@@ -1,0 +1,30 @@
+# Wukong Agent Configuration
+# Copy this file to config.yaml and fill in your API key
+
+# Required: Your API Key
+api_key: "YOUR_API_KEY_HERE"
+
+# Optional: API Base URL (for custom endpoints)
+# api_base: "https://api.example.com"
+
+# Model configuration
+model: "claude-sonnet-4-6"
+provider: "anthropic"  # "anthropic" or "openai"
+
+# Agent configuration
+max_steps: 50
+workspace_dir: "./workspace"
+system_prompt_path: "system_prompt.md"
+
+# Retry configuration
+retry:
+  enabled: true
+  max_retries: 3
+  initial_delay: 1.0
+  max_delay: 60.0
+  exponential_base: 2.0
+
+# Tools configuration
+tools:
+  enable_file_tools: true
+  enable_bash: true

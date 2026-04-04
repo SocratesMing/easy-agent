@@ -1,0 +1,112 @@
+# Mini Agent Configuration Example
+# 
+# Configuration File Locations (in priority order):
+# 1) mini_agent/config/config.yaml - Development mode (current directory)
+# 2) ~/.mini-agent/config/config.yaml - User config directory
+# 3) <package>/mini_agent/config/config.yaml - Package installation directory
+#
+# To use this config:
+# - Copy this file to one of the above locations as config.yaml
+# - Fill in your API key and customize settings as needed
+# - All config files (config.yaml, mcp.json, system_prompt.md) are in the same directory
+
+# ===== LLM Configuration =====
+# MiniMax API Configuration
+# MiniMax provides both global and China platforms:
+# - Global: https://platform.minimax.io -> api_base: https://api.minimax.io
+# - China: https://platform.minimaxi.com -> api_base: https://api.minimaxi.com
+# Please choose based on your network environment and get API key from corresponding platform
+
+api_key: "sk-api-5xGQwVHqkHakCyFMZdZt8bbomoaa-gNdWoBjpAKu7g2zg0qfdKfXyIFRvEaeugHwgi5OQQ1jq9UlnidjCRsLTmfhbLGy-U3Rw83fdixS-GA_VV5S-oK2UaQ"  # Replace with your MiniMax API Key
+api_base: "https://api.minimaxi.com"  # China users
+model: "MiniMax-M2.7"
+provider: "minimax"  # MiniMax provider
+
+# api_key: "sk-bcff7c5f84b94262882cd4b7be499675"  # Replace with your MiniMax API Key
+# api_base: "https://api.deepseek.com/v1"   # Global users (default)
+# model: "deepseek-reasoner"
+# LLM provider: "openai"
+# provider: "deepseek"  # Default: anthropic
+
+# For MiniMax API, the suffix (/anthropic or /v1) is auto-appended based on provider.
+# For third-party APIs (e.g., https://api.siliconflow.cn/v1), api_base is used as-is.
+
+# ===== Retry Configuration =====
+retry:
+  enabled: true           # Enable retry mechanism
+  max_retries: 3          # Maximum number of retries
+  initial_delay: 1.0      # Initial delay time (seconds)
+  max_delay: 60.0         # Maximum delay time (seconds)
+  exponential_base: 2.0   # Exponential backoff base (delay = initial_delay * base^attempt)
+
+# ===== Agent Configuration =====
+max_steps: 100  # Maximum execution steps
+workspace_dir: "./workspace"  # Working directory
+system_prompt_path: "system_prompt.md"  # System prompt file (same config directory)
+
+# ===== Tools Configuration =====
+tools:
+  # Basic tool switches
+  enable_file_tools: true  # File read/write/edit tools (ReadTool, WriteTool, EditTool)
+  enable_bash: true        # Bash command execution tool
+  enable_note: true        # Session note tool (SessionNoteTool)
+  
+  # Claude Skills
+  enable_skills: true      # Enable Skills
+  skills_dir: "./skills"   # Skills directory path
+  
+  # MCP Tools
+  enable_mcp: true         # Enable MCP tools
+  mcp_config_path: "mcp.json"  # MCP configuration file (same config directory)
+                           # Note: API Keys for MCP tools are configured in mcp.json
+  # MCP timeout configuration (prevents hanging on network issues)
+  mcp:
+    connect_timeout: 10.0    # Connection timeout in seconds (default: 10)
+    execute_timeout: 60.0    # Tool execution timeout in seconds (default: 60)
+    sse_read_timeout: 120.0  # SSE read timeout in seconds (default: 120)
+
+# ===== Database Configuration =====
+# Supports SQLite (local) or MySQL (remote)
+database:
+  # Database type: "sqlite" or "mysql"
+  type: "mysql"
+  
+  # SQLite configuration (used when type is "sqlite")
+  sqlite:
+    path: "./data/mini_agent.db"  # Database file path
+  
+  # MySQL configuration (used when type is "mysql")
+  mysql:
+    host: "127.0.0.1"         # MySQL server address
+    port: 3306               # MySQL port (default: 3306)
+    user: "root"              # MySQL username
+    password: "1234"  # MySQL password
+    database: "demo"    # Database name
+    charset: "utf8mb4"        # Character encoding
+    # Connection pool settings
+    pool:
+      pool_size: 5            # Connection pool size
+      max_overflow: 10        # Max overflow connections
+      pool_timeout: 30        # Pool timeout (seconds)
+      pool_recycle: 3600      # Connection recycle time (seconds)
+    # Connection options
+    connect_timeout: 10       # Connection timeout (seconds)
+    read_timeout: 30         # Read timeout (seconds)
+    write_timeout: 30        # Write timeout (seconds)
+
+# ===== Vector Store Configuration (Chroma + Sentence Transformers) =====
+# Chroma is a pure Python vector database that supports Windows
+# Sentence Transformers provides local embedding models
+# Install chroma: pip install chromadb
+# Install sentence-transformers: pip install sentence-transformers
+# Model is cached at ~/.cache/modelscope/hub/models/Qwen/Qwen3-Embedding-4B
+vector_store:
+  enabled: true             # Enable vector store
+  db_path: "./data/chroma_db"  # Local database path
+  collection_name: "mini_agent_docs"  # Collection name
+  embedding_provider: "sentence_transformers"  # Embedding provider: "sentence_transformers" or "zhipu"
+  embedding_dimension: 4096   # Embedding vector dimension (Qwen3-Embedding-4B uses 4096)
+  batch_size: 32           # Batch size for indexing
+  zhipu_api_key: "e85df0ae47b44929b0450939084de077.47Af1uq8jZVsUgHO"          # Zhipu AI API key (if using zhipu provider)
+  zhipu_model: "embedding-3"  # Zhipu embedding model name
+  sentence_transformers_model: "Qwen/Qwen3-Embedding-0.6B"  # Sentence Transformers model name
