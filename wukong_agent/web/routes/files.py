@@ -29,6 +29,28 @@ def ensure_upload_dir():
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 
+@router.get("/session/{session_id}", summary="获取会话生成的文件列表")
+async def get_session_generated_files(
+    session_id: str,
+    db: Annotated[Database, Depends(get_database)],
+):
+    """获取指定会话生成的文件列表"""
+    generated_files = db.get_generated_files(session_id)
+    
+    file_list = []
+    for f in generated_files:
+        file_list.append({
+            "id": f["id"],
+            "filename": f["filename"],
+            "file_path": f["file_path"],
+            "file_type": f["file_type"],
+            "size": f["size"],
+            "created_at": f["created_at"],
+        })
+    
+    return file_list
+
+
 @router.get("/list", summary="获取文件列表", response_model=FileListResponse)
 async def list_files(
     db: Annotated[Database, Depends(get_database)],

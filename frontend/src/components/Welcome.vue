@@ -3,9 +3,9 @@
     <div class="welcome-modal">
       <div class="welcome-header">
         <div class="logo">
-          <WuKongLogo :size="36" />
+          <EasyLogo :size="36" />
         </div>
-        <h1>欢迎使用 WuKong</h1>
+        <h1>欢迎使用 Easy Agent</h1>
         <p v-if="isResetPassword">重置密码</p>
         <p v-else>{{ isLogin ? '请登录您的账号' : '创建新账号开始使用' }}</p>
       </div>
@@ -98,7 +98,7 @@
 <script setup>
 import { ref, onMounted, nextTick } from 'vue'
 import { login, register, resetPassword } from '../api/auth.js'
-import WuKongLogo from './WuKongLogo.vue'
+import EasyLogo from './EasyLogo.vue'
 
 const emit = defineEmits(['completed'])
 

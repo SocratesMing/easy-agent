@@ -433,11 +433,13 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
           }
         }
       } else if (eventType === 'thinking') {
+        console.log('[thinking] 收到思考内容:', data.content)
         currentThinking += data.content || ''
         addBlock('thinking', { content: data.content || '' })
         const idx = messages.value.findIndex(m => m.id === assistantMsgId)
         if (idx !== -1) {
           messages.value[idx] = { ...messages.value[idx], thinking: currentThinking }
+          console.log('[thinking] blocks:', messages.value[idx].blocks)
         }
       } else if (eventType === 'thinking_end') {
         console.log('Received thinking_end event:', JSON.stringify(data))

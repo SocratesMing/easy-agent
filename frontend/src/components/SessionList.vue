@@ -3,9 +3,9 @@
     <div class="session-header">
       <div class="header-left">
         <div class="logo">
-          <WuKongLogo :size="28" />
+          <EasyLogo :size="28" />
         </div>
-        <span class="logo-text">WuKong</span>
+        <span class="logo-text">Easy Agent</span>
       </div>
       <button @click="$emit('toggleSidebar')" class="collapse-btn" title="收起侧边栏">
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -152,7 +152,7 @@
 
 <script setup>
 import { ref, nextTick, onMounted, onUnmounted } from 'vue'
-import WuKongLogo from './WuKongLogo.vue'
+import EasyLogo from './EasyLogo.vue'
 
 const emit = defineEmits(['createSession', 'selectSession', 'deleteSession', 'renameSession', 'toggleSidebar', 'showAssets', 'showProfile', 'logout'])
 

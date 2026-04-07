@@ -65,4 +65,5 @@ def _create_minimax_model(llm_config):
         base_url=f"{api_base.rstrip('/')}/v1",
         http_async_client=httpx.AsyncClient(timeout=120.0),
         max_retries=llm_config.retry.max_retries if llm_config.retry.enabled else 0,
+        streaming=True,  # 启用流式输出
     )

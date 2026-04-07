@@ -3,7 +3,7 @@
     <div class="chat-messages" ref="messagesRef">
       <div v-if="messages.length === 0" class="welcome-screen">
         <div class="welcome-icon">
-          <WuKongLogo :size="64" />
+          <EasyLogo :size="64" />
         </div>
         <h2>{{ displayedTitle }}</h2>
         <p>{{ displayedSubtitle }}</p>
@@ -132,7 +132,7 @@
 import { ref, watch, nextTick, computed, onMounted, onUnmounted } from 'vue'
 import ChatMessage from './ChatMessage.vue'
 import ChatInput from './ChatInput.vue'
-import WuKongLogo from './WuKongLogo.vue'
+import EasyLogo from './EasyLogo.vue'
 import FileIcon from './FileIcon.vue'
 import FileTreeNode from './FileTreeNode.vue'
 import CodePreview from './CodePreview.vue'
@@ -150,8 +150,8 @@ const md = new MarkdownIt({
 })
 import { getSessionGeneratedFiles, getFileContent, downloadFile } from '../api/files'
 
-const welcomeTitle = '我是悟空'
-const welcomeSubtitle = '专注于金融市场领域的通用智能体，有什么可以帮您？'
+const welcomeTitle = '我是 Easy Agent'
+const welcomeSubtitle = '简单易用的智能助手，有什么可以帮您？'
 const displayedTitle = ref('')
 const displayedSubtitle = ref('')
 let titleTimer = null

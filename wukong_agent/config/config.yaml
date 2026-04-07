@@ -77,7 +77,7 @@ database:
     host: "127.0.0.1"
     port: 3306
     user: "root"
-    password: "1234"
+    password: "Test1234"
     database: "agent"
     charset: "utf8mb4"
     pool:

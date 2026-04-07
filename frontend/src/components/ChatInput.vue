@@ -122,7 +122,7 @@
     </div>
     
     <div class="input-footer">
-      <span class="footer-text">WuKong 信息由AI生成，仅供参考</span>
+      <span class="footer-text">Easy Agent 信息由AI生成，仅供参考</span>
     </div>
   </div>
 </template>
