@@ -68,31 +68,26 @@ tools:
 # ===== Database Configuration =====
 # Supports SQLite (local) or MySQL (remote)
 database:
-  # Database type: "sqlite" or "mysql"
   type: "mysql"
   
-  # SQLite configuration (used when type is "sqlite")
   sqlite:
-    path: "./data/mini_agent.db"  # Database file path
+    path: "./data/wukong_agent.db"
   
-  # MySQL configuration (used when type is "mysql")
   mysql:
-    host: "127.0.0.1"         # MySQL server address
-    port: 3306               # MySQL port (default: 3306)
-    user: "root"              # MySQL username
-    password: "1234"  # MySQL password
-    database: "demo"    # Database name
-    charset: "utf8mb4"        # Character encoding
-    # Connection pool settings
+    host: "127.0.0.1"
+    port: 3306
+    user: "root"
+    password: "1234"
+    database: "agent"
+    charset: "utf8mb4"
     pool:
-      pool_size: 5            # Connection pool size
-      max_overflow: 10        # Max overflow connections
-      pool_timeout: 30        # Pool timeout (seconds)
-      pool_recycle: 3600      # Connection recycle time (seconds)
-    # Connection options
-    connect_timeout: 10       # Connection timeout (seconds)
-    read_timeout: 30         # Read timeout (seconds)
-    write_timeout: 30        # Write timeout (seconds)
+      pool_size: 5
+      max_overflow: 10
+      pool_timeout: 30
+      pool_recycle: 3600
+    connect_timeout: 10
+    read_timeout: 30
+    write_timeout: 30
 
 # ===== Vector Store Configuration (Chroma + Sentence Transformers) =====
 # Chroma is a pure Python vector database that supports Windows
@@ -101,12 +96,4 @@ database:
 # Install sentence-transformers: pip install sentence-transformers
 # Model is cached at ~/.cache/modelscope/hub/models/Qwen/Qwen3-Embedding-4B
 vector_store:
-  enabled: true             # Enable vector store
-  db_path: "./data/chroma_db"  # Local database path
-  collection_name: "mini_agent_docs"  # Collection name
-  embedding_provider: "sentence_transformers"  # Embedding provider: "sentence_transformers" or "zhipu"
-  embedding_dimension: 4096   # Embedding vector dimension (Qwen3-Embedding-4B uses 4096)
-  batch_size: 32           # Batch size for indexing
-  zhipu_api_key: "e85df0ae47b44929b0450939084de077.47Af1uq8jZVsUgHO"          # Zhipu AI API key (if using zhipu provider)
-  zhipu_model: "embedding-3"  # Zhipu embedding model name
-  sentence_transformers_model: "Qwen/Qwen3-Embedding-0.6B"  # Sentence Transformers model name
+  enabled: false

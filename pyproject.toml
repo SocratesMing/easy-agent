@@ -16,10 +16,20 @@ dependencies = [
     "langchain-anthropic>=0.3.0",
     "langchain-openai>=0.3.0",
     "prompt-toolkit>=3.0.0",
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.34.0",
+    "python-multipart>=0.0.18",
+    "chromadb>=0.5.0",
+    "sentence-transformers>=3.0.0",
+    "pymysql>=1.1.0",
+    "DBUtils>=3.0.0",
+    "bcrypt>=4.1.0",
+    "python-jose[cryptography]>=3.3.0",
 ]
 
 [project.scripts]
 wukong-agent = "wukong_agent.cli:main"
+wukong-web = "run_web:main"
 
 [project.optional-dependencies]
 dev = [
@@ -41,3 +51,8 @@ exclude = ["tests*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+
+[[tool.uv.index]]
+name = "tsinghua"
+url = "https://pypi.tuna.tsinghua.edu.cn/simple"
+default = true  # 将清华源设为默认源，取代 PyPI 官方源

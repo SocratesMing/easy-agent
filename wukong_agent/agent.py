@@ -7,11 +7,10 @@ from pathlib import Path
 
 from deepagents import create_deep_agent
 from deepagents.backends import LocalShellBackend
-from langchain_anthropic import ChatAnthropic
-from langchain_openai import ChatOpenAI
 
 from .config import Config
 from .logger import AgentLogger
+from .model import create_model
 
 
 class Colors:
@@ -283,40 +282,7 @@ class WukongAgent:
             return error_msg
 
     def _create_deep_agent(self):
-        llm_config = self.config.llm
-
-        if llm_config.provider == "anthropic":
-            model = ChatAnthropic(
-                api_key=llm_config.api_key,
-                model=llm_config.model,
-                base_url=llm_config.api_base,
-                max_retries=llm_config.retry.max_retries if llm_config.retry.enabled else 0,
-            )
-        elif llm_config.provider == "openai":
-            base_url = llm_config.api_base
-            if base_url and not base_url.endswith('/v1'):
-                base_url = base_url.rstrip('/') + '/v1'
-
-            model = ChatOpenAI(
-                api_key=llm_config.api_key,
-                model=llm_config.model,
-                base_url=base_url,
-                max_retries=llm_config.retry.max_retries if llm_config.retry.enabled else 0,
-            )
-        elif llm_config.provider == "minimax":
-            import httpx
-
-            api_base = llm_config.api_base or "https://api.minimaxi.com"
-
-            model = ChatOpenAI(
-                api_key=llm_config.api_key,
-                model=llm_config.model,
-                base_url=f"{api_base.rstrip('/')}/v1",
-                http_async_client=httpx.AsyncClient(timeout=120.0),
-                max_retries=llm_config.retry.max_retries if llm_config.retry.enabled else 0,
-            )
-        else:
-            raise ValueError(f"Unsupported LLM provider: {llm_config.provider}")
+        model = create_model(self.config)
 
         project_root = Path(__file__).parent.parent.absolute()
         backend = LocalShellBackend(root_dir=str(project_root))
