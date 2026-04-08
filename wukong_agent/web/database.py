@@ -1,4 +1,4 @@
-"""Database management for Wukong Agent
+"""Database management for Easy Agent
 
 Supports SQLite3 (local) and MySQL (remote) databases
 """
@@ -17,7 +17,7 @@ from pydantic import BaseModel
 
 from .utils.auth import hash_password, verify_password
 
-DATABASE_PATH = "./data/wukong_agent.db"
+DATABASE_PATH = "./data/easy_agent.db"
 logger = logging.getLogger(__name__)
 
 
@@ -87,7 +87,7 @@ class Database:
         from dbutils.pooled_db import PooledDB
         import pymysql
 
-        db_name = self._mysql_config.get("database", "wukong_agent")
+        db_name = self._mysql_config.get("database", "easy_agent")
         try:
             conn = pymysql.connect(
                 host=self._mysql_config.get("host", "localhost"),
@@ -223,11 +223,32 @@ class Database:
                     arguments TEXT NOT NULL,
                     result TEXT,
                     success INTEGER NOT NULL DEFAULT 1,
+                    duration REAL,
+                    step INTEGER NOT NULL DEFAULT 0,
                     created_at VARCHAR(50) NOT NULL,
                     FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
                 )
             """)
             self._create_index(cursor, "idx_tool_call_session", "tool_call_records", "session_id")
+            self._create_index(cursor, "idx_tool_call_message", "tool_call_records", "session_id, message_id")
+            # 迁移: 为已存在的 tool_call_records 添加新字段
+            self._ensure_column(cursor, "tool_call_records", "duration", "REAL")
+            self._ensure_column(cursor, "tool_call_records", "step", "INTEGER NOT NULL DEFAULT 0")
+
+            cursor.execute(f"""
+                CREATE TABLE IF NOT EXISTS thinking_records (
+                    id INTEGER PRIMARY KEY {auto_inc},
+                    session_id VARCHAR(255) NOT NULL,
+                    message_id VARCHAR(255) NOT NULL,
+                    step INTEGER NOT NULL DEFAULT 0,
+                    content TEXT NOT NULL,
+                    duration REAL,
+                    created_at VARCHAR(50) NOT NULL,
+                    FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
+                )
+            """)
+            self._create_index(cursor, "idx_thinking_session", "thinking_records", "session_id")
+            self._create_index(cursor, "idx_thinking_message", "thinking_records", "session_id, message_id")
 
             cursor.execute(f"""
                 CREATE TABLE IF NOT EXISTS session_files (
@@ -437,14 +458,16 @@ class Database:
         arguments: dict,
         result: str = None,
         success: bool = True,
+        duration: float = None,
+        step: int = 0,
     ):
         with self.get_connection() as conn:
             cursor = conn.cursor()
             self._execute(
                 cursor,
                 """
-                INSERT INTO tool_call_records (session_id, message_id, tool_name, tool_call_id, arguments, result, success, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO tool_call_records (session_id, message_id, tool_name, tool_call_id, arguments, result, success, duration, step, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     session_id,
@@ -454,6 +477,8 @@ class Database:
                     json.dumps(arguments, ensure_ascii=False),
                     result,
                     1 if success else 0,
+                    duration,
+                    step,
                     datetime.now().isoformat(),
                 ),
             )
@@ -464,6 +489,52 @@ class Database:
             self._execute(
                 cursor,
                 "SELECT * FROM tool_call_records WHERE session_id=? ORDER BY created_at",
+                (session_id,),
+            )
+            rows = cursor.fetchall()
+        results = []
+        for row in rows:
+            d = dict(row)
+            if d.get('arguments'):
+                try:
+                    d['arguments'] = json.loads(d['arguments'])
+                except:
+                    pass
+            results.append(d)
+        return results
+
+    def record_thinking(
+        self,
+        session_id: str,
+        message_id: str,
+        step: int,
+        content: str,
+        duration: float = None,
+    ):
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            self._execute(
+                cursor,
+                """
+                INSERT INTO thinking_records (session_id, message_id, step, content, duration, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    session_id,
+                    message_id,
+                    step,
+                    content,
+                    duration,
+                    datetime.now().isoformat(),
+                ),
+            )
+
+    def get_thinkings(self, session_id: str) -> list[dict]:
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            self._execute(
+                cursor,
+                "SELECT * FROM thinking_records WHERE session_id=? ORDER BY step, created_at",
                 (session_id,),
             )
             rows = cursor.fetchall()

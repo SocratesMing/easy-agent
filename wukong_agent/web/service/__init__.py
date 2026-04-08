@@ -11,14 +11,14 @@ from typing import AsyncGenerator
 
 from langchain_core.messages import HumanMessage
 
-from ...agent import WukongAgent
+from ...agent import EasyAgent
 from ...config import Config
 from ..database import Database, SessionModel, get_database
 from ..models import ChatRequest
 
-logger = logging.getLogger("wukong_agent.chat_service")
+logger = logging.getLogger("easy_agent.chat_service")
 
-_session_agents: dict[str, WukongAgent] = {}
+_session_agents: dict[str, EasyAgent] = {}
 _agent_config: dict = None
 _llm_instance = None  # 直接持有 LLM 实例用于流式调用
 
@@ -36,7 +36,7 @@ def init_agent_config(config: Config, system_prompt: str, skills: list[str] = No
     logger.info("[初始化] Agent 配置初始化完成 | LLM 流式已启用")
 
 
-async def get_or_create_agent_for_session(session_id: str, username: str = "default") -> WukongAgent:
+async def get_or_create_agent_for_session(session_id: str, username: str = "default") -> EasyAgent:
     global _session_agents, _agent_config
 
     if session_id in _session_agents:
@@ -45,15 +45,17 @@ async def get_or_create_agent_for_session(session_id: str, username: str = "defa
     if _agent_config is None:
         raise RuntimeError("Agent 配置未初始化")
 
-    logger.info(f"[{session_id[-5:]}] 为会话创建 Agent 实例 | username={username}")
+    logger.info(f"[{session_id[-5:]}] 为会话创建 Agent 实例 | username={username} | session_id={session_id}")
 
-    agent = WukongAgent(
+    agent = EasyAgent(
         config=_agent_config["config"],
         system_prompt=_agent_config["system_prompt"],
         skills=_agent_config["skills"],
+        username=username,
+        session_id=session_id,
     )
     _session_agents[session_id] = agent
-    logger.info(f"[{session_id[-5:]}] Agent 实例创建成功")
+    logger.info(f"[{session_id[-5:]}] Agent 实例创建成功 | workspace: {agent.workspace_dir}")
     return agent
 
 
@@ -67,7 +69,7 @@ def remove_session_agent(session_id: str):
 async def chat_stream_generator(
     request: ChatRequest,
     db: Database,
-    agent: WukongAgent,
+    agent: EasyAgent,
     session_id: str,
     message_id: str,
     username: str,
@@ -102,182 +104,237 @@ async def chat_stream_generator(
             thinking_start_time = None
             thinking_end_time = None
             assistant_started = False
-            thinking_buffer = ""
+            current_step = 0  # 当前步骤序号
+            current_step_thinking = ""  # 当前步骤的思考内容(每轮独立)
             tool_call_start_times = {}  # 记录每个工具调用的开始时间
+            tool_call_step_map = {}  # 记录工具调用对应的步骤序号
             
-            async for event in agent.agent.astream({"messages": messages}):
-                if not isinstance(event, dict):
+            # 用于数据库持久化的收集器
+            thinking_records = []  # [(step, content, duration), ...]
+            tool_call_records = []  # [(tool_name, tool_call_id, args, result, success, duration, step), ...]
+            tool_call_id_counter = 0  # 工具调用ID计数器
+            
+            # 临时存储工具调用信息(等待结果到来时合并)
+            pending_tool_calls = {}  # tool_name -> {tool_call_id, arguments, step}
+            
+            # 使用 messages 模式获取逐 token 的流式输出
+            accumulated_content = ""  # 累积的 AI 内容（包含思考标签）
+            accumulated_thinking = ""  # 累积的思考内容
+            accumulated_response = ""  # 累积的正式回复
+            token_count = 0  # 计数器
+            is_in_thinking = False  # 是否在思考标签内
+            thinking_buffer = ""  # 思考内容缓冲区
+            first_token_time = None  # 第一个 token 的时间
+            msg_received_time = None  # 思考开始时间（遇到 <think> 时记录）
+            
+            async for chunk in agent.agent.astream(
+                {"messages": messages},
+                stream_mode="messages",
+                subgraphs=True,
+                version="v2",
+            ):
+                if chunk["type"] != "messages":
                     continue
                 
-                for node_name, node_output in event.items():
-                    if not isinstance(node_output, dict) or 'messages' not in node_output:
-                        continue
+                token, metadata = chunk["data"]
+                ns = chunk.get("ns", [])  # 命名空间
+                
+                # 只处理主 agent 的消息（忽略子 agent）
+                is_subagent = any(s.startswith("tools:") for s in ns)
+                if is_subagent:
+                    continue
+                
+                # 处理 AI 内容 token（流式）
+                content = getattr(token, 'content', '')
+                if content:
+                    content_str = str(content)
                     
-                    msgs_list = node_output['messages']
-                    if not isinstance(msgs_list, list):
-                        try:
-                            msgs_list = list(msgs_list)
-                        except:
-                            continue
+                    # 记录第一个 token 的时间
+                    if first_token_time is None:
+                        first_token_time = time.time()
+                        logger.info(f"[{sid}] ⚡ 首 token 延迟: {first_token_time - start_time:.2f}s")
                     
-                    for msg in msgs_list:
-                        msg_type = getattr(msg, 'type', None)
-                        if msg_type is None and isinstance(msg, dict):
-                            msg_type = msg.get('type')
-                        
-                        content = getattr(msg, 'content', '')
-                        if not content and isinstance(msg, dict):
-                            content = msg.get('content', '')
-                        
-                        if msg_type == 'ai' and content:
-                            # 处理 AI 消息(可能包含思考标签和工具调用)
-                            import re
+                    accumulated_content += content_str
+                    token_count += 1
+                    
+                    # 实时检测思考标签
+                    import re
+                    
+                    # 检查是否有开始标签
+                    if not is_in_thinking and '<think' in content_str.lower():
+                        is_in_thinking = True
+                        msg_received_time = time.time()  # 记录思考开始时间
+                        # 发送思考开始事件
+                        yield format_sse({
+                            "type": "thinking_start",
+                            "content": "",
+                            "step": current_step,
+                        })
+                    
+                    # 检查是否有结束标签
+                    if is_in_thinking and '</think' in content_str.lower():
+                        # 提取结束标签前的思考内容
+                        end_match = re.search(r'</think[^>]*>', content_str, re.IGNORECASE)
+                        if end_match:
+                            thinking_part = content_str[:end_match.start()]
+                            response_part = content_str[end_match.end():]
                             
-                            # 检查工具调用
-                            additional_kwargs = getattr(msg, 'additional_kwargs', {})
-                            if not additional_kwargs and isinstance(msg, dict):
-                                additional_kwargs = msg.get('additional_kwargs', {})
-                            
-                            tool_calls = []
-                            if additional_kwargs.get('tool_calls'):
-                                for tc in additional_kwargs['tool_calls']:
-                                    tc_name = getattr(tc, 'name', '') or tc.get('name', '')
-                                    tc_args = getattr(tc, 'args', {}) or tc.get('args', {})
-                                    tool_calls.append((tc_name, tc_args))
-                            
-                            if hasattr(msg, 'tool_calls') and msg.tool_calls:
-                                for tc in msg.tool_calls:
-                                    tc_name = getattr(tc, 'name', '') or tc.get('name', '')
-                                    tc_args = getattr(tc, 'args', {}) or tc.get('args', {})
-                                    tool_calls.append((tc_name, tc_args))
-                            
-                            # 发送工具调用事件
-                            for tc_name, tc_args in tool_calls:
-                                logger.info(f"[{sid}] 🔧 工具调用: {tc_name}")
-                                logger.info(f"[{sid}] 📝 工具参数: {json.dumps(tc_args, ensure_ascii=False)[:200]}")
-                                tool_call_start_times[tc_name] = time.time()  # 记录工具调用开始时间
-                                yield format_sse({
-                                    "type": "tool_call",
-                                    "tool_name": tc_name,
-                                    "arguments": tc_args,
-                                })
-                            
-                            # 检查思考标签 - 每次都处理,包括工具执行过程中的思考
-                            think_pattern = r'<think[^>]*>([\s\S]*?)</think\s*>'
-                            matches = re.findall(think_pattern, content, re.IGNORECASE)
-                            
-                            if matches:
-                                # 有思考内容(可能是首次思考,也可能是工具执行中的思考)
-                                thinking_start_time = time.time()
-                                thinking_started = True
-                                
-                                for thinking_text in matches:
-                                    if thinking_text.strip():
-                                        thinking_buffer += thinking_text.strip()
-                                
-                                logger.info(f"[{sid}] 🤔 思考开始")
-                                yield format_sse({
-                                    "type": "thinking_start",
-                                    "content": "",
-                                })
-                                
-                                # 发送思考内容
+                            # 发送剩余思考内容
+                            if thinking_part.strip():
                                 yield format_sse({
                                     "type": "thinking",
-                                    "content": thinking_buffer,
+                                    "content": thinking_part,
+                                    "step": current_step,
                                 })
-                                
-                                # 思考结束
-                                thinking_duration = time.time() - thinking_start_time
-                                thinking_end_time = time.time()
-                                logger.info(f"[{sid}] 🤔 思考结束 | 耗时: {thinking_duration:.2f}s | 长度: {len(thinking_buffer)}")
-                                logger.info(f"[{sid}] 🤔 思考内容:\n{thinking_buffer}")
-                                yield format_sse({
-                                    "type": "thinking_end",
-                                    "duration": round(thinking_duration, 2),
-                                })
-                                
-                                # 提取正式回复(移除思考标签后的内容)
-                                response_text = re.sub(think_pattern, '', content, flags=re.IGNORECASE).strip()
-                                if response_text:
-                                    assistant_started = True
-                                    logger.info(f"[{sid}] 💬 回复开始")
-                                    yield format_sse({
-                                        "type": "assistant_start",
-                                        "content": "",
-                                    })
-                                    
-                                    full_response = response_text
-                                    yield format_sse({
-                                        "type": "content",
-                                        "content": response_text,
-                                    })
-                            elif not tool_calls:
-                                # 没有思考标签和工具调用,直接是回复内容
-                                if not assistant_started:
-                                    assistant_started = True
-                                    logger.info(f"[{sid}] 💬 回复开始")
-                                    yield format_sse({
-                                        "type": "assistant_start",
-                                        "content": "",
-                                    })
-                                
-                                full_response += content
+                                accumulated_thinking += thinking_part
+                            
+                            # 发送思考结束事件
+                            thinking_duration = time.time() - msg_received_time
+                            yield format_sse({
+                                "type": "thinking_end",
+                                "duration": round(thinking_duration, 2),
+                                "step": current_step,
+                            })
+                            
+                            is_in_thinking = False
+                            
+                            # 发送正式回复内容
+                            if response_part.strip():
                                 yield format_sse({
                                     "type": "content",
-                                    "content": content,
+                                    "content": response_part,
                                 })
-                        
-                        elif msg_type == 'tool':
-                            # 工具调用结果
-                            tool_name = getattr(msg, 'name', '')
-                            if not tool_name and isinstance(msg, dict):
-                                tool_name = msg.get('name', '')
+                                accumulated_response += response_part
+                    elif is_in_thinking:
+                        # 在思考标签内，发送思考内容
+                        yield format_sse({
+                            "type": "thinking",
+                            "content": content_str,
+                            "step": current_step,
+                        })
+                        accumulated_thinking += content_str
+                    else:
+                        # 正式回复内容
+                        logger.debug(f"[{sid}] 📤 发送 content 事件 | 长度: {len(content_str)} | 内容: {content_str[:50]}")
+                        yield format_sse({
+                            "type": "content",
+                            "content": content_str,
+                        })
+                        accumulated_response += content_str
+                
+                # 处理工具调用 chunks
+                if hasattr(token, "tool_call_chunks") and token.tool_call_chunks:
+                    for tc_chunk in token.tool_call_chunks:
+                        if tc_chunk.get("name"):
+                            tool_name = tc_chunk['name']
+                            # 记录工具调用开始时间
+                            tool_call_start_times[tool_name] = time.time()
                             
-                            tool_content = getattr(msg, 'content', '')
-                            if not tool_content and isinstance(msg, dict):
-                                tool_content = msg.get('content', '')
-                            
-                            result_str = str(tool_content)
-                            result_preview = result_str[:1000] if len(result_str) > 1000 else result_str
-                            
-                            # 计算工具执行耗时
-                            tool_duration = None
-                            if tool_name in tool_call_start_times:
-                                tool_duration = round(time.time() - tool_call_start_times[tool_name], 2)
-                                logger.info(f"[{sid}] ✅ 工具结果: {tool_name} | 耗时: {tool_duration}s | 长度: {len(result_str)} 字符")
-                                del tool_call_start_times[tool_name]  # 清除记录
-                            else:
-                                logger.info(f"[{sid}] ✅ 工具结果: {tool_name} | 长度: {len(result_str)} 字符")
-                            
+                            logger.info(f"[{sid}] 🔧 工具调用: {tool_name}")
                             yield format_sse({
-                                "type": "tool_result",
+                                "type": "tool_call",
                                 "tool_name": tool_name,
-                                "result": result_preview,
-                                "success": True,
-                                "duration": tool_duration,
+                                "arguments": tc_chunk.get("args", {}),
+                                "step": current_step,
                             })
+                
+                # 处理工具结果
+                if token.type == "tool":
+                    tool_name = getattr(token, "name", "") or ""
+                    result_content = str(getattr(token, "content", ""))
+                    
+                    # 判断工具执行是否成功
+                    tool_success = True
+                    exit_code_match = re.search(r'Exit code:\s*(\d+)', result_content)
+                    if exit_code_match:
+                        exit_code = int(exit_code_match.group(1))
+                        tool_success = exit_code == 0
+                    
+                    # 计算工具执行时间
+                    tool_duration = 0
+                    if tool_name in tool_call_start_times:
+                        tool_duration = time.time() - tool_call_start_times[tool_name]
+                        del tool_call_start_times[tool_name]
+                    
+                    logger.info(f"[{sid}] {'✅' if tool_success else '❌'} 工具结果: {tool_name} | 成功: {tool_success} | 耗时: {tool_duration:.2f}s")
+                    
+                    # 保存到工具调用记录（用于数据库持久化）
+                    tool_call_id = f"tool-{tool_name}-{len(tool_call_records)}"
+                    tool_call_records.append((
+                        tool_name,
+                        tool_call_id,
+                        {},  # arguments（从 pending_tool_calls 获取）
+                        result_content,
+                        tool_success,
+                        round(tool_duration, 2),
+                        current_step,
+                    ))
+                    
+                    yield format_sse({
+                        "type": "tool_result",
+                        "tool_name": tool_name,
+                        "result": result_content,
+                        "success": tool_success,
+                        "duration": round(tool_duration, 2),
+                        "step": current_step,
+                    })
+            
+            # 流式结束后，保存思考记录
+            if accumulated_thinking.strip():
+                thinking_duration = time.time() - msg_received_time
+                db.record_thinking(
+                    session_id=session_id,
+                    message_id=message_id,
+                    step=current_step,
+                    content=accumulated_thinking.strip(),
+                    duration=round(thinking_duration, 2),
+                )
+                logger.info(f"[{sid}] 💾 思考记录已保存 | 长度: {len(accumulated_thinking)}")
+
+            # 发送回复结束事件
+            if accumulated_response:
+                yield format_sse({
+                    "type": "content_end",
+                    "content": "",
+                })
 
             elapsed_time = time.time() - start_time
+            generation_time = time.time() - first_token_time if first_token_time else 0
             
             # 确保发送思考结束事件(如果没有正常关闭)
             if thinking_started and thinking_start_time and thinking_end_time is None:
                 thinking_duration = time.time() - thinking_start_time
-                logger.info(f"[{sid}] 🤔 思考结束(异常) | 耗时: {thinking_duration:.2f}s | 长度: {len(thinking_buffer)}")
-                logger.info(f"[{sid}] 🤔 思考内容:\n{thinking_buffer}")
+                logger.info(f"[{sid}] 🤔 Step {current_step} 思考结束(异常) | 耗时: {thinking_duration:.2f}s | 长度: {len(accumulated_thinking)}")
                 yield format_sse({
                     "type": "thinking_end",
                     "duration": round(thinking_duration, 2),
+                    "step": current_step,
                 })
 
-            logger.info(f"[{sid}] ✅ 流式响应完成 | 总耗时: {elapsed_time:.2f}s | 回复长度: {len(full_response)} 字符")
-            logger.info(f"[{sid}] 💬 回复内容:\n{full_response}")
+            logger.info(f"[{sid}] ✅ 流式响应完成 | 总步骤: {current_step} | 请求耗时: {elapsed_time:.2f}s | 生成耗时: {generation_time:.2f}s | Token数: {token_count} | 思考长度: {len(accumulated_thinking)} | 回复长度: {len(accumulated_response)} 字符")
+            if accumulated_thinking:
+                logger.info(f"[{sid}] 🤔 思考内容:\n{accumulated_thinking}")
+            if accumulated_response:
+                logger.info(f"[{sid}] 💬 回复内容:\n{accumulated_response}")
 
-            # 保存到数据库
+            # 保存到数据库(包含 thinking 和 tool_calls 字段)
             assistant_message = {
                 "role": "assistant",
-                "content": full_response,
+                "content": accumulated_response if accumulated_response else "",
                 "timestamp": datetime.now().isoformat(),
+                "thinking": accumulated_thinking if accumulated_thinking else None,
+                "tool_calls": [
+                    {
+                        "tool_name": tc[0],
+                        "tool_call_id": tc[1],
+                        "arguments": tc[2],
+                        "result": tc[3],
+                        "success": tc[4],
+                        "duration": tc[5],
+                        "step": tc[6],
+                    }
+                    for tc in tool_call_records
+                ] if tool_call_records else None,
             }
             db.add_message(session_id, assistant_message)
 

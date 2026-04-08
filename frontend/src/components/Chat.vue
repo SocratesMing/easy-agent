@@ -19,6 +19,7 @@
       <ChatMessage 
         :message="msg" 
         @removeFile="(file) => handleRemoveFile(file, index)"
+        @retry="handleRetry"
       />
     </div>
     </div>
@@ -435,6 +436,11 @@ function handleRemoveFile(file, messageIndex) {
   // 从事件参数中获取file，然后从messages中获取对应的message
   const message = props.messages[messageIndex]
   emit('removeFile', message, messageIndex, file)
+}
+
+function handleRetry(content) {
+  // 向上传递重试事件
+  emit('retry', content)
 }
 
 function handleStop() {

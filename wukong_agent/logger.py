@@ -17,9 +17,9 @@ class AgentLogger:
     def __init__(self):
         """Initialize logger
 
-        Logs are stored in ~/.wukong-agent/log/ directory
+        Logs are stored in .easy-agent/log/ directory
         """
-        self.log_dir = Path(".wukong-agent") / "log"
+        self.log_dir = Path(".easy-agent") / "log"
         self.log_dir.mkdir(parents=True, exist_ok=True)
         self.log_file = None
         self.log_index = 0
@@ -33,7 +33,7 @@ class AgentLogger:
 
         with open(self.log_file, "w", encoding="utf-8") as f:
             f.write("=" * 80 + "\n")
-            f.write(f"Wukong Agent Run Log - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            f.write(f"Easy Agent Run Log - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
             f.write("=" * 80 + "\n\n")
 
     def log_request(self, messages: list[dict], tools: list[Any] | None = None):

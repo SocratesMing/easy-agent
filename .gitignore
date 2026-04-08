@@ -40,3 +40,4 @@ workspace/
 .pytest_cache/
 .coverage
 htmlcov/
+.qoder

@@ -46,7 +46,7 @@ class ToolsConfig(BaseModel):
 class SQLiteConfig(BaseModel):
     """SQLite configuration"""
 
-    path: str = "./data/wukong_agent.db"
+    path: str = "./data/easy_agent.db"
 
 
 class MySQLPoolConfig(BaseModel):
@@ -65,7 +65,7 @@ class MySQLConfig(BaseModel):
     port: int = 3306
     user: str = "root"
     password: str = ""
-    database: str = "wukong_agent"
+    database: str = "easy_agent"
     charset: str = "utf8mb4"
     pool: MySQLPoolConfig = Field(default_factory=MySQLPoolConfig)
     connect_timeout: int = 10
@@ -86,7 +86,7 @@ class VectorStoreConfig(BaseModel):
 
     enabled: bool = False
     db_path: str = "./data/chroma_db"
-    collection_name: str = "wukong_agent_docs"
+    collection_name: str = "easy_agent_docs"
     embedding_provider: str = "sentence_transformers"
     embedding_dimension: int = 1024
     batch_size: int = 32
@@ -117,7 +117,7 @@ class Config(BaseModel):
         """Load configuration from the default search path."""
         config_path = cls.get_default_config_path()
         if not config_path.exists():
-            raise FileNotFoundError("Configuration file not found. Place config.yaml in wukong_agent/config/ directory.")
+            raise FileNotFoundError("Configuration file not found. Place config.yaml in easy_agent/config/ directory.")
         return cls.from_yaml(config_path)
 
     @classmethod
@@ -180,13 +180,13 @@ class Config(BaseModel):
         mysql_pool_data = mysql_data.get("pool", {}) if isinstance(mysql_data.get("pool"), dict) else {}
         db_config = DatabaseConfig(
             type=db_data.get("type", "sqlite"),
-            sqlite=SQLiteConfig(path=sqlite_data.get("path", "./data/wukong_agent.db")),
+            sqlite=SQLiteConfig(path=sqlite_data.get("path", "./data/easy_agent.db")),
             mysql=MySQLConfig(
                 host=mysql_data.get("host", "127.0.0.1"),
                 port=mysql_data.get("port", 3306),
                 user=mysql_data.get("user", "root"),
                 password=mysql_data.get("password", ""),
-                database=mysql_data.get("database", "wukong_agent"),
+                database=mysql_data.get("database", "easy_agent"),
                 charset=mysql_data.get("charset", "utf8mb4"),
                 pool=MySQLPoolConfig(
                     pool_size=mysql_pool_data.get("pool_size", 5),
@@ -204,7 +204,7 @@ class Config(BaseModel):
         vs_config = VectorStoreConfig(
             enabled=vs_data.get("enabled", False),
             db_path=vs_data.get("db_path", "./data/chroma_db"),
-            collection_name=vs_data.get("collection_name", "wukong_agent_docs"),
+            collection_name=vs_data.get("collection_name", "easy_agent_docs"),
             embedding_provider=vs_data.get("embedding_provider", "sentence_transformers"),
             embedding_dimension=vs_data.get("embedding_dimension", 1024),
             batch_size=vs_data.get("batch_size", 32),
@@ -227,11 +227,11 @@ class Config(BaseModel):
 
     @classmethod
     def find_config_file(cls, filename: str) -> Path | None:
-        dev_config = Path.cwd() / "wukong_agent" / "config" / filename
+        dev_config = Path.cwd() / "easy_agent" / "config" / filename
         if dev_config.exists():
             return dev_config
 
-        user_config = Path.home() / ".wukong-agent" / "config" / filename
+        user_config = Path.home() / ".easy-agent" / "config" / filename
         if user_config.exists():
             return user_config
 
@@ -240,6 +240,37 @@ class Config(BaseModel):
             return package_config
 
         return None
+
+    @staticmethod
+    def sanitize_username(username: str) -> str:
+        """将用户名转换为安全的目录名"""
+        return "".join(c for c in username if c.isalnum() or c in ('_', '-')) or "user"
+
+    @staticmethod
+    def get_user_workspace_dir(username: str) -> Path:
+        """获取用户的工作空间目录路径
+
+        Args:
+            username: 用户名
+
+        Returns:
+            用户工作空间路径，如 workspace/{username}/
+        """
+        safe_name = Config.sanitize_username(username)
+        return Path("./workspace") / safe_name
+
+    @staticmethod
+    def get_user_upload_dir(username: str) -> Path:
+        """获取用户的上传文件目录路径
+
+        Args:
+            username: 用户名
+
+        Returns:
+            用户上传目录路径，如 data/uploads/{username}/
+        """
+        safe_name = Config.sanitize_username(username)
+        return Path("./data/uploads") / safe_name
 
     @classmethod
     def get_default_config_path(cls) -> Path:

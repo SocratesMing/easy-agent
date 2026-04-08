@@ -1,1 +1,1 @@
-"""Web API module for Wukong Agent"""
+"""Web API module for Easy Agent"""

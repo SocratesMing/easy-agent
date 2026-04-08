@@ -1,11 +1,11 @@
 [project]
-name = "wukong-agent"
+name = "easy-agent"
 version = "0.1.0"
 description = "AI agent powered by DeepAgents framework with Mini-Agent's configuration and interaction patterns"
 readme = "README.md"
 requires-python = ">=3.11"
 authors = [
-    {name = "Wukong Agent Team"}
+    {name = "Easy Agent Team"}
 ]
 license = {text = "MIT"}
 dependencies = [
@@ -28,8 +28,8 @@ dependencies = [
 ]
 
 [project.scripts]
-wukong-agent = "wukong_agent.cli:main"
-wukong-web = "run_web:main"
+easy-agent = "wukong_agent.cli:main"
+easy-web = "run_web:main"
 
 [project.optional-dependencies]
 dev = [

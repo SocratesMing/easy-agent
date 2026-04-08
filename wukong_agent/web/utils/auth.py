@@ -8,7 +8,7 @@ from typing import Optional
 import bcrypt
 from jose import JWTError, jwt
 
-SECRET_KEY = os.environ.get("WUKONG_JWT_SECRET") or secrets.token_urlsafe(32)
+SECRET_KEY = os.environ.get("EASY_JWT_SECRET") or secrets.token_urlsafe(32)
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 

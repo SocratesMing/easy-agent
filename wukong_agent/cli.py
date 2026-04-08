@@ -1,12 +1,12 @@
-"""Wukong Agent - Interactive Runtime Example
+"""Easy Agent - Interactive Runtime Example
 
 Usage:
-    wukong-agent [--workspace DIR] [--task TASK]
+    easy-agent [--workspace DIR] [--task TASK]
 
 Examples:
-    wukong-agent                              # Use current directory as workspace (interactive mode)
-    wukong-agent --workspace /path/to/dir     # Use specific workspace directory (interactive mode)
-    wukong-agent --task "create a file"       # Execute a task non-interactively
+    easy-agent                              # Use current directory as workspace (interactive mode)
+    easy-agent --workspace /path/to/dir     # Use specific workspace directory (interactive mode)
+    easy-agent --task "create a file"       # Execute a task non-interactively
 """
 
 import argparse
@@ -24,7 +24,7 @@ from prompt_toolkit.history import FileHistory
 from prompt_toolkit.styles import Style
 from prompt_toolkit.formatted_text import HTML
 
-from .agent import WukongAgent, Colors
+from .agent import EasyAgent, Colors
 from .config import Config
 
 
@@ -78,7 +78,7 @@ C = ColorsCLI()
 
 def get_log_directory() -> Path:
     """Get the log directory path."""
-    return Path(".wukong-agent") / "log"
+    return Path(".easy-agent") / "log"
 
 
 def show_log_directory(open_file_manager: bool = True) -> None:
@@ -170,7 +170,7 @@ def read_log_file(filename: str) -> None:
 def print_banner():
     """Print welcome banner with proper alignment"""
     BOX_WIDTH = 60
-    banner_text = f"{C.BOLD}🐵 Wukong Agent - DeepAgents Powered AI Assistant{C.RESET}"
+    banner_text = f"{C.BOLD}🐵 Easy Agent - DeepAgents Powered AI Assistant{C.RESET}"
     banner_width = calculate_display_width(banner_text)
 
     total_padding = BOX_WIDTH - banner_width
@@ -249,13 +249,13 @@ def parse_args() -> argparse.Namespace:
         Parsed arguments
     """
     parser = argparse.ArgumentParser(
-        description="Wukong Agent - AI assistant powered by DeepAgents framework",
+        description="Easy Agent - AI assistant powered by DeepAgents framework",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  wukong-agent                              # Use current directory as workspace
-  wukong-agent --workspace /path/to/dir     # Use specific workspace directory
-  wukong-agent --task "create a file"       # Execute a task non-interactively
+  easy-agent                              # Use current directory as workspace
+  easy-agent --workspace /path/to/dir     # Use specific workspace directory
+  easy-agent --task "create a file"       # Execute a task non-interactively
         """,
     )
     parser.add_argument(
@@ -276,7 +276,7 @@ Examples:
         "--version",
         "-v",
         action="version",
-        version="wukong-agent 0.1.0",
+        version="easy-agent 0.1.0",
     )
 
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
@@ -331,7 +331,7 @@ def discover_skills(skills_dir: str | None = None) -> list[dict]:
 
     search_paths.extend([
         Path("skills"),
-        Path("wukong_agent") / "skills",
+        Path("easy_agent") / "skills",
         Path(__file__).parent / "skills",
     ])
 
@@ -380,14 +380,14 @@ def print_skills_info(skills: list[dict]):
     print()
 
 
-async def interactive_mode(agent: WukongAgent, config: Config):
+async def interactive_mode(agent: EasyAgent, config: Config):
     """Run agent in interactive mode
 
     Args:
-        agent: WukongAgent instance
+        agent: EasyAgent instance
         config: Configuration object
     """
-    history_path = Path(".wukong-agent") / "history.txt"
+    history_path = Path(".easy-agent") / "history.txt"
     history_path.parent.mkdir(parents=True, exist_ok=True)
 
     session = PromptSession(
@@ -449,11 +449,11 @@ async def interactive_mode(agent: WukongAgent, config: Config):
             break
 
 
-async def non_interactive_mode(agent: WukongAgent, task: str):
+async def non_interactive_mode(agent: EasyAgent, task: str):
     """Run agent in non-interactive mode
 
     Args:
-        agent: WukongAgent instance
+        agent: EasyAgent instance
         task: Task to execute
     """
     response = await agent.run(task)
@@ -476,7 +476,7 @@ async def main_async():
         config = Config.load()
     except FileNotFoundError as e:
         print(f"{Colors.BRIGHT_RED}❌ Configuration Error:{Colors.RESET} {e}")
-        print(f"\n{Colors.YELLOW}Please create a config.yaml file in wukong_agent/config/ directory.{Colors.RESET}")
+        print(f"\n{Colors.YELLOW}Please create a config.yaml file in easy_agent/config/ directory.{Colors.RESET}")
         sys.exit(1)
     except ValueError as e:
         print(f"{Colors.BRIGHT_RED}❌ Configuration Error:{Colors.RESET} {e}")
@@ -491,6 +491,7 @@ async def main_async():
 
     print(f"{C.GREEN}✅ Model: {config.llm.model} ({config.llm.provider}){C.RESET}")
     print(f"{C.GREEN}✅ Workspace: {Path(config.agent.workspace_dir).absolute()}{C.RESET}")
+    print(f"{C.GREEN}✅ OS: {platform.system()} {platform.release()}{C.RESET}")
     print(f"{C.GREEN}✅ Framework: DeepAgents (LangChain){C.RESET}\n")
 
     skills = discover_skills()
@@ -503,7 +504,7 @@ async def main_async():
         for sp in skills_paths:
             print(f"{C.DIM}  - {sp}{C.RESET}")
 
-    agent = WukongAgent(config=config, system_prompt=system_prompt, skills=skills_paths)
+    agent = EasyAgent(config=config, system_prompt=system_prompt, skills=skills_paths)
 
     print(f"{C.GREEN}✅ Backend: {agent.backend_type}{C.RESET}")
 

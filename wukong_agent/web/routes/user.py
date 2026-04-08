@@ -54,6 +54,16 @@ async def register(
 
     access_token = create_access_token(data={"sub": user.username})
 
+    # 注册成功后自动创建用户workspace目录
+    try:
+        user_workspace = Config.get_user_workspace_dir(user.username)
+        user_workspace.mkdir(parents=True, exist_ok=True)
+        user_upload = Config.get_user_upload_dir(user.username)
+        user_upload.mkdir(parents=True, exist_ok=True)
+        logger.info(f"[用户] 创建用户workspace | 用户: {user.username} | 路径: {user_workspace}")
+    except Exception as e:
+        logger.warning(f"[用户] 创建用户workspace失败 | 用户: {user.username} | 错误: {e}")
+
     logger.info(f"[用户] 注册成功 | 用户名: {user.username}")
 
     return AuthResponse(
@@ -146,14 +156,14 @@ async def unregister(
     if not user:
         raise HTTPException(status_code=404, detail="用户不存在")
 
-    env_workspace = Config.get_workspace_dir()
+    env_workspace = os.environ.get("EASY_WORKSPACE_DIR")
     if env_workspace:
         workspace = Path(env_workspace)
     else:
-        project_root = Path(__file__).parent.parent.parent
+        project_root = Path(__file__).parent.parent.parent.parent
         workspace = project_root / "workspace"
 
-    safe_username = "".join(c for c in username if c.isalnum() or c in ('_', '-')) or "user"
+    safe_username = Config.sanitize_username(username)
     user_workspace = workspace / safe_username
 
     if user_workspace.exists() and user_workspace.is_dir():

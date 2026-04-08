@@ -1,4 +1,4 @@
-# Mini Agent Configuration Example
+# Easy Agent Configuration Example
 # 
 # Configuration File Locations (in priority order):
 # 1) mini_agent/config/config.yaml - Development mode (current directory)
@@ -71,7 +71,7 @@ database:
   type: "mysql"
   
   sqlite:
-    path: "./data/wukong_agent.db"
+    path: "./data/easy_agent.db"
   
   mysql:
     host: "127.0.0.1"

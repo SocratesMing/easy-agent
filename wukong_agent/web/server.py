@@ -1,7 +1,8 @@
-"""FastAPI server for Wukong Agent Web UI"""
+"""FastAPI server for Easy Agent Web UI"""
 
 import logging
 import os
+import platform
 import sys
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -35,7 +36,7 @@ def setup_logging():
     log_dir = Path("logs")
     log_dir.mkdir(exist_ok=True)
     
-    log_file = log_dir / "wukong_agent.log"
+    log_file = log_dir / "easy_agent.log"
     
     formatter = logging.Formatter(
         fmt="%(asctime)s.%(msecs)03d [%(levelname)s] %(filename)s:%(lineno)d: %(message)s",
@@ -81,12 +82,13 @@ async def lifespan(app: FastAPI):
     logger.info(f"日志文件: {log_file}")
     
     logger.info("=" * 60)
-    logger.info("[启动] Wukong Agent Web Service 初始化中...")
+    logger.info("[启动] Easy Agent Web Service 初始化中...")
     logger.info(f"[启动] 项目目录: {project_root}")
+    logger.info(f"[启动] 操作系统: {platform.system()} {platform.release()}")
     logger.info(f"[启动] 启动时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     logger.info("=" * 60)
 
-    config_path = os.environ.get("WUKONG_CONFIG", "./wukong_agent/config/config.yaml")
+    config_path = os.environ.get("EASY_CONFIG", "./wukong_agent/config/config.yaml")
     if not os.path.exists(config_path):
         config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "config", "config.yaml")
 
@@ -127,7 +129,7 @@ async def lifespan(app: FastAPI):
 
     system_prompt_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "config", "system_prompt.md")
     if os.path.exists(system_prompt_path):
-        with open(system_prompt_path, "r") as f:
+        with open(system_prompt_path, "r", encoding="utf-8") as f:
             system_prompt = f.read()
         logger.info(f"[启动] ✅ 系统提示词加载成功 ({len(system_prompt)} 字符)")
     else:
@@ -168,7 +170,7 @@ async def lifespan(app: FastAPI):
         logger.warning("[启动] ⚠️ Agent 配置未加载")
 
     logger.info("=" * 60)
-    logger.info("[启动] 🚀 Wukong Agent Web Service 启动完成")
+    logger.info("[启动] 🚀 Easy Agent Web Service 启动完成")
     logger.info("=" * 60)
     yield
 
@@ -179,7 +181,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="Wukong Agent API",
+    title="Easy Agent API",
     description="基于 DeepAgents 的智能体框架 API",
     version="1.0.0",
     lifespan=lifespan,
@@ -256,7 +258,7 @@ def run_server(host: str = "0.0.0.0", port: int = 8000):
     setup_logging()
     
     print("=" * 50)
-    print("  Wukong Agent API Server")
+    print("  Easy Agent API Server")
     print("=" * 50)
     print()
     print(f"  Swagger UI:  http://localhost:{port}/docs")

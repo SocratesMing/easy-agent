@@ -1,4 +1,4 @@
-"""Basic tests for Wukong Agent"""
+"""Basic tests for Easy Agent"""
 import pytest
 from pathlib import Path
 import tempfile

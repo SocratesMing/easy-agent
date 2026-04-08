@@ -1,4 +1,4 @@
-"""Vector Store module for Wukong Agent
+"""Vector Store module for Easy Agent
 
 Supports ChromaDB with Sentence Transformers or ZhipuAI embeddings
 """
@@ -16,7 +16,7 @@ class VectorStore:
     def __init__(self, config: dict):
         self.enabled = config.get("enabled", False)
         self.db_path = config.get("db_path", "./data/chroma_db")
-        self.collection_name = config.get("collection_name", "wukong_agent_docs")
+        self.collection_name = config.get("collection_name", "easy_agent_docs")
         self.embedding_provider = config.get("embedding_provider", "sentence_transformers")
         self.embedding_dimension = config.get("embedding_dimension", 1024)
         self.batch_size = config.get("batch_size", 32)

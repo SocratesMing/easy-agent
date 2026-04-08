@@ -55,6 +55,7 @@
         @createSession="ensureCurrentSession"
         @removeFile="handleRemoveFile"
         @stop="handleStop"
+        @retry="handleRetry"
       />
       
       <div v-if="error" class="error-toast">
@@ -339,11 +340,13 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
   let currentContent = ''
   let currentToolCalls = []
   let currentBlock = null
+  let blockOrderCounter = 0
 
   function addBlock(type, data) {
     ensureAssistantMessage()
+    blockOrderCounter++
     if (!currentBlock || currentBlock.type !== type) {
-      currentBlock = { type, content: '', ...data }
+      currentBlock = { type, content: '', order: blockOrderCounter, ...data }
       const idx = messages.value.findIndex(m => m.id === assistantMsgId)
       if (idx !== -1) {
         messages.value[idx].blocks.push(currentBlock)
@@ -355,17 +358,19 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
       if (data.result !== undefined) currentBlock.result = data.result
       if (data.success !== undefined) currentBlock.success = data.success
       if (data.duration !== undefined) currentBlock.duration = data.duration
+      if (data.step !== undefined) currentBlock.step = data.step
     }
     const idx = messages.value.findIndex(m => m.id === assistantMsgId)
     if (idx !== -1) {
       messages.value[idx] = { ...messages.value[idx] }
     }
+    return currentBlock
   }
 
-  function updateThinkingDuration(duration) {
+  function updateThinkingDuration(duration, step) {
     const idx = messages.value.findIndex(m => m.id === assistantMsgId)
     if (idx !== -1) {
-      const blockIdx = messages.value[idx].blocks.findIndex(b => b.type === 'thinking')
+      const blockIdx = messages.value[idx].blocks.findIndex(b => b.type === 'thinking' && b.step === step)
       if (blockIdx !== -1) {
         messages.value[idx].blocks[blockIdx] = {
           ...messages.value[idx].blocks[blockIdx],
@@ -377,157 +382,114 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
         thinking_duration: duration,
         blocks: [...messages.value[idx].blocks]
       }
-      console.log('Updated thinking duration:', duration)
     }
   }
 
-  isStreaming.value = true
+  function onChunk(data) {
+    const { type: eventType, content, thinking, tool_calls, duration, step, tool_name, arguments: args, result, success, title } = data
 
-  try {
-    await sendMessage(currentSessionId.value, message, (data) => {
-      const eventType = data.type || ''
-      if (eventType === 'knowledge_base_start') {
-        currentBlock = null
-        addBlock('knowledge_base', { docs: [] })
-      } else if (eventType === 'knowledge_base') {
-        if (data.content) {
-          console.log('[knowledge_base] content:', data.content)
-        }
-        if (data.file_name && data.score !== undefined) {
-          const idx = messages.value.findIndex(m => m.id === assistantMsgId)
-          if (idx !== -1) {
-            const kbBlock = messages.value[idx].blocks.find(b => b.type === 'knowledge_base')
-            if (kbBlock) {
-              if (!kbBlock.docs) kbBlock.docs = []
-              kbBlock.docs.push({
-                file_name: data.file_name,
-                score: data.score
-              })
-              messages.value[idx] = { ...messages.value[idx] }
-            }
-          }
-        }
-      } else if (eventType === 'knowledge_base_end') {
-        console.log('[knowledge_base_end] docs_count:', data.docs_count)
-      } else if (eventType === 'error') {
-        error.value = data.content || '发送消息失败'
-      } else if (eventType === 'start') {
-        console.log('[start] Received data:', JSON.stringify(data))
-        if (data.session_id) {
-          currentSessionId.value = data.session_id
-          const existingIdx = sessions.value.findIndex(s => s.session_id === data.session_id)
-          console.log('[start] session_id:', data.session_id, 'existingIdx:', existingIdx, 'title:', data.title)
-          const sessionTitle = data.title || (message.substring(0, 12) + '...') || '新会话'
-          if (existingIdx === -1) {
-            const newSession = {
-              session_id: data.session_id,
-              title: sessionTitle,
-              created_at: new Date().toISOString()
-            }
-            sessions.value = [newSession, ...sessions.value]
-            console.log('[start] Added new session:', newSession, 'total sessions:', sessions.value.length)
-          } else {
-            sessions.value[existingIdx] = { ...sessions.value[existingIdx], title: sessionTitle }
-            sessions.value = [...sessions.value]
-            console.log('[start] Updated existing session title:', sessionTitle)
-          }
-        }
-      } else if (eventType === 'thinking') {
-        console.log('[thinking] 收到思考内容:', data.content)
-        currentThinking += data.content || ''
-        addBlock('thinking', { content: data.content || '' })
+    if (eventType === 'thinking_start') {
+      currentBlock = null
+      addBlock('thinking', { content: '', step: step || 0 })
+    } else if (eventType === 'thinking') {
+      currentThinking += content || ''
+      if (currentBlock && currentBlock.type === 'thinking') {
+        currentBlock.content = currentThinking
         const idx = messages.value.findIndex(m => m.id === assistantMsgId)
         if (idx !== -1) {
-          messages.value[idx] = { ...messages.value[idx], thinking: currentThinking }
-          console.log('[thinking] blocks:', messages.value[idx].blocks)
+          messages.value[idx] = { ...messages.value[idx] }
         }
-      } else if (eventType === 'thinking_end') {
-        console.log('Received thinking_end event:', JSON.stringify(data))
-        if (data.duration !== undefined) {
-          updateThinkingDuration(data.duration)
-        } else {
-          console.warn('thinking_end event has no duration:', data)
+      }
+    } else if (eventType === 'thinking_end') {
+      updateThinkingDuration(duration || 0, step || 0)
+      currentThinking = ''
+    } else if (eventType === 'content') {
+      currentBlock = null
+      currentContent += content || ''
+      const idx = messages.value.findIndex(m => m.id === assistantMsgId)
+      if (idx !== -1) {
+        // 创建新对象以触发响应式更新
+        const msg = messages.value[idx]
+        messages.value[idx] = {
+          ...msg,
+          content: currentContent
         }
-      } else if (eventType === 'content') {
-        currentContent += data.content || ''
-        addBlock('content', { content: data.content || '' })
-        const idx = messages.value.findIndex(m => m.id === assistantMsgId)
-        if (idx !== -1) {
-          messages.value[idx] = { ...messages.value[idx], content: currentContent }
-        }
-      } else if (eventType === 'tool_call') {
-        const toolCall = {
-          tool_name: data.tool_name || '',
-          arguments: data.arguments || {},
-          result: '',
-          success: true
-        }
-        currentToolCalls.push(toolCall)
-        addBlock('tool_call', { 
-          tool_name: data.tool_name || '', 
-          arguments: data.arguments || {},
-          content: ''
-        })
-        const idx = messages.value.findIndex(m => m.id === assistantMsgId)
-        if (idx !== -1) {
-          messages.value[idx] = { ...messages.value[idx], tool_calls: [...currentToolCalls] }
-        }
-      } else if (eventType === 'tool_result') {
-        if (currentToolCalls.length > 0) {
-          const lastTool = currentToolCalls[currentToolCalls.length - 1]
-          lastTool.result = data.result || ''
-          lastTool.success = data.success !== false
-          addBlock('tool_result', { 
-            tool_name: data.tool_name || '',
-            result: data.result || '',
-            success: data.success !== false,
-            duration: data.duration,
-            content: data.result || ''
-          })
+        
+        // 同时创建 content block 用于渲染
+        addBlock('content', { content: content || '' })
+      }
+    } else if (eventType === 'content_end') {
+      currentContent = ''
+    } else if (eventType === 'tool_call') {
+      currentBlock = null
+      const toolCall = {
+        tool_name: tool_name || '',
+        arguments: args || {},
+        result: '',
+        success: true
+      }
+      currentToolCalls.push(toolCall)
+      const toolCallId = `tool-${Date.now()}-${tool_name}`
+      addBlock('tool_call', { 
+        id: toolCallId,
+        tool_name: tool_name || '', 
+        arguments: args || {},
+        result: '',
+        success: true,
+        step: step || 0
+      })
+    } else if (eventType === 'tool_result') {
+      if (currentToolCalls.length > 0) {
+        const lastToolCall = currentToolCalls[currentToolCalls.length - 1]
+        lastToolCall.result = result || ''
+        lastToolCall.success = success !== false
+        
+        if (currentBlock && currentBlock.type === 'tool_call') {
+          currentBlock.result = result || ''
+          currentBlock.success = success !== false
+          if (duration !== undefined) currentBlock.duration = duration
           const idx = messages.value.findIndex(m => m.id === assistantMsgId)
           if (idx !== -1) {
-            messages.value[idx] = { ...messages.value[idx], tool_calls: [...currentToolCalls] }
-          }
-        }
-      } else if (eventType === 'done') {
-        const finalContent = data.content || currentContent
-        if (assistantMsgId) {
-          const idx = messages.value.findIndex(m => m.id === assistantMsgId)
-          if (idx !== -1) {
-            const thinkingBlock = messages.value[idx].blocks.find(b => b.type === 'thinking')
-            if (data.thinking_duration && thinkingBlock) {
-              thinkingBlock.duration = data.thinking_duration
-            }
-            messages.value[idx] = {
-              ...messages.value[idx],
-              content: finalContent,
-              created_at: new Date().toISOString(),
-              loading: false,
-              thinking_duration: data.thinking_duration || messages.value[idx].thinking_duration,
-              generated_files: data.generated_files || []
-            }
-          }
-        }
-        if (data.session_id) {
-          currentSessionId.value = data.session_id
-          const existingIdx = sessions.value.findIndex(s => s.session_id === data.session_id)
-          const sessionTitle = data.title || (message.substring(0, 12) + '...') || '新会话'
-          if (existingIdx === -1) {
-            const newSession = {
-              session_id: data.session_id,
-              title: sessionTitle,
-              created_at: new Date().toISOString()
-            }
-            sessions.value = [newSession, ...sessions.value]
-            console.log('[done] Added new session:', newSession)
-          } else {
-            sessions.value[existingIdx] = { ...sessions.value[existingIdx], title: sessionTitle }
-            sessions.value = [...sessions.value]
-            console.log('[done] Updated existing session title:', sessionTitle)
+            messages.value[idx] = { ...messages.value[idx] }
           }
         }
       }
-    }, signal, enableDeepThink, files, enableKnowledgeBase)
+    } else if (eventType === 'done') {
+      const finalContent = data.content || currentContent
+      if (assistantMsgId) {
+        const idx = messages.value.findIndex(m => m.id === assistantMsgId)
+        if (idx !== -1) {
+          messages.value[idx].content = finalContent
+          messages.value[idx].thinking = currentThinking
+          messages.value[idx].tool_calls = currentToolCalls
+          messages.value[idx].loading = false
+          messages.value[idx].created_at = new Date().toISOString()
+          messages.value[idx] = { ...messages.value[idx] }
+        }
+      }
+
+      if (title) {
+        const sessionTitle = title
+        const existingIdx = sessions.value.findIndex(s => s.id === currentSessionId.value)
+        if (existingIdx === -1) {
+          const newSession = {
+            id: currentSessionId.value,
+            title: sessionTitle,
+            created_at: new Date().toISOString(),
+            message_count: messages.value.length
+          }
+          sessions.value = [newSession, ...sessions.value]
+        } else {
+          sessions.value[existingIdx] = { ...sessions.value[existingIdx], title: sessionTitle }
+          sessions.value = [...sessions.value]
+        }
+      }
+    }
+  }
+
+  try {
+    isStreaming.value = true
+    await sendMessage(currentSessionId.value, message, onChunk, signal, enableDeepThink, files, enableKnowledgeBase)
     
     await refreshSessionFiles(null, 500)
   } catch (e) {
@@ -542,6 +504,28 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
   } finally {
     isStreaming.value = false
     await loadSessions()
+  }
+}
+
+function handleRetry(content) {
+  // 直接重新发送消息内容，不经过输入框
+  console.log('[handleRetry] content type:', typeof content, 'value:', content)
+  
+  if (content && typeof content === 'string' && content.trim()) {
+    // 检查是否正在流式输出
+    if (isStreaming.value) {
+      error.value = '请等待当前消息完成'
+      return
+    }
+    
+    // 确保有当前会话
+    if (!currentSessionId.value) {
+      error.value = '请先创建会话'
+      return
+    }
+    
+    // 直接调用发送
+    handleSendMessage(content.trim())
   }
 }
 

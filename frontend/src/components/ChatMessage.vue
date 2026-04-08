@@ -78,11 +78,11 @@
               </svg>
               <span class="tool-title">工具调用</span>
               <span class="tool-name-badge">{{ block.tool_name }}</span>
-              <svg class="toggle-arrow" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" :class="{ rotated: expandedToolCall[index] }">
+              <svg class="toggle-arrow" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" :class="{ rotated: isExpandedToolCall(index) }">
                 <polyline points="6 9 12 15 18 9"></polyline>
               </svg>
             </div>
-            <div v-if="expandedToolCall[index]" class="tool-call-args">
+            <div v-if="isExpandedToolCall(index)" class="tool-call-args">
               <pre>{{ formatJson(block.arguments) }}</pre>
             </div>
           </div>
@@ -102,12 +102,13 @@
                 </template>
               </svg>
               <span class="tool-title">{{ block.success ? '执行成功' : '执行失败' }}</span>
+              <span class="tool-name-badge">{{ block.tool_name }}</span>
               <span v-if="block.duration !== undefined" class="tool-duration">用时 {{ block.duration }} 秒</span>
-              <svg class="toggle-arrow" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" :class="{ rotated: expandedToolResult[index] }">
+              <svg class="toggle-arrow" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" :class="{ rotated: isExpandedToolResult(index) }">
                 <polyline points="6 9 12 15 18 9"></polyline>
               </svg>
             </div>
-            <div v-if="expandedToolResult[index]" class="tool-result-content">
+            <div v-if="isExpandedToolResult(index)" class="tool-result-content">
               <pre>{{ truncateResult(block.result) }}</pre>
             </div>
           </div>
@@ -175,9 +176,16 @@
         </div>
       </template>
       
-      <!-- 用户消息显示复制按钮 -->
+      <!-- 用户消息显示复制和重试按钮 -->
       <div v-if="message.role === 'user' && message.content" class="message-actions">
-        <button class="copy-btn" @click="copyMessage" title="复制">
+        <button class="action-btn retry-btn" @click="retryMessage" title="重新发送">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polyline points="23 4 23 10 17 10"></polyline>
+            <polyline points="1 20 1 14 7 14"></polyline>
+            <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+          </svg>
+        </button>
+        <button class="action-btn copy-btn" @click="copyMessage" title="复制">
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
             <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
@@ -201,7 +209,7 @@ const props = defineProps({
   }
 })
 
-const emit = defineEmits(['removeFile', 'viewGeneratedFiles'])
+const emit = defineEmits(['removeFile', 'viewGeneratedFiles', 'retry'])
 
 const showThinking = ref(true)
 const expandedThinking = ref({})
@@ -235,32 +243,118 @@ onMounted(async () => {
 })
 
 const sortedBlocks = computed(() => {
-  if (!props.message.blocks) return []
-  return [...props.message.blocks].sort((a, b) => (a.order || 0) - (b.order || 0))
+  // 如果消息有 blocks，返回排序后的 blocks
+  if (props.message.blocks && props.message.blocks.length > 0) {
+    return [...props.message.blocks].sort((a, b) => (a.order || 0) - (b.order || 0))
+  }
+  
+  // 否则从旧数据格式创建 blocks（用于从数据库加载的消息）
+  const blocks = []
+  
+  // 添加思考 block
+  if (props.message.thinking) {
+    blocks.push({
+      type: 'thinking',
+      content: props.message.thinking,
+      duration: props.message.thinking_duration,
+      step: 0,
+      order: 0
+    })
+  }
+  
+  // 添加工具调用 blocks
+  if (props.message.tool_calls && props.message.tool_calls.length > 0) {
+    props.message.tool_calls.forEach((tool, idx) => {
+      blocks.push({
+        type: 'tool_call',
+        tool_name: tool.tool_name,
+        arguments: tool.arguments,
+        step: tool.step || 0,
+        order: idx * 2 + 1
+      })
+      blocks.push({
+        type: 'tool_result',
+        tool_name: tool.tool_name,
+        result: tool.result,
+        success: tool.success,
+        duration: tool.duration,
+        step: tool.step || 0,
+        order: idx * 2 + 2
+      })
+    })
+  }
+  
+  // 添加内容 block
+  if (props.message.content) {
+    blocks.push({
+      type: 'content',
+      content: props.message.content,
+      order: blocks.length + 1
+    })
+  }
+  
+  return blocks
 })
 
+// 使用 block 的唯一标识来跟踪展开状态
+function getBlockKey(block, index) {
+  return block.id || `${block.type}-${block.step || 0}-${block.tool_name || ''}-${index}`
+}
+
 function isExpandedThinking(index) {
-  return expandedThinking.value[index] !== false
+  const block = sortedBlocks.value[index]
+  if (!block) return false
+  const key = getBlockKey(block, index)
+  return expandedThinking.value[key] !== false
 }
 
 function toggleThinking(index) {
-  expandedThinking.value[index] = !expandedThinking.value[index]
+  const block = sortedBlocks.value[index]
+  if (!block) return
+  const key = getBlockKey(block, index)
+  expandedThinking.value[key] = !expandedThinking.value[key]
 }
 
 function isExpandedKnowledgeBase(index) {
-  return expandedKnowledgeBase.value[index] !== false
+  const block = sortedBlocks.value[index]
+  if (!block) return false
+  const key = getBlockKey(block, index)
+  return expandedKnowledgeBase.value[key] !== false
 }
 
 function toggleKnowledgeBase(index) {
-  expandedKnowledgeBase.value[index] = !expandedKnowledgeBase.value[index]
+  const block = sortedBlocks.value[index]
+  if (!block) return
+  const key = getBlockKey(block, index)
+  expandedKnowledgeBase.value[key] = !expandedKnowledgeBase.value[key]
 }
 
 function toggleToolCall(index) {
-  expandedToolCall.value[index] = !expandedToolCall.value[index]
+  const block = sortedBlocks.value[index]
+  if (!block) return
+  const key = getBlockKey(block, index)
+  expandedToolCall.value[key] = !expandedToolCall.value[key]
+}
+
+function isExpandedToolCall(index) {
+  const block = sortedBlocks.value[index]
+  if (!block) return false
+  const key = getBlockKey(block, index)
+  return expandedToolCall.value[key] === true  // 工具调用默认折叠
 }
 
 function toggleToolResult(index) {
-  expandedToolResult.value[index] = !expandedToolResult.value[index]
+  const block = sortedBlocks.value[index]
+  if (!block) return
+  const key = getBlockKey(block, index)
+  expandedToolResult.value[key] = !expandedToolResult.value[key]
+}
+
+function isExpandedToolResult(index) {
+  const block = sortedBlocks.value[index]
+  if (!block) return false
+  const key = getBlockKey(block, index)
+  return expandedToolResult.value[key] !== false  // 工具结果默认展开
 }
 
 function highlightCode(code, lang) {
@@ -373,6 +467,12 @@ async function copyMessage() {
   } catch (err) {
     console.error('复制失败:', err)
   }
+}
+
+function retryMessage() {
+  // 触发重试事件，传递消息内容（确保是纯字符串）
+  const content = String(props.message.content || '')
+  emit('retry', content)
 }
 
 function removeFile(index) {
@@ -1212,7 +1312,12 @@ onMounted(() => {
   justify-content: flex-end;
 }
 
-.message-actions .copy-btn {
+.message-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.message-actions .action-btn {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1225,18 +1330,26 @@ onMounted(() => {
   transition: all 0.2s ease;
 }
 
-.message-actions .copy-btn svg {
+.message-actions .action-btn svg {
   width: 14px;
   height: 14px;
   color: #64748b;
 }
 
-.message-actions .copy-btn:hover {
+.message-actions .action-btn:hover {
   background: rgba(14, 165, 233, 0.1);
 }
 
-.message-actions .copy-btn:hover svg {
+.message-actions .action-btn:hover svg {
   color: #0ea5e9;
+}
+
+.message-actions .retry-btn:hover {
+  background: rgba(16, 185, 129, 0.1);
+}
+
+.message-actions .retry-btn:hover svg {
+  color: #10b981;
 }
 
 .generated-files-btn-container {

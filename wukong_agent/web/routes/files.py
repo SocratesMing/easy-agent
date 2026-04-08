@@ -13,11 +13,12 @@ from fastapi.responses import FileResponse
 from ..database import Database, get_database
 from ..dependencies import get_current_username
 from ..models import FileListResponse, FileInfo
+from ...config import Config
 
 logger = logging.getLogger(__name__)
 
-UPLOAD_DIR = Path("./data/uploads")
-WORKSPACE_DIR = Path("./workspace")
+BASE_UPLOAD_DIR = Path("./data/uploads")
+BASE_WORKSPACE_DIR = Path("./workspace")
 
 router = APIRouter(
     prefix="/api/files",
@@ -25,8 +26,14 @@ router = APIRouter(
 )
 
 
-def ensure_upload_dir():
-    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+def get_user_dirs(username: str):
+    """获取用户隔离的上传目录和workspace目录"""
+    safe_name = Config.sanitize_username(username)
+    upload_dir = BASE_UPLOAD_DIR / safe_name
+    workspace_dir = BASE_WORKSPACE_DIR / safe_name
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    workspace_dir.mkdir(parents=True, exist_ok=True)
+    return upload_dir, workspace_dir
 
 
 @router.get("/session/{session_id}", summary="获取会话生成的文件列表")
@@ -58,6 +65,8 @@ async def list_files(
     session_id: Optional[str] = Query(default=None),
     file_type: Optional[str] = Query(default=None),
 ):
+    upload_dir, workspace_dir = get_user_dirs(username)
+
     if session_id:
         files = db.get_session_files(session_id)
         file_list = []
@@ -74,14 +83,14 @@ async def list_files(
         return FileListResponse(files=file_list, total=len(file_list))
 
     workspace_files = []
-    if WORKSPACE_DIR.exists():
-        for item in WORKSPACE_DIR.rglob("*"):
+    if workspace_dir.exists():
+        for item in workspace_dir.rglob("*"):
             if item.is_file():
                 try:
                     stat = item.stat()
                     workspace_files.append(FileInfo(
                         filename=item.name,
-                        file_path=str(item.relative_to(WORKSPACE_DIR)),
+                        file_path=str(item.relative_to(workspace_dir)),
                         file_type=item.suffix.lstrip(".") or "unknown",
                         size=stat.st_size,
                         uploaded_at=datetime.fromtimestamp(stat.st_mtime).isoformat(),
@@ -112,11 +121,11 @@ async def upload_file(
     session_id: Optional[str] = Query(default=None),
     file: UploadFile = File(...),
 ):
-    ensure_upload_dir()
+    upload_dir, workspace_dir = get_user_dirs(username)
 
     file_ext = os.path.splitext(file.filename)[1] if file.filename else ""
     unique_name = f"{uuid.uuid4().hex}{file_ext}"
-    file_path = UPLOAD_DIR / unique_name
+    file_path = upload_dir / unique_name
 
     content = await file.read()
     with open(file_path, "wb") as f:
@@ -148,10 +157,15 @@ async def upload_file(
 
 
 @router.get("/download/{file_path:path}", summary="下载文件")
-async def download_file(file_path: str):
-    full_path = UPLOAD_DIR / file_path
+async def download_file(
+    file_path: str,
+    username: Annotated[str, Depends(get_current_username)],
+):
+    upload_dir, workspace_dir = get_user_dirs(username)
+
+    full_path = upload_dir / file_path
     if not full_path.exists():
-        full_path = WORKSPACE_DIR / file_path
+        full_path = workspace_dir / file_path
 
     if not full_path.exists() or not full_path.is_file():
         raise HTTPException(status_code=404, detail="文件不存在")
@@ -176,8 +190,12 @@ async def delete_file(
 
 
 @router.get("/workspace/tree", summary="获取工作区目录结构")
-async def get_workspace_tree(path: str = ""):
-    target_dir = WORKSPACE_DIR / path if path else WORKSPACE_DIR
+async def get_workspace_tree(
+    username: Annotated[str, Depends(get_current_username)],
+    path: str = "",
+):
+    _, workspace_dir = get_user_dirs(username)
+    target_dir = workspace_dir / path if path else workspace_dir
 
     if not target_dir.exists():
         raise HTTPException(status_code=404, detail="路径不存在")
@@ -185,7 +203,7 @@ async def get_workspace_tree(path: str = ""):
     if target_dir.is_file():
         return {
             "name": target_dir.name,
-            "path": str(target_dir.relative_to(WORKSPACE_DIR)),
+            "path": str(target_dir.relative_to(workspace_dir)),
             "type": "file",
             "size": target_dir.stat().st_size,
         }
@@ -195,7 +213,7 @@ async def get_workspace_tree(path: str = ""):
         try:
             items.append({
                 "name": item.name,
-                "path": str(item.relative_to(WORKSPACE_DIR)),
+                "path": str(item.relative_to(workspace_dir)),
                 "type": "directory" if item.is_dir() else "file",
                 "size": item.stat().st_size if item.is_file() else 0,
             })
