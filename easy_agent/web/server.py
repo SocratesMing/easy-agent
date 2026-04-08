@@ -88,7 +88,7 @@ async def lifespan(app: FastAPI):
     logger.info(f"[启动] 启动时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     logger.info("=" * 60)
 
-    config_path = os.environ.get("EASY_CONFIG", "./wukong_agent/config/config.yaml")
+    config_path = os.environ.get("EASY_CONFIG", "./easy_agent/config/config.yaml")
     if not os.path.exists(config_path):
         config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "config", "config.yaml")
 
@@ -270,7 +270,7 @@ def run_server(host: str = "0.0.0.0", port: int = 8000):
     print()
     
     uvicorn.run(
-        "wukong_agent.web.server:app",
+        "easy_agent.web.server:app",
         host=host,
         port=port,
         reload=False,

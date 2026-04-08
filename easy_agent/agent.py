@@ -57,11 +57,13 @@ class EasyAgent:
             workspace_info = (
                 f"\n\n## Current Workspace\n"
                 f"You are currently working in: `{self.workspace_dir.absolute()}`\n"
-                f"All relative paths will be resolved relative to this directory.\n"
+                f"All files will be written to this user-isolated directory.\n"
                 f"**IMPORTANT**: When using filesystem tools (read_file, write_file, etc.), "
-                f"you MUST use virtual paths starting with `/` instead of Windows absolute paths. "
-                f"For example, use `/file.txt` instead of `D:\\path\\file.txt`. "
-                f"Relative paths like `file.txt` or `subdir/file.txt` will also work."
+                f"you MUST use virtual paths starting with `/` instead of Windows absolute paths. \n"
+                f"- Virtual path `/file.txt` will be saved to `{self.workspace_dir.absolute()}/file.txt`\n"
+                f"- Virtual path `/subdir/file.txt` will be saved to `{self.workspace_dir.absolute()}/subdir/file.txt`\n"
+                f"- Relative paths like `file.txt` or `subdir/file.txt` will also work.\n"
+                f"- NEVER use Windows absolute paths like `D:\\path\\file.txt`."
             )
             self.system_prompt = system_prompt + workspace_info
 
@@ -372,7 +374,7 @@ class EasyAgent:
 
             workspace_backend = _LSB(root_dir=str(self.workspace_dir.absolute()))
             skills_backend = FilesystemBackend(
-                root_dir=str(project_root / "wukong_agent" / "skills"),
+                root_dir=str(project_root / "easy_agent" / "skills"),
                 virtual_mode=True,
             )
 
@@ -383,7 +385,7 @@ class EasyAgent:
                 default=workspace_backend,
             )
             self.backend_type = "CompositeBackend"
-            logger_msg = f"CompositeBackend | workspace: {self.workspace_dir.absolute()} | skills: {project_root / 'wukong_agent' / 'skills'}"
+            logger_msg = f"CompositeBackend | workspace: {self.workspace_dir.absolute()} | skills: {project_root / 'easy_agent' / 'skills'}"
         except (ImportError, TypeError, Exception) as e:
             # 如果 CompositeBackend 不可用或出错，回退到 LocalShellBackend
             import logging
@@ -399,7 +401,7 @@ class EasyAgent:
             skill_path_obj = Path(skill_path)
             try:
                 # 计算skills目录下的相对路径，转为虚拟路径 /skills/xxx
-                skills_root = project_root / "wukong_agent" / "skills"
+                skills_root = project_root / "easy_agent" / "skills"
                 rel_path = skill_path_obj.relative_to(skills_root)
                 virtual_skill = f"/skills/{rel_path.as_posix()}"
             except ValueError:

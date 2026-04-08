@@ -121,11 +121,15 @@ async def chat_stream_generator(
             accumulated_content = ""  # 累积的 AI 内容（包含思考标签）
             accumulated_thinking = ""  # 累积的思考内容
             accumulated_response = ""  # 累积的正式回复
-            token_count = 0  # 计数器
             is_in_thinking = False  # 是否在思考标签内
             thinking_buffer = ""  # 思考内容缓冲区
-            first_token_time = None  # 第一个 token 的时间
-            msg_received_time = None  # 思考开始时间（遇到 <think> 时记录）
+            
+            # 时间统计
+            thinking_start_time = None  # 思考开始时间
+            thinking_end_time = None  # 思考结束时间
+            content_start_time = None  # 正式内容开始时间
+            content_end_time = None  # 正式内容结束时间
+            total_tool_duration = 0  # 工具调用总时间
             
             async for chunk in agent.agent.astream(
                 {"messages": messages},
@@ -148,14 +152,7 @@ async def chat_stream_generator(
                 content = getattr(token, 'content', '')
                 if content:
                     content_str = str(content)
-                    
-                    # 记录第一个 token 的时间
-                    if first_token_time is None:
-                        first_token_time = time.time()
-                        logger.info(f"[{sid}] ⚡ 首 token 延迟: {first_token_time - start_time:.2f}s")
-                    
                     accumulated_content += content_str
-                    token_count += 1
                     
                     # 实时检测思考标签
                     import re
@@ -163,7 +160,7 @@ async def chat_stream_generator(
                     # 检查是否有开始标签
                     if not is_in_thinking and '<think' in content_str.lower():
                         is_in_thinking = True
-                        msg_received_time = time.time()  # 记录思考开始时间
+                        thinking_start_time = time.time()  # 记录思考开始时间
                         # 发送思考开始事件
                         yield format_sse({
                             "type": "thinking_start",
@@ -188,8 +185,11 @@ async def chat_stream_generator(
                                 })
                                 accumulated_thinking += thinking_part
                             
+                            # 计算思考时间
+                            thinking_end_time = time.time()
+                            thinking_duration = thinking_end_time - thinking_start_time if thinking_start_time else 0
+                            
                             # 发送思考结束事件
-                            thinking_duration = time.time() - msg_received_time
                             yield format_sse({
                                 "type": "thinking_end",
                                 "duration": round(thinking_duration, 2),
@@ -200,6 +200,8 @@ async def chat_stream_generator(
                             
                             # 发送正式回复内容
                             if response_part.strip():
+                                if content_start_time is None:
+                                    content_start_time = time.time()  # 记录正式内容开始时间
                                 yield format_sse({
                                     "type": "content",
                                     "content": response_part,
@@ -215,6 +217,8 @@ async def chat_stream_generator(
                         accumulated_thinking += content_str
                     else:
                         # 正式回复内容
+                        if content_start_time is None:
+                            content_start_time = time.time()  # 记录正式内容开始时间
                         logger.debug(f"[{sid}] 📤 发送 content 事件 | 长度: {len(content_str)} | 内容: {content_str[:50]}")
                         yield format_sse({
                             "type": "content",
@@ -227,14 +231,28 @@ async def chat_stream_generator(
                     for tc_chunk in token.tool_call_chunks:
                         if tc_chunk.get("name"):
                             tool_name = tc_chunk['name']
+                            tool_args = tc_chunk.get("args", {})
+                            
+                            # 累积工具调用参数（流式传输时参数是分片的）
+                            if tool_name not in pending_tool_calls:
+                                pending_tool_calls[tool_name] = {
+                                    "tool_call_id": f"tool-{tool_name}-{tool_call_id_counter}",
+                                    "arguments": {},
+                                    "step": current_step,
+                                }
+                                tool_call_id_counter += 1
+                            
+                            # 合并参数（处理分片参数）
+                            if tool_args:
+                                pending_tool_calls[tool_name]["arguments"].update(tool_args)
+                            
                             # 记录工具调用开始时间
                             tool_call_start_times[tool_name] = time.time()
                             
-                            logger.info(f"[{sid}] 🔧 工具调用: {tool_name}")
                             yield format_sse({
                                 "type": "tool_call",
                                 "tool_name": tool_name,
-                                "arguments": tc_chunk.get("args", {}),
+                                "arguments": tool_args,
                                 "step": current_step,
                             })
                 
@@ -242,6 +260,14 @@ async def chat_stream_generator(
                 if token.type == "tool":
                     tool_name = getattr(token, "name", "") or ""
                     result_content = str(getattr(token, "content", ""))
+                    
+                    # 从 pending_tool_calls 中获取完整的参数
+                    tool_args = {}
+                    if tool_name in pending_tool_calls:
+                        tool_args = pending_tool_calls[tool_name]["arguments"]
+                    
+                    # 记录完整的工具调用参数
+                    logger.info(f"[{sid}] 🔧 工具调用: {tool_name} | 参数: {json.dumps(tool_args, ensure_ascii=False) if tool_args else '{}'}")
                     
                     # 判断工具执行是否成功
                     tool_success = True
@@ -255,15 +281,29 @@ async def chat_stream_generator(
                     if tool_name in tool_call_start_times:
                         tool_duration = time.time() - tool_call_start_times[tool_name]
                         del tool_call_start_times[tool_name]
+                        total_tool_duration += tool_duration  # 累加工具调用总时间
                     
-                    logger.info(f"[{sid}] {'✅' if tool_success else '❌'} 工具结果: {tool_name} | 成功: {tool_success} | 耗时: {tool_duration:.2f}s")
+                    # 截断结果用于日志显示
+                    result_preview = result_content[:500] + "..." if len(result_content) > 500 else result_content
+                    
+                    # 如果是文件操作工具，显示实际的物理路径
+                    if tool_name in ["write_file", "read_file", "edit_file"]:
+                        file_path = tool_args.get("file_path", "")
+                        if file_path:
+                            # 显示虚拟路径和实际物理路径
+                            actual_path = f"{agent.workspace_dir.absolute()}{file_path}"
+                            logger.info(f"[{sid}] {'✅' if tool_success else '❌'} 工具结果: {tool_name} | 成功: {tool_success} | 耗时: {tool_duration:.2f}s | 虚拟路径: {file_path} | 实际路径: {actual_path} | 结果: {result_preview}")
+                        else:
+                            logger.info(f"[{sid}] {'✅' if tool_success else '❌'} 工具结果: {tool_name} | 成功: {tool_success} | 耗时: {tool_duration:.2f}s | 结果: {result_preview}")
+                    else:
+                        logger.info(f"[{sid}] {'✅' if tool_success else '❌'} 工具结果: {tool_name} | 成功: {tool_success} | 耗时: {tool_duration:.2f}s | 结果: {result_preview}")
                     
                     # 保存到工具调用记录（用于数据库持久化）
                     tool_call_id = f"tool-{tool_name}-{len(tool_call_records)}"
                     tool_call_records.append((
                         tool_name,
                         tool_call_id,
-                        {},  # arguments（从 pending_tool_calls 获取）
+                        tool_args,  # 使用完整的参数
                         result_content,
                         tool_success,
                         round(tool_duration, 2),
@@ -279,17 +319,18 @@ async def chat_stream_generator(
                         "step": current_step,
                     })
             
-            # 流式结束后，保存思考记录
-            if accumulated_thinking.strip():
-                thinking_duration = time.time() - msg_received_time
+            # 流式结束后，计算并保存思考记录
+            final_thinking_duration = None
+            if accumulated_thinking.strip() and thinking_start_time and thinking_end_time:
+                final_thinking_duration = round(thinking_end_time - thinking_start_time, 2)
                 db.record_thinking(
                     session_id=session_id,
                     message_id=message_id,
                     step=current_step,
                     content=accumulated_thinking.strip(),
-                    duration=round(thinking_duration, 2),
+                    duration=final_thinking_duration,
                 )
-                logger.info(f"[{sid}] 💾 思考记录已保存 | 长度: {len(accumulated_thinking)}")
+                logger.info(f"[{sid}] 💾 思考记录已保存 | 长度: {len(accumulated_thinking)} | 耗时: {final_thinking_duration}s")
 
             # 发送回复结束事件
             if accumulated_response:
@@ -297,9 +338,13 @@ async def chat_stream_generator(
                     "type": "content_end",
                     "content": "",
                 })
+                content_end_time = time.time()
 
             elapsed_time = time.time() - start_time
-            generation_time = time.time() - first_token_time if first_token_time else 0
+            
+            # 计算各阶段时间
+            thinking_time = round(thinking_end_time - thinking_start_time, 2) if thinking_start_time and thinking_end_time else 0
+            content_time = round(content_end_time - content_start_time, 2) if content_start_time and content_end_time else 0
             
             # 确保发送思考结束事件(如果没有正常关闭)
             if thinking_started and thinking_start_time and thinking_end_time is None:
@@ -311,7 +356,7 @@ async def chat_stream_generator(
                     "step": current_step,
                 })
 
-            logger.info(f"[{sid}] ✅ 流式响应完成 | 总步骤: {current_step} | 请求耗时: {elapsed_time:.2f}s | 生成耗时: {generation_time:.2f}s | Token数: {token_count} | 思考长度: {len(accumulated_thinking)} | 回复长度: {len(accumulated_response)} 字符")
+            logger.info(f"[{sid}] ✅ 流式响应完成 | 总步骤: {current_step} | 总耗时: {elapsed_time:.2f}s | 思考: {thinking_time}s | 回复: {content_time}s | 工具: {total_tool_duration:.2f}s | 思考长度: {len(accumulated_thinking)} | 回复长度: {len(accumulated_response)} 字符")
             if accumulated_thinking:
                 logger.info(f"[{sid}] 🤔 思考内容:\n{accumulated_thinking}")
             if accumulated_response:
@@ -323,6 +368,7 @@ async def chat_stream_generator(
                 "content": accumulated_response if accumulated_response else "",
                 "timestamp": datetime.now().isoformat(),
                 "thinking": accumulated_thinking if accumulated_thinking else None,
+                "thinking_duration": final_thinking_duration,
                 "tool_calls": [
                     {
                         "tool_name": tc[0],

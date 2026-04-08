@@ -316,7 +316,7 @@ def discover_skills(skills_dir: str | None = None) -> list[dict]:
     """Discover and load skills from the skills directory
 
     Args:
-        skills_dir: Path to skills directory (default: ./skills or wukong_agent/skills)
+        skills_dir: Path to skills directory (default: ./skills or easy_agent/skills)
 
     Returns:
         List of skill info dictionaries with name and path

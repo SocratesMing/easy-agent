@@ -14,7 +14,7 @@ def main():
     parser.add_argument("--workers", type=int, default=1, help="工作进程数")
     args = parser.parse_args()
 
-    os.environ.setdefault("EASY_CONFIG", os.path.join(os.path.dirname(os.path.abspath(__file__)), "wukong_agent", "config", "config.yaml"))
+    os.environ.setdefault("EASY_CONFIG", os.path.join(os.path.dirname(os.path.abspath(__file__)), "easy_agent", "config", "config.yaml"))
 
     print(f"""
 ╔══════════════════════════════════════════╗
@@ -26,7 +26,7 @@ def main():
 """)
 
     uvicorn.run(
-        "wukong_agent.web.server:app",
+        "easy_agent.web.server:app",
         host=args.host,
         port=args.port,
         reload=args.reload,

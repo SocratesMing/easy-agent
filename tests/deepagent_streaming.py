@@ -11,14 +11,14 @@ from pathlib import Path
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-from wukong_agent.config import Config
-from wukong_agent.model import create_model
+from easy_agent.config import Config
+from easy_agent.model import create_model
 from deepagents import create_deep_agent
 
 
 def get_llm_config():
     """从项目配置获取 LLM 配置"""
-    config_path = project_root / "wukong_agent" / "config" / "config.yaml"
+    config_path = project_root / "easy_agent" / "config" / "config.yaml"
     if not config_path.exists():
         print(f"❌ 配置文件不存在: {config_path}")
         sys.exit(1)

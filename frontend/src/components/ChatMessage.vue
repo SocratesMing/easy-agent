@@ -147,7 +147,10 @@
           </div>
           <div class="tool-calls-list">
             <div v-for="(tool, idx) in message.tool_calls" :key="idx" class="tool-call-item">
-              <div class="tool-name">{{ tool.tool_name }}</div>
+              <div class="tool-name">
+                {{ tool.tool_name }}
+                <span v-if="tool.duration !== undefined" class="tool-duration">耗时 {{ tool.duration }}s</span>
+              </div>
               <div v-if="tool.arguments" class="tool-args">
                 <pre>{{ formatJson(tool.arguments) }}</pre>
               </div>
@@ -1119,6 +1122,18 @@ onMounted(() => {
   font-size: 13px;
   color: #0369a1;
   margin-bottom: 6px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.tool-duration {
+  font-weight: 400;
+  font-size: 11px;
+  color: #94a3b8;
+  background: #f1f5f9;
+  padding: 2px 6px;
+  border-radius: 4px;
 }
 
 .tool-args {

@@ -1,6 +1,6 @@
 import sys
 
-file_path = 'wukong_agent/web/service/__init__.py'
+file_path = 'easy_agent/web/service/__init__.py'
 
 with open(file_path, 'r', encoding='utf-8') as f:
     lines = f.readlines()

@@ -342,7 +342,7 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
   let currentBlock = null
   let blockOrderCounter = 0
 
-  function addBlock(type, data) {
+  function addBlock(type, data, replace = false) {
     ensureAssistantMessage()
     blockOrderCounter++
     if (!currentBlock || currentBlock.type !== type) {
@@ -352,7 +352,11 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
         messages.value[idx].blocks.push(currentBlock)
       }
     } else {
-      currentBlock.content = (currentBlock.content || '') + (data.content || '')
+      if (replace) {
+        currentBlock.content = data.content || ''
+      } else {
+        currentBlock.content = (currentBlock.content || '') + (data.content || '')
+      }
       if (data.tool_name) currentBlock.tool_name = data.tool_name
       if (data.arguments) currentBlock.arguments = data.arguments
       if (data.result !== undefined) currentBlock.result = data.result
@@ -404,19 +408,17 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
       updateThinkingDuration(duration || 0, step || 0)
       currentThinking = ''
     } else if (eventType === 'content') {
-      currentBlock = null
       currentContent += content || ''
+      
+      // 更新或创建 content block，传入累积的完整内容（使用 replace 模式避免重复）
+      addBlock('content', { content: currentContent }, true)
+      
       const idx = messages.value.findIndex(m => m.id === assistantMsgId)
       if (idx !== -1) {
-        // 创建新对象以触发响应式更新
-        const msg = messages.value[idx]
         messages.value[idx] = {
-          ...msg,
+          ...messages.value[idx],
           content: currentContent
         }
-        
-        // 同时创建 content block 用于渲染
-        addBlock('content', { content: content || '' })
       }
     } else if (eventType === 'content_end') {
       currentContent = ''
@@ -443,6 +445,7 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
         const lastToolCall = currentToolCalls[currentToolCalls.length - 1]
         lastToolCall.result = result || ''
         lastToolCall.success = success !== false
+        if (duration !== undefined) lastToolCall.duration = duration
         
         if (currentBlock && currentBlock.type === 'tool_call') {
           currentBlock.result = result || ''
