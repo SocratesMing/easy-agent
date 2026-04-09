@@ -436,8 +436,19 @@ function renderMarkdown(content) {
 
 function formatJson(obj) {
   try {
+    if (typeof obj === 'string') {
+      const parsed = JSON.parse(obj)
+      return JSON.stringify(parsed, null, 2)
+    }
+    if (obj && typeof obj === 'object' && 'raw' in obj && Object.keys(obj).length === 1) {
+      const parsed = JSON.parse(obj.raw)
+      return JSON.stringify(parsed, null, 2)
+    }
     return JSON.stringify(obj, null, 2)
   } catch (e) {
+    if (obj && typeof obj === 'object' && 'raw' in obj) {
+      return obj.raw
+    }
     return String(obj)
   }
 }

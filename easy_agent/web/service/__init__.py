@@ -123,20 +123,12 @@ async def chat_stream_generator(
             accumulated_response = ""  # 累积的正式回复
             is_in_thinking = False  # 是否在思考标签内
             thinking_buffer = ""  # 思考内容缓冲区
-<<<<<<< HEAD:wukong_agent/web/service/__init__.py
             first_token_time = None  # 第一个 token 的时间
             msg_received_time = None  # 思考开始时间（遇到 <think> 时记录）
+            content_start_time = None  # 正式内容开始时间
+            total_tool_duration = 0  # 工具调用总时间
             is_after_tool_result = False  # 标记是否刚收到工具结果（用于过滤重复内容）
             tool_call_accumulated_args = {}  # 累积工具调用的完整参数 {tool_name: args_str}
-=======
-            
-            # 时间统计
-            thinking_start_time = None  # 思考开始时间
-            thinking_end_time = None  # 思考结束时间
-            content_start_time = None  # 正式内容开始时间
-            content_end_time = None  # 正式内容结束时间
-            total_tool_duration = 0  # 工具调用总时间
->>>>>>> 5e7f42a27a4e99b8fbf025f9b90fdec36a357f59:easy_agent/web/service/__init__.py
             
             async for chunk in agent.agent.astream(
                 {"messages": messages},
@@ -167,14 +159,10 @@ async def chat_stream_generator(
                     # 检查是否有开始标签
                     if not is_in_thinking and '<think' in content_str.lower():
                         is_in_thinking = True
-<<<<<<< HEAD:wukong_agent/web/service/__init__.py
                         is_after_tool_result = False  # 进入思考说明新步骤开始
                         msg_received_time = time.time()  # 记录思考开始时间
                         current_step += 1  # 新的思考轮次，递增 step
                         logger.info(f"[{sid}] 🤔 Step {current_step} 思考开始")
-=======
-                        thinking_start_time = time.time()  # 记录思考开始时间
->>>>>>> 5e7f42a27a4e99b8fbf025f9b90fdec36a357f59:easy_agent/web/service/__init__.py
                         # 发送思考开始事件
                         yield format_sse({
                             "type": "thinking_start",
@@ -204,12 +192,9 @@ async def chat_stream_generator(
                             thinking_duration = thinking_end_time - thinking_start_time if thinking_start_time else 0
                             
                             # 发送思考结束事件
-<<<<<<< HEAD:wukong_agent/web/service/__init__.py
                             thinking_duration = time.time() - msg_received_time
                             thinking_clean = accumulated_thinking.replace('<think>', '').replace('</think>', '').replace('<think ', '').replace('</think ', '').strip()
                             logger.info(f"[{sid}] 🤔 Step {current_step} 思考完成 | 耗时: {thinking_duration:.2f}s | 内容长度: {len(thinking_clean)} | 内容: {thinking_clean[:500]}")
-=======
->>>>>>> 5e7f42a27a4e99b8fbf025f9b90fdec36a357f59:easy_agent/web/service/__init__.py
                             yield format_sse({
                                 "type": "thinking_end",
                                 "duration": round(thinking_duration, 2),
@@ -237,7 +222,6 @@ async def chat_stream_generator(
                         })
                     else:
                         # 正式回复内容
-<<<<<<< HEAD:wukong_agent/web/service/__init__.py
                         if is_after_tool_result:
                             logger.info(f"[{sid}] ⏭️ Step {current_step} 跳过重复 content | 长度: {len(content_str)}")
                             is_after_tool_result = False
@@ -248,70 +232,62 @@ async def chat_stream_generator(
                                 "type": "content",
                                 "content": content_str,
                             })
-=======
-                        if content_start_time is None:
-                            content_start_time = time.time()  # 记录正式内容开始时间
-                        logger.debug(f"[{sid}] 📤 发送 content 事件 | 长度: {len(content_str)} | 内容: {content_str[:50]}")
-                        yield format_sse({
-                            "type": "content",
-                            "content": content_str,
-                        })
-                        accumulated_response += content_str
->>>>>>> 5e7f42a27a4e99b8fbf025f9b90fdec36a357f59:easy_agent/web/service/__init__.py
                 
                 # 处理工具调用 chunks（流式累积参数）
                 if hasattr(token, "tool_call_chunks") and token.tool_call_chunks:
                     for tc_chunk in token.tool_call_chunks:
-<<<<<<< HEAD:wukong_agent/web/service/__init__.py
                         tool_name_from_chunk = tc_chunk.get("name")
-                        args_str = tc_chunk.get("args", "")
+                        args_data = tc_chunk.get("args")
                         
                         if tool_name_from_chunk:
                             # 新的工具调用开始
                             tool_name = tool_name_from_chunk
-=======
-                        if tc_chunk.get("name"):
-                            tool_name = tc_chunk['name']
-                            tool_args = tc_chunk.get("args", {})
-                            
-                            # 累积工具调用参数（流式传输时参数是分片的）
-                            if tool_name not in pending_tool_calls:
-                                pending_tool_calls[tool_name] = {
-                                    "tool_call_id": f"tool-{tool_name}-{tool_call_id_counter}",
-                                    "arguments": {},
-                                    "step": current_step,
-                                }
-                                tool_call_id_counter += 1
-                            
-                            # 合并参数（处理分片参数）
-                            if tool_args:
-                                pending_tool_calls[tool_name]["arguments"].update(tool_args)
-                            
->>>>>>> 5e7f42a27a4e99b8fbf025f9b90fdec36a357f59:easy_agent/web/service/__init__.py
                             # 记录工具调用开始时间
                             tool_call_start_times[tool_name] = time.time()
                             tool_call_step_map[tool_name] = current_step
-                            tool_call_accumulated_args[tool_name] = ""
-                            
-<<<<<<< HEAD:wukong_agent/web/service/__init__.py
-                            # 累积参数
-                            if args_str:
-                                tool_call_accumulated_args[tool_name] += str(args_str)
-                        elif args_str:
+                            # 初始化累积参数
+                            if isinstance(args_data, dict):
+                                tool_call_accumulated_args[tool_name] = args_data.copy()
+                            elif isinstance(args_data, str) and args_data:
+                                # 如果是字符串，尝试解析为 JSON 对象
+                                try:
+                                    parsed = json.loads(args_data)
+                                    if isinstance(parsed, dict):
+                                        tool_call_accumulated_args[tool_name] = parsed
+                                    else:
+                                        tool_call_accumulated_args[tool_name] = {"value": parsed}
+                                except json.JSONDecodeError:
+                                    tool_call_accumulated_args[tool_name] = {"raw": args_data}
+                            else:
+                                tool_call_accumulated_args[tool_name] = {}
+                        elif tool_name and tool_name in tool_call_accumulated_args:
                             # 续接参数（同一个工具调用的后续 chunk）
-                            if tool_call_accumulated_args:
-                                last_tool = list(tool_call_accumulated_args.keys())[-1]
-                                tool_call_accumulated_args[last_tool] += str(args_str)
+                            if isinstance(args_data, dict):
+                                tool_call_accumulated_args[tool_name].update(args_data)
+                            elif isinstance(args_data, str) and args_data:
+                                # 尝试解析并合并
+                                try:
+                                    parsed_args = json.loads(args_data)
+                                    if isinstance(parsed_args, dict):
+                                        tool_call_accumulated_args[tool_name].update(parsed_args)
+                                    else:
+                                        # 如果解析后不是 dict，直接拼接
+                                        current_raw = tool_call_accumulated_args[tool_name].get("raw", "")
+                                        tool_call_accumulated_args[tool_name]["raw"] = current_raw + args_data
+                                except json.JSONDecodeError:
+                                    current_raw = tool_call_accumulated_args[tool_name].get("raw", "")
+                                    tool_call_accumulated_args[tool_name]["raw"] = current_raw + args_data
                     
-                    # 打印完整参数并发送事件
-                    if tool_name_from_chunk and tool_name in tool_call_accumulated_args:
-                        full_args_str = tool_call_accumulated_args[tool_name]
-                        try:
-                            full_args = json.loads(full_args_str) if full_args_str else {}
-                        except json.JSONDecodeError:
-                            full_args = {"raw": full_args_str}
+                    # 每次收到 chunk 都更新并发送 tool_call 事件（参数会逐步完整）
+                    if tool_name and tool_name in tool_call_accumulated_args:
+                        full_args = tool_call_accumulated_args[tool_name]
                         
-                        logger.info(f"[{sid}] 🔧 Step {current_step} 工具调用: {tool_name} | 参数: {json.dumps(full_args, ensure_ascii=False)[:500]}")
+                        if "raw" in full_args and len(full_args) == 1:
+                            log_args = full_args["raw"]
+                        else:
+                            log_args = json.dumps(full_args, ensure_ascii=False)
+                        
+                        logger.info(f"[{sid}] 🔧 Step {current_step} 工具调用: {tool_name} | 参数: {log_args[:2000]}")
                         is_after_tool_result = True
                         yield format_sse({
                             "type": "tool_call",
@@ -319,39 +295,36 @@ async def chat_stream_generator(
                             "arguments": full_args,
                             "step": current_step,
                         })
-=======
-                            yield format_sse({
-                                "type": "tool_call",
-                                "tool_name": tool_name,
-                                "arguments": tool_args,
-                                "step": current_step,
-                            })
->>>>>>> 5e7f42a27a4e99b8fbf025f9b90fdec36a357f59:easy_agent/web/service/__init__.py
                 
                 # 处理工具结果
                 if token.type == "tool":
                     tool_name = getattr(token, "name", "") or ""
                     result_content = str(getattr(token, "content", ""))
                     
-<<<<<<< HEAD:wukong_agent/web/service/__init__.py
                     # 标记刚收到工具结果，后续 AI 可能会重复输出这些内容
                     is_after_tool_result = True
-=======
-                    # 从 pending_tool_calls 中获取完整的参数
-                    tool_args = {}
-                    if tool_name in pending_tool_calls:
-                        tool_args = pending_tool_calls[tool_name]["arguments"]
-                    
-                    # 记录完整的工具调用参数
-                    logger.info(f"[{sid}] 🔧 工具调用: {tool_name} | 参数: {json.dumps(tool_args, ensure_ascii=False) if tool_args else '{}'}")
->>>>>>> 5e7f42a27a4e99b8fbf025f9b90fdec36a357f59:easy_agent/web/service/__init__.py
                     
                     # 判断工具执行是否成功
                     tool_success = True
+                    
+                    # 检查 exit code（格式: Exit code: 0 或 Exit code: 1）
                     exit_code_match = re.search(r'Exit code:\s*(\d+)', result_content)
                     if exit_code_match:
                         exit_code = int(exit_code_match.group(1))
-                        tool_success = exit_code == 0
+                        if exit_code != 0:
+                            tool_success = False
+                    
+                    # 检查常见的错误关键词
+                    error_keywords = [
+                        'error', 'failed', 'cannot', 'exception', 'traceback',
+                        'permission denied', 'no such file', 'file not found',
+                        'already exists', 'command not found'
+                    ]
+                    result_lower = result_content.lower()
+                    for keyword in error_keywords:
+                        if keyword in result_lower:
+                            tool_success = False
+                            break
                     
                     # 计算工具执行时间
                     tool_duration = 0
@@ -360,45 +333,36 @@ async def chat_stream_generator(
                         del tool_call_start_times[tool_name]
                         total_tool_duration += tool_duration  # 累加工具调用总时间
                     
-<<<<<<< HEAD:wukong_agent/web/service/__init__.py
                     # 获取工具调用时的完整参数
                     tool_args = tool_call_accumulated_args.pop(tool_name, {}) if tool_name in tool_call_accumulated_args else {}
-                    if isinstance(tool_args, str):
+                    if not isinstance(tool_args, dict):
+                        tool_args = {}
+                    elif "raw" in tool_args and len(tool_args) == 1:
+                        # 如果只有 raw 字段，尝试解析
                         try:
-                            tool_args = json.loads(tool_args)
+                            parsed = json.loads(tool_args["raw"])
+                            if isinstance(parsed, dict):
+                                tool_args = parsed
                         except json.JSONDecodeError:
-                            tool_args = {"raw": tool_args}
+                            pass
                     
                     result_len = len(result_content)
                     result_preview = result_content[:500] if result_content else ""
-                    logger.info(f"[{sid}] Step {current_step} 工具调用: {tool_name} | 参数: {json.dumps(tool_args, ensure_ascii=False)[:300]} | 耗时: {tool_duration:.2f}s | 内容长度: {result_len} | 调用结果: {'成功' if tool_success else '失败'} | 结果: {result_preview}")
-=======
-                    # 截断结果用于日志显示
-                    result_preview = result_content[:500] + "..." if len(result_content) > 500 else result_content
                     
-                    # 如果是文件操作工具，显示实际的物理路径
-                    if tool_name in ["write_file", "read_file", "edit_file"]:
-                        file_path = tool_args.get("file_path", "")
-                        if file_path:
-                            # 显示虚拟路径和实际物理路径
-                            actual_path = f"{agent.workspace_dir.absolute()}{file_path}"
-                            logger.info(f"[{sid}] {'✅' if tool_success else '❌'} 工具结果: {tool_name} | 成功: {tool_success} | 耗时: {tool_duration:.2f}s | 虚拟路径: {file_path} | 实际路径: {actual_path} | 结果: {result_preview}")
-                        else:
-                            logger.info(f"[{sid}] {'✅' if tool_success else '❌'} 工具结果: {tool_name} | 成功: {tool_success} | 耗时: {tool_duration:.2f}s | 结果: {result_preview}")
+                    # 如果只有 raw 字段，说明 JSON 解析失败，直接打印 raw 内容
+                    if "raw" in tool_args and len(tool_args) == 1:
+                        log_args = tool_args["raw"]
                     else:
-                        logger.info(f"[{sid}] {'✅' if tool_success else '❌'} 工具结果: {tool_name} | 成功: {tool_success} | 耗时: {tool_duration:.2f}s | 结果: {result_preview}")
->>>>>>> 5e7f42a27a4e99b8fbf025f9b90fdec36a357f59:easy_agent/web/service/__init__.py
+                        log_args = json.dumps(tool_args, ensure_ascii=False)
+                    
+                    logger.info(f"[{sid}] Step {current_step} 工具调用: {tool_name} | 参数: {log_args[:2000]} | 耗时: {tool_duration:.2f}s | 内容长度: {result_len} | 调用结果: {'成功' if tool_success else '失败'} | 结果: {result_preview}")
                     
                     # 保存到工具调用记录（用于数据库持久化）
                     tool_call_id = f"tool-{tool_name}-{len(tool_call_records)}"
                     tool_call_records.append((
                         tool_name,
                         tool_call_id,
-<<<<<<< HEAD:wukong_agent/web/service/__init__.py
                         tool_args,
-=======
-                        tool_args,  # 使用完整的参数
->>>>>>> 5e7f42a27a4e99b8fbf025f9b90fdec36a357f59:easy_agent/web/service/__init__.py
                         result_content,
                         tool_success,
                         round(tool_duration, 2),
@@ -408,6 +372,7 @@ async def chat_stream_generator(
                     yield format_sse({
                         "type": "tool_result",
                         "tool_name": tool_name,
+                        "arguments": tool_args,
                         "result": result_content,
                         "success": tool_success,
                         "duration": round(tool_duration, 2),

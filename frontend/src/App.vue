@@ -416,15 +416,11 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
       
       const idx = messages.value.findIndex(m => m.id === assistantMsgId)
       if (idx !== -1) {
-<<<<<<< HEAD
         const msg = messages.value[idx]
-=======
->>>>>>> 5e7f42a27a4e99b8fbf025f9b90fdec36a357f59
         messages.value[idx] = {
           ...messages.value[idx],
           content: currentContent
         }
-<<<<<<< HEAD
         
         if (!currentBlock || currentBlock.type !== 'content') {
           currentBlock = null
@@ -433,53 +429,65 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
           currentBlock.content = currentContent
           messages.value[idx] = { ...messages.value[idx], blocks: [...messages.value[idx].blocks] }
         }
-=======
->>>>>>> 5e7f42a27a4e99b8fbf025f9b90fdec36a357f59
       }
     } else if (eventType === 'content_end') {
       currentContent = ''
     } else if (eventType === 'tool_call') {
-      currentBlock = null
-      const toolCall = {
-        tool_name: tool_name || '',
-        arguments: args || {},
-        result: '',
-        success: true
+      const idx = messages.value.findIndex(m => m.id === assistantMsgId)
+      if (idx !== -1) {
+        // 查找已存在的同名 tool_call block
+        const existingBlockIdx = messages.value[idx].blocks.findIndex(
+          b => b.type === 'tool_call' && b.tool_name === tool_name
+        )
+        
+        if (existingBlockIdx !== -1) {
+          // 更新已存在的 block
+          const existingBlock = messages.value[idx].blocks[existingBlockIdx]
+          existingBlock.arguments = args || {}
+          currentBlock = existingBlock
+          messages.value[idx] = { ...messages.value[idx], blocks: [...messages.value[idx].blocks] }
+          
+          // 同时更新 currentToolCalls 中的最后一个匹配项
+          if (currentToolCalls.length > 0) {
+            const lastToolCallIdx = [...currentToolCalls].reverse().findIndex(tc => tc.tool_name === tool_name)
+            if (lastToolCallIdx !== -1) {
+              const actualIdx = currentToolCalls.length - 1 - lastToolCallIdx
+              currentToolCalls[actualIdx].arguments = args || {}
+            }
+          }
+        } else {
+          // 创建新 block
+          currentBlock = null
+          const toolCall = {
+            tool_name: tool_name || '',
+            arguments: args || {},
+            result: '',
+            success: true
+          }
+          currentToolCalls.push(toolCall)
+          const toolCallId = `tool-${Date.now()}-${tool_name}`
+          addBlock('tool_call', { 
+            id: toolCallId,
+            tool_name: tool_name || '', 
+            arguments: args || {},
+            result: '',
+            success: true,
+            step: step || 0
+          })
+        }
       }
-      currentToolCalls.push(toolCall)
-      const toolCallId = `tool-${Date.now()}-${tool_name}`
-      addBlock('tool_call', { 
-        id: toolCallId,
-        tool_name: tool_name || '', 
-        arguments: args || {},
-        result: '',
-        success: true,
-        step: step || 0
-      })
     } else if (eventType === 'tool_result') {
       if (currentToolCalls.length > 0) {
         const lastToolCall = currentToolCalls[currentToolCalls.length - 1]
+        lastToolCall.arguments = arguments || {}
         lastToolCall.result = result || ''
         lastToolCall.success = success !== false
-<<<<<<< HEAD
-=======
-        if (duration !== undefined) lastToolCall.duration = duration
-        
-        if (currentBlock && currentBlock.type === 'tool_call') {
-          currentBlock.result = result || ''
-          currentBlock.success = success !== false
-          if (duration !== undefined) currentBlock.duration = duration
-          const idx = messages.value.findIndex(m => m.id === assistantMsgId)
-          if (idx !== -1) {
-            messages.value[idx] = { ...messages.value[idx] }
-          }
-        }
->>>>>>> 5e7f42a27a4e99b8fbf025f9b90fdec36a357f59
       }
       
       currentBlock = null
       addBlock('tool_result', {
         tool_name: tool_name || '',
+        arguments: arguments || {},
         result: result || '',
         success: success !== false,
         duration: duration,
