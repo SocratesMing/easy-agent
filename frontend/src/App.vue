@@ -350,6 +350,7 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
       const idx = messages.value.findIndex(m => m.id === assistantMsgId)
       if (idx !== -1) {
         messages.value[idx].blocks.push(currentBlock)
+        messages.value[idx] = { ...messages.value[idx], blocks: [...messages.value[idx].blocks] }
       }
     } else {
       currentBlock.content = (currentBlock.content || '') + (data.content || '')
@@ -359,10 +360,10 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
       if (data.success !== undefined) currentBlock.success = data.success
       if (data.duration !== undefined) currentBlock.duration = data.duration
       if (data.step !== undefined) currentBlock.step = data.step
-    }
-    const idx = messages.value.findIndex(m => m.id === assistantMsgId)
-    if (idx !== -1) {
-      messages.value[idx] = { ...messages.value[idx] }
+      const idx = messages.value.findIndex(m => m.id === assistantMsgId)
+      if (idx !== -1) {
+        messages.value[idx] = { ...messages.value[idx] }
+      }
     }
     return currentBlock
   }
@@ -397,26 +398,29 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
         currentBlock.content = currentThinking
         const idx = messages.value.findIndex(m => m.id === assistantMsgId)
         if (idx !== -1) {
-          messages.value[idx] = { ...messages.value[idx] }
+          messages.value[idx] = { ...messages.value[idx], blocks: [...messages.value[idx].blocks] }
         }
       }
     } else if (eventType === 'thinking_end') {
       updateThinkingDuration(duration || 0, step || 0)
       currentThinking = ''
     } else if (eventType === 'content') {
-      currentBlock = null
       currentContent += content || ''
       const idx = messages.value.findIndex(m => m.id === assistantMsgId)
       if (idx !== -1) {
-        // 创建新对象以触发响应式更新
         const msg = messages.value[idx]
         messages.value[idx] = {
           ...msg,
           content: currentContent
         }
         
-        // 同时创建 content block 用于渲染
-        addBlock('content', { content: content || '' })
+        if (!currentBlock || currentBlock.type !== 'content') {
+          currentBlock = null
+          addBlock('content', { content: currentContent })
+        } else {
+          currentBlock.content = currentContent
+          messages.value[idx] = { ...messages.value[idx], blocks: [...messages.value[idx].blocks] }
+        }
       }
     } else if (eventType === 'content_end') {
       currentContent = ''
@@ -443,17 +447,16 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
         const lastToolCall = currentToolCalls[currentToolCalls.length - 1]
         lastToolCall.result = result || ''
         lastToolCall.success = success !== false
-        
-        if (currentBlock && currentBlock.type === 'tool_call') {
-          currentBlock.result = result || ''
-          currentBlock.success = success !== false
-          if (duration !== undefined) currentBlock.duration = duration
-          const idx = messages.value.findIndex(m => m.id === assistantMsgId)
-          if (idx !== -1) {
-            messages.value[idx] = { ...messages.value[idx] }
-          }
-        }
       }
+      
+      currentBlock = null
+      addBlock('tool_result', {
+        tool_name: tool_name || '',
+        result: result || '',
+        success: success !== false,
+        duration: duration,
+        step: step || 0
+      })
     } else if (eventType === 'done') {
       const finalContent = data.content || currentContent
       if (assistantMsgId) {

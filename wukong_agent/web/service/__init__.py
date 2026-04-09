@@ -126,6 +126,8 @@ async def chat_stream_generator(
             thinking_buffer = ""  # 思考内容缓冲区
             first_token_time = None  # 第一个 token 的时间
             msg_received_time = None  # 思考开始时间（遇到 <think> 时记录）
+            is_after_tool_result = False  # 标记是否刚收到工具结果（用于过滤重复内容）
+            tool_call_accumulated_args = {}  # 累积工具调用的完整参数 {tool_name: args_str}
             
             async for chunk in agent.agent.astream(
                 {"messages": messages},
@@ -163,7 +165,10 @@ async def chat_stream_generator(
                     # 检查是否有开始标签
                     if not is_in_thinking and '<think' in content_str.lower():
                         is_in_thinking = True
+                        is_after_tool_result = False  # 进入思考说明新步骤开始
                         msg_received_time = time.time()  # 记录思考开始时间
+                        current_step += 1  # 新的思考轮次，递增 step
+                        logger.info(f"[{sid}] 🤔 Step {current_step} 思考开始")
                         # 发送思考开始事件
                         yield format_sse({
                             "type": "thinking_start",
@@ -190,6 +195,8 @@ async def chat_stream_generator(
                             
                             # 发送思考结束事件
                             thinking_duration = time.time() - msg_received_time
+                            thinking_clean = accumulated_thinking.replace('<think>', '').replace('</think>', '').replace('<think ', '').replace('</think ', '').strip()
+                            logger.info(f"[{sid}] 🤔 Step {current_step} 思考完成 | 耗时: {thinking_duration:.2f}s | 内容长度: {len(thinking_clean)} | 内容: {thinking_clean[:500]}")
                             yield format_sse({
                                 "type": "thinking_end",
                                 "duration": round(thinking_duration, 2),
@@ -207,41 +214,72 @@ async def chat_stream_generator(
                                 accumulated_response += response_part
                     elif is_in_thinking:
                         # 在思考标签内，发送思考内容
+                        accumulated_thinking += content_str
                         yield format_sse({
                             "type": "thinking",
                             "content": content_str,
                             "step": current_step,
                         })
-                        accumulated_thinking += content_str
                     else:
                         # 正式回复内容
-                        logger.debug(f"[{sid}] 📤 发送 content 事件 | 长度: {len(content_str)} | 内容: {content_str[:50]}")
-                        yield format_sse({
-                            "type": "content",
-                            "content": content_str,
-                        })
-                        accumulated_response += content_str
+                        if is_after_tool_result:
+                            logger.info(f"[{sid}] ⏭️ Step {current_step} 跳过重复 content | 长度: {len(content_str)}")
+                            is_after_tool_result = False
+                        else:
+                            accumulated_response += content_str
+                            logger.info(f"[{sid}] 📤 Step {current_step} 正式内容\n内容: {accumulated_response[:500]}")
+                            yield format_sse({
+                                "type": "content",
+                                "content": content_str,
+                            })
                 
-                # 处理工具调用 chunks
+                # 处理工具调用 chunks（流式累积参数）
                 if hasattr(token, "tool_call_chunks") and token.tool_call_chunks:
                     for tc_chunk in token.tool_call_chunks:
-                        if tc_chunk.get("name"):
-                            tool_name = tc_chunk['name']
+                        tool_name_from_chunk = tc_chunk.get("name")
+                        args_str = tc_chunk.get("args", "")
+                        
+                        if tool_name_from_chunk:
+                            # 新的工具调用开始
+                            tool_name = tool_name_from_chunk
                             # 记录工具调用开始时间
                             tool_call_start_times[tool_name] = time.time()
+                            tool_call_step_map[tool_name] = current_step
+                            tool_call_accumulated_args[tool_name] = ""
                             
-                            logger.info(f"[{sid}] 🔧 工具调用: {tool_name}")
-                            yield format_sse({
-                                "type": "tool_call",
-                                "tool_name": tool_name,
-                                "arguments": tc_chunk.get("args", {}),
-                                "step": current_step,
-                            })
+                            # 累积参数
+                            if args_str:
+                                tool_call_accumulated_args[tool_name] += str(args_str)
+                        elif args_str:
+                            # 续接参数（同一个工具调用的后续 chunk）
+                            if tool_call_accumulated_args:
+                                last_tool = list(tool_call_accumulated_args.keys())[-1]
+                                tool_call_accumulated_args[last_tool] += str(args_str)
+                    
+                    # 打印完整参数并发送事件
+                    if tool_name_from_chunk and tool_name in tool_call_accumulated_args:
+                        full_args_str = tool_call_accumulated_args[tool_name]
+                        try:
+                            full_args = json.loads(full_args_str) if full_args_str else {}
+                        except json.JSONDecodeError:
+                            full_args = {"raw": full_args_str}
+                        
+                        logger.info(f"[{sid}] 🔧 Step {current_step} 工具调用: {tool_name} | 参数: {json.dumps(full_args, ensure_ascii=False)[:500]}")
+                        is_after_tool_result = True
+                        yield format_sse({
+                            "type": "tool_call",
+                            "tool_name": tool_name,
+                            "arguments": full_args,
+                            "step": current_step,
+                        })
                 
                 # 处理工具结果
                 if token.type == "tool":
                     tool_name = getattr(token, "name", "") or ""
                     result_content = str(getattr(token, "content", ""))
+                    
+                    # 标记刚收到工具结果，后续 AI 可能会重复输出这些内容
+                    is_after_tool_result = True
                     
                     # 判断工具执行是否成功
                     tool_success = True
@@ -256,14 +294,24 @@ async def chat_stream_generator(
                         tool_duration = time.time() - tool_call_start_times[tool_name]
                         del tool_call_start_times[tool_name]
                     
-                    logger.info(f"[{sid}] {'✅' if tool_success else '❌'} 工具结果: {tool_name} | 成功: {tool_success} | 耗时: {tool_duration:.2f}s")
+                    # 获取工具调用时的完整参数
+                    tool_args = tool_call_accumulated_args.pop(tool_name, {}) if tool_name in tool_call_accumulated_args else {}
+                    if isinstance(tool_args, str):
+                        try:
+                            tool_args = json.loads(tool_args)
+                        except json.JSONDecodeError:
+                            tool_args = {"raw": tool_args}
+                    
+                    result_len = len(result_content)
+                    result_preview = result_content[:500] if result_content else ""
+                    logger.info(f"[{sid}] Step {current_step} 工具调用: {tool_name} | 参数: {json.dumps(tool_args, ensure_ascii=False)[:300]} | 耗时: {tool_duration:.2f}s | 内容长度: {result_len} | 调用结果: {'成功' if tool_success else '失败'} | 结果: {result_preview}")
                     
                     # 保存到工具调用记录（用于数据库持久化）
                     tool_call_id = f"tool-{tool_name}-{len(tool_call_records)}"
                     tool_call_records.append((
                         tool_name,
                         tool_call_id,
-                        {},  # arguments（从 pending_tool_calls 获取）
+                        tool_args,
                         result_content,
                         tool_success,
                         round(tool_duration, 2),

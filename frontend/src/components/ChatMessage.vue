@@ -354,7 +354,7 @@ function isExpandedToolResult(index) {
   const block = sortedBlocks.value[index]
   if (!block) return false
   const key = getBlockKey(block, index)
-  return expandedToolResult.value[key] !== false  // 工具结果默认展开
+  return expandedToolResult.value[key] === true  // 工具结果默认折叠
 }
 
 function highlightCode(code, lang) {
