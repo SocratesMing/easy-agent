@@ -9,7 +9,7 @@ class TestConfig:
 
     def test_config_file_not_found(self):
         """Test that Config.load raises FileNotFoundError when config doesn't exist"""
-        from wukong_agent.config import Config
+        from easy_agent.config import Config
 
         with tempfile.TemporaryDirectory() as tmpdir:
             import os
@@ -23,7 +23,7 @@ class TestConfig:
 
     def test_config_from_yaml_missing_fields(self):
         """Test that from_yaml raises ValueError for missing required fields"""
-        from wukong_agent.config import Config
+        from easy_agent.config import Config
 
         with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as f:
             f.write("model: test-model\n")
@@ -42,7 +42,7 @@ class TestLogger:
 
     def test_logger_initialization(self):
         """Test that logger initializes correctly"""
-        from wukong_agent.logger import AgentLogger
+        from easy_agent.logger import AgentLogger
 
         logger = AgentLogger()
 
@@ -52,7 +52,7 @@ class TestLogger:
 
     def test_logger_start_new_run(self):
         """Test that logger creates new log file"""
-        from wukong_agent.logger import AgentLogger
+        from easy_agent.logger import AgentLogger
 
         logger = AgentLogger()
         logger.start_new_run()
@@ -63,7 +63,7 @@ class TestLogger:
 
     def test_logger_log_request(self):
         """Test logging requests"""
-        from wukong_agent.logger import AgentLogger
+        from easy_agent.logger import AgentLogger
 
         logger = AgentLogger()
         logger.start_new_run()
@@ -75,7 +75,7 @@ class TestLogger:
 
     def test_logger_log_response(self):
         """Test logging responses"""
-        from wukong_agent.logger import AgentLogger
+        from easy_agent.logger import AgentLogger
 
         logger = AgentLogger()
         logger.start_new_run()
@@ -90,7 +90,7 @@ class TestAgent:
 
     def test_colors_defined(self):
         """Test that Colors class has expected attributes"""
-        from wukong_agent.agent import Colors
+        from easy_agent.agent import Colors
 
         assert hasattr(Colors, 'RESET')
         assert hasattr(Colors, 'BOLD')
@@ -101,13 +101,13 @@ def test_project_structure():
     """Test that project structure is correct"""
     base_path = Path(__file__).parent.parent
 
-    assert (base_path / "wukong_agent" / "__init__.py").exists()
-    assert (base_path / "wukong_agent" / "config.py").exists()
-    assert (base_path / "wukong_agent" / "cli.py").exists()
-    assert (base_path / "wukong_agent" / "agent.py").exists()
-    assert (base_path / "wukong_agent" / "logger.py").exists()
-    assert (base_path / "wukong_agent" / "config" / "config.yaml.example").exists()
-    assert (base_path / "wukong_agent" / "config" / "system_prompt.md").exists()
+    assert (base_path / "easy_agent" / "__init__.py").exists()
+    assert (base_path / "easy_agent" / "config.py").exists()
+    assert (base_path / "easy_agent" / "cli.py").exists()
+    assert (base_path / "easy_agent" / "agent.py").exists()
+    assert (base_path / "easy_agent" / "logger.py").exists()
+    assert (base_path / "easy_agent" / "config" / "config.yaml.example").exists()
+    assert (base_path / "easy_agent" / "config" / "system_prompt.md").exists()
     assert (base_path / "pyproject.toml").exists()
 
 

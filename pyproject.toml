@@ -28,7 +28,7 @@ dependencies = [
 ]
 
 [project.scripts]
-easy-agent = "wukong_agent.cli:main"
+easy-agent = "easy_agent.cli:main"
 easy-web = "run_web:main"
 
 [project.optional-dependencies]
@@ -45,7 +45,7 @@ build-backend = "setuptools.build_meta"
 include-package-data = true
 
 [tool.setuptools.packages.find]
-include = ["wukong_agent*"]
+include = ["easy_agent*"]
 exclude = ["tests*"]
 
 [tool.pytest.ini_options]
