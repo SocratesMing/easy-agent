@@ -10,10 +10,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Header
+from fastapi import APIRouter, Depends, HTTPException, Header, Request
 
 from ...config import Config
-from ..database import Database, get_database
+from ..db import Database, get_database
 from ..models import (
     UserProfile,
     UpdateUserProfileRequest,
@@ -30,6 +30,18 @@ router = APIRouter(
     prefix="/api/auth",
     tags=["Authentication"],
 )
+
+
+def get_client_ip(request: Request) -> str:
+    """从请求中提取客户端真实IP"""
+    forwarded = request.headers.get("X-Forwarded-For")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    real_ip = request.headers.get("X-Real-IP")
+    if real_ip:
+        return real_ip.strip()
+    client_host = request.client.host if request.client else "unknown"
+    return client_host
 
 
 @router.post(
@@ -77,13 +89,14 @@ async def register(
     "/login",
     response_model=AuthResponse,
     summary="用户登录",
-    description="使用用户名和密码登录。",
+    description="使用用户名和密码登录。首次登录会绑定IP地址，后续只能在绑定IP上登录。",
 )
 async def login(
     request: LoginRequest,
+    http_request: Request,
     db: Annotated[Database, Depends(get_database)],
 ):
-    """用户登录."""
+    """用户登录（带IP绑定）."""
     user = db.get_user_by_username(request.username)
 
     if not user:
@@ -94,9 +107,31 @@ async def login(
     if not user:
         raise HTTPException(status_code=401, detail="密码错误")
 
-    access_token = create_access_token(data={"sub": user.username})
+    client_ip = get_client_ip(http_request)
+    bound_ip = db.get_user_bound_ip(user.username)
 
-    logger.info(f"[用户] 登录成功 | 用户名: {user.username}")
+    if bound_ip:
+        # IP 已绑定，校验是否一致
+        if bound_ip != client_ip:
+            logger.warning(f"[用户] IP绑定校验失败 | 用户: {user.username} | 绑定IP: {bound_ip} | 当前IP: {client_ip}")
+            raise HTTPException(status_code=403, detail=f"账号已绑定IP {bound_ip}，当前IP {client_ip} 无访问权限")
+    else:
+        # 首次登录，绑定IP
+        db.bind_user_ip(user.username, client_ip)
+        logger.info(f"[用户] IP绑定成功 | 用户: {user.username} | IP: {client_ip}")
+
+    # 确保用户workspace和upload目录存在
+    try:
+        user_workspace = Config.get_user_workspace_dir(user.username)
+        user_workspace.mkdir(parents=True, exist_ok=True)
+        user_upload = Config.get_user_upload_dir(user.username)
+        user_upload.mkdir(parents=True, exist_ok=True)
+    except Exception as e:
+        logger.warning(f"[用户] 创建工作区失败 | 用户: {user.username} | 错误: {e}")
+
+    access_token = create_access_token(data={"sub": user.username, "ip": client_ip})
+
+    logger.info(f"[用户] 登录成功 | 用户名: {user.username} | IP: {client_ip}")
 
     return AuthResponse(
         access_token=access_token,
@@ -210,6 +245,7 @@ async def get_current_user_profile(
         username=user.username,
         organization_id=user.organization_id,
         email=user.email,
+        bound_ip=user.bound_ip,
         created_at=user.created_at,
         updated_at=user.updated_at,
     )
@@ -256,6 +292,7 @@ async def update_user_profile(
         username=user.username,
         organization_id=user.organization_id,
         email=user.email,
+        bound_ip=user.bound_ip,
         created_at=user.created_at,
         updated_at=user.updated_at,
     )
@@ -296,6 +333,7 @@ async def get_user_profile(
         username=user.username,
         organization_id=user.organization_id,
         email=user.email,
+        bound_ip=user.bound_ip,
         created_at=user.created_at,
         updated_at=user.updated_at,
     )

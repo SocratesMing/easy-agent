@@ -41,3 +41,5 @@ workspace/
 .coverage
 htmlcov/
 .qoder
+
+tests/chat_history/

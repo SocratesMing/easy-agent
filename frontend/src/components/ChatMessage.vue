@@ -163,7 +163,7 @@
         </div>
 
         <div v-if="message.content" class="message-text" v-html="renderMarkdown(message.content)"></div>
-        
+
         <!-- 生成的文件按钮 -->
         <div v-if="message.role === 'assistant' && message.generated_files && message.generated_files.length > 0" class="generated-files-btn-container">
           <button class="generated-files-btn" @click="emit('viewGeneratedFiles')" title="查看生成的文件">
@@ -179,6 +179,32 @@
         </div>
       </template>
       
+      <!-- 等待用户输入（在消息内容之后渲染） -->
+      <div v-if="message.user_input_required" class="user-input-block">
+        <div class="user-input-banner">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="input-icon">
+            <circle cx="12" cy="12" r="10"></circle>
+            <path d="M12 16v-4M12 8h.01"></path>
+          </svg>
+          <span>需要您的输入</span>
+        </div>
+        <div class="user-input-area">
+          <input
+            v-model="userResponse"
+            type="text"
+            class="user-input-field"
+            placeholder="请输入您的选择或回答..."
+            @keyup.enter="submitUserInput"
+          />
+          <button class="user-input-submit" @click="submitUserInput">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="22" y1="2" x2="11" y2="13"></line>
+              <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+            </svg>
+          </button>
+        </div>
+      </div>
+
       <!-- 用户消息显示复制和重试按钮 -->
       <div v-if="message.role === 'user' && message.content" class="message-actions">
         <button class="action-btn retry-btn" @click="retryMessage" title="重新发送">
@@ -212,7 +238,7 @@ const props = defineProps({
   }
 })
 
-const emit = defineEmits(['removeFile', 'viewGeneratedFiles', 'retry'])
+const emit = defineEmits(['removeFile', 'viewGeneratedFiles', 'retry', 'userInput'])
 
 const showThinking = ref(true)
 const expandedThinking = ref({})
@@ -220,6 +246,7 @@ const expandedKnowledgeBase = ref({})
 const expandedToolCall = ref({})
 const expandedToolResult = ref({})
 const highlighter = shallowRef(null)
+const userResponse = ref('')
 
 const langAliases = {
   'js': 'javascript',
@@ -487,6 +514,13 @@ function retryMessage() {
   // 触发重试事件，传递消息内容（确保是纯字符串）
   const content = String(props.message.content || '')
   emit('retry', content)
+}
+
+function submitUserInput() {
+  const response = userResponse.value.trim()
+  if (!response) return
+  emit('userInput', response)
+  userResponse.value = ''
 }
 
 function removeFile(index) {
@@ -1527,5 +1561,75 @@ onMounted(() => {
   40% {
     transform: scale(1);
   }
+}
+
+/* 用户输入交互块 */
+.user-input-block {
+  margin-top: 12px;
+  padding: 12px 16px;
+  background: #fffbeb;
+  border: 1px solid #fde68a;
+  border-radius: 10px;
+}
+
+.user-input-banner {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  color: #92400e;
+  margin-bottom: 10px;
+}
+
+.input-icon {
+  width: 16px;
+  height: 16px;
+  color: #d97706;
+}
+
+.user-input-area {
+  display: flex;
+  gap: 8px;
+}
+
+.user-input-field {
+  flex: 1;
+  padding: 8px 12px;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  font-size: 14px;
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+.user-input-field:focus {
+  border-color: #d97706;
+  box-shadow: 0 0 0 3px rgba(217, 119, 6, 0.1);
+}
+
+.user-input-submit {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  background: #d97706;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  color: white;
+  transition: background 0.2s;
+  flex-shrink: 0;
+}
+
+.user-input-submit:hover {
+  background: #b45309;
+}
+
+.user-input-submit svg {
+  width: 16px;
+  height: 16px;
 }
 </style>

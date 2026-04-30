@@ -2,14 +2,18 @@
 
 import json
 import logging
+import os
+import shutil
 import uuid
 from datetime import datetime
+from pathlib import Path
 from typing import Annotated, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from ..database import Database, SessionModel, get_database
+from ..db import Database, SessionModel, get_database
 from ..dependencies import get_current_username
+from ...config import Config
 from ..models import (
     AddMessageRequest,
     AddMessageResponse,
@@ -22,6 +26,7 @@ from ..models import (
     SessionInfo,
     UpdateTitleRequest,
 )
+from ..utils.session_logger import SessionLogger
 
 logger = logging.getLogger(__name__)
 
@@ -151,10 +156,21 @@ async def update_session_title(
 async def delete_session(
     session_id: str,
     db: Annotated[Database, Depends(get_database)],
+    username: Annotated[str, Depends(get_current_username)],
 ):
     success = db.delete_session(session_id)
     if not success:
         raise HTTPException(status_code=404, detail="会话不存在")
+
+    # 删除会话对应的 workspace 目录
+    workspace_base = Path("workspace") / Config.sanitize_username(username)
+    session_workspace = workspace_base / session_id
+    if session_workspace.exists() and session_workspace.is_dir():
+        try:
+            shutil.rmtree(session_workspace)
+            logger.info(f"删除会话工作区 | ID: {session_id} | 路径: {session_workspace}")
+        except Exception as e:
+            logger.warning(f"删除会话工作区失败 | ID: {session_id} | 错误: {e}")
 
     logger.info(f"删除会话 | ID: {session_id}")
 
@@ -195,3 +211,20 @@ async def get_tool_calls(
 ):
     tool_calls = db.get_tool_calls(session_id)
     return {"tool_calls": tool_calls}
+
+
+@router.get("/{session_id}/log", summary="获取会话日志")
+async def get_session_log(
+    session_id: str,
+):
+    log_path = SessionLogger.get_session_log_path(session_id)
+    if not log_path.exists():
+        raise HTTPException(status_code=404, detail="会话日志不存在")
+    import json as _json
+    return _json.loads(log_path.read_text(encoding="utf-8"))
+
+
+@router.get("/logs", summary="列出所有会话日志")
+async def list_session_logs():
+    logs = SessionLogger.get_all_session_logs()
+    return {"logs": logs}

@@ -12,7 +12,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 
-from .database import init_database, get_database
+from .db import init_database, get_database
 from .models import HealthResponse
 from .routes.chat import router as chat_router
 from .routes.files import router as files_router
@@ -138,7 +138,7 @@ async def lifespan(app: FastAPI):
 
     if config:
         from .service import init_agent_config
-        from ..cli import discover_skills
+        from ..skills import discover_skills
         
         skills = discover_skills(config.tools.skills_dir if hasattr(config.tools, 'skills_dir') else None)
         
@@ -221,12 +221,13 @@ async def health_check():
 
 @app.get("/api/config", summary="获取Agent配置")
 async def get_config():
-    from .service import _agent_config
-    if _agent_config:
+    from .service import get_agent_config
+    _cfg = get_agent_config()
+    if _cfg:
         return {
-            "system_prompt": _agent_config["system_prompt"][:100] + "...",
-            "provider": _agent_config["config"].llm.provider,
-            "model": _agent_config["config"].llm.model_name,
+            "system_prompt": _cfg["system_prompt"][:100] + "...",
+            "provider": _cfg["config"].llm.provider,
+            "model": _cfg["config"].llm.model_name,
         }
     return {"status": "not initialized"}
 

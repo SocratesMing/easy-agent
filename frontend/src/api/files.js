@@ -101,6 +101,19 @@ export async function getSessionGeneratedFiles(sessionId) {
   return await response.json()
 }
 
+export async function getWorkspaceTree(path = '') {
+  const params = new URLSearchParams()
+  if (path) params.set('path', path)
+  const url = `${API_BASE_URL}/api/files/workspace/tree${params.toString() ? '?' + params.toString() : ''}`
+  const response = await authFetch(url)
+
+  if (!response.ok) {
+    throw new Error('获取工作区文件树失败')
+  }
+
+  return await response.json()
+}
+
 export async function getFileContent(filePath) {
   const response = await authFetch(`${API_BASE_URL}/api/files/content?file_path=${encodeURIComponent(filePath)}`)
 

@@ -123,6 +123,7 @@ class UserProfile(BaseModel):
     username: str = Field(..., description="用户名")
     organization_id: str = Field(default="", description="机构ID")
     email: str = Field(default="", description="用户邮箱")
+    bound_ip: str = Field(default="", description="绑定IP")
     created_at: str = Field(..., description="创建时间")
     updated_at: str = Field(..., description="更新时间")
 

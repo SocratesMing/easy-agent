@@ -8,7 +8,7 @@ from typing import Annotated, Optional
 
 from fastapi import Depends, HTTPException, Request
 
-from .database import Database, get_database
+from .db import Database, get_database
 from .utils.auth import decode_access_token, get_username_from_token
 
 logger = logging.getLogger(__name__)

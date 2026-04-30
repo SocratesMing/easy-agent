@@ -17,16 +17,10 @@
 # - China: https://platform.minimaxi.com -> api_base: https://api.minimaxi.com
 # Please choose based on your network environment and get API key from corresponding platform
 
-api_key: "sk-api-5xGQwVHqkHakCyFMZdZt8bbomoaa-gNdWoBjpAKu7g2zg0qfdKfXyIFRvEaeugHwgi5OQQ1jq9UlnidjCRsLTmfhbLGy-U3Rw83fdixS-GA_VV5S-oK2UaQ"  # Replace with your MiniMax API Key
+api_key: "YOUR_API_KEY_HERE"  # Replace with your API Key
 api_base: "https://api.minimaxi.com"  # China users
 model: "MiniMax-M2.7"
 provider: "minimax"  # MiniMax provider
-
-# api_key: "sk-bcff7c5f84b94262882cd4b7be499675"  # Replace with your MiniMax API Key
-# api_base: "https://api.deepseek.com/v1"   # Global users (default)
-# model: "deepseek-reasoner"
-# LLM provider: "openai"
-# provider: "deepseek"  # Default: anthropic
 
 # For MiniMax API, the suffix (/anthropic or /v1) is auto-appended based on provider.
 # For third-party APIs (e.g., https://api.siliconflow.cn/v1), api_base is used as-is.
@@ -77,7 +71,7 @@ database:
     host: "127.0.0.1"
     port: 3306
     user: "root"
-    password: "Test1234"
+    password: "YOUR_DB_PASSWORD"
     database: "agent"
     charset: "utf8mb4"
     pool:

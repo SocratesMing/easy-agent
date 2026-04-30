@@ -101,14 +101,68 @@ def test_project_structure():
     """Test that project structure is correct"""
     base_path = Path(__file__).parent.parent
 
+    # Core modules
     assert (base_path / "easy_agent" / "__init__.py").exists()
     assert (base_path / "easy_agent" / "config.py").exists()
-    assert (base_path / "easy_agent" / "cli.py").exists()
     assert (base_path / "easy_agent" / "agent.py").exists()
+    assert (base_path / "easy_agent" / "model.py").exists()
     assert (base_path / "easy_agent" / "logger.py").exists()
+    assert (base_path / "easy_agent" / "display.py").exists()
+    assert (base_path / "easy_agent" / "skills.py").exists()
+
+    # Config
     assert (base_path / "easy_agent" / "config" / "config.yaml.example").exists()
     assert (base_path / "easy_agent" / "config" / "system_prompt.md").exists()
+
+    # Web package
+    assert (base_path / "easy_agent" / "web" / "__init__.py").exists()
+    assert (base_path / "easy_agent" / "web" / "server.py").exists()
+    assert (base_path / "easy_agent" / "web" / "db" / "__init__.py").exists()
+    assert (base_path / "easy_agent" / "web" / "db" / "database.py").exists()
+    assert (base_path / "easy_agent" / "web" / "db" / "models.py").exists()
+    assert (base_path / "easy_agent" / "web" / "service" / "__init__.py").exists()
+    assert (base_path / "easy_agent" / "web" / "service" / "streaming.py").exists()
+    assert (base_path / "easy_agent" / "web" / "service" / "agent_manager.py").exists()
+
     assert (base_path / "pyproject.toml").exists()
+
+
+class TestImports:
+    """Test that all public imports work correctly"""
+
+    def test_top_level_imports(self):
+        from easy_agent import EasyAgent, Config, create_model, discover_skills
+        assert EasyAgent is not None
+        assert Config is not None
+        assert create_model is not None
+        assert discover_skills is not None
+
+    def test_db_package_imports(self):
+        from easy_agent.web.db import Database, SessionModel, UserModel, get_database, init_database
+        assert Database is not None
+        assert SessionModel is not None
+        assert UserModel is not None
+
+    def test_service_imports(self):
+        from easy_agent.web.service import (
+            chat_stream_generator,
+            init_agent_config,
+            get_or_create_agent_for_session,
+            remove_session_agent,
+            get_agent_config,
+        )
+        assert chat_stream_generator is not None
+        assert init_agent_config is not None
+
+    def test_display_imports(self):
+        from easy_agent.display import Colors, print_thinking, print_tool_call
+        assert hasattr(Colors, 'RESET')
+        assert callable(print_thinking)
+        assert callable(print_tool_call)
+
+    def test_skills_module(self):
+        from easy_agent.skills import discover_skills
+        assert callable(discover_skills)
 
 
 if __name__ == "__main__":

@@ -48,7 +48,6 @@
         v-else-if="!showAssets && !showUserProfile"
         :messages="messages"
         :currentSessionId="currentSessionId"
-        :hasFiles="currentSessionHasFiles"
         :isStreaming="isStreaming"
         :scrollTrigger="scrollTrigger"
         @sendMessage="handleSendMessage"
@@ -57,7 +56,27 @@
         @stop="handleStop"
         @retry="handleRetry"
       />
-      
+
+      <WorkspacePanel
+        v-if="!showAssets && !showUserProfile"
+        :username="userProfile.username"
+        :currentSessionId="currentSessionId"
+        :isStreaming="isStreaming"
+        :visible="!isWorkspaceCollapsed"
+        @toggle="isWorkspaceCollapsed = !isWorkspaceCollapsed"
+      />
+
+      <button
+        v-if="isWorkspaceCollapsed && !showAssets && !showUserProfile"
+        class="expand-workspace-btn"
+        @click="isWorkspaceCollapsed = false"
+        title="展开工作区"
+      >
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+        </svg>
+      </button>
+
       <div v-if="error" class="error-toast">
         {{ error }}
         <button @click="error = null">×</button>
@@ -84,6 +103,7 @@ import Chat from './components/Chat.vue'
 import AssetsPanel from './components/AssetsPanel.vue'
 import UserProfile from './components/UserProfile.vue'
 import Welcome from './components/Welcome.vue'
+import WorkspacePanel from './components/WorkspacePanel.vue'
 import { createSession, listSessions, getChatHistory, deleteSession, sendMessage, renameSession } from './api/chat.js'
 import { uploadFile, deleteFile, getUserProfile, getSessionGeneratedFiles } from './api/files.js'
 import { logout as apiLogout, getStoredToken, getStoredUsername, AUTH_EXPIRED_EVENT } from './api/auth.js'
@@ -122,7 +142,10 @@ async function refreshSessionFiles(sessionId = null, delayMs = 0) {
 const messages = ref([])
 const isStreaming = ref(false)
 const error = ref(null)
+const currentAbortController = ref(null)
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
 const isSidebarCollapsed = ref(false)
+const isWorkspaceCollapsed = ref(true)
 const showAssets = ref(false)
 const showUserProfile = ref(false)
 const showWelcome = ref(false)
@@ -300,6 +323,14 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
 
   let contentWithFiles = message.trim().replace(/\s+/g, ' ')
 
+  // 清除前一条助手消息的 user_input_required 状态
+  if (messages.value.length > 0) {
+    const lastMsg = messages.value[messages.value.length - 1]
+    if (lastMsg.role === 'assistant' && lastMsg.user_input_required) {
+      lastMsg.user_input_required = false
+    }
+  }
+
   const userMessage = {
     id: userMsgId,
     role: 'user',
@@ -432,6 +463,19 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
       }
     } else if (eventType === 'content_end') {
       currentContent = ''
+    } else if (eventType === 'user_input_required') {
+      // 等待用户输入：消息完成但需要用户确认/选择
+      ensureAssistantMessage()
+      const idx = messages.value.findIndex(m => m.id === assistantMsgId)
+      if (idx !== -1) {
+        messages.value[idx].content = currentContent
+        messages.value[idx].loading = false
+        messages.value[idx].user_input_required = true
+        messages.value[idx].user_input_question = content || currentContent
+        messages.value[idx].created_at = new Date().toISOString()
+        messages.value[idx] = { ...messages.value[idx] }
+      }
+      isStreaming.value = false
     } else if (eventType === 'tool_call') {
       const idx = messages.value.findIndex(m => m.id === assistantMsgId)
       if (idx !== -1) {
@@ -528,8 +572,11 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
 
   try {
     isStreaming.value = true
-    await sendMessage(currentSessionId.value, message, onChunk, signal, enableDeepThink, files, enableKnowledgeBase)
-    
+    const controller = new AbortController()
+    currentAbortController.value = controller
+    const abortSignal = signal || controller.signal
+    await sendMessage(currentSessionId.value, message, onChunk, abortSignal, enableDeepThink, files, enableKnowledgeBase)
+
     await refreshSessionFiles(null, 500)
   } catch (e) {
     if (e.name === 'AbortError') {
@@ -542,6 +589,7 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
     error.value = e.message || '发送消息失败'
   } finally {
     isStreaming.value = false
+    currentAbortController.value = null
     await loadSessions()
   }
 }
@@ -570,6 +618,17 @@ function handleRetry(content) {
 
 function handleStop() {
   isStreaming.value = false
+  // 中止正在进行的 fetch 请求
+  if (currentAbortController) {
+    currentAbortController.abort()
+    currentAbortController = null
+  }
+  // 通知后端清除agent缓存
+  if (currentSessionId.value) {
+    fetch(`${API_BASE_URL}/api/chat/session/${currentSessionId.value}/agent`, {
+      method: 'DELETE',
+    }).catch(() => {})
+  }
   error.value = '已停止生成'
   setTimeout(() => {
     error.value = null
@@ -646,6 +705,30 @@ onMounted(async () => {
 .expand-sidebar-btn:hover {
   background: #f8fafc;
   border-color: #cbd5e1;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+}
+
+.expand-workspace-btn {
+  position: fixed;
+  right: 16px;
+  top: 16px;
+  width: 40px;
+  height: 40px;
+  background: white;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  z-index: 100;
+  transition: all 0.2s ease;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+}
+
+.expand-workspace-btn:hover {
+  background: #f0fdf4;
+  border-color: #86efac;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
 }
 

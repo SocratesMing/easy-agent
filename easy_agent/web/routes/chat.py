@@ -5,15 +5,18 @@ import logging
 import time
 import uuid
 from datetime import datetime
+from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
-from ..database import Database, SessionModel, get_database
+from ..db import Database, SessionModel, get_database
 from ..dependencies import get_current_username
 from ..models import ChatRequest
 from ..service import chat_stream_generator, get_or_create_agent_for_session, remove_session_agent
+from ..utils.file_parser import parse_file_content
+from ..utils.session_logger import SessionLogger
 
 logger = logging.getLogger(__name__)
 
@@ -98,9 +101,43 @@ async def chat_stream(
     }
     db.add_message(session_id, user_message)
 
+    # 如果有文件，解析文件内容并拼接到消息中
     parsed_content = request.message
+    if request.files:
+        file_context_parts = []
+        for file_info in request.files:
+            file_path = file_info.get("file_path") or file_info.get("path", "")
+            filename = file_info.get("filename", "")
+            if file_path and Path(file_path).exists():
+                content_type = file_info.get("type", "")
+                extracted = parse_file_content(file_path, content_type)
+                if extracted and len(extracted) > 20:  # 有实质内容才拼接
+                    file_context_parts.append(
+                        f"--- 文件: {filename} ---\n{extracted[:10000]}\n--- 文件结束 ---"
+                    )
+                else:
+                    file_context_parts.append(f"[文件: {filename}，无文本内容可提取]")
+            else:
+                file_context_parts.append(f"[文件: {filename}，路径不可用: {file_path}]")
+
+        if file_context_parts:
+            file_context = "\n\n".join(file_context_parts)
+            parsed_content = f"{request.message}\n\n[用户上传了以下文件，文件内容已提取供参考]:\n\n{file_context}"
+
+    logger.info(f"[{sid}] 最终消息长度: {len(parsed_content)} 字符 | 包含文件: {bool(request.files)}")
 
     agent = await get_or_create_agent_for_session(session_id, username)
+
+    from ..service import get_agent_config
+    _cfg = get_agent_config()
+    sys_prompt = (_cfg or {}).get("system_prompt", "")
+    session_logger = SessionLogger(
+        session_id=session_id,
+        username=username,
+        workspace=str(agent.workspace_dir.absolute()) if agent else "",
+        system_prompt=sys_prompt,
+    )
+    session_logger.log_user_message(request.message, request.files, message_id=message_id)
 
     return StreamingResponse(
         chat_stream_generator(
@@ -112,6 +149,7 @@ async def chat_stream(
             username=username,
             http_request=http_request,
             parsed_content=parsed_content,
+            session_logger=session_logger,
         ),
         media_type="text/event-stream",
         headers={

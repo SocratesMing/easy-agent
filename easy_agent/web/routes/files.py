@@ -1,5 +1,6 @@
 """File management routes"""
 
+import json
 import logging
 import os
 import uuid
@@ -8,11 +9,12 @@ from pathlib import Path
 from typing import Annotated, Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 
-from ..database import Database, get_database
+from ..db import Database, get_database
 from ..dependencies import get_current_username
 from ..models import FileListResponse, FileInfo
+from ..utils.file_parser import parse_file_content
 from ...config import Config
 
 logger = logging.getLogger(__name__)
@@ -145,6 +147,14 @@ async def upload_file(
             username=username,
         )
 
+    # 解析文件内容
+    parsed_content = parse_file_content(str(file_path), file_type)
+    if parsed_content:
+        parsed_preview = parsed_content[:200]
+        logger.info(f"文件解析 | 文件名: {file.filename} | 解析长度: {len(parsed_content)} 字符 | 预览: {parsed_preview}")
+    else:
+        logger.info(f"文件解析 | 文件名: {file.filename} | 无文本内容可提取")
+
     logger.info(f"上传文件 | 文件名: {file.filename} | 大小: {len(content)} bytes")
 
     return {
@@ -153,6 +163,8 @@ async def upload_file(
         "file_path": str(file_path),
         "file_type": file_type,
         "size": len(content),
+        "parsed_content": parsed_content[:5000] if parsed_content else "",
+        "parsed_length": len(parsed_content) if parsed_content else 0,
     }
 
 
@@ -175,6 +187,32 @@ async def download_file(
         filename=full_path.name,
         media_type="application/octet-stream",
     )
+
+
+@router.get("/content", summary="获取工作区文件内容")
+async def get_workspace_file_content(
+    file_path: str = Query(..., description="文件路径（相对于用户workspace目录）"),
+    username: Annotated[str, Depends(get_current_username)] = None,
+):
+    """读取用户工作区中的文件并返回文本内容"""
+    _, workspace_dir = get_user_dirs(username)
+    full_path = workspace_dir / file_path
+
+    if not full_path.exists() or not full_path.is_file():
+        raise HTTPException(status_code=404, detail="文件不存在")
+
+    if full_path.stat().st_size > 1024 * 1024:
+        raise HTTPException(status_code=400, detail="文件超过1MB，请在本地打开")
+
+    try:
+        content = full_path.read_text(encoding="utf-8")
+    except (UnicodeDecodeError, LookupError):
+        try:
+            content = full_path.read_text(encoding="latin-1")
+        except Exception:
+            raise HTTPException(status_code=400, detail="无法读取文件内容")
+
+    return Response(content=content, media_type="text/plain; charset=utf-8")
 
 
 @router.delete("/{file_id}", summary="删除文件")
