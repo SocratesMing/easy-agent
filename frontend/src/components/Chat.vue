@@ -7,6 +7,26 @@
         </div>
         <h2>{{ displayedTitle }}</h2>
         <p>{{ displayedSubtitle }}</p>
+        <div class="quick-actions">
+          <div class="quick-card" @click="handleQuickAction('帮我创建一份智能体介绍的docx')">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+              <polyline points="14 2 14 8 20 8"></polyline>
+              <line x1="16" y1="13" x2="8" y2="13"></line>
+              <line x1="16" y1="17" x2="8" y2="17"></line>
+              <polyline points="10 9 9 9 8 9"></polyline>
+            </svg>
+            <span>帮我创建一份智能体介绍的docx</span>
+          </div>
+          <div class="quick-card" @click="handleQuickAction('帮我生成一份金融量化的pptx')">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect>
+              <line x1="8" y1="21" x2="16" y2="21"></line>
+              <line x1="12" y1="17" x2="12" y2="21"></line>
+            </svg>
+            <span>帮我生成一份金融量化的pptx</span>
+          </div>
+        </div>
       </div>
       
       <div
@@ -35,12 +55,25 @@
         <polyline points="18 15 12 9 6 15"></polyline>
       </svg>
     </button>
-    
+
+    <div v-if="sessionUsage.total_tokens > 0" class="session-usage">
+      <span class="usage-item">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+          <path d="M12 2L2 7l10 5 10-5-10-5z"></path>
+          <path d="M2 17l10 5 10-5"></path>
+          <path d="M2 12l10 5 10-5"></path>
+        </svg>
+        Token 消耗: <strong>{{ sessionUsage.total_tokens.toLocaleString() }}</strong>
+      </span>
+      <span class="usage-detail">(输入 {{ sessionUsage.input_tokens.toLocaleString() }} / 输出 {{ sessionUsage.output_tokens.toLocaleString() }})</span>
+    </div>
+
     <ChatInput
       @send="handleSend"
       :disabled="isStreaming"
       :isStreaming="isStreaming"
       :session-id="currentSessionId"
+      :sessionUsage="sessionUsage"
       @stop="handleStop"
       @createSession="handleCreateSession"
     />
@@ -111,6 +144,10 @@ const props = defineProps({
   scrollTrigger: {
     type: Number,
     default: 0
+  },
+  sessionUsage: {
+    type: Object,
+    default: () => ({ input_tokens: 0, output_tokens: 0, total_tokens: 0 })
   }
 })
 
@@ -204,6 +241,11 @@ function handleCreateSession() {
 function handleUserInput(response, msg) {
   // 用户对助手消息做出了回应，发送为新消息
   emit('sendMessage', response, [], null, true, false)
+}
+
+function handleQuickAction(message) {
+  // 直接发送消息，后端会自动创建会话并根据消息生成标题
+  emit('sendMessage', message, [], null, true, false)
 }
 
 function scrollToBottom() {
@@ -300,6 +342,46 @@ watch(() => props.scrollTrigger, () => {
   font-size: 14px;
   color: #94a3b8;
   margin: 0;
+}
+
+.quick-actions {
+  display: flex;
+  gap: 16px;
+  margin-top: 32px;
+}
+
+.quick-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 20px;
+  background: white;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+  max-width: 300px;
+}
+
+.quick-card:hover {
+  border-color: #0ea5e9;
+  background: #f0f9ff;
+  box-shadow: 0 4px 12px rgba(14, 165, 233, 0.15);
+  transform: translateY(-2px);
+}
+
+.quick-card svg {
+  width: 24px;
+  height: 24px;
+  color: #0ea5e9;
+  flex-shrink: 0;
+}
+
+.quick-card span {
+  font-size: 14px;
+  color: #334155;
+  line-height: 1.5;
 }
 
 .scroll-btn {
@@ -403,5 +485,34 @@ watch(() => props.scrollTrigger, () => {
   50% {
     opacity: 0.5;
   }
+}
+
+.session-usage {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 6px 16px;
+  font-size: 12px;
+  color: #94a3b8;
+  background: #f8fafc;
+  border-top: 1px solid #f1f5f9;
+}
+
+.session-usage .usage-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: #64748b;
+}
+
+.session-usage .usage-item strong {
+  color: #475569;
+  font-weight: 600;
+}
+
+.session-usage .usage-detail {
+  color: #94a3b8;
+  font-size: 11px;
 }
 </style>

@@ -53,30 +53,14 @@
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path>
             </svg>
-            <input 
-              type="file" 
-              @change="handleFileSelect" 
-              multiple 
+            <input
+              type="file"
+              @change="handleFileSelect"
+              multiple
               :disabled="isStreaming || disabled"
               hidden
             />
           </label>
-          
-          <span class="divider">|</span>
-          
-          <button 
-            class="deep-think-btn"
-            :class="{ active: enableDeepThink, disabled: isStreaming || disabled }"
-            :disabled="isStreaming || disabled"
-            @click="enableDeepThink = !enableDeepThink"
-            title="深度思考"
-          >
-            <svg class="deep-think-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-              <path d="M12 15a3 3 0 100-6 3 3 0 000 6z"></path>
-              <path fill-rule="evenodd" d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-2 2 2 2 0 01-2-2v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 01-2-2 2 2 0 012-2h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 012-2 2 2 0 012 2v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 012 2 2 2 0 01-2 2h-.09a1.65 1.65 0 00-1.51 1z" clip-rule="evenodd"></path>
-            </svg>
-            <span class="deep-think-label">深度思考</span>
-          </button>
 
           <button
             class="knowledge-base-btn"
@@ -107,9 +91,19 @@
               <polyline points="12 5 19 12 12 19"></polyline>
             </svg>
           </button>
-          <button 
-            v-else
-            @click="stop" 
+          <div v-if="isStreaming && sessionUsage.total_tokens > 0 && sessionUsage.max_input_tokens" class="context-ring-wrapper" :title="contextTooltip">
+            <svg class="context-ring" viewBox="0 0 36 36">
+              <circle class="context-ring-bg" cx="18" cy="18" r="15.9" fill="none" stroke="#e5e7eb" stroke-width="3" />
+              <circle class="context-ring-fill" cx="18" cy="18" r="15.9" fill="none"
+                :stroke="contextColor" stroke-width="3" stroke-linecap="round"
+                :stroke-dasharray="`${contextPercent} ${100 - contextPercent}`"
+                transform="rotate(-90 18 18)" />
+            </svg>
+            <span class="context-ring-text">{{ contextPercent }}%</span>
+          </div>
+          <button
+            v-if="isStreaming"
+            @click="stop"
             class="action-btn stop-btn"
             title="停止"
           >
@@ -121,9 +115,6 @@
       </div>
     </div>
     
-    <div class="input-footer">
-      <span class="footer-text">Easy Agent 信息由AI生成，仅供参考</span>
-    </div>
   </div>
 </template>
 
@@ -144,6 +135,10 @@ const props = defineProps({
   isStreaming: {
     type: Boolean,
     default: false
+  },
+  sessionUsage: {
+    type: Object,
+    default: () => ({ input_tokens: 0, output_tokens: 0, total_tokens: 0, max_input_tokens: null, auto_compress_tokens: null })
   }
 })
 
@@ -152,12 +147,36 @@ const emit = defineEmits(['send', 'stop', 'createSession'])
 const message = ref('')
 const textareaRef = ref(null)
 const uploadedFiles = ref([])
-const enableDeepThink = ref(true)
 const enableKnowledgeBase = ref(false)
 let abortController = null
 
 const canSend = computed(() => {
   return message.value.trim() || uploadedFiles.value.length > 0
+})
+
+const contextPercent = computed(() => {
+  const u = props.sessionUsage
+  if (!u.max_input_tokens || u.max_input_tokens <= 0) return 0
+  return Math.min(100, Math.round(u.total_tokens / u.max_input_tokens * 100))
+})
+
+const contextColor = computed(() => {
+  const p = contextPercent.value
+  if (p >= 80) return '#ef4444'
+  if (p >= 50) return '#f59e0b'
+  return '#22c55e'
+})
+
+const contextTooltip = computed(() => {
+  const u = props.sessionUsage
+  if (!u.max_input_tokens) return ''
+  const used = u.total_tokens
+  const max = u.max_input_tokens
+  const pct = contextPercent.value
+  const left = 100 - pct
+  const formatK = (n) => n >= 1000 ? (n / 1000).toFixed(1) + 'k' : n.toString()
+  const autoPct = u.auto_compress_tokens ? Math.round(u.auto_compress_tokens / max * 100) : 50
+  return `${pct}% used (${left}% left)\n${formatK(used)} / ${formatK(max)} tokens used\nAuto-compress at ${formatK(u.auto_compress_tokens || max * 0.5)} (${autoPct}%)`
 })
 
 function formatSize(bytes) {
@@ -293,7 +312,7 @@ async function send() {
     type: f.file?.type || f.fileType || ''
   }))
   
-  emit('send', message.value.trim().replace(/\s+/g, ' '), filesToSend, abortController.signal, enableDeepThink.value, enableKnowledgeBase.value)
+  emit('send', message.value.trim().replace(/\s+/g, ' '), filesToSend, abortController.signal, true, enableKnowledgeBase.value)
   
   message.value = ''
   uploadedFiles.value = []
@@ -536,65 +555,6 @@ onUnmounted(() => {
   gap: 12px;
 }
 
-.divider {
-  color: #e2e8f0;
-  font-size: 14px;
-  user-select: none;
-}
-
-.deep-think-btn {
-  display: inline-flex;
-  flex-direction: row;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  padding: 6px 12px;
-  height: auto;
-  min-height: 32px;
-  border: 1px solid #e2e8f0;
-  background: #ffffff;
-  border-radius: 6px;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  white-space: nowrap;
-}
-
-.deep-think-icon {
-  width: 16px;
-  height: 16px;
-  flex-shrink: 0;
-}
-
-.deep-think-btn svg {
-  width: 16px;
-  height: 16px;
-  color: #64748b;
-}
-
-.deep-think-btn.active svg {
-  color: white;
-}
-
-.deep-think-label {
-  font-size: 12px;
-  color: #64748b;
-}
-
-.deep-think-btn.active {
-  background: #3b82f6;
-  border-color: #3b82f6;
-}
-
-.deep-think-btn.active svg,
-.deep-think-btn.active .deep-think-label {
-  color: white;
-}
-
-.deep-think-btn.disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
 .knowledge-base-btn {
   display: inline-flex;
   flex-direction: row;
@@ -718,7 +678,7 @@ onUnmounted(() => {
   height: 36px;
   border: none;
   background: #ef4444;
-  border-radius: 8px;
+  border-radius: 50%;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -727,14 +687,42 @@ onUnmounted(() => {
 }
 
 .stop-btn svg {
-  width: 18px;
-  height: 18px;
+  width: 16px;
+  height: 16px;
   color: white;
 }
 
 .stop-btn:hover {
   transform: scale(1.05);
   box-shadow: 0 2px 8px rgba(239, 68, 68, 0.3);
+}
+
+.context-ring-wrapper {
+  position: relative;
+  width: 36px;
+  height: 36px;
+  cursor: help;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.context-ring {
+  width: 36px;
+  height: 36px;
+}
+
+.context-ring-text {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font-size: 9px;
+  font-weight: 600;
+  color: #475569;
+  line-height: 1;
+  pointer-events: none;
 }
 
 .upload-btn {

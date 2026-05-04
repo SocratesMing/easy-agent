@@ -30,6 +30,12 @@ from ..utils.session_logger import SessionLogger
 
 logger = logging.getLogger(__name__)
 
+
+def generate_workspace_name(session_id: str) -> str:
+    """生成工作区名称: 年月日_时分秒_会话id前5个字符"""
+    now = datetime.now()
+    return f"{now.strftime('%Y%m%d')}_{now.strftime('%H%M%S')}_{session_id[:5]}"
+
 router = APIRouter(
     prefix="/api/sessions",
     tags=["Sessions"],
@@ -44,6 +50,7 @@ async def create_session(
 ):
     session_id = str(uuid.uuid4())
     now = datetime.now().isoformat()
+    workspace_name = generate_workspace_name(session_id)
 
     title = request.title or "新会话"
 
@@ -54,11 +61,13 @@ async def create_session(
         created_at=now,
         updated_at=now,
         username=username or "",
+        workspace_name=workspace_name,
     )
 
     db.create_session(session_data)
+    db.update_session_workspace_name(session_id, workspace_name)
 
-    logger.info(f"创建会话 | ID: {session_id} | 标题: {title}")
+    logger.info(f"创建会话 | ID: {session_id} | 标题: {title} | 工作区: {workspace_name}")
 
     return CreateSessionResponse(
         session_id=session_id,
@@ -158,17 +167,35 @@ async def delete_session(
     db: Annotated[Database, Depends(get_database)],
     username: Annotated[str, Depends(get_current_username)],
 ):
+    # Read session BEFORE deletion to get workspace_name
+    session = db.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="会话不存在")
+
+    workspace_name = getattr(session, 'workspace_name', '') or ''
+
     success = db.delete_session(session_id)
     if not success:
         raise HTTPException(status_code=404, detail="会话不存在")
 
-    # 删除会话对应的 workspace 目录
+    # Delete workspace directory (try new naming first, fallback to session_id)
     workspace_base = Path("workspace") / Config.sanitize_username(username)
-    session_workspace = workspace_base / session_id
-    if session_workspace.exists() and session_workspace.is_dir():
+
+    workspace_dir_to_delete = None
+    if workspace_name:
+        candidate = workspace_base / workspace_name
+        if candidate.exists() and candidate.is_dir():
+            workspace_dir_to_delete = candidate
+
+    if workspace_dir_to_delete is None:
+        candidate = workspace_base / session_id
+        if candidate.exists() and candidate.is_dir():
+            workspace_dir_to_delete = candidate
+
+    if workspace_dir_to_delete:
         try:
-            shutil.rmtree(session_workspace)
-            logger.info(f"删除会话工作区 | ID: {session_id} | 路径: {session_workspace}")
+            shutil.rmtree(workspace_dir_to_delete)
+            logger.info(f"删除会话工作区 | ID: {session_id} | 路径: {workspace_dir_to_delete}")
         except Exception as e:
             logger.warning(f"删除会话工作区失败 | ID: {session_id} | 错误: {e}")
 

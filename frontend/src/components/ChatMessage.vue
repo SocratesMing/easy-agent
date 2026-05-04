@@ -70,46 +70,43 @@
             </div>
           </div>
 
-          <!-- 工具调用块 -->
-          <div v-if="block.type === 'tool_call'" class="tool-call-block">
+          <!-- 工具调用块（合并参数、结果、耗时） -->
+          <div v-if="block.type === 'tool_call'" class="tool-call-block" :class="{ error: block.success === false }">
             <div class="tool-call-header" @click="toggleToolCall(index)">
-              <svg class="tool-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <svg class="tool-icon" :class="{ success: block.success === true, error: block.success === false, spinning: block.duration === undefined }" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path>
               </svg>
-              <span class="tool-title">工具调用</span>
               <span class="tool-name-badge">{{ block.tool_name }}</span>
+              <template v-if="block.duration !== undefined">
+                <svg v-if="block.success" class="tool-status-icon success" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
+                  <polyline points="22 4 12 14.01 9 11.01"></polyline>
+                </svg>
+                <svg v-else class="tool-status-icon error" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <circle cx="12" cy="12" r="10"></circle>
+                  <line x1="15" y1="9" x2="9" y2="15"></line>
+                  <line x1="9" y1="9" x2="15" y2="15"></line>
+                </svg>
+              </template>
+              <span v-if="block.duration !== undefined" class="tool-duration">用时 {{ block.duration }} 秒</span>
+              <span v-else class="tool-status-text executing">执行中...</span>
               <svg class="toggle-arrow" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" :class="{ rotated: isExpandedToolCall(index) }">
                 <polyline points="6 9 12 15 18 9"></polyline>
               </svg>
             </div>
-            <div v-if="isExpandedToolCall(index)" class="tool-call-args">
-              <pre>{{ formatJson(block.arguments) }}</pre>
-            </div>
-          </div>
-
-          <!-- 工具结果块 -->
-          <div v-if="block.type === 'tool_result'" class="tool-result-block" :class="{ error: !block.success }">
-            <div class="tool-result-header" @click="toggleToolResult(index)">
-              <svg class="tool-icon" :class="{ success: block.success, error: !block.success }" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <template v-if="block.success">
-                  <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
-                  <polyline points="22 4 12 14.01 9 11.01"></polyline>
-                </template>
-                <template v-else>
-                  <circle cx="12" cy="12" r="10"></circle>
-                  <line x1="15" y1="9" x2="9" y2="15"></line>
-                  <line x1="9" y1="9" x2="15" y2="15"></line>
-                </template>
-              </svg>
-              <span class="tool-title">{{ block.success ? '执行成功' : '执行失败' }}</span>
-              <span class="tool-name-badge">{{ block.tool_name }}</span>
-              <span v-if="block.duration !== undefined" class="tool-duration">用时 {{ block.duration }} 秒</span>
-              <svg class="toggle-arrow" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" :class="{ rotated: isExpandedToolResult(index) }">
-                <polyline points="6 9 12 15 18 9"></polyline>
-              </svg>
-            </div>
-            <div v-if="isExpandedToolResult(index)" class="tool-result-content">
-              <pre>{{ truncateResult(block.result) }}</pre>
+            <div v-if="isExpandedToolCall(index)" class="tool-call-body">
+              <div v-if="block.arguments && Object.keys(block.arguments).length > 0" class="tool-section">
+                <div class="tool-section-label">参数</div>
+                <pre class="tool-section-content">{{ truncateResult(formatJson(block.arguments), 1000) }}</pre>
+              </div>
+              <div v-if="block.result" class="tool-section">
+                <div class="tool-section-label">结果</div>
+                <pre class="tool-section-content" :class="{ error: block.success === false }">{{ truncateResult(block.result, 1000) }}</pre>
+              </div>
+              <div v-else-if="block.duration === undefined" class="tool-section">
+                <div class="tool-section-label">结果</div>
+                <div class="tool-executing-hint">等待执行结果...</div>
+              </div>
             </div>
           </div>
 
@@ -156,7 +153,7 @@
               </div>
               <div v-if="tool.result" class="tool-result" :class="{ error: !tool.success }">
                 <span class="result-label">{{ tool.success ? '结果:' : '错误:' }}</span>
-                <span class="result-content">{{ truncateResult(tool.result) }}</span>
+                <span class="result-content">{{ truncateResult(tool.result, 1000) }}</span>
               </div>
             </div>
           </div>
@@ -243,8 +240,7 @@ const emit = defineEmits(['removeFile', 'viewGeneratedFiles', 'retry', 'userInpu
 const showThinking = ref(true)
 const expandedThinking = ref({})
 const expandedKnowledgeBase = ref({})
-const expandedToolCall = ref({})
-const expandedToolResult = ref({})
+const expandedTool = ref({})
 const highlighter = shallowRef(null)
 const userResponse = ref('')
 
@@ -292,24 +288,18 @@ const sortedBlocks = computed(() => {
     })
   }
   
-  // 添加工具调用 blocks
+  // 添加工具调用 blocks（合并参数、结果、耗时到一个卡片）
   if (props.message.tool_calls && props.message.tool_calls.length > 0) {
     props.message.tool_calls.forEach((tool, idx) => {
       blocks.push({
         type: 'tool_call',
         tool_name: tool.tool_name,
         arguments: tool.arguments,
-        step: tool.step || 0,
-        order: idx * 2 + 1
-      })
-      blocks.push({
-        type: 'tool_result',
-        tool_name: tool.tool_name,
         result: tool.result,
         success: tool.success,
         duration: tool.duration,
         step: tool.step || 0,
-        order: idx * 2 + 2
+        order: idx + 1
       })
     })
   }
@@ -363,28 +353,14 @@ function toggleToolCall(index) {
   const block = sortedBlocks.value[index]
   if (!block) return
   const key = getBlockKey(block, index)
-  expandedToolCall.value[key] = !expandedToolCall.value[key]
+  expandedTool.value[key] = !expandedTool.value[key]
 }
 
 function isExpandedToolCall(index) {
   const block = sortedBlocks.value[index]
   if (!block) return false
   const key = getBlockKey(block, index)
-  return expandedToolCall.value[key] === true  // 工具调用默认折叠
-}
-
-function toggleToolResult(index) {
-  const block = sortedBlocks.value[index]
-  if (!block) return
-  const key = getBlockKey(block, index)
-  expandedToolResult.value[key] = !expandedToolResult.value[key]
-}
-
-function isExpandedToolResult(index) {
-  const block = sortedBlocks.value[index]
-  if (!block) return false
-  const key = getBlockKey(block, index)
-  return expandedToolResult.value[key] === true  // 工具结果默认折叠
+  return expandedTool.value[key] === true
 }
 
 function highlightCode(code, lang) {
@@ -480,10 +456,10 @@ function formatJson(obj) {
   }
 }
 
-function truncateResult(result) {
+function truncateResult(result, maxLen = 500) {
   if (!result) return ''
   const str = String(result)
-  return str.length > 500 ? str.substring(0, 500) + '...' : str
+  return str.length > maxLen ? str.substring(0, maxLen) + '...' : str
 }
 
 function formatSize(bytes) {
@@ -980,6 +956,10 @@ onMounted(() => {
   width: 100%;
 }
 
+.tool-call-block.error .tool-call-header {
+  color: #dc2626;
+}
+
 .tool-call-header {
   display: inline-flex;
   align-items: center;
@@ -1000,6 +980,10 @@ onMounted(() => {
   background: #f1f5f9;
 }
 
+.tool-call-block.error .tool-call-header:hover {
+  background: #fef2f2;
+}
+
 .tool-icon {
   width: 16px;
   height: 16px;
@@ -1015,8 +999,53 @@ onMounted(() => {
   color: #ef4444;
 }
 
-.tool-title {
-  color: #475569;
+.tool-icon.spinning {
+  color: #0ea5e9;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.tool-status-text {
+  font-size: 11px;
+  font-weight: 400;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.tool-status-text.executing {
+  color: #0ea5e9;
+  background: #e0f2fe;
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.tool-executing-hint {
+  padding: 8px 12px;
+  font-size: 12px;
+  color: #94a3b8;
+  font-style: italic;
+}
+
+.tool-status-icon {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+}
+
+.tool-status-icon.success {
+  color: #22c55e;
+}
+
+.tool-status-icon.error {
+  color: #ef4444;
 }
 
 .tool-name-badge {
@@ -1034,79 +1063,45 @@ onMounted(() => {
   font-weight: 400;
 }
 
-.tool-call-args {
-  padding: 12px 14px;
-  font-size: 12px;
-  color: #64748b;
+.tool-call-body {
+  padding: 8px 12px;
   width: 100%;
   box-sizing: border-box;
-  background: #f8fafc;
-  border-radius: 8px;
-  margin-top: 4px;
-}
-
-.tool-call-args pre {
-  margin: 0;
-  white-space: pre-wrap;
-  word-break: break-all;
-}
-
-.tool-result-block {
   display: flex;
   flex-direction: column;
-  background: transparent;
-  margin-bottom: 8px;
-  width: 100%;
-}
-
-.tool-result-block.error .tool-result-header {
-  color: #dc2626;
-}
-
-.tool-result-header {
-  display: inline-flex;
-  align-items: center;
   gap: 8px;
-  padding: 8px 12px;
-  background: transparent;
-  border-radius: 8px;
-  font-size: 13px;
-  font-weight: 500;
-  color: #475569;
-  cursor: pointer;
-  user-select: none;
-  transition: background 0.2s;
-  align-self: flex-start;
 }
 
-.tool-result-header:hover {
-  background: #f1f5f9;
-}
-
-.tool-result-block.error .tool-result-header:hover {
-  background: #fef2f2;
-}
-
-.tool-result-content {
-  padding: 12px 14px;
-  font-size: 12px;
-  color: #475569;
-  width: 100%;
-  box-sizing: border-box;
+.tool-section {
   background: #f8fafc;
   border-radius: 8px;
-  margin-top: 4px;
+  overflow: hidden;
 }
 
-.tool-result-block.error .tool-result-content {
-  background: #fef2f2;
-  color: #dc2626;
+.tool-section-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: #94a3b8;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 8px 12px 4px;
 }
 
-.tool-result-content pre {
+.tool-section-content {
+  padding: 4px 12px 10px;
+  font-size: 12px;
+  color: #475569;
   margin: 0;
   white-space: pre-wrap;
   word-break: break-all;
+}
+
+.tool-section-content.error {
+  color: #dc2626;
+  background: #fef2f2;
+  border-radius: 6px;
+  margin: 0 8px 8px;
+  padding: 8px;
 }
 
 .toggle-arrow {

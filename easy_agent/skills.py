@@ -3,6 +3,32 @@
 from pathlib import Path
 
 
+def find_skills_root(skills_dir: str | None = None) -> str | None:
+    """Find the first existing skills root directory.
+
+    Args:
+        skills_dir: Explicit skills directory path from config.
+
+    Returns:
+        Absolute path to the skills root directory, or None if not found.
+    """
+    search_paths = []
+    if skills_dir:
+        search_paths.append(Path(skills_dir))
+
+    search_paths.extend([
+        Path("skills"),
+        Path("easy_agent") / "skills",
+        Path(__file__).parent / "skills",
+    ])
+
+    for search_path in search_paths:
+        if search_path.exists() and search_path.is_dir():
+            return str(search_path.absolute())
+
+    return None
+
+
 def discover_skills(skills_dir: str | None = None) -> list[dict]:
     """从 skills 目录中发现可用的技能
 

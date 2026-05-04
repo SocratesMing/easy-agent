@@ -17,6 +17,7 @@ from ..models import ChatRequest
 from ..service import chat_stream_generator, get_or_create_agent_for_session, remove_session_agent
 from ..utils.file_parser import parse_file_content
 from ..utils.session_logger import SessionLogger
+from .sessions import generate_workspace_name
 
 logger = logging.getLogger(__name__)
 
@@ -52,10 +53,10 @@ async def chat_stream(
     def generate_session_title(message, files):
         if message and message.strip():
             title = message.strip()
-            return title[:12] + "..." if len(title) > 12 else title
+            return title[:15] + "..." if len(title) > 15 else title
         elif files and len(files) > 0:
             filename = files[0].get('filename', '文件')
-            return filename[:12] + "..." if len(filename) > 12 else filename
+            return filename[:15] + "..." if len(filename) > 15 else filename
         else:
             return "未命名会话"
 
@@ -63,6 +64,7 @@ async def chat_stream(
         session_id = str(uuid.uuid4())
         now = datetime.now().isoformat()
         session_title = generate_session_title(request.message, request.files)
+        workspace_name = generate_workspace_name(session_id)
         session_data = SessionModel(
             session_id=session_id,
             title=session_title,
@@ -70,14 +72,17 @@ async def chat_stream(
             created_at=now,
             updated_at=now,
             username=username,
+            workspace_name=workspace_name,
         )
         db.create_session(session_data)
+        db.update_session_workspace_name(session_id, workspace_name)
     else:
         session = db.get_session(session_id)
         if not session:
             session_id = str(uuid.uuid4())
             now = datetime.now().isoformat()
             session_title = generate_session_title(request.message, request.files)
+            workspace_name = generate_workspace_name(session_id)
             session_data = SessionModel(
                 session_id=session_id,
                 title=session_title,
@@ -85,8 +90,10 @@ async def chat_stream(
                 created_at=now,
                 updated_at=now,
                 username=username,
+                workspace_name=workspace_name,
             )
             db.create_session(session_data)
+            db.update_session_workspace_name(session_id, workspace_name)
         elif len(session.messages) == 0:
             session_title = generate_session_title(request.message, request.files)
             session.title = session_title
@@ -100,6 +107,7 @@ async def chat_stream(
         "files": request.files or [],
     }
     db.add_message(session_id, user_message)
+    db.add_message_row(session_id, user_message)
 
     # 如果有文件，解析文件内容并拼接到消息中
     parsed_content = request.message
@@ -126,7 +134,11 @@ async def chat_stream(
 
     logger.info(f"[{sid}] 最终消息长度: {len(parsed_content)} 字符 | 包含文件: {bool(request.files)}")
 
-    agent = await get_or_create_agent_for_session(session_id, username)
+    # 获取 workspace_name 用于创建 agent
+    session = db.get_session(session_id)
+    workspace_name = session.workspace_name if session else ""
+
+    agent = await get_or_create_agent_for_session(session_id, username, workspace_name)
 
     from ..service import get_agent_config
     _cfg = get_agent_config()

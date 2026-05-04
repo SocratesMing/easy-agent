@@ -12,15 +12,35 @@ No need to declare these tools manually.
 import logging
 import platform
 import re
+import shutil
 import time
 from pathlib import Path
 
 from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend, FilesystemBackend, LocalShellBackend
+from deepagents.middleware.summarization import (
+    SummarizationMiddleware,
+    SummarizationToolMiddleware,
+    compute_summarization_defaults,
+)
 
 from .config import Config
-from .display import Colors
 from .logger import AgentLogger
+
+
+class _Colors:
+    RESET = "\033[0m"
+    BOLD = "\033[1m"
+    DIM = "\033[2m"
+    RED = "\033[31m"
+    GREEN = "\033[32m"
+    YELLOW = "\033[33m"
+    BLUE = "\033[34m"
+    BRIGHT_RED = "\033[91m"
+    BRIGHT_GREEN = "\033[92m"
+    BRIGHT_YELLOW = "\033[93m"
+    BRIGHT_BLUE = "\033[94m"
+    BRIGHT_CYAN = "\033[96m"
 from .model import create_model
 
 logger = logging.getLogger(__name__)
@@ -32,26 +52,32 @@ class EasyAgent:
     Args:
         config: Application configuration.
         system_prompt: Base system prompt (will be augmented with OS/workspace info).
-        skills: List of skill directory paths to load.
+        skills_root: Path to the skills root directory. Skills are discovered automatically.
         username: Username for workspace isolation.
         session_id: Session ID for workspace isolation.
         workspace_dir: Override workspace directory. If provided, this takes
             priority over the auto-generated path from config + username + session_id.
+        workspace_name: Custom workspace directory name (e.g. '20260501_143022_a1b2c').
+            If provided, used instead of session_id as the directory name.
     """
 
     def __init__(
         self,
         config: Config,
         system_prompt: str,
-        skills: list[str] | None = None,
+        skills_root: str = "",
         username: str = "default",
         session_id: str = None,
         workspace_dir: str | Path | None = None,
+        shared_deps_path: str = "",
+        workspace_name: str = "",
     ):
         self.config = config
         self.username = username
         self.session_id = session_id
-        self.skills = skills or []
+        self.skills_root = skills_root
+        self.shared_deps_path = shared_deps_path
+        self.safe_username = Config.sanitize_username(username)
 
         # Resolve workspace directory: user-provided > auto-generated
         if workspace_dir:
@@ -59,14 +85,60 @@ class EasyAgent:
         else:
             safe_name = Config.sanitize_username(username)
             base = Path(config.agent.workspace_dir)
-            self.workspace_dir = base / safe_name / session_id if session_id else base / safe_name
+            if session_id:
+                dir_name = workspace_name if workspace_name else session_id
+                self.workspace_dir = base / safe_name / dir_name
+            else:
+                self.workspace_dir = base / safe_name
 
         self.workspace_dir.mkdir(parents=True, exist_ok=True)
+        self._workspace_renamed = False
 
-        # Augment system prompt with OS and workspace context
+        # Create symlink to shared deps so npm packages are available without NODE_PATH
+        if shared_deps_path:
+            workspace_node_modules = self.workspace_dir / "node_modules"
+            shared_node_modules = Path(shared_deps_path)
+            if not workspace_node_modules.exists() and shared_node_modules.exists():
+                try:
+                    workspace_node_modules.symlink_to(shared_node_modules, target_is_directory=True)
+                    logger.info(f"Symlinked node_modules -> {shared_node_modules}")
+                except OSError as e:
+                    logger.debug(f"Failed to symlink node_modules: {e}")
+
+        # Ensure memories directory and user memory file exist
+        memories_dir = Path("memories") / self.safe_username
+        memories_dir.mkdir(parents=True, exist_ok=True)
+        self.memory_file = memories_dir / f"{self.safe_username}_AGENTS.md"
+        # Migration: move old flat file to per-user directory
+        old_file = Path("memories") / f"{self.safe_username}_AGENTS.md"
+        if old_file.exists() and not self.memory_file.exists():
+            shutil.move(str(old_file), str(self.memory_file))
+            logger.info(f"Memory file migrated: {old_file} -> {self.memory_file}")
+        if not self.memory_file.exists():
+            self.memory_file.write_text(f"# {username} 的长期记忆\n\n", encoding="utf-8")
+
+        # Augment system prompt with OS, workspace, and skills context
+        skills_info = ""
+        if self.skills_root:
+            skills_info = f"## Skills Root: {Path(self.skills_root).absolute()}\n"
+
+        shared_deps_info = ""
+        if self.shared_deps_path:
+            shared_deps_info = (
+                f"## 共享依赖目录: {self.shared_deps_path}\n"
+                f"- npm 包 (docx, pptxgenjs) 已预安装在此目录，无需重复安装\n"
+                f"- 使用时设置环境变量: NODE_PATH={self.shared_deps_path}\n"
+                f"- 示例: NODE_PATH={self.shared_deps_path} node your_script.js\n"
+            )
+
         self.system_prompt = (
             f"{system_prompt}\n"
             f"## Workspace: {self.workspace_dir.absolute()}\n"
+            f"{skills_info}"
+            f"{shared_deps_info}"
+            f"## 长期记忆文件: /memories/{self.safe_username}_AGENTS.md\n"
+            f"你可以在长期记忆文件中记录用户偏好、重要决策、项目上下文等信息，"
+            f"以便在后续会话中使用。每次对话开始时读取此文件，对话结束时根据需要更新。\n"
             f"{self._get_os_info()}"
         )
 
@@ -75,6 +147,47 @@ class EasyAgent:
         self.agent = self._create_agent()
 
         logger.info(f"EasyAgent initialized | workspace: {self.workspace_dir.absolute()} | user: {username} | session: {session_id}")
+
+    def rename_workspace(self, new_name: str) -> bool:
+        """Rename workspace directory after streaming completes.
+
+        Moves the directory and rebuilds the agent with the new path.
+        Should only be called AFTER streaming completes to avoid
+        breaking in-progress tool calls.
+        """
+        import shutil
+
+        parent = self.workspace_dir.parent
+        new_workspace = parent / new_name
+
+        if new_workspace.resolve() == self.workspace_dir.resolve():
+            return False
+
+        if new_workspace.exists():
+            for item in self.workspace_dir.iterdir():
+                dest = new_workspace / item.name
+                if dest.exists():
+                    if item.is_dir():
+                        shutil.rmtree(dest)
+                    else:
+                        dest.unlink()
+                shutil.move(str(item), str(dest))
+            self.workspace_dir.rmdir()
+        else:
+            self.workspace_dir.rename(new_workspace)
+
+        old_path = str(self.workspace_dir.absolute())
+        self.workspace_dir = new_workspace
+
+        self.system_prompt = self.system_prompt.replace(
+            old_path,
+            str(new_workspace.absolute()),
+        )
+
+        self.agent = self._create_agent()
+
+        logger.info(f"Workspace renamed | {old_path} -> {new_workspace.absolute()}")
+        return True
 
     def _get_os_info(self) -> str:
         system = platform.system()
@@ -129,26 +242,50 @@ class EasyAgent:
         optionally load skills.
         """
         model = create_model(self.config)
-        project_root = Path(__file__).parent.parent.absolute()
+        self.model = model
 
-        # Build backend: workspace for user files, skills for read-only skill access
-        workspace_backend = LocalShellBackend(root_dir=str(self.workspace_dir.absolute()))
+        # Build backend: workspace for user files, skills for read-only skill access, memories for long-term user memory
+        workspace_env = {}
+        if self.shared_deps_path:
+            workspace_env["NODE_PATH"] = self.shared_deps_path
+        workspace_backend = LocalShellBackend(
+            root_dir=str(self.workspace_dir.absolute()),
+            env=workspace_env if workspace_env else None,
+            inherit_env=True,
+        )
 
-        skills_paths = self._resolve_skills_paths(project_root)
-        if skills_paths:
+        memories_dir = self.memory_file.parent
+        memories_backend = LocalShellBackend(root_dir=str(memories_dir.absolute()))
+
+        skills_paths = self._resolve_skills_paths()
+        routes = {
+            "/workspace/": workspace_backend,
+            "/memories/": memories_backend,
+        }
+        if skills_paths and self.skills_root:
             skills_backend = FilesystemBackend(
-                root_dir=str(project_root / "easy_agent" / "skills"),
+                root_dir=self.skills_root,
                 virtual_mode=True,
             )
-            backend = CompositeBackend(
-                routes={
-                    "/workspace/": workspace_backend,
-                    "/skills/": skills_backend,
-                },
-                default=workspace_backend,
-            )
-        else:
-            backend = workspace_backend
+            routes["/skills/"] = skills_backend
+
+        backend = CompositeBackend(
+            routes=routes,
+            default=workspace_backend,
+        )
+
+        # Summarization middleware: auto-compress context + on-demand compact_conversation tool
+        defaults = compute_summarization_defaults(model)
+        summarization = SummarizationMiddleware(
+            model=model,
+            backend=backend,
+            trigger=defaults["trigger"],
+            keep=defaults["keep"],
+            trim_tokens_to_summarize=None,
+            truncate_args_settings=defaults["truncate_args_settings"],
+            history_path_prefix=f"/memories/{self.safe_username}/conversation_history",
+        )
+        summarization_tool = SummarizationToolMiddleware(summarization)
 
         return create_deep_agent(
             name="easy-agent",
@@ -156,26 +293,26 @@ class EasyAgent:
             system_prompt=self.system_prompt,
             backend=backend,
             skills=skills_paths or None,
+            middleware=[summarization_tool],
         )
 
-    def _resolve_skills_paths(self, project_root: Path) -> list[str]:
-        """Resolve skill paths to virtual paths relative to the backend root."""
-        if not self.skills:
+    def _resolve_skills_paths(self) -> list[str]:
+        """Discover skills from skills_root and return virtual paths."""
+        if not self.skills_root:
             return []
 
-        skills_root = project_root / "easy_agent" / "skills"
+        skills_root = Path(self.skills_root)
+        if not skills_root.exists():
+            return []
+
         virtual_skills = []
-        for skill_path in self.skills:
-            p = Path(skill_path)
-            try:
-                rel = p.relative_to(skills_root)
-                virtual_skills.append(f"/skills/{rel.as_posix()}")
-            except ValueError:
-                try:
-                    rel = p.relative_to(project_root)
-                    virtual_skills.append(f"/{rel.as_posix()}")
-                except ValueError:
-                    virtual_skills.append(str(p))
+        for skill_dir in sorted(skills_root.iterdir()):
+            if not skill_dir.is_dir():
+                continue
+            skill_md = skill_dir / "SKILL.md"
+            skill_readme = skill_dir / "README.md"
+            if skill_md.exists() or skill_readme.exists():
+                virtual_skills.append(f"/skills/{skill_dir.name}")
         return virtual_skills
 
     async def run(self, user_input: str) -> str:
@@ -210,7 +347,7 @@ class EasyAgent:
                     for tc in token.tool_call_chunks:
                         name = tc.get("name")
                         if name:
-                            print(f"\n{Colors.BOLD}{Colors.BRIGHT_YELLOW}🔧 Tool: {name}{Colors.RESET}")
+                            print(f"\n{_Colors.BOLD}{_Colors.BRIGHT_YELLOW}🔧 Tool: {name}{_Colors.RESET}")
 
                 if token.type == "tool":
                     self._handle_tool_result(token)
@@ -224,11 +361,11 @@ class EasyAgent:
                 full_response = ""
 
             elapsed = time.time() - start_time
-            print(f"\n{Colors.DIM}⏱️  Completed in {elapsed:.2f}s{Colors.RESET}")
+            print(f"\n{_Colors.DIM}⏱️  Completed in {elapsed:.2f}s{_Colors.RESET}")
 
         except Exception as e:
             error_msg = f"Agent execution failed: {e}"
-            print(f"\n{Colors.BRIGHT_RED}❌ Error:{Colors.RESET} {error_msg}")
+            print(f"\n{_Colors.BRIGHT_RED}❌ Error:{_Colors.RESET} {error_msg}")
             self.logger.log_response(content="", finish_reason="error")
             return error_msg
 
@@ -260,12 +397,12 @@ class EasyAgent:
 
         if st["in_thinking"]:
             if not st["shown_thinking_header"]:
-                print(f"\n{Colors.BOLD}{Colors.BRIGHT_CYAN}🧠 Thinking (Step {st['current_step']}):{Colors.RESET}")
+                print(f"\n{_Colors.BOLD}{_Colors.BRIGHT_CYAN}🧠 Thinking (Step {st['current_step']}):{_Colors.RESET}")
                 st["shown_thinking_header"] = True
             print(content_str, end="", flush=True)
         else:
             if not st["shown_response_header"]:
-                print(f"\n{Colors.BOLD}{Colors.BRIGHT_BLUE}🤖 Assistant:{Colors.RESET}")
+                print(f"\n{_Colors.BOLD}{_Colors.BRIGHT_BLUE}🤖 Assistant:{_Colors.RESET}")
                 st["shown_response_header"] = True
             print(content_str, end="", flush=True)
 
@@ -274,8 +411,8 @@ class EasyAgent:
         name = getattr(token, "name", "")
         result = str(getattr(token, "content", ""))
         is_err = any(e in result.lower() for e in ["exit code: 1", "error:", "failed", "traceback"])
-        icon = f"{Colors.GREEN}✓" if not is_err else f"{Colors.BRIGHT_RED}✗"
-        print(f"\n{icon} {name} ({len(result)} chars){Colors.RESET}")
+        icon = f"{_Colors.GREEN}✓" if not is_err else f"{_Colors.BRIGHT_RED}✗"
+        print(f"\n{icon} {name} ({len(result)} chars){_Colors.RESET}")
 
     def _extract_thinking(self, content: str) -> tuple[str, str]:
         thinking_text = ""

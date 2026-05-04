@@ -133,6 +133,23 @@ async def chat_stream_generator(
         start_time = time.time()
 
         has_streaming = hasattr(agent.agent, 'astream')
+        # Initialized here for cancellation handler access
+        blocks = []
+        tool_call_records = []
+        accumulated_thinking = ""
+        accumulated_response = ""
+        total_usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+
+        # Extract context window info from model profile
+        max_input_tokens = None
+        auto_compress_tokens = None
+        model_instance = getattr(agent, 'model', None)
+        if model_instance and hasattr(model_instance, 'profile') and model_instance.profile:
+            max_input_tokens = model_instance.profile.get("max_input_tokens")
+        if max_input_tokens:
+            auto_compress_tokens = int(max_input_tokens * 0.85)
+        else:
+            auto_compress_tokens = 170000  # fallback for unknown models
 
         if has_streaming:
             logger.info(f"[{sid}] 🚀 使用 DeepAgents 流式接口(支持 skills)")
@@ -161,16 +178,13 @@ async def chat_stream_generator(
             current_step_thinking = ""
             tool_call_start_times = {}
             tool_call_step_map = {}
+            tool_call_block_added = set()  # Track which tool calls have blocks already
 
             thinking_records = []
-            tool_call_records = []
-            tool_call_id_counter = 0
 
             pending_tool_calls = {}
 
             accumulated_content = ""
-            accumulated_thinking = ""
-            accumulated_response = ""
             is_in_thinking = False
             thinking_buffer = ""
             first_token_time = None
@@ -179,6 +193,44 @@ async def chat_stream_generator(
             total_tool_duration = 0
             is_after_tool_result = False
             tool_call_accumulated_args = {}
+            tool_call_id_map = {}
+            last_persisted_len = 0
+
+            # Track blocks for preserving execution order in DB
+            block_order = 0
+            current_content_block = None  # Track active content block
+
+            def build_partial_assistant_message():
+                """Build current assistant message for incremental persistence."""
+                return {
+                    "role": "assistant",
+                    "content": accumulated_response if accumulated_response else "",
+                    "timestamp": datetime.now().isoformat(),
+                    "thinking": accumulated_thinking if accumulated_thinking else None,
+                    "thinking_duration": None,
+                    "tool_calls": [
+                        {
+                            "tool_name": tc[0],
+                            "tool_call_id": tc[1],
+                            "arguments": tc[2],
+                            "result": str(tc[3])[:5000],
+                            "success": tc[4],
+                            "duration": tc[5],
+                            "step": tc[6],
+                        }
+                        for tc in tool_call_records
+                    ] if tool_call_records else None,
+                    "blocks": blocks if blocks else None,
+                }
+
+            def persist_partial():
+                """Persist current state to DB (incremental checkpoint)."""
+                try:
+                    msg = build_partial_assistant_message()
+                    db.update_last_assistant_message(session_id, msg)
+                    db.update_last_assistant_message_row(session_id, msg)
+                except Exception as e:
+                    logger.warning(f"[{sid}] 增量持久化失败: {e}")
 
             async for chunk in agent.agent.astream(
                 {"messages": messages},
@@ -191,6 +243,21 @@ async def chat_stream_generator(
 
                 token, metadata = chunk["data"]
                 ns = chunk.get("ns", [])
+
+                # Accumulate token usage from LLM response chunks
+                if hasattr(token, 'usage_metadata') and token.usage_metadata:
+                    um = token.usage_metadata
+                    total_usage["input_tokens"] += um.get("input_tokens", 0) or 0
+                    total_usage["output_tokens"] += um.get("output_tokens", 0) or 0
+                    total_usage["total_tokens"] += um.get("total_tokens", 0) or 0
+                # 某些模型可能使用 response_metadata 返回 usage
+                elif hasattr(token, 'response_metadata') and token.response_metadata:
+                    rm = token.response_metadata
+                    if 'usage' in rm:
+                        usage = rm['usage']
+                        total_usage["input_tokens"] += usage.get('prompt_tokens', 0) or 0
+                        total_usage["output_tokens"] += usage.get('completion_tokens', 0) or 0
+                        total_usage["total_tokens"] += usage.get('total_tokens', 0) or 0
 
                 is_subagent = any(s.startswith("tools:") for s in ns)
                 if is_subagent:
@@ -207,6 +274,13 @@ async def chat_stream_generator(
                         msg_received_time = time.time()
                         current_step += 1
                         logger.info(f"[{sid}] 🤔 Step {current_step} 思考开始")
+                        block_order += 1
+                        blocks.append({
+                            "type": "thinking",
+                            "content": "",
+                            "order": block_order,
+                            "step": current_step,
+                        })
                         yield format_sse({
                             "type": "thinking_start",
                             "content": "",
@@ -251,6 +325,12 @@ async def chat_stream_generator(
                                 )
 
                             logger.info(f"[{sid}] 🤔 Step {current_step} 思考完成 | 耗时: {thinking_duration:.2f}s | 内容长度: {len(thinking_clean)} | 内容: {thinking_clean[:500]}")
+                            # Update last thinking block with final content and duration
+                            for blk in reversed(blocks):
+                                if blk["type"] == "thinking" and blk["step"] == current_step:
+                                    blk["content"] = thinking_clean
+                                    blk["duration"] = round(thinking_duration, 2)
+                                    break
                             yield format_sse({
                                 "type": "thinking_end",
                                 "duration": round(thinking_duration, 2),
@@ -262,6 +342,16 @@ async def chat_stream_generator(
                             if response_part.strip():
                                 if content_start_time is None:
                                     content_start_time = time.time()
+                                # Add content block if needed
+                                if not current_content_block:
+                                    block_order += 1
+                                    current_content_block = {
+                                        "type": "content",
+                                        "content": "",
+                                        "order": block_order,
+                                    }
+                                    blocks.append(current_content_block)
+                                current_content_block["content"] += response_part
                                 yield format_sse({
                                     "type": "content",
                                     "content": response_part,
@@ -281,20 +371,52 @@ async def chat_stream_generator(
                         else:
                             accumulated_response += content_str
                             logger.info(f"[{sid}] 📤 Step {current_step} 正式内容\n内容: {accumulated_response[:500]}")
+                            # Add content block if needed
+                            if not current_content_block:
+                                block_order += 1
+                                current_content_block = {
+                                    "type": "content",
+                                    "content": "",
+                                    "order": block_order,
+                                }
+                                blocks.append(current_content_block)
+                            current_content_block["content"] += content_str
                             yield format_sse({
                                 "type": "content",
                                 "content": content_str,
                             })
+                            # Periodic persistence during content streaming
+                            if len(accumulated_response) - last_persisted_len >= 500:
+                                last_persisted_len = len(accumulated_response)
+                                persist_partial()
 
                 if hasattr(token, "tool_call_chunks") and token.tool_call_chunks:
                     for tc_chunk in token.tool_call_chunks:
                         tool_name_from_chunk = tc_chunk.get("name")
                         args_data = tc_chunk.get("args")
+                        chunk_id = tc_chunk.get("id")
 
                         if tool_name_from_chunk:
                             tool_name = tool_name_from_chunk
+                            if chunk_id:
+                                tool_call_id_map[tool_name] = chunk_id
                             tool_call_start_times[tool_name] = time.time()
                             tool_call_step_map[tool_name] = current_step
+                            # Add a new tool_call block for this tool invocation
+                            current_content_block = None  # Reset so next content gets a new block
+                            block_order += 1
+                            tc_block = {
+                                "type": "tool_call",
+                                "tool_name": tool_name,
+                                "tool_call_id": chunk_id or f"tool-{tool_name}",
+                                "arguments": {},
+                                "result": "",
+                                "success": True,
+                                "order": block_order,
+                                "step": current_step,
+                            }
+                            blocks.append(tc_block)
+                            tool_call_block_added.add(tool_name)
                             if isinstance(args_data, dict):
                                 tool_call_accumulated_args[tool_name] = args_data.copy()
                             elif isinstance(args_data, str) and args_data:
@@ -333,9 +455,15 @@ async def chat_stream_generator(
 
                         logger.info(f"[{sid}] 🔧 Step {current_step} 工具调用: {tool_name} | 参数: {log_args[:2000]}")
                         is_after_tool_result = True
+                        # Update tool_call block arguments
+                        for blk in reversed(blocks):
+                            if blk["type"] == "tool_call" and blk["tool_name"] == tool_name:
+                                blk["arguments"] = full_args
+                                break
                         yield format_sse({
                             "type": "tool_call",
                             "tool_name": tool_name,
+                            "tool_call_id": tool_call_id_map.get(tool_name, ""),
                             "arguments": full_args,
                             "step": current_step,
                         })
@@ -392,7 +520,15 @@ async def chat_stream_generator(
 
                     logger.info(f"[{sid}] Step {current_step} 工具调用: {tool_name} | 参数: {log_args[:2000]} | 耗时: {tool_duration:.2f}s | 内容长度: {result_len} | 调用结果: {'成功' if tool_success else '失败'} | 结果: {result_preview}")
 
-                    tool_call_id = f"tool-{tool_name}-{len(tool_call_records)}"
+                    # Update tool_call block with result
+                    for blk in reversed(blocks):
+                        if blk["type"] == "tool_call" and blk["tool_name"] == tool_name:
+                            blk["result"] = result_content
+                            blk["success"] = tool_success
+                            blk["duration"] = round(tool_duration, 2)
+                            break
+
+                    tool_call_id = tool_call_id_map.pop(tool_name, f"tool-{tool_name}-{len(tool_call_records)}")
                     tool_call_records.append((
                         tool_name,
                         tool_call_id,
@@ -406,6 +542,7 @@ async def chat_stream_generator(
                     yield format_sse({
                         "type": "tool_result",
                         "tool_name": tool_name,
+                        "tool_call_id": tool_call_id,
                         "arguments": tool_args,
                         "result": result_content,
                         "success": tool_success,
@@ -458,6 +595,9 @@ async def chat_stream_generator(
                                 logger.info(f"[{sid}] 📄 记录生成文件: {base_name}")
                         except Exception as e:
                             logger.warning(f"[{sid}] 记录生成文件失败: {e}")
+
+                    # Incremental persistence after each tool result
+                    persist_partial()
 
             final_thinking_duration = None
             if accumulated_thinking.strip() and thinking_start_time and thinking_end_time:
@@ -539,8 +679,84 @@ async def chat_stream_generator(
                     }
                     for tc in tool_call_records
                 ] if tool_call_records else None,
+                "blocks": blocks if blocks else None,
             }
-            db.add_message(session_id, assistant_message)
+            db.update_last_assistant_message(session_id, assistant_message)
+            db.update_last_assistant_message_row(session_id, assistant_message)
+
+            # Save context file to logs directory
+            try:
+                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                sid_prefix = session_id[:5]
+                context_filename = f"{ts}_{sid_prefix}.json"
+                log_dir = Path("logs/sessions")
+                log_dir.mkdir(parents=True, exist_ok=True)
+                context_path = log_dir / context_filename
+
+                # Build full session message history
+                session = db.get_session(session_id)
+                all_messages = session.messages if session else []
+
+                context_data = {
+                    "session_id": session_id,
+                    "message_id": message_id,
+                    "timestamp": datetime.now().isoformat(),
+                    "messages": all_messages,
+                    "current_exchange": {
+                        "user_message": message_content,
+                        "assistant_response": {
+                            "content": accumulated_response,
+                            "thinking": accumulated_thinking if accumulated_thinking else None,
+                            "thinking_duration": final_thinking_duration,
+                        },
+                        "tool_calls": [
+                            {
+                                "tool_name": tc[0],
+                                "tool_call_id": tc[1],
+                                "arguments": tc[2],
+                                "result": str(tc[3])[:5000],
+                                "success": tc[4],
+                                "duration": tc[5],
+                                "step": tc[6],
+                            }
+                            for tc in tool_call_records
+                        ] if tool_call_records else [],
+                        "blocks": blocks if blocks else [],
+                        "steps": current_step,
+                        "elapsed_time": round(elapsed_time, 2),
+                    },
+                }
+
+                with open(context_path, 'w', encoding='utf-8') as f:
+                    json.dump(context_data, f, ensure_ascii=False, indent=2)
+
+                logger.info(f"[{sid}] Context file saved: {context_filename}")
+            except Exception as e:
+                logger.warning(f"[{sid}] Failed to save context file: {e}")
+
+            # Rename workspace if files were generated during this stream
+            if tool_call_records and agent and not agent._workspace_renamed:
+                has_file_writes = any(
+                    tc[0] in ("write_file", "write_tool") and tc[4]
+                    for tc in tool_call_records
+                )
+                if has_file_writes:
+                    try:
+                        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                        sid_prefix = session_id[:5]
+                        new_ws_name = f"{ts}_{sid_prefix}"
+
+                        old_ws_path = str(agent.workspace_dir.absolute())
+                        agent.rename_workspace(new_ws_name)
+                        agent._workspace_renamed = True
+                        new_ws_path = str(agent.workspace_dir.absolute())
+
+                        db.update_generated_file_paths(session_id, old_ws_path, new_ws_path)
+                        db.update_session_workspace_name(session_id, new_ws_name)
+
+                        logger.info(f"[{sid}] Workspace renamed: {old_ws_path} -> {new_ws_path}")
+                    except Exception as e:
+                        logger.warning(f"[{sid}] Workspace rename failed: {e}")
 
             if session_logger:
                 tool_calls_for_log = [
@@ -561,11 +777,15 @@ async def chat_stream_generator(
                     tool_calls=tool_calls_for_log,
                 )
 
+            logger.info(f"[{sid}] Token usage: input={total_usage['input_tokens']}, output={total_usage['output_tokens']}, total={total_usage['total_tokens']}")
             yield format_sse({
                 "type": "done",
-                "data": {
-                    "session_id": session_id,
-                    "elapsed_time": round(elapsed_time, 2),
+                "session_id": session_id,
+                "elapsed_time": round(elapsed_time, 2),
+                "usage": {
+                    **total_usage,
+                    "max_input_tokens": max_input_tokens,
+                    "auto_compress_tokens": auto_compress_tokens,
                 },
             })
 
@@ -596,20 +816,51 @@ async def chat_stream_generator(
                 "timestamp": datetime.now().isoformat(),
             }
             db.add_message(session_id, assistant_message)
+            db.add_message_row(session_id, assistant_message)
 
             if session_logger:
                 session_logger.log_assistant_response(content=response_content)
 
             yield format_sse({
                 "type": "done",
-                "data": {
-                    "session_id": session_id,
-                    "elapsed_time": round(elapsed_time, 2),
+                "session_id": session_id,
+                "elapsed_time": round(elapsed_time, 2),
+                "usage": {
+                    **total_usage,
+                    "max_input_tokens": max_input_tokens,
+                    "auto_compress_tokens": auto_compress_tokens,
                 },
             })
 
     except asyncio.CancelledError:
         logger.info(f"[{sid}] ❌ 请求被取消")
+        # Persist partial content on cancellation
+        try:
+            partial_msg = {
+                "role": "assistant",
+                "content": accumulated_response if accumulated_response else "",
+                "timestamp": datetime.now().isoformat(),
+                "thinking": accumulated_thinking if accumulated_thinking else None,
+                "thinking_duration": None,
+                "tool_calls": [
+                    {
+                        "tool_name": tc[0],
+                        "tool_call_id": tc[1],
+                        "arguments": tc[2],
+                        "result": str(tc[3])[:5000],
+                        "success": tc[4],
+                        "duration": tc[5],
+                        "step": tc[6],
+                    }
+                    for tc in tool_call_records
+                ] if tool_call_records else None,
+                "blocks": blocks if blocks else None,
+            }
+            db.update_last_assistant_message(session_id, partial_msg)
+            db.update_last_assistant_message_row(session_id, partial_msg)
+            logger.info(f"[{sid}] 💾 取消时已保存部分回复 | 长度: {len(accumulated_response)}")
+        except Exception as e:
+            logger.warning(f"[{sid}] 取消时保存失败: {e}")
         yield format_sse({"type": "error", "content": "请求被取消"})
     except Exception as e:
         logger.error(f"[{sid}] ❌ 聊天异常: {str(e)}", exc_info=True)

@@ -13,6 +13,7 @@ class SessionModel(BaseModel):
     created_at: str
     updated_at: str
     username: str = ""
+    workspace_name: str = ""
 
     def to_json(self) -> str:
         return json.dumps(self.model_dump(), ensure_ascii=False)

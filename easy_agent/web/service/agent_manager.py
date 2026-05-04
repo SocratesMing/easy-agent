@@ -12,19 +12,20 @@ _agent_config: dict = None
 _llm_instance = None
 
 
-def init_agent_config(config: Config, system_prompt: str, skills: list[str] = None):
+def init_agent_config(config: Config, system_prompt: str, skills_root: str = "", shared_deps_path: str = ""):
     global _agent_config, _llm_instance
     _agent_config = {
         "config": config,
         "system_prompt": system_prompt,
-        "skills": skills or [],
+        "skills_root": skills_root,
+        "shared_deps_path": shared_deps_path,
     }
     from ...model import create_model
     _llm_instance = create_model(config)
     logger.info("[初始化] Agent 配置初始化完成 | LLM 流式已启用")
 
 
-async def get_or_create_agent_for_session(session_id: str, username: str = "default") -> EasyAgent:
+async def get_or_create_agent_for_session(session_id: str, username: str = "default", workspace_name: str = "") -> EasyAgent:
     global _session_agents, _agent_config
 
     if session_id in _session_agents:
@@ -38,9 +39,11 @@ async def get_or_create_agent_for_session(session_id: str, username: str = "defa
     agent = EasyAgent(
         config=_agent_config["config"],
         system_prompt=_agent_config["system_prompt"],
-        skills=_agent_config["skills"],
+        skills_root=_agent_config.get("skills_root", ""),
         username=username,
         session_id=session_id,
+        shared_deps_path=_agent_config.get("shared_deps_path", ""),
+        workspace_name=workspace_name,
     )
     _session_agents[session_id] = agent
     logger.info(f"[{session_id[-5:]}] Agent 实例创建成功 | workspace: {agent.workspace_dir}")

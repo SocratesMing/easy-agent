@@ -107,7 +107,6 @@ def test_project_structure():
     assert (base_path / "easy_agent" / "agent.py").exists()
     assert (base_path / "easy_agent" / "model.py").exists()
     assert (base_path / "easy_agent" / "logger.py").exists()
-    assert (base_path / "easy_agent" / "display.py").exists()
     assert (base_path / "easy_agent" / "skills.py").exists()
 
     # Config
@@ -153,12 +152,6 @@ class TestImports:
         )
         assert chat_stream_generator is not None
         assert init_agent_config is not None
-
-    def test_display_imports(self):
-        from easy_agent.display import Colors, print_thinking, print_tool_call
-        assert hasattr(Colors, 'RESET')
-        assert callable(print_thinking)
-        assert callable(print_tool_call)
 
     def test_skills_module(self):
         from easy_agent.skills import discover_skills

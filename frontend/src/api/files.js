@@ -1,4 +1,4 @@
-import { getAuthHeaders, authFetch } from './auth.js'
+import { getAuthHeaders, authFetch, getStoredToken } from './auth.js'
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
 
@@ -129,14 +129,27 @@ export async function getFileContent(filePath) {
   }
 }
 
-export function downloadFile(filePath, fileName) {
-  const url = `${API_BASE_URL}/api/files/download?file_path=${encodeURIComponent(filePath)}`
+export async function downloadFile(filePath, fileName) {
+  const token = getStoredToken()
+  const url = `${API_BASE_URL}/api/files/download/${filePath}`
+
+  const response = await fetch(url, {
+    headers: token ? { 'Authorization': `Bearer ${token}` } : {},
+  })
+
+  if (!response.ok) {
+    throw new Error('下载失败')
+  }
+
+  const blob = await response.blob()
+  const blobUrl = window.URL.createObjectURL(blob)
   const link = document.createElement('a')
-  link.href = url
-  link.download = fileName
+  link.href = blobUrl
+  link.download = fileName || filePath.split('/').pop()
   document.body.appendChild(link)
   link.click()
   document.body.removeChild(link)
+  window.URL.revokeObjectURL(blobUrl)
 }
 
 export async function updateUserProfile(data) {

@@ -3,6 +3,7 @@
 import logging
 import os
 import platform
+import subprocess
 import sys
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -69,6 +70,68 @@ def setup_logging():
     return log_file
 
 
+def _setup_shared_deps(skills_root: str) -> str:
+    """Create shared node_modules for skill npm packages, avoiding per-workspace installs."""
+    if not skills_root:
+        return ""
+
+    shared_dir = Path(skills_root).parent / "shared_deps" / "node_modules"
+    shared_dir.parent.mkdir(parents=True, exist_ok=True)
+
+    # Known skill npm dependencies
+    skill_npm_packages = ["docx", "pptxgenjs"]
+
+    if not shared_dir.exists():
+        shared_dir.mkdir(parents=True, exist_ok=True)
+
+    # Check which packages are missing
+    missing = [pkg for pkg in skill_npm_packages if not (shared_dir / pkg).exists()]
+    if not missing:
+        logger.info(f"[启动] ✅ 共享依赖已就绪: {shared_dir}")
+        return str(shared_dir)
+
+    # Use lock file to prevent concurrent installations
+    lock_file = shared_dir.parent / ".install_lock"
+    if lock_file.exists():
+        # Another process is installing, wait for it
+        logger.info("[启动] ⏳ 等待其他进程完成依赖安装...")
+        import time
+        for _ in range(60):  # Wait up to 60 seconds
+            time.sleep(1)
+            if not lock_file.exists():
+                break
+        # Re-check after waiting
+        missing = [pkg for pkg in skill_npm_packages if not (shared_dir / pkg).exists()]
+        if not missing:
+            logger.info(f"[启动] ✅ 共享依赖已就绪 (由其他进程安装): {shared_dir}")
+            return str(shared_dir)
+
+    # Create lock file
+    lock_file.touch()
+    try:
+        logger.info(f"[启动] 📦 安装共享 skill 依赖: {missing}")
+        subprocess.run(
+            ["npm", "install"] + missing,
+            cwd=str(shared_dir.parent),
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        # Verify installation
+        still_missing = [pkg for pkg in missing if not (shared_dir / pkg).exists()]
+        if still_missing:
+            logger.warning(f"[启动] ⚠️ 以下包安装失败: {still_missing}")
+        else:
+            logger.info(f"[启动] ✅ 共享依赖安装完成: {shared_dir}")
+    except Exception as e:
+        logger.warning(f"[启动] ⚠️ 共享依赖安装失败: {e}")
+    finally:
+        # Remove lock file
+        lock_file.unlink(missing_ok=True)
+
+    return str(shared_dir)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global agent_config, db_instance
@@ -103,6 +166,22 @@ async def lifespan(app: FastAPI):
         logger.warning(f"[启动] ⚠️ 配置文件加载失败，使用默认配置: {e}")
         config = None
 
+    # LLM connectivity check
+    if config:
+        try:
+            from ..model import create_model
+            from langchain_core.messages import HumanMessage
+
+            llm = create_model(config)
+            logger.info(f"[启动] 🔌 正在测试 LLM 连接 | provider: {config.llm.provider} | model: {config.llm.model}")
+
+            resp = await llm.ainvoke([HumanMessage(content="hi")])
+            reply = resp.content if hasattr(resp, "content") else str(resp)
+            logger.info(f"[启动] ✅ LLM 连接成功 | 回复: {reply[:100]}")
+        except Exception as e:
+            logger.warning(f"[启动] ⚠️ LLM 连接失败: {e}")
+            logger.warning(f"[启动] ⚠️ 服务将继续启动，但聊天功能可能不可用")
+
     try:
         db_config = config.database.model_dump() if config else {}
         db = init_database(db_config)
@@ -127,42 +206,46 @@ async def lifespan(app: FastAPI):
         else:
             logger.info("[启动] ℹ️ 向量数据库未启用")
 
-    system_prompt_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "config", "system_prompt.md")
+    # Resolve system_prompt_path from config, relative to config directory
+    if config and hasattr(config.agent, 'system_prompt_path') and config.agent.system_prompt_path:
+        config_dir = os.path.dirname(os.path.abspath(config_path))
+        system_prompt_path = os.path.join(config_dir, config.agent.system_prompt_path)
+    else:
+        system_prompt_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "config", "system_prompt.md")
+
     if os.path.exists(system_prompt_path):
         with open(system_prompt_path, "r", encoding="utf-8") as f:
             system_prompt = f.read()
-        logger.info(f"[启动] ✅ 系统提示词加载成功 ({len(system_prompt)} 字符)")
+        logger.info(f"[启动] ✅ 系统提示词加载成功: {system_prompt_path} ({len(system_prompt)} 字符)")
     else:
         system_prompt = "你是一个有帮助的 AI 助手。"
-        logger.warning("[启动] ⚠️ 使用默认系统提示词")
+        logger.warning(f"[启动] ⚠️ 系统提示词文件不存在: {system_prompt_path}，使用默认提示词")
 
     if config:
         from .service import init_agent_config
-        from ..skills import discover_skills
-        
-        skills = discover_skills(config.tools.skills_dir if hasattr(config.tools, 'skills_dir') else None)
-        
-        skills_dir_paths = []
-        if skills:
-            seen_dirs = set()
-            for skill in skills:
-                skill_parent = str(Path(skill['path']).parent)
-                if skill_parent not in seen_dirs:
-                    seen_dirs.add(skill_parent)
-                    skills_dir_paths.append(skill_parent)
-        
-        if skills_dir_paths:
+        from ..skills import find_skills_root, discover_skills
+
+        skills_dir_config = config.tools.skills_dir if hasattr(config.tools, 'skills_dir') else None
+        skills_root = find_skills_root(skills_dir_config)
+
+        if skills_root:
+            skills = discover_skills(skills_root)
+            logger.info(f"[启动] 📂 Skills 目录: {skills_root}")
             logger.info(f"[启动] 📁 发现 {len(skills)} 个 skills:")
             for skill in skills:
                 logger.info(f"[启动]   - {skill['name']}: {skill['path']}")
-            logger.info(f"[启动] 📂 Skills 目录: {skills_dir_paths}")
         else:
+            skills_root = ""
             logger.info("[启动] ℹ️ 未发现任何 skills")
-        
+
+        # Pre-install shared skill npm dependencies
+        shared_deps_path = _setup_shared_deps(skills_root)
+
         init_agent_config(
             config=config,
             system_prompt=system_prompt,
-            skills=skills_dir_paths,
+            skills_root=skills_root,
+            shared_deps_path=shared_deps_path,
         )
         agent_config = {"config": config}
         logger.info("[启动] ✅ Agent 配置加载成功")

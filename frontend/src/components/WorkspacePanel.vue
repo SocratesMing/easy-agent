@@ -77,37 +77,21 @@ async function buildWorkspaceTree() {
   error.value = null
   try {
     const response = await getWorkspaceTree('')
-    workspaceTreeData.value = await buildTreeNodes(response.items || [])
-  } catch (e) {
-    error.value = '加载工作区失败: ' + e.message
-    workspaceTreeData.value = []
-  } finally {
-    isLoading.value = false
-  }
-}
-
-async function buildTreeNodes(items) {
-  const nodes = []
-  for (const item of items) {
-    const node = {
+    // 只加载根目录，子目录由 FileTreeNode 懒加载
+    workspaceTreeData.value = (response.items || []).map(item => ({
       id: item.path,
       name: item.name,
       type: item.type,
       size: item.size,
       file_type: item.type === 'file' ? item.name.split('.').pop().toLowerCase() : '',
       file_path: item.path,
-    }
-    if (item.type === 'directory') {
-      try {
-        const childResp = await getWorkspaceTree(item.path)
-        node.children = await buildTreeNodes(childResp.items || [])
-      } catch {
-        node.children = []
-      }
-    }
-    nodes.push(node)
+    }))
+  } catch (e) {
+    error.value = '加载工作区失败: ' + e.message
+    workspaceTreeData.value = []
+  } finally {
+    isLoading.value = false
   }
-  return nodes
 }
 
 function handleSelectFile(file) {

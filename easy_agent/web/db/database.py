@@ -183,11 +183,14 @@ class Database:
 
             auto_inc = "AUTOINCREMENT" if self.db_type == "sqlite" else "AUTO_INCREMENT"
 
-            cursor.execute("""
+            # SQLite 的 TEXT 没有大小限制，MySQL 使用 MEDIUMTEXT (16MB)
+            messages_type = "TEXT" if self.db_type == "sqlite" else "MEDIUMTEXT"
+
+            cursor.execute(f"""
                 CREATE TABLE IF NOT EXISTS sessions (
                     session_id VARCHAR(255) PRIMARY KEY,
                     title TEXT NOT NULL,
-                    messages TEXT NOT NULL,
+                    messages {messages_type} NOT NULL,
                     created_at VARCHAR(50) NOT NULL,
                     updated_at VARCHAR(50) NOT NULL,
                     username VARCHAR(255) DEFAULT ''
@@ -196,6 +199,14 @@ class Database:
             self._create_index(cursor, "idx_updated_at", "sessions", "updated_at")
             self._ensure_column(cursor, "sessions", "username", "VARCHAR(255) DEFAULT ''")
             self._create_index(cursor, "idx_sessions_username", "sessions", "username")
+            self._ensure_column(cursor, "sessions", "workspace_name", "VARCHAR(255) DEFAULT ''")
+
+            # 迁移: 将 messages 字段改为 MEDIUMTEXT (MySQL)
+            if self.db_type == "mysql":
+                try:
+                    cursor.execute("ALTER TABLE sessions MODIFY COLUMN messages MEDIUMTEXT NOT NULL")
+                except Exception:
+                    pass  # 字段类型已经是 MEDIUMTEXT 或其他情况
 
             cursor.execute(f"""
                 CREATE TABLE IF NOT EXISTS tool_call_records (
@@ -233,6 +244,31 @@ class Database:
             """)
             self._create_index(cursor, "idx_thinking_session", "thinking_records", "session_id")
             self._create_index(cursor, "idx_thinking_message", "thinking_records", "session_id, message_id")
+
+            # SQLite 的 TEXT 没有大小限制，MySQL 使用 MEDIUMTEXT (16MB)
+            text_type = "TEXT" if self.db_type == "sqlite" else "MEDIUMTEXT"
+
+            cursor.execute(f"""
+                CREATE TABLE IF NOT EXISTS session_messages (
+                    id INTEGER PRIMARY KEY {auto_inc},
+                    session_id VARCHAR(255) NOT NULL,
+                    role VARCHAR(20) NOT NULL,
+                    content {text_type},
+                    extra_data {text_type},
+                    created_at VARCHAR(50) NOT NULL,
+                    FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
+                )
+            """)
+            self._create_index(cursor, "idx_session_messages_session", "session_messages", "session_id")
+            self._create_index(cursor, "idx_session_messages_session_role", "session_messages", "session_id, role")
+
+            # 迁移: 将 content 和 extra_data 字段改为 MEDIUMTEXT (MySQL)
+            if self.db_type == "mysql":
+                try:
+                    cursor.execute("ALTER TABLE session_messages MODIFY COLUMN content MEDIUMTEXT")
+                    cursor.execute("ALTER TABLE session_messages MODIFY COLUMN extra_data MEDIUMTEXT")
+                except Exception:
+                    pass
 
             cursor.execute(f"""
                 CREATE TABLE IF NOT EXISTS session_files (
@@ -323,7 +359,7 @@ class Database:
             self._execute(
                 cursor,
                 """
-                SELECT session_id, title, messages, created_at, updated_at, username
+                SELECT session_id, title, messages, created_at, updated_at, username, workspace_name
                 FROM sessions WHERE session_id = ?
                 """,
                 (session_id,),
@@ -333,13 +369,20 @@ class Database:
         if row is None:
             return None
 
+        # Try reading from session_messages table first (incremental)
+        messages = self.get_messages_from_rows(session_id)
+        if not messages:
+            # Fallback to JSON blob for old sessions
+            messages = json.loads(row["messages"]) if row["messages"] else []
+
         return SessionModel(
             session_id=row["session_id"],
             title=row["title"],
-            messages=json.loads(row["messages"]) if row["messages"] else [],
+            messages=messages,
             created_at=row["created_at"],
             updated_at=row["updated_at"],
             username=row.get("username", "") if isinstance(row, dict) else (row[-1] if len(row) > 5 else ""),
+            workspace_name=row.get("workspace_name", "") if isinstance(row, dict) else "",
         )
 
     def list_sessions(
@@ -351,7 +394,7 @@ class Database:
                 self._execute(
                     cursor,
                     """
-                    SELECT session_id, title, messages, created_at, updated_at, username
+                    SELECT session_id, title, messages, created_at, updated_at, username, workspace_name
                     FROM sessions WHERE username = ?
                     ORDER BY updated_at DESC LIMIT ? OFFSET ?
                     """,
@@ -361,7 +404,7 @@ class Database:
                 self._execute(
                     cursor,
                     """
-                    SELECT session_id, title, messages, created_at, updated_at, username
+                    SELECT session_id, title, messages, created_at, updated_at, username, workspace_name
                     FROM sessions ORDER BY updated_at DESC LIMIT ? OFFSET ?
                     """,
                     (limit, offset),
@@ -377,6 +420,7 @@ class Database:
                 created_at=row["created_at"],
                 updated_at=row["updated_at"],
                 username=row.get("username", "") if isinstance(row, dict) else "",
+                workspace_name=row.get("workspace_name", "") if isinstance(row, dict) else "",
             ))
         return sessions
 
@@ -403,6 +447,32 @@ class Database:
             self._execute(cursor, "DELETE FROM sessions WHERE session_id=?", (session_id,))
             return cursor.rowcount > 0
 
+    def update_session_workspace_name(self, session_id: str, workspace_name: str):
+        """Store the renamed workspace folder name for a session."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            self._execute(cursor,
+                "UPDATE sessions SET workspace_name=? WHERE session_id=?",
+                (workspace_name, session_id))
+
+    def update_generated_file_paths(self, session_id: str, old_prefix: str, new_prefix: str):
+        """Update file_path values in generated_files when workspace is renamed."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            self._execute(cursor,
+                "SELECT id, file_path FROM generated_files WHERE session_id=?",
+                (session_id,))
+            rows = cursor.fetchall()
+            for row in rows:
+                row_dict = dict(row) if not isinstance(row, dict) else row
+                old_path = row_dict["file_path"]
+                file_id = row_dict["id"]
+                if old_path.startswith(old_prefix):
+                    new_path = new_prefix + old_path[len(old_prefix):]
+                    self._execute(cursor,
+                        "UPDATE generated_files SET file_path=? WHERE id=?",
+                        (new_path, file_id))
+
     def add_message(self, session_id: str, message: dict):
         with self.get_connection() as conn:
             cursor = conn.cursor()
@@ -411,6 +481,166 @@ class Database:
                 session.messages.append(message)
                 session.updated_at = datetime.now().isoformat()
                 self.update_session(session)
+
+    def _sanitize_message_for_storage(self, message: dict) -> dict:
+        """精简消息内容用于存储到 sessions.messages，避免字段过长"""
+        sanitized = {
+            "role": message.get("role", ""),
+            "content": (message.get("content", "") or "")[:5000],  # 限制 content 长度
+            "timestamp": message.get("timestamp", ""),
+        }
+        # 保留 thinking 但限制长度
+        if message.get("thinking"):
+            sanitized["thinking"] = message["thinking"][:2000]
+        # 保留 tool_calls 但精简
+        if message.get("tool_calls"):
+            sanitized["tool_calls"] = [
+                {"name": tc.get("name", ""), "success": tc.get("success", True)}
+                for tc in message["tool_calls"][:20]  # 最多保留 20 个工具调用
+            ]
+        return sanitized
+
+    def update_last_assistant_message(self, session_id: str, message: dict):
+        """Update the last assistant message if it exists, otherwise append."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            session = self.get_session(session_id)
+            if session:
+                # 精简消息用于存储
+                sanitized_msg = self._sanitize_message_for_storage(message)
+                if session.messages and session.messages[-1].get("role") == "assistant":
+                    session.messages[-1] = sanitized_msg
+                else:
+                    session.messages.append(sanitized_msg)
+                session.updated_at = datetime.now().isoformat()
+                self.update_session(session)
+
+    def _sanitize_extra_data(self, message: dict) -> str | None:
+        """精简 extra_data 避免字段过长"""
+        extra_keys = {k: v for k, v in message.items() if k not in ("role", "content", "timestamp")}
+        if not extra_keys:
+            return None
+
+        # 精简 blocks 数据
+        if "blocks" in extra_keys:
+            blocks = extra_keys["blocks"]
+            if isinstance(blocks, list):
+                # 只保留类型和简要内容
+                extra_keys["blocks"] = [
+                    {"type": b.get("type", ""), "content": (b.get("content", "") or "")[:200]}
+                    for b in blocks[:30]  # 最多30个块
+                ]
+
+        # 精简 tool_calls 数据
+        if "tool_calls" in extra_keys:
+            tool_calls = extra_keys["tool_calls"]
+            if isinstance(tool_calls, list):
+                extra_keys["tool_calls"] = [
+                    {"name": tc.get("name", ""), "success": tc.get("success", True)}
+                    for tc in tool_calls[:20]  # 最多20个工具调用
+                ]
+
+        # 限制 thinking 长度
+        if "thinking" in extra_keys and extra_keys["thinking"]:
+            extra_keys["thinking"] = extra_keys["thinking"][:2000]
+
+        result = json.dumps(extra_keys, ensure_ascii=False)
+        # 最终限制大小 (60KB)
+        if len(result) > 60000:
+            result = result[:60000] + '"}'
+        return result
+
+    def add_message_row(self, session_id: str, message: dict):
+        """Insert a single message into session_messages table (incremental)."""
+        role = message.get("role", "user")
+        content = message.get("content", "")
+        extra_data = self._sanitize_extra_data(message)
+        timestamp = message.get("timestamp", datetime.now().isoformat())
+
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            self._execute(
+                cursor,
+                """
+                INSERT INTO session_messages (session_id, role, content, extra_data, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (session_id, role, content, extra_data, timestamp),
+            )
+            # Also update sessions.updated_at
+            self._execute(
+                cursor,
+                "UPDATE sessions SET updated_at=? WHERE session_id=?",
+                (datetime.now().isoformat(), session_id),
+            )
+
+    def update_last_assistant_message_row(self, session_id: str, message: dict):
+        """Update the last assistant message in session_messages, or insert if none exists."""
+        role = "assistant"
+        content = message.get("content", "")
+        extra_data = self._sanitize_extra_data(message)
+        timestamp = message.get("timestamp", datetime.now().isoformat())
+
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            # Find the last assistant message for this session
+            self._execute(
+                cursor,
+                "SELECT id FROM session_messages WHERE session_id=? AND role='assistant' ORDER BY id DESC LIMIT 1",
+                (session_id,),
+            )
+            row = cursor.fetchone()
+
+            if row:
+                msg_id = row["id"] if isinstance(row, dict) else row[0]
+                self._execute(
+                    cursor,
+                    "UPDATE session_messages SET content=?, extra_data=?, created_at=? WHERE id=?",
+                    (content, extra_data, timestamp, msg_id),
+                )
+            else:
+                self._execute(
+                    cursor,
+                    """
+                    INSERT INTO session_messages (session_id, role, content, extra_data, created_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (session_id, role, content, extra_data, timestamp),
+                )
+            # Also update sessions.updated_at
+            self._execute(
+                cursor,
+                "UPDATE sessions SET updated_at=? WHERE session_id=?",
+                (datetime.now().isoformat(), session_id),
+            )
+
+    def get_messages_from_rows(self, session_id: str) -> list[dict]:
+        """Read messages from session_messages table (incremental)."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            self._execute(
+                cursor,
+                "SELECT role, content, extra_data, created_at FROM session_messages WHERE session_id=? ORDER BY id",
+                (session_id,),
+            )
+            rows = cursor.fetchall()
+
+        messages = []
+        for row in rows:
+            d = dict(row) if not isinstance(row, dict) else row
+            msg = {
+                "role": d["role"],
+                "content": d["content"] or "",
+                "timestamp": d["created_at"],
+            }
+            if d.get("extra_data"):
+                try:
+                    extra = json.loads(d["extra_data"])
+                    msg.update(extra)
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            messages.append(msg)
+        return messages
 
     def get_messages(self, session_id: str) -> list[dict]:
         session = self.get_session(session_id)

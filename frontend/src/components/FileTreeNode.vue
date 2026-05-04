@@ -1,16 +1,19 @@
 <template>
   <div v-if="item" class="tree-node">
-    <div 
-      class="tree-item" 
-      :class="{ 
+    <div
+      class="tree-item"
+      :class="{
         active: item.type === 'file' && selectedId === item.id,
         'is-directory': item.type === 'directory'
       }"
       :style="{ paddingLeft: depth * 16 + 'px' }"
       @click="handleClick"
     >
-      <span v-if="item.type === 'directory'" class="folder-icon" @click.stop="expanded = !expanded">
-        <svg v-if="expanded" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none">
+      <span v-if="item.type === 'directory'" class="folder-icon" @click.stop="toggleExpand">
+        <svg v-if="isLoading" class="spinner" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none">
+          <path d="M3 7V17C3 18.1046 3.89543 19 5 19H19C20.1046 19 21 18.1046 21 17V9C21 7.89543 20.1046 7 19 7H13L11 5H5C3.89543 5 3 5.89543 3 7Z" fill="#fbbf24" stroke="#f59e0b" stroke-width="1.5"/>
+        </svg>
+        <svg v-else-if="expanded" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none">
           <path d="M3 7V17C3 18.1046 3.89543 19 5 19H19C20.1046 19 21 18.1046 21 17V9C21 7.89543 20.1046 7 19 7H13L11 5H5C3.89543 5 3 5.89543 3 7Z" fill="#eab308" stroke="#ca8a04" stroke-width="1.5"/>
           <path d="M3 10H21" stroke="#ca8a04" stroke-width="1.5"/>
         </svg>
@@ -23,11 +26,11 @@
       </span>
       <span class="tree-item-name">{{ item.name }}</span>
     </div>
-    <div v-if="item.type === 'directory' && expanded && item.children" class="tree-children">
-      <FileTreeNode 
-        v-for="child in item.children" 
-        :key="child.id" 
-        :item="child" 
+    <div v-if="item.type === 'directory' && expanded && children.length > 0" class="tree-children">
+      <FileTreeNode
+        v-for="child in children"
+        :key="child.id"
+        :item="child"
         :selectedId="selectedId"
         :depth="depth + 1"
         @select="$emit('select', $event)"
@@ -37,8 +40,9 @@
 </template>
 
 <script setup>
-import { ref } from 'vue'
+import { ref, watch } from 'vue'
 import FileIcon from './FileIcon.vue'
+import { downloadFile, getWorkspaceTree } from '../api/files'
 
 const props = defineProps({
   item: {
@@ -57,13 +61,55 @@ const props = defineProps({
 
 const emit = defineEmits(['select'])
 
-const expanded = ref(true)
+const expanded = ref(false)
+const children = ref([])
+const isLoading = ref(false)
+
+async function toggleExpand() {
+  if (expanded.value) {
+    expanded.value = false
+    return
+  }
+
+  expanded.value = true
+
+  // 如果已经有子节点数据，不需要再次加载
+  if (children.value.length > 0) return
+
+  // 懒加载子目录
+  await loadChildren()
+}
+
+async function loadChildren() {
+  if (props.item.type !== 'directory') return
+
+  isLoading.value = true
+  try {
+    const response = await getWorkspaceTree(props.item.file_path)
+    children.value = (response.items || []).map(item => ({
+      id: item.path,
+      name: item.name,
+      type: item.type,
+      size: item.size,
+      file_type: item.type === 'file' ? item.name.split('.').pop().toLowerCase() : '',
+      file_path: item.path,
+    }))
+  } catch (e) {
+    console.error('加载子目录失败:', e)
+    children.value = []
+  } finally {
+    isLoading.value = false
+  }
+}
 
 function handleClick() {
   if (props.item.type === 'file') {
     emit('select', props.item)
+    downloadFile(props.item.file_path, props.item.name).catch(err => {
+      console.error('Download failed:', err)
+    })
   } else {
-    expanded.value = !expanded.value
+    toggleExpand()
   }
 }
 </script>
@@ -103,6 +149,14 @@ function handleClick() {
 .folder-icon svg {
   width: 18px;
   height: 18px;
+}
+
+.folder-icon .spinner {
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
 }
 
 .file-icon {

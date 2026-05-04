@@ -43,3 +43,8 @@ htmlcov/
 .qoder
 
 tests/chat_history/
+
+data/
+logs/
+memories/
+node_modules/

@@ -1,22 +1,50 @@
 # Easy Agent Configuration
 # Copy this file to config.yaml and fill in your API key
 
-# Required: Your API Key
+# ===== LLM Configuration =====
+# Provider types:
+# - anthropic: Claude models (requires langchain-anthropic)
+# - openai: OpenAI models or compatible APIs
+# - deepseek: DeepSeek API (OpenAI-compatible, auto-appends /v1)
+# - minimax: MiniMax API (OpenAI-compatible, auto-appends /v1)
+
 api_key: "YOUR_API_KEY_HERE"
 
-# Optional: API Base URL (for custom endpoints)
-# api_base: "https://api.example.com"
+# Provider and model
+provider: "deepseek"           # anthropic | openai | deepseek | minimax
+model: "deepseek-chat"         # Model name for your provider
 
-# Model configuration
-model: "claude-sonnet-4-6"
-provider: "anthropic"  # "anthropic" or "openai"
+# API Base URL (optional, has defaults for each provider)
+# api_base: "https://api.deepseek.com"
 
-# Agent configuration
+# ----- Provider Examples -----
+# DeepSeek:
+#   provider: "deepseek"
+#   model: "deepseek-chat" or "deepseek-reasoner"
+#   api_base: "https://api.deepseek.com"  (default)
+#
+# MiniMax:
+#   provider: "minimax"
+#   model: "MiniMax-M2.7"
+#   api_base: "https://api.minimaxi.com"  (default, China)
+#   api_base: "https://api.minimax.io"    (global)
+#
+# OpenAI:
+#   provider: "openai"
+#   model: "gpt-4o"
+#   api_base: "https://api.openai.com/v1" (default)
+#
+# Anthropic:
+#   provider: "anthropic"
+#   model: "claude-sonnet-4-6"
+#   api_base: "https://api.anthropic.com" (default)
+
+# ===== Agent Configuration =====
 max_steps: 50
 workspace_dir: "./workspace"
 system_prompt_path: "system_prompt.md"
 
-# Retry configuration
+# ===== Retry Configuration =====
 retry:
   enabled: true
   max_retries: 3
@@ -24,7 +52,31 @@ retry:
   max_delay: 60.0
   exponential_base: 2.0
 
-# Tools configuration
+# ===== Tools Configuration =====
 tools:
   enable_file_tools: true
   enable_bash: true
+  enable_skills: true
+  skills_dir: "./skills"
+  enable_mcp: true
+  mcp_config_path: "mcp.json"
+  mcp:
+    connect_timeout: 10.0
+    execute_timeout: 60.0
+    sse_read_timeout: 120.0
+
+# ===== Database Configuration =====
+database:
+  type: "sqlite"
+  sqlite:
+    path: "./data/easy_agent.db"
+  # mysql:
+  #   host: "127.0.0.1"
+  #   port: 3306
+  #   user: "root"
+  #   password: ""
+  #   database: "easy_agent"
+
+# ===== Vector Store Configuration =====
+vector_store:
+  enabled: false
