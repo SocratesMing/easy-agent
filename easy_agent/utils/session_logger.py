@@ -17,11 +17,7 @@ def ensure_log_dir():
 
 
 class SessionLogger:
-    """Logs full conversation as structured JSON per session.
-
-    Stores: system prompt, user messages, assistant responses,
-    thinking blocks, tool calls with IDs/args/results, context compression events.
-    """
+    """Logs full conversation as structured JSON per session."""
 
     def __init__(self, session_id: str, username: str = "",
                  workspace: str = "", system_prompt: str = ""):
@@ -29,7 +25,6 @@ class SessionLogger:
         ensure_log_dir()
         self.log_file = SESSION_LOG_DIR / f"{session_id}.json"
 
-        # 初始化日志结构
         self._data: dict[str, Any] = {
             "session_id": session_id,
             "username": username,
@@ -100,11 +95,26 @@ class SessionLogger:
         self._data["entries"].append(entry)
         self._flush()
 
+    def log_thinking(self, content: str, step: int = 0,
+                     duration: Optional[float] = None,
+                     message_id: str = ""):
+        entry = {
+            "type": "thinking",
+            "timestamp": datetime.now().isoformat(),
+            "message_id": message_id,
+            "step": step,
+            "content": content,
+        }
+        if duration is not None:
+            entry["duration"] = duration
+        self._data["entries"].append(entry)
+        self._flush()
+
     def log_tool_call(self, tool_name: str, tool_call_id: str,
-                       arguments: dict, result: str = "",
-                       success: bool = True, duration: Optional[float] = None,
-                       step: int = 0, message_id: str = ""):
-        self._data["entries"].append({
+                      arguments: dict, result: str = "",
+                      success: bool = True, duration: Optional[float] = None,
+                      step: int = 0, message_id: str = ""):
+        entry = {
             "type": "tool_call",
             "timestamp": datetime.now().isoformat(),
             "message_id": message_id,
@@ -113,58 +123,31 @@ class SessionLogger:
             "arguments": arguments,
             "result": result,
             "success": success,
-            "duration": duration,
             "step": step,
-        })
+        }
+        if duration is not None:
+            entry["duration"] = duration
+        self._data["entries"].append(entry)
         self._flush()
 
-    def log_thinking(self, content: str, step: int = 0,
-                      duration: Optional[float] = None, message_id: str = ""):
-        self._data["entries"].append({
-            "type": "thinking",
-            "timestamp": datetime.now().isoformat(),
-            "message_id": message_id,
-            "content": content,
-            "step": step,
-            "duration": duration,
-        })
-        self._flush()
-
-    def log_system(self, message: str):
-        self._data["entries"].append({
-            "type": "system",
-            "timestamp": datetime.now().isoformat(),
-            "content": message,
-        })
-        self._flush()
-
-    def log_context_compression(self, summary: str, original_length: int,
-                                 compressed_length: int):
-        self._data["entries"].append({
+    def log_context_compression(self, summary: str, original_count: int,
+                                compressed_count: int):
+        entry = {
             "type": "context_compression",
             "timestamp": datetime.now().isoformat(),
             "summary": summary,
-            "original_length": original_length,
-            "compressed_length": compressed_length,
-        })
+            "original_message_count": original_count,
+            "compressed_message_count": compressed_count,
+        }
+        self._data["entries"].append(entry)
         self._flush()
 
-    def get_full_log(self) -> dict:
-        return self._data
-
-    @staticmethod
-    def get_session_log_path(session_id: str) -> Path:
-        return SESSION_LOG_DIR / f"{session_id}.json"
-
-    @staticmethod
-    def get_all_session_logs() -> list[dict]:
-        ensure_log_dir()
-        logs = []
-        for f in sorted(SESSION_LOG_DIR.glob("*.json"), key=os.path.getmtime, reverse=True):
-            logs.append({
-                "session_id": f.stem,
-                "path": str(f),
-                "size": f.stat().st_size,
-                "modified": datetime.fromtimestamp(f.stat().st_mtime).isoformat(),
-            })
-        return logs
+    def log_error(self, error: str, context: str = ""):
+        entry = {
+            "type": "error",
+            "timestamp": datetime.now().isoformat(),
+            "error": error,
+            "context": context,
+        }
+        self._data["entries"].append(entry)
+        self._flush()

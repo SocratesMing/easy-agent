@@ -102,85 +102,57 @@ async def search_documents(req: SearchRequest, request: Request):
         where=req.where,
     )
 
-    if not results:
-        return {"results": [], "total": 0}
-
-    formatted_results = []
-    for i in range(len(results.get("ids", [[]])[0])):
-        formatted_results.append({
-            "id": results["ids"][0][i],
-            "document": results["documents"][0][i],
-            "metadata": results["metadatas"][0][i] if results.get("metadatas") else {},
-            "distance": results["distances"][0][i] if results.get("distances") else 0,
-        })
-
     return {
-        "results": formatted_results,
-        "total": len(formatted_results),
+        "success": True,
+        "query": req.query,
+        "results": results,
+        "count": len(results),
     }
 
 
-@router.delete("/documents")
+@router.post("/delete")
 async def delete_documents(req: DeleteRequest, request: Request):
     vs = get_vector_store(request)
 
     if not req.ids and not req.where:
-        raise HTTPException(status_code=400, detail="必须提供 ID 列表或过滤条件")
+        raise HTTPException(status_code=400, detail="必须提供 ids 或 where 条件")
 
-    before_count = vs.count()
-    vs.delete(ids=req.ids, where=req.where)
-    after_count = vs.count()
+    deleted_count = vs.delete(ids=req.ids, where=req.where)
 
     return {
         "success": True,
-        "deleted_count": before_count - after_count,
+        "deleted_count": deleted_count,
     }
-
-
-@router.get("/documents/{doc_id}")
-async def get_document(doc_id: str, request: Request):
-    vs = get_vector_store(request)
-    doc = vs.get_by_id(doc_id)
-
-    if not doc:
-        raise HTTPException(status_code=404, detail=f"文档不存在: {doc_id}")
-
-    return doc
 
 
 @router.put("/documents/{doc_id}")
 async def update_document(doc_id: str, req: UpdateDocumentRequest, request: Request):
     vs = get_vector_store(request)
-    vs.update_document(doc_id=doc_id, document=req.document, metadata=req.metadata)
 
-    return {"success": True}
-
-
-@router.get("/documents")
-async def list_documents(request: Request, limit: int = 100, offset: int = 0):
-    vs = get_vector_store(request)
-    all_docs = vs.get_all(limit=limit, offset=offset)
-
-    if not all_docs or not all_docs.get("ids"):
-        return {"documents": [], "total": 0}
-
-    documents = []
-    for i in range(len(all_docs["ids"])):
-        documents.append({
-            "id": all_docs["ids"][i],
-            "document": all_docs["documents"][i],
-            "metadata": all_docs["metadatas"][i] if all_docs.get("metadatas") else {},
-        })
+    vs.update_document(
+        doc_id=doc_id,
+        document=req.document,
+        metadata=req.metadata,
+    )
 
     return {
-        "documents": documents,
-        "total": len(documents),
+        "success": True,
+        "doc_id": doc_id,
     }
 
 
-@router.post("/clear")
-async def clear_collection(request: Request):
+@router.get("/documents")
+async def list_documents(
+    request: Request,
+    limit: int = 100,
+    offset: int = 0,
+):
     vs = get_vector_store(request)
-    vs.clear()
 
-    return {"success": True, "message": "向量数据库已清空"}
+    documents = vs.get_all(limit=limit, offset=offset)
+
+    return {
+        "success": True,
+        "documents": documents,
+        "count": len(documents),
+    }

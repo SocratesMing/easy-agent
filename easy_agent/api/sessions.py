@@ -11,10 +11,9 @@ from typing import Annotated, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from ..db import Database, SessionModel, get_database
-from ..dependencies import get_current_username
-from ...config import Config
-from ..models import (
+from ..db import Database, get_database
+from ..models.db import SessionModel
+from ..models.api import (
     AddMessageRequest,
     AddMessageResponse,
     CreateSessionRequest,
@@ -26,13 +25,14 @@ from ..models import (
     SessionInfo,
     UpdateTitleRequest,
 )
-from ..utils.session_logger import SessionLogger
+from ..middleware import get_current_username
+from ..config import Config
+from ..utils import SessionLogger
 
 logger = logging.getLogger(__name__)
 
 
 def generate_workspace_name(session_id: str) -> str:
-    """生成工作区名称: 年月日_时分秒_会话id前5个字符"""
     now = datetime.now()
     return f"{now.strftime('%Y%m%d')}_{now.strftime('%H%M%S')}_{session_id[:5]}"
 
@@ -109,9 +109,10 @@ async def count_sessions(
 
 
 @router.get("/{session_id}", summary="获取会话详情", response_model=SessionDetail)
-async def get_session_detail(
+async def get_session(
     session_id: str,
     db: Annotated[Database, Depends(get_database)],
+    username: Annotated[str, Depends(get_current_username)],
 ):
     session = db.get_session(session_id)
     if not session:
@@ -126,10 +127,55 @@ async def get_session_detail(
     )
 
 
+@router.put("/{session_id}/title", summary="更新会话标题")
+async def update_title(
+    session_id: str,
+    request: UpdateTitleRequest,
+    db: Annotated[Database, Depends(get_database)],
+    username: Annotated[str, Depends(get_current_username)],
+):
+    session = db.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="会话不存在")
+
+    title = request.title or "未命名会话"
+    db.update_session_title(session_id, title)
+
+    logger.info(f"更新会话标题 | ID: {session_id} | 新标题: {title}")
+
+    return {"status": "updated", "session_id": session_id, "title": title}
+
+
+@router.delete("/{session_id}", summary="删除会话", response_model=DeleteSessionResponse)
+async def delete_session(
+    session_id: str,
+    db: Annotated[Database, Depends(get_database)],
+    username: Annotated[str, Depends(get_current_username)],
+):
+    session = db.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="会话不存在")
+
+    workspace_dir = Config.get_user_workspace_dir(username) / session.workspace_name
+    if workspace_dir.exists():
+        try:
+            shutil.rmtree(workspace_dir)
+            logger.info(f"删除工作区目录 | 路径: {workspace_dir}")
+        except Exception as e:
+            logger.warning(f"删除工作区目录失败: {e}")
+
+    db.delete_session(session_id)
+
+    logger.info(f"删除会话 | ID: {session_id}")
+
+    return DeleteSessionResponse(session_id=session_id)
+
+
 @router.get("/{session_id}/history", summary="获取聊天历史", response_model=GetChatHistoryResponse)
 async def get_chat_history(
     session_id: str,
     db: Annotated[Database, Depends(get_database)],
+    username: Annotated[str, Depends(get_current_username)],
 ):
     session = db.get_session(session_id)
     if not session:
@@ -144,74 +190,12 @@ async def get_chat_history(
     )
 
 
-@router.put("/{session_id}/title", summary="更新会话标题")
-async def update_session_title(
-    session_id: str,
-    request: UpdateTitleRequest,
-    db: Annotated[Database, Depends(get_database)],
-):
-    session = db.get_session(session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="会话不存在")
-
-    if request.title:
-        db.update_session_title(session_id, request.title)
-        return {"status": "success", "title": request.title}
-
-    raise HTTPException(status_code=400, detail="标题不能为空")
-
-
-@router.delete("/{session_id}", summary="删除会话", response_model=DeleteSessionResponse)
-async def delete_session(
-    session_id: str,
-    db: Annotated[Database, Depends(get_database)],
-    username: Annotated[str, Depends(get_current_username)],
-):
-    # Read session BEFORE deletion to get workspace_name
-    session = db.get_session(session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="会话不存在")
-
-    workspace_name = getattr(session, 'workspace_name', '') or ''
-
-    success = db.delete_session(session_id)
-    if not success:
-        raise HTTPException(status_code=404, detail="会话不存在")
-
-    # Delete workspace directory (try new naming first, fallback to session_id)
-    workspace_base = Path("workspace") / Config.sanitize_username(username)
-
-    workspace_dir_to_delete = None
-    if workspace_name:
-        candidate = workspace_base / workspace_name
-        if candidate.exists() and candidate.is_dir():
-            workspace_dir_to_delete = candidate
-
-    if workspace_dir_to_delete is None:
-        candidate = workspace_base / session_id
-        if candidate.exists() and candidate.is_dir():
-            workspace_dir_to_delete = candidate
-
-    if workspace_dir_to_delete:
-        try:
-            shutil.rmtree(workspace_dir_to_delete)
-            logger.info(f"删除会话工作区 | ID: {session_id} | 路径: {workspace_dir_to_delete}")
-        except Exception as e:
-            logger.warning(f"删除会话工作区失败 | ID: {session_id} | 错误: {e}")
-
-    logger.info(f"删除会话 | ID: {session_id}")
-
-    from ..service import remove_session_agent
-    remove_session_agent(session_id)
-
-    return DeleteSessionResponse(status="deleted", session_id=session_id)
-
-
 @router.post("/{session_id}/messages", summary="添加消息", response_model=AddMessageResponse)
 async def add_message(
     session_id: str,
     request: AddMessageRequest,
     db: Annotated[Database, Depends(get_database)],
+    username: Annotated[str, Depends(get_current_username)],
 ):
     session = db.get_session(session_id)
     if not session:
@@ -225,33 +209,6 @@ async def add_message(
     db.add_message(session_id, message)
 
     return AddMessageResponse(
-        status="success",
         session_id=session_id,
-        message_count=len(db.get_messages(session_id)),
+        message_count=len(session.messages) + 1,
     )
-
-
-@router.get("/{session_id}/tool-calls", summary="获取工具调用记录")
-async def get_tool_calls(
-    session_id: str,
-    db: Annotated[Database, Depends(get_database)],
-):
-    tool_calls = db.get_tool_calls(session_id)
-    return {"tool_calls": tool_calls}
-
-
-@router.get("/{session_id}/log", summary="获取会话日志")
-async def get_session_log(
-    session_id: str,
-):
-    log_path = SessionLogger.get_session_log_path(session_id)
-    if not log_path.exists():
-        raise HTTPException(status_code=404, detail="会话日志不存在")
-    import json as _json
-    return _json.loads(log_path.read_text(encoding="utf-8"))
-
-
-@router.get("/logs", summary="列出所有会话日志")
-async def list_session_logs():
-    logs = SessionLogger.get_all_session_logs()
-    return {"logs": logs}

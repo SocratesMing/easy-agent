@@ -101,42 +101,17 @@ class VectorStore:
                 self.model = model
 
             def __call__(self, input):
-                import requests
+                from zhipuai import ZhipuAI
+                client = ZhipuAI(api_key=self.api_key)
                 texts = [t if t else "" for t in input]
-                url = "https://open.bigmodel.cn/api/paas/v4/embeddings"
-                headers = {"Authorization": f"Bearer {self.api_key}"}
-                all_embeddings = []
-                batch_size = 32
-
-                for i in range(0, len(texts), batch_size):
-                    batch = texts[i : i + batch_size]
-                    response = requests.post(
-                        url,
-                        json={
-                            "model": self.model,
-                            "input": batch,
-                        },
-                        headers=headers,
-                    )
-                    result = response.json()
-                    batch_embeddings = sorted(result["data"], key=lambda x: x["index"])
-                    all_embeddings.extend([item["embedding"] for item in batch_embeddings])
-
-                return all_embeddings
+                response = client.embeddings.create(model=self.model, input=texts)
+                return [item.embedding for item in response.data]
 
         return ZhiPuEmbeddingFunction(api_key, model_name)
 
     @property
-    def collection(self):
-        return self._collection
-
-    @property
-    def client(self):
-        return self._client
-
-    @property
     def is_ready(self) -> bool:
-        return self._client is not None and self._collection is not None
+        return self.enabled and self._client is not None
 
     def add_documents(
         self,
@@ -145,63 +120,80 @@ class VectorStore:
         ids: Optional[list[str]] = None,
     ) -> int:
         if not self.is_ready:
-            logger.warning("向量数据库未就绪，无法添加文档")
+            logger.warning("向量数据库未就绪，跳过添加文档")
             return 0
 
-        added_count = 0
-        for i in range(0, len(documents), self.batch_size):
-            batch_docs = documents[i : i + self.batch_size]
-            batch_metadatas = metadatas[i : i + self.batch_size] if metadatas else None
-            batch_ids = ids[i : i + self.batch_size] if ids else None
+        if not ids:
+            import uuid
+            ids = [str(uuid.uuid4()) for _ in documents]
 
-            self._collection.add(documents=batch_docs, metadatas=batch_metadatas, ids=batch_ids)
-            added_count += len(batch_docs)
+        total = len(documents)
+        added = 0
+        for i in range(0, total, self.batch_size):
+            batch_end = min(i + self.batch_size, total)
+            self._collection.add(
+                documents=documents[i:batch_end],
+                metadatas=metadatas[i:batch_end] if metadatas else None,
+                ids=ids[i:batch_end],
+            )
+            added += batch_end - i
 
-        logger.info(f"已添加 {added_count} 个文档到向量数据库")
-        return added_count
+        logger.info(f"向量数据库: 添加 {added} 个文档")
+        return added
 
     def search(
         self,
         query: str,
         n_results: int = 5,
         where: Optional[dict] = None,
-        where_document: Optional[dict] = None,
-    ) -> dict:
+    ) -> list[dict]:
         if not self.is_ready:
-            logger.warning("向量数据库未就绪，无法搜索")
-            return {}
+            logger.warning("向量数据库未就绪，返回空结果")
+            return []
 
         results = self._collection.query(
             query_texts=[query],
             n_results=n_results,
             where=where,
-            where_document=where_document,
-            include=["documents", "metadatas", "distances"],
         )
-        return results
 
-    def delete(self, ids: Optional[list[str]] = None, where: Optional[dict] = None):
+        formatted = []
+        if results.get("ids") and results["ids"][0]:
+            for i, doc_id in enumerate(results["ids"][0]):
+                formatted.append({
+                    "id": doc_id,
+                    "document": results["documents"][0][i] if results.get("documents") else "",
+                    "metadata": results["metadatas"][0][i] if results.get("metadatas") else {},
+                    "distance": results["distances"][0][i] if results.get("distances") else 0,
+                })
+
+        return formatted
+
+    def delete(
+        self,
+        ids: Optional[list[str]] = None,
+        where: Optional[dict] = None,
+    ) -> int:
         if not self.is_ready:
-            logger.warning("向量数据库未就绪，无法删除")
-            return
+            return 0
 
-        self._collection.delete(ids=ids, where=where)
-        logger.info("已从向量数据库删除指定文档")
+        if ids:
+            self._collection.delete(ids=ids)
+            return len(ids)
+        elif where:
+            results = self._collection.get(where=where)
+            count = len(results.get("ids", []))
+            if count > 0:
+                self._collection.delete(where=where)
+            return count
+        return 0
 
-    def get_by_id(self, doc_id: str) -> Optional[dict]:
-        if not self.is_ready:
-            return None
-
-        results = self._collection.get(ids=[doc_id], include=["documents", "metadatas"])
-        if results and results["ids"]:
-            return {
-                "id": results["ids"][0],
-                "document": results["documents"][0],
-                "metadata": results["metadatas"][0] if results["metadatas"] else {},
-            }
-        return None
-
-    def update_document(self, doc_id: str, document: str, metadata: Optional[dict] = None):
+    def update_document(
+        self,
+        doc_id: str,
+        document: str,
+        metadata: Optional[dict] = None,
+    ):
         if not self.is_ready:
             return
 
@@ -210,42 +202,23 @@ class VectorStore:
             documents=[document],
             metadatas=[metadata] if metadata else None,
         )
-        logger.info(f"已更新向量数据库中的文档: {doc_id}")
 
     def count(self) -> int:
         if not self.is_ready:
             return 0
         return self._collection.count()
 
-    def get_all(self, limit: int = 100, offset: int = 0) -> dict:
+    def get_all(self, limit: int = 100, offset: int = 0) -> list[dict]:
         if not self.is_ready:
-            return {}
-        return self._collection.get(limit=limit, offset=offset, include=["documents", "metadatas"])
+            return []
 
-    def clear(self):
-        if not self.is_ready:
-            return
-        client = self._client
-        name = self._collection.name
-        client.delete_collection(name=name)
-        self._collection = client.create_collection(
-            name=name,
-            embedding_function=self._embedding_fn,
-            metadata={"hnsw:space": "cosine"},
-        )
-        logger.info("已清空向量数据库")
-
-
-_vector_store_instance: Optional[VectorStore] = None
-
-
-def init_vector_store(config: dict) -> Optional[VectorStore]:
-    global _vector_store_instance
-    vs = VectorStore(config)
-    _vector_store_instance = vs
-    return vs
-
-
-def get_vector_store() -> Optional[VectorStore]:
-    global _vector_store_instance
-    return _vector_store_instance
+        results = self._collection.get(limit=limit, offset=offset)
+        formatted = []
+        if results.get("ids"):
+            for i, doc_id in enumerate(results["ids"]):
+                formatted.append({
+                    "id": doc_id,
+                    "document": results["documents"][i] if results.get("documents") else "",
+                    "metadata": results["metadatas"][i] if results.get("metadatas") else {},
+                })
+        return formatted

@@ -15,7 +15,7 @@ from typing import Any, Generator, Optional
 import sqlite3
 from pydantic import BaseModel
 
-from .models import SessionModel, UserModel
+from ..models.db import SessionModel, UserModel
 from ..utils.auth import hash_password, verify_password
 
 DATABASE_PATH = "./data/easy_agent.db"
@@ -183,7 +183,6 @@ class Database:
 
             auto_inc = "AUTOINCREMENT" if self.db_type == "sqlite" else "AUTO_INCREMENT"
 
-            # SQLite 的 TEXT 没有大小限制，MySQL 使用 MEDIUMTEXT (16MB)
             messages_type = "TEXT" if self.db_type == "sqlite" else "MEDIUMTEXT"
 
             cursor.execute(f"""
@@ -201,12 +200,11 @@ class Database:
             self._create_index(cursor, "idx_sessions_username", "sessions", "username")
             self._ensure_column(cursor, "sessions", "workspace_name", "VARCHAR(255) DEFAULT ''")
 
-            # 迁移: 将 messages 字段改为 MEDIUMTEXT (MySQL)
             if self.db_type == "mysql":
                 try:
                     cursor.execute("ALTER TABLE sessions MODIFY COLUMN messages MEDIUMTEXT NOT NULL")
                 except Exception:
-                    pass  # 字段类型已经是 MEDIUMTEXT 或其他情况
+                    pass
 
             cursor.execute(f"""
                 CREATE TABLE IF NOT EXISTS tool_call_records (
@@ -226,7 +224,6 @@ class Database:
             """)
             self._create_index(cursor, "idx_tool_call_session", "tool_call_records", "session_id")
             self._create_index(cursor, "idx_tool_call_message", "tool_call_records", "session_id, message_id")
-            # 迁移: 为已存在的 tool_call_records 添加新字段
             self._ensure_column(cursor, "tool_call_records", "duration", "REAL")
             self._ensure_column(cursor, "tool_call_records", "step", "INTEGER NOT NULL DEFAULT 0")
 
@@ -245,7 +242,6 @@ class Database:
             self._create_index(cursor, "idx_thinking_session", "thinking_records", "session_id")
             self._create_index(cursor, "idx_thinking_message", "thinking_records", "session_id, message_id")
 
-            # SQLite 的 TEXT 没有大小限制，MySQL 使用 MEDIUMTEXT (16MB)
             text_type = "TEXT" if self.db_type == "sqlite" else "MEDIUMTEXT"
 
             cursor.execute(f"""
@@ -262,7 +258,6 @@ class Database:
             self._create_index(cursor, "idx_session_messages_session", "session_messages", "session_id")
             self._create_index(cursor, "idx_session_messages_session_role", "session_messages", "session_id, role")
 
-            # 迁移: 将 content 和 extra_data 字段改为 MEDIUMTEXT (MySQL)
             if self.db_type == "mysql":
                 try:
                     cursor.execute("ALTER TABLE session_messages MODIFY COLUMN content MEDIUMTEXT")
@@ -316,8 +311,50 @@ class Database:
             """)
             for col in ["password_hash", "organization_id", "email"]:
                 self._ensure_column(cursor, "users", col, "VARCHAR(255) DEFAULT ''")
-            # IP 绑定字段
             self._ensure_column(cursor, "users", "bound_ip", "VARCHAR(45) DEFAULT ''")
+
+            cursor.execute(f"""
+                CREATE TABLE IF NOT EXISTS fmqt_bloom (
+                    id INTEGER PRIMARY KEY {auto_inc},
+                    bloomCode VARCHAR(255) NOT NULL,
+                    bloomCodeCN VARCHAR(255) NOT NULL,
+                    pxLast REAL NOT NULL,
+                    lastUpdate VARCHAR(50),
+                    pxLastEod REAL NOT NULL,
+                    lastUpdateEod VARCHAR(50),
+                    type VARCHAR(100) NOT NULL,
+                    region VARCHAR(100) NOT NULL,
+                    bloomDate VARCHAR(50) NOT NULL,
+                    sbmTime BIGINT NOT NULL,
+                    creatDate VARCHAR(50) NOT NULL
+                )
+            """)
+            self._create_index(cursor, "idx_bloom_type", "fmqt_bloom", "type")
+            self._create_index(cursor, "idx_bloom_date", "fmqt_bloom", "bloomDate")
+            self._create_index(cursor, "idx_bloom_type_date", "fmqt_bloom", "type, bloomDate")
+
+            cursor.execute(f"""
+                CREATE TABLE IF NOT EXISTS fmqt_bloom_analysis (
+                    id INTEGER PRIMARY KEY {auto_inc},
+                    pair VARCHAR(50) NOT NULL,
+                    signalLevel VARCHAR(20) NOT NULL,
+                    signalSide VARCHAR(100) NOT NULL,
+                    drive TEXT,
+                    contradict TEXT,
+                    operate TEXT,
+                    analysisDate VARCHAR(50) NOT NULL,
+                    creatDate VARCHAR(50) NOT NULL
+                )
+            """)
+            self._create_index(cursor, "idx_bloom_analysis_date", "fmqt_bloom_analysis", "analysisDate")
+
+            cursor.execute(f"""
+                CREATE TABLE IF NOT EXISTS fmqt_lock (
+                    id INTEGER PRIMARY KEY {auto_inc},
+                    lock_key VARCHAR(255) NOT NULL UNIQUE,
+                    created_at VARCHAR(50) NOT NULL
+                )
+            """)
 
             conn.commit()
 
@@ -369,10 +406,8 @@ class Database:
         if row is None:
             return None
 
-        # Try reading from session_messages table first (incremental)
         messages = self.get_messages_from_rows(session_id)
         if not messages:
-            # Fallback to JSON blob for old sessions
             messages = json.loads(row["messages"]) if row["messages"] else []
 
         return SessionModel(
@@ -430,7 +465,8 @@ class Database:
             self._execute(
                 cursor,
                 """
-                UPDATE sessions SET title=?, messages=?, updated_at=?, username=? WHERE session_id=?
+                UPDATE sessions SET title=?, messages=?, updated_at=?, username=?
+                WHERE session_id=?
                 """,
                 (
                     session_data.title,
@@ -448,15 +484,14 @@ class Database:
             return cursor.rowcount > 0
 
     def update_session_workspace_name(self, session_id: str, workspace_name: str):
-        """Store the renamed workspace folder name for a session."""
         with self.get_connection() as conn:
             cursor = conn.cursor()
-            self._execute(cursor,
+            self._execute(
+                cursor,
                 "UPDATE sessions SET workspace_name=? WHERE session_id=?",
                 (workspace_name, session_id))
 
     def update_generated_file_paths(self, session_id: str, old_prefix: str, new_prefix: str):
-        """Update file_path values in generated_files when workspace is renamed."""
         with self.get_connection() as conn:
             cursor = conn.cursor()
             self._execute(cursor,
@@ -483,30 +518,58 @@ class Database:
                 self.update_session(session)
 
     def _sanitize_message_for_storage(self, message: dict) -> dict:
-        """精简消息内容用于存储到 sessions.messages，避免字段过长"""
         sanitized = {
             "role": message.get("role", ""),
-            "content": (message.get("content", "") or "")[:5000],  # 限制 content 长度
+            "content": (message.get("content", "") or "")[:5000],
             "timestamp": message.get("timestamp", ""),
         }
-        # 保留 thinking 但限制长度
         if message.get("thinking"):
             sanitized["thinking"] = message["thinking"][:2000]
-        # 保留 tool_calls 但精简
+        if message.get("thinking_duration") is not None:
+            sanitized["thinking_duration"] = message["thinking_duration"]
         if message.get("tool_calls"):
             sanitized["tool_calls"] = [
-                {"name": tc.get("name", ""), "success": tc.get("success", True)}
-                for tc in message["tool_calls"][:20]  # 最多保留 20 个工具调用
+                {
+                    "tool_name": tc.get("tool_name", "") or tc.get("name", ""),
+                    "tool_call_id": tc.get("tool_call_id", ""),
+                    "arguments": tc.get("arguments", {}),
+                    "result": str(tc.get("result", ""))[:5000],
+                    "success": tc.get("success", True),
+                    "duration": tc.get("duration"),
+                    "step": tc.get("step", 0),
+                }
+                for tc in message["tool_calls"][:20]
             ]
+        if message.get("blocks"):
+            sanitized_blocks = []
+            for b in message["blocks"][:30]:
+                block_type = b.get("type", "")
+                s = {"type": block_type, "order": b.get("order", 0)}
+                if block_type == "thinking":
+                    s["content"] = (b.get("content", "") or "")[:2000]
+                    s["duration"] = b.get("duration")
+                    s["step"] = b.get("step", 0)
+                elif block_type == "tool_call":
+                    s["tool_name"] = b.get("tool_name", "")
+                    s["tool_call_id"] = b.get("tool_call_id", "")
+                    s["arguments"] = b.get("arguments", {})
+                    s["result"] = str(b.get("result", ""))[:5000]
+                    s["success"] = b.get("success", True)
+                    s["duration"] = b.get("duration")
+                    s["step"] = b.get("step", 0)
+                elif block_type == "content":
+                    s["content"] = (b.get("content", "") or "")[:5000]
+                else:
+                    s["content"] = (b.get("content", "") or "")[:200]
+                sanitized_blocks.append(s)
+            sanitized["blocks"] = sanitized_blocks
         return sanitized
 
     def update_last_assistant_message(self, session_id: str, message: dict):
-        """Update the last assistant message if it exists, otherwise append."""
         with self.get_connection() as conn:
             cursor = conn.cursor()
             session = self.get_session(session_id)
             if session:
-                # 精简消息用于存储
                 sanitized_msg = self._sanitize_message_for_storage(message)
                 if session.messages and session.messages[-1].get("role") == "assistant":
                     session.messages[-1] = sanitized_msg
@@ -516,42 +579,61 @@ class Database:
                 self.update_session(session)
 
     def _sanitize_extra_data(self, message: dict) -> str | None:
-        """精简 extra_data 避免字段过长"""
         extra_keys = {k: v for k, v in message.items() if k not in ("role", "content", "timestamp")}
         if not extra_keys:
             return None
 
-        # 精简 blocks 数据
         if "blocks" in extra_keys:
             blocks = extra_keys["blocks"]
             if isinstance(blocks, list):
-                # 只保留类型和简要内容
-                extra_keys["blocks"] = [
-                    {"type": b.get("type", ""), "content": (b.get("content", "") or "")[:200]}
-                    for b in blocks[:30]  # 最多30个块
-                ]
+                sanitized_blocks = []
+                for b in blocks[:30]:
+                    block_type = b.get("type", "")
+                    sanitized = {"type": block_type, "order": b.get("order", 0)}
+                    if block_type == "thinking":
+                        sanitized["content"] = (b.get("content", "") or "")[:2000]
+                        sanitized["duration"] = b.get("duration")
+                        sanitized["step"] = b.get("step", 0)
+                    elif block_type == "tool_call":
+                        sanitized["tool_name"] = b.get("tool_name", "")
+                        sanitized["tool_call_id"] = b.get("tool_call_id", "")
+                        sanitized["arguments"] = b.get("arguments", {})
+                        sanitized["result"] = str(b.get("result", ""))[:5000]
+                        sanitized["success"] = b.get("success", True)
+                        sanitized["duration"] = b.get("duration")
+                        sanitized["step"] = b.get("step", 0)
+                    elif block_type == "content":
+                        sanitized["content"] = (b.get("content", "") or "")[:5000]
+                    else:
+                        sanitized["content"] = (b.get("content", "") or "")[:200]
+                    sanitized_blocks.append(sanitized)
+                extra_keys["blocks"] = sanitized_blocks
 
-        # 精简 tool_calls 数据
         if "tool_calls" in extra_keys:
             tool_calls = extra_keys["tool_calls"]
             if isinstance(tool_calls, list):
                 extra_keys["tool_calls"] = [
-                    {"name": tc.get("name", ""), "success": tc.get("success", True)}
-                    for tc in tool_calls[:20]  # 最多20个工具调用
+                    {
+                        "tool_name": tc.get("tool_name", "") or tc.get("name", ""),
+                        "tool_call_id": tc.get("tool_call_id", ""),
+                        "arguments": tc.get("arguments", {}),
+                        "result": str(tc.get("result", ""))[:5000],
+                        "success": tc.get("success", True),
+                        "duration": tc.get("duration"),
+                        "step": tc.get("step", 0),
+                    }
+                    for tc in tool_calls[:20]
                 ]
 
-        # 限制 thinking 长度
         if "thinking" in extra_keys and extra_keys["thinking"]:
             extra_keys["thinking"] = extra_keys["thinking"][:2000]
 
         result = json.dumps(extra_keys, ensure_ascii=False)
-        # 最终限制大小 (60KB)
         if len(result) > 60000:
             result = result[:60000] + '"}'
         return result
 
     def add_message_row(self, session_id: str, message: dict):
-        """Insert a single message into session_messages table (incremental)."""
         role = message.get("role", "user")
         content = message.get("content", "")
         extra_data = self._sanitize_extra_data(message)
@@ -567,7 +649,6 @@ class Database:
                 """,
                 (session_id, role, content, extra_data, timestamp),
             )
-            # Also update sessions.updated_at
             self._execute(
                 cursor,
                 "UPDATE sessions SET updated_at=? WHERE session_id=?",
@@ -575,7 +656,6 @@ class Database:
             )
 
     def update_last_assistant_message_row(self, session_id: str, message: dict):
-        """Update the last assistant message in session_messages, or insert if none exists."""
         role = "assistant"
         content = message.get("content", "")
         extra_data = self._sanitize_extra_data(message)
@@ -583,7 +663,6 @@ class Database:
 
         with self.get_connection() as conn:
             cursor = conn.cursor()
-            # Find the last assistant message for this session
             self._execute(
                 cursor,
                 "SELECT id FROM session_messages WHERE session_id=? AND role='assistant' ORDER BY id DESC LIMIT 1",
@@ -607,7 +686,6 @@ class Database:
                     """,
                     (session_id, role, content, extra_data, timestamp),
                 )
-            # Also update sessions.updated_at
             self._execute(
                 cursor,
                 "UPDATE sessions SET updated_at=? WHERE session_id=?",
@@ -615,7 +693,6 @@ class Database:
             )
 
     def get_messages_from_rows(self, session_id: str) -> list[dict]:
-        """Read messages from session_messages table (incremental)."""
         with self.get_connection() as conn:
             cursor = conn.cursor()
             self._execute(
@@ -835,7 +912,6 @@ class Database:
             )
 
     def bind_user_ip(self, username: str, ip: str) -> bool:
-        """绑定用户IP地址"""
         user = self.get_user_by_username(username)
         if not user:
             return False
@@ -849,14 +925,12 @@ class Database:
             return cursor.rowcount > 0
 
     def get_user_bound_ip(self, username: str) -> str:
-        """获取用户绑定的IP地址"""
         user = self.get_user_by_username(username)
         if not user:
             return ""
         return user.bound_ip
 
     def register_user(self, username: str, password: str, email: str = "") -> Optional[UserModel]:
-        """注册新用户"""
         existing = self.get_user_by_username(username)
         if existing:
             return None
@@ -877,7 +951,6 @@ class Database:
         return user
 
     def verify_user_password(self, username: str, password: str) -> Optional[UserModel]:
-        """验证用户密码"""
         user = self.get_user_by_username(username)
         if not user:
             return None
@@ -886,7 +959,6 @@ class Database:
         return user
 
     def update_user_password(self, username: str, new_password_hash: str) -> bool:
-        """更新用户密码"""
         user = self.get_user_by_username(username)
         if not user:
             return False
@@ -901,14 +973,12 @@ class Database:
             return cursor.rowcount > 0
 
     def delete_user(self, username: str) -> bool:
-        """删除用户"""
         with self.get_connection() as conn:
             cursor = conn.cursor()
             self._execute(cursor, "DELETE FROM users WHERE username=?", (username,))
             return cursor.rowcount > 0
 
     def get_or_create_default_user(self) -> UserModel:
-        """获取或创建默认用户"""
         default_user = self.get_user_by_username("default")
         if default_user:
             return default_user

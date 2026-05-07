@@ -2,8 +2,8 @@
 
 import logging
 
-from ...agent import EasyAgent
-from ...config import Config
+from ..agent import EasyAgent
+from ..config import Config
 
 logger = logging.getLogger("easy_agent.chat_service")
 
@@ -20,7 +20,7 @@ def init_agent_config(config: Config, system_prompt: str, skills_root: str = "",
         "skills_root": skills_root,
         "shared_deps_path": shared_deps_path,
     }
-    from ...model import create_model
+    from ..model import create_model
     _llm_instance = create_model(config)
     logger.info("[初始化] Agent 配置初始化完成 | LLM 流式已启用")
 

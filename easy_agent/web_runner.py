@@ -33,7 +33,7 @@ def run_web():
 """)
 
     uvicorn.run(
-        "easy_agent.web.server:app",
+        "easy_agent.app:app",
         host=args.host,
         port=args.port,
         reload=args.reload,

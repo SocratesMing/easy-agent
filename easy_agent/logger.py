@@ -126,20 +126,14 @@ class AgentLogger:
         self._write_log("TOOL_RESULT", content)
 
     def _write_log(self, log_type: str, content: str):
-        """Write log entry
-
-        Args:
-            log_type: Log type (REQUEST, RESPONSE, TOOL_RESULT)
-            content: Log content
-        """
         if self.log_file is None:
             return
 
+        now = datetime.now()
+        timestamp = now.strftime("%Y-%m-%d %H:%M:%S") + f".{now.microsecond:06d}"
+
         with open(self.log_file, "a", encoding="utf-8") as f:
-            f.write("\n" + "-" * 80 + "\n")
-            f.write(f"[{self.log_index}] {log_type}\n")
-            f.write(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]}\n")
-            f.write("-" * 80 + "\n")
+            f.write(f"[{timestamp}]|INFO|FMQT|-||-|-|MainThread|agent_logger:0| [{self.log_index}] {log_type}\n")
             f.write(content + "\n")
 
     def get_log_file_path(self) -> Path:

@@ -52,15 +52,18 @@
           </div>
 
           <!-- 思考内容块 -->
-          <div v-if="block.type === 'thinking'" class="thinking-block">
+          <div v-if="block.type === 'thinking'" class="thinking-block" :class="{ 'thinking-active': block.duration == null && message.loading }">
             <div class="thinking-header" @click="toggleThinking(index)">
-              <svg class="thinking-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <div v-if="block.duration == null && message.loading" class="thinking-spinner">
+                <span></span><span></span><span></span>
+              </div>
+              <svg v-else class="thinking-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <circle cx="12" cy="12" r="10"></circle>
                 <path d="M12 16v-4M12 8h.01"></path>
                 <path d="M9.5 9.5c.5-.5 1.5-1 2.5-1s2 .5 2.5 1c.5.5.5 1.5 0 2.5-.5.5-1.5 1-2.5 1"></path>
               </svg>
-              <span class="thinking-title">思考过程</span>
-              <span v-if="block.duration !== undefined" class="thinking-duration">用时 {{ block.duration }} 秒</span>
+              <span class="thinking-title">{{ block.duration == null && message.loading ? '正在思考...' : '思考过程' }}</span>
+              <span v-if="block.duration != null" class="thinking-duration">用时 {{ block.duration }} 秒</span>
               <svg class="toggle-arrow" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" :class="{ rotated: isExpandedThinking(index) }">
                 <polyline points="6 9 12 15 18 9"></polyline>
               </svg>
@@ -73,11 +76,11 @@
           <!-- 工具调用块（合并参数、结果、耗时） -->
           <div v-if="block.type === 'tool_call'" class="tool-call-block" :class="{ error: block.success === false }">
             <div class="tool-call-header" @click="toggleToolCall(index)">
-              <svg class="tool-icon" :class="{ success: block.success === true, error: block.success === false, spinning: block.duration === undefined }" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <svg class="tool-icon" :class="{ success: block.success === true, error: block.success === false, spinning: block.duration == null }" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path>
               </svg>
               <span class="tool-name-badge">{{ block.tool_name }}</span>
-              <template v-if="block.duration !== undefined">
+              <template v-if="block.duration != null">
                 <svg v-if="block.success" class="tool-status-icon success" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                   <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
                   <polyline points="22 4 12 14.01 9 11.01"></polyline>
@@ -88,7 +91,7 @@
                   <line x1="9" y1="9" x2="15" y2="15"></line>
                 </svg>
               </template>
-              <span v-if="block.duration !== undefined" class="tool-duration">用时 {{ block.duration }} 秒</span>
+              <span v-if="block.duration != null" class="tool-duration">用时 {{ block.duration }} 秒</span>
               <span v-else class="tool-status-text executing">执行中...</span>
               <svg class="toggle-arrow" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" :class="{ rotated: isExpandedToolCall(index) }">
                 <polyline points="6 9 12 15 18 9"></polyline>
@@ -103,7 +106,7 @@
                 <div class="tool-section-label">结果</div>
                 <pre class="tool-section-content" :class="{ error: block.success === false }">{{ truncateResult(block.result, 1000) }}</pre>
               </div>
-              <div v-else-if="block.duration === undefined" class="tool-section">
+              <div v-else-if="block.duration == null" class="tool-section">
                 <div class="tool-section-label">结果</div>
                 <div class="tool-executing-hint">等待执行结果...</div>
               </div>
@@ -117,15 +120,18 @@
 
       <!-- 兼容旧数据：没有blocks时的渲染 -->
       <template v-else>
-        <div v-if="message.thinking" class="thinking-block">
+        <div v-if="message.thinking" class="thinking-block" :class="{ 'thinking-active': message.thinking_duration == null && message.loading }">
           <div class="thinking-header" @click="showThinking = !showThinking">
-            <svg class="thinking-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <div v-if="message.thinking_duration == null && message.loading" class="thinking-spinner">
+              <span></span><span></span><span></span>
+            </div>
+            <svg v-else class="thinking-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <circle cx="12" cy="12" r="10"></circle>
               <path d="M12 16v-4M12 8h.01"></path>
               <path d="M9.5 9.5c.5-.5 1.5-1 2.5-1s2 .5 2.5 1c.5.5.5 1.5 0 2.5-.5.5-1.5 1-2.5 1"></path>
             </svg>
-            <span class="thinking-title">思考过程</span>
-            <span v-if="message.thinking_duration !== undefined" class="thinking-duration">用时 {{ message.thinking_duration }} 秒</span>
+            <span class="thinking-title">{{ message.thinking_duration == null && message.loading ? '正在思考...' : '思考过程' }}</span>
+            <span v-if="message.thinking_duration != null" class="thinking-duration">用时 {{ message.thinking_duration }} 秒</span>
             <svg class="toggle-arrow" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" :class="{ rotated: showThinking }">
               <polyline points="6 9 12 15 18 9"></polyline>
             </svg>
@@ -176,30 +182,15 @@
         </div>
       </template>
       
-      <!-- 等待用户输入（在消息内容之后渲染） -->
-      <div v-if="message.user_input_required" class="user-input-block">
-        <div class="user-input-banner">
-          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="input-icon">
-            <circle cx="12" cy="12" r="10"></circle>
-            <path d="M12 16v-4M12 8h.01"></path>
-          </svg>
-          <span>需要您的输入</span>
-        </div>
-        <div class="user-input-area">
-          <input
-            v-model="userResponse"
-            type="text"
-            class="user-input-field"
-            placeholder="请输入您的选择或回答..."
-            @keyup.enter="submitUserInput"
-          />
-          <button class="user-input-submit" @click="submitUserInput">
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <line x1="22" y1="2" x2="11" y2="13"></line>
-              <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
-            </svg>
-          </button>
-        </div>
+      <!-- Token 用量显示（助手消息） -->
+      <div v-if="message.role === 'assistant' && message.usage && message.usage.total_tokens > 0" class="message-usage">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="12" height="12">
+          <path d="M12 2L2 7l10 5 10-5-10-5z"></path>
+          <path d="M2 17l10 5 10-5"></path>
+          <path d="M2 12l10 5 10-5"></path>
+        </svg>
+        <span class="usage-total">{{ message.usage.total_tokens.toLocaleString() }} tokens</span>
+        <span class="usage-detail">↑{{ message.usage.input_tokens.toLocaleString() }} ↓{{ message.usage.output_tokens.toLocaleString() }}</span>
       </div>
 
       <!-- 用户消息显示复制和重试按钮 -->
@@ -235,14 +226,13 @@ const props = defineProps({
   }
 })
 
-const emit = defineEmits(['removeFile', 'viewGeneratedFiles', 'retry', 'userInput'])
+const emit = defineEmits(['removeFile', 'viewGeneratedFiles', 'retry'])
 
 const showThinking = ref(true)
 const expandedThinking = ref({})
 const expandedKnowledgeBase = ref({})
 const expandedTool = ref({})
 const highlighter = shallowRef(null)
-const userResponse = ref('')
 
 const langAliases = {
   'js': 'javascript',
@@ -490,13 +480,6 @@ function retryMessage() {
   // 触发重试事件，传递消息内容（确保是纯字符串）
   const content = String(props.message.content || '')
   emit('retry', content)
-}
-
-function submitUserInput() {
-  const response = userResponse.value.trim()
-  if (!response) return
-  emit('userInput', response)
-  userResponse.value = ''
 }
 
 function removeFile(index) {
@@ -829,6 +812,47 @@ onMounted(() => {
 
 .thinking-title {
   flex: 1;
+}
+
+.thinking-active .thinking-title {
+  color: #6366f1;
+}
+
+.thinking-spinner {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+}
+
+.thinking-spinner span {
+  display: block;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: #6366f1;
+  animation: thinking-bounce 1.2s ease-in-out infinite;
+}
+
+.thinking-spinner span:nth-child(2) {
+  animation-delay: 0.15s;
+}
+
+.thinking-spinner span:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+@keyframes thinking-bounce {
+  0%, 80%, 100% {
+    transform: scale(0.6);
+    opacity: 0.4;
+  }
+  40% {
+    transform: scale(1);
+    opacity: 1;
+  }
 }
 
 .thinking-duration {
@@ -1356,6 +1380,31 @@ onMounted(() => {
   background: rgba(30, 41, 59, 0.06);
 }
 
+.message-usage {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  padding: 4px 0;
+  font-size: 11px;
+  color: #94a3b8;
+}
+
+.message-usage svg {
+  opacity: 0.6;
+  flex-shrink: 0;
+}
+
+.message-usage .usage-total {
+  color: #64748b;
+  font-weight: 500;
+}
+
+.message-usage .usage-detail {
+  color: #94a3b8;
+  font-size: 10px;
+}
+
 .message-actions {
   visibility: hidden;
   margin-top: 4px;
@@ -1558,73 +1607,4 @@ onMounted(() => {
   }
 }
 
-/* 用户输入交互块 */
-.user-input-block {
-  margin-top: 12px;
-  padding: 12px 16px;
-  background: #fffbeb;
-  border: 1px solid #fde68a;
-  border-radius: 10px;
-}
-
-.user-input-banner {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 13px;
-  font-weight: 500;
-  color: #92400e;
-  margin-bottom: 10px;
-}
-
-.input-icon {
-  width: 16px;
-  height: 16px;
-  color: #d97706;
-}
-
-.user-input-area {
-  display: flex;
-  gap: 8px;
-}
-
-.user-input-field {
-  flex: 1;
-  padding: 8px 12px;
-  border: 1px solid #d1d5db;
-  border-radius: 8px;
-  font-size: 14px;
-  outline: none;
-  transition: border-color 0.2s;
-}
-
-.user-input-field:focus {
-  border-color: #d97706;
-  box-shadow: 0 0 0 3px rgba(217, 119, 6, 0.1);
-}
-
-.user-input-submit {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 36px;
-  height: 36px;
-  padding: 0;
-  background: #d97706;
-  border: none;
-  border-radius: 8px;
-  cursor: pointer;
-  color: white;
-  transition: background 0.2s;
-  flex-shrink: 0;
-}
-
-.user-input-submit:hover {
-  background: #b45309;
-}
-
-.user-input-submit svg {
-  width: 16px;
-  height: 16px;
-}
 </style>

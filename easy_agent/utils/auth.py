@@ -14,7 +14,6 @@ ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
 
 def hash_password(password: str) -> str:
-    """对密码进行哈希"""
     password_bytes = password.encode('utf-8')
     salt = bcrypt.gensalt()
     hashed = bcrypt.hashpw(password_bytes, salt)
@@ -22,7 +21,6 @@ def hash_password(password: str) -> str:
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    """验证密码"""
     try:
         password_bytes = plain_password.encode('utf-8')
         hashed_bytes = hashed_password.encode('utf-8')
@@ -32,7 +30,6 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
-    """创建 JWT 访问令牌（支持传入 ip 字段）"""
     to_encode = data.copy()
     expire = datetime.utcnow() + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
     to_encode.update({"exp": expire})
@@ -40,7 +37,6 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
 
 
 def decode_access_token(token: str) -> Optional[dict]:
-    """解码 JWT 访问令牌"""
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         return payload
@@ -49,7 +45,6 @@ def decode_access_token(token: str) -> Optional[dict]:
 
 
 def get_username_from_token(token: str) -> Optional[str]:
-    """从 JWT token 获取用户名"""
     payload = decode_access_token(token)
     if payload:
         return payload.get("sub")

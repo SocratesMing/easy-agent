@@ -78,6 +78,49 @@
         </div>
         
         <div class="right-actions">
+          <div 
+            v-if="showTokenRing" 
+            ref="ringRef"
+            class="context-ring-wrapper" 
+            @click.stop="toggleTokenPopup"
+          >
+            <svg class="context-ring" viewBox="0 0 36 36">
+              <circle class="context-ring-bg" cx="18" cy="18" r="15.9" fill="none" stroke="#e5e7eb" stroke-width="3" />
+              <circle class="context-ring-fill" cx="18" cy="18" r="15.9" fill="none"
+                :stroke="contextColor" stroke-width="3" stroke-linecap="round"
+                :stroke-dasharray="`${contextPercent} ${100 - contextPercent}`"
+                transform="rotate(-90 18 18)" />
+            </svg>
+            <span class="context-ring-text">{{ contextPercent }}%</span>
+            <Teleport to="body">
+              <div v-if="showTokenPopup" class="token-popup" :style="popupStyle" @click.stop>
+                <div class="token-popup-title">Token 用量</div>
+                <div class="token-popup-row">
+                  <span class="token-popup-label">上下文上限</span>
+                  <span class="token-popup-value">{{ formatTokens(sessionUsage.max_input_tokens) }}</span>
+                </div>
+                <div class="token-popup-row">
+                  <span class="token-popup-label">已用总量</span>
+                  <span class="token-popup-value">{{ formatTokens(sessionUsage.total_tokens) }}</span>
+                </div>
+                <div class="token-popup-divider"></div>
+                <div class="token-popup-row">
+                  <span class="token-popup-label">输入 (Prompt)</span>
+                  <span class="token-popup-value input">{{ formatTokens(sessionUsage.input_tokens) }}</span>
+                </div>
+                <div class="token-popup-row">
+                  <span class="token-popup-label">输出 (Completion)</span>
+                  <span class="token-popup-value output">{{ formatTokens(sessionUsage.output_tokens) }}</span>
+                </div>
+                <div class="token-popup-bar">
+                  <div class="token-popup-bar-inner">
+                    <div class="token-popup-bar-input" :style="{ width: inputPercent + '%' }"></div>
+                    <div class="token-popup-bar-output" :style="{ width: outputPercent + '%' }"></div>
+                  </div>
+                </div>
+              </div>
+            </Teleport>
+          </div>
           <button 
             v-if="!isStreaming"
             @click="send" 
@@ -91,16 +134,6 @@
               <polyline points="12 5 19 12 12 19"></polyline>
             </svg>
           </button>
-          <div v-if="isStreaming && sessionUsage.total_tokens > 0 && sessionUsage.max_input_tokens" class="context-ring-wrapper" :title="contextTooltip">
-            <svg class="context-ring" viewBox="0 0 36 36">
-              <circle class="context-ring-bg" cx="18" cy="18" r="15.9" fill="none" stroke="#e5e7eb" stroke-width="3" />
-              <circle class="context-ring-fill" cx="18" cy="18" r="15.9" fill="none"
-                :stroke="contextColor" stroke-width="3" stroke-linecap="round"
-                :stroke-dasharray="`${contextPercent} ${100 - contextPercent}`"
-                transform="rotate(-90 18 18)" />
-            </svg>
-            <span class="context-ring-text">{{ contextPercent }}%</span>
-          </div>
           <button
             v-if="isStreaming"
             @click="stop"
@@ -119,7 +152,7 @@
 </template>
 
 <script setup>
-import { ref, computed, watch, nextTick, onUnmounted, reactive } from 'vue'
+import { ref, computed, watch, nextTick, onMounted, onUnmounted, reactive } from 'vue'
 import { uploadFile, deleteFile } from '../api/files.js'
 import FileIcon from './FileIcon.vue'
 
@@ -154,10 +187,38 @@ const canSend = computed(() => {
   return message.value.trim() || uploadedFiles.value.length > 0
 })
 
+const showTokenPopup = ref(false)
+
+function toggleTokenPopup() {
+  showTokenPopup.value = !showTokenPopup.value
+}
+
+function closeTokenPopup(e) {
+  if (showTokenPopup.value) {
+    showTokenPopup.value = false
+  }
+}
+
+const showTokenRing = computed(() => {
+  return props.sessionUsage.total_tokens > 0
+})
+
 const contextPercent = computed(() => {
   const u = props.sessionUsage
   if (!u.max_input_tokens || u.max_input_tokens <= 0) return 0
   return Math.min(100, Math.round(u.total_tokens / u.max_input_tokens * 100))
+})
+
+const inputPercent = computed(() => {
+  const u = props.sessionUsage
+  if (!u.max_input_tokens || u.max_input_tokens <= 0) return 0
+  return Math.min(100, Math.round(u.input_tokens / u.max_input_tokens * 100))
+})
+
+const outputPercent = computed(() => {
+  const u = props.sessionUsage
+  if (!u.max_input_tokens || u.max_input_tokens <= 0) return 0
+  return Math.min(100, Math.round(u.output_tokens / u.max_input_tokens * 100))
 })
 
 const contextColor = computed(() => {
@@ -167,17 +228,23 @@ const contextColor = computed(() => {
   return '#22c55e'
 })
 
-const contextTooltip = computed(() => {
-  const u = props.sessionUsage
-  if (!u.max_input_tokens) return ''
-  const used = u.total_tokens
-  const max = u.max_input_tokens
-  const pct = contextPercent.value
-  const left = 100 - pct
-  const formatK = (n) => n >= 1000 ? (n / 1000).toFixed(1) + 'k' : n.toString()
-  const autoPct = u.auto_compress_tokens ? Math.round(u.auto_compress_tokens / max * 100) : 50
-  return `${pct}% used (${left}% left)\n${formatK(used)} / ${formatK(max)} tokens used\nAuto-compress at ${formatK(u.auto_compress_tokens || max * 0.5)} (${autoPct}%)`
+const ringRef = ref(null)
+
+const popupStyle = computed(() => {
+  if (!ringRef.value) return {}
+  const rect = ringRef.value.getBoundingClientRect()
+  return {
+    position: 'fixed',
+    bottom: `${window.innerHeight - rect.top + 10}px`,
+    right: `${window.innerWidth - rect.right - 8}px`,
+  }
 })
+
+function formatTokens(n) {
+  if (!n) return '0'
+  if (n >= 1000) return (n / 1000).toFixed(1) + 'k'
+  return n.toString()
+}
 
 function formatSize(bytes) {
   if (bytes < 1024) return bytes + ' B'
@@ -340,7 +407,12 @@ watch(() => props.disabled, (val) => {
   }
 })
 
+onMounted(() => {
+  document.addEventListener('click', closeTokenPopup)
+})
+
 onUnmounted(() => {
+  document.removeEventListener('click', closeTokenPopup)
   if (abortController) {
     abortController.abort()
   }
@@ -701,11 +773,16 @@ onUnmounted(() => {
   position: relative;
   width: 36px;
   height: 36px;
-  cursor: help;
+  cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
+  transition: transform 0.2s;
+}
+
+.context-ring-wrapper:hover {
+  transform: scale(1.1);
 }
 
 .context-ring {
@@ -723,6 +800,93 @@ onUnmounted(() => {
   color: #475569;
   line-height: 1;
   pointer-events: none;
+}
+
+.context-ring-detail {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font-size: 7px;
+  font-weight: 600;
+  color: #475569;
+  line-height: 1.2;
+  pointer-events: none;
+  white-space: nowrap;
+  text-align: center;
+}
+
+.token-popup {
+  position: fixed;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  padding: 14px 16px;
+  min-width: 200px;
+  z-index: 9999;
+  cursor: default;
+}
+
+.token-popup-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #1e293b;
+  margin-bottom: 10px;
+}
+
+.token-popup-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 3px 0;
+}
+
+.token-popup-label {
+  font-size: 11px;
+  color: #64748b;
+}
+
+.token-popup-value {
+  font-size: 11px;
+  font-weight: 600;
+  color: #334155;
+}
+
+.token-popup-value.input {
+  color: #6366f1;
+}
+
+.token-popup-value.output {
+  color: #06b6d4;
+}
+
+.token-popup-divider {
+  height: 1px;
+  background: #f1f5f9;
+  margin: 6px 0;
+}
+
+.token-popup-bar {
+  margin-top: 8px;
+}
+
+.token-popup-bar-inner {
+  display: flex;
+  height: 6px;
+  border-radius: 3px;
+  overflow: hidden;
+  background: #f1f5f9;
+}
+
+.token-popup-bar-input {
+  background: #6366f1;
+  transition: width 0.3s ease;
+}
+
+.token-popup-bar-output {
+  background: #06b6d4;
+  transition: width 0.3s ease;
 }
 
 .upload-btn {

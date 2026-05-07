@@ -10,13 +10,8 @@ from pydantic import BaseModel, Field
 
 
 class RetryConfig(BaseModel):
-    """Retry configuration"""
-
     enabled: bool = True
     max_retries: int = 3
-    initial_delay: float = 1.0
-    max_delay: float = 60.0
-    exponential_base: float = 2.0
 
 
 class LLMConfig(BaseModel):
@@ -30,17 +25,8 @@ class LLMConfig(BaseModel):
 
 
 class ToolsConfig(BaseModel):
-    """Tools configuration"""
-
-    enable_file_tools: bool = True
-    enable_bash: bool = True
-    enable_skills: bool = True
     skills_dir: str = "./skills"
-    enable_mcp: bool = True
-    mcp_config_path: str = "mcp.json"
-    mcp_connect_timeout: float = 10.0
-    mcp_execute_timeout: float = 60.0
-    mcp_sse_read_timeout: float = 120.0
+    prompts_dir: str = "./prompts"
 
 
 class SQLiteConfig(BaseModel):
@@ -141,9 +127,6 @@ class Config(BaseModel):
         retry_config = RetryConfig(
             enabled=retry_data.get("enabled", True),
             max_retries=retry_data.get("max_retries", 3),
-            initial_delay=retry_data.get("initial_delay", 1.0),
-            max_delay=retry_data.get("max_delay", 60.0),
-            exponential_base=retry_data.get("exponential_base", 2.0),
         )
 
         llm_config = LLMConfig(
@@ -161,17 +144,9 @@ class Config(BaseModel):
         )
 
         tools_data = data.get("tools", {})
-        mcp_data = tools_data.get("mcp", {}) if isinstance(tools_data.get("mcp"), dict) else {}
         tools_config = ToolsConfig(
-            enable_file_tools=tools_data.get("enable_file_tools", True),
-            enable_bash=tools_data.get("enable_bash", True),
-            enable_skills=tools_data.get("enable_skills", True),
             skills_dir=tools_data.get("skills_dir", "./skills"),
-            enable_mcp=tools_data.get("enable_mcp", True),
-            mcp_config_path=tools_data.get("mcp_config_path", "mcp.json"),
-            mcp_connect_timeout=mcp_data.get("connect_timeout", 10.0),
-            mcp_execute_timeout=mcp_data.get("execute_timeout", 60.0),
-            mcp_sse_read_timeout=mcp_data.get("sse_read_timeout", 120.0),
+            prompts_dir=tools_data.get("prompts_dir", "./prompts"),
         )
 
         db_data = data.get("database", {})

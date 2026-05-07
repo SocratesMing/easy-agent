@@ -9,10 +9,6 @@ logger = logging.getLogger(__name__)
 
 
 def parse_file_content(file_path: str, mime_type: str = "") -> str:
-    """Extract text content from a file based on its type.
-
-    Supports: PDF, DOCX, XLSX, images (OCR via pytesseract), plain text, code, CSV.
-    """
     ext = os.path.splitext(file_path)[1].lower()
     path = Path(file_path)
 
@@ -42,7 +38,6 @@ def parse_file_content(file_path: str, mime_type: str = "") -> str:
                      ".proto", ".graphql", ".tf", ".gradle", ".properties"):
             return _parse_text(path)
         else:
-            # 尝试以文本方式读取未知格式
             return _parse_text(path)
     except Exception as e:
         logger.warning(f"解析文件失败 {file_path}: {e}")
@@ -50,7 +45,6 @@ def parse_file_content(file_path: str, mime_type: str = "") -> str:
 
 
 def _parse_text(path: Path) -> str:
-    """Read plain text file with encoding auto-detection."""
     encodings = ["utf-8", "gbk", "gb2312", "latin-1", "shift-jis", "big5"]
     for enc in encodings:
         try:
@@ -61,9 +55,8 @@ def _parse_text(path: Path) -> str:
 
 
 def _parse_pdf(path: Path) -> str:
-    """Extract text from PDF using PyMuPDF or pdfminer."""
     try:
-        import fitz  # PyMuPDF
+        import fitz
         doc = fitz.open(str(path))
         text = "\n".join(page.get_text() for page in doc)
         doc.close()
@@ -95,64 +88,56 @@ def _parse_pdf(path: Path) -> str:
 
 
 def _parse_docx(path: Path) -> str:
-    """Extract text from DOCX."""
     try:
         from docx import Document
         doc = Document(str(path))
-        paragraphs = [p.text for p in doc.paragraphs]
-        return "\n".join(paragraphs)
+        text = "\n".join(p.text for p in doc.paragraphs)
+        if text.strip():
+            return text
     except ImportError:
-        return f"[DOCX文件: {path.name}，请安装: pip install python-docx]"
+        pass
+    return f"[DOCX文件: {path.name}，未安装python-docx，请安装: pip install python-docx]"
 
 
 def _parse_xlsx(path: Path) -> str:
-    """Extract text from XLSX."""
     try:
         import openpyxl
-        wb = openpyxl.load_workbook(str(path), read_only=True, data_only=True)
-        lines = []
+        wb = openpyxl.load_workbook(str(path), data_only=True)
+        text_parts = []
         for sheet_name in wb.sheetnames:
             ws = wb[sheet_name]
-            lines.append(f"=== Sheet: {sheet_name} ===")
+            text_parts.append(f"--- Sheet: {sheet_name} ---")
             for row in ws.iter_rows(values_only=True):
-                row_str = " | ".join(str(cell) if cell is not None else "" for cell in row)
-                if row_str.strip():
-                    lines.append(row_str)
-        wb.close()
-        return "\n".join(lines)
+                row_text = "\t".join(str(cell) if cell is not None else "" for cell in row)
+                if row_text.strip():
+                    text_parts.append(row_text)
+        text = "\n".join(text_parts)
+        if text.strip():
+            return text
     except ImportError:
         pass
-
-    try:
-        import pandas as pd
-        dfs = pd.read_excel(str(path), sheet_name=None)
-        lines = []
-        for sheet_name, df in dfs.items():
-            lines.append(f"=== Sheet: {sheet_name} ===")
-            lines.append(df.to_string(index=False))
-        return "\n".join(lines)
-    except ImportError:
-        return f"[XLSX文件: {path.name}，请安装: pip install openpyxl pandas]"
+    return f"[XLSX文件: {path.name}，未安装openpyxl，请安装: pip install openpyxl]"
 
 
 def _parse_pptx(path: Path) -> str:
-    """Extract text from PPTX."""
     try:
         from pptx import Presentation
         prs = Presentation(str(path))
-        lines = []
-        for i, slide in enumerate(prs.slides, 1):
-            lines.append(f"=== Slide {i} ===")
+        text_parts = []
+        for i, slide in enumerate(prs.slides):
+            text_parts.append(f"--- Slide {i + 1} ---")
             for shape in slide.shapes:
                 if hasattr(shape, "text") and shape.text.strip():
-                    lines.append(shape.text)
-        return "\n".join(lines)
+                    text_parts.append(shape.text)
+        text = "\n".join(text_parts)
+        if text.strip():
+            return text
     except ImportError:
-        return f"[PPTX文件: {path.name}，请安装: pip install python-pptx]"
+        pass
+    return f"[PPTX文件: {path.name}，未安装python-pptx，请安装: pip install python-pptx]"
 
 
 def _parse_image(path: Path) -> str:
-    """Extract text from image via OCR (pytesseract)."""
     try:
         from PIL import Image
         import pytesseract
@@ -162,30 +147,17 @@ def _parse_image(path: Path) -> str:
             return text
     except ImportError:
         pass
-
-    try:
-        import easyocr
-        reader = easyocr.Reader(["ch_sim", "en"], gpu=False)
-        result = reader.readtext(str(path), detail=0)
-        return "\n".join(result)
-    except ImportError:
-        pass
-
-    return f"[图片文件: {path.name}，未安装OCR库，请安装: pip install pillow pytesseract easyocr]"
+    return f"[图片文件: {path.name}，未安装OCR库，请安装: pip install pytesseract pillow]"
 
 
 def _parse_csv(path: Path) -> str:
-    """Extract text from CSV."""
     try:
         import csv
-        import io
-        with open(str(path), encoding="utf-8", errors="replace") as f:
-            content = f.read()
-
-        lines = []
-        reader = csv.reader(io.StringIO(content))
-        for row in reader:
-            lines.append(" | ".join(row))
-        return "\n".join(lines)
-    except Exception as e:
-        return _parse_text(path)
+        with open(path, 'r', encoding='utf-8') as f:
+            reader = csv.reader(f)
+            rows = list(reader)
+            if rows:
+                return "\n".join(",".join(row) for row in rows)
+    except Exception:
+        pass
+    return _parse_text(path)

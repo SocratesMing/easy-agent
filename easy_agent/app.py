@@ -1,4 +1,4 @@
-"""FastAPI server for Easy Agent Web UI"""
+"""FastAPI application entry point"""
 
 import logging
 import os
@@ -13,17 +13,22 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 
-from .db import init_database, get_database
-from .models import HealthResponse
-from .routes.chat import router as chat_router
-from .routes.files import router as files_router
-from .routes.sessions import router as sessions_router
-from .routes.user import router as user_router, profile_router
-from .routes.vector_store import router as vector_store_router
+from .db import init_database
+from .models.api import HealthResponse
+from .api import (
+    chat_router,
+    sessions_router,
+    files_router,
+    auth_router,
+    vector_store_router,
+    bloom_router,
+    forex_router,
+    prompts_router,
+)
 
 logger = logging.getLogger(__name__)
 
-frontend_dist = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "frontend", "dist")
+frontend_dist = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "frontend", "dist")
 
 agent_config = None
 db_instance = None
@@ -33,80 +38,94 @@ def setup_logging():
     root_logger = logging.getLogger()
     if root_logger.handlers:
         return None
-    
+
     log_dir = Path("logs")
     log_dir.mkdir(exist_ok=True)
-    
+
     log_file = log_dir / "easy_agent.log"
-    
-    formatter = logging.Formatter(
-        fmt="%(asctime)s.%(msecs)03d [%(levelname)s] %(filename)s:%(lineno)d: %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S"
+
+    formatter = _CustomFormatter(
+        fmt="[{asctime}]|{levelname}|FMQT|{runid}||{process}|{thread}|{threadName}|{funcName}:{lineno}| {message}",
+        datefmt="%Y-%m-%d %H:%M:%S",
+        style="{",
     )
-    
+
     console_handler = logging.StreamHandler()
     console_handler.setLevel(logging.INFO)
     console_handler.setFormatter(formatter)
-    
+    console_handler.addFilter(_RunidFilter())
+
     file_handler = logging.FileHandler(log_file, encoding="utf-8")
     file_handler.setLevel(logging.DEBUG)
     file_handler.setFormatter(formatter)
-    
+    file_handler.addFilter(_RunidFilter())
+
     root_logger = logging.getLogger()
     root_logger.setLevel(logging.DEBUG)
     root_logger.addHandler(console_handler)
     root_logger.addHandler(file_handler)
-    
+
     uvicorn_logger = logging.getLogger("uvicorn")
     uvicorn_logger.setLevel(logging.INFO)
     uvicorn_logger.addHandler(console_handler)
     uvicorn_logger.addHandler(file_handler)
-    
+
     uvicorn_access_logger = logging.getLogger("uvicorn.access")
     uvicorn_access_logger.setLevel(logging.INFO)
     uvicorn_access_logger.addHandler(console_handler)
     uvicorn_access_logger.addHandler(file_handler)
-    
+
     return log_file
 
 
+class _RunidFilter(logging.Filter):
+    def filter(self, record):
+        if not hasattr(record, "runid"):
+            record.runid = "-"
+        return True
+
+
+class _CustomFormatter(logging.Formatter):
+    def formatTime(self, record, datefmt=None):
+        from datetime import datetime
+        ct = datetime.fromtimestamp(record.created)
+        if datefmt:
+            s = ct.strftime(datefmt)
+        else:
+            s = ct.strftime("%Y-%m-%d %H:%M:%S")
+        return f"{s}.{int(record.msecs * 1000):06d}"
+
+
 def _setup_shared_deps(skills_root: str) -> str:
-    """Create shared node_modules for skill npm packages, avoiding per-workspace installs."""
     if not skills_root:
         return ""
 
     shared_dir = Path(skills_root).parent / "shared_deps" / "node_modules"
     shared_dir.parent.mkdir(parents=True, exist_ok=True)
 
-    # Known skill npm dependencies
     skill_npm_packages = ["docx", "pptxgenjs"]
 
     if not shared_dir.exists():
         shared_dir.mkdir(parents=True, exist_ok=True)
 
-    # Check which packages are missing
     missing = [pkg for pkg in skill_npm_packages if not (shared_dir / pkg).exists()]
     if not missing:
         logger.info(f"[启动] ✅ 共享依赖已就绪: {shared_dir}")
         return str(shared_dir)
 
-    # Use lock file to prevent concurrent installations
     lock_file = shared_dir.parent / ".install_lock"
     if lock_file.exists():
-        # Another process is installing, wait for it
         logger.info("[启动] ⏳ 等待其他进程完成依赖安装...")
         import time
-        for _ in range(60):  # Wait up to 60 seconds
+        for _ in range(60):
             time.sleep(1)
             if not lock_file.exists():
                 break
-        # Re-check after waiting
         missing = [pkg for pkg in skill_npm_packages if not (shared_dir / pkg).exists()]
         if not missing:
             logger.info(f"[启动] ✅ 共享依赖已就绪 (由其他进程安装): {shared_dir}")
             return str(shared_dir)
 
-    # Create lock file
     lock_file.touch()
     try:
         logger.info(f"[启动] 📦 安装共享 skill 依赖: {missing}")
@@ -117,7 +136,6 @@ def _setup_shared_deps(skills_root: str) -> str:
             text=True,
             timeout=120,
         )
-        # Verify installation
         still_missing = [pkg for pkg in missing if not (shared_dir / pkg).exists()]
         if still_missing:
             logger.warning(f"[启动] ⚠️ 以下包安装失败: {still_missing}")
@@ -126,7 +144,6 @@ def _setup_shared_deps(skills_root: str) -> str:
     except Exception as e:
         logger.warning(f"[启动] ⚠️ 共享依赖安装失败: {e}")
     finally:
-        # Remove lock file
         lock_file.unlink(missing_ok=True)
 
     return str(shared_dir)
@@ -135,15 +152,15 @@ def _setup_shared_deps(skills_root: str) -> str:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global agent_config, db_instance
-    
-    project_root = Path(__file__).parent.parent.parent
+
+    project_root = Path(__file__).parent.parent
     if str(project_root) not in sys.path:
         sys.path.insert(0, str(project_root))
     os.chdir(project_root)
-    
+
     log_file = setup_logging()
     logger.info(f"日志文件: {log_file}")
-    
+
     logger.info("=" * 60)
     logger.info("[启动] Easy Agent Web Service 初始化中...")
     logger.info(f"[启动] 项目目录: {project_root}")
@@ -153,10 +170,10 @@ async def lifespan(app: FastAPI):
 
     config_path = os.environ.get("EASY_CONFIG", "./easy_agent/config/config.yaml")
     if not os.path.exists(config_path):
-        config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "config", "config.yaml")
+        config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config", "config.yaml")
 
     try:
-        from ..config import Config
+        from .config import Config
         config = Config.from_yaml(config_path)
         logger.info(f"[启动] ✅ 配置文件加载成功: {config_path}")
         logger.info(f"[启动] LLM Provider: {config.llm.provider}")
@@ -166,10 +183,9 @@ async def lifespan(app: FastAPI):
         logger.warning(f"[启动] ⚠️ 配置文件加载失败，使用默认配置: {e}")
         config = None
 
-    # LLM connectivity check
     if config:
         try:
-            from ..model import create_model
+            from .model import create_model
             from langchain_core.messages import HumanMessage
 
             llm = create_model(config)
@@ -196,7 +212,7 @@ async def lifespan(app: FastAPI):
         vs_config = config.vector_store.model_dump()
         if vs_config.get("enabled"):
             try:
-                from .vector_store import init_vector_store
+                from .services.vector_store import init_vector_store
                 vs = init_vector_store(vs_config)
                 app.state.vector_store = vs
                 logger.info(f"[启动] ✅ 向量数据库已启用 | provider: {vs_config.get('embedding_provider', 'unknown')}")
@@ -206,12 +222,11 @@ async def lifespan(app: FastAPI):
         else:
             logger.info("[启动] ℹ️ 向量数据库未启用")
 
-    # Resolve system_prompt_path from config, relative to config directory
     if config and hasattr(config.agent, 'system_prompt_path') and config.agent.system_prompt_path:
         config_dir = os.path.dirname(os.path.abspath(config_path))
         system_prompt_path = os.path.join(config_dir, config.agent.system_prompt_path)
     else:
-        system_prompt_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "config", "system_prompt.md")
+        system_prompt_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config", "system_prompt.md")
 
     if os.path.exists(system_prompt_path):
         with open(system_prompt_path, "r", encoding="utf-8") as f:
@@ -222,8 +237,8 @@ async def lifespan(app: FastAPI):
         logger.warning(f"[启动] ⚠️ 系统提示词文件不存在: {system_prompt_path}，使用默认提示词")
 
     if config:
-        from .service import init_agent_config
-        from ..skills import find_skills_root, discover_skills
+        from .services import init_agent_config
+        from .skills import find_skills_root, discover_skills
 
         skills_dir_config = config.tools.skills_dir if hasattr(config.tools, 'skills_dir') else None
         skills_root = find_skills_root(skills_dir_config)
@@ -238,7 +253,6 @@ async def lifespan(app: FastAPI):
             skills_root = ""
             logger.info("[启动] ℹ️ 未发现任何 skills")
 
-        # Pre-install shared skill npm dependencies
         shared_deps_path = _setup_shared_deps(skills_root)
 
         init_agent_config(
@@ -249,6 +263,21 @@ async def lifespan(app: FastAPI):
         )
         agent_config = {"config": config}
         logger.info("[启动] ✅ Agent 配置加载成功")
+
+        try:
+            import threading
+            from .domain.bloom.bloom_scheduler import start_scheduler
+            bloom_llm = create_model(config)
+            bloom_thread = threading.Thread(
+                target=start_scheduler,
+                args=(db, bloom_llm),
+                daemon=True,
+                name="bloom-scheduler"
+            )
+            bloom_thread.start()
+            logger.info("[启动] ✅ 彭博定时任务已启动 (每日 17:00)")
+        except Exception as e:
+            logger.warning(f"[启动] ⚠️ 彭博定时任务启动失败: {e}")
     else:
         logger.warning("[启动] ⚠️ Agent 配置未加载")
 
@@ -288,9 +317,11 @@ async def global_exception_handler(request: Request, exc: Exception):
 app.include_router(chat_router)
 app.include_router(sessions_router)
 app.include_router(files_router)
-app.include_router(user_router)
-app.include_router(profile_router)
+app.include_router(auth_router)
 app.include_router(vector_store_router)
+app.include_router(bloom_router)
+app.include_router(forex_router)
+app.include_router(prompts_router)
 
 
 @app.get("/api/health", summary="健康检查", response_model=HealthResponse)
@@ -304,7 +335,7 @@ async def health_check():
 
 @app.get("/api/config", summary="获取Agent配置")
 async def get_config():
-    from .service import get_agent_config
+    from .services import get_agent_config
     _cfg = get_agent_config()
     if _cfg:
         return {
@@ -338,9 +369,9 @@ async def serve_static(full_path: str):
 
 def run_server(host: str = "0.0.0.0", port: int = 8000):
     import uvicorn
-    
+
     setup_logging()
-    
+
     print("=" * 50)
     print("  Easy Agent API Server")
     print("=" * 50)
@@ -352,9 +383,9 @@ def run_server(host: str = "0.0.0.0", port: int = 8000):
     print(f"  Session-level Agent reuse: Enabled")
     print("=" * 50)
     print()
-    
+
     uvicorn.run(
-        "easy_agent.web.server:app",
+        "easy_agent.app:app",
         host=host,
         port=port,
         reload=False,

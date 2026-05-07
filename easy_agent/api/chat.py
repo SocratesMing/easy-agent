@@ -11,12 +11,12 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
-from ..db import Database, SessionModel, get_database
-from ..dependencies import get_current_username
-from ..models import ChatRequest
-from ..service import chat_stream_generator, get_or_create_agent_for_session, remove_session_agent
-from ..utils.file_parser import parse_file_content
-from ..utils.session_logger import SessionLogger
+from ..db import Database, get_database
+from ..models.db import SessionModel
+from ..models.api import ChatRequest
+from ..middleware import get_current_username
+from ..services import chat_stream_generator, get_or_create_agent_for_session, remove_session_agent
+from ..utils import parse_file_content, SessionLogger
 from .sessions import generate_workspace_name
 
 logger = logging.getLogger(__name__)
@@ -100,59 +100,44 @@ async def chat_stream(
             session.updated_at = datetime.now().isoformat()
             db.update_session(session)
 
+    parsed_content = request.message
+    if request.files:
+        file_contents = []
+        for file_info in request.files:
+            file_path = file_info.get("file_path", "")
+            if file_path:
+                content = parse_file_content(file_path)
+                if content:
+                    file_contents.append(f"[文件: {file_info.get('filename', '')}]\n{content}")
+        if file_contents:
+            parsed_content = "\n\n".join(file_contents) + "\n\n" + request.message
+
     user_message = {
         "role": "user",
         "content": request.message,
         "timestamp": datetime.now().isoformat(),
-        "files": request.files or [],
     }
+    if request.files:
+        user_message["files"] = request.files
     db.add_message(session_id, user_message)
     db.add_message_row(session_id, user_message)
 
-    # 如果有文件，解析文件内容并拼接到消息中
-    parsed_content = request.message
-    if request.files:
-        file_context_parts = []
-        for file_info in request.files:
-            file_path = file_info.get("file_path") or file_info.get("path", "")
-            filename = file_info.get("filename", "")
-            if file_path and Path(file_path).exists():
-                content_type = file_info.get("type", "")
-                extracted = parse_file_content(file_path, content_type)
-                if extracted and len(extracted) > 20:  # 有实质内容才拼接
-                    file_context_parts.append(
-                        f"--- 文件: {filename} ---\n{extracted[:10000]}\n--- 文件结束 ---"
-                    )
-                else:
-                    file_context_parts.append(f"[文件: {filename}，无文本内容可提取]")
-            else:
-                file_context_parts.append(f"[文件: {filename}，路径不可用: {file_path}]")
-
-        if file_context_parts:
-            file_context = "\n\n".join(file_context_parts)
-            parsed_content = f"{request.message}\n\n[用户上传了以下文件，文件内容已提取供参考]:\n\n{file_context}"
-
-    logger.info(f"[{sid}] 最终消息长度: {len(parsed_content)} 字符 | 包含文件: {bool(request.files)}")
-
-    # 获取 workspace_name 用于创建 agent
-    session = db.get_session(session_id)
-    workspace_name = session.workspace_name if session else ""
-
-    agent = await get_or_create_agent_for_session(session_id, username, workspace_name)
-
-    from ..service import get_agent_config
-    _cfg = get_agent_config()
-    sys_prompt = (_cfg or {}).get("system_prompt", "")
     session_logger = SessionLogger(
         session_id=session_id,
         username=username,
-        workspace=str(agent.workspace_dir.absolute()) if agent else "",
-        system_prompt=sys_prompt,
+        workspace="",
+        system_prompt="",
     )
-    session_logger.log_user_message(request.message, request.files, message_id=message_id)
+    session_logger.log_user_message(
+        message=request.message,
+        files=request.files,
+        message_id=message_id,
+    )
 
-    return StreamingResponse(
-        chat_stream_generator(
+    agent = await get_or_create_agent_for_session(session_id, username)
+
+    async def event_generator():
+        async for chunk in chat_stream_generator(
             request=request,
             db=db,
             agent=agent,
@@ -162,7 +147,11 @@ async def chat_stream(
             http_request=http_request,
             parsed_content=parsed_content,
             session_logger=session_logger,
-        ),
+        ):
+            yield chunk
+
+    return StreamingResponse(
+        event_generator(),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -172,16 +161,19 @@ async def chat_stream(
     )
 
 
-@router.delete(
-    "/session/{session_id}/agent",
-    summary="清除会话Agent缓存",
-    description="清除指定会话的Agent实例缓存，下次请求会创建新的Agent。",
+@router.post(
+    "/cancel",
+    summary="取消当前聊天",
+    description="取消当前正在进行的流式聊天请求。",
 )
-async def clear_session_agent(session_id: str):
-    sid = session_id[-5:] if session_id else "new"
+async def cancel_chat(
+    session_id: str,
+    db: Annotated[Database, Depends(get_database)],
+    username: Annotated[str, Depends(get_current_username)],
+):
+    sid = session_id[-5:] if session_id else "unknown"
+    logger.info(f"[{sid}] 取消聊天请求 | 用户: {username}")
+
     remove_session_agent(session_id)
-    logger.info(f"[{sid}] Agent 缓存已清除")
-    return {
-        "status": "success",
-        "message": f"会话 {session_id} 的 Agent 缓存已清除",
-    }
+
+    return {"status": "cancelled", "session_id": session_id}

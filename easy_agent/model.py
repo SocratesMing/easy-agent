@@ -76,4 +76,5 @@ def _create_openai_compatible(llm_config, provider: str) -> ChatOpenAI:
         http_async_client=httpx.AsyncClient(timeout=timeout),
         max_retries=llm_config.retry.max_retries if llm_config.retry.enabled else 0,
         streaming=True,
+        stream_usage=True,
     )

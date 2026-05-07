@@ -108,6 +108,9 @@ export async function sendMessage(sessionId, message, onChunk, signal, enableDee
         if (line.startsWith('data: ')) {
           try {
             const data = JSON.parse(line.slice(6))
+            if (data.type === 'done') {
+              console.log('[SSE] Received done event:', JSON.stringify(data).substring(0, 500))
+            }
             onChunk(data)
           } catch (e) {
             console.error('解析 SSE 数据失败:', e)

@@ -387,14 +387,6 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
 
   let contentWithFiles = message.trim().replace(/\s+/g, ' ')
 
-  // 清除前一条助手消息的 user_input_required 状态
-  if (messages.value.length > 0) {
-    const lastMsg = messages.value[messages.value.length - 1]
-    if (lastMsg.role === 'assistant' && lastMsg.user_input_required) {
-      lastMsg.user_input_required = false
-    }
-  }
-
   const userMessage = {
     id: userMsgId,
     role: 'user',
@@ -496,6 +488,12 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
         // 新会话创建后立即刷新会话列表
         loadSessions()
       }
+    } else if (eventType === 'token_usage') {
+      sessionUsage.value.input_tokens = data.input_tokens || 0
+      sessionUsage.value.output_tokens = data.output_tokens || 0
+      sessionUsage.value.total_tokens = data.total_tokens || 0
+      if (data.max_input_tokens) sessionUsage.value.max_input_tokens = data.max_input_tokens
+      if (data.auto_compress_tokens) sessionUsage.value.auto_compress_tokens = data.auto_compress_tokens
     } else if (eventType === 'thinking_start') {
       // Always create a new thinking block for each step
       currentThinking = ''
@@ -517,11 +515,12 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
       currentThinking = ''
       currentBlock = null
     } else if (eventType === 'content') {
-      currentContent += content || ''
       if (!currentBlock || currentBlock.type !== 'content') {
+        currentContent = content || ''
         currentBlock = null
         addBlock('content', { content: currentContent })
       } else {
+        currentContent += content || ''
         currentBlock.content = currentContent
         const idx = messages.value.findIndex(m => m.id === assistantMsgId)
         if (idx !== -1) {
@@ -531,18 +530,6 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
     } else if (eventType === 'content_end') {
       currentContent = ''
       currentBlock = null
-    } else if (eventType === 'user_input_required') {
-      ensureAssistantMessage()
-      const idx = messages.value.findIndex(m => m.id === assistantMsgId)
-      if (idx !== -1) {
-        messages.value[idx].content = currentContent
-        messages.value[idx].loading = false
-        messages.value[idx].user_input_required = true
-        messages.value[idx].user_input_question = content || currentContent
-        messages.value[idx].created_at = new Date().toISOString()
-        messages.value[idx] = { ...messages.value[idx] }
-      }
-      isStreaming.value = false
     } else if (eventType === 'tool_call') {
       const idx = messages.value.findIndex(m => m.id === assistantMsgId)
       if (idx !== -1) {
@@ -638,6 +625,13 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
           messages.value[idx].tool_calls = currentToolCalls
           messages.value[idx].loading = false
           messages.value[idx].created_at = new Date().toISOString()
+          if (data.usage) {
+            messages.value[idx].usage = {
+              input_tokens: data.usage.input_tokens || 0,
+              output_tokens: data.usage.output_tokens || 0,
+              total_tokens: data.usage.total_tokens || 0,
+            }
+          }
           messages.value[idx] = { ...messages.value[idx] }
         }
       }

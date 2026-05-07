@@ -40,7 +40,6 @@
         :message="msg"
         @removeFile="(file) => handleRemoveFile(file, index)"
         @retry="handleRetry"
-        @userInput="(response) => handleUserInput(response, msg)"
       />
     </div>
     </div>
@@ -55,18 +54,6 @@
         <polyline points="18 15 12 9 6 15"></polyline>
       </svg>
     </button>
-
-    <div v-if="sessionUsage.total_tokens > 0" class="session-usage">
-      <span class="usage-item">
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
-          <path d="M12 2L2 7l10 5 10-5-10-5z"></path>
-          <path d="M2 17l10 5 10-5"></path>
-          <path d="M2 12l10 5 10-5"></path>
-        </svg>
-        Token 消耗: <strong>{{ sessionUsage.total_tokens.toLocaleString() }}</strong>
-      </span>
-      <span class="usage-detail">(输入 {{ sessionUsage.input_tokens.toLocaleString() }} / 输出 {{ sessionUsage.output_tokens.toLocaleString() }})</span>
-    </div>
 
     <ChatInput
       @send="handleSend"
@@ -238,13 +225,7 @@ function handleCreateSession() {
   emit('createSession')
 }
 
-function handleUserInput(response, msg) {
-  // 用户对助手消息做出了回应，发送为新消息
-  emit('sendMessage', response, [], null, true, false)
-}
-
 function handleQuickAction(message) {
-  // 直接发送消息，后端会自动创建会话并根据消息生成标题
   emit('sendMessage', message, [], null, true, false)
 }
 
@@ -485,34 +466,5 @@ watch(() => props.scrollTrigger, () => {
   50% {
     opacity: 0.5;
   }
-}
-
-.session-usage {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  padding: 6px 16px;
-  font-size: 12px;
-  color: #94a3b8;
-  background: #f8fafc;
-  border-top: 1px solid #f1f5f9;
-}
-
-.session-usage .usage-item {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  color: #64748b;
-}
-
-.session-usage .usage-item strong {
-  color: #475569;
-  font-weight: 600;
-}
-
-.session-usage .usage-detail {
-  color: #94a3b8;
-  font-size: 11px;
 }
 </style>
