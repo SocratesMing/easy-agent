@@ -384,6 +384,7 @@ async function handleRenameSession(sessionId, newTitle) {
 
 async function handleSendMessage(message, files = [], signal, enableDeepThink = true, enableKnowledgeBase = false) {
   const userMsgId = `user-${Date.now()}`
+  const preStreamUsage = { ...sessionUsage.value }
 
   let contentWithFiles = message.trim().replace(/\s+/g, ' ')
 
@@ -542,7 +543,7 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
         if (existingBlockIdx !== -1) {
           messages.value[idx].blocks[existingBlockIdx] = {
             ...messages.value[idx].blocks[existingBlockIdx],
-            arguments: args || {}
+            arguments: args !== undefined ? args : messages.value[idx].blocks[existingBlockIdx].arguments
           }
           currentBlock = messages.value[idx].blocks[existingBlockIdx]
           messages.value[idx] = { ...messages.value[idx], blocks: [...messages.value[idx].blocks] }
@@ -568,52 +569,92 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
         }
       }
     } else if (eventType === 'tool_result') {
-      // Update currentToolCalls
       const callId = toolCallId || `tool-${tool_name}`
+      const toolDuration = duration != null ? duration : 0
+      console.log('[tool_result] event received:', { callId, tool_name, toolDuration, resultLen: (result || '').length, success, args })
+
       if (currentToolCalls.length > 0) {
         const matchingCall = currentToolCalls.find(tc => tc.tool_call_id === callId)
         if (matchingCall) {
           matchingCall.result = result || ''
           matchingCall.success = success !== false
+          matchingCall.duration = toolDuration
+          if (args) matchingCall.arguments = args
         } else {
           const lastToolCall = currentToolCalls[currentToolCalls.length - 1]
           lastToolCall.result = result || ''
           lastToolCall.success = success !== false
+          lastToolCall.duration = toolDuration
+          if (args) lastToolCall.arguments = args
         }
       }
 
-      // Find the matching tool_call block by tool_call_id and merge result
       const idx = messages.value.findIndex(m => m.id === assistantMsgId)
       if (idx !== -1) {
         const blockIdx = messages.value[idx].blocks.findIndex(
           b => b.type === 'tool_call' && b.id === callId
         )
         if (blockIdx !== -1) {
+          console.log('[tool_result] matched block by id:', callId)
           messages.value[idx].blocks[blockIdx] = {
             ...messages.value[idx].blocks[blockIdx],
+            arguments: args || messages.value[idx].blocks[blockIdx].arguments,
             result: result || '',
             success: success !== false,
-            duration: duration
+            duration: toolDuration
           }
           messages.value[idx] = { ...messages.value[idx], blocks: [...messages.value[idx].blocks] }
         } else {
-          // Fallback: find last tool_call block with matching tool_name
           const fallbackIdx = [...messages.value[idx].blocks].reverse().findIndex(
             b => b.type === 'tool_call' && b.tool_name === tool_name
           )
           const actualIdx = fallbackIdx !== -1 ? messages.value[idx].blocks.length - 1 - fallbackIdx : -1
           if (actualIdx !== -1) {
+            console.log('[tool_result] matched block by tool_name:', tool_name)
             messages.value[idx].blocks[actualIdx] = {
               ...messages.value[idx].blocks[actualIdx],
+              arguments: args || messages.value[idx].blocks[actualIdx].arguments,
               result: result || '',
               success: success !== false,
-              duration: duration
+              duration: toolDuration
             }
             messages.value[idx] = { ...messages.value[idx], blocks: [...messages.value[idx].blocks] }
+          } else {
+            const ciFallbackIdx = [...messages.value[idx].blocks].reverse().findIndex(
+              b => b.type === 'tool_call' && b.tool_name && b.tool_name.toLowerCase() === tool_name.toLowerCase()
+            )
+            const ciActualIdx = ciFallbackIdx !== -1 ? messages.value[idx].blocks.length - 1 - ciFallbackIdx : -1
+            if (ciActualIdx !== -1) {
+              console.log('[tool_result] matched block by tool_name (case-insensitive):', tool_name)
+              messages.value[idx].blocks[ciActualIdx] = {
+                ...messages.value[idx].blocks[ciActualIdx],
+                arguments: args || messages.value[idx].blocks[ciActualIdx].arguments,
+                result: result || '',
+                success: success !== false,
+                duration: toolDuration
+              }
+              messages.value[idx] = { ...messages.value[idx], blocks: [...messages.value[idx].blocks] }
+            } else {
+              const pendingIdx = messages.value[idx].blocks.findIndex(
+                b => b.type === 'tool_call' && b.duration == null
+              )
+              if (pendingIdx !== -1) {
+                console.log('[tool_result] matched block by pending (duration==null):', messages.value[idx].blocks[pendingIdx].tool_name)
+                messages.value[idx].blocks[pendingIdx] = {
+                  ...messages.value[idx].blocks[pendingIdx],
+                  arguments: args || messages.value[idx].blocks[pendingIdx].arguments,
+                  result: result || '',
+                  success: success !== false,
+                  duration: toolDuration
+                }
+                messages.value[idx] = { ...messages.value[idx], blocks: [...messages.value[idx].blocks] }
+              } else {
+                console.warn('[tool_result] NO matching block found! callId:', callId, 'tool_name:', tool_name, 'blocks:', messages.value[idx].blocks.map(b => ({ type: b.type, id: b.id, tool_name: b.tool_name, duration: b.duration })))
+              }
+            }
           }
         }
       }
-      // Reset currentBlock so next content/tool creates a new block
       currentBlock = null
     } else if (eventType === 'done') {
       const finalContent = data.content || currentContent
@@ -637,10 +678,10 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
       }
 
       if (data.usage) {
-        console.log('[Token Usage] Received usage:', data.usage)
-        sessionUsage.value.input_tokens += data.usage.input_tokens || 0
-        sessionUsage.value.output_tokens += data.usage.output_tokens || 0
-        sessionUsage.value.total_tokens += data.usage.total_tokens || 0
+        console.log('[Token Usage] Received usage:', data.usage, 'preStreamUsage:', preStreamUsage)
+        sessionUsage.value.input_tokens = (preStreamUsage.input_tokens || 0) + (data.usage.input_tokens || 0)
+        sessionUsage.value.output_tokens = (preStreamUsage.output_tokens || 0) + (data.usage.output_tokens || 0)
+        sessionUsage.value.total_tokens = (preStreamUsage.total_tokens || 0) + (data.usage.total_tokens || 0)
         if (data.usage.max_input_tokens) sessionUsage.value.max_input_tokens = data.usage.max_input_tokens
         if (data.usage.auto_compress_tokens) sessionUsage.value.auto_compress_tokens = data.usage.auto_compress_tokens
         console.log('[Token Usage] Updated sessionUsage:', sessionUsage.value)

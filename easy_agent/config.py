@@ -21,6 +21,7 @@ class LLMConfig(BaseModel):
     api_base: str | None = None
     model: str = "claude-sonnet-4-6"
     provider: str = "anthropic"
+    max_input_tokens: int = 200000  # Model context window size
     retry: RetryConfig = Field(default_factory=RetryConfig)
 
 
@@ -89,12 +90,21 @@ class AgentConfig(BaseModel):
     system_prompt_path: str = "system_prompt.md"
 
 
+class SummarizationConfig(BaseModel):
+    """Conversation summarization/compression configuration"""
+
+    enabled: bool = True
+    compression_threshold: float = 0.8  # Trigger compression at this fraction of context window
+    compression_target: float = 0.1     # Keep this fraction of context window after compression
+
+
 class Config(BaseModel):
     """Main configuration class"""
 
     llm: LLMConfig
     agent: AgentConfig
     tools: ToolsConfig
+    summarization: SummarizationConfig = Field(default_factory=SummarizationConfig)
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
     vector_store: VectorStoreConfig = Field(default_factory=VectorStoreConfig)
 
@@ -134,6 +144,7 @@ class Config(BaseModel):
             api_base=data.get("api_base"),
             model=data.get("model", "claude-sonnet-4-6"),
             provider=data.get("provider", "anthropic"),
+            max_input_tokens=data.get("max_input_tokens", 200000),
             retry=retry_config,
         )
 
@@ -188,10 +199,18 @@ class Config(BaseModel):
             sentence_transformers_model=vs_data.get("sentence_transformers_model", "Qwen/Qwen3-Embedding-0.6B"),
         )
 
+        summ_data = data.get("summarization", {})
+        summ_config = SummarizationConfig(
+            enabled=summ_data.get("enabled", True),
+            compression_threshold=summ_data.get("compression_threshold", 0.8),
+            compression_target=summ_data.get("compression_target", 0.1),
+        )
+
         return cls(
             llm=llm_config,
             agent=agent_config,
             tools=tools_config,
+            summarization=summ_config,
             database=db_config,
             vector_store=vs_config,
         )

@@ -214,7 +214,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, shallowRef } from 'vue'
+import { ref, computed, onMounted, shallowRef, watch } from 'vue'
 import { createHighlighter } from 'shiki'
 import { marked } from 'marked'
 import FileIcon from './FileIcon.vue'
@@ -256,6 +256,12 @@ onMounted(async () => {
   } catch (e) {
     console.error('Shiki 初始化失败:', e)
   }
+})
+
+watch(() => props.message.id, () => {
+  expandedThinking.value = {}
+  expandedKnowledgeBase.value = {}
+  expandedTool.value = {}
 })
 
 const sortedBlocks = computed(() => {
@@ -315,7 +321,7 @@ function isExpandedThinking(index) {
   const block = sortedBlocks.value[index]
   if (!block) return false
   const key = getBlockKey(block, index)
-  return expandedThinking.value[key] !== false
+  return expandedThinking.value[key] === true
 }
 
 function toggleThinking(index) {

@@ -10,7 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import AsyncGenerator
 
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from ..agent import EasyAgent
 from ..db import Database
@@ -131,6 +131,39 @@ async def build_context_messages(
             return context_summary + current_message
 
     return current_message
+
+
+def _update_accumulated_args(
+    tool_call_accumulated_args: dict,
+    tool_name: str,
+    args_data: any,
+) -> None:
+    """Update accumulated tool call arguments from a chunk.
+
+    Accumulates string args across chunks (appending partial JSON),
+    and merges dict args. Handles JSON parsing for string args.
+    """
+    if isinstance(args_data, dict):
+        if tool_name in tool_call_accumulated_args and isinstance(tool_call_accumulated_args[tool_name], dict):
+            tool_call_accumulated_args[tool_name].update(args_data)
+        else:
+            tool_call_accumulated_args[tool_name] = args_data.copy()
+    elif isinstance(args_data, str) and args_data:
+        if tool_name not in tool_call_accumulated_args or not isinstance(tool_call_accumulated_args[tool_name], str):
+            tool_call_accumulated_args[tool_name] = args_data
+        else:
+            tool_call_accumulated_args[tool_name] += args_data
+        try:
+            parsed = json.loads(tool_call_accumulated_args[tool_name])
+            if isinstance(parsed, dict):
+                tool_call_accumulated_args[tool_name] = parsed
+            else:
+                tool_call_accumulated_args[tool_name] = {"value": parsed}
+        except json.JSONDecodeError:
+            pass
+    else:
+        if tool_name not in tool_call_accumulated_args:
+            tool_call_accumulated_args[tool_name] = {}
 
 
 async def chat_stream_generator(
@@ -327,7 +360,7 @@ async def chat_stream_generator(
                     continue
 
                 content = getattr(token, 'content', '')
-                if content:
+                if content and not isinstance(token, ToolMessage):
                     content_str = str(content)
                     accumulated_content += content_str
 
@@ -335,6 +368,7 @@ async def chat_stream_generator(
                         is_in_thinking = True
                         is_after_tool_result = False
                         msg_received_time = time.time()
+                        thinking_start_time = time.time()
                         current_step += 1
                         logger.info(f"[{sid}] 🤔 Step {current_step} 思考开始")
                         block_order += 1
@@ -463,8 +497,7 @@ async def chat_stream_generator(
 
                         if tool_name_from_chunk:
                             tool_name = tool_name_from_chunk
-                            if chunk_id:
-                                tool_call_id_map[tool_name] = chunk_id
+                            tool_call_id_map[tool_name] = chunk_id or f"tool-{tool_name}"
                             tool_call_start_times[tool_name] = time.time()
                             tool_call_step_map[tool_name] = current_step
                             current_content_block = None
@@ -481,24 +514,31 @@ async def chat_stream_generator(
                             }
                             blocks.append(tc_block)
                             tool_call_block_added.add(tool_name)
-                            if isinstance(args_data, dict):
-                                tool_call_accumulated_args[tool_name] = args_data.copy()
-                            elif isinstance(args_data, str) and args_data:
-                                try:
-                                    parsed = json.loads(args_data)
-                                    if isinstance(parsed, dict):
-                                        tool_call_accumulated_args[tool_name] = parsed
-                                    else:
-                                        tool_call_accumulated_args[tool_name] = {"value": parsed}
-                                except json.JSONDecodeError:
-                                    tool_call_accumulated_args[tool_name] = {"raw": args_data}
-                            else:
-                                tool_call_accumulated_args[tool_name] = {}
+                            _update_accumulated_args(tool_call_accumulated_args, tool_name, args_data)
 
                             yield format_sse({
                                 "type": "tool_call",
                                 "tool_name": tool_name,
                                 "tool_call_id": chunk_id or f"tool-{tool_name}",
+                                "arguments": tool_call_accumulated_args[tool_name],
+                                "step": current_step,
+                            })
+                        elif chunk_id:
+                            tool_name = next(
+                                (name for name, cid in tool_call_id_map.items() if cid == chunk_id),
+                                None
+                            )
+                            if not tool_name:
+                                continue
+                            _update_accumulated_args(tool_call_accumulated_args, tool_name, args_data)
+                            for blk in reversed(blocks):
+                                if blk["type"] == "tool_call" and blk["tool_name"] == tool_name:
+                                    blk["arguments"] = tool_call_accumulated_args[tool_name]
+                                    break
+                            yield format_sse({
+                                "type": "tool_call",
+                                "tool_name": tool_name,
+                                "tool_call_id": chunk_id,
                                 "arguments": tool_call_accumulated_args[tool_name],
                                 "step": current_step,
                             })
@@ -578,106 +618,109 @@ async def chat_stream_generator(
                                     "step": current_step,
                                 })
 
-                if hasattr(token, "tool_call_results") and token.tool_call_results:
-                    for tcr in token.tool_call_results:
-                        tool_name = tcr.get("name", "")
-                        result_content = tcr.get("content", "")
-                        tool_success = not tcr.get("error")
+                if isinstance(token, ToolMessage):
+                    tool_name = token.name or ""
+                    result_content = str(token.content) if token.content else ""
+                    tool_success = True
+                    tool_call_id = token.tool_call_id or ""
 
-                        tool_start = tool_call_start_times.pop(tool_name, None)
-                        tool_duration = time.time() - tool_start if tool_start else 0
-                        total_tool_duration += tool_duration
+                    if not tool_name:
+                        continue
 
-                        tool_args = tool_call_accumulated_args.pop(tool_name, {})
-                        result_len = len(result_content) if result_content else 0
-                        result_preview = result_content[:500] if result_content else ""
+                    tool_start = tool_call_start_times.pop(tool_name, None)
+                    tool_duration = time.time() - tool_start if tool_start else 0
+                    total_tool_duration += tool_duration
 
-                        if "raw" in tool_args and len(tool_args) == 1:
-                            log_args = tool_args["raw"]
-                        else:
-                            log_args = json.dumps(tool_args, ensure_ascii=False)
+                    tool_args = tool_call_accumulated_args.pop(tool_name, {})
+                    result_len = len(result_content) if result_content else 0
+                    result_preview = result_content[:500] if result_content else ""
 
-                        logger.info(f"[{sid}] Step {current_step} 工具调用: {tool_name} | 参数: {log_args[:2000]} | 耗时: {tool_duration:.2f}s | 内容长度: {result_len} | 调用结果: {'成功' if tool_success else '失败'} | 结果: {result_preview}")
+                    if "raw" in tool_args and len(tool_args) == 1:
+                        log_args = tool_args["raw"]
+                    else:
+                        log_args = json.dumps(tool_args, ensure_ascii=False)
 
-                        for blk in reversed(blocks):
-                            if blk["type"] == "tool_call" and blk["tool_name"] == tool_name:
-                                blk["result"] = result_content
-                                blk["success"] = tool_success
-                                blk["duration"] = round(tool_duration, 2)
-                                break
+                    logger.info(f"[{sid}] Step {current_step} 工具调用: {tool_name} | 参数: {log_args[:2000]} | 耗时: {tool_duration:.2f}s | 内容长度: {result_len} | 调用结果: {'成功' if tool_success else '失败'} | 结果: {result_preview}")
 
-                        tool_call_id = tool_call_id_map.pop(tool_name, f"tool-{tool_name}-{len(tool_call_records)}")
-                        tool_call_records.append((
-                            tool_name,
-                            tool_call_id,
-                            tool_args,
-                            result_content,
-                            tool_success,
-                            round(tool_duration, 2),
-                            current_step,
-                        ))
+                    for blk in reversed(blocks):
+                        if blk["type"] == "tool_call" and blk["tool_name"] == tool_name:
+                            blk["result"] = result_content
+                            blk["success"] = tool_success
+                            blk["duration"] = round(tool_duration, 2)
+                            break
 
-                        yield format_sse({
-                            "type": "tool_result",
-                            "tool_name": tool_name,
-                            "tool_call_id": tool_call_id,
-                            "arguments": tool_args,
-                            "result": result_content,
-                            "success": tool_success,
-                            "duration": round(tool_duration, 2),
-                            "step": current_step,
-                        })
-                        tu = build_token_usage_event()
-                        if tu:
-                            yield tu
+                    mapped_id = tool_call_id_map.pop(tool_name, tool_call_id or f"tool-{tool_name}")
+                    tool_call_records.append((
+                        tool_name,
+                        mapped_id,
+                        tool_args,
+                        result_content,
+                        tool_success,
+                        round(tool_duration, 2),
+                        current_step,
+                    ))
 
+                    yield format_sse({
+                        "type": "tool_result",
+                        "tool_name": tool_name,
+                        "tool_call_id": mapped_id,
+                        "arguments": tool_args,
+                        "result": result_content,
+                        "success": tool_success,
+                        "duration": round(tool_duration, 2),
+                        "step": current_step,
+                    })
+                    tu = build_token_usage_event()
+                    if tu:
+                        yield tu
+
+                    try:
+                        db.record_tool_call(
+                            session_id=session_id,
+                            message_id=message_id,
+                            tool_name=tool_name,
+                            tool_call_id=mapped_id,
+                            arguments=tool_args,
+                            result=str(result_content)[:5000],
+                            success=tool_success,
+                            duration=round(tool_duration, 2),
+                            step=current_step,
+                        )
+                    except Exception as e:
+                        logger.warning(f"[{sid}] 持久化工具调用记录失败: {e}")
+
+                    if session_logger:
+                        session_logger.log_tool_call(
+                            tool_name=tool_name,
+                            tool_call_id=mapped_id,
+                            arguments=tool_args,
+                            result=str(result_content)[:5000],
+                            success=tool_success,
+                            duration=round(tool_duration, 2),
+                            step=current_step,
+                            message_id=message_id,
+                        )
+
+                    if tool_success and tool_name in ("write_file", "write_tool"):
                         try:
-                            db.record_tool_call(
-                                session_id=session_id,
-                                message_id=message_id,
-                                tool_name=tool_name,
-                                tool_call_id=tool_call_id,
-                                arguments=tool_args,
-                                result=str(result_content)[:5000],
-                                success=tool_success,
-                                duration=round(tool_duration, 2),
-                                step=current_step,
-                            )
+                            file_args = tool_args if isinstance(tool_args, dict) else {}
+                            filename = file_args.get("file_name") or file_args.get("path") or file_args.get("file_path", "")
+                            if filename:
+                                base_name = os.path.basename(filename) if filename else "unknown"
+                                ext = os.path.splitext(base_name)[1].lstrip(".") or "txt"
+                                db.add_generated_file(
+                                    session_id=session_id,
+                                    message_id=message_id,
+                                    filename=base_name,
+                                    file_path=str(agent.workspace_dir / filename) if not os.path.isabs(filename) else filename,
+                                    file_type=ext,
+                                    size=0,
+                                )
+                                logger.info(f"[{sid}] 📄 记录生成文件: {base_name}")
                         except Exception as e:
-                            logger.warning(f"[{sid}] 持久化工具调用记录失败: {e}")
+                            logger.warning(f"[{sid}] 记录生成文件失败: {e}")
 
-                        if session_logger:
-                            session_logger.log_tool_call(
-                                tool_name=tool_name,
-                                tool_call_id=tool_call_id,
-                                arguments=tool_args,
-                                result=str(result_content)[:5000],
-                                success=tool_success,
-                                duration=round(tool_duration, 2),
-                                step=current_step,
-                                message_id=message_id,
-                            )
-
-                        if tool_success and tool_name in ("write_file", "write_tool"):
-                            try:
-                                file_args = tool_args if isinstance(tool_args, dict) else {}
-                                filename = file_args.get("file_name") or file_args.get("path") or file_args.get("file_path", "")
-                                if filename:
-                                    base_name = os.path.basename(filename) if filename else "unknown"
-                                    ext = os.path.splitext(base_name)[1].lstrip(".") or "txt"
-                                    db.add_generated_file(
-                                        session_id=session_id,
-                                        message_id=message_id,
-                                        filename=base_name,
-                                        file_path=str(agent.workspace_dir / filename) if not os.path.isabs(filename) else filename,
-                                        file_type=ext,
-                                        size=0,
-                                    )
-                                    logger.info(f"[{sid}] 📄 记录生成文件: {base_name}")
-                            except Exception as e:
-                                logger.warning(f"[{sid}] 记录生成文件失败: {e}")
-
-                        persist_partial()
+                    persist_partial()
 
             final_thinking_duration = None
             if accumulated_thinking.strip() and thinking_start_time and thinking_end_time:

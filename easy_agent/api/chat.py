@@ -94,11 +94,13 @@ async def chat_stream(
             )
             db.create_session(session_data)
             db.update_session_workspace_name(session_id, workspace_name)
-        elif len(session.messages) == 0:
-            session_title = generate_session_title(request.message, request.files)
-            session.title = session_title
-            session.updated_at = datetime.now().isoformat()
-            db.update_session(session)
+        else:
+            workspace_name = session.workspace_name or ""
+            if len(session.messages) == 0:
+                session_title = generate_session_title(request.message, request.files)
+                session.title = session_title
+                session.updated_at = datetime.now().isoformat()
+                db.update_session(session)
 
     parsed_content = request.message
     if request.files:
@@ -134,7 +136,7 @@ async def chat_stream(
         message_id=message_id,
     )
 
-    agent = await get_or_create_agent_for_session(session_id, username)
+    agent = await get_or_create_agent_for_session(session_id, username, workspace_name)
 
     async def event_generator():
         async for chunk in chat_stream_generator(

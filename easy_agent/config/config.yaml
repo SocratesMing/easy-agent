@@ -12,6 +12,7 @@ api_key: "sk-cp-sEc88ZDHU5B8pdrKLRbCbR0RRkIDeBM4o7QwoBb4bGK6hiCp1Z6D9JI5BFqmXwEG
 provider: "minimax"
 model: "MiniMax-M2.7"
 api_base: "https://api.minimaxi.com"  # China users; Global: https://api.minimax.io
+max_input_tokens: 200000  # Model context window size, used for summarization threshold calculation
 
 # ===== Retry Configuration =====
 retry:
@@ -22,6 +23,13 @@ retry:
 max_steps: 100  # Maximum execution steps
 workspace_dir: "./workspace"  # Working directory
 system_prompt_path: "system_prompt.md"  # System prompt file (same config directory)
+
+# ===== Summarization Configuration =====
+# Auto-compress conversation context when token usage exceeds threshold
+summarization:
+  enabled: true                    # Enable context compression
+  compression_threshold: 0.8       # Trigger compression at 80% of context window
+  compression_target: 0.1          # Keep 10% of context window after compression
 
 # ===== Tools Configuration =====
 tools:
@@ -42,7 +50,7 @@ database:
     user: "root"
     password: "Test1234"
     database: "agent"
-    charset: "utf8mb4"
+    charset: "utf8mb4" 
     pool:
       pool_size: 5
       max_overflow: 10

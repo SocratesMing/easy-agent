@@ -10,9 +10,11 @@ No need to declare these tools manually.
 """
 
 import logging
+import os
 import platform
 import re
 import shutil
+import sys
 import time
 from pathlib import Path
 
@@ -21,7 +23,6 @@ from deepagents.backends import CompositeBackend, FilesystemBackend, LocalShellB
 from deepagents.middleware.summarization import (
     SummarizationMiddleware,
     SummarizationToolMiddleware,
-    compute_summarization_defaults,
 )
 
 from .config import Config
@@ -44,6 +45,19 @@ class _Colors:
 from .model import create_model
 
 logger = logging.getLogger(__name__)
+
+
+def _copy_deps(src: Path, dst: Path) -> None:
+    """Copy node_modules packages from src to dst using symlinks for efficiency."""
+    if not src.exists() or not src.is_dir():
+        return
+    for item in src.iterdir():
+        target = dst / item.name
+        if not target.exists():
+            if item.is_dir():
+                shutil.copytree(str(item), str(target), symlinks=True)
+            else:
+                shutil.copy2(str(item), str(target))
 
 
 class EasyAgent:
@@ -94,16 +108,44 @@ class EasyAgent:
         self.workspace_dir.mkdir(parents=True, exist_ok=True)
         self._workspace_renamed = False
 
-        # Create symlink to shared deps so npm packages are available without NODE_PATH
+        # User-level shared dependencies directory: workspace/{username}/.deps/
+        self.user_deps_dir = self.workspace_dir.parent / ".deps"
+        self.user_deps_dir.mkdir(parents=True, exist_ok=True)
+        self.user_node_modules = self.user_deps_dir / "node_modules"
+        self.user_venv = self.user_deps_dir / ".venv"
+
+        # Ensure user-level node_modules exists with seed packages from shared_deps
         if shared_deps_path:
-            workspace_node_modules = self.workspace_dir / "node_modules"
             shared_node_modules = Path(shared_deps_path)
-            if not workspace_node_modules.exists() and shared_node_modules.exists():
-                try:
-                    workspace_node_modules.symlink_to(shared_node_modules, target_is_directory=True)
-                    logger.info(f"Symlinked node_modules -> {shared_node_modules}")
-                except OSError as e:
-                    logger.debug(f"Failed to symlink node_modules: {e}")
+            if not self.user_node_modules.exists():
+                self.user_node_modules.mkdir(parents=True, exist_ok=True)
+                if shared_node_modules.exists():
+                    try:
+                        _copy_deps(shared_node_modules, self.user_node_modules)
+                        logger.info(f"User-level node_modules seeded from {shared_node_modules}")
+                    except Exception as e:
+                        logger.warning(f"Failed to seed user node_modules: {e}")
+
+        # Symlink session workspace node_modules -> user-level node_modules
+        workspace_node_modules = self.workspace_dir / "node_modules"
+        if not workspace_node_modules.exists() and self.user_node_modules.exists():
+            try:
+                workspace_node_modules.symlink_to(self.user_node_modules.resolve(), target_is_directory=True)
+                logger.info(f"Session node_modules symlinked -> {self.user_node_modules}")
+            except OSError as e:
+                logger.debug(f"Failed to symlink session node_modules: {e}")
+
+        # Ensure user-level Python venv exists
+        if not self.user_venv.exists():
+            try:
+                import subprocess
+                subprocess.run(
+                    [sys.executable, "-m", "venv", str(self.user_venv)],
+                    check=True, capture_output=True, timeout=120,
+                )
+                logger.info(f"User-level Python venv created: {self.user_venv}")
+            except Exception as e:
+                logger.warning(f"Failed to create user venv: {e}")
 
         # Ensure memories directory and user memory file exist
         memories_dir = Path("memories") / self.safe_username
@@ -125,10 +167,13 @@ class EasyAgent:
         shared_deps_info = ""
         if self.shared_deps_path:
             shared_deps_info = (
-                f"## 共享依赖目录: {self.shared_deps_path}\n"
-                f"- npm 包 (docx, pptxgenjs) 已预安装在此目录，无需重复安装\n"
-                f"- 使用时设置环境变量: NODE_PATH={self.shared_deps_path}\n"
-                f"- 示例: NODE_PATH={self.shared_deps_path} node your_script.js\n"
+                f"## 用户依赖目录: {self.user_deps_dir.absolute()}\n"
+                f"- 所有 Python 和 Node.js 依赖安装在此目录，该用户的所有会话共享\n"
+                f"- Node.js: node_modules 位于 {self.user_node_modules.absolute()}，已通过软链接在 workspace 中可用\n"
+                f"- Python: 虚拟环境位于 {self.user_venv.absolute()}，使用 `source {self.user_venv}/bin/activate` 激活\n"
+                f"- 安装新依赖时请安装到用户依赖目录，不要在每个会话中重复安装\n"
+                f"- npm install 示例: cd {self.workspace_dir.absolute()} && npm install <package>\n"
+                f"- pip install 示例: source {self.user_venv}/bin/activate && pip install <package>\n"
             )
 
         self.system_prompt = (
@@ -247,7 +292,11 @@ class EasyAgent:
         # Build backend: workspace for user files, skills for read-only skill access, memories for long-term user memory
         workspace_env = {}
         if self.shared_deps_path:
-            workspace_env["NODE_PATH"] = self.shared_deps_path
+            workspace_env["NODE_PATH"] = str(self.user_node_modules.absolute())
+        if self.user_venv.exists():
+            venv_bin = str(self.user_venv / "bin")
+            workspace_env["PATH"] = f"{venv_bin}:{os.environ.get('PATH', '')}"
+            workspace_env["VIRTUAL_ENV"] = str(self.user_venv.absolute())
         workspace_backend = LocalShellBackend(
             root_dir=str(self.workspace_dir.absolute()),
             env=workspace_env if workspace_env else None,
@@ -275,17 +324,34 @@ class EasyAgent:
         )
 
         # Summarization middleware: auto-compress context + on-demand compact_conversation tool
-        defaults = compute_summarization_defaults(model)
-        summarization = SummarizationMiddleware(
-            model=model,
-            backend=backend,
-            trigger=defaults["trigger"],
-            keep=defaults["keep"],
-            trim_tokens_to_summarize=None,
-            truncate_args_settings=defaults["truncate_args_settings"],
-            history_path_prefix=f"/memories/{self.safe_username}/conversation_history",
-        )
-        summarization_tool = SummarizationToolMiddleware(summarization)
+        middleware = []
+        if self.config.summarization.enabled:
+            max_tokens = self.config.llm.max_input_tokens
+            threshold = self.config.summarization.compression_threshold
+            target = self.config.summarization.compression_target
+            trigger_tokens = int(max_tokens * threshold)
+            keep_tokens = int(max_tokens * target)
+            logger.info(
+                f"[{self.session_id}] Summarization enabled | "
+                f"max_input_tokens={max_tokens}, threshold={threshold}, "
+                f"trigger={trigger_tokens}, keep={keep_tokens}"
+            )
+            summarization = SummarizationMiddleware(
+                model=model,
+                backend=backend,
+                trigger=("tokens", trigger_tokens),
+                keep=("tokens", keep_tokens),
+                trim_tokens_to_summarize=None,
+                truncate_args_settings={
+                    "trigger": ("tokens", trigger_tokens),
+                    "keep": ("tokens", keep_tokens),
+                },
+                history_path_prefix=f"/memories/{self.safe_username}/conversation_history",
+            )
+            summarization_tool = SummarizationToolMiddleware(summarization)
+            middleware.append(summarization_tool)
+        else:
+            logger.info(f"[{self.session_id}] Summarization disabled")
 
         return create_deep_agent(
             name="easy-agent",
@@ -293,7 +359,7 @@ class EasyAgent:
             system_prompt=self.system_prompt,
             backend=backend,
             skills=skills_paths or None,
-            middleware=[summarization_tool],
+            middleware=middleware,
         )
 
     def _resolve_skills_paths(self) -> list[str]:

@@ -72,7 +72,36 @@ Easy Agent 平台为你提供以下基础设施：
 | `mcp-builder` | 构建 MCP (Model Context Protocol) 服务 |
 | `claude-api` | Claude API 使用参考 |
 
-**共享依赖：** `docx` 和 `pptxgenjs` 等 npm 包已预装在共享目录中，**不要运行 `npm install docx` 或 `npm install pptxgenjs`**。使用 Node.js 脚本时设置 `NODE_PATH` 环境变量指向共享依赖路径（见系统信息中的共享依赖目录）。
+## 依赖管理（重要）
+
+**所有 Python 和 Node.js 依赖必须安装到用户级依赖目录，该用户的所有会话共享同一份依赖，避免重复安装。**
+
+### 目录结构
+```
+workspace/{username}/
+├── .deps/                  # 用户级共享依赖目录
+│   ├── node_modules/       # npm 包（所有会话共享）
+│   └── .venv/              # Python 虚拟环境（所有会话共享）
+├── {session_id}/           # 会话工作目录（脚本和生成文件）
+│   └── node_modules -> ../.deps/node_modules  # 软链接
+└── uploadfiles/            # 用户上传的文件
+```
+
+### Node.js 依赖规则
+- `node_modules` 已通过软链接在 workspace 中可用，**不要运行 `npm install` 来安装已存在的包**
+- 如果需要安装新的 npm 包，在 workspace 中执行 `npm install <package>`，包会自动安装到用户级 `node_modules`
+- 直接使用 `node your_script.js` 运行脚本，无需设置 NODE_PATH
+
+### Python 依赖规则
+- Python 虚拟环境位于用户级 `.deps/.venv`，已自动激活（PATH 中已包含）
+- 安装新包：`pip install <package>`
+- 运行脚本：`python your_script.py`
+- **不要创建新的虚拟环境**，使用已有的用户级 venv
+
+### 文件组织规则
+- **生成的脚本和文件放在当前会话目录下**（即 Workspace 路径）
+- 不要将文件放在用户根目录或 `.deps` 目录中
+- 每个会话的文件相互隔离，不会互相干扰
 
 ## 业务领域能力
 
@@ -94,10 +123,12 @@ Easy Agent 平台为你提供以下基础设施：
 
 **所有文件和命令操作必须在 workspace 目录内进行。**
 
+- 你的 Workspace 是当前会话的专属目录：`workspace/{username}/{session_id}/`
 - 文件工具使用 `/workspace/` 前缀的绝对路径
 - Shell 命令先 `cd` 到 workspace 目录
 - **绝对不要**操作 workspace 之外的任何文件或目录
 - workspace 路径会在系统信息中明确标注
+- 用户上传的文件位于 `workspace/{username}/uploadfiles/`，可以读取但不要修改
 
 ## 长期记忆
 

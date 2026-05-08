@@ -9,7 +9,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 
 from ..db import Database, get_database
 from ..models.db import SessionModel
@@ -156,6 +156,16 @@ async def delete_session(
     if not session:
         raise HTTPException(status_code=404, detail="会话不存在")
 
+    session_files = db.get_session_files(session_id)
+    for f in session_files:
+        file_path = Path(f["file_path"])
+        if file_path.exists():
+            try:
+                file_path.unlink()
+                logger.info(f"删除会话文件 | 路径: {file_path}")
+            except Exception as e:
+                logger.warning(f"删除会话文件失败: {file_path} | {e}")
+
     workspace_dir = Config.get_user_workspace_dir(username) / session.workspace_name
     if workspace_dir.exists():
         try:
@@ -212,3 +222,49 @@ async def add_message(
         session_id=session_id,
         message_count=len(session.messages) + 1,
     )
+
+
+@router.post("/{session_id}/upload", summary="上传文件到会话")
+async def upload_session_file(
+    session_id: str,
+    db: Annotated[Database, Depends(get_database)],
+    username: Annotated[str, Depends(get_current_username)],
+    file: UploadFile = File(...),
+):
+    session = db.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="会话不存在")
+
+    safe_name = Config.sanitize_username(username)
+    upload_dir = Config.get_user_workspace_dir(username) / "uploadfiles"
+    upload_dir.mkdir(parents=True, exist_ok=True)
+
+    safe_filename = os.path.basename(file.filename or "unknown")
+    file_id = str(uuid.uuid4())[:8]
+    saved_name = f"{file_id}_{safe_filename}"
+    file_path = upload_dir / saved_name
+
+    content = await file.read()
+    file_path.write_bytes(content)
+
+    ext = os.path.splitext(safe_filename)[1].lstrip(".") or "unknown"
+
+    db.add_session_file(
+        session_id=session_id,
+        filename=safe_filename,
+        file_path=str(file_path),
+        file_type=ext,
+        size=len(content),
+        username=username,
+    )
+
+    logger.info(f"文件上传成功 | 会话: {session_id} | 文件名: {safe_filename} | 大小: {len(content)} bytes | 用户: {username}")
+
+    return {
+        "id": file_id,
+        "filename": safe_filename,
+        "file_path": str(file_path),
+        "file_type": ext,
+        "size": len(content),
+        "uploaded_at": datetime.now().isoformat(),
+    }

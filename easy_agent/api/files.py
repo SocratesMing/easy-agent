@@ -202,3 +202,33 @@ async def parse_file(
 ):
     content = parse_file_content(file_path)
     return {"file_path": file_path, "content": content}
+
+
+@router.get("/workspace/tree", summary="获取工作区文件树")
+async def get_workspace_tree(
+    username: Annotated[str, Depends(get_current_username)],
+    path: str = Query(default="", description="目录路径"),
+):
+    workspace_dir = Config.get_user_workspace_dir(username)
+    target_dir = workspace_dir / path if path else workspace_dir
+
+    if not target_dir.exists():
+        return {"items": []}
+
+    if not target_dir.is_dir():
+        raise HTTPException(status_code=400, detail="路径不是目录")
+
+    items = []
+    try:
+        for entry in sorted(target_dir.iterdir(), key=lambda e: (not e.is_dir(), e.name.lower())):
+            item = {
+                "name": entry.name,
+                "path": str(entry.relative_to(workspace_dir)),
+                "type": "directory" if entry.is_dir() else "file",
+                "size": entry.stat().st_size if entry.is_file() else 0,
+            }
+            items.append(item)
+    except PermissionError:
+        pass
+
+    return {"items": items}

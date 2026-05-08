@@ -34,7 +34,17 @@ async def get_or_create_agent_for_session(session_id: str, username: str = "defa
     if _agent_config is None:
         raise RuntimeError("Agent 配置未初始化")
 
-    logger.info(f"[{session_id[-5:]}] 为会话创建 Agent 实例 | username={username} | session_id={session_id}")
+    if not workspace_name:
+        try:
+            from ..db import get_database
+            db = get_database()
+            session = db.get_session(session_id)
+            if session and session.workspace_name:
+                workspace_name = session.workspace_name
+        except Exception:
+            pass
+
+    logger.info(f"[{session_id[-5:]}] 为会话创建 Agent 实例 | username={username} | session_id={session_id} | workspace_name={workspace_name}")
 
     agent = EasyAgent(
         config=_agent_config["config"],
