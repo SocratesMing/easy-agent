@@ -36,14 +36,54 @@ class BloomEnum(Enum):
     CTOTEUR = ("CTOTEUR", "欧元区CITI贸易条件指数", "CITI贸易条件指数", "欧元区")
     CTOTGBP = ("CTOTGBP", "英国CITI贸易条件指数", "CITI贸易条件指数", "英国")
 
-    CECIDUSD = ("CECIDUSD", "美国CITI经济预测不确定性指数", "CITI经济预测不确定性指数", "美国")
-    CECIDEUR = ("CECIDEUR", "欧元区CITI经济预测不确定性指数", "CITI经济预测不确定性指数", "欧元区")
-    CECIUAUD = ("CECIUAUD", "澳洲CITI经济预测不确定性指数", "CITI经济预测不确定性指数", "澳洲")
-    CECIUCAD = ("CECIUCAD", "加拿大CITI经济预测不确定性指数", "CITI经济预测不确定性指数", "加拿大")
-    CECIUCHF = ("CECIUCHF", "瑞士CITI经济预测不确定性指数", "CITI经济预测不确定性指数", "瑞士")
-    CECIUGBP = ("CECIUGBP", "英国CITI经济预测不确定性指数", "CITI经济预测不确定性指数", "英国")
-    CECIUJPY = ("CECIUJPY", "日本CITI经济预测不确定性指数", "CITI经济预测不确定性指数", "日本")
-    CECIUNZD = ("CECIUNZD", "新西兰CITI经济预测不确定性指数", "CITI经济预测不确定性指数", "新西兰")
+    CECIDUSD = (
+        "CECIDUSD",
+        "美国CITI经济预测不确定性指数",
+        "CITI经济预测不确定性指数",
+        "美国",
+    )
+    CECIDEUR = (
+        "CECIDEUR",
+        "欧元区CITI经济预测不确定性指数",
+        "CITI经济预测不确定性指数",
+        "欧元区",
+    )
+    CECIUAUD = (
+        "CECIUAUD",
+        "澳洲CITI经济预测不确定性指数",
+        "CITI经济预测不确定性指数",
+        "澳洲",
+    )
+    CECIUCAD = (
+        "CECIUCAD",
+        "加拿大CITI经济预测不确定性指数",
+        "CITI经济预测不确定性指数",
+        "加拿大",
+    )
+    CECIUCHF = (
+        "CECIUCHF",
+        "瑞士CITI经济预测不确定性指数",
+        "CITI经济预测不确定性指数",
+        "瑞士",
+    )
+    CECIUGBP = (
+        "CECIUGBP",
+        "英国CITI经济预测不确定性指数",
+        "CITI经济预测不确定性指数",
+        "英国",
+    )
+    CECIUJPY = (
+        "CECIUJPY",
+        "日本CITI经济预测不确定性指数",
+        "CITI经济预测不确定性指数",
+        "日本",
+    )
+    CECIUNZD = (
+        "CECIUNZD",
+        "新西兰CITI经济预测不确定性指数",
+        "CITI经济预测不确定性指数",
+        "新西兰",
+    )
 
     EUR001M = ("EUR001M", "欧元区1M基准利率", "短期基准利率", "欧元区")
     TISONI1M = ("TISONI1M", "英国1M基准利率", "短期基准利率", "英国")
@@ -141,27 +181,132 @@ class BloomEnum(Enum):
 
     USDCNHV1W = ("USDCNHV1W", "USDCNH 1周平值隐含波动率", "期权波动率指标", "中国")
     USDCNHV3M = ("USDCNHV3M", "USDCNH 3月平值隐含波动率", "期权波动率指标", "中国")
-    USDCNH25RON = ("USDCNH25RON", "USDCNH 隔夜 25 Delta风险逆转指标", "期权波动率指标", "中国")
-    USDCNH25R1W = ("USDCNH25R1W", "USDCNH 1周 25 Delta风险逆转指标", "期权波动率指标", "中国")
-    USDCNH25R2W = ("USDCNH25R2W", "USDCNH 2周 25 Delta风险逆转指标", "期权波动率指标", "中国")
-    USDCNH25R3W = ("USDCNH25R3W", "USDCNH 3周 25 Delta风险逆转指标", "期权波动率指标", "中国")
-    USDCNH25R1M = ("USDCNH25R1M", "USDCNH 1个月 25 Delta风险逆转指标", "期权波动率指标", "中国")
-    USDCNH25R2M = ("USDCNH25R2M", "USDCNH 2个月 25 Delta风险逆转指标", "期权波动率指标", "中国")
-    USDCNH25R3M = ("USDCNH25R3M", "USDCNH 3个月 25 Delta风险逆转指标", "期权波动率指标", "中国")
-    USDCNH25R4M = ("USDCNH25R4M", "USDCNH 4个月 25 Delta风险逆转指标", "期权波动率指标", "中国")
-    USDCNH25R6M = ("USDCNH25R6M", "USDCNH 6个月 25 Delta风险逆转指标", "期权波动率指标", "中国")
-    USDCNH25R9M = ("USDCNH25R9M", "USDCNH 9个月 25 Delta风险逆转指标", "期权波动率指标", "中国")
-    USDCNH25R1Y = ("USDCNH25R1Y", "USDCNH 1年 25 Delta风险逆转指标", "期权波动率指标", "中国")
-    USDCNH25R18M = ("USDCNH25R18M", "USDCNH 1年6月 25 Delta风险逆转指标", "期权波动率指标", "中国")
-    USDCNH25R2Y = ("USDCNH25R2Y", "USDCNH 2年 25 Delta风险逆转指标", "期权波动率指标", "中国")
-    USDCNH25R3Y = ("USDCNH25R3Y", "USDCNH 3年 25 Delta风险逆转指标", "期权波动率指标", "中国")
-    USDCNH25R4Y = ("USDCNH25R4Y", "USDCNH 4年 25 Delta风险逆转指标", "期权波动率指标", "中国")
-    USDCNH25R5Y = ("USDCNH25R5Y", "USDCNH 5年 25 Delta风险逆转指标", "期权波动率指标", "中国")
-    USDCNH25R7Y = ("USDCNH25R7Y", "USDCNH 7年 25 Delta风险逆转指标", "期权波动率指标", "中国")
-    USDCNH25R10Y = ("USDCNH25R10Y", "USDCNH 10年 25 Delta风险逆转指标", "期权波动率指标", "中国")
-    USDCNH35R3M = ("USDCNH35R3M", "USDCNH 3个月 35 Delta风险逆转指标", "期权波动率指标", "中国")
-    USDCNH15R3M = ("USDCNH15R3M", "USDCNH 3个月 15 Delta风险逆转指标", "期权波动率指标", "中国")
-    USDCNH10R3M = ("USDCNH10R3M", "USDCNH 3个月 10 Delta风险逆转指标", "期权波动率指标", "中国")
+    USDCNH25RON = (
+        "USDCNH25RON",
+        "USDCNH 隔夜 25 Delta风险逆转指标",
+        "期权波动率指标",
+        "中国",
+    )
+    USDCNH25R1W = (
+        "USDCNH25R1W",
+        "USDCNH 1周 25 Delta风险逆转指标",
+        "期权波动率指标",
+        "中国",
+    )
+    USDCNH25R2W = (
+        "USDCNH25R2W",
+        "USDCNH 2周 25 Delta风险逆转指标",
+        "期权波动率指标",
+        "中国",
+    )
+    USDCNH25R3W = (
+        "USDCNH25R3W",
+        "USDCNH 3周 25 Delta风险逆转指标",
+        "期权波动率指标",
+        "中国",
+    )
+    USDCNH25R1M = (
+        "USDCNH25R1M",
+        "USDCNH 1个月 25 Delta风险逆转指标",
+        "期权波动率指标",
+        "中国",
+    )
+    USDCNH25R2M = (
+        "USDCNH25R2M",
+        "USDCNH 2个月 25 Delta风险逆转指标",
+        "期权波动率指标",
+        "中国",
+    )
+    USDCNH25R3M = (
+        "USDCNH25R3M",
+        "USDCNH 3个月 25 Delta风险逆转指标",
+        "期权波动率指标",
+        "中国",
+    )
+    USDCNH25R4M = (
+        "USDCNH25R4M",
+        "USDCNH 4个月 25 Delta风险逆转指标",
+        "期权波动率指标",
+        "中国",
+    )
+    USDCNH25R6M = (
+        "USDCNH25R6M",
+        "USDCNH 6个月 25 Delta风险逆转指标",
+        "期权波动率指标",
+        "中国",
+    )
+    USDCNH25R9M = (
+        "USDCNH25R9M",
+        "USDCNH 9个月 25 Delta风险逆转指标",
+        "期权波动率指标",
+        "中国",
+    )
+    USDCNH25R1Y = (
+        "USDCNH25R1Y",
+        "USDCNH 1年 25 Delta风险逆转指标",
+        "期权波动率指标",
+        "中国",
+    )
+    USDCNH25R18M = (
+        "USDCNH25R18M",
+        "USDCNH 1年6月 25 Delta风险逆转指标",
+        "期权波动率指标",
+        "中国",
+    )
+    USDCNH25R2Y = (
+        "USDCNH25R2Y",
+        "USDCNH 2年 25 Delta风险逆转指标",
+        "期权波动率指标",
+        "中国",
+    )
+    USDCNH25R3Y = (
+        "USDCNH25R3Y",
+        "USDCNH 3年 25 Delta风险逆转指标",
+        "期权波动率指标",
+        "中国",
+    )
+    USDCNH25R4Y = (
+        "USDCNH25R4Y",
+        "USDCNH 4年 25 Delta风险逆转指标",
+        "期权波动率指标",
+        "中国",
+    )
+    USDCNH25R5Y = (
+        "USDCNH25R5Y",
+        "USDCNH 5年 25 Delta风险逆转指标",
+        "期权波动率指标",
+        "中国",
+    )
+    USDCNH25R7Y = (
+        "USDCNH25R7Y",
+        "USDCNH 7年 25 Delta风险逆转指标",
+        "期权波动率指标",
+        "中国",
+    )
+    USDCNH25R10Y = (
+        "USDCNH25R10Y",
+        "USDCNH 10年 25 Delta风险逆转指标",
+        "期权波动率指标",
+        "中国",
+    )
+    USDCNH35R3M = (
+        "USDCNH35R3M",
+        "USDCNH 3个月 35 Delta风险逆转指标",
+        "期权波动率指标",
+        "中国",
+    )
+    USDCNH15R3M = (
+        "USDCNH15R3M",
+        "USDCNH 3个月 15 Delta风险逆转指标",
+        "期权波动率指标",
+        "中国",
+    )
+    USDCNH10R3M = (
+        "USDCNH10R3M",
+        "USDCNH 3个月 10 Delta风险逆转指标",
+        "期权波动率指标",
+        "中国",
+    )
     USDCNH35B3M = ("USDCNH35B3M", "USDCNH 3个月 35 蝶式套利", "期权波动率指标", "中国")
     USDCNH25B3M = ("USDCNH25B3M", "USDCNH 3个月 25 蝶式套利", "期权波动率指标", "中国")
     USDCNH15B3M = ("USDCNH15B3M", "USDCNH 3个月 15 蝶式套利", "期权波动率指标", "中国")

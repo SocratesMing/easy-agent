@@ -6,13 +6,24 @@
 # 3) <package>/easy_agent/config/config.yaml - Package installation directory
 
 # ===== LLM Configuration =====
-# Provider types: anthropic | openai | deepseek | minimax
+# Select which model to use: minimax | deepseek
+model: "deepseek"
 
-api_key: "sk-cp-sEc88ZDHU5B8pdrKLRbCbR0RRkIDeBM4o7QwoBb4bGK6hiCp1Z6D9JI5BFqmXwEGomMHHrdEMV8_mGWK62YQrQN2w6X6Bl3wBHvPR1N8TwvVdFigMDpMSZo"
-provider: "minimax"
-model: "MiniMax-M2.7"
-api_base: "https://api.minimaxi.com"  # China users; Global: https://api.minimax.io
-max_input_tokens: 200000  # Model context window size, used for summarization threshold calculation
+# Provider-specific configurations
+models:
+  minimax:
+    provider: "minimax"
+    api_key: "sk-cp-sEc88ZDHU5B8pdrKLRbCbR0RRkIDeBM4o7QwoBb4bGK6hiCp1Z6D9JI5BFqmXwEGomMHHrdEMV8_mGWK62YQrQN2w6X6Bl3wBHvPR1N8TwvVdFigMDpMSZo"
+    model: "MiniMax-M2.7"
+    api_base: "https://api.minimaxi.com/anthropic"  # China users; Global: https://api.minimax.io/anthropic
+    max_input_tokens: 200000  # Model context window size, used for summarization threshold calculation
+
+  deepseek:
+    provider: "deepseek"
+    api_key: "sk-2c6665b2900448b69c2c532638ae3d1d"
+    model: "deepseek-v4-flash"
+    api_base: "https://api.deepseek.com"
+    max_input_tokens: 1000000
 
 # ===== Retry Configuration =====
 retry:

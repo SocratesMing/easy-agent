@@ -63,9 +63,13 @@ async def register(
         user_workspace.mkdir(parents=True, exist_ok=True)
         user_upload = Config.get_user_upload_dir(user.username)
         user_upload.mkdir(parents=True, exist_ok=True)
-        logger.info(f"[用户] 创建用户workspace | 用户: {user.username} | 路径: {user_workspace}")
+        logger.info(
+            f"[用户] 创建用户workspace | 用户: {user.username} | 路径: {user_workspace}"
+        )
     except Exception as e:
-        logger.warning(f"[用户] 创建用户workspace失败 | 用户: {user.username} | 错误: {e}")
+        logger.warning(
+            f"[用户] 创建用户workspace失败 | 用户: {user.username} | 错误: {e}"
+        )
 
     logger.info(f"[用户] 注册成功 | 用户名: {user.username}")
 
@@ -97,8 +101,13 @@ async def login(
     client_ip = get_client_ip(http_request)
 
     if user.bound_ip and user.bound_ip != client_ip:
-        logger.warning(f"[用户] IP不匹配 | 用户: {user.username} | 绑定IP: {user.bound_ip} | 请求IP: {client_ip}")
-        raise HTTPException(status_code=403, detail=f"账号已绑定IP: {user.bound_ip}，当前IP: {client_ip} 不允许登录")
+        logger.warning(
+            f"[用户] IP不匹配 | 用户: {user.username} | 绑定IP: {user.bound_ip} | 请求IP: {client_ip}"
+        )
+        raise HTTPException(
+            status_code=403,
+            detail=f"账号已绑定IP: {user.bound_ip}，当前IP: {client_ip} 不允许登录",
+        )
 
     if not user.bound_ip:
         db.bind_user_ip(user.username, client_ip)

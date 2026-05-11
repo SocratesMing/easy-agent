@@ -76,7 +76,7 @@
           <!-- 工具调用块（合并参数、结果、耗时） -->
           <div v-if="block.type === 'tool_call'" class="tool-call-block" :class="{ error: block.success === false }">
             <div class="tool-call-header" @click="toggleToolCall(index)">
-              <svg class="tool-icon" :class="{ success: block.success === true, error: block.success === false, spinning: block.duration == null }" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <svg class="tool-icon" :class="{ success: block.success === true, error: block.success === false, spinning: isToolRunning(block) }" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path>
               </svg>
               <span class="tool-name-badge">{{ block.tool_name }}</span>
@@ -92,13 +92,13 @@
                 </svg>
               </template>
               <span v-if="block.duration != null" class="tool-duration">用时 {{ block.duration }} 秒</span>
-              <span v-else class="tool-status-text executing">执行中...</span>
+              <span v-else-if="isToolRunning(block)" class="tool-status-text executing">执行中...</span>
               <svg class="toggle-arrow" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" :class="{ rotated: isExpandedToolCall(index) }">
                 <polyline points="6 9 12 15 18 9"></polyline>
               </svg>
             </div>
             <div v-if="isExpandedToolCall(index)" class="tool-call-body">
-              <div v-if="block.arguments && Object.keys(block.arguments).length > 0" class="tool-section">
+              <div v-if="hasArgs(block.arguments)" class="tool-section">
                 <div class="tool-section-label">参数</div>
                 <pre class="tool-section-content">{{ truncateResult(formatJson(block.arguments), 1000) }}</pre>
               </div>
@@ -106,7 +106,7 @@
                 <div class="tool-section-label">结果</div>
                 <pre class="tool-section-content" :class="{ error: block.success === false }">{{ truncateResult(block.result, 1000) }}</pre>
               </div>
-              <div v-else-if="block.duration == null" class="tool-section">
+              <div v-else-if="isToolRunning(block)" class="tool-section">
                 <div class="tool-section-label">结果</div>
                 <div class="tool-executing-hint">等待执行结果...</div>
               </div>
@@ -265,14 +265,14 @@ watch(() => props.message.id, () => {
 })
 
 const sortedBlocks = computed(() => {
-  // 如果消息有 blocks，返回排序后的 blocks
+  // 从 blocks 字段构建（优先使用）
   if (props.message.blocks && props.message.blocks.length > 0) {
     return [...props.message.blocks].sort((a, b) => (a.order || 0) - (b.order || 0))
   }
-  
+
   // 否则从旧数据格式创建 blocks（用于从数据库加载的消息）
   const blocks = []
-  
+
   // 添加思考 block
   if (props.message.thinking) {
     blocks.push({
@@ -283,23 +283,26 @@ const sortedBlocks = computed(() => {
       order: 0
     })
   }
-  
+
   // 添加工具调用 blocks（合并参数、结果、耗时到一个卡片）
   if (props.message.tool_calls && props.message.tool_calls.length > 0) {
     props.message.tool_calls.forEach((tool, idx) => {
+      const tcArgs = tool.arguments && typeof tool.arguments === 'object' && Object.keys(tool.arguments).length > 0
+        ? tool.arguments
+        : {}
       blocks.push({
         type: 'tool_call',
         tool_name: tool.tool_name,
-        arguments: tool.arguments,
-        result: tool.result,
-        success: tool.success,
+        arguments: tcArgs,
+        result: tool.result || '',
+        success: tool.success !== false,
         duration: tool.duration,
         step: tool.step || 0,
         order: idx + 1
       })
     })
   }
-  
+
   // 添加内容 block
   if (props.message.content) {
     blocks.push({
@@ -308,7 +311,7 @@ const sortedBlocks = computed(() => {
       order: blocks.length + 1
     })
   }
-  
+
   return blocks
 })
 
@@ -343,6 +346,18 @@ function toggleKnowledgeBase(index) {
   if (!block) return
   const key = getBlockKey(block, index)
   expandedKnowledgeBase.value[key] = !expandedKnowledgeBase.value[key]
+}
+
+function isToolRunning(block) {
+  // Tool is still running if: no duration AND the message is still loading
+  return block.duration == null && props.message.loading === true
+}
+
+function hasArgs(args) {
+  if (!args) return false
+  if (typeof args === 'string') return args.trim().length > 0
+  if (typeof args === 'object') return Object.keys(args).length > 0
+  return false
 }
 
 function toggleToolCall(index) {
@@ -436,18 +451,27 @@ function renderMarkdown(content) {
 function formatJson(obj) {
   try {
     if (typeof obj === 'string') {
-      const parsed = JSON.parse(obj)
-      return JSON.stringify(parsed, null, 2)
+      try {
+        const parsed = JSON.parse(obj)
+        return JSON.stringify(parsed, null, 2)
+      } catch {
+        return obj
+      }
     }
-    if (obj && typeof obj === 'object' && 'raw' in obj && Object.keys(obj).length === 1) {
-      const parsed = JSON.parse(obj.raw)
-      return JSON.stringify(parsed, null, 2)
+    if (obj && typeof obj === 'object') {
+      if ('raw' in obj && Object.keys(obj).length === 1) {
+        try {
+          const parsed = JSON.parse(obj.raw)
+          return JSON.stringify(parsed, null, 2)
+        } catch {
+          return obj.raw
+        }
+      }
+      if (Object.keys(obj).length === 0) return ''
+      return JSON.stringify(obj, null, 2)
     }
-    return JSON.stringify(obj, null, 2)
+    return String(obj)
   } catch (e) {
-    if (obj && typeof obj === 'object' && 'raw' in obj) {
-      return obj.raw
-    }
     return String(obj)
   }
 }
@@ -557,7 +581,7 @@ onMounted(() => {
 .message-content {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 2px;
   width: 100%;
 }
 
@@ -785,7 +809,6 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   background: transparent;
-  margin-bottom: 12px;
   width: 100%;
 }
 
@@ -793,7 +816,7 @@ onMounted(() => {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  padding: 8px 12px;
+  padding: 4px 10px;
   background: transparent;
   border-radius: 8px;
   cursor: pointer;
@@ -982,7 +1005,6 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   background: transparent;
-  margin-bottom: 8px;
   width: 100%;
 }
 
@@ -994,7 +1016,7 @@ onMounted(() => {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  padding: 8px 12px;
+  padding: 4px 10px;
   background: transparent;
   border-radius: 8px;
   font-size: 13px;

@@ -430,33 +430,43 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
   let currentToolCalls = []
   let currentBlock = null
   let blockOrderCounter = 0
+  let _thinkingDebounceTimer = null
 
   function addBlock(type, data, replace = false) {
     ensureAssistantMessage()
+    const idx = messages.value.findIndex(m => m.id === assistantMsgId)
+    if (idx === -1) return null
+
+    // Dedup: for thinking blocks, reuse existing block for the same step
+    if (type === 'thinking' && data.step !== undefined) {
+      const existing = messages.value[idx].blocks.find(
+        b => b.type === 'thinking' && b.step === data.step
+      )
+      if (existing) {
+        currentBlock = existing
+        return currentBlock
+      }
+    }
+
     blockOrderCounter++
     if (!currentBlock || currentBlock.type !== type) {
       currentBlock = { type, content: '', order: blockOrderCounter, ...data }
-      const idx = messages.value.findIndex(m => m.id === assistantMsgId)
-      if (idx !== -1) {
-        messages.value[idx].blocks.push(currentBlock)
-        messages.value[idx] = { ...messages.value[idx], blocks: [...messages.value[idx].blocks] }
-      }
+      messages.value[idx].blocks.push(currentBlock)
+      messages.value[idx] = { ...messages.value[idx], blocks: [...messages.value[idx].blocks] }
     } else {
       if (replace) {
         currentBlock.content = data.content || ''
-      } else {
+      } else if (data.content !== undefined) {
         currentBlock.content = (currentBlock.content || '') + (data.content || '')
       }
       if (data.tool_name) currentBlock.tool_name = data.tool_name
-      if (data.arguments) currentBlock.arguments = data.arguments
+      if (data.arguments !== undefined) currentBlock.arguments = data.arguments
       if (data.result !== undefined) currentBlock.result = data.result
       if (data.success !== undefined) currentBlock.success = data.success
       if (data.duration !== undefined) currentBlock.duration = data.duration
       if (data.step !== undefined) currentBlock.step = data.step
-      const idx = messages.value.findIndex(m => m.id === assistantMsgId)
-      if (idx !== -1) {
-        messages.value[idx] = { ...messages.value[idx] }
-      }
+      if (data.id !== undefined) currentBlock.id = data.id
+      messages.value[idx] = { ...messages.value[idx] }
     }
     return currentBlock
   }
@@ -504,12 +514,26 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
       currentThinking += content || ''
       if (currentBlock && currentBlock.type === 'thinking') {
         currentBlock.content = currentThinking
+        // Debounce thinking updates to avoid flickering on fast chunks
+        if (!_thinkingDebounceTimer) {
+          _thinkingDebounceTimer = setTimeout(() => {
+            _thinkingDebounceTimer = null
+            const idx = messages.value.findIndex(m => m.id === assistantMsgId)
+            if (idx !== -1) {
+              messages.value[idx] = { ...messages.value[idx], blocks: [...messages.value[idx].blocks] }
+            }
+          }, 60)
+        }
+      }
+    } else if (eventType === 'thinking_end') {
+      if (_thinkingDebounceTimer) {
+        clearTimeout(_thinkingDebounceTimer)
+        _thinkingDebounceTimer = null
         const idx = messages.value.findIndex(m => m.id === assistantMsgId)
         if (idx !== -1) {
           messages.value[idx] = { ...messages.value[idx], blocks: [...messages.value[idx].blocks] }
         }
       }
-    } else if (eventType === 'thinking_end') {
       totalThinkingDuration += duration || 0
       updateThinkingDuration(duration || 0, step || 0)
       // Reset for next thinking step
@@ -541,19 +565,23 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
         )
 
         if (existingBlockIdx !== -1) {
+          // Only update arguments if the new value is non-empty
+          const newArgs = (args !== undefined && args !== null && !(typeof args === 'object' && Object.keys(args).length === 0))
+            ? args
+            : messages.value[idx].blocks[existingBlockIdx].arguments
           messages.value[idx].blocks[existingBlockIdx] = {
             ...messages.value[idx].blocks[existingBlockIdx],
-            arguments: args !== undefined ? args : messages.value[idx].blocks[existingBlockIdx].arguments
+            arguments: newArgs
           }
           currentBlock = messages.value[idx].blocks[existingBlockIdx]
           messages.value[idx] = { ...messages.value[idx], blocks: [...messages.value[idx].blocks] }
         } else {
-          // New tool call - reset currentBlock so addBlock creates a new block
+          // New tool call
           currentBlock = null
           const toolCall = {
             tool_call_id: callId,
             tool_name: tool_name || '',
-            arguments: args || {},
+            arguments: (args !== undefined && args !== null) ? args : {},
             result: '',
             success: true
           }
@@ -561,7 +589,7 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
           addBlock('tool_call', {
             id: callId,
             tool_name: tool_name || '',
-            arguments: args || {},
+            arguments: (args !== undefined && args !== null) ? args : {},
             result: '',
             success: true,
             step: step || 0
@@ -571,7 +599,7 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
     } else if (eventType === 'tool_result') {
       const callId = toolCallId || `tool-${tool_name}`
       const toolDuration = duration != null ? duration : 0
-      console.log('[tool_result] event received:', { callId, tool_name, toolDuration, resultLen: (result || '').length, success, args })
+      console.log('[tool_result] event received:', { callId, tool_name, toolDuration, resultLen: (result || '').length, success, hasArgs: args !== undefined })
 
       if (currentToolCalls.length > 0) {
         const matchingCall = currentToolCalls.find(tc => tc.tool_call_id === callId)
@@ -579,13 +607,13 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
           matchingCall.result = result || ''
           matchingCall.success = success !== false
           matchingCall.duration = toolDuration
-          if (args) matchingCall.arguments = args
+          if (args !== undefined && args !== null) matchingCall.arguments = args
         } else {
           const lastToolCall = currentToolCalls[currentToolCalls.length - 1]
           lastToolCall.result = result || ''
           lastToolCall.success = success !== false
           lastToolCall.duration = toolDuration
-          if (args) lastToolCall.arguments = args
+          if (args !== undefined && args !== null) lastToolCall.arguments = args
         }
       }
 
@@ -596,9 +624,12 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
         )
         if (blockIdx !== -1) {
           console.log('[tool_result] matched block by id:', callId)
+          const newArgs = (args !== undefined && args !== null && !(typeof args === 'object' && Object.keys(args).length === 0))
+            ? args
+            : messages.value[idx].blocks[blockIdx].arguments
           messages.value[idx].blocks[blockIdx] = {
             ...messages.value[idx].blocks[blockIdx],
-            arguments: args || messages.value[idx].blocks[blockIdx].arguments,
+            arguments: newArgs,
             result: result || '',
             success: success !== false,
             duration: toolDuration
@@ -611,9 +642,12 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
           const actualIdx = fallbackIdx !== -1 ? messages.value[idx].blocks.length - 1 - fallbackIdx : -1
           if (actualIdx !== -1) {
             console.log('[tool_result] matched block by tool_name:', tool_name)
+            const fbNewArgs = (args !== undefined && args !== null && !(typeof args === 'object' && Object.keys(args).length === 0))
+              ? args
+              : messages.value[idx].blocks[actualIdx].arguments
             messages.value[idx].blocks[actualIdx] = {
               ...messages.value[idx].blocks[actualIdx],
-              arguments: args || messages.value[idx].blocks[actualIdx].arguments,
+              arguments: fbNewArgs,
               result: result || '',
               success: success !== false,
               duration: toolDuration
@@ -626,9 +660,12 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
             const ciActualIdx = ciFallbackIdx !== -1 ? messages.value[idx].blocks.length - 1 - ciFallbackIdx : -1
             if (ciActualIdx !== -1) {
               console.log('[tool_result] matched block by tool_name (case-insensitive):', tool_name)
+              const ciNewArgs = (args !== undefined && args !== null && !(typeof args === 'object' && Object.keys(args).length === 0))
+                ? args
+                : messages.value[idx].blocks[ciActualIdx].arguments
               messages.value[idx].blocks[ciActualIdx] = {
                 ...messages.value[idx].blocks[ciActualIdx],
-                arguments: args || messages.value[idx].blocks[ciActualIdx].arguments,
+                arguments: ciNewArgs,
                 result: result || '',
                 success: success !== false,
                 duration: toolDuration
@@ -640,9 +677,12 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
               )
               if (pendingIdx !== -1) {
                 console.log('[tool_result] matched block by pending (duration==null):', messages.value[idx].blocks[pendingIdx].tool_name)
+                const pNewArgs = (args !== undefined && args !== null && !(typeof args === 'object' && Object.keys(args).length === 0))
+                  ? args
+                  : messages.value[idx].blocks[pendingIdx].arguments
                 messages.value[idx].blocks[pendingIdx] = {
                   ...messages.value[idx].blocks[pendingIdx],
-                  arguments: args || messages.value[idx].blocks[pendingIdx].arguments,
+                  arguments: pNewArgs,
                   result: result || '',
                   success: success !== false,
                   duration: toolDuration
@@ -728,6 +768,16 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
     await refreshSessionFiles(null, 500)
   } catch (e) {
     if (e.name === 'AbortError') {
+      // Mark assistant message as complete (loading=false) so spinners stop
+      if (assistantMsgId) {
+        const idx = messages.value.findIndex(m => m.id === assistantMsgId)
+        if (idx !== -1) {
+          messages.value[idx].loading = false
+          messages.value[idx].content = messages.value[idx].content || currentContent || ''
+          messages.value[idx].created_at = new Date().toISOString()
+          messages.value[idx] = { ...messages.value[idx] }
+        }
+      }
       return
     }
     console.error('发送消息失败:', e)

@@ -17,7 +17,9 @@ class VectorStore:
         self.enabled = config.get("enabled", False)
         self.db_path = config.get("db_path", "./data/chroma_db")
         self.collection_name = config.get("collection_name", "easy_agent_docs")
-        self.embedding_provider = config.get("embedding_provider", "sentence_transformers")
+        self.embedding_provider = config.get(
+            "embedding_provider", "sentence_transformers"
+        )
         self.embedding_dimension = config.get("embedding_dimension", 1024)
         self.batch_size = config.get("batch_size", 32)
 
@@ -38,7 +40,9 @@ class VectorStore:
             self._client = None
             return
 
-        self._client = chromadb.PersistentClient(path=self.db_path, settings=ChromaSettings(anonymized_telemetry=False))
+        self._client = chromadb.PersistentClient(
+            path=self.db_path, settings=ChromaSettings(anonymized_telemetry=False)
+        )
 
         if self.embedding_provider == "sentence_transformers":
             self._embedding_fn = self._create_sentence_transformers_embedding()
@@ -66,9 +70,16 @@ class VectorStore:
         )
 
     def _create_sentence_transformers_embedding(self):
-        model_name = getattr(self, 'config', {}).get('sentence_transformers_model', 'Qwen/Qwen3-Embedding-0.6B') if hasattr(self, 'config') else 'Qwen/Qwen3-Embedding-0.6B'
+        model_name = (
+            getattr(self, "config", {}).get(
+                "sentence_transformers_model", "Qwen/Qwen3-Embedding-0.6B"
+            )
+            if hasattr(self, "config")
+            else "Qwen/Qwen3-Embedding-0.6B"
+        )
         try:
             from sentence_transformers import SentenceTransformer
+
             logger.info(f"加载本地嵌入模型: {model_name} (首次使用需要下载)")
             model = SentenceTransformer(model_name, trust_remote_code=True)
 
@@ -93,7 +104,9 @@ class VectorStore:
         model_name = config.get("zhipu_model", "embedding-3")
 
         if not api_key:
-            raise ValueError("Zhipu AI API key is required when using zhipu embedding provider")
+            raise ValueError(
+                "Zhipu AI API key is required when using zhipu embedding provider"
+            )
 
         class ZhiPuEmbeddingFunction:
             def __init__(self, api_key: str, model: str):
@@ -102,6 +115,7 @@ class VectorStore:
 
             def __call__(self, input):
                 from zhipuai import ZhipuAI
+
                 client = ZhipuAI(api_key=self.api_key)
                 texts = [t if t else "" for t in input]
                 response = client.embeddings.create(model=self.model, input=texts)
@@ -125,6 +139,7 @@ class VectorStore:
 
         if not ids:
             import uuid
+
             ids = [str(uuid.uuid4()) for _ in documents]
 
         total = len(documents)
@@ -160,12 +175,20 @@ class VectorStore:
         formatted = []
         if results.get("ids") and results["ids"][0]:
             for i, doc_id in enumerate(results["ids"][0]):
-                formatted.append({
-                    "id": doc_id,
-                    "document": results["documents"][0][i] if results.get("documents") else "",
-                    "metadata": results["metadatas"][0][i] if results.get("metadatas") else {},
-                    "distance": results["distances"][0][i] if results.get("distances") else 0,
-                })
+                formatted.append(
+                    {
+                        "id": doc_id,
+                        "document": results["documents"][0][i]
+                        if results.get("documents")
+                        else "",
+                        "metadata": results["metadatas"][0][i]
+                        if results.get("metadatas")
+                        else {},
+                        "distance": results["distances"][0][i]
+                        if results.get("distances")
+                        else 0,
+                    }
+                )
 
         return formatted
 
@@ -216,9 +239,15 @@ class VectorStore:
         formatted = []
         if results.get("ids"):
             for i, doc_id in enumerate(results["ids"]):
-                formatted.append({
-                    "id": doc_id,
-                    "document": results["documents"][i] if results.get("documents") else "",
-                    "metadata": results["metadatas"][i] if results.get("metadatas") else {},
-                })
+                formatted.append(
+                    {
+                        "id": doc_id,
+                        "document": results["documents"][i]
+                        if results.get("documents")
+                        else "",
+                        "metadata": results["metadatas"][i]
+                        if results.get("metadatas")
+                        else {},
+                    }
+                )
         return formatted

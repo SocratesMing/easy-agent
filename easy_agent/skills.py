@@ -16,11 +16,13 @@ def find_skills_root(skills_dir: str | None = None) -> str | None:
     if skills_dir:
         search_paths.append(Path(skills_dir))
 
-    search_paths.extend([
-        Path("skills"),
-        Path("easy_agent") / "skills",
-        Path(__file__).parent / "skills",
-    ])
+    search_paths.extend(
+        [
+            Path("skills"),
+            Path("easy_agent") / "skills",
+            Path(__file__).parent / "skills",
+        ]
+    )
 
     for search_path in search_paths:
         if search_path.exists() and search_path.is_dir():
@@ -45,11 +47,13 @@ def discover_skills(skills_dir: str | None = None) -> list[dict]:
     if skills_dir:
         search_paths.append(Path(skills_dir))
 
-    search_paths.extend([
-        Path("skills"),
-        Path("easy_agent") / "skills",
-        Path(__file__).parent / "skills",
-    ])
+    search_paths.extend(
+        [
+            Path("skills"),
+            Path("easy_agent") / "skills",
+            Path(__file__).parent / "skills",
+        ]
+    )
 
     for search_path in search_paths:
         if not search_path.exists():
@@ -68,10 +72,14 @@ def discover_skills(skills_dir: str | None = None) -> list[dict]:
 
             if skill_md.exists() or skill_readme.exists():
                 seen_names.add(skill_name)
-                skills.append({
-                    "name": skill_name,
-                    "path": str(skill_dir.absolute()),
-                    "description_file": "SKILL.md" if skill_md.exists() else "README.md",
-                })
+                skills.append(
+                    {
+                        "name": skill_name,
+                        "path": str(skill_dir.absolute()),
+                        "description_file": "SKILL.md"
+                        if skill_md.exists()
+                        else "README.md",
+                    }
+                )
 
     return skills

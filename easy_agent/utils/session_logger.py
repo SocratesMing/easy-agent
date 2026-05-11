@@ -2,7 +2,6 @@
 
 import json
 import logging
-import os
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
@@ -19,8 +18,13 @@ def ensure_log_dir():
 class SessionLogger:
     """Logs full conversation as structured JSON per session."""
 
-    def __init__(self, session_id: str, username: str = "",
-                 workspace: str = "", system_prompt: str = ""):
+    def __init__(
+        self,
+        session_id: str,
+        username: str = "",
+        workspace: str = "",
+        system_prompt: str = "",
+    ):
         self.session_id = session_id
         ensure_log_dir()
         self.log_file = SESSION_LOG_DIR / f"{session_id}.json"
@@ -45,8 +49,9 @@ class SessionLogger:
         self._data["system_prompt"] = prompt
         self._flush()
 
-    def log_user_message(self, message: str, files: Optional[list] = None,
-                         message_id: str = ""):
+    def log_user_message(
+        self, message: str, files: Optional[list] = None, message_id: str = ""
+    ):
         entry = {
             "type": "user_message",
             "timestamp": datetime.now().isoformat(),
@@ -66,10 +71,14 @@ class SessionLogger:
         self._data["entries"].append(entry)
         self._flush()
 
-    def log_assistant_response(self, content: str, thinking: Optional[str] = None,
-                                thinking_duration: Optional[float] = None,
-                                tool_calls: Optional[list] = None,
-                                message_id: str = ""):
+    def log_assistant_response(
+        self,
+        content: str,
+        thinking: Optional[str] = None,
+        thinking_duration: Optional[float] = None,
+        tool_calls: Optional[list] = None,
+        message_id: str = "",
+    ):
         entry: dict[str, Any] = {
             "type": "assistant_response",
             "timestamp": datetime.now().isoformat(),
@@ -95,9 +104,13 @@ class SessionLogger:
         self._data["entries"].append(entry)
         self._flush()
 
-    def log_thinking(self, content: str, step: int = 0,
-                     duration: Optional[float] = None,
-                     message_id: str = ""):
+    def log_thinking(
+        self,
+        content: str,
+        step: int = 0,
+        duration: Optional[float] = None,
+        message_id: str = "",
+    ):
         entry = {
             "type": "thinking",
             "timestamp": datetime.now().isoformat(),
@@ -110,10 +123,17 @@ class SessionLogger:
         self._data["entries"].append(entry)
         self._flush()
 
-    def log_tool_call(self, tool_name: str, tool_call_id: str,
-                      arguments: dict, result: str = "",
-                      success: bool = True, duration: Optional[float] = None,
-                      step: int = 0, message_id: str = ""):
+    def log_tool_call(
+        self,
+        tool_name: str,
+        tool_call_id: str,
+        arguments: dict,
+        result: str = "",
+        success: bool = True,
+        duration: Optional[float] = None,
+        step: int = 0,
+        message_id: str = "",
+    ):
         entry = {
             "type": "tool_call",
             "timestamp": datetime.now().isoformat(),
@@ -130,8 +150,9 @@ class SessionLogger:
         self._data["entries"].append(entry)
         self._flush()
 
-    def log_context_compression(self, summary: str, original_count: int,
-                                compressed_count: int):
+    def log_context_compression(
+        self, summary: str, original_count: int, compressed_count: int
+    ):
         entry = {
             "type": "context_compression",
             "timestamp": datetime.now().isoformat(),

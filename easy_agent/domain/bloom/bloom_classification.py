@@ -42,12 +42,16 @@ def process_data(data_line: list[str], bloom_date: str, db):
     data_dict = {}
     for line in data_line:
         try:
-            fields = line.split('|')
+            fields = line.split("|")
             mem = en.BloomEnum.get_element(fields[0])
             if mem:
                 data_dict[mem.value[0]] = fields
         except Exception as e:
-            logger.error("彭博数据%s数据处理失败 %s", fields[0] if 'fields' in dir() else 'unknown', e)
+            logger.error(
+                "彭博数据%s数据处理失败 %s",
+                fields[0] if "fields" in dir() else "unknown",
+                e,
+            )
 
     for fields in data_dict.values():
         member = en.BloomEnum.get_element(fields[0])
@@ -59,11 +63,11 @@ def process_data(data_line: list[str], bloom_date: str, db):
             type_ = member.value[2]
             ts = convert_date_to_big_int(bloom_date)
 
-            if fields[3] == 'N.A.' and fields[5] == 'N.A.':
+            if fields[3] == "N.A." and fields[5] == "N.A.":
                 continue
-            if fields[3] == 'N.A.' and fields[5]:
+            if fields[3] == "N.A." and fields[5]:
                 fields[3] = fields[5]
-            elif fields[5] == 'N.A.' and fields[3]:
+            elif fields[5] == "N.A." and fields[3]:
                 fields[5] = fields[3]
 
             insert_bloom_data(
@@ -87,12 +91,16 @@ def process_data_gz(data_line: list[str], bloom_date: str, db):
     data_dict = {}
     for line in data_line:
         try:
-            fields = line.split('|')
+            fields = line.split("|")
             mem = en.BloomEnum.get_element(fields[0])
             if mem:
                 data_dict[mem.value[0]] = fields
         except Exception as e:
-            logger.error("彭博数据%s数据处理失败 %s", fields[0] if 'fields' in dir() else 'unknown', e)
+            logger.error(
+                "彭博数据%s数据处理失败 %s",
+                fields[0] if "fields" in dir() else "unknown",
+                e,
+            )
 
     for fields in data_dict.values():
         member = en.BloomEnum.get_element(fields[0])
@@ -104,7 +112,7 @@ def process_data_gz(data_line: list[str], bloom_date: str, db):
             type_ = member.value[2]
             ts = convert_date_to_big_int(bloom_date)
 
-            if fields[4] == 'N.A.':
+            if fields[4] == "N.A.":
                 continue
 
             insert_bloom_data(

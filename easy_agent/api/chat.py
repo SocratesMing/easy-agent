@@ -1,11 +1,9 @@
 """Chat routes - streaming and non-streaming"""
 
-import json
 import logging
 import time
 import uuid
 from datetime import datetime
-from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -15,7 +13,11 @@ from ..db import Database, get_database
 from ..models.db import SessionModel
 from ..models.api import ChatRequest
 from ..middleware import get_current_username
-from ..services import chat_stream_generator, get_or_create_agent_for_session, remove_session_agent
+from ..services import (
+    chat_stream_generator,
+    get_or_create_agent_for_session,
+    remove_session_agent,
+)
 from ..utils import parse_file_content, SessionLogger
 from .sessions import generate_workspace_name
 
@@ -38,7 +40,7 @@ async def chat_stream(
     http_request: Request,
     username: Annotated[str, Depends(get_current_username)],
 ):
-    start_time = time.time()
+    time.time()
 
     if not request.message:
         raise HTTPException(status_code=400, detail="消息内容不能为空")
@@ -48,14 +50,16 @@ async def chat_stream(
 
     sid = session_id[-5:] if session_id else "new"
 
-    logger.info(f"[{sid}] 聊天请求 | message: {request.message[:50]}{'...' if len(request.message) > 50 else ''} | deep_think: {request.enable_deep_think}")
+    logger.info(
+        f"[{sid}] 聊天请求 | message: {request.message[:50]}{'...' if len(request.message) > 50 else ''} | deep_think: {request.enable_deep_think}"
+    )
 
     def generate_session_title(message, files):
         if message and message.strip():
             title = message.strip()
             return title[:15] + "..." if len(title) > 15 else title
         elif files and len(files) > 0:
-            filename = files[0].get('filename', '文件')
+            filename = files[0].get("filename", "文件")
             return filename[:15] + "..." if len(filename) > 15 else filename
         else:
             return "未命名会话"
@@ -110,7 +114,9 @@ async def chat_stream(
             if file_path:
                 content = parse_file_content(file_path)
                 if content:
-                    file_contents.append(f"[文件: {file_info.get('filename', '')}]\n{content}")
+                    file_contents.append(
+                        f"[文件: {file_info.get('filename', '')}]\n{content}"
+                    )
         if file_contents:
             parsed_content = "\n\n".join(file_contents) + "\n\n" + request.message
 

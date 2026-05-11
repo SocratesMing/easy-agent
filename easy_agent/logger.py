@@ -33,7 +33,9 @@ class AgentLogger:
 
         with open(self.log_file, "w", encoding="utf-8") as f:
             f.write("=" * 80 + "\n")
-            f.write(f"Easy Agent Run Log - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            f.write(
+                f"Easy Agent Run Log - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+            )
             f.write("=" * 80 + "\n\n")
 
     def log_request(self, messages: list[dict], tools: list[Any] | None = None):
@@ -133,7 +135,9 @@ class AgentLogger:
         timestamp = now.strftime("%Y-%m-%d %H:%M:%S") + f".{now.microsecond:06d}"
 
         with open(self.log_file, "a", encoding="utf-8") as f:
-            f.write(f"[{timestamp}]|INFO|FMQT|-||-|-|MainThread|agent_logger:0| [{self.log_index}] {log_type}\n")
+            f.write(
+                f"[{timestamp}]|INFO|FMQT|-||-|-|MainThread|agent_logger:0| [{self.log_index}] {log_type}\n"
+            )
             f.write(content + "\n")
 
     def get_log_file_path(self) -> Path:

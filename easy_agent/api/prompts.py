@@ -15,14 +15,12 @@ prompts_router = APIRouter(prefix="/api/prompts", tags=["Prompts"])
 def _get_prompts_dir() -> str:
     try:
         cfg = Config.load()
-        return getattr(cfg.tools, 'prompts_dir', None) or os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            "prompts"
+        return getattr(cfg.tools, "prompts_dir", None) or os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "prompts"
         )
     except Exception:
         return os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            "prompts"
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "prompts"
         )
 
 
@@ -58,10 +56,7 @@ def read_prompt(path: str = Query("fx/options_quote", description="md路径")) -
 
 
 @prompts_router.post("/update", summary="更新单个提示词文档")
-def update_prompt(
-    path: str = Body(...),
-    content: str = Body(...)
-) -> str:
+def update_prompt(path: str = Body(...), content: str = Body(...)) -> str:
     prompts_base = _get_prompts_dir()
     logger.info("[%s].md 更新内容", path)
     try:

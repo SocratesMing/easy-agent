@@ -2,7 +2,6 @@
 
 import argparse
 import os
-import sys
 from pathlib import Path
 
 
@@ -28,7 +27,7 @@ def run_web():
 ║     Easy Agent Web Service              ║
 ╠══════════════════════════════════════════╣
 ║  地址: http://{args.host}:{args.port}            ║
-║  模式: {'开发 (热重载)' if args.reload else '生产'}                    ║
+║  模式: {"开发 (热重载)" if args.reload else "生产"}                    ║
 ╚══════════════════════════════════════════╝
 """)
 

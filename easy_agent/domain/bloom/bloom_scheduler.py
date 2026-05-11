@@ -1,6 +1,5 @@
 import gzip
 import logging
-import os
 import time
 from datetime import datetime, timedelta
 
@@ -25,9 +24,9 @@ def start_scheduler(db, llm):
         time.sleep(60)
 
 
-def read_file(file_path: str, encoding: str = 'utf-8') -> str | None:
+def read_file(file_path: str, encoding: str = "utf-8") -> str | None:
     try:
-        with open(file_path, 'r', encoding=encoding) as file:
+        with open(file_path, "r", encoding=encoding) as file:
             return file.read()
     except FileNotFoundError:
         logger.error("文件[%s]不存在", file_path)
@@ -37,9 +36,9 @@ def read_file(file_path: str, encoding: str = 'utf-8') -> str | None:
         return None
 
 
-def read_gz_file(file_path: str, encoding: str = 'utf-8') -> str | None:
+def read_gz_file(file_path: str, encoding: str = "utf-8") -> str | None:
     try:
-        with gzip.open(file_path, 'rb') as file:
+        with gzip.open(file_path, "rb") as file:
             return file.read().decode(encoding)
     except FileNotFoundError:
         logger.error("文件[%s]不存在", file_path)
@@ -90,10 +89,14 @@ def _try_acquire_lock(db, lock_key: str) -> bool:
     try:
         with db.get_connection() as conn:
             cursor = conn.cursor()
-            db._execute(cursor, """
+            db._execute(
+                cursor,
+                """
                 INSERT INTO fmqt_lock (lock_key, created_at)
                 VALUES (?, ?)
-            """, (lock_key, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+            """,
+                (lock_key, datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+            )
             return True
     except Exception:
         return False

@@ -1,6 +1,5 @@
 """File management routes"""
 
-import json
 import logging
 import os
 import uuid
@@ -9,7 +8,7 @@ from pathlib import Path
 from typing import Annotated, Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse
 
 from ..db import Database, get_database
 from ..models.api import FileListResponse, FileInfo
@@ -46,14 +45,16 @@ async def get_session_generated_files(
 
     file_list = []
     for f in generated_files:
-        file_list.append({
-            "id": f["id"],
-            "filename": f["filename"],
-            "file_path": f["file_path"],
-            "file_type": f["file_type"],
-            "size": f["size"],
-            "created_at": f["created_at"],
-        })
+        file_list.append(
+            {
+                "id": f["id"],
+                "filename": f["filename"],
+                "file_path": f["file_path"],
+                "file_type": f["file_type"],
+                "size": f["size"],
+                "created_at": f["created_at"],
+            }
+        )
 
     return file_list
 
@@ -88,13 +89,17 @@ async def list_files(
             if item.is_file():
                 try:
                     stat = item.stat()
-                    workspace_files.append(FileInfo(
-                        filename=item.name,
-                        file_path=str(item.relative_to(workspace_dir)),
-                        file_type=item.suffix.lstrip(".") or "unknown",
-                        size=stat.st_size,
-                        uploaded_at=datetime.fromtimestamp(stat.st_mtime).isoformat(),
-                    ))
+                    workspace_files.append(
+                        FileInfo(
+                            filename=item.name,
+                            file_path=str(item.relative_to(workspace_dir)),
+                            file_type=item.suffix.lstrip(".") or "unknown",
+                            size=stat.st_size,
+                            uploaded_at=datetime.fromtimestamp(
+                                stat.st_mtime
+                            ).isoformat(),
+                        )
+                    )
                 except Exception as e:
                     logger.warning(f"读取文件信息失败: {item} | {e}")
 
@@ -104,13 +109,17 @@ async def list_files(
             if item.is_file():
                 try:
                     stat = item.stat()
-                    upload_files.append(FileInfo(
-                        filename=item.name,
-                        file_path=str(item.relative_to(upload_dir)),
-                        file_type=item.suffix.lstrip(".") or "unknown",
-                        size=stat.st_size,
-                        uploaded_at=datetime.fromtimestamp(stat.st_mtime).isoformat(),
-                    ))
+                    upload_files.append(
+                        FileInfo(
+                            filename=item.name,
+                            file_path=str(item.relative_to(upload_dir)),
+                            file_type=item.suffix.lstrip(".") or "unknown",
+                            size=stat.st_size,
+                            uploaded_at=datetime.fromtimestamp(
+                                stat.st_mtime
+                            ).isoformat(),
+                        )
+                    )
                 except Exception as e:
                     logger.warning(f"读取上传文件信息失败: {item} | {e}")
 
@@ -150,7 +159,9 @@ async def upload_file(
             username=username,
         )
 
-    logger.info(f"文件上传成功 | 文件名: {safe_filename} | 大小: {len(content)} bytes | 用户: {username}")
+    logger.info(
+        f"文件上传成功 | 文件名: {safe_filename} | 大小: {len(content)} bytes | 用户: {username}"
+    )
 
     return {
         "filename": safe_filename,
@@ -220,7 +231,9 @@ async def get_workspace_tree(
 
     items = []
     try:
-        for entry in sorted(target_dir.iterdir(), key=lambda e: (not e.is_dir(), e.name.lower())):
+        for entry in sorted(
+            target_dir.iterdir(), key=lambda e: (not e.is_dir(), e.name.lower())
+        ):
             item = {
                 "name": entry.name,
                 "path": str(entry.relative_to(workspace_dir)),

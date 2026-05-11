@@ -4,7 +4,7 @@ import logging
 import uuid
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
@@ -35,7 +35,7 @@ class UpdateDocumentRequest(BaseModel):
 
 
 def get_vector_store(request: Request):
-    vs = getattr(request.app.state, 'vector_store', None)
+    vs = getattr(request.app.state, "vector_store", None)
     if not vs or not vs.is_ready:
         raise HTTPException(status_code=503, detail="向量数据库未启用或初始化失败")
     return vs
@@ -43,7 +43,7 @@ def get_vector_store(request: Request):
 
 @router.get("/status")
 async def get_vector_store_status(request: Request):
-    vs = getattr(request.app.state, 'vector_store', None)
+    vs = getattr(request.app.state, "vector_store", None)
     if not vs:
         return {
             "enabled": False,

@@ -1,13 +1,14 @@
 """Pydantic Models for API Request/Response"""
 
-from datetime import datetime
 from typing import Any, List, Optional
 
 from pydantic import BaseModel, Field
 
 
 class AgentConfig(BaseModel):
-    system_prompt: str = Field(default="你是一个有帮助的 AI 助手.", description="系统提示词")
+    system_prompt: str = Field(
+        default="你是一个有帮助的 AI 助手.", description="系统提示词"
+    )
     max_steps: int = Field(default=50, description="最大执行步数")
     workspace_dir: str = Field(default="./workspace", description="工作目录")
 

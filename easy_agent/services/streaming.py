@@ -27,7 +27,7 @@ KEEP_RECENT_MESSAGES = 10
 def estimate_tokens(text: str) -> int:
     if not text:
         return 0
-    chinese_chars = sum(1 for c in text if '\u4e00' <= c <= '\u9fff')
+    chinese_chars = sum(1 for c in text if "\u4e00" <= c <= "\u9fff")
     other_chars = len(text) - chinese_chars
     return int(chinese_chars / 1.5 + other_chars / 4)
 
@@ -51,9 +51,9 @@ def _get_model_context_limit(model_instance) -> int | None:
     if model_instance is None:
         return None
     model_name = ""
-    if hasattr(model_instance, 'model_name'):
+    if hasattr(model_instance, "model_name"):
         model_name = model_instance.model_name or ""
-    elif hasattr(model_instance, 'model'):
+    elif hasattr(model_instance, "model"):
         model_name = model_instance.model or ""
     if not model_name:
         return None
@@ -122,12 +122,20 @@ async def build_context_messages(
     session_messages = session.messages
 
     if len(session_messages) > MAX_CONTEXT_MESSAGES:
-        compressed_msgs, summary, original_count = await compress_context(session_messages)
+        compressed_msgs, summary, original_count = await compress_context(
+            session_messages
+        )
         if summary:
-            context_summary = f"[历史对话摘要（前{original_count}条消息已压缩）]:\n{summary}\n\n"
+            context_summary = (
+                f"[历史对话摘要（前{original_count}条消息已压缩）]:\n{summary}\n\n"
+            )
             if session_logger:
-                session_logger.log_context_compression(summary, original_count, len(compressed_msgs))
-            logger.info(f"[{session_id[-5:]}] 上下文已压缩 | 原消息数: {original_count} | 摘要长度: {len(summary)}")
+                session_logger.log_context_compression(
+                    summary, original_count, len(compressed_msgs)
+                )
+            logger.info(
+                f"[{session_id[-5:]}] 上下文已压缩 | 原消息数: {original_count} | 摘要长度: {len(summary)}"
+            )
             return context_summary + current_message
 
     return current_message
@@ -137,19 +145,23 @@ def _update_accumulated_args(
     tool_call_accumulated_args: dict,
     tool_name: str,
     args_data: any,
+    sid: str = "",
 ) -> None:
-    """Update accumulated tool call arguments from a chunk.
-
-    Accumulates string args across chunks (appending partial JSON),
-    and merges dict args. Handles JSON parsing for string args.
-    """
+    """Update accumulated tool call arguments from a chunk."""
     if isinstance(args_data, dict):
-        if tool_name in tool_call_accumulated_args and isinstance(tool_call_accumulated_args[tool_name], dict):
+        if tool_name in tool_call_accumulated_args and isinstance(
+            tool_call_accumulated_args[tool_name], dict
+        ):
             tool_call_accumulated_args[tool_name].update(args_data)
         else:
             tool_call_accumulated_args[tool_name] = args_data.copy()
+        logger.info(
+            f"[{sid}] 📦 _update_accumulated_args(dict) {tool_name}: {json.dumps(tool_call_accumulated_args[tool_name], ensure_ascii=False)[:200]}"
+        )
     elif isinstance(args_data, str) and args_data:
-        if tool_name not in tool_call_accumulated_args or not isinstance(tool_call_accumulated_args[tool_name], str):
+        if tool_name not in tool_call_accumulated_args or not isinstance(
+            tool_call_accumulated_args[tool_name], str
+        ):
             tool_call_accumulated_args[tool_name] = args_data
         else:
             tool_call_accumulated_args[tool_name] += args_data
@@ -159,6 +171,9 @@ def _update_accumulated_args(
                 tool_call_accumulated_args[tool_name] = parsed
             else:
                 tool_call_accumulated_args[tool_name] = {"value": parsed}
+            logger.info(
+                f"[{sid}] 📦 _update_accumulated_args(str→dict) {tool_name}: {json.dumps(parsed, ensure_ascii=False)[:200]}"
+            )
         except json.JSONDecodeError:
             pass
     else:
@@ -187,10 +202,18 @@ async def chat_stream_generator(
         message_content = f"[workspace: {ws} | tool path: /workspace/xxx | shell: cd {ws}]\n{message_content}"
 
     if session_id and db:
-        message_content = await build_context_messages(db, session_id, message_content, session_logger)
+        message_content = await build_context_messages(
+            db, session_id, message_content, session_logger
+        )
 
-    ws_info = str(agent.workspace_dir.absolute()) if agent and agent.workspace_dir else "unknown"
-    logger.info(f"[{sid}] 开始流式响应 | workspace: {ws_info} | message: {message_content[:50]}{'...' if len(message_content) > 50 else ''} | 用户: {username}")
+    ws_info = (
+        str(agent.workspace_dir.absolute())
+        if agent and agent.workspace_dir
+        else "unknown"
+    )
+    logger.info(
+        f"[{sid}] 开始流式响应 | workspace: {ws_info} | message: {message_content[:50]}{'...' if len(message_content) > 50 else ''} | 用户: {username}"
+    )
 
     def format_sse(data: dict) -> str:
         return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
@@ -200,7 +223,7 @@ async def chat_stream_generator(
 
         start_time = time.time()
 
-        has_streaming = hasattr(agent.agent, 'astream')
+        has_streaming = hasattr(agent.agent, "astream")
         blocks = []
         tool_call_records = []
         accumulated_thinking = ""
@@ -209,8 +232,12 @@ async def chat_stream_generator(
 
         max_input_tokens = None
         auto_compress_tokens = None
-        model_instance = getattr(agent, 'model', None)
-        if model_instance and hasattr(model_instance, 'profile') and model_instance.profile:
+        model_instance = getattr(agent, "model", None)
+        if (
+            model_instance
+            and hasattr(model_instance, "profile")
+            and model_instance.profile
+        ):
             max_input_tokens = model_instance.profile.get("max_input_tokens")
         if not max_input_tokens:
             max_input_tokens = _get_model_context_limit(model_instance)
@@ -225,47 +252,109 @@ async def chat_stream_generator(
             context_messages = []
             session = db.get_session(session_id)
             if session and session.messages:
+                provider = (
+                    agent.config.llm.provider.lower() if agent and agent.config else ""
+                )
                 for msg in session.messages:
                     if msg.get("role") == "user":
-                        context_messages.append(HumanMessage(content=str(msg.get("content", ""))))
+                        context_messages.append(
+                            HumanMessage(content=str(msg.get("content", "")))
+                        )
                     elif msg.get("role") == "assistant":
                         assistant_content = str(msg.get("content", ""))
-                        if msg.get("thinking"):
-                            assistant_content = f"[思考]: {msg.get('thinking')}\n\n{assistant_content}"
-                        context_messages.append(AIMessage(content=assistant_content))
+                        thinking = msg.get("thinking")
+                        if thinking:
+                            if provider == "deepseek":
+                                context_messages.append(
+                                    AIMessage(
+                                        content=assistant_content,
+                                        additional_kwargs={
+                                            "reasoning_content": thinking
+                                        },
+                                    )
+                                )
+                            else:
+                                assistant_content = (
+                                    f"[思考]: {thinking}\n\n{assistant_content}"
+                                )
+                                context_messages.append(
+                                    AIMessage(content=assistant_content)
+                                )
+                        else:
+                            context_messages.append(
+                                AIMessage(content=assistant_content)
+                            )
 
             context_messages.append(HumanMessage(content=message_content))
             messages = context_messages
-            full_response = ""
-            current_thinking = ""
             thinking_started = False
             thinking_start_time = None
             thinking_end_time = None
-            assistant_started = False
             current_step = 0
-            current_step_thinking = ""
             tool_call_start_times = {}
             tool_call_step_map = {}
             tool_call_block_added = set()
 
-            thinking_records = []
-
-            pending_tool_calls = {}
-
             accumulated_content = ""
             is_in_thinking = False
-            thinking_buffer = ""
-            first_token_time = None
-            msg_received_time = None
+            _thinking_from_reasoning = False  # True when thinking started by reasoning_content
             content_start_time = None
             total_tool_duration = 0
             is_after_tool_result = False
             tool_call_accumulated_args = {}
             tool_call_id_map = {}
+            tool_call_order = []
             last_persisted_len = 0
 
             block_order = 0
             current_content_block = None
+
+            def _end_thinking():
+                """End the current thinking step and emit thinking_end event."""
+                nonlocal is_in_thinking, thinking_start_time, thinking_end_time
+                nonlocal _thinking_from_reasoning, current_content_block
+                now = time.time()
+                thinking_end_time = now
+                thinking_duration = (
+                    now - thinking_start_time if thinking_start_time else 0
+                )
+                thinking_clean = accumulated_thinking.strip()
+                if thinking_clean:
+                    try:
+                        db.record_thinking(
+                            session_id=session_id,
+                            message_id=message_id,
+                            step=current_step,
+                            content=thinking_clean[:10000],
+                            duration=round(thinking_duration, 2),
+                        )
+                    except Exception as e:
+                        logger.warning(f"[{sid}] 持久化思考记录失败: {e}")
+                    if session_logger:
+                        session_logger.log_thinking(
+                            content=thinking_clean,
+                            step=current_step,
+                            duration=round(thinking_duration, 2),
+                            message_id=message_id,
+                        )
+                    logger.info(
+                        f"[{sid}] 🤔 Step {current_step} 思考完成 | 耗时: {thinking_duration:.2f}s | 长度: {len(thinking_clean)}"
+                    )
+                for blk in reversed(blocks):
+                    if blk["type"] == "thinking" and blk["step"] == current_step:
+                        blk["content"] = thinking_clean
+                        blk["duration"] = round(thinking_duration, 2)
+                        break
+                yield format_sse(
+                    {
+                        "type": "thinking_end",
+                        "duration": round(thinking_duration, 2),
+                        "step": current_step,
+                    }
+                )
+                is_in_thinking = False
+                _thinking_from_reasoning = False
+                current_content_block = None
 
             def build_partial_assistant_message():
                 return {
@@ -285,7 +374,9 @@ async def chat_stream_generator(
                             "step": tc[6],
                         }
                         for tc in tool_call_records
-                    ] if tool_call_records else None,
+                    ]
+                    if tool_call_records
+                    else None,
                     "blocks": blocks if blocks else None,
                 }
 
@@ -305,16 +396,22 @@ async def chat_stream_generator(
                 if now - last_token_usage_time < 0.5:
                     return None
                 last_token_usage_time = now
-                est_input = total_usage["input_tokens"] or estimate_tokens(message_content)
-                est_output = total_usage["output_tokens"] or estimate_tokens(accumulated_response) + estimate_tokens(accumulated_thinking)
-                return format_sse({
-                    "type": "token_usage",
-                    "input_tokens": est_input,
-                    "output_tokens": est_output,
-                    "total_tokens": est_input + est_output,
-                    "max_input_tokens": max_input_tokens,
-                    "auto_compress_tokens": auto_compress_tokens,
-                })
+                est_input = total_usage["input_tokens"] or estimate_tokens(
+                    message_content
+                )
+                est_output = total_usage["output_tokens"] or estimate_tokens(
+                    accumulated_response
+                ) + estimate_tokens(accumulated_thinking)
+                return format_sse(
+                    {
+                        "type": "token_usage",
+                        "input_tokens": est_input,
+                        "output_tokens": est_output,
+                        "total_tokens": est_input + est_output,
+                        "max_input_tokens": max_input_tokens,
+                        "auto_compress_tokens": auto_compress_tokens,
+                    }
+                )
 
             async for chunk in agent.agent.astream(
                 {"messages": messages},
@@ -328,7 +425,7 @@ async def chat_stream_generator(
                 token, metadata = chunk["data"]
                 ns = chunk.get("ns", [])
 
-                if hasattr(token, 'usage_metadata') and token.usage_metadata:
+                if hasattr(token, "usage_metadata") and token.usage_metadata:
                     um = token.usage_metadata
                     logger.info(f"[{sid}] 📊 usage_metadata found: {um}")
                     total_usage["input_tokens"] += um.get("input_tokens", 0) or 0
@@ -337,71 +434,179 @@ async def chat_stream_generator(
                     tu = build_token_usage_event()
                     if tu:
                         yield tu
-                elif hasattr(token, 'response_metadata') and token.response_metadata:
+                elif hasattr(token, "response_metadata") and token.response_metadata:
                     rm = token.response_metadata
-                    if 'usage' in rm:
-                        usage = rm['usage']
-                        logger.info(f"[{sid}] 📊 response_metadata.usage found: {usage}")
-                        total_usage["input_tokens"] += usage.get('prompt_tokens', 0) or 0
-                        total_usage["output_tokens"] += usage.get('completion_tokens', 0) or 0
-                        total_usage["total_tokens"] += usage.get('total_tokens', 0) or 0
+                    if "usage" in rm:
+                        usage = rm["usage"]
+                        logger.info(
+                            f"[{sid}] 📊 response_metadata.usage found: {usage}"
+                        )
+                        total_usage["input_tokens"] += (
+                            usage.get("prompt_tokens", 0) or 0
+                        )
+                        total_usage["output_tokens"] += (
+                            usage.get("completion_tokens", 0) or 0
+                        )
+                        total_usage["total_tokens"] += usage.get("total_tokens", 0) or 0
                         tu = build_token_usage_event()
                         if tu:
                             yield tu
                 else:
                     token_type = type(token).__name__
-                    has_usage_meta = hasattr(token, 'usage_metadata')
-                    has_resp_meta = hasattr(token, 'response_metadata')
+                    has_usage_meta = hasattr(token, "usage_metadata")
+                    has_resp_meta = hasattr(token, "response_metadata")
                     if total_usage["total_tokens"] == 0 and has_usage_meta:
-                        logger.info(f"[{sid}] 📊 token type={token_type}, usage_metadata={getattr(token, 'usage_metadata', None)}, response_metadata keys={list(getattr(token, 'response_metadata', {}).keys()) if has_resp_meta else 'N/A'}")
+                        logger.info(
+                            f"[{sid}] 📊 token type={token_type}, usage_metadata={getattr(token, 'usage_metadata', None)}, response_metadata keys={list(getattr(token, 'response_metadata', {}).keys()) if has_resp_meta else 'N/A'}"
+                        )
 
                 is_subagent = any(s.startswith("tools:") for s in ns)
                 if is_subagent:
-                    continue
+                    # Only skip content/thinking from subagents.
+                    # Tool calls/results are still needed for arg accumulation.
+                    has_tool_info = (
+                        isinstance(token, ToolMessage)
+                        or (hasattr(token, "tool_calls") and token.tool_calls)
+                        or (hasattr(token, "tool_call_chunks") and token.tool_call_chunks)
+                    )
+                    if not has_tool_info:
+                        continue
 
-                content = getattr(token, 'content', '')
+                content = getattr(token, "content", "")
                 if content and not isinstance(token, ToolMessage):
-                    content_str = str(content)
-                    accumulated_content += content_str
+                    if isinstance(content, list):
+                        has_unhandled = False
+                        for block in content:
+                            block_type = block.get("type", "")
+                            if block_type in ("thinking", "thinking_delta"):
+                                thinking_text = block.get("thinking", "")
+                                if thinking_text:
+                                    if not is_in_thinking:
+                                        is_in_thinking = True
+                                        _thinking_from_reasoning = True
+                                        is_after_tool_result = False
+                                        thinking_start_time = time.time()
+                                        current_step += 1
+                                        logger.info(f"[{sid}] 🤔 Step {current_step} 思考开始 (Anthropic)")
+                                        block_order += 1
+                                        blocks.append(
+                                            {
+                                                "type": "thinking",
+                                                "content": "",
+                                                "order": block_order,
+                                                "step": current_step,
+                                            }
+                                        )
+                                        yield format_sse(
+                                            {
+                                                "type": "thinking_start",
+                                                "content": "",
+                                                "step": current_step,
+                                            }
+                                        )
+                                    accumulated_thinking += thinking_text
+                                    yield format_sse(
+                                        {
+                                            "type": "thinking",
+                                            "content": thinking_text,
+                                            "step": current_step,
+                                        }
+                                    )
+                            elif block_type in ("text", "text_delta"):
+                                text = block.get("text", "")
+                                if text:
+                                    if is_in_thinking:
+                                        for _ in _end_thinking():
+                                            yield _
+                                    accumulated_response += text
+                                    if not current_content_block:
+                                        block_order += 1
+                                        current_content_block = {
+                                            "type": "content",
+                                            "content": "",
+                                            "order": block_order,
+                                        }
+                                        blocks.append(current_content_block)
+                                    current_content_block["content"] += text
+                                    yield format_sse(
+                                        {
+                                            "type": "content",
+                                            "content": text,
+                                        }
+                                    )
+                                    tu = build_token_usage_event()
+                                    if tu:
+                                        yield tu
+                                    if len(accumulated_response) - last_persisted_len >= 500:
+                                        last_persisted_len = len(accumulated_response)
+                                        persist_partial()
+                            elif block_type == "redacted_thinking":
+                                pass
+                            else:
+                                has_unhandled = True
+                        if not has_unhandled:
+                            continue
+                        content_str = ""
+                    else:
+                        content_str = str(content)
+                        accumulated_content += content_str
 
-                    if not is_in_thinking and '<think' in content_str.lower():
+                    if not is_in_thinking and "<think" in content_str.lower():
                         is_in_thinking = True
                         is_after_tool_result = False
-                        msg_received_time = time.time()
+                        time.time()
                         thinking_start_time = time.time()
                         current_step += 1
                         logger.info(f"[{sid}] 🤔 Step {current_step} 思考开始")
                         block_order += 1
-                        blocks.append({
-                            "type": "thinking",
-                            "content": "",
-                            "order": block_order,
-                            "step": current_step,
-                        })
-                        yield format_sse({
-                            "type": "thinking_start",
-                            "content": "",
-                            "step": current_step,
-                        })
+                        blocks.append(
+                            {
+                                "type": "thinking",
+                                "content": "",
+                                "order": block_order,
+                                "step": current_step,
+                            }
+                        )
+                        yield format_sse(
+                            {
+                                "type": "thinking_start",
+                                "content": "",
+                                "step": current_step,
+                            }
+                        )
 
-                    if is_in_thinking and '</think' in content_str.lower():
-                        end_match = re.search(r'</think[^>]*>', content_str, re.IGNORECASE)
+                    if is_in_thinking and "</think" in content_str.lower():
+                        end_match = re.search(
+                            r"</think[^>]*>", content_str, re.IGNORECASE
+                        )
                         if end_match:
-                            thinking_part = content_str[:end_match.start()]
-                            response_part = content_str[end_match.end():]
+                            thinking_part = content_str[: end_match.start()]
+                            response_part = content_str[end_match.end() :]
 
                             if thinking_part.strip():
-                                yield format_sse({
-                                    "type": "thinking",
-                                    "content": thinking_part,
-                                    "step": current_step,
-                                })
+                                yield format_sse(
+                                    {
+                                        "type": "thinking",
+                                        "content": thinking_part,
+                                        "step": current_step,
+                                    }
+                                )
                                 accumulated_thinking += thinking_part
 
                             thinking_end_time = time.time()
-                            thinking_duration = thinking_end_time - thinking_start_time if thinking_start_time else 0
+                            thinking_duration = (
+                                thinking_end_time - thinking_start_time
+                                if thinking_start_time
+                                else 0
+                            )
 
-                            thinking_clean = accumulated_thinking.replace(' thinking', '').replace(' response', '').replace('<think ', '').replace('</think ', '').strip()
+                            thinking_clean = (
+                                accumulated_thinking.replace(" thinking", "")
+                                .replace(" response", "")
+                                .replace("<think ", "")
+                                .replace("</think ", "")
+                                .strip()
+                            )
                             try:
                                 db.record_thinking(
                                     session_id=session_id,
@@ -421,17 +626,24 @@ async def chat_stream_generator(
                                     message_id=message_id,
                                 )
 
-                            logger.info(f"[{sid}] 🤔 Step {current_step} 思考完成 | 耗时: {thinking_duration:.2f}s | 内容长度: {len(thinking_clean)} | 内容: {thinking_clean[:500]}")
+                            logger.info(
+                                f"[{sid}] 🤔 Step {current_step} 思考完成 | 耗时: {thinking_duration:.2f}s | 内容长度: {len(thinking_clean)} | 内容: {thinking_clean[:50]}"
+                            )
                             for blk in reversed(blocks):
-                                if blk["type"] == "thinking" and blk["step"] == current_step:
+                                if (
+                                    blk["type"] == "thinking"
+                                    and blk["step"] == current_step
+                                ):
                                     blk["content"] = thinking_clean
                                     blk["duration"] = round(thinking_duration, 2)
                                     break
-                            yield format_sse({
-                                "type": "thinking_end",
-                                "duration": round(thinking_duration, 2),
-                                "step": current_step,
-                            })
+                            yield format_sse(
+                                {
+                                    "type": "thinking_end",
+                                    "duration": round(thinking_duration, 2),
+                                    "step": current_step,
+                                }
+                            )
 
                             is_in_thinking = False
 
@@ -447,28 +659,24 @@ async def chat_stream_generator(
                                     }
                                     blocks.append(current_content_block)
                                 current_content_block["content"] += response_part
-                                yield format_sse({
-                                    "type": "content",
-                                    "content": response_part,
-                                })
+                                yield format_sse(
+                                    {
+                                        "type": "content",
+                                        "content": response_part,
+                                    }
+                                )
                                 accumulated_response += response_part
                                 tu = build_token_usage_event()
                                 if tu:
                                     yield tu
                     elif is_in_thinking:
-                        accumulated_thinking += content_str
-                        yield format_sse({
-                            "type": "thinking",
-                            "content": content_str,
-                            "step": current_step,
-                        })
-                    else:
-                        if is_after_tool_result:
-                            logger.info(f"[{sid}] ⏭️ Step {current_step} 跳过重复 content | 长度: {len(content_str)}")
-                            is_after_tool_result = False
-                        else:
+                        # If thinking was started by reasoning_content, end it when
+                        # actual content arrives (the model has finished reasoning)
+                        if _thinking_from_reasoning:
+                            for _ in _end_thinking():
+                                yield _
+                            # Process content as regular response text
                             accumulated_response += content_str
-                            logger.info(f"[{sid}] 📤 Step {current_step} 正式内容\n内容: {accumulated_response[:500]}")
                             if not current_content_block:
                                 block_order += 1
                                 current_content_block = {
@@ -478,10 +686,56 @@ async def chat_stream_generator(
                                 }
                                 blocks.append(current_content_block)
                             current_content_block["content"] += content_str
-                            yield format_sse({
-                                "type": "content",
-                                "content": content_str,
-                            })
+                            yield format_sse(
+                                {
+                                    "type": "content",
+                                    "content": content_str,
+                                }
+                            )
+                            tu = build_token_usage_event()
+                            if tu:
+                                yield tu
+                            if len(accumulated_response) - last_persisted_len >= 500:
+                                last_persisted_len = len(accumulated_response)
+                                persist_partial()
+                        else:
+                            accumulated_thinking += content_str
+                            yield format_sse(
+                                {
+                                    "type": "thinking",
+                                    "content": content_str,
+                                    "step": current_step,
+                                }
+                            )
+                    else:
+                        if not content_str:
+                            continue
+                        if is_after_tool_result:
+                            logger.info(
+                                f"[{sid}] ⏭️ Step {current_step} 跳过重复 content | 长度: {len(content_str)}"
+                            )
+                            is_after_tool_result = False
+                        else:
+                            accumulated_response += content_str
+                            if len(accumulated_response) // 200 > (len(accumulated_response) - len(content_str)) // 200:
+                                logger.info(
+                                    f"[{sid}] 📤 Step {current_step} 正式内容 ({len(accumulated_response)} chars): {accumulated_response[:200]}..."
+                                )
+                            if not current_content_block:
+                                block_order += 1
+                                current_content_block = {
+                                    "type": "content",
+                                    "content": "",
+                                    "order": block_order,
+                                }
+                                blocks.append(current_content_block)
+                            current_content_block["content"] += content_str
+                            yield format_sse(
+                                {
+                                    "type": "content",
+                                    "content": content_str,
+                                }
+                            )
                             tu = build_token_usage_event()
                             if tu:
                                 yield tu
@@ -490,6 +744,11 @@ async def chat_stream_generator(
                                 persist_partial()
 
                 if hasattr(token, "tool_call_chunks") and token.tool_call_chunks:
+                    # End thinking if tool call arrives while still in thinking mode
+                    if is_in_thinking:
+                        for _ in _end_thinking():
+                            yield _
+
                     for tc_chunk in token.tool_call_chunks:
                         tool_name_from_chunk = tc_chunk.get("name")
                         args_data = tc_chunk.get("args")
@@ -497,7 +756,10 @@ async def chat_stream_generator(
 
                         if tool_name_from_chunk:
                             tool_name = tool_name_from_chunk
-                            tool_call_id_map[tool_name] = chunk_id or f"tool-{tool_name}"
+                            tool_call_order.append(tool_name)
+                            tool_call_id_map[tool_name] = (
+                                chunk_id or f"tool-{tool_name}"
+                            )
                             tool_call_start_times[tool_name] = time.time()
                             tool_call_step_map[tool_name] = current_step
                             current_content_block = None
@@ -514,71 +776,184 @@ async def chat_stream_generator(
                             }
                             blocks.append(tc_block)
                             tool_call_block_added.add(tool_name)
-                            _update_accumulated_args(tool_call_accumulated_args, tool_name, args_data)
+                            _update_accumulated_args(
+                                tool_call_accumulated_args, tool_name, args_data, sid
+                            )
 
-                            yield format_sse({
-                                "type": "tool_call",
-                                "tool_name": tool_name,
-                                "tool_call_id": chunk_id or f"tool-{tool_name}",
-                                "arguments": tool_call_accumulated_args[tool_name],
-                                "step": current_step,
-                            })
+                            yield format_sse(
+                                {
+                                    "type": "tool_call",
+                                    "tool_name": tool_name,
+                                    "tool_call_id": chunk_id or f"tool-{tool_name}",
+                                    "arguments": tool_call_accumulated_args[tool_name],
+                                    "step": current_step,
+                                }
+                            )
                         elif chunk_id:
                             tool_name = next(
-                                (name for name, cid in tool_call_id_map.items() if cid == chunk_id),
-                                None
+                                (
+                                    name
+                                    for name, cid in tool_call_id_map.items()
+                                    if cid == chunk_id
+                                ),
+                                None,
                             )
                             if not tool_name:
                                 continue
-                            _update_accumulated_args(tool_call_accumulated_args, tool_name, args_data)
+                            _update_accumulated_args(
+                                tool_call_accumulated_args, tool_name, args_data, sid
+                            )
                             for blk in reversed(blocks):
-                                if blk["type"] == "tool_call" and blk["tool_name"] == tool_name:
-                                    blk["arguments"] = tool_call_accumulated_args[tool_name]
+                                if (
+                                    blk["type"] == "tool_call"
+                                    and blk["tool_name"] == tool_name
+                                ):
+                                    blk["arguments"] = tool_call_accumulated_args[
+                                        tool_name
+                                    ]
                                     break
-                            yield format_sse({
-                                "type": "tool_call",
-                                "tool_name": tool_name,
-                                "tool_call_id": chunk_id,
-                                "arguments": tool_call_accumulated_args[tool_name],
-                                "step": current_step,
-                            })
+                            yield format_sse(
+                                {
+                                    "type": "tool_call",
+                                    "tool_name": tool_name,
+                                    "tool_call_id": chunk_id,
+                                    "arguments": tool_call_accumulated_args[tool_name],
+                                    "step": current_step,
+                                }
+                            )
+
+                        elif tool_call_order:
+                            tool_name = tool_call_order[-1]
+                            _update_accumulated_args(
+                                tool_call_accumulated_args, tool_name, args_data, sid
+                            )
+                            for blk in reversed(blocks):
+                                if (
+                                    blk["type"] == "tool_call"
+                                    and blk["tool_name"] == tool_name
+                                ):
+                                    blk["arguments"] = tool_call_accumulated_args[
+                                        tool_name
+                                    ]
+                                    break
+                            yield format_sse(
+                                {
+                                    "type": "tool_call",
+                                    "tool_name": tool_name,
+                                    "tool_call_id": tool_call_id_map.get(tool_name, ""),
+                                    "arguments": tool_call_accumulated_args[tool_name],
+                                    "step": current_step,
+                                }
+                            )
 
                 if hasattr(token, "tool_calls") and token.tool_calls:
+                    # End thinking if tool calls arrive while still in thinking mode
+                    if is_in_thinking:
+                        for _ in _end_thinking():
+                            yield _
+
                     for tc in token.tool_calls:
                         tool_name = tc.get("name", "")
                         tool_args = tc.get("args", {})
                         tool_call_id = tc.get("id", "")
 
                         if tool_name:
+                            log_args = tool_args if tool_args and (not isinstance(tool_args, dict) or len(tool_args) > 0) else tool_call_accumulated_args.get(tool_name, tool_args)
+                            logger.info(f"[{sid}] 🔧 token.tool_calls: name={tool_name}, args={json.dumps(log_args, ensure_ascii=False)[:200]}, id={tool_call_id}")
                             tool_call_id_map[tool_name] = tool_call_id
                             tool_call_start_times[tool_name] = time.time()
                             tool_call_step_map[tool_name] = current_step
                             current_content_block = None
-                            block_order += 1
-                            tc_block = {
-                                "type": "tool_call",
-                                "tool_name": tool_name,
-                                "tool_call_id": tool_call_id or f"tool-{tool_name}",
-                                "arguments": tool_args,
-                                "result": "",
-                                "success": True,
-                                "order": block_order,
-                                "step": current_step,
-                            }
-                            blocks.append(tc_block)
+                            # Update existing block if already created by tool_call_chunks
+                            existing_tc = None
+                            for blk in reversed(blocks):
+                                if (
+                                    blk["type"] == "tool_call"
+                                    and blk.get("tool_call_id") == tool_call_id
+                                ):
+                                    existing_tc = blk
+                                    break
+                            if existing_tc:
+                                existing_tc["arguments"] = tool_args
+                                existing_tc["step"] = current_step
+                                tc_block = existing_tc
+                            else:
+                                block_order += 1
+                                tc_block = {
+                                    "type": "tool_call",
+                                    "tool_name": tool_name,
+                                    "tool_call_id": tool_call_id or f"tool-{tool_name}",
+                                    "arguments": tool_args,
+                                    "result": "",
+                                    "success": True,
+                                    "order": block_order,
+                                    "step": current_step,
+                                }
+                                blocks.append(tc_block)
                             tool_call_block_added.add(tool_name)
-                            tool_call_accumulated_args[tool_name] = tool_args
+                            # Only set if non-empty; tool_call_chunks may have better accumulated data
+                            if tool_args and isinstance(tool_args, dict) and len(tool_args) > 0:
+                                tool_call_accumulated_args[tool_name] = tool_args
+                                logger.info(
+                                    f"[{sid}] 📦 tool_calls set {tool_name}: {json.dumps(tool_args, ensure_ascii=False)[:200]}"
+                                )
+                            elif tool_name not in tool_call_accumulated_args:
+                                tool_call_accumulated_args[tool_name] = tool_args
 
-                            yield format_sse({
-                                "type": "tool_call",
-                                "tool_name": tool_name,
-                                "tool_call_id": tool_call_id or f"tool-{tool_name}",
-                                "arguments": tool_args,
-                                "step": current_step,
-                            })
+                            yield format_sse(
+                                {
+                                    "type": "tool_call",
+                                    "tool_name": tool_name,
+                                    "tool_call_id": tool_call_id or f"tool-{tool_name}",
+                                    "arguments": tool_call_accumulated_args[tool_name],
+                                    "step": current_step,
+                                }
+                            )
 
                 if hasattr(token, "additional_kwargs") and token.additional_kwargs:
                     ak = token.additional_kwargs
+
+                    reasoning_content = ak.get("reasoning_content")
+                    if reasoning_content is not None:
+                        if (
+                            isinstance(reasoning_content, str)
+                            and reasoning_content.strip()
+                        ):
+                            if not is_in_thinking:
+                                is_in_thinking = True
+                                _thinking_from_reasoning = True
+                                is_after_tool_result = False
+                                time.time()
+                                thinking_start_time = time.time()
+                                current_step += 1
+                                logger.info(
+                                    f"[{sid}] 🤔 Step {current_step} 思考开始 (reasoning_content)"
+                                )
+                                block_order += 1
+                                blocks.append(
+                                    {
+                                        "type": "thinking",
+                                        "content": "",
+                                        "order": block_order,
+                                        "step": current_step,
+                                    }
+                                )
+                                yield format_sse(
+                                    {
+                                        "type": "thinking_start",
+                                        "content": "",
+                                        "step": current_step,
+                                    }
+                                )
+                            accumulated_thinking += reasoning_content
+                            yield format_sse(
+                                {
+                                    "type": "thinking",
+                                    "content": reasoning_content,
+                                    "step": current_step,
+                                }
+                            )
+
                     if "tool_calls" in ak:
                         for tc in ak["tool_calls"]:
                             tc_id = tc.get("id", "")
@@ -587,7 +962,11 @@ async def chat_stream_generator(
 
                             if tc_name:
                                 try:
-                                    tc_args = json.loads(tc_args_str) if isinstance(tc_args_str, str) else tc_args_str
+                                    tc_args = (
+                                        json.loads(tc_args_str)
+                                        if isinstance(tc_args_str, str)
+                                        else tc_args_str
+                                    )
                                 except json.JSONDecodeError:
                                     tc_args = {"raw": tc_args_str}
 
@@ -610,18 +989,20 @@ async def chat_stream_generator(
                                 tool_call_block_added.add(tc_name)
                                 tool_call_accumulated_args[tc_name] = tc_args
 
-                                yield format_sse({
-                                    "type": "tool_call",
-                                    "tool_name": tc_name,
-                                    "tool_call_id": tc_id or f"tool-{tc_name}",
-                                    "arguments": tc_args,
-                                    "step": current_step,
-                                })
+                                yield format_sse(
+                                    {
+                                        "type": "tool_call",
+                                        "tool_name": tc_name,
+                                        "tool_call_id": tc_id or f"tool-{tc_name}",
+                                        "arguments": tc_args,
+                                        "step": current_step,
+                                    }
+                                )
 
                 if isinstance(token, ToolMessage):
                     tool_name = token.name or ""
                     result_content = str(token.content) if token.content else ""
-                    tool_success = True
+                    tool_success = "Command failed with exit code" not in result_content and "failed with exit code" not in result_content
                     tool_call_id = token.tool_call_id or ""
 
                     if not tool_name:
@@ -632,15 +1013,30 @@ async def chat_stream_generator(
                     total_tool_duration += tool_duration
 
                     tool_args = tool_call_accumulated_args.pop(tool_name, {})
+                    # Debug: trace where args come from
+                    if not tool_args or (isinstance(tool_args, dict) and len(tool_args) == 0):
+                        logger.info(
+                            f"[{sid}] ⚠️ tool_args empty for {tool_name}, "
+                            f"accumulator keys: {list(tool_call_accumulated_args.keys())}, "
+                            f"tc_id_map keys: {list(tool_call_id_map.keys())}"
+                        )
+                        for blk in reversed(blocks):
+                            if blk["type"] == "tool_call" and blk["tool_name"] == tool_name:
+                                block_args = blk.get("arguments", {})
+                                if block_args:
+                                    tool_args = block_args
+                                break
                     result_len = len(result_content) if result_content else 0
-                    result_preview = result_content[:500] if result_content else ""
+                    result_preview = result_content[:200] if result_content else ""
 
                     if "raw" in tool_args and len(tool_args) == 1:
                         log_args = tool_args["raw"]
                     else:
                         log_args = json.dumps(tool_args, ensure_ascii=False)
 
-                    logger.info(f"[{sid}] Step {current_step} 工具调用: {tool_name} | 参数: {log_args[:2000]} | 耗时: {tool_duration:.2f}s | 内容长度: {result_len} | 调用结果: {'成功' if tool_success else '失败'} | 结果: {result_preview}")
+                    logger.info(
+                        f"[{sid}] Step {current_step} 工具调用: {tool_name} | 参数: {log_args[:2000]} | 耗时: {tool_duration:.2f}s | 内容长度: {result_len} | 调用结果: {'成功' if tool_success else '失败'} | 结果: {result_preview}"
+                    )
 
                     for blk in reversed(blocks):
                         if blk["type"] == "tool_call" and blk["tool_name"] == tool_name:
@@ -649,27 +1045,33 @@ async def chat_stream_generator(
                             blk["duration"] = round(tool_duration, 2)
                             break
 
-                    mapped_id = tool_call_id_map.pop(tool_name, tool_call_id or f"tool-{tool_name}")
-                    tool_call_records.append((
-                        tool_name,
-                        mapped_id,
-                        tool_args,
-                        result_content,
-                        tool_success,
-                        round(tool_duration, 2),
-                        current_step,
-                    ))
+                    mapped_id = tool_call_id_map.pop(
+                        tool_name, tool_call_id or f"tool-{tool_name}"
+                    )
+                    tool_call_records.append(
+                        (
+                            tool_name,
+                            mapped_id,
+                            tool_args,
+                            result_content,
+                            tool_success,
+                            round(tool_duration, 2),
+                            current_step,
+                        )
+                    )
 
-                    yield format_sse({
-                        "type": "tool_result",
-                        "tool_name": tool_name,
-                        "tool_call_id": mapped_id,
-                        "arguments": tool_args,
-                        "result": result_content,
-                        "success": tool_success,
-                        "duration": round(tool_duration, 2),
-                        "step": current_step,
-                    })
+                    yield format_sse(
+                        {
+                            "type": "tool_result",
+                            "tool_name": tool_name,
+                            "tool_call_id": mapped_id,
+                            "arguments": tool_args,
+                            "result": result_content,
+                            "success": tool_success,
+                            "duration": round(tool_duration, 2),
+                            "step": current_step,
+                        }
+                    )
                     tu = build_token_usage_event()
                     if tu:
                         yield tu
@@ -704,15 +1106,27 @@ async def chat_stream_generator(
                     if tool_success and tool_name in ("write_file", "write_tool"):
                         try:
                             file_args = tool_args if isinstance(tool_args, dict) else {}
-                            filename = file_args.get("file_name") or file_args.get("path") or file_args.get("file_path", "")
+                            filename = (
+                                file_args.get("file_name")
+                                or file_args.get("path")
+                                or file_args.get("file_path", "")
+                            )
                             if filename:
-                                base_name = os.path.basename(filename) if filename else "unknown"
-                                ext = os.path.splitext(base_name)[1].lstrip(".") or "txt"
+                                base_name = (
+                                    os.path.basename(filename)
+                                    if filename
+                                    else "unknown"
+                                )
+                                ext = (
+                                    os.path.splitext(base_name)[1].lstrip(".") or "txt"
+                                )
                                 db.add_generated_file(
                                     session_id=session_id,
                                     message_id=message_id,
                                     filename=base_name,
-                                    file_path=str(agent.workspace_dir / filename) if not os.path.isabs(filename) else filename,
+                                    file_path=str(agent.workspace_dir / filename)
+                                    if not os.path.isabs(filename)
+                                    else filename,
                                     file_type=ext,
                                     size=0,
                                 )
@@ -723,8 +1137,14 @@ async def chat_stream_generator(
                     persist_partial()
 
             final_thinking_duration = None
-            if accumulated_thinking.strip() and thinking_start_time and thinking_end_time:
-                final_thinking_duration = round(thinking_end_time - thinking_start_time, 2)
+            if (
+                accumulated_thinking.strip()
+                and thinking_start_time
+                and thinking_end_time
+            ):
+                final_thinking_duration = round(
+                    thinking_end_time - thinking_start_time, 2
+                )
                 db.record_thinking(
                     session_id=session_id,
                     message_id=message_id,
@@ -732,18 +1152,26 @@ async def chat_stream_generator(
                     content=accumulated_thinking.strip(),
                     duration=final_thinking_duration,
                 )
-                logger.info(f"[{sid}] 💾 思考记录已保存 | 长度: {len(accumulated_thinking)} | 耗时: {final_thinking_duration}s")
+                logger.info(
+                    f"[{sid}] 💾 思考记录已保存 | 长度: {len(accumulated_thinking)} | 耗时: {final_thinking_duration}s"
+                )
 
             user_input_needed = False
             if accumulated_response:
                 response_clean = accumulated_response.strip()
                 question_patterns = [
-                    r'[？?]\s*$',
-                    r'方案[一二三123]\s*[）\)]?\s*$',
-                    r'请选择', r'是否确认', r'确认要',
-                    r'是否继续', r'你希望', r'你想[要]?',
-                    r'输入\s*[1-3]', r'选择\s*[1-3]',
-                    r'\([Yy]\/[Nn]\)', r'\([是否]\/[是否]\)',
+                    r"[？?]\s*$",
+                    r"方案[一二三123]\s*[）\)]?\s*$",
+                    r"请选择",
+                    r"是否确认",
+                    r"确认要",
+                    r"是否继续",
+                    r"你希望",
+                    r"你想[要]?",
+                    r"输入\s*[1-3]",
+                    r"选择\s*[1-3]",
+                    r"\([Yy]\/[Nn]\)",
+                    r"\([是否]\/[是否]\)",
                 ]
                 for pattern in question_patterns:
                     if re.search(pattern, response_clean, re.MULTILINE):
@@ -751,38 +1179,58 @@ async def chat_stream_generator(
                         break
 
                 if user_input_needed:
-                    logger.info(f"[{sid}] 🤝 检测到需要用户输入 | 内容: {response_clean[:200]}")
-                    yield format_sse({
-                        "type": "user_input_required",
-                        "content": response_clean,
-                    })
+                    logger.info(
+                        f"[{sid}] 🤝 检测到需要用户输入 | 内容: {response_clean[:200]}"
+                    )
+                    yield format_sse(
+                        {
+                            "type": "user_input_required",
+                            "content": response_clean,
+                        }
+                    )
 
             if accumulated_response:
-                yield format_sse({
-                    "type": "content_end",
-                    "content": "",
-                })
+                yield format_sse(
+                    {
+                        "type": "content_end",
+                        "content": "",
+                    }
+                )
                 content_end_time = time.time()
 
             elapsed_time = time.time() - start_time
 
-            thinking_time = round(thinking_end_time - thinking_start_time, 2) if thinking_start_time and thinking_end_time else 0
-            content_time = round(content_end_time - content_start_time, 2) if content_start_time and content_end_time else 0
+            thinking_time = (
+                round(thinking_end_time - thinking_start_time, 2)
+                if thinking_start_time and thinking_end_time
+                else 0
+            )
+            content_time = (
+                round(content_end_time - content_start_time, 2)
+                if content_start_time and content_end_time
+                else 0
+            )
 
             if thinking_started and thinking_start_time and thinking_end_time is None:
                 thinking_duration = time.time() - thinking_start_time
-                logger.info(f"[{sid}] 🤔 Step {current_step} 思考结束(异常) | 耗时: {thinking_duration:.2f}s | 长度: {len(accumulated_thinking)}")
-                yield format_sse({
-                    "type": "thinking_end",
-                    "duration": round(thinking_duration, 2),
-                    "step": current_step,
-                })
+                logger.info(
+                    f"[{sid}] 🤔 Step {current_step} 思考结束(异常) | 耗时: {thinking_duration:.2f}s | 长度: {len(accumulated_thinking)}"
+                )
+                yield format_sse(
+                    {
+                        "type": "thinking_end",
+                        "duration": round(thinking_duration, 2),
+                        "step": current_step,
+                    }
+                )
 
-            logger.info(f"[{sid}] ✅ 流式响应完成 | 总步骤: {current_step} | 总耗时: {elapsed_time:.2f}s | 思考: {thinking_time}s | 回复: {content_time}s | 工具: {total_tool_duration:.2f}s | 思考长度: {len(accumulated_thinking)} | 回复长度: {len(accumulated_response)} 字符")
+            logger.info(
+                f"[{sid}] ✅ 流式响应完成 | 总步骤: {current_step} | 总耗时: {elapsed_time:.2f}s | 思考: {thinking_time}s | 回复: {content_time}s | 工具: {total_tool_duration:.2f}s | 思考长度: {len(accumulated_thinking)} | 回复长度: {len(accumulated_response)} 字符"
+            )
             if accumulated_thinking:
-                logger.info(f"[{sid}] 🤔 思考内容:\n{accumulated_thinking}")
+                logger.info(f"[{sid}] 🤔 思考内容(前200字):\n{accumulated_thinking[:200]}")
             if accumulated_response:
-                logger.info(f"[{sid}] 💬 回复内容:\n{accumulated_response}")
+                logger.info(f"[{sid}] 💬 回复内容(前200字):\n{accumulated_response[:200]}")
 
             assistant_message = {
                 "role": "assistant",
@@ -801,7 +1249,9 @@ async def chat_stream_generator(
                         "step": tc[6],
                     }
                     for tc in tool_call_records
-                ] if tool_call_records else None,
+                ]
+                if tool_call_records
+                else None,
                 "blocks": blocks if blocks else None,
             }
             db.update_last_assistant_message(session_id, assistant_message)
@@ -827,7 +1277,9 @@ async def chat_stream_generator(
                         "user_message": message_content,
                         "assistant_response": {
                             "content": accumulated_response,
-                            "thinking": accumulated_thinking if accumulated_thinking else None,
+                            "thinking": accumulated_thinking
+                            if accumulated_thinking
+                            else None,
                             "thinking_duration": final_thinking_duration,
                         },
                         "tool_calls": [
@@ -841,14 +1293,16 @@ async def chat_stream_generator(
                                 "step": tc[6],
                             }
                             for tc in tool_call_records
-                        ] if tool_call_records else [],
+                        ]
+                        if tool_call_records
+                        else [],
                         "blocks": blocks if blocks else [],
                         "steps": current_step,
                         "elapsed_time": round(elapsed_time, 2),
                     },
                 }
 
-                with open(context_path, 'w', encoding='utf-8') as f:
+                with open(context_path, "w", encoding="utf-8") as f:
                     json.dump(context_data, f, ensure_ascii=False, indent=2)
 
                 logger.info(f"[{sid}] Context file saved: {context_filename}")
@@ -871,39 +1325,57 @@ async def chat_stream_generator(
                         agent._workspace_renamed = True
                         new_ws_path = str(agent.workspace_dir.absolute())
 
-                        db.update_generated_file_paths(session_id, old_ws_path, new_ws_path)
+                        db.update_generated_file_paths(
+                            session_id, old_ws_path, new_ws_path
+                        )
                         db.update_session_workspace_name(session_id, new_ws_name)
 
-                        logger.info(f"[{sid}] Workspace renamed: {old_ws_path} -> {new_ws_path}")
+                        logger.info(
+                            f"[{sid}] Workspace renamed: {old_ws_path} -> {new_ws_path}"
+                        )
                     except Exception as e:
                         logger.warning(f"[{sid}] Workspace rename failed: {e}")
 
             if session_logger:
-                tool_calls_for_log = [
-                    {
-                        "tool_name": tc[0],
-                        "tool_call_id": tc[1],
-                        "arguments": tc[2],
-                        "result": str(tc[3])[:1000],
-                        "success": tc[4],
-                        "duration": tc[5],
-                        "step": tc[6],
-                    }
-                    for tc in tool_call_records
-                ] if tool_call_records else None
+                tool_calls_for_log = (
+                    [
+                        {
+                            "tool_name": tc[0],
+                            "tool_call_id": tc[1],
+                            "arguments": tc[2],
+                            "result": str(tc[3])[:1000],
+                            "success": tc[4],
+                            "duration": tc[5],
+                            "step": tc[6],
+                        }
+                        for tc in tool_call_records
+                    ]
+                    if tool_call_records
+                    else None
+                )
                 session_logger.log_assistant_response(
                     content=accumulated_response,
                     thinking=accumulated_thinking if accumulated_thinking else None,
                     tool_calls=tool_calls_for_log,
                 )
 
-            logger.info(f"[{sid}] Token usage: input={total_usage['input_tokens']}, output={total_usage['output_tokens']}, total={total_usage['total_tokens']}")
+            logger.info(
+                f"[{sid}] Token usage: input={total_usage['input_tokens']}, output={total_usage['output_tokens']}, total={total_usage['total_tokens']}"
+            )
 
-            if total_usage["total_tokens"] == 0 and (accumulated_response or accumulated_thinking):
+            if total_usage["total_tokens"] == 0 and (
+                accumulated_response or accumulated_thinking
+            ):
                 total_usage["input_tokens"] = estimate_tokens(message_content)
-                total_usage["output_tokens"] = estimate_tokens(accumulated_response) + estimate_tokens(accumulated_thinking)
-                total_usage["total_tokens"] = total_usage["input_tokens"] + total_usage["output_tokens"]
-                logger.info(f"[{sid}] 📊 Estimated tokens: input={total_usage['input_tokens']}, output={total_usage['output_tokens']}, total={total_usage['total_tokens']}")
+                total_usage["output_tokens"] = estimate_tokens(
+                    accumulated_response
+                ) + estimate_tokens(accumulated_thinking)
+                total_usage["total_tokens"] = (
+                    total_usage["input_tokens"] + total_usage["output_tokens"]
+                )
+                logger.info(
+                    f"[{sid}] 📊 Estimated tokens: input={total_usage['input_tokens']}, output={total_usage['output_tokens']}, total={total_usage['total_tokens']}"
+                )
 
             usage_payload = {
                 **total_usage,
@@ -911,33 +1383,41 @@ async def chat_stream_generator(
                 "auto_compress_tokens": auto_compress_tokens,
             }
             logger.info(f"[{sid}] 📊 Sending done event with usage: {usage_payload}")
-            yield format_sse({
-                "type": "done",
-                "session_id": session_id,
-                "elapsed_time": round(elapsed_time, 2),
-                "usage": usage_payload,
-            })
+            yield format_sse(
+                {
+                    "type": "done",
+                    "session_id": session_id,
+                    "elapsed_time": round(elapsed_time, 2),
+                    "usage": usage_payload,
+                }
+            )
 
         else:
             messages = [{"role": "user", "content": message_content}]
 
             logger.info(f"[{sid}] 💬 开始非流式回复")
 
-            yield format_sse({
-                "type": "assistant_start",
-                "content": "",
-            })
+            yield format_sse(
+                {
+                    "type": "assistant_start",
+                    "content": "",
+                }
+            )
 
             start_time = time.time()
             response_content = await agent.run(message_content)
             elapsed_time = time.time() - start_time
 
-            logger.info(f"[{sid}] ✅ 非流式响应完成 | 耗时: {elapsed_time:.2f}s | 回复长度: {len(response_content)} 字符")
+            logger.info(
+                f"[{sid}] ✅ 非流式响应完成 | 耗时: {elapsed_time:.2f}s | 回复长度: {len(response_content)} 字符"
+            )
 
-            yield format_sse({
-                "type": "content",
-                "content": response_content,
-            })
+            yield format_sse(
+                {
+                    "type": "content",
+                    "content": response_content,
+                }
+            )
 
             assistant_message = {
                 "role": "assistant",
@@ -950,16 +1430,18 @@ async def chat_stream_generator(
             if session_logger:
                 session_logger.log_assistant_response(content=response_content)
 
-            yield format_sse({
-                "type": "done",
-                "session_id": session_id,
-                "elapsed_time": round(elapsed_time, 2),
-                "usage": {
-                    **total_usage,
-                    "max_input_tokens": max_input_tokens,
-                    "auto_compress_tokens": auto_compress_tokens,
-                },
-            })
+            yield format_sse(
+                {
+                    "type": "done",
+                    "session_id": session_id,
+                    "elapsed_time": round(elapsed_time, 2),
+                    "usage": {
+                        **total_usage,
+                        "max_input_tokens": max_input_tokens,
+                        "auto_compress_tokens": auto_compress_tokens,
+                    },
+                }
+            )
 
     except asyncio.CancelledError:
         logger.info(f"[{sid}] ❌ 请求被取消")
@@ -981,12 +1463,16 @@ async def chat_stream_generator(
                         "step": tc[6],
                     }
                     for tc in tool_call_records
-                ] if tool_call_records else None,
+                ]
+                if tool_call_records
+                else None,
                 "blocks": blocks if blocks else None,
             }
             db.update_last_assistant_message(session_id, partial_msg)
             db.update_last_assistant_message_row(session_id, partial_msg)
-            logger.info(f"[{sid}] 💾 取消时已保存部分回复 | 长度: {len(accumulated_response)}")
+            logger.info(
+                f"[{sid}] 💾 取消时已保存部分回复 | 长度: {len(accumulated_response)}"
+            )
         except Exception as e:
             logger.warning(f"[{sid}] 取消时保存失败: {e}")
         yield format_sse({"type": "error", "content": "请求被取消"})

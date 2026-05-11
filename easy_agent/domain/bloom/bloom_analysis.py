@@ -7,9 +7,20 @@ from .bloom_repository import query_bloom_by_type
 logger = logging.getLogger("easy_agent.bloom")
 
 
-def bloom_prompt(date: str, spot_rate: dict, stock: dict, option1m: dict, option3m: dict,
-                 fx_option: dict, benchmark: dict, balance: dict, fdi: dict, cpi: dict,
-                 symbol: dict, cny_index: dict):
+def bloom_prompt(
+    date: str,
+    spot_rate: dict,
+    stock: dict,
+    option1m: dict,
+    option3m: dict,
+    fx_option: dict,
+    benchmark: dict,
+    balance: dict,
+    fdi: dict,
+    cpi: dict,
+    symbol: dict,
+    cny_index: dict,
+):
     prompt = f"""
         你是一个金融量化指标分析专家，能够分析不同的金融指标数据，明确指标之间的关联关系
         
@@ -84,26 +95,78 @@ def analysis_bloom(db, llm, analysis_date=None):
 
     prompt = bloom_prompt(
         date,
-        query_bloom_by_type(db, "即期汇率", _getdate(7, analysis_date), analysis_date.strftime("%Y-%m-%d"), 7),
-        query_bloom_by_type(db, "股指价格", _getdate(7, analysis_date), analysis_date.strftime("%Y-%m-%d"), 7),
-        query_bloom_by_type(db, "1m期权波动率", _getdate(7, analysis_date), analysis_date.strftime("%Y-%m-%d"), 7),
-        query_bloom_by_type(db, "3m期权波动率", _getdate(7, analysis_date), analysis_date.strftime("%Y-%m-%d"), 7),
-        query_bloom_by_type(db, "期权波动率指标", _getdate(7, analysis_date), analysis_date.strftime("%Y-%m-%d"), 7),
-        query_bloom_by_type(db, "短期基准利率", _getdate(30, analysis_date), analysis_date.strftime("%Y-%m-%d"), 7),
-        query_bloom_by_type(db, "经常账户差额", _getdate(30, analysis_date), analysis_date.strftime("%Y-%m-%d")),
-        query_bloom_by_type(db, "FDI", _getdate(30, analysis_date), analysis_date.strftime("%Y-%m-%d")),
-        query_bloom_by_type(db, "CPI", _getdate(30, analysis_date), analysis_date.strftime("%Y-%m-%d")),
-        query_bloom_by_type(db, "期货主力合约价格", _getdate(30, analysis_date), analysis_date.strftime("%Y-%m-%d")),
-        query_bloom_by_type(db, "货币指数", _getdate(30, analysis_date), analysis_date.strftime("%Y-%m-%d")),
+        query_bloom_by_type(
+            db,
+            "即期汇率",
+            _getdate(7, analysis_date),
+            analysis_date.strftime("%Y-%m-%d"),
+            7,
+        ),
+        query_bloom_by_type(
+            db,
+            "股指价格",
+            _getdate(7, analysis_date),
+            analysis_date.strftime("%Y-%m-%d"),
+            7,
+        ),
+        query_bloom_by_type(
+            db,
+            "1m期权波动率",
+            _getdate(7, analysis_date),
+            analysis_date.strftime("%Y-%m-%d"),
+            7,
+        ),
+        query_bloom_by_type(
+            db,
+            "3m期权波动率",
+            _getdate(7, analysis_date),
+            analysis_date.strftime("%Y-%m-%d"),
+            7,
+        ),
+        query_bloom_by_type(
+            db,
+            "期权波动率指标",
+            _getdate(7, analysis_date),
+            analysis_date.strftime("%Y-%m-%d"),
+            7,
+        ),
+        query_bloom_by_type(
+            db,
+            "短期基准利率",
+            _getdate(30, analysis_date),
+            analysis_date.strftime("%Y-%m-%d"),
+            7,
+        ),
+        query_bloom_by_type(
+            db,
+            "经常账户差额",
+            _getdate(30, analysis_date),
+            analysis_date.strftime("%Y-%m-%d"),
+        ),
+        query_bloom_by_type(
+            db, "FDI", _getdate(30, analysis_date), analysis_date.strftime("%Y-%m-%d")
+        ),
+        query_bloom_by_type(
+            db, "CPI", _getdate(30, analysis_date), analysis_date.strftime("%Y-%m-%d")
+        ),
+        query_bloom_by_type(
+            db,
+            "期货主力合约价格",
+            _getdate(30, analysis_date),
+            analysis_date.strftime("%Y-%m-%d"),
+        ),
+        query_bloom_by_type(
+            db,
+            "货币指数",
+            _getdate(30, analysis_date),
+            analysis_date.strftime("%Y-%m-%d"),
+        ),
     )
 
-    messages = [
-        {"role": "system", "content": "你是一个金融量化指标分析专家。"},
-        {"role": "user", "content": prompt}
-    ]
     try:
         logger.info("开始调用大模型分析[%s]彭博数据", date)
         from langchain_core.messages import HumanMessage, SystemMessage
+
         lc_messages = [
             SystemMessage(content="你是一个金融量化指标分析专家。"),
             HumanMessage(content=prompt),

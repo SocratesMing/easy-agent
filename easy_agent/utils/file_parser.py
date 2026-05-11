@@ -3,27 +3,113 @@
 import logging
 import os
 from pathlib import Path
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
 MAX_FILE_SIZE = 50 * 1024 * 1024
 
 TEXT_EXTENSIONS = {
-    ".py", ".js", ".ts", ".jsx", ".tsx", ".java", ".go", ".rs",
-    ".c", ".cpp", ".h", ".hpp", ".cs", ".rb", ".php", ".swift",
-    ".kt", ".kts", ".scala", ".sh", ".bash", ".zsh", ".sql", ".r", ".m",
-    ".yaml", ".yml", ".json", ".xml", ".html", ".htm", ".css", ".scss",
-    ".less", ".vue", ".svelte", ".md", ".rst", ".txt", ".ini",
-    ".cfg", ".conf", ".toml", ".env", ".gitignore", ".dockerfile",
-    ".proto", ".graphql", ".tf", ".gradle", ".properties", ".log",
-    ".csv", ".tsv", ".tex", ".bib", ".makefile", ".cmake", ".nim",
-    ".zig", ".v", ".vhdl", ".sv", ".lua", ".pl", ".pm", ".tcl",
-    ".dart", ".elm", ".erl", ".hrl", ".ex", ".exs", ".clj", ".cljs",
-    ".edn", ".hs", ".lhs", ".fs", ".fsx", ".ml", ".mli", ".jl",
-    ".rkt", ".scm", ".ss", ".coffee", ".litcoffee", ".styl",
-    ".sass", ".pug", ".jade", ".haml", ".slim", ".twig", ".blade",
-    ".erb", ".ejs", ".mustache", ".handlebars", ".njk",
+    ".py",
+    ".js",
+    ".ts",
+    ".jsx",
+    ".tsx",
+    ".java",
+    ".go",
+    ".rs",
+    ".c",
+    ".cpp",
+    ".h",
+    ".hpp",
+    ".cs",
+    ".rb",
+    ".php",
+    ".swift",
+    ".kt",
+    ".kts",
+    ".scala",
+    ".sh",
+    ".bash",
+    ".zsh",
+    ".sql",
+    ".r",
+    ".m",
+    ".yaml",
+    ".yml",
+    ".json",
+    ".xml",
+    ".html",
+    ".htm",
+    ".css",
+    ".scss",
+    ".less",
+    ".vue",
+    ".svelte",
+    ".md",
+    ".rst",
+    ".txt",
+    ".ini",
+    ".cfg",
+    ".conf",
+    ".toml",
+    ".env",
+    ".gitignore",
+    ".dockerfile",
+    ".proto",
+    ".graphql",
+    ".tf",
+    ".gradle",
+    ".properties",
+    ".log",
+    ".csv",
+    ".tsv",
+    ".tex",
+    ".bib",
+    ".makefile",
+    ".cmake",
+    ".nim",
+    ".zig",
+    ".v",
+    ".vhdl",
+    ".sv",
+    ".lua",
+    ".pl",
+    ".pm",
+    ".tcl",
+    ".dart",
+    ".elm",
+    ".erl",
+    ".hrl",
+    ".ex",
+    ".exs",
+    ".clj",
+    ".cljs",
+    ".edn",
+    ".hs",
+    ".lhs",
+    ".fs",
+    ".fsx",
+    ".ml",
+    ".mli",
+    ".jl",
+    ".rkt",
+    ".scm",
+    ".ss",
+    ".coffee",
+    ".litcoffee",
+    ".styl",
+    ".sass",
+    ".pug",
+    ".jade",
+    ".haml",
+    ".slim",
+    ".twig",
+    ".blade",
+    ".erb",
+    ".ejs",
+    ".mustache",
+    ".handlebars",
+    ".njk",
 }
 
 
@@ -79,7 +165,16 @@ def _format_size(size: int) -> str:
 
 
 def _parse_text(path: Path) -> str:
-    encodings = ["utf-8", "gbk", "gb2312", "latin-1", "shift-jis", "big5", "euc-kr", "cp1252"]
+    encodings = [
+        "utf-8",
+        "gbk",
+        "gb2312",
+        "latin-1",
+        "shift-jis",
+        "big5",
+        "euc-kr",
+        "cp1252",
+    ]
     for enc in encodings:
         try:
             return path.read_text(encoding=enc)
@@ -91,6 +186,7 @@ def _parse_text(path: Path) -> str:
 def _parse_pdf(path: Path) -> str:
     try:
         import fitz
+
         doc = fitz.open(str(path))
         text_parts = []
         for page in doc:
@@ -108,6 +204,7 @@ def _parse_pdf(path: Path) -> str:
 
     try:
         from pdfminer.high_level import extract_text
+
         text = extract_text(str(path))
         if text.strip():
             return text
@@ -118,6 +215,7 @@ def _parse_pdf(path: Path) -> str:
 
     try:
         import pdfplumber
+
         with pdfplumber.open(str(path)) as pdf:
             text_parts = []
             for page in pdf.pages:
@@ -138,6 +236,7 @@ def _parse_pdf(path: Path) -> str:
 def _parse_docx(path: Path) -> str:
     try:
         from docx import Document
+
         doc = Document(str(path))
         text_parts = []
 
@@ -160,15 +259,17 @@ def _parse_docx(path: Path) -> str:
     except Exception as e:
         logger.warning(f"python-docx 解析失败: {e}")
 
-    return f"[DOCX文件: {path.name}，未安装python-docx，请安装: pip install python-docx]"
+    return (
+        f"[DOCX文件: {path.name}，未安装python-docx，请安装: pip install python-docx]"
+    )
 
 
 def _parse_doc(path: Path) -> str:
     try:
         import subprocess
+
         result = subprocess.run(
-            ["antiword", str(path)],
-            capture_output=True, text=True, timeout=30
+            ["antiword", str(path)], capture_output=True, text=True, timeout=30
         )
         if result.returncode == 0 and result.stdout.strip():
             return result.stdout
@@ -179,9 +280,9 @@ def _parse_doc(path: Path) -> str:
 
     try:
         import subprocess
+
         result = subprocess.run(
-            ["catdoc", str(path)],
-            capture_output=True, text=True, timeout=30
+            ["catdoc", str(path)], capture_output=True, text=True, timeout=30
         )
         if result.returncode == 0 and result.stdout.strip():
             return result.stdout
@@ -192,6 +293,7 @@ def _parse_doc(path: Path) -> str:
 
     try:
         import olefile
+
         with olefile.OleFileIO(str(path)) as ole:
             if ole.exists("WordDocument"):
                 stream = ole.openstream("1Table")
@@ -210,13 +312,16 @@ def _parse_doc(path: Path) -> str:
 def _parse_xlsx(path: Path) -> str:
     try:
         import openpyxl
+
         wb = openpyxl.load_workbook(str(path), data_only=True)
         text_parts = []
         for sheet_name in wb.sheetnames:
             ws = wb[sheet_name]
             text_parts.append(f"--- Sheet: {sheet_name} ---")
             for row in ws.iter_rows(values_only=True):
-                row_text = "\t".join(str(cell) if cell is not None else "" for cell in row)
+                row_text = "\t".join(
+                    str(cell) if cell is not None else "" for cell in row
+                )
                 if row_text.strip():
                     text_parts.append(row_text)
         text = "\n".join(text_parts)
@@ -233,6 +338,7 @@ def _parse_xlsx(path: Path) -> str:
 def _parse_xls(path: Path) -> str:
     try:
         import xlrd
+
         wb = xlrd.open_workbook(str(path))
         text_parts = []
         for sheet in wb.sheets():
@@ -250,12 +356,15 @@ def _parse_xls(path: Path) -> str:
     except Exception as e:
         logger.warning(f"xlrd 解析失败: {e}")
 
-    return f"[XLS文件(旧格式): {path.name}，建议转换为xlsx格式，或安装: pip install xlrd]"
+    return (
+        f"[XLS文件(旧格式): {path.name}，建议转换为xlsx格式，或安装: pip install xlrd]"
+    )
 
 
 def _parse_pptx(path: Path) -> str:
     try:
         from pptx import Presentation
+
         prs = Presentation(str(path))
         text_parts = []
         for i, slide in enumerate(prs.slides):
@@ -280,15 +389,17 @@ def _parse_pptx(path: Path) -> str:
     except Exception as e:
         logger.warning(f"python-pptx 解析失败: {e}")
 
-    return f"[PPTX文件: {path.name}，未安装python-pptx，请安装: pip install python-pptx]"
+    return (
+        f"[PPTX文件: {path.name}，未安装python-pptx，请安装: pip install python-pptx]"
+    )
 
 
 def _parse_ppt(path: Path) -> str:
     try:
         import subprocess
+
         result = subprocess.run(
-            ["catppt", str(path)],
-            capture_output=True, text=True, timeout=30
+            ["catppt", str(path)], capture_output=True, text=True, timeout=30
         )
         if result.returncode == 0 and result.stdout.strip():
             return result.stdout
@@ -303,6 +414,7 @@ def _parse_ppt(path: Path) -> str:
 def _parse_rtf(path: Path) -> str:
     try:
         from striprtf.striprtf import rtf_to_text
+
         with open(path, "r", encoding="utf-8", errors="replace") as f:
             rtf_text = f.read()
         text = rtf_to_text(rtf_text)
@@ -315,9 +427,9 @@ def _parse_rtf(path: Path) -> str:
 
     try:
         import subprocess
+
         result = subprocess.run(
-            ["unrtf", "--text", str(path)],
-            capture_output=True, text=True, timeout=30
+            ["unrtf", "--text", str(path)], capture_output=True, text=True, timeout=30
         )
         if result.returncode == 0 and result.stdout.strip():
             return result.stdout
@@ -333,6 +445,7 @@ def _parse_image(path: Path) -> str:
     try:
         from PIL import Image
         import pytesseract
+
         img = Image.open(str(path))
         text = pytesseract.image_to_string(img, lang="chi_sim+eng")
         if text.strip():
@@ -342,13 +455,16 @@ def _parse_image(path: Path) -> str:
     except Exception as e:
         logger.warning(f"OCR 解析失败: {e}")
 
-    return f"[图片文件: {path.name}，未安装OCR库，请安装: pip install pytesseract pillow]"
+    return (
+        f"[图片文件: {path.name}，未安装OCR库，请安装: pip install pytesseract pillow]"
+    )
 
 
 def _parse_csv(path: Path) -> str:
     try:
         import csv
-        with open(path, 'r', encoding='utf-8') as f:
+
+        with open(path, "r", encoding="utf-8") as f:
             reader = csv.reader(f)
             rows = list(reader)
             if rows:
@@ -360,7 +476,8 @@ def _parse_csv(path: Path) -> str:
 
     try:
         import csv
-        with open(path, 'r', encoding='gbk') as f:
+
+        with open(path, "r", encoding="gbk") as f:
             reader = csv.reader(f)
             rows = list(reader)
             if rows:

@@ -14,13 +14,23 @@ class RetryConfig(BaseModel):
     max_retries: int = 3
 
 
+class ProviderConfig(BaseModel):
+    """Individual provider/model configuration"""
+
+    provider: str = ""
+    api_key: str = ""
+    model: str = ""
+    api_base: str = ""
+    max_input_tokens: int = 200000
+
+
 class LLMConfig(BaseModel):
-    """LLM configuration"""
+    """LLM configuration - resolved from the active model selection"""
 
     api_key: str
     api_base: str | None = None
     model: str = "claude-sonnet-4-6"
-    provider: str = "anthropic"
+    provider: str = "minimax"
     max_input_tokens: int = 200000  # Model context window size
     retry: RetryConfig = Field(default_factory=RetryConfig)
 
@@ -94,8 +104,12 @@ class SummarizationConfig(BaseModel):
     """Conversation summarization/compression configuration"""
 
     enabled: bool = True
-    compression_threshold: float = 0.8  # Trigger compression at this fraction of context window
-    compression_target: float = 0.1     # Keep this fraction of context window after compression
+    compression_threshold: float = (
+        0.8  # Trigger compression at this fraction of context window
+    )
+    compression_target: float = (
+        0.1  # Keep this fraction of context window after compression
+    )
 
 
 class Config(BaseModel):
@@ -107,13 +121,17 @@ class Config(BaseModel):
     summarization: SummarizationConfig = Field(default_factory=SummarizationConfig)
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
     vector_store: VectorStoreConfig = Field(default_factory=VectorStoreConfig)
+    models: dict[str, ProviderConfig] = Field(default_factory=dict)
+    active_model: str = "minimax"
 
     @classmethod
     def load(cls) -> "Config":
         """Load configuration from the default search path."""
         config_path = cls.get_default_config_path()
         if not config_path.exists():
-            raise FileNotFoundError("Configuration file not found. Place config.yaml in easy_agent/config/ directory.")
+            raise FileNotFoundError(
+                "Configuration file not found. Place config.yaml in easy_agent/config/ directory."
+            )
         return cls.from_yaml(config_path)
 
     @classmethod
@@ -130,8 +148,29 @@ class Config(BaseModel):
         if not data:
             raise ValueError("Configuration file is empty")
 
-        if "api_key" not in data:
-            raise ValueError("Configuration file missing required field: api_key")
+        # Parse active model selection
+        active_model = data.get("model", "minimax")
+
+        # Parse provider-specific model configs
+        models_data = data.get("models", {})
+        models: dict[str, ProviderConfig] = {}
+        for name, mcfg in models_data.items():
+            if isinstance(mcfg, dict):
+                models[name] = ProviderConfig(
+                    provider=mcfg.get("provider", name),
+                    api_key=mcfg.get("api_key", ""),
+                    model=mcfg.get("model", ""),
+                    api_base=mcfg.get("api_base", ""),
+                    max_input_tokens=mcfg.get("max_input_tokens", 200000),
+                )
+
+        # Resolve active model config
+        active_cfg = models.get(active_model, ProviderConfig())
+        if not active_cfg.api_key:
+            raise ValueError(
+                f"Active model '{active_model}' has no api_key configured. "
+                f"Available models: {list(models.keys())}"
+            )
 
         retry_data = data.get("retry", {})
         retry_config = RetryConfig(
@@ -140,11 +179,11 @@ class Config(BaseModel):
         )
 
         llm_config = LLMConfig(
-            api_key=data["api_key"],
-            api_base=data.get("api_base"),
-            model=data.get("model", "claude-sonnet-4-6"),
-            provider=data.get("provider", "anthropic"),
-            max_input_tokens=data.get("max_input_tokens", 200000),
+            api_key=active_cfg.api_key,
+            api_base=active_cfg.api_base or None,
+            model=active_cfg.model or "claude-sonnet-4-6",
+            provider=active_cfg.provider or active_model,
+            max_input_tokens=active_cfg.max_input_tokens or 200000,
             retry=retry_config,
         )
 
@@ -161,9 +200,17 @@ class Config(BaseModel):
         )
 
         db_data = data.get("database", {})
-        sqlite_data = db_data.get("sqlite", {}) if isinstance(db_data.get("sqlite"), dict) else {}
-        mysql_data = db_data.get("mysql", {}) if isinstance(db_data.get("mysql"), dict) else {}
-        mysql_pool_data = mysql_data.get("pool", {}) if isinstance(mysql_data.get("pool"), dict) else {}
+        sqlite_data = (
+            db_data.get("sqlite", {}) if isinstance(db_data.get("sqlite"), dict) else {}
+        )
+        mysql_data = (
+            db_data.get("mysql", {}) if isinstance(db_data.get("mysql"), dict) else {}
+        )
+        mysql_pool_data = (
+            mysql_data.get("pool", {})
+            if isinstance(mysql_data.get("pool"), dict)
+            else {}
+        )
         db_config = DatabaseConfig(
             type=db_data.get("type", "sqlite"),
             sqlite=SQLiteConfig(path=sqlite_data.get("path", "./data/easy_agent.db")),
@@ -191,12 +238,16 @@ class Config(BaseModel):
             enabled=vs_data.get("enabled", False),
             db_path=vs_data.get("db_path", "./data/chroma_db"),
             collection_name=vs_data.get("collection_name", "easy_agent_docs"),
-            embedding_provider=vs_data.get("embedding_provider", "sentence_transformers"),
+            embedding_provider=vs_data.get(
+                "embedding_provider", "sentence_transformers"
+            ),
             embedding_dimension=vs_data.get("embedding_dimension", 1024),
             batch_size=vs_data.get("batch_size", 32),
             zhipu_api_key=vs_data.get("zhipu_api_key", ""),
             zhipu_model=vs_data.get("zhipu_model", "embedding-3"),
-            sentence_transformers_model=vs_data.get("sentence_transformers_model", "Qwen/Qwen3-Embedding-0.6B"),
+            sentence_transformers_model=vs_data.get(
+                "sentence_transformers_model", "Qwen/Qwen3-Embedding-0.6B"
+            ),
         )
 
         summ_data = data.get("summarization", {})
@@ -213,6 +264,8 @@ class Config(BaseModel):
             summarization=summ_config,
             database=db_config,
             vector_store=vs_config,
+            models=models,
+            active_model=active_model,
         )
 
     @staticmethod
@@ -238,7 +291,7 @@ class Config(BaseModel):
     @staticmethod
     def sanitize_username(username: str) -> str:
         """将用户名转换为安全的目录名"""
-        return "".join(c for c in username if c.isalnum() or c in ('_', '-')) or "user"
+        return "".join(c for c in username if c.isalnum() or c in ("_", "-")) or "user"
 
     @staticmethod
     def get_user_workspace_dir(username: str) -> Path:

@@ -10,10 +10,9 @@ import re
 import uuid
 from contextlib import contextmanager
 from datetime import datetime
-from typing import Any, Generator, Optional
+from typing import Optional
 
 import sqlite3
-from pydantic import BaseModel
 
 from ..models.db import SessionModel, UserModel
 from ..utils.auth import hash_password, verify_password
@@ -29,7 +28,6 @@ def ensure_database_dir(db_path: str):
 
 
 class Database:
-
     def __init__(self, db_config: dict = None):
         self.db_type = "sqlite"
         self._connection: Optional[sqlite3.Connection] = None
@@ -82,7 +80,9 @@ class Database:
                 connect_timeout=self._mysql_config.get("connect_timeout", 10),
             )
             cursor = conn.cursor()
-            cursor.execute(f"CREATE DATABASE IF NOT EXISTS `{db_name}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci")
+            cursor.execute(
+                f"CREATE DATABASE IF NOT EXISTS `{db_name}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
+            )
             cursor.close()
             conn.close()
             logger.info(f"MySQL数据库 '{db_name}' 已就绪")
@@ -92,7 +92,8 @@ class Database:
         pool_cfg = self._mysql_config.get("pool", {})
         self._pool = PooledDB(
             creator=pymysql,
-            maxconnections=pool_cfg.get("pool_size", 5) + pool_cfg.get("max_overflow", 10),
+            maxconnections=pool_cfg.get("pool_size", 5)
+            + pool_cfg.get("max_overflow", 10),
             mincached=1,
             maxcached=pool_cfg.get("pool_size", 5),
             blocking=True,
@@ -115,7 +116,7 @@ class Database:
         version = cursor.fetchone()
         cursor.close()
         conn.close()
-        ver_str = version['VERSION()'] if version else '未知'
+        ver_str = version["VERSION()"] if version else "未知"
         logger.info(f"MySQL连接成功 | 版本: {ver_str}")
 
     def _get_sqlite_connection(self) -> sqlite3.Connection:
@@ -159,7 +160,7 @@ class Database:
 
     def _execute(self, cursor, sql: str, params: tuple = None):
         if self.db_type == "mysql":
-            sql = re.sub(r'\?', '%s', sql)
+            sql = re.sub(r"\?", "%s", sql)
         if params:
             cursor.execute(sql, params)
         else:
@@ -167,7 +168,9 @@ class Database:
 
     def _create_index(self, cursor, index_name: str, table_name: str, columns: str):
         if self.db_type == "sqlite":
-            cursor.execute(f"CREATE INDEX IF NOT EXISTS {index_name} ON {table_name}({columns})")
+            cursor.execute(
+                f"CREATE INDEX IF NOT EXISTS {index_name} ON {table_name}({columns})"
+            )
         else:
             try:
                 cursor.execute(f"CREATE INDEX {index_name} ON {table_name}({columns})")
@@ -196,13 +199,19 @@ class Database:
                 )
             """)
             self._create_index(cursor, "idx_updated_at", "sessions", "updated_at")
-            self._ensure_column(cursor, "sessions", "username", "VARCHAR(255) DEFAULT ''")
+            self._ensure_column(
+                cursor, "sessions", "username", "VARCHAR(255) DEFAULT ''"
+            )
             self._create_index(cursor, "idx_sessions_username", "sessions", "username")
-            self._ensure_column(cursor, "sessions", "workspace_name", "VARCHAR(255) DEFAULT ''")
+            self._ensure_column(
+                cursor, "sessions", "workspace_name", "VARCHAR(255) DEFAULT ''"
+            )
 
             if self.db_type == "mysql":
                 try:
-                    cursor.execute("ALTER TABLE sessions MODIFY COLUMN messages MEDIUMTEXT NOT NULL")
+                    cursor.execute(
+                        "ALTER TABLE sessions MODIFY COLUMN messages MEDIUMTEXT NOT NULL"
+                    )
                 except Exception:
                     pass
 
@@ -222,10 +231,19 @@ class Database:
                     FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
                 )
             """)
-            self._create_index(cursor, "idx_tool_call_session", "tool_call_records", "session_id")
-            self._create_index(cursor, "idx_tool_call_message", "tool_call_records", "session_id, message_id")
+            self._create_index(
+                cursor, "idx_tool_call_session", "tool_call_records", "session_id"
+            )
+            self._create_index(
+                cursor,
+                "idx_tool_call_message",
+                "tool_call_records",
+                "session_id, message_id",
+            )
             self._ensure_column(cursor, "tool_call_records", "duration", "REAL")
-            self._ensure_column(cursor, "tool_call_records", "step", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column(
+                cursor, "tool_call_records", "step", "INTEGER NOT NULL DEFAULT 0"
+            )
 
             cursor.execute(f"""
                 CREATE TABLE IF NOT EXISTS thinking_records (
@@ -239,8 +257,15 @@ class Database:
                     FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
                 )
             """)
-            self._create_index(cursor, "idx_thinking_session", "thinking_records", "session_id")
-            self._create_index(cursor, "idx_thinking_message", "thinking_records", "session_id, message_id")
+            self._create_index(
+                cursor, "idx_thinking_session", "thinking_records", "session_id"
+            )
+            self._create_index(
+                cursor,
+                "idx_thinking_message",
+                "thinking_records",
+                "session_id, message_id",
+            )
 
             text_type = "TEXT" if self.db_type == "sqlite" else "MEDIUMTEXT"
 
@@ -255,13 +280,24 @@ class Database:
                     FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
                 )
             """)
-            self._create_index(cursor, "idx_session_messages_session", "session_messages", "session_id")
-            self._create_index(cursor, "idx_session_messages_session_role", "session_messages", "session_id, role")
+            self._create_index(
+                cursor, "idx_session_messages_session", "session_messages", "session_id"
+            )
+            self._create_index(
+                cursor,
+                "idx_session_messages_session_role",
+                "session_messages",
+                "session_id, role",
+            )
 
             if self.db_type == "mysql":
                 try:
-                    cursor.execute("ALTER TABLE session_messages MODIFY COLUMN content MEDIUMTEXT")
-                    cursor.execute("ALTER TABLE session_messages MODIFY COLUMN extra_data MEDIUMTEXT")
+                    cursor.execute(
+                        "ALTER TABLE session_messages MODIFY COLUMN content MEDIUMTEXT"
+                    )
+                    cursor.execute(
+                        "ALTER TABLE session_messages MODIFY COLUMN extra_data MEDIUMTEXT"
+                    )
                 except Exception:
                     pass
 
@@ -293,10 +329,21 @@ class Database:
                     FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
                 )
             """)
-            self._create_index(cursor, "idx_generated_files_session", "generated_files", "session_id")
-            self._create_index(cursor, "idx_generated_files_message", "generated_files", "session_id, message_id")
-            self._create_index(cursor, "idx_session_files_session", "session_files", "session_id")
-            self._create_index(cursor, "idx_session_files_username", "session_files", "username")
+            self._create_index(
+                cursor, "idx_generated_files_session", "generated_files", "session_id"
+            )
+            self._create_index(
+                cursor,
+                "idx_generated_files_message",
+                "generated_files",
+                "session_id, message_id",
+            )
+            self._create_index(
+                cursor, "idx_session_files_session", "session_files", "session_id"
+            )
+            self._create_index(
+                cursor, "idx_session_files_username", "session_files", "username"
+            )
 
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS users (
@@ -331,7 +378,9 @@ class Database:
             """)
             self._create_index(cursor, "idx_bloom_type", "fmqt_bloom", "type")
             self._create_index(cursor, "idx_bloom_date", "fmqt_bloom", "bloomDate")
-            self._create_index(cursor, "idx_bloom_type_date", "fmqt_bloom", "type, bloomDate")
+            self._create_index(
+                cursor, "idx_bloom_type_date", "fmqt_bloom", "type, bloomDate"
+            )
 
             cursor.execute(f"""
                 CREATE TABLE IF NOT EXISTS fmqt_bloom_analysis (
@@ -346,7 +395,9 @@ class Database:
                     creatDate VARCHAR(50) NOT NULL
                 )
             """)
-            self._create_index(cursor, "idx_bloom_analysis_date", "fmqt_bloom_analysis", "analysisDate")
+            self._create_index(
+                cursor, "idx_bloom_analysis_date", "fmqt_bloom_analysis", "analysisDate"
+            )
 
             cursor.execute(f"""
                 CREATE TABLE IF NOT EXISTS fmqt_lock (
@@ -366,7 +417,10 @@ class Database:
                 cursor.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_def}")
         else:
             cursor.execute(f"SHOW COLUMNS FROM {table}")
-            columns = [col['Field'] if isinstance(col, dict) else col[0] for col in cursor.fetchall()]
+            columns = [
+                col["Field"] if isinstance(col, dict) else col[0]
+                for col in cursor.fetchall()
+            ]
             if column not in columns:
                 cursor.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_def}")
 
@@ -416,8 +470,12 @@ class Database:
             messages=messages,
             created_at=row["created_at"],
             updated_at=row["updated_at"],
-            username=row.get("username", "") if isinstance(row, dict) else (row[-1] if len(row) > 5 else ""),
-            workspace_name=row.get("workspace_name", "") if isinstance(row, dict) else "",
+            username=row.get("username", "")
+            if isinstance(row, dict)
+            else (row[-1] if len(row) > 5 else ""),
+            workspace_name=row.get("workspace_name", "")
+            if isinstance(row, dict)
+            else "",
         )
 
     def list_sessions(
@@ -448,15 +506,19 @@ class Database:
 
         sessions = []
         for row in rows:
-            sessions.append(SessionModel(
-                session_id=row["session_id"],
-                title=row["title"],
-                messages=json.loads(row["messages"]) if row["messages"] else [],
-                created_at=row["created_at"],
-                updated_at=row["updated_at"],
-                username=row.get("username", "") if isinstance(row, dict) else "",
-                workspace_name=row.get("workspace_name", "") if isinstance(row, dict) else "",
-            ))
+            sessions.append(
+                SessionModel(
+                    session_id=row["session_id"],
+                    title=row["title"],
+                    messages=json.loads(row["messages"]) if row["messages"] else [],
+                    created_at=row["created_at"],
+                    updated_at=row["updated_at"],
+                    username=row.get("username", "") if isinstance(row, dict) else "",
+                    workspace_name=row.get("workspace_name", "")
+                    if isinstance(row, dict)
+                    else "",
+                )
+            )
         return sessions
 
     def update_session(self, session_data: SessionModel):
@@ -480,7 +542,9 @@ class Database:
     def delete_session(self, session_id: str) -> bool:
         with self.get_connection() as conn:
             cursor = conn.cursor()
-            self._execute(cursor, "DELETE FROM sessions WHERE session_id=?", (session_id,))
+            self._execute(
+                cursor, "DELETE FROM sessions WHERE session_id=?", (session_id,)
+            )
             return cursor.rowcount > 0
 
     def update_session_workspace_name(self, session_id: str, workspace_name: str):
@@ -489,28 +553,35 @@ class Database:
             self._execute(
                 cursor,
                 "UPDATE sessions SET workspace_name=? WHERE session_id=?",
-                (workspace_name, session_id))
+                (workspace_name, session_id),
+            )
 
-    def update_generated_file_paths(self, session_id: str, old_prefix: str, new_prefix: str):
+    def update_generated_file_paths(
+        self, session_id: str, old_prefix: str, new_prefix: str
+    ):
         with self.get_connection() as conn:
             cursor = conn.cursor()
-            self._execute(cursor,
+            self._execute(
+                cursor,
                 "SELECT id, file_path FROM generated_files WHERE session_id=?",
-                (session_id,))
+                (session_id,),
+            )
             rows = cursor.fetchall()
             for row in rows:
                 row_dict = dict(row) if not isinstance(row, dict) else row
                 old_path = row_dict["file_path"]
                 file_id = row_dict["id"]
                 if old_path.startswith(old_prefix):
-                    new_path = new_prefix + old_path[len(old_prefix):]
-                    self._execute(cursor,
+                    new_path = new_prefix + old_path[len(old_prefix) :]
+                    self._execute(
+                        cursor,
                         "UPDATE generated_files SET file_path=? WHERE id=?",
-                        (new_path, file_id))
+                        (new_path, file_id),
+                    )
 
     def add_message(self, session_id: str, message: dict):
         with self.get_connection() as conn:
-            cursor = conn.cursor()
+            conn.cursor()
             session = self.get_session(session_id)
             if session:
                 session.messages.append(message)
@@ -567,7 +638,7 @@ class Database:
 
     def update_last_assistant_message(self, session_id: str, message: dict):
         with self.get_connection() as conn:
-            cursor = conn.cursor()
+            conn.cursor()
             session = self.get_session(session_id)
             if session:
                 sanitized_msg = self._sanitize_message_for_storage(message)
@@ -579,7 +650,11 @@ class Database:
                 self.update_session(session)
 
     def _sanitize_extra_data(self, message: dict) -> str | None:
-        extra_keys = {k: v for k, v in message.items() if k not in ("role", "content", "timestamp")}
+        extra_keys = {
+            k: v
+            for k, v in message.items()
+            if k not in ("role", "content", "timestamp")
+        }
         if not extra_keys:
             return None
 
@@ -727,7 +802,11 @@ class Database:
         with self.get_connection() as conn:
             cursor = conn.cursor()
             if username:
-                self._execute(cursor, "SELECT COUNT(*) FROM sessions WHERE username=?", (username,))
+                self._execute(
+                    cursor,
+                    "SELECT COUNT(*) FROM sessions WHERE username=?",
+                    (username,),
+                )
             else:
                 self._execute(cursor, "SELECT COUNT(*) FROM sessions")
             row = cursor.fetchone()
@@ -788,9 +867,9 @@ class Database:
         results = []
         for row in rows:
             d = dict(row)
-            if d.get('arguments'):
+            if d.get("arguments"):
                 try:
-                    d['arguments'] = json.loads(d['arguments'])
+                    d["arguments"] = json.loads(d["arguments"])
                 except:
                     pass
             results.append(d)
@@ -930,7 +1009,9 @@ class Database:
             return ""
         return user.bound_ip
 
-    def register_user(self, username: str, password: str, email: str = "") -> Optional[UserModel]:
+    def register_user(
+        self, username: str, password: str, email: str = ""
+    ) -> Optional[UserModel]:
         existing = self.get_user_by_username(username)
         if existing:
             return None
@@ -1021,7 +1102,13 @@ class Database:
         ]
 
     def add_session_file(
-        self, session_id: str, filename: str, file_path: str, file_type: str, size: int, username: str = ""
+        self,
+        session_id: str,
+        filename: str,
+        file_path: str,
+        file_type: str,
+        size: int,
+        username: str = "",
     ):
         with self.get_connection() as conn:
             cursor = conn.cursor()
@@ -1031,7 +1118,15 @@ class Database:
                 INSERT INTO session_files (session_id, filename, file_path, file_type, size, uploaded_at, username)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                (session_id, filename, file_path, file_type, size, datetime.now().isoformat(), username),
+                (
+                    session_id,
+                    filename,
+                    file_path,
+                    file_type,
+                    size,
+                    datetime.now().isoformat(),
+                    username,
+                ),
             )
 
     def get_session_files(self, session_id: str) -> list[dict]:
@@ -1052,7 +1147,13 @@ class Database:
             return cursor.rowcount > 0
 
     def add_generated_file(
-        self, session_id: str, message_id: str, filename: str, file_path: str, file_type: str, size: int
+        self,
+        session_id: str,
+        message_id: str,
+        filename: str,
+        file_path: str,
+        file_type: str,
+        size: int,
     ):
         with self.get_connection() as conn:
             cursor = conn.cursor()
@@ -1062,7 +1163,15 @@ class Database:
                 INSERT INTO generated_files (session_id, message_id, filename, file_path, file_type, size, created_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                (session_id, message_id, filename, file_path, file_type, size, datetime.now().isoformat()),
+                (
+                    session_id,
+                    message_id,
+                    filename,
+                    file_path,
+                    file_type,
+                    size,
+                    datetime.now().isoformat(),
+                ),
             )
 
     def get_generated_files(self, session_id: str) -> list[dict]:

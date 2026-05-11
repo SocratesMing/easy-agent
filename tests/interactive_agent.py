@@ -15,9 +15,9 @@ from deepagents import create_deep_agent
 from deepagents.backends import LocalShellBackend
 
 # ── DeepSeek Configuration ──────────────────────────────────────
-DEEPSEEK_API_KEY = "YOUR_API_KEY_HERE"
+DEEPSEEK_API_KEY = "sk-2c6665b2900448b69c2c532638ae3d1d"
 DEEPSEEK_BASE_URL = "https://api.deepseek.com"
-DEEPSEEK_MODEL = "deepseek-chat"
+DEEPSEEK_MODEL = "deepseek-v4-flash"
 # ────────────────────────────────────────────────────────────────
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()

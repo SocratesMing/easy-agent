@@ -12,7 +12,12 @@ _agent_config: dict = None
 _llm_instance = None
 
 
-def init_agent_config(config: Config, system_prompt: str, skills_root: str = "", shared_deps_path: str = ""):
+def init_agent_config(
+    config: Config,
+    system_prompt: str,
+    skills_root: str = "",
+    shared_deps_path: str = "",
+):
     global _agent_config, _llm_instance
     _agent_config = {
         "config": config,
@@ -21,11 +26,14 @@ def init_agent_config(config: Config, system_prompt: str, skills_root: str = "",
         "shared_deps_path": shared_deps_path,
     }
     from ..model import create_model
+
     _llm_instance = create_model(config)
     logger.info("[初始化] Agent 配置初始化完成 | LLM 流式已启用")
 
 
-async def get_or_create_agent_for_session(session_id: str, username: str = "default", workspace_name: str = "") -> EasyAgent:
+async def get_or_create_agent_for_session(
+    session_id: str, username: str = "default", workspace_name: str = ""
+) -> EasyAgent:
     global _session_agents, _agent_config
 
     if session_id in _session_agents:
@@ -37,6 +45,7 @@ async def get_or_create_agent_for_session(session_id: str, username: str = "defa
     if not workspace_name:
         try:
             from ..db import get_database
+
             db = get_database()
             session = db.get_session(session_id)
             if session and session.workspace_name:
@@ -44,7 +53,9 @@ async def get_or_create_agent_for_session(session_id: str, username: str = "defa
         except Exception:
             pass
 
-    logger.info(f"[{session_id[-5:]}] 为会话创建 Agent 实例 | username={username} | session_id={session_id} | workspace_name={workspace_name}")
+    logger.info(
+        f"[{session_id[-5:]}] 为会话创建 Agent 实例 | username={username} | session_id={session_id} | workspace_name={workspace_name}"
+    )
 
     agent = EasyAgent(
         config=_agent_config["config"],
@@ -56,7 +67,9 @@ async def get_or_create_agent_for_session(session_id: str, username: str = "defa
         workspace_name=workspace_name,
     )
     _session_agents[session_id] = agent
-    logger.info(f"[{session_id[-5:]}] Agent 实例创建成功 | workspace: {agent.workspace_dir}")
+    logger.info(
+        f"[{session_id[-5:]}] Agent 实例创建成功 | workspace: {agent.workspace_dir}"
+    )
     return agent
 
 

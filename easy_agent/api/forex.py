@@ -8,7 +8,7 @@ import threading
 import time
 from datetime import datetime, time as dt_time
 
-from fastapi import APIRouter, Body, Query
+from fastapi import APIRouter, Body
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from ..config import Config
@@ -22,20 +22,19 @@ BOND_BOT: dict[int, list] = {}
 
 def _get_llm():
     from ..services.agent_manager import _llm_instance
+
     return _llm_instance
 
 
 def _get_prompts_dir() -> str:
     try:
         cfg = Config.load()
-        return getattr(cfg.tools, 'prompts_dir', None) or os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            "prompts"
+        return getattr(cfg.tools, "prompts_dir", None) or os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "prompts"
         )
     except Exception:
         return os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            "prompts"
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "prompts"
         )
 
 
@@ -53,7 +52,7 @@ def _get_prompt_template(prompt_name: str) -> str:
 async def options_quote(
     msgId: str = Body(...),
     content: str = Body(...),
-    model: str = Body(default="MiniMax-M2.7")
+    model: str = Body(default="MiniMax-M2.7"),
 ) -> dict:
     logger.info("msgId[%s] 外汇期权报价内容 %s", msgId, content)
 
@@ -62,7 +61,7 @@ async def options_quote(
 
     messages = [
         SystemMessage(content=system_prompt),
-        HumanMessage(content=f"报价内容为:{content}")
+        HumanMessage(content=f"报价内容为:{content}"),
     ]
 
     try:
@@ -75,12 +74,7 @@ async def options_quote(
         return js_rep
     except Exception as e:
         logger.error("msgId[%s] 解析错误 %s", msgId, e)
-        return {
-            "code": 200,
-            "msg": "解析失败",
-            "data": [],
-            "reason": str(e)
-        }
+        return {"code": 200, "msg": "解析失败", "data": [], "reason": str(e)}
 
 
 @forex_router.post("/bond_bot", summary="现券机器人")
@@ -97,7 +91,7 @@ def bond_bot(content: str, msg_id: int = 0) -> dict:
             system_prompt = _get_prompt_template("fx/options_bond")
             msg = [
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": f"对手内容为:{content}"}
+                {"role": "user", "content": f"对手内容为:{content}"},
             ]
 
         for message in msg:
@@ -115,14 +109,19 @@ def bond_bot(content: str, msg_id: int = 0) -> dict:
 
         json_str = ""
         if "```" in rep:
-            match = re.search(r'```(?:json)?\s*(.*?)\s*```', rep, re.DOTALL)
+            match = re.search(r"```(?:json)?\s*(.*?)\s*```", rep, re.DOTALL)
             if match:
                 json_str = match.group(1).strip()
         else:
             json_str = rep.strip("\n").strip("```").lstrip("json\n")
 
         js_rep = json.loads(json_str)
-        msg.append({"role": "system", "content": json.dumps(js_rep.get("data", [{}])[0], ensure_ascii=False)})
+        msg.append(
+            {
+                "role": "system",
+                "content": json.dumps(js_rep.get("data", [{}])[0], ensure_ascii=False),
+            }
+        )
         js_rep["msg_id"] = msg_id
         return js_rep
     except Exception as e:
@@ -144,8 +143,6 @@ def _run_bond_schedule():
 
 
 _bond_thread = threading.Thread(
-    target=_run_bond_schedule,
-    name="bond-bot-cleaner",
-    daemon=True
+    target=_run_bond_schedule, name="bond-bot-cleaner", daemon=True
 )
 _bond_thread.start()

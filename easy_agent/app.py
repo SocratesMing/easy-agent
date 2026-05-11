@@ -28,7 +28,9 @@ from .api import (
 
 logger = logging.getLogger(__name__)
 
-frontend_dist = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "frontend", "dist")
+frontend_dist = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "frontend", "dist"
+)
 
 agent_config = None
 db_instance = None
@@ -88,6 +90,7 @@ class _RunidFilter(logging.Filter):
 class _CustomFormatter(logging.Formatter):
     def formatTime(self, record, datefmt=None):
         from datetime import datetime
+
         ct = datetime.fromtimestamp(record.created)
         if datefmt:
             s = ct.strftime(datefmt)
@@ -117,6 +120,7 @@ def _setup_shared_deps(skills_root: str) -> str:
     if lock_file.exists():
         logger.info("[启动] ⏳ 等待其他进程完成依赖安装...")
         import time
+
         for _ in range(60):
             time.sleep(1)
             if not lock_file.exists():
@@ -170,10 +174,13 @@ async def lifespan(app: FastAPI):
 
     config_path = os.environ.get("EASY_CONFIG", "./easy_agent/config/config.yaml")
     if not os.path.exists(config_path):
-        config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config", "config.yaml")
+        config_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "config", "config.yaml"
+        )
 
     try:
         from .config import Config
+
         config = Config.from_yaml(config_path)
         logger.info(f"[启动] ✅ 配置文件加载成功: {config_path}")
         logger.info(f"[启动] LLM Provider: {config.llm.provider}")
@@ -189,14 +196,16 @@ async def lifespan(app: FastAPI):
             from langchain_core.messages import HumanMessage
 
             llm = create_model(config)
-            logger.info(f"[启动] 🔌 正在测试 LLM 连接 | provider: {config.llm.provider} | model: {config.llm.model}")
+            logger.info(
+                f"[启动] 🔌 正在测试 LLM 连接 | provider: {config.llm.provider} | model: {config.llm.model}"
+            )
 
             resp = await llm.ainvoke([HumanMessage(content="hi")])
             reply = resp.content if hasattr(resp, "content") else str(resp)
             logger.info(f"[启动] ✅ LLM 连接成功 | 回复: {reply[:100]}")
         except Exception as e:
             logger.warning(f"[启动] ⚠️ LLM 连接失败: {e}")
-            logger.warning(f"[启动] ⚠️ 服务将继续启动，但聊天功能可能不可用")
+            logger.warning("[启动] ⚠️ 服务将继续启动，但聊天功能可能不可用")
 
     try:
         db_config = config.database.model_dump() if config else {}
@@ -208,39 +217,54 @@ async def lifespan(app: FastAPI):
         logger.error(f"[启动] ❌ 数据库初始化失败: {e}")
         raise
 
-    if config and hasattr(config, 'vector_store'):
+    if config and hasattr(config, "vector_store"):
         vs_config = config.vector_store.model_dump()
         if vs_config.get("enabled"):
             try:
                 from .services.vector_store import init_vector_store
+
                 vs = init_vector_store(vs_config)
                 app.state.vector_store = vs
-                logger.info(f"[启动] ✅ 向量数据库已启用 | provider: {vs_config.get('embedding_provider', 'unknown')}")
+                logger.info(
+                    f"[启动] ✅ 向量数据库已启用 | provider: {vs_config.get('embedding_provider', 'unknown')}"
+                )
             except Exception as e:
                 logger.warning(f"[启动] ⚠️ 向量数据库初始化失败: {e}")
                 app.state.vector_store = None
         else:
             logger.info("[启动] ℹ️ 向量数据库未启用")
 
-    if config and hasattr(config.agent, 'system_prompt_path') and config.agent.system_prompt_path:
+    if (
+        config
+        and hasattr(config.agent, "system_prompt_path")
+        and config.agent.system_prompt_path
+    ):
         config_dir = os.path.dirname(os.path.abspath(config_path))
         system_prompt_path = os.path.join(config_dir, config.agent.system_prompt_path)
     else:
-        system_prompt_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config", "system_prompt.md")
+        system_prompt_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "config", "system_prompt.md"
+        )
 
     if os.path.exists(system_prompt_path):
         with open(system_prompt_path, "r", encoding="utf-8") as f:
             system_prompt = f.read()
-        logger.info(f"[启动] ✅ 系统提示词加载成功: {system_prompt_path} ({len(system_prompt)} 字符)")
+        logger.info(
+            f"[启动] ✅ 系统提示词加载成功: {system_prompt_path} ({len(system_prompt)} 字符)"
+        )
     else:
         system_prompt = "你是一个有帮助的 AI 助手。"
-        logger.warning(f"[启动] ⚠️ 系统提示词文件不存在: {system_prompt_path}，使用默认提示词")
+        logger.warning(
+            f"[启动] ⚠️ 系统提示词文件不存在: {system_prompt_path}，使用默认提示词"
+        )
 
     if config:
         from .services import init_agent_config
         from .skills import find_skills_root, discover_skills
 
-        skills_dir_config = config.tools.skills_dir if hasattr(config.tools, 'skills_dir') else None
+        skills_dir_config = (
+            config.tools.skills_dir if hasattr(config.tools, "skills_dir") else None
+        )
         skills_root = find_skills_root(skills_dir_config)
 
         if skills_root:
@@ -267,12 +291,13 @@ async def lifespan(app: FastAPI):
         try:
             import threading
             from .domain.bloom.bloom_scheduler import start_scheduler
+
             bloom_llm = create_model(config)
             bloom_thread = threading.Thread(
                 target=start_scheduler,
                 args=(db, bloom_llm),
                 daemon=True,
-                name="bloom-scheduler"
+                name="bloom-scheduler",
             )
             bloom_thread.start()
             logger.info("[启动] ✅ 彭博定时任务已启动 (每日 17:00)")
@@ -286,7 +311,7 @@ async def lifespan(app: FastAPI):
     logger.info("=" * 60)
     yield
 
-    if hasattr(app.state, 'db') and app.state.db:
+    if hasattr(app.state, "db") and app.state.db:
         app.state.db.close()
 
     logger.info("[关闭] 👋 服务已关闭")
@@ -336,6 +361,7 @@ async def health_check():
 @app.get("/api/config", summary="获取Agent配置")
 async def get_config():
     from .services import get_agent_config
+
     _cfg = get_agent_config()
     if _cfg:
         return {
@@ -380,7 +406,7 @@ def run_server(host: str = "0.0.0.0", port: int = 8000):
     print(f"  ReDoc:      http://localhost:{port}/redoc")
     print(f"  Health:     http://localhost:{port}/api/health")
     print()
-    print(f"  Session-level Agent reuse: Enabled")
+    print("  Session-level Agent reuse: Enabled")
     print("=" * 50)
     print()
 

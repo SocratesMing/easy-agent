@@ -1,13 +1,12 @@
 """Session management routes"""
 
-import json
 import logging
 import os
 import shutil
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Annotated, Optional
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 
@@ -27,7 +26,6 @@ from ..models.api import (
 )
 from ..middleware import get_current_username
 from ..config import Config
-from ..utils import SessionLogger
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +33,7 @@ logger = logging.getLogger(__name__)
 def generate_workspace_name(session_id: str) -> str:
     now = datetime.now()
     return f"{now.strftime('%Y%m%d')}_{now.strftime('%H%M%S')}_{session_id[:5]}"
+
 
 router = APIRouter(
     prefix="/api/sessions",
@@ -67,7 +66,9 @@ async def create_session(
     db.create_session(session_data)
     db.update_session_workspace_name(session_id, workspace_name)
 
-    logger.info(f"创建会话 | ID: {session_id} | 标题: {title} | 工作区: {workspace_name}")
+    logger.info(
+        f"创建会话 | ID: {session_id} | 标题: {title} | 工作区: {workspace_name}"
+    )
 
     return CreateSessionResponse(
         session_id=session_id,
@@ -146,7 +147,9 @@ async def update_title(
     return {"status": "updated", "session_id": session_id, "title": title}
 
 
-@router.delete("/{session_id}", summary="删除会话", response_model=DeleteSessionResponse)
+@router.delete(
+    "/{session_id}", summary="删除会话", response_model=DeleteSessionResponse
+)
 async def delete_session(
     session_id: str,
     db: Annotated[Database, Depends(get_database)],
@@ -181,7 +184,11 @@ async def delete_session(
     return DeleteSessionResponse(session_id=session_id)
 
 
-@router.get("/{session_id}/history", summary="获取聊天历史", response_model=GetChatHistoryResponse)
+@router.get(
+    "/{session_id}/history",
+    summary="获取聊天历史",
+    response_model=GetChatHistoryResponse,
+)
 async def get_chat_history(
     session_id: str,
     db: Annotated[Database, Depends(get_database)],
@@ -200,7 +207,9 @@ async def get_chat_history(
     )
 
 
-@router.post("/{session_id}/messages", summary="添加消息", response_model=AddMessageResponse)
+@router.post(
+    "/{session_id}/messages", summary="添加消息", response_model=AddMessageResponse
+)
 async def add_message(
     session_id: str,
     request: AddMessageRequest,
@@ -235,7 +244,7 @@ async def upload_session_file(
     if not session:
         raise HTTPException(status_code=404, detail="会话不存在")
 
-    safe_name = Config.sanitize_username(username)
+    Config.sanitize_username(username)
     upload_dir = Config.get_user_workspace_dir(username) / "uploadfiles"
     upload_dir.mkdir(parents=True, exist_ok=True)
 
@@ -258,7 +267,9 @@ async def upload_session_file(
         username=username,
     )
 
-    logger.info(f"文件上传成功 | 会话: {session_id} | 文件名: {safe_filename} | 大小: {len(content)} bytes | 用户: {username}")
+    logger.info(
+        f"文件上传成功 | 会话: {session_id} | 文件名: {safe_filename} | 大小: {len(content)} bytes | 用户: {username}"
+    )
 
     return {
         "id": file_id,

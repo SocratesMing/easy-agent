@@ -42,6 +42,8 @@ class _Colors:
     BRIGHT_YELLOW = "\033[93m"
     BRIGHT_BLUE = "\033[94m"
     BRIGHT_CYAN = "\033[96m"
+
+
 from .model import create_model
 
 logger = logging.getLogger(__name__)
@@ -122,7 +124,9 @@ class EasyAgent:
                 if shared_node_modules.exists():
                     try:
                         _copy_deps(shared_node_modules, self.user_node_modules)
-                        logger.info(f"User-level node_modules seeded from {shared_node_modules}")
+                        logger.info(
+                            f"User-level node_modules seeded from {shared_node_modules}"
+                        )
                     except Exception as e:
                         logger.warning(f"Failed to seed user node_modules: {e}")
 
@@ -130,8 +134,12 @@ class EasyAgent:
         workspace_node_modules = self.workspace_dir / "node_modules"
         if not workspace_node_modules.exists() and self.user_node_modules.exists():
             try:
-                workspace_node_modules.symlink_to(self.user_node_modules.resolve(), target_is_directory=True)
-                logger.info(f"Session node_modules symlinked -> {self.user_node_modules}")
+                workspace_node_modules.symlink_to(
+                    self.user_node_modules.resolve(), target_is_directory=True
+                )
+                logger.info(
+                    f"Session node_modules symlinked -> {self.user_node_modules}"
+                )
             except OSError as e:
                 logger.debug(f"Failed to symlink session node_modules: {e}")
 
@@ -139,9 +147,12 @@ class EasyAgent:
         if not self.user_venv.exists():
             try:
                 import subprocess
+
                 subprocess.run(
                     [sys.executable, "-m", "venv", str(self.user_venv)],
-                    check=True, capture_output=True, timeout=120,
+                    check=True,
+                    capture_output=True,
+                    timeout=120,
                 )
                 logger.info(f"User-level Python venv created: {self.user_venv}")
             except Exception as e:
@@ -157,7 +168,9 @@ class EasyAgent:
             shutil.move(str(old_file), str(self.memory_file))
             logger.info(f"Memory file migrated: {old_file} -> {self.memory_file}")
         if not self.memory_file.exists():
-            self.memory_file.write_text(f"# {username} 的长期记忆\n\n", encoding="utf-8")
+            self.memory_file.write_text(
+                f"# {username} 的长期记忆\n\n", encoding="utf-8"
+            )
 
         # Augment system prompt with OS, workspace, and skills context
         skills_info = ""
@@ -191,7 +204,9 @@ class EasyAgent:
         self.logger = AgentLogger()
         self.agent = self._create_agent()
 
-        logger.info(f"EasyAgent initialized | workspace: {self.workspace_dir.absolute()} | user: {username} | session: {session_id}")
+        logger.info(
+            f"EasyAgent initialized | workspace: {self.workspace_dir.absolute()} | user: {username} | session: {session_id}"
+        )
 
     def rename_workspace(self, new_name: str) -> bool:
         """Rename workspace directory after streaming completes.
@@ -248,10 +263,22 @@ class EasyAgent:
             )
         elif system == "Linux":
             release = platform.release()
-            distro = ", ".join(filter(None, [
-                platform.freedesktop_os_release().get("NAME", "") if hasattr(platform, "freedesktop_os_release") else "",
-                platform.freedesktop_os_release().get("VERSION", "") if hasattr(platform, "freedesktop_os_release") else "",
-            ])) or "Unknown Distro"
+            distro = (
+                ", ".join(
+                    filter(
+                        None,
+                        [
+                            platform.freedesktop_os_release().get("NAME", "")
+                            if hasattr(platform, "freedesktop_os_release")
+                            else "",
+                            platform.freedesktop_os_release().get("VERSION", "")
+                            if hasattr(platform, "freedesktop_os_release")
+                            else "",
+                        ],
+                    )
+                )
+                or "Unknown Distro"
+            )
             return (
                 f"You are running on **Linux** (Kernel: {release}, Distro: {distro})\n"
                 "- Use Unix-style commands: `ls`, `cat`, `cp`, `mv`, `rm`, `mkdir`, `rmdir`\n"
@@ -384,7 +411,9 @@ class EasyAgent:
     async def run(self, user_input: str) -> str:
         """Execute agent with streaming output (CLI mode)."""
         self.logger.start_new_run()
-        self.logger.log_request(messages=[{"role": "user", "content": user_input}], tools=None)
+        self.logger.log_request(
+            messages=[{"role": "user", "content": user_input}], tools=None
+        )
 
         start_time = time.time()
         full_response = ""
@@ -413,7 +442,9 @@ class EasyAgent:
                     for tc in token.tool_call_chunks:
                         name = tc.get("name")
                         if name:
-                            print(f"\n{_Colors.BOLD}{_Colors.BRIGHT_YELLOW}🔧 Tool: {name}{_Colors.RESET}")
+                            print(
+                                f"\n{_Colors.BOLD}{_Colors.BRIGHT_YELLOW}🔧 Tool: {name}{_Colors.RESET}"
+                            )
 
                 if token.type == "tool":
                     self._handle_tool_result(token)
@@ -463,12 +494,16 @@ class EasyAgent:
 
         if st["in_thinking"]:
             if not st["shown_thinking_header"]:
-                print(f"\n{_Colors.BOLD}{_Colors.BRIGHT_CYAN}🧠 Thinking (Step {st['current_step']}):{_Colors.RESET}")
+                print(
+                    f"\n{_Colors.BOLD}{_Colors.BRIGHT_CYAN}🧠 Thinking (Step {st['current_step']}):{_Colors.RESET}"
+                )
                 st["shown_thinking_header"] = True
             print(content_str, end="", flush=True)
         else:
             if not st["shown_response_header"]:
-                print(f"\n{_Colors.BOLD}{_Colors.BRIGHT_BLUE}🤖 Assistant:{_Colors.RESET}")
+                print(
+                    f"\n{_Colors.BOLD}{_Colors.BRIGHT_BLUE}🤖 Assistant:{_Colors.RESET}"
+                )
                 st["shown_response_header"] = True
             print(content_str, end="", flush=True)
 
@@ -476,7 +511,10 @@ class EasyAgent:
         """Process a tool result token."""
         name = getattr(token, "name", "")
         result = str(getattr(token, "content", ""))
-        is_err = any(e in result.lower() for e in ["exit code: 1", "error:", "failed", "traceback"])
+        is_err = any(
+            e in result.lower()
+            for e in ["exit code: 1", "error:", "failed", "traceback"]
+        )
         icon = f"{_Colors.GREEN}✓" if not is_err else f"{_Colors.BRIGHT_RED}✗"
         print(f"\n{icon} {name} ({len(result)} chars){_Colors.RESET}")
 
