@@ -7,12 +7,21 @@ import json
 import logging
 import os
 import re
+import sqlite3
 import uuid
 from contextlib import contextmanager
 from datetime import datetime
 from typing import Optional
 
-import sqlite3
+try:
+    import pymysql
+except ImportError:
+    pymysql = None
+
+try:
+    from dbutils.pooled_db import PooledDB
+except ImportError:
+    PooledDB = None
 
 from ..models.db import SessionModel, UserModel
 from ..utils.auth import hash_password, verify_password
@@ -66,9 +75,6 @@ class Database:
             logger.info(f"数据库类型: SQLite | 路径: {self.db_path}")
 
     def _init_mysql_pool(self):
-        from dbutils.pooled_db import PooledDB
-        import pymysql
-
         db_name = self._mysql_config.get("database", "easy_agent")
         try:
             conn = pymysql.connect(
@@ -206,6 +212,9 @@ class Database:
             self._ensure_column(
                 cursor, "sessions", "workspace_name", "VARCHAR(255) DEFAULT ''"
             )
+            self._ensure_column(
+                cursor, "sessions", "pinned", "INTEGER DEFAULT 0"
+            )
 
             if self.db_type == "mysql":
                 try:
@@ -214,6 +223,10 @@ class Database:
                     )
                 except Exception:
                     pass
+
+            self._ensure_column(
+                cursor, "sessions", "todos", "TEXT DEFAULT NULL"
+            )
 
             cursor.execute(f"""
                 CREATE TABLE IF NOT EXISTS tool_call_records (
@@ -409,6 +422,50 @@ class Database:
 
             conn.commit()
 
+            # 修复 session_messages 表中缺失的消息行
+            self._repair_missing_message_rows(cursor)
+            conn.commit()
+
+    def _repair_missing_message_rows(self, cursor):
+        """修复 session_messages 表中缺失或被覆盖的消息行（从 sessions 表 JSON 重建）"""
+        try:
+            self._execute(cursor, "SELECT session_id, messages FROM sessions")
+            sessions = cursor.fetchall()
+            repaired_sessions = 0
+            for s in sessions:
+                sid = s["session_id"] if isinstance(s, dict) else s[0]
+                raw_msgs = s["messages"] if isinstance(s, dict) else s[1]
+                if not raw_msgs:
+                    continue
+                json_messages = json.loads(raw_msgs) if isinstance(raw_msgs, str) else raw_msgs
+
+                # 获取当前 session_messages 中的行数
+                self._execute(cursor, "SELECT COUNT(*) as cnt FROM session_messages WHERE session_id=?", (sid,))
+                row = cursor.fetchone()
+                row_count = row["cnt"] if isinstance(row, dict) else row[0]
+
+                if row_count != len(json_messages):
+                    # 行数不一致：删除旧行，从 JSON 重建
+                    self._execute(cursor, "DELETE FROM session_messages WHERE session_id=?", (sid,))
+                    for msg in json_messages:
+                        role = msg.get("role", "user")
+                        content = msg.get("content", "")
+                        extra_data = self._sanitize_extra_data(msg)
+                        timestamp = msg.get("timestamp", datetime.now().isoformat())
+                        self._execute(
+                            cursor,
+                            """
+                            INSERT INTO session_messages (session_id, role, content, extra_data, created_at)
+                            VALUES (?, ?, ?, ?, ?)
+                            """,
+                            (sid, role, content, extra_data, timestamp),
+                        )
+                    repaired_sessions += 1
+            if repaired_sessions > 0:
+                logger.info(f"数据修复：重建了 {repaired_sessions} 个会话的 session_messages 行")
+        except Exception as e:
+            logger.warning(f"修复 session_messages 缺失行时出错: {e}")
+
     def _ensure_column(self, cursor, table: str, column: str, col_def: str):
         if self.db_type == "sqlite":
             cursor.execute(f"PRAGMA table_info({table})")
@@ -450,7 +507,7 @@ class Database:
             self._execute(
                 cursor,
                 """
-                SELECT session_id, title, messages, created_at, updated_at, username, workspace_name
+                SELECT session_id, title, messages, created_at, updated_at, username, workspace_name, todos
                 FROM sessions WHERE session_id = ?
                 """,
                 (session_id,),
@@ -463,6 +520,32 @@ class Database:
         messages = self.get_messages_from_rows(session_id)
         if not messages:
             messages = json.loads(row["messages"]) if row["messages"] else []
+        else:
+            # 行数据存在时，检查 assistant 消息是否缺少 blocks/tool_calls
+            # 如果行数据不完整，用 sessions 表 JSON 中的数据补充
+            json_messages = json.loads(row["messages"]) if row["messages"] else []
+            if json_messages and len(json_messages) == len(messages):
+                for i, (row_msg, json_msg) in enumerate(zip(messages, json_messages)):
+                    if row_msg.get("role") == "assistant":
+                        row_has_blocks = bool(row_msg.get("blocks"))
+                        json_has_blocks = bool(json_msg.get("blocks"))
+                        row_has_tc = bool(row_msg.get("tool_calls"))
+                        json_has_tc = bool(json_msg.get("tool_calls"))
+                        # 如果行数据缺少 blocks/tool_calls 但 JSON 中有，使用 JSON 版本
+                        if (json_has_blocks and not row_has_blocks) or (json_has_tc and not row_has_tc):
+                            messages[i] = json_msg
+            elif json_messages and len(json_messages) > len(messages):
+                # 行数据数量少于 JSON 数据，用 JSON 数据补充缺失的消息
+                for i in range(len(messages), len(json_messages)):
+                    messages.append(json_messages[i])
+
+        todos = []
+        todos_raw = row.get("todos", None) if isinstance(row, dict) else None
+        if todos_raw:
+            try:
+                todos = json.loads(todos_raw) if isinstance(todos_raw, str) else todos_raw
+            except (json.JSONDecodeError, ValueError):
+                todos = []
 
         return SessionModel(
             session_id=row["session_id"],
@@ -476,6 +559,7 @@ class Database:
             workspace_name=row.get("workspace_name", "")
             if isinstance(row, dict)
             else "",
+            todos=todos,
         )
 
     def list_sessions(
@@ -487,9 +571,9 @@ class Database:
                 self._execute(
                     cursor,
                     """
-                    SELECT session_id, title, messages, created_at, updated_at, username, workspace_name
+                    SELECT session_id, title, messages, created_at, updated_at, username, workspace_name, pinned
                     FROM sessions WHERE username = ?
-                    ORDER BY updated_at DESC LIMIT ? OFFSET ?
+                    ORDER BY pinned DESC, updated_at DESC LIMIT ? OFFSET ?
                     """,
                     (username, limit, offset),
                 )
@@ -497,8 +581,8 @@ class Database:
                 self._execute(
                     cursor,
                     """
-                    SELECT session_id, title, messages, created_at, updated_at, username, workspace_name
-                    FROM sessions ORDER BY updated_at DESC LIMIT ? OFFSET ?
+                    SELECT session_id, title, messages, created_at, updated_at, username, workspace_name, pinned
+                    FROM sessions ORDER BY pinned DESC, updated_at DESC LIMIT ? OFFSET ?
                     """,
                     (limit, offset),
                 )
@@ -517,6 +601,7 @@ class Database:
                     workspace_name=row.get("workspace_name", "")
                     if isinstance(row, dict)
                     else "",
+                    pinned=int(row.get("pinned", 0)) if isinstance(row, dict) else 0,
                 )
             )
         return sessions
@@ -554,6 +639,16 @@ class Database:
                 cursor,
                 "UPDATE sessions SET workspace_name=? WHERE session_id=?",
                 (workspace_name, session_id),
+            )
+
+    def update_session_todos(self, session_id: str, todos: list):
+        """Update the todo list for a session, replacing any existing plan."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            self._execute(
+                cursor,
+                "UPDATE sessions SET todos=? WHERE session_id=?",
+                (json.dumps(todos, ensure_ascii=False), session_id),
             )
 
     def update_generated_file_paths(
@@ -598,6 +693,8 @@ class Database:
             sanitized["thinking"] = message["thinking"][:2000]
         if message.get("thinking_duration") is not None:
             sanitized["thinking_duration"] = message["thinking_duration"]
+        if message.get("usage"):
+            sanitized["usage"] = message["usage"]
         if message.get("tool_calls"):
             sanitized["tool_calls"] = [
                 {
@@ -612,8 +709,12 @@ class Database:
                 for tc in message["tool_calls"][:20]
             ]
         if message.get("blocks"):
+            # 分离 content blocks 和其他 blocks，确保 content 不被截断
+            content_blocks = [b for b in message["blocks"] if b.get("type") == "content"]
+            other_blocks = [b for b in message["blocks"] if b.get("type") != "content"]
+
             sanitized_blocks = []
-            for b in message["blocks"][:30]:
+            for b in other_blocks[:30] + content_blocks:
                 block_type = b.get("type", "")
                 s = {"type": block_type, "order": b.get("order", 0)}
                 if block_type == "thinking":
@@ -633,6 +734,8 @@ class Database:
                 else:
                     s["content"] = (b.get("content", "") or "")[:200]
                 sanitized_blocks.append(s)
+            # 按 order 排序恢复原始顺序
+            sanitized_blocks.sort(key=lambda x: x.get("order", 0))
             sanitized["blocks"] = sanitized_blocks
         return sanitized
 
@@ -661,8 +764,21 @@ class Database:
         if "blocks" in extra_keys:
             blocks = extra_keys["blocks"]
             if isinstance(blocks, list):
+                # 分离 content blocks 和其他 blocks，确保 content 不被截断
+                content_blocks = []
+                other_blocks = []
+                for b in blocks:
+                    if b.get("type") == "content":
+                        content_blocks.append(b)
+                    else:
+                        other_blocks.append(b)
+
+                # 其他 blocks 限制 30 个，content blocks 全部保留
+                max_other = 30
+                truncated_other = other_blocks[:max_other]
+
                 sanitized_blocks = []
-                for b in blocks[:30]:
+                for b in truncated_other + content_blocks:
                     block_type = b.get("type", "")
                     sanitized = {"type": block_type, "order": b.get("order", 0)}
                     if block_type == "thinking":
@@ -682,6 +798,8 @@ class Database:
                     else:
                         sanitized["content"] = (b.get("content", "") or "")[:200]
                     sanitized_blocks.append(sanitized)
+                # 按 order 排序恢复原始顺序
+                sanitized_blocks.sort(key=lambda x: x.get("order", 0))
                 extra_keys["blocks"] = sanitized_blocks
 
         if "tool_calls" in extra_keys:
@@ -704,8 +822,56 @@ class Database:
             extra_keys["thinking"] = extra_keys["thinking"][:2000]
 
         result = json.dumps(extra_keys, ensure_ascii=False)
-        if len(result) > 60000:
-            result = result[:60000] + '"}'
+        max_len = 200000
+        if len(result) <= max_len:
+            return result
+
+        # 渐进式修剪：逐步缩小 result 内容，而不是直接删除 blocks/tool_calls
+        for trim_round in range(10):
+            trimmed = False
+            if "blocks" in extra_keys and isinstance(extra_keys["blocks"], list):
+                for b in extra_keys["blocks"]:
+                    if b.get("type") == "tool_call" and len(str(b.get("result", ""))) > 200:
+                        b["result"] = str(b.get("result", ""))[:200]
+                        trimmed = True
+                    elif b.get("type") == "thinking" and len(str(b.get("content", ""))) > 200:
+                        b["content"] = str(b.get("content", ""))[:200]
+                        trimmed = True
+                    elif b.get("type") == "content" and len(str(b.get("content", ""))) > 500:
+                        b["content"] = str(b.get("content", ""))[:500]
+                        trimmed = True
+            if "tool_calls" in extra_keys and isinstance(extra_keys["tool_calls"], list):
+                for tc in extra_keys["tool_calls"]:
+                    if len(str(tc.get("result", ""))) > 200:
+                        tc["result"] = str(tc.get("result", ""))[:200]
+                        trimmed = True
+            if "thinking" in extra_keys and len(str(extra_keys["thinking"])) > 200:
+                extra_keys["thinking"] = str(extra_keys["thinking"])[:200]
+                trimmed = True
+
+            if not trimmed:
+                break
+            result = json.dumps(extra_keys, ensure_ascii=False)
+            if len(result) <= max_len:
+                return result
+
+        # 最终兜底：如果仍然超限，移除 arguments 和 result 中较长的内容，
+        # 但保留 blocks 和 tool_calls 的结构（tool_name, success, duration 等元信息）
+        if len(result) > max_len:
+            if "blocks" in extra_keys and isinstance(extra_keys["blocks"], list):
+                for b in extra_keys["blocks"]:
+                    if b.get("type") == "tool_call":
+                        b["arguments"] = {}
+                        b["result"] = (str(b.get("result", ""))[:100] + "...") if b.get("result") else ""
+                    elif b.get("type") == "thinking":
+                        b["content"] = (str(b.get("content", ""))[:100] + "...") if b.get("content") else ""
+                    elif b.get("type") == "content":
+                        b["content"] = (str(b.get("content", ""))[:200] + "...") if b.get("content") else ""
+            if "tool_calls" in extra_keys and isinstance(extra_keys["tool_calls"], list):
+                for tc in extra_keys["tool_calls"]:
+                    tc["arguments"] = {}
+                    tc["result"] = (str(tc.get("result", ""))[:100] + "...") if tc.get("result") else ""
+            result = json.dumps(extra_keys, ensure_ascii=False)
         return result
 
     def add_message_row(self, session_id: str, message: dict):
@@ -738,21 +904,36 @@ class Database:
 
         with self.get_connection() as conn:
             cursor = conn.cursor()
+            # 检查最后一条消息是否是 assistant（不区分 role 排序取最后一条）
             self._execute(
                 cursor,
-                "SELECT id FROM session_messages WHERE session_id=? AND role='assistant' ORDER BY id DESC LIMIT 1",
+                "SELECT id, role FROM session_messages WHERE session_id=? ORDER BY id DESC LIMIT 1",
                 (session_id,),
             )
-            row = cursor.fetchone()
+            last_row = cursor.fetchone()
 
-            if row:
-                msg_id = row["id"] if isinstance(row, dict) else row[0]
-                self._execute(
-                    cursor,
-                    "UPDATE session_messages SET content=?, extra_data=?, created_at=? WHERE id=?",
-                    (content, extra_data, timestamp, msg_id),
-                )
+            if last_row and (last_row["id"] if isinstance(last_row, dict) else last_row[0]):
+                last_role = last_row["role"] if isinstance(last_row, dict) else last_row[1]
+                if last_role == "assistant":
+                    # 最后一条是 assistant，更新它
+                    msg_id = last_row["id"] if isinstance(last_row, dict) else last_row[0]
+                    self._execute(
+                        cursor,
+                        "UPDATE session_messages SET content=?, extra_data=?, created_at=? WHERE id=?",
+                        (content, extra_data, timestamp, msg_id),
+                    )
+                else:
+                    # 最后一条不是 assistant（通常是 user），新增一行
+                    self._execute(
+                        cursor,
+                        """
+                        INSERT INTO session_messages (session_id, role, content, extra_data, created_at)
+                        VALUES (?, ?, ?, ?, ?)
+                        """,
+                        (session_id, role, content, extra_data, timestamp),
+                    )
             else:
+                # 没有任何消息，新增一行
                 self._execute(
                     cursor,
                     """
@@ -766,6 +947,78 @@ class Database:
                 "UPDATE sessions SET updated_at=? WHERE session_id=?",
                 (datetime.now().isoformat(), session_id),
             )
+
+    @staticmethod
+    def _try_repair_json(raw: str) -> dict | None:
+        if not raw:
+            return None
+
+        def _scan_structural_ends(text: str) -> list[int]:
+            ends = []
+            in_str = False
+            esc = False
+            for i, ch in enumerate(text):
+                if esc:
+                    esc = False
+                    continue
+                if ch == "\\" and in_str:
+                    esc = True
+                    continue
+                if ch == '"':
+                    in_str = not in_str
+                    continue
+                if in_str:
+                    continue
+                if ch in ("}", "]"):
+                    ends.append(i)
+            return ends
+
+        def _close_brackets(candidate: str) -> dict | None:
+            in_str = False
+            esc = False
+            stack = []
+            for ch in candidate:
+                if esc:
+                    esc = False
+                    continue
+                if ch == "\\" and in_str:
+                    esc = True
+                    continue
+                if ch == '"':
+                    in_str = not in_str
+                    continue
+                if in_str:
+                    continue
+                if ch in ("{", "["):
+                    stack.append(ch)
+                elif ch in ("}", "]"):
+                    if stack:
+                        stack.pop()
+            for b in reversed(stack):
+                candidate += "}" if b == "{" else "]"
+            try:
+                return json.loads(candidate)
+            except (json.JSONDecodeError, TypeError):
+                return None
+
+        blocks_start = raw.find('"blocks": [')
+        if blocks_start > 0:
+            search_area = raw[: len(raw) - 200]
+            last_boundary = search_area.rfind('}, {"type"')
+            if last_boundary > blocks_start:
+                truncated = raw[: last_boundary + 1]
+                result = _close_brackets(truncated)
+                if result is not None:
+                    return result
+
+        structural_ends = _scan_structural_ends(raw)
+        for pos in reversed(structural_ends):
+            candidate = raw[: pos + 1]
+            result = _close_brackets(candidate)
+            if result is not None:
+                return result
+
+        return None
 
     def get_messages_from_rows(self, session_id: str) -> list[dict]:
         with self.get_connection() as conn:
@@ -786,11 +1039,15 @@ class Database:
                 "timestamp": d["created_at"],
             }
             if d.get("extra_data"):
+                raw = d["extra_data"]
                 try:
-                    extra = json.loads(d["extra_data"])
+                    extra = json.loads(raw)
                     msg.update(extra)
-                except (json.JSONDecodeError, TypeError):
-                    pass
+                except (json.JSONDecodeError, TypeError) as e:
+                    logger.warning(f"解析消息extra_data失败 session={session_id}: {e}")
+                    extra = self._try_repair_json(raw)
+                    if extra:
+                        msg.update(extra)
             messages.append(msg)
         return messages
 
@@ -817,9 +1074,28 @@ class Database:
             cursor = conn.cursor()
             self._execute(
                 cursor,
-                "UPDATE sessions SET title=?, updated_at=? WHERE session_id=?",
-                (title, datetime.now().isoformat(), session_id),
+                "UPDATE sessions SET title=? WHERE session_id=?",
+                (title, session_id),
             )
+
+    def toggle_session_pin(self, session_id: str) -> int:
+        """切换会话置顶状态，返回新的 pinned 值"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            self._execute(
+                cursor,
+                "SELECT pinned FROM sessions WHERE session_id=?",
+                (session_id,),
+            )
+            row = cursor.fetchone()
+            current = int(row["pinned"]) if row else 0
+            new_val = 0 if current else 1
+            self._execute(
+                cursor,
+                "UPDATE sessions SET pinned=? WHERE session_id=?",
+                (new_val, session_id),
+            )
+            return new_val
 
     def record_tool_call(
         self,
@@ -1060,14 +1336,14 @@ class Database:
             return cursor.rowcount > 0
 
     def get_or_create_default_user(self) -> UserModel:
-        default_user = self.get_user_by_username("default")
+        default_user = self.get_user_by_username("admin")
         if default_user:
             return default_user
 
         now = datetime.now().isoformat()
         user = UserModel(
             user_id=str(uuid.uuid4()),
-            username="default",
+            username="admin",
             password_hash="",
             organization_id="",
             email="",

@@ -26,7 +26,7 @@ def get_llm_config():
     print(f"📄 加载配置文件: {config_path}")
     config = Config.from_yaml(config_path)
     
-    print(f"✅ 配置信息:")
+    print("✅ 配置信息:")
     print(f"   - Provider: {config.llm.provider}")
     print(f"   - Model: {config.llm.model}")
     print(f"   - API Base: {config.llm.api_base}")
@@ -45,17 +45,17 @@ async def test_streaming_messages():
     config = get_llm_config()
     
     # 创建模型对象
-    print(f"\n🤖 创建模型对象...")
+    print("\n🤖 创建模型对象...")
     model = create_model(config)
     print(f"✅ 模型对象创建成功: {type(model).__name__}")
     
     # 创建 Agent
-    print(f"🤖 创建 DeepAgent...")
+    print("🤖 创建 DeepAgent...")
     agent = create_deep_agent(
         model=model,
         system_prompt="你是一个友好的助手。回答用户问题时，先进行思考，然后给出正式回复。",
     )
-    print(f"✅ Agent 创建成功")
+    print("✅ Agent 创建成功")
     
     messages = [{"role": "user", "content": "你好，请介绍一下你自己"}]
     

@@ -82,7 +82,7 @@ export async function deleteFile(sessionId, file) {
 }
 
 export async function getUserProfile() {
-  const response = await authFetch(`${API_BASE_URL}/api/user/profile`)
+  const response = await authFetch(`${API_BASE_URL}/api/auth/profile`)
 
   if (!response.ok) {
     throw new Error('获取用户资料失败')
@@ -101,9 +101,10 @@ export async function getSessionGeneratedFiles(sessionId) {
   return await response.json()
 }
 
-export async function getWorkspaceTree(path = '') {
+export async function getWorkspaceTree(path = '', sessionId = null) {
   const params = new URLSearchParams()
   if (path) params.set('path', path)
+  if (sessionId) params.set('session_id', sessionId)
   const url = `${API_BASE_URL}/api/files/workspace/tree${params.toString() ? '?' + params.toString() : ''}`
   const response = await authFetch(url)
 
@@ -153,7 +154,7 @@ export async function downloadFile(filePath, fileName) {
 }
 
 export async function updateUserProfile(data) {
-  const response = await authFetch(`${API_BASE_URL}/api/user/profile`, {
+  const response = await authFetch(`${API_BASE_URL}/api/auth/profile`, {
     method: 'PUT',
     headers: {
       'Content-Type': 'application/json',

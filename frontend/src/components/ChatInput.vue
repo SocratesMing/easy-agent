@@ -95,28 +95,28 @@
             <Teleport to="body">
               <div v-if="showTokenPopup" class="token-popup" :style="popupStyle" @click.stop>
                 <div class="token-popup-title">Token 用量</div>
-                <div class="token-popup-row">
-                  <span class="token-popup-label">上下文上限</span>
-                  <span class="token-popup-value">{{ formatTokens(sessionUsage.max_input_tokens) }}</span>
-                </div>
-                <div class="token-popup-row">
-                  <span class="token-popup-label">已用总量</span>
-                  <span class="token-popup-value">{{ formatTokens(sessionUsage.total_tokens) }}</span>
+                <div class="token-popup-section">
+                  <div class="token-popup-row">
+                    <span class="token-popup-label">上下文占用</span>
+                  </div>
+                  <div class="token-popup-context-row">
+                    <span class="token-popup-context-value">{{ formatTokens(sessionUsage.context_tokens || sessionUsage.total_tokens) }}/{{ formatTokens(sessionUsage.max_input_tokens) }}</span>
+                    <span class="token-popup-context-percent" :style="{ color: contextColor }">{{ contextPercent }}%</span>
+                  </div>
+                  <div class="token-popup-bar">
+                    <div class="token-popup-bar-inner">
+                      <div class="token-popup-bar-fill" :style="{ width: contextPercent + '%', background: contextColor }"></div>
+                    </div>
+                  </div>
                 </div>
                 <div class="token-popup-divider"></div>
                 <div class="token-popup-row">
-                  <span class="token-popup-label">输入 (Prompt)</span>
+                  <span class="token-popup-label">总输入 (Prompt)</span>
                   <span class="token-popup-value input">{{ formatTokens(sessionUsage.input_tokens) }}</span>
                 </div>
                 <div class="token-popup-row">
-                  <span class="token-popup-label">输出 (Completion)</span>
+                  <span class="token-popup-label">总输出 (Completion)</span>
                   <span class="token-popup-value output">{{ formatTokens(sessionUsage.output_tokens) }}</span>
-                </div>
-                <div class="token-popup-bar">
-                  <div class="token-popup-bar-inner">
-                    <div class="token-popup-bar-input" :style="{ width: inputPercent + '%' }"></div>
-                    <div class="token-popup-bar-output" :style="{ width: outputPercent + '%' }"></div>
-                  </div>
                 </div>
               </div>
             </Teleport>
@@ -152,7 +152,7 @@
 </template>
 
 <script setup>
-import { ref, computed, watch, nextTick, onMounted, onUnmounted, reactive } from 'vue'
+import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
 import { uploadFile, deleteFile } from '../api/files.js'
 import FileIcon from './FileIcon.vue'
 
@@ -171,7 +171,7 @@ const props = defineProps({
   },
   sessionUsage: {
     type: Object,
-    default: () => ({ input_tokens: 0, output_tokens: 0, total_tokens: 0, max_input_tokens: null, auto_compress_tokens: null })
+    default: () => ({ input_tokens: 0, output_tokens: 0, total_tokens: 0, max_input_tokens: null, auto_compress_tokens: null, context_tokens: 0 })
   }
 })
 
@@ -193,32 +193,22 @@ function toggleTokenPopup() {
   showTokenPopup.value = !showTokenPopup.value
 }
 
-function closeTokenPopup(e) {
+function closeTokenPopup() {
   if (showTokenPopup.value) {
     showTokenPopup.value = false
   }
 }
 
 const showTokenRing = computed(() => {
-  return props.sessionUsage.total_tokens > 0
+  return props.sessionUsage.total_tokens > 0 || props.sessionUsage.context_tokens > 0
 })
 
 const contextPercent = computed(() => {
   const u = props.sessionUsage
   if (!u.max_input_tokens || u.max_input_tokens <= 0) return 0
-  return Math.min(100, Math.round(u.total_tokens / u.max_input_tokens * 100))
-})
-
-const inputPercent = computed(() => {
-  const u = props.sessionUsage
-  if (!u.max_input_tokens || u.max_input_tokens <= 0) return 0
-  return Math.min(100, Math.round(u.input_tokens / u.max_input_tokens * 100))
-})
-
-const outputPercent = computed(() => {
-  const u = props.sessionUsage
-  if (!u.max_input_tokens || u.max_input_tokens <= 0) return 0
-  return Math.min(100, Math.round(u.output_tokens / u.max_input_tokens * 100))
+  // 优先使用 context_tokens（当前上下文窗口占用），否则用 total_tokens 兜底
+  const ctxTokens = u.context_tokens || u.total_tokens || 0
+  return Math.min(100, Math.round(ctxTokens / u.max_input_tokens * 100))
 })
 
 const contextColor = computed(() => {
@@ -802,20 +792,6 @@ onUnmounted(() => {
   pointer-events: none;
 }
 
-.context-ring-detail {
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  font-size: 7px;
-  font-weight: 600;
-  color: #475569;
-  line-height: 1.2;
-  pointer-events: none;
-  white-space: nowrap;
-  text-align: center;
-}
-
 .token-popup {
   position: fixed;
   background: #ffffff;
@@ -833,6 +809,10 @@ onUnmounted(() => {
   font-weight: 600;
   color: #1e293b;
   margin-bottom: 10px;
+}
+
+.token-popup-section {
+  margin-bottom: 2px;
 }
 
 .token-popup-row {
@@ -861,6 +841,26 @@ onUnmounted(() => {
   color: #06b6d4;
 }
 
+.token-popup-context-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  padding: 2px 0 4px;
+}
+
+.token-popup-context-value {
+  font-size: 13px;
+  font-weight: 700;
+  color: #1e293b;
+  font-variant-numeric: tabular-nums;
+}
+
+.token-popup-context-percent {
+  font-size: 13px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
 .token-popup-divider {
   height: 1px;
   background: #f1f5f9;
@@ -868,25 +868,20 @@ onUnmounted(() => {
 }
 
 .token-popup-bar {
-  margin-top: 8px;
+  margin-top: 4px;
 }
 
 .token-popup-bar-inner {
-  display: flex;
-  height: 6px;
+  height: 5px;
   border-radius: 3px;
   overflow: hidden;
   background: #f1f5f9;
 }
 
-.token-popup-bar-input {
-  background: #6366f1;
-  transition: width 0.3s ease;
-}
-
-.token-popup-bar-output {
-  background: #06b6d4;
-  transition: width 0.3s ease;
+.token-popup-bar-fill {
+  height: 100%;
+  border-radius: 3px;
+  transition: width 0.4s ease;
 }
 
 .upload-btn {

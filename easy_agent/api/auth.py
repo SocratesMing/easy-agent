@@ -17,6 +17,7 @@ from ..models.api import (
     ResetPasswordRequest,
     AuthResponse,
 )
+from ..services import get_agent_config
 from ..utils import create_access_token, hash_password
 
 logger = logging.getLogger(__name__)
@@ -25,6 +26,13 @@ router = APIRouter(
     prefix="/api/auth",
     tags=["Authentication"],
 )
+
+
+def _get_max_input_tokens() -> int:
+    _cfg = get_agent_config()
+    if _cfg and _cfg.get("config"):
+        return _cfg["config"].llm.max_input_tokens
+    return 200000
 
 
 def get_client_ip(request: Request) -> str:
@@ -71,12 +79,15 @@ async def register(
             f"[用户] 创建用户workspace失败 | 用户: {user.username} | 错误: {e}"
         )
 
+    max_input_tokens = _get_max_input_tokens()
+
     logger.info(f"[用户] 注册成功 | 用户名: {user.username}")
 
     return AuthResponse(
         access_token=access_token,
         token_type="bearer",
         username=user.username,
+        max_input_tokens=max_input_tokens,
     )
 
 
@@ -115,12 +126,15 @@ async def login(
 
     access_token = create_access_token(data={"sub": user.username})
 
+    max_input_tokens = _get_max_input_tokens()
+
     logger.info(f"[用户] 登录成功 | 用户名: {user.username} | IP: {client_ip}")
 
     return AuthResponse(
         access_token=access_token,
         token_type="bearer",
         username=user.username,
+        max_input_tokens=max_input_tokens,
     )
 
 
@@ -206,3 +220,23 @@ async def reset_password(
     logger.info(f"[用户] 密码重置成功 | 用户名: {request.username}")
 
     return {"status": "success", "message": "密码已重置"}
+
+
+@router.get(
+    "/config",
+    summary="获取当前模型配置信息",
+)
+async def get_auth_config(
+    username: Annotated[str, Depends(get_current_username)],
+):
+    _cfg = get_agent_config()
+    max_input_tokens = 200000
+    if _cfg and _cfg.get("config"):
+        max_input_tokens = _cfg["config"].llm.max_input_tokens
+    preset_questions = []
+    if _cfg and _cfg.get("config"):
+        preset_questions = _cfg["config"].preset_questions or []
+    return {
+        "max_input_tokens": max_input_tokens,
+        "preset_questions": preset_questions,
+    }

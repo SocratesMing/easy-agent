@@ -219,21 +219,44 @@ async def parse_file(
 async def get_workspace_tree(
     username: Annotated[str, Depends(get_current_username)],
     path: str = Query(default="", description="目录路径"),
+    session_id: Optional[str] = Query(default=None, description="会话ID，指定后只返回该会话的工作区目录"),
+    db: Annotated[Database, Depends(get_database)] = None,
 ):
     workspace_dir = Config.get_user_workspace_dir(username)
+
+    if session_id:
+        session = db.get_session(session_id) if db else None
+        # 使用会话所属用户的 workspace 目录，避免当前登录用户与会话所有者不一致时路径错误
+        if session and session.username:
+            workspace_dir = Config.get_user_workspace_dir(session.username)
+        if session and session.workspace_name:
+            workspace_dir = workspace_dir / session.workspace_name
+        else:
+            workspace_dir = workspace_dir / session_id
+        logger.info(
+            f"工作区文件树 | session_id={session_id} | workspace_name={session.workspace_name if session else 'N/A'} | dir={workspace_dir}"
+        )
+    else:
+        logger.info(f"工作区文件树 | 无 session_id | dir={workspace_dir}")
+
     target_dir = workspace_dir / path if path else workspace_dir
 
     if not target_dir.exists():
+        logger.warning(f"工作区目录不存在 | path={target_dir}")
         return {"items": []}
 
     if not target_dir.is_dir():
         raise HTTPException(status_code=400, detail="路径不是目录")
+
+    _HIDDEN_DIRS = {"node_modules", ".venv", ".deps", "__pycache__"}
 
     items = []
     try:
         for entry in sorted(
             target_dir.iterdir(), key=lambda e: (not e.is_dir(), e.name.lower())
         ):
+            if entry.is_dir() and entry.name in _HIDDEN_DIRS:
+                continue
             item = {
                 "name": entry.name,
                 "path": str(entry.relative_to(workspace_dir)),

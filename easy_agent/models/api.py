@@ -32,6 +32,7 @@ class SessionInfo(BaseModel):
     created_at: str = Field(..., description="创建时间")
     updated_at: str = Field(..., description="更新时间")
     message_count: int = Field(default=0, description="消息数量")
+    pinned: int = Field(default=0, description="是否置顶 0/1")
 
 
 class SessionDetail(BaseModel):
@@ -40,6 +41,9 @@ class SessionDetail(BaseModel):
     created_at: str = Field(..., description="创建时间")
     updated_at: str = Field(..., description="更新时间")
     messages: List[dict[str, Any]] = Field(default_factory=list, description="消息列表")
+    todos: List[dict[str, Any]] = Field(default_factory=list, description="任务计划列表")
+    usage: Optional[dict[str, Any]] = Field(default=None, description="会话累计 token 用量")
+    max_input_tokens: Optional[int] = Field(default=None, description="模型上下文窗口大小")
 
 
 class MessageModel(BaseModel):
@@ -117,6 +121,8 @@ class GetChatHistoryResponse(BaseModel):
     messages: List[dict[str, Any]] = Field(default_factory=list, description="消息列表")
     created_at: str = Field(..., description="创建时间")
     updated_at: str = Field(..., description="更新时间")
+    usage: Optional[dict[str, Any]] = Field(default=None, description="会话累计 token 用量")
+    max_input_tokens: Optional[int] = Field(default=None, description="模型上下文窗口大小")
 
 
 class UserProfile(BaseModel):
@@ -155,6 +161,7 @@ class AuthResponse(BaseModel):
     access_token: str = Field(..., description="访问令牌")
     token_type: str = Field(default="bearer", description="令牌类型")
     username: str = Field(..., description="用户名")
+    max_input_tokens: int = Field(default=200000, description="模型上下文窗口大小")
 
 
 class FileInfo(BaseModel):

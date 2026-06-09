@@ -8,6 +8,12 @@
           </svg>
           <span>工作区</span>
         </div>
+        <button class="wp-refresh-btn" @click="refresh" title="刷新工作区" :disabled="isLoading">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" :class="{ spinning: isLoading }">
+            <polyline points="23 4 23 10 17 10"></polyline>
+            <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>
+          </svg>
+        </button>
         <button class="wp-collapse-btn" @click="$emit('toggle')" title="收起工作区">
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <polyline points="15 18 9 12 15 6"></polyline>
@@ -45,6 +51,7 @@
             :item="item"
             :selectedId="selectedFile?.id"
             :depth="0"
+            :sessionId="currentSessionId"
             @select="handleSelectFile"
           />
         </div>
@@ -73,11 +80,14 @@ const isLoading = ref(false)
 const error = ref(null)
 
 async function buildWorkspaceTree() {
+  if (!props.currentSessionId) {
+    workspaceTreeData.value = []
+    return
+  }
   isLoading.value = true
   error.value = null
   try {
-    const response = await getWorkspaceTree('')
-    // 只加载根目录，子目录由 FileTreeNode 懒加载
+    const response = await getWorkspaceTree('', props.currentSessionId)
     workspaceTreeData.value = (response.items || []).map(item => ({
       id: item.path,
       name: item.name,
@@ -112,6 +122,12 @@ watch(() => props.currentSessionId, () => {
   refresh()
 })
 
+watch(() => props.visible, (newVal) => {
+  if (newVal) {
+    refresh()
+  }
+})
+
 onMounted(() => {
   buildWorkspaceTree()
 })
@@ -120,22 +136,19 @@ onMounted(() => {
 <style scoped>
 .workspace-panel {
   width: 260px;
-  min-width: 260px;
   display: flex;
   flex-direction: column;
   background: #ffffff;
   border-left: 1px solid #e2e8f0;
   height: 100vh;
   overflow: hidden;
-  transition: width 0.2s ease, min-width 0.2s ease;
+  box-shadow: 4px 0 16px rgba(0, 0, 0, 0.06);
 }
 
 .workspace-panel.collapsed {
   width: 0;
-  min-width: 0;
   border-left: none;
   overflow: hidden;
-  flex-shrink: 1;
 }
 
 .wp-header {
@@ -183,6 +196,38 @@ onMounted(() => {
 .wp-collapse-btn svg {
   width: 18px;
   height: 18px;
+}
+
+.wp-refresh-btn {
+  background: none;
+  border: none;
+  padding: 4px;
+  cursor: pointer;
+  color: #94a3b8;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  transition: all 0.15s;
+}
+
+.wp-refresh-btn:hover:not(:disabled) {
+  background: #f1f5f9;
+  color: #475569;
+}
+
+.wp-refresh-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.wp-refresh-btn svg {
+  width: 16px;
+  height: 16px;
+}
+
+.wp-refresh-btn svg.spinning {
+  animation: spin 0.8s linear infinite;
 }
 
 .wp-content {

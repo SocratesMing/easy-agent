@@ -22,6 +22,7 @@ class ProviderConfig(BaseModel):
     model: str = ""
     api_base: str = ""
     max_input_tokens: int = 200000
+    protocol: str = "openai"  # "openai" or "anthropic"
 
 
 class LLMConfig(BaseModel):
@@ -32,6 +33,7 @@ class LLMConfig(BaseModel):
     model: str = "claude-sonnet-4-6"
     provider: str = "minimax"
     max_input_tokens: int = 200000  # Model context window size
+    protocol: str = "openai"  # "openai" or "anthropic"
     retry: RetryConfig = Field(default_factory=RetryConfig)
 
 
@@ -97,7 +99,20 @@ class AgentConfig(BaseModel):
 
     max_steps: int = 50
     workspace_dir: str = "./workspace"
+    memories_dir: str = "./memories"
     system_prompt_path: str = "system_prompt.md"
+
+
+class MCPToolConfig(BaseModel):
+    """Configuration for a single MCP server"""
+
+    name: str
+    transport: str = "stdio"  # stdio | sse | http
+    command: str = ""
+    args: list[str] = Field(default_factory=list)
+    env: dict[str, str] = Field(default_factory=dict)
+    url: str = ""
+    headers: dict[str, str] = Field(default_factory=dict)
 
 
 class SummarizationConfig(BaseModel):
@@ -123,6 +138,7 @@ class Config(BaseModel):
     vector_store: VectorStoreConfig = Field(default_factory=VectorStoreConfig)
     models: dict[str, ProviderConfig] = Field(default_factory=dict)
     active_model: str = "minimax"
+    preset_questions: list[str] = Field(default_factory=list)
 
     @classmethod
     def load(cls) -> "Config":
@@ -162,6 +178,7 @@ class Config(BaseModel):
                     model=mcfg.get("model", ""),
                     api_base=mcfg.get("api_base", ""),
                     max_input_tokens=mcfg.get("max_input_tokens", 200000),
+                    protocol=mcfg.get("protocol", "openai"),
                 )
 
         # Resolve active model config
@@ -184,12 +201,14 @@ class Config(BaseModel):
             model=active_cfg.model or "claude-sonnet-4-6",
             provider=active_cfg.provider or active_model,
             max_input_tokens=active_cfg.max_input_tokens or 200000,
+            protocol=active_cfg.protocol or "openai",
             retry=retry_config,
         )
 
         agent_config = AgentConfig(
             max_steps=data.get("max_steps", 50),
             workspace_dir=data.get("workspace_dir", "./workspace"),
+            memories_dir=data.get("memories_dir", "./memories"),
             system_prompt_path=data.get("system_prompt_path", "system_prompt.md"),
         )
 
@@ -266,6 +285,7 @@ class Config(BaseModel):
             vector_store=vs_config,
             models=models,
             active_model=active_model,
+            preset_questions=data.get("preset_questions", []),
         )
 
     @staticmethod

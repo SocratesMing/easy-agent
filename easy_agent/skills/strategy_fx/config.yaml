@@ -1,0 +1,67 @@
+# strategy_fx skill 配置文件
+# API接口和回测/寻优配置
+
+# 本地fast_backtest服务（回测+策略管理）
+service:
+  base_url: "http://localhost:8080"
+
+# 策略管理接口
+strategy:
+  # 新增策略
+  add: "/api/strategy/add"
+  # 查询策略列表
+  list: "/api/strategy/list"
+  # 查询策略详情
+  detail: "/api/strategy/{strategy_name}"
+  # 删除策略
+  delete: "/api/strategy/{strategy_name}"
+
+# 回测接口
+backtest:
+  # 发起回测
+  start: "/api/backtest/start"
+  # 流式发起回测(SSE)
+  start_stream: "/api/backtest/start_stream"
+  # 停止回测
+  stop: "/api/backtest/stop"
+  # 查询回测进度
+  progress: "/api/backtest/progress/{run_id}"
+  # 查询所有回测状态
+  status_all: "/api/backtest/status"
+  # 查询单个回测状态
+  status: "/api/backtest/status/{run_id}"
+
+# 寻优接口（需要外部SBM服务）
+optimize:
+  base_url: "http://localhost:8080"
+  # 发起寻优
+  start: "/api/optimize/start"
+  # 查询寻优进度
+  progress: "/api/optimize/progress/{run_id}"
+  # 查询寻优结果
+  result: "/api/optimize/result/{run_id}"
+  # 停止寻优
+  stop: "/api/optimize/stop"
+
+# 回测轮询配置
+backtest_poll:
+  # 轮询间隔（秒）
+  interval: 3
+  # 最大轮询次数（0表示不限制）
+  max_retries: 0
+  # 超时时间（秒，0表示不限制）
+  timeout: 0
+
+# 寻优默认配置
+optimization:
+  # 默认寻优次数
+  default_count: 100
+
+# 日志配置
+logging:
+  # 日志文件名
+  filename: "skill_run.log"
+  # 日志格式
+  format: "%(asctime)s [%(levelname)s] %(message)s"
+  # 日志级别: DEBUG, INFO, WARNING, ERROR
+  level: "INFO"

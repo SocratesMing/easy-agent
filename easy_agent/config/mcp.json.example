@@ -1,0 +1,20 @@
+{
+  "servers": {
+    "example-filesystem": {
+      "transport": "stdio",
+      "command": "npx",
+      "args": ["-y", "@anthropic/modelcontextprotocol-tools-filesystem", "/tmp"],
+      "env": {}
+    },
+    "example-sse-api": {
+      "transport": "sse",
+      "url": "http://localhost:3000/mcp",
+      "headers": {}
+    },
+    "example-http-api": {
+      "transport": "http",
+      "url": "http://localhost:8000/mcp",
+      "headers": {}
+    }
+  }
+}

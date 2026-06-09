@@ -5,7 +5,25 @@ Supports ChromaDB with Sentence Transformers or ZhipuAI embeddings
 
 import logging
 import os
+import uuid
 from typing import Optional
+
+try:
+    import chromadb
+    from chromadb.config import Settings as ChromaSettings
+except ImportError:
+    chromadb = None
+    ChromaSettings = None
+
+try:
+    from sentence_transformers import SentenceTransformer
+except ImportError:
+    SentenceTransformer = None
+
+try:
+    from zhipuai import ZhipuAI
+except ImportError:
+    ZhipuAI = None
 
 logger = logging.getLogger(__name__)
 
@@ -30,8 +48,8 @@ class VectorStore:
         os.makedirs(self.db_path, exist_ok=True)
 
         try:
-            import chromadb
-            from chromadb.config import Settings as ChromaSettings
+            if chromadb is None:
+                raise ImportError
         except ImportError:
             logger.error(
                 "ChromaDB 未安装，请运行: pip install chromadb\n"
@@ -78,7 +96,8 @@ class VectorStore:
             else "Qwen/Qwen3-Embedding-0.6B"
         )
         try:
-            from sentence_transformers import SentenceTransformer
+            if SentenceTransformer is None:
+                raise ImportError
 
             logger.info(f"加载本地嵌入模型: {model_name} (首次使用需要下载)")
             model = SentenceTransformer(model_name, trust_remote_code=True)
@@ -114,8 +133,6 @@ class VectorStore:
                 self.model = model
 
             def __call__(self, input):
-                from zhipuai import ZhipuAI
-
                 client = ZhipuAI(api_key=self.api_key)
                 texts = [t if t else "" for t in input]
                 response = client.embeddings.create(model=self.model, input=texts)
@@ -138,8 +155,6 @@ class VectorStore:
             return 0
 
         if not ids:
-            import uuid
-
             ids = [str(uuid.uuid4()) for _ in documents]
 
         total = len(documents)

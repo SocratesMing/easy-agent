@@ -4,6 +4,8 @@ import argparse
 import os
 from pathlib import Path
 
+import uvicorn
+
 
 def run_web():
     """Start the Easy Agent Web Server"""
@@ -14,22 +16,11 @@ def run_web():
     parser.add_argument("--workers", type=int, default=1, help="工作进程数")
     args = parser.parse_args()
 
-    import uvicorn
-
     project_root = Path(__file__).parent.parent
     os.chdir(project_root)
 
     config_path = project_root / "easy_agent" / "config" / "config.yaml"
     os.environ.setdefault("EASY_CONFIG", str(config_path))
-
-    print(f"""
-╔══════════════════════════════════════════╗
-║     Easy Agent Web Service              ║
-╠══════════════════════════════════════════╣
-║  地址: http://{args.host}:{args.port}            ║
-║  模式: {"开发 (热重载)" if args.reload else "生产"}                    ║
-╚══════════════════════════════════════════╝
-""")
 
     uvicorn.run(
         "easy_agent.app:app",

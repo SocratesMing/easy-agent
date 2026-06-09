@@ -64,6 +64,7 @@ tools:
     connect_timeout: 10.0
     execute_timeout: 60.0
     sse_read_timeout: 120.0
+  result_log_truncate: 200  # 工具结果在日志中的截断字符数（默认 200）
 
 # ===== Database Configuration =====
 database:

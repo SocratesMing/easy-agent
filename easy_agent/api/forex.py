@@ -12,6 +12,7 @@ from fastapi import APIRouter, Body
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from ..config import Config
+from ..services.agent_manager import _llm_instance
 
 logger = logging.getLogger("easy_agent.forex")
 
@@ -21,8 +22,6 @@ BOND_BOT: dict[int, list] = {}
 
 
 def _get_llm():
-    from ..services.agent_manager import _llm_instance
-
     return _llm_instance
 
 

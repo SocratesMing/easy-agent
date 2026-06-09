@@ -54,11 +54,24 @@ export async function renameSession(sessionId, title) {
   return response.json()
 }
 
+export async function togglePinSession(sessionId) {
+  const response = await authFetch(`${API_BASE_URL}/api/sessions/${sessionId}/pin`, {
+    method: 'PUT',
+  })
+  if (!response.ok) throw new Error('置顶操作失败')
+  return response.json()
+}
+
 export async function getChatHistory(sessionId) {
   const response = await authFetch(`${API_BASE_URL}/api/sessions/${sessionId}`)
   if (!response.ok) throw new Error('获取聊天历史失败')
   const data = await response.json()
-  return { messages: data.messages || [] }
+  return {
+    messages: data.messages || [],
+    todos: data.todos || [],
+    usage: data.usage || null,
+    max_input_tokens: data.max_input_tokens || null,
+  }
 }
 
 export async function sendMessage(sessionId, message, onChunk, signal, enableDeepThink = true, files = [], useKnowledgeBase = false) {

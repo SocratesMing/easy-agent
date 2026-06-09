@@ -47,7 +47,14 @@
         @click="$emit('selectSession', session.session_id)"
       >
         <div class="session-info">
-          <div class="session-name">{{ session.title || '未命名会话' }}</div>
+          <div class="session-name">
+            <svg v-if="session.pinned" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="#f59e0b" stroke="#f59e0b" stroke-width="1" style="width:13px;height:13px;flex-shrink:0;margin-right:2px">
+              <path d="M12 2L2 7l10 5 10-5-10-5z"></path>
+              <path d="M2 17l10 5 10-5"></path>
+              <path d="M2 12l10 5 10-5"></path>
+            </svg>
+            {{ session.title || '未命名会话' }}
+          </div>
         </div>
         <div class="session-actions">
           <button @click="toggleMenu(session.session_id, $event)" class="menu-btn">
@@ -58,6 +65,14 @@
             </svg>
           </button>
           <div v-if="activeMenu === session.session_id" class="menu-dropdown">
+            <button @click.stop="handleTogglePin(session.session_id)" class="menu-item">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px">
+                <path d="M12 2L2 7l10 5 10-5-10-5z"></path>
+                <path d="M2 17l10 5 10-5"></path>
+                <path d="M2 12l10 5 10-5"></path>
+              </svg>
+              {{ session.pinned ? '取消置顶' : '置顶' }}
+            </button>
             <button @click.stop="startRename(session)" class="menu-item">
               <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
@@ -137,6 +152,13 @@
           </svg>
           个人资料
         </button>
+        <button class="user-dropdown-item" @click="showSettings">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="3"></circle>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+          </svg>
+          设置
+        </button>
         <button class="user-dropdown-item logout-item" @click="handleLogout">
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
@@ -151,10 +173,10 @@
 </template>
 
 <script setup>
-import { ref, nextTick, onMounted, onUnmounted } from 'vue'
+import { ref, nextTick, onMounted } from 'vue'
 import EasyLogo from './EasyLogo.vue'
 
-const emit = defineEmits(['createSession', 'selectSession', 'deleteSession', 'renameSession', 'toggleSidebar', 'showAssets', 'showProfile', 'logout'])
+const emit = defineEmits(['createSession', 'selectSession', 'deleteSession', 'renameSession', 'toggleSidebar', 'showAssets', 'showProfile', 'showSettings', 'logout', 'togglePin'])
 
 const props = defineProps({
   sessions: {
@@ -227,6 +249,11 @@ function handleDelete(sessionId) {
   emit('deleteSession', sessionId)
 }
 
+function handleTogglePin(sessionId) {
+  activeMenu.value = null
+  emit('togglePin', sessionId)
+}
+
 function closeMenu() {
   activeMenu.value = null
 }
@@ -245,6 +272,11 @@ function closeUserMenuSilent() {
 function showProfile() {
   showUserMenu.value = false
   emit('showProfile')
+}
+
+function showSettings() {
+  showUserMenu.value = false
+  emit('showSettings')
 }
 
 function handleLogout() {
@@ -407,6 +439,8 @@ function handleLogout() {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  display: flex;
+  align-items: center;
 }
 
 .session-actions {

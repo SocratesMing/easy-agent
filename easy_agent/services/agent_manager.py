@@ -4,31 +4,50 @@ import logging
 
 from ..agent import EasyAgent
 from ..config import Config
+from ..db import get_database
+from ..model import create_model
 
 logger = logging.getLogger("easy_agent.chat_service")
 
 _session_agents: dict[str, EasyAgent] = {}
 _agent_config: dict = None
 _llm_instance = None
+_mcp_tools: list = []  # LangChain BaseTool instances from MCP servers
 
 
 def init_agent_config(
     config: Config,
     system_prompt: str,
     skills_root: str = "",
-    shared_deps_path: str = "",
+    mcp_tools: list | None = None,
 ):
-    global _agent_config, _llm_instance
+    global _agent_config, _llm_instance, _mcp_tools
     _agent_config = {
         "config": config,
         "system_prompt": system_prompt,
         "skills_root": skills_root,
-        "shared_deps_path": shared_deps_path,
     }
-    from ..model import create_model
+    _mcp_tools = mcp_tools or []
+    if _mcp_tools:
+        logger.info(f"[初始化] MCP 工具已加载: {len(_mcp_tools)} 个工具")
+        for t in _mcp_tools:
+            logger.info(f"  └─ {t.name}")
 
     _llm_instance = create_model(config)
     logger.info("[初始化] Agent 配置初始化完成 | LLM 流式已启用")
+
+
+def set_mcp_tools(tools: list):
+    """Set or update MCP tools after startup (e.g., after async connection)."""
+    global _mcp_tools
+    _mcp_tools = tools or []
+    logger.info(f"MCP tools updated: {len(_mcp_tools)} tools")
+    for t in _mcp_tools:
+        logger.info(f"  └─ {t.name}")
+
+
+def get_mcp_tools() -> list:
+    return _mcp_tools
 
 
 async def get_or_create_agent_for_session(
@@ -44,8 +63,6 @@ async def get_or_create_agent_for_session(
 
     if not workspace_name:
         try:
-            from ..db import get_database
-
             db = get_database()
             session = db.get_session(session_id)
             if session and session.workspace_name:
@@ -63,8 +80,8 @@ async def get_or_create_agent_for_session(
         skills_root=_agent_config.get("skills_root", ""),
         username=username,
         session_id=session_id,
-        shared_deps_path=_agent_config.get("shared_deps_path", ""),
         workspace_name=workspace_name,
+        mcp_tools=_mcp_tools,
     )
     _session_agents[session_id] = agent
     logger.info(

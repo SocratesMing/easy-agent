@@ -9,57 +9,66 @@ DeepAgents provides built-in tools automatically:
 No need to declare these tools manually.
 """
 
+import json
 import logging
 import os
 import platform
 import re
 import shutil
-import sys
 import time
 from pathlib import Path
 
 from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend, FilesystemBackend, LocalShellBackend
-from deepagents.middleware.summarization import (
-    SummarizationMiddleware,
-    SummarizationToolMiddleware,
-)
+from deepagents.backends.protocol import ExecuteResponse
+from langchain.agents.middleware.summarization import SummarizationMiddleware
+from langchain_core.messages import AIMessageChunk, ToolMessage
 
 from .config import Config
 from .logger import AgentLogger
+from .model import _parse_mcp_content, create_model
 
-
-class _Colors:
-    RESET = "\033[0m"
-    BOLD = "\033[1m"
-    DIM = "\033[2m"
-    RED = "\033[31m"
-    GREEN = "\033[32m"
-    YELLOW = "\033[33m"
-    BLUE = "\033[34m"
-    BRIGHT_RED = "\033[91m"
-    BRIGHT_GREEN = "\033[92m"
-    BRIGHT_YELLOW = "\033[93m"
-    BRIGHT_BLUE = "\033[94m"
-    BRIGHT_CYAN = "\033[96m"
-
-
-from .model import create_model
 
 logger = logging.getLogger(__name__)
 
 
-def _copy_deps(src: Path, dst: Path) -> None:
-    """Copy node_modules packages from src to dst using symlinks for efficiency."""
-    if not src.exists() or not src.is_dir():
-        return
-    for item in src.iterdir():
-        target = dst / item.name
-        if not target.exists():
-            if item.is_dir():
-                shutil.copytree(str(item), str(target), symlinks=True)
-            else:
-                shutil.copy2(str(item), str(target))
+# ---------------------------------------------------------------------------
+# read_file 默认 limit
+# DeepAgents 默认 limit=100，导致模型频繁分页读取 skill/代码文件。
+# 这里调高到 1000，减少翻页次数。
+# ---------------------------------------------------------------------------
+try:
+    from deepagents.middleware import filesystem as _ds_fs
+
+    _ds_fs.DEFAULT_READ_LIMIT = 1000
+    logger.info(f"DeepAgents read_file DEFAULT_READ_LIMIT → {_ds_fs.DEFAULT_READ_LIMIT}")
+except Exception:
+    pass
+
+
+class _PathTranslatingShell(LocalShellBackend):
+    """LocalShellBackend 包装：execute 命令中自动将虚拟路径翻译为实际路径。
+
+    模型可能混用虚拟路径（/skills/、/workspace/xxx/）和实际路径，
+    此类在命令执行前统一翻译，无需模型在提示词中区分。
+    """
+
+    def __init__(self, path_mappings: dict[str, str], *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # 预编译替换规则，使用 lookbehind 确保只匹配独立的虚拟路径
+        # （前面是空格/引号/命令开头），避免替换真实路径中的子串
+        self._rules = [
+            (re.compile(rf'(^|[\s"\'&|;(])({re.escape(v)})'), real)
+            for v, real in sorted(path_mappings.items(), key=lambda x: -len(x[0]))
+        ]
+
+    def execute(self, command: str, *, timeout: int | None = None) -> "ExecuteResponse":
+        translated = command
+        for pat, real in self._rules:
+            translated = pat.sub(lambda m: m.group(1) + real, translated)
+        if translated != command:
+            logger.debug("execute path translation: %s → %s", command[:80], translated[:80])
+        return super().execute(translated, timeout=timeout)
 
 
 class EasyAgent:
@@ -85,85 +94,39 @@ class EasyAgent:
         username: str = "default",
         session_id: str = None,
         workspace_dir: str | Path | None = None,
-        shared_deps_path: str = "",
         workspace_name: str = "",
+        mcp_tools: list | None = None,
     ):
         self.config = config
         self.username = username
         self.session_id = session_id
         self.skills_root = skills_root
-        self.shared_deps_path = shared_deps_path
+        self.mcp_tools = mcp_tools or []
         self.safe_username = Config.sanitize_username(username)
 
-        # Resolve workspace directory: user-provided > auto-generated
         if workspace_dir:
             self.workspace_dir = Path(workspace_dir)
+            dir_name = self.workspace_dir.name
         else:
-            safe_name = Config.sanitize_username(username)
             base = Path(config.agent.workspace_dir)
             if session_id:
                 dir_name = workspace_name if workspace_name else session_id
-                self.workspace_dir = base / safe_name / dir_name
+                self.workspace_dir = base / self.safe_username / dir_name
             else:
-                self.workspace_dir = base / safe_name
+                self.workspace_dir = base / self.safe_username
+                dir_name = self.safe_username
 
-        self.workspace_dir.mkdir(parents=True, exist_ok=True)
+        # Don't create directory eagerly — FilesystemBackend.write will create it on first write
+        self.workspace_virtual_path = f"/workspace/{self.safe_username}/{dir_name}"
+        self.memory_virtual_path = f"/memories/{self.safe_username}"
         self._workspace_renamed = False
 
-        # User-level shared dependencies directory: workspace/{username}/.deps/
-        self.user_deps_dir = self.workspace_dir.parent / ".deps"
-        self.user_deps_dir.mkdir(parents=True, exist_ok=True)
-        self.user_node_modules = self.user_deps_dir / "node_modules"
-        self.user_venv = self.user_deps_dir / ".venv"
-
-        # Ensure user-level node_modules exists with seed packages from shared_deps
-        if shared_deps_path:
-            shared_node_modules = Path(shared_deps_path)
-            if not self.user_node_modules.exists():
-                self.user_node_modules.mkdir(parents=True, exist_ok=True)
-                if shared_node_modules.exists():
-                    try:
-                        _copy_deps(shared_node_modules, self.user_node_modules)
-                        logger.info(
-                            f"User-level node_modules seeded from {shared_node_modules}"
-                        )
-                    except Exception as e:
-                        logger.warning(f"Failed to seed user node_modules: {e}")
-
-        # Symlink session workspace node_modules -> user-level node_modules
-        workspace_node_modules = self.workspace_dir / "node_modules"
-        if not workspace_node_modules.exists() and self.user_node_modules.exists():
-            try:
-                workspace_node_modules.symlink_to(
-                    self.user_node_modules.resolve(), target_is_directory=True
-                )
-                logger.info(
-                    f"Session node_modules symlinked -> {self.user_node_modules}"
-                )
-            except OSError as e:
-                logger.debug(f"Failed to symlink session node_modules: {e}")
-
-        # Ensure user-level Python venv exists
-        if not self.user_venv.exists():
-            try:
-                import subprocess
-
-                subprocess.run(
-                    [sys.executable, "-m", "venv", str(self.user_venv)],
-                    check=True,
-                    capture_output=True,
-                    timeout=120,
-                )
-                logger.info(f"User-level Python venv created: {self.user_venv}")
-            except Exception as e:
-                logger.warning(f"Failed to create user venv: {e}")
-
         # Ensure memories directory and user memory file exist
-        memories_dir = Path("memories") / self.safe_username
+        memories_base = Path(config.agent.memories_dir)
+        memories_dir = memories_base / self.safe_username
         memories_dir.mkdir(parents=True, exist_ok=True)
-        self.memory_file = memories_dir / f"{self.safe_username}_AGENTS.md"
-        # Migration: move old flat file to per-user directory
-        old_file = Path("memories") / f"{self.safe_username}_AGENTS.md"
+        self.memory_file = memories_dir / "AGENTS.md"
+        old_file = memories_base / f"{self.safe_username}_AGENTS.md"
         if old_file.exists() and not self.memory_file.exists():
             shutil.move(str(old_file), str(self.memory_file))
             logger.info(f"Memory file migrated: {old_file} -> {self.memory_file}")
@@ -172,32 +135,21 @@ class EasyAgent:
                 f"# {username} 的长期记忆\n\n", encoding="utf-8"
             )
 
-        # Augment system prompt with OS, workspace, and skills context
+        # Augment system prompt with virtual paths only.
+        # _PathTranslatingShell 会自动把虚拟路径翻译为实际路径，
+        # 模型无需知道实际路径，统一使用虚拟路径即可。
         skills_info = ""
         if self.skills_root:
-            skills_info = f"## Skills Root: {Path(self.skills_root).absolute()}\n"
-
-        shared_deps_info = ""
-        if self.shared_deps_path:
-            shared_deps_info = (
-                f"## 用户依赖目录: {self.user_deps_dir.absolute()}\n"
-                f"- 所有 Python 和 Node.js 依赖安装在此目录，该用户的所有会话共享\n"
-                f"- Node.js: node_modules 位于 {self.user_node_modules.absolute()}，已通过软链接在 workspace 中可用\n"
-                f"- Python: 虚拟环境位于 {self.user_venv.absolute()}，使用 `source {self.user_venv}/bin/activate` 激活\n"
-                f"- 安装新依赖时请安装到用户依赖目录，不要在每个会话中重复安装\n"
-                f"- npm install 示例: cd {self.workspace_dir.absolute()} && npm install <package>\n"
-                f"- pip install 示例: source {self.user_venv}/bin/activate && pip install <package>\n"
+            skills_info = (
+                f"## Skills: `/skills/`（例：`/skills/docx/SKILL.md`）\n"
             )
 
         self.system_prompt = (
             f"{system_prompt}\n"
-            f"## Workspace: {self.workspace_dir.absolute()}\n"
+            f"## Workspace: `{self.workspace_virtual_path}/`\n"
             f"{skills_info}"
-            f"{shared_deps_info}"
-            f"## 长期记忆文件: /memories/{self.safe_username}_AGENTS.md\n"
-            f"你可以在长期记忆文件中记录用户偏好、重要决策、项目上下文等信息，"
-            f"以便在后续会话中使用。每次对话开始时读取此文件，对话结束时根据需要更新。\n"
-            f"{self._get_os_info()}"
+            f"## Memory: `{self.memory_virtual_path}/AGENTS.md`\n"
+            f"{self._get_os_info()}\n"
         )
 
         self.max_steps = config.agent.max_steps
@@ -215,8 +167,6 @@ class EasyAgent:
         Should only be called AFTER streaming completes to avoid
         breaking in-progress tool calls.
         """
-        import shutil
-
         parent = self.workspace_dir.parent
         new_workspace = parent / new_name
 
@@ -237,11 +187,14 @@ class EasyAgent:
             self.workspace_dir.rename(new_workspace)
 
         old_path = str(self.workspace_dir.absolute())
+        old_virtual = self.workspace_virtual_path
         self.workspace_dir = new_workspace
+        self.workspace_virtual_path = f"/workspace/{self.safe_username}/{new_name}"
 
-        self.system_prompt = self.system_prompt.replace(
-            old_path,
-            str(new_workspace.absolute()),
+        self.system_prompt = (
+            self.system_prompt
+            .replace(old_path, str(new_workspace.absolute()))
+            .replace(old_virtual, self.workspace_virtual_path)
         )
 
         self.agent = self._create_agent()
@@ -251,59 +204,10 @@ class EasyAgent:
 
     def _get_os_info(self) -> str:
         system = platform.system()
-        if system == "Windows":
-            return (
-                "## Operating System: Windows\n"
-                "- Shell commands: `dir`, `type`, `copy`, `del`, `mkdir`, `rmdir`\n"
-                "- Python: `python` (NOT `python3`)\n"
-                "- Package: `uv add` or `uv pip install` (always use `uv`)\n"
-                "- Run scripts: `uv run python script.py` or `uv run script.py`\n"
-                "- Path separator in env vars: `;`\n"
-                "- Newline: CRLF"
-            )
-        elif system == "Linux":
-            release = platform.release()
-            distro = (
-                ", ".join(
-                    filter(
-                        None,
-                        [
-                            platform.freedesktop_os_release().get("NAME", "")
-                            if hasattr(platform, "freedesktop_os_release")
-                            else "",
-                            platform.freedesktop_os_release().get("VERSION", "")
-                            if hasattr(platform, "freedesktop_os_release")
-                            else "",
-                        ],
-                    )
-                )
-                or "Unknown Distro"
-            )
-            return (
-                f"You are running on **Linux** (Kernel: {release}, Distro: {distro})\n"
-                "- Use Unix-style commands: `ls`, `cat`, `cp`, `mv`, `rm`, `mkdir`, `rmdir`\n"
-                "- Use forward slash `/` in file paths\n"
-                "- Python commands: `python3` (not `python`)\n"
-                "- Package manager: `pip3 install` or `apt install`\n"
-                "- Shell: bash\n"
-                "- Path separator: `:` (colon) for environment variables\n"
-                "- Line ending: LF"
-            )
-        elif system == "Darwin":
-            release = platform.release()
-            mac_ver = platform.mac_ver()[0]
-            return (
-                f"You are running on **macOS** (Version: {mac_ver}, Kernel: {release})\n"
-                "- Use Unix-style commands: `ls`, `cat`, `cp`, `mv`, `rm`, `mkdir`, `rmdir`\n"
-                "- Use forward slash `/` in file paths\n"
-                "- Python commands: `python3`\n"
-                "- Package manager: `pip3 install` or `brew install`\n"
-                "- Shell: zsh or bash\n"
-                "- Path separator: `:` (colon) for environment variables\n"
-                "- Line ending: LF"
-            )
-        else:
-            return f"You are running on **{system}** ({platform.platform()})"
+        os_name = {"Windows": "Windows", "Linux": "Linux", "Darwin": "macOS"}.get(
+            system, system
+        )
+        return f"## OS: {os_name}"
 
     def _create_agent(self):
         """Create the DeepAgents agent with workspace + skills backends.
@@ -316,28 +220,64 @@ class EasyAgent:
         model = create_model(self.config)
         self.model = model
 
-        # Build backend: workspace for user files, skills for read-only skill access, memories for long-term user memory
-        workspace_env = {}
-        if self.shared_deps_path:
-            workspace_env["NODE_PATH"] = str(self.user_node_modules.absolute())
-        if self.user_venv.exists():
-            venv_bin = str(self.user_venv / "bin")
-            workspace_env["PATH"] = f"{venv_bin}:{os.environ.get('PATH', '')}"
-            workspace_env["VIRTUAL_ENV"] = str(self.user_venv.absolute())
-        workspace_backend = LocalShellBackend(
-            root_dir=str(self.workspace_dir.absolute()),
-            env=workspace_env if workspace_env else None,
-            inherit_env=True,
+        logger.info(
+            f"[{self.session_id}] 📋 系统提示词:\n{self.system_prompt}"
         )
 
-        memories_dir = self.memory_file.parent
-        memories_backend = LocalShellBackend(root_dir=str(memories_dir.absolute()))
-
         skills_paths = self._resolve_skills_paths()
+        backend = self._build_backend(skills_paths)
+        middleware = self._build_middleware(model, backend)
+        tools = list(self.mcp_tools) if self.mcp_tools else None
+
+        logger.info(
+            f"[{self.session_id}] 🏗️ 创建智能体参数 | "
+            f"model: {self.config.llm.model} | "
+            f"provider: {self.config.llm.provider} | "
+            f"protocol: {self.config.llm.protocol} | "
+            f"max_steps: {self.max_steps} | "
+            f"workspace: {self.workspace_dir.absolute()} | "
+            f"skills: {skills_paths or []} | "
+            f"mcp_tools: {len(tools) if tools else 0} | "
+            f"middleware: {[type(m).__name__ for m in middleware]} | "
+            f"memory_file: {self.memory_file} | "
+            f"summarization: {self.config.summarization.enabled}"
+        )
+
+        memory_path = f"{self.memory_virtual_path}/AGENTS.md"
+
+        logger.info(
+            f"[{self.session_id}] 🧠 记忆文件 | "
+            f"虚拟路径: {memory_path} | 实际路径: {self.memory_file}"
+        )
+
+        return create_deep_agent(
+            name="easy-agent",
+            model=model,
+            system_prompt=self.system_prompt,
+            backend=backend,
+            skills=skills_paths or None,
+            middleware=middleware,
+            tools=tools,
+            memory=[memory_path],
+        )
+
+    def _build_backend(self, skills_paths: list[str]):
+        memories_dir = self.memory_file.parent
+        memories_backend = FilesystemBackend(
+            root_dir=str(memories_dir.absolute()),
+            virtual_mode=True,
+        )
+
+        workspace_backend = FilesystemBackend(
+            root_dir=str(self.workspace_dir.absolute()),
+            virtual_mode=True,
+        )
+
         routes = {
-            "/workspace/": workspace_backend,
-            "/memories/": memories_backend,
+            f"{self.memory_virtual_path}/": memories_backend,
+            f"{self.workspace_virtual_path}/": workspace_backend,
         }
+
         if skills_paths and self.skills_root:
             skills_backend = FilesystemBackend(
                 root_dir=self.skills_root,
@@ -345,12 +285,40 @@ class EasyAgent:
             )
             routes["/skills/"] = skills_backend
 
-        backend = CompositeBackend(
-            routes=routes,
-            default=workspace_backend,
+        logger.info(
+            f"[{self.session_id}] 🗺️ CompositeBackend routes:\n"
+            + "\n".join(
+                f"    {vp:40s} → {b.cwd}"
+                for vp, b in sorted(routes.items())
+            )
         )
 
-        # Summarization middleware: auto-compress context + on-demand compact_conversation tool
+        def backend_factory(runtime):
+            ws_real = self.workspace_dir.absolute()
+            ws_real.mkdir(parents=True, exist_ok=True)
+            ws_str = str(ws_real)
+
+            path_mappings = {
+                f"{self.workspace_virtual_path}/": ws_str + "/",
+                f"{self.memory_virtual_path}/": str(self.memory_file.parent.absolute()) + "/",
+            }
+            if self.skills_root:
+                path_mappings["/skills/"] = str(Path(self.skills_root).absolute()) + "/"
+
+            return CompositeBackend(
+                default=_PathTranslatingShell(
+                    path_mappings=path_mappings,
+                    root_dir=ws_str,
+                    virtual_mode=True,
+                    inherit_env=True,
+                    timeout=120,
+                ),
+                routes=routes,
+            )
+
+        return backend_factory
+
+    def _build_middleware(self, model, backend) -> list:
         middleware = []
         if self.config.summarization.enabled:
             max_tokens = self.config.llm.max_input_tokens
@@ -365,29 +333,15 @@ class EasyAgent:
             )
             summarization = SummarizationMiddleware(
                 model=model,
-                backend=backend,
                 trigger=("tokens", trigger_tokens),
                 keep=("tokens", keep_tokens),
                 trim_tokens_to_summarize=None,
-                truncate_args_settings={
-                    "trigger": ("tokens", trigger_tokens),
-                    "keep": ("tokens", keep_tokens),
-                },
-                history_path_prefix=f"/memories/{self.safe_username}/conversation_history",
             )
-            summarization_tool = SummarizationToolMiddleware(summarization)
-            middleware.append(summarization_tool)
+            middleware.append(summarization)
         else:
             logger.info(f"[{self.session_id}] Summarization disabled")
 
-        return create_deep_agent(
-            name="easy-agent",
-            model=model,
-            system_prompt=self.system_prompt,
-            backend=backend,
-            skills=skills_paths or None,
-            middleware=middleware,
-        )
+        return middleware
 
     def _resolve_skills_paths(self) -> list[str]:
         """Discover skills from skills_root and return virtual paths."""
@@ -409,7 +363,11 @@ class EasyAgent:
         return virtual_skills
 
     async def run(self, user_input: str) -> str:
-        """Execute agent with streaming output (CLI mode)."""
+        """Execute agent with streaming output (CLI mode).
+
+        Uses agent.astream(stream_mode='messages') for raw message-level streaming,
+        which correctly captures DeepSeek's reasoning_content as per-token chunks.
+        """
         self.logger.start_new_run()
         self.logger.log_request(
             messages=[{"role": "user", "content": user_input}], tools=None
@@ -417,150 +375,80 @@ class EasyAgent:
 
         start_time = time.time()
         full_response = ""
+        thinking_shown = False
+        response_shown = False
+        tool_call_accumulated_args = {}
 
         try:
-            async for chunk in self.agent.astream(
+            async for event in self.agent.astream(
                 {"messages": [{"role": "user", "content": user_input}]},
                 stream_mode="messages",
-                subgraphs=True,
-                version="v2",
             ):
-                if chunk["type"] != "messages":
-                    continue
+                chunk, metadata = event
 
-                token, _metadata = chunk["data"]
-                ns = chunk.get("ns", [])
+                if isinstance(chunk, AIMessageChunk):
+                    rc = chunk.additional_kwargs.get("reasoning_content", "") if hasattr(chunk, "additional_kwargs") else ""
+                    content = chunk.content or ""
+                    tcc = getattr(chunk, "tool_call_chunks", None) or []
 
-                if any(s.startswith("tools:") for s in ns):
-                    continue
+                    if rc:
+                        if not thinking_shown:
+                            logger.info("🧠 Thinking:")
+                            thinking_shown = True
+                        print(rc, end="", flush=True)
 
-                content = getattr(token, "content", "")
-                if content:
-                    self._handle_content_chunk(str(content))
+                    if content and not tcc:
+                        if thinking_shown:
+                            thinking_shown = False
+                            print()  # newline separator
+                        if not response_shown:
+                            logger.info("🤖 Assistant:")
+                            response_shown = True
+                        print(content, end="", flush=True)
+                        full_response += content
 
-                if hasattr(token, "tool_call_chunks") and token.tool_call_chunks:
-                    for tc in token.tool_call_chunks:
-                        name = tc.get("name")
+                    for tc in tcc:
+                        name = tc.get("name", "") or ""
+                        args_str = str(tc.get("args", "") or "")
+                        tid = tc.get("id", "") or ""
                         if name:
-                            print(
-                                f"\n{_Colors.BOLD}{_Colors.BRIGHT_YELLOW}🔧 Tool: {name}{_Colors.RESET}"
-                            )
+                            args_data = args_str
+                            if args_str:
+                                try:
+                                    parsed = json.loads(args_str)
+                                    args_data = parsed if isinstance(parsed, dict) else {"value": parsed}
+                                except json.JSONDecodeError:
+                                    args_data = {}
+                            else:
+                                args_data = {}
+                            tool_call_accumulated_args[name] = args_data
+                            logger.info(f"🔧 Tool: {name} | Args: {args_data}")
+                        elif tid and tid in tool_call_accumulated_args:
+                            if args_str:
+                                try:
+                                    parsed = json.loads(args_str)
+                                    if isinstance(parsed, dict):
+                                        tool_call_accumulated_args[list(tool_call_accumulated_args.keys())[-1]] = parsed
+                                except json.JSONDecodeError:
+                                    pass
 
-                if token.type == "tool":
-                    self._handle_tool_result(token)
+                elif isinstance(chunk, ToolMessage):
+                    tool_name = getattr(chunk, "name", "") or ""
+                    result = _parse_mcp_content(chunk.content) if chunk.content else ""
+                    truncate_len = getattr(self.config.tools, 'result_log_truncate', 200)
+                    logger.info(f"📊 Result [{tool_name}]: {result[:truncate_len]}")
 
-            print()
-
-            if hasattr(self, "_accumulated_raw") and self._accumulated_raw:
-                _, response_text = self._extract_thinking(self._accumulated_raw)
-                full_response = response_text or self._accumulated_raw
-            else:
-                full_response = ""
+            if thinking_shown or response_shown:
+                print()  # final newline
 
             elapsed = time.time() - start_time
-            print(f"\n{_Colors.DIM}⏱️  Completed in {elapsed:.2f}s{_Colors.RESET}")
+            logger.info(f"⏱️  Completed in {elapsed:.2f}s")
 
         except Exception as e:
             error_msg = f"Agent execution failed: {e}"
-            print(f"\n{_Colors.BRIGHT_RED}❌ Error:{_Colors.RESET} {error_msg}")
+            logger.error(f"❌ {error_msg}")
             self.logger.log_response(content="", finish_reason="error")
             return error_msg
 
         self.logger.log_response(content=full_response, finish_reason="stop")
         return full_response
-
-    def _handle_content_chunk(self, content_str: str):
-        """Process streaming content chunk, tracking think tags for display."""
-        if not hasattr(self, "_think_state"):
-            self._think_state = {
-                "in_thinking": False,
-                "current_step": 0,
-                "shown_thinking_header": False,
-                "shown_response_header": False,
-            }
-            self._accumulated_raw = ""
-
-        st = self._think_state
-        self._accumulated_raw += content_str
-
-        if not st["in_thinking"] and "<think" in content_str.lower():
-            st["in_thinking"] = True
-            st["current_step"] += 1
-            st["shown_thinking_header"] = False
-
-        if st["in_thinking"] and "</think" in content_str.lower():
-            st["in_thinking"] = False
-            st["shown_response_header"] = False
-
-        if st["in_thinking"]:
-            if not st["shown_thinking_header"]:
-                print(
-                    f"\n{_Colors.BOLD}{_Colors.BRIGHT_CYAN}🧠 Thinking (Step {st['current_step']}):{_Colors.RESET}"
-                )
-                st["shown_thinking_header"] = True
-            print(content_str, end="", flush=True)
-        else:
-            if not st["shown_response_header"]:
-                print(
-                    f"\n{_Colors.BOLD}{_Colors.BRIGHT_BLUE}🤖 Assistant:{_Colors.RESET}"
-                )
-                st["shown_response_header"] = True
-            print(content_str, end="", flush=True)
-
-    def _handle_tool_result(self, token):
-        """Process a tool result token."""
-        name = getattr(token, "name", "")
-        result = str(getattr(token, "content", ""))
-        is_err = any(
-            e in result.lower()
-            for e in ["exit code: 1", "error:", "failed", "traceback"]
-        )
-        icon = f"{_Colors.GREEN}✓" if not is_err else f"{_Colors.BRIGHT_RED}✗"
-        print(f"\n{icon} {name} ({len(result)} chars){_Colors.RESET}")
-
-    def _extract_thinking(self, content: str) -> tuple[str, str]:
-        thinking_text = ""
-        response_text = ""
-
-        if isinstance(content, str):
-            pattern = r"<think[^>]*>([\s\S]*?)</think\s*>"
-            matches = re.findall(pattern, content, re.IGNORECASE)
-
-            for match in matches:
-                if match.strip():
-                    thinking_text += match.strip() + "\n"
-
-            cleaned_content = re.sub(pattern, "", content, flags=re.IGNORECASE).strip()
-
-            if cleaned_content:
-                response_text = cleaned_content
-            elif not thinking_text:
-                response_text = content
-
-        return thinking_text, response_text
-
-    def _process_ai_message(self, msg) -> tuple[str, str, list]:
-        content = getattr(msg, "content", "")
-        if not content and isinstance(msg, dict):
-            content = msg.get("content", "")
-
-        thinking_text, response_text = self._extract_thinking(content)
-
-        additional_kwargs = getattr(msg, "additional_kwargs", {})
-        if not additional_kwargs and isinstance(msg, dict):
-            additional_kwargs = msg.get("additional_kwargs", {})
-
-        tool_calls = []
-        if additional_kwargs.get("tool_calls"):
-            for tc in additional_kwargs["tool_calls"]:
-                tc_name = getattr(tc, "name", "") or tc.get("name", "")
-                tc_args = getattr(tc, "args", {}) or tc.get("args", {})
-                tool_calls.append((tc_name, tc_args))
-
-        if hasattr(msg, "tool_calls") and msg.tool_calls:
-            for tc in msg.tool_calls:
-                tc_name = getattr(tc, "name", "") or tc.get("name", "")
-                tc_args = getattr(tc, "args", {}) or tc.get("args", {})
-                tool_calls.append((tc_name, tc_args))
-
-        return thinking_text, response_text, tool_calls

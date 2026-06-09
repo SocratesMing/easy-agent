@@ -137,7 +137,7 @@ class TestImports:
         assert discover_skills is not None
 
     def test_db_package_imports(self):
-        from easy_agent.db import Database, get_database, init_database
+        from easy_agent.db import Database
         from easy_agent.models.db import SessionModel, UserModel
         assert Database is not None
         assert SessionModel is not None
@@ -147,9 +147,6 @@ class TestImports:
         from easy_agent.services import (
             chat_stream_generator,
             init_agent_config,
-            get_or_create_agent_for_session,
-            remove_session_agent,
-            get_agent_config,
         )
         assert chat_stream_generator is not None
         assert init_agent_config is not None

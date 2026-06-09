@@ -1,6 +1,13 @@
 <template>
   <div class="chat-container">
+    <div class="chat-main">
+    <TodoListPanel
+      :todos="todos"
+    />
     <div class="chat-messages" ref="messagesRef">
+      <div v-if="sessionCreatedAt && messages.length > 0" class="session-created-time">
+        {{ formatSessionTime(sessionCreatedAt) }}
+      </div>
       <div v-if="messages.length === 0" class="welcome-screen">
         <div class="welcome-icon">
           <EasyLogo :size="64" />
@@ -8,7 +15,13 @@
         <h2>{{ displayedTitle }}</h2>
         <p>{{ displayedSubtitle }}</p>
         <div class="quick-actions">
-          <div class="quick-card" @click="handleQuickAction('帮我创建一份智能体介绍的docx')">
+          <div
+            v-for="(question, index) in presetQuestions"
+            :key="index"
+            class="quick-card"
+            :title="question"
+            @click="handleQuickAction(question)"
+          >
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
               <polyline points="14 2 14 8 20 8"></polyline>
@@ -16,15 +29,7 @@
               <line x1="16" y1="17" x2="8" y2="17"></line>
               <polyline points="10 9 9 9 8 9"></polyline>
             </svg>
-            <span>帮我创建一份智能体介绍的docx</span>
-          </div>
-          <div class="quick-card" @click="handleQuickAction('帮我生成一份金融量化的pptx')">
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect>
-              <line x1="8" y1="21" x2="16" y2="21"></line>
-              <line x1="12" y1="17" x2="12" y2="21"></line>
-            </svg>
-            <span>帮我生成一份金融量化的pptx</span>
+            <span class="quick-card-text">{{ question }}</span>
           </div>
         </div>
       </div>
@@ -44,12 +49,12 @@
     </div>
     </div>
     
-    <button v-if="canGoToNextUserMessage" @click="goToNextUserMessage" class="scroll-btn next" title="回到下一个用户问题">
+    <button v-if="canGoToNextUserMessage" @click="goToNextUserMessage" class="scroll-btn next" :class="{ shifted: props.workspaceExpanded }" title="回到下一个用户问题">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
         <polyline points="6 9 12 15 18 9"></polyline>
       </svg>
     </button>
-    <button v-if="canGoToPrevUserMessage" @click="goToPrevUserMessage" class="scroll-btn prev" title="回到上一个用户问题">
+    <button v-if="canGoToPrevUserMessage" @click="goToPrevUserMessage" class="scroll-btn prev" :class="{ shifted: props.workspaceExpanded }" title="回到上一个用户问题">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
         <polyline points="18 15 12 9 6 15"></polyline>
       </svg>
@@ -64,6 +69,7 @@
       @stop="handleStop"
       @createSession="handleCreateSession"
     />
+    </div>
   </div>
 </template>
 
@@ -71,6 +77,7 @@
 import { ref, watch, nextTick, computed, onMounted, onUnmounted } from 'vue'
 import ChatMessage from './ChatMessage.vue'
 import ChatInput from './ChatInput.vue'
+import TodoListPanel from './TodoListPanel.vue'
 import EasyLogo from './EasyLogo.vue'
 
 const welcomeTitle = '我是 Easy Agent'
@@ -124,6 +131,10 @@ const props = defineProps({
     type: String,
     default: null
   },
+  sessionCreatedAt: {
+    type: String,
+    default: null
+  },
   isStreaming: {
     type: Boolean,
     default: false
@@ -135,7 +146,19 @@ const props = defineProps({
   sessionUsage: {
     type: Object,
     default: () => ({ input_tokens: 0, output_tokens: 0, total_tokens: 0 })
-  }
+  },
+  todos: {
+    type: Array,
+    default: () => []
+  },
+  presetQuestions: {
+    type: Array,
+    default: () => []
+  },
+  workspaceExpanded: {
+    type: Boolean,
+    default: false
+  },
 })
 
 watch(() => props.messages, (newMessages) => {
@@ -146,6 +169,17 @@ watch(() => props.messages, (newMessages) => {
 
 const emit = defineEmits(['sendMessage', 'stop', 'removeFile', 'createSession'])
 const messagesRef = ref(null)
+
+function formatSessionTime(isoStr) {
+  if (!isoStr) return ''
+  const d = new Date(isoStr)
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  const h = String(d.getHours()).padStart(2, '0')
+  const min = String(d.getMinutes()).padStart(2, '0')
+  return `${y}-${m}-${day} ${h}:${min}`
+}
 const messageRefs = ref({})
 const currentUserMessageIndex = ref(-1)
 const userMessageIndices = ref([])
@@ -255,9 +289,18 @@ watch(() => props.scrollTrigger, () => {
 .chat-container {
   flex: 1;
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   background: #ffffff;
   overflow: hidden;
+}
+
+.chat-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-width: 0;
+  position: relative;
 }
 
 .chat-header {
@@ -297,6 +340,14 @@ watch(() => props.scrollTrigger, () => {
   scroll-behavior: smooth;
   display: flex;
   flex-direction: column;
+}
+
+.session-created-time {
+  text-align: center;
+  font-size: 12px;
+  color: #94a3b8;
+  padding: 4px 0 16px 0;
+  user-select: none;
 }
 
 .welcome-screen {
@@ -342,7 +393,9 @@ watch(() => props.scrollTrigger, () => {
   cursor: pointer;
   transition: all 0.2s ease;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
-  max-width: 300px;
+  width: 280px;
+  min-width: 280px;
+  max-width: 280px;
 }
 
 .quick-card:hover {
@@ -363,6 +416,12 @@ watch(() => props.scrollTrigger, () => {
   font-size: 14px;
   color: #334155;
   line-height: 1.5;
+}
+
+.quick-card-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .scroll-btn {
@@ -390,6 +449,10 @@ watch(() => props.scrollTrigger, () => {
   bottom: 170px;
 }
 
+
+.scroll-btn.shifted {
+  right: 284px; /* 260px panel + 24px original right */
+}
 .scroll-btn:hover {
   background: #f1f5f9;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);

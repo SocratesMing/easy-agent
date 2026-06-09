@@ -19,7 +19,7 @@
             id="username"
             v-model="form.username"
             type="text"
-            placeholder="请输入用户名"
+            placeholder="用户名: admin"
             required
             ref="usernameInput"
           />
@@ -34,7 +34,7 @@
             id="password"
             v-model="form.password"
             type="password"
-            placeholder="请输入密码"
+            placeholder="密码: 1234"
             required
           />
         </div>
@@ -203,7 +203,8 @@ async function handleSubmit() {
 
     emit('completed', {
       username: data.username,
-      token: data.access_token
+      token: data.access_token,
+      max_input_tokens: data.max_input_tokens
     })
   } catch (e) {
     if (e.status === 404) {

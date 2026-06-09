@@ -17,9 +17,11 @@
         @selectSession="handleSelectSession"
         @deleteSession="handleDeleteSession"
         @renameSession="handleRenameSession"
+        @togglePin="handleTogglePin"
         @toggleSidebar="toggleSidebar"
         @showAssets="handleShowAssets"
         @showProfile="handleShowProfile"
+        @showSettings="showSettingsPanel = true"
         @logout="handleLogout"
       />
       
@@ -44,13 +46,22 @@
         @unregister="handleUnregister"
       />
       
+      <SettingsPanel
+        v-if="showSettingsPanel"
+        @close="showSettingsPanel = false"
+      />
+      
       <Chat
         v-else-if="!showAssets && !showUserProfile"
         :messages="messages"
         :currentSessionId="currentSessionId"
+        :sessionCreatedAt="currentSessionCreatedAt"
         :isStreaming="isStreaming"
         :scrollTrigger="scrollTrigger"
         :sessionUsage="sessionUsage"
+        :todos="currentTodos"
+        :presetQuestions="presetQuestions"
+        :workspaceExpanded="!isWorkspaceCollapsed"
         @sendMessage="handleSendMessage"
         @createSession="ensureCurrentSession"
         @removeFile="handleRemoveFile"
@@ -58,17 +69,18 @@
         @retry="handleRetry"
       />
 
-      <WorkspacePanel
-        v-if="!showAssets && !showUserProfile"
-        :username="userProfile.username"
-        :currentSessionId="currentSessionId"
-        :isStreaming="isStreaming"
-        :visible="!isWorkspaceCollapsed"
-        @toggle="isWorkspaceCollapsed = !isWorkspaceCollapsed"
-      />
+      <div v-if="currentSessionId && !showAssets && !showUserProfile" class="workspace-area">
+        <WorkspacePanel
+          :username="userProfile.username"
+          :currentSessionId="currentSessionId"
+          :isStreaming="isStreaming"
+          :visible="!isWorkspaceCollapsed"
+          @toggle="isWorkspaceCollapsed = !isWorkspaceCollapsed"
+        />
+      </div>
 
       <button
-        v-if="isWorkspaceCollapsed && !showAssets && !showUserProfile"
+        v-if="currentSessionId && isWorkspaceCollapsed && !showAssets && !showUserProfile"
         class="expand-workspace-btn"
         @click="isWorkspaceCollapsed = false"
         title="展开工作区"
@@ -98,20 +110,26 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import SessionList from './components/SessionList.vue'
 import Chat from './components/Chat.vue'
 import AssetsPanel from './components/AssetsPanel.vue'
 import UserProfile from './components/UserProfile.vue'
 import Welcome from './components/Welcome.vue'
 import WorkspacePanel from './components/WorkspacePanel.vue'
-import { createSession, listSessions, getChatHistory, deleteSession, sendMessage, renameSession } from './api/chat.js'
+import SettingsPanel from './components/SettingsPanel.vue'
+import { createSession, listSessions, getChatHistory, deleteSession, sendMessage, renameSession, togglePinSession } from './api/chat.js'
 import { uploadFile, deleteFile, getUserProfile, getSessionGeneratedFiles } from './api/files.js'
-import { logout as apiLogout, getStoredToken, getStoredUsername, AUTH_EXPIRED_EVENT } from './api/auth.js'
+import { logout as apiLogout, getStoredToken, getStoredUsername, AUTH_EXPIRED_EVENT, authFetch } from './api/auth.js'
 
 const sessions = ref([])
 const currentSessionId = ref(null)
 const currentSessionHasFiles = ref(false)
+const currentSessionCreatedAt = computed(() => {
+  if (!currentSessionId.value) return null
+  const session = sessions.value.find(s => s.session_id === currentSessionId.value)
+  return session?.created_at || null
+})
 let filesCheckTimer = null
 
 // 会话状态缓存：为每个会话保存独立的流式状态
@@ -145,9 +163,12 @@ async function refreshSessionFiles(sessionId = null, delayMs = 0) {
 }
 const messages = ref([])
 const isStreaming = ref(false)
+const streamingSessionId = ref(null) // 记录正在流式输出的会话 ID
 const error = ref(null)
 const currentAbortController = ref(null)
-const sessionUsage = ref({ input_tokens: 0, output_tokens: 0, total_tokens: 0, max_input_tokens: null, auto_compress_tokens: null })
+const sessionUsage = ref({ input_tokens: 0, output_tokens: 0, total_tokens: 0, max_input_tokens: null, auto_compress_tokens: null, context_tokens: 0 })
+const currentTodos = ref([])
+const presetQuestions = ref([])
 
 // 保存当前会话状态到缓存
 function saveCurrentSessionState() {
@@ -156,7 +177,8 @@ function saveCurrentSessionState() {
     messages: JSON.parse(JSON.stringify(messages.value)),
     isStreaming: isStreaming.value,
     sessionUsage: { ...sessionUsage.value },
-    abortController: currentAbortController.value
+    abortController: currentAbortController.value,
+    todos: [...currentTodos.value]
   }
 }
 
@@ -168,6 +190,7 @@ function restoreSessionState(sessionId) {
     isStreaming.value = state.isStreaming
     sessionUsage.value = { ...state.sessionUsage }
     currentAbortController.value = state.abortController
+    currentTodos.value = state.todos || []
     return true
   }
   return false
@@ -177,6 +200,7 @@ const isSidebarCollapsed = ref(false)
 const isWorkspaceCollapsed = ref(true)
 const showAssets = ref(false)
 const showUserProfile = ref(false)
+const showSettingsPanel = ref(false)
 const showWelcome = ref(false)
 const scrollTrigger = ref(0)
 const userProfile = ref({
@@ -201,6 +225,23 @@ function handleShowProfile() {
 async function handleWelcomeCompleted(profile) {
   userProfile.value = profile
   showWelcome.value = false
+  if (profile.max_input_tokens) {
+    sessionUsage.value.max_input_tokens = profile.max_input_tokens
+  }
+  try {
+    const configResp = await authFetch(`${API_BASE_URL}/api/auth/config`)
+    if (configResp.ok) {
+      const configData = await configResp.json()
+      if (configData.max_input_tokens) {
+        sessionUsage.value.max_input_tokens = configData.max_input_tokens
+      }
+      if (configData.preset_questions) {
+        presetQuestions.value = configData.preset_questions
+      }
+    }
+  } catch (e) {
+    console.warn('获取模型配置失败:', e)
+  }
   await loadSessions()
   if (sessions.value.length > 0) {
     currentSessionId.value = sessions.value[0].session_id
@@ -209,6 +250,7 @@ async function handleWelcomeCompleted(profile) {
       try {
         const history = await getChatHistory(currentSessionId.value)
         messages.value = history.messages || []
+        currentTodos.value = history.todos || []
       } catch (e) {
         console.error('加载聊天历史失败:', e)
       }
@@ -274,6 +316,22 @@ async function loadUserProfile() {
   } catch (e) {
     console.error('加载用户资料失败:', e)
     showWelcome.value = true
+    return
+  }
+
+  try {
+    const configResp = await authFetch(`${API_BASE_URL}/api/auth/config`)
+    if (configResp.ok) {
+      const configData = await configResp.json()
+      if (configData.max_input_tokens) {
+        sessionUsage.value.max_input_tokens = configData.max_input_tokens
+      }
+      if (configData.preset_questions) {
+        presetQuestions.value = configData.preset_questions
+      }
+    }
+  } catch (e) {
+    console.warn('获取模型配置失败:', e)
   }
 }
 
@@ -305,14 +363,14 @@ async function ensureCurrentSession(initialTitle = '') {
 }
 
 async function handleCreateSession() {
-  // 保存当前会话状态
   saveCurrentSessionState()
 
   showAssets.value = false
   currentSessionId.value = null
   messages.value = []
+  currentTodos.value = []
   isStreaming.value = false
-  sessionUsage.value = { input_tokens: 0, output_tokens: 0, total_tokens: 0, max_input_tokens: null, auto_compress_tokens: null }
+  sessionUsage.value = { input_tokens: 0, output_tokens: 0, total_tokens: 0, max_input_tokens: null, auto_compress_tokens: null, context_tokens: 0 }
   refreshSessionFiles(null)
 }
 
@@ -331,11 +389,22 @@ async function handleSelectSession(sessionId) {
   }
 
   // 缓存中没有，从服务器加载历史
-  sessionUsage.value = { input_tokens: 0, output_tokens: 0, total_tokens: 0, max_input_tokens: null, auto_compress_tokens: null }
+  sessionUsage.value = { input_tokens: 0, output_tokens: 0, total_tokens: 0, max_input_tokens: null, auto_compress_tokens: null, context_tokens: 0 }
 
   try {
     const history = await getChatHistory(sessionId)
     messages.value = history.messages || []
+    currentTodos.value = history.todos || []
+    // 从服务器返回的 usage 数据恢复 token 用量
+    if (history.usage) {
+      sessionUsage.value.input_tokens = history.usage.input_tokens || 0
+      sessionUsage.value.output_tokens = history.usage.output_tokens || 0
+      sessionUsage.value.total_tokens = history.usage.total_tokens || 0
+      sessionUsage.value.context_tokens = history.usage.context_tokens || 0
+    }
+    if (history.max_input_tokens) {
+      sessionUsage.value.max_input_tokens = history.max_input_tokens
+    }
     scrollTrigger.value++
 
     await refreshSessionFiles(sessionId)
@@ -382,6 +451,21 @@ async function handleRenameSession(sessionId, newTitle) {
   }
 }
 
+async function handleTogglePin(sessionId) {
+  try {
+    const result = await togglePinSession(sessionId)
+    const idx = sessions.value.findIndex(s => s.session_id === sessionId)
+    if (idx !== -1) {
+      sessions.value[idx] = { ...sessions.value[idx], pinned: result.pinned }
+    }
+    // 重新排序：置顶在前
+    sessions.value.sort((a, b) => (b.pinned || 0) - (a.pinned || 0) || new Date(b.updated_at) - new Date(a.updated_at))
+  } catch (e) {
+    console.error('置顶操作失败:', e)
+    error.value = '置顶操作失败'
+  }
+}
+
 async function handleSendMessage(message, files = [], signal, enableDeepThink = true, enableKnowledgeBase = false) {
   const userMsgId = `user-${Date.now()}`
   const preStreamUsage = { ...sessionUsage.value }
@@ -403,23 +487,65 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
 
   messages.value.push(userMessage)
 
+  // 立即创建 assistant 占位消息，显示等待动画
+  const assistantPlaceholderId = `assistant-${Date.now()}`
+  const assistantPlaceholder = {
+    id: assistantPlaceholderId,
+    role: 'assistant',
+    content: '',
+    created_at: null,
+    thinking: '',
+    tool_calls: [],
+    blocks: [],
+    loading: true
+  }
+  messages.value.push(assistantPlaceholder)
+
   let assistantMsgId = null
   let assistantMessageCreated = false
 
+  function parseMCPResult(rawResult) {
+    // MCP results come as a string representation of a Python list: "[{'type': 'text', 'text': '...'}]"
+    // or JSON format: '[{"type": "text", "text": "..."}]'
+    // Extract just the text content.
+    if (!rawResult) return ''
+    if (typeof rawResult !== 'string') return String(rawResult)
+
+    // Try JSON format first (single quotes replaced with double)
+    try {
+      const jsonStr = rawResult.replace(/'/g, '"')
+      const parsed = JSON.parse(jsonStr)
+      if (Array.isArray(parsed)) {
+        return parsed
+          .filter(item => item.type === 'text')
+          .map(item => item.text)
+          .join('\n\n')
+      }
+    } catch (e) {
+      // Not valid JSON, return as-is
+    }
+    return rawResult
+  }
+
   function ensureAssistantMessage() {
     if (!assistantMessageCreated) {
-      assistantMsgId = `assistant-${Date.now()}`
-      const assistantMessage = {
-        id: assistantMsgId,
-        role: 'assistant',
-        content: '',
-        created_at: null,
-        thinking: '',
-        tool_calls: [],
-        blocks: [],
-        loading: true
+      // 复用已有的占位消息（在发送消息时已创建）
+      if (assistantPlaceholderId && messages.value.find(m => m.id === assistantPlaceholderId)) {
+        assistantMsgId = assistantPlaceholderId
+      } else {
+        assistantMsgId = `assistant-${Date.now()}`
+        const assistantMessage = {
+          id: assistantMsgId,
+          role: 'assistant',
+          content: '',
+          created_at: null,
+          thinking: '',
+          tool_calls: [],
+          blocks: [],
+          loading: true
+        }
+        messages.value.push(assistantMessage)
       }
-      messages.value.push(assistantMessage)
       assistantMessageCreated = true
     }
   }
@@ -430,7 +556,6 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
   let currentToolCalls = []
   let currentBlock = null
   let blockOrderCounter = 0
-  let _thinkingDebounceTimer = null
 
   function addBlock(type, data, replace = false) {
     ensureAssistantMessage()
@@ -493,6 +618,8 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
     const { type: eventType, content, thinking, tool_calls, duration, step, tool_name, tool_call_id: toolCallId, arguments: args, result, success, title } = data
 
     if (eventType === 'start') {
+      // Reset todo list for new stream
+      currentTodos.value = []
       // 后端返回的 session_id，用于更新当前会话 ID
       if (data.session_id && !currentSessionId.value) {
         currentSessionId.value = data.session_id
@@ -502,7 +629,8 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
     } else if (eventType === 'token_usage') {
       sessionUsage.value.input_tokens = data.input_tokens || 0
       sessionUsage.value.output_tokens = data.output_tokens || 0
-      sessionUsage.value.total_tokens = data.total_tokens || 0
+      sessionUsage.value.total_tokens = data.session_estimate || data.total_tokens || 0
+      sessionUsage.value.context_tokens = data.context_tokens || 0
       if (data.max_input_tokens) sessionUsage.value.max_input_tokens = data.max_input_tokens
       if (data.auto_compress_tokens) sessionUsage.value.auto_compress_tokens = data.auto_compress_tokens
     } else if (eventType === 'thinking_start') {
@@ -514,25 +642,17 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
       currentThinking += content || ''
       if (currentBlock && currentBlock.type === 'thinking') {
         currentBlock.content = currentThinking
-        // Debounce thinking updates to avoid flickering on fast chunks
-        if (!_thinkingDebounceTimer) {
-          _thinkingDebounceTimer = setTimeout(() => {
-            _thinkingDebounceTimer = null
-            const idx = messages.value.findIndex(m => m.id === assistantMsgId)
-            if (idx !== -1) {
-              messages.value[idx] = { ...messages.value[idx], blocks: [...messages.value[idx].blocks] }
-            }
-          }, 60)
+        // Trigger reactivity immediately for each thinking chunk
+        const idx = messages.value.findIndex(m => m.id === assistantMsgId)
+        if (idx !== -1) {
+          messages.value[idx] = { ...messages.value[idx] }
         }
       }
     } else if (eventType === 'thinking_end') {
-      if (_thinkingDebounceTimer) {
-        clearTimeout(_thinkingDebounceTimer)
-        _thinkingDebounceTimer = null
-        const idx = messages.value.findIndex(m => m.id === assistantMsgId)
-        if (idx !== -1) {
-          messages.value[idx] = { ...messages.value[idx], blocks: [...messages.value[idx].blocks] }
-        }
+      // Always trigger reactivity update on thinking end
+      const idx = messages.value.findIndex(m => m.id === assistantMsgId)
+      if (idx !== -1) {
+        messages.value[idx] = { ...messages.value[idx], blocks: [...messages.value[idx].blocks] }
       }
       totalThinkingDuration += duration || 0
       updateThinkingDuration(duration || 0, step || 0)
@@ -555,7 +675,27 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
     } else if (eventType === 'content_end') {
       currentContent = ''
       currentBlock = null
+    } else if (eventType === 'todo_list') {
+      // Update todo list from write_todos tool call
+      if (data.todos && Array.isArray(data.todos)) {
+        currentTodos.value = data.todos
+      }
+    } else if (eventType === 'assistant_start') {
+      ensureAssistantMessage()
+      currentContent = ''
+      currentThinking = ''
+      currentToolCalls = []
+      currentBlock = null
+    } else if (eventType === 'user_input_required') {
+      if (assistantMsgId) {
+        const idx = messages.value.findIndex(m => m.id === assistantMsgId)
+        if (idx !== -1) {
+          messages.value[idx].loading = false
+          messages.value[idx] = { ...messages.value[idx] }
+        }
+      }
     } else if (eventType === 'tool_call') {
+      ensureAssistantMessage()
       const idx = messages.value.findIndex(m => m.id === assistantMsgId)
       if (idx !== -1) {
         const callId = toolCallId || `tool-${tool_name}`
@@ -619,83 +759,52 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
 
       const idx = messages.value.findIndex(m => m.id === assistantMsgId)
       if (idx !== -1) {
-        const blockIdx = messages.value[idx].blocks.findIndex(
-          b => b.type === 'tool_call' && b.id === callId
-        )
+        // Helper: try to match a block for this tool result
+        function findToolBlock(blocks, id, name) {
+          // 1. Try exact id match
+          const byId = blocks.findIndex(b => b.type === 'tool_call' && b.id === id)
+          if (byId !== -1) return byId
+          // 2. Try tool_name match
+          if (name) {
+            const byName = blocks.findIndex(b => b.type === 'tool_call' && b.tool_name === name)
+            if (byName !== -1) return byName
+            const byNameCI = blocks.findIndex(b => b.type === 'tool_call' && b.tool_name && b.tool_name.toLowerCase() === name.toLowerCase())
+            if (byNameCI !== -1) return byNameCI
+          }
+          // 3. Try pending (no duration) block
+          const byPending = blocks.findIndex(b => b.type === 'tool_call' && b.duration == null)
+          if (byPending !== -1) return byPending
+          return -1
+        }
+
+        const blockIdx = findToolBlock(messages.value[idx].blocks, callId, tool_name)
         if (blockIdx !== -1) {
-          console.log('[tool_result] matched block by id:', callId)
+          console.log('[tool_result] matched block at index:', blockIdx, 'tool_name:', messages.value[idx].blocks[blockIdx].tool_name)
           const newArgs = (args !== undefined && args !== null && !(typeof args === 'object' && Object.keys(args).length === 0))
             ? args
             : messages.value[idx].blocks[blockIdx].arguments
+          // Parse MCP result format to extract clean text
+          const cleanResult = parseMCPResult(result || '')
           messages.value[idx].blocks[blockIdx] = {
             ...messages.value[idx].blocks[blockIdx],
             arguments: newArgs,
-            result: result || '',
+            result: cleanResult,
             success: success !== false,
             duration: toolDuration
           }
+          // Also set the block's id if it was a fallback match
+          if (!messages.value[idx].blocks[blockIdx].id) {
+            messages.value[idx].blocks[blockIdx].id = callId
+          }
           messages.value[idx] = { ...messages.value[idx], blocks: [...messages.value[idx].blocks] }
         } else {
-          const fallbackIdx = [...messages.value[idx].blocks].reverse().findIndex(
-            b => b.type === 'tool_call' && b.tool_name === tool_name
-          )
-          const actualIdx = fallbackIdx !== -1 ? messages.value[idx].blocks.length - 1 - fallbackIdx : -1
-          if (actualIdx !== -1) {
-            console.log('[tool_result] matched block by tool_name:', tool_name)
-            const fbNewArgs = (args !== undefined && args !== null && !(typeof args === 'object' && Object.keys(args).length === 0))
-              ? args
-              : messages.value[idx].blocks[actualIdx].arguments
-            messages.value[idx].blocks[actualIdx] = {
-              ...messages.value[idx].blocks[actualIdx],
-              arguments: fbNewArgs,
-              result: result || '',
-              success: success !== false,
-              duration: toolDuration
-            }
-            messages.value[idx] = { ...messages.value[idx], blocks: [...messages.value[idx].blocks] }
-          } else {
-            const ciFallbackIdx = [...messages.value[idx].blocks].reverse().findIndex(
-              b => b.type === 'tool_call' && b.tool_name && b.tool_name.toLowerCase() === tool_name.toLowerCase()
-            )
-            const ciActualIdx = ciFallbackIdx !== -1 ? messages.value[idx].blocks.length - 1 - ciFallbackIdx : -1
-            if (ciActualIdx !== -1) {
-              console.log('[tool_result] matched block by tool_name (case-insensitive):', tool_name)
-              const ciNewArgs = (args !== undefined && args !== null && !(typeof args === 'object' && Object.keys(args).length === 0))
-                ? args
-                : messages.value[idx].blocks[ciActualIdx].arguments
-              messages.value[idx].blocks[ciActualIdx] = {
-                ...messages.value[idx].blocks[ciActualIdx],
-                arguments: ciNewArgs,
-                result: result || '',
-                success: success !== false,
-                duration: toolDuration
-              }
-              messages.value[idx] = { ...messages.value[idx], blocks: [...messages.value[idx].blocks] }
-            } else {
-              const pendingIdx = messages.value[idx].blocks.findIndex(
-                b => b.type === 'tool_call' && b.duration == null
-              )
-              if (pendingIdx !== -1) {
-                console.log('[tool_result] matched block by pending (duration==null):', messages.value[idx].blocks[pendingIdx].tool_name)
-                const pNewArgs = (args !== undefined && args !== null && !(typeof args === 'object' && Object.keys(args).length === 0))
-                  ? args
-                  : messages.value[idx].blocks[pendingIdx].arguments
-                messages.value[idx].blocks[pendingIdx] = {
-                  ...messages.value[idx].blocks[pendingIdx],
-                  arguments: pNewArgs,
-                  result: result || '',
-                  success: success !== false,
-                  duration: toolDuration
-                }
-                messages.value[idx] = { ...messages.value[idx], blocks: [...messages.value[idx].blocks] }
-              } else {
-                console.warn('[tool_result] NO matching block found! callId:', callId, 'tool_name:', tool_name, 'blocks:', messages.value[idx].blocks.map(b => ({ type: b.type, id: b.id, tool_name: b.tool_name, duration: b.duration })))
-              }
-            }
-          }
+          console.warn('[tool_result] NO matching block found! callId:', callId, 'tool_name:', tool_name, 'blocks:', messages.value[idx].blocks.map(b => ({ type: b.type, id: b.id, tool_name: b.tool_name, duration: b.duration, resultLen: (b.result || '').length })))
         }
       }
-      currentBlock = null
+      // Don't reset currentBlock if it's a content block, to avoid splitting the text stream
+      if (!currentBlock || currentBlock.type !== 'content') {
+        currentBlock = null
+      }
     } else if (eventType === 'done') {
       const finalContent = data.content || currentContent
       if (assistantMsgId) {
@@ -721,7 +830,8 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
         console.log('[Token Usage] Received usage:', data.usage, 'preStreamUsage:', preStreamUsage)
         sessionUsage.value.input_tokens = (preStreamUsage.input_tokens || 0) + (data.usage.input_tokens || 0)
         sessionUsage.value.output_tokens = (preStreamUsage.output_tokens || 0) + (data.usage.output_tokens || 0)
-        sessionUsage.value.total_tokens = (preStreamUsage.total_tokens || 0) + (data.usage.total_tokens || 0)
+      sessionUsage.value.total_tokens = data.usage.session_estimate || (preStreamUsage.total_tokens || 0) + (data.usage.total_tokens || 0)
+        sessionUsage.value.context_tokens = data.usage.context_tokens || 0
         if (data.usage.max_input_tokens) sessionUsage.value.max_input_tokens = data.usage.max_input_tokens
         if (data.usage.auto_compress_tokens) sessionUsage.value.auto_compress_tokens = data.usage.auto_compress_tokens
         console.log('[Token Usage] Updated sessionUsage:', sessionUsage.value)
@@ -745,11 +855,35 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
           sessions.value = [...sessions.value]
         }
       }
+    } else if (eventType === 'error') {
+      if (is_in_thinking) {
+        // thinking will be ended by backend, but ensure frontend state is clean
+      }
+      if (assistantMsgId) {
+        const idx = messages.value.findIndex(m => m.id === assistantMsgId)
+        if (idx !== -1) {
+          messages.value[idx].loading = false
+          for (const blk of messages.value[idx].blocks) {
+            if (blk.type === 'thinking' && blk.duration == null) {
+              blk.duration = 0
+            }
+            if (blk.type === 'tool_call' && blk.duration == null) {
+              blk.duration = 0
+              blk.success = false
+              if (!blk.result) blk.result = content || '执行中断'
+            }
+          }
+          messages.value[idx] = { ...messages.value[idx], blocks: [...messages.value[idx].blocks] }
+        }
+      }
+      error.value = content || '处理失败'
+      setTimeout(() => { error.value = null }, 5000)
     }
   }
 
   try {
     isStreaming.value = true
+    streamingSessionId.value = currentSessionId.value
     const controller = new AbortController()
     currentAbortController.value = controller
     const abortSignal = signal || controller.signal
@@ -789,11 +923,13 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
     isStreaming.value = false
     currentAbortController.value = null
 
-    // 更新会话缓存状态
-    if (currentSessionId.value && sessionStates.value[currentSessionId.value]) {
-      sessionStates.value[currentSessionId.value].isStreaming = false
-      sessionStates.value[currentSessionId.value].abortController = null
+    // 更新正在流式输出的会话的缓存状态（可能已切换到其他会话）
+    const sid = streamingSessionId.value
+    if (sid && sessionStates.value[sid]) {
+      sessionStates.value[sid].isStreaming = false
+      sessionStates.value[sid].abortController = null
     }
+    streamingSessionId.value = null
 
     await loadSessions()
   }
@@ -823,6 +959,13 @@ function handleRetry(content) {
 
 function handleStop() {
   isStreaming.value = false
+  // Mark current assistant message as no longer loading (stops tool spinning)
+  if (assistantMsgId) {
+    const idx = messages.value.findIndex(m => m.id === assistantMsgId)
+    if (idx !== -1) {
+      messages.value[idx] = { ...messages.value[idx], loading: false }
+    }
+  }
   // 中止正在进行的 fetch 请求
   if (currentAbortController.value) {
     currentAbortController.value.abort()
@@ -830,10 +973,12 @@ function handleStop() {
   }
 
   // 更新会话缓存状态
-  if (currentSessionId.value && sessionStates.value[currentSessionId.value]) {
-    sessionStates.value[currentSessionId.value].isStreaming = false
-    sessionStates.value[currentSessionId.value].abortController = null
+  const sid = streamingSessionId.value || currentSessionId.value
+  if (sid && sessionStates.value[sid]) {
+    sessionStates.value[sid].isStreaming = false
+    sessionStates.value[sid].abortController = null
   }
+  streamingSessionId.value = null
 
   // 通知后端清除agent缓存
   if (currentSessionId.value) {
@@ -949,6 +1094,14 @@ onMounted(async () => {
   background: #f0fdf4;
   border-color: #86efac;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+}
+
+.workspace-area {
+  position: fixed;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  z-index: 30;
 }
 
 .expand-sidebar-btn svg {

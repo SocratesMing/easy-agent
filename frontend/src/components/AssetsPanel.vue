@@ -238,7 +238,7 @@ async function refreshAssets() {
   try {
     const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
     const { getAuthHeaders } = await import('../api/auth.js')
-    const response = await fetch(`${API_BASE_URL}/api/files/users/files`, {
+    const response = await fetch(`${API_BASE_URL}/api/files/list`, {
       headers: {
         ...getAuthHeaders()
       }
@@ -307,7 +307,7 @@ async function handleCopyPath(path) {
 
 function handleDownload(file) {
   const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
-  const url = `${API_BASE_URL}/api/sessions/files/${encodeURIComponent(file.filename)}/download`
+  const url = `${API_BASE_URL}/api/files/download/${file.file_path}`
   const link = document.createElement('a')
   link.href = url
   link.download = file.filename

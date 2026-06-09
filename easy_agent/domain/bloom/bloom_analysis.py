@@ -2,6 +2,8 @@ import json
 import logging
 from datetime import datetime, timedelta
 
+from langchain_core.messages import HumanMessage, SystemMessage
+
 from .bloom_repository import query_bloom_by_type
 
 logger = logging.getLogger("easy_agent.bloom")
@@ -165,8 +167,6 @@ def analysis_bloom(db, llm, analysis_date=None):
 
     try:
         logger.info("开始调用大模型分析[%s]彭博数据", date)
-        from langchain_core.messages import HumanMessage, SystemMessage
-
         lc_messages = [
             SystemMessage(content="你是一个金融量化指标分析专家。"),
             HumanMessage(content=prompt),

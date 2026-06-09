@@ -95,6 +95,7 @@ async def list_sessions(
             created_at=s.created_at,
             updated_at=s.updated_at,
             message_count=len(s.messages),
+            pinned=s.pinned,
         )
         for s in sessions
     ]
@@ -119,12 +120,51 @@ async def get_session(
     if not session:
         raise HTTPException(status_code=404, detail="会话不存在")
 
+    # 计算会话级别 token 用量（从每条消息持久化的 usage 累加）
+    total_input = 0
+    total_output = 0
+    total_tokens = 0
+    context_tokens = 0  # 最后一次 API 调用的 input_tokens，即当前上下文窗口占用
+    if session.messages:
+        for msg in session.messages:
+            msg_usage = msg.get("usage") or {}
+            total_input += msg_usage.get("input_tokens", 0) or 0
+            total_output += msg_usage.get("output_tokens", 0) or 0
+            total_tokens += msg_usage.get("total_tokens", 0) or 0
+        # 从最后一条有 input_tokens 的 assistant 消息获取上下文占用
+        for msg in reversed(session.messages):
+            if msg.get("role") == "assistant":
+                last_usage = msg.get("usage") or {}
+                if last_usage.get("input_tokens"):
+                    context_tokens = last_usage["input_tokens"]
+                    break
+
+    usage = None
+    if total_input > 0 or total_output > 0:
+        usage = {
+            "input_tokens": total_input,
+            "output_tokens": total_output,
+            "total_tokens": total_tokens,
+            "context_tokens": context_tokens,
+        }
+
+    max_input_tokens = None
+    try:
+        from ..config import Config
+        cfg = Config.load()
+        max_input_tokens = cfg.llm.max_input_tokens if cfg and cfg.llm else None
+    except Exception:
+        pass
+
     return SessionDetail(
         session_id=session.session_id,
         title=session.title,
         created_at=session.created_at,
         updated_at=session.updated_at,
         messages=session.messages,
+        todos=session.todos,
+        usage=usage,
+        max_input_tokens=max_input_tokens,
     )
 
 
@@ -145,6 +185,23 @@ async def update_title(
     logger.info(f"更新会话标题 | ID: {session_id} | 新标题: {title}")
 
     return {"status": "updated", "session_id": session_id, "title": title}
+
+
+@router.put("/{session_id}/pin", summary="切换会话置顶")
+async def toggle_pin(
+    session_id: str,
+    db: Annotated[Database, Depends(get_database)],
+    username: Annotated[str, Depends(get_current_username)],
+):
+    session = db.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="会话不存在")
+
+    new_val = db.toggle_session_pin(session_id)
+    action = "置顶" if new_val else "取消置顶"
+    logger.info(f"会话{action} | ID: {session_id}")
+
+    return {"status": "updated", "session_id": session_id, "pinned": new_val}
 
 
 @router.delete(
@@ -198,12 +255,51 @@ async def get_chat_history(
     if not session:
         raise HTTPException(status_code=404, detail="会话不存在")
 
+    # 计算会话级别 token 用量（从每条消息持久化的 usage 累加）
+    total_input = 0
+    total_output = 0
+    total_tokens = 0
+    context_tokens = 0
+    if session.messages:
+        for msg in session.messages:
+            msg_usage = msg.get("usage") or {}
+            total_input += msg_usage.get("input_tokens", 0) or 0
+            total_output += msg_usage.get("output_tokens", 0) or 0
+            total_tokens += msg_usage.get("total_tokens", 0) or 0
+        # 从最后一条有 input_tokens 的 assistant 消息获取上下文占用
+        for msg in reversed(session.messages):
+            if msg.get("role") == "assistant":
+                last_usage = msg.get("usage") or {}
+                if last_usage.get("input_tokens"):
+                    context_tokens = last_usage["input_tokens"]
+                    break
+
+    usage = None
+    if total_input > 0 or total_output > 0:
+        usage = {
+            "input_tokens": total_input,
+            "output_tokens": total_output,
+            "total_tokens": total_tokens,
+            "context_tokens": context_tokens,
+        }
+
+    # 获取 max_input_tokens 来自配置
+    max_input_tokens = None
+    try:
+        from ..config import Config
+        cfg = Config.load()
+        max_input_tokens = cfg.llm.max_input_tokens if cfg and cfg.llm else None
+    except Exception:
+        pass
+
     return GetChatHistoryResponse(
         session_id=session.session_id,
         title=session.title,
         messages=session.messages,
         created_at=session.created_at,
         updated_at=session.updated_at,
+        usage=usage,
+        max_input_tokens=max_input_tokens,
     )
 
 

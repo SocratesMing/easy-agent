@@ -1,8 +1,65 @@
 """File content parser - extracts text from various file formats"""
 
+import csv
 import logging
 import os
+import subprocess
 from pathlib import Path
+
+try:
+    import fitz
+except ImportError:
+    fitz = None
+
+try:
+    from pdfminer.high_level import extract_text as pdfminer_extract_text
+except ImportError:
+    pdfminer_extract_text = None
+
+try:
+    import pdfplumber
+except ImportError:
+    pdfplumber = None
+
+try:
+    from docx import Document
+except ImportError:
+    Document = None
+
+try:
+    import olefile
+except ImportError:
+    olefile = None
+
+try:
+    import openpyxl
+except ImportError:
+    openpyxl = None
+
+try:
+    import xlrd
+except ImportError:
+    xlrd = None
+
+try:
+    from pptx import Presentation
+except ImportError:
+    Presentation = None
+
+try:
+    from striprtf.striprtf import rtf_to_text
+except ImportError:
+    rtf_to_text = None
+
+try:
+    from PIL import Image
+except ImportError:
+    Image = None
+
+try:
+    import pytesseract
+except ImportError:
+    pytesseract = None
 
 logger = logging.getLogger(__name__)
 
@@ -185,7 +242,8 @@ def _parse_text(path: Path) -> str:
 
 def _parse_pdf(path: Path) -> str:
     try:
-        import fitz
+        if fitz is None:
+            raise ImportError
 
         doc = fitz.open(str(path))
         text_parts = []
@@ -203,9 +261,10 @@ def _parse_pdf(path: Path) -> str:
         logger.warning(f"PyMuPDF 解析失败: {e}")
 
     try:
-        from pdfminer.high_level import extract_text
+        if pdfminer_extract_text is None:
+            raise ImportError
 
-        text = extract_text(str(path))
+        text = pdfminer_extract_text(str(path))
         if text.strip():
             return text
     except ImportError:
@@ -214,7 +273,8 @@ def _parse_pdf(path: Path) -> str:
         logger.warning(f"pdfminer 解析失败: {e}")
 
     try:
-        import pdfplumber
+        if pdfplumber is None:
+            raise ImportError
 
         with pdfplumber.open(str(path)) as pdf:
             text_parts = []
@@ -235,7 +295,8 @@ def _parse_pdf(path: Path) -> str:
 
 def _parse_docx(path: Path) -> str:
     try:
-        from docx import Document
+        if Document is None:
+            raise ImportError
 
         doc = Document(str(path))
         text_parts = []
@@ -266,8 +327,6 @@ def _parse_docx(path: Path) -> str:
 
 def _parse_doc(path: Path) -> str:
     try:
-        import subprocess
-
         result = subprocess.run(
             ["antiword", str(path)], capture_output=True, text=True, timeout=30
         )
@@ -279,8 +338,6 @@ def _parse_doc(path: Path) -> str:
         logger.warning(f"antiword 解析失败: {e}")
 
     try:
-        import subprocess
-
         result = subprocess.run(
             ["catdoc", str(path)], capture_output=True, text=True, timeout=30
         )
@@ -292,7 +349,8 @@ def _parse_doc(path: Path) -> str:
         logger.warning(f"catdoc 解析失败: {e}")
 
     try:
-        import olefile
+        if olefile is None:
+            raise ImportError
 
         with olefile.OleFileIO(str(path)) as ole:
             if ole.exists("WordDocument"):
@@ -311,7 +369,8 @@ def _parse_doc(path: Path) -> str:
 
 def _parse_xlsx(path: Path) -> str:
     try:
-        import openpyxl
+        if openpyxl is None:
+            raise ImportError
 
         wb = openpyxl.load_workbook(str(path), data_only=True)
         text_parts = []
@@ -337,7 +396,8 @@ def _parse_xlsx(path: Path) -> str:
 
 def _parse_xls(path: Path) -> str:
     try:
-        import xlrd
+        if xlrd is None:
+            raise ImportError
 
         wb = xlrd.open_workbook(str(path))
         text_parts = []
@@ -363,7 +423,8 @@ def _parse_xls(path: Path) -> str:
 
 def _parse_pptx(path: Path) -> str:
     try:
-        from pptx import Presentation
+        if Presentation is None:
+            raise ImportError
 
         prs = Presentation(str(path))
         text_parts = []
@@ -396,8 +457,6 @@ def _parse_pptx(path: Path) -> str:
 
 def _parse_ppt(path: Path) -> str:
     try:
-        import subprocess
-
         result = subprocess.run(
             ["catppt", str(path)], capture_output=True, text=True, timeout=30
         )
@@ -413,7 +472,8 @@ def _parse_ppt(path: Path) -> str:
 
 def _parse_rtf(path: Path) -> str:
     try:
-        from striprtf.striprtf import rtf_to_text
+        if rtf_to_text is None:
+            raise ImportError
 
         with open(path, "r", encoding="utf-8", errors="replace") as f:
             rtf_text = f.read()
@@ -426,8 +486,6 @@ def _parse_rtf(path: Path) -> str:
         logger.warning(f"striprtf 解析失败: {e}")
 
     try:
-        import subprocess
-
         result = subprocess.run(
             ["unrtf", "--text", str(path)], capture_output=True, text=True, timeout=30
         )
@@ -443,8 +501,8 @@ def _parse_rtf(path: Path) -> str:
 
 def _parse_image(path: Path) -> str:
     try:
-        from PIL import Image
-        import pytesseract
+        if Image is None or pytesseract is None:
+            raise ImportError
 
         img = Image.open(str(path))
         text = pytesseract.image_to_string(img, lang="chi_sim+eng")
@@ -462,8 +520,6 @@ def _parse_image(path: Path) -> str:
 
 def _parse_csv(path: Path) -> str:
     try:
-        import csv
-
         with open(path, "r", encoding="utf-8") as f:
             reader = csv.reader(f)
             rows = list(reader)
@@ -475,8 +531,6 @@ def _parse_csv(path: Path) -> str:
         logger.warning(f"CSV 解析失败: {e}")
 
     try:
-        import csv
-
         with open(path, "r", encoding="gbk") as f:
             reader = csv.reader(f)
             rows = list(reader)

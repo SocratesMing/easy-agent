@@ -33,6 +33,7 @@
         :item="child"
         :selectedId="selectedId"
         :depth="depth + 1"
+        :sessionId="sessionId"
         @select="$emit('select', $event)"
       />
     </div>
@@ -56,6 +57,10 @@ const props = defineProps({
   depth: {
     type: Number,
     default: 0
+  },
+  sessionId: {
+    type: String,
+    default: null
   }
 })
 
@@ -85,7 +90,7 @@ async function loadChildren() {
 
   isLoading.value = true
   try {
-    const response = await getWorkspaceTree(props.item.file_path)
+    const response = await getWorkspaceTree(props.item.file_path, props.sessionId)
     children.value = (response.items || []).map(item => ({
       id: item.path,
       name: item.name,

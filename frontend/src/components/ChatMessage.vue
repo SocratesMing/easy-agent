@@ -21,6 +21,14 @@
         </div>
       </div>
       
+      <!-- 等待响应动画：assistant 消息正在加载且无任何内容 -->
+      <div v-if="message.role === 'assistant' && message.loading && !hasAnyContent" class="waiting-animation">
+        <div class="waiting-dots">
+          <span></span><span></span><span></span>
+        </div>
+        <span class="waiting-text">正在响应</span>
+      </div>
+
       <!-- 按顺序渲染内容块 -->
       <template v-if="sortedBlocks.length > 0">
         <template v-for="(block, index) in sortedBlocks" :key="index">
@@ -73,8 +81,8 @@
             </div>
           </div>
 
-          <!-- 工具调用块（合并参数、结果、耗时） -->
-          <div v-if="block.type === 'tool_call'" class="tool-call-block" :class="{ error: block.success === false }">
+          <!-- 工具调用块（合并参数、结果、耗时）— 隐藏 write_todos，因为已在侧边栏显示 -->
+          <div v-if="block.type === 'tool_call' && block.tool_name !== 'write_todos'" class="tool-call-block" :class="{ error: block.success === false }">
             <div class="tool-call-header" @click="toggleToolCall(index)">
               <svg class="tool-icon" :class="{ success: block.success === true, error: block.success === false, spinning: isToolRunning(block) }" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path>
@@ -141,7 +149,7 @@
           </div>
         </div>
 
-        <div v-if="message.tool_calls && message.tool_calls.length > 0" class="tool-calls-block">
+        <div v-if="message.tool_calls && message.tool_calls.filter(t => t.tool_name !== 'write_todos').length > 0" class="tool-calls-block">
           <div class="tool-calls-header">
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path>
@@ -149,7 +157,7 @@
             <span>工具调用</span>
           </div>
           <div class="tool-calls-list">
-            <div v-for="(tool, idx) in message.tool_calls" :key="idx" class="tool-call-item">
+            <div v-for="(tool, idx) in message.tool_calls.filter(t => t.tool_name !== 'write_todos')" :key="idx" class="tool-call-item">
               <div class="tool-name">
                 {{ tool.tool_name }}
                 <span v-if="tool.duration !== undefined" class="tool-duration">耗时 {{ tool.duration }}s</span>
@@ -182,17 +190,6 @@
         </div>
       </template>
       
-      <!-- Token 用量显示（助手消息） -->
-      <div v-if="message.role === 'assistant' && message.usage && message.usage.total_tokens > 0" class="message-usage">
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="12" height="12">
-          <path d="M12 2L2 7l10 5 10-5-10-5z"></path>
-          <path d="M2 17l10 5 10-5"></path>
-          <path d="M2 12l10 5 10-5"></path>
-        </svg>
-        <span class="usage-total">{{ message.usage.total_tokens.toLocaleString() }} tokens</span>
-        <span class="usage-detail">↑{{ message.usage.input_tokens.toLocaleString() }} ↓{{ message.usage.output_tokens.toLocaleString() }}</span>
-      </div>
-
       <!-- 用户消息显示复制和重试按钮 -->
       <div v-if="message.role === 'user' && message.content" class="message-actions">
         <button class="action-btn retry-btn" @click="retryMessage" title="重新发送">
@@ -228,7 +225,7 @@ const props = defineProps({
 
 const emit = defineEmits(['removeFile', 'viewGeneratedFiles', 'retry'])
 
-const showThinking = ref(true)
+const showThinking = ref(false)
 const expandedThinking = ref({})
 const expandedKnowledgeBase = ref({})
 const expandedTool = ref({})
@@ -264,10 +261,36 @@ watch(() => props.message.id, () => {
   expandedTool.value = {}
 })
 
+// 判断 assistant 消息是否有任何可见内容
+const hasAnyContent = computed(() => {
+  const m = props.message
+  if (m.blocks && m.blocks.length > 0) return true
+  if (m.thinking) return true
+  if (m.content) return true
+  if (m.tool_calls && m.tool_calls.length > 0) return true
+  return false
+})
+
 const sortedBlocks = computed(() => {
   // 从 blocks 字段构建（优先使用）
   if (props.message.blocks && props.message.blocks.length > 0) {
-    return [...props.message.blocks].sort((a, b) => (a.order || 0) - (b.order || 0))
+    const sorted = [...props.message.blocks].sort((a, b) => (a.order || 0) - (b.order || 0))
+    // 兼容旧数据：blocks 存在但没有 content 类型的 block 时，从 message.content 补充
+    const hasContentBlock = sorted.some(b => b.type === 'content')
+    if (!hasContentBlock && props.message.content) {
+      // 将 content 插入到第一个 thinking block 之前，因为通常模型先输出正文再思考
+      // 如果没有 thinking block，放在最前面
+      const firstThinkingIdx = sorted.findIndex(b => b.type === 'thinking')
+      const insertIdx = firstThinkingIdx > 0 ? firstThinkingIdx : 0
+      sorted.splice(insertIdx, 0, {
+        type: 'content',
+        content: props.message.content,
+        order: insertIdx
+      })
+      // 重新排列 order
+      sorted.forEach((b, i) => { b.order = i })
+    }
+    return sorted
   }
 
   // 否则从旧数据格式创建 blocks（用于从数据库加载的消息）
@@ -323,6 +346,7 @@ function getBlockKey(block, index) {
 function isExpandedThinking(index) {
   const block = sortedBlocks.value[index]
   if (!block) return false
+  // Default collapsed: only expand if explicitly toggled open
   const key = getBlockKey(block, index)
   return expandedThinking.value[key] === true
 }
@@ -371,6 +395,7 @@ function isExpandedToolCall(index) {
   const block = sortedBlocks.value[index]
   if (!block) return false
   const key = getBlockKey(block, index)
+  // Default collapsed: only expand if explicitly toggled open
   return expandedTool.value[key] === true
 }
 
@@ -909,6 +934,9 @@ onMounted(() => {
   line-height: 1.7;
   width: 100%;
   box-sizing: border-box;
+  max-height: 260px;
+  overflow-y: auto;
+  background: #f8fafc;
 }
 
 .thinking-text {
@@ -967,6 +995,21 @@ onMounted(() => {
   overflow: hidden;
 }
 
+.thinking-text :deep(.code-header) {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: #f1f3f5;
+  padding: 8px 12px;
+  border-bottom: 1px solid #e1e4e8;
+}
+
+.thinking-text :deep(.code-lang) {
+  font-size: 11px;
+  color: #57606a;
+  font-weight: 500;
+}
+
 .thinking-text :deep(.code-block-wrapper pre) {
   margin: 0;
   border: none;
@@ -986,6 +1029,33 @@ onMounted(() => {
 .thinking-text :deep(.code-block-wrapper .shiki code) {
   font-family: 'Fira Code', 'Consolas', 'Monaco', monospace;
   font-size: 13px;
+}
+
+.thinking-text :deep(.code-copy-btn) {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 4px 8px;
+  background: #ffffff;
+  border: 1px solid #d0d7de;
+  border-radius: 4px;
+  color: #57606a;
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.2s;
+  height: 24px;
+}
+
+.thinking-text :deep(.code-copy-btn:hover) {
+  background: #f3f4f6;
+  border-color: #8c959f;
+  color: #24292e;
+}
+
+.thinking-text :deep(.code-copy-btn svg) {
+  width: 12px;
+  height: 12px;
 }
 
 .thinking-text :deep(blockquote) {
@@ -1146,6 +1216,8 @@ onMounted(() => {
   margin: 0;
   white-space: pre-wrap;
   word-break: break-all;
+  max-height: 220px;
+  overflow-y: auto;
 }
 
 .tool-section-content.error {
@@ -1247,6 +1319,8 @@ onMounted(() => {
   padding: 8px 12px;
   border-radius: 6px;
   margin-top: 6px;
+  max-height: 220px;
+  overflow-y: auto;
 }
 
 .tool-result.error {
@@ -1406,31 +1480,6 @@ onMounted(() => {
 
 .message.user .message-text :deep(tr:hover) {
   background: rgba(30, 41, 59, 0.06);
-}
-
-.message-usage {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-top: 8px;
-  padding: 4px 0;
-  font-size: 11px;
-  color: #94a3b8;
-}
-
-.message-usage svg {
-  opacity: 0.6;
-  flex-shrink: 0;
-}
-
-.message-usage .usage-total {
-  color: #64748b;
-  font-weight: 500;
-}
-
-.message-usage .usage-detail {
-  color: #94a3b8;
-  font-size: 10px;
 }
 
 .message-actions {
@@ -1603,6 +1652,46 @@ onMounted(() => {
   height: 14px;
 }
 
+.waiting-animation {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 0;
+}
+
+.waiting-dots {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.waiting-dots span {
+  width: 8px;
+  height: 8px;
+  background: #7c6aef;
+  border-radius: 50%;
+  animation: waiting-bounce 1.4s infinite ease-in-out both;
+}
+
+.waiting-dots span:nth-child(1) { animation-delay: -0.32s; }
+.waiting-dots span:nth-child(2) { animation-delay: -0.16s; }
+
+@keyframes waiting-bounce {
+  0%, 80%, 100% { transform: scale(0); }
+  40% { transform: scale(1); }
+}
+
+.waiting-text {
+  font-size: 13px;
+  color: #6b7280;
+  animation: waiting-fade 2s infinite;
+}
+
+@keyframes waiting-fade {
+  0%, 100% { opacity: 0.5; }
+  50% { opacity: 1; }
+}
+
 .loading-indicator {
   display: flex;
   align-items: center;
@@ -1633,6 +1722,32 @@ onMounted(() => {
   40% {
     transform: scale(1);
   }
+}
+
+/* 自定义滚动条样式 - 思考内容和工具结果区域 */
+.thinking-content::-webkit-scrollbar,
+.tool-section-content::-webkit-scrollbar,
+.tool-result::-webkit-scrollbar {
+  width: 5px;
+}
+
+.thinking-content::-webkit-scrollbar-track,
+.tool-section-content::-webkit-scrollbar-track,
+.tool-result::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.thinking-content::-webkit-scrollbar-thumb,
+.tool-section-content::-webkit-scrollbar-thumb,
+.tool-result::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 3px;
+}
+
+.thinking-content::-webkit-scrollbar-thumb:hover,
+.tool-section-content::-webkit-scrollbar-thumb:hover,
+.tool-result::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
 }
 
 </style>

@@ -13,6 +13,8 @@ class SessionModel:
     updated_at: str = ""
     username: str = ""
     workspace_name: str = ""
+    todos: list[dict[str, Any]] = field(default_factory=list)
+    pinned: int = 0
 
 
 @dataclass
