@@ -1,0 +1,25 @@
+{
+  "servers": {
+    "mysql": {
+      "type": "stdio",
+      "command": "uv",
+      "args": [
+        "run",
+        "--with",
+        "mysql-connector-python",
+        "--with",
+        "mcp",
+        "python",
+        "-m",
+        "easy_agent.services.mysql_mcp"
+      ],
+      "env": {
+        "MYSQL_HOST": "localhost",
+        "MYSQL_PORT": "3306",
+        "MYSQL_USER": "root",
+        "MYSQL_PASSWORD": "Test1234",
+        "MYSQL_DATABASE": "agent"
+      }
+    }
+  }
+}
