@@ -3,10 +3,8 @@
 import logging
 import os
 import platform
-import subprocess
 import sys
 import threading
-import time
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
@@ -204,9 +202,7 @@ async def lifespan(app: FastAPI):
         )
     else:
         system_prompt = "你是一个有帮助的 AI 助手。"
-        logger.warning(
-            f"⚠️ 系统提示词文件不存在: {system_prompt_path}，使用默认提示词"
-        )
+        logger.warning(f"⚠️ 系统提示词文件不存在: {system_prompt_path}，使用默认提示词")
 
     if config:
         skills_dir_config = (

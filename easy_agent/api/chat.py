@@ -1,7 +1,6 @@
 """Chat routes - streaming and non-streaming"""
 
 import logging
-import time
 import uuid
 from datetime import datetime
 from typing import Annotated
@@ -40,7 +39,6 @@ async def chat_stream(
     http_request: Request,
     username: Annotated[str, Depends(get_current_username)],
 ):
-    time.time()
 
     if not request.message:
         raise HTTPException(status_code=400, detail="消息内容不能为空")

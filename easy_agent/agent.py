@@ -11,7 +11,6 @@ No need to declare these tools manually.
 
 import json
 import logging
-import os
 import platform
 import re
 import shutil
@@ -21,7 +20,6 @@ from pathlib import Path
 from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend, FilesystemBackend, LocalShellBackend
 from deepagents.backends.protocol import ExecuteResponse
-from langchain.agents.middleware.summarization import SummarizationMiddleware
 from langchain_core.messages import AIMessageChunk, ToolMessage
 
 from .config import Config
@@ -41,7 +39,9 @@ try:
     from deepagents.middleware import filesystem as _ds_fs
 
     _ds_fs.DEFAULT_READ_LIMIT = 1000
-    logger.info(f"DeepAgents read_file DEFAULT_READ_LIMIT → {_ds_fs.DEFAULT_READ_LIMIT}")
+    logger.info(
+        f"DeepAgents read_file DEFAULT_READ_LIMIT → {_ds_fs.DEFAULT_READ_LIMIT}"
+    )
 except Exception:
     pass
 
@@ -67,7 +67,9 @@ class _PathTranslatingShell(LocalShellBackend):
         for pat, real in self._rules:
             translated = pat.sub(lambda m: m.group(1) + real, translated)
         if translated != command:
-            logger.debug("execute path translation: %s → %s", command[:80], translated[:80])
+            logger.debug(
+                "execute path translation: %s → %s", command[:80], translated[:80]
+            )
         return super().execute(translated, timeout=timeout)
 
 
@@ -140,9 +142,7 @@ class EasyAgent:
         # 模型无需知道实际路径，统一使用虚拟路径即可。
         skills_info = ""
         if self.skills_root:
-            skills_info = (
-                f"## Skills: `/skills/`（例：`/skills/docx/SKILL.md`）\n"
-            )
+            skills_info = "## Skills: `/skills/`（例：`/skills/docx/SKILL.md`）\n"
 
         self.system_prompt = (
             f"{system_prompt}\n"
@@ -191,11 +191,9 @@ class EasyAgent:
         self.workspace_dir = new_workspace
         self.workspace_virtual_path = f"/workspace/{self.safe_username}/{new_name}"
 
-        self.system_prompt = (
-            self.system_prompt
-            .replace(old_path, str(new_workspace.absolute()))
-            .replace(old_virtual, self.workspace_virtual_path)
-        )
+        self.system_prompt = self.system_prompt.replace(
+            old_path, str(new_workspace.absolute())
+        ).replace(old_virtual, self.workspace_virtual_path)
 
         self.agent = self._create_agent()
 
@@ -220,13 +218,11 @@ class EasyAgent:
         model = create_model(self.config)
         self.model = model
 
-        logger.info(
-            f"[{self.session_id}] 📋 系统提示词:\n{self.system_prompt}"
-        )
+        logger.info(f"[{self.session_id}] 📋 系统提示词:\n{self.system_prompt}")
 
         skills_paths = self._resolve_skills_paths()
         backend = self._build_backend(skills_paths)
-        middleware = self._build_middleware(model, backend)
+        middleware = self._build_middleware()
         tools = list(self.mcp_tools) if self.mcp_tools else None
 
         logger.info(
@@ -287,20 +283,18 @@ class EasyAgent:
 
         logger.info(
             f"[{self.session_id}] 🗺️ CompositeBackend routes:\n"
-            + "\n".join(
-                f"    {vp:40s} → {b.cwd}"
-                for vp, b in sorted(routes.items())
-            )
+            + "\n".join(f"    {vp:40s} → {b.cwd}" for vp, b in sorted(routes.items()))
         )
 
-        def backend_factory(runtime):
+        def backend_factory(_runtime):
             ws_real = self.workspace_dir.absolute()
             ws_real.mkdir(parents=True, exist_ok=True)
             ws_str = str(ws_real)
 
             path_mappings = {
                 f"{self.workspace_virtual_path}/": ws_str + "/",
-                f"{self.memory_virtual_path}/": str(self.memory_file.parent.absolute()) + "/",
+                f"{self.memory_virtual_path}/": str(self.memory_file.parent.absolute())
+                + "/",
             }
             if self.skills_root:
                 path_mappings["/skills/"] = str(Path(self.skills_root).absolute()) + "/"
@@ -318,30 +312,11 @@ class EasyAgent:
 
         return backend_factory
 
-    def _build_middleware(self, model, backend) -> list:
-        middleware = []
-        if self.config.summarization.enabled:
-            max_tokens = self.config.llm.max_input_tokens
-            threshold = self.config.summarization.compression_threshold
-            target = self.config.summarization.compression_target
-            trigger_tokens = int(max_tokens * threshold)
-            keep_tokens = int(max_tokens * target)
-            logger.info(
-                f"[{self.session_id}] Summarization enabled | "
-                f"max_input_tokens={max_tokens}, threshold={threshold}, "
-                f"trigger={trigger_tokens}, keep={keep_tokens}"
-            )
-            summarization = SummarizationMiddleware(
-                model=model,
-                trigger=("tokens", trigger_tokens),
-                keep=("tokens", keep_tokens),
-                trim_tokens_to_summarize=None,
-            )
-            middleware.append(summarization)
-        else:
-            logger.info(f"[{self.session_id}] Summarization disabled")
-
-        return middleware
+    def _build_middleware(self) -> list:
+        # SummarizationMiddleware is automatically added by create_deep_agent
+        # with model-aware defaults (trigger=0.85, keep=0.10).
+        # No need to add it here — duplicate middleware causes AssertionError.
+        return []
 
     def _resolve_skills_paths(self) -> list[str]:
         """Discover skills from skills_root and return virtual paths."""
@@ -384,10 +359,14 @@ class EasyAgent:
                 {"messages": [{"role": "user", "content": user_input}]},
                 stream_mode="messages",
             ):
-                chunk, metadata = event
+                chunk, _metadata = event
 
                 if isinstance(chunk, AIMessageChunk):
-                    rc = chunk.additional_kwargs.get("reasoning_content", "") if hasattr(chunk, "additional_kwargs") else ""
+                    rc = (
+                        chunk.additional_kwargs.get("reasoning_content", "")
+                        if hasattr(chunk, "additional_kwargs")
+                        else ""
+                    )
                     content = chunk.content or ""
                     tcc = getattr(chunk, "tool_call_chunks", None) or []
 
@@ -416,7 +395,11 @@ class EasyAgent:
                             if args_str:
                                 try:
                                     parsed = json.loads(args_str)
-                                    args_data = parsed if isinstance(parsed, dict) else {"value": parsed}
+                                    args_data = (
+                                        parsed
+                                        if isinstance(parsed, dict)
+                                        else {"value": parsed}
+                                    )
                                 except json.JSONDecodeError:
                                     args_data = {}
                             else:
@@ -428,14 +411,18 @@ class EasyAgent:
                                 try:
                                     parsed = json.loads(args_str)
                                     if isinstance(parsed, dict):
-                                        tool_call_accumulated_args[list(tool_call_accumulated_args.keys())[-1]] = parsed
+                                        tool_call_accumulated_args[
+                                            list(tool_call_accumulated_args.keys())[-1]
+                                        ] = parsed
                                 except json.JSONDecodeError:
                                     pass
 
                 elif isinstance(chunk, ToolMessage):
                     tool_name = getattr(chunk, "name", "") or ""
                     result = _parse_mcp_content(chunk.content) if chunk.content else ""
-                    truncate_len = getattr(self.config.tools, 'result_log_truncate', 200)
+                    truncate_len = getattr(
+                        self.config.tools, "result_log_truncate", 200
+                    )
                     logger.info(f"📊 Result [{tool_name}]: {result[:truncate_len]}")
 
             if thinking_shown or response_shown:

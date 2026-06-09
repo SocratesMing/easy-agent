@@ -35,6 +35,51 @@ def generate_workspace_name(session_id: str) -> str:
     return f"{now.strftime('%Y%m%d')}_{now.strftime('%H%M%S')}_{session_id[:5]}"
 
 
+def compute_session_usage(messages: list[dict]) -> dict | None:
+    """从消息列表中计算会话级别的 token 用量。
+
+    Returns:
+        包含 input_tokens/output_tokens/total_tokens/context_tokens 的字典，
+        如果没有任何用量数据则返回 None。
+    """
+    total_input = 0
+    total_output = 0
+    total_tokens = 0
+    context_tokens = 0
+
+    for msg in messages:
+        msg_usage = msg.get("usage") or {}
+        total_input += msg_usage.get("input_tokens", 0) or 0
+        total_output += msg_usage.get("output_tokens", 0) or 0
+        total_tokens += msg_usage.get("total_tokens", 0) or 0
+
+    # 从最后一条有 input_tokens 的 assistant 消息获取上下文占用
+    for msg in reversed(messages):
+        if msg.get("role") == "assistant":
+            last_usage = msg.get("usage") or {}
+            if last_usage.get("input_tokens"):
+                context_tokens = last_usage["input_tokens"]
+                break
+
+    if total_input > 0 or total_output > 0:
+        return {
+            "input_tokens": total_input,
+            "output_tokens": total_output,
+            "total_tokens": total_tokens,
+            "context_tokens": context_tokens,
+        }
+    return None
+
+
+def get_max_input_tokens() -> int | None:
+    """获取当前配置的 max_input_tokens。"""
+    try:
+        cfg = Config.load()
+        return cfg.llm.max_input_tokens if cfg and cfg.llm else None
+    except Exception:
+        return None
+
+
 router = APIRouter(
     prefix="/api/sessions",
     tags=["Sessions"],
@@ -120,41 +165,8 @@ async def get_session(
     if not session:
         raise HTTPException(status_code=404, detail="会话不存在")
 
-    # 计算会话级别 token 用量（从每条消息持久化的 usage 累加）
-    total_input = 0
-    total_output = 0
-    total_tokens = 0
-    context_tokens = 0  # 最后一次 API 调用的 input_tokens，即当前上下文窗口占用
-    if session.messages:
-        for msg in session.messages:
-            msg_usage = msg.get("usage") or {}
-            total_input += msg_usage.get("input_tokens", 0) or 0
-            total_output += msg_usage.get("output_tokens", 0) or 0
-            total_tokens += msg_usage.get("total_tokens", 0) or 0
-        # 从最后一条有 input_tokens 的 assistant 消息获取上下文占用
-        for msg in reversed(session.messages):
-            if msg.get("role") == "assistant":
-                last_usage = msg.get("usage") or {}
-                if last_usage.get("input_tokens"):
-                    context_tokens = last_usage["input_tokens"]
-                    break
-
-    usage = None
-    if total_input > 0 or total_output > 0:
-        usage = {
-            "input_tokens": total_input,
-            "output_tokens": total_output,
-            "total_tokens": total_tokens,
-            "context_tokens": context_tokens,
-        }
-
-    max_input_tokens = None
-    try:
-        from ..config import Config
-        cfg = Config.load()
-        max_input_tokens = cfg.llm.max_input_tokens if cfg and cfg.llm else None
-    except Exception:
-        pass
+    usage = compute_session_usage(session.messages or [])
+    max_input_tokens = get_max_input_tokens()
 
     return SessionDetail(
         session_id=session.session_id,
@@ -255,42 +267,8 @@ async def get_chat_history(
     if not session:
         raise HTTPException(status_code=404, detail="会话不存在")
 
-    # 计算会话级别 token 用量（从每条消息持久化的 usage 累加）
-    total_input = 0
-    total_output = 0
-    total_tokens = 0
-    context_tokens = 0
-    if session.messages:
-        for msg in session.messages:
-            msg_usage = msg.get("usage") or {}
-            total_input += msg_usage.get("input_tokens", 0) or 0
-            total_output += msg_usage.get("output_tokens", 0) or 0
-            total_tokens += msg_usage.get("total_tokens", 0) or 0
-        # 从最后一条有 input_tokens 的 assistant 消息获取上下文占用
-        for msg in reversed(session.messages):
-            if msg.get("role") == "assistant":
-                last_usage = msg.get("usage") or {}
-                if last_usage.get("input_tokens"):
-                    context_tokens = last_usage["input_tokens"]
-                    break
-
-    usage = None
-    if total_input > 0 or total_output > 0:
-        usage = {
-            "input_tokens": total_input,
-            "output_tokens": total_output,
-            "total_tokens": total_tokens,
-            "context_tokens": context_tokens,
-        }
-
-    # 获取 max_input_tokens 来自配置
-    max_input_tokens = None
-    try:
-        from ..config import Config
-        cfg = Config.load()
-        max_input_tokens = cfg.llm.max_input_tokens if cfg and cfg.llm else None
-    except Exception:
-        pass
+    usage = compute_session_usage(session.messages or [])
+    max_input_tokens = get_max_input_tokens()
 
     return GetChatHistoryResponse(
         session_id=session.session_id,

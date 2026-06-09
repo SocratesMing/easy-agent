@@ -212,9 +212,7 @@ class Database:
             self._ensure_column(
                 cursor, "sessions", "workspace_name", "VARCHAR(255) DEFAULT ''"
             )
-            self._ensure_column(
-                cursor, "sessions", "pinned", "INTEGER DEFAULT 0"
-            )
+            self._ensure_column(cursor, "sessions", "pinned", "INTEGER DEFAULT 0")
 
             if self.db_type == "mysql":
                 try:
@@ -224,9 +222,7 @@ class Database:
                 except Exception:
                     pass
 
-            self._ensure_column(
-                cursor, "sessions", "todos", "TEXT DEFAULT NULL"
-            )
+            self._ensure_column(cursor, "sessions", "todos", "TEXT DEFAULT NULL")
 
             cursor.execute(f"""
                 CREATE TABLE IF NOT EXISTS tool_call_records (
@@ -437,16 +433,26 @@ class Database:
                 raw_msgs = s["messages"] if isinstance(s, dict) else s[1]
                 if not raw_msgs:
                     continue
-                json_messages = json.loads(raw_msgs) if isinstance(raw_msgs, str) else raw_msgs
+                json_messages = (
+                    json.loads(raw_msgs) if isinstance(raw_msgs, str) else raw_msgs
+                )
 
                 # 获取当前 session_messages 中的行数
-                self._execute(cursor, "SELECT COUNT(*) as cnt FROM session_messages WHERE session_id=?", (sid,))
+                self._execute(
+                    cursor,
+                    "SELECT COUNT(*) as cnt FROM session_messages WHERE session_id=?",
+                    (sid,),
+                )
                 row = cursor.fetchone()
                 row_count = row["cnt"] if isinstance(row, dict) else row[0]
 
                 if row_count != len(json_messages):
                     # 行数不一致：删除旧行，从 JSON 重建
-                    self._execute(cursor, "DELETE FROM session_messages WHERE session_id=?", (sid,))
+                    self._execute(
+                        cursor,
+                        "DELETE FROM session_messages WHERE session_id=?",
+                        (sid,),
+                    )
                     for msg in json_messages:
                         role = msg.get("role", "user")
                         content = msg.get("content", "")
@@ -462,7 +468,9 @@ class Database:
                         )
                     repaired_sessions += 1
             if repaired_sessions > 0:
-                logger.info(f"数据修复：重建了 {repaired_sessions} 个会话的 session_messages 行")
+                logger.info(
+                    f"数据修复：重建了 {repaired_sessions} 个会话的 session_messages 行"
+                )
         except Exception as e:
             logger.warning(f"修复 session_messages 缺失行时出错: {e}")
 
@@ -532,7 +540,9 @@ class Database:
                         row_has_tc = bool(row_msg.get("tool_calls"))
                         json_has_tc = bool(json_msg.get("tool_calls"))
                         # 如果行数据缺少 blocks/tool_calls 但 JSON 中有，使用 JSON 版本
-                        if (json_has_blocks and not row_has_blocks) or (json_has_tc and not row_has_tc):
+                        if (json_has_blocks and not row_has_blocks) or (
+                            json_has_tc and not row_has_tc
+                        ):
                             messages[i] = json_msg
             elif json_messages and len(json_messages) > len(messages):
                 # 行数据数量少于 JSON 数据，用 JSON 数据补充缺失的消息
@@ -543,7 +553,9 @@ class Database:
         todos_raw = row.get("todos", None) if isinstance(row, dict) else None
         if todos_raw:
             try:
-                todos = json.loads(todos_raw) if isinstance(todos_raw, str) else todos_raw
+                todos = (
+                    json.loads(todos_raw) if isinstance(todos_raw, str) else todos_raw
+                )
             except (json.JSONDecodeError, ValueError):
                 todos = []
 
@@ -710,7 +722,9 @@ class Database:
             ]
         if message.get("blocks"):
             # 分离 content blocks 和其他 blocks，确保 content 不被截断
-            content_blocks = [b for b in message["blocks"] if b.get("type") == "content"]
+            content_blocks = [
+                b for b in message["blocks"] if b.get("type") == "content"
+            ]
             other_blocks = [b for b in message["blocks"] if b.get("type") != "content"]
 
             sanitized_blocks = []
@@ -831,16 +845,27 @@ class Database:
             trimmed = False
             if "blocks" in extra_keys and isinstance(extra_keys["blocks"], list):
                 for b in extra_keys["blocks"]:
-                    if b.get("type") == "tool_call" and len(str(b.get("result", ""))) > 200:
+                    if (
+                        b.get("type") == "tool_call"
+                        and len(str(b.get("result", ""))) > 200
+                    ):
                         b["result"] = str(b.get("result", ""))[:200]
                         trimmed = True
-                    elif b.get("type") == "thinking" and len(str(b.get("content", ""))) > 200:
+                    elif (
+                        b.get("type") == "thinking"
+                        and len(str(b.get("content", ""))) > 200
+                    ):
                         b["content"] = str(b.get("content", ""))[:200]
                         trimmed = True
-                    elif b.get("type") == "content" and len(str(b.get("content", ""))) > 500:
+                    elif (
+                        b.get("type") == "content"
+                        and len(str(b.get("content", ""))) > 500
+                    ):
                         b["content"] = str(b.get("content", ""))[:500]
                         trimmed = True
-            if "tool_calls" in extra_keys and isinstance(extra_keys["tool_calls"], list):
+            if "tool_calls" in extra_keys and isinstance(
+                extra_keys["tool_calls"], list
+            ):
                 for tc in extra_keys["tool_calls"]:
                     if len(str(tc.get("result", ""))) > 200:
                         tc["result"] = str(tc.get("result", ""))[:200]
@@ -862,15 +887,33 @@ class Database:
                 for b in extra_keys["blocks"]:
                     if b.get("type") == "tool_call":
                         b["arguments"] = {}
-                        b["result"] = (str(b.get("result", ""))[:100] + "...") if b.get("result") else ""
+                        b["result"] = (
+                            (str(b.get("result", ""))[:100] + "...")
+                            if b.get("result")
+                            else ""
+                        )
                     elif b.get("type") == "thinking":
-                        b["content"] = (str(b.get("content", ""))[:100] + "...") if b.get("content") else ""
+                        b["content"] = (
+                            (str(b.get("content", ""))[:100] + "...")
+                            if b.get("content")
+                            else ""
+                        )
                     elif b.get("type") == "content":
-                        b["content"] = (str(b.get("content", ""))[:200] + "...") if b.get("content") else ""
-            if "tool_calls" in extra_keys and isinstance(extra_keys["tool_calls"], list):
+                        b["content"] = (
+                            (str(b.get("content", ""))[:200] + "...")
+                            if b.get("content")
+                            else ""
+                        )
+            if "tool_calls" in extra_keys and isinstance(
+                extra_keys["tool_calls"], list
+            ):
                 for tc in extra_keys["tool_calls"]:
                     tc["arguments"] = {}
-                    tc["result"] = (str(tc.get("result", ""))[:100] + "...") if tc.get("result") else ""
+                    tc["result"] = (
+                        (str(tc.get("result", ""))[:100] + "...")
+                        if tc.get("result")
+                        else ""
+                    )
             result = json.dumps(extra_keys, ensure_ascii=False)
         return result
 
@@ -912,11 +955,17 @@ class Database:
             )
             last_row = cursor.fetchone()
 
-            if last_row and (last_row["id"] if isinstance(last_row, dict) else last_row[0]):
-                last_role = last_row["role"] if isinstance(last_row, dict) else last_row[1]
+            if last_row and (
+                last_row["id"] if isinstance(last_row, dict) else last_row[0]
+            ):
+                last_role = (
+                    last_row["role"] if isinstance(last_row, dict) else last_row[1]
+                )
                 if last_role == "assistant":
                     # 最后一条是 assistant，更新它
-                    msg_id = last_row["id"] if isinstance(last_row, dict) else last_row[0]
+                    msg_id = (
+                        last_row["id"] if isinstance(last_row, dict) else last_row[0]
+                    )
                     self._execute(
                         cursor,
                         "UPDATE session_messages SET content=?, extra_data=?, created_at=? WHERE id=?",
@@ -1146,7 +1195,7 @@ class Database:
             if d.get("arguments"):
                 try:
                     d["arguments"] = json.loads(d["arguments"])
-                except:
+                except (json.JSONDecodeError, TypeError):
                     pass
             results.append(d)
         return results

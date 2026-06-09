@@ -91,12 +91,18 @@ def execute_query(query: str) -> str:
                         header = " | ".join(table[0])
                         sep = "-" * len(header)
                         rows = "\n".join(" | ".join(row) for row in table[1:])
-                        block = f"Result #{i + 1}:\n{header}\n{sep}\n{rows}" if table[1:] else f"Result #{i + 1}:\n{header}\n{sep}\n(empty)"
+                        block = (
+                            f"Result #{i + 1}:\n{header}\n{sep}\n{rows}"
+                            if table[1:]
+                            else f"Result #{i + 1}:\n{header}\n{sep}\n(empty)"
+                        )
                         parts.append(block)
                     else:
                         affected = cursor.rowcount
                         if affected >= 0:
-                            parts.append(f"Result #{i + 1}: OK, {affected} row(s) affected")
+                            parts.append(
+                                f"Result #{i + 1}: OK, {affected} row(s) affected"
+                            )
                         else:
                             parts.append(f"Result #{i + 1}: OK")
             except Error as e:
@@ -160,11 +166,15 @@ async def main():
     print(f"User: {config['user']}", file=sys.stderr)
     print(f"Database: {config['database']}", file=sys.stderr)
 
-    logger.info(f"Starting MySQL MCP server ({config['host']}/{config['database']} as {config['user']})")
+    logger.info(
+        f"Starting MySQL MCP server ({config['host']}/{config['database']} as {config['user']})"
+    )
 
     async with stdio_server() as (read_stream, write_stream):
         try:
-            await app.run(read_stream, write_stream, app.create_initialization_options())
+            await app.run(
+                read_stream, write_stream, app.create_initialization_options()
+            )
         except Exception as e:
             logger.error(f"Server error: {e}", exc_info=True)
             raise

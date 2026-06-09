@@ -70,7 +70,7 @@ def _is_error_result(text: str) -> bool:
     # Check for stderr errors in execute results even with exit code 0
     # e.g. "[stderr] /bin/sh: 1: cd: can't cd to ..."
     # e.g. "[stderr] mkdir: cannot create directory '/workspace': Permission denied"
-    stderr_match = re.search(r'\[stderr\]\s*(.+)', text, re.DOTALL)
+    stderr_match = re.search(r"\[stderr\]\s*(.+)", text, re.DOTALL)
     if stderr_match:
         stderr_text = stderr_match.group(1).strip()
         # Common error patterns in stderr
@@ -255,6 +255,7 @@ async def chat_stream_generator(
         return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
 
     try:
+
         def _sse(data: dict) -> str:
             return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
 
@@ -267,7 +268,9 @@ async def chat_stream_generator(
         accumulated_response = ""
         total_usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
         step_usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
-        last_context_tokens = 0  # 最后一次 API 调用的 input_tokens，即当前上下文窗口占用
+        last_context_tokens = (
+            0  # 最后一次 API 调用的 input_tokens，即当前上下文窗口占用
+        )
 
         current_step = 0
         is_in_thinking = False
@@ -280,9 +283,9 @@ async def chat_stream_generator(
         tool_call_start_times = {}
         tool_call_accumulated_args = {}
         tool_call_accumulated_args_str = {}  # tool_call_id → raw args string
-        tool_call_id_to_name = {}      # tool_call_id → tool_name
-        tool_call_index_to_id = {}     # chunk index → tool_call_id (for correlating subsequent chunks)
-        pending_tool_args_by_index = {} # chunk index → accumulated args string (before name/id arrive)
+        tool_call_id_to_name = {}  # tool_call_id → tool_name
+        tool_call_index_to_id = {}  # chunk index → tool_call_id (for correlating subsequent chunks)
+        pending_tool_args_by_index = {}  # chunk index → accumulated args string (before name/id arrive)
         last_persisted_len = 0
         last_token_usage_time = 0
         step_advanced_this_round = False  # 当前 round 是否已推进过 step
@@ -293,10 +296,16 @@ async def chat_stream_generator(
         _agent_config = get_agent_config()
         if _agent_config and _agent_config.get("config"):
             max_input_tokens = _agent_config["config"].llm.max_input_tokens
-            result_log_truncate = getattr(_agent_config["config"].tools, 'result_log_truncate', 200)
+            result_log_truncate = getattr(
+                _agent_config["config"].tools, "result_log_truncate", 200
+            )
         if not max_input_tokens:
             model_instance = getattr(agent, "model", None)
-            if model_instance and hasattr(model_instance, "profile") and model_instance.profile:
+            if (
+                model_instance
+                and hasattr(model_instance, "profile")
+                and model_instance.profile
+            ):
                 max_input_tokens = model_instance.profile.get("max_input_tokens")
         if not max_input_tokens:
             model_instance = getattr(agent, "model", None)
@@ -328,7 +337,8 @@ async def chat_stream_generator(
                         "step": tc[6],
                     }
                     for tc in tool_call_records
-                ] or None,
+                ]
+                or None,
                 "blocks": blocks or None,
             }
 
@@ -344,7 +354,9 @@ async def chat_stream_generator(
             """Persist todo list to database, replacing any existing plan."""
             try:
                 db.update_session_todos(session_id, todos_list)
-                logger.info(f"[{sid}] 📋 Todo list persisted | items: {len(todos_list)}")
+                logger.info(
+                    f"[{sid}] 📋 Todo list persisted | items: {len(todos_list)}"
+                )
             except Exception as e:
                 logger.warning(f"[{sid}] 持久化 Todo list 失败: {e}")
 
@@ -357,59 +369,83 @@ async def chat_stream_generator(
             inp = total_usage["input_tokens"]
             if not inp:
                 # API 未返回 usage_metadata，从完整上下文估算
-                context_text = "".join(str(getattr(msg, 'content', '')) for msg in context_messages)
-                inp = estimate_tokens(context_text) + estimate_tokens(accumulated_response) + estimate_tokens(accumulated_thinking)
+                context_text = "".join(
+                    str(getattr(msg, "content", "")) for msg in context_messages
+                )
+                inp = (
+                    estimate_tokens(context_text)
+                    + estimate_tokens(accumulated_response)
+                    + estimate_tokens(accumulated_thinking)
+                )
                 for blk in blocks:
                     if blk.get("type") == "tool_result":
                         inp += estimate_tokens(str(blk.get("result", "")))
                     elif blk.get("type") == "tool_call":
                         inp += estimate_tokens(str(blk.get("tool_args", "")))
             out = total_usage["output_tokens"] or (
-                estimate_tokens(accumulated_response) + estimate_tokens(accumulated_thinking)
+                estimate_tokens(accumulated_response)
+                + estimate_tokens(accumulated_thinking)
             )
             cumulative = pre_session_tokens + inp + out
             # context_tokens: 当前上下文窗口占用（最后一次 API 调用的 input_tokens）
             ctx_tokens = last_context_tokens if last_context_tokens > 0 else inp
-            return _sse({
-                "type": "token_usage",
-                "input_tokens": inp,
-                "output_tokens": out,
-                "total_tokens": inp + out,
-                "session_estimate": cumulative,
-                "context_tokens": ctx_tokens,
-                "max_input_tokens": max_input_tokens,
-                "auto_compress_tokens": auto_compress_tokens,
-            })
+            return _sse(
+                {
+                    "type": "token_usage",
+                    "input_tokens": inp,
+                    "output_tokens": out,
+                    "total_tokens": inp + out,
+                    "session_estimate": cumulative,
+                    "context_tokens": ctx_tokens,
+                    "max_input_tokens": max_input_tokens,
+                    "auto_compress_tokens": auto_compress_tokens,
+                }
+            )
 
         def _start_thinking(step: int):
-            nonlocal is_in_thinking, thinking_start_time, current_step, thinking_step_start_len
+            nonlocal \
+                is_in_thinking, \
+                thinking_start_time, \
+                current_step, \
+                thinking_step_start_len
             is_in_thinking = True
             thinking_start_time = time.time()
             thinking_step_start_len = len(accumulated_thinking)
             current_step = step
-            blocks.append({
-                "type": "thinking", "content": "", "order": len(blocks), "step": step,
-            })
+            blocks.append(
+                {
+                    "type": "thinking",
+                    "content": "",
+                    "order": len(blocks),
+                    "step": step,
+                }
+            )
             return _sse({"type": "thinking_start", "content": "", "step": step})
 
         def _end_thinking(step: int):
             nonlocal is_in_thinking, thinking_end_time, thinking_step_start_len
             thinking_end_time = time.time()
             duration = round(
-                (thinking_end_time - thinking_start_time) if thinking_start_time else 0, 2
+                (thinking_end_time - thinking_start_time) if thinking_start_time else 0,
+                2,
             )
             step_thinking = accumulated_thinking[thinking_step_start_len:].strip()
             if step_thinking:
                 try:
                     db.record_thinking(
-                        session_id=session_id, message_id=message_id,
-                        step=step, content=step_thinking[:10000], duration=duration,
+                        session_id=session_id,
+                        message_id=message_id,
+                        step=step,
+                        content=step_thinking[:10000],
+                        duration=duration,
                     )
                 except Exception as e:
                     logger.warning(f"[{sid}] 持久化思考记录失败: {e}")
                 if session_logger:
                     session_logger.log_thinking(
-                        content=step_thinking, step=step, duration=duration,
+                        content=step_thinking,
+                        step=step,
+                        duration=duration,
                         message_id=message_id,
                     )
                 logger.info(
@@ -439,11 +475,13 @@ async def chat_stream_generator(
             nonlocal content_block_start_len
             segment = accumulated_response[content_block_start_len:]
             if segment.strip():
-                blocks.append({
-                    "type": "content",
-                    "content": segment,
-                    "order": len(blocks),
-                })
+                blocks.append(
+                    {
+                        "type": "content",
+                        "content": segment,
+                        "order": len(blocks),
+                    }
+                )
             content_block_start_len = len(accumulated_response)
 
         def _finalize_step(step: int):
@@ -461,15 +499,23 @@ async def chat_stream_generator(
             inp = step_usage["input_tokens"]
             if not inp:
                 # API 未返回 usage_metadata，从完整上下文估算输入 token
-                context_text = "".join(str(getattr(msg, 'content', '')) for msg in context_messages)
-                inp = estimate_tokens(context_text) + estimate_tokens(accumulated_response) + estimate_tokens(accumulated_thinking)
+                context_text = "".join(
+                    str(getattr(msg, "content", "")) for msg in context_messages
+                )
+                inp = (
+                    estimate_tokens(context_text)
+                    + estimate_tokens(accumulated_response)
+                    + estimate_tokens(accumulated_thinking)
+                )
                 # 加上工具调用/结果的估算
                 for blk in blocks:
                     if blk.get("type") == "tool_result":
                         inp += estimate_tokens(str(blk.get("result", "")))
                     elif blk.get("type") == "tool_call":
                         inp += estimate_tokens(str(blk.get("tool_args", "")))
-            out = step_usage["output_tokens"] or estimate_tokens(accumulated_thinking) + estimate_tokens(step_content)
+            out = step_usage["output_tokens"] or estimate_tokens(
+                accumulated_thinking
+            ) + estimate_tokens(step_content)
             step_total = step_usage["total_tokens"] or inp + out
             # context_tokens: 最后一次 API 调用的 input_tokens
             ctx_tokens = last_context_tokens if last_context_tokens > 0 else inp
@@ -478,7 +524,9 @@ async def chat_stream_generator(
             ctx_bar = ""
             if ctx_max:
                 filled = int(ctx_ratio / 5)  # 20 格
-                ctx_bar = " [" + "█" * filled + "░" * (20 - filled) + f"] {ctx_ratio:.1f}%"
+                ctx_bar = (
+                    " [" + "█" * filled + "░" * (20 - filled) + f"] {ctx_ratio:.1f}%"
+                )
             is_estimated = step_usage["input_tokens"] == 0
             logger.info(
                 f"[{sid}] 📊 Step {step} Token{'(估算)' if is_estimated else ''} | "
@@ -491,17 +539,24 @@ async def chat_stream_generator(
             )
 
             # 每步完成时发送 token 用量事件给前端
-            cumulative = pre_session_tokens + total_usage["input_tokens"] + total_usage["output_tokens"]
-            token_sse = _sse({
-                "type": "token_usage",
-                "input_tokens": total_usage["input_tokens"],
-                "output_tokens": total_usage["output_tokens"],
-                "total_tokens": total_usage["input_tokens"] + total_usage["output_tokens"],
-                "session_estimate": cumulative,
-                "context_tokens": ctx_tokens,
-                "max_input_tokens": max_input_tokens,
-                "auto_compress_tokens": auto_compress_tokens,
-            })
+            cumulative = (
+                pre_session_tokens
+                + total_usage["input_tokens"]
+                + total_usage["output_tokens"]
+            )
+            token_sse = _sse(
+                {
+                    "type": "token_usage",
+                    "input_tokens": total_usage["input_tokens"],
+                    "output_tokens": total_usage["output_tokens"],
+                    "total_tokens": total_usage["input_tokens"]
+                    + total_usage["output_tokens"],
+                    "session_estimate": cumulative,
+                    "context_tokens": ctx_tokens,
+                    "max_input_tokens": max_input_tokens,
+                    "auto_compress_tokens": auto_compress_tokens,
+                }
+            )
 
             step_usage["input_tokens"] = 0
             step_usage["output_tokens"] = 0
@@ -520,23 +575,34 @@ async def chat_stream_generator(
         context_messages = []
         session = db.get_session(session_id)
         if session and session.messages:
-            provider = agent.config.llm.provider.lower() if agent and agent.config else ""
+            provider = (
+                agent.config.llm.provider.lower() if agent and agent.config else ""
+            )
             for msg in session.messages:
                 if msg.get("role") == "user":
-                    context_messages.append(HumanMessage(content=str(msg.get("content", ""))))
+                    context_messages.append(
+                        HumanMessage(content=str(msg.get("content", "")))
+                    )
                 elif msg.get("role") == "assistant":
                     assistant_content = str(msg.get("content", ""))
                     thinking = msg.get("thinking")
                     if thinking:
                         if provider == "deepseek":
                             context_messages.append(
-                                AIMessage(content=assistant_content, additional_kwargs={"reasoning_content": thinking})
+                                AIMessage(
+                                    content=assistant_content,
+                                    additional_kwargs={"reasoning_content": thinking},
+                                )
                             )
                         else:
                             # 非 reasoning 模型：将历史思考用 <think> 标签包裹嵌入内容
                             # 避免模型学到用 "[思考]:" 文本标记，从而导致前端显示异常
-                            assistant_content = f"<think>{thinking}</think>\n\n{assistant_content}"
-                            context_messages.append(AIMessage(content=assistant_content))
+                            assistant_content = (
+                                f"<think>{thinking}</think>\n\n{assistant_content}"
+                            )
+                            context_messages.append(
+                                AIMessage(content=assistant_content)
+                            )
                     else:
                         context_messages.append(AIMessage(content=assistant_content))
 
@@ -546,11 +612,13 @@ async def chat_stream_generator(
         logger.info(f"[{sid}] 🚀 使用 stream_mode='messages' 流式接口")
         logger.info(f"[{sid}] 📨 上下文消息数: {len(context_messages)}")
         for i, msg in enumerate(context_messages):
-            role = getattr(msg, 'type', type(msg).__name__)
-            content_full = str(getattr(msg, 'content', ''))
-            tool_calls = getattr(msg, 'tool_calls', None)
+            role = getattr(msg, "type", type(msg).__name__)
+            content_full = str(getattr(msg, "content", ""))
+            tool_calls = getattr(msg, "tool_calls", None)
             tc_info = f" | tool_calls={len(tool_calls)}" if tool_calls else ""
-            logger.info(f"[{sid}] 📨 msg[{i}]: role={role}{tc_info} | len={len(content_full)}")
+            logger.info(
+                f"[{sid}] 📨 msg[{i}]: role={role}{tc_info} | len={len(content_full)}"
+            )
 
         emitted_tool_call_ids = set()
         _todo_emitted_for = set()
@@ -564,15 +632,23 @@ async def chat_stream_generator(
 
             # ── AIMessageChunk: reasoning / text / tool_call_chunks ──────
             if isinstance(chunk, AIMessageChunk):
-                rc = chunk.additional_kwargs.get("reasoning_content", "") if hasattr(chunk, "additional_kwargs") else ""
+                rc = (
+                    chunk.additional_kwargs.get("reasoning_content", "")
+                    if hasattr(chunk, "additional_kwargs")
+                    else ""
+                )
                 raw_content = chunk.content or ""
                 tcc = getattr(chunk, "tool_call_chunks", None) or []
 
                 # Debug: log raw chunk structure for Anthropic protocol diagnosis
                 if not _debug_logged:
                     _debug_logged = True
-                    raw_content_repr = repr(chunk.content)[:300] if chunk.content else "''"
-                    raw_rc_repr = repr(chunk.additional_kwargs.get("reasoning_content", ""))[:200]
+                    raw_content_repr = (
+                        repr(chunk.content)[:300] if chunk.content else "''"
+                    )
+                    raw_rc_repr = repr(
+                        chunk.additional_kwargs.get("reasoning_content", "")
+                    )[:200]
                     raw_tcc_repr = repr(tcc)[:200] if tcc else "[]"
                     logger.info(
                         f"[{sid}] 🔍 AIMessageChunk debug | "
@@ -611,8 +687,7 @@ async def chat_stream_generator(
                 # DeepSeek reasoning_content (from additional_kwargs or list)
                 if isinstance(rc, list):
                     rc = "".join(
-                        c.get("text", "") if isinstance(c, dict) else str(c)
-                        for c in rc
+                        c.get("text", "") if isinstance(c, dict) else str(c) for c in rc
                     )
 
                 # === Usage metadata: 必须在 step 推进之前处理 ===
@@ -647,7 +722,9 @@ async def chat_stream_generator(
                         _log_step_start(current_step, "思考")
                         yield _start_thinking(current_step)
                     accumulated_thinking += rc
-                    yield _sse({"type": "thinking", "content": rc, "step": current_step})
+                    yield _sse(
+                        {"type": "thinking", "content": rc, "step": current_step}
+                    )
 
                 # === Text content (逐 token) ===
                 if content and not tcc:
@@ -683,8 +760,12 @@ async def chat_stream_generator(
                             yield token_sse
                         current_step += 1
                         step_advanced_this_round = True
-                        tool_names = [tc.get('name', '') for tc in tcc if tc.get('name')]
-                        _log_step_start(current_step, "工具调用", f"tools: {tool_names}")
+                        tool_names = [
+                            tc.get("name", "") for tc in tcc if tc.get("name")
+                        ]
+                        _log_step_start(
+                            current_step, "工具调用", f"tools: {tool_names}"
+                        )
                 for tc in tcc:
                     name = tc.get("name", "") or ""
                     args_str = str(tc.get("args", "") or "")
@@ -704,7 +785,10 @@ async def chat_stream_generator(
                             tool_call_index_to_id[tc_index] = tid
 
                         pending_prefix = ""
-                        if tc_index is not None and tc_index in pending_tool_args_by_index:
+                        if (
+                            tc_index is not None
+                            and tc_index in pending_tool_args_by_index
+                        ):
                             pending_prefix = pending_tool_args_by_index.pop(tc_index)
 
                         tool_call_accumulated_args_str[tid] = pending_prefix + args_str
@@ -714,75 +798,111 @@ async def chat_stream_generator(
                         if full_args:
                             try:
                                 parsed = json.loads(full_args)
-                                args_data = parsed if isinstance(parsed, dict) else {"value": parsed}
+                                args_data = (
+                                    parsed
+                                    if isinstance(parsed, dict)
+                                    else {"value": parsed}
+                                )
                             except json.JSONDecodeError:
                                 args_data = {}
 
                         tool_call_accumulated_args[tid] = args_data
                         emitted_tool_call_ids.add(tid)
 
-                        blocks.append({
-                            "type": "tool_call", "tool_name": tool_name,
-                            "tool_call_id": tid,
-                            "arguments": args_data, "result": "",
-                            "success": True, "order": len(blocks),
-                            "step": current_step,
-                        })
+                        blocks.append(
+                            {
+                                "type": "tool_call",
+                                "tool_name": tool_name,
+                                "tool_call_id": tid,
+                                "arguments": args_data,
+                                "result": "",
+                                "success": True,
+                                "order": len(blocks),
+                                "step": current_step,
+                            }
+                        )
 
-                        yield _sse({
-                            "type": "tool_call", "tool_name": tool_name,
-                            "tool_call_id": tid,
-                            "arguments": args_data,
-                            "step": current_step,
-                        })
+                        yield _sse(
+                            {
+                                "type": "tool_call",
+                                "tool_name": tool_name,
+                                "tool_call_id": tid,
+                                "arguments": args_data,
+                                "step": current_step,
+                            }
+                        )
 
                         # ── write_todos: emit todo_list SSE event ─────────
                         if tool_name == "write_todos" and isinstance(args_data, dict):
                             todos = args_data.get("todos", [])
                             if todos:
-                                logger.info(f"[{sid}] 📋 Todo list | items: {len(todos)}")
+                                logger.info(
+                                    f"[{sid}] 📋 Todo list | items: {len(todos)}"
+                                )
                                 _persist_todos(todos)
                                 _todo_emitted_for.add(tid)
-                                yield _sse({
-                                    "type": "todo_list",
-                                    "todos": todos,
-                                    "step": current_step,
-                                })
+                                yield _sse(
+                                    {
+                                        "type": "todo_list",
+                                        "todos": todos,
+                                        "step": current_step,
+                                    }
+                                )
                     elif tid or tc_index is not None:
                         resolved_tid = tid
                         if not resolved_tid and tc_index is not None:
                             resolved_tid = tool_call_index_to_id.get(tc_index, "")
 
                         if resolved_tid and resolved_tid in tool_call_id_to_name:
-                            tool_call_accumulated_args_str[resolved_tid] = tool_call_accumulated_args_str.get(resolved_tid, "") + args_str
+                            tool_call_accumulated_args_str[resolved_tid] = (
+                                tool_call_accumulated_args_str.get(resolved_tid, "")
+                                + args_str
+                            )
 
                             full_args_str = tool_call_accumulated_args_str[resolved_tid]
                             try:
                                 parsed = json.loads(full_args_str)
-                                args_data = parsed if isinstance(parsed, dict) else {"value": parsed}
+                                args_data = (
+                                    parsed
+                                    if isinstance(parsed, dict)
+                                    else {"value": parsed}
+                                )
                                 tool_call_accumulated_args[resolved_tid] = args_data
 
                                 for blk in reversed(blocks):
-                                    if blk["type"] == "tool_call" and blk.get("tool_call_id") == resolved_tid:
+                                    if (
+                                        blk["type"] == "tool_call"
+                                        and blk.get("tool_call_id") == resolved_tid
+                                    ):
                                         blk["arguments"] = args_data
                                         break
 
                                 tool_name = tool_call_id_to_name[resolved_tid]
                                 if tool_name == "write_todos":
-                                    todos = args_data.get("todos", []) if isinstance(args_data, dict) else []
+                                    todos = (
+                                        args_data.get("todos", [])
+                                        if isinstance(args_data, dict)
+                                        else []
+                                    )
                                     if todos and resolved_tid not in _todo_emitted_for:
-                                        logger.info(f"[{sid}] 📋 Todo list | items: {len(todos)}")
+                                        logger.info(
+                                            f"[{sid}] 📋 Todo list | items: {len(todos)}"
+                                        )
                                         _persist_todos(todos)
                                         _todo_emitted_for.add(resolved_tid)
-                                        yield _sse({
-                                            "type": "todo_list",
-                                            "todos": todos,
-                                            "step": current_step,
-                                        })
+                                        yield _sse(
+                                            {
+                                                "type": "todo_list",
+                                                "todos": todos,
+                                                "step": current_step,
+                                            }
+                                        )
                             except json.JSONDecodeError:
                                 pass
                         elif tc_index is not None:
-                            pending_tool_args_by_index[tc_index] = pending_tool_args_by_index.get(tc_index, "") + args_str
+                            pending_tool_args_by_index[tc_index] = (
+                                pending_tool_args_by_index.get(tc_index, "") + args_str
+                            )
 
             # ── ToolMessage: tool execution result ──────────────────────
             elif isinstance(chunk, ToolMessage):
@@ -804,35 +924,53 @@ async def chat_stream_generator(
                                 tool_name = blk.get("tool_name", tool_name)
                                 tool_call_id_to_name[tool_call_id] = tool_name
                                 if tool_call_id in tool_call_accumulated_args:
-                                    tool_call_accumulated_args[resolved_tid] = tool_call_accumulated_args.pop(tool_call_id)
+                                    tool_call_accumulated_args[resolved_tid] = (
+                                        tool_call_accumulated_args.pop(tool_call_id)
+                                    )
                                 if tool_call_id in tool_call_start_times:
-                                    tool_call_start_times[resolved_tid] = tool_call_start_times.pop(tool_call_id)
+                                    tool_call_start_times[resolved_tid] = (
+                                        tool_call_start_times.pop(tool_call_id)
+                                    )
                                 break
 
                 tool_args = tool_call_accumulated_args.get(resolved_tid, {})
-                result_content = _parse_mcp_content(chunk.content) if chunk.content else ""
+                result_content = (
+                    _parse_mcp_content(chunk.content) if chunk.content else ""
+                )
 
                 # Determine success: check both chunk metadata AND result content
                 # DeepAgents built-in tools (read_file, write_file, execute, etc.)
                 # return errors as plain string content (e.g. "Error: File not found"),
                 # not as ToolMessages with is_error metadata.
-                chunk_error = getattr(chunk, "additional_kwargs", {}).get("is_error", False)
+                chunk_error = getattr(chunk, "additional_kwargs", {}).get(
+                    "is_error", False
+                )
                 content_error = _is_error_result(result_content)
                 success = not chunk_error and not content_error
                 tool_start = tool_call_start_times.pop(resolved_tid, None)
                 tool_duration = round(time.time() - tool_start, 2) if tool_start else 0
 
                 for blk in reversed(blocks):
-                    if blk["type"] == "tool_call" and blk.get("tool_call_id") == resolved_tid:
+                    if (
+                        blk["type"] == "tool_call"
+                        and blk.get("tool_call_id") == resolved_tid
+                    ):
                         blk["result"] = result_content
                         blk["success"] = success
                         blk["duration"] = tool_duration
                         break
 
-                tool_call_records.append([
-                    tool_name, tool_call_id, tool_args,
-                    result_content, success, tool_duration, current_step,
-                ])
+                tool_call_records.append(
+                    [
+                        tool_name,
+                        tool_call_id,
+                        tool_args,
+                        result_content,
+                        success,
+                        tool_duration,
+                        current_step,
+                    ]
+                )
 
                 # 日志截断长结果
                 log_result = result_content
@@ -844,7 +982,11 @@ async def chat_stream_generator(
                 if tool_args and isinstance(tool_args, dict):
                     for k, v in tool_args.items():
                         sv = str(v)
-                        log_args[k] = sv[:_arg_value_truncate] + "..." if len(sv) > _arg_value_truncate else v
+                        log_args[k] = (
+                            sv[:_arg_value_truncate] + "..."
+                            if len(sv) > _arg_value_truncate
+                            else v
+                        )
                 logger.info(
                     f"[{sid}] {'✅' if success else '❌'} {tool_name} | "
                     f"参数: {json.dumps(log_args, ensure_ascii=False) if log_args else {}} | "
@@ -855,18 +997,27 @@ async def chat_stream_generator(
                 # 下一个 AIMessageChunk 将开启一个新的 step
                 step_advanced_this_round = False
 
-                yield _sse({
-                    "type": "tool_result", "tool_name": tool_name,
-                    "tool_call_id": resolved_tid,
-                    "arguments": tool_args, "result": result_content,
-                    "success": success, "duration": tool_duration,
-                    "step": current_step,
-                })
+                yield _sse(
+                    {
+                        "type": "tool_result",
+                        "tool_name": tool_name,
+                        "tool_call_id": resolved_tid,
+                        "arguments": tool_args,
+                        "result": result_content,
+                        "success": success,
+                        "duration": tool_duration,
+                        "step": current_step,
+                    }
+                )
 
                 # ── write_todos: extract todo list from tool result ───
                 if tool_name == "write_todos" and resolved_tid not in _todo_emitted_for:
                     # Try to extract todos from arguments first
-                    todos = tool_args.get("todos", []) if isinstance(tool_args, dict) else []
+                    todos = (
+                        tool_args.get("todos", [])
+                        if isinstance(tool_args, dict)
+                        else []
+                    )
                     # If args don't have todos, try parsing from result text
                     if not todos and result_content:
                         todo_match = re.search(r"\[.*?\]", result_content, re.DOTALL)
@@ -881,28 +1032,39 @@ async def chat_stream_generator(
                         logger.info(f"[{sid}] 📋 Todo list | items: {len(todos)}")
                         _persist_todos(todos)
                         _todo_emitted_for.add(resolved_tid)
-                        yield _sse({
-                            "type": "todo_list",
-                            "todos": todos,
-                            "step": current_step,
-                        })
+                        yield _sse(
+                            {
+                                "type": "todo_list",
+                                "todos": todos,
+                                "step": current_step,
+                            }
+                        )
 
                 # Persist tool call
                 try:
                     db.record_tool_call(
-                        session_id=session_id, message_id=message_id,
-                        tool_name=tool_name, tool_call_id=tool_call_id,
-                        arguments=tool_args, result=str(result_content)[:5000],
-                        success=success, duration=tool_duration, step=current_step,
+                        session_id=session_id,
+                        message_id=message_id,
+                        tool_name=tool_name,
+                        tool_call_id=tool_call_id,
+                        arguments=tool_args,
+                        result=str(result_content)[:5000],
+                        success=success,
+                        duration=tool_duration,
+                        step=current_step,
                     )
                 except Exception as e:
                     logger.warning(f"[{sid}] 持久化工具调用记录失败: {e}")
 
                 if session_logger:
                     session_logger.log_tool_call(
-                        tool_name=tool_name, tool_call_id=tool_call_id,
-                        arguments=tool_args, result=str(result_content)[:5000],
-                        success=success, duration=tool_duration, step=current_step,
+                        tool_name=tool_name,
+                        tool_call_id=tool_call_id,
+                        arguments=tool_args,
+                        result=str(result_content)[:5000],
+                        success=success,
+                        duration=tool_duration,
+                        step=current_step,
                         message_id=message_id,
                     )
 
@@ -910,15 +1072,25 @@ async def chat_stream_generator(
                 if tool_name in ("write_file", "write_tool"):
                     try:
                         file_args = tool_args if isinstance(tool_args, dict) else {}
-                        filename = file_args.get("file_name") or file_args.get("path") or file_args.get("file_path", "")
+                        filename = (
+                            file_args.get("file_name")
+                            or file_args.get("path")
+                            or file_args.get("file_path", "")
+                        )
                         if filename:
-                            base_name = os.path.basename(filename) if filename else "unknown"
+                            base_name = (
+                                os.path.basename(filename) if filename else "unknown"
+                            )
                             ext = os.path.splitext(base_name)[1].lstrip(".") or "txt"
                             db.add_generated_file(
-                                session_id=session_id, message_id=message_id,
+                                session_id=session_id,
+                                message_id=message_id,
                                 filename=base_name,
-                                file_path=str(agent.workspace_dir / filename) if not os.path.isabs(filename) else filename,
-                                file_type=ext, size=0,
+                                file_path=str(agent.workspace_dir / filename)
+                                if not os.path.isabs(filename)
+                                else filename,
+                                file_type=ext,
+                                size=0,
                             )
                             logger.info(f"[{sid}] 📄 记录生成文件: {base_name}")
                     except Exception as e:
@@ -974,7 +1146,9 @@ async def chat_stream_generator(
         content_time = 0
         if content_start_time:
             content_time = round(time.time() - content_start_time, 2)
-        total_tool_duration = sum(tc[5] for tc in tool_call_records) if tool_call_records else 0
+        total_tool_duration = (
+            sum(tc[5] for tc in tool_call_records) if tool_call_records else 0
+        )
 
         logger.info(
             f"[{sid}] ✅ 流式响应完成 | 总步骤: {current_step} | "
@@ -992,7 +1166,9 @@ async def chat_stream_generator(
 
         if sum_tokens == 0 and (accumulated_response or accumulated_thinking):
             inp_tokens = estimate_tokens(message_content)
-            out_tokens = estimate_tokens(accumulated_response) + estimate_tokens(accumulated_thinking)
+            out_tokens = estimate_tokens(accumulated_response) + estimate_tokens(
+                accumulated_thinking
+            )
             sum_tokens = inp_tokens + out_tokens
             total_usage["input_tokens"] = inp_tokens
             total_usage["output_tokens"] = out_tokens
@@ -1017,7 +1193,9 @@ async def chat_stream_generator(
 
         ctx_max = max_input_tokens or 0
         ctx_max_str = f"{ctx_max:,}" if ctx_max else "?"
-        ratio = ((session_total_tokens or sum_tokens) / ctx_max * 100) if ctx_max > 0 else 0
+        ratio = (
+            ((session_total_tokens or sum_tokens) / ctx_max * 100) if ctx_max > 0 else 0
+        )
         filled = min(20, int(ratio / 5))
         bar = " [" + "█" * filled + "░" * (20 - filled) + f"] {ratio:.1f}%"
         logger.info(
@@ -1040,12 +1218,17 @@ async def chat_stream_generator(
             "thinking_duration": thinking_time or None,
             "tool_calls": [
                 {
-                    "tool_name": tc[0], "tool_call_id": tc[1],
-                    "arguments": tc[2], "result": tc[3],
-                    "success": tc[4], "duration": tc[5], "step": tc[6],
+                    "tool_name": tc[0],
+                    "tool_call_id": tc[1],
+                    "arguments": tc[2],
+                    "result": tc[3],
+                    "success": tc[4],
+                    "duration": tc[5],
+                    "step": tc[6],
                 }
                 for tc in tool_call_records
-            ] or None,
+            ]
+            or None,
             "blocks": blocks or None,
             "usage": {
                 "input_tokens": inp_tokens,
@@ -1069,7 +1252,8 @@ async def chat_stream_generator(
             all_messages = session.messages if session else []
 
             context_data = {
-                "session_id": session_id, "message_id": message_id,
+                "session_id": session_id,
+                "message_id": message_id,
                 "timestamp": datetime.now().isoformat(),
                 "messages": all_messages,
                 "current_exchange": {
@@ -1081,9 +1265,13 @@ async def chat_stream_generator(
                     },
                     "tool_calls": [
                         {
-                            "tool_name": tc[0], "tool_call_id": tc[1],
-                            "arguments": tc[2], "result": str(tc[3])[:1000],
-                            "success": tc[4], "duration": tc[5], "step": tc[6],
+                            "tool_name": tc[0],
+                            "tool_call_id": tc[1],
+                            "arguments": tc[2],
+                            "result": str(tc[3])[:1000],
+                            "success": tc[4],
+                            "duration": tc[5],
+                            "step": tc[6],
                         }
                         for tc in tool_call_records
                     ],
@@ -1112,17 +1300,38 @@ async def chat_stream_generator(
                     new_ws_path = str(agent.workspace_dir.absolute())
                     db.update_generated_file_paths(session_id, old_ws_path, new_ws_path)
                     db.update_session_workspace_name(session_id, new_ws_name)
-                    logger.info(f"[{sid}] Workspace renamed: {old_ws_path} -> {new_ws_path}")
+                    logger.info(
+                        f"[{sid}] Workspace renamed: {old_ws_path} -> {new_ws_path}"
+                    )
                 except Exception as e:
                     logger.warning(f"[{sid}] Workspace rename failed: {e}")
+
+        # Memory file truncation — ensure AGENTS.md stays within 2000 chars
+        if agent and agent.memory_file and agent.memory_file.exists():
+            try:
+                memory_content = agent.memory_file.read_text(encoding="utf-8")
+                if len(memory_content) > 2000:
+                    from ..api.settings import _truncate_memory
+
+                    truncated = _truncate_memory(memory_content, 2000)
+                    agent.memory_file.write_text(truncated, encoding="utf-8")
+                    logger.warning(
+                        f"[{sid}] 记忆文件已截断 | 原始: {len(memory_content)} | 截断后: {len(truncated)}"
+                    )
+            except Exception as e:
+                logger.warning(f"[{sid}] 记忆文件截断失败: {e}")
 
         # Session logger
         if session_logger:
             tool_calls_for_log = [
                 {
-                    "tool_name": tc[0], "tool_call_id": tc[1],
-                    "arguments": tc[2], "result": str(tc[3])[:1000],
-                    "success": tc[4], "duration": tc[5], "step": tc[6],
+                    "tool_name": tc[0],
+                    "tool_call_id": tc[1],
+                    "arguments": tc[2],
+                    "result": str(tc[3])[:1000],
+                    "success": tc[4],
+                    "duration": tc[5],
+                    "step": tc[6],
                 }
                 for tc in tool_call_records
             ] or None
@@ -1139,14 +1348,18 @@ async def chat_stream_generator(
             "max_input_tokens": max_input_tokens,
             "auto_compress_tokens": auto_compress_tokens,
             "session_estimate": session_total_tokens,
-            "context_tokens": last_context_tokens if last_context_tokens > 0 else inp_tokens,
+            "context_tokens": last_context_tokens
+            if last_context_tokens > 0
+            else inp_tokens,
         }
-        yield _sse({
-            "type": "done",
-            "session_id": session_id,
-            "elapsed_time": round(elapsed_time, 2),
-            "usage": usage_payload,
-        })
+        yield _sse(
+            {
+                "type": "done",
+                "session_id": session_id,
+                "elapsed_time": round(elapsed_time, 2),
+                "usage": usage_payload,
+            }
+        )
 
     except asyncio.CancelledError:
         logger.info(f"[{sid}] ❌ 请求被取消")
@@ -1159,12 +1372,18 @@ async def chat_stream_generator(
                 "thinking_duration": None,
                 "tool_calls": [
                     {
-                        "tool_name": tc[0], "tool_call_id": tc[1],
-                        "arguments": tc[2], "result": str(tc[3])[:5000],
-                        "success": tc[4], "duration": tc[5], "step": tc[6],
+                        "tool_name": tc[0],
+                        "tool_call_id": tc[1],
+                        "arguments": tc[2],
+                        "result": str(tc[3])[:5000],
+                        "success": tc[4],
+                        "duration": tc[5],
+                        "step": tc[6],
                     }
                     for tc in tool_call_records
-                ] if tool_call_records else None,
+                ]
+                if tool_call_records
+                else None,
                 "blocks": blocks if blocks else None,
                 "usage": {
                     "input_tokens": total_usage.get("input_tokens", 0),
@@ -1174,7 +1393,9 @@ async def chat_stream_generator(
             }
             db.update_last_assistant_message(session_id, partial_msg)
             db.update_last_assistant_message_row(session_id, partial_msg)
-            logger.info(f"[{sid}] 💾 取消时已保存部分回复 | 长度: {len(accumulated_response)}")
+            logger.info(
+                f"[{sid}] 💾 取消时已保存部分回复 | 长度: {len(accumulated_response)}"
+            )
         except Exception as e:
             logger.warning(f"[{sid}] 取消时保存失败: {e}")
         yield format_sse({"type": "error", "content": "请求被取消"})

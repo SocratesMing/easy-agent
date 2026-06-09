@@ -1,119 +1,91 @@
+"""日志接口 — info/error/debug/warn 级别日志输出"""
+
 log = None
 
 
-# def init():
-#     global log
-#     log = app.ctx.get('QLOG')
-
-
 def info(*objects):
-    """
-    描述
-        打印info级别日志,提供占位符的方式，以参数化的方式打印日志
-    
-    示例
+    """打印info级别日志。
+
+    Example:
         >>> qlog.info("策略启动")
-        策略启动
     """
     log.info(*objects)
 
 
-def info_f(nformat, *args):
-    """
-    描述
-        打印info级别日志,提供占位符的方式，以参数化的方式打印日志
+def info_f(nformat: str, *args):
+    """打印info级别日志(占位符格式化)。
 
-    参数
-        日志内容
+    Args:
+        nformat: 格式字符串，如 "{}策略启动"
+        *args: 占位符参数
 
-    示例
-        >>> version = "第一版"
-        >>> qlog.info_f("{}策略启动", version )
-        第一版策略启动
-
+    Example:
+        >>> qlog.info_f("{}策略启动", "第一版")
     """
     log.info_f(nformat, *args)
 
 
-def error(nformat):
-    """
-    描述
-        打印error级别日志,提供占位符的方式，以参数化的方式打印日志
+def error(nformat: str):
+    """打印error级别日志。
 
-    示例
+    Example:
         >>> qlog.error("策略启动失败")
-        策略启动失败
     """
     log.error(nformat)
 
 
-def error_f(nformat, *args):
-    """
-    描述
-        打印error级别日志,提供占位符的方式，以参数化的方式打印日志
+def error_f(nformat: str, *args):
+    """打印error级别日志(占位符格式化)。
 
-    参数
-        日志内容
-    
-    示例
-        >>> version = "第一版"
-            qlog.error_f("{}策略启动失败", version)
-        第一版策略启动失败
+    Args:
+        nformat: 格式字符串
+        *args: 占位符参数
+
+    Example:
+        >>> qlog.error_f("{}策略启动失败", "第一版")
     """
     log.error_f(nformat, *args)
 
 
-def debug(nformat):
-    """
-    描述
-        打印debug级别日志,提供占位符的方式，以参数化的方式打印日志
+def debug(nformat: str):
+    """打印debug级别日志。
 
-    示例
-        >>> qlog.debug("策略启动失败")
-        策略启动失败
+    Example:
+        >>> qlog.debug("调试信息")
     """
     log.debug(nformat)
 
 
-def debug_f(nformat, *args):
-    """
-    描述
-        打印debug级别日志,提供占位符的方式，以参数化的方式打印日志
+def debug_f(nformat: str, *args):
+    """打印debug级别日志(占位符格式化)。
 
-    参数
-        日志内容
+    Args:
+        nformat: 格式字符串
+        *args: 占位符参数
 
-    示例
-        >>> version = "第一版"
-            qlog.error_f("{}策略启动失败", version)
-        第一版策略启动失败
+    Example:
+        >>> qlog.debug_f("{}调试信息", "第一版")
     """
     log.debug_f(nformat, *args)
 
 
-def warn(nformat):
-    """
-    描述
-        打印warn级别日志,提供占位符的方式，以参数化的方式打印日志
+def warn(nformat: str):
+    """打印warn级别日志。
 
-    示例
-        >>> qlog.warn("策略启动失败")
-        策略启动失败
+    Example:
+        >>> qlog.warn("警告信息")
     """
     log.warn(nformat)
 
 
-def warn_f(nformat, *args):
-    """
-    描述
-        打印warn级别日志,提供占位符的方式，以参数化的方式打印日志
+def warn_f(nformat: str, *args):
+    """打印warn级别日志(占位符格式化)。
 
-    参数
-        日志内容
+    Args:
+        nformat: 格式字符串
+        *args: 占位符参数
 
-    示例
-        >>> version = "第一版"
-            qlog.warn_f("{}策略启动失败", version)
-        第一版策略启动失败
+    Example:
+        >>> qlog.warn_f("{}警告信息", "第一版")
     """
     log.warn_f(nformat, *args)

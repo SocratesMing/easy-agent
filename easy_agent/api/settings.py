@@ -20,6 +20,7 @@ router = APIRouter(prefix="/api/settings", tags=["Settings"])
 
 # ── 记忆 ──────────────────────────────────────────────────────────────
 
+
 @router.get("/memory", summary="获取当前用户的记忆文件内容")
 async def get_memory(username: Annotated[str, Depends(get_current_username)]):
     safe_name = Config.sanitize_username(username)
@@ -41,6 +42,9 @@ class UpdateMemoryRequest(BaseModel):
     content: str
 
 
+MEMORY_MAX_CHARS = 2000
+
+
 @router.put("/memory", summary="更新当前用户的记忆文件内容")
 async def update_memory(
     request: UpdateMemoryRequest,
@@ -55,12 +59,44 @@ async def update_memory(
     memories_dir.mkdir(parents=True, exist_ok=True)
     memory_file = memories_dir / "AGENTS.md"
 
-    memory_file.write_text(request.content, encoding="utf-8")
-    logger.info(f"记忆文件已更新 | 用户: {username} | 字符数: {len(request.content)}")
-    return {"status": "ok"}
+    content = request.content
+    if len(content) > MEMORY_MAX_CHARS:
+        content = _truncate_memory(content, MEMORY_MAX_CHARS)
+        logger.warning(
+            f"记忆文件超出限制已截断 | 用户: {username} | 原始: {len(request.content)} | 截断后: {len(content)}"
+        )
+
+    memory_file.write_text(content, encoding="utf-8")
+    logger.info(f"记忆文件已更新 | 用户: {username} | 字符数: {len(content)}")
+    return {"status": "ok", "chars": len(content)}
+
+
+def _truncate_memory(content: str, max_chars: int) -> str:
+    """截断记忆文件内容，保留标题和靠前的条目。
+
+    策略：按行分割，从前往后保留尽可能多的完整行，直到接近 max_chars。
+    这样优先保留最早写入的、通常更重要的长期偏好。
+    """
+    lines = content.split("\n")
+    result_lines = []
+    current_len = 0
+
+    for line in lines:
+        line_len = len(line) + 1  # +1 for newline
+        if current_len + line_len > max_chars:
+            break
+        result_lines.append(line)
+        current_len += line_len
+
+    truncated = "\n".join(result_lines)
+    if len(truncated) > max_chars:
+        truncated = truncated[:max_chars]
+
+    return truncated
 
 
 # ── 系统提示词 ────────────────────────────────────────────────────────
+
 
 @router.get("/system-prompt", summary="获取系统提示词（只读）")
 async def get_system_prompt(
@@ -87,6 +123,7 @@ async def get_system_prompt(
 
 # ── Skills ────────────────────────────────────────────────────────────
 
+
 @router.get("/skills", summary="获取所有可用的 Skills 列表")
 async def get_skills(
     username: Annotated[str, Depends(get_current_username)],
@@ -106,16 +143,19 @@ async def get_skills(
             if len(description) > 2000:
                 description = description[:2000] + "..."
 
-        result.append({
-            "name": skill["name"],
-            "description": description,
-            "description_file": skill["description_file"],
-        })
+        result.append(
+            {
+                "name": skill["name"],
+                "description": description,
+                "description_file": skill["description_file"],
+            }
+        )
 
     return {"skills": result}
 
 
 # ── MCP ───────────────────────────────────────────────────────────────
+
 
 @router.get("/mcp", summary="获取所有 MCP 服务配置")
 async def get_mcp_servers(

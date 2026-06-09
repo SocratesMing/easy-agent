@@ -220,7 +220,9 @@ def create_model(config: Config):
     elif protocol == "anthropic":
         return _create_anthropic_compatible(config.llm)
     else:
-        raise ValueError(f"Unsupported protocol: {protocol}. Use 'openai' or 'anthropic'.")
+        raise ValueError(
+            f"Unsupported protocol: {protocol}. Use 'openai' or 'anthropic'."
+        )
 
 
 def _create_openai_compatible(llm_config) -> ChatOpenAI:

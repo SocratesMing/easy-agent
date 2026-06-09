@@ -219,7 +219,9 @@ async def parse_file(
 async def get_workspace_tree(
     username: Annotated[str, Depends(get_current_username)],
     path: str = Query(default="", description="目录路径"),
-    session_id: Optional[str] = Query(default=None, description="会话ID，指定后只返回该会话的工作区目录"),
+    session_id: Optional[str] = Query(
+        default=None, description="会话ID，指定后只返回该会话的工作区目录"
+    ),
     db: Annotated[Database, Depends(get_database)] = None,
 ):
     workspace_dir = Config.get_user_workspace_dir(username)
