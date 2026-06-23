@@ -4,12 +4,21 @@
       <div class="preview-dialog">
         <div class="preview-header">
           <h3 class="preview-title">{{ filename }}</h3>
-          <button class="close-btn" @click="handleClose">
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <line x1="18" y1="6" x2="6" y2="18"></line>
-              <line x1="6" y1="6" x2="18" y2="18"></line>
-            </svg>
-          </button>
+          <div class="header-actions">
+            <button class="download-btn" @click="handleDownload" title="下载文件">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                <polyline points="7 10 12 15 17 10"></polyline>
+                <line x1="12" y1="15" x2="12" y2="3"></line>
+              </svg>
+            </button>
+            <button class="close-btn" @click="handleClose">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <line x1="18" y1="6" x2="6" y2="18"></line>
+                <line x1="6" y1="6" x2="18" y2="18"></line>
+              </svg>
+            </button>
+          </div>
         </div>
         <div class="preview-content">
           <div v-if="loading" class="preview-loading">
@@ -39,11 +48,34 @@
           <div v-else-if="isImage" class="preview-image">
             <img :src="previewUrl" :alt="filename" />
           </div>
+          <div v-else-if="isCsv" class="preview-csv">
+            <div class="csv-table-wrapper">
+              <table class="csv-table">
+                <thead>
+                  <tr>
+                    <th class="row-num">#</th>
+                    <th v-for="(header, hi) in csvData.headers" :key="hi">{{ header }}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="(row, ri) in csvData.rows" :key="ri">
+                    <td class="row-num">{{ ri + 1 }}</td>
+                    <td v-for="(cell, ci) in row" :key="ci">{{ cell }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
           <div v-else-if="isMarkdown" class="preview-markdown">
             <div class="markdown-body" v-html="renderedMarkdown"></div>
           </div>
           <div v-else-if="isText" class="preview-text">
-            <pre>{{ textContent }}</pre>
+            <div class="code-block">
+              <div class="line-numbers">
+                <span v-for="n in lineCount" :key="n">{{ n }}</span>
+              </div>
+              <pre v-html="highlightedCode"></pre>
+            </div>
           </div>
           <div v-else class="preview-unsupported">
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -52,7 +84,8 @@
               <line x1="12" y1="18" x2="12" y2="12"></line>
               <line x1="9" y1="15" x2="15" y2="15"></line>
             </svg>
-            <p>该文件类型暂不支持预览</p>
+            <p>该文件类型暂不支持在线预览</p>
+            <button class="download-fallback-btn" @click="handleDownload">下载文件</button>
           </div>
         </div>
       </div>
@@ -70,6 +103,7 @@ import VueOfficeExcel from '@vue-office/excel'
 import VueOfficePptx from '@vue-office/pptx'
 import '@vue-office/docx/lib/index.css'
 import '@vue-office/excel/lib/index.css'
+import { getStoredToken } from '../api/auth.js'
 
 marked.setOptions({
   breaks: true,
@@ -94,6 +128,10 @@ const props = defineProps({
     type: String,
     default: ''
   },
+  sessionId: {
+    type: String,
+    default: null
+  },
   visible: {
     type: Boolean,
     default: false
@@ -111,7 +149,7 @@ const excelUrl = ref('')
 const pptxUrl = ref('')
 
 const imageExts = ['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.svg', '.ico']
-const textExts = ['.txt', '.json', '.xml', '.csv', '.js', '.ts', '.vue', '.py', '.java', '.go', '.rs', '.c', '.cpp', '.h', '.sh', '.bat', '.css', '.sql', '.html', '.htm']
+const textExts = ['.txt', '.json', '.xml', '.csv', '.js', '.ts', '.vue', '.py', '.java', '.go', '.rs', '.c', '.cpp', '.h', '.hpp', '.sh', '.bat', '.css', '.scss', '.less', '.sql', '.html', '.htm', '.yaml', '.yml', '.toml', '.ini', '.cfg', '.conf', '.env', '.log', '.md', '.jsx', '.tsx', '.rb', '.php', '.swift', '.kt', '.scala', '.lua', '.pl', '.r', '.dart', '.ex', '.exs', '.erl', '.hs', '.ml', '.jl', '.tf', '.proto', '.graphql', '.makefile', '.cmake', '.dockerfile', '.gitignore', '.properties', '.gradle']
 
 const isImage = computed(() => {
   const ext = props.filename.split('.').pop().toLowerCase()
@@ -143,6 +181,115 @@ const isMarkdown = computed(() => {
   return ext === 'md'
 })
 
+const isCsv = computed(() => {
+  const ext = props.filename.split('.').pop().toLowerCase()
+  return ext === 'csv'
+})
+
+const isCode = computed(() => {
+  const ext = props.filename.split('.').pop().toLowerCase()
+  const codeExts = ['js', 'ts', 'vue', 'py', 'java', 'go', 'rs', 'c', 'cpp', 'h', 'hpp', 'sh', 'bat', 'css', 'scss', 'less', 'sql', 'html', 'htm', 'xml', 'json', 'yaml', 'yml', 'toml', 'jsx', 'tsx', 'rb', 'php', 'swift', 'kt', 'lua', 'pl', 'r', 'dart', 'tf', 'proto', 'graphql']
+  return codeExts.includes(ext)
+})
+
+// 代码语言映射
+const codeLangMap = {
+  js: 'javascript', jsx: 'javascript', ts: 'typescript', tsx: 'typescript',
+  vue: 'xml', html: 'xml', htm: 'xml', xml: 'xml',
+  py: 'python', java: 'java', go: 'go', rs: 'rust',
+  c: 'c', cpp: 'cpp', h: 'c', hpp: 'cpp',
+  sh: 'bash', bat: 'bat',
+  css: 'css', scss: 'scss', less: 'less',
+  sql: 'sql', json: 'json', yaml: 'yaml', yml: 'yaml',
+  toml: 'ini', rb: 'ruby', php: 'php', swift: 'swift',
+  kt: 'kotlin', lua: 'lua', pl: 'perl', r: 'r',
+  dart: 'dart', tf: 'hcl', proto: 'protobuf', graphql: 'graphql',
+}
+
+const highlightedCode = computed(() => {
+  if (!textContent.value) return ''
+  const ext = props.filename.split('.').pop().toLowerCase()
+  const lang = codeLangMap[ext]
+
+  // 如果是代码文件且有对应语言，使用语法高亮
+  if (isCode.value && lang && hljs.getLanguage(lang)) {
+    try {
+      return hljs.highlight(textContent.value, { language: lang }).value
+    } catch (__) {}
+  }
+
+  // JSON 特殊处理
+  if (ext === 'json') {
+    try {
+      const parsed = JSON.parse(textContent.value)
+      return hljs.highlight(JSON.stringify(parsed, null, 2), { language: 'json' }).value
+    } catch (__) {}
+  }
+
+  // 普通文本，转义 HTML
+  return escapeHtml(textContent.value)
+})
+
+const lineCount = computed(() => {
+  if (!textContent.value) return 0
+  return textContent.value.split('\n').length
+})
+
+const csvData = computed(() => {
+  if (!textContent.value) return { headers: [], rows: [] }
+  const lines = textContent.value.split('\n').filter(l => l.trim())
+  if (lines.length === 0) return { headers: [], rows: [] }
+
+  const parseLine = (line) => {
+    const result = []
+    let current = ''
+    let inQuotes = false
+    for (let i = 0; i < line.length; i++) {
+      const char = line[i]
+      if (char === '"' && line[i + 1] === '"') {
+        current += '"'
+        i++
+      } else if (char === '"') {
+        inQuotes = !inQuotes
+      } else if (char === ',' && !inQuotes) {
+        result.push(current)
+        current = ''
+      } else {
+        current += char
+      }
+    }
+    result.push(current)
+    return result
+  }
+
+  const headers = parseLine(lines[0])
+  const rows = lines.slice(1, 1000).map(parseLine) // 限制最多 1000 行
+  return { headers, rows }
+})
+
+function escapeHtml(text) {
+  const div = document.createElement('div')
+  div.textContent = text
+  return div.innerHTML
+}
+
+function handleDownload() {
+  const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
+  const token = getStoredToken()
+  const params = new URLSearchParams()
+  params.set('file_path', props.filePath)
+  if (props.sessionId) params.set('session_id', props.sessionId)
+  if (token) params.set('token', token)
+  params.set('download', 'true')
+  const url = `${API_BASE_URL}/api/files/preview?${params.toString()}`
+  const link = document.createElement('a')
+  link.href = url
+  link.download = props.filename
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
+}
+
 const renderedMarkdown = computed(() => {
   if (!textContent.value) return ''
   return marked.parse(textContent.value)
@@ -168,38 +315,47 @@ async function loadPreview() {
   pptxUrl.value = ''
 
   const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
-  const encodedFilename = encodeURIComponent(props.filename)
-  previewUrl.value = `${API_BASE_URL}/api/sessions/files/${encodedFilename}/preview`
+  const token = getStoredToken()
+
+  // 构建预览 URL：使用 /api/files/preview 接口
+  const params = new URLSearchParams()
+  params.set('file_path', props.filePath)
+  if (props.sessionId) params.set('session_id', props.sessionId)
+  if (token) params.set('token', token)
+  previewUrl.value = `${API_BASE_URL}/api/files/preview?${params.toString()}`
   console.log('[FilePreview] 加载预览:', props.filename, previewUrl.value)
 
   const ext = props.filename.split('.').pop().toLowerCase()
+
+  // 构建 auth headers
+  const headers = token ? { 'Authorization': `Bearer ${token}` } : {}
 
   try {
     if (isPdf.value) {
       console.log('[FilePreview] PDF 预览')
     } else if (isPptx.value) {
       console.log('[FilePreview] PPTX 预览')
-      const response = await fetch(previewUrl.value)
+      const response = await fetch(previewUrl.value, { headers })
       if (!response.ok) throw new Error(`HTTP ${response.status}`)
       const arrayBuffer = await response.arrayBuffer()
       const blob = new Blob([arrayBuffer], { type: 'application/vnd.openxmlformats-officedocument.presentationml.presentation' })
       pptxUrl.value = URL.createObjectURL(blob)
     } else if (isDocx.value) {
       console.log('[FilePreview] DOCX 预览')
-      const response = await fetch(previewUrl.value)
+      const response = await fetch(previewUrl.value, { headers })
       if (!response.ok) throw new Error(`HTTP ${response.status}`)
       const arrayBuffer = await response.arrayBuffer()
       const blob = new Blob([arrayBuffer], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' })
       docxUrl.value = URL.createObjectURL(blob)
     } else if (isExcel.value) {
       console.log('[FilePreview] Excel 预览')
-      const response = await fetch(previewUrl.value)
+      const response = await fetch(previewUrl.value, { headers })
       if (!response.ok) throw new Error(`HTTP ${response.status}`)
       const arrayBuffer = await response.arrayBuffer()
       const blob = new Blob([arrayBuffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
       excelUrl.value = URL.createObjectURL(blob)
-    } else if (isMarkdown.value || isText.value) {
-      const response = await fetch(previewUrl.value)
+    } else if (isMarkdown.value || isText.value || isCsv.value) {
+      const response = await fetch(previewUrl.value, { headers })
       if (!response.ok) throw new Error(`HTTP ${response.status}`)
       textContent.value = await response.text()
       if (textContent.value.length > 50000) {
@@ -272,6 +428,36 @@ function handleClose() {
   flex-shrink: 0;
 }
 
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.download-btn {
+  width: 32px;
+  height: 32px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  color: #6b7280;
+  transition: all 0.2s;
+}
+
+.download-btn:hover {
+  background: #e0f2fe;
+  color: #0284c7;
+}
+
+.download-btn svg {
+  width: 18px;
+  height: 18px;
+}
+
 .preview-title {
   margin: 0;
   font-size: 16px;
@@ -334,6 +520,22 @@ function handleClose() {
   width: 64px;
   height: 64px;
   color: #d1d5db;
+}
+
+.download-fallback-btn {
+  margin-top: 8px;
+  padding: 8px 20px;
+  background: #3b82f6;
+  color: white;
+  border: none;
+  border-radius: 8px;
+  font-size: 14px;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.download-fallback-btn:hover {
+  background: #2563eb;
 }
 
 .preview-image {
@@ -403,18 +605,99 @@ function handleClose() {
   width: 100%;
   height: 100%;
   overflow: auto;
-  padding: 20px;
-  background: #f8fafc;
+  background: #1e1e2e;
+}
+
+.preview-text .code-block {
+  display: flex;
+  font-family: 'Cascadia Code', 'Fira Code', 'JetBrains Mono', 'Consolas', monospace;
+  font-size: 13px;
+  line-height: 1.6;
+  min-height: 100%;
+}
+
+.preview-text .line-numbers {
+  display: flex;
+  flex-direction: column;
+  padding: 16px 8px 16px 16px;
+  text-align: right;
+  color: #585b70;
+  user-select: none;
+  border-right: 1px solid #313244;
+  background: #181825;
+  flex-shrink: 0;
+}
+
+.preview-text .line-numbers span {
+  display: block;
+  min-height: 1.6em;
 }
 
 .preview-text pre {
   margin: 0;
-  font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
-  font-size: 13px;
-  line-height: 1.6;
-  color: #334155;
+  padding: 16px;
+  color: #cdd6f4;
   white-space: pre-wrap;
   word-break: break-all;
+  flex: 1;
+  overflow-x: auto;
+}
+
+.preview-csv {
+  width: 100%;
+  height: 100%;
+  overflow: auto;
+  background: #ffffff;
+}
+
+.csv-table-wrapper {
+  padding: 16px;
+}
+
+.csv-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.csv-table th,
+.csv-table td {
+  padding: 6px 12px;
+  border: 1px solid #e2e8f0;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.csv-table th {
+  background: #f1f5f9;
+  font-weight: 600;
+  color: #1e293b;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+.csv-table td {
+  color: #334155;
+}
+
+.csv-table tbody tr:nth-child(even) {
+  background: #f8fafc;
+}
+
+.csv-table tbody tr:hover {
+  background: #e0f2fe;
+}
+
+.csv-table .row-num {
+  background: #f1f5f9;
+  color: #94a3b8;
+  font-size: 11px;
+  text-align: right;
+  user-select: none;
+  position: sticky;
+  left: 0;
+  z-index: 1;
 }
 
 .preview-markdown {

@@ -53,16 +53,26 @@
             :depth="0"
             :sessionId="currentSessionId"
             @select="handleSelectFile"
+          @download="handleDownloadFile"
           />
         </div>
       </div>
     </template>
+
+    <FilePreview
+      :filename="previewFile?.name || ''"
+      :filePath="previewFile?.path || ''"
+      :sessionId="currentSessionId"
+      :visible="showPreview"
+      @close="showPreview = false"
+    />
   </div>
 </template>
 
 <script setup>
 import { ref, watch, onMounted } from 'vue'
 import FileTreeNode from './FileTreeNode.vue'
+import FilePreview from './FilePreview.vue'
 import { getWorkspaceTree } from '../api/files'
 
 const props = defineProps({
@@ -76,6 +86,8 @@ const emit = defineEmits(['toggle'])
 
 const workspaceTreeData = ref([])
 const selectedFile = ref(null)
+const previewFile = ref(null)
+const showPreview = ref(false)
 const isLoading = ref(false)
 const error = ref(null)
 
@@ -106,6 +118,21 @@ async function buildWorkspaceTree() {
 
 function handleSelectFile(file) {
   selectedFile.value = file
+  previewFile.value = file
+  showPreview.value = true
+}
+
+function handleDownloadFile(file) {
+  const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
+  const filePath = file.file_path || file.path
+  const url = `${API_BASE_URL}/api/files/preview?file_path=${encodeURIComponent(filePath)}&session_id=${encodeURIComponent(props.currentSessionId)}&download=true`
+  const link = document.createElement('a')
+  link.href = url
+  link.download = file.name
+  link.target = '_blank'
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
 }
 
 function refresh() {

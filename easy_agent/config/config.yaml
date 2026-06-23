@@ -7,7 +7,7 @@
 
 # ===== LLM Configuration =====
 # Select which model to use: minimax | deepseek
-model: "minimax"
+model: "deepseek"
 
 # Provider-specific configurations
 models:

@@ -35,6 +35,7 @@
         :depth="depth + 1"
         :sessionId="sessionId"
         @select="$emit('select', $event)"
+        @download="$emit('download', $event)"
       />
     </div>
   </div>
@@ -43,7 +44,7 @@
 <script setup>
 import { ref, watch } from 'vue'
 import FileIcon from './FileIcon.vue'
-import { downloadFile, getWorkspaceTree } from '../api/files'
+import { getWorkspaceTree } from '../api/files'
 
 const props = defineProps({
   item: {
@@ -64,11 +65,12 @@ const props = defineProps({
   }
 })
 
-const emit = defineEmits(['select'])
+const emit = defineEmits(['select', 'download'])
 
 const expanded = ref(false)
 const children = ref([])
 const isLoading = ref(false)
+let clickTimer = null
 
 async function toggleExpand() {
   if (expanded.value) {
@@ -108,13 +110,22 @@ async function loadChildren() {
 }
 
 function handleClick() {
-  if (props.item.type === 'file') {
-    emit('select', props.item)
-    downloadFile(props.item.file_path, props.item.name).catch(err => {
-      console.error('Download failed:', err)
-    })
-  } else {
+  if (props.item.type === 'directory') {
     toggleExpand()
+    return
+  }
+  // 文件：单击预览，双击下载
+  if (clickTimer) {
+    clearTimeout(clickTimer)
+    clickTimer = null
+    // 双击：下载
+    emit('download', props.item)
+  } else {
+    clickTimer = setTimeout(() => {
+      clickTimer = null
+      // 单击：预览
+      emit('select', props.item)
+    }, 250)
   }
 }
 </script>

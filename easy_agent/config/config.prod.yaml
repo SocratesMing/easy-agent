@@ -1,0 +1,72 @@
+# ===== 生产环境配置 =====
+
+# LLM Configuration
+model: "deepseek"
+
+models:
+  deepseek:
+    provider: "deepseek"
+    protocol: "openai"
+    model: "deepseek-v4-flash"
+    api_key: "${DEEPSEEK_API_KEY}"
+    api_base: "https://api.deepseek.com"
+    max_input_tokens: 200000
+
+# Retry
+retry:
+  enabled: true
+  max_retries: 3
+
+# Agent
+max_steps: 100
+workspace_dir: "./workspace"
+memories_dir: "./memories"
+system_prompt_path: "system_prompt.md"
+
+# Summarization
+summarization:
+  enabled: true
+  compression_threshold: 0.8
+  compression_target: 0.1
+
+# Tools
+tools:
+  result_log_truncate: 200
+  skills_dir: "./skills"
+  prompts_dir: "./prompts"
+
+# Preset Questions
+preset_questions:
+  - "帮我创建一份智能体介绍的docx"
+  - "帮我生成一份金融量化的pptx"
+
+# Database - 生产环境使用 MySQL
+database:
+  type: "mysql"
+  sqlite:
+    path: "./data/easy_agent.db"
+  mysql:
+    host: "${MYSQL_HOST}"
+    port: 3306
+    user: "${MYSQL_USER}"
+    password: "${MYSQL_PASSWORD}"
+    database: "${MYSQL_DATABASE}"
+    charset: "utf8mb4"
+    pool:
+      pool_size: 10
+      max_overflow: 20
+      pool_timeout: 30
+      pool_recycle: 3600
+    connect_timeout: 10
+    read_timeout: 30
+    write_timeout: 30
+
+# Vector Store
+vector_store:
+  enabled: false
+  db_path: "./data/chroma_db"
+  collection_name: "easy_agent_docs"
+  embedding_provider: "sentence_transformers"
+  embedding_dimension: 1024
+  batch_size: 32
+  sentence_transformers_model: "Qwen/Qwen3-Embedding-0.6B"

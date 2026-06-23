@@ -20,6 +20,7 @@
         @togglePin="handleTogglePin"
         @toggleSidebar="toggleSidebar"
         @showAssets="handleShowAssets"
+        @showSkillCenter="handleShowSkillCenter"
         @showProfile="handleShowProfile"
         @showSettings="showSettingsPanel = true"
         @logout="handleLogout"
@@ -38,6 +39,8 @@
       </button>
       
       <AssetsPanel v-if="showAssets" :visible="showAssets" @close="showAssets = false" />
+
+      <SkillCenter v-if="showSkillCenter" @close="showSkillCenter = false" />
       
       <UserProfile
         v-if="showUserProfile"
@@ -52,7 +55,7 @@
       />
       
       <Chat
-        v-else-if="!showAssets && !showUserProfile"
+        v-else-if="!showAssets && !showUserProfile && !showSkillCenter"
         :messages="messages"
         :currentSessionId="currentSessionId"
         :sessionCreatedAt="currentSessionCreatedAt"
@@ -69,7 +72,7 @@
         @retry="handleRetry"
       />
 
-      <div v-if="currentSessionId && !showAssets && !showUserProfile" class="workspace-area">
+      <div v-if="currentSessionId && !showAssets && !showUserProfile && !showSkillCenter" class="workspace-area">
         <WorkspacePanel
           :username="userProfile.username"
           :currentSessionId="currentSessionId"
@@ -80,7 +83,7 @@
       </div>
 
       <button
-        v-if="currentSessionId && isWorkspaceCollapsed && !showAssets && !showUserProfile"
+        v-if="currentSessionId && isWorkspaceCollapsed && !showAssets && !showUserProfile && !showSkillCenter"
         class="expand-workspace-btn"
         @click="isWorkspaceCollapsed = false"
         title="展开工作区"
@@ -114,6 +117,7 @@ import { ref, computed, onMounted } from 'vue'
 import SessionList from './components/SessionList.vue'
 import Chat from './components/Chat.vue'
 import AssetsPanel from './components/AssetsPanel.vue'
+import SkillCenter from './components/SkillCenter.vue'
 import UserProfile from './components/UserProfile.vue'
 import Welcome from './components/Welcome.vue'
 import WorkspacePanel from './components/WorkspacePanel.vue'
@@ -199,6 +203,7 @@ const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000
 const isSidebarCollapsed = ref(false)
 const isWorkspaceCollapsed = ref(true)
 const showAssets = ref(false)
+const showSkillCenter = ref(false)
 const showUserProfile = ref(false)
 const showSettingsPanel = ref(false)
 const showWelcome = ref(false)
@@ -215,11 +220,18 @@ function toggleSidebar() {
 
 function handleShowAssets() {
   showAssets.value = !showAssets.value
+  showSkillCenter.value = false
+}
+
+function handleShowSkillCenter() {
+  showSkillCenter.value = !showSkillCenter.value
+  showAssets.value = false
 }
 
 function handleShowProfile() {
   showUserProfile.value = true
   showAssets.value = false
+  showSkillCenter.value = false
 }
 
 async function handleWelcomeCompleted(profile) {
@@ -261,6 +273,8 @@ async function handleWelcomeCompleted(profile) {
 function goBack() {
   if (showUserProfile.value) {
     showUserProfile.value = false
+  } else if (showSkillCenter.value) {
+    showSkillCenter.value = false
   } else if (showAssets.value) {
     showAssets.value = false
   }
@@ -277,6 +291,8 @@ async function handleLogout() {
     email: ''
   }
   showUserProfile.value = false
+  showAssets.value = false
+  showSkillCenter.value = false
   showWelcome.value = true
 }
 
@@ -366,6 +382,7 @@ async function handleCreateSession() {
   saveCurrentSessionState()
 
   showAssets.value = false
+  showSkillCenter.value = false
   currentSessionId.value = null
   messages.value = []
   currentTodos.value = []
@@ -379,6 +396,7 @@ async function handleSelectSession(sessionId) {
   saveCurrentSessionState()
 
   showAssets.value = false
+  showSkillCenter.value = false
   currentSessionId.value = sessionId
 
   // 尝试从缓存恢复会话状态
@@ -863,6 +881,7 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
         const idx = messages.value.findIndex(m => m.id === assistantMsgId)
         if (idx !== -1) {
           messages.value[idx].loading = false
+          messages.value[idx].error = content || '处理失败'
           for (const blk of messages.value[idx].blocks) {
             if (blk.type === 'thinking' && blk.duration == null) {
               blk.duration = 0
@@ -877,7 +896,6 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
         }
       }
       error.value = content || '处理失败'
-      setTimeout(() => { error.value = null }, 5000)
     }
   }
 
@@ -916,7 +934,23 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
     }
     console.error('发送消息失败:', e)
     if (assistantMsgId) {
-      messages.value = messages.value.filter(m => m.id !== assistantMsgId)
+      const idx = messages.value.findIndex(m => m.id === assistantMsgId)
+      if (idx !== -1) {
+        messages.value[idx].loading = false
+        messages.value[idx].error = e.message || '发送消息失败，请检查网络连接'
+        messages.value[idx] = { ...messages.value[idx] }
+      } else {
+        // 消息不存在，添加一条错误消息
+        messages.value.push({
+          id: assistantMsgId,
+          role: 'assistant',
+          content: '',
+          error: e.message || '发送消息失败，请检查网络连接',
+          loading: false,
+          created_at: new Date().toISOString(),
+          blocks: []
+        })
+      }
     }
     error.value = e.message || '发送消息失败'
   } finally {
@@ -1124,7 +1158,10 @@ onMounted(async () => {
   align-items: center;
   gap: 12px;
   animation: slideUp 0.3s ease-out;
-  box-shadow: 0 4px 12px rgba(220, 38, 38, 0.2);
+  box-shadow: 0 4px 12px rgba(220, 38, 38, 0.3);
+  z-index: 1000;
+  max-width: 600px;
+  word-break: break-word;
 }
 
 .error-toast button {

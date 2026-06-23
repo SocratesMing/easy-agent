@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Optional
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse
 
 from ..db import Database, get_database
@@ -213,6 +213,115 @@ async def parse_file(
 ):
     content = parse_file_content(file_path)
     return {"file_path": file_path, "content": content}
+
+
+@router.get("/preview", summary="预览工作区文件")
+async def preview_file(
+    request: Request,
+    file_path: str = Query(..., description="文件在工作区中的相对路径"),
+    session_id: Optional[str] = Query(default=None, description="会话ID"),
+    token: Optional[str] = Query(default=None, description="认证token（iframe等无法设置Header时使用）"),
+    download: Optional[bool] = Query(default=None, description="是否以下载方式返回"),
+    db: Annotated[Database, Depends(get_database)] = None,
+):
+    """返回工作区文件的原始内容，供前端预览组件使用。
+
+    支持图片、PDF、Word、Excel、PPT、文本等常见格式的在线预览。
+    认证方式：优先使用 Authorization Header，也支持 token 查询参数（用于 iframe 等场景）。
+    """
+    # 认证：优先 Header，其次查询参数 token
+    username = None
+    auth_header = request.headers.get("Authorization")
+    if auth_header and auth_header.startswith("Bearer "):
+        from ..utils.auth import get_username_from_token
+        username = get_username_from_token(auth_header[7:])
+    if not username and token:
+        from ..utils.auth import get_username_from_token
+        username = get_username_from_token(token)
+    if not username:
+        default_user = db.get_or_create_default_user()
+        username = default_user.username
+
+    workspace_dir = Config.get_user_workspace_dir(username)
+
+    if session_id:
+        session = db.get_session(session_id) if db else None
+        if session and session.username:
+            workspace_dir = Config.get_user_workspace_dir(session.username)
+        if session and session.workspace_name:
+            workspace_dir = workspace_dir / session.workspace_name
+        else:
+            workspace_dir = workspace_dir / session_id
+
+    full_path = workspace_dir / file_path
+
+    if not full_path.exists():
+        raise HTTPException(status_code=404, detail="文件不存在")
+
+    if not full_path.is_file():
+        raise HTTPException(status_code=400, detail="路径不是文件")
+
+    ext = full_path.suffix.lower()
+
+    # MIME 类型映射
+    mime_map = {
+        ".pdf": "application/pdf",
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".gif": "image/gif",
+        ".bmp": "image/bmp",
+        ".webp": "image/webp",
+        ".svg": "image/svg+xml",
+        ".ico": "image/x-icon",
+        ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        ".xls": "application/vnd.ms-excel",
+        ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        ".ppt": "application/vnd.ms-powerpoint",
+        ".txt": "text/plain; charset=utf-8",
+        ".md": "text/plain; charset=utf-8",
+        ".json": "text/plain; charset=utf-8",
+        ".csv": "text/plain; charset=utf-8",
+        ".xml": "text/plain; charset=utf-8",
+        ".html": "text/plain; charset=utf-8",
+        ".css": "text/plain; charset=utf-8",
+        ".js": "text/plain; charset=utf-8",
+        ".ts": "text/plain; charset=utf-8",
+        ".py": "text/plain; charset=utf-8",
+        ".java": "text/plain; charset=utf-8",
+        ".go": "text/plain; charset=utf-8",
+        ".rs": "text/plain; charset=utf-8",
+        ".c": "text/plain; charset=utf-8",
+        ".cpp": "text/plain; charset=utf-8",
+        ".h": "text/plain; charset=utf-8",
+        ".sh": "text/plain; charset=utf-8",
+        ".sql": "text/plain; charset=utf-8",
+        ".yaml": "text/plain; charset=utf-8",
+        ".yml": "text/plain; charset=utf-8",
+        ".toml": "text/plain; charset=utf-8",
+        ".ini": "text/plain; charset=utf-8",
+        ".cfg": "text/plain; charset=utf-8",
+        ".conf": "text/plain; charset=utf-8",
+        ".log": "text/plain; charset=utf-8",
+        ".vue": "text/plain; charset=utf-8",
+    }
+
+    media_type = mime_map.get(ext, "application/octet-stream")
+
+    if download:
+        return FileResponse(
+            path=str(full_path),
+            filename=full_path.name,
+            media_type="application/octet-stream",
+            content_disposition_type="attachment",
+        )
+
+    return FileResponse(
+        path=str(full_path),
+        filename=full_path.name,
+        media_type=media_type,
+    )
 
 
 @router.get("/workspace/tree", summary="获取工作区文件树")

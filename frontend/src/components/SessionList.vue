@@ -30,6 +30,13 @@
         </svg>
         <span>资产</span>
       </button>
+
+      <button @click="$emit('showSkillCenter')" class="action-btn skill-center">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>
+        </svg>
+        <span>技能中心</span>
+      </button>
     </div>
 
     <div class="divider"></div>
@@ -176,7 +183,7 @@
 import { ref, nextTick, onMounted } from 'vue'
 import EasyLogo from './EasyLogo.vue'
 
-const emit = defineEmits(['createSession', 'selectSession', 'deleteSession', 'renameSession', 'toggleSidebar', 'showAssets', 'showProfile', 'showSettings', 'logout', 'togglePin'])
+const emit = defineEmits(['createSession', 'selectSession', 'deleteSession', 'renameSession', 'toggleSidebar', 'showAssets', 'showSkillCenter', 'showProfile', 'showSettings', 'logout', 'togglePin'])
 
 const props = defineProps({
   sessions: {

@@ -62,22 +62,6 @@
             </div>
           </div>
 
-          <!-- Skills -->
-          <div v-if="activeTab === 'skills'" class="content-panel">
-            <div class="panel-header">
-              <h3>Skills</h3>
-              <p class="panel-desc">当前系统可用的技能列表</p>
-            </div>
-            <div v-if="loading" class="loading-state"><div class="spinner"></div></div>
-            <div v-else class="skills-list">
-              <div v-if="skillsList.length === 0" class="empty-hint">暂无可用 Skills</div>
-              <div v-for="skill in skillsList" :key="skill.name" class="skill-card">
-                <div class="skill-name">{{ skill.name }}</div>
-                <pre class="skill-desc">{{ skill.description || '无描述' }}</pre>
-              </div>
-            </div>
-          </div>
-
           <!-- MCP -->
           <div v-if="activeTab === 'mcp'" class="content-panel">
             <div class="panel-header">
@@ -111,7 +95,7 @@
 
 <script setup>
 import { ref, watch, onMounted } from 'vue'
-import { getMemory, updateMemory, getSystemPrompt, getSkills, getMcpServers } from '../api/settings.js'
+import { getMemory, updateMemory, getSystemPrompt, getMcpServers } from '../api/settings.js'
 
 const emit = defineEmits(['close'])
 
@@ -127,9 +111,6 @@ const memoryError = ref('')
 // 提示词
 const promptContent = ref('')
 
-// Skills
-const skillsList = ref([])
-
 // MCP
 const mcpServers = ref([])
 
@@ -143,11 +124,6 @@ const navItems = [
     key: 'prompt',
     label: '提示词',
     icon: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>',
-  },
-  {
-    key: 'skills',
-    label: 'Skills',
-    icon: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>',
   },
   {
     key: 'mcp',
@@ -165,9 +141,6 @@ async function loadTabData() {
     } else if (activeTab.value === 'prompt') {
       const data = await getSystemPrompt()
       promptContent.value = data.content || ''
-    } else if (activeTab.value === 'skills') {
-      const data = await getSkills()
-      skillsList.value = data.skills || []
     } else if (activeTab.value === 'mcp') {
       const data = await getMcpServers()
       mcpServers.value = data.servers || []
@@ -454,39 +427,6 @@ onMounted(() => {
   word-wrap: break-word;
   margin: 0;
   max-height: 450px;
-  overflow-y: auto;
-}
-
-/* Skills 列表 */
-.skills-list {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.skill-card {
-  padding: 16px;
-  background: #f8fafc;
-  border: 1px solid #e2e8f0;
-  border-radius: 10px;
-}
-
-.skill-name {
-  font-size: 15px;
-  font-weight: 600;
-  color: #0ea5e9;
-  margin-bottom: 8px;
-}
-
-.skill-desc {
-  font-size: 13px;
-  color: #475569;
-  white-space: pre-wrap;
-  word-wrap: break-word;
-  margin: 0;
-  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
-  line-height: 1.5;
-  max-height: 200px;
   overflow-y: auto;
 }
 

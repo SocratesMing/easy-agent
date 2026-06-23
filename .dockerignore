@@ -1,0 +1,52 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+dist/
+build/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Git
+.git/
+.gitignore
+
+# Docker
+Dockerfile
+docker/
+
+# Frontend dev artifacts (we build in Docker)
+frontend/node_modules/
+frontend/.vite/
+
+# Data & logs (runtime generated)
+data/
+logs/
+workspace/
+memories/
+*.db
+
+# Config with secrets (use env-specific templates instead)
+easy_agent/config/config.yaml
+
+# Test & docs
+tests/
+*.md
+!easy_agent/config/system_prompt.md
+
+# OS
+.DS_Store
+Thumbs.db

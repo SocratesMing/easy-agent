@@ -34,6 +34,8 @@ from .api import (
     forex_router,
     prompts_router,
     settings_router,
+    skill_center_router,
+    terminal_router,
 )
 
 logger = logging.getLogger(__name__)
@@ -296,6 +298,8 @@ app.include_router(bloom_router)
 app.include_router(forex_router)
 app.include_router(prompts_router)
 app.include_router(settings_router)
+app.include_router(skill_center_router)
+app.include_router(terminal_router)
 
 
 @app.get("/api/health", summary="健康检查", response_model=HealthResponse)

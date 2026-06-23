@@ -1,0 +1,71 @@
+# ===== 开发环境配置 =====
+
+# LLM Configuration
+model: "deepseek"
+
+models:
+  deepseek:
+    provider: "deepseek"
+    protocol: "openai"
+    model: "deepseek-v4-flash"
+    api_key: "${DEEPSEEK_API_KEY}"
+    api_base: "https://api.deepseek.com"
+    max_input_tokens: 200000
+
+# Retry
+retry:
+  enabled: true
+  max_retries: 1
+
+# Agent
+max_steps: 20
+workspace_dir: "./workspace"
+memories_dir: "./memories"
+system_prompt_path: "system_prompt.md"
+
+# Summarization
+summarization:
+  enabled: true
+  compression_threshold: 0.8
+  compression_target: 0.1
+
+# Tools
+tools:
+  result_log_truncate: 500
+  skills_dir: "./skills"
+  prompts_dir: "./prompts"
+
+# Preset Questions
+preset_questions:
+  - "开发测试问题"
+
+# Database - 开发环境使用 SQLite
+database:
+  type: "sqlite"
+  sqlite:
+    path: "./data/easy_agent_dev.db"
+  mysql:
+    host: "127.0.0.1"
+    port: 3306
+    user: "root"
+    password: ""
+    database: "agent_dev"
+    charset: "utf8mb4"
+    pool:
+      pool_size: 2
+      max_overflow: 3
+      pool_timeout: 30
+      pool_recycle: 3600
+    connect_timeout: 10
+    read_timeout: 30
+    write_timeout: 30
+
+# Vector Store
+vector_store:
+  enabled: false
+  db_path: "./data/chroma_db_dev"
+  collection_name: "easy_agent_docs_dev"
+  embedding_provider: "sentence_transformers"
+  embedding_dimension: 1024
+  batch_size: 32
+  sentence_transformers_model: "Qwen/Qwen3-Embedding-0.6B"

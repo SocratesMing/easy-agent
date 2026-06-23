@@ -144,6 +144,13 @@ class EasyAgent:
         if self.skills_root:
             skills_info = "## Skills: `/skills/`（例：`/skills/docx/SKILL.md`）\n"
 
+        # 用户技能目录: workspace/{username}/skills/
+        self.user_skills_dir = self.workspace_dir.parent / "skills"
+        user_skill_names = self._discover_user_skill_names()
+        if user_skill_names:
+            skills_info += "## User Skills: `/user-skills/`（例：`/user-skills/my_skill/SKILL.md`）\n"
+            logger.info(f"User skills loaded: {', '.join(user_skill_names)}")
+
         self.system_prompt = (
             f"{system_prompt}\n"
             f"## Workspace: `{self.workspace_virtual_path}/`\n"
@@ -281,6 +288,14 @@ class EasyAgent:
             )
             routes["/skills/"] = skills_backend
 
+        # 用户技能路由
+        if self.user_skills_dir.exists():
+            user_skills_backend = FilesystemBackend(
+                root_dir=str(self.user_skills_dir.absolute()),
+                virtual_mode=True,
+            )
+            routes["/user-skills/"] = user_skills_backend
+
         logger.info(
             f"[{self.session_id}] 🗺️ CompositeBackend routes:\n"
             + "\n".join(f"    {vp:40s} → {b.cwd}" for vp, b in sorted(routes.items()))
@@ -298,6 +313,8 @@ class EasyAgent:
             }
             if self.skills_root:
                 path_mappings["/skills/"] = str(Path(self.skills_root).absolute()) + "/"
+            if self.user_skills_dir.exists():
+                path_mappings["/user-skills/"] = str(self.user_skills_dir.absolute()) + "/"
 
             return CompositeBackend(
                 default=_PathTranslatingShell(
@@ -318,23 +335,42 @@ class EasyAgent:
         # No need to add it here — duplicate middleware causes AssertionError.
         return []
 
-    def _resolve_skills_paths(self) -> list[str]:
-        """Discover skills from skills_root and return virtual paths."""
-        if not self.skills_root:
+    def _discover_user_skill_names(self) -> list[str]:
+        """发现用户 workspace/{username}/skills/ 目录下的技能名称列表"""
+        if not self.user_skills_dir.exists():
             return []
-
-        skills_root = Path(self.skills_root)
-        if not skills_root.exists():
-            return []
-
-        virtual_skills = []
-        for skill_dir in sorted(skills_root.iterdir()):
+        names = []
+        for skill_dir in sorted(self.user_skills_dir.iterdir()):
             if not skill_dir.is_dir():
                 continue
-            skill_md = skill_dir / "SKILL.md"
-            skill_readme = skill_dir / "README.md"
-            if skill_md.exists() or skill_readme.exists():
-                virtual_skills.append(f"/skills/{skill_dir.name}")
+            if (skill_dir / "SKILL.md").exists() or (skill_dir / "README.md").exists():
+                names.append(skill_dir.name)
+        return names
+
+    def _resolve_skills_paths(self) -> list[str]:
+        """Discover skills from skills_root and user skills dir, return virtual paths."""
+        virtual_skills = []
+
+        # 公共技能
+        if self.skills_root:
+            skills_root = Path(self.skills_root)
+            if skills_root.exists():
+                for skill_dir in sorted(skills_root.iterdir()):
+                    if not skill_dir.is_dir():
+                        continue
+                    skill_md = skill_dir / "SKILL.md"
+                    skill_readme = skill_dir / "README.md"
+                    if skill_md.exists() or skill_readme.exists():
+                        virtual_skills.append(f"/skills/{skill_dir.name}")
+
+        # 用户技能
+        if self.user_skills_dir.exists():
+            for skill_dir in sorted(self.user_skills_dir.iterdir()):
+                if not skill_dir.is_dir():
+                    continue
+                if (skill_dir / "SKILL.md").exists() or (skill_dir / "README.md").exists():
+                    virtual_skills.append(f"/user-skills/{skill_dir.name}")
+
         return virtual_skills
 
     async def run(self, user_input: str) -> str:

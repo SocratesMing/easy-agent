@@ -7,6 +7,8 @@ from .bloom import bloom_router
 from .forex import forex_router
 from .prompts import prompts_router
 from .settings import router as settings_router
+from .skill_center import router as skill_center_router
+from .terminal import router as terminal_router
 
 __all__ = [
     "chat_router",
@@ -18,4 +20,6 @@ __all__ = [
     "forex_router",
     "prompts_router",
     "settings_router",
+    "skill_center_router",
+    "terminal_router",
 ]
