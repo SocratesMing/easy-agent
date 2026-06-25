@@ -125,33 +125,24 @@
 
     <div class="user-profile" @click="toggleUserMenu">
       <div class="user-avatar">
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
-          <circle cx="12" cy="7" r="4"></circle>
-        </svg>
+        <span class="user-initials">{{ userInitials }}</span>
       </div>
       <div class="user-info">
         <div class="user-name">{{ username || '用户' }}</div>
-        <div class="user-status">在线</div>
+        <div v-if="organizationId" class="user-org">
+          <svg class="user-org-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M3 21h18"></path>
+            <path d="M5 21V7l8-4v18"></path>
+            <path d="M19 21V11l-6-4"></path>
+          </svg>
+          <span>{{ organizationId }}</span>
+        </div>
       </div>
-      <svg class="user-arrow" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <svg class="user-arrow" :class="{ rotated: showUserMenu }" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
         <polyline points="6 9 12 15 18 9"></polyline>
       </svg>
       
       <div v-if="showUserMenu" class="user-dropdown">
-        <div class="user-dropdown-header">
-          <div class="user-dropdown-avatar">
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
-              <circle cx="12" cy="7" r="4"></circle>
-            </svg>
-          </div>
-          <div class="user-dropdown-info">
-            <div class="user-dropdown-name">{{ username || '用户' }}</div>
-            <div class="user-dropdown-email">{{ email || '未设置邮箱' }}</div>
-          </div>
-        </div>
-        <div class="user-dropdown-divider"></div>
         <button class="user-dropdown-item" @click="showProfile">
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
@@ -166,6 +157,7 @@
           </svg>
           设置
         </button>
+        <div class="user-dropdown-divider"></div>
         <button class="user-dropdown-item logout-item" @click="handleLogout">
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
@@ -180,7 +172,7 @@
 </template>
 
 <script setup>
-import { ref, nextTick, onMounted } from 'vue'
+import { ref, nextTick, onMounted, computed } from 'vue'
 import EasyLogo from './EasyLogo.vue'
 
 const emit = defineEmits(['createSession', 'selectSession', 'deleteSession', 'renameSession', 'toggleSidebar', 'showAssets', 'showSkillCenter', 'showProfile', 'showSettings', 'logout', 'togglePin'])
@@ -195,6 +187,10 @@ const props = defineProps({
     default: null
   },
   username: {
+    type: String,
+    default: ''
+  },
+  organizationId: {
     type: String,
     default: ''
   },
@@ -214,6 +210,45 @@ const newTitle = ref('')
 const renamingSession = ref(null)
 const renameInput = ref(null)
 const showUserMenu = ref(false)
+
+// 用户名简写：中文取每个字拼音首字母（简化为取前两字），英文取前两字母大写
+const userInitials = computed(() => {
+  const name = props.username || '用户'
+  if (!name) return 'U'
+  // 中文：取前两个字符
+  const chineseChars = name.match(/[\u4e00-\u9fff]/g)
+  if (chineseChars && chineseChars.length > 0) {
+    // 简单取前两个中文字符（拼音首字母需引入拼音库，这里用字符本身的大写映射）
+    // 常见姓氏首字母映射表（覆盖常见情况）
+    const pinyinMap = {
+      '张': 'Z', '王': 'W', '李': 'L', '刘': 'L', '陈': 'C', '杨': 'Y', '赵': 'Z', '黄': 'H',
+      '周': 'Z', '吴': 'W', '徐': 'X', '孙': 'S', '胡': 'H', '朱': 'Z', '高': 'G', '林': 'L',
+      '何': 'H', '郭': 'G', '马': 'M', '罗': 'L', '梁': 'L', '宋': 'S', '郑': 'Z', '谢': 'X',
+      '韩': 'H', '唐': 'T', '冯': 'F', '于': 'Y', '董': 'D', '萧': 'X', '程': 'C', '曹': 'C',
+      '袁': 'Y', '邓': 'D', '许': 'X', '傅': 'F', '沈': 'S', '曾': 'Z', '彭': 'P', '吕': 'L',
+      '苏': 'S', '卢': 'L', '蒋': 'J', '蔡': 'C', '贾': 'J', '丁': 'D', '魏': 'W', '薛': 'X',
+      '叶': 'Y', '阎': 'Y', '余': 'Y', '潘': 'P', '杜': 'D', '戴': 'D', '夏': 'X', '钟': 'Z',
+      '汪': 'W', '田': 'T', '任': 'R', '姜': 'J', '范': 'F', '方': 'F', '石': 'S', '姚': 'Y',
+      '谭': 'T', '廖': 'L', '邹': 'Z', '熊': 'X', '金': 'J', '陆': 'L', '郝': 'H', '孔': 'K',
+      '白': 'B', '崔': 'C', '康': 'K', '毛': 'M', '邱': 'Q', '秦': 'Q', '江': 'J', '史': 'S',
+      '顾': 'G', '侯': 'H', '邵': 'S', '孟': 'M', '龙': 'L', '万': 'W', '段': 'D', '雷': 'L',
+      '钱': 'Q', '汤': 'T', '尹': 'Y', '黎': 'L', '易': 'Y', '常': 'C', '武': 'W', '乔': 'Q',
+      '贺': 'H', '赖': 'L', '龚': 'G', '文': 'W', '用户': 'Y'
+    }
+    const chars = chineseChars.slice(0, 2)
+    let initials = ''
+    for (const ch of chars) {
+      initials += pinyinMap[ch] || ch
+    }
+    return initials.toUpperCase() || name.substring(0, 2).toUpperCase()
+  }
+  // 英文/其他：取前两个字母大写
+  const letters = name.replace(/[^a-zA-Z]/g, '')
+  if (letters.length >= 2) {
+    return letters.substring(0, 2).toUpperCase()
+  }
+  return name.substring(0, 2).toUpperCase()
+})
 
 function toggleUserMenu(e) {
   e.stopPropagation()
@@ -364,8 +399,8 @@ function handleLogout() {
   align-items: center;
   gap: 10px;
   padding: 10px 14px;
-  border: 1px solid #e2e8f0;
-  background: white;
+  border: none;
+  background: transparent;
   border-radius: 10px;
   font-size: 14px;
   color: #475569;
@@ -374,25 +409,17 @@ function handleLogout() {
 }
 
 .action-btn:hover {
-  background: #f8fafc;
-  border-color: #cbd5e1;
+  background: #f1f5f9;
 }
 
 .action-btn.active {
   background: #e0f2fe;
-  border-color: #0ea5e9;
   color: #0ea5e9;
 }
 
 .action-btn svg {
   width: 18px;
   height: 18px;
-}
-
-.action-btn.new-chat:hover {
-  background: #0ea5e9;
-  border-color: #0ea5e9;
-  color: white;
 }
 
 .divider {
@@ -632,8 +659,8 @@ function handleLogout() {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 12px 16px;
-  background: #f8fafc;
+  padding: 10px 14px;
+  background: transparent;
   border-top: 1px solid #e2e8f0;
   cursor: pointer;
   transition: background 0.2s;
@@ -645,19 +672,29 @@ function handleLogout() {
 }
 
 .user-avatar {
-  width: 36px;
-  height: 36px;
+  width: 32px;
+  height: 32px;
   background: linear-gradient(135deg, #0ea5e9 0%, #8b5cf6 100%);
   border-radius: 50%;
   display: flex;
   align-items: center;
   justify-content: center;
+  flex-shrink: 0;
+  box-shadow: 0 2px 6px rgba(14, 165, 233, 0.25);
 }
 
 .user-avatar svg {
   width: 20px;
   height: 20px;
   color: white;
+}
+
+.user-avatar .user-initials {
+  font-size: 13px;
+  font-weight: 600;
+  color: white;
+  letter-spacing: 0.5px;
+  line-height: 1;
 }
 
 .user-info {
@@ -667,77 +704,68 @@ function handleLogout() {
 
 .user-name {
   font-size: 14px;
-  font-weight: 500;
+  font-weight: 600;
   color: #1e293b;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  line-height: 1.2;
 }
 
-.user-status {
-  font-size: 12px;
-  color: #22c55e;
+.user-org {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 2px;
+  font-size: 11px;
+  color: #94a3b8;
+  overflow: hidden;
+}
+
+.user-org span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.user-org-icon {
+  width: 11px;
+  height: 11px;
+  flex-shrink: 0;
+  opacity: 0.8;
 }
 
 .user-arrow {
   width: 16px;
   height: 16px;
   color: #64748b;
+  transition: transform 0.25s ease;
+  flex-shrink: 0;
+}
+
+.user-arrow.rotated {
+  transform: rotate(180deg);
 }
 
 .user-dropdown {
   position: absolute;
   bottom: 100%;
-  left: 0;
-  right: 0;
+  left: 12px;
+  right: 12px;
   background: white;
   border: 1px solid #e2e8f0;
-  border-radius: 12px 12px 0 0;
-  box-shadow: 0 -4px 12px rgba(0, 0, 0, 0.1);
+  border-radius: 12px;
+  box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.12);
   z-index: 100;
   margin-bottom: 8px;
-}
-
-.user-dropdown-header {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 16px;
-}
-
-.user-dropdown-avatar {
-  width: 48px;
-  height: 48px;
-  background: linear-gradient(135deg, #0ea5e9 0%, #8b5cf6 100%);
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.user-dropdown-avatar svg {
-  width: 24px;
-  height: 24px;
-  color: white;
-}
-
-.user-dropdown-info {
-  flex: 1;
-  min-width: 0;
-}
-
-.user-dropdown-name {
-  font-size: 16px;
-  font-weight: 600;
-  color: #1e293b;
-}
-
-.user-dropdown-email {
-  font-size: 13px;
-  color: #64748b;
+  overflow: hidden;
+  padding: 6px;
 }
 
 .user-dropdown-divider {
   height: 1px;
   background: #e2e8f0;
-  margin: 0 8px;
+  margin: 4px 8px;
 }
 
 .user-dropdown-item {
@@ -745,18 +773,20 @@ function handleLogout() {
   align-items: center;
   gap: 10px;
   width: 100%;
-  padding: 12px 16px;
+  padding: 10px 12px;
   border: none;
   background: transparent;
   font-size: 14px;
   color: #475569;
   cursor: pointer;
   transition: all 0.2s;
+  border-radius: 8px;
 }
 
 .user-dropdown-item svg {
   width: 18px;
   height: 18px;
+  flex-shrink: 0;
 }
 
 .user-dropdown-item:hover {

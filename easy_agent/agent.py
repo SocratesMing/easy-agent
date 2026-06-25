@@ -20,6 +20,7 @@ from pathlib import Path
 from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend, FilesystemBackend, LocalShellBackend
 from deepagents.backends.protocol import ExecuteResponse
+from deepagents.middleware.filesystem import FilesystemOperation, FilesystemPermission
 from langchain_core.messages import AIMessageChunk, ToolMessage
 
 from .config import Config
@@ -51,18 +52,53 @@ class _PathTranslatingShell(LocalShellBackend):
 
     模型可能混用虚拟路径（/skills/、/workspace/xxx/）和实际路径，
     此类在命令执行前统一翻译，无需模型在提示词中区分。
+
+    同时对 execute 返回结果做反向翻译（实际路径→虚拟路径），
+    避免命令输出（如 pwd、ls、错误堆栈）向模型暴露宿主机绝对路径，
+    否则模型会从输出中"学到"绝对路径并在后续命令中直接使用。
     """
 
     def __init__(self, path_mappings: dict[str, str], *args, **kwargs):
+        """初始化路径翻译 Shell 后端。
+
+        预编译虚拟路径→实际路径的替换规则，按路径长度降序排列，
+        确保最长前缀优先匹配，避免短前缀误替换长路径中的子串。
+
+        Args:
+            path_mappings: 虚拟路径前缀到实际路径的映射字典，
+                如 {'/workspace/user/session/': '/abs/path/to/session/'}。
+            *args: 传递给 LocalShellBackend 的位置参数。
+            **kwargs: 传递给 LocalShellBackend 的关键字参数。
+        """
         super().__init__(*args, **kwargs)
-        # 预编译替换规则，使用 lookbehind 确保只匹配独立的虚拟路径
+        # 正向规则：虚拟路径 → 实际路径（用于翻译输入命令）
+        # 使用 lookbehind 确保只匹配独立的虚拟路径
         # （前面是空格/引号/命令开头），避免替换真实路径中的子串
         self._rules = [
             (re.compile(rf'(^|[\s"\'&|;(])({re.escape(v)})'), real)
             for v, real in sorted(path_mappings.items(), key=lambda x: -len(x[0]))
         ]
+        # 反向规则：实际路径 → 虚拟路径（用于翻译输出结果）
+        # 去掉结尾斜杠，使 pwd 等不带斜杠的输出也能匹配；
+        # 按实际路径长度降序排列，避免短路径误替换长路径中的子串
+        self._reverse_rules = [
+            (real.rstrip('/'), v.rstrip('/'))
+            for v, real in sorted(path_mappings.items(), key=lambda x: -len(x[1]))
+        ]
 
     def execute(self, command: str, *, timeout: int | None = None) -> "ExecuteResponse":
+        """执行 shell 命令，执行前翻译虚拟路径，执行后反向翻译输出。
+
+        执行前将命令中的虚拟路径前缀替换为实际路径；
+        执行后将输出中的实际路径替换回虚拟路径，避免暴露宿主机路径。
+
+        Args:
+            command: 原始 shell 命令字符串，可能包含虚拟路径。
+            timeout: 命令执行超时时间（秒），None 表示不限制。
+
+        Returns:
+            ExecuteResponse: 命令执行结果，输出中的实际路径已翻译为虚拟路径。
+        """
         translated = command
         for pat, real in self._rules:
             translated = pat.sub(lambda m: m.group(1) + real, translated)
@@ -70,7 +106,20 @@ class _PathTranslatingShell(LocalShellBackend):
             logger.debug(
                 "execute path translation: %s → %s", command[:80], translated[:80]
             )
-        return super().execute(translated, timeout=timeout)
+        result = super().execute(translated, timeout=timeout)
+        # 反向翻译输出：实际路径 → 虚拟路径
+        if self._reverse_rules and result.output:
+            output = result.output
+            for real, v in self._reverse_rules:
+                if real in output:
+                    output = output.replace(real, v)
+            if output != result.output:
+                result = ExecuteResponse(
+                    output=output,
+                    exit_code=result.exit_code,
+                    truncated=result.truncated,
+                )
+        return result
 
 
 class EasyAgent:
@@ -98,12 +147,32 @@ class EasyAgent:
         workspace_dir: str | Path | None = None,
         workspace_name: str = "",
         mcp_tools: list | None = None,
+        organization_id: str = "",
     ):
+        """初始化 EasyAgent 实例，配置工作区隔离、记忆文件和系统提示词。
+
+        根据用户名和会话 ID 构建隔离的工作区目录，设置记忆文件路径，
+        发现用户已添加的技能，拼接包含虚拟路径规范的系统提示词，
+        最终调用 _create_agent() 创建 DeepAgents 智能体实例。
+
+        Args:
+            config: 应用配置对象，包含 LLM、agent、tools 等配置。
+            system_prompt: 基础系统提示词，将被增强加入工作区、技能、记忆等路径信息。
+            skills_root: 公共技能根目录路径，当前版本仅用于参考，不自动加载。
+            username: 用户名，用于工作区路径隔离和记忆文件定位。
+            session_id: 会话 ID，用作工作区子目录名。
+            workspace_dir: 自定义工作区目录路径。提供时优先使用，覆盖自动生成的路径。
+            workspace_name: 自定义工作区目录名（如 '20260501_143022_a1b2c'）。
+                提供时替代 session_id 作为目录名。
+            mcp_tools: MCP 工具列表，作为额外工具注入智能体。
+            organization_id: 用户所属机构ID，注册后不可更改，将注入系统提示词。
+        """
         self.config = config
         self.username = username
         self.session_id = session_id
         self.skills_root = skills_root
         self.mcp_tools = mcp_tools or []
+        self.organization_id = organization_id or ""
         self.safe_username = Config.sanitize_username(username)
 
         if workspace_dir:
@@ -140,19 +209,23 @@ class EasyAgent:
         # Augment system prompt with virtual paths only.
         # _PathTranslatingShell 会自动把虚拟路径翻译为实际路径，
         # 模型无需知道实际路径，统一使用虚拟路径即可。
+        # 仅加载用户已添加的技能（/user-skills/），不再加载全部公共技能。
         skills_info = ""
-        if self.skills_root:
-            skills_info = "## Skills: `/skills/`（例：`/skills/docx/SKILL.md`）\n"
 
         # 用户技能目录: workspace/{username}/skills/
         self.user_skills_dir = self.workspace_dir.parent / "skills"
         user_skill_names = self._discover_user_skill_names()
         if user_skill_names:
-            skills_info += "## User Skills: `/user-skills/`（例：`/user-skills/my_skill/SKILL.md`）\n"
-            logger.info(f"User skills loaded: {', '.join(user_skill_names)}")
+            skills_info = "## User Skills: `/user-skills/`（例：`/user-skills/my_skill/SKILL.md`）\n"
+
+        # 将用户机构ID注入系统提示词
+        org_info = ""
+        if self.organization_id:
+            org_info = f"## 当前用户机构\n机构ID: `{self.organization_id}`（注册后不可更改）\n"
 
         self.system_prompt = (
             f"{system_prompt}\n"
+            f"{org_info}"
             f"## Workspace: `{self.workspace_virtual_path}/`\n"
             f"{skills_info}"
             f"## Memory: `{self.memory_virtual_path}/AGENTS.md`\n"
@@ -208,6 +281,14 @@ class EasyAgent:
         return True
 
     def _get_os_info(self) -> str:
+        """获取当前操作系统信息，返回格式化的系统提示词片段。
+
+        检测运行环境并将系统名称统一映射为友好显示名
+        （如 Darwin → macOS），用于拼接到系统提示词中。
+
+        Returns:
+            格式化的操作系统信息字符串，如 '## OS: Linux'。
+        """
         system = platform.system()
         os_name = {"Windows": "Windows", "Linux": "Linux", "Darwin": "macOS"}.get(
             system, system
@@ -228,9 +309,11 @@ class EasyAgent:
         logger.info(f"[{self.session_id}] 📋 系统提示词:\n{self.system_prompt}")
 
         skills_paths = self._resolve_skills_paths()
+        self._log_user_skills()
         backend = self._build_backend(skills_paths)
         middleware = self._build_middleware()
         tools = list(self.mcp_tools) if self.mcp_tools else None
+        permissions = self._build_permissions()
 
         logger.info(
             f"[{self.session_id}] 🏗️ 创建智能体参数 | "
@@ -243,7 +326,8 @@ class EasyAgent:
             f"mcp_tools: {len(tools) if tools else 0} | "
             f"middleware: {[type(m).__name__ for m in middleware]} | "
             f"memory_file: {self.memory_file} | "
-            f"summarization: {self.config.summarization.enabled}"
+            f"summarization: {self.config.summarization.enabled} | "
+            f"permissions(denied): {len(permissions)} 条"
         )
 
         memory_path = f"{self.memory_virtual_path}/AGENTS.md"
@@ -262,9 +346,23 @@ class EasyAgent:
             middleware=middleware,
             tools=tools,
             memory=[memory_path],
+            permissions=permissions or None,
         )
 
     def _build_backend(self, skills_paths: list[str]):
+        """构建 CompositeBackend 实例，配置多路由文件系统后端。
+
+        创建记忆、工作区和用户技能三组 FilesystemBackend 路由，
+        以 CompositeBackend 组合返回。default 后端使用 _PathTranslatingShell
+        提供命令执行和虚拟路径翻译能力。
+
+        Args:
+            skills_paths: 已解析的技能虚拟路径列表，用于判断是否需要
+                挂载用户技能后端路由。
+
+        Returns:
+            CompositeBackend: 组合后端实例，包含所有路由和路径映射。
+        """
         memories_dir = self.memory_file.parent
         memories_backend = FilesystemBackend(
             root_dir=str(memories_dir.absolute()),
@@ -281,59 +379,120 @@ class EasyAgent:
             f"{self.workspace_virtual_path}/": workspace_backend,
         }
 
-        if skills_paths and self.skills_root:
-            skills_backend = FilesystemBackend(
-                root_dir=self.skills_root,
-                virtual_mode=True,
-            )
-            routes["/skills/"] = skills_backend
-
-        # 用户技能路由
-        if self.user_skills_dir.exists():
+        if skills_paths and self.user_skills_dir.exists():
             user_skills_backend = FilesystemBackend(
                 root_dir=str(self.user_skills_dir.absolute()),
                 virtual_mode=True,
             )
             routes["/user-skills/"] = user_skills_backend
 
+        # 挂载外部目录（skill 需要访问的宿主机目录）为虚拟路径路由
+        external_dirs = self.config.agent.external_dirs or {}
+        for vpath, real_path in external_dirs.items():
+            vp = vpath if vpath.endswith("/") else vpath + "/"
+            real = Path(real_path)
+            real.mkdir(parents=True, exist_ok=True)
+            routes[vp] = FilesystemBackend(
+                root_dir=str(real.absolute()),
+                virtual_mode=True,
+            )
+
         logger.info(
             f"[{self.session_id}] 🗺️ CompositeBackend routes:\n"
             + "\n".join(f"    {vp:40s} → {b.cwd}" for vp, b in sorted(routes.items()))
         )
 
-        def backend_factory(_runtime):
-            ws_real = self.workspace_dir.absolute()
-            ws_real.mkdir(parents=True, exist_ok=True)
-            ws_str = str(ws_real)
+        ws_real = self.workspace_dir.absolute()
+        ws_real.mkdir(parents=True, exist_ok=True)
+        ws_str = str(ws_real)
 
-            path_mappings = {
-                f"{self.workspace_virtual_path}/": ws_str + "/",
-                f"{self.memory_virtual_path}/": str(self.memory_file.parent.absolute())
-                + "/",
-            }
-            if self.skills_root:
-                path_mappings["/skills/"] = str(Path(self.skills_root).absolute()) + "/"
-            if self.user_skills_dir.exists():
-                path_mappings["/user-skills/"] = str(self.user_skills_dir.absolute()) + "/"
+        path_mappings = {
+            f"{self.workspace_virtual_path}/": ws_str + "/",
+            f"{self.memory_virtual_path}/": str(self.memory_file.parent.absolute()) + "/",
+        }
+        if self.user_skills_dir.exists():
+            path_mappings["/user-skills/"] = str(self.user_skills_dir.absolute()) + "/"
+        for vpath, real_path in external_dirs.items():
+            vp = vpath if vpath.endswith("/") else vpath + "/"
+            path_mappings[vp] = str(Path(real_path).absolute()) + "/"
 
-            return CompositeBackend(
-                default=_PathTranslatingShell(
-                    path_mappings=path_mappings,
-                    root_dir=ws_str,
-                    virtual_mode=True,
-                    inherit_env=True,
-                    timeout=120,
-                ),
-                routes=routes,
-            )
-
-        return backend_factory
+        return CompositeBackend(
+            default=_PathTranslatingShell(
+                path_mappings=path_mappings,
+                root_dir=ws_str,
+                virtual_mode=True,
+                inherit_env=True,
+                timeout=120,
+            ),
+            routes=routes,
+        )
 
     def _build_middleware(self) -> list:
+        """构建自定义中间件列表。
+
+        SummarizationMiddleware 由 create_deep_agent 自动添加（使用模型感知的
+        默认值 trigger=0.85, keep=0.10），此处无需重复添加，
+        否则会导致 AssertionError。
+
+        Returns:
+            空列表，表示无额外自定义中间件。
+        """
         # SummarizationMiddleware is automatically added by create_deep_agent
         # with model-aware defaults (trigger=0.85, keep=0.10).
         # No need to add it here — duplicate middleware causes AssertionError.
         return []
+
+    def _build_permissions(self) -> list[FilesystemPermission]:
+        """根据配置构建文件系统权限规则。
+
+        读取 config.agent.denied_dirs 中配置的虚拟路径目录列表，
+        为每个目录生成一条 deny 权限规则。
+
+        支持两种配置格式：
+        - 字符串 ``"/user-skills"``：默认禁止 read+write
+        - 字典 ``{path: "/user-skills", operations: ["write"]}``：只禁止指定操作
+
+        operations 可选值：``read``、``write``，默认两者都禁止。
+        paths 使用 glob 模式：自动为目录路径补充 /** 后缀以递归匹配子目录。
+        注意：使用 CompositeBackend + sandbox default 时，permission path
+        必须限定在已知 route 前缀下（如 /memories/、/user-skills/），
+        否则会抛出 NotImplementedError。
+
+        Returns:
+            FilesystemPermission 列表，无配置时返回空列表。
+        """
+        denied = self.config.agent.denied_dirs or []
+        if not denied:
+            return []
+
+        permissions = []
+        for item in denied:
+            if isinstance(item, dict):
+                path = str(item.get("path", "")).rstrip("/")
+                raw_ops = item.get("operations", ["read", "write"])
+            else:
+                path = str(item).rstrip("/")
+                raw_ops = ["read", "write"]
+            if not path:
+                continue
+            # 规范化 operations：仅保留合法的 read/write，默认两者都禁
+            ops: list[FilesystemOperation] = [
+                op for op in raw_ops if op in ("read", "write")
+            ] or ["read", "write"]
+            glob_path = f"{path}/**"
+            permissions.append(
+                FilesystemPermission(
+                    operations=ops,
+                    paths=[glob_path],
+                    mode="deny",
+                )
+            )
+
+        logger.info(
+            f"[{self.session_id}] 🔒 文件系统权限 | "
+            f"已配置 {len(permissions)} 条 deny 规则: {denied}"
+        )
+        return permissions
 
     def _discover_user_skill_names(self) -> list[str]:
         """发现用户 workspace/{username}/skills/ 目录下的技能名称列表"""
@@ -347,31 +506,70 @@ class EasyAgent:
                 names.append(skill_dir.name)
         return names
 
+    def _log_user_skills(self) -> None:
+        """打印当前用户技能目录及其中已添加的所有技能。
+
+        在每次智能体加载时调用，便于排查技能中心添加的技能是否正确加载。
+        """
+        names = self._discover_user_skill_names()
+        user_dir = str(self.user_skills_dir.absolute())
+
+        if not names:
+            logger.info(
+                f"[{self.session_id}] 🧩 用户技能 | 用户 '{self.username}' 未添加任何技能 | "
+                f"目录: {user_dir}"
+            )
+            return
+
+        lines = [
+            f"[{self.session_id}] 🧩 用户技能 | 用户 '{self.username}' 已添加 {len(names)} 个技能",
+            f"    📁 技能目录: {user_dir}",
+        ]
+        for name in names:
+            skill_dir = self.user_skills_dir / name
+            desc = self._read_skill_description(skill_dir)
+            lines.append(f"    - {name}" + (f"  ({desc})" if desc else ""))
+        logger.info("\n".join(lines))
+
+    @staticmethod
+    def _read_skill_description(skill_dir: Path) -> str:
+        """从 SKILL.md 的 frontmatter 中读取 description 字段。
+
+        仅取第一行描述，超长截断到 60 字符。
+        """
+        for md_name in ("SKILL.md", "README.md"):
+            md_path = skill_dir / md_name
+            if not md_path.exists():
+                continue
+            try:
+                text = md_path.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+            # YAML frontmatter: ---\n key: value \n ---
+            if text.startswith("---"):
+                end = text.find("\n---", 3)
+                if end != -1:
+                    front = text[3:end]
+                    for raw in front.splitlines():
+                        line = raw.strip()
+                        if line.lower().startswith("description:"):
+                            desc = line.split(":", 1)[1].strip().strip('"').strip("'")
+                            return desc[:60]
+            return ""
+        return ""
+
     def _resolve_skills_paths(self) -> list[str]:
-        """Discover skills from skills_root and user skills dir, return virtual paths."""
-        virtual_skills = []
+        """返回用户技能的父级目录虚拟路径。
 
-        # 公共技能
-        if self.skills_root:
-            skills_root = Path(self.skills_root)
-            if skills_root.exists():
-                for skill_dir in sorted(skills_root.iterdir()):
-                    if not skill_dir.is_dir():
-                        continue
-                    skill_md = skill_dir / "SKILL.md"
-                    skill_readme = skill_dir / "README.md"
-                    if skill_md.exists() or skill_readme.exists():
-                        virtual_skills.append(f"/skills/{skill_dir.name}")
-
-        # 用户技能
-        if self.user_skills_dir.exists():
-            for skill_dir in sorted(self.user_skills_dir.iterdir()):
-                if not skill_dir.is_dir():
-                    continue
-                if (skill_dir / "SKILL.md").exists() or (skill_dir / "README.md").exists():
-                    virtual_skills.append(f"/user-skills/{skill_dir.name}")
-
-        return virtual_skills
+        SkillsMiddleware 会自动扫描父级目录下所有含 SKILL.md 的子目录，
+        因此只需传入 /user-skills/ 即可，无需逐个列出每个技能路径。
+        仅当用户技能目录存在且有技能时才返回。
+        """
+        if not self.user_skills_dir.exists():
+            return []
+        if not self._discover_user_skill_names():
+            return []
+        return ["/user-skills/"]
 
     async def run(self, user_input: str) -> str:
         """Execute agent with streaming output (CLI mode).

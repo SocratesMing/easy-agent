@@ -416,7 +416,7 @@ onBeforeUnmount(() => {
   flex: 1;
   display: flex;
   flex-direction: column;
-  background: #f8fafc;
+  background: transparent;
   height: 100%;
   position: relative;
 }
@@ -426,7 +426,7 @@ onBeforeUnmount(() => {
   justify-content: space-between;
   align-items: center;
   padding: 20px 24px;
-  background: white;
+  background: transparent;
   border-bottom: 1px solid #e2e8f0;
 }
 
@@ -464,7 +464,7 @@ onBeforeUnmount(() => {
   display: flex;
   gap: 8px;
   padding: 16px 24px;
-  background: white;
+  background: transparent;
   border-bottom: 1px solid #e2e8f0;
 }
 
@@ -474,7 +474,7 @@ onBeforeUnmount(() => {
   gap: 8px;
   padding: 10px 20px;
   border: 1px solid #e2e8f0;
-  background: white;
+  background: transparent;
   border-radius: 8px;
   font-size: 14px;
   color: #64748b;
@@ -484,7 +484,7 @@ onBeforeUnmount(() => {
 }
 
 .tab:hover {
-  background: #f8fafc;
+  background: #f1f5f9;
   border-color: #cbd5e1;
 }
 

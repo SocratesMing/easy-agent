@@ -40,7 +40,7 @@
             v-model="message"
             @keydown.enter.exact.prevent="send"
             @input="autoResize"
-            placeholder="请输入你的需求，按「Enter」发送"
+            placeholder=""
             :disabled="disabled"
             rows="1"
           ></textarea>
@@ -49,8 +49,8 @@
       
       <div class="input-actions">
         <div class="left-actions">
-          <label class="action-btn upload-btn" :class="{ disabled: isStreaming || disabled }">
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <label class="action-btn upload-btn" :class="{ disabled: isStreaming || disabled }" title="上传文件">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path>
             </svg>
             <input
@@ -66,12 +66,13 @@
             class="knowledge-base-btn"
             :class="{ active: enableKnowledgeBase, disabled: isStreaming || disabled }"
             :disabled="isStreaming || disabled"
-            @click="enableKnowledgeBase = !enableKnowledgeBase"
+            @click="toggleKnowledgeBase"
             title="知识库检索"
           >
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path>
               <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path>
+              <path d="m9 7 2 2 4-4"></path>
             </svg>
             <span class="knowledge-base-label">知识库</span>
           </button>
@@ -182,6 +183,13 @@ const textareaRef = ref(null)
 const uploadedFiles = ref([])
 const enableKnowledgeBase = ref(false)
 let abortController = null
+
+function toggleKnowledgeBase() {
+  enableKnowledgeBase.value = !enableKnowledgeBase.value
+  console.log(
+    `[${new Date().toISOString()}] [知识库按钮] 点击切换 | 启用状态: ${enableKnowledgeBase.value} | 当前输入: "${message.value.substring(0, 80)}"`
+  )
+}
 
 const canSend = computed(() => {
   return message.value.trim() || uploadedFiles.value.length > 0
@@ -368,7 +376,22 @@ async function send() {
     file_path: f.filePath || null,
     type: f.file?.type || f.fileType || ''
   }))
-  
+
+  // 详细日志：记录发送操作、知识库状态、文件上传
+  const ts = new Date().toISOString()
+  console.log(`[${ts}] [发送消息] 内容: "${message.value.substring(0, 100)}" | 知识库: ${enableKnowledgeBase.value} | 文件数: ${filesToSend.length}`)
+  if (filesToSend.length > 0) {
+    console.log(`[${ts}] [文件上传] ${filesToSend.map(f => `${f.filename}(${f.size}B)`).join(', ')}`)
+    if (enableKnowledgeBase.value) {
+      console.log(`[${ts}] [RAG] 文件上传且知识库已启用，将自动调用RAG检索`)
+    } else {
+      console.log(`[${ts}] [RAG] 检测到文件上传，后端将自动触发RAG检索`)
+    }
+  }
+  if (enableKnowledgeBase.value) {
+    console.log(`[${ts}] [RAG] 知识库按钮已启用，后端将调用RAG检索接口`)
+  }
+
   emit('send', message.value.trim().replace(/\s+/g, ' '), filesToSend, abortController.signal, true, enableKnowledgeBase.value)
   
   message.value = ''
@@ -608,7 +631,7 @@ onUnmounted(() => {
   justify-content: space-between;
   padding: 8px 16px 12px;
   border-top: none;
-  background: #fefefe;
+  background: transparent;
 }
 
 .left-actions {
@@ -623,14 +646,14 @@ onUnmounted(() => {
   align-items: center;
   justify-content: center;
   gap: 6px;
-  padding: 6px 12px;
-  height: auto;
-  min-height: 32px;
+  padding: 6px 14px;
+  height: 36px;
+  min-height: 36px;
   border: 1px solid #e2e8f0;
-  background: #ffffff;
-  border-radius: 6px;
+  background: #f8fafc;
+  border-radius: 10px;
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
   white-space: nowrap;
 }
 
@@ -638,24 +661,44 @@ onUnmounted(() => {
   width: 16px;
   height: 16px;
   color: #64748b;
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
-.knowledge-base-btn.active svg {
-  color: white;
+.knowledge-base-btn:hover:not(.disabled) {
+  border-color: rgba(124, 106, 239, 0.4);
+  background: rgba(124, 106, 239, 0.06);
+  transform: translateY(-1px);
+}
+
+.knowledge-base-btn:hover:not(.disabled) svg {
+  color: #7c6aef;
+  transform: scale(1.08);
 }
 
 .knowledge-base-label {
   font-size: 12px;
+  font-weight: 500;
   color: #64748b;
+  transition: color 0.25s ease;
+}
+
+.knowledge-base-btn:hover:not(.disabled) .knowledge-base-label {
+  color: #7c6aef;
 }
 
 .knowledge-base-btn.active {
-  background: #3b82f6;
-  border-color: #3b82f6;
+  background: linear-gradient(135deg, #7c6aef 0%, #6d28d9 100%);
+  border-color: transparent;
+  box-shadow: 0 4px 14px rgba(124, 106, 239, 0.4);
+  transform: translateY(-1px);
+}
+
+.knowledge-base-btn.active svg {
+  color: #ffffff;
 }
 
 .knowledge-base-btn.active .knowledge-base-label {
-  color: white;
+  color: #ffffff;
 }
 
 .knowledge-base-btn.disabled {
@@ -890,26 +933,34 @@ onUnmounted(() => {
   justify-content: center;
   width: 36px;
   height: 36px;
-  border: none;
-  background: transparent;
-  border-radius: 8px;
+  border: 1px solid #e2e8f0;
+  background: #f8fafc;
+  border-radius: 10px;
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .upload-btn svg {
   width: 18px;
   height: 18px;
   color: #64748b;
-  transition: all 0.2s;
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .upload-btn:hover:not(.disabled) {
-  background: #f1f5f9;
+  background: linear-gradient(135deg, #0ea5e9 0%, #0284c7 100%);
+  border-color: transparent;
+  box-shadow: 0 4px 12px rgba(14, 165, 233, 0.35);
+  transform: translateY(-1px);
 }
 
 .upload-btn:hover:not(.disabled) svg {
-  color: #0ea5e9;
+  color: #ffffff;
+  transform: translateY(-1px) scale(1.05);
+}
+
+.upload-btn:active:not(.disabled) {
+  transform: translateY(0);
 }
 
 .upload-btn.disabled {

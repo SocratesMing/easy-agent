@@ -11,6 +11,7 @@
         :sessions="sessions"
         :currentSessionId="currentSessionId"
         :username="userProfile.username"
+        :organizationId="userProfile.organization_id"
         :email="userProfile.email"
         :showAssets="showAssets"
         @createSession="handleCreateSession"
@@ -52,6 +53,8 @@
       <SettingsPanel
         v-if="showSettingsPanel"
         @close="showSettingsPanel = false"
+        @toggle-theme="toggleTheme"
+        :isDarkTheme="isDarkTheme"
       />
       
       <Chat
@@ -65,6 +68,7 @@
         :todos="currentTodos"
         :presetQuestions="presetQuestions"
         :workspaceExpanded="!isWorkspaceCollapsed"
+        :sidebarCollapsed="isSidebarCollapsed"
         @sendMessage="handleSendMessage"
         @createSession="ensureCurrentSession"
         @removeFile="handleRemoveFile"
@@ -97,17 +101,6 @@
         {{ error }}
         <button @click="error = null">×</button>
       </div>
-
-      <!-- 返回上一页按钮 -->
-      <button 
-        class="go-back-btn"
-        @click="goBack"
-        title="返回上一页"
-      >
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M12 19V5M5 12l7-7 7 7"/>
-        </svg>
-      </button>
     </template>
   </div>
 </template>
@@ -191,7 +184,9 @@ function restoreSessionState(sessionId) {
   const state = sessionStates.value[sessionId]
   if (state) {
     messages.value = state.messages
-    isStreaming.value = state.isStreaming
+    // isStreaming 以 streamingSessionId 为准：仅当前会话正是流式会话时才显示停止按钮
+    // 避免切换到历史会话时残留的 isStreaming=true 导致停止按钮错误显示
+    isStreaming.value = (sessionId === streamingSessionId.value)
     sessionUsage.value = { ...state.sessionUsage }
     currentAbortController.value = state.abortController
     currentTodos.value = state.todos || []
@@ -202,6 +197,7 @@ function restoreSessionState(sessionId) {
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
 const isSidebarCollapsed = ref(false)
 const isWorkspaceCollapsed = ref(true)
+const isDarkTheme = ref(localStorage.getItem('theme') === 'dark')
 const showAssets = ref(false)
 const showSkillCenter = ref(false)
 const showUserProfile = ref(false)
@@ -217,6 +213,15 @@ const userProfile = ref({
 function toggleSidebar() {
   isSidebarCollapsed.value = !isSidebarCollapsed.value
 }
+
+function toggleTheme() {
+  isDarkTheme.value = !isDarkTheme.value
+  localStorage.setItem('theme', isDarkTheme.value ? 'dark' : 'light')
+  document.documentElement.setAttribute('data-theme', isDarkTheme.value ? 'dark' : 'light')
+}
+
+// 初始化主题（确保 data-theme 属性始终存在，使 CSS 变量生效）
+document.documentElement.setAttribute('data-theme', isDarkTheme.value ? 'dark' : 'light')
 
 function handleShowAssets() {
   showAssets.value = !showAssets.value
@@ -267,16 +272,6 @@ async function handleWelcomeCompleted(profile) {
         console.error('加载聊天历史失败:', e)
       }
     }
-  }
-}
-
-function goBack() {
-  if (showUserProfile.value) {
-    showUserProfile.value = false
-  } else if (showSkillCenter.value) {
-    showSkillCenter.value = false
-  } else if (showAssets.value) {
-    showAssets.value = false
   }
 }
 
@@ -398,6 +393,9 @@ async function handleSelectSession(sessionId) {
   showAssets.value = false
   showSkillCenter.value = false
   currentSessionId.value = sessionId
+  // 切换后按当前会话是否正在流式输出决定输入框状态：
+  // 历史会话通常不是当前流式会话，应显示发送按钮而非停止按钮
+  isStreaming.value = (sessionId === streamingSessionId.value)
 
   // 尝试从缓存恢复会话状态
   if (restoreSessionState(sessionId)) {
@@ -644,6 +642,11 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
         // 新会话创建后立即刷新会话列表
         loadSessions()
       }
+      // 同步 streamingSessionId：新会话场景下发送时 currentSessionId 为 null，
+      // 此时才拿到真实 session_id，必须更新 streamingSessionId，否则切回该会话时
+      // isStreaming 判断 (sessionId === streamingSessionId) 会因 streamingSessionId
+      // 仍为 null 而错误显示发送按钮
+      streamingSessionId.value = currentSessionId.value
     } else if (eventType === 'token_usage') {
       sessionUsage.value.input_tokens = data.input_tokens || 0
       sessionUsage.value.output_tokens = data.output_tokens || 0
@@ -1000,24 +1003,27 @@ function handleStop() {
       messages.value[idx] = { ...messages.value[idx], loading: false }
     }
   }
-  // 中止正在进行的 fetch 请求
+
+  // 记录正在流式输出的会话 ID（用于通知后端取消）
+  const sid = streamingSessionId.value || currentSessionId.value
+
+  // 中止正在进行的 fetch 请求（关闭 SSE 连接）
   if (currentAbortController.value) {
     currentAbortController.value.abort()
     currentAbortController.value = null
   }
 
   // 更新会话缓存状态
-  const sid = streamingSessionId.value || currentSessionId.value
   if (sid && sessionStates.value[sid]) {
     sessionStates.value[sid].isStreaming = false
     sessionStates.value[sid].abortController = null
   }
   streamingSessionId.value = null
 
-  // 通知后端清除agent缓存
-  if (currentSessionId.value) {
-    fetch(`${API_BASE_URL}/api/chat/session/${currentSessionId.value}/agent`, {
-      method: 'DELETE',
+  // 通知后端取消正在运行的流式任务（中断 astream 执行）并清除 Agent 缓存
+  if (sid) {
+    authFetch(`${API_BASE_URL}/api/chat/cancel?session_id=${encodeURIComponent(sid)}`, {
+      method: 'POST',
     }).catch(() => {})
   }
   error.value = '已停止生成'
@@ -1183,5 +1189,1326 @@ onMounted(async () => {
     opacity: 1;
     transform: translateX(-50%) translateY(0);
   }
+}
+
+/* 响应式：小屏幕优化 */
+@media (max-width: 768px) {
+  .expand-workspace-btn,
+  .expand-sidebar-btn {
+    width: 36px;
+    height: 36px;
+  }
+
+  .expand-workspace-btn svg,
+  .expand-sidebar-btn svg {
+    width: 18px;
+    height: 18px;
+  }
+
+  .error-toast {
+    max-width: 90vw;
+    font-size: 13px;
+    padding: 10px 16px;
+  }
+}
+</style>
+
+<!-- 非 scoped 主题样式：:root 选择器在 scoped 中无法匹配 <html> 元素 -->
+<style>
+/* 深色主题 CSS 变量定义 */
+:root[data-theme="dark"] {
+  --bg-primary: #000000;
+  --bg-secondary: #1a1a1a;
+  --bg-tertiary: #2a2a2a;
+  --bg-surface: #1a1a1a;
+  --text-primary: #ffffff;
+  --text-secondary: #ffffff;
+  --border-color: #3a3a3a;
+  --accent-color: #7c6aef;
+}
+
+/* 浅色主题 CSS 变量定义（默认） */
+:root[data-theme="light"],
+:root:not([data-theme="dark"]) {
+  --bg-primary: #f8fafc;
+  --bg-secondary: #ffffff;
+  --bg-tertiary: #f1f5f9;
+  --bg-surface: #ffffff;
+  --text-primary: #1e293b;
+  --text-secondary: #64748b;
+  --border-color: #e2e8f0;
+  --accent-color: #0ea5e9;
+}
+
+/* ========== 全局 ========== */
+html[data-theme="dark"] body,
+html[data-theme="dark"] #app,
+html[data-theme="dark"] .app-container {
+  background: var(--bg-primary) !important;
+  color: var(--text-primary) !important;
+}
+
+html[data-theme="dark"] .error-toast {
+  background: #7f1d1d !important;
+  color: #fecaca !important;
+}
+
+/* ========== 侧边栏 SessionList ========== */
+html[data-theme="dark"] .session-list {
+  background: var(--bg-secondary) !important;
+  border-color: var(--border-color) !important;
+}
+
+html[data-theme="dark"] .session-header {
+  border-color: var(--border-color) !important;
+}
+
+html[data-theme="dark"] .logo-text {
+  color: var(--text-primary) !important;
+}
+
+html[data-theme="dark"] .action-btn {
+  background: transparent !important;
+  border: none !important;
+  color: var(--text-primary) !important;
+}
+
+html[data-theme="dark"] .action-btn:hover {
+  background: var(--bg-tertiary) !important;
+  color: var(--text-primary) !important;
+}
+
+html[data-theme="dark"] .action-btn.active {
+  background: rgba(124, 106, 239, 0.2) !important;
+  color: var(--accent-color) !important;
+}
+
+html[data-theme="dark"] .session-item {
+  color: var(--text-primary) !important;
+}
+
+html[data-theme="dark"] .session-item:hover {
+  background: var(--bg-tertiary) !important;
+}
+
+html[data-theme="dark"] .session-item.active {
+  background: rgba(124, 106, 239, 0.15) !important;
+}
+
+html[data-theme="dark"] .session-name {
+  color: var(--text-primary) !important;
+}
+
+html[data-theme="dark"] .session-time {
+  color: var(--text-secondary) !important;
+}
+
+html[data-theme="dark"] .menu-btn {
+  color: var(--text-secondary) !important;
+}
+
+html[data-theme="dark"] .menu-btn:hover {
+  background: var(--bg-tertiary) !important;
+}
+
+/* ========== 用户信息区域 ========== */
+html[data-theme="dark"] .user-profile {
+  background: var(--bg-tertiary) !important;
+  border-color: var(--border-color) !important;
+}
+
+html[data-theme="dark"] .user-profile:hover {
+  background: rgba(124, 106, 239, 0.15) !important;
+}
+
+html[data-theme="dark"] .user-name {
+  color: var(--text-primary) !important;
+}
+
+html[data-theme="dark"] .user-status {
+  display: none;
+}
+
+html[data-theme="dark"] .user-arrow {
+  color: var(--text-secondary) !important;
+}
+
+/* ========== 用户下拉菜单 ========== */
+html[data-theme="dark"] .user-dropdown {
+  background: var(--bg-secondary) !important;
+  border-color: var(--border-color) !important;
+  box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.4) !important;
+}
+
+html[data-theme="dark"] .user-dropdown-name {
+  color: var(--text-primary) !important;
+}
+
+html[data-theme="dark"] .user-dropdown-email {
+  color: var(--text-secondary) !important;
+}
+
+html[data-theme="dark"] .user-dropdown-divider {
+  background: var(--border-color) !important;
+}
+
+html[data-theme="dark"] .user-dropdown-item {
+  color: var(--text-primary) !important;
+}
+
+html[data-theme="dark"] .user-dropdown-item:hover {
+  background: var(--bg-tertiary) !important;
+}
+
+html[data-theme="dark"] .logout-item {
+  color: #f87171 !important;
+}
+
+/* ========== 聊天区域 ========== */
+html[data-theme="dark"] .chat-container {
+  background: var(--bg-primary) !important;
+}
+
+html[data-theme="dark"] .chat-main {
+  background: var(--bg-primary) !important;
+}
+
+html[data-theme="dark"] .chat-header {
+  background: var(--bg-secondary) !important;
+  border-color: var(--border-color) !important;
+}
+
+html[data-theme="dark"] .chat-messages {
+  background: var(--bg-primary) !important;
+}
+
+html[data-theme="dark"] .message-text {
+  color: var(--text-primary) !important;
+}
+
+html[data-theme="dark"] .message.user .message-text {
+  background: var(--bg-tertiary) !important;
+  color: var(--text-primary) !important;
+}
+
+html[data-theme="dark"] .session-created-time {
+  color: var(--text-secondary) !important;
+}
+
+html[data-theme="dark"] .message-error {
+  background: rgba(127, 29, 29, 0.3) !important;
+  border-color: #7f1d1d !important;
+  color: #fca5a5 !important;
+}
+
+/* ========== 思考区域 ========== */
+html[data-theme="dark"] .thinking-header {
+  color: var(--text-secondary) !important;
+}
+
+html[data-theme="dark"] .thinking-header:hover {
+  background: var(--bg-tertiary) !important;
+}
+
+html[data-theme="dark"] .thinking-icon {
+  color: var(--text-secondary) !important;
+}
+
+html[data-theme="dark"] .thinking-title {
+  color: var(--text-secondary) !important;
+}
+
+html[data-theme="dark"] .thinking-active .thinking-title {
+  color: #818cf8 !important;
+}
+
+html[data-theme="dark"] .thinking-duration {
+  color: var(--text-secondary) !important;
+}
+
+html[data-theme="dark"] .thinking-content {
+  background: var(--bg-secondary) !important;
+}
+
+html[data-theme="dark"] .thinking-text {
+  color: var(--text-secondary) !important;
+}
+
+/* ========== 工具调用 ========== */
+html[data-theme="dark"] .tool-call-header {
+  color: var(--text-secondary) !important;
+}
+
+html[data-theme="dark"] .tool-call-header:hover {
+  background: var(--bg-tertiary) !important;
+}
+
+html[data-theme="dark"] .tool-call-body {
+  background: transparent !important;
+}
+
+html[data-theme="dark"] .tool-section {
+  background: var(--bg-secondary) !important;
+}
+
+html[data-theme="dark"] .tool-section-label {
+  color: var(--text-secondary) !important;
+}
+
+html[data-theme="dark"] .tool-section-content {
+  color: var(--text-primary) !important;
+}
+
+html[data-theme="dark"] .tool-section-content.error {
+  background: transparent !important;
+  color: #fca5a5 !important;
+}
+
+html[data-theme="dark"] .tool-name-badge {
+  background: var(--bg-tertiary) !important;
+  color: var(--text-primary) !important;
+}
+
+html[data-theme="dark"] .tool-duration {
+  color: var(--text-secondary) !important;
+}
+
+/* ========== 输入框 ========== */
+html[data-theme="dark"] .chat-input-container {
+  background: var(--bg-primary) !important;
+}
+
+html[data-theme="dark"] .input-box {
+  background: var(--bg-secondary) !important;
+  border-color: var(--border-color) !important;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.3) !important;
+}
+
+html[data-theme="dark"] .input-box:focus-within {
+  border-color: var(--accent-color) !important;
+  box-shadow: 0 2px 16px rgba(124, 106, 239, 0.2) !important;
+}
+
+html[data-theme="dark"] .input-area {
+  background: var(--bg-secondary) !important;
+}
+
+html[data-theme="dark"] .input-area textarea {
+  background: transparent !important;
+  color: var(--text-primary) !important;
+}
+
+html[data-theme="dark"] .input-area textarea::placeholder {
+  color: var(--text-secondary) !important;
+}
+
+html[data-theme="dark"] .uploaded-files {
+  background: var(--bg-tertiary) !important;
+  border-color: var(--border-color) !important;
+}
+
+html[data-theme="dark"] .uploaded-file {
+  background: var(--bg-secondary) !important;
+  border-color: var(--border-color) !important;
+}
+
+html[data-theme="dark"] .uploaded-file .file-name {
+  color: var(--text-primary) !important;
+}
+
+html[data-theme="dark"] .send-btn {
+  background: var(--accent-color) !important;
+}
+
+html[data-theme="dark"] .send-btn:disabled {
+  background: var(--bg-tertiary) !important;
+}
+
+html[data-theme="dark"] .upload-btn {
+  background: var(--bg-tertiary) !important;
+  border-color: var(--border-color) !important;
+}
+
+html[data-theme="dark"] .upload-btn svg {
+  color: var(--text-secondary) !important;
+}
+
+html[data-theme="dark"] .upload-btn:hover:not(.disabled) {
+  background: linear-gradient(135deg, #0ea5e9 0%, #0284c7 100%) !important;
+  border-color: transparent !important;
+}
+
+html[data-theme="dark"] .upload-btn:hover:not(.disabled) svg {
+  color: #ffffff !important;
+}
+
+html[data-theme="dark"] .knowledge-base-btn {
+  background: var(--bg-tertiary) !important;
+  border-color: var(--border-color) !important;
+}
+
+html[data-theme="dark"] .knowledge-base-btn svg {
+  color: var(--text-secondary) !important;
+}
+
+html[data-theme="dark"] .knowledge-base-label {
+  color: var(--text-secondary) !important;
+}
+
+html[data-theme="dark"] .knowledge-base-btn:hover:not(.disabled) {
+  background: rgba(124, 106, 239, 0.15) !important;
+  border-color: rgba(124, 106, 239, 0.4) !important;
+}
+
+html[data-theme="dark"] .knowledge-base-btn:hover:not(.disabled) svg,
+html[data-theme="dark"] .knowledge-base-btn:hover:not(.disabled) .knowledge-base-label {
+  color: #a78bfa !important;
+}
+
+html[data-theme="dark"] .knowledge-base-btn.active {
+  background: linear-gradient(135deg, #7c6aef 0%, #6d28d9 100%) !important;
+  border-color: transparent !important;
+}
+
+html[data-theme="dark"] .knowledge-base-btn.active svg,
+html[data-theme="dark"] .knowledge-base-btn.active .knowledge-base-label {
+  color: #ffffff !important;
+}
+
+html[data-theme="dark"] .tool-btn {
+  color: var(--text-secondary) !important;
+}
+
+html[data-theme="dark"] .tool-btn:hover {
+  background: var(--bg-tertiary) !important;
+}
+
+/* ========== 资产面板 ========== */
+html[data-theme="dark"] .assets-panel {
+  background: var(--bg-primary) !important;
+}
+
+html[data-theme="dark"] .assets-header {
+  background: var(--bg-secondary) !important;
+  border-color: var(--border-color) !important;
+}
+
+html[data-theme="dark"] .assets-header h2 {
+  color: var(--text-primary) !important;
+}
+
+html[data-theme="dark"] .assets-content {
+  background: var(--bg-primary) !important;
+}
+
+html[data-theme="dark"] .asset-item,
+html[data-theme="dark"] .file-item {
+  background: var(--bg-secondary) !important;
+  border-color: var(--border-color) !important;
+  color: var(--text-primary) !important;
+}
+
+html[data-theme="dark"] .asset-item:hover,
+html[data-theme="dark"] .file-item:hover {
+  background: var(--bg-tertiary) !important;
+}
+
+html[data-theme="dark"] .asset-name,
+html[data-theme="dark"] .file-name {
+  color: var(--text-primary) !important;
+}
+
+html[data-theme="dark"] .asset-size,
+html[data-theme="dark"] .file-size {
+  color: var(--text-secondary) !important;
+}
+
+html[data-theme="dark"] .upload-btn {
+  background: var(--accent-color) !important;
+  border-color: var(--accent-color) !important;
+}
+
+html[data-theme="dark"] .close-btn {
+  color: var(--text-secondary) !important;
+}
+
+html[data-theme="dark"] .close-btn:hover {
+  background: var(--bg-tertiary) !important;
+}
+
+/* ========== 技能中心 ========== */
+html[data-theme="dark"] .skill-center {
+  background: var(--bg-primary) !important;
+}
+
+html[data-theme="dark"] .skill-center-header {
+  background: var(--bg-secondary) !important;
+  border-color: var(--border-color) !important;
+}
+
+html[data-theme="dark"] .skill-center-header h2 {
+  color: var(--text-primary) !important;
+}
+
+html[data-theme="dark"] .skill-center-content {
+  background: var(--bg-primary) !important;
+}
+
+html[data-theme="dark"] .skill-card {
+  background: var(--bg-secondary) !important;
+  border-color: var(--border-color) !important;
+}
+
+html[data-theme="dark"] .skill-card:hover {
+  background: var(--bg-tertiary) !important;
+  border-color: var(--accent-color) !important;
+}
+
+html[data-theme="dark"] .skill-card-inner {
+  background: transparent !important;
+}
+
+html[data-theme="dark"] .skill-card-name {
+  color: var(--text-primary) !important;
+}
+
+html[data-theme="dark"] .skill-card-desc {
+  color: var(--text-secondary) !important;
+}
+
+html[data-theme="dark"] .skill-card-icon {
+  color: var(--text-primary) !important;
+}
+
+html[data-theme="dark"] .add-skill-btn {
+  color: var(--accent-color) !important;
+}
+
+html[data-theme="dark"] .add-skill-btn:hover {
+  background: rgba(124, 106, 239, 0.15) !important;
+}
+
+/* ========== 工作区面板 ========== */
+html[data-theme="dark"] .workspace-panel,
+html[data-theme="dark"] .wp-header,
+html[data-theme="dark"] .wp-content {
+  background: var(--bg-secondary) !important;
+  color: var(--text-primary) !important;
+  border-color: var(--border-color) !important;
+}
+
+html[data-theme="dark"] .wp-header {
+  border-color: var(--border-color) !important;
+}
+
+html[data-theme="dark"] .wp-title {
+  color: var(--text-primary) !important;
+}
+
+html[data-theme="dark"] .wp-collapse-btn,
+html[data-theme="dark"] .wp-refresh-btn {
+  color: var(--text-primary) !important;
+}
+
+html[data-theme="dark"] .wp-collapse-btn:hover,
+html[data-theme="dark"] .wp-refresh-btn:hover:not(:disabled) {
+  background: var(--bg-tertiary) !important;
+  color: var(--text-primary) !important;
+}
+
+html[data-theme="dark"] .wp-center-text {
+  color: var(--text-secondary) !important;
+}
+
+html[data-theme="dark"] .wp-spinner {
+  border-color: var(--border-color) !important;
+  border-top-color: var(--accent-color) !important;
+}
+
+html[data-theme="dark"] .wp-retry-btn {
+  background: var(--bg-tertiary) !important;
+  border-color: var(--border-color) !important;
+  color: var(--text-primary) !important;
+}
+
+/* 工作区文件树节点 */
+html[data-theme="dark"] .tree-item {
+  color: var(--text-primary) !important;
+}
+
+html[data-theme="dark"] .tree-item-name {
+  color: var(--text-primary) !important;
+}
+
+html[data-theme="dark"] .tree-item:hover {
+  background: var(--bg-tertiary) !important;
+}
+
+html[data-theme="dark"] .tree-item.active {
+  background: rgba(124, 106, 239, 0.15) !important;
+}
+
+html[data-theme="dark"] .file-tree-item {
+  color: var(--text-primary) !important;
+}
+
+html[data-theme="dark"] .file-tree-item:hover {
+  background: var(--bg-tertiary) !important;
+}
+
+html[data-theme="dark"] .file-tree-item.active {
+  background: rgba(124, 106, 239, 0.15) !important;
+}
+
+/* ========== 设置面板 ========== */
+html[data-theme="dark"] .settings-modal,
+html[data-theme="dark"] .settings-header,
+html[data-theme="dark"] .settings-nav,
+html[data-theme="dark"] .settings-content {
+  background: var(--bg-secondary) !important;
+  color: var(--text-primary) !important;
+}
+
+html[data-theme="dark"] .settings-header h2,
+html[data-theme="dark"] .panel-header h3 {
+  color: var(--text-primary) !important;
+}
+
+html[data-theme="dark"] .nav-item {
+  color: var(--text-secondary) !important;
+}
+
+html[data-theme="dark"] .nav-item:hover {
+  background: var(--bg-tertiary) !important;
+}
+
+html[data-theme="dark"] .nav-item.active {
+  background: rgba(124, 106, 239, 0.2) !important;
+  color: var(--accent-color) !important;
+}
+
+html[data-theme="dark"] .theme-option {
+  background: var(--bg-tertiary) !important;
+  border-color: var(--border-color) !important;
+}
+
+html[data-theme="dark"] .theme-option.active {
+  background: rgba(124, 106, 239, 0.2) !important;
+  border-color: var(--accent-color) !important;
+}
+
+html[data-theme="dark"] .theme-option-name {
+  color: var(--text-primary) !important;
+}
+
+html[data-theme="dark"] .theme-option-desc {
+  color: var(--text-secondary) !important;
+}
+
+html[data-theme="dark"] .theme-check {
+  color: var(--accent-color) !important;
+}
+
+/* ========== 悬浮按钮 ========== */
+html[data-theme="dark"] .expand-workspace-btn,
+html[data-theme="dark"] .expand-sidebar-btn {
+  background: var(--bg-secondary) !important;
+  border-color: var(--border-color) !important;
+}
+
+html[data-theme="dark"] .expand-workspace-btn svg,
+html[data-theme="dark"] .expand-sidebar-btn svg {
+  color: var(--text-secondary) !important;
+}
+
+/* ========== 通用元素 ========== */
+html[data-theme="dark"] input,
+html[data-theme="dark"] textarea,
+html[data-theme="dark"] select {
+  background: var(--bg-tertiary) !important;
+  color: var(--text-primary) !important;
+  border-color: var(--border-color) !important;
+}
+
+html[data-theme="dark"] input::placeholder,
+html[data-theme="dark"] textarea::placeholder {
+  color: var(--text-secondary) !important;
+}
+
+html[data-theme="dark"] button {
+  color: var(--text-primary) !important;
+}
+
+html[data-theme="dark"] h1,
+html[data-theme="dark"] h2,
+html[data-theme="dark"] h3,
+html[data-theme="dark"] h4 {
+  color: var(--text-primary) !important;
+}
+
+html[data-theme="dark"] p,
+html[data-theme="dark"] span,
+html[data-theme="dark"] label {
+  color: var(--text-primary) !important;
+}
+
+html[data-theme="dark"] a {
+  color: var(--accent-color) !important;
+}
+
+html[data-theme="dark"] code {
+  background: var(--bg-tertiary) !important;
+  color: var(--text-primary) !important;
+}
+
+html[data-theme="dark"] pre {
+  background: var(--bg-secondary) !important;
+  color: var(--text-primary) !important;
+}
+
+html[data-theme="dark"] hr {
+  border-color: var(--border-color) !important;
+}
+
+html[data-theme="dark"] table {
+  border-color: var(--border-color) !important;
+}
+
+html[data-theme="dark"] th {
+  background: var(--bg-tertiary) !important;
+  color: var(--text-primary) !important;
+  border-color: var(--border-color) !important;
+}
+
+html[data-theme="dark"] td {
+  border-color: var(--border-color) !important;
+  color: var(--text-primary) !important;
+}
+
+html[data-theme="dark"] blockquote {
+  border-left-color: var(--accent-color) !important;
+  color: var(--text-secondary) !important;
+}
+
+/* ========== 滚动条 ========== */
+html[data-theme="dark"] ::-webkit-scrollbar {
+  width: 6px;
+}
+
+html[data-theme="dark"] ::-webkit-scrollbar-track {
+  background: var(--bg-primary) !important;
+}
+
+html[data-theme="dark"] ::-webkit-scrollbar-thumb {
+  background: var(--border-color) !important;
+  border-radius: 3px;
+}
+
+html[data-theme="dark"] ::-webkit-scrollbar-thumb:hover {
+  background: var(--text-secondary) !important;
+}
+
+/* ========== 补充：暗黑模式残留白底修复 ========== */
+/* 输入区操作栏（上传附件所在区域） */
+html[data-theme="dark"] .input-actions {
+  background: var(--bg-secondary) !important;
+}
+
+html[data-theme="dark"] .send-btn {
+  background: var(--bg-tertiary) !important;
+}
+
+html[data-theme="dark"] .send-btn.active {
+  background: var(--accent-color) !important;
+}
+
+html[data-theme="dark"] .knowledge-base-btn {
+  background: var(--bg-tertiary) !important;
+  border-color: var(--border-color) !important;
+  color: var(--text-primary) !important;
+}
+
+html[data-theme="dark"] .knowledge-base-btn svg,
+html[data-theme="dark"] .knowledge-base-btn .knowledge-base-label {
+  color: var(--text-primary) !important;
+}
+
+html[data-theme="dark"] .knowledge-base-btn.active {
+  background: rgba(124, 106, 239, 0.15) !important;
+  border-color: rgba(124, 106, 239, 0.3) !important;
+  color: var(--accent-color) !important;
+}
+
+html[data-theme="dark"] .knowledge-base-btn.active svg,
+html[data-theme="dark"] .knowledge-base-btn.active .knowledge-base-label {
+  color: var(--accent-color) !important;
+}
+
+html[data-theme="dark"] .knowledge-base-btn.active {
+  background: rgba(124, 106, 239, 0.15) !important;
+}
+
+html[data-theme="dark"] .remove-file-btn {
+  background: var(--bg-tertiary) !important;
+}
+
+html[data-theme="dark"] .remove-file-btn svg {
+  color: var(--text-primary) !important;
+}
+
+html[data-theme="dark"] .progress-bar {
+  background: var(--bg-tertiary) !important;
+}
+
+/* Token 用量弹窗 */
+html[data-theme="dark"] .token-popup {
+  background: var(--bg-secondary) !important;
+  border-color: var(--border-color) !important;
+}
+
+html[data-theme="dark"] .token-popup-title,
+html[data-theme="dark"] .token-popup-label,
+html[data-theme="dark"] .token-popup-value,
+html[data-theme="dark"] .token-popup-context-value {
+  color: var(--text-primary) !important;
+}
+
+html[data-theme="dark"] .token-popup-divider,
+html[data-theme="dark"] .token-popup-bar-inner {
+  background: var(--bg-tertiary) !important;
+}
+
+/* Markdown 表格残留白底 */
+html[data-theme="dark"] .message-text tr:nth-child(even) {
+  background: rgba(255, 255, 255, 0.04) !important;
+}
+
+html[data-theme="dark"] .message-text tr:hover {
+  background: rgba(255, 255, 255, 0.08) !important;
+}
+
+html[data-theme="dark"] .message-text td {
+  background: transparent !important;
+}
+
+/* 用时徽标与旧版工具列表 */
+html[data-theme="dark"] .tool-calls-block .tool-duration {
+  background: transparent !important;
+  color: var(--text-primary) !important;
+}
+
+html[data-theme="dark"] .tool-call-item {
+  background: var(--bg-secondary) !important;
+}
+
+html[data-theme="dark"] .tool-result {
+  background: transparent !important;
+  color: var(--text-primary) !important;
+}
+
+html[data-theme="dark"] .tool-result.error {
+  background: transparent !important;
+  color: #fca5a5 !important;
+}
+
+/* 文件卡片 */
+html[data-theme="dark"] .file-card {
+  background: var(--bg-secondary) !important;
+  border-color: var(--border-color) !important;
+}
+
+html[data-theme="dark"] .file-card .file-name {
+  color: var(--text-primary) !important;
+}
+
+html[data-theme="dark"] .file-type {
+  background: var(--bg-tertiary) !important;
+  color: var(--text-primary) !important;
+}
+
+/* 快捷卡片 */
+html[data-theme="dark"] .quick-card {
+  background: var(--bg-secondary) !important;
+  border-color: var(--border-color) !important;
+}
+
+html[data-theme="dark"] .quick-card span {
+  color: var(--text-primary) !important;
+}
+
+/* 滚动按钮 */
+html[data-theme="dark"] .scroll-btn {
+  background: var(--bg-secondary) !important;
+  border-color: var(--border-color) !important;
+}
+
+html[data-theme="dark"] .scroll-btn svg {
+  color: var(--text-primary) !important;
+}
+
+/* 下拉菜单与弹窗 */
+html[data-theme="dark"] .menu-dropdown {
+  background: var(--bg-secondary) !important;
+  border-color: var(--border-color) !important;
+}
+
+html[data-theme="dark"] .menu-item {
+  color: var(--text-primary) !important;
+}
+
+html[data-theme="dark"] .modal-content {
+  background: var(--bg-secondary) !important;
+}
+
+html[data-theme="dark"] .modal-content input {
+  background: var(--bg-tertiary) !important;
+  color: var(--text-primary) !important;
+  border-color: var(--border-color) !important;
+}
+
+html[data-theme="dark"] .cancel-btn {
+  background: var(--bg-tertiary) !important;
+  border-color: var(--border-color) !important;
+  color: var(--text-primary) !important;
+}
+
+/* 生成文件按钮 */
+html[data-theme="dark"] .generated-files-btn {
+  background: rgba(34, 197, 94, 0.15) !important;
+  border-color: rgba(34, 197, 94, 0.4) !important;
+  color: #4ade80 !important;
+}
+
+/* 等待与加载文字 */
+html[data-theme="dark"] .waiting-text,
+html[data-theme="dark"] .loading-text {
+  color: var(--text-primary) !important;
+}
+
+/* 上下文环文字 */
+html[data-theme="dark"] .context-ring-text {
+  color: var(--text-primary) !important;
+}
+
+html[data-theme="dark"] .context-ring-bg {
+  stroke: var(--bg-tertiary) !important;
+}
+
+/* ========== Task Plan (TodoListPanel) 暗黑模式 ========== */
+html[data-theme="dark"] .todo-badge {
+  background: var(--bg-secondary) !important;
+  border-color: var(--border-color) !important;
+  box-shadow: 2px 2px 12px rgba(0, 0, 0, 0.4) !important;
+}
+
+html[data-theme="dark"] .todo-badge-text {
+  color: var(--text-primary) !important;
+}
+
+html[data-theme="dark"] .todo-panel {
+  background: var(--bg-secondary) !important;
+  border-color: var(--border-color) !important;
+  box-shadow: 4px 0 20px rgba(0, 0, 0, 0.4) !important;
+}
+
+html[data-theme="dark"] .todo-header {
+  border-color: var(--border-color) !important;
+}
+
+html[data-theme="dark"] .todo-title {
+  color: var(--text-primary) !important;
+}
+
+html[data-theme="dark"] .todo-count {
+  color: var(--text-primary) !important;
+  background: var(--bg-tertiary) !important;
+}
+
+html[data-theme="dark"] .todo-close {
+  color: var(--text-primary) !important;
+}
+
+html[data-theme="dark"] .todo-close:hover {
+  color: var(--text-primary) !important;
+  background: var(--bg-tertiary) !important;
+}
+
+html[data-theme="dark"] .todo-progress {
+  background: var(--bg-tertiary) !important;
+}
+
+html[data-theme="dark"] .todo-item:hover {
+  background: var(--bg-tertiary) !important;
+}
+
+html[data-theme="dark"] .todo-item.in_progress {
+  background: rgba(124, 106, 239, 0.15) !important;
+}
+
+html[data-theme="dark"] .todo-content {
+  color: var(--text-primary) !important;
+}
+
+html[data-theme="dark"] .todo-content.line-through {
+  color: var(--text-secondary) !important;
+}
+
+html[data-theme="dark"] .todo-item.completed .todo-content {
+  color: var(--text-secondary) !important;
+}
+
+html[data-theme="dark"] .todo-item.in_progress .todo-content {
+  color: var(--text-primary) !important;
+}
+
+html[data-theme="dark"] .todo-pending-dot {
+  border-color: var(--text-secondary) !important;
+}
+
+/* ========== 资产面板暗黑模式补充 ========== */
+html[data-theme="dark"] .assets-panel,
+html[data-theme="dark"] .assets-header,
+html[data-theme="dark"] .assets-content {
+  background: transparent !important;
+}
+
+html[data-theme="dark"] .assets-header h2 {
+  color: var(--text-primary) !important;
+}
+
+html[data-theme="dark"] .upload-btn,
+html[data-theme="dark"] .refresh-btn {
+  background: var(--bg-tertiary) !important;
+  border-color: var(--border-color) !important;
+  color: var(--text-primary) !important;
+}
+
+html[data-theme="dark"] .upload-btn:hover:not(.disabled),
+html[data-theme="dark"] .refresh-btn:hover:not(:disabled) {
+  background: var(--border-color) !important;
+}
+
+html[data-theme="dark"] .tab {
+  background: transparent !important;
+  border-color: var(--border-color) !important;
+  color: var(--text-primary) !important;
+}
+
+html[data-theme="dark"] .tab:hover {
+  background: var(--bg-tertiary) !important;
+}
+
+html[data-theme="dark"] .tab.active {
+  background: var(--accent-color) !important;
+  border-color: var(--accent-color) !important;
+  color: #fff !important;
+}
+
+html[data-theme="dark"] .tab-count {
+  background: var(--bg-tertiary) !important;
+  color: var(--text-primary) !important;
+}
+
+html[data-theme="dark"] .tab.active .tab-count {
+  background: rgba(255, 255, 255, 0.2) !important;
+  color: #fff !important;
+}
+
+html[data-theme="dark"] .file-card {
+  background: var(--bg-secondary) !important;
+  border-color: var(--border-color) !important;
+}
+
+html[data-theme="dark"] .file-card:hover {
+  border-color: var(--accent-color) !important;
+}
+
+html[data-theme="dark"] .file-card .file-name,
+html[data-theme="dark"] .assets-panel .file-name {
+  color: var(--text-primary) !important;
+}
+
+html[data-theme="dark"] .file-type-badge {
+  background: transparent !important;
+  color: var(--text-primary) !important;
+}
+
+html[data-theme="dark"] .file-action:hover {
+  background: var(--bg-tertiary) !important;
+}
+
+html[data-theme="dark"] .file-action svg {
+  color: var(--text-primary) !important;
+}
+
+html[data-theme="dark"] .dropdown-menu {
+  background: var(--bg-secondary) !important;
+  border-color: var(--border-color) !important;
+}
+
+html[data-theme="dark"] .dropdown-item {
+  color: var(--text-primary) !important;
+}
+
+html[data-theme="dark"] .dropdown-item:hover {
+  background: var(--bg-tertiary) !important;
+}
+
+html[data-theme="dark"] .empty-state,
+html[data-theme="dark"] .loading-state {
+  color: var(--text-secondary) !important;
+}
+
+html[data-theme="dark"] .empty-state h3 {
+  color: var(--text-primary) !important;
+}
+
+html[data-theme="dark"] .spinner {
+  border-color: var(--border-color) !important;
+  border-top-color: var(--accent-color) !important;
+}
+
+/* ========== 技能中心暗黑模式补充 ========== */
+html[data-theme="dark"] .skill-center,
+html[data-theme="dark"] .skill-center-header,
+html[data-theme="dark"] .skill-center-content,
+html[data-theme="dark"] .skill-center .tabs {
+  background: transparent !important;
+}
+
+html[data-theme="dark"] .skill-center-header h2 {
+  color: var(--text-primary) !important;
+}
+
+html[data-theme="dark"] .skill-center .tab {
+  background: transparent !important;
+  border-color: var(--border-color) !important;
+  color: var(--text-primary) !important;
+}
+
+html[data-theme="dark"] .skill-center .tab:hover {
+  background: var(--bg-tertiary) !important;
+}
+
+html[data-theme="dark"] .skill-center .tab.active {
+  background: var(--accent-color) !important;
+  border-color: var(--accent-color) !important;
+  color: #fff !important;
+}
+
+html[data-theme="dark"] .skill-center .tab-count {
+  background: var(--bg-tertiary) !important;
+  color: var(--text-primary) !important;
+}
+
+html[data-theme="dark"] .skill-center .tab.active .tab-count {
+  background: rgba(255, 255, 255, 0.2) !important;
+  color: #fff !important;
+}
+
+html[data-theme="dark"] .skill-card {
+  background: var(--bg-secondary) !important;
+  border-color: var(--border-color) !important;
+}
+
+html[data-theme="dark"] .skill-card:hover {
+  border-color: var(--accent-color) !important;
+}
+
+html[data-theme="dark"] .skill-card-name {
+  color: var(--text-primary) !important;
+}
+
+html[data-theme="dark"] .skill-card-desc {
+  color: var(--text-secondary) !important;
+}
+
+html[data-theme="dark"] .add-icon-btn {
+  background: var(--bg-tertiary) !important;
+  border-color: var(--border-color) !important;
+  color: var(--accent-color) !important;
+}
+
+html[data-theme="dark"] .add-icon-btn:hover:not(:disabled) {
+  background: var(--border-color) !important;
+}
+
+html[data-theme="dark"] .add-icon-btn.added {
+  background: var(--bg-tertiary) !important;
+  color: var(--text-secondary) !important;
+}
+
+html[data-theme="dark"] .remove-icon-btn:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 0.15) !important;
+  border-color: rgba(239, 68, 68, 0.4) !important;
+}
+
+html[data-theme="dark"] .popover-card {
+  background: var(--bg-secondary) !important;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5), 0 0 0 1px var(--border-color) !important;
+}
+
+html[data-theme="dark"] .popover-name {
+  color: var(--text-primary) !important;
+}
+
+html[data-theme="dark"] .popover-category {
+  color: var(--text-secondary) !important;
+}
+
+html[data-theme="dark"] .popover-desc {
+  color: var(--text-primary) !important;
+}
+
+html[data-theme="dark"] .popover-close {
+  color: var(--text-secondary) !important;
+}
+
+html[data-theme="dark"] .popover-close:hover {
+  background: var(--bg-tertiary) !important;
+  color: var(--text-primary) !important;
+}
+
+html[data-theme="dark"] .popover-btn {
+  background: var(--bg-tertiary) !important;
+  border-color: var(--accent-color) !important;
+  color: var(--accent-color) !important;
+}
+
+html[data-theme="dark"] .popover-btn:hover:not(:disabled) {
+  background: var(--border-color) !important;
+}
+
+html[data-theme="dark"] .popover-btn.added {
+  background: var(--bg-tertiary) !important;
+  border-color: var(--border-color) !important;
+  color: var(--text-secondary) !important;
+}
+
+html[data-theme="dark"] .popover-btn.remove {
+  border-color: rgba(239, 68, 68, 0.5) !important;
+  color: #f87171 !important;
+}
+
+html[data-theme="dark"] .popover-btn.remove:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 0.15) !important;
+}
+
+html[data-theme="dark"] .retry-btn {
+  background: var(--bg-tertiary) !important;
+  border-color: var(--border-color) !important;
+  color: var(--text-primary) !important;
+}
+
+html[data-theme="dark"] .retry-btn:hover {
+  background: var(--border-color) !important;
+}
+
+html[data-theme="dark"] .btn-spinner,
+html[data-theme="dark"] .btn-spinner-sm {
+  border-color: var(--border-color) !important;
+  border-top-color: var(--accent-color) !important;
+}
+
+html[data-theme="dark"] .toast.success {
+  background: rgba(34, 197, 94, 0.15) !important;
+  color: #4ade80 !important;
+  border-color: rgba(34, 197, 94, 0.4) !important;
+}
+
+html[data-theme="dark"] .toast.error {
+  background: rgba(239, 68, 68, 0.15) !important;
+  color: #f87171 !important;
+  border-color: rgba(239, 68, 68, 0.4) !important;
+}
+
+/* ========== 工具执行状态文字 ========== */
+html[data-theme="dark"] .tool-status-text.executing {
+  background: transparent !important;
+  color: var(--accent-color) !important;
+}
+
+/* ========== 用户消息卡片暗黑模式 ========== */
+html[data-theme="dark"] .message.user .message-text {
+  background: var(--bg-tertiary) !important;
+  color: var(--text-primary) !important;
+  border-color: var(--border-color) !important;
+  box-shadow: none !important;
+}
+
+/* ========== 设置面板 MCP 区域 ========== */
+html[data-theme="dark"] .mcp-card {
+  background: var(--bg-tertiary) !important;
+  border-color: var(--border-color) !important;
+}
+
+html[data-theme="dark"] .mcp-name {
+  color: var(--text-primary) !important;
+}
+
+html[data-theme="dark"] .mcp-transport {
+  background: rgba(14, 165, 233, 0.15) !important;
+  color: #38bdf8 !important;
+}
+
+html[data-theme="dark"] .detail-label {
+  color: var(--text-secondary) !important;
+}
+
+html[data-theme="dark"] .mcp-detail code {
+  background: var(--bg-secondary) !important;
+  color: var(--text-primary) !important;
+}
+
+html[data-theme="dark"] .prompt-content {
+  background: var(--bg-tertiary) !important;
+  border-color: var(--border-color) !important;
+  color: var(--text-primary) !important;
+}
+
+html[data-theme="dark"] .empty-hint {
+  color: var(--text-secondary) !important;
+}
+
+/* ========== 全局边框统一为灰色 ========== */
+html[data-theme="dark"] .session-list,
+html[data-theme="dark"] .session-header,
+html[data-theme="dark"] .divider,
+html[data-theme="dark"] .user-profile,
+html[data-theme="dark"] .action-btn,
+html[data-theme="dark"] .session-item,
+html[data-theme="dark"] .menu-dropdown,
+html[data-theme="dark"] .user-dropdown,
+html[data-theme="dark"] .modal-content,
+html[data-theme="dark"] .modal-content input,
+html[data-theme="dark"] .chat-input-container .input-box,
+html[data-theme="dark"] .knowledge-base-btn,
+html[data-theme="dark"] .upload-btn,
+html[data-theme="dark"] .send-btn,
+html[data-theme="dark"] .assets-header,
+html[data-theme="dark"] .assets-panel .tabs,
+html[data-theme="dark"] .assets-panel .tab,
+html[data-theme="dark"] .assets-panel .upload-btn,
+html[data-theme="dark"] .assets-panel .refresh-btn,
+html[data-theme="dark"] .assets-panel .file-card,
+html[data-theme="dark"] .assets-panel .dropdown-menu,
+html[data-theme="dark"] .skill-center-header,
+html[data-theme="dark"] .skill-center .tabs,
+html[data-theme="dark"] .skill-center .tab,
+html[data-theme="dark"] .skill-card,
+html[data-theme="dark"] .add-icon-btn,
+html[data-theme="dark"] .popover-card,
+html[data-theme="dark"] .popover-btn,
+html[data-theme="dark"] .workspace-panel,
+html[data-theme="dark"] .wp-header,
+html[data-theme="dark"] .mcp-card,
+html[data-theme="dark"] .prompt-content,
+html[data-theme="dark"] .settings-modal,
+html[data-theme="dark"] .todo-panel,
+html[data-theme="dark"] .todo-badge,
+html[data-theme="dark"] .file-card,
+html[data-theme="dark"] .quick-card,
+html[data-theme="dark"] .scroll-btn {
+  border-color: var(--border-color) !important;
 }
 </style>

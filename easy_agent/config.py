@@ -4,6 +4,7 @@ Provides unified configuration loading and management functionality
 """
 
 from pathlib import Path
+from typing import Any
 
 import yaml
 from pydantic import BaseModel, Field
@@ -101,6 +102,24 @@ class AgentConfig(BaseModel):
     workspace_dir: str = "./workspace"
     memories_dir: str = "./memories"
     system_prompt_path: str = "system_prompt.md"
+    denied_dirs: list[str | dict[str, Any]] = Field(default_factory=list)
+    """禁止智能体读写的虚拟路径目录列表。
+
+    支持两种格式（可混用）：
+    - 字符串：``"/user-skills"`` → 默认禁止 read+write
+    - 字典：``{path: "/user-skills", operations: ["write"]}`` → 只禁止指定操作
+
+    operations 可选值：``read``、``write``，默认两者都禁止。
+    通过 FilesystemPermission(mode="deny") 传入 create_deep_agent。
+    """
+
+    external_dirs: dict[str, str] = Field(default_factory=dict)
+    """外部目录映射：虚拟路径前缀 → 宿主机实际路径。
+
+    将 skill 需要访问的宿主机目录挂载为虚拟路径路由，使文件工具
+    (ls/read_file/write_file 等) 能通过虚拟路径访问。
+    例: {"/strategy-workspace/": "/home/sututu/code/finance-skills/fast_backtest/workspace"}
+    """
 
 
 class MCPToolConfig(BaseModel):
@@ -210,6 +229,8 @@ class Config(BaseModel):
             workspace_dir=data.get("workspace_dir", "./workspace"),
             memories_dir=data.get("memories_dir", "./memories"),
             system_prompt_path=data.get("system_prompt_path", "system_prompt.md"),
+            denied_dirs=data.get("denied_dirs", []),
+            external_dirs=data.get("external_dirs", {}),
         )
 
         tools_data = data.get("tools", {})

@@ -54,6 +54,20 @@
         </div>
 
         <div class="form-group" v-if="!isLogin && !isResetPassword">
+          <label for="organizationId">
+            机构ID <span class="required">*</span>
+            <span class="password-hint">（注册后不可更改）</span>
+          </label>
+          <input
+            id="organizationId"
+            v-model="form.organizationId"
+            type="text"
+            placeholder="请输入所属机构ID"
+            required
+          />
+        </div>
+
+        <div class="form-group" v-if="!isLogin && !isResetPassword">
           <label for="email">用户邮箱</label>
           <input
             id="email"
@@ -71,7 +85,7 @@
           {{ success }}
         </div>
 
-        <button type="submit" class="submit-btn" :disabled="submitting || !form.username.trim() || (!isResetPassword && !form.password.trim())">
+        <button type="submit" class="submit-btn" :disabled="submitting || !form.username.trim() || (!isResetPassword && !form.password.trim()) || (!isLogin && !isResetPassword && !form.organizationId.trim())">
           {{ submitting ? (isResetPassword ? '重置中...' : (isLogin ? '登录中...' : '注册中...')) : (isResetPassword ? '重置密码' : (isLogin ? '登录' : '注册')) }}
         </button>
 
@@ -112,6 +126,7 @@ const isResetPassword = ref(false)
 const form = ref({
   username: '',
   password: '',
+  organizationId: '',
   email: '',
   newPassword: ''
 })
@@ -124,6 +139,7 @@ function toggleMode() {
   form.value = {
     username: '',
     password: '',
+    organizationId: '',
     email: '',
     newPassword: ''
   }
@@ -144,6 +160,7 @@ function backToLogin() {
   form.value = {
     username: '',
     password: '',
+    organizationId: '',
     email: '',
     newPassword: ''
   }
@@ -194,9 +211,15 @@ async function handleSubmit() {
     if (isLogin.value) {
       data = await login(form.value.username.trim(), form.value.password)
     } else {
+      if (!form.value.organizationId.trim()) {
+        error.value = '请输入机构ID'
+        submitting.value = false
+        return
+      }
       data = await register(
         form.value.username.trim(),
         form.value.password,
+        form.value.organizationId.trim(),
         form.value.email.trim()
       )
     }

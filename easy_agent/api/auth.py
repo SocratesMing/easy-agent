@@ -53,12 +53,18 @@ def get_client_ip(request: Request) -> str:
 )
 async def register(
     request: RegisterRequest,
+    http_request: Request,
     db: Annotated[Database, Depends(get_database)],
 ):
+    # 注册时与用户IP强绑定
+    client_ip = get_client_ip(http_request)
+
     user = db.register_user(
         username=request.username,
         password=request.password,
+        organization_id=request.organization_id,
         email=request.email,
+        bound_ip=client_ip,
     )
 
     if not user:
@@ -81,7 +87,9 @@ async def register(
 
     max_input_tokens = _get_max_input_tokens()
 
-    logger.info(f"[用户] 注册成功 | 用户名: {user.username}")
+    logger.info(
+        f"[用户] 注册成功 | 用户名: {user.username} | 机构ID: {user.organization_id} | 绑定IP: {client_ip}"
+    )
 
     return AuthResponse(
         access_token=access_token,
@@ -176,17 +184,14 @@ async def update_profile(
     if not user:
         raise HTTPException(status_code=404, detail="用户不存在")
 
-    if request.username:
-        user.username = request.username
-    if request.organization_id is not None:
-        user.organization_id = request.organization_id
+    # 用户名和机构ID注册后不可更改，仅允许更新邮箱
     if request.email is not None:
         user.email = request.email
 
     user.updated_at = datetime.now().isoformat()
     db.update_user(user)
 
-    logger.info(f"[用户] 更新资料 | 用户名: {user.username}")
+    logger.info(f"[用户] 更新资料 | 用户名: {user.username} | 仅邮箱可更新")
 
     return UserProfile(
         user_id=user.user_id,

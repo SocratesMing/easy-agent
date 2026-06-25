@@ -1,5 +1,6 @@
 """Chat routes - streaming and non-streaming"""
 
+import asyncio
 import logging
 import uuid
 from datetime import datetime
@@ -16,6 +17,9 @@ from ..services import (
     chat_stream_generator,
     get_or_create_agent_for_session,
     remove_session_agent,
+    register_stream_task,
+    unregister_stream_task,
+    cancel_stream_task,
 )
 from ..utils import parse_file_content, SessionLogger
 from .sessions import generate_workspace_name
@@ -118,6 +122,36 @@ async def chat_stream(
         if file_contents:
             parsed_content = "\n\n".join(file_contents) + "\n\n" + request.message
 
+    # RAG 知识库检索：当用户启用知识库按钮，或上传文件时自动触发
+    # 将检索结果与用户原始输入整合后发送给 Agent
+    should_rag = request.use_knowledge_base or (request.files and len(request.files) > 0)
+    if should_rag:
+        try:
+            from ..services.rag_service import search_knowledge_base, format_rag_context
+
+            rag_query = request.message or (request.files[0].get("filename", "") if request.files else "")
+            logger.info(
+                f"[{sid}] [RAG] 触发检索 | use_knowledge_base={request.use_knowledge_base} | "
+                f"files={len(request.files or [])} | query={rag_query[:50]}"
+            )
+            rag_result = search_knowledge_base(
+                query=rag_query,
+                username=username,
+                session_id=session_id,
+                files=[f.get("file_path") for f in (request.files or []) if f.get("file_path")],
+                n_results=5,
+                http_request=http_request,
+            )
+            logger.info(
+                f"[{sid}] [RAG] 检索完成 | success={rag_result.get('success')} | "
+                f"count={rag_result.get('count', 0)} | source={rag_result.get('source')}"
+            )
+            if rag_result.get("success") and rag_result.get("results"):
+                parsed_content = format_rag_context(rag_result, parsed_content)
+                logger.info(f"[{sid}] [RAG] 已将检索结果整合至消息内容")
+        except Exception as e:
+            logger.error(f"[{sid}] [RAG] 检索异常: {e}", exc_info=True)
+
     user_message = {
         "role": "user",
         "content": request.message,
@@ -143,18 +177,39 @@ async def chat_stream(
     agent = await get_or_create_agent_for_session(session_id, username, workspace_name)
 
     async def event_generator():
-        async for chunk in chat_stream_generator(
-            request=request,
-            db=db,
-            agent=agent,
-            session_id=session_id,
-            message_id=message_id,
-            username=username,
-            http_request=http_request,
-            parsed_content=parsed_content,
-            session_logger=session_logger,
-        ):
-            yield chunk
+        # 注册当前请求任务，使 /cancel 端点能通过 task.cancel() 中断 astream
+        cur_task = asyncio.current_task()
+        logger.info(
+            f"[{session_id[-5:]}] 📡 流式响应启动 | 已注册 task={cur_task.get_name() if cur_task else '?'}"
+        )
+        register_stream_task(session_id, cur_task)
+        try:
+            async for chunk in chat_stream_generator(
+                request=request,
+                db=db,
+                agent=agent,
+                session_id=session_id,
+                message_id=message_id,
+                username=username,
+                http_request=http_request,
+                parsed_content=parsed_content,
+                session_logger=session_logger,
+            ):
+                yield chunk
+        except asyncio.CancelledError:
+            logger.info(
+                f"[{session_id[-5:]}] 🛑 event_generator 收到 CancelledError | "
+                f"astream 已被中断，停止向客户端推送"
+            )
+            raise
+        except Exception as e:
+            logger.error(
+                f"[{session_id[-5:]}] ❌ event_generator 异常: {type(e).__name__}: {e}"
+            )
+            raise
+        finally:
+            unregister_stream_task(session_id)
+            logger.info(f"[{session_id[-5:]}] 🏁 流式响应结束 | task 已注销")
 
     return StreamingResponse(
         event_generator(),
@@ -170,7 +225,7 @@ async def chat_stream(
 @router.post(
     "/cancel",
     summary="取消当前聊天",
-    description="取消当前正在进行的流式聊天请求。",
+    description="取消当前正在进行的流式聊天请求，中断后端 astream 执行。",
 )
 async def cancel_chat(
     session_id: str,
@@ -178,8 +233,21 @@ async def cancel_chat(
     username: Annotated[str, Depends(get_current_username)],
 ):
     sid = session_id[-5:] if session_id else "unknown"
-    logger.info(f"[{sid}] 取消聊天请求 | 用户: {username}")
+    logger.info(
+        f"[{sid}] 🛑 收到终止请求 | 用户: {username} | "
+        f"完整 session_id: {session_id} | 时间: {datetime.now().isoformat()}"
+    )
 
+    # 1. 取消正在运行的流式任务（向 astream 注入 CancelledError，
+    #    streaming.py 的 except 分支会保存已生成的部分回复）
+    cancelled = await cancel_stream_task(session_id)
+    if cancelled:
+        logger.info(f"[{sid}] 🛑 流式任务已中断")
+    else:
+        logger.info(f"[{sid}] 🛑 无正在运行的流式任务（可能已结束或前端 abort）")
+
+    # 2. 清除 Agent 缓存，使下次请求重新创建 Agent
     remove_session_agent(session_id)
 
+    logger.info(f"[{sid}] 🛑 终止处理完成")
     return {"status": "cancelled", "session_id": session_id}

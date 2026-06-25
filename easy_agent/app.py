@@ -89,6 +89,11 @@ def setup_logging():
     uvicorn_access_logger.addHandler(console_handler)
     uvicorn_access_logger.addHandler(file_handler)
 
+    # deepagents 的技能名校验仅允许小写字母+连字符，但本项目部分技能
+    # （如 strategy_fx）因 Python 反射加载要求必须使用下划线命名，无法改名。
+    #该校验仅为 WARNING 且不影响加载（向后兼容），故屏蔽此噪声日志。
+    logging.getLogger("deepagents.middleware.skills").setLevel(logging.ERROR)
+
     return log_file
 
 

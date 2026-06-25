@@ -373,7 +373,7 @@ watch(() => props.visible, (newVal) => {
   flex: 1;
   display: flex;
   flex-direction: column;
-  background: #f8fafc;
+  background: transparent;
   height: 100%;
 }
 
@@ -382,7 +382,7 @@ watch(() => props.visible, (newVal) => {
   justify-content: space-between;
   align-items: center;
   padding: 20px 24px;
-  background: white;
+  background: transparent;
   border-bottom: 1px solid #e2e8f0;
 }
 
@@ -404,17 +404,17 @@ watch(() => props.visible, (newVal) => {
   align-items: center;
   gap: 6px;
   padding: 8px 16px;
-  border: 1px solid #3b82f6;
-  background: #3b82f6;
+  border: 1px solid #e2e8f0;
+  background: #f1f5f9;
   border-radius: 8px;
   font-size: 14px;
-  color: white;
+  color: #475569;
   cursor: pointer;
   transition: all 0.2s;
 }
 
 .upload-btn:hover:not(.disabled) {
-  background: #2563eb;
+  background: #e2e8f0;
 }
 
 .upload-btn.disabled {
@@ -433,7 +433,7 @@ watch(() => props.visible, (newVal) => {
   gap: 6px;
   padding: 8px 16px;
   border: 1px solid #e2e8f0;
-  background: white;
+  background: #f1f5f9;
   border-radius: 8px;
   font-size: 14px;
   color: #475569;
@@ -442,7 +442,7 @@ watch(() => props.visible, (newVal) => {
 }
 
 .refresh-btn:hover:not(:disabled) {
-  background: #f1f5f9;
+  background: #e2e8f0;
 }
 
 .refresh-btn svg {
@@ -463,7 +463,7 @@ watch(() => props.visible, (newVal) => {
   display: flex;
   gap: 8px;
   padding: 16px 24px;
-  background: white;
+  background: transparent;
   border-bottom: 1px solid #e2e8f0;
   overflow-x: auto;
 }
@@ -474,7 +474,7 @@ watch(() => props.visible, (newVal) => {
   gap: 8px;
   padding: 10px 16px;
   border: 1px solid #e2e8f0;
-  background: white;
+  background: transparent;
   border-radius: 8px;
   font-size: 14px;
   color: #64748b;
@@ -484,7 +484,7 @@ watch(() => props.visible, (newVal) => {
 }
 
 .tab:hover {
-  background: #f8fafc;
+  background: #f1f5f9;
   border-color: #cbd5e1;
 }
 
@@ -642,7 +642,7 @@ watch(() => props.visible, (newVal) => {
 }
 
 .file-type-badge {
-  background: #f1f5f9;
+  background: transparent;
   color: #475569;
   padding: 2px 6px;
   border-radius: 4px;
@@ -702,7 +702,7 @@ watch(() => props.visible, (newVal) => {
   position: absolute;
   right: 0;
   top: 100%;
-  background: white;
+  background: #ffffff;
   border: 1px solid #e2e8f0;
   border-radius: 8px;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);

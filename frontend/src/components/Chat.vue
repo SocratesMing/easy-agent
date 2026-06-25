@@ -2,6 +2,7 @@
   <div class="chat-container">
     <div class="chat-main">
     <TodoListPanel
+      v-if="!sidebarCollapsed"
       :todos="todos"
     />
     <div class="chat-messages" ref="messagesRef">
@@ -156,6 +157,10 @@ const props = defineProps({
     default: () => []
   },
   workspaceExpanded: {
+    type: Boolean,
+    default: false
+  },
+  sidebarCollapsed: {
     type: Boolean,
     default: false
   },

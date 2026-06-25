@@ -938,19 +938,23 @@ onMounted(() => {
 }
 
 .thinking-content {
-  padding: 12px 14px;
+  padding: 8px 12px;
   font-size: 15px;
   color: #475569;
   line-height: 1.7;
-  width: 100%;
+  width: calc(100% - 24px);
+  margin: 0 12px;
   box-sizing: border-box;
-  max-height: 260px;
-  overflow-y: auto;
   background: #f8fafc;
+  border-radius: 8px;
+  overflow: hidden;
 }
 
 .thinking-text {
   color: #64748b;
+  padding: 4px 0 8px;
+  max-height: 220px;
+  overflow-y: auto;
 }
 
 .thinking-text :deep(p) {
@@ -1232,7 +1236,7 @@ onMounted(() => {
 
 .tool-section-content.error {
   color: #dc2626;
-  background: #fef2f2;
+  background: transparent;
   border-radius: 6px;
   margin: 0 8px 8px;
   padding: 8px;
@@ -1305,7 +1309,7 @@ onMounted(() => {
   font-weight: 400;
   font-size: 11px;
   color: #94a3b8;
-  background: #f1f5f9;
+  background: transparent;
   padding: 2px 6px;
   border-radius: 4px;
 }
@@ -1481,7 +1485,11 @@ onMounted(() => {
 .message.user .message-text {
   background: #f0f9ff;
   color: #1e293b;
-  border-radius: 16px;
+  border-radius: 18px 18px 4px 18px;
+  border: 1px solid #bae6fd;
+  padding: 12px 18px;
+  box-shadow: 0 1px 3px rgba(14, 165, 233, 0.08);
+  max-width: 85%;
 }
 
 .message.user .message-text :deep(pre) {

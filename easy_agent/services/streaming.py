@@ -1306,20 +1306,26 @@ async def chat_stream_generator(
                 except Exception as e:
                     logger.warning(f"[{sid}] Workspace rename failed: {e}")
 
-        # Memory file truncation — ensure AGENTS.md stays within 2000 chars
-        if agent and agent.memory_file and agent.memory_file.exists():
+        # Memory file management — 每次会话后按使用场景更新用户记忆
+        # 1. 根据本次会话内容按场景更新记忆（重复场景更新经验，新场景添加章节）
+        # 2. 确保记忆文件不超过 3000 字符
+        if agent and agent.memory_file:
             try:
-                memory_content = agent.memory_file.read_text(encoding="utf-8")
-                if len(memory_content) > 2000:
-                    from ..api.settings import _truncate_memory
+                from .memory_manager import update_memory_after_session
+                from .agent_manager import _llm_instance
 
-                    truncated = _truncate_memory(memory_content, 2000)
-                    agent.memory_file.write_text(truncated, encoding="utf-8")
-                    logger.warning(
-                        f"[{sid}] 记忆文件已截断 | 原始: {len(memory_content)} | 截断后: {len(truncated)}"
+                updated = update_memory_after_session(
+                    agent.memory_file,
+                    user_message=message_content,
+                    assistant_response=accumulated_response,
+                    llm=_llm_instance,
+                )
+                if updated:
+                    logger.info(
+                        f"[{sid}] 记忆文件已按场景更新（上限 3000 字符）"
                     )
             except Exception as e:
-                logger.warning(f"[{sid}] 记忆文件截断失败: {e}")
+                logger.warning(f"[{sid}] 记忆文件更新失败: {e}")
 
         # Session logger
         if session_logger:
@@ -1362,7 +1368,12 @@ async def chat_stream_generator(
         )
 
     except asyncio.CancelledError:
-        logger.info(f"[{sid}] ❌ 请求被取消")
+        logger.info(
+            f"[{sid}] ❌ 请求被取消 | 当前 step={current_step} | "
+            f"已累积回复 {len(accumulated_response)} 字符 | "
+            f"已记录 {len(tool_call_records)} 个工具调用 | "
+            f"思考中={is_in_thinking}"
+        )
         try:
             partial_msg = {
                 "role": "assistant",

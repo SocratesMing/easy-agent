@@ -146,8 +146,8 @@ class UserProfile(BaseModel):
 
 
 class UpdateUserProfileRequest(BaseModel):
-    username: Optional[str] = Field(default=None, description="用户名")
-    organization_id: Optional[str] = Field(default=None, description="机构ID")
+    username: Optional[str] = Field(default=None, description="用户名（注册后不可更改，此字段已废弃）")
+    organization_id: Optional[str] = Field(default=None, description="机构ID（注册后不可更改，此字段已废弃）")
     email: Optional[str] = Field(default=None, description="用户邮箱")
 
 
@@ -159,6 +159,7 @@ class LoginRequest(BaseModel):
 class RegisterRequest(BaseModel):
     username: str = Field(..., description="用户名", min_length=2, max_length=50)
     password: str = Field(..., description="密码", min_length=4, max_length=20)
+    organization_id: str = Field(..., description="机构ID（必填，注册后不可更改）", min_length=1, max_length=100)
     email: Optional[str] = Field(default="", description="邮箱")
 
 

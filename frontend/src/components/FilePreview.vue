@@ -151,43 +151,33 @@ const pptxUrl = ref('')
 const imageExts = ['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.svg', '.ico']
 const textExts = ['.txt', '.json', '.xml', '.csv', '.js', '.ts', '.vue', '.py', '.java', '.go', '.rs', '.c', '.cpp', '.h', '.hpp', '.sh', '.bat', '.css', '.scss', '.less', '.sql', '.html', '.htm', '.yaml', '.yml', '.toml', '.ini', '.cfg', '.conf', '.env', '.log', '.md', '.jsx', '.tsx', '.rb', '.php', '.swift', '.kt', '.scala', '.lua', '.pl', '.r', '.dart', '.ex', '.exs', '.erl', '.hs', '.ml', '.jl', '.tf', '.proto', '.graphql', '.makefile', '.cmake', '.dockerfile', '.gitignore', '.properties', '.gradle']
 
+// 安全获取文件扩展名（无扩展名时返回空字符串）
+function getExt(name) {
+  if (!name) return ''
+  const parts = String(name).split('.')
+  if (parts.length < 2) return ''
+  return parts.pop().toLowerCase()
+}
+
 const isImage = computed(() => {
-  const ext = props.filename.split('.').pop().toLowerCase()
-  return imageExts.includes('.' + ext)
+  const ext = getExt(props.filename)
+  return ext && imageExts.includes('.' + ext)
 })
 
-const isPdf = computed(() => {
-  const ext = props.filename.split('.').pop().toLowerCase()
-  return ext === 'pdf'
-})
+const isPdf = computed(() => getExt(props.filename) === 'pdf')
 
-const isPptx = computed(() => {
-  const ext = props.filename.split('.').pop().toLowerCase()
-  return ext === 'pptx'
-})
+const isPptx = computed(() => getExt(props.filename) === 'pptx')
 
-const isDocx = computed(() => {
-  const ext = props.filename.split('.').pop().toLowerCase()
-  return ext === 'docx'
-})
+const isDocx = computed(() => getExt(props.filename) === 'docx')
 
-const isExcel = computed(() => {
-  const ext = props.filename.split('.').pop().toLowerCase()
-  return ['xlsx', 'xls'].includes(ext)
-})
+const isExcel = computed(() => ['xlsx', 'xls'].includes(getExt(props.filename)))
 
-const isMarkdown = computed(() => {
-  const ext = props.filename.split('.').pop().toLowerCase()
-  return ext === 'md'
-})
+const isMarkdown = computed(() => getExt(props.filename) === 'md')
 
-const isCsv = computed(() => {
-  const ext = props.filename.split('.').pop().toLowerCase()
-  return ext === 'csv'
-})
+const isCsv = computed(() => getExt(props.filename) === 'csv')
 
 const isCode = computed(() => {
-  const ext = props.filename.split('.').pop().toLowerCase()
+  const ext = getExt(props.filename)
   const codeExts = ['js', 'ts', 'vue', 'py', 'java', 'go', 'rs', 'c', 'cpp', 'h', 'hpp', 'sh', 'bat', 'css', 'scss', 'less', 'sql', 'html', 'htm', 'xml', 'json', 'yaml', 'yml', 'toml', 'jsx', 'tsx', 'rb', 'php', 'swift', 'kt', 'lua', 'pl', 'r', 'dart', 'tf', 'proto', 'graphql']
   return codeExts.includes(ext)
 })
@@ -208,14 +198,16 @@ const codeLangMap = {
 
 const highlightedCode = computed(() => {
   if (!textContent.value) return ''
-  const ext = props.filename.split('.').pop().toLowerCase()
+  const ext = getExt(props.filename)
   const lang = codeLangMap[ext]
 
   // 如果是代码文件且有对应语言，使用语法高亮
   if (isCode.value && lang && hljs.getLanguage(lang)) {
     try {
       return hljs.highlight(textContent.value, { language: lang }).value
-    } catch (__) {}
+    } catch (e) {
+      console.warn('[FilePreview] 语法高亮失败:', ext, e)
+    }
   }
 
   // JSON 特殊处理
@@ -223,7 +215,9 @@ const highlightedCode = computed(() => {
     try {
       const parsed = JSON.parse(textContent.value)
       return hljs.highlight(JSON.stringify(parsed, null, 2), { language: 'json' }).value
-    } catch (__) {}
+    } catch (e) {
+      // JSON 解析失败，按普通文本处理
+    }
   }
 
   // 普通文本，转义 HTML
@@ -296,8 +290,8 @@ const renderedMarkdown = computed(() => {
 })
 
 const isText = computed(() => {
-  const ext = props.filename.split('.').pop().toLowerCase()
-  return textExts.includes('.' + ext)
+  const ext = getExt(props.filename)
+  return ext && textExts.includes('.' + ext)
 })
 
 watch(() => props.visible, async (newVal) => {
@@ -314,6 +308,23 @@ async function loadPreview() {
   excelUrl.value = ''
   pptxUrl.value = ''
 
+  const ts = new Date().toISOString()
+  // 统一打印预览请求日志：文件名、路径、会话ID
+  console.log(
+    `[${ts}] [FilePreview] 预览请求 | 文件名: ${props.filename} | 路径: ${props.filePath} | 会话: ${props.sessionId || '无'}`
+  )
+
+  // 校验必要参数
+  if (!props.filePath) {
+    error.value = '文件路径为空，无法预览'
+    console.error(
+      `[${ts}] [FilePreview] loadPreview 失败: filePath 为空`,
+      { filename: props.filename, sessionId: props.sessionId }
+    )
+    loading.value = false
+    return
+  }
+
   const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
   const token = getStoredToken()
 
@@ -323,9 +334,11 @@ async function loadPreview() {
   if (props.sessionId) params.set('session_id', props.sessionId)
   if (token) params.set('token', token)
   previewUrl.value = `${API_BASE_URL}/api/files/preview?${params.toString()}`
-  console.log('[FilePreview] 加载预览:', props.filename, previewUrl.value)
+  console.log(
+    `[${ts}] [FilePreview] 加载预览 | 文件: ${props.filename} | 类型: ${getExt(props.filename) || '无扩展名'} | URL: ${previewUrl.value}`
+  )
 
-  const ext = props.filename.split('.').pop().toLowerCase()
+  const ext = getExt(props.filename)
 
   // 构建 auth headers
   const headers = token ? { 'Authorization': `Bearer ${token}` } : {}
@@ -361,8 +374,12 @@ async function loadPreview() {
       if (textContent.value.length > 50000) {
         textContent.value = textContent.value.substring(0, 50000) + '\n\n... (内容过长已截断)'
       }
+      console.log('[FilePreview] 文本预览加载完成, 长度:', textContent.value.length)
+    } else {
+      console.log('[FilePreview] 不支持预览的文件类型:', ext || '未知')
     }
   } catch (e) {
+    console.error('[FilePreview] 预览加载失败:', e, { filename: props.filename, filePath: props.filePath })
     error.value = `加载失败: ${e.message}`
   }
 
@@ -605,7 +622,7 @@ function handleClose() {
   width: 100%;
   height: 100%;
   overflow: auto;
-  background: #1e1e2e;
+  background: #ffffff;
 }
 
 .preview-text .code-block {
@@ -621,10 +638,10 @@ function handleClose() {
   flex-direction: column;
   padding: 16px 8px 16px 16px;
   text-align: right;
-  color: #585b70;
+  color: #94a3b8;
   user-select: none;
-  border-right: 1px solid #313244;
-  background: #181825;
+  border-right: 1px solid #e2e8f0;
+  background: #f8fafc;
   flex-shrink: 0;
 }
 
@@ -636,11 +653,12 @@ function handleClose() {
 .preview-text pre {
   margin: 0;
   padding: 16px;
-  color: #cdd6f4;
+  color: #24292e;
   white-space: pre-wrap;
   word-break: break-all;
   flex: 1;
   overflow-x: auto;
+  background: #ffffff;
 }
 
 .preview-csv {

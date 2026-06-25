@@ -61,7 +61,7 @@
 
     <FilePreview
       :filename="previewFile?.name || ''"
-      :filePath="previewFile?.path || ''"
+      :filePath="previewFile?.file_path || previewFile?.path || ''"
       :sessionId="currentSessionId"
       :visible="showPreview"
       @close="showPreview = false"

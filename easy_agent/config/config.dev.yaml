@@ -23,6 +23,10 @@ workspace_dir: "./workspace"
 memories_dir: "./memories"
 system_prompt_path: "system_prompt.md"
 
+# 外部目录映射：虚拟路径前缀 → 宿主机实际路径
+external_dirs:
+  "/strategy-workspace": "/home/sututu/code/finance-skills/fast_backtest/workspace"
+
 # Summarization
 summarization:
   enabled: true
@@ -69,3 +73,15 @@ vector_store:
   embedding_dimension: 1024
   batch_size: 32
   sentence_transformers_model: "Qwen/Qwen3-Embedding-0.6B"
+  zhipu_api_key: ""
+  zhipu_model: "embedding-3"
+
+# 禁止智能体读写的虚拟路径目录列表（通过 permissions deny 规则限制）
+# 支持两种格式：
+#   - 字符串："/strategy-workspace"                       → 默认禁止 read+write
+#   - 字典：  {path: "/user-skills", operations: ["write"]} → 只禁止指定操作
+# operations 可选值：read、write。user-skills 建议只禁止 write，
+# 允许模型读取 SKILL.md 和 reference 文件以正常使用技能。
+denied_dirs:
+  - path: "/user-skills"
+    operations: ["write"]

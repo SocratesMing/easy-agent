@@ -1335,7 +1335,12 @@ class Database:
         return user.bound_ip
 
     def register_user(
-        self, username: str, password: str, email: str = ""
+        self,
+        username: str,
+        password: str,
+        organization_id: str = "",
+        email: str = "",
+        bound_ip: str = "",
     ) -> Optional[UserModel]:
         existing = self.get_user_by_username(username)
         if existing:
@@ -1347,9 +1352,9 @@ class Database:
             user_id=str(uuid.uuid4()),
             username=username,
             password_hash=password_hash,
-            organization_id="",
+            organization_id=organization_id or "",
             email=email or "",
-            bound_ip="",
+            bound_ip=bound_ip or "",
             created_at=now,
             updated_at=now,
         )
