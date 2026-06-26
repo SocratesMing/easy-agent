@@ -72,10 +72,14 @@ class _PathTranslatingShell(LocalShellBackend):
         """
         super().__init__(*args, **kwargs)
         # 正向规则：虚拟路径 → 实际路径（用于翻译输入命令）
-        # 使用 lookbehind 确保只匹配独立的虚拟路径
-        # （前面是空格/引号/命令开头），避免替换真实路径中的子串
+        # 去掉结尾斜杠，使 mkdir/cd 等不带斜杠的路径也能匹配；
+        # 用 lookahead 确保路径后是边界字符（斜杠/空格/引号/结尾等），
+        # 避免 /workspace/szm/sess 误匹配 /workspace/szm/sessionXYZ
         self._rules = [
-            (re.compile(rf'(^|[\s"\'&|;(])({re.escape(v)})'), real)
+            (
+                re.compile(rf'(^|[\s"\'&|;(=])({re.escape(v.rstrip("/"))})(?=/|$|[\s"\'&|;),=])'),
+                real.rstrip("/"),
+            )
             for v, real in sorted(path_mappings.items(), key=lambda x: -len(x[0]))
         ]
         # 反向规则：实际路径 → 虚拟路径（用于翻译输出结果）
