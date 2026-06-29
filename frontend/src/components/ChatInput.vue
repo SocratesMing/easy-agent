@@ -95,7 +95,18 @@
             <span class="context-ring-text">{{ contextPercent }}%</span>
             <Teleport to="body">
               <div v-if="showTokenPopup" class="token-popup" :style="popupStyle" @click.stop>
-                <div class="token-popup-title">Token 用量</div>
+                <div class="token-popup-title">会话信息</div>
+                <div class="token-popup-section">
+                  <div class="token-popup-row">
+                    <span class="token-popup-label">会话耗时</span>
+                    <span class="token-popup-value duration-value">{{ formattedDuration }}</span>
+                  </div>
+                  <div class="token-popup-row">
+                    <span class="token-popup-label">迭代次数</span>
+                    <span class="token-popup-value">{{ iterationCount }}</span>
+                  </div>
+                </div>
+                <div class="token-popup-divider"></div>
                 <div class="token-popup-section">
                   <div class="token-popup-row">
                     <span class="token-popup-label">上下文占用</span>
@@ -173,6 +184,14 @@ const props = defineProps({
   sessionUsage: {
     type: Object,
     default: () => ({ input_tokens: 0, output_tokens: 0, total_tokens: 0, max_input_tokens: null, auto_compress_tokens: null, context_tokens: 0 })
+  },
+  sessionDuration: {
+    type: Number,
+    default: 0
+  },
+  iterationCount: {
+    type: Number,
+    default: 0
   }
 })
 
@@ -197,6 +216,21 @@ const canSend = computed(() => {
 
 const showTokenPopup = ref(false)
 
+// ========== 会话耗时格式化 ==========
+const formattedDuration = computed(() => {
+  const total = Math.floor(props.sessionDuration || 0)
+  const h = Math.floor(total / 3600)
+  const m = Math.floor((total % 3600) / 60)
+  const s = total % 60
+  if (h > 0) {
+    return `${h}小时${m}分${s}秒`
+  }
+  if (m > 0) {
+    return `${m}分${s}秒`
+  }
+  return `${s}秒`
+})
+
 function toggleTokenPopup() {
   showTokenPopup.value = !showTokenPopup.value
 }
@@ -208,7 +242,7 @@ function closeTokenPopup() {
 }
 
 const showTokenRing = computed(() => {
-  return props.sessionUsage.total_tokens > 0 || props.sessionUsage.context_tokens > 0
+  return props.sessionUsage.total_tokens > 0 || props.sessionUsage.context_tokens > 0 || props.sessionDuration > 0 || props.iterationCount > 0
 })
 
 const contextPercent = computed(() => {
@@ -882,6 +916,11 @@ onUnmounted(() => {
 
 .token-popup-value.output {
   color: #06b6d4;
+}
+
+.token-popup-value.duration-value {
+  color: #6366f1;
+  font-weight: 600;
 }
 
 .token-popup-context-row {

@@ -138,8 +138,10 @@
           <span>{{ organizationId }}</span>
         </div>
       </div>
-      <svg class="user-arrow" :class="{ rotated: showUserMenu }" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <polyline points="6 9 12 15 18 9"></polyline>
+      <svg class="user-more-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">
+        <circle cx="5" cy="12" r="2"></circle>
+        <circle cx="12" cy="12" r="2"></circle>
+        <circle cx="19" cy="12" r="2"></circle>
       </svg>
       
       <div v-if="showUserMenu" class="user-dropdown">
@@ -667,8 +669,17 @@ function handleLogout() {
   position: relative;
 }
 
-.user-profile:hover {
-  background: #f1f5f9;
+.user-more-icon {
+  width: 18px;
+  height: 18px;
+  color: #94a3b8;
+  flex-shrink: 0;
+  margin-left: auto;
+  transition: color 0.2s;
+}
+
+.user-profile:hover .user-more-icon {
+  color: #64748b;
 }
 
 .user-avatar {
@@ -733,18 +744,6 @@ function handleLogout() {
   height: 11px;
   flex-shrink: 0;
   opacity: 0.8;
-}
-
-.user-arrow {
-  width: 16px;
-  height: 16px;
-  color: #64748b;
-  transition: transform 0.25s ease;
-  flex-shrink: 0;
-}
-
-.user-arrow.rotated {
-  transform: rotate(180deg);
 }
 
 .user-dropdown {

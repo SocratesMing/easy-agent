@@ -67,6 +67,8 @@
       :isStreaming="isStreaming"
       :session-id="currentSessionId"
       :sessionUsage="sessionUsage"
+      :sessionDuration="sessionDuration"
+      :iterationCount="iterationCount"
       @stop="handleStop"
       @createSession="handleCreateSession"
     />
@@ -147,6 +149,14 @@ const props = defineProps({
   sessionUsage: {
     type: Object,
     default: () => ({ input_tokens: 0, output_tokens: 0, total_tokens: 0 })
+  },
+  sessionDuration: {
+    type: Number,
+    default: 0
+  },
+  iterationCount: {
+    type: Number,
+    default: 0
   },
   todos: {
     type: Array,
@@ -348,10 +358,15 @@ watch(() => props.scrollTrigger, () => {
 }
 
 .session-created-time {
+  position: sticky;
+  top: -24px;
+  z-index: 10;
   text-align: center;
   font-size: 12px;
   color: #94a3b8;
-  padding: 4px 0 16px 0;
+  padding: 8px 0;
+  margin: -24px -24px 12px;
+  background: #ffffff;
   user-select: none;
 }
 

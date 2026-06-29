@@ -399,6 +399,8 @@ async def chat_stream_generator(
                     "context_tokens": ctx_tokens,
                     "max_input_tokens": max_input_tokens,
                     "auto_compress_tokens": auto_compress_tokens,
+                    "elapsed_time": round(time.time() - start_time, 2),
+                    "step_count": current_step,
                 }
             )
 
@@ -555,6 +557,8 @@ async def chat_stream_generator(
                     "context_tokens": ctx_tokens,
                     "max_input_tokens": max_input_tokens,
                     "auto_compress_tokens": auto_compress_tokens,
+                    "elapsed_time": round(time.time() - start_time, 2),
+                    "step_count": current_step,
                 }
             )
 
@@ -1234,6 +1238,8 @@ async def chat_stream_generator(
                 "input_tokens": inp_tokens,
                 "output_tokens": out_tokens,
                 "total_tokens": sum_tokens,
+                "elapsed_time": round(elapsed_time, 2),
+                "step_count": current_step,
             },
         }
         db.update_last_assistant_message(session_id, assistant_message)
@@ -1357,6 +1363,7 @@ async def chat_stream_generator(
             "context_tokens": last_context_tokens
             if last_context_tokens > 0
             else inp_tokens,
+            "step_count": current_step,
         }
         yield _sse(
             {
@@ -1400,6 +1407,8 @@ async def chat_stream_generator(
                     "input_tokens": total_usage.get("input_tokens", 0),
                     "output_tokens": total_usage.get("output_tokens", 0),
                     "total_tokens": total_usage.get("total_tokens", 0),
+                    "elapsed_time": round(time.time() - start_time, 2),
+                    "step_count": current_step,
                 },
             }
             db.update_last_assistant_message(session_id, partial_msg)

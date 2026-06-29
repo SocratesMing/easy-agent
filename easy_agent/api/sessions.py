@@ -39,19 +39,23 @@ def compute_session_usage(messages: list[dict]) -> dict | None:
     """从消息列表中计算会话级别的 token 用量。
 
     Returns:
-        包含 input_tokens/output_tokens/total_tokens/context_tokens 的字典，
+        包含 input_tokens/output_tokens/total_tokens/context_tokens/elapsed_time/step_count 的字典，
         如果没有任何用量数据则返回 None。
     """
     total_input = 0
     total_output = 0
     total_tokens = 0
     context_tokens = 0
+    total_elapsed = 0.0
+    total_steps = 0
 
     for msg in messages:
         msg_usage = msg.get("usage") or {}
         total_input += msg_usage.get("input_tokens", 0) or 0
         total_output += msg_usage.get("output_tokens", 0) or 0
         total_tokens += msg_usage.get("total_tokens", 0) or 0
+        total_elapsed += msg_usage.get("elapsed_time", 0) or 0
+        total_steps += msg_usage.get("step_count", 0) or 0
 
     # 从最后一条有 input_tokens 的 assistant 消息获取上下文占用
     for msg in reversed(messages):
@@ -61,12 +65,14 @@ def compute_session_usage(messages: list[dict]) -> dict | None:
                 context_tokens = last_usage["input_tokens"]
                 break
 
-    if total_input > 0 or total_output > 0:
+    if total_input > 0 or total_output > 0 or total_elapsed > 0 or total_steps > 0:
         return {
             "input_tokens": total_input,
             "output_tokens": total_output,
             "total_tokens": total_tokens,
             "context_tokens": context_tokens,
+            "elapsed_time": round(total_elapsed, 2),
+            "step_count": total_steps,
         }
     return None
 

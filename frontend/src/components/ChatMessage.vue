@@ -1692,6 +1692,47 @@ onMounted(() => {
   height: 14px;
 }
 
+/* ========== 黑色主题：代码块 ========== */
+/* shiki 用 github-light 主题生成内联白色背景的 HTML，
+   dark 主题下需强制覆盖，否则代码块背景/边框仍为白色 */
+html[data-theme="dark"] .message-text :deep(.code-block-wrapper pre) {
+  background: #0d1117 !important;
+  border-color: #30363d !important;
+}
+
+html[data-theme="dark"] .message-text :deep(.code-block-wrapper pre code) {
+  color: #c9d1d9;
+}
+
+html[data-theme="dark"] .message-text :deep(.code-block-wrapper .shiki) {
+  background: #0d1117 !important;
+}
+
+html[data-theme="dark"] .message-text :deep(.code-block-wrapper .shiki code) {
+  color: #c9d1d9;
+}
+
+html[data-theme="dark"] .message-text :deep(.code-header) {
+  background: #161b22;
+  border-color: #30363d;
+}
+
+html[data-theme="dark"] .message-text :deep(.code-lang) {
+  color: #8b949e;
+}
+
+html[data-theme="dark"] .message-text :deep(.code-copy-btn) {
+  background: #21262d;
+  border-color: #30363d;
+  color: #8b949e;
+}
+
+html[data-theme="dark"] .message-text :deep(.code-copy-btn:hover) {
+  background: #30363d;
+  border-color: #8b949e;
+  color: #c9d1d9;
+}
+
 .waiting-animation {
   display: flex;
   align-items: center;
