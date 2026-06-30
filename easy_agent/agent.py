@@ -21,7 +21,9 @@ from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend, FilesystemBackend, LocalShellBackend
 from deepagents.backends.protocol import ExecuteResponse
 from deepagents.middleware.filesystem import FilesystemOperation, FilesystemPermission
+from langchain.agents.middleware import InterruptOnConfig, ToolCallRequest
 from langchain_core.messages import AIMessageChunk, ToolMessage
+from langgraph.checkpoint.memory import MemorySaver
 
 from .config import Config
 from .logger import AgentLogger
@@ -29,6 +31,27 @@ from .model import _parse_mcp_content, create_model
 
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Human-in-the-loop: 检测 execute 工具中的文件删除命令
+# ---------------------------------------------------------------------------
+_DESTRUCTIVE_CMD_PATTERNS = [
+    r"\brm\b",
+    r"\brmdir\b",
+    r"\bunlink\b",
+    r"\bshred\b",
+    r"\bfind\s+.*\s-delete\b",
+]
+
+
+def _is_destructive_command(request: ToolCallRequest) -> bool:
+    """检查 execute 工具调用是否包含文件删除命令。"""
+    tool_call = request.tool_call if hasattr(request, "tool_call") else {}
+    command = (tool_call.get("args", {}) if isinstance(tool_call, dict) else {}).get("command", "")
+    if not command:
+        return False
+    return any(re.search(pat, command) for pat in _DESTRUCTIVE_CMD_PATTERNS)
 
 
 # ---------------------------------------------------------------------------
@@ -317,7 +340,7 @@ class EasyAgent:
         backend = self._build_backend(skills_paths)
         middleware = self._build_middleware()
         tools = list(self.mcp_tools) if self.mcp_tools else None
-        permissions = self._build_permissions()
+        permissions = self._build_permissions(skills_paths)
 
         logger.info(
             f"[{self.session_id}] 🏗️ 创建智能体参数 | "
@@ -351,6 +374,13 @@ class EasyAgent:
             tools=tools,
             memory=[memory_path],
             permissions=permissions or None,
+            checkpointer=MemorySaver(),
+            interrupt_on={
+                "execute": InterruptOnConfig(
+                    allowed_decisions=["approve", "reject"],
+                    when=_is_destructive_command,
+                ),
+            },
         )
 
     def _build_backend(self, skills_paths: list[str]):
@@ -446,7 +476,7 @@ class EasyAgent:
         # No need to add it here — duplicate middleware causes AssertionError.
         return []
 
-    def _build_permissions(self) -> list[FilesystemPermission]:
+    def _build_permissions(self, skills_paths: list[str] | None = None) -> list[FilesystemPermission]:
         """根据配置构建文件系统权限规则。
 
         读取 config.agent.denied_dirs 中配置的虚拟路径目录列表，
@@ -462,12 +492,28 @@ class EasyAgent:
         必须限定在已知 route 前缀下（如 /memories/、/user-skills/），
         否则会抛出 NotImplementedError。
 
+        Args:
+            skills_paths: 已解析的技能虚拟路径列表，用于判断 /user-skills/
+                路由是否已挂载。未挂载时跳过对应 deny 规则，避免
+                FilesystemMiddleware NotImplementedError。
+
         Returns:
             FilesystemPermission 列表，无配置时返回空列表。
         """
         denied = self.config.agent.denied_dirs or []
         if not denied:
             return []
+
+        existing_prefixes = [
+            f"{self.memory_virtual_path}/",
+            f"{self.workspace_virtual_path}/",
+        ]
+        if skills_paths:
+            existing_prefixes.append("/user-skills/")
+        external_dirs = self.config.agent.external_dirs or {}
+        for vpath in external_dirs:
+            vp = vpath if vpath.endswith("/") else vpath + "/"
+            existing_prefixes.append(vp)
 
         permissions = []
         for item in denied:
@@ -479,11 +525,16 @@ class EasyAgent:
                 raw_ops = ["read", "write"]
             if not path:
                 continue
-            # 规范化 operations：仅保留合法的 read/write，默认两者都禁
+            glob_path = f"{path}/**"
+            if not any(glob_path.startswith(prefix) for prefix in existing_prefixes):
+                logger.info(
+                    f"[{self.session_id}] ⏭️ 跳过 deny 规则 | "
+                    f"路径 {path} 未挂载路由，避免 NotImplementedError"
+                )
+                continue
             ops: list[FilesystemOperation] = [
                 op for op in raw_ops if op in ("read", "write")
             ] or ["read", "write"]
-            glob_path = f"{path}/**"
             permissions.append(
                 FilesystemPermission(
                     operations=ops,

@@ -987,15 +987,14 @@ onUnmounted(() => {
 }
 
 .upload-btn:hover:not(.disabled) {
-  background: linear-gradient(135deg, #0ea5e9 0%, #0284c7 100%);
-  border-color: transparent;
-  box-shadow: 0 4px 12px rgba(14, 165, 233, 0.35);
+  border-color: rgba(124, 106, 239, 0.4);
+  background: rgba(124, 106, 239, 0.06);
   transform: translateY(-1px);
 }
 
 .upload-btn:hover:not(.disabled) svg {
-  color: #ffffff;
-  transform: translateY(-1px) scale(1.05);
+  color: #7c6aef;
+  transform: scale(1.08);
 }
 
 .upload-btn:active:not(.disabled) {

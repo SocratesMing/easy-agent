@@ -69,6 +69,14 @@ class ChatRequest(BaseModel):
     use_knowledge_base: bool = Field(default=False, description="是否启用知识库检索")
 
 
+class ResumeRequest(BaseModel):
+    session_id: str = Field(..., description="会话ID")
+    thread_id: str = Field(..., description="HITL 线程ID（与中断时一致）")
+    decisions: List[dict[str, Any]] = Field(
+        ..., description="审批决策列表，每个元素 {type: approve|reject, message?: str}"
+    )
+
+
 class ChatResponse(BaseModel):
     session_id: str = Field(..., description="会话ID")
     response: str = Field(..., description="AI 响应内容")

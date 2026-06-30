@@ -100,12 +100,48 @@
                 </svg>
               </template>
               <span v-if="block.duration != null" class="tool-duration">用时 {{ block.duration }} 秒</span>
-              <span v-else-if="isToolRunning(block)" class="tool-status-text executing">执行中...</span>
+              <span v-else-if="isToolRunning(block)" class="tool-status-text" :class="block.pending_approval ? 'pending' : 'executing'">
+                {{ block.pending_approval ? '等待确认' : '执行中...' }}
+              </span>
               <svg class="toggle-arrow" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" :class="{ rotated: isExpandedToolCall(index) }">
                 <polyline points="6 9 12 15 18 9"></polyline>
               </svg>
             </div>
             <div v-if="isExpandedToolCall(index)" class="tool-call-body">
+              <div v-if="block.pending_approval" class="tool-approval-section">
+                <div class="approval-prompt">
+                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="approval-warning-icon">
+                    <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path>
+                    <line x1="12" y1="9" x2="12" y2="13"></line>
+                    <line x1="12" y1="17" x2="12.01" y2="17"></line>
+                  </svg>
+                  <span>此操作将删除文件，需要您的确认</span>
+                </div>
+                <div v-if="block.file_paths && block.file_paths.length > 0" class="approval-file-list">
+                  <div v-for="(fp, fpi) in block.file_paths" :key="fpi" class="approval-file-item">
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="approval-file-icon">
+                      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                      <polyline points="14 2 14 8 20 8"></polyline>
+                    </svg>
+                    <span class="approval-file-path">{{ fp }}</span>
+                  </div>
+                </div>
+                <div class="approval-buttons">
+                  <button class="approval-btn approve" @click="emit('approve')">
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <polyline points="20 6 9 17 4 12"></polyline>
+                    </svg>
+                    批准
+                  </button>
+                  <button class="approval-btn reject" @click="emit('reject')">
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <line x1="18" y1="6" x2="6" y2="18"></line>
+                      <line x1="6" y1="6" x2="18" y2="18"></line>
+                    </svg>
+                    拒绝
+                  </button>
+                </div>
+              </div>
               <div v-if="hasArgs(block.arguments)" class="tool-section">
                 <div class="tool-section-label">参数</div>
                 <pre class="tool-section-content">{{ truncateResult(formatJson(block.arguments), 1000) }}</pre>
@@ -114,7 +150,7 @@
                 <div class="tool-section-label">结果</div>
                 <pre class="tool-section-content" :class="{ error: block.success === false }">{{ truncateResult(block.result, 1000) }}</pre>
               </div>
-              <div v-else-if="isToolRunning(block)" class="tool-section">
+              <div v-else-if="isToolRunning(block) && !block.pending_approval" class="tool-section">
                 <div class="tool-section-label">结果</div>
                 <div class="tool-executing-hint">等待执行结果...</div>
               </div>
@@ -233,7 +269,7 @@ const props = defineProps({
   }
 })
 
-const emit = defineEmits(['removeFile', 'viewGeneratedFiles', 'retry'])
+const emit = defineEmits(['removeFile', 'viewGeneratedFiles', 'retry', 'approve', 'reject'])
 
 const showThinking = ref(false)
 const expandedThinking = ref({})
@@ -397,6 +433,7 @@ function hasArgs(args) {
 function toggleToolCall(index) {
   const block = sortedBlocks.value[index]
   if (!block) return
+  if (block.pending_approval) return
   const key = getBlockKey(block, index)
   expandedTool.value[key] = !expandedTool.value[key]
 }
@@ -404,8 +441,8 @@ function toggleToolCall(index) {
 function isExpandedToolCall(index) {
   const block = sortedBlocks.value[index]
   if (!block) return false
+  if (block.pending_approval) return true
   const key = getBlockKey(block, index)
-  // Default collapsed: only expand if explicitly toggled open
   return expandedTool.value[key] === true
 }
 
@@ -1158,6 +1195,12 @@ onMounted(() => {
   animation: pulse 1.5s ease-in-out infinite;
 }
 
+.tool-status-text.pending {
+  color: #d97706;
+  background: #fef3c7;
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
 @keyframes pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.5; }
@@ -1168,6 +1211,135 @@ onMounted(() => {
   font-size: 12px;
   color: #94a3b8;
   font-style: italic;
+}
+
+.tool-approval-section {
+  background: #fffbeb;
+  border: 1px solid #fcd34d;
+  border-radius: 8px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.approval-prompt {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: #92400e;
+  font-weight: 500;
+}
+
+.approval-warning-icon {
+  width: 18px;
+  height: 18px;
+  color: #f59e0b;
+  flex-shrink: 0;
+}
+
+.approval-file-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 8px;
+  background: rgba(146, 64, 14, 0.06);
+  border-radius: 6px;
+  border: 1px solid rgba(245, 158, 11, 0.2);
+}
+
+.approval-file-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: #78350f;
+  word-break: break-all;
+}
+
+.approval-file-icon {
+  width: 14px;
+  height: 14px;
+  color: #b45309;
+  flex-shrink: 0;
+}
+
+.approval-file-path {
+  font-family: 'Fira Code', Consolas, monospace;
+  font-size: 12px;
+}
+
+.approval-buttons {
+  display: flex;
+  gap: 8px;
+}
+
+.approval-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 16px;
+  border: none;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.approval-btn svg {
+  width: 14px;
+  height: 14px;
+}
+
+.approval-btn.approve {
+  background: #16a34a;
+  color: #ffffff;
+}
+
+.approval-btn.approve:hover {
+  background: #15803d;
+}
+
+.approval-btn.reject {
+  background: #dc2626;
+  color: #ffffff;
+}
+
+.approval-btn.reject:hover {
+  background: #b91c1c;
+}
+
+html[data-theme="dark"] .tool-approval-section {
+  background: #422006;
+  border-color: #a16207;
+}
+
+html[data-theme="dark"] .approval-prompt {
+  color: #fbbf24;
+}
+
+html[data-theme="dark"] .approval-warning-icon {
+  color: #f59e0b;
+}
+
+html[data-theme="dark"] .approval-file-list {
+  background: rgba(251, 191, 36, 0.08);
+  border-color: rgba(161, 98, 7, 0.4);
+}
+
+html[data-theme="dark"] .approval-file-item {
+  color: #fde68a;
+}
+
+html[data-theme="dark"] .approval-file-icon {
+  color: #fbbf24;
+}
+
+html[data-theme="dark"] .tool-status-text.pending {
+  color: #fbbf24;
+  background: #78350f;
 }
 
 .tool-status-icon {

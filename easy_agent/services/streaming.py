@@ -16,6 +16,7 @@ Events emitted to frontend:
   token_usage      {input_tokens, output_tokens, total_tokens, max_input_tokens, auto_compress_tokens}
   done             {session_id, elapsed_time, usage}
   error            {content}
+  approval_required {thread_id, action_requests, allowed_decisions}
 """
 
 import asyncio
@@ -29,6 +30,7 @@ from pathlib import Path
 from typing import AsyncGenerator
 
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, ToolMessage
+from langgraph.types import Command
 
 from ..agent import EasyAgent
 from ..db import Database
@@ -93,6 +95,23 @@ def _is_error_result(text: str) -> bool:
             if pattern in stderr_lower:
                 return True
     return False
+
+
+def _extract_file_paths_from_command(command: str) -> list[str]:
+    """从删除命令中提取文件路径列表。"""
+    if not command:
+        return []
+    # Remove common flags: -rf, -r, -f, -fr, etc.
+    cleaned = re.sub(r'\s+-[rRfFilPd]+\s*', ' ', command)
+    # Remove the command itself (rm, rmdir, unlink, shred)
+    cleaned = re.sub(r'^\s*(rm|rmdir|unlink|shred)\s+', '', cleaned).strip()
+    # Handle quoted paths (single or double quotes)
+    paths = []
+    for m in re.finditer(r'"([^"]+)"|\'([^\']+)\'|(\S+)', cleaned):
+        path = m.group(1) or m.group(2) or m.group(3)
+        if path and not path.startswith('-'):
+            paths.append(path)
+    return paths
 
 
 _MODEL_CONTEXT_LIMITS = {
@@ -627,9 +646,14 @@ async def chat_stream_generator(
         emitted_tool_call_ids = set()
         _todo_emitted_for = set()
 
+        # HITL: per-message thread_id for checkpointer state isolation
+        thread_id = f"{session_id}-{message_id}"
+        stream_config = {"configurable": {"thread_id": thread_id}}
+
         async for event in agent.agent.astream(
             {"messages": context_messages},
             stream_mode="messages",
+            config=stream_config,
         ):
             chunk, metadata = event
             node = metadata.get("langgraph_node", "?")
@@ -1141,6 +1165,92 @@ async def chat_stream_generator(
         if accumulated_response:
             yield _sse({"type": "content_end", "content": ""})
 
+        # ── HITL: 检测中断（文件删除审批） ────────────────────────────
+        try:
+            graph_state = await agent.agent.aget_state(stream_config)
+            if graph_state.next and graph_state.tasks:
+                hitl_request = None
+                for task in graph_state.tasks:
+                    if hasattr(task, "interrupts") and task.interrupts:
+                        hitl_request = task.interrupts[0].value
+                        break
+                if hitl_request:
+                    action_requests = hitl_request.get("action_requests", [])
+                    review_configs = hitl_request.get("review_configs", [])
+                    config_map = {
+                        cfg.get("action_name"): cfg for cfg in review_configs
+                    }
+                    # 从状态中获取 tool_call_id（ActionRequest 不含 id）
+                    state_msgs = graph_state.values.get("messages", [])
+                    pending_tc_ids = []
+                    for msg in reversed(state_msgs):
+                        if isinstance(msg, AIMessage) and getattr(msg, "tool_calls", None):
+                            pending_tc_ids = [tc.get("id", "") for tc in msg.tool_calls]
+                            break
+                    # 保存部分 assistant 消息（复用取消路径模式）
+                    partial_elapsed = time.time() - start_time
+                    partial_msg = {
+                        "role": "assistant",
+                        "content": accumulated_response if accumulated_response else "",
+                        "timestamp": datetime.now().isoformat(),
+                        "thinking": accumulated_thinking if accumulated_thinking else None,
+                        "thinking_duration": None,
+                        "tool_calls": [
+                            {
+                                "tool_name": tc[0],
+                                "tool_call_id": tc[1],
+                                "arguments": tc[2],
+                                "result": str(tc[3])[:5000],
+                                "success": tc[4],
+                                "duration": tc[5],
+                                "step": tc[6],
+                            }
+                            for tc in tool_call_records
+                        ]
+                        if tool_call_records
+                        else None,
+                        "blocks": blocks if blocks else None,
+                        "usage": {
+                            "input_tokens": total_usage.get("input_tokens", 0),
+                            "output_tokens": total_usage.get("output_tokens", 0),
+                            "total_tokens": total_usage.get("total_tokens", 0),
+                            "elapsed_time": round(partial_elapsed, 2),
+                            "step_count": current_step,
+                        },
+                    }
+                    db.update_last_assistant_message(session_id, partial_msg)
+                    db.update_last_assistant_message_row(session_id, partial_msg)
+                    logger.info(
+                        f"[{sid}] 🔔 HITL 中断 | thread_id={thread_id} | "
+                        f"{len(action_requests)} 个操作待审批"
+                    )
+                    yield _sse(
+                        {
+                            "type": "approval_required",
+                            "thread_id": thread_id,
+                            "action_requests": [
+                                {
+                                    "tool_call_id": pending_tc_ids[i]
+                                    if i < len(pending_tc_ids)
+                                    else "",
+                                    "tool_name": ar.get("name", ""),
+                                    "arguments": ar.get("args", {}),
+                                    "description": ar.get("description", ""),
+                                    "allowed_decisions": config_map.get(
+                                        ar.get("name", ""), {}
+                                    ).get("allowed_decisions", ["approve", "reject"]),
+                                    "file_paths": _extract_file_paths_from_command(
+                                        ar.get("args", {}).get("command", "")
+                                    ),
+                                }
+                                for i, ar in enumerate(action_requests)
+                            ],
+                        }
+                    )
+                    return
+        except Exception as e:
+            logger.warning(f"[{sid}] HITL 中断检测异常: {e}", exc_info=True)
+
         elapsed_time = time.time() - start_time
 
         # 统计
@@ -1429,4 +1539,374 @@ async def chat_stream_generator(
                 blk["result"] = f"执行中断: {str(e)[:result_log_truncate]}"
                 blk["duration"] = 0
                 break
+        yield format_sse({"type": "error", "content": f"处理失败: {str(e)}"})
+
+
+async def resume_stream_generator(
+    db: Database,
+    agent: EasyAgent,
+    session_id: str,
+    thread_id: str,
+    decisions: list[dict],
+    username: str = "",
+    session_logger: SessionLogger = None,
+) -> AsyncGenerator[str, None]:
+    """HITL 恢复流：用户审批后继续执行 Agent。
+
+    从 DB 加载中断前的部分 assistant 消息，初始化状态，
+    调用 agent.astream(Command(resume=...)) 继续执行。
+    """
+    start_time = time.time()
+    sid = session_id[-5:] if session_id else "resume"
+
+    def format_sse(data: dict) -> str:
+        return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+    def _sse(data: dict) -> str:
+        return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+    yield format_sse({"type": "start", "session_id": session_id})
+
+    # 从 DB 加载部分 assistant 消息
+    accumulated_response = ""
+    accumulated_thinking = ""
+    blocks = []
+    tool_call_records = []
+    current_step = 0
+    block_order_counter = 0
+    total_usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+    last_context_tokens = 0
+
+    try:
+        session = db.get_session(session_id)
+        if session and session.messages:
+            for msg in reversed(session.messages):
+                if msg.get("role") == "assistant":
+                    accumulated_response = msg.get("content", "") or ""
+                    accumulated_thinking = msg.get("thinking", "") or ""
+                    blocks = list(msg.get("blocks") or [])
+                    for tc in msg.get("tool_calls") or []:
+                        tool_call_records.append([
+                            tc.get("tool_name", ""),
+                            tc.get("tool_call_id", ""),
+                            tc.get("arguments", {}),
+                            tc.get("result", ""),
+                            tc.get("success", True),
+                            tc.get("duration", 0),
+                            tc.get("step", 0),
+                        ])
+                    usage = msg.get("usage") or {}
+                    total_usage = {
+                        "input_tokens": usage.get("input_tokens", 0),
+                        "output_tokens": usage.get("output_tokens", 0),
+                        "total_tokens": usage.get("total_tokens", 0),
+                    }
+                    current_step = usage.get("step_count", 0)
+                    block_order_counter = len(blocks)
+                    break
+    except Exception as e:
+        logger.warning(f"[{sid}] HITL 恢复: 加载部分消息失败: {e}")
+
+    logger.info(
+        f"[{sid}] 🔔 HITL 恢复 | thread_id={thread_id} | "
+        f"已有内容 {len(accumulated_response)} 字符 | "
+        f"已有 blocks {len(blocks)} | decisions={decisions}"
+    )
+
+    stream_config = {"configurable": {"thread_id": thread_id}}
+    max_input_tokens = getattr(agent, "max_input_tokens", None) or 0
+    auto_compress_tokens = getattr(agent, "auto_compress_tokens", None) or 0
+
+    is_in_thinking = False
+    thinking_start_time = None
+    content_start_time = None
+    tool_call_start_times = {}
+    tool_call_accumulated_args = {}
+    current_thinking_block_idx = None
+    current_content_block_idx = None
+    emitted_tool_call_ids = set()
+
+    def _end_thinking(step):
+        nonlocal is_in_thinking, thinking_start_time, current_thinking_block_idx
+        if not is_in_thinking:
+            return None
+        is_in_thinking = False
+        duration = round(time.time() - thinking_start_time, 2) if thinking_start_time else 0
+        thinking_start_time = None
+        current_thinking_block_idx = None
+        return _sse({"type": "thinking_end", "duration": duration, "step": step})
+
+    def _seal_content_block():
+        nonlocal current_content_block_idx
+        current_content_block_idx = None
+
+    try:
+        async for event in agent.agent.astream(
+            Command(resume={"decisions": decisions}),
+            stream_mode="messages",
+            config=stream_config,
+        ):
+            chunk, metadata = event
+
+            if isinstance(chunk, AIMessageChunk):
+                rc = chunk.additional_kwargs.get("reasoning_content", "") if hasattr(chunk, "additional_kwargs") else ""
+                raw_content = chunk.content or ""
+                tcc = getattr(chunk, "tool_call_chunks", None) or []
+
+                if rc:
+                    if not is_in_thinking:
+                        is_in_thinking = True
+                        thinking_start_time = time.time()
+                        current_step += 1
+                        current_thinking_block_idx = block_order_counter
+                        blocks.append({"type": "thinking", "order": block_order_counter, "content": "", "step": current_step})
+                        block_order_counter += 1
+                        yield _sse({"type": "thinking_start", "step": current_step})
+                    accumulated_thinking += rc
+                    blocks[current_thinking_block_idx]["content"] = accumulated_thinking
+                    yield _sse({"type": "thinking", "content": rc, "step": current_step})
+
+                if raw_content and not tcc:
+                    if is_in_thinking:
+                        te = _end_thinking(current_step)
+                        if te:
+                            yield te
+                    if current_content_block_idx is None:
+                        current_content_block_idx = block_order_counter
+                        blocks.append({"type": "content", "order": block_order_counter, "content": "", "step": current_step})
+                        block_order_counter += 1
+                        if not content_start_time:
+                            content_start_time = time.time()
+                        yield _sse({"type": "content_start", "step": current_step})
+                    accumulated_response += raw_content
+                    blocks[current_content_block_idx]["content"] = accumulated_response
+                    yield _sse({"type": "content", "content": raw_content})
+
+                if tcc:
+                    for tc_chunk in tcc:
+                        tc_name = tc_chunk.get("name", "")
+                        tc_id = tc_chunk.get("id", "")
+                        tc_args_str = tc_chunk.get("args", "")
+                        if tc_name and tc_id:
+                            current_step += 1
+                            tc_args = {}
+                            if tc_args_str:
+                                try:
+                                    tc_args = json.loads(tc_args_str)
+                                except Exception:
+                                    tc_args = {"raw": tc_args_str}
+                            tool_call_start_times[tc_id] = time.time()
+                            tool_call_accumulated_args[tc_id] = tc_args
+                            emitted_tool_call_ids.add(tc_id)
+                            blk_idx = block_order_counter
+                            blocks.append({
+                                "type": "tool_call",
+                                "order": block_order_counter,
+                                "tool_name": tc_name,
+                                "tool_call_id": tc_id,
+                                "arguments": tc_args,
+                                "result": "",
+                                "success": True,
+                                "duration": None,
+                                "step": current_step,
+                            })
+                            block_order_counter += 1
+                            yield _sse({
+                                "type": "tool_call",
+                                "tool_name": tc_name,
+                                "tool_call_id": tc_id,
+                                "arguments": tc_args,
+                                "step": current_step,
+                            })
+                        elif tc_id and tc_args_str:
+                            if tc_id in tool_call_accumulated_args:
+                                try:
+                                    parsed = json.loads(tc_args_str)
+                                    if isinstance(parsed, dict):
+                                        tool_call_accumulated_args[tc_id].update(parsed)
+                                except Exception:
+                                    pass
+
+                if hasattr(chunk, "usage_metadata") and chunk.usage_metadata:
+                    usage_meta = chunk.usage_metadata
+                    total_usage["input_tokens"] += usage_meta.get("input_tokens", 0)
+                    total_usage["output_tokens"] += usage_meta.get("output_tokens", 0)
+                    total_usage["total_tokens"] += usage_meta.get("total_tokens", 0)
+                    if usage_meta.get("input_tokens", 0) > 0:
+                        last_context_tokens = usage_meta["input_tokens"]
+
+            elif isinstance(chunk, ToolMessage):
+                resolved_tid = chunk.tool_call_id
+                tool_name = chunk.name or "tool"
+                tool_args = tool_call_accumulated_args.get(resolved_tid, {})
+                result_content = _parse_mcp_content(chunk.content) if chunk.content else ""
+                chunk_error = getattr(chunk, "additional_kwargs", {}).get("is_error", False)
+                content_error = _is_error_result(result_content)
+                success = not chunk_error and not content_error
+                tool_start = tool_call_start_times.pop(resolved_tid, None)
+                tool_duration = round(time.time() - tool_start, 2) if tool_start else 0
+
+                for blk in reversed(blocks):
+                    if blk["type"] == "tool_call" and blk.get("tool_call_id") == resolved_tid:
+                        blk["result"] = result_content
+                        blk["success"] = success
+                        blk["duration"] = tool_duration
+                        break
+
+                tool_call_records.append([
+                    tool_name, resolved_tid, tool_args, result_content,
+                    success, tool_duration, current_step,
+                ])
+
+                yield _sse({
+                    "type": "tool_result",
+                    "tool_name": tool_name,
+                    "tool_call_id": resolved_tid,
+                    "arguments": tool_args,
+                    "result": result_content,
+                    "success": success,
+                    "duration": tool_duration,
+                    "step": current_step,
+                })
+
+        # ── Post-streaming ─────────────────────────────────────────
+        te = _end_thinking(current_step)
+        if te:
+            yield te
+        _seal_content_block()
+        if accumulated_response:
+            yield _sse({"type": "content_end", "content": ""})
+
+        # ── HITL: 检测嵌套中断 ─────────────────────────────────────
+        try:
+            graph_state = await agent.agent.aget_state(stream_config)
+            if graph_state.next and graph_state.tasks:
+                hitl_request = None
+                for task in graph_state.tasks:
+                    if hasattr(task, "interrupts") and task.interrupts:
+                        hitl_request = task.interrupts[0].value
+                        break
+                if hitl_request:
+                    action_requests = hitl_request.get("action_requests", [])
+                    review_configs = hitl_request.get("review_configs", [])
+                    config_map = {cfg.get("action_name"): cfg for cfg in review_configs}
+                    state_msgs = graph_state.values.get("messages", [])
+                    pending_tc_ids = []
+                    for msg in reversed(state_msgs):
+                        if isinstance(msg, AIMessage) and getattr(msg, "tool_calls", None):
+                            pending_tc_ids = [tc.get("id", "") for tc in msg.tool_calls]
+                            break
+                    partial_elapsed = time.time() - start_time
+                    partial_msg = {
+                        "role": "assistant",
+                        "content": accumulated_response,
+                        "timestamp": datetime.now().isoformat(),
+                        "thinking": accumulated_thinking or None,
+                        "tool_calls": [
+                            {"tool_name": tc[0], "tool_call_id": tc[1], "arguments": tc[2],
+                             "result": str(tc[3])[:5000], "success": tc[4], "duration": tc[5], "step": tc[6]}
+                            for tc in tool_call_records
+                        ] or None,
+                        "blocks": blocks or None,
+                        "usage": {**total_usage, "elapsed_time": round(partial_elapsed, 2), "step_count": current_step},
+                    }
+                    db.update_last_assistant_message(session_id, partial_msg)
+                    db.update_last_assistant_message_row(session_id, partial_msg)
+                    yield _sse({
+                        "type": "approval_required",
+                        "thread_id": thread_id,
+                        "action_requests": [
+                            {
+                                "tool_call_id": pending_tc_ids[i] if i < len(pending_tc_ids) else "",
+                                "tool_name": ar.get("name", ""),
+                                "arguments": ar.get("args", {}),
+                                "allowed_decisions": config_map.get(ar.get("name", ""), {}).get("allowed_decisions", ["approve", "reject"]),
+                                "file_paths": _extract_file_paths_from_command(
+                                    ar.get("args", {}).get("command", "")
+                                ),
+                            }
+                            for i, ar in enumerate(action_requests)
+                        ],
+                    })
+                    return
+        except Exception as e:
+            logger.warning(f"[{sid}] HITL 恢复: 嵌套中断检测异常: {e}", exc_info=True)
+
+        elapsed_time = time.time() - start_time
+
+        # 会话累计 token
+        session_total_tokens = 0
+        try:
+            sess = db.get_session(session_id)
+            if sess and sess.messages:
+                for msg in sess.messages:
+                    msg_usage = msg.get("usage") or {}
+                    session_total_tokens += msg_usage.get("total_tokens", 0)
+        except Exception:
+            pass
+
+        inp_tokens = total_usage["input_tokens"]
+        out_tokens = total_usage["output_tokens"]
+        sum_tokens = total_usage["total_tokens"]
+
+        usage_payload = {
+            **total_usage,
+            "max_input_tokens": max_input_tokens,
+            "auto_compress_tokens": auto_compress_tokens,
+            "session_estimate": session_total_tokens,
+            "context_tokens": last_context_tokens if last_context_tokens > 0 else inp_tokens,
+            "elapsed_time": round(elapsed_time, 2),
+            "step_count": current_step,
+        }
+
+        assistant_message = {
+            "role": "assistant",
+            "content": accumulated_response or "",
+            "timestamp": datetime.now().isoformat(),
+            "thinking": accumulated_thinking or None,
+            "thinking_duration": None,
+            "tool_calls": [
+                {"tool_name": tc[0], "tool_call_id": tc[1], "arguments": tc[2],
+                 "result": str(tc[3])[:5000], "success": tc[4], "duration": tc[5], "step": tc[6]}
+                for tc in tool_call_records
+            ] or None,
+            "blocks": blocks or None,
+            "usage": {
+                "input_tokens": inp_tokens,
+                "output_tokens": out_tokens,
+                "total_tokens": sum_tokens,
+                "elapsed_time": round(elapsed_time, 2),
+                "step_count": current_step,
+            },
+        }
+        db.update_last_assistant_message(session_id, assistant_message)
+        db.update_last_assistant_message_row(session_id, assistant_message)
+
+        yield _sse({
+            "type": "done",
+            "session_id": session_id,
+            "elapsed_time": round(elapsed_time, 2),
+            "usage": usage_payload,
+        })
+
+    except asyncio.CancelledError:
+        logger.info(f"[{sid}] HITL 恢复被取消")
+        partial_msg = {
+            "role": "assistant",
+            "content": accumulated_response,
+            "timestamp": datetime.now().isoformat(),
+            "thinking": accumulated_thinking or None,
+            "tool_calls": [
+                {"tool_name": tc[0], "tool_call_id": tc[1], "arguments": tc[2],
+                 "result": str(tc[3])[:5000], "success": tc[4], "duration": tc[5], "step": tc[6]}
+                for tc in tool_call_records
+            ] or None,
+            "blocks": blocks or None,
+            "usage": {**total_usage, "elapsed_time": round(time.time() - start_time, 2), "step_count": current_step},
+        }
+        db.update_last_assistant_message(session_id, partial_msg)
+        db.update_last_assistant_message_row(session_id, partial_msg)
+        yield format_sse({"type": "error", "content": "请求被取消"})
+    except Exception as e:
+        logger.error(f"[{sid}] HITL 恢复异常: {str(e)}", exc_info=True)
         yield format_sse({"type": "error", "content": f"处理失败: {str(e)}"})

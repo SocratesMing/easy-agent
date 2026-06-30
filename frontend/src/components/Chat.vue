@@ -46,6 +46,8 @@
         :message="msg"
         @removeFile="(file) => handleRemoveFile(file, index)"
         @retry="handleRetry"
+        @approve="handleApprove"
+        @reject="handleReject"
       />
     </div>
     </div>
@@ -182,7 +184,7 @@ watch(() => props.messages, (newMessages) => {
   }
 })
 
-const emit = defineEmits(['sendMessage', 'stop', 'removeFile', 'createSession'])
+const emit = defineEmits(['sendMessage', 'stop', 'removeFile', 'createSession', 'approve', 'reject'])
 const messagesRef = ref(null)
 
 function formatSessionTime(isoStr) {
@@ -264,6 +266,14 @@ function handleRemoveFile(file, messageIndex) {
 function handleRetry(content) {
   // 向上传递重试事件
   emit('retry', content)
+}
+
+function handleApprove() {
+  emit('approve')
+}
+
+function handleReject() {
+  emit('reject')
 }
 
 function handleStop() {

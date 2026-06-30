@@ -11,10 +11,11 @@ from fastapi.responses import StreamingResponse
 
 from ..db import Database, get_database
 from ..models.db import SessionModel
-from ..models.api import ChatRequest
+from ..models.api import ChatRequest, ResumeRequest
 from ..middleware import get_current_username
 from ..services import (
     chat_stream_generator,
+    resume_stream_generator,
     get_or_create_agent_for_session,
     remove_session_agent,
     register_stream_task,
@@ -251,3 +252,68 @@ async def cancel_chat(
 
     logger.info(f"[{sid}] 🛑 终止处理完成")
     return {"status": "cancelled", "session_id": session_id}
+
+
+@router.post(
+    "/resume",
+    summary="恢复 HITL 审批",
+    description="用户审批文件删除操作后，恢复 Agent 执行流。",
+)
+async def chat_resume(
+    request: ResumeRequest,
+    db: Annotated[Database, Depends(get_database)],
+    http_request: Request,
+    username: Annotated[str, Depends(get_current_username)],
+):
+    session_id = request.session_id
+    thread_id = request.thread_id
+    sid = session_id[-5:] if session_id else "resume"
+
+    logger.info(
+        f"[{sid}] 🔔 HITL 恢复请求 | thread_id={thread_id} | "
+        f"decisions={request.decisions}"
+    )
+
+    # 获取会话的 workspace_name
+    workspace_name = ""
+    try:
+        session = db.get_session(session_id)
+        if session:
+            workspace_name = session.workspace_name or ""
+    except Exception:
+        pass
+
+    # 复用缓存的 Agent 实例（保留 checkpointer 中的 interrupt 状态）
+    agent = await get_or_create_agent_for_session(session_id, username, workspace_name)
+
+    async def event_generator():
+        cur_task = asyncio.current_task()
+        register_stream_task(session_id, cur_task)
+        try:
+            async for chunk in resume_stream_generator(
+                db=db,
+                agent=agent,
+                session_id=session_id,
+                thread_id=thread_id,
+                decisions=request.decisions,
+                username=username,
+            ):
+                yield chunk
+        except asyncio.CancelledError:
+            logger.info(f"[{sid}] 🔔 HITL 恢复被取消")
+            raise
+        except Exception as e:
+            logger.error(f"[{sid}] 🔔 HITL 恢复异常: {type(e).__name__}: {e}")
+            raise
+        finally:
+            unregister_stream_task(session_id)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )

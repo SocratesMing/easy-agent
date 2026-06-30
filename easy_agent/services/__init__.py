@@ -7,7 +7,7 @@ from .agent_manager import (
     cancel_stream_task,
     get_agent_config,
 )
-from .streaming import chat_stream_generator, estimate_tokens
+from .streaming import chat_stream_generator, resume_stream_generator, estimate_tokens
 from .vector_store import VectorStore
 
 __all__ = [
@@ -19,6 +19,7 @@ __all__ = [
     "cancel_stream_task",
     "get_agent_config",
     "chat_stream_generator",
+    "resume_stream_generator",
     "estimate_tokens",
     "VectorStore",
 ]

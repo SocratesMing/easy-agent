@@ -76,6 +76,8 @@
         @removeFile="handleRemoveFile"
         @stop="handleStop"
         @retry="handleRetry"
+        @approve="handleToolApproval('approve')"
+        @reject="handleToolApproval('reject')"
       />
 
       <div v-if="currentSessionId && !showAssets && !showUserProfile && !showSkillCenter" class="workspace-area">
@@ -117,7 +119,7 @@ import UserProfile from './components/UserProfile.vue'
 import Welcome from './components/Welcome.vue'
 import WorkspacePanel from './components/WorkspacePanel.vue'
 import SettingsPanel from './components/SettingsPanel.vue'
-import { createSession, listSessions, getChatHistory, deleteSession, sendMessage, renameSession, togglePinSession } from './api/chat.js'
+import { createSession, listSessions, getChatHistory, deleteSession, sendMessage, resumeStream, renameSession, togglePinSession } from './api/chat.js'
 import { uploadFile, deleteFile, getUserProfile, getSessionGeneratedFiles } from './api/files.js'
 import { logout as apiLogout, getStoredToken, getStoredUsername, AUTH_EXPIRED_EVENT, authFetch } from './api/auth.js'
 
@@ -165,6 +167,8 @@ const isStreaming = ref(false)
 const streamingSessionId = ref(null) // 记录正在流式输出的会话 ID
 const error = ref(null)
 const currentAbortController = ref(null)
+// HITL: 审批待处理状态，存储 { threadId, assistantMsgId }
+const pendingApproval = ref(null)
 const sessionUsage = ref({ input_tokens: 0, output_tokens: 0, total_tokens: 0, max_input_tokens: null, auto_compress_tokens: null, context_tokens: 0 })
 // 当前会话累计耗时（秒），每次 AI 回复完成后累加
 const sessionDuration = ref(0)
@@ -944,6 +948,30 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
         }
       }
       error.value = content || '处理失败'
+    } else if (eventType === 'approval_required') {
+      // HITL: 文件删除审批请求
+      pendingApproval.value = {
+        threadId: data.thread_id,
+        assistantMsgId,
+      }
+      // 将对应 tool_call block 标记为 pending_approval
+      if (assistantMsgId && data.action_requests) {
+        const idx = messages.value.findIndex(m => m.id === assistantMsgId)
+        if (idx !== -1) {
+          for (const ar of data.action_requests) {
+            const blk = messages.value[idx].blocks.find(
+              b => b.type === 'tool_call' && (b.tool_call_id === ar.tool_call_id || b.id === ar.tool_call_id)
+            )
+            if (blk) {
+              blk.pending_approval = true
+              if (ar.file_paths && ar.file_paths.length > 0) {
+                blk.file_paths = ar.file_paths
+              }
+            }
+          }
+          messages.value[idx] = { ...messages.value[idx], blocks: [...messages.value[idx].blocks] }
+        }
+      }
     }
   }
 
@@ -1002,17 +1030,231 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
     }
     error.value = e.message || '发送消息失败'
   } finally {
+    // HITL: 若有审批待处理，保持 isStreaming=true（用户需先审批）
+    if (!pendingApproval.value) {
+      isStreaming.value = false
+      currentAbortController.value = null
+
+      const sid = streamingSessionId.value
+      if (sid && sessionStates.value[sid]) {
+        sessionStates.value[sid].isStreaming = false
+        sessionStates.value[sid].abortController = null
+      }
+      streamingSessionId.value = null
+
+      await loadSessions()
+    }
+  }
+}
+
+// HITL: 用户审批文件删除操作后恢复执行
+async function handleToolApproval(decision) {
+  if (!pendingApproval.value) return
+
+  const { threadId, assistantMsgId } = pendingApproval.value
+  const sessionId = currentSessionId.value
+
+  const decisions = decision === 'approve'
+    ? [{ type: 'approve' }]
+    : [{ type: 'reject', message: '用户拒绝了此操作，请勿重试此删除命令。' }]
+
+  // 清除 tool_call block 的 pending_approval 状态
+  if (assistantMsgId) {
+    const idx = messages.value.findIndex(m => m.id === assistantMsgId)
+    if (idx !== -1) {
+      for (const blk of messages.value[idx].blocks) {
+        if (blk.pending_approval) {
+          blk.pending_approval = false
+        }
+      }
+      messages.value[idx] = { ...messages.value[idx], blocks: [...messages.value[idx].blocks] }
+    }
+  }
+
+  // resume 专用的 onChunk 处理器：追加到已有的 assistant 消息
+  let currentContent = ''
+  let currentThinking = ''
+  let is_in_thinking = false
+  let currentContentBlockIdx = null
+
+  function onChunk(data) {
+    const eventType = data.type
+
+    if (eventType === 'thinking_start') {
+      is_in_thinking = true
+      const idx = messages.value.findIndex(m => m.id === assistantMsgId)
+      if (idx !== -1) {
+        const blk = { type: 'thinking', order: (messages.value[idx].blocks.length), content: '', step: data.step, duration: null }
+        currentContentBlockIdx = blk.order
+        messages.value[idx].blocks.push(blk)
+        messages.value[idx] = { ...messages.value[idx], blocks: [...messages.value[idx].blocks] }
+      }
+    } else if (eventType === 'thinking') {
+      const idx = messages.value.findIndex(m => m.id === assistantMsgId)
+      if (idx !== -1 && currentContentBlockIdx !== null) {
+        currentThinking += data.content
+        messages.value[idx].blocks[currentContentBlockIdx].content = currentThinking
+        messages.value[idx] = { ...messages.value[idx], blocks: [...messages.value[idx].blocks] }
+      }
+    } else if (eventType === 'thinking_end') {
+      is_in_thinking = false
+      const idx = messages.value.findIndex(m => m.id === assistantMsgId)
+      if (idx !== -1 && currentContentBlockIdx !== null) {
+        messages.value[idx].blocks[currentContentBlockIdx].duration = data.duration
+        messages.value[idx] = { ...messages.value[idx], blocks: [...messages.value[idx].blocks] }
+      }
+      currentContentBlockIdx = null
+    } else if (eventType === 'content_start') {
+      if (is_in_thinking) {
+        is_in_thinking = false
+      }
+      const idx = messages.value.findIndex(m => m.id === assistantMsgId)
+      if (idx !== -1) {
+        const blk = { type: 'content', order: messages.value[idx].blocks.length, content: '', step: data.step }
+        currentContentBlockIdx = blk.order
+        messages.value[idx].blocks.push(blk)
+        messages.value[idx] = { ...messages.value[idx], blocks: [...messages.value[idx].blocks] }
+      }
+    } else if (eventType === 'content') {
+      const idx = messages.value.findIndex(m => m.id === assistantMsgId)
+      if (idx !== -1) {
+        if (currentContentBlockIdx === null) {
+          const blk = { type: 'content', order: messages.value[idx].blocks.length, content: '', step: data.step }
+          currentContentBlockIdx = blk.order
+          messages.value[idx].blocks.push(blk)
+        }
+        currentContent += data.content
+        messages.value[idx].content = (messages.value[idx].content || '') + data.content
+        messages.value[idx].blocks[currentContentBlockIdx].content = currentContent
+        messages.value[idx] = { ...messages.value[idx], blocks: [...messages.value[idx].blocks] }
+      }
+    } else if (eventType === 'content_end') {
+      currentContentBlockIdx = null
+    } else if (eventType === 'tool_call') {
+      currentContentBlockIdx = null
+      const idx = messages.value.findIndex(m => m.id === assistantMsgId)
+      if (idx !== -1) {
+        const existing = messages.value[idx].blocks.find(
+          b => b.type === 'tool_call' && (b.tool_call_id === data.tool_call_id || b.id === data.tool_call_id)
+        )
+        if (!existing) {
+          messages.value[idx].blocks.push({
+            type: 'tool_call',
+            order: messages.value[idx].blocks.length,
+            tool_name: data.tool_name,
+            tool_call_id: data.tool_call_id,
+            id: data.tool_call_id,
+            arguments: data.arguments,
+            result: '',
+            success: true,
+            duration: null,
+            step: data.step,
+          })
+          messages.value[idx] = { ...messages.value[idx], blocks: [...messages.value[idx].blocks] }
+        }
+      }
+    } else if (eventType === 'tool_result') {
+      const idx = messages.value.findIndex(m => m.id === assistantMsgId)
+      if (idx !== -1) {
+        const blk = messages.value[idx].blocks.find(
+          b => b.type === 'tool_call' && (b.tool_call_id === data.tool_call_id || b.id === data.tool_call_id)
+        )
+        if (blk) {
+          blk.result = data.result
+          blk.success = data.success
+          blk.duration = data.duration
+        }
+        messages.value[idx] = { ...messages.value[idx], blocks: [...messages.value[idx].blocks] }
+      }
+    } else if (eventType === 'token_usage') {
+      sessionUsage.value.input_tokens = data.input_tokens || 0
+      sessionUsage.value.output_tokens = data.output_tokens || 0
+      sessionUsage.value.total_tokens = data.session_estimate || data.total_tokens || 0
+      sessionUsage.value.context_tokens = data.context_tokens || 0
+      if (data.max_input_tokens) sessionUsage.value.max_input_tokens = data.max_input_tokens
+      if (data.auto_compress_tokens) sessionUsage.value.auto_compress_tokens = data.auto_compress_tokens
+      if (typeof data.elapsed_time === 'number') {
+        sessionDuration.value = Math.round((sessionDuration.value + data.elapsed_time) * 10) / 10
+      }
+      if (typeof data.step_count === 'number') {
+        iterationCount.value = data.step_count
+      }
+    } else if (eventType === 'approval_required') {
+      // 嵌套审批
+      pendingApproval.value = {
+        threadId: data.thread_id,
+        assistantMsgId,
+      }
+      if (assistantMsgId && data.action_requests) {
+        const idx = messages.value.findIndex(m => m.id === assistantMsgId)
+        if (idx !== -1) {
+          for (const ar of data.action_requests) {
+            const blk = messages.value[idx].blocks.find(
+              b => b.type === 'tool_call' && (b.tool_call_id === ar.tool_call_id || b.id === ar.tool_call_id)
+            )
+            if (blk) {
+              blk.pending_approval = true
+              if (ar.file_paths && ar.file_paths.length > 0) {
+                blk.file_paths = ar.file_paths
+              }
+            }
+          }
+          messages.value[idx] = { ...messages.value[idx], blocks: [...messages.value[idx].blocks] }
+        }
+      }
+    } else if (eventType === 'done') {
+      const idx = messages.value.findIndex(m => m.id === assistantMsgId)
+      if (idx !== -1) {
+        messages.value[idx].loading = false
+        messages.value[idx].created_at = new Date().toISOString()
+        if (data.usage) {
+          if (typeof data.usage.elapsed_time === 'number') {
+            sessionDuration.value = Math.round((sessionDuration.value + data.usage.elapsed_time) * 10) / 10
+          }
+          if (typeof data.usage.step_count === 'number') {
+            iterationCount.value = data.usage.step_count
+          }
+        }
+        messages.value[idx] = { ...messages.value[idx] }
+      }
+    } else if (eventType === 'error') {
+      const idx = messages.value.findIndex(m => m.id === assistantMsgId)
+      if (idx !== -1) {
+        messages.value[idx].loading = false
+        messages.value[idx].error = data.content || '处理失败'
+        messages.value[idx] = { ...messages.value[idx] }
+      }
+      error.value = data.content || '处理失败'
+    }
+  }
+
+  try {
+    const controller = new AbortController()
+    currentAbortController.value = controller
+
+    await resumeStream(sessionId, threadId, decisions, onChunk, controller.signal)
+
+    await loadSessions()
+  } catch (e) {
+    if (e.name === 'AbortError') return
+    console.error('恢复执行失败:', e)
+    const idx = messages.value.findIndex(m => m.id === assistantMsgId)
+    if (idx !== -1) {
+      messages.value[idx].loading = false
+      messages.value[idx].error = e.message || '恢复执行失败'
+      messages.value[idx] = { ...messages.value[idx] }
+    }
+  } finally {
+    pendingApproval.value = null
     isStreaming.value = false
     currentAbortController.value = null
-
-    // 更新正在流式输出的会话的缓存状态（可能已切换到其他会话）
     const sid = streamingSessionId.value
     if (sid && sessionStates.value[sid]) {
       sessionStates.value[sid].isStreaming = false
       sessionStates.value[sid].abortController = null
     }
     streamingSessionId.value = null
-
+    saveCurrentSessionState()
     await loadSessions()
   }
 }
