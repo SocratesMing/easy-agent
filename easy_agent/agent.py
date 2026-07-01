@@ -44,14 +44,39 @@ _DESTRUCTIVE_CMD_PATTERNS = [
     r"\bfind\s+.*\s-delete\b",
 ]
 
+# 目录删除命令模式：rmdir、rm -r/-R/-d、find -delete、shred -r
+_DIR_DELETION_PATTERNS = [
+    r"\brmdir\b",
+    r"\brm\b\s+(-\w*[rRd])",
+    r"\bfind\s+.*\s-delete\b",
+    r"\bshred\b\s+(-\w*[rR])",
+]
+
+
+def _is_directory_deletion(command: str) -> bool:
+    """检查命令是否试图删除目录（而非仅删除文件）。"""
+    if not command:
+        return False
+    return any(re.search(pat, command) for pat in _DIR_DELETION_PATTERNS)
+
 
 def _is_destructive_command(request: ToolCallRequest) -> bool:
-    """检查 execute 工具调用是否包含文件删除命令。"""
+    """检查 execute 工具调用是否包含文件删除命令。
+
+    目录删除命令（rmdir、rm -r 等）不触发 HITL 审批，
+    而是由 _PathTranslatingShell.execute() 直接拒绝。
+    仅文件删除命令（rm、unlink、shred）触发 HITL 审批。
+    """
     tool_call = request.tool_call if hasattr(request, "tool_call") else {}
     command = (tool_call.get("args", {}) if isinstance(tool_call, dict) else {}).get("command", "")
     if not command:
         return False
-    return any(re.search(pat, command) for pat in _DESTRUCTIVE_CMD_PATTERNS)
+    if not any(re.search(pat, command) for pat in _DESTRUCTIVE_CMD_PATTERNS):
+        return False
+    # 目录删除由 execute() 直接拒绝，不触发 HITL
+    if _is_directory_deletion(command):
+        return False
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -118,6 +143,7 @@ class _PathTranslatingShell(LocalShellBackend):
 
         执行前将命令中的虚拟路径前缀替换为实际路径；
         执行后将输出中的实际路径替换回虚拟路径，避免暴露宿主机路径。
+        目录删除命令（rmdir、rm -r 等）将被直接拒绝。
 
         Args:
             command: 原始 shell 命令字符串，可能包含虚拟路径。
@@ -132,6 +158,17 @@ class _PathTranslatingShell(LocalShellBackend):
         if translated != command:
             logger.debug(
                 "execute path translation: %s → %s", command[:80], translated[:80]
+            )
+        # 拦截目录删除命令：项目根目录和 workspace 下的文件夹不可删除
+        if _is_directory_deletion(translated):
+            logger.warning(
+                f"[execute] 拒绝目录删除命令: {translated[:120]}"
+            )
+            return ExecuteResponse(
+                output="Error: 不允许删除目录/文件夹。项目根目录和 workspace 下的文件夹受保护，"
+                       "无法通过 rmdir、rm -r 等命令删除。如需删除文件，请使用 rm（不带 -r/-R/-d 参数）。",
+                exit_code=1,
+                truncated=False,
             )
         result = super().execute(translated, timeout=timeout)
         # 反向翻译输出：实际路径 → 虚拟路径
@@ -175,6 +212,7 @@ class EasyAgent:
         workspace_name: str = "",
         mcp_tools: list | None = None,
         organization_id: str = "",
+        enable_hitl: bool = True,
     ):
         """初始化 EasyAgent 实例，配置工作区隔离、记忆文件和系统提示词。
 
@@ -200,6 +238,7 @@ class EasyAgent:
         self.skills_root = skills_root
         self.mcp_tools = mcp_tools or []
         self.organization_id = organization_id or ""
+        self.enable_hitl = enable_hitl
         self.safe_username = Config.sanitize_username(username)
 
         if workspace_dir:
@@ -364,6 +403,15 @@ class EasyAgent:
             f"虚拟路径: {memory_path} | 实际路径: {self.memory_file}"
         )
 
+        interrupt_on_config = None
+        if self.enable_hitl:
+            interrupt_on_config = {
+                "execute": InterruptOnConfig(
+                    allowed_decisions=["approve", "reject"],
+                    when=_is_destructive_command,
+                ),
+            }
+
         return create_deep_agent(
             name="easy-agent",
             model=model,
@@ -375,12 +423,7 @@ class EasyAgent:
             memory=[memory_path],
             permissions=permissions or None,
             checkpointer=MemorySaver(),
-            interrupt_on={
-                "execute": InterruptOnConfig(
-                    allowed_decisions=["approve", "reject"],
-                    when=_is_destructive_command,
-                ),
-            },
+            interrupt_on=interrupt_on_config,
         )
 
     def _build_backend(self, skills_paths: list[str]):

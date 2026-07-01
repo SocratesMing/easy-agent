@@ -27,3 +27,31 @@ class UserModel:
     bound_ip: str = ""
     created_at: str = ""
     updated_at: str = ""
+
+
+@dataclass
+class ScheduledTaskModel:
+    task_id: str
+    username: str
+    session_id: str = ""
+    name: str = ""
+    description: str = ""
+    schedule_cron: str = ""
+    task_prompt: str = ""
+    enabled: int = 1
+    created_at: str = ""
+    updated_at: str = ""
+    last_run_at: str = ""
+    next_run_at: str = ""
+
+
+@dataclass
+class ScheduledTaskRunModel:
+    run_id: str
+    task_id: str
+    session_id: str = ""
+    status: str = "running"
+    started_at: str = ""
+    finished_at: str = ""
+    result_summary: str = ""
+    error_message: str = ""

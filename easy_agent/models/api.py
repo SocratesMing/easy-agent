@@ -194,3 +194,34 @@ class FileInfo(BaseModel):
 class FileListResponse(BaseModel):
     files: List[FileInfo] = Field(default_factory=list, description="文件列表")
     total: int = Field(..., description="文件总数")
+
+
+class ScheduledTaskInfo(BaseModel):
+    task_id: str = Field(..., description="任务ID")
+    username: str = Field(..., description="用户名")
+    session_id: str = Field(default="", description="创建任务的会话ID")
+    name: str = Field(..., description="任务名称")
+    description: str = Field(default="", description="任务描述")
+    schedule_cron: str = Field(..., description="Cron 表达式（5字段）")
+    task_prompt: str = Field(..., description="任务执行时发送给 Agent 的提示词")
+    enabled: bool = Field(default=True, description="是否启用")
+    created_at: str = Field(default="", description="创建时间")
+    updated_at: str = Field(default="", description="更新时间")
+    last_run_at: str = Field(default="", description="上次执行时间")
+    next_run_at: str = Field(default="", description="下次执行时间")
+
+
+class ScheduledTaskRunInfo(BaseModel):
+    run_id: str = Field(..., description="执行记录ID")
+    task_id: str = Field(..., description="任务ID")
+    session_id: str = Field(default="", description="执行时创建的会话ID")
+    status: str = Field(..., description="执行状态: running/succeeded/failed")
+    started_at: str = Field(..., description="开始时间")
+    finished_at: str = Field(default="", description="完成时间")
+    result_summary: str = Field(default="", description="执行结果摘要")
+    error_message: str = Field(default="", description="错误信息")
+
+
+class DeleteScheduledTaskResponse(BaseModel):
+    status: str = Field(default="deleted", description="状态")
+    task_id: str = Field(..., description="任务ID")

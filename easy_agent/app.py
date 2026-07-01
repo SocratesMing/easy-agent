@@ -21,6 +21,7 @@ from .domain.bloom.bloom_scheduler import start_scheduler
 from .model import create_model
 from .models.api import HealthResponse
 from .services import get_agent_config, init_agent_config
+from .services import init_scheduler, shutdown_scheduler, reload_all_tasks
 from .services.mcp import get_mcp_tools
 from .services.vector_store import VectorStore
 from .skills import find_skills_root, discover_skills
@@ -36,6 +37,7 @@ from .api import (
     settings_router,
     skill_center_router,
     terminal_router,
+    scheduled_tasks_router,
 )
 
 logger = logging.getLogger(__name__)
@@ -211,6 +213,14 @@ async def lifespan(app: FastAPI):
         system_prompt = "你是一个有帮助的 AI 助手。"
         logger.warning(f"⚠️ 系统提示词文件不存在: {system_prompt_path}，使用默认提示词")
 
+    # 注入当前时间和时区，供定时任务 cron 表达式生成参考
+    now_dt = datetime.now().astimezone()
+    tz_name = now_dt.strftime("%Z") or "Asia/Shanghai"
+    system_prompt += (
+        f"\n## 当前时间\n"
+        f"{now_dt.strftime('%Y-%m-%d %H:%M:%S')} (时区: {tz_name})\n"
+    )
+
     if config:
         skills_dir_config = (
             config.tools.skills_dir if hasattr(config.tools, "skills_dir") else None
@@ -258,6 +268,15 @@ async def lifespan(app: FastAPI):
             logger.info("✅ 彭博定时任务已启动 (每日 17:00)")
         except Exception as e:
             logger.warning(f"⚠️ 彭博定时任务启动失败: {e}")
+
+        # 定时任务调度器（AsyncIOScheduler）
+        try:
+            scheduler = init_scheduler()
+            reload_all_tasks()
+            scheduler.start()
+            logger.info("✅ 定时任务调度器已启动 (AsyncIOScheduler)")
+        except Exception as e:
+            logger.warning(f"⚠️ 定时任务调度器启动失败: {e}")
     else:
         logger.warning("⚠️ Agent 配置未加载")
 
@@ -265,6 +284,12 @@ async def lifespan(app: FastAPI):
     logger.info("🚀 Easy Agent Web Service 启动完成")
     logger.info("=" * 60)
     yield
+
+    try:
+        shutdown_scheduler()
+        logger.info("[关闭] 定时任务调度器已关闭")
+    except Exception as e:
+        logger.warning(f"[关闭] 定时任务调度器关闭失败: {e}")
 
     if hasattr(app.state, "db") and app.state.db:
         app.state.db.close()
@@ -305,6 +330,7 @@ app.include_router(prompts_router)
 app.include_router(settings_router)
 app.include_router(skill_center_router)
 app.include_router(terminal_router)
+app.include_router(scheduled_tasks_router)
 
 
 @app.get("/api/health", summary="健康检查", response_model=HealthResponse)

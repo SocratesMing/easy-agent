@@ -350,15 +350,12 @@ async function refresh() {
   loading.value = true
   error.value = ''
   try {
-    // 同时加载公共技能和我的技能，确保两个 tab 的计数实时准确，
-    // 避免切换到技能中心时"我的技能"计数显示为 0，直到点击后才更新
     const [publicData, userData] = await Promise.all([
       getPublicSkills(),
       getUserSkills(),
     ])
     publicSkills.value = publicData.skills || []
     const userSkillNames = new Set((userData.skills || []).map(s => s.dir_name))
-    // 标记公共技能中已添加的
     for (const s of publicSkills.value) {
       s.added = userSkillNames.has(s.dir_name)
     }

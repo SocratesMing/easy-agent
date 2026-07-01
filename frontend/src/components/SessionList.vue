@@ -37,6 +37,14 @@
         </svg>
         <span>技能中心</span>
       </button>
+
+      <button @click="$emit('showScheduledTasks')" class="action-btn scheduled-tasks">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="12" cy="12" r="10"></circle>
+          <polyline points="12 6 12 12 16 14"></polyline>
+        </svg>
+        <span>定时任务</span>
+      </button>
     </div>
 
     <div class="divider"></div>
@@ -177,7 +185,7 @@
 import { ref, nextTick, onMounted, computed } from 'vue'
 import EasyLogo from './EasyLogo.vue'
 
-const emit = defineEmits(['createSession', 'selectSession', 'deleteSession', 'renameSession', 'toggleSidebar', 'showAssets', 'showSkillCenter', 'showProfile', 'showSettings', 'logout', 'togglePin'])
+const emit = defineEmits(['createSession', 'selectSession', 'deleteSession', 'renameSession', 'toggleSidebar', 'showAssets', 'showSkillCenter', 'showScheduledTasks', 'showProfile', 'showSettings', 'logout', 'togglePin'])
 
 const props = defineProps({
   sessions: {
@@ -390,21 +398,21 @@ function handleLogout() {
 }
 
 .action-buttons {
-  padding: 12px 16px;
+  padding: 8px 12px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 4px;
 }
 
 .action-btn {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 10px 14px;
+  gap: 8px;
+  padding: 7px 12px;
   border: none;
   background: transparent;
-  border-radius: 10px;
-  font-size: 14px;
+  border-radius: 8px;
+  font-size: 13px;
   color: #475569;
   cursor: pointer;
   transition: all 0.2s;
@@ -420,8 +428,8 @@ function handleLogout() {
 }
 
 .action-btn svg {
-  width: 18px;
-  height: 18px;
+  width: 16px;
+  height: 16px;
 }
 
 .divider {
@@ -433,12 +441,12 @@ function handleLogout() {
 .session-items {
   flex: 1;
   overflow-y: auto;
-  padding: 12px 8px;
+  padding: 6px 6px;
   padding-bottom: 60px;
 }
 
 .sessions-header {
-  padding: 0 8px 8px;
+  padding: 0 6px 6px;
   font-size: 12px;
   font-weight: 500;
   color: #94a3b8;
@@ -448,11 +456,11 @@ function handleLogout() {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 8px 10px;
+  padding: 5px 8px;
   border-radius: 8px;
   cursor: pointer;
   transition: all 0.2s;
-  margin-bottom: 2px;
+  margin-bottom: 1px;
 }
 
 .session-item:hover {

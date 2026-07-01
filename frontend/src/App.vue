@@ -22,6 +22,7 @@
         @toggleSidebar="toggleSidebar"
         @showAssets="handleShowAssets"
         @showSkillCenter="handleShowSkillCenter"
+        @showScheduledTasks="handleShowScheduledTasks"
         @showProfile="handleShowProfile"
         @showSettings="showSettingsPanel = true"
         @logout="handleLogout"
@@ -42,6 +43,8 @@
       <AssetsPanel v-if="showAssets" :visible="showAssets" @close="showAssets = false" />
 
       <SkillCenter v-if="showSkillCenter" @close="showSkillCenter = false" />
+
+      <ScheduledTasksPanel v-if="showScheduledTasks" @close="showScheduledTasks = false" />
       
       <UserProfile
         v-if="showUserProfile"
@@ -58,7 +61,7 @@
       />
       
       <Chat
-        v-else-if="!showAssets && !showUserProfile && !showSkillCenter"
+        v-else-if="!showAssets && !showUserProfile && !showSkillCenter && !showScheduledTasks"
         :messages="messages"
         :currentSessionId="currentSessionId"
         :sessionCreatedAt="currentSessionCreatedAt"
@@ -91,7 +94,7 @@
       </div>
 
       <button
-        v-if="currentSessionId && isWorkspaceCollapsed && !showAssets && !showUserProfile && !showSkillCenter"
+        v-if="currentSessionId && isWorkspaceCollapsed && !showAssets && !showUserProfile && !showSkillCenter && !showScheduledTasks"
         class="expand-workspace-btn"
         @click="isWorkspaceCollapsed = false"
         title="展开工作区"
@@ -115,6 +118,7 @@ import SessionList from './components/SessionList.vue'
 import Chat from './components/Chat.vue'
 import AssetsPanel from './components/AssetsPanel.vue'
 import SkillCenter from './components/SkillCenter.vue'
+import ScheduledTasksPanel from './components/ScheduledTasksPanel.vue'
 import UserProfile from './components/UserProfile.vue'
 import Welcome from './components/Welcome.vue'
 import WorkspacePanel from './components/WorkspacePanel.vue'
@@ -214,6 +218,7 @@ const isWorkspaceCollapsed = ref(true)
 const isDarkTheme = ref(localStorage.getItem('theme') === 'dark')
 const showAssets = ref(false)
 const showSkillCenter = ref(false)
+const showScheduledTasks = ref(false)
 const showUserProfile = ref(false)
 const showSettingsPanel = ref(false)
 const showWelcome = ref(false)
@@ -240,17 +245,26 @@ document.documentElement.setAttribute('data-theme', isDarkTheme.value ? 'dark' :
 function handleShowAssets() {
   showAssets.value = !showAssets.value
   showSkillCenter.value = false
+  showScheduledTasks.value = false
 }
 
 function handleShowSkillCenter() {
   showSkillCenter.value = !showSkillCenter.value
   showAssets.value = false
+  showScheduledTasks.value = false
+}
+
+function handleShowScheduledTasks() {
+  showScheduledTasks.value = !showScheduledTasks.value
+  showAssets.value = false
+  showSkillCenter.value = false
 }
 
 function handleShowProfile() {
   showUserProfile.value = true
   showAssets.value = false
   showSkillCenter.value = false
+  showScheduledTasks.value = false
 }
 
 async function handleWelcomeCompleted(profile) {
@@ -419,6 +433,7 @@ async function handleSelectSession(sessionId) {
 
   showAssets.value = false
   showSkillCenter.value = false
+  showScheduledTasks.value = false
   currentSessionId.value = sessionId
   // 切换后按当前会话是否正在流式输出决定输入框状态：
   // 历史会话通常不是当前流式会话，应显示发送按钮而非停止按钮

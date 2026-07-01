@@ -53,7 +53,8 @@ def get_mcp_tools() -> list:
 
 
 async def get_or_create_agent_for_session(
-    session_id: str, username: str = "default", workspace_name: str = ""
+    session_id: str, username: str = "default", workspace_name: str = "",
+    enable_hitl: bool = True,
 ) -> EasyAgent:
     global _session_agents, _agent_config
 
@@ -86,6 +87,15 @@ async def get_or_create_agent_for_session(
     except Exception as e:
         logger.warning(f"[{session_id[-5:]}] 获取用户机构ID失败: {e}")
 
+    # 构建 tools 列表：MCP 工具 + 定时任务工具（仅 HITL 模式下注入）
+    tools = list(_mcp_tools)
+    if enable_hitl:
+        try:
+            from ..tools.scheduled_task import CreateScheduledTaskTool
+            tools.append(CreateScheduledTaskTool(username=username, session_id=session_id or ""))
+        except Exception as e:
+            logger.warning(f"[{session_id[-5:]}] 注入定时任务工具失败: {e}")
+
     agent = EasyAgent(
         config=_agent_config["config"],
         system_prompt=_agent_config["system_prompt"],
@@ -93,8 +103,9 @@ async def get_or_create_agent_for_session(
         username=username,
         session_id=session_id,
         workspace_name=workspace_name,
-        mcp_tools=_mcp_tools,
+        mcp_tools=tools,
         organization_id=organization_id,
+        enable_hitl=enable_hitl,
     )
     _session_agents[session_id] = agent
     logger.info(

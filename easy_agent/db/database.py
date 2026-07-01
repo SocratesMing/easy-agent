@@ -23,7 +23,7 @@ try:
 except ImportError:
     PooledDB = None
 
-from ..models.db import SessionModel, UserModel
+from ..models.db import SessionModel, UserModel, ScheduledTaskModel, ScheduledTaskRunModel
 from ..utils.auth import hash_password, verify_password
 
 DATABASE_PATH = "./data/easy_agent.db"
@@ -416,6 +416,41 @@ class Database:
                 )
             """)
 
+            # 定时任务表
+            cursor.execute(f"""
+                CREATE TABLE IF NOT EXISTS scheduled_tasks (
+                    task_id VARCHAR(255) PRIMARY KEY,
+                    username VARCHAR(255) NOT NULL,
+                    session_id VARCHAR(255) DEFAULT '',
+                    name VARCHAR(255) NOT NULL,
+                    description TEXT,
+                    schedule_cron VARCHAR(255) NOT NULL,
+                    task_prompt TEXT NOT NULL,
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    created_at VARCHAR(50) NOT NULL,
+                    updated_at VARCHAR(50) NOT NULL,
+                    last_run_at VARCHAR(50) DEFAULT '',
+                    next_run_at VARCHAR(50) DEFAULT ''
+                )
+            """)
+            self._create_index(cursor, "idx_scheduled_tasks_username", "scheduled_tasks", "username")
+            self._create_index(cursor, "idx_scheduled_tasks_enabled", "scheduled_tasks", "enabled")
+
+            # 定时任务执行记录表
+            cursor.execute(f"""
+                CREATE TABLE IF NOT EXISTS scheduled_task_runs (
+                    run_id VARCHAR(255) PRIMARY KEY,
+                    task_id VARCHAR(255) NOT NULL,
+                    session_id VARCHAR(255) DEFAULT '',
+                    status VARCHAR(20) NOT NULL,
+                    started_at VARCHAR(50) NOT NULL,
+                    finished_at VARCHAR(50) DEFAULT '',
+                    result_summary TEXT,
+                    error_message TEXT
+                )
+            """)
+            self._create_index(cursor, "idx_scheduled_task_runs_task", "scheduled_task_runs", "task_id")
+
             conn.commit()
 
             # 修复 session_messages 表中缺失的消息行
@@ -584,19 +619,20 @@ class Database:
                     cursor,
                     """
                     SELECT session_id, title, messages, created_at, updated_at, username, workspace_name, pinned
-                    FROM sessions WHERE username = ?
+                    FROM sessions WHERE username = ? AND title NOT LIKE ?
                     ORDER BY pinned DESC, updated_at DESC LIMIT ? OFFSET ?
                     """,
-                    (username, limit, offset),
+                    (username, "[定时任务]%", limit, offset),
                 )
             else:
                 self._execute(
                     cursor,
                     """
                     SELECT session_id, title, messages, created_at, updated_at, username, workspace_name, pinned
-                    FROM sessions ORDER BY pinned DESC, updated_at DESC LIMIT ? OFFSET ?
+                    FROM sessions WHERE title NOT LIKE ?
+                    ORDER BY pinned DESC, updated_at DESC LIMIT ? OFFSET ?
                     """,
-                    (limit, offset),
+                    ("[定时任务]%", limit, offset),
                 )
             rows = cursor.fetchall()
 
@@ -1110,11 +1146,15 @@ class Database:
             if username:
                 self._execute(
                     cursor,
-                    "SELECT COUNT(*) FROM sessions WHERE username=?",
-                    (username,),
+                    "SELECT COUNT(*) FROM sessions WHERE username=? AND title NOT LIKE ?",
+                    (username, "[定时任务]%"),
                 )
             else:
-                self._execute(cursor, "SELECT COUNT(*) FROM sessions")
+                self._execute(
+                    cursor,
+                    "SELECT COUNT(*) FROM sessions WHERE title NOT LIKE ?",
+                    ("[定时任务]%",),
+                )
             row = cursor.fetchone()
             return row[0] if row else 0
 
@@ -1514,6 +1554,113 @@ class Database:
             )
             rows = cursor.fetchall()
         return [dict(row) for row in rows]
+
+    # ── 定时任务 CRUD ──────────────────────────────────────────────
+
+    def create_scheduled_task(self, task: ScheduledTaskModel) -> ScheduledTaskModel:
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            self._execute(
+                cursor,
+                """INSERT INTO scheduled_tasks
+                   (task_id, username, session_id, name, description, schedule_cron,
+                    task_prompt, enabled, created_at, updated_at, last_run_at, next_run_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (task.task_id, task.username, task.session_id, task.name,
+                 task.description, task.schedule_cron, task.task_prompt, task.enabled,
+                 task.created_at, task.updated_at, task.last_run_at, task.next_run_at),
+            )
+        return task
+
+    def get_scheduled_task(self, task_id: str) -> ScheduledTaskModel | None:
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            self._execute(cursor, "SELECT * FROM scheduled_tasks WHERE task_id=?", (task_id,))
+            row = cursor.fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        return ScheduledTaskModel(**d)
+
+    def list_scheduled_tasks(self, username: str, enabled_only: bool = False) -> list[ScheduledTaskModel]:
+        sql = "SELECT * FROM scheduled_tasks WHERE username=?"
+        params: list = [username]
+        if enabled_only:
+            sql += " AND enabled=1"
+        sql += " ORDER BY created_at DESC"
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            self._execute(cursor, sql, params)
+            rows = cursor.fetchall()
+        return [ScheduledTaskModel(**dict(r)) for r in rows]
+
+    def list_all_enabled_scheduled_tasks(self) -> list[ScheduledTaskModel]:
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            self._execute(cursor, "SELECT * FROM scheduled_tasks WHERE enabled=1")
+            rows = cursor.fetchall()
+        return [ScheduledTaskModel(**dict(r)) for r in rows]
+
+    def delete_scheduled_task(self, task_id: str) -> bool:
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            self._execute(cursor, "DELETE FROM scheduled_task_runs WHERE task_id=?", (task_id,))
+            self._execute(cursor, "DELETE FROM scheduled_tasks WHERE task_id=?", (task_id,))
+            return cursor.rowcount > 0
+
+    def update_scheduled_task_status(self, task_id: str, enabled: bool):
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            self._execute(
+                cursor,
+                "UPDATE scheduled_tasks SET enabled=?, updated_at=? WHERE task_id=?",
+                (1 if enabled else 0, datetime.now().isoformat(), task_id),
+            )
+
+    def update_scheduled_task_run_times(self, task_id: str, last_run_at: str, next_run_at: str):
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            self._execute(
+                cursor,
+                "UPDATE scheduled_tasks SET last_run_at=?, next_run_at=? WHERE task_id=?",
+                (last_run_at, next_run_at, task_id),
+            )
+
+    def add_scheduled_task_run(self, run: ScheduledTaskRunModel) -> ScheduledTaskRunModel:
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            self._execute(
+                cursor,
+                """INSERT INTO scheduled_task_runs
+                   (run_id, task_id, session_id, status, started_at, finished_at, result_summary, error_message)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (run.run_id, run.task_id, run.session_id, run.status,
+                 run.started_at, run.finished_at, run.result_summary, run.error_message),
+            )
+        return run
+
+    def update_scheduled_task_run(self, run_id: str, status: str, finished_at: str,
+                                  result_summary: str = "", error_message: str = ""):
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            self._execute(
+                cursor,
+                """UPDATE scheduled_task_runs
+                   SET status=?, finished_at=?, result_summary=?, error_message=?
+                   WHERE run_id=?""",
+                (status, finished_at, result_summary, error_message, run_id),
+            )
+
+    def list_scheduled_task_runs(self, task_id: str, limit: int = 50) -> list[ScheduledTaskRunModel]:
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            self._execute(
+                cursor,
+                "SELECT * FROM scheduled_task_runs WHERE task_id=? ORDER BY started_at DESC LIMIT ?",
+                (task_id, limit),
+            )
+            rows = cursor.fetchall()
+        return [ScheduledTaskRunModel(**dict(r)) for r in rows]
 
 
 _db_instance = None

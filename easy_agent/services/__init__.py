@@ -9,6 +9,14 @@ from .agent_manager import (
 )
 from .streaming import chat_stream_generator, resume_stream_generator, estimate_tokens
 from .vector_store import VectorStore
+from .scheduler import (
+    init_scheduler,
+    get_scheduler,
+    shutdown_scheduler,
+    register_scheduled_task,
+    unregister_scheduled_task,
+    reload_all_tasks,
+)
 
 __all__ = [
     "init_agent_config",
@@ -22,4 +30,10 @@ __all__ = [
     "resume_stream_generator",
     "estimate_tokens",
     "VectorStore",
+    "init_scheduler",
+    "get_scheduler",
+    "shutdown_scheduler",
+    "register_scheduled_task",
+    "unregister_scheduled_task",
+    "reload_all_tasks",
 ]
