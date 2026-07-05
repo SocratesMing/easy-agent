@@ -21,6 +21,12 @@ logger = logging.getLogger(__name__)
 BASE_UPLOAD_DIR = Path("./data/uploads")
 BASE_WORKSPACE_DIR = Path("./workspace")
 
+HIDDEN_EXTENSIONS = frozenset({
+    "py", "js", "ts", "vue", "html", "css", "json", "xml",
+    "java", "go", "rs", "c", "cpp", "h", "sh", "bat",
+    "log", "jsonl",
+})
+
 router = APIRouter(
     prefix="/api/files",
     tags=["Files"],
@@ -87,13 +93,16 @@ async def list_files(
     if workspace_dir.exists():
         for item in workspace_dir.rglob("*"):
             if item.is_file():
+                ext = item.suffix.lstrip(".").lower()
+                if ext in HIDDEN_EXTENSIONS:
+                    continue
                 try:
                     stat = item.stat()
                     workspace_files.append(
                         FileInfo(
                             filename=item.name,
                             file_path=str(item.relative_to(workspace_dir)),
-                            file_type=item.suffix.lstrip(".") or "unknown",
+                            file_type=ext or "unknown",
                             size=stat.st_size,
                             uploaded_at=datetime.fromtimestamp(
                                 stat.st_mtime
@@ -107,13 +116,16 @@ async def list_files(
     if upload_dir.exists():
         for item in upload_dir.rglob("*"):
             if item.is_file():
+                ext = item.suffix.lstrip(".").lower()
+                if ext in HIDDEN_EXTENSIONS:
+                    continue
                 try:
                     stat = item.stat()
                     upload_files.append(
                         FileInfo(
                             filename=item.name,
                             file_path=str(item.relative_to(upload_dir)),
-                            file_type=item.suffix.lstrip(".") or "unknown",
+                            file_type=ext or "unknown",
                             size=stat.st_size,
                             uploaded_at=datetime.fromtimestamp(
                                 stat.st_mtime

@@ -241,6 +241,17 @@ async def chat_stream_generator(
         ws = agent.workspace_dir.absolute().as_posix()
         message_content = f"[workspace: {agent.workspace_virtual_path}/ | shell: cd {ws}]\n{message_content}"
 
+    # 加载当前会话的工作区记忆（memory.md），在后续输入时提供历史记忆上下文
+    # 首轮对话时 memory.md 不存在，返回空字符串，不影响流程
+    if agent:
+        session_memory = agent.load_session_memory()
+        if session_memory:
+            message_content = (
+                f"[会话记忆 - 当前会话的历史经验总结]:\n{session_memory}\n\n"
+                f"---\n\n{message_content}"
+            )
+            logger.info(f"[{sid}] 🧠 已注入会话记忆上下文 | 长度: {len(session_memory)} 字符")
+
     if session_id and db:
         message_content = await build_context_messages(
             db, session_id, message_content, session_logger
@@ -1422,26 +1433,30 @@ async def chat_stream_generator(
                 except Exception as e:
                     logger.warning(f"[{sid}] Workspace rename failed: {e}")
 
-        # Memory file management — 每次会话后按使用场景更新用户记忆
-        # 1. 根据本次会话内容按场景更新记忆（重复场景更新经验，新场景添加章节）
-        # 2. 确保记忆文件不超过 3000 字符
-        if agent and agent.memory_file:
+        # 会话级记忆持久化 — 每轮对话结束后更新工作区下的 memory.md
+        # 1. 根据本轮对话内容按场景更新会话记忆（重复场景更新经验，新场景添加章节）
+        # 2. 确保记忆文件不超过 2000 字符，超限时自动压缩
+        # 注意：此更新在 workspace rename 之后执行，确保 memory.md 写入最终目录
+        if agent and agent.session_memory_file:
             try:
                 from .memory_manager import update_memory_after_session
                 from .agent_manager import _llm_instance
 
+                # 使用原始用户输入（不含注入的记忆前缀）作为记忆提取素材
+                raw_user_msg = parsed_content or request.message
                 updated = update_memory_after_session(
-                    agent.memory_file,
-                    user_message=message_content,
+                    agent.session_memory_file,
+                    user_message=raw_user_msg,
                     assistant_response=accumulated_response,
                     llm=_llm_instance,
                 )
                 if updated:
                     logger.info(
-                        f"[{sid}] 记忆文件已按场景更新（上限 3000 字符）"
+                        f"[{sid}] 🧠 会话记忆已更新 | 文件: {agent.session_memory_file} | "
+                        f"上限 2000 字符"
                     )
             except Exception as e:
-                logger.warning(f"[{sid}] 记忆文件更新失败: {e}")
+                logger.warning(f"[{sid}] 会话记忆更新失败: {e}")
 
         # Session logger
         if session_logger:

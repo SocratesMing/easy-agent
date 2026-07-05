@@ -258,6 +258,13 @@ class EasyAgent:
         self.memory_virtual_path = f"/memories/{self.safe_username}"
         self._workspace_renamed = False
 
+        # 预创建工作区目录，确保会话级记忆文件可写入
+        self.workspace_dir.mkdir(parents=True, exist_ok=True)
+
+        # 会话级记忆文件：workspace/{username}/{workspace_name}/memory.md
+        # 每次会话结束后更新，后续输入时自动加载，提供当前会话的历史记忆上下文
+        self.session_memory_file = self.workspace_dir / "memory.md"
+
         # Ensure memories directory and user memory file exist
         memories_base = Path(config.agent.memories_dir)
         memories_dir = memories_base / self.safe_username
@@ -294,7 +301,7 @@ class EasyAgent:
             f"{org_info}"
             f"## Workspace: `{self.workspace_virtual_path}/`\n"
             f"{skills_info}"
-            f"## Memory: `{self.memory_virtual_path}/AGENTS.md`\n"
+            f"## 会话记忆: `{self.workspace_virtual_path}/memory.md`\n"
             f"{self._get_os_info()}\n"
         )
 
@@ -345,6 +352,28 @@ class EasyAgent:
 
         logger.info(f"Workspace renamed | {old_path} -> {new_workspace.absolute()}")
         return True
+
+    def load_session_memory(self) -> str:
+        """加载当前会话的工作区记忆文件（memory.md）。
+
+        在后续用户输入时调用，将历史会话记忆作为上下文注入。
+        若文件不存在（如首轮对话），返回空字符串。
+
+        Returns:
+            记忆文件内容字符串；不存在时返回 ""。
+        """
+        try:
+            if self.session_memory_file and self.session_memory_file.exists():
+                content = self.session_memory_file.read_text(encoding="utf-8").strip()
+                if content:
+                    logger.info(
+                        f"[{self.session_id[-5:] if self.session_id else '?'}] "
+                        f"📥 加载会话记忆 | 文件: {self.session_memory_file} | 长度: {len(content)} 字符"
+                    )
+                return content
+        except Exception as e:
+            logger.warning(f"加载会话记忆失败: {e}")
+        return ""
 
     def _get_os_info(self) -> str:
         """获取当前操作系统信息，返回格式化的系统提示词片段。
