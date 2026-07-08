@@ -13,7 +13,7 @@ from langchain_core.language_models import chat_model_stream as cms
 from langchain_core.messages import AIMessage, AIMessageChunk
 from langchain_openai import ChatOpenAI
 
-from .config import Config
+from .config import Config, LLMConfig, RetryConfig
 
 logger = logging.getLogger(__name__)
 
@@ -197,7 +197,38 @@ def _apply_reasoning_patches():
     logger.info("Applied langchain_openai reasoning_content patches for DeepSeek")
 
 
-def create_model(config: Config):
+def _resolve_llm_config(config: Config, model_name: str | None):
+    """Resolve an LLMConfig to use for model creation.
+
+    If ``model_name`` is given and matches a key in ``config.models``, build a
+    fresh LLMConfig from that provider entry (preserving the global retry
+    config). Otherwise fall back to the active ``config.llm``.
+    """
+    if not model_name:
+        return config.llm
+
+    provider = config.models.get(model_name)
+    if provider is None:
+        logger.warning(
+            f"Model '{model_name}' not found in config.models, "
+            f"falling back to active model '{config.active_model}'. "
+            f"Available: {list(config.models.keys())}"
+        )
+        return config.llm
+
+    retry = config.llm.retry if config.llm.retry else RetryConfig()
+    return LLMConfig(
+        api_key=provider.api_key,
+        api_base=provider.api_base or None,
+        model=provider.model or "claude-sonnet-4-6",
+        provider=provider.provider or model_name,
+        max_input_tokens=provider.max_input_tokens or 200000,
+        protocol=provider.protocol or "openai",
+        retry=retry,
+    )
+
+
+def create_model(config: Config, model_name: str | None = None):
     """Create LLM model instance based on protocol.
 
     The protocol field in config determines which API client to use:
@@ -206,19 +237,35 @@ def create_model(config: Config):
 
     Args:
         config: Application configuration.
+        model_name: Optional model key (from ``config.models``). When provided
+            and present, the corresponding provider config is used instead of
+            the active model. Useful for per-request model selection.
 
     Returns:
         LangChain chat model instance.
 
     Raises:
-        ValueError: If protocol is not supported.
+        ValueError: If protocol is not supported or the selected provider has
+            no api_key configured.
     """
-    protocol = config.llm.protocol.lower()
+    llm_config = _resolve_llm_config(config, model_name)
+    if not llm_config.api_key:
+        raise ValueError(
+            f"Model '{model_name or config.active_model}' has no api_key configured. "
+            f"Available models: {list(config.models.keys())}"
+        )
+
+    protocol = llm_config.protocol.lower()
+    logger.info(
+        f"Creating LLM instance | model_name={model_name or config.active_model} | "
+        f"provider={llm_config.provider} | model={llm_config.model} | "
+        f"protocol={protocol}"
+    )
 
     if protocol == "openai":
-        return _create_openai_compatible(config.llm)
+        return _create_openai_compatible(llm_config)
     elif protocol == "anthropic":
-        return _create_anthropic_compatible(config.llm)
+        return _create_anthropic_compatible(llm_config)
     else:
         raise ValueError(
             f"Unsupported protocol: {protocol}. Use 'openai' or 'anthropic'."

@@ -1,17 +1,22 @@
-"""设置相关 API：记忆读写、系统提示词、Skills 列表、MCP 列表"""
+"""设置相关 API：记忆读写、系统提示词、Skills 列表、MCP 列表、模型列表"""
 
+import json
 import logging
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from ..config import Config
 from ..middleware import get_current_username
 from ..skills import discover_skills
-from ..services.mcp import load_mcp_config
-from ..services import get_agent_config
+from ..services.mcp import (
+    load_mcp_config,
+    invalidate_mcp_cache,
+    get_mcp_tools,
+)
+from ..services import get_agent_config, invalidate_user_agents
 
 logger = logging.getLogger(__name__)
 
@@ -154,26 +159,136 @@ async def get_skills(
     return {"skills": result}
 
 
+# ── 模型列表 ──────────────────────────────────────────────────────────
+
+
+@router.get("/models", summary="获取所有可选模型列表")
+async def get_models(
+    username: Annotated[str, Depends(get_current_username)],
+):
+    """返回 config.models 中的模型列表及当前激活模型。
+
+    前端用于填充输入框的模型下拉，值使用模型 key（如 deepseek/glm）。
+    """
+    _cfg = get_agent_config()
+    if not _cfg or not _cfg.get("config"):
+        raise HTTPException(status_code=503, detail="Agent 配置未初始化")
+    config: Config = _cfg["config"]
+
+    models = []
+    for name, prov in config.models.items():
+        models.append({
+            "name": name,
+            "model": prov.model,
+            "provider": prov.provider,
+            "protocol": prov.protocol,
+            "max_input_tokens": prov.max_input_tokens,
+            "is_active": name == config.active_model,
+        })
+
+    logger.info(
+        f"获取模型列表 | 用户: {username} | 可选: {[m['name'] for m in models]} | "
+        f"active: {config.active_model}"
+    )
+    return {"models": models, "active_model": config.active_model}
+
+
 # ── MCP ───────────────────────────────────────────────────────────────
 
 
-@router.get("/mcp", summary="获取所有 MCP 服务配置")
+@router.get("/mcp", summary="获取当前用户的 MCP 服务配置")
 async def get_mcp_servers(
     username: Annotated[str, Depends(get_current_username)],
 ):
-    config = load_mcp_config()
+    """读取用户专属 mcp.json（不存在则回退全局）。
+
+    不暴露 env 中的敏感值，仅返回 key 列表。
+    """
+    config = load_mcp_config(username)
 
     servers = []
     for name, cfg in config.items():
+        # 保留完整原始配置供前端编辑（env 值脱敏）
+        raw = dict(cfg)
+        if "env" in raw and isinstance(raw["env"], dict):
+            raw["env"] = {k: "***" for k in raw["env"]}
+
         server_info = {
             "name": name,
             "transport": cfg.get("transport", cfg.get("type", "unknown")),
             "command": cfg.get("command", ""),
             "args": cfg.get("args", []),
+            "_raw": raw,
         }
-        # 不暴露 env 中的敏感信息（如密码）
+        # 不暴露 env 中的敏感信息（如密码），仅返回 key 列表
         env_keys = list(cfg.get("env", {}).keys())
         server_info["env_keys"] = env_keys
         servers.append(server_info)
 
-    return {"servers": servers}
+    # 标注来源：用户专属文件是否存在
+    user_mcp_path = Config.get_user_mcp_path(username)
+    logger.info(
+        f"获取 MCP 配置 | 用户: {username} | 来源: "
+        f"{'user' if user_mcp_path.exists() else 'global'} | servers: {len(servers)}"
+    )
+    return {
+        "servers": servers,
+        "source": "user" if user_mcp_path.exists() else "global",
+        "user_mcp_path": str(user_mcp_path),
+    }
+
+
+class UpdateMcpRequest(BaseModel):
+    servers: dict[str, dict[str, Any]]
+
+
+@router.put("/mcp", summary="更新当前用户的 MCP 服务配置")
+async def update_mcp_servers(
+    request: UpdateMcpRequest,
+    username: Annotated[str, Depends(get_current_username)],
+):
+    """写入用户专属 mcp.json，并失效该用户的 MCP 缓存与缓存 Agent。
+
+    下次聊天请求会重建 Agent 并加载新的 MCP 工具，实现动态加载。
+    """
+    _cfg = get_agent_config()
+    config: Config = _cfg["config"] if _cfg and _cfg.get("config") else None
+    user_mcp_path = Config.get_user_mcp_path(username, config)
+    user_mcp_path.parent.mkdir(parents=True, exist_ok=True)
+
+    payload = {"servers": request.servers}
+    user_mcp_path.write_text(
+        json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+    logger.info(
+        f"写入用户 MCP 配置 | 用户: {username} | 路径: {user_mcp_path} | "
+        f"servers: {list(request.servers.keys())}"
+    )
+
+    # 失效 MCP 工具缓存（按用户路径）
+    invalidate_mcp_cache(username)
+
+    # 失效该用户已缓存的 Agent，使下次请求重建并加载新 MCP
+    evicted = invalidate_user_agents(username)
+    logger.info(
+        f"用户 MCP 更新完成 | 用户: {username} | 失效 Agent: {evicted} 个"
+    )
+
+    # 预热：立即尝试加载新工具，便于提前发现问题
+    loaded = 0
+    try:
+        tools = await get_mcp_tools(username)
+        loaded = len(tools)
+        logger.info(
+            f"用户 MCP 预加载 | 用户: {username} | 工具数: {loaded}"
+        )
+    except Exception as e:
+        logger.warning(f"用户 MCP 预加载失败 | 用户: {username} | {e}")
+
+    return {
+        "status": "ok",
+        "path": str(user_mcp_path),
+        "servers": list(request.servers.keys()),
+        "tools_loaded": loaded,
+        "agents_invalidated": evicted,
+    }

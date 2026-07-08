@@ -213,6 +213,7 @@ class EasyAgent:
         mcp_tools: list | None = None,
         organization_id: str = "",
         enable_hitl: bool = True,
+        model_name: str | None = None,
     ):
         """初始化 EasyAgent 实例，配置工作区隔离、记忆文件和系统提示词。
 
@@ -240,6 +241,7 @@ class EasyAgent:
         self.organization_id = organization_id or ""
         self.enable_hitl = enable_hitl
         self.safe_username = Config.sanitize_username(username)
+        self.model_name = model_name or config.active_model
 
         if workspace_dir:
             self.workspace_dir = Path(workspace_dir)
@@ -369,7 +371,7 @@ class EasyAgent:
         We only need to configure the backend for file/shell access and
         optionally load skills.
         """
-        model = create_model(self.config)
+        model = create_model(self.config, model_name=self.model_name)
         self.model = model
 
         logger.info(f"[{self.session_id}] 📋 系统提示词:\n{self.system_prompt}")

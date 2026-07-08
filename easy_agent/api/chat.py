@@ -54,7 +54,8 @@ async def chat_stream(
     sid = session_id[-5:] if session_id else "new"
 
     logger.info(
-        f"[{sid}] 聊天请求 | message: {request.message[:50]}{'...' if len(request.message) > 50 else ''} | deep_think: {request.enable_deep_think}"
+        f"[{sid}] 聊天请求 | message: {request.message[:50]}{'...' if len(request.message) > 50 else ''} | "
+        f"deep_think: {request.enable_deep_think} | model: {request.model or '(active)'}"
     )
 
     def generate_session_title(message, files):
@@ -175,7 +176,9 @@ async def chat_stream(
         message_id=message_id,
     )
 
-    agent = await get_or_create_agent_for_session(session_id, username, workspace_name)
+    agent = await get_or_create_agent_for_session(
+        session_id, username, workspace_name, model_name=request.model
+    )
 
     async def event_generator():
         # 注册当前请求任务，使 /cancel 端点能通过 task.cancel() 中断 astream
