@@ -3,11 +3,41 @@
 Provides unified configuration loading and management functionality
 """
 
+import os
+import re
 from pathlib import Path
 from typing import Any
 
 import yaml
 from pydantic import BaseModel, Field
+
+# Matches ${VAR} and ${VAR:-default} placeholders inside string values.
+_ENV_VAR_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
+
+
+def _expand_env(value: str) -> str:
+    """Resolve ${VAR} / ${VAR:-default} placeholders in a single string."""
+
+    def _replace(match: re.Match) -> str:
+        name = match.group(1)
+        default = match.group(2)
+        env_value = os.environ.get(name)
+        if env_value is not None:
+            return env_value
+        return default if default is not None else ""
+
+    return _ENV_VAR_RE.sub(_replace, value)
+
+
+def _expand_env_recursive(obj: Any) -> Any:
+    """Recursively expand env-var placeholders inside parsed YAML data."""
+    if isinstance(obj, str):
+        return _expand_env(obj)
+    if isinstance(obj, dict):
+        return {k: _expand_env_recursive(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_expand_env_recursive(item) for item in obj]
+    return obj
 
 
 class RetryConfig(BaseModel):
@@ -183,6 +213,9 @@ class Config(BaseModel):
         if not data:
             raise ValueError("Configuration file is empty")
 
+        # Expand ${ENV_VAR} / ${ENV_VAR:-default} placeholders (e.g. api_key, password).
+        data = _expand_env_recursive(data)
+
         # Parse active model selection
         active_model = data.get("model", "minimax")
 
@@ -346,6 +379,16 @@ class Config(BaseModel):
         """
         safe_name = Config.sanitize_username(username)
         return Path("./workspace") / safe_name
+
+    @classmethod
+    def get_user_mcp_path(cls, username: str, config: "Config | None" = None) -> Path:
+        """获取用户的 MCP 配置文件路径：{workspace_dir}/{username}/mcp.json
+
+        文件可能不存在，由调用方判断后决定是否回退到全局 mcp.json。
+        """
+        safe_name = cls.sanitize_username(username)
+        base = Path(config.agent.workspace_dir) if config else Path("./workspace")
+        return base / safe_name / "mcp.json"
 
     @staticmethod
     def get_user_upload_dir(username: str) -> Path:

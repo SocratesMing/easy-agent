@@ -48,3 +48,6 @@ data/
 logs/
 memories/
 node_modules/
+
+# Local config with secrets (use config-example.yaml as template)
+easy_agent/config/config.yaml

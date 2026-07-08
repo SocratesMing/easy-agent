@@ -1,9 +1,20 @@
-# Easy Agent Configuration
+# Easy Agent Configuration (Example)
+#
+# Copy this file to config.yaml and fill in your API keys via environment variables,
+# or replace the ${...} placeholders with actual values.
 #
 # Configuration File Locations (in priority order):
 # 1) easy_agent/config/config.yaml - Development mode (current directory)
 # 2) ~/.easy-agent/config/config.yaml - User config directory
 # 3) <package>/easy_agent/config/config.yaml - Package installation directory
+#
+# Sensitive values (api_key, password, ...) use ${ENV_VAR} placeholders and are
+# resolved at load time. Provide them via environment variables, for example:
+#   export MINIMAX_API_KEY=...
+#   export DEEPSEEK_API_KEY=...
+#   export ARK_API_KEY=...
+#   export MYSQL_PASSWORD=...
+# Optional ${VAR:-default} syntax is also supported.
 
 # ===== LLM Configuration =====
 # Select which model to use: minimax | deepseek
@@ -14,26 +25,34 @@ models:
   minimax:
     provider: "minimax"
     protocol: "anthropic"  # anthropic or openai
-    api_key: "sk-cp-sEc88ZDHU5B8pdrKLRbCbR0RRkIDeBM4o7QwoBb4bGK6hiCp1Z6D9JI5BFqmXwEGomMHHrdEMV8_mGWK62YQrQN2w6X6Bl3wBHvPR1N8TwvVdFigMDpMSZo"
+    api_key: "${MINIMAX_API_KEY}"
     model: "MiniMax-M3"
     api_base: "https://api.minimaxi.com/anthropic"  # China users; Global: https://api.minimax.io/anthropic
     max_input_tokens: 200000  # Model context window size, used for summarization threshold calculation
- 
+
   deepseek:
     provider: "deepseek"
     protocol: "openai"  # anthropic or openai
     model: "deepseek-v4-flash"
-    api_key: "sk-a6aaaa7b97334dd2b4bb6a90f1cbce4b"
+    api_key: "${DEEPSEEK_API_KEY}"
     api_base: "https://api.deepseek.com"
     max_input_tokens: 200000
-  
+
   ark:
     provider: "ark"
     protocol: "openai"  # anthropic or openai
     model: "deepseek-v4-pro"
-    api_key: "ark-d97c5996-5264-4d8f-a944-ebe3de546532-6c049"
+    api_key: "${ARK_API_KEY}"
     api_base: "https://ark.cn-beijing.volces.com/api/coding/v3"
     max_input_tokens: 200000
+
+  glm:
+    provider: "glm"
+    protocol: "openai"  # anthropic or openai
+    model: "glm5"
+    api_key: "${GLM_API_KEY}"
+    api_base: "https://open.bigmodel.cn/api/paas/v4"
+    max_input_tokens: 128000
 
 # ===== Retry Configuration =====
 retry:
@@ -75,17 +94,17 @@ preset_questions:
 # Supports SQLite (local) or MySQL (remote)
 database:
   type: "mysql"
-  
+
   sqlite:
     path: "./data/easy_agent.db"
-  
+
   mysql:
-    host: "127.0.0.1"
+    host: "${MYSQL_HOST:-127.0.0.1}"
     port: 3306
-    user: "root"
-    password: "Test1234"
-    database: "agent"
-    charset: "utf8mb4" 
+    user: "${MYSQL_USER:-root}"
+    password: "${MYSQL_PASSWORD}"
+    database: "${MYSQL_DATABASE:-agent}"
+    charset: "utf8mb4"
     pool:
       pool_size: 5
       max_overflow: 10
@@ -104,7 +123,7 @@ vector_store:
   embedding_dimension: 1024
   batch_size: 32
   sentence_transformers_model: "Qwen/Qwen3-Embedding-0.6B"
-  zhipu_api_key: ""
+  zhipu_api_key: "${ZHIPU_API_KEY}"
   zhipu_model: "embedding-3"
 
 # 禁止智能体读写的虚拟路径目录列表（通过 permissions deny 规则限制）
