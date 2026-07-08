@@ -35,3 +35,19 @@ export async function getMcpServers() {
   if (!response.ok) throw new Error('获取 MCP 配置失败')
   return await response.json()
 }
+
+export async function updateMcpServers(servers) {
+  const response = await authFetch(`${API_BASE_URL}/api/settings/mcp`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ servers }),
+  })
+  if (!response.ok) throw new Error('更新 MCP 配置失败')
+  return await response.json()
+}
+
+export async function getModels() {
+  const response = await authFetch(`${API_BASE_URL}/api/settings/models`)
+  if (!response.ok) throw new Error('获取模型列表失败')
+  return await response.json()
+}

@@ -49,6 +49,22 @@
       
       <div class="input-actions">
         <div class="left-actions">
+          <div class="model-select-wrapper" :class="{ disabled: isStreaming || disabled }" :title="'选择模型'">
+            <select
+              v-model="localSelectedModel"
+              :disabled="isStreaming || disabled"
+              class="model-select"
+              @change="onModelChange"
+            >
+              <option v-for="m in models" :key="m.name" :value="m.name">
+                {{ m.model || m.name }}{{ m.is_active ? ' ★' : '' }}
+              </option>
+            </select>
+            <svg class="model-select-arrow" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="6 9 12 15 18 9"></polyline>
+            </svg>
+          </div>
+
           <label class="action-btn upload-btn" :class="{ disabled: isStreaming || disabled }" title="上传文件">
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path>
@@ -192,16 +208,36 @@ const props = defineProps({
   iterationCount: {
     type: Number,
     default: 0
+  },
+  models: {
+    type: Array,
+    default: () => []
+  },
+  selectedModel: {
+    type: String,
+    default: null
   }
 })
 
-const emit = defineEmits(['send', 'stop', 'createSession'])
+const emit = defineEmits(['send', 'stop', 'createSession', 'update:selectedModel'])
 
 const message = ref('')
 const textareaRef = ref(null)
 const uploadedFiles = ref([])
 const enableKnowledgeBase = ref(false)
 let abortController = null
+
+// 模型选择：本地双向绑定，变化时同步父组件
+const localSelectedModel = computed({
+  get: () => props.selectedModel,
+  set: (val) => emit('update:selectedModel', val)
+})
+
+function onModelChange() {
+  console.log(
+    `[${new Date().toISOString()}] [模型选择] 切换为: ${localSelectedModel.value}`
+  )
+}
 
 function toggleKnowledgeBase() {
   enableKnowledgeBase.value = !enableKnowledgeBase.value
@@ -672,6 +708,57 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 12px;
+}
+
+.model-select-wrapper {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  height: 36px;
+  min-height: 36px;
+  border: 1px solid #e2e8f0;
+  background: #f8fafc;
+  border-radius: 10px;
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  overflow: hidden;
+}
+
+.model-select-wrapper:hover:not(.disabled) {
+  border-color: rgba(14, 165, 233, 0.4);
+  background: rgba(14, 165, 233, 0.06);
+}
+
+.model-select-wrapper.disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.model-select {
+  appearance: none;
+  -webkit-appearance: none;
+  border: none;
+  background: transparent;
+  height: 36px;
+  padding: 0 28px 0 12px;
+  font-size: 12px;
+  font-weight: 500;
+  color: #475569;
+  cursor: pointer;
+  outline: none;
+  max-width: 180px;
+}
+
+.model-select:disabled {
+  cursor: not-allowed;
+}
+
+.model-select-arrow {
+  position: absolute;
+  right: 8px;
+  width: 14px;
+  height: 14px;
+  color: #64748b;
+  pointer-events: none;
 }
 
 .knowledge-base-btn {

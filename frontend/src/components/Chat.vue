@@ -71,6 +71,9 @@
       :sessionUsage="sessionUsage"
       :sessionDuration="sessionDuration"
       :iterationCount="iterationCount"
+      :models="models"
+      :selectedModel="selectedModel"
+      @update:selectedModel="(v) => emit('update:selectedModel', v)"
       @stop="handleStop"
       @createSession="handleCreateSession"
     />
@@ -176,6 +179,14 @@ const props = defineProps({
     type: Boolean,
     default: false
   },
+  models: {
+    type: Array,
+    default: () => []
+  },
+  selectedModel: {
+    type: String,
+    default: null
+  }
 })
 
 watch(() => props.messages, (newMessages) => {
@@ -184,7 +195,7 @@ watch(() => props.messages, (newMessages) => {
   }
 })
 
-const emit = defineEmits(['sendMessage', 'stop', 'removeFile', 'createSession', 'approve', 'reject'])
+const emit = defineEmits(['sendMessage', 'stop', 'removeFile', 'createSession', 'approve', 'reject', 'update:selectedModel'])
 const messagesRef = ref(null)
 
 function formatSessionTime(isoStr) {

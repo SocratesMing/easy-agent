@@ -74,6 +74,9 @@
         :presetQuestions="presetQuestions"
         :workspaceExpanded="!isWorkspaceCollapsed"
         :sidebarCollapsed="isSidebarCollapsed"
+        :models="availableModels"
+        :selectedModel="selectedModel"
+        @update:selectedModel="selectedModel = $event"
         @sendMessage="handleSendMessage"
         @createSession="ensureCurrentSession"
         @removeFile="handleRemoveFile"
@@ -126,10 +129,31 @@ import SettingsPanel from './components/SettingsPanel.vue'
 import { createSession, listSessions, getChatHistory, deleteSession, sendMessage, resumeStream, renameSession, togglePinSession } from './api/chat.js'
 import { uploadFile, deleteFile, getUserProfile, getSessionGeneratedFiles } from './api/files.js'
 import { logout as apiLogout, getStoredToken, getStoredUsername, AUTH_EXPIRED_EVENT, authFetch } from './api/auth.js'
+import { getModels as fetchModels } from './api/settings.js'
 
 const sessions = ref([])
 const currentSessionId = ref(null)
 const currentSessionHasFiles = ref(false)
+
+// 模型选择：从配置加载可选列表，默认选 active model
+const availableModels = ref([])
+const selectedModel = ref(null)
+
+async function loadModels() {
+  try {
+    const data = await fetchModels()
+    availableModels.value = data.models || []
+    // 默认选 active model（仅当当前未选择时）
+    if (!selectedModel.value && data.active_model) {
+      selectedModel.value = data.active_model
+    }
+    console.log(
+      `[${new Date().toISOString()}] [模型列表] 加载成功 | 可选: ${availableModels.value.map(m => m.name).join(',')} | 当前: ${selectedModel.value}`
+    )
+  } catch (e) {
+    console.error('加载模型列表失败:', e)
+  }
+}
 const currentSessionCreatedAt = computed(() => {
   if (!currentSessionId.value) return null
   const session = sessions.value.find(s => s.session_id === currentSessionId.value)
@@ -287,6 +311,7 @@ async function handleWelcomeCompleted(profile) {
   } catch (e) {
     console.warn('获取模型配置失败:', e)
   }
+  loadModels()
   await loadSessions()
   if (sessions.value.length > 0) {
     currentSessionId.value = sessions.value[0].session_id
@@ -1006,7 +1031,7 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
       }
     }
 
-    await sendMessage(currentSessionId.value, message, onChunk, abortSignal, enableDeepThink, files, enableKnowledgeBase)
+    await sendMessage(currentSessionId.value, message, onChunk, abortSignal, enableDeepThink, files, enableKnowledgeBase, selectedModel.value)
 
     await refreshSessionFiles(null, 500)
   } catch (e) {
@@ -1365,6 +1390,8 @@ async function handleRemoveFile(message, messageIndex, file) {
 onMounted(async () => {
   window.addEventListener(AUTH_EXPIRED_EVENT, handleLogout)
   await loadUserProfile()
+  // 拉取可选模型列表（不阻塞会话加载）
+  loadModels()
   if (!showWelcome.value) {
     await loadSessions()
     if (sessions.value.length > 0) {

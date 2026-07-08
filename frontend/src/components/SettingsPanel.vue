@@ -65,16 +65,48 @@
           <!-- MCP -->
           <div v-if="activeTab === 'mcp'" class="content-panel">
             <div class="panel-header">
-              <h3>MCP</h3>
-              <p class="panel-desc">当前系统配置的 MCP 服务</p>
+              <div class="panel-header-row">
+                <div>
+                  <h3>MCP</h3>
+                  <p class="panel-desc">管理 MCP 服务配置 · 来源：<span class="source-tag" :class="mcpSource">{{ mcpSource === 'user' ? '用户配置' : '全局默认' }}</span></p>
+                </div>
+                <div class="panel-actions">
+                  <button class="action-btn-outline" @click="openPreview" title="预览最终 mcp.json">
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                    预览
+                  </button>
+                  <button class="action-btn-primary" @click="openAddMcp" title="添加自定义 MCP 服务">
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                    添加
+                  </button>
+                </div>
+              </div>
             </div>
             <div v-if="loading" class="loading-state"><div class="spinner"></div></div>
             <div v-else class="mcp-list">
-              <div v-if="mcpServers.length === 0" class="empty-hint">暂无 MCP 服务配置</div>
-              <div v-for="server in mcpServers" :key="server.name" class="mcp-card">
+              <div v-if="mcpServers.length === 0" class="empty-hint">暂无 MCP 服务配置，点击"添加"按钮创建</div>
+              <div
+                v-for="server in mcpServers"
+                :key="server.name"
+                class="mcp-card"
+                :class="{ disabled: mcpEnabledMap[server.name] === false }"
+              >
                 <div class="mcp-header">
-                  <span class="mcp-name">{{ server.name }}</span>
-                  <span class="mcp-transport">{{ server.transport }}</span>
+                  <div class="mcp-header-left">
+                    <label class="toggle-switch">
+                      <input
+                        type="checkbox"
+                        :checked="mcpEnabledMap[server.name] !== false"
+                        @change="toggleMcpServer(server.name, $event.target.checked)"
+                      />
+                      <span class="toggle-slider"></span>
+                    </label>
+                    <span class="mcp-name">{{ server.name }}</span>
+                    <span class="mcp-transport">{{ server.transport }}</span>
+                  </div>
+                  <button class="mcp-delete-btn" @click="removeMcpServer(server.name)" title="删除">
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                  </button>
                 </div>
                 <div v-if="server.command" class="mcp-detail">
                   <span class="detail-label">Command:</span>
@@ -84,6 +116,60 @@
                   <span class="detail-label">Env:</span>
                   <code>{{ server.env_keys.join(', ') }}</code>
                 </div>
+              </div>
+            </div>
+            <!-- 保存栏 -->
+            <div v-if="mcpServers.length > 0" class="editor-actions">
+              <span v-if="mcpSaved" class="save-hint">已保存，配置将在下次对话生效</span>
+              <span v-if="mcpError" class="save-error">{{ mcpError }}</span>
+              <button class="save-btn" @click="saveMcp" :disabled="mcpSaving">
+                {{ mcpSaving ? '保存中...' : '保存配置' }}
+              </button>
+            </div>
+          </div>
+
+          <!-- 添加 MCP 弹窗 -->
+          <div v-if="showAddMcp" class="mcp-dialog-overlay" @click.self="showAddMcp = false">
+            <div class="mcp-dialog">
+              <div class="mcp-dialog-header">
+                <h4>添加 MCP 服务</h4>
+                <button class="close-btn" @click="showAddMcp = false">
+                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                </button>
+              </div>
+              <p class="mcp-dialog-desc">粘贴 MCP 服务配置（JSON 格式）。支持对象格式或单条 server 格式：</p>
+              <pre class="mcp-dialog-example">对象格式：{"myserver": {"transport":"stdio","command":"npx",...}}
+单条格式：{"name":"myserver","transport":"stdio","command":"npx",...}</pre>
+              <textarea
+                v-model="addMcpJson"
+                class="mcp-json-input"
+                placeholder='{"myserver": {"transport": "stdio", "command": "npx", "args": ["-y", "some-mcp-server"]}}'
+                spellcheck="false"
+              ></textarea>
+              <div v-if="addMcpError" class="save-error">{{ addMcpError }}</div>
+              <div class="mcp-dialog-actions">
+                <button class="action-btn-outline" @click="showAddMcp = false">取消</button>
+                <button class="action-btn-primary" @click="confirmAddMcp">确认添加</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- 预览 MCP 弹窗 -->
+          <div v-if="showPreview" class="mcp-dialog-overlay" @click.self="showPreview = false">
+            <div class="mcp-dialog mcp-dialog-preview">
+              <div class="mcp-dialog-header">
+                <h4>预览 mcp.json</h4>
+                <button class="close-btn" @click="showPreview = false">
+                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                </button>
+              </div>
+              <p class="mcp-dialog-desc">以下为保存后实际生效的 mcp.json 内容（仅包含已启用的服务）：</p>
+              <pre class="mcp-preview-content">{{ mcpPreviewJson }}</pre>
+              <div class="mcp-dialog-actions">
+                <button class="action-btn-outline" @click="showPreview = false">关闭</button>
+                <button class="action-btn-primary" @click="copyPreview">
+                  {{ previewCopied ? '已复制' : '复制' }}
+                </button>
               </div>
             </div>
           </div>
@@ -142,8 +228,8 @@
 </template>
 
 <script setup>
-import { ref, watch, onMounted } from 'vue'
-import { getMemory, updateMemory, getSystemPrompt, getMcpServers } from '../api/settings.js'
+import { ref, watch, onMounted, computed } from 'vue'
+import { getMemory, updateMemory, getSystemPrompt, getMcpServers, updateMcpServers } from '../api/settings.js'
 
 const props = defineProps({
   isDarkTheme: { type: Boolean, default: false },
@@ -165,6 +251,37 @@ const promptContent = ref('')
 
 // MCP
 const mcpServers = ref([])
+const mcpEnabledMap = ref({})     // { serverName: boolean }
+const mcpSaving = ref(false)
+const mcpSaved = ref(false)
+const mcpError = ref('')
+const mcpSource = ref('global')   // 'user' | 'global'
+
+// 添加 MCP
+const showAddMcp = ref(false)
+const addMcpJson = ref('')
+const addMcpError = ref('')
+
+// 预览 MCP
+const showPreview = ref(false)
+
+// 生成最终 mcp.json 内容（仅 enabled 的 server）
+const mcpPreviewJson = computed(() => {
+  const servers = {}
+  for (const server of mcpServers.value) {
+    if (mcpEnabledMap.value[server.name] !== false) {
+      const entry = { ...server._raw }
+      // 规范化：用 transport 替代 type
+      if (entry.type && !entry.transport) {
+        entry.transport = entry.type
+        delete entry.type
+      }
+      delete entry.name
+      servers[server.name] = entry
+    }
+  }
+  return JSON.stringify({ servers }, null, 2)
+})
 
 function switchTheme(dark) {
   if (dark === props.isDarkTheme) return
@@ -205,7 +322,19 @@ async function loadTabData() {
       promptContent.value = data.content || ''
     } else if (activeTab.value === 'mcp') {
       const data = await getMcpServers()
-      mcpServers.value = data.servers || []
+      mcpServers.value = (data.servers || []).map(s => ({
+        ...s,
+        _raw: s._raw || { transport: s.transport, command: s.command, args: s.args, env: {} },
+      }))
+      mcpSource.value = data.source || 'global'
+      // 初始化 enabledMap：默认全部开启
+      const newMap = {}
+      for (const s of mcpServers.value) {
+        newMap[s.name] = mcpEnabledMap.value[s.name] !== undefined
+          ? mcpEnabledMap.value[s.name]
+          : true
+      }
+      mcpEnabledMap.value = newMap
     }
   } catch (e) {
     console.error('加载数据失败:', e)
@@ -226,6 +355,128 @@ async function saveMemory() {
     memoryError.value = e.message || '保存失败'
   } finally {
     memorySaving.value = false
+  }
+}
+
+// ── MCP 操作 ──
+
+async function saveMcp() {
+  mcpSaving.value = true
+  mcpSaved.value = false
+  mcpError.value = ''
+  try {
+    const servers = {}
+    for (const server of mcpServers.value) {
+      if (mcpEnabledMap.value[server.name] !== false) {
+        const entry = { ...server._raw }
+        if (entry.type && !entry.transport) {
+          entry.transport = entry.type
+          delete entry.type
+        }
+        delete entry.name
+        servers[server.name] = entry
+      }
+    }
+    await updateMcpServers(servers)
+    mcpSaved.value = true
+    setTimeout(() => { mcpSaved.value = false }, 2000)
+  } catch (e) {
+    mcpError.value = e.message || '保存失败'
+  } finally {
+    mcpSaving.value = false
+  }
+}
+
+function removeMcpServer(name) {
+  mcpServers.value = mcpServers.value.filter(s => s.name !== name)
+  const newMap = { ...mcpEnabledMap.value }
+  delete newMap[name]
+  mcpEnabledMap.value = newMap
+}
+
+function openAddMcp() {
+  addMcpJson.value = ''
+  addMcpError.value = ''
+  showAddMcp.value = true
+}
+
+function confirmAddMcp() {
+  addMcpError.value = ''
+  let parsed
+  try {
+    parsed = JSON.parse(addMcpJson.value)
+  } catch {
+    addMcpError.value = 'JSON 格式无效，请检查输入'
+    return
+  }
+
+  // 支持两种格式：
+  // 1. { "serverName": { "transport": "stdio", "command": "..." } }  — 对象格式
+  // 2. { "name": "serverName", "transport": "stdio", "command": "..." } — 单个 server
+  let entries = []
+  if (parsed.name && typeof parsed.name === 'string') {
+    // 单个 server 格式
+    const { name, ...rest } = parsed
+    entries.push({ name, raw: rest })
+  } else if (typeof parsed === 'object' && !Array.isArray(parsed)) {
+    // 对象格式
+    for (const [name, cfg] of Object.entries(parsed)) {
+      if (typeof cfg === 'object' && cfg !== null) {
+        entries.push({ name, raw: cfg })
+      }
+    }
+  }
+
+  if (entries.length === 0) {
+    addMcpError.value = '未找到有效的 server 配置。支持对象格式 {"name": {...}} 或单条 {"name":"xx", ...}'
+    return
+  }
+
+  for (const { name, raw } of entries) {
+    if (mcpServers.value.some(s => s.name === name)) {
+      addMcpError.value = `服务器 "${name}" 已存在`
+      return
+    }
+    const transport = raw.transport || raw.type || 'unknown'
+    mcpServers.value.push({
+      name,
+      transport,
+      command: raw.command || '',
+      args: raw.args || [],
+      env_keys: Object.keys(raw.env || {}),
+      _raw: raw,
+    })
+    mcpEnabledMap.value[name] = true
+  }
+
+  showAddMcp.value = false
+  addMcpJson.value = ''
+}
+
+function toggleMcpServer(name, enabled) {
+  mcpEnabledMap.value = { ...mcpEnabledMap.value, [name]: enabled }
+}
+
+function openPreview() {
+  showPreview.value = true
+}
+
+const previewCopied = ref(false)
+async function copyPreview() {
+  try {
+    await navigator.clipboard.writeText(mcpPreviewJson.value)
+    previewCopied.value = true
+    setTimeout(() => { previewCopied.value = false }, 2000)
+  } catch {
+    // fallback
+    const ta = document.createElement('textarea')
+    ta.value = mcpPreviewJson.value
+    document.body.appendChild(ta)
+    ta.select()
+    document.execCommand('copy')
+    document.body.removeChild(ta)
+    previewCopied.value = true
+    setTimeout(() => { previewCopied.value = false }, 2000)
   }
 }
 
@@ -656,5 +907,306 @@ onMounted(() => {
   height: 20px;
   color: #0ea5e9;
   flex-shrink: 0;
+}
+
+/* MCP 增强样式 */
+.panel-header-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.panel-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.action-btn-primary,
+.action-btn-outline {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 14px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+  white-space: nowrap;
+}
+
+.action-btn-primary {
+  border: none;
+  background: #0ea5e9;
+  color: white;
+}
+
+.action-btn-primary:hover {
+  background: #0284c7;
+}
+
+.action-btn-outline {
+  border: 1px solid #e2e8f0;
+  background: white;
+  color: #475569;
+}
+
+.action-btn-outline:hover {
+  border-color: #cbd5e1;
+  background: #f8fafc;
+}
+
+.source-tag {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.source-tag.user {
+  background: #dcfce7;
+  color: #16a34a;
+}
+
+.source-tag.global {
+  background: #f1f5f9;
+  color: #64748b;
+}
+
+.mcp-header-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* Toggle Switch */
+.toggle-switch {
+  position: relative;
+  display: inline-block;
+  width: 36px;
+  height: 20px;
+  flex-shrink: 0;
+  cursor: pointer;
+}
+
+.toggle-switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.toggle-slider {
+  position: absolute;
+  inset: 0;
+  background: #cbd5e1;
+  border-radius: 20px;
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.toggle-slider::before {
+  content: '';
+  position: absolute;
+  width: 16px;
+  height: 16px;
+  left: 2px;
+  bottom: 2px;
+  background: white;
+  border-radius: 50%;
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
+}
+
+.toggle-switch input:checked + .toggle-slider {
+  background: #0ea5e9;
+}
+
+.toggle-switch input:checked + .toggle-slider::before {
+  transform: translateX(16px);
+}
+
+.mcp-card.disabled {
+  opacity: 0.5;
+}
+
+.mcp-card .mcp-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.mcp-delete-btn {
+  width: 28px;
+  height: 28px;
+  border: none;
+  background: transparent;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  color: #94a3b8;
+  transition: all 0.2s;
+}
+
+.mcp-delete-btn:hover {
+  background: #fef2f2;
+  color: #ef4444;
+}
+
+/* MCP 弹窗 */
+.mcp-dialog-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1100;
+}
+
+.mcp-dialog {
+  background: white;
+  border-radius: 14px;
+  width: 560px;
+  max-width: 90vw;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.18);
+  overflow: hidden;
+}
+
+.mcp-dialog-preview {
+  width: 640px;
+}
+
+.mcp-dialog-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px 20px;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.mcp-dialog-header h4 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: #1e293b;
+}
+
+.mcp-dialog-desc {
+  padding: 12px 20px 0;
+  margin: 0;
+  font-size: 13px;
+  color: #64748b;
+  line-height: 1.5;
+}
+
+.mcp-dialog-example {
+  margin: 8px 20px 0;
+  padding: 10px 14px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  font-size: 12px;
+  color: #475569;
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+
+.mcp-json-input {
+  margin: 12px 20px;
+  padding: 14px;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+  font-size: 13px;
+  line-height: 1.6;
+  color: #1e293b;
+  resize: none;
+  outline: none;
+  transition: border-color 0.2s;
+  min-height: 140px;
+}
+
+.mcp-json-input:focus {
+  border-color: #0ea5e9;
+  box-shadow: 0 0 0 3px rgba(14, 165, 233, 0.1);
+}
+
+.mcp-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 20px 16px;
+}
+
+.mcp-preview-content {
+  margin: 12px 20px;
+  padding: 16px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  color: #334155;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+/* Dark theme overrides */
+:global(.dark) .mcp-dialog,
+:global(.dark) .settings-modal {
+  background: #1e293b;
+}
+
+:global(.dark) .mcp-dialog-header h4,
+:global(.dark) .settings-header h2 {
+  color: #e2e8f0;
+}
+
+:global(.dark) .mcp-dialog-desc,
+:global(.dark) .panel-desc {
+  color: #94a3b8;
+}
+
+:global(.dark) .mcp-json-input,
+:global(.dark) .mcp-preview-content,
+:global(.dark) .mcp-dialog-example {
+  background: #0f172a;
+  border-color: #334155;
+  color: #e2e8f0;
+}
+
+:global(.dark) .action-btn-outline {
+  background: #334155;
+  border-color: #475569;
+  color: #cbd5e1;
+}
+
+:global(.dark) .mcp-card {
+  background: #0f172a;
+  border-color: #334155;
+}
+
+:global(.dark) .mcp-name {
+  color: #e2e8f0;
+}
+
+:global(.dark) .mcp-delete-btn {
+  color: #64748b;
+}
+
+:global(.dark) .mcp-delete-btn:hover {
+  background: #451a1a;
+  color: #f87171;
 }
 </style>
