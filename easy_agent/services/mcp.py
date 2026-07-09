@@ -192,3 +192,42 @@ def invalidate_mcp_cache(username: str | None = None) -> None:
         if gkey in _mcp_tools_cache:
             _mcp_tools_cache.pop(gkey, None)
             logger.info(f"MCP tools cache invalidated for global ({gkey})")
+
+
+async def validate_mcp_servers(
+    username: str | None = None,
+) -> list[dict[str, Any]]:
+    """逐个加载 MCP server 并返回每个 server 的状态。
+
+    用于前端保存 MCP 配置后检测哪些 server 可用、哪些异常，
+    异常的 server 前端会自动关闭开关并给出提示。
+
+    Returns:
+        [{"name": "xx", "status": "ok"|"error", "tools_count": N, "error": "..."}]
+    """
+    config = load_mcp_config(username)
+    if not config:
+        return []
+
+    results: list[dict[str, Any]] = []
+    for name, cfg in config.items():
+        try:
+            single_config = {name: cfg}
+            client = MultiServerMCPClient(single_config)
+            tools = await client.get_tools()
+            results.append({
+                "name": name,
+                "status": "ok",
+                "tools_count": len(tools),
+                "error": "",
+            })
+            logger.info(f"MCP 校验 | {name} ✅ 成功 ({len(tools)} 工具)")
+        except Exception as e:
+            results.append({
+                "name": name,
+                "status": "error",
+                "tools_count": 0,
+                "error": str(e),
+            })
+            logger.warning(f"MCP 校验 | {name} ❌ 失败: {e}")
+    return results

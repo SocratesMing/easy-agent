@@ -116,6 +116,10 @@
                   <span class="detail-label">Env:</span>
                   <code>{{ server.env_keys.join(', ') }}</code>
                 </div>
+                <div v-if="mcpServerErrors[server.name]" class="mcp-error-banner">
+                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+                  <span>{{ mcpServerErrors[server.name] }}</span>
+                </div>
               </div>
             </div>
             <!-- 保存栏 -->
@@ -256,6 +260,7 @@ const mcpSaving = ref(false)
 const mcpSaved = ref(false)
 const mcpError = ref('')
 const mcpSource = ref('global')   // 'user' | 'global'
+const mcpServerErrors = ref({})   // { serverName: errorMessage }
 
 // 添加 MCP
 const showAddMcp = ref(false)
@@ -364,6 +369,7 @@ async function saveMcp() {
   mcpSaving.value = true
   mcpSaved.value = false
   mcpError.value = ''
+  mcpServerErrors.value = {}
   try {
     const servers = {}
     for (const server of mcpServers.value) {
@@ -377,9 +383,27 @@ async function saveMcp() {
         servers[server.name] = entry
       }
     }
-    await updateMcpServers(servers)
-    mcpSaved.value = true
-    setTimeout(() => { mcpSaved.value = false }, 2000)
+    const resp = await updateMcpServers(servers)
+
+    // 处理 per-server 校验结果：异常的 server 自动关闭开关并记录错误
+    const statuses = resp.server_status || []
+    const newErrors = {}
+    for (const s of statuses) {
+      if (s.status === 'error') {
+        // 自动关闭异常 server 的开关
+        mcpEnabledMap.value = { ...mcpEnabledMap.value, [s.name]: false }
+        newErrors[s.name] = s.error || '加载失败'
+      }
+    }
+    mcpServerErrors.value = newErrors
+
+    if (statuses.length > 0 && Object.keys(newErrors).length > 0) {
+      const failedNames = Object.keys(newErrors).join(', ')
+      mcpError.value = `以下 MCP 服务加载异常，已自动关闭: ${failedNames}`
+    } else {
+      mcpSaved.value = true
+      setTimeout(() => { mcpSaved.value = false }, 2000)
+    }
   } catch (e) {
     mcpError.value = e.message || '保存失败'
   } finally {
@@ -1054,6 +1078,26 @@ onMounted(() => {
 
 .mcp-delete-btn:hover {
   background: #fef2f2;
+  color: #ef4444;
+}
+
+.mcp-error-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin-top: 8px;
+  padding: 8px 10px;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  border-radius: 8px;
+  font-size: 12px;
+  color: #dc2626;
+  line-height: 1.5;
+}
+
+.mcp-error-banner svg {
+  flex-shrink: 0;
+  margin-top: 1px;
   color: #ef4444;
 }
 

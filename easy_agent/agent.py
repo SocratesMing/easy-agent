@@ -257,21 +257,18 @@ class EasyAgent:
 
         # Don't create directory eagerly — FilesystemBackend.write will create it on first write
         self.workspace_virtual_path = f"/workspace/{self.safe_username}/{dir_name}"
-        self.memory_virtual_path = f"/memories/{self.safe_username}"
         self._workspace_renamed = False
 
-        # Ensure memories directory and user memory file exist
-        memories_base = Path(config.agent.memories_dir)
-        memories_dir = memories_base / self.safe_username
-        memories_dir.mkdir(parents=True, exist_ok=True)
-        self.memory_file = memories_dir / "AGENTS.md"
-        old_file = memories_base / f"{self.safe_username}_AGENTS.md"
-        if old_file.exists() and not self.memory_file.exists():
-            shutil.move(str(old_file), str(self.memory_file))
-            logger.info(f"Memory file migrated: {old_file} -> {self.memory_file}")
+        # 记忆文件放在会话工作区目录下（每会话独立），而非全局 memories 目录
+        # 每轮对话完成后迭代更新，下次会话恢复时自动加载
+        self.memory_file = self.workspace_dir / "memory.md"
+        self.workspace_dir.mkdir(parents=True, exist_ok=True)
         if not self.memory_file.exists():
             self.memory_file.write_text(
-                f"# {username} 的长期记忆\n\n", encoding="utf-8"
+                f"# 会话记忆\n\n", encoding="utf-8"
+            )
+            logger.info(
+                f"[{session_id}] 创建会话记忆文件: {self.memory_file}"
             )
 
         # Augment system prompt with virtual paths only.
@@ -296,7 +293,7 @@ class EasyAgent:
             f"{org_info}"
             f"## Workspace: `{self.workspace_virtual_path}/`\n"
             f"{skills_info}"
-            f"## Memory: `{self.memory_virtual_path}/AGENTS.md`\n"
+            f"## Memory: `{self.workspace_virtual_path}/memory.md`\n"
             f"{self._get_os_info()}\n"
         )
 
@@ -371,8 +368,21 @@ class EasyAgent:
         We only need to configure the backend for file/shell access and
         optionally load skills.
         """
+        from .model import _resolve_llm_config
+
         model = create_model(self.config, model_name=self.model_name)
         self.model = model
+
+        # 解析实际使用的模型配置（而非 config.llm 默认配置）用于日志
+        actual_llm_cfg = _resolve_llm_config(self.config, self.model_name)
+        logger.info(
+            f"[{self.session_id}] 🤖 当前使用模型 | "
+            f"model_key: {self.model_name} | "
+            f"provider: {actual_llm_cfg.provider} | "
+            f"model: {actual_llm_cfg.model} | "
+            f"protocol: {actual_llm_cfg.protocol} | "
+            f"max_input_tokens: {actual_llm_cfg.max_input_tokens}"
+        )
 
         logger.info(f"[{self.session_id}] 📋 系统提示词:\n{self.system_prompt}")
 
@@ -385,9 +395,9 @@ class EasyAgent:
 
         logger.info(
             f"[{self.session_id}] 🏗️ 创建智能体参数 | "
-            f"model: {self.config.llm.model} | "
-            f"provider: {self.config.llm.provider} | "
-            f"protocol: {self.config.llm.protocol} | "
+            f"model: {actual_llm_cfg.model} | "
+            f"provider: {actual_llm_cfg.provider} | "
+            f"protocol: {actual_llm_cfg.protocol} | "
             f"max_steps: {self.max_steps} | "
             f"workspace: {self.workspace_dir.absolute()} | "
             f"skills: {skills_paths or []} | "
@@ -398,7 +408,7 @@ class EasyAgent:
             f"permissions(denied): {len(permissions)} 条"
         )
 
-        memory_path = f"{self.memory_virtual_path}/AGENTS.md"
+        memory_path = f"{self.workspace_virtual_path}/memory.md"
 
         logger.info(
             f"[{self.session_id}] 🧠 记忆文件 | "
@@ -442,19 +452,13 @@ class EasyAgent:
         Returns:
             CompositeBackend: 组合后端实例，包含所有路由和路径映射。
         """
-        memories_dir = self.memory_file.parent
-        memories_backend = FilesystemBackend(
-            root_dir=str(memories_dir.absolute()),
-            virtual_mode=True,
-        )
-
+        # 记忆文件现已放在会话工作区目录下，不再需要单独的 memories 路由
         workspace_backend = FilesystemBackend(
             root_dir=str(self.workspace_dir.absolute()),
             virtual_mode=True,
         )
 
         routes = {
-            f"{self.memory_virtual_path}/": memories_backend,
             f"{self.workspace_virtual_path}/": workspace_backend,
         }
 
@@ -487,7 +491,6 @@ class EasyAgent:
 
         path_mappings = {
             f"{self.workspace_virtual_path}/": ws_str + "/",
-            f"{self.memory_virtual_path}/": str(self.memory_file.parent.absolute()) + "/",
         }
         if self.user_skills_dir.exists():
             path_mappings["/user-skills/"] = str(self.user_skills_dir.absolute()) + "/"
@@ -550,7 +553,6 @@ class EasyAgent:
             return []
 
         existing_prefixes = [
-            f"{self.memory_virtual_path}/",
             f"{self.workspace_virtual_path}/",
         ]
         if skills_paths:

@@ -22,7 +22,6 @@ from .model import create_model
 from .models.api import HealthResponse
 from .services import get_agent_config, init_agent_config
 from .services import init_scheduler, shutdown_scheduler, reload_all_tasks
-from .services.mcp import get_mcp_tools
 from .services.vector_store import VectorStore
 from .skills import find_skills_root, discover_skills
 from .api import (
@@ -135,11 +134,29 @@ async def lifespan(app: FastAPI):
     logger.info(f"启动时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     logger.info("=" * 60)
 
-    config_path = os.environ.get("EASY_CONFIG", "./easy_agent/config/config.yaml")
-    if not os.path.exists(config_path):
-        config_path = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)), "config", "config.yaml"
-        )
+    # ── 环境识别 ──
+    # AGENT_ENV 决定运行环境: dev | test | prod
+    # 1. 若设置了 EASY_CONFIG 环境变量，直接使用（entrypoint.sh 场景）
+    # 2. 若设置了 AGENT_ENV，按环境选择 config.{env}.yaml
+    # 3. 默认使用 config.yaml
+    agent_env = os.environ.get("AGENT_ENV", "").lower()
+    config_dir = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "config"
+    )
+
+    if os.environ.get("EASY_CONFIG"):
+        config_path = os.environ["EASY_CONFIG"]
+    elif agent_env in ("dev", "test", "prod"):
+        candidate = os.path.join(config_dir, f"config.{agent_env}.yaml")
+        config_path = candidate if os.path.exists(candidate) else os.path.join(config_dir, "config.yaml")
+    else:
+        config_path = os.path.join(config_dir, "config.yaml")
+
+    # 打印环境信息和配置文件
+    logger.info("=" * 60)
+    logger.info(f"AGENT_ENV: {agent_env or '(未设置, 使用默认)'}")
+    logger.info(f"配置文件: {config_path}")
+    logger.info("=" * 60)
 
     try:
         config = Config.from_yaml(config_path)
@@ -213,6 +230,16 @@ async def lifespan(app: FastAPI):
         system_prompt = "你是一个有帮助的 AI 助手。"
         logger.warning(f"⚠️ 系统提示词文件不存在: {system_prompt_path}，使用默认提示词")
 
+    # 打印系统提示词完整内容，便于启动时核查
+    logger.info("=" * 60)
+    logger.info("📝 系统提示词内容:")
+    logger.info("-" * 60)
+    for line in system_prompt.splitlines():
+        logger.info(line)
+    logger.info("-" * 60)
+    logger.info(f"📝 系统提示词结束 (共 {len(system_prompt)} 字符)")
+    logger.info("=" * 60)
+
     # 注入当前时间和时区，供定时任务 cron 表达式生成参考
     now_dt = datetime.now().astimezone()
     tz_name = now_dt.strftime("%Z") or "Asia/Shanghai"
@@ -238,20 +265,13 @@ async def lifespan(app: FastAPI):
             logger.info("ℹ️ 未发现任何 skills")
 
         mcp_tools = []
-        try:
-            mcp_tools = await get_mcp_tools()
-            if mcp_tools:
-                logger.info(f"✅ MCP 工具已加载: 共 {len(mcp_tools)} 个")
-            else:
-                logger.info("ℹ️ MCP 未配置，跳过")
-        except Exception as e:
-            logger.warning(f"⚠️ MCP 初始化失败: {e}")
+        # MCP 不在启动时全局加载，改为按用户配置动态加载（见 agent_manager）
+        logger.info("ℹ️ MCP 将按用户配置动态加载（不在启动时预加载）")
 
         init_agent_config(
             config=config,
             system_prompt=system_prompt,
             skills_root=skills_root,
-            mcp_tools=mcp_tools,
         )
         agent_config = {"config": config}
         logger.info("✅ Agent 配置加载成功")

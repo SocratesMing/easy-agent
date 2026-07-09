@@ -15,42 +15,27 @@ _session_agents: dict[str, EasyAgent] = {}
 _session_stream_tasks: dict[str, asyncio.Task[None]] = {}
 _agent_config: dict = None
 _llm_instance = None
-_mcp_tools: list = []  # Global default MCP tools (LangChain BaseTool instances)
 
 
 def init_agent_config(
     config: Config,
     system_prompt: str,
     skills_root: str = "",
-    mcp_tools: list | None = None,
 ):
-    global _agent_config, _llm_instance, _mcp_tools
+    """初始化 Agent 全局配置。
+
+    MCP 工具不再在启动时全局预加载，改为按用户配置动态加载
+    （见 get_or_create_agent_for_session）。
+    """
+    global _agent_config, _llm_instance
     _agent_config = {
         "config": config,
         "system_prompt": system_prompt,
         "skills_root": skills_root,
     }
-    _mcp_tools = mcp_tools or []
-    if _mcp_tools:
-        logger.info(f"[初始化] MCP 工具已加载: {len(_mcp_tools)} 个工具")
-        for t in _mcp_tools:
-            logger.info(f"  └─ {t.name}")
 
     _llm_instance = create_model(config)
-    logger.info("[初始化] Agent 配置初始化完成 | LLM 流式已启用")
-
-
-def set_mcp_tools(tools: list):
-    """Set or update MCP tools after startup (e.g., after async connection)."""
-    global _mcp_tools
-    _mcp_tools = tools or []
-    logger.info(f"MCP tools updated: {len(_mcp_tools)} tools")
-    for t in _mcp_tools:
-        logger.info(f"  └─ {t.name}")
-
-
-def get_mcp_tools() -> list:
-    return _mcp_tools
+    logger.info("[初始化] Agent 配置初始化完成 | LLM 流式已启用 | MCP 按需动态加载")
 
 
 async def get_or_create_agent_for_session(
@@ -101,7 +86,7 @@ async def get_or_create_agent_for_session(
     except Exception as e:
         logger.warning(f"[{session_id[-5:]}] 获取用户机构ID失败: {e}")
 
-    # MCP 工具：用户专属 mcp.json 优先，无则回退全局默认
+    # MCP 工具：用户专属 mcp.json 优先，无则按需加载全局 mcp.json
     user_mcp_path = Config.get_user_mcp_path(username, config)
     if user_mcp_path.exists():
         logger.info(f"[{session_id[-5:]}] 加载用户专属 MCP | {user_mcp_path}")
@@ -109,14 +94,21 @@ async def get_or_create_agent_for_session(
             mcp_tools = await load_mcp_tools_for_user(username)
         except Exception as e:
             logger.warning(
-                f"[{session_id[-5:]}] 加载用户 MCP 失败，回退全局: {e}"
+                f"[{session_id[-5:]}] 加载用户 MCP 失败，尝试全局: {e}"
             )
-            mcp_tools = list(_mcp_tools)
+            mcp_tools = await load_mcp_tools_for_user(None)
     else:
-        mcp_tools = list(_mcp_tools)
+        # 无用户专属 mcp.json，按需加载全局 mcp.json（缓存命中时零开销）
         logger.info(
-            f"[{session_id[-5:]}] 使用全局 MCP 工具 ({len(mcp_tools)} 个) | 用户无专属 mcp.json"
+            f"[{session_id[-5:]}] 无用户专属 mcp.json，按需加载全局 MCP"
         )
+        try:
+            mcp_tools = await load_mcp_tools_for_user(None)
+        except Exception as e:
+            logger.warning(
+                f"[{session_id[-5:]}] 加载全局 MCP 失败: {e}"
+            )
+            mcp_tools = []
 
     # 构建 tools 列表：MCP 工具 + 定时任务工具（仅 HITL 模式下注入）
     tools = list(mcp_tools)

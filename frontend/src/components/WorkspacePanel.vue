@@ -70,6 +70,7 @@
 </template>
 
 <script setup>
+import { API_BASE_URL } from '../config.js'
 import { ref, watch, onMounted } from 'vue'
 import FileTreeNode from './FileTreeNode.vue'
 import FilePreview from './FilePreview.vue'
@@ -123,7 +124,6 @@ function handleSelectFile(file) {
 }
 
 function handleDownloadFile(file) {
-  const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
   const filePath = file.file_path || file.path
   const url = `${API_BASE_URL}/api/files/preview?file_path=${encodeURIComponent(filePath)}&session_id=${encodeURIComponent(props.currentSessionId)}&download=true`
   const link = document.createElement('a')

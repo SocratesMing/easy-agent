@@ -1428,13 +1428,19 @@ async def chat_stream_generator(
         if agent and agent.memory_file:
             try:
                 from .memory_manager import update_memory_after_session
-                from .agent_manager import _llm_instance
+
+                # 使用当前会话 Agent 的模型（支持动态模型选择），
+                # 而非全局 _llm_instance（仅启动时的默认模型）
+                session_llm = getattr(agent, "model", None)
+                if session_llm is None:
+                    from .agent_manager import _llm_instance
+                    session_llm = _llm_instance
 
                 updated = update_memory_after_session(
                     agent.memory_file,
                     user_message=message_content,
                     assistant_response=accumulated_response,
-                    llm=_llm_instance,
+                    llm=session_llm,
                 )
                 if updated:
                     logger.info(

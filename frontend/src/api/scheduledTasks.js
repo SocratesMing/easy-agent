@@ -1,6 +1,5 @@
+import { API_BASE_URL } from '../config.js'
 import { authFetch } from './auth.js'
-
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
 
 export async function getScheduledTasks() {
   const response = await authFetch(`${API_BASE_URL}/api/scheduled-tasks`)

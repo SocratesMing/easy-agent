@@ -49,20 +49,44 @@
       
       <div class="input-actions">
         <div class="left-actions">
-          <div class="model-select-wrapper" :class="{ disabled: isStreaming || disabled }" :title="'选择模型'">
-            <select
-              v-model="localSelectedModel"
+          <div class="model-dropdown-wrapper" ref="modelDropdownRef">
+            <button
+              class="model-btn"
+              :class="{ disabled: isStreaming || disabled }"
               :disabled="isStreaming || disabled"
-              class="model-select"
-              @change="onModelChange"
+              @click="toggleModelDropdown"
+              title="选择模型"
             >
-              <option v-for="m in models" :key="m.name" :value="m.name">
-                {{ m.model || m.name }}{{ m.is_active ? ' ★' : '' }}
-              </option>
-            </select>
-            <svg class="model-select-arrow" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <polyline points="6 9 12 15 18 9"></polyline>
-            </svg>
+              <svg class="model-btn-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
+                <circle cx="8.5" cy="8.5" r="1.5"/>
+                <polyline points="21 15 16 10 5 21"/>
+              </svg>
+              <span class="model-btn-label">{{ currentModelLabel }}</span>
+              <svg class="model-btn-arrow" :class="{ open: showModelDropdown }" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="6 9 12 15 18 9"></polyline>
+              </svg>
+            </button>
+            <Teleport to="body">
+              <div v-if="showModelDropdown" class="model-dropdown-menu" :style="dropdownStyle" @click.stop>
+                <div
+                  v-for="m in models"
+                  :key="m.name"
+                  class="model-dropdown-item"
+                  :class="{ active: m.name === localSelectedModel }"
+                  @click="selectModel(m.name)"
+                >
+                  <div class="model-item-info">
+                    <span class="model-item-name">{{ m.model || m.name }}</span>
+                    <span class="model-item-provider">{{ m.provider }}</span>
+                  </div>
+                  <span v-if="m.is_active" class="model-item-badge">默认</span>
+                  <svg v-if="m.name === localSelectedModel" class="model-item-check" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="20 6 9 17 4 12"></polyline>
+                  </svg>
+                </div>
+              </div>
+            </Teleport>
           </div>
 
           <label class="action-btn upload-btn" :class="{ disabled: isStreaming || disabled }" title="上传文件">
@@ -233,10 +257,47 @@ const localSelectedModel = computed({
   set: (val) => emit('update:selectedModel', val)
 })
 
-function onModelChange() {
+// 自定义下拉菜单
+const showModelDropdown = ref(false)
+const modelDropdownRef = ref(null)
+const dropdownStyle = ref({})
+
+const currentModelLabel = computed(() => {
+  const m = props.models.find(m => m.name === props.selectedModel)
+  return m ? (m.model || m.name) : '选择模型'
+})
+
+function toggleModelDropdown() {
+  if (props.isStreaming || props.disabled) return
+  if (showModelDropdown.value) {
+    showModelDropdown.value = false
+    return
+  }
+  // 计算下拉菜单位置
+  if (modelDropdownRef.value) {
+    const rect = modelDropdownRef.value.getBoundingClientRect()
+    dropdownStyle.value = {
+      position: 'fixed',
+      bottom: `${window.innerHeight - rect.top + 6}px`,
+      left: `${rect.left}px`,
+      minWidth: `${Math.max(rect.width, 200)}px`,
+    }
+  }
+  showModelDropdown.value = true
+}
+
+function selectModel(name) {
+  emit('update:selectedModel', name)
+  showModelDropdown.value = false
   console.log(
-    `[${new Date().toISOString()}] [模型选择] 切换为: ${localSelectedModel.value}`
+    `[${new Date().toISOString()}] [模型选择] 切换为: ${name}`
   )
+}
+
+function closeModelDropdown(event) {
+  if (showModelDropdown.value && modelDropdownRef.value && !modelDropdownRef.value.contains(event.target)) {
+    showModelDropdown.value = false
+  }
 }
 
 function toggleKnowledgeBase() {
@@ -492,10 +553,12 @@ watch(() => props.disabled, (val) => {
 
 onMounted(() => {
   document.addEventListener('click', closeTokenPopup)
+  document.addEventListener('click', closeModelDropdown)
 })
 
 onUnmounted(() => {
   document.removeEventListener('click', closeTokenPopup)
+  document.removeEventListener('click', closeModelDropdown)
   if (abortController) {
     abortController.abort()
   }
@@ -710,55 +773,142 @@ onUnmounted(() => {
   gap: 12px;
 }
 
-.model-select-wrapper {
+.model-dropdown-wrapper {
   position: relative;
   display: inline-flex;
   align-items: center;
+}
+
+.model-btn {
+  display: inline-flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 6px 12px;
   height: 36px;
   min-height: 36px;
   border: 1px solid #e2e8f0;
   background: #f8fafc;
   border-radius: 10px;
+  cursor: pointer;
   transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
-  overflow: hidden;
+  white-space: nowrap;
 }
 
-.model-select-wrapper:hover:not(.disabled) {
+.model-btn:hover:not(.disabled) {
   border-color: rgba(14, 165, 233, 0.4);
   background: rgba(14, 165, 233, 0.06);
+  transform: translateY(-1px);
 }
 
-.model-select-wrapper.disabled {
+.model-btn.disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
 
-.model-select {
-  appearance: none;
-  -webkit-appearance: none;
-  border: none;
-  background: transparent;
-  height: 36px;
-  padding: 0 28px 0 12px;
+.model-btn-icon {
+  width: 16px;
+  height: 16px;
+  color: #64748b;
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.model-btn:hover:not(.disabled) .model-btn-icon {
+  color: #0ea5e9;
+  transform: scale(1.08);
+}
+
+.model-btn-label {
   font-size: 12px;
   font-weight: 500;
-  color: #475569;
-  cursor: pointer;
-  outline: none;
-  max-width: 180px;
-}
-
-.model-select:disabled {
-  cursor: not-allowed;
-}
-
-.model-select-arrow {
-  position: absolute;
-  right: 8px;
-  width: 14px;
-  height: 14px;
   color: #64748b;
-  pointer-events: none;
+  transition: color 0.25s ease;
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.model-btn:hover:not(.disabled) .model-btn-label {
+  color: #0ea5e9;
+}
+
+.model-btn-arrow {
+  width: 12px;
+  height: 12px;
+  color: #94a3b8;
+  transition: transform 0.2s ease;
+}
+
+.model-btn-arrow.open {
+  transform: rotate(180deg);
+}
+
+.model-dropdown-menu {
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  padding: 6px;
+  z-index: 9999;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.model-dropdown-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.model-dropdown-item:hover {
+  background: #f1f5f9;
+}
+
+.model-dropdown-item.active {
+  background: rgba(14, 165, 233, 0.08);
+}
+
+.model-item-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.model-item-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: #1e293b;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.model-item-provider {
+  font-size: 11px;
+  color: #94a3b8;
+}
+
+.model-item-badge {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: #dcfce7;
+  color: #16a34a;
+  flex-shrink: 0;
+}
+
+.model-item-check {
+  width: 16px;
+  height: 16px;
+  color: #0ea5e9;
+  flex-shrink: 0;
 }
 
 .knowledge-base-btn {

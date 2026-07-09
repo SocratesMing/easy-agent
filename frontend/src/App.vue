@@ -116,6 +116,7 @@
 </template>
 
 <script setup>
+import { API_BASE_URL } from './config.js'
 import { ref, computed, onMounted } from 'vue'
 import SessionList from './components/SessionList.vue'
 import Chat from './components/Chat.vue'
@@ -236,7 +237,6 @@ function restoreSessionState(sessionId) {
   }
   return false
 }
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
 const isSidebarCollapsed = ref(false)
 const isWorkspaceCollapsed = ref(true)
 const isDarkTheme = ref(localStorage.getItem('theme') === 'dark')

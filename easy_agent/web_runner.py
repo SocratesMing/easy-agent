@@ -19,8 +19,11 @@ def run_web():
     project_root = Path(__file__).parent.parent
     os.chdir(project_root)
 
-    config_path = project_root / "easy_agent" / "config" / "config.yaml"
-    os.environ.setdefault("EASY_CONFIG", str(config_path))
+    # 仅当未显式指定 EASY_CONFIG 且未设置 AGENT_ENV 时，才回退到 config.yaml。
+    # 若设置了 AGENT_ENV，交给 app.py 的 lifespan 按 dev/test/prod 选择 config.{env}.yaml。
+    if not os.environ.get("EASY_CONFIG") and not os.environ.get("AGENT_ENV"):
+        config_path = project_root / "easy_agent" / "config" / "config.yaml"
+        os.environ.setdefault("EASY_CONFIG", str(config_path))
 
     uvicorn.run(
         "easy_agent.app:app",

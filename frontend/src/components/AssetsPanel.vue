@@ -132,6 +132,7 @@
 </template>
 
 <script setup>
+import { API_BASE_URL } from '../config.js'
 import { ref, computed, onMounted, watch, onActivated } from 'vue'
 import { getAllFiles, deleteFile } from '../api/files.js'
 import FileIcon from './FileIcon.vue'
@@ -236,7 +237,6 @@ const currentFiles = computed(() => {
 async function refreshAssets() {
   loading.value = true
   try {
-    const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
     const { getAuthHeaders } = await import('../api/auth.js')
     const response = await fetch(`${API_BASE_URL}/api/files/list`, {
       headers: {
@@ -258,7 +258,6 @@ async function handleUpload(event) {
 
   uploading.value = true
 
-  const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
   const { getAuthHeaders } = await import('../api/auth.js')
 
   for (const file of files) {
@@ -306,7 +305,6 @@ async function handleCopyPath(path) {
 }
 
 function handleDownload(file) {
-  const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
   const url = `${API_BASE_URL}/api/files/download/${file.file_path}`
   const link = document.createElement('a')
   link.href = url
@@ -326,7 +324,6 @@ async function handleDelete(file) {
   }
 
   try {
-    const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
     const { getAuthHeaders } = await import('../api/auth.js')
     const response = await fetch(`${API_BASE_URL}/api/files/users/files/${encodeURIComponent(file.id)}`, {
       method: 'DELETE',

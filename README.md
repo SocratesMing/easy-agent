@@ -47,7 +47,7 @@ easy-agent/
 ├── pyproject.toml                # Python 依赖与项目元数据
 ├── uv.lock                       # uv 锁定的依赖版本
 ├── Dockerfile                    # 多阶段构建（前端 + 后端）
-├── docker/entrypoint.sh          # 容器入口（按 ENV_MODE 选配置）
+├── docker/entrypoint.sh          # 容器入口（按 AGENT_ENV 选配置）
 │
 ├── easy_agent/                   # 后端核心
 │   ├── app.py                    # FastAPI 应用与 lifespan（启动调度器）
@@ -176,8 +176,11 @@ uv run uvicorn easy_agent.app:app --host 0.0.0.0 --port 8000
 ### 方式二：Docker 部署
 
 ```bash
-# 构建镜像（默认 ENV_MODE=prod）
+# 构建镜像（默认 AGENT_ENV=prod）
 docker build -t easy-agent:latest .
+
+# 也可在构建时指定环境（会同时影响前端构建与后端配置）
+# docker build --build-arg AGENT_ENV=test -t easy-agent:test .
 
 # 运行容器
 docker run -d \
@@ -187,14 +190,17 @@ docker run -d \
   -v $(pwd)/workspace:/app/workspace \
   -v $(pwd)/memories:/app/memories \
   -v $(pwd)/logs:/app/logs \
-  -e ENV_MODE=prod \
+  -e AGENT_ENV=prod \
   easy-agent:latest
 ```
 
-容器入口脚本 `docker/entrypoint.sh` 会根据 `ENV_MODE` 选择配置：
-- `prod` → `config/config.yaml`（生产）
-- `test` → `config/config.test.yaml`（测试）
-- `dev` → `config/config.dev.yaml`（开发）
+容器入口脚本 `docker/entrypoint.sh` 会根据 `AGENT_ENV` 选择配置：
+- `prod` -> `config/config.prod.yaml`（生产）
+- `test` -> `config/config.test.yaml`（测试）
+- `dev` -> `config/config.dev.yaml`（开发）
+
+后端 `easy_agent/app.py` 启动时同样读取 `AGENT_ENV`（优先级：`EASY_CONFIG` 环境变量 > `AGENT_ENV` > 默认 `config.yaml`），并在终端打印环境信息与加载的配置文件路径。
+前端 `vite.config.js` 在构建时读取 `AGENT_ENV` 映射为 Vite mode（dev→development / test→test / prod→production），加载对应的 `.env.[mode]` 文件，并在终端输出配置横幅。
 
 ---
 

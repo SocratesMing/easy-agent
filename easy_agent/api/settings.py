@@ -15,6 +15,7 @@ from ..services.mcp import (
     load_mcp_config,
     invalidate_mcp_cache,
     get_mcp_tools,
+    validate_mcp_servers,
 )
 from ..services import get_agent_config, invalidate_user_agents
 
@@ -274,21 +275,23 @@ async def update_mcp_servers(
         f"用户 MCP 更新完成 | 用户: {username} | 失效 Agent: {evicted} 个"
     )
 
-    # 预热：立即尝试加载新工具，便于提前发现问题
-    loaded = 0
+    # 逐个校验 server 状态：异常的 server 前端会自动关闭开关并提示
+    server_status = []
     try:
-        tools = await get_mcp_tools(username)
-        loaded = len(tools)
+        server_status = await validate_mcp_servers(username)
+        ok_count = sum(1 for s in server_status if s["status"] == "ok")
+        err_count = len(server_status) - ok_count
         logger.info(
-            f"用户 MCP 预加载 | 用户: {username} | 工具数: {loaded}"
+            f"用户 MCP 校验 | 用户: {username} | "
+            f"成功: {ok_count} | 失败: {err_count} | 详情: {server_status}"
         )
     except Exception as e:
-        logger.warning(f"用户 MCP 预加载失败 | 用户: {username} | {e}")
+        logger.warning(f"用户 MCP 校验失败 | 用户: {username} | {e}")
 
     return {
         "status": "ok",
         "path": str(user_mcp_path),
         "servers": list(request.servers.keys()),
-        "tools_loaded": loaded,
         "agents_invalidated": evicted,
+        "server_status": server_status,
     }

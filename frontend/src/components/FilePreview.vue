@@ -94,6 +94,7 @@
 </template>
 
 <script setup>
+import { API_BASE_URL } from '../config.js'
 import { ref, computed, watch } from 'vue'
 import { marked } from 'marked'
 import hljs from 'highlight.js'
@@ -268,7 +269,6 @@ function escapeHtml(text) {
 }
 
 function handleDownload() {
-  const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
   const token = getStoredToken()
   const params = new URLSearchParams()
   params.set('file_path', props.filePath)
@@ -325,7 +325,6 @@ async function loadPreview() {
     return
   }
 
-  const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
   const token = getStoredToken()
 
   // 构建预览 URL：使用 /api/files/preview 接口

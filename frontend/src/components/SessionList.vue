@@ -53,55 +53,65 @@
       <div class="sessions-header">
         <span>会话列表</span>
       </div>
-      
+
       <div
-        v-for="session in sessions"
-        :key="session.session_id"
-        class="session-item"
-        :class="{ active: !showAssets && session.session_id === currentSessionId }"
-        @click="$emit('selectSession', session.session_id)"
+        v-for="group in groupedSessions"
+        :key="group.label"
+        class="session-group"
       >
-        <div class="session-info">
-          <div class="session-name">
-            <svg v-if="session.pinned" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="#f59e0b" stroke="#f59e0b" stroke-width="1" style="width:13px;height:13px;flex-shrink:0;margin-right:2px">
-              <path d="M12 2L2 7l10 5 10-5-10-5z"></path>
-              <path d="M2 17l10 5 10-5"></path>
-              <path d="M2 12l10 5 10-5"></path>
-            </svg>
-            {{ session.title || '未命名会话' }}
-          </div>
+        <div class="session-group-header">
+          <span class="session-group-label">{{ group.label }}</span>
+          <span class="session-group-count">{{ group.sessions.length }}</span>
         </div>
-        <div class="session-actions">
-          <button @click="toggleMenu(session.session_id, $event)" class="menu-btn">
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">
-              <circle cx="12" cy="5" r="2"></circle>
-              <circle cx="12" cy="12" r="2"></circle>
-              <circle cx="12" cy="19" r="2"></circle>
-            </svg>
-          </button>
-          <div v-if="activeMenu === session.session_id" class="menu-dropdown">
-            <button @click.stop="handleTogglePin(session.session_id)" class="menu-item">
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px">
+        <div
+          v-for="session in group.sessions"
+          :key="session.session_id"
+          class="session-item"
+          :class="{ active: !showAssets && session.session_id === currentSessionId }"
+          @click="$emit('selectSession', session.session_id)"
+        >
+          <div class="session-info">
+            <div class="session-name">
+              <svg v-if="session.pinned" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="#f59e0b" stroke="#f59e0b" stroke-width="1" style="width:13px;height:13px;flex-shrink:0;margin-right:2px">
                 <path d="M12 2L2 7l10 5 10-5-10-5z"></path>
                 <path d="M2 17l10 5 10-5"></path>
                 <path d="M2 12l10 5 10-5"></path>
               </svg>
-              {{ session.pinned ? '取消置顶' : '置顶' }}
-            </button>
-            <button @click.stop="startRename(session)" class="menu-item">
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
-                <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
+              {{ session.title || '未命名会话' }}
+            </div>
+          </div>
+          <div class="session-actions">
+            <button @click="toggleMenu(session.session_id, $event)" class="menu-btn">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">
+                <circle cx="12" cy="5" r="2"></circle>
+                <circle cx="12" cy="12" r="2"></circle>
+                <circle cx="12" cy="19" r="2"></circle>
               </svg>
-              重命名
             </button>
-            <button @click.stop="handleDelete(session.session_id)" class="menu-item delete">
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <polyline points="3 6 5 6 21 6"></polyline>
-                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
-              </svg>
-              删除
-            </button>
+            <div v-if="activeMenu === session.session_id" class="menu-dropdown">
+              <button @click.stop="handleTogglePin(session.session_id)" class="menu-item">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px">
+                  <path d="M12 2L2 7l10 5 10-5-10-5z"></path>
+                  <path d="M2 17l10 5 10-5"></path>
+                  <path d="M2 12l10 5 10-5"></path>
+                </svg>
+                {{ session.pinned ? '取消置顶' : '置顶' }}
+              </button>
+              <button @click.stop="startRename(session)" class="menu-item">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
+                  <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
+                </svg>
+                重命名
+              </button>
+              <button @click.stop="handleDelete(session.session_id)" class="menu-item delete">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <polyline points="3 6 5 6 21 6"></polyline>
+                  <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                </svg>
+                删除
+              </button>
+            </div>
           </div>
         </div>
       </div>
@@ -220,6 +230,40 @@ const newTitle = ref('')
 const renamingSession = ref(null)
 const renameInput = ref(null)
 const showUserMenu = ref(false)
+
+// 按时间分组会话：置顶 / 今天 / 最近一周 / 更早
+const groupedSessions = computed(() => {
+  const now = new Date()
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()
+  const weekAgo = startOfToday - 7 * 24 * 60 * 60 * 1000
+
+  const pinned = []
+  const today = []
+  const week = []
+  const earlier = []
+
+  for (const s of props.sessions) {
+    if (s.pinned) {
+      pinned.push(s)
+      continue
+    }
+    const ts = new Date(s.updated_at || s.created_at || Date.now()).getTime()
+    if (ts >= startOfToday) {
+      today.push(s)
+    } else if (ts >= weekAgo) {
+      week.push(s)
+    } else {
+      earlier.push(s)
+    }
+  }
+
+  const groups = []
+  if (pinned.length) groups.push({ label: '置顶', sessions: pinned })
+  if (today.length) groups.push({ label: '今天', sessions: today })
+  if (week.length) groups.push({ label: '最近一周', sessions: week })
+  if (earlier.length) groups.push({ label: '更早', sessions: earlier })
+  return groups
+})
 
 // 用户名简写：中文取每个字拼音首字母（简化为取前两字），英文取前两字母大写
 const userInitials = computed(() => {
@@ -452,15 +496,40 @@ function handleLogout() {
   color: #94a3b8;
 }
 
+.session-group {
+  margin-bottom: 4px;
+}
+
+.session-group-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px 2px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #94a3b8;
+  user-select: none;
+}
+
+.session-group-count {
+  font-size: 10px;
+  font-weight: 500;
+  color: #cbd5e1;
+  background: #f8fafc;
+  border-radius: 8px;
+  padding: 0 6px;
+  line-height: 16px;
+}
+
 .session-item {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 5px 8px;
+  padding: 4px 8px;
   border-radius: 8px;
   cursor: pointer;
   transition: all 0.2s;
-  margin-bottom: 1px;
+  margin-bottom: 0;
 }
 
 .session-item:hover {
