@@ -82,17 +82,8 @@ def _is_destructive_command(request: ToolCallRequest) -> bool:
 # ---------------------------------------------------------------------------
 # read_file 默认 limit
 # DeepAgents 默认 limit=100，导致模型频繁分页读取 skill/代码文件。
-# 这里调高到 1000，减少翻页次数。
+# 实际覆盖在 _create_agent() 中执行，使用 self.config.tools.read_file_line_limit。
 # ---------------------------------------------------------------------------
-try:
-    from deepagents.middleware import filesystem as _ds_fs
-
-    _ds_fs.DEFAULT_READ_LIMIT = 1000
-    logger.info(
-        f"DeepAgents read_file DEFAULT_READ_LIMIT → {_ds_fs.DEFAULT_READ_LIMIT}"
-    )
-except Exception:
-    pass
 
 
 class _PathTranslatingShell(LocalShellBackend):
@@ -212,8 +203,10 @@ class EasyAgent:
         workspace_name: str = "",
         mcp_tools: list | None = None,
         organization_id: str = "",
-        enable_hitl: bool = True,
-    ):
+       enable_hitl: bool = True,
+       model_name: str | None = None,
+        system_prompt_extra: str = "",
+   ):
         """初始化 EasyAgent 实例，配置工作区隔离、记忆文件和系统提示词。
 
         根据用户名和会话 ID 构建隔离的工作区目录，设置记忆文件路径，
@@ -240,6 +233,7 @@ class EasyAgent:
         self.organization_id = organization_id or ""
         self.enable_hitl = enable_hitl
         self.safe_username = Config.sanitize_username(username)
+        self.model_name = model_name or config.active_model
 
         if workspace_dir:
             self.workspace_dir = Path(workspace_dir)
@@ -255,29 +249,12 @@ class EasyAgent:
 
         # Don't create directory eagerly — FilesystemBackend.write will create it on first write
         self.workspace_virtual_path = f"/workspace/{self.safe_username}/{dir_name}"
-        self.memory_virtual_path = f"/memories/{self.safe_username}"
         self._workspace_renamed = False
 
-        # 预创建工作区目录，确保会话级记忆文件可写入
+        # 记忆文件放在会话工作区目录下（每会话独立），而非全局 memories 目录
+        # 不在创建 Agent 时预创建记忆文件，而是在第一轮对话完成后生成
+        self.memory_file = self.workspace_dir / "memory.md"
         self.workspace_dir.mkdir(parents=True, exist_ok=True)
-
-        # 会话级记忆文件：workspace/{username}/{workspace_name}/memory.md
-        # 每次会话结束后更新，后续输入时自动加载，提供当前会话的历史记忆上下文
-        self.session_memory_file = self.workspace_dir / "memory.md"
-
-        # Ensure memories directory and user memory file exist
-        memories_base = Path(config.agent.memories_dir)
-        memories_dir = memories_base / self.safe_username
-        memories_dir.mkdir(parents=True, exist_ok=True)
-        self.memory_file = memories_dir / "AGENTS.md"
-        old_file = memories_base / f"{self.safe_username}_AGENTS.md"
-        if old_file.exists() and not self.memory_file.exists():
-            shutil.move(str(old_file), str(self.memory_file))
-            logger.info(f"Memory file migrated: {old_file} -> {self.memory_file}")
-        if not self.memory_file.exists():
-            self.memory_file.write_text(
-                f"# {username} 的长期记忆\n\n", encoding="utf-8"
-            )
 
         # Augment system prompt with virtual paths only.
         # _PathTranslatingShell 会自动把虚拟路径翻译为实际路径，
@@ -301,9 +278,11 @@ class EasyAgent:
             f"{org_info}"
             f"## Workspace: `{self.workspace_virtual_path}/`\n"
             f"{skills_info}"
-            f"## 会话记忆: `{self.workspace_virtual_path}/memory.md`\n"
+            f"## Memory: `{self.workspace_virtual_path}/memory.md`\n"
             f"{self._get_os_info()}\n"
         )
+        if system_prompt_extra:
+            self.system_prompt += f"\n{system_prompt_extra}\n"
 
         self.max_steps = config.agent.max_steps
         self.logger = AgentLogger()
@@ -398,23 +377,38 @@ class EasyAgent:
         We only need to configure the backend for file/shell access and
         optionally load skills.
         """
-        model = create_model(self.config)
+        from .model import _resolve_llm_config
+
+        model = create_model(self.config, model_name=self.model_name)
         self.model = model
+
+        # 解析实际使用的模型配置（而非 config.llm 默认配置）用于日志
+        actual_llm_cfg = _resolve_llm_config(self.config, self.model_name)
+        logger.info(
+            f"[{self.session_id}] 🤖 当前使用模型 | "
+            f"model_key: {self.model_name} | "
+            f"provider: {actual_llm_cfg.provider} | "
+            f"model: {actual_llm_cfg.model} | "
+            f"protocol: {actual_llm_cfg.protocol} | "
+            f"max_input_tokens: {actual_llm_cfg.max_input_tokens}"
+        )
 
         logger.info(f"[{self.session_id}] 📋 系统提示词:\n{self.system_prompt}")
 
         skills_paths = self._resolve_skills_paths()
-        self._log_user_skills()
         backend = self._build_backend(skills_paths)
+        self._log_user_skills()
         middleware = self._build_middleware()
         tools = list(self.mcp_tools) if self.mcp_tools else None
         permissions = self._build_permissions(skills_paths)
 
+        self._override_read_file_limit(middleware)
+
         logger.info(
             f"[{self.session_id}] 🏗️ 创建智能体参数 | "
-            f"model: {self.config.llm.model} | "
-            f"provider: {self.config.llm.provider} | "
-            f"protocol: {self.config.llm.protocol} | "
+            f"model: {actual_llm_cfg.model} | "
+            f"provider: {actual_llm_cfg.provider} | "
+            f"protocol: {actual_llm_cfg.protocol} | "
             f"max_steps: {self.max_steps} | "
             f"workspace: {self.workspace_dir.absolute()} | "
             f"skills: {skills_paths or []} | "
@@ -425,11 +419,17 @@ class EasyAgent:
             f"permissions(denied): {len(permissions)} 条"
         )
 
-        memory_path = f"{self.memory_virtual_path}/AGENTS.md"
+        memory_path = f"{self.workspace_virtual_path}/memory.md"
+
+        # 仅当记忆文件已存在时才传给 DeepAgents 加载
+        # 第一次对话时记忆文件不存在，不加载记忆；对话完成后生成记忆文件
+        # 第二次对话时 Agent 缓存已被清除，重建 Agent 时会加载新生成的记忆
+        memory_list = [memory_path] if self.memory_file.exists() else []
 
         logger.info(
             f"[{self.session_id}] 🧠 记忆文件 | "
-            f"虚拟路径: {memory_path} | 实际路径: {self.memory_file}"
+            f"虚拟路径: {memory_path} | 实际路径: {self.memory_file} | "
+            f"已加载: {'是' if memory_list else '否（首轮对话，记忆尚未生成）'}"
         )
 
         interrupt_on_config = None
@@ -449,11 +449,40 @@ class EasyAgent:
             skills=skills_paths or None,
             middleware=middleware,
             tools=tools,
-            memory=[memory_path],
+            memory=memory_list or None,
             permissions=permissions or None,
             checkpointer=MemorySaver(),
-            interrupt_on=interrupt_on_config,
-        )
+           interrupt_on=interrupt_on_config,
+       )
+
+    def _override_read_file_limit(self, middleware):
+        """覆盖 read_file 工具的默认 limit。
+
+        DeepAgents 通过 StructuredTool.from_function 创建工具，函数签名中的
+        limit=DEFAULT_READ_LIMIT 在定义时绑定，修改模块全局变量无效。
+        必须在工具创建后直接修改其 args_schema 的 Pydantic 字段默认值。
+        """
+        line_limit = self.config.tools.read_file_line_limit
+        try:
+            for mw in middleware:
+                for tool in getattr(mw, "tools", []):
+                    if tool.name != "read_file":
+                        continue
+                    schema_cls = tool.args_schema
+                    if "limit" in schema_cls.model_fields:
+                        field = schema_cls.model_fields["limit"]
+                        field.default = line_limit
+                        field.description = (
+                            f"Maximum number of lines to read per call. "
+                            f"Default is {line_limit}. Only pass a smaller value when paginating."
+                        )
+                        schema_cls.model_rebuild(force=True)
+                    logger.info(
+                        f"[{self.session_id}] 📖 read_file limit -> {line_limit}"
+                    )
+                    return
+        except Exception as e:
+            logger.warning(f"read_file limit 覆盖失败: {e}")
 
     def _build_backend(self, skills_paths: list[str]):
         """构建 CompositeBackend 实例，配置多路由文件系统后端。
@@ -469,19 +498,13 @@ class EasyAgent:
         Returns:
             CompositeBackend: 组合后端实例，包含所有路由和路径映射。
         """
-        memories_dir = self.memory_file.parent
-        memories_backend = FilesystemBackend(
-            root_dir=str(memories_dir.absolute()),
-            virtual_mode=True,
-        )
-
+        # 记忆文件现已放在会话工作区目录下，不再需要单独的 memories 路由
         workspace_backend = FilesystemBackend(
             root_dir=str(self.workspace_dir.absolute()),
             virtual_mode=True,
         )
 
         routes = {
-            f"{self.memory_virtual_path}/": memories_backend,
             f"{self.workspace_virtual_path}/": workspace_backend,
         }
 
@@ -514,7 +537,6 @@ class EasyAgent:
 
         path_mappings = {
             f"{self.workspace_virtual_path}/": ws_str + "/",
-            f"{self.memory_virtual_path}/": str(self.memory_file.parent.absolute()) + "/",
         }
         if self.user_skills_dir.exists():
             path_mappings["/user-skills/"] = str(self.user_skills_dir.absolute()) + "/"
@@ -543,10 +565,18 @@ class EasyAgent:
         Returns:
             空列表，表示无额外自定义中间件。
         """
-        # SummarizationMiddleware is automatically added by create_deep_agent
-        # with model-aware defaults (trigger=0.85, keep=0.10).
-        # No need to add it here — duplicate middleware causes AssertionError.
-        return []
+       # SummarizationMiddleware is automatically added by create_deep_agent
+       # with model-aware defaults (trigger=0.85, keep=0.10).
+       # No need to add it here - duplicate middleware causes AssertionError.
+        from .services.logging_middleware import LoggingMiddleware
+        return [
+            LoggingMiddleware(
+                session_id=self.session_id or "",
+                result_log_truncate=getattr(
+                    self.config.tools, "result_log_truncate", 500
+                ),
+            )
+        ]
 
     def _build_permissions(self, skills_paths: list[str] | None = None) -> list[FilesystemPermission]:
         """根据配置构建文件系统权限规则。
@@ -577,7 +607,6 @@ class EasyAgent:
             return []
 
         existing_prefixes = [
-            f"{self.memory_virtual_path}/",
             f"{self.workspace_virtual_path}/",
         ]
         if skills_paths:

@@ -32,7 +32,6 @@ Easy Agent 是一个开箱即用的 AI Agent 平台，让大模型能够：
 | 网页终端 | 基于 xterm.js 的 Web Shell，含路径翻译与命令拦截 |
 | 技能中心 | 公共/个人技能分类管理，支持自定义 SKILL.md |
 | 定时任务 | LLM 自动识别调度意图，APScheduler 执行，可视化执行记录 |
-| 知识库（RAG） | ChromaDB + Sentence Transformers，本地向量检索 |
 | HITL 审批 | 文件删除前必须用户确认，目录删除直接拒绝 |
 | 路径翻译 | 虚拟路径 ↔ 宿主机实际路径，保护主机目录结构 |
 | 审计日志 | 定时任务全生命周期事件，记录到 `workspace/{user}/cron/` |
@@ -47,7 +46,7 @@ easy-agent/
 ├── pyproject.toml                # Python 依赖与项目元数据
 ├── uv.lock                       # uv 锁定的依赖版本
 ├── Dockerfile                    # 多阶段构建（前端 + 后端）
-├── docker/entrypoint.sh          # 容器入口（按 ENV_MODE 选配置）
+├── docker/entrypoint.sh          # 容器入口（按 AGENT_ENV 选配置）
 │
 ├── easy_agent/                   # 后端核心
 │   ├── app.py                    # FastAPI 应用与 lifespan（启动调度器）
@@ -64,7 +63,6 @@ easy-agent/
 │   │   ├── files.py              #     /api/files/* (上传/下载/预览)
 │   │   ├── skill_center.py       #     /api/skill-center/* (公共/用户技能)
 │   │   ├── scheduled_tasks.py    #     /api/scheduled-tasks/* (定时任务)
-│   │   ├── vector_store.py       #     /api/vector-store/* (RAG)
 │   │   ├── terminal.py           #     /api/terminal/* (Web Shell)
 │   │   ├── bloom.py              #     /api/bloom/* (Bloom 调度)
 │   │   ├── forex.py              #     /api/forex/* (外汇行情)
@@ -75,8 +73,7 @@ easy-agent/
 │   │   ├── agent_manager.py      #     会话级 Agent 缓存
 │   │   ├── scheduler.py          #     定时任务调度器（APScheduler）
 │   │   ├── streaming.py          #     SSE 流式输出 + 工具审批
-│   │   ├── mcp.py                #     MCP 工具加载
-│   │   ├── vector_store.py       #     向量数据库封装
+│   │   ├── mcp.py                #     MCP 工具加载（按用户配置动态加载）
 │   │   └── ...
 │   │
 │   ├── tools/
@@ -176,8 +173,11 @@ uv run uvicorn easy_agent.app:app --host 0.0.0.0 --port 8000
 ### 方式二：Docker 部署
 
 ```bash
-# 构建镜像（默认 ENV_MODE=prod）
+# 构建镜像（默认 AGENT_ENV=prod）
 docker build -t easy-agent:latest .
+
+# 也可在构建时指定环境（会同时影响前端构建与后端配置）
+# docker build --build-arg AGENT_ENV=test -t easy-agent:test .
 
 # 运行容器
 docker run -d \
@@ -187,14 +187,17 @@ docker run -d \
   -v $(pwd)/workspace:/app/workspace \
   -v $(pwd)/memories:/app/memories \
   -v $(pwd)/logs:/app/logs \
-  -e ENV_MODE=prod \
+  -e AGENT_ENV=prod \
   easy-agent:latest
 ```
 
-容器入口脚本 `docker/entrypoint.sh` 会根据 `ENV_MODE` 选择配置：
-- `prod` → `config/config.yaml`（生产）
-- `test` → `config/config.test.yaml`（测试）
-- `dev` → `config/config.dev.yaml`（开发）
+容器入口脚本 `docker/entrypoint.sh` 会根据 `AGENT_ENV` 选择配置：
+- `prod` -> `config/config.prod.yaml`（生产）
+- `test` -> `config/config.test.yaml`（测试）
+- `dev` -> `config/config.dev.yaml`（开发）
+
+后端 `easy_agent/app.py` 启动时同样读取 `AGENT_ENV`（优先级：`EASY_CONFIG` 环境变量 > `AGENT_ENV` > 默认 `config.yaml`），并在终端打印环境信息与加载的配置文件路径。
+前端 `vite.config.js` 在构建时读取 `AGENT_ENV` 映射为 Vite mode（dev→development / test→test / prod→production），加载对应的 `.env.[mode]` 文件，并在终端输出配置横幅。
 
 ---
 
@@ -236,10 +239,6 @@ database:
     password: "Test1234"
     database: "agent"
 
-# 向量库（可选）
-vector_store:
-  enabled: false
-  embedding_provider: "sentence_transformers"
 
 # 外部目录映射（虚拟路径 → 宿主机路径）
 external_dirs:
@@ -360,10 +359,11 @@ Agent 会自动解析调度意图并调用 `create_scheduled_task` 工具，参�
 - 在对话中 LLM 会自动识别可调用的技能并加载 SKILL.md
 - 自定义技能：把 `SKILL.md` 放进 `skills/your-skill/` 目录即可
 
-### 6. 知识库
-- 启用 `vector_store.enabled: true`，点击对话输入框旁的"知识库"按钮上传文件
-- 上传后系统会切片、向量化、入库
-- 之后的对话中 LLM 会自动检索相关片段作为上下文
+### 6. MCP 工具
+- 在设置面板中配置 MCP 服务，支持添加/删除/开关
+- 添加时粘贴 JSON 格式的 MCP 配置（以 `servers` 下的名称识别）
+- 删除时后端自动卸载对应 MCP，即时生效
+- 用户 MCP 配置保存在 `workspace/{username}/mcp.json`
 
 ---
 

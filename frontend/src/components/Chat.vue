@@ -20,8 +20,9 @@
             v-for="(question, index) in presetQuestions"
             :key="index"
             class="quick-card"
+            :class="{ selected: selectedQuickAction === index }"
             :title="question"
-            @click="handleQuickAction(question)"
+            @click="handleQuickAction(question, index)"
           >
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
@@ -31,6 +32,11 @@
               <polyline points="10 9 9 9 8 9"></polyline>
             </svg>
             <span class="quick-card-text">{{ question }}</span>
+            <span v-if="selectedQuickAction === index" class="quick-card-check">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3">
+                <polyline points="20 6 9 17 4 12"></polyline>
+              </svg>
+            </span>
           </div>
         </div>
       </div>
@@ -71,6 +77,9 @@
       :sessionUsage="sessionUsage"
       :sessionDuration="sessionDuration"
       :iterationCount="iterationCount"
+      :models="models"
+      :selectedModel="selectedModel"
+      @update:selectedModel="(v) => emit('update:selectedModel', v)"
       @stop="handleStop"
       @createSession="handleCreateSession"
     />
@@ -89,6 +98,7 @@ const welcomeTitle = '我是 Easy Agent'
 const welcomeSubtitle = '简单易用的智能助手，有什么可以帮您？'
 const displayedTitle = ref('')
 const displayedSubtitle = ref('')
+const selectedQuickAction = ref(null)
 let titleTimer = null
 let subtitleTimer = null
 
@@ -176,15 +186,24 @@ const props = defineProps({
     type: Boolean,
     default: false
   },
+  models: {
+    type: Array,
+    default: () => []
+  },
+  selectedModel: {
+    type: String,
+    default: null
+  }
 })
 
 watch(() => props.messages, (newMessages) => {
   if (newMessages.length === 0) {
     startTypingEffect()
+    selectedQuickAction.value = null
   }
 })
 
-const emit = defineEmits(['sendMessage', 'stop', 'removeFile', 'createSession', 'approve', 'reject'])
+const emit = defineEmits(['sendMessage', 'stop', 'removeFile', 'createSession', 'approve', 'reject', 'update:selectedModel'])
 const messagesRef = ref(null)
 
 function formatSessionTime(isoStr) {
@@ -253,8 +272,8 @@ function goToNextUserMessage() {
   }
 }
 
-function handleSend(message, files, signal, enableDeepThink = true, enableKnowledgeBase = false) {
-  emit('sendMessage', message, files, signal, enableDeepThink, enableKnowledgeBase)
+function handleSend(message, files, signal, enableDeepThink = true) {
+  emit('sendMessage', message, files, signal, enableDeepThink)
 }
 
 function handleRemoveFile(file, messageIndex) {
@@ -284,7 +303,8 @@ function handleCreateSession() {
   emit('createSession')
 }
 
-function handleQuickAction(message) {
+function handleQuickAction(message, index) {
+  selectedQuickAction.value = index
   emit('sendMessage', message, [], null, true, false)
 }
 
@@ -435,6 +455,16 @@ watch(() => props.scrollTrigger, () => {
   transform: translateY(-2px);
 }
 
+.quick-card.selected {
+  border-color: #0ea5e9;
+  background: #e0f2fe;
+  box-shadow: 0 4px 12px rgba(14, 165, 233, 0.25);
+}
+
+.quick-card.selected svg {
+  color: #0284c7;
+}
+
 .quick-card svg {
   width: 24px;
   height: 24px;
@@ -452,6 +482,25 @@ watch(() => props.scrollTrigger, () => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  flex: 1;
+}
+
+.quick-card-check {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  background: #0ea5e9;
+  border-radius: 50%;
+  flex-shrink: 0;
+  margin-left: 4px;
+}
+
+.quick-card-check svg {
+  width: 12px;
+  height: 12px;
+  color: white;
 }
 
 .scroll-btn {

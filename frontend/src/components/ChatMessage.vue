@@ -32,33 +32,6 @@
       <!-- 按顺序渲染内容块 -->
       <template v-if="sortedBlocks.length > 0">
         <template v-for="(block, index) in sortedBlocks" :key="index">
-          <!-- 知识库检索块 -->
-          <div v-if="block.type === 'knowledge_base'" class="knowledge-base-block">
-            <div class="kb-header" @click="toggleKnowledgeBase(index)">
-              <svg class="kb-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <circle cx="11" cy="11" r="8"></circle>
-                <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
-              </svg>
-              <span class="kb-title">知识库检索</span>
-              <span v-if="block.docs" class="kb-count">{{ block.docs.length }}篇文档</span>
-              <svg class="toggle-arrow" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" :class="{ rotated: isExpandedKnowledgeBase(index) }">
-                <polyline points="6 9 12 15 18 9"></polyline>
-              </svg>
-            </div>
-            <div v-if="isExpandedKnowledgeBase(index)" class="kb-content">
-              <div v-if="block.docs && block.docs.length > 0" class="kb-docs-list">
-                <div v-for="(doc, docIndex) in block.docs" :key="docIndex" class="kb-doc-item">
-                  <div class="kb-doc-icon">📄</div>
-                  <div class="kb-doc-info">
-                    <span class="kb-doc-name">{{ doc.file_name }}</span>
-                    <span class="kb-doc-score">相关度: {{ (doc.score * 100).toFixed(1) }}%</span>
-                  </div>
-                </div>
-              </div>
-              <div v-else class="kb-no-docs">未找到相关文档</div>
-            </div>
-          </div>
-
           <!-- 思考内容块 -->
           <div v-if="block.type === 'thinking'" class="thinking-block" :class="{ 'thinking-active': block.duration == null && message.loading }">
             <div class="thinking-header" @click="toggleThinking(index)">
@@ -142,7 +115,7 @@
                   </button>
                 </div>
               </div>
-              <div v-if="hasArgs(block.arguments)" class="tool-section">
+              <div v-if="hasArgs(block.arguments) && !block.pending_approval" class="tool-section">
                 <div class="tool-section-label">参数</div>
                 <pre class="tool-section-content">{{ truncateResult(formatJson(block.arguments), 1000) }}</pre>
               </div>
@@ -273,7 +246,6 @@ const emit = defineEmits(['removeFile', 'viewGeneratedFiles', 'retry', 'approve'
 
 const showThinking = ref(false)
 const expandedThinking = ref({})
-const expandedKnowledgeBase = ref({})
 const expandedTool = ref({})
 const highlighter = shallowRef(null)
 
@@ -303,7 +275,6 @@ onMounted(async () => {
 
 watch(() => props.message.id, () => {
   expandedThinking.value = {}
-  expandedKnowledgeBase.value = {}
   expandedTool.value = {}
 })
 
@@ -404,19 +375,7 @@ function toggleThinking(index) {
   expandedThinking.value[key] = !expandedThinking.value[key]
 }
 
-function isExpandedKnowledgeBase(index) {
-  const block = sortedBlocks.value[index]
-  if (!block) return false
-  const key = getBlockKey(block, index)
-  return expandedKnowledgeBase.value[key] !== false
-}
 
-function toggleKnowledgeBase(index) {
-  const block = sortedBlocks.value[index]
-  if (!block) return
-  const key = getBlockKey(block, index)
-  expandedKnowledgeBase.value[key] = !expandedKnowledgeBase.value[key]
-}
 
 function isToolRunning(block) {
   // Tool is still running if: no duration AND the message is still loading
@@ -779,103 +738,19 @@ onMounted(() => {
   background: #F1F5F9;
 }
 
-.knowledge-base-block {
-  display: flex;
-  flex-direction: column;
-  background: transparent;
-  margin-bottom: 12px;
-  width: 100%;
-}
 
-.knowledge-base-block .kb-header {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
-  background: transparent;
-  border-radius: 8px;
-  cursor: pointer;
-  font-size: 13px;
-  font-weight: 500;
-  color: #475569;
-  user-select: none;
-  transition: background 0.2s;
-  align-self: flex-start;
-}
 
-.knowledge-base-block .kb-header:hover {
-  background: #f1f5f9;
-}
 
-.knowledge-base-block .kb-icon {
-  width: 16px;
-  height: 16px;
-  color: #64748b;
-  flex-shrink: 0;
-}
 
-.knowledge-base-block .kb-title {
-  flex: 1;
-}
 
-.knowledge-base-block .kb-count {
-  font-size: 11px;
-  color: #94a3b8;
-  font-weight: 400;
-}
 
-.knowledge-base-block .kb-content {
-  padding: 12px 14px;
-  font-size: 15px;
-  color: #475569;
-  line-height: 1.7;
-  width: 100%;
-  box-sizing: border-box;
-}
 
-.knowledge-base-block .kb-docs-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
 
-.knowledge-base-block .kb-doc-item {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 8px 12px;
-  background: #f8fafc;
-  border: 1px solid #e2e8f0;
-  border-radius: 6px;
-}
 
-.knowledge-base-block .kb-doc-icon {
-  font-size: 16px;
-}
 
-.knowledge-base-block .kb-doc-info {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
 
-.knowledge-base-block .kb-doc-name {
-  font-size: 13px;
-  font-weight: 500;
-  color: #1e293b;
-}
 
-.knowledge-base-block .kb-doc-score {
-  font-size: 11px;
-  color: #64748b;
-}
 
-.knowledge-base-block .kb-no-docs {
-  font-size: 13px;
-  color: #64748b;
-  text-align: center;
-  padding: 8px;
-}
 
 .thinking-block {
   display: flex;

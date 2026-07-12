@@ -54,7 +54,8 @@ async def chat_stream(
     sid = session_id[-5:] if session_id else "new"
 
     logger.info(
-        f"[{sid}] 聊天请求 | message: {request.message[:50]}{'...' if len(request.message) > 50 else ''} | deep_think: {request.enable_deep_think}"
+        f"[{sid}] 聊天请求 | message: {request.message[:50]}{'...' if len(request.message) > 50 else ''} | "
+        f"deep_think: {request.enable_deep_think} | model: {request.model or '(active)'}"
     )
 
     def generate_session_title(message, files):
@@ -110,48 +111,44 @@ async def chat_stream(
                 db.update_session(session)
 
     parsed_content = request.message
+    # 判断是否为新建会话（首次消息）：新建会话的上传文件内容注入系统提示词，
+    # 非首次会话则拼接到用户消息（保持原有行为）。
+    _existing = db.get_session(session_id)
+    is_new_session = (not _existing) or (len(_existing.messages) == 0)
+
+    # 依次解析上传文件内容（支持 docx/excel/pdf/txt/md 等）
+    file_context_parts = []
     if request.files:
-        file_contents = []
         for file_info in request.files:
             file_path = file_info.get("file_path", "")
-            if file_path:
-                content = parse_file_content(file_path)
-                if content:
-                    file_contents.append(
-                        f"[文件: {file_info.get('filename', '')}]\n{content}"
-                    )
-        if file_contents:
+            if not file_path:
+                continue
+            filename = file_info.get("filename", "")
+            content = parse_file_content(file_path)
+            if content:
+                file_context_parts.append((filename, content))
+                logger.info(
+                    f"[{session_id[-5:]}] 📎 文件已解析 | {filename} | "
+                    f"内容长度: {len(content)} 字符"
+                )
+            else:
+                logger.warning(f"[{session_id[-5:]}] 文件解析为空: {filename}")
+
+    system_prompt_extra = ""
+    if file_context_parts:
+        if is_new_session:
+            sections = [
+                f"### 文件: {fn}\n{c}" for fn, c in file_context_parts
+            ]
+            system_prompt_extra = (
+                "## 用户上传的文件内容（已为你解析，请基于这些内容回应用户）\n\n"
+                + "\n\n".join(sections)
+            )
+        else:
+            file_contents = [
+                f"[文件: {fn}]\n{c}" for fn, c in file_context_parts
+            ]
             parsed_content = "\n\n".join(file_contents) + "\n\n" + request.message
-
-    # RAG 知识库检索：当用户启用知识库按钮，或上传文件时自动触发
-    # 将检索结果与用户原始输入整合后发送给 Agent
-    should_rag = request.use_knowledge_base or (request.files and len(request.files) > 0)
-    if should_rag:
-        try:
-            from ..services.rag_service import search_knowledge_base, format_rag_context
-
-            rag_query = request.message or (request.files[0].get("filename", "") if request.files else "")
-            logger.info(
-                f"[{sid}] [RAG] 触发检索 | use_knowledge_base={request.use_knowledge_base} | "
-                f"files={len(request.files or [])} | query={rag_query[:50]}"
-            )
-            rag_result = search_knowledge_base(
-                query=rag_query,
-                username=username,
-                session_id=session_id,
-                files=[f.get("file_path") for f in (request.files or []) if f.get("file_path")],
-                n_results=5,
-                http_request=http_request,
-            )
-            logger.info(
-                f"[{sid}] [RAG] 检索完成 | success={rag_result.get('success')} | "
-                f"count={rag_result.get('count', 0)} | source={rag_result.get('source')}"
-            )
-            if rag_result.get("success") and rag_result.get("results"):
-                parsed_content = format_rag_context(rag_result, parsed_content)
-                logger.info(f"[{sid}] [RAG] 已将检索结果整合至消息内容")
-        except Exception as e:
-            logger.error(f"[{sid}] [RAG] 检索异常: {e}", exc_info=True)
 
     user_message = {
         "role": "user",
@@ -175,7 +172,10 @@ async def chat_stream(
         message_id=message_id,
     )
 
-    agent = await get_or_create_agent_for_session(session_id, username, workspace_name)
+    agent = await get_or_create_agent_for_session(
+        session_id, username, workspace_name, model_name=request.model,
+        system_prompt_extra=system_prompt_extra,
+    )
 
     async def event_generator():
         # 注册当前请求任务，使 /cancel 端点能通过 task.cancel() 中断 astream

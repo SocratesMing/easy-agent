@@ -50,14 +50,21 @@
     <div class="divider"></div>
 
     <div class="session-items">
-      <!-- 置顶会话 -->
-      <template v-if="pinnedSessions.length > 0">
+      <div class="sessions-header">
+        <span>会话列表</span>
+      </div>
+
+      <div
+        v-for="group in groupedSessions"
+        :key="group.label"
+        class="session-group"
+      >
         <div class="session-group-header">
-          <span class="group-label">置顶</span>
-          <span class="group-count">{{ pinnedSessions.length }}</span>
+          <span class="session-group-label">{{ group.label }}</span>
+          <span class="session-group-count">{{ group.sessions.length }}</span>
         </div>
         <div
-          v-for="session in pinnedSessions"
+          v-for="session in group.sessions"
           :key="session.session_id"
           class="session-item"
           :class="{ active: !showAssets && session.session_id === currentSessionId }"
@@ -65,7 +72,7 @@
         >
           <div class="session-info">
             <div class="session-name">
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="#f59e0b" stroke="#f59e0b" stroke-width="1" style="width:13px;height:13px;flex-shrink:0;margin-right:2px">
+              <svg v-if="session.pinned" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="#f59e0b" stroke="#f59e0b" stroke-width="1" style="width:13px;height:13px;flex-shrink:0;margin-right:2px">
                 <path d="M12 2L2 7l10 5 10-5-10-5z"></path>
                 <path d="M2 17l10 5 10-5"></path>
                 <path d="M2 12l10 5 10-5"></path>
@@ -88,7 +95,7 @@
                   <path d="M2 17l10 5 10-5"></path>
                   <path d="M2 12l10 5 10-5"></path>
                 </svg>
-                取消置顶
+                {{ session.pinned ? '取消置顶' : '置顶' }}
               </button>
               <button @click.stop="startRename(session)" class="menu-item">
                 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -389,47 +396,39 @@ const renamingSession = ref(null)
 const renameInput = ref(null)
 const showUserMenu = ref(false)
 
-// 时间分类（基于用户本地时间）
-function isToday(dateStr) {
-  if (!dateStr) return false
-  const d = new Date(dateStr)
+// 按时间分组会话：置顶 / 今天 / 最近一周 / 更早
+const groupedSessions = computed(() => {
   const now = new Date()
-  return d.getFullYear() === now.getFullYear() &&
-    d.getMonth() === now.getMonth() &&
-    d.getDate() === now.getDate()
-}
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()
+  const weekAgo = startOfToday - 7 * 24 * 60 * 60 * 1000
 
-function isWithinWeek(dateStr) {
-  if (!dateStr) return false
-  const d = new Date(dateStr)
-  const now = new Date()
-  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate())
-  const weekAgo = new Date(todayStart.getTime() - 7 * 24 * 60 * 60 * 1000)
-  return d >= weekAgo && d < todayStart
-}
+  const pinned = []
+  const today = []
+  const week = []
+  const earlier = []
 
-const pinnedSessions = computed(() =>
-  props.sessions.filter(s => s.pinned)
-)
+  for (const s of props.sessions) {
+    if (s.pinned) {
+      pinned.push(s)
+      continue
+    }
+    const ts = new Date(s.updated_at || s.created_at || Date.now()).getTime()
+    if (ts >= startOfToday) {
+      today.push(s)
+    } else if (ts >= weekAgo) {
+      week.push(s)
+    } else {
+      earlier.push(s)
+    }
+  }
 
-const unpinnedSessions = computed(() =>
-  props.sessions.filter(s => !s.pinned)
-)
-
-const todaySessions = computed(() =>
-  unpinnedSessions.value.filter(s => isToday(s.updated_at))
-    .sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at))
-)
-
-const weekSessions = computed(() =>
-  unpinnedSessions.value.filter(s => isWithinWeek(s.updated_at))
-    .sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at))
-)
-
-const olderSessions = computed(() =>
-  unpinnedSessions.value.filter(s => !isToday(s.updated_at) && !isWithinWeek(s.updated_at))
-    .sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at))
-)
+  const groups = []
+  if (pinned.length) groups.push({ label: '置顶', sessions: pinned })
+  if (today.length) groups.push({ label: '今天', sessions: today })
+  if (week.length) groups.push({ label: '最近一周', sessions: week })
+  if (earlier.length) groups.push({ label: '更早', sessions: earlier })
+  return groups
+})
 
 // 用户名简写：中文取每个字拼音首字母（简化为取前两字），英文取前两字母大写
 const userInitials = computed(() => {
@@ -664,37 +663,40 @@ function handleLogout() {
   margin-top: 4px;
 }
 
-.session-group-header:first-child {
-  margin-top: 0;
+.session-group {
+  margin-bottom: 4px;
 }
 
-.group-label {
-  font-size: 12px;
-  font-weight: 600;
-  color: #64748b;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-}
-
-.group-count {
+.session-group-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px 2px;
   font-size: 11px;
+  font-weight: 600;
   color: #94a3b8;
-  background: #f1f5f9;
-  padding: 0 6px;
-  border-radius: 8px;
-  line-height: 18px;
+  user-select: none;
 }
 
+.session-group-count {
+  font-size: 10px;
+  font-weight: 500;
+  color: #cbd5e1;
+  background: #f8fafc;
+  border-radius: 8px;
+  padding: 0 6px;
+  line-height: 16px;
+}
 
 .session-item {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 5px 8px;
+  padding: 4px 8px;
   border-radius: 8px;
   cursor: pointer;
   transition: all 0.2s;
-  margin-bottom: 1px;
+  margin-bottom: 0;
 }
 
 .session-item:hover {

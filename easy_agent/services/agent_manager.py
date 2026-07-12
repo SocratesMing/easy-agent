@@ -7,62 +7,60 @@ from ..agent import EasyAgent
 from ..config import Config
 from ..db import get_database
 from ..model import create_model
+from .mcp import get_mcp_tools as load_mcp_tools_for_user
 
-logger = logging.getLogger("easy_agent.chat_service")
+logger = logging.getLogger("easy-agent.chat_service")
 
 _session_agents: dict[str, EasyAgent] = {}
 _session_stream_tasks: dict[str, asyncio.Task[None]] = {}
 _agent_config: dict = None
 _llm_instance = None
-_mcp_tools: list = []  # LangChain BaseTool instances from MCP servers
 
 
 def init_agent_config(
     config: Config,
     system_prompt: str,
     skills_root: str = "",
-    mcp_tools: list | None = None,
 ):
-    global _agent_config, _llm_instance, _mcp_tools
+    """初始化 Agent 全局配置。
+
+    MCP 工具不再在启动时全局预加载，改为按用户配置动态加载
+    （见 get_or_create_agent_for_session）。
+    """
+    global _agent_config, _llm_instance
     _agent_config = {
         "config": config,
         "system_prompt": system_prompt,
         "skills_root": skills_root,
     }
-    _mcp_tools = mcp_tools or []
-    if _mcp_tools:
-        logger.info(f"[初始化] MCP 工具已加载: {len(_mcp_tools)} 个工具")
-        for t in _mcp_tools:
-            logger.info(f"  └─ {t.name}")
 
     _llm_instance = create_model(config)
-    logger.info("[初始化] Agent 配置初始化完成 | LLM 流式已启用")
-
-
-def set_mcp_tools(tools: list):
-    """Set or update MCP tools after startup (e.g., after async connection)."""
-    global _mcp_tools
-    _mcp_tools = tools or []
-    logger.info(f"MCP tools updated: {len(_mcp_tools)} tools")
-    for t in _mcp_tools:
-        logger.info(f"  └─ {t.name}")
-
-
-def get_mcp_tools() -> list:
-    return _mcp_tools
+    logger.info("[初始化] Agent 配置初始化完成 | LLM 流式已启用 | MCP 按需动态加载")
 
 
 async def get_or_create_agent_for_session(
     session_id: str, username: str = "default", workspace_name: str = "",
-    enable_hitl: bool = True,
+   enable_hitl: bool = True, model_name: str | None = None,
+    system_prompt_extra: str = "",
 ) -> EasyAgent:
     global _session_agents, _agent_config
 
-    if session_id in _session_agents:
-        return _session_agents[session_id]
-
     if _agent_config is None:
         raise RuntimeError("Agent 配置未初始化")
+
+    config = _agent_config["config"]
+    effective_model = model_name or config.active_model
+
+    # 模型切换：若缓存的 Agent 使用了不同模型，驱逐后重建
+    cached = _session_agents.get(session_id)
+    if cached is not None:
+        if effective_model != getattr(cached, "model_name", None):
+            logger.info(
+                f"[{session_id[-5:]}] 模型切换 | {getattr(cached, 'model_name', '?')} -> {effective_model} | 驱逐旧 Agent 重建"
+            )
+            _session_agents.pop(session_id, None)
+        else:
+            return cached
 
     if not workspace_name:
         try:
@@ -73,8 +71,10 @@ async def get_or_create_agent_for_session(
         except Exception:
             pass
 
+    effective_model = model_name or config.active_model
     logger.info(
-        f"[{session_id[-5:]}] 为会话创建 Agent 实例 | username={username} | session_id={session_id} | workspace_name={workspace_name}"
+        f"[{session_id[-5:]}] 为会话创建 Agent 实例 | username={username} | session_id={session_id} | "
+        f"workspace_name={workspace_name} | model={effective_model}"
     )
 
     # 查询用户机构ID，注入系统提示词
@@ -87,8 +87,32 @@ async def get_or_create_agent_for_session(
     except Exception as e:
         logger.warning(f"[{session_id[-5:]}] 获取用户机构ID失败: {e}")
 
+    # MCP 工具：用户专属 mcp.json 优先，无则按需加载全局 mcp.json
+    user_mcp_path = Config.get_user_mcp_path(username, config)
+    if user_mcp_path.exists():
+        logger.info(f"[{session_id[-5:]}] 加载用户专属 MCP | {user_mcp_path}")
+        try:
+            mcp_tools = await load_mcp_tools_for_user(username)
+        except Exception as e:
+            logger.warning(
+                f"[{session_id[-5:]}] 加载用户 MCP 失败，尝试全局: {e}"
+            )
+            mcp_tools = await load_mcp_tools_for_user(None)
+    else:
+        # 无用户专属 mcp.json，按需加载全局 mcp.json（缓存命中时零开销）
+        logger.info(
+            f"[{session_id[-5:]}] 无用户专属 mcp.json，按需加载全局 MCP"
+        )
+        try:
+            mcp_tools = await load_mcp_tools_for_user(None)
+        except Exception as e:
+            logger.warning(
+                f"[{session_id[-5:]}] 加载全局 MCP 失败: {e}"
+            )
+            mcp_tools = []
+
     # 构建 tools 列表：MCP 工具 + 定时任务工具（仅 HITL 模式下注入）
-    tools = list(_mcp_tools)
+    tools = list(mcp_tools)
     if enable_hitl:
         try:
             from ..tools.scheduled_task import CreateScheduledTaskTool
@@ -97,7 +121,7 @@ async def get_or_create_agent_for_session(
             logger.warning(f"[{session_id[-5:]}] 注入定时任务工具失败: {e}")
 
     agent = EasyAgent(
-        config=_agent_config["config"],
+        config=config,
         system_prompt=_agent_config["system_prompt"],
         skills_root=_agent_config.get("skills_root", ""),
         username=username,
@@ -105,13 +129,39 @@ async def get_or_create_agent_for_session(
         workspace_name=workspace_name,
         mcp_tools=tools,
         organization_id=organization_id,
-        enable_hitl=enable_hitl,
-    )
+       enable_hitl=enable_hitl,
+       model_name=model_name,
+        system_prompt_extra=system_prompt_extra,
+   )
     _session_agents[session_id] = agent
     logger.info(
-        f"[{session_id[-5:]}] Agent 实例创建成功 | workspace: {agent.workspace_dir}"
+        f"[{session_id[-5:]}] Agent 实例创建成功 | workspace: {agent.workspace_dir} | "
+        f"model: {agent.model_name} | mcp_tools: {len(tools)}"
     )
     return agent
+
+
+def invalidate_user_agents(username: str) -> int:
+    """Evict all cached agents belonging to ``username``.
+
+    Called after the user edits their mcp.json (or other per-user config) so
+    that the next request rebuilds the agent with fresh settings. Returns the
+    number of evicted agents.
+    """
+    global _session_agents
+    if not username:
+        return 0
+    safe = Config.sanitize_username(username)
+    to_remove = [
+        sid for sid, a in _session_agents.items()
+        if getattr(a, "safe_username", "") == safe
+    ]
+    for sid in to_remove:
+        _session_agents.pop(sid, None)
+    logger.info(
+        f"用户 {username} 的缓存 Agent 已失效 | 清除 {len(to_remove)} 个 | sessions={to_remove}"
+    )
+    return len(to_remove)
 
 
 def remove_session_agent(session_id: str):

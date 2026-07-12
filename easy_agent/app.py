@@ -22,15 +22,12 @@ from .model import create_model
 from .models.api import HealthResponse
 from .services import get_agent_config, init_agent_config
 from .services import init_scheduler, shutdown_scheduler, reload_all_tasks
-from .services.mcp import get_mcp_tools
-from .services.vector_store import VectorStore
 from .skills import find_skills_root, discover_skills
 from .api import (
     chat_router,
     sessions_router,
     files_router,
     auth_router,
-    vector_store_router,
     bloom_router,
     forex_router,
     prompts_router,
@@ -50,15 +47,15 @@ agent_config = None
 db_instance = None
 
 
-def setup_logging():
+def setup_logging(log_dir: str = "./logs"):
     root_logger = logging.getLogger()
     if root_logger.handlers:
         return None
 
-    log_dir = Path("logs")
-    log_dir.mkdir(exist_ok=True)
+    log_dir_path = Path(log_dir)
+    log_dir_path.mkdir(parents=True, exist_ok=True)
 
-    log_file = log_dir / "easy_agent.log"
+    log_file = log_dir_path / "easy_agent.log"
 
     formatter = _CustomFormatter(
         fmt="[{asctime}]|{levelname}|{funcName}:{lineno}| {message}",
@@ -125,8 +122,8 @@ async def lifespan(app: FastAPI):
         sys.path.insert(0, str(project_root))
     os.chdir(project_root)
 
+    # 先用默认日志目录初始化，配置加载后如需切换会重新初始化
     log_file = setup_logging()
-    logger.info(f"日志文件: {log_file}")
 
     logger.info("=" * 60)
     logger.info("Easy Agent Web Service 初始化中...")
@@ -135,15 +132,44 @@ async def lifespan(app: FastAPI):
     logger.info(f"启动时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     logger.info("=" * 60)
 
-    config_path = os.environ.get("EASY_CONFIG", "./easy_agent/config/config.yaml")
-    if not os.path.exists(config_path):
-        config_path = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)), "config", "config.yaml"
-        )
+    # ── 环境识别 ──
+    # AGENT_ENV 决定运行环境: dev | test | prod
+    # 1. 若设置了 EASY_CONFIG 环境变量，直接使用（entrypoint.sh 场景）
+    # 2. 若设置了 AGENT_ENV，按环境选择 config.{env}.yaml
+    # 3. 默认使用 config.yaml
+    agent_env = os.environ.get("AGENT_ENV", "").lower()
+    config_dir = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "config"
+    )
+
+    if os.environ.get("EASY_CONFIG"):
+        config_path = os.environ["EASY_CONFIG"]
+    elif agent_env in ("dev", "test", "prod"):
+        candidate = os.path.join(config_dir, f"config.{agent_env}.yaml")
+        config_path = candidate if os.path.exists(candidate) else os.path.join(config_dir, "config.yaml")
+    else:
+        config_path = os.path.join(config_dir, "config.yaml")
+
+    # 打印环境信息和配置文件
+    logger.info("=" * 60)
+    logger.info(f"AGENT_ENV: {agent_env or '(未设置, 使用默认)'}")
+    logger.info(f"配置文件: {config_path}")
+    logger.info("=" * 60)
 
     try:
         config = Config.from_yaml(config_path)
         logger.info(f"✅ 配置文件加载成功: {config_path}")
+
+        # 如果配置了自定义日志目录，重新初始化日志
+        configured_log_dir = config.agent.log_dir
+        if configured_log_dir and configured_log_dir != "./logs":
+            # 清除已有 handler，用配置的目录重新初始化
+            root_logger = logging.getLogger()
+            for h in list(root_logger.handlers):
+                root_logger.removeHandler(h)
+            log_file = setup_logging(configured_log_dir)
+            logger.info(f"日志目录已切换至配置路径: {configured_log_dir}")
+        logger.info(f"日志文件: {log_file}")
         logger.info(f"LLM Provider: {config.llm.provider}")
         logger.info(f"LLM Model: {config.llm.model}")
         logger.info(f"LLM Protocol: {config.llm.protocol}")
@@ -175,21 +201,6 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"❌ 数据库初始化失败: {e}")
         raise
-
-    if config and hasattr(config, "vector_store"):
-        vs_config = config.vector_store.model_dump()
-        if vs_config.get("enabled"):
-            try:
-                vs = VectorStore(vs_config)
-                app.state.vector_store = vs
-                logger.info(
-                    f"✅ 向量数据库已启用 | provider: {vs_config.get('embedding_provider', 'unknown')}"
-                )
-            except Exception as e:
-                logger.warning(f"⚠️ 向量数据库初始化失败: {e}")
-                app.state.vector_store = None
-        else:
-            logger.info("ℹ️ 向量数据库未启用")
 
     if (
         config
@@ -238,20 +249,13 @@ async def lifespan(app: FastAPI):
             logger.info("ℹ️ 未发现任何 skills")
 
         mcp_tools = []
-        try:
-            mcp_tools = await get_mcp_tools()
-            if mcp_tools:
-                logger.info(f"✅ MCP 工具已加载: 共 {len(mcp_tools)} 个")
-            else:
-                logger.info("ℹ️ MCP 未配置，跳过")
-        except Exception as e:
-            logger.warning(f"⚠️ MCP 初始化失败: {e}")
+        # MCP 不在启动时全局加载，改为按用户配置动态加载（见 agent_manager）
+        logger.info("ℹ️ MCP 将按用户配置动态加载（不在启动时预加载）")
 
         init_agent_config(
             config=config,
             system_prompt=system_prompt,
             skills_root=skills_root,
-            mcp_tools=mcp_tools,
         )
         agent_config = {"config": config}
         logger.info("✅ Agent 配置加载成功")
@@ -323,7 +327,6 @@ app.include_router(chat_router)
 app.include_router(sessions_router)
 app.include_router(files_router)
 app.include_router(auth_router)
-app.include_router(vector_store_router)
 app.include_router(bloom_router)
 app.include_router(forex_router)
 app.include_router(prompts_router)

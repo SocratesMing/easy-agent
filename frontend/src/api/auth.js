@@ -1,4 +1,4 @@
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
+import { API_BASE_URL } from '../config.js'
 
 const TOKEN_KEY = 'mini_agent_token'
 const USERNAME_KEY = 'mini_agent_username'

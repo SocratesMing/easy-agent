@@ -1,6 +1,5 @@
+import { API_BASE_URL } from '../config.js'
 import { getAuthHeaders, authFetch, getStoredToken } from './auth.js'
-
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
 
 export async function uploadFile(sessionId, file, onProgress) {
   return new Promise((resolve, reject) => {

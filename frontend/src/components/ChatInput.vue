@@ -49,6 +49,46 @@
       
       <div class="input-actions">
         <div class="left-actions">
+          <div class="model-dropdown-wrapper" ref="modelDropdownRef">
+            <button
+              class="model-btn"
+              :class="{ disabled: isStreaming || disabled }"
+              :disabled="isStreaming || disabled"
+              @click="toggleModelDropdown"
+              title="选择模型"
+            >
+              <svg class="model-btn-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
+                <circle cx="8.5" cy="8.5" r="1.5"/>
+                <polyline points="21 15 16 10 5 21"/>
+              </svg>
+              <span class="model-btn-label">{{ currentModelLabel }}</span>
+              <svg class="model-btn-arrow" :class="{ open: showModelDropdown }" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="6 9 12 15 18 9"></polyline>
+              </svg>
+            </button>
+            <Teleport to="body">
+              <div v-if="showModelDropdown" class="model-dropdown-menu" :style="dropdownStyle" @click.stop>
+                <div
+                  v-for="m in models"
+                  :key="m.name"
+                  class="model-dropdown-item"
+                  :class="{ active: m.name === localSelectedModel }"
+                  @click="selectModel(m.name)"
+                >
+                  <div class="model-item-info">
+                    <span class="model-item-name">{{ m.model || m.name }}</span>
+                    <span class="model-item-provider">{{ m.provider }}</span>
+                  </div>
+                  <span v-if="m.is_active" class="model-item-badge">默认</span>
+                  <svg v-if="m.name === localSelectedModel" class="model-item-check" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="20 6 9 17 4 12"></polyline>
+                  </svg>
+                </div>
+              </div>
+            </Teleport>
+          </div>
+
           <label class="action-btn upload-btn" :class="{ disabled: isStreaming || disabled }" title="上传文件">
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path>
@@ -61,21 +101,6 @@
               hidden
             />
           </label>
-
-          <button
-            class="knowledge-base-btn"
-            :class="{ active: enableKnowledgeBase, disabled: isStreaming || disabled }"
-            :disabled="isStreaming || disabled"
-            @click="toggleKnowledgeBase"
-            title="知识库检索"
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path>
-              <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path>
-              <path d="m9 7 2 2 4-4"></path>
-            </svg>
-            <span class="knowledge-base-label">知识库</span>
-          </button>
         </div>
         
         <div class="right-actions">
@@ -192,22 +217,71 @@ const props = defineProps({
   iterationCount: {
     type: Number,
     default: 0
+  },
+  models: {
+    type: Array,
+    default: () => []
+  },
+  selectedModel: {
+    type: String,
+    default: null
   }
 })
 
-const emit = defineEmits(['send', 'stop', 'createSession'])
+const emit = defineEmits(['send', 'stop', 'createSession', 'update:selectedModel'])
 
 const message = ref('')
 const textareaRef = ref(null)
 const uploadedFiles = ref([])
-const enableKnowledgeBase = ref(false)
 let abortController = null
 
-function toggleKnowledgeBase() {
-  enableKnowledgeBase.value = !enableKnowledgeBase.value
+// 模型选择：本地双向绑定，变化时同步父组件
+const localSelectedModel = computed({
+  get: () => props.selectedModel,
+  set: (val) => emit('update:selectedModel', val)
+})
+
+// 自定义下拉菜单
+const showModelDropdown = ref(false)
+const modelDropdownRef = ref(null)
+const dropdownStyle = ref({})
+
+const currentModelLabel = computed(() => {
+  const m = props.models.find(m => m.name === props.selectedModel)
+  return m ? (m.model || m.name) : '选择模型'
+})
+
+function toggleModelDropdown() {
+  if (props.isStreaming || props.disabled) return
+  if (showModelDropdown.value) {
+    showModelDropdown.value = false
+    return
+  }
+  // 计算下拉菜单位置
+  if (modelDropdownRef.value) {
+    const rect = modelDropdownRef.value.getBoundingClientRect()
+    dropdownStyle.value = {
+      position: 'fixed',
+      bottom: `${window.innerHeight - rect.top + 6}px`,
+      left: `${rect.left}px`,
+      minWidth: `${Math.max(rect.width, 200)}px`,
+    }
+  }
+  showModelDropdown.value = true
+}
+
+function selectModel(name) {
+  emit('update:selectedModel', name)
+  showModelDropdown.value = false
   console.log(
-    `[${new Date().toISOString()}] [知识库按钮] 点击切换 | 启用状态: ${enableKnowledgeBase.value} | 当前输入: "${message.value.substring(0, 80)}"`
+    `[${new Date().toISOString()}] [模型选择] 切换为: ${name}`
   )
+}
+
+function closeModelDropdown(event) {
+  if (showModelDropdown.value && modelDropdownRef.value && !modelDropdownRef.value.contains(event.target)) {
+    showModelDropdown.value = false
+  }
 }
 
 const canSend = computed(() => {
@@ -411,22 +485,14 @@ async function send() {
     type: f.file?.type || f.fileType || ''
   }))
 
-  // 详细日志：记录发送操作、知识库状态、文件上传
+  // 详细日志：记录发送操作、文件上传
   const ts = new Date().toISOString()
-  console.log(`[${ts}] [发送消息] 内容: "${message.value.substring(0, 100)}" | 知识库: ${enableKnowledgeBase.value} | 文件数: ${filesToSend.length}`)
+  console.log(`[${ts}] [发送消息] 内容: "${message.value.substring(0, 100)}" | 文件数: ${filesToSend.length}`)
   if (filesToSend.length > 0) {
     console.log(`[${ts}] [文件上传] ${filesToSend.map(f => `${f.filename}(${f.size}B)`).join(', ')}`)
-    if (enableKnowledgeBase.value) {
-      console.log(`[${ts}] [RAG] 文件上传且知识库已启用，将自动调用RAG检索`)
-    } else {
-      console.log(`[${ts}] [RAG] 检测到文件上传，后端将自动触发RAG检索`)
-    }
-  }
-  if (enableKnowledgeBase.value) {
-    console.log(`[${ts}] [RAG] 知识库按钮已启用，后端将调用RAG检索接口`)
   }
 
-  emit('send', message.value.trim().replace(/\s+/g, ' '), filesToSend, abortController.signal, true, enableKnowledgeBase.value)
+  emit('send', message.value.trim().replace(/\s+/g, ' '), filesToSend, abortController.signal, true)
   
   message.value = ''
   uploadedFiles.value = []
@@ -456,10 +522,12 @@ watch(() => props.disabled, (val) => {
 
 onMounted(() => {
   document.addEventListener('click', closeTokenPopup)
+  document.addEventListener('click', closeModelDropdown)
 })
 
 onUnmounted(() => {
   document.removeEventListener('click', closeTokenPopup)
+  document.removeEventListener('click', closeModelDropdown)
   if (abortController) {
     abortController.abort()
   }
@@ -674,13 +742,19 @@ onUnmounted(() => {
   gap: 12px;
 }
 
-.knowledge-base-btn {
+.model-dropdown-wrapper {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.model-btn {
   display: inline-flex;
   flex-direction: row;
   align-items: center;
   justify-content: center;
   gap: 6px;
-  padding: 6px 14px;
+  padding: 6px 12px;
   height: 36px;
   min-height: 36px;
   border: 1px solid #e2e8f0;
@@ -691,53 +765,119 @@ onUnmounted(() => {
   white-space: nowrap;
 }
 
-.knowledge-base-btn svg {
+.model-btn:hover:not(.disabled) {
+  border-color: rgba(14, 165, 233, 0.4);
+  background: rgba(14, 165, 233, 0.06);
+  transform: translateY(-1px);
+}
+
+.model-btn.disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.model-btn-icon {
   width: 16px;
   height: 16px;
   color: #64748b;
   transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
-.knowledge-base-btn:hover:not(.disabled) {
-  border-color: rgba(124, 106, 239, 0.4);
-  background: rgba(124, 106, 239, 0.06);
-  transform: translateY(-1px);
-}
-
-.knowledge-base-btn:hover:not(.disabled) svg {
-  color: #7c6aef;
+.model-btn:hover:not(.disabled) .model-btn-icon {
+  color: #0ea5e9;
   transform: scale(1.08);
 }
 
-.knowledge-base-label {
+.model-btn-label {
   font-size: 12px;
   font-weight: 500;
   color: #64748b;
   transition: color 0.25s ease;
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.knowledge-base-btn:hover:not(.disabled) .knowledge-base-label {
-  color: #7c6aef;
+.model-btn:hover:not(.disabled) .model-btn-label {
+  color: #0ea5e9;
 }
 
-.knowledge-base-btn.active {
-  background: linear-gradient(135deg, #7c6aef 0%, #6d28d9 100%);
-  border-color: transparent;
-  box-shadow: 0 4px 14px rgba(124, 106, 239, 0.4);
-  transform: translateY(-1px);
+.model-btn-arrow {
+  width: 12px;
+  height: 12px;
+  color: #94a3b8;
+  transition: transform 0.2s ease;
 }
 
-.knowledge-base-btn.active svg {
-  color: #ffffff;
+.model-btn-arrow.open {
+  transform: rotate(180deg);
 }
 
-.knowledge-base-btn.active .knowledge-base-label {
-  color: #ffffff;
+.model-dropdown-menu {
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  padding: 6px;
+  z-index: 9999;
+  max-height: 320px;
+  overflow-y: auto;
 }
 
-.knowledge-base-btn.disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
+.model-dropdown-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.model-dropdown-item:hover {
+  background: #f1f5f9;
+}
+
+.model-dropdown-item.active {
+  background: rgba(14, 165, 233, 0.08);
+}
+
+.model-item-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.model-item-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: #1e293b;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.model-item-provider {
+  font-size: 11px;
+  color: #94a3b8;
+}
+
+.model-item-badge {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: #dcfce7;
+  color: #16a34a;
+  flex-shrink: 0;
+}
+
+.model-item-check {
+  width: 16px;
+  height: 16px;
+  color: #0ea5e9;
+  flex-shrink: 0;
 }
 
 .right-actions {

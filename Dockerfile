@@ -1,10 +1,14 @@
 # ============================================================
 # Easy Agent - Multi-stage Dockerfile
-# ENV_MODE: prod (default) | test | dev
+# AGENT_ENV: prod (default) | test | dev
 # ============================================================
 
 # ---------- Stage 1: Frontend Build ----------
 FROM node:20-slim AS frontend-builder
+
+# 前端构建时需要 AGENT_ENV 来决定加载哪个 .env 文件
+ARG AGENT_ENV=prod
+ENV AGENT_ENV=${AGENT_ENV}
 
 WORKDIR /build/frontend
 
@@ -19,9 +23,9 @@ RUN npm run build
 # ---------- Stage 2: Backend Runtime ----------
 FROM python:3.12-slim
 
-# Environment mode: prod | test | dev
-ARG ENV_MODE=prod
-ENV ENV_MODE=${ENV_MODE}
+# 环境变量: AGENT_ENV 决定后端配置文件和前端构建环境
+ARG AGENT_ENV=prod
+ENV AGENT_ENV=${AGENT_ENV}
 
 # Install system dependencies for pty support
 RUN apt-get update && \
@@ -56,5 +60,5 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')" || exit 1
 
-# Entrypoint selects config based on ENV_MODE
+# Entrypoint starts uvicorn (app.py 内部已通过 AGENT_ENV 选择配置文件)
 ENTRYPOINT ["/entrypoint.sh"]

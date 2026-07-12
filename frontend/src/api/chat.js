@@ -1,6 +1,5 @@
+import { API_BASE_URL } from '../config.js'
 import { getAuthHeaders, authFetch } from './auth.js'
-
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
 
 export async function createSession(title, username = null) {
   const body = { title }
@@ -74,23 +73,27 @@ export async function getChatHistory(sessionId) {
   }
 }
 
-export async function sendMessage(sessionId, message, onChunk, signal, enableDeepThink = true, files = [], useKnowledgeBase = false) {
+export async function sendMessage(sessionId, message, onChunk, signal, enableDeepThink = true, files = [], model = null) {
   const controller = new AbortController()
   const abortSignal = signal || controller.signal
+
+  const payload = {
+      session_id: sessionId,
+      message,
+      message_id: generateMessageId(),
+      enable_deep_think: enableDeepThink,
+      files: files,
+  }
+  if (model) {
+    payload.model = model
+  }
 
   const response = await authFetch(`${API_BASE_URL}/api/chat/stream`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({
-      session_id: sessionId,
-      message,
-      message_id: generateMessageId(),
-      enable_deep_think: enableDeepThink,
-      files: files,
-      use_knowledge_base: useKnowledgeBase
-    }),
+    body: JSON.stringify(payload),
     signal: abortSignal
   })
 
