@@ -40,7 +40,8 @@ def init_agent_config(
 
 async def get_or_create_agent_for_session(
     session_id: str, username: str = "default", workspace_name: str = "",
-    enable_hitl: bool = True, model_name: str | None = None,
+   enable_hitl: bool = True, model_name: str | None = None,
+    system_prompt_extra: str = "",
 ) -> EasyAgent:
     global _session_agents, _agent_config
 
@@ -128,9 +129,10 @@ async def get_or_create_agent_for_session(
         workspace_name=workspace_name,
         mcp_tools=tools,
         organization_id=organization_id,
-        enable_hitl=enable_hitl,
-        model_name=model_name,
-    )
+       enable_hitl=enable_hitl,
+       model_name=model_name,
+        system_prompt_extra=system_prompt_extra,
+   )
     _session_agents[session_id] = agent
     logger.info(
         f"[{session_id[-5:]}] Agent 实例创建成功 | workspace: {agent.workspace_dir} | "

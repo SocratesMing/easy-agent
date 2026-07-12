@@ -45,14 +45,6 @@ MAX_CONTEXT_MESSAGES = 30
 KEEP_RECENT_MESSAGES = 10
 
 
-def estimate_tokens(text: str) -> int:
-    if not text:
-        return 0
-    chinese_chars = sum(1 for c in text if "\u4e00" <= c <= "\u9fff")
-    other_chars = len(text) - chinese_chars
-    return int(chinese_chars / 1.5 + other_chars / 4)
-
-
 def _is_error_result(text: str) -> bool:
     """Check if a tool result string indicates an error.
 
@@ -98,19 +90,34 @@ def _is_error_result(text: str) -> bool:
 
 
 def _extract_file_paths_from_command(command: str) -> list[str]:
-    """从删除命令中提取文件路径列表。"""
+    """从删除命令中提取文件路径列表。
+
+    支持复合命令（如 `ls ... && touch ... && rm ...`），
+    只提取 rm/rmdir/unlink/shred 部分的文件路径。
+    """
     if not command:
         return []
-    # Remove common flags: -rf, -r, -f, -fr, etc.
-    cleaned = re.sub(r'\s+-[rRfFilPd]+\s*', ' ', command)
-    # Remove the command itself (rm, rmdir, unlink, shred)
-    cleaned = re.sub(r'^\s*(rm|rmdir|unlink|shred)\s+', '', cleaned).strip()
-    # Handle quoted paths (single or double quotes)
+    # 按复合命令分隔符拆分
+    parts = re.split(r'\s*(?:&&|\|\||;|\|)\s*', command)
     paths = []
-    for m in re.finditer(r'"([^"]+)"|\'([^\']+)\'|(\S+)', cleaned):
-        path = m.group(1) or m.group(2) or m.group(3)
-        if path and not path.startswith('-'):
-            paths.append(path)
+    for part in parts:
+        part = part.strip()
+        if not part:
+            continue
+        # 只处理删除类命令
+        rm_match = re.match(r'^(rm|rmdir|unlink|shred)\s+', part)
+        if not rm_match:
+            continue
+        # 移除命令名
+        cleaned = part[rm_match.end():]
+        # 移除 flags: -rf, -r, -f 等
+        cleaned = re.sub(r'\s+-[rRfFilPdV]+\s*', ' ', cleaned)
+        cleaned = re.sub(r'^-[rRfFilPdV]+\s*', '', cleaned)
+        # 提取路径（支持引号）
+        for m in re.finditer(r'"([^"]+)"|\'([^\']+)\'|(\S+)', cleaned):
+            path = m.group(1) or m.group(2) or m.group(3)
+            if path and not path.startswith('-') and path not in ('2>&1', '2>/dev/null', '>/dev/null'):
+                paths.append(path)
     return paths
 
 
@@ -251,13 +258,10 @@ async def chat_stream_generator(
     try:
         session_obj = db.get_session(session_id)
         if session_obj and session_obj.messages:
-            # 优先从消息的 usage 字段累加（API 返回的准确值）
+            # 从消息的 usage 字段累加（API 返回的准确值）
             for msg in session_obj.messages:
                 msg_usage = msg.get("usage") or {}
                 pre_session_tokens += msg_usage.get("total_tokens", 0)
-            # 如果没有 usage 数据，用估算兜底
-            if pre_session_tokens == 0:
-                pre_session_tokens = estimate_tokens(str(session_obj.messages))
     except Exception:
         pass
 
@@ -386,25 +390,7 @@ async def chat_stream_generator(
                 return None
             last_token_usage_time = now
             inp = total_usage["input_tokens"]
-            if not inp:
-                # API 未返回 usage_metadata，从完整上下文估算
-                context_text = "".join(
-                    str(getattr(msg, "content", "")) for msg in context_messages
-                )
-                inp = (
-                    estimate_tokens(context_text)
-                    + estimate_tokens(accumulated_response)
-                    + estimate_tokens(accumulated_thinking)
-                )
-                for blk in blocks:
-                    if blk.get("type") == "tool_result":
-                        inp += estimate_tokens(str(blk.get("result", "")))
-                    elif blk.get("type") == "tool_call":
-                        inp += estimate_tokens(str(blk.get("tool_args", "")))
-            out = total_usage["output_tokens"] or (
-                estimate_tokens(accumulated_response)
-                + estimate_tokens(accumulated_thinking)
-            )
+            out = total_usage["output_tokens"]
             cumulative = pre_session_tokens + inp + out
             # context_tokens: 当前上下文窗口占用（最后一次 API 调用的 input_tokens）
             ctx_tokens = last_context_tokens if last_context_tokens > 0 else inp
@@ -515,29 +501,10 @@ async def chat_stream_generator(
                 )
             content_step_start_len = len(accumulated_response)
 
-            # 打印 token 用量
-            # 优先使用 API 返回的 usage_metadata，否则从 context_messages 估算
+            # 打印 token 用量（使用 API 返回的 usage_metadata）
             inp = step_usage["input_tokens"]
-            if not inp:
-                # API 未返回 usage_metadata，从完整上下文估算输入 token
-                context_text = "".join(
-                    str(getattr(msg, "content", "")) for msg in context_messages
-                )
-                inp = (
-                    estimate_tokens(context_text)
-                    + estimate_tokens(accumulated_response)
-                    + estimate_tokens(accumulated_thinking)
-                )
-                # 加上工具调用/结果的估算
-                for blk in blocks:
-                    if blk.get("type") == "tool_result":
-                        inp += estimate_tokens(str(blk.get("result", "")))
-                    elif blk.get("type") == "tool_call":
-                        inp += estimate_tokens(str(blk.get("tool_args", "")))
-            out = step_usage["output_tokens"] or estimate_tokens(
-                accumulated_thinking
-            ) + estimate_tokens(step_content)
-            step_total = step_usage["total_tokens"] or inp + out
+            out = step_usage["output_tokens"]
+            step_total = step_usage["total_tokens"]
             # context_tokens: 最后一次 API 调用的 input_tokens
             ctx_tokens = last_context_tokens if last_context_tokens > 0 else inp
             ctx_max = max_input_tokens or 0
@@ -548,9 +515,9 @@ async def chat_stream_generator(
                 ctx_bar = (
                     " [" + "█" * filled + "░" * (20 - filled) + f"] {ctx_ratio:.1f}%"
                 )
-            is_estimated = step_usage["input_tokens"] == 0
+            is_pending = step_usage["input_tokens"] == 0
             logger.info(
-                f"[{sid}] 📊 Step {step} Token{'(估算)' if is_estimated else ''} | "
+                f"[{sid}] 📊 Step {step} Token{'(等待API返回)' if is_pending else ''} | "
                 f"上下文占用: {ctx_tokens}/{ctx_max or '?'}{ctx_bar} | "
                 f"Step输入: {inp} | Step输出: {out} | "
                 f"Step合计: {step_total} | "
@@ -633,15 +600,6 @@ async def chat_stream_generator(
 
         # ── 启动流式输出 (stream_mode='messages') ────────────────────────
         logger.info(f"[{sid}] 🚀 使用 stream_mode='messages' 流式接口")
-        logger.info(f"[{sid}] 📨 上下文消息数: {len(context_messages)}")
-        for i, msg in enumerate(context_messages):
-            role = getattr(msg, "type", type(msg).__name__)
-            content_full = str(getattr(msg, "content", ""))
-            tool_calls = getattr(msg, "tool_calls", None)
-            tc_info = f" | tool_calls={len(tool_calls)}" if tool_calls else ""
-            logger.info(
-                f"[{sid}] 📨 msg[{i}]: role={role}{tc_info} | len={len(content_full)}"
-            )
 
         emitted_tool_call_ids = set()
         _todo_emitted_for = set()
@@ -1000,26 +958,7 @@ async def chat_stream_generator(
                     ]
                 )
 
-                # 日志截断长结果
-                log_result = result_content
-                if len(log_result) > result_log_truncate:
-                    log_result = log_result[:result_log_truncate] + "..."
-                # 截断工具参数值（最大100字符）
-                _arg_value_truncate = 100
-                log_args = {}
-                if tool_args and isinstance(tool_args, dict):
-                    for k, v in tool_args.items():
-                        sv = str(v)
-                        log_args[k] = (
-                            sv[:_arg_value_truncate] + "..."
-                            if len(sv) > _arg_value_truncate
-                            else v
-                        )
-                logger.info(
-                    f"[{sid}] {'✅' if success else '❌'} {tool_name} | "
-                    f"参数: {json.dumps(log_args, ensure_ascii=False) if log_args else {}} | "
-                    f"结果: {log_result} | 耗时: {tool_duration}s"
-                )
+                # 工具执行日志由 LoggingMiddleware 统一记录（见 services/logging_middleware.py）
 
                 # 工具结果处理完毕，重置 step 推进标记
                 # 下一个 AIMessageChunk 将开启一个新的 step
@@ -1273,20 +1212,10 @@ async def chat_stream_generator(
         )
 
         # ── Token 统计 ────────────────────────────────────────────────
-        # 本轮对话（当前 exchange）token
+        # 本轮对话（当前 exchange）token - 使用 API 返回的 usage_metadata
         inp_tokens = total_usage["input_tokens"]
         out_tokens = total_usage["output_tokens"]
         sum_tokens = total_usage["total_tokens"]
-
-        if sum_tokens == 0 and (accumulated_response or accumulated_thinking):
-            inp_tokens = estimate_tokens(message_content)
-            out_tokens = estimate_tokens(accumulated_response) + estimate_tokens(
-                accumulated_thinking
-            )
-            sum_tokens = inp_tokens + out_tokens
-            total_usage["input_tokens"] = inp_tokens
-            total_usage["output_tokens"] = out_tokens
-            total_usage["total_tokens"] = sum_tokens
 
         # 整个会话的累计占用（优先使用消息中持久化的 usage 累加）
         session_total_tokens = 0
@@ -1295,13 +1224,10 @@ async def chat_stream_generator(
             session = db.get_session(session_id)
             if session and session.messages:
                 session_msg_count = len(session.messages)
-                # 优先从消息的 usage 字段累加（API 返回的准确值）
+                # 从消息的 usage 字段累加（API 返回的准确值）
                 for msg in session.messages:
                     msg_usage = msg.get("usage") or {}
                     session_total_tokens += msg_usage.get("total_tokens", 0)
-                # 如果没有 usage 数据，用估算兜底
-                if session_total_tokens == 0:
-                    session_total_tokens = estimate_tokens(str(session.messages))
         except Exception:
             pass
 
@@ -1446,6 +1372,15 @@ async def chat_stream_generator(
                     logger.info(
                         f"[{sid}] 记忆文件已按场景更新（上限 3000 字符）"
                     )
+                    # 记忆更新后使 Agent 缓存失效，下次发消息时重建 Agent 以加载新记忆
+                    try:
+                        from .agent_manager import remove_session_agent
+                        remove_session_agent(session_id)
+                        logger.info(
+                            f"[{sid}] 记忆更新后 Agent 缓存已失效，下次消息将重新加载记忆"
+                        )
+                    except Exception as e:
+                        logger.warning(f"[{sid}] 使 Agent 缓存失效失败: {e}")
             except Exception as e:
                 logger.warning(f"[{sid}] 记忆文件更新失败: {e}")
 
@@ -1628,6 +1563,7 @@ async def resume_stream_generator(
     content_start_time = None
     tool_call_start_times = {}
     tool_call_accumulated_args = {}
+    tool_call_accumulated_args_str = {}
     current_thinking_block_idx = None
     current_content_block_idx = None
     emitted_tool_call_ids = set()
@@ -1695,22 +1631,30 @@ async def resume_stream_generator(
                         tc_args_str = tc_chunk.get("args", "")
                         if tc_name and tc_id:
                             current_step += 1
-                            tc_args = {}
-                            if tc_args_str:
-                                try:
-                                    tc_args = json.loads(tc_args_str)
-                                except Exception:
-                                    tc_args = {"raw": tc_args_str}
                             tool_call_start_times[tc_id] = time.time()
-                            tool_call_accumulated_args[tc_id] = tc_args
+                            tool_call_accumulated_args_str[tc_id] = tc_args_str or ""
+
+                            args_data = {}
+                            full_args = tool_call_accumulated_args_str[tc_id]
+                            if full_args:
+                                try:
+                                    parsed = json.loads(full_args)
+                                    args_data = (
+                                        parsed
+                                        if isinstance(parsed, dict)
+                                        else {"value": parsed}
+                                    )
+                                except json.JSONDecodeError:
+                                    args_data = {}
+
+                            tool_call_accumulated_args[tc_id] = args_data
                             emitted_tool_call_ids.add(tc_id)
-                            blk_idx = block_order_counter
                             blocks.append({
                                 "type": "tool_call",
                                 "order": block_order_counter,
                                 "tool_name": tc_name,
                                 "tool_call_id": tc_id,
-                                "arguments": tc_args,
+                                "arguments": args_data,
                                 "result": "",
                                 "success": True,
                                 "duration": None,
@@ -1721,16 +1665,29 @@ async def resume_stream_generator(
                                 "type": "tool_call",
                                 "tool_name": tc_name,
                                 "tool_call_id": tc_id,
-                                "arguments": tc_args,
+                                "arguments": args_data,
                                 "step": current_step,
                             })
                         elif tc_id and tc_args_str:
-                            if tc_id in tool_call_accumulated_args:
+                            if tc_id in tool_call_accumulated_args_str:
+                                tool_call_accumulated_args_str[tc_id] += tc_args_str
+                                full_args_str = tool_call_accumulated_args_str[tc_id]
                                 try:
-                                    parsed = json.loads(tc_args_str)
-                                    if isinstance(parsed, dict):
-                                        tool_call_accumulated_args[tc_id].update(parsed)
-                                except Exception:
+                                    parsed = json.loads(full_args_str)
+                                    args_data = (
+                                        parsed
+                                        if isinstance(parsed, dict)
+                                        else {"value": parsed}
+                                    )
+                                    tool_call_accumulated_args[tc_id] = args_data
+                                    for blk in reversed(blocks):
+                                        if (
+                                            blk["type"] == "tool_call"
+                                            and blk.get("tool_call_id") == tc_id
+                                        ):
+                                            blk["arguments"] = args_data
+                                            break
+                                except json.JSONDecodeError:
                                     pass
 
                 if hasattr(chunk, "usage_metadata") and chunk.usage_metadata:
@@ -1764,6 +1721,8 @@ async def resume_stream_generator(
                     success, tool_duration, current_step,
                 ])
 
+                # 工具执行日志由 LoggingMiddleware 统一记录（见 services/logging_middleware.py）
+
                 yield _sse({
                     "type": "tool_result",
                     "tool_name": tool_name,
@@ -1776,6 +1735,7 @@ async def resume_stream_generator(
                 })
 
         # ── Post-streaming ─────────────────────────────────────────
+        logger.info(f"[{sid}] 📢 流式输出结束 | steps={current_step} | blocks={len(blocks)}")
         te = _end_thinking(current_step)
         if te:
             yield te
@@ -1887,6 +1847,11 @@ async def resume_stream_generator(
         }
         db.update_last_assistant_message(session_id, assistant_message)
         db.update_last_assistant_message_row(session_id, assistant_message)
+
+        logger.info(
+            f"[{sid}] ✅ 流式响应完成 | 总步骤: {current_step} | "
+            f"总耗时: {elapsed_time:.2f}s | tokens={sum_tokens} (in={inp_tokens}, out={out_tokens})"
+        )
 
         yield _sse({
             "type": "done",

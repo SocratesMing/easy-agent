@@ -233,7 +233,7 @@
 
 <script setup>
 import { ref, watch, onMounted, computed } from 'vue'
-import { getMemory, updateMemory, getSystemPrompt, getMcpServers, updateMcpServers } from '../api/settings.js'
+import { getMemory, updateMemory, getSystemPrompt, getMcpServers, updateMcpServers, addMcpServer, deleteMcpServer } from '../api/settings.js'
 
 const props = defineProps({
   isDarkTheme: { type: Boolean, default: false },
@@ -411,11 +411,24 @@ async function saveMcp() {
   }
 }
 
-function removeMcpServer(name) {
-  mcpServers.value = mcpServers.value.filter(s => s.name !== name)
-  const newMap = { ...mcpEnabledMap.value }
-  delete newMap[name]
-  mcpEnabledMap.value = newMap
+async function removeMcpServer(name) {
+  if (!confirm(`确认删除 MCP 服务 "${name}"？删除后立即生效。`)) return
+  try {
+    await deleteMcpServer(name)
+    // 删除成功，本地同步移除
+    mcpServers.value = mcpServers.value.filter(s => s.name !== name)
+    const newMap = { ...mcpEnabledMap.value }
+    delete newMap[name]
+    mcpEnabledMap.value = newMap
+    const newErrors = { ...mcpServerErrors.value }
+    delete newErrors[name]
+    mcpServerErrors.value = newErrors
+    mcpError.value = ''
+    mcpSaved.value = true
+    setTimeout(() => { mcpSaved.value = false }, 2000)
+  } catch (e) {
+    mcpError.value = e.message || '删除失败'
+  }
 }
 
 function openAddMcp() {
@@ -424,7 +437,7 @@ function openAddMcp() {
   showAddMcp.value = true
 }
 
-function confirmAddMcp() {
+async function confirmAddMcp() {
   addMcpError.value = ''
   let parsed
   try {
@@ -434,47 +447,40 @@ function confirmAddMcp() {
     return
   }
 
-  // 支持两种格式：
-  // 1. { "serverName": { "transport": "stdio", "command": "..." } }  — 对象格式
-  // 2. { "name": "serverName", "transport": "stdio", "command": "..." } — 单个 server
-  let entries = []
-  if (parsed.name && typeof parsed.name === 'string') {
-    // 单个 server 格式
-    const { name, ...rest } = parsed
-    entries.push({ name, raw: rest })
-  } else if (typeof parsed === 'object' && !Array.isArray(parsed)) {
-    // 对象格式
-    for (const [name, cfg] of Object.entries(parsed)) {
-      if (typeof cfg === 'object' && cfg !== null) {
-        entries.push({ name, raw: cfg })
-      }
-    }
-  }
-
-  if (entries.length === 0) {
-    addMcpError.value = '未找到有效的 server 配置。支持对象格式 {"name": {...}} 或单条 {"name":"xx", ...}'
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    addMcpError.value = '请输入 JSON 对象，格式如 {"servers": {"myserver": {...}}}'
     return
   }
 
-  for (const { name, raw } of entries) {
-    if (mcpServers.value.some(s => s.name === name)) {
-      addMcpError.value = `服务器 "${name}" 已存在`
-      return
-    }
-    const transport = raw.transport || raw.type || 'unknown'
-    mcpServers.value.push({
-      name,
-      transport,
-      command: raw.command || '',
-      args: raw.args || [],
-      env_keys: Object.keys(raw.env || {}),
-      _raw: raw,
-    })
-    mcpEnabledMap.value[name] = true
-  }
+  // 调用后端添加：后端按 servers 下的名称判重、合并写入、即时重载 MCP
+  try {
+    const resp = await addMcpServer(parsed)
 
-  showAddMcp.value = false
-  addMcpJson.value = ''
+    // 处理新添加 server 的校验结果：异常的记录错误
+    const statuses = resp.server_status || []
+    const newErrors = {}
+    for (const s of statuses) {
+      if (s.status === 'error') {
+        newErrors[s.name] = s.error || '加载失败'
+      }
+    }
+    mcpServerErrors.value = { ...mcpServerErrors.value, ...newErrors }
+
+    if (Object.keys(newErrors).length > 0) {
+      const failedNames = Object.keys(newErrors).join(', ')
+      addMcpError.value = `以下 MCP 服务添加成功但加载异常: ${failedNames}（请检查配置）`
+    }
+
+    // 重新拉取最新列表，保证与后端一致
+    await loadTabData()
+
+    if (!addMcpError.value) {
+      showAddMcp.value = false
+      addMcpJson.value = ''
+    }
+  } catch (e) {
+    addMcpError.value = e.message || '添加失败'
+  }
 }
 
 function toggleMcpServer(name, enabled) {

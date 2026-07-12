@@ -71,6 +71,8 @@ class LLMConfig(BaseModel):
 class ToolsConfig(BaseModel):
     skills_dir: str = "./skills"
     prompts_dir: str = "./prompts"
+    read_file_line_limit: int = 2000
+    """read_file 内置工具每次读取的行数，默认 2000。"""
 
 
 class SQLiteConfig(BaseModel):
@@ -111,26 +113,14 @@ class DatabaseConfig(BaseModel):
     mysql: MySQLConfig = Field(default_factory=MySQLConfig)
 
 
-class VectorStoreConfig(BaseModel):
-    """Vector store configuration (ChromaDB + Sentence Transformers)"""
-
-    enabled: bool = False
-    db_path: str = "./data/chroma_db"
-    collection_name: str = "easy_agent_docs"
-    embedding_provider: str = "sentence_transformers"
-    embedding_dimension: int = 1024
-    batch_size: int = 32
-    zhipu_api_key: str = ""
-    zhipu_model: str = "embedding-3"
-    sentence_transformers_model: str = "Qwen/Qwen3-Embedding-0.6B"
-
-
 class AgentConfig(BaseModel):
     """Agent configuration"""
 
     max_steps: int = 50
     workspace_dir: str = "./workspace"
     memories_dir: str = "./memories"
+    log_dir: str = "./logs"
+    sessions_dir: str = "./sessions"
     system_prompt_path: str = "system_prompt.md"
     denied_dirs: list[str | dict[str, Any]] = Field(default_factory=list)
     """禁止智能体读写的虚拟路径目录列表。
@@ -184,7 +174,6 @@ class Config(BaseModel):
     tools: ToolsConfig
     summarization: SummarizationConfig = Field(default_factory=SummarizationConfig)
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
-    vector_store: VectorStoreConfig = Field(default_factory=VectorStoreConfig)
     models: dict[str, ProviderConfig] = Field(default_factory=dict)
     active_model: str = "minimax"
     preset_questions: list[str] = Field(default_factory=list)
@@ -261,6 +250,8 @@ class Config(BaseModel):
             max_steps=data.get("max_steps", 50),
             workspace_dir=data.get("workspace_dir", "./workspace"),
             memories_dir=data.get("memories_dir", "./memories"),
+            log_dir=data.get("log_dir", "./logs"),
+            sessions_dir=data.get("sessions_dir", "./sessions"),
             system_prompt_path=data.get("system_prompt_path", "system_prompt.md"),
             denied_dirs=data.get("denied_dirs", []),
             external_dirs=data.get("external_dirs", {}),
@@ -270,6 +261,7 @@ class Config(BaseModel):
         tools_config = ToolsConfig(
             skills_dir=tools_data.get("skills_dir", "./skills"),
             prompts_dir=tools_data.get("prompts_dir", "./prompts"),
+            read_file_line_limit=tools_data.get("read_file_line_limit", 2000),
         )
 
         db_data = data.get("database", {})
@@ -306,23 +298,6 @@ class Config(BaseModel):
             ),
         )
 
-        vs_data = data.get("vector_store", {})
-        vs_config = VectorStoreConfig(
-            enabled=vs_data.get("enabled", False),
-            db_path=vs_data.get("db_path", "./data/chroma_db"),
-            collection_name=vs_data.get("collection_name", "easy_agent_docs"),
-            embedding_provider=vs_data.get(
-                "embedding_provider", "sentence_transformers"
-            ),
-            embedding_dimension=vs_data.get("embedding_dimension", 1024),
-            batch_size=vs_data.get("batch_size", 32),
-            zhipu_api_key=vs_data.get("zhipu_api_key", ""),
-            zhipu_model=vs_data.get("zhipu_model", "embedding-3"),
-            sentence_transformers_model=vs_data.get(
-                "sentence_transformers_model", "Qwen/Qwen3-Embedding-0.6B"
-            ),
-        )
-
         summ_data = data.get("summarization", {})
         summ_config = SummarizationConfig(
             enabled=summ_data.get("enabled", True),
@@ -336,7 +311,6 @@ class Config(BaseModel):
             tools=tools_config,
             summarization=summ_config,
             database=db_config,
-            vector_store=vs_config,
             models=models,
             active_model=active_model,
             preset_questions=data.get("preset_questions", []),

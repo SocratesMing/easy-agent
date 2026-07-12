@@ -66,7 +66,7 @@ async def list_files(
     session_id: Optional[str] = Query(default=None),
     file_type: Optional[str] = Query(default=None),
 ):
-    upload_dir, workspace_dir = get_user_dirs(username)
+    upload_dir, _ = get_user_dirs(username)
 
     if session_id:
         files = db.get_session_files(session_id)
@@ -82,26 +82,6 @@ async def list_files(
             if not file_type or fi.file_type == file_type:
                 file_list.append(fi)
         return FileListResponse(files=file_list, total=len(file_list))
-
-    workspace_files = []
-    if workspace_dir.exists():
-        for item in workspace_dir.rglob("*"):
-            if item.is_file():
-                try:
-                    stat = item.stat()
-                    workspace_files.append(
-                        FileInfo(
-                            filename=item.name,
-                            file_path=str(item.relative_to(workspace_dir)),
-                            file_type=item.suffix.lstrip(".") or "unknown",
-                            size=stat.st_size,
-                            uploaded_at=datetime.fromtimestamp(
-                                stat.st_mtime
-                            ).isoformat(),
-                        )
-                    )
-                except Exception as e:
-                    logger.warning(f"读取文件信息失败: {item} | {e}")
 
     upload_files = []
     if upload_dir.exists():
@@ -123,7 +103,7 @@ async def list_files(
                 except Exception as e:
                     logger.warning(f"读取上传文件信息失败: {item} | {e}")
 
-    all_files = upload_files + workspace_files
+    all_files = upload_files
     if file_type:
         all_files = [f for f in all_files if f.file_type == file_type]
 
@@ -321,6 +301,7 @@ async def preview_file(
         path=str(full_path),
         filename=full_path.name,
         media_type=media_type,
+        content_disposition_type="inline",
     )
 
 

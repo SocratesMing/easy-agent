@@ -218,14 +218,14 @@ const filesWithCategory = computed(() => {
 })
 
 const categoryCounts = computed(() => {
-  const counts = { '全部': allFiles.value.length }
+  const counts = { '全部': filesWithCategory.value.length }
   for (const file of filesWithCategory.value) {
     counts[file.category] = (counts[file.category] || 0) + 1
   }
   return counts
 })
 
-const totalFiles = computed(() => allFiles.value.length)
+const totalFiles = computed(() => filesWithCategory.value.length)
 
 const currentFiles = computed(() => {
   if (activeTab.value === '全部') {
@@ -265,7 +265,7 @@ async function handleUpload(event) {
       const formData = new FormData()
       formData.append('file', file)
 
-      const response = await fetch(`${API_BASE_URL}/api/files/users/files/upload`, {
+      const response = await fetch(`${API_BASE_URL}/api/files/upload`, {
         method: 'POST',
         headers: {
           ...getAuthHeaders()

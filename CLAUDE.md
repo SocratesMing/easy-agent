@@ -31,7 +31,7 @@ cd frontend && npm run build
 
 Copy `easy_agent/config/config.yaml.example` to `easy_agent/config/config.yaml` and configure your models. Config is searched in cwd, home dir, and package dir (in that order).
 
-The YAML format uses a `models:` dict for multi-provider support and `model:` to select the active one. Top-level keys: `model` (active model name), `models` (dict of provider configs), `max_steps`, `workspace_dir`, `system_prompt_path`. Nested sections: `retry`, `tools`, `database`, `vector_store`, `summarization`. Parsed manually in `Config.from_yaml()`, not mapped from Pydantic models.
+The YAML format uses a `models:` dict for multi-provider support and `model:` to select the active one. Top-level keys: `model` (active model name), `models` (dict of provider configs), `max_steps`, `workspace_dir`, `system_prompt_path`. Nested sections: `retry`, `tools`, `database`, `summarization`. Parsed manually in `Config.from_yaml()`, not mapped from Pydantic models.
 
 Environment variables:
 - `EASY_CONFIG` — override config file path (set by `web_runner.py` automatically)
@@ -43,7 +43,7 @@ Environment variables:
 
 **Agent layer** (`agent.py`) — `EasyAgent` class wraps `deepagents.create_deep_agent()`. Built-in tools: `write_todos`, `ls`, `read_file`, `write_file`, `edit_file`, `glob`, `grep`, `execute`, `task` (subagent). Creates a `CompositeBackend` mapping `/workspace/` to user/session-isolated directory (`workspace/{username}/{session_id}/`), `/skills/` to read-only skill files, and `/memories/` to per-user memory files. System prompt is dynamically augmented with OS-specific commands, workspace path, skills root, and shared dependency paths. Supports `SummarizationMiddleware` for context compression (configurable via `config.summarization`).
 
-**Config** (`config.py`) — Pydantic models: `LLMConfig`, `AgentConfig`, `ToolsConfig`, `DatabaseConfig`, `VectorStoreConfig`, `ProviderConfig`. Multi-provider support via `ProviderConfig` entries.
+**Config** (`config.py`) — Pydantic models: `LLMConfig`, `AgentConfig`, `ToolsConfig`, `DatabaseConfig`, `ProviderConfig`. Multi-provider support via `ProviderConfig` entries.
 
 **LLM factory** (`model.py`) — Supports `anthropic` (ChatAnthropic), `openai` (ChatOpenAI), `deepseek` (langchain-deepseek), `minimax` (OpenAI-compatible with 120s timeout). All use LangChain wrappers.
 
@@ -62,13 +62,11 @@ Environment variables:
 - `bloom.py` — Bloomberg analysis endpoints
 - `forex.py` — Forex data endpoints
 - `prompts.py` — Prompt template management
-- `vector_store.py` — Vector store query endpoints
 
 ### Services (`easy_agent/services/`)
 
 - `streaming.py` — **Core SSE generator** (`chat_stream_generator`). Processes DeepAgents `astream` output, emits typed events: `start`, `thinking_start`, `thinking`, `thinking_end`, `content`, `content_end`, `tool_call`, `tool_result`, `user_input_required`, `done`, `error`. Parses `<think>` tags. Accumulates partial tool call JSON across chunks.
 - `agent_manager.py` — In-memory session-level agent cache (`_session_agents` dict). Lost on server restart.
-- `vector_store.py` — ChromaDB with Sentence Transformers (default: `Qwen/Qwen3-Embedding-0.6B`) or ZhipuAI embeddings. Disabled by default.
 
 ### Other Backend Modules
 

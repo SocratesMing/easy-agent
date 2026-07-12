@@ -66,7 +66,6 @@ class ChatRequest(BaseModel):
     message_id: Optional[str] = Field(default=None, description="消息ID")
     enable_deep_think: bool = Field(default=False, description="是否启用深度思考")
     files: Optional[List[dict]] = Field(default=None, description="上传的文件列表")
-    use_knowledge_base: bool = Field(default=False, description="是否启用知识库检索")
     model: Optional[str] = Field(
         default=None,
         description="模型名称（config.models 的 key，如 deepseek/glm）。为空时使用 active model",

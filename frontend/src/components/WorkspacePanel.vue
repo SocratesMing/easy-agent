@@ -75,6 +75,7 @@ import { ref, watch, onMounted } from 'vue'
 import FileTreeNode from './FileTreeNode.vue'
 import FilePreview from './FilePreview.vue'
 import { getWorkspaceTree } from '../api/files'
+import { getStoredToken } from '../api/auth.js'
 
 const props = defineProps({
   username: { type: String, default: '' },
@@ -125,11 +126,16 @@ function handleSelectFile(file) {
 
 function handleDownloadFile(file) {
   const filePath = file.file_path || file.path
-  const url = `${API_BASE_URL}/api/files/preview?file_path=${encodeURIComponent(filePath)}&session_id=${encodeURIComponent(props.currentSessionId)}&download=true`
+  const token = getStoredToken()
+  const params = new URLSearchParams()
+  params.set('file_path', filePath)
+  params.set('session_id', props.currentSessionId)
+  params.set('download', 'true')
+  if (token) params.set('token', token)
+  const url = `${API_BASE_URL}/api/files/preview?${params.toString()}`
   const link = document.createElement('a')
   link.href = url
   link.download = file.name
-  link.target = '_blank'
   document.body.appendChild(link)
   link.click()
   document.body.removeChild(link)

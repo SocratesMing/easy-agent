@@ -560,6 +560,8 @@ class Database:
         if row is None:
             return None
 
+        row = dict(row) if not isinstance(row, dict) else row
+
         messages = self.get_messages_from_rows(session_id)
         if not messages:
             messages = json.loads(row["messages"]) if row["messages"] else []
@@ -585,7 +587,7 @@ class Database:
                     messages.append(json_messages[i])
 
         todos = []
-        todos_raw = row.get("todos", None) if isinstance(row, dict) else None
+        todos_raw = row.get("todos", None)
         if todos_raw:
             try:
                 todos = (
@@ -600,12 +602,8 @@ class Database:
             messages=messages,
             created_at=row["created_at"],
             updated_at=row["updated_at"],
-            username=row.get("username", "")
-            if isinstance(row, dict)
-            else (row[-1] if len(row) > 5 else ""),
-            workspace_name=row.get("workspace_name", "")
-            if isinstance(row, dict)
-            else "",
+            username=row.get("username", ""),
+            workspace_name=row.get("workspace_name", ""),
             todos=todos,
         )
 
@@ -638,6 +636,7 @@ class Database:
 
         sessions = []
         for row in rows:
+            row = dict(row) if not isinstance(row, dict) else row
             sessions.append(
                 SessionModel(
                     session_id=row["session_id"],
@@ -645,11 +644,9 @@ class Database:
                     messages=json.loads(row["messages"]) if row["messages"] else [],
                     created_at=row["created_at"],
                     updated_at=row["updated_at"],
-                    username=row.get("username", "") if isinstance(row, dict) else "",
-                    workspace_name=row.get("workspace_name", "")
-                    if isinstance(row, dict)
-                    else "",
-                    pinned=int(row.get("pinned", 0)) if isinstance(row, dict) else 0,
+                    username=row.get("username", ""),
+                    workspace_name=row.get("workspace_name", ""),
+                    pinned=int(row.get("pinned", 0)),
                 )
             )
         return sessions
@@ -1306,6 +1303,7 @@ class Database:
             row = cursor.fetchone()
         if row is None:
             return None
+        row = dict(row) if not isinstance(row, dict) else row
         return UserModel(
             user_id=row["user_id"],
             username=row["username"],
@@ -1324,6 +1322,7 @@ class Database:
             row = cursor.fetchone()
         if row is None:
             return None
+        row = dict(row) if not isinstance(row, dict) else row
         return UserModel(
             user_id=row["user_id"],
             username=row["username"],
@@ -1457,19 +1456,22 @@ class Database:
                 (limit, offset),
             )
             rows = cursor.fetchall()
-        return [
-            UserModel(
-                user_id=row["user_id"],
-                username=row["username"],
-                password_hash=row["password_hash"],
-                organization_id=row.get("organization_id", ""),
-                email=row.get("email", ""),
-                bound_ip=row.get("bound_ip", ""),
-                created_at=row["created_at"],
-                updated_at=row["updated_at"],
+        result = []
+        for row in rows:
+            row = dict(row) if not isinstance(row, dict) else row
+            result.append(
+                UserModel(
+                    user_id=row["user_id"],
+                    username=row["username"],
+                    password_hash=row["password_hash"],
+                    organization_id=row.get("organization_id", ""),
+                    email=row.get("email", ""),
+                    bound_ip=row.get("bound_ip", ""),
+                    created_at=row["created_at"],
+                    updated_at=row["updated_at"],
+                )
             )
-            for row in rows
-        ]
+        return result
 
     def add_session_file(
         self,

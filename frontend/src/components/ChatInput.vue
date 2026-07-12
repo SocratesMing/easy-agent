@@ -101,21 +101,6 @@
               hidden
             />
           </label>
-
-          <button
-            class="knowledge-base-btn"
-            :class="{ active: enableKnowledgeBase, disabled: isStreaming || disabled }"
-            :disabled="isStreaming || disabled"
-            @click="toggleKnowledgeBase"
-            title="知识库检索"
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path>
-              <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path>
-              <path d="m9 7 2 2 4-4"></path>
-            </svg>
-            <span class="knowledge-base-label">知识库</span>
-          </button>
         </div>
         
         <div class="right-actions">
@@ -248,7 +233,6 @@ const emit = defineEmits(['send', 'stop', 'createSession', 'update:selectedModel
 const message = ref('')
 const textareaRef = ref(null)
 const uploadedFiles = ref([])
-const enableKnowledgeBase = ref(false)
 let abortController = null
 
 // 模型选择：本地双向绑定，变化时同步父组件
@@ -298,13 +282,6 @@ function closeModelDropdown(event) {
   if (showModelDropdown.value && modelDropdownRef.value && !modelDropdownRef.value.contains(event.target)) {
     showModelDropdown.value = false
   }
-}
-
-function toggleKnowledgeBase() {
-  enableKnowledgeBase.value = !enableKnowledgeBase.value
-  console.log(
-    `[${new Date().toISOString()}] [知识库按钮] 点击切换 | 启用状态: ${enableKnowledgeBase.value} | 当前输入: "${message.value.substring(0, 80)}"`
-  )
 }
 
 const canSend = computed(() => {
@@ -508,22 +485,14 @@ async function send() {
     type: f.file?.type || f.fileType || ''
   }))
 
-  // 详细日志：记录发送操作、知识库状态、文件上传
+  // 详细日志：记录发送操作、文件上传
   const ts = new Date().toISOString()
-  console.log(`[${ts}] [发送消息] 内容: "${message.value.substring(0, 100)}" | 知识库: ${enableKnowledgeBase.value} | 文件数: ${filesToSend.length}`)
+  console.log(`[${ts}] [发送消息] 内容: "${message.value.substring(0, 100)}" | 文件数: ${filesToSend.length}`)
   if (filesToSend.length > 0) {
     console.log(`[${ts}] [文件上传] ${filesToSend.map(f => `${f.filename}(${f.size}B)`).join(', ')}`)
-    if (enableKnowledgeBase.value) {
-      console.log(`[${ts}] [RAG] 文件上传且知识库已启用，将自动调用RAG检索`)
-    } else {
-      console.log(`[${ts}] [RAG] 检测到文件上传，后端将自动触发RAG检索`)
-    }
-  }
-  if (enableKnowledgeBase.value) {
-    console.log(`[${ts}] [RAG] 知识库按钮已启用，后端将调用RAG检索接口`)
   }
 
-  emit('send', message.value.trim().replace(/\s+/g, ' '), filesToSend, abortController.signal, true, enableKnowledgeBase.value)
+  emit('send', message.value.trim().replace(/\s+/g, ' '), filesToSend, abortController.signal, true)
   
   message.value = ''
   uploadedFiles.value = []
@@ -909,72 +878,6 @@ onUnmounted(() => {
   height: 16px;
   color: #0ea5e9;
   flex-shrink: 0;
-}
-
-.knowledge-base-btn {
-  display: inline-flex;
-  flex-direction: row;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  padding: 6px 14px;
-  height: 36px;
-  min-height: 36px;
-  border: 1px solid #e2e8f0;
-  background: #f8fafc;
-  border-radius: 10px;
-  cursor: pointer;
-  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
-  white-space: nowrap;
-}
-
-.knowledge-base-btn svg {
-  width: 16px;
-  height: 16px;
-  color: #64748b;
-  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
-}
-
-.knowledge-base-btn:hover:not(.disabled) {
-  border-color: rgba(124, 106, 239, 0.4);
-  background: rgba(124, 106, 239, 0.06);
-  transform: translateY(-1px);
-}
-
-.knowledge-base-btn:hover:not(.disabled) svg {
-  color: #7c6aef;
-  transform: scale(1.08);
-}
-
-.knowledge-base-label {
-  font-size: 12px;
-  font-weight: 500;
-  color: #64748b;
-  transition: color 0.25s ease;
-}
-
-.knowledge-base-btn:hover:not(.disabled) .knowledge-base-label {
-  color: #7c6aef;
-}
-
-.knowledge-base-btn.active {
-  background: linear-gradient(135deg, #7c6aef 0%, #6d28d9 100%);
-  border-color: transparent;
-  box-shadow: 0 4px 14px rgba(124, 106, 239, 0.4);
-  transform: translateY(-1px);
-}
-
-.knowledge-base-btn.active svg {
-  color: #ffffff;
-}
-
-.knowledge-base-btn.active .knowledge-base-label {
-  color: #ffffff;
-}
-
-.knowledge-base-btn.disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
 }
 
 .right-actions {

@@ -22,14 +22,12 @@ from .model import create_model
 from .models.api import HealthResponse
 from .services import get_agent_config, init_agent_config
 from .services import init_scheduler, shutdown_scheduler, reload_all_tasks
-from .services.vector_store import VectorStore
 from .skills import find_skills_root, discover_skills
 from .api import (
     chat_router,
     sessions_router,
     files_router,
     auth_router,
-    vector_store_router,
     bloom_router,
     forex_router,
     prompts_router,
@@ -49,15 +47,15 @@ agent_config = None
 db_instance = None
 
 
-def setup_logging():
+def setup_logging(log_dir: str = "./logs"):
     root_logger = logging.getLogger()
     if root_logger.handlers:
         return None
 
-    log_dir = Path("logs")
-    log_dir.mkdir(exist_ok=True)
+    log_dir_path = Path(log_dir)
+    log_dir_path.mkdir(parents=True, exist_ok=True)
 
-    log_file = log_dir / "easy_agent.log"
+    log_file = log_dir_path / "easy_agent.log"
 
     formatter = _CustomFormatter(
         fmt="[{asctime}]|{levelname}|{funcName}:{lineno}| {message}",
@@ -124,8 +122,8 @@ async def lifespan(app: FastAPI):
         sys.path.insert(0, str(project_root))
     os.chdir(project_root)
 
+    # 先用默认日志目录初始化，配置加载后如需切换会重新初始化
     log_file = setup_logging()
-    logger.info(f"日志文件: {log_file}")
 
     logger.info("=" * 60)
     logger.info("Easy Agent Web Service 初始化中...")
@@ -161,6 +159,17 @@ async def lifespan(app: FastAPI):
     try:
         config = Config.from_yaml(config_path)
         logger.info(f"✅ 配置文件加载成功: {config_path}")
+
+        # 如果配置了自定义日志目录，重新初始化日志
+        configured_log_dir = config.agent.log_dir
+        if configured_log_dir and configured_log_dir != "./logs":
+            # 清除已有 handler，用配置的目录重新初始化
+            root_logger = logging.getLogger()
+            for h in list(root_logger.handlers):
+                root_logger.removeHandler(h)
+            log_file = setup_logging(configured_log_dir)
+            logger.info(f"日志目录已切换至配置路径: {configured_log_dir}")
+        logger.info(f"日志文件: {log_file}")
         logger.info(f"LLM Provider: {config.llm.provider}")
         logger.info(f"LLM Model: {config.llm.model}")
         logger.info(f"LLM Protocol: {config.llm.protocol}")
@@ -193,21 +202,6 @@ async def lifespan(app: FastAPI):
         logger.error(f"❌ 数据库初始化失败: {e}")
         raise
 
-    if config and hasattr(config, "vector_store"):
-        vs_config = config.vector_store.model_dump()
-        if vs_config.get("enabled"):
-            try:
-                vs = VectorStore(vs_config)
-                app.state.vector_store = vs
-                logger.info(
-                    f"✅ 向量数据库已启用 | provider: {vs_config.get('embedding_provider', 'unknown')}"
-                )
-            except Exception as e:
-                logger.warning(f"⚠️ 向量数据库初始化失败: {e}")
-                app.state.vector_store = None
-        else:
-            logger.info("ℹ️ 向量数据库未启用")
-
     if (
         config
         and hasattr(config.agent, "system_prompt_path")
@@ -229,16 +223,6 @@ async def lifespan(app: FastAPI):
     else:
         system_prompt = "你是一个有帮助的 AI 助手。"
         logger.warning(f"⚠️ 系统提示词文件不存在: {system_prompt_path}，使用默认提示词")
-
-    # 打印系统提示词完整内容，便于启动时核查
-    logger.info("=" * 60)
-    logger.info("📝 系统提示词内容:")
-    logger.info("-" * 60)
-    for line in system_prompt.splitlines():
-        logger.info(line)
-    logger.info("-" * 60)
-    logger.info(f"📝 系统提示词结束 (共 {len(system_prompt)} 字符)")
-    logger.info("=" * 60)
 
     # 注入当前时间和时区，供定时任务 cron 表达式生成参考
     now_dt = datetime.now().astimezone()
@@ -343,7 +327,6 @@ app.include_router(chat_router)
 app.include_router(sessions_router)
 app.include_router(files_router)
 app.include_router(auth_router)
-app.include_router(vector_store_router)
 app.include_router(bloom_router)
 app.include_router(forex_router)
 app.include_router(prompts_router)

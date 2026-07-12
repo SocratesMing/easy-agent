@@ -69,6 +69,9 @@
           <div v-else-if="isMarkdown" class="preview-markdown">
             <div class="markdown-body" v-html="renderedMarkdown"></div>
           </div>
+          <div v-else-if="isHtml" class="preview-html">
+            <iframe :src="htmlUrl" class="html-iframe" sandbox="allow-same-origin"></iframe>
+          </div>
           <div v-else-if="isText" class="preview-text">
             <div class="code-block">
               <div class="line-numbers">
@@ -146,11 +149,12 @@ const error = ref('')
 const textContent = ref('')
 const previewUrl = ref('')
 const docxUrl = ref('')
-const excelUrl = ref('')
+const excelUrl = ref(null)
 const pptxUrl = ref('')
+const htmlUrl = ref('')
 
 const imageExts = ['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.svg', '.ico']
-const textExts = ['.txt', '.json', '.xml', '.csv', '.js', '.ts', '.vue', '.py', '.java', '.go', '.rs', '.c', '.cpp', '.h', '.hpp', '.sh', '.bat', '.css', '.scss', '.less', '.sql', '.html', '.htm', '.yaml', '.yml', '.toml', '.ini', '.cfg', '.conf', '.env', '.log', '.md', '.jsx', '.tsx', '.rb', '.php', '.swift', '.kt', '.scala', '.lua', '.pl', '.r', '.dart', '.ex', '.exs', '.erl', '.hs', '.ml', '.jl', '.tf', '.proto', '.graphql', '.makefile', '.cmake', '.dockerfile', '.gitignore', '.properties', '.gradle']
+const textExts = ['.txt', '.json', '.xml', '.csv', '.js', '.ts', '.vue', '.py', '.java', '.go', '.rs', '.c', '.cpp', '.h', '.hpp', '.sh', '.bat', '.css', '.scss', '.less', '.sql', '.yaml', '.yml', '.toml', '.ini', '.cfg', '.conf', '.env', '.log', '.md', '.jsx', '.tsx', '.rb', '.php', '.swift', '.kt', '.scala', '.lua', '.pl', '.r', '.dart', '.ex', '.exs', '.erl', '.hs', '.ml', '.jl', '.tf', '.proto', '.graphql', '.makefile', '.cmake', '.dockerfile', '.gitignore', '.properties', '.gradle']
 
 // 安全获取文件扩展名（无扩展名时返回空字符串）
 function getExt(name) {
@@ -174,6 +178,8 @@ const isDocx = computed(() => getExt(props.filename) === 'docx')
 const isExcel = computed(() => ['xlsx', 'xls'].includes(getExt(props.filename)))
 
 const isMarkdown = computed(() => getExt(props.filename) === 'md')
+
+const isHtml = computed(() => ['html', 'htm'].includes(getExt(props.filename)))
 
 const isCsv = computed(() => getExt(props.filename) === 'csv')
 
@@ -305,8 +311,12 @@ async function loadPreview() {
   error.value = ''
   textContent.value = ''
   docxUrl.value = ''
-  excelUrl.value = ''
+  excelUrl.value = null
   pptxUrl.value = ''
+  if (htmlUrl.value) {
+    URL.revokeObjectURL(htmlUrl.value)
+    htmlUrl.value = ''
+  }
 
   const ts = new Date().toISOString()
   // 统一打印预览请求日志：文件名、路径、会话ID
@@ -364,8 +374,15 @@ async function loadPreview() {
       const response = await fetch(previewUrl.value, { headers })
       if (!response.ok) throw new Error(`HTTP ${response.status}`)
       const arrayBuffer = await response.arrayBuffer()
-      const blob = new Blob([arrayBuffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
-      excelUrl.value = URL.createObjectURL(blob)
+      // @vue-office/excel 直接传 ArrayBuffer，避免 Blob URL 解析问题
+      excelUrl.value = arrayBuffer
+    } else if (isHtml.value) {
+      console.log('[FilePreview] HTML 预览')
+      const response = await fetch(previewUrl.value, { headers })
+      if (!response.ok) throw new Error(`HTTP ${response.status}`)
+      const htmlText = await response.text()
+      const blob = new Blob([htmlText], { type: 'text/html; charset=utf-8' })
+      htmlUrl.value = URL.createObjectURL(blob)
     } else if (isMarkdown.value || isText.value || isCsv.value) {
       const response = await fetch(previewUrl.value, { headers })
       if (!response.ok) throw new Error(`HTTP ${response.status}`)
@@ -402,8 +419,8 @@ function handleExcelError(e) {
 
 function handleClose() {
   if (docxUrl.value) URL.revokeObjectURL(docxUrl.value)
-  if (excelUrl.value) URL.revokeObjectURL(excelUrl.value)
   if (pptxUrl.value) URL.revokeObjectURL(pptxUrl.value)
+  if (htmlUrl.value) URL.revokeObjectURL(htmlUrl.value)
   emit('close')
 }
 </script>
@@ -585,6 +602,19 @@ function handleClose() {
   background: #525659;
 }
 
+.preview-html {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+.html-iframe {
+  width: 100%;
+  height: 100%;
+  border: none;
+  background: #fff;
+}
+
 .preview-pptx {
   width: 100%;
   height: 100%;
@@ -609,12 +639,15 @@ function handleClose() {
 .preview-excel {
   width: 100%;
   height: 100%;
+  min-height: 400px;
   overflow: auto;
 }
 
-.preview-excel :deep(.excel-preview) {
+.preview-excel :deep(.excel-preview),
+.preview-excel :deep(.vue-office-excel),
+.preview-excel :deep(.x-spreadsheet) {
   width: 100%;
-  height: 100%;
+  min-height: 400px;
 }
 
 .preview-text {

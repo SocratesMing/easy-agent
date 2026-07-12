@@ -73,7 +73,7 @@ export async function getChatHistory(sessionId) {
   }
 }
 
-export async function sendMessage(sessionId, message, onChunk, signal, enableDeepThink = true, files = [], useKnowledgeBase = false, model = null) {
+export async function sendMessage(sessionId, message, onChunk, signal, enableDeepThink = true, files = [], model = null) {
   const controller = new AbortController()
   const abortSignal = signal || controller.signal
 
@@ -83,7 +83,6 @@ export async function sendMessage(sessionId, message, onChunk, signal, enableDee
       message_id: generateMessageId(),
       enable_deep_think: enableDeepThink,
       files: files,
-      use_knowledge_base: useKnowledgeBase
   }
   if (model) {
     payload.model = model

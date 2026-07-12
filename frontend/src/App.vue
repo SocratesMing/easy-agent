@@ -553,7 +553,7 @@ async function handleTogglePin(sessionId) {
   }
 }
 
-async function handleSendMessage(message, files = [], signal, enableDeepThink = true, enableKnowledgeBase = false) {
+async function handleSendMessage(message, files = [], signal, enableDeepThink = true) {
   const userMsgId = `user-${Date.now()}`
   const preStreamUsage = { ...sessionUsage.value }
   // 记录本次请求开始前已累计的耗时和迭代次数，用于流式过程中实时累加
@@ -1031,7 +1031,7 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
       }
     }
 
-    await sendMessage(currentSessionId.value, message, onChunk, abortSignal, enableDeepThink, files, enableKnowledgeBase, selectedModel.value)
+    await sendMessage(currentSessionId.value, message, onChunk, abortSignal, enableDeepThink, files, selectedModel.value)
 
     await refreshSessionFiles(null, 500)
   } catch (e) {
@@ -1091,7 +1091,8 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
 async function handleToolApproval(decision) {
   if (!pendingApproval.value) return
 
-  const { threadId, assistantMsgId } = pendingApproval.value
+  const currentApproval = pendingApproval.value
+  const { threadId, assistantMsgId } = currentApproval
   const sessionId = currentSessionId.value
 
   const decisions = decision === 'approve'
@@ -1200,7 +1201,7 @@ async function handleToolApproval(decision) {
           b => b.type === 'tool_call' && (b.tool_call_id === data.tool_call_id || b.id === data.tool_call_id)
         )
         if (blk) {
-          blk.result = data.result
+          blk.result = parseMCPResult(data.result || '')
           blk.success = data.success
           blk.duration = data.duration
         }
@@ -1272,6 +1273,11 @@ async function handleToolApproval(decision) {
     const controller = new AbortController()
     currentAbortController.value = controller
 
+    // 恢复期间保持 loading=true，使思考 spinner 与工具"执行中"状态与正常流一致
+    const _resumeIdx = messages.value.findIndex(m => m.id === assistantMsgId)
+    if (_resumeIdx !== -1) {
+      messages.value[_resumeIdx] = { ...messages.value[_resumeIdx], loading: true }
+    }
     await resumeStream(sessionId, threadId, decisions, onChunk, controller.signal)
 
     await loadSessions()
@@ -1285,17 +1291,22 @@ async function handleToolApproval(decision) {
       messages.value[idx] = { ...messages.value[idx] }
     }
   } finally {
-    pendingApproval.value = null
-    isStreaming.value = false
-    currentAbortController.value = null
-    const sid = streamingSessionId.value
-    if (sid && sessionStates.value[sid]) {
-      sessionStates.value[sid].isStreaming = false
-      sessionStates.value[sid].abortController = null
+    // 如果 resumeStream 期间收到了新的 approval_required（onChunk 重新设置了
+    // pendingApproval.value），则不清除，保持 isStreaming=true 等待用户审批
+    const hasNewApproval = pendingApproval.value && pendingApproval.value !== currentApproval
+    if (!hasNewApproval) {
+      pendingApproval.value = null
+      isStreaming.value = false
+      currentAbortController.value = null
+      const sid = streamingSessionId.value
+      if (sid && sessionStates.value[sid]) {
+        sessionStates.value[sid].isStreaming = false
+        sessionStates.value[sid].abortController = null
+      }
+      streamingSessionId.value = null
+      saveCurrentSessionState()
+      await loadSessions()
     }
-    streamingSessionId.value = null
-    saveCurrentSessionState()
-    await loadSessions()
   }
 }
 
@@ -1887,39 +1898,6 @@ html[data-theme="dark"] .upload-btn:hover:not(.disabled) svg {
   color: #ffffff !important;
 }
 
-html[data-theme="dark"] .knowledge-base-btn {
-  background: var(--bg-tertiary) !important;
-  border-color: var(--border-color) !important;
-}
-
-html[data-theme="dark"] .knowledge-base-btn svg {
-  color: var(--text-secondary) !important;
-}
-
-html[data-theme="dark"] .knowledge-base-label {
-  color: var(--text-secondary) !important;
-}
-
-html[data-theme="dark"] .knowledge-base-btn:hover:not(.disabled) {
-  background: rgba(124, 106, 239, 0.15) !important;
-  border-color: rgba(124, 106, 239, 0.4) !important;
-}
-
-html[data-theme="dark"] .knowledge-base-btn:hover:not(.disabled) svg,
-html[data-theme="dark"] .knowledge-base-btn:hover:not(.disabled) .knowledge-base-label {
-  color: #a78bfa !important;
-}
-
-html[data-theme="dark"] .knowledge-base-btn.active {
-  background: linear-gradient(135deg, #7c6aef 0%, #6d28d9 100%) !important;
-  border-color: transparent !important;
-}
-
-html[data-theme="dark"] .knowledge-base-btn.active svg,
-html[data-theme="dark"] .knowledge-base-btn.active .knowledge-base-label {
-  color: #ffffff !important;
-}
-
 html[data-theme="dark"] .tool-btn {
   color: var(--text-secondary) !important;
 }
@@ -2265,32 +2243,6 @@ html[data-theme="dark"] .send-btn {
 
 html[data-theme="dark"] .send-btn.active {
   background: var(--accent-color) !important;
-}
-
-html[data-theme="dark"] .knowledge-base-btn {
-  background: var(--bg-tertiary) !important;
-  border-color: var(--border-color) !important;
-  color: var(--text-primary) !important;
-}
-
-html[data-theme="dark"] .knowledge-base-btn svg,
-html[data-theme="dark"] .knowledge-base-btn .knowledge-base-label {
-  color: var(--text-primary) !important;
-}
-
-html[data-theme="dark"] .knowledge-base-btn.active {
-  background: rgba(124, 106, 239, 0.15) !important;
-  border-color: rgba(124, 106, 239, 0.3) !important;
-  color: var(--accent-color) !important;
-}
-
-html[data-theme="dark"] .knowledge-base-btn.active svg,
-html[data-theme="dark"] .knowledge-base-btn.active .knowledge-base-label {
-  color: var(--accent-color) !important;
-}
-
-html[data-theme="dark"] .knowledge-base-btn.active {
-  background: rgba(124, 106, 239, 0.15) !important;
 }
 
 html[data-theme="dark"] .remove-file-btn {
@@ -2826,34 +2778,7 @@ html[data-theme="dark"] .menu-dropdown,
 html[data-theme="dark"] .user-dropdown,
 html[data-theme="dark"] .modal-content,
 html[data-theme="dark"] .modal-content input,
-html[data-theme="dark"] .chat-input-container .input-box,
-html[data-theme="dark"] .knowledge-base-btn,
-html[data-theme="dark"] .upload-btn,
-html[data-theme="dark"] .send-btn,
-html[data-theme="dark"] .assets-header,
-html[data-theme="dark"] .assets-panel .tabs,
-html[data-theme="dark"] .assets-panel .tab,
-html[data-theme="dark"] .assets-panel .upload-btn,
-html[data-theme="dark"] .assets-panel .refresh-btn,
-html[data-theme="dark"] .assets-panel .file-card,
-html[data-theme="dark"] .assets-panel .dropdown-menu,
-html[data-theme="dark"] .skill-center-header,
-html[data-theme="dark"] .skill-center .tabs,
-html[data-theme="dark"] .skill-center .tab,
-html[data-theme="dark"] .skill-card,
-html[data-theme="dark"] .add-icon-btn,
-html[data-theme="dark"] .popover-card,
-html[data-theme="dark"] .popover-btn,
-html[data-theme="dark"] .workspace-panel,
-html[data-theme="dark"] .wp-header,
-html[data-theme="dark"] .mcp-card,
-html[data-theme="dark"] .prompt-content,
-html[data-theme="dark"] .settings-modal,
-html[data-theme="dark"] .todo-panel,
-html[data-theme="dark"] .todo-badge,
-html[data-theme="dark"] .file-card,
-html[data-theme="dark"] .quick-card,
-html[data-theme="dark"] .scroll-btn {
+html[data-theme="dark"] .chat-input-container .input-box {
   border-color: var(--border-color) !important;
 }
 </style>

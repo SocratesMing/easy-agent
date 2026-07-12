@@ -21,6 +21,9 @@ retry:
 max_steps: 100
 workspace_dir: "./workspace"
 memories_dir: "./memories"
+log_dir: "./logs"             # 日志文件目录（项目相对路径）
+sessions_dir: "./sessions"     # 会话数据存储目录（项目相对路径）
+system_prompt_path: "system_prompt.md"  # System prompt file (same config directory)
 system_prompt_path: "system_prompt.md"
 
 # 外部目录映射：虚拟路径前缀 → 宿主机实际路径
@@ -39,6 +42,7 @@ tools:
   result_log_truncate: 200
   skills_dir: "./skills"
   prompts_dir: "./prompts"
+  read_file_line_limit: 2000
 
 # Preset Questions
 preset_questions:
@@ -67,17 +71,6 @@ database:
     write_timeout: 30
 
 # Vector Store
-vector_store:
-  enabled: false
-  db_path: "./data/chroma_db"
-  collection_name: "easy_agent_docs"
-  embedding_provider: "sentence_transformers"
-  embedding_dimension: 1024
-  batch_size: 32
-  sentence_transformers_model: "Qwen/Qwen3-Embedding-0.6B"
-  zhipu_api_key: ""
-  zhipu_model: "embedding-3"
-
 # 禁止智能体读写的虚拟路径目录列表（通过 permissions deny 规则限制）
 # 支持两种格式：
 #   - 字符串："/strategy-workspace"                       → 默认禁止 read+write

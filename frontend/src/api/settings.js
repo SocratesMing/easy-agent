@@ -45,6 +45,30 @@ export async function updateMcpServers(servers) {
   return await response.json()
 }
 
+export async function addMcpServer(config) {
+  const response = await authFetch(`${API_BASE_URL}/api/settings/mcp/server`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ config }),
+  })
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}))
+    throw new Error(err.detail || '添加 MCP 服务失败')
+  }
+  return await response.json()
+}
+
+export async function deleteMcpServer(name) {
+  const response = await authFetch(`${API_BASE_URL}/api/settings/mcp/server/${encodeURIComponent(name)}`, {
+    method: 'DELETE',
+  })
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}))
+    throw new Error(err.detail || '删除 MCP 服务失败')
+  }
+  return await response.json()
+}
+
 export async function getModels() {
   const response = await authFetch(`${API_BASE_URL}/api/settings/models`)
   if (!response.ok) throw new Error('获取模型列表失败')

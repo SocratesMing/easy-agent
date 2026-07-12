@@ -8,6 +8,8 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
+from langchain_mcp_adapters.client import MultiServerMCPClient
+
 from ..config import Config
 from ..middleware import get_current_username
 from ..skills import discover_skills
@@ -294,4 +296,170 @@ async def update_mcp_servers(
         "servers": list(request.servers.keys()),
         "agents_invalidated": evicted,
         "server_status": server_status,
+    }
+
+
+# ── MCP 单条添加 / 删除（即时同步后端） ────────────────────────────────
+
+
+def _read_user_mcp_raw(username: str, config: Config | None) -> dict[str, Any]:
+    """读取用户专属 mcp.json 原始内容，返回 {"servers": {name: cfg}}。
+
+    文件不存在或格式异常时返回空 servers。
+    """
+    user_mcp_path = Config.get_user_mcp_path(username, config)
+    if not user_mcp_path.exists():
+        return {"servers": {}}
+    try:
+        data = json.loads(user_mcp_path.read_text(encoding="utf-8"))
+        if isinstance(data, dict) and isinstance(data.get("servers"), dict):
+            return data
+    except Exception as e:
+        logger.warning(f"读取用户 mcp.json 失败 | 用户: {username} | {e}")
+    return {"servers": {}}
+
+
+def _write_user_mcp_raw(username: str, config: Config | None, payload: dict[str, Any]) -> Path:
+    """写入用户专属 mcp.json，返回文件路径。"""
+    user_mcp_path = Config.get_user_mcp_path(username, config)
+    user_mcp_path.parent.mkdir(parents=True, exist_ok=True)
+    user_mcp_path.write_text(
+        json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+    return user_mcp_path
+
+
+def _extract_servers(user_config: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """从用户粘贴的 JSON 中提取 {name: cfg} 映射。
+
+    支持三种格式（以 mcp.json 的 servers 结构为基准）：
+      1. {"servers": {"mysql": {...}}}          - 完整 mcp.json 片段
+      2. {"mysql": {...}}                        - 对象格式
+      3. {"name": "mysql", "transport": ...}     - 单条 server
+    """
+    # 格式1: {"servers": {"mysql": {...}}}
+    servers = user_config.get("servers")
+    if isinstance(servers, dict):
+        return {k: v for k, v in servers.items() if isinstance(v, dict)}
+    # 格式3: {"name": "mysql", ...}
+    if "name" in user_config and isinstance(user_config["name"], str):
+        name = user_config["name"]
+        cfg = {k: v for k, v in user_config.items() if k != "name"}
+        return {name: cfg}
+    # 格式2: {"mysql": {...}}
+    return {k: v for k, v in user_config.items() if isinstance(v, dict)}
+
+
+class AddMcpServerRequest(BaseModel):
+    config: dict[str, Any]
+
+
+@router.post("/mcp/server", summary="添加 MCP 服务（按 servers 下的名称判重，即时生效）")
+async def add_mcp_server(
+    request: AddMcpServerRequest,
+    username: Annotated[str, Depends(get_current_username)],
+):
+    """添加一个或多个 MCP server。
+
+    用户粘贴的 JSON 会被解析，以 servers 下的 key 作为 MCP 名称进行判重：
+    若名称已存在则返回 409（不写入）。全部新增成功后立即失效缓存与 Agent，
+    并逐个校验新添加的 server，异常的在前端提示。
+    """
+    _cfg = get_agent_config()
+    config: Config | None = _cfg["config"] if _cfg and _cfg.get("config") else None
+
+    new_servers = _extract_servers(request.config)
+    if not new_servers:
+        raise HTTPException(status_code=400, detail="未找到有效的 server 配置，请检查 JSON 格式")
+
+    raw = _read_user_mcp_raw(username, config)
+    existing: dict[str, Any] = raw.get("servers", {})
+
+    # 判重：以 servers 下的名称识别
+    duplicates = [n for n in new_servers if n in existing]
+    if duplicates:
+        raise HTTPException(
+            status_code=409,
+            detail=f"MCP 服务已存在: {', '.join(duplicates)}（请先删除或改名）",
+        )
+
+    # 合并写入
+    existing.update(new_servers)
+    raw["servers"] = existing
+    user_mcp_path = _write_user_mcp_raw(username, config, raw)
+    logger.info(
+        f"添加 MCP | 用户: {username} | 新增: {list(new_servers.keys())} | "
+        f"总数: {len(existing)} | 路径: {user_mcp_path}"
+    )
+
+    # 失效 MCP 工具缓存 + 该用户已缓存 Agent，使下次请求重建并加载新 MCP
+    invalidate_mcp_cache(username)
+    evicted = invalidate_user_agents(username)
+
+    # 仅校验新添加的 server
+    server_status = []
+    try:
+        all_config = load_mcp_config(username)
+        for name in new_servers:
+            cfg = all_config.get(name)
+            if not cfg:
+                continue
+            single = {name: cfg}
+            try:
+                client = MultiServerMCPClient(single)
+                tools = await client.get_tools()
+                server_status.append({"name": name, "status": "ok", "tools_count": len(tools), "error": ""})
+                logger.info(f"MCP 校验 | {name} ✅ 成功 ({len(tools)} 工具)")
+            except Exception as e:
+                server_status.append({"name": name, "status": "error", "tools_count": 0, "error": str(e)})
+                logger.warning(f"MCP 校验 | {name} ❌ 失败: {e}")
+    except Exception as e:
+        logger.warning(f"MCP 校验失败 | 用户: {username} | {e}")
+
+    return {
+        "status": "ok",
+        "added": list(new_servers.keys()),
+        "servers": list(existing.keys()),
+        "path": str(user_mcp_path),
+        "agents_invalidated": evicted,
+        "server_status": server_status,
+    }
+
+
+@router.delete("/mcp/server/{name}", summary="删除指定 MCP 服务（即时同步后端）")
+async def delete_mcp_server(
+    name: str,
+    username: Annotated[str, Depends(get_current_username)],
+):
+    """按 servers 下的名称删除单个 MCP server。
+
+    删除后立即失效缓存与 Agent，下次请求不会再加载该 MCP。
+    """
+    _cfg = get_agent_config()
+    config: Config | None = _cfg["config"] if _cfg and _cfg.get("config") else None
+
+    raw = _read_user_mcp_raw(username, config)
+    existing: dict[str, Any] = raw.get("servers", {})
+
+    if name not in existing:
+        raise HTTPException(status_code=404, detail=f"MCP 服务不存在: {name}")
+
+    existing.pop(name, None)
+    raw["servers"] = existing
+    user_mcp_path = _write_user_mcp_raw(username, config, raw)
+    logger.info(
+        f"删除 MCP | 用户: {username} | 删除: {name} | 剩余: {list(existing.keys())} | "
+        f"路径: {user_mcp_path}"
+    )
+
+    # 失效 MCP 工具缓存 + 该用户已缓存 Agent，使下次请求不再加载已删除的 MCP
+    invalidate_mcp_cache(username)
+    evicted = invalidate_user_agents(username)
+
+    return {
+        "status": "ok",
+        "deleted": name,
+        "servers": list(existing.keys()),
+        "path": str(user_mcp_path),
+        "agents_invalidated": evicted,
     }
