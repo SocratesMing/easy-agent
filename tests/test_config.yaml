@@ -1,0 +1,67 @@
+# Easy Agent 测试专用配置
+# 路径均使用 ${ENV} 占位符，由 tests/conftest.py 在导入 app 之前注入临时目录，
+# 避免依赖宿主机真实配置与外部服务。
+
+# LLM 配置（/api/config、/api/auth/config 等会读取）
+llm:
+  provider: "deepseek"
+  model: "deepseek-v4-flash"
+  api_key: "sk-test-not-real"
+  api_base: "https://api.deepseek.com"
+  max_input_tokens: 200000
+  protocol: "openai"
+
+model: "deepseek"
+
+models:
+  deepseek:
+    provider: "deepseek"
+    protocol: "openai"
+    model: "deepseek-v4-flash"
+    api_key: "sk-test-not-real"
+    api_base: "https://api.deepseek.com"
+    max_input_tokens: 200000
+
+retry:
+  enabled: true
+  max_retries: 3
+
+max_steps: 100
+
+agent:
+  max_steps: 100
+  default_username: "testuser"
+
+workspace_dir: "${TEST_WORKSPACE_DIR}"
+memories_dir: "${TEST_MEMORIES_DIR}"
+log_dir: "${TEST_LOG_DIR}"
+sessions_dir: "${TEST_SESSIONS_DIR}"
+system_prompt_path: "${TEST_SYSTEM_PROMPT}"
+
+external_dirs: {}
+
+summarization:
+  enabled: true
+  compression_threshold: 0.8
+  compression_target: 0.1
+
+tools:
+  result_log_truncate: 200
+  skills_dir: "${TEST_SKILLS_DIR}"
+  prompts_dir: "${TEST_PROMPTS_DIR}"
+  read_file_line_limit: 2000
+
+database:
+  type: "sqlite"
+  sqlite:
+    path: "${TEST_DB_PATH}"
+  mysql:
+    host: "127.0.0.1"
+    port: 3306
+    user: "root"
+    password: "Test1234"
+    database: "agent"
+    charset: "utf8mb4"
+
+denied_dirs: []
+preset_questions: []

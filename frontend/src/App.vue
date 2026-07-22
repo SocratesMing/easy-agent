@@ -10,6 +10,7 @@
         v-show="!isSidebarCollapsed"
         :sessions="sessions"
         :currentSessionId="currentSessionId"
+        :streamingSessionId="streamingSessionId"
         :username="userProfile.username"
         :organizationId="userProfile.organization_id"
         :email="userProfile.email"
@@ -442,6 +443,9 @@ async function handleCreateSession() {
 
   showAssets.value = false
   showSkillCenter.value = false
+  showScheduledTasks.value = false
+  showUserProfile.value = false
+  showSettingsPanel.value = false
   currentSessionId.value = null
   messages.value = []
   currentTodos.value = []
@@ -1192,6 +1196,19 @@ async function handleToolApproval(decision) {
             step: data.step,
           })
           messages.value[idx] = { ...messages.value[idx], blocks: [...messages.value[idx].blocks] }
+        } else if (data.arguments && typeof data.arguments === 'object' && Object.keys(data.arguments).length > 0) {
+          // 后端流式累积工具参数，可能重新推送 tool_call 事件覆盖不完整的参数
+          // 块已存在时更新 arguments 字段（仅当新参数非空时覆盖，避免用 {} 冲掉完整参数）
+          const newArgs = (data.arguments !== undefined && data.arguments !== null &&
+            !(typeof data.arguments === 'object' && Object.keys(data.arguments).length === 0))
+            ? data.arguments
+            : existing.arguments
+          const updateIdx = messages.value[idx].blocks.indexOf(existing)
+          if (updateIdx !== -1) {
+            messages.value[idx].blocks[updateIdx].arguments = newArgs
+            messages.value[idx].blocks[updateIdx].tool_name = data.tool_name || existing.tool_name
+            messages.value[idx] = { ...messages.value[idx], blocks: [...messages.value[idx].blocks] }
+          }
         }
       }
     } else if (eventType === 'tool_result') {
@@ -1204,6 +1221,11 @@ async function handleToolApproval(decision) {
           blk.result = parseMCPResult(data.result || '')
           blk.success = data.success
           blk.duration = data.duration
+          // 合并工具参数（后端 tool_result 事件可能携带完整参数）
+          if (data.arguments !== undefined && data.arguments !== null &&
+              !(typeof data.arguments === 'object' && Object.keys(data.arguments).length === 0)) {
+            blk.arguments = data.arguments
+          }
         }
         messages.value[idx] = { ...messages.value[idx], blocks: [...messages.value[idx].blocks] }
       }
@@ -1220,6 +1242,9 @@ async function handleToolApproval(decision) {
       if (typeof data.step_count === 'number') {
         iterationCount.value = data.step_count
       }
+    } else if (eventType === 'todo_list') {
+      // HITL 恢复阶段后端会推送 write_todos 更新，需同步刷新进度卡片
+      currentTodos.value = data.todos
     } else if (eventType === 'approval_required') {
       // 嵌套审批
       pendingApproval.value = {
@@ -1277,6 +1302,20 @@ async function handleToolApproval(decision) {
     const _resumeIdx = messages.value.findIndex(m => m.id === assistantMsgId)
     if (_resumeIdx !== -1) {
       messages.value[_resumeIdx] = { ...messages.value[_resumeIdx], loading: true }
+    }
+    // 将人工介入（审批决策）记录为一条消息，便于持久化后回顾
+    const aIdx = messages.value.findIndex(m => m.id === assistantMsgId)
+    if (aIdx !== -1) {
+      const interventionText = decision === 'approve'
+        ? '✅ 用户已批准该操作'
+        : '❌ 用户已拒绝该操作：请勿重试此删除命令。'
+      messages.value.splice(aIdx, 0, {
+        id: 'hitl-intervention-' + threadId + '-' + Date.now(),
+        role: 'user',
+        content: interventionText,
+        created_at: new Date().toISOString(),
+        loading: false,
+      })
     }
     await resumeStream(sessionId, threadId, decisions, onChunk, controller.signal)
 
@@ -1401,9 +1440,9 @@ async function handleRemoveFile(message, messageIndex, file) {
 onMounted(async () => {
   window.addEventListener(AUTH_EXPIRED_EVENT, handleLogout)
   await loadUserProfile()
-  // 拉取可选模型列表（不阻塞会话加载）
-  loadModels()
   if (!showWelcome.value) {
+    // 拉取可选模型列表（不阻塞会话加载）
+    loadModels()
     await loadSessions()
     if (sessions.value.length > 0) {
       currentSessionId.value = sessions.value[0].session_id
@@ -2323,14 +2362,39 @@ html[data-theme="dark"] .file-type {
   color: var(--text-primary) !important;
 }
 
-/* 快捷卡片 */
-html[data-theme="dark"] .quick-card {
+/* 预设问题卡片堆叠 */
+html[data-theme="dark"] .preset-card {
   background: var(--bg-secondary) !important;
   border-color: var(--border-color) !important;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4) !important;
 }
 
-html[data-theme="dark"] .quick-card span {
+html[data-theme="dark"] .preset-card.is-front {
+  border-color: var(--accent-color, #0ea5e9) !important;
+  box-shadow: 0 10px 30px rgba(14, 165, 233, 0.25) !important;
+}
+
+html[data-theme="dark"] .preset-card-text {
   color: var(--text-primary) !important;
+}
+
+html[data-theme="dark"] .preset-card-index,
+html[data-theme="dark"] .preset-card-foot {
+  color: var(--text-muted) !important;
+}
+
+html[data-theme="dark"] .preset-nav-btn {
+  background: var(--bg-secondary) !important;
+  border-color: var(--border-color) !important;
+  color: var(--text-primary) !important;
+}
+
+html[data-theme="dark"] .preset-dot {
+  background: var(--border-color) !important;
+}
+
+html[data-theme="dark"] .preset-dot.active {
+  background: var(--accent-color, #0ea5e9) !important;
 }
 
 /* 滚动按钮 */

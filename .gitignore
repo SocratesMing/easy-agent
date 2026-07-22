@@ -51,3 +51,10 @@ node_modules/
 
 # Local config with secrets (use config-example.yaml as template)
 easy_agent/config/config.yaml
+
+# 离线依赖制品（脚本生成的大体积 wheel/tgz 缓存）
+offline_deps/
+
+# IDE 智能体工作目录（含跨会话记忆，勿提交）
+.codebuddy/
+.codebuddy/

@@ -1,75 +1,130 @@
-# ===== 开发环境配置 =====
+# Easy Agent Configuration
+#
+# Configuration File Locations (in priority order):
+# 1) easy_agent/config/config.yaml - Development mode (current directory)
+# 2) ~/.easy-agent/config/config.yaml - User config directory
+# 3) <package>/easy_agent/config/config.yaml - Package installation directory
 
-# LLM Configuration
+# ===== LLM Configuration =====
+# Select which model to use: minimax | deepseek
 model: "deepseek"
 
+# Provider-specific configurations
 models:
+  minimax:
+    provider: "minimax"
+    protocol: "anthropic"  # anthropic or openai
+    api_key: "${MINIMAX_API_KEY}"
+    model: "MiniMax-M3"
+    api_base: "https://api.minimaxi.com/anthropic"  # China users; Global: https://api.minimax.io/anthropic
+    max_input_tokens: 200000  # Model context window size, used for summarization threshold calculation
+ 
   deepseek:
     provider: "deepseek"
-    protocol: "openai"
+    protocol: "openai"  # anthropic or openai
     model: "deepseek-v4-flash"
     api_key: "${DEEPSEEK_API_KEY}"
     api_base: "https://api.deepseek.com"
     max_input_tokens: 200000
+  
+  ark:
+    provider: "ark"
+    protocol: "openai"  # anthropic or openai
+    model: "deepseek-v4-pro"
+    api_key: "${ARK_API_KEY}"
+    api_base: "https://ark.cn-beijing.volces.com/api/coding/v3"
+    max_input_tokens: 200000
 
-# Retry
+  glm:
+    provider: "glm"
+    protocol: "openai"  # anthropic or openai
+    model: "glm5"
+    api_key: "${GLM_API_KEY}"
+    api_base: "https://open.bigmodel.cn/api/paas/v4"
+    max_input_tokens: 128000
+
+# ===== Retry Configuration =====
 retry:
-  enabled: true
-  max_retries: 1
+  enabled: true           # Enable retry mechanism
+  max_retries: 3          # Maximum number of retries
 
-# Agent
-max_steps: 20
-workspace_dir: "./workspace"
-memories_dir: "./memories"
+# ===== Agent Configuration =====
+max_steps: 100  # Maximum execution steps
+workspace_dir: "./workspace"  # Working directory (project-relative). 实际路径会按用户/会话隔离：{workspace_dir}/{username}/{session_dir}
+memories_dir: "./memories"    # Long-term memory directory (project-relative). 实际路径：{memories_dir}/{username}/AGENTS.md
 log_dir: "./logs"             # 日志文件目录（项目相对路径）
 sessions_dir: "./sessions"     # 会话数据存储目录（项目相对路径）
 system_prompt_path: "system_prompt.md"  # System prompt file (same config directory)
-system_prompt_path: "system_prompt.md"
 
 # 外部目录映射：虚拟路径前缀 → 宿主机实际路径
+# 将 skill 需要访问的宿主机目录挂载为虚拟路径路由，使文件工具能通过虚拟路径访问
 external_dirs:
   "/strategy-workspace": "/home/sututu/code/finance-skills/fast_backtest/workspace"
 
-# Summarization
+# ===== Summarization Configuration =====
+# Auto-compress conversation context when token usage exceeds threshold
 summarization:
-  enabled: true
-  compression_threshold: 0.8
-  compression_target: 0.1
+  enabled: true                    # Enable context compression
+  compression_threshold: 0.8       # Trigger compression at 80% of context window
+  compression_target: 0.1          # Keep 10% of context window after compression
 
-# Tools
+# ===== Tools Configuration =====
 tools:
-  result_log_truncate: 500
-  skills_dir: "./skills"
-  prompts_dir: "./prompts"
-  read_file_line_limit: 2000
+  result_log_truncate: 200  # 工具结果在日志中的截断字符数（默认 200）
+  skills_dir: "./skills"   # Skills directory path
+  prompts_dir: "./prompts" # Prompts directory path (for forex, bloom, etc.)
+  read_file_line_limit: 2000  # read_file 内置工具每次读取的行数（默认 2000）
 
-# Preset Questions
+# ===== Preset Questions =====
+# Quick action questions shown on the welcome screen
 preset_questions:
-  - "开发测试问题"
+  - category: "文档处理"
+    icon: "📄"
+    questions:
+      - "帮我创建一份智能体介绍的docx,ppt和pdf文件"
+      - "帮我生成一份金融量化的pptx"
+      - "总结这份PDF的核心要点"
+  - category: "量化策略"
+    icon: "📈"
+    questions:
+      - "帮我生成一个策略如下： 1、交易货币：EUR/USD， 2、周期：采用1小时图作为主信号周期， 3、核心指标包括：集合EMA(20)、MACD指实现入开仓； 4、止盈止损：止盈采用固定40点，止损采用固定100点。 5、持仓时间：无限制 6、回测区间 2021-01-01 至 2021-03-31 不需要回测，生成策略即可"
+      - "解释一下什么是动量策略"
+      - "帮我写一个双均线交叉策略"
+  - category: "信息查询"
+    icon: "🔍"
+    questions:
+      - "今天A股哪些板块比较强势？"
+      - "帮我查一下贵州茅台的最新财报"
+      - "解释一下MACD指标的原理"
 
-# Database - 开发环境使用 SQLite
+# ===== Database Configuration =====
+# Supports SQLite (local) or MySQL (remote)
 database:
-  type: "sqlite"
+  type: "mysql"
+  
   sqlite:
-    path: "./data/easy_agent_dev.db"
+    path: "./data/easy_agent.db"
+  
   mysql:
     host: "127.0.0.1"
     port: 3306
     user: "root"
-    password: ""
-    database: "agent_dev"
-    charset: "utf8mb4"
+    password: "${MYSQL_PASSWORD}"
+    database: "agent"
+    charset: "utf8mb4" 
     pool:
-      pool_size: 2
-      max_overflow: 3
+      pool_size: 5
+      max_overflow: 10
       pool_timeout: 30
       pool_recycle: 3600
     connect_timeout: 10
     read_timeout: 30
     write_timeout: 30
 
-# Vector Store
+# ===== Vector Store Configuration (Chroma + Sentence Transformers) =====
 # 禁止智能体读写的虚拟路径目录列表（通过 permissions deny 规则限制）
+# 路径必须是虚拟路径（以 / 开头），且必须是 CompositeBackend 已挂载的 route 前缀。
+# 系统会自动为路径补充 /** glob 通配符递归匹配子目录。
 # 支持两种格式：
 #   - 字符串："/strategy-workspace"                       → 默认禁止 read+write
 #   - 字典：  {path: "/user-skills", operations: ["write"]} → 只禁止指定操作

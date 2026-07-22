@@ -228,6 +228,88 @@ async def build_context_messages(
     return current_message
 
 
+def format_sse(data: dict) -> str:
+    """将事件数据序列化为 SSE 格式字符串。"""
+    return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+def tool_call_records_to_dicts(records: list, result_limit: int = 5000) -> list[dict]:
+    """将工具调用记录转为可序列化 dict 列表。
+
+    records 中每个元素为 7 元组：
+        [0]=tool_name, [1]=tool_call_id, [2]=arguments, [3]=result,
+        [4]=success, [5]=duration, [6]=step
+    result_limit 控制 result 字段保留的字符数（None 表示不截断）。
+    """
+    dicts = []
+    for tc in records:
+        result = tc[3]
+        if result_limit is None:
+            result = str(result)
+        elif isinstance(result, str):
+            result = result[:result_limit]
+        else:
+            result = str(result)[:result_limit]
+        dicts.append(
+            {
+                "tool_name": tc[0],
+                "tool_call_id": tc[1],
+                "arguments": tc[2],
+                "result": result,
+                "success": tc[4],
+                "duration": tc[5],
+                "step": tc[6],
+            }
+        )
+    return dicts
+
+
+def build_assistant_message_dict(
+    *,
+    content: str,
+    thinking: str,
+    thinking_duration,
+    tool_call_records: list,
+    blocks: list,
+    input_tokens: int,
+    output_tokens: int,
+    total_tokens: int,
+    context_tokens: int,
+    elapsed_time: float,
+    step_count: int,
+    result_limit: int = 5000,
+) -> dict:
+    """构建用于持久化/返回的 assistant 消息字典（常规结束、HITL 中断、取消等场景共用）。"""
+    return {
+        "role": "assistant",
+        "content": content or "",
+        "timestamp": datetime.now().isoformat(),
+        "thinking": thinking or None,
+        "thinking_duration": thinking_duration or None,
+        "tool_calls": tool_call_records_to_dicts(tool_call_records, result_limit) or None,
+        "blocks": blocks or None,
+        "usage": {
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": total_tokens,
+            "context_tokens": context_tokens if context_tokens > 0 else input_tokens,
+            "elapsed_time": round(elapsed_time, 2),
+            "step_count": step_count,
+        },
+    }
+
+
+def parse_tool_args(args_str: str) -> dict:
+    """解析工具调用参数 JSON 字符串为 dict；标量值包装为 {"value": ...}；解析失败返回 {}。"""
+    if not args_str:
+        return {}
+    try:
+        parsed = json.loads(args_str)
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {"value": parsed}
+
+
 async def chat_stream_generator(
     request: ChatRequest,
     db: Database,
@@ -248,16 +330,26 @@ async def chat_stream_generator(
         ws = agent.workspace_dir.absolute().as_posix()
         message_content = f"[workspace: {agent.workspace_virtual_path}/ | shell: cd {ws}]\n{message_content}"
 
-    # 加载当前会话的工作区记忆（memory.md），在后续输入时提供历史记忆上下文
-    # 首轮对话时 memory.md 不存在，返回空字符串，不影响流程
+    # 加载记忆上下文：
+    # - 长期记忆（memories/{username}/AGENTS.md）：跨会话用户偏好与经验，始终加载
+    # - 会话记忆（workspace/.../memory.md）：当前会话历史经验，首轮对话时不存在
     if agent:
+        long_term_memory = agent.load_long_term_memory()
         session_memory = agent.load_session_memory()
+        memory_parts = []
+        if long_term_memory:
+            memory_parts.append(f"[长期记忆 - 用户偏好与跨会话经验]:\n{long_term_memory}")
         if session_memory:
+            memory_parts.append(f"[会话记忆 - 当前会话的历史经验总结]:\n{session_memory}")
+        if memory_parts:
             message_content = (
-                f"[会话记忆 - 当前会话的历史经验总结]:\n{session_memory}\n\n"
-                f"---\n\n{message_content}"
+                "\n\n---\n\n".join(memory_parts)
+                + f"\n\n---\n\n{message_content}"
             )
-            logger.info(f"[{sid}] 🧠 已注入会话记忆上下文 | 长度: {len(session_memory)} 字符")
+            logger.info(
+                f"[{sid}] 🧠 已注入记忆上下文 | "
+                f"长期: {len(long_term_memory)} 字符 | 会话: {len(session_memory)} 字符"
+            )
 
     if session_id and db:
         message_content = await build_context_messages(
@@ -285,13 +377,7 @@ async def chat_stream_generator(
         f"[{sid}] 开始流式响应 | workspace: {ws_info} | message: {message_content[:50]}{'...' if len(message_content) > 50 else ''} | 用户: {username}"
     )
 
-    def format_sse(data: dict) -> str:
-        return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
-
     try:
-
-        def _sse(data: dict) -> str:
-            return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
 
         yield format_sse({"type": "start", "session_id": session_id})
 
@@ -360,19 +446,7 @@ async def chat_stream_generator(
                 "timestamp": datetime.now().isoformat(),
                 "thinking": accumulated_thinking or None,
                 "thinking_duration": None,
-                "tool_calls": [
-                    {
-                        "tool_name": tc[0],
-                        "tool_call_id": tc[1],
-                        "arguments": tc[2],
-                        "result": str(tc[3])[:5000],
-                        "success": tc[4],
-                        "duration": tc[5],
-                        "step": tc[6],
-                    }
-                    for tc in tool_call_records
-                ]
-                or None,
+                "tool_calls": tool_call_records_to_dicts(tool_call_records) or None,
                 "blocks": blocks or None,
             }
 
@@ -405,7 +479,7 @@ async def chat_stream_generator(
             cumulative = pre_session_tokens + inp + out
             # context_tokens: 当前上下文窗口占用（最后一次 API 调用的 input_tokens）
             ctx_tokens = last_context_tokens if last_context_tokens > 0 else inp
-            return _sse(
+            return format_sse(
                 {
                     "type": "token_usage",
                     "input_tokens": inp,
@@ -438,7 +512,7 @@ async def chat_stream_generator(
                     "step": step,
                 }
             )
-            return _sse({"type": "thinking_start", "content": "", "step": step})
+            return format_sse({"type": "thinking_start", "content": "", "step": step})
 
         def _end_thinking(step: int):
             nonlocal is_in_thinking, thinking_end_time, thinking_step_start_len
@@ -479,7 +553,7 @@ async def chat_stream_generator(
                     blk["duration"] = duration
                     break
             is_in_thinking = False
-            return _sse({"type": "thinking_end", "duration": duration, "step": step})
+            return format_sse({"type": "thinking_end", "duration": duration, "step": step})
 
         def _end_thinking_if_needed():
             nonlocal is_in_thinking
@@ -543,7 +617,7 @@ async def chat_stream_generator(
                 + total_usage["input_tokens"]
                 + total_usage["output_tokens"]
             )
-            token_sse = _sse(
+            token_sse = format_sse(
                 {
                     "type": "token_usage",
                     "input_tokens": total_usage["input_tokens"],
@@ -719,7 +793,7 @@ async def chat_stream_generator(
                         _log_step_start(current_step, "思考")
                         yield _start_thinking(current_step)
                     accumulated_thinking += rc
-                    yield _sse(
+                    yield format_sse(
                         {"type": "thinking", "content": rc, "step": current_step}
                     )
 
@@ -739,7 +813,7 @@ async def chat_stream_generator(
                     if content_start_time is None:
                         content_start_time = time.time()
                     accumulated_response += content
-                    yield _sse({"type": "content", "content": content})
+                    yield format_sse({"type": "content", "content": content})
                     tu = _token_event()
                     if tu:
                         yield tu
@@ -790,19 +864,8 @@ async def chat_stream_generator(
 
                         tool_call_accumulated_args_str[tid] = pending_prefix + args_str
 
-                        args_data = {}
                         full_args = tool_call_accumulated_args_str[tid]
-                        if full_args:
-                            try:
-                                parsed = json.loads(full_args)
-                                args_data = (
-                                    parsed
-                                    if isinstance(parsed, dict)
-                                    else {"value": parsed}
-                                )
-                            except json.JSONDecodeError:
-                                args_data = {}
-
+                        args_data = parse_tool_args(full_args)
                         tool_call_accumulated_args[tid] = args_data
                         emitted_tool_call_ids.add(tid)
 
@@ -819,7 +882,7 @@ async def chat_stream_generator(
                             }
                         )
 
-                        yield _sse(
+                        yield format_sse(
                             {
                                 "type": "tool_call",
                                 "tool_name": tool_name,
@@ -838,7 +901,7 @@ async def chat_stream_generator(
                                 )
                                 _persist_todos(todos)
                                 _todo_emitted_for.add(tid)
-                                yield _sse(
+                                yield format_sse(
                                     {
                                         "type": "todo_list",
                                         "todos": todos,
@@ -874,6 +937,16 @@ async def chat_stream_generator(
                                         blk["arguments"] = args_data
                                         break
 
+                                # 重新推送 tool_call 事件，确保前端获取完整参数
+                                # （首个 chunk 的 tool_call 事件可能参数为空）
+                                yield format_sse({
+                                    "type": "tool_call",
+                                    "tool_name": tool_call_id_to_name.get(resolved_tid, ""),
+                                    "tool_call_id": resolved_tid,
+                                    "arguments": args_data,
+                                    "step": current_step,
+                                })
+
                                 tool_name = tool_call_id_to_name[resolved_tid]
                                 if tool_name == "write_todos":
                                     todos = (
@@ -887,7 +960,7 @@ async def chat_stream_generator(
                                         )
                                         _persist_todos(todos)
                                         _todo_emitted_for.add(resolved_tid)
-                                        yield _sse(
+                                        yield format_sse(
                                             {
                                                 "type": "todo_list",
                                                 "todos": todos,
@@ -975,7 +1048,7 @@ async def chat_stream_generator(
                 # 下一个 AIMessageChunk 将开启一个新的 step
                 step_advanced_this_round = False
 
-                yield _sse(
+                yield format_sse(
                     {
                         "type": "tool_result",
                         "tool_name": tool_name,
@@ -1010,7 +1083,7 @@ async def chat_stream_generator(
                         logger.info(f"[{sid}] 📋 Todo list | items: {len(todos)}")
                         _persist_todos(todos)
                         _todo_emitted_for.add(resolved_tid)
-                        yield _sse(
+                        yield format_sse(
                             {
                                 "type": "todo_list",
                                 "todos": todos,
@@ -1113,7 +1186,7 @@ async def chat_stream_generator(
 
         # 发送 content_end
         if accumulated_response:
-            yield _sse({"type": "content_end", "content": ""})
+            yield format_sse({"type": "content_end", "content": ""})
 
         # ── HITL: 检测中断（文件删除审批） ────────────────────────────
         try:
@@ -1139,42 +1212,26 @@ async def chat_stream_generator(
                             break
                     # 保存部分 assistant 消息（复用取消路径模式）
                     partial_elapsed = time.time() - start_time
-                    partial_msg = {
-                        "role": "assistant",
-                        "content": accumulated_response if accumulated_response else "",
-                        "timestamp": datetime.now().isoformat(),
-                        "thinking": accumulated_thinking if accumulated_thinking else None,
-                        "thinking_duration": None,
-                        "tool_calls": [
-                            {
-                                "tool_name": tc[0],
-                                "tool_call_id": tc[1],
-                                "arguments": tc[2],
-                                "result": str(tc[3])[:5000],
-                                "success": tc[4],
-                                "duration": tc[5],
-                                "step": tc[6],
-                            }
-                            for tc in tool_call_records
-                        ]
-                        if tool_call_records
-                        else None,
-                        "blocks": blocks if blocks else None,
-                        "usage": {
-                            "input_tokens": total_usage.get("input_tokens", 0),
-                            "output_tokens": total_usage.get("output_tokens", 0),
-                            "total_tokens": total_usage.get("total_tokens", 0),
-                            "elapsed_time": round(partial_elapsed, 2),
-                            "step_count": current_step,
-                        },
-                    }
+                    partial_msg = build_assistant_message_dict(
+                        content=accumulated_response,
+                        thinking=accumulated_thinking,
+                        thinking_duration=None,
+                        tool_call_records=tool_call_records,
+                        blocks=blocks,
+                        input_tokens=total_usage.get("input_tokens", 0),
+                        output_tokens=total_usage.get("output_tokens", 0),
+                        total_tokens=total_usage.get("total_tokens", 0),
+                        context_tokens=last_context_tokens,
+                        elapsed_time=partial_elapsed,
+                        step_count=current_step,
+                    )
                     db.update_last_assistant_message(session_id, partial_msg)
                     db.update_last_assistant_message_row(session_id, partial_msg)
                     logger.info(
                         f"[{sid}] 🔔 HITL 中断 | thread_id={thread_id} | "
                         f"{len(action_requests)} 个操作待审批"
                     )
-                    yield _sse(
+                    yield format_sse(
                         {
                             "type": "approval_required",
                             "thread_id": thread_id,
@@ -1261,34 +1318,20 @@ async def chat_stream_generator(
             logger.info(f"[{sid}] 💬 回复内容(前200字):\n{accumulated_response[:200]}")
 
         # 持久化最终消息
-        assistant_message = {
-            "role": "assistant",
-            "content": accumulated_response or "",
-            "timestamp": datetime.now().isoformat(),
-            "thinking": accumulated_thinking or None,
-            "thinking_duration": thinking_time or None,
-            "tool_calls": [
-                {
-                    "tool_name": tc[0],
-                    "tool_call_id": tc[1],
-                    "arguments": tc[2],
-                    "result": tc[3],
-                    "success": tc[4],
-                    "duration": tc[5],
-                    "step": tc[6],
-                }
-                for tc in tool_call_records
-            ]
-            or None,
-            "blocks": blocks or None,
-            "usage": {
-                "input_tokens": inp_tokens,
-                "output_tokens": out_tokens,
-                "total_tokens": sum_tokens,
-                "elapsed_time": round(elapsed_time, 2),
-                "step_count": current_step,
-            },
-        }
+        assistant_message = build_assistant_message_dict(
+            content=accumulated_response,
+            thinking=accumulated_thinking,
+            thinking_duration=thinking_time,
+            tool_call_records=tool_call_records,
+            blocks=blocks,
+            input_tokens=inp_tokens,
+            output_tokens=out_tokens,
+            total_tokens=sum_tokens,
+            context_tokens=last_context_tokens,
+            elapsed_time=elapsed_time,
+            step_count=current_step,
+            result_limit=None,
+        )
         db.update_last_assistant_message(session_id, assistant_message)
         db.update_last_assistant_message_row(session_id, assistant_message)
 
@@ -1316,18 +1359,7 @@ async def chat_stream_generator(
                         "thinking": accumulated_thinking or None,
                         "thinking_duration": thinking_time,
                     },
-                    "tool_calls": [
-                        {
-                            "tool_name": tc[0],
-                            "tool_call_id": tc[1],
-                            "arguments": tc[2],
-                            "result": str(tc[3])[:1000],
-                            "success": tc[4],
-                            "duration": tc[5],
-                            "step": tc[6],
-                        }
-                        for tc in tool_call_records
-                    ],
+                    "tool_calls": tool_call_records_to_dicts(tool_call_records, 1000),
                 },
             }
             with open(context_path, "w", encoding="utf-8") as f:
@@ -1363,7 +1395,7 @@ async def chat_stream_generator(
         # 1. 根据本轮对话内容按场景更新会话记忆（重复场景更新经验，新场景添加章节）
         # 2. 确保记忆文件不超过 2000 字符，超限时自动压缩
         # 注意：此更新在 workspace rename 之后执行，确保 memory.md 写入最终目录
-        if agent and agent.session_memory_file:
+        if agent and agent.memory_file:
             try:
                 from .memory_manager import update_memory_after_session
 
@@ -1377,14 +1409,14 @@ async def chat_stream_generator(
                 # 使用原始用户输入（不含注入的记忆前缀）作为记忆提取素材
                 raw_user_msg = parsed_content or request.message
                 updated = update_memory_after_session(
-                    agent.session_memory_file,
+                    agent.memory_file,
                     user_message=raw_user_msg,
                     assistant_response=accumulated_response,
                     llm=session_llm,
                 )
                 if updated:
                     logger.info(
-                        f"[{sid}] 🧠 会话记忆已更新 | 文件: {agent.session_memory_file} | "
+                        f"[{sid}] 🧠 会话记忆已更新 | 文件: {agent.memory_file} | "
                         f"上限 2000 字符"
                     )
                     # 记忆更新后使 Agent 缓存失效，下次发消息时重建 Agent 以加载新记忆
@@ -1401,18 +1433,7 @@ async def chat_stream_generator(
 
         # Session logger
         if session_logger:
-            tool_calls_for_log = [
-                {
-                    "tool_name": tc[0],
-                    "tool_call_id": tc[1],
-                    "arguments": tc[2],
-                    "result": str(tc[3])[:1000],
-                    "success": tc[4],
-                    "duration": tc[5],
-                    "step": tc[6],
-                }
-                for tc in tool_call_records
-            ] or None
+            tool_calls_for_log = tool_call_records_to_dicts(tool_call_records, 1000) or None
             session_logger.log_assistant_response(
                 content=accumulated_response,
                 thinking=accumulated_thinking or None,
@@ -1431,7 +1452,7 @@ async def chat_stream_generator(
             else inp_tokens,
             "step_count": current_step,
         }
-        yield _sse(
+        yield format_sse(
             {
                 "type": "done",
                 "session_id": session_id,
@@ -1448,35 +1469,19 @@ async def chat_stream_generator(
             f"思考中={is_in_thinking}"
         )
         try:
-            partial_msg = {
-                "role": "assistant",
-                "content": accumulated_response if accumulated_response else "",
-                "timestamp": datetime.now().isoformat(),
-                "thinking": accumulated_thinking if accumulated_thinking else None,
-                "thinking_duration": None,
-                "tool_calls": [
-                    {
-                        "tool_name": tc[0],
-                        "tool_call_id": tc[1],
-                        "arguments": tc[2],
-                        "result": str(tc[3])[:5000],
-                        "success": tc[4],
-                        "duration": tc[5],
-                        "step": tc[6],
-                    }
-                    for tc in tool_call_records
-                ]
-                if tool_call_records
-                else None,
-                "blocks": blocks if blocks else None,
-                "usage": {
-                    "input_tokens": total_usage.get("input_tokens", 0),
-                    "output_tokens": total_usage.get("output_tokens", 0),
-                    "total_tokens": total_usage.get("total_tokens", 0),
-                    "elapsed_time": round(time.time() - start_time, 2),
-                    "step_count": current_step,
-                },
-            }
+            partial_msg = build_assistant_message_dict(
+                content=accumulated_response,
+                thinking=accumulated_thinking,
+                thinking_duration=None,
+                tool_call_records=tool_call_records,
+                blocks=blocks,
+                input_tokens=total_usage.get("input_tokens", 0),
+                output_tokens=total_usage.get("output_tokens", 0),
+                total_tokens=total_usage.get("total_tokens", 0),
+                context_tokens=last_context_tokens,
+                elapsed_time=time.time() - start_time,
+                step_count=current_step,
+            )
             db.update_last_assistant_message(session_id, partial_msg)
             db.update_last_assistant_message_row(session_id, partial_msg)
             logger.info(
@@ -1514,12 +1519,6 @@ async def resume_stream_generator(
     """
     start_time = time.time()
     sid = session_id[-5:] if session_id else "resume"
-
-    def format_sse(data: dict) -> str:
-        return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
-
-    def _sse(data: dict) -> str:
-        return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
 
     yield format_sse({"type": "start", "session_id": session_id})
 
@@ -1579,9 +1578,59 @@ async def resume_stream_generator(
     tool_call_start_times = {}
     tool_call_accumulated_args = {}
     tool_call_accumulated_args_str = {}
+    tool_call_id_to_name = {}
+    tool_call_index_to_id = {}
+    pending_tool_args_by_index = {}
     current_thinking_block_idx = None
     current_content_block_idx = None
     emitted_tool_call_ids = set()
+    _todo_emitted_for = set()
+
+    def _persist_todos(todos_list):
+        try:
+            db.update_session_todos(session_id, todos_list)
+            logger.info(f"[{sid}] 📋 Todo list persisted | items: {len(todos_list)}")
+        except Exception as e:
+            logger.warning(f"[{sid}] 持久化 Todo list 失败: {e}")
+
+    def _persist_intervention():
+        """持久化人工介入（审批决策）为一条独立消息。
+
+        插在「最后一条 assistant」之前，保证 HITL 后会话历史顺序为：
+        中断请求 -> 人工介入 -> 最终回复。否则人工介入动作在数据库中无任何记录。
+        """
+        try:
+            if not decisions:
+                return
+            decision_type = decisions[0].get("type", "approve")
+            if decision_type == "approve":
+                text = "✅ 用户已批准该操作"
+            else:
+                msg = decisions[0].get("message", "") or ""
+                text = "❌ 用户已拒绝该操作" + (f"：{msg}" if msg else "")
+            intervention_id = f"hitl-{thread_id}-{int(time.time() * 1000)}"
+            intervention = {
+                "role": "user",
+                "content": text,
+                "timestamp": datetime.now().isoformat(),
+                "id": intervention_id,
+                "message_id": intervention_id,
+            }
+            sess = db.get_session(session_id)
+            if sess and sess.messages:
+                last_assistant_idx = -1
+                for i in range(len(sess.messages) - 1, -1, -1):
+                    if sess.messages[i].get("role") == "assistant":
+                        last_assistant_idx = i
+                        break
+                if last_assistant_idx >= 0:
+                    sess.messages.insert(last_assistant_idx, intervention)
+                else:
+                    sess.messages.append(intervention)
+                sess.updated_at = datetime.now().isoformat()
+                db.update_session(sess)
+        except Exception as e:
+            logger.warning(f"[{sid}] 持久化人工介入消息失败: {e}")
 
     def _end_thinking(step):
         nonlocal is_in_thinking, thinking_start_time, current_thinking_block_idx
@@ -1591,11 +1640,26 @@ async def resume_stream_generator(
         duration = round(time.time() - thinking_start_time, 2) if thinking_start_time else 0
         thinking_start_time = None
         current_thinking_block_idx = None
-        return _sse({"type": "thinking_end", "duration": duration, "step": step})
+        logger.info(
+            f"[{sid}] 🤔 Step {step} 思考完成 | 耗时: {duration}s"
+        )
+        return format_sse({"type": "thinking_end", "duration": duration, "step": step})
+
+    def _end_thinking_if_needed():
+        nonlocal is_in_thinking
+        if not is_in_thinking:
+            return None
+        return _end_thinking(current_step)
 
     def _seal_content_block():
         nonlocal current_content_block_idx
         current_content_block_idx = None
+
+    def _log_step_start(step, step_type, detail=""):
+        msg = f"[{sid}] 🚀 Step {step} 开始 | 类型: {step_type}"
+        if detail:
+            msg += f" | {detail}"
+        logger.info(msg)
 
     try:
         async for event in agent.agent.astream(
@@ -1610,6 +1674,14 @@ async def resume_stream_generator(
                 raw_content = chunk.content or ""
                 tcc = getattr(chunk, "tool_call_chunks", None) or []
 
+                if hasattr(chunk, "usage_metadata") and chunk.usage_metadata:
+                    usage_meta = chunk.usage_metadata
+                    total_usage["input_tokens"] += usage_meta.get("input_tokens", 0)
+                    total_usage["output_tokens"] += usage_meta.get("output_tokens", 0)
+                    total_usage["total_tokens"] += usage_meta.get("total_tokens", 0)
+                    if usage_meta.get("input_tokens", 0) > 0:
+                        last_context_tokens = usage_meta["input_tokens"]
+
                 if rc:
                     if not is_in_thinking:
                         is_in_thinking = True
@@ -1618,10 +1690,11 @@ async def resume_stream_generator(
                         current_thinking_block_idx = block_order_counter
                         blocks.append({"type": "thinking", "order": block_order_counter, "content": "", "step": current_step})
                         block_order_counter += 1
-                        yield _sse({"type": "thinking_start", "step": current_step})
+                        _log_step_start(current_step, "思考")
+                        yield format_sse({"type": "thinking_start", "step": current_step})
                     accumulated_thinking += rc
                     blocks[current_thinking_block_idx]["content"] = accumulated_thinking
-                    yield _sse({"type": "thinking", "content": rc, "step": current_step})
+                    yield format_sse({"type": "thinking", "content": rc, "step": current_step})
 
                 if raw_content and not tcc:
                     if is_in_thinking:
@@ -1634,34 +1707,41 @@ async def resume_stream_generator(
                         block_order_counter += 1
                         if not content_start_time:
                             content_start_time = time.time()
-                        yield _sse({"type": "content_start", "step": current_step})
+                        yield format_sse({"type": "content_start", "step": current_step})
                     accumulated_response += raw_content
                     blocks[current_content_block_idx]["content"] = accumulated_response
-                    yield _sse({"type": "content", "content": raw_content})
+                    yield format_sse({"type": "content", "content": raw_content})
 
                 if tcc:
+                    te = _end_thinking_if_needed()
+                    if te:
+                        yield te
+                    _seal_content_block()
                     for tc_chunk in tcc:
-                        tc_name = tc_chunk.get("name", "")
-                        tc_id = tc_chunk.get("id", "")
-                        tc_args_str = tc_chunk.get("args", "")
+                        tc_name = tc_chunk.get("name", "") or ""
+                        tc_id = tc_chunk.get("id", "") or ""
+                        tc_args_str = str(tc_chunk.get("args", "") or "")
+                        tc_index = tc_chunk.get("index")
+
                         if tc_name and tc_id:
                             current_step += 1
+                            _log_step_start(current_step, "工具调用", f"tools: [{tc_name}]")
+                            tool_call_id_to_name[tc_id] = tc_name
                             tool_call_start_times[tc_id] = time.time()
-                            tool_call_accumulated_args_str[tc_id] = tc_args_str or ""
+                            if tc_index is not None:
+                                tool_call_index_to_id[tc_index] = tc_id
 
-                            args_data = {}
+                            pending_prefix = ""
+                            if (
+                                tc_index is not None
+                                and tc_index in pending_tool_args_by_index
+                            ):
+                                pending_prefix = pending_tool_args_by_index.pop(tc_index)
+
+                            tool_call_accumulated_args_str[tc_id] = pending_prefix + tc_args_str
+
                             full_args = tool_call_accumulated_args_str[tc_id]
-                            if full_args:
-                                try:
-                                    parsed = json.loads(full_args)
-                                    args_data = (
-                                        parsed
-                                        if isinstance(parsed, dict)
-                                        else {"value": parsed}
-                                    )
-                                except json.JSONDecodeError:
-                                    args_data = {}
-
+                            args_data = parse_tool_args(full_args)
                             tool_call_accumulated_args[tc_id] = args_data
                             emitted_tool_call_ids.add(tc_id)
                             blocks.append({
@@ -1676,17 +1756,36 @@ async def resume_stream_generator(
                                 "step": current_step,
                             })
                             block_order_counter += 1
-                            yield _sse({
+                            yield format_sse({
                                 "type": "tool_call",
                                 "tool_name": tc_name,
                                 "tool_call_id": tc_id,
                                 "arguments": args_data,
                                 "step": current_step,
                             })
-                        elif tc_id and tc_args_str:
-                            if tc_id in tool_call_accumulated_args_str:
-                                tool_call_accumulated_args_str[tc_id] += tc_args_str
-                                full_args_str = tool_call_accumulated_args_str[tc_id]
+
+                            if tc_name == "write_todos" and isinstance(args_data, dict):
+                                todos = args_data.get("todos", [])
+                                if todos:
+                                    logger.info(f"[{sid}] 📋 Todo list | items: {len(todos)}")
+                                    _persist_todos(todos)
+                                    _todo_emitted_for.add(tc_id)
+                                    yield format_sse({
+                                        "type": "todo_list",
+                                        "todos": todos,
+                                        "step": current_step,
+                                    })
+                        elif tc_id or tc_index is not None:
+                            resolved_tid = tc_id
+                            if not resolved_tid and tc_index is not None:
+                                resolved_tid = tool_call_index_to_id.get(tc_index, "")
+
+                            if resolved_tid and resolved_tid in tool_call_id_to_name:
+                                tool_call_accumulated_args_str[resolved_tid] = (
+                                    tool_call_accumulated_args_str.get(resolved_tid, "")
+                                    + tc_args_str
+                                )
+                                full_args_str = tool_call_accumulated_args_str[resolved_tid]
                                 try:
                                     parsed = json.loads(full_args_str)
                                     args_data = (
@@ -1694,26 +1793,49 @@ async def resume_stream_generator(
                                         if isinstance(parsed, dict)
                                         else {"value": parsed}
                                     )
-                                    tool_call_accumulated_args[tc_id] = args_data
+                                    tool_call_accumulated_args[resolved_tid] = args_data
                                     for blk in reversed(blocks):
                                         if (
                                             blk["type"] == "tool_call"
-                                            and blk.get("tool_call_id") == tc_id
+                                            and blk.get("tool_call_id") == resolved_tid
                                         ):
                                             blk["arguments"] = args_data
                                             break
+
+                                    # 重新推送 tool_call 事件，确保前端获取完整参数
+                                    yield format_sse({
+                                        "type": "tool_call",
+                                        "tool_name": tool_call_id_to_name.get(resolved_tid, ""),
+                                        "tool_call_id": resolved_tid,
+                                        "arguments": args_data,
+                                        "step": current_step,
+                                    })
+
+                                    # write_todos: 推送 todo_list 事件
+                                    _tc_name = tool_call_id_to_name.get(resolved_tid, "")
+                                    if _tc_name == "write_todos" and isinstance(args_data, dict):
+                                        todos = args_data.get("todos", [])
+                                        if todos and resolved_tid not in _todo_emitted_for:
+                                            logger.info(f"[{sid}] 📋 Todo list | items: {len(todos)}")
+                                            _persist_todos(todos)
+                                            _todo_emitted_for.add(resolved_tid)
+                                            yield format_sse({
+                                                "type": "todo_list",
+                                                "todos": todos,
+                                                "step": current_step,
+                                            })
                                 except json.JSONDecodeError:
                                     pass
-
-                if hasattr(chunk, "usage_metadata") and chunk.usage_metadata:
-                    usage_meta = chunk.usage_metadata
-                    total_usage["input_tokens"] += usage_meta.get("input_tokens", 0)
-                    total_usage["output_tokens"] += usage_meta.get("output_tokens", 0)
-                    total_usage["total_tokens"] += usage_meta.get("total_tokens", 0)
-                    if usage_meta.get("input_tokens", 0) > 0:
-                        last_context_tokens = usage_meta["input_tokens"]
+                            elif tc_index is not None:
+                                pending_tool_args_by_index[tc_index] = (
+                                    pending_tool_args_by_index.get(tc_index, "")
+                                    + tc_args_str
+                                )
 
             elif isinstance(chunk, ToolMessage):
+                te = _end_thinking_if_needed()
+                if te:
+                    yield te
                 resolved_tid = chunk.tool_call_id
                 tool_name = chunk.name or "tool"
                 tool_args = tool_call_accumulated_args.get(resolved_tid, {})
@@ -1738,7 +1860,7 @@ async def resume_stream_generator(
 
                 # 工具执行日志由 LoggingMiddleware 统一记录（见 services/logging_middleware.py）
 
-                yield _sse({
+                yield format_sse({
                     "type": "tool_result",
                     "tool_name": tool_name,
                     "tool_call_id": resolved_tid,
@@ -1749,6 +1871,32 @@ async def resume_stream_generator(
                     "step": current_step,
                 })
 
+                # write_todos: 从工具结果中提取 todo list
+                if tool_name == "write_todos" and resolved_tid not in _todo_emitted_for:
+                    todos = (
+                        tool_args.get("todos", [])
+                        if isinstance(tool_args, dict)
+                        else []
+                    )
+                    if not todos and result_content:
+                        todo_match = re.search(r"\[.*?\]", result_content, re.DOTALL)
+                        if todo_match:
+                            try:
+                                parsed_result = json.loads(todo_match.group(0))
+                                if isinstance(parsed_result, list):
+                                    todos = parsed_result
+                            except (json.JSONDecodeError, ValueError):
+                                pass
+                    if todos:
+                        logger.info(f"[{sid}] 📋 Todo list | items: {len(todos)}")
+                        _persist_todos(todos)
+                        _todo_emitted_for.add(resolved_tid)
+                        yield format_sse({
+                            "type": "todo_list",
+                            "todos": todos,
+                            "step": current_step,
+                        })
+
         # ── Post-streaming ─────────────────────────────────────────
         logger.info(f"[{sid}] 📢 流式输出结束 | steps={current_step} | blocks={len(blocks)}")
         te = _end_thinking(current_step)
@@ -1756,7 +1904,7 @@ async def resume_stream_generator(
             yield te
         _seal_content_block()
         if accumulated_response:
-            yield _sse({"type": "content_end", "content": ""})
+            yield format_sse({"type": "content_end", "content": ""})
 
         # ── HITL: 检测嵌套中断 ─────────────────────────────────────
         try:
@@ -1778,22 +1926,23 @@ async def resume_stream_generator(
                             pending_tc_ids = [tc.get("id", "") for tc in msg.tool_calls]
                             break
                     partial_elapsed = time.time() - start_time
-                    partial_msg = {
-                        "role": "assistant",
-                        "content": accumulated_response,
-                        "timestamp": datetime.now().isoformat(),
-                        "thinking": accumulated_thinking or None,
-                        "tool_calls": [
-                            {"tool_name": tc[0], "tool_call_id": tc[1], "arguments": tc[2],
-                             "result": str(tc[3])[:5000], "success": tc[4], "duration": tc[5], "step": tc[6]}
-                            for tc in tool_call_records
-                        ] or None,
-                        "blocks": blocks or None,
-                        "usage": {**total_usage, "elapsed_time": round(partial_elapsed, 2), "step_count": current_step},
-                    }
+                    partial_msg = build_assistant_message_dict(
+                        content=accumulated_response,
+                        thinking=accumulated_thinking,
+                        thinking_duration=None,
+                        tool_call_records=tool_call_records,
+                        blocks=blocks,
+                        input_tokens=total_usage.get("input_tokens", 0),
+                        output_tokens=total_usage.get("output_tokens", 0),
+                        total_tokens=total_usage.get("total_tokens", 0),
+                        context_tokens=last_context_tokens,
+                        elapsed_time=partial_elapsed,
+                        step_count=current_step,
+                    )
+                    _persist_intervention()
                     db.update_last_assistant_message(session_id, partial_msg)
                     db.update_last_assistant_message_row(session_id, partial_msg)
-                    yield _sse({
+                    yield format_sse({
                         "type": "approval_required",
                         "thread_id": thread_id,
                         "action_requests": [
@@ -1840,26 +1989,20 @@ async def resume_stream_generator(
             "step_count": current_step,
         }
 
-        assistant_message = {
-            "role": "assistant",
-            "content": accumulated_response or "",
-            "timestamp": datetime.now().isoformat(),
-            "thinking": accumulated_thinking or None,
-            "thinking_duration": None,
-            "tool_calls": [
-                {"tool_name": tc[0], "tool_call_id": tc[1], "arguments": tc[2],
-                 "result": str(tc[3])[:5000], "success": tc[4], "duration": tc[5], "step": tc[6]}
-                for tc in tool_call_records
-            ] or None,
-            "blocks": blocks or None,
-            "usage": {
-                "input_tokens": inp_tokens,
-                "output_tokens": out_tokens,
-                "total_tokens": sum_tokens,
-                "elapsed_time": round(elapsed_time, 2),
-                "step_count": current_step,
-            },
-        }
+        assistant_message = build_assistant_message_dict(
+            content=accumulated_response,
+            thinking=accumulated_thinking,
+            thinking_duration=None,
+            tool_call_records=tool_call_records,
+            blocks=blocks,
+            input_tokens=inp_tokens,
+            output_tokens=out_tokens,
+            total_tokens=sum_tokens,
+            context_tokens=last_context_tokens,
+            elapsed_time=elapsed_time,
+            step_count=current_step,
+        )
+        _persist_intervention()
         db.update_last_assistant_message(session_id, assistant_message)
         db.update_last_assistant_message_row(session_id, assistant_message)
 
@@ -1868,7 +2011,7 @@ async def resume_stream_generator(
             f"总耗时: {elapsed_time:.2f}s | tokens={sum_tokens} (in={inp_tokens}, out={out_tokens})"
         )
 
-        yield _sse({
+        yield format_sse({
             "type": "done",
             "session_id": session_id,
             "elapsed_time": round(elapsed_time, 2),
@@ -1877,19 +2020,20 @@ async def resume_stream_generator(
 
     except asyncio.CancelledError:
         logger.info(f"[{sid}] HITL 恢复被取消")
-        partial_msg = {
-            "role": "assistant",
-            "content": accumulated_response,
-            "timestamp": datetime.now().isoformat(),
-            "thinking": accumulated_thinking or None,
-            "tool_calls": [
-                {"tool_name": tc[0], "tool_call_id": tc[1], "arguments": tc[2],
-                 "result": str(tc[3])[:5000], "success": tc[4], "duration": tc[5], "step": tc[6]}
-                for tc in tool_call_records
-            ] or None,
-            "blocks": blocks or None,
-            "usage": {**total_usage, "elapsed_time": round(time.time() - start_time, 2), "step_count": current_step},
-        }
+        partial_msg = build_assistant_message_dict(
+            content=accumulated_response,
+            thinking=accumulated_thinking,
+            thinking_duration=None,
+            tool_call_records=tool_call_records,
+            blocks=blocks,
+            input_tokens=total_usage.get("input_tokens", 0),
+            output_tokens=total_usage.get("output_tokens", 0),
+            total_tokens=total_usage.get("total_tokens", 0),
+            context_tokens=last_context_tokens,
+            elapsed_time=time.time() - start_time,
+            step_count=current_step,
+        )
+        _persist_intervention()
         db.update_last_assistant_message(session_id, partial_msg)
         db.update_last_assistant_message_row(session_id, partial_msg)
         yield format_sse({"type": "error", "content": "请求被取消"})

@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 # Matches ${VAR} and ${VAR:-default} placeholders inside string values.
 _ENV_VAR_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
@@ -166,6 +166,14 @@ class SummarizationConfig(BaseModel):
     )
 
 
+class PresetQuestionGroup(BaseModel):
+    """预设问题分组，可在配置文件中按分类组织。"""
+
+    category: str = "预设问题"
+    icon: str = ""
+    questions: list[str] = Field(default_factory=list)
+
+
 class Config(BaseModel):
     """Main configuration class"""
 
@@ -176,7 +184,21 @@ class Config(BaseModel):
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
     models: dict[str, ProviderConfig] = Field(default_factory=dict)
     active_model: str = "minimax"
-    preset_questions: list[str] = Field(default_factory=list)
+    preset_questions: list[PresetQuestionGroup] = Field(default_factory=list)
+
+    @field_validator("preset_questions", mode="before")
+    @classmethod
+    def _normalize_preset_questions(cls, value):
+        """兼容旧版扁平字符串列表与分类字典两种写法。"""
+        if not isinstance(value, list):
+            return []
+        groups: list[PresetQuestionGroup] = []
+        for item in value:
+            if isinstance(item, str):
+                groups.append(PresetQuestionGroup(category="预设问题", questions=[item]))
+            elif isinstance(item, dict):
+                groups.append(PresetQuestionGroup(**item))
+        return groups
 
     @classmethod
     def load(cls) -> "Config":

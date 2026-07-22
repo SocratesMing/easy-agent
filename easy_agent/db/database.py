@@ -1557,6 +1557,27 @@ class Database:
             rows = cursor.fetchall()
         return [dict(row) for row in rows]
 
+    def get_generated_filenames(self, username: str) -> set[str]:
+        """返回指定用户所有会话中生成的文件原始文件名集合。
+
+        用于资产页（/api/files/list）排除会话生成的文件，确保只展示用户上传的文件。
+        """
+        if not username:
+            return set()
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            self._execute(
+                cursor,
+                """
+                SELECT gf.filename FROM generated_files gf
+                JOIN sessions s ON gf.session_id = s.session_id
+                WHERE s.username = ?
+                """,
+                (username,),
+            )
+            rows = cursor.fetchall()
+        return {r["filename"] for r in rows if r["filename"]}
+
     # ── 定时任务 CRUD ──────────────────────────────────────────────
 
     def create_scheduled_task(self, task: ScheduledTaskModel) -> ScheduledTaskModel:

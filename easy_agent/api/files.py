@@ -112,6 +112,12 @@ async def list_files(
                 except Exception as e:
                     logger.warning(f"读取上传文件信息失败: {item} | {e}")
 
+    # 排除会话中生成的文件：生成文件物理上位于 workspace 目录，正常不会出现在 uploads，
+    # 此处以文件名为黑名单做双保险，确保资产页只展示用户上传的文件。
+    generated_names = db.get_generated_filenames(username)
+    if generated_names:
+        upload_files = [f for f in upload_files if f.filename not in generated_names]
+
     all_files = upload_files
     if file_type:
         all_files = [f for f in all_files if f.file_type == file_type]

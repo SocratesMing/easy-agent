@@ -46,8 +46,24 @@ tools:
 
 # Preset Questions
 preset_questions:
-  - "测试问题1"
-  - "测试问题2"
+  - category: "文档处理"
+    icon: "📄"
+    questions:
+      - "帮我创建一份智能体介绍的docx,ppt和pdf文件"
+      - "帮我生成一份金融量化的pptx"
+      - "总结这份PDF的核心要点"
+  - category: "量化策略"
+    icon: "📈"
+    questions:
+      - "帮我生成一个策略如下： 1、交易货币：EUR/USD， 2、周期：采用1小时图作为主信号周期， 3、核心指标包括：集合EMA(20)、MACD指实现入开仓； 4、止盈止损：止盈采用固定40点，止损采用固定100点。 5、持仓时间：无限制 6、回测区间 2021-01-01 至 2021-03-31 不需要回测，生成策略即可"
+      - "解释一下什么是动量策略"
+      - "帮我写一个双均线交叉策略"
+  - category: "信息查询"
+    icon: "🔍"
+    questions:
+      - "今天A股哪些板块比较强势？"
+      - "帮我查一下贵州茅台的最新财报"
+      - "解释一下MACD指标的原理"
 
 # Database - 测试环境使用 MySQL（可降级为 SQLite）
 database:

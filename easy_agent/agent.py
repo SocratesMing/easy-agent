@@ -251,10 +251,16 @@ class EasyAgent:
         self.workspace_virtual_path = f"/workspace/{self.safe_username}/{dir_name}"
         self._workspace_renamed = False
 
-        # 记忆文件放在会话工作区目录下（每会话独立），而非全局 memories 目录
-        # 不在创建 Agent 时预创建记忆文件，而是在第一轮对话完成后生成
+        # 会话级记忆文件：workspace/{username}/{workspace_name}/memory.md
+        # 首轮对话时不创建，第一轮回复完成后自动生成
+        # 第二轮及后续对话时自动加载，提供当前会话的上下文连续性
         self.memory_file = self.workspace_dir / "memory.md"
         self.workspace_dir.mkdir(parents=True, exist_ok=True)
+
+        # 用户长期记忆文件：memories/{username}/AGENTS.md
+        # 跨会话持久化，记录用户偏好与可复用经验，首轮对话时加载
+        memories_base = Path(config.agent.memories_dir)
+        self.long_term_memory_file = memories_base / self.safe_username / "AGENTS.md"
 
         # Augment system prompt with virtual paths only.
         # _PathTranslatingShell 会自动把虚拟路径翻译为实际路径，
@@ -323,6 +329,10 @@ class EasyAgent:
         self.workspace_dir = new_workspace
         self.workspace_virtual_path = f"/workspace/{self.safe_username}/{new_name}"
 
+        # 记忆文件基于 workspace_dir 推导，重命名后必须同步更新，
+        # 否则 update_memory_after_session 会写回旧目录（且 mkdir 会重建旧目录）。
+        self.memory_file = self.workspace_dir / "memory.md"
+
         self.system_prompt = self.system_prompt.replace(
             old_path, str(new_workspace.absolute())
         ).replace(old_virtual, self.workspace_virtual_path)
@@ -332,27 +342,42 @@ class EasyAgent:
         logger.info(f"Workspace renamed | {old_path} -> {new_workspace.absolute()}")
         return True
 
+    def _load_memory_file(self, memory_path: Path, label: str) -> str:
+        """读取记忆文件内容（不存在或读取失败时返回空字符串）。
+
+        Args:
+            memory_path: 记忆文件路径。
+            label: 日志中使用的记忆名称（如 "会话记忆"/"长期记忆"）。
+        """
+        if not memory_path or not memory_path.exists():
+            return ""
+        try:
+            content = memory_path.read_text(encoding="utf-8").strip()
+            if content:
+                logger.info(
+                    f"[{self.session_id[-5:] if self.session_id else '?'}] "
+                    f"📥 加载{label} | 文件: {memory_path} | 长度: {len(content)} 字符"
+                )
+            return content
+        except Exception as e:
+            logger.warning(f"加载{label}失败: {e}")
+        return ""
+
     def load_session_memory(self) -> str:
-        """加载当前会话的工作区记忆文件（memory.md）。
+        """加载当前会话的记忆文件（workspace/.../memory.md）。
 
         在后续用户输入时调用，将历史会话记忆作为上下文注入。
         若文件不存在（如首轮对话），返回空字符串。
-
-        Returns:
-            记忆文件内容字符串；不存在时返回 ""。
         """
-        try:
-            if self.session_memory_file and self.session_memory_file.exists():
-                content = self.session_memory_file.read_text(encoding="utf-8").strip()
-                if content:
-                    logger.info(
-                        f"[{self.session_id[-5:] if self.session_id else '?'}] "
-                        f"📥 加载会话记忆 | 文件: {self.session_memory_file} | 长度: {len(content)} 字符"
-                    )
-                return content
-        except Exception as e:
-            logger.warning(f"加载会话记忆失败: {e}")
-        return ""
+        return self._load_memory_file(self.memory_file, "会话记忆")
+
+    def load_long_term_memory(self) -> str:
+        """加载用户长期记忆文件（memories/{username}/AGENTS.md）。
+
+        跨会话持久化，记录用户偏好与可复用经验。
+        在新会话首轮对话时加载，提供跨会话上下文。
+        """
+        return self._load_memory_file(self.long_term_memory_file, "长期记忆")
 
     def _get_os_info(self) -> str:
         """获取当前操作系统信息，返回格式化的系统提示词片段。
@@ -432,7 +457,7 @@ class EasyAgent:
             f"已加载: {'是' if memory_list else '否（首轮对话，记忆尚未生成）'}"
         )
 
-        interrupt_on_config = None
+        interrupt_on_config: dict[str, bool | InterruptOnConfig] | None = None
         if self.enable_hitl:
             interrupt_on_config = {
                 "execute": InterruptOnConfig(
@@ -455,34 +480,75 @@ class EasyAgent:
            interrupt_on=interrupt_on_config,
        )
 
+    # read_file 全量读取：覆盖 DeepAgents 默认 read_file 工具描述，
+    # 让模型默认读取整个文件（省略 offset/limit），仅在用户明确要求时才分页。
+    READ_FILE_FULL_TOOL_DESCRIPTION: str = """Reads a file from the filesystem in full.
+
+Assume this tool is able to read all files. If the User provides a path to a file assume that path is valid. It is okay to read a file that does not exist; an error will be returned.
+
+Usage:
+- This tool returns the ENTIRE file content from the beginning by default. Always read the full file.
+- Do NOT pass `offset` or `limit` for normal reads — omitting them returns the complete file. Only provide them when the user explicitly asks to read a specific portion.
+- Results are returned using cat -n format, with line numbers starting at 1.
+- Lines longer than 5,000 characters will be split into multiple lines with continuation markers (e.g., 5.1, 5.2, etc.).
+- You have the capability to call multiple tools in a single response. It is always better to speculatively read multiple files as a batch that are potentially useful.
+- If you read a file that exists but has empty contents you will receive a system reminder warning in place of file contents.
+- Image files (.png, .jpg, .jpeg, .gif, .webp, etc.), audio and video files, and PDFs are returned as multimodal content blocks.
+- For multimodal reads use `read_file(file_path=...)` without offset/limit.
+- You should ALWAYS make sure a file has been read before editing it."""
+
+    # 全量读取时的 limit 默认值：极大值，使省略 limit 时仍返回完整文件。
+    READ_FILE_FULL_LINE_LIMIT: int = 1_000_000
+
     def _override_read_file_limit(self, middleware):
-        """覆盖 read_file 工具的默认 limit。
+        """覆盖 read_file 工具，使其每次读取都全量读取。
 
         DeepAgents 通过 StructuredTool.from_function 创建工具，函数签名中的
         limit=DEFAULT_READ_LIMIT 在定义时绑定，修改模块全局变量无效。
-        必须在工具创建后直接修改其 args_schema 的 Pydantic 字段默认值。
+        FilesystemMiddleware（含 read_file 工具）由 create_deep_agent 内部创建，
+        因此通过 monkey-patch _create_read_file_tool 方法，在工具创建时注入：
+          1) 自定义工具描述（重定义中间件的 _custom_tool_descriptions["read_file"]），
+             指导模型默认读取完整文件、不主动分页；
+          2) limit 默认极大值，确保模型省略 limit 时仍返回完整文件。
         """
-        line_limit = self.config.tools.read_file_line_limit
         try:
-            for mw in middleware:
-                for tool in getattr(mw, "tools", []):
-                    if tool.name != "read_file":
-                        continue
-                    schema_cls = tool.args_schema
-                    if "limit" in schema_cls.model_fields:
-                        field = schema_cls.model_fields["limit"]
-                        field.default = line_limit
-                        field.description = (
-                            f"Maximum number of lines to read per call. "
-                            f"Default is {line_limit}. Only pass a smaller value when paginating."
-                        )
-                        schema_cls.model_rebuild(force=True)
-                    logger.info(
-                        f"[{self.session_id}] 📖 read_file limit -> {line_limit}"
+            from deepagents.middleware.filesystem import FilesystemMiddleware
+
+            # 保存原始方法（仅第一次）
+            if not hasattr(FilesystemMiddleware, "_original_create_read_file_tool"):
+                FilesystemMiddleware._original_create_read_file_tool = (
+                    FilesystemMiddleware._create_read_file_tool
+                )
+
+            original = FilesystemMiddleware._original_create_read_file_tool
+
+            def patched_create_read_file_tool(self_inner):
+                # 重新定义 read_file 的自定义描述：每次读取都是全量读取。
+                if not hasattr(self_inner, "_custom_tool_descriptions") or \
+                        self_inner._custom_tool_descriptions is None:
+                    self_inner._custom_tool_descriptions = {}
+                self_inner._custom_tool_descriptions = {
+                    **self_inner._custom_tool_descriptions,
+                    "read_file": self.READ_FILE_FULL_TOOL_DESCRIPTION,
+                }
+
+                tool = original(self_inner)
+                schema_cls = tool.args_schema
+                if "limit" in schema_cls.model_fields:
+                    field = schema_cls.model_fields["limit"]
+                    field.default = self.READ_FILE_FULL_LINE_LIMIT
+                    field.description = (
+                        "Maximum number of lines to read per call. "
+                        "The tool reads the FULL file by default; do not pass this "
+                        "unless the user explicitly asks to read only a portion."
                     )
-                    return
+                    schema_cls.model_rebuild(force=True)
+                return tool
+
+            FilesystemMiddleware._create_read_file_tool = patched_create_read_file_tool
+            logger.info(f"[{self.session_id}] 📖 read_file 已配置为全量读取")
         except Exception as e:
-            logger.warning(f"read_file limit 覆盖失败: {e}")
+            logger.warning(f"read_file 全量读取配置失败: {e}")
 
     def _build_backend(self, skills_paths: list[str]):
         """构建 CompositeBackend 实例，配置多路由文件系统后端。

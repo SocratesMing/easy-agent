@@ -33,6 +33,42 @@ router = APIRouter(
 )
 
 
+def generate_session_title(message: str, files: list | None) -> str:
+    """根据首条消息或首个上传文件生成会话标题。"""
+    if message and message.strip():
+        title = message.strip()
+        return title[:15] + "..." if len(title) > 15 else title
+    elif files and len(files) > 0:
+        filename = files[0].get("filename", "文件")
+        return filename[:15] + "..." if len(filename) > 15 else filename
+    return "未命名会话"
+
+
+def create_new_session(
+    db: Database,
+    session_id: str,
+    username: str,
+    message: str,
+    files: list | None,
+) -> str:
+    """创建新会话记录并返回其 workspace_name。"""
+    now = datetime.now().isoformat()
+    session_title = generate_session_title(message, files)
+    workspace_name = generate_workspace_name(session_id)
+    session_data = SessionModel(
+        session_id=session_id,
+        title=session_title,
+        messages=[],
+        created_at=now,
+        updated_at=now,
+        username=username,
+        workspace_name=workspace_name,
+    )
+    db.create_session(session_data)
+    db.update_session_workspace_name(session_id, workspace_name)
+    return workspace_name
+
+
 @router.post(
     "/stream",
     summary="流式聊天",
@@ -58,55 +94,22 @@ async def chat_stream(
         f"deep_think: {request.enable_deep_think} | model: {request.model or '(active)'}"
     )
 
-    def generate_session_title(message, files):
-        if message and message.strip():
-            title = message.strip()
-            return title[:15] + "..." if len(title) > 15 else title
-        elif files and len(files) > 0:
-            filename = files[0].get("filename", "文件")
-            return filename[:15] + "..." if len(filename) > 15 else filename
-        else:
-            return "未命名会话"
-
     if session_id is None:
         session_id = str(uuid.uuid4())
-        now = datetime.now().isoformat()
-        session_title = generate_session_title(request.message, request.files)
-        workspace_name = generate_workspace_name(session_id)
-        session_data = SessionModel(
-            session_id=session_id,
-            title=session_title,
-            messages=[],
-            created_at=now,
-            updated_at=now,
-            username=username,
-            workspace_name=workspace_name,
+        workspace_name = create_new_session(
+            db, session_id, username, request.message, request.files
         )
-        db.create_session(session_data)
-        db.update_session_workspace_name(session_id, workspace_name)
     else:
         session = db.get_session(session_id)
         if not session:
             session_id = str(uuid.uuid4())
-            now = datetime.now().isoformat()
-            session_title = generate_session_title(request.message, request.files)
-            workspace_name = generate_workspace_name(session_id)
-            session_data = SessionModel(
-                session_id=session_id,
-                title=session_title,
-                messages=[],
-                created_at=now,
-                updated_at=now,
-                username=username,
-                workspace_name=workspace_name,
+            workspace_name = create_new_session(
+                db, session_id, username, request.message, request.files
             )
-            db.create_session(session_data)
-            db.update_session_workspace_name(session_id, workspace_name)
         else:
             workspace_name = session.workspace_name or ""
             if len(session.messages) == 0:
-                session_title = generate_session_title(request.message, request.files)
-                session.title = session_title
+                session.title = generate_session_title(request.message, request.files)
                 session.updated_at = datetime.now().isoformat()
                 db.update_session(session)
 

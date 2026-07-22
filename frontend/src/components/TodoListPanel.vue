@@ -153,11 +153,12 @@ const progressPercent = computed(() => {
   position: absolute;
   left: 0;
   top: 0;
-  bottom: 0;
   z-index: 20;
   width: 260px;
   background: #f8f9fa;
   border-right: 1px solid #e5e7eb;
+  border-bottom: 1px solid #e5e7eb;
+  border-radius: 0 12px 12px 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -233,6 +234,7 @@ const progressPercent = computed(() => {
   padding: 8px 12px 12px;
   overflow-y: auto;
   flex: 1;
+  max-height: 70vh;
 }
 
 .todo-item {

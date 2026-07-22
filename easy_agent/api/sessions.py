@@ -57,10 +57,15 @@ def compute_session_usage(messages: list[dict]) -> dict | None:
         total_elapsed += msg_usage.get("elapsed_time", 0) or 0
         total_steps += msg_usage.get("step_count", 0) or 0
 
-    # 从最后一条有 input_tokens 的 assistant 消息获取上下文占用
+    # 从最后一条 assistant 消息获取上下文窗口占用
+    # 优先使用 context_tokens（最后一次 API 调用的 input_tokens），
+    # 旧消息无此字段时回退到 input_tokens
     for msg in reversed(messages):
         if msg.get("role") == "assistant":
             last_usage = msg.get("usage") or {}
+            if last_usage.get("context_tokens"):
+                context_tokens = last_usage["context_tokens"]
+                break
             if last_usage.get("input_tokens"):
                 context_tokens = last_usage["input_tokens"]
                 break

@@ -33,9 +33,13 @@ from .api import (
     prompts_router,
     settings_router,
     skill_center_router,
-    terminal_router,
     scheduled_tasks_router,
 )
+
+# Web Terminal 依赖 pty（POSIX 专用），Windows 不支持，故不加载该模块
+terminal_router = None
+if platform.system() != "Windows":
+    from .api import terminal_router
 
 logger = logging.getLogger(__name__)
 
@@ -136,8 +140,11 @@ async def lifespan(app: FastAPI):
     # AGENT_ENV 决定运行环境: dev | test | prod
     # 1. 若设置了 EASY_CONFIG 环境变量，直接使用（entrypoint.sh 场景）
     # 2. 若设置了 AGENT_ENV，按环境选择 config.{env}.yaml
-    # 3. 默认使用 config.yaml
+    # 3. 未设置时：优先 config.dev.yaml（开发默认），兜底 config.yaml
     agent_env = os.environ.get("AGENT_ENV", "").lower()
+    # Windows 启动默认使用 dev 环境（除非用户显式设置了 AGENT_ENV 或 EASY_CONFIG）
+    if platform.system() == "Windows" and not os.environ.get("AGENT_ENV") and not os.environ.get("EASY_CONFIG"):
+        agent_env = "dev"
     config_dir = os.path.join(
         os.path.dirname(os.path.abspath(__file__)), "config"
     )
@@ -148,11 +155,14 @@ async def lifespan(app: FastAPI):
         candidate = os.path.join(config_dir, f"config.{agent_env}.yaml")
         config_path = candidate if os.path.exists(candidate) else os.path.join(config_dir, "config.yaml")
     else:
-        config_path = os.path.join(config_dir, "config.yaml")
+        # 未设置 AGENT_ENV：优先 dev 配置，兜底 config.yaml
+        dev_candidate = os.path.join(config_dir, "config.dev.yaml")
+        config_path = dev_candidate if os.path.exists(dev_candidate) else os.path.join(config_dir, "config.yaml")
+        agent_env = "dev" if os.path.exists(dev_candidate) else "(默认)"
 
     # 打印环境信息和配置文件
     logger.info("=" * 60)
-    logger.info(f"AGENT_ENV: {agent_env or '(未设置, 使用默认)'}")
+    logger.info(f"AGENT_ENV: {agent_env or '(未设置, 默认 dev)'}")
     logger.info(f"配置文件: {config_path}")
     logger.info("=" * 60)
 
@@ -276,8 +286,8 @@ async def lifespan(app: FastAPI):
         # 定时任务调度器（AsyncIOScheduler）
         try:
             scheduler = init_scheduler()
-            reload_all_tasks()
             scheduler.start()
+            reload_all_tasks()
             logger.info("✅ 定时任务调度器已启动 (AsyncIOScheduler)")
         except Exception as e:
             logger.warning(f"⚠️ 定时任务调度器启动失败: {e}")
@@ -332,7 +342,8 @@ app.include_router(forex_router)
 app.include_router(prompts_router)
 app.include_router(settings_router)
 app.include_router(skill_center_router)
-app.include_router(terminal_router)
+if terminal_router is not None:
+    app.include_router(terminal_router)
 app.include_router(scheduled_tasks_router)
 
 
@@ -352,7 +363,7 @@ async def get_config():
         return {
             "system_prompt": _cfg["system_prompt"][:100] + "...",
             "provider": _cfg["config"].llm.provider,
-            "model": _cfg["config"].llm.model_name,
+            "model": _cfg["config"].llm.model,
         }
     return {"status": "not initialized"}
 

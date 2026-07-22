@@ -1,6 +1,6 @@
 <template>
   <div class="chat-container">
-    <div class="chat-main">
+    <div class="chat-main" :class="composerMode === 'center' ? 'is-center' : 'is-bottom'">
     <TodoListPanel
       v-if="!sidebarCollapsed"
       :todos="todos"
@@ -10,35 +10,7 @@
         {{ formatSessionTime(sessionCreatedAt) }}
       </div>
       <div v-if="messages.length === 0" class="welcome-screen">
-        <div class="welcome-icon">
-          <EasyLogo :size="64" />
-        </div>
-        <h2>{{ displayedTitle }}</h2>
-        <p>{{ displayedSubtitle }}</p>
-        <div class="quick-actions">
-          <div
-            v-for="(question, index) in presetQuestions"
-            :key="index"
-            class="quick-card"
-            :class="{ selected: selectedQuickAction === index }"
-            :title="question"
-            @click="handleQuickAction(question, index)"
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
-              <polyline points="14 2 14 8 20 8"></polyline>
-              <line x1="16" y1="13" x2="8" y2="13"></line>
-              <line x1="16" y1="17" x2="8" y2="17"></line>
-              <polyline points="10 9 9 9 8 9"></polyline>
-            </svg>
-            <span class="quick-card-text">{{ question }}</span>
-            <span v-if="selectedQuickAction === index" class="quick-card-check">
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3">
-                <polyline points="20 6 9 17 4 12"></polyline>
-              </svg>
-            </span>
-          </div>
-        </div>
+        <h2>{{ welcomeTitle }}</h2>
       </div>
       
       <div
@@ -70,7 +42,8 @@
     </button>
 
     <ChatInput
-      @send="handleSend"
+      class="composer"
+      @send="onSend"
       :disabled="isStreaming"
       :isStreaming="isStreaming"
       :session-id="currentSessionId"
@@ -83,6 +56,31 @@
       @stop="handleStop"
       @createSession="handleCreateSession"
     />
+
+    <!-- 分类预设问题：仅在首页（居中模式）展示，置于输入框下方，悬浮展开 -->
+    <div class="preset-categories" v-if="composerMode === 'center' && presetQuestions.length">
+      <div class="preset-category-tabs">
+        <div
+          class="preset-category"
+          v-for="(group, gi) in presetQuestions"
+          :key="gi"
+        >
+          <button type="button" class="preset-category-tab">
+            <span v-if="group.icon" class="preset-category-icon">{{ group.icon }}</span>
+            <span>{{ group.category }}</span>
+          </button>
+          <div class="preset-category-panel">
+            <button
+              v-for="(q, i) in group.questions"
+              :key="i"
+              type="button"
+              class="preset-chip"
+              @click="onPresetClick(q)"
+            >{{ q }}</button>
+          </div>
+        </div>
+      </div>
+    </div>
     </div>
   </div>
 </template>
@@ -92,50 +90,13 @@ import { ref, watch, nextTick, computed, onMounted, onUnmounted } from 'vue'
 import ChatMessage from './ChatMessage.vue'
 import ChatInput from './ChatInput.vue'
 import TodoListPanel from './TodoListPanel.vue'
-import EasyLogo from './EasyLogo.vue'
 
-const welcomeTitle = '我是 Easy Agent'
-const welcomeSubtitle = '简单易用的智能助手，有什么可以帮您？'
-const displayedTitle = ref('')
-const displayedSubtitle = ref('')
-const selectedQuickAction = ref(null)
-let titleTimer = null
-let subtitleTimer = null
+const welcomeTitle = 'Easy Agent，让工作更简单'
+// 首页布局模式：center=空会话时输入框居中，bottom=对话中输入框贴底
+const composerMode = ref('center')
 
-function startTypingEffect() {
-  if (titleTimer) {
-    clearInterval(titleTimer)
-    titleTimer = null
-  }
-  if (subtitleTimer) {
-    clearInterval(subtitleTimer)
-    subtitleTimer = null
-  }
-
-  displayedTitle.value = welcomeTitle
-  displayedSubtitle.value = ''
-
-  let subtitleIndex = 0
-
-  subtitleTimer = setInterval(() => {
-    if (subtitleIndex < welcomeSubtitle.length) {
-      displayedSubtitle.value += welcomeSubtitle[subtitleIndex]
-      subtitleIndex++
-    } else {
-      clearInterval(subtitleTimer)
-      subtitleTimer = null
-    }
-  }, 50)
-}
-
-onMounted(() => {
-  startTypingEffect()
-})
-
-onUnmounted(() => {
-  if (titleTimer) clearInterval(titleTimer)
-  if (subtitleTimer) clearInterval(subtitleTimer)
-})
+const deckTop = ref(0)
+const deckVisibleCount = 3 // keep
 
 const props = defineProps({
   messages: {
@@ -197,10 +158,8 @@ const props = defineProps({
 })
 
 watch(() => props.messages, (newMessages) => {
-  if (newMessages.length === 0) {
-    startTypingEffect()
-    selectedQuickAction.value = null
-  }
+  // 空会话显示居中输入框；有消息时输入框贴底
+  composerMode.value = newMessages.length === 0 ? 'center' : 'bottom'
 })
 
 const emit = defineEmits(['sendMessage', 'stop', 'removeFile', 'createSession', 'approve', 'reject', 'update:selectedModel'])
@@ -304,8 +263,18 @@ function handleCreateSession() {
 }
 
 function handleQuickAction(message, index) {
-  selectedQuickAction.value = index
+  // 兼容旧引用（已无 deck），直接走预设点击
+  onPresetClick(message)
+}
+
+function onPresetClick(message) {
+  composerMode.value = 'bottom'
   emit('sendMessage', message, [], null, true, false)
+}
+
+function onSend(message, files, signal, enableDeepThink) {
+  composerMode.value = 'bottom'
+  handleSend(message, files, signal, enableDeepThink)
 }
 
 function scrollToBottom() {
@@ -387,6 +356,32 @@ watch(() => props.scrollTrigger, () => {
   flex-direction: column;
 }
 
+/* 空会话：欢迎区与输入框整体垂直居中 */
+.chat-main.is-center {
+  justify-content: center;
+}
+
+.chat-main.is-center .chat-messages {
+  flex: 0 1 auto;
+  overflow: visible;
+}
+
+/* 回车发送后，输入框平滑下移到底部 */
+.chat-main.is-bottom .composer {
+  animation: composerDropIn 0.45s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@keyframes composerDropIn {
+  from {
+    transform: translateY(-40px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
 .session-created-time {
   position: sticky;
   top: -24px;
@@ -404,103 +399,286 @@ watch(() => props.scrollTrigger, () => {
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
-  height: 100%;
   color: #64748b;
-}
-
-.welcome-icon {
-  margin-bottom: 20px;
 }
 
 .welcome-screen h2 {
   font-size: 24px;
   font-weight: 600;
   color: #1e293b;
-  margin: 0 0 8px 0;
-}
-
-.welcome-screen p {
-  font-size: 14px;
-  color: #94a3b8;
   margin: 0;
 }
 
-.quick-actions {
+.preset-categories {
   display: flex;
-  gap: 16px;
-  margin-top: 32px;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  margin: 24px auto 0;
+  width: 100%;
+  max-width: 720px;
 }
 
-.quick-card {
+.preset-category-tabs {
   display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  width: 100%;
+  gap: 10px;
+}
+
+.preset-category-tab {
+  display: inline-flex;
   align-items: center;
-  gap: 12px;
-  padding: 16px 20px;
-  background: white;
+  gap: 6px;
+  padding: 8px 16px;
+  background: #f8fafc;
   border: 1px solid #e2e8f0;
-  border-radius: 12px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #475569;
   cursor: pointer;
   transition: all 0.2s ease;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
-  width: 280px;
-  min-width: 280px;
-  max-width: 280px;
 }
 
-.quick-card:hover {
-  border-color: #0ea5e9;
-  background: #f0f9ff;
-  box-shadow: 0 4px 12px rgba(14, 165, 233, 0.15);
-  transform: translateY(-2px);
-}
-
-.quick-card.selected {
-  border-color: #0ea5e9;
-  background: #e0f2fe;
-  box-shadow: 0 4px 12px rgba(14, 165, 233, 0.25);
-}
-
-.quick-card.selected svg {
+.preset-category-tab:hover {
+  border-color: #bae6fd;
   color: #0284c7;
 }
 
-.quick-card svg {
-  width: 24px;
-  height: 24px;
+.preset-category-tab.active {
+  background: #e0f2fe;
+  border-color: #7dd3fc;
+  color: #0369a1;
+}
+
+.preset-category-icon {
+  font-size: 14px;
+}
+
+.preset-category {
+  position: relative;
+}
+
+.preset-category-panel {
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  transform: translateX(-50%) translateY(-6px);
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+  width: 360px;
+  max-width: 82vw;
+  max-height: 0;
+  opacity: 0;
+  overflow: hidden;
+  pointer-events: none;
+  background: linear-gradient(180deg, #f8fafc 0%, #f0f9ff 100%);
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  padding: 0 12px;
+  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.10);
+  transition: max-height 0.35s ease, opacity 0.3s ease,
+    transform 0.3s ease, padding 0.3s ease;
+  z-index: 20;
+}
+
+.preset-category:hover .preset-category-panel,
+.preset-category:focus-within .preset-category-panel {
+  max-height: 320px;
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+  pointer-events: auto;
+  padding: 12px;
+}
+
+.preset-chip {
+  width: 100%;
+  padding: 12px 16px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  font-size: 13px;
+  color: #475569;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  text-align: center;
+}
+
+.preset-chip:hover {
+  background: #f0f9ff;
+  border-color: #bae6fd;
+  color: #0284c7;
+  transform: translateY(-1px);
+}
+
+.preset-deck-stage {
+  position: relative;
+  width: 440px;
+  max-width: 92vw;
+  height: 188px;
+}
+
+.preset-card {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  width: 100%;
+  min-height: 150px;
+  padding: 20px 22px;
+  background: white;
+  border: 1px solid #e2e8f0;
+  border-radius: 18px;
+  box-shadow: 0 6px 20px rgba(15, 23, 42, 0.08);
+  cursor: pointer;
+  transition: transform 0.4s cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 0.4s ease, box-shadow 0.25s ease;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  text-align: left;
+  transform-origin: center top;
+}
+
+.preset-card.is-front {
+  box-shadow: 0 10px 30px rgba(14, 165, 233, 0.18);
+  border-color: #bae6fd;
+}
+
+.preset-card.is-front:hover {
+  box-shadow: 0 14px 38px rgba(14, 165, 233, 0.28);
+}
+
+.preset-card.is-back {
+  cursor: pointer;
+}
+
+.preset-card-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.preset-card-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  background: linear-gradient(135deg, #e0f2fe, #f0f9ff);
   color: #0ea5e9;
   flex-shrink: 0;
 }
 
-.quick-card span {
-  font-size: 14px;
-  color: #334155;
-  line-height: 1.5;
+.preset-card-icon svg {
+  width: 17px;
+  height: 17px;
 }
 
-.quick-card-text {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.preset-card-tag {
+  font-size: 12px;
+  font-weight: 600;
+  color: #0ea5e9;
+  letter-spacing: 0.05em;
+}
+
+.preset-card-index {
+  margin-left: auto;
+  font-size: 12px;
+  color: #94a3b8;
+}
+
+.preset-card-text {
   flex: 1;
+  margin: 0;
+  font-size: 17px;
+  font-weight: 600;
+  line-height: 1.5;
+  color: #1e293b;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
-.quick-card-check {
+.preset-card-foot {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  font-size: 13px;
+  color: #64748b;
+}
+
+.preset-send-arrow {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: #0ea5e9;
+  color: white;
+  font-size: 14px;
+  transition: transform 0.2s ease;
+}
+
+.preset-card.is-front:hover .preset-send-arrow {
+  transform: translateX(3px);
+}
+
+.preset-nav {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-top: 26px;
+}
+
+.preset-nav-btn {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: 1px solid #e2e8f0;
+  background: white;
+  color: #475569;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 20px;
-  height: 20px;
-  background: #0ea5e9;
-  border-radius: 50%;
-  flex-shrink: 0;
-  margin-left: 4px;
+  transition: all 0.2s ease;
 }
 
-.quick-card-check svg {
-  width: 12px;
-  height: 12px;
-  color: white;
+.preset-nav-btn:hover {
+  border-color: #0ea5e9;
+  color: #0ea5e9;
+  background: #f0f9ff;
+}
+
+.preset-dots {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.preset-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #cbd5e1;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.preset-dot.active {
+  width: 22px;
+  border-radius: 4px;
+  background: #0ea5e9;
 }
 
 .scroll-btn {

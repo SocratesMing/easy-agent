@@ -39,7 +39,7 @@
             ref="textareaRef"
             v-model="message"
             @keydown.enter.exact.prevent="send"
-            @input="autoResize"
+            @input="onInput"
             placeholder=""
             :disabled="disabled"
             rows="1"
@@ -63,12 +63,14 @@
                 <polyline points="21 15 16 10 5 21"/>
               </svg>
               <span class="model-btn-label">{{ currentModelLabel }}</span>
+              <span class="model-btn-count" v-if="models.length">{{ models.length }}</span>
               <svg class="model-btn-arrow" :class="{ open: showModelDropdown }" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <polyline points="6 9 12 15 18 9"></polyline>
               </svg>
             </button>
             <Teleport to="body">
               <div v-if="showModelDropdown" class="model-dropdown-menu" :style="dropdownStyle" @click.stop>
+                <div class="model-dropdown-header">可选模型 · 共 {{ models.length }} 个</div>
                 <div
                   v-for="m in models"
                   :key="m.name"
@@ -76,10 +78,7 @@
                   :class="{ active: m.name === localSelectedModel }"
                   @click="selectModel(m.name)"
                 >
-                  <div class="model-item-info">
-                    <span class="model-item-name">{{ m.model || m.name }}</span>
-                    <span class="model-item-provider">{{ m.provider }}</span>
-                  </div>
+                  <span class="model-item-name">{{ m.model || m.name }}</span>
                   <span v-if="m.is_active" class="model-item-badge">默认</span>
                   <svg v-if="m.name === localSelectedModel" class="model-item-check" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
                     <polyline points="20 6 9 17 4 12"></polyline>
@@ -228,7 +227,7 @@ const props = defineProps({
   }
 })
 
-const emit = defineEmits(['send', 'stop', 'createSession', 'update:selectedModel'])
+const emit = defineEmits(['send', 'stop', 'createSession', 'update:selectedModel', 'typing'])
 
 const message = ref('')
 const textareaRef = ref(null)
@@ -512,6 +511,11 @@ function autoResize() {
     textareaRef.value.style.height = 'auto'
     textareaRef.value.style.height = Math.min(textareaRef.value.scrollHeight, 150) + 'px'
   }
+}
+
+function onInput() {
+  autoResize()
+  emit('typing')
 }
 
 watch(() => props.disabled, (val) => {
@@ -798,8 +802,28 @@ onUnmounted(() => {
   text-overflow: ellipsis;
 }
 
+.model-btn-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: #e2e8f0;
+  color: #64748b;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+}
+
 .model-btn:hover:not(.disabled) .model-btn-label {
   color: #0ea5e9;
+}
+
+.model-btn:hover:not(.disabled) .model-btn-count {
+  background: #bae6fd;
+  color: #0284c7;
 }
 
 .model-btn-arrow {
@@ -842,25 +866,25 @@ onUnmounted(() => {
   background: rgba(14, 165, 233, 0.08);
 }
 
-.model-item-info {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  flex: 1;
-  min-width: 0;
+.model-dropdown-header {
+  padding: 6px 10px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #94a3b8;
+  letter-spacing: 0.02em;
+  border-bottom: 1px solid #f1f5f9;
+  margin-bottom: 4px;
 }
 
 .model-item-name {
   font-size: 13px;
   font-weight: 600;
   color: #1e293b;
+  white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-
-.model-item-provider {
-  font-size: 11px;
-  color: #94a3b8;
+  flex: 1;
+  min-width: 0;
 }
 
 .model-item-badge {
