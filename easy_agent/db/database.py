@@ -433,6 +433,7 @@ class Database:
                     next_run_at VARCHAR(50) DEFAULT ''
                 )
             """)
+            self._ensure_column(cursor, "scheduled_tasks", "workspace_name", "VARCHAR(255) DEFAULT ''")
             self._create_index(cursor, "idx_scheduled_tasks_username", "scheduled_tasks", "username")
             self._create_index(cursor, "idx_scheduled_tasks_enabled", "scheduled_tasks", "enabled")
 
@@ -1586,10 +1587,10 @@ class Database:
             self._execute(
                 cursor,
                 """INSERT INTO scheduled_tasks
-                   (task_id, username, session_id, name, description, schedule_cron,
+                   (task_id, username, session_id, workspace_name, name, description, schedule_cron,
                     task_prompt, enabled, created_at, updated_at, last_run_at, next_run_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (task.task_id, task.username, task.session_id, task.name,
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (task.task_id, task.username, task.session_id, task.workspace_name, task.name,
                  task.description, task.schedule_cron, task.task_prompt, task.enabled,
                  task.created_at, task.updated_at, task.last_run_at, task.next_run_at),
             )
@@ -1647,6 +1648,15 @@ class Database:
                 cursor,
                 "UPDATE scheduled_tasks SET last_run_at=?, next_run_at=? WHERE task_id=?",
                 (last_run_at, next_run_at, task_id),
+            )
+
+    def update_scheduled_task_workspace(self, task_id: str, workspace_name: str):
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            self._execute(
+                cursor,
+                "UPDATE scheduled_tasks SET workspace_name=? WHERE task_id=?",
+                (workspace_name, task_id),
             )
 
     def add_scheduled_task_run(self, run: ScheduledTaskRunModel) -> ScheduledTaskRunModel:

@@ -2,6 +2,8 @@
 
 import asyncio
 import logging
+import os
+import platform
 
 from ..agent import EasyAgent
 from ..config import Config
@@ -17,25 +19,49 @@ _agent_config: dict = None
 _llm_instance = None
 
 
+def _is_windows() -> bool:
+    """Detect whether the server process runs on Windows.
+
+    Auto-detects via ``platform.system()`` but can be overridden with the
+    ``AGENT_WIN`` environment variable (``1/true/yes/on`` -> True,
+    ``0/false/no/off`` -> False).
+    """
+    override = os.environ.get("AGENT_WIN", "").strip().lower()
+    if override in ("1", "true", "yes", "on"):
+        return True
+    if override in ("0", "false", "no", "off"):
+        return False
+    return platform.system().lower().startswith("win")
+
+
 def init_agent_config(
     config: Config,
     system_prompt: str,
     skills_root: str = "",
+    agent_env: str = "",
 ):
     """初始化 Agent 全局配置。
 
     MCP 工具不再在启动时全局预加载，改为按用户配置动态加载
     （见 get_or_create_agent_for_session）。
+
+    ``agent_env`` 为运行环境标识（dev/test/prod），``win`` 表示后端是否运行在
+    Windows 系统上，二者均存入全局配置供接口与前端读取。
     """
     global _agent_config, _llm_instance
     _agent_config = {
         "config": config,
         "system_prompt": system_prompt,
         "skills_root": skills_root,
+        "agent_env": agent_env or "",
+        "win": _is_windows(),
     }
 
     _llm_instance = create_model(config)
-    logger.info("[初始化] Agent 配置初始化完成 | LLM 流式已启用 | MCP 按需动态加载")
+    logger.info(
+        f"[初始化] Agent 配置初始化完成 | 环境: {agent_env or '(未设置)'} | "
+        f"Windows: {_is_windows()} | LLM 流式已启用 | MCP 按需动态加载"
+    )
 
 
 async def get_or_create_agent_for_session(

@@ -34,6 +34,7 @@
         :selectedId="selectedId"
         :depth="depth + 1"
         :sessionId="sessionId"
+        :taskId="taskId"
         @select="$emit('select', $event)"
         @download="$emit('download', $event)"
       />
@@ -45,6 +46,7 @@
 import { ref, watch } from 'vue'
 import FileIcon from './FileIcon.vue'
 import { getWorkspaceTree } from '../api/files'
+import { getScheduledTaskWorkspace } from '../api/scheduledTasks'
 
 const props = defineProps({
   item: {
@@ -62,8 +64,17 @@ const props = defineProps({
   sessionId: {
     type: String,
     default: null
+  },
+  taskId: {
+    type: String,
+    default: null
   }
 })
+// 兼容两种文件树来源：会话工作区或定时任务工作区
+const loadTree = (path, sessionId, taskId) =>
+  taskId
+    ? getScheduledTaskWorkspace(path, taskId)
+    : getWorkspaceTree(path, sessionId)
 
 const emit = defineEmits(['select', 'download'])
 
@@ -92,7 +103,7 @@ async function loadChildren() {
 
   isLoading.value = true
   try {
-    const response = await getWorkspaceTree(props.item.file_path, props.sessionId)
+    const response = await loadTree(props.item.file_path, props.sessionId, props.taskId)
     children.value = (response.items || []).map(item => ({
       id: item.path,
       name: item.name,
@@ -146,11 +157,11 @@ function handleClick() {
 }
 
 .tree-item:hover {
-  background: #f3f4f6;
+  background: var(--bg-tertiary);
 }
 
 .tree-item.active {
-  background: #dbeafe;
+  background: color-mix(in srgb, var(--accent-color) 18%, transparent);
 }
 
 .folder-icon {

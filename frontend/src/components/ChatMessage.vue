@@ -233,7 +233,11 @@
 import { ref, computed, onMounted, shallowRef, watch } from 'vue'
 import { createHighlighter } from 'shiki'
 import { marked } from 'marked'
+import { setupMarkedExtensions, normalizeMathDelimiters } from '../markdownSetup.js'
 import FileIcon from './FileIcon.vue'
+
+// 注册 KaTeX 数学公式 + emoji 短代码扩展（幂等，仅执行一次）
+setupMarkedExtensions()
 
 const props = defineProps({
   message: {
@@ -472,7 +476,8 @@ renderer.code = function(token) {
 function renderMarkdown(content) {
   if (!content) return ''
   try {
-    return marked.parse(content, { renderer, breaks: true, gfm: true })
+    const normalized = normalizeMathDelimiters(content)
+    return marked.parse(normalized, { renderer, breaks: true, gfm: true })
   } catch (e) {
     console.error('Markdown 渲染失败:', e)
     return escapeHtml(content)
@@ -1410,6 +1415,48 @@ html[data-theme="dark"] .tool-status-text.pending {
   box-sizing: border-box;
 }
 
+/* GitHub 风格 emoji 短代码渲染后的 unicode 字符 */
+.message-text :deep(.github-emoji) {
+  display: inline;
+  vertical-align: -0.125em;
+  font-size: 1.1em;
+  line-height: 1;
+}
+
+/* KaTeX 数学公式块级与行内展示 */
+.message-text :deep(.katex) {
+  font-size: 1.05em;
+  /* 行内公式作为一个整体，避免被 word-break 从中间断开 */
+  white-space: nowrap;
+}
+
+.message-text :deep(.katex-display) {
+  margin: 12px 0;
+  padding: 4px 0;
+  max-width: 100%;
+  /* 不显示滚动条：公式完整渲染，超出气泡宽度时直接溢出而非裁切/滚动 */
+  overflow: visible;
+}
+
+/* 视口较窄时自动缩小块级公式，尽量避免溢出气泡（用 @media 而非 @container，避免影响布局） */
+@media (max-width: 640px) {
+  .message-text :deep(.katex-display) {
+    font-size: 0.9em;
+  }
+}
+
+@media (max-width: 520px) {
+  .message-text :deep(.katex-display) {
+    font-size: 0.78em;
+  }
+}
+
+@media (max-width: 400px) {
+  .message-text :deep(.katex-display) {
+    font-size: 0.66em;
+  }
+}
+
 .message-error {
   display: flex;
   align-items: flex-start;
@@ -1778,6 +1825,53 @@ html[data-theme="dark"] .message-text :deep(.code-copy-btn:hover) {
   background: #30363d;
   border-color: #8b949e;
   color: #c9d1d9;
+}
+
+/* ========== 用户气泡 / 文件卡片 / 表格 / 工具块 深色适配 ========== */
+html[data-theme="dark"] .message.user .message-text {
+  background: var(--bg-tertiary) !important;
+  color: var(--text-primary) !important;
+  border-color: var(--border-color) !important;
+}
+
+html[data-theme="dark"] .file-card {
+  background: var(--bg-tertiary) !important;
+  border-color: var(--border-color) !important;
+}
+html[data-theme="dark"] .file-name {
+  color: var(--text-primary) !important;
+}
+html[data-theme="dark"] .remove-file-btn {
+  background: var(--bg-secondary) !important;
+}
+html[data-theme="dark"] .remove-file-btn svg {
+  color: var(--text-secondary) !important;
+}
+
+html[data-theme="dark"] .message-text :deep(th),
+html[data-theme="dark"] .message-text :deep(td) {
+  border-color: var(--border-color) !important;
+}
+html[data-theme="dark"] .message-text :deep(th) {
+  background: var(--bg-tertiary) !important;
+}
+html[data-theme="dark"] .message-text :deep(tr:nth-child(even)) {
+  background: var(--bg-tertiary) !important;
+}
+html[data-theme="dark"] .message-text :deep(tr:hover) {
+  background: var(--bg-secondary) !important;
+}
+
+html[data-theme="dark"] .tool-name-badge {
+  background: color-mix(in srgb, var(--accent-color) 20%, transparent) !important;
+  color: var(--accent-color) !important;
+}
+html[data-theme="dark"] .tool-section {
+  background: var(--bg-tertiary) !important;
+}
+html[data-theme="dark"] .tool-status-text.executing {
+  color: #38bdf8 !important;
+  background: rgba(56, 189, 248, 0.15) !important;
 }
 
 .waiting-animation {

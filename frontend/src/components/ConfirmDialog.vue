@@ -151,14 +151,14 @@ defineExpose({ show })
   margin: 0 0 8px;
   font-size: 18px;
   font-weight: 600;
-  color: #1e293b;
+  color: var(--text-primary);
   text-align: center;
 }
 
 .confirm-message {
   margin: 0 0 24px;
   font-size: 14px;
-  color: #64748b;
+  color: var(--text-secondary);
   text-align: center;
   line-height: 1.5;
 }
@@ -181,12 +181,12 @@ defineExpose({ show })
 }
 
 .btn-cancel {
-  background: #f1f5f9;
-  color: #475569;
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
 }
 
 .btn-cancel:hover {
-  background: #e2e8f0;
+  background: var(--bg-secondary);
 }
 
 .btn-confirm {

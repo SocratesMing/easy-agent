@@ -441,7 +441,7 @@ onBeforeUnmount(() => {
   margin: 0;
   font-size: 20px;
   font-weight: 600;
-  color: #1e293b;
+  color: var(--text-primary);
 }
 
 .close-btn {
@@ -458,13 +458,13 @@ onBeforeUnmount(() => {
 }
 
 .close-btn:hover {
-  background: #f1f5f9;
+  background: var(--bg-tertiary);
 }
 
 .close-btn svg {
   width: 20px;
   height: 20px;
-  color: #64748b;
+  color: var(--text-secondary);
 }
 
 .tabs {
@@ -480,18 +480,18 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 8px;
   padding: 10px 20px;
-  border: 1px solid #e2e8f0;
+  border: 1px solid var(--border-color);
   background: transparent;
   border-radius: 8px;
   font-size: 14px;
-  color: #64748b;
+  color: var(--text-secondary);
   cursor: pointer;
   transition: all 0.2s;
   white-space: nowrap;
 }
 
 .tab:hover {
-  background: #f1f5f9;
+  background: var(--bg-tertiary);
   border-color: #cbd5e1;
 }
 
@@ -525,7 +525,7 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: center;
   padding: 60px 20px;
-  color: #94a3b8;
+  color: var(--text-secondary);
   gap: 16px;
 }
 
@@ -545,17 +545,17 @@ onBeforeUnmount(() => {
 
 .retry-btn {
   padding: 8px 20px;
-  border: 1px solid #e2e8f0;
+  border: 1px solid var(--border-color);
   background: white;
   border-radius: 8px;
   font-size: 14px;
-  color: #475569;
+  color: var(--text-secondary);
   cursor: pointer;
   transition: all 0.2s;
 }
 
 .retry-btn:hover {
-  background: #f1f5f9;
+  background: var(--bg-tertiary);
 }
 
 .empty-state {
@@ -564,7 +564,7 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: center;
   padding: 60px 20px;
-  color: #94a3b8;
+  color: var(--text-secondary);
 }
 
 .empty-state svg {
@@ -587,7 +587,7 @@ onBeforeUnmount(() => {
 
 .skill-card {
   background: white;
-  border: 1px solid #e2e8f0;
+  border: 1px solid var(--border-color);
   border-radius: 12px;
   transition: all 0.2s;
   cursor: pointer;
@@ -645,7 +645,7 @@ onBeforeUnmount(() => {
 .skill-card-name {
   font-size: 14px;
   font-weight: 600;
-  color: #1e293b;
+  color: var(--text-primary);
   margin-bottom: 2px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -654,7 +654,7 @@ onBeforeUnmount(() => {
 
 .skill-card-desc {
   font-size: 12px;
-  color: #94a3b8;
+  color: var(--text-secondary);
   line-height: 1.4;
   display: -webkit-box;
   -webkit-line-clamp: 1;
@@ -670,7 +670,7 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  border: 1px solid #e2e8f0;
+  border: 1px solid var(--border-color);
   background: white;
   border-radius: 6px;
   cursor: pointer;
@@ -689,8 +689,8 @@ onBeforeUnmount(() => {
 }
 
 .add-icon-btn.added {
-  color: #94a3b8;
-  border-color: #e2e8f0;
+  color: var(--text-secondary);
+  border-color: var(--border-color);
   background: #f8fafc;
 }
 
@@ -811,7 +811,7 @@ onBeforeUnmount(() => {
 .popover-name {
   font-size: 16px;
   font-weight: 600;
-  color: #1e293b;
+  color: var(--text-primary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -819,7 +819,7 @@ onBeforeUnmount(() => {
 
 .popover-category {
   font-size: 12px;
-  color: #94a3b8;
+  color: var(--text-secondary);
   margin-top: 2px;
 }
 
@@ -833,14 +833,14 @@ onBeforeUnmount(() => {
   background: transparent;
   border-radius: 6px;
   cursor: pointer;
-  color: #94a3b8;
+  color: var(--text-secondary);
   transition: all 0.2s;
   flex-shrink: 0;
 }
 
 .popover-close:hover {
-  background: #f1f5f9;
-  color: #475569;
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
 }
 
 .popover-close svg {
@@ -854,7 +854,7 @@ onBeforeUnmount(() => {
 
 .popover-desc {
   font-size: 13px;
-  color: #475569;
+  color: var(--text-secondary);
   line-height: 1.7;
   white-space: pre-wrap;
   word-break: break-word;
@@ -894,7 +894,7 @@ onBeforeUnmount(() => {
 
 .popover-btn.added {
   border-color: #cbd5e1;
-  color: #94a3b8;
+  color: var(--text-secondary);
   background: #f8fafc;
 }
 

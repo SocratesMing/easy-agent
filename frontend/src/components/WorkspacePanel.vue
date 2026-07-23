@@ -199,13 +199,13 @@ onMounted(() => {
   gap: 8px;
   font-size: 14px;
   font-weight: 600;
-  color: #1e293b;
+  color: var(--text-primary);
 }
 
 .wp-header-icon {
   width: 18px;
   height: 18px;
-  color: #64748b;
+  color: var(--text-secondary);
 }
 
 .wp-collapse-btn {
@@ -213,7 +213,7 @@ onMounted(() => {
   border: none;
   padding: 4px;
   cursor: pointer;
-  color: #94a3b8;
+  color: var(--text-secondary);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -222,8 +222,8 @@ onMounted(() => {
 }
 
 .wp-collapse-btn:hover {
-  background: #f1f5f9;
-  color: #475569;
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
 }
 
 .wp-collapse-btn svg {
@@ -236,7 +236,7 @@ onMounted(() => {
   border: none;
   padding: 4px;
   cursor: pointer;
-  color: #94a3b8;
+  color: var(--text-secondary);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -245,8 +245,8 @@ onMounted(() => {
 }
 
 .wp-refresh-btn:hover:not(:disabled) {
-  background: #f1f5f9;
-  color: #475569;
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
 }
 
 .wp-refresh-btn:disabled {
@@ -299,7 +299,7 @@ onMounted(() => {
 
 .wp-center-text {
   font-size: 13px;
-  color: #94a3b8;
+  color: var(--text-secondary);
   text-align: center;
 }
 

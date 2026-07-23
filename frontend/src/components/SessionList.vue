@@ -388,7 +388,7 @@ function handleLogout() {
 .session-list {
   width: 280px;
   background: #ffffff;
-  border-right: 1px solid #e2e8f0;
+  border-right: 1px solid var(--border-color);
   display: flex;
   flex-direction: column;
   height: 100%;
@@ -400,7 +400,7 @@ function handleLogout() {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  border-bottom: 1px solid #f1f5f9;
+  border-bottom: 1px solid var(--border-color);
 }
 
 .header-left {
@@ -418,7 +418,7 @@ function handleLogout() {
 .logo-text {
   font-size: 16px;
   font-weight: 600;
-  color: #1e293b;
+  color: var(--text-primary);
 }
 
 .collapse-btn {
@@ -435,13 +435,13 @@ function handleLogout() {
 }
 
 .collapse-btn:hover {
-  background: #f1f5f9;
+  background: var(--bg-tertiary);
 }
 
 .collapse-btn svg {
   width: 18px;
   height: 18px;
-  color: #64748b;
+  color: var(--text-secondary);
 }
 
 .action-buttons {
@@ -460,18 +460,18 @@ function handleLogout() {
   background: transparent;
   border-radius: 8px;
   font-size: 13px;
-  color: #475569;
+  color: var(--text-secondary);
   cursor: pointer;
   transition: all 0.2s;
 }
 
 .action-btn:hover {
-  background: #f1f5f9;
+  background: var(--bg-tertiary);
 }
 
 .action-btn.active {
-  background: #e0f2fe;
-  color: #0ea5e9;
+  background: color-mix(in srgb, var(--accent-color) 20%, transparent);
+  color: var(--accent-color);
 }
 
 .action-btn svg {
@@ -481,7 +481,7 @@ function handleLogout() {
 
 .divider {
   height: 1px;
-  background: #e2e8f0;
+  background: var(--bg-tertiary);
   margin: 0 16px;
 }
 
@@ -520,7 +520,7 @@ function handleLogout() {
   font-size: 10px;
   font-weight: 500;
   color: #cbd5e1;
-  background: #f8fafc;
+  background: var(--bg-tertiary);
   border-radius: 8px;
   padding: 0 6px;
   line-height: 16px;
@@ -538,11 +538,11 @@ function handleLogout() {
 }
 
 .session-item:hover {
-  background: #f1f5f9;
+  background: var(--bg-tertiary);
 }
 
 .session-item.active {
-  background: #e0f2fe;
+  background: color-mix(in srgb, var(--accent-color) 20%, transparent);
 }
 
 .session-item.streaming {
@@ -561,7 +561,7 @@ function handleLogout() {
 .session-name {
   font-size: 13px;
   font-weight: 500;
-  color: #1e293b;
+  color: var(--text-primary);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -619,7 +619,7 @@ function handleLogout() {
 .menu-btn svg {
   width: 18px;
   height: 18px;
-  color: #64748b;
+  color: var(--text-secondary);
 }
 
 .session-item:hover .menu-btn {
@@ -627,15 +627,15 @@ function handleLogout() {
 }
 
 .menu-btn:hover {
-  background: #e2e8f0;
+  background: var(--bg-tertiary);
 }
 
 .menu-dropdown {
   position: absolute;
   right: 0;
   top: 100%;
-  background: white;
-  border: 1px solid #e2e8f0;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
   border-radius: 8px;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
   z-index: 100;
@@ -652,7 +652,7 @@ function handleLogout() {
   border: none;
   background: transparent;
   font-size: 13px;
-  color: #475569;
+  color: var(--text-secondary);
   cursor: pointer;
   transition: all 0.2s;
 }
@@ -663,7 +663,7 @@ function handleLogout() {
 }
 
 .menu-item:hover {
-  background: #f1f5f9;
+  background: var(--bg-tertiary);
 }
 
 .menu-item.delete {
@@ -709,7 +709,7 @@ function handleLogout() {
 }
 
 .modal-content {
-  background: white;
+  background: var(--bg-secondary);
   padding: 24px;
   border-radius: 12px;
   width: 320px;
@@ -720,13 +720,13 @@ function handleLogout() {
   margin: 0 0 16px 0;
   font-size: 16px;
   font-weight: 600;
-  color: #1e293b;
+  color: var(--text-primary);
 }
 
 .modal-content input {
   width: 100%;
   padding: 10px 12px;
-  border: 1px solid #e2e8f0;
+  border: 1px solid var(--border-color);
   border-radius: 8px;
   font-size: 14px;
   outline: none;
@@ -748,17 +748,17 @@ function handleLogout() {
 
 .cancel-btn {
   padding: 8px 16px;
-  border: 1px solid #e2e8f0;
-  background: white;
+  border: 1px solid var(--border-color);
+  background: var(--bg-secondary);
   border-radius: 8px;
   font-size: 14px;
-  color: #64748b;
+  color: var(--text-secondary);
   cursor: pointer;
   transition: all 0.2s;
 }
 
 .cancel-btn:hover {
-  background: #f1f5f9;
+  background: var(--bg-tertiary);
 }
 
 .confirm-btn {
@@ -798,7 +798,7 @@ function handleLogout() {
 }
 
 .user-profile:hover .user-more-icon {
-  color: #64748b;
+  color: var(--text-secondary);
 }
 
 .user-avatar {
@@ -835,7 +835,7 @@ function handleLogout() {
 .user-name {
   font-size: 14px;
   font-weight: 600;
-  color: #1e293b;
+  color: var(--text-primary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -870,8 +870,8 @@ function handleLogout() {
   bottom: 100%;
   left: 12px;
   right: 12px;
-  background: white;
-  border: 1px solid #e2e8f0;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
   border-radius: 12px;
   box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.12);
   z-index: 100;
@@ -882,7 +882,7 @@ function handleLogout() {
 
 .user-dropdown-divider {
   height: 1px;
-  background: #e2e8f0;
+  background: var(--bg-tertiary);
   margin: 4px 8px;
 }
 
@@ -895,7 +895,7 @@ function handleLogout() {
   border: none;
   background: transparent;
   font-size: 14px;
-  color: #475569;
+  color: var(--text-secondary);
   cursor: pointer;
   transition: all 0.2s;
   border-radius: 8px;
@@ -908,7 +908,7 @@ function handleLogout() {
 }
 
 .user-dropdown-item:hover {
-  background: #f1f5f9;
+  background: var(--bg-tertiary);
 }
 
 .user-dropdown-item.logout-item {
@@ -927,7 +927,7 @@ html.dark .session-group-header .group-label {
 }
 
 html.dark .session-group-header .group-count {
-  color: #64748b;
+  color: var(--text-secondary);
   background: #334155;
 }
 </style>

@@ -2,25 +2,24 @@ import { defineConfig, loadEnv } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import Icons from 'unplugin-icons/vite'
 import monacoEditorPlugin from 'vite-plugin-monaco-editor'
+import { resolveEnvMode } from './scripts/env-mode.mjs'
 
 /**
- * AGENT_ENV -> Vite mode 映射：
- *   dev  -> development  -> .env.development
- *   test -> test         -> .env.test
- *   prod -> production   -> .env.production
+ * 平台 / AGENT_ENV -> 加载的 .env.<mode> 文件：
+ *   Windows（或 AGENT_WIN=true 模拟） -> win   -> .env.win
+ *   Linux + AGENT_ENV=dev   -> dev  -> .env.dev
+ *   Linux + AGENT_ENV=test  -> test -> .env.test
+ *   Linux + AGENT_ENV=prod  -> prod -> .env.prod
  *
- * 容器化部署时只需设置 AGENT_ENV 环境变量，无需 --mode 参数。
+ * 具体 mode 由 scripts/run-vite.mjs 通过 --mode 传入，Vite 据此自动把
+ * .env.<mode> 注入到 import.meta.env（只有 mode 与文件名一致才会注入）。
+ * 容器化部署时只需设置 AGENT_ENV（Windows 上自动识别平台），无需手动 --mode。
  */
-function resolveMode(defaultMode) {
-  const agentEnv = (process.env.AGENT_ENV || '').toLowerCase()
-  if (agentEnv === 'dev') return 'development'
-  if (agentEnv === 'test') return 'test'
-  if (agentEnv === 'prod') return 'production'
-  return defaultMode
-}
 
-export default defineConfig(({ mode }) => {
-  const effectiveMode = resolveMode(mode)
+export default defineConfig(() => {
+  // 命令类型由启动脚本传入的 argv 决定（build / dev）
+  const command = process.argv.includes('build') ? 'build' : 'dev'
+  const effectiveMode = resolveEnvMode(command)
   const env = loadEnv(effectiveMode, process.cwd(), '')
   const envFile = `.env.${effectiveMode}`
 
@@ -36,6 +35,7 @@ export default defineConfig(({ mode }) => {
 ║           Easy Agent Frontend                    ║
 ╠══════════════════════════════════════════════════╣
 ║  AGENT_ENV:        ${process.env.AGENT_ENV || '(未设置, 使用默认)'}
+║  平台:             ${isWindows ? 'Windows' : 'Linux/macOS'}
 ║  环境模式 (mode):  ${effectiveMode}
 ║  配置文件:         ${envFile}
 ║  后端地址 (API):   ${env.VITE_API_BASE_URL || 'http://localhost:8000 (默认)'}

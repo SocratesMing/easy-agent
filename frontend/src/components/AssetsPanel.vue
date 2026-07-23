@@ -380,14 +380,14 @@ watch(() => props.visible, (newVal) => {
   align-items: center;
   padding: 20px 24px;
   background: transparent;
-  border-bottom: 1px solid #e2e8f0;
+  border-bottom: 1px solid var(--border-color);
 }
 
 .assets-header h2 {
   margin: 0;
   font-size: 20px;
   font-weight: 600;
-  color: #1e293b;
+  color: var(--text-primary);
 }
 
 .header-actions {
@@ -401,8 +401,8 @@ watch(() => props.visible, (newVal) => {
   align-items: center;
   gap: 6px;
   padding: 8px 16px;
-  border: 1px solid #e2e8f0;
-  background: #f1f5f9;
+  border: 1px solid var(--border-color);
+  background: var(--bg-tertiary);
   border-radius: 8px;
   font-size: 14px;
   color: #475569;
@@ -429,8 +429,8 @@ watch(() => props.visible, (newVal) => {
   align-items: center;
   gap: 6px;
   padding: 8px 16px;
-  border: 1px solid #e2e8f0;
-  background: #f1f5f9;
+  border: 1px solid var(--border-color);
+  background: var(--bg-tertiary);
   border-radius: 8px;
   font-size: 14px;
   color: #475569;
@@ -461,7 +461,7 @@ watch(() => props.visible, (newVal) => {
   gap: 8px;
   padding: 16px 24px;
   background: transparent;
-  border-bottom: 1px solid #e2e8f0;
+  border-bottom: 1px solid var(--border-color);
   overflow-x: auto;
 }
 
@@ -470,7 +470,7 @@ watch(() => props.visible, (newVal) => {
   align-items: center;
   gap: 8px;
   padding: 10px 16px;
-  border: 1px solid #e2e8f0;
+  border: 1px solid var(--border-color);
   background: transparent;
   border-radius: 8px;
   font-size: 14px;
@@ -481,8 +481,8 @@ watch(() => props.visible, (newVal) => {
 }
 
 .tab:hover {
-  background: #f1f5f9;
-  border-color: #cbd5e1;
+  background: var(--bg-tertiary);
+  border-color: var(--border-color);
 }
 
 .tab.active {
@@ -522,14 +522,14 @@ watch(() => props.visible, (newVal) => {
   align-items: center;
   justify-content: center;
   padding: 60px 20px;
-  color: #94a3b8;
+  color: var(--text-secondary);
   gap: 16px;
 }
 
 .spinner {
   width: 40px;
   height: 40px;
-  border: 3px solid #e2e8f0;
+  border: 3px solid var(--border-color);
   border-top-color: #0ea5e9;
   border-radius: 50%;
   animation: spin 1s linear infinite;
@@ -541,7 +541,7 @@ watch(() => props.visible, (newVal) => {
   align-items: center;
   justify-content: center;
   padding: 60px 20px;
-  color: #94a3b8;
+  color: var(--text-secondary);
 }
 
 .empty-state svg {
@@ -574,15 +574,15 @@ watch(() => props.visible, (newVal) => {
   align-items: center;
   gap: 12px;
   padding: 16px;
-  background: white;
-  border: 1px solid #e2e8f0;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
   border-radius: 12px;
   transition: all 0.2s;
   cursor: pointer;
 }
 
 .file-card:hover {
-  border-color: #cbd5e1;
+  border-color: var(--border-color);
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
 }
 
@@ -623,7 +623,7 @@ watch(() => props.visible, (newVal) => {
 .file-name {
   font-size: 14px;
   font-weight: 500;
-  color: #1e293b;
+  color: var(--text-primary);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -634,7 +634,7 @@ watch(() => props.visible, (newVal) => {
   display: flex;
   gap: 12px;
   font-size: 12px;
-  color: #94a3b8;
+  color: var(--text-secondary);
   align-items: center;
 }
 
@@ -677,7 +677,7 @@ watch(() => props.visible, (newVal) => {
 }
 
 .file-action:hover {
-  background: #f1f5f9;
+  background: var(--bg-tertiary);
 }
 
 .file-action.more-action {
@@ -700,7 +700,7 @@ watch(() => props.visible, (newVal) => {
   right: 0;
   top: 100%;
   background: #ffffff;
-  border: 1px solid #e2e8f0;
+  border: 1px solid var(--border-color);
   border-radius: 8px;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
   min-width: 120px;
@@ -718,13 +718,13 @@ watch(() => props.visible, (newVal) => {
   background: transparent;
   border-radius: 6px;
   font-size: 14px;
-  color: #334155;
+  color: var(--text-secondary);
   cursor: pointer;
   transition: all 0.2s;
 }
 
 .dropdown-item:hover {
-  background: #f1f5f9;
+  background: var(--bg-tertiary);
 }
 
 .dropdown-item.delete-item {

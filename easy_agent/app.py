@@ -266,6 +266,7 @@ async def lifespan(app: FastAPI):
             config=config,
             system_prompt=system_prompt,
             skills_root=skills_root,
+            agent_env=agent_env if agent_env in ("dev", "test", "prod") else "",
         )
         agent_config = {"config": config}
         logger.info("✅ Agent 配置加载成功")

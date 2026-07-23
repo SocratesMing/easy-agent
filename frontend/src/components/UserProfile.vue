@@ -169,7 +169,7 @@ onMounted(() => {
 }
 
 .profile-modal {
-  background: white;
+  background: var(--bg-secondary);
   border-radius: 16px;
   width: 420px;
   max-width: 90vw;
@@ -182,14 +182,14 @@ onMounted(() => {
   justify-content: space-between;
   align-items: center;
   padding: 20px 24px;
-  border-bottom: 1px solid #e2e8f0;
+  border-bottom: 1px solid var(--border-color);
 }
 
 .profile-header h2 {
   margin: 0;
   font-size: 18px;
   font-weight: 600;
-  color: #1e293b;
+  color: var(--text-primary);
 }
 
 .close-btn {
@@ -206,13 +206,13 @@ onMounted(() => {
 }
 
 .close-btn:hover {
-  background: #f1f5f9;
+  background: var(--bg-tertiary);
 }
 
 .close-btn svg {
   width: 20px;
   height: 20px;
-  color: #64748b;
+  color: var(--text-secondary);
 }
 
 .profile-content {
@@ -253,7 +253,7 @@ onMounted(() => {
   flex-direction: column;
   align-items: center;
   padding-bottom: 24px;
-  border-bottom: 1px solid #e2e8f0;
+  border-bottom: 1px solid var(--border-color);
   margin-bottom: 24px;
 }
 
@@ -277,7 +277,7 @@ onMounted(() => {
 .user-display-name {
   font-size: 20px;
   font-weight: 600;
-  color: #1e293b;
+  color: var(--text-primary);
 }
 
 .info-list {
@@ -291,7 +291,7 @@ onMounted(() => {
   justify-content: space-between;
   align-items: center;
   padding: 12px 16px;
-  background: #f8fafc;
+  background: var(--bg-tertiary);
   border-radius: 10px;
 }
 
@@ -301,7 +301,7 @@ onMounted(() => {
   gap: 10px;
   font-size: 14px;
   font-weight: 500;
-  color: #64748b;
+  color: var(--text-secondary);
 }
 
 .info-label svg {
@@ -312,7 +312,7 @@ onMounted(() => {
 .info-value {
   font-size: 14px;
   font-weight: 500;
-  color: #1e293b;
+  color: var(--text-primary);
 }
 
 .error-message {
@@ -347,7 +347,7 @@ onMounted(() => {
 
 .logout-btn {
   border: 1px solid #fee2e2;
-  background: white;
+  background: var(--bg-secondary);
   color: #dc2626;
 }
 
@@ -362,8 +362,8 @@ onMounted(() => {
 }
 
 .unregister-btn {
-  border: 1px solid #e2e8f0;
-  background: white;
+  border: 1px solid var(--border-color);
+  background: var(--bg-secondary);
   color: #dc2626;
 }
 
@@ -385,18 +385,18 @@ onMounted(() => {
 .close-action-btn {
   width: 100%;
   padding: 12px 48px;
-  border: 1px solid #e2e8f0;
-  background: white;
+  border: 1px solid var(--border-color);
+  background: var(--bg-secondary);
   border-radius: 10px;
   font-size: 14px;
-  color: #475569;
+  color: var(--text-secondary);
   cursor: pointer;
   transition: all 0.2s;
   margin-top: 12px;
 }
 
 .close-action-btn:hover {
-  background: #f1f5f9;
-  border-color: #cbd5e1;
+  background: var(--bg-tertiary);
+  border-color: var(--border-color);
 }
 </style>

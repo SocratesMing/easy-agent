@@ -100,8 +100,12 @@
 import { API_BASE_URL } from '../config.js'
 import { ref, computed, watch } from 'vue'
 import { marked } from 'marked'
+import { setupMarkedExtensions, normalizeMathDelimiters } from '../markdownSetup.js'
 import hljs from 'highlight.js'
 import 'highlight.js/styles/github.css'
+
+// 注册 KaTeX 数学公式 + emoji 短代码扩展（幂等，仅执行一次）
+setupMarkedExtensions()
 import VueOfficeDocx from '@vue-office/docx'
 import VueOfficeExcel from '@vue-office/excel'
 import VueOfficePptx from '@vue-office/pptx'
@@ -133,6 +137,10 @@ const props = defineProps({
     default: ''
   },
   sessionId: {
+    type: String,
+    default: null
+  },
+  taskId: {
     type: String,
     default: null
   },
@@ -274,6 +282,11 @@ function escapeHtml(text) {
   return div.innerHTML
 }
 
+// 预览/下载基础 URL：定时任务工作目录走独立端点，否则走会话文件端点
+const previewBaseUrl = computed(() => props.taskId
+  ? `${API_BASE_URL}/api/scheduled-tasks/${props.taskId}/workspace/file`
+  : `${API_BASE_URL}/api/files/preview`)
+
 function handleDownload() {
   const token = getStoredToken()
   const params = new URLSearchParams()
@@ -281,7 +294,7 @@ function handleDownload() {
   if (props.sessionId) params.set('session_id', props.sessionId)
   if (token) params.set('token', token)
   params.set('download', 'true')
-  const url = `${API_BASE_URL}/api/files/preview?${params.toString()}`
+  const url = `${previewBaseUrl.value}?${params.toString()}`
   const link = document.createElement('a')
   link.href = url
   link.download = props.filename
@@ -292,7 +305,7 @@ function handleDownload() {
 
 const renderedMarkdown = computed(() => {
   if (!textContent.value) return ''
-  return marked.parse(textContent.value)
+  return marked.parse(normalizeMathDelimiters(textContent.value))
 })
 
 const isText = computed(() => {
@@ -337,12 +350,12 @@ async function loadPreview() {
 
   const token = getStoredToken()
 
-  // 构建预览 URL：使用 /api/files/preview 接口
+  // 构建预览 URL：定时任务工作目录走独立端点，否则走会话文件端点
   const params = new URLSearchParams()
   params.set('file_path', props.filePath)
   if (props.sessionId) params.set('session_id', props.sessionId)
   if (token) params.set('token', token)
-  previewUrl.value = `${API_BASE_URL}/api/files/preview?${params.toString()}`
+  previewUrl.value = `${previewBaseUrl.value}?${params.toString()}`
   console.log(
     `[${ts}] [FilePreview] 加载预览 | 文件: ${props.filename} | 类型: ${getExt(props.filename) || '无扩展名'} | URL: ${previewUrl.value}`
   )

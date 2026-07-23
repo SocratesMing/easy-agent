@@ -7,194 +7,44 @@ Supported providers:
 
 import logging
 
-import langchain_openai.chat_models.base as lc_oai_base
 from langchain_anthropic import ChatAnthropic
-from langchain_core.language_models import chat_model_stream as cms
-from langchain_core.messages import AIMessage, AIMessageChunk
+from langchain_core.messages import AIMessageChunk
 from langchain_openai import ChatOpenAI
 
 from .config import Config, LLMConfig, RetryConfig
 
 logger = logging.getLogger(__name__)
 
-_patches_applied = False
+# Candidate field names used by various providers for model reasoning / thinking.
+# DeepSeek uses "reasoning_content"; some models use "reasoning"; others use
+# "reason_content". All are treated as aliases and the original key is preserved
+# so the value round-trips correctly back to the same provider.
+_REASONING_KEYS = ("reasoning_content", "reasoning", "reason_content")
 
 
-def _parse_mcp_content(content) -> str:
-    """Parse MCP-style ToolMessage content and extract plain text.
+def _extract_reasoning(source: dict):
+    """Return ``(key, value)`` for the first reasoning field present in ``source``.
 
-    MCP tools return content as a list of blocks like:
-        [{"type": "text", "text": "..."}]
-    or Python repr:
-        [{'type': 'text', 'text': '...'}]
+    Returns ``None`` if none of the candidate keys carry a truthy value.
     """
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts = []
-        for item in content:
-            if isinstance(item, dict) and item.get("type") == "text":
-                parts.append(item.get("text", ""))
-            elif hasattr(item, "text"):
-                parts.append(str(item.text))
-        if parts:
-            return "\n\n".join(parts)
-    return str(content)
+    for key in _REASONING_KEYS:
+        val = source.get(key)
+        if val:
+            return key, val
+    return None
 
 
-def _apply_reasoning_patches():
-    """Monkey-patch langchain_openai to handle DeepSeek's reasoning_content field.
+def extract_reasoning(additional_kwargs) -> str:
+    """Extract reasoning/thinking text from a message's ``additional_kwargs``.
 
-    DeepSeek's API uses ``reasoning_content`` for model thinking, but
-    langchain_openai's internal message conversion functions ignore unknown
-    ``additional_kwargs`` fields on AIMessage and don't capture
-    ``reasoning_content`` from API responses. This causes 400 errors when
-    ``reasoning_content`` from previous assistant messages is silently dropped
-    on subsequent API calls within the same agent run.
-
-    Uses THREE layers of patching for robustness:
-
-    **Layer 1 (message conversion functions)**
-    - ``_convert_delta_to_message_chunk`` -- capture reasoning_content from
-      streaming delta responses into ``additional_kwargs``
-    - ``_convert_dict_to_message`` -- capture reasoning_content from
-      non-streaming responses into ``additional_kwargs``
-    - ``_convert_message_to_dict`` -- emit reasoning_content from
-      ``additional_kwargs`` back into the request payload
-
-    **Layer 2 (request payload)**
-    - ``ChatOpenAI._get_request_payload`` -- forcefully injects
-      ``reasoning_content`` into the request payload for every assistant
-      message that has it in ``additional_kwargs``, as a safety net.
-
-    **Layer 3 (stream assembly)**
-    - ``BaseChatOpenAI._astream`` -- copy ``reasoning_content`` from
-      ``additional_kwargs`` to ``generation_info`` so it flows through
-      the v2 streaming pipeline
-    - ``_ChatModelStreamBase._assemble_message`` -- extract
-      ``reasoning_content`` from ``response_metadata`` and put it into
-      ``additional_kwargs`` of the final ``AIMessage``
+    Handles the various field names providers use (``reasoning_content``,
+    ``reasoning``, ``reason_content``). Returns the first truthy value found,
+    or an empty string when ``additional_kwargs`` is missing/empty.
     """
-    global _patches_applied
-    if _patches_applied:
-        return
-
-    # ── Layer 1: message conversion functions ──────────────────────────────
-
-    # 1) Streaming: capture reasoning_content from delta into additional_kwargs
-    _orig_convert_delta = lc_oai_base._convert_delta_to_message_chunk
-
-    def _patched_convert_delta(_dict, default_class):
-        result = _orig_convert_delta(_dict, default_class)
-        if isinstance(result, AIMessageChunk):
-            rc = _dict.get("reasoning_content")
-            if rc:
-                result.additional_kwargs["reasoning_content"] = rc
-        return result
-
-    lc_oai_base._convert_delta_to_message_chunk = _patched_convert_delta
-
-    # 2) Non-streaming: capture reasoning_content from response dict into additional_kwargs
-    _orig_convert_dict = lc_oai_base._convert_dict_to_message
-
-    def _patched_convert_dict(_dict):
-        result = _orig_convert_dict(_dict)
-        if isinstance(result, AIMessage):
-            rc = _dict.get("reasoning_content")
-            if rc:
-                result.additional_kwargs["reasoning_content"] = rc
-        return result
-
-    lc_oai_base._convert_dict_to_message = _patched_convert_dict
-
-    # 3) Outbound: emit reasoning_content from additional_kwargs back into request dict
-    _orig_convert_msg = lc_oai_base._convert_message_to_dict
-
-    def _patched_convert_msg(message, api="chat/completions"):
-        is_ai = isinstance(message, (AIMessage, AIMessageChunk))
-
-        result = _orig_convert_msg(message, api)
-        # Attach reasoning_content back to the dict for downstream use
-        if is_ai:
-            rc = message.additional_kwargs.get("reasoning_content")
-            if rc:
-                result["reasoning_content"] = rc
-        return result
-
-    lc_oai_base._convert_message_to_dict = _patched_convert_msg
-
-    # ── Layer 2: directly patch ChatOpenAI._get_request_payload ────────────
-
-    _orig_get_payload = ChatOpenAI._get_request_payload
-
-    def _patched_get_payload(self, input_, **kwargs):
-        payload = _orig_get_payload(self, input_, **kwargs)
-        msgs = payload.get("messages", [])
-        for msg in msgs:
-            if msg.get("role") == "assistant" and msg.get("tool_calls"):
-                if "reasoning_content" not in msg:
-                    pass
-        return payload
-
-    ChatOpenAI._get_request_payload = _patched_get_payload
-
-    # ── Layer 3: stream assembly — preserve additional_kwargs ──────────────
-
-    # Patch _astream to copy reasoning_content from additional_kwargs
-    # to generation_info, which flows through to response_metadata
-    # in the v2 streaming pipeline.
-    _orig_astream = lc_oai_base.BaseChatOpenAI._astream
-
-    _tc_fallback_counter = 0
-
-    async def _patched_astream(self, messages, **kwargs):
-        nonlocal _tc_fallback_counter
-        async for generation_chunk in _orig_astream(self, messages, **kwargs):
-            msg = generation_chunk.message
-            if isinstance(msg, AIMessageChunk):
-                rc = msg.additional_kwargs.get("reasoning_content")
-                if rc:
-                    gi = dict(generation_chunk.generation_info or {})
-                    gi["reasoning_content"] = rc
-                    generation_chunk.generation_info = gi
-                if msg.tool_call_chunks:
-                    patched = []
-                    for tc in msg.tool_call_chunks:
-                        tc = dict(tc)
-                        if tc.get("id") is None and tc.get("name"):
-                            _tc_fallback_counter += 1
-                            tc["id"] = f"tc_{_tc_fallback_counter}"
-                        patched.append(tc)
-                    msg.tool_call_chunks = patched
-                    if msg.tool_calls:
-                        patched_calls = []
-                        for tc in msg.tool_calls:
-                            tc = dict(tc)
-                            if tc.get("id") is None:
-                                _tc_fallback_counter += 1
-                                tc["id"] = f"tc_{_tc_fallback_counter}"
-                            patched_calls.append(tc)
-                        msg.tool_calls = patched_calls
-            yield generation_chunk
-
-    lc_oai_base.BaseChatOpenAI._astream = _patched_astream
-
-    # Patch _assemble_message to extract reasoning_content from
-    # response_metadata and put it into additional_kwargs.
-    _orig_assemble = cms._ChatModelStreamBase._assemble_message
-
-    def _patched_assemble(self):
-        result = _orig_assemble(self)
-        if isinstance(result, AIMessage):
-            rc = result.response_metadata.get("reasoning_content")
-            if rc:
-                result.additional_kwargs["reasoning_content"] = rc
-        return result
-
-    cms._ChatModelStreamBase._assemble_message = _patched_assemble
-
-    _patches_applied = True
-    logger.info("Applied langchain_openai reasoning_content patches for DeepSeek")
+    if not isinstance(additional_kwargs, dict):
+        return ""
+    found = _extract_reasoning(additional_kwargs)
+    return found[1] if found else ""
 
 
 def _resolve_llm_config(config: Config, model_name: str | None):
@@ -272,15 +122,51 @@ def create_model(config: Config, model_name: str | None = None):
         )
 
 
-def _create_openai_compatible(llm_config) -> ChatOpenAI:
-    """Create model using OpenAI-compatible API.
+class ReasoningChatOpenAI(ChatOpenAI):
+    """ChatOpenAI 子类：把 OpenAI 兼容接口返回的思考内容
+    （reasoning_content / reasoning / reason_content）写入 additional_kwargs，
+    供前端展示。
 
-    Applies monkey-patches to langchain_openai so that DeepSeek's
-    ``reasoning_content`` field (used for model thinking) is preserved
-    across API calls within the same agent execution.
+    当前 langchain-openai 不会自动提取这些非标准字段（官方文档亦说明，
+    建议用 provider 专属子类处理），因此在此集中解析，而非全局猴子补丁。
     """
-    _apply_reasoning_patches()
-    return ChatOpenAI(
+
+    def _convert_chunk_to_generation_chunk(
+        self,
+        chunk: dict,
+        default_chunk_class: type,
+        base_generation_info: dict | None,
+    ):
+        gen = super()._convert_chunk_to_generation_chunk(
+            chunk, default_chunk_class, base_generation_info
+        )
+        if gen is None:
+            return gen
+        msg = gen.message
+        if not isinstance(msg, AIMessageChunk):
+            return gen
+
+        choices = chunk.get("choices") or chunk.get("chunk", {}).get("choices", [])
+        if not choices or choices[0].get("delta") is None:
+            return gen
+        delta = choices[0]["delta"]
+
+        reasoning = ""
+        for key in _REASONING_KEYS:
+            val = delta.get(key)
+            if isinstance(val, str):
+                reasoning += val
+
+        if reasoning:
+            existing = msg.additional_kwargs.get("reasoning_content")
+            msg.additional_kwargs["reasoning_content"] = (existing or "") + reasoning
+
+        return gen
+
+
+def _create_openai_compatible(llm_config) -> ChatOpenAI:
+    """Create model using OpenAI-compatible API."""
+    return ReasoningChatOpenAI(
         model=llm_config.model,
         api_key=llm_config.api_key,
         base_url=llm_config.api_base,

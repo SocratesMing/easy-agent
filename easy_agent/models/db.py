@@ -34,6 +34,7 @@ class ScheduledTaskModel:
     task_id: str
     username: str
     session_id: str = ""
+    workspace_name: str = ""      # 工作目录名（默认 workspace/{username}/{workspace_name}/）
     name: str = ""
     description: str = ""
     schedule_cron: str = ""

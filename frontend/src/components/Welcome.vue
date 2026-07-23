@@ -287,13 +287,13 @@ onMounted(() => {
   margin: 0 0 8px 0;
   font-size: 24px;
   font-weight: 600;
-  color: #1e293b;
+  color: var(--text-primary);
 }
 
 .welcome-header p {
   margin: 0;
   font-size: 14px;
-  color: #64748b;
+  color: var(--text-secondary);
 }
 
 .welcome-form {
@@ -312,7 +312,7 @@ onMounted(() => {
 .form-group label {
   font-size: 14px;
   font-weight: 500;
-  color: #475569;
+  color: var(--text-secondary);
 }
 
 .required {
@@ -322,16 +322,17 @@ onMounted(() => {
 .password-hint {
   font-size: 12px;
   font-weight: 400;
-  color: #94a3b8;
+  color: var(--text-secondary);
   margin-left: 4px;
 }
 
 .form-group input {
   padding: 14px 16px;
-  border: 1px solid #e2e8f0;
+  border: 1px solid var(--border-color);
   border-radius: 12px;
   font-size: 15px;
-  color: #1e293b;
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
   transition: all 0.2s;
   outline: none;
 }
@@ -342,7 +343,7 @@ onMounted(() => {
 }
 
 .form-group input::placeholder {
-  color: #94a3b8;
+  color: var(--text-secondary);
 }
 
 .error-message {
@@ -411,7 +412,7 @@ onMounted(() => {
 .forgot-password-btn {
   background: transparent;
   border: none;
-  color: #94a3b8;
+  color: var(--text-secondary);
   font-size: 13px;
   cursor: pointer;
   padding: 4px 16px;
@@ -419,7 +420,7 @@ onMounted(() => {
 }
 
 .forgot-password-btn:hover {
-  color: #64748b;
+  color: var(--text-secondary);
   text-decoration: underline;
 }
 </style>

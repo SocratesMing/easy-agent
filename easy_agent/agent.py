@@ -20,14 +20,18 @@ from pathlib import Path
 from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend, FilesystemBackend, LocalShellBackend
 from deepagents.backends.protocol import ExecuteResponse
-from deepagents.middleware.filesystem import FilesystemOperation, FilesystemPermission
+from deepagents.middleware.filesystem import (
+    EXECUTE_TOOL_DESCRIPTION,
+    FilesystemOperation,
+    FilesystemPermission,
+)
 from langchain.agents.middleware import InterruptOnConfig, ToolCallRequest
 from langchain_core.messages import AIMessageChunk, ToolMessage
 from langgraph.checkpoint.memory import MemorySaver
 
 from .config import Config
 from .logger import AgentLogger
-from .model import _parse_mcp_content, create_model
+from .model import create_model, extract_reasoning
 
 
 logger = logging.getLogger(__name__)
@@ -428,6 +432,7 @@ class EasyAgent:
         permissions = self._build_permissions(skills_paths)
 
         self._override_read_file_limit(middleware)
+        self._override_execute_description(middleware)
 
         logger.info(
             f"[{self.session_id}] 🏗️ 创建智能体参数 | "
@@ -500,6 +505,21 @@ Usage:
     # 全量读取时的 limit 默认值：极大值，使省略 limit 时仍返回完整文件。
     READ_FILE_FULL_LINE_LIMIT: int = 1_000_000
 
+    # execute 工具 HITL 重点标注：该工具在宿主机直接执行命令（无沙箱），
+    # 文件删除类命令会触发人工审批中断，需在模型侧工具描述中明确告知模型。
+    EXECUTE_HITL_TOOL_DESCRIPTION: str = (
+        "⚠️⚠️⚠️ 人工审批工具 (HUMAN-IN-THE-LOOP / HITL) ⚠️⚠️⚠️\n\n"
+        "本工具在【宿主机】上直接执行 Shell 命令，没有沙箱隔离，危险性较高。\n"
+        "当命令属于「文件删除」类（如 rm / unlink / shred 删除文件）时，工具调用会触发【人工审批中断】：\n"
+        "  • 调用会立即暂停，等待用户在对话界面上「批准 / 拒绝」；\n"
+        "  • 在你收到用户的审批结果之前，命令【尚未真正执行】，不要假设它已成功，也不要提前执行依赖其结果的后续步骤；\n"
+        "  • 若用户「拒绝」，请根据拒绝原因调整方案，不要原样重复发起被拒绝的删除命令；\n"
+        "  • 目录删除（rm -r / rmdir 等）会被直接拒绝，不会进入审批流程。\n"
+        "普通命令（查看文件、列出目录、编译、运行测试、安装依赖等）通常无需审批即可直接执行。\n\n"
+        "—— 以下为工具的常规使用说明 ——\n\n"
+        + EXECUTE_TOOL_DESCRIPTION
+    )
+
     def _override_read_file_limit(self, middleware):
         """覆盖 read_file 工具，使其每次读取都全量读取。
 
@@ -549,6 +569,40 @@ Usage:
             logger.info(f"[{self.session_id}] 📖 read_file 已配置为全量读取")
         except Exception as e:
             logger.warning(f"read_file 全量读取配置失败: {e}")
+
+    def _override_execute_description(self, middleware):
+        """覆盖 execute 工具描述，在模型侧重点标注 HITL（人工审批）行为。
+
+        文件删除类命令（rm/unlink/shred 删除文件）会触发人工审批中断；
+        通过重写 FilesystemMiddleware._create_execute_tool，在工具创建时
+        注入 'execute' 的自定义描述，让模型明确知道该工具可能需要用户批准。
+        主智能体与子智能体共用 FilesystemMiddleware._create_execute_tool，
+        因此一处重写即可覆盖两者。
+        """
+        try:
+            from deepagents.middleware.filesystem import FilesystemMiddleware
+
+            if not hasattr(FilesystemMiddleware, "_original_create_execute_tool"):
+                FilesystemMiddleware._original_create_execute_tool = (
+                    FilesystemMiddleware._create_execute_tool
+                )
+
+            original = FilesystemMiddleware._original_create_execute_tool
+
+            def patched_create_execute_tool(self_inner):
+                if not hasattr(self_inner, "_custom_tool_descriptions") or \
+                        self_inner._custom_tool_descriptions is None:
+                    self_inner._custom_tool_descriptions = {}
+                self_inner._custom_tool_descriptions = {
+                    **self_inner._custom_tool_descriptions,
+                    "execute": self.EXECUTE_HITL_TOOL_DESCRIPTION,
+                }
+                return original(self_inner)
+
+            FilesystemMiddleware._create_execute_tool = patched_create_execute_tool
+            logger.info(f"[{self.session_id}] 🔧 execute 已标注 HITL 人工审批说明")
+        except Exception as e:
+            logger.warning(f"[{self.session_id}] ⚠️ 覆盖 execute 工具描述失败: {e}")
 
     def _build_backend(self, skills_paths: list[str]):
         """构建 CompositeBackend 实例，配置多路由文件系统后端。
@@ -819,7 +873,7 @@ Usage:
 
                 if isinstance(chunk, AIMessageChunk):
                     rc = (
-                        chunk.additional_kwargs.get("reasoning_content", "")
+                        extract_reasoning(chunk.additional_kwargs)
                         if hasattr(chunk, "additional_kwargs")
                         else ""
                     )
@@ -874,6 +928,8 @@ Usage:
                                     pass
 
                 elif isinstance(chunk, ToolMessage):
+                    from .services.mcp import _parse_mcp_content
+
                     tool_name = getattr(chunk, "name", "") or ""
                     result = _parse_mcp_content(chunk.content) if chunk.content else ""
                     truncate_len = getattr(

@@ -76,6 +76,9 @@
               <button class="action-btn run-btn" @click.stop="handleRun(task)" :disabled="runLoading === task.task_id">
                 {{ runLoading === task.task_id ? '触发中...' : '立即执行' }}
               </button>
+              <button class="action-btn ws-btn" @click.stop="openWorkspace(task)">
+                查看工作目录
+              </button>
               <button class="action-btn delete-btn" @click.stop="handleDelete(task)">
                 删除
               </button>
@@ -142,6 +145,40 @@
       cancel-text="取消"
       type="danger"
     />
+
+    <div v-if="workspaceModalVisible" class="workspace-modal-overlay" @click.self="closeWorkspace">
+      <div class="workspace-modal">
+        <div class="workspace-modal-header">
+          <span class="workspace-modal-title">工作目录</span>
+          <button class="workspace-refresh-btn" @click="loadWorkspace" :disabled="workspaceLoading">刷新</button>
+          <button class="workspace-close-btn" @click="closeWorkspace">×</button>
+        </div>
+        <div class="workspace-modal-body">
+          <div v-if="workspaceLoading" class="ws-loading">加载中...</div>
+          <div v-else-if="workspaceItems.length === 0" class="ws-empty">该工作目录暂无文件</div>
+          <div v-else class="ws-tree">
+            <FileTreeNode
+              v-for="item in workspaceItems"
+              :key="item.path"
+              :item="item"
+              :taskId="workspaceTaskId"
+              :selectedId="selectedFile ? selectedFile.path : null"
+              @select="handleWorkspaceSelect"
+              @download="handleWorkspaceDownload"
+            />
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <FilePreview
+      v-if="previewVisible"
+      :visible="previewVisible"
+      :filePath="selectedFile ? selectedFile.path : ''"
+      :filename="selectedFile ? selectedFile.name : ''"
+      :taskId="workspaceTaskId"
+      @close="previewVisible = false"
+    />
   </div>
 </template>
 
@@ -153,8 +190,13 @@ import {
   deleteScheduledTask,
   toggleScheduledTask,
   runScheduledTaskNow,
+  getScheduledTaskWorkspace,
 } from '../api/scheduledTasks.js'
 import ConfirmDialog from './ConfirmDialog.vue'
+import FileTreeNode from './FileTreeNode.vue'
+import FilePreview from './FilePreview.vue'
+import { API_BASE_URL } from '../config.js'
+import { getStoredToken } from '../api/auth.js'
 
 defineEmits(['close'])
 
@@ -169,6 +211,60 @@ const runsCollapsed = ref(true)
 const toast = ref(null)
 const confirmDialog = ref(null)
 const pendingDeleteTaskName = ref('')
+
+// 工作目录弹窗状态
+const workspaceModalVisible = ref(false)
+const workspaceTaskId = ref('')
+const workspaceItems = ref([])
+const workspaceLoading = ref(false)
+const selectedFile = ref(null)
+const previewVisible = ref(false)
+
+async function openWorkspace(task) {
+  workspaceTaskId.value = task.task_id
+  selectedFile.value = null
+  previewVisible.value = false
+  workspaceModalVisible.value = true
+  await loadWorkspace()
+}
+
+function closeWorkspace() {
+  workspaceModalVisible.value = false
+}
+
+async function loadWorkspace() {
+  workspaceLoading.value = true
+  try {
+    const data = await getScheduledTaskWorkspace(workspaceTaskId.value, '')
+    workspaceItems.value = data.items || []
+  } catch (e) {
+    showToast(e.message, 'error')
+    workspaceItems.value = []
+  } finally {
+    workspaceLoading.value = false
+  }
+}
+
+function handleWorkspaceSelect(file) {
+  if (file.type === 'directory') return
+  selectedFile.value = file
+  previewVisible.value = true
+}
+
+function handleWorkspaceDownload(file) {
+  const token = getStoredToken()
+  const params = new URLSearchParams()
+  params.set('file_path', file.path)
+  if (token) params.set('token', token)
+  params.set('download', 'true')
+  const url = `${API_BASE_URL}/api/scheduled-tasks/${workspaceTaskId.value}/workspace/file?${params.toString()}`
+  const link = document.createElement('a')
+  link.href = url
+  link.download = file.name
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
+}
 
 function showToast(message, type = 'success') {
   toast.value = { message, type }
@@ -727,6 +823,95 @@ onMounted(() => {
   color: #dc2626;
   white-space: pre-wrap;
   word-break: break-all;
+}
+
+/* 工作目录弹窗 */
+.workspace-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2000;
+}
+
+.workspace-modal {
+  width: min(640px, 92vw);
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-card, #fff);
+  border-radius: 12px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25);
+  overflow: hidden;
+}
+
+.workspace-modal-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border-color, #e5e5e5);
+  flex-shrink: 0;
+}
+
+.workspace-modal-title {
+  flex: 1;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary, #333);
+}
+
+.workspace-refresh-btn {
+  padding: 4px 12px;
+  border: 1px solid var(--border-color, #e5e5e5);
+  border-radius: 8px;
+  background: var(--bg-card, #fff);
+  font-size: 13px;
+  color: var(--accent, #6c5ce7);
+  cursor: pointer;
+}
+
+.workspace-refresh-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.workspace-close-btn {
+  width: 30px;
+  height: 30px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  font-size: 22px;
+  line-height: 1;
+  color: var(--text-tertiary, #999);
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.workspace-close-btn:hover {
+  background: var(--bg-hover, #f1f5f9);
+}
+
+.workspace-modal-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px 16px;
+}
+
+.ws-loading, .ws-empty {
+  padding: 40px 0;
+  text-align: center;
+  font-size: 13px;
+  color: var(--text-tertiary, #aaa);
+}
+
+.ws-tree {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 
 .toast {

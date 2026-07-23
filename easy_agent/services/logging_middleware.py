@@ -64,6 +64,11 @@ class LoggingMiddleware(AgentMiddleware):
     def __init__(self, session_id: str = "", result_log_truncate: int = 500):
         self.sid = session_id[-5:] if session_id else "agent"
         self._truncate_len = result_log_truncate or 500
+        self._run_start = None  # 本轮对话（run）首次模型调用时间，用于累计总耗时
+        self._prev_time = None  # 上一轮模型调用时间，用于检测新 run
+        self._pending_round = None  # 待打印的模型轮次摘要（延迟到本轮工具执行完后打印）
+        self._executed_tools = 0  # 本轮已执行的工具数
+        self._round_seq = 0  # 模型轮次序号，用于 "Step N end" 日志
 
     def _log_tool(self, request, result, duration: float) -> None:
         call = getattr(request, "tool_call", None)
@@ -82,6 +87,11 @@ class LoggingMiddleware(AgentMiddleware):
             f"参数: {_format_args(args)} | 结果: {_truncate(text, self._truncate_len)} | "
             f"耗时: {duration:.2f}s"
         )
+        # 本轮模型轮次日志延迟到所有工具执行完后打印：每执行一个工具计数，
+        # 达到本轮工具数（来自 aafter_model 缓存的 round_info）时再打印模型轮次。
+        self._executed_tools += 1
+        if self._pending_round is not None and self._executed_tools >= self._pending_round["tool_count"]:
+            self._flush_pending_round()
 
     def wrap_tool_call(self, request, handler):
         t0 = time.time()
@@ -113,13 +123,51 @@ class LoggingMiddleware(AgentMiddleware):
                     item.get("text", "") if isinstance(item, dict) else str(item)
                     for item in content
                 )
-            add_kw = getattr(last, "additional_kwargs", {}) or {}
-            reasoning = add_kw.get("reasoning_content", "") or ""
             tool_calls = getattr(last, "tool_calls", None) or []
-            logger.info(
-                f"[{self.sid}] 🧠 模型轮次 | 思考: {len(str(reasoning))} 字符 | "
-                f"正文: {len(str(content))} 字符 | 工具调用: {len(tool_calls)}"
-            )
+            # 当前轮 token 用量（模型消息自带的 usage_metadata）
+            usage = getattr(last, "usage_metadata", None) or {}
+            in_tok = usage.get("input_tokens", 0) or 0
+            out_tok = usage.get("output_tokens", 0) or 0
+            tot_tok = usage.get("total_tokens", 0) or (in_tok + out_tok)
+            # 本轮对话总耗时基准：以首次模型调用为起点；若与上轮间隔过大（>120s）
+            # 视为新一轮对话，自动重置起点，避免 middleware 实例跨请求复用导致计时累积。
+            now = time.time()
+            if self._run_start is None or (self._prev_time and now - self._prev_time > 120):
+                self._run_start = now
+            self._prev_time = now
+            # 模型轮次摘要延迟到本轮所有工具执行完后打印（见 _log_tool / _flush_pending_round），
+            # 使“模型轮次”出现在工具日志之后，更符合阅读顺序。
+            if self._pending_round is not None:
+                self._flush_pending_round()
+            self._round_seq += 1
+            round_info = {
+                "seq": self._round_seq,
+                "content_len": len(str(content)),
+                "tool_count": len(tool_calls),
+                "in_tok": in_tok,
+                "out_tok": out_tok,
+                "tot_tok": tot_tok,
+            }
+            if len(tool_calls) == 0:
+                self._print_round(round_info)
+            else:
+                self._pending_round = round_info
+                self._executed_tools = 0
         except Exception as e:
             logger.warning(f"[{self.sid}] 模型轮次日志记录异常: {e}")
         return None
+
+    def _print_round(self, round_info: dict) -> None:
+        total_elapsed = round(time.time() - self._run_start, 2) if self._run_start else 0
+        logger.info(
+            f"[{self.sid}] Step {round_info['seq']} end | 正文: {round_info['content_len']} 字符 | "
+            f"工具调用: {round_info['tool_count']} | "
+            f"Token(in/out/total): {round_info['in_tok']}/{round_info['out_tok']}/{round_info['tot_tok']} | "
+            f"总耗时: {total_elapsed}s"
+        )
+
+    def _flush_pending_round(self) -> None:
+        if self._pending_round is not None:
+            self._print_round(self._pending_round)
+            self._pending_round = None
+            self._executed_tools = 0

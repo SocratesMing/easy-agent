@@ -18,6 +18,9 @@ from ..services import (
     unregister_scheduled_task,
     get_scheduler,
 )
+from ..services.scheduler import get_task_workspace_name
+from ..api.files import build_workspace_tree, serve_workspace_file
+from ..config import Config
 from ..utils.task_logger import log_task_event
 
 logger = logging.getLogger(__name__)
@@ -33,6 +36,7 @@ def _task_to_info(task) -> dict:
         "task_id": task.task_id,
         "username": task.username,
         "session_id": task.session_id,
+        "workspace_name": getattr(task, "workspace_name", ""),
         "name": task.name,
         "description": task.description,
         "schedule_cron": task.schedule_cron,
@@ -174,3 +178,48 @@ async def run_scheduled_task_now(
         detail=f"手动触发执行: name={task.name}",
     )
     return {"task_id": task_id, "status": "triggered"}
+
+
+def _resolve_task_workspace_dir(db, task_id: str, username: str):
+    """校验任务归属并返回其工作目录的绝对路径。"""
+    task = db.get_scheduled_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    if task.username != username:
+        raise HTTPException(status_code=403, detail="无权访问此任务")
+    workspace_name = get_task_workspace_name(db, task)
+    workspace_dir = Config.get_user_workspace_dir(task.username)
+    if workspace_name:
+        workspace_dir = workspace_dir / workspace_name
+    return task, workspace_dir
+
+
+@router.get("/{task_id}/workspace", summary="获取定时任务工作目录文件树")
+async def get_task_workspace(
+    task_id: str,
+    db: Annotated[Database, Depends(get_database)],
+    username: Annotated[str, Depends(get_current_username)],
+    path: str = "",
+):
+    """返回定时任务工作目录的文件树，便于查看任务产生的文件。
+
+    工作目录定位规则见 ``get_task_workspace_name``：若任务由会话生成则复用该会话目录，
+    否则使用任务独立目录 ``scheduled_{task_id}``。
+    """
+    _, workspace_dir = _resolve_task_workspace_dir(db, task_id, username)
+    items = build_workspace_tree(workspace_dir, path)
+    return {"path": path, "workspace_dir": str(workspace_dir), "items": items}
+
+
+@router.get("/{task_id}/workspace/file", summary="预览/下载定时任务工作目录文件")
+async def get_task_workspace_file(
+    task_id: str,
+    file_path: str = "",
+    download: bool = False,
+    db: Annotated[Database, Depends(get_database)] = None,
+    username: Annotated[str, Depends(get_current_username)] = None,
+):
+    _, workspace_dir = _resolve_task_workspace_dir(db, task_id, username)
+    if not file_path:
+        raise HTTPException(status_code=400, detail="缺少 file_path 参数")
+    return serve_workspace_file(workspace_dir, file_path, download=download)

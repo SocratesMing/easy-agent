@@ -98,7 +98,7 @@ if [[ "$SKIP_BUILD" == "true" ]]; then
 else
     cd "$PROJECT_ROOT/frontend"
     npm install --registry=https://registry.npmmirror.com
-    # AGENT_ENV 已在环境中，vite.config.js 会据此选择 .env.production
+    # AGENT_ENV 已在环境中，vite.config.js 会据此选择 .env.prod
     npm run build
     cd "$PROJECT_ROOT"
     echo "  ✅ 前端构建完成 -> frontend/dist/"

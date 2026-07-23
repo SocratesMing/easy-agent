@@ -86,6 +86,16 @@ class CreateScheduledTaskTool(BaseTool):
         )
 
         db = get_database()
+        # 解析工作目录：若由会话生成则复用该会话目录，否则使用独立目录
+        workspace_name = ""
+        if self.session_id:
+            session = db.get_session(self.session_id)
+            if session and getattr(session, "workspace_name", ""):
+                workspace_name = session.workspace_name
+        if not workspace_name:
+            workspace_name = f"scheduled_{task_id}"
+        task.workspace_name = workspace_name
+
         db.create_scheduled_task(task)
 
         next_run = register_scheduled_task(task)

@@ -35,11 +35,21 @@
       
       <div class="input-row">
         <div class="input-field">
+          <div
+            v-show="caretLineTop !== null"
+            class="caret-line"
+            :style="{ top: caretLineTop + 'px', height: lineHeight + 'px' }"
+          ></div>
           <textarea
             ref="textareaRef"
             v-model="message"
             @keydown.enter.exact.prevent="send"
             @input="onInput"
+            @focus="updateCaretLine"
+            @blur="hideCaretLine"
+            @keyup="updateCaretLine"
+            @click="updateCaretLine"
+            @scroll="updateCaretLine"
             placeholder=""
             :disabled="disabled"
             rows="1"
@@ -57,11 +67,6 @@
               @click="toggleModelDropdown"
               title="选择模型"
             >
-              <svg class="model-btn-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
-                <circle cx="8.5" cy="8.5" r="1.5"/>
-                <polyline points="21 15 16 10 5 21"/>
-              </svg>
               <span class="model-btn-label">{{ currentModelLabel }}</span>
               <span class="model-btn-count" v-if="models.length">{{ models.length }}</span>
               <svg class="model-btn-arrow" :class="{ open: showModelDropdown }" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -233,6 +238,24 @@ const message = ref('')
 const textareaRef = ref(null)
 const uploadedFiles = ref([])
 let abortController = null
+
+// 光标所在行高亮（overlay 技术：textareal 本身无法按行上色）
+const caretLineTop = ref(null)   // 高亮条 top，null 表示隐藏
+const lineHeight = ref(24)       // 行高（px）
+
+function updateCaretLine() {
+  const ta = textareaRef.value
+  if (!ta) return
+  const lh = parseFloat(getComputedStyle(ta).lineHeight)
+  if (!isNaN(lh) && lh > 0) lineHeight.value = lh
+  const pos = ta.selectionStart ?? 0
+  const lineIndex = ta.value.slice(0, pos).split('\n').length - 1
+  caretLineTop.value = lineIndex * lineHeight.value - ta.scrollTop
+}
+
+function hideCaretLine() {
+  caretLineTop.value = null
+}
 
 // 模型选择：本地双向绑定，变化时同步父组件
 const localSelectedModel = computed({
@@ -515,6 +538,7 @@ function autoResize() {
 
 function onInput() {
   autoResize()
+  updateCaretLine()
   emit('typing')
 }
 
@@ -550,8 +574,8 @@ onUnmounted(() => {
 .input-box {
   width: 80%;
   max-width: 900px;
-  background: #ffffff;
-  border: 1px solid #e2e8f0;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
   border-radius: 16px;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
   transition: all 0.3s ease;
@@ -568,16 +592,16 @@ onUnmounted(() => {
   flex-wrap: wrap;
   gap: 12px;
   padding: 12px 16px;
-  background: #f8fafc;
-  border-bottom: 1px solid #f1f5f9;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-color);
 }
 
 .uploaded-file {
   display: flex;
   align-items: center;
   gap: 10px;
-  background: #ffffff;
-  border: 1px solid #e2e8f0;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
   padding: 10px 14px;
   border-radius: 12px;
   max-width: 250px;
@@ -588,7 +612,7 @@ onUnmounted(() => {
 
 .uploaded-file:hover {
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08);
-  border-color: #cbd5e1;
+  border-color: var(--border-color);
 }
 
 .file-icon {
@@ -611,7 +635,7 @@ onUnmounted(() => {
 .file-name {
   font-size: 13px;
   font-weight: 500;
-  color: #1e293b;
+  color: var(--text-primary);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -625,7 +649,7 @@ onUnmounted(() => {
 
 .file-size {
   font-size: 11px;
-  color: #64748b;
+  color: var(--text-secondary);
 }
 
 .upload-progress {
@@ -637,7 +661,7 @@ onUnmounted(() => {
 .progress-bar {
   width: 60px;
   height: 4px;
-  background: #f1f5f9;
+  background: var(--bg-tertiary);
   border-radius: 2px;
   overflow: hidden;
 }
@@ -651,7 +675,7 @@ onUnmounted(() => {
 
 .progress-text {
   font-size: 10px;
-  color: #64748b;
+  color: var(--text-secondary);
   min-width: 35px;
 }
 
@@ -678,7 +702,7 @@ onUnmounted(() => {
   justify-content: center;
   width: 24px;
   height: 24px;
-  background: #f1f5f9;
+  background: var(--bg-tertiary);
   border: none;
   border-radius: 6px;
   cursor: pointer;
@@ -687,14 +711,14 @@ onUnmounted(() => {
 }
 
 .remove-file-btn:hover {
-  background: #e2e8f0;
+  background: var(--border-color);
   transform: scale(1.05);
 }
 
 .remove-file-btn svg {
   width: 14px;
   height: 14px;
-  color: #64748b;
+  color: var(--text-secondary);
 }
 
 .remove-file-btn:hover svg {
@@ -710,16 +734,34 @@ onUnmounted(() => {
 
 .input-field {
   width: 100%;
+  position: relative;
+}
+
+/* 光标所在行高亮条（覆盖在 textarea 下层，仅深色模式可见） */
+.caret-line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  z-index: 0;
+  border-radius: 4px;
+  background: transparent;
+  pointer-events: none;
+}
+
+html[data-theme="dark"] .caret-line {
+  background: rgba(255, 255, 255, 0.05);
 }
 
 .input-field textarea {
+  position: relative;
+  z-index: 1;
   width: 100%;
   border: none;
   background: transparent;
   resize: none;
   font-size: 15px;
   line-height: 1.6;
-  color: #1e293b;
+  color: var(--text-primary);
   max-height: 150px;
   min-height: 24px;
   padding: 0;
@@ -727,7 +769,7 @@ onUnmounted(() => {
 }
 
 .input-field textarea::placeholder {
-  color: #94a3b8;
+  color: var(--text-secondary);
   font-size: 14px;
 }
 
@@ -761,8 +803,8 @@ onUnmounted(() => {
   padding: 6px 12px;
   height: 36px;
   min-height: 36px;
-  border: 1px solid #e2e8f0;
-  background: #f8fafc;
+  border: 1px solid var(--border-color);
+  background: var(--bg-secondary);
   border-radius: 10px;
   cursor: pointer;
   transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
@@ -771,7 +813,7 @@ onUnmounted(() => {
 
 .model-btn:hover:not(.disabled) {
   border-color: rgba(14, 165, 233, 0.4);
-  background: rgba(14, 165, 233, 0.06);
+  background: color-mix(in srgb, var(--accent-color) 10%, transparent);
   transform: translateY(-1px);
 }
 
@@ -780,22 +822,10 @@ onUnmounted(() => {
   cursor: not-allowed;
 }
 
-.model-btn-icon {
-  width: 16px;
-  height: 16px;
-  color: #64748b;
-  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
-}
-
-.model-btn:hover:not(.disabled) .model-btn-icon {
-  color: #0ea5e9;
-  transform: scale(1.08);
-}
-
 .model-btn-label {
   font-size: 12px;
   font-weight: 500;
-  color: #64748b;
+  color: var(--text-secondary);
   transition: color 0.25s ease;
   max-width: 140px;
   overflow: hidden;
@@ -810,8 +840,8 @@ onUnmounted(() => {
   height: 16px;
   padding: 0 4px;
   border-radius: 8px;
-  background: #e2e8f0;
-  color: #64748b;
+  background: var(--border-color);
+  color: var(--text-secondary);
   font-size: 10px;
   font-weight: 600;
   line-height: 1;
@@ -822,14 +852,14 @@ onUnmounted(() => {
 }
 
 .model-btn:hover:not(.disabled) .model-btn-count {
-  background: #bae6fd;
-  color: #0284c7;
+  background: color-mix(in srgb, var(--accent-color) 25%, transparent);
+  color: var(--accent-color);
 }
 
 .model-btn-arrow {
   width: 12px;
   height: 12px;
-  color: #94a3b8;
+  color: var(--text-secondary);
   transition: transform 0.2s ease;
 }
 
@@ -838,8 +868,8 @@ onUnmounted(() => {
 }
 
 .model-dropdown-menu {
-  background: #ffffff;
-  border: 1px solid #e2e8f0;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
   border-radius: 12px;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
   padding: 6px;
@@ -859,27 +889,27 @@ onUnmounted(() => {
 }
 
 .model-dropdown-item:hover {
-  background: #f1f5f9;
+  background: var(--bg-tertiary);
 }
 
 .model-dropdown-item.active {
-  background: rgba(14, 165, 233, 0.08);
+  background: color-mix(in srgb, var(--accent-color) 12%, transparent);
 }
 
 .model-dropdown-header {
   padding: 6px 10px 8px;
   font-size: 11px;
   font-weight: 600;
-  color: #94a3b8;
+  color: var(--text-secondary);
   letter-spacing: 0.02em;
-  border-bottom: 1px solid #f1f5f9;
+  border-bottom: 1px solid var(--border-color);
   margin-bottom: 4px;
 }
 
 .model-item-name {
   font-size: 13px;
   font-weight: 600;
-  color: #1e293b;
+  color: var(--text-primary);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -927,11 +957,11 @@ onUnmounted(() => {
 .action-btn svg {
   width: 18px;
   height: 18px;
-  color: #64748b;
+  color: var(--text-secondary);
 }
 
 .action-btn:hover {
-  background: #f1f5f9;
+  background: var(--bg-tertiary);
 }
 
 .action-btn:hover svg {
@@ -942,7 +972,7 @@ onUnmounted(() => {
   width: 36px;
   height: 36px;
   border: none;
-  background: #f1f5f9;
+  background: var(--bg-tertiary);
   border-radius: 8px;
   display: flex;
   align-items: center;
@@ -954,7 +984,7 @@ onUnmounted(() => {
 .send-btn svg {
   width: 18px;
   height: 18px;
-  color: #64748b;
+  color: var(--text-secondary);
   transition: all 0.2s;
 }
 
@@ -1021,6 +1051,10 @@ onUnmounted(() => {
   height: 36px;
 }
 
+.context-ring-bg {
+  stroke: var(--border-color);
+}
+
 .context-ring-text {
   position: absolute;
   top: 50%;
@@ -1028,15 +1062,15 @@ onUnmounted(() => {
   transform: translate(-50%, -50%);
   font-size: 9px;
   font-weight: 600;
-  color: #475569;
+  color: var(--text-secondary);
   line-height: 1;
   pointer-events: none;
 }
 
 .token-popup {
   position: fixed;
-  background: #ffffff;
-  border: 1px solid #e2e8f0;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
   border-radius: 12px;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
   padding: 14px 16px;
@@ -1048,7 +1082,7 @@ onUnmounted(() => {
 .token-popup-title {
   font-size: 12px;
   font-weight: 600;
-  color: #1e293b;
+  color: var(--text-primary);
   margin-bottom: 10px;
 }
 
@@ -1065,13 +1099,13 @@ onUnmounted(() => {
 
 .token-popup-label {
   font-size: 11px;
-  color: #64748b;
+  color: var(--text-secondary);
 }
 
 .token-popup-value {
   font-size: 11px;
   font-weight: 600;
-  color: #334155;
+  color: var(--text-secondary);
 }
 
 .token-popup-value.input {
@@ -1097,7 +1131,7 @@ onUnmounted(() => {
 .token-popup-context-value {
   font-size: 13px;
   font-weight: 700;
-  color: #1e293b;
+  color: var(--text-primary);
   font-variant-numeric: tabular-nums;
 }
 
@@ -1109,7 +1143,7 @@ onUnmounted(() => {
 
 .token-popup-divider {
   height: 1px;
-  background: #f1f5f9;
+  background: var(--bg-tertiary);
   margin: 6px 0;
 }
 
@@ -1121,7 +1155,7 @@ onUnmounted(() => {
   height: 5px;
   border-radius: 3px;
   overflow: hidden;
-  background: #f1f5f9;
+  background: var(--bg-tertiary);
 }
 
 .token-popup-bar-fill {
@@ -1136,8 +1170,8 @@ onUnmounted(() => {
   justify-content: center;
   width: 36px;
   height: 36px;
-  border: 1px solid #e2e8f0;
-  background: #f8fafc;
+  border: 1px solid var(--border-color);
+  background: var(--bg-secondary);
   border-radius: 10px;
   cursor: pointer;
   transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
@@ -1146,7 +1180,7 @@ onUnmounted(() => {
 .upload-btn svg {
   width: 18px;
   height: 18px;
-  color: #64748b;
+  color: var(--text-secondary);
   transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
@@ -1186,12 +1220,12 @@ onUnmounted(() => {
 .copy-btn svg {
   width: 18px;
   height: 18px;
-  color: #64748b;
+  color: var(--text-secondary);
   transition: all 0.2s;
 }
 
 .copy-btn:hover:not(.disabled) {
-  background: #f1f5f9;
+  background: var(--bg-tertiary);
 }
 
 .copy-btn:hover:not(.disabled) svg {
@@ -1210,6 +1244,6 @@ onUnmounted(() => {
 
 .footer-text {
   font-size: 12px;
-  color: #94a3b8;
+  color: var(--text-secondary);
 }
 </style>

@@ -174,7 +174,7 @@ watch(() => props.files, () => {
 }
 
 .close-btn:hover {
-  background: #f3f4f6;
+  background: var(--bg-tertiary);
   color: #1f2937;
 }
 
@@ -191,7 +191,7 @@ watch(() => props.files, () => {
 
 .file-list {
   width: 300px;
-  border-right: 1px solid #e5e7eb;
+  border-right: 1px solid var(--border-color);
   overflow-y: auto;
   padding: 8px;
 }
@@ -207,11 +207,11 @@ watch(() => props.files, () => {
 }
 
 .file-item:hover {
-  background: #f3f4f6;
+  background: var(--bg-tertiary);
 }
 
 .file-item.active {
-  background: #e0f2fe;
+  background: color-mix(in srgb, var(--accent-color) 18%, transparent);
 }
 
 .file-icon {

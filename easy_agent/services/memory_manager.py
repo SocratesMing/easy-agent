@@ -19,6 +19,10 @@ MAX_MEMORY_CHARS = 2000
 # 触发压缩的阈值（达到此长度即压缩，留出余量避免频繁触发）
 COMPRESS_THRESHOLD = 1800
 
+# 用户级长期记忆（memories/{username}/AGENTS.md）上限，跨会话积累故比会话级更大
+MAX_LONG_TERM_MEMORY_CHARS = 4000
+LONG_TERM_COMPRESS_THRESHOLD = 3600
+
 COMPRESS_PROMPT = """你是一个记忆压缩助手。请将下面的"会话记忆"内容压缩到不超过 {max_chars} 个字符，要求：
 1. 保留所有可复用的经验、用户偏好、行为原则、关键解决方案
 2. 删除一次性任务、临时状态、过时信息
@@ -161,7 +165,7 @@ def _hard_truncate(content: str, max_chars: int) -> str:
     return "\n".join(result)
 
 
-def enforce_memory_limit(memory_file: Path, llm=None) -> bool:
+def enforce_memory_limit(memory_file: Path, llm=None, max_chars: int = MAX_MEMORY_CHARS) -> bool:
     """检查并强制记忆文件不超过长度限制。
 
     在 Agent 运行结束后调用。若记忆超过阈值则触发压缩。
@@ -169,23 +173,24 @@ def enforce_memory_limit(memory_file: Path, llm=None) -> bool:
     Args:
         memory_file: 记忆文件路径
         llm: 可选的 LLM 实例用于智能压缩；为 None 时仅硬截断
+        max_chars: 最大字符数，默认会话级上限
 
     Returns:
         True 表示执行了压缩，False 表示无需压缩
     """
     try:
         content = read_memory(memory_file)
-        if not needs_compression(content):
+        if len(content) <= max_chars:
             return False
 
         logger.info(
-            f"记忆超限触发压缩 | 文件: {memory_file} | 当前长度: {len(content)} 字符"
+            f"记忆超限触发压缩 | 文件: {memory_file} | 当前长度: {len(content)} 字符 | 上限: {max_chars}"
         )
 
         if llm is not None:
-            compressed = compress_memory(content, llm)
+            compressed = compress_memory(content, llm, max_chars=max_chars)
         else:
-            compressed = _hard_truncate(content, MAX_MEMORY_CHARS)
+            compressed = _hard_truncate(content, max_chars)
 
         write_memory(memory_file, compressed)
         return True
@@ -277,3 +282,124 @@ def update_memory_after_session(
         logger.error(f"update_memory_after_session 异常: {e}", exc_info=True)
         # 异常时回退到仅做长度检查
         return enforce_memory_limit(memory_file, llm)
+
+
+UPDATE_LONG_TERM_MEMORY_PROMPT = """你是一个用户长期记忆管理助手。请根据本次对话内容，更新用户的长期记忆文件（AGENTS.md）。
+
+## 这是什么
+这是**用户级别**的长期记忆，跨所有会话持久化，记录该用户相对稳定、长期有效的信息：
+- 个人偏好与习惯（如沟通风格、技术栈倾向、输出格式要求）
+- 跨会话可复用的经验、踩过的坑、关键解决方案
+- 正在进行的长期项目/目标的背景信息
+- 不随单个会话结束而失效的稳定信息
+
+## 更新规则
+1. **只记稳定、长期有效、跨会话有价值的信息**：不要记录一次性任务、临时状态、单次会话的临时上下文、寒暄。
+2. **合并而非堆叠**：若新信息与已有条目重复或相近，合并精炼，不要产生多篇重复内容。
+3. **用户偏好优先**：用户明确表达出的稳定偏好（如界面要求、格式习惯）应被记录并长期保留。
+4. **不记敏感信息**：密钥、密码、token、隐私数据一律不记。
+5. **精炼表达**：每条用一句话概括，结构清晰，使用二级标题按主题分章节（如 `## 用户偏好`、`## 项目背景`、`## 可复用经验`）。
+6. **总长度限制**：更新后总内容不得超过 {max_chars} 字符。接近上限时优先保留长期有效的偏好与核心经验。
+
+## 当前长期记忆内容
+
+---
+{current_memory}
+---
+
+## 本次对话内容（摘要）
+
+**用户输入**：
+{user_message}
+
+**助手回复**（节选）：
+{assistant_response}
+
+---
+
+请直接输出更新后的完整长期记忆文件内容（Markdown 格式，以 `# 用户长期记忆` 作为一级标题，不要添加任何解释说明）："""
+
+
+def update_long_term_memory_after_session(
+    memory_file: Path,
+    user_message: str,
+    assistant_response: str,
+    llm=None,
+    max_chars: int = MAX_LONG_TERM_MEMORY_CHARS,
+) -> bool:
+    """会话结束后更新用户级长期记忆文件（memories/{username}/AGENTS.md）。
+
+    与 update_memory_after_session（工作区会话级 memory.md）的区别：
+    - 这是**用户级、跨会话持久化**的长期记忆；
+    - 只保留稳定、长期有效、跨会话有价值的用户偏好与可复用经验，
+      不记录单次会话的临时上下文、一次性任务或寒暄。
+
+    Args:
+        memory_file: 长期记忆文件路径（AGENTS.md）
+        user_message: 本次会话用户输入
+        assistant_response: 本次会话助手回复
+        llm: LLM 实例；为 None 时跳过场景更新，仅做长度检查
+        max_chars: 长期记忆字符上限，默认 4000（比会话级更大）
+
+    Returns:
+        True 表示记忆已更新，False 表示未更新
+    """
+    if llm is None:
+        logger.info("未提供 LLM 实例，跳过长期记忆场景更新，仅做长度检查")
+        return enforce_memory_limit(memory_file, None, max_chars=max_chars)
+
+    start = time.time()
+    try:
+        current_memory = read_memory(memory_file)
+
+        # 截断过长的会话内容，避免 token 浪费
+        user_msg_trunc = (user_message or "")[:800]
+        asst_msg_trunc = (assistant_response or "")[:2000]
+
+        # 如果会话内容为空（如纯工具调用无文本），跳过更新
+        if not user_msg_trunc.strip() and not asst_msg_trunc.strip():
+            logger.info("会话内容为空，跳过长期记忆更新")
+            return enforce_memory_limit(memory_file, llm, max_chars=max_chars)
+
+        logger.info(
+            f"开始更新用户长期记忆 | 文件: {memory_file} | "
+            f"当前长度: {len(current_memory)} 字符"
+        )
+
+        from langchain_core.messages import HumanMessage
+
+        prompt = UPDATE_LONG_TERM_MEMORY_PROMPT.format(
+            max_chars=max_chars,
+            current_memory=current_memory or "(空)",
+            user_message=user_msg_trunc,
+            assistant_response=asst_msg_trunc,
+        )
+        response = llm.invoke([HumanMessage(content=prompt)])
+        updated = getattr(response, "content", str(response)).strip()
+
+        if not updated:
+            logger.warning("LLM 返回空内容，长期记忆未更新")
+            return enforce_memory_limit(memory_file, llm, max_chars=max_chars)
+
+        # 若更新后超限，触发压缩
+        if len(updated) > LONG_TERM_COMPRESS_THRESHOLD:
+            logger.info(
+                f"更新后长期记忆超限 ({len(updated)} 字符)，触发压缩"
+            )
+            updated = compress_memory(updated, llm, max_chars=max_chars)
+
+        # 最终硬保底
+        if len(updated) > max_chars:
+            updated = _hard_truncate(updated, max_chars)
+
+        write_memory(memory_file, updated)
+
+        elapsed = time.time() - start
+        logger.info(
+            f"用户长期记忆更新完成 | 更新后长度: {len(updated)} 字符 | 耗时: {elapsed:.2f}s"
+        )
+        return True
+    except Exception as e:
+        logger.error(f"update_long_term_memory_after_session 异常: {e}", exc_info=True)
+        # 异常时回退到仅做长度检查
+        return enforce_memory_limit(memory_file, llm, max_chars=max_chars)

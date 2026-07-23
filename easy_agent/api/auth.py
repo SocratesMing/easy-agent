@@ -236,12 +236,17 @@ async def get_auth_config(
 ):
     _cfg = get_agent_config()
     max_input_tokens = 200000
+    preset_questions = []
+    win = False
+    agent_env = ""
     if _cfg and _cfg.get("config"):
         max_input_tokens = _cfg["config"].llm.max_input_tokens
-    preset_questions = []
-    if _cfg and _cfg.get("config"):
         preset_questions = _cfg["config"].preset_questions or []
+        win = bool(_cfg.get("win"))
+        agent_env = _cfg.get("agent_env", "") or ""
     return {
         "max_input_tokens": max_input_tokens,
         "preset_questions": preset_questions,
+        "win": win,
+        "agent_env": agent_env,
     }

@@ -45,3 +45,11 @@ export async function runScheduledTaskNow(taskId) {
   }
   return await response.json()
 }
+
+export async function getScheduledTaskWorkspace(taskId, path = '') {
+  const response = await authFetch(
+    `${API_BASE_URL}/api/scheduled-tasks/${taskId}/workspace?path=${encodeURIComponent(path)}`
+  )
+  if (!response.ok) throw new Error('获取工作目录失败')
+  return await response.json()
+}

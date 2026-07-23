@@ -34,7 +34,8 @@ from langgraph.types import Command
 
 from ..agent import EasyAgent
 from ..db import Database
-from ..model import _parse_mcp_content, create_model
+from ..model import create_model, extract_reasoning
+from ..services.mcp import _parse_mcp_content
 from ..models.api import ChatRequest
 from ..utils.session_logger import SessionLogger
 from .agent_manager import get_agent_config
@@ -541,7 +542,7 @@ async def chat_stream_generator(
                         message_id=message_id,
                     )
                 logger.info(
-                    f"[{sid}] 🤔 Step {step} 思考完成 | 耗时: {duration}s | 长度: {len(step_thinking)} | 内容: {step_thinking}"
+                    f"[{sid}] 🤔 Step {step} 思考完成 | 耗时: {duration}s | 字符: {len(step_thinking)}"
                 )
             else:
                 logger.info(
@@ -604,8 +605,6 @@ async def chat_stream_generator(
             logger.info(
                 f"[{sid}] 📊 Step {step} Token{'(等待API返回)' if is_pending else ''} | "
                 f"上下文占用: {ctx_tokens}/{ctx_max or '?'}{ctx_bar} | "
-                f"Step输入: {inp} | Step输出: {out} | "
-                f"Step合计: {step_total} | "
                 f"累计输入: {total_usage['input_tokens']} | "
                 f"累计输出: {total_usage['output_tokens']} | "
                 f"累计 API Token: {total_usage['total_tokens']}"
@@ -704,7 +703,7 @@ async def chat_stream_generator(
             # ── AIMessageChunk: reasoning / text / tool_call_chunks ──────
             if isinstance(chunk, AIMessageChunk):
                 rc = (
-                    chunk.additional_kwargs.get("reasoning_content", "")
+                    extract_reasoning(chunk.additional_kwargs)
                     if hasattr(chunk, "additional_kwargs")
                     else ""
                 )
@@ -718,7 +717,7 @@ async def chat_stream_generator(
                         repr(chunk.content)[:300] if chunk.content else "''"
                     )
                     raw_rc_repr = repr(
-                        chunk.additional_kwargs.get("reasoning_content", "")
+                        extract_reasoning(chunk.additional_kwargs)
                     )[:200]
                     raw_tcc_repr = repr(tcc)[:200] if tcc else "[]"
                     logger.info(
@@ -790,7 +789,6 @@ async def chat_stream_generator(
                             yield token_sse
                         current_step += 1
                         step_advanced_this_round = True
-                        _log_step_start(current_step, "思考")
                         yield _start_thinking(current_step)
                     accumulated_thinking += rc
                     yield format_sse(
@@ -1431,6 +1429,33 @@ async def chat_stream_generator(
             except Exception as e:
                 logger.warning(f"[{sid}] 会话记忆更新失败: {e}")
 
+        # 用户级长期记忆持久化 — 每轮对话结束后更新 memories/{username}/AGENTS.md
+        # 与工作区 memory.md 的区别：这是跨会话的用户级长期记忆，记录用户偏好与可复用经验
+        if agent and getattr(agent, "long_term_memory_file", None):
+            try:
+                from .memory_manager import update_long_term_memory_after_session
+
+                # 复用当前会话 Agent 的模型（支持动态模型选择）
+                session_llm = getattr(agent, "model", None)
+                if session_llm is None:
+                    from .agent_manager import _llm_instance
+                    session_llm = _llm_instance
+
+                # 使用原始用户输入（不含注入的记忆前缀）作为记忆提取素材
+                raw_user_msg = parsed_content or request.message
+                updated_lt = update_long_term_memory_after_session(
+                    agent.long_term_memory_file,
+                    user_message=raw_user_msg,
+                    assistant_response=accumulated_response,
+                    llm=session_llm,
+                )
+                if updated_lt:
+                    logger.info(
+                        f"[{sid}] 🧠 用户长期记忆已更新 | 文件: {agent.long_term_memory_file}"
+                    )
+            except Exception as e:
+                logger.warning(f"[{sid}] 用户长期记忆更新失败: {e}")
+
         # Session logger
         if session_logger:
             tool_calls_for_log = tool_call_records_to_dicts(tool_call_records, 1000) or None
@@ -1574,6 +1599,7 @@ async def resume_stream_generator(
 
     is_in_thinking = False
     thinking_start_time = None
+    thinking_step_start_len = 0
     content_start_time = None
     tool_call_start_times = {}
     tool_call_accumulated_args = {}
@@ -1593,55 +1619,17 @@ async def resume_stream_generator(
         except Exception as e:
             logger.warning(f"[{sid}] 持久化 Todo list 失败: {e}")
 
-    def _persist_intervention():
-        """持久化人工介入（审批决策）为一条独立消息。
-
-        插在「最后一条 assistant」之前，保证 HITL 后会话历史顺序为：
-        中断请求 -> 人工介入 -> 最终回复。否则人工介入动作在数据库中无任何记录。
-        """
-        try:
-            if not decisions:
-                return
-            decision_type = decisions[0].get("type", "approve")
-            if decision_type == "approve":
-                text = "✅ 用户已批准该操作"
-            else:
-                msg = decisions[0].get("message", "") or ""
-                text = "❌ 用户已拒绝该操作" + (f"：{msg}" if msg else "")
-            intervention_id = f"hitl-{thread_id}-{int(time.time() * 1000)}"
-            intervention = {
-                "role": "user",
-                "content": text,
-                "timestamp": datetime.now().isoformat(),
-                "id": intervention_id,
-                "message_id": intervention_id,
-            }
-            sess = db.get_session(session_id)
-            if sess and sess.messages:
-                last_assistant_idx = -1
-                for i in range(len(sess.messages) - 1, -1, -1):
-                    if sess.messages[i].get("role") == "assistant":
-                        last_assistant_idx = i
-                        break
-                if last_assistant_idx >= 0:
-                    sess.messages.insert(last_assistant_idx, intervention)
-                else:
-                    sess.messages.append(intervention)
-                sess.updated_at = datetime.now().isoformat()
-                db.update_session(sess)
-        except Exception as e:
-            logger.warning(f"[{sid}] 持久化人工介入消息失败: {e}")
-
     def _end_thinking(step):
-        nonlocal is_in_thinking, thinking_start_time, current_thinking_block_idx
+        nonlocal is_in_thinking, thinking_start_time, current_thinking_block_idx, thinking_step_start_len
         if not is_in_thinking:
             return None
         is_in_thinking = False
         duration = round(time.time() - thinking_start_time, 2) if thinking_start_time else 0
         thinking_start_time = None
         current_thinking_block_idx = None
+        step_thinking_len = len(accumulated_thinking[thinking_step_start_len:].strip())
         logger.info(
-            f"[{sid}] 🤔 Step {step} 思考完成 | 耗时: {duration}s"
+            f"[{sid}] 🤔 Step {step} 思考完成 | 耗时: {duration}s | 字符: {step_thinking_len}"
         )
         return format_sse({"type": "thinking_end", "duration": duration, "step": step})
 
@@ -1670,7 +1658,7 @@ async def resume_stream_generator(
             chunk, metadata = event
 
             if isinstance(chunk, AIMessageChunk):
-                rc = chunk.additional_kwargs.get("reasoning_content", "") if hasattr(chunk, "additional_kwargs") else ""
+                rc = extract_reasoning(chunk.additional_kwargs) if hasattr(chunk, "additional_kwargs") else ""
                 raw_content = chunk.content or ""
                 tcc = getattr(chunk, "tool_call_chunks", None) or []
 
@@ -1686,11 +1674,11 @@ async def resume_stream_generator(
                     if not is_in_thinking:
                         is_in_thinking = True
                         thinking_start_time = time.time()
+                        thinking_step_start_len = len(accumulated_thinking)
                         current_step += 1
                         current_thinking_block_idx = block_order_counter
                         blocks.append({"type": "thinking", "order": block_order_counter, "content": "", "step": current_step})
                         block_order_counter += 1
-                        _log_step_start(current_step, "思考")
                         yield format_sse({"type": "thinking_start", "step": current_step})
                     accumulated_thinking += rc
                     blocks[current_thinking_block_idx]["content"] = accumulated_thinking
@@ -1939,7 +1927,6 @@ async def resume_stream_generator(
                         elapsed_time=partial_elapsed,
                         step_count=current_step,
                     )
-                    _persist_intervention()
                     db.update_last_assistant_message(session_id, partial_msg)
                     db.update_last_assistant_message_row(session_id, partial_msg)
                     yield format_sse({
@@ -2002,7 +1989,6 @@ async def resume_stream_generator(
             elapsed_time=elapsed_time,
             step_count=current_step,
         )
-        _persist_intervention()
         db.update_last_assistant_message(session_id, assistant_message)
         db.update_last_assistant_message_row(session_id, assistant_message)
 
@@ -2033,7 +2019,6 @@ async def resume_stream_generator(
             elapsed_time=time.time() - start_time,
             step_count=current_step,
         )
-        _persist_intervention()
         db.update_last_assistant_message(session_id, partial_msg)
         db.update_last_assistant_message_row(session_id, partial_msg)
         yield format_sse({"type": "error", "content": "请求被取消"})

@@ -559,7 +559,7 @@ onMounted(() => {
   margin: 0;
   font-size: 18px;
   font-weight: 600;
-  color: #1e293b;
+  color: var(--text-primary);
 }
 
 .close-btn {
@@ -576,13 +576,13 @@ onMounted(() => {
 }
 
 .close-btn:hover {
-  background: #f1f5f9;
+  background: var(--bg-tertiary);
 }
 
 .close-btn svg {
   width: 20px;
   height: 20px;
-  color: #64748b;
+  color: var(--text-secondary);
 }
 
 .settings-body {
@@ -607,18 +607,18 @@ onMounted(() => {
   border-radius: 8px;
   cursor: pointer;
   transition: all 0.2s;
-  color: #475569;
+  color: var(--text-secondary);
   font-size: 14px;
   font-weight: 500;
 }
 
 .nav-item:hover {
-  background: #f1f5f9;
-  color: #1e293b;
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
 }
 
 .nav-item.active {
-  background: #e0f2fe;
+  background: color-mix(in srgb, var(--accent-color) 18%, transparent);
   color: #0ea5e9;
 }
 
@@ -656,13 +656,13 @@ onMounted(() => {
   margin: 0 0 4px 0;
   font-size: 16px;
   font-weight: 600;
-  color: #1e293b;
+  color: var(--text-primary);
 }
 
 .panel-desc {
   margin: 0;
   font-size: 13px;
-  color: #94a3b8;
+  color: var(--text-secondary);
 }
 
 .loading-state {
@@ -701,7 +701,7 @@ onMounted(() => {
   font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
   font-size: 13px;
   line-height: 1.6;
-  color: #1e293b;
+  color: var(--text-primary);
   resize: none;
   outline: none;
   transition: border-color 0.2s;
@@ -759,13 +759,13 @@ onMounted(() => {
 
 .prompt-content {
   padding: 16px;
-  background: #f8fafc;
+  background: var(--bg-tertiary);
   border: 1px solid #e2e8f0;
   border-radius: 10px;
   font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
   font-size: 13px;
   line-height: 1.6;
-  color: #334155;
+  color: var(--text-secondary);
   white-space: pre-wrap;
   word-wrap: break-word;
   margin: 0;
@@ -782,7 +782,7 @@ onMounted(() => {
 
 .mcp-card {
   padding: 16px;
-  background: #f8fafc;
+  background: var(--bg-tertiary);
   border: 1px solid #e2e8f0;
   border-radius: 10px;
 }
@@ -797,13 +797,13 @@ onMounted(() => {
 .mcp-name {
   font-size: 15px;
   font-weight: 600;
-  color: #1e293b;
+  color: var(--text-primary);
 }
 
 .mcp-transport {
   font-size: 12px;
   padding: 2px 8px;
-  background: #e0f2fe;
+  background: color-mix(in srgb, var(--accent-color) 18%, transparent);
   color: #0ea5e9;
   border-radius: 4px;
   font-weight: 500;
@@ -818,14 +818,14 @@ onMounted(() => {
 }
 
 .detail-label {
-  color: #94a3b8;
+  color: var(--text-secondary);
   font-weight: 500;
   flex-shrink: 0;
 }
 
 .mcp-detail code {
-  color: #475569;
-  background: #f1f5f9;
+  color: var(--text-secondary);
+  background: var(--bg-tertiary);
   padding: 2px 6px;
   border-radius: 4px;
   font-size: 12px;
@@ -834,7 +834,7 @@ onMounted(() => {
 
 .empty-hint {
   text-align: center;
-  color: #94a3b8;
+  color: var(--text-secondary);
   padding: 40px 0;
   font-size: 14px;
 }
@@ -851,7 +851,7 @@ onMounted(() => {
   align-items: center;
   gap: 16px;
   padding: 16px;
-  background: #f8fafc;
+  background: var(--bg-tertiary);
   border: 2px solid #e2e8f0;
   border-radius: 10px;
   cursor: pointer;
@@ -860,12 +860,12 @@ onMounted(() => {
 
 .theme-option:hover {
   border-color: #cbd5e1;
-  background: #f1f5f9;
+  background: var(--bg-tertiary);
 }
 
 .theme-option.active {
   border-color: #0ea5e9;
-  background: #e0f2fe;
+  background: color-mix(in srgb, var(--accent-color) 18%, transparent);
 }
 
 .theme-preview {
@@ -881,7 +881,7 @@ onMounted(() => {
 }
 
 .theme-preview-light {
-  background: #ffffff;
+  background: var(--bg-secondary);
 }
 
 .theme-preview-dark {
@@ -924,12 +924,12 @@ onMounted(() => {
 .theme-option-name {
   font-size: 14px;
   font-weight: 600;
-  color: #1e293b;
+  color: var(--text-primary);
 }
 
 .theme-option-desc {
   font-size: 12px;
-  color: #94a3b8;
+  color: var(--text-secondary);
 }
 
 .theme-check {
@@ -980,12 +980,12 @@ onMounted(() => {
 .action-btn-outline {
   border: 1px solid #e2e8f0;
   background: white;
-  color: #475569;
+  color: var(--text-secondary);
 }
 
 .action-btn-outline:hover {
   border-color: #cbd5e1;
-  background: #f8fafc;
+  background: var(--bg-tertiary);
 }
 
 .source-tag {
@@ -1002,8 +1002,8 @@ onMounted(() => {
 }
 
 .source-tag.global {
-  background: #f1f5f9;
-  color: #64748b;
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
 }
 
 .mcp-header-left {
@@ -1078,7 +1078,7 @@ onMounted(() => {
   align-items: center;
   justify-content: center;
   cursor: pointer;
-  color: #94a3b8;
+  color: var(--text-secondary);
   transition: all 0.2s;
 }
 
@@ -1146,25 +1146,25 @@ onMounted(() => {
   margin: 0;
   font-size: 15px;
   font-weight: 600;
-  color: #1e293b;
+  color: var(--text-primary);
 }
 
 .mcp-dialog-desc {
   padding: 12px 20px 0;
   margin: 0;
   font-size: 13px;
-  color: #64748b;
+  color: var(--text-secondary);
   line-height: 1.5;
 }
 
 .mcp-dialog-example {
   margin: 8px 20px 0;
   padding: 10px 14px;
-  background: #f8fafc;
+  background: var(--bg-tertiary);
   border: 1px solid #e2e8f0;
   border-radius: 8px;
   font-size: 12px;
-  color: #475569;
+  color: var(--text-secondary);
   line-height: 1.6;
   white-space: pre-wrap;
 }
@@ -1177,7 +1177,7 @@ onMounted(() => {
   font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
   font-size: 13px;
   line-height: 1.6;
-  color: #1e293b;
+  color: var(--text-primary);
   resize: none;
   outline: none;
   transition: border-color 0.2s;
@@ -1199,13 +1199,13 @@ onMounted(() => {
 .mcp-preview-content {
   margin: 12px 20px;
   padding: 16px;
-  background: #f8fafc;
+  background: var(--bg-tertiary);
   border: 1px solid #e2e8f0;
   border-radius: 10px;
   font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
   font-size: 12px;
   line-height: 1.6;
-  color: #334155;
+  color: var(--text-secondary);
   white-space: pre-wrap;
   word-wrap: break-word;
   max-height: 400px;
@@ -1213,49 +1213,49 @@ onMounted(() => {
 }
 
 /* Dark theme overrides */
-:global(.dark) .mcp-dialog,
-:global(.dark) .settings-modal {
+html[data-theme="dark"] .mcp-dialog,
+html[data-theme="dark"] .settings-modal {
   background: #1e293b;
 }
 
-:global(.dark) .mcp-dialog-header h4,
-:global(.dark) .settings-header h2 {
+html[data-theme="dark"] .mcp-dialog-header h4,
+html[data-theme="dark"] .settings-header h2 {
   color: #e2e8f0;
 }
 
-:global(.dark) .mcp-dialog-desc,
-:global(.dark) .panel-desc {
-  color: #94a3b8;
+html[data-theme="dark"] .mcp-dialog-desc,
+html[data-theme="dark"] .panel-desc {
+  color: var(--text-secondary);
 }
 
-:global(.dark) .mcp-json-input,
-:global(.dark) .mcp-preview-content,
-:global(.dark) .mcp-dialog-example {
+html[data-theme="dark"] .mcp-json-input,
+html[data-theme="dark"] .mcp-preview-content,
+html[data-theme="dark"] .mcp-dialog-example {
   background: #0f172a;
-  border-color: #334155;
+  border-color: var(--text-secondary);
   color: #e2e8f0;
 }
 
-:global(.dark) .action-btn-outline {
+html[data-theme="dark"] .action-btn-outline {
   background: #334155;
-  border-color: #475569;
+  border-color: var(--text-secondary);
   color: #cbd5e1;
 }
 
-:global(.dark) .mcp-card {
+html[data-theme="dark"] .mcp-card {
   background: #0f172a;
-  border-color: #334155;
+  border-color: var(--text-secondary);
 }
 
-:global(.dark) .mcp-name {
+html[data-theme="dark"] .mcp-name {
   color: #e2e8f0;
 }
 
-:global(.dark) .mcp-delete-btn {
-  color: #64748b;
+html[data-theme="dark"] .mcp-delete-btn {
+  color: var(--text-secondary);
 }
 
-:global(.dark) .mcp-delete-btn:hover {
+html[data-theme="dark"] .mcp-delete-btn:hover {
   background: #451a1a;
   color: #f87171;
 }

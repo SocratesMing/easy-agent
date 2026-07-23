@@ -117,7 +117,7 @@
 </template>
 
 <script setup>
-import { API_BASE_URL } from './config.js'
+import { API_BASE_URL, appRuntime } from './config.js'
 import { ref, computed, onMounted } from 'vue'
 import SessionList from './components/SessionList.vue'
 import Chat from './components/Chat.vue'
@@ -165,6 +165,11 @@ let filesCheckTimer = null
 
 // 会话状态缓存：为每个会话保存独立的流式状态
 const sessionStates = ref({})
+// 当前界面上展示的数据（messages/sessionUsage 等）实际所属的会话 ID。
+// 与 currentSessionId 的区别：切换会话后、历史数据加载完成前，currentSessionId 已指向新会话，
+// 但界面数据仍属于旧会话。保存缓存必须以 loadedSessionId 为 key，否则会把旧数据/清零的用量
+// 错误地存到新会话名下，导致来回切换时 token 用量显示为 0。
+const loadedSessionId = ref(null)
 
 async function refreshSessionFiles(sessionId = null, delayMs = 0) {
   const targetId = sessionId || currentSessionId.value
@@ -207,10 +212,10 @@ const iterationCount = ref(0)
 const currentTodos = ref([])
 const presetQuestions = ref([])
 
-// 保存当前会话状态到缓存
+// 保存当前会话状态到缓存（以界面数据实际所属的会话为 key，避免异步加载期间保存错位）
 function saveCurrentSessionState() {
-  if (!currentSessionId.value) return
-  sessionStates.value[currentSessionId.value] = {
+  if (!loadedSessionId.value) return
+  sessionStates.value[loadedSessionId.value] = {
     messages: JSON.parse(JSON.stringify(messages.value)),
     isStreaming: isStreaming.value,
     sessionUsage: { ...sessionUsage.value },
@@ -234,6 +239,7 @@ function restoreSessionState(sessionId) {
     iterationCount.value = state.iterationCount || 0
     currentAbortController.value = state.abortController
     currentTodos.value = state.todos || []
+    loadedSessionId.value = sessionId
     return true
   }
   return false
@@ -292,6 +298,22 @@ function handleShowProfile() {
   showScheduledTasks.value = false
 }
 
+function applyAgentConfig(configData) {
+  if (!configData) return
+  if (configData.max_input_tokens) {
+    sessionUsage.value.max_input_tokens = configData.max_input_tokens
+  }
+  if (configData.preset_questions) {
+    presetQuestions.value = configData.preset_questions
+  }
+  if (typeof configData.win === 'boolean') {
+    appRuntime.win = configData.win
+  }
+  if (configData.agent_env) {
+    appRuntime.agentEnv = configData.agent_env
+  }
+}
+
 async function handleWelcomeCompleted(profile) {
   userProfile.value = profile
   showWelcome.value = false
@@ -302,12 +324,7 @@ async function handleWelcomeCompleted(profile) {
     const configResp = await authFetch(`${API_BASE_URL}/api/auth/config`)
     if (configResp.ok) {
       const configData = await configResp.json()
-      if (configData.max_input_tokens) {
-        sessionUsage.value.max_input_tokens = configData.max_input_tokens
-      }
-      if (configData.preset_questions) {
-        presetQuestions.value = configData.preset_questions
-      }
+      applyAgentConfig(configData)
     }
   } catch (e) {
     console.warn('获取模型配置失败:', e)
@@ -315,11 +332,14 @@ async function handleWelcomeCompleted(profile) {
   loadModels()
   await loadSessions()
   if (sessions.value.length > 0) {
-    currentSessionId.value = sessions.value[0].session_id
+    const initialSessionId = sessions.value[0].session_id
+    currentSessionId.value = initialSessionId
     // 尝试从缓存恢复，否则加载历史
-    if (!restoreSessionState(currentSessionId.value)) {
+    if (!restoreSessionState(initialSessionId)) {
       try {
-        const history = await getChatHistory(currentSessionId.value)
+        const history = await getChatHistory(initialSessionId)
+        // 加载期间用户可能已切换会话，丢弃过期响应
+        if (currentSessionId.value !== initialSessionId) return
         messages.value = history.messages || []
         currentTodos.value = history.todos || []
         if (history.usage) {
@@ -333,6 +353,7 @@ async function handleWelcomeCompleted(profile) {
         if (history.max_input_tokens) {
           sessionUsage.value.max_input_tokens = history.max_input_tokens
         }
+        loadedSessionId.value = initialSessionId
       } catch (e) {
         console.error('加载聊天历史失败:', e)
       }
@@ -344,6 +365,8 @@ async function handleLogout() {
   apiLogout()
   sessions.value = []
   currentSessionId.value = null
+  loadedSessionId.value = null
+  sessionStates.value = {}
   messages.value = []
   userProfile.value = {
     username: '',
@@ -359,6 +382,8 @@ async function handleLogout() {
 async function handleUnregister() {
   sessions.value = []
   currentSessionId.value = null
+  loadedSessionId.value = null
+  sessionStates.value = {}
   messages.value = []
   userProfile.value = {
     username: '',
@@ -399,12 +424,7 @@ async function loadUserProfile() {
     const configResp = await authFetch(`${API_BASE_URL}/api/auth/config`)
     if (configResp.ok) {
       const configData = await configResp.json()
-      if (configData.max_input_tokens) {
-        sessionUsage.value.max_input_tokens = configData.max_input_tokens
-      }
-      if (configData.preset_questions) {
-        presetQuestions.value = configData.preset_questions
-      }
+      applyAgentConfig(configData)
     }
   } catch (e) {
     console.warn('获取模型配置失败:', e)
@@ -447,6 +467,7 @@ async function handleCreateSession() {
   showUserProfile.value = false
   showSettingsPanel.value = false
   currentSessionId.value = null
+  loadedSessionId.value = null
   messages.value = []
   currentTodos.value = []
   isStreaming.value = false
@@ -482,6 +503,9 @@ async function handleSelectSession(sessionId) {
 
   try {
     const history = await getChatHistory(sessionId)
+    // 加载期间用户可能又切换到了其他会话：丢弃过期响应，
+    // 避免覆盖当前显示的数据（token 用量、消息等）
+    if (currentSessionId.value !== sessionId) return
     messages.value = history.messages || []
     currentTodos.value = history.todos || []
     // 从服务器返回的 usage 数据恢复 token 用量、会话耗时和迭代次数
@@ -496,12 +520,18 @@ async function handleSelectSession(sessionId) {
     if (history.max_input_tokens) {
       sessionUsage.value.max_input_tokens = history.max_input_tokens
     }
+    // 数据加载完成，界面数据现在归属于该会话
+    loadedSessionId.value = sessionId
     scrollTrigger.value++
 
     await refreshSessionFiles(sessionId)
   } catch (e) {
     console.error('加载聊天历史失败:', e)
+    if (currentSessionId.value !== sessionId) return
     error.value = '加载聊天历史失败'
+    // 加载失败时界面数据处于不一致状态（消息还是旧会话的、用量已清零），
+    // 置空 loadedSessionId 防止后续把错误数据写入缓存
+    loadedSessionId.value = null
     refreshSessionFiles(sessionId)
   }
 }
@@ -521,7 +551,10 @@ async function handleDeleteSession(sessionId) {
       } else {
         messages.value = []
         isStreaming.value = false
+        loadedSessionId.value = null
       }
+    } else if (loadedSessionId.value === sessionId) {
+      loadedSessionId.value = null
     }
   } catch (e) {
     console.error('删除会话失败:', e)
@@ -563,6 +596,9 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
   // 记录本次请求开始前已累计的耗时和迭代次数，用于流式过程中实时累加
   const preStreamDuration = sessionDuration.value
   const preStreamIterationCount = iterationCount.value
+  // 本次流所属的会话 ID（新会话在 start 事件后才有值）。
+  // 用于用户中途切换会话时，把用量更新写入所属会话的缓存而非当前显示
+  let streamSessionId = currentSessionId.value
 
   let contentWithFiles = message.trim().replace(/\s+/g, ' ')
 
@@ -717,27 +753,45 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
       // 后端返回的 session_id，用于更新当前会话 ID
       if (data.session_id && !currentSessionId.value) {
         currentSessionId.value = data.session_id
+        // 新会话：当前界面数据（刚发送的消息）即属于该会话
+        loadedSessionId.value = data.session_id
         // 新会话创建后立即刷新会话列表
         loadSessions()
       }
+      if (data.session_id) streamSessionId = data.session_id
       // 同步 streamingSessionId：新会话场景下发送时 currentSessionId 为 null，
       // 此时才拿到真实 session_id，必须更新 streamingSessionId，否则切回该会话时
       // isStreaming 判断 (sessionId === streamingSessionId) 会因 streamingSessionId
       // 仍为 null 而错误显示发送按钮
-      streamingSessionId.value = currentSessionId.value
+      streamingSessionId.value = streamSessionId || currentSessionId.value
     } else if (eventType === 'token_usage') {
-      sessionUsage.value.input_tokens = data.input_tokens || 0
-      sessionUsage.value.output_tokens = data.output_tokens || 0
-      sessionUsage.value.total_tokens = data.session_estimate || data.total_tokens || 0
-      sessionUsage.value.context_tokens = data.context_tokens || 0
-      if (data.max_input_tokens) sessionUsage.value.max_input_tokens = data.max_input_tokens
-      if (data.auto_compress_tokens) sessionUsage.value.auto_compress_tokens = data.auto_compress_tokens
-      // 实时更新会话耗时和迭代次数（基于本次请求开始前的基线值累加）
-      if (typeof data.elapsed_time === 'number') {
-        sessionDuration.value = Math.round((preStreamDuration + data.elapsed_time) * 10) / 10
+      const usagePatch = {
+        input_tokens: data.input_tokens || 0,
+        output_tokens: data.output_tokens || 0,
+        total_tokens: data.session_estimate || data.total_tokens || 0,
+        context_tokens: data.context_tokens || 0,
       }
-      if (typeof data.step_count === 'number') {
-        iterationCount.value = preStreamIterationCount + data.step_count
+      if (data.max_input_tokens) usagePatch.max_input_tokens = data.max_input_tokens
+      if (data.auto_compress_tokens) usagePatch.auto_compress_tokens = data.auto_compress_tokens
+      const newDuration = typeof data.elapsed_time === 'number'
+        ? Math.round((preStreamDuration + data.elapsed_time) * 10) / 10
+        : null
+      const newIterations = typeof data.step_count === 'number'
+        ? preStreamIterationCount + data.step_count
+        : null
+      if (!streamSessionId || currentSessionId.value === streamSessionId) {
+        // 用户仍停留在流所属会话：更新实时显示（基于本次请求开始前的基线值累加）
+        Object.assign(sessionUsage.value, usagePatch)
+        if (newDuration !== null) sessionDuration.value = newDuration
+        if (newIterations !== null) iterationCount.value = newIterations
+      } else {
+        // 用户已切换到其他会话：写入流所属会话的缓存，避免污染当前会话的用量显示
+        const cached = sessionStates.value[streamSessionId]
+        if (cached) {
+          cached.sessionUsage = { ...cached.sessionUsage, ...usagePatch }
+          if (newDuration !== null) cached.sessionDuration = newDuration
+          if (newIterations !== null) cached.iterationCount = newIterations
+        }
       }
     } else if (eventType === 'thinking_start') {
       // Always create a new thinking block for each step
@@ -932,25 +986,40 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
         }
       }
 
-      if (data.usage) {
-        console.log('[Token Usage] Received usage:', data.usage, 'preStreamUsage:', preStreamUsage)
-        sessionUsage.value.input_tokens = (preStreamUsage.input_tokens || 0) + (data.usage.input_tokens || 0)
-        sessionUsage.value.output_tokens = (preStreamUsage.output_tokens || 0) + (data.usage.output_tokens || 0)
-      sessionUsage.value.total_tokens = data.usage.session_estimate || (preStreamUsage.total_tokens || 0) + (data.usage.total_tokens || 0)
-        sessionUsage.value.context_tokens = data.usage.context_tokens || 0
-        if (data.usage.max_input_tokens) sessionUsage.value.max_input_tokens = data.usage.max_input_tokens
-        if (data.usage.auto_compress_tokens) sessionUsage.value.auto_compress_tokens = data.usage.auto_compress_tokens
-        console.log('[Token Usage] Updated sessionUsage:', sessionUsage.value)
-      } else {
-        console.log('[Token Usage] No usage data in done event')
-      }
-
-      // 基于preStream基线值设置最终耗时和迭代次数（与token_usage事件逻辑一致，幂等，避免双重计数）
-      if (typeof data.elapsed_time === 'number') {
-        sessionDuration.value = Math.round((preStreamDuration + data.elapsed_time) * 10) / 10
-      }
-      if (data.usage && typeof data.usage.step_count === 'number') {
-        iterationCount.value = preStreamIterationCount + data.usage.step_count
+      {
+        const usagePatch = {}
+        if (data.usage) {
+          console.log('[Token Usage] Received usage:', data.usage, 'preStreamUsage:', preStreamUsage)
+          usagePatch.input_tokens = (preStreamUsage.input_tokens || 0) + (data.usage.input_tokens || 0)
+          usagePatch.output_tokens = (preStreamUsage.output_tokens || 0) + (data.usage.output_tokens || 0)
+          usagePatch.total_tokens = data.usage.session_estimate || (preStreamUsage.total_tokens || 0) + (data.usage.total_tokens || 0)
+          usagePatch.context_tokens = data.usage.context_tokens || 0
+          if (data.usage.max_input_tokens) usagePatch.max_input_tokens = data.usage.max_input_tokens
+          if (data.usage.auto_compress_tokens) usagePatch.auto_compress_tokens = data.usage.auto_compress_tokens
+        } else {
+          console.log('[Token Usage] No usage data in done event')
+        }
+        // 基于preStream基线值设置最终耗时和迭代次数（与token_usage事件逻辑一致，幂等，避免双重计数）
+        const finalDuration = typeof data.elapsed_time === 'number'
+          ? Math.round((preStreamDuration + data.elapsed_time) * 10) / 10
+          : null
+        const finalIterations = data.usage && typeof data.usage.step_count === 'number'
+          ? preStreamIterationCount + data.usage.step_count
+          : null
+        if (!streamSessionId || currentSessionId.value === streamSessionId) {
+          Object.assign(sessionUsage.value, usagePatch)
+          if (finalDuration !== null) sessionDuration.value = finalDuration
+          if (finalIterations !== null) iterationCount.value = finalIterations
+          console.log('[Token Usage] Updated sessionUsage:', sessionUsage.value)
+        } else {
+          // 用户已切换到其他会话：最终用量写入流所属会话的缓存
+          const cached = sessionStates.value[streamSessionId]
+          if (cached) {
+            cached.sessionUsage = { ...cached.sessionUsage, ...usagePatch }
+            if (finalDuration !== null) cached.sessionDuration = finalDuration
+            if (finalIterations !== null) cached.iterationCount = finalIterations
+          }
+        }
       }
 
       if (title) {
@@ -1230,17 +1299,34 @@ async function handleToolApproval(decision) {
         messages.value[idx] = { ...messages.value[idx], blocks: [...messages.value[idx].blocks] }
       }
     } else if (eventType === 'token_usage') {
-      sessionUsage.value.input_tokens = data.input_tokens || 0
-      sessionUsage.value.output_tokens = data.output_tokens || 0
-      sessionUsage.value.total_tokens = data.session_estimate || data.total_tokens || 0
-      sessionUsage.value.context_tokens = data.context_tokens || 0
-      if (data.max_input_tokens) sessionUsage.value.max_input_tokens = data.max_input_tokens
-      if (data.auto_compress_tokens) sessionUsage.value.auto_compress_tokens = data.auto_compress_tokens
-      if (typeof data.elapsed_time === 'number') {
-        sessionDuration.value = Math.round((sessionDuration.value + data.elapsed_time) * 10) / 10
+      const usagePatch = {
+        input_tokens: data.input_tokens || 0,
+        output_tokens: data.output_tokens || 0,
+        total_tokens: data.session_estimate || data.total_tokens || 0,
+        context_tokens: data.context_tokens || 0,
       }
-      if (typeof data.step_count === 'number') {
-        iterationCount.value = data.step_count
+      if (data.max_input_tokens) usagePatch.max_input_tokens = data.max_input_tokens
+      if (data.auto_compress_tokens) usagePatch.auto_compress_tokens = data.auto_compress_tokens
+      if (!sessionId || currentSessionId.value === sessionId) {
+        Object.assign(sessionUsage.value, usagePatch)
+        if (typeof data.elapsed_time === 'number') {
+          sessionDuration.value = Math.round((sessionDuration.value + data.elapsed_time) * 10) / 10
+        }
+        if (typeof data.step_count === 'number') {
+          iterationCount.value = data.step_count
+        }
+      } else {
+        // 用户已切换到其他会话：写入流所属会话的缓存，避免污染当前会话的用量显示
+        const cached = sessionStates.value[sessionId]
+        if (cached) {
+          cached.sessionUsage = { ...cached.sessionUsage, ...usagePatch }
+          if (typeof data.elapsed_time === 'number') {
+            cached.sessionDuration = Math.round(((cached.sessionDuration || 0) + data.elapsed_time) * 10) / 10
+          }
+          if (typeof data.step_count === 'number') {
+            cached.iterationCount = data.step_count
+          }
+        }
       }
     } else if (eventType === 'todo_list') {
       // HITL 恢复阶段后端会推送 write_todos 更新，需同步刷新进度卡片
@@ -1273,7 +1359,7 @@ async function handleToolApproval(decision) {
       if (idx !== -1) {
         messages.value[idx].loading = false
         messages.value[idx].created_at = new Date().toISOString()
-        if (data.usage) {
+        if (data.usage && (!sessionId || currentSessionId.value === sessionId)) {
           if (typeof data.usage.elapsed_time === 'number') {
             sessionDuration.value = Math.round((sessionDuration.value + data.usage.elapsed_time) * 10) / 10
           }
@@ -1303,20 +1389,8 @@ async function handleToolApproval(decision) {
     if (_resumeIdx !== -1) {
       messages.value[_resumeIdx] = { ...messages.value[_resumeIdx], loading: true }
     }
-    // 将人工介入（审批决策）记录为一条消息，便于持久化后回顾
-    const aIdx = messages.value.findIndex(m => m.id === assistantMsgId)
-    if (aIdx !== -1) {
-      const interventionText = decision === 'approve'
-        ? '✅ 用户已批准该操作'
-        : '❌ 用户已拒绝该操作：请勿重试此删除命令。'
-      messages.value.splice(aIdx, 0, {
-        id: 'hitl-intervention-' + threadId + '-' + Date.now(),
-        role: 'user',
-        content: interventionText,
-        created_at: new Date().toISOString(),
-        loading: false,
-      })
-    }
+    // 注意：人工介入（批准/拒绝）不再作为用户侧消息展示，
+    // 直接在模型侧的 execute 工具上进行了 HITL 标注。
     await resumeStream(sessionId, threadId, decisions, onChunk, controller.signal)
 
     await loadSessions()
@@ -1445,10 +1519,13 @@ onMounted(async () => {
     loadModels()
     await loadSessions()
     if (sessions.value.length > 0) {
-      currentSessionId.value = sessions.value[0].session_id
+      const initialSessionId = sessions.value[0].session_id
+      currentSessionId.value = initialSessionId
       // 加载初始会话的消息
       try {
-        const history = await getChatHistory(currentSessionId.value)
+        const history = await getChatHistory(initialSessionId)
+        // 加载期间用户可能已切换会话，丢弃过期响应
+        if (currentSessionId.value !== initialSessionId) return
         messages.value = history.messages || []
         if (history.usage) {
           sessionUsage.value.input_tokens = history.usage.input_tokens || 0
@@ -1461,6 +1538,7 @@ onMounted(async () => {
         if (history.max_input_tokens) {
           sessionUsage.value.max_input_tokens = history.max_input_tokens
         }
+        loadedSessionId.value = initialSessionId
       } catch (e) {
         console.error('加载聊天历史失败:', e)
       }
@@ -2844,5 +2922,131 @@ html[data-theme="dark"] .modal-content,
 html[data-theme="dark"] .modal-content input,
 html[data-theme="dark"] .chat-input-container .input-box {
   border-color: var(--border-color) !important;
+}
+
+/* ========== 模型下拉列表（Teleport 到 body，首页 / 输入框）========== */
+html[data-theme="dark"] .model-dropdown-menu {
+  background: var(--bg-secondary) !important;
+  border-color: var(--border-color) !important;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5) !important;
+}
+
+html[data-theme="dark"] .model-dropdown-item:hover {
+  background: var(--bg-tertiary) !important;
+}
+
+html[data-theme="dark"] .model-dropdown-item.active {
+  background: color-mix(in srgb, var(--accent-color) 16%, transparent) !important;
+}
+
+html[data-theme="dark"] .model-dropdown-header {
+  color: var(--text-secondary) !important;
+  border-bottom-color: var(--border-color) !important;
+}
+
+html[data-theme="dark"] .model-item-name {
+  color: var(--text-primary) !important;
+}
+
+html[data-theme="dark"] .model-item-check {
+  color: var(--accent-color) !important;
+}
+
+html[data-theme="dark"] .model-item-badge {
+  background: rgba(34, 197, 94, 0.15) !important;
+  color: #4ade80 !important;
+}
+
+/* ========== 首页预设问题（分类标签 + 悬浮面板 + 问题卡片）========== */
+html[data-theme="dark"] .preset-category-tab {
+  background: var(--bg-tertiary) !important;
+  border-color: var(--border-color) !important;
+  color: var(--text-secondary) !important;
+}
+
+html[data-theme="dark"] .preset-category-tab:hover {
+  border-color: var(--accent-color) !important;
+  color: var(--accent-color) !important;
+}
+
+html[data-theme="dark"] .preset-category-tab.active {
+  background: color-mix(in srgb, var(--accent-color) 22%, var(--bg-tertiary)) !important;
+  border-color: var(--accent-color) !important;
+  color: var(--accent-color) !important;
+}
+
+html[data-theme="dark"] .preset-category-panel {
+  background: var(--bg-secondary) !important;
+  border-color: var(--border-color) !important;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5) !important;
+}
+
+html[data-theme="dark"] .preset-chip {
+  background: var(--bg-tertiary) !important;
+  border-color: var(--border-color) !important;
+  color: var(--text-secondary) !important;
+}
+
+html[data-theme="dark"] .preset-chip:hover {
+  border-color: var(--accent-color) !important;
+  color: var(--accent-color) !important;
+  transform: translateY(-1px);
+}
+
+/* ========== 聊天页（Chat.vue）深色适配 ========== */
+html[data-theme="dark"] .chat-container {
+  background: var(--bg-primary) !important;
+}
+html[data-theme="dark"] .chat-header {
+  background: var(--bg-secondary) !important;
+  border-bottom-color: var(--border-color) !important;
+}
+html[data-theme="dark"] .session-created-time {
+  background: var(--bg-secondary) !important;
+  color: var(--text-secondary) !important;
+}
+html[data-theme="dark"] .welcome-screen {
+  color: var(--text-secondary) !important;
+}
+html[data-theme="dark"] .welcome-screen h2 {
+  color: var(--text-primary) !important;
+}
+html[data-theme="dark"] .preset-card {
+  background: var(--bg-secondary) !important;
+  border-color: var(--border-color) !important;
+}
+html[data-theme="dark"] .preset-card-text {
+  color: var(--text-primary) !important;
+}
+html[data-theme="dark"] .preset-card-foot {
+  color: var(--text-secondary) !important;
+}
+html[data-theme="dark"] .preset-nav-btn {
+  background: var(--bg-secondary) !important;
+  border-color: var(--border-color) !important;
+  color: var(--text-secondary) !important;
+}
+html[data-theme="dark"] .preset-nav-btn:hover {
+  background: var(--bg-tertiary) !important;
+  border-color: var(--accent-color) !important;
+  color: var(--accent-color) !important;
+}
+html[data-theme="dark"] .preset-dot {
+  background: var(--border-color) !important;
+}
+html[data-theme="dark"] .scroll-btn {
+  background: var(--bg-secondary) !important;
+  color: var(--text-secondary) !important;
+}
+html[data-theme="dark"] .scroll-btn:hover {
+  background: var(--bg-tertiary) !important;
+}
+html[data-theme="dark"] .scroll-btn svg {
+  color: var(--text-secondary) !important;
+}
+html[data-theme="dark"] .generated-files-header-btn {
+  background: rgba(34, 197, 94, 0.15) !important;
+  border-color: rgba(34, 197, 94, 0.4) !important;
+  color: #4ade80 !important;
 }
 </style>

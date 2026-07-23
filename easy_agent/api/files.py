@@ -32,6 +32,49 @@ router = APIRouter(
     tags=["Files"],
 )
 
+_MIME_MAP = {
+    ".pdf": "application/pdf",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".bmp": "image/bmp",
+    ".webp": "image/webp",
+    ".svg": "image/svg+xml",
+    ".ico": "image/x-icon",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".xls": "application/vnd.ms-excel",
+    ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    ".ppt": "application/vnd.ms-powerpoint",
+    ".txt": "text/plain; charset=utf-8",
+    ".md": "text/plain; charset=utf-8",
+    ".json": "text/plain; charset=utf-8",
+    ".csv": "text/plain; charset=utf-8",
+    ".xml": "text/plain; charset=utf-8",
+    ".html": "text/plain; charset=utf-8",
+    ".css": "text/plain; charset=utf-8",
+    ".js": "text/plain; charset=utf-8",
+    ".ts": "text/plain; charset=utf-8",
+    ".py": "text/plain; charset=utf-8",
+    ".java": "text/plain; charset=utf-8",
+    ".go": "text/plain; charset=utf-8",
+    ".rs": "text/plain; charset=utf-8",
+    ".c": "text/plain; charset=utf-8",
+    ".cpp": "text/plain; charset=utf-8",
+    ".h": "text/plain; charset=utf-8",
+    ".sh": "text/plain; charset=utf-8",
+    ".sql": "text/plain; charset=utf-8",
+    ".yaml": "text/plain; charset=utf-8",
+    ".yml": "text/plain; charset=utf-8",
+    ".toml": "text/plain; charset=utf-8",
+    ".ini": "text/plain; charset=utf-8",
+    ".cfg": "text/plain; charset=utf-8",
+    ".conf": "text/plain; charset=utf-8",
+    ".log": "text/plain; charset=utf-8",
+    ".vue": "text/plain; charset=utf-8",
+}
+
 
 def get_user_dirs(username: str):
     safe_name = Config.sanitize_username(username)
@@ -40,6 +83,68 @@ def get_user_dirs(username: str):
     upload_dir.mkdir(parents=True, exist_ok=True)
     workspace_dir.mkdir(parents=True, exist_ok=True)
     return upload_dir, workspace_dir
+
+
+def build_workspace_tree(workspace_dir: Path, path: str = "") -> list:
+    """列出工作区某个目录下的文件树（与具体会话/任务解耦，便于复用）。"""
+    target_dir = workspace_dir / path if path else workspace_dir
+    if not target_dir.exists():
+        return []
+    if not target_dir.is_dir():
+        raise HTTPException(status_code=400, detail="路径不是目录")
+
+    _HIDDEN_DIRS = {"node_modules", ".venv", ".deps", "__pycache__"}
+    items = []
+    try:
+        for entry in sorted(
+            target_dir.iterdir(), key=lambda e: (not e.is_dir(), e.name.lower())
+        ):
+            if entry.is_dir() and entry.name in _HIDDEN_DIRS:
+                continue
+            items.append(
+                {
+                    "name": entry.name,
+                    "path": str(entry.relative_to(workspace_dir)),
+                    "type": "directory" if entry.is_dir() else "file",
+                    "size": entry.stat().st_size if entry.is_file() else 0,
+                }
+            )
+    except PermissionError:
+        pass
+    return items
+
+
+def resolve_workspace_file(workspace_dir: Path, file_path: str) -> Path:
+    """解析工作区文件绝对路径，并防止路径穿越攻击。"""
+    full_path = (workspace_dir / file_path).resolve()
+    base = workspace_dir.resolve()
+    if full_path != base and base not in full_path.parents:
+        raise HTTPException(status_code=400, detail="非法的文件路径")
+    if not full_path.exists() or not full_path.is_file():
+        raise HTTPException(status_code=404, detail="文件不存在")
+    return full_path
+
+
+def serve_workspace_file(
+    workspace_dir: Path, file_path: str, download: bool = False
+) -> FileResponse:
+    """返回工作区文件的预览/下载响应。"""
+    full_path = resolve_workspace_file(workspace_dir, file_path)
+    ext = full_path.suffix.lower()
+    media_type = _MIME_MAP.get(ext, "application/octet-stream")
+    if download:
+        return FileResponse(
+            path=str(full_path),
+            filename=full_path.name,
+            media_type="application/octet-stream",
+            content_disposition_type="attachment",
+        )
+    return FileResponse(
+        path=str(full_path),
+        filename=full_path.name,
+        media_type=media_type,
+        content_disposition_type="inline",
+    )
 
 
 @router.get("/session/{session_id}", summary="获取会话生成的文件列表")
@@ -256,68 +361,7 @@ async def preview_file(
     if not full_path.is_file():
         raise HTTPException(status_code=400, detail="路径不是文件")
 
-    ext = full_path.suffix.lower()
-
-    # MIME 类型映射
-    mime_map = {
-        ".pdf": "application/pdf",
-        ".png": "image/png",
-        ".jpg": "image/jpeg",
-        ".jpeg": "image/jpeg",
-        ".gif": "image/gif",
-        ".bmp": "image/bmp",
-        ".webp": "image/webp",
-        ".svg": "image/svg+xml",
-        ".ico": "image/x-icon",
-        ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        ".xls": "application/vnd.ms-excel",
-        ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-        ".ppt": "application/vnd.ms-powerpoint",
-        ".txt": "text/plain; charset=utf-8",
-        ".md": "text/plain; charset=utf-8",
-        ".json": "text/plain; charset=utf-8",
-        ".csv": "text/plain; charset=utf-8",
-        ".xml": "text/plain; charset=utf-8",
-        ".html": "text/plain; charset=utf-8",
-        ".css": "text/plain; charset=utf-8",
-        ".js": "text/plain; charset=utf-8",
-        ".ts": "text/plain; charset=utf-8",
-        ".py": "text/plain; charset=utf-8",
-        ".java": "text/plain; charset=utf-8",
-        ".go": "text/plain; charset=utf-8",
-        ".rs": "text/plain; charset=utf-8",
-        ".c": "text/plain; charset=utf-8",
-        ".cpp": "text/plain; charset=utf-8",
-        ".h": "text/plain; charset=utf-8",
-        ".sh": "text/plain; charset=utf-8",
-        ".sql": "text/plain; charset=utf-8",
-        ".yaml": "text/plain; charset=utf-8",
-        ".yml": "text/plain; charset=utf-8",
-        ".toml": "text/plain; charset=utf-8",
-        ".ini": "text/plain; charset=utf-8",
-        ".cfg": "text/plain; charset=utf-8",
-        ".conf": "text/plain; charset=utf-8",
-        ".log": "text/plain; charset=utf-8",
-        ".vue": "text/plain; charset=utf-8",
-    }
-
-    media_type = mime_map.get(ext, "application/octet-stream")
-
-    if download:
-        return FileResponse(
-            path=str(full_path),
-            filename=full_path.name,
-            media_type="application/octet-stream",
-            content_disposition_type="attachment",
-        )
-
-    return FileResponse(
-        path=str(full_path),
-        filename=full_path.name,
-        media_type=media_type,
-        content_disposition_type="inline",
-    )
+    return serve_workspace_file(workspace_dir, file_path, download=bool(download))
 
 
 @router.get("/workspace/tree", summary="获取工作区文件树")
@@ -352,26 +396,5 @@ async def get_workspace_tree(
         logger.warning(f"工作区目录不存在 | path={target_dir}")
         return {"items": []}
 
-    if not target_dir.is_dir():
-        raise HTTPException(status_code=400, detail="路径不是目录")
-
-    _HIDDEN_DIRS = {"node_modules", ".venv", ".deps", "__pycache__"}
-
-    items = []
-    try:
-        for entry in sorted(
-            target_dir.iterdir(), key=lambda e: (not e.is_dir(), e.name.lower())
-        ):
-            if entry.is_dir() and entry.name in _HIDDEN_DIRS:
-                continue
-            item = {
-                "name": entry.name,
-                "path": str(entry.relative_to(workspace_dir)),
-                "type": "directory" if entry.is_dir() else "file",
-                "size": entry.stat().st_size if entry.is_file() else 0,
-            }
-            items.append(item)
-    except PermissionError:
-        pass
-
+    items = build_workspace_tree(workspace_dir, path)
     return {"items": items}

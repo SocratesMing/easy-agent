@@ -31,6 +31,22 @@ running_tasks: dict[str, "asyncio.Task"] = {}
 stopping_tasks: set[str] = set()
 
 
+def get_task_workspace_name(db, task: ScheduledTaskModel) -> str:
+    """解析定时任务的工作目录名。
+
+    - 若任务由某个会话生成（session_id 指向有效会话），复用该会话的工作目录，
+      保证后续定时任务产生的文件都落在该会话目录下，不新建目录。
+    - 否则使用每个任务独立的工作目录 ``scheduled_{task_id}``。
+    """
+    if getattr(task, "workspace_name", ""):
+        return task.workspace_name
+    if task.session_id:
+        session = db.get_session(task.session_id)
+        if session and getattr(session, "workspace_name", ""):
+            return session.workspace_name
+    return f"scheduled_{task.task_id}"
+
+
 class _TaskAborted(Exception):
     """任务在运行过程中被暂停/删除，主动中止 agent 调用。"""
 
@@ -184,10 +200,11 @@ async def _execute_task(task_id: str):
     started_at = now.isoformat()
     ts_label = now.strftime("%Y%m%d_%H%M%S")
 
-    # 创建新 session 用于此次执行
-    from ..api.sessions import generate_workspace_name
+    # 创建新 session 用于此次执行，但工作目录与任务绑定（复用创建会话的目录或独立目录），
+    # 确保多次运行都写入同一工作目录，不再为每次运行新建目录。
     session_id = str(uuid.uuid4())
-    workspace_name = generate_workspace_name(session_id)
+    workspace_name = get_task_workspace_name(db, task)
+    db.update_scheduled_task_workspace(task.task_id, workspace_name)
     session_title = f"[定时任务] {task.name} - {ts_label}"
     session_data = SessionModel(
         session_id=session_id,
