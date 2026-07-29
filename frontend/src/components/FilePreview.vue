@@ -37,7 +37,7 @@
             <iframe :src="previewUrl" class="pdf-iframe"></iframe>
           </div>
           <div v-else-if="isPptx" class="preview-pptx">
-            <vue-office-pptx :src="pptxUrl" @error="handlePptxError" />
+            <vue-office-pptx :src="pptxUrl" @rendered="onPptxRendered" @error="handlePptxError" />
           </div>
           <div v-else-if="isDocx" class="preview-docx">
             <vue-office-docx :src="docxUrl" @error="handleDocxError" />
@@ -156,9 +156,9 @@ const loading = ref(false)
 const error = ref('')
 const textContent = ref('')
 const previewUrl = ref('')
-const docxUrl = ref('')
+const docxUrl = ref(null)
 const excelUrl = ref(null)
-const pptxUrl = ref('')
+const pptxUrl = ref(null)
 const htmlUrl = ref('')
 
 const imageExts = ['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.svg', '.ico']
@@ -323,9 +323,9 @@ async function loadPreview() {
   loading.value = true
   error.value = ''
   textContent.value = ''
-  docxUrl.value = ''
+  docxUrl.value = null
   excelUrl.value = null
-  pptxUrl.value = ''
+  pptxUrl.value = null
   if (htmlUrl.value) {
     URL.revokeObjectURL(htmlUrl.value)
     htmlUrl.value = ''
@@ -373,15 +373,15 @@ async function loadPreview() {
       const response = await fetch(previewUrl.value, { headers })
       if (!response.ok) throw new Error(`HTTP ${response.status}`)
       const arrayBuffer = await response.arrayBuffer()
-      const blob = new Blob([arrayBuffer], { type: 'application/vnd.openxmlformats-officedocument.presentationml.presentation' })
-      pptxUrl.value = URL.createObjectURL(blob)
+      // 直接传 ArrayBuffer，避免 Blob URL 在 @vue-office/pptx 下的解析问题
+      pptxUrl.value = arrayBuffer
     } else if (isDocx.value) {
       console.log('[FilePreview] DOCX 预览')
       const response = await fetch(previewUrl.value, { headers })
       if (!response.ok) throw new Error(`HTTP ${response.status}`)
       const arrayBuffer = await response.arrayBuffer()
-      const blob = new Blob([arrayBuffer], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' })
-      docxUrl.value = URL.createObjectURL(blob)
+      // 直接传 ArrayBuffer，避免 Blob URL 解析问题（与 excel/pptx 一致）
+      docxUrl.value = arrayBuffer
     } else if (isExcel.value) {
       console.log('[FilePreview] Excel 预览')
       const response = await fetch(previewUrl.value, { headers })
@@ -415,9 +415,13 @@ async function loadPreview() {
   loading.value = false
 }
 
+function onPptxRendered() {
+  console.log('[FilePreview] PPTX 渲染完成')
+}
+
 function handlePptxError(e) {
-  console.error('PPTX error:', e)
-  error.value = 'PPTX 预览加载失败'
+  console.error('[FilePreview] PPTX error:', e)
+  error.value = 'PPTX 预览加载失败，请尝试下载后查看'
 }
 
 function handleDocxError(e) {
@@ -431,8 +435,7 @@ function handleExcelError(e) {
 }
 
 function handleClose() {
-  if (docxUrl.value) URL.revokeObjectURL(docxUrl.value)
-  if (pptxUrl.value) URL.revokeObjectURL(pptxUrl.value)
+  // docxUrl/pptxUrl/excelUrl 现为 ArrayBuffer，无需 revoke；仅 htmlUrl 是 Blob URL
   if (htmlUrl.value) URL.revokeObjectURL(htmlUrl.value)
   emit('close')
 }
@@ -630,12 +633,15 @@ function handleClose() {
 
 .preview-pptx {
   width: 100%;
-  height: 100%;
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  background: #f5f5f5;
 }
 
 .preview-pptx :deep(.vue-office-pptx) {
   width: 100%;
-  height: 100%;
+  /* 不强制 height，让幻灯片按自然高度堆叠，容器滚动 */
 }
 
 .preview-docx {

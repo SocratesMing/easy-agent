@@ -118,7 +118,7 @@
 
 <script setup>
 import { API_BASE_URL, appRuntime } from './config.js'
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import SessionList from './components/SessionList.vue'
 import Chat from './components/Chat.vue'
 import AssetsPanel from './components/AssetsPanel.vue'
@@ -130,7 +130,7 @@ import WorkspacePanel from './components/WorkspacePanel.vue'
 import SettingsPanel from './components/SettingsPanel.vue'
 import { createSession, listSessions, getChatHistory, deleteSession, sendMessage, resumeStream, renameSession, togglePinSession } from './api/chat.js'
 import { uploadFile, deleteFile, getUserProfile, getSessionGeneratedFiles } from './api/files.js'
-import { logout as apiLogout, getStoredToken, getStoredUsername, AUTH_EXPIRED_EVENT, authFetch } from './api/auth.js'
+import { logout as apiLogout, getStoredToken, getStoredUsername, AUTH_EXPIRED_EVENT, USER_ACTIVITY_EVENT, authFetch } from './api/auth.js'
 import { getModels as fetchModels } from './api/settings.js'
 
 const sessions = ref([])
@@ -312,6 +312,10 @@ function applyAgentConfig(configData) {
   if (configData.agent_env) {
     appRuntime.agentEnv = configData.agent_env
   }
+  // 空闲自动登出超时（分钟）；0 或非法值表示禁用
+  if (typeof configData.idle_logout_minutes === 'number' && configData.idle_logout_minutes >= 0) {
+    idleLogoutMs.value = configData.idle_logout_minutes * 60 * 1000
+  }
 }
 
 async function handleWelcomeCompleted(profile) {
@@ -377,6 +381,36 @@ async function handleLogout() {
   showAssets.value = false
   showSkillCenter.value = false
   showWelcome.value = true
+}
+
+// ---- 无操作自动退出登录（超时时间由后端 idle_logout_minutes 下发，默认 30 分钟） ----
+let idleTimer = null
+// 空闲超时（毫秒）；0 或非法值表示禁用自动登出
+const idleLogoutMs = ref(5 * 60 * 1000)
+function resetIdleTimer() {
+  if (idleTimer) clearTimeout(idleTimer)
+  if (showWelcome.value) return // 未登录不计时
+  if (idleLogoutMs.value <= 0) return // 已禁用
+  idleTimer = setTimeout(() => {
+    // 流式响应进行中（即使暂时无数据到达）视为仍在与后端交互，不登出，重新计时
+    if (isStreaming.value) {
+      resetIdleTimer()
+      return
+    }
+    handleLogout()
+  }, idleLogoutMs.value)
+}
+function startIdleTimer() {
+  ;['mousemove', 'mousedown', 'keydown', 'click', 'scroll', 'touchstart'].forEach((evt) =>
+    window.addEventListener(evt, resetIdleTimer, { passive: true })
+  )
+  resetIdleTimer()
+}
+function stopIdleTimer() {
+  if (idleTimer) clearTimeout(idleTimer)
+  ;['mousemove', 'mousedown', 'keydown', 'click', 'scroll', 'touchstart'].forEach((evt) =>
+    window.removeEventListener(evt, resetIdleTimer)
+  )
 }
 
 async function handleUnregister() {
@@ -471,7 +505,9 @@ async function handleCreateSession() {
   messages.value = []
   currentTodos.value = []
   isStreaming.value = false
-  sessionUsage.value = { input_tokens: 0, output_tokens: 0, total_tokens: 0, max_input_tokens: null, auto_compress_tokens: null, context_tokens: 0 }
+  // 注意：保留 max_input_tokens（全局上下文窗口，对所有会话通用），不重置为 null，
+  // 否则 contextPercent 分母为 null 时会强制显示为 0%
+  sessionUsage.value = { input_tokens: 0, output_tokens: 0, total_tokens: 0, max_input_tokens: sessionUsage.value.max_input_tokens, auto_compress_tokens: null, context_tokens: 0 }
   sessionDuration.value = 0
   iterationCount.value = 0
   refreshSessionFiles(null)
@@ -497,7 +533,9 @@ async function handleSelectSession(sessionId) {
   }
 
   // 缓存中没有，从服务器加载历史
-  sessionUsage.value = { input_tokens: 0, output_tokens: 0, total_tokens: 0, max_input_tokens: null, auto_compress_tokens: null, context_tokens: 0 }
+  // 保留 max_input_tokens（全局上下文窗口），仅清空用量计数；
+  // 若服务器返回了 max_input_tokens 则以其为准（见下方恢复逻辑）
+  sessionUsage.value = { input_tokens: 0, output_tokens: 0, total_tokens: 0, max_input_tokens: sessionUsage.value.max_input_tokens, auto_compress_tokens: null, context_tokens: 0 }
   sessionDuration.value = 0
   iterationCount.value = 0
 
@@ -590,6 +628,405 @@ async function handleTogglePin(sessionId) {
   }
 }
 
+// MCP 工具结果解析：模块级函数，供正常流(handleSendMessage)与 HITL 恢复流(handleToolApproval)共用。
+// 注意：不要把它定义在某个函数内部，否则另一处引用会抛 ReferenceError，
+// 导致 tool_result 事件处理中断、工具一直显示"等待运行结果"。
+function parseMCPResult(rawResult) {
+  // MCP results come as a string representation of a Python list: "[{'type': 'text', 'text': '...'}]"
+  // or JSON format: '[{"type": "text", "text": "..."}]'
+  // Extract just the text content.
+  if (!rawResult) return ''
+  if (typeof rawResult !== 'string') return String(rawResult)
+
+  // Try JSON format first (single quotes replaced with double)
+  try {
+    const jsonStr = rawResult.replace(/'/g, '"')
+    const parsed = JSON.parse(jsonStr)
+    if (Array.isArray(parsed)) {
+      return parsed
+        .filter(item => item.type === 'text')
+        .map(item => item.text)
+        .join('\n\n')
+    }
+  } catch (e) {
+    // Not valid JSON, return as-is
+  }
+  return rawResult
+}
+
+function createStreamChunkHandler(ctx) {
+  let currentBlock = null
+  let currentThinking = ''
+  let currentContent = ''
+  let currentToolCalls = []
+  let blockOrderCounter = ctx.initialBlockOrder || 0
+  let totalThinkingDuration = 0
+
+  function findIdx() {
+    return messages.value.findIndex(m => m.id === ctx.assistantMsgId)
+  }
+  function touchBlocks() {
+    const idx = findIdx()
+    if (idx !== -1) messages.value[idx] = { ...messages.value[idx], blocks: [...messages.value[idx].blocks] }
+  }
+  function ensureMessage() {
+    if (ctx.ensureMessage) ctx.ensureMessage()
+  }
+  function addBlock(type, data, replace = false) {
+    ensureMessage()
+    const idx = findIdx()
+    if (idx === -1) return null
+    if (type === 'thinking' && data.step !== undefined) {
+      const existing = messages.value[idx].blocks.find(b => b.type === 'thinking' && b.step === data.step)
+      if (existing) { currentBlock = existing; return currentBlock }
+    }
+    blockOrderCounter++
+    // 严格按 order 展示时，reopen 场景（late reasoning 晚于同 step 工具块到达）会让
+    // 思考块的 order 大于工具块而排到工具之后。此时给思考块一个更小的 order
+    //（同 step 最小 order - 0.5），使其排在工具之前，符合「先思考后工具」。
+    let blkOrder = blockOrderCounter
+    if (type === 'thinking' && data.step !== undefined) {
+      const sameStep = messages.value[idx].blocks.filter(b => b.step === data.step && b.type !== 'thinking')
+      if (sameStep.length > 0) {
+        blkOrder = Math.min(...sameStep.map(b => b.order || 0)) - 0.5
+      }
+    }
+    const needNewBlock = !currentBlock || currentBlock.type !== type ||
+      (type === 'thinking' && data.step !== undefined && currentBlock.step !== data.step)
+    if (needNewBlock) {
+      currentBlock = { type, content: '', order: blkOrder, ...data }
+      messages.value[idx].blocks.push(currentBlock)
+      messages.value[idx] = { ...messages.value[idx], blocks: [...messages.value[idx].blocks] }
+    } else {
+      if (replace) {
+        currentBlock.content = data.content || ''
+      } else if (data.content !== undefined) {
+        currentBlock.content = (currentBlock.content || '') + (data.content || '')
+      }
+      if (data.tool_name) currentBlock.tool_name = data.tool_name
+      if (data.arguments !== undefined) currentBlock.arguments = data.arguments
+      if (data.result !== undefined) currentBlock.result = data.result
+      if (data.success !== undefined) currentBlock.success = data.success
+      if (data.duration !== undefined) currentBlock.duration = data.duration
+      if (data.step !== undefined) currentBlock.step = data.step
+      if (data.id !== undefined) currentBlock.id = data.id
+      messages.value[idx] = { ...messages.value[idx] }
+    }
+    return currentBlock
+  }
+  function updateThinkingDuration(duration, step) {
+    const idx = findIdx()
+    if (idx !== -1) {
+      const blockIdx = messages.value[idx].blocks.findIndex(b => b.type === 'thinking' && b.step === step)
+      if (blockIdx !== -1) {
+        messages.value[idx].blocks[blockIdx] = { ...messages.value[idx].blocks[blockIdx], duration }
+      }
+      messages.value[idx] = { ...messages.value[idx], thinking_duration: duration, blocks: [...messages.value[idx].blocks] }
+    }
+  }
+  function usagePatchFrom(data) {
+    const patch = {
+      input_tokens: data.input_tokens || 0,
+      output_tokens: data.output_tokens || 0,
+      total_tokens: data.session_estimate || data.total_tokens || 0,
+      context_tokens: data.context_tokens || sessionUsage.value.context_tokens || 0,
+    }
+    if (data.max_input_tokens) patch.max_input_tokens = data.max_input_tokens
+    if (data.auto_compress_tokens) patch.auto_compress_tokens = data.auto_compress_tokens
+    return patch
+  }
+  function applyUsage(data, sid) {
+    const patch = usagePatchFrom(data)
+    const match = !sid || currentSessionId.value === sid
+    if (ctx.isResume) {
+      if (match) {
+        Object.assign(sessionUsage.value, patch)
+        if (typeof data.elapsed_time === 'number') sessionDuration.value = Math.round((sessionDuration.value + data.elapsed_time) * 10) / 10
+        if (typeof data.step_count === 'number') iterationCount.value = data.step_count
+      } else {
+        const cached = sessionStates.value[sid]
+        if (cached) {
+          cached.sessionUsage = { ...cached.sessionUsage, ...patch }
+          if (typeof data.elapsed_time === 'number') cached.sessionDuration = Math.round(((cached.sessionDuration || 0) + data.elapsed_time) * 10) / 10
+          if (typeof data.step_count === 'number') cached.iterationCount = data.step_count
+        }
+      }
+    } else {
+      const newDuration = typeof data.elapsed_time === 'number' ? Math.round((ctx.preStreamDuration + data.elapsed_time) * 10) / 10 : null
+      const newIterations = typeof data.step_count === 'number' ? ctx.preStreamIterationCount + data.step_count : null
+      if (match) {
+        Object.assign(sessionUsage.value, patch)
+        if (newDuration !== null) sessionDuration.value = newDuration
+        if (newIterations !== null) iterationCount.value = newIterations
+      } else {
+        const cached = sessionStates.value[sid]
+        if (cached) {
+          cached.sessionUsage = { ...cached.sessionUsage, ...patch }
+          if (newDuration !== null) cached.sessionDuration = newDuration
+          if (newIterations !== null) cached.iterationCount = newIterations
+        }
+      }
+    }
+  }
+
+  function onChunk(data) {
+    // 流式数据到达视为后端交互，重置空闲登出计时器
+    resetIdleTimer()
+    const { type: eventType, content, duration, step, tool_name, tool_call_id: toolCallId, arguments: args, result, success, title } = data
+    const sid = ctx.streamSessionId
+
+    if (eventType === 'start') {
+      if (!ctx.isResume) {
+        currentTodos.value = []
+        if (data.session_id && !currentSessionId.value) {
+          currentSessionId.value = data.session_id
+          loadedSessionId.value = data.session_id
+          loadSessions()
+        }
+        if (data.session_id) ctx.streamSessionId = data.session_id
+        streamingSessionId.value = ctx.streamSessionId || currentSessionId.value
+      }
+    } else if (eventType === 'token_usage') {
+      applyUsage(data, ctx.streamSessionId)
+    } else if (eventType === 'thinking_start') {
+      // 始终按 step 解析思考块，不再用「currentBlock 已是 thinking 则跳过」守卫：
+      // 该守卫会在上一 step 的 currentBlock 未被 thinking_end 及时置空时跳过新 step
+      // 的 thinking_start，导致后续 thinking 增量回退到上一步卡片，造成同一 step 的
+      // 思考内容被拆分/串步渲染。按 step 查找：存在则复用（同 turn 思考分段重开），
+      // 不存在则新建，保证每个 step 恰好一张思考卡片。
+      const idx = findIdx()
+      if (idx !== -1) {
+        const targetStep = step || 0
+        const existing = messages.value[idx].blocks.find(b => b.type === 'thinking' && b.step === targetStep)
+        if (existing) {
+          // 复用同 step 思考块：恢复已累积内容继续追加，不重置 duration 以避免卡片在
+          //「思考过程」与「正在思考」间闪烁、也避免同一步骤思考被视觉上分成两段。
+          currentThinking = existing.content || ''
+          currentBlock = existing
+          touchBlocks()
+        } else {
+          currentThinking = ''
+          currentBlock = null
+          addBlock('thinking', { content: '', step: targetStep })
+        }
+      }
+    } else if (eventType === 'thinking') {
+      const targetStep = step || 0
+      // 优先用后端 full_content（本 step 思考完整内容）采用 SET 语义覆盖——幂等，
+      // 重复/聚合增量也不会重复渲染；旧后端无 full_content 时回退到 append 增量。
+      if (data.full_content) {
+        currentThinking = data.full_content
+      } else {
+        currentThinking += content || ''
+      }
+      const idx = findIdx()
+      if (idx !== -1) {
+        // 按 step 定位思考块写入；若该 step 尚无思考块（thinking_start 被跳过或事件
+        // 乱序），按 step 新建一块，绝不回退到其他 step 的 currentBlock——否则会把
+        // 本步思考写入上一步卡片（覆盖其内容），造成一个 step 的思考被拆分/错位。
+        let blk = messages.value[idx].blocks.find(b => b.type === 'thinking' && b.step === targetStep)
+        if (!blk) {
+          blk = addBlock('thinking', { content: '', step: targetStep })
+          if (!data.full_content) currentThinking = content || ''
+        }
+        if (blk) {
+          blk.content = currentThinking
+          currentBlock = blk
+          messages.value[idx] = { ...messages.value[idx] }
+        }
+      }
+    } else if (eventType === 'thinking_end') {
+      touchBlocks()
+      totalThinkingDuration += duration || 0
+      if (ctx.isResume) {
+        // 健壮地为对应思考块设置 duration。HITL 恢复流中，思考之后往往紧跟
+        // tool_call/tool_result 事件，currentBlock 已被改写为工具块或 null，
+        // 仅依赖 currentBlock 会导致思考块 duration 一直为 null（前端误显示
+        // “正在思考…”）。因此优先按 step 匹配，再回退到 currentBlock 与最后
+        // 一个无 duration 的思考块。
+        const idx = findIdx()
+        if (idx !== -1) {
+          let blockIdx = messages.value[idx].blocks.findIndex(b => b.type === 'thinking' && b.step === (step || 0))
+          if (blockIdx === -1 && currentBlock && currentBlock.type === 'thinking') {
+            blockIdx = messages.value[idx].blocks.indexOf(currentBlock)
+          }
+          if (blockIdx === -1) {
+            for (let i = messages.value[idx].blocks.length - 1; i >= 0; i--) {
+              if (messages.value[idx].blocks[i].type === 'thinking') { blockIdx = i; break }
+            }
+          }
+          if (blockIdx !== -1) {
+            messages.value[idx].blocks[blockIdx] = { ...messages.value[idx].blocks[blockIdx], duration: duration || 0 }
+            messages.value[idx] = { ...messages.value[idx], blocks: [...messages.value[idx].blocks] }
+          }
+        }
+      } else {
+        updateThinkingDuration(duration || 0, step || 0)
+      }
+      currentThinking = ''
+      currentBlock = null
+    } else if (eventType === 'content_start') {
+      if (!currentBlock || currentBlock.type !== 'content') {
+        currentContent = ''
+        currentBlock = null
+        addBlock('content', { content: '', step: step || 0 })
+      }
+    } else if (eventType === 'content') {
+      const targetStep = step || 0
+      // 正文块必须带 step，否则按 step 排序时会落到顶部（step=0）。同一 step 的
+      // 正文分段到达（reopen）时复用已有正文块，避免同 step 产生多个正文块。
+      if (!currentBlock || currentBlock.type !== 'content' || currentBlock.step !== targetStep) {
+        const idx0 = findIdx()
+        let existing = null
+        if (idx0 !== -1) existing = messages.value[idx0].blocks.find(b => b.type === 'content' && b.step === targetStep)
+        if (existing) {
+          currentContent = (existing.content || '') + (content || '')
+          currentBlock = existing
+        } else {
+          currentContent = content || ''
+          currentBlock = null
+          addBlock('content', { content: currentContent, step: targetStep })
+        }
+      } else {
+        currentContent += content || ''
+      }
+      if (currentBlock && currentBlock.type === 'content') currentBlock.content = currentContent
+      const idx = findIdx()
+      if (idx !== -1) {
+        if (ctx.isResume) messages.value[idx].content = (messages.value[idx].content || '') + (content || '')
+        touchBlocks()
+      }
+    } else if (eventType === 'content_end') {
+      currentContent = ''
+      currentBlock = null
+    } else if (eventType === 'todo_list') {
+      if (data.todos && Array.isArray(data.todos)) currentTodos.value = data.todos
+    } else if (eventType === 'assistant_start') {
+      if (!ctx.isResume) {
+        ensureMessage()
+        currentContent = ''
+        currentThinking = ''
+        currentToolCalls = []
+        currentBlock = null
+      }
+    } else if (eventType === 'user_input_required') {
+      if (!ctx.isResume) {
+        const idx = findIdx()
+        if (idx !== -1) { messages.value[idx].loading = false; messages.value[idx] = { ...messages.value[idx] } }
+      }
+    } else if (eventType === 'tool_call') {
+      if (!ctx.isResume) ensureMessage()
+      const idx = findIdx()
+      if (idx !== -1) {
+        const callId = toolCallId || `tool-${tool_name}`
+        const existingBlockIdx = messages.value[idx].blocks.findIndex(b => b.type === 'tool_call' && (b.id === callId || b.tool_call_id === callId))
+        if (existingBlockIdx !== -1) {
+          messages.value[idx].blocks[existingBlockIdx].arguments = args || {}
+          currentBlock = messages.value[idx].blocks[existingBlockIdx]
+          touchBlocks()
+        } else {
+          currentBlock = null
+          if (!ctx.isResume) currentToolCalls.push({ tool_call_id: callId, tool_name: tool_name || '', arguments: args || {}, result: '', success: true })
+          addBlock('tool_call', { id: callId, tool_name: tool_name || '', arguments: args || {}, result: '', success: true, step: step || 0 })
+        }
+      }
+    } else if (eventType === 'tool_result') {
+      const callId = toolCallId || `tool-${tool_name}`
+      const toolDuration = duration != null ? duration : 0
+      if (!ctx.isResume && currentToolCalls.length > 0) {
+        const matchingCall = currentToolCalls.find(tc => tc.tool_call_id === callId)
+        if (matchingCall) {
+          matchingCall.result = result || ''
+          matchingCall.success = success !== false
+          matchingCall.duration = toolDuration
+          if (args) matchingCall.arguments = args
+        }
+      }
+      const idx = findIdx()
+      if (idx !== -1) {
+        const blockIdx = messages.value[idx].blocks.findIndex(b => b.type === 'tool_call' && (b.id === callId || b.tool_call_id === callId))
+        if (blockIdx !== -1) {
+          const blk = { ...messages.value[idx].blocks[blockIdx], arguments: args || messages.value[idx].blocks[blockIdx].arguments, result: parseMCPResult(result || ''), success: success !== false, duration: toolDuration }
+          if (ctx.isResume) blk.loading = false
+          messages.value[idx].blocks[blockIdx] = blk
+          touchBlocks()
+        }
+      }
+      if (!currentBlock || currentBlock.type !== 'content') currentBlock = null
+    } else if (eventType === 'approval_required') {
+      if (ctx.onApprovalRequired) ctx.onApprovalRequired(data)
+    } else if (eventType === 'done') {
+      const idx = findIdx()
+      if (idx !== -1) {
+        messages.value[idx].loading = false
+        messages.value[idx].created_at = new Date().toISOString()
+        if (ctx.isResume) {
+          if (Array.isArray(data.blocks) && data.blocks.length > 0) messages.value[idx].blocks = data.blocks.map(b => ({ ...b }))
+          for (const b of messages.value[idx].blocks) { if (b.type === 'thinking' && b.duration == null) b.duration = 0 }
+          if (data.usage) applyUsage(data.usage, ctx.streamSessionId)
+        } else {
+          const finalContent = data.content || currentContent
+          messages.value[idx].content = finalContent
+          // SET 语义下 currentThinking 只剩最后一个 step 的内容；此处从所有思考块
+          // 拼接出完整 thinking，保证 message.thinking 字段（旧数据回退/兼容）正确。
+          messages.value[idx].thinking = (messages.value[idx].blocks || [])
+            .filter(b => b.type === 'thinking')
+            .map(b => b.content || '')
+            .join('')
+          messages.value[idx].tool_calls = currentToolCalls
+          if (data.usage) {
+            messages.value[idx].usage = { input_tokens: data.usage.input_tokens || 0, output_tokens: data.usage.output_tokens || 0, total_tokens: data.usage.total_tokens || 0 }
+          }
+          if (data.usage) {
+            const patch = usagePatchFrom(data.usage)
+            const match = !ctx.streamSessionId || currentSessionId.value === ctx.streamSessionId
+            const finalDuration = typeof data.elapsed_time === 'number' ? Math.round((ctx.preStreamDuration + data.elapsed_time) * 10) / 10 : null
+            const finalIterations = data.usage && typeof data.usage.step_count === 'number' ? ctx.preStreamIterationCount + data.usage.step_count : null
+            if (match) {
+              Object.assign(sessionUsage.value, patch)
+              if (finalDuration !== null) sessionDuration.value = finalDuration
+              if (finalIterations !== null) iterationCount.value = finalIterations
+            } else {
+              const cached = sessionStates.value[ctx.streamSessionId]
+              if (cached) {
+                cached.sessionUsage = { ...cached.sessionUsage, ...patch }
+                if (finalDuration !== null) cached.sessionDuration = finalDuration
+                if (finalIterations !== null) cached.iterationCount = finalIterations
+              }
+            }
+          }
+        }
+        messages.value[idx] = { ...messages.value[idx] }
+      }
+      if (!ctx.isResume && title) {
+        const existingIdx = sessions.value.findIndex(s => s.session_id === currentSessionId.value)
+        if (existingIdx === -1) {
+          sessions.value = [{ session_id: currentSessionId.value, title, created_at: new Date().toISOString(), message_count: messages.value.length }, ...sessions.value]
+        } else {
+          sessions.value[existingIdx] = { ...sessions.value[existingIdx], title }
+          sessions.value = [...sessions.value]
+        }
+      }
+    } else if (eventType === 'error') {
+      const idx = findIdx()
+      if (idx !== -1) {
+        messages.value[idx].loading = false
+        messages.value[idx].error = data.content || '处理失败'
+        if (!ctx.isResume) {
+          for (const blk of messages.value[idx].blocks) {
+            if (blk.type === 'thinking' && blk.duration == null) blk.duration = 0
+            if (blk.type === 'tool_call' && blk.duration == null) { blk.duration = 0; blk.success = false; if (!blk.result) blk.result = data.content || '执行中断' }
+          }
+        }
+        messages.value[idx] = { ...messages.value[idx], blocks: [...messages.value[idx].blocks] }
+      }
+      error.value = data.content || '处理失败'
+    }
+  }
+
+  return { onChunk }
+}
+
 async function handleSendMessage(message, files = [], signal, enableDeepThink = true) {
   const userMsgId = `user-${Date.now()}`
   const preStreamUsage = { ...sessionUsage.value }
@@ -634,459 +1071,63 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
   let assistantMsgId = null
   let assistantMessageCreated = false
 
-  function parseMCPResult(rawResult) {
-    // MCP results come as a string representation of a Python list: "[{'type': 'text', 'text': '...'}]"
-    // or JSON format: '[{"type": "text", "text": "..."}]'
-    // Extract just the text content.
-    if (!rawResult) return ''
-    if (typeof rawResult !== 'string') return String(rawResult)
-
-    // Try JSON format first (single quotes replaced with double)
-    try {
-      const jsonStr = rawResult.replace(/'/g, '"')
-      const parsed = JSON.parse(jsonStr)
-      if (Array.isArray(parsed)) {
-        return parsed
-          .filter(item => item.type === 'text')
-          .map(item => item.text)
-          .join('\n\n')
-      }
-    } catch (e) {
-      // Not valid JSON, return as-is
-    }
-    return rawResult
-  }
-
-  function ensureAssistantMessage() {
-    if (!assistantMessageCreated) {
-      // 复用已有的占位消息（在发送消息时已创建）
-      if (assistantPlaceholderId && messages.value.find(m => m.id === assistantPlaceholderId)) {
-        assistantMsgId = assistantPlaceholderId
-      } else {
-        assistantMsgId = `assistant-${Date.now()}`
-        const assistantMessage = {
-          id: assistantMsgId,
-          role: 'assistant',
-          content: '',
-          created_at: null,
-          thinking: '',
-          tool_calls: [],
-          blocks: [],
-          loading: true
-        }
-        messages.value.push(assistantMessage)
-      }
-      assistantMessageCreated = true
-    }
-  }
-
-  let currentThinking = ''
-  let totalThinkingDuration = 0
-  let currentContent = ''
-  let currentToolCalls = []
-  let currentBlock = null
-  let blockOrderCounter = 0
-
-  function addBlock(type, data, replace = false) {
-    ensureAssistantMessage()
-    const idx = messages.value.findIndex(m => m.id === assistantMsgId)
-    if (idx === -1) return null
-
-    // Dedup: for thinking blocks, reuse existing block for the same step
-    if (type === 'thinking' && data.step !== undefined) {
-      const existing = messages.value[idx].blocks.find(
-        b => b.type === 'thinking' && b.step === data.step
-      )
-      if (existing) {
-        currentBlock = existing
-        return currentBlock
-      }
-    }
-
-    blockOrderCounter++
-    if (!currentBlock || currentBlock.type !== type) {
-      currentBlock = { type, content: '', order: blockOrderCounter, ...data }
-      messages.value[idx].blocks.push(currentBlock)
-      messages.value[idx] = { ...messages.value[idx], blocks: [...messages.value[idx].blocks] }
-    } else {
-      if (replace) {
-        currentBlock.content = data.content || ''
-      } else if (data.content !== undefined) {
-        currentBlock.content = (currentBlock.content || '') + (data.content || '')
-      }
-      if (data.tool_name) currentBlock.tool_name = data.tool_name
-      if (data.arguments !== undefined) currentBlock.arguments = data.arguments
-      if (data.result !== undefined) currentBlock.result = data.result
-      if (data.success !== undefined) currentBlock.success = data.success
-      if (data.duration !== undefined) currentBlock.duration = data.duration
-      if (data.step !== undefined) currentBlock.step = data.step
-      if (data.id !== undefined) currentBlock.id = data.id
-      messages.value[idx] = { ...messages.value[idx] }
-    }
-    return currentBlock
-  }
-
-  function updateThinkingDuration(duration, step) {
-    const idx = messages.value.findIndex(m => m.id === assistantMsgId)
-    if (idx !== -1) {
-      const blockIdx = messages.value[idx].blocks.findIndex(b => b.type === 'thinking' && b.step === step)
-      if (blockIdx !== -1) {
-        messages.value[idx].blocks[blockIdx] = {
-          ...messages.value[idx].blocks[blockIdx],
-          duration: duration
-        }
-      }
-      messages.value[idx] = { 
-        ...messages.value[idx], 
-        thinking_duration: duration,
-        blocks: [...messages.value[idx].blocks]
-      }
-    }
-  }
-
-  function onChunk(data) {
-    const { type: eventType, content, thinking, tool_calls, duration, step, tool_name, tool_call_id: toolCallId, arguments: args, result, success, title } = data
-
-    if (eventType === 'start') {
-      // Reset todo list for new stream
-      currentTodos.value = []
-      // 后端返回的 session_id，用于更新当前会话 ID
-      if (data.session_id && !currentSessionId.value) {
-        currentSessionId.value = data.session_id
-        // 新会话：当前界面数据（刚发送的消息）即属于该会话
-        loadedSessionId.value = data.session_id
-        // 新会话创建后立即刷新会话列表
-        loadSessions()
-      }
-      if (data.session_id) streamSessionId = data.session_id
-      // 同步 streamingSessionId：新会话场景下发送时 currentSessionId 为 null，
-      // 此时才拿到真实 session_id，必须更新 streamingSessionId，否则切回该会话时
-      // isStreaming 判断 (sessionId === streamingSessionId) 会因 streamingSessionId
-      // 仍为 null 而错误显示发送按钮
-      streamingSessionId.value = streamSessionId || currentSessionId.value
-    } else if (eventType === 'token_usage') {
-      const usagePatch = {
-        input_tokens: data.input_tokens || 0,
-        output_tokens: data.output_tokens || 0,
-        total_tokens: data.session_estimate || data.total_tokens || 0,
-        context_tokens: data.context_tokens || 0,
-      }
-      if (data.max_input_tokens) usagePatch.max_input_tokens = data.max_input_tokens
-      if (data.auto_compress_tokens) usagePatch.auto_compress_tokens = data.auto_compress_tokens
-      const newDuration = typeof data.elapsed_time === 'number'
-        ? Math.round((preStreamDuration + data.elapsed_time) * 10) / 10
-        : null
-      const newIterations = typeof data.step_count === 'number'
-        ? preStreamIterationCount + data.step_count
-        : null
-      if (!streamSessionId || currentSessionId.value === streamSessionId) {
-        // 用户仍停留在流所属会话：更新实时显示（基于本次请求开始前的基线值累加）
-        Object.assign(sessionUsage.value, usagePatch)
-        if (newDuration !== null) sessionDuration.value = newDuration
-        if (newIterations !== null) iterationCount.value = newIterations
-      } else {
-        // 用户已切换到其他会话：写入流所属会话的缓存，避免污染当前会话的用量显示
-        const cached = sessionStates.value[streamSessionId]
-        if (cached) {
-          cached.sessionUsage = { ...cached.sessionUsage, ...usagePatch }
-          if (newDuration !== null) cached.sessionDuration = newDuration
-          if (newIterations !== null) cached.iterationCount = newIterations
-        }
-      }
-    } else if (eventType === 'thinking_start') {
-      // Always create a new thinking block for each step
-      currentThinking = ''
-      currentBlock = null
-      addBlock('thinking', { content: '', step: step || 0 })
-    } else if (eventType === 'thinking') {
-      currentThinking += content || ''
-      if (currentBlock && currentBlock.type === 'thinking') {
-        currentBlock.content = currentThinking
-        // Trigger reactivity immediately for each thinking chunk
-        const idx = messages.value.findIndex(m => m.id === assistantMsgId)
-        if (idx !== -1) {
-          messages.value[idx] = { ...messages.value[idx] }
-        }
-      }
-    } else if (eventType === 'thinking_end') {
-      // Always trigger reactivity update on thinking end
-      const idx = messages.value.findIndex(m => m.id === assistantMsgId)
-      if (idx !== -1) {
-        messages.value[idx] = { ...messages.value[idx], blocks: [...messages.value[idx].blocks] }
-      }
-      totalThinkingDuration += duration || 0
-      updateThinkingDuration(duration || 0, step || 0)
-      // Reset for next thinking step
-      currentThinking = ''
-      currentBlock = null
-    } else if (eventType === 'content') {
-      if (!currentBlock || currentBlock.type !== 'content') {
-        currentContent = content || ''
-        currentBlock = null
-        addBlock('content', { content: currentContent })
-      } else {
-        currentContent += content || ''
-        currentBlock.content = currentContent
-        const idx = messages.value.findIndex(m => m.id === assistantMsgId)
-        if (idx !== -1) {
-          messages.value[idx] = { ...messages.value[idx], blocks: [...messages.value[idx].blocks] }
-        }
-      }
-    } else if (eventType === 'content_end') {
-      currentContent = ''
-      currentBlock = null
-    } else if (eventType === 'todo_list') {
-      // Update todo list from write_todos tool call
-      if (data.todos && Array.isArray(data.todos)) {
-        currentTodos.value = data.todos
-      }
-    } else if (eventType === 'assistant_start') {
-      ensureAssistantMessage()
-      currentContent = ''
-      currentThinking = ''
-      currentToolCalls = []
-      currentBlock = null
-    } else if (eventType === 'user_input_required') {
-      if (assistantMsgId) {
-        const idx = messages.value.findIndex(m => m.id === assistantMsgId)
-        if (idx !== -1) {
-          messages.value[idx].loading = false
-          messages.value[idx] = { ...messages.value[idx] }
-        }
-      }
-    } else if (eventType === 'tool_call') {
-      ensureAssistantMessage()
-      const idx = messages.value.findIndex(m => m.id === assistantMsgId)
-      if (idx !== -1) {
-        const callId = toolCallId || `tool-${tool_name}`
-        // Match by tool_call_id to distinguish repeated calls to the same tool
-        const existingBlockIdx = messages.value[idx].blocks.findIndex(
-          b => b.type === 'tool_call' && b.id === callId
-        )
-
-        if (existingBlockIdx !== -1) {
-          // Only update arguments if the new value is non-empty
-          const newArgs = (args !== undefined && args !== null && !(typeof args === 'object' && Object.keys(args).length === 0))
-            ? args
-            : messages.value[idx].blocks[existingBlockIdx].arguments
-          messages.value[idx].blocks[existingBlockIdx] = {
-            ...messages.value[idx].blocks[existingBlockIdx],
-            arguments: newArgs
-          }
-          currentBlock = messages.value[idx].blocks[existingBlockIdx]
-          messages.value[idx] = { ...messages.value[idx], blocks: [...messages.value[idx].blocks] }
+  const { onChunk } = createStreamChunkHandler({
+    isResume: false,
+    get assistantMsgId() { return assistantMsgId },
+    set assistantMsgId(v) { assistantMsgId = v },
+    get streamSessionId() { return streamSessionId },
+    set streamSessionId(v) { streamSessionId = v },
+    preStreamUsage,
+    preStreamIterationCount,
+    preStreamDuration,
+    initialBlockOrder: 0,
+    ensureMessage: () => {
+      if (!assistantMessageCreated) {
+        if (assistantPlaceholderId && messages.value.find(m => m.id === assistantPlaceholderId)) {
+          assistantMsgId = assistantPlaceholderId
         } else {
-          // New tool call
-          currentBlock = null
-          const toolCall = {
-            tool_call_id: callId,
-            tool_name: tool_name || '',
-            arguments: (args !== undefined && args !== null) ? args : {},
-            result: '',
-            success: true
-          }
-          currentToolCalls.push(toolCall)
-          addBlock('tool_call', {
-            id: callId,
-            tool_name: tool_name || '',
-            arguments: (args !== undefined && args !== null) ? args : {},
-            result: '',
-            success: true,
-            step: step || 0
+          assistantMsgId = `assistant-${Date.now()}`
+          messages.value.push({
+            id: assistantMsgId, role: 'assistant', content: '',
+            created_at: null, thinking: '', tool_calls: [], blocks: [], loading: true,
           })
         }
+        assistantMessageCreated = true
       }
-    } else if (eventType === 'tool_result') {
-      const callId = toolCallId || `tool-${tool_name}`
-      const toolDuration = duration != null ? duration : 0
-      console.log('[tool_result] event received:', { callId, tool_name, toolDuration, resultLen: (result || '').length, success, hasArgs: args !== undefined })
-
-      if (currentToolCalls.length > 0) {
-        const matchingCall = currentToolCalls.find(tc => tc.tool_call_id === callId)
-        if (matchingCall) {
-          matchingCall.result = result || ''
-          matchingCall.success = success !== false
-          matchingCall.duration = toolDuration
-          if (args !== undefined && args !== null) matchingCall.arguments = args
-        } else {
-          const lastToolCall = currentToolCalls[currentToolCalls.length - 1]
-          lastToolCall.result = result || ''
-          lastToolCall.success = success !== false
-          lastToolCall.duration = toolDuration
-          if (args !== undefined && args !== null) lastToolCall.arguments = args
-        }
-      }
-
-      const idx = messages.value.findIndex(m => m.id === assistantMsgId)
-      if (idx !== -1) {
-        // Helper: try to match a block for this tool result
-        function findToolBlock(blocks, id, name) {
-          // 1. Try exact id match
-          const byId = blocks.findIndex(b => b.type === 'tool_call' && b.id === id)
-          if (byId !== -1) return byId
-          // 2. Try tool_name match
-          if (name) {
-            const byName = blocks.findIndex(b => b.type === 'tool_call' && b.tool_name === name)
-            if (byName !== -1) return byName
-            const byNameCI = blocks.findIndex(b => b.type === 'tool_call' && b.tool_name && b.tool_name.toLowerCase() === name.toLowerCase())
-            if (byNameCI !== -1) return byNameCI
-          }
-          // 3. Try pending (no duration) block
-          const byPending = blocks.findIndex(b => b.type === 'tool_call' && b.duration == null)
-          if (byPending !== -1) return byPending
-          return -1
-        }
-
-        const blockIdx = findToolBlock(messages.value[idx].blocks, callId, tool_name)
-        if (blockIdx !== -1) {
-          console.log('[tool_result] matched block at index:', blockIdx, 'tool_name:', messages.value[idx].blocks[blockIdx].tool_name)
-          const newArgs = (args !== undefined && args !== null && !(typeof args === 'object' && Object.keys(args).length === 0))
-            ? args
-            : messages.value[idx].blocks[blockIdx].arguments
-          // Parse MCP result format to extract clean text
-          const cleanResult = parseMCPResult(result || '')
-          messages.value[idx].blocks[blockIdx] = {
-            ...messages.value[idx].blocks[blockIdx],
-            arguments: newArgs,
-            result: cleanResult,
-            success: success !== false,
-            duration: toolDuration
-          }
-          // Also set the block's id if it was a fallback match
-          if (!messages.value[idx].blocks[blockIdx].id) {
-            messages.value[idx].blocks[blockIdx].id = callId
-          }
-          messages.value[idx] = { ...messages.value[idx], blocks: [...messages.value[idx].blocks] }
-        } else {
-          console.warn('[tool_result] NO matching block found! callId:', callId, 'tool_name:', tool_name, 'blocks:', messages.value[idx].blocks.map(b => ({ type: b.type, id: b.id, tool_name: b.tool_name, duration: b.duration, resultLen: (b.result || '').length })))
-        }
-      }
-      // Don't reset currentBlock if it's a content block, to avoid splitting the text stream
-      if (!currentBlock || currentBlock.type !== 'content') {
-        currentBlock = null
-      }
-    } else if (eventType === 'done') {
-      const finalContent = data.content || currentContent
-      if (assistantMsgId) {
-        const idx = messages.value.findIndex(m => m.id === assistantMsgId)
-        if (idx !== -1) {
-          messages.value[idx].content = finalContent
-          messages.value[idx].thinking = currentThinking
-          messages.value[idx].tool_calls = currentToolCalls
-          messages.value[idx].loading = false
-          messages.value[idx].created_at = new Date().toISOString()
-          if (data.usage) {
-            messages.value[idx].usage = {
-              input_tokens: data.usage.input_tokens || 0,
-              output_tokens: data.usage.output_tokens || 0,
-              total_tokens: data.usage.total_tokens || 0,
-            }
-          }
-          messages.value[idx] = { ...messages.value[idx] }
-        }
-      }
-
-      {
-        const usagePatch = {}
-        if (data.usage) {
-          console.log('[Token Usage] Received usage:', data.usage, 'preStreamUsage:', preStreamUsage)
-          usagePatch.input_tokens = (preStreamUsage.input_tokens || 0) + (data.usage.input_tokens || 0)
-          usagePatch.output_tokens = (preStreamUsage.output_tokens || 0) + (data.usage.output_tokens || 0)
-          usagePatch.total_tokens = data.usage.session_estimate || (preStreamUsage.total_tokens || 0) + (data.usage.total_tokens || 0)
-          usagePatch.context_tokens = data.usage.context_tokens || 0
-          if (data.usage.max_input_tokens) usagePatch.max_input_tokens = data.usage.max_input_tokens
-          if (data.usage.auto_compress_tokens) usagePatch.auto_compress_tokens = data.usage.auto_compress_tokens
-        } else {
-          console.log('[Token Usage] No usage data in done event')
-        }
-        // 基于preStream基线值设置最终耗时和迭代次数（与token_usage事件逻辑一致，幂等，避免双重计数）
-        const finalDuration = typeof data.elapsed_time === 'number'
-          ? Math.round((preStreamDuration + data.elapsed_time) * 10) / 10
-          : null
-        const finalIterations = data.usage && typeof data.usage.step_count === 'number'
-          ? preStreamIterationCount + data.usage.step_count
-          : null
-        if (!streamSessionId || currentSessionId.value === streamSessionId) {
-          Object.assign(sessionUsage.value, usagePatch)
-          if (finalDuration !== null) sessionDuration.value = finalDuration
-          if (finalIterations !== null) iterationCount.value = finalIterations
-          console.log('[Token Usage] Updated sessionUsage:', sessionUsage.value)
-        } else {
-          // 用户已切换到其他会话：最终用量写入流所属会话的缓存
-          const cached = sessionStates.value[streamSessionId]
-          if (cached) {
-            cached.sessionUsage = { ...cached.sessionUsage, ...usagePatch }
-            if (finalDuration !== null) cached.sessionDuration = finalDuration
-            if (finalIterations !== null) cached.iterationCount = finalIterations
-          }
-        }
-      }
-
-      if (title) {
-        const sessionTitle = title
-        const existingIdx = sessions.value.findIndex(s => s.session_id === currentSessionId.value)
-        if (existingIdx === -1) {
-          const newSession = {
-            session_id: currentSessionId.value,
-            title: sessionTitle,
-            created_at: new Date().toISOString(),
-            message_count: messages.value.length
-          }
-          sessions.value = [newSession, ...sessions.value]
-        } else {
-          sessions.value[existingIdx] = { ...sessions.value[existingIdx], title: sessionTitle }
-          sessions.value = [...sessions.value]
-        }
-      }
-    } else if (eventType === 'error') {
-      if (is_in_thinking) {
-        // thinking will be ended by backend, but ensure frontend state is clean
-      }
-      if (assistantMsgId) {
-        const idx = messages.value.findIndex(m => m.id === assistantMsgId)
-        if (idx !== -1) {
-          messages.value[idx].loading = false
-          messages.value[idx].error = content || '处理失败'
-          for (const blk of messages.value[idx].blocks) {
-            if (blk.type === 'thinking' && blk.duration == null) {
-              blk.duration = 0
-            }
-            if (blk.type === 'tool_call' && blk.duration == null) {
-              blk.duration = 0
-              blk.success = false
-              if (!blk.result) blk.result = content || '执行中断'
-            }
-          }
-          messages.value[idx] = { ...messages.value[idx], blocks: [...messages.value[idx].blocks] }
-        }
-      }
-      error.value = content || '处理失败'
-    } else if (eventType === 'approval_required') {
-      // HITL: 文件删除审批请求
-      pendingApproval.value = {
-        threadId: data.thread_id,
-        assistantMsgId,
-      }
-      // 将对应 tool_call block 标记为 pending_approval
+    },
+    onApprovalRequired: (data) => {
+      pendingApproval.value = { threadId: data.thread_id, assistantMsgId }
       if (assistantMsgId && data.action_requests) {
         const idx = messages.value.findIndex(m => m.id === assistantMsgId)
         if (idx !== -1) {
           for (const ar of data.action_requests) {
-            const blk = messages.value[idx].blocks.find(
+            let blk = messages.value[idx].blocks.find(
               b => b.type === 'tool_call' && (b.tool_call_id === ar.tool_call_id || b.id === ar.tool_call_id)
             )
+            if (!blk && ar.tool_name) {
+              for (let i = messages.value[idx].blocks.length - 1; i >= 0; i--) {
+                const b = messages.value[idx].blocks[i]
+                if (b.type === 'tool_call' && b.tool_name === ar.tool_name) { blk = b; break }
+              }
+            }
+            if (!blk) {
+              for (let i = messages.value[idx].blocks.length - 1; i >= 0; i--) {
+                const b = messages.value[idx].blocks[i]
+                if (b.type === 'tool_call' && !b.result && b.duration == null) { blk = b; break }
+              }
+            }
             if (blk) {
               blk.pending_approval = true
-              if (ar.file_paths && ar.file_paths.length > 0) {
-                blk.file_paths = ar.file_paths
-              }
+              blk.approval_status = 'pending'
+              if (ar.tool_call_id) { blk.tool_call_id = ar.tool_call_id; blk.id = ar.tool_call_id }
+              if (ar.file_paths && ar.file_paths.length > 0) blk.file_paths = ar.file_paths
             }
           }
           messages.value[idx] = { ...messages.value[idx], blocks: [...messages.value[idx].blocks] }
         }
       }
-    }
-  }
+    },
+  })
 
   try {
     isStreaming.value = true
@@ -1179,159 +1220,23 @@ async function handleToolApproval(decision) {
       for (const blk of messages.value[idx].blocks) {
         if (blk.pending_approval) {
           blk.pending_approval = false
+          // 记录用户审批决策，供前端显示「已批准 / 已拒绝」持久标记
+          blk.approval_status = decision === 'approve' ? 'approved' : 'rejected'
         }
       }
       messages.value[idx] = { ...messages.value[idx], blocks: [...messages.value[idx].blocks] }
     }
   }
 
-  // resume 专用的 onChunk 处理器：追加到已有的 assistant 消息
-  let currentContent = ''
-  let currentThinking = ''
-  let is_in_thinking = false
-  let currentContentBlockIdx = null
-
-  function onChunk(data) {
-    const eventType = data.type
-
-    if (eventType === 'thinking_start') {
-      is_in_thinking = true
-      const idx = messages.value.findIndex(m => m.id === assistantMsgId)
-      if (idx !== -1) {
-        const blk = { type: 'thinking', order: (messages.value[idx].blocks.length), content: '', step: data.step, duration: null }
-        currentContentBlockIdx = blk.order
-        messages.value[idx].blocks.push(blk)
-        messages.value[idx] = { ...messages.value[idx], blocks: [...messages.value[idx].blocks] }
-      }
-    } else if (eventType === 'thinking') {
-      const idx = messages.value.findIndex(m => m.id === assistantMsgId)
-      if (idx !== -1 && currentContentBlockIdx !== null) {
-        currentThinking += data.content
-        messages.value[idx].blocks[currentContentBlockIdx].content = currentThinking
-        messages.value[idx] = { ...messages.value[idx], blocks: [...messages.value[idx].blocks] }
-      }
-    } else if (eventType === 'thinking_end') {
-      is_in_thinking = false
-      const idx = messages.value.findIndex(m => m.id === assistantMsgId)
-      if (idx !== -1 && currentContentBlockIdx !== null) {
-        messages.value[idx].blocks[currentContentBlockIdx].duration = data.duration
-        messages.value[idx] = { ...messages.value[idx], blocks: [...messages.value[idx].blocks] }
-      }
-      currentContentBlockIdx = null
-    } else if (eventType === 'content_start') {
-      if (is_in_thinking) {
-        is_in_thinking = false
-      }
-      const idx = messages.value.findIndex(m => m.id === assistantMsgId)
-      if (idx !== -1) {
-        const blk = { type: 'content', order: messages.value[idx].blocks.length, content: '', step: data.step }
-        currentContentBlockIdx = blk.order
-        messages.value[idx].blocks.push(blk)
-        messages.value[idx] = { ...messages.value[idx], blocks: [...messages.value[idx].blocks] }
-      }
-    } else if (eventType === 'content') {
-      const idx = messages.value.findIndex(m => m.id === assistantMsgId)
-      if (idx !== -1) {
-        if (currentContentBlockIdx === null) {
-          const blk = { type: 'content', order: messages.value[idx].blocks.length, content: '', step: data.step }
-          currentContentBlockIdx = blk.order
-          messages.value[idx].blocks.push(blk)
-        }
-        currentContent += data.content
-        messages.value[idx].content = (messages.value[idx].content || '') + data.content
-        messages.value[idx].blocks[currentContentBlockIdx].content = currentContent
-        messages.value[idx] = { ...messages.value[idx], blocks: [...messages.value[idx].blocks] }
-      }
-    } else if (eventType === 'content_end') {
-      currentContentBlockIdx = null
-    } else if (eventType === 'tool_call') {
-      currentContentBlockIdx = null
-      const idx = messages.value.findIndex(m => m.id === assistantMsgId)
-      if (idx !== -1) {
-        const existing = messages.value[idx].blocks.find(
-          b => b.type === 'tool_call' && (b.tool_call_id === data.tool_call_id || b.id === data.tool_call_id)
-        )
-        if (!existing) {
-          messages.value[idx].blocks.push({
-            type: 'tool_call',
-            order: messages.value[idx].blocks.length,
-            tool_name: data.tool_name,
-            tool_call_id: data.tool_call_id,
-            id: data.tool_call_id,
-            arguments: data.arguments,
-            result: '',
-            success: true,
-            duration: null,
-            step: data.step,
-          })
-          messages.value[idx] = { ...messages.value[idx], blocks: [...messages.value[idx].blocks] }
-        } else if (data.arguments && typeof data.arguments === 'object' && Object.keys(data.arguments).length > 0) {
-          // 后端流式累积工具参数，可能重新推送 tool_call 事件覆盖不完整的参数
-          // 块已存在时更新 arguments 字段（仅当新参数非空时覆盖，避免用 {} 冲掉完整参数）
-          const newArgs = (data.arguments !== undefined && data.arguments !== null &&
-            !(typeof data.arguments === 'object' && Object.keys(data.arguments).length === 0))
-            ? data.arguments
-            : existing.arguments
-          const updateIdx = messages.value[idx].blocks.indexOf(existing)
-          if (updateIdx !== -1) {
-            messages.value[idx].blocks[updateIdx].arguments = newArgs
-            messages.value[idx].blocks[updateIdx].tool_name = data.tool_name || existing.tool_name
-            messages.value[idx] = { ...messages.value[idx], blocks: [...messages.value[idx].blocks] }
-          }
-        }
-      }
-    } else if (eventType === 'tool_result') {
-      const idx = messages.value.findIndex(m => m.id === assistantMsgId)
-      if (idx !== -1) {
-        const blk = messages.value[idx].blocks.find(
-          b => b.type === 'tool_call' && (b.tool_call_id === data.tool_call_id || b.id === data.tool_call_id)
-        )
-        if (blk) {
-          blk.result = parseMCPResult(data.result || '')
-          blk.success = data.success
-          blk.duration = data.duration
-          // 合并工具参数（后端 tool_result 事件可能携带完整参数）
-          if (data.arguments !== undefined && data.arguments !== null &&
-              !(typeof data.arguments === 'object' && Object.keys(data.arguments).length === 0)) {
-            blk.arguments = data.arguments
-          }
-        }
-        messages.value[idx] = { ...messages.value[idx], blocks: [...messages.value[idx].blocks] }
-      }
-    } else if (eventType === 'token_usage') {
-      const usagePatch = {
-        input_tokens: data.input_tokens || 0,
-        output_tokens: data.output_tokens || 0,
-        total_tokens: data.session_estimate || data.total_tokens || 0,
-        context_tokens: data.context_tokens || 0,
-      }
-      if (data.max_input_tokens) usagePatch.max_input_tokens = data.max_input_tokens
-      if (data.auto_compress_tokens) usagePatch.auto_compress_tokens = data.auto_compress_tokens
-      if (!sessionId || currentSessionId.value === sessionId) {
-        Object.assign(sessionUsage.value, usagePatch)
-        if (typeof data.elapsed_time === 'number') {
-          sessionDuration.value = Math.round((sessionDuration.value + data.elapsed_time) * 10) / 10
-        }
-        if (typeof data.step_count === 'number') {
-          iterationCount.value = data.step_count
-        }
-      } else {
-        // 用户已切换到其他会话：写入流所属会话的缓存，避免污染当前会话的用量显示
-        const cached = sessionStates.value[sessionId]
-        if (cached) {
-          cached.sessionUsage = { ...cached.sessionUsage, ...usagePatch }
-          if (typeof data.elapsed_time === 'number') {
-            cached.sessionDuration = Math.round(((cached.sessionDuration || 0) + data.elapsed_time) * 10) / 10
-          }
-          if (typeof data.step_count === 'number') {
-            cached.iterationCount = data.step_count
-          }
-        }
-      }
-    } else if (eventType === 'todo_list') {
-      // HITL 恢复阶段后端会推送 write_todos 更新，需同步刷新进度卡片
-      currentTodos.value = data.todos
-    } else if (eventType === 'approval_required') {
+  const { onChunk } = createStreamChunkHandler({
+    isResume: true,
+    assistantMsgId,
+    streamSessionId: sessionId,
+    initialBlockOrder: (() => {
+      const i = messages.value.findIndex(m => m.id === assistantMsgId)
+      return i !== -1 ? messages.value[i].blocks.length : 0
+    })(),
+    onApprovalRequired: (data) => {
       // 嵌套审批
       pendingApproval.value = {
         threadId: data.thread_id,
@@ -1340,12 +1245,38 @@ async function handleToolApproval(decision) {
       if (assistantMsgId && data.action_requests) {
         const idx = messages.value.findIndex(m => m.id === assistantMsgId)
         if (idx !== -1) {
+          // 用后端权威 blocks 刷新（含本轮已完成工具的结果）
+          if (Array.isArray(data.blocks) && data.blocks.length > 0) {
+            messages.value[idx].blocks = data.blocks.map(b => ({ ...b }))
+          }
+          // 防御：嵌套审批时本轮思考已完成，把残留无 duration 的思考块置 0，
+          // 避免 block.duration==null && loading=true 误显示"正在思考"
+          for (const b of messages.value[idx].blocks) {
+            if (b.type === 'thinking' && (b.duration == null)) {
+              b.duration = 0
+            }
+          }
           for (const ar of data.action_requests) {
-            const blk = messages.value[idx].blocks.find(
+            let blk = messages.value[idx].blocks.find(
               b => b.type === 'tool_call' && (b.tool_call_id === ar.tool_call_id || b.id === ar.tool_call_id)
             )
+            // 兜底：按 tool_name 匹配最后一个同名工具块
+            if (!blk && ar.tool_name) {
+              for (let i = messages.value[idx].blocks.length - 1; i >= 0; i--) {
+                const b = messages.value[idx].blocks[i]
+                if (b.type === 'tool_call' && b.tool_name === ar.tool_name) {
+                  blk = b
+                  break
+                }
+              }
+            }
             if (blk) {
               blk.pending_approval = true
+              blk.approval_status = 'pending'
+              if (ar.tool_call_id) {
+                blk.tool_call_id = ar.tool_call_id
+                blk.id = ar.tool_call_id
+              }
               if (ar.file_paths && ar.file_paths.length > 0) {
                 blk.file_paths = ar.file_paths
               }
@@ -1354,31 +1285,8 @@ async function handleToolApproval(decision) {
           messages.value[idx] = { ...messages.value[idx], blocks: [...messages.value[idx].blocks] }
         }
       }
-    } else if (eventType === 'done') {
-      const idx = messages.value.findIndex(m => m.id === assistantMsgId)
-      if (idx !== -1) {
-        messages.value[idx].loading = false
-        messages.value[idx].created_at = new Date().toISOString()
-        if (data.usage && (!sessionId || currentSessionId.value === sessionId)) {
-          if (typeof data.usage.elapsed_time === 'number') {
-            sessionDuration.value = Math.round((sessionDuration.value + data.usage.elapsed_time) * 10) / 10
-          }
-          if (typeof data.usage.step_count === 'number') {
-            iterationCount.value = data.usage.step_count
-          }
-        }
-        messages.value[idx] = { ...messages.value[idx] }
-      }
-    } else if (eventType === 'error') {
-      const idx = messages.value.findIndex(m => m.id === assistantMsgId)
-      if (idx !== -1) {
-        messages.value[idx].loading = false
-        messages.value[idx].error = data.content || '处理失败'
-        messages.value[idx] = { ...messages.value[idx] }
-      }
-      error.value = data.content || '处理失败'
-    }
-  }
+    },
+  })
 
   try {
     const controller = new AbortController()
@@ -1391,7 +1299,7 @@ async function handleToolApproval(decision) {
     }
     // 注意：人工介入（批准/拒绝）不再作为用户侧消息展示，
     // 直接在模型侧的 execute 工具上进行了 HITL 标注。
-    await resumeStream(sessionId, threadId, decisions, onChunk, controller.signal)
+    await resumeStream(sessionId, threadId, decisions, onChunk, controller.signal, assistantMsgId)
 
     await loadSessions()
   } catch (e) {
@@ -1513,8 +1421,11 @@ async function handleRemoveFile(message, messageIndex, file) {
 
 onMounted(async () => {
   window.addEventListener(AUTH_EXPIRED_EVENT, handleLogout)
+  // 后端交互（API 调用）触发用户活动事件 -> 重置空闲登出计时器
+  window.addEventListener(USER_ACTIVITY_EVENT, resetIdleTimer)
   await loadUserProfile()
   if (!showWelcome.value) {
+    startIdleTimer()
     // 拉取可选模型列表（不阻塞会话加载）
     loadModels()
     await loadSessions()
@@ -1544,6 +1455,11 @@ onMounted(async () => {
       }
     }
   }
+})
+
+onUnmounted(() => {
+  window.removeEventListener(USER_ACTIVITY_EVENT, resetIdleTimer)
+  stopIdleTimer()
 })
 </script>
 

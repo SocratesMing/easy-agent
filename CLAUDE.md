@@ -49,7 +49,7 @@ Environment variables:
 
 **Skills** (`skills.py`) — Discovers skills by scanning for directories containing `SKILL.md` or `README.md`. Skills are mounted at `/skills/` virtual path in the agent backend.
 
-**Web app** (`app.py`) — FastAPI app with lifespan that initializes config, database, vector store, system prompt, skills, shared npm deps, and Bloomberg scheduler. Serves Vue SPA from `frontend/dist/` with fallback to `index.html`. CORS is wide open. Registers routers from `easy_agent/api/`.
+**Web app** (`app.py`) — FastAPI app with lifespan that initializes config, database, vector store, system prompt, skills, shared npm deps, and Bloomberg scheduler. Serves Vue SPA from `frontend/dist/` with fallback to `index.html`. CORS enabled (all origins by default; tighten via `EASY_CORS_ALLOW_ORIGINS`). Registers routers from `easy_agent/api/`.
 
 **Web runner** (`web_runner.py`) — Entry point for `easy-web` CLI command. Does `os.chdir(project_root)` and sets `EASY_CONFIG` env var before starting uvicorn.
 

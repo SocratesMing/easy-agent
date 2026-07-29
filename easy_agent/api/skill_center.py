@@ -68,9 +68,8 @@ def _parse_skill_metadata(skill_dir: Path) -> dict:
 
 
 def _get_user_skills_dir(username: str) -> Path:
-    """获取用户的技能目录路径: workspace/{username}/skills/"""
-    safe_name = Config.sanitize_username(username)
-    return Path("./workspace") / safe_name / "skills"
+    """获取用户的技能目录路径，遵循配置 agent.workspace_dir"""
+    return Config.get_user_workspace_dir(username) / "skills"
 
 
 # ── 公共技能 ──────────────────────────────────────────────────────────
@@ -82,8 +81,13 @@ async def list_public_skills(
 ):
     """从系统 skills 目录加载所有公共技能，并标记用户是否已添加"""
     _cfg = get_agent_config()
-    skills_root = _cfg.get("skills_root", "") if _cfg else ""
+    # 运行期配置结构为 {"config": Config, ...}；公共技能目录在 _cfg["config"].tools.skills_dir
+    skills_root = _cfg["config"].tools.skills_dir if _cfg else "./skills"
+    abs_skills_root = str(Path(skills_root).absolute())
     skills = discover_skills(skills_root or None)
+    logger.info(
+        f"📂 公共技能目录 | 目录: {abs_skills_root} | 技能数量: {len(skills)}"
+    )
 
     user_skills_dir = _get_user_skills_dir(username)
     user_skill_names = set()
@@ -116,8 +120,12 @@ async def list_user_skills(
 ):
     """从用户 workspace/{username}/skills/ 目录加载技能列表"""
     user_skills_dir = _get_user_skills_dir(username)
+    abs_user_skills_dir = str(user_skills_dir.absolute())
 
     if not user_skills_dir.exists():
+        logger.info(
+            f"📂 用户技能目录不存在 | 用户: {username} | 目录: {abs_user_skills_dir} | 技能数量: 0"
+        )
         return {"skills": []}
 
     result = []
@@ -136,6 +144,9 @@ async def list_user_skills(
             "path": str(skill_dir),
         })
 
+    logger.info(
+        f"📂 用户技能目录 | 用户: {username} | 目录: {abs_user_skills_dir} | 技能数量: {len(result)}"
+    )
     return {"skills": result}
 
 
@@ -153,7 +164,7 @@ async def add_skill_to_user(
 ):
     """将公共技能文件夹完整复制到用户 workspace/{username}/skills/ 目录下"""
     _cfg = get_agent_config()
-    skills_root = _cfg.get("skills_root", "") if _cfg else ""
+    skills_root = _cfg["config"].tools.skills_dir if _cfg else "./skills"
 
     if not skills_root:
         raise HTTPException(status_code=400, detail="系统未配置公共技能目录")
@@ -187,7 +198,10 @@ async def add_skill_to_user(
         shutil.copytree(str(source_dir), str(temp_dir))
         temp_dir.rename(target_dir)
 
-        logger.info(f"技能添加成功 | 用户: {username} | 技能: {request.dir_name}")
+        abs_target = target_dir.resolve()
+        logger.info(
+            f"技能添加成功 | 用户: {username} | 技能: {request.dir_name} | 目标绝对路径: {abs_target}"
+        )
         return {"status": "ok", "message": f"技能 '{request.dir_name}' 添加成功"}
 
     except PermissionError as e:

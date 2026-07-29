@@ -1,6 +1,7 @@
 """FastAPI application entry point"""
 
 import logging
+from logging.handlers import RotatingFileHandler
 import os
 import platform
 import sys
@@ -12,10 +13,12 @@ from pathlib import Path
 import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.openapi.docs import get_swagger_ui_html
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from langchain_core.messages import HumanMessage
 
-from .config import Config
+from .config import Config, AgentConfig
 from .db import init_database
 from .domain.bloom.bloom_scheduler import start_scheduler
 from .model import create_model
@@ -51,44 +54,68 @@ agent_config = None
 db_instance = None
 
 
-def setup_logging(log_dir: str = "./logs"):
+def setup_logging(log_config: dict | None = None):
+    """按配置文件中的 log 段初始化日志。
+
+    log_config 字段：
+        dir:    日志目录（环境变量 EASY_LOG_DIR 可覆盖）
+        file:   日志文件名（留空则默认 easy_agent.log）
+        format: logging 格式串（% 风格：%(asctime)s 等）
+        level:  日志级别（默认 info）
+    lifespan 会调用两次（先默认、后按配置），故每次调用都按新配置重建 handler。
+    """
+    cfg = log_config or {}
+    log_dir = os.getenv("EASY_LOG_DIR") or cfg.get("dir") or "./logs"
+    log_file_name = cfg.get("file") or "easy_agent.log"
+    fmt = (
+        cfg.get("format")
+        or "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    )
+    level_name = (cfg.get("level") or "info").lower()
+    level = getattr(logging, level_name.upper(), logging.INFO)
+
     root_logger = logging.getLogger()
-    if root_logger.handlers:
-        return None
+    # 先移除已有 handler，确保按新配置重建（支持运行期按配置重设）
+    for h in list(root_logger.handlers):
+        root_logger.removeHandler(h)
+        try:
+            h.close()
+        except Exception:
+            pass
 
     log_dir_path = Path(log_dir)
     log_dir_path.mkdir(parents=True, exist_ok=True)
-
-    log_file = log_dir_path / "easy_agent.log"
+    log_file = log_dir_path / log_file_name
 
     formatter = _CustomFormatter(
-        fmt="[{asctime}]|{levelname}|{funcName}:{lineno}| {message}",
+        fmt=fmt,
         datefmt="%Y-%m-%d %H:%M:%S",
-        style="{",
+        style="%",
     )
 
     console_handler = logging.StreamHandler()
-    console_handler.setLevel(logging.INFO)
+    console_handler.setLevel(level)
     console_handler.setFormatter(formatter)
     console_handler.addFilter(_RunidFilter())
 
-    file_handler = logging.FileHandler(log_file, encoding="utf-8")
-    file_handler.setLevel(logging.DEBUG)
+    file_handler = RotatingFileHandler(
+        log_file, maxBytes=10 * 1024 * 1024, backupCount=5, encoding="utf-8"
+    )
+    file_handler.setLevel(level)
     file_handler.setFormatter(formatter)
     file_handler.addFilter(_RunidFilter())
 
-    root_logger = logging.getLogger()
-    root_logger.setLevel(logging.DEBUG)
+    root_logger.setLevel(level)
     root_logger.addHandler(console_handler)
     root_logger.addHandler(file_handler)
 
     uvicorn_logger = logging.getLogger("uvicorn")
-    uvicorn_logger.setLevel(logging.INFO)
+    uvicorn_logger.setLevel(level)
     uvicorn_logger.addHandler(console_handler)
     uvicorn_logger.addHandler(file_handler)
 
     uvicorn_access_logger = logging.getLogger("uvicorn.access")
-    uvicorn_access_logger.setLevel(logging.INFO)
+    uvicorn_access_logger.setLevel(level)
     uvicorn_access_logger.addHandler(console_handler)
     uvicorn_access_logger.addHandler(file_handler)
 
@@ -97,7 +124,7 @@ def setup_logging(log_dir: str = "./logs"):
     #该校验仅为 WARNING 且不影响加载（向后兼容），故屏蔽此噪声日志。
     logging.getLogger("deepagents.middleware.skills").setLevel(logging.ERROR)
 
-    return log_file
+    return str(log_file)
 
 
 class _RunidFilter(logging.Filter):
@@ -126,17 +153,7 @@ async def lifespan(app: FastAPI):
         sys.path.insert(0, str(project_root))
     os.chdir(project_root)
 
-    # 先用默认日志目录初始化，配置加载后如需切换会重新初始化
-    log_file = setup_logging()
-
-    logger.info("=" * 60)
-    logger.info("Easy Agent Web Service 初始化中...")
-    logger.info(f"项目目录: {project_root}")
-    logger.info(f"操作系统: {platform.system()} {platform.release()}")
-    logger.info(f"启动时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    logger.info("=" * 60)
-
-    # ── 环境识别 ──
+    # ── 环境识别 & 配置路径解析（先静默确定配置，再初始化日志格式）──
     # AGENT_ENV 决定运行环境: dev | test | prod
     # 1. 若设置了 EASY_CONFIG 环境变量，直接使用（entrypoint.sh 场景）
     # 2. 若设置了 AGENT_ENV，按环境选择 config.{env}.yaml
@@ -160,33 +177,55 @@ async def lifespan(app: FastAPI):
         config_path = dev_candidate if os.path.exists(dev_candidate) else os.path.join(config_dir, "config.yaml")
         agent_env = "dev" if os.path.exists(dev_candidate) else "(默认)"
 
+    # 先加载配置并按其 log 段初始化日志格式，使启动日志从一开始就使用
+    # 配置文件中的 format（而非默认的 " - " 分隔格式）。
+    config = None
+    try:
+        config = Config.from_yaml(config_path)
+        log_cfg = config.log.model_dump()
+    except Exception as e:
+        logger.error(
+            f"❌ 配置文件加载失败，服务将以降级模式启动（聊天等功能不可用）: {e}\n"
+            f"   请检查配置文件（{config_path}）的 active model 是否配置了 api_key，"
+            f"或对应的 ${{ENV_VAR}} 环境变量是否已设置。"
+        )
+        log_cfg = None
+
+    log_file = setup_logging(log_cfg)
+
+    logger.info("=" * 60)
+    logger.info("Easy Agent Web Service 初始化中...")
+    logger.info(f"项目目录: {project_root}")
+    logger.info(f"操作系统: {platform.system()} {platform.release()}")
+    logger.info(f"启动时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    logger.info("=" * 60)
+
     # 打印环境信息和配置文件
     logger.info("=" * 60)
     logger.info(f"AGENT_ENV: {agent_env or '(未设置, 默认 dev)'}")
     logger.info(f"配置文件: {config_path}")
     logger.info("=" * 60)
 
-    try:
-        config = Config.from_yaml(config_path)
+    if config:
         logger.info(f"✅ 配置文件加载成功: {config_path}")
 
-        # 如果配置了自定义日志目录，重新初始化日志
-        configured_log_dir = config.agent.log_dir
-        if configured_log_dir and configured_log_dir != "./logs":
-            # 清除已有 handler，用配置的目录重新初始化
-            root_logger = logging.getLogger()
-            for h in list(root_logger.handlers):
-                root_logger.removeHandler(h)
-            log_file = setup_logging(configured_log_dir)
-            logger.info(f"日志目录已切换至配置路径: {configured_log_dir}")
-        logger.info(f"日志文件: {log_file}")
+        # 启动时创建配置文件中所有缺失的目录（workspace/memories/logs/sessions/
+        # skills/prompts/sqlite 父目录/external_dirs 宿主机路径等）
+        created_dirs = config.ensure_directories()
+        if created_dirs:
+            logger.info(f"📁 已创建 {len(created_dirs)} 个配置目录: {created_dirs}")
+        else:
+            logger.info("📁 配置目录均已存在，无需创建")
+
+        logger.info(
+            f"日志初始化完成 | 目录: {log_cfg.get('dir')} | 文件: {log_file} | 级别: {log_cfg.get('level')}"
+        )
         logger.info(f"LLM Provider: {config.llm.provider}")
         logger.info(f"LLM Model: {config.llm.model}")
         logger.info(f"LLM Protocol: {config.llm.protocol}")
         logger.info(f"Database Type: {config.database.type}")
-    except Exception as e:
-        logger.warning(f"⚠️ 配置文件加载失败，使用默认配置: {e}")
-        config = None
+    else:
+        logger.warning("⚠️ 配置未加载，后续将使用内置默认值（部分功能可能不可用）")
 
     if config:
         try:
@@ -234,6 +273,18 @@ async def lifespan(app: FastAPI):
         system_prompt = "你是一个有帮助的 AI 助手。"
         logger.warning(f"⚠️ 系统提示词文件不存在: {system_prompt_path}，使用默认提示词")
 
+    # 打印工作目录与记忆目录的绝对路径（记忆文件按用户/会话动态生成，故给出基目录与模板路径）
+    # 配置未加载（config 为 None）时使用 AgentConfig 默认值，保证降级启动不崩溃
+    _agent_cfg = config.agent if config else AgentConfig()
+    _ws_abs = os.path.abspath(_agent_cfg.workspace_dir)
+    _mem_abs = os.path.abspath(_agent_cfg.memories_dir)
+    logger.info("=" * 60)
+    logger.info(f"📁 工作目录 (workspace): {_ws_abs}")
+    logger.info(f"🧠 记忆目录 (memories):  {_mem_abs}")
+    logger.info(f"   长期记忆文件: {_mem_abs}/{{username}}/AGENTS.md")
+    logger.info(f"   会话记忆文件: {_ws_abs}/{{username}}/{{workspace_name}}/memory.md")
+    logger.info("=" * 60)
+
     # 注入当前时间和时区，供定时任务 cron 表达式生成参考
     now_dt = datetime.now().astimezone()
     tz_name = now_dt.strftime("%Z") or "Asia/Shanghai"
@@ -250,7 +301,7 @@ async def lifespan(app: FastAPI):
 
         if skills_root:
             skills = discover_skills(skills_root)
-            logger.info(f"📂 Skills 目录: {skills_root}")
+            logger.info(f"📂 Skills 目录 (配置: {skills_dir_config}): {skills_root}")
             logger.info(f"📁 发现 {len(skills)} 个 skills:")
             for skill in skills:
                 logger.info(f"  - {skill['name']}: {skill['path']}")
@@ -262,14 +313,17 @@ async def lifespan(app: FastAPI):
         # MCP 不在启动时全局加载，改为按用户配置动态加载（见 agent_manager）
         logger.info("ℹ️ MCP 将按用户配置动态加载（不在启动时预加载）")
 
-        init_agent_config(
-            config=config,
-            system_prompt=system_prompt,
-            skills_root=skills_root,
-            agent_env=agent_env if agent_env in ("dev", "test", "prod") else "",
-        )
-        agent_config = {"config": config}
-        logger.info("✅ Agent 配置加载成功")
+        if config:
+            init_agent_config(
+                config=config,
+                system_prompt=system_prompt,
+                skills_root=skills_root,
+                agent_env=agent_env if agent_env in ("dev", "test", "prod") else "",
+            )
+            agent_config = {"config": config}
+            logger.info("✅ Agent 配置加载成功")
+        else:
+            logger.warning("⚠️ 配置未加载，Agent 未初始化，聊天等功能将不可用")
 
         try:
             bloom_llm = create_model(config)
@@ -317,15 +371,49 @@ app = FastAPI(
     description="基于 DeepAgents 的智能体框架 API",
     version="1.0.0",
     lifespan=lifespan,
+    # 禁用默认 /docs、/redoc（默认从 CDN 加载 Swagger UI 资源，离线环境无法访问）。
+    # 下面用本地静态资源重新提供 /docs，离线可用。
+    docs_url=None,
+    redoc_url=None,
 )
+
+# 跨域访问（CORS）：
+#   - 默认放行所有来源（"*"），兼容开发期跨域直连与同 pod 部署；
+#   - 生产环境如需收紧，设置环境变量 EASY_CORS_ALLOW_ORIGINS 为逗号分隔的可信域名，
+#     例如 "https://app.example.com,https://admin.example.com"。
+_cors_raw = os.getenv("EASY_CORS_ALLOW_ORIGINS")
+if _cors_raw:
+    allow_origins = [o.strip() for o in _cors_raw.split(",") if o.strip()]
+else:
+    allow_origins = ["*"]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=allow_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# 离线 Swagger UI：挂载本地 vendored 的 swagger-ui-dist 静态资源，
+# 并自定义 /docs 路由指向本地 JS/CSS，避免从 CDN 加载（离线环境 CDN 不可达）。
+_swagger_static_dir = Path(__file__).parent / "static" / "swagger-ui"
+if _swagger_static_dir.is_dir():
+    app.mount("/swagger-ui-assets", StaticFiles(directory=str(_swagger_static_dir)), name="swagger-ui-assets")
+
+    @app.get("/docs", include_in_schema=False)
+    async def custom_swagger_ui_html():
+        return get_swagger_ui_html(
+            openapi_url=app.openapi_url,
+            title=f"{app.title} - Swagger UI",
+            swagger_js_url="/swagger-ui-assets/swagger-ui-bundle.js",
+            swagger_css_url="/swagger-ui-assets/swagger-ui.css",
+            oauth2_redirect_url=app.swagger_ui_oauth2_redirect_url,
+        )
+
+    @app.get(app.swagger_ui_oauth2_redirect_url, include_in_schema=False)
+    async def swagger_ui_redirect():
+        return HTMLResponse(app.swagger_ui_oauth2_redirect_html)
 
 
 @app.exception_handler(Exception)

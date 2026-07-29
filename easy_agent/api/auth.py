@@ -210,11 +210,27 @@ async def update_profile(
 )
 async def reset_password(
     request: ResetPasswordRequest,
+    http_request: Request,
     db: Annotated[Database, Depends(get_database)],
 ):
+    if request.username == "admin":
+        raise HTTPException(status_code=400, detail="admin 用户不支持默认密码重置，请使用正常修改密码流程")
     user = db.get_user_by_username(request.username)
     if not user:
         raise HTTPException(status_code=404, detail="用户不存在")
+
+    # 仅允许来自绑定 IP 的请求修改密码：账号已与 IP 强绑定，
+    # 非绑定 IP 视为非法请求，拒绝重置（防止他人冒用用户名改密）
+    if user.bound_ip:
+        client_ip = get_client_ip(http_request)
+        if user.bound_ip != client_ip:
+            logger.warning(
+                f"[用户] 密码重置IP不匹配 | 用户: {user.username} | 绑定IP: {user.bound_ip} | 请求IP: {client_ip}"
+            )
+            raise HTTPException(
+                status_code=403,
+                detail=f"账号已绑定IP: {user.bound_ip}，当前IP: {client_ip} 不允许修改密码",
+            )
 
     new_hash = hash_password(request.new_password)
     success = db.update_user_password(request.username, new_hash)
@@ -222,7 +238,7 @@ async def reset_password(
     if not success:
         raise HTTPException(status_code=500, detail="密码更新失败")
 
-    logger.info(f"[用户] 密码重置成功 | 用户名: {request.username}")
+    logger.info(f"[用户] 密码重置成功 | 用户名: {request.username} | 绑定IP: {user.bound_ip}")
 
     return {"status": "success", "message": "密码已重置"}
 
@@ -244,9 +260,13 @@ async def get_auth_config(
         preset_questions = _cfg["config"].preset_questions or []
         win = bool(_cfg.get("win"))
         agent_env = _cfg.get("agent_env", "") or ""
+        idle_logout_minutes = _cfg["config"].agent.idle_logout_minutes
+    else:
+        idle_logout_minutes = 5
     return {
         "max_input_tokens": max_input_tokens,
         "preset_questions": preset_questions,
         "win": win,
         "agent_env": agent_env,
+        "idle_logout_minutes": idle_logout_minutes,
     }

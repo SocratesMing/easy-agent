@@ -1,8 +1,11 @@
 """Model factory for creating LLM instances.
 
-Supported providers:
-- deepseek: ChatOpenAI (OpenAI-compatible API)
-- minimax: ChatAnthropic (Anthropic-compatible API)
+Model selection is protocol-driven (see ``ProviderConfig.protocol``):
+- "openai":     ChatOpenAI subclass (ReasoningChatOpenAI), OpenAI-compatible API.
+- "anthropic":  ChatAnthropic, Anthropic-compatible API (e.g. MiniMax / Bedrock / Anthropic).
+
+Use ``create_model(config, model_name)`` to build an instance; config resolution
+is handled by the public ``resolve_llm_config``.
 """
 
 import logging
@@ -20,6 +23,11 @@ logger = logging.getLogger(__name__)
 # "reason_content". All are treated as aliases and the original key is preserved
 # so the value round-trips correctly back to the same provider.
 _REASONING_KEYS = ("reasoning_content", "reasoning", "reason_content")
+
+# Anthropic-compatible models: extended-thinking budget and output cap.
+# Values identical to the previous hardcoded literals (Phase 1 behavior-preserving).
+ANTHROPIC_THINKING_BUDGET_TOKENS = 10000
+ANTHROPIC_MAX_TOKENS = 16000
 
 
 def _extract_reasoning(source: dict):
@@ -47,7 +55,49 @@ def extract_reasoning(additional_kwargs) -> str:
     return found[1] if found else ""
 
 
-def _resolve_llm_config(config: Config, model_name: str | None):
+def strip_image_content(messages):
+    """把消息列表中的 image_url / image 多模态内容块替换为文本占位。
+
+    供不支持视觉（supports_vision=False）的模型使用，避免发送 image_url
+    给 DeepSeek 等纯文本模型导致 400 invalid_request_error。
+
+    幂等：对已过滤的消息重复执行无副作用。
+    """
+    result = []
+    for msg in messages:
+        content = getattr(msg, "content", None)
+        if not isinstance(content, list):
+            result.append(msg)
+            continue
+        new_content = []
+        changed = False
+        for block in content:
+            if isinstance(block, dict) and block.get("type") in ("image_url", "image"):
+                changed = True
+                # 保留原文件名提示（若有），便于模型理解上下文
+                url = ""
+                if block.get("type") == "image_url":
+                    url = (block.get("image_url") or {}).get("url", "")
+                new_content.append(
+                    {"type": "text", "text": f"[图片内容已省略{('：' + url[:60]) if url else ''}]"}
+                )
+            else:
+                new_content.append(block)
+        if changed:
+            # 若过滤后只剩一个 text 块，转回纯字符串内容
+            if (
+                len(new_content) == 1
+                and isinstance(new_content[0], dict)
+                and new_content[0].get("type") == "text"
+            ):
+                msg = msg.model_copy(update={"content": new_content[0]["text"]})
+            else:
+                msg = msg.model_copy(update={"content": new_content})
+        result.append(msg)
+    return result
+
+
+def resolve_llm_config(config: Config, model_name: str | None):
     """Resolve an LLMConfig to use for model creation.
 
     If ``model_name`` is given and matches a key in ``config.models``, build a
@@ -74,6 +124,7 @@ def _resolve_llm_config(config: Config, model_name: str | None):
         provider=provider.provider or model_name,
         max_input_tokens=provider.max_input_tokens or 200000,
         protocol=provider.protocol or "openai",
+        supports_vision=provider.supports_vision,
         retry=retry,
     )
 
@@ -98,7 +149,7 @@ def create_model(config: Config, model_name: str | None = None):
         ValueError: If protocol is not supported or the selected provider has
             no api_key configured.
     """
-    llm_config = _resolve_llm_config(config, model_name)
+    llm_config = resolve_llm_config(config, model_name)
     if not llm_config.api_key:
         raise ValueError(
             f"Model '{model_name or config.active_model}' has no api_key configured. "
@@ -123,14 +174,46 @@ def create_model(config: Config, model_name: str | None = None):
 
 
 class ReasoningChatOpenAI(ChatOpenAI):
-    """ChatOpenAI 子类：把 OpenAI 兼容接口返回的思考内容
-    （reasoning_content / reasoning / reason_content）写入 additional_kwargs，
-    供前端展示。
+    """ChatOpenAI 子类，承载两个独立职责（Phase 1 仅做结构分清，不改行为）：
 
-    当前 langchain-openai 不会自动提取这些非标准字段（官方文档亦说明，
-    建议用 provider 专属子类处理），因此在此集中解析，而非全局猴子补丁。
+    职责 A - 图片过滤：当 supports_vision=False 时，在流式/非流式入口
+        过滤消息中的 image_url/image 多模态块，避免 DeepSeek 等纯文本模型
+        收到图片内容报 400 invalid_request_error。
+    职责 B - reasoning 提取：把 OpenAI 兼容接口返回的思考内容
+        (reasoning_content / reasoning / reason_content) 写入 additional_kwargs，
+        供前端展示。
     """
 
+    supports_vision: bool = False
+
+    # ── 职责 A：图片过滤 ─────────────────────────────────────────────
+    def _maybe_strip_images(self, messages, **kwargs):
+        if self.supports_vision:
+            return messages, kwargs
+        return strip_image_content(messages), kwargs
+
+    async def _astream(self, messages, stop=None, **kwargs):
+        messages, kwargs = self._maybe_strip_images(messages, **kwargs)
+        async for chunk in super()._astream(messages, stop=stop, **kwargs):
+            yield chunk
+
+    async def _agenerate(self, messages, stop=None, run_manager=None, **kwargs):
+        messages, kwargs = self._maybe_strip_images(messages, **kwargs)
+        return await super()._agenerate(
+            messages, stop=stop, run_manager=run_manager, **kwargs
+        )
+
+    def _stream(self, messages, stop=None, **kwargs):
+        messages, kwargs = self._maybe_strip_images(messages, **kwargs)
+        yield from super()._stream(messages, stop=stop, **kwargs)
+
+    def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+        messages, kwargs = self._maybe_strip_images(messages, **kwargs)
+        return super()._generate(
+            messages, stop=stop, run_manager=run_manager, **kwargs
+        )
+
+    # ── 职责 B：reasoning 提取 ────────────────────────────────────────
     def _convert_chunk_to_generation_chunk(
         self,
         chunk: dict,
@@ -171,6 +254,7 @@ def _create_openai_compatible(llm_config) -> ChatOpenAI:
         api_key=llm_config.api_key,
         base_url=llm_config.api_base,
         max_retries=llm_config.retry.max_retries if llm_config.retry.enabled else 0,
+        supports_vision=getattr(llm_config, "supports_vision", False),
     )
 
 
@@ -190,7 +274,7 @@ def _create_anthropic_compatible(llm_config) -> ChatAnthropic:
         "api_key": llm_config.api_key,
         "base_url": llm_config.api_base,
         "max_retries": llm_config.retry.max_retries if llm_config.retry.enabled else 0,
-        "thinking": {"type": "enabled", "budget_tokens": 10000},
-        "max_tokens": 16000,
+        "thinking": {"type": "enabled", "budget_tokens": ANTHROPIC_THINKING_BUDGET_TOKENS},
+        "max_tokens": ANTHROPIC_MAX_TOKENS,
     }
     return ChatAnthropic(**kwargs)

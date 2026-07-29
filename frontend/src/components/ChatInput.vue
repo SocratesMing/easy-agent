@@ -137,11 +137,11 @@
                 </div>
                 <div class="token-popup-divider"></div>
                 <div class="token-popup-section">
-                  <div class="token-popup-row">
-                    <span class="token-popup-label">上下文占用</span>
-                  </div>
-                  <div class="token-popup-context-row">
-                    <span class="token-popup-context-value">{{ formatTokens(sessionUsage.context_tokens || sessionUsage.total_tokens) }}/{{ formatTokens(sessionUsage.max_input_tokens) }}</span>
+                <div class="token-popup-row">
+                  <span class="token-popup-label">本轮上下文占用</span>
+                </div>
+                <div class="token-popup-context-row">
+                  <span class="token-popup-context-value">{{ formatTokens(sessionUsage.context_tokens) }}/{{ formatTokens(sessionUsage.max_input_tokens) }}</span>
                     <span class="token-popup-context-percent" :style="{ color: contextColor }">{{ contextPercent }}%</span>
                   </div>
                   <div class="token-popup-bar">
@@ -188,7 +188,10 @@
         </div>
       </div>
     </div>
-    
+
+    <div v-if="showFooter" class="input-footer">
+      <span class="footer-text">内容由AI生成，请仔细甄别</span>
+    </div>
   </div>
 </template>
 
@@ -229,6 +232,10 @@ const props = defineProps({
   selectedModel: {
     type: String,
     default: null
+  },
+  showFooter: {
+    type: Boolean,
+    default: false
   }
 })
 
@@ -237,7 +244,6 @@ const emit = defineEmits(['send', 'stop', 'createSession', 'update:selectedModel
 const message = ref('')
 const textareaRef = ref(null)
 const uploadedFiles = ref([])
-let abortController = null
 
 // 光标所在行高亮（overlay 技术：textareal 本身无法按行上色）
 const caretLineTop = ref(null)   // 高亮条 top，null 表示隐藏
@@ -344,8 +350,9 @@ const showTokenRing = computed(() => {
 const contextPercent = computed(() => {
   const u = props.sessionUsage
   if (!u.max_input_tokens || u.max_input_tokens <= 0) return 0
-  // 优先使用 context_tokens（当前上下文窗口占用），否则用 total_tokens 兜底
-  const ctxTokens = u.context_tokens || u.total_tokens || 0
+  // 分子使用「当前轮次的上下文窗口占用」(context_tokens)：即本轮喂给模型的输入 token 数，
+  // 与 max_input_tokens（上下文窗口上限）对比。不能用会话累计 total_tokens（多轮累加会很快 >100%）。
+  const ctxTokens = u.context_tokens || 0
   return Math.min(100, Math.round(ctxTokens / u.max_input_tokens * 100))
 })
 
@@ -496,8 +503,6 @@ async function send() {
     return
   }
   
-  abortController = new AbortController()
-  
   const filesToSend = uploadedFiles.value.map(f => ({
     id: f.id,
     filename: f.filename,
@@ -514,7 +519,7 @@ async function send() {
     console.log(`[${ts}] [文件上传] ${filesToSend.map(f => `${f.filename}(${f.size}B)`).join(', ')}`)
   }
 
-  emit('send', message.value.trim().replace(/\s+/g, ' '), filesToSend, abortController.signal, true)
+  emit('send', message.value.trim().replace(/\s+/g, ' '), filesToSend, null, true)
   
   message.value = ''
   uploadedFiles.value = []
@@ -522,10 +527,6 @@ async function send() {
 }
 
 function stop() {
-  if (abortController) {
-    abortController.abort()
-    abortController = null
-  }
   emit('stop')
 }
 
@@ -556,9 +557,6 @@ onMounted(() => {
 onUnmounted(() => {
   document.removeEventListener('click', closeTokenPopup)
   document.removeEventListener('click', closeModelDropdown)
-  if (abortController) {
-    abortController.abort()
-  }
 })
 </script>
 
@@ -567,7 +565,7 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding: 16px 24px 24px;
+  padding: 16px 24px 4px;
   background: transparent;
 }
 
@@ -759,6 +757,7 @@ html[data-theme="dark"] .caret-line {
   border: none;
   background: transparent;
   resize: none;
+  font-family: 'Microsoft YaHei', '微软雅黑', sans-serif;
   font-size: 15px;
   line-height: 1.6;
   color: var(--text-primary);
@@ -1238,7 +1237,7 @@ html[data-theme="dark"] .caret-line {
 }
 
 .input-footer {
-  margin-top: 12px;
+  margin-top: 2px;
   text-align: center;
 }
 

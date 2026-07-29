@@ -782,10 +782,15 @@ function handleLogout() {
   gap: 10px;
   padding: 10px 14px;
   background: transparent;
-  border-top: 1px solid #e2e8f0;
   cursor: pointer;
   transition: background 0.2s;
   position: relative;
+  border-radius: 10px;
+  margin: 4px 8px;
+}
+
+.user-profile:hover {
+  background: var(--bg-tertiary);
 }
 
 .user-more-icon {

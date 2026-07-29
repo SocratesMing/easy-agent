@@ -300,6 +300,7 @@ async def chat_resume(
                 thread_id=thread_id,
                 decisions=request.decisions,
                 username=username,
+                message_id=request.message_id,
             ):
                 yield chunk
         except asyncio.CancelledError:

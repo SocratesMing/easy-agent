@@ -62,7 +62,7 @@ class Database:
                         f"数据库: {self._mysql_config.get('database')} | 用户: {self._mysql_config.get('user')}"
                     )
                 except Exception as e:
-                    logger.warning(f"MySQL 连接失败，自动降级到 SQLite: {e}")
+                    logger.info(f"MySQL 连接失败，自动降级到 SQLite: {e}")
                     self.db_type = "sqlite"
                     self._pool = None
                     sqlite_cfg = db_config.get("sqlite", {})
@@ -93,7 +93,7 @@ class Database:
             conn.close()
             logger.info(f"MySQL数据库 '{db_name}' 已就绪")
         except Exception as e:
-            logger.warning(f"创建数据库时出错（可能已存在）: {e}")
+            logger.info(f"创建数据库时出错（可能已存在）: {e}")
 
         pool_cfg = self._mysql_config.get("pool", {})
         self._pool = PooledDB(
@@ -742,6 +742,9 @@ class Database:
         if message.get("usage"):
             sanitized["usage"] = message["usage"]
         if message.get("tool_calls"):
+            # 与 _sanitize_extra_data 对齐：不再截断为前 20 条。
+            # HITL 恢复后新增的工具调用位于列表尾部，截断会导致历史会话中
+            # HITL 之后的工具调用整体丢失。
             sanitized["tool_calls"] = [
                 {
                     "tool_name": tc.get("tool_name", "") or tc.get("name", ""),
@@ -751,8 +754,9 @@ class Database:
                     "success": tc.get("success", True),
                     "duration": tc.get("duration"),
                     "step": tc.get("step", 0),
+                    "approval_status": tc.get("approval_status"),
                 }
-                for tc in message["tool_calls"][:20]
+                for tc in message["tool_calls"][:1000]
             ]
         if message.get("blocks"):
             # 分离 content blocks 和其他 blocks，确保 content 不被截断
@@ -761,8 +765,12 @@ class Database:
             ]
             other_blocks = [b for b in message["blocks"] if b.get("type") != "content"]
 
+            # 保留全部非 content blocks（原先仅保留前 30 个）：
+            # 长会话/HITL 恢复后产生的 thinking/tool_call 块 order 靠后，
+            # 截断会导致「切回历史会话时 HITL 之后的工具与思考过程不显示」。
+            # sessions.messages 列为 MEDIUMTEXT(16MB)，且各块 result/content 已做长度裁剪。
             sanitized_blocks = []
-            for b in other_blocks[:30] + content_blocks:
+            for b in other_blocks[:1000] + content_blocks:
                 block_type = b.get("type", "")
                 s = {"type": block_type, "order": b.get("order", 0)}
                 if block_type == "thinking":
@@ -777,8 +785,17 @@ class Database:
                     s["success"] = b.get("success", True)
                     s["duration"] = b.get("duration")
                     s["step"] = b.get("step", 0)
+                    # 保留 HITL 审批标记：历史会话显示「已批准/已拒绝/待审批」，
+                    # 且恢复流依赖 approval_status == "pending" 定位待审批工具。
+                    if b.get("approval_status"):
+                        s["approval_status"] = b["approval_status"]
+                    if b.get("pending_approval"):
+                        s["pending_approval"] = True
+                    if b.get("file_paths"):
+                        s["file_paths"] = b["file_paths"]
                 elif block_type == "content":
                     s["content"] = (b.get("content", "") or "")[:5000]
+                    s["step"] = b.get("step", 0)
                 else:
                     s["content"] = (b.get("content", "") or "")[:200]
                 sanitized_blocks.append(s)
@@ -821,8 +838,11 @@ class Database:
                     else:
                         other_blocks.append(b)
 
-                # 其他 blocks 限制 30 个，content blocks 全部保留
-                max_other = 30
+                # 保留全部非 content blocks（不再限制数量）：
+                # 长会话/多次 HITL 会产生数十至上百个 tool_call/thinking 块，
+                # 限制数量会导致后期（最晚出现的）块在历史记录中整体丢失。
+                # 列类型为 MEDIUMTEXT(16MB)，配合下方 max_len 渐进式裁剪控制体积。
+                max_other = 1000
                 truncated_other = other_blocks[:max_other]
 
                 sanitized_blocks = []
@@ -841,6 +861,13 @@ class Database:
                         sanitized["success"] = b.get("success", True)
                         sanitized["duration"] = b.get("duration")
                         sanitized["step"] = b.get("step", 0)
+                        # 保留 HITL 审批标记，使历史会话也能显示「已批准/已拒绝/待审批」
+                        if b.get("approval_status"):
+                            sanitized["approval_status"] = b["approval_status"]
+                        if b.get("pending_approval"):
+                            sanitized["pending_approval"] = True
+                        if b.get("file_paths"):
+                            sanitized["file_paths"] = b["file_paths"]
                     elif block_type == "content":
                         sanitized["content"] = (b.get("content", "") or "")[:5000]
                     else:
@@ -862,15 +889,16 @@ class Database:
                         "success": tc.get("success", True),
                         "duration": tc.get("duration"),
                         "step": tc.get("step", 0),
+                        "approval_status": tc.get("approval_status"),
                     }
-                    for tc in tool_calls[:20]
+                    for tc in tool_calls[:1000]
                 ]
 
         if "thinking" in extra_keys and extra_keys["thinking"]:
             extra_keys["thinking"] = extra_keys["thinking"][:2000]
 
         result = json.dumps(extra_keys, ensure_ascii=False)
-        max_len = 200000
+        max_len = 5_000_000
         if len(result) <= max_len:
             return result
 
@@ -1248,6 +1276,14 @@ class Database:
     ):
         with self.get_connection() as conn:
             cursor = conn.cursor()
+            # 同一 (session_id, message_id, step) 可能在一次 turn 内被多次记录
+            # （思考被分段结束时触发多次 thinking_end），先清除旧记录再写入，避免
+            # 历史思考记录出现重复行。
+            self._execute(
+                cursor,
+                "DELETE FROM thinking_records WHERE session_id=? AND message_id=? AND step=?",
+                (session_id, message_id, step),
+            )
             self._execute(
                 cursor,
                 """
@@ -1432,13 +1468,17 @@ class Database:
     def get_or_create_default_user(self) -> UserModel:
         default_user = self.get_user_by_username("admin")
         if default_user:
+            # 保证 admin 默认密码为 admin（补齐历史空密码/无密码的存量数据）
+            if not default_user.password_hash:
+                self.update_user_password("admin", hash_password("admin"))
+                default_user = self.get_user_by_username("admin")
             return default_user
 
         now = datetime.now().isoformat()
         user = UserModel(
             user_id=str(uuid.uuid4()),
             username="admin",
-            password_hash="",
+            password_hash=hash_password("admin"),
             organization_id="",
             email="",
             bound_ip="",

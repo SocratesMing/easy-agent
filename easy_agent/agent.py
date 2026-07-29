@@ -406,19 +406,16 @@ class EasyAgent:
         We only need to configure the backend for file/shell access and
         optionally load skills.
         """
-        from .model import _resolve_llm_config
+        from .model import resolve_llm_config
 
         model = create_model(self.config, model_name=self.model_name)
         self.model = model
 
         # 解析实际使用的模型配置（而非 config.llm 默认配置）用于日志
-        actual_llm_cfg = _resolve_llm_config(self.config, self.model_name)
+        actual_llm_cfg = resolve_llm_config(self.config, self.model_name)
         logger.info(
             f"[{self.session_id}] 🤖 当前使用模型 | "
             f"model_key: {self.model_name} | "
-            f"provider: {actual_llm_cfg.provider} | "
-            f"model: {actual_llm_cfg.model} | "
-            f"protocol: {actual_llm_cfg.protocol} | "
             f"max_input_tokens: {actual_llm_cfg.max_input_tokens}"
         )
 

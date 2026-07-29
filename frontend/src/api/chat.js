@@ -142,7 +142,7 @@ export async function sendMessage(sessionId, message, onChunk, signal, enableDee
   }
 }
 
-export async function resumeStream(sessionId, threadId, decisions, onChunk, signal) {
+export async function resumeStream(sessionId, threadId, decisions, onChunk, signal, messageId) {
   const controller = new AbortController()
   const abortSignal = signal || controller.signal
 
@@ -155,6 +155,7 @@ export async function resumeStream(sessionId, threadId, decisions, onChunk, sign
       session_id: sessionId,
       thread_id: threadId,
       decisions,
+      message_id: messageId || null,
     }),
     signal: abortSignal,
   })

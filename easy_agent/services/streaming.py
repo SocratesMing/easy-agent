@@ -29,13 +29,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import AsyncGenerator
 
-from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.types import Command
 
 from ..agent import EasyAgent
 from ..db import Database
-from ..model import create_model, extract_reasoning
-from ..services.mcp import _parse_mcp_content
+from ..model import create_model
+from .stream_processor import StreamProcessor
 from ..models.api import ChatRequest
 from ..utils.session_logger import SessionLogger
 from .agent_manager import get_agent_config
@@ -46,48 +46,6 @@ MAX_CONTEXT_MESSAGES = 30
 KEEP_RECENT_MESSAGES = 10
 
 
-def _is_error_result(text: str) -> bool:
-    """Check if a tool result string indicates an error.
-
-    DeepAgents built-in tools return errors as plain string content (e.g.
-    "Error: File not found", "Cannot write to ..."), not as ToolMessage
-    metadata. This function detects those patterns.
-    """
-    if not text:
-        return False
-    stripped = text.strip()
-    if stripped.startswith("Error:") or stripped.startswith("Error "):
-        return True
-    if stripped.startswith("Cannot write to"):
-        return True
-    if "[Command failed with exit code" in stripped:
-        return True
-    # Check for stderr errors in execute results even with exit code 0
-    # e.g. "[stderr] /bin/sh: 1: cd: can't cd to ..."
-    # e.g. "[stderr] mkdir: cannot create directory '/workspace': Permission denied"
-    stderr_match = re.search(r"\[stderr\]\s*(.+)", text, re.DOTALL)
-    if stderr_match:
-        stderr_text = stderr_match.group(1).strip()
-        # Common error patterns in stderr
-        error_patterns = [
-            "permission denied",
-            "cannot create directory",
-            "can't cd to",
-            "cannot cd to",
-            "no such file",
-            "not found",
-            "command not found",
-            "is not a directory",
-            "is not a file",
-            "access denied",
-            "operation not permitted",
-            "read-only",
-        ]
-        stderr_lower = stderr_text.lower()
-        for pattern in error_patterns:
-            if pattern in stderr_lower:
-                return True
-    return False
 
 
 def _extract_file_paths_from_command(command: str) -> list[str]:
@@ -152,6 +110,19 @@ def _get_model_context_limit(model_instance) -> int | None:
         if prefix in model_lower:
             return limit
     return None
+
+
+def _build_progress_bar(ratio: float, width: int = 20) -> str:
+    """生成跨平台一致的进度条（使用 ASCII 字符，避免 █/░ 等 Unicode 块字符在不同
+    终端/字体下宽度与渲染不一致导致错位）。
+
+    用法: f" [{_build_progress_bar(12.1)}] 12.1%"
+    显示: [||||||||||----------]（| 表示已占用，- 表示剩余）
+    """
+    ratio = max(0.0, min(100.0, float(ratio)))
+    filled = round(ratio / 100 * width)
+    filled = max(0, min(width, filled))
+    return "|" * filled + "-" * (width - filled)
 
 
 async def compress_context(
@@ -260,6 +231,7 @@ def tool_call_records_to_dicts(records: list, result_limit: int = 5000) -> list[
                 "success": tc[4],
                 "duration": tc[5],
                 "step": tc[6],
+                "approval_status": tc[7] if len(tc) > 7 else None,
             }
         )
     return dicts
@@ -300,15 +272,118 @@ def build_assistant_message_dict(
     }
 
 
-def parse_tool_args(args_str: str) -> dict:
-    """解析工具调用参数 JSON 字符串为 dict；标量值包装为 {"value": ...}；解析失败返回 {}。"""
-    if not args_str:
-        return {}
+def _maybe_rename_workspace(agent, db, session_id, tool_call_records, sid):
+    """首轮对话完成后（含文件写入时）将工作区从 session_id 重命名为时间戳目录。
+
+    主生成器在遇到 HITL 中断时会提前 return（约 1266 行），跳过此步；
+    HITL 批准后的 resume 生成器需补做，否则带文件操作的 HITL 会话工作区
+    始终停留在 session_id 命名，且不会触发记忆生成所需的目录。
+    """
     try:
-        parsed = json.loads(args_str)
-    except json.JSONDecodeError:
-        return {}
-    return parsed if isinstance(parsed, dict) else {"value": parsed}
+        if tool_call_records and agent and not agent._workspace_renamed:
+            has_file_writes = any(
+                tc[0] in ("write_file", "write_tool") and tc[4]
+                for tc in tool_call_records
+            )
+            if has_file_writes:
+                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                sid_prefix = session_id[:5]
+                new_ws_name = f"{ts}_{sid_prefix}"
+                old_ws_path = str(agent.workspace_dir.absolute())
+                agent.rename_workspace(new_ws_name)
+                agent._workspace_renamed = True
+                new_ws_path = str(agent.workspace_dir.absolute())
+                db.update_generated_file_paths(session_id, old_ws_path, new_ws_path)
+                db.update_session_workspace_name(session_id, new_ws_name)
+                logger.info(
+                    f"[{sid}] Workspace renamed: {old_ws_path} -> {new_ws_path}"
+                )
+    except Exception as e:
+        logger.warning(f"[{sid}] Workspace rename failed: {e}")
+
+
+def _submit_memory_updates(agent, session_id, db, raw_user_msg, accumulated_response, sid):
+    """将「会话级 memory.md」与「用户级 AGENTS.md」的记忆更新提交到后台线程执行。
+
+    主生成器与 HITL resume 生成器均复用此函数，确保无论首轮是否触发 HITL、
+    在任务真正完成（含批准后）都会在工作区生成 memory.md，并在下一轮加载。
+
+    注意：
+    - update_memory_after_session 内部会同步调用 LLM（阻塞式 HTTP），必须放到线程池，
+      否则会阻塞事件循环数秒~十几秒。
+    - 会话级记忆写入成功后会调用 remove_session_agent 使 Agent 缓存失效，
+      下次发消息时重建 Agent 以加载新记忆（保证第二轮能读到第一轮总结）。
+    """
+    # 1) 会话级记忆：workspace/{username}/{workspace_name}/memory.md
+    if agent and agent.memory_file:
+        try:
+            from .memory_manager import update_memory_after_session
+
+            session_llm = getattr(agent, "model", None)
+            if session_llm is None:
+                from .agent_manager import _llm_instance
+                session_llm = _llm_instance
+
+            def _session_memory_job():
+                try:
+                    updated = update_memory_after_session(
+                        agent.memory_file,
+                        user_message=raw_user_msg,
+                        assistant_response=accumulated_response,
+                        llm=session_llm,
+                    )
+                    if updated:
+                        logger.info(
+                            f"[{sid}] 🧠 会话记忆已更新 | 文件: {agent.memory_file} | "
+                            f"上限 2000 字符"
+                        )
+                        # 记忆更新后使 Agent 缓存失效，下次发消息时重建 Agent 以加载新记忆
+                        try:
+                            from .agent_manager import remove_session_agent
+                            remove_session_agent(session_id)
+                            logger.info(
+                                f"[{sid}] 记忆更新后 Agent 缓存已失效，下次消息将重新加载记忆"
+                            )
+                        except Exception as e:
+                            logger.warning(f"[{sid}] 使 Agent 缓存失效失败: {e}")
+                except Exception as e:
+                    logger.warning(f"[{sid}] 会话记忆更新失败: {e}")
+
+            loop = asyncio.get_running_loop()
+            loop.run_in_executor(None, _session_memory_job)
+            logger.info(f"[{sid}] 🧠 会话记忆更新已提交至后台线程执行")
+        except Exception as e:
+            logger.warning(f"[{sid}] 会话记忆更新提交失败: {e}")
+
+    # 2) 用户级长期记忆：memories/{username}/AGENTS.md
+    if agent and getattr(agent, "long_term_memory_file", None):
+        try:
+            from .memory_manager import update_long_term_memory_after_session
+
+            session_llm = getattr(agent, "model", None)
+            if session_llm is None:
+                from .agent_manager import _llm_instance
+                session_llm = _llm_instance
+
+            def _long_term_memory_job():
+                try:
+                    update_long_term_memory_after_session(
+                        agent.long_term_memory_file,
+                        user_message=raw_user_msg,
+                        assistant_response=accumulated_response,
+                        llm=session_llm,
+                    )
+                    logger.info(
+                        f"[{sid}] 🧠 用户长期记忆已更新 | 文件: {agent.long_term_memory_file}"
+                    )
+                except Exception as e:
+                    logger.warning(f"[{sid}] 用户长期记忆更新失败: {e}")
+
+            loop = asyncio.get_running_loop()
+            loop.run_in_executor(None, _long_term_memory_job)
+            logger.info(f"[{sid}] 🧠 用户长期记忆更新已提交至后台线程执行")
+        except Exception as e:
+            logger.warning(f"[{sid}] 用户长期记忆更新提交失败: {e}")
 
 
 async def chat_stream_generator(
@@ -356,8 +431,8 @@ async def chat_stream_generator(
         message_content = await build_context_messages(
             db, session_id, message_content, session_logger
         )
-    # capture pre-exchange cumulative session token estimate (used later in _token_event
-    # so frontend can display session-level context consumption during streaming)
+    # capture pre-exchange cumulative session token estimate (used later by StreamProcessor
+    # token_usage events so frontend can display session-level context consumption during streaming)
     pre_session_tokens = 0
     try:
         session_obj = db.get_session(session_id)
@@ -382,35 +457,7 @@ async def chat_stream_generator(
 
         yield format_sse({"type": "start", "session_id": session_id})
 
-        # ── 状态变量 ─────────────────────────────────────────────────
-        blocks = []
-        tool_call_records = []
-        accumulated_thinking = ""
-        accumulated_response = ""
-        total_usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
-        step_usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
-        last_context_tokens = (
-            0  # 最后一次 API 调用的 input_tokens，即当前上下文窗口占用
-        )
-
-        current_step = 0
-        is_in_thinking = False
-        thinking_start_time = None
-        thinking_end_time = None
-        thinking_step_start_len = 0
-        content_start_time = None
-        content_step_start_len = 0
-        content_block_start_len = 0  # 当前 content block 的起始位置（用于分段持久化）
-        tool_call_start_times = {}
-        tool_call_accumulated_args = {}
-        tool_call_accumulated_args_str = {}  # tool_call_id → raw args string
-        tool_call_id_to_name = {}  # tool_call_id → tool_name
-        tool_call_index_to_id = {}  # chunk index → tool_call_id (for correlating subsequent chunks)
-        pending_tool_args_by_index = {}  # chunk index → accumulated args string (before name/id arrive)
-        last_persisted_len = 0
-        last_token_usage_time = 0
-        step_advanced_this_round = False  # 当前 round 是否已推进过 step
-
+        # ── 配置 ─────────────────────────────────────────────────
         max_input_tokens = None
         auto_compress_tokens = None
         result_log_truncate = 200
@@ -436,214 +483,113 @@ async def chat_stream_generator(
         else:
             auto_compress_tokens = 170000
 
-        _debug_logged = False
+        # ── StreamProcessor（混合流式：updates 权威 + messages token 流式）──
+        proc = StreamProcessor(
+            sid=sid, session_id=session_id, db=db, message_id=message_id,
+            session_logger=session_logger,
+            max_input_tokens=max_input_tokens,
+            auto_compress_tokens=auto_compress_tokens,
+            pre_session_tokens=pre_session_tokens, start_time=start_time,
+        )
 
-        # ── 辅助函数 ─────────────────────────────────────────────────
-
-        def _make_partial():
-            return {
-                "role": "assistant",
-                "content": accumulated_response or "",
-                "timestamp": datetime.now().isoformat(),
-                "thinking": accumulated_thinking or None,
-                "thinking_duration": None,
-                "tool_calls": tool_call_records_to_dicts(tool_call_records) or None,
-                "blocks": blocks or None,
-            }
+        def _tool_call_records_from_blocks(blks):
+            return [
+                (b.get("tool_name", ""), b.get("tool_call_id", ""),
+                 b.get("arguments", {}), b.get("result", ""),
+                 b.get("success", True), b.get("duration"),
+                 b.get("step", 0))
+                for b in blks if b.get("type") == "tool_call"
+            ]
 
         def _persist():
             try:
-                msg = _make_partial()
+                msg = build_assistant_message_dict(
+                    content=proc.accumulated_response,
+                    thinking=proc.accumulated_thinking,
+                    thinking_duration=None,
+                    tool_call_records=_tool_call_records_from_blocks(proc.blocks),
+                    blocks=proc.blocks,
+                    input_tokens=proc.total_usage.get("input_tokens", 0),
+                    output_tokens=proc.total_usage.get("output_tokens", 0),
+                    total_tokens=proc.total_usage.get("total_tokens", 0),
+                    context_tokens=proc.last_context_tokens,
+                    elapsed_time=time.time() - start_time,
+                    step_count=proc.current_step,
+                )
                 db.update_last_assistant_message(session_id, msg)
                 db.update_last_assistant_message_row(session_id, msg)
             except Exception as e:
                 logger.warning(f"[{sid}] 增量持久化失败: {e}")
 
-        def _persist_todos(todos_list):
-            """Persist todo list to database, replacing any existing plan."""
-            try:
-                db.update_session_todos(session_id, todos_list)
-                logger.info(
-                    f"[{sid}] 📋 Todo list persisted | items: {len(todos_list)}"
-                )
-            except Exception as e:
-                logger.warning(f"[{sid}] 持久化 Todo list 失败: {e}")
-
-        def _token_event():
-            nonlocal last_token_usage_time
-            now = time.time()
-            if now - last_token_usage_time < 0.5:
-                return None
-            last_token_usage_time = now
-            inp = total_usage["input_tokens"]
-            out = total_usage["output_tokens"]
-            cumulative = pre_session_tokens + inp + out
-            # context_tokens: 当前上下文窗口占用（最后一次 API 调用的 input_tokens）
-            ctx_tokens = last_context_tokens if last_context_tokens > 0 else inp
-            return format_sse(
-                {
-                    "type": "token_usage",
-                    "input_tokens": inp,
-                    "output_tokens": out,
-                    "total_tokens": inp + out,
-                    "session_estimate": cumulative,
-                    "context_tokens": ctx_tokens,
-                    "max_input_tokens": max_input_tokens,
-                    "auto_compress_tokens": auto_compress_tokens,
-                    "elapsed_time": round(time.time() - start_time, 2),
-                    "step_count": current_step,
-                }
-            )
-
-        def _start_thinking(step: int):
-            nonlocal \
-                is_in_thinking, \
-                thinking_start_time, \
-                current_step, \
-                thinking_step_start_len
-            is_in_thinking = True
-            thinking_start_time = time.time()
-            thinking_step_start_len = len(accumulated_thinking)
-            current_step = step
-            blocks.append(
-                {
-                    "type": "thinking",
-                    "content": "",
-                    "order": len(blocks),
-                    "step": step,
-                }
-            )
-            return format_sse({"type": "thinking_start", "content": "", "step": step})
-
-        def _end_thinking(step: int):
-            nonlocal is_in_thinking, thinking_end_time, thinking_step_start_len
-            thinking_end_time = time.time()
-            duration = round(
-                (thinking_end_time - thinking_start_time) if thinking_start_time else 0,
-                2,
-            )
-            step_thinking = accumulated_thinking[thinking_step_start_len:].strip()
-            if step_thinking:
+        def _on_tool_result(ev):
+            tool_name = ev.get("tool_name", "")
+            tool_call_id = ev.get("tool_call_id", "")
+            tool_args = ev.get("arguments", {})
+            result_content = ev.get("result", "")
+            success = ev.get("success", True)
+            tool_duration = ev.get("duration", 0)
+            step = ev.get("step", 0)
+            if message_id:
                 try:
-                    db.record_thinking(
-                        session_id=session_id,
-                        message_id=message_id,
-                        step=step,
-                        content=step_thinking[:10000],
-                        duration=duration,
+                    db.record_tool_call(
+                        session_id=session_id, message_id=message_id,
+                        tool_name=tool_name, tool_call_id=tool_call_id,
+                        arguments=tool_args if isinstance(tool_args, dict) else {},
+                        result=str(result_content)[:5000] if result_content is not None else None,
+                        success=success, duration=tool_duration, step=step,
                     )
                 except Exception as e:
-                    logger.warning(f"[{sid}] 持久化思考记录失败: {e}")
-                if session_logger:
-                    session_logger.log_thinking(
-                        content=step_thinking,
-                        step=step,
-                        duration=duration,
+                    logger.warning(f"[{sid}] 持久化工具调用记录失败: {e}")
+            if session_logger:
+                try:
+                    session_logger.log_tool_call(
+                        tool_name=tool_name, tool_call_id=tool_call_id,
+                        arguments=tool_args,
+                        result=str(result_content)[:5000],
+                        success=success, duration=tool_duration, step=step,
                         message_id=message_id,
                     )
-                logger.info(
-                    f"[{sid}] 🤔 Step {step} 思考完成 | 耗时: {duration}s | 字符: {len(step_thinking)}"
-                )
-            else:
-                logger.info(
-                    f"[{sid}] 🤔 Step {step} 思考完成（空） | 耗时: {duration}s"
-                )
-            for blk in reversed(blocks):
-                if blk["type"] == "thinking" and blk.get("step") == step:
-                    blk["content"] = step_thinking
-                    blk["duration"] = duration
+                except Exception:
+                    pass
+            if tool_name in ("write_file", "write_tool"):
+                try:
+                    file_args = tool_args if isinstance(tool_args, dict) else {}
+                    filename = (
+                        file_args.get("file_name")
+                        or file_args.get("path")
+                        or file_args.get("file_path", "")
+                    )
+                    if filename:
+                        base_name = os.path.basename(filename) if filename else "unknown"
+                        ext = os.path.splitext(base_name)[1].lstrip(".") or "txt"
+                        db.add_generated_file(
+                            session_id=session_id, message_id=message_id,
+                            filename=base_name,
+                            file_path=str(agent.workspace_dir / filename)
+                            if not os.path.isabs(filename) else filename,
+                            file_type=ext, size=0,
+                        )
+                        logger.info(f"[{sid}] 📄 记录生成文件: {base_name}")
+                except Exception as e:
+                    logger.warning(f"[{sid}] 记录生成文件失败: {e}")
+
+        def _on_thinking_end(ev):
+            step = ev.get("step", 0)
+            duration = ev.get("duration", 0)
+            for blk in reversed(proc.blocks):
+                if blk.get("type") == "thinking" and blk.get("step") == step:
+                    content = (blk.get("content", "") or "").strip()
+                    if content and message_id:
+                        try:
+                            db.record_thinking(
+                                session_id=session_id, message_id=message_id,
+                                step=step, content=content[:10000], duration=duration,
+                            )
+                        except Exception as e:
+                            logger.warning(f"[{sid}] 持久化思考记录失败: {e}")
                     break
-            is_in_thinking = False
-            return format_sse({"type": "thinking_end", "duration": duration, "step": step})
 
-        def _end_thinking_if_needed():
-            nonlocal is_in_thinking
-            if not is_in_thinking:
-                return None
-            return _end_thinking(current_step)
-
-        def _seal_content_block():
-            """将当前累积的正文内容（自上次封存以来的部分）作为一个 content block 添加到 blocks 中。
-            在切换到 thinking/tool_call 或流结束时调用，确保中间正文内容被分段持久化。"""
-            nonlocal content_block_start_len
-            segment = accumulated_response[content_block_start_len:]
-            if segment.strip():
-                blocks.append(
-                    {
-                        "type": "content",
-                        "content": segment,
-                        "order": len(blocks),
-                    }
-                )
-            content_block_start_len = len(accumulated_response)
-
-        def _finalize_step(step: int):
-            """打印上一个 step 的正文汇总 + token 用量信息，并发送 token 事件给前端。"""
-            nonlocal content_step_start_len
-            step_content = accumulated_response[content_step_start_len:].strip()
-            if step_content:
-                logger.info(
-                    f"[{sid}] 💬 Step {step} 正文 | 长度: {len(step_content)} | 内容: {step_content}"
-                )
-            content_step_start_len = len(accumulated_response)
-
-            # 打印 token 用量（使用 API 返回的 usage_metadata）
-            inp = step_usage["input_tokens"]
-            out = step_usage["output_tokens"]
-            step_total = step_usage["total_tokens"]
-            # context_tokens: 最后一次 API 调用的 input_tokens
-            ctx_tokens = last_context_tokens if last_context_tokens > 0 else inp
-            ctx_max = max_input_tokens or 0
-            ctx_ratio = (ctx_tokens / ctx_max * 100) if ctx_max else 0
-            ctx_bar = ""
-            if ctx_max:
-                filled = int(ctx_ratio / 5)  # 20 格
-                ctx_bar = (
-                    " [" + "█" * filled + "░" * (20 - filled) + f"] {ctx_ratio:.1f}%"
-                )
-            is_pending = step_usage["input_tokens"] == 0
-            logger.info(
-                f"[{sid}] 📊 Step {step} Token{'(等待API返回)' if is_pending else ''} | "
-                f"上下文占用: {ctx_tokens}/{ctx_max or '?'}{ctx_bar} | "
-                f"累计输入: {total_usage['input_tokens']} | "
-                f"累计输出: {total_usage['output_tokens']} | "
-                f"累计 API Token: {total_usage['total_tokens']}"
-            )
-
-            # 每步完成时发送 token 用量事件给前端
-            cumulative = (
-                pre_session_tokens
-                + total_usage["input_tokens"]
-                + total_usage["output_tokens"]
-            )
-            token_sse = format_sse(
-                {
-                    "type": "token_usage",
-                    "input_tokens": total_usage["input_tokens"],
-                    "output_tokens": total_usage["output_tokens"],
-                    "total_tokens": total_usage["input_tokens"]
-                    + total_usage["output_tokens"],
-                    "session_estimate": cumulative,
-                    "context_tokens": ctx_tokens,
-                    "max_input_tokens": max_input_tokens,
-                    "auto_compress_tokens": auto_compress_tokens,
-                    "elapsed_time": round(time.time() - start_time, 2),
-                    "step_count": current_step,
-                }
-            )
-
-            step_usage["input_tokens"] = 0
-            step_usage["output_tokens"] = 0
-            step_usage["total_tokens"] = 0
-
-            return token_sse
-
-        def _log_step_start(step: int, step_type: str, detail: str = ""):
-            """新 step 开始时立即打印日志。"""
-            msg = f"[{sid}] 🚀 Step {step} 开始 | 类型: {step_type}"
-            if detail:
-                msg += f" | {detail}"
-            logger.info(msg)
+        last_persisted_len = 0
 
         # ── 构建上下文消息 ─────────────────────────────────────────────
         context_messages = []
@@ -682,11 +628,8 @@ async def chat_stream_generator(
 
         context_messages.append(HumanMessage(content=message_content))
 
-        # ── 启动流式输出 (stream_mode='messages') ────────────────────────
-        logger.info(f"[{sid}] 🚀 使用 stream_mode='messages' 流式接口")
-
-        emitted_tool_call_ids = set()
-        _todo_emitted_for = set()
+        # ── 启动流式输出 (stream_mode=['messages', 'updates']) ─────────
+        logger.info(f"[{sid}] 🚀 使用 stream_mode=['messages', 'updates'] 流式接口")
 
         # HITL: per-message thread_id for checkpointer state isolation
         thread_id = f"{session_id}-{message_id}"
@@ -694,493 +637,48 @@ async def chat_stream_generator(
 
         async for event in agent.agent.astream(
             {"messages": context_messages},
-            stream_mode="messages",
+            stream_mode=["messages", "updates"],
             config=stream_config,
         ):
-            chunk, metadata = event
-            node = metadata.get("langgraph_node", "?")
-
-            # ── AIMessageChunk: reasoning / text / tool_call_chunks ──────
-            if isinstance(chunk, AIMessageChunk):
-                rc = (
-                    extract_reasoning(chunk.additional_kwargs)
-                    if hasattr(chunk, "additional_kwargs")
-                    else ""
-                )
-                raw_content = chunk.content or ""
-                tcc = getattr(chunk, "tool_call_chunks", None) or []
-
-                # Debug: log raw chunk structure for Anthropic protocol diagnosis
-                if not _debug_logged:
-                    _debug_logged = True
-                    raw_content_repr = (
-                        repr(chunk.content)[:300] if chunk.content else "''"
-                    )
-                    raw_rc_repr = repr(
-                        extract_reasoning(chunk.additional_kwargs)
-                    )[:200]
-                    raw_tcc_repr = repr(tcc)[:200] if tcc else "[]"
-                    logger.info(
-                        f"[{sid}] 🔍 AIMessageChunk debug | "
-                        f"content_type={type(chunk.content).__name__} content={raw_content_repr} | "
-                        f"rc={raw_rc_repr} | "
-                        f"tcc={raw_tcc_repr} | "
-                        f"node={node}"
-                    )
-
-                # ── Extract text and thinking from content ───────────────
-                # Anthropic protocol (ChatAnthropic) sends content as a list of
-                # content blocks when tools or thinking are enabled:
-                #   text:    [{"type": "text", "text": "Hello", "index": 0}]
-                #   thinking: [{"type": "thinking", "thinking": "...", "index": 0}]
-                #   tool_use: [{"type": "tool_use", ...}]
-                # OpenAI protocol sends content as a plain string.
-                content = ""
-                anthropic_thinking = ""
-
-                if isinstance(raw_content, list):
-                    for block in raw_content:
-                        if not isinstance(block, dict):
-                            content += str(block)
-                            continue
-                        block_type = block.get("type", "")
-                        if block_type == "thinking":
-                            # Anthropic thinking block: {"type": "thinking", "thinking": "..."}
-                            anthropic_thinking += block.get("thinking", "")
-                        elif block_type == "text":
-                            # Anthropic text block: {"type": "text", "text": "..."}
-                            content += block.get("text", "")
-                        # Skip tool_use, input_json_delta, compaction, etc.
-                elif isinstance(raw_content, str):
-                    content = raw_content
-
-                # DeepSeek reasoning_content (from additional_kwargs or list)
-                if isinstance(rc, list):
-                    rc = "".join(
-                        c.get("text", "") if isinstance(c, dict) else str(c) for c in rc
-                    )
-
-                # === Usage metadata: 必须在 step 推进之前处理 ===
-                # OpenAI 兼容 API 的 usage_metadata 在最后一个 AIMessageChunk 中返回，
-                # 可能在 tool_call_chunks 之后、下一个 step 开始之前到达
-                if hasattr(chunk, "usage_metadata") and chunk.usage_metadata:
-                    usage_meta = chunk.usage_metadata
-                    total_usage["input_tokens"] += usage_meta.get("input_tokens", 0)
-                    total_usage["output_tokens"] += usage_meta.get("output_tokens", 0)
-                    total_usage["total_tokens"] += usage_meta.get("total_tokens", 0)
-                    step_usage["input_tokens"] += usage_meta.get("input_tokens", 0)
-                    step_usage["output_tokens"] += usage_meta.get("output_tokens", 0)
-                    step_usage["total_tokens"] += usage_meta.get("total_tokens", 0)
-                    # 记录最后一次 API 调用的 input_tokens 作为上下文窗口占用
-                    if usage_meta.get("input_tokens", 0) > 0:
-                        last_context_tokens = usage_meta["input_tokens"]
-
-                # Merge Anthropic thinking into rc for unified handling
-                if anthropic_thinking:
-                    rc = rc + anthropic_thinking if rc else anthropic_thinking
-
-                # === Reasoning (逐 token) ===
-                if rc:
-                    # 切换到思考前，封存之前的正文段落
-                    _seal_content_block()
-                    if not is_in_thinking:
-                        token_sse = _finalize_step(current_step)
-                        if token_sse:
-                            yield token_sse
-                        current_step += 1
-                        step_advanced_this_round = True
-                        yield _start_thinking(current_step)
-                    accumulated_thinking += rc
-                    yield format_sse(
-                        {"type": "thinking", "content": rc, "step": current_step}
-                    )
-
-                # === Text content (逐 token) ===
-                if content and not tcc:
-                    # 非 reasoning 模型：首次内容或工具结果后推进 step
-                    if not is_in_thinking and not step_advanced_this_round:
-                        token_sse = _finalize_step(current_step)
-                        if token_sse:
-                            yield token_sse
-                        current_step += 1
-                        step_advanced_this_round = True
-                        _log_step_start(current_step, "正文")
-                    te = _end_thinking_if_needed()
-                    if te:
-                        yield te
-                    if content_start_time is None:
-                        content_start_time = time.time()
-                    accumulated_response += content
-                    yield format_sse({"type": "content", "content": content})
-                    tu = _token_event()
-                    if tu:
-                        yield tu
-                    if len(accumulated_response) - last_persisted_len >= 500:
-                        last_persisted_len = len(accumulated_response)
-                        _persist()
-
-                # === Tool call chunks ===
-                if tcc:
-                    # 切换到工具调用前，封存之前的正文段落
-                    _seal_content_block()
-                    if not step_advanced_this_round:
-                        token_sse = _finalize_step(current_step)
-                        if token_sse:
-                            yield token_sse
-                        current_step += 1
-                        step_advanced_this_round = True
-                        tool_names = [
-                            tc.get("name", "") for tc in tcc if tc.get("name")
-                        ]
-                        _log_step_start(
-                            current_step, "工具调用", f"tools: {tool_names}"
-                        )
-                for tc in tcc:
-                    name = tc.get("name", "") or ""
-                    args_str = str(tc.get("args", "") or "")
-                    tid = tc.get("id", "") or ""
-                    tc_index = tc.get("index")
-
-                    te = _end_thinking_if_needed()
-                    if te:
-                        yield te
-
-                    if name and tid:
-                        tool_name = name
-                        tool_call_id_to_name[tid] = tool_name
-                        tool_call_start_times[tid] = time.time()
-
-                        if tc_index is not None:
-                            tool_call_index_to_id[tc_index] = tid
-
-                        pending_prefix = ""
-                        if (
-                            tc_index is not None
-                            and tc_index in pending_tool_args_by_index
-                        ):
-                            pending_prefix = pending_tool_args_by_index.pop(tc_index)
-
-                        tool_call_accumulated_args_str[tid] = pending_prefix + args_str
-
-                        full_args = tool_call_accumulated_args_str[tid]
-                        args_data = parse_tool_args(full_args)
-                        tool_call_accumulated_args[tid] = args_data
-                        emitted_tool_call_ids.add(tid)
-
-                        blocks.append(
-                            {
-                                "type": "tool_call",
-                                "tool_name": tool_name,
-                                "tool_call_id": tid,
-                                "arguments": args_data,
-                                "result": "",
-                                "success": True,
-                                "order": len(blocks),
-                                "step": current_step,
-                            }
-                        )
-
-                        yield format_sse(
-                            {
-                                "type": "tool_call",
-                                "tool_name": tool_name,
-                                "tool_call_id": tid,
-                                "arguments": args_data,
-                                "step": current_step,
-                            }
-                        )
-
-                        # ── write_todos: emit todo_list SSE event ─────────
-                        if tool_name == "write_todos" and isinstance(args_data, dict):
-                            todos = args_data.get("todos", [])
-                            if todos:
-                                logger.info(
-                                    f"[{sid}] 📋 Todo list | items: {len(todos)}"
-                                )
-                                _persist_todos(todos)
-                                _todo_emitted_for.add(tid)
-                                yield format_sse(
-                                    {
-                                        "type": "todo_list",
-                                        "todos": todos,
-                                        "step": current_step,
-                                    }
-                                )
-                    elif tid or tc_index is not None:
-                        resolved_tid = tid
-                        if not resolved_tid and tc_index is not None:
-                            resolved_tid = tool_call_index_to_id.get(tc_index, "")
-
-                        if resolved_tid and resolved_tid in tool_call_id_to_name:
-                            tool_call_accumulated_args_str[resolved_tid] = (
-                                tool_call_accumulated_args_str.get(resolved_tid, "")
-                                + args_str
-                            )
-
-                            full_args_str = tool_call_accumulated_args_str[resolved_tid]
-                            try:
-                                parsed = json.loads(full_args_str)
-                                args_data = (
-                                    parsed
-                                    if isinstance(parsed, dict)
-                                    else {"value": parsed}
-                                )
-                                tool_call_accumulated_args[resolved_tid] = args_data
-
-                                for blk in reversed(blocks):
-                                    if (
-                                        blk["type"] == "tool_call"
-                                        and blk.get("tool_call_id") == resolved_tid
-                                    ):
-                                        blk["arguments"] = args_data
-                                        break
-
-                                # 重新推送 tool_call 事件，确保前端获取完整参数
-                                # （首个 chunk 的 tool_call 事件可能参数为空）
-                                yield format_sse({
-                                    "type": "tool_call",
-                                    "tool_name": tool_call_id_to_name.get(resolved_tid, ""),
-                                    "tool_call_id": resolved_tid,
-                                    "arguments": args_data,
-                                    "step": current_step,
-                                })
-
-                                tool_name = tool_call_id_to_name[resolved_tid]
-                                if tool_name == "write_todos":
-                                    todos = (
-                                        args_data.get("todos", [])
-                                        if isinstance(args_data, dict)
-                                        else []
-                                    )
-                                    if todos and resolved_tid not in _todo_emitted_for:
-                                        logger.info(
-                                            f"[{sid}] 📋 Todo list | items: {len(todos)}"
-                                        )
-                                        _persist_todos(todos)
-                                        _todo_emitted_for.add(resolved_tid)
-                                        yield format_sse(
-                                            {
-                                                "type": "todo_list",
-                                                "todos": todos,
-                                                "step": current_step,
-                                            }
-                                        )
-                            except json.JSONDecodeError:
-                                pass
-                        elif tc_index is not None:
-                            pending_tool_args_by_index[tc_index] = (
-                                pending_tool_args_by_index.get(tc_index, "") + args_str
-                            )
-
-            # ── ToolMessage: tool execution result ──────────────────────
-            elif isinstance(chunk, ToolMessage):
-                te = _end_thinking_if_needed()
-                if te:
-                    yield te
-
-                tool_call_id = chunk.tool_call_id
-                tool_name = tool_call_id_to_name.get(tool_call_id, "")
-                if not tool_name:
-                    tool_name = getattr(chunk, "name", "") or ""
-
-                resolved_tid = tool_call_id
-                if tool_call_id not in tool_call_id_to_name:
-                    for blk in reversed(blocks):
-                        if blk["type"] == "tool_call" and blk.get("result", "") == "":
-                            if blk.get("tool_name") == tool_name or not tool_name:
-                                resolved_tid = blk.get("tool_call_id", tool_call_id)
-                                tool_name = blk.get("tool_name", tool_name)
-                                tool_call_id_to_name[tool_call_id] = tool_name
-                                if tool_call_id in tool_call_accumulated_args:
-                                    tool_call_accumulated_args[resolved_tid] = (
-                                        tool_call_accumulated_args.pop(tool_call_id)
-                                    )
-                                if tool_call_id in tool_call_start_times:
-                                    tool_call_start_times[resolved_tid] = (
-                                        tool_call_start_times.pop(tool_call_id)
-                                    )
-                                break
-
-                tool_args = tool_call_accumulated_args.get(resolved_tid, {})
-                result_content = (
-                    _parse_mcp_content(chunk.content) if chunk.content else ""
-                )
-
-                # Determine success: check both chunk metadata AND result content
-                # DeepAgents built-in tools (read_file, write_file, execute, etc.)
-                # return errors as plain string content (e.g. "Error: File not found"),
-                # not as ToolMessages with is_error metadata.
-                chunk_error = getattr(chunk, "additional_kwargs", {}).get(
-                    "is_error", False
-                )
-                content_error = _is_error_result(result_content)
-                success = not chunk_error and not content_error
-                tool_start = tool_call_start_times.pop(resolved_tid, None)
-                tool_duration = round(time.time() - tool_start, 2) if tool_start else 0
-
-                for blk in reversed(blocks):
-                    if (
-                        blk["type"] == "tool_call"
-                        and blk.get("tool_call_id") == resolved_tid
-                    ):
-                        blk["result"] = result_content
-                        blk["success"] = success
-                        blk["duration"] = tool_duration
-                        break
-
-                tool_call_records.append(
-                    [
-                        tool_name,
-                        tool_call_id,
-                        tool_args,
-                        result_content,
-                        success,
-                        tool_duration,
-                        current_step,
-                    ]
-                )
-
-                # 工具执行日志由 LoggingMiddleware 统一记录（见 services/logging_middleware.py）
-
-                # 工具结果处理完毕，重置 step 推进标记
-                # 下一个 AIMessageChunk 将开启一个新的 step
-                step_advanced_this_round = False
-
-                yield format_sse(
-                    {
-                        "type": "tool_result",
-                        "tool_name": tool_name,
-                        "tool_call_id": resolved_tid,
-                        "arguments": tool_args,
-                        "result": result_content,
-                        "success": success,
-                        "duration": tool_duration,
-                        "step": current_step,
-                    }
-                )
-
-                # ── write_todos: extract todo list from tool result ───
-                if tool_name == "write_todos" and resolved_tid not in _todo_emitted_for:
-                    # Try to extract todos from arguments first
-                    todos = (
-                        tool_args.get("todos", [])
-                        if isinstance(tool_args, dict)
-                        else []
-                    )
-                    # If args don't have todos, try parsing from result text
-                    if not todos and result_content:
-                        todo_match = re.search(r"\[.*?\]", result_content, re.DOTALL)
-                        if todo_match:
-                            try:
-                                parsed_result = json.loads(todo_match.group(0))
-                                if isinstance(parsed_result, list):
-                                    todos = parsed_result
-                            except (json.JSONDecodeError, ValueError):
-                                pass
-                    if todos:
-                        logger.info(f"[{sid}] 📋 Todo list | items: {len(todos)}")
-                        _persist_todos(todos)
-                        _todo_emitted_for.add(resolved_tid)
-                        yield format_sse(
-                            {
-                                "type": "todo_list",
-                                "todos": todos,
-                                "step": current_step,
-                            }
-                        )
-
-                # Persist tool call
-                try:
-                    db.record_tool_call(
-                        session_id=session_id,
-                        message_id=message_id,
-                        tool_name=tool_name,
-                        tool_call_id=tool_call_id,
-                        arguments=tool_args,
-                        result=str(result_content)[:5000],
-                        success=success,
-                        duration=tool_duration,
-                        step=current_step,
-                    )
-                except Exception as e:
-                    logger.warning(f"[{sid}] 持久化工具调用记录失败: {e}")
-
-                if session_logger:
-                    session_logger.log_tool_call(
-                        tool_name=tool_name,
-                        tool_call_id=tool_call_id,
-                        arguments=tool_args,
-                        result=str(result_content)[:5000],
-                        success=success,
-                        duration=tool_duration,
-                        step=current_step,
-                        message_id=message_id,
-                    )
-
-                # Record generated file if applicable
-                if tool_name in ("write_file", "write_tool"):
+            mode, data = (
+                event if isinstance(event, tuple) else ("messages", event)
+            )
+            for ev in proc.handle(mode, data):
+                ev_type = ev.get("type")
+                if ev_type == "tool_result":
+                    _on_tool_result(ev)
+                elif ev_type == "thinking_end":
+                    _on_thinking_end(ev)
+                elif ev_type == "todo_list":
                     try:
-                        file_args = tool_args if isinstance(tool_args, dict) else {}
-                        filename = (
-                            file_args.get("file_name")
-                            or file_args.get("path")
-                            or file_args.get("file_path", "")
-                        )
-                        if filename:
-                            base_name = (
-                                os.path.basename(filename) if filename else "unknown"
-                            )
-                            ext = os.path.splitext(base_name)[1].lstrip(".") or "txt"
-                            db.add_generated_file(
-                                session_id=session_id,
-                                message_id=message_id,
-                                filename=base_name,
-                                file_path=str(agent.workspace_dir / filename)
-                                if not os.path.isabs(filename)
-                                else filename,
-                                file_type=ext,
-                                size=0,
-                            )
-                            logger.info(f"[{sid}] 📄 记录生成文件: {base_name}")
+                        db.update_session_todos(session_id, ev["todos"])
                     except Exception as e:
-                        logger.warning(f"[{sid}] 记录生成文件失败: {e}")
-
-                tu = _token_event()
-                if tu:
-                    yield tu
-                _persist()
-
-            # ── AIMessage (final assembled message with usage) ──────────
-            elif isinstance(chunk, AIMessage) and not isinstance(chunk, AIMessageChunk):
-                if chunk.usage_metadata:
-                    usage_meta = chunk.usage_metadata
-                    logger.info(f"[{sid}] 📊 usage_metadata: {usage_meta}")
-                    total_usage["input_tokens"] += usage_meta.get("input_tokens", 0)
-                    total_usage["output_tokens"] += usage_meta.get("output_tokens", 0)
-                    total_usage["total_tokens"] += usage_meta.get("total_tokens", 0)
-                    step_usage["input_tokens"] += usage_meta.get("input_tokens", 0)
-                    step_usage["output_tokens"] += usage_meta.get("output_tokens", 0)
-                    step_usage["total_tokens"] += usage_meta.get("total_tokens", 0)
-                    if usage_meta.get("input_tokens", 0) > 0:
-                        last_context_tokens = usage_meta["input_tokens"]
-                    tu = _token_event()
-                    if tu:
-                        yield tu
+                        logger.warning(f"[{sid}] 持久化 Todo list 失败: {e}")
+                elif ev_type == "content":
+                    if len(proc.accumulated_response) - last_persisted_len >= 500:
+                        last_persisted_len = len(proc.accumulated_response)
+                        _persist()
+                yield format_sse(ev)
 
         # ── Post-streaming: 流结束 ──────────────────────────────────────
         logger.info(f"[{sid}] 📢 流式输出结束")
 
-        token_sse = _finalize_step(current_step)
-        if token_sse:
-            yield token_sse
+        # 确保 thinking 结束（流结束时若仍在思考）
+        for _ev in proc._end_thinking():
+            yield format_sse(_ev)
 
-        # 确保 thinking 结束
-        te = _end_thinking_if_needed()
-        if te:
-            yield te
-
-        # 将最后的正文内容段封存为 content block
-        _seal_content_block()
+        # 同步本地状态别名（供后续 HITL/持久化/记忆逻辑使用）
+        accumulated_response = proc.accumulated_response
+        accumulated_thinking = proc.accumulated_thinking
+        blocks = proc.blocks
+        tool_call_records = _tool_call_records_from_blocks(proc.blocks)
+        total_usage = proc.total_usage
+        current_step = proc.current_step
+        last_context_tokens = proc.last_context_tokens
+        is_in_thinking = proc.is_in_thinking
+        thinking_start_time = proc.thinking_start_time
+        thinking_end_time = None
+        content_start_time = None
 
         # 发送 content_end
         if accumulated_response:
@@ -1202,11 +700,22 @@ async def chat_stream_generator(
                         cfg.get("action_name"): cfg for cfg in review_configs
                     }
                     # 从状态中获取 tool_call_id（ActionRequest 不含 id）
+                    # 关键：只取需要审批的工具（与 action_requests 按 tool_name 匹配），
+                    # 而非 AIMessage 的全部 tool_calls。否则同一 AIMessage 里无需审批的工具
+                    # 也会被标 pending，且 resume 时 decisions 数量对不上 -> 永远显示"待审批"。
                     state_msgs = graph_state.values.get("messages", [])
+                    _approval_tool_names = {
+                        (ar.get("name", "") if isinstance(ar, dict) else getattr(ar, "name", ""))
+                        for ar in action_requests
+                    }
                     pending_tc_ids = []
                     for msg in reversed(state_msgs):
                         if isinstance(msg, AIMessage) and getattr(msg, "tool_calls", None):
-                            pending_tc_ids = [tc.get("id", "") for tc in msg.tool_calls]
+                            pending_tc_ids = [
+                                tc.get("id", "")
+                                for tc in msg.tool_calls
+                                if tc.get("name", "") in _approval_tool_names
+                            ]
                             break
                     # 保存部分 assistant 消息（复用取消路径模式）
                     partial_elapsed = time.time() - start_time
@@ -1223,6 +732,18 @@ async def chat_stream_generator(
                         elapsed_time=partial_elapsed,
                         step_count=current_step,
                     )
+                    # 持久化 HITL 审批状态：将触发中断的工具调用标记为「待审批」
+                    # 注意：blocks 也必须同步打标记——前端历史渲染优先读 blocks，
+                    # 只标 tool_calls 会导致切回历史会话时审批状态徽章不显示。
+                    for tc in partial_msg.get("tool_calls") or []:
+                        if tc.get("tool_call_id") in pending_tc_ids:
+                            tc["approval_status"] = "pending"
+                    for b in partial_msg.get("blocks") or []:
+                        if (
+                            b.get("type") == "tool_call"
+                            and b.get("tool_call_id") in pending_tc_ids
+                        ):
+                            b["approval_status"] = "pending"
                     db.update_last_assistant_message(session_id, partial_msg)
                     db.update_last_assistant_message_row(session_id, partial_msg)
                     logger.info(
@@ -1259,9 +780,9 @@ async def chat_stream_generator(
         elapsed_time = time.time() - start_time
 
         # 统计
-        thinking_time = 0
-        if thinking_start_time and thinking_end_time:
-            thinking_time = round(thinking_end_time - thinking_start_time, 2)
+        thinking_time = round(
+            sum(b.get("duration", 0) or 0 for b in blocks if b.get("type") == "thinking"), 2
+        )
         content_time = 0
         if content_start_time:
             content_time = round(time.time() - content_start_time, 2)
@@ -1302,8 +823,7 @@ async def chat_stream_generator(
         ratio = (
             ((session_total_tokens or sum_tokens) / ctx_max * 100) if ctx_max > 0 else 0
         )
-        filled = min(20, int(ratio / 5))
-        bar = " [" + "█" * filled + "░" * (20 - filled) + f"] {ratio:.1f}%"
+        bar = " [" + _build_progress_bar(ratio) + f"] {ratio:.1f}%"
         logger.info(
             f"[{sid}] 📊 Token | "
             f"本轮: ↑{inp_tokens} ↓{out_tokens} Σ{sum_tokens} | "
@@ -1366,95 +886,13 @@ async def chat_stream_generator(
         except Exception as e:
             logger.warning(f"[{sid}] Failed to save context file: {e}")
 
-        # Workspace rename
-        if tool_call_records and agent and not agent._workspace_renamed:
-            has_file_writes = any(
-                tc[0] in ("write_file", "write_tool") and tc[4]
-                for tc in tool_call_records
-            )
-            if has_file_writes:
-                try:
-                    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    sid_prefix = session_id[:5]
-                    new_ws_name = f"{ts}_{sid_prefix}"
-                    old_ws_path = str(agent.workspace_dir.absolute())
-                    agent.rename_workspace(new_ws_name)
-                    agent._workspace_renamed = True
-                    new_ws_path = str(agent.workspace_dir.absolute())
-                    db.update_generated_file_paths(session_id, old_ws_path, new_ws_path)
-                    db.update_session_workspace_name(session_id, new_ws_name)
-                    logger.info(
-                        f"[{sid}] Workspace renamed: {old_ws_path} -> {new_ws_path}"
-                    )
-                except Exception as e:
-                    logger.warning(f"[{sid}] Workspace rename failed: {e}")
+        # Workspace rename（抽取为公共函数，主生成器与 HITL resume 生成器复用）
+        _maybe_rename_workspace(agent, db, session_id, tool_call_records, sid)
 
-        # 会话级记忆持久化 — 每轮对话结束后更新工作区下的 memory.md
-        # 1. 根据本轮对话内容按场景更新会话记忆（重复场景更新经验，新场景添加章节）
-        # 2. 确保记忆文件不超过 2000 字符，超限时自动压缩
-        # 注意：此更新在 workspace rename 之后执行，确保 memory.md 写入最终目录
-        if agent and agent.memory_file:
-            try:
-                from .memory_manager import update_memory_after_session
-
-                # 使用当前会话 Agent 的模型（支持动态模型选择），
-                # 而非全局 _llm_instance（仅启动时的默认模型）
-                session_llm = getattr(agent, "model", None)
-                if session_llm is None:
-                    from .agent_manager import _llm_instance
-                    session_llm = _llm_instance
-
-                # 使用原始用户输入（不含注入的记忆前缀）作为记忆提取素材
-                raw_user_msg = parsed_content or request.message
-                updated = update_memory_after_session(
-                    agent.memory_file,
-                    user_message=raw_user_msg,
-                    assistant_response=accumulated_response,
-                    llm=session_llm,
-                )
-                if updated:
-                    logger.info(
-                        f"[{sid}] 🧠 会话记忆已更新 | 文件: {agent.memory_file} | "
-                        f"上限 2000 字符"
-                    )
-                    # 记忆更新后使 Agent 缓存失效，下次发消息时重建 Agent 以加载新记忆
-                    try:
-                        from .agent_manager import remove_session_agent
-                        remove_session_agent(session_id)
-                        logger.info(
-                            f"[{sid}] 记忆更新后 Agent 缓存已失效，下次消息将重新加载记忆"
-                        )
-                    except Exception as e:
-                        logger.warning(f"[{sid}] 使 Agent 缓存失效失败: {e}")
-            except Exception as e:
-                logger.warning(f"[{sid}] 会话记忆更新失败: {e}")
-
-        # 用户级长期记忆持久化 — 每轮对话结束后更新 memories/{username}/AGENTS.md
-        # 与工作区 memory.md 的区别：这是跨会话的用户级长期记忆，记录用户偏好与可复用经验
-        if agent and getattr(agent, "long_term_memory_file", None):
-            try:
-                from .memory_manager import update_long_term_memory_after_session
-
-                # 复用当前会话 Agent 的模型（支持动态模型选择）
-                session_llm = getattr(agent, "model", None)
-                if session_llm is None:
-                    from .agent_manager import _llm_instance
-                    session_llm = _llm_instance
-
-                # 使用原始用户输入（不含注入的记忆前缀）作为记忆提取素材
-                raw_user_msg = parsed_content or request.message
-                updated_lt = update_long_term_memory_after_session(
-                    agent.long_term_memory_file,
-                    user_message=raw_user_msg,
-                    assistant_response=accumulated_response,
-                    llm=session_llm,
-                )
-                if updated_lt:
-                    logger.info(
-                        f"[{sid}] 🧠 用户长期记忆已更新 | 文件: {agent.long_term_memory_file}"
-                    )
-            except Exception as e:
-                logger.warning(f"[{sid}] 用户长期记忆更新失败: {e}")
+        # 会话级 + 用户级记忆持久化（复用公共函数，主生成器与 HITL resume 生成器一致，
+        # 确保首轮即使触发 HITL、在批准后任务真正完成时也会生成 memory.md 并在第二轮加载）
+        raw_user_msg = parsed_content or request.message
+        _submit_memory_updates(agent, session_id, db, raw_user_msg, accumulated_response, sid)
 
         # Session logger
         if session_logger:
@@ -1487,6 +925,14 @@ async def chat_stream_generator(
         )
 
     except asyncio.CancelledError:
+        accumulated_response = proc.accumulated_response
+        accumulated_thinking = proc.accumulated_thinking
+        blocks = proc.blocks
+        tool_call_records = _tool_call_records_from_blocks(proc.blocks)
+        total_usage = proc.total_usage
+        current_step = proc.current_step
+        last_context_tokens = proc.last_context_tokens
+        is_in_thinking = proc.is_in_thinking
         logger.info(
             f"[{sid}] ❌ 请求被取消 | 当前 step={current_step} | "
             f"已累积回复 {len(accumulated_response)} 字符 | "
@@ -1517,8 +963,16 @@ async def chat_stream_generator(
         yield format_sse({"type": "error", "content": "请求被取消"})
     except Exception as e:
         logger.error(f"[{sid}] ❌ 聊天异常: {str(e)}", exc_info=True)
-        if is_in_thinking:
-            yield _end_thinking(current_step)
+        accumulated_response = proc.accumulated_response
+        blocks = proc.blocks
+        current_step = proc.current_step
+        is_in_thinking = proc.is_in_thinking
+        if is_in_thinking and proc.thinking_start_time:
+            dur = round(time.time() - proc.thinking_start_time, 2)
+            if proc.blocks and proc.blocks[-1]["type"] == "thinking":
+                proc.blocks[-1]["duration"] = dur
+            proc.is_in_thinking = False
+            yield format_sse({"type": "thinking_end", "duration": dur, "step": current_step})
         for blk in reversed(blocks):
             if blk.get("type") == "tool_call" and blk.get("duration") is None:
                 blk["success"] = False
@@ -1536,6 +990,7 @@ async def resume_stream_generator(
     decisions: list[dict],
     username: str = "",
     session_logger: SessionLogger = None,
+    message_id: str = "",
 ) -> AsyncGenerator[str, None]:
     """HITL 恢复流：用户审批后继续执行 Agent。
 
@@ -1553,12 +1008,13 @@ async def resume_stream_generator(
     blocks = []
     tool_call_records = []
     current_step = 0
-    block_order_counter = 0
     total_usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
     last_context_tokens = 0
+    original_user_msg = ""  # 触发 HITL 的原始用户消息，供记忆生成使用
 
     try:
         session = db.get_session(session_id)
+        pending_tool_call_ids = []
         if session and session.messages:
             for msg in reversed(session.messages):
                 if msg.get("role") == "assistant":
@@ -1574,6 +1030,7 @@ async def resume_stream_generator(
                             tc.get("success", True),
                             tc.get("duration", 0),
                             tc.get("step", 0),
+                            tc.get("approval_status"),
                         ])
                     usage = msg.get("usage") or {}
                     total_usage = {
@@ -1582,315 +1039,287 @@ async def resume_stream_generator(
                         "total_tokens": usage.get("total_tokens", 0),
                     }
                     current_step = usage.get("step_count", 0)
-                    block_order_counter = len(blocks)
+                    # 收集历史中已被标记为「待审批」的工具调用（HITL 中断），供后续写回最终决策。
+                    # 关键：HITL 中断发生在工具「决定调用但尚未执行」时，此时 tool_call_records
+                    # 尚未生成（要等 ToolMessage 即工具执行后才 append），因此 message.tool_calls
+                    # 不含该中断工具，approval_status="pending" 只落在 blocks 上。
+                    # 故必须从 blocks 取 pending id，tool_calls 仅作补充，否则 pending_tool_call_ids
+                    # 恒为空 -> 决策不应用 -> 历史永远显示「待审批」。
+                    pending_tool_call_ids: list[str] = []
+                    _seen_pending: set = set()
+                    for b in (msg.get("blocks") or []):
+                        if (
+                            b.get("type") == "tool_call"
+                            and b.get("approval_status") == "pending"
+                        ):
+                            tid = b.get("tool_call_id", "")
+                            if tid and tid not in _seen_pending:
+                                _seen_pending.add(tid)
+                                pending_tool_call_ids.append(tid)
+                    for tc in (msg.get("tool_calls") or []):
+                        if tc.get("approval_status") == "pending":
+                            tid = tc.get("tool_call_id", "")
+                            if tid and tid not in _seen_pending:
+                                _seen_pending.add(tid)
+                                pending_tool_call_ids.append(tid)
                     break
     except Exception as e:
         logger.warning(f"[{sid}] HITL 恢复: 加载部分消息失败: {e}")
+
+    # 捕获触发 HITL 的原始用户消息（会话中最后一条 user 消息），供记忆生成使用
+    try:
+        if session and session.messages:
+            for m in session.messages:
+                if m.get("role") == "user":
+                    original_user_msg = m.get("content", "") or ""
+    except Exception:
+        pass
+
+    # 将审批决策立即应用到内存中的 blocks / tool_call_records：
+    # 1) 前端历史渲染优先读 blocks，只写 tool_calls 不够；
+    # 2) 恢复流结束后会用内存数据整条覆盖持久化（build_assistant_message_dict），
+    #    若只 patch 数据库（_persist_approval_decisions），最终写回会把状态冲回 "pending"。
+    decision_status_by_id: dict[str, str] = {}
+    for i, tc_id in enumerate(pending_tool_call_ids):
+        if i >= len(decisions or []):
+            break
+        decision_item = decisions[i] or {}
+        decision_type = decision_item.get("type") if isinstance(decision_item, dict) else None
+        decision_status_by_id[tc_id] = (
+            "approved" if decision_type == "approve" else "rejected"
+        )
+    if decision_status_by_id:
+        for rec in tool_call_records:
+            rec_id = rec[1] if len(rec) > 1 else ""
+            if rec_id in decision_status_by_id:
+                while len(rec) < 8:
+                    rec.append(None)
+                rec[7] = decision_status_by_id[rec_id]
+        for b in blocks:
+            if (
+                b.get("type") == "tool_call"
+                and b.get("tool_call_id") in decision_status_by_id
+            ):
+                b["approval_status"] = decision_status_by_id[b["tool_call_id"]]
+                b.pop("pending_approval", None)
 
     logger.info(
         f"[{sid}] 🔔 HITL 恢复 | thread_id={thread_id} | "
         f"已有内容 {len(accumulated_response)} 字符 | "
         f"已有 blocks {len(blocks)} | decisions={decisions}"
     )
+    if decisions:
+        decision_desc = "、".join(
+            ("批准" if (d or {}).get("type") == "approve" else "拒绝")
+            if isinstance(d, dict) else str(d)
+            for d in decisions
+        )
+        logger.info(f"[{sid}] 👤 用户审批操作: {decision_desc}")
 
     stream_config = {"configurable": {"thread_id": thread_id}}
     max_input_tokens = getattr(agent, "max_input_tokens", None) or 0
     auto_compress_tokens = getattr(agent, "auto_compress_tokens", None) or 0
 
-    is_in_thinking = False
-    thinking_start_time = None
-    thinking_step_start_len = 0
-    content_start_time = None
-    tool_call_start_times = {}
-    tool_call_accumulated_args = {}
-    tool_call_accumulated_args_str = {}
-    tool_call_id_to_name = {}
-    tool_call_index_to_id = {}
-    pending_tool_args_by_index = {}
-    current_thinking_block_idx = None
-    current_content_block_idx = None
-    emitted_tool_call_ids = set()
-    _todo_emitted_for = set()
+    # ── StreamProcessor（用 DB 载入的初始状态初始化）──────────────────
+    proc = StreamProcessor(
+        sid=sid, session_id=session_id, db=db, message_id=message_id,
+        session_logger=session_logger,
+        max_input_tokens=max_input_tokens,
+        auto_compress_tokens=auto_compress_tokens,
+        current_step=current_step, blocks=list(blocks),
+        total_usage=dict(total_usage),
+        last_context_tokens=last_context_tokens,
+        accumulated_response=accumulated_response,
+        accumulated_thinking=accumulated_thinking,
+        start_time=start_time,
+    )
 
-    def _persist_todos(todos_list):
+    def _tool_call_records_from_blocks(blks):
+        return [
+            (b.get("tool_name", ""), b.get("tool_call_id", ""),
+             b.get("arguments", {}), b.get("result", ""),
+             b.get("success", True), b.get("duration"),
+             b.get("step", 0), b.get("approval_status"))
+            for b in blks if b.get("type") == "tool_call"
+        ]
+
+    def _persist():
         try:
-            db.update_session_todos(session_id, todos_list)
-            logger.info(f"[{sid}] 📋 Todo list persisted | items: {len(todos_list)}")
+            msg = build_assistant_message_dict(
+                content=proc.accumulated_response,
+                thinking=proc.accumulated_thinking,
+                thinking_duration=None,
+                tool_call_records=_tool_call_records_from_blocks(proc.blocks),
+                blocks=proc.blocks,
+                input_tokens=proc.total_usage.get("input_tokens", 0),
+                output_tokens=proc.total_usage.get("output_tokens", 0),
+                total_tokens=proc.total_usage.get("total_tokens", 0),
+                context_tokens=proc.last_context_tokens,
+                elapsed_time=time.time() - start_time,
+                step_count=proc.current_step,
+            )
+            db.update_last_assistant_message(session_id, msg)
+            db.update_last_assistant_message_row(session_id, msg)
         except Exception as e:
-            logger.warning(f"[{sid}] 持久化 Todo list 失败: {e}")
+            logger.warning(f"[{sid}] 增量持久化失败: {e}")
 
-    def _end_thinking(step):
-        nonlocal is_in_thinking, thinking_start_time, current_thinking_block_idx, thinking_step_start_len
-        if not is_in_thinking:
-            return None
-        is_in_thinking = False
-        duration = round(time.time() - thinking_start_time, 2) if thinking_start_time else 0
-        thinking_start_time = None
-        current_thinking_block_idx = None
-        step_thinking_len = len(accumulated_thinking[thinking_step_start_len:].strip())
-        logger.info(
-            f"[{sid}] 🤔 Step {step} 思考完成 | 耗时: {duration}s | 字符: {step_thinking_len}"
-        )
-        return format_sse({"type": "thinking_end", "duration": duration, "step": step})
+    def _on_tool_result(ev):
+        tool_name = ev.get("tool_name", "")
+        tool_call_id = ev.get("tool_call_id", "")
+        tool_args = ev.get("arguments", {})
+        result_content = ev.get("result", "")
+        success = ev.get("success", True)
+        tool_duration = ev.get("duration", 0)
+        step = ev.get("step", 0)
+        if message_id:
+            try:
+                db.record_tool_call(
+                    session_id=session_id, message_id=message_id,
+                    tool_name=tool_name, tool_call_id=tool_call_id,
+                    arguments=tool_args if isinstance(tool_args, dict) else {},
+                    result=str(result_content)[:5000] if result_content is not None else None,
+                    success=success, duration=tool_duration, step=step,
+                )
+            except Exception as e:
+                logger.warning(f"[{sid}] 持久化工具调用记录失败: {e}")
+        if session_logger:
+            try:
+                session_logger.log_tool_call(
+                    tool_name=tool_name, tool_call_id=tool_call_id,
+                    arguments=tool_args,
+                    result=str(result_content)[:5000],
+                    success=success, duration=tool_duration, step=step,
+                    message_id=message_id,
+                )
+            except Exception:
+                pass
+        if tool_name in ("write_file", "write_tool"):
+            try:
+                file_args = tool_args if isinstance(tool_args, dict) else {}
+                filename = (
+                    file_args.get("file_name")
+                    or file_args.get("path")
+                    or file_args.get("file_path", "")
+                )
+                if filename:
+                    base_name = os.path.basename(filename) if filename else "unknown"
+                    ext = os.path.splitext(base_name)[1].lstrip(".") or "txt"
+                    db.add_generated_file(
+                        session_id=session_id, message_id=message_id,
+                        filename=base_name,
+                        file_path=str(agent.workspace_dir / filename)
+                        if not os.path.isabs(filename) else filename,
+                        file_type=ext, size=0,
+                    )
+                    logger.info(f"[{sid}] 📄 记录生成文件: {base_name}")
+            except Exception as e:
+                logger.warning(f"[{sid}] 记录生成文件失败: {e}")
 
-    def _end_thinking_if_needed():
-        nonlocal is_in_thinking
-        if not is_in_thinking:
-            return None
-        return _end_thinking(current_step)
+    def _on_thinking_end(ev):
+        step = ev.get("step", 0)
+        duration = ev.get("duration", 0)
+        for blk in reversed(proc.blocks):
+            if blk.get("type") == "thinking" and blk.get("step") == step:
+                content = (blk.get("content", "") or "").strip()
+                if content and message_id:
+                    try:
+                        db.record_thinking(
+                            session_id=session_id, message_id=message_id,
+                            step=step, content=content[:10000], duration=duration,
+                        )
+                    except Exception as e:
+                        logger.warning(f"[{sid}] 持久化思考记录失败: {e}")
+                break
 
-    def _seal_content_block():
-        nonlocal current_content_block_idx
-        current_content_block_idx = None
+    def _persist_approval_decisions():
+        """将用户对 HITL 工具调用的审批决策（批准/拒绝）持久化到最近一条 assistant 消息，
+        使切换会话/刷新页面后仍能显示审批标记。"""
+        if not decision_status_by_id:
+            return
+        try:
+            sess = db.get_session(session_id)
+            if not sess or not sess.messages:
+                return
+            last = sess.messages[-1]
+            if last.get("role") != "assistant":
+                return
+            for tc in last.get("tool_calls") or []:
+                if tc.get("tool_call_id") in decision_status_by_id:
+                    tc["approval_status"] = decision_status_by_id[tc["tool_call_id"]]
+            # blocks 同步写回：前端历史渲染优先读 blocks
+            for b in last.get("blocks") or []:
+                if (
+                    b.get("type") == "tool_call"
+                    and b.get("tool_call_id") in decision_status_by_id
+                ):
+                    b["approval_status"] = decision_status_by_id[b["tool_call_id"]]
+                    b.pop("pending_approval", None)
+            db.update_last_assistant_message(session_id, last)
+        except Exception as e:
+            logger.warning(f"[{sid}] 持久化审批决策失败: {e}")
 
-    def _log_step_start(step, step_type, detail=""):
-        msg = f"[{sid}] 🚀 Step {step} 开始 | 类型: {step_type}"
-        if detail:
-            msg += f" | {detail}"
-        logger.info(msg)
+    # 构造 resume 载荷：当图中存在多个 pending interrupt（如并行工具调用/子代理各自触发 HITL）时，
+    # LangGraph 要求以 {interrupt_id: value} 映射形式恢复，否则抛
+    # "When there are multiple pending interrupts, you must specify the interrupt id when resuming."
+    resume_payload = {"decisions": decisions}
+    resume_command = Command(resume=resume_payload)
+    try:
+        state = await agent.agent.aget_state(stream_config)
+        interrupt_ids = []
+        for task_item in getattr(state, "tasks", None) or []:
+            for intr in getattr(task_item, "interrupts", None) or []:
+                iid = getattr(intr, "id", None) or getattr(intr, "interrupt_id", None)
+                if iid:
+                    interrupt_ids.append(iid)
+        if len(interrupt_ids) > 1:
+            logger.info(f"[{sid}] HITL 恢复: 检测到 {len(interrupt_ids)} 个 pending interrupt，按 interrupt_id 映射恢复")
+            resume_command = Command(resume={iid: resume_payload for iid in interrupt_ids})
+    except Exception as e:
+        logger.warning(f"[{sid}] HITL 恢复: 检查 pending interrupts 失败（回退默认 resume）: {e}")
 
     try:
+        last_persisted_len = 0
         async for event in agent.agent.astream(
-            Command(resume={"decisions": decisions}),
-            stream_mode="messages",
+            resume_command,
+            stream_mode=["messages", "updates"],
             config=stream_config,
         ):
-            chunk, metadata = event
-
-            if isinstance(chunk, AIMessageChunk):
-                rc = extract_reasoning(chunk.additional_kwargs) if hasattr(chunk, "additional_kwargs") else ""
-                raw_content = chunk.content or ""
-                tcc = getattr(chunk, "tool_call_chunks", None) or []
-
-                if hasattr(chunk, "usage_metadata") and chunk.usage_metadata:
-                    usage_meta = chunk.usage_metadata
-                    total_usage["input_tokens"] += usage_meta.get("input_tokens", 0)
-                    total_usage["output_tokens"] += usage_meta.get("output_tokens", 0)
-                    total_usage["total_tokens"] += usage_meta.get("total_tokens", 0)
-                    if usage_meta.get("input_tokens", 0) > 0:
-                        last_context_tokens = usage_meta["input_tokens"]
-
-                if rc:
-                    if not is_in_thinking:
-                        is_in_thinking = True
-                        thinking_start_time = time.time()
-                        thinking_step_start_len = len(accumulated_thinking)
-                        current_step += 1
-                        current_thinking_block_idx = block_order_counter
-                        blocks.append({"type": "thinking", "order": block_order_counter, "content": "", "step": current_step})
-                        block_order_counter += 1
-                        yield format_sse({"type": "thinking_start", "step": current_step})
-                    accumulated_thinking += rc
-                    blocks[current_thinking_block_idx]["content"] = accumulated_thinking
-                    yield format_sse({"type": "thinking", "content": rc, "step": current_step})
-
-                if raw_content and not tcc:
-                    if is_in_thinking:
-                        te = _end_thinking(current_step)
-                        if te:
-                            yield te
-                    if current_content_block_idx is None:
-                        current_content_block_idx = block_order_counter
-                        blocks.append({"type": "content", "order": block_order_counter, "content": "", "step": current_step})
-                        block_order_counter += 1
-                        if not content_start_time:
-                            content_start_time = time.time()
-                        yield format_sse({"type": "content_start", "step": current_step})
-                    accumulated_response += raw_content
-                    blocks[current_content_block_idx]["content"] = accumulated_response
-                    yield format_sse({"type": "content", "content": raw_content})
-
-                if tcc:
-                    te = _end_thinking_if_needed()
-                    if te:
-                        yield te
-                    _seal_content_block()
-                    for tc_chunk in tcc:
-                        tc_name = tc_chunk.get("name", "") or ""
-                        tc_id = tc_chunk.get("id", "") or ""
-                        tc_args_str = str(tc_chunk.get("args", "") or "")
-                        tc_index = tc_chunk.get("index")
-
-                        if tc_name and tc_id:
-                            current_step += 1
-                            _log_step_start(current_step, "工具调用", f"tools: [{tc_name}]")
-                            tool_call_id_to_name[tc_id] = tc_name
-                            tool_call_start_times[tc_id] = time.time()
-                            if tc_index is not None:
-                                tool_call_index_to_id[tc_index] = tc_id
-
-                            pending_prefix = ""
-                            if (
-                                tc_index is not None
-                                and tc_index in pending_tool_args_by_index
-                            ):
-                                pending_prefix = pending_tool_args_by_index.pop(tc_index)
-
-                            tool_call_accumulated_args_str[tc_id] = pending_prefix + tc_args_str
-
-                            full_args = tool_call_accumulated_args_str[tc_id]
-                            args_data = parse_tool_args(full_args)
-                            tool_call_accumulated_args[tc_id] = args_data
-                            emitted_tool_call_ids.add(tc_id)
-                            blocks.append({
-                                "type": "tool_call",
-                                "order": block_order_counter,
-                                "tool_name": tc_name,
-                                "tool_call_id": tc_id,
-                                "arguments": args_data,
-                                "result": "",
-                                "success": True,
-                                "duration": None,
-                                "step": current_step,
-                            })
-                            block_order_counter += 1
-                            yield format_sse({
-                                "type": "tool_call",
-                                "tool_name": tc_name,
-                                "tool_call_id": tc_id,
-                                "arguments": args_data,
-                                "step": current_step,
-                            })
-
-                            if tc_name == "write_todos" and isinstance(args_data, dict):
-                                todos = args_data.get("todos", [])
-                                if todos:
-                                    logger.info(f"[{sid}] 📋 Todo list | items: {len(todos)}")
-                                    _persist_todos(todos)
-                                    _todo_emitted_for.add(tc_id)
-                                    yield format_sse({
-                                        "type": "todo_list",
-                                        "todos": todos,
-                                        "step": current_step,
-                                    })
-                        elif tc_id or tc_index is not None:
-                            resolved_tid = tc_id
-                            if not resolved_tid and tc_index is not None:
-                                resolved_tid = tool_call_index_to_id.get(tc_index, "")
-
-                            if resolved_tid and resolved_tid in tool_call_id_to_name:
-                                tool_call_accumulated_args_str[resolved_tid] = (
-                                    tool_call_accumulated_args_str.get(resolved_tid, "")
-                                    + tc_args_str
-                                )
-                                full_args_str = tool_call_accumulated_args_str[resolved_tid]
-                                try:
-                                    parsed = json.loads(full_args_str)
-                                    args_data = (
-                                        parsed
-                                        if isinstance(parsed, dict)
-                                        else {"value": parsed}
-                                    )
-                                    tool_call_accumulated_args[resolved_tid] = args_data
-                                    for blk in reversed(blocks):
-                                        if (
-                                            blk["type"] == "tool_call"
-                                            and blk.get("tool_call_id") == resolved_tid
-                                        ):
-                                            blk["arguments"] = args_data
-                                            break
-
-                                    # 重新推送 tool_call 事件，确保前端获取完整参数
-                                    yield format_sse({
-                                        "type": "tool_call",
-                                        "tool_name": tool_call_id_to_name.get(resolved_tid, ""),
-                                        "tool_call_id": resolved_tid,
-                                        "arguments": args_data,
-                                        "step": current_step,
-                                    })
-
-                                    # write_todos: 推送 todo_list 事件
-                                    _tc_name = tool_call_id_to_name.get(resolved_tid, "")
-                                    if _tc_name == "write_todos" and isinstance(args_data, dict):
-                                        todos = args_data.get("todos", [])
-                                        if todos and resolved_tid not in _todo_emitted_for:
-                                            logger.info(f"[{sid}] 📋 Todo list | items: {len(todos)}")
-                                            _persist_todos(todos)
-                                            _todo_emitted_for.add(resolved_tid)
-                                            yield format_sse({
-                                                "type": "todo_list",
-                                                "todos": todos,
-                                                "step": current_step,
-                                            })
-                                except json.JSONDecodeError:
-                                    pass
-                            elif tc_index is not None:
-                                pending_tool_args_by_index[tc_index] = (
-                                    pending_tool_args_by_index.get(tc_index, "")
-                                    + tc_args_str
-                                )
-
-            elif isinstance(chunk, ToolMessage):
-                te = _end_thinking_if_needed()
-                if te:
-                    yield te
-                resolved_tid = chunk.tool_call_id
-                tool_name = chunk.name or "tool"
-                tool_args = tool_call_accumulated_args.get(resolved_tid, {})
-                result_content = _parse_mcp_content(chunk.content) if chunk.content else ""
-                chunk_error = getattr(chunk, "additional_kwargs", {}).get("is_error", False)
-                content_error = _is_error_result(result_content)
-                success = not chunk_error and not content_error
-                tool_start = tool_call_start_times.pop(resolved_tid, None)
-                tool_duration = round(time.time() - tool_start, 2) if tool_start else 0
-
-                for blk in reversed(blocks):
-                    if blk["type"] == "tool_call" and blk.get("tool_call_id") == resolved_tid:
-                        blk["result"] = result_content
-                        blk["success"] = success
-                        blk["duration"] = tool_duration
-                        break
-
-                tool_call_records.append([
-                    tool_name, resolved_tid, tool_args, result_content,
-                    success, tool_duration, current_step,
-                ])
-
-                # 工具执行日志由 LoggingMiddleware 统一记录（见 services/logging_middleware.py）
-
-                yield format_sse({
-                    "type": "tool_result",
-                    "tool_name": tool_name,
-                    "tool_call_id": resolved_tid,
-                    "arguments": tool_args,
-                    "result": result_content,
-                    "success": success,
-                    "duration": tool_duration,
-                    "step": current_step,
-                })
-
-                # write_todos: 从工具结果中提取 todo list
-                if tool_name == "write_todos" and resolved_tid not in _todo_emitted_for:
-                    todos = (
-                        tool_args.get("todos", [])
-                        if isinstance(tool_args, dict)
-                        else []
-                    )
-                    if not todos and result_content:
-                        todo_match = re.search(r"\[.*?\]", result_content, re.DOTALL)
-                        if todo_match:
-                            try:
-                                parsed_result = json.loads(todo_match.group(0))
-                                if isinstance(parsed_result, list):
-                                    todos = parsed_result
-                            except (json.JSONDecodeError, ValueError):
-                                pass
-                    if todos:
-                        logger.info(f"[{sid}] 📋 Todo list | items: {len(todos)}")
-                        _persist_todos(todos)
-                        _todo_emitted_for.add(resolved_tid)
-                        yield format_sse({
-                            "type": "todo_list",
-                            "todos": todos,
-                            "step": current_step,
-                        })
+            mode, data = (
+                event if isinstance(event, tuple) else ("messages", event)
+            )
+            for ev in proc.handle(mode, data):
+                ev_type = ev.get("type")
+                if ev_type == "tool_result":
+                    _on_tool_result(ev)
+                elif ev_type == "thinking_end":
+                    _on_thinking_end(ev)
+                elif ev_type == "todo_list":
+                    try:
+                        db.update_session_todos(session_id, ev["todos"])
+                    except Exception as e:
+                        logger.warning(f"[{sid}] 持久化 Todo list 失败: {e}")
+                elif ev_type == "content":
+                    if len(proc.accumulated_response) - last_persisted_len >= 500:
+                        last_persisted_len = len(proc.accumulated_response)
+                        _persist()
+                yield format_sse(ev)
 
         # ── Post-streaming ─────────────────────────────────────────
+        # 确保 thinking 结束（流结束时若仍在思考）
+        for _ev in proc._end_thinking():
+            yield format_sse(_ev)
+
+        # 同步本地状态别名（供后续嵌套 HITL/持久化/记忆逻辑使用）
+        accumulated_response = proc.accumulated_response
+        accumulated_thinking = proc.accumulated_thinking
+        blocks = proc.blocks
+        tool_call_records = _tool_call_records_from_blocks(proc.blocks)
+        total_usage = proc.total_usage
+        current_step = proc.current_step
+        last_context_tokens = proc.last_context_tokens
+        is_in_thinking = proc.is_in_thinking
         logger.info(f"[{sid}] 📢 流式输出结束 | steps={current_step} | blocks={len(blocks)}")
-        te = _end_thinking(current_step)
-        if te:
-            yield te
-        _seal_content_block()
+
         if accumulated_response:
             yield format_sse({"type": "content_end", "content": ""})
 
@@ -1908,10 +1337,18 @@ async def resume_stream_generator(
                     review_configs = hitl_request.get("review_configs", [])
                     config_map = {cfg.get("action_name"): cfg for cfg in review_configs}
                     state_msgs = graph_state.values.get("messages", [])
+                    _nested_approval_names = {
+                        (ar.get("name", "") if isinstance(ar, dict) else getattr(ar, "name", ""))
+                        for ar in action_requests
+                    }
                     pending_tc_ids = []
                     for msg in reversed(state_msgs):
                         if isinstance(msg, AIMessage) and getattr(msg, "tool_calls", None):
-                            pending_tc_ids = [tc.get("id", "") for tc in msg.tool_calls]
+                            pending_tc_ids = [
+                                tc.get("id", "")
+                                for tc in msg.tool_calls
+                                if tc.get("name", "") in _nested_approval_names
+                            ]
                             break
                     partial_elapsed = time.time() - start_time
                     partial_msg = build_assistant_message_dict(
@@ -1927,11 +1364,24 @@ async def resume_stream_generator(
                         elapsed_time=partial_elapsed,
                         step_count=current_step,
                     )
+                    # 持久化 HITL 审批状态：将本层嵌套中断触发的工具调用标记为「待审批」
+                    # blocks 同步打标记（前端历史渲染优先读 blocks）
+                    for tc in partial_msg.get("tool_calls") or []:
+                        if tc.get("tool_call_id") in pending_tc_ids:
+                            tc["approval_status"] = "pending"
+                    for b in partial_msg.get("blocks") or []:
+                        if (
+                            b.get("type") == "tool_call"
+                            and b.get("tool_call_id") in pending_tc_ids
+                        ):
+                            b["approval_status"] = "pending"
                     db.update_last_assistant_message(session_id, partial_msg)
                     db.update_last_assistant_message_row(session_id, partial_msg)
                     yield format_sse({
                         "type": "approval_required",
                         "thread_id": thread_id,
+                        # 嵌套中断时也下发当前 blocks，前端据此刷新已完成的工具结果
+                        "blocks": proc._sse_blocks(),
                         "action_requests": [
                             {
                                 "tool_call_id": pending_tc_ids[i] if i < len(pending_tc_ids) else "",
@@ -1948,8 +1398,78 @@ async def resume_stream_generator(
                     return
         except Exception as e:
             logger.warning(f"[{sid}] HITL 恢复: 嵌套中断检测异常: {e}", exc_info=True)
+        finally:
+            # 无论正常结束、嵌套中断还是异常，均把审批决策写回，保证切换会话后仍可见
+            _persist_approval_decisions()
 
         elapsed_time = time.time() - start_time
+
+        # 恢复流重跑工具时会再次 append 同 tool_call_id 的记录（DB 加载的 + 重跑时新增的），
+        # 按 tool_call_id 去重并合并审批状态：保留有结果的记录，继承非空 approval_status，
+        # 避免最终消息出现重复工具卡、且审批标记（已批准）不被无状态的新记录冲掉。
+        _merged_tcr: dict[str, list] = {}
+        for rec in tool_call_records:
+            tid = rec[1] if len(rec) > 1 else ""
+            status = rec[7] if len(rec) > 7 else None
+            base = _merged_tcr.get(tid)
+            if base is None:
+                _merged_tcr[tid] = list(rec)
+            else:
+                # rec 来自 _tool_call_records_from_blocks，是 tuple（不可变）；
+                # chosen 后续需要做下标赋值（chosen[7] = ...），必须先转成 list，
+                # 否则 TypeError: 'tuple' object does not support item assignment。
+                chosen = list(rec) if rec[3] else base
+                other = base if rec[3] else rec
+                if len(chosen) < 8:
+                    chosen = chosen + [None] * (8 - len(chosen))
+                # 继承非空审批状态
+                if chosen[7] is None and other[7] is not None:
+                    chosen[7] = other[7]
+                _merged_tcr[tid] = chosen
+        tool_call_records = list(_merged_tcr.values())
+
+        # blocks 同样需要 finalize：astream 重放可能新建同 tool_call_id/同名 block，
+        # 且内存 blocks 的 approval_status 可能在重放中被遗漏。这里：
+        # 1) 重新应用审批决策（已批准的 tc_id -> approval_status=approved，移除 pending_approval）；
+        # 2) 按 tool_call_id 去重 blocks（保留有结果的，继承非空 approval_status），
+        #    避免历史会话出现重复工具卡或残留 pending（误显示"待审批"）。
+        if decision_status_by_id:
+            for b in blocks:
+                if (
+                    b.get("type") == "tool_call"
+                    and b.get("tool_call_id") in decision_status_by_id
+                ):
+                    b["approval_status"] = decision_status_by_id[b["tool_call_id"]]
+                    b.pop("pending_approval", None)
+        _final_blocks: list = []
+        _seen_tc_blocks: dict = {}
+        for b in blocks:
+            if b.get("type") == "tool_call":
+                tid = b.get("tool_call_id", "")
+                if tid and tid in _seen_tc_blocks:
+                    existing = _seen_tc_blocks[tid]
+                    # 选取有结果的作为基础，并继承非空审批状态
+                    if b.get("result") and not existing.get("result"):
+                        merged = dict(b)
+                        if not merged.get("approval_status") and existing.get("approval_status"):
+                            merged["approval_status"] = existing["approval_status"]
+                        _seen_tc_blocks[tid] = merged
+                        # 替换列表中的占位
+                        idx = _final_blocks.index(existing)
+                        _final_blocks[idx] = merged
+                    else:
+                        if not existing.get("approval_status") and b.get("approval_status"):
+                            existing["approval_status"] = b["approval_status"]
+                    continue
+                elif tid:
+                    _seen_tc_blocks[tid] = b
+                    _final_blocks.append(b)
+                else:
+                    _final_blocks.append(b)
+            else:
+                _final_blocks.append(b)
+        blocks = _final_blocks
+        proc.blocks = blocks  # 同步去重后的 blocks，确保 done 事件 _sse_blocks() 一致
 
         # 会话累计 token
         session_total_tokens = 0
@@ -1992,6 +1512,13 @@ async def resume_stream_generator(
         db.update_last_assistant_message(session_id, assistant_message)
         db.update_last_assistant_message_row(session_id, assistant_message)
 
+        # 记忆持久化：HITL 恢复流首轮因中断后，用户批准后任务真正完成时，
+        # 也须在工作区生成 memory.md（主生成器在 HITL 中断处提前 return，到不了记忆块；
+        # 此处复用与主生成器一致的公共函数，保证第二轮能加载第一轮总结）。
+        # 注意：仅在任务真正完成（非嵌套中断，嵌套中断已提前 return）时执行。
+        _maybe_rename_workspace(agent, db, session_id, tool_call_records, sid)
+        _submit_memory_updates(agent, session_id, db, original_user_msg, accumulated_response, sid)
+
         logger.info(
             f"[{sid}] ✅ 流式响应完成 | 总步骤: {current_step} | "
             f"总耗时: {elapsed_time:.2f}s | tokens={sum_tokens} (in={inp_tokens}, out={out_tokens})"
@@ -2002,10 +1529,20 @@ async def resume_stream_generator(
             "session_id": session_id,
             "elapsed_time": round(elapsed_time, 2),
             "usage": usage_payload,
+            # 下发权威最终 blocks（含工具结果/耗时），前端据此替换内存 blocks，
+            # 避免依赖 tool_result 事件匹配（HITL 恢复流曾因匹配失败导致工具一直"执行中"）。
+            "blocks": proc._sse_blocks(),
         })
 
     except asyncio.CancelledError:
         logger.info(f"[{sid}] HITL 恢复被取消")
+        accumulated_response = proc.accumulated_response
+        accumulated_thinking = proc.accumulated_thinking
+        blocks = proc.blocks
+        tool_call_records = _tool_call_records_from_blocks(proc.blocks)
+        total_usage = proc.total_usage
+        last_context_tokens = proc.last_context_tokens
+        current_step = proc.current_step
         partial_msg = build_assistant_message_dict(
             content=accumulated_response,
             thinking=accumulated_thinking,
@@ -2024,4 +1561,24 @@ async def resume_stream_generator(
         yield format_sse({"type": "error", "content": "请求被取消"})
     except Exception as e:
         logger.error(f"[{sid}] HITL 恢复异常: {str(e)}", exc_info=True)
+        # 持久化已生成的部分回复（与取消路径一致），避免流式过程中已完成的
+        # 思考/工具/正文在异常后丢失，导致历史会话中 HITL 之后的记录整体消失。
+        try:
+            _partial = build_assistant_message_dict(
+                content=proc.accumulated_response,
+                thinking=proc.accumulated_thinking,
+                thinking_duration=None,
+                tool_call_records=_tool_call_records_from_blocks(proc.blocks),
+                blocks=proc.blocks,
+                input_tokens=proc.total_usage.get("input_tokens", 0),
+                output_tokens=proc.total_usage.get("output_tokens", 0),
+                total_tokens=proc.total_usage.get("total_tokens", 0),
+                context_tokens=proc.last_context_tokens,
+                elapsed_time=time.time() - start_time,
+                step_count=proc.current_step,
+            )
+            db.update_last_assistant_message(session_id, _partial)
+            db.update_last_assistant_message_row(session_id, _partial)
+        except Exception as persist_err:
+            logger.warning(f"[{sid}] HITL 恢复异常时持久化失败: {persist_err}")
         yield format_sse({"type": "error", "content": f"处理失败: {str(e)}"})

@@ -26,6 +26,7 @@ from ..models.api import (
 )
 from ..middleware import get_current_username
 from ..config import Config
+from ..services import get_agent_config, remove_session_agent
 
 logger = logging.getLogger(__name__)
 
@@ -83,7 +84,19 @@ def compute_session_usage(messages: list[dict]) -> dict | None:
 
 
 def get_max_input_tokens() -> int | None:
-    """获取当前配置的 max_input_tokens。"""
+    """获取当前配置的 max_input_tokens。
+
+    优先复用启动时已初始化的全局配置（get_agent_config），避免每次请求重新读盘
+    并依赖 Config.load 的默认搜索路径（生产环境可能读不到按 AGENT_ENV 选择的配置文件，
+    导致返回 None，进而使前端切换会话后 token 用量百分比显示为 0）。
+    兜底再从磁盘加载配置。
+    """
+    try:
+        cfg = get_agent_config()
+        if cfg and cfg.get("config"):
+            return cfg["config"].llm.max_input_tokens
+    except Exception:
+        pass
     try:
         cfg = Config.load()
         return cfg.llm.max_input_tokens if cfg and cfg.llm else None
@@ -249,13 +262,42 @@ async def delete_session(
             except Exception as e:
                 logger.warning(f"删除会话文件失败: {file_path} | {e}")
 
-    workspace_dir = Config.get_user_workspace_dir(username) / session.workspace_name
-    if workspace_dir.exists():
-        try:
-            shutil.rmtree(workspace_dir)
-            logger.info(f"删除工作区目录 | 路径: {workspace_dir}")
-        except Exception as e:
-            logger.warning(f"删除工作区目录失败: {e}")
+    # 先移除缓存 Agent 实例，避免后台记忆更新线程在删除后用 mkdir 重建工作区目录
+    try:
+        remove_session_agent(session_id)
+    except Exception as e:
+        logger.warning(f"移除缓存 Agent 失败: {e}")
+
+    user_workspace_dir = Config.get_user_workspace_dir(username)
+    # 候选工作区目录名：workspace_name（首轮/重命名后）与 session_id（旧会话回退）
+    # agent.py 在 workspace_name 为空时会用 session_id 作目录名，故两者都尝试。
+    candidate_names = []
+    if session.workspace_name:
+        candidate_names.append(session.workspace_name)
+    candidate_names.append(session_id)
+    deleted_any = False
+    for name in candidate_names:
+        if not name:
+            continue
+        ws_dir = user_workspace_dir / name
+        # 安全护栏：绝不删除用户级工作区根目录（name 为空或仅指向 user 目录时跳过）
+        if ws_dir.resolve() == user_workspace_dir.resolve():
+            logger.warning(f"跳过删除：候选目录等于用户工作区根目录 | name={name}")
+            continue
+        if ws_dir.exists():
+            try:
+                shutil.rmtree(ws_dir)
+                logger.info(f"删除工作区目录 | 路径: {ws_dir} | name={name}")
+                deleted_any = True
+            except Exception as e:
+                logger.warning(f"删除工作区目录失败: {ws_dir} | {e}")
+        else:
+            logger.info(f"工作区目录不存在，跳过 | 路径: {ws_dir} | name={name}")
+    if not deleted_any:
+        logger.warning(
+            f"未删除任何工作区目录 | session_id={session_id} | "
+            f"workspace_name={session.workspace_name} | user_dir={user_workspace_dir}"
+        )
 
     db.delete_session(session_id)
 

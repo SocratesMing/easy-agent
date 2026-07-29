@@ -4,12 +4,20 @@ const TOKEN_KEY = 'mini_agent_token'
 const USERNAME_KEY = 'mini_agent_username'
 
 export const AUTH_EXPIRED_EVENT = 'auth-expired'
+// 用户活动事件：后端交互（API 调用/流式数据）时派发，前端据此重置空闲自动登出计时器
+export const USER_ACTIVITY_EVENT = 'user-activity'
+
+export function dispatchUserActivity() {
+  window.dispatchEvent(new CustomEvent(USER_ACTIVITY_EVENT))
+}
 
 export function dispatchAuthExpired() {
   window.dispatchEvent(new CustomEvent(AUTH_EXPIRED_EVENT))
 }
 
 export async function authFetch(url, options = {}) {
+  // 任何后端 API 调用都视为用户活动，重置空闲登出计时器
+  dispatchUserActivity()
   const token = getStoredToken()
   const headers = {
     ...options.headers,

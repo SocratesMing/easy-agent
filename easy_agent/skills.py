@@ -4,25 +4,35 @@ from pathlib import Path
 
 
 def find_skills_root(skills_dir: str | None = None) -> str | None:
-    """Find the first existing skills root directory.
+    """Find the skills root directory.
 
     Args:
-        skills_dir: Explicit skills directory path from config.
+        skills_dir: Explicit skills directory path from config. When given,
+            it is honored directly (no silent fallback to bundled skills) so
+            that the runtime path stays consistent with the configuration.
+            The directory is created if missing (best-effort, e.g. an external
+            skills mount point).
 
     Returns:
         Absolute path to the skills root directory, or None if not found.
     """
-    search_paths = []
     if skills_dir:
-        search_paths.append(Path(skills_dir))
+        # 显式配置优先：直接采用配置路径，不再因目录不存在而静默回退到包内 skills，
+        # 保证启动日志与 config.tools.skills_dir 完全一致。
+        p = Path(skills_dir)
+        if not p.exists():
+            try:
+                p.mkdir(parents=True, exist_ok=True)
+            except Exception:
+                # 外部挂载点可能无需创建；即便为空也保持配置值，不回退
+                pass
+        return str(p.absolute())
 
-    search_paths.extend(
-        [
-            Path("skills"),
-            Path("easy_agent") / "skills",
-            Path(__file__).parent / "skills",
-        ]
-    )
+    search_paths = [
+        Path("skills"),
+        Path("easy_agent") / "skills",
+        Path(__file__).parent / "skills",
+    ]
 
     for search_path in search_paths:
         if search_path.exists() and search_path.is_dir():
@@ -43,17 +53,16 @@ def discover_skills(skills_dir: str | None = None) -> list[dict]:
     skills = []
     seen_names = set()
 
-    search_paths = []
+    # 显式配置 skills_dir 时只扫描该路径（与 find_skills_root 行为一致，不回退包内 skills）；
+    # 未配置时才回退到默认搜索路径。
     if skills_dir:
-        search_paths.append(Path(skills_dir))
-
-    search_paths.extend(
-        [
+        search_paths = [Path(skills_dir)]
+    else:
+        search_paths = [
             Path("skills"),
             Path("easy_agent") / "skills",
             Path(__file__).parent / "skills",
         ]
-    )
 
     for search_path in search_paths:
         if not search_path.exists():

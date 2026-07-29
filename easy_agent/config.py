@@ -3,6 +3,7 @@
 Provides unified configuration loading and management functionality
 """
 
+import logging
 import os
 import re
 from pathlib import Path
@@ -10,6 +11,8 @@ from typing import Any
 
 import yaml
 from pydantic import BaseModel, Field, field_validator
+
+logger = logging.getLogger(__name__)
 
 # Matches ${VAR} and ${VAR:-default} placeholders inside string values.
 _ENV_VAR_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
@@ -54,6 +57,7 @@ class ProviderConfig(BaseModel):
     api_base: str = ""
     max_input_tokens: int = 200000
     protocol: str = "openai"  # "openai" or "anthropic"
+    supports_vision: bool = False  # 是否支持视觉/图片输入；False 时自动过滤 image_url 内容块
 
 
 class LLMConfig(BaseModel):
@@ -65,6 +69,7 @@ class LLMConfig(BaseModel):
     provider: str = "minimax"
     max_input_tokens: int = 200000  # Model context window size
     protocol: str = "openai"  # "openai" or "anthropic"
+    supports_vision: bool = False  # 是否支持视觉/图片输入
     retry: RetryConfig = Field(default_factory=RetryConfig)
 
 
@@ -122,6 +127,9 @@ class AgentConfig(BaseModel):
     log_dir: str = "./logs"
     sessions_dir: str = "./sessions"
     system_prompt_path: str = "system_prompt.md"
+    idle_logout_minutes: int = 5
+    """前端空闲超时（分钟）：用户超过该时长无任何操作时自动退出到登录页。
+    设为 0 表示禁用自动登出。"""
     denied_dirs: list[str | dict[str, Any]] = Field(default_factory=list)
     """禁止智能体读写的虚拟路径目录列表。
 
@@ -140,6 +148,21 @@ class AgentConfig(BaseModel):
     (ls/read_file/write_file 等) 能通过虚拟路径访问。
     例: {"/strategy-workspace/": "/home/sututu/code/finance-skills/fast_backtest/workspace"}
     """
+
+
+class LogConfig(BaseModel):
+    """日志配置：可在配置文件中指定日志目录、文件名、格式与级别。
+
+    - dir:    日志目录（也可用环境变量 EASY_LOG_DIR 覆盖）
+    - file:   日志文件名（留空则默认 easy_agent.log）
+    - format: logging 格式串，支持 %(asctime)s/%(name)s/%(levelname)s/%(message)s 等
+    - level:  日志级别，默认 info（info/debug/warning/error）
+    """
+
+    dir: str = "./logs"
+    file: str = ""
+    format: str = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    level: str = "info"
 
 
 class MCPToolConfig(BaseModel):
@@ -180,6 +203,7 @@ class Config(BaseModel):
     llm: LLMConfig
     agent: AgentConfig
     tools: ToolsConfig
+    log: LogConfig = Field(default_factory=LogConfig)
     summarization: SummarizationConfig = Field(default_factory=SummarizationConfig)
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
     models: dict[str, ProviderConfig] = Field(default_factory=dict)
@@ -242,6 +266,7 @@ class Config(BaseModel):
                     api_base=mcfg.get("api_base", ""),
                     max_input_tokens=mcfg.get("max_input_tokens", 200000),
                     protocol=mcfg.get("protocol", "openai"),
+                    supports_vision=mcfg.get("supports_vision", False),
                 )
 
         # Resolve active model config
@@ -265,6 +290,7 @@ class Config(BaseModel):
             provider=active_cfg.provider or active_model,
             max_input_tokens=active_cfg.max_input_tokens or 200000,
             protocol=active_cfg.protocol or "openai",
+            supports_vision=active_cfg.supports_vision,
             retry=retry_config,
         )
 
@@ -275,6 +301,7 @@ class Config(BaseModel):
             log_dir=data.get("log_dir", "./logs"),
             sessions_dir=data.get("sessions_dir", "./sessions"),
             system_prompt_path=data.get("system_prompt_path", "system_prompt.md"),
+            idle_logout_minutes=data.get("idle_logout_minutes", 5),
             denied_dirs=data.get("denied_dirs", []),
             external_dirs=data.get("external_dirs", {}),
         )
@@ -284,6 +311,16 @@ class Config(BaseModel):
             skills_dir=tools_data.get("skills_dir", "./skills"),
             prompts_dir=tools_data.get("prompts_dir", "./prompts"),
             read_file_line_limit=tools_data.get("read_file_line_limit", 2000),
+        )
+
+        log_data = data.get("log", {})
+        log_config = LogConfig(
+            dir=log_data.get("dir", "./logs"),
+            file=log_data.get("file", ""),
+            format=log_data.get(
+                "format", "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+            ),
+            level=log_data.get("level", "info"),
         )
 
         db_data = data.get("database", {})
@@ -331,12 +368,62 @@ class Config(BaseModel):
             llm=llm_config,
             agent=agent_config,
             tools=tools_config,
+            log=log_config,
             summarization=summ_config,
             database=db_config,
             models=models,
             active_model=active_model,
             preset_questions=data.get("preset_questions", []),
         )
+
+    def ensure_directories(self) -> list[str]:
+        """Create all directories referenced by the configuration if missing.
+
+        Covers runtime directories (workspace / memories / logs / sessions),
+        tools directories (skills / prompts), the log directory, the SQLite
+        database parent directory, and external_dirs host paths. Virtual paths
+        (denied_dirs) are intentionally skipped.
+
+        Returns the absolute paths that were created (empty if all existed).
+        Failures are swallowed (logged caller-side) so startup is never blocked.
+        """
+        # (label, path) for every real, on-disk directory in the config.
+        candidates: list[tuple[str, str]] = [
+            ("workspace", self.agent.workspace_dir),
+            ("memories", self.agent.memories_dir),
+            ("log_dir", self.agent.log_dir),
+            ("sessions", self.agent.sessions_dir),
+            ("skills", self.tools.skills_dir),
+            ("prompts", self.tools.prompts_dir),
+            ("log", self.log.dir),
+        ]
+
+        # SQLite database file -> its parent directory.
+        db_path = self.database.sqlite.path
+        if db_path:
+            db_parent = os.path.dirname(os.path.abspath(db_path))
+            if db_parent:
+                candidates.append(("sqlite_db_dir", db_parent))
+
+        # external_dirs: virtual prefix -> host real path (create the host side).
+        for vhost, host in self.agent.external_dirs.items():
+            candidates.append((f"external_dirs[{vhost}]", host))
+
+        created: list[str] = []
+        for label, raw in candidates:
+            if not raw:
+                continue
+            p = Path(raw)
+            if p.exists():
+                continue
+            try:
+                p.mkdir(parents=True, exist_ok=True)
+                created.append(str(p.absolute()))
+                logger.debug(f"📁 已创建配置目录 [{label}]: {p.absolute()}")
+            except Exception as e:
+                logger.warning(f"⚠️ 创建配置目录 [{label}] 失败 {raw}: {e}")
+
+        return created
 
     @staticmethod
     def get_package_dir() -> Path:
@@ -363,18 +450,36 @@ class Config(BaseModel):
         """将用户名转换为安全的目录名"""
         return "".join(c for c in username if c.isalnum() or c in ("_", "-")) or "user"
 
-    @staticmethod
-    def get_user_workspace_dir(username: str) -> Path:
+    @classmethod
+    def get_user_workspace_dir(cls, username: str, config: "Config | None" = None) -> Path:
         """获取用户的工作空间目录路径
+
+        遵循配置 agent.workspace_dir；未传入 config 时回退到运行期配置
+        （get_agent_config()），确保「更改配置工作目录后」查询会话目录文件
+        能按配置路径解析。
 
         Args:
             username: 用户名
+            config:   可选 Config 实例；省略则使用运行期配置
 
         Returns:
-            用户工作空间路径，如 workspace/{username}/
+            用户工作空间路径，如 {workspace_dir}/{username}/
         """
-        safe_name = Config.sanitize_username(username)
-        return Path("./workspace") / safe_name
+        safe_name = cls.sanitize_username(username)
+        if config is not None:
+            base = Path(config.agent.workspace_dir)
+        else:
+            try:
+                # 运行期配置结构为 {"config": Config, "win":..., "agent_env":...}，
+                # 真正的目录在 _cfg["config"].agent.workspace_dir（而非顶层 "agent" 字典）。
+                # 惰性导入避免与 agent_manager 形成循环依赖。
+                from easy_agent.services.agent_manager import get_agent_config
+                _cfg = get_agent_config()
+                agent_cfg = _cfg.get("config") if _cfg else None
+                base = Path(agent_cfg.agent.workspace_dir)
+            except Exception:
+                base = Path("./workspace")
+        return base / safe_name
 
     @classmethod
     def get_user_mcp_path(cls, username: str, config: "Config | None" = None) -> Path:
@@ -383,7 +488,16 @@ class Config(BaseModel):
         文件可能不存在，由调用方判断后决定是否回退到全局 mcp.json。
         """
         safe_name = cls.sanitize_username(username)
-        base = Path(config.agent.workspace_dir) if config else Path("./workspace")
+        if config is not None:
+            base = Path(config.agent.workspace_dir)
+        else:
+            try:
+                from easy_agent.services.agent_manager import get_agent_config
+                _cfg = get_agent_config()
+                agent_cfg = _cfg.get("config") if _cfg else None
+                base = Path(agent_cfg.agent.workspace_dir)
+            except Exception:
+                base = Path("./workspace")
         return base / safe_name / "mcp.json"
 
     @staticmethod

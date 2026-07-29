@@ -54,13 +54,19 @@
             </div>
           </div>
 
-          <!-- 工具调用块（合并参数、结果、耗时）— 隐藏 write_todos，因为已在侧边栏显示 -->
+          <!-- 工具调用块（合并参数、结果、耗时）- 隐藏 write_todos，因为已在侧边栏显示 -->
           <div v-if="block.type === 'tool_call' && block.tool_name !== 'write_todos'" class="tool-call-block" :class="{ error: block.success === false }">
             <div class="tool-call-header" @click="toggleToolCall(index)">
               <svg class="tool-icon" :class="{ success: block.success === true, error: block.success === false, spinning: isToolRunning(block) }" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path>
               </svg>
               <span class="tool-name-badge">{{ block.tool_name }}</span>
+              <span v-if="block.approval_status" class="approval-badge" :class="'status-' + block.approval_status">
+                <svg v-if="block.approval_status === 'pending'" class="badge-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
+                <svg v-else-if="block.approval_status === 'approved'" class="badge-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"></polyline></svg>
+                <svg v-else class="badge-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                <span class="badge-text">{{ block.approval_status === 'pending' ? '待审批' : block.approval_status === 'approved' ? '已批准' : '已拒绝' }}</span>
+              </span>
               <template v-if="block.duration != null">
                 <svg v-if="block.success" class="tool-status-icon success" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                   <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
@@ -73,7 +79,7 @@
                 </svg>
               </template>
               <span v-if="block.duration != null" class="tool-duration">用时 {{ block.duration }} 秒</span>
-              <span v-else-if="isToolRunning(block)" class="tool-status-text" :class="block.pending_approval ? 'pending' : 'executing'">
+              <span v-else-if="isToolRunning(block) && !block.approval_status" class="tool-status-text" :class="block.pending_approval ? 'pending' : 'executing'">
                 {{ block.pending_approval ? '等待确认' : '执行中...' }}
               </span>
               <svg class="toggle-arrow" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" :class="{ rotated: isExpandedToolCall(index) }">
@@ -295,23 +301,46 @@ const hasAnyContent = computed(() => {
 const sortedBlocks = computed(() => {
   // 从 blocks 字段构建（优先使用）
   if (props.message.blocks && props.message.blocks.length > 0) {
+    // 严格按大模型返回顺序（创建顺序 order）展示，不做按 step/类型的二次重排：
+    // 旧数据 content 块无 step，按 step 重排会把它排到顶部；按 order 原序则正文
+    //（创建最晚、order 最大）自然落在最后。同一 step「先思考后工具」由创建顺序保证
+    //（reopen 时思考晚于工具创建的极端情况，已在 addBlock 中用更小的 order 纠正）。
     const sorted = [...props.message.blocks].sort((a, b) => (a.order || 0) - (b.order || 0))
-    // 兼容旧数据：blocks 存在但没有 content 类型的 block 时，从 message.content 补充
+    // 兼容数据：blocks 存在但没有 content 类型的 block 时，从 message.content 补充。
+    // 正文是模型最终输出的回答，应排在所有思考/工具块之后（与实时流式中 content
+    // 事件最后到达的顺序一致）；原先插到首个思考块之前，会导致历史会话正文显示在最顶部。
     const hasContentBlock = sorted.some(b => b.type === 'content')
     if (!hasContentBlock && props.message.content) {
-      // 将 content 插入到第一个 thinking block 之前，因为通常模型先输出正文再思考
-      // 如果没有 thinking block，放在最前面
-      const firstThinkingIdx = sorted.findIndex(b => b.type === 'thinking')
-      const insertIdx = firstThinkingIdx > 0 ? firstThinkingIdx : 0
-      sorted.splice(insertIdx, 0, {
+      sorted.push({
         type: 'content',
         content: props.message.content,
-        order: insertIdx
+        order: sorted.length
       })
       // 重新排列 order
       sorted.forEach((b, i) => { b.order = i })
     }
-    return sorted
+    // 防御性合并：将同一 step 的思考块合并为一张「思考过程」卡片。
+    // 即使流式过程中因事件时序/乱序产生了重复思考块，也能保证一个 step 的思考内容
+    // 渲染为单张卡片，而非被拆成「我是」「大模型」等多段。
+    const merged = []
+    const thinkingByStep = new Map()
+    for (const b of sorted) {
+      if (b.type === 'thinking') {
+        const key = (b.step === undefined || b.step === null) ? '__nostep__' : b.step
+        const prev = thinkingByStep.get(key)
+        if (prev) {
+          prev.content = (prev.content || '') + (b.content || '')
+          if (b.duration != null) prev.duration = b.duration
+          continue
+        }
+        const clone = { ...b }
+        thinkingByStep.set(key, clone)
+        merged.push(clone)
+        continue
+      }
+      merged.push(b)
+    }
+    return merged
   }
 
   // 否则从旧数据格式创建 blocks（用于从数据库加载的消息）
@@ -342,6 +371,7 @@ const sortedBlocks = computed(() => {
         success: tool.success !== false,
         duration: tool.duration,
         step: tool.step || 0,
+        approval_status: tool.approval_status || undefined,
         order: idx + 1
       })
     })
@@ -1081,6 +1111,35 @@ onMounted(() => {
   animation: pulse 1.5s ease-in-out infinite;
 }
 
+/* HITL 审批状态徽章（待审批 / 已批准 / 已拒绝） */
+.approval-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.4;
+}
+.approval-badge .badge-icon {
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
+}
+.approval-badge.status-pending {
+  color: #d97706;
+  background: #fef3c7;
+}
+.approval-badge.status-approved {
+  color: #16a34a;
+  background: #dcfce7;
+}
+.approval-badge.status-rejected {
+  color: #dc2626;
+  background: #fee2e2;
+}
+
 @keyframes pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.5; }
@@ -1220,6 +1279,19 @@ html[data-theme="dark"] .approval-file-icon {
 html[data-theme="dark"] .tool-status-text.pending {
   color: #fbbf24;
   background: #78350f;
+}
+
+html[data-theme="dark"] .approval-badge.status-pending {
+  color: #fbbf24;
+  background: #78350f;
+}
+html[data-theme="dark"] .approval-badge.status-approved {
+  color: #4ade80;
+  background: #14532d;
+}
+html[data-theme="dark"] .approval-badge.status-rejected {
+  color: #f87171;
+  background: #7f1d1d;
 }
 
 .tool-status-icon {
@@ -1580,10 +1652,11 @@ html[data-theme="dark"] .tool-status-text.pending {
   background: #f0f9ff;
   color: #1e293b;
   border-radius: 18px 18px 4px 18px;
-  border: 1px solid #bae6fd;
+  border: none;
   padding: 12px 18px;
-  box-shadow: 0 1px 3px rgba(14, 165, 233, 0.08);
+  box-shadow: none;
   max-width: 85%;
+  font-family: 'Microsoft YaHei', '微软雅黑', sans-serif;
 }
 
 .message.user .message-text :deep(pre) {

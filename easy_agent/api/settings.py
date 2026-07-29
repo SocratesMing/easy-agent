@@ -137,7 +137,7 @@ async def get_skills(
     username: Annotated[str, Depends(get_current_username)],
 ):
     _cfg = get_agent_config()
-    skills_root = _cfg.get("skills_root", "") if _cfg else ""
+    skills_root = _cfg.get("tools", {}).get("skills_dir", "./skills") if _cfg else "./skills"
     skills = discover_skills(skills_root or None)
 
     result = []

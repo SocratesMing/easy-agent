@@ -85,7 +85,10 @@ def write_memory(memory_file: Path, content: str) -> None:
     try:
         memory_file.parent.mkdir(parents=True, exist_ok=True)
         memory_file.write_text(content, encoding="utf-8")
-        logger.info(f"记忆文件已更新: {memory_file} | 长度: {len(content)} 字符")
+        logger.info(
+            f"记忆文件已更新: {memory_file} | 长度: {len(content)} 字符\n"
+            f"--- 记忆内容 ---\n{content}\n--- 记忆内容结束 ---"
+        )
     except Exception as e:
         logger.error(f"写入记忆文件失败 {memory_file}: {e}")
 
@@ -275,7 +278,8 @@ def update_memory_after_session(
 
         elapsed = time.time() - start
         logger.info(
-            f"记忆按场景更新完成 | 更新后长度: {len(updated)} 字符 | 耗时: {elapsed:.2f}s"
+            f"记忆按场景更新完成 | 更新后长度: {len(updated)} 字符 | 耗时: {elapsed:.2f}s\n"
+            f"--- 记忆内容 ---\n{updated}\n--- 记忆内容结束 ---"
         )
         return True
     except Exception as e:
@@ -396,7 +400,8 @@ def update_long_term_memory_after_session(
 
         elapsed = time.time() - start
         logger.info(
-            f"用户长期记忆更新完成 | 更新后长度: {len(updated)} 字符 | 耗时: {elapsed:.2f}s"
+            f"用户长期记忆更新完成 | 更新后长度: {len(updated)} 字符 | 耗时: {elapsed:.2f}s\n"
+            f"--- 记忆内容 ---\n{updated}\n--- 记忆内容结束 ---"
         )
         return True
     except Exception as e:

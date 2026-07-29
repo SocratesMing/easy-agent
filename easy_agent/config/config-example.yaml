@@ -66,7 +66,7 @@ memories_dir: "./memories"    # Long-term memory directory (project-relative). �
 log_dir: "./logs"             # 日志文件目录（项目相对路径）
 sessions_dir: "./sessions"     # 会话数据存储目录（项目相对路径）
 system_prompt_path: "system_prompt.md"  # System prompt file (same config directory)
-system_prompt_path: "system_prompt.md"  # System prompt file (same config directory)
+idle_logout_minutes: 5   # 前端空闲自动登出（分钟）：用户超过该时长无界面操作或后端交互则退出到登录页；设为 0 禁用
 
 # 外部目录映射：虚拟路径前缀 → 宿主机实际路径
 # 将 skill 需要访问的宿主机目录挂载为虚拟路径路由，使文件工具能通过虚拟路径访问
@@ -86,6 +86,14 @@ tools:
   skills_dir: "./skills"   # Skills directory path
   prompts_dir: "./prompts" # Prompts directory path (for forex, bloom, etc.)
   read_file_line_limit: 2000  # read_file 内置工具每次读取的行数（默认 2000）
+
+# ===== Log Configuration =====
+# 日志目录 / 文件名 / 格式 / 级别均可在配置中指定；级别默认 info
+log:
+  dir: ./logs                       # 日志目录（也可用环境变量 EASY_LOG_DIR 覆盖）
+  file: ""                          # 日志文件名，留空则默认 easy_agent.log
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"  # 日志格式
+  level: info                       # 日志级别: debug / info / warning / error
 
 # ===== Preset Questions =====
 # Quick action questions shown on the welcome screen

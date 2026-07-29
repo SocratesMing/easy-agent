@@ -3,7 +3,7 @@
 import logging
 from typing import Annotated
 
-from fastapi import Depends, Request
+from fastapi import Depends, HTTPException, Request
 
 from ..db import Database, get_database
 from ..utils.auth import get_username_from_token
@@ -31,5 +31,10 @@ async def get_current_username(
         if user:
             return username_header
 
-    default_user = db.get_or_create_default_user()
-    return default_user.username
+    # 不再静默回退到 admin：未携带有效凭证（token 过期/未登录）时直接返回 401，
+    # 避免把请求（如发送消息）误记到 admin 账户下。前端 authFetch 收到 401 后
+    # 会清除登录态并跳回登录页。
+    raise HTTPException(
+        status_code=401,
+        detail="登录已过期或未登录，请重新登录",
+    )

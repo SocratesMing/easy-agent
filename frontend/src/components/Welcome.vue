@@ -77,6 +77,10 @@
           />
         </div>
 
+        <div v-if="!isLogin && !isResetPassword" class="info-message">
+          用户名将与当前 IP 地址绑定，仅可在该 IP 下登录与使用本账号
+        </div>
+
         <div v-if="error" class="error-message">
           {{ error }}
         </div>
@@ -352,6 +356,16 @@ onMounted(() => {
   color: #dc2626;
   border-radius: 10px;
   font-size: 14px;
+}
+
+.info-message {
+  padding: 12px 16px;
+  background: rgba(14, 165, 233, 0.1);
+  color: #0284c7;
+  border: 1px solid rgba(14, 165, 233, 0.25);
+  border-radius: 10px;
+  font-size: 13px;
+  line-height: 1.5;
 }
 
 .success-message {

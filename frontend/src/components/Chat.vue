@@ -52,6 +52,7 @@
       :iterationCount="iterationCount"
       :models="models"
       :selectedModel="selectedModel"
+      :showFooter="composerMode === 'bottom'"
       @update:selectedModel="(v) => emit('update:selectedModel', v)"
       @stop="handleStop"
       @createSession="handleCreateSession"
@@ -160,7 +161,7 @@ const props = defineProps({
 watch(() => props.messages, (newMessages) => {
   // 空会话显示居中输入框；有消息时输入框贴底
   composerMode.value = newMessages.length === 0 ? 'center' : 'bottom'
-})
+}, { immediate: true })
 
 const emit = defineEmits(['sendMessage', 'stop', 'removeFile', 'createSession', 'approve', 'reject', 'update:selectedModel'])
 const messagesRef = ref(null)
@@ -403,7 +404,7 @@ watch(() => props.scrollTrigger, () => {
 }
 
 .welcome-screen h2 {
-  font-size: 24px;
+  font-size: 32px;
   font-weight: 600;
   color: #1e293b;
   margin: 0;

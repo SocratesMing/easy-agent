@@ -78,6 +78,10 @@ class ResumeRequest(BaseModel):
     decisions: List[dict[str, Any]] = Field(
         ..., description="审批决策列表，每个元素 {type: approve|reject, message?: str}"
     )
+    message_id: Optional[str] = Field(
+        default=None,
+        description="被恢复（继续）的 assistant 消息ID，用于将本轮工具调用/思考增量关联到该消息",
+    )
 
 
 class ChatResponse(BaseModel):

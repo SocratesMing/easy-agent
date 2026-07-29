@@ -516,6 +516,7 @@ onBeforeUnmount(() => {
   flex: 1;
   overflow-y: auto;
   padding: 24px;
+  position: relative;
 }
 
 .loading-state,
@@ -559,11 +560,16 @@ onBeforeUnmount(() => {
 }
 
 .empty-state {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 60px 20px;
+  padding: 24px;
   color: var(--text-secondary);
 }
 

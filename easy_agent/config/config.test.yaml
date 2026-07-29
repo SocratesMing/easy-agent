@@ -1,6 +1,7 @@
 # ===== 测试环境配置 =====
 
-# LLM Configuration
+# 前端空闲自动登出（分钟）：用户超过该时长无操作则退出到登录页；设为 0 禁用
+idle_logout_minutes: 5   # 前端空闲自动登出（分钟）：用户超过该时长无界面操作或后端交互则退出到登录页；设为 0 禁用
 model: "deepseek"
 
 models:
@@ -21,7 +22,12 @@ retry:
 max_steps: 50
 workspace_dir: "./workspace"
 memories_dir: "./memories"
-log_dir: "./logs"             # 日志文件目录（项目相对路径）
+# 日志目录 / 文件名 / 格式 / 级别（级别默认 info；EASY_LOG_DIR 可覆盖 dir）
+log:
+  dir: ./logs
+  file: ""
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  level: info
 sessions_dir: "./sessions"     # 会话数据存储目录（项目相对路径）
 system_prompt_path: "system_prompt.md"  # System prompt file (same config directory)
 system_prompt_path: "system_prompt.md"
