@@ -477,18 +477,24 @@ class StreamProcessor:
                 if b.get("type") == "content" and b.get("step") == step:
                     _preview += b.get("content", "") or ""
             logger.info(
-                "[%s] step%d 📝 | 预览: %s",
+                "[%s] step%d 📝 | 正文: %s",
                 self.sid, step, _truncate(_preview, 100),
             )
         inp = self._step_usage["input_tokens"]
         out = self._step_usage["output_tokens"]
         tot = self._step_usage.get("total_tokens", 0) or (inp + out)
         ctx = self.last_context_tokens or inp
+        # 上下文占用率：本步上下文 token / 模型上下文窗口长度（max_input_tokens）。
+        if self.max_input_tokens:
+            _ctx_pct = ctx / self.max_input_tokens * 100
+            _ctx_str = f"{ctx}/{self.max_input_tokens:,} ({_ctx_pct:.1f}%)"
+        else:
+            _ctx_str = f"{ctx}"
         logger.info(
             "[%s] step%d 结束 | 思考:%d字符 | 正文:%d字符 | 工具:%d | "
-            "Token(in/out/total):%d/%d/%d | 上下文:%d",
+            "Token(in/out/total):%d/%d/%d | 上下文:%s",
             self.sid, step, self._step_thinking_len, self._step_content_len,
-            self._step_tool_count, inp, out, tot, ctx,
+            self._step_tool_count, inp, out, tot, _ctx_str,
         )
 
     def _sse_blocks(self) -> list[dict]:

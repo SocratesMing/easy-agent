@@ -400,7 +400,7 @@ function handleLogout() {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  border-bottom: 1px solid var(--border-color);
+  border-bottom: none;
 }
 
 .header-left {

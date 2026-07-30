@@ -32,7 +32,8 @@
     "vite-plugin-monaco-editor": "^1.1.0",
     "vue": "^3.5.25",
     "vue-demi": "^0.14.10",
-    "vue-markdown-render": "^2.3.0"
+    "vue-markdown-render": "^2.3.0",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "@iconify/json": "^2.2.441",

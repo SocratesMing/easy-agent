@@ -322,12 +322,16 @@ async def preview_file(
     session_id: Optional[str] = Query(default=None, description="会话ID"),
     token: Optional[str] = Query(default=None, description="认证token（iframe等无法设置Header时使用）"),
     download: Optional[bool] = Query(default=None, description="是否以下载方式返回"),
+    target: Optional[str] = Query(default=None, description="转换为指定格式后返回，如 pdf（用 LibreOffice 转换，用于 PPT/XLS/DOC 预览）"),
     db: Annotated[Database, Depends(get_database)] = None,
 ):
     """返回工作区文件的原始内容，供前端预览组件使用。
 
     支持图片、PDF、Word、Excel、PPT、文本等常见格式的在线预览。
     认证方式：优先使用 Authorization Header，也支持 token 查询参数（用于 iframe 等场景）。
+
+    当指定 target=pdf 且文件为可转换的 Office 类型时，使用 LibreOffice 将文件转换为
+    PDF 后返回，由前端内置查看器渲染（解决 @vue-office/pptx 等组件渲染不稳定的问题）。
     """
     # 认证：优先 Header，其次查询参数 token
     username = None
@@ -360,6 +364,23 @@ async def preview_file(
 
     if not full_path.is_file():
         raise HTTPException(status_code=400, detail="路径不是文件")
+
+    # 目标格式转换（如 PPT/XLS/DOC → PDF）
+    if target and target.lower() == "pdf":
+        try:
+            from ..services.document_convert import convert_to_pdf
+            pdf_path = convert_to_pdf(full_path, target="pdf")
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except Exception as e:
+            logger.error(f"文档转换失败 | {file_path} | {e}")
+            raise HTTPException(status_code=500, detail=f"文档转换失败: {e}")
+        return FileResponse(
+            path=str(pdf_path),
+            filename=full_path.stem + ".pdf",
+            media_type="application/pdf",
+            content_disposition_type="inline",
+        )
 
     return serve_workspace_file(workspace_dir, file_path, download=bool(download))
 

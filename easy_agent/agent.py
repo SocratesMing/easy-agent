@@ -232,6 +232,8 @@ class EasyAgent:
         self.config = config
         self.username = username
         self.session_id = session_id
+        # 日志用的短前缀（取 sid 末 5 位），与 chat_service 等模块保持一致。
+        self.sid = (session_id or "new")[-5:]
         self.skills_root = skills_root
         self.mcp_tools = mcp_tools or []
         self.organization_id = organization_id or ""
@@ -414,12 +416,12 @@ class EasyAgent:
         # 解析实际使用的模型配置（而非 config.llm 默认配置）用于日志
         actual_llm_cfg = resolve_llm_config(self.config, self.model_name)
         logger.info(
-            f"[{self.session_id}] 🤖 当前使用模型 | "
+            f"[{self.sid}] 🤖 当前使用模型 | "
             f"model_key: {self.model_name} | "
             f"max_input_tokens: {actual_llm_cfg.max_input_tokens}"
         )
 
-        logger.info(f"[{self.session_id}] 📋 系统提示词:\n{self.system_prompt}")
+        logger.info(f"[{self.sid}] 📋 系统提示词 | 预览(前100字符): {self.system_prompt[:100]}")
 
         skills_paths = self._resolve_skills_paths()
         backend = self._build_backend(skills_paths)
@@ -432,7 +434,7 @@ class EasyAgent:
         self._override_execute_description(middleware)
 
         logger.info(
-            f"[{self.session_id}] 🏗️ 创建智能体参数 | "
+            f"[{self.sid}] 🏗️ 创建智能体参数 | "
             f"model: {actual_llm_cfg.model} | "
             f"provider: {actual_llm_cfg.provider} | "
             f"protocol: {actual_llm_cfg.protocol} | "
@@ -454,7 +456,7 @@ class EasyAgent:
         memory_list = [memory_path] if self.memory_file.exists() else []
 
         logger.info(
-            f"[{self.session_id}] 🧠 记忆文件 | "
+            f"[{self.sid}] 🧠 记忆文件 | "
             f"虚拟路径: {memory_path} | 实际路径: {self.memory_file} | "
             f"已加载: {'是' if memory_list else '否（首轮对话，记忆尚未生成）'}"
         )
@@ -563,7 +565,7 @@ Usage:
                 return tool
 
             FilesystemMiddleware._create_read_file_tool = patched_create_read_file_tool
-            logger.info(f"[{self.session_id}] 📖 read_file 已配置为全量读取")
+            logger.info(f"[{self.sid}] 📖 read_file 已配置为全量读取")
         except Exception as e:
             logger.warning(f"read_file 全量读取配置失败: {e}")
 
@@ -597,9 +599,9 @@ Usage:
                 return original(self_inner)
 
             FilesystemMiddleware._create_execute_tool = patched_create_execute_tool
-            logger.info(f"[{self.session_id}] 🔧 execute 已标注 HITL 人工审批说明")
+            logger.info(f"[{self.sid}] 🔧 execute 已标注 HITL 人工审批说明")
         except Exception as e:
-            logger.warning(f"[{self.session_id}] ⚠️ 覆盖 execute 工具描述失败: {e}")
+            logger.warning(f"[{self.sid}] ⚠️ 覆盖 execute 工具描述失败: {e}")
 
     def _build_backend(self, skills_paths: list[str]):
         """构建 CompositeBackend 实例，配置多路由文件系统后端。
@@ -644,7 +646,7 @@ Usage:
             )
 
         logger.info(
-            f"[{self.session_id}] 🗺️ CompositeBackend routes:\n"
+            f"[{self.sid}] 🗺️ CompositeBackend routes:\n"
             + "\n".join(f"    {vp:40s} → {b.cwd}" for vp, b in sorted(routes.items()))
         )
 
@@ -746,7 +748,7 @@ Usage:
             glob_path = f"{path}/**"
             if not any(glob_path.startswith(prefix) for prefix in existing_prefixes):
                 logger.info(
-                    f"[{self.session_id}] ⏭️ 跳过 deny 规则 | "
+                    f"[{self.sid}] ⏭️ 跳过 deny 规则 | "
                     f"路径 {path} 未挂载路由，避免 NotImplementedError"
                 )
                 continue
@@ -762,7 +764,7 @@ Usage:
             )
 
         logger.info(
-            f"[{self.session_id}] 🔒 文件系统权限 | "
+            f"[{self.sid}] 🔒 文件系统权限 | "
             f"已配置 {len(permissions)} 条 deny 规则: {denied}"
         )
         return permissions
@@ -789,13 +791,13 @@ Usage:
 
         if not names:
             logger.info(
-                f"[{self.session_id}] 🧩 用户技能 | 用户 '{self.username}' 未添加任何技能 | "
+                f"[{self.sid}] 🧩 用户技能 | 用户 '{self.username}' 未添加任何技能 | "
                 f"目录: {user_dir}"
             )
             return
 
         lines = [
-            f"[{self.session_id}] 🧩 用户技能 | 用户 '{self.username}' 已添加 {len(names)} 个技能",
+            f"[{self.sid}] 🧩 用户技能 | 用户 '{self.username}' 已添加 {len(names)} 个技能",
             f"    📁 技能目录: {user_dir}",
         ]
         for name in names:

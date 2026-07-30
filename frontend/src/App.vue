@@ -794,6 +794,9 @@ function createStreamChunkHandler(ctx) {
       // 的 thinking_start，导致后续 thinking 增量回退到上一步卡片，造成同一 step 的
       // 思考内容被拆分/串步渲染。按 step 查找：存在则复用（同 turn 思考分段重开），
       // 不存在则新建，保证每个 step 恰好一张思考卡片。
+      // 第一步思考事件可能早于 content/tool_call 到达（此时 assistant 消息尚未创建），
+      // 必须先 ensureMessage，否则 findIdx 返回 -1 导致首步思考被丢弃（历史能查到、实时不渲染）。
+      ensureMessage()
       const idx = findIdx()
       if (idx !== -1) {
         const targetStep = step || 0
@@ -819,6 +822,7 @@ function createStreamChunkHandler(ctx) {
       } else {
         currentThinking += content || ''
       }
+      ensureMessage()
       const idx = findIdx()
       if (idx !== -1) {
         // 按 step 定位思考块写入；若该 step 尚无思考块（thinking_start 被跳过或事件

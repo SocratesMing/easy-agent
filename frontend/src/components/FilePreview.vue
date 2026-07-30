@@ -37,13 +37,25 @@
             <iframe :src="previewUrl" class="pdf-iframe"></iframe>
           </div>
           <div v-else-if="isPptx" class="preview-pptx">
-            <vue-office-pptx :src="pptxUrl" @rendered="onPptxRendered" @error="handlePptxError" />
+            <iframe v-if="pptxPdfUrl" :src="pptxPdfUrl" class="pptx-iframe" title="PPTX 预览"></iframe>
           </div>
           <div v-else-if="isDocx" class="preview-docx">
             <vue-office-docx :src="docxUrl" @error="handleDocxError" />
           </div>
           <div v-else-if="isExcel" class="preview-excel">
-            <vue-office-excel :src="excelUrl" @error="handleExcelError" />
+            <vue-office-excel
+              v-if="!excelFallback"
+              :key="excelKey"
+              :src="excelUrl"
+              @rendered="onExcelRendered"
+              @error="handleExcelError"
+            />
+            <div v-else class="excel-fallback">
+              <div v-for="sheet in excelSheets" :key="sheet.name" class="excel-sheet">
+                <div class="excel-sheet-name">{{ sheet.name }}</div>
+                <div class="excel-table-wrap" v-html="sheet.html"></div>
+              </div>
+            </div>
           </div>
           <div v-else-if="isImage" class="preview-image">
             <img :src="previewUrl" :alt="filename" />
@@ -108,9 +120,9 @@ import 'highlight.js/styles/github.css'
 setupMarkedExtensions()
 import VueOfficeDocx from '@vue-office/docx'
 import VueOfficeExcel from '@vue-office/excel'
-import VueOfficePptx from '@vue-office/pptx'
 import '@vue-office/docx/lib/index.css'
 import '@vue-office/excel/lib/index.css'
+import * as XLSX from 'xlsx'
 import { getStoredToken } from '../api/auth.js'
 
 marked.setOptions({
@@ -158,7 +170,15 @@ const textContent = ref('')
 const previewUrl = ref('')
 const docxUrl = ref(null)
 const excelUrl = ref(null)
-const pptxUrl = ref(null)
+// PPTX：经后端 LibreOffice 转为 PDF 后以 iframe 预览（比 @vue-office/pptx 稳定）
+const pptxPdfUrl = ref('')
+// Excel 兜底：@vue-office/excel 解析含批注/drawing 的 xlsx 会抛 anchors 错误，
+// 此时用 SheetJS 将各 sheet 渲染为 HTML 表格。
+const excelArrayBuffer = ref(null)
+const excelFallback = ref(false)
+const excelSheets = ref([])
+const excelRetried = ref(false)
+const excelKey = ref(0)
 const htmlUrl = ref('')
 
 const imageExts = ['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.svg', '.ico']
@@ -325,7 +345,15 @@ async function loadPreview() {
   textContent.value = ''
   docxUrl.value = null
   excelUrl.value = null
-  pptxUrl.value = null
+  if (pptxPdfUrl.value) {
+    URL.revokeObjectURL(pptxPdfUrl.value)
+  }
+  pptxPdfUrl.value = ''
+  excelArrayBuffer.value = null
+  excelFallback.value = false
+  excelSheets.value = []
+  excelRetried.value = false
+  excelKey.value++
   if (htmlUrl.value) {
     URL.revokeObjectURL(htmlUrl.value)
     htmlUrl.value = ''
@@ -369,12 +397,18 @@ async function loadPreview() {
     if (isPdf.value) {
       console.log('[FilePreview] PDF 预览')
     } else if (isPptx.value) {
-      console.log('[FilePreview] PPTX 预览')
-      const response = await fetch(previewUrl.value, { headers })
-      if (!response.ok) throw new Error(`HTTP ${response.status}`)
-      const arrayBuffer = await response.arrayBuffer()
-      // 直接传 ArrayBuffer，避免 Blob URL 在 @vue-office/pptx 下的解析问题
-      pptxUrl.value = arrayBuffer
+      console.log('[FilePreview] PPTX 预览 (LibreOffice → PDF)')
+      // 后端用 LibreOffice 把 pptx 转成 PDF，返回 PDF 流，由浏览器内置查看器渲染
+      const pdfParams = new URLSearchParams(params)
+      pdfParams.set('target', 'pdf')
+      const pdfUrl = `${previewBaseUrl.value}?${pdfParams.toString()}`
+      const response = await fetch(pdfUrl, { headers })
+      if (!response.ok) {
+        const detail = await response.text().catch(() => '')
+        throw new Error(`HTTP ${response.status} ${detail}`)
+      }
+      const blob = await response.blob()
+      pptxPdfUrl.value = URL.createObjectURL(blob)
     } else if (isDocx.value) {
       console.log('[FilePreview] DOCX 预览')
       const response = await fetch(previewUrl.value, { headers })
@@ -388,6 +422,7 @@ async function loadPreview() {
       if (!response.ok) throw new Error(`HTTP ${response.status}`)
       const arrayBuffer = await response.arrayBuffer()
       // @vue-office/excel 直接传 ArrayBuffer，避免 Blob URL 解析问题
+      excelArrayBuffer.value = arrayBuffer
       excelUrl.value = arrayBuffer
     } else if (isHtml.value) {
       console.log('[FilePreview] HTML 预览')
@@ -415,27 +450,60 @@ async function loadPreview() {
   loading.value = false
 }
 
-function onPptxRendered() {
-  console.log('[FilePreview] PPTX 渲染完成')
-}
-
-function handlePptxError(e) {
-  console.error('[FilePreview] PPTX error:', e)
-  error.value = 'PPTX 预览加载失败，请尝试下载后查看'
-}
-
 function handleDocxError(e) {
   console.error('DOCX error:', e)
   error.value = 'DOCX 预览加载失败'
 }
 
+function onExcelRendered() {
+  // @vue-office/excel 成功渲染，无需兜底
+}
+
+// @vue-office/excel 解析含批注/drawing 的 xlsx 时会抛 anchors 错误，
+// 这里用 SheetJS 将各 sheet 渲染为 HTML 表格作为兜底。
+function buildExcelTables(ab) {
+  try {
+    const wb = XLSX.read(ab, { type: 'array' })
+    excelSheets.value = wb.SheetNames.map((name) => ({
+      name,
+      html: XLSX.utils.sheet_to_html(wb.Sheets[name]),
+    }))
+    excelFallback.value = true
+  } catch (err) {
+    console.error('[FilePreview] SheetJS 兜底渲染失败:', err)
+    error.value = 'Excel 预览加载失败'
+  }
+}
+
 function handleExcelError(e) {
   console.error('Excel error:', e)
-  error.value = 'Excel 预览加载失败'
+  if (!excelRetried.value && excelArrayBuffer.value) {
+    // @vue-office/excel 解析含图片/drawing 的 xlsx 会抛 anchors 错误。
+    // 用 SheetJS 做一次 read→write 往返，生成“不含 drawing”的干净工作簿，
+    // 再交回 @vue-office/excel 渲染：保留边框、合并单元格、多 sheet（仅不含图片），
+    // 与“无图片时正常显示”体验一致。
+    try {
+      const wb = XLSX.read(excelArrayBuffer.value, { type: 'array', cellStyles: true })
+      const cleaned = XLSX.write(wb, { type: 'array', bookType: 'xlsx' })
+      excelRetried.value = true
+      excelUrl.value = cleaned
+      excelKey.value++
+      return
+    } catch (err) {
+      console.error('[FilePreview] 去 drawing 重试失败:', err)
+    }
+  }
+  // 仍失败（极少见）：用 SheetJS 把各 sheet 渲染为 HTML 表格兜底
+  if (excelArrayBuffer.value) {
+    buildExcelTables(excelArrayBuffer.value)
+  } else {
+    error.value = 'Excel 预览加载失败'
+  }
 }
 
 function handleClose() {
-  // docxUrl/pptxUrl/excelUrl 现为 ArrayBuffer，无需 revoke；仅 htmlUrl 是 Blob URL
+  // docxUrl/excelUrl 为 ArrayBuffer 无需 revoke；pptxPdfUrl/htmlUrl 是 Blob URL，需释放
+  if (pptxPdfUrl.value) URL.revokeObjectURL(pptxPdfUrl.value)
   if (htmlUrl.value) URL.revokeObjectURL(htmlUrl.value)
   emit('close')
 }
@@ -635,13 +703,16 @@ function handleClose() {
   width: 100%;
   flex: 1;
   min-height: 0;
-  overflow: auto;
-  background: #f5f5f5;
+  overflow: hidden;
+  background: #fff;
 }
 
-.preview-pptx :deep(.vue-office-pptx) {
+/* PPTX 经后端 LibreOffice 转为 PDF，由浏览器内置查看器渲染 */
+.pptx-iframe {
   width: 100%;
-  /* 不强制 height，让幻灯片按自然高度堆叠，容器滚动 */
+  height: 100%;
+  border: none;
+  background: #fff;
 }
 
 .preview-docx {
@@ -667,6 +738,46 @@ function handleClose() {
 .preview-excel :deep(.x-spreadsheet) {
   width: 100%;
   min-height: 400px;
+}
+
+/* Excel 兜底：SheetJS 生成的 HTML 表格 */
+.excel-fallback {
+  height: 100%;
+  overflow: auto;
+  padding: 16px;
+  background: #fff;
+}
+
+.excel-sheet {
+  margin-bottom: 24px;
+}
+
+.excel-sheet-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: #374151;
+  margin-bottom: 8px;
+  padding-bottom: 4px;
+  border-bottom: 2px solid #e5e7eb;
+}
+
+.excel-table-wrap {
+  overflow: auto;
+}
+
+.excel-table-wrap table {
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.excel-table-wrap td,
+.excel-table-wrap th {
+  border: 1px solid #d0d7de;
+  padding: 4px 10px;
+  min-width: 64px;
+  max-width: 480px;
+  white-space: normal;
+  word-break: break-word;
 }
 
 .preview-text {
