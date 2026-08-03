@@ -31,112 +31,132 @@
 
       <!-- 按顺序渲染内容块 -->
       <template v-if="sortedBlocks.length > 0">
-        <template v-for="(block, index) in sortedBlocks" :key="index">
-          <!-- 思考内容块 -->
-          <div v-if="block.type === 'thinking'" class="thinking-block" :class="{ 'thinking-active': block.duration == null && message.loading }">
-            <div class="thinking-header" @click="toggleThinking(index)">
-              <div v-if="block.duration == null && message.loading" class="thinking-spinner">
-                <span></span><span></span><span></span>
-              </div>
-              <svg v-else class="thinking-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <circle cx="12" cy="12" r="10"></circle>
-                <path d="M12 16v-4M12 8h.01"></path>
-                <path d="M9.5 9.5c.5-.5 1.5-1 2.5-1s2 .5 2.5 1c.5.5.5 1.5 0 2.5-.5.5-1.5 1-2.5 1"></path>
-              </svg>
-              <span class="thinking-title">{{ block.duration == null && message.loading ? '正在思考...' : '思考过程' }}</span>
-              <span v-if="block.duration != null" class="thinking-duration">用时 {{ block.duration }} 秒</span>
-              <svg class="toggle-arrow" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" :class="{ rotated: isExpandedThinking(index) }">
-                <polyline points="6 9 12 15 18 9"></polyline>
-              </svg>
-            </div>
-            <div v-if="isExpandedThinking(index)" class="thinking-content">
-              <div class="thinking-text" v-html="renderMarkdown(block.content)"></div>
-            </div>
+        <div v-if="processBlocks.length > 0" class="process-wrapper" :class="{ 'process-active': isProcessActive, 'process-expanded': processExpanded }">
+          <div class="process-header" :class="{ 'is-stuck': isStuck }" ref="processHeaderRef" @click="toggleProcess">
+            <svg class="process-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2z"></path>
+              <path d="M8 14s1.5 2 4 2 4-2 4-2"></path>
+              <line x1="9" y1="9" x2="9.01" y2="9"></line>
+              <line x1="15" y1="9" x2="15.01" y2="9"></line>
+            </svg>
+            <span class="process-title">执行过程</span>
+            <span class="process-step-count">{{ processStepCount }} 个步骤</span>
+            <svg class="toggle-arrow" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" :class="{ rotated: processExpanded }">
+              <polyline points="6 9 12 15 18 9"></polyline>
+            </svg>
           </div>
-
-          <!-- 工具调用块（合并参数、结果、耗时）- 隐藏 write_todos，因为已在侧边栏显示 -->
-          <div v-if="block.type === 'tool_call' && block.tool_name !== 'write_todos'" class="tool-call-block" :class="{ error: block.success === false }">
-            <div class="tool-call-header" @click="toggleToolCall(index)">
-              <svg class="tool-icon" :class="{ success: block.success === true, error: block.success === false, spinning: isToolRunning(block) }" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path>
-              </svg>
-              <span class="tool-name-badge">{{ block.tool_name }}</span>
-              <span v-if="block.approval_status" class="approval-badge" :class="'status-' + block.approval_status">
-                <svg v-if="block.approval_status === 'pending'" class="badge-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
-                <svg v-else-if="block.approval_status === 'approved'" class="badge-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"></polyline></svg>
-                <svg v-else class="badge-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
-                <span class="badge-text">{{ block.approval_status === 'pending' ? '待审批' : block.approval_status === 'approved' ? '已批准' : '已拒绝' }}</span>
-              </span>
-              <template v-if="block.duration != null">
-                <svg v-if="block.success" class="tool-status-icon success" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
-                  <polyline points="22 4 12 14.01 9 11.01"></polyline>
-                </svg>
-                <svg v-else class="tool-status-icon error" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <circle cx="12" cy="12" r="10"></circle>
-                  <line x1="15" y1="9" x2="9" y2="15"></line>
-                  <line x1="9" y1="9" x2="15" y2="15"></line>
-                </svg>
-              </template>
-              <span v-if="block.duration != null" class="tool-duration">用时 {{ block.duration }} 秒</span>
-              <span v-else-if="isToolRunning(block) && !block.approval_status" class="tool-status-text" :class="block.pending_approval ? 'pending' : 'executing'">
-                {{ block.pending_approval ? '等待确认' : '执行中...' }}
-              </span>
-              <svg class="toggle-arrow" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" :class="{ rotated: isExpandedToolCall(index) }">
-                <polyline points="6 9 12 15 18 9"></polyline>
-              </svg>
-            </div>
-            <div v-if="isExpandedToolCall(index)" class="tool-call-body">
-              <div v-if="block.pending_approval" class="tool-approval-section">
-                <div class="approval-prompt">
-                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="approval-warning-icon">
-                    <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path>
-                    <line x1="12" y1="9" x2="12" y2="13"></line>
-                    <line x1="12" y1="17" x2="12.01" y2="17"></line>
+          <div v-if="processExpanded" class="process-body">
+            <template v-for="(block, idx) in processBlocks" :key="'p'+block.origIndex">
+              <!-- 思考内容块 -->
+              <div v-if="block.type === 'thinking'" class="thinking-block" :class="{ 'thinking-active': block.duration == null && message.loading }">
+                <div class="thinking-header" @click="toggleThinking(block.origIndex)">
+                  <div v-if="block.duration == null && message.loading" class="thinking-spinner">
+                    <span></span><span></span><span></span>
+                  </div>
+                  <svg v-else class="thinking-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="10"></circle>
+                    <path d="M12 16v-4M12 8h.01"></path>
+                    <path d="M9.5 9.5c.5-.5 1.5-1 2.5-1s2 .5 2.5 1c.5.5.5 1.5 0 2.5-.5.5-1.5 1-2.5 1"></path>
                   </svg>
-                  <span>此操作将删除文件，需要您的确认</span>
+                  <span class="thinking-title">{{ block.duration == null && message.loading ? '正在思考...' : '思考过程' }}</span>
+                  <span v-if="block.duration != null" class="thinking-duration">用时 {{ block.duration }} 秒</span>
+                  <svg class="toggle-arrow" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" :class="{ rotated: isExpandedThinking(block.origIndex) }">
+                    <polyline points="6 9 12 15 18 9"></polyline>
+                  </svg>
                 </div>
-                <div v-if="block.file_paths && block.file_paths.length > 0" class="approval-file-list">
-                  <div v-for="(fp, fpi) in block.file_paths" :key="fpi" class="approval-file-item">
-                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="approval-file-icon">
-                      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
-                      <polyline points="14 2 14 8 20 8"></polyline>
+                <div v-if="isExpandedThinking(block.origIndex)" class="thinking-content">
+                  <div class="thinking-text" v-html="renderMarkdown(block.content)"></div>
+                </div>
+              </div>
+
+              <!-- 工具调用块（合并参数、结果、耗时）- 隐藏 write_todos，因为已在侧边栏显示 -->
+              <div v-if="block.type === 'tool_call' && block.tool_name !== 'write_todos'" class="tool-call-block" :class="{ error: block.success === false }">
+                <div class="tool-call-header" @click="toggleToolCall(block.origIndex)">
+                  <svg class="tool-icon" :class="{ success: block.success === true, error: block.success === false, spinning: isToolRunning(block) }" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path>
+                  </svg>
+                  <span class="tool-name-badge">{{ block.tool_name }}</span>
+                  <span v-if="block.approval_status" class="approval-badge" :class="'status-' + block.approval_status">
+                    <svg v-if="block.approval_status === 'pending'" class="badge-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
+                    <svg v-else-if="block.approval_status === 'approved'" class="badge-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"></polyline></svg>
+                    <svg v-else class="badge-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                    <span class="badge-text">{{ block.approval_status === 'pending' ? '待审批' : block.approval_status === 'approved' ? '已批准' : '已拒绝' }}</span>
+                  </span>
+                  <template v-if="block.duration != null">
+                    <svg v-if="block.success" class="tool-status-icon success" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
+                      <polyline points="22 4 12 14.01 9 11.01"></polyline>
                     </svg>
-                    <span class="approval-file-path">{{ fp }}</span>
+                    <svg v-else class="tool-status-icon error" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <circle cx="12" cy="12" r="10"></circle>
+                      <line x1="15" y1="9" x2="9" y2="15"></line>
+                      <line x1="9" y1="9" x2="15" y2="15"></line>
+                    </svg>
+                  </template>
+                  <span v-if="block.duration != null" class="tool-duration">用时 {{ block.duration }} 秒</span>
+                  <span v-else-if="isToolRunning(block) && !block.approval_status" class="tool-status-text" :class="block.pending_approval ? 'pending' : 'executing'">
+                    {{ block.pending_approval ? '等待确认' : '执行中...' }}
+                  </span>
+                  <svg class="toggle-arrow" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" :class="{ rotated: isExpandedToolCall(block.origIndex) }">
+                    <polyline points="6 9 12 15 18 9"></polyline>
+                  </svg>
+                </div>
+                <div v-if="isExpandedToolCall(block.origIndex)" class="tool-call-body">
+                  <div v-if="block.pending_approval" class="tool-approval-section">
+                    <div class="approval-prompt">
+                      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="approval-warning-icon">
+                        <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path>
+                        <line x1="12" y1="9" x2="12" y2="13"></line>
+                        <line x1="12" y1="17" x2="12.01" y2="17"></line>
+                      </svg>
+                      <span>此操作将删除文件，需要您的确认</span>
+                    </div>
+                    <div v-if="block.file_paths && block.file_paths.length > 0" class="approval-file-list">
+                      <div v-for="(fp, fpi) in block.file_paths" :key="fpi" class="approval-file-item">
+                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="approval-file-icon">
+                          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                          <polyline points="14 2 14 8 20 8"></polyline>
+                        </svg>
+                        <span class="approval-file-path">{{ fp }}</span>
+                      </div>
+                    </div>
+                    <div class="approval-buttons">
+                      <button class="approval-btn approve" @click="emit('approve')">
+                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                          <polyline points="20 6 9 17 4 12"></polyline>
+                        </svg>
+                        批准
+                      </button>
+                      <button class="approval-btn reject" @click="emit('reject')">
+                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                          <line x1="18" y1="6" x2="6" y2="18"></line>
+                          <line x1="6" y1="6" x2="18" y2="18"></line>
+                        </svg>
+                        拒绝
+                      </button>
+                    </div>
+                  </div>
+                  <div v-if="hasArgs(block.arguments) && !block.pending_approval" class="tool-section">
+                    <div class="tool-section-label">参数</div>
+                    <pre class="tool-section-content">{{ truncateResult(formatJson(block.arguments), 1000) }}</pre>
+                  </div>
+                  <div v-if="block.result" class="tool-section">
+                    <div class="tool-section-label">结果</div>
+                    <pre class="tool-section-content" :class="{ error: block.success === false }">{{ truncateResult(block.result, 1000) }}</pre>
+                  </div>
+                  <div v-else-if="isToolRunning(block) && !block.pending_approval" class="tool-section">
+                    <div class="tool-section-label">结果</div>
+                    <div class="tool-executing-hint">等待执行结果...</div>
                   </div>
                 </div>
-                <div class="approval-buttons">
-                  <button class="approval-btn approve" @click="emit('approve')">
-                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                      <polyline points="20 6 9 17 4 12"></polyline>
-                    </svg>
-                    批准
-                  </button>
-                  <button class="approval-btn reject" @click="emit('reject')">
-                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                      <line x1="18" y1="6" x2="6" y2="18"></line>
-                      <line x1="6" y1="6" x2="18" y2="18"></line>
-                    </svg>
-                    拒绝
-                  </button>
-                </div>
               </div>
-              <div v-if="hasArgs(block.arguments) && !block.pending_approval" class="tool-section">
-                <div class="tool-section-label">参数</div>
-                <pre class="tool-section-content">{{ truncateResult(formatJson(block.arguments), 1000) }}</pre>
-              </div>
-              <div v-if="block.result" class="tool-section">
-                <div class="tool-section-label">结果</div>
-                <pre class="tool-section-content" :class="{ error: block.success === false }">{{ truncateResult(block.result, 1000) }}</pre>
-              </div>
-              <div v-else-if="isToolRunning(block) && !block.pending_approval" class="tool-section">
-                <div class="tool-section-label">结果</div>
-                <div class="tool-executing-hint">等待执行结果...</div>
-              </div>
-            </div>
-          </div>
 
-          <!-- 内容块 -->
+              <!-- 中间穿插的正文（其后仍有思考/工具）放进处理过程内部按原序展示 -->
+              <div v-if="block.type === 'content'" class="message-text process-inline-content" v-html="renderMarkdown(block.content)"></div>
+            </template>
+          </div>
+        </div>
+        <template v-for="(block, idx) in finalContentBlocks" :key="'c'+block.origIndex">
           <div v-if="block.type === 'content'" class="message-text" v-html="renderMarkdown(block.content)"></div>
         </template>
       </template>
@@ -236,7 +256,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, shallowRef, watch } from 'vue'
+import { ref, computed, onMounted, shallowRef, watch, nextTick, onBeforeUnmount } from 'vue'
 import { createHighlighter } from 'shiki'
 import { marked } from 'marked'
 import { setupMarkedExtensions, normalizeMathDelimiters } from '../markdownSetup.js'
@@ -387,6 +407,126 @@ const sortedBlocks = computed(() => {
   }
 
   return blocks
+})
+
+// 处理过程：思考 + 工具调用（排除已在侧边栏显示的 write_todos）+ 穿插其间的正文。
+// 判定「最终正文」：仅当消息真正完成（非流式且无待审批 HITL）时，才取 order 最大
+// 的一段 content 作为最终正文展示在处理过程之后；流式/HITL 期间所有正文均作为
+// 「中间穿插」纳入处理过程内部。这样避免中间正文「先在过程外渲染一下、新正文到达
+// 后又落入过程内」的闪烁（原先在流式中即把 order 最大 content 定为最终正文，新正文
+// 到达时旧正文会从过程外跳入过程内）。
+// origIndex 保留在 sortedBlocks 中的原始下标，供折叠状态函数定位 block。
+const _isProcessType = (b) =>
+  b.type === 'thinking' || (b.type === 'tool_call' && b.tool_name !== 'write_todos')
+
+// 消息是否已真正完成：非流式中（loading=false）且无待审批（pending_approval）。
+// HITL 时 loading 也会被置 false，故需同时排除 pending_approval，避免审批期间把中间
+// 正文误当最终正文展示在过程外、恢复执行后再次跳入过程内造成闪烁。
+const isMessageFinished = computed(() =>
+  !props.message.loading && !props.message.pending_approval
+)
+
+// 最终正文：仅当消息完成后，取 order 最大的一段 content 展示在处理过程之后；
+// 流式/HITL 期间返回空，所有正文均作为「中间穿插」纳入处理过程内部。
+const finalContentBlocks = computed(() => {
+  if (!isMessageFinished.value) return []
+  const contents = []
+  sortedBlocks.value.forEach((b, i) => {
+    if (b.type === 'content') contents.push({ ...b, origIndex: i })
+  })
+  if (contents.length === 0) return []
+  contents.sort((a, b) => (a.order || 0) - (b.order || 0))
+  return [contents[contents.length - 1]]
+})
+
+const processBlocks = computed(() => {
+  const finalOrigIndex = finalContentBlocks.value[0]?.origIndex
+  const result = []
+  sortedBlocks.value.forEach((b, i) => {
+    if (_isProcessType(b)) {
+      result.push({ ...b, origIndex: i })
+      return
+    }
+    // 非最终正文的 content -> 中间穿插，纳入处理过程内部按原序展示
+    if (b.type === 'content' && i !== finalOrigIndex) {
+      result.push({ ...b, origIndex: i })
+    }
+  })
+  return result
+})
+
+// 「步骤数」仅统计思考与工具调用，不含穿插的正文。
+const processStepCount = computed(() =>
+  processBlocks.value.filter((b) => _isProcessType(b)).length
+)
+
+// 处理是否仍在进行：消息仍在流式（loading）即视为处理中，扫光动画保持；流式结束
+// （loading=false）动画消失。与正文位置解耦，避免正文一出现动画就关、后续工具仍在
+// 跑却无动画提示的问题。
+const isProcessActive = computed(() => !!props.message.loading)
+
+// 处理过程默认折叠（含实时会话），由用户手动展开/折叠；新过程到达不自动展开，
+// 避免打断用户已收起的查看状态。
+const processExpanded = ref(false)
+
+// 出现待审批的工具调用（HITL）时自动展开，便于用户查看审批提示。
+const hasPendingApproval = computed(() =>
+  processBlocks.value.some(b => b.type === 'tool_call' && b.approval_status === 'pending')
+)
+watch(() => hasPendingApproval.value, (pending) => {
+  if (pending) processExpanded.value = true
+})
+
+function toggleProcess() {
+  processExpanded.value = !processExpanded.value
+}
+
+// 执行过程头部冻结（sticky 卡住）检测：卡住时补绘顶边框——wrapper 顶边框已随滚动
+// 移出可视区，用 is-stuck 类驱动 header 伪元素重绘一条与 wrapper 圆角一致的顶边框。
+const processHeaderRef = ref(null)
+const isStuck = ref(false)
+let _scrollEl = null
+let _onScroll = null
+
+function updateStuck() {
+  const header = processHeaderRef.value
+  if (!header || !processExpanded.value) { isStuck.value = false; return }
+  const wrapper = header.parentElement
+  if (!wrapper) { isStuck.value = false; return }
+  // 卡住时 header 钉在可视区顶部、wrapper 顶边随滚动上移，二者顶边差增大；
+  // 正常流中 header 紧贴 wrapper 顶边（差≈边框 1px）。比较二者不依赖具体吸附点。
+  isStuck.value = header.getBoundingClientRect().top - wrapper.getBoundingClientRect().top > 2
+}
+
+watch(processExpanded, (expanded) => {
+  isStuck.value = false
+  nextTick(() => {
+    if (expanded) {
+      if (processHeaderRef.value) _scrollEl = processHeaderRef.value.closest('.chat-messages')
+      if (_scrollEl) {
+        if (!_onScroll) {
+          _onScroll = () => updateStuck()
+          _scrollEl.addEventListener('scroll', _onScroll, { passive: true })
+        }
+        updateStuck()
+      }
+    } else {
+      if (_scrollEl && _onScroll) {
+        _scrollEl.removeEventListener('scroll', _onScroll)
+        _onScroll = null
+      }
+      _scrollEl = null
+    }
+  })
+})
+
+// 展开时内容增长（流式）会改变布局，重新判定冻结状态
+watch(() => processBlocks.value.length, () => {
+  if (processExpanded.value) nextTick(updateStuck)
+})
+
+onBeforeUnmount(() => {
+  if (_scrollEl && _onScroll) _scrollEl.removeEventListener('scroll', _onScroll)
 })
 
 // 使用 block 的唯一标识来跟踪展开状态
@@ -612,6 +752,125 @@ onMounted(() => {
 </script>
 
 <style scoped>
+/* 处理过程折叠容器：包裹一轮会话中的所有思考 + 工具调用，正文展示在其后 */
+.process-wrapper {
+  /* message-content 为 align-items: flex-start（子项不拉伸），需显式撑满，
+     使折叠（仅 header）与展开（含 body）时宽度一致，且与输入框对齐。
+     不能使用 overflow: hidden：否则它会成为 .process-header position:sticky
+     的滚动祖先（粘性上下文），导致头部无法相对 .chat-messages 冻结。
+     圆角裁剪改由 header/body 各自的 border-radius 承担。 */
+  width: 100%;
+  margin: 6px 0 10px;
+  border: 1px solid var(--border-color, #e5e7eb);
+  border-radius: 10px;
+  background: var(--bg-secondary, #f9fafb);
+}
+.process-wrapper.process-active {
+  border-color: #c7d2fe;
+}
+.process-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 14px;
+  cursor: pointer;
+  user-select: none;
+  font-size: 13px;
+  color: var(--text-secondary, #64748b);
+  transition: background 0.15s;
+  /* 显式不透明背景：sticky 冻结时遮挡其后滚动的流程内容；
+     折叠态圆角与外层 wrapper 一致。 */
+  background: var(--bg-secondary, #f9fafb);
+  border-radius: 10px;
+}
+/* 展开态：头部冻结在可视区顶部，折叠按钮始终可达；
+   仅顶部圆角与 body 的底部圆角拼合 wrapper 的圆角。 */
+.process-wrapper.process-expanded .process-header {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  border-radius: 10px 10px 0 0;
+}
+/* 冻结（sticky 卡住）时补绘执行过程顶边框：wrapper 顶边框已随滚动移出可视区，
+   用 header 伪元素在可视区顶部重绘一条与 wrapper 圆角一致的顶边框，并与左右边框相接。 */
+.process-wrapper.process-expanded .process-header.is-stuck::before {
+  content: '';
+  position: absolute;
+  left: -1px;
+  right: -1px;
+  top: 0;
+  height: 0;
+  border-top: 1px solid var(--border-color, #e5e7eb);
+  border-top-left-radius: 10px;
+  border-top-right-radius: 10px;
+  pointer-events: none;
+}
+.process-header:hover {
+  background: var(--bg-tertiary, #f1f5f9);
+}
+.process-icon {
+  width: 16px;
+  height: 16px;
+  color: #94a3b8;
+  flex-shrink: 0;
+}
+.process-title {
+  font-weight: 500;
+  color: var(--text-secondary, #475569);
+}
+/* 处理进行中：标题「执行过程」文字扫光。
+   激活态文字用靛蓝色（与未激活的灰色拉开差异），其上一道更亮的高光从左到右循环
+   扫过，扫光更明细且文字始终清晰可读。 */
+.process-wrapper.process-active .process-title {
+  background: linear-gradient(
+    100deg,
+    #6366f1 0%,
+    #6366f1 42%,
+    #c7d2fe 50%,
+    #6366f1 58%,
+    #6366f1 100%
+  );
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+  animation: process-shimmer 2.2s linear infinite;
+}
+@keyframes process-shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+.process-step-count {
+  font-size: 11px;
+  color: #94a3b8;
+}
+.process-header .toggle-arrow {
+  margin-left: auto;
+}
+.process-body {
+  padding: 4px 10px 10px;
+  border-top: 1px solid var(--border-color, #e5e7eb);
+  /* 补偿 wrapper 移除的 overflow:hidden：裁剪内部子项背景到圆角。
+     body 是 header 的兄弟而非祖先，其 overflow 不影响 header 的 sticky。 */
+  overflow: hidden;
+  border-radius: 0 0 10px 10px;
+}
+.process-body .thinking-block,
+.process-body .tool-call-block {
+  margin: 6px 0;
+}
+.process-body .process-inline-content {
+  margin: 6px 0;
+  padding: 8px 12px;
+  border-left: 3px solid var(--border-color, #e5e7eb);
+  background: var(--process-inline-bg, rgba(0, 0, 0, 0.02));
+  border-radius: 0 6px 6px 0;
+  font-size: 14px;
+}
+html[data-theme="dark"] .process-body .process-inline-content {
+  background: var(--process-inline-bg, rgba(255, 255, 255, 0.04));
+}
 .message {
   display: flex;
   gap: 12px;

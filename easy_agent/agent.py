@@ -32,6 +32,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from .config import Config
 from .logger import AgentLogger
 from .model import create_model, extract_reasoning
+from .sandbox import bwrap_usable, check_command_paths, run_sandboxed
 
 
 logger = logging.getLogger(__name__)
@@ -101,7 +102,7 @@ class _PathTranslatingShell(LocalShellBackend):
     否则模型会从输出中"学到"绝对路径并在后续命令中直接使用。
     """
 
-    def __init__(self, path_mappings: dict[str, str], *args, **kwargs):
+    def __init__(self, path_mappings: dict[str, str], *args, sandbox_enabled: bool = True, **kwargs):
         """初始化路径翻译 Shell 后端。
 
         预编译虚拟路径→实际路径的替换规则，按路径长度降序排列，
@@ -132,6 +133,13 @@ class _PathTranslatingShell(LocalShellBackend):
             (real.rstrip('/'), v.rstrip('/'))
             for v, real in sorted(path_mappings.items(), key=lambda x: -len(x[1]))
         ]
+        # 沙箱：限制 shell 命令只能访问工作区及授权目录，禁止访问宿主机其他路径
+        self._sandbox_enabled = sandbox_enabled
+        self._allowed_rw_dirs = self._compute_allowed_dirs(path_mappings)
+        self._use_bwrap = sandbox_enabled and bwrap_usable()
+        if sandbox_enabled:
+            mode = "bwrap 沙箱隔离" if self._use_bwrap else "路径白名单（bwrap 不可用，已降级）"
+            logger.info(f"[{self._sandbox_id}] shell 沙箱已启用: {mode}")
 
     def execute(self, command: str, *, timeout: int | None = None) -> "ExecuteResponse":
         """执行 shell 命令，执行前翻译虚拟路径，执行后反向翻译输出。
@@ -165,7 +173,7 @@ class _PathTranslatingShell(LocalShellBackend):
                 exit_code=1,
                 truncated=False,
             )
-        result = super().execute(translated, timeout=timeout)
+        result = self._run_sandboxed(translated, timeout=timeout)
         # 反向翻译输出：实际路径 → 虚拟路径
         if self._reverse_rules and result.output:
             output = result.output
@@ -179,6 +187,48 @@ class _PathTranslatingShell(LocalShellBackend):
                     truncated=result.truncated,
                 )
         return result
+
+    def _compute_allowed_dirs(self, path_mappings: dict[str, str]) -> list[str]:
+        """计算沙箱内可读写的实际目录：工作区 + 技能 + 外部目录。
+
+        这些目录会以读写方式挂载进 bwrap 沙箱，其余宿主机路径均不可见。
+        """
+        dirs: set[str] = set()
+        try:
+            dirs.add(str(Path(self.cwd).resolve()))
+        except Exception:
+            dirs.add(str(self.cwd))
+        for real in path_mappings.values():
+            try:
+                dirs.add(str(Path(real).resolve()))
+            except Exception:
+                dirs.add(str(Path(real)))
+        return sorted(dirs, key=len, reverse=True)
+
+    def _run_sandboxed(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
+        """在沙箱中执行命令；沙箱关闭时直接在宿主机执行。
+
+        - bwrap 可用：命令在 bubblewrap 容器内执行，仅能访问工作区/技能/外部
+          目录（读写）与系统命令库/Python 环境（只读）。
+        - bwrap 不可用：best-effort 路径白名单检测，拒绝引用工作区外路径的命令。
+        - 沙箱关闭：回退到原始的宿主机直接执行（不推荐，仅用于排查）。
+        """
+        if not self._sandbox_enabled:
+            return super().execute(command, timeout=timeout)
+        if self._use_bwrap:
+            return run_sandboxed(
+                command,
+                allowed_rw_dirs=self._allowed_rw_dirs,
+                cwd=str(self.cwd),
+                env=self._env,
+                timeout=timeout if timeout is not None else self._default_timeout,
+                max_output_bytes=self._max_output_bytes,
+            )
+        blocked = check_command_paths(command, self._allowed_rw_dirs)
+        if blocked:
+            logger.warning(f"[{self._sandbox_id}][fallback] 拒绝越界命令: {command[:120]}")
+            return ExecuteResponse(output=blocked, exit_code=1, truncated=False)
+        return super().execute(command, timeout=timeout)
 
 
 class EasyAgent:
@@ -670,6 +720,7 @@ Usage:
                 virtual_mode=True,
                 inherit_env=True,
                 timeout=120,
+                sandbox_enabled=self.config.agent.sandbox_enabled,
             ),
             routes=routes,
         )

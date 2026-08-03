@@ -27,11 +27,16 @@ FROM python:3.12-slim
 ARG AGENT_ENV=prod
 ENV AGENT_ENV=${AGENT_ENV}
 
-# Install system dependencies for pty support
+# Install system dependencies for pty support and shell sandboxing.
+# bubblewrap (bwrap) isolates agent shell commands to the workspace; if the
+# container lacks user-namespace caps it auto-falls-back to a path allowlist.
+# To enable full bwrap isolation, run the container with:
+#   --cap-add SYS_ADMIN --security-opt apparmor=unconfined
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         bash \
         procps \
+        bubblewrap \
         && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

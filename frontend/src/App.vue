@@ -118,7 +118,7 @@
 
 <script setup>
 import { API_BASE_URL, appRuntime } from './config.js'
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import SessionList from './components/SessionList.vue'
 import Chat from './components/Chat.vue'
 import AssetsPanel from './components/AssetsPanel.vue'
@@ -244,6 +244,42 @@ function restoreSessionState(sessionId) {
   }
   return false
 }
+
+// HITL 历史恢复：从消息中重建待审批状态，使切换/重载会话后仍能显示审批按钮并继续执行。
+// 历史消息无前端 id，按 thread_id（= `${session_id}-${message_id}`）还原后端 message_id
+// 作为消息 id，保证恢复执行时记录使用一致的 message_id。监听 loadedSessionId 变化即可
+// 覆盖所有历史加载路径（初始加载、切换会话、欢迎流程后加载、删除会话回退等）。
+function reconstructPendingApproval() {
+  // 流式进行中由 onApprovalRequired 管理审批状态，不重建以免覆盖
+  if (isStreaming.value) return
+  pendingApproval.value = null
+  if (!messages.value || messages.value.length === 0) return
+  const sid = currentSessionId.value || ''
+  for (let i = messages.value.length - 1; i >= 0; i--) {
+    const msg = messages.value[i]
+    // 末尾出现用户消息说明已发起新一轮对话，旧的待审批不再阻塞，不重建
+    if (msg.role === 'user') return
+    if (msg.role === 'assistant' && msg.pending_approval && msg.pending_approval.thread_id) {
+      const threadId = msg.pending_approval.thread_id
+      const backendMsgId = sid && threadId.startsWith(sid + '-')
+        ? threadId.slice(sid.length + 1)
+        : (msg.id || `hist-${i}-${Date.now()}`)
+      const blocks = (msg.blocks || []).map(b => {
+        if (b.type === 'tool_call' && b.approval_status === 'pending') {
+          return { ...b, pending_approval: true }
+        }
+        return b
+      })
+      const hasPending = blocks.some(b => b.type === 'tool_call' && b.approval_status === 'pending')
+      messages.value[i] = { ...msg, id: backendMsgId, blocks }
+      if (hasPending) {
+        pendingApproval.value = { threadId, assistantMsgId: backendMsgId }
+      }
+      break
+    }
+  }
+}
+watch(() => loadedSessionId.value, reconstructPendingApproval)
 const isSidebarCollapsed = ref(false)
 const isWorkspaceCollapsed = ref(true)
 const isDarkTheme = ref(localStorage.getItem('theme') === 'dark')
@@ -963,6 +999,8 @@ function createStreamChunkHandler(ctx) {
       const idx = findIdx()
       if (idx !== -1) {
         messages.value[idx].loading = false
+        messages.value[idx].pending_approval = null
+        pendingApproval.value = null
         messages.value[idx].created_at = new Date().toISOString()
         if (ctx.isResume) {
           if (Array.isArray(data.blocks) && data.blocks.length > 0) messages.value[idx].blocks = data.blocks.map(b => ({ ...b }))
@@ -1104,6 +1142,7 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
       if (assistantMsgId && data.action_requests) {
         const idx = messages.value.findIndex(m => m.id === assistantMsgId)
         if (idx !== -1) {
+          messages.value[idx].pending_approval = { thread_id: data.thread_id, action_requests: data.action_requests }
           for (const ar of data.action_requests) {
             let blk = messages.value[idx].blocks.find(
               b => b.type === 'tool_call' && (b.tool_call_id === ar.tool_call_id || b.id === ar.tool_call_id)
@@ -1249,6 +1288,7 @@ async function handleToolApproval(decision) {
       if (assistantMsgId && data.action_requests) {
         const idx = messages.value.findIndex(m => m.id === assistantMsgId)
         if (idx !== -1) {
+          messages.value[idx].pending_approval = { thread_id: data.thread_id, action_requests: data.action_requests }
           // 用后端权威 blocks 刷新（含本轮已完成工具的结果）
           if (Array.isArray(data.blocks) && data.blocks.length > 0) {
             messages.value[idx].blocks = data.blocks.map(b => ({ ...b }))

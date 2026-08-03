@@ -209,9 +209,19 @@ def register_stream_task(session_id: str, task: asyncio.Task[None]) -> None:
     _session_stream_tasks[session_id] = task
 
 
-def unregister_stream_task(session_id: str) -> None:
-    """流式任务结束后注销自身。"""
-    _session_stream_tasks.pop(session_id, None)
+def unregister_stream_task(
+    session_id: str, task: asyncio.Task[None] | None = None
+) -> None:
+    """流式任务结束后注销自身。
+
+    传入 task 时仅当注册的仍是该 task 才移除：客户端断开后后台任务会继续运行，
+    若用户随后对同一会话发起新流，新任务会先 register；旧任务结束时的 finally
+    若无条件 pop 会误删新任务的注册，导致 /cancel 失效。
+    """
+    if task is None:
+        _session_stream_tasks.pop(session_id, None)
+    elif _session_stream_tasks.get(session_id) is task:
+        _session_stream_tasks.pop(session_id, None)
 
 
 async def cancel_stream_task(session_id: str) -> bool:

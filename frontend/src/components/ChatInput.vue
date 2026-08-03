@@ -318,9 +318,37 @@ const canSend = computed(() => {
 
 const showTokenPopup = ref(false)
 
-// ========== 会话耗时格式化 ==========
+// ========== 会话耗时 ==========
+// 后台未返回耗时数据（sessionDuration<=0）且「会话信息」弹窗打开时，前端按 1s
+// 间隔本地计时，让会话耗时实时更新；后台有数据时直接用后台值。
+const liveDuration = ref(0)
+let durationTimer = null
+const shouldCountLive = computed(
+  () => showTokenPopup.value && (!props.sessionDuration || props.sessionDuration <= 0)
+)
+const displayDuration = computed(() =>
+  shouldCountLive.value ? liveDuration.value : (props.sessionDuration || 0)
+)
+function startLiveDuration() {
+  stopLiveDuration()
+  liveDuration.value = 0
+  durationTimer = setInterval(() => {
+    liveDuration.value += 1
+  }, 1000)
+}
+function stopLiveDuration() {
+  if (durationTimer) {
+    clearInterval(durationTimer)
+    durationTimer = null
+  }
+}
+watch(shouldCountLive, (on) => {
+  if (on) startLiveDuration()
+  else stopLiveDuration()
+})
+
 const formattedDuration = computed(() => {
-  const total = Math.floor(props.sessionDuration || 0)
+  const total = Math.floor(displayDuration.value)
   const h = Math.floor(total / 3600)
   const m = Math.floor((total % 3600) / 60)
   const s = total % 60
@@ -557,6 +585,7 @@ onMounted(() => {
 onUnmounted(() => {
   document.removeEventListener('click', closeTokenPopup)
   document.removeEventListener('click', closeModelDropdown)
+  stopLiveDuration()
 })
 </script>
 
@@ -567,6 +596,9 @@ onUnmounted(() => {
   align-items: center;
   padding: 16px 24px 4px;
   background: transparent;
+  /* 预留与消息区相同的滚动条 gutter，使输入框与消息（含「处理过程」）左右对齐。 */
+  overflow-y: auto;
+  scrollbar-gutter: stable;
 }
 
 .input-box {

@@ -148,6 +148,8 @@ class AgentConfig(BaseModel):
     (ls/read_file/write_file 等) 能通过虚拟路径访问。
     例: {"/strategy-workspace/": "/home/sututu/code/finance-skills/fast_backtest/workspace"}
     """
+    sandbox_enabled: bool = True
+    """Shell 命令沙箱：用 bwrap (bubblewrap) 将 execute 命令隔离在沙箱内，仅允许读写工作区/技能/外部目录，只读访问系统命令库与当前 Python 环境（使 python 及已安装包仍可用）；bwrap 不可用时降级为路径白名单检测。设为 False 关闭（不推荐，仅用于排查）。"""
 
 
 class LogConfig(BaseModel):

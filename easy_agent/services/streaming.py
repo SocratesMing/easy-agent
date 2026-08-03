@@ -281,6 +281,64 @@ def build_assistant_message_dict(
     }
 
 
+def _mark_hitl_pending(
+    partial_msg: dict,
+    pending_tc_ids: list,
+    action_requests: list,
+    config_map: dict,
+    thread_id: str,
+) -> list:
+    """将 HITL 中断触发的工具调用标记为「待审批」并附加可持久化的审批信息。
+
+    在 tool_calls 与 blocks 上同步写入 approval_status / pending_approval /
+    file_paths（前端历史渲染优先读 blocks，只标 tool_calls 会导致切回历史会话
+    时审批徽章与按钮丢失）。同时在消息上写入 pending_approval（thread_id +
+    操作详情），使前端从历史会话恢复时能重建审批 UI 并继续执行。
+
+    Returns:
+        action_requests 负载列表（同时用于下发 approval_required 事件）。
+    """
+    action_requests_payload = [
+        {
+            "tool_call_id": pending_tc_ids[i] if i < len(pending_tc_ids) else "",
+            "tool_name": ar.get("name", ""),
+            "arguments": ar.get("args", {}),
+            "description": ar.get("description", ""),
+            "allowed_decisions": config_map.get(ar.get("name", ""), {}).get(
+                "allowed_decisions", ["approve", "reject"]
+            ),
+            "file_paths": _extract_file_paths_from_command(
+                ar.get("args", {}).get("command", "")
+            ),
+        }
+        for i, ar in enumerate(action_requests)
+    ]
+    _pending_file_paths = {
+        ar["tool_call_id"]: ar.get("file_paths", [])
+        for ar in action_requests_payload
+        if ar.get("tool_call_id")
+    }
+    for tc in partial_msg.get("tool_calls") or []:
+        if tc.get("tool_call_id") in pending_tc_ids:
+            tc["approval_status"] = "pending"
+            if tc.get("tool_call_id") in _pending_file_paths:
+                tc["file_paths"] = _pending_file_paths[tc["tool_call_id"]]
+    for b in partial_msg.get("blocks") or []:
+        if (
+            b.get("type") == "tool_call"
+            and b.get("tool_call_id") in pending_tc_ids
+        ):
+            b["approval_status"] = "pending"
+            b["pending_approval"] = True
+            if b.get("tool_call_id") in _pending_file_paths:
+                b["file_paths"] = _pending_file_paths[b["tool_call_id"]]
+    partial_msg["pending_approval"] = {
+        "thread_id": thread_id,
+        "action_requests": action_requests_payload,
+    }
+    return action_requests_payload
+
+
 def _maybe_rename_workspace(agent, db, session_id, tool_call_records, sid):
     """首轮对话完成后（含文件写入时）将工作区从 session_id 重命名为时间戳目录。
 
@@ -773,15 +831,9 @@ async def chat_stream_generator(
                     # 持久化 HITL 审批状态：将触发中断的工具调用标记为「待审批」
                     # 注意：blocks 也必须同步打标记——前端历史渲染优先读 blocks，
                     # 只标 tool_calls 会导致切回历史会话时审批状态徽章不显示。
-                    for tc in partial_msg.get("tool_calls") or []:
-                        if tc.get("tool_call_id") in pending_tc_ids:
-                            tc["approval_status"] = "pending"
-                    for b in partial_msg.get("blocks") or []:
-                        if (
-                            b.get("type") == "tool_call"
-                            and b.get("tool_call_id") in pending_tc_ids
-                        ):
-                            b["approval_status"] = "pending"
+                    action_requests_payload = _mark_hitl_pending(
+                        partial_msg, pending_tc_ids, action_requests, config_map, thread_id
+                    )
                     db.update_last_assistant_message(session_id, partial_msg)
                     db.update_last_assistant_message_row(session_id, partial_msg)
                     logger.info(
@@ -792,23 +844,7 @@ async def chat_stream_generator(
                         {
                             "type": "approval_required",
                             "thread_id": thread_id,
-                            "action_requests": [
-                                {
-                                    "tool_call_id": pending_tc_ids[i]
-                                    if i < len(pending_tc_ids)
-                                    else "",
-                                    "tool_name": ar.get("name", ""),
-                                    "arguments": ar.get("args", {}),
-                                    "description": ar.get("description", ""),
-                                    "allowed_decisions": config_map.get(
-                                        ar.get("name", ""), {}
-                                    ).get("allowed_decisions", ["approve", "reject"]),
-                                    "file_paths": _extract_file_paths_from_command(
-                                        ar.get("args", {}).get("command", "")
-                                    ),
-                                }
-                                for i, ar in enumerate(action_requests)
-                            ],
+                            "action_requests": action_requests_payload,
                         }
                     )
                     return
@@ -1398,15 +1434,9 @@ async def resume_stream_generator(
                     )
                     # 持久化 HITL 审批状态：将本层嵌套中断触发的工具调用标记为「待审批」
                     # blocks 同步打标记（前端历史渲染优先读 blocks）
-                    for tc in partial_msg.get("tool_calls") or []:
-                        if tc.get("tool_call_id") in pending_tc_ids:
-                            tc["approval_status"] = "pending"
-                    for b in partial_msg.get("blocks") or []:
-                        if (
-                            b.get("type") == "tool_call"
-                            and b.get("tool_call_id") in pending_tc_ids
-                        ):
-                            b["approval_status"] = "pending"
+                    action_requests_payload = _mark_hitl_pending(
+                        partial_msg, pending_tc_ids, action_requests, config_map, thread_id
+                    )
                     db.update_last_assistant_message(session_id, partial_msg)
                     db.update_last_assistant_message_row(session_id, partial_msg)
                     yield format_sse({
@@ -1414,18 +1444,7 @@ async def resume_stream_generator(
                         "thread_id": thread_id,
                         # 嵌套中断时也下发当前 blocks，前端据此刷新已完成的工具结果
                         "blocks": proc._sse_blocks(),
-                        "action_requests": [
-                            {
-                                "tool_call_id": pending_tc_ids[i] if i < len(pending_tc_ids) else "",
-                                "tool_name": ar.get("name", ""),
-                                "arguments": ar.get("args", {}),
-                                "allowed_decisions": config_map.get(ar.get("name", ""), {}).get("allowed_decisions", ["approve", "reject"]),
-                                "file_paths": _extract_file_paths_from_command(
-                                    ar.get("args", {}).get("command", "")
-                                ),
-                            }
-                            for i, ar in enumerate(action_requests)
-                        ],
+                        "action_requests": action_requests_payload,
                     })
                     return
         except Exception as e:

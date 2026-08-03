@@ -5,13 +5,13 @@
       v-if="todos.length > 0 && !expanded"
       class="todo-badge"
       @click="expanded = true"
-      title="展开任务计划"
+      title="展开执行计划"
     >
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="todo-badge-icon">
         <path d="M9 11l3 3L22 4"></path>
         <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"></path>
       </svg>
-      <span class="todo-badge-text">todo {{ completedCount }}/{{ todos.length }}</span>
+      <span class="todo-badge-text">plan {{ completedCount }}/{{ todos.length }}</span>
     </div>
   </Transition>
 
@@ -24,7 +24,7 @@
             <path d="M9 11l3 3L22 4"></path>
             <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"></path>
           </svg>
-          <span>Task Plan</span>
+          <span>执行计划</span>
           <span class="todo-count">{{ completedCount }}/{{ todos.length }}</span>
         </div>
         <button class="todo-close" @click="expanded = false" title="收起">

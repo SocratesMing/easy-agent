@@ -802,6 +802,9 @@ class Database:
             # 按 order 排序恢复原始顺序
             sanitized_blocks.sort(key=lambda x: x.get("order", 0))
             sanitized["blocks"] = sanitized_blocks
+        if message.get("pending_approval"):
+            # HITL 待审批信息（thread_id + 操作详情），供历史会话恢复审批 UI 与继续执行
+            sanitized["pending_approval"] = message["pending_approval"]
         return sanitized
 
     def update_last_assistant_message(self, session_id: str, message: dict):

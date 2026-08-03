@@ -5,7 +5,7 @@
       v-if="!sidebarCollapsed"
       :todos="todos"
     />
-    <div class="chat-messages" ref="messagesRef">
+    <div class="chat-messages" ref="messagesRef" @scroll="handleScroll">
       <div v-if="sessionCreatedAt && messages.length > 0" class="session-created-time">
         {{ formatSessionTime(sessionCreatedAt) }}
       </div>
@@ -29,7 +29,6 @@
       />
     </div>
     </div>
-    
     <button v-if="canGoToNextUserMessage" @click="goToNextUserMessage" class="scroll-btn next" :class="{ shifted: props.workspaceExpanded }" title="回到下一个用户问题">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
         <polyline points="6 9 12 15 18 9"></polyline>
@@ -270,24 +269,40 @@ function handleQuickAction(message, index) {
 
 function onPresetClick(message) {
   composerMode.value = 'bottom'
+  isAtBottom.value = true
   emit('sendMessage', message, [], null, true, false)
 }
 
 function onSend(message, files, signal, enableDeepThink) {
   composerMode.value = 'bottom'
+  isAtBottom.value = true
   handleSend(message, files, signal, enableDeepThink)
 }
 
-function scrollToBottom() {
+// 是否贴底：用户位于滚动容器底部时为 true，向上滚动查看历史时为 false。
+// 流式更新仅在贴底时自动滚动，避免抢占用户阅读上方内容；用户滚回底部后自动恢复跟随。
+const isAtBottom = ref(true)
+
+function handleScroll() {
+  const el = messagesRef.value
+  if (!el) return
+  const threshold = 80
+  isAtBottom.value = el.scrollHeight - el.scrollTop - el.clientHeight < threshold
+}
+
+function scrollToBottom(force = false) {
   nextTick(() => {
-    if (messagesRef.value) {
-      messagesRef.value.scrollTop = messagesRef.value.scrollHeight
+    const el = messagesRef.value
+    if (!el) return
+    if (force || isAtBottom.value) {
+      el.scrollTop = el.scrollHeight
     }
   })
 }
 
 watch(() => props.messages, (newMessages, oldMessages) => {
-  if (props.isStreaming) {
+  // 流式更新或新增消息时，仅在用户贴底时自动滚动；用户向上查看历史时不打断
+  if (props.isStreaming || (newMessages?.length || 0) > (oldMessages?.length || 0)) {
     scrollToBottom()
   }
   nextTick(() => {
@@ -296,7 +311,9 @@ watch(() => props.messages, (newMessages, oldMessages) => {
 }, { deep: true })
 
 watch(() => props.scrollTrigger, () => {
-  scrollToBottom()
+  // 切换/加载会话时强制贴底
+  isAtBottom.value = true
+  scrollToBottom(true)
 })
 </script>
 
@@ -352,9 +369,11 @@ watch(() => props.scrollTrigger, () => {
   flex: 1;
   overflow-y: auto;
   padding: 24px;
-  scroll-behavior: smooth;
   display: flex;
   flex-direction: column;
+  /* 与输入框区保持相同的内容宽度基准：预留滚动条 gutter，避免滚动条出现/消失
+     导致消息容器（含「处理过程」）与输入框左右错位、宽度跳动。 */
+  scrollbar-gutter: stable;
 }
 
 /* 空会话：欢迎区与输入框整体垂直居中 */
@@ -706,6 +725,7 @@ watch(() => props.scrollTrigger, () => {
 .scroll-btn.next {
   bottom: 170px;
 }
+
 
 
 .scroll-btn.shifted {

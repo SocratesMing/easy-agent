@@ -22,6 +22,7 @@ from ..services import (
     unregister_stream_task,
     cancel_stream_task,
 )
+from ..services.streaming import format_sse
 from ..utils import parse_file_content, SessionLogger
 from .sessions import generate_workspace_name
 
@@ -67,6 +68,56 @@ def create_new_session(
     db.create_session(session_data)
     db.update_session_workspace_name(session_id, workspace_name)
     return workspace_name
+
+
+_detached_bg_tasks: "set[asyncio.Task]" = set()
+
+
+async def _detached_event_stream(gen, session_id: str, sid: str):
+    """以「后台任务 + 队列」驱动流式生成器，与客户端断开解耦。
+
+    后台任务推进 astream 并把 SSE 分片入队；客户端断开（登出/超时/关页）时仅停止
+    向前端推送，后台任务继续运行至完成（含 DB 持久化），长任务因此不会被中断。
+    /cancel 仍生效：后台任务已 register_stream_task 注册，可被 task.cancel() 取消。
+    """
+    queue: asyncio.Queue = asyncio.Queue()
+    state = {"disconnected": False}
+
+    async def _drive():
+        bg = asyncio.current_task()
+        try:
+            register_stream_task(session_id, bg)
+            async for chunk in gen:
+                if not state["disconnected"]:
+                    await queue.put(chunk)
+        except asyncio.CancelledError:
+            logger.info(f"[{sid}] 后台流式任务被取消（/cancel）")
+            raise
+        except Exception as e:
+            logger.error(f"[{sid}] 后台流式任务异常: {type(e).__name__}: {e}")
+            if not state["disconnected"]:
+                try:
+                    await queue.put(
+                        format_sse({"type": "error", "content": f"处理失败: {e}"})
+                    )
+                except Exception:
+                    pass
+        finally:
+            unregister_stream_task(session_id, bg)
+            await queue.put(None)
+
+    bg_task = asyncio.create_task(_drive())
+    _detached_bg_tasks.add(bg_task)
+    bg_task.add_done_callback(_detached_bg_tasks.discard)
+    try:
+        while True:
+            item = await queue.get()
+            if item is None:
+                break
+            yield item
+    except asyncio.CancelledError:
+        state["disconnected"] = True
+        logger.info(f"[{sid}] 客户端断开连接，后台流式任务继续执行（不取消）")
 
 
 @router.post(
@@ -180,15 +231,9 @@ async def chat_stream(
         system_prompt_extra=system_prompt_extra,
     )
 
-    async def event_generator():
-        # 注册当前请求任务，使 /cancel 端点能通过 task.cancel() 中断 astream
-        cur_task = asyncio.current_task()
-        logger.info(
-            f"[{session_id[-5:]}] 📡 流式响应启动 | 已注册 task={cur_task.get_name() if cur_task else '?'}"
-        )
-        register_stream_task(session_id, cur_task)
-        try:
-            async for chunk in chat_stream_generator(
+    return StreamingResponse(
+        _detached_event_stream(
+            chat_stream_generator(
                 request=request,
                 db=db,
                 agent=agent,
@@ -198,25 +243,10 @@ async def chat_stream(
                 http_request=http_request,
                 parsed_content=parsed_content,
                 session_logger=session_logger,
-            ):
-                yield chunk
-        except asyncio.CancelledError:
-            logger.info(
-                f"[{session_id[-5:]}] 🛑 event_generator 收到 CancelledError | "
-                f"astream 已被中断，停止向客户端推送"
-            )
-            raise
-        except Exception as e:
-            logger.error(
-                f"[{session_id[-5:]}] ❌ event_generator 异常: {type(e).__name__}: {e}"
-            )
-            raise
-        finally:
-            unregister_stream_task(session_id)
-            logger.info(f"[{session_id[-5:]}] 🏁 流式响应结束 | task 已注销")
-
-    return StreamingResponse(
-        event_generator(),
+            ),
+            session_id,
+            sid,
+        ),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -289,11 +319,9 @@ async def chat_resume(
     # 复用缓存的 Agent 实例（保留 checkpointer 中的 interrupt 状态）
     agent = await get_or_create_agent_for_session(session_id, username, workspace_name)
 
-    async def event_generator():
-        cur_task = asyncio.current_task()
-        register_stream_task(session_id, cur_task)
-        try:
-            async for chunk in resume_stream_generator(
+    return StreamingResponse(
+        _detached_event_stream(
+            resume_stream_generator(
                 db=db,
                 agent=agent,
                 session_id=session_id,
@@ -301,19 +329,10 @@ async def chat_resume(
                 decisions=request.decisions,
                 username=username,
                 message_id=request.message_id,
-            ):
-                yield chunk
-        except asyncio.CancelledError:
-            logger.info(f"[{sid}] 🔔 HITL 恢复被取消")
-            raise
-        except Exception as e:
-            logger.error(f"[{sid}] 🔔 HITL 恢复异常: {type(e).__name__}: {e}")
-            raise
-        finally:
-            unregister_stream_task(session_id)
-
-    return StreamingResponse(
-        event_generator(),
+            ),
+            session_id,
+            sid,
+        ),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
