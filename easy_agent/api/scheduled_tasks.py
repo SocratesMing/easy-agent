@@ -2,9 +2,10 @@
 
 import logging
 from datetime import datetime
-from typing import Annotated
+from typing import Annotated, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import FileResponse
 
 from ..db import Database, get_database
 from ..middleware import get_current_username
@@ -19,7 +20,7 @@ from ..services import (
     get_scheduler,
 )
 from ..services.scheduler import get_task_workspace_name
-from ..api.files import build_workspace_tree, serve_workspace_file
+from ..api.files import build_workspace_tree, resolve_workspace_file, serve_workspace_file
 from ..config import Config
 from ..utils.task_logger import log_task_event
 
@@ -190,7 +191,7 @@ def _resolve_task_workspace_dir(db, task_id: str, username: str):
     workspace_name = get_task_workspace_name(db, task)
     workspace_dir = Config.get_user_workspace_dir(task.username)
     if workspace_name:
-        workspace_dir = workspace_dir / workspace_name
+        workspace_dir = workspace_dir / "session" / workspace_name
     return task, workspace_dir
 
 
@@ -213,13 +214,59 @@ async def get_task_workspace(
 
 @router.get("/{task_id}/workspace/file", summary="预览/下载定时任务工作目录文件")
 async def get_task_workspace_file(
+    request: Request,
     task_id: str,
     file_path: str = "",
     download: bool = False,
+    target: Optional[str] = Query(
+        default=None,
+        description="转换为指定格式后返回，如 pdf（用 LibreOffice 转换，用于 PPT/XLS/DOC 预览）",
+    ),
+    token: Optional[str] = Query(
+        default=None,
+        description="认证token（iframe/img 等无法设置 Header 时使用）",
+    ),
     db: Annotated[Database, Depends(get_database)] = None,
-    username: Annotated[str, Depends(get_current_username)] = None,
 ):
+    # 认证：优先 Authorization Header，其次查询参数 token（iframe/img 预览场景），
+    # 均走单点登录 token_version 校验
+    username = None
+    auth_header = request.headers.get("Authorization")
+    if auth_header and auth_header.startswith("Bearer "):
+        from ..middleware.auth import verify_token_sso
+
+        username = verify_token_sso(auth_header[7:], db)
+    if not username and token:
+        from ..middleware.auth import verify_token_sso
+
+        username = verify_token_sso(token, db)
+    if not username:
+        raise HTTPException(status_code=401, detail="登录已过期或未登录，请重新登录")
+
     _, workspace_dir = _resolve_task_workspace_dir(db, task_id, username)
     if not file_path:
         raise HTTPException(status_code=400, detail="缺少 file_path 参数")
+
+    full_path = resolve_workspace_file(workspace_dir, file_path)
+    if not full_path.is_file():
+        raise HTTPException(status_code=404, detail="文件不存在")
+
+    # 目标格式转换（PPT/XLS/DOC → PDF），与普通会话文件预览一致
+    if target and target.lower() == "pdf":
+        try:
+            from ..services.document_convert import convert_to_pdf
+
+            pdf_path = convert_to_pdf(full_path, target="pdf")
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except Exception as e:
+            logger.error(f"文档转换失败 | {file_path} | {e}")
+            raise HTTPException(status_code=500, detail=f"文档转换失败: {e}")
+        return FileResponse(
+            path=str(pdf_path),
+            filename=full_path.stem + ".pdf",
+            media_type="application/pdf",
+            content_disposition_type="inline",
+        )
+
     return serve_workspace_file(workspace_dir, file_path, download=download)

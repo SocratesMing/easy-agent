@@ -34,18 +34,12 @@ from langgraph.types import Command
 
 from ..agent import EasyAgent
 from ..db import Database
-from ..model import create_model
 from .stream_processor import StreamProcessor
 from ..models.api import ChatRequest
 from ..utils.session_logger import SessionLogger
 from .agent_manager import get_agent_config
 
 logger = logging.getLogger("easy_agent.chat_service")
-
-MAX_CONTEXT_MESSAGES = 30  # 已由 config.summarization 的 token 占比阈值取代，保留备用
-KEEP_RECENT_MESSAGES = 10
-
-
 
 
 def _extract_file_paths_from_command(command: str) -> list[str]:
@@ -112,103 +106,6 @@ def _get_model_context_limit(model_instance) -> int | None:
     return None
 
 
-def _dict_to_lc_message(msg: dict):
-    """将 DB 消息 dict 转为 LangChain 消息（用于摘要输入与 token 估算）。"""
-    if msg.get("role") == "assistant":
-        return AIMessage(content=str(msg.get("content", "")))
-    return HumanMessage(content=str(msg.get("content", "")))
-
-
-def _estimate_tokens(messages: list[dict]) -> int:
-    """用官方近似算法 count_tokens_approximately 估算消息列表 token 数。"""
-    try:
-        from langchain_core.messages.utils import count_tokens_approximately
-        return count_tokens_approximately(
-            [_dict_to_lc_message(m) for m in messages]
-        )
-    except Exception:
-        return 0
-
-
-async def compress_context(
-    messages: list[dict],
-    keep_recent: int = KEEP_RECENT_MESSAGES,
-) -> tuple[list[dict], str, int]:
-    if len(messages) <= keep_recent + 4:
-        return messages, "", len(messages)
-
-    recent = messages[-keep_recent:]
-    to_compress = messages[:-keep_recent]
-
-    # 采用官方 SummarizationMiddleware 的 DEFAULT_SUMMARY_PROMPT（结构化提取：
-    # SESSION INTENT / SUMMARY / ARTIFACTS / NEXT STEPS），并用 get_buffer_string
-    # 保留完整消息内容（不再逐条截断到 500 字符），提升压缩摘要质量。
-    from langchain.agents.middleware.summarization import DEFAULT_SUMMARY_PROMPT
-    from langchain_core.messages import get_buffer_string
-
-    conversation_text = get_buffer_string([_dict_to_lc_message(m) for m in to_compress])
-    if not conversation_text.strip():
-        return messages, "", len(messages)
-
-    try:
-        agent_cfg = get_agent_config()
-        llm = create_model(agent_cfg["config"])
-        summary_prompt = DEFAULT_SUMMARY_PROMPT.format(messages=conversation_text)
-        result = await llm.ainvoke([HumanMessage(content=summary_prompt)])
-        summary = result.content if hasattr(result, "content") else str(result)
-        summary = summary.strip()
-
-        compressed_msg = {
-            "role": "system",
-            "content": f"[历史对话压缩摘要]:\n{summary}\n\n[以下是最新的对话内容]:",
-        }
-        compressed = [compressed_msg] + recent
-        return compressed, summary, len(to_compress)
-    except Exception as e:
-        logger.warning(f"上下文压缩失败: {e}")
-        return messages, "", len(messages)
-
-
-async def build_context_messages(
-    db: Database,
-    session_id: str,
-    current_message: str,
-    session_logger: SessionLogger = None,
-) -> str:
-    session = db.get_session(session_id)
-    if not session or len(session.messages) <= 4:
-        return current_message
-
-    session_messages = session.messages
-
-    # 触发条件采用官方 token 占比阈值（config.summarization.compression_threshold），
-    # 取代固定消息数阈值，更贴近「上下文到达一定阈值后压缩」的官方做法。
-    agent_cfg = get_agent_config()
-    _config = agent_cfg["config"] if agent_cfg else None
-    max_input_tokens = _config.llm.max_input_tokens if _config else 200000
-    threshold = _config.summarization.compression_threshold if _config else 0.8
-    need_compress = _estimate_tokens(session_messages[:-1]) > max_input_tokens * threshold
-
-    if need_compress:
-        compressed_msgs, summary, original_count = await compress_context(
-            session_messages
-        )
-        if summary:
-            context_summary = (
-                f"[历史对话摘要（前{original_count}条消息已压缩）]:\n{summary}\n\n"
-            )
-            if session_logger:
-                session_logger.log_context_compression(
-                    summary, original_count, len(compressed_msgs)
-                )
-            logger.info(
-                f"[{session_id[-5:]}] 上下文已压缩 | 原消息数: {original_count} | 摘要长度: {len(summary)}"
-            )
-            return context_summary + current_message
-
-    return current_message
-
-
 def format_sse(data: dict) -> str:
     """将事件数据序列化为 SSE 格式字符串。"""
     return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
@@ -262,14 +159,20 @@ def build_assistant_message_dict(
     result_limit: int = 5000,
 ) -> dict:
     """构建用于持久化/返回的 assistant 消息字典（常规结束、HITL 中断、取消等场景共用）。"""
+    _raw_content = content or ""
+    # 过滤空/纯空白的 content block，避免持久化与历史会话渲染空正文
+    _clean_blocks = [
+        b for b in (blocks or [])
+        if not (b.get("type") == "content" and not (b.get("content", "") or "").strip())
+    ]
     return {
         "role": "assistant",
-        "content": content or "",
+        "content": _raw_content if _raw_content.strip() else "",
         "timestamp": datetime.now().isoformat(),
         "thinking": thinking or None,
         "thinking_duration": thinking_duration or None,
         "tool_calls": tool_call_records_to_dicts(tool_call_records, result_limit) or None,
-        "blocks": blocks or None,
+        "blocks": _clean_blocks or None,
         "usage": {
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
@@ -472,8 +375,7 @@ async def chat_stream_generator(
     raw_user_input = message_content
 
     if agent and agent.workspace_dir:
-        ws = agent.workspace_dir.absolute().as_posix()
-        message_content = f"[workspace: {agent.workspace_virtual_path}/ | shell: cd {ws}]\n{message_content}"
+        message_content = f"[workspace: {agent.workspace_virtual_path}/ | shell: cd {agent.workspace_virtual_path}]\n{message_content}"
 
     # 加载记忆上下文：
     # - 长期记忆（memories/{username}/AGENTS.md）：跨会话用户偏好与经验，始终加载
@@ -496,10 +398,6 @@ async def chat_stream_generator(
                 f"长期: {len(long_term_memory)} 字符 | 会话: {len(session_memory)} 字符"
             )
 
-    if session_id and db:
-        message_content = await build_context_messages(
-            db, session_id, message_content, session_logger
-        )
     # capture pre-exchange cumulative session token estimate (used later by StreamProcessor
     # token_usage events so frontend can display session-level context consumption during streaming)
     pre_session_tokens = 0
@@ -551,7 +449,13 @@ async def chat_stream_generator(
             model_instance = getattr(agent, "model", None)
             max_input_tokens = _get_model_context_limit(model_instance)
         if max_input_tokens:
-            auto_compress_tokens = int(max_input_tokens * 0.85)
+            _summ = get_agent_config()
+            _thr = (
+                _summ["config"].summarization.compression_threshold
+                if _summ and _summ.get("config")
+                else 0.8
+            )
+            auto_compress_tokens = int(max_input_tokens * _thr)
         else:
             auto_compress_tokens = 170000
 
@@ -666,24 +570,12 @@ async def chat_stream_generator(
         # ── 构建上下文消息 ─────────────────────────────────────────────
         # session.messages 末尾是本次刚写入 DB 的当前用户消息（chat.py 在调用
         # 本生成器前已 add_message），需排除以免与下方 message_content 重复注入。
-        # 历史超过 token 阈值时，build_context_messages 已把早期对话
-        # 压缩为摘要并入 message_content，此处仅保留最近 KEEP_RECENT_MESSAGES 条
-        # 结构化历史，避免「完整历史 + 摘要」双重注入使压缩失效。
+        # 完整历史直接注入；超长时由官方 SummarizationMiddleware 在模型调用前
+        # 按 token 阈值自动摘要，无需在此自行截断或压缩。
         context_messages = []
         session = db.get_session(session_id)
         total_msgs = len(session.messages) if session and session.messages else 0
         history_messages = session.messages[:-1] if total_msgs else []
-        # 与 build_context_messages 一致：用官方 token 占比阈值判断是否压缩，
-        # 触发时仅保留最近 KEEP_RECENT_MESSAGES 条，其余由摘要（message_content）替代。
-        _cfg = get_agent_config()
-        _thr = (
-            _cfg["config"].summarization.compression_threshold
-            if _cfg and _cfg.get("config")
-            else 0.8
-        )
-        compressed = _estimate_tokens(history_messages) > (max_input_tokens or 200000) * _thr
-        if compressed:
-            history_messages = history_messages[-KEEP_RECENT_MESSAGES:]
         if history_messages:
             provider = (
                 agent.config.llm.provider.lower() if agent and agent.config else ""
@@ -720,8 +612,7 @@ async def chat_stream_generator(
 
         logger.info(
             f"[{sid}] 📚 上下文消息构建 | DB 消息数: {total_msgs} | "
-            f"历史注入: {len(context_messages) - 1} | "
-            f"压缩: {'是(保留最近%d条)' % KEEP_RECENT_MESSAGES if compressed else '否'}"
+            f"历史注入: {len(context_messages) - 1} | 压缩: 官方 SummarizationMiddleware"
         )
 
         # ── 启动流式输出 (stream_mode=['messages', 'updates']) ─────────

@@ -25,6 +25,7 @@ from ..models.api import (
     UpdateTitleRequest,
 )
 from ..middleware import get_current_username
+from ..utils import get_owned_session
 from ..config import Config
 from ..services import get_agent_config, remove_session_agent
 
@@ -185,9 +186,7 @@ async def get_session(
     db: Annotated[Database, Depends(get_database)],
     username: Annotated[str, Depends(get_current_username)],
 ):
-    session = db.get_session(session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="会话不存在")
+    session = get_owned_session(db, session_id, username)
 
     usage = compute_session_usage(session.messages or [])
     max_input_tokens = get_max_input_tokens()
@@ -211,9 +210,7 @@ async def update_title(
     db: Annotated[Database, Depends(get_database)],
     username: Annotated[str, Depends(get_current_username)],
 ):
-    session = db.get_session(session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="会话不存在")
+    session = get_owned_session(db, session_id, username)
 
     title = request.title or "未命名会话"
     db.update_session_title(session_id, title)
@@ -229,9 +226,7 @@ async def toggle_pin(
     db: Annotated[Database, Depends(get_database)],
     username: Annotated[str, Depends(get_current_username)],
 ):
-    session = db.get_session(session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="会话不存在")
+    session = get_owned_session(db, session_id, username)
 
     new_val = db.toggle_session_pin(session_id)
     action = "置顶" if new_val else "取消置顶"
@@ -248,9 +243,7 @@ async def delete_session(
     db: Annotated[Database, Depends(get_database)],
     username: Annotated[str, Depends(get_current_username)],
 ):
-    session = db.get_session(session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="会话不存在")
+    session = get_owned_session(db, session_id, username)
 
     session_files = db.get_session_files(session_id)
     for f in session_files:
@@ -279,7 +272,7 @@ async def delete_session(
     for name in candidate_names:
         if not name:
             continue
-        ws_dir = user_workspace_dir / name
+        ws_dir = user_workspace_dir / "session" / name
         # 安全护栏：绝不删除用户级工作区根目录（name 为空或仅指向 user 目录时跳过）
         if ws_dir.resolve() == user_workspace_dir.resolve():
             logger.warning(f"跳过删除：候选目录等于用户工作区根目录 | name={name}")
@@ -316,9 +309,7 @@ async def get_chat_history(
     db: Annotated[Database, Depends(get_database)],
     username: Annotated[str, Depends(get_current_username)],
 ):
-    session = db.get_session(session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="会话不存在")
+    session = get_owned_session(db, session_id, username)
 
     usage = compute_session_usage(session.messages or [])
     max_input_tokens = get_max_input_tokens()
@@ -343,9 +334,7 @@ async def add_message(
     db: Annotated[Database, Depends(get_database)],
     username: Annotated[str, Depends(get_current_username)],
 ):
-    session = db.get_session(session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="会话不存在")
+    session = get_owned_session(db, session_id, username)
 
     message = {
         "role": request.role,
@@ -367,9 +356,7 @@ async def upload_session_file(
     username: Annotated[str, Depends(get_current_username)],
     file: UploadFile = File(...),
 ):
-    session = db.get_session(session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="会话不存在")
+    session = get_owned_session(db, session_id, username)
 
     Config.sanitize_username(username)
     upload_dir = Config.get_user_workspace_dir(username) / "uploadfiles"

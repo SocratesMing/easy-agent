@@ -47,7 +47,7 @@ appRuntime.agentEnv = AGENT_ENV
 
 // 浏览器侧始终打印当前生效配置（含生产模式），便于在控制台核对实际加载的环境
 console.log(
-  `%c[Easy Agent 配置信息] (${BUILD_MODE})\n` +
+  `%c[${APP_TITLE} 配置信息] (${BUILD_MODE})\n` +
     `  运行环境: ${AGENT_ENV}\n` +
     `  后端地址: ${API_BASE_URL}\n` +
     `  应用名称: ${APP_TITLE}\n` +
@@ -56,3 +56,8 @@ console.log(
     ? 'color: #0ea5e9; font-weight: bold; font-size: 12px;'
     : 'color: #64748b; font-size: 12px;'
 )
+
+// 同步网站标题（浏览器标签）为配置的应用名称
+if (typeof document !== 'undefined') {
+  document.title = APP_TITLE
+}

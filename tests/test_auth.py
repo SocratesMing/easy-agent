@@ -1,5 +1,8 @@
 """认证接口测试：注册、登录、资料、改密、配置。"""
 
+from datetime import timedelta
+
+from easy_agent.api import auth as auth_mod
 from easy_agent.app import app
 
 
@@ -17,6 +20,32 @@ def test_register_success(client):
     assert data["access_token"]
     assert data["token_type"] == "bearer"
     assert data["username"] == "alice"
+
+
+def test_token_lifetime_zero_idle_logout(monkeypatch):
+    """idle_logout_minutes=0（不登出、一直登录）时签发超长有效期 token。"""
+
+    class _Agent:
+        idle_logout_minutes = 0
+
+    class _Cfg:
+        agent = _Agent()
+
+    monkeypatch.setattr(auth_mod, "get_agent_config", lambda: {"config": _Cfg()})
+    assert auth_mod._get_token_lifetime() == timedelta(days=365)
+
+
+def test_token_lifetime_default_when_idle_enabled(monkeypatch):
+    """idle_logout_minutes>0 时保持默认 30 分钟 token 有效期。"""
+
+    class _Agent:
+        idle_logout_minutes = 5
+
+    class _Cfg:
+        agent = _Agent()
+
+    monkeypatch.setattr(auth_mod, "get_agent_config", lambda: {"config": _Cfg()})
+    assert auth_mod._get_token_lifetime() == timedelta(minutes=30)
 
 
 def test_register_missing_fields(client):

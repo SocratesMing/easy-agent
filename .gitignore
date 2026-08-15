@@ -47,6 +47,7 @@ tests/chat_history/
 data/
 logs/
 memories/
+sessions/
 node_modules/
 
 # Local config with secrets (use config-example.yaml as template)

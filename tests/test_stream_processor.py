@@ -103,6 +103,26 @@ def test_messages_text_emits_content_event():
     assert any(e["type"] == "content" and e["content"] == "hi there" for e in events)
 
 
+def test_content_whitespace_tokens_are_forwarded():
+    """纯空白 token（换行/缩进）必须作为 content 事件下发并累积进正文块，
+    否则前端实时渲染缺少块间换行，markdown（标题/表格/代码块）会显示成原文。"""
+    p = StreamProcessor(sid="s1")
+    ev1 = p.handle("messages", (AIMessageChunk(content="## 标题"), {}))
+    ev2 = p.handle("messages", (AIMessageChunk(content="\n\n"), {}))
+    ev3 = p.handle("messages", (AIMessageChunk(content="- 项目一"), {}))
+
+    contents = [
+        e["content"]
+        for e in ev1 + ev2 + ev3
+        if e.get("type") == "content"
+    ]
+    assert contents == ["## 标题", "\n\n", "- 项目一"]
+    # 正文块累积原文（含空白），与 message.content 一致
+    assert p.accumulated_response == "## 标题\n\n- 项目一"
+    cblks = [b for b in p.blocks if b.get("type") == "content"]
+    assert cblks and cblks[0]["content"] == "## 标题\n\n- 项目一"
+
+
 def test_hybrid_thinking_then_tool_call_then_result():
     """End-to-end hybrid: messages(thinking) + updates(model tool_call) + updates(tools result)."""
     p = StreamProcessor(sid="s1")

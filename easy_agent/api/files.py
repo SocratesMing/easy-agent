@@ -13,7 +13,7 @@ from fastapi.responses import FileResponse
 from ..db import Database, get_database
 from ..models.api import FileListResponse, FileInfo
 from ..middleware import get_current_username
-from ..utils import parse_file_content
+from ..utils import parse_file_content, get_owned_session
 from ..config import Config
 
 logger = logging.getLogger(__name__)
@@ -151,7 +151,10 @@ def serve_workspace_file(
 async def get_session_generated_files(
     session_id: str,
     db: Annotated[Database, Depends(get_database)],
+    username: Annotated[str, Depends(get_current_username)],
 ):
+    # 校验会话归属，防止跨用户读取其他会话生成的文件
+    get_owned_session(db, session_id, username)
     generated_files = db.get_generated_files(session_id)
 
     file_list = []
@@ -180,6 +183,8 @@ async def list_files(
     upload_dir, _ = get_user_dirs(username)
 
     if session_id:
+        # 校验会话归属，防止跨用户读取其他会话的文件列表
+        get_owned_session(db, session_id, username)
         files = db.get_session_files(session_id)
         file_list = []
         for f in files:
@@ -250,6 +255,8 @@ async def upload_file(
     ext = os.path.splitext(safe_filename)[1].lstrip(".") or "unknown"
 
     if session_id:
+        # 校验会话归属，防止向他人会话关联文件
+        get_owned_session(db, session_id, username)
         db.add_session_file(
             session_id=session_id,
             filename=safe_filename,
@@ -299,7 +306,7 @@ async def delete_file(
     db: Annotated[Database, Depends(get_database)],
     username: Annotated[str, Depends(get_current_username)],
 ):
-    success = db.delete_file(file_id)
+    success = db.delete_file(file_id, username=username)
     if not success:
         raise HTTPException(status_code=404, detail="文件不存在")
 
@@ -333,29 +340,28 @@ async def preview_file(
     当指定 target=pdf 且文件为可转换的 Office 类型时，使用 LibreOffice 将文件转换为
     PDF 后返回，由前端内置查看器渲染（解决 @vue-office/pptx 等组件渲染不稳定的问题）。
     """
-    # 认证：优先 Header，其次查询参数 token
+    # 认证：优先 Header，其次查询参数 token（均走单点登录 version 校验）
     username = None
     auth_header = request.headers.get("Authorization")
     if auth_header and auth_header.startswith("Bearer "):
-        from ..utils.auth import get_username_from_token
-        username = get_username_from_token(auth_header[7:])
+        from ..middleware.auth import verify_token_sso
+        username = verify_token_sso(auth_header[7:], db)
     if not username and token:
-        from ..utils.auth import get_username_from_token
-        username = get_username_from_token(token)
+        from ..middleware.auth import verify_token_sso
+        username = verify_token_sso(token, db)
     if not username:
         default_user = db.get_or_create_default_user()
         username = default_user.username
 
     workspace_dir = Config.get_user_workspace_dir(username)
 
-    if session_id:
-        session = db.get_session(session_id) if db else None
-        if session and session.username:
-            workspace_dir = Config.get_user_workspace_dir(session.username)
-        if session and session.workspace_name:
-            workspace_dir = workspace_dir / session.workspace_name
+    if session_id and db:
+        # 校验会话归属，防止通过他人 session_id 访问其工作区文件
+        session = get_owned_session(db, session_id, username)
+        if session.workspace_name:
+            workspace_dir = workspace_dir / "session" / session.workspace_name
         else:
-            workspace_dir = workspace_dir / session_id
+            workspace_dir = workspace_dir / "session" / session_id
 
     full_path = workspace_dir / file_path
 
@@ -396,17 +402,15 @@ async def get_workspace_tree(
 ):
     workspace_dir = Config.get_user_workspace_dir(username)
 
-    if session_id:
-        session = db.get_session(session_id) if db else None
-        # 使用会话所属用户的 workspace 目录，避免当前登录用户与会话所有者不一致时路径错误
-        if session and session.username:
-            workspace_dir = Config.get_user_workspace_dir(session.username)
-        if session and session.workspace_name:
-            workspace_dir = workspace_dir / session.workspace_name
+    if session_id and db:
+        # 校验会话归属，防止通过他人 session_id 浏览其工作区文件树
+        session = get_owned_session(db, session_id, username)
+        if session.workspace_name:
+            workspace_dir = workspace_dir / "session" / session.workspace_name
         else:
-            workspace_dir = workspace_dir / session_id
+            workspace_dir = workspace_dir / "session" / session_id
         logger.info(
-            f"工作区文件树 | session_id={session_id} | workspace_name={session.workspace_name if session else 'N/A'} | dir={workspace_dir}"
+            f"工作区文件树 | session_id={session_id} | workspace_name={session.workspace_name} | dir={workspace_dir}"
         )
     else:
         logger.info(f"工作区文件树 | 无 session_id | dir={workspace_dir}")

@@ -32,6 +32,13 @@ export async function authFetch(url, options = {}) {
   })
 
   if (response.status === 401) {
+    // 识别"被踢下线"场景（账号在其他设备/IP 登录），设置标记供登录页提示用户
+    try {
+      const errBody = await response.clone().json()
+      if (errBody && errBody.detail && /其他设备|被迫下线/.test(errBody.detail)) {
+        localStorage.setItem('auth_kicked', '1')
+      }
+    } catch (_) { /* ignore */ }
     clearAuth()
     dispatchAuthExpired()
     throw new Error('登录已过期，请重新登录')
@@ -110,6 +117,14 @@ export async function register(username, password, organizationId, email = '') {
 
 export async function logout() {
   clearAuth()
+}
+
+export async function notifyLogout() {
+  try {
+    await authFetch(`${API_BASE_URL}/api/auth/logout`, { method: 'POST' })
+  } catch (e) {
+    // best-effort：登出通知失败不影响前端登出流程
+  }
 }
 
 export async function unregister() {

@@ -108,14 +108,28 @@
       </div>
 
       <!-- 我的技能 -->
-      <div v-else class="skills-grid">
-        <div v-if="userSkills.length === 0" class="empty-state">
-          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-            <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
-            <circle cx="12" cy="7" r="4"></circle>
-          </svg>
-          <p>暂无技能，从公共技能中添加</p>
+      <div v-else class="user-skills-section">
+        <div class="user-toolbar">
+          <button class="import-btn" @click="triggerImport" :disabled="importing">
+            <div v-if="importing" class="btn-spinner-sm"></div>
+            <svg v-else xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+              <polyline points="17 8 12 3 7 8"/>
+              <line x1="12" y1="3" x2="12" y2="15"/>
+            </svg>
+            {{ importing ? '导入中...' : '导入技能' }}
+          </button>
+          <span class="toolbar-hint">上传 zip 压缩包（需含 SKILL.md）</span>
+          <input ref="fileInputRef" type="file" accept=".zip" class="hidden-file-input" @change="handleImportFile" />
         </div>
+        <div class="skills-grid user-skills-grid">
+          <div v-if="userSkills.length === 0" class="empty-state">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+              <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+              <circle cx="12" cy="7" r="4"></circle>
+            </svg>
+            <p>暂无技能，从公共技能添加或导入 zip 压缩包</p>
+          </div>
         <div
           v-for="skill in userSkills"
           :key="skill.dir_name"
@@ -146,6 +160,19 @@
               <div class="skill-card-desc">{{ skill.description || '暂无描述' }}</div>
             </div>
             <button
+              class="download-icon-btn"
+              :disabled="downloadingSkill === skill.dir_name"
+              @click.stop="handleDownloadSkill(skill)"
+              title="下载技能"
+            >
+              <div v-if="downloadingSkill === skill.dir_name" class="btn-spinner-sm"></div>
+              <svg v-else xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                <polyline points="7 10 12 15 17 10"/>
+                <line x1="12" y1="15" x2="12" y2="3"/>
+              </svg>
+            </button>
+            <button
               class="remove-icon-btn"
               :disabled="removingSkill === skill.dir_name"
               @click.stop="handleRemoveSkill(skill)"
@@ -157,6 +184,7 @@
               </svg>
             </button>
           </div>
+        </div>
         </div>
       </div>
     </div>
@@ -260,7 +288,7 @@
 
 <script setup>
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
-import { getPublicSkills, getUserSkills, addSkillToUser, removeSkillFromUser } from '../api/skills.js'
+import { getPublicSkills, getUserSkills, addSkillToUser, removeSkillFromUser, importSkill, downloadSkill } from '../api/skills.js'
 
 const emit = defineEmits(['close'])
 
@@ -271,6 +299,9 @@ const publicSkills = ref([])
 const userSkills = ref([])
 const addingSkill = ref(null)
 const removingSkill = ref(null)
+const importing = ref(false)
+const fileInputRef = ref(null)
+const downloadingSkill = ref(null)
 const toast = ref({ show: false, message: '', type: 'success' })
 
 // 悬浮窗状态
@@ -402,6 +433,39 @@ async function handleRemoveSkill(skill) {
   }
 }
 
+function triggerImport() {
+  fileInputRef.value?.click()
+}
+
+async function handleImportFile(e) {
+  const file = e.target.files?.[0]
+  if (!file) return
+  importing.value = true
+  try {
+    const res = await importSkill(file)
+    showToast(`技能「${res.dir_name}」导入成功`)
+    await refresh()
+  } catch (err) {
+    showToast(err.message || '导入失败', 'error')
+  } finally {
+    importing.value = false
+    e.target.value = ''
+  }
+}
+
+async function handleDownloadSkill(skill) {
+  if (!skill) return
+  downloadingSkill.value = skill.dir_name
+  try {
+    await downloadSkill(skill.dir_name)
+    showToast(`技能「${skill.name}」下载成功`)
+  } catch (err) {
+    showToast(err.message || '下载失败', 'error')
+  } finally {
+    downloadingSkill.value = null
+  }
+}
+
 function handleKeydown(e) {
   if (e.key === 'Escape' && popover.value.visible) {
     closePopover()
@@ -517,6 +581,59 @@ onBeforeUnmount(() => {
   overflow-y: auto;
   padding: 24px;
   position: relative;
+}
+
+.user-skills-section {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.user-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.import-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  border: 1px solid var(--accent-color, #0ea5e9);
+  background: var(--bg-primary, white);
+  border-radius: 8px;
+  font-size: 13px;
+  color: var(--accent-color, #0ea5e9);
+  cursor: pointer;
+  transition: all 0.2s;
+  white-space: nowrap;
+  font-weight: 500;
+}
+
+.import-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent-color, #0ea5e9) 10%, transparent);
+}
+
+.import-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.toolbar-hint {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.hidden-file-input {
+  display: none;
+}
+
+.user-skills-grid {
+  position: relative;
+  min-height: 200px;
+  align-items: start;
 }
 
 .loading-state,
@@ -677,7 +794,7 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: center;
   border: 1px solid var(--border-color);
-  background: white;
+  background: var(--bg-primary);
   border-radius: 6px;
   cursor: pointer;
   flex-shrink: 0;
@@ -686,8 +803,8 @@ onBeforeUnmount(() => {
 }
 
 .add-icon-btn:hover:not(:disabled) {
-  background: #f0f9ff;
-  border-color: #0ea5e9;
+  background: color-mix(in srgb, var(--accent-color, #0ea5e9) 10%, transparent);
+  border-color: var(--accent-color, #0ea5e9);
 }
 
 .add-icon-btn:disabled {
@@ -697,7 +814,7 @@ onBeforeUnmount(() => {
 .add-icon-btn.added {
   color: var(--text-secondary);
   border-color: var(--border-color);
-  background: #f8fafc;
+  background: var(--bg-secondary);
 }
 
 .add-icon-btn svg {
@@ -721,8 +838,8 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  border: 1px solid transparent;
-  background: transparent;
+  border: 1px solid var(--border-color);
+  background: var(--bg-primary);
   border-radius: 6px;
   cursor: pointer;
   flex-shrink: 0;
@@ -739,6 +856,37 @@ onBeforeUnmount(() => {
 .remove-icon-btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+/* 下载按钮（我的技能）——与公共技能 add-icon-btn 风格统一 */
+.download-icon-btn {
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border-color);
+  background: var(--bg-primary);
+  border-radius: 6px;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: all 0.2s;
+  color: #0ea5e9;
+}
+
+.download-icon-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent-color, #0ea5e9) 10%, transparent);
+  border-color: var(--accent-color, #0ea5e9);
+}
+
+.download-icon-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.download-icon-btn svg {
+  width: 14px;
+  height: 14px;
 }
 
 .remove-icon-btn svg {

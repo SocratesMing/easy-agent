@@ -131,7 +131,7 @@ Claude automatically gains access to `bash_code_execution` (run shell commands) 
 - **Math**: sympy, mpmath
 - **Utilities**: tqdm, python-dateutil, pytz, sqlite3
 
-Additional packages can be installed at runtime via `pip install`.
+Additional packages can be installed at runtime via `uv pip install`.
 
 ### Supported File Types for Upload
 

@@ -32,7 +32,8 @@ from langgraph.checkpoint.memory import MemorySaver
 from .config import Config
 from .logger import AgentLogger
 from .model import create_model, extract_reasoning
-from .sandbox import bwrap_usable, check_command_paths, run_sandboxed
+from .landlock import landlock_usable
+from .sandbox import bwrap_usable, run_landlocked, run_sandboxed
 
 
 logger = logging.getLogger(__name__)
@@ -91,6 +92,96 @@ def _is_destructive_command(request: ToolCallRequest) -> bool:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# 外部目录挂载安全校验：防止 external_dirs 把工作区根（含所有用户会话）或
+# 其他用户子树挂载为虚拟路径，导致智能体越权访问其他用户的会话数据。
+# ---------------------------------------------------------------------------
+
+def _is_within(child: Path, ancestor: Path) -> bool:
+    """*child* 等于或位于 *ancestor* 之内（两者均应已 ``resolve()``）。"""
+    try:
+        child.relative_to(ancestor)
+        return True
+    except ValueError:
+        return False
+
+
+def _check_external_dir_safety(
+    real_path: Path, workspace_root: Path, safe_username: str
+) -> tuple[bool, str]:
+    """检查外部目录挂载是否会越权暴露其他用户的会话数据。
+
+    返回 ``(是否安全, 不安全时的原因)``。以下情形视为不安全，必须拒绝挂载：
+
+    - 外部目录是工作区根目录本身或其祖先 -> 暴露全部用户；
+    - 外部目录位于工作区根目录下、但不在当前用户子树内 -> 暴露其他用户。
+
+    使用 ``resolve()`` 跟随符号链接，软链接到工作区根的情形同样会被拦截。
+    """
+    try:
+        ws_root = workspace_root.resolve()
+        user_root = (ws_root / safe_username).resolve()
+        real = real_path.resolve()
+    except Exception:
+        # 无法解析时不阻断：后续 mkdir/挂载会自然失败并报错。
+        return True, ""
+    if _is_within(ws_root, real):
+        return False, (
+            f"目标路径 {real} 是工作区根目录 {ws_root} 本身或其祖先，"
+            "挂载后将暴露所有用户的会话目录"
+        )
+    if _is_within(real, ws_root) and not _is_within(real, user_root):
+        return False, (
+            f"目标路径 {real} 位于工作区根目录 {ws_root} 下但不在当前用户"
+            f"({safe_username})的子树内，挂载后将暴露其他用户数据"
+        )
+    return True, ""
+
+
+_summarization_factory_installed = False
+
+
+def install_config_summarization(config: "Config") -> None:
+    """让官方 SummarizationMiddleware 使用 config.summarization 阈值。
+
+    ``create_deep_agent`` 会无条件注入 ``create_summarization_middleware(model, backend)``
+    （模型感知默认值），且不接受 profile 自定义、再传入一个会触发
+    ``AssertionError: Please remove duplicate middleware instances``。因此一次性替换
+    ``deepagents.graph`` 中的工厂引用，使其返回用 config 阈值参数化的官方
+    ``SummarizationMiddleware`` 实例--复用官方实现，不自行重写摘要逻辑。
+
+    上下文压缩统一交给该官方中间件：在每次模型调用前按 token 阈值自动摘要旧消息，
+    从而取代 streaming.py 中自实现的 compress_context/build_context_messages。
+    """
+    global _summarization_factory_installed
+    if _summarization_factory_installed:
+        return
+    import deepagents.graph as _graph
+    from deepagents.middleware.summarization import SummarizationMiddleware
+
+    max_tokens = int(getattr(config.llm, "max_input_tokens", 0) or 200000)
+    thr = float(getattr(config.summarization, "compression_threshold", 0.0) or 0.8)
+    tgt = float(getattr(config.summarization, "compression_target", 0.0) or 0.1)
+    trigger_tokens = max(1, int(max_tokens * thr))
+    keep_tokens = max(1, int(max_tokens * tgt))
+
+    def _factory(model, backend, **_kwargs):
+        return SummarizationMiddleware(
+            model=model,
+            backend=backend,
+            trigger=("tokens", trigger_tokens),
+            keep=("tokens", keep_tokens),
+        )
+
+    _graph.create_summarization_middleware = _factory
+    _summarization_factory_installed = True
+    logger.info(
+        f"SummarizationMiddleware 已接入 config 阈值 | "
+        f"trigger=tokens:{trigger_tokens} keep=tokens:{keep_tokens} "
+        f"(max_input_tokens={max_tokens} threshold={thr} target={tgt})"
+    )
+
+
 class _PathTranslatingShell(LocalShellBackend):
     """LocalShellBackend 包装：execute 命令中自动将虚拟路径翻译为实际路径。
 
@@ -110,7 +201,7 @@ class _PathTranslatingShell(LocalShellBackend):
 
         Args:
             path_mappings: 虚拟路径前缀到实际路径的映射字典，
-                如 {'/workspace/user/session/': '/abs/path/to/session/'}。
+                如 {'/workspace/': '/abs/path/to/session/'}。
             *args: 传递给 LocalShellBackend 的位置参数。
             **kwargs: 传递给 LocalShellBackend 的关键字参数。
         """
@@ -137,8 +228,33 @@ class _PathTranslatingShell(LocalShellBackend):
         self._sandbox_enabled = sandbox_enabled
         self._allowed_rw_dirs = self._compute_allowed_dirs(path_mappings)
         self._use_bwrap = sandbox_enabled and bwrap_usable()
+        self._use_landlock = (
+            sandbox_enabled and not self._use_bwrap and landlock_usable()
+        )
+        # bwrap 把每个真实目录绑定到其「虚拟路径」挂载点，而非真实宿主机路径
+        # （后者通常位于 /home/<user>/... 下）。这样 /home、/root 在沙箱内完全
+        # 不可见，模型直接使用虚拟路径，因此 bwrap 模式下关闭路径翻译。
+        # Landlock 无法重映射路径，仍使用 virtual->real 翻译与真实 cwd。
+        if self._use_bwrap:
+            self._bind_pairs = [
+                (real.rstrip("/"), virtual.rstrip("/"))
+                for virtual, real in path_mappings.items()
+            ]
+            self._virtual_cwd = next(
+                iter(path_mappings.keys()), str(self.cwd)
+            ).rstrip("/")
+            self._rules = []
+            self._reverse_rules = []
+        else:
+            self._bind_pairs = None
+            self._virtual_cwd = None
         if sandbox_enabled:
-            mode = "bwrap 沙箱隔离" if self._use_bwrap else "路径白名单（bwrap 不可用，已降级）"
+            if self._use_bwrap:
+                mode = "bwrap 沙箱隔离"
+            elif self._use_landlock:
+                mode = "Landlock 隔离（bwrap 不可用，已降级为非特权文件系统隔离）"
+            else:
+                mode = "fail-closed（bwrap 与 Landlock 均不可用，shell 命令将被拒绝）"
             logger.info(f"[{self._sandbox_id}] shell 沙箱已启用: {mode}")
 
     def execute(self, command: str, *, timeout: int | None = None) -> "ExecuteResponse":
@@ -210,7 +326,9 @@ class _PathTranslatingShell(LocalShellBackend):
 
         - bwrap 可用：命令在 bubblewrap 容器内执行，仅能访问工作区/技能/外部
           目录（读写）与系统命令库/Python 环境（只读）。
-        - bwrap 不可用：best-effort 路径白名单检测，拒绝引用工作区外路径的命令。
+        - bwrap 不可用但 Landlock 可用：用 Landlock（非特权文件系统隔离）将命令
+          限制在工作区/技能/外部目录与系统只读目录，其余宿主机路径不可见。
+        - 二者均不可用：fail-closed，拒绝执行（避免越权访问其他用户数据）。
         - 沙箱关闭：回退到原始的宿主机直接执行（不推荐，仅用于排查）。
         """
         if not self._sandbox_enabled:
@@ -218,17 +336,34 @@ class _PathTranslatingShell(LocalShellBackend):
         if self._use_bwrap:
             return run_sandboxed(
                 command,
+                binds=self._bind_pairs,
+                cwd=self._virtual_cwd,
+                env=self._env,
+                timeout=timeout if timeout is not None else self._default_timeout,
+                max_output_bytes=self._max_output_bytes,
+            )
+        if self._use_landlock:
+            return run_landlocked(
+                command,
                 allowed_rw_dirs=self._allowed_rw_dirs,
                 cwd=str(self.cwd),
                 env=self._env,
                 timeout=timeout if timeout is not None else self._default_timeout,
                 max_output_bytes=self._max_output_bytes,
             )
-        blocked = check_command_paths(command, self._allowed_rw_dirs)
-        if blocked:
-            logger.warning(f"[{self._sandbox_id}][fallback] 拒绝越界命令: {command[:120]}")
-            return ExecuteResponse(output=blocked, exit_code=1, truncated=False)
-        return super().execute(command, timeout=timeout)
+        # bwrap 与 Landlock 均不可用：fail-closed，拒绝执行（避免越权访问其他用户数据）
+        logger.warning(
+            f"[{self._sandbox_id}] 拒绝执行 shell 命令（无可用沙箱隔离）: {command[:120]}"
+        )
+        return ExecuteResponse(
+            output=(
+                "Error: 当前环境不支持 bwrap 与 Landlock，无法安全执行 shell 命令，已拒绝执行。\n"
+                "请在容器启动时添加 --cap-add SYS_ADMIN --security-opt apparmor=unconfined "
+                "以启用 bwrap 沙箱，或在配置中设置 agent.sandbox_enabled=false（仅限可信单用户环境）。"
+            ),
+            exit_code=127,
+            truncated=False,
+        )
 
 
 class EasyAgent:
@@ -298,16 +433,16 @@ class EasyAgent:
             base = Path(config.agent.workspace_dir)
             if session_id:
                 dir_name = workspace_name if workspace_name else session_id
-                self.workspace_dir = base / self.safe_username / dir_name
+                self.workspace_dir = base / self.safe_username / "session" / dir_name
             else:
                 self.workspace_dir = base / self.safe_username
                 dir_name = self.safe_username
 
         # Don't create directory eagerly — FilesystemBackend.write will create it on first write
-        self.workspace_virtual_path = f"/workspace/{self.safe_username}/{dir_name}"
+        self.workspace_virtual_path = "/workspace"
         self._workspace_renamed = False
 
-        # 会话级记忆文件：workspace/{username}/{workspace_name}/memory.md
+        # 会话级记忆文件：workspace/{username}/session/{workspace_name}/memory.md
         # 首轮对话时不创建，第一轮回复完成后自动生成
         # 第二轮及后续对话时自动加载，提供当前会话的上下文连续性
         self.memory_file = self.workspace_dir / "memory.md"
@@ -324,8 +459,8 @@ class EasyAgent:
         # 仅加载用户已添加的技能（/user-skills/），不再加载全部公共技能。
         skills_info = ""
 
-        # 用户技能目录: workspace/{username}/skills/
-        self.user_skills_dir = self.workspace_dir.parent / "skills"
+        # 用户技能目录: workspace/{username}/skills/（用户级，非 session 级）
+        self.user_skills_dir = Path(config.agent.workspace_dir) / self.safe_username / "skills"
         user_skill_names = self._discover_user_skill_names()
         if user_skill_names:
             skills_info = "## User Skills: `/user-skills/`（例：`/user-skills/my_skill/SKILL.md`）\n"
@@ -381,9 +516,8 @@ class EasyAgent:
             self.workspace_dir.rename(new_workspace)
 
         old_path = str(self.workspace_dir.absolute())
-        old_virtual = self.workspace_virtual_path
         self.workspace_dir = new_workspace
-        self.workspace_virtual_path = f"/workspace/{self.safe_username}/{new_name}"
+        # 扁平化后虚拟路径恒为 /workspace，重命名只改真实目录，虚拟路径不变。
 
         # 记忆文件基于 workspace_dir 推导，重命名后必须同步更新，
         # 否则 update_memory_after_session 会写回旧目录（且 mkdir 会重建旧目录）。
@@ -391,7 +525,7 @@ class EasyAgent:
 
         self.system_prompt = self.system_prompt.replace(
             old_path, str(new_workspace.absolute())
-        ).replace(old_virtual, self.workspace_virtual_path)
+        )
 
         self.agent = self._create_agent()
 
@@ -474,11 +608,12 @@ class EasyAgent:
         logger.info(f"[{self.sid}] 📋 系统提示词 | 预览(前100字符): {self.system_prompt[:100]}")
 
         skills_paths = self._resolve_skills_paths()
-        backend = self._build_backend(skills_paths)
+        safe_external = self._safe_external_dirs()
+        backend = self._build_backend(skills_paths, safe_external)
         self._log_user_skills()
         middleware = self._build_middleware()
         tools = list(self.mcp_tools) if self.mcp_tools else None
-        permissions = self._build_permissions(skills_paths)
+        permissions = self._build_permissions(skills_paths, safe_external)
 
         self._override_read_file_limit(middleware)
         self._override_execute_description(middleware)
@@ -653,7 +788,32 @@ Usage:
         except Exception as e:
             logger.warning(f"[{self.sid}] ⚠️ 覆盖 execute 工具描述失败: {e}")
 
-    def _build_backend(self, skills_paths: list[str]):
+    def _safe_external_dirs(self) -> dict[str, str]:
+        """返回通过安全校验的外部目录映射 {虚拟路径(带/): 实际绝对路径}。
+
+        跳过任何可能越权暴露其他用户会话数据的外部目录：工作区根目录本身、
+        其祖先、或工作区根下不属于当前用户的子树。被跳过的目录会记录安全告警，
+        确保即使配置失误也不会把其他用户的会话目录挂载给当前会话的智能体。
+        """
+        external_dirs = self.config.agent.external_dirs or {}
+        workspace_root = Path(self.config.agent.workspace_dir)
+        result: dict[str, str] = {}
+        for vpath, real_path in external_dirs.items():
+            real = Path(real_path)
+            ok, reason = _check_external_dir_safety(
+                real, workspace_root, self.safe_username
+            )
+            if not ok:
+                logger.warning(
+                    f"[{self.sid}] 🚫 拒绝挂载外部目录 {vpath} -> {real_path}：{reason}。"
+                    f"该挂载已跳过，以防止越权访问其他用户的会话数据。"
+                )
+                continue
+            vp = vpath if vpath.endswith("/") else vpath + "/"
+            result[vp] = str(real.absolute())
+        return result
+
+    def _build_backend(self, skills_paths: list[str], safe_external: dict[str, str]):
         """构建 CompositeBackend 实例，配置多路由文件系统后端。
 
         创建记忆、工作区和用户技能三组 FilesystemBackend 路由，
@@ -684,11 +844,11 @@ Usage:
             )
             routes["/user-skills/"] = user_skills_backend
 
-        # 挂载外部目录（skill 需要访问的宿主机目录）为虚拟路径路由
-        external_dirs = self.config.agent.external_dirs or {}
-        for vpath, real_path in external_dirs.items():
-            vp = vpath if vpath.endswith("/") else vpath + "/"
-            real = Path(real_path)
+        # 挂载外部目录（skill 需要访问的宿主机目录）为虚拟路径路由。
+        # 仅挂载通过安全校验的目录（safe_external），防止把工作区根或其他用户
+        # 子树挂载出来导致越权访问其他用户的会话数据。
+        for vp, real_abs in safe_external.items():
+            real = Path(real_abs)
             real.mkdir(parents=True, exist_ok=True)
             routes[vp] = FilesystemBackend(
                 root_dir=str(real.absolute()),
@@ -709,9 +869,8 @@ Usage:
         }
         if self.user_skills_dir.exists():
             path_mappings["/user-skills/"] = str(self.user_skills_dir.absolute()) + "/"
-        for vpath, real_path in external_dirs.items():
-            vp = vpath if vpath.endswith("/") else vpath + "/"
-            path_mappings[vp] = str(Path(real_path).absolute()) + "/"
+        for vp, real_abs in safe_external.items():
+            path_mappings[vp] = real_abs + "/"
 
         return CompositeBackend(
             default=_PathTranslatingShell(
@@ -748,7 +907,7 @@ Usage:
             )
         ]
 
-    def _build_permissions(self, skills_paths: list[str] | None = None) -> list[FilesystemPermission]:
+    def _build_permissions(self, skills_paths: list[str] | None = None, safe_external: dict[str, str] | None = None) -> list[FilesystemPermission]:
         """根据配置构建文件系统权限规则。
 
         读取 config.agent.denied_dirs 中配置的虚拟路径目录列表，
@@ -781,9 +940,7 @@ Usage:
         ]
         if skills_paths:
             existing_prefixes.append("/user-skills/")
-        external_dirs = self.config.agent.external_dirs or {}
-        for vpath in external_dirs:
-            vp = vpath if vpath.endswith("/") else vpath + "/"
+        for vp in (safe_external or {}):
             existing_prefixes.append(vp)
 
         permissions = []

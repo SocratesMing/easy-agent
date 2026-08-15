@@ -141,13 +141,14 @@
                   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
                 </button>
               </div>
-              <p class="mcp-dialog-desc">粘贴 MCP 服务配置（JSON 格式）。支持对象格式或单条 server 格式：</p>
-              <pre class="mcp-dialog-example">对象格式：{"myserver": {"transport":"stdio","command":"npx",...}}
+              <p class="mcp-dialog-desc">粘贴 MCP 服务配置（JSON 格式）。支持标准 mcpServers 格式、对象格式或单条 server 格式：</p>
+              <pre class="mcp-dialog-example">标准格式：{"mcpServers": {"akshare-mcp": {"type":"sse","url":"http://127.0.0.1:8005/sse","timeout":60}}}
+对象格式：{"myserver": {"transport":"stdio","command":"npx",...}}
 单条格式：{"name":"myserver","transport":"stdio","command":"npx",...}</pre>
               <textarea
                 v-model="addMcpJson"
                 class="mcp-json-input"
-                placeholder='{"myserver": {"transport": "stdio", "command": "npx", "args": ["-y", "some-mcp-server"]}}'
+                placeholder='{"mcpServers": {"akshare-mcp": {"type": "sse", "url": "http://127.0.0.1:8005/sse", "timeout": 60}}}'
                 spellcheck="false"
               ></textarea>
               <div v-if="addMcpError" class="save-error">{{ addMcpError }}</div>

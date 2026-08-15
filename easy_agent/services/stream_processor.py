@@ -376,7 +376,10 @@ class StreamProcessor:
                 # 上一个 step（思考/工具）在本轮正文开始时结束：先打印其汇总，再清空本步统计。
                 self._log_step_end(_prev_step)
                 self._reset_step_stats()
+            # accumulated_response 始终累积原文（含空白），保证 DB 持久化正文完整、
+            # 代码块缩进/换行不丢失。
             self.accumulated_response += content
+            self._step_content_len += len(content)
             cblk = None
             for b in reversed(self.blocks):
                 if b.get("type") == "content" and b.get("step") == self.current_step:
@@ -386,8 +389,11 @@ class StreamProcessor:
                 cblk = {"type": "content", "order": len(self.blocks),
                         "content": "", "step": self.current_step}
                 self.blocks.append(cblk)
+            # 累积原文（含空白），保持正文/代码格式完整
             cblk["content"] += content
-            self._step_content_len += len(content)
+            # 空白 token（换行/缩进）同样下发事件：前端按 token 累积正文，
+            # 若丢弃纯空白 chunk，标题/表格/代码块之间的换行会缺失，
+            # 导致 markdown 实时渲染成原始文本（历史记录用的是完整文本所以正常）。
             events.append({"type": "content", "content": content, "step": self.current_step})
         return events
 
@@ -516,7 +522,11 @@ class StreamProcessor:
                 if b.get("approval_status"):
                     item["approval_status"] = b["approval_status"]
             elif bt == "content":
-                item["content"] = (b.get("content", "") or "")[:8000]
+                _c = (b.get("content", "") or "")
+                # 过滤空/纯空白的 content block，避免 done 事件下发空正文
+                if not _c.strip():
+                    continue
+                item["content"] = _c[:8000]
             out.append(item)
         return out
 

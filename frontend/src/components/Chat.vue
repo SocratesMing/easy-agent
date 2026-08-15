@@ -90,8 +90,9 @@ import { ref, watch, nextTick, computed, onMounted, onUnmounted } from 'vue'
 import ChatMessage from './ChatMessage.vue'
 import ChatInput from './ChatInput.vue'
 import TodoListPanel from './TodoListPanel.vue'
+import { APP_TITLE } from '../config.js'
 
-const welcomeTitle = 'Easy Agent，让工作更简单'
+const welcomeTitle = `${APP_TITLE}，让工作更简单`
 // 首页布局模式：center=空会话时输入框居中，bottom=对话中输入框贴底
 const composerMode = ref('center')
 
@@ -198,7 +199,9 @@ const canGoToPrevUserMessage = computed(() => {
 })
 
 const canGoToNextUserMessage = computed(() => {
-  return currentUserMessageIndex.value > 0
+  // 未滚动到底部时持续显示“回到下一个用户问题”按钮，
+  // 让用户能逐条向下跳转，最后再回到会话底部
+  return userMessageIndices.value.length > 0 && !isAtBottom.value
 })
 
 onMounted(() => {
@@ -223,11 +226,19 @@ function goToPrevUserMessage() {
 
 function goToNextUserMessage() {
   if (currentUserMessageIndex.value > 0) {
+    // 还有更靠后的用户问题：逐条向下跳转
     currentUserMessageIndex.value--
     const targetIndex = userMessageIndices.value[currentUserMessageIndex.value]
     if (targetIndex !== undefined && messageRefs.value[targetIndex]) {
       messageRefs.value[targetIndex].scrollIntoView({ behavior: 'smooth', block: 'center' })
     }
+  } else {
+    // 已到最后一个用户问题（或未经过导航）：直接滚动到会话底部
+    currentUserMessageIndex.value = -1
+    nextTick(() => {
+      const el = messagesRef.value
+      if (el) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
+    })
   }
 }
 
@@ -287,7 +298,14 @@ function handleScroll() {
   const el = messagesRef.value
   if (!el) return
   const threshold = 80
-  isAtBottom.value = el.scrollHeight - el.scrollTop - el.clientHeight < threshold
+  const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < threshold
+  isAtBottom.value = atBottom
+  // 手动滚动回到最底部时，同步复位「上一个/下一个问题」导航索引：
+  // 此前索引停留在历史问题位置，会导致回到底部后「回到上一个问题」按钮
+  // 按旧索引计算而消失（按钮状态与真实滚动位置脱节）。
+  if (atBottom && currentUserMessageIndex.value !== -1) {
+    currentUserMessageIndex.value = -1
+  }
 }
 
 function scrollToBottom(force = false) {

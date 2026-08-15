@@ -409,33 +409,28 @@ const sortedBlocks = computed(() => {
   return blocks
 })
 
-// 处理过程：思考 + 工具调用（排除已在侧边栏显示的 write_todos）+ 穿插其间的正文。
-// 判定「最终正文」：仅当消息真正完成（非流式且无待审批 HITL）时，才取 order 最大
-// 的一段 content 作为最终正文展示在处理过程之后；流式/HITL 期间所有正文均作为
-// 「中间穿插」纳入处理过程内部。这样避免中间正文「先在过程外渲染一下、新正文到达
-// 后又落入过程内」的闪烁（原先在流式中即把 order 最大 content 定为最终正文，新正文
-// 到达时旧正文会从过程外跳入过程内）。
+// 处理过程：思考 + 工具调用（排除已在侧边栏显示的 write_todos）。
+// 正文统一由 finalContentBlocks 完整渲染，不再作为「中间穿插」放进执行过程——
+// 后端按模型 turn 把正文拆成多个 content 块，若只取最后一块，被工具调用隔开的
+// 表格/代码片段会丢失；拼接所有块才能保证实时与历史渲染一致。
 // origIndex 保留在 sortedBlocks 中的原始下标，供折叠状态函数定位 block。
 const _isProcessType = (b) =>
   b.type === 'thinking' || (b.type === 'tool_call' && b.tool_name !== 'write_todos')
 
-// 消息是否已真正完成：非流式中（loading=false）且无待审批（pending_approval）。
-// HITL 时 loading 也会被置 false，故需同时排除 pending_approval，避免审批期间把中间
-// 正文误当最终正文展示在过程外、恢复执行后再次跳入过程内造成闪烁。
-const isMessageFinished = computed(() =>
-  !props.message.loading && !props.message.pending_approval
-)
-
-// 最终正文：仅当消息完成后，取 order 最大的一段 content 展示在处理过程之后；
-// 流式/HITL 期间返回空，所有正文均作为「中间穿插」纳入处理过程内部。
+// 最终正文：仅当消息完成（非流式且无待审批 HITL）时，取 order 最大的一段 content
+// 展示在处理过程之后；思考/工具执行过程中到达的中间正文按返回顺序渲染在执行过程
+// 内部（process-inline-content），不混入最终正文区。
 const finalContentBlocks = computed(() => {
-  if (!isMessageFinished.value) return []
-  const contents = []
-  sortedBlocks.value.forEach((b, i) => {
-    if (b.type === 'content') contents.push({ ...b, origIndex: i })
-  })
+  const contents = sortedBlocks.value
+    .map((b, i) => ({ ...b, origIndex: i }))
+    .filter((b) => b.type === 'content')
   if (contents.length === 0) return []
   contents.sort((a, b) => (a.order || 0) - (b.order || 0))
+  // 有思考/工具执行过程时：流式/HITL 期间中间正文留在执行过程内部按序展示，
+  // 完成后才把最后一段正文移到过程之后；
+  // 无执行过程（纯正文回复）时：流式中也要实时显示在过程外。
+  const hasProcess = sortedBlocks.value.some(_isProcessType)
+  if (!isMessageFinished.value && hasProcess) return []
   return [contents[contents.length - 1]]
 })
 
@@ -447,13 +442,18 @@ const processBlocks = computed(() => {
       result.push({ ...b, origIndex: i })
       return
     }
-    // 非最终正文的 content -> 中间穿插，纳入处理过程内部按原序展示
+    // 非最终正文的 content -> 中间穿插，按返回顺序纳入执行过程内部展示
     if (b.type === 'content' && i !== finalOrigIndex) {
       result.push({ ...b, origIndex: i })
     }
   })
   return result
 })
+
+// 消息是否已真正完成：非流式中（loading=false）且无待审批（pending_approval）
+const isMessageFinished = computed(() =>
+  !props.message.loading && !props.message.pending_approval
+)
 
 // 「步骤数」仅统计思考与工具调用，不含穿插的正文。
 const processStepCount = computed(() =>
@@ -468,6 +468,21 @@ const isProcessActive = computed(() => !!props.message.loading)
 // 处理过程默认折叠（含实时会话），由用户手动展开/折叠；新过程到达不自动展开，
 // 避免打断用户已收起的查看状态。
 const processExpanded = ref(false)
+
+// 流式期间只要出现穿插正文（思考/工具之间的中间正文），自动展开执行过程，
+// 让中间正文按返回顺序可见；完成后保持用户手动展开/收起的状态。
+watch(
+  () => [
+    props.message.loading,
+    processBlocks.value.some((b) => b.type === 'content'),
+  ],
+  ([loading, hasInlineContent]) => {
+    if (loading && hasInlineContent && !processExpanded.value) {
+      processExpanded.value = true
+    }
+  },
+  { immediate: true }
+)
 
 // 出现待审批的工具调用（HITL）时自动展开，便于用户查看审批提示。
 const hasPendingApproval = computed(() =>
@@ -702,11 +717,62 @@ function getFileExtension(filename) {
   return 'FILE'
 }
 
-async function copyMessage() {
-  if (!props.message.content) return
-  
+// 兼容历史脏数据：早期版本可能把注入给模型的工作区前缀/记忆上下文一并存进
+// 用户消息，复制时应剔除这些内部前缀，只复制用户真正输入的需求内容。
+function cleanUserContent(content) {
+  let text = String(content == null ? '' : content)
+  const lines = text.split('\n')
+  const wsIdx = lines.findIndex(l => /^\[workspace: .*shell: cd .*\]$/.test(l.trim()))
+  if (wsIdx !== -1) {
+    // 去掉 [workspace: ...] 标记行及前面的记忆/上下文前缀
+    text = lines.slice(wsIdx + 1).join('\n')
+  }
+  return text.replace(/^\s+/, '').replace(/\s+$/, '')
+}
+
+// 统一复制入口：优先 Clipboard API，失败时降级为隐藏 textarea + execCommand，
+// 兼容非 HTTPS（LAN IP 访问）等 Clipboard API 不可用的场景。
+async function copyTextToClipboard(text) {
+  const content = String(text == null ? '' : text)
+  if (!content) return false
   try {
-    await navigator.clipboard.writeText(props.message.content)
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(content)
+      return true
+    }
+  } catch (e) {
+    console.warn('Clipboard API 不可用，降级复制:', e)
+  }
+  try {
+    const textarea = document.createElement('textarea')
+    textarea.value = content
+    textarea.setAttribute('readonly', '')
+    textarea.style.position = 'fixed'
+    textarea.style.top = '-9999px'
+    document.body.appendChild(textarea)
+    textarea.select()
+    textarea.setSelectionRange(0, content.length)
+    const ok = document.execCommand('copy')
+    document.body.removeChild(textarea)
+    return ok
+  } catch (e) {
+    console.error('复制失败:', e)
+    return false
+  }
+}
+
+async function copyMessage(ev) {
+  if (!props.message.content) return
+
+  const text = cleanUserContent(props.message.content)
+  try {
+    const ok = await copyTextToClipboard(text)
+    const btn = ev?.currentTarget
+    if (ok && btn) {
+      const original = btn.title
+      btn.title = '已复制'
+      setTimeout(() => { btn.title = original }, 1500)
+    }
   } catch (err) {
     console.error('复制失败:', err)
   }
@@ -726,29 +792,25 @@ function removeFile(index) {
   }
 }
 
-onMounted(() => {
-  if (!window.copyCode) {
-    window.copyCode = async function(btn) {
-      const wrapper = btn.closest('.code-block-wrapper')
-      const codeEl = wrapper.querySelector('pre code') || wrapper.querySelector('pre')
-      const code = codeEl?.textContent || ''
-      
-      try {
-        await navigator.clipboard.writeText(code)
-        const span = btn.querySelector('span')
-        const originalText = span.textContent
-        span.textContent = '已复制!'
-        btn.classList.add('copied')
-        setTimeout(() => {
-          span.textContent = originalText
-          btn.classList.remove('copied')
-        }, 2000)
-      } catch (err) {
-        console.error('复制失败:', err)
-      }
-    }
+// 代码块复制：markdown 渲染产物通过 v-html 注入，按钮用 inline onclick 调全局函数。
+// 定义在模块级（而非 onMounted），保证任何渲染时机点击都能找到该函数。
+window.copyCode = async function(btn) {
+  const wrapper = btn.closest('.code-block-wrapper')
+  const codeEl = wrapper.querySelector('pre code') || wrapper.querySelector('pre')
+  const code = codeEl?.textContent || ''
+
+  const span = btn.querySelector('span')
+  const originalText = span ? span.textContent : ''
+  const ok = await copyTextToClipboard(code)
+  if (span) {
+    span.textContent = ok ? '已复制!' : '复制失败'
+    btn.classList.add(ok ? 'copied' : 'copy-error')
+    setTimeout(() => {
+      span.textContent = originalText
+      btn.classList.remove('copied', 'copy-error')
+    }, 2000)
   }
-})
+}
 </script>
 
 <style scoped>
@@ -2122,7 +2184,7 @@ html[data-theme="dark"] .approval-badge.status-rejected {
 /* shiki 用 github-light 主题生成内联白色背景的 HTML，
    dark 主题下需强制覆盖，否则代码块背景/边框仍为白色 */
 html[data-theme="dark"] .message-text :deep(.code-block-wrapper pre) {
-  background: #0d1117 !important;
+  background: transparent !important;
   border-color: #30363d !important;
 }
 
@@ -2131,7 +2193,7 @@ html[data-theme="dark"] .message-text :deep(.code-block-wrapper pre code) {
 }
 
 html[data-theme="dark"] .message-text :deep(.code-block-wrapper .shiki) {
-  background: #0d1117 !important;
+  background: transparent !important;
 }
 
 html[data-theme="dark"] .message-text :deep(.code-block-wrapper .shiki code) {
@@ -2157,6 +2219,53 @@ html[data-theme="dark"] .message-text :deep(.code-copy-btn:hover) {
   background: #30363d;
   border-color: #8b949e;
   color: #c9d1d9;
+}
+
+/* 思考过程中的代码块：全局深色规则会把 pre/code 统一成灰底，
+   这里与正文代码块保持一致（深色 GitHub 风格），避免显示灰色/白色底。 */
+html[data-theme="dark"] .thinking-text :deep(.code-block-wrapper) {
+  background: transparent;
+  border-color: #30363d;
+}
+
+html[data-theme="dark"] .thinking-text :deep(.code-block-wrapper pre),
+html[data-theme="dark"] .thinking-text :deep(.code-block-wrapper pre code) {
+  background: transparent !important;
+  color: #c9d1d9;
+}
+
+html[data-theme="dark"] .thinking-text :deep(.code-block-wrapper .shiki),
+html[data-theme="dark"] .thinking-text :deep(.code-block-wrapper .shiki code) {
+  background: transparent !important;
+  color: #c9d1d9;
+}
+
+html[data-theme="dark"] .thinking-text :deep(.code-header) {
+  background: #161b22;
+  border-color: #30363d;
+}
+
+html[data-theme="dark"] .thinking-text :deep(.code-lang) {
+  color: #8b949e;
+}
+
+html[data-theme="dark"] .thinking-text :deep(.code-copy-btn) {
+  background: #21262d;
+  border-color: #30363d;
+  color: #8b949e;
+}
+
+html[data-theme="dark"] .thinking-text :deep(.code-copy-btn:hover) {
+  background: #30363d;
+  border-color: #8b949e;
+  color: #c9d1d9;
+}
+
+/* 行内代码深色适配 */
+html[data-theme="dark"] .message-text :deep(code),
+html[data-theme="dark"] .thinking-text :deep(code) {
+  background: #30363d !important;
+  color: #c9d1d9 !important;
 }
 
 /* ========== 用户气泡 / 文件卡片 / 表格 / 工具块 深色适配 ========== */

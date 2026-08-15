@@ -2,10 +2,7 @@
   <div class="session-list">
     <div class="session-header">
       <div class="header-left">
-        <div class="logo">
-          <EasyLogo :size="28" />
-        </div>
-        <span class="logo-text">Easy Agent</span>
+        <span class="logo-text">{{ APP_TITLE }}</span>
       </div>
       <button @click="$emit('toggleSidebar')" class="collapse-btn" title="收起侧边栏">
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -63,7 +60,7 @@
           v-for="session in group.sessions"
           :key="session.session_id"
           class="session-item"
-          :class="{ active: !showAssets && session.session_id === currentSessionId, streaming: session.session_id === streamingSessionId }"
+          :class="{ active: !showAssets && session.session_id === currentSessionId, streaming: streamingSessionIds.includes(session.session_id) }"
           @click="$emit('selectSession', session.session_id)"
         >
           <div class="session-info">
@@ -74,7 +71,7 @@
                 <path d="M2 12l10 5 10-5"></path>
               </svg>
               <span class="session-title-text">{{ session.title || '未命名会话' }}</span>
-              <span v-if="session.session_id === streamingSessionId" class="streaming-badge" title="进行中">
+              <span v-if="streamingSessionIds.includes(session.session_id)" class="streaming-badge" title="进行中">
                 <span class="streaming-dot"></span>
               </span>
             </div>
@@ -192,7 +189,7 @@
 
 <script setup>
 import { ref, nextTick, onMounted, computed } from 'vue'
-import EasyLogo from './EasyLogo.vue'
+import { APP_TITLE } from '../config.js'
 
 const emit = defineEmits(['createSession', 'selectSession', 'deleteSession', 'renameSession', 'toggleSidebar', 'showAssets', 'showSkillCenter', 'showScheduledTasks', 'showProfile', 'showSettings', 'logout', 'togglePin'])
 
@@ -205,9 +202,9 @@ const props = defineProps({
     type: String,
     default: null
   },
-  streamingSessionId: {
-    type: String,
-    default: null
+  streamingSessionIds: {
+    type: Array,
+    default: () => []
   },
   username: {
     type: String,

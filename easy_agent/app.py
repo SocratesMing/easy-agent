@@ -1,7 +1,7 @@
 """FastAPI application entry point"""
 
 import logging
-from logging.handlers import RotatingFileHandler
+from logging.handlers import TimedRotatingFileHandler
 import os
 import platform
 import sys
@@ -33,6 +33,7 @@ from .api import (
     auth_router,
     bloom_router,
     forex_router,
+    completion_router,
     prompts_router,
     settings_router,
     skill_center_router,
@@ -98,9 +99,18 @@ def setup_logging(log_config: dict | None = None):
     console_handler.setFormatter(formatter)
     console_handler.addFilter(_RunidFilter())
 
-    file_handler = RotatingFileHandler(
-        log_file, maxBytes=10 * 1024 * 1024, backupCount=5, encoding="utf-8"
+    # 按天滚动：每天午夜切分新日志文件，保留最近 30 天，文件名追加日期后缀
+    # （如 easy_agent.log.2026-08-14）。空文件（当天无日志）不生成旋转文件。
+    file_handler = TimedRotatingFileHandler(
+        log_file,
+        when="midnight",
+        interval=1,
+        backupCount=30,
+        encoding="utf-8",
+        delay=True,
     )
+    file_handler.suffix = "%Y-%m-%d"
+    file_handler.extMatch = r"^\.\d{4}-\d{2}-\d{2}$"
     file_handler.setLevel(level)
     file_handler.setFormatter(formatter)
     file_handler.addFilter(_RunidFilter())
@@ -282,7 +292,7 @@ async def lifespan(app: FastAPI):
     logger.info(f"📁 工作目录 (workspace): {_ws_abs}")
     logger.info(f"🧠 记忆目录 (memories):  {_mem_abs}")
     logger.info(f"   长期记忆文件: {_mem_abs}/{{username}}/AGENTS.md")
-    logger.info(f"   会话记忆文件: {_ws_abs}/{{username}}/{{workspace_name}}/memory.md")
+    logger.info(f"   会话记忆文件: {_ws_abs}/{{username}}/session/{{workspace_name}}/memory.md")
     logger.info("=" * 60)
 
     # 注入当前时间和时区，供定时任务 cron 表达式生成参考
@@ -395,6 +405,54 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+def _get_client_ip(request: Request) -> str:
+    """从请求头或连接信息中提取客户端真实 IP。"""
+    forwarded = request.headers.get("X-Forwarded-For")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    real_ip = request.headers.get("X-Real-IP")
+    if real_ip:
+        return real_ip.strip()
+    return request.client.host if request.client else "unknown"
+
+
+# HTTP 访问日志：记录每个请求的方法、路径、客户端 IP。
+# 便于确认登录/登出等关键操作是否有请求到达后端（业务日志见 api/auth.py）。
+# 跳过静态资源、文档页与高频无意义路径，避免日志噪音。
+_ACCESS_SKIP_PREFIXES = (
+    "/swagger-ui-assets",
+    "/docs",
+    "/openapi.json",
+    "/static",
+    "/assets",
+)
+_ACCESS_SKIP_SUFFIXES = (
+    ".js",
+    ".css",
+    ".svg",
+    ".ico",
+    ".png",
+    ".woff",
+    ".woff2",
+    ".ttf",
+    ".map",
+)
+
+
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    path = request.url.path
+    if (
+        path in ("/", "/health")
+        or path.startswith(_ACCESS_SKIP_PREFIXES)
+        or path.endswith(_ACCESS_SKIP_SUFFIXES)
+    ):
+        return await call_next(request)
+    client_ip = _get_client_ip(request)
+    logger.info(f"[请求] {request.method} {path} | IP: {client_ip}")
+    return await call_next(request)
+
 # 离线 Swagger UI：挂载本地 vendored 的 swagger-ui-dist 静态资源，
 # 并自定义 /docs 路由指向本地 JS/CSS，避免从 CDN 加载（离线环境 CDN 不可达）。
 _swagger_static_dir = Path(__file__).parent / "static" / "swagger-ui"
@@ -428,6 +486,7 @@ app.include_router(files_router)
 app.include_router(auth_router)
 app.include_router(bloom_router)
 app.include_router(forex_router)
+app.include_router(completion_router)
 app.include_router(prompts_router)
 app.include_router(settings_router)
 app.include_router(skill_center_router)

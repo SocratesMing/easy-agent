@@ -2,10 +2,7 @@
   <div class="welcome-overlay">
     <div class="welcome-modal">
       <div class="welcome-header">
-        <div class="logo">
-          <EasyLogo :size="36" />
-        </div>
-        <h1>欢迎使用 Easy Agent</h1>
+        <h1>{{ APP_TITLE }}</h1>
         <p v-if="isResetPassword">重置密码</p>
         <p v-else>{{ isLogin ? '请登录您的账号' : '创建新账号开始使用' }}</p>
       </div>
@@ -78,7 +75,7 @@
         </div>
 
         <div v-if="!isLogin && !isResetPassword" class="info-message">
-          用户名将与当前 IP 地址绑定，仅可在该 IP 下登录与使用本账号
+          账号支持单点登录：同账号新登录会自动踢掉此前的登录，登录不限制 IP
         </div>
 
         <div v-if="error" class="error-message">
@@ -116,7 +113,7 @@
 <script setup>
 import { ref, onMounted, nextTick } from 'vue'
 import { login, register, resetPassword } from '../api/auth.js'
-import EasyLogo from './EasyLogo.vue'
+import { APP_TITLE } from '../config.js'
 
 const emit = defineEmits(['completed'])
 
@@ -247,6 +244,11 @@ async function handleSubmit() {
 }
 
 onMounted(() => {
+  // 检测是否因单点登录被踢下线（账号在其他设备登录）
+  if (localStorage.getItem('auth_kicked') === '1') {
+    localStorage.removeItem('auth_kicked')
+    error.value = '您的账号在其他设备登录，您已被迫下线，请重新登录'
+  }
   nextTick(() => {
     usernameInput.value?.focus()
   })
@@ -260,7 +262,7 @@ onMounted(() => {
   left: 0;
   right: 0;
   bottom: 0;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  background: #ffffff;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -272,7 +274,8 @@ onMounted(() => {
   border-radius: 20px;
   width: 420px;
   max-width: 90vw;
-  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+  border: 1px solid #e5e7eb;
+  box-shadow: 0 12px 40px rgba(15, 23, 42, 0.08);
   overflow: hidden;
 }
 
@@ -291,13 +294,13 @@ onMounted(() => {
   margin: 0 0 8px 0;
   font-size: 24px;
   font-weight: 600;
-  color: var(--text-primary);
+  color: #1e293b;
 }
 
 .welcome-header p {
   margin: 0;
   font-size: 14px;
-  color: var(--text-secondary);
+  color: #64748b;
 }
 
 .welcome-form {
@@ -316,7 +319,7 @@ onMounted(() => {
 .form-group label {
   font-size: 14px;
   font-weight: 500;
-  color: var(--text-secondary);
+  color: #64748b;
 }
 
 .required {
@@ -326,17 +329,17 @@ onMounted(() => {
 .password-hint {
   font-size: 12px;
   font-weight: 400;
-  color: var(--text-secondary);
+  color: #94a3b8;
   margin-left: 4px;
 }
 
 .form-group input {
   padding: 14px 16px;
-  border: 1px solid var(--border-color);
+  border: 1px solid #e2e8f0;
   border-radius: 12px;
   font-size: 15px;
-  background: var(--bg-tertiary);
-  color: var(--text-primary);
+  background: #f8fafc;
+  color: #1e293b;
   transition: all 0.2s;
   outline: none;
 }
@@ -347,7 +350,7 @@ onMounted(() => {
 }
 
 .form-group input::placeholder {
-  color: var(--text-secondary);
+  color: #94a3b8;
 }
 
 .error-message {
@@ -426,7 +429,7 @@ onMounted(() => {
 .forgot-password-btn {
   background: transparent;
   border: none;
-  color: var(--text-secondary);
+  color: #64748b;
   font-size: 13px;
   cursor: pointer;
   padding: 4px 16px;
@@ -434,7 +437,7 @@ onMounted(() => {
 }
 
 .forgot-password-btn:hover {
-  color: var(--text-secondary);
+  color: #334155;
   text-decoration: underline;
 }
 </style>

@@ -25,6 +25,7 @@ class UserModel:
     organization_id: str = ""
     email: str = ""
     bound_ip: str = ""
+    token_version: int = 0
     created_at: str = ""
     updated_at: str = ""
 

@@ -244,6 +244,8 @@ const emit = defineEmits(['send', 'stop', 'createSession', 'update:selectedModel
 const message = ref('')
 const textareaRef = ref(null)
 const uploadedFiles = ref([])
+// 输入草稿持久化：页面刷新后恢复用户尚未发送的输入内容（“输入框的状态不变”）
+const DRAFT_KEY = 'easy_agent_input_draft'
 
 // 光标所在行高亮（overlay 技术：textareal 本身无法按行上色）
 const caretLineTop = ref(null)   // 高亮条 top，null 表示隐藏
@@ -571,6 +573,14 @@ function onInput() {
   emit('typing')
 }
 
+watch(message, (val) => {
+  try {
+    sessionStorage.setItem(DRAFT_KEY, val)
+  } catch (e) {
+    // 隐私模式等场景下 sessionStorage 可能不可用，忽略即可
+  }
+})
+
 watch(() => props.disabled, (val) => {
   if (!val && textareaRef.value) {
     textareaRef.value.focus()
@@ -578,6 +588,16 @@ watch(() => props.disabled, (val) => {
 })
 
 onMounted(() => {
+  // 恢复刷新前的输入草稿
+  try {
+    const draft = sessionStorage.getItem(DRAFT_KEY)
+    if (draft) {
+      message.value = draft
+      nextTick(() => autoResize())
+    }
+  } catch (e) {
+    // 忽略草稿恢复失败
+  }
   document.addEventListener('click', closeTokenPopup)
   document.addEventListener('click', closeModelDropdown)
 })
@@ -779,7 +799,53 @@ onUnmounted(() => {
 }
 
 html[data-theme="dark"] .caret-line {
-  background: rgba(255, 255, 255, 0.05);
+  /* 光标所在行颜色与 textarea 区域背景一致，点击时不再出现突兀色带 */
+  background: var(--bg-tertiary) !important;
+}
+
+/* textarea 所在区域使用浅灰底（与全局深色风格一致） */
+html[data-theme="dark"] .input-field textarea {
+  background: var(--bg-tertiary) !important;
+}
+
+/* 整个输入框（容器、操作区、模型选择、上传按钮、textarea、光标行）
+   在深色模式下统一为浅灰色，保持视觉一致。 */
+html[data-theme="dark"] .input-box {
+  background: var(--bg-tertiary) !important;
+}
+
+html[data-theme="dark"] .input-actions {
+  background: var(--bg-tertiary) !important;
+}
+
+html[data-theme="dark"] .model-btn {
+  background: var(--bg-tertiary) !important;
+  border-color: var(--border-color) !important;
+}
+
+html[data-theme="dark"] .model-btn:hover:not(.disabled) {
+  background: color-mix(in srgb, var(--accent-color) 15%, var(--bg-tertiary)) !important;
+}
+
+html[data-theme="dark"] .upload-btn {
+  background: var(--bg-tertiary) !important;
+  border-color: #9ca3af !important;
+}
+
+html[data-theme="dark"] .upload-btn svg {
+  color: #ffffff !important;
+}
+
+/* token 用量圆环：全局深色规则把环底描边设成 var(--bg-tertiary)，
+   与灰色输入框背景同色导致不可见，黑色主题下改为白色圆环 */
+html[data-theme="dark"] .context-ring-bg {
+  stroke: #ffffff !important;
+}
+
+html[data-theme="dark"] .context-ring-wrapper {
+  border: 1px solid #ffffff !important;
+  border-radius: 50% !important;
+  box-sizing: border-box !important;
 }
 
 .input-field textarea {

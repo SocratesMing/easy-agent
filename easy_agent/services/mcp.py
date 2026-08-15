@@ -6,6 +6,8 @@ their tools into LangChain BaseTool instances for the agent.
 
 import json
 import logging
+import os
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +16,40 @@ from langchain_mcp_adapters.client import MultiServerMCPClient
 from easy_agent.config import Config
 
 logger = logging.getLogger("easy-agent")
+
+
+def _unpack_error(e: BaseException) -> str:
+    """把 ExceptionGroup/TaskGroup 的错误展开为最底层可读信息。"""
+    if isinstance(e, BaseExceptionGroup):
+        parts = []
+        seen = set()
+        for sub in e.exceptions:
+            text = _unpack_error(sub)
+            if text and text not in seen:
+                seen.add(text)
+                parts.append(text)
+        return "; ".join(parts) if parts else str(e) or type(e).__name__
+    return str(e) or type(e).__name__
+
+
+def _stdio_precheck(cfg: dict[str, Any]) -> str:
+    """stdio 服务启动前的快速检查，返回明确的中文提示（空字符串表示通过）。"""
+    if str(cfg.get("transport", "")).lower() != "stdio":
+        return ""
+    command = cfg.get("command", "")
+    if not command:
+        return "stdio 服务缺少 command 字段"
+    if shutil.which(command) is None:
+        return f"命令不存在: {command}（请确认该命令在后端进程的 PATH 中，或填写绝对路径）"
+    args = cfg.get("args") or []
+    for i, a in enumerate(args):
+        if a in ("--directory", "--cwd", "-C") and i + 1 < len(args):
+            workdir = args[i + 1]
+            if not os.path.isdir(workdir):
+                return (
+                    f"stdio 命令的工作目录不存在: {workdir}（请填写服务器实际所在目录的绝对路径）"
+                )
+    return ""
 
 
 # ---------------------------------------------------------------------------
@@ -96,7 +132,10 @@ def load_mcp_config(username: str | None = None) -> dict[str, dict[str, Any]]:
         with open(config_path, encoding="utf-8") as f:
             data = json.load(f)
 
-        servers = data.get("servers", {})
+        servers = data.get("servers")
+        if servers is None:
+            # 兼容标准 Claude Desktop 格式 {"mcpServers": {"name": {...}}}
+            servers = data.get("mcpServers", {})
         if not servers:
             logger.info(
                 f"mcp.json ({config_path}) has no server entries, MCP tools disabled"
@@ -107,21 +146,15 @@ def load_mcp_config(username: str | None = None) -> dict[str, dict[str, Any]]:
 
         if isinstance(servers, dict):
             # Object format: {"mysql": {"type": "stdio", "command": ...}}
-            for name, cfg in servers.items():
-                normalized = dict(cfg)
-                if "type" in normalized and "transport" not in normalized:
-                    normalized["transport"] = normalized.pop("type")
-                result[name] = normalized
+            result.update(normalize_servers_mapping(servers))
         else:
             # Array format: [{"name": "example", "transport": "stdio", ...}]
-            for s in servers:
-                name = s.get("name", "")
-                if not name:
-                    continue
-                normalized = {k: v for k, v in s.items() if k != "name"}
-                if "type" in normalized and "transport" not in normalized:
-                    normalized["transport"] = normalized.pop("type")
-                result[name] = normalized
+            items = {
+                s.get("name", ""): {k: v for k, v in s.items() if k != "name"}
+                for s in servers
+                if s.get("name")
+            }
+            result.update(normalize_servers_mapping(items))
 
         logger.info(
             f"MCP config loaded from {config_path}: "
@@ -132,6 +165,39 @@ def load_mcp_config(username: str | None = None) -> dict[str, dict[str, Any]]:
     except Exception as e:
         logger.warning(f"Failed to load mcp.json ({config_path}): {e}")
         return {}
+
+
+def normalize_servers_mapping(
+    servers: dict[str, Any],
+) -> dict[str, dict[str, Any]]:
+    """归一化 servers 映射：type→transport，并展开误存的嵌套外壳。
+
+    旧版解析把标准 Claude Desktop 格式 {"mcpServers": {...}} 误存成名为
+    "mcpServers"/"servers" 的 server（值为 {name: cfg} 映射），这里递归展开，
+    避免出现缺少 transport 的伪 server 导致校验失败。
+    """
+    result: dict[str, dict[str, Any]] = {}
+    for name, cfg in servers.items():
+        if not isinstance(cfg, dict):
+            continue
+        # 值整体是 {name: cfg} 映射（嵌套外壳）时递归展开
+        if name in ("mcpServers", "servers") and cfg and all(
+            isinstance(v, dict) for v in cfg.values()
+        ):
+            result.update(normalize_servers_mapping(cfg))
+            continue
+        normalized = dict(cfg)
+        if "type" in normalized and "transport" not in normalized:
+            normalized["transport"] = normalized.pop("type")
+        elif "transport" not in normalized:
+            # 标准 Claude Desktop 格式不写 type：
+            # 有 command/args 的是 stdio 服务，只有 url 的按 sse 处理
+            if "command" in normalized:
+                normalized["transport"] = "stdio"
+            elif "url" in normalized:
+                normalized["transport"] = "sse"
+        result[name] = normalized
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -239,6 +305,16 @@ async def validate_mcp_servers(
     results: list[dict[str, Any]] = []
     for name, cfg in config.items():
         try:
+            precheck = _stdio_precheck(cfg)
+            if precheck:
+                results.append({
+                    "name": name,
+                    "status": "error",
+                    "tools_count": 0,
+                    "error": precheck,
+                })
+                logger.warning(f"MCP 校验 | {name} ❌ 配置预检失败: {precheck}")
+                continue
             single_config = {name: cfg}
             client = MultiServerMCPClient(single_config)
             tools = await client.get_tools()
@@ -250,11 +326,12 @@ async def validate_mcp_servers(
             })
             logger.info(f"MCP 校验 | {name} ✅ 成功 ({len(tools)} 工具)")
         except Exception as e:
+            err_text = _unpack_error(e)
             results.append({
                 "name": name,
                 "status": "error",
                 "tools_count": 0,
-                "error": str(e),
+                "error": err_text,
             })
-            logger.warning(f"MCP 校验 | {name} ❌ 失败: {e}")
+            logger.warning(f"MCP 校验 | {name} ❌ 失败: {err_text}")
     return results

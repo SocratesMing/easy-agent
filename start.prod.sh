@@ -72,7 +72,7 @@ check_cmd() {
 }
 
 check_cmd python "需要 Python >= 3.11"
-check_cmd uv "安装: pip install uv"
+check_cmd uv "安装: curl -LsSf https://astral.sh/uv/install.sh | sh"
 check_cmd node "需要 Node.js >= 20（仅构建前端需要）"
 check_cmd npm "随 Node.js 一同安装"
 

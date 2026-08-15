@@ -15,6 +15,8 @@ from ..middleware import get_current_username
 from ..skills import discover_skills
 from ..services.mcp import (
     load_mcp_config,
+    normalize_servers_mapping,
+    _unpack_error,
     invalidate_mcp_cache,
     get_mcp_tools,
     validate_mcp_servers,
@@ -259,7 +261,18 @@ async def update_mcp_servers(
     user_mcp_path = Config.get_user_mcp_path(username, config)
     user_mcp_path.parent.mkdir(parents=True, exist_ok=True)
 
-    payload = {"servers": request.servers}
+    # 前端展示时 env 值被脱敏为 ***，保存时必须保留磁盘上的真实值，
+    # 否则会把密码/用户等覆盖成 *** 导致 MCP 无法连接。
+    current_raw = _read_user_mcp_raw(username, config)
+    current_servers = current_raw.get("servers", {})
+    payload_servers: dict[str, Any] = {}
+    for name, cfg in (request.servers or {}).items():
+        new_cfg = dict(cfg)
+        if isinstance(new_cfg.get("env"), dict):
+            existing_env = (current_servers.get(name) or {}).get("env", {})
+            new_cfg["env"] = _merge_mcp_env(existing_env, new_cfg["env"])
+        payload_servers[name] = new_cfg
+    payload = {"servers": payload_servers}
     user_mcp_path.write_text(
         json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8"
     )
@@ -305,6 +318,8 @@ async def update_mcp_servers(
 def _read_user_mcp_raw(username: str, config: Config | None) -> dict[str, Any]:
     """读取用户专属 mcp.json 原始内容，返回 {"servers": {name: cfg}}。
 
+    兼容标准 mcpServers 顶层键与旧版误存的嵌套外壳（名为 "mcpServers" 的
+    伪 server），统一展开归一化，避免写入时保留脏结构。
     文件不存在或格式异常时返回空 servers。
     """
     user_mcp_path = Config.get_user_mcp_path(username, config)
@@ -312,11 +327,33 @@ def _read_user_mcp_raw(username: str, config: Config | None) -> dict[str, Any]:
         return {"servers": {}}
     try:
         data = json.loads(user_mcp_path.read_text(encoding="utf-8"))
-        if isinstance(data, dict) and isinstance(data.get("servers"), dict):
-            return data
+        if isinstance(data, dict):
+            servers = data.get("servers")
+            if servers is None:
+                servers = data.get("mcpServers", {})
+            if isinstance(servers, dict):
+                return {"servers": normalize_servers_mapping(servers)}
     except Exception as e:
         logger.warning(f"读取用户 mcp.json 失败 | 用户: {username} | {e}")
     return {"servers": {}}
+
+
+def _merge_mcp_env(existing: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
+    """合并 server env：值为 ***（脱敏占位）或空字符串的键保留旧值。
+
+    前端展示时 env 值被替换成 ***，若直接写回会把真实密码/用户覆盖；
+    只有用户真正修改过的键（值不是 ***/空）才更新。
+    """
+    existing = existing or {}
+    incoming = incoming or {}
+    merged = dict(existing)
+    for k, v in incoming.items():
+        if v == "***" or v == "":
+            # 未修改：保留旧值；旧值不存在则保留占位便于前端提示
+            merged.setdefault(k, v)
+        else:
+            merged[k] = v
+    return merged
 
 
 def _write_user_mcp_raw(username: str, config: Config | None, payload: dict[str, Any]) -> Path:
@@ -336,18 +373,26 @@ def _extract_servers(user_config: dict[str, Any]) -> dict[str, dict[str, Any]]:
       1. {"servers": {"mysql": {...}}}          - 完整 mcp.json 片段
       2. {"mysql": {...}}                        - 对象格式
       3. {"name": "mysql", "transport": ...}     - 单条 server
+      4. {"mcpServers": {"mysql": {...}}}        - 标准 Claude Desktop 格式
+
+    所有格式都会把标准字段 "type" 归一化为应用内部字段 "transport"
+    （如 {"type": "sse", "url": ...} -> {"transport": "sse", "url": ...}）。
     """
     # 格式1: {"servers": {"mysql": {...}}}
     servers = user_config.get("servers")
     if isinstance(servers, dict):
-        return {k: v for k, v in servers.items() if isinstance(v, dict)}
+        return normalize_servers_mapping(servers)
+    # 格式4: {"mcpServers": {"mysql": {...}}} - 标准 Claude Desktop 格式
+    mcp_servers = user_config.get("mcpServers")
+    if isinstance(mcp_servers, dict):
+        return normalize_servers_mapping(mcp_servers)
     # 格式3: {"name": "mysql", ...}
     if "name" in user_config and isinstance(user_config["name"], str):
         name = user_config["name"]
         cfg = {k: v for k, v in user_config.items() if k != "name"}
-        return {name: cfg}
+        return normalize_servers_mapping({name: cfg})
     # 格式2: {"mysql": {...}}
-    return {k: v for k, v in user_config.items() if isinstance(v, dict)}
+    return normalize_servers_mapping(user_config)
 
 
 class AddMcpServerRequest(BaseModel):
@@ -411,8 +456,9 @@ async def add_mcp_server(
                 server_status.append({"name": name, "status": "ok", "tools_count": len(tools), "error": ""})
                 logger.info(f"MCP 校验 | {name} ✅ 成功 ({len(tools)} 工具)")
             except Exception as e:
-                server_status.append({"name": name, "status": "error", "tools_count": 0, "error": str(e)})
-                logger.warning(f"MCP 校验 | {name} ❌ 失败: {e}")
+                err_text = _unpack_error(e)
+                server_status.append({"name": name, "status": "error", "tools_count": 0, "error": err_text})
+                logger.warning(f"MCP 校验 | {name} ❌ 失败: {err_text}")
     except Exception as e:
         logger.warning(f"MCP 校验失败 | 用户: {username} | {e}")
 

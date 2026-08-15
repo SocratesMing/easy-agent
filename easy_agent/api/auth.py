@@ -1,7 +1,7 @@
 """用户管理路由"""
 
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -19,6 +19,7 @@ from ..models.api import (
 )
 from ..services import get_agent_config
 from ..utils import create_access_token, hash_password
+from ..utils.auth import decode_access_token
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +27,34 @@ router = APIRouter(
     prefix="/api/auth",
     tags=["Authentication"],
 )
+
+# 登录时间缓存：username -> 登录成功时刻（本地时间）。用于登出时打印上次登录缓存时间；
+# 进程重启后丢失，此时回退到 JWT 的 iat 字段。
+_login_time_cache: dict[str, datetime] = {}
+
+# 当前活跃登录 IP 缓存：username -> IP。用于登录时判断是否为异地登录踢人。
+# 进程内存，重启丢失（重启后旧 token 仍会因 token_version 不匹配被踢，只是无异地日志）。
+_active_login_ip: dict[str, str] = {}
+
+
+def _get_token_lifetime() -> timedelta:
+    """签发 token 的有效期。
+
+    「空闲自动登出」配置（agent.idle_logout_minutes）为 0 表示不登出、一直保持登录，
+    此时签发超长有效期 token（365 天），避免 30 分钟 token 过期把用户强制踢下线；
+    其余情况保持默认 30 分钟有效期（空闲登出计时器会在更早触发）。
+    """
+    try:
+        _cfg = get_agent_config()
+        if _cfg and _cfg.get("config"):
+            idle_minutes = _cfg["config"].agent.idle_logout_minutes
+            if idle_minutes == 0:
+                return timedelta(days=365)
+    except Exception as e:
+        logger.warning(f"读取 idle_logout_minutes 失败，使用默认 token 有效期: {e}")
+    from ..utils.auth import ACCESS_TOKEN_EXPIRE_MINUTES
+
+    return timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
 
 
 def _get_max_input_tokens() -> int:
@@ -56,21 +85,27 @@ async def register(
     http_request: Request,
     db: Annotated[Database, Depends(get_database)],
 ):
-    # 注册时与用户IP强绑定
-    client_ip = get_client_ip(http_request)
-
+    # 注册不再绑定 IP（单点登录：登录不限制 IP，但同账号新登录会踢掉旧登录）
     user = db.register_user(
         username=request.username,
         password=request.password,
         organization_id=request.organization_id,
         email=request.email,
-        bound_ip=client_ip,
     )
 
     if not user:
         raise HTTPException(status_code=400, detail="用户名已存在")
 
-    access_token = create_access_token(data={"sub": user.username})
+    # 注册即登录：递增 token 版本号并签发带 v 的 token
+    new_version = db.increment_user_token_version(user.username)
+    access_token = create_access_token(
+        data={"sub": user.username, "v": new_version},
+        expires_delta=_get_token_lifetime(),
+    )
+
+    # 注册即登录，同样缓存登录时间与活跃 IP
+    _login_time_cache[user.username] = datetime.now()
+    _active_login_ip[user.username] = get_client_ip(http_request)
 
     try:
         user_workspace = Config.get_user_workspace_dir(user.username)
@@ -88,7 +123,7 @@ async def register(
     max_input_tokens = _get_max_input_tokens()
 
     logger.info(
-        f"[用户] 注册成功 | 用户名: {user.username} | 机构ID: {user.organization_id} | 绑定IP: {client_ip}"
+        f"[用户] 注册成功 | 用户名: {user.username} | 机构ID: {user.organization_id} | 版本: {new_version}"
     )
 
     return AuthResponse(
@@ -119,24 +154,27 @@ async def login(
 
     client_ip = get_client_ip(http_request)
 
-    if user.bound_ip and user.bound_ip != client_ip:
-        logger.warning(
-            f"[用户] IP不匹配 | 用户: {user.username} | 绑定IP: {user.bound_ip} | 请求IP: {client_ip}"
-        )
-        raise HTTPException(
-            status_code=403,
-            detail=f"账号已绑定IP: {user.bound_ip}，当前IP: {client_ip} 不允许登录",
-        )
+    # 单点登录：递增 token 版本号，使该用户此前在其他设备/IP 的登录立即失效
+    prev_ip = _active_login_ip.get(user.username)
+    new_version = db.increment_user_token_version(user.username)
+    access_token = create_access_token(
+        data={"sub": user.username, "v": new_version},
+        expires_delta=_get_token_lifetime(),
+    )
 
-    if not user.bound_ip:
-        db.bind_user_ip(user.username, client_ip)
-        logger.info(f"[用户] 首次登录绑定IP | 用户: {user.username} | IP: {client_ip}")
-
-    access_token = create_access_token(data={"sub": user.username})
+    # 缓存登录时间（供登出接口打印）与当前活跃 IP（供下次登录判断异地踢人）
+    _login_time_cache[user.username] = datetime.now()
+    _active_login_ip[user.username] = client_ip
 
     max_input_tokens = _get_max_input_tokens()
 
-    logger.info(f"[用户] 登录成功 | 用户名: {user.username} | IP: {client_ip}")
+    if prev_ip and prev_ip != client_ip:
+        logger.info(
+            f"[用户] 单点登录踢出旧会话 | 用户: {user.username} | 旧IP: {prev_ip} | 新IP: {client_ip}"
+        )
+    logger.info(
+        f"[用户] 登录成功 | 用户名: {user.username} | IP: {client_ip} | 版本: {new_version}"
+    )
 
     return AuthResponse(
         access_token=access_token,
@@ -144,6 +182,39 @@ async def login(
         username=user.username,
         max_input_tokens=max_input_tokens,
     )
+
+
+@router.post("/logout", summary="用户登出")
+async def logout(
+    username: Annotated[str, Depends(get_current_username)],
+    http_request: Request,
+):
+    """记录用户登出信息（用户名、上次登录缓存时间、在线时长）。
+
+    前端手动登出与空闲超时自动登出均会调用。登录时间优先取登录缓存，缓存未命中
+    （如后端重启后未重新登录）时回退到 JWT 的 iat（签发时间）。
+    """
+    now = datetime.now()
+    cached_login = _login_time_cache.pop(username, None)
+    _active_login_ip.pop(username, None)
+    login_time_str = "未知"
+    duration_str = "未知"
+    if cached_login is not None:
+        login_time_str = cached_login.strftime("%Y-%m-%d %H:%M:%S")
+        duration_str = str(now - cached_login).split(".")[0]
+    else:
+        # 缓存未命中：回退到 token 的 iat（签发时间，UTC 时间戳 -> 本地时间）
+        auth_header = http_request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            payload = decode_access_token(auth_header[7:])
+            if payload and payload.get("iat"):
+                iat_local = datetime.fromtimestamp(payload["iat"])
+                login_time_str = iat_local.strftime("%Y-%m-%d %H:%M:%S")
+                duration_str = str(now - iat_local).split(".")[0]
+    logger.info(
+        f"[用户] 登出 | 用户名: {username} | 上次登录缓存时间: {login_time_str} | 在线时长: {duration_str}"
+    )
+    return {"status": "ok"}
 
 
 @router.get(
@@ -219,26 +290,17 @@ async def reset_password(
     if not user:
         raise HTTPException(status_code=404, detail="用户不存在")
 
-    # 仅允许来自绑定 IP 的请求修改密码：账号已与 IP 强绑定，
-    # 非绑定 IP 视为非法请求，拒绝重置（防止他人冒用用户名改密）
-    if user.bound_ip:
-        client_ip = get_client_ip(http_request)
-        if user.bound_ip != client_ip:
-            logger.warning(
-                f"[用户] 密码重置IP不匹配 | 用户: {user.username} | 绑定IP: {user.bound_ip} | 请求IP: {client_ip}"
-            )
-            raise HTTPException(
-                status_code=403,
-                detail=f"账号已绑定IP: {user.bound_ip}，当前IP: {client_ip} 不允许修改密码",
-            )
-
+    # 登录不再绑定 IP，密码重置也不再校验 IP（鉴权由单点登录 token 保证）
     new_hash = hash_password(request.new_password)
     success = db.update_user_password(request.username, new_hash)
 
     if not success:
         raise HTTPException(status_code=500, detail="密码更新失败")
 
-    logger.info(f"[用户] 密码重置成功 | 用户名: {request.username} | 绑定IP: {user.bound_ip}")
+    # 密码重置后递增 token 版本号，使该用户所有已登录设备被迫重新登录
+    db.increment_user_token_version(request.username)
+
+    logger.info(f"[用户] 密码重置成功 | 用户名: {request.username}")
 
     return {"status": "success", "message": "密码已重置"}
 

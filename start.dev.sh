@@ -61,7 +61,7 @@ check_cmd() {
     fi
 }
 check_cmd python "需要 Python >= 3.11"
-check_cmd uv "安装: pip install uv"
+check_cmd uv "安装: curl -LsSf https://astral.sh/uv/install.sh | sh"
 check_cmd node "需要 Node.js >= 20"
 check_cmd npm "随 Node.js 一同安装"
 echo "  ✅ python $(python --version 2>&1 | awk '{print $2}')"

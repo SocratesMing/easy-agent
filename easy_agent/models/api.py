@@ -92,6 +92,21 @@ class ChatResponse(BaseModel):
     usage: Optional[dict] = Field(default=None, description="Token 使用统计")
 
 
+class ChatCompletionMessage(BaseModel):
+    role: str = Field(..., description="消息角色: system / user / assistant")
+    content: str = Field(..., description="消息内容")
+
+
+class ChatCompletionRequest(BaseModel):
+    messages: List[ChatCompletionMessage] = Field(
+        ..., description="对话消息数组，例如 [{role: system, content: ...}, {role: user, content: ...}]"
+    )
+    model: Optional[str] = Field(
+        default=None,
+        description="模型名称（config.models 的 key，如 deepseek/glm）。为空时使用当前激活模型",
+    )
+
+
 class StreamChunk(BaseModel):
     type: str = Field(
         ...,

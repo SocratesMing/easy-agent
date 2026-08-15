@@ -133,7 +133,8 @@ easy-agent/
 - **Python** ≥ 3.11（推荐 3.12）
 - **Node.js** ≥ 20（仅本地开发前端需要）
 - **MySQL** ≥ 5.7（可选，默认 SQLite）
-- **uv**（推荐 Python 包管理器）：`pip install uv`
+- **uv**（推荐 Python 包管理器，统一用它安装 Python 依赖）：
+  `curl -LsSf https://astral.sh/uv/install.sh | sh`
 - **npm** 或 **pnpm**
 
 可选：

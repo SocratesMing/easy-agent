@@ -368,6 +368,8 @@ class Database:
             for col in ["password_hash", "organization_id", "email"]:
                 self._ensure_column(cursor, "users", col, "VARCHAR(255) DEFAULT ''")
             self._ensure_column(cursor, "users", "bound_ip", "VARCHAR(45) DEFAULT ''")
+            # 单点登录：token 版本号，每次登录递增，旧 token 的 v 不匹配即被踢下线
+            self._ensure_column(cursor, "users", "token_version", "INTEGER DEFAULT 0")
 
             cursor.execute(f"""
                 CREATE TABLE IF NOT EXISTS fmqt_bloom (
@@ -1320,8 +1322,8 @@ class Database:
             self._execute(
                 cursor,
                 """
-                INSERT INTO users (user_id, username, password_hash, organization_id, email, bound_ip, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO users (user_id, username, password_hash, organization_id, email, bound_ip, token_version, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     user_data.user_id,
@@ -1330,6 +1332,7 @@ class Database:
                     user_data.organization_id,
                     user_data.email,
                     user_data.bound_ip,
+                    user_data.token_version,
                     user_data.created_at,
                     user_data.updated_at,
                 ),
@@ -1351,6 +1354,7 @@ class Database:
             organization_id=row.get("organization_id", ""),
             email=row.get("email", ""),
             bound_ip=row.get("bound_ip", ""),
+            token_version=row.get("token_version", 0),
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )
@@ -1370,6 +1374,7 @@ class Database:
             organization_id=row.get("organization_id", ""),
             email=row.get("email", ""),
             bound_ip=row.get("bound_ip", ""),
+            token_version=row.get("token_version", 0),
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )
@@ -1412,6 +1417,29 @@ class Database:
         if not user:
             return ""
         return user.bound_ip
+
+    def increment_user_token_version(self, username: str) -> int:
+        """单点登录：递增用户的 token 版本号并返回新值。
+
+        每次登录调用，使该用户此前签发的 JWT（v 不等于新值）在下次鉴权时失效，
+        从而实现「新登录踢掉旧登录」。
+        """
+        user = self.get_user_by_username(username)
+        if not user:
+            return 0
+        new_version = user.token_version + 1
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            self._execute(
+                cursor,
+                "UPDATE users SET token_version=?, updated_at=? WHERE username=?",
+                (new_version, datetime.now().isoformat(), username),
+            )
+        return new_version
+
+    def get_user_token_version(self, username: str) -> int:
+        user = self.get_user_by_username(username)
+        return user.token_version if user else 0
 
     def register_user(
         self,
@@ -1511,6 +1539,7 @@ class Database:
                     organization_id=row.get("organization_id", ""),
                     email=row.get("email", ""),
                     bound_ip=row.get("bound_ip", ""),
+                    token_version=row.get("token_version", 0),
                     created_at=row["created_at"],
                     updated_at=row["updated_at"],
                 )
@@ -1556,10 +1585,17 @@ class Database:
             rows = cursor.fetchall()
         return [dict(row) for row in rows]
 
-    def delete_file(self, file_id: int) -> bool:
+    def delete_file(self, file_id: int, username: str | None = None) -> bool:
         with self.get_connection() as conn:
             cursor = conn.cursor()
-            self._execute(cursor, "DELETE FROM session_files WHERE id=?", (file_id,))
+            if username:
+                self._execute(
+                    cursor,
+                    "DELETE FROM session_files WHERE id=? AND username=?",
+                    (file_id, username),
+                )
+            else:
+                self._execute(cursor, "DELETE FROM session_files WHERE id=?", (file_id,))
             return cursor.rowcount > 0
 
     def add_generated_file(

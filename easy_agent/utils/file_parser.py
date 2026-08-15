@@ -290,7 +290,7 @@ def _parse_pdf(path: Path) -> str:
     except Exception as e:
         logger.warning(f"pdfplumber 解析失败: {e}")
 
-    return f"[PDF文件: {path.name}，未安装PDF解析库，请安装: pip install pymupdf pdfminer.six pdfplumber]"
+    return f"[PDF文件: {path.name}，未安装PDF解析库，请安装: uv pip install pymupdf pdfminer.six pdfplumber]"
 
 
 def _parse_docx(path: Path) -> str:
@@ -321,7 +321,7 @@ def _parse_docx(path: Path) -> str:
         logger.warning(f"python-docx 解析失败: {e}")
 
     return (
-        f"[DOCX文件: {path.name}，未安装python-docx，请安装: pip install python-docx]"
+        f"[DOCX文件: {path.name}，未安装python-docx，请安装: uv pip install python-docx]"
     )
 
 
@@ -391,7 +391,7 @@ def _parse_xlsx(path: Path) -> str:
     except Exception as e:
         logger.warning(f"openpyxl 解析失败: {e}")
 
-    return f"[XLSX文件: {path.name}，未安装openpyxl，请安装: pip install openpyxl]"
+    return f"[XLSX文件: {path.name}，未安装openpyxl，请安装: uv pip install openpyxl]"
 
 
 def _parse_xls(path: Path) -> str:
@@ -417,7 +417,7 @@ def _parse_xls(path: Path) -> str:
         logger.warning(f"xlrd 解析失败: {e}")
 
     return (
-        f"[XLS文件(旧格式): {path.name}，建议转换为xlsx格式，或安装: pip install xlrd]"
+        f"[XLS文件(旧格式): {path.name}，建议转换为xlsx格式，或安装: uv pip install xlrd]"
     )
 
 
@@ -451,7 +451,7 @@ def _parse_pptx(path: Path) -> str:
         logger.warning(f"python-pptx 解析失败: {e}")
 
     return (
-        f"[PPTX文件: {path.name}，未安装python-pptx，请安装: pip install python-pptx]"
+        f"[PPTX文件: {path.name}，未安装python-pptx，请安装: uv pip install python-pptx]"
     )
 
 
@@ -514,7 +514,7 @@ def _parse_image(path: Path) -> str:
         logger.warning(f"OCR 解析失败: {e}")
 
     return (
-        f"[图片文件: {path.name}，未安装OCR库，请安装: pip install pytesseract pillow]"
+        f"[图片文件: {path.name}，未安装OCR库，请安装: uv pip install pytesseract pillow]"
     )
 
 

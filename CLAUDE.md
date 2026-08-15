@@ -18,7 +18,7 @@ pytest tests/ -v
 pytest tests/test_basic.py::TestConfig -v
 
 # Install package (dev mode)
-pip install -e ".[dev]"
+uv pip install -e ".[dev]"
 
 # Start frontend dev server (proxy to backend at localhost:8000)
 cd frontend && npm run dev

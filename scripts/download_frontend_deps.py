@@ -166,7 +166,7 @@ def main() -> int:
         failed: list[str] = []
         for pkg_dir in pkg_dirs:
             pack = run(
-                ["npm", "pack", pkg_dir, "--pack-destination", str(out_dir)],
+                ["npm", "pack", pkg_dir, "--ignore-scripts", "--pack-destination", str(out_dir)],
                 cwd=tmp_path,
             )
             if pack.returncode == 0:

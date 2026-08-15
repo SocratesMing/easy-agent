@@ -10,7 +10,7 @@
         v-show="!isSidebarCollapsed"
         :sessions="sessions"
         :currentSessionId="currentSessionId"
-        :streamingSessionId="streamingSessionId"
+        :streamingSessionIds="streamingSessions"
         :username="userProfile.username"
         :organizationId="userProfile.organization_id"
         :email="userProfile.email"
@@ -128,9 +128,9 @@ import UserProfile from './components/UserProfile.vue'
 import Welcome from './components/Welcome.vue'
 import WorkspacePanel from './components/WorkspacePanel.vue'
 import SettingsPanel from './components/SettingsPanel.vue'
-import { createSession, listSessions, getChatHistory, deleteSession, sendMessage, resumeStream, renameSession, togglePinSession } from './api/chat.js'
+import { createSession, listSessions, getChatHistory, deleteSession, sendMessage, resumeStream, renameSession, togglePinSession, getStreamStatus, attachStream } from './api/chat.js'
 import { uploadFile, deleteFile, getUserProfile, getSessionGeneratedFiles } from './api/files.js'
-import { logout as apiLogout, getStoredToken, getStoredUsername, AUTH_EXPIRED_EVENT, USER_ACTIVITY_EVENT, authFetch } from './api/auth.js'
+import { logout as apiLogout, notifyLogout, getStoredToken, getStoredUsername, AUTH_EXPIRED_EVENT, USER_ACTIVITY_EVENT, authFetch } from './api/auth.js'
 import { getModels as fetchModels } from './api/settings.js'
 
 const sessions = ref([])
@@ -198,8 +198,15 @@ async function refreshSessionFiles(sessionId = null, delayMs = 0) {
   }
 }
 const messages = ref([])
-const isStreaming = ref(false)
-const streamingSessionId = ref(null) // 记录正在流式输出的会话 ID
+// 多个会话可同时流式：记录所有正在流式输出的会话 id（会话列表逐个显示"进行中"徽标）
+const streamingSessions = ref([])
+// 最近开始流式的会话（页面刷新后据此重新挂载）
+const lastStreamingSession = ref(null)
+// 输入框状态：当前展示的会话正在流式时才显示停止按钮与 token 用量
+const isStreaming = computed(() => isSessionStreaming(currentSessionId.value))
+// 当前正在流式输出的 assistant 消息 id（组件级，供 handleStop 等跨函数使用；
+// 之前误引用 handleSendMessage 的局部变量 assistantMsgId 导致停止按钮抛 ReferenceError）
+const streamingAssistantId = ref(null)
 const error = ref(null)
 const currentAbortController = ref(null)
 // HITL: 审批待处理状态，存储 { threadId, assistantMsgId }
@@ -211,6 +218,268 @@ const sessionDuration = ref(0)
 const iterationCount = ref(0)
 const currentTodos = ref([])
 const presetQuestions = ref([])
+
+function markStreaming(sid) {
+  if (!sid) return
+  if (!streamingSessions.value.includes(sid)) {
+    streamingSessions.value.push(sid)
+  }
+  lastStreamingSession.value = sid
+}
+
+function unmarkStreaming(sid) {
+  if (!sid) return
+  const idx = streamingSessions.value.indexOf(sid)
+  if (idx !== -1) streamingSessions.value.splice(idx, 1)
+}
+
+function isSessionStreaming(sid) {
+  return !!sid && streamingSessions.value.includes(sid)
+}
+
+// ── 流式状态持久化（sessionStorage）─────────────────────────────────────
+// 页面刷新后据此恢复「输入框状态不变、页面持续流式返回」：
+// - 恢复输入框草稿（ChatInput 自行持久化）
+// - 若刷新前正在流式，则重新挂载到后端进行中的流式任务继续接收事件
+const STREAM_STATE_KEY = 'easy_agent_stream_state'
+
+function saveStreamState() {
+  const ids = streamingSessions.value.filter(Boolean)
+  if (ids.length > 0) {
+    sessionStorage.setItem(STREAM_STATE_KEY, JSON.stringify({
+      streamingIds: ids,
+      lastActive: lastStreamingSession.value || ids[ids.length - 1],
+      streaming: true,
+      at: Date.now(),
+    }))
+  } else {
+    sessionStorage.removeItem(STREAM_STATE_KEY)
+  }
+}
+
+watch([streamingSessions, lastStreamingSession], saveStreamState)
+
+// 本页已建立实时挂载的会话及模式（避免重复挂载/重复回放）：
+// { [sessionId]: 'displayed' | 'background' }
+const attachedStreamingSessions = ref({})
+
+// 挂载到进行中的流式任务：回放该流已产生的事件并持续接收后续事件。
+// displayed=true：重建界面消息并持续更新（当前查看的会话）；
+// displayed=false：仅后台同步 token 用量、流结束时移除"进行中"标记，不触碰界面。
+async function attachToStreamingSession(sessionId, opts = {}) {
+  const { switchTo = false, displayed = true } = opts
+  if (!sessionId) return
+  const mode = displayed ? 'displayed' : 'background'
+  // 已展示挂载的会话无需重复挂载；后台挂载可被升级为展示挂载
+  if (attachedStreamingSessions.value[sessionId] === 'displayed') return
+  attachedStreamingSessions.value[sessionId] = mode
+
+  if (switchTo) {
+    currentSessionId.value = sessionId
+  }
+  // 展示挂载（含切换懒挂载）时，界面消息/用量归属于该会话；
+  // 否则 loadedSessionId 停留在旧会话，缓存写入错位，来回切换会显示空会话主页。
+  if (displayed) {
+    loadedSessionId.value = sessionId
+  }
+  markStreaming(sessionId)
+
+  if (displayed) {
+    try {
+      const history = await getChatHistory(sessionId)
+      if (currentSessionId.value !== sessionId) {
+        // 加载期间用户已切换到其他会话：放弃本次挂载，避免覆盖当前展示
+        if (attachedStreamingSessions.value[sessionId] === mode) {
+          delete attachedStreamingSessions.value[sessionId]
+        }
+        return
+      }
+      messages.value = history.messages || []
+      currentTodos.value = history.todos || []
+      if (history.usage) {
+        sessionUsage.value.input_tokens = history.usage.input_tokens || 0
+        sessionUsage.value.output_tokens = history.usage.output_tokens || 0
+        sessionUsage.value.total_tokens = history.usage.total_tokens || 0
+        sessionUsage.value.context_tokens = history.usage.context_tokens || 0
+        sessionDuration.value = history.usage.elapsed_time || 0
+        iterationCount.value = history.usage.step_count || 0
+      }
+      if (history.max_input_tokens) {
+        sessionUsage.value.max_input_tokens = history.max_input_tokens
+      }
+    } catch (e) {
+      console.error('加载聊天历史失败:', e)
+    }
+  }
+
+  // 正在生成中的回复应是消息列表的最后一条：最后一条是 assistant 则原位替换为
+  // 空占位由回放重建（避免重复）；最后一条仍是用户消息则末尾追加占位。
+  // 此前按「倒数第一条 assistant」查找，会把上一轮历史 assistant 误替换，导致
+  // 正文渲染在最后一次用户输入的上方。
+  const attachId = `assistant-attach-${Date.now()}-${String(sessionId).slice(-5)}`
+  if (displayed) {
+    const lastMsg = messages.value[messages.value.length - 1]
+    const lastAssistantIdx = lastMsg && lastMsg.role === 'assistant'
+      ? messages.value.length - 1
+      : -1
+    const placeholder = {
+      id: attachId,
+      role: 'assistant',
+      content: '',
+      created_at: null,
+      thinking: '',
+      tool_calls: [],
+      blocks: [],
+      loading: true,
+    }
+    if (lastAssistantIdx === -1) {
+      messages.value.push(placeholder)
+    } else {
+      messages.value[lastAssistantIdx] = placeholder
+    }
+    streamingAssistantId.value = attachId
+  }
+
+  const { onChunk } = createStreamChunkHandler({
+    isResume: true,
+    attachMode: true,
+    get assistantMsgId() { return attachId },
+    set assistantMsgId(v) {},
+    streamSessionId: sessionId,
+    preStreamUsage: { ...sessionUsage.value },
+    preStreamIterationCount: iterationCount.value,
+    preStreamDuration: sessionDuration.value,
+    initialBlockOrder: 0,
+    onApprovalRequired: (data) => {
+      if (!displayed) return
+      pendingApproval.value = {
+        threadId: data.thread_id,
+        assistantMsgId: attachId,
+      }
+      if (attachId && data.action_requests) {
+        const idx = messages.value.findIndex(m => m.id === attachId)
+        if (idx !== -1) {
+          messages.value[idx].pending_approval = { thread_id: data.thread_id, action_requests: data.action_requests }
+          if (Array.isArray(data.blocks) && data.blocks.length > 0) {
+            messages.value[idx].blocks = data.blocks.map(b => ({ ...b }))
+          }
+          for (const ar of data.action_requests) {
+            let blk = messages.value[idx].blocks.find(
+              b => b.type === 'tool_call' && (b.tool_call_id === ar.tool_call_id || b.id === ar.tool_call_id)
+            )
+            if (!blk && ar.tool_name) {
+              for (let i = messages.value[idx].blocks.length - 1; i >= 0; i--) {
+                const b = messages.value[idx].blocks[i]
+                if (b.type === 'tool_call' && b.tool_name === ar.tool_name) { blk = b; break }
+              }
+            }
+            if (blk) {
+              blk.pending_approval = true
+              blk.approval_status = 'pending'
+              if (ar.tool_call_id) {
+                blk.tool_call_id = ar.tool_call_id
+                blk.id = ar.tool_call_id
+              }
+              if (ar.file_paths && ar.file_paths.length > 0) {
+                blk.file_paths = ar.file_paths
+              }
+            }
+          }
+          messages.value[idx] = { ...messages.value[idx], blocks: [...messages.value[idx].blocks] }
+        }
+      }
+    },
+  })
+
+  const controller = new AbortController()
+  if (displayed) currentAbortController.value = controller
+  if (!displayed && !sessionStates.value[sessionId]) {
+    // 后台挂载：确保会话缓存存在，供 token 用量回放写入
+    sessionStates.value[sessionId] = {
+      messages: [],
+      isStreaming: true,
+      sessionUsage: {
+        input_tokens: 0,
+        output_tokens: 0,
+        total_tokens: 0,
+        max_input_tokens: sessionUsage.value.max_input_tokens,
+        auto_compress_tokens: null,
+        context_tokens: 0,
+      },
+      sessionDuration: 0,
+      iterationCount: 0,
+      abortController: null,
+      todos: [],
+    }
+  }
+  try {
+    await attachStream(sessionId, onChunk, controller.signal)
+  } catch (e) {
+    if (e.name !== 'AbortError') {
+      console.error('挂载流式输出失败:', e)
+      if (displayed) error.value = e.message || '挂载流式输出失败'
+    }
+  } finally {
+    if (attachedStreamingSessions.value[sessionId] === mode) {
+      delete attachedStreamingSessions.value[sessionId]
+    }
+    if (!displayed || !pendingApproval.value) {
+      if (displayed) currentAbortController.value = null
+      unmarkStreaming(sessionId)
+      if (sessionStates.value[sessionId]) {
+        sessionStates.value[sessionId].isStreaming = false
+        sessionStates.value[sessionId].abortController = null
+      }
+      if (displayed) {
+        streamingAssistantId.value = null
+        saveCurrentSessionState()
+      }
+      await loadSessions()
+    }
+  }
+}
+
+// 刷新后恢复全部进行中的流式任务：逐个查询后端状态，活跃的恢复"进行中"标记；
+// 最近活跃的会话直接重挂载，其余会话在切换到它时懒挂载。
+async function tryAttachLiveStream() {
+  let saved = null
+  try {
+    const raw = sessionStorage.getItem(STREAM_STATE_KEY)
+    if (!raw) return
+    saved = JSON.parse(raw)
+  } catch (e) {
+    return
+  }
+  if (!saved || !saved.streaming) return
+
+  const candidates = Array.isArray(saved.streamingIds) && saved.streamingIds.length
+    ? saved.streamingIds
+    : (saved.sessionId ? [saved.sessionId] : [])
+  const active = []
+  for (const sid of candidates) {
+    try {
+      const status = await getStreamStatus(sid)
+      if (status && status.active && !active.includes(sid)) active.push(sid)
+    } catch (e) {
+      // 会话可能已被删除：忽略
+    }
+  }
+  for (const sid of active) markStreaming(sid)
+
+  const attachTarget = saved.lastActive && active.includes(saved.lastActive)
+    ? saved.lastActive
+    : active[0]
+  if (attachTarget) {
+    attachToStreamingSession(attachTarget, { switchTo: true, displayed: true })
+  }
+  // 其余仍活跃的会话后台挂载：同步 token 用量、流结束时自动移除"进行中"标记
+  for (const sid of active) {
+    if (sid === attachTarget) continue
+    attachToStreamingSession(sid, { switchTo: false, displayed: false })
+  }
+  // 清理一次性恢复标记；仍活跃的流会通过 watch 重新写入持久化
+  saveStreamState()
+}
 
 // 保存当前会话状态到缓存（以界面数据实际所属的会话为 key，避免异步加载期间保存错位）
 function saveCurrentSessionState() {
@@ -231,9 +500,7 @@ function restoreSessionState(sessionId) {
   const state = sessionStates.value[sessionId]
   if (state) {
     messages.value = state.messages
-    // isStreaming 以 streamingSessionId 为准：仅当前会话正是流式会话时才显示停止按钮
-    // 避免切换到历史会话时残留的 isStreaming=true 导致停止按钮错误显示
-    isStreaming.value = (sessionId === streamingSessionId.value)
+    // 输入框是否显示停止按钮由 isStreaming（当前会话是否在流式会话集合中）决定
     sessionUsage.value = { ...state.sessionUsage }
     sessionDuration.value = state.sessionDuration || 0
     iterationCount.value = state.iterationCount || 0
@@ -398,16 +665,34 @@ async function handleWelcomeCompleted(profile) {
         console.error('加载聊天历史失败:', e)
       }
     }
+    // 刷新前若正在流式，重新挂载并继续接收事件
+    await tryAttachLiveStream()
   }
+  // 首次登录（欢迎页流程）后启动空闲登出计时器；
+  // 配置为 0（不登出）时 resetIdleTimer 内部直接跳过，不会触发登出
+  startIdleTimer()
 }
 
 async function handleLogout() {
+  // 通知后端记录登出（用户名/上次登录缓存时间/在线时长），best-effort。
+  // 仅在仍持有 token 时通知：被动登出（401 被踢下线/过期）时 token 已被 clearAuth
+  // 清除，再调登出接口会再次 401 触发 AUTH_EXPIRED 事件造成循环。
+  if (getStoredToken()) {
+    await notifyLogout()
+  }
   apiLogout()
   sessions.value = []
   currentSessionId.value = null
   loadedSessionId.value = null
   sessionStates.value = {}
   messages.value = []
+  streamingSessions.value = []
+  lastStreamingSession.value = null
+  attachedStreamingSessions.value = {}
+  streamingAssistantId.value = null
+  currentAbortController.value = null
+  sessionStorage.removeItem(STREAM_STATE_KEY)
+  sessionStorage.removeItem('easy_agent_input_draft')
   userProfile.value = {
     username: '',
     organization_id: '',
@@ -427,12 +712,13 @@ function resetIdleTimer() {
   if (idleTimer) clearTimeout(idleTimer)
   if (showWelcome.value) return // 未登录不计时
   if (idleLogoutMs.value <= 0) return // 已禁用
-  idleTimer = setTimeout(() => {
+  idleTimer = setTimeout(async () => {
     // 流式响应进行中（即使暂时无数据到达）视为仍在与后端交互，不登出，重新计时
     if (isStreaming.value) {
       resetIdleTimer()
       return
     }
+    // handleLogout 内部已通知后端记录登出信息，此处直接调用即可
     handleLogout()
   }, idleLogoutMs.value)
 }
@@ -540,7 +826,6 @@ async function handleCreateSession() {
   loadedSessionId.value = null
   messages.value = []
   currentTodos.value = []
-  isStreaming.value = false
   // 注意：保留 max_input_tokens（全局上下文窗口，对所有会话通用），不重置为 null，
   // 否则 contextPercent 分母为 null 时会强制显示为 0%
   sessionUsage.value = { input_tokens: 0, output_tokens: 0, total_tokens: 0, max_input_tokens: sessionUsage.value.max_input_tokens, auto_compress_tokens: null, context_tokens: 0 }
@@ -559,7 +844,16 @@ async function handleSelectSession(sessionId) {
   currentSessionId.value = sessionId
   // 切换后按当前会话是否正在流式输出决定输入框状态：
   // 历史会话通常不是当前流式会话，应显示发送按钮而非停止按钮
-  isStreaming.value = (sessionId === streamingSessionId.value)
+  // 输入框状态由 isStreaming（当前会话是否在流式会话集合中）自动决定
+
+  // 切换到进行中的会话：若本页尚未挂载其流式任务，懒挂载以继续接收事件
+  // （刷新后恢复出的多个进行中会话，除当前展示外都走这里）
+  if (isSessionStreaming(sessionId) && attachedStreamingSessions.value[sessionId] !== 'displayed') {
+    attachToStreamingSession(sessionId, { switchTo: false, displayed: true })
+    scrollTrigger.value++
+    await refreshSessionFiles(sessionId)
+    return
+  }
 
   // 尝试从缓存恢复会话状态
   if (restoreSessionState(sessionId)) {
@@ -624,12 +918,14 @@ async function handleDeleteSession(sessionId) {
         restoreSessionState(currentSessionId.value)
       } else {
         messages.value = []
-        isStreaming.value = false
         loadedSessionId.value = null
       }
     } else if (loadedSessionId.value === sessionId) {
       loadedSessionId.value = null
     }
+    // 删除进行中的会话：同步移除流式标记，避免列表残留"进行中"徽标
+    unmarkStreaming(sessionId)
+    delete attachedStreamingSessions.value[sessionId]
   } catch (e) {
     console.error('删除会话失败:', e)
     error.value = '删除会话失败'
@@ -774,6 +1070,23 @@ function createStreamChunkHandler(ctx) {
   function applyUsage(data, sid) {
     const patch = usagePatchFrom(data)
     const match = !sid || currentSessionId.value === sid
+    if (ctx.attachMode) {
+      // 重挂载回放：token_usage/done 携带的 elapsed_time 是原始流从头开始的
+      // 累计值，应 SET 而非累加（isResume 分支的累加语义只适用于 HITL 续跑）
+      if (match) {
+        Object.assign(sessionUsage.value, patch)
+        if (typeof data.elapsed_time === 'number') sessionDuration.value = Math.round(data.elapsed_time * 10) / 10
+        if (typeof data.step_count === 'number') iterationCount.value = data.step_count
+      } else {
+        const cached = sessionStates.value[sid]
+        if (cached) {
+          cached.sessionUsage = { ...cached.sessionUsage, ...patch }
+          if (typeof data.elapsed_time === 'number') cached.sessionDuration = Math.round(data.elapsed_time * 10) / 10
+          if (typeof data.step_count === 'number') cached.iterationCount = data.step_count
+        }
+      }
+      return
+    }
     if (ctx.isResume) {
       if (match) {
         Object.assign(sessionUsage.value, patch)
@@ -820,7 +1133,7 @@ function createStreamChunkHandler(ctx) {
           loadSessions()
         }
         if (data.session_id) ctx.streamSessionId = data.session_id
-        streamingSessionId.value = ctx.streamSessionId || currentSessionId.value
+        markStreaming(ctx.streamSessionId || currentSessionId.value)
       }
     } else if (eventType === 'token_usage') {
       applyUsage(data, ctx.streamSessionId)
@@ -1109,6 +1422,7 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
     loading: true
   }
   messages.value.push(assistantPlaceholder)
+  streamingAssistantId.value = assistantPlaceholderId
 
   let assistantMsgId = null
   let assistantMessageCreated = false
@@ -1134,6 +1448,7 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
             created_at: null, thinking: '', tool_calls: [], blocks: [], loading: true,
           })
         }
+        streamingAssistantId.value = assistantMsgId
         assistantMessageCreated = true
       }
     },
@@ -1173,8 +1488,7 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
   })
 
   try {
-    isStreaming.value = true
-    streamingSessionId.value = currentSessionId.value
+    markStreaming(currentSessionId.value)
     const controller = new AbortController()
     currentAbortController.value = controller
     const abortSignal = signal || controller.signal
@@ -1229,15 +1543,15 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
   } finally {
     // HITL: 若有审批待处理，保持 isStreaming=true（用户需先审批）
     if (!pendingApproval.value) {
-      isStreaming.value = false
       currentAbortController.value = null
+      streamingAssistantId.value = null
 
-      const sid = streamingSessionId.value
+      const sid = streamSessionId
       if (sid && sessionStates.value[sid]) {
         sessionStates.value[sid].isStreaming = false
         sessionStates.value[sid].abortController = null
       }
-      streamingSessionId.value = null
+      unmarkStreaming(sid)
 
       await loadSessions()
     }
@@ -1335,6 +1649,8 @@ async function handleToolApproval(decision) {
   try {
     const controller = new AbortController()
     currentAbortController.value = controller
+    markStreaming(sessionId)
+    streamingAssistantId.value = assistantMsgId
 
     // 恢复期间保持 loading=true，使思考 spinner 与工具"执行中"状态与正常流一致
     const _resumeIdx = messages.value.findIndex(m => m.id === assistantMsgId)
@@ -1361,14 +1677,14 @@ async function handleToolApproval(decision) {
     const hasNewApproval = pendingApproval.value && pendingApproval.value !== currentApproval
     if (!hasNewApproval) {
       pendingApproval.value = null
-      isStreaming.value = false
       currentAbortController.value = null
-      const sid = streamingSessionId.value
+      streamingAssistantId.value = null
+      const sid = sessionId
       if (sid && sessionStates.value[sid]) {
         sessionStates.value[sid].isStreaming = false
         sessionStates.value[sid].abortController = null
       }
-      streamingSessionId.value = null
+      unmarkStreaming(sid)
       saveCurrentSessionState()
       await loadSessions()
     }
@@ -1398,17 +1714,17 @@ function handleRetry(content) {
 }
 
 function handleStop() {
-  isStreaming.value = false
   // Mark current assistant message as no longer loading (stops tool spinning)
-  if (assistantMsgId) {
-    const idx = messages.value.findIndex(m => m.id === assistantMsgId)
+  if (streamingAssistantId.value) {
+    const idx = messages.value.findIndex(m => m.id === streamingAssistantId.value)
     if (idx !== -1) {
       messages.value[idx] = { ...messages.value[idx], loading: false }
     }
   }
+  streamingAssistantId.value = null
 
-  // 记录正在流式输出的会话 ID（用于通知后端取消）
-  const sid = streamingSessionId.value || currentSessionId.value
+  // 停止按钮仅在当前会话正在流式时显示，取消的会话即当前会话
+  const sid = currentSessionId.value
 
   // 中止正在进行的 fetch 请求（关闭 SSE 连接）
   if (currentAbortController.value) {
@@ -1421,7 +1737,8 @@ function handleStop() {
     sessionStates.value[sid].isStreaming = false
     sessionStates.value[sid].abortController = null
   }
-  streamingSessionId.value = null
+  unmarkStreaming(sid)
+  delete attachedStreamingSessions.value[sid]
 
   // 通知后端取消正在运行的流式任务（中断 astream 执行）并清除 Agent 缓存
   if (sid) {
@@ -1498,6 +1815,8 @@ onMounted(async () => {
         console.error('加载聊天历史失败:', e)
       }
     }
+    // 刷新前若正在流式，重新挂载并继续接收事件
+    await tryAttachLiveStream()
   }
 })
 
@@ -2962,7 +3281,7 @@ html[data-theme="dark"] .chat-header {
   border-bottom-color: var(--border-color) !important;
 }
 html[data-theme="dark"] .session-created-time {
-  background: var(--bg-secondary) !important;
+  background: #000000 !important;
   color: var(--text-secondary) !important;
 }
 html[data-theme="dark"] .welcome-screen {

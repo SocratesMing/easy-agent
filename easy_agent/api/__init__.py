@@ -4,6 +4,7 @@ from .files import router as files_router
 from .auth import router as auth_router
 from .bloom import bloom_router
 from .forex import forex_router
+from .completion import router as completion_router
 import platform
 
 from .prompts import prompts_router
@@ -22,6 +23,7 @@ __all__ = [
     "auth_router",
     "bloom_router",
     "forex_router",
+    "completion_router",
     "prompts_router",
     "settings_router",
     "skill_center_router",

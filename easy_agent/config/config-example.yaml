@@ -64,7 +64,7 @@ max_steps: 100  # Maximum execution steps
 workspace_dir: "./workspace"  # Working directory (project-relative). 实际路径会按用户/会话隔离：{workspace_dir}/{username}/{session_dir}
 memories_dir: "./memories"    # Long-term memory directory (project-relative). 实际路径：{memories_dir}/{username}/AGENTS.md
 log_dir: "./logs"             # 日志文件目录（项目相对路径）
-sessions_dir: "./sessions"     # 会话数据存储目录（项目相对路径）
+sessions_dir: "./sessions"     # 会话数据存储目录（项目相对路径）。实际路径：{sessions_dir}/{username}/{session_id}.json
 system_prompt_path: "system_prompt.md"  # System prompt file (same config directory)
 idle_logout_minutes: 5   # 前端空闲自动登出（分钟）：用户超过该时长无界面操作或后端交互则退出到登录页；设为 0 禁用
 

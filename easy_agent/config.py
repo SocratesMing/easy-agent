@@ -502,6 +502,64 @@ class Config(BaseModel):
                 base = Path("./workspace")
         return base / safe_name / "mcp.json"
 
+    @classmethod
+    def get_user_sessions_dir(cls, username: str, config: "Config | None" = None) -> Path:
+        """获取用户的会话日志目录路径：{sessions_dir}/{username}/
+
+        遵循配置 agent.sessions_dir；未传入 config 时回退到运行期配置
+        （get_agent_config()）。会话 JSON 日志按用户隔离，与
+        workspace/memories 的用户隔离约定一致。
+
+        Args:
+            username: 用户名
+            config:   可选 Config 实例；省略则使用运行期配置
+
+        Returns:
+            用户会话日志目录路径，如 {sessions_dir}/{username}/
+        """
+        safe_name = cls.sanitize_username(username)
+        if config is not None:
+            base = Path(config.agent.sessions_dir)
+        else:
+            try:
+                from easy_agent.services.agent_manager import get_agent_config
+
+                _cfg = get_agent_config()
+                agent_cfg = _cfg.get("config") if _cfg else None
+                base = Path(agent_cfg.agent.sessions_dir)
+            except Exception:
+                base = Path("./sessions")
+        return base / safe_name
+
+    @classmethod
+    def get_user_memories_dir(cls, username: str, config: "Config | None" = None) -> Path:
+        """获取用户的长期记忆目录路径：{memories_dir}/{username}/
+
+        遵循配置 agent.memories_dir；未传入 config 时回退到运行期配置。
+        与 get_user_sessions_dir 对称，按用户隔离。记忆文件约定为
+        {memories_dir}/{username}/AGENTS.md。
+
+        Args:
+            username: 用户名
+            config:   可选 Config 实例；省略则使用运行期配置
+
+        Returns:
+            用户记忆目录路径，如 {memories_dir}/{username}/
+        """
+        safe_name = cls.sanitize_username(username)
+        if config is not None:
+            base = Path(config.agent.memories_dir)
+        else:
+            try:
+                from easy_agent.services.agent_manager import get_agent_config
+
+                _cfg = get_agent_config()
+                agent_cfg = _cfg.get("config") if _cfg else None
+                base = Path(agent_cfg.agent.memories_dir)
+            except Exception:
+                base = Path("./memories")
+        return base / safe_name
+
     @staticmethod
     def get_user_upload_dir(username: str) -> Path:
         """获取用户的上传文件目录路径

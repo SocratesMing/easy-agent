@@ -7,7 +7,7 @@
 ## Installation
 
 ```bash
-pip install anthropic
+uv pip install anthropic
 ```
 
 ## Client Initialization

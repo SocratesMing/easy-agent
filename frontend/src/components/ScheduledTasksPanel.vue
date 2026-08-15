@@ -1,5 +1,5 @@
 <template>
-  <div class="scheduled-tasks-panel">
+  <div class="scheduled-tasks-panel" :class="{ 'has-workspace': workspaceModalVisible }">
     <div class="panel-nav">
       <span class="nav-title">定时任务</span>
       <button class="refresh-btn" @click="refresh" :disabled="loading" title="刷新">
@@ -76,7 +76,11 @@
               <button class="action-btn run-btn" @click.stop="handleRun(task)" :disabled="runLoading === task.task_id">
                 {{ runLoading === task.task_id ? '触发中...' : '立即执行' }}
               </button>
-              <button class="action-btn ws-btn" @click.stop="openWorkspace(task)">
+              <button
+                class="action-btn ws-btn"
+                :class="{ active: workspaceModalVisible && workspaceTaskId === task.task_id }"
+                @click.stop="openWorkspace(task)"
+              >
                 查看工作目录
               </button>
               <button class="action-btn delete-btn" @click.stop="handleDelete(task)">
@@ -146,27 +150,26 @@
       type="danger"
     />
 
-    <div v-if="workspaceModalVisible" class="workspace-modal-overlay" @click.self="closeWorkspace">
-      <div class="workspace-modal">
-        <div class="workspace-modal-header">
-          <span class="workspace-modal-title">工作目录</span>
-          <button class="workspace-refresh-btn" @click="loadWorkspace" :disabled="workspaceLoading">刷新</button>
-          <button class="workspace-close-btn" @click="closeWorkspace">×</button>
-        </div>
-        <div class="workspace-modal-body">
-          <div v-if="workspaceLoading" class="ws-loading">加载中...</div>
-          <div v-else-if="workspaceItems.length === 0" class="ws-empty">该工作目录暂无文件</div>
-          <div v-else class="ws-tree">
-            <FileTreeNode
-              v-for="item in workspaceItems"
-              :key="item.path"
-              :item="item"
-              :taskId="workspaceTaskId"
-              :selectedId="selectedFile ? selectedFile.path : null"
-              @select="handleWorkspaceSelect"
-              @download="handleWorkspaceDownload"
-            />
-          </div>
+    <!-- 工作目录侧边面板：从右侧滑入并挤压定时任务页面，风格对齐正常会话工作区 -->
+    <div class="workspace-side-panel" :class="{ open: workspaceModalVisible }">
+      <div class="workspace-side-header">
+        <span class="workspace-side-title">工作目录</span>
+        <button class="workspace-refresh-btn" @click="loadWorkspace" :disabled="workspaceLoading">刷新</button>
+        <button class="workspace-close-btn" @click="closeWorkspace">×</button>
+      </div>
+      <div class="workspace-side-body">
+        <div v-if="workspaceLoading" class="ws-loading">加载中...</div>
+        <div v-else-if="workspaceItems.length === 0" class="ws-empty">该工作目录暂无文件</div>
+        <div v-else class="ws-tree">
+          <FileTreeNode
+            v-for="item in workspaceItems"
+            :key="item.path"
+            :item="item"
+            :taskId="workspaceTaskId"
+            :selectedId="selectedFile ? selectedFile.path : null"
+            @select="handleWorkspaceSelect"
+            @download="handleWorkspaceDownload"
+          />
         </div>
       </div>
     </div>
@@ -221,6 +224,11 @@ const selectedFile = ref(null)
 const previewVisible = ref(false)
 
 async function openWorkspace(task) {
+  // 再次点击同一任务的“查看工作目录”时折叠目录面板
+  if (workspaceModalVisible.value && workspaceTaskId.value === task.task_id) {
+    closeWorkspace()
+    return
+  }
   workspaceTaskId.value = task.task_id
   selectedFile.value = null
   previewVisible.value = false
@@ -392,6 +400,12 @@ onMounted(() => {
   flex-direction: column;
   height: 100%;
   background: var(--bg-primary, #f5f5f5);
+  transition: margin-right 0.25s ease;
+}
+
+.scheduled-tasks-panel.has-workspace {
+  /* 目录面板滑入时挤压定时任务页面，宽度与正常工作区一致 */
+  margin-right: 260px;
 }
 
 .panel-nav {
@@ -679,6 +693,12 @@ onMounted(() => {
   cursor: not-allowed;
 }
 
+.ws-btn.active {
+  border-color: var(--accent, #6c5ce7);
+  color: var(--accent, #6c5ce7);
+  background: rgba(108, 92, 231, 0.1);
+}
+
 .delete-btn:hover:not(:disabled) {
   border-color: #ef4444;
   color: #ef4444;
@@ -826,28 +846,27 @@ onMounted(() => {
 }
 
 /* 工作目录弹窗 */
-.workspace-modal-overlay {
+.workspace-side-panel {
   position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.45);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 2000;
-}
-
-.workspace-modal {
-  width: min(640px, 92vw);
-  max-height: 80vh;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: 260px;
+  z-index: 30;
   display: flex;
   flex-direction: column;
   background: var(--bg-card, #fff);
-  border-radius: 12px;
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25);
-  overflow: hidden;
+  border-left: 1px solid var(--border-color, #e5e5e5);
+  box-shadow: -4px 0 16px rgba(0, 0, 0, 0.08);
+  transform: translateX(100%);
+  transition: transform 0.25s ease;
 }
 
-.workspace-modal-header {
+.workspace-side-panel.open {
+  transform: translateX(0);
+}
+
+.workspace-side-header {
   display: flex;
   align-items: center;
   gap: 12px;
@@ -856,7 +875,7 @@ onMounted(() => {
   flex-shrink: 0;
 }
 
-.workspace-modal-title {
+.workspace-side-title {
   flex: 1;
   font-size: 15px;
   font-weight: 600;
@@ -895,7 +914,7 @@ onMounted(() => {
   background: var(--bg-hover, #f1f5f9);
 }
 
-.workspace-modal-body {
+.workspace-side-body {
   flex: 1;
   overflow-y: auto;
   padding: 12px 16px;
@@ -948,13 +967,14 @@ onMounted(() => {
 
 <style>
 html[data-theme="dark"] .scheduled-tasks-panel {
-  --bg-primary: #1a1a2e;
-  --bg-card: #16213e;
-  --bg-hover: #233;
-  --border-color: #2a2a4a;
-  --text-primary: #e0e0e0;
-  --text-secondary: #a0a0b0;
-  --text-tertiary: #707080;
+  /* 与全局深色主题保持一致（纯黑/中性灰），避免面板显示成蓝色调 */
+  --bg-primary: #000000;
+  --bg-card: #1a1a1a;
+  --bg-hover: #2a2a2a;
+  --border-color: #3a3a3a;
+  --text-primary: #f5f5f5;
+  --text-secondary: #a3a3a3;
+  --text-tertiary: #6b7280;
   --accent: #7c6aef;
 }
 </style>

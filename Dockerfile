@@ -29,7 +29,10 @@ ENV AGENT_ENV=${AGENT_ENV}
 
 # Install system dependencies for pty support and shell sandboxing.
 # bubblewrap (bwrap) isolates agent shell commands to the workspace; if the
-# container lacks user-namespace caps it auto-falls-back to a path allowlist.
+# container lacks user-namespace caps it auto-falls-back to Landlock
+# (unprivileged filesystem isolation; requires kernel >= 5.13). If neither
+# bwrap nor Landlock is available, shell execution is refused (fail-closed)
+# to prevent cross-user workspace access.
 # To enable full bwrap isolation, run the container with:
 #   --cap-add SYS_ADMIN --security-opt apparmor=unconfined
 RUN apt-get update && \
@@ -41,12 +44,20 @@ RUN apt-get update && \
 
 WORKDIR /app
 
-# Install Python dependencies
-COPY pyproject.toml ./
-RUN pip install --no-cache-dir -e ".[docs]" -i https://pypi.tuna.tsinghua.edu.cn/simple
+# Install Python dependencies with uv（项目统一使用 uv 管理 Python 依赖）
+COPY pyproject.toml uv.lock ./
+COPY --from=ghcr.io/astral-sh/uv:0.11.1 /uv /uvx /bin/
+# 先用锁文件安装全部依赖（含 docs 扩展），便于 Docker 层缓存；
+# 项目本体待源码就位后再做 editable 安装。
+RUN uv export --frozen --no-dev --extra docs -o /tmp/requirements.txt \
+    && uv pip install --system --no-cache -r /tmp/requirements.txt \
+    && rm -f /tmp/requirements.txt
 
 # Copy backend source
 COPY easy_agent/ ./easy_agent/
+
+# Editable 安装项目本体（脚本入口 easy-web / 包发现）
+RUN uv pip install --system --no-cache --no-deps -e .
 
 # Copy frontend build output
 COPY --from=frontend-builder /build/frontend/dist ./frontend/dist/
