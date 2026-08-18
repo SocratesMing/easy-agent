@@ -14,11 +14,12 @@ import logging
 import platform
 import re
 import shutil
+import sys
 import time
 from pathlib import Path
 
 from deepagents import create_deep_agent
-from deepagents.backends import CompositeBackend, FilesystemBackend, LocalShellBackend
+from deepagents.backends import CompositeBackend, LocalShellBackend
 from deepagents.backends.protocol import ExecuteResponse
 from deepagents.middleware.filesystem import (
     EXECUTE_TOOL_DESCRIPTION,
@@ -37,6 +38,7 @@ from .sandbox import bwrap_usable, run_landlocked, run_sandboxed
 
 
 logger = logging.getLogger(__name__)
+_IS_WINDOWS = sys.platform == "win32"
 
 
 # ---------------------------------------------------------------------------
@@ -48,14 +50,22 @@ _DESTRUCTIVE_CMD_PATTERNS = [
     r"\bunlink\b",
     r"\bshred\b",
     r"\bfind\s+.*\s-delete\b",
+    r"\bdel\b",
+    r"\berase\b",
+    r"\brd\b",
+    r"\bRemove-Item\b",
 ]
 
-# 目录删除命令模式：rmdir、rm -r/-R/-d、find -delete、shred -r
+# 目录删除命令模式：rmdir、rm -r/-R/-d、find -delete、shred -r，
+# 以及 Windows 的 rd /s、del /s 和 PowerShell Remove-Item -Recurse。
 _DIR_DELETION_PATTERNS = [
     r"\brmdir\b",
     r"\brm\b\s+(-\w*[rRd])",
     r"\bfind\s+.*\s-delete\b",
     r"\bshred\b\s+(-\w*[rR])",
+    r"\brd\b(?:\s+-\w*s)?",
+    r"\bdel\b(?:\s+[^&|;]*)\s/-s\b",
+    r"\bRemove-Item\b[^;|&]*-Recurse\b",
 ]
 
 
@@ -206,6 +216,7 @@ class _PathTranslatingShell(LocalShellBackend):
             **kwargs: 传递给 LocalShellBackend 的关键字参数。
         """
         super().__init__(*args, **kwargs)
+        self._is_windows = _IS_WINDOWS
         # 正向规则：虚拟路径 → 实际路径（用于翻译输入命令）
         # 去掉结尾斜杠，使 mkdir/cd 等不带斜杠的路径也能匹配；
         # 用 lookahead 确保路径后是边界字符（斜杠/空格/引号/结尾等），
@@ -213,7 +224,7 @@ class _PathTranslatingShell(LocalShellBackend):
         self._rules = [
             (
                 re.compile(rf'(^|[\s"\'&|;(=])({re.escape(v.rstrip("/"))})(?=/|$|[\s"\'&|;),=])'),
-                real.rstrip("/"),
+                real.rstrip("/\\"),
             )
             for v, real in sorted(path_mappings.items(), key=lambda x: -len(x[0]))
         ]
@@ -221,7 +232,7 @@ class _PathTranslatingShell(LocalShellBackend):
         # 去掉结尾斜杠，使 pwd 等不带斜杠的输出也能匹配；
         # 按实际路径长度降序排列，避免短路径误替换长路径中的子串
         self._reverse_rules = [
-            (real.rstrip('/'), v.rstrip('/'))
+            (real.rstrip('/\\'), v.rstrip('/'))
             for v, real in sorted(path_mappings.items(), key=lambda x: -len(x[1]))
         ]
         # 沙箱：限制 shell 命令只能访问工作区及授权目录，禁止访问宿主机其他路径
@@ -274,6 +285,10 @@ class _PathTranslatingShell(LocalShellBackend):
         translated = command
         for pat, real in self._rules:
             translated = pat.sub(lambda m: m.group(1) + real, translated)
+        if self._is_windows:
+            for _pattern, real in self._rules:
+                prefix = real.rstrip("/\\")
+                translated = translated.replace(f"{prefix}/", f"{prefix}\\")
         if translated != command:
             logger.debug(
                 "execute path translation: %s → %s", command[:80], translated[:80]
@@ -294,7 +309,20 @@ class _PathTranslatingShell(LocalShellBackend):
         if self._reverse_rules and result.output:
             output = result.output
             for real, v in self._reverse_rules:
-                if real in output:
+                if self._is_windows:
+                    candidates = (
+                        real,
+                        real.replace("/", "\\"),
+                        real.replace("\\", "/"),
+                    )
+                    for candidate in candidates:
+                        output = re.sub(
+                            re.escape(candidate),
+                            v.rstrip("/"),
+                            output,
+                            flags=re.IGNORECASE,
+                        )
+                elif real in output:
                     output = output.replace(real, v)
             if output != result.output:
                 result = ExecuteResponse(
@@ -355,12 +383,18 @@ class _PathTranslatingShell(LocalShellBackend):
         logger.warning(
             f"[{self._sandbox_id}] 拒绝执行 shell 命令（无可用沙箱隔离）: {command[:120]}"
         )
-        return ExecuteResponse(
-            output=(
+        unsupported_message = (
+            "Error: Windows 当前未提供 bwrap/Landlock 等效沙箱，已拒绝执行 shell 命令。\n"
+            "如仅在可信单用户环境运行，可在配置中设置 agent.sandbox_enabled=false。"
+            if self._is_windows
+            else (
                 "Error: 当前环境不支持 bwrap 与 Landlock，无法安全执行 shell 命令，已拒绝执行。\n"
                 "请在容器启动时添加 --cap-add SYS_ADMIN --security-opt apparmor=unconfined "
                 "以启用 bwrap 沙箱，或在配置中设置 agent.sandbox_enabled=false（仅限可信单用户环境）。"
-            ),
+            )
+        )
+        return ExecuteResponse(
+            output=unsupported_message,
             exit_code=127,
             truncated=False,
         )
@@ -438,7 +472,7 @@ class EasyAgent:
                 self.workspace_dir = base / self.safe_username
                 dir_name = self.safe_username
 
-        # Don't create directory eagerly — FilesystemBackend.write will create it on first write
+        # Don't create directory eagerly - LocalShellBackend.write will create it on first write
         self.workspace_virtual_path = "/workspace"
         self._workspace_renamed = False
 
@@ -582,7 +616,13 @@ class EasyAgent:
         os_name = {"Windows": "Windows", "Linux": "Linux", "Darwin": "macOS"}.get(
             system, system
         )
-        return f"## OS: {os_name}"
+        os_info = f"## OS: {os_name}"
+        if system == "Windows":
+            os_info += (
+                "\n- Shell 为 cmd.exe；请使用 dir/type/copy/mkdir 等命令。"
+                "\n- Python 命令使用 python，不要使用 python3。"
+            )
+        return os_info
 
     def _create_agent(self):
         """Create the DeepAgents agent with workspace + skills backends.
@@ -816,7 +856,7 @@ Usage:
     def _build_backend(self, skills_paths: list[str], safe_external: dict[str, str]):
         """构建 CompositeBackend 实例，配置多路由文件系统后端。
 
-        创建记忆、工作区和用户技能三组 FilesystemBackend 路由，
+        创建工作区、用户技能和外部目录多组 LocalShellBackend 路由，
         以 CompositeBackend 组合返回。default 后端使用 _PathTranslatingShell
         提供命令执行和虚拟路径翻译能力。
 
@@ -828,7 +868,7 @@ Usage:
             CompositeBackend: 组合后端实例，包含所有路由和路径映射。
         """
         # 记忆文件现已放在会话工作区目录下，不再需要单独的 memories 路由
-        workspace_backend = FilesystemBackend(
+        workspace_backend = LocalShellBackend(
             root_dir=str(self.workspace_dir.absolute()),
             virtual_mode=True,
         )
@@ -838,7 +878,7 @@ Usage:
         }
 
         if skills_paths and self.user_skills_dir.exists():
-            user_skills_backend = FilesystemBackend(
+            user_skills_backend = LocalShellBackend(
                 root_dir=str(self.user_skills_dir.absolute()),
                 virtual_mode=True,
             )
@@ -850,7 +890,7 @@ Usage:
         for vp, real_abs in safe_external.items():
             real = Path(real_abs)
             real.mkdir(parents=True, exist_ok=True)
-            routes[vp] = FilesystemBackend(
+            routes[vp] = LocalShellBackend(
                 root_dir=str(real.absolute()),
                 virtual_mode=True,
             )

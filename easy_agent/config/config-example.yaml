@@ -67,6 +67,7 @@ log_dir: "./logs"             # 日志文件目录（项目相对路径）
 sessions_dir: "./sessions"     # 会话数据存储目录（项目相对路径）。实际路径：{sessions_dir}/{username}/{session_id}.json
 system_prompt_path: "system_prompt.md"  # System prompt file (same config directory)
 idle_logout_minutes: 5   # 前端空闲自动登出（分钟）：用户超过该时长无界面操作或后端交互则退出到登录页；设为 0 禁用
+sandbox_enabled: true    # Linux 使用 bwrap/Landlock；Windows 无等效沙箱时拒绝 execute。仅在可信单用户环境设为 false
 
 # 外部目录映射：虚拟路径前缀 → 宿主机实际路径
 # 将 skill 需要访问的宿主机目录挂载为虚拟路径路由，使文件工具能通过虚拟路径访问

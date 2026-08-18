@@ -9,11 +9,14 @@
 """
 
 import pytest
+from types import SimpleNamespace
 
 import easy_agent.agent as agent_mod
 import easy_agent.landlock as landlock_mod
 import easy_agent.sandbox as sandbox_mod
+from deepagents.backends import LocalShellBackend
 from easy_agent.agent import _PathTranslatingShell
+from deepagents.backends.protocol import ExecuteResponse
 
 
 def _make_shell(tmp_path, monkeypatch, *, bwrap=False, landlock=True):
@@ -86,6 +89,76 @@ def test_fail_closed_when_no_isolation(tmp_path, monkeypatch):
     # fail-closed：命令被拒绝，不执行
     assert result.exit_code == 127
     assert "拒绝" in result.output or "Landlock" in result.output
+
+
+def test_windows_virtual_paths_translate_between_posix_and_windows(tmp_path, monkeypatch):
+    real_workspace = r"C:\Users\Agent\workspace"
+    shell = _PathTranslatingShell(
+        path_mappings={"/workspace/": real_workspace + "\\"},
+        root_dir=tmp_path,
+        virtual_mode=True,
+        sandbox_enabled=False,
+    )
+    shell._is_windows = True
+    captured = {}
+
+    def fake_execute(self, command, *, timeout=None):
+        captured["command"] = command
+        return ExecuteResponse(
+            output="C:/Users/Agent/workspace/result.txt",
+            exit_code=0,
+            truncated=False,
+        )
+
+    monkeypatch.setattr(agent_mod.LocalShellBackend, "execute", fake_execute)
+    result = shell.execute("type /workspace/result.txt")
+
+    assert captured["command"] == f"type {real_workspace}\\result.txt"
+    assert result.output == "/workspace/result.txt"
+
+
+def test_windows_without_sandbox_support_fails_closed(tmp_path, monkeypatch):
+    monkeypatch.setattr(agent_mod, "bwrap_usable", lambda: False)
+    monkeypatch.setattr(agent_mod, "landlock_usable", lambda: False)
+    shell = _PathTranslatingShell(
+        path_mappings={"/workspace/": str(tmp_path) + "/"},
+        root_dir=tmp_path,
+        virtual_mode=True,
+        sandbox_enabled=True,
+    )
+    shell._is_windows = True
+
+    result = shell.execute("dir /workspace")
+
+    assert result.exit_code == 127
+    assert "Windows" in result.output
+    assert "sandbox_enabled=false" in result.output
+
+
+def test_windows_deletion_commands_are_recognized():
+    file_deletion = SimpleNamespace(
+        tool_call={"args": {"command": "del /workspace/file.txt"}}
+    )
+    directory_deletion = SimpleNamespace(
+        tool_call={"args": {"command": "rd /s /q /workspace/dir"}}
+    )
+
+    assert agent_mod._is_destructive_command(file_deletion) is True
+    assert agent_mod._is_directory_deletion("rd /s /q C:\\dir") is True
+    assert agent_mod._is_directory_deletion(
+        "powershell Remove-Item -Recurse -Force C:\\dir"
+    ) is True
+
+
+def test_windows_os_info_documents_cmd_shell(monkeypatch):
+    monkeypatch.setattr(agent_mod.platform, "system", lambda: "Windows")
+    agent = EasyAgent.__new__(EasyAgent)
+
+    os_info = agent._get_os_info()
+
+    assert "## OS: Windows" in os_info
+    assert "cmd.exe" in os_info
+    assert "python3" in os_info
 
 
 from pathlib import Path
@@ -194,3 +267,47 @@ def test_build_backend_skips_dangerous_external_dir(tmp_path):
     assert "/bob-files/" not in route_keys
     assert "/safe-shared/" in route_keys
     assert "/workspace/" in route_keys
+
+
+def test_build_backend_uses_local_shell_for_each_directory(tmp_path):
+    """每个独立目录路由都由 LocalShellBackend 单独承载。"""
+    from types import SimpleNamespace
+
+    ws_root = tmp_path / "workspace"
+    workspace = ws_root / "alice" / "session" / "s1"
+    skills_dir = tmp_path / "skills"
+    external_dir = tmp_path / "external"
+    workspace.mkdir(parents=True)
+    skills_dir.mkdir()
+    external_dir.mkdir()
+
+    agent = EasyAgent.__new__(EasyAgent)
+    agent.config = SimpleNamespace(
+        agent=SimpleNamespace(sandbox_enabled=False)
+    )
+    agent.workspace_virtual_path = "/workspace"
+    agent.workspace_dir = workspace
+    agent.user_skills_dir = skills_dir
+    agent.sid = "test"
+
+    backend = agent._build_backend(
+        ["/user-skills/"],
+        {"/external/": str(external_dir)},
+    )
+
+    assert isinstance(backend.default, LocalShellBackend)
+    assert all(
+        type(route_backend) is LocalShellBackend
+        for route_backend in backend.routes.values()
+    )
+    assert backend.routes["/workspace/"].cwd == workspace.resolve()
+    assert backend.routes["/user-skills/"].cwd == skills_dir.resolve()
+    assert backend.routes["/external/"].cwd == external_dir.resolve()
+
+    backend.write("/workspace/workspace.txt", "workspace")
+    backend.write("/user-skills/skills.txt", "skills")
+    backend.write("/external/external.txt", "external")
+
+    assert (workspace / "workspace.txt").read_text(encoding="utf-8") == "workspace"
+    assert (skills_dir / "skills.txt").read_text(encoding="utf-8") == "skills"
+    assert (external_dir / "external.txt").read_text(encoding="utf-8") == "external"

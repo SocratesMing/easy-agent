@@ -36,9 +36,7 @@ OUTPUT = PROJECT_ROOT / "docs" / "API接口文档.xlsx"
 # 不需要纳入文档的路由（框架/页面路由）
 EXCLUDE_PATHS = {
     "/docs",
-    "/docs/oauth2-redirect",
     "/openapi.json",
-    "/swagger-ui-assets",
     "/terminal",
     "/",
     "/{full_path:path}",

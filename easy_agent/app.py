@@ -13,9 +13,7 @@ from pathlib import Path
 import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.openapi.docs import get_swagger_ui_html
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse, JSONResponse
 from langchain_core.messages import HumanMessage
 
 from .config import Config, AgentConfig
@@ -381,10 +379,9 @@ app = FastAPI(
     description="基于 DeepAgents 的智能体框架 API",
     version="1.0.0",
     lifespan=lifespan,
-    # 禁用默认 /docs、/redoc（默认从 CDN 加载 Swagger UI 资源，离线环境无法访问）。
-    # 下面用本地静态资源重新提供 /docs，离线可用。
+    # 接口文档使用 Redoc；OpenAPI 数据仍由本服务提供。
     docs_url=None,
-    redoc_url=None,
+    redoc_url="/docs",
 )
 
 # 跨域访问（CORS）：
@@ -421,7 +418,6 @@ def _get_client_ip(request: Request) -> str:
 # 便于确认登录/登出等关键操作是否有请求到达后端（业务日志见 api/auth.py）。
 # 跳过静态资源、文档页与高频无意义路径，避免日志噪音。
 _ACCESS_SKIP_PREFIXES = (
-    "/swagger-ui-assets",
     "/docs",
     "/openapi.json",
     "/static",
@@ -452,27 +448,6 @@ async def log_requests(request: Request, call_next):
     client_ip = _get_client_ip(request)
     logger.info(f"[请求] {request.method} {path} | IP: {client_ip}")
     return await call_next(request)
-
-# 离线 Swagger UI：挂载本地 vendored 的 swagger-ui-dist 静态资源，
-# 并自定义 /docs 路由指向本地 JS/CSS，避免从 CDN 加载（离线环境 CDN 不可达）。
-_swagger_static_dir = Path(__file__).parent / "static" / "swagger-ui"
-if _swagger_static_dir.is_dir():
-    app.mount("/swagger-ui-assets", StaticFiles(directory=str(_swagger_static_dir)), name="swagger-ui-assets")
-
-    @app.get("/docs", include_in_schema=False)
-    async def custom_swagger_ui_html():
-        return get_swagger_ui_html(
-            openapi_url=app.openapi_url,
-            title=f"{app.title} - Swagger UI",
-            swagger_js_url="/swagger-ui-assets/swagger-ui-bundle.js",
-            swagger_css_url="/swagger-ui-assets/swagger-ui.css",
-            oauth2_redirect_url=app.swagger_ui_oauth2_redirect_url,
-        )
-
-    @app.get(app.swagger_ui_oauth2_redirect_url, include_in_schema=False)
-    async def swagger_ui_redirect():
-        return HTMLResponse(app.swagger_ui_oauth2_redirect_html)
-
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):

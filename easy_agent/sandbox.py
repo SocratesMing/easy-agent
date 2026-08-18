@@ -135,6 +135,8 @@ def bwrap_usable() -> bool:
     The result is cached after the first probe.
     """
     global _bwrap_usable
+    if sys.platform != "linux" and not sys.platform.startswith("linux"):
+        return False
     if _bwrap_usable is not None:
         return _bwrap_usable
     bwrap = shutil.which("bwrap")

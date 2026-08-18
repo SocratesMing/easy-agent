@@ -95,7 +95,7 @@ _LANDLOCK_CREATE_RULESET_VERSION = 1 << 0
 _LANDLOCK_RULE_PATH_BENEATH = 1
 _PR_SET_NO_NEW_PRIVS = 38
 
-_libc = ctypes.CDLL(None, use_errno=True)
+_libc = ctypes.CDLL(None, use_errno=True) if sys.platform.startswith("linux") else None
 
 
 class _RulesetAttr(ctypes.Structure):
