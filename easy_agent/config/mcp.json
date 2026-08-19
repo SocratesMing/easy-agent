@@ -1,3 +1,28 @@
 {
-  "servers": {}
+  "servers": {
+    "docs-langchain": {
+      "url": "https://docs.langchain.com/mcp",
+      "transport": "http"
+    },
+    "reference-langchain": {
+      "url": "https://reference.langchain.com/mcp",
+      "transport": "http"
+    },
+    "mysql": {
+      "command": "uvx",
+      "args": [
+        "--from",
+        "mysql-mcp-server",
+        "mysql_mcp_server"
+      ],
+      "env": {
+        "MYSQL_HOST": "${MYSQL_HOST:-127.0.0.1}",
+        "MYSQL_PORT": "${MYSQL_PORT:-3306}",
+        "MYSQL_USER": "${MYSQL_USER:-root}",
+        "MYSQL_PASSWORD": "${MYSQL_PASSWORD}",
+        "MYSQL_DATABASE": "${MYSQL_DATABASE:-agent}"
+      },
+      "transport": "stdio"
+    }
+  }
 }

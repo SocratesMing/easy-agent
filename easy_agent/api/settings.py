@@ -210,6 +210,9 @@ async def get_mcp_servers(
     不暴露 env 中的敏感值，仅返回 key 列表。
     """
     config = load_mcp_config(username)
+    _cfg = get_agent_config()
+    agent_config: Config | None = _cfg["config"] if _cfg and _cfg.get("config") else None
+    user_mcp_path = Config.get_user_mcp_path(username, agent_config)
 
     servers = []
     for name, cfg in config.items():
@@ -223,6 +226,7 @@ async def get_mcp_servers(
             "transport": cfg.get("transport", cfg.get("type", "unknown")),
             "command": cfg.get("command", ""),
             "args": cfg.get("args", []),
+            "origin": "user" if user_mcp_path.exists() else "global",
             "_raw": raw,
         }
         # 不暴露 env 中的敏感信息（如密码），仅返回 key 列表
@@ -231,7 +235,6 @@ async def get_mcp_servers(
         servers.append(server_info)
 
     # 标注来源：用户专属文件是否存在
-    user_mcp_path = Config.get_user_mcp_path(username)
     logger.info(
         f"获取 MCP 配置 | 用户: {username} | 来源: "
         f"{'user' if user_mcp_path.exists() else 'global'} | servers: {len(servers)}"
@@ -240,6 +243,80 @@ async def get_mcp_servers(
         "servers": servers,
         "source": "user" if user_mcp_path.exists() else "global",
         "user_mcp_path": str(user_mcp_path),
+    }
+
+
+@router.get("/mcp/market", summary="获取公共 MCP 市场列表")
+async def get_mcp_market(
+    username: Annotated[str, Depends(get_current_username)],
+):
+    """读取全局 mcp.json 作为公共市场，并标记当前用户是否已添加。"""
+    _cfg = get_agent_config()
+    config: Config | None = _cfg["config"] if _cfg and _cfg.get("config") else None
+    market_config = load_mcp_config(None)
+    user_servers = _read_user_mcp_raw(username, config).get("servers", {})
+
+    servers = []
+    for name, cfg in market_config.items():
+        raw = dict(cfg)
+        if "env" in raw and isinstance(raw["env"], dict):
+            raw["env"] = {key: "***" for key in raw["env"]}
+        servers.append({
+            "name": name,
+            "transport": cfg.get("transport", cfg.get("type", "unknown")),
+            "command": cfg.get("command", ""),
+            "args": cfg.get("args", []),
+            "added": name in user_servers,
+            "env_keys": list(cfg.get("env", {}).keys()) if isinstance(cfg.get("env"), dict) else [],
+            "_raw": raw,
+        })
+
+    global_path = Config.find_config_file("mcp.json")
+    logger.info(
+        f"获取 MCP 市场 | 用户: {username} | 全局路径: {global_path} | "
+        f"总数: {len(servers)} | 已添加: {sum(1 for s in servers if s['added'])}"
+    )
+    return {"servers": servers, "source": "global", "path": str(global_path or "")}
+
+
+class AddMarketMcpRequest(BaseModel):
+    name: str
+
+
+@router.post("/mcp/market/add", summary="从公共市场添加 MCP 到个人配置")
+async def add_mcp_from_market(
+    request: AddMarketMcpRequest,
+    username: Annotated[str, Depends(get_current_username)],
+):
+    """把市场中的全局 server 配置复制到当前用户 mcp.json。"""
+    _cfg = get_agent_config()
+    config: Config | None = _cfg["config"] if _cfg and _cfg.get("config") else None
+    market_config = load_mcp_config(None)
+    server_config = market_config.get(request.name)
+    if not server_config:
+        raise HTTPException(status_code=404, detail=f"MCP 市场服务不存在: {request.name}")
+
+    raw = _read_user_mcp_raw(username, config)
+    existing: dict[str, Any] = raw.get("servers", {})
+    if request.name in existing:
+        raise HTTPException(status_code=409, detail=f"MCP 服务已添加: {request.name}")
+
+    existing[request.name] = dict(server_config)
+    raw["servers"] = existing
+    user_mcp_path = _write_user_mcp_raw(username, config, raw)
+    invalidate_mcp_cache(username)
+    evicted = invalidate_user_agents(username)
+    logger.info(
+        f"从 MCP 市场添加 | 用户: {username} | 服务: {request.name} | "
+        f"路径: {user_mcp_path} | 失效 Agent: {evicted} 个"
+    )
+
+    return {
+        "status": "ok",
+        "added": [request.name],
+        "servers": list(existing.keys()),
+        "path": str(user_mcp_path),
+        "agents_invalidated": evicted,
     }
 
 

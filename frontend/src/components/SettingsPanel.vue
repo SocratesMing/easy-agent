@@ -104,7 +104,12 @@
                     <span class="mcp-name">{{ server.name }}</span>
                     <span class="mcp-transport">{{ server.transport }}</span>
                   </div>
-                  <button class="mcp-delete-btn" @click="removeMcpServer(server.name)" title="删除">
+                  <button
+                    v-if="mcpSource === 'user'"
+                    class="mcp-delete-btn"
+                    @click="removeMcpServer(server.name)"
+                    title="删除"
+                  >
                     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
                   </button>
                 </div>
@@ -134,28 +139,86 @@
 
           <!-- 添加 MCP 弹窗 -->
           <div v-if="showAddMcp" class="mcp-dialog-overlay" @click.self="showAddMcp = false">
-            <div class="mcp-dialog">
+            <div class="mcp-dialog" :class="{ 'mcp-dialog-market': addMcpMode === 'market' }">
               <div class="mcp-dialog-header">
                 <h4>添加 MCP 服务</h4>
                 <button class="close-btn" @click="showAddMcp = false">
                   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
                 </button>
               </div>
-              <p class="mcp-dialog-desc">粘贴 MCP 服务配置（JSON 格式）。支持标准 mcpServers 格式、对象格式或单条 server 格式：</p>
-              <pre class="mcp-dialog-example">标准格式：{"mcpServers": {"akshare-mcp": {"type":"sse","url":"http://127.0.0.1:8005/sse","timeout":60}}}
+              <div class="add-mode-tabs">
+                <button
+                  class="add-mode-tab"
+                  :class="{ active: addMcpMode === 'manual' }"
+                  @click="switchAddMcpMode('manual')"
+                >
+                  手动配置
+                </button>
+                <button
+                  class="add-mode-tab"
+                  :class="{ active: addMcpMode === 'market' }"
+                  @click="switchAddMcpMode('market')"
+                >
+                  从市场添加
+                </button>
+              </div>
+
+              <template v-if="addMcpMode === 'manual'">
+                <p class="mcp-dialog-desc">粘贴 MCP 服务配置（JSON 格式）。支持标准 mcpServers 格式、对象格式或单条 server 格式：</p>
+                <pre class="mcp-dialog-example">标准格式：{"mcpServers": {"akshare-mcp": {"type":"sse","url":"http://127.0.0.1:8005/sse","timeout":60}}}
 对象格式：{"myserver": {"transport":"stdio","command":"npx",...}}
 单条格式：{"name":"myserver","transport":"stdio","command":"npx",...}</pre>
-              <textarea
-                v-model="addMcpJson"
-                class="mcp-json-input"
-                placeholder='{"mcpServers": {"akshare-mcp": {"type": "sse", "url": "http://127.0.0.1:8005/sse", "timeout": 60}}}'
-                spellcheck="false"
-              ></textarea>
-              <div v-if="addMcpError" class="save-error">{{ addMcpError }}</div>
-              <div class="mcp-dialog-actions">
-                <button class="action-btn-outline" @click="showAddMcp = false">取消</button>
-                <button class="action-btn-primary" @click="confirmAddMcp">确认添加</button>
-              </div>
+                <textarea
+                  v-model="addMcpJson"
+                  class="mcp-json-input"
+                  placeholder='{"mcpServers": {"akshare-mcp": {"type": "sse", "url": "http://127.0.0.1:8005/sse", "timeout": 60}}}'
+                  spellcheck="false"
+                ></textarea>
+                <div class="mcp-dialog-actions">
+                  <button class="action-btn-outline" @click="showAddMcp = false">取消</button>
+                  <button class="action-btn-primary" @click="confirmAddMcp">确认添加</button>
+                </div>
+              </template>
+
+              <template v-else>
+                <div class="mcp-market-list mcp-dialog-market-list">
+                  <div v-if="mcpMarketServers.length === 0" class="empty-hint market-empty">
+                    暂无公共 MCP 服务
+                  </div>
+                  <div
+                    v-for="server in mcpMarketServers"
+                    :key="`market-${server.name}`"
+                    class="mcp-market-card"
+                    :class="{ added: server.added }"
+                  >
+                    <div class="mcp-market-info">
+                      <div class="mcp-header-left">
+                        <span class="mcp-name">{{ server.name }}</span>
+                        <span class="mcp-transport">{{ server.transport }}</span>
+                        <span v-if="server.added" class="market-added-tag">已添加</span>
+                      </div>
+                      <p class="mcp-market-desc">
+                        {{ server._raw?.description || server.command || server._raw?.url || '暂无描述' }}
+                      </p>
+                      <div v-if="server.env_keys && server.env_keys.length" class="mcp-detail">
+                        <span class="detail-label">Env:</span>
+                        <code>{{ server.env_keys.join(', ') }}</code>
+                      </div>
+                    </div>
+                    <button
+                      class="market-add-btn"
+                      :disabled="server.added || addingMarketMcp === server.name"
+                      @click="addMarketMcp(server.name)"
+                    >
+                      {{ server.added ? '已添加' : addingMarketMcp === server.name ? '添加中...' : '添加' }}
+                    </button>
+                  </div>
+                </div>
+                <div v-if="addMcpError" class="mcp-dialog-error">{{ addMcpError }}</div>
+                <div class="mcp-dialog-actions">
+                  <button class="action-btn-outline" @click="showAddMcp = false">关闭</button>
+                </div>
+              </template>
             </div>
           </div>
 
@@ -234,7 +297,18 @@
 
 <script setup>
 import { ref, watch, onMounted, computed } from 'vue'
-import { getMemory, updateMemory, getSystemPrompt, getMcpServers, updateMcpServers, addMcpServer, deleteMcpServer } from '../api/settings.js'
+import {
+  getMemory,
+  updateMemory,
+  getSystemPrompt,
+  getMcpServers,
+  getMcpMarket,
+  addMcpFromMarket,
+  updateMcpServers,
+  addMcpServer,
+  deleteMcpServer,
+} from '../api/settings.js'
+import { syncMarketAddedState } from '../utils/mcpMarket.js'
 
 const props = defineProps({
   isDarkTheme: { type: Boolean, default: false },
@@ -262,11 +336,14 @@ const mcpSaved = ref(false)
 const mcpError = ref('')
 const mcpSource = ref('global')   // 'user' | 'global'
 const mcpServerErrors = ref({})   // { serverName: errorMessage }
+const mcpMarketServers = ref([])
 
 // 添加 MCP
 const showAddMcp = ref(false)
+const addMcpMode = ref('manual')
 const addMcpJson = ref('')
 const addMcpError = ref('')
+const addingMarketMcp = ref('')
 
 // 预览 MCP
 const showPreview = ref(false)
@@ -327,12 +404,13 @@ async function loadTabData() {
       const data = await getSystemPrompt()
       promptContent.value = data.content || ''
     } else if (activeTab.value === 'mcp') {
-      const data = await getMcpServers()
+      const [data, market] = await Promise.all([getMcpServers(), getMcpMarket()])
       mcpServers.value = (data.servers || []).map(s => ({
         ...s,
         _raw: s._raw || { transport: s.transport, command: s.command, args: s.args, env: {} },
       }))
       mcpSource.value = data.source || 'global'
+      mcpMarketServers.value = market.servers || []
       // 初始化 enabledMap：默认全部开启
       const newMap = {}
       for (const s of mcpServers.value) {
@@ -385,6 +463,10 @@ async function saveMcp() {
       }
     }
     const resp = await updateMcpServers(servers)
+    mcpMarketServers.value = syncMarketAddedState(
+      mcpMarketServers.value,
+      resp.servers || Object.keys(servers),
+    )
 
     // 处理 per-server 校验结果：异常的 server 自动关闭开关并记录错误
     const statuses = resp.server_status || []
@@ -415,9 +497,13 @@ async function saveMcp() {
 async function removeMcpServer(name) {
   if (!confirm(`确认删除 MCP 服务 "${name}"？删除后立即生效。`)) return
   try {
-    await deleteMcpServer(name)
+    const resp = await deleteMcpServer(name)
     // 删除成功，本地同步移除
     mcpServers.value = mcpServers.value.filter(s => s.name !== name)
+    mcpMarketServers.value = syncMarketAddedState(
+      mcpMarketServers.value,
+      resp.servers || mcpServers.value.map(s => s.name),
+    )
     const newMap = { ...mcpEnabledMap.value }
     delete newMap[name]
     mcpEnabledMap.value = newMap
@@ -435,7 +521,13 @@ async function removeMcpServer(name) {
 function openAddMcp() {
   addMcpJson.value = ''
   addMcpError.value = ''
+  addMcpMode.value = 'manual'
   showAddMcp.value = true
+}
+
+function switchAddMcpMode(mode) {
+  addMcpMode.value = mode
+  addMcpError.value = ''
 }
 
 async function confirmAddMcp() {
@@ -486,6 +578,22 @@ async function confirmAddMcp() {
 
 function toggleMcpServer(name, enabled) {
   mcpEnabledMap.value = { ...mcpEnabledMap.value, [name]: enabled }
+}
+
+async function addMarketMcp(name) {
+  addingMarketMcp.value = name
+  addMcpError.value = ''
+  mcpError.value = ''
+  try {
+    await addMcpFromMarket(name)
+    mcpSaved.value = true
+    setTimeout(() => { mcpSaved.value = false }, 2000)
+    await loadTabData()
+  } catch (e) {
+    addMcpError.value = e.message || '添加失败'
+  } finally {
+    addingMarketMcp.value = ''
+  }
 }
 
 function openPreview() {
@@ -775,10 +883,95 @@ onMounted(() => {
 }
 
 /* MCP 列表 */
+
 .mcp-list {
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+
+.mcp-market-list {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+}
+
+.mcp-market-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-width: 0;
+  padding: 14px 16px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+}
+
+.mcp-market-info {
+  min-width: 0;
+  flex: 1;
+}
+
+.mcp-market-desc {
+  margin: 7px 0 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.market-added-tag {
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: #dcfce7;
+  color: #15803d;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.market-add-btn {
+  align-self: center;
+  flex-shrink: 0;
+  padding: 7px 14px;
+  border: none;
+  border-radius: 8px;
+  background: var(--accent-color);
+  color: white;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.market-add-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent-color) 85%, black);
+}
+
+.market-add-btn:disabled {
+  background: #dcfce7;
+  color: #15803d;
+  cursor: default;
+}
+
+@media (max-width: 560px) {
+  .mcp-market-card {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .market-add-btn {
+    align-self: stretch;
+  }
+}
+
+.market-empty {
+  grid-column: 1 / -1;
+  padding: 28px 0;
 }
 
 .mcp-card {
@@ -1135,6 +1328,55 @@ onMounted(() => {
   width: 640px;
 }
 
+.mcp-dialog-market {
+  width: 720px;
+}
+
+.add-mode-tabs {
+  display: flex;
+  gap: 4px;
+  margin: 14px 20px 0;
+  padding: 4px;
+  background: var(--bg-tertiary);
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+}
+
+.add-mode-tab {
+  flex: 1;
+  padding: 8px 12px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.add-mode-tab:hover {
+  color: var(--text-primary);
+}
+
+.add-mode-tab.active {
+  background: white;
+  color: #0ea5e9;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.12);
+}
+
+.mcp-dialog-market-list {
+  flex: 1;
+  margin: 12px 20px;
+  overflow-y: auto;
+}
+
+.mcp-dialog-error {
+  margin: 0 20px;
+  font-size: 13px;
+  color: #ef4444;
+}
+
 .mcp-dialog-header {
   display: flex;
   justify-content: space-between;
@@ -1237,6 +1479,17 @@ html[data-theme="dark"] .mcp-dialog-example {
   color: #e2e8f0;
 }
 
+html[data-theme="dark"] .add-mode-tabs {
+  background: #0f172a;
+  border-color: var(--text-secondary);
+}
+
+html[data-theme="dark"] .add-mode-tab.active {
+  background: #334155;
+  color: #38bdf8;
+  box-shadow: none;
+}
+
 html[data-theme="dark"] .action-btn-outline {
   background: #334155;
   border-color: var(--text-secondary);
@@ -1246,6 +1499,12 @@ html[data-theme="dark"] .action-btn-outline {
 html[data-theme="dark"] .mcp-card {
   background: #0f172a;
   border-color: var(--text-secondary);
+}
+
+html[data-theme="dark"] .market-added-tag,
+html[data-theme="dark"] .market-add-btn:disabled {
+  background: #052e16;
+  color: #86efac;
 }
 
 html[data-theme="dark"] .mcp-name {

@@ -35,6 +35,25 @@ export async function getMcpServers() {
   return await response.json()
 }
 
+export async function getMcpMarket() {
+  const response = await authFetch(`${API_BASE_URL}/api/settings/mcp/market`)
+  if (!response.ok) throw new Error('获取 MCP 市场失败')
+  return await response.json()
+}
+
+export async function addMcpFromMarket(name) {
+  const response = await authFetch(`${API_BASE_URL}/api/settings/mcp/market/add`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }),
+  })
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}))
+    throw new Error(err.detail || '添加 MCP 市场服务失败')
+  }
+  return await response.json()
+}
+
 export async function updateMcpServers(servers) {
   const response = await authFetch(`${API_BASE_URL}/api/settings/mcp`, {
     method: 'PUT',

@@ -13,7 +13,7 @@ from typing import Any
 
 from langchain_mcp_adapters.client import MultiServerMCPClient
 
-from easy_agent.config import Config
+from easy_agent.config import Config, _expand_env_recursive
 
 logger = logging.getLogger("easy-agent")
 
@@ -131,6 +131,7 @@ def load_mcp_config(username: str | None = None) -> dict[str, dict[str, Any]]:
     try:
         with open(config_path, encoding="utf-8") as f:
             data = json.load(f)
+        data = _expand_env_recursive(data)
 
         servers = data.get("servers")
         if servers is None:
