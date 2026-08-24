@@ -14,6 +14,8 @@ from pydantic import BaseModel, Field, field_validator
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_APP_WELCOME_TITLE = "Easy Agent，让工作更简单"
+
 # Matches ${VAR} and ${VAR:-default} placeholders inside string values.
 _ENV_VAR_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
 
@@ -128,8 +130,8 @@ class AgentConfig(BaseModel):
     sessions_dir: str = "./sessions"
     system_prompt_path: str = "system_prompt.md"
     idle_logout_minutes: int = 5
-    """前端空闲超时（分钟）：用户超过该时长无任何操作时自动退出到登录页。
-    设为 0 表示禁用自动登出。"""
+    """登录态空闲超时（分钟）：后端以最近一次接口调用为起点滑动续期，
+    前端超过该时长无操作时自动退出到登录页。设为 0 表示永不过期。"""
     denied_dirs: list[str | dict[str, Any]] = Field(default_factory=list)
     """禁止智能体读写的虚拟路径目录列表。
 
@@ -216,6 +218,7 @@ class Config(BaseModel):
     models: dict[str, ProviderConfig] = Field(default_factory=dict)
     active_model: str = "minimax"
     preset_questions: list[PresetQuestionGroup] = Field(default_factory=list)
+    app_welcome_title: str = DEFAULT_APP_WELCOME_TITLE
 
     @field_validator("preset_questions", mode="before")
     @classmethod
@@ -381,6 +384,9 @@ class Config(BaseModel):
             models=models,
             active_model=active_model,
             preset_questions=data.get("preset_questions", []),
+            app_welcome_title=data.get(
+                "app_welcome_title", DEFAULT_APP_WELCOME_TITLE
+            ),
         )
 
     def ensure_directories(self) -> list[str]:

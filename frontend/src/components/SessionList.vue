@@ -173,6 +173,19 @@
           </svg>
           设置
         </button>
+        <button
+          v-if="username === 'admin'"
+          class="user-dropdown-item"
+          @click="showUserManagement"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
+            <circle cx="9" cy="7" r="4"></circle>
+            <path d="M23 21v-2a4 4 0 0 0-3-3.87"></path>
+            <path d="M16 3.13a4 4 0 0 1 0 7.75"></path>
+          </svg>
+          用户管理
+        </button>
         <div class="user-dropdown-divider"></div>
         <button class="user-dropdown-item logout-item" @click="handleLogout">
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -191,7 +204,7 @@
 import { ref, nextTick, onMounted, computed } from 'vue'
 import { APP_TITLE } from '../config.js'
 
-const emit = defineEmits(['createSession', 'selectSession', 'deleteSession', 'renameSession', 'toggleSidebar', 'showAssets', 'showSkillCenter', 'showScheduledTasks', 'showProfile', 'showSettings', 'logout', 'togglePin'])
+const emit = defineEmits(['createSession', 'selectSession', 'deleteSession', 'renameSession', 'toggleSidebar', 'showAssets', 'showSkillCenter', 'showScheduledTasks', 'showProfile', 'showSettings', 'showUserManagement', 'logout', 'togglePin'])
 
 const props = defineProps({
   sessions: {
@@ -373,6 +386,11 @@ function showProfile() {
 function showSettings() {
   showUserMenu.value = false
   emit('showSettings')
+}
+
+function showUserManagement() {
+  showUserMenu.value = false
+  emit('showUserManagement')
 }
 
 function handleLogout() {

@@ -16,6 +16,7 @@
 #                例：http://easy-agent-backend:8000
 #   AGENT_ENV     环境标识（dev/test/prod），决定加载哪份环境配置（默认 prod）
 #   APP_TITLE     应用名称（可选）
+#   APP_WELCOME_TITLE 首页欢迎语（可选，默认使用构建期 VITE_APP_WELCOME_TITLE）
 #   DIST_DIR      输出目录（默认 dist）
 #
 # 后端地址选择优先级（高 -> 低）：
@@ -30,6 +31,7 @@ OUT_FILE="$DIST_DIR/runtime-config.js"
 mkdir -p "$DIST_DIR"
 
 APP_TITLE="${APP_TITLE:-Easy Agent}"
+APP_WELCOME_TITLE="${APP_WELCOME_TITLE:-}"
 AGENT_ENV_VAL="${AGENT_ENV:-prod}"
 
 # 读取各环境 .env.<mode> 中的 VITE_API_BASE_URL，作为该环境默认后端地址。
@@ -68,6 +70,7 @@ window.__RUNTIME_CONFIG__ = {
   AGENT_ENV: "${AGENT_ENV_VAL}",
   API_BASE_URL: "${RT_API}",
   APP_TITLE: "${APP_TITLE}",
+  APP_WELCOME_TITLE: "${APP_WELCOME_TITLE}",
   ENV_CONFIG: {
     dev:  { API_BASE_URL: "${DEV_API:-}" },
     test: { API_BASE_URL: "${TEST_API:-}" },
@@ -79,4 +82,5 @@ EOF
 echo "==> 已生成运行期前端配置: $OUT_FILE"
 echo "    AGENT_ENV        : ${AGENT_ENV_VAL}"
 echo "    生效后端地址     : ${RT_API}  (来源: ${RT_API_SRC})"
+echo "    首页欢迎语       : ${APP_WELCOME_TITLE:-<使用构建期配置>}"
 echo "    各环境默认地址   : dev=${DEV_API:-<空>}  test=${TEST_API:-<空>}  prod=${PROD_API:-<空>}"

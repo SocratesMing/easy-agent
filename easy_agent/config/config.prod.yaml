@@ -2,6 +2,7 @@
 
 # 前端空闲自动登出（分钟）：用户超过该时长无操作则退出到登录页；设为 0 禁用
 idle_logout_minutes: 5   # 前端空闲自动登出（分钟）：用户超过该时长无界面操作或后端交互则退出到登录页；设为 0 禁用
+app_welcome_title: "Easy Agent，让工作更简单"  # 首页欢迎语
 model: "deepseek"
 
 models:

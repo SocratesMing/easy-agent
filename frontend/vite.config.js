@@ -40,6 +40,7 @@ export default defineConfig(() => {
 ║  配置文件:         ${envFile}
 ║  后端地址 (API):   ${env.VITE_API_BASE_URL || 'http://localhost:8000 (默认)'}
 ║  应用名称 (title): ${env.VITE_APP_TITLE || 'Easy Agent'}
+║  首页欢迎语:      ${env.VITE_APP_WELCOME_TITLE || 'Easy Agent，让工作更简单'}
 ║  监听地址 (host):  ${defaultHost}  (${isWindows ? 'Windows' : 'Linux/macOS'})
 ╚══════════════════════════════════════════════════╝
 `

@@ -6,11 +6,18 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from ..config import Config
+from ..config import Config, DEFAULT_APP_WELCOME_TITLE
 from ..db import Database, get_database
 from ..middleware import get_current_username
+from ..middleware.auth import (
+    clear_user_activity,
+    get_user_activity_time,
+    touch_user_activity,
+)
 from ..models.api import (
     UserProfile,
+    UserListResponse,
+    UserAccount,
     UpdateUserProfileRequest,
     LoginRequest,
     RegisterRequest,
@@ -28,6 +35,8 @@ router = APIRouter(
     tags=["Authentication"],
 )
 
+DEFAULT_RESET_PASSWORD = "123456"
+
 # 登录时间缓存：username -> 登录成功时刻（本地时间）。用于登出时打印上次登录缓存时间；
 # 进程重启后丢失，此时回退到 JWT 的 iat 字段。
 _login_time_cache: dict[str, datetime] = {}
@@ -40,21 +49,23 @@ _active_login_ip: dict[str, str] = {}
 def _get_token_lifetime() -> timedelta:
     """签发 token 的有效期。
 
-    「空闲自动登出」配置（agent.idle_logout_minutes）为 0 表示不登出、一直保持登录，
-    此时签发超长有效期 token（365 天），避免 30 分钟 token 过期把用户强制踢下线；
-    其余情况保持默认 30 分钟有效期（空闲登出计时器会在更早触发）。
+    配置为 0 时由 _token_never_expires() 签发无过期 token；
+    其余情况保持默认 30 分钟有效期，接口调用会滑动续期后端登录缓存。
     """
-    try:
-        _cfg = get_agent_config()
-        if _cfg and _cfg.get("config"):
-            idle_minutes = _cfg["config"].agent.idle_logout_minutes
-            if idle_minutes == 0:
-                return timedelta(days=365)
-    except Exception as e:
-        logger.warning(f"读取 idle_logout_minutes 失败，使用默认 token 有效期: {e}")
     from ..utils.auth import ACCESS_TOKEN_EXPIRE_MINUTES
 
     return timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+
+
+def _token_never_expires() -> bool:
+    """判断当前配置是否要求登录态永不过期。"""
+    try:
+        agent_config = get_agent_config()
+        if agent_config and agent_config.get("config"):
+            return agent_config["config"].agent.idle_logout_minutes == 0
+    except Exception as e:
+        logger.warning(f"读取 idle_logout_minutes 失败，token 将使用默认有效期: {e}")
+    return False
 
 
 def _get_max_input_tokens() -> int:
@@ -101,11 +112,13 @@ async def register(
     access_token = create_access_token(
         data={"sub": user.username, "v": new_version},
         expires_delta=_get_token_lifetime(),
+        never_expires=_token_never_expires(),
     )
 
     # 注册即登录，同样缓存登录时间与活跃 IP
     _login_time_cache[user.username] = datetime.now()
     _active_login_ip[user.username] = get_client_ip(http_request)
+    touch_user_activity(user.username)
 
     try:
         user_workspace = Config.get_user_workspace_dir(user.username)
@@ -160,11 +173,13 @@ async def login(
     access_token = create_access_token(
         data={"sub": user.username, "v": new_version},
         expires_delta=_get_token_lifetime(),
+        never_expires=_token_never_expires(),
     )
 
     # 缓存登录时间（供登出接口打印）与当前活跃 IP（供下次登录判断异地踢人）
     _login_time_cache[user.username] = datetime.now()
     _active_login_ip[user.username] = client_ip
+    touch_user_activity(user.username)
 
     max_input_tokens = _get_max_input_tokens()
 
@@ -188,15 +203,19 @@ async def login(
 async def logout(
     username: Annotated[str, Depends(get_current_username)],
     http_request: Request,
+    db: Annotated[Database, Depends(get_database)],
 ):
-    """记录用户登出信息（用户名、上次登录缓存时间、在线时长）。
+    """记录用户登出信息（用户名、首次登录时间、最后缓存更新时间、在线时长）。
 
     前端手动登出与空闲超时自动登出均会调用。登录时间优先取登录缓存，缓存未命中
     （如后端重启后未重新登录）时回退到 JWT 的 iat（签发时间）。
     """
     now = datetime.now()
     cached_login = _login_time_cache.pop(username, None)
+    last_activity_timestamp = get_user_activity_time(username)
     _active_login_ip.pop(username, None)
+    clear_user_activity(username)
+    db.increment_user_token_version(username)
     login_time_str = "未知"
     duration_str = "未知"
     if cached_login is not None:
@@ -206,13 +225,19 @@ async def logout(
         # 缓存未命中：回退到 token 的 iat（签发时间，UTC 时间戳 -> 本地时间）
         auth_header = http_request.headers.get("Authorization", "")
         if auth_header.startswith("Bearer "):
-            payload = decode_access_token(auth_header[7:])
+            payload = decode_access_token(auth_header[7:], verify_exp=False)
             if payload and payload.get("iat"):
                 iat_local = datetime.fromtimestamp(payload["iat"])
                 login_time_str = iat_local.strftime("%Y-%m-%d %H:%M:%S")
                 duration_str = str(now - iat_local).split(".")[0]
+    last_activity_str = "未知"
+    if last_activity_timestamp is not None:
+        last_activity_str = datetime.fromtimestamp(last_activity_timestamp).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
     logger.info(
-        f"[用户] 登出 | 用户名: {username} | 上次登录缓存时间: {login_time_str} | 在线时长: {duration_str}"
+        f"[用户] 登出 | 用户名: {username} | 第一次登录时间: {login_time_str} | "
+        f"上一次缓存更新时间: {last_activity_str} | 在线时长: {duration_str}"
     )
     return {"status": "ok"}
 
@@ -281,9 +306,12 @@ async def update_profile(
 )
 async def reset_password(
     request: ResetPasswordRequest,
-    http_request: Request,
+    username: Annotated[str, Depends(get_current_username)],
     db: Annotated[Database, Depends(get_database)],
 ):
+    if username != "admin":
+        raise HTTPException(status_code=403, detail="仅管理员可以重置密码")
+
     if request.username == "admin":
         raise HTTPException(status_code=400, detail="admin 用户不支持默认密码重置，请使用正常修改密码流程")
     user = db.get_user_by_username(request.username)
@@ -306,6 +334,61 @@ async def reset_password(
 
 
 @router.get(
+    "/admin/users",
+    response_model=UserListResponse,
+    summary="管理员获取用户列表",
+)
+async def list_users(
+    db: Annotated[Database, Depends(get_database)],
+    username: Annotated[str, Depends(get_current_username)],
+):
+    if username != "admin":
+        raise HTTPException(status_code=403, detail="仅管理员可以查看用户列表")
+
+    total = db.count_users()
+    users = db.list_users(limit=total, offset=0) if total else []
+    return UserListResponse(
+        total=total,
+        users=[
+            UserAccount(
+                username=user.username,
+                created_at=user.created_at,
+                updated_at=user.updated_at,
+            )
+            for user in users
+        ],
+    )
+
+
+@router.post(
+    "/admin/users/{username}/reset-password",
+    summary="管理员重置用户默认密码",
+)
+async def admin_reset_password(
+    username: str,
+    admin_username: Annotated[str, Depends(get_current_username)],
+    db: Annotated[Database, Depends(get_database)],
+):
+    if admin_username != "admin":
+        raise HTTPException(status_code=403, detail="仅管理员可以重置密码")
+
+    user = db.get_user_by_username(username)
+    if not user:
+        raise HTTPException(status_code=404, detail="用户不存在")
+
+    if not db.update_user_password(username, hash_password(DEFAULT_RESET_PASSWORD)):
+        raise HTTPException(status_code=500, detail="密码更新失败")
+
+    db.increment_user_token_version(username)
+    logger.info(f"[用户] 管理员重置默认密码 | 管理员: {admin_username} | 用户名: {username}")
+
+    return {
+        "status": "success",
+        "message": f"密码已重置为默认密码 {DEFAULT_RESET_PASSWORD}",
+    }
+
+
+@router.get(
     "/config",
     summary="获取当前模型配置信息",
 )
@@ -317,12 +400,14 @@ async def get_auth_config(
     preset_questions = []
     win = False
     agent_env = ""
+    app_welcome_title = DEFAULT_APP_WELCOME_TITLE
     if _cfg and _cfg.get("config"):
         max_input_tokens = _cfg["config"].llm.max_input_tokens
         preset_questions = _cfg["config"].preset_questions or []
         win = bool(_cfg.get("win"))
         agent_env = _cfg.get("agent_env", "") or ""
         idle_logout_minutes = _cfg["config"].agent.idle_logout_minutes
+        app_welcome_title = _cfg["config"].app_welcome_title
     else:
         idle_logout_minutes = 5
     return {
@@ -331,4 +416,5 @@ async def get_auth_config(
         "win": win,
         "agent_env": agent_env,
         "idle_logout_minutes": idle_logout_minutes,
+        "app_welcome_title": app_welcome_title,
     }

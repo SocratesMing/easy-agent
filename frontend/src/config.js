@@ -5,7 +5,7 @@
  * - 运行期：启动脚本（docker/entrypoint.sh 或 scripts/generate-runtime-config.sh）
  *   根据容器/serve 启动时的环境变量写出 dist/runtime-config.js，
  *   使“构建镜像时未知 AGENT_ENV / 后端地址”也能在部署时动态确定。
- * - 构建期：.env.win / .env.dev / .env.test / .env.prod 注入 VITE_API_BASE_URL。
+ * - 构建期：.env.win / .env.dev / .env.test / .env.prod 注入前端配置。
  */
 
 import { reactive } from 'vue'
@@ -29,6 +29,10 @@ const _envApiBase = _envConfig[AGENT_ENV]?.API_BASE_URL || ''
 const _runtimeApiBase = _rt.API_BASE_URL || _envApiBase || import.meta.env.VITE_API_BASE_URL || ''
 export const API_BASE_URL = (_runtimeApiBase ?? '').replace(/\/+$/, '')
 export const APP_TITLE = _rt.APP_TITLE || import.meta.env.VITE_APP_TITLE || 'Easy Agent'
+export const APP_WELCOME_TITLE =
+  _rt.APP_WELCOME_TITLE ||
+  import.meta.env.VITE_APP_WELCOME_TITLE ||
+  `${APP_TITLE}，让工作更简单`
 export const BUILD_MODE = import.meta.env.MODE || 'development'
 
 /**

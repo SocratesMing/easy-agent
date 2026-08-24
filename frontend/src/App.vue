@@ -26,6 +26,7 @@
         @showScheduledTasks="handleShowScheduledTasks"
         @showProfile="handleShowProfile"
         @showSettings="showSettingsPanel = true"
+        @showUserManagement="showUserManagementPanel = true"
         @logout="handleLogout"
       />
       
@@ -60,6 +61,11 @@
         @toggle-theme="toggleTheme"
         :isDarkTheme="isDarkTheme"
       />
+
+      <UserManagementPanel
+        v-if="showUserManagementPanel"
+        @close="showUserManagementPanel = false"
+      />
       
       <Chat
         v-else-if="!showAssets && !showUserProfile && !showSkillCenter && !showScheduledTasks"
@@ -73,6 +79,7 @@
         :iterationCount="iterationCount"
         :todos="currentTodos"
         :presetQuestions="presetQuestions"
+        :welcomeTitle="welcomeTitle"
         :workspaceExpanded="!isWorkspaceCollapsed"
         :sidebarCollapsed="isSidebarCollapsed"
         :models="availableModels"
@@ -117,7 +124,7 @@
 </template>
 
 <script setup>
-import { API_BASE_URL, appRuntime } from './config.js'
+import { API_BASE_URL, APP_WELCOME_TITLE, appRuntime } from './config.js'
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import SessionList from './components/SessionList.vue'
 import Chat from './components/Chat.vue'
@@ -125,6 +132,7 @@ import AssetsPanel from './components/AssetsPanel.vue'
 import SkillCenter from './components/SkillCenter.vue'
 import ScheduledTasksPanel from './components/ScheduledTasksPanel.vue'
 import UserProfile from './components/UserProfile.vue'
+import UserManagementPanel from './components/UserManagementPanel.vue'
 import Welcome from './components/Welcome.vue'
 import WorkspacePanel from './components/WorkspacePanel.vue'
 import SettingsPanel from './components/SettingsPanel.vue'
@@ -140,6 +148,7 @@ const currentSessionHasFiles = ref(false)
 // 模型选择：从配置加载可选列表，默认选 active model
 const availableModels = ref([])
 const selectedModel = ref(null)
+const welcomeTitle = ref(APP_WELCOME_TITLE)
 
 async function loadModels() {
   try {
@@ -555,6 +564,7 @@ const showSkillCenter = ref(false)
 const showScheduledTasks = ref(false)
 const showUserProfile = ref(false)
 const showSettingsPanel = ref(false)
+const showUserManagementPanel = ref(false)
 const showWelcome = ref(false)
 const scrollTrigger = ref(0)
 const userProfile = ref({
@@ -614,6 +624,9 @@ function applyAgentConfig(configData) {
   }
   if (configData.agent_env) {
     appRuntime.agentEnv = configData.agent_env
+  }
+  if (typeof configData.app_welcome_title === 'string' && configData.app_welcome_title.trim()) {
+    welcomeTitle.value = configData.app_welcome_title
   }
   // 空闲自动登出超时（分钟）；0 或非法值表示禁用
   if (typeof configData.idle_logout_minutes === 'number' && configData.idle_logout_minutes >= 0) {
@@ -704,7 +717,7 @@ async function handleLogout() {
   showWelcome.value = true
 }
 
-// ---- 无操作自动退出登录（超时时间由后端 idle_logout_minutes 下发，默认 30 分钟） ----
+// ---- 无操作自动退出登录（后端按最近一次接口调用滑动续期；0 表示永不自动退出） ----
 let idleTimer = null
 // 空闲超时（毫秒）；0 或非法值表示禁用自动登出
 const idleLogoutMs = ref(5 * 60 * 1000)

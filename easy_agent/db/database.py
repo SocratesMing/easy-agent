@@ -1546,6 +1546,13 @@ class Database:
             )
         return result
 
+    def count_users(self) -> int:
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            self._execute(cursor, "SELECT COUNT(*) AS total FROM users")
+            row = cursor.fetchone()
+        return int(row["total"]) if row else 0
+
     def add_session_file(
         self,
         session_id: str,

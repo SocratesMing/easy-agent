@@ -1,9 +1,14 @@
 """认证接口测试：注册、登录、资料、改密、配置。"""
 
 from datetime import timedelta
+from types import SimpleNamespace
+import pytest
+from fastapi import HTTPException
 
 from easy_agent.api import auth as auth_mod
 from easy_agent.app import app
+from easy_agent.config import Config
+from easy_agent.models.api import LoginRequest, ResetPasswordRequest
 
 
 def _register(client, username, password="secret123", org="org-1"):
@@ -23,7 +28,7 @@ def test_register_success(client):
 
 
 def test_token_lifetime_zero_idle_logout(monkeypatch):
-    """idle_logout_minutes=0（不登出、一直登录）时签发超长有效期 token。"""
+    """idle_logout_minutes=0（不登出、一直登录）时签发无过期 token。"""
 
     class _Agent:
         idle_logout_minutes = 0
@@ -32,7 +37,7 @@ def test_token_lifetime_zero_idle_logout(monkeypatch):
         agent = _Agent()
 
     monkeypatch.setattr(auth_mod, "get_agent_config", lambda: {"config": _Cfg()})
-    assert auth_mod._get_token_lifetime() == timedelta(days=365)
+    assert auth_mod._token_never_expires() is True
 
 
 def test_token_lifetime_default_when_idle_enabled(monkeypatch):
@@ -90,25 +95,74 @@ def test_update_profile(client):
     assert resp.json()["email"] == "new@x.com"
 
 
-def test_reset_password_success(client):
-    _register(client, "testuser")
-    resp = client.post(
-        "/api/auth/reset-password",
-        json={"username": "testuser", "new_password": "new12345"},
-    )
-    assert resp.status_code == 200
-    login = client.post(
-        "/api/auth/login", json={"username": "testuser", "password": "new12345"}
-    )
-    assert login.status_code == 200
+async def test_admin_can_list_users(db):
+    db.register_user("admin", "admin")
+    db.register_user("alice", "secret123")
+
+    users = await auth_mod.list_users(db, "admin")
+
+    assert users.total == 2
+    assert {user.username for user in users.users} == {"admin", "alice"}
 
 
-def test_reset_password_missing_user(client):
-    resp = client.post(
-        "/api/auth/reset-password",
-        json={"username": "nobody", "new_password": "new12345"},
+async def test_admin_can_reset_user_password_to_default(db):
+    db.register_user("admin", "admin")
+    db.register_user("alice", "secret123")
+
+    result = await auth_mod.admin_reset_password("alice", "admin", db)
+
+    assert result["status"] == "success"
+    assert db.verify_user_password("alice", "123456") is not None
+
+
+async def test_admin_reset_password_allows_login_with_default(db, monkeypatch):
+    monkeypatch.setattr(auth_mod, "get_agent_config", lambda: {})
+    db.register_user("alice", "secret123")
+    await auth_mod.admin_reset_password("alice", "admin", db)
+
+    response = await auth_mod.login(
+        LoginRequest(username="alice", password="123456"),
+        SimpleNamespace(headers={}, client=None),
+        db,
     )
-    assert resp.status_code == 404
+
+    assert response.username == "alice"
+
+
+async def test_non_admin_cannot_list_users_or_reset_password(db):
+    db.register_user("alice", "secret123")
+
+    with pytest.raises(HTTPException) as list_error:
+        await auth_mod.list_users(db, "alice")
+    with pytest.raises(HTTPException) as reset_error:
+        await auth_mod.admin_reset_password("alice", "alice", db)
+
+    assert list_error.value.status_code == 403
+    assert reset_error.value.status_code == 403
+
+
+async def test_legacy_reset_password_requires_admin(db):
+    request = ResetPasswordRequest(username="alice", new_password="new12345")
+
+    with pytest.raises(HTTPException) as error:
+        await auth_mod.reset_password(request, "alice", db)
+
+    assert error.value.status_code == 403
+
+
+def test_login_request_allows_default_reset_password():
+    request = LoginRequest(username="alice", password="123456")
+
+    assert request.password == "123456"
+
+
+async def test_reset_password_missing_user(db):
+    request = ResetPasswordRequest(username="nobody", new_password="new12345")
+
+    with pytest.raises(HTTPException) as error:
+        await auth_mod.reset_password(request, "admin", db)
+
+    assert error.value.status_code == 404
 
 
 def test_auth_config(client):
@@ -117,3 +171,26 @@ def test_auth_config(client):
     data = resp.json()
     assert "max_input_tokens" in data
     assert "preset_questions" in data
+
+
+async def test_auth_config_returns_configured_welcome_title(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+model: test
+models:
+  test:
+    provider: test
+    api_key: test-key
+    model: test-model
+    api_base: https://example.invalid
+app_welcome_title: "自定义欢迎语"
+""",
+        encoding="utf-8",
+    )
+    config = Config.from_yaml(config_path)
+    monkeypatch.setattr(auth_mod, "get_agent_config", lambda: {"config": config})
+
+    result = await auth_mod.get_auth_config("testuser")
+
+    assert result["app_welcome_title"] == "自定义欢迎语"

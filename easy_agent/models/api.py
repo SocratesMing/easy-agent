@@ -175,6 +175,17 @@ class UserProfile(BaseModel):
     updated_at: str = Field(..., description="更新时间")
 
 
+class UserAccount(BaseModel):
+    username: str = Field(..., description="用户名")
+    created_at: str = Field(default="", description="创建时间")
+    updated_at: str = Field(default="", description="更新时间")
+
+
+class UserListResponse(BaseModel):
+    total: int = Field(..., description="用户总数")
+    users: List[UserAccount] = Field(default_factory=list, description="用户列表")
+
+
 class UpdateUserProfileRequest(BaseModel):
     username: Optional[str] = Field(default=None, description="用户名（注册后不可更改，此字段已废弃）")
     organization_id: Optional[str] = Field(default=None, description="机构ID（注册后不可更改，此字段已废弃）")
@@ -183,7 +194,7 @@ class UpdateUserProfileRequest(BaseModel):
 
 class LoginRequest(BaseModel):
     username: str = Field(..., description="用户名")
-    password: str = Field(..., description="密码", min_length=4, max_length=20)
+    password: str = Field(..., description="密码", min_length=3, max_length=20)
 
 
 class RegisterRequest(BaseModel):

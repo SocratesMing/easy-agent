@@ -53,9 +53,11 @@ function loadRuntimeConfig() {
   }
   const api = pick('API_BASE_URL')
   const title = pick('APP_TITLE')
+  const welcomeTitle = pick('APP_WELCOME_TITLE')
   const env = pick('AGENT_ENV')
   if (api !== undefined) cfg.API_BASE_URL = api
   if (title !== undefined) cfg.APP_TITLE = title
+  if (welcomeTitle !== undefined) cfg.APP_WELCOME_TITLE = welcomeTitle
   if (env !== undefined) cfg.AGENT_ENV = env
 
   // 解析 ENV_CONFIG 表：ENV_CONFIG: { dev: { API_BASE_URL: "..." }, ... }
@@ -84,6 +86,7 @@ const rows = [
   `  生效后端地址    : ${runtime.API_BASE_URL || '(未生成, 将用构建期/相对路径)'}`,
   `  构建期后端地址  : ${env.VITE_API_BASE_URL || '(未设置)'}`,
   `  应用名称        : ${runtime.APP_TITLE || env.VITE_APP_TITLE || 'Easy Agent'}`,
+  `  首页欢迎语      : ${runtime.APP_WELCOME_TITLE || env.VITE_APP_WELCOME_TITLE || 'Easy Agent，让工作更简单'}`,
   `  静态目录        : dist/`,
   `  环境配置表      : dev=${runtime.ENV_CONFIG.dev || '<空>'}  test=${runtime.ENV_CONFIG.test || '<空>'}  prod=${runtime.ENV_CONFIG.prod || '<空>'}`,
 ]

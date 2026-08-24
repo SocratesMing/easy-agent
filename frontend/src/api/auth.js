@@ -141,14 +141,22 @@ export async function unregister() {
   return await response.json()
 }
 
-export async function resetPassword(username, newPassword) {
-  const response = await fetch(`${API_BASE_URL}/api/auth/reset-password`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({ username, new_password: newPassword })
-  })
+export async function listUsers() {
+  const response = await authFetch(`${API_BASE_URL}/api/auth/admin/users`)
+
+  if (!response.ok) {
+    const error = await response.json()
+    throw new Error(error.detail || '获取用户列表失败')
+  }
+
+  return await response.json()
+}
+
+export async function resetUserPassword(username) {
+  const response = await authFetch(
+    `${API_BASE_URL}/api/auth/admin/users/${encodeURIComponent(username)}/reset-password`,
+    { method: 'POST' }
+  )
 
   if (!response.ok) {
     const error = await response.json()
