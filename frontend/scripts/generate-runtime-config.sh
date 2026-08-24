@@ -3,12 +3,12 @@
 # 运行期前端配置生成器
 #
 # 解决“构建镜像时未知 AGENT_ENV / 后端地址”的问题：
-# 前端在 build 时把 VITE_API_BASE_URL 固化进 bundle，无法预知部署环境的
+# 前端在 build 时把 VUE_APP_API_BASE_URL 固化进 bundle，无法预知部署环境的
 # 后端地址。本脚本在 serve / 容器启动时根据环境变量写出 dist/runtime-config.js，
 # 前端运行时读取 window.__RUNTIME_CONFIG__ 覆盖构建期值。
 #
 # 关键点：build 后前端按 AGENT_ENV 的值加载“该环境专属配置”。
-#   本脚本读取各 .env.<mode> 中的 VITE_API_BASE_URL，构造 ENV_CONFIG 表写入
+#   本脚本读取各 .env.<mode> 中的 VUE_APP_API_BASE_URL，构造 ENV_CONFIG 表写入
 #   runtime-config.js，前端运行时用 AGENT_ENV 索引对应环境的后端地址。
 #
 # 环境变量：
@@ -16,11 +16,11 @@
 #                例：http://easy-agent-backend:8000
 #   AGENT_ENV     环境标识（dev/test/prod），决定加载哪份环境配置（默认 prod）
 #   APP_TITLE     应用名称（可选）
-#   APP_WELCOME_TITLE 首页欢迎语（可选，默认使用构建期 VITE_APP_WELCOME_TITLE）
+#   APP_WELCOME_TITLE 首页欢迎语（可选，默认使用构建期 VUE_APP_WELCOME_TITLE）
 #   DIST_DIR      输出目录（默认 dist）
 #
 # 后端地址选择优先级（高 -> 低）：
-#   API_BASE_URL（显式，跨域部署用） > 构建期 VITE_API_BASE_URL（bundle 内）
+#   API_BASE_URL（显式，跨域部署用） > 构建期 VUE_APP_API_BASE_URL（bundle 内）
 #   > "/"（默认：同源相对路径，后端不设置跨域时的正确选择）
 # 注：ENV_CONFIG 表仅作各环境地址参考/打印，默认不自动套用（避免产生跨域）。
 # ============================================================
@@ -34,14 +34,14 @@ APP_TITLE="${APP_TITLE:-Easy Agent}"
 APP_WELCOME_TITLE="${APP_WELCOME_TITLE:-}"
 AGENT_ENV_VAL="${AGENT_ENV:-prod}"
 
-# 读取各环境 .env.<mode> 中的 VITE_API_BASE_URL，作为该环境默认后端地址。
+# 读取各环境 .env.<mode> 中的 VUE_APP_API_BASE_URL，作为该环境默认后端地址。
 # 这是“按 AGENT_ENV 加载不同环境配置”的唯一数据源（与构建期保持一致）。
 read_env_api() {
   local env="$1"
   local env_file=".env.${env}"
   local url=""
   if [ -f "$env_file" ]; then
-    url=$(grep -E "^VITE_API_BASE_URL=" "$env_file" 2>/dev/null | tail -1 | cut -d= -f2- \
+    url=$(grep -E "^VUE_APP_API_BASE_URL=" "$env_file" 2>/dev/null | tail -1 | cut -d= -f2- \
             | sed "s/^[\"']//;s/[\"']$//")
   fi
   echo "$url"

@@ -1,20 +1,17 @@
-/**
- * Vite 启动器：根据平台与 AGENT_ENV 解析 --mode，
- * 让 Vite 自动加载对应的 .env.<mode> 文件。
- * 用法（package.json 脚本已接好）：
- *   node scripts/run-vite.mjs dev     # 对应 npm run dev
- *   node scripts/run-vite.mjs build   # 对应 npm run build
- */
 import { spawnSync } from 'node:child_process'
+import { createRequire } from 'node:module'
+import { resolve } from 'node:path'
 import { resolveEnvMode } from './env-mode.mjs'
 
+const require = createRequire(import.meta.url)
 const command = process.argv[2] || 'dev'
 const mode = resolveEnvMode(command)
+const cliPath = resolve(require.resolve('@vue/cli-service/bin/vue-cli-service.js'))
+const args = command === 'build' ? ['build', '--mode', mode] : ['serve', '--mode', mode]
 
-const viteArgs = command === 'build' ? ['build', '--mode', mode] : ['--mode', mode]
-
-const res = spawnSync('vite', viteArgs, {
+const result = spawnSync(process.execPath, [cliPath, ...args], {
   stdio: 'inherit',
-  shell: process.platform === 'win32',
+  env: process.env,
 })
-process.exit(res.status ?? 0)
+
+process.exit(result.status ?? 0)

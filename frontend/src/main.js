@@ -1,6 +1,13 @@
-import { createApp } from 'vue'
+import Vue from 'vue'
+import ElementUI from 'element-ui'
+import 'element-ui/lib/theme-chalk/index.css'
 import './style.css'
 import 'highlight.js/styles/github-dark.css'
 import App from './App.vue'
 
-createApp(App).mount('#app')
+Vue.use(ElementUI)
+Vue.config.productionTip = false
+
+new Vue({
+  render: (h) => h(App),
+}).$mount('#app')

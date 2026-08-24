@@ -1,7 +1,7 @@
 /**
  * 前端静态托管（serve -s dist/）启动前置脚本。
  *
- * 由于 .env.<mode> 中的 VITE_* 变量在 `npm run build` 时已被固化进 bundle，
+ * 由于 .env.<mode> 中的 VUE_APP_* 变量在 `npm run build` 时已被固化进 bundle，
  * `serve` 运行期不会读取 .env。本脚本在启动 serve 之前：
  *   1) 根据 AGENT_ENV 读取对应 .env.<mode>（构建期配置，仅作参考）；
  *   2) 读取 dist/runtime-config.js（运行期配置，由 generate-runtime-config.sh
@@ -24,7 +24,7 @@ const root = path.resolve(__dirname, '..')
 const mode = resolveEnvMode('build')
 const envFile = path.join(root, `.env.${mode}`)
 
-/** 解析 .env.<mode> 中的键值对（仅取 VITE_* 展示） */
+/** 解析 .env.<mode> 中的键值对（仅取 VUE_APP_* 展示） */
 function loadEnvVars(file) {
   const vars = {}
   if (!fs.existsSync(file)) return vars
@@ -84,9 +84,9 @@ const rows = [
   `  AGENT_ENV       : ${agentEnvVal}  (运行期: ${runtime.AGENT_ENV || '未写入'} | 进程变量: ${process.env.AGENT_ENV || '未设置'})`,
   `  环境模式        : ${mode}  (构建期加载 ${path.basename(envFile)})`,
   `  生效后端地址    : ${runtime.API_BASE_URL || '(未生成, 将用构建期/相对路径)'}`,
-  `  构建期后端地址  : ${env.VITE_API_BASE_URL || '(未设置)'}`,
-  `  应用名称        : ${runtime.APP_TITLE || env.VITE_APP_TITLE || 'Easy Agent'}`,
-  `  首页欢迎语      : ${runtime.APP_WELCOME_TITLE || env.VITE_APP_WELCOME_TITLE || 'Easy Agent，让工作更简单'}`,
+  `  构建期后端地址  : ${env.VUE_APP_API_BASE_URL || '(未设置)'}`,
+  `  应用名称        : ${runtime.APP_TITLE || env.VUE_APP_TITLE || 'Easy Agent'}`,
+  `  首页欢迎语      : ${runtime.APP_WELCOME_TITLE || env.VUE_APP_WELCOME_TITLE || 'Easy Agent，让工作更简单'}`,
   `  静态目录        : dist/`,
   `  环境配置表      : dev=${runtime.ENV_CONFIG.dev || '<空>'}  test=${runtime.ENV_CONFIG.test || '<空>'}  prod=${runtime.ENV_CONFIG.prod || '<空>'}`,
 ]
