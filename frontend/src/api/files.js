@@ -1,147 +1,87 @@
-import { API_BASE_URL } from '../config.js'
-import { getAuthHeaders, authFetch, getStoredToken } from './auth.js'
+import { request, requestBlob, requestJson, requestText } from './request.js'
 
 export async function uploadFile(sessionId, file, onProgress) {
-  return new Promise((resolve, reject) => {
-    const formData = new FormData()
-    formData.append('file', file)
-
-    const xhr = new XMLHttpRequest()
-
-    xhr.upload.addEventListener('progress', (progressEvent) => {
-      if (onProgress && progressEvent.lengthComputable) {
-        const percentCompleted = Math.round((progressEvent.loaded * 100) / progressEvent.total)
-        onProgress(percentCompleted)
+  const formData = new FormData()
+  formData.append('file', file)
+  const response = await request({
+    url: `/api/sessions/${sessionId}/upload`,
+    method: 'post',
+    data: formData,
+    onUploadProgress: (progressEvent) => {
+      if (onProgress && progressEvent.total) {
+        onProgress(Math.round((progressEvent.loaded * 100) / progressEvent.total))
       }
-    })
-
-    xhr.addEventListener('load', () => {
-      if (xhr.status >= 200 && xhr.status < 300) {
-        try {
-          const response = JSON.parse(xhr.responseText)
-          resolve(response)
-        } catch (error) {
-          reject(new Error('Invalid response format'))
-        }
-      } else {
-        try {
-          const error = JSON.parse(xhr.responseText)
-          reject(new Error(error.detail || '文件上传失败'))
-        } catch {
-          reject(new Error('文件上传失败'))
-        }
-      }
-    })
-
-    xhr.addEventListener('error', () => {
-      reject(new Error('网络错误，文件上传失败'))
-    })
-
-    xhr.open('POST', `${API_BASE_URL}/api/sessions/${sessionId}/upload`)
-
-    const authHeaders = getAuthHeaders()
-    for (const [key, value] of Object.entries(authHeaders)) {
-      xhr.setRequestHeader(key, value)
-    }
-
-    xhr.send(formData)
+    },
   })
+  return response.data
 }
 
 export async function getSessionFiles(sessionId) {
-  const response = await authFetch(`${API_BASE_URL}/api/sessions/${sessionId}/files`)
-
-  if (!response.ok) {
-    throw new Error('获取文件列表失败')
-  }
-
-  return await response.json()
+  return requestJson(
+    { url: `/api/sessions/${sessionId}/files`, method: 'get' },
+    '获取文件列表失败'
+  )
 }
 
 export async function getAllFiles() {
-  const response = await authFetch(`${API_BASE_URL}/api/sessions/files/all`)
-
-  if (!response.ok) {
-    throw new Error('获取所有文件失败')
-  }
-
-  return await response.json()
+  return requestJson(
+    { url: '/api/sessions/files/all', method: 'get' },
+    '获取所有文件失败'
+  )
 }
 
 export async function deleteFile(sessionId, file) {
-  const response = await authFetch(`${API_BASE_URL}/api/sessions/${sessionId}/files/${file.id}`, {
-    method: 'DELETE',
-  })
-
-  if (!response.ok) {
-    throw new Error('删除文件失败')
-  }
-
-  return await response.json()
+  return requestJson(
+    { url: `/api/sessions/${sessionId}/files/${file.id}`, method: 'delete' },
+    '删除文件失败'
+  )
 }
 
 export async function getUserProfile() {
-  const response = await authFetch(`${API_BASE_URL}/api/auth/profile`)
-
-  if (!response.ok) {
-    throw new Error('获取用户资料失败')
-  }
-
-  return await response.json()
+  return requestJson(
+    { url: '/api/auth/profile', method: 'get' },
+    '获取用户资料失败'
+  )
 }
 
 export async function getSessionGeneratedFiles(sessionId) {
-  const response = await authFetch(`${API_BASE_URL}/api/files/session/${sessionId}`)
-
-  if (!response.ok) {
-    throw new Error('获取生成的文件失败')
-  }
-
-  return await response.json()
+  return requestJson(
+    { url: `/api/files/session/${sessionId}`, method: 'get' },
+    '获取生成的文件失败'
+  )
 }
 
 export async function getWorkspaceTree(path = '', sessionId = null) {
-  const params = new URLSearchParams()
-  if (path) params.set('path', path)
-  if (sessionId) params.set('session_id', sessionId)
-  const url = `${API_BASE_URL}/api/files/workspace/tree${params.toString() ? '?' + params.toString() : ''}`
-  const response = await authFetch(url)
-
-  if (!response.ok) {
-    throw new Error('获取工作区文件树失败')
-  }
-
-  return await response.json()
+  const params = {}
+  if (path) params.path = path
+  if (sessionId) params.session_id = sessionId
+  return requestJson(
+    { url: '/api/files/workspace/tree', method: 'get', params },
+    '获取工作区文件树失败'
+  )
 }
 
 export async function getFileContent(filePath) {
-  const response = await authFetch(`${API_BASE_URL}/api/files/content?file_path=${encodeURIComponent(filePath)}`)
-
-  if (!response.ok) {
-    throw new Error('获取文件内容失败')
-  }
-
-  const text = await response.text()
+  const text = await requestText(
+    {
+      url: '/api/files/content',
+      method: 'get',
+      params: { file_path: filePath },
+    },
+    '获取文件内容失败'
+  )
   try {
     return JSON.parse(text)
-  } catch {
+  } catch (error) {
     return text
   }
 }
 
 export async function downloadFile(filePath, fileName) {
-  const token = getStoredToken()
-  const url = `${API_BASE_URL}/api/files/download/${filePath}`
-
-  const response = await fetch(url, {
-    headers: token ? { 'Authorization': `Bearer ${token}` } : {},
+  const blob = await requestBlob({
+    url: `/api/files/download/${filePath}`,
+    method: 'get',
   })
-
-  if (!response.ok) {
-    throw new Error('下载失败')
-  }
-
-  const blob = await response.blob()
   const blobUrl = window.URL.createObjectURL(blob)
   const link = document.createElement('a')
   link.href = blobUrl
@@ -153,18 +93,8 @@ export async function downloadFile(filePath, fileName) {
 }
 
 export async function updateUserProfile(data) {
-  const response = await authFetch(`${API_BASE_URL}/api/auth/profile`, {
-    method: 'PUT',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(data)
-  })
-
-  if (!response.ok) {
-    const error = await response.json()
-    throw new Error(error.detail || '更新用户资料失败')
-  }
-
-  return await response.json()
+  return requestJson(
+    { url: '/api/auth/profile', method: 'put', data },
+    '更新用户资料失败'
+  )
 }

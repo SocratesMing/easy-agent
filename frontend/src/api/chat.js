@@ -1,70 +1,67 @@
-import { API_BASE_URL } from '../config.js'
-import { getAuthHeaders, authFetch } from './auth.js'
+import {
+  handleStreamResponse,
+  requestJson,
+  streamHeaders,
+  streamUrl,
+} from './request.js'
 
 export async function createSession(title, username = null) {
-  const body = { title }
-  if (username) {
-    body.username = username
-  }
-  const response = await authFetch(`${API_BASE_URL}/api/sessions`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(body)
-  })
-  if (!response.ok) throw new Error('创建会话失败')
-  return response.json()
+  const data = { title }
+  if (username) data.username = username
+  return requestJson(
+    { url: '/api/sessions', method: 'post', data },
+    '创建会话失败'
+  )
 }
 
 export async function listSessions(username = null) {
-  let url = `${API_BASE_URL}/api/sessions`
-  if (username) {
-    url += `?username=${encodeURIComponent(username)}`
-  }
-  const response = await authFetch(url)
-  if (!response.ok) throw new Error('获取会话列表失败')
-  return response.json()
+  return requestJson(
+    {
+      url: '/api/sessions',
+      method: 'get',
+      params: username ? { username } : undefined,
+    },
+    '获取会话列表失败'
+  )
 }
 
 export async function getSession(sessionId) {
-  const response = await authFetch(`${API_BASE_URL}/api/sessions/${sessionId}`)
-  if (!response.ok) throw new Error('获取会话失败')
-  return response.json()
+  return requestJson(
+    { url: `/api/sessions/${sessionId}`, method: 'get' },
+    '获取会话失败'
+  )
 }
 
 export async function deleteSession(sessionId) {
-  const response = await authFetch(`${API_BASE_URL}/api/sessions/${sessionId}`, {
-    method: 'DELETE',
-  })
-  if (!response.ok) throw new Error('删除会话失败')
-  return response.json()
+  return requestJson(
+    { url: `/api/sessions/${sessionId}`, method: 'delete' },
+    '删除会话失败'
+  )
 }
 
 export async function renameSession(sessionId, title) {
-  const response = await authFetch(`${API_BASE_URL}/api/sessions/${sessionId}/title`, {
-    method: 'PUT',
-    headers: {
-      'Content-Type': 'application/json',
+  return requestJson(
+    {
+      url: `/api/sessions/${sessionId}/title`,
+      method: 'put',
+      data: { title },
     },
-    body: JSON.stringify({ title })
-  })
-  if (!response.ok) throw new Error('重命名会话失败')
-  return response.json()
+    '重命名会话失败'
+  )
 }
 
 export async function togglePinSession(sessionId) {
-  const response = await authFetch(`${API_BASE_URL}/api/sessions/${sessionId}/pin`, {
-    method: 'PUT',
-  })
-  if (!response.ok) throw new Error('置顶操作失败')
-  return response.json()
+  return requestJson(
+    { url: `/api/sessions/${sessionId}/pin`, method: 'put' },
+    '置顶操作失败'
+  )
 }
 
 export async function getChatHistory(sessionId) {
-  const response = await authFetch(`${API_BASE_URL}/api/sessions/${sessionId}`)
-  if (!response.ok) throw new Error('获取聊天历史失败')
-  const data = await response.json()
+  const data = await requestJson(
+    { url: `/api/sessions/${sessionId}`, method: 'get' },
+    '获取聊天历史失败'
+  )
   return {
     messages: data.messages || [],
     todos: data.todos || [],
@@ -73,195 +70,119 @@ export async function getChatHistory(sessionId) {
   }
 }
 
-// 查询会话当前是否仍有进行中的流式任务（页面刷新后判断是否需要重新挂载）
 export async function getStreamStatus(sessionId) {
-  const response = await authFetch(
-    `${API_BASE_URL}/api/chat/stream/status?session_id=${encodeURIComponent(sessionId)}`
+  return requestJson(
+    {
+      url: '/api/chat/stream/status',
+      method: 'get',
+      params: { session_id: sessionId },
+    },
+    '查询流式状态失败'
   )
-  if (!response.ok) {
-    throw new Error('查询流式状态失败')
-  }
-  return response.json()
 }
 
-// 挂载到进行中的流式任务：先回放已产生的全部事件，再持续接收后续事件
+async function readSseStream(response, onChunk, abortSignal, controller) {
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+
+  try {
+    while (true) {
+      if (abortSignal && abortSignal.aborted) {
+        controller.abort()
+        return
+      }
+
+      const { done, value } = await reader.read()
+      if (done) break
+
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n')
+      buffer = lines.pop() || ''
+
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue
+        try {
+          const data = JSON.parse(line.slice(6))
+          onChunk(data)
+        } catch (error) {
+          console.error('解析 SSE 数据失败:', error)
+        }
+      }
+    }
+  } catch (error) {
+    if (error.name === 'AbortError') return
+    throw error
+  }
+}
+
 export async function attachStream(sessionId, onChunk, signal) {
   const controller = new AbortController()
   const abortSignal = signal || controller.signal
-
-  const response = await authFetch(
-    `${API_BASE_URL}/api/chat/stream/live?session_id=${encodeURIComponent(sessionId)}`,
-    { signal: abortSignal }
+  const response = await handleStreamResponse(
+    await fetch(streamUrl(`/api/chat/stream/live?session_id=${encodeURIComponent(sessionId)}`), {
+      signal: abortSignal,
+      headers: streamHeaders(),
+    })
   )
-  if (!response.ok) {
-    const error = await response.json()
-    throw new Error(error.detail || '挂载流式输出失败')
-  }
-
-  const reader = response.body.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ''
-
-  try {
-    while (true) {
-      if (abortSignal?.aborted) {
-        controller.abort()
-        return
-      }
-
-      const { done, value } = await reader.read()
-      if (done) break
-
-      buffer += decoder.decode(value, { stream: true })
-      const lines = buffer.split('\n')
-      buffer = lines.pop() || ''
-
-      for (const line of lines) {
-        if (line.startsWith('data: ')) {
-          try {
-            const data = JSON.parse(line.slice(6))
-            onChunk(data)
-          } catch (e) {
-            console.error('解析 SSE 数据失败:', e)
-          }
-        }
-      }
-    }
-  } catch (e) {
-    if (e.name === 'AbortError') {
-      return
-    }
-    throw e
-  }
+  await readSseStream(response, onChunk, abortSignal, controller)
 }
 
-export async function sendMessage(sessionId, message, onChunk, signal, enableDeepThink = true, files = [], model = null) {
+export async function sendMessage(
+  sessionId,
+  message,
+  onChunk,
+  signal,
+  enableDeepThink = true,
+  files = [],
+  model = null
+) {
   const controller = new AbortController()
   const abortSignal = signal || controller.signal
-
   const payload = {
-      session_id: sessionId,
-      message,
-      message_id: generateMessageId(),
-      enable_deep_think: enableDeepThink,
-      files: files,
+    session_id: sessionId,
+    message,
+    message_id: generateMessageId(),
+    enable_deep_think: enableDeepThink,
+    files,
   }
-  if (model) {
-    payload.model = model
-  }
+  if (model) payload.model = model
 
-  const response = await authFetch(`${API_BASE_URL}/api/chat/stream`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(payload),
-    signal: abortSignal
-  })
-
-  if (!response.ok) {
-    const error = await response.json()
-    throw new Error(error.detail || '发送消息失败')
-  }
-
-  const reader = response.body.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ''
-
-  try {
-    while (true) {
-      if (abortSignal?.aborted) {
-        controller.abort()
-        return
-      }
-
-      const { done, value } = await reader.read()
-      if (done) break
-
-      buffer += decoder.decode(value, { stream: true })
-      const lines = buffer.split('\n')
-      buffer = lines.pop() || ''
-
-      for (const line of lines) {
-        if (line.startsWith('data: ')) {
-          try {
-            const data = JSON.parse(line.slice(6))
-            if (data.type === 'done') {
-              console.log('[SSE] Received done event:', JSON.stringify(data).substring(0, 500))
-            }
-            onChunk(data)
-          } catch (e) {
-            console.error('解析 SSE 数据失败:', e)
-          }
-        }
-      }
-    }
-  } catch (e) {
-    if (e.name === 'AbortError') {
-      return
-    }
-    throw e
-  }
+  const response = await handleStreamResponse(
+    await fetch(streamUrl('/api/chat/stream'), {
+      method: 'POST',
+      headers: streamHeaders(),
+      body: JSON.stringify(payload),
+      signal: abortSignal,
+    })
+  )
+  await readSseStream(response, onChunk, abortSignal, controller)
 }
 
-export async function resumeStream(sessionId, threadId, decisions, onChunk, signal, messageId) {
+export async function resumeStream(
+  sessionId,
+  threadId,
+  decisions,
+  onChunk,
+  signal,
+  messageId
+) {
   const controller = new AbortController()
   const abortSignal = signal || controller.signal
-
-  const response = await authFetch(`${API_BASE_URL}/api/chat/resume`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      session_id: sessionId,
-      thread_id: threadId,
-      decisions,
-      message_id: messageId || null,
-    }),
-    signal: abortSignal,
-  })
-
-  if (!response.ok) {
-    const error = await response.json()
-    throw new Error(error.detail || '恢复执行失败')
-  }
-
-  const reader = response.body.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ''
-
-  try {
-    while (true) {
-      if (abortSignal?.aborted) {
-        controller.abort()
-        return
-      }
-
-      const { done, value } = await reader.read()
-      if (done) break
-
-      buffer += decoder.decode(value, { stream: true })
-      const lines = buffer.split('\n')
-      buffer = lines.pop() || ''
-
-      for (const line of lines) {
-        if (line.startsWith('data: ')) {
-          try {
-            const data = JSON.parse(line.slice(6))
-            onChunk(data)
-          } catch (e) {
-            console.error('解析 SSE 数据失败:', e)
-          }
-        }
-      }
-    }
-  } catch (e) {
-    if (e.name === 'AbortError') {
-      return
-    }
-    throw e
-  }
+  const response = await handleStreamResponse(
+    await fetch(streamUrl('/api/chat/resume'), {
+      method: 'POST',
+      headers: streamHeaders(),
+      body: JSON.stringify({
+        session_id: sessionId,
+        thread_id: threadId,
+        decisions,
+        message_id: messageId || null,
+      }),
+      signal: abortSignal,
+    })
+  )
+  await readSseStream(response, onChunk, abortSignal, controller)
 }
 
 function generateMessageId() {
