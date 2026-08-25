@@ -89,14 +89,15 @@
   </div>
 </template>
 
-<script setup>
+<script>
 import { ref, onMounted } from 'vue'
 import { getUserProfile } from '../api/files.js'
 import { unregister } from '../api/auth.js'
 import ConfirmDialog from './ConfirmDialog.vue'
-
-const emit = defineEmits(['close', 'logout', 'switch-user', 'unregister'])
-
+export default {
+  components: { ConfirmDialog },
+  emits: ['close', 'logout', 'switch-user', 'unregister'],
+  setup(props, { emit }) {
 const loading = ref(true)
 const error = ref('')
 const unregisterDialog = ref(null)
@@ -152,6 +153,25 @@ async function handleUnregister() {
 onMounted(() => {
   loadProfile()
 })
+
+    return {
+      ConfirmDialog,
+      error,
+      getUserProfile,
+      handleLogout,
+      handleSwitchUser,
+      handleUnregister,
+      loading,
+      loadProfile,
+      onMounted,
+      profile,
+      ref,
+      showUnregisterDialog,
+      unregister,
+      unregisterDialog,
+    }
+  },
+}
 </script>
 
 <style scoped>

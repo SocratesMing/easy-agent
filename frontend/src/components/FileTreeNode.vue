@@ -42,13 +42,15 @@
   </div>
 </template>
 
-<script setup>
+<script>
 import { ref, watch } from 'vue'
 import FileIcon from './FileIcon.vue'
 import { getWorkspaceTree } from '../api/files'
 import { getScheduledTaskWorkspace } from '../api/scheduledTasks'
-
-const props = defineProps({
+export default {
+  name: 'FileTreeNode',
+  components: { FileIcon },
+  props: {
   item: {
     type: Object,
     required: true
@@ -69,14 +71,16 @@ const props = defineProps({
     type: String,
     default: null
   }
-})
+},
+  emits: ['select', 'download'],
+  setup(props, { emit }) {
 // 兼容两种文件树来源：会话工作区或定时任务工作区
 const loadTree = (path, sessionId, taskId) =>
   taskId
     ? getScheduledTaskWorkspace(path, taskId)
     : getWorkspaceTree(path, sessionId)
 
-const emit = defineEmits(['select', 'download'])
+
 
 const expanded = ref(false)
 const children = ref([])
@@ -138,6 +142,24 @@ function handleClick() {
       emit('select', props.item)
     }, 250)
   }
+}
+
+    return {
+      children,
+      clickTimer,
+      expanded,
+      FileIcon,
+      getScheduledTaskWorkspace,
+      getWorkspaceTree,
+      handleClick,
+      isLoading,
+      loadChildren,
+      loadTree,
+      ref,
+      toggleExpand,
+      watch,
+    }
+  },
 }
 </script>
 

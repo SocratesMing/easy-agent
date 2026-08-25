@@ -30,17 +30,17 @@
   </div>
 </template>
 
-<script setup>
+<script>
 import { ref, onMounted, watch } from 'vue'
 import ExcelJS from 'exceljs'
-
-const props = defineProps({
+export default {
+  props: {
   fileUrl: {
     type: String,
     default: ''
   }
-})
-
+},
+  setup(props, { emit }) {
 const sheets = ref([])
 const activeSheet = ref(0)
 
@@ -80,6 +80,18 @@ onMounted(() => {
 watch(() => props.fileUrl, () => {
   loadExcel()
 })
+
+    return {
+      activeSheet,
+      ExcelJS,
+      loadExcel,
+      onMounted,
+      ref,
+      sheets,
+      watch,
+    }
+  },
+}
 </script>
 
 <style scoped>

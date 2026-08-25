@@ -47,10 +47,11 @@
   </div>
 </template>
 
-<script setup>
+<script>
 import { ref, onMounted } from 'vue'
 import { listUsers, resetUserPassword } from '../api/auth.js'
-
+export default {
+  setup(props, { emit }) {
 const users = ref([])
 const total = ref(0)
 const loading = ref(true)
@@ -90,6 +91,23 @@ async function resetPassword(username) {
 }
 
 onMounted(loadUsers)
+
+    return {
+      error,
+      listUsers,
+      loading,
+      loadUsers,
+      message,
+      onMounted,
+      ref,
+      resetPassword,
+      resettingUsername,
+      resetUserPassword,
+      total,
+      users,
+    }
+  },
+}
 </script>
 
 <style scoped>

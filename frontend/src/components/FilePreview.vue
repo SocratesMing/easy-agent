@@ -1,5 +1,4 @@
 <template>
-  <Teleport to="body">
     <div v-if="visible" class="preview-overlay" @click.self="handleClose">
       <div class="preview-dialog">
         <div class="preview-header">
@@ -40,22 +39,10 @@
             <iframe v-if="pptxPdfUrl" :src="pptxPdfUrl" class="pptx-iframe" title="PPTX 预览"></iframe>
           </div>
           <div v-else-if="isDocx" class="preview-docx">
-            <vue-office-docx :src="docxUrl" @error="handleDocxError" />
+            <DocxPreview v-if="docxUrl" :file-url="docxUrl" />
           </div>
           <div v-else-if="isExcel" class="preview-excel">
-            <vue-office-excel
-              v-if="!excelFallback"
-              :key="excelKey"
-              :src="excelUrl"
-              @rendered="onExcelRendered"
-              @error="handleExcelError"
-            />
-            <div v-else class="excel-fallback">
-              <div v-for="sheet in excelSheets" :key="sheet.name" class="excel-sheet">
-                <div class="excel-sheet-name">{{ sheet.name }}</div>
-                <div class="excel-table-wrap" v-html="sheet.html"></div>
-              </div>
-            </div>
+            <ExcelPreview v-if="excelUrl" :file-url="excelUrl" />
           </div>
           <div v-else-if="isImage" class="preview-image">
             <img :src="previewUrl" :alt="filename" />
@@ -105,41 +92,22 @@
         </div>
       </div>
     </div>
-  </Teleport>
 </template>
 
-<script setup>
+<script>
 import { API_BASE_URL } from '../config.js'
 import { ref, computed, watch } from 'vue'
 import { marked } from 'marked'
 import { setupMarkedExtensions, normalizeMathDelimiters } from '../markdownSetup.js'
 import hljs from 'highlight.js'
 import 'highlight.js/styles/github.css'
-
-// 注册 KaTeX 数学公式 + emoji 短代码扩展（幂等，仅执行一次）
-setupMarkedExtensions()
-import VueOfficeDocx from '@vue-office/docx'
-import VueOfficeExcel from '@vue-office/excel'
-import '@vue-office/docx/lib/index.css'
-import '@vue-office/excel/lib/index.css'
+import DocxPreview from './DocxPreview.vue'
+import ExcelPreview from './ExcelPreview.vue'
 import * as XLSX from 'xlsx'
 import { getStoredToken } from '../api/auth.js'
-
-marked.setOptions({
-  breaks: true,
-  gfm: true,
-  headerIds: false,
-  highlight: function(code, lang) {
-    if (lang && hljs.getLanguage(lang)) {
-      try {
-        return hljs.highlight(code, { language: lang }).value
-      } catch (__) {}
-    }
-    return hljs.highlightAuto(code).value
-  }
-})
-
-const props = defineProps({
+export default {
+  components: { DocxPreview, ExcelPreview },
+  props: {
   filename: {
     type: String,
     default: ''
@@ -160,25 +128,50 @@ const props = defineProps({
     type: Boolean,
     default: false
   }
+},
+  emits: ['close'],
+  setup(props, { emit }) {
+// 注册 KaTeX 数学公式 + emoji 短代码扩展（幂等，仅执行一次）
+setupMarkedExtensions()
+
+
+
+
+
+
+
+marked.setOptions({
+  breaks: true,
+  gfm: true,
+  headerIds: false,
+  highlight: function(code, lang) {
+    if (lang && hljs.getLanguage(lang)) {
+      try {
+        return hljs.highlight(code, { language: lang }).value
+      } catch (__) {}
+    }
+    return hljs.highlightAuto(code).value
+  }
 })
 
-const emit = defineEmits(['close'])
+
+
+
 
 const loading = ref(false)
 const error = ref('')
 const textContent = ref('')
 const previewUrl = ref('')
-const docxUrl = ref(null)
-const excelUrl = ref(null)
-// PPTX：经后端 LibreOffice 转为 PDF 后以 iframe 预览（比 @vue-office/pptx 稳定）
+const docxUrl = ref('')
+const excelUrl = ref('')
+// PPTX：经后端 LibreOffice 转为 PDF 后以 iframe 预览
 const pptxPdfUrl = ref('')
-// Excel 兜底：@vue-office/excel 解析含批注/drawing 的 xlsx 会抛 anchors 错误，
-// 此时用 SheetJS 将各 sheet 渲染为 HTML 表格。
 const excelArrayBuffer = ref(null)
 const excelFallback = ref(false)
 const excelSheets = ref([])
 const excelRetried = ref(false)
 const excelKey = ref(0)
+// Excel 兜底逻辑保留给后续扩展，当前预览由 ExcelPreview 组件承接。
 const htmlUrl = ref('')
 
 const imageExts = ['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.svg', '.ico']
@@ -343,17 +336,18 @@ async function loadPreview() {
   loading.value = true
   error.value = ''
   textContent.value = ''
-  docxUrl.value = null
-  excelUrl.value = null
+  if (docxUrl.value) {
+    URL.revokeObjectURL(docxUrl.value)
+  }
+  if (excelUrl.value) {
+    URL.revokeObjectURL(excelUrl.value)
+  }
+  docxUrl.value = ''
+  excelUrl.value = ''
   if (pptxPdfUrl.value) {
     URL.revokeObjectURL(pptxPdfUrl.value)
   }
   pptxPdfUrl.value = ''
-  excelArrayBuffer.value = null
-  excelFallback.value = false
-  excelSheets.value = []
-  excelRetried.value = false
-  excelKey.value++
   if (htmlUrl.value) {
     URL.revokeObjectURL(htmlUrl.value)
     htmlUrl.value = ''
@@ -414,16 +408,21 @@ async function loadPreview() {
       const response = await fetch(previewUrl.value, { headers })
       if (!response.ok) throw new Error(`HTTP ${response.status}`)
       const arrayBuffer = await response.arrayBuffer()
-      // 直接传 ArrayBuffer，避免 Blob URL 解析问题（与 excel/pptx 一致）
-      docxUrl.value = arrayBuffer
+      docxUrl.value = URL.createObjectURL(
+        new Blob([arrayBuffer], {
+          type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        })
+      )
     } else if (isExcel.value) {
       console.log('[FilePreview] Excel 预览')
       const response = await fetch(previewUrl.value, { headers })
       if (!response.ok) throw new Error(`HTTP ${response.status}`)
       const arrayBuffer = await response.arrayBuffer()
-      // @vue-office/excel 直接传 ArrayBuffer，避免 Blob URL 解析问题
-      excelArrayBuffer.value = arrayBuffer
-      excelUrl.value = arrayBuffer
+      excelUrl.value = URL.createObjectURL(
+        new Blob([arrayBuffer], {
+          type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        })
+      )
     } else if (isHtml.value) {
       console.log('[FilePreview] HTML 预览')
       const response = await fetch(previewUrl.value, { headers })
@@ -450,37 +449,12 @@ async function loadPreview() {
   loading.value = false
 }
 
-function handleDocxError(e) {
-  console.error('DOCX error:', e)
-  error.value = 'DOCX 预览加载失败'
-}
-
-function onExcelRendered() {
-  // @vue-office/excel 成功渲染，无需兜底
-}
-
-// @vue-office/excel 解析含批注/drawing 的 xlsx 时会抛 anchors 错误，
-// 这里用 SheetJS 将各 sheet 渲染为 HTML 表格作为兜底。
-function buildExcelTables(ab) {
-  try {
-    const wb = XLSX.read(ab, { type: 'array' })
-    excelSheets.value = wb.SheetNames.map((name) => ({
-      name,
-      html: XLSX.utils.sheet_to_html(wb.Sheets[name]),
-    }))
-    excelFallback.value = true
-  } catch (err) {
-    console.error('[FilePreview] SheetJS 兜底渲染失败:', err)
-    error.value = 'Excel 预览加载失败'
-  }
-}
-
 function handleExcelError(e) {
   console.error('Excel error:', e)
   if (!excelRetried.value && excelArrayBuffer.value) {
-    // @vue-office/excel 解析含图片/drawing 的 xlsx 会抛 anchors 错误。
+    // 复杂 xlsx 可能包含 drawing，先做一次清理重试。
     // 用 SheetJS 做一次 read→write 往返，生成“不含 drawing”的干净工作簿，
-    // 再交回 @vue-office/excel 渲染：保留边框、合并单元格、多 sheet（仅不含图片），
+    // 清理后的工作簿仍保留边框、合并单元格和多 sheet。
     // 与“无图片时正常显示”体验一致。
     try {
       const wb = XLSX.read(excelArrayBuffer.value, { type: 'array', cellStyles: true })
@@ -502,10 +476,57 @@ function handleExcelError(e) {
 }
 
 function handleClose() {
-  // docxUrl/excelUrl 为 ArrayBuffer 无需 revoke；pptxPdfUrl/htmlUrl 是 Blob URL，需释放
+  // pptx/docx/excel/html 均为 Blob URL，需释放
+  if (docxUrl.value) URL.revokeObjectURL(docxUrl.value)
+  if (excelUrl.value) URL.revokeObjectURL(excelUrl.value)
   if (pptxPdfUrl.value) URL.revokeObjectURL(pptxPdfUrl.value)
   if (htmlUrl.value) URL.revokeObjectURL(htmlUrl.value)
   emit('close')
+}
+
+    return {
+      API_BASE_URL,
+      codeLangMap,
+      computed,
+      csvData,
+      docxUrl,
+      error,
+      escapeHtml,
+      excelUrl,
+      getExt,
+      getStoredToken,
+      handleClose,
+      handleDownload,
+      highlightedCode,
+      hljs,
+      htmlUrl,
+      imageExts,
+      isCode,
+      isCsv,
+      isDocx,
+      isExcel,
+      isHtml,
+      isImage,
+      isMarkdown,
+      isPdf,
+      isPptx,
+      isText,
+      lineCount,
+      loading,
+      loadPreview,
+      marked,
+      normalizeMathDelimiters,
+      pptxPdfUrl,
+      previewBaseUrl,
+      previewUrl,
+      ref,
+      renderedMarkdown,
+      setupMarkedExtensions,
+      textContent,
+      textExts,
+      watch,
+    }
+  },
 }
 </script>
 
@@ -721,7 +742,7 @@ function handleClose() {
   overflow: auto;
 }
 
-.preview-docx :deep(.docx-preview) {
+.preview-docx ::v-deep(.docx-preview) {
   width: 100%;
   height: 100%;
 }
@@ -733,9 +754,9 @@ function handleClose() {
   overflow: auto;
 }
 
-.preview-excel :deep(.excel-preview),
-.preview-excel :deep(.vue-office-excel),
-.preview-excel :deep(.x-spreadsheet) {
+.preview-excel ::v-deep(.excel-preview),
+.preview-excel ::v-deep(.vue-office-excel),
+.preview-excel ::v-deep(.x-spreadsheet) {
   width: 100%;
   min-height: 400px;
 }
@@ -888,19 +909,19 @@ function handleClose() {
   background: #ffffff;
 }
 
-:deep(.markdown-body) {
+::v-deep(.markdown-body) {
   max-width: 900px;
   margin: 0 auto;
   color: #24292f;
   line-height: 1.6;
 }
 
-:deep(.markdown-body h1),
-:deep(.markdown-body h2),
-:deep(.markdown-body h3),
-:deep(.markdown-body h4),
-:deep(.markdown-body h5),
-:deep(.markdown-body h6) {
+::v-deep(.markdown-body h1),
+::v-deep(.markdown-body h2),
+::v-deep(.markdown-body h3),
+::v-deep(.markdown-body h4),
+::v-deep(.markdown-body h5),
+::v-deep(.markdown-body h6) {
   margin-top: 24px;
   margin-bottom: 16px;
   font-weight: 600;
@@ -909,16 +930,16 @@ function handleClose() {
   padding-bottom: 8px;
 }
 
-:deep(.markdown-body h1) { font-size: 2em; }
-:deep(.markdown-body h2) { font-size: 1.5em; }
-:deep(.markdown-body h3) { font-size: 1.25em; }
-:deep(.markdown-body h4) { font-size: 1em; }
+::v-deep(.markdown-body h1) { font-size: 2em; }
+::v-deep(.markdown-body h2) { font-size: 1.5em; }
+::v-deep(.markdown-body h3) { font-size: 1.25em; }
+::v-deep(.markdown-body h4) { font-size: 1em; }
 
-:deep(.markdown-body p) {
+::v-deep(.markdown-body p) {
   margin-bottom: 16px;
 }
 
-:deep(.markdown-body code) {
+::v-deep(.markdown-body code) {
   padding: 0.2em 0.4em;
   margin: 0;
   font-size: 85%;
@@ -927,7 +948,7 @@ function handleClose() {
   font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
 }
 
-:deep(.markdown-body pre) {
+::v-deep(.markdown-body pre) {
   padding: 16px;
   overflow: auto;
   font-size: 85%;
@@ -938,7 +959,7 @@ function handleClose() {
   border: 1px solid #e1e4e8;
 }
 
-:deep(.markdown-body pre code) {
+::v-deep(.markdown-body pre code) {
   padding: 0;
   margin: 0;
   background-color: transparent;
@@ -947,75 +968,75 @@ function handleClose() {
   display: block;
 }
 
-:deep(.markdown-body ul),
-:deep(.markdown-body ol) {
+::v-deep(.markdown-body ul),
+::v-deep(.markdown-body ol) {
   padding-left: 2em;
   margin-bottom: 16px;
 }
 
-:deep(.markdown-body li) {
+::v-deep(.markdown-body li) {
   margin-bottom: 4px;
 }
 
-:deep(.markdown-body blockquote) {
+::v-deep(.markdown-body blockquote) {
   padding: 0 1em;
   color: #6a737d;
   border-left: 0.25em solid #d0d7de;
   margin: 0 0 16px 0;
 }
 
-:deep(.markdown-body table) {
+::v-deep(.markdown-body table) {
   border-collapse: collapse;
   width: 100%;
   margin-bottom: 16px;
   border-spacing: 0;
 }
 
-:deep(.markdown-body thead) {
+::v-deep(.markdown-body thead) {
   display: table-header-group;
   vertical-align: middle;
   border-color: inherit;
 }
 
-:deep(.markdown-body tbody) {
+::v-deep(.markdown-body tbody) {
   display: table-row-group;
   vertical-align: middle;
   border-color: inherit;
 }
 
-:deep(.markdown-body tr) {
+::v-deep(.markdown-body tr) {
   display: table-row;
   vertical-align: inherit;
   border-color: inherit;
 }
 
-:deep(.markdown-body tr:nth-child(2n)) {
+::v-deep(.markdown-body tr:nth-child(2n)) {
   background-color: #f6f8fa;
 }
 
-:deep(.markdown-body table th),
-:deep(.markdown-body table td) {
+::v-deep(.markdown-body table th),
+::v-deep(.markdown-body table td) {
   padding: 6px 13px;
   border: 1px solid #d0d7de;
   display: table-cell;
   vertical-align: middle;
 }
 
-:deep(.markdown-body table th) {
+::v-deep(.markdown-body table th) {
   font-weight: 600;
   background-color: #f6f8fa;
 }
 
-:deep(.markdown-body table td) {
+::v-deep(.markdown-body table td) {
   color: #24292f;
 }
 
-:deep(.markdown-body a) {
+::v-deep(.markdown-body a) {
   color: #0366d6;
   text-decoration: none;
 }
 
-:deep(.markdown-body a:hover) {
+::v-deep(.markdown-body a:hover) {
   text-decoration: underline;
 }
 

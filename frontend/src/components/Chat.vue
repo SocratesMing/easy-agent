@@ -16,7 +16,7 @@
       <div
       v-for="(msg, index) in messages"
       :key="msg.id"
-      :ref="el => setMessageRef(el, index)"
+      ref="messageEls"
       class="message-wrapper"
       :class="msg.role"
     >
@@ -29,12 +29,12 @@
       />
     </div>
     </div>
-    <button v-if="canGoToNextUserMessage" @click="goToNextUserMessage" class="scroll-btn next" :class="{ shifted: props.workspaceExpanded }" title="回到下一个用户问题">
+    <button v-if="canGoToNextUserMessage" @click="goToNextUserMessage" class="scroll-btn next" :class="{ shifted: workspaceExpanded }" title="回到下一个用户问题">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
         <polyline points="6 9 12 15 18 9"></polyline>
       </svg>
     </button>
-    <button v-if="canGoToPrevUserMessage" @click="goToPrevUserMessage" class="scroll-btn prev" :class="{ shifted: props.workspaceExpanded }" title="回到上一个用户问题">
+    <button v-if="canGoToPrevUserMessage" @click="goToPrevUserMessage" class="scroll-btn prev" :class="{ shifted: workspaceExpanded }" title="回到上一个用户问题">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
         <polyline points="18 15 12 9 6 15"></polyline>
       </svg>
@@ -52,7 +52,7 @@
       :models="models"
       :selectedModel="selectedModel"
       :showFooter="composerMode === 'bottom'"
-      @update:selectedModel="(v) => emit('update:selectedModel', v)"
+      @update:selectedModel="$emit('update:selectedModel', $event)"
       @stop="handleStop"
       @createSession="handleCreateSession"
     />
@@ -85,19 +85,15 @@
   </div>
 </template>
 
-<script setup>
+<script>
 import { ref, watch, nextTick, computed, onMounted, onUnmounted } from 'vue'
 import ChatMessage from './ChatMessage.vue'
 import ChatInput from './ChatInput.vue'
 import TodoListPanel from './TodoListPanel.vue'
 import { APP_WELCOME_TITLE } from '../config.js'
-// 首页布局模式：center=空会话时输入框居中，bottom=对话中输入框贴底
-const composerMode = ref('center')
-
-const deckTop = ref(0)
-const deckVisibleCount = 3 // keep
-
-const props = defineProps({
+export default {
+  components: { ChatInput, ChatMessage, TodoListPanel },
+  props: {
   messages: {
     type: Array,
     default: () => []
@@ -158,14 +154,23 @@ const props = defineProps({
     type: String,
     default: APP_WELCOME_TITLE
   }
-})
+},
+  emits: ['sendMessage', 'stop', 'removeFile', 'createSession', 'approve', 'reject', 'update:selectedModel'],
+  setup(props, { emit }) {
+// 首页布局模式：center=空会话时输入框居中，bottom=对话中输入框贴底
+const composerMode = ref('center')
+
+const deckTop = ref(0)
+const deckVisibleCount = 3 // keep
+
+
 
 watch(() => props.messages, (newMessages) => {
   // 空会话显示居中输入框；有消息时输入框贴底
   composerMode.value = newMessages.length === 0 ? 'center' : 'bottom'
 }, { immediate: true })
 
-const emit = defineEmits(['sendMessage', 'stop', 'removeFile', 'createSession', 'approve', 'reject', 'update:selectedModel'])
+
 const messagesRef = ref(null)
 
 function formatSessionTime(isoStr) {
@@ -178,15 +183,9 @@ function formatSessionTime(isoStr) {
   const min = String(d.getMinutes()).padStart(2, '0')
   return `${y}-${m}-${day} ${h}:${min}`
 }
-const messageRefs = ref({})
+const messageEls = ref([])
 const currentUserMessageIndex = ref(-1)
 const userMessageIndices = ref([])
-
-function setMessageRef(el, index) {
-  if (el) {
-    messageRefs.value[index] = el
-  }
-}
 
 function updateUserMessageIndices() {
   userMessageIndices.value = props.messages
@@ -221,8 +220,8 @@ function goToPrevUserMessage() {
   
   const targetIndex = userMessageIndices.value[currentUserMessageIndex.value]
   
-  if (targetIndex !== undefined && messageRefs.value[targetIndex]) {
-    messageRefs.value[targetIndex].scrollIntoView({ behavior: 'smooth', block: 'center' })
+  if (targetIndex !== undefined && messageEls.value[targetIndex]) {
+    messageEls.value[targetIndex].scrollIntoView({ behavior: 'smooth', block: 'center' })
   }
 }
 
@@ -231,8 +230,8 @@ function goToNextUserMessage() {
     // 还有更靠后的用户问题：逐条向下跳转
     currentUserMessageIndex.value--
     const targetIndex = userMessageIndices.value[currentUserMessageIndex.value]
-    if (targetIndex !== undefined && messageRefs.value[targetIndex]) {
-      messageRefs.value[targetIndex].scrollIntoView({ behavior: 'smooth', block: 'center' })
+    if (targetIndex !== undefined && messageEls.value[targetIndex]) {
+      messageEls.value[targetIndex].scrollIntoView({ behavior: 'smooth', block: 'center' })
     }
   } else {
     // 已到最后一个用户问题（或未经过导航）：直接滚动到会话底部
@@ -335,6 +334,47 @@ watch(() => props.scrollTrigger, () => {
   isAtBottom.value = true
   scrollToBottom(true)
 })
+
+    return {
+      APP_WELCOME_TITLE,
+      canGoToNextUserMessage,
+      canGoToPrevUserMessage,
+      ChatInput,
+      ChatMessage,
+      composerMode,
+      computed,
+      currentUserMessageIndex,
+      deckTop,
+      deckVisibleCount,
+      formatSessionTime,
+      goToNextUserMessage,
+      goToPrevUserMessage,
+      handleApprove,
+      handleCreateSession,
+      handleQuickAction,
+      handleReject,
+      handleRemoveFile,
+      handleRetry,
+      handleScroll,
+      handleSend,
+      handleStop,
+      isAtBottom,
+      messageEls,
+      messagesRef,
+      nextTick,
+      onMounted,
+      onPresetClick,
+      onSend,
+      onUnmounted,
+      ref,
+      scrollToBottom,
+      TodoListPanel,
+      updateUserMessageIndices,
+      userMessageIndices,
+      watch,
+    }
+  },
+}
 </script>
 
 <style scoped>

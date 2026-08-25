@@ -86,7 +86,7 @@ const rows = [
   `  生效后端地址    : ${runtime.API_BASE_URL || '(未生成, 将用构建期/相对路径)'}`,
   `  构建期后端地址  : ${env.VUE_APP_API_BASE_URL || '(未设置)'}`,
   `  应用名称        : ${runtime.APP_TITLE || env.VUE_APP_TITLE || 'Easy Agent'}`,
-  `  首页欢迎语      : ${runtime.APP_WELCOME_TITLE || env.VUE_APP_WELCOME_TITLE || 'Easy Agent，让工作更简单'}`,
+  `  首页欢迎语      : ${runtime.APP_WELCOME_TITLE || env.VUE_APP_WELCOME_TITLE || 'Easy Agent，让工作化繁为简'}`,
   `  静态目录        : dist/`,
   `  环境配置表      : dev=${runtime.ENV_CONFIG.dev || '<空>'}  test=${runtime.ENV_CONFIG.test || '<空>'}  prod=${runtime.ENV_CONFIG.prod || '<空>'}`,
 ]

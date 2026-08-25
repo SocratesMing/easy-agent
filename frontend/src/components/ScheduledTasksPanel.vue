@@ -185,7 +185,7 @@
   </div>
 </template>
 
-<script setup>
+<script>
 import { ref, onMounted } from 'vue'
 import {
   getScheduledTasks,
@@ -200,9 +200,10 @@ import FileTreeNode from './FileTreeNode.vue'
 import FilePreview from './FilePreview.vue'
 import { API_BASE_URL } from '../config.js'
 import { getStoredToken } from '../api/auth.js'
-
-defineEmits(['close'])
-
+export default {
+  components: { ConfirmDialog, FilePreview, FileTreeNode },
+  emits: ['close'],
+  setup(props, { emit }) {
 const tasks = ref([])
 const loading = ref(false)
 const expandedTaskId = ref(null)
@@ -389,6 +390,57 @@ function calcDuration(start, end) {
 onMounted(() => {
   refresh()
 })
+
+    return {
+      API_BASE_URL,
+      calcDuration,
+      closeWorkspace,
+      confirmDialog,
+      ConfirmDialog,
+      deleteScheduledTask,
+      expandedRuns,
+      expandedTaskId,
+      FilePreview,
+      FileTreeNode,
+      formatTime,
+      getScheduledTaskRuns,
+      getScheduledTasks,
+      getScheduledTaskWorkspace,
+      getStoredToken,
+      handleDelete,
+      handleRun,
+      handleToggle,
+      handleWorkspaceDownload,
+      handleWorkspaceSelect,
+      loading,
+      loadRuns,
+      loadWorkspace,
+      onMounted,
+      openWorkspace,
+      pendingDeleteTaskName,
+      previewVisible,
+      ref,
+      refresh,
+      runLoading,
+      runs,
+      runScheduledTaskNow,
+      runsCollapsed,
+      runsLoading,
+      selectedFile,
+      showToast,
+      tasks,
+      toast,
+      toggleExpand,
+      toggleRunExpand,
+      toggleRunsCollapse,
+      toggleScheduledTask,
+      workspaceItems,
+      workspaceLoading,
+      workspaceModalVisible,
+      workspaceTaskId,
+    }
+  },
+}
 </script>
 
 <style scoped>

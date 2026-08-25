@@ -111,41 +111,42 @@
         </div>
       </div>
     </div>
+    <ConfirmDialog
+      ref="confirmDialog"
+      title="确认删除"
+      message="确定要删除此文件吗？此操作不可恢复。"
+      confirm-text="删除"
+      cancel-text="取消"
+      type="danger"
+    />
+
+    <FilePreview
+      ref="previewDialog"
+      :filename="previewFile.filename"
+      :file-path="previewFile.filePath"
+      :visible="previewFile.visible"
+      @close="previewFile.visible = false"
+    />
   </div>
-
-  <ConfirmDialog
-    ref="confirmDialog"
-    title="确认删除"
-    message="确定要删除此文件吗？此操作不可恢复。"
-    confirm-text="删除"
-    cancel-text="取消"
-    type="danger"
-  />
-
-  <FilePreview
-    ref="previewDialog"
-    :filename="previewFile.filename"
-    :file-path="previewFile.filePath"
-    :visible="previewFile.visible"
-    @close="previewFile.visible = false"
-  />
 </template>
 
-<script setup>
+<script>
 import { API_BASE_URL } from '../config.js'
 import { ref, computed, onMounted, watch, onActivated } from 'vue'
 import { getAllFiles, deleteFile } from '../api/files.js'
 import FileIcon from './FileIcon.vue'
 import ConfirmDialog from './ConfirmDialog.vue'
 import FilePreview from './FilePreview.vue'
-
-const props = defineProps({
+export default {
+  components: { ConfirmDialog, FileIcon, FilePreview },
+  props: {
   visible: {
     type: Boolean,
     default: true
   }
-})
-
+},
+  emits: ['close'],
+  setup(props, { emit }) {
 const loading = ref(false)
 const allFiles = ref([])
 const confirmDialog = ref(null)
@@ -154,7 +155,7 @@ const uploading = ref(false)
 const activeDropdown = ref(null)
 const previewDialog = ref(null)
 const previewFile = ref({ filename: '', filePath: '', visible: false })
-const emit = defineEmits(['close'])
+
 
 function toggleDropdown(filePath) {
   activeDropdown.value = activeDropdown.value === filePath ? null : filePath
@@ -363,6 +364,49 @@ watch(() => props.visible, (newVal) => {
     refreshAssets()
   }
 })
+
+    return {
+      activeDropdown,
+      activeTab,
+      allFiles,
+      API_BASE_URL,
+      categories,
+      categoryCounts,
+      categoryIcons,
+      closeDropdown,
+      computed,
+      confirmDialog,
+      ConfirmDialog,
+      currentFiles,
+      deleteFile,
+      FileIcon,
+      FilePreview,
+      filesWithCategory,
+      formatSize,
+      getAllFiles,
+      getCategoryClass,
+      getCategoryIcon,
+      getFileCategory,
+      getFileTypeLabel,
+      handleCopyPath,
+      handleDelete,
+      handleDownload,
+      handlePreview,
+      handleUpload,
+      loading,
+      onActivated,
+      onMounted,
+      previewDialog,
+      previewFile,
+      ref,
+      refreshAssets,
+      toggleDropdown,
+      totalFiles,
+      uploading,
+      watch,
+    }
+  },
+}
 </script>
 
 <style scoped>

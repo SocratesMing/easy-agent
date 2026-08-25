@@ -55,11 +55,12 @@
   </div>
 </template>
 
-<script setup>
+<script>
 import { ref, watch } from 'vue'
 import FileIcon from './FileIcon.vue'
-
-const props = defineProps({
+export default {
+  components: { FileIcon },
+  props: {
   visible: {
     type: Boolean,
     default: false
@@ -68,10 +69,9 @@ const props = defineProps({
     type: Array,
     default: () => []
   }
-})
-
-const emit = defineEmits(['close'])
-
+},
+  emits: ['close'],
+  setup(props, { emit }) {
 const selectedFile = ref(null)
 const fileContent = ref('')
 
@@ -117,6 +117,20 @@ watch(() => props.files, () => {
     selectFile(props.files[0])
   }
 })
+
+    return {
+      close,
+      fileContent,
+      FileIcon,
+      formatFileSize,
+      formatTime,
+      ref,
+      selectedFile,
+      selectFile,
+      watch,
+    }
+  },
+}
 </script>
 
 <style scoped>

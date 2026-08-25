@@ -46,9 +46,9 @@
             </svg>
           </div>
           <div v-if="processExpanded" class="process-body">
-            <template v-for="(block, idx) in processBlocks" :key="'p'+block.origIndex">
+            <template v-for="(block, idx) in processBlocks">
               <!-- 思考内容块 -->
-              <div v-if="block.type === 'thinking'" class="thinking-block" :class="{ 'thinking-active': block.duration == null && message.loading }">
+              <div v-if="block.type === 'thinking'" :key="'p'+block.origIndex" class="thinking-block" :class="{ 'thinking-active': block.duration == null && message.loading }">
                 <div class="thinking-header" @click="toggleThinking(block.origIndex)">
                   <div v-if="block.duration == null && message.loading" class="thinking-spinner">
                     <span></span><span></span><span></span>
@@ -70,7 +70,7 @@
               </div>
 
               <!-- 工具调用块（合并参数、结果、耗时）- 隐藏 write_todos，因为已在侧边栏显示 -->
-              <div v-if="block.type === 'tool_call' && block.tool_name !== 'write_todos'" class="tool-call-block" :class="{ error: block.success === false }">
+              <div v-if="block.type === 'tool_call' && block.tool_name !== 'write_todos'" :key="'p'+block.origIndex" class="tool-call-block" :class="{ error: block.success === false }">
                 <div class="tool-call-header" @click="toggleToolCall(block.origIndex)">
                   <svg class="tool-icon" :class="{ success: block.success === true, error: block.success === false, spinning: isToolRunning(block) }" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path>
@@ -121,13 +121,13 @@
                       </div>
                     </div>
                     <div class="approval-buttons">
-                      <button class="approval-btn approve" @click="emit('approve')">
+                      <button class="approval-btn approve" @click="$emit('approve')">
                         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                           <polyline points="20 6 9 17 4 12"></polyline>
                         </svg>
                         批准
                       </button>
-                      <button class="approval-btn reject" @click="emit('reject')">
+                      <button class="approval-btn reject" @click="$emit('reject')">
                         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                           <line x1="18" y1="6" x2="6" y2="18"></line>
                           <line x1="6" y1="6" x2="18" y2="18"></line>
@@ -152,12 +152,12 @@
               </div>
 
               <!-- 中间穿插的正文（其后仍有思考/工具）放进处理过程内部按原序展示 -->
-              <div v-if="block.type === 'content'" class="message-text process-inline-content" v-html="renderMarkdown(block.content)"></div>
+              <div v-if="block.type === 'content'" :key="'p'+block.origIndex" class="message-text process-inline-content" v-html="renderMarkdown(block.content)"></div>
             </template>
           </div>
         </div>
-        <template v-for="(block, idx) in finalContentBlocks" :key="'c'+block.origIndex">
-          <div v-if="block.type === 'content'" class="message-text" v-html="renderMarkdown(block.content)"></div>
+        <template v-for="(block, idx) in finalContentBlocks">
+          <div v-if="block.type === 'content'" :key="'c'+block.origIndex" class="message-text" v-html="renderMarkdown(block.content)"></div>
         </template>
       </template>
 
@@ -222,7 +222,7 @@
 
         <!-- 生成的文件按钮 -->
         <div v-if="message.role === 'assistant' && message.generated_files && message.generated_files.length > 0" class="generated-files-btn-container">
-          <button class="generated-files-btn" @click="emit('viewGeneratedFiles')" title="查看生成的文件">
+          <button class="generated-files-btn" @click="$emit('viewGeneratedFiles')" title="查看生成的文件">
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
               <polyline points="14 2 14 8 20 8"></polyline>
@@ -255,24 +255,28 @@
   </div>
 </template>
 
-<script setup>
+<script>
 import { ref, computed, onMounted, shallowRef, watch, nextTick, onBeforeUnmount } from 'vue'
 import { createHighlighter } from 'shiki'
 import { marked } from 'marked'
 import { setupMarkedExtensions, normalizeMathDelimiters } from '../markdownSetup.js'
 import FileIcon from './FileIcon.vue'
-
-// 注册 KaTeX 数学公式 + emoji 短代码扩展（幂等，仅执行一次）
-setupMarkedExtensions()
-
-const props = defineProps({
+export default {
+  components: { FileIcon },
+  props: {
   message: {
     type: Object,
     required: true
   }
-})
+},
+  emits: ['removeFile', 'viewGeneratedFiles', 'retry', 'approve', 'reject'],
+  setup(props, { emit }) {
+// 注册 KaTeX 数学公式 + emoji 短代码扩展（幂等，仅执行一次）
+setupMarkedExtensions()
 
-const emit = defineEmits(['removeFile', 'viewGeneratedFiles', 'retry', 'approve', 'reject'])
+
+
+
 
 const showThinking = ref(false)
 const expandedThinking = ref({})
@@ -561,7 +565,8 @@ function toggleThinking(index) {
   const block = sortedBlocks.value[index]
   if (!block) return
   const key = getBlockKey(block, index)
-  expandedThinking.value[key] = !expandedThinking.value[key]
+  // Vue 2 中对响应式对象新增属性不会触发更新，整体替换对象以保证响应性
+  expandedThinking.value = { ...expandedThinking.value, [key]: !expandedThinking.value[key] }
 }
 
 
@@ -583,7 +588,8 @@ function toggleToolCall(index) {
   if (!block) return
   if (block.pending_approval) return
   const key = getBlockKey(block, index)
-  expandedTool.value[key] = !expandedTool.value[key]
+  // Vue 2 中对响应式对象新增属性不会触发更新，整体替换对象以保证响应性
+  expandedTool.value = { ...expandedTool.value, [key]: !expandedTool.value[key] }
 }
 
 function isExpandedToolCall(index) {
@@ -810,6 +816,64 @@ window.copyCode = async function(btn) {
       btn.classList.remove('copied', 'copy-error')
     }, 2000)
   }
+}
+
+    return {
+      _isProcessType,
+      _onScroll,
+      _scrollEl,
+      cleanUserContent,
+      computed,
+      copyMessage,
+      copyTextToClipboard,
+      createHighlighter,
+      escapeHtml,
+      expandedThinking,
+      expandedTool,
+      FileIcon,
+      finalContentBlocks,
+      formatJson,
+      formatSize,
+      getBlockKey,
+      getFileExtension,
+      hasAnyContent,
+      hasArgs,
+      hasPendingApproval,
+      highlightCode,
+      highlighter,
+      isExpandedThinking,
+      isExpandedToolCall,
+      isMessageFinished,
+      isProcessActive,
+      isStuck,
+      isToolRunning,
+      langAliases,
+      marked,
+      nextTick,
+      normalizeMathDelimiters,
+      onBeforeUnmount,
+      onMounted,
+      processBlocks,
+      processExpanded,
+      processHeaderRef,
+      processStepCount,
+      ref,
+      removeFile,
+      renderer,
+      renderMarkdown,
+      retryMessage,
+      setupMarkedExtensions,
+      shallowRef,
+      showThinking,
+      sortedBlocks,
+      toggleProcess,
+      toggleThinking,
+      toggleToolCall,
+      truncateResult,
+      updateStuck,
+      watch,
+    }
+  },
 }
 </script>
 
@@ -1225,25 +1289,25 @@ html[data-theme="dark"] .process-body .process-inline-content {
   overflow-y: auto;
 }
 
-.thinking-text :deep(p) {
+.thinking-text ::v-deep(p) {
   margin: 0 0 12px 0;
 }
 
-.thinking-text :deep(p:last-child) {
+.thinking-text ::v-deep(p:last-child) {
   margin-bottom: 0;
 }
 
-.thinking-text :deep(ol),
-.thinking-text :deep(ul) {
+.thinking-text ::v-deep(ol),
+.thinking-text ::v-deep(ul) {
   margin: 12px 0;
   padding-left: 24px;
 }
 
-.thinking-text :deep(li) {
+.thinking-text ::v-deep(li) {
   margin: 6px 0;
 }
 
-.thinking-text :deep(code) {
+.thinking-text ::v-deep(code) {
   background: #e2e8f0;
   padding: 2px 6px;
   border-radius: 4px;
@@ -1252,7 +1316,7 @@ html[data-theme="dark"] .process-body .process-inline-content {
   font-family: 'Fira Code', 'Consolas', monospace;
 }
 
-.thinking-text :deep(pre) {
+.thinking-text ::v-deep(pre) {
   background: #f6f8fa;
   color: #24292e;
   padding: 14px;
@@ -1262,14 +1326,14 @@ html[data-theme="dark"] .process-body .process-inline-content {
   border: 1px solid #e1e4e8;
 }
 
-.thinking-text :deep(pre code) {
+.thinking-text ::v-deep(pre code) {
   background: transparent;
   padding: 0;
   font-family: 'Fira Code', 'Consolas', 'Monaco', monospace;
   font-size: 13px;
 }
 
-.thinking-text :deep(.code-block-wrapper) {
+.thinking-text ::v-deep(.code-block-wrapper) {
   background: #f6f8fa;
   border: 1px solid #e1e4e8;
   border-radius: 8px;
@@ -1277,7 +1341,7 @@ html[data-theme="dark"] .process-body .process-inline-content {
   overflow: hidden;
 }
 
-.thinking-text :deep(.code-header) {
+.thinking-text ::v-deep(.code-header) {
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -1286,34 +1350,34 @@ html[data-theme="dark"] .process-body .process-inline-content {
   border-bottom: 1px solid #e1e4e8;
 }
 
-.thinking-text :deep(.code-lang) {
+.thinking-text ::v-deep(.code-lang) {
   font-size: 11px;
   color: #57606a;
   font-weight: 500;
 }
 
-.thinking-text :deep(.code-block-wrapper pre) {
+.thinking-text ::v-deep(.code-block-wrapper pre) {
   margin: 0;
   border: none;
   padding: 14px;
 }
 
-.thinking-text :deep(.code-block-wrapper pre code) {
+.thinking-text ::v-deep(.code-block-wrapper pre code) {
   font-family: 'Fira Code', 'Consolas', 'Monaco', monospace;
   font-size: 13px;
 }
 
-.thinking-text :deep(.code-block-wrapper .shiki) {
+.thinking-text ::v-deep(.code-block-wrapper .shiki) {
   background: transparent !important;
   margin: 0;
 }
 
-.thinking-text :deep(.code-block-wrapper .shiki code) {
+.thinking-text ::v-deep(.code-block-wrapper .shiki code) {
   font-family: 'Fira Code', 'Consolas', 'Monaco', monospace;
   font-size: 13px;
 }
 
-.thinking-text :deep(.code-copy-btn) {
+.thinking-text ::v-deep(.code-copy-btn) {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1329,18 +1393,18 @@ html[data-theme="dark"] .process-body .process-inline-content {
   height: 24px;
 }
 
-.thinking-text :deep(.code-copy-btn:hover) {
+.thinking-text ::v-deep(.code-copy-btn:hover) {
   background: #f3f4f6;
   border-color: #8c959f;
   color: #24292e;
 }
 
-.thinking-text :deep(.code-copy-btn svg) {
+.thinking-text ::v-deep(.code-copy-btn svg) {
   width: 12px;
   height: 12px;
 }
 
-.thinking-text :deep(blockquote) {
+.thinking-text ::v-deep(blockquote) {
   border-left: 3px solid #cbd5e1;
   padding-left: 16px;
   margin: 12px 0;
@@ -1809,7 +1873,7 @@ html[data-theme="dark"] .approval-badge.status-rejected {
 }
 
 /* GitHub 风格 emoji 短代码渲染后的 unicode 字符 */
-.message-text :deep(.github-emoji) {
+.message-text ::v-deep(.github-emoji) {
   display: inline;
   vertical-align: -0.125em;
   font-size: 1.1em;
@@ -1817,13 +1881,13 @@ html[data-theme="dark"] .approval-badge.status-rejected {
 }
 
 /* KaTeX 数学公式块级与行内展示 */
-.message-text :deep(.katex) {
+.message-text ::v-deep(.katex) {
   font-size: 1.05em;
   /* 行内公式作为一个整体，避免被 word-break 从中间断开 */
   white-space: nowrap;
 }
 
-.message-text :deep(.katex-display) {
+.message-text ::v-deep(.katex-display) {
   margin: 12px 0;
   padding: 4px 0;
   max-width: 100%;
@@ -1833,19 +1897,19 @@ html[data-theme="dark"] .approval-badge.status-rejected {
 
 /* 视口较窄时自动缩小块级公式，尽量避免溢出气泡（用 @media 而非 @container，避免影响布局） */
 @media (max-width: 640px) {
-  .message-text :deep(.katex-display) {
+  .message-text ::v-deep(.katex-display) {
     font-size: 0.9em;
   }
 }
 
 @media (max-width: 520px) {
-  .message-text :deep(.katex-display) {
+  .message-text ::v-deep(.katex-display) {
     font-size: 0.78em;
   }
 }
 
 @media (max-width: 400px) {
-  .message-text :deep(.katex-display) {
+  .message-text ::v-deep(.katex-display) {
     font-size: 0.66em;
   }
 }
@@ -1872,7 +1936,7 @@ html[data-theme="dark"] .approval-badge.status-rejected {
   margin-top: 1px;
 }
 
-.message-text :deep(pre) {
+.message-text ::v-deep(pre) {
   background: #f6f8fa;
   color: #24292e;
   padding: 14px;
@@ -1884,88 +1948,88 @@ html[data-theme="dark"] .approval-badge.status-rejected {
   box-sizing: border-box;
 }
 
-.message-text :deep(pre code) {
+.message-text ::v-deep(pre code) {
   font-family: 'Fira Code', 'Consolas', 'Monaco', monospace;
   font-size: 13px;
 }
 
-.message-text :deep(code) {
+.message-text ::v-deep(code) {
   font-family: 'Fira Code', 'Consolas', monospace;
   font-size: 13px;
 }
 
-.message-text :deep(p) {
+.message-text ::v-deep(p) {
   margin: 20px 0;
 }
 
-.message-text :deep(p:first-child) {
+.message-text ::v-deep(p:first-child) {
   margin-top: 0;
 }
 
-.message-text :deep(p:last-child) {
+.message-text ::v-deep(p:last-child) {
   margin-bottom: 0;
 }
 
-.message-text :deep(ul), .message-text :deep(ol) {
+.message-text ::v-deep(ul), .message-text ::v-deep(ol) {
   margin: 20px 0;
   padding-left: 28px;
 }
 
-.message-text :deep(li) {
+.message-text ::v-deep(li) {
   margin: 12px 0;
 }
 
-.message-text :deep(blockquote) {
+.message-text ::v-deep(blockquote) {
   border-left: 3px solid #0ea5e9;
   margin: 20px 0;
   padding-left: 16px;
   color: #64748b;
 }
 
-.message-text :deep(h1),
-.message-text :deep(h2),
-.message-text :deep(h3),
-.message-text :deep(h4),
-.message-text :deep(h5),
-.message-text :deep(h6) {
+.message-text ::v-deep(h1),
+.message-text ::v-deep(h2),
+.message-text ::v-deep(h3),
+.message-text ::v-deep(h4),
+.message-text ::v-deep(h5),
+.message-text ::v-deep(h6) {
   margin: 28px 0 20px 0;
   font-weight: 600;
   line-height: 1.4;
 }
 
-.message-text :deep(h1:first-child),
-.message-text :deep(h2:first-child),
-.message-text :deep(h3:first-child),
-.message-text :deep(h4:first-child),
-.message-text :deep(h5:first-child),
-.message-text :deep(h6:first-child) {
+.message-text ::v-deep(h1:first-child),
+.message-text ::v-deep(h2:first-child),
+.message-text ::v-deep(h3:first-child),
+.message-text ::v-deep(h4:first-child),
+.message-text ::v-deep(h5:first-child),
+.message-text ::v-deep(h6:first-child) {
   margin-top: 0;
 }
 
-.message-text :deep(table) {
+.message-text ::v-deep(table) {
   border-collapse: collapse;
   width: 100%;
   margin: 24px 0;
   font-size: 13px;
 }
 
-.message-text :deep(th),
-.message-text :deep(td) {
+.message-text ::v-deep(th),
+.message-text ::v-deep(td) {
   border: 1px solid #e2e8f0;
   padding: 10px 14px;
   text-align: left;
 }
 
-.message-text :deep(th) {
+.message-text ::v-deep(th) {
   background: #f1f5f9;
   font-weight: 600;
 }
 
-.message-text :deep(tr:nth-child(even)) {
+.message-text ::v-deep(tr:nth-child(even)) {
   background: #f8fafc;
 }
 
-.message-text :deep(tr:hover) {
+.message-text ::v-deep(tr:hover) {
   background: #f1f5f9;
 }
 
@@ -1980,33 +2044,33 @@ html[data-theme="dark"] .approval-badge.status-rejected {
   font-family: 'Microsoft YaHei', '微软雅黑', sans-serif;
 }
 
-.message.user .message-text :deep(pre) {
+.message.user .message-text ::v-deep(pre) {
   background: rgba(30, 41, 59, 0.08);
   border: 1px solid rgba(30, 41, 59, 0.15);
 }
 
-.message.user .message-text :deep(blockquote) {
+.message.user .message-text ::v-deep(blockquote) {
   border-left-color: rgba(30, 41, 59, 0.2);
 }
 
-.message.user .message-text :deep(table) {
+.message.user .message-text ::v-deep(table) {
   border-color: rgba(30, 41, 59, 0.15);
 }
 
-.message.user .message-text :deep(th),
-.message.user .message-text :deep(td) {
+.message.user .message-text ::v-deep(th),
+.message.user .message-text ::v-deep(td) {
   border-color: rgba(30, 41, 59, 0.15);
 }
 
-.message.user .message-text :deep(th) {
+.message.user .message-text ::v-deep(th) {
   background: rgba(30, 41, 59, 0.06);
 }
 
-.message.user .message-text :deep(tr:nth-child(even)) {
+.message.user .message-text ::v-deep(tr:nth-child(even)) {
   background: rgba(30, 41, 59, 0.03);
 }
 
-.message.user .message-text :deep(tr:hover) {
+.message.user .message-text ::v-deep(tr:hover) {
   background: rgba(30, 41, 59, 0.06);
 }
 
@@ -2091,13 +2155,13 @@ html[data-theme="dark"] .approval-badge.status-rejected {
   height: 18px;
 }
 
-.message-text :deep(.code-block-wrapper) {
+.message-text ::v-deep(.code-block-wrapper) {
   position: relative;
   margin: 8px 0;
   width: 100%;
 }
 
-.message-text :deep(.code-block-wrapper pre) {
+.message-text ::v-deep(.code-block-wrapper pre) {
   margin: 0;
   padding: 12px 16px;
   overflow-x: auto;
@@ -2107,14 +2171,14 @@ html[data-theme="dark"] .approval-badge.status-rejected {
   border-top: none;
 }
 
-.message-text :deep(.code-block-wrapper pre code) {
+.message-text ::v-deep(.code-block-wrapper pre code) {
   font-family: 'Fira Code', 'Consolas', 'Monaco', monospace;
   font-size: 13px;
   line-height: 1.5;
   color: #24292e;
 }
 
-.message-text :deep(.code-block-wrapper .shiki) {
+.message-text ::v-deep(.code-block-wrapper .shiki) {
   background: #f6f8fa !important;
   padding: 12px 16px;
   margin: 0;
@@ -2122,14 +2186,14 @@ html[data-theme="dark"] .approval-badge.status-rejected {
   overflow-x: auto;
 }
 
-.message-text :deep(.code-block-wrapper .shiki code) {
+.message-text ::v-deep(.code-block-wrapper .shiki code) {
   display: block;
   font-family: 'Fira Code', 'Consolas', 'Monaco', monospace;
   font-size: 13px;
   line-height: 1.5;
 }
 
-.message-text :deep(.code-header) {
+.message-text ::v-deep(.code-header) {
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -2141,7 +2205,7 @@ html[data-theme="dark"] .approval-badge.status-rejected {
   border-bottom: none;
 }
 
-.message-text :deep(.code-lang) {
+.message-text ::v-deep(.code-lang) {
   font-size: 12px;
   color: #57606a;
   font-weight: 500;
@@ -2149,7 +2213,7 @@ html[data-theme="dark"] .approval-badge.status-rejected {
   align-items: center;
 }
 
-.message-text :deep(.code-copy-btn) {
+.message-text ::v-deep(.code-copy-btn) {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -2165,17 +2229,17 @@ html[data-theme="dark"] .approval-badge.status-rejected {
   height: 28px;
 }
 
-.message-text :deep(.code-copy-btn:hover) {
+.message-text ::v-deep(.code-copy-btn:hover) {
   background: #f3f4f6;
   border-color: #8c959f;
   color: #24292e;
 }
 
-.message-text :deep(.code-copy-btn.copied) {
+.message-text ::v-deep(.code-copy-btn.copied) {
   color: #22c55e;
 }
 
-.message-text :deep(.code-copy-btn svg) {
+.message-text ::v-deep(.code-copy-btn svg) {
   width: 14px;
   height: 14px;
 }
@@ -2183,39 +2247,39 @@ html[data-theme="dark"] .approval-badge.status-rejected {
 /* ========== 黑色主题：代码块 ========== */
 /* shiki 用 github-light 主题生成内联白色背景的 HTML，
    dark 主题下需强制覆盖，否则代码块背景/边框仍为白色 */
-html[data-theme="dark"] .message-text :deep(.code-block-wrapper pre) {
+html[data-theme="dark"] .message-text ::v-deep(.code-block-wrapper pre) {
   background: transparent !important;
   border-color: #30363d !important;
 }
 
-html[data-theme="dark"] .message-text :deep(.code-block-wrapper pre code) {
+html[data-theme="dark"] .message-text ::v-deep(.code-block-wrapper pre code) {
   color: #c9d1d9;
 }
 
-html[data-theme="dark"] .message-text :deep(.code-block-wrapper .shiki) {
+html[data-theme="dark"] .message-text ::v-deep(.code-block-wrapper .shiki) {
   background: transparent !important;
 }
 
-html[data-theme="dark"] .message-text :deep(.code-block-wrapper .shiki code) {
+html[data-theme="dark"] .message-text ::v-deep(.code-block-wrapper .shiki code) {
   color: #c9d1d9;
 }
 
-html[data-theme="dark"] .message-text :deep(.code-header) {
+html[data-theme="dark"] .message-text ::v-deep(.code-header) {
   background: #161b22;
   border-color: #30363d;
 }
 
-html[data-theme="dark"] .message-text :deep(.code-lang) {
+html[data-theme="dark"] .message-text ::v-deep(.code-lang) {
   color: #8b949e;
 }
 
-html[data-theme="dark"] .message-text :deep(.code-copy-btn) {
+html[data-theme="dark"] .message-text ::v-deep(.code-copy-btn) {
   background: #21262d;
   border-color: #30363d;
   color: #8b949e;
 }
 
-html[data-theme="dark"] .message-text :deep(.code-copy-btn:hover) {
+html[data-theme="dark"] .message-text ::v-deep(.code-copy-btn:hover) {
   background: #30363d;
   border-color: #8b949e;
   color: #c9d1d9;
@@ -2223,47 +2287,47 @@ html[data-theme="dark"] .message-text :deep(.code-copy-btn:hover) {
 
 /* 思考过程中的代码块：全局深色规则会把 pre/code 统一成灰底，
    这里与正文代码块保持一致（深色 GitHub 风格），避免显示灰色/白色底。 */
-html[data-theme="dark"] .thinking-text :deep(.code-block-wrapper) {
+html[data-theme="dark"] .thinking-text ::v-deep(.code-block-wrapper) {
   background: transparent;
   border-color: #30363d;
 }
 
-html[data-theme="dark"] .thinking-text :deep(.code-block-wrapper pre),
-html[data-theme="dark"] .thinking-text :deep(.code-block-wrapper pre code) {
+html[data-theme="dark"] .thinking-text ::v-deep(.code-block-wrapper pre),
+html[data-theme="dark"] .thinking-text ::v-deep(.code-block-wrapper pre code) {
   background: transparent !important;
   color: #c9d1d9;
 }
 
-html[data-theme="dark"] .thinking-text :deep(.code-block-wrapper .shiki),
-html[data-theme="dark"] .thinking-text :deep(.code-block-wrapper .shiki code) {
+html[data-theme="dark"] .thinking-text ::v-deep(.code-block-wrapper .shiki),
+html[data-theme="dark"] .thinking-text ::v-deep(.code-block-wrapper .shiki code) {
   background: transparent !important;
   color: #c9d1d9;
 }
 
-html[data-theme="dark"] .thinking-text :deep(.code-header) {
+html[data-theme="dark"] .thinking-text ::v-deep(.code-header) {
   background: #161b22;
   border-color: #30363d;
 }
 
-html[data-theme="dark"] .thinking-text :deep(.code-lang) {
+html[data-theme="dark"] .thinking-text ::v-deep(.code-lang) {
   color: #8b949e;
 }
 
-html[data-theme="dark"] .thinking-text :deep(.code-copy-btn) {
+html[data-theme="dark"] .thinking-text ::v-deep(.code-copy-btn) {
   background: #21262d;
   border-color: #30363d;
   color: #8b949e;
 }
 
-html[data-theme="dark"] .thinking-text :deep(.code-copy-btn:hover) {
+html[data-theme="dark"] .thinking-text ::v-deep(.code-copy-btn:hover) {
   background: #30363d;
   border-color: #8b949e;
   color: #c9d1d9;
 }
 
 /* 行内代码深色适配 */
-html[data-theme="dark"] .message-text :deep(code),
-html[data-theme="dark"] .thinking-text :deep(code) {
+html[data-theme="dark"] .message-text ::v-deep(code),
+html[data-theme="dark"] .thinking-text ::v-deep(code) {
   background: #30363d !important;
   color: #c9d1d9 !important;
 }
@@ -2289,17 +2353,17 @@ html[data-theme="dark"] .remove-file-btn svg {
   color: var(--text-secondary) !important;
 }
 
-html[data-theme="dark"] .message-text :deep(th),
-html[data-theme="dark"] .message-text :deep(td) {
+html[data-theme="dark"] .message-text ::v-deep(th),
+html[data-theme="dark"] .message-text ::v-deep(td) {
   border-color: var(--border-color) !important;
 }
-html[data-theme="dark"] .message-text :deep(th) {
+html[data-theme="dark"] .message-text ::v-deep(th) {
   background: var(--bg-tertiary) !important;
 }
-html[data-theme="dark"] .message-text :deep(tr:nth-child(even)) {
+html[data-theme="dark"] .message-text ::v-deep(tr:nth-child(even)) {
   background: var(--bg-tertiary) !important;
 }
-html[data-theme="dark"] .message-text :deep(tr:hover) {
+html[data-theme="dark"] .message-text ::v-deep(tr:hover) {
   background: var(--bg-secondary) !important;
 }
 

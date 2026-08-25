@@ -69,23 +69,23 @@
   </div>
 </template>
 
-<script setup>
+<script>
 import { API_BASE_URL } from '../config.js'
 import { ref, watch, onMounted } from 'vue'
 import FileTreeNode from './FileTreeNode.vue'
 import FilePreview from './FilePreview.vue'
 import { getWorkspaceTree } from '../api/files'
 import { getStoredToken } from '../api/auth.js'
-
-const props = defineProps({
+export default {
+  components: { FilePreview, FileTreeNode },
+  props: {
   username: { type: String, default: '' },
   currentSessionId: { type: String, default: null },
   isStreaming: { type: Boolean, default: false },
   visible: { type: Boolean, default: true },
-})
-
-const emit = defineEmits(['toggle'])
-
+},
+  emits: ['toggle'],
+  setup(props, { emit }) {
 const workspaceTreeData = ref([])
 const selectedFile = ref(null)
 const previewFile = ref(null)
@@ -164,6 +164,29 @@ watch(() => props.visible, (newVal) => {
 onMounted(() => {
   buildWorkspaceTree()
 })
+
+    return {
+      API_BASE_URL,
+      buildWorkspaceTree,
+      error,
+      FilePreview,
+      FileTreeNode,
+      getStoredToken,
+      getWorkspaceTree,
+      handleDownloadFile,
+      handleSelectFile,
+      isLoading,
+      onMounted,
+      previewFile,
+      ref,
+      refresh,
+      selectedFile,
+      showPreview,
+      watch,
+      workspaceTreeData,
+    }
+  },
+}
 </script>
 
 <style scoped>

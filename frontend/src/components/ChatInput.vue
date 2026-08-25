@@ -73,7 +73,6 @@
                 <polyline points="6 9 12 15 18 9"></polyline>
               </svg>
             </button>
-            <Teleport to="body">
               <div v-if="showModelDropdown" class="model-dropdown-menu" :style="dropdownStyle" @click.stop>
                 <div class="model-dropdown-header">可选模型 · 共 {{ models.length }} 个</div>
                 <div
@@ -90,7 +89,6 @@
                   </svg>
                 </div>
               </div>
-            </Teleport>
           </div>
 
           <label class="action-btn upload-btn" :class="{ disabled: isStreaming || disabled }" title="上传文件">
@@ -114,15 +112,17 @@
             class="context-ring-wrapper" 
             @click.stop="toggleTokenPopup"
           >
-            <svg class="context-ring" viewBox="0 0 36 36">
-              <circle class="context-ring-bg" cx="18" cy="18" r="15.9" fill="none" stroke="#e5e7eb" stroke-width="3" />
-              <circle class="context-ring-fill" cx="18" cy="18" r="15.9" fill="none"
-                :stroke="contextColor" stroke-width="3" stroke-linecap="round"
-                :stroke-dasharray="`${contextPercent} ${100 - contextPercent}`"
-                transform="rotate(-90 18 18)" />
-            </svg>
+            <span class="context-ring-inner">
+              <svg class="context-ring" viewBox="0 0 36 36">
+                <circle class="context-ring-bg" cx="18" cy="18" r="15.9" fill="none" stroke="#e5e7eb" stroke-width="3" />
+                <circle class="context-ring-fill" cx="18" cy="18" r="15.9" fill="none"
+                  :stroke="contextColor" stroke-width="3" stroke-linecap="round"
+                  :stroke-dasharray="`${contextPercent} ${100 - contextPercent}`"
+                  transform="rotate(-90 18 18)" />
+              </svg>
+            </span>
             <span class="context-ring-text">{{ contextPercent }}%</span>
-            <Teleport to="body">
+            <!-- Vue 2.7 不支持 Teleport：弹窗留在 wrapper 内，依赖 wrapper 无 transform（hover 缩放作用于 .context-ring-inner）保证 fixed 定位正确 -->
               <div v-if="showTokenPopup" class="token-popup" :style="popupStyle" @click.stop>
                 <div class="token-popup-title">会话信息</div>
                 <div class="token-popup-section">
@@ -160,7 +160,6 @@
                   <span class="token-popup-value output">{{ formatTokens(sessionUsage.output_tokens) }}</span>
                 </div>
               </div>
-            </Teleport>
           </div>
           <button 
             v-if="!isStreaming"
@@ -195,12 +194,13 @@
   </div>
 </template>
 
-<script setup>
+<script>
 import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
 import { uploadFile, deleteFile } from '../api/files.js'
 import FileIcon from './FileIcon.vue'
-
-const props = defineProps({
+export default {
+  components: { FileIcon },
+  props: {
   disabled: {
     type: Boolean,
     default: false
@@ -237,10 +237,9 @@ const props = defineProps({
     type: Boolean,
     default: false
   }
-})
-
-const emit = defineEmits(['send', 'stop', 'createSession', 'update:selectedModel', 'typing'])
-
+},
+  emits: ['send', 'stop', 'createSession', 'update:selectedModel', 'typing'],
+  setup(props, { emit }) {
 const message = ref('')
 const textareaRef = ref(null)
 const uploadedFiles = ref([])
@@ -607,6 +606,60 @@ onUnmounted(() => {
   document.removeEventListener('click', closeModelDropdown)
   stopLiveDuration()
 })
+
+    return {
+      autoResize,
+      canSend,
+      caretLineTop,
+      closeModelDropdown,
+      closeTokenPopup,
+      computed,
+      contextColor,
+      contextPercent,
+      currentModelLabel,
+      deleteFile,
+      displayDuration,
+      DRAFT_KEY,
+      dropdownStyle,
+      durationTimer,
+      FileIcon,
+      formatSize,
+      formattedDuration,
+      formatTokens,
+      handleFileSelect,
+      hideCaretLine,
+      lineHeight,
+      liveDuration,
+      localSelectedModel,
+      message,
+      modelDropdownRef,
+      nextTick,
+      onInput,
+      onMounted,
+      onUnmounted,
+      popupStyle,
+      ref,
+      removeFile,
+      ringRef,
+      selectModel,
+      send,
+      shouldCountLive,
+      showModelDropdown,
+      showTokenPopup,
+      showTokenRing,
+      startLiveDuration,
+      stop,
+      stopLiveDuration,
+      textareaRef,
+      toggleModelDropdown,
+      toggleTokenPopup,
+      updateCaretLine,
+      uploadedFiles,
+      uploadFile,
+      watch,
+    }
+  },
+}
 </script>
 
 <style scoped>
@@ -1136,10 +1189,16 @@ html[data-theme="dark"] .context-ring-wrapper {
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
+}
+
+.context-ring-inner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
   transition: transform 0.2s;
 }
 
-.context-ring-wrapper:hover {
+.context-ring-wrapper:hover .context-ring-inner {
   transform: scale(1.1);
 }
 

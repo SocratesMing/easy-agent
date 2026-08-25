@@ -190,7 +190,6 @@
     </div>
 
     <!-- 悬浮详情窗 -->
-    <Teleport to="body">
       <div v-if="popover.visible" class="popover-overlay" @click.self="closePopover">
         <div
           class="popover-card"
@@ -275,7 +274,6 @@
           </div>
         </div>
       </div>
-    </Teleport>
 
     <!-- Toast 提示 -->
     <Transition name="toast">
@@ -286,12 +284,12 @@
   </div>
 </template>
 
-<script setup>
+<script>
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { getPublicSkills, getUserSkills, addSkillToUser, removeSkillFromUser, importSkill, downloadSkill } from '../api/skills.js'
-
-const emit = defineEmits(['close'])
-
+export default {
+  emits: ['close'],
+  setup(props, { emit }) {
 const activeTab = ref('public')
 const loading = ref(false)
 const error = ref('')
@@ -480,6 +478,49 @@ onMounted(() => {
 onBeforeUnmount(() => {
   document.removeEventListener('keydown', handleKeydown)
 })
+
+    return {
+      activeTab,
+      addingSkill,
+      addSkillToUser,
+      CATEGORY_LABELS,
+      closePopover,
+      computed,
+      downloadingSkill,
+      downloadSkill,
+      error,
+      fileInputRef,
+      getCategoryLabel,
+      getPublicSkills,
+      getSkillCategory,
+      getUserSkills,
+      handleAddSkill,
+      handleDownloadSkill,
+      handleImportFile,
+      handleKeydown,
+      handleRemoveSkill,
+      importing,
+      importSkill,
+      loading,
+      onBeforeUnmount,
+      onMounted,
+      openPopover,
+      popover,
+      popoverStyle,
+      publicSkills,
+      ref,
+      refresh,
+      removeSkillFromUser,
+      removingSkill,
+      showToast,
+      SKILL_CATEGORIES,
+      switchTab,
+      toast,
+      triggerImport,
+      userSkills,
+    }
+  },
+}
 </script>
 
 <style scoped>

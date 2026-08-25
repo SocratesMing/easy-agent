@@ -86,13 +86,13 @@
   </div>
 </template>
 
-<script setup>
+<script>
 import { ref, onMounted, nextTick } from 'vue'
 import { login, register } from '../api/auth.js'
 import { APP_TITLE } from '../config.js'
-
-const emit = defineEmits(['completed'])
-
+export default {
+  emits: ['completed'],
+  setup(props, { emit }) {
 const usernameInput = ref(null)
 const submitting = ref(false)
 const error = ref('')
@@ -189,6 +189,25 @@ onMounted(() => {
     usernameInput.value?.focus()
   })
 })
+
+    return {
+      APP_TITLE,
+      error,
+      form,
+      handleSubmit,
+      isLogin,
+      login,
+      nextTick,
+      onMounted,
+      ref,
+      register,
+      submitting,
+      success,
+      toggleMode,
+      usernameInput,
+    }
+  },
+}
 </script>
 
 <style scoped>

@@ -1,4 +1,4 @@
-<script setup>
+<script>
 import { computed } from 'vue'
 import IconPdf from '~icons/vscode-icons/file-type-pdf2'
 import IconWord from '~icons/vscode-icons/file-type-word'
@@ -22,8 +22,8 @@ import IconCpp from '~icons/vscode-icons/file-type-cpp'
 import IconSql from '~icons/vscode-icons/file-type-sql'
 import IconZip from '~icons/vscode-icons/file-type-zip'
 import IconDefault from '~icons/vscode-icons/default-file'
-
-const props = defineProps({
+export default {
+  props: {
   filename: {
     type: String,
     required: true
@@ -32,13 +32,13 @@ const props = defineProps({
     type: [Number, String],
     default: 48
   }
-})
-
+},
+  setup(props, { emit }) {
 const extension = computed(() => {
   return props.filename.split('.').pop().toLowerCase()
 })
 
-const iconComponent = computed(() => {
+const iconSvg = computed(() => {
   const ext = extension.value
   
   const iconMap = {
@@ -89,17 +89,53 @@ const iconComponent = computed(() => {
 const iconSize = computed(() => {
   return typeof props.size === 'number' ? `${props.size}px` : props.size
 })
+
+    return {
+      computed,
+      extension,
+      IconC,
+      iconSvg,
+      IconCpp,
+      IconCss,
+      IconDefault,
+      IconExcel,
+      IconGo,
+      IconHtml,
+      IconImage,
+      IconJava,
+      IconJs,
+      IconJson,
+      IconMarkdown,
+      IconPdf,
+      IconPowerpoint,
+      IconPython,
+      IconRust,
+      iconSize,
+      IconSql,
+      IconText,
+      IconTs,
+      IconVue,
+      IconWord,
+      IconZip,
+    }
+  },
+}
 </script>
 
 <template>
-  <component :is="iconComponent" class="file-icon" :style="{ width: iconSize, height: iconSize }" />
+  <span class="file-icon" :style="{ width: iconSize, height: iconSize }" v-html="iconSvg"></span>
 </template>
 
 <style scoped>
 .file-icon {
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  display: inline-block;
+  line-height: 0;
   flex-shrink: 0;
+}
+
+.file-icon svg {
+  display: block;
+  width: 100%;
+  height: 100%;
 }
 </style>

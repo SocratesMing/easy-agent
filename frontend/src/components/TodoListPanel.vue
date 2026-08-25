@@ -1,6 +1,7 @@
 <template>
-  <!-- Collapsed badge -->
-  <Transition name="todo-badge">
+  <div class="todo-root">
+    <!-- Collapsed badge -->
+    <Transition name="todo-badge">
     <div
       v-if="todos.length > 0 && !expanded"
       class="todo-badge"
@@ -13,10 +14,10 @@
       </svg>
       <span class="todo-badge-text">plan {{ completedCount }}/{{ todos.length }}</span>
     </div>
-  </Transition>
+    </Transition>
 
-  <!-- Expanded floating panel -->
-  <Transition name="todo-slide">
+    <!-- Expanded floating panel -->
+    <Transition name="todo-slide">
     <div v-if="todos.length > 0 && expanded" class="todo-panel">
       <div class="todo-header">
         <div class="todo-title">
@@ -59,19 +60,20 @@
         </div>
       </div>
     </div>
-  </Transition>
+    </Transition>
+  </div>
 </template>
 
-<script setup>
+<script>
 import { computed, ref } from 'vue'
-
-const props = defineProps({
+export default {
+  props: {
   todos: {
     type: Array,
     default: () => []
   }
-})
-
+},
+  setup(props, { emit }) {
 const expanded = ref(true)
 
 const completedCount = computed(() => props.todos.filter(t => t.status === 'completed').length)
@@ -79,6 +81,16 @@ const progressPercent = computed(() => {
   if (props.todos.length === 0) return 0
   return Math.round((completedCount.value / props.todos.length) * 100)
 })
+
+    return {
+      completedCount,
+      computed,
+      expanded,
+      progressPercent,
+      ref,
+    }
+  },
+}
 </script>
 
 <style scoped>

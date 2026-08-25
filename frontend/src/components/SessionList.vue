@@ -200,13 +200,11 @@
   </div>
 </template>
 
-<script setup>
+<script>
 import { ref, nextTick, onMounted, computed } from 'vue'
 import { APP_TITLE } from '../config.js'
-
-const emit = defineEmits(['createSession', 'selectSession', 'deleteSession', 'renameSession', 'toggleSidebar', 'showAssets', 'showSkillCenter', 'showScheduledTasks', 'showProfile', 'showSettings', 'showUserManagement', 'logout', 'togglePin'])
-
-const props = defineProps({
+export default {
+  props: {
   sessions: {
     type: Array,
     default: () => []
@@ -235,8 +233,9 @@ const props = defineProps({
     type: Boolean,
     default: false
   }
-})
-
+},
+  emits: ['createSession', 'selectSession', 'deleteSession', 'renameSession', 'toggleSidebar', 'showAssets', 'showSkillCenter', 'showScheduledTasks', 'showProfile', 'showSettings', 'showUserManagement', 'logout', 'togglePin'],
+  setup(props, { emit }) {
 const activeMenu = ref(null)
 const showRenameModal = ref(false)
 const newTitle = ref('')
@@ -396,6 +395,37 @@ function showUserManagement() {
 function handleLogout() {
   showUserMenu.value = false
   emit('logout')
+}
+
+    return {
+      activeMenu,
+      APP_TITLE,
+      cancelRename,
+      closeMenu,
+      closeUserMenuSilent,
+      computed,
+      confirmRename,
+      groupedSessions,
+      handleDelete,
+      handleLogout,
+      handleTogglePin,
+      newTitle,
+      nextTick,
+      onMounted,
+      ref,
+      renameInput,
+      renamingSession,
+      showProfile,
+      showRenameModal,
+      showSettings,
+      showUserManagement,
+      showUserMenu,
+      startRename,
+      toggleMenu,
+      toggleUserMenu,
+      userInitials,
+    }
+  },
 }
 </script>
 

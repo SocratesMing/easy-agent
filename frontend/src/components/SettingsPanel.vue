@@ -295,7 +295,7 @@
   </div>
 </template>
 
-<script setup>
+<script>
 import { ref, watch, onMounted, computed } from 'vue'
 import {
   getMemory,
@@ -309,13 +309,12 @@ import {
   deleteMcpServer,
 } from '../api/settings.js'
 import { syncMarketAddedState } from '../utils/mcpMarket.js'
-
-const props = defineProps({
+export default {
+  props: {
   isDarkTheme: { type: Boolean, default: false },
-})
-
-const emit = defineEmits(['close', 'toggle-theme'])
-
+},
+  emits: ['close', 'toggle-theme'],
+  setup(props, { emit }) {
 const activeTab = ref('memory')
 const loading = ref(false)
 
@@ -626,6 +625,61 @@ watch(activeTab, () => {
 onMounted(() => {
   loadTabData()
 })
+
+    return {
+      activeTab,
+      addingMarketMcp,
+      addMarketMcp,
+      addMcpError,
+      addMcpFromMarket,
+      addMcpJson,
+      addMcpMode,
+      addMcpServer,
+      computed,
+      confirmAddMcp,
+      copyPreview,
+      deleteMcpServer,
+      getMcpMarket,
+      getMcpServers,
+      getMemory,
+      getSystemPrompt,
+      loading,
+      loadTabData,
+      mcpEnabledMap,
+      mcpError,
+      mcpMarketServers,
+      mcpPreviewJson,
+      mcpSaved,
+      mcpSaving,
+      mcpServerErrors,
+      mcpServers,
+      mcpSource,
+      memoryContent,
+      memoryError,
+      memorySaved,
+      memorySaving,
+      navItems,
+      onMounted,
+      openAddMcp,
+      openPreview,
+      previewCopied,
+      promptContent,
+      ref,
+      removeMcpServer,
+      saveMcp,
+      saveMemory,
+      showAddMcp,
+      showPreview,
+      switchAddMcpMode,
+      switchTheme,
+      syncMarketAddedState,
+      toggleMcpServer,
+      updateMcpServers,
+      updateMemory,
+      watch,
+    }
+  },
+}
 </script>
 
 <style scoped>
@@ -739,7 +793,7 @@ onMounted(() => {
   justify-content: center;
 }
 
-.nav-icon :deep(svg) {
+.nav-icon ::v-deep(svg) {
   width: 20px;
   height: 20px;
 }
