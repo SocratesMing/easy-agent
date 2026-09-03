@@ -52,6 +52,9 @@ node_modules/
 
 # Local config with secrets (use config-example.yaml as template)
 easy_agent/config/config.yaml
+easy_agent/config/config.*.yaml
+!easy_agent/config/config-example.yaml
+easy_agent/config/mcp.json
 
 # 离线依赖制品（脚本生成的大体积 wheel/tgz 缓存）
 offline_deps/

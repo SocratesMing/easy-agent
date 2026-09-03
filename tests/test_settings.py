@@ -130,7 +130,7 @@ def test_mcp_market_adds_global_server_to_user_config(tmp_path, monkeypatch):
     assert "/api/settings/mcp/market/add" in market_routes
 
 
-def test_mcp_config_expands_environment_placeholders(tmp_path, monkeypatch):
+def test_mcp_config_preserves_environment_placeholders(tmp_path, monkeypatch):
     global_path = tmp_path / "mcp.json"
     global_path.write_text(
         json.dumps(
@@ -156,6 +156,6 @@ def test_mcp_config_expands_environment_placeholders(tmp_path, monkeypatch):
     config = mcp_mod.load_mcp_config(None)
 
     assert config["env-server"]["env"] == {
-        "MCP_PASSWORD": "test-password",
-        "MCP_HOST": "127.0.0.1",
+        "MCP_PASSWORD": "${MCP_TEST_PASSWORD}",
+        "MCP_HOST": "${MCP_TEST_HOST:-127.0.0.1}",
     }

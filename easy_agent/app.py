@@ -45,6 +45,11 @@ if platform.system() != "Windows":
 
 logger = logging.getLogger(__name__)
 
+# 可选加载项目根 .env，供运行时环境变量使用；应用配置值完全来自 YAML 文件。
+from .utils.env_loader import get_loaded_env_info, load_project_env
+
+load_project_env()
+
 frontend_dist = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "frontend", "dist"
 )
@@ -162,28 +167,9 @@ async def lifespan(app: FastAPI):
     os.chdir(project_root)
 
     # ── 环境识别 & 配置路径解析（先静默确定配置，再初始化日志格式）──
-    # AGENT_ENV 决定运行环境: dev | test | prod
-    # 1. 若设置了 EASY_CONFIG 环境变量，直接使用（entrypoint.sh 场景）
-    # 2. 若设置了 AGENT_ENV，按环境选择 config.{env}.yaml
-    # 3. 未设置时：优先 config.dev.yaml（开发默认），兜底 config.yaml
+    # EASY_CONFIG / AGENT_ENV 只选择配置文件；配置值本身全部来自 YAML。
     agent_env = os.environ.get("AGENT_ENV", "").lower()
-    # Windows 启动默认使用 dev 环境（除非用户显式设置了 AGENT_ENV 或 EASY_CONFIG）
-    if platform.system() == "Windows" and not os.environ.get("AGENT_ENV") and not os.environ.get("EASY_CONFIG"):
-        agent_env = "dev"
-    config_dir = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), "config"
-    )
-
-    if os.environ.get("EASY_CONFIG"):
-        config_path = os.environ["EASY_CONFIG"]
-    elif agent_env in ("dev", "test", "prod"):
-        candidate = os.path.join(config_dir, f"config.{agent_env}.yaml")
-        config_path = candidate if os.path.exists(candidate) else os.path.join(config_dir, "config.yaml")
-    else:
-        # 未设置 AGENT_ENV：优先 dev 配置，兜底 config.yaml
-        dev_candidate = os.path.join(config_dir, "config.dev.yaml")
-        config_path = dev_candidate if os.path.exists(dev_candidate) else os.path.join(config_dir, "config.yaml")
-        agent_env = "dev" if os.path.exists(dev_candidate) else "(默认)"
+    config_path = Config.resolve_config_path()
 
     # 先加载配置并按其 log 段初始化日志格式，使启动日志从一开始就使用
     # 配置文件中的 format（而非默认的 " - " 分隔格式）。
@@ -194,8 +180,7 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(
             f"❌ 配置文件加载失败，服务将以降级模式启动（聊天等功能不可用）: {e}\n"
-            f"   请检查配置文件（{config_path}）的 active model 是否配置了 api_key，"
-            f"或对应的 ${{ENV_VAR}} 环境变量是否已设置。"
+                f"   请检查配置文件（{config_path}）的 active model 是否直接配置了 api_key。"
         )
         log_cfg = None
 
@@ -213,6 +198,17 @@ async def lifespan(app: FastAPI):
     logger.info(f"AGENT_ENV: {agent_env or '(未设置, 默认 dev)'}")
     logger.info(f"配置文件: {config_path}")
     logger.info("=" * 60)
+
+    # .env 在模块级（日志初始化之前）已加载，此处补打日志便于确认注入是否生效
+    env_file, env_keys = get_loaded_env_info()
+    if env_file:
+        logger.info(
+            f"环境变量文件: {env_file} | 已注入: {', '.join(sorted(set(env_keys))) or '无'}"
+        )
+    else:
+        logger.info(
+            "环境变量文件: 未找到项目根 .env（可选）| 应用配置值完全来自 YAML 文件"
+        )
 
     if config:
         logger.info(f"✅ 配置文件加载成功: {config_path}")
@@ -254,7 +250,9 @@ async def lifespan(app: FastAPI):
         db = init_database(db_config)
         app.state.db = db
         db_instance = db
-        logger.info("✅ 数据库初始化完成")
+        logger.info(
+            f"✅ 数据库初始化完成 | 实际类型: {getattr(db, 'db_type', 'unknown')}"
+        )
     except Exception as e:
         logger.error(f"❌ 数据库初始化失败: {e}")
         raise
