@@ -95,12 +95,34 @@ def build() -> FastMCP:
     return mcp
 ```
 
-### ② URL 形态与挂载方式（待 spike 验证，方案 A 优先）
+### ② URL 形态与挂载方式（spike 已验证）
 
-- **A（优先）**：`FastMCP(..., streamable_http_path="/")` + `app.mount(f"/mcp/{name}", sub_app)`，URL = `http://<host>:<port>/mcp/<name>/`
-- **B（兜底）**：`streamable_http_path="/mcp"`（默认）+ `app.mount(f"/{name}", sub_app)`，URL = `http://<host>:<port>/<name>/mcp`
+**结论：采用方案 A，且 URL 必须带尾斜杠。**
 
-选择依据：客户端不跟随重定向，需实测 A 是否稳定返回 200；否则退回 B。
+```python
+mcp = FastMCP("market", streamable_http_path="/", stateless_http=True)
+app.mount("/mcp/market", mcp.streamable_http_app())   # → /mcp/market/
+```
+
+spike 实测（`tests/test_spike.py`）：
+
+| 项 | 实测结果 |
+| --- | --- |
+| `POST /mcp/hello/`（带尾斜杠） | 客户端直连成功，工具可调用 |
+| `POST /mcp/hello`（无尾斜杠） | **307**，客户端不跟随重定向 → 配置中 URL 必须带尾斜杠 |
+| 未知业务 `/mcp/does-not-exist/` | 401（先鉴权），不返回 404，避免暴露业务存在性 |
+
+**关键坑（已解决）**：`app.mount()` 不会执行子应用的 lifespan，而 MCP 的 session manager 必须在 lifespan 中启动，否则每个请求都报
+`RuntimeError: Task group is not initialized`。必须在父应用 lifespan 中手动驱动：
+
+```python
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    async with AsyncExitStack() as stack:
+        for _, mcp in items:
+            await stack.enter_async_context(mcp.session_manager.run())
+        yield
+```
 
 ### ③ 鉴权链路
 
@@ -177,14 +199,16 @@ CREATE TABLE IF NOT EXISTS mcp_api_keys (
 - 导入隔离断言：主应用代码中不出现对 `mcp_server` 子项目的 import
 - key 签发写入统一表、明文仅返回一次、重复签发覆盖旧 key
 
-### ⑦ 风险与待验证项
+### ⑦ 风险与验证结论
 
-| 项 | 说明 | 兜底 |
-| --- | --- | --- |
-| A. URL 尾斜杠 | 客户端不跟随 307，方案 A 需实测 | 退回方案 B（`/<name>/mcp`） |
-| B. DNS rebinding 保护 | FastMCP 对 `127.0.0.1/localhost` 默认开启；`0.0.0.0` 不启用。反代场景需显式配 `allowed_hosts`/`allowed_origins` | 启动参数化并写入 README |
-| C. 有状态 vs 无状态 | 拟设 `stateless_http=True` 匹配"每次调用新建 session" | 实测后定 |
-| D. 旧 key 迁移 | 明文不可恢复，存量 key 需用户重签 | 前端提示重新生成 |
+| 项 | 结论 |
+| --- | --- |
+| A. URL 尾斜杠 | **已验证**：必须用 `/mcp/<business>/`。无尾斜杠返回 307，而 MCP 客户端不跟随重定向 |
+| B. DNS rebinding 保护 | **已验证**：非白名单 Host 返回 421。部署通过域名/反代访问时，必须显式配置 `allowed_hosts`（否则全部 421） |
+| C. 有状态 vs 无状态 | **已验证**：`stateless_http=True` 可用，匹配 langchain"每次调用新建 session"的行为 |
+| D. session manager lifespan | **已验证（新发现）**：`mount()` 不传播 lifespan，必须在父应用 lifespan 中手动 `session_manager.run()` |
+| E. mcp 版本 | **已验证**：子项目必须锁 `mcp>=1.27,<2`。mcp 2.x 客户端 API 有 breaking change，会与主项目 1.27.x 不兼容 |
+| F. 旧 key 迁移 | 明文不可恢复，存量 key 需用户重签，前端需提示重新生成 |
 
 ## 实施顺序
 

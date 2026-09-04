@@ -41,9 +41,17 @@ export async function getMcpMarket() {
   return await response.json()
 }
 
-export async function generateMcpApiKey() {
+export async function getMcpApiKeyStatuses() {
+  const response = await authFetch(`${API_BASE_URL}/agent/settings/mcp/api-keys`)
+  if (!response.ok) throw new Error('获取 MCP API Key 状态失败')
+  return await response.json()
+}
+
+export async function generateMcpApiKey(business) {
   const response = await authFetch(`${API_BASE_URL}/agent/settings/mcp/api-key`, {
     method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ business }),
   })
   if (!response.ok) {
     const err = await response.json().catch(() => ({}))

@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from pathlib import Path
 
 import pytest
 from fastapi import HTTPException
@@ -133,62 +134,79 @@ def test_mcp_market_adds_global_server_to_user_config(tmp_path, monkeypatch):
 
 
 def test_mcp_api_key_generation_uses_current_user(monkeypatch):
+    import easy_agent.services.mcp_api_keys as keys_service
+    from easy_agent.api.settings import IssueMcpApiKeyRequest
+
     captured = {}
 
-    def fake_generate(username, mysql_config):
+    def fake_issue(username, business):
         captured["username"] = username
+        captured["business"] = business
         return "generated-api-key"
 
-    monkeypatch.setattr(settings_api, "generate_market_mcp_api_key", fake_generate)
+    monkeypatch.setattr(keys_service, "issue_api_key", fake_issue)
 
-    result = asyncio.run(generate_mcp_api_key("testuser"))
-
-    assert result == {"status": "ok", "api_key": "generated-api-key"}
-    assert captured["username"] == "testuser"
-
-
-def test_mcp_api_key_generation_uses_app_mysql_config(monkeypatch):
-    captured = {}
-
-    def fake_generate(username, mysql_config):
-        captured["username"] = username
-        captured["mysql_config"] = mysql_config
-        return "generated-api-key"
-
-    monkeypatch.setattr(
-        settings_api,
-        "_market_mysql_config",
-        lambda: {"user": "app-user", "password": "app-password"},
+    result = asyncio.run(
+        generate_mcp_api_key(IssueMcpApiKeyRequest(business="market"), "testuser")
     )
-    monkeypatch.setattr(settings_api, "generate_market_mcp_api_key", fake_generate)
 
-    result = asyncio.run(generate_mcp_api_key("testuser"))
-
-    assert result == {"status": "ok", "api_key": "generated-api-key"}
+    assert result == {"status": "ok", "api_key": "generated-api-key", "business": "market"}
     assert captured["username"] == "testuser"
-    assert captured["mysql_config"] == {
-        "user": "app-user",
-        "password": "app-password",
-    }
+    assert captured["business"] == "market"
+
+
+def test_mcp_api_key_rejects_unknown_business():
+    from easy_agent.api.settings import IssueMcpApiKeyRequest
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(
+            generate_mcp_api_key(IssueMcpApiKeyRequest(business="nope"), "testuser")
+        )
+
+    assert exc_info.value.status_code == 400
 
 
 def test_mcp_api_key_generation_maps_database_failure(monkeypatch):
-    def fake_generate(username, mysql_config):
+    import easy_agent.services.mcp_api_keys as keys_service
+    from easy_agent.api.settings import IssueMcpApiKeyRequest
+
+    def fake_issue(username, business):
         raise RuntimeError("database unavailable")
 
-    monkeypatch.setattr(settings_api, "generate_market_mcp_api_key", fake_generate)
+    monkeypatch.setattr(keys_service, "issue_api_key", fake_issue)
 
     with pytest.raises(HTTPException) as exc_info:
-        asyncio.run(generate_mcp_api_key("testuser"))
+        asyncio.run(
+            generate_mcp_api_key(IssueMcpApiKeyRequest(business="market"), "testuser")
+        )
 
     assert exc_info.value.status_code == 503
     assert "数据库" in exc_info.value.detail
 
 
-def test_mcp_api_key_route_is_registered():
+def test_mcp_api_key_routes_are_registered():
     paths = {route.path for route in router.routes}
 
     assert "/agent/settings/mcp/api-key" in paths
+    assert "/agent/settings/mcp/api-keys" in paths
+
+
+def test_main_app_never_imports_mcp_server_subproject():
+    """导入隔离：主应用代码不得 import mcp-server 子项目（只通过 HTTP/数据库耦合）。"""
+    import re
+
+    banned_patterns = (
+        re.compile(r"^\s*(from|import)\s+easy_mcp_server", re.MULTILINE),
+        re.compile(r"^\s*(from|import)\s+easy_agent\.mcp_servers", re.MULTILINE),
+    )
+    src_root = Path(__file__).resolve().parent.parent / "easy_agent"
+    offenders = [
+        str(p)
+        for p in src_root.rglob("*.py")
+        if "__pycache__" not in p.parts
+        and any(pat.search(p.read_text(encoding="utf-8")) for pat in banned_patterns)
+    ]
+    assert offenders == [], f"主应用 import 了 MCP 子项目: {offenders}"
 
 
 def test_mcp_config_preserves_environment_placeholders(tmp_path, monkeypatch):

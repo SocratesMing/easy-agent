@@ -71,11 +71,22 @@
                   <p class="panel-desc">管理 MCP 服务配置 · 来源：<span class="source-tag" :class="mcpSource">{{ mcpSource === 'user' ? '用户配置' : '全局默认' }}</span></p>
                 </div>
                 <div class="panel-actions">
+                  <select
+                    v-if="mcpKeyBusinesses.length"
+                    v-model="mcpKeySelectedBusiness"
+                    class="mcp-key-business-select"
+                    title="选择要生成 API Key 的业务"
+                    aria-label="选择业务类型"
+                  >
+                    <option v-for="item in mcpKeyBusinesses" :key="item.business" :value="item.business">
+                      {{ item.business }}{{ item.issued ? '（已生成）' : '' }}
+                    </option>
+                  </select>
                   <button
                     class="action-btn-outline"
                     @click="handleGenerateMcpApiKey"
                     :disabled="mcpApiKeyGenerating"
-                    title="为当前用户生成 Market MCP API Key"
+                    title="为当前用户生成所选业务的 MCP API Key"
                   >
                     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"></path></svg>
                     {{ mcpApiKeyGenerating ? '生成中...' : '生成 Key' }}
@@ -96,7 +107,7 @@
               <div v-if="mcpApiKey || mcpApiKeyError" class="mcp-api-key-panel">
                 <div v-if="mcpApiKey" class="mcp-api-key-row">
                   <div class="mcp-api-key-field">
-                    <span class="mcp-api-key-label">mcp-key</span>
+                    <span class="mcp-api-key-label">{{ mcpKeySelectedBusiness }}-key</span>
                     <input
                       :type="mcpApiKeyVisible ? 'text' : 'password'"
                       :value="mcpApiKey"
@@ -123,6 +134,19 @@
                     </button>
                   </div>
                   <p class="mcp-api-key-hint">生成后仅显示一次；再次生成会替换并作废旧 Key。</p>
+                  <div class="mcp-api-key-row mcp-snippet-row">
+                    <pre class="mcp-snippet">{{ mcpSnippet }}</pre>
+                    <button
+                      class="mcp-api-key-toggle"
+                      @click="copyMcpSnippet"
+                      :title="mcpSnippetCopied ? '已复制配置片段' : '复制配置片段'"
+                      :aria-label="mcpSnippetCopied ? '已复制配置片段' : '复制配置片段'"
+                    >
+                      <svg v-if="mcpSnippetCopied" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><polyline points="20 6 9 17 4 12"></polyline></svg>
+                      <svg v-else xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+                    </button>
+                  </div>
+                  <p class="mcp-api-key-hint">把片段中的 mcp-server 地址替换为实际部署地址后，粘贴到 mcp.json 即可接入。</p>
                 </div>
                 <div v-if="mcpApiKeyError" class="save-error mcp-api-key-error">{{ mcpApiKeyError }}</div>
               </div>
@@ -345,6 +369,7 @@ import {
   getSystemPrompt,
   getMcpServers,
   getMcpMarket,
+  getMcpApiKeyStatuses,
   generateMcpApiKey,
   addMcpFromMarket,
   updateMcpServers,
@@ -385,6 +410,9 @@ const mcpApiKeyVisible = ref(false)
 const mcpApiKeyCopied = ref(false)
 const mcpApiKeyGenerating = ref(false)
 const mcpApiKeyError = ref('')
+const mcpKeyBusinesses = ref([])          // [{ business, issued, updated_at }]
+const mcpKeySelectedBusiness = ref('')    // 当前选中的业务
+const mcpSnippetCopied = ref(false)
 
 // 添加 MCP
 const showAddMcp = ref(false)
@@ -452,13 +480,21 @@ async function loadTabData() {
       const data = await getSystemPrompt()
       promptContent.value = data.content || ''
     } else if (activeTab.value === 'mcp') {
-      const [data, market] = await Promise.all([getMcpServers(), getMcpMarket()])
+      const [data, market, keyStatuses] = await Promise.all([
+        getMcpServers(),
+        getMcpMarket(),
+        getMcpApiKeyStatuses().catch(() => ({ businesses: [] })),
+      ])
       mcpServers.value = (data.servers || []).map(s => ({
         ...s,
         _raw: s._raw || { transport: s.transport, command: s.command, args: s.args, env: {} },
       }))
       mcpSource.value = data.source || 'global'
       mcpMarketServers.value = market.servers || []
+      mcpKeyBusinesses.value = keyStatuses.businesses || []
+      if (!mcpKeySelectedBusiness.value && mcpKeyBusinesses.value.length) {
+        mcpKeySelectedBusiness.value = mcpKeyBusinesses.value[0].business
+      }
       // 初始化 enabledMap：默认全部开启
       const newMap = {}
       for (const s of mcpServers.value) {
@@ -648,20 +684,59 @@ function openPreview() {
   showPreview.value = true
 }
 
+// 生成后展示可直接粘贴到 mcp.json 的配置片段（URL 由子项目部署地址决定）
+const mcpSnippet = computed(() => {
+  const business = mcpKeySelectedBusiness.value || 'market'
+  return JSON.stringify(
+    {
+      servers: {
+        [`${business}-data`]: {
+          transport: 'streamable_http',
+          url: `http://<mcp-server 地址>/mcp/${business}/`,
+          headers: { Authorization: `Bearer ${mcpApiKey.value}` },
+        },
+      },
+    },
+    null,
+    2,
+  )
+})
+
 async function handleGenerateMcpApiKey() {
+  const business = mcpKeySelectedBusiness.value
+  if (!business) {
+    mcpApiKeyError.value = '请先选择业务类型'
+    return
+  }
   mcpApiKeyGenerating.value = true
   mcpApiKeyError.value = ''
   try {
-    const result = await generateMcpApiKey()
+    const result = await generateMcpApiKey(business)
     mcpApiKey.value = result.api_key || ''
     mcpApiKeyVisible.value = false
     mcpApiKeyCopied.value = false
+    mcpSnippetCopied.value = false
   } catch (e) {
     mcpApiKey.value = ''
     mcpApiKeyError.value = e.message || '生成 MCP API Key 失败'
   } finally {
     mcpApiKeyGenerating.value = false
   }
+}
+
+async function copyMcpSnippet() {
+  try {
+    await navigator.clipboard.writeText(mcpSnippet.value)
+  } catch {
+    const textarea = document.createElement('textarea')
+    textarea.value = mcpSnippet.value
+    document.body.appendChild(textarea)
+    textarea.select()
+    document.execCommand('copy')
+    document.body.removeChild(textarea)
+  }
+  mcpSnippetCopied.value = true
+  setTimeout(() => { mcpSnippetCopied.value = false }, 2000)
 }
 
 async function copyMcpApiKey() {
@@ -997,6 +1072,37 @@ onMounted(() => {
   font-size: 13px;
   font-weight: 600;
   color: var(--text-primary);
+}
+
+.mcp-key-business-select {
+  height: 34px;
+  padding: 0 8px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: white;
+  color: var(--text-primary);
+  font-size: 13px;
+}
+
+.mcp-snippet-row {
+  margin-top: 10px;
+  align-items: flex-start;
+}
+
+.mcp-snippet {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  padding: 10px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-x: auto;
+  white-space: pre;
 }
 
 .mcp-api-key-field input {
@@ -1655,9 +1761,17 @@ html[data-theme="dark"] .mcp-card {
 
 html[data-theme="dark"] .mcp-api-key-panel,
 html[data-theme="dark"] .mcp-api-key-field input,
-html[data-theme="dark"] .mcp-api-key-toggle {
+html[data-theme="dark"] .mcp-api-key-toggle,
+html[data-theme="dark"] .mcp-key-business-select,
+html[data-theme="dark"] .mcp-snippet {
   background: #0f172a;
   border-color: var(--text-secondary);
+}
+
+html[data-theme="dark"] .mcp-api-key-field input,
+html[data-theme="dark"] .mcp-key-business-select,
+html[data-theme="dark"] .mcp-snippet {
+  color: #e2e8f0;
 }
 
 html[data-theme="dark"] .mcp-api-key-field input {

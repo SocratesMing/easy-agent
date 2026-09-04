@@ -1,16 +1,17 @@
-"""Initialize MySQL tables and seed demo market data for the market MCP."""
+"""初始化 market 业务表并灌入演示数据。
+
+用法：cd mcp-server && uv run python -m easy_mcp_server.businesses.market.seed
+
+API Key 的签发已移交给主应用（设置页），本脚本只负责业务数据表。
+"""
 
 from __future__ import annotations
 
 import argparse
-import secrets
 from datetime import datetime, timezone
 from typing import Any
 
-from easy_agent.mcp_servers.market.server import (
-    _get_connection,
-    hash_api_key,
-)
+from easy_mcp_server.db import connection
 
 
 def _now() -> datetime:
@@ -67,8 +68,8 @@ def demo_position_rows() -> list[dict[str, Any]]:
     ]
 
 
-def ensure_schema(connection) -> None:
-    with connection.cursor() as cursor:
+def ensure_schema(connection_ctx) -> None:
+    with connection_ctx.cursor() as cursor:
         cursor.execute(
             """
             CREATE TABLE IF NOT EXISTS market_quotes (
@@ -78,17 +79,6 @@ def ensure_schema(connection) -> None:
                 price DECIMAL(18,6) NOT NULL,
                 change_percent DECIMAL(8,4) NOT NULL,
                 updated_at DATETIME NOT NULL
-            )
-            """
-        )
-        cursor.execute(
-            """
-            CREATE TABLE IF NOT EXISTS market_mcp_api_keys (
-                username VARCHAR(64) PRIMARY KEY,
-                api_key_hash CHAR(64) NOT NULL UNIQUE,
-                created_at DATETIME NOT NULL,
-                updated_at DATETIME NOT NULL,
-                revoked TINYINT(1) NOT NULL DEFAULT 0
             )
             """
         )
@@ -111,8 +101,8 @@ def ensure_schema(connection) -> None:
         )
 
 
-def seed_market_data(connection) -> None:
-    with connection.cursor() as cursor:
+def seed_market_data(connection_ctx) -> None:
+    with connection_ctx.cursor() as cursor:
         for quote in demo_market_rows():
             cursor.execute(
                 """
@@ -162,62 +152,20 @@ def seed_market_data(connection) -> None:
             )
 
 
-def issue_api_keys(connection, usernames: list[str], rotate: bool = False) -> dict[str, str]:
-    issued: dict[str, str] = {}
-    now = _now()
-    with connection.cursor() as cursor:
-        for username in usernames:
-            cursor.execute(
-                "SELECT username FROM market_mcp_api_keys WHERE username=%s",
-                (username,),
-            )
-            existing = cursor.fetchone()
-            if existing and not rotate:
-                print(f"{username}: API key already exists; use --rotate-keys to replace it")
-                continue
-            api_key = secrets.token_urlsafe(32)
-            if existing:
-                cursor.execute(
-                    """
-                    UPDATE market_mcp_api_keys
-                    SET api_key_hash=%s, updated_at=%s, revoked=0
-                    WHERE username=%s
-                    """,
-                    (hash_api_key(api_key), now, username),
-                )
-            else:
-                cursor.execute(
-                    """
-                    INSERT INTO market_mcp_api_keys
-                        (username, api_key_hash, created_at, updated_at, revoked)
-                    VALUES (%s, %s, %s, %s, 0)
-                    """,
-                    (username, hash_api_key(api_key), now, now),
-                )
-            issued[username] = api_key
-            print(f"{username}: {api_key}")
-    return issued
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--users",
-        default="szm,zr6",
-        help="Comma-separated usernames for demo API keys (default: szm,zr6)",
-    )
-    parser.add_argument(
-        "--rotate-keys",
+        "--skip-seed",
         action="store_true",
-        help="Replace existing API keys and print the new plaintext keys",
+        help="Only create tables, do not insert demo rows",
     )
     args = parser.parse_args()
-    usernames = [name.strip() for name in args.users.split(",") if name.strip()]
 
-    with _get_connection() as connection:
-        ensure_schema(connection)
-        seed_market_data(connection)
-        issue_api_keys(connection, usernames, rotate=args.rotate_keys)
+    with connection() as conn:
+        ensure_schema(conn)
+        if not args.skip_seed:
+            seed_market_data(conn)
+    print("market 表已就绪")
 
 
 if __name__ == "__main__":

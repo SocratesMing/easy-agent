@@ -399,6 +399,24 @@ class Database:
             # 保证 uvicorn 多 worker（--workers > 1）下各进程读到一致的登录活跃状态。
             self._ensure_column(cursor, "users", "last_activity_at", "REAL")
 
+            # MCP API Key：主应用签发，mcp-server 子项目只读校验。
+            # UNIQUE(username, business) 保证每用户每业务仅一把有效 key，重签即覆盖。
+            cursor.execute(f"""
+                CREATE TABLE IF NOT EXISTS mcp_api_keys (
+                    id INTEGER PRIMARY KEY {auto_inc},
+                    username VARCHAR(64) NOT NULL,
+                    business VARCHAR(64) NOT NULL,
+                    key_hash CHAR(64) NOT NULL UNIQUE,
+                    created_at VARCHAR(50) NOT NULL,
+                    updated_at VARCHAR(50) NOT NULL,
+                    revoked INTEGER NOT NULL DEFAULT 0,
+                    UNIQUE (username, business)
+                )
+            """)
+            self._create_index(
+                cursor, "idx_mcp_api_keys_user", "mcp_api_keys", "username"
+            )
+
             cursor.execute(f"""
                 CREATE TABLE IF NOT EXISTS fmqt_bloom (
                     id INTEGER PRIMARY KEY {auto_inc},
@@ -1503,6 +1521,53 @@ class Database:
         except (TypeError, ValueError):
             return None
 
+    # ── MCP API Key（主应用签发，mcp-server 子项目只读校验） ─────────────
+
+    def issue_mcp_api_key(self, username: str, business: str, key_hash: str) -> bool:
+        """签发（或重签）某用户某业务的 MCP API Key，明文不落库。"""
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        # upsert：sqlite 用 ON CONFLICT，mysql 用 ON DUPLICATE KEY UPDATE
+        if self.db_type == "sqlite":
+            upsert_sql = """
+                INSERT INTO mcp_api_keys (username, business, key_hash, created_at, updated_at, revoked)
+                VALUES (?, ?, ?, ?, ?, 0)
+                ON CONFLICT(username, business) DO UPDATE SET
+                    key_hash=excluded.key_hash, updated_at=excluded.updated_at, revoked=0
+            """
+        else:
+            upsert_sql = """
+                INSERT INTO mcp_api_keys (username, business, key_hash, created_at, updated_at, revoked)
+                VALUES (?, ?, ?, ?, ?, 0)
+                ON DUPLICATE KEY UPDATE
+                    key_hash=VALUES(key_hash), updated_at=VALUES(updated_at), revoked=0
+            """
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            self._execute(cursor, upsert_sql, (username, business, key_hash, now, now))
+        return True
+
+    def revoke_mcp_api_key(self, username: str, business: str) -> bool:
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            self._execute(
+                cursor,
+                "UPDATE mcp_api_keys SET revoked=1, updated_at=? WHERE username=? AND business=?",
+                (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), username, business),
+            )
+            return cursor.rowcount > 0
+
+    def get_mcp_api_keys(self, username: str) -> list[dict]:
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            self._execute(
+                cursor,
+                "SELECT business, created_at, updated_at, revoked "
+                "FROM mcp_api_keys WHERE username=? ORDER BY business",
+                (username,),
+            )
+            rows = cursor.fetchall()
+        return [dict(r) if not isinstance(r, dict) else r for r in rows]
+
     def clear_user_activity(self, username: str) -> bool:
         """清空用户活跃时间（登出时调用）。"""
         with self.get_connection() as conn:
@@ -1548,6 +1613,43 @@ class Database:
         if not verify_password(password, user.password_hash):
             return None
         return user
+
+    def get_or_create_passwordless_user(
+        self,
+        username: str,
+        user_id: str = "",
+    ) -> tuple[Optional[UserModel], bool]:
+        """免密登录：按用户名查找用户，不存在则注册。
+
+        - 用户名已存在：直接返回该用户，user_id 不参与匹配；
+        - 用户名不存在：user_id 为空或 "0" 时自动生成唯一 ID，否则使用传入值，
+          传入值已被其他用户占用时返回 (None, False)。
+
+        返回 (user, created)。
+        """
+        existing = self.get_user_by_username(username)
+        if existing:
+            return existing, False
+
+        if not user_id or user_id == "0":
+            user_id = str(uuid.uuid4())
+        elif self.get_user_by_id(user_id):
+            return None, False
+
+        now = datetime.now().isoformat()
+        user = UserModel(
+            user_id=user_id,
+            username=username,
+            # 免密用户不通过密码登录，写入随机密码哈希防止被猜测
+            password_hash=hash_password(uuid.uuid4().hex),
+            organization_id="",
+            email="",
+            bound_ip="",
+            created_at=now,
+            updated_at=now,
+        )
+        self.create_user(user)
+        return user, True
 
     def update_user_password(self, username: str, new_password_hash: str) -> bool:
         user = self.get_user_by_username(username)
