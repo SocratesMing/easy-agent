@@ -51,7 +51,6 @@ MODULE_LABELS = [
     ("/api/settings", "设置"),
     ("/api/skill-center", "技能中心"),
     ("/api/scheduled-tasks", "定时任务"),
-    ("/api/bloom", "彭博分析"),
     ("/api/forex", "外汇"),
     ("/api/prompts", "提示词"),
     ("/api/completion", "对话补全"),

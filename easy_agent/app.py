@@ -5,7 +5,6 @@ from logging.handlers import TimedRotatingFileHandler
 import os
 import platform
 import sys
-import threading
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
@@ -16,9 +15,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from langchain_core.messages import HumanMessage
 
-from .config import Config, AgentConfig
+from .config import Config, AgentConfig, get_missing_env_vars
 from .db import init_database
-from .domain.bloom.bloom_scheduler import start_scheduler
 from .model import create_model
 from .models.api import HealthResponse
 from .services import get_agent_config, init_agent_config
@@ -29,7 +27,6 @@ from .api import (
     sessions_router,
     files_router,
     auth_router,
-    bloom_router,
     forex_router,
     completion_router,
     prompts_router,
@@ -167,21 +164,20 @@ async def lifespan(app: FastAPI):
     os.chdir(project_root)
 
     # ── 环境识别 & 配置路径解析（先静默确定配置，再初始化日志格式）──
-    # EASY_CONFIG / AGENT_ENV 只选择配置文件；配置值本身全部来自 YAML。
+    # EASY_CONFIG / AGENT_ENV 只选择配置文件；配置值来自 YAML，其中的 ${VAR} 由 .env 提供。
     agent_env = os.environ.get("AGENT_ENV", "").lower()
     config_path = Config.resolve_config_path()
 
     # 先加载配置并按其 log 段初始化日志格式，使启动日志从一开始就使用
     # 配置文件中的 format（而非默认的 " - " 分隔格式）。
+    # 注意：加载失败的原因要等日志就绪后再打印，否则原因会丢失在日志初始化之前。
     config = None
+    config_error: Exception | None = None
     try:
         config = Config.from_yaml(config_path)
         log_cfg = config.log.model_dump()
     except Exception as e:
-        logger.error(
-            f"❌ 配置文件加载失败，服务将以降级模式启动（聊天等功能不可用）: {e}\n"
-                f"   请检查配置文件（{config_path}）的 active model 是否直接配置了 api_key。"
-        )
+        config_error = e
         log_cfg = None
 
     log_file = setup_logging(log_cfg)
@@ -207,11 +203,27 @@ async def lifespan(app: FastAPI):
         )
     else:
         logger.info(
-            "环境变量文件: 未找到项目根 .env（可选）| 应用配置值完全来自 YAML 文件"
+            "环境变量文件: 未找到项目根 .env（可选）| YAML 中的 ${VAR} 将取不到值"
+        )
+
+    if config_error:
+        logger.error(
+            f"❌ 配置文件加载失败，服务将以降级模式启动（聊天等功能不可用）: {config_error}"
+        )
+        logger.error(
+            f"   请检查 {config_path} 是否存在，且其中的 ${{ENV_VAR}} 占位符都能在"
+            "项目根 .env（或运行环境）中取到值；active model 也必须配置 api_key。"
         )
 
     if config:
         logger.info(f"✅ 配置文件加载成功: {config_path}")
+
+        missing_env = get_missing_env_vars()
+        if missing_env:
+            logger.warning(
+                "⚠️ 配置中的环境变量占位符未取到值（已按空值处理）: "
+                f"{', '.join(missing_env)} | 请在项目根 .env 中设置后重启服务"
+            )
 
         # 启动时创建配置文件中所有缺失的目录（workspace/memories/logs/sessions/
         # skills/prompts/sqlite 父目录/external_dirs 宿主机路径等）
@@ -331,19 +343,6 @@ async def lifespan(app: FastAPI):
         else:
             logger.warning("⚠️ 配置未加载，Agent 未初始化，聊天等功能将不可用")
 
-        try:
-            bloom_llm = create_model(config)
-            bloom_thread = threading.Thread(
-                target=start_scheduler,
-                args=(db, bloom_llm),
-                daemon=True,
-                name="bloom-scheduler",
-            )
-            bloom_thread.start()
-            logger.info("✅ 彭博定时任务已启动 (每日 17:00)")
-        except Exception as e:
-            logger.warning(f"⚠️ 彭博定时任务启动失败: {e}")
-
         # 定时任务调度器（AsyncIOScheduler）
         try:
             scheduler = init_scheduler()
@@ -457,7 +456,6 @@ app.include_router(chat_router)
 app.include_router(sessions_router)
 app.include_router(files_router)
 app.include_router(auth_router)
-app.include_router(bloom_router)
 app.include_router(forex_router)
 app.include_router(completion_router)
 app.include_router(prompts_router)

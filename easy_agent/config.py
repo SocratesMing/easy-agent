@@ -5,6 +5,7 @@ Provides unified configuration loading and management functionality
 
 import logging
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +15,64 @@ from pydantic import BaseModel, Field, field_validator
 logger = logging.getLogger(__name__)
 
 DEFAULT_APP_WELCOME_TITLE = "Easy Agent，让工作更简单"
+
+# Matches ${VAR} and ${VAR:-default} placeholders inside string values.
+_ENV_VAR_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
+
+# 最近一次配置解析中未取到值的占位符变量名（供启动日志提示，避免静默变空串）
+_unresolved_env_vars: list[str] = []
+
+
+def get_missing_env_vars() -> list[str]:
+    """返回最近一次 ``Config.from_yaml`` 中未取到值的 ``${VAR}`` 变量名。"""
+    return list(_unresolved_env_vars)
+
+
+def _ensure_project_env_loaded() -> None:
+    """解析配置前兜底加载项目根 .env（幂等）。
+
+    ``${VAR}`` 的值来自 ``os.environ``；直接 ``python main.py`` 或 IDE 启动时，
+    shell 里 export 的变量常常传不进进程，这里保证无论入口如何都能取到 .env 的值。
+    """
+    try:
+        from .utils.env_loader import load_project_env
+    except Exception as e:  # pragma: no cover - 兜底，不影响配置解析
+        logger.debug(f"跳过项目根 .env 加载: {e}")
+        return
+    try:
+        load_project_env()
+    except Exception as e:
+        logger.warning(f"⚠️ 加载项目根 .env 失败（忽略）: {e}")
+
+
+def _expand_env(value: str, missing: set[str]) -> str:
+    """Resolve ${VAR} / ${VAR:-default} placeholders in a single string."""
+
+    def _replace(match: "re.Match[str]") -> str:
+        name = match.group(1)
+        default = match.group(2)
+        env_value = os.environ.get(name)
+        if env_value:
+            return env_value
+        if default is not None:
+            return default
+        missing.add(name)
+        return ""
+
+    return _ENV_VAR_RE.sub(_replace, value)
+
+
+def _expand_env_recursive(obj: Any, missing: set[str] | None = None) -> Any:
+    """Recursively expand env-var placeholders inside parsed YAML data."""
+    if missing is None:
+        missing = set()
+    if isinstance(obj, str):
+        return _expand_env(obj, missing)
+    if isinstance(obj, dict):
+        return {k: _expand_env_recursive(v, missing) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_expand_env_recursive(item, missing) for item in obj]
+    return obj
 
 
 class RetryConfig(BaseModel):
@@ -241,7 +300,15 @@ class Config(BaseModel):
 
     @classmethod
     def from_yaml(cls, config_path: str | Path) -> "Config":
-        """Load configuration from YAML file"""
+        """Load configuration from YAML file
+
+        YAML 中的字符串支持 ``${VAR}`` / ``${VAR:-默认值}`` 占位符，值取自
+        ``os.environ``（项目根 .env 会在解析前自动注入），用于不入库的敏感配置。
+        未取到值且无默认值的变量按空串处理，变量名记录在 ``get_missing_env_vars()``。
+        """
+        global _unresolved_env_vars
+        _unresolved_env_vars = []
+
         config_path = Path(config_path)
 
         if not config_path.exists():
@@ -252,6 +319,12 @@ class Config(BaseModel):
 
         if not data:
             raise ValueError("Configuration file is empty")
+
+        # Expand ${ENV_VAR} / ${ENV_VAR:-default} placeholders (e.g. api_key, password).
+        _ensure_project_env_loaded()
+        missing: set[str] = set()
+        data = _expand_env_recursive(data, missing)
+        _unresolved_env_vars = sorted(missing)
 
         # Parse active model selection
         active_model = data.get("model", "minimax")

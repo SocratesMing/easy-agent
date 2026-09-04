@@ -74,7 +74,7 @@ def client(db, monkeypatch):
     monkeypatch.setattr(_files_mod, "BASE_UPLOAD_DIR", Path(os.environ["TEST_UPLOADS_DIR"]))
     monkeypatch.setattr(_files_mod, "BASE_WORKSPACE_DIR", Path(os.environ["TEST_WORKSPACE_DIR"]))
 
-    # mock 模型创建，避免 lifespan / bloom / forex 等处的 LLM 调用发起真实网络请求。
+    # mock 模型创建，避免 lifespan / forex 等处的 LLM 调用发起真实网络请求。
     # 多个模块各自 import 了 create_model，需要逐个覆盖。
     class _FakeMsg:
         content = "mock-response"
@@ -118,7 +118,6 @@ def client(db, monkeypatch):
             return 0
 
     import easy_agent.agent as _agent_mod
-    import easy_agent.api.bloom as _bloom_mod
     import easy_agent.api.forex as _forex_mod
     import easy_agent.app as _app_mod
     import easy_agent.model as _model_mod
@@ -131,7 +130,6 @@ def client(db, monkeypatch):
         _am_mod,
         _stream_mod,
         _agent_mod,
-        _bloom_mod,
         _forex_mod,
     ):
         if hasattr(_m, "create_model"):

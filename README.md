@@ -64,7 +64,6 @@ easy-agent/
 │   │   ├── skill_center.py       #     /agent/skill-center/* (公共/用户技能)
 │   │   ├── scheduled_tasks.py    #     /agent/scheduled-tasks/* (定时任务)
 │   │   ├── terminal.py           #     /agent/terminal/* (Web Shell)
-│   │   ├── bloom.py              #     /agent/bloom/* (Bloom 调度)
 │   │   ├── forex.py              #     /agent/forex/* (外汇行情)
 │   │   ├── prompts.py            #     /agent/prompts/* (提示词管理)
 │   │   └── settings.py           #     /agent/settings/* (用户设置)
@@ -198,7 +197,7 @@ docker run -d \
 - `dev` -> `config/config.dev.yaml`（开发）
 
 后端通过 `Config.resolve_config_path()` 选择配置（优先级：`EASY_CONFIG` > `AGENT_ENV` 对应的 `config.{env}.yaml` > `config.dev.yaml` > `config.yaml`），并在终端打印环境信息与加载的配置文件路径。
-YAML 中的 `api_key`、`password` 等值会按字面量直接读取，不会替换为环境变量。
+YAML 中的 `api_key`、`password` 等值支持 `${ENV_VAR}` / `${ENV_VAR:-默认值}` 占位符，在加载配置时从 `os.environ` 解析；项目根 `.env` 会在配置解析前自动注入（见 `easy_agent/utils/env_loader.py`），未取到值的变量名会在启动日志里以 WARNING 列出。
 前端 `vite.config.js` 在构建时读取 `AGENT_ENV` 映射为 Vite mode（dev→development / test→test / prod→production），加载对应的 `.env.[mode]` 文件，并在终端输出配置横幅。
 
 ---
@@ -317,7 +316,7 @@ external_dirs:
 | GET  | `/agent/terminal/history` | 命令历史 |
 
 ### 其他
-`/agent/bloom/*`、`/agent/forex/*`、`/agent/prompts/*`、`/agent/settings/*`
+`/agent/forex/*`、`/agent/prompts/*`、`/agent/settings/*`
 
 ---
 

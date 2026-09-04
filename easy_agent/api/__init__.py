@@ -2,7 +2,6 @@ from .chat import router as chat_router
 from .sessions import router as sessions_router
 from .files import router as files_router
 from .auth import router as auth_router
-from .bloom import bloom_router
 from .forex import forex_router
 from .completion import router as completion_router
 import platform
@@ -21,7 +20,6 @@ __all__ = [
     "sessions_router",
     "files_router",
     "auth_router",
-    "bloom_router",
     "forex_router",
     "completion_router",
     "prompts_router",

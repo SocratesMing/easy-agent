@@ -9,7 +9,6 @@ easy-agent/
 ├── easy_agent/          # Python backend (FastAPI)
 │   ├── api/             # Routers: chat, auth, files, sessions, terminal, scheduled_tasks
 │   ├── services/        # Business logic: streaming, scheduler, agent_manager, mcp
-│   ├── domain/bloom/    # Bloomberg analysis domain logic
 │   ├── db/              # SQLite/MySQL database layer
 │   ├── models/          # Pydantic API & DB models
 │   ├── middleware/      # JWT auth middleware

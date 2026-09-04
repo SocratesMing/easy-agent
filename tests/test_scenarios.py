@@ -59,21 +59,6 @@ def test_scenario_memory_roundtrip(client: TestClient):
     assert "用户偏好：用中文回复" in again.json()["content"]
 
 
-def test_scenario_bloom_chain(client: TestClient):
-    # 查询（Body: list[dict]）
-    q = client.post("/agent/bloom/queryBloom", json=[{"type": "短期基准利率", "region": "瑞士"}])
-    assert q.status_code == 200 and isinstance(q.json(), list)
-    # 分析（query 参数）
-    a = client.post(
-        "/agent/bloom/queryBloomAnalysis",
-        params={"pair": "EURUSD", "startDate": "2025-06-27", "endDate": "2025-06-27"},
-    )
-    assert a.status_code == 200 and isinstance(a.json(), list)
-    # 导入（无数据时 no-op）
-    i = client.post("/agent/bloom/importBloom", params={"startDate": "20250627", "endDate": "20250628"})
-    assert i.status_code == 200
-
-
 def test_scenario_scheduled_task_lifecycle(client: TestClient):
     from easy_agent.db import get_database
     from easy_agent.models.db import ScheduledTaskModel
