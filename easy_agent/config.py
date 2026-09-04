@@ -5,7 +5,6 @@ Provides unified configuration loading and management functionality
 
 import logging
 import os
-import re
 from pathlib import Path
 from typing import Any
 
@@ -15,34 +14,6 @@ from pydantic import BaseModel, Field, field_validator
 logger = logging.getLogger(__name__)
 
 DEFAULT_APP_WELCOME_TITLE = "Easy Agent，让工作更简单"
-
-# Matches ${VAR} and ${VAR:-default} placeholders inside string values.
-_ENV_VAR_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
-
-
-def _expand_env(value: str) -> str:
-    """Resolve ${VAR} / ${VAR:-default} placeholders in a single string."""
-
-    def _replace(match: re.Match) -> str:
-        name = match.group(1)
-        default = match.group(2)
-        env_value = os.environ.get(name)
-        if env_value is not None:
-            return env_value
-        return default if default is not None else ""
-
-    return _ENV_VAR_RE.sub(_replace, value)
-
-
-def _expand_env_recursive(obj: Any) -> Any:
-    """Recursively expand env-var placeholders inside parsed YAML data."""
-    if isinstance(obj, str):
-        return _expand_env(obj)
-    if isinstance(obj, dict):
-        return {k: _expand_env_recursive(v) for k, v in obj.items()}
-    if isinstance(obj, list):
-        return [_expand_env_recursive(item) for item in obj]
-    return obj
 
 
 class RetryConfig(BaseModel):
@@ -237,12 +208,36 @@ class Config(BaseModel):
     @classmethod
     def load(cls) -> "Config":
         """Load configuration from the default search path."""
-        config_path = cls.get_default_config_path()
+        config_path = cls.resolve_config_path()
         if not config_path.exists():
             raise FileNotFoundError(
                 "Configuration file not found. Place config.yaml in easy_agent/config/ directory."
             )
         return cls.from_yaml(config_path)
+
+    @classmethod
+    def resolve_config_path(
+        cls,
+        explicit_path: str | Path | None = None,
+        config_dir: str | Path | None = None,
+    ) -> Path:
+        """Resolve the active YAML config without expanding config values."""
+        if explicit_path is None:
+            explicit_path = os.environ.get("EASY_CONFIG")
+        if explicit_path:
+            return Path(explicit_path)
+
+        base_dir = Path(config_dir) if config_dir else cls.get_package_dir() / "config"
+        agent_env = os.environ.get("AGENT_ENV", "dev").lower()
+        if agent_env in ("dev", "test", "prod"):
+            candidate = base_dir / f"config.{agent_env}.yaml"
+            if candidate.exists():
+                return candidate
+
+        dev_candidate = base_dir / "config.dev.yaml"
+        if dev_candidate.exists():
+            return dev_candidate
+        return base_dir / "config.yaml"
 
     @classmethod
     def from_yaml(cls, config_path: str | Path) -> "Config":
@@ -257,9 +252,6 @@ class Config(BaseModel):
 
         if not data:
             raise ValueError("Configuration file is empty")
-
-        # Expand ${ENV_VAR} / ${ENV_VAR:-default} placeholders (e.g. api_key, password).
-        data = _expand_env_recursive(data)
 
         # Parse active model selection
         active_model = data.get("model", "minimax")
@@ -586,8 +578,4 @@ class Config(BaseModel):
 
     @classmethod
     def get_default_config_path(cls) -> Path:
-        config_path = cls.find_config_file("config.yaml")
-        if config_path:
-            return config_path
-
-        return cls.get_package_dir() / "config" / "config.yaml"
+        return cls.resolve_config_path()

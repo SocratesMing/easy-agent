@@ -62,7 +62,7 @@ class Database:
                         f"数据库: {self._mysql_config.get('database')} | 用户: {self._mysql_config.get('user')}"
                     )
                 except Exception as e:
-                    logger.info(f"MySQL 连接失败，自动降级到 SQLite: {e}")
+                    logger.warning(f"MySQL 连接失败，自动降级到 SQLite: {e}")
                     self.db_type = "sqlite"
                     self._pool = None
                     sqlite_cfg = db_config.get("sqlite", {})
@@ -76,14 +76,28 @@ class Database:
 
     def _init_mysql_pool(self):
         db_name = self._mysql_config.get("database", "easy_agent")
+        host = self._mysql_config.get("host", "localhost")
+        port = self._mysql_config.get("port", 3306)
+        user = self._mysql_config.get("user", "root")
+        password = self._mysql_config.get("password", "")
+        charset = self._mysql_config.get("charset", "utf8mb4")
+        connect_timeout = self._mysql_config.get("connect_timeout", 10)
+        target = f"{user}@{host}:{port}/{db_name}"
+
+        if not password:
+            logger.warning(
+                "MySQL 密码为空：请检查当前环境配置文件中的 database.mysql.password，"
+                "并直接填写真实密码（改完必须重启后端）"
+            )
+
         try:
             conn = pymysql.connect(
-                host=self._mysql_config.get("host", "localhost"),
-                port=self._mysql_config.get("port", 3306),
-                user=self._mysql_config.get("user", "root"),
-                password=self._mysql_config.get("password", ""),
-                charset=self._mysql_config.get("charset", "utf8mb4"),
-                connect_timeout=self._mysql_config.get("connect_timeout", 10),
+                host=host,
+                port=port,
+                user=user,
+                password=password,
+                charset=charset,
+                connect_timeout=connect_timeout,
             )
             cursor = conn.cursor()
             cursor.execute(
@@ -93,7 +107,14 @@ class Database:
             conn.close()
             logger.info(f"MySQL数据库 '{db_name}' 已就绪")
         except Exception as e:
-            logger.info(f"创建数据库时出错（可能已存在）: {e}")
+            err = str(e)
+            if "using password: NO" in err:
+                hint = "（未发送密码：请检查 database.mysql.password 是否为空）"
+            elif "using password: YES" in err:
+                hint = "（密码错误，或该用户未对来源 host 授权，如 root@'172.17.0.1'）"
+            else:
+                hint = "（库已存在或无 CREATE 权限时可忽略）"
+            logger.warning(f"创建/连接 MySQL 数据库失败{hint}: {e} | 目标: {target}")
 
         pool_cfg = self._mysql_config.get("pool", {})
         self._pool = PooledDB(
@@ -104,24 +125,28 @@ class Database:
             maxcached=pool_cfg.get("pool_size", 5),
             blocking=True,
             maxusage=pool_cfg.get("pool_recycle", 3600),
-            host=self._mysql_config.get("host", "localhost"),
-            port=self._mysql_config.get("port", 3306),
-            user=self._mysql_config.get("user", "root"),
-            password=self._mysql_config.get("password", ""),
+            host=host,
+            port=port,
+            user=user,
+            password=password,
             database=db_name,
-            charset=self._mysql_config.get("charset", "utf8mb4"),
-            connect_timeout=self._mysql_config.get("connect_timeout", 10),
+            charset=charset,
+            connect_timeout=connect_timeout,
             read_timeout=self._mysql_config.get("read_timeout", 30),
             write_timeout=self._mysql_config.get("write_timeout", 30),
             cursorclass=pymysql.cursors.DictCursor,
         )
 
-        conn = self._pool.connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT VERSION()")
-        version = cursor.fetchone()
-        cursor.close()
-        conn.close()
+        try:
+            conn = self._pool.connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT VERSION()")
+            version = cursor.fetchone()
+            cursor.close()
+            conn.close()
+        except Exception as e:
+            raise ConnectionError(f"MySQL 连接失败 | 目标: {target} | 原因: {e}") from e
+
         ver_str = version["VERSION()"] if version else "未知"
         logger.info(f"MySQL连接成功 | 版本: {ver_str}")
 
@@ -370,6 +395,9 @@ class Database:
             self._ensure_column(cursor, "users", "bound_ip", "VARCHAR(45) DEFAULT ''")
             # 单点登录：token 版本号，每次登录递增，旧 token 的 v 不匹配即被踢下线
             self._ensure_column(cursor, "users", "token_version", "INTEGER DEFAULT 0")
+            # 空闲超时：最近一次接口调用时间（Unix 时间戳）。持久化到共享数据库，
+            # 保证 uvicorn 多 worker（--workers > 1）下各进程读到一致的登录活跃状态。
+            self._ensure_column(cursor, "users", "last_activity_at", "REAL")
 
             cursor.execute(f"""
                 CREATE TABLE IF NOT EXISTS fmqt_bloom (
@@ -1440,6 +1468,51 @@ class Database:
     def get_user_token_version(self, username: str) -> int:
         user = self.get_user_by_username(username)
         return user.token_version if user else 0
+
+    def touch_user_activity(self, username: str, timestamp: float) -> bool:
+        """更新用户最近活跃时间（Unix 时间戳），供 idle-logout 滑动续期。
+
+        数据落在共享数据库，多 worker 下任意进程都能读到同一个登录活跃状态。
+        """
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            self._execute(
+                cursor,
+                "UPDATE users SET last_activity_at=? WHERE username=?",
+                (timestamp, username),
+            )
+            return cursor.rowcount > 0
+
+    def get_user_activity_time(self, username: str) -> Optional[float]:
+        """读取用户最近活跃时间（Unix 时间戳），无记录返回 None。"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            self._execute(
+                cursor,
+                "SELECT last_activity_at FROM users WHERE username=?",
+                (username,),
+            )
+            row = cursor.fetchone()
+        if row is None:
+            return None
+        value = row["last_activity_at"] if isinstance(row, dict) else row[0]
+        if value is None or value == "":
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    def clear_user_activity(self, username: str) -> bool:
+        """清空用户活跃时间（登出时调用）。"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            self._execute(
+                cursor,
+                "UPDATE users SET last_activity_at=NULL WHERE username=?",
+                (username,),
+            )
+            return cursor.rowcount > 0
 
     def register_user(
         self,

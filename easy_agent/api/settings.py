@@ -117,12 +117,8 @@ async def get_system_prompt(
         return {"content": _cfg["system_prompt"]}
 
     # fallback: 从文件读取
-    config_path = Config.find_config_file("config.yaml")
-    if config_path:
-        config_dir = Path(config_path).parent
-        sp_path = config_dir / "system_prompt.md"
-    else:
-        sp_path = Path(__file__).parent.parent / "config" / "system_prompt.md"
+    config_path = Config.resolve_config_path()
+    sp_path = config_path.parent / "system_prompt.md"
 
     if sp_path.exists():
         content = sp_path.read_text(encoding="utf-8")

@@ -118,7 +118,7 @@ async def register(
     # 注册即登录，同样缓存登录时间与活跃 IP
     _login_time_cache[user.username] = datetime.now()
     _active_login_ip[user.username] = get_client_ip(http_request)
-    touch_user_activity(user.username)
+    touch_user_activity(db, user.username)
 
     try:
         user_workspace = Config.get_user_workspace_dir(user.username)
@@ -179,7 +179,7 @@ async def login(
     # 缓存登录时间（供登出接口打印）与当前活跃 IP（供下次登录判断异地踢人）
     _login_time_cache[user.username] = datetime.now()
     _active_login_ip[user.username] = client_ip
-    touch_user_activity(user.username)
+    touch_user_activity(db, user.username)
 
     max_input_tokens = _get_max_input_tokens()
 
@@ -212,9 +212,9 @@ async def logout(
     """
     now = datetime.now()
     cached_login = _login_time_cache.pop(username, None)
-    last_activity_timestamp = get_user_activity_time(username)
+    last_activity_timestamp = get_user_activity_time(db, username)
     _active_login_ip.pop(username, None)
-    clear_user_activity(username)
+    clear_user_activity(db, username)
     db.increment_user_token_version(username)
     login_time_str = "未知"
     duration_str = "未知"

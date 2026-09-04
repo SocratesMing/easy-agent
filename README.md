@@ -197,14 +197,15 @@ docker run -d \
 - `test` -> `config/config.test.yaml`（测试）
 - `dev` -> `config/config.dev.yaml`（开发）
 
-后端 `easy_agent/app.py` 启动时同样读取 `AGENT_ENV`（优先级：`EASY_CONFIG` 环境变量 > `AGENT_ENV` > 默认 `config.yaml`），并在终端打印环境信息与加载的配置文件路径。
+后端通过 `Config.resolve_config_path()` 选择配置（优先级：`EASY_CONFIG` > `AGENT_ENV` 对应的 `config.{env}.yaml` > `config.dev.yaml` > `config.yaml`），并在终端打印环境信息与加载的配置文件路径。
+YAML 中的 `api_key`、`password` 等值会按字面量直接读取，不会替换为环境变量。
 前端 `vite.config.js` 在构建时读取 `AGENT_ENV` 映射为 Vite mode（dev→development / test→test / prod→production），加载对应的 `.env.[mode]` 文件，并在终端输出配置横幅。
 
 ---
 
 ## 六、配置说明
 
-主要配置项（`easy_agent/config/config.yaml`）：
+主要配置项（例如 `easy_agent/config/config.dev.yaml`；本地环境配置已被 Git 忽略）：
 
 ```yaml
 # 使用的模型（在 models 列表中选择一个）
