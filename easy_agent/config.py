@@ -100,9 +100,9 @@ class AgentConfig(BaseModel):
     log_dir: str = "./logs"
     sessions_dir: str = "./sessions"
     system_prompt_path: str = "system_prompt.md"
-    idle_logout_minutes: int = 5
+    idle_logout_minutes: int = 0
     """登录态空闲超时（分钟）：后端以最近一次接口调用为起点滑动续期，
-    前端超过该时长无操作时自动退出到登录页。设为 0 表示永不过期。"""
+    前端超过该时长无操作时自动退出到登录页。0 表示永不过期（默认，后台不启用登录超时机制）。"""
     denied_dirs: list[str | dict[str, Any]] = Field(default_factory=list)
     """禁止智能体读写的虚拟路径目录列表。
 
@@ -303,7 +303,7 @@ class Config(BaseModel):
             log_dir=data.get("log_dir", "./logs"),
             sessions_dir=data.get("sessions_dir", "./sessions"),
             system_prompt_path=data.get("system_prompt_path", "system_prompt.md"),
-            idle_logout_minutes=data.get("idle_logout_minutes", 5),
+            idle_logout_minutes=data.get("idle_logout_minutes", 0),
             denied_dirs=data.get("denied_dirs", []),
             external_dirs=data.get("external_dirs", {}),
         )

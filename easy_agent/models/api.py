@@ -204,6 +204,11 @@ class RegisterRequest(BaseModel):
     email: Optional[str] = Field(default="", description="邮箱")
 
 
+class PasswordlessLoginRequest(BaseModel):
+    username: str = Field(..., description="用户名", min_length=2, max_length=50)
+    user_id: str = Field(default="0", max_length=100, description="用户ID：已存在用户忽略此字段；新用户为 0/空时自动生成")
+
+
 class ResetPasswordRequest(BaseModel):
     username: str = Field(..., description="用户名")
     new_password: str = Field(..., description="新密码", min_length=4, max_length=20)

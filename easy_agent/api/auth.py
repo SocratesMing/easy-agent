@@ -21,6 +21,7 @@ from ..models.api import (
     UpdateUserProfileRequest,
     LoginRequest,
     RegisterRequest,
+    PasswordlessLoginRequest,
     ResetPasswordRequest,
     AuthResponse,
 )
@@ -189,6 +190,82 @@ async def login(
         )
     logger.info(
         f"[用户] 登录成功 | 用户名: {user.username} | IP: {client_ip} | 版本: {new_version}"
+    )
+
+    return AuthResponse(
+        access_token=access_token,
+        token_type="bearer",
+        username=user.username,
+        max_input_tokens=max_input_tokens,
+    )
+
+
+@router.post(
+    "/login-passwordless",
+    response_model=AuthResponse,
+    summary="免密登录（用户名 + 用户ID，用户不存在时自动注册并登录）",
+)
+async def login_passwordless(
+    request: PasswordlessLoginRequest,
+    http_request: Request,
+    db: Annotated[Database, Depends(get_database)],
+):
+    """免密登录：用户名已存在则直接登录（忽略 user_id）；不存在则自动注册后登录。
+
+    新用户的 user_id 为 0/空时自动生成唯一 ID，否则使用传入值；
+    传入的 user_id 已被其他用户占用时返回 400。供外部系统通过 URL
+    携带用户名与用户ID 直登使用。
+    """
+    # admin 拥有用户管理权限，禁止免密登录，防止仅凭用户名冒充管理员
+    if request.username == "admin":
+        raise HTTPException(status_code=403, detail="admin 用户不支持免密登录")
+
+    user, created = db.get_or_create_passwordless_user(
+        username=request.username,
+        user_id=request.user_id,
+    )
+    if not user:
+        raise HTTPException(status_code=400, detail="用户ID已被其他用户使用")
+
+    client_ip = get_client_ip(http_request)
+    prev_ip = _active_login_ip.get(user.username)
+
+    # 与密码登录一致：递增 token 版本号实现单点登录，签发新 token
+    new_version = db.increment_user_token_version(user.username)
+    access_token = create_access_token(
+        data={"sub": user.username, "v": new_version},
+        expires_delta=_get_token_lifetime(),
+        never_expires=_token_never_expires(),
+    )
+
+    _login_time_cache[user.username] = datetime.now()
+    _active_login_ip[user.username] = client_ip
+    touch_user_activity(db, user.username)
+
+    if created:
+        # 与注册接口一致：为免密新用户创建 workspace 目录
+        try:
+            user_workspace = Config.get_user_workspace_dir(user.username)
+            user_workspace.mkdir(parents=True, exist_ok=True)
+            user_upload = Config.get_user_upload_dir(user.username)
+            user_upload.mkdir(parents=True, exist_ok=True)
+            logger.info(
+                f"[用户] 创建用户workspace | 用户: {user.username} | 路径: {user_workspace}"
+            )
+        except Exception as e:
+            logger.warning(
+                f"[用户] 创建用户workspace失败 | 用户: {user.username} | 错误: {e}"
+            )
+
+    max_input_tokens = _get_max_input_tokens()
+
+    if prev_ip and prev_ip != client_ip:
+        logger.info(
+            f"[用户] 单点登录踢出旧会话 | 用户: {user.username} | 旧IP: {prev_ip} | 新IP: {client_ip}"
+        )
+    logger.info(
+        f"[用户] 免密登录成功 | 用户名: {user.username} | 自动注册: {created} | "
+        f"IP: {client_ip} | 版本: {new_version}"
     )
 
     return AuthResponse(
@@ -409,7 +486,7 @@ async def get_auth_config(
         idle_logout_minutes = _cfg["config"].agent.idle_logout_minutes
         app_welcome_title = _cfg["config"].app_welcome_title
     else:
-        idle_logout_minutes = 5
+        idle_logout_minutes = 0
     return {
         "max_input_tokens": max_input_tokens,
         "preset_questions": preset_questions,

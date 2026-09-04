@@ -26,8 +26,8 @@ def _get_idle_logout_minutes() -> int:
         if agent_config and agent_config.get("config"):
             return agent_config["config"].agent.idle_logout_minutes
     except Exception as exc:
-        logger.warning(f"读取 idle_logout_minutes 失败，使用默认 5 分钟: {exc}")
-    return 5
+        logger.warning(f"读取 idle_logout_minutes 失败，使用默认 0（永不过期）: {exc}")
+    return 0
 
 
 def touch_user_activity(db: Database, username: str, now: Optional[float] = None) -> None:

@@ -96,6 +96,29 @@ export async function login(username, password) {
   return data
 }
 
+// 免密登录：用户名已存在直接登录；不存在则自动注册后登录。
+// userId 为 0/空时由后端为新用户自动生成唯一 user_id。
+export async function passwordlessLogin(username, userId = '0') {
+  const response = await fetch(`${API_BASE_URL}/agent/auth/login-passwordless`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ username, user_id: userId })
+  })
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => null)
+    const err = new Error((error && error.detail) || '免密登录失败')
+    err.status = response.status
+    throw err
+  }
+
+  const data = await response.json()
+  storeAuth(data.access_token, data.username)
+  return data
+}
+
 export async function register(username, password, organizationId, email = '') {
   const response = await fetch(`${API_BASE_URL}/agent/auth/register`, {
     method: 'POST',
