@@ -25,21 +25,21 @@ def _seed_task(client: TestClient, task_id: str = "unit-task-1"):
 
 def test_list_tasks(client: TestClient):
     tid = _seed_task(client)
-    resp = client.get("/api/scheduled-tasks")
+    resp = client.get("/agent/scheduled-tasks")
     assert resp.status_code == 200
     assert any(t["task_id"] == tid for t in resp.json())
 
 
 def test_task_runs_empty(client: TestClient):
     tid = _seed_task(client)
-    resp = client.get(f"/api/scheduled-tasks/{tid}/runs")
+    resp = client.get(f"/agent/scheduled-tasks/{tid}/runs")
     assert resp.status_code == 200
     assert isinstance(resp.json(), list)
 
 
 def test_toggle_task(client: TestClient):
     tid = _seed_task(client)
-    resp = client.patch(f"/api/scheduled-tasks/{tid}/toggle")
+    resp = client.patch(f"/agent/scheduled-tasks/{tid}/toggle")
     assert resp.status_code == 200
     assert "enabled" in resp.json()
 
@@ -47,14 +47,14 @@ def test_toggle_task(client: TestClient):
 def test_run_task(client: TestClient):
     tid = _seed_task(client)
     # 运行需要智能体；无论成功触发还是因无智能体失败，都不应返回 5xx 之外的错误
-    resp = client.post(f"/api/scheduled-tasks/{tid}/run")
+    resp = client.post(f"/agent/scheduled-tasks/{tid}/run")
     assert resp.status_code < 600
 
 
 def test_delete_task(client: TestClient):
     tid = _seed_task(client)
-    resp = client.delete(f"/api/scheduled-tasks/{tid}")
+    resp = client.delete(f"/agent/scheduled-tasks/{tid}")
     assert resp.status_code == 200
 
-    lst = client.get("/api/scheduled-tasks").json()
+    lst = client.get("/agent/scheduled-tasks").json()
     assert not any(t["task_id"] == tid for t in lst)

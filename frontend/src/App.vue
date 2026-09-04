@@ -138,7 +138,7 @@ import WorkspacePanel from './components/WorkspacePanel.vue'
 import SettingsPanel from './components/SettingsPanel.vue'
 import { createSession, listSessions, getChatHistory, deleteSession, sendMessage, resumeStream, renameSession, togglePinSession, getStreamStatus, attachStream } from './api/chat.js'
 import { uploadFile, deleteFile, getUserProfile, getSessionGeneratedFiles } from './api/files.js'
-import { logout as apiLogout, notifyLogout, getStoredToken, getStoredUsername, AUTH_EXPIRED_EVENT, USER_ACTIVITY_EVENT, authFetch } from './api/auth.js'
+import { logout as apiLogout, notifyLogout, getStoredToken, getStoredUsername, AUTH_EXPIRED_EVENT, USER_ACTIVITY_EVENT, authFetch, passwordlessLogin } from './api/auth.js'
 import { getModels as fetchModels } from './api/settings.js'
 export default {
   components: {
@@ -654,7 +654,7 @@ async function handleWelcomeCompleted(profile) {
     sessionUsage.value.max_input_tokens = profile.max_input_tokens
   }
   try {
-    const configResp = await authFetch(`${API_BASE_URL}/api/auth/config`)
+    const configResp = await authFetch(`${API_BASE_URL}/agent/auth/config`)
     if (configResp.ok) {
       const configData = await configResp.json()
       applyAgentConfig(configData)
@@ -803,13 +803,35 @@ async function loadUserProfile() {
   }
 
   try {
-    const configResp = await authFetch(`${API_BASE_URL}/api/auth/config`)
+    const configResp = await authFetch(`${API_BASE_URL}/agent/auth/config`)
     if (configResp.ok) {
       const configData = await configResp.json()
       applyAgentConfig(configData)
     }
   } catch (e) {
     console.warn('获取模型配置失败:', e)
+  }
+}
+
+// URL 免密直登：地址栏携带 ?username=xxx&user_id=yyy（user_id 可省略，默认 0）时
+// 直接免密登录进入主界面，优先级高于已存储的登录态。
+async function handlePasswordlessUrlLogin() {
+  const params = new URLSearchParams(window.location.search)
+  const username = params.get('username')
+  if (!username) return false
+  const userId = params.get('user_id') || '0'
+  try {
+    const data = await passwordlessLogin(username, userId)
+    // 清除地址栏中的凭证参数，避免留在浏览器历史/后端访问日志
+    window.history.replaceState({}, '', window.location.pathname)
+    await handleWelcomeCompleted({
+      username: data.username,
+      max_input_tokens: data.max_input_tokens
+    })
+    return true
+  } catch (e) {
+    console.error('URL 免密登录失败:', e)
+    return false
   }
 }
 
@@ -1768,7 +1790,7 @@ function handleStop() {
 
   // 通知后端取消正在运行的流式任务（中断 astream 执行）并清除 Agent 缓存
   if (sid) {
-    authFetch(`${API_BASE_URL}/api/chat/cancel?session_id=${encodeURIComponent(sid)}`, {
+    authFetch(`${API_BASE_URL}/agent/chat/cancel?session_id=${encodeURIComponent(sid)}`, {
       method: 'POST',
     }).catch(() => {})
   }
@@ -1810,6 +1832,8 @@ onMounted(async () => {
   window.addEventListener(AUTH_EXPIRED_EVENT, handleLogout)
   // 后端交互（API 调用）触发用户活动事件 -> 重置空闲登出计时器
   window.addEventListener(USER_ACTIVITY_EVENT, resetIdleTimer)
+  // URL 免密直登（?username=xxx&user_id=yyy）：成功则直接进入主界面
+  if (await handlePasswordlessUrlLogin()) return
   await loadUserProfile()
   if (!showWelcome.value) {
     startIdleTimer()

@@ -25,7 +25,16 @@ from ..services import get_agent_config, invalidate_user_agents
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/settings", tags=["Settings"])
+router = APIRouter(prefix="/agent/settings", tags=["Settings"])
+
+
+def _market_mysql_config() -> dict[str, Any] | None:
+    """Use the backend database config for in-process Market MCP operations."""
+    agent_config = get_agent_config() or {}
+    config = agent_config.get("config") or Config.load()
+    if config.database.type != "mysql":
+        return None
+    return config.database.mysql.model_dump()
 
 
 # ── 记忆 ──────────────────────────────────────────────────────────────
@@ -117,12 +126,8 @@ async def get_system_prompt(
         return {"content": _cfg["system_prompt"]}
 
     # fallback: 从文件读取
-    config_path = Config.find_config_file("config.yaml")
-    if config_path:
-        config_dir = Path(config_path).parent
-        sp_path = config_dir / "system_prompt.md"
-    else:
-        sp_path = Path(__file__).parent.parent / "config" / "system_prompt.md"
+    config_path = Config.resolve_config_path()
+    sp_path = config_path.parent / "system_prompt.md"
 
     if sp_path.exists():
         content = sp_path.read_text(encoding="utf-8")
@@ -167,13 +172,12 @@ async def get_skills(
 # ── 模型列表 ──────────────────────────────────────────────────────────
 
 
-@router.get("/models", summary="获取所有可选模型列表")
-async def get_models(
-    username: Annotated[str, Depends(get_current_username)],
-):
+@router.get("/models", summary="获取所有可选模型列表（公共接口，无需登录）")
+async def get_models():
     """返回 config.models 中的模型列表及当前激活模型。
 
     前端用于填充输入框的模型下拉，值使用模型 key（如 deepseek/glm）。
+    与用户隔离无关，为公共接口。
     """
     _cfg = get_agent_config()
     if not _cfg or not _cfg.get("config"):
@@ -192,7 +196,7 @@ async def get_models(
         })
 
     logger.info(
-        f"获取模型列表 | 用户: {username} | 可选: {[m['name'] for m in models]} | "
+        f"获取模型列表 | 可选: {[m['name'] for m in models]} | "
         f"active: {config.active_model}"
     )
     return {"models": models, "active_model": config.active_model}
@@ -281,6 +285,54 @@ async def get_mcp_market(
 
 class AddMarketMcpRequest(BaseModel):
     name: str
+
+
+class IssueMcpApiKeyRequest(BaseModel):
+    business: str
+
+
+@router.get("/mcp/api-keys", summary="获取当前用户各业务的 MCP API Key 状态")
+async def get_mcp_api_keys(
+    username: Annotated[str, Depends(get_current_username)],
+):
+    """返回每个业务的 key 是否已生成与更新时间（不含任何密钥信息）。"""
+    from ..services.mcp_api_keys import SUPPORTED_BUSINESSES, list_key_status
+
+    statuses = {row["business"]: row for row in list_key_status(username)}
+    return {
+        "businesses": [
+            {
+                "business": name,
+                "issued": name in statuses and not statuses[name]["revoked"],
+                "updated_at": statuses.get(name, {}).get("updated_at"),
+            }
+            for name in SUPPORTED_BUSINESSES
+        ]
+    }
+
+
+@router.post("/mcp/api-key", summary="为当前用户生成指定业务的 MCP API Key")
+async def generate_mcp_api_key(
+    request: IssueMcpApiKeyRequest,
+    username: Annotated[str, Depends(get_current_username)],
+):
+    """生成新的 API Key；数据库仅保存哈希，明文只返回一次。重签后旧 Key 失效。"""
+    from ..services.mcp_api_keys import issue_api_key, is_supported_business
+
+    if not is_supported_business(request.business):
+        raise HTTPException(status_code=400, detail=f"不支持的 MCP 业务: {request.business}")
+
+    try:
+        api_key = issue_api_key(username, request.business)
+    except Exception as e:
+        logger.warning(f"生成 MCP API Key 失败 | 用户: {username} | 错误: {e}")
+        raise HTTPException(
+            status_code=503,
+            detail="生成 MCP API Key 失败，请检查数据库配置",
+        )
+
+    logger.info(f"生成 MCP API Key 成功 | 用户: {username} | 业务: {request.business}")
+    return {"status": "ok", "api_key": api_key, "business": request.business}
 
 
 @router.post("/mcp/market/add", summary="从公共市场添加 MCP 到个人配置")

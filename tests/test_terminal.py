@@ -17,7 +17,7 @@ def test_terminal_page(client: TestClient):
 def test_terminal_ws(client: TestClient):
     # 无 pty 环境下端点会主动断开，有 pty 则可建立连接，两种均为可接受行为
     try:
-        with client.websocket_connect("/api/terminal/ws?cols=80&rows=24") as ws:
+        with client.websocket_connect("/agent/terminal/ws?cols=80&rows=24") as ws:
             _ = ws.receive_text()
     except Exception:
         pass

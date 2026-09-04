@@ -16,7 +16,7 @@ from ..services.agent_manager import _llm_instance
 
 logger = logging.getLogger("easy_agent.forex")
 
-forex_router = APIRouter(prefix="/api/forex", tags=["Forex"])
+forex_router = APIRouter(prefix="/agent/forex", tags=["Forex"])
 
 BOND_BOT: dict[int, list] = {}
 

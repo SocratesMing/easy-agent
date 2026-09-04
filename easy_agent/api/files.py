@@ -28,7 +28,7 @@ HIDDEN_EXTENSIONS = frozenset({
 })
 
 router = APIRouter(
-    prefix="/api/files",
+    prefix="/agent/files",
     tags=["Files"],
 )
 

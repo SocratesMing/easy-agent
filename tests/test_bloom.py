@@ -12,14 +12,14 @@ from fastapi.testclient import TestClient
 
 
 def test_query_bloom(client: TestClient):
-    resp = client.post("/api/bloom/queryBloom", json=[{"type": "短期基准利率", "region": "瑞士"}])
+    resp = client.post("/agent/bloom/queryBloom", json=[{"type": "短期基准利率", "region": "瑞士"}])
     assert resp.status_code == 200
     assert isinstance(resp.json(), (list, dict))
 
 
 def test_query_bloom_stock_index(client: TestClient):
     resp = client.post(
-        "/api/bloom/queryBloomStockIndex",
+        "/agent/bloom/queryBloomStockIndex",
         json={"type": "股指价格", "region": "道琼斯指数"},
     )
     assert resp.status_code == 200
@@ -28,7 +28,7 @@ def test_query_bloom_stock_index(client: TestClient):
 
 def test_query_bloom_line_chart(client: TestClient):
     resp = client.post(
-        "/api/bloom/queryBloomLineChart",
+        "/agent/bloom/queryBloomLineChart",
         json={
             "type": "短期基准利率",
             "region": ["瑞士"],
@@ -42,7 +42,7 @@ def test_query_bloom_line_chart(client: TestClient):
 
 def test_query_bloom_stock_index_chart(client: TestClient):
     resp = client.post(
-        "/api/bloom/queryBloomStockIndexChart",
+        "/agent/bloom/queryBloomStockIndexChart",
         json={
             "type": "股指价格",
             "bloomCodeCN": ["道琼斯指数"],
@@ -56,7 +56,7 @@ def test_query_bloom_stock_index_chart(client: TestClient):
 
 def test_query_bloom_analysis(client: TestClient):
     resp = client.post(
-        "/api/bloom/queryBloomAnalysis",
+        "/agent/bloom/queryBloomAnalysis",
         params={"pair": "EURUSD", "startDate": "2025-06-27", "endDate": "2025-06-27"},
     )
     assert resp.status_code == 200
@@ -66,7 +66,7 @@ def test_query_bloom_analysis(client: TestClient):
 def test_import_bloom(client: TestClient):
     # 数据目录不存在时导入为 no-op，返回 True
     resp = client.post(
-        "/api/bloom/importBloom",
+        "/agent/bloom/importBloom",
         params={"startDate": "20250627", "endDate": "20250628"},
     )
     assert resp.status_code == 200
@@ -74,6 +74,6 @@ def test_import_bloom(client: TestClient):
 
 def test_reanalysis_bloom(client: TestClient):
     resp = client.post(
-        "/api/bloom/reAnalysisBloom", params={"analysisDate": "20250627"}
+        "/agent/bloom/reAnalysisBloom", params={"analysisDate": "20250627"}
     )
     assert resp.status_code == 200

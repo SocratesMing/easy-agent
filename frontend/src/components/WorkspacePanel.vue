@@ -132,7 +132,7 @@ function handleDownloadFile(file) {
   params.set('session_id', props.currentSessionId)
   params.set('download', 'true')
   if (token) params.set('token', token)
-  const url = `${API_BASE_URL}/api/files/preview?${params.toString()}`
+  const url = `${API_BASE_URL}/agent/files/preview?${params.toString()}`
   const link = document.createElement('a')
   link.href = url
   link.download = file.name

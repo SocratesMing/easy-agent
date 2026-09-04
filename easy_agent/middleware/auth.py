@@ -12,7 +12,12 @@ from ..utils.auth import decode_access_token
 
 logger = logging.getLogger(__name__)
 
-_user_activity_cache: dict[str, float] = {}
+# 活跃时间戳的写入节流：username -> 最近一次写入数据库的时间。
+# 仅用于减少共享数据库的写压力（滑动续期无需每次请求都落库），
+# 权威数据始终以数据库 last_activity_at 为准，因此不跨进程共享也不会
+# 造成登录态不一致（读侧永远从共享库读）。
+_activity_write_throttle: dict[str, float] = {}
+_ACTIVITY_WRITE_INTERVAL = 30.0
 
 
 def _get_idle_logout_minutes() -> int:
@@ -21,30 +26,58 @@ def _get_idle_logout_minutes() -> int:
         if agent_config and agent_config.get("config"):
             return agent_config["config"].agent.idle_logout_minutes
     except Exception as exc:
-        logger.warning(f"读取 idle_logout_minutes 失败，使用默认 5 分钟: {exc}")
-    return 5
+        logger.warning(f"读取 idle_logout_minutes 失败，使用默认 0（永不过期）: {exc}")
+    return 0
 
 
-def touch_user_activity(username: str, now: Optional[float] = None) -> None:
-    if not username:
+def touch_user_activity(db: Database, username: str, now: Optional[float] = None) -> None:
+    """更新用户最近活跃时间，写入共享数据库（节流）。
+
+    多 worker 下登录请求可能落在 worker A，后续请求落在 worker B；活跃时间
+    必须存进共享数据库，否则 worker B 会误判用户「空闲过期」而将其登出。
+    """
+    if not username or db is None:
         return
-    _user_activity_cache[username] = time.time() if now is None else now
+    ts = time.time() if now is None else now
+    last = _activity_write_throttle.get(username)
+    if last is not None and ts - last < _ACTIVITY_WRITE_INTERVAL:
+        return
+    _activity_write_throttle[username] = ts
+    try:
+        db.touch_user_activity(username, ts)
+    except Exception as exc:
+        logger.warning(f"写入用户活跃时间失败 | 用户: {username} | 错误: {exc}")
 
 
-def clear_user_activity(username: str) -> None:
-    _user_activity_cache.pop(username, None)
+def clear_user_activity(db: Database, username: str) -> None:
+    _activity_write_throttle.pop(username, None)
+    if db is None:
+        return
+    try:
+        db.clear_user_activity(username)
+    except Exception as exc:
+        logger.warning(f"清空用户活跃时间失败 | 用户: {username} | 错误: {exc}")
 
 
-def get_user_activity_time(username: str) -> Optional[float]:
-    return _user_activity_cache.get(username)
+def get_user_activity_time(db: Database, username: str) -> Optional[float]:
+    """从共享数据库读取用户最近活跃时间。"""
+    if db is None:
+        return None
+    try:
+        return db.get_user_activity_time(username)
+    except Exception as exc:
+        logger.warning(f"读取用户活跃时间失败 | 用户: {username} | 错误: {exc}")
+        return None
 
 
-def _user_session_is_active(username: str, now: Optional[float] = None) -> bool:
+def _user_session_is_active(
+    db: Database, username: str, now: Optional[float] = None
+) -> bool:
     idle_minutes = _get_idle_logout_minutes()
     if idle_minutes <= 0:
         return True
 
-    last_activity = _user_activity_cache.get(username)
+    last_activity = get_user_activity_time(db, username)
     if last_activity is None:
         return False
 
@@ -70,9 +103,9 @@ def verify_token_sso(token: str, db: Database) -> Optional[str]:
         return None
     if token_v is None or user.token_version != token_v:
         return None
-    if not _user_session_is_active(username):
+    if not _user_session_is_active(db, username):
         return None
-    touch_user_activity(username)
+    touch_user_activity(db, username)
     return username
 
 
@@ -98,12 +131,12 @@ async def get_current_username(
                             status_code=401,
                             detail="您的账号在其他设备登录，您已被迫下线，请重新登录",
                         )
-                    if not _user_session_is_active(username):
+                    if not _user_session_is_active(db, username):
                         raise HTTPException(
                             status_code=401,
                             detail="登录已过期或未登录，请重新登录",
                         )
-                    touch_user_activity(username)
+                    touch_user_activity(db, username)
                     return username
 
     # 未携带有效凭证（token 过期/未登录/被踢下线）时返回 401。

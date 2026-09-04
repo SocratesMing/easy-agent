@@ -62,7 +62,7 @@ class Database:
                         f"数据库: {self._mysql_config.get('database')} | 用户: {self._mysql_config.get('user')}"
                     )
                 except Exception as e:
-                    logger.info(f"MySQL 连接失败，自动降级到 SQLite: {e}")
+                    logger.warning(f"MySQL 连接失败，自动降级到 SQLite: {e}")
                     self.db_type = "sqlite"
                     self._pool = None
                     sqlite_cfg = db_config.get("sqlite", {})
@@ -76,14 +76,28 @@ class Database:
 
     def _init_mysql_pool(self):
         db_name = self._mysql_config.get("database", "easy_agent")
+        host = self._mysql_config.get("host", "localhost")
+        port = self._mysql_config.get("port", 3306)
+        user = self._mysql_config.get("user", "root")
+        password = self._mysql_config.get("password", "")
+        charset = self._mysql_config.get("charset", "utf8mb4")
+        connect_timeout = self._mysql_config.get("connect_timeout", 10)
+        target = f"{user}@{host}:{port}/{db_name}"
+
+        if not password:
+            logger.warning(
+                "MySQL 密码为空：请检查当前环境配置文件中的 database.mysql.password，"
+                "并直接填写真实密码（改完必须重启后端）"
+            )
+
         try:
             conn = pymysql.connect(
-                host=self._mysql_config.get("host", "localhost"),
-                port=self._mysql_config.get("port", 3306),
-                user=self._mysql_config.get("user", "root"),
-                password=self._mysql_config.get("password", ""),
-                charset=self._mysql_config.get("charset", "utf8mb4"),
-                connect_timeout=self._mysql_config.get("connect_timeout", 10),
+                host=host,
+                port=port,
+                user=user,
+                password=password,
+                charset=charset,
+                connect_timeout=connect_timeout,
             )
             cursor = conn.cursor()
             cursor.execute(
@@ -93,7 +107,14 @@ class Database:
             conn.close()
             logger.info(f"MySQL数据库 '{db_name}' 已就绪")
         except Exception as e:
-            logger.info(f"创建数据库时出错（可能已存在）: {e}")
+            err = str(e)
+            if "using password: NO" in err:
+                hint = "（未发送密码：请检查 database.mysql.password 是否为空）"
+            elif "using password: YES" in err:
+                hint = "（密码错误，或该用户未对来源 host 授权，如 root@'172.17.0.1'）"
+            else:
+                hint = "（库已存在或无 CREATE 权限时可忽略）"
+            logger.warning(f"创建/连接 MySQL 数据库失败{hint}: {e} | 目标: {target}")
 
         pool_cfg = self._mysql_config.get("pool", {})
         self._pool = PooledDB(
@@ -104,24 +125,28 @@ class Database:
             maxcached=pool_cfg.get("pool_size", 5),
             blocking=True,
             maxusage=pool_cfg.get("pool_recycle", 3600),
-            host=self._mysql_config.get("host", "localhost"),
-            port=self._mysql_config.get("port", 3306),
-            user=self._mysql_config.get("user", "root"),
-            password=self._mysql_config.get("password", ""),
+            host=host,
+            port=port,
+            user=user,
+            password=password,
             database=db_name,
-            charset=self._mysql_config.get("charset", "utf8mb4"),
-            connect_timeout=self._mysql_config.get("connect_timeout", 10),
+            charset=charset,
+            connect_timeout=connect_timeout,
             read_timeout=self._mysql_config.get("read_timeout", 30),
             write_timeout=self._mysql_config.get("write_timeout", 30),
             cursorclass=pymysql.cursors.DictCursor,
         )
 
-        conn = self._pool.connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT VERSION()")
-        version = cursor.fetchone()
-        cursor.close()
-        conn.close()
+        try:
+            conn = self._pool.connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT VERSION()")
+            version = cursor.fetchone()
+            cursor.close()
+            conn.close()
+        except Exception as e:
+            raise ConnectionError(f"MySQL 连接失败 | 目标: {target} | 原因: {e}") from e
+
         ver_str = version["VERSION()"] if version else "未知"
         logger.info(f"MySQL连接成功 | 版本: {ver_str}")
 
@@ -370,6 +395,27 @@ class Database:
             self._ensure_column(cursor, "users", "bound_ip", "VARCHAR(45) DEFAULT ''")
             # 单点登录：token 版本号，每次登录递增，旧 token 的 v 不匹配即被踢下线
             self._ensure_column(cursor, "users", "token_version", "INTEGER DEFAULT 0")
+            # 空闲超时：最近一次接口调用时间（Unix 时间戳）。持久化到共享数据库，
+            # 保证 uvicorn 多 worker（--workers > 1）下各进程读到一致的登录活跃状态。
+            self._ensure_column(cursor, "users", "last_activity_at", "REAL")
+
+            # MCP API Key：主应用签发，mcp-server 子项目只读校验。
+            # UNIQUE(username, business) 保证每用户每业务仅一把有效 key，重签即覆盖。
+            cursor.execute(f"""
+                CREATE TABLE IF NOT EXISTS mcp_api_keys (
+                    id INTEGER PRIMARY KEY {auto_inc},
+                    username VARCHAR(64) NOT NULL,
+                    business VARCHAR(64) NOT NULL,
+                    key_hash CHAR(64) NOT NULL UNIQUE,
+                    created_at VARCHAR(50) NOT NULL,
+                    updated_at VARCHAR(50) NOT NULL,
+                    revoked INTEGER NOT NULL DEFAULT 0,
+                    UNIQUE (username, business)
+                )
+            """)
+            self._create_index(
+                cursor, "idx_mcp_api_keys_user", "mcp_api_keys", "username"
+            )
 
             cursor.execute(f"""
                 CREATE TABLE IF NOT EXISTS fmqt_bloom (
@@ -1441,6 +1487,98 @@ class Database:
         user = self.get_user_by_username(username)
         return user.token_version if user else 0
 
+    def touch_user_activity(self, username: str, timestamp: float) -> bool:
+        """更新用户最近活跃时间（Unix 时间戳），供 idle-logout 滑动续期。
+
+        数据落在共享数据库，多 worker 下任意进程都能读到同一个登录活跃状态。
+        """
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            self._execute(
+                cursor,
+                "UPDATE users SET last_activity_at=? WHERE username=?",
+                (timestamp, username),
+            )
+            return cursor.rowcount > 0
+
+    def get_user_activity_time(self, username: str) -> Optional[float]:
+        """读取用户最近活跃时间（Unix 时间戳），无记录返回 None。"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            self._execute(
+                cursor,
+                "SELECT last_activity_at FROM users WHERE username=?",
+                (username,),
+            )
+            row = cursor.fetchone()
+        if row is None:
+            return None
+        value = row["last_activity_at"] if isinstance(row, dict) else row[0]
+        if value is None or value == "":
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    # ── MCP API Key（主应用签发，mcp-server 子项目只读校验） ─────────────
+
+    def issue_mcp_api_key(self, username: str, business: str, key_hash: str) -> bool:
+        """签发（或重签）某用户某业务的 MCP API Key，明文不落库。"""
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        # upsert：sqlite 用 ON CONFLICT，mysql 用 ON DUPLICATE KEY UPDATE
+        if self.db_type == "sqlite":
+            upsert_sql = """
+                INSERT INTO mcp_api_keys (username, business, key_hash, created_at, updated_at, revoked)
+                VALUES (?, ?, ?, ?, ?, 0)
+                ON CONFLICT(username, business) DO UPDATE SET
+                    key_hash=excluded.key_hash, updated_at=excluded.updated_at, revoked=0
+            """
+        else:
+            upsert_sql = """
+                INSERT INTO mcp_api_keys (username, business, key_hash, created_at, updated_at, revoked)
+                VALUES (?, ?, ?, ?, ?, 0)
+                ON DUPLICATE KEY UPDATE
+                    key_hash=VALUES(key_hash), updated_at=VALUES(updated_at), revoked=0
+            """
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            self._execute(cursor, upsert_sql, (username, business, key_hash, now, now))
+        return True
+
+    def revoke_mcp_api_key(self, username: str, business: str) -> bool:
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            self._execute(
+                cursor,
+                "UPDATE mcp_api_keys SET revoked=1, updated_at=? WHERE username=? AND business=?",
+                (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), username, business),
+            )
+            return cursor.rowcount > 0
+
+    def get_mcp_api_keys(self, username: str) -> list[dict]:
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            self._execute(
+                cursor,
+                "SELECT business, created_at, updated_at, revoked "
+                "FROM mcp_api_keys WHERE username=? ORDER BY business",
+                (username,),
+            )
+            rows = cursor.fetchall()
+        return [dict(r) if not isinstance(r, dict) else r for r in rows]
+
+    def clear_user_activity(self, username: str) -> bool:
+        """清空用户活跃时间（登出时调用）。"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            self._execute(
+                cursor,
+                "UPDATE users SET last_activity_at=NULL WHERE username=?",
+                (username,),
+            )
+            return cursor.rowcount > 0
+
     def register_user(
         self,
         username: str,
@@ -1475,6 +1613,43 @@ class Database:
         if not verify_password(password, user.password_hash):
             return None
         return user
+
+    def get_or_create_passwordless_user(
+        self,
+        username: str,
+        user_id: str = "",
+    ) -> tuple[Optional[UserModel], bool]:
+        """免密登录：按用户名查找用户，不存在则注册。
+
+        - 用户名已存在：直接返回该用户，user_id 不参与匹配；
+        - 用户名不存在：user_id 为空或 "0" 时自动生成唯一 ID，否则使用传入值，
+          传入值已被其他用户占用时返回 (None, False)。
+
+        返回 (user, created)。
+        """
+        existing = self.get_user_by_username(username)
+        if existing:
+            return existing, False
+
+        if not user_id or user_id == "0":
+            user_id = str(uuid.uuid4())
+        elif self.get_user_by_id(user_id):
+            return None, False
+
+        now = datetime.now().isoformat()
+        user = UserModel(
+            user_id=user_id,
+            username=username,
+            # 免密用户不通过密码登录，写入随机密码哈希防止被猜测
+            password_hash=hash_password(uuid.uuid4().hex),
+            organization_id="",
+            email="",
+            bound_ip="",
+            created_at=now,
+            updated_at=now,
+        )
+        self.create_user(user)
+        return user, True
 
     def update_user_password(self, username: str, new_password_hash: str) -> bool:
         user = self.get_user_by_username(username)
@@ -1647,7 +1822,7 @@ class Database:
     def get_generated_filenames(self, username: str) -> set[str]:
         """返回指定用户所有会话中生成的文件原始文件名集合。
 
-        用于资产页（/api/files/list）排除会话生成的文件，确保只展示用户上传的文件。
+        用于资产页（/agent/files/list）排除会话生成的文件，确保只展示用户上传的文件。
         """
         if not username:
             return set()

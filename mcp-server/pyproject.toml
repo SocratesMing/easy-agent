@@ -1,0 +1,32 @@
+[project]
+name = "easy-mcp-server"
+version = "0.1.0"
+description = "Standalone MCP (Model Context Protocol) servers for Easy Agent"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    # 与主项目 uv.lock 中的 mcp 1.27.x 保持同一大版本：
+    # mcp 2.x 的客户端 API 有 breaking change，服务端升级会导致主项目连不上。
+    "mcp>=1.27.0,<2.0.0",
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.34.0",
+    "pymysql>=1.1.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "httpx>=0.27.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["easy_mcp_server"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

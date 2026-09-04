@@ -1,20 +1,14 @@
 # Easy Agent Configuration (Example)
 #
-# Copy this file to config.yaml and fill in your API keys via environment variables,
-# or replace the ${...} placeholders with actual values.
+# Copy this file to config.yaml and replace every example value with your real value.
 #
 # Configuration File Locations (in priority order):
 # 1) easy_agent/config/config.yaml - Development mode (current directory)
 # 2) ~/.easy-agent/config/config.yaml - User config directory
 # 3) <package>/easy_agent/config/config.yaml - Package installation directory
 #
-# Sensitive values (api_key, password, ...) use ${ENV_VAR} placeholders and are
-# resolved at load time. Provide them via environment variables, for example:
-#   export MINIMAX_API_KEY=...
-#   export DEEPSEEK_API_KEY=...
-#   export ARK_API_KEY=...
-#   export MYSQL_PASSWORD=...
-# Optional ${VAR:-default} syntax is also supported.
+# Sensitive values (api_key, password, ...) must be written directly in the local
+# environment config file. Do not commit environment config files.
 
 # ===== LLM Configuration =====
 # Select which model to use: minimax | deepseek
@@ -25,7 +19,7 @@ models:
   minimax:
     provider: "minimax"
     protocol: "anthropic"  # anthropic or openai
-    api_key: "${MINIMAX_API_KEY}"
+    api_key: "your-minimax-api-key"
     model: "MiniMax-M3"
     api_base: "https://api.minimaxi.com/anthropic"  # China users; Global: https://api.minimax.io/anthropic
     max_input_tokens: 200000  # Model context window size, used for summarization threshold calculation
@@ -34,7 +28,7 @@ models:
     provider: "deepseek"
     protocol: "openai"  # anthropic or openai
     model: "deepseek-v4-flash"
-    api_key: "${DEEPSEEK_API_KEY}"
+    api_key: "your-deepseek-api-key"
     api_base: "https://api.deepseek.com"
     max_input_tokens: 200000
 
@@ -42,7 +36,7 @@ models:
     provider: "ark"
     protocol: "openai"  # anthropic or openai
     model: "deepseek-v4-pro"
-    api_key: "${ARK_API_KEY}"
+    api_key: "your-ark-api-key"
     api_base: "https://ark.cn-beijing.volces.com/api/coding/v3"
     max_input_tokens: 200000
 
@@ -50,7 +44,7 @@ models:
     provider: "glm"
     protocol: "openai"  # anthropic or openai
     model: "glm5"
-    api_key: "${GLM_API_KEY}"
+    api_key: "your-glm-api-key"
     api_base: "https://open.bigmodel.cn/api/paas/v4"
     max_input_tokens: 128000
 
@@ -66,7 +60,7 @@ memories_dir: "./memories"    # Long-term memory directory (project-relative). �
 log_dir: "./logs"             # 日志文件目录（项目相对路径）
 sessions_dir: "./sessions"     # 会话数据存储目录（项目相对路径）。实际路径：{sessions_dir}/{username}/{session_id}.json
 system_prompt_path: "system_prompt.md"  # System prompt file (same config directory)
-idle_logout_minutes: 5   # 前端空闲自动登出（分钟）：用户超过该时长无界面操作或后端交互则退出到登录页；设为 0 禁用
+idle_logout_minutes: 0   # 前端空闲自动登出（分钟）：用户超过该时长无界面操作或后端交互则退出到登录页；0 表示永不过期（默认，后台不启用登录超时机制）
 app_welcome_title: "Easy Agent，让工作更简单"  # 首页欢迎语
 sandbox_enabled: true    # Linux 使用 bwrap/Landlock；Windows 无等效沙箱时拒绝 execute。仅在可信单用户环境设为 false
 
@@ -128,11 +122,11 @@ database:
     path: "./data/easy_agent.db"
 
   mysql:
-    host: "${MYSQL_HOST:-127.0.0.1}"
+    host: "127.0.0.1"
     port: 3306
-    user: "${MYSQL_USER:-root}"
-    password: "${MYSQL_PASSWORD}"
-    database: "${MYSQL_DATABASE:-agent}"
+    user: "root"
+    password: "your-mysql-password"
+    database: "agent"
     charset: "utf8mb4"
     pool:
       pool_size: 5

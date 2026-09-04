@@ -1,7 +1,8 @@
-"""接口 /api/settings 的测试：模型列表、MCP 服务器查询与增删。"""
+"""接口 /agent/settings 的测试：模型列表、MCP 服务器查询与增删。"""
 
 import asyncio
 import json
+from pathlib import Path
 
 import pytest
 from fastapi import HTTPException
@@ -9,17 +10,19 @@ from fastapi import HTTPException
 from easy_agent.api.settings import (
     AddMarketMcpRequest,
     add_mcp_from_market,
+    generate_mcp_api_key,
     get_mcp_market,
     get_mcp_servers,
     router,
 )
+import easy_agent.api.settings as settings_api
 
 from easy_agent.config import Config
 from easy_agent.services import mcp as mcp_mod
 
 
 def test_models(client):
-    resp = client.get("/api/settings/models")
+    resp = client.get("/agent/settings/models")
     assert resp.status_code == 200
     data = resp.json()
     assert "models" in data
@@ -33,7 +36,7 @@ def test_models(client):
 
 
 def test_mcp_list(client):
-    resp = client.get("/api/settings/mcp")
+    resp = client.get("/agent/settings/mcp")
     assert resp.status_code == 200
     data = resp.json()
     assert "servers" in data
@@ -44,12 +47,12 @@ def test_mcp_list(client):
 
 def test_mcp_update_and_server_crud(client):
     # 1) 清空所有 MCP server（servers 为 dict，不是 list）
-    r = client.put("/api/settings/mcp", json={"servers": {}})
+    r = client.put("/agent/settings/mcp", json={"servers": {}})
     assert r.status_code == 200
 
     # 2) 新增一个本地 stdio 测试服务（body 字段为 config）
     add = client.post(
-        "/api/settings/mcp/server",
+        "/agent/settings/mcp/server",
         json={
             "config": {
                 "name": "unit-test-server",
@@ -64,7 +67,7 @@ def test_mcp_update_and_server_crud(client):
     assert "unit-test-server" in body["added"]
 
     # 3) 删除该服务
-    d = client.delete("/api/settings/mcp/server/unit-test-server")
+    d = client.delete("/agent/settings/mcp/server/unit-test-server")
     assert d.status_code == 200
 
 
@@ -126,11 +129,87 @@ def test_mcp_market_adds_global_server_to_user_config(tmp_path, monkeypatch):
     assert saved["servers"]["market-server"]["env"]["MCP_TOKEN"] == "secret-token"
 
     market_routes = {route.path: getattr(route, "methods", set()) for route in router.routes}
-    assert "/api/settings/mcp/market" in market_routes
-    assert "/api/settings/mcp/market/add" in market_routes
+    assert "/agent/settings/mcp/market" in market_routes
+    assert "/agent/settings/mcp/market/add" in market_routes
 
 
-def test_mcp_config_expands_environment_placeholders(tmp_path, monkeypatch):
+def test_mcp_api_key_generation_uses_current_user(monkeypatch):
+    import easy_agent.services.mcp_api_keys as keys_service
+    from easy_agent.api.settings import IssueMcpApiKeyRequest
+
+    captured = {}
+
+    def fake_issue(username, business):
+        captured["username"] = username
+        captured["business"] = business
+        return "generated-api-key"
+
+    monkeypatch.setattr(keys_service, "issue_api_key", fake_issue)
+
+    result = asyncio.run(
+        generate_mcp_api_key(IssueMcpApiKeyRequest(business="market"), "testuser")
+    )
+
+    assert result == {"status": "ok", "api_key": "generated-api-key", "business": "market"}
+    assert captured["username"] == "testuser"
+    assert captured["business"] == "market"
+
+
+def test_mcp_api_key_rejects_unknown_business():
+    from easy_agent.api.settings import IssueMcpApiKeyRequest
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(
+            generate_mcp_api_key(IssueMcpApiKeyRequest(business="nope"), "testuser")
+        )
+
+    assert exc_info.value.status_code == 400
+
+
+def test_mcp_api_key_generation_maps_database_failure(monkeypatch):
+    import easy_agent.services.mcp_api_keys as keys_service
+    from easy_agent.api.settings import IssueMcpApiKeyRequest
+
+    def fake_issue(username, business):
+        raise RuntimeError("database unavailable")
+
+    monkeypatch.setattr(keys_service, "issue_api_key", fake_issue)
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(
+            generate_mcp_api_key(IssueMcpApiKeyRequest(business="market"), "testuser")
+        )
+
+    assert exc_info.value.status_code == 503
+    assert "数据库" in exc_info.value.detail
+
+
+def test_mcp_api_key_routes_are_registered():
+    paths = {route.path for route in router.routes}
+
+    assert "/agent/settings/mcp/api-key" in paths
+    assert "/agent/settings/mcp/api-keys" in paths
+
+
+def test_main_app_never_imports_mcp_server_subproject():
+    """导入隔离：主应用代码不得 import mcp-server 子项目（只通过 HTTP/数据库耦合）。"""
+    import re
+
+    banned_patterns = (
+        re.compile(r"^\s*(from|import)\s+easy_mcp_server", re.MULTILINE),
+        re.compile(r"^\s*(from|import)\s+easy_agent\.mcp_servers", re.MULTILINE),
+    )
+    src_root = Path(__file__).resolve().parent.parent / "easy_agent"
+    offenders = [
+        str(p)
+        for p in src_root.rglob("*.py")
+        if "__pycache__" not in p.parts
+        and any(pat.search(p.read_text(encoding="utf-8")) for pat in banned_patterns)
+    ]
+    assert offenders == [], f"主应用 import 了 MCP 子项目: {offenders}"
+
+
+def test_mcp_config_preserves_environment_placeholders(tmp_path, monkeypatch):
     global_path = tmp_path / "mcp.json"
     global_path.write_text(
         json.dumps(
@@ -156,6 +235,6 @@ def test_mcp_config_expands_environment_placeholders(tmp_path, monkeypatch):
     config = mcp_mod.load_mcp_config(None)
 
     assert config["env-server"]["env"] == {
-        "MCP_PASSWORD": "test-password",
-        "MCP_HOST": "127.0.0.1",
+        "MCP_PASSWORD": "${MCP_TEST_PASSWORD}",
+        "MCP_HOST": "${MCP_TEST_HOST:-127.0.0.1}",
     }

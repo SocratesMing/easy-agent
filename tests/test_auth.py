@@ -13,7 +13,7 @@ from easy_agent.models.api import LoginRequest, ResetPasswordRequest
 
 def _register(client, username, password="secret123", org="org-1"):
     return client.post(
-        "/api/auth/register",
+        "/agent/auth/register",
         json={"username": username, "password": password, "organization_id": org},
     )
 
@@ -55,7 +55,7 @@ def test_token_lifetime_default_when_idle_enabled(monkeypatch):
 
 def test_register_missing_fields(client):
     # 缺少必填 organization_id
-    resp = client.post("/api/auth/register", json={"username": "bob", "password": "secret123"})
+    resp = client.post("/agent/auth/register", json={"username": "bob", "password": "secret123"})
     assert resp.status_code == 422
 
 
@@ -67,7 +67,7 @@ def test_register_duplicate(client):
 
 def test_login_wrong_password(client):
     _register(client, "dave")
-    resp = client.post("/api/auth/login", json={"username": "dave", "password": "wrong"})
+    resp = client.post("/agent/auth/login", json={"username": "dave", "password": "wrong"})
     assert resp.status_code == 401
 
 
@@ -75,12 +75,12 @@ def test_login_success_and_profile(auth_client):
     client = auth_client
     _register(client, "erin")
     login = client.post(
-        "/api/auth/login", json={"username": "erin", "password": "secret123"}
+        "/agent/auth/login", json={"username": "erin", "password": "secret123"}
     )
     assert login.status_code == 200
     token = login.json()["access_token"]
 
-    prof = client.get("/api/auth/profile", headers={"Authorization": f"Bearer {token}"})
+    prof = client.get("/agent/auth/profile", headers={"Authorization": f"Bearer {token}"})
     assert prof.status_code == 200
     assert prof.json()["username"] == "erin"
 
@@ -88,7 +88,7 @@ def test_login_success_and_profile(auth_client):
 def test_update_profile(client):
     _register(client, "testuser")
     resp = client.put(
-        "/api/auth/profile",
+        "/agent/auth/profile",
         json={"nickname": "测试昵称", "email": "new@x.com"},
     )
     assert resp.status_code == 200
@@ -166,7 +166,7 @@ async def test_reset_password_missing_user(db):
 
 
 def test_auth_config(client):
-    resp = client.get("/api/auth/config")
+    resp = client.get("/agent/auth/config")
     assert resp.status_code == 200
     data = resp.json()
     assert "max_input_tokens" in data

@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 
 
 def test_health(client: TestClient):
-    resp = client.get("/api/health")
+    resp = client.get("/agent/health")
     assert resp.status_code == 200
     data = resp.json()
     assert data["status"] == "healthy"
@@ -13,7 +13,7 @@ def test_health(client: TestClient):
 
 
 def test_config_endpoint(client: TestClient):
-    resp = client.get("/api/config")
+    resp = client.get("/agent/config")
     assert resp.status_code == 200
     data = resp.json()
     assert data["provider"] == "deepseek"
@@ -23,7 +23,7 @@ def test_config_endpoint(client: TestClient):
 
 def test_app_metadata(client: TestClient):
     routes = [getattr(r, "path", "") for r in app.routes]
-    assert "/api/health" in routes
-    assert "/api/auth/login" in routes
-    assert "/api/sessions" in routes
-    assert "/api/chat/stream" in routes
+    assert "/agent/health" in routes
+    assert "/agent/auth/login" in routes
+    assert "/agent/sessions" in routes
+    assert "/agent/chat/stream" in routes
