@@ -641,7 +641,7 @@ async function handleWelcomeCompleted(profile) {
     sessionUsage.value.max_input_tokens = profile.max_input_tokens
   }
   try {
-    const configResp = await authFetch(`${API_BASE_URL}/api/auth/config`)
+    const configResp = await authFetch(`${API_BASE_URL}/agent/auth/config`)
     if (configResp.ok) {
       const configData = await configResp.json()
       applyAgentConfig(configData)
@@ -790,7 +790,7 @@ async function loadUserProfile() {
   }
 
   try {
-    const configResp = await authFetch(`${API_BASE_URL}/api/auth/config`)
+    const configResp = await authFetch(`${API_BASE_URL}/agent/auth/config`)
     if (configResp.ok) {
       const configData = await configResp.json()
       applyAgentConfig(configData)
@@ -1755,7 +1755,7 @@ function handleStop() {
 
   // 通知后端取消正在运行的流式任务（中断 astream 执行）并清除 Agent 缓存
   if (sid) {
-    authFetch(`${API_BASE_URL}/api/chat/cancel?session_id=${encodeURIComponent(sid)}`, {
+    authFetch(`${API_BASE_URL}/agent/chat/cancel?session_id=${encodeURIComponent(sid)}`, {
       method: 'POST',
     }).catch(() => {})
   }

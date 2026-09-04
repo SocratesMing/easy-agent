@@ -12,6 +12,7 @@ from langchain_mcp_adapters.client import MultiServerMCPClient
 
 from ..config import Config
 from ..middleware import get_current_username
+from ..mcp_servers.market.server import issue_api_key as generate_market_mcp_api_key
 from ..skills import discover_skills
 from ..services.mcp import (
     load_mcp_config,
@@ -25,7 +26,16 @@ from ..services import get_agent_config, invalidate_user_agents
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/settings", tags=["Settings"])
+router = APIRouter(prefix="/agent/settings", tags=["Settings"])
+
+
+def _market_mysql_config() -> dict[str, Any] | None:
+    """Use the backend database config for in-process Market MCP operations."""
+    agent_config = get_agent_config() or {}
+    config = agent_config.get("config") or Config.load()
+    if config.database.type != "mysql":
+        return None
+    return config.database.mysql.model_dump()
 
 
 # ── 记忆 ──────────────────────────────────────────────────────────────
@@ -277,6 +287,24 @@ async def get_mcp_market(
 
 class AddMarketMcpRequest(BaseModel):
     name: str
+
+
+@router.post("/mcp/api-key", summary="为当前用户生成 Market MCP API Key")
+async def generate_mcp_api_key(
+    username: Annotated[str, Depends(get_current_username)],
+):
+    """生成新的 API Key；数据库仅保存哈希，明文只返回一次。"""
+    try:
+        api_key = generate_market_mcp_api_key(username, _market_mysql_config())
+    except Exception as e:
+        logger.warning(f"生成 Market MCP API Key 失败 | 用户: {username} | 错误: {e}")
+        raise HTTPException(
+            status_code=503,
+            detail="生成 MCP API Key 失败，请检查数据库配置",
+        )
+
+    logger.info(f"生成 Market MCP API Key 成功 | 用户: {username}")
+    return {"status": "ok", "api_key": api_key}
 
 
 @router.post("/mcp/market/add", summary="从公共市场添加 MCP 到个人配置")

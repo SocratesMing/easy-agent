@@ -118,10 +118,10 @@ import 'highlight.js/styles/github.css'
 
 // 注册 KaTeX 数学公式 + emoji 短代码扩展（幂等，仅执行一次）
 setupMarkedExtensions()
-import VueOfficeDocx from '@vue-office/docx'
-import VueOfficeExcel from '@vue-office/excel'
-import '@vue-office/docx/lib/index.css'
-import '@vue-office/excel/lib/index.css'
+import VueOfficeDocx from '@vue-office/docx/lib/v3/vue-office-docx.mjs'
+import VueOfficeExcel from '@vue-office/excel/lib/v3/vue-office-excel.mjs'
+import '@vue-office/docx/lib/v3/index.css'
+import '@vue-office/excel/lib/v3/index.css'
 import * as XLSX from 'xlsx'
 import { getStoredToken } from '../api/auth.js'
 
@@ -304,8 +304,8 @@ function escapeHtml(text) {
 
 // 预览/下载基础 URL：定时任务工作目录走独立端点，否则走会话文件端点
 const previewBaseUrl = computed(() => props.taskId
-  ? `${API_BASE_URL}/api/scheduled-tasks/${props.taskId}/workspace/file`
-  : `${API_BASE_URL}/api/files/preview`)
+  ? `${API_BASE_URL}/agent/scheduled-tasks/${props.taskId}/workspace/file`
+  : `${API_BASE_URL}/agent/files/preview`)
 
 function handleDownload() {
   const token = getStoredToken()

@@ -23,8 +23,8 @@ export const AGENT_ENV = _rt.AGENT_ENV || import.meta.env.MODE || 'prod'
 //   1) 运行期显式覆盖：window.__RUNTIME_CONFIG__.API_BASE_URL；
 //   2) 当前环境默认地址：ENV_CONFIG[AGENT_ENV].API_BASE_URL（按 AGENT_ENV 值加载）；
 //   3) 构建期固化值：VITE_API_BASE_URL（来自 .env.[mode]，已打进 bundle）；
-//   4) 兜底：空字符串 → '/api/...' 相对路径，自动跟随页面当前 origin。
-// 末尾斜杠统一去除，避免拼出 "//api/..." 这种错误协议相对地址。
+//   4) 兜底：空字符串 → '/agent/...' 相对路径，自动跟随页面当前 origin。
+// 末尾斜杠统一去除，避免拼出 "//agent/..." 这种错误协议相对地址。
 const _envApiBase = _envConfig[AGENT_ENV]?.API_BASE_URL || ''
 const _runtimeApiBase = _rt.API_BASE_URL || _envApiBase || import.meta.env.VITE_API_BASE_URL || ''
 export const API_BASE_URL = (_runtimeApiBase ?? '').replace(/\/+$/, '')
@@ -36,7 +36,7 @@ export const APP_WELCOME_TITLE =
 export const BUILD_MODE = import.meta.env.MODE || 'development'
 
 /**
- * 运行时环境信息，由后端 /api/auth/config 在登录/加载时填充。
+ * 运行时环境信息，由后端 /agent/auth/config 在登录/加载时填充。
  * - win: 后端是否运行在 Windows 系统上（用于路径/命令等差异化处理）
  * - agentEnv: 后端运行环境标识（dev | test | prod）
  */
@@ -45,7 +45,7 @@ export const appRuntime = reactive({
   agentEnv: '',
 })
 
-// 加载运行期配置时即用 AGENT_ENV 初始化（即便后端 /api/auth/config 尚未返回，
+// 加载运行期配置时即用 AGENT_ENV 初始化（即便后端 /agent/auth/config 尚未返回，
 // 前端也已知道当前处于哪个环境，可据此加载对应环境配置）。
 appRuntime.agentEnv = AGENT_ENV
 

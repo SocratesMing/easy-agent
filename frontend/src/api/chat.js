@@ -6,7 +6,7 @@ export async function createSession(title, username = null) {
   if (username) {
     body.username = username
   }
-  const response = await authFetch(`${API_BASE_URL}/api/sessions`, {
+  const response = await authFetch(`${API_BASE_URL}/agent/sessions`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -18,7 +18,7 @@ export async function createSession(title, username = null) {
 }
 
 export async function listSessions(username = null) {
-  let url = `${API_BASE_URL}/api/sessions`
+  let url = `${API_BASE_URL}/agent/sessions`
   if (username) {
     url += `?username=${encodeURIComponent(username)}`
   }
@@ -28,13 +28,13 @@ export async function listSessions(username = null) {
 }
 
 export async function getSession(sessionId) {
-  const response = await authFetch(`${API_BASE_URL}/api/sessions/${sessionId}`)
+  const response = await authFetch(`${API_BASE_URL}/agent/sessions/${sessionId}`)
   if (!response.ok) throw new Error('获取会话失败')
   return response.json()
 }
 
 export async function deleteSession(sessionId) {
-  const response = await authFetch(`${API_BASE_URL}/api/sessions/${sessionId}`, {
+  const response = await authFetch(`${API_BASE_URL}/agent/sessions/${sessionId}`, {
     method: 'DELETE',
   })
   if (!response.ok) throw new Error('删除会话失败')
@@ -42,7 +42,7 @@ export async function deleteSession(sessionId) {
 }
 
 export async function renameSession(sessionId, title) {
-  const response = await authFetch(`${API_BASE_URL}/api/sessions/${sessionId}/title`, {
+  const response = await authFetch(`${API_BASE_URL}/agent/sessions/${sessionId}/title`, {
     method: 'PUT',
     headers: {
       'Content-Type': 'application/json',
@@ -54,7 +54,7 @@ export async function renameSession(sessionId, title) {
 }
 
 export async function togglePinSession(sessionId) {
-  const response = await authFetch(`${API_BASE_URL}/api/sessions/${sessionId}/pin`, {
+  const response = await authFetch(`${API_BASE_URL}/agent/sessions/${sessionId}/pin`, {
     method: 'PUT',
   })
   if (!response.ok) throw new Error('置顶操作失败')
@@ -62,7 +62,7 @@ export async function togglePinSession(sessionId) {
 }
 
 export async function getChatHistory(sessionId) {
-  const response = await authFetch(`${API_BASE_URL}/api/sessions/${sessionId}`)
+  const response = await authFetch(`${API_BASE_URL}/agent/sessions/${sessionId}`)
   if (!response.ok) throw new Error('获取聊天历史失败')
   const data = await response.json()
   return {
@@ -76,7 +76,7 @@ export async function getChatHistory(sessionId) {
 // 查询会话当前是否仍有进行中的流式任务（页面刷新后判断是否需要重新挂载）
 export async function getStreamStatus(sessionId) {
   const response = await authFetch(
-    `${API_BASE_URL}/api/chat/stream/status?session_id=${encodeURIComponent(sessionId)}`
+    `${API_BASE_URL}/agent/chat/stream/status?session_id=${encodeURIComponent(sessionId)}`
   )
   if (!response.ok) {
     throw new Error('查询流式状态失败')
@@ -90,7 +90,7 @@ export async function attachStream(sessionId, onChunk, signal) {
   const abortSignal = signal || controller.signal
 
   const response = await authFetch(
-    `${API_BASE_URL}/api/chat/stream/live?session_id=${encodeURIComponent(sessionId)}`,
+    `${API_BASE_URL}/agent/chat/stream/live?session_id=${encodeURIComponent(sessionId)}`,
     { signal: abortSignal }
   )
   if (!response.ok) {
@@ -150,7 +150,7 @@ export async function sendMessage(sessionId, message, onChunk, signal, enableDee
     payload.model = model
   }
 
-  const response = await authFetch(`${API_BASE_URL}/api/chat/stream`, {
+  const response = await authFetch(`${API_BASE_URL}/agent/chat/stream`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -208,7 +208,7 @@ export async function resumeStream(sessionId, threadId, decisions, onChunk, sign
   const controller = new AbortController()
   const abortSignal = signal || controller.signal
 
-  const response = await authFetch(`${API_BASE_URL}/api/chat/resume`, {
+  const response = await authFetch(`${API_BASE_URL}/agent/chat/resume`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',

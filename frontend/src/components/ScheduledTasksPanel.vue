@@ -265,7 +265,7 @@ function handleWorkspaceDownload(file) {
   params.set('file_path', file.path)
   if (token) params.set('token', token)
   params.set('download', 'true')
-  const url = `${API_BASE_URL}/api/scheduled-tasks/${workspaceTaskId.value}/workspace/file?${params.toString()}`
+  const url = `${API_BASE_URL}/agent/scheduled-tasks/${workspaceTaskId.value}/workspace/file?${params.toString()}`
   const link = document.createElement('a')
   link.href = url
   link.download = file.name

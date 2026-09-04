@@ -2,7 +2,7 @@
 # 路径均使用 ${ENV} 占位符，由 tests/conftest.py 在导入 app 之前注入临时目录，
 # 避免依赖宿主机真实配置与外部服务。
 
-# LLM 配置（/api/config、/api/auth/config 等会读取）
+# LLM 配置（/agent/config、/agent/auth/config 等会读取）
 llm:
   provider: "deepseek"
   model: "deepseek-v4-flash"

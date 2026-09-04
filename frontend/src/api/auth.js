@@ -76,7 +76,7 @@ export function getAuthHeaders() {
 }
 
 export async function login(username, password) {
-  const response = await fetch(`${API_BASE_URL}/api/auth/login`, {
+  const response = await fetch(`${API_BASE_URL}/agent/auth/login`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json'
@@ -97,7 +97,7 @@ export async function login(username, password) {
 }
 
 export async function register(username, password, organizationId, email = '') {
-  const response = await fetch(`${API_BASE_URL}/api/auth/register`, {
+  const response = await fetch(`${API_BASE_URL}/agent/auth/register`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json'
@@ -121,14 +121,14 @@ export async function logout() {
 
 export async function notifyLogout() {
   try {
-    await authFetch(`${API_BASE_URL}/api/auth/logout`, { method: 'POST' })
+    await authFetch(`${API_BASE_URL}/agent/auth/logout`, { method: 'POST' })
   } catch (e) {
     // best-effort：登出通知失败不影响前端登出流程
   }
 }
 
 export async function unregister() {
-  const response = await authFetch(`${API_BASE_URL}/api/auth/unregister`, {
+  const response = await authFetch(`${API_BASE_URL}/agent/auth/unregister`, {
     method: 'DELETE'
   })
 
@@ -142,7 +142,7 @@ export async function unregister() {
 }
 
 export async function listUsers() {
-  const response = await authFetch(`${API_BASE_URL}/api/auth/admin/users`)
+  const response = await authFetch(`${API_BASE_URL}/agent/auth/admin/users`)
 
   if (!response.ok) {
     const error = await response.json()
@@ -154,7 +154,7 @@ export async function listUsers() {
 
 export async function resetUserPassword(username) {
   const response = await authFetch(
-    `${API_BASE_URL}/api/auth/admin/users/${encodeURIComponent(username)}/reset-password`,
+    `${API_BASE_URL}/agent/auth/admin/users/${encodeURIComponent(username)}/reset-password`,
     { method: 'POST' }
   )
 
@@ -172,7 +172,7 @@ export async function getCurrentUser() {
     return null
   }
 
-  const response = await fetch(`${API_BASE_URL}/api/auth/me?username=${encodeURIComponent(username)}`, {
+  const response = await fetch(`${API_BASE_URL}/agent/auth/me?username=${encodeURIComponent(username)}`, {
     headers: {
       ...getAuthHeaders()
     }

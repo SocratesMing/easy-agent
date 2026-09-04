@@ -57,17 +57,17 @@ easy-agent/
 │   ├── logger.py
 │   │
 │   ├── api/                      # FastAPI 路由
-│   │   ├── auth.py               #     POST /api/auth/{register,login}
-│   │   ├── chat.py               #     POST /api/chat/stream  (SSE)
-│   │   ├── sessions.py           #     /api/sessions/* (CRUD + 切换)
-│   │   ├── files.py              #     /api/files/* (上传/下载/预览)
-│   │   ├── skill_center.py       #     /api/skill-center/* (公共/用户技能)
-│   │   ├── scheduled_tasks.py    #     /api/scheduled-tasks/* (定时任务)
-│   │   ├── terminal.py           #     /api/terminal/* (Web Shell)
-│   │   ├── bloom.py              #     /api/bloom/* (Bloom 调度)
-│   │   ├── forex.py              #     /api/forex/* (外汇行情)
-│   │   ├── prompts.py            #     /api/prompts/* (提示词管理)
-│   │   └── settings.py           #     /api/settings/* (用户设置)
+│   │   ├── auth.py               #     POST /agent/auth/{register,login}
+│   │   ├── chat.py               #     POST /agent/chat/stream  (SSE)
+│   │   ├── sessions.py           #     /agent/sessions/* (CRUD + 切换)
+│   │   ├── files.py              #     /agent/files/* (上传/下载/预览)
+│   │   ├── skill_center.py       #     /agent/skill-center/* (公共/用户技能)
+│   │   ├── scheduled_tasks.py    #     /agent/scheduled-tasks/* (定时任务)
+│   │   ├── terminal.py           #     /agent/terminal/* (Web Shell)
+│   │   ├── bloom.py              #     /agent/bloom/* (Bloom 调度)
+│   │   ├── forex.py              #     /agent/forex/* (外汇行情)
+│   │   ├── prompts.py            #     /agent/prompts/* (提示词管理)
+│   │   └── settings.py           #     /agent/settings/* (用户设置)
 │   │
 │   ├── services/                 # 业务服务层
 │   │   ├── agent_manager.py      #     会话级 Agent 缓存
@@ -251,73 +251,73 @@ external_dirs:
 
 ## 七、API 接口速查
 
-所有接口（除 `/api/auth/*`、`/api/health` 外）需要在请求头携带 `Authorization: Bearer <jwt>`。
+所有接口（除 `/agent/auth/*`、`/agent/health` 外）需要在请求头携带 `Authorization: Bearer <jwt>`。
 
 ### 认证
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| POST | `/api/auth/register` | 注册（需 username + organization_id，绑定注册 IP） |
-| POST | `/api/auth/login` | 登录，返回 JWT |
-| GET  | `/api/health` | 健康检查 |
+| POST | `/agent/auth/register` | 注册（需 username + organization_id，绑定注册 IP） |
+| POST | `/agent/auth/login` | 登录，返回 JWT |
+| GET  | `/agent/health` | 健康检查 |
 
 ### 会话
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET    | `/api/sessions` | 列出会话 |
-| POST   | `/api/sessions` | 新建会话 |
-| GET    | `/api/sessions/{id}` | 会话详情 |
-| DELETE | `/api/sessions/{id}` | 删除会话 |
-| POST   | `/api/sessions/{id}/switch` | 切换激活会话 |
+| GET    | `/agent/sessions` | 列出会话 |
+| POST   | `/agent/sessions` | 新建会话 |
+| GET    | `/agent/sessions/{id}` | 会话详情 |
+| DELETE | `/agent/sessions/{id}` | 删除会话 |
+| POST   | `/agent/sessions/{id}/switch` | 切换激活会话 |
 
 ### 聊天（SSE 流式）
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| POST | `/api/chat/stream` | 流式对话，SSE 事件：`step_thinking` / `token` / `tool_call` / `tool_result` / `approval_required` / `interrupt_handled` / `error` / `done` |
-| POST | `/api/chat/resume` | 人工审批后恢复执行 |
+| POST | `/agent/chat/stream` | 流式对话，SSE 事件：`step_thinking` / `token` / `tool_call` / `tool_result` / `approval_required` / `interrupt_handled` / `error` / `done` |
+| POST | `/agent/chat/resume` | 人工审批后恢复执行 |
 
 ### 文件
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET    | `/api/files/list` | 列出用户文件 |
-| POST   | `/api/files/users/files/upload` | 上传 |
-| GET    | `/api/files/download/{path}` | 下载 |
-| DELETE | `/api/files/users/files/{id}` | 删除 |
-| GET    | `/api/files/preview/{path}` | 预览（docx/pdf/pptx/图片/代码/...） |
+| GET    | `/agent/files/list` | 列出用户文件 |
+| POST   | `/agent/files/users/files/upload` | 上传 |
+| GET    | `/agent/files/download/{path}` | 下载 |
+| DELETE | `/agent/files/users/files/{id}` | 删除 |
+| GET    | `/agent/files/preview/{path}` | 预览（docx/pdf/pptx/图片/代码/...） |
 
 ### 技能中心
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET  | `/api/skill-center/public-skills` | 公共技能列表 |
-| GET  | `/api/skill-center/user-skills` | 用户技能列表 |
-| POST | `/api/skill-center/add-skill` | 添加技能 |
-| POST | `/api/skill-center/remove-skill` | 移除技能 |
+| GET  | `/agent/skill-center/public-skills` | 公共技能列表 |
+| GET  | `/agent/skill-center/user-skills` | 用户技能列表 |
+| POST | `/agent/skill-center/add-skill` | 添加技能 |
+| POST | `/agent/skill-center/remove-skill` | 移除技能 |
 
 ### 定时任务
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET    | `/api/scheduled-tasks` | 列出当前用户任务 |
-| GET    | `/api/scheduled-tasks/{task_id}/runs` | 执行记录 |
-| PATCH  | `/api/scheduled-tasks/{task_id}/toggle` | 启用/暂停 |
-| POST   | `/api/scheduled-tasks/{task_id}/run` | 立即执行 |
-| DELETE | `/api/scheduled-tasks/{task_id}` | 删除（同步注销调度） |
+| GET    | `/agent/scheduled-tasks` | 列出当前用户任务 |
+| GET    | `/agent/scheduled-tasks/{task_id}/runs` | 执行记录 |
+| PATCH  | `/agent/scheduled-tasks/{task_id}/toggle` | 启用/暂停 |
+| POST   | `/agent/scheduled-tasks/{task_id}/run` | 立即执行 |
+| DELETE | `/agent/scheduled-tasks/{task_id}` | 删除（同步注销调度） |
 
 > 任务的创建不由前端直接触发，而是由大模型在对话中识别用户调度意图后调用 `CreateScheduledTaskTool` 完成。
 
 ### 知识库（RAG）
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| POST | `/api/vector-store/documents` | 添加文档 |
-| POST | `/api/vector-store/search` | 检索 |
-| GET  | `/api/vector-store/collections` | 集合列表 |
+| POST | `/agent/vector-store/documents` | 添加文档 |
+| POST | `/agent/vector-store/search` | 检索 |
+| GET  | `/agent/vector-store/collections` | 集合列表 |
 
 ### 网页终端
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| POST | `/api/terminal/exec` | 执行命令（含路径翻译与拦截） |
-| GET  | `/api/terminal/history` | 命令历史 |
+| POST | `/agent/terminal/exec` | 执行命令（含路径翻译与拦截） |
+| GET  | `/agent/terminal/history` | 命令历史 |
 
 ### 其他
-`/api/bloom/*`、`/api/forex/*`、`/api/prompts/*`、`/api/settings/*`
+`/agent/bloom/*`、`/agent/forex/*`、`/agent/prompts/*`、`/agent/settings/*`
 
 ---
 
@@ -366,6 +366,7 @@ Agent 会自动解析调度意图并调用 `create_scheduled_task` 工具，参�
 - 添加时粘贴 JSON 格式的 MCP 配置（以 `servers` 下的名称识别）
 - 删除时后端自动卸载对应 MCP，即时生效
 - 用户 MCP 配置保存在 `workspace/{username}/mcp.json`
+- 智能问数示例见 `easy_agent/mcp_servers/market/README.md`
 
 ---
 
@@ -383,7 +384,7 @@ Agent 会自动解析调度意图并调用 `create_scheduled_task` 工具，参�
 1. 后端发出 SSE `approval_required` 事件（含待删文件路径列表）
 2. 前端在对应工具调用卡片上显示"等待确认"按钮组
 3. 用户点击"批准"或"拒绝"
-4. 前端调用 `POST /api/chat/resume` 继续执行
+4. 前端调用 `POST /agent/chat/resume` 继续执行
 5. 后端继续流式输出
 
 后台定时任务执行时，会自动以 `enable_hitl=False` 调用 Agent，绕过审批避免死锁。
@@ -419,8 +420,8 @@ uv run pytest
 3. 在 `easy_agent/config/system_prompt.md` 中描述工具用途
 
 ### 添加新 API 路由
-1. 在 `easy_agent/api/` 下新建 router 文件
-2. 在 `easy_agent/api/__init__.py` 中导出
+1. 在 `easy_agent/agent/` 下新建 router 文件
+2. 在 `easy_agent/agent/__init__.py` 中导出
 3. 在 `easy_agent/app.py` 中 `app.include_router(...)`
 
 ---
@@ -437,7 +438,7 @@ A: 默认使用 SQLite，无需额外配置。若配置为 MySQL，请确保 `da
 A: 检查 `api_base` 是否可达，`api_key` 是否有效。日志文件 `logs/easy_agent.log` 包含详细错误。
 
 **Q: 定时任务不触发？**
-A: 查看日志中 `Scheduler started` 是否出现。`apscheduler` 必须随服务一起启动。可执行 `GET /api/scheduled-tasks` 验证任务是否注册。
+A: 查看日志中 `Scheduler started` 是否出现。`apscheduler` 必须随服务一起启动。可执行 `GET /agent/scheduled-tasks` 验证任务是否注册。
 
 **Q: 如何添加自定义模型 provider？**
 A: 在 `easy_agent/model.py` 中扩展 `create_model()`，并在 `config.yaml` 的 `models.<name>` 中添加新条目。

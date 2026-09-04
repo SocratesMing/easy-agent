@@ -238,7 +238,7 @@ async function refreshAssets() {
   loading.value = true
   try {
     const { getAuthHeaders } = await import('../api/auth.js')
-    const response = await fetch(`${API_BASE_URL}/api/files/list`, {
+    const response = await fetch(`${API_BASE_URL}/agent/files/list`, {
       headers: {
         ...getAuthHeaders()
       }
@@ -265,7 +265,7 @@ async function handleUpload(event) {
       const formData = new FormData()
       formData.append('file', file)
 
-      const response = await fetch(`${API_BASE_URL}/api/files/upload`, {
+      const response = await fetch(`${API_BASE_URL}/agent/files/upload`, {
         method: 'POST',
         headers: {
           ...getAuthHeaders()
@@ -305,7 +305,7 @@ async function handleCopyPath(path) {
 }
 
 function handleDownload(file) {
-  const url = `${API_BASE_URL}/api/files/download/${file.file_path}`
+  const url = `${API_BASE_URL}/agent/files/download/${file.file_path}`
   const link = document.createElement('a')
   link.href = url
   link.download = file.filename
@@ -325,7 +325,7 @@ async function handleDelete(file) {
 
   try {
     const { getAuthHeaders } = await import('../api/auth.js')
-    const response = await fetch(`${API_BASE_URL}/api/files/users/files/${encodeURIComponent(file.id)}`, {
+    const response = await fetch(`${API_BASE_URL}/agent/files/users/files/${encodeURIComponent(file.id)}`, {
       method: 'DELETE',
       headers: {
         ...getAuthHeaders()

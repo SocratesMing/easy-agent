@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 
 def test_option_quote(client: TestClient):
     resp = client.post(
-        "/api/forex/option_quote",
+        "/agent/forex/option_quote",
         json={"msgId": "1", "content": "EURUSD call strike 1.1"},
     )
     assert resp.status_code == 200
@@ -19,7 +19,7 @@ def test_option_quote(client: TestClient):
 def test_bond_bot(client: TestClient):
     # bond_bot 的 content / msg_id 为查询参数
     resp = client.post(
-        "/api/forex/bond_bot",
+        "/agent/forex/bond_bot",
         params={"content": "对手方报价 EURUSD 1.1", "msg_id": 0},
     )
     assert resp.status_code == 200

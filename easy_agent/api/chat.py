@@ -29,7 +29,7 @@ from .sessions import generate_workspace_name
 logger = logging.getLogger(__name__)
 
 router = APIRouter(
-    prefix="/api/chat",
+    prefix="/agent/chat",
     tags=["Chat"],
 )
 

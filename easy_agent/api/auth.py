@@ -31,7 +31,7 @@ from ..utils.auth import decode_access_token
 logger = logging.getLogger(__name__)
 
 router = APIRouter(
-    prefix="/api/auth",
+    prefix="/agent/auth",
     tags=["Authentication"],
 )
 

@@ -23,7 +23,7 @@ from ..db import get_database
 
 logger = logging.getLogger("easy_agent.bloom")
 
-bloom_router = APIRouter(prefix="/api/bloom", tags=["Bloom"])
+bloom_router = APIRouter(prefix="/agent/bloom", tags=["Bloom"])
 
 
 @bloom_router.post("/queryBloom", summary="查询彭博数据面板")

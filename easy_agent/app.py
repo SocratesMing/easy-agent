@@ -468,7 +468,7 @@ if terminal_router is not None:
 app.include_router(scheduled_tasks_router)
 
 
-@app.get("/api/health", summary="健康检查", response_model=HealthResponse)
+@app.get("/agent/health", summary="健康检查", response_model=HealthResponse)
 async def health_check():
     return HealthResponse(
         status="healthy",
@@ -477,7 +477,7 @@ async def health_check():
     )
 
 
-@app.get("/api/config", summary="获取Agent配置")
+@app.get("/agent/config", summary="获取Agent配置")
 async def get_config():
     _cfg = get_agent_config()
     if _cfg:

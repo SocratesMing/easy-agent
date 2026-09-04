@@ -1,4 +1,4 @@
-"""接口 /api/settings 的测试：模型列表、MCP 服务器查询与增删。"""
+"""接口 /agent/settings 的测试：模型列表、MCP 服务器查询与增删。"""
 
 import asyncio
 import json
@@ -9,17 +9,19 @@ from fastapi import HTTPException
 from easy_agent.api.settings import (
     AddMarketMcpRequest,
     add_mcp_from_market,
+    generate_mcp_api_key,
     get_mcp_market,
     get_mcp_servers,
     router,
 )
+import easy_agent.api.settings as settings_api
 
 from easy_agent.config import Config
 from easy_agent.services import mcp as mcp_mod
 
 
 def test_models(client):
-    resp = client.get("/api/settings/models")
+    resp = client.get("/agent/settings/models")
     assert resp.status_code == 200
     data = resp.json()
     assert "models" in data
@@ -33,7 +35,7 @@ def test_models(client):
 
 
 def test_mcp_list(client):
-    resp = client.get("/api/settings/mcp")
+    resp = client.get("/agent/settings/mcp")
     assert resp.status_code == 200
     data = resp.json()
     assert "servers" in data
@@ -44,12 +46,12 @@ def test_mcp_list(client):
 
 def test_mcp_update_and_server_crud(client):
     # 1) 清空所有 MCP server（servers 为 dict，不是 list）
-    r = client.put("/api/settings/mcp", json={"servers": {}})
+    r = client.put("/agent/settings/mcp", json={"servers": {}})
     assert r.status_code == 200
 
     # 2) 新增一个本地 stdio 测试服务（body 字段为 config）
     add = client.post(
-        "/api/settings/mcp/server",
+        "/agent/settings/mcp/server",
         json={
             "config": {
                 "name": "unit-test-server",
@@ -64,7 +66,7 @@ def test_mcp_update_and_server_crud(client):
     assert "unit-test-server" in body["added"]
 
     # 3) 删除该服务
-    d = client.delete("/api/settings/mcp/server/unit-test-server")
+    d = client.delete("/agent/settings/mcp/server/unit-test-server")
     assert d.status_code == 200
 
 
@@ -126,8 +128,67 @@ def test_mcp_market_adds_global_server_to_user_config(tmp_path, monkeypatch):
     assert saved["servers"]["market-server"]["env"]["MCP_TOKEN"] == "secret-token"
 
     market_routes = {route.path: getattr(route, "methods", set()) for route in router.routes}
-    assert "/api/settings/mcp/market" in market_routes
-    assert "/api/settings/mcp/market/add" in market_routes
+    assert "/agent/settings/mcp/market" in market_routes
+    assert "/agent/settings/mcp/market/add" in market_routes
+
+
+def test_mcp_api_key_generation_uses_current_user(monkeypatch):
+    captured = {}
+
+    def fake_generate(username, mysql_config):
+        captured["username"] = username
+        return "generated-api-key"
+
+    monkeypatch.setattr(settings_api, "generate_market_mcp_api_key", fake_generate)
+
+    result = asyncio.run(generate_mcp_api_key("testuser"))
+
+    assert result == {"status": "ok", "api_key": "generated-api-key"}
+    assert captured["username"] == "testuser"
+
+
+def test_mcp_api_key_generation_uses_app_mysql_config(monkeypatch):
+    captured = {}
+
+    def fake_generate(username, mysql_config):
+        captured["username"] = username
+        captured["mysql_config"] = mysql_config
+        return "generated-api-key"
+
+    monkeypatch.setattr(
+        settings_api,
+        "_market_mysql_config",
+        lambda: {"user": "app-user", "password": "app-password"},
+    )
+    monkeypatch.setattr(settings_api, "generate_market_mcp_api_key", fake_generate)
+
+    result = asyncio.run(generate_mcp_api_key("testuser"))
+
+    assert result == {"status": "ok", "api_key": "generated-api-key"}
+    assert captured["username"] == "testuser"
+    assert captured["mysql_config"] == {
+        "user": "app-user",
+        "password": "app-password",
+    }
+
+
+def test_mcp_api_key_generation_maps_database_failure(monkeypatch):
+    def fake_generate(username, mysql_config):
+        raise RuntimeError("database unavailable")
+
+    monkeypatch.setattr(settings_api, "generate_market_mcp_api_key", fake_generate)
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(generate_mcp_api_key("testuser"))
+
+    assert exc_info.value.status_code == 503
+    assert "数据库" in exc_info.value.detail
+
+
+def test_mcp_api_key_route_is_registered():
+    paths = {route.path for route in router.routes}
+
+    assert "/agent/settings/mcp/api-key" in paths
 
 
 def test_mcp_config_preserves_environment_placeholders(tmp_path, monkeypatch):

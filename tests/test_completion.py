@@ -1,4 +1,4 @@
-"""公共对话补全接口 /api/completion/chat 测试。
+"""公共对话补全接口 /agent/completion/chat 测试。
 
 直接调用 chat_completion 处理函数并注入 mock LLM，验证入参消息数组 ->
 返回完整上下文数组（含 assistant 回复）的契约，以及参数校验。

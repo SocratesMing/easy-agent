@@ -58,6 +58,8 @@
 <script setup>
 import { ref, watch } from 'vue'
 import FileIcon from './FileIcon.vue'
+import { API_BASE_URL } from '../config.js'
+import { authFetch } from '../api/auth.js'
 
 const props = defineProps({
   visible: {
@@ -84,7 +86,9 @@ function close() {
 async function selectFile(file) {
   selectedFile.value = file
   try {
-    const response = await fetch(`/api/files/content?file_path=${encodeURIComponent(file.file_path)}`)
+    const response = await authFetch(
+      `${API_BASE_URL}/agent/files/content?file_path=${encodeURIComponent(file.file_path)}`
+    )
     if (response.ok) {
       fileContent.value = await response.text()
     } else {

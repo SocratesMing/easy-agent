@@ -106,7 +106,7 @@ def get_max_input_tokens() -> int | None:
 
 
 router = APIRouter(
-    prefix="/api/sessions",
+    prefix="/agent/sessions",
     tags=["Sessions"],
 )
 

@@ -1720,7 +1720,7 @@ class Database:
     def get_generated_filenames(self, username: str) -> set[str]:
         """返回指定用户所有会话中生成的文件原始文件名集合。
 
-        用于资产页（/api/files/list）排除会话生成的文件，确保只展示用户上传的文件。
+        用于资产页（/agent/files/list）排除会话生成的文件，确保只展示用户上传的文件。
         """
         if not username:
             return set()
