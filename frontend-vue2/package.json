@@ -6,6 +6,7 @@
     "dev": "node scripts/run-vite.mjs dev",
     "build": "node scripts/run-vite.mjs build && sh scripts/generate-runtime-config.sh",
     "preview": "vue-cli-service preview",
+    "lint:vue2": "node scripts/check-vue2-syntax.mjs",
     "serve": "sh scripts/generate-runtime-config.sh && node scripts/print-serve-env.mjs && npx --yes serve -s dist/"
   },
   "dependencies": {

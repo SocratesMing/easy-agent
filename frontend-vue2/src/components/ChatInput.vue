@@ -238,7 +238,7 @@ export default {
     default: false
   }
 },
-  emits: ['send', 'stop', 'createSession', 'update:selectedModel', 'typing'],
+  emits: ['send', 'stop', 'create-session', 'update:selectedModel', 'typing'],
   setup(props, { emit }) {
 const message = ref('')
 const textareaRef = ref(null)
@@ -452,7 +452,7 @@ async function handleFileSelect(event) {
             }
           )
           // 触发会话创建
-          emit('createSession')
+          emit('create-session')
         })
         
         // 等待会话创建完成

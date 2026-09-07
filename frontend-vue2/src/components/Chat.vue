@@ -22,7 +22,7 @@
     >
       <ChatMessage
         :message="msg"
-        @removeFile="(file) => handleRemoveFile(file, index)"
+        @remove-file="(file) => handleRemoveFile(file, index)"
         @retry="handleRetry"
         @approve="handleApprove"
         @reject="handleReject"
@@ -54,7 +54,7 @@
       :showFooter="composerMode === 'bottom'"
       @update:selectedModel="$emit('update:selectedModel', $event)"
       @stop="handleStop"
-      @createSession="handleCreateSession"
+      @create-session="handleCreateSession"
     />
 
     <!-- 分类预设问题：仅在首页（居中模式）展示，置于输入框下方，悬浮展开 -->
@@ -155,7 +155,7 @@ export default {
     default: APP_WELCOME_TITLE
   }
 },
-  emits: ['sendMessage', 'stop', 'removeFile', 'createSession', 'approve', 'reject', 'update:selectedModel'],
+  emits: ['send-message', 'stop', 'remove-file', 'create-session', 'approve', 'reject', 'update:selectedModel'],
   setup(props, { emit }) {
 // 首页布局模式：center=空会话时输入框居中，bottom=对话中输入框贴底
 const composerMode = ref('center')
@@ -244,13 +244,13 @@ function goToNextUserMessage() {
 }
 
 function handleSend(message, files, signal, enableDeepThink = true) {
-  emit('sendMessage', message, files, signal, enableDeepThink)
+  emit('send-message', message, files, signal, enableDeepThink)
 }
 
 function handleRemoveFile(file, messageIndex) {
   // 从事件参数中获取file，然后从messages中获取对应的message
   const message = props.messages[messageIndex]
-  emit('removeFile', message, messageIndex, file)
+  emit('remove-file', message, messageIndex, file)
 }
 
 function handleRetry(content) {
@@ -271,7 +271,7 @@ function handleStop() {
 }
 
 function handleCreateSession() {
-  emit('createSession')
+  emit('create-session')
 }
 
 function handleQuickAction(message, index) {
@@ -282,7 +282,7 @@ function handleQuickAction(message, index) {
 function onPresetClick(message) {
   composerMode.value = 'bottom'
   isAtBottom.value = true
-  emit('sendMessage', message, [], null, true, false)
+  emit('send-message', message, [], null, true, false)
 }
 
 function onSend(message, files, signal, enableDeepThink) {

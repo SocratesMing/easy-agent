@@ -4,7 +4,7 @@
       <div class="header-left">
         <span class="logo-text">{{ APP_TITLE }}</span>
       </div>
-      <button @click="$emit('toggleSidebar')" class="collapse-btn" title="收起侧边栏">
+      <button @click="$emit('toggle-sidebar')" class="collapse-btn" title="收起侧边栏">
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
           <line x1="15" y1="3" x2="15" y2="21"></line>
@@ -13,7 +13,7 @@
     </div>
 
     <div class="action-buttons">
-      <button @click="$emit('createSession')" class="action-btn new-chat">
+      <button @click="$emit('create-session')" class="action-btn new-chat">
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <line x1="12" y1="5" x2="12" y2="19"></line>
           <line x1="5" y1="12" x2="19" y2="12"></line>
@@ -21,21 +21,21 @@
         <span>新建会话</span>
       </button>
       
-      <button @click="$emit('showAssets')" class="action-btn assets">
+      <button @click="$emit('show-assets')" class="action-btn assets">
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
         </svg>
         <span>资产</span>
       </button>
 
-      <button @click="$emit('showSkillCenter')" class="action-btn skill-center">
+      <button @click="$emit('show-skill-center')" class="action-btn skill-center">
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>
         </svg>
         <span>技能中心</span>
       </button>
 
-      <button @click="$emit('showScheduledTasks')" class="action-btn scheduled-tasks">
+      <button @click="$emit('show-scheduled-tasks')" class="action-btn scheduled-tasks">
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <circle cx="12" cy="12" r="10"></circle>
           <polyline points="12 6 12 12 16 14"></polyline>
@@ -61,7 +61,7 @@
           :key="session.session_id"
           class="session-item"
           :class="{ active: !showAssets && session.session_id === currentSessionId, streaming: streamingSessionIds.includes(session.session_id) }"
-          @click="$emit('selectSession', session.session_id)"
+          @click="$emit('select-session', session.session_id)"
         >
           <div class="session-info">
             <div class="session-name">
@@ -234,7 +234,7 @@ export default {
     default: false
   }
 },
-  emits: ['createSession', 'selectSession', 'deleteSession', 'renameSession', 'toggleSidebar', 'showAssets', 'showSkillCenter', 'showScheduledTasks', 'showProfile', 'showSettings', 'showUserManagement', 'logout', 'togglePin'],
+  emits: ['create-session', 'select-session', 'delete-session', 'rename-session', 'toggle-sidebar', 'show-assets', 'show-skill-center', 'show-scheduled-tasks', 'show-profile', 'show-settings', 'show-user-management', 'logout', 'toggle-pin'],
   setup(props, { emit }) {
 const activeMenu = ref(null)
 const showRenameModal = ref(false)
@@ -347,19 +347,19 @@ function cancelRename() {
 
 function confirmRename() {
   if (newTitle.value.trim() && renamingSession.value) {
-    emit('renameSession', renamingSession.value.session_id, newTitle.value.trim())
+    emit('rename-session', renamingSession.value.session_id, newTitle.value.trim())
     cancelRename()
   }
 }
 
 function handleDelete(sessionId) {
   activeMenu.value = null
-  emit('deleteSession', sessionId)
+  emit('delete-session', sessionId)
 }
 
 function handleTogglePin(sessionId) {
   activeMenu.value = null
-  emit('togglePin', sessionId)
+  emit('toggle-pin', sessionId)
 }
 
 function closeMenu() {
@@ -379,17 +379,17 @@ function closeUserMenuSilent() {
 
 function showProfile() {
   showUserMenu.value = false
-  emit('showProfile')
+  emit('show-profile')
 }
 
 function showSettings() {
   showUserMenu.value = false
-  emit('showSettings')
+  emit('show-settings')
 }
 
 function showUserManagement() {
   showUserMenu.value = false
-  emit('showUserManagement')
+  emit('show-user-management')
 }
 
 function handleLogout() {
