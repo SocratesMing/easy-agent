@@ -418,45 +418,6 @@ class Database:
             )
 
             cursor.execute(f"""
-                CREATE TABLE IF NOT EXISTS fmqt_bloom (
-                    id INTEGER PRIMARY KEY {auto_inc},
-                    bloomCode VARCHAR(255) NOT NULL,
-                    bloomCodeCN VARCHAR(255) NOT NULL,
-                    pxLast REAL NOT NULL,
-                    lastUpdate VARCHAR(50),
-                    pxLastEod REAL NOT NULL,
-                    lastUpdateEod VARCHAR(50),
-                    type VARCHAR(100) NOT NULL,
-                    region VARCHAR(100) NOT NULL,
-                    bloomDate VARCHAR(50) NOT NULL,
-                    sbmTime BIGINT NOT NULL,
-                    creatDate VARCHAR(50) NOT NULL
-                )
-            """)
-            self._create_index(cursor, "idx_bloom_type", "fmqt_bloom", "type")
-            self._create_index(cursor, "idx_bloom_date", "fmqt_bloom", "bloomDate")
-            self._create_index(
-                cursor, "idx_bloom_type_date", "fmqt_bloom", "type, bloomDate"
-            )
-
-            cursor.execute(f"""
-                CREATE TABLE IF NOT EXISTS fmqt_bloom_analysis (
-                    id INTEGER PRIMARY KEY {auto_inc},
-                    pair VARCHAR(50) NOT NULL,
-                    signalLevel VARCHAR(20) NOT NULL,
-                    signalSide VARCHAR(100) NOT NULL,
-                    drive TEXT,
-                    contradict TEXT,
-                    operate TEXT,
-                    analysisDate VARCHAR(50) NOT NULL,
-                    creatDate VARCHAR(50) NOT NULL
-                )
-            """)
-            self._create_index(
-                cursor, "idx_bloom_analysis_date", "fmqt_bloom_analysis", "analysisDate"
-            )
-
-            cursor.execute(f"""
                 CREATE TABLE IF NOT EXISTS fmqt_lock (
                     id INTEGER PRIMARY KEY {auto_inc},
                     lock_key VARCHAR(255) NOT NULL UNIQUE,

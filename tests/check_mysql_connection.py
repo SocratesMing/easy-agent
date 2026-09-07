@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -18,16 +19,85 @@ from typing import Any
 import pymysql
 import yaml
 
-from easy_agent.config import Config
+# 让脚本能 import 项目内的 easy_agent 包（无论从哪个目录执行）。
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+# 配置文件里的 ${VAR} / ${VAR:-default} 必须像应用一样展开，
+# 否则 password 会变成字面量 "${MYSQL_PASSWORD}" 并被当成真实密码发送。
+_ENV_PLACEHOLDER_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
+
+try:  # 复用应用同款实现，避免语义漂移
+    from easy_agent.config import _expand_env_recursive as expand_env_recursive
+except ImportError:  # pragma: no cover - 依赖缺失时降级为本地实现
+
+    def _expand_env(value: str) -> str:
+        def _replace(match: re.Match) -> str:
+            env_value = os.environ.get(match.group(1))
+            if env_value is not None:
+                return env_value
+            default = match.group(2)
+            return default if default is not None else ""
+
+        return _ENV_PLACEHOLDER_RE.sub(_replace, value)
+
+    def expand_env_recursive(obj: Any) -> Any:
+        if isinstance(obj, str):
+            return _expand_env(obj)
+        if isinstance(obj, dict):
+            return {k: expand_env_recursive(v) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [expand_env_recursive(item) for item in obj]
+        return obj
 
 
 def resolve_config_path(config_arg: str | None) -> Path:
-    return Config.resolve_config_path(config_arg)
+    if config_arg:
+        return Path(config_arg)
+
+    env_config = os.environ.get("EASY_CONFIG")
+    if env_config:
+        return Path(env_config)
+
+    agent_env = os.environ.get("AGENT_ENV", "dev").lower()
+    candidate = Path("easy_agent/config") / f"config.{agent_env}.yaml"
+    if candidate.exists():
+        return candidate
+
+    return Path("easy_agent/config/config.yaml")
 
 
-def load_mysql_config(config_path: Path) -> dict[str, Any]:
+def placeholder_env_names(raw_obj: Any) -> list[str]:
+    """收集配置里仍处于未解析状态的 ${VAR} 变量名（环境变量未设置且无默认值）。
+
+    仅用于提示：明文值不受影响，会原样使用。
+    """
+    names: list[str] = []
+    if isinstance(raw_obj, str):
+        for match in _ENV_PLACEHOLDER_RE.finditer(raw_obj):
+            name, default = match.group(1), match.group(2)
+            if os.environ.get(name) is None and default is None:
+                names.append(name)
+    elif isinstance(raw_obj, dict):
+        for value in raw_obj.values():
+            names.extend(placeholder_env_names(value))
+    elif isinstance(raw_obj, list):
+        for item in raw_obj:
+            names.extend(placeholder_env_names(item))
+    return sorted(set(names))
+
+
+def load_mysql_config(config_path: Path) -> tuple[dict[str, Any], list[str]]:
+    """返回 mysql 配置，以及其中未解析的 ${VAR} 变量名（用于提示，不阻断连接）。"""
     with config_path.open(encoding="utf-8") as file:
-        data = yaml.safe_load(file) or {}
+        raw_data = yaml.safe_load(file) or {}
+
+    raw_mysql = raw_data.get("database", {}).get("mysql", {})
+    placeholders = placeholder_env_names(raw_mysql)
+
+    # 直接以配置文件的值连接；${VAR} 仅在有对应环境变量时才做替换。
+    data = expand_env_recursive(raw_data)
 
     database = data.get("database", {})
     if not isinstance(database, dict) or database.get("type") != "mysql":
@@ -36,7 +106,7 @@ def load_mysql_config(config_path: Path) -> dict[str, Any]:
     mysql_config = database.get("mysql", {})
     if not isinstance(mysql_config, dict):
         raise ValueError("配置文件缺少 database.mysql 配置")
-    return mysql_config
+    return mysql_config, placeholders
 
 
 def failure_hint(error: pymysql.err.OperationalError) -> str:
@@ -53,7 +123,7 @@ def failure_hint(error: pymysql.err.OperationalError) -> str:
 
 
 def check_connection(config_path: Path, create_database: bool) -> int:
-    mysql_config = load_mysql_config(config_path)
+    mysql_config, placeholders = load_mysql_config(config_path)
     host = mysql_config.get("host", "127.0.0.1")
     port = int(mysql_config.get("port", 3306))
     user = mysql_config.get("user", "root")
@@ -64,7 +134,16 @@ def check_connection(config_path: Path, create_database: bool) -> int:
 
     print(f"配置文件: {config_path}")
     print(f"目标: {user}@{host}:{port}/{database}")
+
     print(f"密码状态: {'已配置' if password else '为空'}")
+    if placeholders:
+        print(
+            f"⚠️ 配置中的 ${{VAR}} 占位符未解析（环境变量未设置），本次按空值连接: "
+            f"{', '.join(placeholders)}"
+        )
+        print("   如需直接连接，请在配置文件里填写明文值，或设置对应的环境变量。")
+    elif not password:
+        print("⚠️ password 为空，请检查 database.mysql.password")
 
     try:
         server_connection = pymysql.connect(
@@ -117,6 +196,12 @@ def check_connection(config_path: Path, create_database: bool) -> int:
 
 
 def main() -> int:
+    # Windows 控制台默认 GBK，无法输出 ⚠️/✅ 等符号，统一切到 UTF-8。
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure:
+            reconfigure(encoding="utf-8", errors="replace")
+
     parser = argparse.ArgumentParser(description="验证 Easy Agent 的 MySQL 配置")
     parser.add_argument(
         "--config",
