@@ -1,0 +1,983 @@
+<template>
+  <div class="session-list">
+    <div class="session-header">
+      <div class="header-left">
+        <span class="logo-text">{{ APP_TITLE }}</span>
+      </div>
+      <button @click="$emit('toggleSidebar')" class="collapse-btn" title="收起侧边栏">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+          <line x1="15" y1="3" x2="15" y2="21"></line>
+        </svg>
+      </button>
+    </div>
+
+    <div class="action-buttons">
+      <button @click="$emit('createSession')" class="action-btn new-chat">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <line x1="12" y1="5" x2="12" y2="19"></line>
+          <line x1="5" y1="12" x2="19" y2="12"></line>
+        </svg>
+        <span>新建会话</span>
+      </button>
+      
+      <button @click="$emit('showAssets')" class="action-btn assets">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+        </svg>
+        <span>资产</span>
+      </button>
+
+      <button @click="$emit('showSkillCenter')" class="action-btn skill-center">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>
+        </svg>
+        <span>技能中心</span>
+      </button>
+
+      <button @click="$emit('showScheduledTasks')" class="action-btn scheduled-tasks">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="12" cy="12" r="10"></circle>
+          <polyline points="12 6 12 12 16 14"></polyline>
+        </svg>
+        <span>定时任务</span>
+      </button>
+    </div>
+
+    <div class="divider"></div>
+
+    <div class="session-items">
+      <div
+        v-for="group in groupedSessions"
+        :key="group.label"
+        class="session-group"
+      >
+        <div class="session-group-header">
+          <span class="session-group-label">{{ group.label }}</span>
+          <span class="session-group-count">{{ group.sessions.length }}</span>
+        </div>
+        <div
+          v-for="session in group.sessions"
+          :key="session.session_id"
+          class="session-item"
+          :class="{ active: !showAssets && session.session_id === currentSessionId, streaming: streamingSessionIds.includes(session.session_id) }"
+          @click="$emit('selectSession', session.session_id)"
+        >
+          <div class="session-info">
+            <div class="session-name">
+              <svg v-if="session.pinned" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="#f59e0b" stroke="#f59e0b" stroke-width="1" style="width:13px;height:13px;flex-shrink:0;margin-right:2px">
+                <path d="M12 2L2 7l10 5 10-5-10-5z"></path>
+                <path d="M2 17l10 5 10-5"></path>
+                <path d="M2 12l10 5 10-5"></path>
+              </svg>
+              <span class="session-title-text">{{ session.title || '未命名会话' }}</span>
+              <span v-if="streamingSessionIds.includes(session.session_id)" class="streaming-badge" title="进行中">
+                <span class="streaming-dot"></span>
+              </span>
+            </div>
+          </div>
+          <div class="session-actions">
+            <button @click="toggleMenu(session.session_id, $event)" class="menu-btn">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">
+                <circle cx="12" cy="5" r="2"></circle>
+                <circle cx="12" cy="12" r="2"></circle>
+                <circle cx="12" cy="19" r="2"></circle>
+              </svg>
+            </button>
+            <div v-if="activeMenu === session.session_id" class="menu-dropdown">
+              <button @click.stop="handleTogglePin(session.session_id)" class="menu-item">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px">
+                  <path d="M12 2L2 7l10 5 10-5-10-5z"></path>
+                  <path d="M2 17l10 5 10-5"></path>
+                  <path d="M2 12l10 5 10-5"></path>
+                </svg>
+                {{ session.pinned ? '取消置顶' : '置顶' }}
+              </button>
+              <button @click.stop="startRename(session)" class="menu-item">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
+                  <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
+                </svg>
+                重命名
+              </button>
+              <button @click.stop="handleDelete(session.session_id)" class="menu-item delete">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <polyline points="3 6 5 6 21 6"></polyline>
+                  <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                </svg>
+                删除
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div v-if="sessions.length === 0" class="empty-state">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+        </svg>
+        <p>暂无会话</p>
+      </div>
+    </div>
+
+    <div v-if="showRenameModal" class="modal-overlay" @click="cancelRename">
+      <div class="modal-content" @click.stop>
+        <h3>重命名会话</h3>
+        <input
+          v-model="newTitle"
+          @keyup.enter="confirmRename"
+          @keyup.escape="cancelRename"
+          placeholder="请输入新名称"
+          ref="renameInput"
+        />
+        <div class="modal-actions">
+          <button @click="cancelRename" class="cancel-btn">取消</button>
+          <button @click="confirmRename" class="confirm-btn">确认</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="user-profile" @click="toggleUserMenu">
+      <div class="user-avatar">
+        <span class="user-initials">{{ userInitials }}</span>
+      </div>
+      <div class="user-info">
+        <div class="user-name">{{ username || '用户' }}</div>
+        <div v-if="organizationId" class="user-org">
+          <svg class="user-org-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M3 21h18"></path>
+            <path d="M5 21V7l8-4v18"></path>
+            <path d="M19 21V11l-6-4"></path>
+          </svg>
+          <span>{{ organizationId }}</span>
+        </div>
+      </div>
+      <svg class="user-more-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">
+        <circle cx="5" cy="12" r="2"></circle>
+        <circle cx="12" cy="12" r="2"></circle>
+        <circle cx="19" cy="12" r="2"></circle>
+      </svg>
+      
+      <div v-if="showUserMenu" class="user-dropdown">
+        <button class="user-dropdown-item" @click="showProfile">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+            <circle cx="12" cy="7" r="4"></circle>
+          </svg>
+          个人资料
+        </button>
+        <button class="user-dropdown-item" @click="showSettings">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="3"></circle>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+          </svg>
+          设置
+        </button>
+        <button
+          v-if="username === 'admin'"
+          class="user-dropdown-item"
+          @click="showUserManagement"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
+            <circle cx="9" cy="7" r="4"></circle>
+            <path d="M23 21v-2a4 4 0 0 0-3-3.87"></path>
+            <path d="M16 3.13a4 4 0 0 1 0 7.75"></path>
+          </svg>
+          用户管理
+        </button>
+        <div class="user-dropdown-divider"></div>
+        <button class="user-dropdown-item logout-item" @click="handleLogout">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
+            <polyline points="16 17 21 12 16 7"></polyline>
+            <line x1="21" y1="12" x2="9" y2="12"></line>
+          </svg>
+          退出登录
+        </button>
+      </div>
+    </div>
+  </div>
+</template>
+
+<script>
+import { ref, nextTick, onMounted, computed } from 'vue'
+import { APP_TITLE } from '../config.js'
+export default {
+  props: {
+  sessions: {
+    type: Array,
+    default: () => []
+  },
+  currentSessionId: {
+    type: String,
+    default: null
+  },
+  streamingSessionIds: {
+    type: Array,
+    default: () => []
+  },
+  username: {
+    type: String,
+    default: ''
+  },
+  organizationId: {
+    type: String,
+    default: ''
+  },
+  email: {
+    type: String,
+    default: ''
+  },
+  showAssets: {
+    type: Boolean,
+    default: false
+  }
+},
+  emits: ['createSession', 'selectSession', 'deleteSession', 'renameSession', 'toggleSidebar', 'showAssets', 'showSkillCenter', 'showScheduledTasks', 'showProfile', 'showSettings', 'showUserManagement', 'logout', 'togglePin'],
+  setup(props, { emit }) {
+const activeMenu = ref(null)
+const showRenameModal = ref(false)
+const newTitle = ref('')
+const renamingSession = ref(null)
+const renameInput = ref(null)
+const showUserMenu = ref(false)
+
+// 按时间分组会话：置顶 / 今天 / 最近一周 / 更早
+const groupedSessions = computed(() => {
+  const now = new Date()
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()
+  const weekAgo = startOfToday - 7 * 24 * 60 * 60 * 1000
+
+  const pinned = []
+  const today = []
+  const week = []
+  const earlier = []
+
+  for (const s of props.sessions) {
+    if (s.pinned) {
+      pinned.push(s)
+      continue
+    }
+    const ts = new Date(s.updated_at || s.created_at || Date.now()).getTime()
+    if (ts >= startOfToday) {
+      today.push(s)
+    } else if (ts >= weekAgo) {
+      week.push(s)
+    } else {
+      earlier.push(s)
+    }
+  }
+
+  const groups = []
+  if (pinned.length) groups.push({ label: '置顶', sessions: pinned })
+  if (today.length) groups.push({ label: '今天', sessions: today })
+  if (week.length) groups.push({ label: '最近一周', sessions: week })
+  if (earlier.length) groups.push({ label: '更早', sessions: earlier })
+  return groups
+})
+
+// 用户名简写：中文取每个字拼音首字母（简化为取前两字），英文取前两字母大写
+const userInitials = computed(() => {
+  const name = props.username || '用户'
+  if (!name) return 'U'
+  // 中文：取前两个字符
+  const chineseChars = name.match(/[\u4e00-\u9fff]/g)
+  if (chineseChars && chineseChars.length > 0) {
+    // 简单取前两个中文字符（拼音首字母需引入拼音库，这里用字符本身的大写映射）
+    // 常见姓氏首字母映射表（覆盖常见情况）
+    const pinyinMap = {
+      '张': 'Z', '王': 'W', '李': 'L', '刘': 'L', '陈': 'C', '杨': 'Y', '赵': 'Z', '黄': 'H',
+      '周': 'Z', '吴': 'W', '徐': 'X', '孙': 'S', '胡': 'H', '朱': 'Z', '高': 'G', '林': 'L',
+      '何': 'H', '郭': 'G', '马': 'M', '罗': 'L', '梁': 'L', '宋': 'S', '郑': 'Z', '谢': 'X',
+      '韩': 'H', '唐': 'T', '冯': 'F', '于': 'Y', '董': 'D', '萧': 'X', '程': 'C', '曹': 'C',
+      '袁': 'Y', '邓': 'D', '许': 'X', '傅': 'F', '沈': 'S', '曾': 'Z', '彭': 'P', '吕': 'L',
+      '苏': 'S', '卢': 'L', '蒋': 'J', '蔡': 'C', '贾': 'J', '丁': 'D', '魏': 'W', '薛': 'X',
+      '叶': 'Y', '阎': 'Y', '余': 'Y', '潘': 'P', '杜': 'D', '戴': 'D', '夏': 'X', '钟': 'Z',
+      '汪': 'W', '田': 'T', '任': 'R', '姜': 'J', '范': 'F', '方': 'F', '石': 'S', '姚': 'Y',
+      '谭': 'T', '廖': 'L', '邹': 'Z', '熊': 'X', '金': 'J', '陆': 'L', '郝': 'H', '孔': 'K',
+      '白': 'B', '崔': 'C', '康': 'K', '毛': 'M', '邱': 'Q', '秦': 'Q', '江': 'J', '史': 'S',
+      '顾': 'G', '侯': 'H', '邵': 'S', '孟': 'M', '龙': 'L', '万': 'W', '段': 'D', '雷': 'L',
+      '钱': 'Q', '汤': 'T', '尹': 'Y', '黎': 'L', '易': 'Y', '常': 'C', '武': 'W', '乔': 'Q',
+      '贺': 'H', '赖': 'L', '龚': 'G', '文': 'W', '用户': 'Y'
+    }
+    const chars = chineseChars.slice(0, 2)
+    let initials = ''
+    for (const ch of chars) {
+      initials += pinyinMap[ch] || ch
+    }
+    return initials.toUpperCase() || name.substring(0, 2).toUpperCase()
+  }
+  // 英文/其他：取前两个字母大写
+  const letters = name.replace(/[^a-zA-Z]/g, '')
+  if (letters.length >= 2) {
+    return letters.substring(0, 2).toUpperCase()
+  }
+  return name.substring(0, 2).toUpperCase()
+})
+
+function toggleUserMenu(e) {
+  e.stopPropagation()
+  showUserMenu.value = !showUserMenu.value
+}
+
+function toggleMenu(sessionId, e) {
+  if (e) {
+    e.stopPropagation()
+  }
+  activeMenu.value = activeMenu.value === sessionId ? null : sessionId
+}
+
+function startRename(session) {
+  renamingSession.value = session
+  newTitle.value = session.title || ''
+  activeMenu.value = null
+  showRenameModal.value = true
+  nextTick(() => {
+    renameInput.value?.focus()
+    renameInput.value?.select()
+  })
+}
+
+function cancelRename() {
+  showRenameModal.value = false
+  renamingSession.value = null
+  newTitle.value = ''
+}
+
+function confirmRename() {
+  if (newTitle.value.trim() && renamingSession.value) {
+    emit('renameSession', renamingSession.value.session_id, newTitle.value.trim())
+    cancelRename()
+  }
+}
+
+function handleDelete(sessionId) {
+  activeMenu.value = null
+  emit('deleteSession', sessionId)
+}
+
+function handleTogglePin(sessionId) {
+  activeMenu.value = null
+  emit('togglePin', sessionId)
+}
+
+function closeMenu() {
+  activeMenu.value = null
+}
+
+onMounted(() => {
+  document.addEventListener('click', () => {
+    closeMenu()
+    closeUserMenuSilent()
+  })
+})
+
+function closeUserMenuSilent() {
+  showUserMenu.value = false
+}
+
+function showProfile() {
+  showUserMenu.value = false
+  emit('showProfile')
+}
+
+function showSettings() {
+  showUserMenu.value = false
+  emit('showSettings')
+}
+
+function showUserManagement() {
+  showUserMenu.value = false
+  emit('showUserManagement')
+}
+
+function handleLogout() {
+  showUserMenu.value = false
+  emit('logout')
+}
+
+    return {
+      activeMenu,
+      APP_TITLE,
+      cancelRename,
+      closeMenu,
+      closeUserMenuSilent,
+      computed,
+      confirmRename,
+      groupedSessions,
+      handleDelete,
+      handleLogout,
+      handleTogglePin,
+      newTitle,
+      nextTick,
+      onMounted,
+      ref,
+      renameInput,
+      renamingSession,
+      showProfile,
+      showRenameModal,
+      showSettings,
+      showUserManagement,
+      showUserMenu,
+      startRename,
+      toggleMenu,
+      toggleUserMenu,
+      userInitials,
+    }
+  },
+}
+</script>
+
+<style scoped>
+.session-list {
+  width: 280px;
+  background: #ffffff;
+  border-right: 1px solid var(--border-color);
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  position: relative;
+}
+
+.session-header {
+  padding: 12px 16px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: none;
+}
+
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.logo {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.logo-text {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.collapse-btn {
+  width: 28px;
+  height: 28px;
+  border: none;
+  background: transparent;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.collapse-btn:hover {
+  background: var(--bg-tertiary);
+}
+
+.collapse-btn svg {
+  width: 18px;
+  height: 18px;
+  color: var(--text-secondary);
+}
+
+.action-buttons {
+  padding: 8px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.action-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 12px;
+  border: none;
+  background: transparent;
+  border-radius: 8px;
+  font-size: 13px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.action-btn:hover {
+  background: var(--bg-tertiary);
+}
+
+.action-btn.active {
+  background: color-mix(in srgb, var(--accent-color) 20%, transparent);
+  color: var(--accent-color);
+}
+
+.action-btn svg {
+  width: 16px;
+  height: 16px;
+}
+
+.divider {
+  height: 1px;
+  background: var(--bg-tertiary);
+  margin: 0 16px;
+}
+
+.session-items {
+  flex: 1;
+  overflow-y: auto;
+  padding: 6px 6px;
+  padding-bottom: 60px;
+  scroll-behavior: smooth;
+}
+
+.session-group-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 8px 4px;
+  margin-top: 4px;
+}
+
+.session-group {
+  margin-bottom: 4px;
+}
+
+.session-group-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px 2px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #94a3b8;
+  user-select: none;
+}
+
+.session-group-count {
+  font-size: 10px;
+  font-weight: 500;
+  color: #cbd5e1;
+  background: var(--bg-tertiary);
+  border-radius: 8px;
+  padding: 0 6px;
+  line-height: 16px;
+}
+
+.session-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 8px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.2s;
+  margin-bottom: 0;
+}
+
+.session-item:hover {
+  background: var(--bg-tertiary);
+}
+
+.session-item.active {
+  background: color-mix(in srgb, var(--accent-color) 20%, transparent);
+}
+
+.session-item.streaming {
+  background: #f0fdf4;
+}
+
+.session-item.streaming:hover {
+  background: #ecfdf5;
+}
+
+.session-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.session-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.session-title-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.streaming-badge {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  margin-left: 2px;
+}
+
+.streaming-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #22c55e;
+  animation: streaming-pulse 1.2s infinite ease-in-out;
+}
+
+@keyframes streaming-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.35; transform: scale(0.65); }
+}
+
+.session-actions {
+  position: relative;
+}
+
+.menu-btn {
+  width: 28px;
+  height: 28px;
+  border: none;
+  background: transparent;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  opacity: 0;
+  transition: all 0.2s;
+}
+
+.menu-btn svg {
+  width: 18px;
+  height: 18px;
+  color: var(--text-secondary);
+}
+
+.session-item:hover .menu-btn {
+  opacity: 1;
+}
+
+.menu-btn:hover {
+  background: var(--bg-tertiary);
+}
+
+.menu-dropdown {
+  position: absolute;
+  right: 0;
+  top: 100%;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+  z-index: 100;
+  min-width: 120px;
+  overflow: hidden;
+}
+
+.menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 10px 14px;
+  border: none;
+  background: transparent;
+  font-size: 13px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.menu-item svg {
+  width: 16px;
+  height: 16px;
+}
+
+.menu-item:hover {
+  background: var(--bg-tertiary);
+}
+
+.menu-item.delete {
+  color: #ef4444;
+}
+
+.menu-item.delete:hover {
+  background: #fee2e2;
+}
+
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 20px;
+  color: #94a3b8;
+}
+
+.empty-state svg {
+  width: 48px;
+  height: 48px;
+  margin-bottom: 12px;
+  opacity: 0.5;
+}
+
+.empty-state p {
+  font-size: 14px;
+  margin: 0;
+}
+
+.modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.modal-content {
+  background: var(--bg-secondary);
+  padding: 24px;
+  border-radius: 12px;
+  width: 320px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+}
+
+.modal-content h3 {
+  margin: 0 0 16px 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.modal-content input {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  font-size: 14px;
+  outline: none;
+  transition: all 0.2s;
+  box-sizing: border-box;
+}
+
+.modal-content input:focus {
+  border-color: #0ea5e9;
+  box-shadow: 0 0 0 3px rgba(14, 165, 233, 0.1);
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.cancel-btn {
+  padding: 8px 16px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-secondary);
+  border-radius: 8px;
+  font-size: 14px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.cancel-btn:hover {
+  background: var(--bg-tertiary);
+}
+
+.confirm-btn {
+  padding: 8px 16px;
+  border: none;
+  background: #0ea5e9;
+  color: white;
+  border-radius: 8px;
+  font-size: 14px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.confirm-btn:hover {
+  background: #0284c7;
+}
+
+.user-profile {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  background: transparent;
+  cursor: pointer;
+  transition: background 0.2s;
+  position: relative;
+  border-radius: 10px;
+  margin: 4px 8px;
+}
+
+.user-profile:hover {
+  background: var(--bg-tertiary);
+}
+
+.user-more-icon {
+  width: 18px;
+  height: 18px;
+  color: #94a3b8;
+  flex-shrink: 0;
+  margin-left: auto;
+  transition: color 0.2s;
+}
+
+.user-profile:hover .user-more-icon {
+  color: var(--text-secondary);
+}
+
+.user-avatar {
+  width: 32px;
+  height: 32px;
+  background: linear-gradient(135deg, #0ea5e9 0%, #8b5cf6 100%);
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  box-shadow: 0 2px 6px rgba(14, 165, 233, 0.25);
+}
+
+.user-avatar svg {
+  width: 20px;
+  height: 20px;
+  color: white;
+}
+
+.user-avatar .user-initials {
+  font-size: 13px;
+  font-weight: 600;
+  color: white;
+  letter-spacing: 0.5px;
+  line-height: 1;
+}
+
+.user-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.user-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  line-height: 1.2;
+}
+
+.user-org {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 2px;
+  font-size: 11px;
+  color: #94a3b8;
+  overflow: hidden;
+}
+
+.user-org span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.user-org-icon {
+  width: 11px;
+  height: 11px;
+  flex-shrink: 0;
+  opacity: 0.8;
+}
+
+.user-dropdown {
+  position: absolute;
+  bottom: 100%;
+  left: 12px;
+  right: 12px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.12);
+  z-index: 100;
+  margin-bottom: 8px;
+  overflow: hidden;
+  padding: 6px;
+}
+
+.user-dropdown-divider {
+  height: 1px;
+  background: var(--bg-tertiary);
+  margin: 4px 8px;
+}
+
+.user-dropdown-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 12px;
+  border: none;
+  background: transparent;
+  font-size: 14px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.2s;
+  border-radius: 8px;
+}
+
+.user-dropdown-item svg {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+}
+
+.user-dropdown-item:hover {
+  background: var(--bg-tertiary);
+}
+
+.user-dropdown-item.logout-item {
+  color: #ef4444;
+}
+
+.user-dropdown-item.logout-item:hover {
+  background: #fee2e2;
+}
+</style>
+
+<style>
+/* Dark theme overrides for session list (non-scoped for root HTML) */
+html.dark .session-group-header .group-label {
+  color: #94a3b8;
+}
+
+html.dark .session-group-header .group-count {
+  color: var(--text-secondary);
+  background: #334155;
+}
+</style>
