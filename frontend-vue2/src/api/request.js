@@ -115,6 +115,14 @@ export async function requestBlob(config) {
   return response.data
 }
 
+export async function requestArrayBuffer(config) {
+  const response = await request({
+    ...config,
+    responseType: 'arraybuffer',
+  })
+  return response.data
+}
+
 export function streamUrl(path) {
   return `${API_BASE_URL}${path}`
 }

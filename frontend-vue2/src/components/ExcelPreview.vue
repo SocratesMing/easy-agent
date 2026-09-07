@@ -33,6 +33,7 @@
 <script>
 import { ref, onMounted, watch } from 'vue'
 import ExcelJS from 'exceljs'
+import { requestArrayBuffer } from '../api/request.js'
 export default {
   props: {
   fileUrl: {
@@ -48,9 +49,8 @@ async function loadExcel() {
   if (!props.fileUrl) return
   
   try {
-    const response = await fetch(props.fileUrl)
-    const arrayBuffer = await response.arrayBuffer()
-    
+    const arrayBuffer = await requestArrayBuffer({ url: props.fileUrl })
+
     const workbook = new ExcelJS.Workbook()
     await workbook.xlsx.load(arrayBuffer)
     

@@ -49,6 +49,7 @@
 
 <script>
 import { ref, onMounted } from 'vue'
+import { MessageBox } from 'element-ui'
 import { listUsers, resetUserPassword } from '../api/auth.js'
 export default {
   setup(props, { emit }) {
@@ -75,7 +76,16 @@ async function loadUsers() {
 }
 
 async function resetPassword(username) {
-  if (!window.confirm(`确认将用户 ${username} 的密码重置为 123456？`)) return
+  // 用 element-ui 的确认框替代原生 confirm
+  try {
+    await MessageBox.confirm(`确认将用户 ${username} 的密码重置为 123456？`, '重置密码确认', {
+      type: 'warning',
+      confirmButtonText: '重置',
+      cancelButtonText: '取消',
+    })
+  } catch {
+    return // 用户取消
+  }
 
   resettingUsername.value = username
   error.value = ''

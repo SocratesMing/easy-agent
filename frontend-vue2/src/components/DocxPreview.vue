@@ -5,6 +5,7 @@
 <script>
 import { ref, onMounted, watch, onUnmounted } from 'vue'
 import { renderAsync } from 'docx-preview'
+import { requestArrayBuffer } from '../api/request.js'
 export default {
   props: {
   fileUrl: {
@@ -21,9 +22,9 @@ async function loadDocx() {
   try {
     containerRef.value.innerHTML = ''
     
-    const response = await fetch(props.fileUrl)
-    const arrayBuffer = await response.arrayBuffer()
-    
+    // 走统一 axios 封装（自动带鉴权头），直接拿原始字节给 docx-preview 渲染
+    const arrayBuffer = await requestArrayBuffer({ url: props.fileUrl })
+
     await renderAsync(arrayBuffer, containerRef.value, containerRef.value, {
       className: 'docx-preview-content',
       inWrapper: true,

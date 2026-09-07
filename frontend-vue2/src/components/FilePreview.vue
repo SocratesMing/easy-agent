@@ -105,6 +105,7 @@ import DocxPreview from './DocxPreview.vue'
 import ExcelPreview from './ExcelPreview.vue'
 import * as XLSX from 'xlsx'
 import { getStoredToken } from '../api/auth.js'
+import { requestBlob, requestArrayBuffer, requestText } from '../api/request.js'
 export default {
   components: { DocxPreview, ExcelPreview },
   props: {
@@ -396,18 +397,11 @@ async function loadPreview() {
       const pdfParams = new URLSearchParams(params)
       pdfParams.set('target', 'pdf')
       const pdfUrl = `${previewBaseUrl.value}?${pdfParams.toString()}`
-      const response = await fetch(pdfUrl, { headers })
-      if (!response.ok) {
-        const detail = await response.text().catch(() => '')
-        throw new Error(`HTTP ${response.status} ${detail}`)
-      }
-      const blob = await response.blob()
+      const blob = await requestBlob({ url: pdfUrl, headers })
       pptxPdfUrl.value = URL.createObjectURL(blob)
     } else if (isDocx.value) {
       console.log('[FilePreview] DOCX 预览')
-      const response = await fetch(previewUrl.value, { headers })
-      if (!response.ok) throw new Error(`HTTP ${response.status}`)
-      const arrayBuffer = await response.arrayBuffer()
+      const arrayBuffer = await requestArrayBuffer({ url: previewUrl.value, headers })
       docxUrl.value = URL.createObjectURL(
         new Blob([arrayBuffer], {
           type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
@@ -415,9 +409,7 @@ async function loadPreview() {
       )
     } else if (isExcel.value) {
       console.log('[FilePreview] Excel 预览')
-      const response = await fetch(previewUrl.value, { headers })
-      if (!response.ok) throw new Error(`HTTP ${response.status}`)
-      const arrayBuffer = await response.arrayBuffer()
+      const arrayBuffer = await requestArrayBuffer({ url: previewUrl.value, headers })
       excelUrl.value = URL.createObjectURL(
         new Blob([arrayBuffer], {
           type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
@@ -425,15 +417,11 @@ async function loadPreview() {
       )
     } else if (isHtml.value) {
       console.log('[FilePreview] HTML 预览')
-      const response = await fetch(previewUrl.value, { headers })
-      if (!response.ok) throw new Error(`HTTP ${response.status}`)
-      const htmlText = await response.text()
+      const htmlText = await requestText({ url: previewUrl.value, headers })
       const blob = new Blob([htmlText], { type: 'text/html; charset=utf-8' })
       htmlUrl.value = URL.createObjectURL(blob)
     } else if (isMarkdown.value || isText.value || isCsv.value) {
-      const response = await fetch(previewUrl.value, { headers })
-      if (!response.ok) throw new Error(`HTTP ${response.status}`)
-      textContent.value = await response.text()
+      textContent.value = await requestText({ url: previewUrl.value, headers })
       if (textContent.value.length > 50000) {
         textContent.value = textContent.value.substring(0, 50000) + '\n\n... (内容过长已截断)'
       }

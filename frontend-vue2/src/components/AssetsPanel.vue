@@ -133,7 +133,9 @@
 <script>
 import { API_BASE_URL } from '../config.js'
 import { ref, computed, onMounted, watch, onActivated } from 'vue'
+import { Message } from 'element-ui'
 import { getAllFiles, deleteFile } from '../api/files.js'
+import { requestJson } from '../api/request.js'
 import FileIcon from './FileIcon.vue'
 import ConfirmDialog from './ConfirmDialog.vue'
 import FilePreview from './FilePreview.vue'
@@ -238,16 +240,15 @@ const currentFiles = computed(() => {
 async function refreshAssets() {
   loading.value = true
   try {
-    const { getAuthHeaders } = await import('../api/auth.js')
-    const response = await fetch(`${API_BASE_URL}/agent/files/list`, {
-      headers: {
-        ...getAuthHeaders()
-      }
-    })
-    const data = await response.json()
+    // 统一走 axios 封装：自动携带 API_BASE_URL 与 Authorization 头
+    const data = await requestJson(
+      { url: '/agent/files/list', method: 'get' },
+      '获取资产失败'
+    )
     allFiles.value = data.files || []
   } catch (e) {
     console.error('获取资产失败:', e)
+    Message.error(e.message)
   } finally {
     loading.value = false
   }
@@ -259,28 +260,23 @@ async function handleUpload(event) {
 
   uploading.value = true
 
-  const { getAuthHeaders } = await import('../api/auth.js')
-
   for (const file of files) {
     try {
       const formData = new FormData()
       formData.append('file', file)
 
-      const response = await fetch(`${API_BASE_URL}/agent/files/upload`, {
-        method: 'POST',
-        headers: {
-          ...getAuthHeaders()
+      await requestJson(
+        {
+          url: '/agent/files/upload',
+          method: 'post',
+          data: formData,
+          headers: { 'Content-Type': 'multipart/form-data' },
         },
-        body: formData
-      })
-
-      if (response.ok) {
-        console.log('文件上传成功:', file.name)
-      } else {
-        console.error('文件上传失败:', file.name)
-      }
+        `上传 ${file.name} 失败`
+      )
     } catch (e) {
       console.error('上传文件失败:', e)
+      Message.error(e.message)
     }
   }
 
@@ -325,25 +321,18 @@ async function handleDelete(file) {
   }
 
   try {
-    const { getAuthHeaders } = await import('../api/auth.js')
-    const response = await fetch(`${API_BASE_URL}/agent/files/users/files/${encodeURIComponent(file.id)}`, {
-      method: 'DELETE',
-      headers: {
-        ...getAuthHeaders()
-      }
-    })
-
-    if (response.ok) {
-      console.log('文件删除成功:', file.filename)
-      await refreshAssets()
-    } else {
-      const error = await response.json()
-      console.error('文件删除失败:', error)
-      alert('删除失败: ' + (error.detail || '未知错误'))
-    }
+    await requestJson(
+      {
+        url: `/agent/files/users/files/${encodeURIComponent(file.id)}`,
+        method: 'delete',
+      },
+      '删除文件失败'
+    )
+    Message.success('文件删除成功')
+    await refreshAssets()
   } catch (e) {
     console.error('删除文件失败:', e)
-    alert('删除失败: ' + e.message)
+    Message.error(e.message)
   }
 }
 

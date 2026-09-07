@@ -363,6 +363,7 @@
 
 <script>
 import { ref, watch, onMounted, computed } from 'vue'
+import { MessageBox } from 'element-ui'
 import {
   getMemory,
   updateMemory,
@@ -578,7 +579,16 @@ async function saveMcp() {
 }
 
 async function removeMcpServer(name) {
-  if (!confirm(`确认删除 MCP 服务 "${name}"？删除后立即生效。`)) return
+  // 用 element-ui 的确认框替代原生 confirm
+  try {
+    await MessageBox.confirm(`确认删除 MCP 服务 "${name}"？删除后立即生效。`, '删除确认', {
+      type: 'warning',
+      confirmButtonText: '删除',
+      cancelButtonText: '取消',
+    })
+  } catch {
+    return // 用户取消
+  }
   try {
     const resp = await deleteMcpServer(name)
     // 删除成功，本地同步移除

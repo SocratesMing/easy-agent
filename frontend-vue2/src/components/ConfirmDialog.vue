@@ -1,26 +1,38 @@
 <template>
-    <div v-if="visible" class="confirm-dialog-overlay" @click.self="handleCancel">
-      <div class="confirm-dialog">
-        <div class="confirm-icon" :class="type">
-          <svg v-if="type === 'warning'" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path>
-            <line x1="12" y1="9" x2="12" y2="13"></line>
-            <line x1="12" y1="17" x2="12.01" y2="17"></line>
-          </svg>
-          <svg v-else xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <circle cx="12" cy="12" r="10"></circle>
-            <line x1="12" y1="8" x2="12" y2="12"></line>
-            <line x1="12" y1="16" x2="12.01" y2="16"></line>
-          </svg>
-        </div>
-        <h3 class="confirm-title">{{ title }}</h3>
-        <p class="confirm-message">{{ message }}</p>
-        <div class="confirm-actions">
-          <button class="btn-cancel" @click="handleCancel">{{ cancelText }}</button>
-          <button class="btn-confirm" :class="type" @click="handleConfirm">{{ confirmText }}</button>
-        </div>
+  <!-- 用 element-ui 的 el-dialog 承载，保留 show() 的 Promise 用法，调用方零改动 -->
+  <el-dialog
+    :visible.sync="visible"
+    :title="title"
+    width="380px"
+    :close-on-click-modal="true"
+    custom-class="ea-confirm-dialog"
+    @close="handleCancel"
+  >
+    <div class="confirm-body">
+      <div class="confirm-icon" :class="type">
+        <svg v-if="type === 'warning'" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="24" height="24">
+          <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path>
+          <line x1="12" y1="9" x2="12" y2="13"></line>
+          <line x1="12" y1="17" x2="12.01" y2="17"></line>
+        </svg>
+        <svg v-else xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="24" height="24">
+          <circle cx="12" cy="12" r="10"></circle>
+          <line x1="12" y1="8" x2="12" y2="12"></line>
+          <line x1="12" y1="16" x2="12.01" y2="16"></line>
+        </svg>
       </div>
+      <p class="confirm-message">{{ message }}</p>
     </div>
+
+    <span slot="footer" class="confirm-actions">
+      <el-button size="small" @click="handleCancel">{{ cancelText }}</el-button>
+      <el-button
+        size="small"
+        :type="type === 'danger' ? 'danger' : 'warning'"
+        @click="handleConfirm"
+      >{{ confirmText }}</el-button>
+    </span>
+  </el-dialog>
 </template>
 
 <script>
@@ -78,13 +90,9 @@ function handleCancel() {
   emit('cancel')
 }
 
-
-
     return {
       handleCancel,
       handleConfirm,
-      ref,
-      resolvePromise,
       show,
       visible,
     }
@@ -93,56 +101,24 @@ function handleCancel() {
 </script>
 
 <style scoped>
-.confirm-dialog-overlay {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background: rgba(0, 0, 0, 0.5);
+.confirm-body {
   display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 9999;
-}
-
-.confirm-dialog {
-  background: white;
-  border-radius: 12px;
-  padding: 24px;
-  width: 360px;
-  max-width: 90vw;
-  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.2);
-  animation: dialog-enter 0.2s ease-out;
-}
-
-@keyframes dialog-enter {
-  from {
-    opacity: 0;
-    transform: scale(0.9);
-  }
-  to {
-    opacity: 1;
-    transform: scale(1);
-  }
+  align-items: flex-start;
+  gap: 12px;
 }
 
 .confirm-icon {
-  width: 48px;
-  height: 48px;
+  flex-shrink: 0;
+  width: 36px;
+  height: 36px;
   border-radius: 50%;
   display: flex;
   align-items: center;
   justify-content: center;
-  margin: 0 auto 16px;
 }
 
 .confirm-icon.warning {
   background: #fef3cd;
-  color: #d4a700;
-}
-
-.confirm-icon.warning svg {
   color: #d4a700;
 }
 
@@ -151,69 +127,16 @@ function handleCancel() {
   color: #ef4444;
 }
 
-.confirm-icon.danger svg {
-  color: #ef4444;
-}
-
-.confirm-title {
-  margin: 0 0 8px;
-  font-size: 18px;
-  font-weight: 600;
-  color: var(--text-primary);
-  text-align: center;
-}
-
 .confirm-message {
-  margin: 0 0 24px;
+  margin: 0;
   font-size: 14px;
   color: var(--text-secondary);
-  text-align: center;
-  line-height: 1.5;
+  line-height: 1.6;
 }
 
 .confirm-actions {
   display: flex;
-  gap: 12px;
-}
-
-.btn-cancel,
-.btn-confirm {
-  flex: 1;
-  padding: 10px 16px;
-  border-radius: 8px;
-  font-size: 14px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all 0.2s;
-  border: none;
-}
-
-.btn-cancel {
-  background: var(--bg-tertiary);
-  color: var(--text-secondary);
-}
-
-.btn-cancel:hover {
-  background: var(--bg-secondary);
-}
-
-.btn-confirm {
-  color: white;
-}
-
-.btn-confirm.warning {
-  background: #f59e0b;
-}
-
-.btn-confirm.warning:hover {
-  background: #d97706;
-}
-
-.btn-confirm.danger {
-  background: #ef4444;
-}
-
-.btn-confirm.danger:hover {
-  background: #dc2626;
+  justify-content: flex-end;
+  gap: 8px;
 }
 </style>

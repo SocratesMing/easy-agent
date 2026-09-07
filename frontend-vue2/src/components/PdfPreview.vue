@@ -41,6 +41,7 @@
 
 <script>
 import { ref, onMounted, watch, onUnmounted } from 'vue'
+import { requestArrayBuffer } from '../api/request.js'
 import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.mjs'
 import pdfjsWorker from 'pdfjs-dist/legacy/build/pdf.worker.min.mjs?url'
 export default {
@@ -74,14 +75,9 @@ async function loadPdf() {
   errorMsg.value = ''
   
   try {
-    const response = await fetch(props.fileUrl)
-    
-    if (!response.ok) {
-      throw new Error(`HTTP error! status: ${response.status}`)
-    }
-    
-    const arrayBuffer = await response.arrayBuffer()
-    
+    // 统一走 axios 封装（自动带鉴权头），4xx/5xx 由拦截器直接 reject
+    const arrayBuffer = await requestArrayBuffer({ url: props.fileUrl })
+
     if (arrayBuffer.byteLength === 0) {
       throw new Error('文件内容为空')
     }
