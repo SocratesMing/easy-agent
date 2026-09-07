@@ -86,7 +86,7 @@ summarization:
 tools:
   result_log_truncate: 200  # 工具结果在日志中的截断字符数（默认 200）
   skills_dir: "./skills"   # Skills directory path
-  prompts_dir: "./prompts" # Prompts directory path (for forex, etc.)
+  prompts_dir: "./prompts" # Prompts directory path
   read_file_line_limit: 2000  # read_file 内置工具每次读取的行数（默认 2000）
 
 # ===== Log Configuration =====

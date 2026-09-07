@@ -64,7 +64,6 @@ easy-agent/
 │   │   ├── skill_center.py       #     /agent/skill-center/* (公共/用户技能)
 │   │   ├── scheduled_tasks.py    #     /agent/scheduled-tasks/* (定时任务)
 │   │   ├── terminal.py           #     /agent/terminal/* (Web Shell)
-│   │   ├── forex.py              #     /agent/forex/* (外汇行情)
 │   │   ├── prompts.py            #     /agent/prompts/* (提示词管理)
 │   │   └── settings.py           #     /agent/settings/* (用户设置)
 │   │
@@ -316,7 +315,7 @@ external_dirs:
 | GET  | `/agent/terminal/history` | 命令历史 |
 
 ### 其他
-`/agent/forex/*`、`/agent/prompts/*`、`/agent/settings/*`
+`/agent/prompts/*`、`/agent/settings/*`
 
 ---
 

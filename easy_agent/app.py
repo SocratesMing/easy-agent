@@ -27,7 +27,6 @@ from .api import (
     sessions_router,
     files_router,
     auth_router,
-    forex_router,
     completion_router,
     prompts_router,
     settings_router,
@@ -456,7 +455,6 @@ app.include_router(chat_router)
 app.include_router(sessions_router)
 app.include_router(files_router)
 app.include_router(auth_router)
-app.include_router(forex_router)
 app.include_router(completion_router)
 app.include_router(prompts_router)
 app.include_router(settings_router)

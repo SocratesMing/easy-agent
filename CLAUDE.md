@@ -59,7 +59,6 @@ Environment variables:
 - `sessions.py` — Session CRUD, workspace name generation
 - `auth.py` — Login/register endpoints
 - `files.py` — File upload/management
-- `forex.py` — Forex data endpoints
 - `prompts.py` — Prompt template management
 
 ### Services (`easy_agent/services/`)
