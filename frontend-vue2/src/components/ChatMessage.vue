@@ -471,7 +471,8 @@ const isProcessActive = computed(() => !!props.message.loading)
 
 // 处理过程默认折叠（含实时会话），由用户手动展开/折叠；新过程到达不自动展开，
 // 避免打断用户已收起的查看状态。
-const processExpanded = ref(false)
+// 默认展开：让执行过程（思考/工具调用）在流式过程中即可见
+const processExpanded = ref(true)
 
 // 流式期间只要出现穿插正文（思考/工具之间的中间正文），自动展开执行过程，
 // 让中间正文按返回顺序可见；完成后保持用户手动展开/收起的状态。
@@ -556,9 +557,9 @@ function getBlockKey(block, index) {
 function isExpandedThinking(index) {
   const block = sortedBlocks.value[index]
   if (!block) return false
-  // Default collapsed: only expand if explicitly toggled open
+  // 默认展开：仅当用户显式折叠过（值为 false）才收起
   const key = getBlockKey(block, index)
-  return expandedThinking.value[key] === true
+  return expandedThinking.value[key] !== false
 }
 
 function toggleThinking(index) {
@@ -596,8 +597,9 @@ function isExpandedToolCall(index) {
   const block = sortedBlocks.value[index]
   if (!block) return false
   if (block.pending_approval) return true
+  // 默认展开：仅当用户显式折叠过（值为 false）才收起
   const key = getBlockKey(block, index)
-  return expandedTool.value[key] === true
+  return expandedTool.value[key] !== false
 }
 
 function highlightCode(code, lang) {

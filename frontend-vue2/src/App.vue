@@ -126,6 +126,7 @@
 <script>
 import { API_BASE_URL, APP_WELCOME_TITLE, appRuntime } from './config.js'
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import Vue from 'vue'
 import SessionList from './components/SessionList.vue'
 import Chat from './components/Chat.vue'
 import AssetsPanel from './components/AssetsPanel.vue'
@@ -357,7 +358,7 @@ async function attachToStreamingSession(sessionId, opts = {}) {
     if (lastAssistantIdx === -1) {
       messages.value.push(placeholder)
     } else {
-      messages.value[lastAssistantIdx] = placeholder
+      setReactive(messages.value, lastAssistantIdx, placeholder)
     }
     streamingAssistantId.value = attachId
   }
@@ -407,7 +408,7 @@ async function attachToStreamingSession(sessionId, opts = {}) {
               }
             }
           }
-          messages.value[idx] = { ...messages.value[idx], blocks: [...messages.value[idx].blocks] }
+          setReactive(messages.value, idx, { ...messages.value[idx], blocks: [...messages.value[idx].blocks] })
         }
       }
     },
@@ -560,7 +561,7 @@ function reconstructPendingApproval() {
         return b
       })
       const hasPending = blocks.some(b => b.type === 'tool_call' && b.approval_status === 'pending')
-      messages.value[i] = { ...msg, id: backendMsgId, blocks }
+      setReactive(messages.value, i, { ...msg, id: backendMsgId, blocks })
       if (hasPending) {
         pendingApproval.value = { threadId, assistantMsgId: backendMsgId }
       }
@@ -985,7 +986,7 @@ async function handleRenameSession(sessionId, newTitle) {
     await renameSession(sessionId, newTitle)
     const idx = sessions.value.findIndex(s => s.session_id === sessionId)
     if (idx !== -1) {
-      sessions.value[idx] = { ...sessions.value[idx], title: newTitle }
+      setReactive(sessions.value, idx, { ...sessions.value[idx], title: newTitle })
     }
   } catch (e) {
     console.error('重命名会话失败:', e)
@@ -998,7 +999,7 @@ async function handleTogglePin(sessionId) {
     const result = await togglePinSession(sessionId)
     const idx = sessions.value.findIndex(s => s.session_id === sessionId)
     if (idx !== -1) {
-      sessions.value[idx] = { ...sessions.value[idx], pinned: result.pinned }
+      setReactive(sessions.value, idx, { ...sessions.value[idx], pinned: result.pinned })
     }
     // 重新排序：置顶在前
     sessions.value.sort((a, b) => (b.pinned || 0) - (a.pinned || 0) || new Date(b.updated_at) - new Date(a.updated_at))
@@ -1034,6 +1035,20 @@ function parseMCPResult(rawResult) {
   return rawResult
 }
 
+/**
+ * Vue 2 无法检测「数组索引赋值」（arr[i] = x）与「对象属性新增」（obj.k = x），
+ * 只有 push/splice 等变异方法和 Vue.set 才会触发更新。Vue 3 基于 Proxy 没有这个限制，
+ * 因此迁移后必须统一走这里写入，否则流式内容不会逐步渲染。
+ */
+function setReactive(target, key, value) {
+  if (!target) return
+  if (Array.isArray(target)) {
+    if (key >= 0 && key < target.length) target.splice(key, 1, value)
+  } else {
+    Vue.set(target, key, value)
+  }
+}
+
 function createStreamChunkHandler(ctx) {
   let currentBlock = null
   let currentThinking = ''
@@ -1047,7 +1062,7 @@ function createStreamChunkHandler(ctx) {
   }
   function touchBlocks() {
     const idx = findIdx()
-    if (idx !== -1) messages.value[idx] = { ...messages.value[idx], blocks: [...messages.value[idx].blocks] }
+    if (idx !== -1) setReactive(messages.value, idx, { ...messages.value[idx], blocks: [...messages.value[idx].blocks] })
   }
   function ensureMessage() {
     if (ctx.ensureMessage) ctx.ensureMessage()
@@ -1076,7 +1091,7 @@ function createStreamChunkHandler(ctx) {
     if (needNewBlock) {
       currentBlock = { type, content: '', order: blkOrder, ...data }
       messages.value[idx].blocks.push(currentBlock)
-      messages.value[idx] = { ...messages.value[idx], blocks: [...messages.value[idx].blocks] }
+      setReactive(messages.value, idx, { ...messages.value[idx], blocks: [...messages.value[idx].blocks] })
     } else {
       if (replace) {
         currentBlock.content = data.content || ''
@@ -1090,7 +1105,7 @@ function createStreamChunkHandler(ctx) {
       if (data.duration !== undefined) currentBlock.duration = data.duration
       if (data.step !== undefined) currentBlock.step = data.step
       if (data.id !== undefined) currentBlock.id = data.id
-      messages.value[idx] = { ...messages.value[idx] }
+      setReactive(messages.value, idx, { ...messages.value[idx] })
     }
     return currentBlock
   }
@@ -1099,9 +1114,9 @@ function createStreamChunkHandler(ctx) {
     if (idx !== -1) {
       const blockIdx = messages.value[idx].blocks.findIndex(b => b.type === 'thinking' && b.step === step)
       if (blockIdx !== -1) {
-        messages.value[idx].blocks[blockIdx] = { ...messages.value[idx].blocks[blockIdx], duration }
+        setReactive(messages.value[idx].blocks, blockIdx, { ...messages.value[idx].blocks[blockIdx], duration })
       }
-      messages.value[idx] = { ...messages.value[idx], thinking_duration: duration, blocks: [...messages.value[idx].blocks] }
+      setReactive(messages.value, idx, { ...messages.value[idx], thinking_duration: duration, blocks: [...messages.value[idx].blocks] })
     }
   }
   function usagePatchFrom(data) {
@@ -1233,7 +1248,7 @@ function createStreamChunkHandler(ctx) {
         if (blk) {
           blk.content = currentThinking
           currentBlock = blk
-          messages.value[idx] = { ...messages.value[idx] }
+          setReactive(messages.value, idx, { ...messages.value[idx] })
         }
       }
     } else if (eventType === 'thinking_end') {
@@ -1257,8 +1272,8 @@ function createStreamChunkHandler(ctx) {
             }
           }
           if (blockIdx !== -1) {
-            messages.value[idx].blocks[blockIdx] = { ...messages.value[idx].blocks[blockIdx], duration: duration || 0 }
-            messages.value[idx] = { ...messages.value[idx], blocks: [...messages.value[idx].blocks] }
+            setReactive(messages.value[idx].blocks, blockIdx, { ...messages.value[idx].blocks[blockIdx], duration: duration || 0 })
+            setReactive(messages.value, idx, { ...messages.value[idx], blocks: [...messages.value[idx].blocks] })
           }
         }
       } else {
@@ -1313,7 +1328,7 @@ function createStreamChunkHandler(ctx) {
     } else if (eventType === 'user_input_required') {
       if (!ctx.isResume) {
         const idx = findIdx()
-        if (idx !== -1) { messages.value[idx].loading = false; messages.value[idx] = { ...messages.value[idx] } }
+        if (idx !== -1) { messages.value[idx].loading = false; setReactive(messages.value, idx, { ...messages.value[idx] }) }
       }
     } else if (eventType === 'tool_call') {
       if (!ctx.isResume) ensureMessage()
@@ -1349,7 +1364,7 @@ function createStreamChunkHandler(ctx) {
         if (blockIdx !== -1) {
           const blk = { ...messages.value[idx].blocks[blockIdx], arguments: args || messages.value[idx].blocks[blockIdx].arguments, result: parseMCPResult(result || ''), success: success !== false, duration: toolDuration }
           if (ctx.isResume) blk.loading = false
-          messages.value[idx].blocks[blockIdx] = blk
+          setReactive(messages.value[idx].blocks, blockIdx, blk)
           touchBlocks()
         }
       }
@@ -1399,14 +1414,14 @@ function createStreamChunkHandler(ctx) {
             }
           }
         }
-        messages.value[idx] = { ...messages.value[idx] }
+        setReactive(messages.value, idx, { ...messages.value[idx] })
       }
       if (!ctx.isResume && title) {
         const existingIdx = sessions.value.findIndex(s => s.session_id === currentSessionId.value)
         if (existingIdx === -1) {
           sessions.value = [{ session_id: currentSessionId.value, title, created_at: new Date().toISOString(), message_count: messages.value.length }, ...sessions.value]
         } else {
-          sessions.value[existingIdx] = { ...sessions.value[existingIdx], title }
+          setReactive(sessions.value, existingIdx, { ...sessions.value[existingIdx], title })
           sessions.value = [...sessions.value]
         }
       }
@@ -1421,7 +1436,7 @@ function createStreamChunkHandler(ctx) {
             if (blk.type === 'tool_call' && blk.duration == null) { blk.duration = 0; blk.success = false; if (!blk.result) blk.result = data.content || '执行中断' }
           }
         }
-        messages.value[idx] = { ...messages.value[idx], blocks: [...messages.value[idx].blocks] }
+        setReactive(messages.value, idx, { ...messages.value[idx], blocks: [...messages.value[idx].blocks] })
       }
       error.value = data.content || '处理失败'
     }
@@ -1529,7 +1544,7 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
               if (ar.file_paths && ar.file_paths.length > 0) blk.file_paths = ar.file_paths
             }
           }
-          messages.value[idx] = { ...messages.value[idx], blocks: [...messages.value[idx].blocks] }
+          setReactive(messages.value, idx, { ...messages.value[idx], blocks: [...messages.value[idx].blocks] })
         }
       }
     },
@@ -1562,7 +1577,7 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
           messages.value[idx].loading = false
           messages.value[idx].content = messages.value[idx].content || currentContent || ''
           messages.value[idx].created_at = new Date().toISOString()
-          messages.value[idx] = { ...messages.value[idx] }
+          setReactive(messages.value, idx, { ...messages.value[idx] })
         }
       }
       return
@@ -1573,7 +1588,7 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
       if (idx !== -1) {
         messages.value[idx].loading = false
         messages.value[idx].error = e.message || '发送消息失败，请检查网络连接'
-        messages.value[idx] = { ...messages.value[idx] }
+        setReactive(messages.value, idx, { ...messages.value[idx] })
       } else {
         // 消息不存在，添加一条错误消息
         messages.value.push({
@@ -1629,7 +1644,7 @@ async function handleToolApproval(decision) {
           blk.approval_status = decision === 'approve' ? 'approved' : 'rejected'
         }
       }
-      messages.value[idx] = { ...messages.value[idx], blocks: [...messages.value[idx].blocks] }
+      setReactive(messages.value, idx, { ...messages.value[idx], blocks: [...messages.value[idx].blocks] })
     }
   }
 
@@ -1688,7 +1703,7 @@ async function handleToolApproval(decision) {
               }
             }
           }
-          messages.value[idx] = { ...messages.value[idx], blocks: [...messages.value[idx].blocks] }
+          setReactive(messages.value, idx, { ...messages.value[idx], blocks: [...messages.value[idx].blocks] })
         }
       }
     },
@@ -1703,7 +1718,7 @@ async function handleToolApproval(decision) {
     // 恢复期间保持 loading=true，使思考 spinner 与工具"执行中"状态与正常流一致
     const _resumeIdx = messages.value.findIndex(m => m.id === assistantMsgId)
     if (_resumeIdx !== -1) {
-      messages.value[_resumeIdx] = { ...messages.value[_resumeIdx], loading: true }
+      setReactive(messages.value, _resumeIdx, { ...messages.value[_resumeIdx], loading: true })
     }
     // 注意：人工介入（批准/拒绝）不再作为用户侧消息展示，
     // 直接在模型侧的 execute 工具上进行了 HITL 标注。
@@ -1717,7 +1732,7 @@ async function handleToolApproval(decision) {
     if (idx !== -1) {
       messages.value[idx].loading = false
       messages.value[idx].error = e.message || '恢复执行失败'
-      messages.value[idx] = { ...messages.value[idx] }
+      setReactive(messages.value, idx, { ...messages.value[idx] })
     }
   } finally {
     // 如果 resumeStream 期间收到了新的 approval_required（onChunk 重新设置了
@@ -1766,7 +1781,7 @@ function handleStop() {
   if (streamingAssistantId.value) {
     const idx = messages.value.findIndex(m => m.id === streamingAssistantId.value)
     if (idx !== -1) {
-      messages.value[idx] = { ...messages.value[idx], loading: false }
+      setReactive(messages.value, idx, { ...messages.value[idx], loading: false })
     }
   }
   streamingAssistantId.value = null
