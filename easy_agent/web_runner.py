@@ -22,17 +22,12 @@ def run_web():
     parser.add_argument("--workers", type=int, default=1, help="工作进程数")
     args = parser.parse_args()
 
-    # 在 uvicorn 启动（含 --reload 子进程）之前加载项目根 .env，
-    # 供运行时环境变量使用；应用配置值完全来自 YAML 文件。
-    from easy_agent.utils.env_loader import load_project_env
-
-    load_project_env()
-
     project_root = Path(__file__).parent.parent
     os.chdir(project_root)
 
-    # 配置文件路径完全交给 Config.resolve_config_path 决定；
-    # EASY_CONFIG / AGENT_ENV 只选择文件，不参与配置值解析。
+    from easy_agent.initialization import initialize_runtime
+
+    initialize_runtime()
 
     uvicorn.run(
         "easy_agent.app:app",
