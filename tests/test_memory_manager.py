@@ -1,4 +1,6 @@
 from easy_agent.services.memory_manager import (
+    MAX_LONG_TERM_MEMORY_CHARS,
+    MAX_MEMORY_CHARS,
     build_long_term_memory_update_prompt,
     build_memory_update_prompt,
     update_long_term_memory_after_session,
@@ -13,12 +15,11 @@ def test_session_memory_prompt_preserves_project_handoff_context():
         assistant_response="已完成架构梳理和测试。",
     )
 
-    assert "当前项目做什么" in prompt
-    assert "已完成的关键结果" in prompt
-    assert "可复用经验" in prompt
-    assert "用户偏好" in prompt
-    assert "后续必要动作" in prompt
-    assert "快速恢复上下文" in prompt
+    # 按契约校验（不锁死文案措辞）：具备恢复上下文所需的结构要素
+    assert "## 当前项目" in prompt
+    assert "## 下一步" in prompt
+    assert "## 关键决策" in prompt
+    assert "## 踩坑与解法" in prompt
 
 
 def test_session_memory_prompt_keeps_restore_sections_and_safety_rules():
@@ -29,11 +30,11 @@ def test_session_memory_prompt_keeps_restore_sections_and_safety_rules():
     )
 
     assert "## 当前项目" in prompt
-    assert "## 经验与注意事项" in prompt
-    assert "## 用户偏好" in prompt
-    assert "根据上下文" in prompt
-    assert "密钥、密码、token" in prompt
-    assert "不得超过 600 字符" in prompt
+    assert "## 下一步" in prompt
+    assert "## 踩坑与解法" in prompt
+    assert "原始日志" in prompt
+    assert "密钥" in prompt
+    assert str(MAX_MEMORY_CHARS) in prompt
 
 
 def test_all_sessions_use_context_summary_without_task_mode():
@@ -47,8 +48,8 @@ def test_all_sessions_use_context_summary_without_task_mode():
     assert "输出模式" not in prompt
     assert "简单任务" not in prompt
     assert "项目上下文" not in prompt
-    assert "目标长度：不超过 600 字符" in prompt
-    assert "没有可靠内容时省略对应小节" in prompt
+    assert str(MAX_MEMORY_CHARS) in prompt
+    assert "省略" in prompt
 
 
 def test_single_weak_project_signal_still_uses_compact_budget():
@@ -60,7 +61,7 @@ def test_single_weak_project_signal_still_uses_compact_budget():
     )
 
     assert "输出模式" not in prompt
-    assert "目标长度：不超过 600 字符" in prompt
+    assert str(MAX_MEMORY_CHARS) in prompt
 
 
 def test_existing_non_project_memory_is_recompressed_to_compact_budget():
@@ -72,7 +73,7 @@ def test_existing_non_project_memory_is_recompressed_to_compact_budget():
     )
 
     assert "输出模式" not in prompt
-    assert "目标长度：不超过 600 字符" in prompt
+    assert str(MAX_MEMORY_CHARS) in prompt
 
 
 def test_project_session_also_uses_compact_memory_prompt_budget():
@@ -84,9 +85,9 @@ def test_project_session_also_uses_compact_memory_prompt_budget():
     )
 
     assert "输出模式" not in prompt
-    assert "目标长度：不超过 600 字符" in prompt
+    assert str(MAX_MEMORY_CHARS) in prompt
     assert "## 当前项目" in prompt
-    assert "## 经验与注意事项" in prompt
+    assert "## 踩坑与解法" in prompt
 
 
 def test_update_memory_enforces_compact_budget_without_task_mode(tmp_path):
@@ -110,8 +111,8 @@ def test_update_memory_enforces_compact_budget_without_task_mode(tmp_path):
 
     assert updated is True
     assert len(memory_file.read_text(encoding="utf-8")) <= 600
-    assert "目标长度：不超过 600 字符" in llm.calls[0]
-    assert "不超过 600 个字符" in llm.calls[1]
+    assert str(MAX_MEMORY_CHARS) in llm.calls[0]
+    assert str(MAX_MEMORY_CHARS) in llm.calls[1]
 
 
 def test_long_term_memory_uses_compact_context_budget():
@@ -122,10 +123,12 @@ def test_long_term_memory_uses_compact_context_budget():
         max_chars=4000,
     )
 
-    assert "目标长度：不超过 800 字符" in prompt
-    assert "长期稳定、跨会话可复用" in prompt
-    assert "当前项目背景" in prompt
-    assert "用户偏好" in prompt
+    assert str(MAX_LONG_TERM_MEMORY_CHARS) in prompt
+    assert "跨会话长期有效" in prompt
+    assert "## 用户偏好" in prompt
+    assert "## 项目背景" in prompt
+    assert "## 可复用经验" in prompt
+    assert "一次性任务" in prompt
 
 
 def test_long_term_memory_update_enforces_compact_budget(tmp_path):

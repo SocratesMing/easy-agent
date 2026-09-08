@@ -13,6 +13,8 @@ import logging
 import time
 from pathlib import Path
 
+from .prompt_loader import load_prompt, render
+
 logger = logging.getLogger("easy_agent.memory")
 
 MAX_MEMORY_CHARS = 600
@@ -23,57 +25,57 @@ COMPRESS_THRESHOLD = 540
 MAX_LONG_TERM_MEMORY_CHARS = 800
 LONG_TERM_COMPRESS_THRESHOLD = 720
 
-COMPRESS_PROMPT = """你是一个记忆压缩助手。请将下面的"会话记忆"内容压缩到不超过 {max_chars} 个字符，要求：
-1. 保留所有可复用的经验、用户偏好、行为原则、关键解决方案
-2. 删除一次性任务、临时状态、过时信息
-3. 合并相似条目，用更精炼的表述
-4. 保持 Markdown 格式和层级结构
-5. 绝不能丢失关键信息——若空间不足，优先压缩旧内容
+# 提示词统一放在 easy_agent/config/prompts/ 下（文件为权威）；
+# 以下为文件缺失时的兜底文本，保证部署漏挂载仍能工作。
+# 占位符使用 string.Template 的 $name 形式，对正文中的 JSON 大括号免疫。
+FALLBACK_COMPRESS_PROMPT = """你是一个记忆压缩助手。请将下面的会话记忆压缩到不超过 $max_chars 个字符：
+
+1. 保留可复用的经验、用户偏好、行为原则、关键解决方案
+2. 删除一次性任务、临时状态、过时信息，合并相似条目
+3. 保持 Markdown 层级结构；空间不足时优先压缩旧内容
 
 原始记忆：
 ---
-{content}
+$content
 ---
 
-请直接输出压缩后的完整记忆内容（不要添加任何解释说明）："""
+直接输出压缩后的完整记忆内容（不要添加任何解释说明）："""
 
 
-UPDATE_MEMORY_PROMPT = """你是一个会话记忆管理助手。请根据本次对话内容，更新当前会话的记忆文件（memory.md）。目标是让后续会话能够快速恢复上下文，并继续当前项目工作。
+FALLBACK_UPDATE_MEMORY_PROMPT = """你是一个会话记忆管理助手。根据本次对话更新会话记忆（memory.md），让后续会话无需重新探索就能接着干活。
 
-## 通用规则
+## 只记这四类
 
-1. **合并而非堆叠**：更新已有信息，删除过时内容、重复表述和寒暄。
-2. **不记敏感信息**：密钥、密码、token、隐私数据一律不记；报错信息中若包含敏感值应脱敏。
-3. **根据上下文提炼**：不按任务简单或复杂分类。优先总结当前项目做什么、已完成的关键结果、可复用经验、用户偏好和后续必要动作。
-4. **精炼高密度表达**：每条信息用一两句话概括，只保留能帮助继续实施、复现、验证和决策的内容。
-5. **省略无价值内容**：没有可靠内容时省略对应小节；不要为了填满长度扩写，不要记录一次性过程、原始日志或临时状态。
-6. **总长度限制**：更新后总内容不得超过 {target_chars} 字符。接近上限时，只保留高价值信息。
+1. 决策与依据：选了什么方案、为什么（含被否掉的选项及原因）
+2. 错误根因：报错的真实原因与已验证的解法（不是原始日志）
+3. 约定与路径：接口 / 命名 / 目录约定、关键文件位置、环境差异
+4. 断点与待办：未完成动作、下一步、待确认问题
 
-## 建议结构
+## 一律不记
 
-使用 Markdown 二级标题按内容组织，建议为：`## 当前项目`、`## 经验与注意事项`、`## 用户偏好`、`## 下一步`。只保留有信息量的标题和条目；没有可靠内容时省略对应小节。
+寒暄、一次性执行过程、原始日志、临时状态、可从代码直接读出的内容；密钥 / token / 密码（报错含敏感值须脱敏）。
 
-## 输出预算
+## 写法
 
-目标长度：不超过 {target_chars} 字符
+每条一句话，先结论后原因；合并同类项，删除过时与重复表述。
+用二级标题分组：`## 当前项目`、`## 关键决策`、`## 踩坑与解法`、`## 下一步`；无内容的小节省略。
+总长不超过 $target_chars 字符。
 
-## 当前记忆文件内容
+## 当前记忆
 
 ---
-{current_memory}
+$current_memory
 ---
 
-## 本次对话内容（摘要）
+## 本次对话
 
-**用户输入**：
-{user_message}
+**用户输入**：$user_message
 
-**助手回复**（节选）：
-{assistant_response}
+**助手回复（节选）**：$assistant_response
 
 ---
 
-请直接输出更新后的完整记忆文件内容（Markdown 格式，以 `# 会话记忆` 作为一级标题，不要添加任何解释说明）："""
+直接输出更新后的完整记忆文件（Markdown，一级标题 `# 会话记忆`），不要任何解释说明："""
 
 
 def build_memory_update_prompt(
@@ -84,7 +86,9 @@ def build_memory_update_prompt(
 ) -> str:
     """Build a compact, context-aware session memory update prompt."""
     target_chars = min(MAX_MEMORY_CHARS, max_chars)
-    return UPDATE_MEMORY_PROMPT.format(
+    template = load_prompt("memory_update") or FALLBACK_UPDATE_MEMORY_PROMPT
+    return render(
+        template,
         target_chars=target_chars,
         current_memory=current_memory or "(空)",
         user_message=user_message,
@@ -143,7 +147,8 @@ def compress_memory(content: str, llm, max_chars: int = MAX_MEMORY_CHARS) -> str
     try:
         from langchain_core.messages import HumanMessage
 
-        prompt = COMPRESS_PROMPT.format(max_chars=max_chars, content=content)
+        template = load_prompt("memory_compress") or FALLBACK_COMPRESS_PROMPT
+        prompt = render(template, max_chars=max_chars, content=content)
         response = llm.invoke([HumanMessage(content=prompt)])
         compressed = getattr(response, "content", str(response)).strip()
 
@@ -314,46 +319,40 @@ def update_memory_after_session(
         return enforce_memory_limit(memory_file, llm)
 
 
-UPDATE_LONG_TERM_MEMORY_PROMPT = """你是一个用户长期记忆管理助手。请根据本次对话内容，更新用户的长期记忆文件（AGENTS.md）。
+FALLBACK_LONG_TERM_MEMORY_PROMPT = """你是一个用户长期记忆管理助手。根据本次对话更新用户长期记忆（AGENTS.md），只沉淀跨会话长期有效的信息。
 
-## 这是什么
-这是**用户级别**的长期记忆，跨所有会话持久化，根据上下文记录该用户相对稳定、长期有效的信息：
-- 个人偏好与习惯（如沟通风格、技术栈倾向、输出格式要求）
-- 跨会话可复用的经验、踩过的坑、关键解决方案
-- 长期项目背景、当前项目目标中不会随本次会话结束而失效的信息
-- 不随单个会话结束而失效的稳定信息
+## 记入（满足其一）
 
-## 更新规则
-1. **只记长期稳定、跨会话可复用的信息**：不要记录一次性任务、临时状态、寒暄或完整执行过程。
-2. **合并而非堆叠**：若新信息与已有条目重复或相近，合并精炼，不要产生多篇重复内容。
-3. **用户偏好优先**：用户明确表达出的稳定偏好（如界面要求、格式习惯）应被记录并长期保留。
-4. **不记敏感信息**：密钥、密码、token、隐私数据一律不记。
-5. **精炼表达**：每条用一句话概括，结构清晰，使用二级标题按主题分章节（如 `## 用户偏好`、`## 当前项目背景`、`## 可复用经验`）。
-6. **总长度限制**：更新后总内容不得超过 {target_chars} 字符。接近上限时优先保留长期有效的偏好与核心经验。
+1. 稳定偏好：用户明确表达的沟通风格、技术栈倾向、输出格式与交付习惯
+2. 长期背景：不会随本次会话结束而失效的项目目标、环境约束、角色与职责
+3. 可复用经验：跨项目通用的踩坑结论与解决方案
 
-## 输出预算
+## 排除
 
-目标长度：不超过 {target_chars} 字符
+一次性任务及其结果、临时状态、单会话内的中间结论、完整执行过程、密钥 / token / 隐私数据。
+判据：只在本次会话成立的信息一律不写。
 
-只记录长期稳定、跨会话可复用的信息；没有可靠内容时省略对应小节，不要为填满长度扩写。
+## 写法
 
-## 当前长期记忆内容
+每条一句话，用「结论：值」形式；与已有条目重复就合并精炼，不堆叠。
+用二级标题分组：`## 用户偏好`、`## 项目背景`、`## 可复用经验`；无内容的小节省略。
+总长不超过 $target_chars 字符；接近上限时优先保留偏好与通用经验。
+
+## 当前长期记忆
 
 ---
-{current_memory}
+$current_memory
 ---
 
-## 本次对话内容（摘要）
+## 本次对话
 
-**用户输入**：
-{user_message}
+**用户输入**：$user_message
 
-**助手回复**（节选）：
-{assistant_response}
+**助手回复（节选）**：$assistant_response
 
 ---
 
-请直接输出更新后的完整长期记忆文件内容（Markdown 格式，以 `# 用户长期记忆` 作为一级标题，不要添加任何解释说明）："""
+直接输出更新后的完整长期记忆（Markdown，一级标题 `# 用户长期记忆`），不要任何解释说明："""
 
 
 def build_long_term_memory_update_prompt(
@@ -364,7 +363,9 @@ def build_long_term_memory_update_prompt(
 ) -> str:
     """Build a size-aware long-term memory update prompt."""
     target_chars = min(MAX_LONG_TERM_MEMORY_CHARS, max_chars)
-    return UPDATE_LONG_TERM_MEMORY_PROMPT.format(
+    template = load_prompt("long_term_memory") or FALLBACK_LONG_TERM_MEMORY_PROMPT
+    return render(
+        template,
         target_chars=target_chars,
         current_memory=current_memory or "(空)",
         user_message=user_message,

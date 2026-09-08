@@ -24,6 +24,7 @@ from .model import create_model
 from .models.api import HealthResponse
 from .services import get_agent_config, init_agent_config
 from .services import init_scheduler, shutdown_scheduler, reload_all_tasks
+from .services.prompt_loader import load_system_prompt
 from .skills import find_skills_root, discover_skills
 from .api import (
     chat_router,
@@ -139,27 +140,19 @@ async def lifespan(app: FastAPI):
         logger.error(f"❌ 数据库初始化失败: {e}")
         raise
 
-    if (
-        config
-        and hasattr(config.agent, "system_prompt_path")
-        and config.agent.system_prompt_path
-    ):
-        config_dir = os.path.dirname(os.path.abspath(config_path))
-        system_prompt_path = os.path.join(config_dir, config.agent.system_prompt_path)
-    else:
-        system_prompt_path = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)), "config", "system_prompt.md"
-        )
-
-    if os.path.exists(system_prompt_path):
-        with open(system_prompt_path, "r", encoding="utf-8") as f:
-            system_prompt = f.read()
-        logger.info(
-            f"✅ 系统提示词加载成功: {system_prompt_path} ({len(system_prompt)} 字符)"
-        )
-    else:
-        system_prompt = "你是一个有帮助的 AI 助手。"
-        logger.warning(f"⚠️ 系统提示词文件不存在: {system_prompt_path}，使用默认提示词")
+    # 提示词统一由 prompt_loader 加载：
+    # 优先 <config_dir>/prompts/system.md（+ fragments/*.md），
+    # 其次兼容旧的 system_prompt_path 单文件，最后回落到内置默认提示词。
+    config_dir = os.path.dirname(os.path.abspath(config_path)) if config_path else None
+    configured_path = (
+        config.agent.system_prompt_path
+        if config and hasattr(config.agent, "system_prompt_path")
+        else None
+    )
+    system_prompt = load_system_prompt(
+        config_dir=config_dir, configured_path=configured_path
+    )
+    logger.info(f"✅ 系统提示词加载完成（{len(system_prompt)} 字符）")
 
     # 打印工作目录与记忆目录的绝对路径（记忆文件按用户/会话动态生成，故给出基目录与模板路径）
     # 配置未加载（config 为 None）时使用 AgentConfig 默认值，保证降级启动不崩溃

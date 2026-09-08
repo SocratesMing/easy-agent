@@ -22,13 +22,6 @@ model: "deepseek"
 
 # Provider-specific configurations
 models:
-  minimax:
-    provider: "minimax"
-    protocol: "anthropic"  # anthropic or openai
-    api_key: "${MINIMAX_API_KEY}"
-    model: "MiniMax-M3"
-    api_base: "https://api.minimaxi.com/anthropic"  # China users; Global: https://api.minimax.io/anthropic
-    max_input_tokens: 200000  # Model context window size, used for summarization threshold calculation
 
   deepseek:
     provider: "deepseek"
@@ -46,13 +39,6 @@ models:
     api_base: "https://ark.cn-beijing.volces.com/api/coding/v3"
     max_input_tokens: 200000
 
-  glm:
-    provider: "glm"
-    protocol: "openai"  # anthropic or openai
-    model: "glm5"
-    api_key: "${GLM_API_KEY}"
-    api_base: "https://open.bigmodel.cn/api/paas/v4"
-    max_input_tokens: 128000
 
 # ===== Retry Configuration =====
 retry:
@@ -64,7 +50,10 @@ max_steps: 100  # Maximum execution steps
 workspace_dir: "/qts/workspace"  # Working directory (project-relative). 实际路径会按用户/会话隔离：{workspace_dir}/{username}/{session_dir}
 memories_dir: "./memories"    # Long-term memory directory (project-relative). 实际路径：{memories_dir}/{username}/AGENTS.md
 sessions_dir: "./sessions"     # 会话数据存储目录（项目相对路径）。实际路径：{sessions_dir}/{username}/{session_id}.json
-system_prompt_path: "system_prompt.md"  # System prompt file (same config directory)
+# 提示词目录：优先读取 <本目录>/prompts/system.md + prompts/fragments/*.md，
+# 不存在时才回落到下面这个单文件（兼容旧配置），两者都没有则使用内置默认提示词。
+# 也可用环境变量 EASY_PROMPTS_DIR 指向外部提示词目录（便于 ConfigMap 挂载覆盖）。
+system_prompt_path: "system_prompt.md"  # System prompt file (same config directory, legacy fallback)
 idle_logout_minutes: 0   # 前端空闲自动登出（分钟）：用户超过该时长无界面操作或后端交互则退出到登录页；0 表示永不过期（默认，后台不启用登录超时机制）
 app_welcome_title: "Easy Agent，让工作更简单"  # 首页欢迎语
 sandbox_enabled: true    # Linux 使用 bwrap/Landlock；Windows 无等效沙箱时拒绝 execute。仅在可信单用户环境设为 false
