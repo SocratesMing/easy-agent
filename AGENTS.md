@@ -31,7 +31,7 @@ uv sync                              # Install/sync Python dependencies
 uv pip install -e ".[dev]"           # Editable install with dev deps (alternative)
 easy-web --port 8000                 # Run backend (or: python main.py)
 pytest tests/ -v                     # Run the test suite
-pytest tests/test_basic.py -v        # Run a single test file
+pytest tests/integration/test_basic.py -v        # Run a single test file
 cd frontend && npm run dev           # Frontend dev server (proxies to backend :8000)
 cd frontend && npm run build         # Build SPA into frontend/dist/ (required before easy-web serves UI)
 ./start.prod.sh                      # Production startup

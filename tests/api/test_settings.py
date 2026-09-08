@@ -199,7 +199,7 @@ def test_main_app_never_imports_mcp_server_subproject():
         re.compile(r"^\s*(from|import)\s+easy_mcp_server", re.MULTILINE),
         re.compile(r"^\s*(from|import)\s+easy_agent\.mcp_servers", re.MULTILINE),
     )
-    src_root = Path(__file__).resolve().parent.parent / "easy_agent"
+    src_root = Path(__file__).resolve().parents[2] / "easy_agent"
     offenders = [
         str(p)
         for p in src_root.rglob("*.py")

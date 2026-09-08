@@ -19,7 +19,7 @@ DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 DEEPSEEK_MODEL = "deepseek-v4-flash"
 # ────────────────────────────────────────────────────────────────
 
-PROJECT_ROOT = Path(__file__).parent.parent.resolve()
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 WORKSPACE = PROJECT_ROOT / "workspace" / "agent_playground"
 HISTORY_DIR = Path(__file__).parent / "chat_history"
 

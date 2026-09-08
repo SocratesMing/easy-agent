@@ -25,7 +25,7 @@ from easy_agent.config import Config
 from easy_agent.model import create_model, extract_reasoning
 
 
-PROJECT_ROOT = Path(__file__).parent.parent.resolve()
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 def load_dev_config(config_path: str | None = None) -> Config:

@@ -20,7 +20,7 @@ import pymysql
 import yaml
 
 # 让脚本能 import 项目内的 easy_agent 包（无论从哪个目录执行）。
-_REPO_ROOT = Path(__file__).resolve().parents[1]
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 

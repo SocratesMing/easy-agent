@@ -6,7 +6,7 @@ from deepagents.backends import CompositeBackend, LocalShellBackend
 from deepagents.middleware.skills import SkillsMiddleware
 from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
 
-from tests.virtual_root_agent import (
+from tests.helpers.virtual_root_agent import (
     build_agent,
     build_backend,
     InteractiveStreamPrinter,
@@ -131,7 +131,7 @@ def test_build_agent_uses_shell_backend_and_skills_source(tmp_path):
         captured.update(kwargs)
         return "compiled-agent"
 
-    import tests.virtual_root_agent as module
+    import tests.helpers.virtual_root_agent as module
     original_create_deep_agent = module.create_deep_agent
     module.create_deep_agent = fake_create_deep_agent
     try:

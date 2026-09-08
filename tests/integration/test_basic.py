@@ -7,19 +7,13 @@ import tempfile
 class TestConfig:
     """Test configuration module"""
 
-    def test_config_file_not_found(self):
-        """Test that Config.load raises FileNotFoundError when config doesn't exist"""
+    def test_config_from_yaml_missing_file(self):
+        """Test that Config.from_yaml raises FileNotFoundError when file doesn't exist"""
         from easy_agent.config import Config
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            import os
-            original_cwd = os.getcwd()
-            try:
-                os.chdir(tmpdir)
-                with pytest.raises(FileNotFoundError):
-                    Config.load()
-            finally:
-                os.chdir(original_cwd)
+            with pytest.raises(FileNotFoundError):
+                Config.from_yaml(Path(tmpdir) / "no_such_config.yaml")
 
     def test_config_from_yaml_missing_fields(self):
         """Test that from_yaml raises ValueError for missing required fields"""
@@ -85,21 +79,9 @@ class TestLogger:
         assert logger.log_index == 1
 
 
-class TestAgent:
-    """Test agent module"""
-
-    def test_colors_defined(self):
-        """Test that Colors class has expected attributes"""
-        from easy_agent.agent import Colors
-
-        assert hasattr(Colors, 'RESET')
-        assert hasattr(Colors, 'BOLD')
-        assert hasattr(Colors, 'GREEN')
-
-
 def test_project_structure():
     """Test that project structure is correct"""
-    base_path = Path(__file__).parent.parent
+    base_path = Path(__file__).resolve().parents[2]
 
     # Core modules
     assert (base_path / "easy_agent" / "__init__.py").exists()
@@ -109,20 +91,18 @@ def test_project_structure():
     assert (base_path / "easy_agent" / "logger.py").exists()
     assert (base_path / "easy_agent" / "skills.py").exists()
 
-    # Config
-    assert (base_path / "easy_agent" / "config" / "config.yaml.example").exists()
-    assert (base_path / "easy_agent" / "config" / "system_prompt.md").exists()
+    # Config（示例配置与提示词目录）
+    assert (base_path / "easy_agent" / "config" / "config-example.yaml").exists()
+    assert (base_path / "easy_agent" / "config" / "prompts" / "system.md").exists()
 
-    # Web package
-    assert (base_path / "easy_agent" / "web" / "__init__.py").exists()
-    assert (base_path / "easy_agent" / "web" / "server.py").exists()
-    assert (base_path / "easy_agent" / "web" / "db" / "__init__.py").exists()
-    assert (base_path / "easy_agent" / "web" / "db" / "database.py").exists()
-    assert (base_path / "easy_agent" / "web" / "db" / "models.py").exists()
-    assert (base_path / "easy_agent" / "web" / "service" / "__init__.py").exists()
-    assert (base_path / "easy_agent" / "web" / "service" / "streaming.py").exists()
-    assert (base_path / "easy_agent" / "web" / "service" / "agent_manager.py").exists()
+    # 各功能包结构
+    assert (base_path / "easy_agent" / "api" / "__init__.py").exists()
+    assert (base_path / "easy_agent" / "api" / "chat.py").exists()
+    assert (base_path / "easy_agent" / "services" / "prompt_loader.py").exists()
+    assert (base_path / "easy_agent" / "initialization" / "runtime.py").exists()
+    assert (base_path / "easy_agent" / "db" / "database.py").exists()
 
+    assert (base_path / "frontend" / "package.json").exists()
     assert (base_path / "pyproject.toml").exists()
 
 

@@ -14,8 +14,18 @@ import asyncio
 import sys
 from pathlib import Path
 
-project_root = Path(__file__).parent.parent
+project_root = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(project_root))
+
+import pytest
+
+# 手动集成脚本：需本地 easy_agent/config/config.yaml 与真实模型才能运行；
+# 自动化环境下文件缺失时跳过，避免 sys.exit 中断 pytest。
+pytestmark = pytest.mark.skipif(
+    not (project_root / "easy_agent" / "config" / "config.yaml").exists(),
+    reason="需本地 config.yaml 与真实模型（手动集成脚本）",
+)
+
 
 from easy_agent.config import Config
 from easy_agent.model import create_model

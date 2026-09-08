@@ -13,7 +13,7 @@ import pytest
 
 from easy_agent.services.prompt_loader import clear_cache, load_system_prompt
 
-CONFIG_DIR = Path(__file__).resolve().parent.parent / "easy_agent" / "config"
+CONFIG_DIR = Path(__file__).resolve().parents[2] / "easy_agent" / "config"
 
 
 @pytest.fixture(autouse=True)
