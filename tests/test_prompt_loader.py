@@ -9,6 +9,8 @@ import pytest
 from easy_agent.services.prompt_loader import (
     DEFAULT_SYSTEM_PROMPT,
     clear_cache,
+    configure_prompts_dir,
+    get_prompts_dir,
     load_prompt,
     load_system_prompt,
     render,
@@ -75,7 +77,7 @@ def test_legacy_single_file_mode(tmp_path, monkeypatch):
     monkeypatch.setenv("EASY_PROMPTS_DIR", str(tmp_path / "missing"))
     clear_cache()
 
-    assert load_system_prompt(configured_path=str(legacy)) == "LEGACY PROMPT"
+    assert load_system_prompt(prompt_path=str(legacy)) == "LEGACY PROMPT"
 
 
 def test_relative_legacy_path_resolved_against_config_dir(tmp_path, monkeypatch):
@@ -86,7 +88,7 @@ def test_relative_legacy_path_resolved_against_config_dir(tmp_path, monkeypatch)
     clear_cache()
 
     result = load_system_prompt(
-        config_dir=config_root, configured_path="system_prompt.md"
+        config_dir=config_root, prompt_path="system_prompt.md"
     )
 
     assert result == "RELATIVE"
@@ -97,7 +99,7 @@ def test_falls_back_to_builtin_when_nothing_found(tmp_path, monkeypatch):
     clear_cache()
 
     assert load_system_prompt() == DEFAULT_SYSTEM_PROMPT
-    assert load_system_prompt(configured_path=str(tmp_path / "nope.md")) == (
+    assert load_system_prompt(prompt_path=str(tmp_path / "nope.md")) == (
         DEFAULT_SYSTEM_PROMPT
     )
 
@@ -129,6 +131,36 @@ def test_load_prompt_reads_file(tmp_path, monkeypatch):
     clear_cache()
 
     assert load_prompt("memory_update") == "UPDATE $target_chars"
+
+
+def test_prompt_path_points_to_custom_directory(tmp_path, monkeypatch):
+    """配置项 agent.prompt_path 指向任意目录名时也能读取。"""
+    custom = tmp_path / "my-prompts"
+    custom.mkdir()
+    (custom / "system.md").write_text("CUSTOM SYSTEM", encoding="utf-8")
+    (custom / "memory_update.md").write_text("CUSTOM MEMORY", encoding="utf-8")
+    monkeypatch.setenv("EASY_PROMPTS_DIR", str(tmp_path / "missing"))
+    clear_cache()
+
+    assert "CUSTOM SYSTEM" in load_system_prompt(prompt_path=str(custom))
+    # 相对路径基于 config_dir 解析
+    assert "CUSTOM SYSTEM" in load_system_prompt(
+        prompt_path="my-prompts", config_dir=tmp_path
+    )
+
+
+def test_configure_prompts_dir_affects_memory_prompts(tmp_path, monkeypatch):
+    """设置提示词目录后，记忆类提示词也从该目录读取。"""
+    custom = tmp_path / "prompts"
+    custom.mkdir()
+    (custom / "memory_update.md").write_text("FROM CONFIGURED", encoding="utf-8")
+    monkeypatch.setenv("EASY_PROMPTS_DIR", str(tmp_path / "missing"))
+    clear_cache()
+
+    configure_prompts_dir(str(custom))
+
+    assert get_prompts_dir() == custom
+    assert load_prompt("memory_update") == "FROM CONFIGURED"
 
 
 def test_render_substitutes_placeholders():

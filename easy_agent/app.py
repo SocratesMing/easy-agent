@@ -24,7 +24,11 @@ from .model import create_model
 from .models.api import HealthResponse
 from .services import get_agent_config, init_agent_config
 from .services import init_scheduler, shutdown_scheduler, reload_all_tasks
-from .services.prompt_loader import load_system_prompt
+from .services.prompt_loader import (
+    configure_prompts_dir,
+    get_prompts_dir,
+    load_system_prompt,
+)
 from .skills import find_skills_root, discover_skills
 from .api import (
     chat_router,
@@ -140,19 +144,19 @@ async def lifespan(app: FastAPI):
         logger.error(f"❌ 数据库初始化失败: {e}")
         raise
 
-    # 提示词统一由 prompt_loader 加载：
-    # 优先 <config_dir>/prompts/system.md（+ fragments/*.md），
-    # 其次兼容旧的 system_prompt_path 单文件，最后回落到内置默认提示词。
+    # 提示词统一由 prompt_loader 从 agent.prompt_path 指向的目录加载：
+    # system.md + fragments/*.md，缺失时逐级回落到内置默认提示词。
+    # 同时把该目录设为全局提示词目录，使记忆类提示词也从同一处读取。
     config_dir = os.path.dirname(os.path.abspath(config_path)) if config_path else None
-    configured_path = (
-        config.agent.system_prompt_path
-        if config and hasattr(config.agent, "system_prompt_path")
-        else None
+    prompt_path = (
+        getattr(config.agent, "prompt_path", "prompts") if config else "prompts"
     )
-    system_prompt = load_system_prompt(
-        config_dir=config_dir, configured_path=configured_path
+    configure_prompts_dir(prompt_path, base_dir=config_dir)
+    system_prompt = load_system_prompt(prompt_path=prompt_path, config_dir=config_dir)
+    logger.info(
+        f"✅ 系统提示词加载完成 | 提示词目录: {get_prompts_dir()} "
+        f"({len(system_prompt)} 字符)"
     )
-    logger.info(f"✅ 系统提示词加载完成（{len(system_prompt)} 字符）")
 
     # 打印工作目录与记忆目录的绝对路径（记忆文件按用户/会话动态生成，故给出基目录与模板路径）
     # 配置未加载（config 为 None）时使用 AgentConfig 默认值，保证降级启动不崩溃

@@ -126,11 +126,9 @@ async def get_system_prompt(
     if _cfg and _cfg.get("system_prompt"):
         return {"content": _cfg["system_prompt"]}
 
-    # fallback: 由 prompt_loader 读取（prompts/system.md + fragments，兼容旧单文件）
+    # fallback: 由 prompt_loader 从 prompt_path 目录读取（system.md + fragments）
     config_path = Config.resolve_config_path()
-    content = load_system_prompt(
-        config_dir=config_path.parent, configured_path="system_prompt.md"
-    )
+    content = load_system_prompt(config_dir=config_path.parent)
     return {"content": content}
 
 

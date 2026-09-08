@@ -59,9 +59,32 @@ DEFAULT_SYSTEM_PROMPT = """你是 Easy Agent —— 运行在容器化工作区�
 # (mtime, content) 缓存
 _CACHE: dict[str, tuple[float, str]] = {}
 
+# 由 configure_prompts_dir() 设置（来自配置项 agent.prompt_path）
+_CONFIGURED_DIR: Path | None = None
+
+
+def configure_prompts_dir(
+    path: str | Path | None, base_dir: Path | str | None = None
+) -> None:
+    """由应用在读取配置后设置提示词目录（配置项 agent.prompt_path）。
+
+    相对路径会基于 ``base_dir``（配置目录）解析。设置后，系统提示词与
+    记忆类提示词都从这里读取。
+    """
+    global _CONFIGURED_DIR
+    if not path:
+        _CONFIGURED_DIR = None
+        return
+    resolved = Path(path)
+    if not resolved.is_absolute() and base_dir:
+        resolved = Path(base_dir) / resolved
+    _CONFIGURED_DIR = resolved
+
 
 def get_prompts_dir() -> Path:
-    """提示词目录：环境变量 EASY_PROMPTS_DIR 优先，否则用包内 config/prompts。"""
+    """提示词目录优先级：configure_prompts_dir 设置 > EASY_PROMPTS_DIR > 包内默认。"""
+    if _CONFIGURED_DIR is not None:
+        return _CONFIGURED_DIR
     env = os.getenv("EASY_PROMPTS_DIR", "").strip()
     return Path(env) if env else DEFAULT_PROMPTS_DIR
 
@@ -83,8 +106,16 @@ def _read(path: Path) -> str | None:
         return None
 
 
-def _candidate_dirs(config_dir: Path | str | None) -> Iterable[Path]:
+def _candidate_dirs(
+    config_dir: Path | str | None = None,
+    prompt_path: str | Path | None = None,
+) -> Iterable[Path]:
     """按优先级产出可能的 prompts 目录。"""
+    if prompt_path:
+        path = Path(prompt_path)
+        if not path.is_absolute() and config_dir:
+            path = Path(config_dir) / path
+        yield path
     if config_dir:
         yield Path(config_dir) / "prompts"
     yield get_prompts_dir()
@@ -105,17 +136,19 @@ def render(template: str, **kwargs: object) -> str:
 
 
 def load_system_prompt(
+    prompt_path: str | Path | None = None,
     config_dir: Path | str | None = None,
-    configured_path: str | None = None,
 ) -> str:
     """加载系统提示词 = 主文件 + 片段文件（按文件名字典序）。
 
-    优先级：
-    1. ``<config_dir>/prompts/system.md`` 或 ``EASY_PROMPTS_DIR/system.md``
-    2. 兼容旧配置：``configured_path`` 指向的单个 md 文件
+    ``prompt_path`` 对应配置项 ``agent.prompt_path``，指向**提示词目录**
+    （相对路径基于 ``config_dir`` 解析）。优先级：
+
+    1. ``prompt_path`` 目录 / ``<config_dir>/prompts`` / ``EASY_PROMPTS_DIR`` 下的 system.md
+    2. 兼容旧配置：``prompt_path`` 若指向单个 md 文件则直接读取
     3. 内置 ``DEFAULT_SYSTEM_PROMPT``
     """
-    for prompts_dir in _candidate_dirs(config_dir):
+    for prompts_dir in _candidate_dirs(config_dir, prompt_path):
         main = _read(prompts_dir / "system.md")
         if main is None:
             continue
@@ -128,9 +161,9 @@ def load_system_prompt(
                     parts.append(text.strip())
         return "\n\n".join(parts) + "\n"
 
-    # 兼容旧的单文件格式
-    if configured_path:
-        path = Path(configured_path)
+    # 兼容旧配置：prompt_path 指向单个 md 文件
+    if prompt_path and str(prompt_path).endswith(".md"):
+        path = Path(prompt_path)
         if not path.is_absolute() and config_dir:
             path = Path(config_dir) / path
         text = _read(path)
@@ -141,5 +174,7 @@ def load_system_prompt(
 
 
 def clear_cache() -> None:
-    """清空缓存（测试或提示词热更新后使用）。"""
+    """清空缓存与已配置的提示词目录（测试或提示词热更新后使用）。"""
+    global _CONFIGURED_DIR
     _CACHE.clear()
+    _CONFIGURED_DIR = None

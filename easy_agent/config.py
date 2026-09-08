@@ -157,7 +157,12 @@ class AgentConfig(BaseModel):
     workspace_dir: str = "./workspace"
     memories_dir: str = "./memories"
     sessions_dir: str = "./sessions"
-    system_prompt_path: str = "system_prompt.md"
+    prompt_path: str = "prompts"
+    """提示词目录（相对配置目录），内含 system.md、fragments/ 与 memory_*.md。
+
+    目录不存在时依次回落：包内 ``easy_agent/config/prompts`` → 内置默认提示词。
+    也可用环境变量 EASY_PROMPTS_DIR 指向外部目录覆盖。
+    """
     idle_logout_minutes: int = 0
     """登录态空闲超时（分钟）：后端以最近一次接口调用为起点滑动续期，
     前端超过该时长无操作时自动退出到登录页。0 表示永不过期（默认，后台不启用登录超时机制）。"""
@@ -357,7 +362,10 @@ class Config(BaseModel):
             workspace_dir=data.get("workspace_dir", "./workspace"),
             memories_dir=data.get("memories_dir", "./memories"),
             sessions_dir=data.get("sessions_dir", "./sessions"),
-            system_prompt_path=data.get("system_prompt_path", "system_prompt.md"),
+            # 旧字段 system_prompt_path 仅作兼容（值为单文件时按单文件读取）
+            prompt_path=data.get("prompt_path")
+            or data.get("system_prompt_path")
+            or "prompts",
             idle_logout_minutes=data.get("idle_logout_minutes", 0),
             denied_dirs=data.get("denied_dirs", []),
             external_dirs=data.get("external_dirs", {}),

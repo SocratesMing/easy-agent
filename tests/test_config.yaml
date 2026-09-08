@@ -36,7 +36,7 @@ workspace_dir: "${TEST_WORKSPACE_DIR}"
 memories_dir: "${TEST_MEMORIES_DIR}"
 log_dir: "${TEST_LOG_DIR}"
 sessions_dir: "${TEST_SESSIONS_DIR}"
-system_prompt_path: "${TEST_SYSTEM_PROMPT}"
+prompt_path: "prompts"
 
 external_dirs: {}
 
