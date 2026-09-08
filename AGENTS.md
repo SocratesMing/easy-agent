@@ -42,7 +42,7 @@ cd frontend && npm run build         # Build SPA into frontend/dist/ (required b
 
 - **Python**: requires 3.11+. Four-space indentation, `snake_case` for functions/variables, `PascalCase` for classes. No project-wide linter is configured-match surrounding files.
 - **Frontend**: Vue 3 Composition API with `<script setup>`. Components are `PascalCase.vue`; API modules in `frontend/src/api/` are camelCase `.js`.
-- **Config**: Environment config YAML files in `easy_agent/config/` are local and gitignored; copy `config-example.yaml` and write real values directly.
+- **Config**: YAML files in `easy_agent/config/`; sensitive values use `${ENV_VAR}` placeholders resolved at load time.
 
 ## Testing Guidelines
 

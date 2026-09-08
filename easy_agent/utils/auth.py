@@ -1,57 +1,16 @@
 """用户认证工具模块"""
 
-import logging
 import os
 import secrets
 from datetime import datetime, timedelta
-from pathlib import Path
 from typing import Optional
 
 import bcrypt
 from jose import JWTError, jwt
 
-logger = logging.getLogger(__name__)
-
+SECRET_KEY = os.environ.get("EASY_JWT_SECRET") or secrets.token_urlsafe(32)
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
-
-# 默认的 JWT 密钥持久化路径（data/ 运行时目录，已被 gitignore）。
-_DEFAULT_SECRET_FILE = Path("./data/.jwt_secret")
-
-
-def _load_or_create_secret(secret_file: Path = _DEFAULT_SECRET_FILE) -> str:
-    """返回稳定的 JWT 签名密钥，保证多 worker 进程共享同一密钥。
-
-    优先级：
-    1. EASY_JWT_SECRET 环境变量（推荐，生产环境显式配置）；
-    2. 密钥文件（首次生成后持久化），使未设置环境变量时所有 worker 也能
-       读到同一密钥，避免 --workers > 1 下各进程随机密钥互相解不开 token。
-    """
-    env_secret = os.environ.get("EASY_JWT_SECRET")
-    if env_secret:
-        return env_secret
-    try:
-        if secret_file.exists():
-            stored = secret_file.read_text(encoding="utf-8").strip()
-            if stored:
-                return stored
-        secret = secrets.token_urlsafe(32)
-        secret_file.parent.mkdir(parents=True, exist_ok=True)
-        secret_file.write_text(secret, encoding="utf-8")
-        try:
-            os.chmod(secret_file, 0o600)
-        except OSError:
-            pass
-        return secret
-    except OSError as exc:
-        logger.warning(
-            f"无法读写 JWT 密钥文件 {secret_file}，将使用进程内随机密钥；"
-            f"多进程部署时请设置 EASY_JWT_SECRET 保证各 worker 密钥一致 | 错误: {exc}"
-        )
-        return secrets.token_urlsafe(32)
-
-
-SECRET_KEY = _load_or_create_secret()
 
 
 def hash_password(password: str) -> str:
