@@ -66,8 +66,7 @@ async def lifespan(app: FastAPI):
     config_path = runtime_initialization.config_path
     config = runtime_initialization.config
     config_error = runtime_initialization.config_error
-    log_cfg = runtime_initialization.log_config or {}
-    log_file = runtime_initialization.log_file
+    log_files = runtime_initialization.log_files
 
     logger.info("=" * 60)
     logger.info("Easy Agent Web Service 初始化中...")
@@ -103,7 +102,9 @@ async def lifespan(app: FastAPI):
             logger.info("📁 配置目录均已存在，无需创建")
 
         logger.info(
-            f"日志初始化完成 | 目录: {log_cfg.get('dir')} | 文件: {log_file} | 级别: {log_cfg.get('level')}"
+            f"日志初始化完成 | 目录: {Path(log_files.get('proc', '')).parent} | "
+            f"运行日志: {log_files.get('proc')} | 错误日志: {log_files.get('err')} | "
+            f"通信日志: {log_files.get('comm')}"
         )
         logger.info(f"LLM Provider: {config.llm.provider}")
         logger.info(f"LLM Model: {config.llm.model}")
@@ -377,4 +378,5 @@ def run_server(host: str = "0.0.0.0", port: int = 8000):
         port=port,
         reload=False,
         log_level="info",
+        log_config=None,
     )

@@ -31,6 +31,28 @@ database:
     assert get_missing_env_vars() == []
 
 
+def test_config_from_yaml_ignores_log_configuration(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+model: test-model
+models:
+  test-model:
+    provider: test-provider
+    api_key: sk-test
+log:
+  dir: ./ignored
+log_dir: ./ignored
+""",
+        encoding="utf-8",
+    )
+
+    config = Config.from_yaml(config_path)
+
+    assert not hasattr(config, "log")
+    assert not hasattr(config.agent, "log_dir")
+
+
 def test_config_from_yaml_reports_unresolved_placeholders(tmp_path, monkeypatch):
     config_path = tmp_path / "config.yaml"
     config_path.write_text(

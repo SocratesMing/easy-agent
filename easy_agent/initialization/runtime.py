@@ -17,8 +17,7 @@ class RuntimeInitialization:
     config_path: Path
     config: AgentConfig | None
     config_error: Exception | None
-    log_config: dict | None
-    log_file: str
+    log_files: dict[str, str]
 
 
 _initialization: RuntimeInitialization | None = None
@@ -52,30 +51,34 @@ def _log_initialization(initialization: RuntimeInitialization) -> None:
 
 
 def initialize_runtime(force: bool = False) -> RuntimeInitialization:
-    """Load environment, then initialize logging before app components load."""
+    """Initialize logging, then load environment and config before app components."""
     global _initialization
     if _initialization is not None and not force:
         return _initialization
+
+    log_files = setup_logging()
+    logger.info(
+        "运行日志初始化完成 | 运行日志: %s | 错误日志: %s | 通信日志: %s",
+        log_files["proc"],
+        log_files["err"],
+        log_files["comm"],
+    )
 
     environment = load_environment()
     config_path = Config.resolve_config_path()
     config: AgentConfig | None = None
     config_error: Exception | None = None
-    log_config: dict | None = None
     try:
         config = Config.from_yaml(config_path)
-        log_config = config.log.model_dump()
     except Exception as error:
         config_error = error
 
-    log_file = setup_logging(log_config, log_dir=environment.log_dir)
     initialization = RuntimeInitialization(
         environment=environment,
         config_path=config_path,
         config=config,
         config_error=config_error,
-        log_config=log_config,
-        log_file=log_file,
+        log_files=log_files,
     )
     _initialization = initialization
     _log_initialization(initialization)

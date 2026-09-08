@@ -10,7 +10,6 @@ from ..utils.env_loader import get_loaded_env_info, load_project_env
 class EnvironmentInitialization:
     env_file: str | None
     loaded_keys: list[str]
-    log_dir: str
     agent_env: str
     cors_allow_origins: list[str]
 
@@ -28,7 +27,6 @@ def load_environment() -> EnvironmentInitialization:
     return EnvironmentInitialization(
         env_file=env_file,
         loaded_keys=loaded_keys,
-        log_dir=os.getenv("EASY_LOG_DIR", ""),
         agent_env=os.getenv("AGENT_ENV", "").lower(),
         cors_allow_origins=cors_allow_origins,
     )

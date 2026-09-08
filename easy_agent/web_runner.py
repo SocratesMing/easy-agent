@@ -36,4 +36,5 @@ def run_web():
         reload=args.reload,
         workers=args.workers if not args.reload else 1,
         log_level="info",
+        log_config=None,
     )

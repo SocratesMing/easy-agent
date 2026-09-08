@@ -1,8 +1,8 @@
 """会话级记忆管理服务（基于工作区持久化）。
 
 负责：
-1. 每轮对话后按业务场景更新工作区下的 memory.md（重复场景则更新重要经验）
-2. 监控记忆文件长度，确保不超过 MAX_MEMORY_CHARS (2000) 字符
+1. 每轮对话后根据上下文更新工作区下的 memory.md（项目、经验与偏好）
+2. 监控记忆文件长度，确保不超过 MAX_MEMORY_CHARS (600) 字符
 3. 超过限制时自动调用 LLM 压缩，保留核心信息
 
 记忆文件位置：workspace/{username}/{workspace_name}/memory.md
@@ -15,13 +15,13 @@ from pathlib import Path
 
 logger = logging.getLogger("easy_agent.memory")
 
-MAX_MEMORY_CHARS = 2000
+MAX_MEMORY_CHARS = 600
 # 触发压缩的阈值（达到此长度即压缩，留出余量避免频繁触发）
-COMPRESS_THRESHOLD = 1800
+COMPRESS_THRESHOLD = 540
 
 # 用户级长期记忆（memories/{username}/AGENTS.md）上限，跨会话积累故比会话级更大
-MAX_LONG_TERM_MEMORY_CHARS = 4000
-LONG_TERM_COMPRESS_THRESHOLD = 3600
+MAX_LONG_TERM_MEMORY_CHARS = 800
+LONG_TERM_COMPRESS_THRESHOLD = 720
 
 COMPRESS_PROMPT = """你是一个记忆压缩助手。请将下面的"会话记忆"内容压缩到不超过 {max_chars} 个字符，要求：
 1. 保留所有可复用的经验、用户偏好、行为原则、关键解决方案
@@ -38,17 +38,24 @@ COMPRESS_PROMPT = """你是一个记忆压缩助手。请将下面的"会话记�
 请直接输出压缩后的完整记忆内容（不要添加任何解释说明）："""
 
 
-UPDATE_MEMORY_PROMPT = """你是一个会话记忆管理助手。请根据本次对话内容，按照"业务场景"更新当前会话的记忆文件（memory.md）。
+UPDATE_MEMORY_PROMPT = """你是一个会话记忆管理助手。请根据本次对话内容，更新当前会话的记忆文件（memory.md）。目标是让后续会话能够快速恢复上下文，并继续当前项目工作。
 
-## 更新规则
+## 通用规则
 
-1. **按业务场景组织**：将记忆按场景分章节，每个场景一个二级标题（如 `## 编程开发`、`## 数据分析`、`## 写作创作`、`## 金融研究` 等）。
-2. **重复场景**：若本次对话属于已有场景，更新该场景下的内容——合并新经验、精炼重复表述、补充重要经验，删除过时信息。
-3. **新场景**：若本次对话属于新场景，添加新的二级标题章节。
-4. **只记可复用经验**：记录本次对话中发现的关键问题、解决方案、用户偏好、技术要点、踩过的坑等。不要记录一次性任务细节、临时状态、寒暄。
-5. **不记敏感信息**：密钥、密码、token 等一律不记。
-6. **精炼表达**：每条经验用一句话概括，避免冗长描述。
-7. **总长度限制**：更新后总内容不得超过 {max_chars} 字符。若接近上限，优先保留高频场景和核心经验，压缩或删除低价值条目。
+1. **合并而非堆叠**：更新已有信息，删除过时内容、重复表述和寒暄。
+2. **不记敏感信息**：密钥、密码、token、隐私数据一律不记；报错信息中若包含敏感值应脱敏。
+3. **根据上下文提炼**：不按任务简单或复杂分类。优先总结当前项目做什么、已完成的关键结果、可复用经验、用户偏好和后续必要动作。
+4. **精炼高密度表达**：每条信息用一两句话概括，只保留能帮助继续实施、复现、验证和决策的内容。
+5. **省略无价值内容**：没有可靠内容时省略对应小节；不要为了填满长度扩写，不要记录一次性过程、原始日志或临时状态。
+6. **总长度限制**：更新后总内容不得超过 {target_chars} 字符。接近上限时，只保留高价值信息。
+
+## 建议结构
+
+使用 Markdown 二级标题按内容组织，建议为：`## 当前项目`、`## 经验与注意事项`、`## 用户偏好`、`## 下一步`。只保留有信息量的标题和条目；没有可靠内容时省略对应小节。
+
+## 输出预算
+
+目标长度：不超过 {target_chars} 字符
 
 ## 当前记忆文件内容
 
@@ -67,6 +74,22 @@ UPDATE_MEMORY_PROMPT = """你是一个会话记忆管理助手。请根据本次
 ---
 
 请直接输出更新后的完整记忆文件内容（Markdown 格式，以 `# 会话记忆` 作为一级标题，不要添加任何解释说明）："""
+
+
+def build_memory_update_prompt(
+    current_memory: str,
+    user_message: str,
+    assistant_response: str,
+    max_chars: int = MAX_MEMORY_CHARS,
+) -> str:
+    """Build a compact, context-aware session memory update prompt."""
+    target_chars = min(MAX_MEMORY_CHARS, max_chars)
+    return UPDATE_MEMORY_PROMPT.format(
+        target_chars=target_chars,
+        current_memory=current_memory or "(空)",
+        user_message=user_message,
+        assistant_response=assistant_response,
+    )
 
 
 def read_memory(memory_file: Path) -> str:
@@ -208,11 +231,11 @@ def update_memory_after_session(
     assistant_response: str,
     llm=None,
 ) -> bool:
-    """会话结束后按使用场景更新用户记忆文件。
+    """会话结束后根据上下文更新用户记忆文件。
 
     流程：
     1. 读取现有记忆
-    2. 调用 LLM 按场景更新（重复场景更新经验，新场景添加章节）
+    2. 调用 LLM 提炼项目、经验与偏好
     3. 写回文件
     4. 若更新后超限，触发压缩
 
@@ -220,13 +243,13 @@ def update_memory_after_session(
         memory_file: 记忆文件路径
         user_message: 本次会话用户输入
         assistant_response: 本次会话助手回复
-        llm: LLM 实例；为 None 时跳过场景更新，仅做长度检查
+        llm: LLM 实例；为 None 时跳过上下文更新，仅做长度检查
 
     Returns:
         True 表示记忆已更新，False 表示未更新
     """
     if llm is None:
-        logger.info("未提供 LLM 实例，跳过场景更新，仅做长度检查")
+        logger.info("未提供 LLM 实例，跳过上下文更新，仅做长度检查")
         return enforce_memory_limit(memory_file, None)
 
     start = time.time()
@@ -243,18 +266,18 @@ def update_memory_after_session(
             return enforce_memory_limit(memory_file, llm)
 
         logger.info(
-            f"开始按场景更新记忆 | 文件: {memory_file} | "
+            f"开始根据上下文更新记忆 | 文件: {memory_file} | "
             f"当前长度: {len(current_memory)} 字符 | "
             f"用户输入: {len(user_msg_trunc)} 字符 | 助手回复: {len(asst_msg_trunc)} 字符"
         )
 
         from langchain_core.messages import HumanMessage
 
-        prompt = UPDATE_MEMORY_PROMPT.format(
-            max_chars=MAX_MEMORY_CHARS,
-            current_memory=current_memory or "(空)",
+        prompt = build_memory_update_prompt(
+            current_memory=current_memory,
             user_message=user_msg_trunc,
             assistant_response=asst_msg_trunc,
+            max_chars=MAX_MEMORY_CHARS,
         )
         response = llm.invoke([HumanMessage(content=prompt)])
         updated = getattr(response, "content", str(response)).strip()
@@ -263,22 +286,25 @@ def update_memory_after_session(
             logger.warning("LLM 返回空内容，记忆未更新")
             return enforce_memory_limit(memory_file, llm)
 
-        # 若更新后超限，触发压缩
-        if len(updated) > COMPRESS_THRESHOLD:
+        target_chars = MAX_MEMORY_CHARS
+        compression_threshold = min(COMPRESS_THRESHOLD, target_chars)
+
+        # 若更新后超过目标预算，触发压缩
+        if len(updated) > compression_threshold:
             logger.info(
-                f"更新后记忆超限 ({len(updated)} 字符)，触发压缩"
+                f"更新后记忆超过目标预算 ({len(updated)} > {target_chars} 字符)，触发压缩"
             )
-            updated = compress_memory(updated, llm)
+            updated = compress_memory(updated, llm, max_chars=target_chars)
 
         # 最终硬保底
-        if len(updated) > MAX_MEMORY_CHARS:
-            updated = _hard_truncate(updated, MAX_MEMORY_CHARS)
+        if len(updated) > target_chars:
+            updated = _hard_truncate(updated, target_chars)
 
         write_memory(memory_file, updated)
 
         elapsed = time.time() - start
         logger.info(
-            f"记忆按场景更新完成 | 更新后长度: {len(updated)} 字符 | 耗时: {elapsed:.2f}s\n"
+            f"记忆更新完成 | 更新后长度: {len(updated)} 字符 | 耗时: {elapsed:.2f}s\n"
             f"--- 记忆内容 ---\n{updated}\n--- 记忆内容结束 ---"
         )
         return True
@@ -291,19 +317,25 @@ def update_memory_after_session(
 UPDATE_LONG_TERM_MEMORY_PROMPT = """你是一个用户长期记忆管理助手。请根据本次对话内容，更新用户的长期记忆文件（AGENTS.md）。
 
 ## 这是什么
-这是**用户级别**的长期记忆，跨所有会话持久化，记录该用户相对稳定、长期有效的信息：
+这是**用户级别**的长期记忆，跨所有会话持久化，根据上下文记录该用户相对稳定、长期有效的信息：
 - 个人偏好与习惯（如沟通风格、技术栈倾向、输出格式要求）
 - 跨会话可复用的经验、踩过的坑、关键解决方案
-- 正在进行的长期项目/目标的背景信息
+- 长期项目背景、当前项目目标中不会随本次会话结束而失效的信息
 - 不随单个会话结束而失效的稳定信息
 
 ## 更新规则
-1. **只记稳定、长期有效、跨会话有价值的信息**：不要记录一次性任务、临时状态、单次会话的临时上下文、寒暄。
+1. **只记长期稳定、跨会话可复用的信息**：不要记录一次性任务、临时状态、寒暄或完整执行过程。
 2. **合并而非堆叠**：若新信息与已有条目重复或相近，合并精炼，不要产生多篇重复内容。
 3. **用户偏好优先**：用户明确表达出的稳定偏好（如界面要求、格式习惯）应被记录并长期保留。
 4. **不记敏感信息**：密钥、密码、token、隐私数据一律不记。
-5. **精炼表达**：每条用一句话概括，结构清晰，使用二级标题按主题分章节（如 `## 用户偏好`、`## 项目背景`、`## 可复用经验`）。
-6. **总长度限制**：更新后总内容不得超过 {max_chars} 字符。接近上限时优先保留长期有效的偏好与核心经验。
+5. **精炼表达**：每条用一句话概括，结构清晰，使用二级标题按主题分章节（如 `## 用户偏好`、`## 当前项目背景`、`## 可复用经验`）。
+6. **总长度限制**：更新后总内容不得超过 {target_chars} 字符。接近上限时优先保留长期有效的偏好与核心经验。
+
+## 输出预算
+
+目标长度：不超过 {target_chars} 字符
+
+只记录长期稳定、跨会话可复用的信息；没有可靠内容时省略对应小节，不要为填满长度扩写。
 
 ## 当前长期记忆内容
 
@@ -324,6 +356,22 @@ UPDATE_LONG_TERM_MEMORY_PROMPT = """你是一个用户长期记忆管理助手�
 请直接输出更新后的完整长期记忆文件内容（Markdown 格式，以 `# 用户长期记忆` 作为一级标题，不要添加任何解释说明）："""
 
 
+def build_long_term_memory_update_prompt(
+    current_memory: str,
+    user_message: str,
+    assistant_response: str,
+    max_chars: int = MAX_LONG_TERM_MEMORY_CHARS,
+) -> str:
+    """Build a size-aware long-term memory update prompt."""
+    target_chars = min(MAX_LONG_TERM_MEMORY_CHARS, max_chars)
+    return UPDATE_LONG_TERM_MEMORY_PROMPT.format(
+        target_chars=target_chars,
+        current_memory=current_memory or "(空)",
+        user_message=user_message,
+        assistant_response=assistant_response,
+    )
+
+
 def update_long_term_memory_after_session(
     memory_file: Path,
     user_message: str,
@@ -342,14 +390,14 @@ def update_long_term_memory_after_session(
         memory_file: 长期记忆文件路径（AGENTS.md）
         user_message: 本次会话用户输入
         assistant_response: 本次会话助手回复
-        llm: LLM 实例；为 None 时跳过场景更新，仅做长度检查
+        llm: LLM 实例；为 None 时跳过上下文更新，仅做长度检查
         max_chars: 长期记忆字符上限，默认 4000（比会话级更大）
 
     Returns:
         True 表示记忆已更新，False 表示未更新
     """
     if llm is None:
-        logger.info("未提供 LLM 实例，跳过长期记忆场景更新，仅做长度检查")
+        logger.info("未提供 LLM 实例，跳过长期记忆上下文更新，仅做长度检查")
         return enforce_memory_limit(memory_file, None, max_chars=max_chars)
 
     start = time.time()
@@ -372,11 +420,11 @@ def update_long_term_memory_after_session(
 
         from langchain_core.messages import HumanMessage
 
-        prompt = UPDATE_LONG_TERM_MEMORY_PROMPT.format(
-            max_chars=max_chars,
-            current_memory=current_memory or "(空)",
+        prompt = build_long_term_memory_update_prompt(
+            current_memory=current_memory,
             user_message=user_msg_trunc,
             assistant_response=asst_msg_trunc,
+            max_chars=max_chars,
         )
         response = llm.invoke([HumanMessage(content=prompt)])
         updated = getattr(response, "content", str(response)).strip()
@@ -385,16 +433,19 @@ def update_long_term_memory_after_session(
             logger.warning("LLM 返回空内容，长期记忆未更新")
             return enforce_memory_limit(memory_file, llm, max_chars=max_chars)
 
-        # 若更新后超限，触发压缩
-        if len(updated) > LONG_TERM_COMPRESS_THRESHOLD:
+        target_chars = max_chars
+        compression_threshold = min(LONG_TERM_COMPRESS_THRESHOLD, target_chars)
+
+        # 若更新后超过目标预算，触发压缩
+        if len(updated) > compression_threshold:
             logger.info(
-                f"更新后长期记忆超限 ({len(updated)} 字符)，触发压缩"
+                f"更新后长期记忆超过目标预算 ({len(updated)} > {target_chars} 字符)，触发压缩"
             )
-            updated = compress_memory(updated, llm, max_chars=max_chars)
+            updated = compress_memory(updated, llm, max_chars=target_chars)
 
         # 最终硬保底
-        if len(updated) > max_chars:
-            updated = _hard_truncate(updated, max_chars)
+        if len(updated) > target_chars:
+            updated = _hard_truncate(updated, target_chars)
 
         write_memory(memory_file, updated)
 
