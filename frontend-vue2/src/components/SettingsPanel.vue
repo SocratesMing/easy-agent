@@ -1,0 +1,1874 @@
+<template>
+  <div class="settings-overlay" @click="$emit('close')">
+    <div class="settings-modal" @click.stop>
+      <div class="settings-header">
+        <h2>设置</h2>
+        <button @click="$emit('close')" class="close-btn">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="18" y1="6" x2="6" y2="18"></line>
+            <line x1="6" y1="6" x2="18" y2="18"></line>
+          </svg>
+        </button>
+      </div>
+
+      <div class="settings-body">
+        <div class="settings-nav">
+          <div
+            v-for="item in navItems"
+            :key="item.key"
+            class="nav-item"
+            :class="{ active: activeTab === item.key }"
+            @click="activeTab = item.key"
+          >
+            <span class="nav-icon" v-html="item.icon"></span>
+            <span class="nav-label">{{ item.label }}</span>
+          </div>
+        </div>
+
+        <div class="settings-content">
+          <!-- 记忆 -->
+          <div v-if="activeTab === 'memory'" class="content-panel">
+            <div class="panel-header">
+              <h3>记忆</h3>
+              <p class="panel-desc">当前用户的长期记忆文件，支持 Markdown 格式编辑</p>
+            </div>
+            <div v-if="loading" class="loading-state"><div class="spinner"></div></div>
+            <div v-else class="memory-editor">
+              <textarea
+                v-model="memoryContent"
+                class="markdown-editor"
+                placeholder="在此编辑记忆内容..."
+                spellcheck="false"
+              ></textarea>
+              <div class="editor-actions">
+                <span v-if="memorySaved" class="save-hint">已保存</span>
+                <span v-if="memoryError" class="save-error">{{ memoryError }}</span>
+                <button class="save-btn" @click="saveMemory" :disabled="memorySaving">
+                  {{ memorySaving ? '保存中...' : '保存' }}
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- 提示词 -->
+          <div v-if="activeTab === 'prompt'" class="content-panel">
+            <div class="panel-header">
+              <h3>系统提示词</h3>
+              <p class="panel-desc">当前使用的系统提示词（只读）</p>
+            </div>
+            <div v-if="loading" class="loading-state"><div class="spinner"></div></div>
+            <div v-else class="prompt-viewer">
+              <pre class="prompt-content">{{ promptContent }}</pre>
+            </div>
+          </div>
+
+          <!-- MCP -->
+          <div v-if="activeTab === 'mcp'" class="content-panel">
+            <div class="panel-header">
+              <div class="panel-header-row">
+                <div>
+                  <h3>MCP</h3>
+                  <p class="panel-desc">管理 MCP 服务配置 · 来源：<span class="source-tag" :class="mcpSource">{{ mcpSource === 'user' ? '用户配置' : '全局默认' }}</span></p>
+                </div>
+                <div class="panel-actions">
+                  <select
+                    v-if="mcpKeyBusinesses.length"
+                    v-model="mcpKeySelectedBusiness"
+                    class="mcp-key-business-select"
+                    title="选择要生成 API Key 的业务"
+                    aria-label="选择业务类型"
+                  >
+                    <option v-for="item in mcpKeyBusinesses" :key="item.business" :value="item.business">
+                      {{ item.business }}{{ item.issued ? '（已生成）' : '' }}
+                    </option>
+                  </select>
+                  <button
+                    class="action-btn-outline"
+                    @click="handleGenerateMcpApiKey"
+                    :disabled="mcpApiKeyGenerating"
+                    title="为当前用户生成所选业务的 MCP API Key"
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"></path></svg>
+                    {{ mcpApiKeyGenerating ? '生成中...' : '生成 Key' }}
+                  </button>
+                  <button class="action-btn-outline" @click="openPreview" title="预览最终 mcp.json">
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                    预览
+                  </button>
+                  <button class="action-btn-primary" @click="openAddMcp" title="添加自定义 MCP 服务">
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                    添加
+                  </button>
+                </div>
+              </div>
+            </div>
+            <div v-if="loading" class="loading-state"><div class="spinner"></div></div>
+            <div v-else class="mcp-list">
+              <div v-if="mcpApiKey || mcpApiKeyError" class="mcp-api-key-panel">
+                <div v-if="mcpApiKey" class="mcp-api-key-row">
+                  <div class="mcp-api-key-field">
+                    <span class="mcp-api-key-label">{{ mcpKeySelectedBusiness }}-key</span>
+                    <input
+                      :type="mcpApiKeyVisible ? 'text' : 'password'"
+                      :value="mcpApiKey"
+                      readonly
+                      aria-label="mcp-key"
+                    />
+                    <button
+                      class="mcp-api-key-toggle"
+                      @click="mcpApiKeyVisible = !mcpApiKeyVisible"
+                      :title="mcpApiKeyVisible ? '隐藏 API Key' : '显示 API Key'"
+                      :aria-label="mcpApiKeyVisible ? '隐藏 API Key' : '显示 API Key'"
+                    >
+                      <svg v-if="mcpApiKeyVisible" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path><line x1="1" y1="1" x2="23" y2="23"></line></svg>
+                      <svg v-else xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                    </button>
+                    <button
+                      class="mcp-api-key-toggle"
+                      @click="copyMcpApiKey"
+                      :title="mcpApiKeyCopied ? '已复制' : '复制 mcp-key'"
+                      :aria-label="mcpApiKeyCopied ? '已复制 mcp-key' : '复制 mcp-key'"
+                    >
+                      <svg v-if="mcpApiKeyCopied" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><polyline points="20 6 9 17 4 12"></polyline></svg>
+                      <svg v-else xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+                    </button>
+                  </div>
+                  <p class="mcp-api-key-hint">生成后仅显示一次；再次生成会替换并作废旧 Key。</p>
+                  <div class="mcp-api-key-row mcp-snippet-row">
+                    <pre class="mcp-snippet">{{ mcpSnippet }}</pre>
+                    <button
+                      class="mcp-api-key-toggle"
+                      @click="copyMcpSnippet"
+                      :title="mcpSnippetCopied ? '已复制配置片段' : '复制配置片段'"
+                      :aria-label="mcpSnippetCopied ? '已复制配置片段' : '复制配置片段'"
+                    >
+                      <svg v-if="mcpSnippetCopied" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><polyline points="20 6 9 17 4 12"></polyline></svg>
+                      <svg v-else xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+                    </button>
+                  </div>
+                  <p class="mcp-api-key-hint">把片段中的 mcp-server 地址替换为实际部署地址后，粘贴到 mcp.json 即可接入。</p>
+                </div>
+                <div v-if="mcpApiKeyError" class="save-error mcp-api-key-error">{{ mcpApiKeyError }}</div>
+              </div>
+              <div v-if="mcpServers.length === 0" class="empty-hint">暂无 MCP 服务配置，点击"添加"按钮创建</div>
+              <div
+                v-for="server in mcpServers"
+                :key="server.name"
+                class="mcp-card"
+                :class="{ disabled: mcpEnabledMap[server.name] === false }"
+              >
+                <div class="mcp-header">
+                  <div class="mcp-header-left">
+                    <label class="toggle-switch">
+                      <input
+                        type="checkbox"
+                        :checked="mcpEnabledMap[server.name] !== false"
+                        @change="toggleMcpServer(server.name, $event.target.checked)"
+                      />
+                      <span class="toggle-slider"></span>
+                    </label>
+                    <span class="mcp-name">{{ server.name }}</span>
+                    <span class="mcp-transport">{{ server.transport }}</span>
+                  </div>
+                  <button
+                    v-if="mcpSource === 'user'"
+                    class="mcp-delete-btn"
+                    @click="removeMcpServer(server.name)"
+                    title="删除"
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                  </button>
+                </div>
+                <div v-if="server.command" class="mcp-detail">
+                  <span class="detail-label">Command:</span>
+                  <code>{{ server.command }} {{ (server.args || []).join(' ') }}</code>
+                </div>
+                <div v-if="server.env_keys && server.env_keys.length" class="mcp-detail">
+                  <span class="detail-label">Env:</span>
+                  <code>{{ server.env_keys.join(', ') }}</code>
+                </div>
+                <div v-if="mcpServerErrors[server.name]" class="mcp-error-banner">
+                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+                  <span>{{ mcpServerErrors[server.name] }}</span>
+                </div>
+              </div>
+            </div>
+            <!-- 保存栏 -->
+            <div v-if="mcpServers.length > 0" class="editor-actions">
+              <span v-if="mcpSaved" class="save-hint">已保存，配置将在下次对话生效</span>
+              <span v-if="mcpError" class="save-error">{{ mcpError }}</span>
+              <button class="save-btn" @click="saveMcp" :disabled="mcpSaving">
+                {{ mcpSaving ? '保存中...' : '保存配置' }}
+              </button>
+            </div>
+          </div>
+
+          <!-- 添加 MCP 弹窗 -->
+          <div v-if="showAddMcp" class="mcp-dialog-overlay" @click.self="showAddMcp = false">
+            <div class="mcp-dialog" :class="{ 'mcp-dialog-market': addMcpMode === 'market' }">
+              <div class="mcp-dialog-header">
+                <h4>添加 MCP 服务</h4>
+                <button class="close-btn" @click="showAddMcp = false">
+                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                </button>
+              </div>
+              <div class="add-mode-tabs">
+                <button
+                  class="add-mode-tab"
+                  :class="{ active: addMcpMode === 'manual' }"
+                  @click="switchAddMcpMode('manual')"
+                >
+                  手动配置
+                </button>
+                <button
+                  class="add-mode-tab"
+                  :class="{ active: addMcpMode === 'market' }"
+                  @click="switchAddMcpMode('market')"
+                >
+                  从市场添加
+                </button>
+              </div>
+
+              <template v-if="addMcpMode === 'manual'">
+                <p class="mcp-dialog-desc">粘贴 MCP 服务配置（JSON 格式）。支持标准 mcpServers 格式、对象格式或单条 server 格式：</p>
+                <pre class="mcp-dialog-example">标准格式：{"mcpServers": {"akshare-mcp": {"type":"sse","url":"http://127.0.0.1:8005/sse","timeout":60}}}
+对象格式：{"myserver": {"transport":"stdio","command":"npx",...}}
+单条格式：{"name":"myserver","transport":"stdio","command":"npx",...}</pre>
+                <textarea
+                  v-model="addMcpJson"
+                  class="mcp-json-input"
+                  placeholder='{"mcpServers": {"akshare-mcp": {"type": "sse", "url": "http://127.0.0.1:8005/sse", "timeout": 60}}}'
+                  spellcheck="false"
+                ></textarea>
+                <div class="mcp-dialog-actions">
+                  <button class="action-btn-outline" @click="showAddMcp = false">取消</button>
+                  <button class="action-btn-primary" @click="confirmAddMcp">确认添加</button>
+                </div>
+              </template>
+
+              <template v-else>
+                <div class="mcp-market-list mcp-dialog-market-list">
+                  <div v-if="mcpMarketServers.length === 0" class="empty-hint market-empty">
+                    暂无公共 MCP 服务
+                  </div>
+                  <div
+                    v-for="server in mcpMarketServers"
+                    :key="`market-${server.name}`"
+                    class="mcp-market-card"
+                    :class="{ added: server.added }"
+                  >
+                    <div class="mcp-market-info">
+                      <div class="mcp-header-left">
+                        <span class="mcp-name">{{ server.name }}</span>
+                        <span class="mcp-transport">{{ server.transport }}</span>
+                        <span v-if="server.added" class="market-added-tag">已添加</span>
+                      </div>
+                      <p class="mcp-market-desc">
+                        {{ server._raw?.description || server.command || server._raw?.url || '暂无描述' }}
+                      </p>
+                      <div v-if="server.env_keys && server.env_keys.length" class="mcp-detail">
+                        <span class="detail-label">Env:</span>
+                        <code>{{ server.env_keys.join(', ') }}</code>
+                      </div>
+                    </div>
+                    <button
+                      class="market-add-btn"
+                      :disabled="server.added || addingMarketMcp === server.name"
+                      @click="addMarketMcp(server.name)"
+                    >
+                      {{ server.added ? '已添加' : addingMarketMcp === server.name ? '添加中...' : '添加' }}
+                    </button>
+                  </div>
+                </div>
+                <div v-if="addMcpError" class="mcp-dialog-error">{{ addMcpError }}</div>
+                <div class="mcp-dialog-actions">
+                  <button class="action-btn-outline" @click="showAddMcp = false">关闭</button>
+                </div>
+              </template>
+            </div>
+          </div>
+
+          <!-- 预览 MCP 弹窗 -->
+          <div v-if="showPreview" class="mcp-dialog-overlay" @click.self="showPreview = false">
+            <div class="mcp-dialog mcp-dialog-preview">
+              <div class="mcp-dialog-header">
+                <h4>预览 mcp.json</h4>
+                <button class="close-btn" @click="showPreview = false">
+                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                </button>
+              </div>
+              <p class="mcp-dialog-desc">以下为保存后实际生效的 mcp.json 内容（仅包含已启用的服务）：</p>
+              <pre class="mcp-preview-content">{{ mcpPreviewJson }}</pre>
+              <div class="mcp-dialog-actions">
+                <button class="action-btn-outline" @click="showPreview = false">关闭</button>
+                <button class="action-btn-primary" @click="copyPreview">
+                  {{ previewCopied ? '已复制' : '复制' }}
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- 外观 -->
+          <div v-if="activeTab === 'appearance'" class="content-panel">
+            <div class="panel-header">
+              <h3>外观</h3>
+              <p class="panel-desc">切换界面的显示主题</p>
+            </div>
+            <div class="appearance-options">
+              <div
+                class="theme-option"
+                :class="{ active: !isDarkTheme }"
+                @click="switchTheme(false)"
+              >
+                <div class="theme-preview theme-preview-light">
+                  <div class="preview-bar"></div>
+                  <div class="preview-line"></div>
+                  <div class="preview-line short"></div>
+                </div>
+                <div class="theme-option-info">
+                  <span class="theme-option-name">浅色主题</span>
+                  <span class="theme-option-desc">明亮清新，适合白天使用</span>
+                </div>
+                <svg v-if="!isDarkTheme" class="theme-check" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
+                  <polyline points="22 4 12 14.01 9 11.01"></polyline>
+                </svg>
+              </div>
+              <div
+                class="theme-option"
+                :class="{ active: isDarkTheme }"
+                @click="switchTheme(true)"
+              >
+                <div class="theme-preview theme-preview-dark">
+                  <div class="preview-bar"></div>
+                  <div class="preview-line"></div>
+                  <div class="preview-line short"></div>
+                </div>
+                <div class="theme-option-info">
+                  <span class="theme-option-name">深色主题</span>
+                  <span class="theme-option-desc">柔和护眼，适合夜间使用</span>
+                </div>
+                <svg v-if="isDarkTheme" class="theme-check" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
+                  <polyline points="22 4 12 14.01 9 11.01"></polyline>
+                </svg>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</template>
+
+<script>
+import { ref, watch, onMounted, computed } from 'vue'
+import { MessageBox } from 'element-ui'
+import {
+  getMemory,
+  updateMemory,
+  getSystemPrompt,
+  getMcpServers,
+  getMcpMarket,
+  getMcpApiKeyStatuses,
+  generateMcpApiKey,
+  addMcpFromMarket,
+  updateMcpServers,
+  addMcpServer,
+  deleteMcpServer,
+} from '../api/settings.js'
+import { syncMarketAddedState } from '../utils/mcpMarket.js'
+export default {
+  props: {
+  isDarkTheme: { type: Boolean, default: false },
+},
+  emits: ['close', 'toggle-theme'],
+  setup(props, { emit }) {
+const activeTab = ref('memory')
+const loading = ref(false)
+
+// 记忆
+const memoryContent = ref('')
+const memorySaving = ref(false)
+const memorySaved = ref(false)
+const memoryError = ref('')
+
+// 提示词
+const promptContent = ref('')
+
+// MCP
+const mcpServers = ref([])
+const mcpEnabledMap = ref({})     // { serverName: boolean }
+const mcpSaving = ref(false)
+const mcpSaved = ref(false)
+const mcpError = ref('')
+const mcpSource = ref('global')   // 'user' | 'global'
+const mcpServerErrors = ref({})   // { serverName: errorMessage }
+const mcpMarketServers = ref([])
+const mcpApiKey = ref('')
+const mcpApiKeyVisible = ref(false)
+const mcpApiKeyCopied = ref(false)
+const mcpApiKeyGenerating = ref(false)
+const mcpApiKeyError = ref('')
+const mcpKeyBusinesses = ref([])          // [{ business, issued, updated_at }]
+const mcpKeySelectedBusiness = ref('')    // 当前选中的业务
+const mcpSnippetCopied = ref(false)
+
+// 添加 MCP
+const showAddMcp = ref(false)
+const addMcpMode = ref('manual')
+const addMcpJson = ref('')
+const addMcpError = ref('')
+const addingMarketMcp = ref('')
+
+// 预览 MCP
+const showPreview = ref(false)
+
+// 生成最终 mcp.json 内容（仅 enabled 的 server）
+const mcpPreviewJson = computed(() => {
+  const servers = {}
+  for (const server of mcpServers.value) {
+    if (mcpEnabledMap.value[server.name] !== false) {
+      const entry = { ...server._raw }
+      // 规范化：用 transport 替代 type
+      if (entry.type && !entry.transport) {
+        entry.transport = entry.type
+        delete entry.type
+      }
+      delete entry.name
+      servers[server.name] = entry
+    }
+  }
+  return JSON.stringify({ servers }, null, 2)
+})
+
+function switchTheme(dark) {
+  if (dark === props.isDarkTheme) return
+  emit('toggle-theme')
+}
+
+const navItems = [
+  {
+    key: 'memory',
+    label: '记忆',
+    icon: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a7 7 0 0 0-7 7c0 2.38 1.19 4.47 3 5.74V17a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1v-2.26c1.81-1.27 3-3.36 3-5.74a7 7 0 0 0-7-7z"/><line x1="9" y1="21" x2="15" y2="21"/></svg>',
+  },
+  {
+    key: 'prompt',
+    label: '提示词',
+    icon: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>',
+  },
+  {
+    key: 'mcp',
+    label: 'MCP',
+    icon: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"/><rect x="2" y="14" width="20" height="8" rx="2" ry="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>',
+  },
+  {
+    key: 'appearance',
+    label: '外观',
+    icon: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><line x1="2" y1="12" x2="22" y2="12"/></svg>',
+  },
+]
+
+async function loadTabData() {
+  loading.value = true
+  try {
+    if (activeTab.value === 'memory') {
+      const data = await getMemory()
+      memoryContent.value = data.content || ''
+    } else if (activeTab.value === 'prompt') {
+      const data = await getSystemPrompt()
+      promptContent.value = data.content || ''
+    } else if (activeTab.value === 'mcp') {
+      const [data, market, keyStatuses] = await Promise.all([
+        getMcpServers(),
+        getMcpMarket(),
+        getMcpApiKeyStatuses().catch(() => ({ businesses: [] })),
+      ])
+      mcpServers.value = (data.servers || []).map(s => ({
+        ...s,
+        _raw: s._raw || { transport: s.transport, command: s.command, args: s.args, env: {} },
+      }))
+      mcpSource.value = data.source || 'global'
+      mcpMarketServers.value = market.servers || []
+      mcpKeyBusinesses.value = keyStatuses.businesses || []
+      if (!mcpKeySelectedBusiness.value && mcpKeyBusinesses.value.length) {
+        mcpKeySelectedBusiness.value = mcpKeyBusinesses.value[0].business
+      }
+      // 初始化 enabledMap：默认全部开启
+      const newMap = {}
+      for (const s of mcpServers.value) {
+        newMap[s.name] = mcpEnabledMap.value[s.name] !== undefined
+          ? mcpEnabledMap.value[s.name]
+          : true
+      }
+      mcpEnabledMap.value = newMap
+    }
+  } catch (e) {
+    console.error('加载数据失败:', e)
+  } finally {
+    loading.value = false
+  }
+}
+
+async function saveMemory() {
+  memorySaving.value = true
+  memorySaved.value = false
+  memoryError.value = ''
+  try {
+    await updateMemory(memoryContent.value)
+    memorySaved.value = true
+    setTimeout(() => { memorySaved.value = false }, 2000)
+  } catch (e) {
+    memoryError.value = e.message || '保存失败'
+  } finally {
+    memorySaving.value = false
+  }
+}
+
+// ── MCP 操作 ──
+
+async function saveMcp() {
+  mcpSaving.value = true
+  mcpSaved.value = false
+  mcpError.value = ''
+  mcpServerErrors.value = {}
+  try {
+    const servers = {}
+    for (const server of mcpServers.value) {
+      if (mcpEnabledMap.value[server.name] !== false) {
+        const entry = { ...server._raw }
+        if (entry.type && !entry.transport) {
+          entry.transport = entry.type
+          delete entry.type
+        }
+        delete entry.name
+        servers[server.name] = entry
+      }
+    }
+    const resp = await updateMcpServers(servers)
+    mcpMarketServers.value = syncMarketAddedState(
+      mcpMarketServers.value,
+      resp.servers || Object.keys(servers),
+    )
+
+    // 处理 per-server 校验结果：异常的 server 自动关闭开关并记录错误
+    const statuses = resp.server_status || []
+    const newErrors = {}
+    for (const s of statuses) {
+      if (s.status === 'error') {
+        // 自动关闭异常 server 的开关
+        mcpEnabledMap.value = { ...mcpEnabledMap.value, [s.name]: false }
+        newErrors[s.name] = s.error || '加载失败'
+      }
+    }
+    mcpServerErrors.value = newErrors
+
+    if (statuses.length > 0 && Object.keys(newErrors).length > 0) {
+      const failedNames = Object.keys(newErrors).join(', ')
+      mcpError.value = `以下 MCP 服务加载异常，已自动关闭: ${failedNames}`
+    } else {
+      mcpSaved.value = true
+      setTimeout(() => { mcpSaved.value = false }, 2000)
+    }
+  } catch (e) {
+    mcpError.value = e.message || '保存失败'
+  } finally {
+    mcpSaving.value = false
+  }
+}
+
+async function removeMcpServer(name) {
+  // 用 element-ui 的确认框替代原生 confirm
+  try {
+    await MessageBox.confirm(`确认删除 MCP 服务 "${name}"？删除后立即生效。`, '删除确认', {
+      type: 'warning',
+      confirmButtonText: '删除',
+      cancelButtonText: '取消',
+    })
+  } catch {
+    return // 用户取消
+  }
+  try {
+    const resp = await deleteMcpServer(name)
+    // 删除成功，本地同步移除
+    mcpServers.value = mcpServers.value.filter(s => s.name !== name)
+    mcpMarketServers.value = syncMarketAddedState(
+      mcpMarketServers.value,
+      resp.servers || mcpServers.value.map(s => s.name),
+    )
+    const newMap = { ...mcpEnabledMap.value }
+    delete newMap[name]
+    mcpEnabledMap.value = newMap
+    const newErrors = { ...mcpServerErrors.value }
+    delete newErrors[name]
+    mcpServerErrors.value = newErrors
+    mcpError.value = ''
+    mcpSaved.value = true
+    setTimeout(() => { mcpSaved.value = false }, 2000)
+  } catch (e) {
+    mcpError.value = e.message || '删除失败'
+  }
+}
+
+function openAddMcp() {
+  addMcpJson.value = ''
+  addMcpError.value = ''
+  addMcpMode.value = 'manual'
+  showAddMcp.value = true
+}
+
+function switchAddMcpMode(mode) {
+  addMcpMode.value = mode
+  addMcpError.value = ''
+}
+
+async function confirmAddMcp() {
+  addMcpError.value = ''
+  let parsed
+  try {
+    parsed = JSON.parse(addMcpJson.value)
+  } catch {
+    addMcpError.value = 'JSON 格式无效，请检查输入'
+    return
+  }
+
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    addMcpError.value = '请输入 JSON 对象，格式如 {"servers": {"myserver": {...}}}'
+    return
+  }
+
+  // 调用后端添加：后端按 servers 下的名称判重、合并写入、即时重载 MCP
+  try {
+    const resp = await addMcpServer(parsed)
+
+    // 处理新添加 server 的校验结果：异常的记录错误
+    const statuses = resp.server_status || []
+    const newErrors = {}
+    for (const s of statuses) {
+      if (s.status === 'error') {
+        newErrors[s.name] = s.error || '加载失败'
+      }
+    }
+    mcpServerErrors.value = { ...mcpServerErrors.value, ...newErrors }
+
+    if (Object.keys(newErrors).length > 0) {
+      const failedNames = Object.keys(newErrors).join(', ')
+      addMcpError.value = `以下 MCP 服务添加成功但加载异常: ${failedNames}（请检查配置）`
+    }
+
+    // 重新拉取最新列表，保证与后端一致
+    await loadTabData()
+
+    if (!addMcpError.value) {
+      showAddMcp.value = false
+      addMcpJson.value = ''
+    }
+  } catch (e) {
+    addMcpError.value = e.message || '添加失败'
+  }
+}
+
+function toggleMcpServer(name, enabled) {
+  mcpEnabledMap.value = { ...mcpEnabledMap.value, [name]: enabled }
+}
+
+async function addMarketMcp(name) {
+  addingMarketMcp.value = name
+  addMcpError.value = ''
+  mcpError.value = ''
+  try {
+    await addMcpFromMarket(name)
+    mcpSaved.value = true
+    setTimeout(() => { mcpSaved.value = false }, 2000)
+    await loadTabData()
+  } catch (e) {
+    addMcpError.value = e.message || '添加失败'
+  } finally {
+    addingMarketMcp.value = ''
+  }
+}
+
+function openPreview() {
+  showPreview.value = true
+}
+
+// 生成后展示可直接粘贴到 mcp.json 的配置片段（URL 由子项目部署地址决定）
+const mcpSnippet = computed(() => {
+  const business = mcpKeySelectedBusiness.value || 'market'
+  return JSON.stringify(
+    {
+      servers: {
+        [`${business}-data`]: {
+          transport: 'streamable_http',
+          url: `http://<mcp-server 地址>/mcp/${business}/`,
+          headers: { Authorization: `Bearer ${mcpApiKey.value}` },
+        },
+      },
+    },
+    null,
+    2,
+  )
+})
+
+async function handleGenerateMcpApiKey() {
+  const business = mcpKeySelectedBusiness.value
+  if (!business) {
+    mcpApiKeyError.value = '请先选择业务类型'
+    return
+  }
+  mcpApiKeyGenerating.value = true
+  mcpApiKeyError.value = ''
+  try {
+    const result = await generateMcpApiKey(business)
+    mcpApiKey.value = result.api_key || ''
+    mcpApiKeyVisible.value = false
+    mcpApiKeyCopied.value = false
+    mcpSnippetCopied.value = false
+  } catch (e) {
+    mcpApiKey.value = ''
+    mcpApiKeyError.value = e.message || '生成 MCP API Key 失败'
+  } finally {
+    mcpApiKeyGenerating.value = false
+  }
+}
+
+async function copyMcpSnippet() {
+  try {
+    await navigator.clipboard.writeText(mcpSnippet.value)
+  } catch {
+    const textarea = document.createElement('textarea')
+    textarea.value = mcpSnippet.value
+    document.body.appendChild(textarea)
+    textarea.select()
+    document.execCommand('copy')
+    document.body.removeChild(textarea)
+  }
+  mcpSnippetCopied.value = true
+  setTimeout(() => { mcpSnippetCopied.value = false }, 2000)
+}
+
+async function copyMcpApiKey() {
+  try {
+    await navigator.clipboard.writeText(mcpApiKey.value)
+  } catch {
+    const textarea = document.createElement('textarea')
+    textarea.value = mcpApiKey.value
+    document.body.appendChild(textarea)
+    textarea.select()
+    document.execCommand('copy')
+    document.body.removeChild(textarea)
+  }
+  mcpApiKeyCopied.value = true
+  setTimeout(() => { mcpApiKeyCopied.value = false }, 2000)
+}
+
+const previewCopied = ref(false)
+async function copyPreview() {
+  try {
+    await navigator.clipboard.writeText(mcpPreviewJson.value)
+    previewCopied.value = true
+    setTimeout(() => { previewCopied.value = false }, 2000)
+  } catch {
+    // fallback
+    const ta = document.createElement('textarea')
+    ta.value = mcpPreviewJson.value
+    document.body.appendChild(ta)
+    ta.select()
+    document.execCommand('copy')
+    document.body.removeChild(ta)
+    previewCopied.value = true
+    setTimeout(() => { previewCopied.value = false }, 2000)
+  }
+}
+
+watch(activeTab, () => {
+  loadTabData()
+})
+
+onMounted(() => {
+  loadTabData()
+})
+
+    return {
+      activeTab,
+      addingMarketMcp,
+      addMarketMcp,
+      addMcpError,
+      addMcpFromMarket,
+      addMcpJson,
+      addMcpMode,
+      addMcpServer,
+      computed,
+      confirmAddMcp,
+      copyMcpApiKey,
+      copyMcpSnippet,
+      copyPreview,
+      deleteMcpServer,
+      handleGenerateMcpApiKey,
+      getMcpMarket,
+      getMcpServers,
+      getMemory,
+      getSystemPrompt,
+      loading,
+      loadTabData,
+      mcpApiKey,
+      mcpApiKeyCopied,
+      mcpApiKeyError,
+      mcpApiKeyVisible,
+      mcpEnabledMap,
+      mcpError,
+      mcpKeyBusinesses,
+      mcpKeySelectedBusiness,
+      mcpMarketServers,
+      mcpPreviewJson,
+      mcpSaved,
+      mcpSaving,
+      mcpServerErrors,
+      mcpServers,
+      mcpSnippet,
+      mcpSnippetCopied,
+      mcpSource,
+      memoryContent,
+      memoryError,
+      memorySaved,
+      memorySaving,
+      navItems,
+      onMounted,
+      openAddMcp,
+      openPreview,
+      previewCopied,
+      promptContent,
+      ref,
+      removeMcpServer,
+      saveMcp,
+      saveMemory,
+      showAddMcp,
+      showPreview,
+      switchAddMcpMode,
+      switchTheme,
+      syncMarketAddedState,
+      toggleMcpServer,
+      updateMcpServers,
+      updateMemory,
+      watch,
+    }
+  },
+}
+</script>
+
+<style scoped>
+.settings-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.settings-modal {
+  background: white;
+  border-radius: 16px;
+  width: 800px;
+  max-width: 90vw;
+  height: 600px;
+  max-height: 85vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+  overflow: hidden;
+}
+
+.settings-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px 24px;
+  border-bottom: 1px solid #e2e8f0;
+  flex-shrink: 0;
+}
+
+.settings-header h2 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.close-btn {
+  width: 32px;
+  height: 32px;
+  border: none;
+  background: transparent;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.close-btn:hover {
+  background: var(--bg-tertiary);
+}
+
+.close-btn svg {
+  width: 20px;
+  height: 20px;
+  color: var(--text-secondary);
+}
+
+.settings-body {
+  flex: 1;
+  display: flex;
+  overflow: hidden;
+}
+
+.settings-nav {
+  width: 180px;
+  border-right: 1px solid #e2e8f0;
+  padding: 12px 8px;
+  flex-shrink: 0;
+  overflow-y: auto;
+}
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.2s;
+  color: var(--text-secondary);
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.nav-item:hover {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+.nav-item.active {
+  background: color-mix(in srgb, var(--accent-color) 18%, transparent);
+  color: #0ea5e9;
+}
+
+.nav-icon {
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.nav-icon ::v-deep(svg) {
+  width: 20px;
+  height: 20px;
+}
+
+.settings-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 24px;
+}
+
+.content-panel {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.panel-header {
+  margin-bottom: 16px;
+  flex-shrink: 0;
+}
+
+.panel-header h3 {
+  margin: 0 0 4px 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.panel-desc {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.loading-state {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 40px;
+}
+
+.spinner {
+  width: 28px;
+  height: 28px;
+  border: 3px solid #e2e8f0;
+  border-top-color: #0ea5e9;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/* 记忆编辑器 */
+.memory-editor {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+.markdown-editor {
+  flex: 1;
+  padding: 16px;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text-primary);
+  resize: none;
+  outline: none;
+  transition: border-color 0.2s;
+  min-height: 300px;
+}
+
+.markdown-editor:focus {
+  border-color: #0ea5e9;
+  box-shadow: 0 0 0 3px rgba(14, 165, 233, 0.1);
+}
+
+.editor-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.save-hint {
+  font-size: 13px;
+  color: #22c55e;
+}
+
+.save-error {
+  font-size: 13px;
+  color: #ef4444;
+}
+
+.save-btn {
+  padding: 8px 20px;
+  border: none;
+  background: #0ea5e9;
+  color: white;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.save-btn:hover:not(:disabled) {
+  background: #0284c7;
+}
+
+.save-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* 提示词查看器 */
+.prompt-viewer {
+  flex: 1;
+}
+
+.prompt-content {
+  padding: 16px;
+  background: var(--bg-tertiary);
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  margin: 0;
+  max-height: 450px;
+  overflow-y: auto;
+}
+
+/* MCP 列表 */
+
+.mcp-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.mcp-api-key-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px 16px;
+  background: var(--bg-tertiary);
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+}
+
+.mcp-api-key-row {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.mcp-api-key-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.mcp-api-key-label {
+  flex-shrink: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.mcp-key-business-select {
+  height: 34px;
+  padding: 0 8px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: white;
+  color: var(--text-primary);
+  font-size: 13px;
+}
+
+.mcp-snippet-row {
+  margin-top: 10px;
+  align-items: flex-start;
+}
+
+.mcp-snippet {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  padding: 10px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-x: auto;
+  white-space: pre;
+}
+
+.mcp-api-key-field input {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: white;
+  color: var(--text-primary);
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+  font-size: 13px;
+}
+
+.mcp-api-key-toggle {
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: white;
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.mcp-api-key-toggle:hover {
+  border-color: #cbd5e1;
+  background: var(--bg-tertiary);
+}
+
+.mcp-api-key-hint {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.mcp-api-key-error {
+  margin: 0;
+}
+
+.mcp-market-list {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+}
+
+.mcp-market-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-width: 0;
+  padding: 14px 16px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+}
+
+.mcp-market-info {
+  min-width: 0;
+  flex: 1;
+}
+
+.mcp-market-desc {
+  margin: 7px 0 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.market-added-tag {
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: #dcfce7;
+  color: #15803d;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.market-add-btn {
+  align-self: center;
+  flex-shrink: 0;
+  padding: 7px 14px;
+  border: none;
+  border-radius: 8px;
+  background: var(--accent-color);
+  color: white;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.market-add-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent-color) 85%, black);
+}
+
+.market-add-btn:disabled {
+  background: #dcfce7;
+  color: #15803d;
+  cursor: default;
+}
+
+@media (max-width: 560px) {
+  .mcp-market-card {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .market-add-btn {
+    align-self: stretch;
+  }
+}
+
+.market-empty {
+  grid-column: 1 / -1;
+  padding: 28px 0;
+}
+
+.mcp-card {
+  padding: 16px;
+  background: var(--bg-tertiary);
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+}
+
+.mcp-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.mcp-name {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.mcp-transport {
+  font-size: 12px;
+  padding: 2px 8px;
+  background: color-mix(in srgb, var(--accent-color) 18%, transparent);
+  color: #0ea5e9;
+  border-radius: 4px;
+  font-weight: 500;
+}
+
+.mcp-detail {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-top: 6px;
+  font-size: 13px;
+}
+
+.detail-label {
+  color: var(--text-secondary);
+  font-weight: 500;
+  flex-shrink: 0;
+}
+
+.mcp-detail code {
+  color: var(--text-secondary);
+  background: var(--bg-tertiary);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.empty-hint {
+  text-align: center;
+  color: var(--text-secondary);
+  padding: 40px 0;
+  font-size: 14px;
+}
+
+/* 外观 - 主题切换 */
+.appearance-options {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.theme-option {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 16px;
+  background: var(--bg-tertiary);
+  border: 2px solid #e2e8f0;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.theme-option:hover {
+  border-color: #cbd5e1;
+  background: var(--bg-tertiary);
+}
+
+.theme-option.active {
+  border-color: #0ea5e9;
+  background: color-mix(in srgb, var(--accent-color) 18%, transparent);
+}
+
+.theme-preview {
+  width: 80px;
+  height: 56px;
+  border-radius: 6px;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex-shrink: 0;
+  border: 1px solid #e2e8f0;
+}
+
+.theme-preview-light {
+  background: var(--bg-secondary);
+}
+
+.theme-preview-dark {
+  background: #1a1a2e;
+}
+
+.theme-preview .preview-bar {
+  height: 8px;
+  border-radius: 3px;
+  background: #0ea5e9;
+  width: 60%;
+}
+
+.theme-preview-dark .preview-bar {
+  background: #7c6aef;
+}
+
+.theme-preview .preview-line {
+  height: 4px;
+  border-radius: 2px;
+  background: #cbd5e1;
+  width: 100%;
+}
+
+.theme-preview-dark .preview-line {
+  background: #475569;
+}
+
+.theme-preview .preview-line.short {
+  width: 60%;
+}
+
+.theme-option-info {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.theme-option-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.theme-option-desc {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.theme-check {
+  width: 20px;
+  height: 20px;
+  color: #0ea5e9;
+  flex-shrink: 0;
+}
+
+/* MCP 增强样式 */
+.panel-header-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.panel-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.action-btn-primary,
+.action-btn-outline {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 14px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+  white-space: nowrap;
+}
+
+.action-btn-primary {
+  border: none;
+  background: #0ea5e9;
+  color: white;
+}
+
+.action-btn-primary:hover {
+  background: #0284c7;
+}
+
+.action-btn-outline {
+  border: 1px solid #e2e8f0;
+  background: white;
+  color: var(--text-secondary);
+}
+
+.action-btn-outline:hover {
+  border-color: #cbd5e1;
+  background: var(--bg-tertiary);
+}
+
+.source-tag {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.source-tag.user {
+  background: #dcfce7;
+  color: #16a34a;
+}
+
+.source-tag.global {
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+}
+
+.mcp-header-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* Toggle Switch */
+.toggle-switch {
+  position: relative;
+  display: inline-block;
+  width: 36px;
+  height: 20px;
+  flex-shrink: 0;
+  cursor: pointer;
+}
+
+.toggle-switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.toggle-slider {
+  position: absolute;
+  inset: 0;
+  background: #cbd5e1;
+  border-radius: 20px;
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.toggle-slider::before {
+  content: '';
+  position: absolute;
+  width: 16px;
+  height: 16px;
+  left: 2px;
+  bottom: 2px;
+  background: white;
+  border-radius: 50%;
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
+}
+
+.toggle-switch input:checked + .toggle-slider {
+  background: #0ea5e9;
+}
+
+.toggle-switch input:checked + .toggle-slider::before {
+  transform: translateX(16px);
+}
+
+.mcp-card.disabled {
+  opacity: 0.5;
+}
+
+.mcp-card .mcp-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.mcp-delete-btn {
+  width: 28px;
+  height: 28px;
+  border: none;
+  background: transparent;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  color: var(--text-secondary);
+  transition: all 0.2s;
+}
+
+.mcp-delete-btn:hover {
+  background: #fef2f2;
+  color: #ef4444;
+}
+
+.mcp-error-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin-top: 8px;
+  padding: 8px 10px;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  border-radius: 8px;
+  font-size: 12px;
+  color: #dc2626;
+  line-height: 1.5;
+}
+
+.mcp-error-banner svg {
+  flex-shrink: 0;
+  margin-top: 1px;
+  color: #ef4444;
+}
+
+/* MCP 弹窗 */
+.mcp-dialog-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1100;
+}
+
+.mcp-dialog {
+  background: white;
+  border-radius: 14px;
+  width: 560px;
+  max-width: 90vw;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.18);
+  overflow: hidden;
+}
+
+.mcp-dialog-preview {
+  width: 640px;
+}
+
+.mcp-dialog-market {
+  width: 720px;
+}
+
+.add-mode-tabs {
+  display: flex;
+  gap: 4px;
+  margin: 14px 20px 0;
+  padding: 4px;
+  background: var(--bg-tertiary);
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+}
+
+.add-mode-tab {
+  flex: 1;
+  padding: 8px 12px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.add-mode-tab:hover {
+  color: var(--text-primary);
+}
+
+.add-mode-tab.active {
+  background: white;
+  color: #0ea5e9;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.12);
+}
+
+.mcp-dialog-market-list {
+  flex: 1;
+  margin: 12px 20px;
+  overflow-y: auto;
+}
+
+.mcp-dialog-error {
+  margin: 0 20px;
+  font-size: 13px;
+  color: #ef4444;
+}
+
+.mcp-dialog-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px 20px;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.mcp-dialog-header h4 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.mcp-dialog-desc {
+  padding: 12px 20px 0;
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.mcp-dialog-example {
+  margin: 8px 20px 0;
+  padding: 10px 14px;
+  background: var(--bg-tertiary);
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+
+.mcp-json-input {
+  margin: 12px 20px;
+  padding: 14px;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text-primary);
+  resize: none;
+  outline: none;
+  transition: border-color 0.2s;
+  min-height: 140px;
+}
+
+.mcp-json-input:focus {
+  border-color: #0ea5e9;
+  box-shadow: 0 0 0 3px rgba(14, 165, 233, 0.1);
+}
+
+.mcp-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 20px 16px;
+}
+
+.mcp-preview-content {
+  margin: 12px 20px;
+  padding: 16px;
+  background: var(--bg-tertiary);
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+/* Dark theme overrides */
+html[data-theme="dark"] .mcp-dialog,
+html[data-theme="dark"] .settings-modal {
+  background: #1e293b;
+}
+
+html[data-theme="dark"] .mcp-dialog-header h4,
+html[data-theme="dark"] .settings-header h2 {
+  color: #e2e8f0;
+}
+
+html[data-theme="dark"] .mcp-dialog-desc,
+html[data-theme="dark"] .panel-desc {
+  color: var(--text-secondary);
+}
+
+html[data-theme="dark"] .mcp-json-input,
+html[data-theme="dark"] .mcp-preview-content,
+html[data-theme="dark"] .mcp-dialog-example {
+  background: #0f172a;
+  border-color: var(--text-secondary);
+  color: #e2e8f0;
+}
+
+html[data-theme="dark"] .add-mode-tabs {
+  background: #0f172a;
+  border-color: var(--text-secondary);
+}
+
+html[data-theme="dark"] .add-mode-tab.active {
+  background: #334155;
+  color: #38bdf8;
+  box-shadow: none;
+}
+
+html[data-theme="dark"] .action-btn-outline {
+  background: #334155;
+  border-color: var(--text-secondary);
+  color: #cbd5e1;
+}
+
+html[data-theme="dark"] .mcp-card {
+  background: #0f172a;
+  border-color: var(--text-secondary);
+}
+
+html[data-theme="dark"] .mcp-api-key-panel,
+html[data-theme="dark"] .mcp-api-key-field input,
+html[data-theme="dark"] .mcp-api-key-toggle,
+html[data-theme="dark"] .mcp-key-business-select,
+html[data-theme="dark"] .mcp-snippet {
+  background: #0f172a;
+  border-color: var(--text-secondary);
+}
+
+html[data-theme="dark"] .mcp-api-key-field input,
+html[data-theme="dark"] .mcp-key-business-select,
+html[data-theme="dark"] .mcp-snippet {
+  color: #e2e8f0;
+}
+
+html[data-theme="dark"] .mcp-api-key-field input {
+  color: #e2e8f0;
+}
+
+html[data-theme="dark"] .market-added-tag,
+html[data-theme="dark"] .market-add-btn:disabled {
+  background: #052e16;
+  color: #86efac;
+}
+
+html[data-theme="dark"] .mcp-name {
+  color: #e2e8f0;
+}
+
+html[data-theme="dark"] .mcp-delete-btn {
+  color: var(--text-secondary);
+}
+
+html[data-theme="dark"] .mcp-delete-btn:hover {
+  background: #451a1a;
+  color: #f87171;
+}
+</style>

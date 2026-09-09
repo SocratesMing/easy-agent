@@ -156,9 +156,13 @@ class AgentConfig(BaseModel):
     max_steps: int = 50
     workspace_dir: str = "./workspace"
     memories_dir: str = "./memories"
-    log_dir: str = "./logs"
     sessions_dir: str = "./sessions"
-    system_prompt_path: str = "system_prompt.md"
+    prompt_path: str = "prompts"
+    """提示词目录（相对配置目录），内含 system.md、fragments/ 与 memory_*.md。
+
+    目录不存在时依次回落：包内 ``easy_agent/config/prompts`` → 内置默认提示词。
+    也可用环境变量 EASY_PROMPTS_DIR 指向外部目录覆盖。
+    """
     idle_logout_minutes: int = 0
     """登录态空闲超时（分钟）：后端以最近一次接口调用为起点滑动续期，
     前端超过该时长无操作时自动退出到登录页。0 表示永不过期（默认，后台不启用登录超时机制）。"""
@@ -187,21 +191,6 @@ class AgentConfig(BaseModel):
     环境。Windows 暂无等效沙箱，默认拒绝 execute；仅在可信单用户环境才可设为
     False 直接执行宿主机命令。
     """
-
-
-class LogConfig(BaseModel):
-    """日志配置：可在配置文件中指定日志目录、文件名、格式与级别。
-
-    - dir:    日志目录（也可用环境变量 EASY_LOG_DIR 覆盖）
-    - file:   日志文件名（留空则默认 easy_agent.log）
-    - format: logging 格式串，支持 %(asctime)s/%(name)s/%(levelname)s/%(message)s 等
-    - level:  日志级别，默认 info（info/debug/warning/error）
-    """
-
-    dir: str = "./logs"
-    file: str = ""
-    format: str = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-    level: str = "info"
 
 
 class MCPToolConfig(BaseModel):
@@ -242,7 +231,6 @@ class Config(BaseModel):
     llm: LLMConfig
     agent: AgentConfig
     tools: ToolsConfig
-    log: LogConfig = Field(default_factory=LogConfig)
     summarization: SummarizationConfig = Field(default_factory=SummarizationConfig)
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
     models: dict[str, ProviderConfig] = Field(default_factory=dict)
@@ -373,9 +361,11 @@ class Config(BaseModel):
             max_steps=data.get("max_steps", 50),
             workspace_dir=data.get("workspace_dir", "./workspace"),
             memories_dir=data.get("memories_dir", "./memories"),
-            log_dir=data.get("log_dir", "./logs"),
             sessions_dir=data.get("sessions_dir", "./sessions"),
-            system_prompt_path=data.get("system_prompt_path", "system_prompt.md"),
+            # 旧字段 system_prompt_path 仅作兼容（值为单文件时按单文件读取）
+            prompt_path=data.get("prompt_path")
+            or data.get("system_prompt_path")
+            or "prompts",
             idle_logout_minutes=data.get("idle_logout_minutes", 0),
             denied_dirs=data.get("denied_dirs", []),
             external_dirs=data.get("external_dirs", {}),
@@ -386,16 +376,6 @@ class Config(BaseModel):
             skills_dir=tools_data.get("skills_dir", "./skills"),
             prompts_dir=tools_data.get("prompts_dir", "./prompts"),
             read_file_line_limit=tools_data.get("read_file_line_limit", 2000),
-        )
-
-        log_data = data.get("log", {})
-        log_config = LogConfig(
-            dir=log_data.get("dir", "./logs"),
-            file=log_data.get("file", ""),
-            format=log_data.get(
-                "format", "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-            ),
-            level=log_data.get("level", "info"),
         )
 
         db_data = data.get("database", {})
@@ -443,7 +423,6 @@ class Config(BaseModel):
             llm=llm_config,
             agent=agent_config,
             tools=tools_config,
-            log=log_config,
             summarization=summ_config,
             database=db_config,
             models=models,
@@ -469,11 +448,9 @@ class Config(BaseModel):
         candidates: list[tuple[str, str]] = [
             ("workspace", self.agent.workspace_dir),
             ("memories", self.agent.memories_dir),
-            ("log_dir", self.agent.log_dir),
             ("sessions", self.agent.sessions_dir),
             ("skills", self.tools.skills_dir),
             ("prompts", self.tools.prompts_dir),
-            ("log", self.log.dir),
         ]
 
         # SQLite database file -> its parent directory.

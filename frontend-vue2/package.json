@@ -1,0 +1,48 @@
+{
+  "name": "easy-agent",
+  "private": true,
+  "version": "0.0.0",
+  "scripts": {
+    "dev": "node scripts/run-vite.mjs dev",
+    "build": "node scripts/run-vite.mjs build && sh scripts/generate-runtime-config.sh",
+    "preview": "vue-cli-service preview",
+    "lint:vue2": "node scripts/check-vue2-syntax.mjs",
+    "serve": "sh scripts/generate-runtime-config.sh && node scripts/print-serve-env.mjs && npx --yes serve -s dist/"
+  },
+  "dependencies": {
+    "axios": "^1.7.9",
+    "docx": "^9.6.0",
+    "docx-preview": "^0.3.7",
+    "element-ui": "^2.15.14",
+    "exceljs": "^3.4.0",
+    "gemoji": "^8.1.0",
+    "highlight.js": "^11.11.1",
+    "jspdf": "^4.2.0",
+    "katex": "^0.16.47",
+    "mammoth": "^1.12.0",
+    "markdown-it": "^14.1.1",
+    "marked": "^17.0.5",
+    "marked-emoji": "^2.0.3",
+    "marked-katex-extension": "^5.1.10",
+    "monaco-editor": "^0.53.0",
+    "pdfjs-dist": "^4.8.69",
+    "shiki": "^3.22.0",
+    "vue": "^2.7.16",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "@iconify/json": "^2.2.44",
+    "@tailwindcss/postcss": "^4.1.17",
+    "@vue/cli-plugin-babel": "~5.0.8",
+    "@vue/cli-service": "~5.0.8",
+    "autoprefixer": "^10.4.24",
+    "postcss": "^8.5.6",
+    "tailwindcss": "^4.1.17",
+    "unplugin-icons": "^23.0.1"
+  },
+  "overrides": {
+    "braces": ">=3.0.3",
+    "tar": ">=7.5.11",
+    "micromatch": ">=4.0.8"
+  }
+}

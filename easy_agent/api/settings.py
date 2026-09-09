@@ -22,6 +22,7 @@ from ..services.mcp import (
     validate_mcp_servers,
 )
 from ..services import get_agent_config, invalidate_user_agents
+from ..services.prompt_loader import load_system_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -125,15 +126,10 @@ async def get_system_prompt(
     if _cfg and _cfg.get("system_prompt"):
         return {"content": _cfg["system_prompt"]}
 
-    # fallback: 从文件读取
+    # fallback: 由 prompt_loader 从 prompt_path 目录读取（system.md + fragments）
     config_path = Config.resolve_config_path()
-    sp_path = config_path.parent / "system_prompt.md"
-
-    if sp_path.exists():
-        content = sp_path.read_text(encoding="utf-8")
-        return {"content": content}
-
-    return {"content": "你是一个有帮助的 AI 助手。"}
+    content = load_system_prompt(config_dir=config_path.parent)
+    return {"content": content}
 
 
 # ── Skills ────────────────────────────────────────────────────────────

@@ -1,7 +1,6 @@
 """FastAPI application entry point"""
 
 import logging
-from logging.handlers import TimedRotatingFileHandler
 import os
 import platform
 import sys
@@ -9,18 +8,27 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 
+from .initialization import initialize_runtime
+
+runtime_initialization = initialize_runtime()
+
 import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from langchain_core.messages import HumanMessage
 
-from .config import Config, AgentConfig, get_missing_env_vars
+from .config import AgentConfig
 from .db import init_database
 from .model import create_model
 from .models.api import HealthResponse
 from .services import get_agent_config, init_agent_config
 from .services import init_scheduler, shutdown_scheduler, reload_all_tasks
+from .services.prompt_loader import (
+    configure_prompts_dir,
+    get_prompts_dir,
+    load_system_prompt,
+)
 from .skills import find_skills_root, discover_skills
 from .api import (
     chat_router,
@@ -41,116 +49,12 @@ if platform.system() != "Windows":
 
 logger = logging.getLogger(__name__)
 
-# 可选加载项目根 .env，供运行时环境变量使用；应用配置值完全来自 YAML 文件。
-from .utils.env_loader import get_loaded_env_info, load_project_env
-
-load_project_env()
-
 frontend_dist = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "frontend", "dist"
 )
 
 agent_config = None
 db_instance = None
-
-
-def setup_logging(log_config: dict | None = None):
-    """按配置文件中的 log 段初始化日志。
-
-    log_config 字段：
-        dir:    日志目录（环境变量 EASY_LOG_DIR 可覆盖）
-        file:   日志文件名（留空则默认 easy_agent.log）
-        format: logging 格式串（% 风格：%(asctime)s 等）
-        level:  日志级别（默认 info）
-    lifespan 会调用两次（先默认、后按配置），故每次调用都按新配置重建 handler。
-    """
-    cfg = log_config or {}
-    log_dir = os.getenv("EASY_LOG_DIR") or cfg.get("dir") or "./logs"
-    log_file_name = cfg.get("file") or "easy_agent.log"
-    fmt = (
-        cfg.get("format")
-        or "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-    )
-    level_name = (cfg.get("level") or "info").lower()
-    level = getattr(logging, level_name.upper(), logging.INFO)
-
-    root_logger = logging.getLogger()
-    # 先移除已有 handler，确保按新配置重建（支持运行期按配置重设）
-    for h in list(root_logger.handlers):
-        root_logger.removeHandler(h)
-        try:
-            h.close()
-        except Exception:
-            pass
-
-    log_dir_path = Path(log_dir)
-    log_dir_path.mkdir(parents=True, exist_ok=True)
-    log_file = log_dir_path / log_file_name
-
-    formatter = _CustomFormatter(
-        fmt=fmt,
-        datefmt="%Y-%m-%d %H:%M:%S",
-        style="%",
-    )
-
-    console_handler = logging.StreamHandler()
-    console_handler.setLevel(level)
-    console_handler.setFormatter(formatter)
-    console_handler.addFilter(_RunidFilter())
-
-    # 按天滚动：每天午夜切分新日志文件，保留最近 30 天，文件名追加日期后缀
-    # （如 easy_agent.log.2026-08-14）。空文件（当天无日志）不生成旋转文件。
-    file_handler = TimedRotatingFileHandler(
-        log_file,
-        when="midnight",
-        interval=1,
-        backupCount=30,
-        encoding="utf-8",
-        delay=True,
-    )
-    file_handler.suffix = "%Y-%m-%d"
-    file_handler.extMatch = r"^\.\d{4}-\d{2}-\d{2}$"
-    file_handler.setLevel(level)
-    file_handler.setFormatter(formatter)
-    file_handler.addFilter(_RunidFilter())
-
-    root_logger.setLevel(level)
-    root_logger.addHandler(console_handler)
-    root_logger.addHandler(file_handler)
-
-    uvicorn_logger = logging.getLogger("uvicorn")
-    uvicorn_logger.setLevel(level)
-    uvicorn_logger.addHandler(console_handler)
-    uvicorn_logger.addHandler(file_handler)
-
-    uvicorn_access_logger = logging.getLogger("uvicorn.access")
-    uvicorn_access_logger.setLevel(level)
-    uvicorn_access_logger.addHandler(console_handler)
-    uvicorn_access_logger.addHandler(file_handler)
-
-    # deepagents 的技能名校验仅允许小写字母+连字符，但本项目部分技能
-    # （如 strategy_fx）因 Python 反射加载要求必须使用下划线命名，无法改名。
-    #该校验仅为 WARNING 且不影响加载（向后兼容），故屏蔽此噪声日志。
-    logging.getLogger("deepagents.middleware.skills").setLevel(logging.ERROR)
-
-    return str(log_file)
-
-
-class _RunidFilter(logging.Filter):
-    def filter(self, record):
-        if not hasattr(record, "runid"):
-            record.runid = "-"
-        return True
-
-
-class _CustomFormatter(logging.Formatter):
-    def formatTime(self, record, datefmt=None):
-        ct = datetime.fromtimestamp(record.created)
-        if datefmt:
-            s = ct.strftime(datefmt)
-        else:
-            s = ct.strftime("%Y-%m-%d %H:%M:%S")
-        return f"{s}.{int(record.msecs * 1000):06d}"
 
 
 @asynccontextmanager
@@ -162,24 +66,12 @@ async def lifespan(app: FastAPI):
         sys.path.insert(0, str(project_root))
     os.chdir(project_root)
 
-    # ── 环境识别 & 配置路径解析（先静默确定配置，再初始化日志格式）──
-    # EASY_CONFIG / AGENT_ENV 只选择配置文件；配置值来自 YAML，其中的 ${VAR} 由 .env 提供。
-    agent_env = os.environ.get("AGENT_ENV", "").lower()
-    config_path = Config.resolve_config_path()
-
-    # 先加载配置并按其 log 段初始化日志格式，使启动日志从一开始就使用
-    # 配置文件中的 format（而非默认的 " - " 分隔格式）。
-    # 注意：加载失败的原因要等日志就绪后再打印，否则原因会丢失在日志初始化之前。
-    config = None
-    config_error: Exception | None = None
-    try:
-        config = Config.from_yaml(config_path)
-        log_cfg = config.log.model_dump()
-    except Exception as e:
-        config_error = e
-        log_cfg = None
-
-    log_file = setup_logging(log_cfg)
+    environment = runtime_initialization.environment
+    agent_env = environment.agent_env
+    config_path = runtime_initialization.config_path
+    config = runtime_initialization.config
+    config_error = runtime_initialization.config_error
+    log_files = runtime_initialization.log_files
 
     logger.info("=" * 60)
     logger.info("Easy Agent Web Service 初始化中...")
@@ -194,17 +86,6 @@ async def lifespan(app: FastAPI):
     logger.info(f"配置文件: {config_path}")
     logger.info("=" * 60)
 
-    # .env 在模块级（日志初始化之前）已加载，此处补打日志便于确认注入是否生效
-    env_file, env_keys = get_loaded_env_info()
-    if env_file:
-        logger.info(
-            f"环境变量文件: {env_file} | 已注入: {', '.join(sorted(set(env_keys))) or '无'}"
-        )
-    else:
-        logger.info(
-            "环境变量文件: 未找到项目根 .env（可选）| YAML 中的 ${VAR} 将取不到值"
-        )
-
     if config_error:
         logger.error(
             f"❌ 配置文件加载失败，服务将以降级模式启动（聊天等功能不可用）: {config_error}"
@@ -217,13 +98,6 @@ async def lifespan(app: FastAPI):
     if config:
         logger.info(f"✅ 配置文件加载成功: {config_path}")
 
-        missing_env = get_missing_env_vars()
-        if missing_env:
-            logger.warning(
-                "⚠️ 配置中的环境变量占位符未取到值（已按空值处理）: "
-                f"{', '.join(missing_env)} | 请在项目根 .env 中设置后重启服务"
-            )
-
         # 启动时创建配置文件中所有缺失的目录（workspace/memories/logs/sessions/
         # skills/prompts/sqlite 父目录/external_dirs 宿主机路径等）
         created_dirs = config.ensure_directories()
@@ -233,7 +107,9 @@ async def lifespan(app: FastAPI):
             logger.info("📁 配置目录均已存在，无需创建")
 
         logger.info(
-            f"日志初始化完成 | 目录: {log_cfg.get('dir')} | 文件: {log_file} | 级别: {log_cfg.get('level')}"
+            f"日志初始化完成 | 目录: {Path(log_files.get('proc', '')).parent} | "
+            f"运行日志: {log_files.get('proc')} | 错误日志: {log_files.get('err')} | "
+            f"通信日志: {log_files.get('comm')}"
         )
         logger.info(f"LLM Provider: {config.llm.provider}")
         logger.info(f"LLM Model: {config.llm.model}")
@@ -268,27 +144,19 @@ async def lifespan(app: FastAPI):
         logger.error(f"❌ 数据库初始化失败: {e}")
         raise
 
-    if (
-        config
-        and hasattr(config.agent, "system_prompt_path")
-        and config.agent.system_prompt_path
-    ):
-        config_dir = os.path.dirname(os.path.abspath(config_path))
-        system_prompt_path = os.path.join(config_dir, config.agent.system_prompt_path)
-    else:
-        system_prompt_path = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)), "config", "system_prompt.md"
-        )
-
-    if os.path.exists(system_prompt_path):
-        with open(system_prompt_path, "r", encoding="utf-8") as f:
-            system_prompt = f.read()
-        logger.info(
-            f"✅ 系统提示词加载成功: {system_prompt_path} ({len(system_prompt)} 字符)"
-        )
-    else:
-        system_prompt = "你是一个有帮助的 AI 助手。"
-        logger.warning(f"⚠️ 系统提示词文件不存在: {system_prompt_path}，使用默认提示词")
+    # 提示词统一由 prompt_loader 从 agent.prompt_path 指向的目录加载：
+    # system.md + fragments/*.md，缺失时逐级回落到内置默认提示词。
+    # 同时把该目录设为全局提示词目录，使记忆类提示词也从同一处读取。
+    config_dir = os.path.dirname(os.path.abspath(config_path)) if config_path else None
+    prompt_path = (
+        getattr(config.agent, "prompt_path", "prompts") if config else "prompts"
+    )
+    configure_prompts_dir(prompt_path, base_dir=config_dir)
+    system_prompt = load_system_prompt(prompt_path=prompt_path, config_dir=config_dir)
+    logger.info(
+        f"✅ 系统提示词加载完成 | 提示词目录: {get_prompts_dir()} "
+        f"({len(system_prompt)} 字符)"
+    )
 
     # 打印工作目录与记忆目录的绝对路径（记忆文件按用户/会话动态生成，故给出基目录与模板路径）
     # 配置未加载（config 为 None）时使用 AgentConfig 默认值，保证降级启动不崩溃
@@ -384,15 +252,9 @@ app = FastAPI(
 #   - 默认放行所有来源（"*"），兼容开发期跨域直连与同 pod 部署；
 #   - 生产环境如需收紧，设置环境变量 EASY_CORS_ALLOW_ORIGINS 为逗号分隔的可信域名，
 #     例如 "https://app.example.com,https://admin.example.com"。
-_cors_raw = os.getenv("EASY_CORS_ALLOW_ORIGINS")
-if _cors_raw:
-    allow_origins = [o.strip() for o in _cors_raw.split(",") if o.strip()]
-else:
-    allow_origins = ["*"]
-
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=allow_origins,
+    allow_origins=runtime_initialization.environment.cors_allow_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -507,12 +369,11 @@ async def serve_static(full_path: str):
 
 
 def run_server(host: str = "0.0.0.0", port: int = 8000):
-    setup_logging()
-
     uvicorn.run(
         "easy_agent.app:app",
         host=host,
         port=port,
         reload=False,
         log_level="info",
+        log_config=None,
     )

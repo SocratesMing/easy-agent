@@ -184,7 +184,7 @@ async function refreshSessionFiles(sessionId = null, delayMs = 0) {
   const targetId = sessionId || currentSessionId.value
   if (!targetId) {
     currentSessionHasFiles.value = false
-    return
+    return false
   }
   if (filesCheckTimer) {
     clearTimeout(filesCheckTimer)
@@ -193,17 +193,37 @@ async function refreshSessionFiles(sessionId = null, delayMs = 0) {
   const doCheck = async () => {
     try {
       const files = await getSessionGeneratedFiles(targetId)
-      currentSessionHasFiles.value = Array.isArray(files) && files.length > 0
-      console.log('[Files] Session', targetId, 'has files:', currentSessionHasFiles.value, 'count:', files?.length)
+      const hasFiles = Array.isArray(files) && files.length > 0
+      if (currentSessionId.value === targetId) {
+        currentSessionHasFiles.value = hasFiles
+      }
+      console.log('[Files] Session', targetId, 'has files:', hasFiles, 'count:', files?.length)
+      return currentSessionId.value === targetId && hasFiles
     } catch (e) {
       console.error('[Files] 检查会话文件失败:', e)
-      currentSessionHasFiles.value = false
+      if (currentSessionId.value === targetId) {
+        currentSessionHasFiles.value = false
+      }
+      return false
     }
   }
   if (delayMs > 0) {
-    filesCheckTimer = setTimeout(doCheck, delayMs)
+    return await new Promise((resolve) => {
+      filesCheckTimer = setTimeout(() => {
+        doCheck().then(resolve).catch(resolve)
+      }, delayMs)
+    })
   } else {
-    await doCheck()
+    return await doCheck()
+  }
+}
+
+async function expandWorkspaceAfterSessionCompletion(sessionId, delayMs = 500) {
+  if (!sessionId) return
+  if (pendingApproval.value) return
+  const hasFiles = await refreshSessionFiles(sessionId, delayMs)
+  if (hasFiles && currentSessionId.value === sessionId && !pendingApproval.value) {
+    isWorkspaceCollapsed.value = false
   }
 }
 const messages = ref([])
@@ -423,6 +443,9 @@ async function attachToStreamingSession(sessionId, opts = {}) {
   }
   try {
     await attachStream(sessionId, onChunk, controller.signal)
+    if (displayed) {
+      await expandWorkspaceAfterSessionCompletion(sessionId)
+    }
   } catch (e) {
     if (e.name !== 'AbortError') {
       console.error('挂载流式输出失败:', e)
@@ -1539,7 +1562,7 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
 
     await sendMessage(currentSessionId.value, message, onChunk, abortSignal, enableDeepThink, files, selectedModel.value)
 
-    await refreshSessionFiles(null, 500)
+    await expandWorkspaceAfterSessionCompletion(streamSessionId)
   } catch (e) {
     if (e.name === 'AbortError') {
       // Mark assistant message as complete (loading=false) so spinners stop
@@ -1695,6 +1718,7 @@ async function handleToolApproval(decision) {
     // 注意：人工介入（批准/拒绝）不再作为用户侧消息展示，
     // 直接在模型侧的 execute 工具上进行了 HITL 标注。
     await resumeStream(sessionId, threadId, decisions, onChunk, controller.signal, assistantMsgId)
+    await expandWorkspaceAfterSessionCompletion(sessionId)
 
     await loadSessions()
   } catch (e) {
