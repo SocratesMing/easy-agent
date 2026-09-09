@@ -458,6 +458,9 @@ class EasyAgent:
         self.organization_id = organization_id or ""
         self.enable_hitl = enable_hitl
         self.safe_username = Config.sanitize_username(username)
+        # 注入给 shell 执行环境的变量（LocalShellBackend 默认 inherit_env=False，
+        # 环境为空 dict，这里只追加用户名，不继承宿主环境以免泄露密钥等变量）
+        self.shell_env = {"EASY_USERNAME": self.safe_username}
         self.model_name = model_name or config.active_model
 
         if workspace_dir:
@@ -504,9 +507,18 @@ class EasyAgent:
         if self.organization_id:
             org_info = f"## 当前用户机构\n机构ID: `{self.organization_id}`（注册后不可更改）\n"
 
+        # 将当前登录用户名注入系统提示词：技能文档/脚本中的 {userId}、{username}
+        # 等占位符均指当前用户名，模型可直接替换
+        user_info = (
+            f"## 当前用户\n"
+            f"用户名: `{self.safe_username}`\n"
+            f"- 技能文档与脚本中的 `{{userId}}` / `{{username}}` 均指当前登录用户名\n"
+        )
+
         self.system_prompt = (
             f"{system_prompt}\n"
             f"{org_info}"
+            f"{user_info}"
             f"## Workspace: `{self.workspace_virtual_path}/`\n"
             f"{skills_info}"
             f"## Memory: `{self.workspace_virtual_path}/memory.md`\n"
@@ -867,10 +879,15 @@ Usage:
         Returns:
             CompositeBackend: 组合后端实例，包含所有路由和路径映射。
         """
+        # 注入给脚本的环境变量（仅当前用户名）；getattr 兜底以兼容
+        # 绕过 __init__ 直接调用本方法的场景
+        shell_env = getattr(self, "shell_env", {})
+
         # 记忆文件现已放在会话工作区目录下，不再需要单独的 memories 路由
         workspace_backend = LocalShellBackend(
             root_dir=str(self.workspace_dir.absolute()),
             virtual_mode=True,
+            env=shell_env,
         )
 
         routes = {
@@ -881,6 +898,7 @@ Usage:
             user_skills_backend = LocalShellBackend(
                 root_dir=str(self.user_skills_dir.absolute()),
                 virtual_mode=True,
+                env=shell_env,
             )
             routes["/user-skills/"] = user_skills_backend
 
@@ -893,6 +911,7 @@ Usage:
             routes[vp] = LocalShellBackend(
                 root_dir=str(real.absolute()),
                 virtual_mode=True,
+                env=shell_env,
             )
 
         logger.info(
