@@ -91,3 +91,31 @@ def test_upload_session_file(client):
     data = resp.json()
     assert data["filename"] == "hello.txt"
     assert data["size"] == len(b"hello world")
+
+
+def test_compute_session_usage_sums_reasoning_tokens():
+    """会话级聚合需带上思考 token（output 的子集，不并入 total 重复计数）。"""
+    from easy_agent.api.sessions import compute_session_usage
+
+    usage = compute_session_usage([
+        {"role": "user"},
+        {"role": "assistant", "usage": {
+            "input_tokens": 10, "output_tokens": 5, "total_tokens": 15,
+            "reasoning_tokens": 3, "context_tokens": 10,
+            "elapsed_time": 1.0, "step_count": 1}},
+        {"role": "assistant", "usage": {
+            "input_tokens": 20, "output_tokens": 8, "total_tokens": 28,
+            "reasoning_tokens": 6, "context_tokens": 20,
+            "elapsed_time": 2.0, "step_count": 2}},
+    ])
+    assert usage["input_tokens"] == 30
+    assert usage["output_tokens"] == 13
+    assert usage["reasoning_tokens"] == 9
+    # 已不再统计会话累计总量（旧消息里残留的 total_tokens 不参与聚合）
+    assert "total_tokens" not in usage
+    # 旧消息无 reasoning_tokens 字段时按 0 处理，不报错
+    legacy = compute_session_usage([
+        {"role": "assistant", "usage": {
+            "input_tokens": 1, "output_tokens": 1, "total_tokens": 2}},
+    ])
+    assert legacy["reasoning_tokens"] == 0

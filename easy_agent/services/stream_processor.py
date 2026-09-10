@@ -96,9 +96,8 @@ class StreamProcessor:
                  message_id: str = "", session_logger=None,
                  max_input_tokens: int | None = None,
                  auto_compress_tokens: int | None = None,
-                 pre_session_tokens: int = 0, start_time: float | None = None,
+                 start_time: float | None = None,
                  result_log_truncate: int = 5000,
-                 total_usage: dict | None = None,
                  last_context_tokens: int = 0,
                  accumulated_response: str = "",
                  accumulated_thinking: str | None = None):
@@ -111,7 +110,8 @@ class StreamProcessor:
         self.session_logger = session_logger
         self.max_input_tokens = max_input_tokens
         self.auto_compress_tokens = auto_compress_tokens
-        self.pre_session_tokens = pre_session_tokens
+        # 说明：会话累计 token（pre_session_tokens / session_estimate）已移除，
+        # 前端只按类型展示本轮 input/output/reasoning。
         self.start_time = start_time if start_time is not None else time.time()
         self.result_log_truncate = result_log_truncate
 
@@ -124,8 +124,12 @@ class StreamProcessor:
         )
         self.accumulated_response = accumulated_response
         self.tool_call_start_times: dict[str, float] = {}
-        self.total_usage = total_usage if total_usage is not None else {
-            "input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+        # 注意：**不做跨步累加**（历史实现里的 total_usage 已移除）。
+        # 前端每次渲染的是「当前 step / 最近一次模型调用」的用量 —— agent 多步会
+        # 反复发送同一份上下文，累加值会被放大数倍（实测同一份 15.8k 上下文跑 5 步
+        # 累加成 70k），与"当前上下文占用"语义冲突。
+        self.last_usage = {
+            "input_tokens": 0, "output_tokens": 0, "reasoning_tokens": 0}
         self.last_context_tokens = last_context_tokens
         self._step_advanced_this_turn = False
         self._todo_emitted_for: set[str] = set()
@@ -134,7 +138,8 @@ class StreamProcessor:
         self._step_thinking_len = 0
         self._step_content_len = 0
         self._step_tool_count = 0
-        self._step_usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+        self._step_usage = {
+            "input_tokens": 0, "output_tokens": 0, "reasoning_tokens": 0}
         self._step_end_logged: set = set()
 
         # 累计思考耗时：同一 turn 内思考被分段（如 思考->工具调用->继续思考）时，
@@ -402,14 +407,16 @@ class StreamProcessor:
         if now - self._last_token_usage_time < 0.3:
             return []
         self._last_token_usage_time = now
-        inp = self.total_usage["input_tokens"]
-        out = self.total_usage["output_tokens"]
+        # 下发"最近一次模型调用"的用量（不累加）
+        last = self.last_usage
+        inp = last["input_tokens"]
+        out = last["output_tokens"]
         return [{
             "type": "token_usage",
             "input_tokens": inp,
             "output_tokens": out,
-            "total_tokens": inp + out,
-            "session_estimate": self.pre_session_tokens + inp + out,
+            # 思考 token（output 的子集），前端据此展示拆分
+            "reasoning_tokens": last["reasoning_tokens"],
             "context_tokens": self.last_context_tokens if self.last_context_tokens > 0 else inp,
             "max_input_tokens": self.max_input_tokens,
             "auto_compress_tokens": self.auto_compress_tokens,
@@ -448,12 +455,19 @@ class StreamProcessor:
         um = getattr(m, "usage_metadata", None) or {}
         if not um:
             return
-        self.total_usage["input_tokens"] += um.get("input_tokens", 0)
-        self.total_usage["output_tokens"] += um.get("output_tokens", 0)
-        self.total_usage["total_tokens"] += um.get("total_tokens", 0)
         self._step_usage["input_tokens"] += um.get("input_tokens", 0)
         self._step_usage["output_tokens"] += um.get("output_tokens", 0)
-        self._step_usage["total_tokens"] += um.get("total_tokens", 0)
+        # 思考 token 拆分：LangChain 把服务端的 completion_tokens_details.reasoning_tokens
+        # 映射到 output_token_details.reasoning。它是 output_tokens 的子集，
+        # 单独累计用于展示（不重复计数）。
+        reasoning = (um.get("output_token_details") or {}).get("reasoning", 0) or 0
+        self._step_usage["reasoning_tokens"] += reasoning
+        # 覆盖式记录"最近一次调用"，前端与持久化按类型展示用的就是它
+        self.last_usage = {
+            "input_tokens": um.get("input_tokens", 0),
+            "output_tokens": um.get("output_tokens", 0),
+            "reasoning_tokens": reasoning,
+        }
         if um.get("input_tokens", 0) > 0:
             self.last_context_tokens = um["input_tokens"]
 
@@ -462,7 +476,8 @@ class StreamProcessor:
         self._step_thinking_len = 0
         self._step_content_len = 0
         self._step_tool_count = 0
-        self._step_usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+        self._step_usage = {
+            "input_tokens": 0, "output_tokens": 0, "reasoning_tokens": 0}
 
     def _log_step_end(self, step: int) -> None:
         """打印某一步的汇总日志（思考/正文/工具/token），每行以 step 开头。
@@ -488,7 +503,8 @@ class StreamProcessor:
             )
         inp = self._step_usage["input_tokens"]
         out = self._step_usage["output_tokens"]
-        tot = self._step_usage.get("total_tokens", 0) or (inp + out)
+        tot = inp + out
+        rea = self._step_usage.get("reasoning_tokens", 0)
         ctx = self.last_context_tokens or inp
         # 上下文占用率：本步上下文 token / 模型上下文窗口长度（max_input_tokens）。
         if self.max_input_tokens:
@@ -498,9 +514,9 @@ class StreamProcessor:
             _ctx_str = f"{ctx}"
         logger.info(
             "[%s] step%d 结束 | 思考:%d字符 | 正文:%d字符 | 工具:%d | "
-            "Token(in/out/total):%d/%d/%d | 上下文:%s",
+            "Token(in/out/total):%d/%d/%d | 思考Token:%d | 上下文:%s",
             self.sid, step, self._step_thinking_len, self._step_content_len,
-            self._step_tool_count, inp, out, tot, _ctx_str,
+            self._step_tool_count, inp, out, tot, rea, _ctx_str,
         )
 
     def _sse_blocks(self) -> list[dict]:
@@ -533,23 +549,18 @@ class StreamProcessor:
     def start(self) -> list[dict]:
         return [{"type": "start", "session_id": self.session_id}]
 
-    def finalize(self, *, session_id, elapsed_time, session_total_tokens=None) -> list[dict]:
+    def finalize(self, *, session_id, elapsed_time) -> list[dict]:
         # 确保最后一步（如纯正文收尾、无工具边界）的汇总日志被打印。
         self._log_step_end(self.current_step)
-        session_est = (
-            session_total_tokens
-            if session_total_tokens is not None
-            else self.pre_session_tokens + self.total_usage["input_tokens"] + self.total_usage["output_tokens"]
-        )
-        inp = self.total_usage["input_tokens"]
-        out = self.total_usage["output_tokens"]
+        last = self.last_usage
+        inp = last["input_tokens"]
+        out = last["output_tokens"]
         usage = {
             "input_tokens": inp,
             "output_tokens": out,
-            "total_tokens": self.total_usage.get("total_tokens", inp + out),
+            "reasoning_tokens": last["reasoning_tokens"],
             "max_input_tokens": self.max_input_tokens,
             "auto_compress_tokens": self.auto_compress_tokens,
-            "session_estimate": session_est,
             "context_tokens": self.last_context_tokens if self.last_context_tokens > 0 else inp,
             "elapsed_time": round(elapsed_time, 2),
             "step_count": self.current_step,

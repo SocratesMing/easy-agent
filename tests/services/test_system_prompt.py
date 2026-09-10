@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from easy_agent.services.prompt_loader import clear_cache, load_system_prompt
+from easy_agent.services.prompt_loader import DEFAULT_SYSTEM_PROMPT
 
 CONFIG_DIR = Path(__file__).resolve().parents[2] / "easy_agent" / "config"
 
@@ -36,29 +37,36 @@ def test_system_prompt_matches_easy_agent_workflow():
     assert "数据分析" in prompt
     assert "金融研究" in prompt
 
-    # 运行环境
-    assert "会话工作区 `/workspace/`" in prompt
-    assert "技能" in prompt
-    assert "MCP" in prompt
+    # 项目级规则；通用任务行为由 DeepAgents 默认提示词提供
+    assert "中文" in prompt
+    assert "破坏性操作" in prompt
+    assert "密钥" in prompt
 
-    # 行为准则
-    assert "先检查现有文件" in prompt
-    assert "验证结果" in prompt
-
-    # 记忆体系（会话 600 / 长期 800 字符上限）
-    assert "会话记忆" in prompt
-    assert "用户长期记忆" in prompt
-    assert "600" in prompt
-    assert "800" in prompt
+    # 记忆体系
+    assert "系统自动维护" in prompt
+    assert "不要手动改写记忆文件" in prompt
 
     # 已废弃的旧表述不应再出现
     assert "业务场景" not in prompt
     assert "2000" not in prompt
 
 
-def test_system_prompt_includes_scheduled_task_fragment():
-    """定时任务片段应拼接到系统提示词中。"""
+def test_system_prompt_excludes_scheduled_task_fragment():
+    """定时任务使用说明由工具描述与参数说明提供，不重复拼接片段。"""
     prompt = _load()
 
-    assert "create_scheduled_task" in prompt
-    assert "task_prompt" in prompt
+    assert "create_scheduled_task" not in prompt
+    assert "task_prompt" not in prompt
+
+
+def test_system_prompt_defers_runtime_and_framework_details():
+    """运行时路径与 DeepAgents 已注入能力不写入基础提示词。"""
+    prompt = _load()
+
+    assert "/workspace/" not in prompt
+    assert "技能" not in prompt
+    assert "MCP" not in prompt
+
+
+def test_builtin_prompt_matches_prompt_file():
+    assert DEFAULT_SYSTEM_PROMPT.strip() == _load().strip()

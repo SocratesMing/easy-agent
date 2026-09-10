@@ -68,13 +68,12 @@
               title="选择模型"
             >
               <span class="model-btn-label">{{ currentModelLabel }}</span>
-              <span class="model-btn-count" v-if="models.length">{{ models.length }}</span>
               <svg class="model-btn-arrow" :class="{ open: showModelDropdown }" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <polyline points="6 9 12 15 18 9"></polyline>
               </svg>
             </button>
               <div v-if="showModelDropdown" class="model-dropdown-menu" :style="dropdownStyle" @click.stop>
-                <div class="model-dropdown-header">可选模型 · 共 {{ models.length }} 个</div>
+                <div class="model-dropdown-header">可选模型</div>
                 <div
                   v-for="m in models"
                   :key="m.name"
@@ -152,12 +151,16 @@
                 </div>
                 <div class="token-popup-divider"></div>
                 <div class="token-popup-row">
-                  <span class="token-popup-label">总输入 (Prompt)</span>
+                  <span class="token-popup-label">输入 Token</span>
                   <span class="token-popup-value input">{{ formatTokens(sessionUsage.input_tokens) }}</span>
                 </div>
                 <div class="token-popup-row">
-                  <span class="token-popup-label">总输出 (Completion)</span>
+                  <span class="token-popup-label">输出 Token</span>
                   <span class="token-popup-value output">{{ formatTokens(sessionUsage.output_tokens) }}</span>
+                </div>
+                <div class="token-popup-row">
+                  <span class="token-popup-label">思考 Token</span>
+                  <span class="token-popup-value reasoning">{{ formatTokens(sessionUsage.reasoning_tokens) }}</span>
                 </div>
               </div>
           </div>
@@ -215,7 +218,7 @@ export default {
   },
   sessionUsage: {
     type: Object,
-    default: () => ({ input_tokens: 0, output_tokens: 0, total_tokens: 0, max_input_tokens: null, auto_compress_tokens: null, context_tokens: 0 })
+    default: () => ({ input_tokens: 0, output_tokens: 0, reasoning_tokens: 0, max_input_tokens: null, auto_compress_tokens: null, context_tokens: 0 })
   },
   sessionDuration: {
     type: Number,
@@ -373,14 +376,14 @@ function closeTokenPopup() {
 }
 
 const showTokenRing = computed(() => {
-  return props.sessionUsage.total_tokens > 0 || props.sessionUsage.context_tokens > 0 || props.sessionDuration > 0 || props.iterationCount > 0
+  return props.sessionUsage.input_tokens > 0 || props.sessionUsage.output_tokens > 0 || props.sessionUsage.reasoning_tokens > 0 || props.sessionUsage.context_tokens > 0 || props.sessionDuration > 0 || props.iterationCount > 0
 })
 
 const contextPercent = computed(() => {
   const u = props.sessionUsage
   if (!u.max_input_tokens || u.max_input_tokens <= 0) return 0
   // 分子使用「当前轮次的上下文窗口占用」(context_tokens)：即本轮喂给模型的输入 token 数，
-  // 与 max_input_tokens（上下文窗口上限）对比。不能用会话累计 total_tokens（多轮累加会很快 >100%）。
+  // 与 max_input_tokens（上下文窗口上限）对比（已不再统计会话累计总量）。
   const ctxTokens = u.context_tokens || 0
   return Math.min(100, Math.round(ctxTokens / u.max_input_tokens * 100))
 })
@@ -982,29 +985,11 @@ html[data-theme="dark"] .context-ring-wrapper {
   text-overflow: ellipsis;
 }
 
-.model-btn-count {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 16px;
-  height: 16px;
-  padding: 0 4px;
-  border-radius: 8px;
-  background: var(--border-color);
-  color: var(--text-secondary);
-  font-size: 10px;
-  font-weight: 600;
-  line-height: 1;
-}
 
 .model-btn:hover:not(.disabled) .model-btn-label {
   color: #0ea5e9;
 }
 
-.model-btn:hover:not(.disabled) .model-btn-count {
-  background: color-mix(in srgb, var(--accent-color) 25%, transparent);
-  color: var(--accent-color);
-}
 
 .model-btn-arrow {
   width: 12px;
@@ -1270,6 +1255,10 @@ html[data-theme="dark"] .context-ring-wrapper {
 
 .token-popup-value.output {
   color: #06b6d4;
+}
+
+.token-popup-value.reasoning {
+  color: #a855f7;
 }
 
 .token-popup-value.duration-value {

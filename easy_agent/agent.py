@@ -152,13 +152,24 @@ _summarization_factory_installed = False
 
 
 def install_config_summarization(config: "Config") -> None:
-    """让官方 SummarizationMiddleware 使用 config.summarization 阈值。
+    """让官方 SummarizationMiddleware 使用 config 阈值。
 
     ``create_deep_agent`` 会无条件注入 ``create_summarization_middleware(model, backend)``
     （模型感知默认值），且不接受 profile 自定义、再传入一个会触发
     ``AssertionError: Please remove duplicate middleware instances``。因此一次性替换
     ``deepagents.graph`` 中的工厂引用，使其返回用 config 阈值参数化的官方
     ``SummarizationMiddleware`` 实例--复用官方实现，不自行重写摘要逻辑。
+
+    阈值口径：**全部以配置文件 ``config.llm.max_input_tokens`` 为基准**，按
+    ``config.summarization.compression_threshold / compression_target`` 的**比例**
+    折算成绝对 token 数（不依赖 ``model.profile``，因为项目自定义的
+    ``ReasoningChatOpenAI.profile`` 为 None，fraction 形式会静默失效）。
+
+    同时必须显式配置 ``truncate_args_settings``：官方默认是 ``("messages", 20)``，
+    即消息数一到 20 条就把 keep 窗口之外的 ``AIMessage.tool_calls.args`` 砍成
+    「前 20 字符 + ...(argument truncated)」，会把 ``write_file`` / ``execute``
+    这类大参数清空，导致下一轮从 DB 重建上下文时明显缩水（实测 34.3k -> 30.6k
+    tokens）。这里改为与摘要同一比例触发。
 
     上下文压缩统一交给该官方中间件：在每次模型调用前按 token 阈值自动摘要旧消息，
     从而取代 streaming.py 中自实现的 compress_context/build_context_messages。
@@ -174,6 +185,9 @@ def install_config_summarization(config: "Config") -> None:
     tgt = float(getattr(config.summarization, "compression_target", 0.0) or 0.1)
     trigger_tokens = max(1, int(max_tokens * thr))
     keep_tokens = max(1, int(max_tokens * tgt))
+    truncate_max_length = int(
+        getattr(config.summarization, "truncate_arg_max_length", 0) or 2000
+    )
 
     def _factory(model, backend, **_kwargs):
         return SummarizationMiddleware(
@@ -181,13 +195,22 @@ def install_config_summarization(config: "Config") -> None:
             backend=backend,
             trigger=("tokens", trigger_tokens),
             keep=("tokens", keep_tokens),
+            # 与摘要同一比例：只有上下文逼近阈值时才裁剪旧消息里的工具参数
+            truncate_args_settings={
+                "trigger": ("tokens", trigger_tokens),
+                "keep": ("tokens", keep_tokens),
+                "max_length": truncate_max_length,
+                "truncation_text": "...(argument truncated)",
+            },
         )
 
     _graph.create_summarization_middleware = _factory
     _summarization_factory_installed = True
     logger.info(
         f"SummarizationMiddleware 已接入 config 阈值 | "
-        f"trigger=tokens:{trigger_tokens} keep=tokens:{keep_tokens} "
+        f"摘要 trigger=tokens:{trigger_tokens} keep=tokens:{keep_tokens} | "
+        f"参数截断 trigger=tokens:{trigger_tokens} keep=tokens:{keep_tokens} "
+        f"max_length={truncate_max_length} | "
         f"(max_input_tokens={max_tokens} threshold={thr} target={tgt})"
     )
 
@@ -405,7 +428,7 @@ class EasyAgent:
 
     Args:
         config: Application configuration.
-        system_prompt: Base system prompt (will be augmented with OS/workspace info).
+        system_prompt: Base project prompt, augmented only with runtime context.
         skills_root: Path to the skills root directory. Skills are discovered automatically.
         username: Username for workspace isolation.
         session_id: Session ID for workspace isolation.
@@ -430,15 +453,15 @@ class EasyAgent:
        model_name: str | None = None,
         system_prompt_extra: str = "",
    ):
-        """初始化 EasyAgent 实例，配置工作区隔离、记忆文件和系统提示词。
+        """初始化 EasyAgent 实例，配置工作区隔离和运行时上下文。
 
         根据用户名和会话 ID 构建隔离的工作区目录，设置记忆文件路径，
-        发现用户已添加的技能，拼接包含虚拟路径规范的系统提示词，
-        最终调用 _create_agent() 创建 DeepAgents 智能体实例。
+        拼接 DeepAgents 无法自动得知的运行时上下文，最终调用
+        _create_agent() 创建 DeepAgents 智能体实例。
 
         Args:
             config: 应用配置对象，包含 LLM、agent、tools 等配置。
-            system_prompt: 基础系统提示词，将被增强加入工作区、技能、记忆等路径信息。
+            system_prompt: 基础系统提示词，将追加用户、机构、工作区与系统信息。
             skills_root: 公共技能根目录路径，当前版本仅用于参考，不自动加载。
             username: 用户名，用于工作区路径隔离和记忆文件定位。
             session_id: 会话 ID，用作工作区子目录名。
@@ -490,42 +513,27 @@ class EasyAgent:
         memories_base = Path(config.agent.memories_dir)
         self.long_term_memory_file = memories_base / self.safe_username / "AGENTS.md"
 
-        # Augment system prompt with virtual paths only.
-        # _PathTranslatingShell 会自动把虚拟路径翻译为实际路径，
-        # 模型无需知道实际路径，统一使用虚拟路径即可。
-        # 仅加载用户已添加的技能（/user-skills/），不再加载全部公共技能。
-        skills_info = ""
-
         # 用户技能目录: workspace/{username}/skills/（用户级，非 session 级）
         self.user_skills_dir = Path(config.agent.workspace_dir) / self.safe_username / "skills"
-        user_skill_names = self._discover_user_skill_names()
-        if user_skill_names:
-            skills_info = "## User Skills: `/user-skills/`（例：`/user-skills/my_skill/SKILL.md`）\n"
 
-        # 将用户机构ID注入系统提示词
-        org_info = ""
-        if self.organization_id:
-            org_info = f"## 当前用户机构\n机构ID: `{self.organization_id}`（注册后不可更改）\n"
-
-        # 将当前登录用户名注入系统提示词：技能文档/脚本中的 {userId}、{username}
-        # 等占位符均指当前用户名，模型可直接替换
         user_info = (
             f"## 当前用户\n"
-            f"用户名: `{self.safe_username}`\n"
-            f"- 技能文档与脚本中的 `{{userId}}` / `{{username}}` 均指当前登录用户名\n"
+            f"- 用户名: `{self.safe_username}`（技能文档与脚本中的 `{{userId}}` / `{{username}}` 均指它）\n"
+            + (f"- 机构ID: `{self.organization_id}`（注册后不可更改）\n" if self.organization_id else "")
+            + f"- 工作区: `{self.workspace_virtual_path}/`\n"
+            + f"{self._get_os_info()}\n"
         )
 
-        self.system_prompt = (
-            f"{system_prompt}\n"
-            f"{org_info}"
-            f"{user_info}"
-            f"## Workspace: `{self.workspace_virtual_path}/`\n"
-            f"{skills_info}"
-            f"## Memory: `{self.workspace_virtual_path}/memory.md`\n"
-            f"{self._get_os_info()}\n"
-        )
-        if system_prompt_extra:
-            self.system_prompt += f"\n{system_prompt_extra}\n"
+        prompt_parts = [
+            part
+            for part in (
+                system_prompt.strip(),
+                user_info.strip(),
+                system_prompt_extra.strip(),
+            )
+            if part
+        ]
+        self.system_prompt = "\n\n".join(prompt_parts) + "\n"
 
         self.max_steps = config.agent.max_steps
         self.logger = AgentLogger()

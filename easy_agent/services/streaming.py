@@ -13,7 +13,7 @@ Events emitted to frontend:
   tool_call        {tool_name, tool_call_id, arguments, step}
   tool_result      {tool_name, tool_call_id, arguments, result, success, duration, step}
   todo_list        {todos, step}
-  token_usage      {input_tokens, output_tokens, total_tokens, max_input_tokens, auto_compress_tokens}
+  token_usage      {input_tokens, output_tokens, reasoning_tokens, max_input_tokens, auto_compress_tokens}
   done             {session_id, elapsed_time, usage}
   error            {content}
   approval_required {thread_id, action_requests, allowed_decisions}
@@ -29,7 +29,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import AsyncGenerator
 
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.types import Command
 
 from ..agent import EasyAgent
@@ -111,13 +111,14 @@ def format_sse(data: dict) -> str:
     return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
-def tool_call_records_to_dicts(records: list, result_limit: int = 5000) -> list[dict]:
+def tool_call_records_to_dicts(records: list, result_limit: int | None = None) -> list[dict]:
     """将工具调用记录转为可序列化 dict 列表。
 
     records 中每个元素为 7 元组：
         [0]=tool_name, [1]=tool_call_id, [2]=arguments, [3]=result,
         [4]=success, [5]=duration, [6]=step
-    result_limit 控制 result 字段保留的字符数（None 表示不截断）。
+    result_limit 控制 result 字段保留的字符数（None 表示不截断，默认不截断：
+    截断会导致下一轮重建上下文时 token 明显缩水）。
     """
     dicts = []
     for tc in records:
@@ -143,6 +144,142 @@ def tool_call_records_to_dicts(records: list, result_limit: int = 5000) -> list[
     return dicts
 
 
+def _historical_tool_records(message: dict) -> list[dict]:
+    records = message.get("tool_calls") or []
+    if records:
+        return [record for record in records if isinstance(record, dict)]
+    return [
+        block
+        for block in (message.get("blocks") or [])
+        if isinstance(block, dict) and block.get("type") == "tool_call"
+    ]
+
+
+def _assistant_content_message(message: dict, provider: str) -> AIMessage:
+    """重建历史 assistant 消息：**只恢复正文，不回灌思考内容**。
+
+    历史思考故意不注入上下文，原因有二：
+    1. OpenAI 兼容通道（deepseek / ark / glm / ...）的请求侧不会序列化
+       ``reasoning_content``——langchain_openai 的 ``_convert_message_to_dict``
+       只输出 content/role/name/tool_calls/function_call，即使写进
+       ``additional_kwargs`` 也会被丢弃，等于白写；
+    2. 若改用 ``<think>…</think>`` 文本回灌，历史思考会被当成正文重复占用
+       token，还可能干扰模型对自身输出的理解，且思考里出现 ``</think>``
+       字面量时会破坏标签配对。
+
+    Anthropic 协议在跨轮历史中允许省略 thinking block，故此处对所有 provider
+    统一丢弃。``provider`` 参数保留以兼容既有调用方（后续如需按 provider
+    差异化可在此基础上分支）。
+    """
+    return AIMessage(content=str(message.get("content") or ""))
+
+
+def _hitl_interrupt_items(state) -> list[tuple[str | None, dict]]:
+    """提取 LangGraph 状态中的 HITL interrupt ID 与请求负载。"""
+    items: list[tuple[str | None, dict]] = []
+    for task_item in getattr(state, "tasks", None) or []:
+        for interrupt_item in getattr(task_item, "interrupts", None) or []:
+            interrupt_id = (
+                getattr(interrupt_item, "id", None)
+                or getattr(interrupt_item, "interrupt_id", None)
+            )
+            value = getattr(interrupt_item, "value", None)
+            if isinstance(value, dict):
+                items.append((interrupt_id, value))
+    return items
+
+
+def hanging_hitl_tool_count(state) -> int:
+    """统计当前所有 HITL interrupt 中挂起的工具调用数量。"""
+    return sum(
+        len(value.get("action_requests") or [])
+        for _, value in _hitl_interrupt_items(state)
+    )
+
+
+def normalize_resume_decisions(
+    decisions: list[dict], *, hanging_tool_count: int
+) -> list[dict]:
+    """将前端的全局审批决策扩展为与挂起工具数一致的决策列表。
+
+    前端目前一次点击只发送一个 decision。LangChain HITL 要求 decision 数量
+    必须与 action_requests 数量一致；数量已匹配或语义不明确时不做猜测。
+    """
+    if hanging_tool_count <= 0 or len(decisions) != 1:
+        return decisions
+    return [dict(decisions[0]) for _ in range(hanging_tool_count)]
+
+
+def build_context_messages(
+    history_messages: list[dict], current_message: str, provider: str = ""
+) -> list:
+    """将持久化会话历史重建为完整的 LangChain 消息链。
+
+    旧实现只恢复用户/助手正文，导致下一轮模型输入不包含上一轮工具调用与结果。
+    这里按 step 恢复 AIMessage(tool_calls=...) 与对应 ToolMessage；无工具记录的
+    旧会话回退为正文消息。
+
+    注意：历史 **thinking 不回灌上下文**（详见 ``_assistant_content_message``），
+    思考仅用于前端展示与持久化。
+    """
+    context_messages: list = []
+    provider = (provider or "").lower()
+
+    for message in history_messages:
+        if message.get("role") == "user":
+            context_messages.append(
+                HumanMessage(content=str(message.get("content") or ""))
+            )
+            continue
+        if message.get("role") != "assistant":
+            continue
+
+        records = _historical_tool_records(message)
+        grouped_records: dict[int, list[dict]] = {}
+        step_order: list[int] = []
+        for index, record in enumerate(records):
+            step = record.get("step") or 0
+            if step not in grouped_records:
+                grouped_records[step] = []
+                step_order.append(step)
+            tool_call_id = str(record.get("tool_call_id") or f"historical-{index}")
+            tool_name = str(record.get("tool_name") or "tool")
+            grouped_records[step].append(
+                {
+                    "name": tool_name,
+                    "args": record.get("arguments") or {},
+                    "id": tool_call_id,
+                    "record": record,
+                }
+            )
+
+        for step in step_order:
+            tool_calls = grouped_records[step]
+            context_messages.append(
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {"name": item["name"], "args": item["args"], "id": item["id"]}
+                        for item in tool_calls
+                    ],
+                )
+            )
+            for item in tool_calls:
+                context_messages.append(
+                    ToolMessage(
+                        content=str(item["record"].get("result") or ""),
+                        tool_call_id=item["id"],
+                        name=item["name"],
+                    )
+                )
+
+        if str(message.get("content") or "").strip() or message.get("thinking"):
+            context_messages.append(_assistant_content_message(message, provider))
+
+    context_messages.append(HumanMessage(content=current_message))
+    return context_messages
+
+
 def build_assistant_message_dict(
     *,
     content: str,
@@ -152,11 +289,11 @@ def build_assistant_message_dict(
     blocks: list,
     input_tokens: int,
     output_tokens: int,
-    total_tokens: int,
     context_tokens: int,
     elapsed_time: float,
     step_count: int,
-    result_limit: int = 5000,
+    result_limit: int | None = None,
+    reasoning_tokens: int = 0,
 ) -> dict:
     """构建用于持久化/返回的 assistant 消息字典（常规结束、HITL 中断、取消等场景共用）。"""
     _raw_content = content or ""
@@ -176,7 +313,8 @@ def build_assistant_message_dict(
         "usage": {
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
-            "total_tokens": total_tokens,
+            # 思考 token（output_tokens 的子集，仅用于拆分展示）
+            "reasoning_tokens": reasoning_tokens or 0,
             "context_tokens": context_tokens if context_tokens > 0 else input_tokens,
             "elapsed_time": round(elapsed_time, 2),
             "step_count": step_count,
@@ -398,18 +536,8 @@ async def chat_stream_generator(
                 f"长期: {len(long_term_memory)} 字符 | 会话: {len(session_memory)} 字符"
             )
 
-    # capture pre-exchange cumulative session token estimate (used later by StreamProcessor
-    # token_usage events so frontend can display session-level context consumption during streaming)
-    pre_session_tokens = 0
-    try:
-        session_obj = db.get_session(session_id)
-        if session_obj and session_obj.messages:
-            # 从消息的 usage 字段累加（API 返回的准确值）
-            for msg in session_obj.messages:
-                msg_usage = msg.get("usage") or {}
-                pre_session_tokens += msg_usage.get("total_tokens", 0)
-    except Exception:
-        pass
+    # 说明：会话累计 token（pre_session_tokens / session_estimate）已移除，
+    # 前端只展示本轮的 input / output / reasoning 三类 token。
 
     ws_info = (
         str(agent.workspace_dir.absolute())
@@ -465,7 +593,7 @@ async def chat_stream_generator(
             session_logger=session_logger,
             max_input_tokens=max_input_tokens,
             auto_compress_tokens=auto_compress_tokens,
-            pre_session_tokens=pre_session_tokens, start_time=start_time,
+            start_time=start_time,
         )
 
         def _tool_call_records_from_blocks(blks):
@@ -485,9 +613,9 @@ async def chat_stream_generator(
                     thinking_duration=None,
                     tool_call_records=_tool_call_records_from_blocks(proc.blocks),
                     blocks=proc.blocks,
-                    input_tokens=proc.total_usage.get("input_tokens", 0),
-                    output_tokens=proc.total_usage.get("output_tokens", 0),
-                    total_tokens=proc.total_usage.get("total_tokens", 0),
+                    input_tokens=proc.last_usage.get("input_tokens", 0),
+                    output_tokens=proc.last_usage.get("output_tokens", 0),
+                    reasoning_tokens=proc.last_usage.get("reasoning_tokens", 0),
                     context_tokens=proc.last_context_tokens,
                     elapsed_time=time.time() - start_time,
                     step_count=proc.current_step,
@@ -572,44 +700,13 @@ async def chat_stream_generator(
         # 本生成器前已 add_message），需排除以免与下方 message_content 重复注入。
         # 完整历史直接注入；超长时由官方 SummarizationMiddleware 在模型调用前
         # 按 token 阈值自动摘要，无需在此自行截断或压缩。
-        context_messages = []
         session = db.get_session(session_id)
         total_msgs = len(session.messages) if session and session.messages else 0
         history_messages = session.messages[:-1] if total_msgs else []
-        if history_messages:
-            provider = (
-                agent.config.llm.provider.lower() if agent and agent.config else ""
-            )
-            for msg in history_messages:
-                if msg.get("role") == "user":
-                    context_messages.append(
-                        HumanMessage(content=str(msg.get("content", "")))
-                    )
-                elif msg.get("role") == "assistant":
-                    assistant_content = str(msg.get("content", ""))
-                    thinking = msg.get("thinking")
-                    if thinking:
-                        if provider == "deepseek":
-                            context_messages.append(
-                                AIMessage(
-                                    content=assistant_content,
-                                    additional_kwargs={"reasoning_content": thinking},
-                                )
-                            )
-                        else:
-                            # 非 reasoning 模型：将历史思考用 <think> 标签包裹嵌入内容
-                            # 避免模型学到用 "[思考]:" 文本标记，从而导致前端显示异常
-                            assistant_content = (
-                                f"<think>{thinking}</think>\n\n{assistant_content}"
-                            )
-                            context_messages.append(
-                                AIMessage(content=assistant_content)
-                            )
-                    else:
-                        context_messages.append(AIMessage(content=assistant_content))
-
-        context_messages.append(HumanMessage(content=message_content))
-
+        provider = agent.config.llm.provider.lower() if agent and agent.config else ""
+        context_messages = build_context_messages(
+            history_messages, message_content, provider=provider
+        )
         logger.info(
             f"[{sid}] 📚 上下文消息构建 | DB 消息数: {total_msgs} | "
             f"历史注入: {len(context_messages) - 1} | 压缩: 官方 SummarizationMiddleware"
@@ -659,7 +756,6 @@ async def chat_stream_generator(
         accumulated_thinking = proc.accumulated_thinking
         blocks = proc.blocks
         tool_call_records = _tool_call_records_from_blocks(proc.blocks)
-        total_usage = proc.total_usage
         current_step = proc.current_step
         last_context_tokens = proc.last_context_tokens
         is_in_thinking = proc.is_in_thinking
@@ -712,9 +808,9 @@ async def chat_stream_generator(
                         thinking_duration=None,
                         tool_call_records=tool_call_records,
                         blocks=blocks,
-                        input_tokens=total_usage.get("input_tokens", 0),
-                        output_tokens=total_usage.get("output_tokens", 0),
-                        total_tokens=total_usage.get("total_tokens", 0),
+                        input_tokens=proc.last_usage.get("input_tokens", 0),
+                        output_tokens=proc.last_usage.get("output_tokens", 0),
+                        reasoning_tokens=proc.last_usage.get("reasoning_tokens", 0),
                         context_tokens=last_context_tokens,
                         elapsed_time=partial_elapsed,
                         step_count=current_step,
@@ -765,29 +861,17 @@ async def chat_stream_generator(
 
         # ── Token 统计 ────────────────────────────────────────────────
         # 本轮对话（当前 exchange）token - 使用 API 返回的 usage_metadata
-        inp_tokens = total_usage["input_tokens"]
-        out_tokens = total_usage["output_tokens"]
-        sum_tokens = total_usage["total_tokens"]
-
-        # 整个会话的累计占用（优先使用消息中持久化的 usage 累加）
-        session_total_tokens = 0
-        session_msg_count = 0
-        try:
-            session = db.get_session(session_id)
-            if session and session.messages:
-                session_msg_count = len(session.messages)
-                # 从消息的 usage 字段累加（API 返回的准确值）
-                for msg in session.messages:
-                    msg_usage = msg.get("usage") or {}
-                    session_total_tokens += msg_usage.get("total_tokens", 0)
-        except Exception:
-            pass
+        # 展示/持久化口径：**最近一次模型调用**的用量（不跨步累加）；
+        # 日志里的"本轮累计"仍用累加值，便于核对计费与排查。
+        last_usage = proc.last_usage
+        inp_tokens = last_usage["input_tokens"]
+        out_tokens = last_usage["output_tokens"]
+        rea_tokens = last_usage.get("reasoning_tokens", 0)
+        sum_tokens = inp_tokens + out_tokens
 
         logger.info(
-            f"[{sid}] 📊 Token | "
-            f"本轮: ↑{inp_tokens} ↓{out_tokens} Σ{sum_tokens} | "
-            f"会话累计: Σ{max(session_total_tokens, sum_tokens)} | "
-            f"消息数: {max(session_msg_count, 1)}"
+            f"[{sid}] 📊 Token | 当前 step: ↑{inp_tokens} ↓{out_tokens}"
+            f"(思考{rea_tokens}) Σ{sum_tokens}"
         )
         if accumulated_thinking:
             logger.info(f"[{sid}] 🤔 思考内容(前200字):\n{accumulated_thinking[:200]}")
@@ -803,7 +887,7 @@ async def chat_stream_generator(
             blocks=blocks,
             input_tokens=inp_tokens,
             output_tokens=out_tokens,
-            total_tokens=sum_tokens,
+            reasoning_tokens=rea_tokens,
             context_tokens=last_context_tokens,
             elapsed_time=elapsed_time,
             step_count=current_step,
@@ -865,10 +949,13 @@ async def chat_stream_generator(
         # Token 统计 — 已在上文完成 fallback 估算，此处直接使用
 
         usage_payload = {
-            **total_usage,
+            # 与 token_usage 事件保持一致：只给**最近一次模型调用**的用量（不跨步累加），
+            # 否则 done 事件会把前端已显示的值覆盖回累加值。
+            "input_tokens": inp_tokens,
+            "output_tokens": out_tokens,
+            "reasoning_tokens": rea_tokens,
             "max_input_tokens": max_input_tokens,
             "auto_compress_tokens": auto_compress_tokens,
-            "session_estimate": session_total_tokens,
             "context_tokens": last_context_tokens
             if last_context_tokens > 0
             else inp_tokens,
@@ -888,7 +975,6 @@ async def chat_stream_generator(
         accumulated_thinking = proc.accumulated_thinking
         blocks = proc.blocks
         tool_call_records = _tool_call_records_from_blocks(proc.blocks)
-        total_usage = proc.total_usage
         current_step = proc.current_step
         last_context_tokens = proc.last_context_tokens
         is_in_thinking = proc.is_in_thinking
@@ -905,9 +991,9 @@ async def chat_stream_generator(
                 thinking_duration=None,
                 tool_call_records=tool_call_records,
                 blocks=blocks,
-                input_tokens=total_usage.get("input_tokens", 0),
-                output_tokens=total_usage.get("output_tokens", 0),
-                total_tokens=total_usage.get("total_tokens", 0),
+                input_tokens=proc.last_usage.get("input_tokens", 0),
+                output_tokens=proc.last_usage.get("output_tokens", 0),
+                reasoning_tokens=proc.last_usage.get("reasoning_tokens", 0),
                 context_tokens=last_context_tokens,
                 elapsed_time=time.time() - start_time,
                 step_count=current_step,
@@ -967,7 +1053,6 @@ async def resume_stream_generator(
     blocks = []
     tool_call_records = []
     current_step = 0
-    total_usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
     last_context_tokens = 0
     original_user_msg = ""  # 触发 HITL 的原始用户消息，供记忆生成使用
 
@@ -992,11 +1077,6 @@ async def resume_stream_generator(
                             tc.get("approval_status"),
                         ])
                     usage = msg.get("usage") or {}
-                    total_usage = {
-                        "input_tokens": usage.get("input_tokens", 0),
-                        "output_tokens": usage.get("output_tokens", 0),
-                        "total_tokens": usage.get("total_tokens", 0),
-                    }
                     current_step = usage.get("step_count", 0)
                     # 收集历史中已被标记为「待审批」的工具调用（HITL 中断），供后续写回最终决策。
                     # 关键：HITL 中断发生在工具「决定调用但尚未执行」时，此时 tool_call_records
@@ -1039,10 +1119,13 @@ async def resume_stream_generator(
     # 2) 恢复流结束后会用内存数据整条覆盖持久化（build_assistant_message_dict），
     #    若只 patch 数据库（_persist_approval_decisions），最终写回会把状态冲回 "pending"。
     decision_status_by_id: dict[str, str] = {}
+    pending_decisions = normalize_resume_decisions(
+        decisions, hanging_tool_count=len(pending_tool_call_ids)
+    )
     for i, tc_id in enumerate(pending_tool_call_ids):
-        if i >= len(decisions or []):
+        if i >= len(pending_decisions):
             break
-        decision_item = decisions[i] or {}
+        decision_item = pending_decisions[i] or {}
         decision_type = decision_item.get("type") if isinstance(decision_item, dict) else None
         decision_status_by_id[tc_id] = (
             "approved" if decision_type == "approve" else "rejected"
@@ -1086,7 +1169,6 @@ async def resume_stream_generator(
         max_input_tokens=max_input_tokens,
         auto_compress_tokens=auto_compress_tokens,
         current_step=current_step, blocks=list(blocks),
-        total_usage=dict(total_usage),
         last_context_tokens=last_context_tokens,
         accumulated_response=accumulated_response,
         accumulated_thinking=accumulated_thinking,
@@ -1110,9 +1192,9 @@ async def resume_stream_generator(
                 thinking_duration=None,
                 tool_call_records=_tool_call_records_from_blocks(proc.blocks),
                 blocks=proc.blocks,
-                input_tokens=proc.total_usage.get("input_tokens", 0),
-                output_tokens=proc.total_usage.get("output_tokens", 0),
-                total_tokens=proc.total_usage.get("total_tokens", 0),
+                input_tokens=proc.last_usage.get("input_tokens", 0),
+                output_tokens=proc.last_usage.get("output_tokens", 0),
+                reasoning_tokens=proc.last_usage.get("reasoning_tokens", 0),
                 context_tokens=proc.last_context_tokens,
                 elapsed_time=time.time() - start_time,
                 step_count=proc.current_step,
@@ -1220,21 +1302,46 @@ async def resume_stream_generator(
     # 构造 resume 载荷：当图中存在多个 pending interrupt（如并行工具调用/子代理各自触发 HITL）时，
     # LangGraph 要求以 {interrupt_id: value} 映射形式恢复，否则抛
     # "When there are multiple pending interrupts, you must specify the interrupt id when resuming."
-    resume_payload = {"decisions": decisions}
-    resume_command = Command(resume=resume_payload)
+    resume_command = None
     try:
         state = await agent.agent.aget_state(stream_config)
-        interrupt_ids = []
-        for task_item in getattr(state, "tasks", None) or []:
-            for intr in getattr(task_item, "interrupts", None) or []:
-                iid = getattr(intr, "id", None) or getattr(intr, "interrupt_id", None)
-                if iid:
-                    interrupt_ids.append(iid)
-        if len(interrupt_ids) > 1:
-            logger.info(f"[{sid}] HITL 恢复: 检测到 {len(interrupt_ids)} 个 pending interrupt，按 interrupt_id 映射恢复")
-            resume_command = Command(resume={iid: resume_payload for iid in interrupt_ids})
+        interrupt_items = _hitl_interrupt_items(state)
+        if len(interrupt_items) == 1:
+            interrupt_id, value = interrupt_items[0]
+            hanging_tool_count = len(value.get("action_requests") or [])
+            effective_decisions = normalize_resume_decisions(
+                decisions, hanging_tool_count=hanging_tool_count
+            )
+            resume_payload = {"decisions": effective_decisions}
+            resume_command = Command(resume=resume_payload)
+        elif len(interrupt_items) > 1 and all(
+            interrupt_id for interrupt_id, _ in interrupt_items
+        ):
+            logger.info(
+                f"[{sid}] HITL 恢复: 检测到 {len(interrupt_items)} 个 pending interrupt，"
+                "按 interrupt_id 与各自挂起工具数映射恢复"
+            )
+            resume_command = Command(
+                resume={
+                    interrupt_id: {
+                        "decisions": normalize_resume_decisions(
+                            decisions,
+                            hanging_tool_count=len(value.get("action_requests") or []),
+                        )
+                    }
+                    for interrupt_id, value in interrupt_items
+                }
+            )
+        else:
+            hanging_tool_count = hanging_hitl_tool_count(state)
+            effective_decisions = normalize_resume_decisions(
+                decisions, hanging_tool_count=hanging_tool_count
+            )
+            resume_command = Command(resume={"decisions": effective_decisions})
     except Exception as e:
         logger.warning(f"[{sid}] HITL 恢复: 检查 pending interrupts 失败（回退默认 resume）: {e}")
+    if resume_command is None:
+        resume_command = Command(resume={"decisions": decisions})
 
     try:
         last_persisted_len = 0
@@ -1273,7 +1380,6 @@ async def resume_stream_generator(
         accumulated_thinking = proc.accumulated_thinking
         blocks = proc.blocks
         tool_call_records = _tool_call_records_from_blocks(proc.blocks)
-        total_usage = proc.total_usage
         current_step = proc.current_step
         last_context_tokens = proc.last_context_tokens
         is_in_thinking = proc.is_in_thinking
@@ -1316,9 +1422,9 @@ async def resume_stream_generator(
                         thinking_duration=None,
                         tool_call_records=tool_call_records,
                         blocks=blocks,
-                        input_tokens=total_usage.get("input_tokens", 0),
-                        output_tokens=total_usage.get("output_tokens", 0),
-                        total_tokens=total_usage.get("total_tokens", 0),
+                        input_tokens=proc.last_usage.get("input_tokens", 0),
+                        output_tokens=proc.last_usage.get("output_tokens", 0),
+                        reasoning_tokens=proc.last_usage.get("reasoning_tokens", 0),
                         context_tokens=last_context_tokens,
                         elapsed_time=partial_elapsed,
                         step_count=current_step,
@@ -1413,26 +1519,20 @@ async def resume_stream_generator(
         blocks = _final_blocks
         proc.blocks = blocks  # 同步去重后的 blocks，确保 done 事件 _sse_blocks() 一致
 
-        # 会话累计 token
-        session_total_tokens = 0
-        try:
-            sess = db.get_session(session_id)
-            if sess and sess.messages:
-                for msg in sess.messages:
-                    msg_usage = msg.get("usage") or {}
-                    session_total_tokens += msg_usage.get("total_tokens", 0)
-        except Exception:
-            pass
-
-        inp_tokens = total_usage["input_tokens"]
-        out_tokens = total_usage["output_tokens"]
-        sum_tokens = total_usage["total_tokens"]
+        # 展示/持久化口径：最近一次模型调用的用量（不跨步累加）
+        last_usage = proc.last_usage
+        inp_tokens = last_usage["input_tokens"]
+        out_tokens = last_usage["output_tokens"]
+        rea_tokens = last_usage.get("reasoning_tokens", 0)
+        sum_tokens = inp_tokens + out_tokens
 
         usage_payload = {
-            **total_usage,
+            # 同主生成器：done 事件只下发最近一次调用的用量（不跨步累加）
+            "input_tokens": inp_tokens,
+            "output_tokens": out_tokens,
+            "reasoning_tokens": rea_tokens,
             "max_input_tokens": max_input_tokens,
             "auto_compress_tokens": auto_compress_tokens,
-            "session_estimate": session_total_tokens,
             "context_tokens": last_context_tokens if last_context_tokens > 0 else inp_tokens,
             "elapsed_time": round(elapsed_time, 2),
             "step_count": current_step,
@@ -1446,7 +1546,7 @@ async def resume_stream_generator(
             blocks=blocks,
             input_tokens=inp_tokens,
             output_tokens=out_tokens,
-            total_tokens=sum_tokens,
+            reasoning_tokens=rea_tokens,
             context_tokens=last_context_tokens,
             elapsed_time=elapsed_time,
             step_count=current_step,
@@ -1463,7 +1563,8 @@ async def resume_stream_generator(
 
         logger.info(
             f"[{sid}] ✅ 流式响应完成 | 总步骤: {current_step} | "
-            f"总耗时: {elapsed_time:.2f}s | tokens={sum_tokens} (in={inp_tokens}, out={out_tokens})"
+            f"总耗时: {elapsed_time:.2f}s | tokens={sum_tokens} "
+            f"(in={inp_tokens}, out={out_tokens}, think={rea_tokens})"
         )
 
         yield format_sse({
@@ -1482,7 +1583,6 @@ async def resume_stream_generator(
         accumulated_thinking = proc.accumulated_thinking
         blocks = proc.blocks
         tool_call_records = _tool_call_records_from_blocks(proc.blocks)
-        total_usage = proc.total_usage
         last_context_tokens = proc.last_context_tokens
         current_step = proc.current_step
         partial_msg = build_assistant_message_dict(
@@ -1491,9 +1591,9 @@ async def resume_stream_generator(
             thinking_duration=None,
             tool_call_records=tool_call_records,
             blocks=blocks,
-            input_tokens=total_usage.get("input_tokens", 0),
-            output_tokens=total_usage.get("output_tokens", 0),
-            total_tokens=total_usage.get("total_tokens", 0),
+            input_tokens=proc.last_usage.get("input_tokens", 0),
+            output_tokens=proc.last_usage.get("output_tokens", 0),
+            reasoning_tokens=proc.last_usage.get("reasoning_tokens", 0),
             context_tokens=last_context_tokens,
             elapsed_time=time.time() - start_time,
             step_count=current_step,
@@ -1512,9 +1612,9 @@ async def resume_stream_generator(
                 thinking_duration=None,
                 tool_call_records=_tool_call_records_from_blocks(proc.blocks),
                 blocks=proc.blocks,
-                input_tokens=proc.total_usage.get("input_tokens", 0),
-                output_tokens=proc.total_usage.get("output_tokens", 0),
-                total_tokens=proc.total_usage.get("total_tokens", 0),
+                input_tokens=proc.last_usage.get("input_tokens", 0),
+                output_tokens=proc.last_usage.get("output_tokens", 0),
+                reasoning_tokens=proc.last_usage.get("reasoning_tokens", 0),
                 context_tokens=proc.last_context_tokens,
                 elapsed_time=time.time() - start_time,
                 step_count=proc.current_step,

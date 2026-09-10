@@ -110,8 +110,8 @@
         @click="isWorkspaceCollapsed = false"
         title="展开工作区"
       >
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" class="expand-workspace-icon">
+          <path d="M3 7V17C3 18.1046 3.89543 19 5 19H19C20.1046 19 21 18.1046 21 17V9C21 7.89543 20.1046 7 19 7H13L11 5H5C3.89543 5 3 5.89543 3 7Z" fill="#fbbf24" stroke="#f59e0b" stroke-width="1.5"></path>
         </svg>
       </button>
 
@@ -234,7 +234,7 @@ const error = ref(null)
 const currentAbortController = ref(null)
 // HITL: 审批待处理状态，存储 { threadId, assistantMsgId }
 const pendingApproval = ref(null)
-const sessionUsage = ref({ input_tokens: 0, output_tokens: 0, total_tokens: 0, max_input_tokens: null, auto_compress_tokens: null, context_tokens: 0 })
+const sessionUsage = ref({ input_tokens: 0, output_tokens: 0, reasoning_tokens: 0, max_input_tokens: null, auto_compress_tokens: null, context_tokens: 0 })
 // 当前会话累计耗时（秒），每次 AI 回复完成后累加
 const sessionDuration = ref(0)
 // 当前会话累计迭代次数（step 数），每次 AI 回复完成后累加
@@ -322,7 +322,7 @@ async function attachToStreamingSession(sessionId, opts = {}) {
       if (history.usage) {
         sessionUsage.value.input_tokens = history.usage.input_tokens || 0
         sessionUsage.value.output_tokens = history.usage.output_tokens || 0
-        sessionUsage.value.total_tokens = history.usage.total_tokens || 0
+        sessionUsage.value.reasoning_tokens = history.usage.reasoning_tokens || 0
         sessionUsage.value.context_tokens = history.usage.context_tokens || 0
         sessionDuration.value = history.usage.elapsed_time || 0
         iterationCount.value = history.usage.step_count || 0
@@ -424,7 +424,6 @@ async function attachToStreamingSession(sessionId, opts = {}) {
       sessionUsage: {
         input_tokens: 0,
         output_tokens: 0,
-        total_tokens: 0,
         max_input_tokens: sessionUsage.value.max_input_tokens,
         auto_compress_tokens: null,
         context_tokens: 0,
@@ -679,7 +678,7 @@ async function handleWelcomeCompleted(profile) {
         if (history.usage) {
           sessionUsage.value.input_tokens = history.usage.input_tokens || 0
           sessionUsage.value.output_tokens = history.usage.output_tokens || 0
-          sessionUsage.value.total_tokens = history.usage.total_tokens || 0
+          sessionUsage.value.reasoning_tokens = history.usage.reasoning_tokens || 0
           sessionUsage.value.context_tokens = history.usage.context_tokens || 0
           sessionDuration.value = history.usage.elapsed_time || 0
           iterationCount.value = history.usage.step_count || 0
@@ -877,7 +876,7 @@ async function handleCreateSession() {
   currentTodos.value = []
   // 注意：保留 max_input_tokens（全局上下文窗口，对所有会话通用），不重置为 null，
   // 否则 contextPercent 分母为 null 时会强制显示为 0%
-  sessionUsage.value = { input_tokens: 0, output_tokens: 0, total_tokens: 0, max_input_tokens: sessionUsage.value.max_input_tokens, auto_compress_tokens: null, context_tokens: 0 }
+  sessionUsage.value = { input_tokens: 0, output_tokens: 0, reasoning_tokens: 0, max_input_tokens: sessionUsage.value.max_input_tokens, auto_compress_tokens: null, context_tokens: 0 }
   sessionDuration.value = 0
   iterationCount.value = 0
   refreshSessionFiles(null)
@@ -914,7 +913,7 @@ async function handleSelectSession(sessionId) {
   // 缓存中没有，从服务器加载历史
   // 保留 max_input_tokens（全局上下文窗口），仅清空用量计数；
   // 若服务器返回了 max_input_tokens 则以其为准（见下方恢复逻辑）
-  sessionUsage.value = { input_tokens: 0, output_tokens: 0, total_tokens: 0, max_input_tokens: sessionUsage.value.max_input_tokens, auto_compress_tokens: null, context_tokens: 0 }
+  sessionUsage.value = { input_tokens: 0, output_tokens: 0, reasoning_tokens: 0, max_input_tokens: sessionUsage.value.max_input_tokens, auto_compress_tokens: null, context_tokens: 0 }
   sessionDuration.value = 0
   iterationCount.value = 0
 
@@ -929,7 +928,7 @@ async function handleSelectSession(sessionId) {
     if (history.usage) {
       sessionUsage.value.input_tokens = history.usage.input_tokens || 0
       sessionUsage.value.output_tokens = history.usage.output_tokens || 0
-      sessionUsage.value.total_tokens = history.usage.total_tokens || 0
+      sessionUsage.value.reasoning_tokens = history.usage.reasoning_tokens || 0
       sessionUsage.value.context_tokens = history.usage.context_tokens || 0
       sessionDuration.value = history.usage.elapsed_time || 0
       iterationCount.value = history.usage.step_count || 0
@@ -1123,7 +1122,7 @@ function createStreamChunkHandler(ctx) {
     const patch = {
       input_tokens: data.input_tokens || 0,
       output_tokens: data.output_tokens || 0,
-      total_tokens: data.session_estimate || data.total_tokens || 0,
+      reasoning_tokens: data.reasoning_tokens || 0,
       context_tokens: data.context_tokens || sessionUsage.value.context_tokens || 0,
     }
     if (data.max_input_tokens) patch.max_input_tokens = data.max_input_tokens
@@ -1393,7 +1392,7 @@ function createStreamChunkHandler(ctx) {
             .join('')
           messages.value[idx].tool_calls = currentToolCalls
           if (data.usage) {
-            messages.value[idx].usage = { input_tokens: data.usage.input_tokens || 0, output_tokens: data.usage.output_tokens || 0, total_tokens: data.usage.total_tokens || 0 }
+            messages.value[idx].usage = { input_tokens: data.usage.input_tokens || 0, output_tokens: data.usage.output_tokens || 0, reasoning_tokens: data.usage.reasoning_tokens || 0 }
           }
           if (data.usage) {
             const patch = usagePatchFrom(data.usage)
@@ -1867,7 +1866,7 @@ onMounted(async () => {
         if (history.usage) {
           sessionUsage.value.input_tokens = history.usage.input_tokens || 0
           sessionUsage.value.output_tokens = history.usage.output_tokens || 0
-          sessionUsage.value.total_tokens = history.usage.total_tokens || 0
+          sessionUsage.value.reasoning_tokens = history.usage.reasoning_tokens || 0
           sessionUsage.value.context_tokens = history.usage.context_tokens || 0
           sessionDuration.value = history.usage.elapsed_time || 0
           iterationCount.value = history.usage.step_count || 0
@@ -2079,6 +2078,16 @@ onUnmounted(() => {
   z-index: 30;
 }
 
+.expand-workspace-icon {
+  width: 26px;
+  height: 26px;
+  transition: transform 0.2s ease;
+}
+
+.expand-workspace-btn:hover .expand-workspace-icon {
+  transform: scale(1.1);
+}
+
 .expand-sidebar-btn svg {
   width: 20px;
   height: 20px;
@@ -2134,7 +2143,11 @@ onUnmounted(() => {
     height: 36px;
   }
 
-  .expand-workspace-btn svg,
+  .expand-workspace-btn svg {
+    width: 22px;
+    height: 22px;
+  }
+
   .expand-sidebar-btn svg {
     width: 18px;
     height: 18px;
@@ -3055,13 +3068,7 @@ html[data-theme="dark"] .todo-content {
   color: var(--text-primary) !important;
 }
 
-html[data-theme="dark"] .todo-content.line-through {
-  color: var(--text-secondary) !important;
-}
 
-html[data-theme="dark"] .todo-item.completed .todo-content {
-  color: var(--text-secondary) !important;
-}
 
 html[data-theme="dark"] .todo-item.in_progress .todo-content {
   color: var(--text-primary) !important;

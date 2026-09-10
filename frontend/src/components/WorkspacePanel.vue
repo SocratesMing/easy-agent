@@ -3,8 +3,9 @@
     <template v-if="visible">
       <div class="wp-header">
         <div class="wp-title">
-          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="wp-header-icon">
-            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" class="wp-header-icon">
+            <path d="M3 7V17C3 18.1046 3.89543 19 5 19H19C20.1046 19 21 18.1046 21 17V9C21 7.89543 20.1046 7 19 7H13L11 5H5C3.89543 5 3 5.89543 3 7Z" fill="#eab308" stroke="#ca8a04" stroke-width="1.5"></path>
+            <path d="M3 10H21" stroke="#ca8a04" stroke-width="1.5"></path>
           </svg>
           <span>工作区</span>
         </div>
@@ -38,8 +39,8 @@
         </div>
 
         <div v-else-if="workspaceTreeData.length === 0" class="wp-center">
-          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" class="wp-empty-icon">
-            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" class="wp-empty-icon">
+            <path d="M3 7V17C3 18.1046 3.89543 19 5 19H19C20.1046 19 21 18.1046 21 17V9C21 7.89543 20.1046 7 19 7H13L11 5H5C3.89543 5 3 5.89543 3 7Z" fill="#fbbf24" stroke="#f59e0b" stroke-width="1.5"></path>
           </svg>
           <span class="wp-center-text">工作区为空</span>
         </div>
@@ -203,9 +204,10 @@ onMounted(() => {
 }
 
 .wp-header-icon {
-  width: 18px;
-  height: 18px;
-  color: var(--text-secondary);
+  width: 20px;
+  height: 20px;
+  /* 彩色文件夹图标与文件树保持同一套视觉语言，不再跟随文字色 */
+  flex-shrink: 0;
 }
 
 .wp-collapse-btn {
@@ -329,8 +331,9 @@ onMounted(() => {
 }
 
 .wp-empty-icon {
-  width: 40px;
-  height: 40px;
-  color: #cbd5e1;
+  width: 56px;
+  height: 56px;
+  /* 彩色图标用透明度淡化，空态不喧宾夺主 */
+  opacity: 0.45;
 }
 </style>

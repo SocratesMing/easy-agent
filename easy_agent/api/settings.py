@@ -174,6 +174,10 @@ async def get_models():
 
     前端用于填充输入框的模型下拉，值使用模型 key（如 deepseek/glm）。
     与用户隔离无关，为公共接口。
+
+    只返回**真正可用**的模型：配置里的 api_key 常写成 ``${XXX_API_KEY}``，
+    若对应环境变量缺失，解析结果会是空字符串，这类模型选中后必然请求失败，
+    因此直接从可选列表中过滤掉（激活模型一定有 key，不会被过滤）。
     """
     _cfg = get_agent_config()
     if not _cfg or not _cfg.get("config"):
@@ -182,6 +186,9 @@ async def get_models():
 
     models = []
     for name, prov in config.models.items():
+        if not str(getattr(prov, "api_key", "") or "").strip():
+            logger.info(f"模型 {name} 未配置 API Key，已从可选列表中隐藏")
+            continue
         models.append({
             "name": name,
             "model": prov.model,

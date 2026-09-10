@@ -35,6 +35,40 @@ def test_models(client):
     assert data["active_model"] == "deepseek"
 
 
+def test_models_hides_models_without_api_key(client, monkeypatch):
+    """未配置 API Key（环境变量缺失 → 空串）的模型不应出现在可选列表。
+
+    配置里 api_key 常写 ``${XXX_API_KEY}``，环境变量缺失时解析为空串，
+    这类模型选中必然请求失败，必须从下拉里剔除。
+    """
+    from types import SimpleNamespace
+
+    def _prov(model: str, api_key: str):
+        return SimpleNamespace(
+            model=model,
+            provider="p",
+            protocol="openai",
+            max_input_tokens=1000,
+            api_key=api_key,
+        )
+
+    cfg = SimpleNamespace(
+        models={
+            "with-key": _prov("m1", "sk-ok"),
+            "no-key": _prov("m2", ""),
+            "blank-key": _prov("m3", "   "),
+        },
+        active_model="with-key",
+    )
+    monkeypatch.setattr(settings_api, "get_agent_config", lambda: {"config": cfg})
+
+    resp = client.get("/agent/settings/models")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert [m["name"] for m in data["models"]] == ["with-key"]
+    assert data["active_model"] == "with-key"
+
+
 def test_mcp_list(client):
     resp = client.get("/agent/settings/mcp")
     assert resp.status_code == 200

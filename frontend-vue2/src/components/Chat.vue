@@ -116,7 +116,7 @@ export default {
   },
   sessionUsage: {
     type: Object,
-    default: () => ({ input_tokens: 0, output_tokens: 0, total_tokens: 0 })
+    default: () => ({ input_tokens: 0, output_tokens: 0, reasoning_tokens: 0 })
   },
   sessionDuration: {
     type: Number,

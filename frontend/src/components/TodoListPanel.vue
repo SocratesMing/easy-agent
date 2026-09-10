@@ -5,13 +5,14 @@
       v-if="todos.length > 0 && !expanded"
       class="todo-badge"
       @click="expanded = true"
-      title="展开执行计划"
+      title="展开任务规划"
     >
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="todo-badge-icon">
-        <path d="M9 11l3 3L22 4"></path>
-        <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"></path>
+        <rect width="8" height="4" x="8" y="2" rx="1" ry="1"></rect>
+        <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"></path>
+        <path d="m9 14 2 2 4-4"></path>
       </svg>
-      <span class="todo-badge-text">plan {{ completedCount }}/{{ todos.length }}</span>
+      <span class="todo-badge-text">任务 {{ completedCount }}/{{ todos.length }}</span>
     </div>
   </Transition>
 
@@ -21,10 +22,11 @@
       <div class="todo-header">
         <div class="todo-title">
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="todo-icon">
-            <path d="M9 11l3 3L22 4"></path>
-            <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"></path>
+            <rect width="8" height="4" x="8" y="2" rx="1" ry="1"></rect>
+            <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"></path>
+            <path d="m9 14 2 2 4-4"></path>
           </svg>
-          <span>执行计划</span>
+          <span>任务规划</span>
           <span class="todo-count">{{ completedCount }}/{{ todos.length }}</span>
         </div>
         <button class="todo-close" @click="expanded = false" title="收起">
@@ -53,7 +55,7 @@
             </div>
             <div v-else class="todo-pending-dot"></div>
           </div>
-          <span class="todo-content" :class="{ 'line-through': todo.status === 'completed' }">
+          <span class="todo-content">
             {{ todo.content }}
           </span>
         </div>
@@ -267,7 +269,7 @@ const progressPercent = computed(() => {
 .todo-status-icon svg {
   width: 16px;
   height: 16px;
-  color: #4ade80;
+  color: #22c55e;
 }
 
 .todo-spinner {
@@ -308,14 +310,7 @@ const progressPercent = computed(() => {
   word-break: break-word;
 }
 
-.todo-content.line-through {
-  text-decoration: line-through;
-  color: #9ca3af;
-}
 
-.todo-item.completed .todo-content {
-  color: #9ca3af;
-}
 
 .todo-item.in_progress .todo-content {
   color: #1f2937;

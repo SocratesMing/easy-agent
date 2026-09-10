@@ -217,7 +217,10 @@ class Database:
 
             auto_inc = "AUTOINCREMENT" if self.db_type == "sqlite" else "AUTO_INCREMENT"
 
-            messages_type = "TEXT" if self.db_type == "sqlite" else "MEDIUMTEXT"
+            # MySQL 用 LONGTEXT(4GB)：会话消息不截断落库后体积可达数十 MB，
+            # MEDIUMTEXT(16MB) 会触发 1406 Data too long 导致保存失败。
+            # SQLite 的 TEXT 无实际长度限制，保持不变。
+            messages_type = "TEXT" if self.db_type == "sqlite" else "LONGTEXT"
 
             cursor.execute(f"""
                 CREATE TABLE IF NOT EXISTS sessions (
@@ -243,6 +246,13 @@ class Database:
                 try:
                     cursor.execute(
                         "ALTER TABLE sessions MODIFY COLUMN messages MEDIUMTEXT NOT NULL"
+                    )
+                except Exception:
+                    pass
+                # 存量库继续升级到 LONGTEXT：MEDIUMTEXT(16MB) 在消息不截断后容易写满
+                try:
+                    cursor.execute(
+                        "ALTER TABLE sessions MODIFY COLUMN messages LONGTEXT NOT NULL"
                     )
                 except Exception:
                     pass
@@ -739,13 +749,17 @@ class Database:
                 self.update_session(session)
 
     def _sanitize_message_for_storage(self, message: dict) -> dict:
+        # 不做内容截断：历史上下文需要完整回灌给模型，落库时截断会导致
+        # 下一轮上下文 token 明显缩水（实测 50% → 36%）。
+        # 列类型 MySQL 为 MEDIUMTEXT(16MB)、SQLite 为 TEXT，足以容纳完整内容；
+        # 上下文体积改由 SummarizationMiddleware 在模型调用前按 token 阈值压缩。
         sanitized = {
             "role": message.get("role", ""),
-            "content": (message.get("content", "") or "")[:5000],
+            "content": message.get("content", "") or "",
             "timestamp": message.get("timestamp", ""),
         }
         if message.get("thinking"):
-            sanitized["thinking"] = message["thinking"][:2000]
+            sanitized["thinking"] = message["thinking"]
         if message.get("thinking_duration") is not None:
             sanitized["thinking_duration"] = message["thinking_duration"]
         if message.get("usage"):
@@ -759,7 +773,7 @@ class Database:
                     "tool_name": tc.get("tool_name", "") or tc.get("name", ""),
                     "tool_call_id": tc.get("tool_call_id", ""),
                     "arguments": tc.get("arguments", {}),
-                    "result": str(tc.get("result", ""))[:5000],
+                    "result": str(tc.get("result", "")),
                     "success": tc.get("success", True),
                     "duration": tc.get("duration"),
                     "step": tc.get("step", 0),
@@ -783,14 +797,14 @@ class Database:
                 block_type = b.get("type", "")
                 s = {"type": block_type, "order": b.get("order", 0)}
                 if block_type == "thinking":
-                    s["content"] = (b.get("content", "") or "")[:2000]
+                    s["content"] = b.get("content", "") or ""
                     s["duration"] = b.get("duration")
                     s["step"] = b.get("step", 0)
                 elif block_type == "tool_call":
                     s["tool_name"] = b.get("tool_name", "")
                     s["tool_call_id"] = b.get("tool_call_id", "")
                     s["arguments"] = b.get("arguments", {})
-                    s["result"] = str(b.get("result", ""))[:5000]
+                    s["result"] = str(b.get("result", ""))
                     s["success"] = b.get("success", True)
                     s["duration"] = b.get("duration")
                     s["step"] = b.get("step", 0)
@@ -803,10 +817,10 @@ class Database:
                     if b.get("file_paths"):
                         s["file_paths"] = b["file_paths"]
                 elif block_type == "content":
-                    s["content"] = (b.get("content", "") or "")[:5000]
+                    s["content"] = b.get("content", "") or ""
                     s["step"] = b.get("step", 0)
                 else:
-                    s["content"] = (b.get("content", "") or "")[:200]
+                    s["content"] = b.get("content", "") or ""
                 sanitized_blocks.append(s)
             # 按 order 排序恢复原始顺序
             sanitized_blocks.sort(key=lambda x: x.get("order", 0))
@@ -862,14 +876,14 @@ class Database:
                     block_type = b.get("type", "")
                     sanitized = {"type": block_type, "order": b.get("order", 0)}
                     if block_type == "thinking":
-                        sanitized["content"] = (b.get("content", "") or "")[:2000]
+                        sanitized["content"] = b.get("content", "") or ""
                         sanitized["duration"] = b.get("duration")
                         sanitized["step"] = b.get("step", 0)
                     elif block_type == "tool_call":
                         sanitized["tool_name"] = b.get("tool_name", "")
                         sanitized["tool_call_id"] = b.get("tool_call_id", "")
                         sanitized["arguments"] = b.get("arguments", {})
-                        sanitized["result"] = str(b.get("result", ""))[:5000]
+                        sanitized["result"] = str(b.get("result", ""))
                         sanitized["success"] = b.get("success", True)
                         sanitized["duration"] = b.get("duration")
                         sanitized["step"] = b.get("step", 0)
@@ -881,9 +895,9 @@ class Database:
                         if b.get("file_paths"):
                             sanitized["file_paths"] = b["file_paths"]
                     elif block_type == "content":
-                        sanitized["content"] = (b.get("content", "") or "")[:5000]
+                        sanitized["content"] = b.get("content", "") or ""
                     else:
-                        sanitized["content"] = (b.get("content", "") or "")[:200]
+                        sanitized["content"] = b.get("content", "") or ""
                     sanitized_blocks.append(sanitized)
                 # 按 order 排序恢复原始顺序
                 sanitized_blocks.sort(key=lambda x: x.get("order", 0))
@@ -897,7 +911,7 @@ class Database:
                         "tool_name": tc.get("tool_name", "") or tc.get("name", ""),
                         "tool_call_id": tc.get("tool_call_id", ""),
                         "arguments": tc.get("arguments", {}),
-                        "result": str(tc.get("result", ""))[:5000],
+                        "result": str(tc.get("result", "")),
                         "success": tc.get("success", True),
                         "duration": tc.get("duration"),
                         "step": tc.get("step", 0),
@@ -907,7 +921,8 @@ class Database:
                 ]
 
         if "thinking" in extra_keys and extra_keys["thinking"]:
-            extra_keys["thinking"] = extra_keys["thinking"][:2000]
+            # 不截断：完整思考用于下一轮上下文；超大时由下方 max_len 渐进裁剪兜底
+            extra_keys["thinking"] = extra_keys["thinking"]
 
         result = json.dumps(extra_keys, ensure_ascii=False)
         max_len = 5_000_000

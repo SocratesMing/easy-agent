@@ -41,12 +41,12 @@ def compute_session_usage(messages: list[dict]) -> dict | None:
     """从消息列表中计算会话级别的 token 用量。
 
     Returns:
-        包含 input_tokens/output_tokens/total_tokens/context_tokens/elapsed_time/step_count 的字典，
-        如果没有任何用量数据则返回 None。
+        包含 input_tokens/output_tokens/reasoning_tokens/context_tokens/
+        elapsed_time/step_count 的字典，如果没有任何用量数据则返回 None。
     """
     total_input = 0
     total_output = 0
-    total_tokens = 0
+    total_reasoning = 0
     context_tokens = 0
     total_elapsed = 0.0
     total_steps = 0
@@ -55,7 +55,8 @@ def compute_session_usage(messages: list[dict]) -> dict | None:
         msg_usage = msg.get("usage") or {}
         total_input += msg_usage.get("input_tokens", 0) or 0
         total_output += msg_usage.get("output_tokens", 0) or 0
-        total_tokens += msg_usage.get("total_tokens", 0) or 0
+        # 思考 token（output 的子集），仅用于拆分展示
+        total_reasoning += msg_usage.get("reasoning_tokens", 0) or 0
         total_elapsed += msg_usage.get("elapsed_time", 0) or 0
         total_steps += msg_usage.get("step_count", 0) or 0
 
@@ -76,7 +77,7 @@ def compute_session_usage(messages: list[dict]) -> dict | None:
         return {
             "input_tokens": total_input,
             "output_tokens": total_output,
-            "total_tokens": total_tokens,
+            "reasoning_tokens": total_reasoning,
             "context_tokens": context_tokens,
             "elapsed_time": round(total_elapsed, 2),
             "step_count": total_steps,

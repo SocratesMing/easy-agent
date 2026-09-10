@@ -46,7 +46,6 @@ def test_model_update_emits_tool_call_and_token_usage():
     tu = next(e for e in events if e["type"] == "token_usage")
     assert tu["input_tokens"] == 100
     assert tu["output_tokens"] == 20
-    assert tu["total_tokens"] == 120
     assert tu["context_tokens"] == 100
     assert tu["step_count"] == 1
     assert p.blocks[0]["tool_call_id"] == "tc1"
@@ -178,11 +177,13 @@ def test_step_increments_each_turn():
 
 def test_token_usage_enriched_fields():
     p = StreamProcessor(sid="s1", max_input_tokens=200000,
-                        auto_compress_tokens=170000, pre_session_tokens=500,
+                        auto_compress_tokens=170000,
                         start_time=time.time() - 2.0)
     events = p.handle("updates", {"model": {"messages": [_ai_with_tool_call()]}})
     tu = next(e for e in events if e["type"] == "token_usage")
-    assert tu["session_estimate"] == 500 + 100 + 20
+    # 已不再统计会话累计总量（total_tokens / session_estimate）
+    assert "session_estimate" not in tu
+    assert "total_tokens" not in tu
     assert tu["max_input_tokens"] == 200000
     assert tu["auto_compress_tokens"] == 170000
     assert tu["elapsed_time"] >= 1.5
@@ -221,11 +222,10 @@ def test_todo_list_not_duplicated():
 
 def test_finalize_enriched_usage():
     p = StreamProcessor(sid="s1", max_input_tokens=200000,
-                        auto_compress_tokens=170000, pre_session_tokens=500)
+                        auto_compress_tokens=170000)
     p.handle("updates", {"model": {"messages": [_ai_with_tool_call()]}})
-    done = p.finalize(session_id="s", elapsed_time=3.0,
-                      session_total_tokens=999)[0]
-    assert done["usage"]["session_estimate"] == 999
+    done = p.finalize(session_id="s", elapsed_time=3.0)[0]
+    assert "session_estimate" not in done["usage"]
     assert done["usage"]["max_input_tokens"] == 200000
     assert done["usage"]["step_count"] == 1
     assert isinstance(done["blocks"], list)
@@ -448,3 +448,94 @@ def test_content_block_per_step_interleaved_order():
     assert [b["content"] for b in content_blocks] == ["正文1", "正文2"]
     # 累计正文仍可用于上下文重建
     assert p.accumulated_response == "正文1正文2"
+
+
+def test_usage_splits_reasoning_tokens_without_double_counting():
+    """思考 token 从 output_token_details.reasoning 拆分出来单独统计。
+
+    reasoning_tokens 是 output_tokens 的子集（服务端 completion_tokens_details.
+    reasoning_tokens），只按类型展示，不再统计总量。
+    """
+    p = StreamProcessor(sid="s1")
+    msg = AIMessage(
+        content="",
+        tool_calls=[{"name": "ls", "args": {}, "id": "tc1"}],
+        usage_metadata={
+            "input_tokens": 100,
+            "output_tokens": 50,
+            "total_tokens": 150,  # API 原始返回必填，仅作输入，不参与统计
+            "output_token_details": {"reasoning": 30},
+        },
+    )
+    events = p.handle("updates", {"model": {"messages": [msg]}})
+    tu = next(e for e in events if e["type"] == "token_usage")
+    assert tu["input_tokens"] == 100
+    assert tu["output_tokens"] == 50
+    assert tu["reasoning_tokens"] == 30
+
+    assert p.last_usage["reasoning_tokens"] == 30
+
+    # finalize 的 done 事件同样带上拆分字段
+    done = p.finalize(session_id="sess", elapsed_time=0.1)
+    assert done[0]["usage"]["reasoning_tokens"] == 30
+
+
+def test_usage_reasoning_defaults_to_zero_when_absent():
+    """服务端不返回思考明细（非推理模型）时取 0，不报错。"""
+    p = StreamProcessor(sid="s1")
+    p.handle("updates", {"model": {"messages": [_ai_with_tool_call()]}})
+    assert p.last_usage["reasoning_tokens"] == 0
+    events = p.finalize(session_id="sess", elapsed_time=0.1)
+    assert events[0]["usage"]["reasoning_tokens"] == 0
+
+
+def test_build_assistant_message_dict_carries_reasoning_tokens():
+    """持久化的消息 usage 必须带上 reasoning_tokens，供历史会话回放展示。"""
+    from easy_agent.services.streaming import build_assistant_message_dict
+
+    msg = build_assistant_message_dict(
+        content="c", thinking="t", thinking_duration=1.0,
+        tool_call_records=[], blocks=[], input_tokens=10, output_tokens=5,
+        context_tokens=10, elapsed_time=1.0, step_count=1,
+        reasoning_tokens=4,
+    )
+    assert msg["usage"]["reasoning_tokens"] == 4
+    # 不带该参数时向后兼容，默认为 0
+    legacy = build_assistant_message_dict(
+        content="c", thinking="", thinking_duration=None,
+        tool_call_records=[], blocks=[], input_tokens=1, output_tokens=1,
+        context_tokens=1, elapsed_time=0.1, step_count=1,
+    )
+    assert legacy["usage"]["reasoning_tokens"] == 0
+
+
+def test_token_usage_reports_last_call_not_accumulated():
+    """token_usage 展示**最近一次模型调用**的用量，而非跨步累加。
+
+    多步 agent 里累加的 input 会被放大数倍（同一份上下文被反复发送），
+    与"当前上下文占用"混淆，因此对外只给最近一次调用的值。
+    """
+    p = StreamProcessor(sid="s1")
+    p.handle("updates", {"model": {"messages": [AIMessage(
+        content="",
+        tool_calls=[{"name": "ls", "args": {}, "id": "tc1"}],
+        usage_metadata={"input_tokens": 100, "output_tokens": 20, "total_tokens": 120},
+    )]}})
+    p._last_token_usage_time = 0.0  # 绕开 0.3s 节流
+    events = p.handle("updates", {"model": {"messages": [AIMessage(
+        content="done",
+        usage_metadata={"input_tokens": 150, "output_tokens": 30, "total_tokens": 180},
+    )]}})
+
+    tu = next(e for e in events if e["type"] == "token_usage")
+    assert tu["input_tokens"] == 150      # 最近一次，而不是 250
+    assert tu["output_tokens"] == 30
+    assert tu["context_tokens"] == 150
+    # 跨步累加逻辑（total_usage）已移除：属性不存在，只保留当前 step 的用量
+    assert not hasattr(p, "total_usage")
+    assert p.last_usage["input_tokens"] == 150
+    assert p.last_usage["output_tokens"] == 30
+
+    done = p.finalize(session_id="s", elapsed_time=0.1)[0]
+    assert done["usage"]["input_tokens"] == 150
+    assert done["usage"]["output_tokens"] == 30

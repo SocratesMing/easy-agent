@@ -207,6 +207,17 @@ async def lifespan(app: FastAPI):
             )
             agent_config = {"config": config}
             logger.info("✅ Agent 配置加载成功")
+
+            # 让 deepagents 的 SummarizationMiddleware 使用 config 阈值（基准为
+            # config.llm.max_input_tokens）。必须在任何 create_deep_agent 之前执行：
+            # 官方默认的参数截断是 ("messages", 20)，消息一到 20 条就会把历史里
+            # write_file/execute 的参数砍掉，导致下一轮重建上下文时明显缩水。
+            try:
+                from .agent import install_config_summarization
+
+                install_config_summarization(config)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(f"⚠️ SummarizationMiddleware 阈值接入失败: {exc}")
         else:
             logger.warning("⚠️ 配置未加载，Agent 未初始化，聊天等功能将不可用")
 
