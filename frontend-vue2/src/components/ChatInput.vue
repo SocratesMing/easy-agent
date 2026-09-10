@@ -806,56 +806,6 @@ export default {
   pointer-events: none;
 }
 
-html[data-theme="dark"] .caret-line {
-  /* 光标所在行颜色与 textarea 区域背景一致，点击时不再出现突兀色带 */
-  background: var(--bg-tertiary) !important;
-}
-
-/* textarea 所在区域使用浅灰底（与全局深色风格一致） */
-html[data-theme="dark"] .input-field textarea {
-  background: var(--bg-tertiary) !important;
-}
-
-/* 整个输入框（容器、操作区、模型选择、上传按钮、textarea、光标行）
-   在深色模式下统一为浅灰色，保持视觉一致。 */
-html[data-theme="dark"] .input-box {
-  background: var(--bg-tertiary) !important;
-}
-
-html[data-theme="dark"] .input-actions {
-  background: var(--bg-tertiary) !important;
-}
-
-html[data-theme="dark"] .model-btn {
-  background: var(--bg-tertiary) !important;
-  border-color: var(--border-color) !important;
-}
-
-html[data-theme="dark"] .model-btn:hover:not(.disabled) {
-  background: color-mix(in srgb, var(--accent-color) 15%, var(--bg-tertiary)) !important;
-}
-
-html[data-theme="dark"] .upload-btn {
-  background: var(--bg-tertiary) !important;
-  border-color: #9ca3af !important;
-}
-
-html[data-theme="dark"] .upload-btn svg {
-  color: #ffffff !important;
-}
-
-/* token 用量圆环：全局深色规则把环底描边设成 var(--bg-tertiary)，
-   与灰色输入框背景同色导致不可见，黑色主题下改为白色圆环 */
-html[data-theme="dark"] .context-ring-bg {
-  stroke: #ffffff !important;
-}
-
-html[data-theme="dark"] .context-ring-wrapper {
-  border: 1px solid #ffffff !important;
-  border-radius: 50% !important;
-  box-sizing: border-box !important;
-}
-
 .input-field textarea {
   position: relative;
   z-index: 1;

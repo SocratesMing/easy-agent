@@ -207,6 +207,8 @@ export default {
   },
   data() {
     return {
+      // Vue 2 模板只能访问实例属性：import 进来的常量需挂到 data 上才能在模板中渲染
+      APP_TITLE,
       activeMenu: null,
       showRenameModal: false,
       newTitle: '',
@@ -887,17 +889,5 @@ export default {
 
 .user-dropdown-item:hover {
   background: var(--bg-tertiary);
-}
-</style>
-
-<style>
-/* Dark theme overrides for session list (non-scoped for root HTML) */
-html.dark .session-group-header .group-label {
-  color: #94a3b8;
-}
-
-html.dark .session-group-header .group-count {
-  color: var(--text-secondary);
-  background: #334155;
 }
 </style>

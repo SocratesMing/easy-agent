@@ -27,6 +27,7 @@
           </svg>
           <span>执行计划</span>
           <span class="todo-count">{{ completedCount }}/{{ todos.length }}</span>
+          <span v-if="hasInterrupted" class="todo-tag-stopped" title="对话已停止，未完成的步骤已中断">已中断</span>
         </div>
         <button class="todo-close" @click="expanded = false" title="收起">
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -39,7 +40,7 @@
       </div>
       <div class="todo-list">
         <div
-          v-for="(todo, index) in todos"
+          v-for="(todo, index) in normalizedTodos"
           :key="index"
           class="todo-item"
           :class="todo.status"
@@ -52,6 +53,11 @@
             <div v-else-if="todo.status === 'in_progress'" class="todo-spinner">
               <span></span><span></span><span></span>
             </div>
+            <!-- 对话已停止：进行中的步骤不再转圈，改为静态中断标记 -->
+            <svg v-else-if="todo.status === 'interrupted'" class="todo-interrupted-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" title="已中断">
+              <circle cx="12" cy="12" r="9"></circle>
+              <line x1="9.5" y1="9.5" x2="14.5" y2="14.5"></line>
+            </svg>
             <div v-else class="todo-pending-dot"></div>
           </div>
           <span class="todo-content" :class="{ 'line-through': todo.status === 'completed' }">
@@ -72,6 +78,12 @@ export default {
       type: Array,
       default: () => [],
     },
+    // 当前会话是否仍在流式执行。为 false 时（用户停止 / 出错中断 / 切换会话），
+    // 仍停留在 in_progress 的步骤不再动画转圈，而是显示为「已中断」。
+    active: {
+      type: Boolean,
+      default: false,
+    },
   },
   data() {
     return {
@@ -79,6 +91,18 @@ export default {
     }
   },
   computed: {
+    normalizedTodos() {
+      return (this.todos || []).map((t) =>
+        t.status === 'in_progress' && !this.active
+          ? { ...t, status: 'interrupted' }
+          : t
+      )
+    },
+    hasInterrupted() {
+      return (this.todos || []).some(
+        (t) => t.status === 'in_progress' && !this.active
+      )
+    },
     completedCount() {
       return this.todos.filter((t) => t.status === 'completed').length
     },
@@ -261,6 +285,26 @@ export default {
 
 .todo-item.in_progress {
   background: rgba(124, 106, 239, 0.08);
+}
+
+/* 已中断：对话停止后未完成的步骤，用静态标记代替转圈动画 */
+.todo-item.interrupted {
+  background: rgba(245, 158, 11, 0.08);
+}
+
+.todo-interrupted-icon {
+  width: 15px;
+  height: 15px;
+  color: #f59e0b;
+}
+
+.todo-tag-stopped {
+  font-size: 11px;
+  font-weight: 500;
+  color: #b45309;
+  background: #fef3c7;
+  padding: 1px 6px;
+  border-radius: 8px;
 }
 
 .todo-status-icon {

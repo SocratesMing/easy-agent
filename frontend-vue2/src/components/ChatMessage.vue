@@ -148,6 +148,11 @@
                     <div class="tool-section-label">结果</div>
                     <div class="tool-executing-hint">等待执行结果...</div>
                   </div>
+                  <!-- 消息已结束（停止/中断）但该工具没有结果：显式提示，避免看起来仍在执行 -->
+                  <div v-else-if="!block.result && block.duration == null && !block.pending_approval" class="tool-section">
+                    <div class="tool-section-label">结果</div>
+                    <div class="tool-executing-hint">已中断，未返回结果</div>
+                  </div>
                 </div>
               </div>
 
@@ -256,6 +261,7 @@
 </template>
 
 <script>
+import Vue from 'vue'
 import { createHighlighter } from 'shiki'
 import { marked } from 'marked'
 import { setupMarkedExtensions, normalizeMathDelimiters } from '../markdownSetup.js'
@@ -294,12 +300,52 @@ function escapeHtml(text) {
     .replace(/'/g, '&#039;')
 }
 
-// Shiki 高亮器全局持有：组件每次 mounted 时初始化一次
+// Shiki 高亮器：全局单例（所有消息组件共用，避免每条消息各初始化一次）。
+// 就绪状态用 Vue.observable 承载：模块级普通变量没有响应式，shiki 异步加载完成后
+// 已渲染的代码块不会重新渲染，会一直停留在无高亮的兜底样式上（Vue3 版用 shallowRef
+// 天然具备该能力）。渲染时读取 highlightState.ready 建立依赖即可自动重渲染。
 let highlighter = null
+let highlighterPromise = null
+const highlightState = Vue.observable({ ready: false })
+
+// 高亮结果缓存：流式输出时每来一个分片都会整段重渲染，未变化的代码块可命中缓存，
+// 避免重复调用 shiki（尤其是长回复里包含多段代码时）。
+const highlightCache = new Map()
+const HIGHLIGHT_CACHE_MAX = 200
+
+function fallbackPre(code) {
+  return `<pre class="shiki" style="background: #0d1117; padding: 12px 16px; border-radius: 8px; overflow-x: auto; border: 1px solid #21262d;"><code style="color: #c9d1d9; font-family: 'Fira Code', Consolas, monospace; font-size: 13px;">${escapeHtml(code)}</code></pre>`
+}
+
+function ensureHighlighter() {
+  if (highlighter) return Promise.resolve(highlighter)
+  if (highlighterPromise) return highlighterPromise
+  highlighterPromise = createHighlighter({
+    // 代码块统一使用深色（亮黑）底色，因此高亮主题也用 dark 版本，
+    // 否则浅色主题的 token 颜色放到深底上会发灰、对比度不足。
+    themes: ['github-dark'],
+    langs: [
+      'javascript', 'typescript', 'python', 'java', 'cpp', 'c', 'go',
+      'rust', 'html', 'css', 'json', 'yaml', 'markdown', 'bash', 'shell',
+      'sql', 'xml', 'vue', 'jsx', 'tsx', 'text',
+    ],
+  })
+    .then((h) => {
+      highlighter = h
+      highlightState.ready = true
+      return h
+    })
+    .catch((e) => {
+      console.error('Shiki 初始化失败:', e)
+      highlighterPromise = null
+      return null
+    })
+  return highlighterPromise
+}
 
 function highlightCode(code, lang) {
   if (!highlighter) {
-    return `<pre style="background: #f6f8fa; padding: 12px; border-radius: 8px; overflow-x: auto; border: 1px solid #e1e4e8;"><code style="color: #24292e; font-family: 'Fira Code', Consolas, monospace; font-size: 13px;">${escapeHtml(code)}</code></pre>`
+    return fallbackPre(code)
   }
 
   const normalizedLang = lang ? lang.toLowerCase() : 'text'
@@ -308,14 +354,28 @@ function highlightCode(code, lang) {
   const loadedLangs = highlighter.getLoadedLanguages()
   const validLang = loadedLangs.includes(mappedLang) ? mappedLang : 'text'
 
+  const cacheKey = validLang + '\u0000' + code
+  if (code.length <= 20000) {
+    const cached = highlightCache.get(cacheKey)
+    if (cached) return cached
+  }
+
   try {
-    return highlighter.codeToHtml(code, {
+    const html = highlighter.codeToHtml(code, {
       lang: validLang,
-      theme: 'github-light',
+      theme: 'github-dark',
     })
+    if (code.length <= 20000) {
+      if (highlightCache.size >= HIGHLIGHT_CACHE_MAX) {
+        // 简易淘汰：清掉最早写入的一批
+        highlightCache.delete(highlightCache.keys().next().value)
+      }
+      highlightCache.set(cacheKey, html)
+    }
+    return html
   } catch (e) {
     console.error('Shiki 高亮失败:', e, 'lang:', validLang)
-    return `<pre style="background: #f6f8fa; padding: 12px; border-radius: 8px; overflow-x: auto; border: 1px solid #e1e4e8;"><code style="color: #24292e; font-family: 'Fira Code', Consolas, monospace; font-size: 13px;">${escapeHtml(code)}</code></pre>`
+    return fallbackPre(code)
   }
 }
 
@@ -644,6 +704,8 @@ export default {
     },
     renderMarkdown(content) {
       if (!content) return ''
+      // 读取就绪标记建立渲染依赖：shiki 加载完成后自动重渲染，代码块不会停在兜底样式
+      void highlightState.ready
       try {
         const normalized = normalizeMathDelimiters(content)
         return marked.parse(normalized, { renderer, breaks: true, gfm: true })
@@ -789,20 +851,7 @@ export default {
     },
   },
   mounted() {
-    ;(async () => {
-      try {
-        highlighter = await createHighlighter({
-          themes: ['github-light'],
-          langs: [
-            'javascript', 'typescript', 'python', 'java', 'cpp', 'c', 'go',
-            'rust', 'html', 'css', 'json', 'yaml', 'markdown', 'bash', 'shell',
-            'sql', 'xml', 'vue', 'jsx', 'tsx', 'text',
-          ],
-        })
-      } catch (e) {
-        console.error('Shiki 初始化失败:', e)
-      }
-    })()
+    ensureHighlighter()
   },
   beforeDestroy() {
     if (this._scrollEl && this._onScroll) {
@@ -930,9 +979,6 @@ export default {
   background: var(--process-inline-bg, rgba(0, 0, 0, 0.02));
   border-radius: 0 6px 6px 0;
   font-size: 14px;
-}
-html[data-theme="dark"] .process-body .process-inline-content {
-  background: var(--process-inline-bg, rgba(255, 255, 255, 0.04));
 }
 .message {
   display: flex;
@@ -1095,20 +1141,6 @@ html[data-theme="dark"] .process-body .process-inline-content {
   background: #F1F5F9;
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 .thinking-block {
   display: flex;
   flex-direction: column;
@@ -1226,122 +1258,124 @@ html[data-theme="dark"] .process-body .process-inline-content {
   overflow-y: auto;
 }
 
-.thinking-text ::v-deep(p) {
+.thinking-text ::v-deep p {
   margin: 0 0 12px 0;
 }
 
-.thinking-text ::v-deep(p:last-child) {
+.thinking-text ::v-deep p:last-child {
   margin-bottom: 0;
 }
 
-.thinking-text ::v-deep(ol),
-.thinking-text ::v-deep(ul) {
+.thinking-text ::v-deep ol,
+.thinking-text ::v-deep ul {
   margin: 12px 0;
   padding-left: 24px;
 }
 
-.thinking-text ::v-deep(li) {
+.thinking-text ::v-deep li {
   margin: 6px 0;
 }
 
-.thinking-text ::v-deep(code) {
-  background: #e2e8f0;
+/* 思考过程中的代码：与正文代码块同一套亮黑配色 */
+.thinking-text ::v-deep :not(pre) > code {
+  background: rgba(13, 17, 23, 0.06);
   padding: 2px 6px;
   border-radius: 4px;
   font-size: 13px;
-  color: #475569;
+  color: #0d1117;
   font-family: 'Fira Code', 'Consolas', monospace;
 }
 
-.thinking-text ::v-deep(pre) {
-  background: #f6f8fa;
-  color: #24292e;
+.thinking-text ::v-deep pre {
+  background: #0d1117;
+  color: #c9d1d9;
   padding: 14px;
   border-radius: 8px;
   overflow-x: auto;
   margin: 16px 0;
-  border: 1px solid #e1e4e8;
+  border: 1px solid #21262d;
 }
 
-.thinking-text ::v-deep(pre code) {
+.thinking-text ::v-deep pre code {
   background: transparent;
   padding: 0;
   font-family: 'Fira Code', 'Consolas', 'Monaco', monospace;
   font-size: 13px;
+  color: #c9d1d9;
 }
 
-.thinking-text ::v-deep(.code-block-wrapper) {
-  background: #f6f8fa;
-  border: 1px solid #e1e4e8;
+.thinking-text ::v-deep .code-block-wrapper {
+  background: #0d1117;
+  border: 1px solid #21262d;
   border-radius: 8px;
   margin: 16px 0;
   overflow: hidden;
 }
 
-.thinking-text ::v-deep(.code-header) {
+.thinking-text ::v-deep .code-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  background: #f1f3f5;
+  background: #161b22;
   padding: 8px 12px;
-  border-bottom: 1px solid #e1e4e8;
+  border-bottom: 1px solid #21262d;
 }
 
-.thinking-text ::v-deep(.code-lang) {
+.thinking-text ::v-deep .code-lang {
   font-size: 11px;
-  color: #57606a;
+  color: #8b949e;
   font-weight: 500;
 }
 
-.thinking-text ::v-deep(.code-block-wrapper pre) {
+.thinking-text ::v-deep .code-block-wrapper pre {
   margin: 0;
   border: none;
   padding: 14px;
 }
 
-.thinking-text ::v-deep(.code-block-wrapper pre code) {
+.thinking-text ::v-deep .code-block-wrapper pre code {
   font-family: 'Fira Code', 'Consolas', 'Monaco', monospace;
   font-size: 13px;
 }
 
-.thinking-text ::v-deep(.code-block-wrapper .shiki) {
+.thinking-text ::v-deep .code-block-wrapper .shiki {
   background: transparent !important;
   margin: 0;
 }
 
-.thinking-text ::v-deep(.code-block-wrapper .shiki code) {
+.thinking-text ::v-deep .code-block-wrapper .shiki code {
   font-family: 'Fira Code', 'Consolas', 'Monaco', monospace;
   font-size: 13px;
 }
 
-.thinking-text ::v-deep(.code-copy-btn) {
+.thinking-text ::v-deep .code-copy-btn {
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 4px;
   padding: 4px 8px;
-  background: #ffffff;
-  border: 1px solid #d0d7de;
+  background: #21262d;
+  border: 1px solid #30363d;
   border-radius: 4px;
-  color: #57606a;
+  color: #8b949e;
   font-size: 11px;
   cursor: pointer;
   transition: all 0.2s;
   height: 24px;
 }
 
-.thinking-text ::v-deep(.code-copy-btn:hover) {
-  background: #f3f4f6;
-  border-color: #8c959f;
-  color: #24292e;
+.thinking-text ::v-deep .code-copy-btn:hover {
+  background: #30363d;
+  border-color: #484f58;
+  color: #c9d1d9;
 }
 
-.thinking-text ::v-deep(.code-copy-btn svg) {
+.thinking-text ::v-deep .code-copy-btn svg {
   width: 12px;
   height: 12px;
 }
 
-.thinking-text ::v-deep(blockquote) {
+.thinking-text ::v-deep blockquote {
   border-left: 3px solid #cbd5e1;
   padding-left: 16px;
   margin: 12px 0;
@@ -1572,50 +1606,6 @@ html[data-theme="dark"] .process-body .process-inline-content {
   background: #b91c1c;
 }
 
-html[data-theme="dark"] .tool-approval-section {
-  background: #422006;
-  border-color: #a16207;
-}
-
-html[data-theme="dark"] .approval-prompt {
-  color: #fbbf24;
-}
-
-html[data-theme="dark"] .approval-warning-icon {
-  color: #f59e0b;
-}
-
-html[data-theme="dark"] .approval-file-list {
-  background: rgba(251, 191, 36, 0.08);
-  border-color: rgba(161, 98, 7, 0.4);
-}
-
-html[data-theme="dark"] .approval-file-item {
-  color: #fde68a;
-}
-
-html[data-theme="dark"] .approval-file-icon {
-  color: #fbbf24;
-}
-
-html[data-theme="dark"] .tool-status-text.pending {
-  color: #fbbf24;
-  background: #78350f;
-}
-
-html[data-theme="dark"] .approval-badge.status-pending {
-  color: #fbbf24;
-  background: #78350f;
-}
-html[data-theme="dark"] .approval-badge.status-approved {
-  color: #4ade80;
-  background: #14532d;
-}
-html[data-theme="dark"] .approval-badge.status-rejected {
-  color: #f87171;
-  background: #7f1d1d;
-}
-
 .tool-status-icon {
   width: 14px;
   height: 14px;
@@ -1810,7 +1800,7 @@ html[data-theme="dark"] .approval-badge.status-rejected {
 }
 
 /* GitHub 风格 emoji 短代码渲染后的 unicode 字符 */
-.message-text ::v-deep(.github-emoji) {
+.message-text ::v-deep .github-emoji {
   display: inline;
   vertical-align: -0.125em;
   font-size: 1.1em;
@@ -1818,13 +1808,13 @@ html[data-theme="dark"] .approval-badge.status-rejected {
 }
 
 /* KaTeX 数学公式块级与行内展示 */
-.message-text ::v-deep(.katex) {
+.message-text ::v-deep .katex {
   font-size: 1.05em;
   /* 行内公式作为一个整体，避免被 word-break 从中间断开 */
   white-space: nowrap;
 }
 
-.message-text ::v-deep(.katex-display) {
+.message-text ::v-deep .katex-display {
   margin: 12px 0;
   padding: 4px 0;
   max-width: 100%;
@@ -1834,19 +1824,19 @@ html[data-theme="dark"] .approval-badge.status-rejected {
 
 /* 视口较窄时自动缩小块级公式，尽量避免溢出气泡（用 @media 而非 @container，避免影响布局） */
 @media (max-width: 640px) {
-  .message-text ::v-deep(.katex-display) {
+  .message-text ::v-deep .katex-display {
     font-size: 0.9em;
   }
 }
 
 @media (max-width: 520px) {
-  .message-text ::v-deep(.katex-display) {
+  .message-text ::v-deep .katex-display {
     font-size: 0.78em;
   }
 }
 
 @media (max-width: 400px) {
-  .message-text ::v-deep(.katex-display) {
+  .message-text ::v-deep .katex-display {
     font-size: 0.66em;
   }
 }
@@ -1873,100 +1863,111 @@ html[data-theme="dark"] .approval-badge.status-rejected {
   margin-top: 1px;
 }
 
-.message-text ::v-deep(pre) {
-  background: #f6f8fa;
-  color: #24292e;
+/* 代码展示统一「亮黑」配色：底 #0d1117 / 头部与行号槽 #161b22 / 边框 #21262d /
+   正文 #c9d1d9 / 次要文字 #8b949e，与 shiki github-dark 主题 token 颜色配套。 */
+.message-text ::v-deep pre {
+  background: #0d1117;
+  color: #c9d1d9;
   padding: 14px;
   border-radius: 8px;
   overflow-x: auto;
   margin: 16px 0;
-  border: 1px solid #e1e4e8;
+  border: 1px solid #21262d;
   width: 100%;
   box-sizing: border-box;
 }
 
-.message-text ::v-deep(pre code) {
+.message-text ::v-deep pre code {
   font-family: 'Fira Code', 'Consolas', 'Monaco', monospace;
   font-size: 13px;
+  color: #c9d1d9;
 }
 
-.message-text ::v-deep(code) {
+.message-text ::v-deep code {
   font-family: 'Fira Code', 'Consolas', monospace;
   font-size: 13px;
 }
 
-.message-text ::v-deep(p) {
+/* 行内代码：浅色主题下给一点对比度很低的底色，避免与正文混在一起 */
+.message-text ::v-deep :not(pre) > code {
+  background: rgba(13, 17, 23, 0.06);
+  color: #0d1117;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.message-text ::v-deep p {
   margin: 20px 0;
 }
 
-.message-text ::v-deep(p:first-child) {
+.message-text ::v-deep p:first-child {
   margin-top: 0;
 }
 
-.message-text ::v-deep(p:last-child) {
+.message-text ::v-deep p:last-child {
   margin-bottom: 0;
 }
 
-.message-text ::v-deep(ul), .message-text ::v-deep(ol) {
+.message-text ::v-deep ul, .message-text ::v-deep ol {
   margin: 20px 0;
   padding-left: 28px;
 }
 
-.message-text ::v-deep(li) {
+.message-text ::v-deep li {
   margin: 12px 0;
 }
 
-.message-text ::v-deep(blockquote) {
+.message-text ::v-deep blockquote {
   border-left: 3px solid #0ea5e9;
   margin: 20px 0;
   padding-left: 16px;
   color: #64748b;
 }
 
-.message-text ::v-deep(h1),
-.message-text ::v-deep(h2),
-.message-text ::v-deep(h3),
-.message-text ::v-deep(h4),
-.message-text ::v-deep(h5),
-.message-text ::v-deep(h6) {
+.message-text ::v-deep h1,
+.message-text ::v-deep h2,
+.message-text ::v-deep h3,
+.message-text ::v-deep h4,
+.message-text ::v-deep h5,
+.message-text ::v-deep h6 {
   margin: 28px 0 20px 0;
   font-weight: 600;
   line-height: 1.4;
 }
 
-.message-text ::v-deep(h1:first-child),
-.message-text ::v-deep(h2:first-child),
-.message-text ::v-deep(h3:first-child),
-.message-text ::v-deep(h4:first-child),
-.message-text ::v-deep(h5:first-child),
-.message-text ::v-deep(h6:first-child) {
+.message-text ::v-deep h1:first-child,
+.message-text ::v-deep h2:first-child,
+.message-text ::v-deep h3:first-child,
+.message-text ::v-deep h4:first-child,
+.message-text ::v-deep h5:first-child,
+.message-text ::v-deep h6:first-child {
   margin-top: 0;
 }
 
-.message-text ::v-deep(table) {
+.message-text ::v-deep table {
   border-collapse: collapse;
   width: 100%;
   margin: 24px 0;
   font-size: 13px;
 }
 
-.message-text ::v-deep(th),
-.message-text ::v-deep(td) {
+.message-text ::v-deep th,
+.message-text ::v-deep td {
   border: 1px solid #e2e8f0;
   padding: 10px 14px;
   text-align: left;
 }
 
-.message-text ::v-deep(th) {
+.message-text ::v-deep th {
   background: #f1f5f9;
   font-weight: 600;
 }
 
-.message-text ::v-deep(tr:nth-child(even)) {
+.message-text ::v-deep tr:nth-child(even) {
   background: #f8fafc;
 }
 
-.message-text ::v-deep(tr:hover) {
+.message-text ::v-deep tr:hover {
   background: #f1f5f9;
 }
 
@@ -1981,33 +1982,34 @@ html[data-theme="dark"] .approval-badge.status-rejected {
   font-family: 'Microsoft YaHei', '微软雅黑', sans-serif;
 }
 
-.message.user .message-text ::v-deep(pre) {
-  background: rgba(30, 41, 59, 0.08);
-  border: 1px solid rgba(30, 41, 59, 0.15);
+.message.user .message-text ::v-deep pre {
+  background: #0d1117;
+  border: 1px solid #21262d;
+  color: #c9d1d9;
 }
 
-.message.user .message-text ::v-deep(blockquote) {
+.message.user .message-text ::v-deep blockquote {
   border-left-color: rgba(30, 41, 59, 0.2);
 }
 
-.message.user .message-text ::v-deep(table) {
+.message.user .message-text ::v-deep table {
   border-color: rgba(30, 41, 59, 0.15);
 }
 
-.message.user .message-text ::v-deep(th),
-.message.user .message-text ::v-deep(td) {
+.message.user .message-text ::v-deep th,
+.message.user .message-text ::v-deep td {
   border-color: rgba(30, 41, 59, 0.15);
 }
 
-.message.user .message-text ::v-deep(th) {
+.message.user .message-text ::v-deep th {
   background: rgba(30, 41, 59, 0.06);
 }
 
-.message.user .message-text ::v-deep(tr:nth-child(even)) {
+.message.user .message-text ::v-deep tr:nth-child(even) {
   background: rgba(30, 41, 59, 0.03);
 }
 
-.message.user .message-text ::v-deep(tr:hover) {
+.message.user .message-text ::v-deep tr:hover {
   background: rgba(30, 41, 59, 0.06);
 }
 
@@ -2092,228 +2094,93 @@ html[data-theme="dark"] .approval-badge.status-rejected {
   height: 18px;
 }
 
-.message-text ::v-deep(.code-block-wrapper) {
+.message-text ::v-deep .code-block-wrapper {
   position: relative;
   margin: 8px 0;
   width: 100%;
 }
 
-.message-text ::v-deep(.code-block-wrapper pre) {
+.message-text ::v-deep .code-block-wrapper pre {
   margin: 0;
   padding: 12px 16px;
   overflow-x: auto;
   border-radius: 0 0 8px 8px;
-  background: #f6f8fa !important;
-  border: 1px solid #e1e4e8;
+  background: #0d1117 !important;
+  border: 1px solid #21262d;
   border-top: none;
 }
 
-.message-text ::v-deep(.code-block-wrapper pre code) {
+.message-text ::v-deep .code-block-wrapper pre code {
   font-family: 'Fira Code', 'Consolas', 'Monaco', monospace;
   font-size: 13px;
   line-height: 1.5;
-  color: #24292e;
+  color: #c9d1d9;
 }
 
-.message-text ::v-deep(.code-block-wrapper .shiki) {
-  background: #f6f8fa !important;
+.message-text ::v-deep .code-block-wrapper .shiki {
+  background: #0d1117 !important;
   padding: 12px 16px;
   margin: 0;
   border-radius: 0 0 8px 8px;
   overflow-x: auto;
 }
 
-.message-text ::v-deep(.code-block-wrapper .shiki code) {
+.message-text ::v-deep .code-block-wrapper .shiki code {
   display: block;
   font-family: 'Fira Code', 'Consolas', 'Monaco', monospace;
   font-size: 13px;
   line-height: 1.5;
 }
 
-.message-text ::v-deep(.code-header) {
+.message-text ::v-deep .code-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  background: #f1f3f5;
+  background: #161b22;
   padding: 10px 16px;
   border-radius: 8px 8px 0 0;
   min-height: 40px;
-  border: 1px solid #e1e4e8;
+  border: 1px solid #21262d;
   border-bottom: none;
 }
 
-.message-text ::v-deep(.code-lang) {
+.message-text ::v-deep .code-lang {
   font-size: 12px;
-  color: #57606a;
+  color: #8b949e;
   font-weight: 500;
   display: flex;
   align-items: center;
 }
 
-.message-text ::v-deep(.code-copy-btn) {
+.message-text ::v-deep .code-copy-btn {
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 4px;
   padding: 6px 10px;
-  background: #ffffff;
-  border: 1px solid #d0d7de;
+  background: #21262d;
+  border: 1px solid #30363d;
   border-radius: 6px;
-  color: #57606a;
+  color: #8b949e;
   font-size: 12px;
   cursor: pointer;
   transition: all 0.2s;
   height: 28px;
 }
 
-.message-text ::v-deep(.code-copy-btn:hover) {
-  background: #f3f4f6;
-  border-color: #8c959f;
-  color: #24292e;
+.message-text ::v-deep .code-copy-btn:hover {
+  background: #30363d;
+  border-color: #484f58;
+  color: #c9d1d9;
 }
 
-.message-text ::v-deep(.code-copy-btn.copied) {
+.message-text ::v-deep .code-copy-btn.copied {
   color: #22c55e;
 }
 
-.message-text ::v-deep(.code-copy-btn svg) {
+.message-text ::v-deep .code-copy-btn svg {
   width: 14px;
   height: 14px;
-}
-
-/* ========== 黑色主题：代码块 ========== */
-/* shiki 用 github-light 主题生成内联白色背景的 HTML，
-   dark 主题下需强制覆盖，否则代码块背景/边框仍为白色 */
-html[data-theme="dark"] .message-text ::v-deep(.code-block-wrapper pre) {
-  background: transparent !important;
-  border-color: #30363d !important;
-}
-
-html[data-theme="dark"] .message-text ::v-deep(.code-block-wrapper pre code) {
-  color: #c9d1d9;
-}
-
-html[data-theme="dark"] .message-text ::v-deep(.code-block-wrapper .shiki) {
-  background: transparent !important;
-}
-
-html[data-theme="dark"] .message-text ::v-deep(.code-block-wrapper .shiki code) {
-  color: #c9d1d9;
-}
-
-html[data-theme="dark"] .message-text ::v-deep(.code-header) {
-  background: #161b22;
-  border-color: #30363d;
-}
-
-html[data-theme="dark"] .message-text ::v-deep(.code-lang) {
-  color: #8b949e;
-}
-
-html[data-theme="dark"] .message-text ::v-deep(.code-copy-btn) {
-  background: #21262d;
-  border-color: #30363d;
-  color: #8b949e;
-}
-
-html[data-theme="dark"] .message-text ::v-deep(.code-copy-btn:hover) {
-  background: #30363d;
-  border-color: #8b949e;
-  color: #c9d1d9;
-}
-
-/* 思考过程中的代码块：全局深色规则会把 pre/code 统一成灰底，
-   这里与正文代码块保持一致（深色 GitHub 风格），避免显示灰色/白色底。 */
-html[data-theme="dark"] .thinking-text ::v-deep(.code-block-wrapper) {
-  background: transparent;
-  border-color: #30363d;
-}
-
-html[data-theme="dark"] .thinking-text ::v-deep(.code-block-wrapper pre),
-html[data-theme="dark"] .thinking-text ::v-deep(.code-block-wrapper pre code) {
-  background: transparent !important;
-  color: #c9d1d9;
-}
-
-html[data-theme="dark"] .thinking-text ::v-deep(.code-block-wrapper .shiki),
-html[data-theme="dark"] .thinking-text ::v-deep(.code-block-wrapper .shiki code) {
-  background: transparent !important;
-  color: #c9d1d9;
-}
-
-html[data-theme="dark"] .thinking-text ::v-deep(.code-header) {
-  background: #161b22;
-  border-color: #30363d;
-}
-
-html[data-theme="dark"] .thinking-text ::v-deep(.code-lang) {
-  color: #8b949e;
-}
-
-html[data-theme="dark"] .thinking-text ::v-deep(.code-copy-btn) {
-  background: #21262d;
-  border-color: #30363d;
-  color: #8b949e;
-}
-
-html[data-theme="dark"] .thinking-text ::v-deep(.code-copy-btn:hover) {
-  background: #30363d;
-  border-color: #8b949e;
-  color: #c9d1d9;
-}
-
-/* 行内代码深色适配 */
-html[data-theme="dark"] .message-text ::v-deep(code),
-html[data-theme="dark"] .thinking-text ::v-deep(code) {
-  background: #30363d !important;
-  color: #c9d1d9 !important;
-}
-
-/* ========== 用户气泡 / 文件卡片 / 表格 / 工具块 深色适配 ========== */
-html[data-theme="dark"] .message.user .message-text {
-  background: var(--bg-tertiary) !important;
-  color: var(--text-primary) !important;
-  border-color: var(--border-color) !important;
-}
-
-html[data-theme="dark"] .file-card {
-  background: var(--bg-tertiary) !important;
-  border-color: var(--border-color) !important;
-}
-html[data-theme="dark"] .file-name {
-  color: var(--text-primary) !important;
-}
-html[data-theme="dark"] .remove-file-btn {
-  background: var(--bg-secondary) !important;
-}
-html[data-theme="dark"] .remove-file-btn svg {
-  color: var(--text-secondary) !important;
-}
-
-html[data-theme="dark"] .message-text ::v-deep(th),
-html[data-theme="dark"] .message-text ::v-deep(td) {
-  border-color: var(--border-color) !important;
-}
-html[data-theme="dark"] .message-text ::v-deep(th) {
-  background: var(--bg-tertiary) !important;
-}
-html[data-theme="dark"] .message-text ::v-deep(tr:nth-child(even)) {
-  background: var(--bg-tertiary) !important;
-}
-html[data-theme="dark"] .message-text ::v-deep(tr:hover) {
-  background: var(--bg-secondary) !important;
-}
-
-html[data-theme="dark"] .tool-name-badge {
-  background: color-mix(in srgb, var(--accent-color) 20%, transparent) !important;
-  color: var(--accent-color) !important;
-}
-html[data-theme="dark"] .tool-section {
-  background: var(--bg-tertiary) !important;
-}
-html[data-theme="dark"] .tool-status-text.executing {
-  color: #38bdf8 !important;
-  background: rgba(56, 189, 248, 0.15) !important;
 }
 
 .waiting-animation {

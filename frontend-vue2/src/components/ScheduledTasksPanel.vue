@@ -953,15 +953,4 @@ export default {
 </style>
 
 <style>
-html[data-theme="dark"] .scheduled-tasks-panel {
-  /* 与全局深色主题保持一致（纯黑/中性灰），避免面板显示成蓝色调 */
-  --bg-primary: #000000;
-  --bg-card: #1a1a1a;
-  --bg-hover: #2a2a2a;
-  --border-color: #3a3a3a;
-  --text-primary: #f5f5f5;
-  --text-secondary: #a3a3a3;
-  --text-tertiary: #6b7280;
-  --accent: #7c6aef;
-}
 </style>

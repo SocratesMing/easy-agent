@@ -72,7 +72,7 @@ export default {
   background: #f5f5f5;
 }
 
-.docx-preview-container ::v-deep(.docx-preview-content) {
+.docx-preview-container ::v-deep .docx-preview-content {
   background: white;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
   margin: 16px auto;

@@ -308,53 +308,6 @@
             </div>
           </div>
 
-          <!-- 外观 -->
-          <div v-if="activeTab === 'appearance'" class="content-panel">
-            <div class="panel-header">
-              <h3>外观</h3>
-              <p class="panel-desc">切换界面的显示主题</p>
-            </div>
-            <div class="appearance-options">
-              <div
-                class="theme-option"
-                :class="{ active: !isDarkTheme }"
-                @click="switchTheme(false)"
-              >
-                <div class="theme-preview theme-preview-light">
-                  <div class="preview-bar"></div>
-                  <div class="preview-line"></div>
-                  <div class="preview-line short"></div>
-                </div>
-                <div class="theme-option-info">
-                  <span class="theme-option-name">浅色主题</span>
-                  <span class="theme-option-desc">明亮清新，适合白天使用</span>
-                </div>
-                <svg v-if="!isDarkTheme" class="theme-check" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
-                  <polyline points="22 4 12 14.01 9 11.01"></polyline>
-                </svg>
-              </div>
-              <div
-                class="theme-option"
-                :class="{ active: isDarkTheme }"
-                @click="switchTheme(true)"
-              >
-                <div class="theme-preview theme-preview-dark">
-                  <div class="preview-bar"></div>
-                  <div class="preview-line"></div>
-                  <div class="preview-line short"></div>
-                </div>
-                <div class="theme-option-info">
-                  <span class="theme-option-name">深色主题</span>
-                  <span class="theme-option-desc">柔和护眼，适合夜间使用</span>
-                </div>
-                <svg v-if="isDarkTheme" class="theme-check" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
-                  <polyline points="22 4 12 14.01 9 11.01"></polyline>
-                </svg>
-              </div>
-            </div>
-          </div>
         </div>
       </div>
     </div>
@@ -378,7 +331,9 @@ import {
 } from '../api/settings.js'
 import { syncMarketAddedState } from '../utils/mcpMarket.js'
 
-// 侧边导航（无需响应式）
+// 侧边导航。
+// 注意：Vue 2 普通 <script> 的模块级常量不会暴露给模板（模板编译在独立模块中，
+// 只能访问组件实例上的属性），必须挂到 data 上，否则导航渲染为空。
 const navItems = [
   {
     key: 'memory',
@@ -395,19 +350,12 @@ const navItems = [
     label: 'MCP',
     icon: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"/><rect x="2" y="14" width="20" height="8" rx="2" ry="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>',
   },
-  {
-    key: 'appearance',
-    label: '外观',
-    icon: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><line x1="2" y1="12" x2="22" y2="12"/></svg>',
-  },
 ]
 
 export default {
-  props: {
-    isDarkTheme: { type: Boolean, default: false }
-  },
   data() {
     return {
+      navItems,
       activeTab: 'memory',
       loading: false,
       // 记忆
@@ -490,10 +438,6 @@ export default {
     this.loadTabData()
   },
   methods: {
-    switchTheme(dark) {
-      if (dark === this.isDarkTheme) return
-      this.$emit('toggle-theme')
-    },
     async loadTabData() {
       this.loading = true
       try {
@@ -887,7 +831,7 @@ export default {
   justify-content: center;
 }
 
-.nav-icon ::v-deep(svg) {
+.nav-icon ::v-deep svg {
   width: 20px;
   height: 20px;
 }
@@ -1285,106 +1229,6 @@ export default {
   font-size: 14px;
 }
 
-/* 外观 - 主题切换 */
-.appearance-options {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.theme-option {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  padding: 16px;
-  background: var(--bg-tertiary);
-  border: 2px solid #e2e8f0;
-  border-radius: 10px;
-  cursor: pointer;
-  transition: all 0.2s;
-}
-
-.theme-option:hover {
-  border-color: #cbd5e1;
-  background: var(--bg-tertiary);
-}
-
-.theme-option.active {
-  border-color: #0ea5e9;
-  background: color-mix(in srgb, var(--accent-color) 18%, transparent);
-}
-
-.theme-preview {
-  width: 80px;
-  height: 56px;
-  border-radius: 6px;
-  padding: 8px;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  flex-shrink: 0;
-  border: 1px solid #e2e8f0;
-}
-
-.theme-preview-light {
-  background: var(--bg-secondary);
-}
-
-.theme-preview-dark {
-  background: #1a1a2e;
-}
-
-.theme-preview .preview-bar {
-  height: 8px;
-  border-radius: 3px;
-  background: #0ea5e9;
-  width: 60%;
-}
-
-.theme-preview-dark .preview-bar {
-  background: #7c6aef;
-}
-
-.theme-preview .preview-line {
-  height: 4px;
-  border-radius: 2px;
-  background: #cbd5e1;
-  width: 100%;
-}
-
-.theme-preview-dark .preview-line {
-  background: #475569;
-}
-
-.theme-preview .preview-line.short {
-  width: 60%;
-}
-
-.theme-option-info {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.theme-option-name {
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--text-primary);
-}
-
-.theme-option-desc {
-  font-size: 12px;
-  color: var(--text-secondary);
-}
-
-.theme-check {
-  width: 20px;
-  height: 20px;
-  color: #0ea5e9;
-  flex-shrink: 0;
-}
-
 /* MCP 增强样式 */
 .panel-header-row {
   display: flex;
@@ -1705,89 +1549,5 @@ export default {
   word-wrap: break-word;
   max-height: 400px;
   overflow-y: auto;
-}
-
-/* Dark theme overrides */
-html[data-theme="dark"] .mcp-dialog,
-html[data-theme="dark"] .settings-modal {
-  background: #1e293b;
-}
-
-html[data-theme="dark"] .mcp-dialog-header h4,
-html[data-theme="dark"] .settings-header h2 {
-  color: #e2e8f0;
-}
-
-html[data-theme="dark"] .mcp-dialog-desc,
-html[data-theme="dark"] .panel-desc {
-  color: var(--text-secondary);
-}
-
-html[data-theme="dark"] .mcp-json-input,
-html[data-theme="dark"] .mcp-preview-content,
-html[data-theme="dark"] .mcp-dialog-example {
-  background: #0f172a;
-  border-color: var(--text-secondary);
-  color: #e2e8f0;
-}
-
-html[data-theme="dark"] .add-mode-tabs {
-  background: #0f172a;
-  border-color: var(--text-secondary);
-}
-
-html[data-theme="dark"] .add-mode-tab.active {
-  background: #334155;
-  color: #38bdf8;
-  box-shadow: none;
-}
-
-html[data-theme="dark"] .action-btn-outline {
-  background: #334155;
-  border-color: var(--text-secondary);
-  color: #cbd5e1;
-}
-
-html[data-theme="dark"] .mcp-card {
-  background: #0f172a;
-  border-color: var(--text-secondary);
-}
-
-html[data-theme="dark"] .mcp-api-key-panel,
-html[data-theme="dark"] .mcp-api-key-field input,
-html[data-theme="dark"] .mcp-api-key-toggle,
-html[data-theme="dark"] .mcp-key-business-select,
-html[data-theme="dark"] .mcp-snippet {
-  background: #0f172a;
-  border-color: var(--text-secondary);
-}
-
-html[data-theme="dark"] .mcp-api-key-field input,
-html[data-theme="dark"] .mcp-key-business-select,
-html[data-theme="dark"] .mcp-snippet {
-  color: #e2e8f0;
-}
-
-html[data-theme="dark"] .mcp-api-key-field input {
-  color: #e2e8f0;
-}
-
-html[data-theme="dark"] .market-added-tag,
-html[data-theme="dark"] .market-add-btn:disabled {
-  background: #052e16;
-  color: #86efac;
-}
-
-html[data-theme="dark"] .mcp-name {
-  color: #e2e8f0;
-}
-
-html[data-theme="dark"] .mcp-delete-btn {
-  color: var(--text-secondary);
-}
-
-html[data-theme="dark"] .mcp-delete-btn:hover {
-  background: #451a1a;
-  color: #f87171;
 }
 </style>

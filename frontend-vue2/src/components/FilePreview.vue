@@ -99,7 +99,8 @@ import { API_BASE_URL } from '../config.js'
 import { marked } from 'marked'
 import { setupMarkedExtensions, normalizeMathDelimiters } from '../markdownSetup.js'
 import hljs from 'highlight.js'
-import 'highlight.js/styles/github.css'
+// 代码展示统一亮黑底色，配套使用 highlight.js 的深色主题
+import 'highlight.js/styles/github-dark.css'
 import DocxPreview from './DocxPreview.vue'
 import ExcelPreview from './ExcelPreview.vue'
 import { getStoredToken } from '../api/auth.js'
@@ -634,7 +635,7 @@ export default {
   overflow: auto;
 }
 
-.preview-docx ::v-deep(.docx-preview) {
+.preview-docx ::v-deep .docx-preview {
   width: 100%;
   height: 100%;
 }
@@ -646,9 +647,9 @@ export default {
   overflow: auto;
 }
 
-.preview-excel ::v-deep(.excel-preview),
-.preview-excel ::v-deep(.vue-office-excel),
-.preview-excel ::v-deep(.x-spreadsheet) {
+.preview-excel ::v-deep .excel-preview,
+.preview-excel ::v-deep .vue-office-excel,
+.preview-excel ::v-deep .x-spreadsheet {
   width: 100%;
   min-height: 400px;
 }
@@ -697,7 +698,7 @@ export default {
   width: 100%;
   height: 100%;
   overflow: auto;
-  background: #ffffff;
+  background: #0d1117;
 }
 
 .preview-text .code-block {
@@ -713,10 +714,10 @@ export default {
   flex-direction: column;
   padding: 16px 8px 16px 16px;
   text-align: right;
-  color: #94a3b8;
+  color: #6e7681;
   user-select: none;
-  border-right: 1px solid #e2e8f0;
-  background: #f8fafc;
+  border-right: 1px solid #21262d;
+  background: #161b22;
   flex-shrink: 0;
 }
 
@@ -728,12 +729,12 @@ export default {
 .preview-text pre {
   margin: 0;
   padding: 16px;
-  color: #24292e;
+  color: #c9d1d9;
   white-space: pre-wrap;
   word-break: break-all;
   flex: 1;
   overflow-x: auto;
-  background: #ffffff;
+  background: #0d1117;
 }
 
 .preview-csv {
@@ -801,19 +802,19 @@ export default {
   background: #ffffff;
 }
 
-::v-deep(.markdown-body) {
+::v-deep .markdown-body {
   max-width: 900px;
   margin: 0 auto;
   color: #24292f;
   line-height: 1.6;
 }
 
-::v-deep(.markdown-body h1),
-::v-deep(.markdown-body h2),
-::v-deep(.markdown-body h3),
-::v-deep(.markdown-body h4),
-::v-deep(.markdown-body h5),
-::v-deep(.markdown-body h6) {
+::v-deep .markdown-body h1,
+::v-deep .markdown-body h2,
+::v-deep .markdown-body h3,
+::v-deep .markdown-body h4,
+::v-deep .markdown-body h5,
+::v-deep .markdown-body h6 {
   margin-top: 24px;
   margin-bottom: 16px;
   font-weight: 600;
@@ -822,113 +823,116 @@ export default {
   padding-bottom: 8px;
 }
 
-::v-deep(.markdown-body h1) { font-size: 2em; }
-::v-deep(.markdown-body h2) { font-size: 1.5em; }
-::v-deep(.markdown-body h3) { font-size: 1.25em; }
-::v-deep(.markdown-body h4) { font-size: 1em; }
+::v-deep .markdown-body h1 { font-size: 2em; }
+::v-deep .markdown-body h2 { font-size: 1.5em; }
+::v-deep .markdown-body h3 { font-size: 1.25em; }
+::v-deep .markdown-body h4 { font-size: 1em; }
 
-::v-deep(.markdown-body p) {
+::v-deep .markdown-body p {
   margin-bottom: 16px;
 }
 
-::v-deep(.markdown-body code) {
+/* Markdown 预览里的代码同样使用亮黑底 + github-dark 的 token 配色 */
+::v-deep .markdown-body :not(pre) > code {
   padding: 0.2em 0.4em;
   margin: 0;
   font-size: 85%;
-  background-color: #f6f8fa;
+  background-color: rgba(13, 17, 23, 0.06);
   border-radius: 6px;
   font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
 }
 
-::v-deep(.markdown-body pre) {
+::v-deep .markdown-body pre {
   padding: 16px;
   overflow: auto;
   font-size: 85%;
   line-height: 1.45;
-  background-color: #f6f8fa;
+  background-color: #0d1117;
+  color: #c9d1d9;
   border-radius: 6px;
   margin-bottom: 16px;
-  border: 1px solid #e1e4e8;
+  border: 1px solid #21262d;
 }
 
-::v-deep(.markdown-body pre code) {
+::v-deep .markdown-body pre code {
   padding: 0;
   margin: 0;
   background-color: transparent;
+  color: #c9d1d9;
   border-radius: 0;
   white-space: pre;
   display: block;
 }
 
-::v-deep(.markdown-body ul),
-::v-deep(.markdown-body ol) {
+::v-deep .markdown-body ul,
+::v-deep .markdown-body ol {
   padding-left: 2em;
   margin-bottom: 16px;
 }
 
-::v-deep(.markdown-body li) {
+::v-deep .markdown-body li {
   margin-bottom: 4px;
 }
 
-::v-deep(.markdown-body blockquote) {
+::v-deep .markdown-body blockquote {
   padding: 0 1em;
   color: #6a737d;
   border-left: 0.25em solid #d0d7de;
   margin: 0 0 16px 0;
 }
 
-::v-deep(.markdown-body table) {
+::v-deep .markdown-body table {
   border-collapse: collapse;
   width: 100%;
   margin-bottom: 16px;
   border-spacing: 0;
 }
 
-::v-deep(.markdown-body thead) {
+::v-deep .markdown-body thead {
   display: table-header-group;
   vertical-align: middle;
   border-color: inherit;
 }
 
-::v-deep(.markdown-body tbody) {
+::v-deep .markdown-body tbody {
   display: table-row-group;
   vertical-align: middle;
   border-color: inherit;
 }
 
-::v-deep(.markdown-body tr) {
+::v-deep .markdown-body tr {
   display: table-row;
   vertical-align: inherit;
   border-color: inherit;
 }
 
-::v-deep(.markdown-body tr:nth-child(2n)) {
+::v-deep .markdown-body tr:nth-child(2n) {
   background-color: #f6f8fa;
 }
 
-::v-deep(.markdown-body table th),
-::v-deep(.markdown-body table td) {
+::v-deep .markdown-body table th,
+::v-deep .markdown-body table td {
   padding: 6px 13px;
   border: 1px solid #d0d7de;
   display: table-cell;
   vertical-align: middle;
 }
 
-::v-deep(.markdown-body table th) {
+::v-deep .markdown-body table th {
   font-weight: 600;
   background-color: #f6f8fa;
 }
 
-::v-deep(.markdown-body table td) {
+::v-deep .markdown-body table td {
   color: #24292f;
 }
 
-::v-deep(.markdown-body a) {
+::v-deep .markdown-body a {
   color: #0366d6;
   text-decoration: none;
 }
 
-::v-deep(.markdown-body a:hover) {
+::v-deep .markdown-body a:hover {
   text-decoration: underline;
 }
 

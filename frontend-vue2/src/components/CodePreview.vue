@@ -43,6 +43,27 @@ const languageMap = {
   makefile: 'makefile',
 }
 
+// 与聊天代码块一致的「亮黑」配色（背景 #0d1117 / 前景 #c9d1d9 / 行号槽 #161b22）
+const EDITOR_THEME = 'easy-agent-dark'
+monaco.editor.defineTheme(EDITOR_THEME, {
+  base: 'vs-dark',
+  inherit: true,
+  rules: [],
+  colors: {
+    'editor.background': '#0d1117',
+    'editor.foreground': '#c9d1d9',
+    'editorGutter.background': '#0d1117',
+    'editorLineNumber.foreground': '#6e7681',
+    'editorLineNumber.activeForeground': '#c9d1d9',
+    'editor.lineHighlightBackground': '#161b22',
+    'editor.selectionBackground': '#264f78',
+    'editorIndentGuide.background1': '#21262d',
+    'editorIndentGuide.activeBackground1': '#30363d',
+    'editorWidget.background': '#161b22',
+    'editorWidget.border': '#30363d',
+  },
+})
+
 export default {
   name: 'CodePreview',
   props: {
@@ -83,7 +104,7 @@ export default {
       this.editor = monaco.editor.create(el, {
         value: content,
         language: lang,
-        theme: 'vs-dark',
+        theme: EDITOR_THEME,
         readOnly: this.readOnly,
         automaticLayout: true,
         minimap: { enabled: false },
@@ -142,6 +163,6 @@ export default {
   width: 100%;
   height: 100%;
   overflow: hidden;
-  background: #1e1e1e;
+  background: #0d1117;
 }
 </style>

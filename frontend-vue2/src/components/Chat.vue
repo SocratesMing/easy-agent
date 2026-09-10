@@ -4,6 +4,7 @@
     <TodoListPanel
       v-if="!sidebarCollapsed"
       :todos="todos"
+      :active="isStreaming"
     />
     <div class="chat-messages" ref="messagesRef" @scroll="handleScroll">
       <div v-if="sessionCreatedAt && messages.length > 0" class="session-created-time">
