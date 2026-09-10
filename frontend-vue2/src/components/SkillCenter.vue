@@ -198,7 +198,7 @@
         >
           <div class="popover-header">
             <div class="popover-icon" :class="getSkillCategory(popover.skill)">
-              <span v-if="popover.skill?.icon" class="icon-emoji">{{ popover.skill.icon }}</span>
+              <span v-if="popover.skill && popover.skill.icon" class="icon-emoji">{{ popover.skill.icon }}</span>
               <svg v-else-if="getSkillCategory(popover.skill) === 'doc'" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>
               </svg>
@@ -219,7 +219,7 @@
               </svg>
             </div>
             <div class="popover-title-area">
-              <div class="popover-name">{{ popover.skill?.name }}</div>
+              <div class="popover-name">{{ popover.skill ? popover.skill.name : '' }}</div>
               <div class="popover-category">{{ getCategoryLabel(popover.skill) }}</div>
             </div>
             <button class="popover-close" @click="closePopover">
@@ -230,12 +230,12 @@
             </button>
           </div>
           <div class="popover-body">
-            <div class="popover-desc">{{ popover.skill?.description || '暂无详细说明' }}</div>
+            <div class="popover-desc">{{ (popover.skill && popover.skill.description) || '暂无详细说明' }}</div>
           </div>
           <div class="popover-footer">
             <template v-if="activeTab === 'public'">
               <button
-                v-if="popover.skill?.added"
+                v-if="popover.skill && popover.skill.added"
                 class="popover-btn added"
                 disabled
               >
@@ -247,21 +247,21 @@
               <button
                 v-else
                 class="popover-btn"
-                :disabled="addingSkill === popover.skill?.dir_name"
+                :disabled="addingSkill === (popover.skill && popover.skill.dir_name)"
                 @click.stop="handleAddSkill(popover.skill)"
               >
-                <div v-if="addingSkill === popover.skill?.dir_name" class="btn-spinner"></div>
+                <div v-if="addingSkill === (popover.skill && popover.skill.dir_name)" class="btn-spinner"></div>
                 <svg v-else xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px">
                   <line x1="12" y1="5" x2="12" y2="19"></line>
                   <line x1="5" y1="12" x2="19" y2="12"></line>
                 </svg>
-                {{ addingSkill === popover.skill?.dir_name ? '添加中...' : '添加到我的技能' }}
+                {{ addingSkill === (popover.skill && popover.skill.dir_name) ? '添加中...' : '添加到我的技能' }}
               </button>
             </template>
             <template v-else>
               <button
                 class="popover-btn remove"
-                :disabled="removingSkill === popover.skill?.dir_name"
+                :disabled="removingSkill === (popover.skill && popover.skill.dir_name)"
                 @click.stop="handleRemoveSkill(popover.skill)"
               >
                 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px">
@@ -276,54 +276,36 @@
       </div>
 
     <!-- Toast 提示 -->
-    <Transition name="toast">
+    <transition name="toast">
       <div v-if="toast.show" class="toast" :class="toast.type">
         {{ toast.message }}
       </div>
-    </Transition>
+    </transition>
   </div>
 </template>
 
 <script>
-import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
-import { getPublicSkills, getUserSkills, addSkillToUser, removeSkillFromUser, importSkill, downloadSkill } from '../api/skills.js'
-export default {
-  emits: ['close'],
-  setup(props, { emit }) {
-const activeTab = ref('public')
-const loading = ref(false)
-const error = ref('')
-const publicSkills = ref([])
-const userSkills = ref([])
-const addingSkill = ref(null)
-const removingSkill = ref(null)
-const importing = ref(false)
-const fileInputRef = ref(null)
-const downloadingSkill = ref(null)
-const toast = ref({ show: false, message: '', type: 'success' })
-
-// 悬浮窗状态
-const popover = ref({
-  visible: false,
-  skill: null,
-  x: 0,
-  y: 0,
-})
-
-const popoverStyle = computed(() => {
-  const x = Math.min(popover.value.x, window.innerWidth - 380)
-  const y = Math.min(popover.value.y, window.innerHeight - 300)
-  return {
-    left: `${x}px`,
-    top: `${y}px`,
-  }
-})
+import {
+  getPublicSkills,
+  getUserSkills,
+  addSkillToUser,
+  removeSkillFromUser,
+  importSkill,
+  downloadSkill,
+} from '../api/skills.js'
 
 // 技能分类映射
 const SKILL_CATEGORIES = {
   doc: ['pdf', 'docx', 'pptx', 'xlsx', 'doc-coauthoring'],
   code: ['mcp-builder', 'skill-creator', 'claude-api'],
-  design: ['frontend-design', 'canvas-design', 'theme-factory', 'brand-guidelines', 'algorithmic-art', 'web-artifacts-builder'],
+  design: [
+    'frontend-design',
+    'canvas-design',
+    'theme-factory',
+    'brand-guidelines',
+    'algorithmic-art',
+    'web-artifacts-builder',
+  ],
   data: ['webapp-testing', 'strategy_fx'],
   api: ['internal-comms', 'slack-gif-creator'],
 }
@@ -337,188 +319,172 @@ const CATEGORY_LABELS = {
   default: '通用技能',
 }
 
-function getSkillCategory(skill) {
-  if (!skill) return 'default'
-  for (const [cat, names] of Object.entries(SKILL_CATEGORIES)) {
-    if (names.includes(skill.dir_name)) return cat
-  }
-  return 'default'
-}
-
-function getCategoryLabel(skill) {
-  return CATEGORY_LABELS[getSkillCategory(skill)] || '通用技能'
-}
-
-function openPopover(skill, event) {
-  const rect = event.currentTarget.getBoundingClientRect()
-  popover.value = {
-    visible: true,
-    skill,
-    x: rect.left,
-    y: rect.bottom + 8,
-  }
-}
-
-function closePopover() {
-  popover.value.visible = false
-  popover.value.skill = null
-}
-
-function showToast(message, type = 'success') {
-  toast.value = { show: true, message, type }
-  setTimeout(() => { toast.value.show = false }, 2500)
-}
-
-function switchTab(tab) {
-  activeTab.value = tab
-  closePopover()
-  refresh()
-}
-
-async function refresh() {
-  loading.value = true
-  error.value = ''
-  try {
-    const [publicData, userData] = await Promise.all([
-      getPublicSkills(),
-      getUserSkills(),
-    ])
-    publicSkills.value = publicData.skills || []
-    const userSkillNames = new Set((userData.skills || []).map(s => s.dir_name))
-    for (const s of publicSkills.value) {
-      s.added = userSkillNames.has(s.dir_name)
-    }
-    userSkills.value = userData.skills || []
-  } catch (e) {
-    error.value = e.message || '加载失败'
-  } finally {
-    loading.value = false
-  }
-}
-
-async function handleAddSkill(skill) {
-  if (!skill) return
-  addingSkill.value = skill.dir_name
-  try {
-    await addSkillToUser(skill.dir_name)
-    skill.added = true
-    // 同步加入"我的技能"列表，使计数立即更新
-    if (!userSkills.value.some(s => s.dir_name === skill.dir_name)) {
-      userSkills.value = [...userSkills.value, { ...skill }]
-    }
-    showToast(`技能「${skill.name}」添加成功`)
-  } catch (e) {
-    showToast(e.message || '添加失败', 'error')
-  } finally {
-    addingSkill.value = null
-  }
-}
-
-async function handleRemoveSkill(skill) {
-  if (!skill) return
-  removingSkill.value = skill.dir_name
-  try {
-    await removeSkillFromUser(skill.dir_name)
-    userSkills.value = userSkills.value.filter(s => s.dir_name !== skill.dir_name)
-    const publicSkill = publicSkills.value.find(s => s.dir_name === skill.dir_name)
-    if (publicSkill) publicSkill.added = false
-    closePopover()
-    showToast(`技能「${skill.name}」已移除`)
-  } catch (e) {
-    showToast(e.message || '移除失败', 'error')
-  } finally {
-    removingSkill.value = null
-  }
-}
-
-function triggerImport() {
-  fileInputRef.value?.click()
-}
-
-async function handleImportFile(e) {
-  const file = e.target.files?.[0]
-  if (!file) return
-  importing.value = true
-  try {
-    const res = await importSkill(file)
-    showToast(`技能「${res.dir_name}」导入成功`)
-    await refresh()
-  } catch (err) {
-    showToast(err.message || '导入失败', 'error')
-  } finally {
-    importing.value = false
-    e.target.value = ''
-  }
-}
-
-async function handleDownloadSkill(skill) {
-  if (!skill) return
-  downloadingSkill.value = skill.dir_name
-  try {
-    await downloadSkill(skill.dir_name)
-    showToast(`技能「${skill.name}」下载成功`)
-  } catch (err) {
-    showToast(err.message || '下载失败', 'error')
-  } finally {
-    downloadingSkill.value = null
-  }
-}
-
-function handleKeydown(e) {
-  if (e.key === 'Escape' && popover.value.visible) {
-    closePopover()
-  }
-}
-
-onMounted(() => {
-  refresh()
-  document.addEventListener('keydown', handleKeydown)
-})
-
-onBeforeUnmount(() => {
-  document.removeEventListener('keydown', handleKeydown)
-})
-
+export default {
+  name: 'SkillCenter',
+  data() {
     return {
-      activeTab,
-      addingSkill,
-      addSkillToUser,
-      CATEGORY_LABELS,
-      closePopover,
-      computed,
-      downloadingSkill,
-      downloadSkill,
-      error,
-      fileInputRef,
-      getCategoryLabel,
-      getPublicSkills,
-      getSkillCategory,
-      getUserSkills,
-      handleAddSkill,
-      handleDownloadSkill,
-      handleImportFile,
-      handleKeydown,
-      handleRemoveSkill,
-      importing,
-      importSkill,
-      loading,
-      onBeforeUnmount,
-      onMounted,
-      openPopover,
-      popover,
-      popoverStyle,
-      publicSkills,
-      ref,
-      refresh,
-      removeSkillFromUser,
-      removingSkill,
-      showToast,
-      SKILL_CATEGORIES,
-      switchTab,
-      toast,
-      triggerImport,
-      userSkills,
+      activeTab: 'public',
+      loading: false,
+      error: '',
+      publicSkills: [],
+      userSkills: [],
+      addingSkill: null,
+      removingSkill: null,
+      importing: false,
+      downloadingSkill: null,
+      toast: { show: false, message: '', type: 'success' },
+      // 悬浮窗状态
+      popover: {
+        visible: false,
+        skill: null,
+        x: 0,
+        y: 0,
+      },
     }
+  },
+  computed: {
+    popoverStyle() {
+      const x = Math.min(this.popover.x, window.innerWidth - 380)
+      const y = Math.min(this.popover.y, window.innerHeight - 300)
+      return { left: `${x}px`, top: `${y}px` }
+    },
+  },
+  methods: {
+    getSkillCategory(skill) {
+      if (!skill) return 'default'
+      for (const [cat, names] of Object.entries(SKILL_CATEGORIES)) {
+        if (names.includes(skill.dir_name)) return cat
+      }
+      return 'default'
+    },
+    getCategoryLabel(skill) {
+      return CATEGORY_LABELS[this.getSkillCategory(skill)] || '通用技能'
+    },
+    openPopover(skill, event) {
+      const rect = event.currentTarget.getBoundingClientRect()
+      this.popover = {
+        visible: true,
+        skill,
+        x: rect.left,
+        y: rect.bottom + 8,
+      }
+    },
+    closePopover() {
+      this.popover = { ...this.popover, visible: false, skill: null }
+    },
+    showToast(message, type = 'success') {
+      this.toast = { show: true, message, type }
+      setTimeout(() => {
+        this.toast = { ...this.toast, show: false }
+      }, 2500)
+    },
+    switchTab(tab) {
+      this.activeTab = tab
+      this.closePopover()
+      this.refresh()
+    },
+    async refresh() {
+      this.loading = true
+      this.error = ''
+      try {
+        const [publicData, userData] = await Promise.all([
+          getPublicSkills(),
+          getUserSkills(),
+        ])
+        this.publicSkills = publicData.skills || []
+        const userSkillNames = new Set(
+          (userData.skills || []).map((s) => s.dir_name)
+        )
+        for (const s of this.publicSkills) {
+          s.added = userSkillNames.has(s.dir_name)
+        }
+        this.userSkills = userData.skills || []
+      } catch (e) {
+        this.error = e.message || '加载失败'
+      } finally {
+        this.loading = false
+      }
+    },
+    async handleAddSkill(skill) {
+      if (!skill) return
+      this.addingSkill = skill.dir_name
+      try {
+        await addSkillToUser(skill.dir_name)
+        skill.added = true
+        // 同步加入「我的技能」列表，使计数立即更新
+        if (!this.userSkills.some((s) => s.dir_name === skill.dir_name)) {
+          this.userSkills = [...this.userSkills, { ...skill }]
+        }
+        this.showToast(`技能「${skill.name}」添加成功`)
+      } catch (e) {
+        this.showToast(e.message || '添加失败', 'error')
+      } finally {
+        this.addingSkill = null
+      }
+    },
+    async handleRemoveSkill(skill) {
+      if (!skill) return
+      this.removingSkill = skill.dir_name
+      try {
+        await removeSkillFromUser(skill.dir_name)
+        this.userSkills = this.userSkills.filter(
+          (s) => s.dir_name !== skill.dir_name
+        )
+        const publicSkill = this.publicSkills.find(
+          (s) => s.dir_name === skill.dir_name
+        )
+        if (publicSkill) publicSkill.added = false
+        this.closePopover()
+        this.showToast(`技能「${skill.name}」已移除`)
+      } catch (e) {
+        this.showToast(e.message || '移除失败', 'error')
+      } finally {
+        this.removingSkill = null
+      }
+    },
+    triggerImport() {
+      const input = this.$refs.fileInputRef
+      if (input) input.click()
+    },
+    async handleImportFile(e) {
+      const file = e.target.files && e.target.files[0]
+      if (!file) return
+      this.importing = true
+      try {
+        const res = await importSkill(file)
+        this.showToast(`技能「${res.dir_name}」导入成功`)
+        await this.refresh()
+      } catch (err) {
+        this.showToast(err.message || '导入失败', 'error')
+      } finally {
+        this.importing = false
+        e.target.value = ''
+      }
+    },
+    async handleDownloadSkill(skill) {
+      if (!skill) return
+      this.downloadingSkill = skill.dir_name
+      try {
+        await downloadSkill(skill.dir_name)
+        this.showToast(`技能「${skill.name}」下载成功`)
+      } catch (err) {
+        this.showToast(err.message || '下载失败', 'error')
+      } finally {
+        this.downloadingSkill = null
+      }
+    },
+    handleKeydown(e) {
+      if (e.key === 'Escape' && this.popover.visible) {
+        this.closePopover()
+      }
+    },
+  },
+  mounted() {
+    this.refresh()
+    document.addEventListener('keydown', this.handleKeydown)
+  },
+  beforeDestroy() {
+    document.removeEventListener('keydown', this.handleKeydown)
   },
 }
 </script>

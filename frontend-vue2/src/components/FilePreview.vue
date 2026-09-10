@@ -96,51 +96,17 @@
 
 <script>
 import { API_BASE_URL } from '../config.js'
-import { ref, computed, watch } from 'vue'
 import { marked } from 'marked'
 import { setupMarkedExtensions, normalizeMathDelimiters } from '../markdownSetup.js'
 import hljs from 'highlight.js'
 import 'highlight.js/styles/github.css'
 import DocxPreview from './DocxPreview.vue'
 import ExcelPreview from './ExcelPreview.vue'
-import * as XLSX from 'xlsx'
 import { getStoredToken } from '../api/auth.js'
 import { requestBlob, requestArrayBuffer, requestText } from '../api/request.js'
-export default {
-  components: { DocxPreview, ExcelPreview },
-  props: {
-  filename: {
-    type: String,
-    default: ''
-  },
-  filePath: {
-    type: String,
-    default: ''
-  },
-  sessionId: {
-    type: String,
-    default: null
-  },
-  taskId: {
-    type: String,
-    default: null
-  },
-  visible: {
-    type: Boolean,
-    default: false
-  }
-},
-  emits: ['close'],
-  setup(props, { emit }) {
-// 注册 KaTeX 数学公式 + emoji 短代码扩展（幂等，仅执行一次）
+
+// 注册 KaTeX 数学公式 + emoji 短代码扩展（幂等，模块加载时仅执行一次）
 setupMarkedExtensions()
-
-
-
-
-
-
-
 marked.setOptions({
   breaks: true,
   gfm: true,
@@ -155,61 +121,9 @@ marked.setOptions({
   }
 })
 
-
-
-
-
-const loading = ref(false)
-const error = ref('')
-const textContent = ref('')
-const previewUrl = ref('')
-const docxUrl = ref('')
-const excelUrl = ref('')
-// PPTX：经后端 LibreOffice 转为 PDF 后以 iframe 预览
-const pptxPdfUrl = ref('')
-const excelArrayBuffer = ref(null)
-const excelFallback = ref(false)
-const excelSheets = ref([])
-const excelRetried = ref(false)
-const excelKey = ref(0)
-// Excel 兜底逻辑保留给后续扩展，当前预览由 ExcelPreview 组件承接。
-const htmlUrl = ref('')
-
+// 模块级常量（无需响应式）
 const imageExts = ['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.svg', '.ico']
 const textExts = ['.txt', '.json', '.xml', '.csv', '.js', '.ts', '.vue', '.py', '.java', '.go', '.rs', '.c', '.cpp', '.h', '.hpp', '.sh', '.bat', '.css', '.scss', '.less', '.sql', '.yaml', '.yml', '.toml', '.ini', '.cfg', '.conf', '.env', '.log', '.md', '.jsx', '.tsx', '.rb', '.php', '.swift', '.kt', '.scala', '.lua', '.pl', '.r', '.dart', '.ex', '.exs', '.erl', '.hs', '.ml', '.jl', '.tf', '.proto', '.graphql', '.makefile', '.cmake', '.dockerfile', '.gitignore', '.properties', '.gradle']
-
-// 安全获取文件扩展名（无扩展名时返回空字符串）
-function getExt(name) {
-  if (!name) return ''
-  const parts = String(name).split('.')
-  if (parts.length < 2) return ''
-  return parts.pop().toLowerCase()
-}
-
-const isImage = computed(() => {
-  const ext = getExt(props.filename)
-  return ext && imageExts.includes('.' + ext)
-})
-
-const isPdf = computed(() => getExt(props.filename) === 'pdf')
-
-const isPptx = computed(() => getExt(props.filename) === 'pptx')
-
-const isDocx = computed(() => getExt(props.filename) === 'docx')
-
-const isExcel = computed(() => ['xlsx', 'xls'].includes(getExt(props.filename)))
-
-const isMarkdown = computed(() => getExt(props.filename) === 'md')
-
-const isHtml = computed(() => ['html', 'htm'].includes(getExt(props.filename)))
-
-const isCsv = computed(() => getExt(props.filename) === 'csv')
-
-const isCode = computed(() => {
-  const ext = getExt(props.filename)
-  const codeExts = ['js', 'ts', 'vue', 'py', 'java', 'go', 'rs', 'c', 'cpp', 'h', 'hpp', 'sh', 'bat', 'css', 'scss', 'less', 'sql', 'html', 'htm', 'xml', 'json', 'yaml', 'yml', 'toml', 'jsx', 'tsx', 'rb', 'php', 'swift', 'kt', 'lua', 'pl', 'r', 'dart', 'tf', 'proto', 'graphql']
-  return codeExts.includes(ext)
-})
 
 // 代码语言映射
 const codeLangMap = {
@@ -222,299 +136,289 @@ const codeLangMap = {
   sql: 'sql', json: 'json', yaml: 'yaml', yml: 'yaml',
   toml: 'ini', rb: 'ruby', php: 'php', swift: 'swift',
   kt: 'kotlin', lua: 'lua', pl: 'perl', r: 'r',
-  dart: 'dart', tf: 'hcl', proto: 'protobuf', graphql: 'graphql',
+  dart: 'dart', tf: 'hcl', proto: 'protobuf', graphql: 'graphql'
 }
 
-const highlightedCode = computed(() => {
-  if (!textContent.value) return ''
-  const ext = getExt(props.filename)
-  const lang = codeLangMap[ext]
+// 安全获取文件扩展名（无扩展名时返回空字符串）
+function getExt(name) {
+  if (!name) return ''
+  const parts = String(name).split('.')
+  if (parts.length < 2) return ''
+  return parts.pop().toLowerCase()
+}
 
-  // 如果是代码文件且有对应语言，使用语法高亮
-  if (isCode.value && lang && hljs.getLanguage(lang)) {
-    try {
-      return hljs.highlight(textContent.value, { language: lang }).value
-    } catch (e) {
-      console.warn('[FilePreview] 语法高亮失败:', ext, e)
-    }
-  }
-
-  // JSON 特殊处理
-  if (ext === 'json') {
-    try {
-      const parsed = JSON.parse(textContent.value)
-      return hljs.highlight(JSON.stringify(parsed, null, 2), { language: 'json' }).value
-    } catch (e) {
-      // JSON 解析失败，按普通文本处理
-    }
-  }
-
-  // 普通文本，转义 HTML
-  return escapeHtml(textContent.value)
-})
-
-const lineCount = computed(() => {
-  if (!textContent.value) return 0
-  return textContent.value.split('\n').length
-})
-
-const csvData = computed(() => {
-  if (!textContent.value) return { headers: [], rows: [] }
-  const lines = textContent.value.split('\n').filter(l => l.trim())
-  if (lines.length === 0) return { headers: [], rows: [] }
-
-  const parseLine = (line) => {
-    const result = []
-    let current = ''
-    let inQuotes = false
-    for (let i = 0; i < line.length; i++) {
-      const char = line[i]
-      if (char === '"' && line[i + 1] === '"') {
-        current += '"'
-        i++
-      } else if (char === '"') {
-        inQuotes = !inQuotes
-      } else if (char === ',' && !inQuotes) {
-        result.push(current)
-        current = ''
-      } else {
-        current += char
-      }
-    }
-    result.push(current)
-    return result
-  }
-
-  const headers = parseLine(lines[0])
-  const rows = lines.slice(1, 1000).map(parseLine) // 限制最多 1000 行
-  return { headers, rows }
-})
-
+// 普通文本转义 HTML，防止将原文误当作标签渲染
 function escapeHtml(text) {
   const div = document.createElement('div')
   div.textContent = text
   return div.innerHTML
 }
 
-// 预览/下载基础 URL：定时任务工作目录走独立端点，否则走会话文件端点
-const previewBaseUrl = computed(() => props.taskId
-  ? `${API_BASE_URL}/agent/scheduled-tasks/${props.taskId}/workspace/file`
-  : `${API_BASE_URL}/agent/files/preview`)
-
-function handleDownload() {
-  const token = getStoredToken()
-  const params = new URLSearchParams()
-  params.set('file_path', props.filePath)
-  if (props.sessionId) params.set('session_id', props.sessionId)
-  if (token) params.set('token', token)
-  params.set('download', 'true')
-  const url = `${previewBaseUrl.value}?${params.toString()}`
-  const link = document.createElement('a')
-  link.href = url
-  link.download = props.filename
-  document.body.appendChild(link)
-  link.click()
-  document.body.removeChild(link)
-}
-
-const renderedMarkdown = computed(() => {
-  if (!textContent.value) return ''
-  return marked.parse(normalizeMathDelimiters(textContent.value))
-})
-
-const isText = computed(() => {
-  const ext = getExt(props.filename)
-  return ext && textExts.includes('.' + ext)
-})
-
-watch(() => props.visible, async (newVal) => {
-  if (newVal && props.filename) {
-    await loadPreview()
-  }
-})
-
-async function loadPreview() {
-  loading.value = true
-  error.value = ''
-  textContent.value = ''
-  if (docxUrl.value) {
-    URL.revokeObjectURL(docxUrl.value)
-  }
-  if (excelUrl.value) {
-    URL.revokeObjectURL(excelUrl.value)
-  }
-  docxUrl.value = ''
-  excelUrl.value = ''
-  if (pptxPdfUrl.value) {
-    URL.revokeObjectURL(pptxPdfUrl.value)
-  }
-  pptxPdfUrl.value = ''
-  if (htmlUrl.value) {
-    URL.revokeObjectURL(htmlUrl.value)
-    htmlUrl.value = ''
-  }
-
-  const ts = new Date().toISOString()
-  // 统一打印预览请求日志：文件名、路径、会话ID
-  console.log(
-    `[${ts}] [FilePreview] 预览请求 | 文件名: ${props.filename} | 路径: ${props.filePath} | 会话: ${props.sessionId || '无'}`
-  )
-
-  // 校验必要参数
-  if (!props.filePath) {
-    error.value = '文件路径为空，无法预览'
-    console.error(
-      `[${ts}] [FilePreview] loadPreview 失败: filePath 为空`,
-      { filename: props.filename, sessionId: props.sessionId }
-    )
-    loading.value = false
-    return
-  }
-
-  const token = getStoredToken()
-
-  // 构建预览 URL：定时任务工作目录走独立端点，否则走会话文件端点
-  const params = new URLSearchParams()
-  params.set('file_path', props.filePath)
-  if (props.sessionId) params.set('session_id', props.sessionId)
-  if (token) params.set('token', token)
-  previewUrl.value = `${previewBaseUrl.value}?${params.toString()}`
-  console.log(
-    `[${ts}] [FilePreview] 加载预览 | 文件: ${props.filename} | 类型: ${getExt(props.filename) || '无扩展名'} | URL: ${previewUrl.value}`
-  )
-
-  const ext = getExt(props.filename)
-
-  // 构建 auth headers
-  const headers = token ? { 'Authorization': `Bearer ${token}` } : {}
-
-  try {
-    if (isPdf.value) {
-      console.log('[FilePreview] PDF 预览')
-    } else if (isPptx.value) {
-      console.log('[FilePreview] PPTX 预览 (LibreOffice → PDF)')
-      // 后端用 LibreOffice 把 pptx 转成 PDF，返回 PDF 流，由浏览器内置查看器渲染
-      const pdfParams = new URLSearchParams(params)
-      pdfParams.set('target', 'pdf')
-      const pdfUrl = `${previewBaseUrl.value}?${pdfParams.toString()}`
-      const blob = await requestBlob({ url: pdfUrl, headers })
-      pptxPdfUrl.value = URL.createObjectURL(blob)
-    } else if (isDocx.value) {
-      console.log('[FilePreview] DOCX 预览')
-      const arrayBuffer = await requestArrayBuffer({ url: previewUrl.value, headers })
-      docxUrl.value = URL.createObjectURL(
-        new Blob([arrayBuffer], {
-          type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-        })
-      )
-    } else if (isExcel.value) {
-      console.log('[FilePreview] Excel 预览')
-      const arrayBuffer = await requestArrayBuffer({ url: previewUrl.value, headers })
-      excelUrl.value = URL.createObjectURL(
-        new Blob([arrayBuffer], {
-          type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-        })
-      )
-    } else if (isHtml.value) {
-      console.log('[FilePreview] HTML 预览')
-      const htmlText = await requestText({ url: previewUrl.value, headers })
-      const blob = new Blob([htmlText], { type: 'text/html; charset=utf-8' })
-      htmlUrl.value = URL.createObjectURL(blob)
-    } else if (isMarkdown.value || isText.value || isCsv.value) {
-      textContent.value = await requestText({ url: previewUrl.value, headers })
-      if (textContent.value.length > 50000) {
-        textContent.value = textContent.value.substring(0, 50000) + '\n\n... (内容过长已截断)'
-      }
-      console.log('[FilePreview] 文本预览加载完成, 长度:', textContent.value.length)
-    } else {
-      console.log('[FilePreview] 不支持预览的文件类型:', ext || '未知')
-    }
-  } catch (e) {
-    console.error('[FilePreview] 预览加载失败:', e, { filename: props.filename, filePath: props.filePath })
-    error.value = `加载失败: ${e.message}`
-  }
-
-  loading.value = false
-}
-
-function handleExcelError(e) {
-  console.error('Excel error:', e)
-  if (!excelRetried.value && excelArrayBuffer.value) {
-    // 复杂 xlsx 可能包含 drawing，先做一次清理重试。
-    // 用 SheetJS 做一次 read→write 往返，生成“不含 drawing”的干净工作簿，
-    // 清理后的工作簿仍保留边框、合并单元格和多 sheet。
-    // 与“无图片时正常显示”体验一致。
-    try {
-      const wb = XLSX.read(excelArrayBuffer.value, { type: 'array', cellStyles: true })
-      const cleaned = XLSX.write(wb, { type: 'array', bookType: 'xlsx' })
-      excelRetried.value = true
-      excelUrl.value = cleaned
-      excelKey.value++
-      return
-    } catch (err) {
-      console.error('[FilePreview] 去 drawing 重试失败:', err)
-    }
-  }
-  // 仍失败（极少见）：用 SheetJS 把各 sheet 渲染为 HTML 表格兜底
-  if (excelArrayBuffer.value) {
-    buildExcelTables(excelArrayBuffer.value)
-  } else {
-    error.value = 'Excel 预览加载失败'
-  }
-}
-
-function handleClose() {
-  // pptx/docx/excel/html 均为 Blob URL，需释放
-  if (docxUrl.value) URL.revokeObjectURL(docxUrl.value)
-  if (excelUrl.value) URL.revokeObjectURL(excelUrl.value)
-  if (pptxPdfUrl.value) URL.revokeObjectURL(pptxPdfUrl.value)
-  if (htmlUrl.value) URL.revokeObjectURL(htmlUrl.value)
-  emit('close')
-}
-
+export default {
+  components: { DocxPreview, ExcelPreview },
+  props: {
+    filename: { type: String, default: '' },
+    filePath: { type: String, default: '' },
+    sessionId: { type: String, default: null },
+    taskId: { type: String, default: null },
+    visible: { type: Boolean, default: false }
+  },
+  data() {
     return {
-      API_BASE_URL,
-      codeLangMap,
-      computed,
-      csvData,
-      docxUrl,
-      error,
-      escapeHtml,
-      excelUrl,
-      getExt,
-      getStoredToken,
-      handleClose,
-      handleDownload,
-      highlightedCode,
-      hljs,
-      htmlUrl,
-      imageExts,
-      isCode,
-      isCsv,
-      isDocx,
-      isExcel,
-      isHtml,
-      isImage,
-      isMarkdown,
-      isPdf,
-      isPptx,
-      isText,
-      lineCount,
-      loading,
-      loadPreview,
-      marked,
-      normalizeMathDelimiters,
-      pptxPdfUrl,
-      previewBaseUrl,
-      previewUrl,
-      ref,
-      renderedMarkdown,
-      setupMarkedExtensions,
-      textContent,
-      textExts,
-      watch,
+      loading: false,
+      error: '',
+      textContent: '',
+      previewUrl: '',
+      docxUrl: '',
+      excelUrl: '',
+      // PPTX：经后端 LibreOffice 转为 PDF 后以 iframe 预览
+      pptxPdfUrl: '',
+      htmlUrl: ''
     }
   },
+  computed: {
+    isImage() {
+      const ext = getExt(this.filename)
+      return ext && imageExts.includes('.' + ext)
+    },
+    isPdf() {
+      return getExt(this.filename) === 'pdf'
+    },
+    isPptx() {
+      return getExt(this.filename) === 'pptx'
+    },
+    isDocx() {
+      return getExt(this.filename) === 'docx'
+    },
+    isExcel() {
+      return ['xlsx', 'xls'].includes(getExt(this.filename))
+    },
+    isMarkdown() {
+      return getExt(this.filename) === 'md'
+    },
+    isHtml() {
+      return ['html', 'htm'].includes(getExt(this.filename))
+    },
+    isCsv() {
+      return getExt(this.filename) === 'csv'
+    },
+    isCode() {
+      const ext = getExt(this.filename)
+      const codeExts = ['js', 'ts', 'vue', 'py', 'java', 'go', 'rs', 'c', 'cpp', 'h', 'hpp', 'sh', 'bat', 'css', 'scss', 'less', 'sql', 'html', 'htm', 'xml', 'json', 'yaml', 'yml', 'toml', 'jsx', 'tsx', 'rb', 'php', 'swift', 'kt', 'lua', 'pl', 'r', 'dart', 'tf', 'proto', 'graphql']
+      return codeExts.includes(ext)
+    },
+    isText() {
+      const ext = getExt(this.filename)
+      return ext && textExts.includes('.' + ext)
+    },
+    // 预览/下载基础 URL：定时任务工作目录走独立端点，否则走会话文件端点
+    previewBaseUrl() {
+      return this.taskId
+        ? `${API_BASE_URL}/agent/scheduled-tasks/${this.taskId}/workspace/file`
+        : `${API_BASE_URL}/agent/files/preview`
+    },
+    highlightedCode() {
+      if (!this.textContent) return ''
+      const ext = getExt(this.filename)
+      const lang = codeLangMap[ext]
+
+      // 如果是代码文件且有对应语言，使用语法高亮
+      if (this.isCode && lang && hljs.getLanguage(lang)) {
+        try {
+          return hljs.highlight(this.textContent, { language: lang }).value
+        } catch (e) {
+          console.warn('[FilePreview] 语法高亮失败:', ext, e)
+        }
+      }
+
+      // JSON 特殊处理
+      if (ext === 'json') {
+        try {
+          const parsed = JSON.parse(this.textContent)
+          return hljs.highlight(JSON.stringify(parsed, null, 2), { language: 'json' }).value
+        } catch (e) {
+          // JSON 解析失败，按普通文本处理
+        }
+      }
+
+      // 普通文本，转义 HTML
+      return escapeHtml(this.textContent)
+    },
+    lineCount() {
+      if (!this.textContent) return 0
+      return this.textContent.split('\n').length
+    },
+    csvData() {
+      if (!this.textContent) return { headers: [], rows: [] }
+      const lines = this.textContent.split('\n').filter(l => l.trim())
+      if (lines.length === 0) return { headers: [], rows: [] }
+
+      const parseLine = (line) => {
+        const result = []
+        let current = ''
+        let inQuotes = false
+        for (let i = 0; i < line.length; i++) {
+          const char = line[i]
+          if (char === '"' && line[i + 1] === '"') {
+            current += '"'
+            i++
+          } else if (char === '"') {
+            inQuotes = !inQuotes
+          } else if (char === ',' && !inQuotes) {
+            result.push(current)
+            current = ''
+          } else {
+            current += char
+          }
+        }
+        result.push(current)
+        return result
+      }
+
+      const headers = parseLine(lines[0])
+      const rows = lines.slice(1, 1000).map(parseLine) // 限制最多 1000 行
+      return { headers, rows }
+    },
+    renderedMarkdown() {
+      if (!this.textContent) return ''
+      return marked.parse(normalizeMathDelimiters(this.textContent))
+    }
+  },
+  watch: {
+    visible(newVal) {
+      if (newVal && this.filename) {
+        this.loadPreview()
+      }
+    }
+  },
+  methods: {
+    handleDownload() {
+      const token = getStoredToken()
+      const params = new URLSearchParams()
+      params.set('file_path', this.filePath)
+      if (this.sessionId) params.set('session_id', this.sessionId)
+      if (token) params.set('token', token)
+      params.set('download', 'true')
+      const url = `${this.previewBaseUrl}?${params.toString()}`
+      const link = document.createElement('a')
+      link.href = url
+      link.download = this.filename
+      document.body.appendChild(link)
+      link.click()
+      document.body.removeChild(link)
+    },
+    handleClose() {
+      // pptx/docx/excel/html 均为 Blob URL，需释放
+      if (this.docxUrl) URL.revokeObjectURL(this.docxUrl)
+      if (this.excelUrl) URL.revokeObjectURL(this.excelUrl)
+      if (this.pptxPdfUrl) URL.revokeObjectURL(this.pptxPdfUrl)
+      if (this.htmlUrl) URL.revokeObjectURL(this.htmlUrl)
+      this.$emit('close')
+    },
+    async loadPreview() {
+      this.loading = true
+      this.error = ''
+      this.textContent = ''
+      if (this.docxUrl) {
+        URL.revokeObjectURL(this.docxUrl)
+      }
+      if (this.excelUrl) {
+        URL.revokeObjectURL(this.excelUrl)
+      }
+      this.docxUrl = ''
+      this.excelUrl = ''
+      if (this.pptxPdfUrl) {
+        URL.revokeObjectURL(this.pptxPdfUrl)
+      }
+      this.pptxPdfUrl = ''
+      if (this.htmlUrl) {
+        URL.revokeObjectURL(this.htmlUrl)
+        this.htmlUrl = ''
+      }
+
+      const ts = new Date().toISOString()
+      // 统一打印预览请求日志：文件名、路径、会话ID
+      console.log(
+        `[${ts}] [FilePreview] 预览请求 | 文件名: ${this.filename} | 路径: ${this.filePath} | 会话: ${this.sessionId || '无'}`
+      )
+
+      // 校验必要参数
+      if (!this.filePath) {
+        this.error = '文件路径为空，无法预览'
+        console.error(
+          `[${ts}] [FilePreview] loadPreview 失败: filePath 为空`,
+          { filename: this.filename, sessionId: this.sessionId }
+        )
+        this.loading = false
+        return
+      }
+
+      const token = getStoredToken()
+
+      // 构建预览 URL：定时任务工作目录走独立端点，否则走会话文件端点
+      const params = new URLSearchParams()
+      params.set('file_path', this.filePath)
+      if (this.sessionId) params.set('session_id', this.sessionId)
+      if (token) params.set('token', token)
+      this.previewUrl = `${this.previewBaseUrl}?${params.toString()}`
+      console.log(
+        `[${ts}] [FilePreview] 加载预览 | 文件: ${this.filename} | 类型: ${getExt(this.filename) || '无扩展名'} | URL: ${this.previewUrl}`
+      )
+
+      const ext = getExt(this.filename)
+
+      // 构建 auth headers
+      const headers = token ? { 'Authorization': `Bearer ${token}` } : {}
+
+      try {
+        if (this.isPdf) {
+          console.log('[FilePreview] PDF 预览')
+        } else if (this.isPptx) {
+          console.log('[FilePreview] PPTX 预览 (LibreOffice → PDF)')
+          // 后端用 LibreOffice 把 pptx 转成 PDF，返回 PDF 流，由浏览器内置查看器渲染
+          const pdfParams = new URLSearchParams(params)
+          pdfParams.set('target', 'pdf')
+          const pdfUrl = `${this.previewBaseUrl}?${pdfParams.toString()}`
+          const blob = await requestBlob({ url: pdfUrl, headers })
+          this.pptxPdfUrl = URL.createObjectURL(blob)
+        } else if (this.isDocx) {
+          console.log('[FilePreview] DOCX 预览')
+          const arrayBuffer = await requestArrayBuffer({ url: this.previewUrl, headers })
+          this.docxUrl = URL.createObjectURL(
+            new Blob([arrayBuffer], {
+              type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            })
+          )
+        } else if (this.isExcel) {
+          console.log('[FilePreview] Excel 预览')
+          const arrayBuffer = await requestArrayBuffer({ url: this.previewUrl, headers })
+          this.excelUrl = URL.createObjectURL(
+            new Blob([arrayBuffer], {
+              type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            })
+          )
+        } else if (this.isHtml) {
+          console.log('[FilePreview] HTML 预览')
+          const htmlText = await requestText({ url: this.previewUrl, headers })
+          const blob = new Blob([htmlText], { type: 'text/html; charset=utf-8' })
+          this.htmlUrl = URL.createObjectURL(blob)
+        } else if (this.isMarkdown || this.isText || this.isCsv) {
+          this.textContent = await requestText({ url: this.previewUrl, headers })
+          if (this.textContent.length > 50000) {
+            this.textContent = this.textContent.substring(0, 50000) + '\n\n... (内容过长已截断)'
+          }
+          console.log('[FilePreview] 文本预览加载完成, 长度:', this.textContent.length)
+        } else {
+          console.log('[FilePreview] 不支持预览的文件类型:', ext || '未知')
+        }
+      } catch (e) {
+        console.error('[FilePreview] 预览加载失败:', e, { filename: this.filename, filePath: this.filePath })
+        this.error = `加载失败: ${e.message}`
+      }
+
+      this.loading = false
+    }
+  }
 }
 </script>
 

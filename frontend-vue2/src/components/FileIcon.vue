@@ -1,5 +1,4 @@
 <script>
-import { computed } from 'vue'
 import IconPdf from '~icons/vscode-icons/file-type-pdf2'
 import IconWord from '~icons/vscode-icons/file-type-word'
 import IconExcel from '~icons/vscode-icons/file-type-excel'
@@ -22,102 +21,73 @@ import IconCpp from '~icons/vscode-icons/file-type-cpp'
 import IconSql from '~icons/vscode-icons/file-type-sql'
 import IconZip from '~icons/vscode-icons/file-type-zip'
 import IconDefault from '~icons/vscode-icons/default-file'
+
 export default {
+  name: 'FileIcon',
   props: {
-  filename: {
-    type: String,
-    required: true
+    filename: {
+      type: String,
+      required: true,
+    },
+    size: {
+      type: [Number, String],
+      default: 48,
+    },
   },
-  size: {
-    type: [Number, String],
-    default: 48
-  }
-},
-  setup(props, { emit }) {
-const extension = computed(() => {
-  return props.filename.split('.').pop().toLowerCase()
-})
+  computed: {
+    extension() {
+      return this.filename.split('.').pop().toLowerCase()
+    },
+    iconSvg() {
+      const ext = this.extension
 
-const iconSvg = computed(() => {
-  const ext = extension.value
-  
-  const iconMap = {
-    pdf: IconPdf,
-    doc: IconWord,
-    docx: IconWord,
-    xls: IconExcel,
-    xlsx: IconExcel,
-    ppt: IconPowerpoint,
-    pptx: IconPowerpoint,
-    txt: IconText,
-    md: IconMarkdown,
-    jpg: IconImage,
-    jpeg: IconImage,
-    png: IconImage,
-    gif: IconImage,
-    svg: IconImage,
-    webp: IconImage,
-    bmp: IconImage,
-    py: IconPython,
-    js: IconJs,
-    ts: IconTs,
-    vue: IconVue,
-    html: IconHtml,
-    htm: IconHtml,
-    css: IconCss,
-    json: IconJson,
-    java: IconJava,
-    go: IconGo,
-    rs: IconRust,
-    c: IconC,
-    cpp: IconCpp,
-    cc: IconCpp,
-    cxx: IconCpp,
-    sql: IconSql,
-    zip: IconZip,
-    rar: IconZip,
-    '7z': IconZip,
-    tar: IconZip,
-    gz: IconZip,
-    csv: IconExcel,
-    xml: IconHtml,
-  }
-  
-  return iconMap[ext] || IconDefault
-})
+      const iconMap = {
+        pdf: IconPdf,
+        doc: IconWord,
+        docx: IconWord,
+        xls: IconExcel,
+        xlsx: IconExcel,
+        ppt: IconPowerpoint,
+        pptx: IconPowerpoint,
+        txt: IconText,
+        md: IconMarkdown,
+        jpg: IconImage,
+        jpeg: IconImage,
+        png: IconImage,
+        gif: IconImage,
+        svg: IconImage,
+        webp: IconImage,
+        bmp: IconImage,
+        py: IconPython,
+        js: IconJs,
+        ts: IconTs,
+        vue: IconVue,
+        html: IconHtml,
+        htm: IconHtml,
+        css: IconCss,
+        json: IconJson,
+        java: IconJava,
+        go: IconGo,
+        rs: IconRust,
+        c: IconC,
+        cpp: IconCpp,
+        cc: IconCpp,
+        cxx: IconCpp,
+        sql: IconSql,
+        zip: IconZip,
+        rar: IconZip,
+        '7z': IconZip,
+        tar: IconZip,
+        gz: IconZip,
+        csv: IconExcel,
+        xml: IconHtml,
+      }
 
-const iconSize = computed(() => {
-  return typeof props.size === 'number' ? `${props.size}px` : props.size
-})
-
-    return {
-      computed,
-      extension,
-      IconC,
-      iconSvg,
-      IconCpp,
-      IconCss,
-      IconDefault,
-      IconExcel,
-      IconGo,
-      IconHtml,
-      IconImage,
-      IconJava,
-      IconJs,
-      IconJson,
-      IconMarkdown,
-      IconPdf,
-      IconPowerpoint,
-      IconPython,
-      IconRust,
-      iconSize,
-      IconSql,
-      IconText,
-      IconTs,
-      IconVue,
-      IconWord,
-      IconZip,
-    }
+      return iconMap[ext] || IconDefault
+    },
+    iconSize() {
+      return typeof this.size === 'number' ? `${this.size}px` : this.size
+    },
   },
 }
 </script>

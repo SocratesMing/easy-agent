@@ -3,72 +3,62 @@
 </template>
 
 <script>
-import { ref, onMounted, watch, onUnmounted } from 'vue'
 import { renderAsync } from 'docx-preview'
 import { requestArrayBuffer } from '../api/request.js'
+
 export default {
+  name: 'DocxPreview',
   props: {
-  fileUrl: {
-    type: String,
-    default: ''
-  }
-},
-  setup(props, { emit }) {
-const containerRef = ref(null)
+    fileUrl: {
+      type: String,
+      default: '',
+    },
+  },
+  methods: {
+    async loadDocx() {
+      const el = this.$refs.containerRef
+      if (!this.fileUrl || !el) return
 
-async function loadDocx() {
-  if (!props.fileUrl || !containerRef.value) return
-  
-  try {
-    containerRef.value.innerHTML = ''
-    
-    // 走统一 axios 封装（自动带鉴权头），直接拿原始字节给 docx-preview 渲染
-    const arrayBuffer = await requestArrayBuffer({ url: props.fileUrl })
+      try {
+        el.innerHTML = ''
 
-    await renderAsync(arrayBuffer, containerRef.value, containerRef.value, {
-      className: 'docx-preview-content',
-      inWrapper: true,
-      ignoreWidth: false,
-      ignoreHeight: false,
-      ignoreFonts: false,
-      breakPages: true,
-      ignoreLastRenderedPageBreak: true,
-      experimental: false,
-      trimXmlDeclaration: true,
-      useBase64URL: true,
-      renderHeaders: true,
-      renderFooters: true,
-      renderFootnotes: true,
-      renderEndnotes: true
-    })
-  } catch (e) {
-    console.error('Docx preview error:', e)
-    containerRef.value.innerHTML = '<div class="preview-error">文档预览失败</div>'
-  }
-}
+        // 走统一 axios 封装（自动带鉴权头），直接拿原始字节给 docx-preview 渲染
+        const arrayBuffer = await requestArrayBuffer({ url: this.fileUrl })
 
-onMounted(() => {
-  loadDocx()
-})
-
-watch(() => props.fileUrl, () => {
-  loadDocx()
-})
-
-onUnmounted(() => {
-  if (containerRef.value) {
-    containerRef.value.innerHTML = ''
-  }
-})
-
-    return {
-      containerRef,
-      loadDocx,
-      onMounted,
-      onUnmounted,
-      ref,
-      renderAsync,
-      watch,
+        await renderAsync(arrayBuffer, el, el, {
+          className: 'docx-preview-content',
+          inWrapper: true,
+          ignoreWidth: false,
+          ignoreHeight: false,
+          ignoreFonts: false,
+          breakPages: true,
+          ignoreLastRenderedPageBreak: true,
+          experimental: false,
+          trimXmlDeclaration: true,
+          useBase64URL: true,
+          renderHeaders: true,
+          renderFooters: true,
+          renderFootnotes: true,
+          renderEndnotes: true,
+        })
+      } catch (e) {
+        console.error('Docx preview error:', e)
+        el.innerHTML = '<div class="preview-error">文档预览失败</div>'
+      }
+    },
+  },
+  mounted() {
+    this.loadDocx()
+  },
+  watch: {
+    fileUrl() {
+      this.loadDocx()
+    },
+  },
+  beforeDestroy() {
+    const el = this.$refs.containerRef
+    if (el) {
+      el.innerHTML = ''
     }
   },
 }

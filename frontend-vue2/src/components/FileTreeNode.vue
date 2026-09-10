@@ -43,121 +43,115 @@
 </template>
 
 <script>
-import { ref, watch } from 'vue'
 import FileIcon from './FileIcon.vue'
 import { getWorkspaceTree } from '../api/files'
 import { getScheduledTaskWorkspace } from '../api/scheduledTasks'
+
 export default {
   name: 'FileTreeNode',
   components: { FileIcon },
   props: {
-  item: {
-    type: Object,
-    required: true
+    item: {
+      type: Object,
+      required: true,
+    },
+    selectedId: {
+      type: String,
+      default: null,
+    },
+    depth: {
+      type: Number,
+      default: 0,
+    },
+    sessionId: {
+      type: String,
+      default: null,
+    },
+    taskId: {
+      type: String,
+      default: null,
+    },
   },
-  selectedId: {
-    type: String,
-    default: null
-  },
-  depth: {
-    type: Number,
-    default: 0
-  },
-  sessionId: {
-    type: String,
-    default: null
-  },
-  taskId: {
-    type: String,
-    default: null
-  }
-},
-  emits: ['select', 'download'],
-  setup(props, { emit }) {
-// 兼容两种文件树来源：会话工作区或定时任务工作区
-const loadTree = (path, sessionId, taskId) =>
-  taskId
-    ? getScheduledTaskWorkspace(path, taskId)
-    : getWorkspaceTree(path, sessionId)
-
-
-
-const expanded = ref(false)
-const children = ref([])
-const isLoading = ref(false)
-let clickTimer = null
-
-async function toggleExpand() {
-  if (expanded.value) {
-    expanded.value = false
-    return
-  }
-
-  expanded.value = true
-
-  // 如果已经有子节点数据，不需要再次加载
-  if (children.value.length > 0) return
-
-  // 懒加载子目录
-  await loadChildren()
-}
-
-async function loadChildren() {
-  if (props.item.type !== 'directory') return
-
-  isLoading.value = true
-  try {
-    const response = await loadTree(props.item.file_path, props.sessionId, props.taskId)
-    children.value = (response.items || []).map(item => ({
-      id: item.path,
-      name: item.name,
-      type: item.type,
-      size: item.size,
-      file_type: item.type === 'file' ? item.name.split('.').pop().toLowerCase() : '',
-      file_path: item.path,
-    }))
-  } catch (e) {
-    console.error('加载子目录失败:', e)
-    children.value = []
-  } finally {
-    isLoading.value = false
-  }
-}
-
-function handleClick() {
-  if (props.item.type === 'directory') {
-    toggleExpand()
-    return
-  }
-  // 文件：单击预览，双击下载
-  if (clickTimer) {
-    clearTimeout(clickTimer)
-    clickTimer = null
-    // 双击：下载
-    emit('download', props.item)
-  } else {
-    clickTimer = setTimeout(() => {
-      clickTimer = null
-      // 单击：预览
-      emit('select', props.item)
-    }, 250)
-  }
-}
-
+  data() {
     return {
-      children,
-      clickTimer,
-      expanded,
-      FileIcon,
-      getScheduledTaskWorkspace,
-      getWorkspaceTree,
-      handleClick,
-      isLoading,
-      loadChildren,
-      loadTree,
-      ref,
-      toggleExpand,
-      watch,
+      expanded: false,
+      children: [],
+      isLoading: false,
+    }
+  },
+  methods: {
+    // 兼容两种文件树来源：会话工作区或定时任务工作区
+    loadTree(path, sessionId, taskId) {
+      return taskId
+        ? getScheduledTaskWorkspace(path, taskId)
+        : getWorkspaceTree(path, sessionId)
+    },
+    async toggleExpand() {
+      if (this.expanded) {
+        this.expanded = false
+        return
+      }
+
+      this.expanded = true
+
+      // 如果已经有子节点数据，不需要再次加载
+      if (this.children.length > 0) return
+
+      // 懒加载子目录
+      await this.loadChildren()
+    },
+    async loadChildren() {
+      if (this.item.type !== 'directory') return
+
+      this.isLoading = true
+      try {
+        const response = await this.loadTree(
+          this.item.file_path,
+          this.sessionId,
+          this.taskId
+        )
+        this.children = (response.items || []).map((item) => ({
+          id: item.path,
+          name: item.name,
+          type: item.type,
+          size: item.size,
+          file_type:
+            item.type === 'file'
+              ? item.name.split('.').pop().toLowerCase()
+              : '',
+          file_path: item.path,
+        }))
+      } catch (e) {
+        console.error('加载子目录失败:', e)
+        this.children = []
+      } finally {
+        this.isLoading = false
+      }
+    },
+    handleClick() {
+      if (this.item.type === 'directory') {
+        this.toggleExpand()
+        return
+      }
+      // 文件：单击预览，双击下载
+      if (this.clickTimer) {
+        clearTimeout(this.clickTimer)
+        this.clickTimer = null
+        // 双击：下载
+        this.$emit('download', this.item)
+      } else {
+        this.clickTimer = setTimeout(() => {
+          this.clickTimer = null
+          // 单击：预览
+          this.$emit('select', this.item)
+        }, 250)
+      }
+    },
+  },
+  beforeDestroy() {
+    if (this.clickTimer) {
+      clearTimeout(this.clickTimer)
+      this.clickTimer = null
     }
   },
 }

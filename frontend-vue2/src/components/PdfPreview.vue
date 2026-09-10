@@ -40,164 +40,134 @@
 </template>
 
 <script>
-import { ref, onMounted, watch, onUnmounted } from 'vue'
-import { requestArrayBuffer } from '../api/request.js'
 import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.mjs'
-import pdfjsWorker from 'pdfjs-dist/legacy/build/pdf.worker.min.mjs?url'
+import pdfjsWorkerUrl from 'pdfjs-dist/legacy/build/pdf.worker.min.mjs'
+import { requestArrayBuffer } from '../api/request.js'
+
+// webpack5 下通过 vue.config.js 的 asset rule 把 worker 输出为可访问的静态资源 URL
+pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorkerUrl
+
 export default {
+  name: 'PdfPreview',
   props: {
-  fileUrl: {
-    type: String,
-    default: ''
-  }
-},
-  setup(props, { emit }) {
-pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker
-
-
-
-const containerRef = ref(null)
-const canvasRef = ref(null)
-const currentPage = ref(1)
-const totalPages = ref(0)
-const scale = ref(1.2)
-const loading = ref(true)
-const errorMsg = ref('')
-let pdfDoc = null
-
-const CMAP_URL = 'https://unpkg.com/pdfjs-dist@4.10.38/cmaps/'
-const STANDARD_FONT_DATA_URL = 'https://unpkg.com/pdfjs-dist@4.10.38/standard_fonts/'
-
-async function loadPdf() {
-  if (!props.fileUrl) return
-  
-  loading.value = true
-  errorMsg.value = ''
-  
-  try {
-    // 统一走 axios 封装（自动带鉴权头），4xx/5xx 由拦截器直接 reject
-    const arrayBuffer = await requestArrayBuffer({ url: props.fileUrl })
-
-    if (arrayBuffer.byteLength === 0) {
-      throw new Error('文件内容为空')
-    }
-    
-    pdfDoc = await pdfjsLib.getDocument({ 
-      data: arrayBuffer,
-      cMapUrl: CMAP_URL,
-      cMapPacked: true,
-      standardFontDataUrl: STANDARD_FONT_DATA_URL,
-      useSystemFonts: true,
-      disableFontFace: false,
-      isEvalSupported: false,
-      useWorkerFetch: false
-    }).promise
-    
-    totalPages.value = pdfDoc.numPages
-    currentPage.value = 1
-    
-    await renderPage()
-  } catch (e) {
-    console.error('PDF load error:', e)
-    errorMsg.value = `PDF 加载失败: ${e.message}`
-  } finally {
-    loading.value = false
-  }
-}
-
-async function renderPage() {
-  if (!pdfDoc || !canvasRef.value) return
-  
-  try {
-    const page = await pdfDoc.getPage(currentPage.value)
-    const viewport = page.getViewport({ scale: scale.value })
-    
-    const canvas = canvasRef.value
-    const context = canvas.getContext('2d')
-    
-    canvas.height = viewport.height
-    canvas.width = viewport.width
-    
-    const renderContext = {
-      canvasContext: context,
-      viewport: viewport,
-      enableWebGL: false,
-      renderInteractiveForms: false
-    }
-    
-    await page.render(renderContext).promise
-  } catch (e) {
-    console.error('Render page error:', e)
-  }
-}
-
-function prevPage() {
-  if (currentPage.value > 1) {
-    currentPage.value--
-    renderPage()
-  }
-}
-
-function nextPage() {
-  if (currentPage.value < totalPages.value) {
-    currentPage.value++
-    renderPage()
-  }
-}
-
-function zoomIn() {
-  scale.value = Math.min(scale.value + 0.25, 3)
-  renderPage()
-}
-
-function zoomOut() {
-  scale.value = Math.max(scale.value - 0.25, 0.5)
-  renderPage()
-}
-
-onMounted(() => {
-  loadPdf()
-})
-
-watch(() => props.fileUrl, () => {
-  if (pdfDoc) {
-    pdfDoc.destroy()
-    pdfDoc = null
-  }
-  currentPage.value = 1
-  totalPages.value = 0
-  loadPdf()
-})
-
-onUnmounted(() => {
-  if (pdfDoc) {
-    pdfDoc.destroy()
-  }
-})
-
+    fileUrl: {
+      type: String,
+      default: '',
+    },
+  },
+  data() {
     return {
-      canvasRef,
-      CMAP_URL,
-      containerRef,
-      currentPage,
-      errorMsg,
-      loading,
-      loadPdf,
-      nextPage,
-      onMounted,
-      onUnmounted,
-      pdfDoc,
-      pdfjsLib,
-      pdfjsWorker,
-      prevPage,
-      ref,
-      renderPage,
-      scale,
-      STANDARD_FONT_DATA_URL,
-      totalPages,
-      watch,
-      zoomIn,
-      zoomOut,
+      currentPage: 1,
+      totalPages: 0,
+      scale: 1.2,
+      loading: true,
+      errorMsg: '',
+      pdfDoc: null,
+    }
+  },
+  methods: {
+    async loadPdf() {
+      if (!this.fileUrl) return
+
+      this.loading = true
+      this.errorMsg = ''
+
+      try {
+        // 统一走 axios 封装（自动带鉴权头），4xx/5xx 由拦截器直接 reject
+        const arrayBuffer = await requestArrayBuffer({ url: this.fileUrl })
+
+        if (arrayBuffer.byteLength === 0) {
+          throw new Error('文件内容为空')
+        }
+
+        this.pdfDoc = await pdfjsLib.getDocument({
+          data: arrayBuffer,
+          cMapUrl: 'https://unpkg.com/pdfjs-dist@4.10.38/cmaps/',
+          cMapPacked: true,
+          standardFontDataUrl:
+            'https://unpkg.com/pdfjs-dist@4.10.38/standard_fonts/',
+          useSystemFonts: true,
+          disableFontFace: false,
+          isEvalSupported: false,
+          useWorkerFetch: false,
+        }).promise
+
+        this.totalPages = this.pdfDoc.numPages
+        this.currentPage = 1
+
+        await this.renderPage()
+      } catch (e) {
+        console.error('PDF load error:', e)
+        this.errorMsg = `PDF 加载失败: ${e.message}`
+      } finally {
+        this.loading = false
+      }
+    },
+    async renderPage() {
+      if (!this.pdfDoc) return
+      const canvas = this.$refs.canvasRef
+      if (!canvas) return
+
+      try {
+        const page = await this.pdfDoc.getPage(this.currentPage)
+        const viewport = page.getViewport({ scale: this.scale })
+
+        const context = canvas.getContext('2d')
+
+        canvas.height = viewport.height
+        canvas.width = viewport.width
+
+        const renderContext = {
+          canvasContext: context,
+          viewport: viewport,
+          enableWebGL: false,
+          renderInteractiveForms: false,
+        }
+
+        await page.render(renderContext).promise
+      } catch (e) {
+        console.error('Render page error:', e)
+      }
+    },
+    prevPage() {
+      if (this.currentPage > 1) {
+        this.currentPage--
+        this.renderPage()
+      }
+    },
+    nextPage() {
+      if (this.currentPage < this.totalPages) {
+        this.currentPage++
+        this.renderPage()
+      }
+    },
+    zoomIn() {
+      this.scale = Math.min(this.scale + 0.25, 3)
+      this.renderPage()
+    },
+    zoomOut() {
+      this.scale = Math.max(this.scale - 0.25, 0.5)
+      this.renderPage()
+    },
+  },
+  mounted() {
+    this.loadPdf()
+  },
+  watch: {
+    fileUrl() {
+      if (this.pdfDoc) {
+        this.pdfDoc.destroy()
+        this.pdfDoc = null
+      }
+      this.currentPage = 1
+      this.totalPages = 0
+      this.loadPdf()
+    },
+  },
+  beforeDestroy() {
+    if (this.pdfDoc) {
+      this.pdfDoc.destroy()
+      this.pdfDoc = null
     }
   },
 }

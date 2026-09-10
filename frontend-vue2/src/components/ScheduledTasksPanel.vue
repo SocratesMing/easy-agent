@@ -135,11 +135,11 @@
       </div>
     </div>
 
-    <Transition name="toast">
+    <transition name="toast">
       <div v-if="toast" class="toast" :class="toast.type">
         {{ toast.message }}
       </div>
-    </Transition>
+    </transition>
 
     <ConfirmDialog
       ref="confirmDialog"
@@ -186,7 +186,6 @@
 </template>
 
 <script>
-import { ref, onMounted } from 'vue'
 import {
   getScheduledTasks,
   getScheduledTaskRuns,
@@ -200,246 +199,182 @@ import FileTreeNode from './FileTreeNode.vue'
 import FilePreview from './FilePreview.vue'
 import { API_BASE_URL } from '../config.js'
 import { getStoredToken } from '../api/auth.js'
+
 export default {
   components: { ConfirmDialog, FilePreview, FileTreeNode },
-  emits: ['close'],
-  setup(props, { emit }) {
-const tasks = ref([])
-const loading = ref(false)
-const expandedTaskId = ref(null)
-const runs = ref([])
-const runsLoading = ref(false)
-const runLoading = ref(null)
-const expandedRuns = ref(new Set())
-const runsCollapsed = ref(true)
-const toast = ref(null)
-const confirmDialog = ref(null)
-const pendingDeleteTaskName = ref('')
-
-// 工作目录弹窗状态
-const workspaceModalVisible = ref(false)
-const workspaceTaskId = ref('')
-const workspaceItems = ref([])
-const workspaceLoading = ref(false)
-const selectedFile = ref(null)
-const previewVisible = ref(false)
-
-async function openWorkspace(task) {
-  // 再次点击同一任务的“查看工作目录”时折叠目录面板
-  if (workspaceModalVisible.value && workspaceTaskId.value === task.task_id) {
-    closeWorkspace()
-    return
-  }
-  workspaceTaskId.value = task.task_id
-  selectedFile.value = null
-  previewVisible.value = false
-  workspaceModalVisible.value = true
-  await loadWorkspace()
-}
-
-function closeWorkspace() {
-  workspaceModalVisible.value = false
-}
-
-async function loadWorkspace() {
-  workspaceLoading.value = true
-  try {
-    const data = await getScheduledTaskWorkspace(workspaceTaskId.value, '')
-    workspaceItems.value = data.items || []
-  } catch (e) {
-    showToast(e.message, 'error')
-    workspaceItems.value = []
-  } finally {
-    workspaceLoading.value = false
-  }
-}
-
-function handleWorkspaceSelect(file) {
-  if (file.type === 'directory') return
-  selectedFile.value = file
-  previewVisible.value = true
-}
-
-function handleWorkspaceDownload(file) {
-  const token = getStoredToken()
-  const params = new URLSearchParams()
-  params.set('file_path', file.path)
-  if (token) params.set('token', token)
-  params.set('download', 'true')
-  const url = `${API_BASE_URL}/agent/scheduled-tasks/${workspaceTaskId.value}/workspace/file?${params.toString()}`
-  const link = document.createElement('a')
-  link.href = url
-  link.download = file.name
-  document.body.appendChild(link)
-  link.click()
-  document.body.removeChild(link)
-}
-
-function showToast(message, type = 'success') {
-  toast.value = { message, type }
-  setTimeout(() => { toast.value = null }, 3000)
-}
-
-async function refresh() {
-  loading.value = true
-  try {
-    tasks.value = await getScheduledTasks()
-  } catch (e) {
-    showToast(e.message, 'error')
-  } finally {
-    loading.value = false
-  }
-}
-
-async function toggleExpand(taskId) {
-  if (expandedTaskId.value === taskId) {
-    expandedTaskId.value = null
-    return
-  }
-  expandedTaskId.value = taskId
-  expandedRuns.value = new Set()
-  runsCollapsed.value = true
-  await loadRuns(taskId)
-}
-
-async function loadRuns(taskId) {
-  runsLoading.value = true
-  try {
-    runs.value = await getScheduledTaskRuns(taskId)
-  } catch (e) {
-    showToast(e.message, 'error')
-    runs.value = []
-  } finally {
-    runsLoading.value = false
-  }
-}
-
-function toggleRunExpand(runId) {
-  const next = new Set(expandedRuns.value)
-  if (next.has(runId)) {
-    next.delete(runId)
-  } else {
-    next.add(runId)
-  }
-  expandedRuns.value = next
-}
-
-function toggleRunsCollapse() {
-  runsCollapsed.value = !runsCollapsed.value
-}
-
-async function handleToggle(task) {
-  try {
-    await toggleScheduledTask(task.task_id)
-    showToast(task.enabled ? '已暂停' : '已启用')
-    await refresh()
-  } catch (e) {
-    showToast(e.message, 'error')
-  }
-}
-
-async function handleRun(task) {
-  runLoading.value = task.task_id
-  try {
-    await runScheduledTaskNow(task.task_id)
-    showToast('已触发执行')
-    setTimeout(() => loadRuns(task.task_id), 2000)
-  } catch (e) {
-    showToast(e.message, 'error')
-  } finally {
-    runLoading.value = null
-  }
-}
-
-async function handleDelete(task) {
-  pendingDeleteTaskName.value = task.name
-  const confirmed = await confirmDialog.value.show()
-  if (!confirmed) return
-  try {
-    await deleteScheduledTask(task.task_id)
-    showToast('已删除')
-    if (expandedTaskId.value === task.task_id) {
-      expandedTaskId.value = null
-    }
-    await refresh()
-  } catch (e) {
-    showToast(e.message, 'error')
-  }
-}
-
-function formatTime(ts) {
-  if (!ts) return ''
-  try {
-    const d = new Date(ts)
-    return d.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
-  } catch {
-    return ts
-  }
-}
-
-function calcDuration(start, end) {
-  try {
-    const ms = new Date(end) - new Date(start)
-    if (ms < 60000) return `${Math.round(ms / 1000)}秒`
-    return `${Math.round(ms / 60000)}分钟`
-  } catch {
-    return ''
-  }
-}
-
-onMounted(() => {
-  refresh()
-})
-
+  data() {
     return {
-      API_BASE_URL,
-      calcDuration,
-      closeWorkspace,
-      confirmDialog,
-      ConfirmDialog,
-      deleteScheduledTask,
-      expandedRuns,
-      expandedTaskId,
-      FilePreview,
-      FileTreeNode,
-      formatTime,
-      getScheduledTaskRuns,
-      getScheduledTasks,
-      getScheduledTaskWorkspace,
-      getStoredToken,
-      handleDelete,
-      handleRun,
-      handleToggle,
-      handleWorkspaceDownload,
-      handleWorkspaceSelect,
-      loading,
-      loadRuns,
-      loadWorkspace,
-      onMounted,
-      openWorkspace,
-      pendingDeleteTaskName,
-      previewVisible,
-      ref,
-      refresh,
-      runLoading,
-      runs,
-      runScheduledTaskNow,
-      runsCollapsed,
-      runsLoading,
-      selectedFile,
-      showToast,
-      tasks,
-      toast,
-      toggleExpand,
-      toggleRunExpand,
-      toggleRunsCollapse,
-      toggleScheduledTask,
-      workspaceItems,
-      workspaceLoading,
-      workspaceModalVisible,
-      workspaceTaskId,
+      tasks: [],
+      loading: false,
+      expandedTaskId: null,
+      runs: [],
+      runsLoading: false,
+      runLoading: null,
+      expandedRuns: new Set(),
+      runsCollapsed: true,
+      toast: null,
+      pendingDeleteTaskName: '',
+      // 工作目录弹窗状态
+      workspaceModalVisible: false,
+      workspaceTaskId: '',
+      workspaceItems: [],
+      workspaceLoading: false,
+      selectedFile: null,
+      previewVisible: false
     }
   },
+  mounted() {
+    this.refresh()
+  },
+  methods: {
+    showToast(message, type = 'success') {
+      this.toast = { message, type }
+      setTimeout(() => { this.toast = null }, 3000)
+    },
+    async refresh() {
+      this.loading = true
+      try {
+        this.tasks = await getScheduledTasks()
+      } catch (e) {
+        this.showToast(e.message, 'error')
+      } finally {
+        this.loading = false
+      }
+    },
+    async loadRuns(taskId) {
+      this.runsLoading = true
+      try {
+        this.runs = await getScheduledTaskRuns(taskId)
+      } catch (e) {
+        this.showToast(e.message, 'error')
+        this.runs = []
+      } finally {
+        this.runsLoading = false
+      }
+    },
+    async toggleExpand(taskId) {
+      if (this.expandedTaskId === taskId) {
+        this.expandedTaskId = null
+        return
+      }
+      this.expandedTaskId = taskId
+      this.expandedRuns = new Set()
+      this.runsCollapsed = true
+      await this.loadRuns(taskId)
+    },
+    toggleRunExpand(runId) {
+      const next = new Set(this.expandedRuns)
+      if (next.has(runId)) {
+        next.delete(runId)
+      } else {
+        next.add(runId)
+      }
+      this.expandedRuns = next
+    },
+    toggleRunsCollapse() {
+      this.runsCollapsed = !this.runsCollapsed
+    },
+    async handleToggle(task) {
+      try {
+        await toggleScheduledTask(task.task_id)
+        this.showToast(task.enabled ? '已暂停' : '已启用')
+        await this.refresh()
+      } catch (e) {
+        this.showToast(e.message, 'error')
+      }
+    },
+    async handleRun(task) {
+      this.runLoading = task.task_id
+      try {
+        await runScheduledTaskNow(task.task_id)
+        this.showToast('已触发执行')
+        setTimeout(() => this.loadRuns(task.task_id), 2000)
+      } catch (e) {
+        this.showToast(e.message, 'error')
+      } finally {
+        this.runLoading = null
+      }
+    },
+    async handleDelete(task) {
+      this.pendingDeleteTaskName = task.name
+      const confirmed = await this.$refs.confirmDialog.show()
+      if (!confirmed) return
+      try {
+        await deleteScheduledTask(task.task_id)
+        this.showToast('已删除')
+        if (this.expandedTaskId === task.task_id) {
+          this.expandedTaskId = null
+        }
+        await this.refresh()
+      } catch (e) {
+        this.showToast(e.message, 'error')
+      }
+    },
+    async openWorkspace(task) {
+      // 再次点击同一任务的"查看工作目录"时折叠目录面板
+      if (this.workspaceModalVisible && this.workspaceTaskId === task.task_id) {
+        this.closeWorkspace()
+        return
+      }
+      this.workspaceTaskId = task.task_id
+      this.selectedFile = null
+      this.previewVisible = false
+      this.workspaceModalVisible = true
+      await this.loadWorkspace()
+    },
+    closeWorkspace() {
+      this.workspaceModalVisible = false
+    },
+    async loadWorkspace() {
+      this.workspaceLoading = true
+      try {
+        const data = await getScheduledTaskWorkspace(this.workspaceTaskId, '')
+        this.workspaceItems = data.items || []
+      } catch (e) {
+        this.showToast(e.message, 'error')
+        this.workspaceItems = []
+      } finally {
+        this.workspaceLoading = false
+      }
+    },
+    handleWorkspaceSelect(file) {
+      if (file.type === 'directory') return
+      this.selectedFile = file
+      this.previewVisible = true
+    },
+    handleWorkspaceDownload(file) {
+      const token = getStoredToken()
+      const params = new URLSearchParams()
+      params.set('file_path', file.path)
+      if (token) params.set('token', token)
+      params.set('download', 'true')
+      const url = `${API_BASE_URL}/agent/scheduled-tasks/${this.workspaceTaskId}/workspace/file?${params.toString()}`
+      const link = document.createElement('a')
+      link.href = url
+      link.download = file.name
+      document.body.appendChild(link)
+      link.click()
+      document.body.removeChild(link)
+    },
+    formatTime(ts) {
+      if (!ts) return ''
+      try {
+        const d = new Date(ts)
+        return d.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
+      } catch {
+        return ts
+      }
+    },
+    calcDuration(start, end) {
+      try {
+        const ms = new Date(end) - new Date(start)
+        if (ms < 60000) return `${Math.round(ms / 1000)}秒`
+        return `${Math.round(ms / 60000)}分钟`
+      } catch {
+        return ''
+      }
+    }
+  }
 }
 </script>
 
@@ -1011,7 +946,7 @@ onMounted(() => {
   transition: opacity 0.3s, transform 0.3s;
 }
 
-.toast-enter-from, .toast-leave-to {
+.toast-enter, .toast-leave-to {
   opacity: 0;
   transform: translateX(-50%) translateY(20px);
 }

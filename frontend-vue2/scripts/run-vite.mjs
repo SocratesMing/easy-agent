@@ -1,11 +1,14 @@
 import { spawnSync } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { existsSync, readFileSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { dirname, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { resolveEnvMode } from './env-mode.mjs'
 
 const require = createRequire(import.meta.url)
-const root = resolve(import.meta.dirname, '..')
+// Node14 没有 import.meta.dirname（Node20+ 才支持），用 fileURLToPath 推导
+const here = dirname(fileURLToPath(import.meta.url))
+const root = resolve(here, '..')
 const command = process.argv[2] || 'dev'
 const mode = resolveEnvMode(command)
 const envFile = resolve(root, `.env.${mode}`)

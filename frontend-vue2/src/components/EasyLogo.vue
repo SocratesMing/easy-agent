@@ -1,21 +1,16 @@
 <script>
-import { computed } from 'vue'
 export default {
+  name: 'EasyLogo',
   props: {
-  size: {
-    type: [Number, String],
-    default: 36
-  }
-},
-  setup(props, { emit }) {
-const iconSize = computed(() => {
-  return typeof props.size === 'number' ? `${props.size}px` : props.size
-})
-
-    return {
-      computed,
-      iconSize,
-    }
+    size: {
+      type: [Number, String],
+      default: 36,
+    },
+  },
+  computed: {
+    iconSize() {
+      return typeof this.size === 'number' ? `${this.size}px` : this.size
+    },
   },
 }
 </script>

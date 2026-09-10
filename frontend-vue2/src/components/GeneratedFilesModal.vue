@@ -17,7 +17,7 @@
             v-for="file in files"
             :key="file.id"
             class="file-item"
-            :class="{ active: selectedFile?.id === file.id }"
+            :class="{ active: selectedFile && selectedFile.id === file.id }"
             @click="selectFile(file)"
           >
             <div class="file-icon">
@@ -56,83 +56,72 @@
 </template>
 
 <script>
-import { ref, watch } from 'vue'
 import FileIcon from './FileIcon.vue'
 import { requestText } from '../api/request.js'
+
 export default {
+  name: 'GeneratedFilesModal',
   components: { FileIcon },
   props: {
-  visible: {
-    type: Boolean,
-    default: false
+    visible: {
+      type: Boolean,
+      default: false,
+    },
+    files: {
+      type: Array,
+      default: () => [],
+    },
   },
-  files: {
-    type: Array,
-    default: () => []
-  }
-},
-  emits: ['close'],
-  setup(props, { emit }) {
-const selectedFile = ref(null)
-const fileContent = ref('')
-
-function close() {
-  emit('close')
-  selectedFile.value = null
-  fileContent.value = ''
-}
-
-async function selectFile(file) {
-  selectedFile.value = file
-  try {
-    // 走统一请求层：自动带上 API_BASE_URL 与 Authorization 头
-    fileContent.value = await requestText(
-      {
-        url: '/agent/files/content',
-        method: 'get',
-        params: { file_path: file.file_path },
-      },
-      '无法加载文件内容'
-    )
-  } catch (e) {
-    fileContent.value = '加载文件内容失败: ' + e.message
-  }
-}
-
-function formatFileSize(size) {
-  if (size < 1024) return size + ' B'
-  if (size < 1024 * 1024) return (size / 1024).toFixed(1) + ' KB'
-  return (size / 1024 / 1024).toFixed(1) + ' MB'
-}
-
-function formatTime(timeStr) {
-  if (!timeStr) return ''
-  const date = new Date(timeStr)
-  return date.toLocaleString('zh-CN', { 
-    month: '2-digit', 
-    day: '2-digit', 
-    hour: '2-digit', 
-    minute: '2-digit' 
-  })
-}
-
-watch(() => props.files, () => {
-  if (props.files.length > 0 && !selectedFile.value) {
-    selectFile(props.files[0])
-  }
-})
-
+  data() {
     return {
-      close,
-      fileContent,
-      FileIcon,
-      formatFileSize,
-      formatTime,
-      ref,
-      selectedFile,
-      selectFile,
-      watch,
+      selectedFile: null,
+      fileContent: '',
     }
+  },
+  methods: {
+    close() {
+      this.$emit('close')
+      this.selectedFile = null
+      this.fileContent = ''
+    },
+    async selectFile(file) {
+      this.selectedFile = file
+      try {
+        // 走统一请求层：自动带上 API_BASE_URL 与 Authorization 头
+        this.fileContent = await requestText(
+          {
+            url: '/agent/files/content',
+            method: 'get',
+            params: { file_path: file.file_path },
+          },
+          '无法加载文件内容'
+        )
+      } catch (e) {
+        this.fileContent = '加载文件内容失败: ' + e.message
+      }
+    },
+    formatFileSize(size) {
+      if (size < 1024) return size + ' B'
+      if (size < 1024 * 1024) return (size / 1024).toFixed(1) + ' KB'
+      return (size / 1024 / 1024).toFixed(1) + ' MB'
+    },
+    formatTime(timeStr) {
+      if (!timeStr) return ''
+      const date = new Date(timeStr)
+      return date.toLocaleString('zh-CN', {
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+      })
+    },
+  },
+  watch: {
+    files() {
+      if (this.files.length > 0 && !this.selectedFile) {
+        this.selectFile(this.files[0])
+      }
+    },
   },
 }
 </script>

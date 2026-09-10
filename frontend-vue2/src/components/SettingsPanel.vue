@@ -264,7 +264,7 @@
                         <span v-if="server.added" class="market-added-tag">已添加</span>
                       </div>
                       <p class="mcp-market-desc">
-                        {{ server._raw?.description || server.command || server._raw?.url || '暂无描述' }}
+                        {{ (server._raw && server._raw.description) || server.command || (server._raw && server._raw.url) || '暂无描述' }}
                       </p>
                       <div v-if="server.env_keys && server.env_keys.length" class="mcp-detail">
                         <span class="detail-label">Env:</span>
@@ -362,7 +362,6 @@
 </template>
 
 <script>
-import { ref, watch, onMounted, computed } from 'vue'
 import { MessageBox } from 'element-ui'
 import {
   getMemory,
@@ -378,75 +377,8 @@ import {
   deleteMcpServer,
 } from '../api/settings.js'
 import { syncMarketAddedState } from '../utils/mcpMarket.js'
-export default {
-  props: {
-  isDarkTheme: { type: Boolean, default: false },
-},
-  emits: ['close', 'toggle-theme'],
-  setup(props, { emit }) {
-const activeTab = ref('memory')
-const loading = ref(false)
 
-// 记忆
-const memoryContent = ref('')
-const memorySaving = ref(false)
-const memorySaved = ref(false)
-const memoryError = ref('')
-
-// 提示词
-const promptContent = ref('')
-
-// MCP
-const mcpServers = ref([])
-const mcpEnabledMap = ref({})     // { serverName: boolean }
-const mcpSaving = ref(false)
-const mcpSaved = ref(false)
-const mcpError = ref('')
-const mcpSource = ref('global')   // 'user' | 'global'
-const mcpServerErrors = ref({})   // { serverName: errorMessage }
-const mcpMarketServers = ref([])
-const mcpApiKey = ref('')
-const mcpApiKeyVisible = ref(false)
-const mcpApiKeyCopied = ref(false)
-const mcpApiKeyGenerating = ref(false)
-const mcpApiKeyError = ref('')
-const mcpKeyBusinesses = ref([])          // [{ business, issued, updated_at }]
-const mcpKeySelectedBusiness = ref('')    // 当前选中的业务
-const mcpSnippetCopied = ref(false)
-
-// 添加 MCP
-const showAddMcp = ref(false)
-const addMcpMode = ref('manual')
-const addMcpJson = ref('')
-const addMcpError = ref('')
-const addingMarketMcp = ref('')
-
-// 预览 MCP
-const showPreview = ref(false)
-
-// 生成最终 mcp.json 内容（仅 enabled 的 server）
-const mcpPreviewJson = computed(() => {
-  const servers = {}
-  for (const server of mcpServers.value) {
-    if (mcpEnabledMap.value[server.name] !== false) {
-      const entry = { ...server._raw }
-      // 规范化：用 transport 替代 type
-      if (entry.type && !entry.transport) {
-        entry.transport = entry.type
-        delete entry.type
-      }
-      delete entry.name
-      servers[server.name] = entry
-    }
-  }
-  return JSON.stringify({ servers }, null, 2)
-})
-
-function switchTheme(dark) {
-  if (dark === props.isDarkTheme) return
-  emit('toggle-theme')
-}
-
+// 侧边导航（无需响应式）
 const navItems = [
   {
     key: 'memory',
@@ -470,390 +402,377 @@ const navItems = [
   },
 ]
 
-async function loadTabData() {
-  loading.value = true
-  try {
-    if (activeTab.value === 'memory') {
-      const data = await getMemory()
-      memoryContent.value = data.content || ''
-    } else if (activeTab.value === 'prompt') {
-      const data = await getSystemPrompt()
-      promptContent.value = data.content || ''
-    } else if (activeTab.value === 'mcp') {
-      const [data, market, keyStatuses] = await Promise.all([
-        getMcpServers(),
-        getMcpMarket(),
-        getMcpApiKeyStatuses().catch(() => ({ businesses: [] })),
-      ])
-      mcpServers.value = (data.servers || []).map(s => ({
-        ...s,
-        _raw: s._raw || { transport: s.transport, command: s.command, args: s.args, env: {} },
-      }))
-      mcpSource.value = data.source || 'global'
-      mcpMarketServers.value = market.servers || []
-      mcpKeyBusinesses.value = keyStatuses.businesses || []
-      if (!mcpKeySelectedBusiness.value && mcpKeyBusinesses.value.length) {
-        mcpKeySelectedBusiness.value = mcpKeyBusinesses.value[0].business
-      }
-      // 初始化 enabledMap：默认全部开启
-      const newMap = {}
-      for (const s of mcpServers.value) {
-        newMap[s.name] = mcpEnabledMap.value[s.name] !== undefined
-          ? mcpEnabledMap.value[s.name]
-          : true
-      }
-      mcpEnabledMap.value = newMap
-    }
-  } catch (e) {
-    console.error('加载数据失败:', e)
-  } finally {
-    loading.value = false
-  }
-}
-
-async function saveMemory() {
-  memorySaving.value = true
-  memorySaved.value = false
-  memoryError.value = ''
-  try {
-    await updateMemory(memoryContent.value)
-    memorySaved.value = true
-    setTimeout(() => { memorySaved.value = false }, 2000)
-  } catch (e) {
-    memoryError.value = e.message || '保存失败'
-  } finally {
-    memorySaving.value = false
-  }
-}
-
-// ── MCP 操作 ──
-
-async function saveMcp() {
-  mcpSaving.value = true
-  mcpSaved.value = false
-  mcpError.value = ''
-  mcpServerErrors.value = {}
-  try {
-    const servers = {}
-    for (const server of mcpServers.value) {
-      if (mcpEnabledMap.value[server.name] !== false) {
-        const entry = { ...server._raw }
-        if (entry.type && !entry.transport) {
-          entry.transport = entry.type
-          delete entry.type
-        }
-        delete entry.name
-        servers[server.name] = entry
-      }
-    }
-    const resp = await updateMcpServers(servers)
-    mcpMarketServers.value = syncMarketAddedState(
-      mcpMarketServers.value,
-      resp.servers || Object.keys(servers),
-    )
-
-    // 处理 per-server 校验结果：异常的 server 自动关闭开关并记录错误
-    const statuses = resp.server_status || []
-    const newErrors = {}
-    for (const s of statuses) {
-      if (s.status === 'error') {
-        // 自动关闭异常 server 的开关
-        mcpEnabledMap.value = { ...mcpEnabledMap.value, [s.name]: false }
-        newErrors[s.name] = s.error || '加载失败'
-      }
-    }
-    mcpServerErrors.value = newErrors
-
-    if (statuses.length > 0 && Object.keys(newErrors).length > 0) {
-      const failedNames = Object.keys(newErrors).join(', ')
-      mcpError.value = `以下 MCP 服务加载异常，已自动关闭: ${failedNames}`
-    } else {
-      mcpSaved.value = true
-      setTimeout(() => { mcpSaved.value = false }, 2000)
-    }
-  } catch (e) {
-    mcpError.value = e.message || '保存失败'
-  } finally {
-    mcpSaving.value = false
-  }
-}
-
-async function removeMcpServer(name) {
-  // 用 element-ui 的确认框替代原生 confirm
-  try {
-    await MessageBox.confirm(`确认删除 MCP 服务 "${name}"？删除后立即生效。`, '删除确认', {
-      type: 'warning',
-      confirmButtonText: '删除',
-      cancelButtonText: '取消',
-    })
-  } catch {
-    return // 用户取消
-  }
-  try {
-    const resp = await deleteMcpServer(name)
-    // 删除成功，本地同步移除
-    mcpServers.value = mcpServers.value.filter(s => s.name !== name)
-    mcpMarketServers.value = syncMarketAddedState(
-      mcpMarketServers.value,
-      resp.servers || mcpServers.value.map(s => s.name),
-    )
-    const newMap = { ...mcpEnabledMap.value }
-    delete newMap[name]
-    mcpEnabledMap.value = newMap
-    const newErrors = { ...mcpServerErrors.value }
-    delete newErrors[name]
-    mcpServerErrors.value = newErrors
-    mcpError.value = ''
-    mcpSaved.value = true
-    setTimeout(() => { mcpSaved.value = false }, 2000)
-  } catch (e) {
-    mcpError.value = e.message || '删除失败'
-  }
-}
-
-function openAddMcp() {
-  addMcpJson.value = ''
-  addMcpError.value = ''
-  addMcpMode.value = 'manual'
-  showAddMcp.value = true
-}
-
-function switchAddMcpMode(mode) {
-  addMcpMode.value = mode
-  addMcpError.value = ''
-}
-
-async function confirmAddMcp() {
-  addMcpError.value = ''
-  let parsed
-  try {
-    parsed = JSON.parse(addMcpJson.value)
-  } catch {
-    addMcpError.value = 'JSON 格式无效，请检查输入'
-    return
-  }
-
-  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-    addMcpError.value = '请输入 JSON 对象，格式如 {"servers": {"myserver": {...}}}'
-    return
-  }
-
-  // 调用后端添加：后端按 servers 下的名称判重、合并写入、即时重载 MCP
-  try {
-    const resp = await addMcpServer(parsed)
-
-    // 处理新添加 server 的校验结果：异常的记录错误
-    const statuses = resp.server_status || []
-    const newErrors = {}
-    for (const s of statuses) {
-      if (s.status === 'error') {
-        newErrors[s.name] = s.error || '加载失败'
-      }
-    }
-    mcpServerErrors.value = { ...mcpServerErrors.value, ...newErrors }
-
-    if (Object.keys(newErrors).length > 0) {
-      const failedNames = Object.keys(newErrors).join(', ')
-      addMcpError.value = `以下 MCP 服务添加成功但加载异常: ${failedNames}（请检查配置）`
-    }
-
-    // 重新拉取最新列表，保证与后端一致
-    await loadTabData()
-
-    if (!addMcpError.value) {
-      showAddMcp.value = false
-      addMcpJson.value = ''
-    }
-  } catch (e) {
-    addMcpError.value = e.message || '添加失败'
-  }
-}
-
-function toggleMcpServer(name, enabled) {
-  mcpEnabledMap.value = { ...mcpEnabledMap.value, [name]: enabled }
-}
-
-async function addMarketMcp(name) {
-  addingMarketMcp.value = name
-  addMcpError.value = ''
-  mcpError.value = ''
-  try {
-    await addMcpFromMarket(name)
-    mcpSaved.value = true
-    setTimeout(() => { mcpSaved.value = false }, 2000)
-    await loadTabData()
-  } catch (e) {
-    addMcpError.value = e.message || '添加失败'
-  } finally {
-    addingMarketMcp.value = ''
-  }
-}
-
-function openPreview() {
-  showPreview.value = true
-}
-
-// 生成后展示可直接粘贴到 mcp.json 的配置片段（URL 由子项目部署地址决定）
-const mcpSnippet = computed(() => {
-  const business = mcpKeySelectedBusiness.value || 'market'
-  return JSON.stringify(
-    {
-      servers: {
-        [`${business}-data`]: {
-          transport: 'streamable_http',
-          url: `http://<mcp-server 地址>/mcp/${business}/`,
-          headers: { Authorization: `Bearer ${mcpApiKey.value}` },
-        },
-      },
-    },
-    null,
-    2,
-  )
-})
-
-async function handleGenerateMcpApiKey() {
-  const business = mcpKeySelectedBusiness.value
-  if (!business) {
-    mcpApiKeyError.value = '请先选择业务类型'
-    return
-  }
-  mcpApiKeyGenerating.value = true
-  mcpApiKeyError.value = ''
-  try {
-    const result = await generateMcpApiKey(business)
-    mcpApiKey.value = result.api_key || ''
-    mcpApiKeyVisible.value = false
-    mcpApiKeyCopied.value = false
-    mcpSnippetCopied.value = false
-  } catch (e) {
-    mcpApiKey.value = ''
-    mcpApiKeyError.value = e.message || '生成 MCP API Key 失败'
-  } finally {
-    mcpApiKeyGenerating.value = false
-  }
-}
-
-async function copyMcpSnippet() {
-  try {
-    await navigator.clipboard.writeText(mcpSnippet.value)
-  } catch {
-    const textarea = document.createElement('textarea')
-    textarea.value = mcpSnippet.value
-    document.body.appendChild(textarea)
-    textarea.select()
-    document.execCommand('copy')
-    document.body.removeChild(textarea)
-  }
-  mcpSnippetCopied.value = true
-  setTimeout(() => { mcpSnippetCopied.value = false }, 2000)
-}
-
-async function copyMcpApiKey() {
-  try {
-    await navigator.clipboard.writeText(mcpApiKey.value)
-  } catch {
-    const textarea = document.createElement('textarea')
-    textarea.value = mcpApiKey.value
-    document.body.appendChild(textarea)
-    textarea.select()
-    document.execCommand('copy')
-    document.body.removeChild(textarea)
-  }
-  mcpApiKeyCopied.value = true
-  setTimeout(() => { mcpApiKeyCopied.value = false }, 2000)
-}
-
-const previewCopied = ref(false)
-async function copyPreview() {
-  try {
-    await navigator.clipboard.writeText(mcpPreviewJson.value)
-    previewCopied.value = true
-    setTimeout(() => { previewCopied.value = false }, 2000)
-  } catch {
-    // fallback
-    const ta = document.createElement('textarea')
-    ta.value = mcpPreviewJson.value
-    document.body.appendChild(ta)
-    ta.select()
-    document.execCommand('copy')
-    document.body.removeChild(ta)
-    previewCopied.value = true
-    setTimeout(() => { previewCopied.value = false }, 2000)
-  }
-}
-
-watch(activeTab, () => {
-  loadTabData()
-})
-
-onMounted(() => {
-  loadTabData()
-})
-
+export default {
+  props: {
+    isDarkTheme: { type: Boolean, default: false }
+  },
+  data() {
     return {
-      activeTab,
-      addingMarketMcp,
-      addMarketMcp,
-      addMcpError,
-      addMcpFromMarket,
-      addMcpJson,
-      addMcpMode,
-      addMcpServer,
-      computed,
-      confirmAddMcp,
-      copyMcpApiKey,
-      copyMcpSnippet,
-      copyPreview,
-      deleteMcpServer,
-      handleGenerateMcpApiKey,
-      getMcpMarket,
-      getMcpServers,
-      getMemory,
-      getSystemPrompt,
-      loading,
-      loadTabData,
-      mcpApiKey,
-      mcpApiKeyCopied,
-      mcpApiKeyError,
-      mcpApiKeyVisible,
-      mcpEnabledMap,
-      mcpError,
-      mcpKeyBusinesses,
-      mcpKeySelectedBusiness,
-      mcpMarketServers,
-      mcpPreviewJson,
-      mcpSaved,
-      mcpSaving,
-      mcpServerErrors,
-      mcpServers,
-      mcpSnippet,
-      mcpSnippetCopied,
-      mcpSource,
-      memoryContent,
-      memoryError,
-      memorySaved,
-      memorySaving,
-      navItems,
-      onMounted,
-      openAddMcp,
-      openPreview,
-      previewCopied,
-      promptContent,
-      ref,
-      removeMcpServer,
-      saveMcp,
-      saveMemory,
-      showAddMcp,
-      showPreview,
-      switchAddMcpMode,
-      switchTheme,
-      syncMarketAddedState,
-      toggleMcpServer,
-      updateMcpServers,
-      updateMemory,
-      watch,
+      activeTab: 'memory',
+      loading: false,
+      // 记忆
+      memoryContent: '',
+      memorySaving: false,
+      memorySaved: false,
+      memoryError: '',
+      // 提示词
+      promptContent: '',
+      // MCP
+      mcpServers: [],
+      mcpEnabledMap: {},     // { serverName: boolean }
+      mcpSaving: false,
+      mcpSaved: false,
+      mcpError: '',
+      mcpSource: 'global',   // 'user' | 'global'
+      mcpServerErrors: {},   // { serverName: errorMessage }
+      mcpMarketServers: [],
+      mcpApiKey: '',
+      mcpApiKeyVisible: false,
+      mcpApiKeyCopied: false,
+      mcpApiKeyGenerating: false,
+      mcpApiKeyError: '',
+      mcpKeyBusinesses: [],          // [{ business, issued, updated_at }]
+      mcpKeySelectedBusiness: '',    // 当前选中的业务
+      mcpSnippetCopied: false,
+      // 添加 MCP
+      showAddMcp: false,
+      addMcpMode: 'manual',
+      addMcpJson: '',
+      addMcpError: '',
+      addingMarketMcp: '',
+      // 预览 MCP
+      showPreview: false,
+      previewCopied: false
     }
   },
+  computed: {
+    // 生成最终 mcp.json 内容（仅 enabled 的 server）
+    mcpPreviewJson() {
+      const servers = {}
+      for (const server of this.mcpServers) {
+        if (this.mcpEnabledMap[server.name] !== false) {
+          const entry = { ...server._raw }
+          // 规范化：用 transport 替代 type
+          if (entry.type && !entry.transport) {
+            entry.transport = entry.type
+            delete entry.type
+          }
+          delete entry.name
+          servers[server.name] = entry
+        }
+      }
+      return JSON.stringify({ servers }, null, 2)
+    },
+    // 生成后展示可直接粘贴到 mcp.json 的配置片段（URL 由子项目部署地址决定）
+    mcpSnippet() {
+      const business = this.mcpKeySelectedBusiness || 'market'
+      return JSON.stringify(
+        {
+          servers: {
+            [`${business}-data`]: {
+              transport: 'streamable_http',
+              url: `http://<mcp-server 地址>/mcp/${business}/`,
+              headers: { Authorization: `Bearer ${this.mcpApiKey}` },
+            },
+          },
+        },
+        null,
+        2,
+      )
+    }
+  },
+  watch: {
+    activeTab() {
+      this.loadTabData()
+    }
+  },
+  mounted() {
+    this.loadTabData()
+  },
+  methods: {
+    switchTheme(dark) {
+      if (dark === this.isDarkTheme) return
+      this.$emit('toggle-theme')
+    },
+    async loadTabData() {
+      this.loading = true
+      try {
+        if (this.activeTab === 'memory') {
+          const data = await getMemory()
+          this.memoryContent = data.content || ''
+        } else if (this.activeTab === 'prompt') {
+          const data = await getSystemPrompt()
+          this.promptContent = data.content || ''
+        } else if (this.activeTab === 'mcp') {
+          const [data, market, keyStatuses] = await Promise.all([
+            getMcpServers(),
+            getMcpMarket(),
+            getMcpApiKeyStatuses().catch(() => ({ businesses: [] })),
+          ])
+          this.mcpServers = (data.servers || []).map(s => ({
+            ...s,
+            _raw: s._raw || { transport: s.transport, command: s.command, args: s.args, env: {} },
+          }))
+          this.mcpSource = data.source || 'global'
+          this.mcpMarketServers = market.servers || []
+          this.mcpKeyBusinesses = keyStatuses.businesses || []
+          if (!this.mcpKeySelectedBusiness && this.mcpKeyBusinesses.length) {
+            this.mcpKeySelectedBusiness = this.mcpKeyBusinesses[0].business
+          }
+          // 初始化 enabledMap：默认全部开启
+          const newMap = {}
+          for (const s of this.mcpServers) {
+            newMap[s.name] = this.mcpEnabledMap[s.name] !== undefined
+              ? this.mcpEnabledMap[s.name]
+              : true
+          }
+          this.mcpEnabledMap = newMap
+        }
+      } catch (e) {
+        console.error('加载数据失败:', e)
+      } finally {
+        this.loading = false
+      }
+    },
+    async saveMemory() {
+      this.memorySaving = true
+      this.memorySaved = false
+      this.memoryError = ''
+      try {
+        await updateMemory(this.memoryContent)
+        this.memorySaved = true
+        setTimeout(() => { this.memorySaved = false }, 2000)
+      } catch (e) {
+        this.memoryError = e.message || '保存失败'
+      } finally {
+        this.memorySaving = false
+      }
+    },
+    // ── MCP 操作 ──
+    async saveMcp() {
+      this.mcpSaving = true
+      this.mcpSaved = false
+      this.mcpError = ''
+      this.mcpServerErrors = {}
+      try {
+        const servers = {}
+        for (const server of this.mcpServers) {
+          if (this.mcpEnabledMap[server.name] !== false) {
+            const entry = { ...server._raw }
+            if (entry.type && !entry.transport) {
+              entry.transport = entry.type
+              delete entry.type
+            }
+            delete entry.name
+            servers[server.name] = entry
+          }
+        }
+        const resp = await updateMcpServers(servers)
+        this.mcpMarketServers = syncMarketAddedState(
+          this.mcpMarketServers,
+          resp.servers || Object.keys(servers),
+        )
+
+        // 处理 per-server 校验结果：异常的 server 自动关闭开关并记录错误
+        const statuses = resp.server_status || []
+        const newErrors = {}
+        for (const s of statuses) {
+          if (s.status === 'error') {
+            // 自动关闭异常 server 的开关
+            this.mcpEnabledMap = { ...this.mcpEnabledMap, [s.name]: false }
+            newErrors[s.name] = s.error || '加载失败'
+          }
+        }
+        this.mcpServerErrors = newErrors
+
+        if (statuses.length > 0 && Object.keys(newErrors).length > 0) {
+          const failedNames = Object.keys(newErrors).join(', ')
+          this.mcpError = `以下 MCP 服务加载异常，已自动关闭: ${failedNames}`
+        } else {
+          this.mcpSaved = true
+          setTimeout(() => { this.mcpSaved = false }, 2000)
+        }
+      } catch (e) {
+        this.mcpError = e.message || '保存失败'
+      } finally {
+        this.mcpSaving = false
+      }
+    },
+    async removeMcpServer(name) {
+      // 用 element-ui 的确认框替代原生 confirm
+      try {
+        await MessageBox.confirm(`确认删除 MCP 服务 "${name}"？删除后立即生效。`, '删除确认', {
+          type: 'warning',
+          confirmButtonText: '删除',
+          cancelButtonText: '取消',
+        })
+      } catch {
+        return // 用户取消
+      }
+      try {
+        const resp = await deleteMcpServer(name)
+        // 删除成功，本地同步移除
+        this.mcpServers = this.mcpServers.filter(s => s.name !== name)
+        this.mcpMarketServers = syncMarketAddedState(
+          this.mcpMarketServers,
+          resp.servers || this.mcpServers.map(s => s.name),
+        )
+        const newMap = { ...this.mcpEnabledMap }
+        delete newMap[name]
+        this.mcpEnabledMap = newMap
+        const newErrors = { ...this.mcpServerErrors }
+        delete newErrors[name]
+        this.mcpServerErrors = newErrors
+        this.mcpError = ''
+        this.mcpSaved = true
+        setTimeout(() => { this.mcpSaved = false }, 2000)
+      } catch (e) {
+        this.mcpError = e.message || '删除失败'
+      }
+    },
+    openAddMcp() {
+      this.addMcpJson = ''
+      this.addMcpError = ''
+      this.addMcpMode = 'manual'
+      this.showAddMcp = true
+    },
+    switchAddMcpMode(mode) {
+      this.addMcpMode = mode
+      this.addMcpError = ''
+    },
+    async confirmAddMcp() {
+      this.addMcpError = ''
+      let parsed
+      try {
+        parsed = JSON.parse(this.addMcpJson)
+      } catch {
+        this.addMcpError = 'JSON 格式无效，请检查输入'
+        return
+      }
+
+      if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+        this.addMcpError = '请输入 JSON 对象，格式如 {"servers": {"myserver": {...}}}'
+        return
+      }
+
+      // 调用后端添加：后端按 servers 下的名称判重、合并写入、即时重载 MCP
+      try {
+        const resp = await addMcpServer(parsed)
+
+        // 处理新添加 server 的校验结果：异常的记录错误
+        const statuses = resp.server_status || []
+        const newErrors = {}
+        for (const s of statuses) {
+          if (s.status === 'error') {
+            newErrors[s.name] = s.error || '加载失败'
+          }
+        }
+        this.mcpServerErrors = { ...this.mcpServerErrors, ...newErrors }
+
+        if (Object.keys(newErrors).length > 0) {
+          const failedNames = Object.keys(newErrors).join(', ')
+          this.addMcpError = `以下 MCP 服务添加成功但加载异常: ${failedNames}（请检查配置）`
+        }
+
+        // 重新拉取最新列表，保证与后端一致
+        await this.loadTabData()
+
+        if (!this.addMcpError) {
+          this.showAddMcp = false
+          this.addMcpJson = ''
+        }
+      } catch (e) {
+        this.addMcpError = e.message || '添加失败'
+      }
+    },
+    toggleMcpServer(name, enabled) {
+      this.mcpEnabledMap = { ...this.mcpEnabledMap, [name]: enabled }
+    },
+    async addMarketMcp(name) {
+      this.addingMarketMcp = name
+      this.addMcpError = ''
+      this.mcpError = ''
+      try {
+        await addMcpFromMarket(name)
+        this.mcpSaved = true
+        setTimeout(() => { this.mcpSaved = false }, 2000)
+        await this.loadTabData()
+      } catch (e) {
+        this.addMcpError = e.message || '添加失败'
+      } finally {
+        this.addingMarketMcp = ''
+      }
+    },
+    openPreview() {
+      this.showPreview = true
+    },
+    async handleGenerateMcpApiKey() {
+      const business = this.mcpKeySelectedBusiness
+      if (!business) {
+        this.mcpApiKeyError = '请先选择业务类型'
+        return
+      }
+      this.mcpApiKeyGenerating = true
+      this.mcpApiKeyError = ''
+      try {
+        const result = await generateMcpApiKey(business)
+        this.mcpApiKey = result.api_key || ''
+        this.mcpApiKeyVisible = false
+        this.mcpApiKeyCopied = false
+        this.mcpSnippetCopied = false
+      } catch (e) {
+        this.mcpApiKey = ''
+        this.mcpApiKeyError = e.message || '生成 MCP API Key 失败'
+      } finally {
+        this.mcpApiKeyGenerating = false
+      }
+    },
+    async copyMcpSnippet() {
+      try {
+        await navigator.clipboard.writeText(this.mcpSnippet)
+      } catch {
+        const textarea = document.createElement('textarea')
+        textarea.value = this.mcpSnippet
+        document.body.appendChild(textarea)
+        textarea.select()
+        document.execCommand('copy')
+        document.body.removeChild(textarea)
+      }
+      this.mcpSnippetCopied = true
+      setTimeout(() => { this.mcpSnippetCopied = false }, 2000)
+    },
+    async copyMcpApiKey() {
+      try {
+        await navigator.clipboard.writeText(this.mcpApiKey)
+      } catch {
+        const textarea = document.createElement('textarea')
+        textarea.value = this.mcpApiKey
+        document.body.appendChild(textarea)
+        textarea.select()
+        document.execCommand('copy')
+        document.body.removeChild(textarea)
+      }
+      this.mcpApiKeyCopied = true
+      setTimeout(() => { this.mcpApiKeyCopied = false }, 2000)
+    },
+    async copyPreview() {
+      try {
+        await navigator.clipboard.writeText(this.mcpPreviewJson)
+        this.previewCopied = true
+        setTimeout(() => { this.previewCopied = false }, 2000)
+      } catch {
+        // fallback
+        const ta = document.createElement('textarea')
+        ta.value = this.mcpPreviewJson
+        document.body.appendChild(ta)
+        ta.select()
+        document.execCommand('copy')
+        document.body.removeChild(ta)
+        this.previewCopied = true
+        setTimeout(() => { this.previewCopied = false }, 2000)
+      }
+    }
+  }
 }
 </script>
 

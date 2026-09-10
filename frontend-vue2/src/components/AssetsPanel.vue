@@ -132,43 +132,13 @@
 
 <script>
 import { API_BASE_URL } from '../config.js'
-import { ref, computed, onMounted, watch, onActivated } from 'vue'
 import { Message } from 'element-ui'
-import { getAllFiles, deleteFile } from '../api/files.js'
 import { requestJson } from '../api/request.js'
 import FileIcon from './FileIcon.vue'
 import ConfirmDialog from './ConfirmDialog.vue'
 import FilePreview from './FilePreview.vue'
-export default {
-  components: { ConfirmDialog, FileIcon, FilePreview },
-  props: {
-  visible: {
-    type: Boolean,
-    default: true
-  }
-},
-  emits: ['close'],
-  setup(props, { emit }) {
-const loading = ref(false)
-const allFiles = ref([])
-const confirmDialog = ref(null)
-const activeTab = ref('全部')
-const uploading = ref(false)
-const activeDropdown = ref(null)
-const previewDialog = ref(null)
-const previewFile = ref({ filename: '', filePath: '', visible: false })
 
-
-function toggleDropdown(filePath) {
-  activeDropdown.value = activeDropdown.value === filePath ? null : filePath
-}
-
-function closeDropdown() {
-  activeDropdown.value = null
-}
-
-const categories = ['全部', '文档', '图片', '代码', '数据', '其他']
-
+// 模块级常量（无需响应式）
 const categoryIcons = {
   '全部': '📁',
   '文档': '📄',
@@ -178,223 +148,197 @@ const categoryIcons = {
   '其他': '📎'
 }
 
-function getCategoryIcon(category) {
-  return categoryIcons[category] || '📎'
-}
-
-function getCategoryClass(category) {
-  const classes = {
-    '文档': 'doc',
-    '图片': 'image',
-    '代码': 'code',
-    '数据': 'data',
-    '其他': 'other'
-  }
-  return classes[category] || 'other'
-}
-
-function getFileTypeLabel(filename) {
-  const ext = filename.split('.').pop().toUpperCase()
-  return ext
-}
-
-function getFileCategory(filename) {
-  const ext = filename.split('.').pop().toLowerCase()
-  const categoryMap = {
-    '文档': ['pdf', 'doc', 'docx', 'txt', 'md', 'xls', 'xlsx', 'ppt', 'pptx', 'rtf', 'odt'],
-    '图片': ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'svg', 'webp', 'ico', 'tiff'],
-    '代码': ['py', 'js', 'ts', 'vue', 'html', 'css', 'json', 'xml', 'java', 'go', 'rs', 'c', 'cpp', 'h', 'sh', 'bat'],
-    '数据': ['csv', 'sql', 'db', 'sqlite', 'parquet', 'avro'],
-  }
-  
-  for (const [cat, exts] of Object.entries(categoryMap)) {
-    if (exts.includes(ext)) return cat
-  }
-  return '其他'
-}
-
-const filesWithCategory = computed(() => {
-  return allFiles.value.map(file => ({
-    ...file,
-    category: getFileCategory(file.filename)
-  }))
-})
-
-const categoryCounts = computed(() => {
-  const counts = { '全部': filesWithCategory.value.length }
-  for (const file of filesWithCategory.value) {
-    counts[file.category] = (counts[file.category] || 0) + 1
-  }
-  return counts
-})
-
-const totalFiles = computed(() => filesWithCategory.value.length)
-
-const currentFiles = computed(() => {
-  if (activeTab.value === '全部') {
-    return filesWithCategory.value
-  }
-  return filesWithCategory.value.filter(f => f.category === activeTab.value)
-})
-
-async function refreshAssets() {
-  loading.value = true
-  try {
-    // 统一走 axios 封装：自动携带 API_BASE_URL 与 Authorization 头
-    const data = await requestJson(
-      { url: '/agent/files/list', method: 'get' },
-      '获取资产失败'
-    )
-    allFiles.value = data.files || []
-  } catch (e) {
-    console.error('获取资产失败:', e)
-    Message.error(e.message)
-  } finally {
-    loading.value = false
-  }
-}
-
-async function handleUpload(event) {
-  const files = Array.from(event.target.files)
-  if (files.length === 0) return
-
-  uploading.value = true
-
-  for (const file of files) {
-    try {
-      const formData = new FormData()
-      formData.append('file', file)
-
-      await requestJson(
-        {
-          url: '/agent/files/upload',
-          method: 'post',
-          data: formData,
-          headers: { 'Content-Type': 'multipart/form-data' },
-        },
-        `上传 ${file.name} 失败`
-      )
-    } catch (e) {
-      console.error('上传文件失败:', e)
-      Message.error(e.message)
-    }
-  }
-
-  uploading.value = false
-  event.target.value = ''
-
-  await refreshAssets()
-}
-
-function formatSize(bytes) {
-  if (bytes < 1024) return bytes + ' B'
-  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
-  return (bytes / (1024 * 1024)).toFixed(1) + ' MB'
-}
-
-async function handleCopyPath(path) {
-  try {
-    await navigator.clipboard.writeText(path)
-  } catch (e) {
-    console.error('复制失败:', e)
-  }
-  closeDropdown()
-}
-
-function handleDownload(file) {
-  const url = `${API_BASE_URL}/agent/files/download/${file.file_path}`
-  const link = document.createElement('a')
-  link.href = url
-  link.download = file.filename
-  document.body.appendChild(link)
-  link.click()
-  document.body.removeChild(link)
-  closeDropdown()
-}
-
-async function handleDelete(file) {
-  closeDropdown()
-
-  const confirmed = await confirmDialog.value.show()
-  if (!confirmed) {
-    return
-  }
-
-  try {
-    await requestJson(
-      {
-        url: `/agent/files/users/files/${encodeURIComponent(file.id)}`,
-        method: 'delete',
-      },
-      '删除文件失败'
-    )
-    Message.success('文件删除成功')
-    await refreshAssets()
-  } catch (e) {
-    console.error('删除文件失败:', e)
-    Message.error(e.message)
-  }
-}
-
-function handlePreview(file) {
-  previewFile.value = {
-    filename: file.filename,
-    filePath: file.file_path,
-    visible: true
-  }
-}
-
-onMounted(() => {
-  refreshAssets()
-})
-
-watch(() => props.visible, (newVal) => {
-  if (newVal) {
-    refreshAssets()
-  }
-})
-
-    return {
-      activeDropdown,
-      activeTab,
-      allFiles,
-      API_BASE_URL,
-      categories,
-      categoryCounts,
-      categoryIcons,
-      closeDropdown,
-      computed,
-      confirmDialog,
-      ConfirmDialog,
-      currentFiles,
-      deleteFile,
-      FileIcon,
-      FilePreview,
-      filesWithCategory,
-      formatSize,
-      getAllFiles,
-      getCategoryClass,
-      getCategoryIcon,
-      getFileCategory,
-      getFileTypeLabel,
-      handleCopyPath,
-      handleDelete,
-      handleDownload,
-      handlePreview,
-      handleUpload,
-      loading,
-      onActivated,
-      onMounted,
-      previewDialog,
-      previewFile,
-      ref,
-      refreshAssets,
-      toggleDropdown,
-      totalFiles,
-      uploading,
-      watch,
+export default {
+  components: { ConfirmDialog, FileIcon, FilePreview },
+  props: {
+    visible: {
+      type: Boolean,
+      default: true
     }
   },
+  data() {
+    return {
+      loading: false,
+      allFiles: [],
+      activeTab: '全部',
+      uploading: false,
+      activeDropdown: null,
+      previewFile: { filename: '', filePath: '', visible: false }
+    }
+  },
+  computed: {
+    filesWithCategory() {
+      return this.allFiles.map(file => ({
+        ...file,
+        category: this.getFileCategory(file.filename)
+      }))
+    },
+    categoryCounts() {
+      const counts = { '全部': this.filesWithCategory.length }
+      for (const file of this.filesWithCategory) {
+        counts[file.category] = (counts[file.category] || 0) + 1
+      }
+      return counts
+    },
+    totalFiles() {
+      return this.filesWithCategory.length
+    },
+    currentFiles() {
+      if (this.activeTab === '全部') {
+        return this.filesWithCategory
+      }
+      return this.filesWithCategory.filter(f => f.category === this.activeTab)
+    }
+  },
+  watch: {
+    visible(newVal) {
+      if (newVal) {
+        this.refreshAssets()
+      }
+    }
+  },
+  mounted() {
+    this.refreshAssets()
+  },
+  methods: {
+    toggleDropdown(filePath) {
+      this.activeDropdown = this.activeDropdown === filePath ? null : filePath
+    },
+    closeDropdown() {
+      this.activeDropdown = null
+    },
+    getCategoryIcon(category) {
+      return categoryIcons[category] || '📎'
+    },
+    getCategoryClass(category) {
+      const classes = {
+        '文档': 'doc',
+        '图片': 'image',
+        '代码': 'code',
+        '数据': 'data',
+        '其他': 'other'
+      }
+      return classes[category] || 'other'
+    },
+    getFileTypeLabel(filename) {
+      const ext = filename.split('.').pop().toUpperCase()
+      return ext
+    },
+    getFileCategory(filename) {
+      const ext = filename.split('.').pop().toLowerCase()
+      const categoryMap = {
+        '文档': ['pdf', 'doc', 'docx', 'txt', 'md', 'xls', 'xlsx', 'ppt', 'pptx', 'rtf', 'odt'],
+        '图片': ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'svg', 'webp', 'ico', 'tiff'],
+        '代码': ['py', 'js', 'ts', 'vue', 'html', 'css', 'json', 'xml', 'java', 'go', 'rs', 'c', 'cpp', 'h', 'sh', 'bat'],
+        '数据': ['csv', 'sql', 'db', 'sqlite', 'parquet', 'avro']
+      }
+
+      for (const [cat, exts] of Object.entries(categoryMap)) {
+        if (exts.includes(ext)) return cat
+      }
+      return '其他'
+    },
+    formatSize(bytes) {
+      if (bytes < 1024) return bytes + ' B'
+      if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
+      return (bytes / (1024 * 1024)).toFixed(1) + ' MB'
+    },
+    async refreshAssets() {
+      this.loading = true
+      try {
+        // 统一走 axios 封装：自动携带 API_BASE_URL 与 Authorization 头
+        const data = await requestJson(
+          { url: '/agent/files/list', method: 'get' },
+          '获取资产失败'
+        )
+        this.allFiles = data.files || []
+      } catch (e) {
+        console.error('获取资产失败:', e)
+        Message.error(e.message)
+      } finally {
+        this.loading = false
+      }
+    },
+    async handleUpload(event) {
+      const files = Array.from(event.target.files)
+      if (files.length === 0) return
+
+      this.uploading = true
+
+      for (const file of files) {
+        try {
+          const formData = new FormData()
+          formData.append('file', file)
+
+          await requestJson(
+            {
+              url: '/agent/files/upload',
+              method: 'post',
+              data: formData,
+              headers: { 'Content-Type': 'multipart/form-data' }
+            },
+            `上传 ${file.name} 失败`
+          )
+        } catch (e) {
+          console.error('上传文件失败:', e)
+          Message.error(e.message)
+        }
+      }
+
+      this.uploading = false
+      event.target.value = ''
+
+      await this.refreshAssets()
+    },
+    async handleCopyPath(path) {
+      try {
+        await navigator.clipboard.writeText(path)
+      } catch (e) {
+        console.error('复制失败:', e)
+      }
+      this.closeDropdown()
+    },
+    handleDownload(file) {
+      const url = `${API_BASE_URL}/agent/files/download/${file.file_path}`
+      const link = document.createElement('a')
+      link.href = url
+      link.download = file.filename
+      document.body.appendChild(link)
+      link.click()
+      document.body.removeChild(link)
+      this.closeDropdown()
+    },
+    async handleDelete(file) {
+      this.closeDropdown()
+
+      const confirmed = await this.$refs.confirmDialog.show()
+      if (!confirmed) {
+        return
+      }
+
+      try {
+        await requestJson(
+          {
+            url: `/agent/files/users/files/${encodeURIComponent(file.id)}`,
+            method: 'delete'
+          },
+          '删除文件失败'
+        )
+        Message.success('文件删除成功')
+        await this.refreshAssets()
+      } catch (e) {
+        console.error('删除文件失败:', e)
+        Message.error(e.message)
+      }
+    },
+    handlePreview(file) {
+      this.previewFile = {
+        filename: file.filename,
+        filePath: file.file_path,
+        visible: true
+      }
+    }
+  }
 }
 </script>
 

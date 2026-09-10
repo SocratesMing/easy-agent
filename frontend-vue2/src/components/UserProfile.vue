@@ -55,121 +55,48 @@
           <div v-if="error" class="error-message">
             {{ error }}
           </div>
-
-          <div class="form-actions">
-            <button class="logout-btn" @click="handleLogout">
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
-                <polyline points="16 17 21 12 16 7"></polyline>
-                <line x1="21" y1="12" x2="9" y2="12"></line>
-              </svg>
-              退出登录
-            </button>
-            <button class="unregister-btn" @click="showUnregisterDialog">
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <polyline points="3 6 5 6 21 6"></polyline>
-                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
-              </svg>
-              注销账号
-            </button>
-          </div>
         </div>
       </div>
-
-      <ConfirmDialog
-        ref="unregisterDialog"
-        title="注销账号"
-        :message="'注销后您的所有数据将被删除，包括上传的文件和会话记录。此操作不可恢复，确定要注销吗？'"
-        confirm-text="注销"
-        cancel-text="取消"
-        type="danger"
-        @confirm="handleUnregister"
-      />
     </div>
   </div>
 </template>
 
 <script>
-import { ref, onMounted } from 'vue'
 import { getUserProfile } from '../api/files.js'
-import { unregister } from '../api/auth.js'
-import ConfirmDialog from './ConfirmDialog.vue'
+
 export default {
-  components: { ConfirmDialog },
-  emits: ['close', 'logout', 'switch-user', 'unregister'],
-  setup(props, { emit }) {
-const loading = ref(true)
-const error = ref('')
-const unregisterDialog = ref(null)
-
-const profile = ref({
-  username: '',
-  organization_id: '',
-  email: ''
-})
-
-async function loadProfile() {
-  loading.value = true
-  error.value = ''
-  try {
-    const data = await getUserProfile()
-    profile.value = {
-      username: data.username || '',
-      organization_id: data.organization_id || '',
-      email: data.email || ''
-    }
-  } catch (e) {
-    error.value = e.message || '加载用户资料失败'
-  } finally {
-    loading.value = false
-  }
-}
-
-function handleLogout() {
-  emit('logout')
-}
-
-function handleSwitchUser() {
-  emit('switch-user')
-}
-
-async function showUnregisterDialog() {
-  const confirmed = await unregisterDialog.value.show()
-  if (confirmed) {
-    await handleUnregister()
-  }
-}
-
-async function handleUnregister() {
-  try {
-    await unregister()
-    emit('unregister')
-    emit('close')
-  } catch (e) {
-    error.value = e.message || '注销失败'
-  }
-}
-
-onMounted(() => {
-  loadProfile()
-})
-
+  name: 'UserProfile',
+  data() {
     return {
-      ConfirmDialog,
-      error,
-      getUserProfile,
-      handleLogout,
-      handleSwitchUser,
-      handleUnregister,
-      loading,
-      loadProfile,
-      onMounted,
-      profile,
-      ref,
-      showUnregisterDialog,
-      unregister,
-      unregisterDialog,
+      loading: true,
+      error: '',
+      profile: {
+        username: '',
+        organization_id: '',
+        email: '',
+      },
     }
+  },
+  methods: {
+    async loadProfile() {
+      this.loading = true
+      this.error = ''
+      try {
+        const data = await getUserProfile()
+        this.profile = {
+          username: data.username || '',
+          organization_id: data.organization_id || '',
+          email: data.email || '',
+        }
+      } catch (e) {
+        this.error = e.message || '加载用户资料失败'
+      } finally {
+        this.loading = false
+      }
+    },
+  },
+  mounted() {
+    this.loadProfile()
   },
 }
 </script>
@@ -344,79 +271,4 @@ onMounted(() => {
   margin-top: 16px;
 }
 
-.form-actions {
-  display: flex;
-  gap: 12px;
-  margin-top: 24px;
-}
-
-.logout-btn,
-.unregister-btn {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  padding: 12px 16px;
-  border-radius: 10px;
-  font-size: 14px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all 0.2s;
-}
-
-.logout-btn {
-  border: 1px solid #fee2e2;
-  background: var(--bg-secondary);
-  color: #dc2626;
-}
-
-.logout-btn:hover {
-  background: #fee2e2;
-  border-color: #fecaca;
-}
-
-.logout-btn svg {
-  width: 18px;
-  height: 18px;
-}
-
-.unregister-btn {
-  border: 1px solid var(--border-color);
-  background: var(--bg-secondary);
-  color: #dc2626;
-}
-
-.unregister-btn:hover {
-  background: #fee2e2;
-  border-color: #fecaca;
-}
-
-.unregister-btn svg {
-  width: 18px;
-  height: 18px;
-}
-
-.switch-btn svg {
-  width: 18px;
-  height: 18px;
-}
-
-.close-action-btn {
-  width: 100%;
-  padding: 12px 48px;
-  border: 1px solid var(--border-color);
-  background: var(--bg-secondary);
-  border-radius: 10px;
-  font-size: 14px;
-  color: var(--text-secondary);
-  cursor: pointer;
-  transition: all 0.2s;
-  margin-top: 12px;
-}
-
-.close-action-btn:hover {
-  background: var(--bg-tertiary);
-  border-color: var(--border-color);
-}
 </style>

@@ -49,19 +49,19 @@
             v-for="item in workspaceTreeData"
             :key="item.id"
             :item="item"
-            :selectedId="selectedFile?.id"
+            :selectedId="selectedFile ? selectedFile.id : undefined"
             :depth="0"
             :sessionId="currentSessionId"
             @select="handleSelectFile"
-          @download="handleDownloadFile"
+            @download="handleDownloadFile"
           />
         </div>
       </div>
     </template>
 
     <FilePreview
-      :filename="previewFile?.name || ''"
-      :filePath="previewFile?.file_path || previewFile?.path || ''"
+      :filename="previewFile ? previewFile.name : ''"
+      :filePath="previewFile ? (previewFile.file_path || previewFile.path || '') : ''"
       :sessionId="currentSessionId"
       :visible="showPreview"
       @close="showPreview = false"
@@ -71,120 +71,100 @@
 
 <script>
 import { API_BASE_URL } from '../config.js'
-import { ref, watch, onMounted } from 'vue'
 import FileTreeNode from './FileTreeNode.vue'
 import FilePreview from './FilePreview.vue'
 import { getWorkspaceTree } from '../api/files'
 import { getStoredToken } from '../api/auth.js'
+
 export default {
+  name: 'WorkspacePanel',
   components: { FilePreview, FileTreeNode },
   props: {
-  username: { type: String, default: '' },
-  currentSessionId: { type: String, default: null },
-  isStreaming: { type: Boolean, default: false },
-  visible: { type: Boolean, default: true },
-},
-  emits: ['toggle'],
-  setup(props, { emit }) {
-const workspaceTreeData = ref([])
-const selectedFile = ref(null)
-const previewFile = ref(null)
-const showPreview = ref(false)
-const isLoading = ref(false)
-const error = ref(null)
-
-async function buildWorkspaceTree() {
-  if (!props.currentSessionId) {
-    workspaceTreeData.value = []
-    return
-  }
-  isLoading.value = true
-  error.value = null
-  try {
-    const response = await getWorkspaceTree('', props.currentSessionId)
-    workspaceTreeData.value = (response.items || []).map(item => ({
-      id: item.path,
-      name: item.name,
-      type: item.type,
-      size: item.size,
-      file_type: item.type === 'file' ? item.name.split('.').pop().toLowerCase() : '',
-      file_path: item.path,
-    }))
-  } catch (e) {
-    error.value = '加载工作区失败: ' + e.message
-    workspaceTreeData.value = []
-  } finally {
-    isLoading.value = false
-  }
-}
-
-function handleSelectFile(file) {
-  selectedFile.value = file
-  previewFile.value = file
-  showPreview.value = true
-}
-
-function handleDownloadFile(file) {
-  const filePath = file.file_path || file.path
-  const token = getStoredToken()
-  const params = new URLSearchParams()
-  params.set('file_path', filePath)
-  params.set('session_id', props.currentSessionId)
-  params.set('download', 'true')
-  if (token) params.set('token', token)
-  const url = `${API_BASE_URL}/agent/files/preview?${params.toString()}`
-  const link = document.createElement('a')
-  link.href = url
-  link.download = file.name
-  document.body.appendChild(link)
-  link.click()
-  document.body.removeChild(link)
-}
-
-function refresh() {
-  buildWorkspaceTree()
-}
-
-watch(() => props.isStreaming, (newVal, oldVal) => {
-  if (oldVal === true && newVal === false) {
-    setTimeout(() => refresh(), 300)
-  }
-})
-
-watch(() => props.currentSessionId, () => {
-  refresh()
-})
-
-watch(() => props.visible, (newVal) => {
-  if (newVal) {
-    refresh()
-  }
-})
-
-onMounted(() => {
-  buildWorkspaceTree()
-})
-
+    username: { type: String, default: '' },
+    currentSessionId: { type: String, default: null },
+    isStreaming: { type: Boolean, default: false },
+    visible: { type: Boolean, default: true },
+  },
+  data() {
     return {
-      API_BASE_URL,
-      buildWorkspaceTree,
-      error,
-      FilePreview,
-      FileTreeNode,
-      getStoredToken,
-      getWorkspaceTree,
-      handleDownloadFile,
-      handleSelectFile,
-      isLoading,
-      onMounted,
-      previewFile,
-      ref,
-      refresh,
-      selectedFile,
-      showPreview,
-      watch,
-      workspaceTreeData,
+      workspaceTreeData: [],
+      selectedFile: null,
+      previewFile: null,
+      showPreview: false,
+      isLoading: false,
+      error: null,
     }
+  },
+  methods: {
+    async buildWorkspaceTree() {
+      if (!this.currentSessionId) {
+        this.workspaceTreeData = []
+        return
+      }
+      this.isLoading = true
+      this.error = null
+      try {
+        const response = await getWorkspaceTree('', this.currentSessionId)
+        this.workspaceTreeData = (response.items || []).map((item) => ({
+          id: item.path,
+          name: item.name,
+          type: item.type,
+          size: item.size,
+          file_type:
+            item.type === 'file'
+              ? item.name.split('.').pop().toLowerCase()
+              : '',
+          file_path: item.path,
+        }))
+      } catch (e) {
+        this.error = '加载工作区失败: ' + e.message
+        this.workspaceTreeData = []
+      } finally {
+        this.isLoading = false
+      }
+    },
+    handleSelectFile(file) {
+      this.selectedFile = file
+      this.previewFile = file
+      this.showPreview = true
+    },
+    handleDownloadFile(file) {
+      const filePath = file.file_path || file.path
+      const token = getStoredToken()
+      const params = new URLSearchParams()
+      params.set('file_path', filePath)
+      params.set('session_id', this.currentSessionId)
+      params.set('download', 'true')
+      if (token) params.set('token', token)
+      const url = `${API_BASE_URL}/agent/files/preview?${params.toString()}`
+      const link = document.createElement('a')
+      link.href = url
+      link.download = file.name
+      document.body.appendChild(link)
+      link.click()
+      document.body.removeChild(link)
+    },
+    refresh() {
+      this.buildWorkspaceTree()
+    },
+  },
+  mounted() {
+    this.buildWorkspaceTree()
+  },
+  watch: {
+    isStreaming(newVal, oldVal) {
+      if (oldVal === true && newVal === false) {
+        setTimeout(() => this.refresh(), 300)
+      }
+    },
+    currentSessionId() {
+      this.refresh()
+    },
+    visible(newVal) {
+      if (newVal) {
+        this.refresh()
+      }
+    },
   },
 }
 </script>

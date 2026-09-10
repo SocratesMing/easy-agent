@@ -1,4 +1,4 @@
-import { reactive } from 'vue'
+import Vue from 'vue'
 
 const runtimeConfig =
   (typeof window !== 'undefined' && window.__RUNTIME_CONFIG__) || {}
@@ -38,7 +38,7 @@ export const APP_WELCOME_TITLE =
   `${APP_TITLE}，让工作化繁为简`
 export const BUILD_MODE = process.env.NODE_ENV || 'development'
 
-export const appRuntime = reactive({
+export const appRuntime = Vue.observable({
   win: false,
   agentEnv: '',
 })

@@ -14,7 +14,7 @@
     <div class="sheet-content" v-if="sheets.length > 0">
       <table class="excel-table">
         <tbody>
-          <tr v-for="(row, rowIndex) in sheets[activeSheet]?.data" :key="rowIndex">
+          <tr v-for="(row, rowIndex) in (sheets[activeSheet] || {}).data" :key="rowIndex">
             <td 
               v-for="(cell, colIndex) in row" 
               :key="colIndex"
@@ -31,65 +31,59 @@
 </template>
 
 <script>
-import { ref, onMounted, watch } from 'vue'
 import ExcelJS from 'exceljs'
 import { requestArrayBuffer } from '../api/request.js'
+
 export default {
+  name: 'ExcelPreview',
   props: {
-  fileUrl: {
-    type: String,
-    default: ''
-  }
-},
-  setup(props, { emit }) {
-const sheets = ref([])
-const activeSheet = ref(0)
-
-async function loadExcel() {
-  if (!props.fileUrl) return
-  
-  try {
-    const arrayBuffer = await requestArrayBuffer({ url: props.fileUrl })
-
-    const workbook = new ExcelJS.Workbook()
-    await workbook.xlsx.load(arrayBuffer)
-    
-    sheets.value = workbook.worksheets.map(ws => {
-      const data = []
-      ws.eachRow((row, rowNumber) => {
-        const rowData = []
-        row.eachCell({ includeEmpty: true }, cell => {
-          rowData[cell.column - 1] = cell.value ?? ''
-        })
-        data.push(rowData)
-      })
-      return { name: ws.name, data }
-    })
-    
-    activeSheet.value = 0
-  } catch (e) {
-    console.error('Excel preview error:', e)
-    sheets.value = []
-  }
-}
-
-onMounted(() => {
-  loadExcel()
-})
-
-watch(() => props.fileUrl, () => {
-  loadExcel()
-})
-
+    fileUrl: {
+      type: String,
+      default: '',
+    },
+  },
+  data() {
     return {
-      activeSheet,
-      ExcelJS,
-      loadExcel,
-      onMounted,
-      ref,
-      sheets,
-      watch,
+      sheets: [],
+      activeSheet: 0,
     }
+  },
+  methods: {
+    async loadExcel() {
+      if (!this.fileUrl) return
+
+      try {
+        const arrayBuffer = await requestArrayBuffer({ url: this.fileUrl })
+
+        const workbook = new ExcelJS.Workbook()
+        await workbook.xlsx.load(arrayBuffer)
+
+        this.sheets = workbook.worksheets.map((ws) => {
+          const data = []
+          ws.eachRow((row) => {
+            const rowData = []
+            row.eachCell({ includeEmpty: true }, (cell) => {
+              rowData[cell.column - 1] = cell.value == null ? '' : cell.value
+            })
+            data.push(rowData)
+          })
+          return { name: ws.name, data }
+        })
+
+        this.activeSheet = 0
+      } catch (e) {
+        console.error('Excel preview error:', e)
+        this.sheets = []
+      }
+    },
+  },
+  mounted() {
+    this.loadExcel()
+  },
+  watch: {
+    fileUrl() {
+      this.loadExcel()
+    },
   },
 }
 </script>

@@ -1,7 +1,7 @@
 <template>
   <div class="todo-root">
     <!-- Collapsed badge -->
-    <Transition name="todo-badge">
+    <transition name="todo-badge">
     <div
       v-if="todos.length > 0 && !expanded"
       class="todo-badge"
@@ -14,10 +14,10 @@
       </svg>
       <span class="todo-badge-text">plan {{ completedCount }}/{{ todos.length }}</span>
     </div>
-    </Transition>
+    </transition>
 
     <!-- Expanded floating panel -->
-    <Transition name="todo-slide">
+    <transition name="todo-slide">
     <div v-if="todos.length > 0 && expanded" class="todo-panel">
       <div class="todo-header">
         <div class="todo-title">
@@ -60,35 +60,32 @@
         </div>
       </div>
     </div>
-    </Transition>
+    </transition>
   </div>
 </template>
 
 <script>
-import { computed, ref } from 'vue'
 export default {
+  name: 'TodoListPanel',
   props: {
-  todos: {
-    type: Array,
-    default: () => []
-  }
-},
-  setup(props, { emit }) {
-const expanded = ref(true)
-
-const completedCount = computed(() => props.todos.filter(t => t.status === 'completed').length)
-const progressPercent = computed(() => {
-  if (props.todos.length === 0) return 0
-  return Math.round((completedCount.value / props.todos.length) * 100)
-})
-
+    todos: {
+      type: Array,
+      default: () => [],
+    },
+  },
+  data() {
     return {
-      completedCount,
-      computed,
-      expanded,
-      progressPercent,
-      ref,
+      expanded: true,
     }
+  },
+  computed: {
+    completedCount() {
+      return this.todos.filter((t) => t.status === 'completed').length
+    },
+    progressPercent() {
+      if (this.todos.length === 0) return 0
+      return Math.round((this.completedCount / this.todos.length) * 100)
+    },
   },
 }
 </script>
@@ -150,7 +147,7 @@ const progressPercent = computed(() => {
   transition: all 0.3s ease;
 }
 
-.todo-badge-enter-from {
+.todo-badge-enter {
   opacity: 0;
   transform: translateX(-20px);
 }
@@ -340,7 +337,7 @@ const progressPercent = computed(() => {
   transition: all 0.3s ease;
 }
 
-.todo-slide-enter-from {
+.todo-slide-enter {
   opacity: 0;
   transform: translateX(-260px);
 }

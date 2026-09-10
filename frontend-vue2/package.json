@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "node scripts/run-vite.mjs dev",
     "build": "node scripts/run-vite.mjs build && sh scripts/generate-runtime-config.sh",
-    "preview": "vue-cli-service preview",
+    "preview": "npx --yes serve -s dist/",
     "lint:vue2": "node scripts/check-vue2-syntax.mjs",
     "serve": "sh scripts/generate-runtime-config.sh && node scripts/print-serve-env.mjs && npx --yes serve -s dist/"
   },
@@ -27,18 +27,21 @@
     "monaco-editor": "^0.53.0",
     "pdfjs-dist": "^4.8.69",
     "shiki": "^3.22.0",
-    "vue": "^2.7.16",
+    "vue": "2.6.14",
     "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "@iconify/json": "^2.2.44",
-    "@tailwindcss/postcss": "^4.1.17",
     "@vue/cli-plugin-babel": "~5.0.8",
     "@vue/cli-service": "~5.0.8",
     "autoprefixer": "^10.4.24",
     "postcss": "^8.5.6",
-    "tailwindcss": "^4.1.17",
-    "unplugin-icons": "^23.0.1"
+    "tailwindcss": "^3.4.17",
+    "unplugin-icons": "^23.0.1",
+    "vue-template-compiler": "2.6.14"
+  },
+  "engines": {
+    "node": ">=14.18.0"
   },
   "overrides": {
     "braces": ">=3.0.3",

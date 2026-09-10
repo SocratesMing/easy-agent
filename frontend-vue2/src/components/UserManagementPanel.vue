@@ -48,74 +48,69 @@
 </template>
 
 <script>
-import { ref, onMounted } from 'vue'
-import { MessageBox } from 'element-ui'
+import ElementUI from 'element-ui'
 import { listUsers, resetUserPassword } from '../api/auth.js'
+
+const { MessageBox } = ElementUI
+
 export default {
-  setup(props, { emit }) {
-const users = ref([])
-const total = ref(0)
-const loading = ref(true)
-const error = ref('')
-const message = ref('')
-const resettingUsername = ref('')
-
-async function loadUsers() {
-  loading.value = true
-  error.value = ''
-  message.value = ''
-  try {
-    const data = await listUsers()
-    users.value = data.users || []
-    total.value = data.total ?? users.value.length
-  } catch (e) {
-    error.value = e.message || '获取用户列表失败'
-  } finally {
-    loading.value = false
-  }
-}
-
-async function resetPassword(username) {
-  // 用 element-ui 的确认框替代原生 confirm
-  try {
-    await MessageBox.confirm(`确认将用户 ${username} 的密码重置为 123456？`, '重置密码确认', {
-      type: 'warning',
-      confirmButtonText: '重置',
-      cancelButtonText: '取消',
-    })
-  } catch {
-    return // 用户取消
-  }
-
-  resettingUsername.value = username
-  error.value = ''
-  message.value = ''
-  try {
-    await resetUserPassword(username)
-    message.value = `用户 ${username} 的密码已重置为 123456`
-  } catch (e) {
-    error.value = e.message || '密码重置失败'
-  } finally {
-    resettingUsername.value = ''
-  }
-}
-
-onMounted(loadUsers)
-
+  name: 'UserManagementPanel',
+  data() {
     return {
-      error,
-      listUsers,
-      loading,
-      loadUsers,
-      message,
-      onMounted,
-      ref,
-      resetPassword,
-      resettingUsername,
-      resetUserPassword,
-      total,
-      users,
+      users: [],
+      total: 0,
+      loading: true,
+      error: '',
+      message: '',
+      resettingUsername: '',
     }
+  },
+  methods: {
+    async loadUsers() {
+      this.loading = true
+      this.error = ''
+      this.message = ''
+      try {
+        const data = await listUsers()
+        this.users = data.users || []
+        this.total = data.total != null ? data.total : this.users.length
+      } catch (e) {
+        this.error = e.message || '获取用户列表失败'
+      } finally {
+        this.loading = false
+      }
+    },
+    async resetPassword(username) {
+      // 用 element-ui 的确认框替代原生 confirm
+      try {
+        await MessageBox.confirm(
+          `确认将用户 ${username} 的密码重置为 123456？`,
+          '重置密码确认',
+          {
+            type: 'warning',
+            confirmButtonText: '重置',
+            cancelButtonText: '取消',
+          }
+        )
+      } catch (e) {
+        return // 用户取消
+      }
+
+      this.resettingUsername = username
+      this.error = ''
+      this.message = ''
+      try {
+        await resetUserPassword(username)
+        this.message = `用户 ${username} 的密码已重置为 123456`
+      } catch (e) {
+        this.error = e.message || '密码重置失败'
+      } finally {
+        this.resettingUsername = ''
+      }
+    },
+  },
+  mounted() {
+    this.loadUsers()
   },
 }
 </script>
