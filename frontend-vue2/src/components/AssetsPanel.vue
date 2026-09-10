@@ -133,7 +133,7 @@
 <script>
 import { API_BASE_URL } from '../config.js'
 import { Message } from 'element-ui'
-import { requestJson } from '../api/request.js'
+import request from '@/utils/request'
 import FileIcon from './FileIcon.vue'
 import ConfirmDialog from './ConfirmDialog.vue'
 import FilePreview from './FilePreview.vue'
@@ -247,7 +247,7 @@ export default {
       this.loading = true
       try {
         // 统一走 axios 封装：自动携带 API_BASE_URL 与 Authorization 头
-        const data = await requestJson(
+        const data = await request(
           { url: '/agent/files/list', method: 'get' },
           '获取资产失败'
         )
@@ -270,7 +270,7 @@ export default {
           const formData = new FormData()
           formData.append('file', file)
 
-          await requestJson(
+          await request(
             {
               url: '/agent/files/upload',
               method: 'post',
@@ -317,7 +317,7 @@ export default {
       }
 
       try {
-        await requestJson(
+        await request(
           {
             url: `/agent/files/users/files/${encodeURIComponent(file.id)}`,
             method: 'delete'

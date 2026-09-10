@@ -7,7 +7,6 @@
       :streamingSessionIds="streamingSessions"
       :username="userProfile.username"
       :organizationId="userProfile.organization_id"
-      :email="userProfile.email"
       :showAssets="showAssets"
       @create-session="handleCreateSession"
       @select-session="handleSelectSession"
@@ -18,9 +17,7 @@
       @show-assets="handleShowAssets"
       @show-skill-center="handleShowSkillCenter"
       @show-scheduled-tasks="handleShowScheduledTasks"
-      @show-profile="handleShowProfile"
       @show-settings="showSettingsPanel = true"
-      @show-user-management="showUserManagementPanel = true"
     />
     
     <button 
@@ -41,23 +38,13 @@
 
     <ScheduledTasksPanel v-if="showScheduledTasks" @close="showScheduledTasks = false" />
     
-    <UserProfile
-      v-if="showUserProfile"
-      @close="showUserProfile = false"
-    />
-    
     <SettingsPanel
       v-if="showSettingsPanel"
       @close="showSettingsPanel = false"
     />
-
-    <UserManagementPanel
-      v-if="showUserManagementPanel"
-      @close="showUserManagementPanel = false"
-    />
     
     <Chat
-      v-else-if="!showAssets && !showUserProfile && !showSkillCenter && !showScheduledTasks"
+      v-else-if="!showAssets && !showSkillCenter && !showScheduledTasks"
       :messages="messages"
       :currentSessionId="currentSessionId"
       :sessionCreatedAt="currentSessionCreatedAt"
@@ -83,7 +70,7 @@
       @reject="handleToolApproval('reject')"
     />
 
-    <div v-if="currentSessionId && !showAssets && !showUserProfile && !showSkillCenter" class="workspace-area">
+    <div v-if="currentSessionId && !showAssets && !showSkillCenter" class="workspace-area">
       <WorkspacePanel
         :username="userProfile.username"
         :currentSessionId="currentSessionId"
@@ -94,7 +81,7 @@
     </div>
 
     <button
-      v-if="currentSessionId && isWorkspaceCollapsed && !showAssets && !showUserProfile && !showSkillCenter && !showScheduledTasks"
+      v-if="currentSessionId && isWorkspaceCollapsed && !showAssets && !showSkillCenter && !showScheduledTasks"
       class="expand-workspace-btn"
       @click="isWorkspaceCollapsed = false"
       title="展开工作区"
@@ -119,8 +106,6 @@ import Chat from './components/Chat.vue'
 import AssetsPanel from './components/AssetsPanel.vue'
 import SkillCenter from './components/SkillCenter.vue'
 import ScheduledTasksPanel from './components/ScheduledTasksPanel.vue'
-import UserProfile from './components/UserProfile.vue'
-import UserManagementPanel from './components/UserManagementPanel.vue'
 import WorkspacePanel from './components/WorkspacePanel.vue'
 import SettingsPanel from './components/SettingsPanel.vue'
 import { createSession, listSessions, getChatHistory, deleteSession, sendMessage, resumeStream, renameSession, togglePinSession, getStreamStatus, attachStream } from './api/chat.js'
@@ -184,8 +169,6 @@ export default {
     SessionList,
     SettingsPanel,
     SkillCenter,
-    UserManagementPanel,
-    UserProfile,
     WorkspacePanel,
   },
   data() {
@@ -227,9 +210,7 @@ export default {
       showAssets: false,
       showSkillCenter: false,
       showScheduledTasks: false,
-      showUserProfile: false,
       showSettingsPanel: false,
-      showUserManagementPanel: false,
       scrollTrigger: 0,
       userProfile: {
         username: '',
@@ -428,12 +409,6 @@ methods: {
       this.showAssets = false
       this.showSkillCenter = false
     },
-    handleShowProfile() {
-      this.showUserProfile = true
-      this.showAssets = false
-      this.showSkillCenter = false
-      this.showScheduledTasks = false
-    },
     // 应用配置下发
     applyAgentConfig(configData) {
       if (!configData) return
@@ -583,7 +558,6 @@ methods: {
       this.showAssets = false
       this.showSkillCenter = false
       this.showScheduledTasks = false
-      this.showUserProfile = false
       this.showSettingsPanel = false
       this.currentSessionId = null
       this.loadedSessionId = null

@@ -104,7 +104,7 @@ import 'highlight.js/styles/github-dark.css'
 import DocxPreview from './DocxPreview.vue'
 import ExcelPreview from './ExcelPreview.vue'
 import { getStoredToken } from '../api/auth.js'
-import { requestBlob, requestArrayBuffer, requestText } from '../api/request.js'
+import { requestBlob, requestArrayBuffer, requestText } from '@/utils/request'
 
 // 注册 KaTeX 数学公式 + emoji 短代码扩展（幂等，模块加载时仅执行一次）
 setupMarkedExtensions()

@@ -32,7 +32,7 @@
 
 <script>
 import ExcelJS from 'exceljs'
-import { requestArrayBuffer } from '../api/request.js'
+import { requestArrayBuffer } from '@/utils/request'
 
 export default {
   name: 'ExcelPreview',

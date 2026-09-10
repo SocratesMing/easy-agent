@@ -42,7 +42,7 @@
 <script>
 import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.mjs'
 import pdfjsWorkerUrl from 'pdfjs-dist/legacy/build/pdf.worker.min.mjs'
-import { requestArrayBuffer } from '../api/request.js'
+import { requestArrayBuffer } from '@/utils/request'
 
 // webpack5 下通过 vue.config.js 的 asset rule 把 worker 输出为可访问的静态资源 URL
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorkerUrl

@@ -57,7 +57,7 @@
 
 <script>
 import FileIcon from './FileIcon.vue'
-import { requestText } from '../api/request.js'
+import { requestText } from '@/utils/request'
 
 export default {
   name: 'GeneratedFilesModal',
