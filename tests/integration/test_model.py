@@ -27,12 +27,14 @@ from easy_agent.config import (
 from easy_agent.model import (
     ReasoningChatOpenAI,
     create_model,
+    drop_incomplete_media_blocks,
     extract_reasoning,
     strip_image_content,
+    strip_media_content,
 )
 
 
-def _make_config(protocol="openai", supports_vision=False, model_name="m"):
+def _make_config(protocol="openai", model_name="m"):
     provider = ProviderConfig(
         provider="p",
         api_key="sk-fake",
@@ -40,7 +42,6 @@ def _make_config(protocol="openai", supports_vision=False, model_name="m"):
         api_base="http://x",
         context_length=128000,
         protocol=protocol,
-        supports_vision=supports_vision,
     )
     return Config(
         llm=LLMConfig(
@@ -49,8 +50,7 @@ def _make_config(protocol="openai", supports_vision=False, model_name="m"):
             provider="p",
             context_length=128000,
             protocol=protocol,
-            supports_vision=supports_vision,
-            retry=RetryConfig(enabled=True, max_retries=2),
+                retry=RetryConfig(enabled=True, max_retries=2),
         ),
         agent=AgentConfig(),
         tools=ToolsConfig(),
@@ -61,16 +61,13 @@ def _make_config(protocol="openai", supports_vision=False, model_name="m"):
 
 class TestCreateModel:
     def test_openai_protocol_returns_reasoning_chat_openai(self):
-        model = create_model(_make_config(protocol="openai", supports_vision=False))
+        model = create_model(_make_config(protocol="openai"))
         assert isinstance(model, ReasoningChatOpenAI)
         assert isinstance(model, ChatOpenAI)
         assert model.model == "mod"
-        assert model.supports_vision is False
+        # 多模态清理不再由 supports_vision 开关控制（该字段已移除）
+        assert not hasattr(model, "supports_vision")
         assert model.max_retries == 2
-
-    def test_openai_protocol_supports_vision(self):
-        model = create_model(_make_config(protocol="openai", supports_vision=True))
-        assert model.supports_vision is True
 
     def test_anthropic_protocol_returns_chat_anthropic(self):
         model = create_model(_make_config(protocol="anthropic"))
@@ -144,6 +141,52 @@ class TestStripImageContent:
         assert twice[0].content == once[0].content
 
 
+class TestMediaBlockFiltering:
+    """多模态块过滤。
+
+    回归：只过滤 image_url 时，历史消息里的 file 块会原样发给 DeepSeek，
+    导致 400 ``.messages[63]: file must have a file_id or file_data``。
+    """
+
+    def test_file_block_is_replaced_for_text_only_models(self):
+        msgs = [HumanMessage(content=[
+            {"type": "text", "text": "看这个文件"},
+            {"type": "file", "filename": "report.pdf"},
+        ])]
+        result = strip_media_content(msgs)
+        content = result[0].content
+        assert isinstance(content, list)
+        assert content[0]["text"] == "看这个文件"
+        assert "文件内容已省略" in content[1]["text"]
+        assert "report.pdf" in content[1]["text"]
+        assert all(b.get("type") != "file" for b in content)
+
+    def test_incomplete_file_block_is_dropped(self):
+        """缺 file_id/file_data 的 file 块必须剔除——即使模型支持多模态也会被拒。"""
+        msgs = [HumanMessage(content=[
+            {"type": "text", "text": "hi"},
+            {"type": "file", "filename": "broken.pdf"},
+            {"type": "file", "file_id": "file-abc", "filename": "ok.pdf"},
+        ])]
+        result = drop_incomplete_media_blocks(msgs)
+        blocks = result[0].content
+        assert isinstance(blocks, list)
+        file_blocks = [
+            b for b in blocks if isinstance(b, dict) and b.get("type") == "file"
+        ]
+        assert len(file_blocks) == 1
+        assert file_blocks[0]["file_id"] == "file-abc"
+
+    def test_complete_image_url_survives_incomplete_filter(self):
+        msgs = [HumanMessage(content=[
+            {"type": "image_url", "image_url": {"url": "https://x/y.png"}},
+        ])]
+        result = drop_incomplete_media_blocks(msgs)
+        content = result[0].content
+        assert isinstance(content, list)
+        assert content[0]["type"] == "image_url"
+
+
 class TestAnthropicConstants:
     def test_constants_exist_and_match_previous_values(self):
         from easy_agent.model import (
@@ -157,13 +200,12 @@ class TestAnthropicConstants:
 class TestResolveLlmConfig:
     def test_resolves_named_model(self):
         from easy_agent.model import resolve_llm_config
-        config = _make_config(protocol="anthropic", supports_vision=True)
+        config = _make_config(protocol="anthropic")
         cfg = resolve_llm_config(config, "m")
         assert cfg.provider == "p"
         assert cfg.model == "mod"
         assert cfg.protocol == "anthropic"
         assert cfg.context_length == 128000
-        assert cfg.supports_vision is True
 
     def test_none_falls_back_to_active(self):
         from easy_agent.model import resolve_llm_config

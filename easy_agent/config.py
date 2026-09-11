@@ -90,7 +90,6 @@ class ProviderConfig(BaseModel):
     # 未显式配置时的默认上下文窗口（1M）；实际值以各 provider 段配置为准。
     context_length: int = 1_000_000
     protocol: str = "openai"  # "openai" or "anthropic"
-    supports_vision: bool = False  # 是否支持视觉/图片输入；False 时自动过滤 image_url 内容块
 
 
 class LLMConfig(BaseModel):
@@ -102,7 +101,6 @@ class LLMConfig(BaseModel):
     provider: str = "minimax"
     context_length: int = 1_000_000  # Model context window size
     protocol: str = "openai"  # "openai" or "anthropic"
-    supports_vision: bool = False  # 是否支持视觉/图片输入
     retry: RetryConfig = Field(default_factory=RetryConfig)
 
 
@@ -358,7 +356,6 @@ class Config(BaseModel):
                     api_base=mcfg.get("api_base", ""),
                     context_length=mcfg.get("context_length", 1_000_000),
                     protocol=mcfg.get("protocol", "openai"),
-                    supports_vision=mcfg.get("supports_vision", False),
                 )
         return models
 
@@ -386,7 +383,6 @@ class Config(BaseModel):
             provider=active_cfg.provider or active_model,
             context_length=active_cfg.context_length or 1_000_000,
             protocol=active_cfg.protocol or "openai",
-            supports_vision=active_cfg.supports_vision,
             retry=retry_config,
         )
 

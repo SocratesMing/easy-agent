@@ -55,14 +55,35 @@ def extract_reasoning(additional_kwargs) -> str:
     return found[1] if found else ""
 
 
-def strip_image_content(messages):
-    """把消息列表中的 image_url / image 多模态内容块替换为文本占位。
+# 非文本内容块：图片 / 文件 / 音视频等。纯文本模型（如 DeepSeek）收到这些块
+# 会直接 400 invalid_request_error。
+MEDIA_BLOCK_TYPES = frozenset({
+    "image_url", "image", "input_image",
+    "file", "input_file", "document",
+    "audio", "input_audio", "video",
+})
 
-    供不支持视觉（supports_vision=False）的模型使用，避免发送 image_url
-    给 DeepSeek 等纯文本模型导致 400 invalid_request_error。
 
-    幂等：对已过滤的消息重复执行无副作用。
-    """
+def _media_placeholder(block: dict) -> str:
+    """把多模态块降级成文本占位，尽量保留可辨识信息（文件名 / URL 前缀）。"""
+    btype = block.get("type")
+    if btype in ("image_url", "image", "input_image"):
+        url = ""
+        if btype == "image_url":
+            url = (block.get("image_url") or {}).get("url", "")
+        return f"[图片内容已省略{('：' + url[:60]) if url else ''}]"
+    if btype in ("file", "input_file", "document"):
+        name = block.get("filename") or block.get("name") or ""
+        return f"[文件内容已省略{('：' + name[:60]) if name else ''}]"
+    if btype in ("audio", "input_audio"):
+        return "[音频内容已省略]"
+    if btype == "video":
+        return "[视频内容已省略]"
+    return "[媒体内容已省略]"
+
+
+def _replace_blocks(messages, should_replace, placeholder_of):
+    """遍历消息内容块，按谓词替换并尽量把单块结果还原成纯字符串。"""
     result = []
     for msg in messages:
         content = getattr(msg, "content", None)
@@ -72,15 +93,9 @@ def strip_image_content(messages):
         new_content = []
         changed = False
         for block in content:
-            if isinstance(block, dict) and block.get("type") in ("image_url", "image"):
+            if should_replace(block):
                 changed = True
-                # 保留原文件名提示（若有），便于模型理解上下文
-                url = ""
-                if block.get("type") == "image_url":
-                    url = (block.get("image_url") or {}).get("url", "")
-                new_content.append(
-                    {"type": "text", "text": f"[图片内容已省略{('：' + url[:60]) if url else ''}]"}
-                )
+                new_content.append({"type": "text", "text": placeholder_of(block)})
             else:
                 new_content.append(block)
         if changed:
@@ -95,6 +110,58 @@ def strip_image_content(messages):
                 msg = msg.model_copy(update={"content": new_content})
         result.append(msg)
     return result
+
+
+def strip_media_content(messages):
+    """把消息列表中的多模态内容块（图片 / 文件 / 音视频）替换为文本占位。
+
+    DeepSeek 等纯文本模型收到 image_url 或 file 块会直接 400
+    invalid_request_error，例如
+    ``.messages[63]: file must have a file_id or file_data``。
+
+    幂等：对已过滤的消息重复执行无副作用。
+    """
+
+    def _should_replace(block):
+        return isinstance(block, dict) and block.get("type") in MEDIA_BLOCK_TYPES
+
+    return _replace_blocks(messages, _should_replace, _media_placeholder)
+
+
+# 向后兼容：该函数最初只处理图片，现扩展到所有多模态块
+strip_image_content = strip_media_content
+
+
+def _is_incomplete_media_block(block) -> bool:
+    """判断多媒体块是否缺少 API 要求的必填字段（缺了会连累整次请求被拒）。"""
+    if not isinstance(block, dict):
+        return False
+    btype = block.get("type")
+    if btype in ("file", "input_file"):
+        # OpenAI 要求 file 块必须带 file_id 或 file_data
+        return not (block.get("file_id") or block.get("file_data"))
+    if btype == "image_url":
+        return not (block.get("image_url") or {}).get("url")
+    return False
+
+
+def _incomplete_placeholder(block: dict) -> str:
+    if block.get("type") in ("file", "input_file"):
+        name = block.get("filename") or block.get("name") or ""
+        return f"[文件引用不完整已省略{('：' + name[:60]) if name else ''}]"
+    return "[图片引用不完整已省略]"
+
+
+def drop_incomplete_media_blocks(messages):
+    """移除不完整的多媒体块，避免整次请求被 API 拒绝。
+
+    即使模型声明支持多模态也要执行：历史上出现过 file 块只带 filename、
+    既无 file_id 也无 file_data 的情况，OpenAI 会以
+    ``file must have a file_id or file_data`` 拒绝整个请求。
+    """
+    return _replace_blocks(
+        messages, _is_incomplete_media_block, _incomplete_placeholder
+    )
 
 
 def resolve_llm_config(config: Config, model_name: str | None):
@@ -124,7 +191,6 @@ def resolve_llm_config(config: Config, model_name: str | None):
         provider=provider.provider or model_name,
         context_length=provider.context_length or 1_000_000,
         protocol=provider.protocol or "openai",
-        supports_vision=provider.supports_vision,
         retry=retry,
     )
 
@@ -176,39 +242,45 @@ def create_model(config: Config, model_name: str | None = None):
 class ReasoningChatOpenAI(ChatOpenAI):
     """ChatOpenAI 子类，承载两个独立职责（Phase 1 仅做结构分清，不改行为）：
 
-    职责 A - 图片过滤：当 supports_vision=False 时，在流式/非流式入口
-        过滤消息中的 image_url/image 多模态块，避免 DeepSeek 等纯文本模型
-        收到图片内容报 400 invalid_request_error。
+    职责 A - 多模态清理：在流式/非流式入口统一处理消息内容块
+        （不再区分模型是否支持视觉）：
+        1) 剔除不完整的块（如既无 file_id 也无 file_data 的 file 块、
+           缺 url 的 image_url）——这类块会让 API 拒绝**整个请求**；
+        2) 其余多模态块（image_url / file / 音视频等）降级为文本占位，
+           避免 DeepSeek 等纯文本模型收到它们报 400 invalid_request_error。
     职责 B - reasoning 提取：把 OpenAI 兼容接口返回的思考内容
         (reasoning_content / reasoning / reason_content) 写入 additional_kwargs，
         供前端展示。
     """
 
-    supports_vision: bool = False
+    # ── 职责 A：多模态清理 ───────────────────────────────────────────
+    def _sanitize_messages(self, messages, **kwargs):
+        """发送前统一清理消息内容块（不区分模型是否支持视觉）。
 
-    # ── 职责 A：图片过滤 ─────────────────────────────────────────────
-    def _maybe_strip_images(self, messages, **kwargs):
-        if self.supports_vision:
-            return messages, kwargs
-        return strip_image_content(messages), kwargs
+        1) 剔除不完整的块：缺 file_id/file_data 的 file、缺 url 的 image_url
+           —— 这类块会让 API 拒绝**整个请求**；
+        2) 其余多模态块降级为文本占位，保证纯文本模型不会 400。
+        """
+        messages = drop_incomplete_media_blocks(messages)
+        return strip_media_content(messages), kwargs
 
     async def _astream(self, messages, stop=None, **kwargs):
-        messages, kwargs = self._maybe_strip_images(messages, **kwargs)
+        messages, kwargs = self._sanitize_messages(messages, **kwargs)
         async for chunk in super()._astream(messages, stop=stop, **kwargs):
             yield chunk
 
     async def _agenerate(self, messages, stop=None, run_manager=None, **kwargs):
-        messages, kwargs = self._maybe_strip_images(messages, **kwargs)
+        messages, kwargs = self._sanitize_messages(messages, **kwargs)
         return await super()._agenerate(
             messages, stop=stop, run_manager=run_manager, **kwargs
         )
 
     def _stream(self, messages, stop=None, **kwargs):
-        messages, kwargs = self._maybe_strip_images(messages, **kwargs)
+        messages, kwargs = self._sanitize_messages(messages, **kwargs)
         yield from super()._stream(messages, stop=stop, **kwargs)
 
     def _generate(self, messages, stop=None, run_manager=None, **kwargs):
-        messages, kwargs = self._maybe_strip_images(messages, **kwargs)
+        messages, kwargs = self._sanitize_messages(messages, **kwargs)
         return super()._generate(
             messages, stop=stop, run_manager=run_manager, **kwargs
         )
@@ -254,7 +326,6 @@ def _create_openai_compatible(llm_config) -> ChatOpenAI:
         api_key=llm_config.api_key,
         base_url=llm_config.api_base,
         max_retries=llm_config.retry.max_retries if llm_config.retry.enabled else 0,
-        supports_vision=getattr(llm_config, "supports_vision", False),
     )
 
 

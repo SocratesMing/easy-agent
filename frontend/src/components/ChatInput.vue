@@ -279,6 +279,8 @@ const dropdownStyle = ref({})
 
 const currentModelLabel = computed(() => {
   const m = props.models.find(m => m.name === props.selectedModel)
+  // 显示模型名（deepseek-v4-flash / deepseek-v4-pro），
+  // 而不是 provider 配置段名（deepseek / ark）
   return m ? (m.model || m.name) : '选择模型'
 })
 
@@ -375,6 +377,10 @@ function closeTokenPopup() {
 }
 
 const showTokenRing = computed(() => {
+  // 首页（尚未进入任何会话）不展示会话级用量：登录/注册后会从全局配置把
+  // context_length 写进 sessionUsage，但此时没有任何实际用量，
+  // 不能凭这个就显示上下文占用环。
+  if (!props.sessionId) return false
   return props.sessionUsage.input_tokens > 0 || props.sessionUsage.output_tokens > 0 || props.sessionUsage.reasoning_tokens > 0 || props.sessionUsage.context_tokens > 0 || props.sessionDuration > 0 || props.iterationCount > 0
 })
 
