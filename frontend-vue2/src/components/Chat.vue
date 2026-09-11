@@ -29,12 +29,12 @@
       />
     </div>
     </div>
-    <button v-if="canGoToNextUserMessage" @click="goToNextUserMessage" class="scroll-btn next" :class="{ shifted: workspaceExpanded }" title="回到下一个用户问题">
+    <button v-if="canGoToNextUserMessage" @click="goToNextUserMessage" class="scroll-btn next" title="回到下一个用户问题">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
         <polyline points="6 9 12 15 18 9"></polyline>
       </svg>
     </button>
-    <button v-if="canGoToPrevUserMessage" @click="goToPrevUserMessage" class="scroll-btn prev" :class="{ shifted: workspaceExpanded }" title="回到上一个用户问题">
+    <button v-if="canGoToPrevUserMessage" @click="goToPrevUserMessage" class="scroll-btn prev" title="回到上一个用户问题">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
         <polyline points="18 15 12 9 6 15"></polyline>
       </svg>
@@ -380,6 +380,10 @@ watch(() => props.scrollTrigger, () => {
 <style scoped>
 .chat-container {
   flex: 1;
+  /* flex 项默认 min-width:auto 会阻止收缩，工作区展开时聊天区不会让位 */
+  min-width: 0;
+  /* 内部浮层按钮（.scroll-btn）改为相对本容器定位，不再依赖视口/面板宽度 */
+  position: relative;
   display: flex;
   flex-direction: row;
   background: #ffffff;
@@ -761,8 +765,10 @@ watch(() => props.scrollTrigger, () => {
   background: #0ea5e9;
 }
 
+/* 相对聊天容器定位（而非视口）：工作区分栏后聊天区会收窄，用 fixed 会飘到
+   工作区上面；用 absolute 则始终贴聊天区右边缘，工作区拖拽改宽时无需避让。 */
 .scroll-btn {
-  position: fixed;
+  position: absolute;
   right: 24px;
   width: 40px;
   height: 40px;
@@ -788,9 +794,8 @@ watch(() => props.scrollTrigger, () => {
 
 
 
-.scroll-btn.shifted {
-  right: 284px; /* 260px panel + 24px original right */
-}
+/* 不再需要按面板宽度做避让（原 260px 硬编码在可拖拽后必然错位）：
+   按钮已改为相对 .chat-container 定位，聊天区收窄时自动跟随。 */
 .scroll-btn:hover {
   background: #f1f5f9;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);

@@ -69,11 +69,11 @@ def _token_never_expires() -> bool:
     return False
 
 
-def _get_max_input_tokens() -> int:
+def _get_context_length() -> int:
     _cfg = get_agent_config()
     if _cfg and _cfg.get("config"):
-        return _cfg["config"].llm.max_input_tokens
-    return 200000
+        return _cfg["config"].llm.context_length
+    return 1_000_000
 
 
 def get_client_ip(request: Request) -> str:
@@ -97,12 +97,16 @@ async def register(
     http_request: Request,
     db: Annotated[Database, Depends(get_database)],
 ):
+    # 工号全局唯一：先显式校验以便返回精确提示（register_user 内部还有一层兜底）
+    employee_id = request.employee_id.strip()
+    if db.get_user_by_employee_id(employee_id):
+        raise HTTPException(status_code=400, detail="工号已存在")
+
     # 注册不再绑定 IP（单点登录：登录不限制 IP，但同账号新登录会踢掉旧登录）
     user = db.register_user(
         username=request.username,
         password=request.password,
-        organization_id=request.organization_id,
-        email=request.email,
+        employee_id=employee_id,
     )
 
     if not user:
@@ -134,17 +138,17 @@ async def register(
             f"[用户] 创建用户workspace失败 | 用户: {user.username} | 错误: {e}"
         )
 
-    max_input_tokens = _get_max_input_tokens()
+    context_length = _get_context_length()
 
     logger.info(
-        f"[用户] 注册成功 | 用户名: {user.username} | 机构ID: {user.organization_id} | 版本: {new_version}"
+        f"[用户] 注册成功 | 用户名: {user.username} | 工号: {user.employee_id} | 版本: {new_version}"
     )
 
     return AuthResponse(
         access_token=access_token,
         token_type="bearer",
         username=user.username,
-        max_input_tokens=max_input_tokens,
+        context_length=context_length,
     )
 
 
@@ -158,7 +162,8 @@ async def login(
     http_request: Request,
     db: Annotated[Database, Depends(get_database)],
 ):
-    user = db.get_user_by_username(request.username)
+    # 登录标识支持「用户名或工号」：工号全局唯一，无需额外消歧
+    user = db.get_user_by_account(request.username)
     if not user:
         raise HTTPException(status_code=401, detail="用户名或密码错误")
 
@@ -182,7 +187,7 @@ async def login(
     _active_login_ip[user.username] = client_ip
     touch_user_activity(db, user.username)
 
-    max_input_tokens = _get_max_input_tokens()
+    context_length = _get_context_length()
 
     if prev_ip and prev_ip != client_ip:
         logger.info(
@@ -196,7 +201,7 @@ async def login(
         access_token=access_token,
         token_type="bearer",
         username=user.username,
-        max_input_tokens=max_input_tokens,
+        context_length=context_length,
     )
 
 
@@ -257,7 +262,7 @@ async def login_passwordless(
                 f"[用户] 创建用户workspace失败 | 用户: {user.username} | 错误: {e}"
             )
 
-    max_input_tokens = _get_max_input_tokens()
+    context_length = _get_context_length()
 
     if prev_ip and prev_ip != client_ip:
         logger.info(
@@ -272,7 +277,7 @@ async def login_passwordless(
         access_token=access_token,
         token_type="bearer",
         username=user.username,
-        max_input_tokens=max_input_tokens,
+        context_length=context_length,
     )
 
 
@@ -338,6 +343,7 @@ async def get_profile(
         organization_id=user.organization_id,
         email=user.email,
         bound_ip=user.bound_ip,
+        employee_id=user.employee_id,
         created_at=user.created_at,
         updated_at=user.updated_at,
     )
@@ -372,6 +378,7 @@ async def update_profile(
         organization_id=user.organization_id,
         email=user.email,
         bound_ip=user.bound_ip,
+        employee_id=user.employee_id,
         created_at=user.created_at,
         updated_at=user.updated_at,
     )
@@ -429,6 +436,7 @@ async def list_users(
         users=[
             UserAccount(
                 username=user.username,
+                employee_id=user.employee_id,
                 created_at=user.created_at,
                 updated_at=user.updated_at,
             )
@@ -473,13 +481,13 @@ async def get_auth_config(
     username: Annotated[str, Depends(get_current_username)],
 ):
     _cfg = get_agent_config()
-    max_input_tokens = 200000
+    context_length = 1_000_000
     preset_questions = []
     win = False
     agent_env = ""
     app_welcome_title = DEFAULT_APP_WELCOME_TITLE
     if _cfg and _cfg.get("config"):
-        max_input_tokens = _cfg["config"].llm.max_input_tokens
+        context_length = _cfg["config"].llm.context_length
         preset_questions = _cfg["config"].preset_questions or []
         win = bool(_cfg.get("win"))
         agent_env = _cfg.get("agent_env", "") or ""
@@ -488,7 +496,7 @@ async def get_auth_config(
     else:
         idle_logout_minutes = 0
     return {
-        "max_input_tokens": max_input_tokens,
+        "context_length": context_length,
         "preset_questions": preset_questions,
         "win": win,
         "agent_env": agent_env,

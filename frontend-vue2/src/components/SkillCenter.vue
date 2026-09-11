@@ -34,6 +34,19 @@
         我的技能
         <span class="tab-count">{{ userSkills.length }}</span>
       </button>
+      <div v-if="activeTab === 'user'" class="user-toolbar">
+        <button class="import-btn" @click="triggerImport" :disabled="importing">
+          <div v-if="importing" class="btn-spinner-sm"></div>
+          <svg v-else xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+            <polyline points="17 8 12 3 7 8"/>
+            <line x1="12" y1="3" x2="12" y2="15"/>
+          </svg>
+          {{ importing ? '导入中...' : '导入技能' }}
+        </button>
+        <span class="toolbar-hint">上传 zip 压缩包（需含 SKILL.md）</span>
+        <input ref="fileInputRef" type="file" accept=".zip" class="hidden-file-input" @change="handleImportFile" />
+      </div>
     </div>
 
     <div class="skill-center-content">
@@ -109,19 +122,6 @@
 
       <!-- 我的技能 -->
       <div v-else class="user-skills-section">
-        <div class="user-toolbar">
-          <button class="import-btn" @click="triggerImport" :disabled="importing">
-            <div v-if="importing" class="btn-spinner-sm"></div>
-            <svg v-else xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px">
-              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-              <polyline points="17 8 12 3 7 8"/>
-              <line x1="12" y1="3" x2="12" y2="15"/>
-            </svg>
-            {{ importing ? '导入中...' : '导入技能' }}
-          </button>
-          <span class="toolbar-hint">上传 zip 压缩包（需含 SKILL.md）</span>
-          <input ref="fileInputRef" type="file" accept=".zip" class="hidden-file-input" @change="handleImportFile" />
-        </div>
         <div class="skills-grid user-skills-grid">
           <div v-if="userSkills.length === 0" class="empty-state">
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
@@ -574,6 +574,7 @@ onBeforeUnmount(() => {
 
 .tabs {
   display: flex;
+  align-items: center;
   gap: 8px;
   padding: 16px 24px;
   background: transparent;
@@ -633,8 +634,10 @@ onBeforeUnmount(() => {
 .user-toolbar {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
   flex-wrap: wrap;
+  /* 与「我的技能」标签同处 tabs 行，靠右对齐 */
+  margin-left: auto;
 }
 
 .import-btn {

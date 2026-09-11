@@ -47,7 +47,7 @@ class SessionDetail(BaseModel):
     usage: Optional[dict[str, Any]] = Field(
         default=None, description="会话累计 token 用量"
     )
-    max_input_tokens: Optional[int] = Field(
+    context_length: Optional[int] = Field(
         default=None, description="模型上下文窗口大小"
     )
 
@@ -160,7 +160,7 @@ class GetChatHistoryResponse(BaseModel):
     usage: Optional[dict[str, Any]] = Field(
         default=None, description="会话累计 token 用量"
     )
-    max_input_tokens: Optional[int] = Field(
+    context_length: Optional[int] = Field(
         default=None, description="模型上下文窗口大小"
     )
 
@@ -171,12 +171,14 @@ class UserProfile(BaseModel):
     organization_id: str = Field(default="", description="机构ID")
     email: str = Field(default="", description="用户邮箱")
     bound_ip: str = Field(default="", description="绑定IP")
+    employee_id: str = Field(default="", description="工号")
     created_at: str = Field(..., description="创建时间")
     updated_at: str = Field(..., description="更新时间")
 
 
 class UserAccount(BaseModel):
     username: str = Field(..., description="用户名")
+    employee_id: str = Field(default="", description="工号")
     created_at: str = Field(default="", description="创建时间")
     updated_at: str = Field(default="", description="更新时间")
 
@@ -193,15 +195,20 @@ class UpdateUserProfileRequest(BaseModel):
 
 
 class LoginRequest(BaseModel):
-    username: str = Field(..., description="用户名")
+    username: str = Field(..., description="用户名或工号")
     password: str = Field(..., description="密码", min_length=3, max_length=20)
 
 
 class RegisterRequest(BaseModel):
+    """注册项：用户名 + 密码 + 工号。
+
+    机构ID 与邮箱不再是注册项——机构ID 仍可用于系统提示词注入（由管理员在库中维护），
+    邮箱可在登录后通过「更新资料」接口补填。
+    """
+
     username: str = Field(..., description="用户名", min_length=2, max_length=50)
     password: str = Field(..., description="密码", min_length=4, max_length=20)
-    organization_id: str = Field(..., description="机构ID（必填，注册后不可更改）", min_length=1, max_length=100)
-    email: Optional[str] = Field(default="", description="邮箱")
+    employee_id: str = Field(..., description="工号（必填，全局唯一，注册后不可更改）", min_length=1, max_length=64)
 
 
 class PasswordlessLoginRequest(BaseModel):
@@ -218,7 +225,7 @@ class AuthResponse(BaseModel):
     access_token: str = Field(..., description="访问令牌")
     token_type: str = Field(default="bearer", description="令牌类型")
     username: str = Field(..., description="用户名")
-    max_input_tokens: int = Field(default=200000, description="模型上下文窗口大小")
+    context_length: int = Field(default=1_000_000, description="模型上下文窗口大小")
 
 
 class FileInfo(BaseModel):

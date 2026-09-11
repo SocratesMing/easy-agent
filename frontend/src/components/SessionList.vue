@@ -158,14 +158,10 @@
         <circle cx="19" cy="12" r="2"></circle>
       </svg>
       
-      <div v-if="showUserMenu" class="user-dropdown">
-        <button class="user-dropdown-item" @click="showProfile">
-          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
-            <circle cx="12" cy="7" r="4"></circle>
-          </svg>
-          个人资料
-        </button>
+      <!-- @click.stop：菜单项是 .user-profile 的子元素，不加 stop 会冒泡到父级的
+           toggleUserMenu 把刚关闭的菜单又切回打开（且它的 stopPropagation 会挡掉
+           document 上的关闭监听），导致点「设置」后菜单一直不消失 -->
+      <div v-if="showUserMenu" class="user-dropdown" @click.stop>
         <button class="user-dropdown-item" @click="showSettings">
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <circle cx="12" cy="12" r="3"></circle>
@@ -204,7 +200,7 @@
 import { ref, nextTick, onMounted, computed } from 'vue'
 import { APP_TITLE } from '../config.js'
 
-const emit = defineEmits(['createSession', 'selectSession', 'deleteSession', 'renameSession', 'toggleSidebar', 'showAssets', 'showSkillCenter', 'showScheduledTasks', 'showProfile', 'showSettings', 'showUserManagement', 'logout', 'togglePin'])
+const emit = defineEmits(['createSession', 'selectSession', 'deleteSession', 'renameSession', 'toggleSidebar', 'showAssets', 'showSkillCenter', 'showScheduledTasks', 'showSettings', 'showUserManagement', 'logout', 'togglePin'])
 
 const props = defineProps({
   sessions: {
@@ -376,11 +372,6 @@ onMounted(() => {
 
 function closeUserMenuSilent() {
   showUserMenu.value = false
-}
-
-function showProfile() {
-  showUserMenu.value = false
-  emit('showProfile')
 }
 
 function showSettings() {

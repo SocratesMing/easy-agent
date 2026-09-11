@@ -147,21 +147,38 @@ function handleClick() {
 }
 
 .tree-item {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 5px 8px;
+  gap: 8px;
+  min-height: 32px;
+  padding: 6px 10px;
   cursor: pointer;
-  border-radius: 4px;
-  transition: background 0.15s ease;
+  border-radius: 6px;
+  transition: background 0.15s ease, color 0.15s ease;
 }
 
 .tree-item:hover {
   background: var(--bg-tertiary);
+  color: var(--text-primary);
 }
 
+/* 选中态：淡色底 + 左侧强调竖条，扫视时一眼定位当前文件 */
 .tree-item.active {
   background: color-mix(in srgb, var(--accent-color) 18%, transparent);
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+.tree-item.active::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 4px;
+  bottom: 4px;
+  width: 2px;
+  border-radius: 0 2px 2px 0;
+  background: var(--accent-color);
 }
 
 .folder-icon {
@@ -197,7 +214,8 @@ function handleClick() {
 
 .tree-item-name {
   font-size: 13px;
-  color: #374151;
+  line-height: 1.4;
+  color: var(--text-primary, #374151);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

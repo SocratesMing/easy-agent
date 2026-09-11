@@ -122,7 +122,7 @@ def resolve_llm_config(config: Config, model_name: str | None):
         api_base=provider.api_base or None,
         model=provider.model or "claude-sonnet-4-6",
         provider=provider.provider or model_name,
-        max_input_tokens=provider.max_input_tokens or 200000,
+        context_length=provider.context_length or 1_000_000,
         protocol=provider.protocol or "openai",
         supports_vision=provider.supports_vision,
         retry=retry,

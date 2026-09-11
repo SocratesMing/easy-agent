@@ -38,7 +38,12 @@ def test_passwordless_login_registers_new_user_with_given_user_id(auth_client):
 def test_passwordless_login_existing_user_directly(auth_client):
     reg = auth_client.post(
         "/agent/auth/register",
-        json={"username": "plbob", "password": "secret123", "organization_id": "org-1"},
+        json={
+            "username": "plbob",
+            "password": "secret123",
+            "organization_id": "org-1",
+            "employee_id": "E-plbob",
+        },
     )
     assert reg.status_code == 200
 

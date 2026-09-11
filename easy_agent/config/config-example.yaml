@@ -21,6 +21,9 @@
 model: "deepseek"
 
 # Provider-specific configurations
+# 说明：context_length 为模型上下文窗口，用于摘要压缩阈值计算；
+#      未设置时默认 1000000（1M）。各 provider 的值相互独立，
+#      实际生效的是 model: 所指向的那个 provider。
 models:
 
   deepseek:
@@ -29,7 +32,7 @@ models:
     model: "deepseek-v4-flash"
     api_key: "${DEEPSEEK_API_KEY}"
     api_base: "https://api.deepseek.com"
-    max_input_tokens: 200000
+    context_length: 200000
 
   ark:
     provider: "ark"
@@ -37,7 +40,7 @@ models:
     model: "deepseek-v4-pro"
     api_key: "${ARK_API_KEY}"
     api_base: "https://ark.cn-beijing.volces.com/api/coding/v3"
-    max_input_tokens: 200000
+    context_length: 200000
 
 
 # ===== Retry Configuration =====
@@ -56,7 +59,7 @@ sessions_dir: "./sessions"     # 会话数据存储目录（项目相对路径�
 # 目录不存在时回落：包内 easy_agent/config/prompts → 内置默认提示词。
 # 也可用环境变量 EASY_PROMPTS_DIR 指向外部目录覆盖（便于 ConfigMap 挂载）。
 # 旧字段 system_prompt_path 仍兼容（若指向单个 .md 文件则按文件读取）。
-prompt_path: "prompts"
+prompt_path: "/qts/prompts"
 idle_logout_minutes: 0   # 前端空闲自动登出（分钟）：用户超过该时长无界面操作或后端交互则退出到登录页；0 表示永不过期（默认，后台不启用登录超时机制）
 app_welcome_title: "Easy Agent，让工作更简单"  # 首页欢迎语
 sandbox_enabled: true    # Linux 使用 bwrap/Landlock；Windows 无等效沙箱时拒绝 execute。仅在可信单用户环境设为 false
@@ -78,7 +81,6 @@ tools:
   result_log_truncate: 200  # 工具结果在日志中的截断字符数（默认 200）
   skills_dir: "./skills"   # Skills directory path
   prompts_dir: "./prompts" # Prompts directory path
-  read_file_line_limit: 2000  # read_file 内置工具每次读取的行数（默认 2000）
 
 # ===== Preset Questions =====
 # Quick action questions shown on the welcome screen

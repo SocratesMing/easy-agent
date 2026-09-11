@@ -15,7 +15,12 @@ def test_scenario_auth_session_flow(auth_client: TestClient):
     # 注册并登录
     client.post(
         "/agent/auth/register",
-        json={"username": "scenario_user", "password": "secret123", "organization_id": "org-1"},
+        json={
+            "username": "scenario_user",
+            "password": "secret123",
+            "organization_id": "org-1",
+            "employee_id": "E-scenario",
+        },
     )
     token = client.post(
         "/agent/auth/login",

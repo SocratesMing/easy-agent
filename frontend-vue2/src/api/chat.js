@@ -66,7 +66,7 @@ export async function getChatHistory(sessionId) {
     messages: data.messages || [],
     todos: data.todos || [],
     usage: data.usage || null,
-    max_input_tokens: data.max_input_tokens || null,
+    context_length: data.context_length || null,
   }
 }
 

@@ -1,6 +1,6 @@
 """SummarizationMiddleware 阈值接入测试。
 
-基准必须是配置文件里的 ``config.llm.max_input_tokens``：
+基准必须是配置文件里的 ``config.llm.context_length``：
 - 摘要 trigger/keep 按 compression_threshold / compression_target 折算；
 - **工具参数截断**同样按该比例折算（默认值是 ("messages", 20)，消息一到 20 条
   就会把历史里 write_file/execute 的参数砍掉，导致下一轮上下文明显缩水）。
@@ -19,14 +19,14 @@ from easy_agent.config import Config
 
 
 def _expected_thresholds(cfg) -> tuple[tuple, tuple]:
-    base = int(cfg.llm.max_input_tokens)
+    base = int(cfg.llm.context_length)
     thr = float(cfg.summarization.compression_threshold)
     tgt = float(cfg.summarization.compression_target)
     return ("tokens", max(1, int(base * thr))), ("tokens", max(1, int(base * tgt)))
 
 
 def test_install_config_summarization_folds_fractions_into_config_limit(monkeypatch):
-    """trigger/keep/参数截断都应按 config.llm.max_input_tokens 折算。"""
+    """trigger/keep/参数截断都应按 config.llm.context_length 折算。"""
     cfg = Config.from_yaml(Config.resolve_config_path())
     exp_trigger, exp_keep = _expected_thresholds(cfg)
 

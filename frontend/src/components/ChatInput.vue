@@ -74,7 +74,6 @@
             </button>
             <Teleport to="body">
               <div v-if="showModelDropdown" class="model-dropdown-menu" :style="dropdownStyle" @click.stop>
-                <div class="model-dropdown-header">可选模型</div>
                 <div
                   v-for="m in models"
                   :key="m.name"
@@ -83,7 +82,6 @@
                   @click="selectModel(m.name)"
                 >
                   <span class="model-item-name">{{ m.model || m.name }}</span>
-                  <span v-if="m.is_active" class="model-item-badge">默认</span>
                   <svg v-if="m.name === localSelectedModel" class="model-item-check" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
                     <polyline points="20 6 9 17 4 12"></polyline>
                   </svg>
@@ -140,7 +138,7 @@
                   <span class="token-popup-label">本轮上下文占用</span>
                 </div>
                 <div class="token-popup-context-row">
-                  <span class="token-popup-context-value">{{ formatTokens(sessionUsage.context_tokens) }}/{{ formatTokens(sessionUsage.max_input_tokens) }}</span>
+                  <span class="token-popup-context-value">{{ formatTokens(sessionUsage.context_tokens) }}/{{ formatTokens(sessionUsage.context_length) }}</span>
                     <span class="token-popup-context-percent" :style="{ color: contextColor }">{{ contextPercent }}%</span>
                   </div>
                   <div class="token-popup-bar">
@@ -218,7 +216,7 @@ const props = defineProps({
   },
   sessionUsage: {
     type: Object,
-    default: () => ({ input_tokens: 0, output_tokens: 0, reasoning_tokens: 0, max_input_tokens: null, auto_compress_tokens: null, context_tokens: 0 })
+    default: () => ({ input_tokens: 0, output_tokens: 0, reasoning_tokens: 0, context_length: null, auto_compress_tokens: null, context_tokens: 0 })
   },
   sessionDuration: {
     type: Number,
@@ -382,11 +380,11 @@ const showTokenRing = computed(() => {
 
 const contextPercent = computed(() => {
   const u = props.sessionUsage
-  if (!u.max_input_tokens || u.max_input_tokens <= 0) return 0
+  if (!u.context_length || u.context_length <= 0) return 0
   // 分子使用「当前轮次的上下文窗口占用」(context_tokens)：即本轮喂给模型的输入 token 数，
-  // 与 max_input_tokens（上下文窗口上限）对比（已不再统计会话累计总量）。
+  // 与 context_length（上下文窗口上限）对比（已不再统计会话累计总量）。
   const ctxTokens = u.context_tokens || 0
-  return Math.min(100, Math.round(ctxTokens / u.max_input_tokens * 100))
+  return Math.min(100, Math.round(ctxTokens / u.context_length * 100))
 })
 
 const contextColor = computed(() => {
@@ -978,16 +976,6 @@ html[data-theme="dark"] .context-ring-wrapper {
   background: color-mix(in srgb, var(--accent-color) 12%, transparent);
 }
 
-.model-dropdown-header {
-  padding: 6px 10px 8px;
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--text-secondary);
-  letter-spacing: 0.02em;
-  border-bottom: 1px solid var(--border-color);
-  margin-bottom: 4px;
-}
-
 .model-item-name {
   font-size: 13px;
   font-weight: 600;
@@ -997,16 +985,6 @@ html[data-theme="dark"] .context-ring-wrapper {
   text-overflow: ellipsis;
   flex: 1;
   min-width: 0;
-}
-
-.model-item-badge {
-  font-size: 10px;
-  font-weight: 600;
-  padding: 2px 6px;
-  border-radius: 4px;
-  background: #dcfce7;
-  color: #16a34a;
-  flex-shrink: 0;
 }
 
 .model-item-check {
@@ -1190,20 +1168,23 @@ html[data-theme="dark"] .context-ring-wrapper {
   color: var(--text-secondary);
 }
 
+/* 语义色：11px 小字需满足 WCAG AA 4.5:1（对白色背景）。
+   原 indigo-500 / cyan-500 / purple-500 仅 4.46:1 / 2.43:1 / 3.92:1，
+   均不达标，故整体加深到 600~700 档（6.2~7.0:1） */
 .token-popup-value.input {
-  color: #6366f1;
+  color: #4f46e5;
 }
 
 .token-popup-value.output {
-  color: #06b6d4;
+  color: #0e7490;
 }
 
 .token-popup-value.reasoning {
-  color: #a855f7;
+  color: #7e22ce;
 }
 
 .token-popup-value.duration-value {
-  color: #6366f1;
+  color: #4f46e5;
   font-weight: 600;
 }
 

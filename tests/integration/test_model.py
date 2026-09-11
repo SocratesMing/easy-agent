@@ -38,7 +38,7 @@ def _make_config(protocol="openai", supports_vision=False, model_name="m"):
         api_key="sk-fake",
         model="mod",
         api_base="http://x",
-        max_input_tokens=128000,
+        context_length=128000,
         protocol=protocol,
         supports_vision=supports_vision,
     )
@@ -47,7 +47,7 @@ def _make_config(protocol="openai", supports_vision=False, model_name="m"):
             api_key="sk-fake",
             model="mod",
             provider="p",
-            max_input_tokens=128000,
+            context_length=128000,
             protocol=protocol,
             supports_vision=supports_vision,
             retry=RetryConfig(enabled=True, max_retries=2),
@@ -162,7 +162,7 @@ class TestResolveLlmConfig:
         assert cfg.provider == "p"
         assert cfg.model == "mod"
         assert cfg.protocol == "anthropic"
-        assert cfg.max_input_tokens == 128000
+        assert cfg.context_length == 128000
         assert cfg.supports_vision is True
 
     def test_none_falls_back_to_active(self):

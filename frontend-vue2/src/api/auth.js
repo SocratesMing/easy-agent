@@ -42,6 +42,8 @@ export async function authFetch(url, options = {}) {
   }
 }
 
+// 登录：username 字段既接受用户名，也接受工号（后端按「用户名或工号」定位用户），
+// 两种情况都必须校验密码。走 URL 免密直登请用 passwordlessLogin。
 export async function login(username, password) {
   const data = await requestJson(
     {
@@ -70,7 +72,8 @@ export async function passwordlessLogin(username, userId = '0') {
   return data
 }
 
-export async function register(username, password, organizationId, email = '') {
+// 注册：仅需用户名 + 密码 + 工号（工号必填且全局唯一，注册后不可更改）
+export async function register(username, password, employeeId = '') {
   const data = await requestJson(
     {
       url: '/agent/auth/register',
@@ -78,8 +81,7 @@ export async function register(username, password, organizationId, email = '') {
       data: {
         username,
         password,
-        organization_id: organizationId,
-        email,
+        employee_id: employeeId,
       },
     },
     '注册失败'

@@ -15,6 +15,7 @@ import platform
 import re
 import shutil
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -96,13 +97,6 @@ def _is_destructive_command(request: ToolCallRequest) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# read_file 默认 limit
-# DeepAgents 默认 limit=100，导致模型频繁分页读取 skill/代码文件。
-# 实际覆盖在 _create_agent() 中执行，使用 self.config.tools.read_file_line_limit。
-# ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
 # 外部目录挂载安全校验：防止 external_dirs 把工作区根（含所有用户会话）或
 # 其他用户子树挂载为虚拟路径，导致智能体越权访问其他用户的会话数据。
 # ---------------------------------------------------------------------------
@@ -148,7 +142,97 @@ def _check_external_dir_safety(
     return True, ""
 
 
+# 长期记忆（跨会话 AGENTS.md）在虚拟文件系统中的挂载点：
+# _build_backend 把 memories/{username}/ 挂成 /memories/ 路由，
+# create_deep_agent(memory=[...]) 再经该虚拟路径加载（MemoryMiddleware 读 backend）。
+LONG_TERM_MEMORY_VIRTUAL_PATH = "/memories/AGENTS.md"
+
+# ── HITL checkpointer 复用 ────────────────────────────────────────────────
+# HITL 的中断态保存在 checkpointer 中，而 Agent 会在 rename_workspace、
+# 记忆更新（remove_session_agent）后被重建。若每次重建都 new 一个 MemorySaver，
+# 中断态随之丢失，resume 将找不到 checkpoint。故按 session 复用同一实例。
+#
+# 限制：MemorySaver 只存在于进程内、重启即失效（langgraph 的 sqlite / postgres
+# checkpointer 当前未安装）。FIFO 上限用于避免会话长期累积导致内存无界增长。
+_CHECKPOINTERS: dict[str, MemorySaver] = {}
+_CHECKPOINTER_MAX = 200
+_CHECKPOINTER_LOCK = threading.Lock()
+
+
+def get_session_checkpointer(session_id: str) -> MemorySaver:
+    """按 session 复用 HITL checkpointer（Agent 重建后中断态仍可恢复）。"""
+    with _CHECKPOINTER_LOCK:
+        checkpointer = _CHECKPOINTERS.get(session_id)
+        if checkpointer is None:
+            if len(_CHECKPOINTERS) >= _CHECKPOINTER_MAX:
+                # FIFO 淘汰最旧的会话（其 HITL 中断态一并释放）
+                _CHECKPOINTERS.pop(next(iter(_CHECKPOINTERS)), None)
+            checkpointer = MemorySaver()
+            _CHECKPOINTERS[session_id] = checkpointer
+        return checkpointer
+
+
+def release_session_checkpointer(session_id: str) -> None:
+    """会话删除时释放其 checkpointer（未调用时由 FIFO 上限兜底）。"""
+    with _CHECKPOINTER_LOCK:
+        _CHECKPOINTERS.pop(session_id, None)
+
+
 _summarization_factory_installed = False
+
+
+def _match_provider_by_model(config: "Config", model) -> object | None:
+    """按模型实例反查它在 ``config.models`` 中对应的 provider 配置。
+
+    匹配依据（依次尝试）：``model.model_name`` / ``model.model`` /
+    ``model.model_kwargs["model"]``。找不到时返回 None，调用方回退到
+    ``config.llm``（启动时的激活模型）的阈值。
+
+    用途：摘要阈值必须跟随「本次实际使用的模型」——用户可在输入框切换模型
+    （每轮 ``create_model(config, model_name)``），而各 provider 的
+    ``context_length`` 是分别配置的，可能相差很大。
+    """
+    candidates: list[str] = []
+    for attr in ("model_name", "model"):
+        value = getattr(model, attr, None)
+        if isinstance(value, str) and value:
+            candidates.append(value)
+    model_kwargs = getattr(model, "model_kwargs", None)
+    if isinstance(model_kwargs, dict):
+        value = model_kwargs.get("model")
+        if isinstance(value, str) and value:
+            candidates.append(value)
+    if not candidates:
+        return None
+    for provider in (getattr(config, "models", None) or {}).values():
+        if getattr(provider, "model", "") and provider.model in candidates:
+            return provider
+    return None
+
+
+def resolve_context_length(
+    config: "Config | None", model_name: str | None = None
+) -> int:
+    """取「本次会话实际使用模型」的上下文窗口（``context_length``）。
+
+    用户可在输入框切换模型，而各 provider 的 ``context_length`` 是分别配置的，
+    因此上下文压缩阈值与前端上下文占用率都必须以**当前模型**的值为准，
+    不能只认 ``config.llm``（那只是启动时 ``model:`` 指向的 provider）。
+
+    优先级：``config.models[model_name].context_length`` → ``config.llm``
+    → 兜底 ``1_000_000``。解析失败不抛异常（调用方多为展示/日志路径）。
+    """
+    fallback = 1_000_000
+    if config is None:
+        return fallback
+    try:
+        from .model import resolve_llm_config
+
+        resolved = resolve_llm_config(config, model_name)
+        value = int(getattr(resolved, "context_length", 0) or 0)
+        return value or fallback
+    except Exception:  # noqa: BLE001
+        return fallback
 
 
 def install_config_summarization(config: "Config") -> None:
@@ -160,7 +244,7 @@ def install_config_summarization(config: "Config") -> None:
     ``deepagents.graph`` 中的工厂引用，使其返回用 config 阈值参数化的官方
     ``SummarizationMiddleware`` 实例--复用官方实现，不自行重写摘要逻辑。
 
-    阈值口径：**全部以配置文件 ``config.llm.max_input_tokens`` 为基准**，按
+    阈值口径：**全部以配置文件 ``config.llm.context_length`` 为基准**，按
     ``config.summarization.compression_threshold / compression_target`` 的**比例**
     折算成绝对 token 数（不依赖 ``model.profile``，因为项目自定义的
     ``ReasoningChatOpenAI.profile`` 为 None，fraction 形式会静默失效）。
@@ -180,7 +264,7 @@ def install_config_summarization(config: "Config") -> None:
     import deepagents.graph as _graph
     from deepagents.middleware.summarization import SummarizationMiddleware
 
-    max_tokens = int(getattr(config.llm, "max_input_tokens", 0) or 200000)
+    max_tokens = int(getattr(config.llm, "context_length", 0) or 1_000_000)
     thr = float(getattr(config.summarization, "compression_threshold", 0.0) or 0.8)
     tgt = float(getattr(config.summarization, "compression_target", 0.0) or 0.1)
     trigger_tokens = max(1, int(max_tokens * thr))
@@ -189,16 +273,57 @@ def install_config_summarization(config: "Config") -> None:
         getattr(config.summarization, "truncate_arg_max_length", 0) or 2000
     )
 
+    _logged_models: set[str] = set()
+    # 生成摘要时纳入的历史 token 上限比例（官方默认是固定 4000，对 1M 窗口偏小）
+    _trim_ratio = 0.02
+
     def _factory(model, backend, **_kwargs):
+        # 【全部动态】middleware 的每个 token 类参数都从「本次实际使用的模型」的
+        # context_length 派生，没有任何写死的绝对 token 值：
+        #   trigger / keep               → 窗口 × compression_threshold / compression_target
+        #   truncate_args trigger / keep → 与摘要同一阈值
+        #   trim_tokens_to_summarize     → 窗口 × _trim_ratio（不低于官方默认 4000）
+        # 不能用 ("fraction", x)：本项目 ReasoningChatOpenAI.profile 为 None，
+        # fraction 形式会静默失效（见本函数文档）。
+        # 模型切换时 agent_manager 会驱逐旧 Agent 重建
+        # （get_or_create_agent_for_session 的「模型切换」分支），
+        # 因此每建一次 Agent 就会按新窗口重算一次。
+        provider = _match_provider_by_model(config, model)
+        model_max = 0
+        if provider is not None:
+            model_max = int(getattr(provider, "context_length", 0) or 0)
+        if model_max <= 0:
+            # 反查失败（自定义模型实例等）：按实例模型名再解析一次；
+            # 仍失败则由 resolve_context_length 兜底到激活模型 / 1M。
+            model_name = getattr(model, "model_name", None) or getattr(model, "model", None)
+            model_max = resolve_context_length(config, model_name)
+        use_trigger = max(1, int(model_max * thr))
+        use_keep = max(1, int(model_max * tgt))
+        use_trim = max(4000, int(model_max * _trim_ratio))
+        # 每个 provider **首次**被使用时打印一行实际生效的阈值。
+        # 之前只在「窗口与启动基准不同」时才打，导致切到窗口相同的 provider
+        # （如 dev.yaml 里 deepseek 与 glm 都是 128000）完全没有日志，
+        # 看起来像"阈值没跟随当前模型"。同一 provider 后续调用不再重复打印。
+        _name = getattr(provider, "provider", "") or "未知"
+        if _name not in _logged_models:
+            _logged_models.add(_name)
+            logger.info(
+                f"📐 摘要阈值生效基准（全部由 context_length 派生）| {_name}"
+                f"({getattr(provider, 'model', '') or getattr(model, 'model_name', '')}) "
+                f"窗口={model_max} | trigger={use_trigger} keep={use_keep} "
+                f"trim_to_summarize={use_trim} | "
+                f"(context_length={model_max} threshold={thr} target={tgt})"
+            )
         return SummarizationMiddleware(
             model=model,
             backend=backend,
-            trigger=("tokens", trigger_tokens),
-            keep=("tokens", keep_tokens),
+            trigger=("tokens", use_trigger),
+            keep=("tokens", use_keep),
+            trim_tokens_to_summarize=use_trim,
             # 与摘要同一比例：只有上下文逼近阈值时才裁剪旧消息里的工具参数
             truncate_args_settings={
-                "trigger": ("tokens", trigger_tokens),
-                "keep": ("tokens", keep_tokens),
+                "trigger": ("tokens", use_trigger),
+                "keep": ("tokens", use_keep),
                 "max_length": truncate_max_length,
                 "truncation_text": "...(argument truncated)",
             },
@@ -207,11 +332,72 @@ def install_config_summarization(config: "Config") -> None:
     _graph.create_summarization_middleware = _factory
     _summarization_factory_installed = True
     logger.info(
-        f"SummarizationMiddleware 已接入 config 阈值 | "
+        f"SummarizationMiddleware 已接入 config 阈值 | 启动基准（激活模型 "
+        f"{getattr(config.llm, 'model', '')}）：context_length={max_tokens} "
+        f"threshold={thr} target={tgt} | "
         f"摘要 trigger=tokens:{trigger_tokens} keep=tokens:{keep_tokens} | "
         f"参数截断 trigger=tokens:{trigger_tokens} keep=tokens:{keep_tokens} "
         f"max_length={truncate_max_length} | "
-        f"(max_input_tokens={max_tokens} threshold={thr} target={tgt})"
+        f"运行时按「当前实际使用的模型」的 context_length 重算（见 📐 日志）"
+    )
+
+
+def _deepagents_version() -> str:
+    """当前 deepagents 版本（适配失效时的排查提示用）。"""
+    try:
+        from importlib.metadata import version
+
+        return version("deepagents")
+    except Exception:  # noqa: BLE001
+        return "unknown"
+
+
+def framework_patch_status() -> dict[str, bool]:
+    """自检对 deepagents 内部的两处适配是否仍然生效。
+
+    这两处适配都依赖框架**私有符号**（``deepagents.graph`` 的模块级工厂、
+    ``FilesystemMiddleware._create_execute_tool``），属于「框架未提供官方扩展点」时的
+    必要绕行。deepagents 升级后符号若改名/改签名，打补丁会失败并降级，
+    本函数把这种降级变得可见，而不是静默失效。
+    """
+    status = {"summarization_factory": _summarization_factory_installed}
+    try:
+        from deepagents.middleware.filesystem import FilesystemMiddleware
+
+        status["execute_tool"] = (
+            getattr(
+                FilesystemMiddleware, "_original_create_execute_tool", None
+            )
+            is not None
+        )
+    except Exception:  # noqa: BLE001
+        status["read_file_tool"] = False
+        status["execute_tool"] = False
+    return status
+
+
+_patch_status_logged = False
+
+
+def log_framework_patch_status(sid: str = "startup") -> None:
+    """只打印一次框架适配体检结果；任一项失效按 ERROR 报出并说明降级后果。"""
+    global _patch_status_logged
+    if _patch_status_logged:
+        return
+    _patch_status_logged = True
+
+    status = framework_patch_status()
+    detail = " | ".join(f"{k}={'生效' if v else '失效'}" for k, v in status.items())
+    if all(status.values()):
+        logger.info(f"[{sid}] 🔧 deepagents {_deepagents_version()} 适配体检: {detail}")
+        return
+
+    failed = [k for k, v in status.items() if not v]
+    logger.error(
+        f"[{sid}] ❌ deepagents 适配失效: {failed} | {detail} | 降级后果——"
+        f"summarization_factory=摘要阈值不再按 config 生效、"
+        f"execute_tool=execute 描述缺少 HITL 说明。"
+        f"当前 deepagents {_deepagents_version()}，请对照其源码修正 agent.py 中的适配代码。"
     )
 
 
@@ -662,7 +848,7 @@ class EasyAgent:
         logger.info(
             f"[{self.sid}] 🤖 当前使用模型 | "
             f"model_key: {self.model_name} | "
-            f"max_input_tokens: {actual_llm_cfg.max_input_tokens}"
+            f"context_length: {actual_llm_cfg.context_length}"
         )
 
         logger.info(f"[{self.sid}] 📋 系统提示词 | 预览(前100字符): {self.system_prompt[:100]}")
@@ -675,8 +861,10 @@ class EasyAgent:
         tools = list(self.mcp_tools) if self.mcp_tools else None
         permissions = self._build_permissions(skills_paths, safe_external)
 
-        self._override_read_file_limit(middleware)
         self._override_execute_description(middleware)
+        # 适配体检（全进程只打印一次）：三处适配依赖 deepagents 私有符号，
+        # 升级后可能静默失效，这里让降级显式可见。
+        log_framework_patch_status(self.sid)
 
         logger.info(
             f"[{self.sid}] 🏗️ 创建智能体参数 | "
@@ -699,10 +887,15 @@ class EasyAgent:
         # 第一次对话时记忆文件不存在，不加载记忆；对话完成后生成记忆文件
         # 第二次对话时 Agent 缓存已被清除，重建 Agent 时会加载新生成的记忆
         memory_list = [memory_path] if self.memory_file.exists() else []
+        if self.long_term_memory_file.exists():
+            memory_list.append(LONG_TERM_MEMORY_VIRTUAL_PATH)
 
         logger.info(
             f"[{self.sid}] 🧠 记忆文件 | "
-            f"虚拟路径: {memory_path} | 实际路径: {self.memory_file} | "
+            f"会话: {memory_path} ({'有' if self.memory_file.exists() else '无'}) | "
+            f"长期: {LONG_TERM_MEMORY_VIRTUAL_PATH} "
+            f"({'有' if self.long_term_memory_file.exists() else '无'}) | "
+            f"实际路径: {self.memory_file} / {self.long_term_memory_file} | "
             f"已加载: {'是' if memory_list else '否（首轮对话，记忆尚未生成）'}"
         )
 
@@ -725,29 +918,9 @@ class EasyAgent:
             tools=tools,
             memory=memory_list or None,
             permissions=permissions or None,
-            checkpointer=MemorySaver(),
+            checkpointer=get_session_checkpointer(self.session_id or "default"),
            interrupt_on=interrupt_on_config,
        )
-
-    # read_file 全量读取：覆盖 DeepAgents 默认 read_file 工具描述，
-    # 让模型默认读取整个文件（省略 offset/limit），仅在用户明确要求时才分页。
-    READ_FILE_FULL_TOOL_DESCRIPTION: str = """Reads a file from the filesystem in full.
-
-Assume this tool is able to read all files. If the User provides a path to a file assume that path is valid. It is okay to read a file that does not exist; an error will be returned.
-
-Usage:
-- This tool returns the ENTIRE file content from the beginning by default. Always read the full file.
-- Do NOT pass `offset` or `limit` for normal reads — omitting them returns the complete file. Only provide them when the user explicitly asks to read a specific portion.
-- Results are returned using cat -n format, with line numbers starting at 1.
-- Lines longer than 5,000 characters will be split into multiple lines with continuation markers (e.g., 5.1, 5.2, etc.).
-- You have the capability to call multiple tools in a single response. It is always better to speculatively read multiple files as a batch that are potentially useful.
-- If you read a file that exists but has empty contents you will receive a system reminder warning in place of file contents.
-- Image files (.png, .jpg, .jpeg, .gif, .webp, etc.), audio and video files, and PDFs are returned as multimodal content blocks.
-- For multimodal reads use `read_file(file_path=...)` without offset/limit.
-- You should ALWAYS make sure a file has been read before editing it."""
-
-    # 全量读取时的 limit 默认值：极大值，使省略 limit 时仍返回完整文件。
-    READ_FILE_FULL_LINE_LIMIT: int = 1_000_000
 
     # execute 工具 HITL 重点标注：该工具在宿主机直接执行命令（无沙箱），
     # 文件删除类命令会触发人工审批中断，需在模型侧工具描述中明确告知模型。
@@ -763,56 +936,6 @@ Usage:
         "—— 以下为工具的常规使用说明 ——\n\n"
         + EXECUTE_TOOL_DESCRIPTION
     )
-
-    def _override_read_file_limit(self, middleware):
-        """覆盖 read_file 工具，使其每次读取都全量读取。
-
-        DeepAgents 通过 StructuredTool.from_function 创建工具，函数签名中的
-        limit=DEFAULT_READ_LIMIT 在定义时绑定，修改模块全局变量无效。
-        FilesystemMiddleware（含 read_file 工具）由 create_deep_agent 内部创建，
-        因此通过 monkey-patch _create_read_file_tool 方法，在工具创建时注入：
-          1) 自定义工具描述（重定义中间件的 _custom_tool_descriptions["read_file"]），
-             指导模型默认读取完整文件、不主动分页；
-          2) limit 默认极大值，确保模型省略 limit 时仍返回完整文件。
-        """
-        try:
-            from deepagents.middleware.filesystem import FilesystemMiddleware
-
-            # 保存原始方法（仅第一次）
-            if not hasattr(FilesystemMiddleware, "_original_create_read_file_tool"):
-                FilesystemMiddleware._original_create_read_file_tool = (
-                    FilesystemMiddleware._create_read_file_tool
-                )
-
-            original = FilesystemMiddleware._original_create_read_file_tool
-
-            def patched_create_read_file_tool(self_inner):
-                # 重新定义 read_file 的自定义描述：每次读取都是全量读取。
-                if not hasattr(self_inner, "_custom_tool_descriptions") or \
-                        self_inner._custom_tool_descriptions is None:
-                    self_inner._custom_tool_descriptions = {}
-                self_inner._custom_tool_descriptions = {
-                    **self_inner._custom_tool_descriptions,
-                    "read_file": self.READ_FILE_FULL_TOOL_DESCRIPTION,
-                }
-
-                tool = original(self_inner)
-                schema_cls = tool.args_schema
-                if "limit" in schema_cls.model_fields:
-                    field = schema_cls.model_fields["limit"]
-                    field.default = self.READ_FILE_FULL_LINE_LIMIT
-                    field.description = (
-                        "Maximum number of lines to read per call. "
-                        "The tool reads the FULL file by default; do not pass this "
-                        "unless the user explicitly asks to read only a portion."
-                    )
-                    schema_cls.model_rebuild(force=True)
-                return tool
-
-            FilesystemMiddleware._create_read_file_tool = patched_create_read_file_tool
-            logger.info(f"[{self.sid}] 📖 read_file 已配置为全量读取")
-        except Exception as e:
-            logger.warning(f"read_file 全量读取配置失败: {e}")
 
     def _override_execute_description(self, middleware):
         """覆盖 execute 工具描述，在模型侧重点标注 HITL（人工审批）行为。
@@ -846,7 +969,12 @@ Usage:
             FilesystemMiddleware._create_execute_tool = patched_create_execute_tool
             logger.info(f"[{self.sid}] 🔧 execute 已标注 HITL 人工审批说明")
         except Exception as e:
-            logger.warning(f"[{self.sid}] ⚠️ 覆盖 execute 工具描述失败: {e}")
+            logger.error(
+                f"[{self.sid}] ❌ execute 工具描述适配失败"
+                f"（模型侧将缺少 HITL 审批说明）: {type(e).__name__}: {e} | "
+                f"通常是 deepagents 升级导致 FilesystemMiddleware._create_execute_tool "
+                f"改名或改签名，请对照 deepagents {_deepagents_version()} 源码修正本适配。"
+            )
 
     def _safe_external_dirs(self) -> dict[str, str]:
         """返回通过安全校验的外部目录映射 {虚拟路径(带/): 实际绝对路径}。
@@ -901,6 +1029,18 @@ Usage:
         routes = {
             f"{self.workspace_virtual_path}/": workspace_backend,
         }
+
+        # 长期记忆（跨会话 AGENTS.md）挂载为 /memories/ 路由，供
+        # create_deep_agent(memory=[LONG_TERM_MEMORY_VIRTUAL_PATH]) 经虚拟路径读取。
+        # 会话记忆在工作区内（/workspace/memory.md），无需单独路由。
+        # getattr 兜底：兼容绕过 __init__ 直接调用本方法的场景（如测试）。
+        _ltm_file = getattr(self, "long_term_memory_file", None)
+        if _ltm_file is not None and _ltm_file.parent.exists():
+            routes["/memories/"] = LocalShellBackend(
+                root_dir=str(_ltm_file.parent.absolute()),
+                virtual_mode=True,
+                env=shell_env,
+            )
 
         if skills_paths and self.user_skills_dir.exists():
             user_skills_backend = LocalShellBackend(

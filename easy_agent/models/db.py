@@ -26,6 +26,9 @@ class UserModel:
     email: str = ""
     bound_ip: str = ""
     token_version: int = 0
+    # 工号：注册必填、全局唯一；登录时可替代用户名。免密自动注册的用户没有工号，
+    # 此时为空串（落库为 NULL，以便唯一索引允许多个空值）。
+    employee_id: str = ""
     created_at: str = ""
     updated_at: str = ""
 

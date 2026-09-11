@@ -194,7 +194,7 @@ async def get_models():
             "model": prov.model,
             "provider": prov.provider,
             "protocol": prov.protocol,
-            "max_input_tokens": prov.max_input_tokens,
+            "context_length": prov.context_length,
             "is_active": name == config.active_model,
         })
 

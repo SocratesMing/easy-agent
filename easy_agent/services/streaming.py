@@ -13,7 +13,7 @@ Events emitted to frontend:
   tool_call        {tool_name, tool_call_id, arguments, step}
   tool_result      {tool_name, tool_call_id, arguments, result, success, duration, step}
   todo_list        {todos, step}
-  token_usage      {input_tokens, output_tokens, reasoning_tokens, max_input_tokens, auto_compress_tokens}
+  token_usage      {input_tokens, output_tokens, reasoning_tokens, context_length, auto_compress_tokens}
   done             {session_id, elapsed_time, usage}
   error            {content}
   approval_required {thread_id, action_requests, allowed_decisions}
@@ -32,7 +32,7 @@ from typing import AsyncGenerator
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.types import Command
 
-from ..agent import EasyAgent
+from ..agent import EasyAgent, resolve_context_length
 from ..db import Database
 from .stream_processor import StreamProcessor
 from ..models.api import ChatRequest
@@ -155,6 +155,136 @@ def _historical_tool_records(message: dict) -> list[dict]:
     ]
 
 
+def _tool_call_tuples(blocks: list, *, with_approval: bool = False) -> list[tuple]:
+    """从 StreamProcessor 的 blocks 中提取工具调用元组（供持久化使用）。
+
+    chat / resume 两条流式链路原本各自定义了一份完全相同的闭包，现统一到此处。
+    ``with_approval=True`` 时在末尾追加第 8 项 ``approval_status``（HITL 恢复流程需要）。
+    """
+    if with_approval:
+        return [
+            (b.get("tool_name", ""), b.get("tool_call_id", ""),
+             b.get("arguments", {}), b.get("result", ""),
+             b.get("success", True), b.get("duration"),
+             b.get("step", 0), b.get("approval_status"))
+            for b in blocks if b.get("type") == "tool_call"
+        ]
+    return [
+        (b.get("tool_name", ""), b.get("tool_call_id", ""),
+         b.get("arguments", {}), b.get("result", ""),
+         b.get("success", True), b.get("duration"),
+         b.get("step", 0))
+        for b in blocks if b.get("type") == "tool_call"
+    ]
+
+
+def _persist_incremental(
+    proc, *, db, session_id: str, sid: str, start_time: float
+) -> None:
+    """流式过程中增量持久化当前 assistant 消息（正文 / 思考 / 工具记录）。
+
+    chat 与 resume 共用；内部吞掉异常——持久化失败不应中断流式输出。
+    """
+    try:
+        msg = build_assistant_message_dict(
+            content=proc.accumulated_response,
+            thinking=proc.accumulated_thinking,
+            thinking_duration=None,
+            tool_call_records=_tool_call_tuples(proc.blocks),
+            blocks=proc.blocks,
+            input_tokens=proc.last_usage.get("input_tokens", 0),
+            output_tokens=proc.last_usage.get("output_tokens", 0),
+            reasoning_tokens=proc.last_usage.get("reasoning_tokens", 0),
+            context_tokens=proc.last_context_tokens,
+            elapsed_time=time.time() - start_time,
+            step_count=proc.current_step,
+        )
+        db.update_last_assistant_message(session_id, msg)
+        db.update_last_assistant_message_row(session_id, msg)
+    except Exception as e:
+        logger.warning(f"[{sid}] 增量持久化失败: {e}")
+
+
+def _handle_tool_result_event(
+    ev, *, db, session_id, message_id, session_logger, agent, sid
+) -> None:
+    """工具执行结果落库：工具调用记录 + 会话日志 + 生成文件登记。
+
+    chat 与 resume 共用（原为两份逐行相同的闭包）。
+    """
+    tool_name = ev.get("tool_name", "")
+    tool_call_id = ev.get("tool_call_id", "")
+    tool_args = ev.get("arguments", {})
+    result_content = ev.get("result", "")
+    success = ev.get("success", True)
+    tool_duration = ev.get("duration", 0)
+    step = ev.get("step", 0)
+    if message_id:
+        try:
+            db.record_tool_call(
+                session_id=session_id, message_id=message_id,
+                tool_name=tool_name, tool_call_id=tool_call_id,
+                arguments=tool_args if isinstance(tool_args, dict) else {},
+                result=str(result_content)[:5000] if result_content is not None else None,
+                success=success, duration=tool_duration, step=step,
+            )
+        except Exception as e:
+            logger.warning(f"[{sid}] 持久化工具调用记录失败: {e}")
+    if session_logger:
+        try:
+            session_logger.log_tool_call(
+                tool_name=tool_name, tool_call_id=tool_call_id,
+                arguments=tool_args,
+                result=str(result_content)[:5000],
+                success=success, duration=tool_duration, step=step,
+                message_id=message_id,
+            )
+        except Exception:
+            pass
+    if tool_name in ("write_file", "write_tool"):
+        try:
+            file_args = tool_args if isinstance(tool_args, dict) else {}
+            filename = (
+                file_args.get("file_name")
+                or file_args.get("path")
+                or file_args.get("file_path", "")
+            )
+            if filename:
+                base_name = os.path.basename(filename) if filename else "unknown"
+                ext = os.path.splitext(base_name)[1].lstrip(".") or "txt"
+                db.add_generated_file(
+                    session_id=session_id, message_id=message_id,
+                    filename=base_name,
+                    file_path=str(agent.workspace_dir / filename)
+                    if not os.path.isabs(filename) else filename,
+                    file_type=ext, size=0,
+                )
+                logger.info(f"[{sid}] 📄 记录生成文件: {base_name}")
+        except Exception as e:
+            logger.warning(f"[{sid}] 记录生成文件失败: {e}")
+
+
+def _persist_thinking_event(
+    ev, *, proc, db, session_id, message_id, sid
+) -> None:
+    """把指定 step 的思考内容落库（chat 与 resume 共用）。"""
+    step = ev.get("step", 0)
+    duration = ev.get("duration", 0)
+    for blk in reversed(proc.blocks):
+        if blk.get("type") == "thinking" and blk.get("step") == step:
+            content = (blk.get("content", "") or "").strip()
+            if content and message_id:
+                try:
+                    db.record_thinking(
+                        session_id=session_id, message_id=message_id,
+                        step=step, content=content[:10000], duration=duration,
+                    )
+                except Exception as e:
+                    logger.warning(f"[{sid}] 持久化思考记录失败: {e}")
+            break
+
+
+
 def _assistant_content_message(message: dict, provider: str) -> AIMessage:
     """重建历史 assistant 消息：**只恢复正文，不回灌思考内容**。
 
@@ -187,6 +317,37 @@ def _hitl_interrupt_items(state) -> list[tuple[str | None, dict]]:
             if isinstance(value, dict):
                 items.append((interrupt_id, value))
     return items
+
+
+def _extract_hitl_request(graph_state) -> dict | None:
+    """取出待审批的 HITL 中断负载；无中断时返回 None。
+
+    **兼容层**：``state.tasks[*].interrupts[0].value`` 及其内部键
+    （``action_requests`` / ``review_configs`` / ``action_name``）属于
+    deepagents / langchain 的**内部结构**，不在公开契约内——官方对该中间件只承诺
+    ``Command(resume={"decisions": ...})``。业务层统一经本函数取值，
+    框架升级时只需调整这一处，而不是散落在两条流式链路里各改一遍。
+    """
+    if not getattr(graph_state, "next", None):
+        return None
+    items = _hitl_interrupt_items(graph_state)
+    return items[0][1] if items else None
+
+
+def _hitl_action_names(hitl_request: dict) -> set[str]:
+    """待审批的工具名集合（兼容 ActionRequest 为 dict 或对象两种形态）。"""
+    return {
+        (ar.get("name", "") if isinstance(ar, dict) else getattr(ar, "name", ""))
+        for ar in (hitl_request.get("action_requests") or [])
+    }
+
+
+def _hitl_review_config_map(hitl_request: dict) -> dict:
+    """把中断负载里的 ``review_configs`` 转为 ``{action_name: config}``。"""
+    return {
+        cfg.get("action_name"): cfg
+        for cfg in (hitl_request.get("review_configs") or [])
+    }
 
 
 def hanging_hitl_tool_count(state) -> int:
@@ -515,26 +676,12 @@ async def chat_stream_generator(
     if agent and agent.workspace_dir:
         message_content = f"[workspace: {agent.workspace_virtual_path}/ | shell: cd {agent.workspace_virtual_path}]\n{message_content}"
 
-    # 加载记忆上下文：
-    # - 长期记忆（memories/{username}/AGENTS.md）：跨会话用户偏好与经验，始终加载
-    # - 会话记忆（workspace/.../memory.md）：当前会话历史经验，首轮对话时不存在
-    if agent:
-        long_term_memory = agent.load_long_term_memory()
-        session_memory = agent.load_session_memory()
-        memory_parts = []
-        if long_term_memory:
-            memory_parts.append(f"[长期记忆 - 用户偏好与跨会话经验]:\n{long_term_memory}")
-        if session_memory:
-            memory_parts.append(f"[会话记忆 - 当前会话的历史经验总结]:\n{session_memory}")
-        if memory_parts:
-            message_content = (
-                "\n\n---\n\n".join(memory_parts)
-                + f"\n\n---\n\n{message_content}"
-            )
-            logger.info(
-                f"[{sid}] 🧠 已注入记忆上下文 | "
-                f"长期: {len(long_term_memory)} 字符 | 会话: {len(session_memory)} 字符"
-            )
+    # 记忆统一由 create_deep_agent(memory=[...]) 经 MemoryMiddleware 注入 system prompt：
+    #   - 会话记忆 /workspace/memory.md
+    #   - 长期记忆 /memories/AGENTS.md（见 _build_backend 的 /memories/ 路由）
+    # 此处**不再**把记忆拼进用户消息——否则同一份内容会同时出现在 system prompt
+    # 与用户消息中，多占一份上下文。记忆更新后由 remove_session_agent 使缓存失效，
+    # 下次重建 Agent 时会加载到最新内容。
 
     # 说明：会话累计 token（pre_session_tokens / session_estimate）已移除，
     # 前端只展示本轮的 input / output / reasoning 三类 token。
@@ -556,34 +703,38 @@ async def chat_stream_generator(
         yield format_sse({"type": "start", "session_id": session_id})
 
         # ── 配置 ─────────────────────────────────────────────────
-        max_input_tokens = None
+        context_length = None
         auto_compress_tokens = None
         result_log_truncate = 200
         _agent_config = get_agent_config()
         if _agent_config and _agent_config.get("config"):
-            max_input_tokens = _agent_config["config"].llm.max_input_tokens
+            # 以「本次实际使用的模型」的窗口为基准（用户可切换模型，各 provider 的
+            # context_length 分别配置），口径与摘要中间件保持一致。
+            context_length = resolve_context_length(
+                _agent_config["config"], getattr(agent, "model_name", None)
+            )
             result_log_truncate = getattr(
                 _agent_config["config"].tools, "result_log_truncate", 200
             )
-        if not max_input_tokens:
+        if not context_length:
             model_instance = getattr(agent, "model", None)
             if (
                 model_instance
                 and hasattr(model_instance, "profile")
                 and model_instance.profile
             ):
-                max_input_tokens = model_instance.profile.get("max_input_tokens")
-        if not max_input_tokens:
+                context_length = model_instance.profile.get("max_input_tokens")  # LangChain model.profile 的键名，非本项目字段
+        if not context_length:
             model_instance = getattr(agent, "model", None)
-            max_input_tokens = _get_model_context_limit(model_instance)
-        if max_input_tokens:
+            context_length = _get_model_context_limit(model_instance)
+        if context_length:
             _summ = get_agent_config()
             _thr = (
                 _summ["config"].summarization.compression_threshold
                 if _summ and _summ.get("config")
                 else 0.8
             )
-            auto_compress_tokens = int(max_input_tokens * _thr)
+            auto_compress_tokens = int(context_length * _thr)
         else:
             auto_compress_tokens = 170000
 
@@ -591,107 +742,30 @@ async def chat_stream_generator(
         proc = StreamProcessor(
             sid=sid, session_id=session_id, db=db, message_id=message_id,
             session_logger=session_logger,
-            max_input_tokens=max_input_tokens,
+            context_length=context_length,
             auto_compress_tokens=auto_compress_tokens,
             start_time=start_time,
         )
 
         def _tool_call_records_from_blocks(blks):
-            return [
-                (b.get("tool_name", ""), b.get("tool_call_id", ""),
-                 b.get("arguments", {}), b.get("result", ""),
-                 b.get("success", True), b.get("duration"),
-                 b.get("step", 0))
-                for b in blks if b.get("type") == "tool_call"
-            ]
+            return _tool_call_tuples(blks)
 
         def _persist():
-            try:
-                msg = build_assistant_message_dict(
-                    content=proc.accumulated_response,
-                    thinking=proc.accumulated_thinking,
-                    thinking_duration=None,
-                    tool_call_records=_tool_call_records_from_blocks(proc.blocks),
-                    blocks=proc.blocks,
-                    input_tokens=proc.last_usage.get("input_tokens", 0),
-                    output_tokens=proc.last_usage.get("output_tokens", 0),
-                    reasoning_tokens=proc.last_usage.get("reasoning_tokens", 0),
-                    context_tokens=proc.last_context_tokens,
-                    elapsed_time=time.time() - start_time,
-                    step_count=proc.current_step,
-                )
-                db.update_last_assistant_message(session_id, msg)
-                db.update_last_assistant_message_row(session_id, msg)
-            except Exception as e:
-                logger.warning(f"[{sid}] 增量持久化失败: {e}")
+            _persist_incremental(
+                proc, db=db, session_id=session_id, sid=sid, start_time=start_time
+            )
 
         def _on_tool_result(ev):
-            tool_name = ev.get("tool_name", "")
-            tool_call_id = ev.get("tool_call_id", "")
-            tool_args = ev.get("arguments", {})
-            result_content = ev.get("result", "")
-            success = ev.get("success", True)
-            tool_duration = ev.get("duration", 0)
-            step = ev.get("step", 0)
-            if message_id:
-                try:
-                    db.record_tool_call(
-                        session_id=session_id, message_id=message_id,
-                        tool_name=tool_name, tool_call_id=tool_call_id,
-                        arguments=tool_args if isinstance(tool_args, dict) else {},
-                        result=str(result_content)[:5000] if result_content is not None else None,
-                        success=success, duration=tool_duration, step=step,
-                    )
-                except Exception as e:
-                    logger.warning(f"[{sid}] 持久化工具调用记录失败: {e}")
-            if session_logger:
-                try:
-                    session_logger.log_tool_call(
-                        tool_name=tool_name, tool_call_id=tool_call_id,
-                        arguments=tool_args,
-                        result=str(result_content)[:5000],
-                        success=success, duration=tool_duration, step=step,
-                        message_id=message_id,
-                    )
-                except Exception:
-                    pass
-            if tool_name in ("write_file", "write_tool"):
-                try:
-                    file_args = tool_args if isinstance(tool_args, dict) else {}
-                    filename = (
-                        file_args.get("file_name")
-                        or file_args.get("path")
-                        or file_args.get("file_path", "")
-                    )
-                    if filename:
-                        base_name = os.path.basename(filename) if filename else "unknown"
-                        ext = os.path.splitext(base_name)[1].lstrip(".") or "txt"
-                        db.add_generated_file(
-                            session_id=session_id, message_id=message_id,
-                            filename=base_name,
-                            file_path=str(agent.workspace_dir / filename)
-                            if not os.path.isabs(filename) else filename,
-                            file_type=ext, size=0,
-                        )
-                        logger.info(f"[{sid}] 📄 记录生成文件: {base_name}")
-                except Exception as e:
-                    logger.warning(f"[{sid}] 记录生成文件失败: {e}")
+            _handle_tool_result_event(
+                ev, db=db, session_id=session_id, message_id=message_id,
+                session_logger=session_logger, agent=agent, sid=sid,
+            )
 
         def _on_thinking_end(ev):
-            step = ev.get("step", 0)
-            duration = ev.get("duration", 0)
-            for blk in reversed(proc.blocks):
-                if blk.get("type") == "thinking" and blk.get("step") == step:
-                    content = (blk.get("content", "") or "").strip()
-                    if content and message_id:
-                        try:
-                            db.record_thinking(
-                                session_id=session_id, message_id=message_id,
-                                step=step, content=content[:10000], duration=duration,
-                            )
-                        except Exception as e:
-                            logger.warning(f"[{sid}] 持久化思考记录失败: {e}")
-                    break
+            _persist_thinking_event(
+                ev, proc=proc, db=db, session_id=session_id,
+                message_id=message_id, sid=sid,
+            )
 
         last_persisted_len = 0
 
@@ -771,26 +845,17 @@ async def chat_stream_generator(
         try:
             graph_state = await agent.agent.aget_state(stream_config)
             if graph_state.next and graph_state.tasks:
-                hitl_request = None
-                for task in graph_state.tasks:
-                    if hasattr(task, "interrupts") and task.interrupts:
-                        hitl_request = task.interrupts[0].value
-                        break
+                hitl_request = _extract_hitl_request(graph_state)
                 if hitl_request:
                     action_requests = hitl_request.get("action_requests", [])
                     review_configs = hitl_request.get("review_configs", [])
-                    config_map = {
-                        cfg.get("action_name"): cfg for cfg in review_configs
-                    }
+                    config_map = _hitl_review_config_map(hitl_request)
                     # 从状态中获取 tool_call_id（ActionRequest 不含 id）
                     # 关键：只取需要审批的工具（与 action_requests 按 tool_name 匹配），
                     # 而非 AIMessage 的全部 tool_calls。否则同一 AIMessage 里无需审批的工具
                     # 也会被标 pending，且 resume 时 decisions 数量对不上 -> 永远显示"待审批"。
                     state_msgs = graph_state.values.get("messages", [])
-                    _approval_tool_names = {
-                        (ar.get("name", "") if isinstance(ar, dict) else getattr(ar, "name", ""))
-                        for ar in action_requests
-                    }
+                    _approval_tool_names = _hitl_action_names(hitl_request)
                     pending_tc_ids = []
                     for msg in reversed(state_msgs):
                         if isinstance(msg, AIMessage) and getattr(msg, "tool_calls", None):
@@ -954,7 +1019,7 @@ async def chat_stream_generator(
             "input_tokens": inp_tokens,
             "output_tokens": out_tokens,
             "reasoning_tokens": rea_tokens,
-            "max_input_tokens": max_input_tokens,
+            "context_length": context_length,
             "auto_compress_tokens": auto_compress_tokens,
             "context_tokens": last_context_tokens
             if last_context_tokens > 0
@@ -1159,14 +1224,23 @@ async def resume_stream_generator(
         logger.info(f"[{sid}] 👤 用户审批操作: {decision_desc}")
 
     stream_config = {"configurable": {"thread_id": thread_id}}
-    max_input_tokens = getattr(agent, "max_input_tokens", None) or 0
-    auto_compress_tokens = getattr(agent, "auto_compress_tokens", None) or 0
+    # 与 chat 流口径一致：取「本次实际使用的模型」的窗口，并按阈值折算自动压缩点。
+    # 原实现读的是并不存在的 EasyAgent.context_length / auto_compress_tokens 属性，
+    # 恒为 0，导致 HITL 恢复后前端拿不到窗口值（上下文占用率显示为 0/N）。
+    context_length = resolve_context_length(
+        getattr(agent, "config", None), getattr(agent, "model_name", None)
+    )
+    auto_compress_tokens = 0
+    if context_length:
+        _summ_cfg = getattr(getattr(agent, "config", None), "summarization", None)
+        _thr = float(getattr(_summ_cfg, "compression_threshold", 0.8) or 0.8)
+        auto_compress_tokens = int(context_length * _thr)
 
     # ── StreamProcessor（用 DB 载入的初始状态初始化）──────────────────
     proc = StreamProcessor(
         sid=sid, session_id=session_id, db=db, message_id=message_id,
         session_logger=session_logger,
-        max_input_tokens=max_input_tokens,
+        context_length=context_length,
         auto_compress_tokens=auto_compress_tokens,
         current_step=current_step, blocks=list(blocks),
         last_context_tokens=last_context_tokens,
@@ -1176,101 +1250,24 @@ async def resume_stream_generator(
     )
 
     def _tool_call_records_from_blocks(blks):
-        return [
-            (b.get("tool_name", ""), b.get("tool_call_id", ""),
-             b.get("arguments", {}), b.get("result", ""),
-             b.get("success", True), b.get("duration"),
-             b.get("step", 0), b.get("approval_status"))
-            for b in blks if b.get("type") == "tool_call"
-        ]
+        return _tool_call_tuples(blks, with_approval=True)
 
     def _persist():
-        try:
-            msg = build_assistant_message_dict(
-                content=proc.accumulated_response,
-                thinking=proc.accumulated_thinking,
-                thinking_duration=None,
-                tool_call_records=_tool_call_records_from_blocks(proc.blocks),
-                blocks=proc.blocks,
-                input_tokens=proc.last_usage.get("input_tokens", 0),
-                output_tokens=proc.last_usage.get("output_tokens", 0),
-                reasoning_tokens=proc.last_usage.get("reasoning_tokens", 0),
-                context_tokens=proc.last_context_tokens,
-                elapsed_time=time.time() - start_time,
-                step_count=proc.current_step,
-            )
-            db.update_last_assistant_message(session_id, msg)
-            db.update_last_assistant_message_row(session_id, msg)
-        except Exception as e:
-            logger.warning(f"[{sid}] 增量持久化失败: {e}")
+        _persist_incremental(
+            proc, db=db, session_id=session_id, sid=sid, start_time=start_time
+        )
 
     def _on_tool_result(ev):
-        tool_name = ev.get("tool_name", "")
-        tool_call_id = ev.get("tool_call_id", "")
-        tool_args = ev.get("arguments", {})
-        result_content = ev.get("result", "")
-        success = ev.get("success", True)
-        tool_duration = ev.get("duration", 0)
-        step = ev.get("step", 0)
-        if message_id:
-            try:
-                db.record_tool_call(
-                    session_id=session_id, message_id=message_id,
-                    tool_name=tool_name, tool_call_id=tool_call_id,
-                    arguments=tool_args if isinstance(tool_args, dict) else {},
-                    result=str(result_content)[:5000] if result_content is not None else None,
-                    success=success, duration=tool_duration, step=step,
-                )
-            except Exception as e:
-                logger.warning(f"[{sid}] 持久化工具调用记录失败: {e}")
-        if session_logger:
-            try:
-                session_logger.log_tool_call(
-                    tool_name=tool_name, tool_call_id=tool_call_id,
-                    arguments=tool_args,
-                    result=str(result_content)[:5000],
-                    success=success, duration=tool_duration, step=step,
-                    message_id=message_id,
-                )
-            except Exception:
-                pass
-        if tool_name in ("write_file", "write_tool"):
-            try:
-                file_args = tool_args if isinstance(tool_args, dict) else {}
-                filename = (
-                    file_args.get("file_name")
-                    or file_args.get("path")
-                    or file_args.get("file_path", "")
-                )
-                if filename:
-                    base_name = os.path.basename(filename) if filename else "unknown"
-                    ext = os.path.splitext(base_name)[1].lstrip(".") or "txt"
-                    db.add_generated_file(
-                        session_id=session_id, message_id=message_id,
-                        filename=base_name,
-                        file_path=str(agent.workspace_dir / filename)
-                        if not os.path.isabs(filename) else filename,
-                        file_type=ext, size=0,
-                    )
-                    logger.info(f"[{sid}] 📄 记录生成文件: {base_name}")
-            except Exception as e:
-                logger.warning(f"[{sid}] 记录生成文件失败: {e}")
+        _handle_tool_result_event(
+            ev, db=db, session_id=session_id, message_id=message_id,
+            session_logger=session_logger, agent=agent, sid=sid,
+        )
 
     def _on_thinking_end(ev):
-        step = ev.get("step", 0)
-        duration = ev.get("duration", 0)
-        for blk in reversed(proc.blocks):
-            if blk.get("type") == "thinking" and blk.get("step") == step:
-                content = (blk.get("content", "") or "").strip()
-                if content and message_id:
-                    try:
-                        db.record_thinking(
-                            session_id=session_id, message_id=message_id,
-                            step=step, content=content[:10000], duration=duration,
-                        )
-                    except Exception as e:
-                        logger.warning(f"[{sid}] 持久化思考记录失败: {e}")
-                break
+        _persist_thinking_event(
+            ev, proc=proc, db=db, session_id=session_id,
+            message_id=message_id, sid=sid,
+        )
 
     def _persist_approval_decisions():
         """将用户对 HITL 工具调用的审批决策（批准/拒绝）持久化到最近一条 assistant 消息，
@@ -1392,20 +1389,13 @@ async def resume_stream_generator(
         try:
             graph_state = await agent.agent.aget_state(stream_config)
             if graph_state.next and graph_state.tasks:
-                hitl_request = None
-                for task in graph_state.tasks:
-                    if hasattr(task, "interrupts") and task.interrupts:
-                        hitl_request = task.interrupts[0].value
-                        break
+                hitl_request = _extract_hitl_request(graph_state)
                 if hitl_request:
                     action_requests = hitl_request.get("action_requests", [])
                     review_configs = hitl_request.get("review_configs", [])
-                    config_map = {cfg.get("action_name"): cfg for cfg in review_configs}
+                    config_map = _hitl_review_config_map(hitl_request)
                     state_msgs = graph_state.values.get("messages", [])
-                    _nested_approval_names = {
-                        (ar.get("name", "") if isinstance(ar, dict) else getattr(ar, "name", ""))
-                        for ar in action_requests
-                    }
+                    _nested_approval_names = _hitl_action_names(hitl_request)
                     pending_tc_ids = []
                     for msg in reversed(state_msgs):
                         if isinstance(msg, AIMessage) and getattr(msg, "tool_calls", None):
@@ -1531,7 +1521,7 @@ async def resume_stream_generator(
             "input_tokens": inp_tokens,
             "output_tokens": out_tokens,
             "reasoning_tokens": rea_tokens,
-            "max_input_tokens": max_input_tokens,
+            "context_length": context_length,
             "auto_compress_tokens": auto_compress_tokens,
             "context_tokens": last_context_tokens if last_context_tokens > 0 else inp_tokens,
             "elapsed_time": round(elapsed_time, 2),

@@ -94,7 +94,7 @@ class StreamProcessor:
     def __init__(self, *, sid: str = "", current_step: int = 0,
                  blocks: list | None = None, db=None, session_id: str | None = None,
                  message_id: str = "", session_logger=None,
-                 max_input_tokens: int | None = None,
+                 context_length: int | None = None,
                  auto_compress_tokens: int | None = None,
                  start_time: float | None = None,
                  result_log_truncate: int = 5000,
@@ -108,7 +108,7 @@ class StreamProcessor:
         self.session_id = session_id
         self.message_id = message_id
         self.session_logger = session_logger
-        self.max_input_tokens = max_input_tokens
+        self.context_length = context_length
         self.auto_compress_tokens = auto_compress_tokens
         # 说明：会话累计 token（pre_session_tokens / session_estimate）已移除，
         # 前端只按类型展示本轮 input/output/reasoning。
@@ -418,7 +418,7 @@ class StreamProcessor:
             # 思考 token（output 的子集），前端据此展示拆分
             "reasoning_tokens": last["reasoning_tokens"],
             "context_tokens": self.last_context_tokens if self.last_context_tokens > 0 else inp,
-            "max_input_tokens": self.max_input_tokens,
+            "context_length": self.context_length,
             "auto_compress_tokens": self.auto_compress_tokens,
             "elapsed_time": round(time.time() - self.start_time, 2),
             "step_count": self.current_step,
@@ -506,10 +506,10 @@ class StreamProcessor:
         tot = inp + out
         rea = self._step_usage.get("reasoning_tokens", 0)
         ctx = self.last_context_tokens or inp
-        # 上下文占用率：本步上下文 token / 模型上下文窗口长度（max_input_tokens）。
-        if self.max_input_tokens:
-            _ctx_pct = ctx / self.max_input_tokens * 100
-            _ctx_str = f"{ctx}/{self.max_input_tokens:,} ({_ctx_pct:.1f}%)"
+        # 上下文占用率：本步上下文 token / 模型上下文窗口长度（context_length）。
+        if self.context_length:
+            _ctx_pct = ctx / self.context_length * 100
+            _ctx_str = f"{ctx}/{self.context_length:,} ({_ctx_pct:.1f}%)"
         else:
             _ctx_str = f"{ctx}"
         logger.info(
@@ -559,7 +559,7 @@ class StreamProcessor:
             "input_tokens": inp,
             "output_tokens": out,
             "reasoning_tokens": last["reasoning_tokens"],
-            "max_input_tokens": self.max_input_tokens,
+            "context_length": self.context_length,
             "auto_compress_tokens": self.auto_compress_tokens,
             "context_tokens": self.last_context_tokens if self.last_context_tokens > 0 else inp,
             "elapsed_time": round(elapsed_time, 2),

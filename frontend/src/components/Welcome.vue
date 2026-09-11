@@ -9,13 +9,13 @@
       <form @submit.prevent="handleSubmit" class="welcome-form">
         <div class="form-group">
           <label for="username">
-            用户名 <span class="required">*</span>
+            {{ isLogin ? '用户名 / 工号' : '用户名' }} <span class="required">*</span>
           </label>
           <input
             id="username"
             v-model="form.username"
             type="text"
-            placeholder="用户名: admin"
+            :placeholder="isLogin ? '请输入用户名或工号' : '用户名: admin'"
             required
             ref="usernameInput"
           />
@@ -36,26 +36,16 @@
         </div>
 
         <div class="form-group" v-if="!isLogin">
-          <label for="organizationId">
-            机构ID <span class="required">*</span>
-            <span class="password-hint">（注册后不可更改）</span>
+          <label for="employeeId">
+            工号 <span class="required">*</span>
+            <span class="password-hint">（全局唯一，注册后不可更改）</span>
           </label>
           <input
-            id="organizationId"
-            v-model="form.organizationId"
+            id="employeeId"
+            v-model="form.employeeId"
             type="text"
-            placeholder="请输入所属机构ID"
+            placeholder="请输入工号"
             required
-          />
-        </div>
-
-        <div class="form-group" v-if="!isLogin">
-          <label for="email">用户邮箱</label>
-          <input
-            id="email"
-            v-model="form.email"
-            type="email"
-            placeholder="请输入用户邮箱（选填）"
           />
         </div>
 
@@ -71,7 +61,7 @@
           {{ success }}
         </div>
 
-        <button type="submit" class="submit-btn" :disabled="submitting || !form.username.trim() || !form.password.trim() || (!isLogin && !form.organizationId.trim())">
+        <button type="submit" class="submit-btn" :disabled="submitting || !form.username.trim() || !form.password.trim() || (!isLogin && !form.employeeId.trim())">
           {{ submitting ? (isLogin ? '登录中...' : '注册中...') : (isLogin ? '登录' : '注册') }}
         </button>
 
@@ -102,8 +92,7 @@ const isLogin = ref(true)
 const form = ref({
   username: '',
   password: '',
-  organizationId: '',
-  email: ''
+  employeeId: ''
 })
 
 function toggleMode() {
@@ -113,8 +102,7 @@ function toggleMode() {
   form.value = {
     username: '',
     password: '',
-    organizationId: '',
-    email: ''
+    employeeId: ''
   }
 }
 
@@ -148,29 +136,28 @@ async function handleSubmit() {
     if (isLogin.value) {
       data = await login(form.value.username.trim(), form.value.password)
     } else {
-      if (!form.value.organizationId.trim()) {
-        error.value = '请输入机构ID'
+      if (!form.value.employeeId.trim()) {
+        error.value = '请输入工号'
         submitting.value = false
         return
       }
       data = await register(
         form.value.username.trim(),
         form.value.password,
-        form.value.organizationId.trim(),
-        form.value.email.trim()
+        form.value.employeeId.trim()
       )
     }
 
     emit('completed', {
       username: data.username,
       token: data.access_token,
-      max_input_tokens: data.max_input_tokens
+      context_length: data.context_length
     })
   } catch (e) {
     if (e.status === 404) {
-      error.value = '用户名不存在'
+      error.value = '用户名或工号不存在'
     } else if (e.status === 401) {
-      error.value = '密码错误'
+      error.value = '用户名/工号或密码错误'
     } else {
       error.value = e.message || (isLogin.value ? '登录失败，请重试' : '注册失败，请重试')
     }

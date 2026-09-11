@@ -48,7 +48,7 @@ def test_models_hides_models_without_api_key(client, monkeypatch):
             model=model,
             provider="p",
             protocol="openai",
-            max_input_tokens=1000,
+            context_length=1000,
             api_key=api_key,
         )
 

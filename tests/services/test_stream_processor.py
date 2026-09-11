@@ -176,7 +176,7 @@ def test_step_increments_each_turn():
 
 
 def test_token_usage_enriched_fields():
-    p = StreamProcessor(sid="s1", max_input_tokens=200000,
+    p = StreamProcessor(sid="s1", context_length=200000,
                         auto_compress_tokens=170000,
                         start_time=time.time() - 2.0)
     events = p.handle("updates", {"model": {"messages": [_ai_with_tool_call()]}})
@@ -184,7 +184,7 @@ def test_token_usage_enriched_fields():
     # 已不再统计会话累计总量（total_tokens / session_estimate）
     assert "session_estimate" not in tu
     assert "total_tokens" not in tu
-    assert tu["max_input_tokens"] == 200000
+    assert tu["context_length"] == 200000
     assert tu["auto_compress_tokens"] == 170000
     assert tu["elapsed_time"] >= 1.5
 
@@ -221,12 +221,12 @@ def test_todo_list_not_duplicated():
 
 
 def test_finalize_enriched_usage():
-    p = StreamProcessor(sid="s1", max_input_tokens=200000,
+    p = StreamProcessor(sid="s1", context_length=200000,
                         auto_compress_tokens=170000)
     p.handle("updates", {"model": {"messages": [_ai_with_tool_call()]}})
     done = p.finalize(session_id="s", elapsed_time=3.0)[0]
     assert "session_estimate" not in done["usage"]
-    assert done["usage"]["max_input_tokens"] == 200000
+    assert done["usage"]["context_length"] == 200000
     assert done["usage"]["step_count"] == 1
     assert isinstance(done["blocks"], list)
     assert done["blocks"][0]["tool_name"] == "ls"

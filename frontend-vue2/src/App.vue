@@ -24,7 +24,6 @@
         @show-assets="handleShowAssets"
         @show-skill-center="handleShowSkillCenter"
         @show-scheduled-tasks="handleShowScheduledTasks"
-        @show-profile="handleShowProfile"
         @show-settings="showSettingsPanel = true"
         @show-user-management="showUserManagementPanel = true"
         @logout="handleLogout"
@@ -48,13 +47,6 @@
 
       <ScheduledTasksPanel v-if="showScheduledTasks" @close="showScheduledTasks = false" />
       
-      <UserProfile
-        v-if="showUserProfile"
-        @close="showUserProfile = false"
-        @logout="handleLogout"
-        @unregister="handleUnregister"
-      />
-      
       <SettingsPanel
         v-if="showSettingsPanel"
         @close="showSettingsPanel = false"
@@ -68,7 +60,7 @@
       />
       
       <Chat
-        v-else-if="!showAssets && !showUserProfile && !showSkillCenter && !showScheduledTasks"
+        v-else-if="!showAssets && !showSkillCenter && !showScheduledTasks"
         :messages="messages"
         :currentSessionId="currentSessionId"
         :sessionCreatedAt="currentSessionCreatedAt"
@@ -94,7 +86,7 @@
         @reject="handleToolApproval('reject')"
       />
 
-      <div v-if="currentSessionId && !showAssets && !showUserProfile && !showSkillCenter" class="workspace-area">
+      <div v-if="currentSessionId && !showAssets && !showSkillCenter" class="workspace-area">
         <WorkspacePanel
           :username="userProfile.username"
           :currentSessionId="currentSessionId"
@@ -105,7 +97,7 @@
       </div>
 
       <button
-        v-if="currentSessionId && isWorkspaceCollapsed && !showAssets && !showUserProfile && !showSkillCenter && !showScheduledTasks"
+        v-if="currentSessionId && isWorkspaceCollapsed && !showAssets && !showSkillCenter && !showScheduledTasks"
         class="expand-workspace-btn"
         @click="isWorkspaceCollapsed = false"
         title="展开工作区"
@@ -132,7 +124,6 @@ import Chat from './components/Chat.vue'
 import AssetsPanel from './components/AssetsPanel.vue'
 import SkillCenter from './components/SkillCenter.vue'
 import ScheduledTasksPanel from './components/ScheduledTasksPanel.vue'
-import UserProfile from './components/UserProfile.vue'
 import UserManagementPanel from './components/UserManagementPanel.vue'
 import Welcome from './components/Welcome.vue'
 import WorkspacePanel from './components/WorkspacePanel.vue'
@@ -150,7 +141,6 @@ export default {
     SettingsPanel,
     SkillCenter,
     UserManagementPanel,
-    UserProfile,
     Welcome,
     WorkspacePanel,
   },
@@ -234,7 +224,7 @@ const error = ref(null)
 const currentAbortController = ref(null)
 // HITL: 审批待处理状态，存储 { threadId, assistantMsgId }
 const pendingApproval = ref(null)
-const sessionUsage = ref({ input_tokens: 0, output_tokens: 0, reasoning_tokens: 0, max_input_tokens: null, auto_compress_tokens: null, context_tokens: 0 })
+const sessionUsage = ref({ input_tokens: 0, output_tokens: 0, reasoning_tokens: 0, context_length: null, auto_compress_tokens: null, context_tokens: 0 })
 // 当前会话累计耗时（秒），每次 AI 回复完成后累加
 const sessionDuration = ref(0)
 // 当前会话累计迭代次数（step 数），每次 AI 回复完成后累加
@@ -327,8 +317,8 @@ async function attachToStreamingSession(sessionId, opts = {}) {
         sessionDuration.value = history.usage.elapsed_time || 0
         iterationCount.value = history.usage.step_count || 0
       }
-      if (history.max_input_tokens) {
-        sessionUsage.value.max_input_tokens = history.max_input_tokens
+      if (history.context_length) {
+        sessionUsage.value.context_length = history.context_length
       }
     } catch (e) {
       console.error('加载聊天历史失败:', e)
@@ -424,7 +414,7 @@ async function attachToStreamingSession(sessionId, opts = {}) {
       sessionUsage: {
         input_tokens: 0,
         output_tokens: 0,
-        max_input_tokens: sessionUsage.value.max_input_tokens,
+        context_length: sessionUsage.value.context_length,
         auto_compress_tokens: null,
         context_tokens: 0,
       },
@@ -575,7 +565,6 @@ const isDarkTheme = ref(localStorage.getItem('theme') === 'dark')
 const showAssets = ref(false)
 const showSkillCenter = ref(false)
 const showScheduledTasks = ref(false)
-const showUserProfile = ref(false)
 const showSettingsPanel = ref(false)
 const showUserManagementPanel = ref(false)
 const showWelcome = ref(false)
@@ -617,17 +606,10 @@ function handleShowScheduledTasks() {
   showSkillCenter.value = false
 }
 
-function handleShowProfile() {
-  showUserProfile.value = true
-  showAssets.value = false
-  showSkillCenter.value = false
-  showScheduledTasks.value = false
-}
-
 function applyAgentConfig(configData) {
   if (!configData) return
-  if (configData.max_input_tokens) {
-    sessionUsage.value.max_input_tokens = configData.max_input_tokens
+  if (configData.context_length) {
+    sessionUsage.value.context_length = configData.context_length
   }
   if (configData.preset_questions) {
     presetQuestions.value = configData.preset_questions
@@ -650,8 +632,8 @@ function applyAgentConfig(configData) {
 async function handleWelcomeCompleted(profile) {
   userProfile.value = profile
   showWelcome.value = false
-  if (profile.max_input_tokens) {
-    sessionUsage.value.max_input_tokens = profile.max_input_tokens
+  if (profile.context_length) {
+    sessionUsage.value.context_length = profile.context_length
   }
   try {
     const configResp = await authFetch(`${API_BASE_URL}/agent/auth/config`)
@@ -683,8 +665,8 @@ async function handleWelcomeCompleted(profile) {
           sessionDuration.value = history.usage.elapsed_time || 0
           iterationCount.value = history.usage.step_count || 0
         }
-        if (history.max_input_tokens) {
-          sessionUsage.value.max_input_tokens = history.max_input_tokens
+        if (history.context_length) {
+          sessionUsage.value.context_length = history.context_length
         }
         loadedSessionId.value = initialSessionId
       } catch (e) {
@@ -724,7 +706,6 @@ async function handleLogout() {
     organization_id: '',
     email: ''
   }
-  showUserProfile.value = false
   showAssets.value = false
   showSkillCenter.value = false
   showWelcome.value = true
@@ -772,7 +753,6 @@ async function handleUnregister() {
     organization_id: '',
     email: ''
   }
-  showUserProfile.value = false
   showWelcome.value = true
 }
 
@@ -826,7 +806,7 @@ async function handlePasswordlessUrlLogin() {
     window.history.replaceState({}, '', window.location.pathname)
     await handleWelcomeCompleted({
       username: data.username,
-      max_input_tokens: data.max_input_tokens
+      context_length: data.context_length
     })
     return true
   } catch (e) {
@@ -868,15 +848,14 @@ async function handleCreateSession() {
   showAssets.value = false
   showSkillCenter.value = false
   showScheduledTasks.value = false
-  showUserProfile.value = false
   showSettingsPanel.value = false
   currentSessionId.value = null
   loadedSessionId.value = null
   messages.value = []
   currentTodos.value = []
-  // 注意：保留 max_input_tokens（全局上下文窗口，对所有会话通用），不重置为 null，
+  // 注意：保留 context_length（全局上下文窗口，对所有会话通用），不重置为 null，
   // 否则 contextPercent 分母为 null 时会强制显示为 0%
-  sessionUsage.value = { input_tokens: 0, output_tokens: 0, reasoning_tokens: 0, max_input_tokens: sessionUsage.value.max_input_tokens, auto_compress_tokens: null, context_tokens: 0 }
+  sessionUsage.value = { input_tokens: 0, output_tokens: 0, reasoning_tokens: 0, context_length: sessionUsage.value.context_length, auto_compress_tokens: null, context_tokens: 0 }
   sessionDuration.value = 0
   iterationCount.value = 0
   refreshSessionFiles(null)
@@ -911,9 +890,9 @@ async function handleSelectSession(sessionId) {
   }
 
   // 缓存中没有，从服务器加载历史
-  // 保留 max_input_tokens（全局上下文窗口），仅清空用量计数；
-  // 若服务器返回了 max_input_tokens 则以其为准（见下方恢复逻辑）
-  sessionUsage.value = { input_tokens: 0, output_tokens: 0, reasoning_tokens: 0, max_input_tokens: sessionUsage.value.max_input_tokens, auto_compress_tokens: null, context_tokens: 0 }
+  // 保留 context_length（全局上下文窗口），仅清空用量计数；
+  // 若服务器返回了 context_length 则以其为准（见下方恢复逻辑）
+  sessionUsage.value = { input_tokens: 0, output_tokens: 0, reasoning_tokens: 0, context_length: sessionUsage.value.context_length, auto_compress_tokens: null, context_tokens: 0 }
   sessionDuration.value = 0
   iterationCount.value = 0
 
@@ -933,8 +912,8 @@ async function handleSelectSession(sessionId) {
       sessionDuration.value = history.usage.elapsed_time || 0
       iterationCount.value = history.usage.step_count || 0
     }
-    if (history.max_input_tokens) {
-      sessionUsage.value.max_input_tokens = history.max_input_tokens
+    if (history.context_length) {
+      sessionUsage.value.context_length = history.context_length
     }
     // 数据加载完成，界面数据现在归属于该会话
     loadedSessionId.value = sessionId
@@ -1125,7 +1104,7 @@ function createStreamChunkHandler(ctx) {
       reasoning_tokens: data.reasoning_tokens || 0,
       context_tokens: data.context_tokens || sessionUsage.value.context_tokens || 0,
     }
-    if (data.max_input_tokens) patch.max_input_tokens = data.max_input_tokens
+    if (data.context_length) patch.context_length = data.context_length
     if (data.auto_compress_tokens) patch.auto_compress_tokens = data.auto_compress_tokens
     return patch
   }
@@ -1871,8 +1850,8 @@ onMounted(async () => {
           sessionDuration.value = history.usage.elapsed_time || 0
           iterationCount.value = history.usage.step_count || 0
         }
-        if (history.max_input_tokens) {
-          sessionUsage.value.max_input_tokens = history.max_input_tokens
+        if (history.context_length) {
+          sessionUsage.value.context_length = history.context_length
         }
         loadedSessionId.value = initialSessionId
       } catch (e) {
@@ -1986,7 +1965,6 @@ onUnmounted(() => {
       showSettingsPanel,
       showSkillCenter,
       showUserManagementPanel,
-      showUserProfile,
       showWelcome,
       SkillCenter,
       startIdleTimer,
@@ -2003,8 +1981,7 @@ onUnmounted(() => {
       USER_ACTIVITY_EVENT,
       UserManagementPanel,
       userProfile,
-      UserProfile,
-      watch,
+        watch,
       Welcome,
       welcomeTitle,
       WorkspacePanel,
@@ -2070,12 +2047,15 @@ onUnmounted(() => {
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
 }
 
+/* 工作区参与 Flex 分栏：原先是 position:fixed 的浮层，会盖住聊天区右侧内容。
+   改为普通 flex 项后，展开时聊天区自动收窄、互不遮挡；宽度由 WorkspacePanel
+   自己控制（可拖拽），这里只保证它不被压缩。 */
 .workspace-area {
-  position: fixed;
-  right: 0;
-  top: 0;
-  bottom: 0;
-  z-index: 30;
+  position: relative;
+  flex-shrink: 0;
+  height: 100%;
+  display: flex;
+  z-index: 1;
 }
 
 .expand-workspace-icon {
@@ -2170,7 +2150,10 @@ onUnmounted(() => {
   --bg-tertiary: #2a2a2a;
   --bg-surface: #1a1a1a;
   --text-primary: #ffffff;
-  --text-secondary: #ffffff;
+  /* 与主文字拉开层次：原来与 primary 同为 #ffffff，导致暗色下所有次要文字
+     （标签、空态提示、文件树名）都过亮、信息层级丢失。
+     #a1a1aa 对 #1a1a1a 背景 6.65:1、对纯黑 8.19:1，均达标。 */
+  --text-secondary: #a1a1aa;
   --border-color: #3a3a3a;
   --accent-color: #7c6aef;
 }
@@ -2865,6 +2848,22 @@ html[data-theme="dark"] .token-popup-label,
 html[data-theme="dark"] .token-popup-value,
 html[data-theme="dark"] .token-popup-context-value {
   color: var(--text-primary) !important;
+}
+
+/* 语义色单独提升：上面的通用 .token-popup-value 规则会（靠 !important）把
+   输入/输出/思考的配色抹成纯白，导致亮暗主题表现不一致。下面三条特异性更高，
+   使暗色下仍保留色彩区分（均达到 5:1 以上）。 */
+html[data-theme="dark"] .token-popup-value.input,
+html[data-theme="dark"] .token-popup-value.duration-value {
+  color: #818cf8 !important;
+}
+
+html[data-theme="dark"] .token-popup-value.output {
+  color: #22d3ee !important;
+}
+
+html[data-theme="dark"] .token-popup-value.reasoning {
+  color: #c084fc !important;
 }
 
 html[data-theme="dark"] .token-popup-divider,

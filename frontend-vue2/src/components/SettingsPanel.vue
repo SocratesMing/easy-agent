@@ -28,11 +28,29 @@
         <div class="settings-content">
           <!-- 记忆 -->
           <div v-if="activeTab === 'memory'" class="content-panel">
-            <div class="panel-header">
-              <h3>记忆</h3>
-              <p class="panel-desc">当前用户的长期记忆文件，支持 Markdown 格式编辑</p>
+            <div class="panel-header memory-panel-header">
+              <div class="panel-header-text">
+                <h3>记忆</h3>
+                <p class="panel-desc">当前用户的长期记忆文件，支持 Markdown 格式</p>
+              </div>
+              <button
+                v-if="!loading"
+                class="memory-edit-btn"
+                :class="{ 'is-saving': memorySaving }"
+                :disabled="memorySaving"
+                @click="toggleMemoryEdit"
+              >
+                {{ memorySaving ? '保存中...' : (memoryEditing ? '保存' : '编辑') }}
+              </button>
             </div>
             <div v-if="loading" class="loading-state"><div class="spinner"></div></div>
+            <!-- 预览态：按 Markdown 渲染 -->
+            <div
+              v-else-if="!memoryEditing"
+              class="memory-preview markdown-body"
+              v-html="renderedMemory"
+            ></div>
+            <!-- 编辑态 -->
             <div v-else class="memory-editor">
               <textarea
                 v-model="memoryContent"
@@ -43,9 +61,6 @@
               <div class="editor-actions">
                 <span v-if="memorySaved" class="save-hint">已保存</span>
                 <span v-if="memoryError" class="save-error">{{ memoryError }}</span>
-                <button class="save-btn" @click="saveMemory" :disabled="memorySaving">
-                  {{ memorySaving ? '保存中...' : '保存' }}
-                </button>
               </div>
             </div>
           </div>
@@ -58,7 +73,10 @@
             </div>
             <div v-if="loading" class="loading-state"><div class="spinner"></div></div>
             <div v-else class="prompt-viewer">
-              <pre class="prompt-content">{{ promptContent }}</pre>
+              <div
+                class="prompt-preview markdown-body"
+                v-html="renderedPrompt"
+              ></div>
             </div>
           </div>
 
@@ -378,6 +396,10 @@ import {
   deleteMcpServer,
 } from '../api/settings.js'
 import { syncMarketAddedState } from '../utils/mcpMarket.js'
+import { marked } from 'marked'
+import { setupMarkedExtensions } from '../markdownSetup.js'
+
+setupMarkedExtensions()
 export default {
   props: {
   isDarkTheme: { type: Boolean, default: false },
@@ -392,6 +414,8 @@ const memoryContent = ref('')
 const memorySaving = ref(false)
 const memorySaved = ref(false)
 const memoryError = ref('')
+// false = 预览态（Markdown 渲染）；true = 编辑态（textarea）
+const memoryEditing = ref(false)
 
 // 提示词
 const promptContent = ref('')
@@ -476,6 +500,8 @@ async function loadTabData() {
     if (activeTab.value === 'memory') {
       const data = await getMemory()
       memoryContent.value = data.content || ''
+      // 每次进入该页都从预览态开始
+      memoryEditing.value = false
     } else if (activeTab.value === 'prompt') {
       const data = await getSystemPrompt()
       promptContent.value = data.content || ''
@@ -508,6 +534,53 @@ async function loadTabData() {
     console.error('加载数据失败:', e)
   } finally {
     loading.value = false
+  }
+}
+
+function escapeHtml(text) {
+  return String(text).replace(/[&<>"']/g, (c) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  })[c])
+}
+
+// 预览态：把记忆内容按 Markdown 渲染
+const renderedMemory = computed(() => {
+  const raw = memoryContent.value || ''
+  if (!raw.trim()) {
+    return '<p class="memory-empty">暂无记忆内容，点击右上角「编辑」添加</p>'
+  }
+  try {
+    return marked.parse(raw, { breaks: true, gfm: true })
+  } catch (e) {
+    console.error('记忆 Markdown 渲染失败:', e)
+    return `<pre>${escapeHtml(raw)}</pre>`
+  }
+})
+
+// 系统提示词（只读）：同样按 Markdown 渲染
+const renderedPrompt = computed(() => {
+  const raw = promptContent.value || ''
+  if (!raw.trim()) {
+    return '<p class="memory-empty">暂无系统提示词</p>'
+  }
+  try {
+    return marked.parse(raw, { breaks: true, gfm: true })
+  } catch (e) {
+    console.error('系统提示词 Markdown 渲染失败:', e)
+    return `<pre>${escapeHtml(raw)}</pre>`
+  }
+})
+
+// 「编辑 / 保存」同一个按钮切换：编辑态点击即保存，成功后再回到预览态
+async function toggleMemoryEdit() {
+  if (!memoryEditing.value) {
+    memoryError.value = ''
+    memoryEditing.value = true
+    return
+  }
+  await saveMemory()
+  if (!memoryError.value) {
+    memoryEditing.value = false
   }
 }
 
@@ -841,6 +914,8 @@ onMounted(() => {
       promptContent,
       ref,
       removeMcpServer,
+      renderedMemory,
+      renderedPrompt,
       saveMcp,
       saveMemory,
       showAddMcp,
@@ -849,6 +924,7 @@ onMounted(() => {
       switchTheme,
       syncMarketAddedState,
       toggleMcpServer,
+      toggleMemoryEdit,
       updateMcpServers,
       updateMemory,
       watch,
@@ -1025,6 +1101,157 @@ onMounted(() => {
 }
 
 /* 记忆编辑器 */
+/* 记忆页头部：标题 + 右上角「编辑/保存」按钮 */
+.memory-panel-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.panel-header-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.memory-edit-btn {
+  flex-shrink: 0;
+  padding: 6px 16px;
+  border: 1px solid var(--border-color, #e2e8f0);
+  background: transparent;
+  color: var(--text-primary);
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.memory-edit-btn:hover {
+  border-color: #0ea5e9;
+  color: #0ea5e9;
+}
+
+.memory-edit-btn.is-saving {
+  border-color: #0ea5e9;
+  background: #0ea5e9;
+  color: #fff;
+}
+
+.memory-edit-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* 预览态：Markdown 渲染结果 */
+.memory-preview {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 300px;
+  padding: 16px 20px;
+  border: 1px solid var(--border-color, #e2e8f0);
+  border-radius: 10px;
+  background: var(--bg-secondary, #fff);
+  font-size: 14px;
+  line-height: 1.7;
+  color: var(--text-primary);
+  word-break: break-word;
+}
+
+.memory-preview > *:first-child { margin-top: 0; }
+.memory-preview > *:last-child { margin-bottom: 0; }
+
+.memory-preview h1,
+.memory-preview h2,
+.memory-preview h3,
+.memory-preview h4 {
+  margin: 18px 0 10px;
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--text-primary);
+}
+
+.memory-preview h1 { font-size: 20px; }
+.memory-preview h2 { font-size: 17px; }
+.memory-preview h3 { font-size: 15px; }
+.memory-preview h4 { font-size: 14px; }
+.memory-preview p { margin: 0 0 12px; }
+.memory-preview ul,
+.memory-preview ol { margin: 0 0 12px; padding-left: 22px; }
+.memory-preview li { margin: 4px 0; }
+
+.memory-preview code {
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(100, 116, 139, 0.15);
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+  font-size: 0.9em;
+}
+
+.memory-preview pre {
+  margin: 0 0 12px;
+  padding: 12px 14px;
+  border-radius: 8px;
+  background: rgba(100, 116, 139, 0.12);
+  overflow-x: auto;
+}
+
+.memory-preview pre code {
+  padding: 0;
+  background: transparent;
+}
+
+.memory-preview blockquote {
+  margin: 0 0 12px;
+  padding: 2px 0 2px 12px;
+  border-left: 3px solid #0ea5e9;
+  color: var(--text-secondary);
+}
+
+.memory-preview a {
+  color: #0ea5e9;
+  text-decoration: none;
+}
+
+.memory-preview a:hover {
+  text-decoration: underline;
+}
+
+.memory-preview table {
+  width: 100%;
+  margin: 0 0 12px;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.memory-preview th,
+.memory-preview td {
+  padding: 6px 10px;
+  border: 1px solid var(--border-color, #e2e8f0);
+  text-align: left;
+}
+
+.memory-preview th {
+  background: rgba(100, 116, 139, 0.08);
+  font-weight: 600;
+}
+
+.memory-preview hr {
+  margin: 16px 0;
+  border: none;
+  border-top: 1px solid var(--border-color, #e2e8f0);
+}
+
+.memory-preview img {
+  max-width: 100%;
+}
+
+.memory-preview .memory-empty {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
 .memory-editor {
   flex: 1;
   display: flex;
@@ -1093,6 +1320,114 @@ onMounted(() => {
 /* 提示词查看器 */
 .prompt-viewer {
   flex: 1;
+}
+
+.prompt-preview {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 300px;
+  padding: 16px 20px;
+  border: 1px solid var(--border-color, #e2e8f0);
+  border-radius: 10px;
+  background: var(--bg-secondary, #fff);
+  font-size: 14px;
+  line-height: 1.7;
+  color: var(--text-primary);
+  word-break: break-word;
+}
+
+.prompt-preview > *:first-child { margin-top: 0; }
+.prompt-preview > *:last-child { margin-bottom: 0; }
+
+.prompt-preview h1,
+.prompt-preview h2,
+.prompt-preview h3,
+.prompt-preview h4 {
+  margin: 18px 0 10px;
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--text-primary);
+}
+
+.prompt-preview h1 { font-size: 20px; }
+.prompt-preview h2 { font-size: 17px; }
+.prompt-preview h3 { font-size: 15px; }
+.prompt-preview h4 { font-size: 14px; }
+.prompt-preview p { margin: 0 0 12px; }
+.prompt-preview ul,
+.prompt-preview ol { margin: 0 0 12px; padding-left: 22px; }
+.prompt-preview li { margin: 4px 0; }
+
+.prompt-preview code {
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(100, 116, 139, 0.15);
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+  font-size: 0.9em;
+}
+
+.prompt-preview pre {
+  margin: 0 0 12px;
+  padding: 12px 14px;
+  border-radius: 8px;
+  background: rgba(100, 116, 139, 0.12);
+  overflow-x: auto;
+}
+
+.prompt-preview pre code {
+  padding: 0;
+  background: transparent;
+}
+
+.prompt-preview blockquote {
+  margin: 0 0 12px;
+  padding: 2px 0 2px 12px;
+  border-left: 3px solid #0ea5e9;
+  color: var(--text-secondary);
+}
+
+.prompt-preview a {
+  color: #0ea5e9;
+  text-decoration: none;
+}
+
+.prompt-preview a:hover {
+  text-decoration: underline;
+}
+
+.prompt-preview table {
+  width: 100%;
+  margin: 0 0 12px;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.prompt-preview th,
+.prompt-preview td {
+  padding: 6px 10px;
+  border: 1px solid var(--border-color, #e2e8f0);
+  text-align: left;
+}
+
+.prompt-preview th {
+  background: rgba(100, 116, 139, 0.08);
+  font-weight: 600;
+}
+
+.prompt-preview hr {
+  margin: 16px 0;
+  border: none;
+  border-top: 1px solid var(--border-color, #e2e8f0);
+}
+
+.prompt-preview img {
+  max-width: 100%;
+}
+
+.prompt-preview .memory-empty {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-secondary);
 }
 
 .prompt-content {

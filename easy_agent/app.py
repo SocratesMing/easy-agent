@@ -57,6 +57,102 @@ agent_config = None
 db_instance = None
 
 
+async def _check_llm_connection(config) -> None:
+    """启动时探测 LLM 连通性；失败只告警，不阻断服务启动。"""
+    try:
+        llm = create_model(config)
+        logger.info(
+            f"🔌 正在测试 LLM 连接 | provider: {config.llm.provider} | model: {config.llm.model}"
+        )
+
+        resp = await llm.ainvoke([HumanMessage(content="hi")])
+        reply = resp.content if hasattr(resp, "content") else str(resp)
+        logger.info(f"✅ LLM 连接成功 | 回复: {reply[:100]}")
+    except Exception as e:
+        logger.warning(f"⚠️ LLM 连接失败: {e}")
+        logger.warning("⚠️ 服务将继续启动，但聊天功能可能不可用")
+
+
+def _init_database_and_state(app, config) -> None:
+    """初始化数据库，并挂到 app.state.db 与全局 db_instance。"""
+    global db_instance
+
+    try:
+        db_config = config.database.model_dump() if config else {}
+        db = init_database(db_config)
+        app.state.db = db
+        db_instance = db
+        logger.info(
+            f"✅ 数据库初始化完成 | 实际类型: {getattr(db, 'db_type', 'unknown')}"
+        )
+    except Exception as e:
+        logger.error(f"❌ 数据库初始化失败: {e}")
+        raise
+
+
+def _prepare_system_prompt(config, config_path) -> str:
+    """加载提示词目录与系统提示词、追加当前时间，返回最终 system_prompt。"""
+    # 提示词统一由 prompt_loader 从 agent.prompt_path 指向的目录加载：
+    # system.md + fragments/*.md，缺失时逐级回落到内置默认提示词。
+    # 同时把该目录设为全局提示词目录，使记忆类提示词也从同一处读取。
+    config_dir = os.path.dirname(os.path.abspath(config_path)) if config_path else None
+    prompt_path = (
+        getattr(config.agent, "prompt_path", "prompts") if config else "prompts"
+    )
+    configure_prompts_dir(prompt_path, base_dir=config_dir)
+    system_prompt = load_system_prompt(prompt_path=prompt_path, config_dir=config_dir)
+    logger.info(
+        f"✅ 系统提示词加载完成 | 提示词目录: {get_prompts_dir()} "
+        f"({len(system_prompt)} 字符)"
+    )
+
+    # 打印工作目录与记忆目录的绝对路径（记忆文件按用户/会话动态生成，故给出基目录与模板路径）
+    # 配置未加载（config 为 None）时使用 AgentConfig 默认值，保证降级启动不崩溃
+    _agent_cfg = config.agent if config else AgentConfig()
+    _ws_abs = os.path.abspath(_agent_cfg.workspace_dir)
+    _mem_abs = os.path.abspath(_agent_cfg.memories_dir)
+    logger.info("=" * 60)
+    logger.info(f"📁 工作目录 (workspace): {_ws_abs}")
+    logger.info(f"🧠 记忆目录 (memories):  {_mem_abs}")
+    logger.info(f"   长期记忆文件: {_mem_abs}/{{username}}/AGENTS.md")
+    logger.info(f"   会话记忆文件: {_ws_abs}/{{username}}/session/{{workspace_name}}/memory.md")
+    logger.info("=" * 60)
+
+    # 注入当前时间和时区，供定时任务 cron 表达式生成参考
+    now_dt = datetime.now().astimezone()
+    tz_name = now_dt.strftime("%Z") or "Asia/Shanghai"
+    system_prompt += (
+        f"\n## 当前时间\n"
+        f"{now_dt.strftime('%Y-%m-%d %H:%M:%S')} (时区: {tz_name})\n"
+    )
+    return system_prompt
+
+
+def _start_scheduler() -> None:
+    """启动定时任务调度器（AsyncIOScheduler）；失败只告警。"""
+    # 定时任务调度器（AsyncIOScheduler）
+    try:
+        scheduler = init_scheduler()
+        scheduler.start()
+        reload_all_tasks()
+        logger.info("✅ 定时任务调度器已启动 (AsyncIOScheduler)")
+    except Exception as e:
+        logger.warning(f"⚠️ 定时任务调度器启动失败: {e}")
+
+
+def _shutdown_app(app) -> None:
+    """关闭定时任务调度器与数据库连接。"""
+    try:
+        shutdown_scheduler()
+        logger.info("[关闭] 定时任务调度器已关闭")
+    except Exception as e:
+        logger.warning(f"[关闭] 定时任务调度器关闭失败: {e}")
+
+    if hasattr(app.state, "db") and app.state.db:
+        app.state.db.close()
+
+    logger.info("[关闭] 👋 服务已关闭")
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global agent_config, db_instance
@@ -119,64 +215,11 @@ async def lifespan(app: FastAPI):
         logger.warning("⚠️ 配置未加载，后续将使用内置默认值（部分功能可能不可用）")
 
     if config:
-        try:
-            llm = create_model(config)
-            logger.info(
-                f"🔌 正在测试 LLM 连接 | provider: {config.llm.provider} | model: {config.llm.model}"
-            )
+        await _check_llm_connection(config)
 
-            resp = await llm.ainvoke([HumanMessage(content="hi")])
-            reply = resp.content if hasattr(resp, "content") else str(resp)
-            logger.info(f"✅ LLM 连接成功 | 回复: {reply[:100]}")
-        except Exception as e:
-            logger.warning(f"⚠️ LLM 连接失败: {e}")
-            logger.warning("⚠️ 服务将继续启动，但聊天功能可能不可用")
+    _init_database_and_state(app, config)
 
-    try:
-        db_config = config.database.model_dump() if config else {}
-        db = init_database(db_config)
-        app.state.db = db
-        db_instance = db
-        logger.info(
-            f"✅ 数据库初始化完成 | 实际类型: {getattr(db, 'db_type', 'unknown')}"
-        )
-    except Exception as e:
-        logger.error(f"❌ 数据库初始化失败: {e}")
-        raise
-
-    # 提示词统一由 prompt_loader 从 agent.prompt_path 指向的目录加载：
-    # system.md + fragments/*.md，缺失时逐级回落到内置默认提示词。
-    # 同时把该目录设为全局提示词目录，使记忆类提示词也从同一处读取。
-    config_dir = os.path.dirname(os.path.abspath(config_path)) if config_path else None
-    prompt_path = (
-        getattr(config.agent, "prompt_path", "prompts") if config else "prompts"
-    )
-    configure_prompts_dir(prompt_path, base_dir=config_dir)
-    system_prompt = load_system_prompt(prompt_path=prompt_path, config_dir=config_dir)
-    logger.info(
-        f"✅ 系统提示词加载完成 | 提示词目录: {get_prompts_dir()} "
-        f"({len(system_prompt)} 字符)"
-    )
-
-    # 打印工作目录与记忆目录的绝对路径（记忆文件按用户/会话动态生成，故给出基目录与模板路径）
-    # 配置未加载（config 为 None）时使用 AgentConfig 默认值，保证降级启动不崩溃
-    _agent_cfg = config.agent if config else AgentConfig()
-    _ws_abs = os.path.abspath(_agent_cfg.workspace_dir)
-    _mem_abs = os.path.abspath(_agent_cfg.memories_dir)
-    logger.info("=" * 60)
-    logger.info(f"📁 工作目录 (workspace): {_ws_abs}")
-    logger.info(f"🧠 记忆目录 (memories):  {_mem_abs}")
-    logger.info(f"   长期记忆文件: {_mem_abs}/{{username}}/AGENTS.md")
-    logger.info(f"   会话记忆文件: {_ws_abs}/{{username}}/session/{{workspace_name}}/memory.md")
-    logger.info("=" * 60)
-
-    # 注入当前时间和时区，供定时任务 cron 表达式生成参考
-    now_dt = datetime.now().astimezone()
-    tz_name = now_dt.strftime("%Z") or "Asia/Shanghai"
-    system_prompt += (
-        f"\n## 当前时间\n"
-        f"{now_dt.strftime('%Y-%m-%d %H:%M:%S')} (时区: {tz_name})\n"
-    )
+    system_prompt = _prepare_system_prompt(config, config_path)
 
     if config:
         skills_dir_config = (
@@ -209,7 +252,7 @@ async def lifespan(app: FastAPI):
             logger.info("✅ Agent 配置加载成功")
 
             # 让 deepagents 的 SummarizationMiddleware 使用 config 阈值（基准为
-            # config.llm.max_input_tokens）。必须在任何 create_deep_agent 之前执行：
+            # config.llm.context_length）。必须在任何 create_deep_agent 之前执行：
             # 官方默认的参数截断是 ("messages", 20)，消息一到 20 条就会把历史里
             # write_file/execute 的参数砍掉，导致下一轮重建上下文时明显缩水。
             try:
@@ -217,18 +260,17 @@ async def lifespan(app: FastAPI):
 
                 install_config_summarization(config)
             except Exception as exc:  # noqa: BLE001
-                logger.warning(f"⚠️ SummarizationMiddleware 阈值接入失败: {exc}")
+                logger.error(
+                    f"❌ SummarizationMiddleware 阈值接入失败"
+                    f"（已降级为 deepagents 默认摘要阈值）: "
+                    f"{type(exc).__name__}: {exc} | 通常是 deepagents 升级导致 "
+                    f"deepagents.graph.create_summarization_middleware 变更，"
+                    f"请对照其源码修正 agent.py 中的适配。"
+                )
         else:
             logger.warning("⚠️ 配置未加载，Agent 未初始化，聊天等功能将不可用")
 
-        # 定时任务调度器（AsyncIOScheduler）
-        try:
-            scheduler = init_scheduler()
-            scheduler.start()
-            reload_all_tasks()
-            logger.info("✅ 定时任务调度器已启动 (AsyncIOScheduler)")
-        except Exception as e:
-            logger.warning(f"⚠️ 定时任务调度器启动失败: {e}")
+        _start_scheduler()
     else:
         logger.warning("⚠️ Agent 配置未加载")
 
@@ -237,16 +279,7 @@ async def lifespan(app: FastAPI):
     logger.info("=" * 60)
     yield
 
-    try:
-        shutdown_scheduler()
-        logger.info("[关闭] 定时任务调度器已关闭")
-    except Exception as e:
-        logger.warning(f"[关闭] 定时任务调度器关闭失败: {e}")
-
-    if hasattr(app.state, "db") and app.state.db:
-        app.state.db.close()
-
-    logger.info("[关闭] 👋 服务已关闭")
+    _shutdown_app(app)
 
 
 app = FastAPI(

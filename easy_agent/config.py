@@ -87,7 +87,8 @@ class ProviderConfig(BaseModel):
     api_key: str = ""
     model: str = ""
     api_base: str = ""
-    max_input_tokens: int = 200000
+    # 未显式配置时的默认上下文窗口（1M）；实际值以各 provider 段配置为准。
+    context_length: int = 1_000_000
     protocol: str = "openai"  # "openai" or "anthropic"
     supports_vision: bool = False  # 是否支持视觉/图片输入；False 时自动过滤 image_url 内容块
 
@@ -99,7 +100,7 @@ class LLMConfig(BaseModel):
     api_base: str | None = None
     model: str = "claude-sonnet-4-6"
     provider: str = "minimax"
-    max_input_tokens: int = 200000  # Model context window size
+    context_length: int = 1_000_000  # Model context window size
     protocol: str = "openai"  # "openai" or "anthropic"
     supports_vision: bool = False  # 是否支持视觉/图片输入
     retry: RetryConfig = Field(default_factory=RetryConfig)
@@ -108,9 +109,6 @@ class LLMConfig(BaseModel):
 class ToolsConfig(BaseModel):
     skills_dir: str = "./skills"
     prompts_dir: str = "./prompts"
-    read_file_line_limit: int = 2000
-    """read_file 内置工具每次读取的行数，默认 2000。"""
-
 
 class SQLiteConfig(BaseModel):
     """SQLite configuration"""
@@ -318,6 +316,37 @@ class Config(BaseModel):
         active_model = data.get("model", "minimax")
 
         # Parse provider-specific model configs
+        models = cls._parse_models(data)
+
+        # Resolve active model config
+        llm_config = cls._parse_llm_config(data, models, active_model)
+
+        agent_config = cls._parse_agent_config(data)
+
+        tools_config = cls._parse_tools_config(data)
+
+        db_config = cls._parse_database_config(data)
+
+        summ_config = cls._parse_summarization_config(data)
+
+        return cls(
+            llm=llm_config,
+            agent=agent_config,
+            tools=tools_config,
+            summarization=summ_config,
+            database=db_config,
+            models=models,
+            active_model=active_model,
+            preset_questions=data.get("preset_questions", []),
+            app_welcome_title=data.get(
+                "app_welcome_title", DEFAULT_APP_WELCOME_TITLE
+            ),
+        )
+
+    @staticmethod
+    def _parse_models(data: dict) -> dict[str, ProviderConfig]:
+        """解析 models 段：每个 provider 的 api_key / model / api_base 等。"""
+        # Parse provider-specific model configs
         models_data = data.get("models", {})
         models: dict[str, ProviderConfig] = {}
         for name, mcfg in models_data.items():
@@ -327,11 +356,15 @@ class Config(BaseModel):
                     api_key=mcfg.get("api_key", ""),
                     model=mcfg.get("model", ""),
                     api_base=mcfg.get("api_base", ""),
-                    max_input_tokens=mcfg.get("max_input_tokens", 200000),
+                    context_length=mcfg.get("context_length", 1_000_000),
                     protocol=mcfg.get("protocol", "openai"),
                     supports_vision=mcfg.get("supports_vision", False),
                 )
+        return models
 
+    @staticmethod
+    def _parse_llm_config(data: dict, models: dict, active_model: str) -> LLMConfig:
+        """解析当前激活模型为 LLMConfig，并校验 api_key 非空。"""
         # Resolve active model config
         active_cfg = models.get(active_model, ProviderConfig())
         if not active_cfg.api_key:
@@ -346,18 +379,21 @@ class Config(BaseModel):
             max_retries=retry_data.get("max_retries", 3),
         )
 
-        llm_config = LLMConfig(
+        return LLMConfig(
             api_key=active_cfg.api_key,
             api_base=active_cfg.api_base or None,
             model=active_cfg.model or "claude-sonnet-4-6",
             provider=active_cfg.provider or active_model,
-            max_input_tokens=active_cfg.max_input_tokens or 200000,
+            context_length=active_cfg.context_length or 1_000_000,
             protocol=active_cfg.protocol or "openai",
             supports_vision=active_cfg.supports_vision,
             retry=retry_config,
         )
 
-        agent_config = AgentConfig(
+    @staticmethod
+    def _parse_agent_config(data: dict) -> AgentConfig:
+        """解析 agent 段（工作目录、记忆目录、提示词路径等）。"""
+        return AgentConfig(
             max_steps=data.get("max_steps", 50),
             workspace_dir=data.get("workspace_dir", "./workspace"),
             memories_dir=data.get("memories_dir", "./memories"),
@@ -371,13 +407,18 @@ class Config(BaseModel):
             external_dirs=data.get("external_dirs", {}),
         )
 
+    @staticmethod
+    def _parse_tools_config(data: dict) -> ToolsConfig:
+        """解析 tools 段（技能目录、提示词目录、读取行数上限）。"""
         tools_data = data.get("tools", {})
-        tools_config = ToolsConfig(
+        return ToolsConfig(
             skills_dir=tools_data.get("skills_dir", "./skills"),
             prompts_dir=tools_data.get("prompts_dir", "./prompts"),
-            read_file_line_limit=tools_data.get("read_file_line_limit", 2000),
         )
 
+    @staticmethod
+    def _parse_database_config(data: dict) -> DatabaseConfig:
+        """解析 database 段（sqlite / mysql 及其连接池参数）。"""
         db_data = data.get("database", {})
         sqlite_data = (
             db_data.get("sqlite", {}) if isinstance(db_data.get("sqlite"), dict) else {}
@@ -390,7 +431,7 @@ class Config(BaseModel):
             if isinstance(mysql_data.get("pool"), dict)
             else {}
         )
-        db_config = DatabaseConfig(
+        return DatabaseConfig(
             type=db_data.get("type", "sqlite"),
             sqlite=SQLiteConfig(path=sqlite_data.get("path", "./data/easy_agent.db")),
             mysql=MySQLConfig(
@@ -412,25 +453,14 @@ class Config(BaseModel):
             ),
         )
 
+    @staticmethod
+    def _parse_summarization_config(data: dict) -> SummarizationConfig:
+        """解析 summarization 段（压缩阈值与目标比例）。"""
         summ_data = data.get("summarization", {})
-        summ_config = SummarizationConfig(
+        return SummarizationConfig(
             enabled=summ_data.get("enabled", True),
             compression_threshold=summ_data.get("compression_threshold", 0.8),
             compression_target=summ_data.get("compression_target", 0.1),
-        )
-
-        return cls(
-            llm=llm_config,
-            agent=agent_config,
-            tools=tools_config,
-            summarization=summ_config,
-            database=db_config,
-            models=models,
-            active_model=active_model,
-            preset_questions=data.get("preset_questions", []),
-            app_welcome_title=data.get(
-                "app_welcome_title", DEFAULT_APP_WELCOME_TITLE
-            ),
         )
 
     def ensure_directories(self) -> list[str]:
