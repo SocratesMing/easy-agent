@@ -45,3 +45,14 @@ test('frontend source uses Vue 2 compatible SFC syntax', async () => {
     }
   }
 })
+
+test('ChatMessage does not expose private setup bindings to Vue 2 templates', async () => {
+  const source = await readFile(path.join(frontendRoot, 'src/components/ChatMessage.vue'), 'utf8')
+  for (const privateBinding of ['_isProcessType,', '_onScroll,', '_scrollEl,']) {
+    assert.equal(
+      source.includes(`      ${privateBinding}`),
+      false,
+      `ChatMessage setup return exposes ${privateBinding}`
+    )
+  }
+})

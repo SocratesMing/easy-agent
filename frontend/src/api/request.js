@@ -138,8 +138,16 @@ export async function handleStreamResponse(response) {
     throw new Error('登录已过期，请重新登录')
   }
   if (!response.ok) {
-    const detail = await response.json().catch(() => ({}))
-    throw new Error(detail.detail || `请求失败: ${response.status}`)
+    const payload = await response.json().catch(() => ({}))
+    const detail = payload?.detail
+    const message = typeof detail === 'string'
+      ? detail
+      : detail?.message || payload?.message || `请求失败: ${response.status}`
+    const error = new Error(message)
+    error.status = response.status
+    error.code = detail?.code || payload?.code || 'STREAM_REQUEST_FAILED'
+    error.retryable = Boolean(detail?.retryable || payload?.retryable)
+    throw error
   }
   return response
 }

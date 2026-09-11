@@ -68,6 +68,19 @@ def _token_never_expires() -> bool:
     return False
 
 
+def _self_registration_enabled() -> bool:
+    """Return the explicit personnel provisioning policy, failing closed."""
+
+    try:
+        agent_config = get_agent_config()
+        config = agent_config.get("config") if agent_config else None
+        personnel = getattr(config, "personnel", None)
+        return bool(getattr(personnel, "self_registration_enabled", False))
+    except Exception as exc:
+        logger.warning("读取自助注册配置失败，已按关闭处理: %s", exc)
+        return False
+
+
 def _get_max_input_tokens() -> int:
     _cfg = get_agent_config()
     if _cfg and _cfg.get("config"):
@@ -96,6 +109,12 @@ async def register(
     http_request: Request,
     db: Annotated[Database, Depends(get_database)],
 ):
+    if not _self_registration_enabled():
+        raise HTTPException(
+            status_code=403,
+            detail="当前环境已关闭自助注册，请联系管理员创建账号",
+        )
+
     # 注册不再绑定 IP（单点登录：登录不限制 IP，但同账号新登录会踢掉旧登录）
     user = db.register_user(
         username=request.username,
@@ -108,7 +127,14 @@ async def register(
         raise HTTPException(status_code=400, detail="用户名已存在")
 
     # 注册即登录：递增 token 版本号并签发带 v 的 token
-    new_version = db.increment_user_token_version(user.username)
+    # The status predicate is part of the same UPDATE that increments the
+    # token version.  This prevents a concurrent admin disable from racing
+    # between the status check above and token issuance.
+    new_version = db.increment_user_token_version(
+        user.username, require_active=True
+    )
+    if new_version <= 0:
+        raise HTTPException(status_code=403, detail="账号已停用，请联系管理员")
     access_token = create_access_token(
         data={"sub": user.username, "v": new_version},
         expires_delta=_get_token_lifetime(),
@@ -165,11 +191,20 @@ async def login(
     if not user:
         raise HTTPException(status_code=401, detail="用户名或密码错误")
 
+    if user.account_status == "disabled":
+        raise HTTPException(status_code=403, detail="账号已停用，请联系管理员")
+
     client_ip = get_client_ip(http_request)
 
     # 单点登录：递增 token 版本号，使该用户此前在其他设备/IP 的登录立即失效
     prev_ip = _active_login_ip.get(user.username)
-    new_version = db.increment_user_token_version(user.username)
+    # Keep the active-account predicate in the same statement as the version
+    # increment so a concurrent admin disable cannot race token issuance.
+    new_version = db.increment_user_token_version(
+        user.username, require_active=True
+    )
+    if new_version <= 0:
+        raise HTTPException(status_code=403, detail="账号已停用，请联系管理员")
     access_token = create_access_token(
         data={"sub": user.username, "v": new_version},
         expires_delta=_get_token_lifetime(),
@@ -371,6 +406,12 @@ async def admin_reset_password(
 ):
     if admin_username != "admin":
         raise HTTPException(status_code=403, detail="仅管理员可以重置密码")
+
+    if username == "admin":
+        raise HTTPException(
+            status_code=400,
+            detail="admin 用户不支持默认密码重置，请使用正常修改密码流程",
+        )
 
     user = db.get_user_by_username(username)
     if not user:

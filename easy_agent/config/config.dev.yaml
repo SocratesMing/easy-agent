@@ -18,6 +18,7 @@ models:
     model: "MiniMax-M3"
     api_base: "https://api.minimaxi.com/anthropic"  # China users; Global: https://api.minimax.io/anthropic
     max_input_tokens: 200000  # Model context window size, used for summarization threshold calculation
+    timeout_seconds: "${LLM_TIMEOUT_SECONDS:-60}"
  
   deepseek:
     provider: "deepseek"
@@ -26,6 +27,7 @@ models:
     api_key: "${DEEPSEEK_API_KEY}"
     api_base: "https://api.deepseek.com"
     max_input_tokens: 200000
+    timeout_seconds: "${LLM_TIMEOUT_SECONDS:-60}"
   
   ark:
     provider: "ark"
@@ -34,6 +36,7 @@ models:
     api_key: "${ARK_API_KEY}"
     api_base: "https://ark.cn-beijing.volces.com/api/coding/v3"
     max_input_tokens: 200000
+    timeout_seconds: "${LLM_TIMEOUT_SECONDS:-60}"
 
   glm:
     provider: "glm"
@@ -42,6 +45,7 @@ models:
     api_key: "${GLM_API_KEY}"
     api_base: "https://open.bigmodel.cn/api/paas/v4"
     max_input_tokens: 128000
+    timeout_seconds: "${LLM_TIMEOUT_SECONDS:-60}"
 
 # ===== Retry Configuration =====
 retry:
@@ -58,8 +62,7 @@ system_prompt_path: "system_prompt.md"  # System prompt file (same config direct
 
 # 外部目录映射：虚拟路径前缀 → 宿主机实际路径
 # 将 skill 需要访问的宿主机目录挂载为虚拟路径路由，使文件工具能通过虚拟路径访问
-external_dirs:
-  "/strategy-workspace": "/home/sututu/code/finance-skills/fast_backtest/workspace"
+external_dirs: {}
 
 # ===== Summarization Configuration =====
 # Auto-compress conversation context when token usage exceeds threshold
@@ -100,17 +103,20 @@ preset_questions:
 # ===== Database Configuration =====
 # Supports SQLite (local) or MySQL (remote)
 database:
+  # 行外联调使用 deploy/mysql-local 中的 MySQL；SQLite 文件保留作安全回退副本。
   type: "mysql"
+  # 防止 MySQL 异常时静默写回 SQLite，导致两套数据继续分叉。
+  fallback_to_sqlite: false
   
   sqlite:
     path: "./data/easy_agent.db"
   
   mysql:
-    host: "127.0.0.1"
-    port: 3306
-    user: "root"
-    password: "${MYSQL_PASSWORD}"
-    database: "agent"
+    host: "${EASYAGENT_MYSQL_HOST:-127.0.0.1}"
+    port: "${EASYAGENT_MYSQL_PORT:-3307}"
+    user: "${EASYAGENT_MYSQL_USER:-easyagent}"
+    password: "${EASYAGENT_MYSQL_PASSWORD:-easyagent_dev_only}"
+    database: "${EASYAGENT_MYSQL_DATABASE:-agent}"
     charset: "utf8mb4" 
     pool:
       pool_size: 5
@@ -120,6 +126,10 @@ database:
     connect_timeout: 10
     read_timeout: 30
     write_timeout: 30
+
+# 人员账号仅由 admin 手工新增或 Excel 导入；行内默认禁止自助注册。
+personnel:
+  self_registration_enabled: false
 
 # ===== Vector Store Configuration (Chroma + Sentence Transformers) =====
 # 禁止智能体读写的虚拟路径目录列表（通过 permissions deny 规则限制）
@@ -133,3 +143,454 @@ database:
 denied_dirs:
   - path: "/user-skills"
     operations: ["write"]
+
+# ===== Small Model Configuration =====
+# Embedding/reranking model metadata is parsed by easy_agent/small_model.py.
+small_models:
+  embedding:
+    provider: "ragflow"
+    model: "${RAGFLOW_EMBEDDING_MODEL:-bge-m3:latest@Ollama}"
+    api_base: "${RAGFLOW_BASE_URL:-http://127.0.0.1:9380}"
+  reranker:
+    provider: "ragflow"
+    model: "${RAGFLOW_RERANK_MODEL:-}"
+    api_base: "${RAGFLOW_BASE_URL:-http://127.0.0.1:9380}"
+
+# ===== Knowledge Base Configuration =====
+# The independent easy_agent/knowledge package owns this schema and lifecycle.
+knowledge:
+  schema_version: 1
+  enabled: true
+
+  adapter:
+    # The bank API is the canonical production contract.
+    profile: bank_custom_v1
+    expected_version: bank_custom_v1
+    contract_fixture_set: bank_custom_v1
+    capabilities:
+      declared:
+        - datasets
+        - documents
+        - document_download
+        - parsing
+        - retrieval
+      required:
+        - datasets
+        - documents
+        - document_download
+        - parsing
+        - retrieval
+      probe_on_startup: true
+    version_probe:
+      # none | response_header | endpoint. Official v0.17.2 has no API-token probe.
+      mode: none
+      require_match: false
+      header_name: ""
+      operation: ""
+    # Development-only and physically isolated. Set false in-bank; then all
+    # requests use the bank endpoints and AaaS headers below without conversion.
+    local_v017_bridge:
+      enabled: "${RAGFLOW_LOCAL_COMPAT_ENABLED:-true}"
+      base_url: "${RAGFLOW_LOCAL_BASE_URL:-http://127.0.0.1:9380}"
+      api_prefix: /api/v1
+      operation_paths:
+        retrieve: /retrieval
+      strip_headers:
+        - stdAuthToken
+        - stdRqtSyt
+        - stdRspSys
+        - stdTransId
+        - stdApplySystTmtp
+        - stdBankNum
+      omit_embedding_model_on_create: true
+      layout_recognize_value: "Plain Text"
+      strip_parser_config_fields:
+        - method
+        - paternity
+        - parent_retrieval
+        - stuctured
+      # Local v0.17 rejects PUT document configuration for presentations with
+      # code 102, while parsing succeeds when started with dataset defaults.
+      # This field belongs only to the detachable out-of-bank bridge.
+      skip_document_configuration_extensions: [ppt, pptx]
+
+  endpoint:
+    # Defaults are the bank FT endpoints from 行内api.docx. Production overrides
+    # management with http://server.aigcqa.eprod.cncb:9380 and retrieval with
+    # http://gw.caqp.eprod.cncb:8081 through deployment environment variables.
+    base_url: "${RAGFLOW_BANK_BASE_URL:-http://29.240.86.22:9380}"
+    api_prefix: "${RAGFLOW_API_PREFIX:-/api/v1}"
+    # Every operation is configurable so a bank route/method difference does not
+    # require code changes. request_encoding: query | json | multipart | none.
+    operations:
+      create_dataset:
+        method: POST
+        path: "/datasets"
+        request_encoding: json
+        response_contract: dataset
+      list_datasets:
+        method: GET
+        path: "/datasets"
+        request_encoding: query
+        response_contract: dataset_list
+      update_dataset:
+        method: PUT
+        path: "/datasets/{dataset_id}"
+        request_encoding: json
+        response_contract: empty_or_boolean
+      delete_datasets:
+        method: DELETE
+        path: "/datasets"
+        request_encoding: json
+        response_contract: empty_or_boolean
+      upload_documents:
+        method: POST
+        path: "/datasets/{dataset_id}/documents"
+        request_encoding: multipart
+        response_contract: document_list
+      list_documents:
+        method: GET
+        path: "/datasets/{dataset_id}/documents"
+        request_encoding: query
+        response_contract: document_list
+      update_document:
+        method: PUT
+        path: "/datasets/{dataset_id}/documents/{document_id}"
+        request_encoding: json
+        response_contract: empty_or_boolean
+      download_document:
+        method: GET
+        path: "/datasets/{dataset_id}/documents/{document_id}"
+        request_encoding: none
+        response_contract: binary
+      delete_documents:
+        method: DELETE
+        path: "/datasets/{dataset_id}/documents"
+        request_encoding: json
+        response_contract: empty_or_boolean
+      start_parsing:
+        method: POST
+        path: "/datasets/{dataset_id}/chunks"
+        request_encoding: json
+        response_contract: empty_or_boolean
+      stop_parsing:
+        method: DELETE
+        path: "/datasets/{dataset_id}/chunks"
+        request_encoding: json
+        response_contract: empty_or_boolean
+      retrieve:
+        method: POST
+        base_url: "${RAGFLOW_BANK_RETRIEVAL_BASE_URL:-http://29.225.225.253:8081}"
+        path: "/AIGCQA/api/rag_retrieval"
+        request_encoding: json
+        response_contract: retrieval_result
+
+  auth:
+    mode: "${RAGFLOW_AUTH_MODE:-bearer}"
+    header_name: "${RAGFLOW_AUTH_HEADER_NAME:-Authorization}"
+    scheme: "${RAGFLOW_AUTH_SCHEME:-Bearer}"
+    credential: "${RAGFLOW_API_KEY}"
+    fixed_headers: {}
+    # Values come from the server-side trusted Principal, never from frontend input.
+    principal_headers:
+      tenant_id: "${RAGFLOW_TENANT_HEADER_NAME:-}"
+      organization_id: "${RAGFLOW_ORG_HEADER_NAME:-}"
+      request_id: "${RAGFLOW_REQUEST_ID_HEADER_NAME:-X-Request-Id}"
+
+  bank_api:
+    # Must be the uppercase consumer-system code allocated by the bank.
+    system_code: "${RAGFLOW_SYS_CODE:-EASYAGENT}"
+    aaas_retrieval:
+      enabled: true
+      auth_token: "${RAGFLOW_AAAS_AUTH_TOKEN:-}"
+      request_system: "${RAGFLOW_AAAS_REQUEST_SYSTEM:-EASYAGENT}"
+      response_system: "${RAGFLOW_AAAS_RESPONSE_SYSTEM:-AIGCQA}"
+      bank_number: "${RAGFLOW_AAAS_BANK_NUMBER:-001}"
+      transaction_id_prefix: "${RAGFLOW_AAAS_TRANS_PREFIX:-EASYAGENT}"
+
+  tls:
+    verify: "${RAGFLOW_VERIFY_SSL:-true}"
+    ca_bundle: "${RAGFLOW_CA_BUNDLE:-}"
+    client_cert: "${RAGFLOW_CLIENT_CERT:-}"
+    client_key: "${RAGFLOW_CLIENT_KEY:-}"
+
+  transport:
+    trust_env: false
+    follow_redirects: false
+    proxy: "${RAGFLOW_PROXY:-}"
+    timeout_seconds:
+      connect: 5
+      read: 60
+      write: 60
+      pool: 5
+      upload_wall_clock: 300
+    pool:
+      max_connections: 50
+      max_keepalive_connections: 20
+      keepalive_expiry_seconds: 30
+    retry:
+      attempts: 3
+      base_backoff_seconds: 0.5
+      max_backoff_seconds: 8
+      jitter: true
+      respect_retry_after: true
+      retry_statuses: [429, 502, 503, 504]
+      # Mutating operations are excluded unless an idempotency protocol is agreed.
+      operations:
+        - list_datasets
+        - list_documents
+        - retrieve
+
+  response:
+    envelope:
+      code_field: "code"
+      data_field: "data"
+      message_field: "message"
+      success_codes: [0]
+      authentication_codes: [109]
+      # Some v0.17.2 auth failures are HTTP 200/code 0/data false.
+      data_false_with_message_is_error: true
+    accepted_json_content_types:
+      - "application/json"
+      - "application/*+json"
+    require_operation_contract_match: true
+    field_aliases: {}
+    error_code_map: {}
+
+  compatibility:
+    # Fixed, deployment-controlled additions only. Frontend passthrough is forbidden.
+    fixed_query_by_operation: {}
+    fixed_body_by_operation: {}
+    request_field_aliases:
+      parse_document_ids: "document_ids"
+      retrieval_document_ids: "document_ids"
+      retrieval_dataset_ids: "dataset_ids"
+    document_status_mapping:
+      "0": pending
+      "UNSTART": pending
+      "1": processing
+      "RUNNING": processing
+      "2": cancelled
+      "CANCEL": cancelled
+      "3": ready
+      "DONE": ready
+      "4": failed
+      "FAIL": failed
+    # Compatibility guard for RAGFlow v0.17.2/custom deployments where indexing
+    # tasks finish but the document row remains RUNNING. This never trusts chunk
+    # counters alone: retrieval must return non-empty text for the exact document.
+    completed_document_probe:
+      enabled: "${RAGFLOW_COMPLETED_DOCUMENT_PROBE_ENABLED:-true}"
+      grace_seconds: 10
+      min_chunk_count: 1
+      min_token_count: 1
+      probe_question: "${RAGFLOW_COMPLETED_DOCUMENT_PROBE_QUESTION:-文档主要内容}"
+
+  defaults:
+    dataset:
+      # Keep upstream private; EasyAgent remains the authorization authority.
+      permission: "${RAGFLOW_DATASET_PERMISSION:-me}"
+      embedding_model: ""  # Injected from small_models.embedding
+    parsing:
+      default_profile: standard
+      profiles:
+        standard:
+          chunk_method: naive
+          parser_config:
+            chunk_token_num: 512
+            layout_recognize: true
+            html4excel: false
+            delimiter: "\n!?;。；！？"
+            task_page_size: 12
+            method: minerullm
+            parent_retrieval: false
+            raptor:
+              use_raptor: false
+        table:
+          chunk_method: naive
+          parser_config:
+            # Excel HTML can collapse a large sheet into an oversized embedding
+            # input. Plain-text rows keep chunks bounded for local bge-m3.
+            chunk_token_num: 256
+            layout_recognize: true
+            html4excel: false
+            delimiter: "\n!?;。；！？"
+            task_page_size: 12
+            method: minerullm
+            parent_retrieval: false
+            raptor:
+              use_raptor: false
+        presentation:
+          chunk_method: naive
+          parser_config:
+            chunk_token_num: 512
+            layout_recognize: true
+            method: minerullm
+            parent_retrieval: false
+            raptor:
+              use_raptor: false
+      routing_rules:
+        - extensions: [xls, xlsx, csv]
+          profile: table
+        - extensions: [ppt, pptx]
+          profile: presentation
+    retrieval:
+      page_size: 10
+      similarity_threshold: 0.2
+      vector_similarity_weight: 0.3
+      top_k: 1024
+      rerank_id: ""  # Injected from small_models.reranker
+      require_non_empty_document_filter: true
+      enforce_single_embedding_model: true
+      # Never truncate or fall back to a broader dataset-only query.
+      document_filter_overflow_strategy: reject
+
+  operations:
+    upload:
+      per_file: true
+      concurrency: 1
+    parsing_poll:
+      interval_seconds: 2
+      max_duration_seconds: 1800
+    deletion:
+      remote_strategy: delete
+      durable_outbox: true
+      forbid_empty_ids: true
+    worker:
+      mode: queue
+      poll_interval_seconds: 1
+      heartbeat_interval_seconds: 10
+      stale_after_seconds: 90
+      task_timeout_seconds: 300
+      max_attempts: 3
+      retry_backoff_seconds: 5
+
+  limits:
+    max_file_size_mb: 100
+    max_request_size_mb: 110
+    max_files_per_request: 1
+    max_dataset_name_utf8_bytes: 127
+    max_filename_utf8_bytes: 127
+    allowed_extensions:
+      - pdf
+      - doc
+      - docx
+      - txt
+      - md
+      - xls
+      - xlsx
+      - csv
+      - ppt
+      - pptx
+    max_datasets_per_query: 20
+    max_documents_per_query: 500
+
+  features:
+    # Enable only after the bank-specific contract has been verified.
+    reparse_completed_document: false
+    retry_failed_document: false
+    disable_document: false
+    ragflow_chat: false
+    ragflow_agent: false
+    expose_chunk_management_to_business_users: false
+
+  health:
+    upstream_required_for_easyagent_startup: false
+    upstream_required_for_readiness: false
+    upstream_probe_operation: list_datasets
+    upstream_probe_query:
+      page: 1
+      page_size: 1
+    mask_endpoint: true
+
+  reconciliation:
+    enabled: true
+    interval_seconds: 300
+    max_documents_per_run: 2000
+    verify_sha256: true
+    auto_repair_status: true
+
+  audit:
+    enabled: true
+    retention_days: 365
+    max_details_bytes: 4096
+
+  upload_security:
+    reject_empty_files: true
+    verify_magic: true
+    reject_office_macros: true
+    virus_scan:
+      # 行外联调默认关闭；行内将 command 替换为已批准的扫描客户端并设置 required=true。
+      enabled: "${KNOWLEDGE_VIRUS_SCAN_ENABLED:-false}"
+      required: "${KNOWLEDGE_VIRUS_SCAN_REQUIRED:-false}"
+      command: "${KNOWLEDGE_VIRUS_SCAN_COMMAND:-clamdscan}"
+      timeout_seconds: 60
+
+  observability:
+    task_backlog_warning: 50
+    failed_task_warning: 1
+    worker_heartbeat_grace_seconds: 45
+    metrics_token: "${KNOWLEDGE_METRICS_TOKEN:-}"
+
+  quality_baseline:
+    parser_version: "bank-configured-v1"
+    embedding_version: "${RAGFLOW_EMBEDDING_MODEL:-bge-m3:latest@Ollama}"
+    prompt_version: "knowledge-answer-v1"
+    no_answer_text: "当前授权知识范围内没有足够证据回答该问题。"
+    minimum_evidence_score: 0.0
+
+  # Original binaries are authoritative here; RAGFlow remains the derived index.
+  # In-bank deployments should mount NAS at the OS/container layer and only replace
+  # this root through deployment configuration. NAS credentials never belong here.
+  original_storage:
+    enabled: "${KNOWLEDGE_ORIGINAL_STORAGE_ENABLED:-true}"
+    required_for_upload: true
+    driver: "${KNOWLEDGE_ORIGINAL_STORAGE_DRIVER:-local_fs}"
+    filesystem:
+      root_path: "${KNOWLEDGE_ORIGINAL_STORAGE_ROOT:-./data/nas-sim}"
+      path_prefix: "${KNOWLEDGE_ORIGINAL_STORAGE_PREFIX:-easyagent-knowledge}"
+      chunk_size_mb: 8
+      fsync: true
+      directory_mode: "0750"
+      file_mode: "0640"
+    reads:
+      legacy_fallback_to_ragflow: true
+      max_agent_file_size_mb: 100
+      max_agent_total_size_mb: 200
+      materialized_file_ttl_seconds: 3600
+    deletion:
+      policy: quarantine
+      retention_days: 30
+    health:
+      required_for_readiness: true
+      probe_on_startup: true
+
+  security:
+    forbid_frontend_passthrough: true
+    fail_when_enabled_and_secret_missing: true
+    allowed_base_url_schemes:
+      - "${RAGFLOW_ALLOWED_SCHEME:-http}"
+    # HTTP is allowed only when the exact host is also listed here. Empty by default.
+    insecure_http_hosts:
+      - 127.0.0.1
+      - localhost
+      - 29.240.86.22
+      - 29.225.225.253
+      - server.aigcqa.eprod.cncb
+      - gw.caqp.eprod.cncb
+    forbid_base_url_userinfo_query_fragment: true
+    operation_paths_must_be_relative: true
+    reject_network_path_and_dot_segments: true
+    reject_header_newlines: true
+    reserved_headers:
+      - Authorization
+      - Host
+      - Content-Length
+      - Transfer-Encoding
+    redact_keys:
+      - authorization
+      - api_key
+      - credential
+      - client_key
+      - cookie
+      - document_content

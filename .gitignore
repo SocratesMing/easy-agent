@@ -43,6 +43,8 @@ htmlcov/
 .qoder
 
 tests/chat_history/
+# Local QA evidence can contain request/response payloads and document metadata.
+test-results/
 
 data/
 logs/
@@ -52,10 +54,12 @@ node_modules/
 
 # Local config with secrets (use config-example.yaml as template)
 easy_agent/config/config.yaml
+easy_agent/config/config.*.yaml
+!easy_agent/config/config-example.yaml
+easy_agent/config/mcp.json
 
 # 离线依赖制品（脚本生成的大体积 wheel/tgz 缓存）
 offline_deps/
 
 # IDE 智能体工作目录（含跨会话记忆，勿提交）
-.codebuddy/
 .codebuddy/

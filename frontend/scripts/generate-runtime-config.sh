@@ -51,6 +51,13 @@ DEV_API=$(read_env_api dev)
 TEST_API=$(read_env_api test)
 PROD_API=$(read_env_api prod)
 
+# A production artifact must not embed development/test network coordinates.
+# Operators may inject only the active deployment address through API_BASE_URL.
+if [ "$AGENT_ENV_VAL" = "prod" ]; then
+  DEV_API=""
+  TEST_API=""
+fi
+
 # 后端“不设置跨域(CORS)”时，前端必须与后端同源访问，否则浏览器会拦截请求。
 # 故默认（未显式给定 API_BASE_URL）使用相对路径 "/"，让前端跟随当前访问入口
 # （即由后端自身托管 dist/，访问 http://<host>:<port>/ 即可，无需跨域）。

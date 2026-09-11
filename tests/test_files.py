@@ -51,9 +51,18 @@ def test_workspace_tree(client):
 
 
 def test_preview_workspace_file(client):
-    from easy_agent.utils.auth import create_access_token
-
-    token = create_access_token(data={"sub": "testuser"})
+    # 预览接口已接入单点登录 token_version 与活跃会话校验，必须使用真实注册流程
+    # 签发的 token；旧式仅含 sub 的手工 token 应当被拒绝。
+    registered = client.post(
+        "/api/auth/register",
+        json={
+            "username": "testuser",
+            "password": "secret123",
+            "organization_id": "test-org",
+        },
+    )
+    assert registered.status_code == 200
+    token = registered.json()["access_token"]
     ws_file = (
         Path(os.environ["TEST_WORKSPACE_DIR"]) / "users" / "testuser" / "preview.md"
     )

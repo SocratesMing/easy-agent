@@ -8,13 +8,9 @@
 # 2) ~/.easy-agent/config/config.yaml - User config directory
 # 3) <package>/easy_agent/config/config.yaml - Package installation directory
 #
-# Sensitive values (api_key, password, ...) use ${ENV_VAR} placeholders and are
-# resolved at load time. Provide them via environment variables, for example:
-#   export MINIMAX_API_KEY=...
-#   export DEEPSEEK_API_KEY=...
-#   export ARK_API_KEY=...
-#   export MYSQL_PASSWORD=...
-# Optional ${VAR:-default} syntax is also supported.
+# Sensitive values should use ${NAME} placeholders and be injected by the
+# deployment environment or a secret manager. ${NAME:-default} is supported for
+# non-secret defaults. Unresolved variables in the selected model/database fail fast.
 
 # ===== LLM Configuration =====
 # Select which model to use: minimax | deepseek
@@ -29,6 +25,7 @@ models:
     model: "MiniMax-M3"
     api_base: "https://api.minimaxi.com/anthropic"  # China users; Global: https://api.minimax.io/anthropic
     max_input_tokens: 200000  # Model context window size, used for summarization threshold calculation
+    timeout_seconds: "${LLM_TIMEOUT_SECONDS:-60}"  # Per-request LLM timeout
 
   deepseek:
     provider: "deepseek"
@@ -37,6 +34,7 @@ models:
     api_key: "${DEEPSEEK_API_KEY}"
     api_base: "https://api.deepseek.com"
     max_input_tokens: 200000
+    timeout_seconds: "${LLM_TIMEOUT_SECONDS:-60}"
 
   ark:
     provider: "ark"
@@ -45,6 +43,7 @@ models:
     api_key: "${ARK_API_KEY}"
     api_base: "https://ark.cn-beijing.volces.com/api/coding/v3"
     max_input_tokens: 200000
+    timeout_seconds: "${LLM_TIMEOUT_SECONDS:-60}"
 
   glm:
     provider: "glm"
@@ -53,6 +52,7 @@ models:
     api_key: "${GLM_API_KEY}"
     api_base: "https://open.bigmodel.cn/api/paas/v4"
     max_input_tokens: 128000
+    timeout_seconds: "${LLM_TIMEOUT_SECONDS:-60}"
 
 # ===== Retry Configuration =====
 retry:
@@ -123,6 +123,8 @@ preset_questions:
 # Supports SQLite (local) or MySQL (remote)
 database:
   type: "mysql"
+  # MySQL 不可用时应直接失败；仅隔离测试环境可显式改为 true。
+  fallback_to_sqlite: false
 
   sqlite:
     path: "./data/easy_agent.db"
@@ -142,6 +144,10 @@ database:
     connect_timeout: 10
     read_timeout: 30
     write_timeout: 30
+
+# 默认禁止公开注册；仅在可控测试环境显式开启。
+personnel:
+  self_registration_enabled: false
 
 # ===== Vector Store Configuration (Chroma + Sentence Transformers) =====
 # 禁止智能体读写的虚拟路径目录列表（通过 permissions deny 规则限制）

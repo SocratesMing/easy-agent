@@ -234,6 +234,13 @@
           </button>
         </div>
       </template>
+
+      <KnowledgeEvidence
+        v-if="message.role === 'assistant'"
+        :evidence="message.knowledge_evidence || []"
+        :warnings="message.knowledge_warnings || []"
+        :message-id="message.id || message.timestamp"
+      />
       
       <!-- 用户消息显示复制和重试按钮 -->
       <div v-if="message.role === 'user' && message.content" class="message-actions">
@@ -261,8 +268,9 @@ import { createHighlighter } from 'shiki'
 import { marked } from 'marked'
 import { setupMarkedExtensions, normalizeMathDelimiters } from '../markdownSetup.js'
 import FileIcon from './FileIcon.vue'
+import KnowledgeEvidence from '../features/knowledge/KnowledgeEvidence.vue'
 export default {
-  components: { FileIcon },
+  components: { FileIcon, KnowledgeEvidence },
   props: {
   message: {
     type: Object,
@@ -319,6 +327,8 @@ const hasAnyContent = computed(() => {
   if (m.thinking) return true
   if (m.content) return true
   if (m.tool_calls && m.tool_calls.length > 0) return true
+  if (m.knowledge_evidence && m.knowledge_evidence.length > 0) return true
+  if (m.knowledge_warnings && m.knowledge_warnings.length > 0) return true
   return false
 })
 
@@ -569,8 +579,6 @@ function toggleThinking(index) {
   expandedThinking.value = { ...expandedThinking.value, [key]: !expandedThinking.value[key] }
 }
 
-
-
 function isToolRunning(block) {
   // Tool is still running if: no duration AND the message is still loading
   return block.duration == null && props.message.loading === true
@@ -819,9 +827,6 @@ window.copyCode = async function(btn) {
 }
 
     return {
-      _isProcessType,
-      _onScroll,
-      _scrollEl,
       cleanUserContent,
       computed,
       copyMessage,

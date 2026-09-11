@@ -8,27 +8,39 @@
     <template v-else>
       <SessionList
         v-show="!isSidebarCollapsed"
+        :style="{ width: `${sidebarWidth}px` }"
         :sessions="sessions"
         :currentSessionId="currentSessionId"
         :streamingSessionIds="streamingSessions"
         :username="userProfile.username"
         :organizationId="userProfile.organization_id"
         :email="userProfile.email"
-        :showAssets="showAssets"
+        :showKnowledge="showKnowledge"
         @createSession="handleCreateSession"
         @selectSession="handleSelectSession"
         @deleteSession="handleDeleteSession"
         @renameSession="handleRenameSession"
         @togglePin="handleTogglePin"
         @toggleSidebar="toggleSidebar"
-        @showAssets="handleShowAssets"
+        @showKnowledge="handleShowKnowledge"
         @showSkillCenter="handleShowSkillCenter"
         @showScheduledTasks="handleShowScheduledTasks"
         @showProfile="handleShowProfile"
         @showSettings="showSettingsPanel = true"
-        @showUserManagement="showUserManagementPanel = true"
         @logout="handleLogout"
       />
+
+      <div
+        v-if="!isSidebarCollapsed"
+        class="layout-resizer sidebar-resizer"
+        role="separator"
+        aria-label="调整左侧导航宽度"
+        aria-orientation="vertical"
+        :aria-valuenow="sidebarWidth"
+        tabindex="0"
+        @pointerdown="startLayoutResize('sidebar', $event)"
+        @keydown="resizeWithKeyboard('sidebar', $event)"
+      ></div>
       
       <button 
         v-if="isSidebarCollapsed"
@@ -42,8 +54,6 @@
         </svg>
       </button>
       
-      <AssetsPanel v-if="showAssets" :visible="showAssets" @close="showAssets = false" />
-
       <SkillCenter v-if="showSkillCenter" @close="showSkillCenter = false" />
 
       <ScheduledTasksPanel v-if="showScheduledTasks" @close="showScheduledTasks = false" />
@@ -66,9 +76,15 @@
         v-if="showUserManagementPanel"
         @close="showUserManagementPanel = false"
       />
+
+      <KnowledgeWorkbench
+        v-if="showKnowledge"
+        @close="showKnowledge = false"
+        @managePersonnel="handleShowUserManagement"
+      />
       
       <Chat
-        v-else-if="!showAssets && !showUserProfile && !showSkillCenter && !showScheduledTasks"
+        v-else-if="!showUserProfile && !showSkillCenter && !showScheduledTasks"
         :messages="messages"
         :currentSessionId="currentSessionId"
         :sessionCreatedAt="currentSessionCreatedAt"
@@ -94,8 +110,24 @@
         @reject="handleToolApproval('reject')"
       />
 
-      <div v-if="currentSessionId && !showAssets && !showUserProfile && !showSkillCenter" class="workspace-area">
+      <div
+        v-if="currentSessionId && !isWorkspaceCollapsed && !showKnowledge && !showUserProfile && !showSkillCenter && !showScheduledTasks && !showUserManagementPanel"
+        class="workspace-area"
+        :style="{ width: `${workspaceWidth + 6}px` }"
+      >
+        <div
+          v-if="!isWorkspaceCollapsed"
+          class="layout-resizer workspace-resizer"
+          role="separator"
+          aria-label="调整工作区宽度"
+          aria-orientation="vertical"
+          :aria-valuenow="workspaceWidth"
+          tabindex="0"
+          @pointerdown="startLayoutResize('workspace', $event)"
+          @keydown="resizeWithKeyboard('workspace', $event)"
+        ></div>
         <WorkspacePanel
+          :style="{ width: `${workspaceWidth}px` }"
           :username="userProfile.username"
           :currentSessionId="currentSessionId"
           :isStreaming="isStreaming"
@@ -105,7 +137,7 @@
       </div>
 
       <button
-        v-if="currentSessionId && isWorkspaceCollapsed && !showAssets && !showUserProfile && !showSkillCenter && !showScheduledTasks"
+        v-if="currentSessionId && isWorkspaceCollapsed && !showKnowledge && !showUserProfile && !showSkillCenter && !showScheduledTasks && !showUserManagementPanel"
         class="expand-workspace-btn"
         @click="isWorkspaceCollapsed = false"
         title="展开工作区"
@@ -128,22 +160,23 @@ import { API_BASE_URL, APP_WELCOME_TITLE, appRuntime } from './config.js'
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import SessionList from './components/SessionList.vue'
 import Chat from './components/Chat.vue'
-import AssetsPanel from './components/AssetsPanel.vue'
 import SkillCenter from './components/SkillCenter.vue'
 import ScheduledTasksPanel from './components/ScheduledTasksPanel.vue'
 import UserProfile from './components/UserProfile.vue'
-import UserManagementPanel from './components/UserManagementPanel.vue'
+import UserManagementPanel from './features/personnel/PersonnelManagement.vue'
 import Welcome from './components/Welcome.vue'
 import WorkspacePanel from './components/WorkspacePanel.vue'
 import SettingsPanel from './components/SettingsPanel.vue'
+import KnowledgeWorkbench from './features/knowledge/KnowledgeWorkbench.vue'
 import { createSession, listSessions, getChatHistory, deleteSession, sendMessage, resumeStream, renameSession, togglePinSession, getStreamStatus, attachStream } from './api/chat.js'
 import { uploadFile, deleteFile, getUserProfile, getSessionGeneratedFiles } from './api/files.js'
 import { logout as apiLogout, notifyLogout, getStoredToken, getStoredUsername, AUTH_EXPIRED_EVENT, USER_ACTIVITY_EVENT, authFetch } from './api/auth.js'
 import { getModels as fetchModels } from './api/settings.js'
+import { isRestorableUserProfile } from './utils/userProfile.js'
 export default {
   components: {
-    AssetsPanel,
     Chat,
+    KnowledgeWorkbench,
     ScheduledTasksPanel,
     SessionList,
     SettingsPanel,
@@ -572,7 +605,7 @@ watch(() => loadedSessionId.value, reconstructPendingApproval)
 const isSidebarCollapsed = ref(false)
 const isWorkspaceCollapsed = ref(true)
 const isDarkTheme = ref(localStorage.getItem('theme') === 'dark')
-const showAssets = ref(false)
+const showKnowledge = ref(false)
 const showSkillCenter = ref(false)
 const showScheduledTasks = ref(false)
 const showUserProfile = ref(false)
@@ -580,6 +613,63 @@ const showSettingsPanel = ref(false)
 const showUserManagementPanel = ref(false)
 const showWelcome = ref(false)
 const scrollTrigger = ref(0)
+
+const clamp = (value, min, max) => Math.min(max, Math.max(min, value))
+const storedLayoutNumber = (key, fallback) => {
+  const value = Number(localStorage.getItem(key))
+  return Number.isFinite(value) ? value : fallback
+}
+const sidebarWidth = ref(clamp(storedLayoutNumber('easyagent.layout.sidebar', 280), 220, 440))
+const workspaceWidth = ref(clamp(storedLayoutNumber('easyagent.layout.workspace', 320), 260, 720))
+let activeLayoutResize = null
+
+function finishLayoutResize() {
+  if (!activeLayoutResize) return
+  localStorage.setItem('easyagent.layout.sidebar', String(sidebarWidth.value))
+  localStorage.setItem('easyagent.layout.workspace', String(workspaceWidth.value))
+  activeLayoutResize = null
+  document.body.classList.remove('layout-resizing')
+  window.removeEventListener('pointermove', handleLayoutResize)
+  window.removeEventListener('pointerup', finishLayoutResize)
+  window.removeEventListener('pointercancel', finishLayoutResize)
+}
+
+function handleLayoutResize(event) {
+  if (!activeLayoutResize) return
+  const delta = event.clientX - activeLayoutResize.startX
+  if (activeLayoutResize.kind === 'sidebar') {
+    sidebarWidth.value = clamp(activeLayoutResize.startWidth + delta, 220, 440)
+  } else {
+    workspaceWidth.value = clamp(activeLayoutResize.startWidth - delta, 260, 720)
+  }
+}
+
+function startLayoutResize(kind, event) {
+  if (event.pointerType === 'mouse' && event.button !== 0) return
+  activeLayoutResize = {
+    kind,
+    startX: event.clientX,
+    startWidth: kind === 'sidebar' ? sidebarWidth.value : workspaceWidth.value,
+  }
+  document.body.classList.add('layout-resizing')
+  window.addEventListener('pointermove', handleLayoutResize)
+  window.addEventListener('pointerup', finishLayoutResize)
+  window.addEventListener('pointercancel', finishLayoutResize)
+  event.preventDefault()
+}
+
+function resizeWithKeyboard(kind, event) {
+  if (!['ArrowLeft', 'ArrowRight'].includes(event.key)) return
+  const direction = event.key === 'ArrowRight' ? 1 : -1
+  if (kind === 'sidebar') {
+    sidebarWidth.value = clamp(sidebarWidth.value + direction * 16, 220, 440)
+    localStorage.setItem('easyagent.layout.sidebar', String(sidebarWidth.value))
+  } else {
+    workspaceWidth.value = clamp(workspaceWidth.value - direction * 16, 260, 720)
+    localStorage.setItem('easyagent.layout.workspace', String(workspaceWidth.value))
+  }
+  event.preventDefault()
+}
 const userProfile = ref({
   username: '',
   organization_id: '',
@@ -599,29 +689,48 @@ function toggleTheme() {
 // 初始化主题（确保 data-theme 属性始终存在，使 CSS 变量生效）
 document.documentElement.setAttribute('data-theme', isDarkTheme.value ? 'dark' : 'light')
 
-function handleShowAssets() {
-  showAssets.value = !showAssets.value
+function handleShowKnowledge() {
+  showKnowledge.value = !showKnowledge.value
   showSkillCenter.value = false
   showScheduledTasks.value = false
+  showUserProfile.value = false
+  showSettingsPanel.value = false
+  showUserManagementPanel.value = false
 }
 
 function handleShowSkillCenter() {
   showSkillCenter.value = !showSkillCenter.value
-  showAssets.value = false
+  showKnowledge.value = false
   showScheduledTasks.value = false
+  showUserProfile.value = false
+  showSettingsPanel.value = false
+  showUserManagementPanel.value = false
 }
 
 function handleShowScheduledTasks() {
   showScheduledTasks.value = !showScheduledTasks.value
-  showAssets.value = false
+  showKnowledge.value = false
   showSkillCenter.value = false
+  showUserProfile.value = false
+  showSettingsPanel.value = false
+  showUserManagementPanel.value = false
 }
 
 function handleShowProfile() {
   showUserProfile.value = true
-  showAssets.value = false
+  showKnowledge.value = false
   showSkillCenter.value = false
   showScheduledTasks.value = false
+  showSettingsPanel.value = false
+  showUserManagementPanel.value = false
+}
+
+function handleShowUserManagement() {
+  showUserManagementPanel.value = true
+  showSkillCenter.value = false
+  showScheduledTasks.value = false
+  showUserProfile.value = false
+  showSettingsPanel.value = false
 }
 
 function applyAgentConfig(configData) {
@@ -725,8 +834,11 @@ async function handleLogout() {
     email: ''
   }
   showUserProfile.value = false
-  showAssets.value = false
+  showKnowledge.value = false
   showSkillCenter.value = false
+  showScheduledTasks.value = false
+  showSettingsPanel.value = false
+  showUserManagementPanel.value = false
   showWelcome.value = true
 }
 
@@ -773,6 +885,11 @@ async function handleUnregister() {
     email: ''
   }
   showUserProfile.value = false
+  showKnowledge.value = false
+  showSkillCenter.value = false
+  showScheduledTasks.value = false
+  showSettingsPanel.value = false
+  showUserManagementPanel.value = false
   showWelcome.value = true
 }
 
@@ -787,7 +904,7 @@ async function loadUserProfile() {
 
   try {
     const profile = await getUserProfile()
-    if (!profile.username || profile.username === 'admin') {
+    if (!isRestorableUserProfile(profile)) {
       showWelcome.value = true
       return
     }
@@ -843,11 +960,12 @@ async function ensureCurrentSession(initialTitle = '') {
 async function handleCreateSession() {
   saveCurrentSessionState()
 
-  showAssets.value = false
+  showKnowledge.value = false
   showSkillCenter.value = false
   showScheduledTasks.value = false
   showUserProfile.value = false
   showSettingsPanel.value = false
+  showUserManagementPanel.value = false
   currentSessionId.value = null
   loadedSessionId.value = null
   messages.value = []
@@ -864,9 +982,12 @@ async function handleSelectSession(sessionId) {
   // 保存当前会话状态
   saveCurrentSessionState()
 
-  showAssets.value = false
+  showKnowledge.value = false
   showSkillCenter.value = false
   showScheduledTasks.value = false
+  showUserProfile.value = false
+  showSettingsPanel.value = false
+  showUserManagementPanel.value = false
   currentSessionId.value = sessionId
   // 切换后按当前会话是否正在流式输出决定输入框状态：
   // 历史会话通常不是当前流式会话，应显示发送按钮而非停止按钮
@@ -1163,6 +1284,16 @@ function createStreamChunkHandler(ctx) {
       }
     } else if (eventType === 'token_usage') {
       applyUsage(data, ctx.streamSessionId)
+    } else if (eventType === 'knowledge_evidence') {
+      ensureMessage()
+      const idx = findIdx()
+      if (idx !== -1) {
+        messages.value[idx] = {
+          ...messages.value[idx],
+          knowledge_evidence: Array.isArray(data.evidence) ? data.evidence : [],
+          knowledge_warnings: Array.isArray(data.warnings) ? data.warnings : [],
+        }
+      }
     } else if (eventType === 'thinking_start') {
       // 始终按 step 解析思考块，不再用「currentBlock 已是 thinking 则跳过」守卫：
       // 该守卫会在上一 step 的 currentBlock 未被 thinking_end 及时置空时跳过新 step
@@ -1847,6 +1978,7 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
+  finishLayoutResize()
   window.removeEventListener(USER_ACTIVITY_EVENT, resetIdleTimer)
   stopIdleTimer()
 })
@@ -1857,7 +1989,6 @@ onUnmounted(() => {
       APP_WELCOME_TITLE,
       applyAgentConfig,
       appRuntime,
-      AssetsPanel,
       attachedStreamingSessions,
       attachStream,
       attachToStreamingSession,
@@ -1893,7 +2024,8 @@ onUnmounted(() => {
       handleRetry,
       handleSelectSession,
       handleSendMessage,
-      handleShowAssets,
+      handleShowKnowledge,
+      handleShowUserManagement,
       handleShowProfile,
       handleShowScheduledTasks,
       handleShowSkillCenter,
@@ -1943,7 +2075,7 @@ onUnmounted(() => {
       sessionStates,
       sessionUsage,
       SettingsPanel,
-      showAssets,
+      showKnowledge,
       showScheduledTasks,
       showSettingsPanel,
       showSkillCenter,
@@ -1951,6 +2083,8 @@ onUnmounted(() => {
       showUserProfile,
       showWelcome,
       SkillCenter,
+      sidebarWidth,
+      startLayoutResize,
       startIdleTimer,
       stopIdleTimer,
       STREAM_STATE_KEY,
@@ -1969,7 +2103,9 @@ onUnmounted(() => {
       watch,
       Welcome,
       welcomeTitle,
+      workspaceWidth,
       WorkspacePanel,
+      resizeWithKeyboard,
     }
   },
 }
@@ -1982,6 +2118,39 @@ onUnmounted(() => {
   width: 100vw;
   background: #f8fafc;
   position: relative;
+}
+
+.layout-resizer {
+  position: relative;
+  width: 6px;
+  flex: 0 0 6px;
+  cursor: col-resize;
+  touch-action: none;
+  z-index: 80;
+  outline: none;
+}
+
+.layout-resizer::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 2px;
+  width: 2px;
+  background: transparent;
+  transition: background 0.15s ease, box-shadow 0.15s ease;
+}
+
+.layout-resizer:hover::after,
+.layout-resizer:focus-visible::after,
+:global(body.layout-resizing) .layout-resizer::after {
+  background: var(--accent-color);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent-color) 14%, transparent);
+}
+
+.sidebar-resizer {
+  margin-left: -3px;
+  margin-right: -3px;
 }
 
 .expand-sidebar-btn {
@@ -2033,11 +2202,17 @@ onUnmounted(() => {
 }
 
 .workspace-area {
-  position: fixed;
-  right: 0;
-  top: 0;
-  bottom: 0;
+  position: relative;
+  height: 100vh;
+  flex: none;
+  display: flex;
+  min-width: 260px;
   z-index: 30;
+}
+
+.workspace-resizer {
+  margin-left: -3px;
+  margin-right: -3px;
 }
 
 .expand-sidebar-btn svg {
@@ -2089,6 +2264,10 @@ onUnmounted(() => {
 
 /* 响应式：小屏幕优化 */
 @media (max-width: 768px) {
+  .layout-resizer {
+    display: none;
+  }
+
   .expand-workspace-btn,
   .expand-sidebar-btn {
     width: 36px;

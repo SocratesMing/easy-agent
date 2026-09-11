@@ -4,8 +4,11 @@ import logging
 from logging.handlers import TimedRotatingFileHandler
 import os
 import platform
+import re
 import sys
 import threading
+import time
+import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
@@ -19,6 +22,12 @@ from langchain_core.messages import HumanMessage
 from .config import Config, AgentConfig
 from .db import init_database
 from .domain.bloom.bloom_scheduler import start_scheduler
+from .knowledge.api import router as knowledge_router
+from .knowledge.ops_api import router as knowledge_ops_router
+from .knowledge.observability import audit_metadata, metrics, resolve_request_id, should_audit
+from .knowledge.operations_repository import KnowledgeOperationsRepository
+from .knowledge.lifecycle import shutdown_knowledge, startup_knowledge
+from .personnel import router as personnel_router
 from .model import create_model
 from .models.api import HealthResponse
 from .services import get_agent_config, init_agent_config
@@ -51,6 +60,7 @@ frontend_dist = os.path.join(
 
 agent_config = None
 db_instance = None
+_ROTATED_LOG_SUFFIX = re.compile(r"^\.\d{4}-\d{2}-\d{2}$", re.ASCII)
 
 
 def setup_logging(log_config: dict | None = None):
@@ -108,7 +118,7 @@ def setup_logging(log_config: dict | None = None):
         delay=True,
     )
     file_handler.suffix = "%Y-%m-%d"
-    file_handler.extMatch = r"^\.\d{4}-\d{2}-\d{2}$"
+    file_handler.extMatch = _ROTATED_LOG_SUFFIX
     file_handler.setLevel(level)
     file_handler.setFormatter(formatter)
     file_handler.addFilter(_RunidFilter())
@@ -207,6 +217,8 @@ async def lifespan(app: FastAPI):
     logger.info(f"操作系统: {platform.system()} {platform.release()}")
     logger.info(f"启动时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     logger.info("=" * 60)
+
+    await startup_knowledge(app, config_path)
 
     # 打印环境信息和配置文件
     logger.info("=" * 60)
@@ -368,6 +380,8 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"[关闭] 定时任务调度器关闭失败: {e}")
 
+    await shutdown_knowledge(app)
+
     if hasattr(app.state, "db") and app.state.db:
         app.state.db.close()
 
@@ -438,21 +452,56 @@ _ACCESS_SKIP_SUFFIXES = (
 
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
+    request_id = resolve_request_id(request.headers.get("X-Request-Id"))
+    request.state.request_id = request_id
     path = request.url.path
     if (
         path in ("/", "/health")
         or path.startswith(_ACCESS_SKIP_PREFIXES)
         or path.endswith(_ACCESS_SKIP_SUFFIXES)
     ):
-        return await call_next(request)
+        response = await call_next(request)
+        response.headers["X-Request-Id"] = request_id
+        return response
     client_ip = _get_client_ip(request)
-    logger.info(f"[请求] {request.method} {path} | IP: {client_ip}")
-    return await call_next(request)
+    started = time.monotonic()
+    logger.info("[请求] %s %s | IP: %s | request_id=%s", request.method, path, client_ip, request_id)
+    status_code = 500
+    try:
+        response = await call_next(request)
+        status_code = response.status_code
+        response.headers["X-Request-Id"] = request_id
+        return response
+    finally:
+        duration = time.monotonic() - started
+        if path.startswith("/api/knowledge/"):
+            metrics.observe(request.method, path, status_code, duration)
+        if should_audit(path, request.method):
+            db = getattr(request.app.state, "db", None)
+            config = getattr(request.app.state, "knowledge_config", None)
+            if db is not None and (config is None or config.audit.enabled):
+                metadata = audit_metadata(path, request.method, status_code, duration)
+                try:
+                    await asyncio.to_thread(
+                        KnowledgeOperationsRepository(db).record_audit,
+                        request_id=request_id,
+                        actor_user_id=str(getattr(request.state, "actor_user_id", "anonymous")),
+                        actor_username=str(getattr(request.state, "actor_username", "anonymous")),
+                        max_details_bytes=getattr(getattr(config, "audit", None), "max_details_bytes", 4096),
+                        **metadata,
+                    )
+                except Exception:
+                    logger.exception("审计记录写入失败 | request_id=%s", request_id)
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
-    logger.error(f"全局异常: {str(exc)}", exc_info=True)
-    return JSONResponse(status_code=500, content={"detail": str(exc)})
+    request_id = str(getattr(request.state, "request_id", "unknown"))
+    logger.error("全局异常 | request_id=%s", request_id, exc_info=True)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "服务内部错误", "request_id": request_id},
+        headers={"X-Request-Id": request_id},
+    )
 
 
 app.include_router(chat_router)
@@ -468,6 +517,9 @@ app.include_router(skill_center_router)
 if terminal_router is not None:
     app.include_router(terminal_router)
 app.include_router(scheduled_tasks_router)
+app.include_router(knowledge_router)
+app.include_router(knowledge_ops_router)
+app.include_router(personnel_router)
 
 
 @app.get("/api/health", summary="健康检查", response_model=HealthResponse)

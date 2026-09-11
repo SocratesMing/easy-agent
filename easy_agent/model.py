@@ -125,6 +125,7 @@ def resolve_llm_config(config: Config, model_name: str | None):
         max_input_tokens=provider.max_input_tokens or 200000,
         protocol=provider.protocol or "openai",
         supports_vision=provider.supports_vision,
+        timeout_seconds=provider.timeout_seconds,
         retry=retry,
     )
 
@@ -254,6 +255,7 @@ def _create_openai_compatible(llm_config) -> ChatOpenAI:
         api_key=llm_config.api_key,
         base_url=llm_config.api_base,
         max_retries=llm_config.retry.max_retries if llm_config.retry.enabled else 0,
+        timeout=llm_config.timeout_seconds,
         supports_vision=getattr(llm_config, "supports_vision", False),
     )
 
@@ -274,6 +276,7 @@ def _create_anthropic_compatible(llm_config) -> ChatAnthropic:
         "api_key": llm_config.api_key,
         "base_url": llm_config.api_base,
         "max_retries": llm_config.retry.max_retries if llm_config.retry.enabled else 0,
+        "timeout": llm_config.timeout_seconds,
         "thinking": {"type": "enabled", "budget_tokens": ANTHROPIC_THINKING_BUDGET_TOKENS},
         "max_tokens": ANTHROPIC_MAX_TOKENS,
     }

@@ -13,6 +13,14 @@ from ..db import Database, get_database
 from ..models.db import SessionModel
 from ..models.api import ChatRequest, ResumeRequest
 from ..middleware import get_current_username
+from ..knowledge.chat_bridge import (
+    authorize_scoped_chat,
+    empty_knowledge_context,
+    is_knowledge_panel_title,
+    knowledge_panel_system_prompt,
+    prepare_knowledge_chat,
+)
+from ..knowledge.streaming import knowledge_chat_stream_generator
 from ..services import (
     chat_stream_generator,
     resume_stream_generator,
@@ -32,7 +40,6 @@ router = APIRouter(
     prefix="/api/chat",
     tags=["Chat"],
 )
-
 
 def generate_session_title(message: str, files: list | None) -> str:
     """根据首条消息或首个上传文件生成会话标题。"""
@@ -277,6 +284,16 @@ async def chat_stream(
 
     session_id = request.session_id
     message_id = request.message_id or str(uuid.uuid4())
+    is_knowledge_panel_session = False
+
+    # 知识库会话必须独立执行 fail-closed 鉴权。即使宿主 EasyAgent 在测试、代理层或
+    # 行内环境中替换了通用聊天身份依赖，也不能让 X-Username 等兼容头绕过知识权限。
+    username = await authorize_scoped_chat(
+        request=http_request,
+        db=db,
+        session_id=session_id,
+        username=username,
+    )
 
     sid = session_id[-5:] if session_id else "new"
 
@@ -302,12 +319,22 @@ async def chat_stream(
             raise HTTPException(status_code=404, detail="会话不存在")
         else:
             workspace_name = session.workspace_name or ""
-            if len(session.messages) == 0:
+            is_knowledge_panel_session = is_knowledge_panel_title(session.title)
+            if (
+                len(session.messages) == 0
+                and not is_knowledge_panel_session
+            ):
                 session.title = generate_session_title(request.message, request.files)
                 session.updated_at = datetime.now().isoformat()
                 db.update_session(session)
 
     parsed_content = request.message
+    knowledge_chat = await prepare_knowledge_chat(
+        request=http_request,
+        db=db,
+        session_id=session_id,
+        question=request.message,
+    )
     # 判断是否为新建会话（首次消息）：新建会话的上传文件内容注入系统提示词，
     # 非首次会话则拼接到用户消息（保持原有行为）。
     _existing = db.get_session(session_id)
@@ -331,13 +358,15 @@ async def chat_stream(
             else:
                 logger.warning(f"[{session_id[-5:]}] 文件解析为空: {filename}")
 
-    system_prompt_extra = ""
+    system_prompt_parts = []
+    if is_knowledge_panel_session:
+        system_prompt_parts.append(knowledge_panel_system_prompt())
     if file_context_parts:
         if is_new_session:
             sections = [
                 f"### 文件: {fn}\n{c}" for fn, c in file_context_parts
             ]
-            system_prompt_extra = (
+            system_prompt_parts.append(
                 "## 用户上传的文件内容（已为你解析，请基于这些内容回应用户）\n\n"
                 + "\n\n".join(sections)
             )
@@ -346,6 +375,7 @@ async def chat_stream(
                 f"[文件: {fn}]\n{c}" for fn, c in file_context_parts
             ]
             parsed_content = "\n\n".join(file_contents) + "\n\n" + request.message
+    system_prompt_extra = "\n\n".join(system_prompt_parts)
 
     user_message = {
         "role": "user",
@@ -369,24 +399,45 @@ async def chat_stream(
         message_id=message_id,
     )
 
-    agent = await get_or_create_agent_for_session(
-        session_id, username, workspace_name, model_name=request.model,
-        system_prompt_extra=system_prompt_extra,
-    )
+    if is_knowledge_panel_session:
+        # Same public endpoint/SSE protocol, but a separate no-tool executor.
+        # DeepAgent always adds built-in filesystem and shell tools even when
+        # MCP tools are disabled, so it is not a valid knowledge-only boundary.
+        stream_generator = knowledge_chat_stream_generator(
+            request=request,
+            db=db,
+            session_id=session_id,
+            message_id=message_id,
+            username=username,
+            knowledge_context=knowledge_chat.context or empty_knowledge_context(),
+            knowledge_evidence=knowledge_chat.evidence,
+            knowledge_warnings=knowledge_chat.warnings,
+            session_logger=session_logger,
+        )
+    else:
+        agent = await get_or_create_agent_for_session(
+            session_id, username, workspace_name, model_name=request.model,
+            system_prompt_extra=system_prompt_extra,
+            enable_hitl=True,
+        )
+        stream_generator = chat_stream_generator(
+            request=request,
+            db=db,
+            agent=agent,
+            session_id=session_id,
+            message_id=message_id,
+            username=username,
+            http_request=http_request,
+            parsed_content=parsed_content,
+            session_logger=session_logger,
+            context_prefix=knowledge_chat.context,
+            initial_events=knowledge_chat.initial_events,
+            assistant_metadata=knowledge_chat.assistant_metadata,
+        )
 
     return StreamingResponse(
         _detached_event_stream(
-            chat_stream_generator(
-                request=request,
-                db=db,
-                agent=agent,
-                session_id=session_id,
-                message_id=message_id,
-                username=username,
-                http_request=http_request,
-                parsed_content=parsed_content,
-                session_logger=session_logger,
-            ),
+            stream_generator,
             session_id,
             sid,
         ),

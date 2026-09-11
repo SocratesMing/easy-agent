@@ -39,14 +39,25 @@ def get_user_activity_time(username: str) -> Optional[float]:
     return _user_activity_cache.get(username)
 
 
-def _user_session_is_active(username: str, now: Optional[float] = None) -> bool:
+def _user_session_is_active(
+    username: str,
+    now: Optional[float] = None,
+    *,
+    token_issued_at: object = None,
+) -> bool:
     idle_minutes = _get_idle_logout_minutes()
     if idle_minutes <= 0:
         return True
 
     last_activity = _user_activity_cache.get(username)
     if last_activity is None:
-        return False
+        # The idle cache is deliberately process-local. After a clean service
+        # restart, conservatively fall back to the signed JWT issue time so a
+        # recently active session can resume, while an old token cannot reset
+        # its idle window merely by hitting the restarted server.
+        if not isinstance(token_issued_at, (int, float)):
+            return False
+        last_activity = float(token_issued_at)
 
     current_time = time.time() if now is None else now
     return current_time - last_activity < idle_minutes * 60
@@ -68,9 +79,13 @@ def verify_token_sso(token: str, db: Database) -> Optional[str]:
     user = db.get_user_by_username(username)
     if not user:
         return None
+    if getattr(user, "account_status", "active") == "disabled":
+        return None
     if token_v is None or user.token_version != token_v:
         return None
-    if not _user_session_is_active(username):
+    if not _user_session_is_active(
+        username, token_issued_at=payload.get("iat")
+    ):
         return None
     touch_user_activity(username)
     return username
@@ -91,6 +106,11 @@ async def get_current_username(
             if username:
                 user = db.get_user_by_username(username)
                 if user:
+                    if getattr(user, "account_status", "active") == "disabled":
+                        raise HTTPException(
+                            status_code=403,
+                            detail="账号已停用，请联系管理员",
+                        )
                     # 单点登录：token 中的 v 必须等于 DB 当前 token_version，
                     # 否则说明该账号已在其他设备/IP 登录，当前 token 立即失效。
                     if token_v is None or user.token_version != token_v:
@@ -98,7 +118,9 @@ async def get_current_username(
                             status_code=401,
                             detail="您的账号在其他设备登录，您已被迫下线，请重新登录",
                         )
-                    if not _user_session_is_active(username):
+                    if not _user_session_is_active(
+                        username, token_issued_at=payload.get("iat")
+                    ):
                         raise HTTPException(
                             status_code=401,
                             detail="登录已过期或未登录，请重新登录",

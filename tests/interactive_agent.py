@@ -6,6 +6,7 @@ Usage:
 
 import asyncio
 import json
+import os
 from datetime import datetime
 from pathlib import Path
 
@@ -14,7 +15,7 @@ from deepagents import create_deep_agent
 from deepagents.backends import LocalShellBackend
 
 # ── DeepSeek Configuration ──────────────────────────────────────
-DEEPSEEK_API_KEY = "sk-2c6665b2900448b69c2c532638ae3d1d"
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 DEEPSEEK_MODEL = "deepseek-v4-flash"
 # ────────────────────────────────────────────────────────────────
@@ -25,6 +26,9 @@ HISTORY_DIR = Path(__file__).parent / "chat_history"
 
 
 def build_agent():
+    if not DEEPSEEK_API_KEY:
+        raise RuntimeError("Please set DEEPSEEK_API_KEY before running this demo.")
+
     WORKSPACE.mkdir(parents=True, exist_ok=True)
 
     model = ChatOpenAI(

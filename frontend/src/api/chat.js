@@ -159,6 +159,17 @@ export async function sendMessage(
   await readSseStream(response, onChunk, abortSignal, controller)
 }
 
+export function cancelMessage(sessionId) {
+  return requestJson(
+    {
+      url: '/api/chat/cancel',
+      method: 'post',
+      params: { session_id: sessionId },
+    },
+    '停止回答失败'
+  )
+}
+
 export async function resumeStream(
   sessionId,
   threadId,

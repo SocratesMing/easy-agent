@@ -379,6 +379,7 @@ watch(() => props.scrollTrigger, () => {
 
 <style scoped>
 .chat-container {
+  position: relative;
   flex: 1;
   display: flex;
   flex-direction: row;

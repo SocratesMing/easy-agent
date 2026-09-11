@@ -16,33 +16,89 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_APP_WELCOME_TITLE = "Easy Agent，让工作更简单"
 
-# Matches ${VAR} and ${VAR:-default} placeholders inside string values.
 _ENV_VAR_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
+_INT_RE = re.compile(r"^[+-]?(?:0|[1-9][0-9]*)$")
+_FLOAT_RE = re.compile(
+    r"^[+-]?(?:(?:[0-9]+\.[0-9]*)|(?:[0-9]*\.[0-9]+)|(?:[0-9]+[eE][+-]?[0-9]+))$"
+)
 
 
-def _expand_env(value: str) -> str:
-    """Resolve ${VAR} / ${VAR:-default} placeholders in a single string."""
+def _parse_env_scalar(value: str) -> object:
+    lowered = value.lower()
+    if lowered == "true":
+        return True
+    if lowered == "false":
+        return False
+    if lowered in {"null", "none", "~"}:
+        return None
+    if _INT_RE.fullmatch(value):
+        return int(value)
+    if _FLOAT_RE.fullmatch(value):
+        return float(value)
+    return value
 
-    def _replace(match: re.Match) -> str:
-        name = match.group(1)
-        default = match.group(2)
-        env_value = os.environ.get(name)
+
+def _expand_env_string(value: str) -> object:
+    """Expand only ${NAME} / ${NAME:-default}; never evaluate shell syntax."""
+
+    full_match = _ENV_VAR_RE.fullmatch(value)
+
+    def replace(match: re.Match[str]) -> str:
+        env_value = os.environ.get(match.group(1))
         if env_value is not None:
             return env_value
-        return default if default is not None else ""
+        default = match.group(2)
+        return default if default is not None else match.group(0)
 
-    return _ENV_VAR_RE.sub(_replace, value)
+    expanded = _ENV_VAR_RE.sub(replace, value)
+    if full_match and not _ENV_VAR_RE.search(expanded):
+        return _parse_env_scalar(expanded)
+    return expanded
 
 
-def _expand_env_recursive(obj: Any) -> Any:
-    """Recursively expand env-var placeholders inside parsed YAML data."""
-    if isinstance(obj, str):
-        return _expand_env(obj)
-    if isinstance(obj, dict):
-        return {k: _expand_env_recursive(v) for k, v in obj.items()}
-    if isinstance(obj, list):
-        return [_expand_env_recursive(item) for item in obj]
-    return obj
+def _expand_env_recursive(value: object) -> object:
+    if isinstance(value, str):
+        return _expand_env_string(value)
+    if isinstance(value, list):
+        return [_expand_env_recursive(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _expand_env_recursive(item) for key, item in value.items()}
+    return value
+
+
+def _find_unresolved_paths(value: object, path: str = "") -> set[str]:
+    found: set[str] = set()
+    if isinstance(value, str) and _ENV_VAR_RE.search(value):
+        found.add(path or "<root>")
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            found.update(_find_unresolved_paths(item, f"{path}[{index}]"))
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            child = f"{path}.{key}" if path else str(key)
+            found.update(_find_unresolved_paths(item, child))
+    return found
+
+
+def _runtime_config_view(data: dict[str, Any]) -> dict[str, Any]:
+    """Return only configuration branches consumed by the selected runtime."""
+
+    active_model = str(data.get("model", "minimax"))
+    models = data.get("models") if isinstance(data.get("models"), dict) else {}
+    database = (
+        data.get("database") if isinstance(data.get("database"), dict) else {}
+    )
+    database_type = str(database.get("type", "sqlite"))
+    selected: dict[str, Any] = {
+        key: value for key, value in data.items() if key not in {"models", "database"}
+    }
+    selected["models"] = {active_model: models.get(active_model, {})}
+    selected["database"] = {
+        "type": database_type,
+        "fallback_to_sqlite": database.get("fallback_to_sqlite", False),
+        database_type: database.get(database_type, {}),
+    }
+    return selected
 
 
 class RetryConfig(BaseModel):
@@ -60,6 +116,7 @@ class ProviderConfig(BaseModel):
     max_input_tokens: int = 200000
     protocol: str = "openai"  # "openai" or "anthropic"
     supports_vision: bool = False  # 是否支持视觉/图片输入；False 时自动过滤 image_url 内容块
+    timeout_seconds: float = 60.0  # 单次模型请求超时，防止代理断连后无限等待
 
 
 class LLMConfig(BaseModel):
@@ -72,6 +129,7 @@ class LLMConfig(BaseModel):
     max_input_tokens: int = 200000  # Model context window size
     protocol: str = "openai"  # "openai" or "anthropic"
     supports_vision: bool = False  # 是否支持视觉/图片输入
+    timeout_seconds: float = 60.0
     retry: RetryConfig = Field(default_factory=RetryConfig)
 
 
@@ -116,8 +174,19 @@ class DatabaseConfig(BaseModel):
     """Database configuration - supports SQLite and MySQL"""
 
     type: str = "sqlite"
+    # MySQL deployments must fail closed.  A silent fallback creates a second,
+    # divergent personnel store and can invalidate authorization decisions.
+    fallback_to_sqlite: bool = False
     sqlite: SQLiteConfig = Field(default_factory=SQLiteConfig)
     mysql: MySQLConfig = Field(default_factory=MySQLConfig)
+
+
+class PersonnelConfig(BaseModel):
+    """Personnel provisioning and account-source policy."""
+
+    # Fail closed unless a controlled deployment explicitly opts into the
+    # legacy public registration flow.
+    self_registration_enabled: bool = False
 
 
 class AgentConfig(BaseModel):
@@ -215,6 +284,7 @@ class Config(BaseModel):
     log: LogConfig = Field(default_factory=LogConfig)
     summarization: SummarizationConfig = Field(default_factory=SummarizationConfig)
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
+    personnel: PersonnelConfig = Field(default_factory=PersonnelConfig)
     models: dict[str, ProviderConfig] = Field(default_factory=dict)
     active_model: str = "minimax"
     preset_questions: list[PresetQuestionGroup] = Field(default_factory=list)
@@ -245,6 +315,30 @@ class Config(BaseModel):
         return cls.from_yaml(config_path)
 
     @classmethod
+    def resolve_config_path(
+        cls,
+        explicit_path: str | Path | None = None,
+        config_dir: str | Path | None = None,
+    ) -> Path:
+        """Resolve the active YAML path; values are expanded by :meth:`from_yaml`."""
+        if explicit_path is None:
+            explicit_path = os.environ.get("EASY_CONFIG")
+        if explicit_path:
+            return Path(explicit_path)
+
+        base_dir = Path(config_dir) if config_dir else cls.get_package_dir() / "config"
+        agent_env = os.environ.get("AGENT_ENV", "dev").lower()
+        if agent_env in ("dev", "test", "prod"):
+            candidate = base_dir / f"config.{agent_env}.yaml"
+            if candidate.exists():
+                return candidate
+
+        dev_candidate = base_dir / "config.dev.yaml"
+        if dev_candidate.exists():
+            return dev_candidate
+        return base_dir / "config.yaml"
+
+    @classmethod
     def from_yaml(cls, config_path: str | Path) -> "Config":
         """Load configuration from YAML file"""
         config_path = Path(config_path)
@@ -255,11 +349,16 @@ class Config(BaseModel):
         with open(config_path, encoding="utf-8") as f:
             data = yaml.safe_load(f)
 
-        if not data:
+        if not isinstance(data, dict) or not data:
             raise ValueError("Configuration file is empty")
 
-        # Expand ${ENV_VAR} / ${ENV_VAR:-default} placeholders (e.g. api_key, password).
         data = _expand_env_recursive(data)
+        unresolved = sorted(_find_unresolved_paths(_runtime_config_view(data)))
+        if unresolved:
+            raise ValueError(
+                "Selected runtime configuration has unresolved environment variables at: "
+                + ", ".join(unresolved)
+            )
 
         # Parse active model selection
         active_model = data.get("model", "minimax")
@@ -277,6 +376,7 @@ class Config(BaseModel):
                     max_input_tokens=mcfg.get("max_input_tokens", 200000),
                     protocol=mcfg.get("protocol", "openai"),
                     supports_vision=mcfg.get("supports_vision", False),
+                    timeout_seconds=mcfg.get("timeout_seconds", 60.0),
                 )
 
         # Resolve active model config
@@ -301,6 +401,7 @@ class Config(BaseModel):
             max_input_tokens=active_cfg.max_input_tokens or 200000,
             protocol=active_cfg.protocol or "openai",
             supports_vision=active_cfg.supports_vision,
+            timeout_seconds=active_cfg.timeout_seconds,
             retry=retry_config,
         )
 
@@ -347,6 +448,7 @@ class Config(BaseModel):
         )
         db_config = DatabaseConfig(
             type=db_data.get("type", "sqlite"),
+            fallback_to_sqlite=db_data.get("fallback_to_sqlite", False),
             sqlite=SQLiteConfig(path=sqlite_data.get("path", "./data/easy_agent.db")),
             mysql=MySQLConfig(
                 host=mysql_data.get("host", "127.0.0.1"),
@@ -374,6 +476,15 @@ class Config(BaseModel):
             compression_target=summ_data.get("compression_target", 0.1),
         )
 
+        personnel_data = data.get("personnel", {})
+        if not isinstance(personnel_data, dict):
+            personnel_data = {}
+        personnel_config = PersonnelConfig(
+            self_registration_enabled=personnel_data.get(
+                "self_registration_enabled", False
+            )
+        )
+
         return cls(
             llm=llm_config,
             agent=agent_config,
@@ -381,6 +492,7 @@ class Config(BaseModel):
             log=log_config,
             summarization=summ_config,
             database=db_config,
+            personnel=personnel_config,
             models=models,
             active_model=active_model,
             preset_questions=data.get("preset_questions", []),

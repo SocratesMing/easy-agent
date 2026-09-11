@@ -26,6 +26,7 @@ from ..models.api import (
 )
 from ..middleware import get_current_username
 from ..utils import get_owned_session
+from ..utils.reasoning_safety import redact_messages_reasoning
 from ..config import Config
 from ..services import get_agent_config, remove_session_agent
 
@@ -196,7 +197,7 @@ async def get_session(
         title=session.title,
         created_at=session.created_at,
         updated_at=session.updated_at,
-        messages=session.messages,
+        messages=redact_messages_reasoning(session.messages),
         todos=session.todos,
         usage=usage,
         max_input_tokens=max_input_tokens,
@@ -317,7 +318,7 @@ async def get_chat_history(
     return GetChatHistoryResponse(
         session_id=session.session_id,
         title=session.title,
-        messages=session.messages,
+        messages=redact_messages_reasoning(session.messages),
         created_at=session.created_at,
         updated_at=session.updated_at,
         usage=usage,

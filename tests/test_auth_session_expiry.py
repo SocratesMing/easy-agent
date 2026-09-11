@@ -107,6 +107,29 @@ async def test_unexpired_token_fails_after_idle_timeout(monkeypatch):
     assert exc_info.value.status_code == 401
 
 
+@pytest.mark.asyncio
+async def test_recent_signed_token_restores_idle_cache_after_process_restart(monkeypatch):
+    monkeypatch.setattr(auth_middleware, "get_agent_config", lambda: _config(1))
+    auth_middleware._user_activity_cache.clear()
+
+    username = await auth_middleware.get_current_username(
+        _Request(_active_token()), _Database()
+    )
+
+    assert username == "alice"
+    assert auth_middleware._user_activity_cache["alice"] > auth_middleware.time.time() - 2
+
+
+def test_stale_token_issue_time_cannot_reopen_idle_window(monkeypatch):
+    monkeypatch.setattr(auth_middleware, "get_agent_config", lambda: _config(1))
+    auth_middleware._user_activity_cache.clear()
+    now = auth_middleware.time.time()
+
+    assert auth_middleware._user_session_is_active(
+        "alice", now=now, token_issued_at=now - 61
+    ) is False
+
+
 def test_verify_token_sso_rejects_after_idle_timeout(monkeypatch):
     monkeypatch.setattr(
         auth_middleware, "get_agent_config", lambda: _config(1)
@@ -116,6 +139,28 @@ def test_verify_token_sso_rejects_after_idle_timeout(monkeypatch):
     token = _active_token()
 
     assert auth_middleware.verify_token_sso(token, _Database()) is None
+
+
+@pytest.mark.asyncio
+async def test_main_auth_rejects_disabled_user_even_with_current_token(monkeypatch):
+    monkeypatch.setattr(auth_middleware, "get_agent_config", lambda: _config(0))
+    disabled = SimpleNamespace(token_version=1, account_status="disabled")
+
+    with pytest.raises(HTTPException) as exc_info:
+        await auth_middleware.get_current_username(
+            _Request(_active_token()), _Database(disabled)
+        )
+
+    assert exc_info.value.status_code == 403
+
+
+def test_query_token_auth_rejects_disabled_user(monkeypatch):
+    monkeypatch.setattr(auth_middleware, "get_agent_config", lambda: _config(0))
+    disabled = SimpleNamespace(token_version=1, account_status="disabled")
+
+    assert auth_middleware.verify_token_sso(
+        _active_token(), _Database(disabled)
+    ) is None
 
 
 @pytest.mark.asyncio
@@ -152,7 +197,7 @@ async def test_logout_invalidates_never_expiring_token():
     class _LogoutDatabase:
         token_version = 1
 
-        def increment_user_token_version(self, username):
+        def increment_user_token_version(self, username, *, require_active=False):
             assert username == "alice"
             self.token_version += 1
             return self.token_version
@@ -174,7 +219,7 @@ async def test_logout_invalidates_never_expiring_token():
 @pytest.mark.asyncio
 async def test_logout_logs_first_login_and_last_activity(caplog):
     class _LogoutDatabase:
-        def increment_user_token_version(self, username):
+        def increment_user_token_version(self, username, *, require_active=False):
             return 2
 
     token = create_access_token(

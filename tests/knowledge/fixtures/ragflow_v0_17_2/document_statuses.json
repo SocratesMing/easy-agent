@@ -1,0 +1,13 @@
+{
+  "code": 0,
+  "data": {
+    "docs": [
+      {"id": "doc_pending", "name": "pending.pdf", "run": "0", "progress": 0.0},
+      {"id": "doc_processing", "name": "processing.pdf", "run": "1", "progress": 0.5},
+      {"id": "doc_cancelled", "name": "cancelled.pdf", "run": "2", "progress": 0.5},
+      {"id": "doc_ready", "name": "ready.pdf", "run": "3", "progress": 1.0},
+      {"id": "doc_failed", "name": "failed.pdf", "run": "4", "progress": -1.0}
+    ],
+    "total": 5
+  }
+}

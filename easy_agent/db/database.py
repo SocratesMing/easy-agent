@@ -8,6 +8,7 @@ import logging
 import os
 import re
 import sqlite3
+import threading
 import uuid
 from contextlib import contextmanager
 from datetime import datetime
@@ -30,6 +31,23 @@ DATABASE_PATH = "./data/easy_agent.db"
 logger = logging.getLogger(__name__)
 
 
+def _bootstrap_admin_password() -> str:
+    """Read a one-time administrator secret without providing a weak fallback."""
+
+    password = os.environ.get("EASYAGENT_BOOTSTRAP_ADMIN_PASSWORD", "")
+    weak_values = {"admin", "123456", "password", "changeme", "easyagent"}
+    if (
+        len(password) < 12
+        or password.casefold() in weak_values
+        or len(set(password)) < 4
+    ):
+        raise RuntimeError(
+            "首次初始化需要通过 EASYAGENT_BOOTSTRAP_ADMIN_PASSWORD "
+            "注入长度不少于 12 位的强随机管理员密码"
+        )
+    return password
+
+
 def ensure_database_dir(db_path: str):
     db_dir = os.path.dirname(db_path)
     if db_dir and not os.path.exists(db_dir):
@@ -40,6 +58,7 @@ class Database:
     def __init__(self, db_config: dict = None):
         self.db_type = "sqlite"
         self._connection: Optional[sqlite3.Connection] = None
+        self._sqlite_lock = threading.RLock()
         self._pool = None
 
         if db_config:
@@ -62,7 +81,10 @@ class Database:
                         f"数据库: {self._mysql_config.get('database')} | 用户: {self._mysql_config.get('user')}"
                     )
                 except Exception as e:
-                    logger.info(f"MySQL 连接失败，自动降级到 SQLite: {e}")
+                    if not db_config.get("fallback_to_sqlite", False):
+                        logger.error(f"MySQL 连接失败且已禁止 SQLite 降级: {e}")
+                        raise
+                    logger.warning(f"MySQL 连接失败，自动降级到 SQLite: {e}")
                     self.db_type = "sqlite"
                     self._pool = None
                     sqlite_cfg = db_config.get("sqlite", {})
@@ -132,6 +154,7 @@ class Database:
                 check_same_thread=False,
             )
             self._connection.row_factory = sqlite3.Row
+            self._connection.execute("PRAGMA foreign_keys = ON")
         return self._connection
 
     def _get_mysql_connection(self):
@@ -156,13 +179,23 @@ class Database:
 
     @contextmanager
     def get_connection(self):
-        conn = self._get_connection()
+        # SQLite 降级模式下所有请求共用一个 connection。FastAPI
+        # threadpool 会让文件夹、文档和聊天请求并发使用它，因此必须
+        # 把一次完整事务串行化。MySQL 仍使用独立池化连接，不加此锁。
+        lock = self._sqlite_lock if self.db_type == "sqlite" else None
+        if lock is not None:
+            lock.acquire()
         try:
-            yield conn
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
+            conn = self._get_connection()
+            try:
+                yield conn
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+        finally:
+            if lock is not None:
+                lock.release()
 
     def _execute(self, cursor, sql: str, params: tuple = None):
         if self.db_type == "mysql":
@@ -180,6 +213,29 @@ class Database:
         else:
             try:
                 cursor.execute(f"CREATE INDEX {index_name} ON {table_name}({columns})")
+            except Exception as e:
+                if "Duplicate key name" in str(e) or "already exists" in str(e):
+                    pass
+                else:
+                    raise
+
+    def _create_unique_index(
+        self,
+        cursor,
+        index_name: str,
+        table_name: str,
+        columns: str,
+    ):
+        if self.db_type == "sqlite":
+            cursor.execute(
+                f"CREATE UNIQUE INDEX IF NOT EXISTS {index_name} "
+                f"ON {table_name}({columns})"
+            )
+        else:
+            try:
+                cursor.execute(
+                    f"CREATE UNIQUE INDEX {index_name} ON {table_name}({columns})"
+                )
             except Exception as e:
                 if "Duplicate key name" in str(e) or "already exists" in str(e):
                     pass
@@ -370,6 +426,42 @@ class Database:
             self._ensure_column(cursor, "users", "bound_ip", "VARCHAR(45) DEFAULT ''")
             # 单点登录：token 版本号，每次登录递增，旧 token 的 v 不匹配即被踢下线
             self._ensure_column(cursor, "users", "token_version", "INTEGER DEFAULT 0")
+            # 人员管理扩展字段。organization_id 保留给现有权限代码，
+            # department_id 是人员管理中的明确部门标识，两者始终保持兼容。
+            personnel_columns = {
+                # NULL means "not supplied" so a normal UNIQUE index can enforce
+                # non-empty employee IDs while allowing many users without one.
+                "employee_id": "VARCHAR(64) DEFAULT NULL",
+                "display_name": "VARCHAR(127) DEFAULT ''",
+                "department_id": "VARCHAR(255) DEFAULT ''",
+                "department_name": "VARCHAR(255) DEFAULT ''",
+                "position": "VARCHAR(127) DEFAULT ''",
+                "mobile": "VARCHAR(64) DEFAULT ''",
+                "account_status": "VARCHAR(20) DEFAULT 'active'",
+                "personnel_source": "VARCHAR(255) DEFAULT ''",
+            }
+            for column, definition in personnel_columns.items():
+                self._ensure_column(cursor, "users", column, definition)
+            self._execute(
+                cursor,
+                "UPDATE users SET employee_id=NULL WHERE employee_id=''",
+            )
+            if self.db_type == "mysql":
+                cursor.execute(
+                    "ALTER TABLE users MODIFY employee_id VARCHAR(64) NULL DEFAULT NULL"
+                )
+            self._create_unique_index(
+                cursor,
+                "uq_users_employee_id",
+                "users",
+                "employee_id",
+            )
+            self._execute(
+                cursor,
+                """UPDATE users SET department_id=organization_id
+                   WHERE (department_id IS NULL OR department_id='')
+                     AND organization_id IS NOT NULL AND organization_id<>''""",
+            )
 
             cursor.execute(f"""
                 CREATE TABLE IF NOT EXISTS fmqt_bloom (
@@ -453,6 +545,20 @@ class Database:
                 )
             """)
             self._create_index(cursor, "idx_scheduled_task_runs_task", "scheduled_task_runs", "task_id")
+
+            # Narrow integration point: schema ownership stays in knowledge/.
+            from ..knowledge.schema import (
+                initialize_knowledge_schema,
+                validate_knowledge_schema_cursor,
+            )
+
+            # Production releases must run the explicit migration command
+            # before either Web or Worker starts.  Development/test keeps the
+            # backwards-compatible bootstrap path for disposable databases.
+            if os.environ.get("AGENT_ENV", "").casefold() in {"prod", "production"}:
+                validate_knowledge_schema_cursor(self, cursor)
+            else:
+                initialize_knowledge_schema(self, cursor)
 
             conn.commit()
 
@@ -620,20 +726,21 @@ class Database:
                     cursor,
                     """
                     SELECT session_id, title, messages, created_at, updated_at, username, workspace_name, pinned
-                    FROM sessions WHERE username = ? AND title NOT LIKE ?
+                    FROM sessions
+                    WHERE username = ? AND title NOT LIKE ? AND title NOT LIKE ?
                     ORDER BY pinned DESC, updated_at DESC LIMIT ? OFFSET ?
                     """,
-                    (username, "[定时任务]%", limit, offset),
+                    (username, "[定时任务]%", "[知识库问答]%", limit, offset),
                 )
             else:
                 self._execute(
                     cursor,
                     """
                     SELECT session_id, title, messages, created_at, updated_at, username, workspace_name, pinned
-                    FROM sessions WHERE title NOT LIKE ?
+                    FROM sessions WHERE title NOT LIKE ? AND title NOT LIKE ?
                     ORDER BY pinned DESC, updated_at DESC LIMIT ? OFFSET ?
                     """,
-                    ("[定时任务]%", limit, offset),
+                    ("[定时任务]%", "[知识库问答]%", limit, offset),
                 )
             rows = cursor.fetchall()
 
@@ -1177,14 +1284,14 @@ class Database:
             if username:
                 self._execute(
                     cursor,
-                    "SELECT COUNT(*) FROM sessions WHERE username=? AND title NOT LIKE ?",
-                    (username, "[定时任务]%"),
+                    "SELECT COUNT(*) FROM sessions WHERE username=? AND title NOT LIKE ? AND title NOT LIKE ?",
+                    (username, "[定时任务]%", "[知识库问答]%"),
                 )
             else:
                 self._execute(
                     cursor,
-                    "SELECT COUNT(*) FROM sessions WHERE title NOT LIKE ?",
-                    ("[定时任务]%",),
+                    "SELECT COUNT(*) FROM sessions WHERE title NOT LIKE ? AND title NOT LIKE ?",
+                    ("[定时任务]%", "[知识库问答]%"),
                 )
             row = cursor.fetchone()
             return row[0] if row else 0
@@ -1316,14 +1423,41 @@ class Database:
             rows = cursor.fetchall()
         return [dict(row) for row in rows]
 
+    @staticmethod
+    def _user_from_row(row) -> UserModel:
+        row = dict(row) if not isinstance(row, dict) else row
+        return UserModel(
+            user_id=row["user_id"],
+            username=row["username"],
+            password_hash=row.get("password_hash", ""),
+            organization_id=row.get("organization_id", ""),
+            email=row.get("email", ""),
+            bound_ip=row.get("bound_ip", ""),
+            token_version=row.get("token_version", 0),
+            employee_id=row.get("employee_id", "") or "",
+            display_name=row.get("display_name", ""),
+            department_id=row.get("department_id", "") or row.get("organization_id", ""),
+            department_name=row.get("department_name", ""),
+            position=row.get("position", ""),
+            mobile=row.get("mobile", ""),
+            account_status=row.get("account_status", "active") or "active",
+            personnel_source=row.get("personnel_source", ""),
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )
+
     def create_user(self, user_data: UserModel) -> UserModel:
         with self.get_connection() as conn:
             cursor = conn.cursor()
             self._execute(
                 cursor,
                 """
-                INSERT INTO users (user_id, username, password_hash, organization_id, email, bound_ip, token_version, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO users (
+                    user_id, username, password_hash, organization_id, email,
+                    bound_ip, token_version, employee_id, display_name,
+                    department_id, department_name, position, mobile,
+                    account_status, personnel_source, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     user_data.user_id,
@@ -1333,6 +1467,14 @@ class Database:
                     user_data.email,
                     user_data.bound_ip,
                     user_data.token_version,
+                    user_data.employee_id or None,
+                    user_data.display_name,
+                    user_data.department_id or user_data.organization_id,
+                    user_data.department_name,
+                    user_data.position,
+                    user_data.mobile,
+                    user_data.account_status,
+                    user_data.personnel_source,
                     user_data.created_at,
                     user_data.updated_at,
                 ),
@@ -1346,18 +1488,7 @@ class Database:
             row = cursor.fetchone()
         if row is None:
             return None
-        row = dict(row) if not isinstance(row, dict) else row
-        return UserModel(
-            user_id=row["user_id"],
-            username=row["username"],
-            password_hash=row["password_hash"],
-            organization_id=row.get("organization_id", ""),
-            email=row.get("email", ""),
-            bound_ip=row.get("bound_ip", ""),
-            token_version=row.get("token_version", 0),
-            created_at=row["created_at"],
-            updated_at=row["updated_at"],
-        )
+        return self._user_from_row(row)
 
     def get_user_by_id(self, user_id: str) -> Optional[UserModel]:
         with self.get_connection() as conn:
@@ -1366,18 +1497,7 @@ class Database:
             row = cursor.fetchone()
         if row is None:
             return None
-        row = dict(row) if not isinstance(row, dict) else row
-        return UserModel(
-            user_id=row["user_id"],
-            username=row["username"],
-            password_hash=row["password_hash"],
-            organization_id=row.get("organization_id", ""),
-            email=row.get("email", ""),
-            bound_ip=row.get("bound_ip", ""),
-            token_version=row.get("token_version", 0),
-            created_at=row["created_at"],
-            updated_at=row["updated_at"],
-        )
+        return self._user_from_row(row)
 
     def update_user(self, user_data: UserModel):
         with self.get_connection() as conn:
@@ -1385,7 +1505,9 @@ class Database:
             self._execute(
                 cursor,
                 """
-                UPDATE users SET username=?, password_hash=?, organization_id=?, email=?, bound_ip=?, updated_at=?
+                UPDATE users SET username=?, password_hash=?, organization_id=?, email=?, bound_ip=?,
+                    employee_id=?, display_name=?, department_id=?, department_name=?,
+                    position=?, mobile=?, account_status=?, personnel_source=?, updated_at=?
                 WHERE user_id=?
                 """,
                 (
@@ -1394,6 +1516,14 @@ class Database:
                     user_data.organization_id,
                     user_data.email,
                     user_data.bound_ip,
+                    user_data.employee_id or None,
+                    user_data.display_name,
+                    user_data.department_id or user_data.organization_id,
+                    user_data.department_name,
+                    user_data.position,
+                    user_data.mobile,
+                    user_data.account_status,
+                    user_data.personnel_source,
                     datetime.now().isoformat(),
                     user_data.user_id,
                 ),
@@ -1418,24 +1548,35 @@ class Database:
             return ""
         return user.bound_ip
 
-    def increment_user_token_version(self, username: str) -> int:
+    def increment_user_token_version(
+        self, username: str, *, require_active: bool = False
+    ) -> int:
         """单点登录：递增用户的 token 版本号并返回新值。
 
         每次登录调用，使该用户此前签发的 JWT（v 不等于新值）在下次鉴权时失效，
         从而实现「新登录踢掉旧登录」。
         """
-        user = self.get_user_by_username(username)
-        if not user:
-            return 0
-        new_version = user.token_version + 1
         with self.get_connection() as conn:
             cursor = conn.cursor()
+            active_clause = " AND account_status<>'disabled'" if require_active else ""
             self._execute(
                 cursor,
-                "UPDATE users SET token_version=?, updated_at=? WHERE username=?",
-                (new_version, datetime.now().isoformat(), username),
+                "UPDATE users SET token_version=COALESCE(token_version, 0)+1, "
+                f"updated_at=? WHERE username=?{active_clause}",
+                (datetime.now().isoformat(), username),
             )
-        return new_version
+            if cursor.rowcount <= 0:
+                return 0
+            self._execute(
+                cursor,
+                "SELECT token_version FROM users WHERE username=?",
+                (username,),
+            )
+            row = cursor.fetchone()
+        if not row:
+            return 0
+        value = dict(row) if not isinstance(row, dict) else row
+        return int(value["token_version"])
 
     def get_user_token_version(self, username: str) -> int:
         user = self.get_user_by_username(username)
@@ -1499,17 +1640,33 @@ class Database:
     def get_or_create_default_user(self) -> UserModel:
         default_user = self.get_user_by_username("admin")
         if default_user:
-            # 保证 admin 默认密码为 admin（补齐历史空密码/无密码的存量数据）
-            if not default_user.password_hash:
-                self.update_user_password("admin", hash_password("admin"))
+            # Never repair an account to a public, well-known password.  A
+            # historical row without a credential must be provisioned with a
+            # one-time secret supplied by the deployment environment.
+            is_production = os.environ.get("AGENT_ENV", "").casefold() in {
+                "prod",
+                "production",
+            }
+            has_known_password = bool(default_user.password_hash) and any(
+                verify_password(candidate, default_user.password_hash)
+                for candidate in ("admin", "123456")
+            )
+            if not default_user.password_hash or (is_production and has_known_password):
+                password = _bootstrap_admin_password()
+                self.update_user_password("admin", hash_password(password))
                 default_user = self.get_user_by_username("admin")
+            elif has_known_password:
+                logger.warning(
+                    "开发环境 admin 仍使用公开弱密码；生产环境启动时将强制轮换"
+                )
             return default_user
 
+        password = _bootstrap_admin_password()
         now = datetime.now().isoformat()
         user = UserModel(
             user_id=str(uuid.uuid4()),
             username="admin",
-            password_hash=hash_password("admin"),
+            password_hash=hash_password(password),
             organization_id="",
             email="",
             bound_ip="",
@@ -1530,20 +1687,7 @@ class Database:
             rows = cursor.fetchall()
         result = []
         for row in rows:
-            row = dict(row) if not isinstance(row, dict) else row
-            result.append(
-                UserModel(
-                    user_id=row["user_id"],
-                    username=row["username"],
-                    password_hash=row["password_hash"],
-                    organization_id=row.get("organization_id", ""),
-                    email=row.get("email", ""),
-                    bound_ip=row.get("bound_ip", ""),
-                    token_version=row.get("token_version", 0),
-                    created_at=row["created_at"],
-                    updated_at=row["updated_at"],
-                )
-            )
+            result.append(self._user_from_row(row))
         return result
 
     def count_users(self) -> int:
@@ -1789,6 +1933,9 @@ def init_database(db_config: dict = None) -> Database:
     global _db_instance
     db = Database(db_config)
     db.init_tables()
+    # 人员配置入口仅对 admin 开放。历史库可能存在空密码的 admin 行，
+    # 统一沿用既有初始化逻辑补齐，使首次迁移到 MySQL 后管理员可登录。
+    db.get_or_create_default_user()
     _db_instance = db
     logger.info("✅ 数据库初始化完成")
     return db

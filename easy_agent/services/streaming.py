@@ -37,6 +37,11 @@ from ..db import Database
 from .stream_processor import StreamProcessor
 from ..models.api import ChatRequest
 from ..utils.session_logger import SessionLogger
+from ..utils.reasoning_safety import (
+    redact_messages_reasoning,
+    safe_blocks,
+    safe_reasoning_event,
+)
 from .agent_manager import get_agent_config
 
 logger = logging.getLogger("easy_agent.chat_service")
@@ -157,6 +162,7 @@ def build_assistant_message_dict(
     elapsed_time: float,
     step_count: int,
     result_limit: int = 5000,
+    extra_fields: dict | None = None,
 ) -> dict:
     """构建用于持久化/返回的 assistant 消息字典（常规结束、HITL 中断、取消等场景共用）。"""
     _raw_content = content or ""
@@ -165,11 +171,14 @@ def build_assistant_message_dict(
         b for b in (blocks or [])
         if not (b.get("type") == "content" and not (b.get("content", "") or "").strip())
     ]
-    return {
+    _clean_blocks = safe_blocks(_clean_blocks)
+    message = {
         "role": "assistant",
         "content": _raw_content if _raw_content.strip() else "",
         "timestamp": datetime.now().isoformat(),
-        "thinking": thinking or None,
+        # Raw provider reasoning is never part of the public/persistent
+        # contract. The fixed stage label in blocks preserves useful progress.
+        "thinking": None,
         "thinking_duration": thinking_duration or None,
         "tool_calls": tool_call_records_to_dicts(tool_call_records, result_limit) or None,
         "blocks": _clean_blocks or None,
@@ -182,6 +191,9 @@ def build_assistant_message_dict(
             "step_count": step_count,
         },
     }
+    if extra_fields:
+        message.update(extra_fields)
+    return message
 
 
 def _mark_hitl_pending(
@@ -366,6 +378,9 @@ async def chat_stream_generator(
     http_request=None,
     parsed_content: str = None,
     session_logger=None,
+    context_prefix: str | None = None,
+    initial_events: list[dict] | None = None,
+    assistant_metadata: dict | None = None,
 ) -> AsyncGenerator[str, None]:
     start_time = time.time()
     sid = session_id[-5:] if session_id else "new"
@@ -373,6 +388,9 @@ async def chat_stream_generator(
     message_content = parsed_content or request.message
     # 保存原始用户输入（记忆/工作区前缀注入前），供日志明确打印用户实际提问。
     raw_user_input = message_content
+
+    if context_prefix:
+        message_content = f"{context_prefix}\n\n## 用户当前问题\n{message_content}"
 
     if agent and agent.workspace_dir:
         message_content = f"[workspace: {agent.workspace_virtual_path}/ | shell: cd {agent.workspace_virtual_path}]\n{message_content}"
@@ -426,6 +444,8 @@ async def chat_stream_generator(
     try:
 
         yield format_sse({"type": "start", "session_id": session_id})
+        for initial_event in initial_events or []:
+            yield format_sse(initial_event)
 
         # ── 配置 ─────────────────────────────────────────────────
         max_input_tokens = None
@@ -549,22 +569,6 @@ async def chat_stream_generator(
                 except Exception as e:
                     logger.warning(f"[{sid}] 记录生成文件失败: {e}")
 
-        def _on_thinking_end(ev):
-            step = ev.get("step", 0)
-            duration = ev.get("duration", 0)
-            for blk in reversed(proc.blocks):
-                if blk.get("type") == "thinking" and blk.get("step") == step:
-                    content = (blk.get("content", "") or "").strip()
-                    if content and message_id:
-                        try:
-                            db.record_thinking(
-                                session_id=session_id, message_id=message_id,
-                                step=step, content=content[:10000], duration=duration,
-                            )
-                        except Exception as e:
-                            logger.warning(f"[{sid}] 持久化思考记录失败: {e}")
-                    break
-
         last_persisted_len = 0
 
         # ── 构建上下文消息 ─────────────────────────────────────────────
@@ -622,6 +626,7 @@ async def chat_stream_generator(
         thread_id = f"{session_id}-{message_id}"
         stream_config = {"configurable": {"thread_id": thread_id}}
 
+        announced_thinking_steps: set[int] = set()
         async for event in agent.agent.astream(
             {"messages": context_messages},
             stream_mode=["messages", "updates"],
@@ -635,7 +640,8 @@ async def chat_stream_generator(
                 if ev_type == "tool_result":
                     _on_tool_result(ev)
                 elif ev_type == "thinking_end":
-                    _on_thinking_end(ev)
+                    # Raw chain-of-thought must not be persisted.
+                    pass
                 elif ev_type == "todo_list":
                     try:
                         db.update_session_todos(session_id, ev["todos"])
@@ -645,14 +651,18 @@ async def chat_stream_generator(
                     if len(proc.accumulated_response) - last_persisted_len >= 500:
                         last_persisted_len = len(proc.accumulated_response)
                         _persist()
-                yield format_sse(ev)
+                safe_event = safe_reasoning_event(ev, announced_thinking_steps)
+                if safe_event is not None:
+                    yield format_sse(safe_event)
 
         # ── Post-streaming: 流结束 ──────────────────────────────────────
         logger.info(f"[{sid}] 📢 流式输出结束")
 
         # 确保 thinking 结束（流结束时若仍在思考）
         for _ev in proc._end_thinking():
-            yield format_sse(_ev)
+            safe_event = safe_reasoning_event(_ev, announced_thinking_steps)
+            if safe_event is not None:
+                yield format_sse(safe_event)
 
         # 同步本地状态别名（供后续 HITL/持久化/记忆逻辑使用）
         accumulated_response = proc.accumulated_response
@@ -718,6 +728,7 @@ async def chat_stream_generator(
                         context_tokens=last_context_tokens,
                         elapsed_time=partial_elapsed,
                         step_count=current_step,
+                        extra_fields=assistant_metadata,
                     )
                     # 持久化 HITL 审批状态：将触发中断的工具调用标记为「待审批」
                     # 注意：blocks 也必须同步打标记——前端历史渲染优先读 blocks，
@@ -789,8 +800,6 @@ async def chat_stream_generator(
             f"会话累计: Σ{max(session_total_tokens, sum_tokens)} | "
             f"消息数: {max(session_msg_count, 1)}"
         )
-        if accumulated_thinking:
-            logger.info(f"[{sid}] 🤔 思考内容(前200字):\n{accumulated_thinking[:200]}")
         if accumulated_response:
             logger.info(f"[{sid}] 💬 回复内容(前200字):\n{accumulated_response[:200]}")
 
@@ -808,6 +817,7 @@ async def chat_stream_generator(
             elapsed_time=elapsed_time,
             step_count=current_step,
             result_limit=None,
+            extra_fields=assistant_metadata,
         )
         db.update_last_assistant_message(session_id, assistant_message)
         db.update_last_assistant_message_row(session_id, assistant_message)
@@ -828,12 +838,12 @@ async def chat_stream_generator(
                 "session_id": session_id,
                 "message_id": message_id,
                 "timestamp": datetime.now().isoformat(),
-                "messages": all_messages,
+                "messages": redact_messages_reasoning(all_messages),
                 "current_exchange": {
                     "user_message": message_content,
                     "assistant_response": {
                         "content": accumulated_response,
-                        "thinking": accumulated_thinking or None,
+                        "thinking": None,
                         "thinking_duration": thinking_time,
                     },
                     "tool_calls": tool_call_records_to_dicts(tool_call_records, 1000),
@@ -858,7 +868,7 @@ async def chat_stream_generator(
             tool_calls_for_log = tool_call_records_to_dicts(tool_call_records, 1000) or None
             session_logger.log_assistant_response(
                 content=accumulated_response,
-                thinking=accumulated_thinking or None,
+                thinking=None,
                 tool_calls=tool_calls_for_log,
             )
 
@@ -911,6 +921,7 @@ async def chat_stream_generator(
                 context_tokens=last_context_tokens,
                 elapsed_time=time.time() - start_time,
                 step_count=current_step,
+                extra_fields=assistant_metadata,
             )
             db.update_last_assistant_message(session_id, partial_msg)
             db.update_last_assistant_message_row(session_id, partial_msg)
@@ -1174,22 +1185,6 @@ async def resume_stream_generator(
             except Exception as e:
                 logger.warning(f"[{sid}] 记录生成文件失败: {e}")
 
-    def _on_thinking_end(ev):
-        step = ev.get("step", 0)
-        duration = ev.get("duration", 0)
-        for blk in reversed(proc.blocks):
-            if blk.get("type") == "thinking" and blk.get("step") == step:
-                content = (blk.get("content", "") or "").strip()
-                if content and message_id:
-                    try:
-                        db.record_thinking(
-                            session_id=session_id, message_id=message_id,
-                            step=step, content=content[:10000], duration=duration,
-                        )
-                    except Exception as e:
-                        logger.warning(f"[{sid}] 持久化思考记录失败: {e}")
-                break
-
     def _persist_approval_decisions():
         """将用户对 HITL 工具调用的审批决策（批准/拒绝）持久化到最近一条 assistant 消息，
         使切换会话/刷新页面后仍能显示审批标记。"""
@@ -1238,6 +1233,7 @@ async def resume_stream_generator(
 
     try:
         last_persisted_len = 0
+        announced_thinking_steps: set[int] = set()
         async for event in agent.agent.astream(
             resume_command,
             stream_mode=["messages", "updates"],
@@ -1251,7 +1247,8 @@ async def resume_stream_generator(
                 if ev_type == "tool_result":
                     _on_tool_result(ev)
                 elif ev_type == "thinking_end":
-                    _on_thinking_end(ev)
+                    # Raw chain-of-thought must not be persisted.
+                    pass
                 elif ev_type == "todo_list":
                     try:
                         db.update_session_todos(session_id, ev["todos"])
@@ -1261,12 +1258,16 @@ async def resume_stream_generator(
                     if len(proc.accumulated_response) - last_persisted_len >= 500:
                         last_persisted_len = len(proc.accumulated_response)
                         _persist()
-                yield format_sse(ev)
+                safe_event = safe_reasoning_event(ev, announced_thinking_steps)
+                if safe_event is not None:
+                    yield format_sse(safe_event)
 
         # ── Post-streaming ─────────────────────────────────────────
         # 确保 thinking 结束（流结束时若仍在思考）
         for _ev in proc._end_thinking():
-            yield format_sse(_ev)
+            safe_event = safe_reasoning_event(_ev, announced_thinking_steps)
+            if safe_event is not None:
+                yield format_sse(safe_event)
 
         # 同步本地状态别名（供后续嵌套 HITL/持久化/记忆逻辑使用）
         accumulated_response = proc.accumulated_response
@@ -1334,7 +1335,7 @@ async def resume_stream_generator(
                         "type": "approval_required",
                         "thread_id": thread_id,
                         # 嵌套中断时也下发当前 blocks，前端据此刷新已完成的工具结果
-                        "blocks": proc._sse_blocks(),
+                        "blocks": safe_blocks(proc._sse_blocks()),
                         "action_requests": action_requests_payload,
                     })
                     return
@@ -1473,7 +1474,7 @@ async def resume_stream_generator(
             "usage": usage_payload,
             # 下发权威最终 blocks（含工具结果/耗时），前端据此替换内存 blocks，
             # 避免依赖 tool_result 事件匹配（HITL 恢复流曾因匹配失败导致工具一直"执行中"）。
-            "blocks": proc._sse_blocks(),
+            "blocks": safe_blocks(proc._sse_blocks()),
         })
 
     except asyncio.CancelledError:

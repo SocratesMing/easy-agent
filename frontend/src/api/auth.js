@@ -31,6 +31,7 @@ export async function authFetch(url, options = {}) {
     headers: options.headers,
     data: options.body,
     signal: options.signal,
+    responseType: options.responseType,
   })
 
   return {
@@ -39,6 +40,11 @@ export async function authFetch(url, options = {}) {
     json: async () => response.data,
     text: async () => String(response.data),
     blob: async () => response.data,
+    headers: {
+      get(name) {
+        return response.headers?.[String(name).toLowerCase()] || null
+      },
+    },
   }
 }
 

@@ -27,6 +27,19 @@ def test_register_success(client):
     assert data["username"] == "alice"
 
 
+def test_register_is_rejected_when_personnel_policy_disables_it(client, db, monkeypatch):
+    config = SimpleNamespace(
+        personnel=SimpleNamespace(self_registration_enabled=False)
+    )
+    monkeypatch.setattr(auth_mod, "get_agent_config", lambda: {"config": config})
+
+    response = _register(client, "blocked.user")
+
+    assert response.status_code == 403
+    assert "关闭自助注册" in response.json()["detail"]
+    assert db.get_user_by_username("blocked.user") is None
+
+
 def test_token_lifetime_zero_idle_logout(monkeypatch):
     """idle_logout_minutes=0（不登出、一直登录）时签发无过期 token。"""
 
@@ -113,6 +126,17 @@ async def test_admin_can_reset_user_password_to_default(db):
 
     assert result["status"] == "success"
     assert db.verify_user_password("alice", "123456") is not None
+
+
+async def test_admin_default_password_reset_rejects_admin_target(db):
+    admin = db.get_user_by_username("admin")
+    original_hash = admin.password_hash
+
+    with pytest.raises(HTTPException) as error:
+        await auth_mod.admin_reset_password("admin", "admin", db)
+
+    assert error.value.status_code == 400
+    assert db.get_user_by_username("admin").password_hash == original_hash
 
 
 async def test_admin_reset_password_allows_login_with_default(db, monkeypatch):

@@ -192,6 +192,7 @@ onMounted(() => {
 <style scoped>
 .workspace-panel {
   width: 260px;
+  flex: none;
   display: flex;
   flex-direction: column;
   background: #ffffff;

@@ -26,6 +26,14 @@ class UserModel:
     email: str = ""
     bound_ip: str = ""
     token_version: int = 0
+    employee_id: str = ""
+    display_name: str = ""
+    department_id: str = ""
+    department_name: str = ""
+    position: str = ""
+    mobile: str = ""
+    account_status: str = "active"
+    personnel_source: str = ""
     created_at: str = ""
     updated_at: str = ""
 

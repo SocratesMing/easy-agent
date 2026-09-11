@@ -3,7 +3,7 @@
     <div class="welcome-modal">
       <div class="welcome-header">
         <h1>{{ APP_TITLE }}</h1>
-        <p>{{ isLogin ? '请登录您的账号' : '创建新账号开始使用' }}</p>
+        <p>账号由 admin 统一配置，请使用已分配账号登录</p>
       </div>
 
       <form @submit.prevent="handleSubmit" class="welcome-form">
@@ -35,51 +35,17 @@
           />
         </div>
 
-        <div class="form-group" v-if="!isLogin">
-          <label for="organizationId">
-            机构ID <span class="required">*</span>
-            <span class="password-hint">（注册后不可更改）</span>
-          </label>
-          <input
-            id="organizationId"
-            v-model="form.organizationId"
-            type="text"
-            placeholder="请输入所属机构ID"
-            required
-          />
-        </div>
-
-        <div class="form-group" v-if="!isLogin">
-          <label for="email">用户邮箱</label>
-          <input
-            id="email"
-            v-model="form.email"
-            type="email"
-            placeholder="请输入用户邮箱（选填）"
-          />
-        </div>
-
-        <div v-if="!isLogin" class="info-message">
-          账号支持单点登录：同账号新登录会自动踢掉此前的登录，登录不限制 IP
-        </div>
-
-        <div v-if="error" class="error-message">
+        <div v-if="error" class="error-message" role="alert">
           {{ error }}
         </div>
 
-        <div v-if="success" class="success-message">
-          {{ success }}
-        </div>
-
-        <button type="submit" class="submit-btn" :disabled="submitting || !form.username.trim() || !form.password.trim() || (!isLogin && !form.organizationId.trim())">
-          {{ submitting ? (isLogin ? '登录中...' : '注册中...') : (isLogin ? '登录' : '注册') }}
+        <button type="submit" class="submit-btn" :disabled="submitting || !form.username.trim() || !form.password.trim()">
+          {{ submitting ? '登录中...' : '登录' }}
         </button>
 
         <div class="form-footer">
-          <button type="button" @click="toggleMode" class="toggle-mode-btn">
-            {{ isLogin ? '还没有账号？立即注册' : '已有账号？立即登录' }}
-          </button>
-          <span v-if="isLogin" class="forgot-password-btn">忘记密码？请联系管理员 admin 重置</span>
+          <span class="account-provisioned">暂无账号？请联系管理员 admin 配置</span>
+          <span class="forgot-password-btn">忘记密码？请联系管理员 admin 重置</span>
         </div>
       </form>
     </div>
@@ -88,7 +54,7 @@
 
 <script>
 import { ref, onMounted, nextTick } from 'vue'
-import { login, register } from '../api/auth.js'
+import { login } from '../api/auth.js'
 import { APP_TITLE } from '../config.js'
 export default {
   emits: ['completed'],
@@ -96,27 +62,11 @@ export default {
 const usernameInput = ref(null)
 const submitting = ref(false)
 const error = ref('')
-const success = ref('')
-const isLogin = ref(true)
 
 const form = ref({
   username: '',
-  password: '',
-  organizationId: '',
-  email: ''
+  password: ''
 })
-
-function toggleMode() {
-  isLogin.value = !isLogin.value
-  error.value = ''
-  success.value = ''
-  form.value = {
-    username: '',
-    password: '',
-    organizationId: '',
-    email: ''
-  }
-}
 
 async function handleSubmit() {
   if (!form.value.username.trim()) {
@@ -129,37 +79,16 @@ async function handleSubmit() {
     return
   }
 
-  if (!isLogin.value && (form.value.password.length < 4 || form.value.password.length > 20)) {
-    error.value = '密码长度应为4-20位'
+  if (form.value.password.length > 20) {
+    error.value = '密码长度不能超过20位'
     return
-  } else {
-    if (form.value.password.length > 20) {
-      error.value = '密码长度不能超过20位'
-      return
-    }
   }
 
   submitting.value = true
   error.value = ''
-  success.value = ''
 
   try {
-    let data
-    if (isLogin.value) {
-      data = await login(form.value.username.trim(), form.value.password)
-    } else {
-      if (!form.value.organizationId.trim()) {
-        error.value = '请输入机构ID'
-        submitting.value = false
-        return
-      }
-      data = await register(
-        form.value.username.trim(),
-        form.value.password,
-        form.value.organizationId.trim(),
-        form.value.email.trim()
-      )
-    }
+    const data = await login(form.value.username.trim(), form.value.password)
 
     emit('completed', {
       username: data.username,
@@ -172,7 +101,7 @@ async function handleSubmit() {
     } else if (e.status === 401) {
       error.value = '密码错误'
     } else {
-      error.value = e.message || (isLogin.value ? '登录失败，请重试' : '注册失败，请重试')
+      error.value = e.message || '登录失败，请重试'
     }
   } finally {
     submitting.value = false
@@ -195,15 +124,11 @@ onMounted(() => {
       error,
       form,
       handleSubmit,
-      isLogin,
       login,
       nextTick,
       onMounted,
       ref,
-      register,
       submitting,
-      success,
-      toggleMode,
       usernameInput,
     }
   },
@@ -316,24 +241,6 @@ onMounted(() => {
   font-size: 14px;
 }
 
-.info-message {
-  padding: 12px 16px;
-  background: rgba(14, 165, 233, 0.1);
-  color: #0284c7;
-  border: 1px solid rgba(14, 165, 233, 0.25);
-  border-radius: 10px;
-  font-size: 13px;
-  line-height: 1.5;
-}
-
-.success-message {
-  padding: 12px 16px;
-  background: #d1fae5;
-  color: #059669;
-  border-radius: 10px;
-  font-size: 14px;
-}
-
 .submit-btn {
   padding: 14px 24px;
   border: none;
@@ -366,21 +273,7 @@ onMounted(() => {
   gap: 4px;
 }
 
-.toggle-mode-btn {
-  background: transparent;
-  border: none;
-  color: #0ea5e9;
-  font-size: 14px;
-  cursor: pointer;
-  padding: 8px 16px;
-  transition: all 0.2s;
-}
-
-.toggle-mode-btn:hover {
-  color: #0284c7;
-  text-decoration: underline;
-}
-
+.account-provisioned,
 .forgot-password-btn {
   background: transparent;
   border: none;

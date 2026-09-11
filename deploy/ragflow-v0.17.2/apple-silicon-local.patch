@@ -1,0 +1,33 @@
+diff --git a/docker/.env b/docker/.env
+--- a/docker/.env
++++ b/docker/.env
+@@ -32,7 +32,7 @@ KIBANA_PASSWORD=infini_rag_flow
+-MEM_LIMIT=8073741824
++MEM_LIMIT=4294967296
+@@ -123,7 +123,7 @@ TIMEZONE='Asia/Shanghai'
+-# MACOS=1
++MACOS=1
+diff --git a/docker/docker-compose.yml b/docker/docker-compose.yml
+--- a/docker/docker-compose.yml
++++ b/docker/docker-compose.yml
+@@ -6,6 +6,10 @@ services:
+     depends_on:
+       mysql:
+         condition: service_healthy
++      # Elasticsearch needs several minutes on Apple Silicon x86 emulation;
++      # wait for it instead of letting the API exhaust its startup retries.
++      es01:
++        condition: service_healthy
+@@ -13,7 +17,9 @@ services:
+     volumes:
+-      - ./ragflow-logs:/ragflow/logs
++      # A named volume avoids chown failures on Colima bind mounts when the
++      # repository path contains non-ASCII characters.
++      - ragflow_logs:/ragflow/logs
+@@ -51,3 +57,7 @@ services:
+   #   extra_hosts:
+   #     - "host.docker.internal:host-gateway"
++
++volumes:
++  ragflow_logs:
++    driver: local

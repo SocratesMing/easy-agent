@@ -13,6 +13,7 @@ models:
     api_key: "${DEEPSEEK_API_KEY}"
     api_base: "https://api.deepseek.com"
     max_input_tokens: 200000
+    timeout_seconds: "${LLM_TIMEOUT_SECONDS:-60}"
 
 # Retry
 retry:
@@ -75,6 +76,8 @@ preset_questions:
 # Database - 生产环境使用 MySQL
 database:
   type: "mysql"
+  # 禁止数据库故障时静默写入本地 SQLite，避免形成两套人员与权限数据。
+  fallback_to_sqlite: false
   sqlite:
     path: "./data/easy_agent.db"
   mysql:
@@ -92,6 +95,10 @@ database:
     connect_timeout: 10
     read_timeout: 30
     write_timeout: 30
+
+# 生产环境账号由管理员/行内人员源统一配置。
+personnel:
+  self_registration_enabled: false
 
 # Vector Store
 # 禁止智能体读写的虚拟路径目录列表（通过 permissions deny 规则限制）

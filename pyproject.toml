@@ -16,8 +16,10 @@ dependencies = [
     "langchain-anthropic>=0.3.0",
     "langchain-openai>=0.3.0",
     "fastapi>=0.115.0",
+    "httpx>=0.28.0",
     "uvicorn[standard]>=0.34.0",
     "python-multipart>=0.0.18",
+    "openpyxl>=3.0.0",
     "pymysql>=1.1.0",
     "DBUtils>=3.0.0",
     "bcrypt>=4.1.0",
@@ -30,6 +32,7 @@ dependencies = [
 
 [project.scripts]
 easy-web = "easy_agent.web_runner:run_web"
+easy-knowledge-worker = "easy_agent.knowledge.worker:run"
 
 [project.optional-dependencies]
 dev = [
