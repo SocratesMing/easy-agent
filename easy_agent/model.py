@@ -326,6 +326,13 @@ def _create_openai_compatible(llm_config) -> ChatOpenAI:
         api_key=llm_config.api_key,
         base_url=llm_config.api_base,
         max_retries=llm_config.retry.max_retries if llm_config.retry.enabled else 0,
+        # 必须显式开启：langchain 只在「未传 base_url 等自定义客户端参数」时才默认
+        # 打开 stream_usage（见 langchain_openai/chat_models/base.py 中
+        # "Enable stream_usage by default if using default base URL and client" 分支）。
+        # 本项目一律走自定义 base_url（DeepSeek / 火山方舟等兼容接口），不显式开启的
+        # 话请求不会带 stream_options={"include_usage": true}，这些服务便不在流末尾
+        # 返回 usage_metadata，前端「输入/输出/思考 Token」与「本轮上下文占用」会恒为 0。
+        stream_usage=True,
     )
 
 

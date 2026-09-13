@@ -190,12 +190,18 @@ docker run -d \
   easy-agent:latest
 ```
 
-容器入口脚本 `docker/entrypoint.sh` 会根据 `AGENT_ENV` 选择配置：
-- `prod` -> `config/config.prod.yaml`（生产）
-- `test` -> `config/config.test.yaml`（测试）
-- `dev` -> `config/config.dev.yaml`（开发）
+后端**只使用一份 `config.yaml`**，不再按环境拆分配置文件。
 
-后端通过 `Config.resolve_config_path()` 选择配置（优先级：`EASY_CONFIG` > `AGENT_ENV` 对应的 `config.{env}.yaml` > `config.dev.yaml` > `config.yaml`），并在终端打印环境信息与加载的配置文件路径。
+环境差异（工作区路径、上下文窗口、阈值、模型名等）通过 `config.yaml` 里的 `${VAR:-默认值}` 占位符注入，
+不同环境只需提供不同的 env 文件 —— 由 `AGENT_ENV` 决定加载哪个：
+
+- `AGENT_ENV=dev` -> 项目根 `.env.dev`（不存在则回退 `.env`）
+- `AGENT_ENV=test` -> 项目根 `.env.test`（不存在则回退 `.env`）
+- `AGENT_ENV=prod` -> 项目根 `.env.prod`（不存在则回退 `.env`）
+
+变量清单见 `.env.dev.example` / `.env.test.example` / `.env.prod.example`。
+配置文件路径可用 `EASY_CONFIG=/path/to/xxx.yaml` 覆盖（`Config.resolve_config_path()`），
+终端会打印环境信息与加载的配置文件路径。
 YAML 中的 `api_key`、`password` 等值支持 `${ENV_VAR}` / `${ENV_VAR:-默认值}` 占位符，在加载配置时从 `os.environ` 解析；项目根 `.env` 会在配置解析前自动注入（见 `easy_agent/utils/env_loader.py`），未取到值的变量名会在启动日志里以 WARNING 列出。
 前端 `vite.config.js` 在构建时读取 `AGENT_ENV` 映射为 Vite mode（dev→development / test→test / prod→production），加载对应的 `.env.[mode]` 文件，并在终端输出配置横幅。
 
@@ -203,7 +209,7 @@ YAML 中的 `api_key`、`password` 等值支持 `${ENV_VAR}` / `${ENV_VAR:-默�
 
 ## 六、配置说明
 
-主要配置项（例如 `easy_agent/config/config.dev.yaml`；本地环境配置已被 Git 忽略）：
+主要配置项（例如 `easy_agent/config/config.yaml`；本地环境配置已被 Git 忽略）：
 
 ```yaml
 # 使用的模型（在 models 列表中选择一个）

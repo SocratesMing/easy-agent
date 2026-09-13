@@ -3,7 +3,7 @@
 「正文内容」「推理内容」以及「token 用量」。
 
 说明：
-  - 配置：优先加载 easy_agent/config/config.dev.yaml，回退到 config.yaml。
+  - 配置：加载统一配置 config.yaml（环境差异由 .env.{AGENT_ENV} 注入）。
   - 模型：用 create_model(config) 创建（内置 reasoning_content 提取）。
   - 推理：兼容 OpenAI/DeepSeek 的 reasoning_content 与 Anthropic 的 thinking block。
   - token：开启 stream_options.include_usage，流式结束后打印 input/output/total。
@@ -31,12 +31,10 @@ THIN = "-" * 70
 
 
 def load_dev_config() -> Config:
-    """加载 dev 配置文件（config.dev.yaml），回退到 config.yaml。"""
-    path = Config.find_config_file("config.dev.yaml") or Config.find_config_file(
-        "config.yaml"
-    )
+    """加载统一配置文件 config.yaml。"""
+    path = Config.find_config_file("config.yaml")
     if path is None:
-        raise FileNotFoundError("未找到 config.dev.yaml 或 config.yaml")
+        raise FileNotFoundError("未找到 config.yaml")
     print(f"✅ 加载配置文件: {path}")
     return Config.from_yaml(path)
 

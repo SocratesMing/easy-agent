@@ -57,7 +57,8 @@ cd frontend && npm run build         # Build SPA into frontend/dist/ (required b
 
 ## Configuration & Security Tips
 
-- `config.yaml` is gitignored because it holds secrets-copy `config-example.yaml` as a template.
-- Per-environment configs (`config.dev.yaml`, `config.prod.yaml`, `config.test.yaml`) are selected via the `AGENT_ENV` variable.
+- `config.yaml` is the **single** backend config file, and it is gitignored — copy `config-example.yaml` as a template.
+- Environment differences are injected through `${VAR:-default}` placeholders, whose values come from `.env.{AGENT_ENV}` (`.env.dev` / `.env.test` / `.env.prod`, falling back to `.env`). See `.env.*.example` for the full variable list.
+- Legacy per-environment files (`config.dev.yaml`, `config.prod.yaml`, `config.test.yaml`) are no longer read by the backend.
 - Set `EASY_JWT_SECRET` for stable tokens across restarts; otherwise a random secret is generated each start, invalidating all sessions on restart.
 - Override the config path with the `EASY_CONFIG` environment variable.

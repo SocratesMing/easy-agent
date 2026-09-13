@@ -1,82 +1,106 @@
 <template>
   <div class="chat-container">
-    <div class="chat-main" :class="composerMode === 'center' ? 'is-center' : 'is-bottom'">
-    <TodoListPanel
-      v-if="!sidebarCollapsed"
-      :todos="todos"
-    />
-    <div class="chat-messages" ref="messagesRef" @scroll="handleScroll">
-      <div v-if="sessionCreatedAt && messages.length > 0" class="session-created-time">
-        {{ formatSessionTime(sessionCreatedAt) }}
-      </div>
-      <div v-if="messages.length === 0" class="welcome-screen">
-        <h2>{{ welcomeTitle }}</h2>
-      </div>
-      
-      <div
-      v-for="(msg, index) in messages"
-      :key="msg.id"
-      ref="messageEls"
-      class="message-wrapper"
-      :class="msg.role"
-    >
-      <ChatMessage
-        :message="msg"
-        @remove-file="(file) => handleRemoveFile(file, index)"
-        @retry="handleRetry"
-        @approve="handleApprove"
-        @reject="handleReject"
-      />
-    </div>
-    </div>
-    <button v-if="canGoToNextUserMessage" @click="goToNextUserMessage" class="scroll-btn next" title="回到下一个用户问题">
-      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <polyline points="6 9 12 15 18 9"></polyline>
-      </svg>
-    </button>
-    <button v-if="canGoToPrevUserMessage" @click="goToPrevUserMessage" class="scroll-btn prev" title="回到上一个用户问题">
-      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <polyline points="18 15 12 9 6 15"></polyline>
-      </svg>
-    </button>
-
-    <ChatInput
-      class="composer"
-      @send="onSend"
-      :disabled="isStreaming"
-      :isStreaming="isStreaming"
-      :session-id="currentSessionId"
-      :sessionUsage="sessionUsage"
-      :sessionDuration="sessionDuration"
-      :iterationCount="iterationCount"
-      :models="models"
-      :selectedModel="selectedModel"
-      :showFooter="composerMode === 'bottom'"
-      @update:selectedModel="$emit('update:selectedModel', $event)"
-      @stop="handleStop"
-      @create-session="handleCreateSession"
-    />
-
-    <!-- 分类预设问题：仅在首页（居中模式）展示，置于输入框下方，悬浮展开 -->
-    <div class="preset-categories" v-if="composerMode === 'center' && presetQuestions.length">
-      <div class="preset-category-tabs">
-        <div
-          class="preset-category"
-          v-for="(group, gi) in presetQuestions"
-          :key="gi"
-        >
-          <button type="button" class="preset-category-tab">
-            <span v-if="group.icon" class="preset-category-icon">{{ group.icon }}</span>
-            <span>{{ group.category }}</span>
+    <div class="chat-main">
+    <div class="chat-content" :class="composerMode === 'center' ? 'is-center' : 'is-bottom'">
+      <!-- 顶部信息行：会话时间居中，操作区（任务规划 + 展开工作区）贴右。
+           这三者此前分散在视口/聊天区右上角，位置互不相干；现在统一到同一行。 -->
+      <div v-if="showTopbar" class="chat-topbar">
+        <div v-if="showSessionTime" class="session-created-time">
+          <span class="session-time-pill">
+            <svg class="session-time-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="10"></circle>
+              <polyline points="12 6 12 12 16 14"></polyline>
+            </svg>
+            {{ formatSessionTime(sessionCreatedAt) }}
+          </span>
+        </div>
+        <div class="chat-topbar-actions">
+          <!-- 任务规划：只由 todos 决定显隐，不再依赖 sidebarCollapsed
+               （那会让折叠会话列表时任务胶囊一起消失）。 -->
+          <TodoListPanel :todos="todos" />
+          <button
+            v-if="currentSessionId && !workspaceExpanded"
+            class="expand-workspace-inline"
+            @click="$emit('toggle-workspace')"
+            title="展开工作区"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+              <line x1="9" y1="3" x2="9" y2="21"></line>
+            </svg>
           </button>
-          <div class="preset-category-panel">
-            <button
-              v-for="(q, i) in group.questions"
-              :key="i"
-              type="button"
-              class="preset-chip"
-              @click="onPresetClick(q)"
-            >{{ q }}</button>
+        </div>
+      </div>
+      <div class="chat-messages" ref="messagesRef" @scroll="handleScroll">
+        <div v-if="messages.length === 0" class="welcome-screen">
+          <h2>{{ welcomeTitle }}</h2>
+        </div>
+      
+        <div
+        v-for="(msg, index) in messages"
+        :key="msg.id"
+        ref="messageEls"
+        class="message-wrapper"
+        :class="msg.role"
+      >
+        <ChatMessage
+          :message="msg"
+          @remove-file="(file) => handleRemoveFile(file, index)"
+          @retry="handleRetry"
+          @approve="handleApprove"
+          @reject="handleReject"
+        />
+      </div>
+      </div>
+      <button v-if="canGoToNextUserMessage" @click="goToNextUserMessage" class="scroll-btn next" title="回到下一个用户问题">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <polyline points="6 9 12 15 18 9"></polyline>
+        </svg>
+      </button>
+      <button v-if="canGoToPrevUserMessage" @click="goToPrevUserMessage" class="scroll-btn prev" title="回到上一个用户问题">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <polyline points="18 15 12 9 6 15"></polyline>
+        </svg>
+      </button>
+
+      <ChatInput
+        class="composer"
+        @send="onSend"
+        :disabled="isStreaming"
+        :isStreaming="isStreaming"
+        :session-id="currentSessionId"
+        :sessionUsage="sessionUsage"
+        :sessionDuration="sessionDuration"
+        :iterationCount="iterationCount"
+        :models="models"
+        :selectedModel="selectedModel"
+        :showFooter="composerMode === 'bottom'"
+        @update:selectedModel="$emit('update:selectedModel', $event)"
+        @stop="handleStop"
+        @create-session="handleCreateSession"
+      />
+
+      <!-- 分类预设问题：仅在首页（居中模式）展示，置于输入框下方，悬浮展开 -->
+      <div class="preset-categories" v-if="composerMode === 'center' && presetQuestions.length">
+        <div class="preset-category-tabs">
+          <div
+            class="preset-category"
+            v-for="(group, gi) in presetQuestions"
+            :key="gi"
+          >
+            <button type="button" class="preset-category-tab">
+              <span v-if="group.icon" class="preset-category-icon">{{ group.icon }}</span>
+              <span>{{ group.category }}</span>
+            </button>
+            <div class="preset-category-panel">
+              <button
+                v-for="(q, i) in group.questions"
+                :key="i"
+                type="button"
+                class="preset-chip"
+                @click="onPresetClick(q)"
+              >{{ q }}</button>
+            </div>
           </div>
         </div>
       </div>
@@ -155,7 +179,7 @@ export default {
     default: APP_WELCOME_TITLE
   }
 },
-  emits: ['send-message', 'stop', 'remove-file', 'create-session', 'approve', 'reject', 'update:selectedModel'],
+  emits: ['send-message', 'stop', 'remove-file', 'create-session', 'approve', 'reject', 'update:selectedModel', 'toggle-workspace'],
   setup(props, { emit }) {
 // 首页布局模式：center=空会话时输入框居中，bottom=对话中输入框贴底
 const composerMode = ref('center')
@@ -169,6 +193,15 @@ watch(() => props.messages, (newMessages) => {
   // 空会话显示居中输入框；有消息时输入框贴底
   composerMode.value = newMessages.length === 0 ? 'center' : 'bottom'
 }, { immediate: true })
+
+// 顶部信息行：会话时间（居中）+ 操作区（任务规划、展开工作区，贴右）。
+// 三者中任意一个需要展示时，这一行才占位 —— 首页（无会话）保持干净，
+// 否则会破坏 .chat-content.is-center 的垂直居中。
+const showSessionTime = computed(() => !!props.sessionCreatedAt && props.messages.length > 0)
+const showWorkspaceBtn = computed(() => !!props.currentSessionId && !props.workspaceExpanded)
+const showTopbar = computed(() =>
+  showSessionTime.value || props.todos.length > 0 || showWorkspaceBtn.value
+)
 
 
 const messagesRef = ref(null)
@@ -347,6 +380,9 @@ watch(() => props.scrollTrigger, () => {
       deckTop,
       deckVisibleCount,
       formatSessionTime,
+      showSessionTime,
+      showTopbar,
+      showWorkspaceBtn,
       goToNextUserMessage,
       goToPrevUserMessage,
       handleApprove,
@@ -386,11 +422,27 @@ watch(() => props.scrollTrigger, () => {
   position: relative;
   display: flex;
   flex-direction: row;
-  background: #ffffff;
+  /* 聊天区表面色：会话时间吸顶栏等需要"与容器同色"的元素统一引用本变量，
+     避免各自硬编码导致色差（此前吸顶栏用 --bg-primary 而这里是 #ffffff）。 */
+  --chat-surface: #ffffff;
+  background: var(--chat-surface);
   overflow: hidden;
 }
 
+/* 聊天区骨架：单列纵向。任务规划改为放在 .chat-content 顶部的可折叠条，
+   不再占用横向空间（此前是 260px 左栏，会挤压会话宽度）。 */
 .chat-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-width: 0;
+  position: relative;
+}
+
+/* 内容列：任务条 + 消息区 + 滚动按钮 + 输入框 + 预设问题。
+   position: relative 让 .scroll-btn 相对本列定位（含任务条之外的消息区域）。 */
+.chat-content {
   flex: 1;
   display: flex;
   flex-direction: column;
@@ -432,7 +484,10 @@ watch(() => props.scrollTrigger, () => {
 .chat-messages {
   flex: 1;
   overflow-y: auto;
-  padding: 24px;
+  /* 上下 padding 归零：sticky 子元素（如执行过程头部）被约束在父元素 content box 内，
+     容器的上下 padding 会让它们的冻结位置整体下移 24px —— 冻结时贴不住顶部、
+     会与上方滚过来的内容糊在一起。改由首尾伪元素提供间距，吸附点即等于容器顶部。 */
+  padding: 0 24px;
   display: flex;
   flex-direction: column;
   /* 与输入框区保持相同的内容宽度基准：预留滚动条 gutter，避免滚动条出现/消失
@@ -440,18 +495,27 @@ watch(() => props.scrollTrigger, () => {
   scrollbar-gutter: stable;
 }
 
+/* 首尾间距（替代被移除的上下 padding）：
+   伪元素只是普通 flex item，不会成为 sticky 子元素的吸附参照。 */
+.chat-messages::before,
+.chat-messages::after {
+  content: '';
+  display: block;
+  flex: 0 0 24px;
+}
+
 /* 空会话：欢迎区与输入框整体垂直居中 */
-.chat-main.is-center {
+.chat-content.is-center {
   justify-content: center;
 }
 
-.chat-main.is-center .chat-messages {
+.chat-content.is-center .chat-messages {
   flex: 0 1 auto;
   overflow: visible;
 }
 
 /* 回车发送后，输入框平滑下移到底部 */
-.chat-main.is-bottom .composer {
+.chat-content.is-bottom .composer {
   animation: composerDropIn 0.45s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
@@ -466,17 +530,98 @@ watch(() => props.scrollTrigger, () => {
   }
 }
 
+/* 顶部信息行：会话时间居中，操作区（任务规划胶囊 + 展开工作区）贴右。
+   border-bottom 画在这一行上，同时充当消息区的顶部分隔线。 */
+.chat-topbar {
+  position: relative;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* 与工作区头部 .wp-header 严格等高（44px，含 1px 底边框），
+     工作区展开时两区横线才能对齐；用固定高度而非 padding 推导。 */
+  height: 44px;
+  padding: 0 24px;
+  box-sizing: border-box;
+  background: var(--chat-surface, #ffffff);
+  border-bottom: 1px solid var(--border-color, #e2e8f0);
+}
+
+/* 右侧操作区：绝对定位以免影响时间的真正居中。
+   z-index 让它（及其内部的浮层）压在消息区之上。 */
+.chat-topbar-actions {
+  position: absolute;
+  right: 24px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* 会话时间只作为行内内容；条状背景与分隔线已上移到 .chat-topbar */
 .session-created-time {
-  position: sticky;
-  top: -24px;
-  z-index: 10;
-  text-align: center;
-  font-size: 12px;
-  color: #94a3b8;
-  padding: 8px 0;
-  margin: -24px -24px 12px;
-  background: #ffffff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
   user-select: none;
+}
+
+/* 展开工作区：与任务规划胶囊同排、位于最右。
+   原先 fixed 在视口右上角，与时间行不在同一区域（工作区展开时会浮在工作区面板上）。 */
+.expand-workspace-inline {
+  width: 26px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 999px;
+  /* 图标为展开箭头（‹），与工作区头部的收起箭头（›）成对；
+     配色改用中性灰，不再沿袭原先文件夹图标的黄色 hover。 */
+  color: #64748b;
+  cursor: pointer;
+  transition: background 0.2s ease, border-color 0.2s ease, color 0.2s ease;
+}
+
+.expand-workspace-inline:hover {
+  background: #eef2f7;
+  border-color: #cbd5e1;
+  color: #1f2937;
+}
+
+.expand-workspace-inline svg {
+  width: 14px;
+  height: 14px;
+}
+
+.session-time-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 11px 3px 9px;
+  border-radius: 999px;
+  font-size: 12px;
+  line-height: 1.6;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  color: var(--text-secondary, #64748b);
+  /* 底色用 --bg-primary（#f8fafc 浅灰蓝）而不是 --bg-secondary（#ffffff）。
+     容器本身已是白色，胶囊再用白色就完全看不见了 —— 需要一个明确低于
+     容器明度的表面色才能形成层次。 */
+  background: var(--bg-primary, #f8fafc);
+  border: 1px solid var(--border-color, #e2e8f0);
+  white-space: nowrap;
+}
+
+.session-time-icon {
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
+  opacity: 0.7;
 }
 
 .welcome-screen {

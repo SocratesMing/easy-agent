@@ -67,7 +67,17 @@ def load_project_env(override: bool | None = None) -> list[str]:
     if env_file:
         candidates = [Path(env_file)]
     else:
-        candidates = [PROJECT_ROOT / ".env", Path.cwd() / ".env"]
+        # 按 AGENT_ENV 优先加载「环境专属」的 .env.{env}（.env.dev / .env.test /
+        # .env.prod），找不到时回退到通用 .env —— 这样：
+        #   1) 后端只保留一份 config.yaml，环境差异全由这里的变量注入；
+        #   2) 尚未迁移的环境仍能用旧的 .env 正常启动（不会因缺文件导致配置全空）。
+        agent_env = (os.environ.get("AGENT_ENV") or "dev").strip().lower()
+        candidates = [
+            PROJECT_ROOT / f".env.{agent_env}",
+            Path.cwd() / f".env.{agent_env}",
+            PROJECT_ROOT / ".env",
+            Path.cwd() / ".env",
+        ]
 
     path = next((p for p in candidates if p.is_file()), None)
     if path is None:

@@ -20,6 +20,10 @@ wheels/
 *.egg
 
 .env
+# 各环境 env（本机密钥，勿提交）；仅入库 .example 模板
+.env.*
+!.env.example
+!.env.*.example
 .venv
 env/
 venv/

@@ -1,71 +1,75 @@
 <template>
-  <!-- Collapsed badge -->
-  <Transition name="todo-badge">
-    <div
-      v-if="todos.length > 0 && !expanded"
-      class="todo-badge"
-      @click="expanded = true"
-      title="展开任务规划"
+  <div v-if="todos.length > 0" ref="rootRef" class="todo-root">
+    <!-- 收起态：悬浮胶囊。绝对定位在会话区右上角（与会话时间同一行），
+         脱离文档流 → 收起时纵向占用为 0，不再把会话内容往下推。 -->
+    <button
+      class="todo-pill"
+      :class="{ 'is-active': hasInProgress, 'is-open': expanded }"
+      @click.stop="expanded = !expanded"
+      :title="expanded ? '收起任务规划' : '展开任务规划'"
     >
-      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="todo-badge-icon">
+      <svg class="todo-pill-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <rect width="8" height="4" x="8" y="2" rx="1" ry="1"></rect>
         <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"></path>
         <path d="m9 14 2 2 4-4"></path>
       </svg>
-      <span class="todo-badge-text">任务 {{ completedCount }}/{{ todos.length }}</span>
-    </div>
-  </Transition>
+      <span class="todo-pill-text">{{ completedCount }}/{{ todos.length }}</span>
+      <svg class="todo-pill-caret" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <polyline points="6 9 12 15 18 9"></polyline>
+      </svg>
+    </button>
 
-  <!-- Expanded floating panel -->
-  <Transition name="todo-slide">
-    <div v-if="todos.length > 0 && expanded" class="todo-panel">
-      <div class="todo-header">
-        <div class="todo-title">
-          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="todo-icon">
-            <rect width="8" height="4" x="8" y="2" rx="1" ry="1"></rect>
-            <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"></path>
-            <path d="m9 14 2 2 4-4"></path>
-          </svg>
-          <span>任务规划</span>
-          <span class="todo-count">{{ completedCount }}/{{ todos.length }}</span>
-        </div>
-        <button class="todo-close" @click="expanded = false" title="收起">
-          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <polyline points="15 18 9 12 15 6"></polyline>
-          </svg>
-        </button>
-      </div>
-      <div class="todo-progress">
-        <div class="todo-progress-bar" :style="{ width: progressPercent + '%' }"></div>
-      </div>
-      <div class="todo-list">
-        <div
-          v-for="(todo, index) in todos"
-          :key="index"
-          class="todo-item"
-          :class="todo.status"
-        >
-          <div class="todo-status-icon">
-            <svg v-if="todo.status === 'completed'" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-              <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
-              <polyline points="22 4 12 14.01 9 11.01"></polyline>
+    <!-- 展开态：浮层卡片。覆盖在消息之上而不是占据布局，点外部自动收起 -->
+    <Transition name="todo-pop">
+      <div v-if="expanded" class="todo-popup" @click.stop>
+        <div class="todo-header">
+          <div class="todo-title">
+            <svg class="todo-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect width="8" height="4" x="8" y="2" rx="1" ry="1"></rect>
+              <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"></path>
+              <path d="m9 14 2 2 4-4"></path>
             </svg>
-            <div v-else-if="todo.status === 'in_progress'" class="todo-spinner">
-              <span></span><span></span><span></span>
-            </div>
-            <div v-else class="todo-pending-dot"></div>
+            <span>任务规划</span>
+            <span class="todo-count">{{ completedCount }}/{{ todos.length }}</span>
           </div>
-          <span class="todo-content">
-            {{ todo.content }}
-          </span>
+          <button class="todo-close" @click="expanded = false" title="收起">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polyline points="18 15 12 9 6 15"></polyline>
+            </svg>
+          </button>
+        </div>
+        <div class="todo-progress">
+          <div class="todo-progress-bar" :style="{ width: progressPercent + '%' }"></div>
+        </div>
+        <div class="todo-list">
+          <div
+            v-for="(todo, index) in todos"
+            :key="index"
+            class="todo-item"
+            :class="todo.status"
+          >
+            <div class="todo-status-icon">
+              <svg v-if="todo.status === 'completed'" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
+                <polyline points="22 4 12 14.01 9 11.01"></polyline>
+              </svg>
+              <div v-else-if="todo.status === 'in_progress'" class="todo-spinner">
+                <span></span><span></span><span></span>
+              </div>
+              <div v-else class="todo-pending-dot"></div>
+            </div>
+            <span class="todo-content">
+              {{ todo.content }}
+            </span>
+          </div>
         </div>
       </div>
-    </div>
-  </Transition>
+    </Transition>
+  </div>
 </template>
 
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, ref, onMounted, onBeforeUnmount } from 'vue'
 
 const props = defineProps({
   todos: {
@@ -74,51 +78,77 @@ const props = defineProps({
   }
 })
 
-const expanded = ref(true)
+// 默认收起：展开态是浮层，收起时完全不占布局高度（此前默认展开会推挤会话内容）
+const expanded = ref(false)
+const rootRef = ref(null)
 
 const completedCount = computed(() => props.todos.filter(t => t.status === 'completed').length)
 const progressPercent = computed(() => {
   if (props.todos.length === 0) return 0
   return Math.round((completedCount.value / props.todos.length) * 100)
 })
+// 有任务执行中时胶囊做呼吸提示 —— 收起态也能看出"还在跑"
+const hasInProgress = computed(() => props.todos.some(t => t.status === 'in_progress'))
+
+function onDocClick(e) {
+  if (expanded.value && rootRef.value && !rootRef.value.contains(e.target)) {
+    expanded.value = false
+  }
+}
+onMounted(() => document.addEventListener('click', onDocClick))
+onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
 </script>
 
 <style scoped>
-/* Collapsed badge */
-.todo-badge {
-  position: absolute;
-  left: 0;
-  top: 12px;
-  z-index: 20;
+/* 任务规划：悬浮在会话区右上角，与会话时间处于同一视觉行。
+   绝对定位使其脱离文档流 —— 收起态高度为 0，展开态只是覆盖在消息之上，
+   两种状态都不会改变会话内容的布局（此前顶部横条会把消息整体推下去）。 */
+.todo-root {
+  /* 位于 .chat-topbar-actions 内，参与该行的水平排列（不再是绝对定位的浮层） */
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+/* 收起态胶囊（点击展开） */
+.todo-pill {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 6px 12px;
-  background: #f8f9fa;
-  border: 1px solid #e5e7eb;
-  border-left: none;
-  border-radius: 0 8px 8px 0;
+  padding: 4px 10px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 999px;
   cursor: pointer;
-  transition: all 0.2s ease;
-  box-shadow: 2px 2px 8px rgba(0, 0, 0, 0.06);
+  transition: background 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
   user-select: none;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
 }
 
-.todo-badge:hover {
+.todo-pill:hover {
   background: #7c6aef;
   border-color: #7c6aef;
-  box-shadow: 2px 2px 12px rgba(124, 106, 239, 0.25);
+  box-shadow: 0 2px 12px rgba(124, 106, 239, 0.25);
 }
 
-.todo-badge:hover .todo-badge-text {
+.todo-pill:hover .todo-pill-text,
+.todo-pill:hover .todo-pill-icon,
+.todo-pill:hover .todo-pill-caret {
   color: #fff;
 }
 
-.todo-badge:hover .todo-badge-icon {
-  color: #fff;
+/* 有任务执行中：紫色描边 + 呼吸光晕，收起态也能看出还在跑 */
+.todo-pill.is-active {
+  border-color: #a5b4fc;
+  animation: todo-pulse 2.2s ease-in-out infinite;
 }
 
-.todo-badge-icon {
+@keyframes todo-pulse {
+  0%, 100% { box-shadow: 0 1px 2px rgba(124, 106, 239, 0.08); }
+  50% { box-shadow: 0 0 0 4px rgba(124, 106, 239, 0.14); }
+}
+
+.todo-pill-icon {
   width: 14px;
   height: 14px;
   color: #7c6aef;
@@ -126,7 +156,7 @@ const progressPercent = computed(() => {
   transition: color 0.2s;
 }
 
-.todo-badge-text {
+.todo-pill-text {
   font-size: 12px;
   font-weight: 600;
   color: #4b5563;
@@ -134,37 +164,32 @@ const progressPercent = computed(() => {
   transition: color 0.2s;
 }
 
-/* Badge transition */
-.todo-badge-enter-active,
-.todo-badge-leave-active {
-  transition: all 0.3s ease;
+.todo-pill-caret {
+  width: 12px;
+  height: 12px;
+  color: #9ca3af;
+  flex-shrink: 0;
+  transition: transform 0.2s ease, color 0.2s;
 }
 
-.todo-badge-enter-from {
-  opacity: 0;
-  transform: translateX(-20px);
+.todo-pill.is-open .todo-pill-caret {
+  transform: rotate(180deg);
 }
 
-.todo-badge-leave-to {
-  opacity: 0;
-  transform: translateX(-20px);
-}
-
-/* Expanded floating panel */
-.todo-panel {
+/* 展开态浮层：锚定在胶囊下方，右对齐，覆盖在消息之上 */
+.todo-popup {
   position: absolute;
-  left: 0;
-  top: 0;
-  z-index: 20;
-  width: 260px;
-  background: #f8f9fa;
-  border-right: 1px solid #e5e7eb;
-  border-bottom: 1px solid #e5e7eb;
-  border-radius: 0 12px 12px 0;
+  top: calc(100% + 8px);
+  right: 0;
+  width: 300px;
+  max-height: min(46vh, 420px);
   display: flex;
   flex-direction: column;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.14);
   overflow: hidden;
-  box-shadow: 4px 0 16px rgba(0, 0, 0, 0.06);
 }
 
 .todo-header {
@@ -236,7 +261,8 @@ const progressPercent = computed(() => {
   padding: 8px 12px 12px;
   overflow-y: auto;
   flex: 1;
-  max-height: 70vh;
+  min-height: 0;
+  /* 限高由 .todo-popup 的 max-height 统一控制，这里只负责内部滚动 */
 }
 
 .todo-item {
@@ -310,32 +336,33 @@ const progressPercent = computed(() => {
   word-break: break-word;
 }
 
-
-
 .todo-item.in_progress .todo-content {
   color: #1f2937;
   font-weight: 500;
 }
 
-/* Panel slide transition */
-.todo-slide-enter-active,
-.todo-slide-leave-active {
-  transition: all 0.3s ease;
+/* 浮层显隐：自胶囊下方轻微下落淡入 */
+.todo-pop-enter-active,
+.todo-pop-leave-active {
+  transition: opacity 0.18s ease, transform 0.18s ease;
 }
 
-.todo-slide-enter-from {
+.todo-pop-enter-from,
+.todo-pop-leave-to {
   opacity: 0;
-  transform: translateX(-260px);
+  transform: translateY(-6px);
 }
 
-.todo-slide-leave-to {
-  opacity: 0;
-  transform: translateX(-260px);
-}
-
-.todo-slide-enter-to,
-.todo-slide-leave-from {
-  transform: translateX(0);
+@media (prefers-reduced-motion: reduce) {
+  .todo-pill,
+  .todo-pill.is-active,
+  .todo-spinner span {
+    animation: none;
+  }
+  .todo-pop-enter-active,
+  .todo-pop-leave-active {
+    transition-duration: 0.01ms;
+  }
 }
 
 /* Scrollbar */

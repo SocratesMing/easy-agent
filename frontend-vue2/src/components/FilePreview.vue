@@ -1,5 +1,5 @@
 <template>
-    <div v-if="visible" class="preview-overlay" @click.self="handleClose">
+    <div v-if="visible" class="preview-overlay" :class="{ 'is-inline': inline }" @click.self="handleClose">
       <div class="preview-dialog">
         <div class="preview-header">
           <h3 class="preview-title">{{ filename }}</h3>
@@ -126,6 +126,13 @@ export default {
     default: null
   },
   visible: {
+    type: Boolean,
+    default: false
+  },
+  // 内嵌模式：预览只占据「父容器」范围，不再铺满视口、也不加全屏黑遮罩。
+  // 用于工作区（WorkspacePanel）—— 这样预览文件时聊天区仍然可见，
+  // 会话时间区域、任务规划区域不会被盖住。默认 false 保持原有模态行为。
+  inline: {
     type: Boolean,
     default: false
   }
@@ -327,13 +334,27 @@ const isText = computed(() => {
   return ext && textExts.includes('.' + ext)
 })
 
-watch(() => props.visible, async (newVal) => {
-  if (newVal && props.filename) {
-    await loadPreview()
-  }
-})
+// 预览目标由 (visible, filename, filePath) 共同决定，需要覆盖三种场景：
+//   1) 常驻挂载 + visible 由 false→true（素材面板）；
+//   2) 父级用 v-if 控制、挂载时 visible 已为 true（定时任务面板）—— 靠 immediate 兜住；
+//   3) 多标签切换：visible 始终为 true，只有 filePath/filename 变化（工作区预览）。
+// 只监听 visible 会漏掉 2 和 3，表现为预览区一直空白。
+watch(
+  [() => props.visible, () => props.filePath, () => props.filename],
+  async () => {
+    if (props.visible && props.filename) {
+      await loadPreview()
+    }
+  },
+  { immediate: true }
+)
+
+// 每次加载分配递增序号：异步返回后若已有更新的加载，丢弃旧结果，
+// 避免快速切换标签时旧请求覆盖新标签内容。
+let loadSeq = 0
 
 async function loadPreview() {
+  const seq = ++loadSeq
   loading.value = true
   error.value = ''
   textContent.value = ''
@@ -398,10 +419,12 @@ async function loadPreview() {
       pdfParams.set('target', 'pdf')
       const pdfUrl = `${previewBaseUrl.value}?${pdfParams.toString()}`
       const blob = await requestBlob({ url: pdfUrl, headers })
+      if (seq !== loadSeq) return
       pptxPdfUrl.value = URL.createObjectURL(blob)
     } else if (isDocx.value) {
       console.log('[FilePreview] DOCX 预览')
       const arrayBuffer = await requestArrayBuffer({ url: previewUrl.value, headers })
+      if (seq !== loadSeq) return
       docxUrl.value = URL.createObjectURL(
         new Blob([arrayBuffer], {
           type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
@@ -410,6 +433,7 @@ async function loadPreview() {
     } else if (isExcel.value) {
       console.log('[FilePreview] Excel 预览')
       const arrayBuffer = await requestArrayBuffer({ url: previewUrl.value, headers })
+      if (seq !== loadSeq) return
       excelUrl.value = URL.createObjectURL(
         new Blob([arrayBuffer], {
           type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
@@ -418,22 +442,27 @@ async function loadPreview() {
     } else if (isHtml.value) {
       console.log('[FilePreview] HTML 预览')
       const htmlText = await requestText({ url: previewUrl.value, headers })
+      if (seq !== loadSeq) return
       const blob = new Blob([htmlText], { type: 'text/html; charset=utf-8' })
       htmlUrl.value = URL.createObjectURL(blob)
     } else if (isMarkdown.value || isText.value || isCsv.value) {
-      textContent.value = await requestText({ url: previewUrl.value, headers })
-      if (textContent.value.length > 50000) {
-        textContent.value = textContent.value.substring(0, 50000) + '\n\n... (内容过长已截断)'
+      let text = await requestText({ url: previewUrl.value, headers })
+      if (seq !== loadSeq) return
+      if (text.length > 50000) {
+        text = text.substring(0, 50000) + '\n\n... (内容过长已截断)'
       }
+      textContent.value = text
       console.log('[FilePreview] 文本预览加载完成, 长度:', textContent.value.length)
     } else {
       console.log('[FilePreview] 不支持预览的文件类型:', ext || '未知')
     }
   } catch (e) {
+    if (seq !== loadSeq) return
     console.error('[FilePreview] 预览加载失败:', e, { filename: props.filename, filePath: props.filePath })
     error.value = `加载失败: ${e.message}`
   }
 
+  if (seq !== loadSeq) return
   loading.value = false
 }
 
@@ -542,6 +571,32 @@ function handleClose() {
   flex-direction: column;
   overflow: hidden;
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+}
+
+/* 内嵌模式（工作区内预览）：限定在「父容器」范围内定位 —— 不铺满视口、
+   不加全屏黑遮罩，因此聊天区的会话时间、任务规划等区域在预览时依然可见。 */
+.preview-overlay.is-inline {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(15, 23, 42, 0.04);
+  z-index: 50;
+}
+
+.preview-overlay.is-inline .preview-dialog {
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+/* inline（工作区内预览）不显示自带头部：文件名与关闭按钮已由工作区标签栏承担，
+   重复展示既冗余又白占一行高度。下载入口移到标签上（见 WorkspacePanel）。 */
+.preview-overlay.is-inline .preview-header {
+  display: none;
 }
 
 .preview-header {

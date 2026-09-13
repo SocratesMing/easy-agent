@@ -31,9 +31,9 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 def load_dev_config(config_path: str | None = None) -> Config:
     path = Path(config_path).expanduser() if config_path else None
     if path is None:
-        path = Config.find_config_file("config.dev.yaml") or Config.find_config_file("config.yaml")
+        path = Config.find_config_file("config.yaml") or Config.find_config_file("config.dev.yaml")
     if path is None:
-        raise FileNotFoundError("未找到 config.dev.yaml 或 config.yaml")
+        raise FileNotFoundError("未找到 config.yaml")
     return Config.from_yaml(path)
 
 

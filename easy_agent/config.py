@@ -270,16 +270,10 @@ class Config(BaseModel):
         if explicit_path:
             return Path(explicit_path)
 
+        # 统一单一配置：只读 config.yaml。环境差异（路径 / 窗口 / 阈值 / 模型名）
+        # 一律通过 ${VAR:-默认值} 占位符从 .env.{AGENT_ENV} 注入，不再按 AGENT_ENV
+        # 选择不同的 yaml —— config.{dev,test,prod}.yaml 已废弃。
         base_dir = Path(config_dir) if config_dir else cls.get_package_dir() / "config"
-        agent_env = os.environ.get("AGENT_ENV", "dev").lower()
-        if agent_env in ("dev", "test", "prod"):
-            candidate = base_dir / f"config.{agent_env}.yaml"
-            if candidate.exists():
-                return candidate
-
-        dev_candidate = base_dir / "config.dev.yaml"
-        if dev_candidate.exists():
-            return dev_candidate
         return base_dir / "config.yaml"
 
     @classmethod

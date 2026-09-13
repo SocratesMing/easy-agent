@@ -5,7 +5,7 @@
       @completed="handleWelcomeCompleted" 
     />
     
-    <template v-else>
+    <template v-else-if="!isBootstrapping">
       <SessionList
         v-show="!isSidebarCollapsed"
         :sessions="sessions"
@@ -50,8 +50,6 @@
       <SettingsPanel
         v-if="showSettingsPanel"
         @close="showSettingsPanel = false"
-        @toggle-theme="toggleTheme"
-        :isDarkTheme="isDarkTheme"
       />
 
       <UserManagementPanel
@@ -77,6 +75,7 @@
         :models="availableModels"
         :selectedModel="selectedModel"
         @update:selectedModel="selectedModel = $event"
+        @toggle-workspace="isWorkspaceCollapsed = false"
         @sendMessage="handleSendMessage"
         @createSession="ensureCurrentSession"
         @removeFile="handleRemoveFile"
@@ -95,17 +94,6 @@
           @toggle="isWorkspaceCollapsed = !isWorkspaceCollapsed"
         />
       </div>
-
-      <button
-        v-if="currentSessionId && isWorkspaceCollapsed && !showAssets && !showSkillCenter && !showScheduledTasks"
-        class="expand-workspace-btn"
-        @click="isWorkspaceCollapsed = false"
-        title="展开工作区"
-      >
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" class="expand-workspace-icon">
-          <path d="M3 7V17C3 18.1046 3.89543 19 5 19H19C20.1046 19 21 18.1046 21 17V9C21 7.89543 20.1046 7 19 7H13L11 5H5C3.89543 5 3 5.89543 3 7Z" fill="#fbbf24" stroke="#f59e0b" stroke-width="1.5"></path>
-        </svg>
-      </button>
 
       <div v-if="error" class="error-toast">
         {{ error }}
@@ -135,6 +123,25 @@ import { getModels as fetchModels } from './api/settings.js'
 const sessions = ref([])
 const currentSessionId = ref(null)
 const currentSessionHasFiles = ref(false)
+
+// ── 当前会话视图持久化 ────────────────────────────────────────────
+// 刷新后恢复到用户刷新前所在的会话，而不是永远跳到列表第一个。
+// 用 '__new__' 记录"新会话首页"（currentSessionId 为 null）这一状态。
+const ACTIVE_SESSION_KEY = 'easy_agent_active_session'
+const NEW_SESSION_MARK = '__new__'
+// bootstrap（认证 + 会话列表 + 首个会话历史）完成前不写入，避免用初始 null 覆盖已存值
+const hasBootstrapped = ref(false)
+watch(currentSessionId, (sid) => {
+  if (!hasBootstrapped.value) return
+  try {
+    localStorage.setItem(ACTIVE_SESSION_KEY, sid || NEW_SESSION_MARK)
+  } catch (_) { /* localStorage 不可用时忽略 */ }
+})
+function clearActiveSession() {
+  try {
+    localStorage.removeItem(ACTIVE_SESSION_KEY)
+  } catch (_) { /* ignore */ }
+}
 
 // 模型选择：从配置加载可选列表，默认选 active model
 const availableModels = ref([])
@@ -571,13 +578,15 @@ function reconstructPendingApproval() {
 watch(() => loadedSessionId.value, reconstructPendingApproval)
 const isSidebarCollapsed = ref(false)
 const isWorkspaceCollapsed = ref(true)
-const isDarkTheme = ref(localStorage.getItem('theme') === 'dark')
 const showAssets = ref(false)
 const showSkillCenter = ref(false)
 const showScheduledTasks = ref(false)
 const showSettingsPanel = ref(false)
 const showUserManagementPanel = ref(false)
 const showWelcome = ref(false)
+// 首屏引导中：认证 + 会话列表 + 首次历史加载完成前不渲染聊天区，
+// 否则会先闪出空会话首页、会话时间下方那条分隔线也会闪一下。
+const isBootstrapping = ref(true)
 const scrollTrigger = ref(0)
 const userProfile = ref({
   username: '',
@@ -588,15 +597,6 @@ const userProfile = ref({
 function toggleSidebar() {
   isSidebarCollapsed.value = !isSidebarCollapsed.value
 }
-
-function toggleTheme() {
-  isDarkTheme.value = !isDarkTheme.value
-  localStorage.setItem('theme', isDarkTheme.value ? 'dark' : 'light')
-  document.documentElement.setAttribute('data-theme', isDarkTheme.value ? 'dark' : 'light')
-}
-
-// 初始化主题（确保 data-theme 属性始终存在，使 CSS 变量生效）
-document.documentElement.setAttribute('data-theme', isDarkTheme.value ? 'dark' : 'light')
 
 function handleShowAssets() {
   showAssets.value = !showAssets.value
@@ -639,7 +639,71 @@ function applyAgentConfig(configData) {
   }
 }
 
+// 依据持久化的选择恢复初始会话视图：
+//   - 上次所在会话（仍存在）→ 恢复该会话；
+//   - '__new__' → 保持新会话首页（currentSessionId 为 null）；
+//   - 无记录 / 会话已被删除 → 回退到列表第一个；列表为空则新会话首页。
+// 加载对应历史后解除首屏门控（isBootstrapping），避免闪出空首页与顶部分隔线。
+async function restoreInitialSession() {
+  let stored = null
+  try {
+    stored = localStorage.getItem(ACTIVE_SESSION_KEY)
+  } catch (_) { /* ignore */ }
+
+  let initialSessionId = null
+  if (stored === NEW_SESSION_MARK) {
+    initialSessionId = null
+  } else if (stored && sessions.value.some(s => s.session_id === stored)) {
+    initialSessionId = stored
+  } else if (sessions.value.length > 0) {
+    initialSessionId = sessions.value[0].session_id
+  }
+
+  if (initialSessionId) {
+    currentSessionId.value = initialSessionId
+    if (!restoreSessionState(initialSessionId)) {
+      try {
+        const history = await getChatHistory(initialSessionId)
+        // 加载期间用户可能已切换会话，丢弃过期响应（正常 bootstrap 期间 UI 门控，不会发生）
+        if (currentSessionId.value === initialSessionId) {
+          messages.value = history.messages || []
+          currentTodos.value = history.todos || []
+          if (history.usage) {
+            sessionUsage.value.input_tokens = history.usage.input_tokens || 0
+            sessionUsage.value.output_tokens = history.usage.output_tokens || 0
+            sessionUsage.value.reasoning_tokens = history.usage.reasoning_tokens || 0
+            sessionUsage.value.context_tokens = history.usage.context_tokens || 0
+            sessionDuration.value = history.usage.elapsed_time || 0
+            iterationCount.value = history.usage.step_count || 0
+          }
+          if (history.context_length) {
+            sessionUsage.value.context_length = history.context_length
+          }
+          loadedSessionId.value = initialSessionId
+        }
+      } catch (e) {
+        console.error('加载聊天历史失败:', e)
+      }
+    }
+  } else {
+    currentSessionId.value = null
+    messages.value = []
+    currentTodos.value = []
+    loadedSessionId.value = null
+  }
+
+  hasBootstrapped.value = true
+  try {
+    localStorage.setItem(ACTIVE_SESSION_KEY, currentSessionId.value || NEW_SESSION_MARK)
+  } catch (_) { /* ignore */ }
+  isBootstrapping.value = false
+
+  // 刷新前若正在流式，重新挂载并继续接收事件
+  await tryAttachLiveStream()
+}
+
 async function handleWelcomeCompleted(profile) {
+  isBootstrapping.value = true
   userProfile.value = profile
   showWelcome.value = false
   if (profile.context_length) {
@@ -656,36 +720,7 @@ async function handleWelcomeCompleted(profile) {
   }
   loadModels()
   await loadSessions()
-  if (sessions.value.length > 0) {
-    const initialSessionId = sessions.value[0].session_id
-    currentSessionId.value = initialSessionId
-    // 尝试从缓存恢复，否则加载历史
-    if (!restoreSessionState(initialSessionId)) {
-      try {
-        const history = await getChatHistory(initialSessionId)
-        // 加载期间用户可能已切换会话，丢弃过期响应
-        if (currentSessionId.value !== initialSessionId) return
-        messages.value = history.messages || []
-        currentTodos.value = history.todos || []
-        if (history.usage) {
-          sessionUsage.value.input_tokens = history.usage.input_tokens || 0
-          sessionUsage.value.output_tokens = history.usage.output_tokens || 0
-          sessionUsage.value.reasoning_tokens = history.usage.reasoning_tokens || 0
-          sessionUsage.value.context_tokens = history.usage.context_tokens || 0
-          sessionDuration.value = history.usage.elapsed_time || 0
-          iterationCount.value = history.usage.step_count || 0
-        }
-        if (history.context_length) {
-          sessionUsage.value.context_length = history.context_length
-        }
-        loadedSessionId.value = initialSessionId
-      } catch (e) {
-        console.error('加载聊天历史失败:', e)
-      }
-    }
-    // 刷新前若正在流式，重新挂载并继续接收事件
-    await tryAttachLiveStream()
-  }
+  await restoreInitialSession()
   // 首次登录（欢迎页流程）后启动空闲登出计时器；
   // 配置为 0（不登出）时 resetIdleTimer 内部直接跳过，不会触发登出
   startIdleTimer()
@@ -718,6 +753,8 @@ async function handleLogout() {
   }
   showAssets.value = false
   showSkillCenter.value = false
+  hasBootstrapped.value = false
+  clearActiveSession()
   showWelcome.value = true
 }
 
@@ -763,6 +800,8 @@ async function handleUnregister() {
     organization_id: '',
     email: ''
   }
+  hasBootstrapped.value = false
+  clearActiveSession()
   showWelcome.value = true
 }
 
@@ -1822,41 +1861,20 @@ onMounted(async () => {
   window.addEventListener(AUTH_EXPIRED_EVENT, handleLogout)
   // 后端交互（API 调用）触发用户活动事件 -> 重置空闲登出计时器
   window.addEventListener(USER_ACTIVITY_EVENT, resetIdleTimer)
-  // URL 免密直登（?username=xxx&user_id=yyy）：成功则直接进入主界面
-  if (await handlePasswordlessUrlLogin()) return
-  await loadUserProfile()
-  if (!showWelcome.value) {
-    startIdleTimer()
-    // 拉取可选模型列表（不阻塞会话加载）
-    loadModels()
-    await loadSessions()
-    if (sessions.value.length > 0) {
-      const initialSessionId = sessions.value[0].session_id
-      currentSessionId.value = initialSessionId
-      // 加载初始会话的消息
-      try {
-        const history = await getChatHistory(initialSessionId)
-        // 加载期间用户可能已切换会话，丢弃过期响应
-        if (currentSessionId.value !== initialSessionId) return
-        messages.value = history.messages || []
-        if (history.usage) {
-          sessionUsage.value.input_tokens = history.usage.input_tokens || 0
-          sessionUsage.value.output_tokens = history.usage.output_tokens || 0
-          sessionUsage.value.reasoning_tokens = history.usage.reasoning_tokens || 0
-          sessionUsage.value.context_tokens = history.usage.context_tokens || 0
-          sessionDuration.value = history.usage.elapsed_time || 0
-          iterationCount.value = history.usage.step_count || 0
-        }
-        if (history.context_length) {
-          sessionUsage.value.context_length = history.context_length
-        }
-        loadedSessionId.value = initialSessionId
-      } catch (e) {
-        console.error('加载聊天历史失败:', e)
-      }
+  try {
+    // URL 免密直登（?username=xxx&user_id=yyy）：成功则直接进入主界面
+    if (await handlePasswordlessUrlLogin()) return
+    await loadUserProfile()
+    if (!showWelcome.value) {
+      startIdleTimer()
+      // 拉取可选模型列表（不阻塞会话加载）
+      loadModels()
+      await loadSessions()
+      await restoreInitialSession()
     }
-    // 刷新前若正在流式，重新挂载并继续接收事件
-    await tryAttachLiveStream()
+  } finally {
+    // 未登录时也解除首屏门控，让 Welcome 登录页正常显示
+    isBootstrapping.value = false
   }
 })
 
@@ -1899,30 +1917,6 @@ onUnmounted(() => {
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
 }
 
-.expand-workspace-btn {
-  position: fixed;
-  right: 16px;
-  top: 16px;
-  width: 40px;
-  height: 40px;
-  background: white;
-  border: 1px solid #e2e8f0;
-  border-radius: 10px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  z-index: 100;
-  transition: all 0.2s ease;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
-}
-
-.expand-workspace-btn:hover {
-  background: #f0fdf4;
-  border-color: #86efac;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
-}
-
 /* 工作区参与 Flex 分栏：原先是 position:fixed 的浮层，会盖住聊天区右侧内容。
    改为普通 flex 项后，展开时聊天区自动收窄、互不遮挡；宽度由 WorkspacePanel
    自己控制（可拖拽），这里只保证它不被压缩。 */
@@ -1934,14 +1928,11 @@ onUnmounted(() => {
   z-index: 1;
 }
 
-.expand-workspace-icon {
-  width: 26px;
-  height: 26px;
-  transition: transform 0.2s ease;
-}
-
-.expand-workspace-btn:hover .expand-workspace-icon {
-  transform: scale(1.1);
+/* 工作区页面内全屏时抬高整列：.workspace-area 自身的 z-index:1 会形成
+   层叠上下文，把内部 fixed 全屏面板的层级一起限制住 —— 聊天区里的
+   .scroll-btn（z-index:10）会因此浮在全屏面板之上。用 :has() 精准提升。 */
+.workspace-area:has(.workspace-panel.is-fullscreen) {
+  z-index: 150;
 }
 
 .expand-sidebar-btn svg {
@@ -1993,15 +1984,9 @@ onUnmounted(() => {
 
 /* 响应式：小屏幕优化 */
 @media (max-width: 768px) {
-  .expand-workspace-btn,
   .expand-sidebar-btn {
     width: 36px;
     height: 36px;
-  }
-
-  .expand-workspace-btn svg {
-    width: 22px;
-    height: 22px;
   }
 
   .expand-sidebar-btn svg {
@@ -2484,13 +2469,11 @@ html[data-theme="dark"] .wp-title {
   color: var(--text-primary) !important;
 }
 
-html[data-theme="dark"] .wp-collapse-btn,
-html[data-theme="dark"] .wp-refresh-btn {
+html[data-theme="dark"] .wp-icon-btn {
   color: var(--text-primary) !important;
 }
 
-html[data-theme="dark"] .wp-collapse-btn:hover,
-html[data-theme="dark"] .wp-refresh-btn:hover:not(:disabled) {
+html[data-theme="dark"] .wp-icon-btn:hover:not(:disabled) {
   background: var(--bg-tertiary) !important;
   color: var(--text-primary) !important;
 }
@@ -2589,13 +2572,11 @@ html[data-theme="dark"] .theme-check {
 }
 
 /* ========== 悬浮按钮 ========== */
-html[data-theme="dark"] .expand-workspace-btn,
 html[data-theme="dark"] .expand-sidebar-btn {
   background: var(--bg-secondary) !important;
   border-color: var(--border-color) !important;
 }
 
-html[data-theme="dark"] .expand-workspace-btn svg,
 html[data-theme="dark"] .expand-sidebar-btn svg {
   color: var(--text-secondary) !important;
 }

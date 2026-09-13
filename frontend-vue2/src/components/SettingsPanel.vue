@@ -1,8 +1,16 @@
 <template>
   <div class="settings-overlay" @click="$emit('close')">
-    <div class="settings-modal" @click.stop>
+    <div
+      class="settings-modal"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="settings-title"
+      ref="dialogRef"
+      tabindex="-1"
+      @click.stop
+    >
       <div class="settings-header">
-        <h2>设置</h2>
+        <h2 id="settings-title">设置</h2>
         <button @click="$emit('close')" class="close-btn">
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <line x1="18" y1="6" x2="6" y2="18"></line>
@@ -12,22 +20,35 @@
       </div>
 
       <div class="settings-body">
-        <div class="settings-nav">
-          <div
+        <div class="settings-nav" role="tablist" aria-label="设置分类">
+          <button
             v-for="item in navItems"
             :key="item.key"
+            :id="`tab-${item.key}`"
+            type="button"
             class="nav-item"
+            role="tab"
+            :aria-selected="activeTab === item.key"
+            :aria-controls="`panel-${item.key}`"
+            :tabindex="activeTab === item.key ? 0 : -1"
             :class="{ active: activeTab === item.key }"
             @click="activeTab = item.key"
+            @keydown="onNavKeydown($event, item.key)"
           >
             <span class="nav-icon" v-html="item.icon"></span>
             <span class="nav-label">{{ item.label }}</span>
-          </div>
+          </button>
         </div>
 
         <div class="settings-content">
           <!-- 记忆 -->
-          <div v-if="activeTab === 'memory'" class="content-panel">
+          <div
+            v-if="activeTab === 'memory'"
+            class="content-panel"
+            role="tabpanel"
+            id="panel-memory"
+            aria-labelledby="tab-memory"
+          >
             <div class="panel-header memory-panel-header">
               <div class="panel-header-text">
                 <h3>记忆</h3>
@@ -66,7 +87,13 @@
           </div>
 
           <!-- 提示词 -->
-          <div v-if="activeTab === 'prompt'" class="content-panel">
+          <div
+            v-if="activeTab === 'prompt'"
+            class="content-panel"
+            role="tabpanel"
+            id="panel-prompt"
+            aria-labelledby="tab-prompt"
+          >
             <div class="panel-header">
               <h3>系统提示词</h3>
               <p class="panel-desc">当前使用的系统提示词（只读）</p>
@@ -81,7 +108,13 @@
           </div>
 
           <!-- MCP -->
-          <div v-if="activeTab === 'mcp'" class="content-panel">
+          <div
+            v-if="activeTab === 'mcp'"
+            class="content-panel"
+            role="tabpanel"
+            id="panel-mcp"
+            aria-labelledby="tab-mcp"
+          >
             <div class="panel-header">
               <div class="panel-header-row">
                 <div>
@@ -325,54 +358,6 @@
               </div>
             </div>
           </div>
-
-          <!-- 外观 -->
-          <div v-if="activeTab === 'appearance'" class="content-panel">
-            <div class="panel-header">
-              <h3>外观</h3>
-              <p class="panel-desc">切换界面的显示主题</p>
-            </div>
-            <div class="appearance-options">
-              <div
-                class="theme-option"
-                :class="{ active: !isDarkTheme }"
-                @click="switchTheme(false)"
-              >
-                <div class="theme-preview theme-preview-light">
-                  <div class="preview-bar"></div>
-                  <div class="preview-line"></div>
-                  <div class="preview-line short"></div>
-                </div>
-                <div class="theme-option-info">
-                  <span class="theme-option-name">浅色主题</span>
-                  <span class="theme-option-desc">明亮清新，适合白天使用</span>
-                </div>
-                <svg v-if="!isDarkTheme" class="theme-check" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
-                  <polyline points="22 4 12 14.01 9 11.01"></polyline>
-                </svg>
-              </div>
-              <div
-                class="theme-option"
-                :class="{ active: isDarkTheme }"
-                @click="switchTheme(true)"
-              >
-                <div class="theme-preview theme-preview-dark">
-                  <div class="preview-bar"></div>
-                  <div class="preview-line"></div>
-                  <div class="preview-line short"></div>
-                </div>
-                <div class="theme-option-info">
-                  <span class="theme-option-name">深色主题</span>
-                  <span class="theme-option-desc">柔和护眼，适合夜间使用</span>
-                </div>
-                <svg v-if="isDarkTheme" class="theme-check" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
-                  <polyline points="22 4 12 14.01 9 11.01"></polyline>
-                </svg>
-              </div>
-            </div>
-          </div>
         </div>
       </div>
     </div>
@@ -380,7 +365,7 @@
 </template>
 
 <script>
-import { ref, watch, onMounted, computed } from 'vue'
+import { ref, watch, onMounted, onBeforeUnmount, nextTick, computed } from 'vue'
 import { MessageBox } from 'element-ui'
 import {
   getMemory,
@@ -401,11 +386,31 @@ import { setupMarkedExtensions } from '../markdownSetup.js'
 
 setupMarkedExtensions()
 export default {
-  props: {
-  isDarkTheme: { type: Boolean, default: false },
-},
-  emits: ['close', 'toggle-theme'],
+  emits: ['close'],
   setup(props, { emit }) {
+// 设置弹窗：Esc 关闭 + 打开时聚焦当前标签，导航支持方向键切换（WAI-ARIA tabs）
+const dialogRef = ref(null)
+
+function onDialogKeydown(e) {
+  if (e.key === 'Escape') emit('close')
+}
+
+function onNavKeydown(e, key) {
+  const keys = navItems.map(i => i.key)
+  const idx = keys.indexOf(key)
+  if (idx === -1) return
+  let next = null
+  if (e.key === 'ArrowDown' || e.key === 'ArrowRight') next = keys[(idx + 1) % keys.length]
+  else if (e.key === 'ArrowUp' || e.key === 'ArrowLeft') next = keys[(idx - 1 + keys.length) % keys.length]
+  else if (e.key === 'Home') next = keys[0]
+  else if (e.key === 'End') next = keys[keys.length - 1]
+  if (!next) return
+  e.preventDefault()
+  activeTab.value = next
+  nextTick(() => {
+    dialogRef.value?.querySelector(`#tab-${next}`)?.focus()
+  })
+}
 const activeTab = ref('memory')
 const loading = ref(false)
 
@@ -466,11 +471,6 @@ const mcpPreviewJson = computed(() => {
   return JSON.stringify({ servers }, null, 2)
 })
 
-function switchTheme(dark) {
-  if (dark === props.isDarkTheme) return
-  emit('toggle-theme')
-}
-
 const navItems = [
   {
     key: 'memory',
@@ -486,11 +486,6 @@ const navItems = [
     key: 'mcp',
     label: 'MCP',
     icon: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"/><rect x="2" y="14" width="20" height="8" rx="2" ry="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>',
-  },
-  {
-    key: 'appearance',
-    label: '外观',
-    icon: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><line x1="2" y1="12" x2="22" y2="12"/></svg>',
   },
 ]
 
@@ -861,6 +856,15 @@ watch(activeTab, () => {
 
 onMounted(() => {
   loadTabData()
+  document.addEventListener('keydown', onDialogKeydown)
+  nextTick(() => {
+    const active = dialogRef.value?.querySelector('.nav-item.active')
+    ;(active || dialogRef.value)?.focus()
+  })
+})
+
+onBeforeUnmount(() => {
+  document.removeEventListener('keydown', onDialogKeydown)
 })
 
     return {
@@ -878,6 +882,7 @@ onMounted(() => {
       copyMcpSnippet,
       copyPreview,
       deleteMcpServer,
+      dialogRef,
       handleGenerateMcpApiKey,
       getMcpMarket,
       getMcpServers,
@@ -888,6 +893,7 @@ onMounted(() => {
       mcpApiKey,
       mcpApiKeyCopied,
       mcpApiKeyError,
+      mcpApiKeyGenerating,
       mcpApiKeyVisible,
       mcpEnabledMap,
       mcpError,
@@ -903,10 +909,12 @@ onMounted(() => {
       mcpSnippetCopied,
       mcpSource,
       memoryContent,
+      memoryEditing,
       memoryError,
       memorySaved,
       memorySaving,
       navItems,
+      onNavKeydown,
       onMounted,
       openAddMcp,
       openPreview,
@@ -920,8 +928,7 @@ onMounted(() => {
       saveMemory,
       showAddMcp,
       showPreview,
-      switchAddMcpMode,
-      switchTheme,
+
       syncMarketAddedState,
       toggleMcpServer,
       toggleMemoryEdit,
@@ -949,11 +956,9 @@ onMounted(() => {
 
 .settings-modal {
   background: white;
-  border-radius: 16px;
-  width: 800px;
-  max-width: 90vw;
-  height: 600px;
-  max-height: 85vh;
+  border-radius: 1rem;
+  width: min(75rem, 95vw);
+  height: min(56rem, 92vh);
   display: flex;
   flex-direction: column;
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
@@ -964,14 +969,14 @@ onMounted(() => {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 16px 24px;
+  padding: 1rem 1.5rem;
   border-bottom: 1px solid #e2e8f0;
   flex-shrink: 0;
 }
 
 .settings-header h2 {
   margin: 0;
-  font-size: 18px;
+  font-size: 1.25rem;
   font-weight: 600;
   color: var(--text-primary);
 }
@@ -1006,9 +1011,9 @@ onMounted(() => {
 }
 
 .settings-nav {
-  width: 180px;
+  width: 14rem;
   border-right: 1px solid #e2e8f0;
-  padding: 12px 8px;
+  padding: 0.75rem 0.5rem;
   flex-shrink: 0;
   overflow-y: auto;
 }
@@ -1016,14 +1021,24 @@ onMounted(() => {
 .nav-item {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 10px 12px;
-  border-radius: 8px;
+  gap: 0.625rem;
+  width: 100%;
+  padding: 0.6875rem 0.875rem;
+  border: none;
+  background: none;
+  font: inherit;
+  text-align: left;
+  border-radius: 0.5rem;
   cursor: pointer;
-  transition: all 0.2s;
+  transition: background 0.2s, color 0.2s;
   color: var(--text-secondary);
-  font-size: 14px;
+  font-size: 0.875rem;
   font-weight: 500;
+}
+
+.nav-item:focus-visible {
+  outline: 2px solid var(--accent-color, #0ea5e9);
+  outline-offset: 2px;
 }
 
 .nav-item:hover {
@@ -1052,7 +1067,7 @@ onMounted(() => {
 .settings-content {
   flex: 1;
   overflow-y: auto;
-  padding: 24px;
+  padding: 2rem;
 }
 
 .content-panel {
@@ -1626,7 +1641,47 @@ onMounted(() => {
   cursor: default;
 }
 
-@media (max-width: 560px) {
+/* 窄屏：设置弹窗全屏化，左侧导航改为顶部横向标签 */
+@media (max-width: 48rem) {
+  .settings-overlay {
+    align-items: stretch;
+    justify-content: stretch;
+  }
+
+  .settings-modal {
+    width: 100vw;
+    height: 100dvh;
+    border-radius: 0;
+    box-shadow: none;
+  }
+
+  .settings-body {
+    flex-direction: column;
+  }
+
+  .settings-nav {
+    width: 100%;
+    display: flex;
+    gap: 0.25rem;
+    padding: 0.5rem 0.75rem;
+    border-right: none;
+    border-bottom: 1px solid #e2e8f0;
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
+
+  .nav-item {
+    width: auto;
+    flex-shrink: 0;
+    white-space: nowrap;
+  }
+
+  .settings-content {
+    padding: 1rem;
+  }
+}
+
+@media (max-width: 35rem) {
   .mcp-market-card {
     align-items: flex-start;
     flex-wrap: wrap;
@@ -1699,106 +1754,6 @@ onMounted(() => {
   color: var(--text-secondary);
   padding: 40px 0;
   font-size: 14px;
-}
-
-/* 外观 - 主题切换 */
-.appearance-options {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.theme-option {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  padding: 16px;
-  background: var(--bg-tertiary);
-  border: 2px solid #e2e8f0;
-  border-radius: 10px;
-  cursor: pointer;
-  transition: all 0.2s;
-}
-
-.theme-option:hover {
-  border-color: #cbd5e1;
-  background: var(--bg-tertiary);
-}
-
-.theme-option.active {
-  border-color: #0ea5e9;
-  background: color-mix(in srgb, var(--accent-color) 18%, transparent);
-}
-
-.theme-preview {
-  width: 80px;
-  height: 56px;
-  border-radius: 6px;
-  padding: 8px;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  flex-shrink: 0;
-  border: 1px solid #e2e8f0;
-}
-
-.theme-preview-light {
-  background: var(--bg-secondary);
-}
-
-.theme-preview-dark {
-  background: #1a1a2e;
-}
-
-.theme-preview .preview-bar {
-  height: 8px;
-  border-radius: 3px;
-  background: #0ea5e9;
-  width: 60%;
-}
-
-.theme-preview-dark .preview-bar {
-  background: #7c6aef;
-}
-
-.theme-preview .preview-line {
-  height: 4px;
-  border-radius: 2px;
-  background: #cbd5e1;
-  width: 100%;
-}
-
-.theme-preview-dark .preview-line {
-  background: #475569;
-}
-
-.theme-preview .preview-line.short {
-  width: 60%;
-}
-
-.theme-option-info {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.theme-option-name {
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--text-primary);
-}
-
-.theme-option-desc {
-  font-size: 12px;
-  color: var(--text-secondary);
-}
-
-.theme-check {
-  width: 20px;
-  height: 20px;
-  color: #0ea5e9;
-  flex-shrink: 0;
 }
 
 /* MCP 增强样式 */

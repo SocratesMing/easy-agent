@@ -83,22 +83,26 @@ def test_resolve_config_path_prefers_explicit_path(tmp_path):
     assert resolved == explicit_path
 
 
-def test_resolve_config_path_uses_agent_env(tmp_path, monkeypatch):
+def test_resolve_config_path_ignores_agent_env(tmp_path, monkeypatch):
+    """不再按 AGENT_ENV 选 yaml：即使 config.prod.yaml 存在，也一律返回 config.yaml。
+
+    环境差异改由 .env.{AGENT_ENV} 注入（见 utils/env_loader.py）。
+    """
     (tmp_path / "config.prod.yaml").touch()
+    (tmp_path / "config.yaml").touch()
     monkeypatch.delenv("EASY_CONFIG", raising=False)
     monkeypatch.setenv("AGENT_ENV", "prod")
 
     resolved = Config.resolve_config_path(config_dir=tmp_path)
 
-    assert resolved == tmp_path / "config.prod.yaml"
+    assert resolved == tmp_path / "config.yaml"
 
 
-def test_resolve_config_path_defaults_to_dev(tmp_path, monkeypatch):
-    (tmp_path / "config.dev.yaml").touch()
+def test_resolve_config_path_defaults_to_config_yaml(tmp_path, monkeypatch):
     (tmp_path / "config.yaml").touch()
     monkeypatch.delenv("EASY_CONFIG", raising=False)
     monkeypatch.delenv("AGENT_ENV", raising=False)
 
     resolved = Config.resolve_config_path(config_dir=tmp_path)
 
-    assert resolved == tmp_path / "config.dev.yaml"
+    assert resolved == tmp_path / "config.yaml"

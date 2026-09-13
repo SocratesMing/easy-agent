@@ -821,9 +821,6 @@ window.copyCode = async function(btn) {
 }
 
     return {
-      _isProcessType,
-      _onScroll,
-      _scrollEl,
       cleanUserContent,
       computed,
       copyMessage,
