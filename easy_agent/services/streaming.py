@@ -161,21 +161,17 @@ def _tool_call_tuples(blocks: list, *, with_approval: bool = False) -> list[tupl
     chat / resume 两条流式链路原本各自定义了一份完全相同的闭包，现统一到此处。
     ``with_approval=True`` 时在末尾追加第 8 项 ``approval_status``（HITL 恢复流程需要）。
     """
-    if with_approval:
-        return [
-            (b.get("tool_name", ""), b.get("tool_call_id", ""),
-             b.get("arguments", {}), b.get("result", ""),
-             b.get("success", True), b.get("duration"),
-             b.get("step", 0), b.get("approval_status"))
-            for b in blocks if b.get("type") == "tool_call"
-        ]
-    return [
-        (b.get("tool_name", ""), b.get("tool_call_id", ""),
-         b.get("arguments", {}), b.get("result", ""),
-         b.get("success", True), b.get("duration"),
-         b.get("step", 0))
-        for b in blocks if b.get("type") == "tool_call"
-    ]
+    tuples = []
+    for b in blocks:
+        if b.get("type") != "tool_call":
+            continue
+        t = (
+            b.get("tool_name", ""), b.get("tool_call_id", ""),
+            b.get("arguments", {}), b.get("result", ""),
+            b.get("success", True), b.get("duration"), b.get("step", 0),
+        )
+        tuples.append(t + (b.get("approval_status"),) if with_approval else t)
+    return tuples
 
 
 def _persist_incremental(
@@ -186,19 +182,7 @@ def _persist_incremental(
     chat 与 resume 共用；内部吞掉异常——持久化失败不应中断流式输出。
     """
     try:
-        msg = build_assistant_message_dict(
-            content=proc.accumulated_response,
-            thinking=proc.accumulated_thinking,
-            thinking_duration=None,
-            tool_call_records=_tool_call_tuples(proc.blocks),
-            blocks=proc.blocks,
-            input_tokens=proc.last_usage.get("input_tokens", 0),
-            output_tokens=proc.last_usage.get("output_tokens", 0),
-            reasoning_tokens=proc.last_usage.get("reasoning_tokens", 0),
-            context_tokens=proc.last_context_tokens,
-            elapsed_time=time.time() - start_time,
-            step_count=proc.current_step,
-        )
+        msg = _partial_message_dict(proc, time.time() - start_time)
         db.update_last_assistant_message(session_id, msg)
         db.update_last_assistant_message_row(session_id, msg)
     except Exception as e:
@@ -483,6 +467,23 @@ def build_assistant_message_dict(
     }
 
 
+def _partial_message_dict(proc, elapsed_time: float, *, with_approval: bool = False) -> dict:
+    """从当前 StreamProcessor 构建「进行中」的 assistant 消息（增量/HITL/取消/异常共用）。"""
+    return build_assistant_message_dict(
+        content=proc.accumulated_response,
+        thinking=proc.accumulated_thinking,
+        thinking_duration=None,
+        tool_call_records=_tool_call_tuples(proc.blocks, with_approval=with_approval),
+        blocks=proc.blocks,
+        input_tokens=proc.last_usage.get("input_tokens", 0),
+        output_tokens=proc.last_usage.get("output_tokens", 0),
+        reasoning_tokens=proc.last_usage.get("reasoning_tokens", 0),
+        context_tokens=proc.last_context_tokens,
+        elapsed_time=elapsed_time,
+        step_count=proc.current_step,
+    )
+
+
 def _mark_hitl_pending(
     partial_msg: dict,
     pending_tc_ids: list,
@@ -747,9 +748,6 @@ async def chat_stream_generator(
             start_time=start_time,
         )
 
-        def _tool_call_records_from_blocks(blks):
-            return _tool_call_tuples(blks)
-
         def _persist():
             _persist_incremental(
                 proc, db=db, session_id=session_id, sid=sid, start_time=start_time
@@ -829,7 +827,7 @@ async def chat_stream_generator(
         accumulated_response = proc.accumulated_response
         accumulated_thinking = proc.accumulated_thinking
         blocks = proc.blocks
-        tool_call_records = _tool_call_records_from_blocks(proc.blocks)
+        tool_call_records = _tool_call_tuples(proc.blocks)
         current_step = proc.current_step
         last_context_tokens = proc.last_context_tokens
         is_in_thinking = proc.is_in_thinking
@@ -866,20 +864,7 @@ async def chat_stream_generator(
                             ]
                             break
                     # 保存部分 assistant 消息（复用取消路径模式）
-                    partial_elapsed = time.time() - start_time
-                    partial_msg = build_assistant_message_dict(
-                        content=accumulated_response,
-                        thinking=accumulated_thinking,
-                        thinking_duration=None,
-                        tool_call_records=tool_call_records,
-                        blocks=blocks,
-                        input_tokens=proc.last_usage.get("input_tokens", 0),
-                        output_tokens=proc.last_usage.get("output_tokens", 0),
-                        reasoning_tokens=proc.last_usage.get("reasoning_tokens", 0),
-                        context_tokens=last_context_tokens,
-                        elapsed_time=partial_elapsed,
-                        step_count=current_step,
-                    )
+                    partial_msg = _partial_message_dict(proc, time.time() - start_time)
                     # 持久化 HITL 审批状态：将触发中断的工具调用标记为「待审批」
                     # 注意：blocks 也必须同步打标记——前端历史渲染优先读 blocks，
                     # 只标 tool_calls 会导致切回历史会话时审批状态徽章不显示。
@@ -1039,7 +1024,7 @@ async def chat_stream_generator(
         accumulated_response = proc.accumulated_response
         accumulated_thinking = proc.accumulated_thinking
         blocks = proc.blocks
-        tool_call_records = _tool_call_records_from_blocks(proc.blocks)
+        tool_call_records = _tool_call_tuples(proc.blocks)
         current_step = proc.current_step
         last_context_tokens = proc.last_context_tokens
         is_in_thinking = proc.is_in_thinking
@@ -1050,19 +1035,7 @@ async def chat_stream_generator(
             f"思考中={is_in_thinking}"
         )
         try:
-            partial_msg = build_assistant_message_dict(
-                content=accumulated_response,
-                thinking=accumulated_thinking,
-                thinking_duration=None,
-                tool_call_records=tool_call_records,
-                blocks=blocks,
-                input_tokens=proc.last_usage.get("input_tokens", 0),
-                output_tokens=proc.last_usage.get("output_tokens", 0),
-                reasoning_tokens=proc.last_usage.get("reasoning_tokens", 0),
-                context_tokens=last_context_tokens,
-                elapsed_time=time.time() - start_time,
-                step_count=current_step,
-            )
+            partial_msg = _partial_message_dict(proc, time.time() - start_time)
             db.update_last_assistant_message(session_id, partial_msg)
             db.update_last_assistant_message_row(session_id, partial_msg)
             logger.info(
@@ -1249,9 +1222,6 @@ async def resume_stream_generator(
         start_time=start_time,
     )
 
-    def _tool_call_records_from_blocks(blks):
-        return _tool_call_tuples(blks, with_approval=True)
-
     def _persist():
         _persist_incremental(
             proc, db=db, session_id=session_id, sid=sid, start_time=start_time
@@ -1376,7 +1346,7 @@ async def resume_stream_generator(
         accumulated_response = proc.accumulated_response
         accumulated_thinking = proc.accumulated_thinking
         blocks = proc.blocks
-        tool_call_records = _tool_call_records_from_blocks(proc.blocks)
+        tool_call_records = _tool_call_tuples(proc.blocks, with_approval=True)
         current_step = proc.current_step
         last_context_tokens = proc.last_context_tokens
         is_in_thinking = proc.is_in_thinking
@@ -1405,19 +1375,8 @@ async def resume_stream_generator(
                                 if tc.get("name", "") in _nested_approval_names
                             ]
                             break
-                    partial_elapsed = time.time() - start_time
-                    partial_msg = build_assistant_message_dict(
-                        content=accumulated_response,
-                        thinking=accumulated_thinking,
-                        thinking_duration=None,
-                        tool_call_records=tool_call_records,
-                        blocks=blocks,
-                        input_tokens=proc.last_usage.get("input_tokens", 0),
-                        output_tokens=proc.last_usage.get("output_tokens", 0),
-                        reasoning_tokens=proc.last_usage.get("reasoning_tokens", 0),
-                        context_tokens=last_context_tokens,
-                        elapsed_time=partial_elapsed,
-                        step_count=current_step,
+                    partial_msg = _partial_message_dict(
+                        proc, time.time() - start_time, with_approval=True
                     )
                     # 持久化 HITL 审批状态：将本层嵌套中断触发的工具调用标记为「待审批」
                     # blocks 同步打标记（前端历史渲染优先读 blocks）
@@ -1453,7 +1412,7 @@ async def resume_stream_generator(
             if base is None:
                 _merged_tcr[tid] = list(rec)
             else:
-                # rec 来自 _tool_call_records_from_blocks，是 tuple（不可变）；
+                # rec 来自 _tool_call_tuples，是 tuple（不可变）；
                 # chosen 后续需要做下标赋值（chosen[7] = ...），必须先转成 list，
                 # 否则 TypeError: 'tuple' object does not support item assignment。
                 chosen = list(rec) if rec[3] else base
@@ -1572,21 +1531,11 @@ async def resume_stream_generator(
         accumulated_response = proc.accumulated_response
         accumulated_thinking = proc.accumulated_thinking
         blocks = proc.blocks
-        tool_call_records = _tool_call_records_from_blocks(proc.blocks)
+        tool_call_records = _tool_call_tuples(proc.blocks, with_approval=True)
         last_context_tokens = proc.last_context_tokens
         current_step = proc.current_step
-        partial_msg = build_assistant_message_dict(
-            content=accumulated_response,
-            thinking=accumulated_thinking,
-            thinking_duration=None,
-            tool_call_records=tool_call_records,
-            blocks=blocks,
-            input_tokens=proc.last_usage.get("input_tokens", 0),
-            output_tokens=proc.last_usage.get("output_tokens", 0),
-            reasoning_tokens=proc.last_usage.get("reasoning_tokens", 0),
-            context_tokens=last_context_tokens,
-            elapsed_time=time.time() - start_time,
-            step_count=current_step,
+        partial_msg = _partial_message_dict(
+            proc, time.time() - start_time, with_approval=True
         )
         db.update_last_assistant_message(session_id, partial_msg)
         db.update_last_assistant_message_row(session_id, partial_msg)
@@ -1596,18 +1545,8 @@ async def resume_stream_generator(
         # 持久化已生成的部分回复（与取消路径一致），避免流式过程中已完成的
         # 思考/工具/正文在异常后丢失，导致历史会话中 HITL 之后的记录整体消失。
         try:
-            _partial = build_assistant_message_dict(
-                content=proc.accumulated_response,
-                thinking=proc.accumulated_thinking,
-                thinking_duration=None,
-                tool_call_records=_tool_call_records_from_blocks(proc.blocks),
-                blocks=proc.blocks,
-                input_tokens=proc.last_usage.get("input_tokens", 0),
-                output_tokens=proc.last_usage.get("output_tokens", 0),
-                reasoning_tokens=proc.last_usage.get("reasoning_tokens", 0),
-                context_tokens=proc.last_context_tokens,
-                elapsed_time=time.time() - start_time,
-                step_count=proc.current_step,
+            _partial = _partial_message_dict(
+                proc, time.time() - start_time, with_approval=True
             )
             db.update_last_assistant_message(session_id, _partial)
             db.update_last_assistant_message_row(session_id, _partial)

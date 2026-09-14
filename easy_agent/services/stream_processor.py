@@ -43,9 +43,6 @@ def _fmt_tool_args(args) -> str:
         return str(args)
 
 
-
-
-
 def _is_error_result(text: str) -> bool:
     """Check if a tool result string indicates an error (DeepAgents plain-text errors)."""
     if not text:
@@ -60,14 +57,12 @@ def _is_error_result(text: str) -> bool:
     stderr_match = re.search(r"\[stderr\]\s*(.+)", text, re.DOTALL)
     if stderr_match:
         stderr_lower = stderr_match.group(1).strip().lower()
-        for pattern in (
+        return any(p in stderr_lower for p in (
             "permission denied", "cannot create directory", "can't cd to",
             "cannot cd to", "no such file", "not found", "command not found",
             "is not a directory", "is not a file", "access denied",
             "operation not permitted", "read-only",
-        ):
-            if pattern in stderr_lower:
-                return True
+        ))
     return False
 
 
@@ -149,9 +144,6 @@ class StreamProcessor:
     def _thinking_text(self) -> str:
         blk = next((b for b in self.blocks if b.get("type") == "thinking"), None)
         return blk.get("content", "") if blk else ""
-
-    def _response_text(self) -> str:
-        return ""
 
     def handle(self, mode: str, data: Any) -> list[dict]:
         if mode == "updates":
@@ -323,7 +315,6 @@ class StreamProcessor:
                     )
                     rc = ""
             if rc:
-                reused = None
                 if not self.is_in_thinking:
                     self.is_in_thinking = True
                     self.thinking_start_time = time.time()
@@ -402,27 +393,29 @@ class StreamProcessor:
             events.append({"type": "content", "content": content, "step": self.current_step})
         return events
 
+    def _usage_payload(self, elapsed_time: float) -> dict:
+        """统一的用量负载（``token_usage`` 事件与 ``done`` 事件共用）。"""
+        last = self.last_usage
+        inp = last["input_tokens"]
+        return {
+            "input_tokens": inp,
+            "output_tokens": last["output_tokens"],
+            # 思考 token（output 的子集），前端据此展示拆分
+            "reasoning_tokens": last["reasoning_tokens"],
+            "context_tokens": self.last_context_tokens if self.last_context_tokens > 0 else inp,
+            "context_length": self.context_length,
+            "auto_compress_tokens": self.auto_compress_tokens,
+            "elapsed_time": round(elapsed_time, 2),
+            "step_count": self.current_step,
+        }
+
     def _emit_token_usage(self) -> list[dict]:
         now = time.time()
         if now - self._last_token_usage_time < 0.3:
             return []
         self._last_token_usage_time = now
         # 下发"最近一次模型调用"的用量（不累加）
-        last = self.last_usage
-        inp = last["input_tokens"]
-        out = last["output_tokens"]
-        return [{
-            "type": "token_usage",
-            "input_tokens": inp,
-            "output_tokens": out,
-            # 思考 token（output 的子集），前端据此展示拆分
-            "reasoning_tokens": last["reasoning_tokens"],
-            "context_tokens": self.last_context_tokens if self.last_context_tokens > 0 else inp,
-            "context_length": self.context_length,
-            "auto_compress_tokens": self.auto_compress_tokens,
-            "elapsed_time": round(time.time() - self.start_time, 2),
-            "step_count": self.current_step,
-        }]
+        return [{"type": "token_usage", **self._usage_payload(now - self.start_time)}]
 
     def _maybe_todo_from_args(self, name: str, tid: str, args) -> list[dict]:
         if name != "write_todos" or tid in self._todo_emitted_for:
@@ -552,22 +545,9 @@ class StreamProcessor:
     def finalize(self, *, session_id, elapsed_time) -> list[dict]:
         # 确保最后一步（如纯正文收尾、无工具边界）的汇总日志被打印。
         self._log_step_end(self.current_step)
-        last = self.last_usage
-        inp = last["input_tokens"]
-        out = last["output_tokens"]
-        usage = {
-            "input_tokens": inp,
-            "output_tokens": out,
-            "reasoning_tokens": last["reasoning_tokens"],
-            "context_length": self.context_length,
-            "auto_compress_tokens": self.auto_compress_tokens,
-            "context_tokens": self.last_context_tokens if self.last_context_tokens > 0 else inp,
-            "elapsed_time": round(elapsed_time, 2),
-            "step_count": self.current_step,
-        }
         return [{
             "type": "done", "session_id": session_id,
             "elapsed_time": round(elapsed_time, 2),
-            "usage": usage,
+            "usage": self._usage_payload(elapsed_time),
             "blocks": self._sse_blocks(),
         }]
