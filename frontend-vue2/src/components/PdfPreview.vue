@@ -42,9 +42,11 @@
 <script>
 import { requestArrayBuffer } from '../utils/request.js'
 import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.mjs'
-import pdfjsWorker from 'pdfjs-dist/legacy/build/pdf.worker.min.mjs?url'
 
-pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker
+// Vue CLI(Webpack) 不支持 Vite 的 `?url` 导入后缀，worker 由 vue.config.js 的
+// CopyPlugin 从 node_modules 拷贝到构建输出根目录，这里按 publicPath 拼出访问路径
+// （BASE_URL 默认 '/'，子路径部署时也能正确命中）。
+pdfjsLib.GlobalWorkerOptions.workerSrc = `${process.env.BASE_URL}pdf.worker.min.mjs`
 
 const CMAP_URL = 'https://unpkg.com/pdfjs-dist@4.10.38/cmaps/'
 const STANDARD_FONT_DATA_URL = 'https://unpkg.com/pdfjs-dist@4.10.38/standard_fonts/'

@@ -1,5 +1,6 @@
 const { defineConfig } = require('@vue/cli-service')
 const Icons = require('unplugin-icons/webpack')
+const CopyPlugin = require('copy-webpack-plugin')
 
 // ── 环境与后端地址（开发代理目标）──────────────────────────────────────────
 // 约定：前端所有请求一律使用相对路径（/agent/...），不拼后端域名。
@@ -48,6 +49,20 @@ module.exports = defineConfig({
   },
 
   configureWebpack: {
-    plugins: [Icons({ compiler: 'raw', autoInstall: true })],
+    plugins: [
+      Icons({ compiler: 'raw', autoInstall: true }),
+      // pdf.js 的 worker 必须与 pdfjs-dist 的安装版本严格一致，版本不同会直接报
+      // "The API version does not match the Worker version"。Vue CLI(Webpack) 不支持
+      // Vite 的 `?url` 语法，因此改为构建期从 node_modules 拷贝到输出根目录，
+      // 免去手工同步（public/ 下的静态文件不会随依赖升级而更新）。
+      new CopyPlugin({
+        patterns: [
+          {
+            from: require.resolve('pdfjs-dist/legacy/build/pdf.worker.min.mjs'),
+            to: 'pdf.worker.min.mjs',
+          },
+        ],
+      }),
+    ],
   },
 })

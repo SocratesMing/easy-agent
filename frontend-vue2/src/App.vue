@@ -1158,7 +1158,6 @@ export default {
       let currentContent = ''
       let currentToolCalls = []
       let blockOrderCounter = ctx.initialBlockOrder || 0
-      let totalThinkingDuration = 0
 
       const findIdx = () => {
         return this.messages.findIndex(m => m.id === ctx.assistantMsgId)
@@ -1287,8 +1286,7 @@ export default {
       const onChunk = (data) => {
         // 流式数据到达视为后端交互，重置空闲登出计时器
         this.resetIdleTimer()
-        const { type: eventType, content, duration, step, tool_name, tool_call_id: toolCallId, arguments: args, result, success, title } = data
-        const sid = ctx.streamSessionId
+        const { type: eventType, content, duration, step, tool_name: toolName, tool_call_id: toolCallId, arguments: args, result, success, title } = data
 
         if (eventType === 'start') {
           if (!ctx.isResume) {
@@ -1356,7 +1354,6 @@ export default {
           }
         } else if (eventType === 'thinking_end') {
           touchBlocks()
-          totalThinkingDuration += duration || 0
           if (ctx.isResume) {
             // 健壮地为对应思考块设置 duration。HITL 恢复流中，思考之后往往紧跟
             // tool_call/tool_result 事件，currentBlock 已被改写为工具块或 null，
@@ -1437,7 +1434,7 @@ export default {
           if (!ctx.isResume) ensureMessage()
           const idx = findIdx()
           if (idx !== -1) {
-            const callId = toolCallId || `tool-${tool_name}`
+            const callId = toolCallId || `tool-${toolName}`
             const existingBlockIdx = this.messages[idx].blocks.findIndex(b => b.type === 'tool_call' && (b.id === callId || b.tool_call_id === callId))
             if (existingBlockIdx !== -1) {
               this.messages[idx].blocks[existingBlockIdx].arguments = args || {}
@@ -1445,12 +1442,12 @@ export default {
               touchBlocks()
             } else {
               currentBlock = null
-              if (!ctx.isResume) currentToolCalls.push({ tool_call_id: callId, tool_name: tool_name || '', arguments: args || {}, result: '', success: true })
-              addBlock('tool_call', { id: callId, tool_name: tool_name || '', arguments: args || {}, result: '', success: true, step: step || 0 })
+              if (!ctx.isResume) currentToolCalls.push({ tool_call_id: callId, tool_name: toolName || '', arguments: args || {}, result: '', success: true })
+              addBlock('tool_call', { id: callId, tool_name: toolName || '', arguments: args || {}, result: '', success: true, step: step || 0 })
             }
           }
         } else if (eventType === 'tool_result') {
-          const callId = toolCallId || `tool-${tool_name}`
+          const callId = toolCallId || `tool-${toolName}`
           const toolDuration = duration != null ? duration : 0
           if (!ctx.isResume && currentToolCalls.length > 0) {
             const matchingCall = currentToolCalls.find(tc => tc.tool_call_id === callId)
@@ -1954,7 +1951,7 @@ export default {
 <style scoped>
 .app-container {
   display: flex;
-  height: 100vh;
+  height: 100%;
   width: 100vw;
   background: #f8fafc;
   position: relative;

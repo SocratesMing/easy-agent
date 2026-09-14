@@ -124,6 +124,20 @@ function getExt(name) {
   return parts.pop().toLowerCase()
 }
 
+// 代码语言映射：文件扩展名 → highlight.js 语言标识
+const codeLangMap = {
+  js: 'javascript', jsx: 'javascript', ts: 'typescript', tsx: 'typescript',
+  vue: 'xml', html: 'xml', htm: 'xml', xml: 'xml',
+  py: 'python', java: 'java', go: 'go', rs: 'rust',
+  c: 'c', cpp: 'cpp', h: 'c', hpp: 'cpp',
+  sh: 'bash', bat: 'bat',
+  css: 'css', scss: 'scss', less: 'less',
+  sql: 'sql', json: 'json', yaml: 'yaml', yml: 'yaml',
+  toml: 'ini', rb: 'ruby', php: 'php', swift: 'swift',
+  kt: 'kotlin', lua: 'lua', pl: 'perl', r: 'r',
+  dart: 'dart', tf: 'hcl', proto: 'protobuf', graphql: 'graphql',
+}
+
 // markdown 预览：与聊天区共用代码块结构（语言标签 + 复制按钮），
 // 高亮走 highlight.js（亮黑主题），未识别语言时按自动识别处理
 function highlightWithHljs(code, lang) {
@@ -223,12 +237,23 @@ export default {
     isCsv() {
       return getExt(this.filename) === 'csv'
     },
+    isText() {
+      const ext = getExt(this.filename)
+      return ext && textExts.includes('.' + ext)
+    },
+    // 预览目标由 (visible, filename, filePath) 共同决定，需要覆盖三种场景：
+    //   1) 常驻挂载 + visible 由 false→true（素材面板）；
+    //   2) 父级用 v-if 控制、挂载时 visible 已为 true（定时任务面板）—— 靠 immediate 兜住；
+    //   3) 多标签切换：visible 始终为 true，只有 filePath/filename 变化（工作区预览）。
+    // 只监听 visible 会漏掉 2 和 3，表现为预览区一直空白。
+    previewTarget() {
+      return `${this.visible}|${this.filePath}|${this.filename}`
+    },
     isCode() {
       const ext = getExt(this.filename)
       const codeExts = ['js', 'ts', 'vue', 'py', 'java', 'go', 'rs', 'c', 'cpp', 'h', 'hpp', 'sh', 'bat', 'css', 'scss', 'less', 'sql', 'html', 'htm', 'xml', 'json', 'yaml', 'yml', 'toml', 'jsx', 'tsx', 'rb', 'php', 'swift', 'kt', 'lua', 'pl', 'r', 'dart', 'tf', 'proto', 'graphql']
       return codeExts.includes(ext)
     },
-    // 代码语言映射
     highlightedCode() {
       if (!this.textContent) return ''
       const ext = getExt(this.filename)
