@@ -96,57 +96,18 @@
 
 <script>
 import { API_BASE_URL } from '../config.js'
-import { ref, computed, watch } from 'vue'
 import { marked } from 'marked'
 import { setupMarkedExtensions, normalizeMathDelimiters } from '../markdownSetup.js'
 import hljs from 'highlight.js'
-import 'highlight.js/styles/github.css'
+import 'highlight.js/styles/github-dark.css'
 import DocxPreview from './DocxPreview.vue'
 import ExcelPreview from './ExcelPreview.vue'
 import * as XLSX from 'xlsx'
 import { getStoredToken } from '../api/auth.js'
-import { requestBlob, requestArrayBuffer, requestText } from '../api/request.js'
-export default {
-  components: { DocxPreview, ExcelPreview },
-  props: {
-  filename: {
-    type: String,
-    default: ''
-  },
-  filePath: {
-    type: String,
-    default: ''
-  },
-  sessionId: {
-    type: String,
-    default: null
-  },
-  taskId: {
-    type: String,
-    default: null
-  },
-  visible: {
-    type: Boolean,
-    default: false
-  },
-  // 内嵌模式：预览只占据「父容器」范围，不再铺满视口、也不加全屏黑遮罩。
-  // 用于工作区（WorkspacePanel）—— 这样预览文件时聊天区仍然可见，
-  // 会话时间区域、任务规划区域不会被盖住。默认 false 保持原有模态行为。
-  inline: {
-    type: Boolean,
-    default: false
-  }
-},
-  emits: ['close'],
-  setup(props, { emit }) {
+import { requestBlob, requestArrayBuffer, requestText } from '../utils/request.js'
+
 // 注册 KaTeX 数学公式 + emoji 短代码扩展（幂等，仅执行一次）
 setupMarkedExtensions()
-
-
-
-
-
-
 
 marked.setOptions({
   breaks: true,
@@ -162,26 +123,6 @@ marked.setOptions({
   }
 })
 
-
-
-
-
-const loading = ref(false)
-const error = ref('')
-const textContent = ref('')
-const previewUrl = ref('')
-const docxUrl = ref('')
-const excelUrl = ref('')
-// PPTX：经后端 LibreOffice 转为 PDF 后以 iframe 预览
-const pptxPdfUrl = ref('')
-const excelArrayBuffer = ref(null)
-const excelFallback = ref(false)
-const excelSheets = ref([])
-const excelRetried = ref(false)
-const excelKey = ref(0)
-// Excel 兜底逻辑保留给后续扩展，当前预览由 ExcelPreview 组件承接。
-const htmlUrl = ref('')
-
 const imageExts = ['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.svg', '.ico']
 const textExts = ['.txt', '.json', '.xml', '.csv', '.js', '.ts', '.vue', '.py', '.java', '.go', '.rs', '.c', '.cpp', '.h', '.hpp', '.sh', '.bat', '.css', '.scss', '.less', '.sql', '.yaml', '.yml', '.toml', '.ini', '.cfg', '.conf', '.env', '.log', '.md', '.jsx', '.tsx', '.rb', '.php', '.swift', '.kt', '.scala', '.lua', '.pl', '.r', '.dart', '.ex', '.exs', '.erl', '.hs', '.ml', '.jl', '.tf', '.proto', '.graphql', '.makefile', '.cmake', '.dockerfile', '.gitignore', '.properties', '.gradle']
 
@@ -193,30 +134,11 @@ function getExt(name) {
   return parts.pop().toLowerCase()
 }
 
-const isImage = computed(() => {
-  const ext = getExt(props.filename)
-  return ext && imageExts.includes('.' + ext)
-})
-
-const isPdf = computed(() => getExt(props.filename) === 'pdf')
-
-const isPptx = computed(() => getExt(props.filename) === 'pptx')
-
-const isDocx = computed(() => getExt(props.filename) === 'docx')
-
-const isExcel = computed(() => ['xlsx', 'xls'].includes(getExt(props.filename)))
-
-const isMarkdown = computed(() => getExt(props.filename) === 'md')
-
-const isHtml = computed(() => ['html', 'htm'].includes(getExt(props.filename)))
-
-const isCsv = computed(() => getExt(props.filename) === 'csv')
-
-const isCode = computed(() => {
-  const ext = getExt(props.filename)
-  const codeExts = ['js', 'ts', 'vue', 'py', 'java', 'go', 'rs', 'c', 'cpp', 'h', 'hpp', 'sh', 'bat', 'css', 'scss', 'less', 'sql', 'html', 'htm', 'xml', 'json', 'yaml', 'yml', 'toml', 'jsx', 'tsx', 'rb', 'php', 'swift', 'kt', 'lua', 'pl', 'r', 'dart', 'tf', 'proto', 'graphql']
-  return codeExts.includes(ext)
-})
+function escapeHtml(text) {
+  const div = document.createElement('div')
+  div.textContent = text
+  return div.innerHTML
+}
 
 // 代码语言映射
 const codeLangMap = {
@@ -232,317 +154,346 @@ const codeLangMap = {
   dart: 'dart', tf: 'hcl', proto: 'protobuf', graphql: 'graphql',
 }
 
-const highlightedCode = computed(() => {
-  if (!textContent.value) return ''
-  const ext = getExt(props.filename)
-  const lang = codeLangMap[ext]
-
-  // 如果是代码文件且有对应语言，使用语法高亮
-  if (isCode.value && lang && hljs.getLanguage(lang)) {
-    try {
-      return hljs.highlight(textContent.value, { language: lang }).value
-    } catch (e) {
-      console.warn('[FilePreview] 语法高亮失败:', ext, e)
-    }
-  }
-
-  // JSON 特殊处理
-  if (ext === 'json') {
-    try {
-      const parsed = JSON.parse(textContent.value)
-      return hljs.highlight(JSON.stringify(parsed, null, 2), { language: 'json' }).value
-    } catch (e) {
-      // JSON 解析失败，按普通文本处理
-    }
-  }
-
-  // 普通文本，转义 HTML
-  return escapeHtml(textContent.value)
-})
-
-const lineCount = computed(() => {
-  if (!textContent.value) return 0
-  return textContent.value.split('\n').length
-})
-
-const csvData = computed(() => {
-  if (!textContent.value) return { headers: [], rows: [] }
-  const lines = textContent.value.split('\n').filter(l => l.trim())
-  if (lines.length === 0) return { headers: [], rows: [] }
-
-  const parseLine = (line) => {
-    const result = []
-    let current = ''
-    let inQuotes = false
-    for (let i = 0; i < line.length; i++) {
-      const char = line[i]
-      if (char === '"' && line[i + 1] === '"') {
-        current += '"'
-        i++
-      } else if (char === '"') {
-        inQuotes = !inQuotes
-      } else if (char === ',' && !inQuotes) {
-        result.push(current)
-        current = ''
-      } else {
-        current += char
-      }
-    }
-    result.push(current)
-    return result
-  }
-
-  const headers = parseLine(lines[0])
-  const rows = lines.slice(1, 1000).map(parseLine) // 限制最多 1000 行
-  return { headers, rows }
-})
-
-function escapeHtml(text) {
-  const div = document.createElement('div')
-  div.textContent = text
-  return div.innerHTML
-}
-
-// 预览/下载基础 URL：定时任务工作目录走独立端点，否则走会话文件端点
-const previewBaseUrl = computed(() => props.taskId
-  ? `${API_BASE_URL}/agent/scheduled-tasks/${props.taskId}/workspace/file`
-  : `${API_BASE_URL}/agent/files/preview`)
-
-function handleDownload() {
-  const token = getStoredToken()
-  const params = new URLSearchParams()
-  params.set('file_path', props.filePath)
-  if (props.sessionId) params.set('session_id', props.sessionId)
-  if (token) params.set('token', token)
-  params.set('download', 'true')
-  const url = `${previewBaseUrl.value}?${params.toString()}`
-  const link = document.createElement('a')
-  link.href = url
-  link.download = props.filename
-  document.body.appendChild(link)
-  link.click()
-  document.body.removeChild(link)
-}
-
-const renderedMarkdown = computed(() => {
-  if (!textContent.value) return ''
-  return marked.parse(normalizeMathDelimiters(textContent.value))
-})
-
-const isText = computed(() => {
-  const ext = getExt(props.filename)
-  return ext && textExts.includes('.' + ext)
-})
-
-// 预览目标由 (visible, filename, filePath) 共同决定，需要覆盖三种场景：
-//   1) 常驻挂载 + visible 由 false→true（素材面板）；
-//   2) 父级用 v-if 控制、挂载时 visible 已为 true（定时任务面板）—— 靠 immediate 兜住；
-//   3) 多标签切换：visible 始终为 true，只有 filePath/filename 变化（工作区预览）。
-// 只监听 visible 会漏掉 2 和 3，表现为预览区一直空白。
-watch(
-  [() => props.visible, () => props.filePath, () => props.filename],
-  async () => {
-    if (props.visible && props.filename) {
-      await loadPreview()
+export default {
+  components: { DocxPreview, ExcelPreview },
+  props: {
+    filename: {
+      type: String,
+      default: ''
+    },
+    filePath: {
+      type: String,
+      default: ''
+    },
+    sessionId: {
+      type: String,
+      default: null
+    },
+    taskId: {
+      type: String,
+      default: null
+    },
+    visible: {
+      type: Boolean,
+      default: false
+    },
+    // 内嵌模式：预览只占据「父容器」范围，不再铺满视口、也不加全屏黑遮罩。
+    // 用于工作区（WorkspacePanel）—— 这样预览文件时聊天区仍然可见，
+    // 会话时间区域、任务规划区域不会被盖住。默认 false 保持原有模态行为。
+    inline: {
+      type: Boolean,
+      default: false
     }
   },
-  { immediate: true }
-)
-
-// 每次加载分配递增序号：异步返回后若已有更新的加载，丢弃旧结果，
-// 避免快速切换标签时旧请求覆盖新标签内容。
-let loadSeq = 0
-
-async function loadPreview() {
-  const seq = ++loadSeq
-  loading.value = true
-  error.value = ''
-  textContent.value = ''
-  if (docxUrl.value) {
-    URL.revokeObjectURL(docxUrl.value)
-  }
-  if (excelUrl.value) {
-    URL.revokeObjectURL(excelUrl.value)
-  }
-  docxUrl.value = ''
-  excelUrl.value = ''
-  if (pptxPdfUrl.value) {
-    URL.revokeObjectURL(pptxPdfUrl.value)
-  }
-  pptxPdfUrl.value = ''
-  if (htmlUrl.value) {
-    URL.revokeObjectURL(htmlUrl.value)
-    htmlUrl.value = ''
-  }
-
-  const ts = new Date().toISOString()
-  // 统一打印预览请求日志：文件名、路径、会话ID
-  console.log(
-    `[${ts}] [FilePreview] 预览请求 | 文件名: ${props.filename} | 路径: ${props.filePath} | 会话: ${props.sessionId || '无'}`
-  )
-
-  // 校验必要参数
-  if (!props.filePath) {
-    error.value = '文件路径为空，无法预览'
-    console.error(
-      `[${ts}] [FilePreview] loadPreview 失败: filePath 为空`,
-      { filename: props.filename, sessionId: props.sessionId }
-    )
-    loading.value = false
-    return
-  }
-
-  const token = getStoredToken()
-
-  // 构建预览 URL：定时任务工作目录走独立端点，否则走会话文件端点
-  const params = new URLSearchParams()
-  params.set('file_path', props.filePath)
-  if (props.sessionId) params.set('session_id', props.sessionId)
-  if (token) params.set('token', token)
-  previewUrl.value = `${previewBaseUrl.value}?${params.toString()}`
-  console.log(
-    `[${ts}] [FilePreview] 加载预览 | 文件: ${props.filename} | 类型: ${getExt(props.filename) || '无扩展名'} | URL: ${previewUrl.value}`
-  )
-
-  const ext = getExt(props.filename)
-
-  // 构建 auth headers
-  const headers = token ? { 'Authorization': `Bearer ${token}` } : {}
-
-  try {
-    if (isPdf.value) {
-      console.log('[FilePreview] PDF 预览')
-    } else if (isPptx.value) {
-      console.log('[FilePreview] PPTX 预览 (LibreOffice → PDF)')
-      // 后端用 LibreOffice 把 pptx 转成 PDF，返回 PDF 流，由浏览器内置查看器渲染
-      const pdfParams = new URLSearchParams(params)
-      pdfParams.set('target', 'pdf')
-      const pdfUrl = `${previewBaseUrl.value}?${pdfParams.toString()}`
-      const blob = await requestBlob({ url: pdfUrl, headers })
-      if (seq !== loadSeq) return
-      pptxPdfUrl.value = URL.createObjectURL(blob)
-    } else if (isDocx.value) {
-      console.log('[FilePreview] DOCX 预览')
-      const arrayBuffer = await requestArrayBuffer({ url: previewUrl.value, headers })
-      if (seq !== loadSeq) return
-      docxUrl.value = URL.createObjectURL(
-        new Blob([arrayBuffer], {
-          type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-        })
-      )
-    } else if (isExcel.value) {
-      console.log('[FilePreview] Excel 预览')
-      const arrayBuffer = await requestArrayBuffer({ url: previewUrl.value, headers })
-      if (seq !== loadSeq) return
-      excelUrl.value = URL.createObjectURL(
-        new Blob([arrayBuffer], {
-          type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-        })
-      )
-    } else if (isHtml.value) {
-      console.log('[FilePreview] HTML 预览')
-      const htmlText = await requestText({ url: previewUrl.value, headers })
-      if (seq !== loadSeq) return
-      const blob = new Blob([htmlText], { type: 'text/html; charset=utf-8' })
-      htmlUrl.value = URL.createObjectURL(blob)
-    } else if (isMarkdown.value || isText.value || isCsv.value) {
-      let text = await requestText({ url: previewUrl.value, headers })
-      if (seq !== loadSeq) return
-      if (text.length > 50000) {
-        text = text.substring(0, 50000) + '\n\n... (内容过长已截断)'
-      }
-      textContent.value = text
-      console.log('[FilePreview] 文本预览加载完成, 长度:', textContent.value.length)
-    } else {
-      console.log('[FilePreview] 不支持预览的文件类型:', ext || '未知')
-    }
-  } catch (e) {
-    if (seq !== loadSeq) return
-    console.error('[FilePreview] 预览加载失败:', e, { filename: props.filename, filePath: props.filePath })
-    error.value = `加载失败: ${e.message}`
-  }
-
-  if (seq !== loadSeq) return
-  loading.value = false
-}
-
-function handleExcelError(e) {
-  console.error('Excel error:', e)
-  if (!excelRetried.value && excelArrayBuffer.value) {
-    // 复杂 xlsx 可能包含 drawing，先做一次清理重试。
-    // 用 SheetJS 做一次 read→write 往返，生成“不含 drawing”的干净工作簿，
-    // 清理后的工作簿仍保留边框、合并单元格和多 sheet。
-    // 与“无图片时正常显示”体验一致。
-    try {
-      const wb = XLSX.read(excelArrayBuffer.value, { type: 'array', cellStyles: true })
-      const cleaned = XLSX.write(wb, { type: 'array', bookType: 'xlsx' })
-      excelRetried.value = true
-      excelUrl.value = cleaned
-      excelKey.value++
-      return
-    } catch (err) {
-      console.error('[FilePreview] 去 drawing 重试失败:', err)
-    }
-  }
-  // 仍失败（极少见）：用 SheetJS 把各 sheet 渲染为 HTML 表格兜底
-  if (excelArrayBuffer.value) {
-    buildExcelTables(excelArrayBuffer.value)
-  } else {
-    error.value = 'Excel 预览加载失败'
-  }
-}
-
-function handleClose() {
-  // pptx/docx/excel/html 均为 Blob URL，需释放
-  if (docxUrl.value) URL.revokeObjectURL(docxUrl.value)
-  if (excelUrl.value) URL.revokeObjectURL(excelUrl.value)
-  if (pptxPdfUrl.value) URL.revokeObjectURL(pptxPdfUrl.value)
-  if (htmlUrl.value) URL.revokeObjectURL(htmlUrl.value)
-  emit('close')
-}
-
+  data() {
     return {
-      API_BASE_URL,
-      codeLangMap,
-      computed,
-      csvData,
-      docxUrl,
-      error,
-      escapeHtml,
-      excelUrl,
-      getExt,
-      getStoredToken,
-      handleClose,
-      handleDownload,
-      highlightedCode,
-      hljs,
-      htmlUrl,
-      imageExts,
-      isCode,
-      isCsv,
-      isDocx,
-      isExcel,
-      isHtml,
-      isImage,
-      isMarkdown,
-      isPdf,
-      isPptx,
-      isText,
-      lineCount,
-      loading,
-      loadPreview,
-      marked,
-      normalizeMathDelimiters,
-      pptxPdfUrl,
-      previewBaseUrl,
-      previewUrl,
-      ref,
-      renderedMarkdown,
-      setupMarkedExtensions,
-      textContent,
-      textExts,
-      watch,
+      loading: false,
+      error: '',
+      textContent: '',
+      previewUrl: '',
+      docxUrl: '',
+      excelUrl: '',
+      // PPTX：经后端 LibreOffice 转为 PDF 后以 iframe 预览
+      pptxPdfUrl: '',
+      excelArrayBuffer: null,
+      excelFallback: false,
+      excelSheets: [],
+      excelRetried: false,
+      excelKey: 0,
+      // Excel 兜底逻辑保留给后续扩展，当前预览由 ExcelPreview 组件承接。
+      htmlUrl: '',
     }
+  },
+  computed: {
+    isImage() {
+      const ext = getExt(this.filename)
+      return ext && imageExts.includes('.' + ext)
+    },
+    isPdf() {
+      return getExt(this.filename) === 'pdf'
+    },
+    isPptx() {
+      return getExt(this.filename) === 'pptx'
+    },
+    isDocx() {
+      return getExt(this.filename) === 'docx'
+    },
+    isExcel() {
+      return ['xlsx', 'xls'].includes(getExt(this.filename))
+    },
+    isMarkdown() {
+      return getExt(this.filename) === 'md'
+    },
+    isHtml() {
+      return ['html', 'htm'].includes(getExt(this.filename))
+    },
+    isCsv() {
+      return getExt(this.filename) === 'csv'
+    },
+    isCode() {
+      const ext = getExt(this.filename)
+      const codeExts = ['js', 'ts', 'vue', 'py', 'java', 'go', 'rs', 'c', 'cpp', 'h', 'hpp', 'sh', 'bat', 'css', 'scss', 'less', 'sql', 'html', 'htm', 'xml', 'json', 'yaml', 'yml', 'toml', 'jsx', 'tsx', 'rb', 'php', 'swift', 'kt', 'lua', 'pl', 'r', 'dart', 'tf', 'proto', 'graphql']
+      return codeExts.includes(ext)
+    },
+    // 代码语言映射
+    highlightedCode() {
+      if (!this.textContent) return ''
+      const ext = getExt(this.filename)
+      const lang = codeLangMap[ext]
+
+      // 如果是代码文件且有对应语言，使用语法高亮
+      if (this.isCode && lang && hljs.getLanguage(lang)) {
+        try {
+          return hljs.highlight(this.textContent, { language: lang }).value
+        } catch (e) {
+          console.warn('[FilePreview] 语法高亮失败:', ext, e)
+        }
+      }
+
+      // JSON 特殊处理
+      if (ext === 'json') {
+        try {
+          const parsed = JSON.parse(this.textContent)
+          return hljs.highlight(JSON.stringify(parsed, null, 2), { language: 'json' }).value
+        } catch (e) {
+          // JSON 解析失败，按普通文本处理
+        }
+      }
+
+      // 普通文本，转义 HTML
+      return escapeHtml(this.textContent)
+    },
+    lineCount() {
+      if (!this.textContent) return 0
+      return this.textContent.split('\n').length
+    },
+    csvData() {
+      if (!this.textContent) return { headers: [], rows: [] }
+      const lines = this.textContent.split('\n').filter(l => l.trim())
+      if (lines.length === 0) return { headers: [], rows: [] }
+
+      const parseLine = (line) => {
+        const result = []
+        let current = ''
+        let inQuotes = false
+        for (let i = 0; i < line.length; i++) {
+          const char = line[i]
+          if (char === '"' && line[i + 1] === '"') {
+            current += '"'
+            i++
+          } else if (char === '"') {
+            inQuotes = !inQuotes
+          } else if (char === ',' && !inQuotes) {
+            result.push(current)
+            current = ''
+          } else {
+            current += char
+          }
+        }
+        result.push(current)
+        return result
+      }
+
+      const headers = parseLine(lines[0])
+      const rows = lines.slice(1, 1000).map(parseLine) // 限制最多 1000 行
+      return { headers, rows }
+    },
+    // 预览/下载基础 URL：定时任务工作目录走独立端点，否则走会话文件端点
+    previewBaseUrl() {
+      return this.taskId
+        ? `${API_BASE_URL}/agent/scheduled-tasks/${this.taskId}/workspace/file`
+        : `${API_BASE_URL}/agent/files/preview`
+    },
+    renderedMarkdown() {
+      if (!this.textContent) return ''
+      return marked.parse(normalizeMathDelimiters(this.textContent))
+    },
+    isText() {
+      const ext = getExt(this.filename)
+      return ext && textExts.includes('.' + ext)
+    },
+    // 预览目标由 (visible, filename, filePath) 共同决定，需要覆盖三种场景：
+    //   1) 常驻挂载 + visible 由 false→true（素材面板）；
+    //   2) 父级用 v-if 控制、挂载时 visible 已为 true（定时任务面板）—— 靠 immediate 兜住；
+    //   3) 多标签切换：visible 始终为 true，只有 filePath/filename 变化（工作区预览）。
+    // 只监听 visible 会漏掉 2 和 3，表现为预览区一直空白。
+    previewTarget() {
+      return `${this.visible}\u0000${this.filePath}\u0000${this.filename}`
+    },
+  },
+  watch: {
+    previewTarget: {
+      immediate: true,
+      handler() {
+        if (this.visible && this.filename) {
+          this.loadPreview()
+        }
+      }
+    },
+  },
+  methods: {
+    handleDownload() {
+      const token = getStoredToken()
+      const params = new URLSearchParams()
+      params.set('file_path', this.filePath)
+      if (this.sessionId) params.set('session_id', this.sessionId)
+      if (token) params.set('token', token)
+      params.set('download', 'true')
+      const url = `${this.previewBaseUrl}?${params.toString()}`
+      const link = document.createElement('a')
+      link.href = url
+      link.download = this.filename
+      document.body.appendChild(link)
+      link.click()
+      document.body.removeChild(link)
+    },
+    async loadPreview() {
+      // 每次加载分配递增序号：异步返回后若已有更新的加载，丢弃旧结果，
+      // 避免快速切换标签时旧请求覆盖新标签内容。
+      const seq = (this._loadSeq = (this._loadSeq || 0) + 1)
+      this.loading = true
+      this.error = ''
+      this.textContent = ''
+      if (this.docxUrl) {
+        URL.revokeObjectURL(this.docxUrl)
+      }
+      if (this.excelUrl) {
+        URL.revokeObjectURL(this.excelUrl)
+      }
+      this.docxUrl = ''
+      this.excelUrl = ''
+      if (this.pptxPdfUrl) {
+        URL.revokeObjectURL(this.pptxPdfUrl)
+      }
+      this.pptxPdfUrl = ''
+      if (this.htmlUrl) {
+        URL.revokeObjectURL(this.htmlUrl)
+        this.htmlUrl = ''
+      }
+
+      const ts = new Date().toISOString()
+      // 统一打印预览请求日志：文件名、路径、会话ID
+      console.log(
+        `[${ts}] [FilePreview] 预览请求 | 文件名: ${this.filename} | 路径: ${this.filePath} | 会话: ${this.sessionId || '无'}`
+      )
+
+      // 校验必要参数
+      if (!this.filePath) {
+        this.error = '文件路径为空，无法预览'
+        console.error(
+          `[${ts}] [FilePreview] loadPreview 失败: filePath 为空`,
+          { filename: this.filename, sessionId: this.sessionId }
+        )
+        this.loading = false
+        return
+      }
+
+      const token = getStoredToken()
+
+      // 构建预览 URL：定时任务工作目录走独立端点，否则走会话文件端点
+      const params = new URLSearchParams()
+      params.set('file_path', this.filePath)
+      if (this.sessionId) params.set('session_id', this.sessionId)
+      if (token) params.set('token', token)
+      this.previewUrl = `${this.previewBaseUrl}?${params.toString()}`
+      console.log(
+        `[${ts}] [FilePreview] 加载预览 | 文件: ${this.filename} | 类型: ${getExt(this.filename) || '无扩展名'} | URL: ${this.previewUrl}`
+      )
+
+      const ext = getExt(this.filename)
+
+      // 构建 auth headers
+      const headers = token ? { 'Authorization': `Bearer ${token}` } : {}
+
+      try {
+        if (this.isPdf) {
+          console.log('[FilePreview] PDF 预览')
+        } else if (this.isPptx) {
+          console.log('[FilePreview] PPTX 预览 (LibreOffice → PDF)')
+          // 后端用 LibreOffice 把 pptx 转成 PDF，返回 PDF 流，由浏览器内置查看器渲染
+          const pdfParams = new URLSearchParams(params)
+          pdfParams.set('target', 'pdf')
+          const pdfUrl = `${this.previewBaseUrl}?${pdfParams.toString()}`
+          const blob = await requestBlob({ url: pdfUrl, headers })
+          if (seq !== this._loadSeq) return
+          this.pptxPdfUrl = URL.createObjectURL(blob)
+        } else if (this.isDocx) {
+          console.log('[FilePreview] DOCX 预览')
+          const arrayBuffer = await requestArrayBuffer({ url: this.previewUrl, headers })
+          if (seq !== this._loadSeq) return
+          this.docxUrl = URL.createObjectURL(
+            new Blob([arrayBuffer], {
+              type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            })
+          )
+        } else if (this.isExcel) {
+          console.log('[FilePreview] Excel 预览')
+          const arrayBuffer = await requestArrayBuffer({ url: this.previewUrl, headers })
+          if (seq !== this._loadSeq) return
+          this.excelUrl = URL.createObjectURL(
+            new Blob([arrayBuffer], {
+              type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            })
+          )
+        } else if (this.isHtml) {
+          console.log('[FilePreview] HTML 预览')
+          const htmlText = await requestText({ url: this.previewUrl, headers })
+          if (seq !== this._loadSeq) return
+          const blob = new Blob([htmlText], { type: 'text/html; charset=utf-8' })
+          this.htmlUrl = URL.createObjectURL(blob)
+        } else if (this.isMarkdown || this.isText || this.isCsv) {
+          let text = await requestText({ url: this.previewUrl, headers })
+          if (seq !== this._loadSeq) return
+          if (text.length > 50000) {
+            text = text.substring(0, 50000) + '\n\n... (内容过长已截断)'
+          }
+          this.textContent = text
+          console.log('[FilePreview] 文本预览加载完成, 长度:', this.textContent.length)
+        } else {
+          console.log('[FilePreview] 不支持预览的文件类型:', ext || '未知')
+        }
+      } catch (e) {
+        if (seq !== this._loadSeq) return
+        console.error('[FilePreview] 预览加载失败:', e, { filename: this.filename, filePath: this.filePath })
+        this.error = `加载失败: ${e.message}`
+      }
+
+      if (seq !== this._loadSeq) return
+      this.loading = false
+    },
+    handleExcelError(e) {
+      console.error('Excel error:', e)
+      if (!this.excelRetried && this.excelArrayBuffer) {
+        // 复杂 xlsx 可能包含 drawing，先做一次清理重试。
+        // 用 SheetJS 做一次 read→write 往返，生成“不含 drawing”的干净工作簿，
+        // 清理后的工作簿仍保留边框、合并单元格和多 sheet。
+        // 与“无图片时正常显示”体验一致。
+        try {
+          const wb = XLSX.read(this.excelArrayBuffer, { type: 'array', cellStyles: true })
+          const cleaned = XLSX.write(wb, { type: 'array', bookType: 'xlsx' })
+          this.excelRetried = true
+          this.excelUrl = cleaned
+          this.excelKey++
+          return
+        } catch (err) {
+          console.error('[FilePreview] 去 drawing 重试失败:', err)
+        }
+      }
+      // 仍失败（极少见）：用 SheetJS 把各 sheet 渲染为 HTML 表格兜底
+      if (this.excelArrayBuffer) {
+        this.buildExcelTables(this.excelArrayBuffer)
+      } else {
+        this.error = 'Excel 预览加载失败'
+      }
+    },
+    handleClose() {
+      // pptx/docx/excel/html 均为 Blob URL，需释放
+      if (this.docxUrl) URL.revokeObjectURL(this.docxUrl)
+      if (this.excelUrl) URL.revokeObjectURL(this.excelUrl)
+      if (this.pptxPdfUrl) URL.revokeObjectURL(this.pptxPdfUrl)
+      if (this.htmlUrl) URL.revokeObjectURL(this.htmlUrl)
+      this.$emit('close')
+    },
   },
 }
 </script>
@@ -785,7 +736,7 @@ function handleClose() {
   overflow: auto;
 }
 
-.preview-docx ::v-deep(.docx-preview) {
+.preview-docx ::v-deep .docx-preview {
   width: 100%;
   height: 100%;
 }
@@ -797,9 +748,9 @@ function handleClose() {
   overflow: auto;
 }
 
-.preview-excel ::v-deep(.excel-preview),
-.preview-excel ::v-deep(.vue-office-excel),
-.preview-excel ::v-deep(.x-spreadsheet) {
+.preview-excel ::v-deep .excel-preview,
+.preview-excel ::v-deep .vue-office-excel,
+.preview-excel ::v-deep .x-spreadsheet {
   width: 100%;
   min-height: 400px;
 }
@@ -848,7 +799,7 @@ function handleClose() {
   width: 100%;
   height: 100%;
   overflow: auto;
-  background: #ffffff;
+  background: #0d1117;
 }
 
 .preview-text .code-block {
@@ -864,10 +815,10 @@ function handleClose() {
   flex-direction: column;
   padding: 16px 8px 16px 16px;
   text-align: right;
-  color: #94a3b8;
+  color: #6e7681;
   user-select: none;
-  border-right: 1px solid #e2e8f0;
-  background: #f8fafc;
+  border-right: 1px solid #21262d;
+  background: #161b22;
   flex-shrink: 0;
 }
 
@@ -879,12 +830,12 @@ function handleClose() {
 .preview-text pre {
   margin: 0;
   padding: 16px;
-  color: #24292e;
+  color: #c9d1d9;
   white-space: pre-wrap;
   word-break: break-all;
   flex: 1;
   overflow-x: auto;
-  background: #ffffff;
+  background: #0d1117;
 }
 
 .preview-csv {
@@ -952,19 +903,19 @@ function handleClose() {
   background: #ffffff;
 }
 
-::v-deep(.markdown-body) {
+::v-deep .markdown-body {
   max-width: 900px;
   margin: 0 auto;
   color: #24292f;
   line-height: 1.6;
 }
 
-::v-deep(.markdown-body h1),
-::v-deep(.markdown-body h2),
-::v-deep(.markdown-body h3),
-::v-deep(.markdown-body h4),
-::v-deep(.markdown-body h5),
-::v-deep(.markdown-body h6) {
+::v-deep .markdown-body h1,
+::v-deep .markdown-body h2,
+::v-deep .markdown-body h3,
+::v-deep .markdown-body h4,
+::v-deep .markdown-body h5,
+::v-deep .markdown-body h6 {
   margin-top: 24px;
   margin-bottom: 16px;
   font-weight: 600;
@@ -973,113 +924,116 @@ function handleClose() {
   padding-bottom: 8px;
 }
 
-::v-deep(.markdown-body h1) { font-size: 2em; }
-::v-deep(.markdown-body h2) { font-size: 1.5em; }
-::v-deep(.markdown-body h3) { font-size: 1.25em; }
-::v-deep(.markdown-body h4) { font-size: 1em; }
+::v-deep .markdown-body h1 { font-size: 2em; }
+::v-deep .markdown-body h2 { font-size: 1.5em; }
+::v-deep .markdown-body h3 { font-size: 1.25em; }
+::v-deep .markdown-body h4 { font-size: 1em; }
 
-::v-deep(.markdown-body p) {
+::v-deep .markdown-body p {
   margin-bottom: 16px;
 }
 
-::v-deep(.markdown-body code) {
+/* Markdown 预览里的代码同样使用亮黑底 + github-dark 的 token 配色 */
+::v-deep .markdown-body :not(pre) > code {
   padding: 0.2em 0.4em;
   margin: 0;
   font-size: 85%;
-  background-color: #f6f8fa;
+  background-color: rgba(13, 17, 23, 0.06);
   border-radius: 6px;
   font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
 }
 
-::v-deep(.markdown-body pre) {
+::v-deep .markdown-body pre {
   padding: 16px;
   overflow: auto;
   font-size: 85%;
   line-height: 1.45;
-  background-color: #f6f8fa;
+  background-color: #0d1117;
+  color: #c9d1d9;
   border-radius: 6px;
   margin-bottom: 16px;
-  border: 1px solid #e1e4e8;
+  border: 1px solid #21262d;
 }
 
-::v-deep(.markdown-body pre code) {
+::v-deep .markdown-body pre code {
   padding: 0;
   margin: 0;
   background-color: transparent;
+  color: #c9d1d9;
   border-radius: 0;
   white-space: pre;
   display: block;
 }
 
-::v-deep(.markdown-body ul),
-::v-deep(.markdown-body ol) {
+::v-deep .markdown-body ul,
+::v-deep .markdown-body ol {
   padding-left: 2em;
   margin-bottom: 16px;
 }
 
-::v-deep(.markdown-body li) {
+::v-deep .markdown-body li {
   margin-bottom: 4px;
 }
 
-::v-deep(.markdown-body blockquote) {
+::v-deep .markdown-body blockquote {
   padding: 0 1em;
   color: #6a737d;
   border-left: 0.25em solid #d0d7de;
   margin: 0 0 16px 0;
 }
 
-::v-deep(.markdown-body table) {
+::v-deep .markdown-body table {
   border-collapse: collapse;
   width: 100%;
   margin-bottom: 16px;
   border-spacing: 0;
 }
 
-::v-deep(.markdown-body thead) {
+::v-deep .markdown-body thead {
   display: table-header-group;
   vertical-align: middle;
   border-color: inherit;
 }
 
-::v-deep(.markdown-body tbody) {
+::v-deep .markdown-body tbody {
   display: table-row-group;
   vertical-align: middle;
   border-color: inherit;
 }
 
-::v-deep(.markdown-body tr) {
+::v-deep .markdown-body tr {
   display: table-row;
   vertical-align: inherit;
   border-color: inherit;
 }
 
-::v-deep(.markdown-body tr:nth-child(2n)) {
+::v-deep .markdown-body tr:nth-child(2n) {
   background-color: #f6f8fa;
 }
 
-::v-deep(.markdown-body table th),
-::v-deep(.markdown-body table td) {
+::v-deep .markdown-body table th,
+::v-deep .markdown-body table td {
   padding: 6px 13px;
   border: 1px solid #d0d7de;
   display: table-cell;
   vertical-align: middle;
 }
 
-::v-deep(.markdown-body table th) {
+::v-deep .markdown-body table th {
   font-weight: 600;
   background-color: #f6f8fa;
 }
 
-::v-deep(.markdown-body table td) {
+::v-deep .markdown-body table td {
   color: #24292f;
 }
 
-::v-deep(.markdown-body a) {
+::v-deep .markdown-body a {
   color: #0366d6;
   text-decoration: none;
 }
 
-::v-deep(.markdown-body a:hover) {
+::v-deep .markdown-body a:hover {
   text-decoration: underline;
 }
 

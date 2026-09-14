@@ -20,8 +20,11 @@ export function normalizeMathDelimiters(content) {
     protectedChunks.push(chunk)
     return ' CODE' + (protectedChunks.length - 1) + ' '
   }
+  // 末位分支 (?:```|$) 用于保护「流式输出中尚未闭合」的代码块：
+  // 此时没有结尾 ```，若只匹配成对围栏，代码里的 $ 会被后面的公式规整当成数学公式改写，
+  // 导致流式过程中代码被 KaTeX 渲染成公式（样式错乱），流结束后才恢复正常。
   let s = content
-    .replace(/```[\s\S]*?```/g, placeholder)
+    .replace(/```[\s\S]*?(?:```|$)/g, placeholder)
     .replace(/`[^`\n]+`/g, placeholder)
   s = s.replace(/\$\$([\s\S]+?)\$\$/g, (_, inner) => '\n\n$$\n' + inner.trim() + '\n$$\n\n')
   s = s.replace(/ CODE(\d+) /g, (_, i) => protectedChunks[+i])

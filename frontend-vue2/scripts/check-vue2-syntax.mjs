@@ -70,6 +70,9 @@ const VUE3_PATTERNS = [
   [/(?<!:):deep\s*\(/, 'Vue3 :deep()（Vue2 用 ::v-deep）'],
   [/\$slots\.[a-zA-Z]+\s*\(/, 'Vue3 插槽函数式调用'],
   [/\bupdate:modelValue\b|\bmodelValue\b/, 'Vue3 v-model 约定 modelValue（Vue2 为 value/input）'],
+  // Vue2.6 兼容：组件必须用选项式 API，不得使用 2.7 的 Composition API
+  [/\bsetup\s*\(/, 'Vue2.7 setup()（Vue2.6 用 data/computed/methods）'],
+  [/import\s*\{[^}]*\}\s*from\s*['"]vue['"]/, 'Vue2.7 具名导入（Vue2.6 用默认导入 Vue / 选项式 API）'],
 ]
 
 for (const f of files) {

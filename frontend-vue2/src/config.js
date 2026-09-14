@@ -1,4 +1,4 @@
-import { reactive } from 'vue'
+import Vue from 'vue'
 
 const runtimeConfig =
   (typeof window !== 'undefined' && window.__RUNTIME_CONFIG__) || {}
@@ -38,7 +38,13 @@ export const APP_WELCOME_TITLE =
   `${APP_TITLE}，让工作化繁为简`
 export const BUILD_MODE = process.env.NODE_ENV || 'development'
 
-export const appRuntime = reactive({
+// 登录页开关（运行期 runtime-config 注入，未配置默认开启）：
+//   true  → 未登录时显示 Welcome 登录页（默认）；
+//   false → 不显示登录页，依赖 URL 免密直登（?username=&user_id=）或已有登录态；
+//           两者都不满足时显示未授权提示。生产环境通常关闭。
+export const LOGIN_PAGE_ENABLED = runtimeConfig.LOGIN_PAGE_ENABLED !== false
+
+export const appRuntime = Vue.observable({
   win: false,
   agentEnv: '',
 })
@@ -51,6 +57,7 @@ console.log(
     `  后端地址: ${API_BASE_URL || '(同源相对路径 /)'}\n` +
     `  地址来源: ${apiSource}\n` +
     `  应用名称: ${APP_TITLE}\n` +
+    `  登录页开关: ${LOGIN_PAGE_ENABLED ? '开启' : '关闭'}\n` +
     `  构建时间: ${new Date().toLocaleString()}`,
   BUILD_MODE === 'development'
     ? 'color: #0ea5e9; font-weight: bold; font-size: 12px;'

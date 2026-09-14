@@ -1,21 +1,20 @@
-import {
+import request, {
   handleStreamResponse,
-  requestJson,
   streamHeaders,
   streamUrl,
-} from './request.js'
+} from '../utils/request.js'
 
 export async function createSession(title, username = null) {
   const data = { title }
   if (username) data.username = username
-  return requestJson(
+  return request(
     { url: '/agent/sessions', method: 'post', data },
     '创建会话失败'
   )
 }
 
 export async function listSessions(username = null) {
-  return requestJson(
+  return request(
     {
       url: '/agent/sessions',
       method: 'get',
@@ -26,21 +25,21 @@ export async function listSessions(username = null) {
 }
 
 export async function getSession(sessionId) {
-  return requestJson(
+  return request(
     { url: `/agent/sessions/${sessionId}`, method: 'get' },
     '获取会话失败'
   )
 }
 
 export async function deleteSession(sessionId) {
-  return requestJson(
+  return request(
     { url: `/agent/sessions/${sessionId}`, method: 'delete' },
     '删除会话失败'
   )
 }
 
 export async function renameSession(sessionId, title) {
-  return requestJson(
+  return request(
     {
       url: `/agent/sessions/${sessionId}/title`,
       method: 'put',
@@ -51,14 +50,14 @@ export async function renameSession(sessionId, title) {
 }
 
 export async function togglePinSession(sessionId) {
-  return requestJson(
+  return request(
     { url: `/agent/sessions/${sessionId}/pin`, method: 'put' },
     '置顶操作失败'
   )
 }
 
 export async function getChatHistory(sessionId) {
-  const data = await requestJson(
+  const data = await request(
     { url: `/agent/sessions/${sessionId}`, method: 'get' },
     '获取聊天历史失败'
   )
@@ -71,7 +70,7 @@ export async function getChatHistory(sessionId) {
 }
 
 export async function getStreamStatus(sessionId) {
-  return requestJson(
+  return request(
     {
       url: '/agent/chat/stream/status',
       method: 'get',

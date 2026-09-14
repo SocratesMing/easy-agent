@@ -17,6 +17,7 @@
 #   AGENT_ENV     环境标识（dev/test/prod），决定加载哪份环境配置（默认 prod）
 #   APP_TITLE     应用名称（可选）
 #   APP_WELCOME_TITLE 首页欢迎语（可选，默认使用构建期 VUE_APP_WELCOME_TITLE）
+#   LOGIN_PAGE_ENABLED 登录页开关（可选，默认 true）：false 关闭登录页，生产常用
 #   DIST_DIR      输出目录（默认 dist）
 #
 # 后端地址选择优先级（高 -> 低）：
@@ -33,6 +34,14 @@ mkdir -p "$DIST_DIR"
 APP_TITLE="${APP_TITLE:-Easy Agent}"
 APP_WELCOME_TITLE="${APP_WELCOME_TITLE:-}"
 AGENT_ENV_VAL="${AGENT_ENV:-prod}"
+
+# 登录页开关（运行期）：true（默认）显示登录页；false 关闭登录页，依赖 URL 免密直登
+# （?username=&user_id=）或已有登录态，生产环境通常关闭。
+LOGIN_PAGE_ENABLED_VAL="${LOGIN_PAGE_ENABLED:-true}"
+case "$(echo "$LOGIN_PAGE_ENABLED_VAL" | tr 'A-Z' 'a-z')" in
+  false|0|no|off) RT_LOGIN_PAGE_ENABLED=false ;;
+  *)              RT_LOGIN_PAGE_ENABLED=true ;;
+esac
 
 # 读取各环境 .env.<mode> 中的 VUE_APP_API_BASE_URL，作为该环境默认后端地址。
 # 这是“按 AGENT_ENV 加载不同环境配置”的唯一数据源（与构建期保持一致）。
@@ -71,6 +80,7 @@ window.__RUNTIME_CONFIG__ = {
   API_BASE_URL: "${RT_API}",
   APP_TITLE: "${APP_TITLE}",
   APP_WELCOME_TITLE: "${APP_WELCOME_TITLE}",
+  LOGIN_PAGE_ENABLED: ${RT_LOGIN_PAGE_ENABLED},
   ENV_CONFIG: {
     dev:  { API_BASE_URL: "${DEV_API:-}" },
     test: { API_BASE_URL: "${TEST_API:-}" },
@@ -83,4 +93,5 @@ echo "==> 已生成运行期前端配置: $OUT_FILE"
 echo "    AGENT_ENV        : ${AGENT_ENV_VAL}"
 echo "    生效后端地址     : ${RT_API}  (来源: ${RT_API_SRC})"
 echo "    首页欢迎语       : ${APP_WELCOME_TITLE:-<使用构建期配置>}"
+echo "    登录页开关       : ${RT_LOGIN_PAGE_ENABLED}"
 echo "    各环境默认地址   : dev=${DEV_API:-<空>}  test=${TEST_API:-<空>}  prod=${PROD_API:-<空>}"

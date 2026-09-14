@@ -1,4 +1,4 @@
-import {
+import request, {
   AUTH_EXPIRED_EVENT,
   USER_ACTIVITY_EVENT,
   clearAuth,
@@ -7,10 +7,9 @@ import {
   getAuthHeaders,
   getStoredToken,
   getStoredUsername,
-  request,
-  requestJson,
+  requestRaw,
   storeAuth,
-} from './request.js'
+} from '../utils/request.js'
 
 export {
   AUTH_EXPIRED_EVENT,
@@ -25,7 +24,7 @@ export {
 }
 
 export async function authFetch(url, options = {}) {
-  const response = await request({
+  const response = await requestRaw({
     url,
     method: options.method || 'get',
     headers: options.headers,
@@ -45,7 +44,7 @@ export async function authFetch(url, options = {}) {
 // 登录：username 字段既接受用户名，也接受工号（后端按「用户名或工号」定位用户），
 // 两种情况都必须校验密码。走 URL 免密直登请用 passwordlessLogin。
 export async function login(username, password) {
-  const data = await requestJson(
+  const data = await request(
     {
       url: '/agent/auth/login',
       method: 'post',
@@ -60,7 +59,7 @@ export async function login(username, password) {
 // 免密登录：用户名已存在直接登录；不存在则自动注册后登录。
 // userId 为 0/空时由后端为新用户自动生成唯一 user_id。
 export async function passwordlessLogin(username, userId = '0') {
-  const data = await requestJson(
+  const data = await request(
     {
       url: '/agent/auth/login-passwordless',
       method: 'post',
@@ -74,7 +73,7 @@ export async function passwordlessLogin(username, userId = '0') {
 
 // 注册：仅需用户名 + 密码 + 工号（工号必填且全局唯一，注册后不可更改）
 export async function register(username, password, employeeId = '') {
-  const data = await requestJson(
+  const data = await request(
     {
       url: '/agent/auth/register',
       method: 'post',
@@ -103,7 +102,7 @@ export async function notifyLogout() {
 }
 
 export async function unregister() {
-  const data = await requestJson(
+  const data = await request(
     { url: '/agent/auth/unregister', method: 'delete' },
     '注销失败'
   )
@@ -112,14 +111,14 @@ export async function unregister() {
 }
 
 export async function listUsers() {
-  return requestJson(
+  return request(
     { url: '/agent/auth/admin/users', method: 'get' },
     '获取用户列表失败'
   )
 }
 
 export async function resetUserPassword(username) {
-  return requestJson(
+  return request(
     {
       url: `/agent/auth/admin/users/${encodeURIComponent(username)}/reset-password`,
       method: 'post',
@@ -129,7 +128,7 @@ export async function resetUserPassword(username) {
 }
 
 export async function getAuthConfig() {
-  return requestJson({ url: '/agent/auth/config', method: 'get' })
+  return request({ url: '/agent/auth/config', method: 'get' })
 }
 
 export async function getCurrentUser() {
@@ -137,7 +136,7 @@ export async function getCurrentUser() {
   if (!username) return null
 
   try {
-    return await requestJson({
+    return await request({
       url: '/agent/auth/me',
       method: 'get',
       params: { username },

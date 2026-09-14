@@ -3,26 +3,7 @@
 </template>
 
 <script>
-import { ref, onMounted, watch, onUnmounted, shallowRef, nextTick } from 'vue'
 import * as monaco from 'monaco-editor'
-export default {
-  props: {
-  content: {
-    type: String,
-    default: ''
-  },
-  language: {
-    type: String,
-    default: 'plaintext'
-  },
-  readOnly: {
-    type: Boolean,
-    default: true
-  }
-},
-  setup(props, { emit }) {
-const containerRef = ref(null)
-const editor = shallowRef(null)
 
 const languageMap = {
   'js': 'javascript',
@@ -62,89 +43,112 @@ const languageMap = {
   'makefile': 'makefile'
 }
 
-function getLanguage(ext) {
-  return languageMap[ext?.toLowerCase()] || 'plaintext'
-}
-
-function initEditor() {
-  if (!containerRef.value) return
-  
-  if (editor.value) {
-    editor.value.dispose()
-  }
-  
-  const content = props.content || ''
-  const lang = getLanguage(props.language)
-  
-  editor.value = monaco.editor.create(containerRef.value, {
-    value: content,
-    language: lang,
-    theme: 'vs-dark',
-    readOnly: props.readOnly,
-    automaticLayout: true,
-    minimap: { enabled: false },
-    scrollBeyondLastLine: false,
-    fontSize: 13,
-    lineNumbers: 'on',
-    renderLineHighlight: 'line',
-    wordWrap: 'off',
-    wrappingIndent: 'indent',
-    contextmenu: false,
-    folding: true,
-    glyphMargin: false,
-    lineDecorationsWidth: 10,
-    lineNumbersMinChars: 3
-  })
-}
-
-onMounted(() => {
-  nextTick(() => {
-    initEditor()
-  })
+// 与聊天代码块一致的「亮黑」配色（背景 #0d1117 / 前景 #c9d1d9 / 行号槽 #161b22）
+const EDITOR_THEME = 'easy-agent-dark'
+monaco.editor.defineTheme(EDITOR_THEME, {
+  base: 'vs-dark',
+  inherit: true,
+  rules: [],
+  colors: {
+    'editor.background': '#0d1117',
+    'editor.foreground': '#c9d1d9',
+    'editorGutter.background': '#0d1117',
+    'editorLineNumber.foreground': '#6e7681',
+    'editorLineNumber.activeForeground': '#c9d1d9',
+    'editor.lineHighlightBackground': '#161b22',
+    'editor.selectionBackground': '#264f78',
+    'editorIndentGuide.background1': '#21262d',
+    'editorIndentGuide.activeBackground1': '#30363d',
+    'editorWidget.background': '#161b22',
+    'editorWidget.border': '#30363d',
+  },
 })
 
-watch(() => props.content, (newContent) => {
-  if (editor.value) {
-    const model = editor.value.getModel()
-    if (model) {
-      model.setValue(newContent || '')
+export default {
+  props: {
+    content: {
+      type: String,
+      default: ''
+    },
+    language: {
+      type: String,
+      default: 'plaintext'
+    },
+    readOnly: {
+      type: Boolean,
+      default: true
     }
-  } else {
-    nextTick(() => {
-      initEditor()
+  },
+  created() {
+    this.editor = null
+  },
+  methods: {
+    getLanguage(ext) {
+      return languageMap[ext?.toLowerCase()] || 'plaintext'
+    },
+    initEditor() {
+      const el = this.$refs.containerRef
+      if (!el) return
+
+      if (this.editor) {
+        this.editor.dispose()
+      }
+
+      const content = this.content || ''
+      const lang = this.getLanguage(this.language)
+
+      this.editor = monaco.editor.create(el, {
+        value: content,
+        language: lang,
+        theme: EDITOR_THEME,
+        readOnly: this.readOnly,
+        automaticLayout: true,
+        minimap: { enabled: false },
+        scrollBeyondLastLine: false,
+        fontSize: 13,
+        lineNumbers: 'on',
+        renderLineHighlight: 'line',
+        wordWrap: 'off',
+        wrappingIndent: 'indent',
+        contextmenu: false,
+        folding: true,
+        glyphMargin: false,
+        lineDecorationsWidth: 10,
+        lineNumbersMinChars: 3
+      })
+    }
+  },
+  mounted() {
+    this.$nextTick(() => {
+      this.initEditor()
     })
-  }
-})
-
-watch(() => props.language, (newLang) => {
-  if (editor.value) {
-    const model = editor.value.getModel()
-    if (model) {
-      monaco.editor.setModelLanguage(model, getLanguage(newLang))
+  },
+  watch: {
+    content(newContent) {
+      if (this.editor) {
+        const model = this.editor.getModel()
+        if (model) {
+          model.setValue(newContent || '')
+        }
+      } else {
+        this.$nextTick(() => {
+          this.initEditor()
+        })
+      }
+    },
+    language(newLang) {
+      if (this.editor) {
+        const model = this.editor.getModel()
+        if (model) {
+          monaco.editor.setModelLanguage(model, this.getLanguage(newLang))
+        }
+      }
     }
-  }
-})
-
-onUnmounted(() => {
-  if (editor.value) {
-    editor.value.dispose()
-    editor.value = null
-  }
-})
-
-    return {
-      containerRef,
-      editor,
-      getLanguage,
-      initEditor,
-      languageMap,
-      monaco,
-      nextTick,
-      onMounted,
-      onUnmounted,
-      ref,
-      shallowRef,
-      watch,
+  },
+  beforeDestroy() {
+    if (this.editor) {
+      this.editor.dispose()
+      this.editor = null
     }
   },
 }
