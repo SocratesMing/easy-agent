@@ -258,8 +258,14 @@
 <script>
 import Vue from 'vue'
 import { createHighlighter } from 'shiki'
-import { marked } from 'marked'
-import { setupMarkedExtensions, normalizeMathDelimiters } from '../markdownSetup.js'
+import {
+  setupMarkedExtensions,
+  createMarkdownRenderer,
+  renderMarkdown as renderMarkdownHtml,
+  installCodeCopyHandler,
+  copyTextToClipboard,
+  escapeHtml,
+} from '../markdownSetup.js'
 import FileIcon from './FileIcon.vue'
 
 // 注册 KaTeX 数学公式 + emoji 短代码扩展（幂等，仅执行一次）
@@ -280,16 +286,10 @@ const langAliases = {
 
 // 处理过程类型：思考 + 工具调用（排除已在侧边栏显示的 write_todos）
 function isProcessType(b) {
-  return b.type === 'thinking' || (b.type === 'tool_call' && b.tool_name !== 'write_todos')
-}
-
-function escapeHtml(text) {
-  return text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#039;')
+  return (
+    b.type === 'thinking' ||
+    (b.type === 'tool_call' && b.tool_name !== 'write_todos')
+  )
 }
 
 // Shiki 高亮器：全局单例（所有消息组件共用，避免每条消息各初始化一次）。
@@ -369,88 +369,12 @@ function highlightCode(code, lang) {
   }
 }
 
-const renderer = new marked.Renderer()
+// 统一的 markdown 渲染器（代码块结构、外链处理由 markdownSetup 提供），
+// 代码高亮仍使用本组件持有的 shiki 实例
+const renderer = createMarkdownRenderer({ highlight: highlightCode })
 
-renderer.code = function(token) {
-  let code = ''
-  let language = ''
-
-  if (typeof token === 'object') {
-    code = token.text || token.raw || ''
-    language = token.lang || ''
-  } else {
-    code = arguments[0] || ''
-    language = arguments[1] || ''
-  }
-
-  const langLabel = language || 'text'
-  const highlightedCode = highlightCode(code, language)
-
-  return `<div class="code-block-wrapper">
-    <div class="code-header">
-      <span class="code-lang">${langLabel}</span>
-      <button class="code-copy-btn" onclick="copyCode(this)">
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
-          <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
-        </svg>
-        <span>复制</span>
-      </button>
-    </div>
-    ${highlightedCode}
-  </div>`
-}
-
-// 统一复制入口：优先 Clipboard API，失败时降级为隐藏 textarea + execCommand，
-// 兼容非 HTTPS（LAN IP 访问）等 Clipboard API 不可用的场景。
-async function copyTextToClipboard(text) {
-  const content = String(text == null ? '' : text)
-  if (!content) return false
-  try {
-    if (navigator.clipboard && window.isSecureContext) {
-      await navigator.clipboard.writeText(content)
-      return true
-    }
-  } catch (e) {
-    console.warn('Clipboard API 不可用，降级复制:', e)
-  }
-  try {
-    const textarea = document.createElement('textarea')
-    textarea.value = content
-    textarea.setAttribute('readonly', '')
-    textarea.style.position = 'fixed'
-    textarea.style.top = '-9999px'
-    document.body.appendChild(textarea)
-    textarea.select()
-    textarea.setSelectionRange(0, content.length)
-    const ok = document.execCommand('copy')
-    document.body.removeChild(textarea)
-    return ok
-  } catch (e) {
-    console.error('复制失败:', e)
-    return false
-  }
-}
-
-// 代码块复制：markdown 渲染产物通过 v-html 注入，按钮用 inline onclick 调全局函数。
-// 定义在模块级（而非 mounted），保证任何渲染时机点击都能找到该函数。
-window.copyCode = async function(btn) {
-  const wrapper = btn.closest('.code-block-wrapper')
-  const codeEl = wrapper.querySelector('pre code') || wrapper.querySelector('pre')
-  const code = codeEl?.textContent || ''
-
-  const span = btn.querySelector('span')
-  const originalText = span ? span.textContent : ''
-  const ok = await copyTextToClipboard(code)
-  if (span) {
-    span.textContent = ok ? '已复制!' : '复制失败'
-    btn.classList.add(ok ? 'copied' : 'copy-error')
-    setTimeout(() => {
-      span.textContent = originalText
-      btn.classList.remove('copied', 'copy-error')
-    }, 2000)
-  }
-}
+// 代码块复制按钮的全局处理函数（幂等），FilePreview 也复用同一实现
+installCodeCopyHandler()
 
 export default {
   components: { FileIcon },
@@ -745,13 +669,7 @@ export default {
       if (!content) return ''
       // 读取就绪标记建立渲染依赖：shiki 加载完成后自动重渲染，代码块不会停在兜底样式
       void highlightState.ready
-      try {
-        const normalized = normalizeMathDelimiters(content)
-        return marked.parse(normalized, { renderer, breaks: true, gfm: true })
-      } catch (e) {
-        console.error('Markdown 渲染失败:', e)
-        return escapeHtml(content)
-      }
+      return renderMarkdownHtml(content, renderer)
     },
     formatJson(obj) {
       try {

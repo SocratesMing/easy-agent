@@ -1,6 +1,8 @@
-// 共享的 marked 扩展注册：数学公式(KaTeX) + GitHub 风格 emoji 短代码(:smile: 等)
+// 共享的 marked 扩展注册与渲染器工厂：数学公式(KaTeX) + GitHub 风格 emoji 短代码(:smile: 等)
 // 通过 initialized 标志保证全局 marked 实例上的扩展只注册一次，
 // 避免 ChatMessage / FilePreview 等多个组件重复注册导致扩展冲突。
+//
+// 版本约定：marked 锁定 4.3.0（Renderer 回调为字符串参数签名，且支持 headerIds/mangle 选项）。
 import { marked } from 'marked'
 import katexExtension from 'marked-katex-extension'
 import { markedEmoji } from 'marked-emoji'
@@ -51,8 +53,167 @@ export function setupMarkedExtensions() {
     markedEmoji({
       emojis: nameToEmoji,
       renderer(token) {
-        return '<span class="github-emoji" role="img" aria-label=":' + token.name + ':">' + token.emoji + '</span>'
+        return (
+          '<span class="github-emoji" role="img" aria-label=":' +
+          token.name +
+          ':">' +
+          token.emoji +
+          '</span>'
+        )
       },
     })
   )
+}
+
+// ---------------------------------------------------------------------------
+// 代码块复制：markdown 渲染产物通过 v-html 注入，按钮用 inline onclick 调全局函数。
+// 由 ChatMessage / FilePreview 共用，故注册在模块级且幂等，避免重复定义。
+// ---------------------------------------------------------------------------
+
+const CODE_COPY_SVG =
+  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">' +
+  '<rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>' +
+  '<path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>' +
+  '</svg>'
+
+/** HTML 转义（用于语言标签等由模型输出拼接进 HTML 的文本） */
+export function escapeHtml(text) {
+  return String(text == null ? '' : text)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;')
+}
+
+/**
+ * 复制文本到剪贴板：优先 Clipboard API，非安全上下文降级到 execCommand
+ *
+ * @param {string} text 待复制文本
+ * @returns {Promise<boolean>} 是否复制成功
+ * @example
+ * copyTextToClipboard('hello')
+ */
+export function copyTextToClipboard(text) {
+  const content = String(text == null ? '' : text)
+  if (!content) return Promise.resolve(false)
+  return (async () => {
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(content)
+        return true
+      }
+    } catch (e) {
+      console.warn('Clipboard API 不可用，降级复制:', e)
+    }
+    try {
+      const textarea = document.createElement('textarea')
+      textarea.value = content
+      textarea.setAttribute('readonly', '')
+      textarea.style.position = 'fixed'
+      textarea.style.top = '-9999px'
+      document.body.appendChild(textarea)
+      textarea.select()
+      textarea.setSelectionRange(0, content.length)
+      const ok = document.execCommand('copy')
+      document.body.removeChild(textarea)
+      return ok
+    } catch (e) {
+      console.error('复制失败:', e)
+      return false
+    }
+  })()
+}
+
+/** 注册全局 window.copyCode（代码块复制按钮用），幂等 */
+export function installCodeCopyHandler() {
+  if (typeof window === 'undefined' || window.copyCode) return
+  window.copyCode = async function (btn) {
+    const wrapper = btn.closest('.code-block-wrapper')
+    if (!wrapper) return
+    const codeEl = wrapper.querySelector('pre code') || wrapper.querySelector('pre')
+    const code = codeEl ? codeEl.textContent || '' : ''
+
+    const span = btn.querySelector('span')
+    const originalText = span ? span.textContent : ''
+    const ok = await copyTextToClipboard(code)
+    if (span) {
+      span.textContent = ok ? '已复制!' : '复制失败'
+      btn.classList.add(ok ? 'copied' : 'copy-error')
+      setTimeout(() => {
+        span.textContent = originalText
+        btn.classList.remove('copied', 'copy-error')
+      }, 2000)
+    }
+  }
+}
+
+/**
+ * 创建统一的 markdown 渲染器（ChatMessage / FilePreview 共用同一套代码块结构）
+ *
+ * marked 4.x 的 Renderer 回调为字符串参数签名：
+ *   code(code, infostring, escaped) / link(href, title, text)
+ *
+ * @param {Object} options 配置
+ * @param {(code: string, lang: string) => string} options.highlight 高亮函数，返回完整代码块 HTML（含 <pre>）
+ * @param {boolean} [options.externalLinks=true] 是否为外链添加 target="_blank" rel="noopener noreferrer"
+ * @returns {Object} marked Renderer 实例
+ * @example
+ * const renderer = createMarkdownRenderer({ highlight: highlightCode })
+ */
+export function createMarkdownRenderer({ highlight, externalLinks = true }) {
+  const renderer = new marked.Renderer()
+
+  renderer.code = function (code, infostring) {
+    const rawLang = (infostring || '').trim().split(/\s+/)[0]
+    const langLabel = escapeHtml(rawLang || 'text')
+    const highlighted = typeof highlight === 'function' ? highlight(code, rawLang) : ''
+    return (
+      '<div class="code-block-wrapper">' +
+      '<div class="code-header">' +
+      `<span class="code-lang">${langLabel}</span>` +
+      `<button class="code-copy-btn" onclick="copyCode(this)">${CODE_COPY_SVG}<span>复制</span></button>` +
+      '</div>' +
+      highlighted +
+      '</div>'
+    )
+  }
+
+  if (externalLinks) {
+    renderer.link = function (href, title, text) {
+      const url = href || ''
+      const isExternal = /^https?:\/\//i.test(url)
+      const titleAttr = title ? ` title="${escapeHtml(title)}"` : ''
+      const extra = isExternal ? ' target="_blank" rel="noopener noreferrer"' : ''
+      return `<a href="${escapeHtml(url)}"${titleAttr}${extra}>${text}</a>`
+    }
+  }
+
+  return renderer
+}
+
+/**
+ * 统一渲染入口：规整数学公式后按 gfm + 换行策略渲染
+ *
+ * @param {string} content markdown 文本
+ * @param {Object} renderer createMarkdownRenderer 创建的渲染器
+ * @returns {string} HTML 字符串
+ * @example
+ * renderMarkdown('**hi**', renderer)
+ */
+export function renderMarkdown(content, renderer) {
+  if (!content) return ''
+  try {
+    return marked.parse(normalizeMathDelimiters(content), {
+      renderer,
+      breaks: true,
+      gfm: true,
+      // 这两项为 marked 4.x 专有选项（5.x 起移除）：关闭标题 id 生成与邮箱混淆
+      headerIds: false,
+      mangle: false,
+    })
+  } catch (e) {
+    console.error('Markdown 渲染失败:', e)
+    return escapeHtml(content)
+  }
 }

@@ -96,8 +96,13 @@
 
 <script>
 import { API_BASE_URL } from '../config.js'
-import { marked } from 'marked'
-import { setupMarkedExtensions, normalizeMathDelimiters } from '../markdownSetup.js'
+import {
+  setupMarkedExtensions,
+  createMarkdownRenderer,
+  renderMarkdown,
+  installCodeCopyHandler,
+  escapeHtml,
+} from '../markdownSetup.js'
 import hljs from 'highlight.js'
 import 'highlight.js/styles/github-dark.css'
 import DocxPreview from './DocxPreview.vue'
@@ -108,20 +113,6 @@ import { requestBlob, requestArrayBuffer, requestText } from '../utils/request.j
 
 // 注册 KaTeX 数学公式 + emoji 短代码扩展（幂等，仅执行一次）
 setupMarkedExtensions()
-
-marked.setOptions({
-  breaks: true,
-  gfm: true,
-  headerIds: false,
-  highlight: function(code, lang) {
-    if (lang && hljs.getLanguage(lang)) {
-      try {
-        return hljs.highlight(code, { language: lang }).value
-      } catch (__) {}
-    }
-    return hljs.highlightAuto(code).value
-  }
-})
 
 const imageExts = ['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.svg', '.ico']
 const textExts = ['.txt', '.json', '.xml', '.csv', '.js', '.ts', '.vue', '.py', '.java', '.go', '.rs', '.c', '.cpp', '.h', '.hpp', '.sh', '.bat', '.css', '.scss', '.less', '.sql', '.yaml', '.yml', '.toml', '.ini', '.cfg', '.conf', '.env', '.log', '.md', '.jsx', '.tsx', '.rb', '.php', '.swift', '.kt', '.scala', '.lua', '.pl', '.r', '.dart', '.ex', '.exs', '.erl', '.hs', '.ml', '.jl', '.tf', '.proto', '.graphql', '.makefile', '.cmake', '.dockerfile', '.gitignore', '.properties', '.gradle']
@@ -134,25 +125,28 @@ function getExt(name) {
   return parts.pop().toLowerCase()
 }
 
-function escapeHtml(text) {
-  const div = document.createElement('div')
-  div.textContent = text
-  return div.innerHTML
+// markdown 预览：与聊天区共用代码块结构（语言标签 + 复制按钮），
+// 高亮走 highlight.js（亮黑主题），未识别语言时按自动识别处理
+function highlightWithHljs(code, lang) {
+  const raw = (lang || '').toLowerCase()
+  const resolved = raw ? codeLangMap[raw] || raw : ''
+  let inner = ''
+  if (resolved && hljs.getLanguage(resolved)) {
+    try {
+      inner = hljs.highlight(code, { language: resolved }).value
+    } catch (e) {
+      console.warn('[FilePreview] 语法高亮失败:', raw, e)
+    }
+  }
+  if (!inner) inner = hljs.highlightAuto(code).value
+  const langClass = resolved ? ` class="language-${escapeHtml(resolved)}"` : ''
+  return `<pre class="hljs"><code${langClass}>${inner}</code></pre>`
 }
 
-// 代码语言映射
-const codeLangMap = {
-  js: 'javascript', jsx: 'javascript', ts: 'typescript', tsx: 'typescript',
-  vue: 'xml', html: 'xml', htm: 'xml', xml: 'xml',
-  py: 'python', java: 'java', go: 'go', rs: 'rust',
-  c: 'c', cpp: 'cpp', h: 'c', hpp: 'cpp',
-  sh: 'bash', bat: 'bat',
-  css: 'css', scss: 'scss', less: 'less',
-  sql: 'sql', json: 'json', yaml: 'yaml', yml: 'yaml',
-  toml: 'ini', rb: 'ruby', php: 'php', swift: 'swift',
-  kt: 'kotlin', lua: 'lua', pl: 'perl', r: 'r',
-  dart: 'dart', tf: 'hcl', proto: 'protobuf', graphql: 'graphql',
-}
+const mdRenderer = createMarkdownRenderer({ highlight: highlightWithHljs })
+
+// 代码块复制按钮的全局处理函数（幂等），与聊天区共用
+installCodeCopyHandler()
 
 export default {
   components: { DocxPreview, ExcelPreview },
@@ -306,20 +300,8 @@ export default {
     },
     renderedMarkdown() {
       if (!this.textContent) return ''
-      return marked.parse(normalizeMathDelimiters(this.textContent))
-    },
-    isText() {
-      const ext = getExt(this.filename)
-      return ext && textExts.includes('.' + ext)
-    },
-    // 预览目标由 (visible, filename, filePath) 共同决定，需要覆盖三种场景：
-    //   1) 常驻挂载 + visible 由 false→true（素材面板）；
-    //   2) 父级用 v-if 控制、挂载时 visible 已为 true（定时任务面板）—— 靠 immediate 兜住；
-    //   3) 多标签切换：visible 始终为 true，只有 filePath/filename 变化（工作区预览）。
-    // 只监听 visible 会漏掉 2 和 3，表现为预览区一直空白。
-    previewTarget() {
-      return `${this.visible}\u0000${this.filePath}\u0000${this.filename}`
-    },
+      return renderMarkdown(this.textContent, mdRenderer)
+    }
   },
   watch: {
     previewTarget: {
@@ -941,6 +923,65 @@ export default {
   background-color: rgba(13, 17, 23, 0.06);
   border-radius: 6px;
   font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+}
+
+/* markdown 预览内的代码块：与聊天区一致的语言标签 + 复制按钮（亮黑配色） */
+::v-deep .markdown-body .code-block-wrapper {
+  margin: 16px 0;
+  border: 1px solid #21262d;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+::v-deep .markdown-body .code-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: #161b22;
+  padding: 8px 12px;
+}
+
+::v-deep .markdown-body .code-lang {
+  font-size: 12px;
+  color: #8b949e;
+  font-weight: 500;
+}
+
+::v-deep .markdown-body .code-copy-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  background: #21262d;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  color: #8b949e;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+::v-deep .markdown-body .code-copy-btn:hover {
+  background: #30363d;
+  border-color: #484f58;
+  color: #c9d1d9;
+}
+
+::v-deep .markdown-body .code-copy-btn.copied {
+  color: #4ade80;
+}
+
+::v-deep .markdown-body .code-copy-btn svg {
+  width: 13px;
+  height: 13px;
+}
+
+/* wrapper 内的 pre 交给 wrapper 统一裁切圆角与边框 */
+::v-deep .markdown-body .code-block-wrapper pre {
+  margin: 0;
+  border: none;
+  border-radius: 0;
+  background-color: #0d1117;
 }
 
 ::v-deep .markdown-body pre {
