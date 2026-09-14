@@ -1,94 +1,54 @@
 /**
- * 前端静态托管（serve -s dist/）启动前置脚本。
+ * 前端静态托管（serve -s dist/）启动前置脚本：打印当前生效的部署信息。
  *
- * 由于 .env.<mode> 中的 VUE_APP_* 变量在 `npm run build` 时已被固化进 bundle，
- * `serve` 运行期不会读取 .env。本脚本在启动 serve 之前：
- *   1) 根据 AGENT_ENV 读取对应 .env.<mode>（构建期配置，仅作参考）；
- *   2) 读取 dist/runtime-config.js（运行期配置，由 generate-runtime-config.sh
- *      在启动时生成），展示真正生效的后端地址。
+ * 背景：前端所有接口一律使用相对路径（/agent/...），后端地址不再写入 bundle，
+ * 也不再生成运行期配置。因此静态托管时必须保证「同源」：
+ *   · 推荐：由后端 FastAPI 直接托管 dist/（访问 http://<backend>/ 即可）；
+ *   · 或用 Nginx 等反向代理把 /agent 转发到后端；
+ * 否则接口会打到静态服务器自身端口导致 404。
  *
- * 用法（在 frontend/ 下）：
- *   npm run serve                  # 默认 prod
- *   AGENT_ENV=test npm run serve   # 加载 .env.test 信息
- *   API_BASE_URL=http://x:8000 npm run serve   # 运行期指定后端地址
+ * 用法（在 frontend-vue2/ 下）：
+ *   npm run serve
  */
 import fs from 'node:fs'
 import path from 'node:path'
+import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 import { resolveEnvMode } from './env-mode.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const root = path.resolve(__dirname, '..')
+const require = createRequire(import.meta.url)
 
 // serve 面向已构建产物，mode 解析与 build 保持一致（默认 prod）
 const mode = resolveEnvMode('build')
 const envFile = path.join(root, `.env.${mode}`)
+const distIndex = path.join(root, 'dist', 'index.html')
 
-/** 解析 .env.<mode> 中的键值对（仅取 VUE_APP_* 展示） */
-function loadEnvVars(file) {
-  const vars = {}
-  if (!fs.existsSync(file)) return vars
-  const text = fs.readFileSync(file, 'utf-8')
-  for (const raw of text.split('\n')) {
-    const line = raw.trim()
-    if (!line || line.startsWith('#')) continue
-    const eq = line.indexOf('=')
-    if (eq === -1) continue
-    const key = line.slice(0, eq).trim()
-    const val = line.slice(eq + 1).trim().replace(/^["']|["']$/g, '')
-    vars[key] = val
+/** 读取 vue.config.js 中 devServer.proxy 的代理目标（后端地址唯一定义在 vue.config.js） */
+function loadProxyTarget() {
+  try {
+    // vue.config.js 依赖 VUE_APP_AGENT_ENV 判断环境（由 .env.<mode> 提供），此处对齐
+    if (!process.env.VUE_APP_AGENT_ENV) process.env.VUE_APP_AGENT_ENV = mode
+    const config = require(path.join(root, 'vue.config.js'))
+    const proxy = config && config.devServer && config.devServer.proxy
+    const entry = proxy && proxy['/agent']
+    return (entry && entry.target) || ''
+  } catch (e) {
+    return ''
   }
-  return vars
 }
 
-/** 解析 dist/runtime-config.js（运行期配置，启动脚本生成） */
-function loadRuntimeConfig() {
-  const file = path.join(root, 'dist', 'runtime-config.js')
-  const cfg = { ENV_CONFIG: {} }
-  if (!fs.existsSync(file)) return cfg
-  const text = fs.readFileSync(file, 'utf-8')
-  const pick = (k) => {
-    const m = text.match(new RegExp(`${k}:\\s*"([^"]*)"`))
-    return m ? m[1] : undefined
-  }
-  const api = pick('API_BASE_URL')
-  const title = pick('APP_TITLE')
-  const welcomeTitle = pick('APP_WELCOME_TITLE')
-  const env = pick('AGENT_ENV')
-  if (api !== undefined) cfg.API_BASE_URL = api
-  if (title !== undefined) cfg.APP_TITLE = title
-  if (welcomeTitle !== undefined) cfg.APP_WELCOME_TITLE = welcomeTitle
-  if (env !== undefined) cfg.AGENT_ENV = env
-
-  // 解析 ENV_CONFIG 表：ENV_CONFIG: { dev: { API_BASE_URL: "..." }, ... }
-  const block = text.match(/ENV_CONFIG:\s*\{([\s\S]*?)\}\s*\}/)
-  if (block) {
-    for (const envKey of ['dev', 'test', 'prod']) {
-      const eb = block[1].match(
-        new RegExp(`${envKey}:\\s*\\{\\s*API_BASE_URL:\\s*"([^"]*)"`)
-      )
-      if (eb) cfg.ENV_CONFIG[envKey] = eb[1]
-    }
-  }
-  return cfg
-}
-
-const env = loadEnvVars(envFile)
-const runtime = loadRuntimeConfig()
-
-// AGENT_ENV 实际生效值：运行期配置优先，否则取启动环境变量，再否则默认 prod
-const agentEnvVal = runtime.AGENT_ENV || process.env.AGENT_ENV || 'prod'
+const proxyTarget = loadProxyTarget()
+const distReady = fs.existsSync(distIndex)
 
 const title = 'Easy Agent Frontend — 静态托管启动'
 const rows = [
-  `  AGENT_ENV       : ${agentEnvVal}  (运行期: ${runtime.AGENT_ENV || '未写入'} | 进程变量: ${process.env.AGENT_ENV || '未设置'})`,
-  `  环境模式        : ${mode}  (构建期加载 ${path.basename(envFile)})`,
-  `  生效后端地址    : ${runtime.API_BASE_URL || '(未生成, 将用构建期/相对路径)'}`,
-  `  构建期后端地址  : ${env.VUE_APP_API_BASE_URL || '(未设置)'}`,
-  `  应用名称        : ${runtime.APP_TITLE || env.VUE_APP_TITLE || 'Easy Agent'}`,
-  `  首页欢迎语      : ${runtime.APP_WELCOME_TITLE || env.VUE_APP_WELCOME_TITLE || 'Easy Agent，让工作化繁为简'}`,
+  `  构建模式        : ${mode}  (${fs.existsSync(envFile) ? path.basename(envFile) : `.env.${mode} 不存在`})`,
+  `  接口地址策略    : 相对路径 (/agent/...) —— 必须与后端同源`,
+  `  后端地址参考    : ${proxyTarget || '见 vue.config.js 的 PROXY_TARGETS'}`,
+  `  构建产物        : ${distReady ? 'dist/index.html 已就绪' : '⚠ 未找到 dist/index.html，请先执行 npm run build'}`,
   `  静态目录        : dist/`,
-  `  环境配置表      : dev=${runtime.ENV_CONFIG.dev || '<空>'}  test=${runtime.ENV_CONFIG.test || '<空>'}  prod=${runtime.ENV_CONFIG.prod || '<空>'}`,
 ]
 
 const width = 60
@@ -102,3 +62,7 @@ const banner = [
 ].join('\n')
 
 console.log('\n' + banner + '\n')
+
+if (!distReady) {
+  process.exit(1)
+}

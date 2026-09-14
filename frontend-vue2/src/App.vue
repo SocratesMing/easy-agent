@@ -5,11 +5,14 @@
       @completed="handleWelcomeCompleted" 
     />
 
-    <!-- 登录页关闭时（生产）：无 URL 免密参数且无有效登录态，显示未授权提示 -->
+    <!-- 登录页关闭时（生产）：无有效登录态时的兜底提示 -->
     <div v-else-if="authBlocked" class="auth-blocked">
       <div class="auth-blocked-box">
         <h2>未授权访问</h2>
-        <p>登录页已关闭。请通过携带 <code>username</code> 与 <code>user_id</code> 参数的链接进入。</p>
+        <p v-if="passwordlessEnabled">
+          免密登录未成功（未获取到门户共享登录信息或后端校验未通过）。请从门户系统重新进入本页面。
+        </p>
+        <p v-else>登录页已关闭，且免密登录未开启。请联系管理员分配账号后使用账号密码登录。</p>
       </div>
     </div>
 
@@ -112,7 +115,6 @@
 </template>
 
 <script>
-import { API_BASE_URL, APP_WELCOME_TITLE, appRuntime, LOGIN_PAGE_ENABLED } from './config.js'
 import Vue from 'vue'
 import SessionList from './components/SessionList.vue'
 import Chat from './components/Chat.vue'
@@ -127,6 +129,43 @@ import { createSession, listSessions, getChatHistory, deleteSession, sendMessage
 import { uploadFile, deleteFile, getUserProfile, getSessionGeneratedFiles } from './api/files.js'
 import { logout as apiLogout, notifyLogout, getStoredToken, getStoredUsername, AUTH_EXPIRED_EVENT, USER_ACTIVITY_EVENT, authFetch, passwordlessLogin } from './api/auth.js'
 import { getModels as fetchModels } from './api/settings.js'
+
+// ── 应用级常量（原 src/config.js 已移除，直接定义在组件内）────────────
+// 应用名称与首页欢迎语；后端 /agent/auth/config 返回的 app_welcome_title 仍可在运行期覆盖
+const APP_TITLE = 'Easy Agent'
+const APP_WELCOME_TITLE = `${APP_TITLE}，让工作化繁为简`
+// 登录页开关：true 显示登录 / 注册页；false 不显示登录页 —— 当前为「登录页关」，
+// 统一走下面的免密登录，免密失败时显示「未授权访问」提示
+const LOGIN_PAGE_ENABLED = false
+// 免密登录开关：仅在「登录页关」时生效 —— 由前端模拟登录用户信息直接免密登录
+// （不调用 loadUserProfile，用户资料取自门户共享存储 system:share:*）。
+const PASSWORDLESS_LOGIN_ENABLED = true
+//
+// 登录方式约定：
+//   登录页关（当前配置）：免密登录；失败 → 「未授权访问」提示
+//   登录页开：显示 Welcome 登录 / 注册页，免密登录不参与
+
+// ── 门户共享存储键（由外部系统写入 localStorage）──────────────────────────
+// system:share:loginId        登录账号     → 免密登录接口的 username
+// system:share:iamEmpLoginNo  IAM 员工号   → 免密登录接口的 user_id
+// system:share:name           用户姓名     → userProfile.username（展示用）
+// system:share:bankName       所属机构/银行 → userProfile.organization_id
+const SHARE_KEY_LOGIN_ID = 'system:share:loginId'
+const SHARE_KEY_EMP_NO = 'system:share:iamEmpLoginNo'
+const SHARE_KEY_NAME = 'system:share:name'
+const SHARE_KEY_BANK = 'system:share:bankName'
+// 共享存储缺失时的模拟默认值
+const DEFAULT_PASSWORDLESS_USERNAME = 'demo'
+const DEFAULT_PASSWORDLESS_USER_ID = 'demoid'
+
+/** 安全读取 localStorage（隐私模式 / 禁用存储时返回空串） */
+function readShareItem(key) {
+  try {
+    return localStorage.getItem(key) || ''
+  } catch (e) {
+    return ''
+  }
+}
 
 // ── 当前会话视图持久化 ────────────────────────────────────────────
 // 刷新后恢复到用户刷新前所在的会话，而不是永远跳到列表第一个。
@@ -200,7 +239,7 @@ export default {
       availableModels: [],
       selectedModel: null,
       welcomeTitle: APP_WELCOME_TITLE,
-      // 「未授权」提示态（登录页关闭且无法免密直登时显示）
+      // 「未授权」提示态（登录页关闭且免密登录未成功时显示）
       authBlocked: false,
       // 会话状态缓存：为每个会话保存独立的流式状态
       sessionStates: {},
@@ -239,6 +278,8 @@ export default {
       showSettingsPanel: false,
       showUserManagementPanel: false,
       showWelcome: false,
+      // 免密登录开关（模板用：未授权提示的文案按开关区分）
+      passwordlessEnabled: PASSWORDLESS_LOGIN_ENABLED,
       // 首屏引导中：认证 + 会话列表 + 首次历史加载完成前不渲染聊天区，
       // 否则会先闪出空会话首页、会话时间下方那条分隔线也会闪一下。
       isBootstrapping: true,
@@ -287,6 +328,17 @@ export default {
     }
   },
   mounted() {
+    // 页面标题（原 src/config.js 中设置，现收敛到组件内）
+    document.title = APP_TITLE
+    // 登录开关自检：两者同时关闭时没有任何登录入口，属于配置错误
+    if (!LOGIN_PAGE_ENABLED && !PASSWORDLESS_LOGIN_ENABLED) {
+      console.warn(
+        '[登录] LOGIN_PAGE_ENABLED 与 PASSWORDLESS_LOGIN_ENABLED 同时为 false，将无任何登录入口，请检查配置'
+      )
+    }
+    console.info(
+      `[登录] 登录页=${LOGIN_PAGE_ENABLED ? '开启' : '关闭'} | 免密登录=${PASSWORDLESS_LOGIN_ENABLED ? '开启' : '关闭'}`
+    )
     window.addEventListener(AUTH_EXPIRED_EVENT, this.handleLogout)
     // 后端交互（API 调用）触发用户活动事件 -> 重置空闲登出计时器
     window.addEventListener(USER_ACTIVITY_EVENT, this.resetIdleTimer)
@@ -300,8 +352,10 @@ export default {
     // 应用初始化：免密登录 -> 加载用户资料 -> 恢复会话与流式任务
     async initApp() {
       try {
-        // URL 免密直登（?username=xxx&user_id=yyy）：成功则直接进入主界面
-        if (await this.handlePasswordlessUrlLogin()) return
+        // 免密登录（仅登录页关闭时生效）：由前端模拟用户信息直接登录，
+        // 成功后 handleWelcomeCompleted 已完成首屏引导（此路径不调用 loadUserProfile）
+        if (!LOGIN_PAGE_ENABLED && PASSWORDLESS_LOGIN_ENABLED && (await this.handlePasswordlessLogin())) return
+        // 免密关闭或免密失败：走常规资料加载（无有效登录态时回落到登录页 / 未授权提示）
         await this.loadUserProfile()
         if (!this.showWelcome && !this.authBlocked) {
           this.startIdleTimer()
@@ -705,12 +759,6 @@ export default {
       if (configData.preset_questions) {
         this.presetQuestions = configData.preset_questions
       }
-      if (typeof configData.win === 'boolean') {
-        appRuntime.win = configData.win
-      }
-      if (configData.agent_env) {
-        appRuntime.agentEnv = configData.agent_env
-      }
       if (typeof configData.app_welcome_title === 'string' && configData.app_welcome_title.trim()) {
         this.welcomeTitle = configData.app_welcome_title
       }
@@ -789,7 +837,7 @@ export default {
         this.sessionUsage.context_length = profile.context_length
       }
       try {
-        const configResp = await authFetch(`${API_BASE_URL}/agent/auth/config`)
+        const configResp = await authFetch('/agent/auth/config')
         if (configResp.ok) {
           const configData = await configResp.json()
           this.applyAgentConfig(configData)
@@ -904,7 +952,7 @@ export default {
       }
 
       try {
-        const configResp = await authFetch(`${API_BASE_URL}/agent/auth/config`)
+        const configResp = await authFetch('/agent/auth/config')
         if (configResp.ok) {
           const configData = await configResp.json()
           this.applyAgentConfig(configData)
@@ -913,24 +961,29 @@ export default {
         console.warn('获取模型配置失败:', e)
       }
     },
-    // URL 免密直登：地址栏携带 ?username=xxx&user_id=yyy（user_id 可省略，默认 0）时
-    // 直接免密登录进入主界面，优先级高于已存储的登录态。
-    async handlePasswordlessUrlLogin() {
-      const params = new URLSearchParams(window.location.search)
-      const username = params.get('username')
-      if (!username) return false
-      const userId = params.get('user_id') || '0'
+    // 免密登录（登录页关闭时的登录方式）：在前端「模拟登录用户信息」后调用后端免密登录接口，
+    // 成功即进入主界面。
+    //   · 登录身份：username 取 system:share:loginId，user_id 取 system:share:iamEmpLoginNo，
+    //     两者缺失时分别回落到默认值 demo / demoid；
+    //   · 用户资料：直接取门户共享存储（name / bankName / loginId），不调用 loadUserProfile；
+    //   · 登录页开启（LOGIN_PAGE_ENABLED=true）或免密开关关闭时，本方法不会被调用。
+    async handlePasswordlessLogin() {
+      const shareLoginId = readShareItem(SHARE_KEY_LOGIN_ID)
+      const username = shareLoginId || DEFAULT_PASSWORDLESS_USERNAME
+      const userId =
+        readShareItem(SHARE_KEY_EMP_NO) || DEFAULT_PASSWORDLESS_USER_ID
       try {
         const data = await passwordlessLogin(username, userId)
-        // 清除地址栏中的凭证参数，避免留在浏览器历史/后端访问日志
-        window.history.replaceState({}, '', window.location.pathname)
         await this.handleWelcomeCompleted({
-          username: data.username,
+          // username 用姓名展示；姓名缺失时回落到登录账号，避免界面显示为空
+          username: readShareItem(SHARE_KEY_NAME) || username,
+          organization_id: readShareItem(SHARE_KEY_BANK),
+          email: shareLoginId,
           context_length: data.context_length
         })
         return true
       } catch (e) {
-        console.error('URL 免密登录失败:', e)
+        console.error('免密登录失败:', e)
         return false
       }
     },
@@ -1858,7 +1911,7 @@ export default {
 
       // 通知后端取消正在运行的流式任务（中断 astream 执行）并清除 Agent 缓存
       if (sid) {
-        authFetch(`${API_BASE_URL}/agent/chat/cancel?session_id=${encodeURIComponent(sid)}`, {
+        authFetch(`/agent/chat/cancel?session_id=${encodeURIComponent(sid)}`, {
           method: 'POST',
         }).catch(() => {})
       }

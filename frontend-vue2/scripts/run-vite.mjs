@@ -31,24 +31,38 @@ function loadEnvVars(file) {
   return vars
 }
 
+/** 读取 vue.config.js 中 devServer.proxy 的代理目标（后端地址唯一定义在 vue.config.js） */
+function loadProxyTarget() {
+  try {
+    // vue.config.js 通过 VUE_APP_AGENT_ENV 判断当前环境，而该变量由 vue-cli 在加载
+    // .env.<mode> 时注入；这里手动对齐，保证横幅显示的是当前 mode 对应的代理目标。
+    const envVars = loadEnvVars(envFile)
+    Object.keys(envVars).forEach((k) => {
+      if (!process.env[k]) process.env[k] = envVars[k]
+    })
+    const config = require(resolve(root, 'vue.config.js'))
+    const proxy = config && config.devServer && config.devServer.proxy
+    const entry = proxy && proxy['/agent']
+    return (entry && entry.target) || ''
+  } catch (e) {
+    return ''
+  }
+}
+
 function printBanner() {
   const envVars = loadEnvVars(envFile)
   const agentEnv = process.env.AGENT_ENV || envVars.VUE_APP_AGENT_ENV || '(未设置)'
-  const apiBase = envVars.VUE_APP_API_BASE_URL || '(未设置)'
-  const title = envVars.VUE_APP_TITLE || '(未设置)'
-  const welcome = envVars.VUE_APP_WELCOME_TITLE || '(未设置)'
+  // 后端地址唯一定义在 vue.config.js（devServer.proxy 目标），此处直接读取展示
+  const proxyTarget = loadProxyTarget()
 
   const rows = [
     `命令      : ${command}  (vue-cli-service ${args.join(' ')})`,
     `环境模式  : ${mode}  ->  ${existsSync(envFile) ? `.env.${mode}` : `.env.${mode} (文件不存在, 使用默认值)`}`,
     `AGENT_ENV : ${agentEnv}`,
-    `后端地址  : ${apiBase}`,
-    `应用名称  : ${title}`,
-    `欢迎语    : ${welcome}`,
+    `接口地址  : 相对路径 /agent/...（同源）`,
+    `代理目标  : ${proxyTarget || '(未在 vue.config.js devServer.proxy 中解析到)'}`,
+    `应用名称  : Easy Agent（定义在各 Vue 组件内）`,
   ]
-  if (process.env.API_BASE_URL) {
-    rows.push(`API_BASE_URL 覆盖: ${process.env.API_BASE_URL} (仅 serve 静态托管时生效)`)
-  }
 
   const width = 60
   const bar = '═'.repeat(width)

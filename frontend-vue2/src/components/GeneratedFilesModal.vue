@@ -85,7 +85,7 @@ export default {
     async selectFile(file) {
       this.selectedFile = file
       try {
-        // 走统一请求层：自动带上 API_BASE_URL 与 Authorization 头
+        // 走统一请求层：相对路径请求 + 自动带上 Authorization 头
         this.fileContent = await requestText(
           {
             url: '/agent/files/content',

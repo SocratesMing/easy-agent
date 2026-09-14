@@ -197,7 +197,6 @@ import {
 import ConfirmDialog from './ConfirmDialog.vue'
 import FileTreeNode from './FileTreeNode.vue'
 import FilePreview from './FilePreview.vue'
-import { API_BASE_URL } from '../config.js'
 import { getStoredToken } from '../api/auth.js'
 export default {
   components: { ConfirmDialog, FilePreview, FileTreeNode },
@@ -264,7 +263,8 @@ export default {
       params.set('file_path', file.path)
       if (token) params.set('token', token)
       params.set('download', 'true')
-      const url = `${API_BASE_URL}/agent/scheduled-tasks/${this.workspaceTaskId}/workspace/file?${params.toString()}`
+      // 相对路径：开发由 vue.config.js 的 proxy 转发，生产与后端同源
+      const url = `/agent/scheduled-tasks/${this.workspaceTaskId}/workspace/file?${params.toString()}`
       const link = document.createElement('a')
       link.href = url
       link.download = file.name

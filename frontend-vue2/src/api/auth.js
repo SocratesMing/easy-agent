@@ -42,7 +42,7 @@ export async function authFetch(url, options = {}) {
 }
 
 // 登录：username 字段既接受用户名，也接受工号（后端按「用户名或工号」定位用户），
-// 两种情况都必须校验密码。走 URL 免密直登请用 passwordlessLogin。
+// 两种情况都必须校验密码。免密登录请用 passwordlessLogin。
 export async function login(username, password) {
   const data = await request(
     {

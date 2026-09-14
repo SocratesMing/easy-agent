@@ -113,7 +113,8 @@
 import ChatMessage from './ChatMessage.vue'
 import ChatInput from './ChatInput.vue'
 import TodoListPanel from './TodoListPanel.vue'
-import { APP_WELCOME_TITLE } from '../config.js'
+// 首页欢迎语：直接定义在前端（原 src/config.js 已移除）
+const APP_WELCOME_TITLE = 'Easy Agent，让工作化繁为简'
 export default {
   components: { ChatInput, ChatMessage, TodoListPanel },
   props: {

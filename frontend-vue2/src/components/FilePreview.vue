@@ -95,7 +95,6 @@
 </template>
 
 <script>
-import { API_BASE_URL } from '../config.js'
 import {
   setupMarkedExtensions,
   createMarkdownRenderer,
@@ -294,9 +293,10 @@ export default {
     },
     // 预览/下载基础 URL：定时任务工作目录走独立端点，否则走会话文件端点
     previewBaseUrl() {
+      // 相对路径：开发由 vue.config.js 的 proxy 转发，生产与后端同源
       return this.taskId
-        ? `${API_BASE_URL}/agent/scheduled-tasks/${this.taskId}/workspace/file`
-        : `${API_BASE_URL}/agent/files/preview`
+        ? `/agent/scheduled-tasks/${this.taskId}/workspace/file`
+        : '/agent/files/preview'
     },
     renderedMarkdown() {
       if (!this.textContent) return ''

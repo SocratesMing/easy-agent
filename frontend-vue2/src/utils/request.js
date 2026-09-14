@@ -8,7 +8,6 @@
  *   requestArrayBuffer（非 JSON 响应），以及流式请求（SSE / fetch）相关辅助方法。
  */
 import axios from 'axios'
-import { API_BASE_URL } from '../config.js'
 
 /** 登录态失效事件名：401 时派发，由 App 监听并自动重新免密登录 */
 export const AUTH_EXPIRED_EVENT = 'auth-expired'
@@ -57,9 +56,14 @@ export function getAuthHeaders() {
   return token ? { Authorization: `Bearer ${token}` } : {}
 }
 
-/** axios 实例：统一 baseURL、超时、鉴权头与 401 处理 */
+/**
+ * axios 实例：统一超时、鉴权头与 401 处理
+ *
+ * 不设置 baseURL，所有接口一律使用相对路径（/agent/...）：
+ *   - 开发环境：由 vue.config.js 的 devServer.proxy 把 /agent 转发到后端（见 PROXY_TARGETS）；
+ *   - 生产环境：后端同源托管 dist/，相对路径直接命中后端，天然无跨域。
+ */
 const requestInstance = axios.create({
-  baseURL: API_BASE_URL,
   timeout: 30000,
 })
 
@@ -196,13 +200,15 @@ export async function requestArrayBuffer(config) {
 /**
  * 拼接流式接口地址（SSE / fetch 使用）
  *
+ * 与 axios 一致使用相对路径，由开发代理或同源后端接管。
+ *
  * @param {string} path 接口路径，如 '/agent/chat/stream'
- * @returns {string} 完整请求地址
+ * @returns {string} 请求地址
  * @example
  * streamUrl('/agent/chat/stream')
  */
 export function streamUrl(path) {
-  return `${API_BASE_URL}${path}`
+  return path
 }
 
 /**

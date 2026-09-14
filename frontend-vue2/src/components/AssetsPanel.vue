@@ -131,7 +131,6 @@
 </template>
 
 <script>
-import { API_BASE_URL } from '../config.js'
 import { Message } from 'element-ui'
 import request from '../utils/request.js'
 import FileIcon from './FileIcon.vue'
@@ -241,7 +240,7 @@ export default {
     async refreshAssets() {
       this.loading = true
       try {
-        // 统一走 axios 封装：自动携带 API_BASE_URL 与 Authorization 头
+        // 统一走 axios 封装：相对路径请求 + 自动携带 Authorization 头
         const data = await request(
           { url: '/agent/files/list', method: 'get' },
           '获取资产失败'
@@ -299,7 +298,8 @@ export default {
       this.closeDropdown()
     },
     handleDownload(file) {
-      const url = `${API_BASE_URL}/agent/files/download/${file.file_path}`
+      // 相对路径：开发由 vue.config.js 的 proxy 转发，生产与后端同源
+      const url = `/agent/files/download/${file.file_path}`
       const link = document.createElement('a')
       link.href = url
       link.download = file.filename

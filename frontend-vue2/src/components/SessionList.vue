@@ -197,7 +197,8 @@
 </template>
 
 <script>
-import { APP_TITLE } from '../config.js'
+// 应用名称：直接定义在前端（原 src/config.js 已移除）
+const APP_TITLE = 'Easy Agent'
 export default {
   props: {
   sessions: {

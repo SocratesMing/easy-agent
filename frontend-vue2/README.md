@@ -10,12 +10,13 @@
 | 构建 | Vite 7 | Vue CLI 5（webpack） |
 | 组件写法 | `<script setup>` | `<script>` + `export default { setup() {} }` / Options API |
 | UI 库 | — | element-ui 2.15 |
-| 请求 | `fetch` + `authFetch` | axios 统一层（`src/api/request.js`） |
+| 请求 | `fetch` + `authFetch` | axios 统一层（`src/utils/request.js`） |
+| 后端地址 | `src/config.js` + 运行期配置 | **`vue.config.js` 的 devServer.proxy**（前端一律用相对路径） |
 
 ## 目录结构
 
-与 `frontend/` 保持一致：`src/components/`、`src/api/`、`src/utils/`、`src/config.js`、`public/`、`scripts/`。
-差异仅在构建配置：`vue.config.js` + `babel.config.js` + `postcss.config.cjs` + `tailwind.config.cjs`
+与 `frontend/` 基本一致：`src/components/`、`src/api/`、`src/utils/`、`public/`、`scripts/`。
+差异仅在构建配置：`vue.config.js` + `babel.config.js` + `postcss.config.cjs`
 （`frontend/` 用的是 `vite.config.js` + `postcss.config.js` + 根目录 `index.html`；
 Vue CLI 的入口 HTML 位于 `public/index.html`）。
 
@@ -43,8 +44,10 @@ npm run dev     # 开发服务器
 npm run build   # 产物输出到 dist/
 ```
 
-`npm run build` 会额外执行 `scripts/generate-runtime-config.sh`，在 `dist/runtime-config.js`
-中写入运行期后端地址与欢迎语（与 Vue 3 版本一致的机制）。
+开发时前端所有请求走相对路径 `/agent/...`，由 `vue.config.js` 的 `devServer.proxy`
+转发到对应环境后端（地址见 `PROXY_TARGETS`，可按 `VUE_APP_PROXY_TARGET` 覆盖）。
+生产环境需与后端**同源**部署（后端托管 `dist/`，或 Nginx 反代 `/agent`），
+详见 `docs/配置说明.md`。
 
 > 后端默认托管的是 `frontend/dist`。如需让后端托管本目录产物，把 `easy_agent/app.py` 中
 > `frontend_dist` 的指向改为 `frontend-vue2/dist`（或复制产物覆盖 `frontend/dist`）后重启服务。

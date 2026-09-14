@@ -175,7 +175,6 @@
 </template>
 
 <script>
-import { API_BASE_URL } from '../config.js'
 import FileTreeNode from './FileTreeNode.vue'
 import FilePreview from './FilePreview.vue'
 import { getWorkspaceTree } from '../api/files'
@@ -432,7 +431,8 @@ export default {
       params.set('session_id', this.currentSessionId)
       params.set('download', 'true')
       if (token) params.set('token', token)
-      const url = `${API_BASE_URL}/agent/files/preview?${params.toString()}`
+      // 相对路径：开发由 vue.config.js 的 proxy 转发，生产与后端同源
+      const url = `/agent/files/preview?${params.toString()}`
       const link = document.createElement('a')
       link.href = url
       link.download = file.name
