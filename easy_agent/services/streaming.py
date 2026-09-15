@@ -35,6 +35,7 @@ from langgraph.types import Command
 from ..agent import EasyAgent, resolve_context_length
 from ..db import Database
 from .stream_processor import StreamProcessor
+from .stream_v3 import V3StreamRunner
 from ..models.api import ChatRequest
 from ..utils.session_logger import SessionLogger
 from .agent_manager import get_agent_config
@@ -656,6 +657,32 @@ def _submit_memory_updates(agent, session_id, db, raw_user_msg, accumulated_resp
             logger.warning(f"[{sid}] 用户长期记忆更新提交失败: {e}")
 
 
+async def _forward_events(
+    events, *, db, session_id, sid, proc, persisted,
+    on_tool_result, on_thinking_end, persist,
+):
+    """把 StreamProcessor 事件按类型落库并转成 SSE（chat 与 resume 共用）。
+
+    ``persisted`` 为单元素列表（可变的最近落库长度），避免闭包重绑定。
+    """
+    async for ev in events:
+        ev_type = ev.get("type")
+        if ev_type == "tool_result":
+            on_tool_result(ev)
+        elif ev_type == "thinking_end":
+            on_thinking_end(ev)
+        elif ev_type == "todo_list":
+            try:
+                db.update_session_todos(session_id, ev["todos"])
+            except Exception as e:
+                logger.warning(f"[{sid}] 持久化 Todo list 失败: {e}")
+        elif ev_type == "content":
+            if len(proc.accumulated_response) - persisted[0] >= 500:
+                persisted[0] = len(proc.accumulated_response)
+                persist()
+        yield format_sse(ev)
+
+
 async def chat_stream_generator(
     request: ChatRequest,
     db: Database,
@@ -765,7 +792,7 @@ async def chat_stream_generator(
                 message_id=message_id, sid=sid,
             )
 
-        last_persisted_len = 0
+        persisted = [0]
 
         # ── 构建上下文消息 ─────────────────────────────────────────────
         # session.messages 末尾是本次刚写入 DB 的当前用户消息（chat.py 在调用
@@ -791,30 +818,15 @@ async def chat_stream_generator(
         thread_id = f"{session_id}-{message_id}"
         stream_config = {"configurable": {"thread_id": thread_id}}
 
-        async for event in agent.agent.astream(
-            {"messages": context_messages},
-            stream_mode=["messages", "updates"],
-            config=stream_config,
+        # ── 流式输出（langgraph v3 投影：messages + updates）────────────
+        runner = V3StreamRunner(proc)
+        async for sse in _forward_events(
+            runner.events(agent.agent, {"messages": context_messages}, stream_config),
+            db=db, session_id=session_id, sid=sid, proc=proc, persisted=persisted,
+            on_tool_result=_on_tool_result, on_thinking_end=_on_thinking_end,
+            persist=_persist,
         ):
-            mode, data = (
-                event if isinstance(event, tuple) else ("messages", event)
-            )
-            for ev in proc.handle(mode, data):
-                ev_type = ev.get("type")
-                if ev_type == "tool_result":
-                    _on_tool_result(ev)
-                elif ev_type == "thinking_end":
-                    _on_thinking_end(ev)
-                elif ev_type == "todo_list":
-                    try:
-                        db.update_session_todos(session_id, ev["todos"])
-                    except Exception as e:
-                        logger.warning(f"[{sid}] 持久化 Todo list 失败: {e}")
-                elif ev_type == "content":
-                    if len(proc.accumulated_response) - last_persisted_len >= 500:
-                        last_persisted_len = len(proc.accumulated_response)
-                        _persist()
-                yield format_sse(ev)
+            yield sse
 
         # ── Post-streaming: 流结束 ──────────────────────────────────────
         logger.info(f"[{sid}] 📢 流式输出结束")
@@ -1311,31 +1323,15 @@ async def resume_stream_generator(
         resume_command = Command(resume={"decisions": decisions})
 
     try:
-        last_persisted_len = 0
-        async for event in agent.agent.astream(
-            resume_command,
-            stream_mode=["messages", "updates"],
-            config=stream_config,
+        # ── 流式输出（langgraph v3 投影：messages + updates）────────────
+        runner = V3StreamRunner(proc)
+        async for sse in _forward_events(
+            runner.events(agent.agent, resume_command, stream_config),
+            db=db, session_id=session_id, sid=sid, proc=proc, persisted=[0],
+            on_tool_result=_on_tool_result, on_thinking_end=_on_thinking_end,
+            persist=_persist,
         ):
-            mode, data = (
-                event if isinstance(event, tuple) else ("messages", event)
-            )
-            for ev in proc.handle(mode, data):
-                ev_type = ev.get("type")
-                if ev_type == "tool_result":
-                    _on_tool_result(ev)
-                elif ev_type == "thinking_end":
-                    _on_thinking_end(ev)
-                elif ev_type == "todo_list":
-                    try:
-                        db.update_session_todos(session_id, ev["todos"])
-                    except Exception as e:
-                        logger.warning(f"[{sid}] 持久化 Todo list 失败: {e}")
-                elif ev_type == "content":
-                    if len(proc.accumulated_response) - last_persisted_len >= 500:
-                        last_persisted_len = len(proc.accumulated_response)
-                        _persist()
-                yield format_sse(ev)
+            yield sse
 
         # ── Post-streaming ─────────────────────────────────────────
         # 确保 thinking 结束（流结束时若仍在思考）

@@ -20,148 +20,27 @@ logger = logging.getLogger(__name__)
 
 # Candidate field names used by various providers for model reasoning / thinking.
 # DeepSeek uses "reasoning_content"; some models use "reasoning"; others use
-# "reason_content". All are treated as aliases and the original key is preserved
-# so the value round-trips correctly back to the same provider.
+# "reason_content". All are treated as aliases.
 _REASONING_KEYS = ("reasoning_content", "reasoning", "reason_content")
 
 # Anthropic-compatible models: extended-thinking budget and output cap.
-# Values identical to the previous hardcoded literals (Phase 1 behavior-preserving).
 ANTHROPIC_THINKING_BUDGET_TOKENS = 10000
 ANTHROPIC_MAX_TOKENS = 16000
 
 
-def _extract_reasoning(source: dict):
-    """Return ``(key, value)`` for the first reasoning field present in ``source``.
-
-    Returns ``None`` if none of the candidate keys carry a truthy value.
-    """
-    for key in _REASONING_KEYS:
-        val = source.get(key)
-        if val:
-            return key, val
-    return None
-
-
 def extract_reasoning(additional_kwargs) -> str:
-    """Extract reasoning/thinking text from a message's ``additional_kwargs``.
+    """取消息 ``additional_kwargs`` 里的思考文本（兼容各 provider 字段名）。
 
-    Handles the various field names providers use (``reasoning_content``,
-    ``reasoning``, ``reason_content``). Returns the first truthy value found,
-    or an empty string when ``additional_kwargs`` is missing/empty.
+    依次尝试 ``reasoning_content`` / ``reasoning`` / ``reason_content``，
+    返回首个真值；字段缺失/为空时返回空串。
     """
     if not isinstance(additional_kwargs, dict):
         return ""
-    found = _extract_reasoning(additional_kwargs)
-    return found[1] if found else ""
-
-
-# 非文本内容块：图片 / 文件 / 音视频等。纯文本模型（如 DeepSeek）收到这些块
-# 会直接 400 invalid_request_error。
-MEDIA_BLOCK_TYPES = frozenset({
-    "image_url", "image", "input_image",
-    "file", "input_file", "document",
-    "audio", "input_audio", "video",
-})
-
-
-def _media_placeholder(block: dict) -> str:
-    """把多模态块降级成文本占位，尽量保留可辨识信息（文件名 / URL 前缀）。"""
-    btype = block.get("type")
-    if btype in ("image_url", "image", "input_image"):
-        url = ""
-        if btype == "image_url":
-            url = (block.get("image_url") or {}).get("url", "")
-        return f"[图片内容已省略{('：' + url[:60]) if url else ''}]"
-    if btype in ("file", "input_file", "document"):
-        name = block.get("filename") or block.get("name") or ""
-        return f"[文件内容已省略{('：' + name[:60]) if name else ''}]"
-    if btype in ("audio", "input_audio"):
-        return "[音频内容已省略]"
-    if btype == "video":
-        return "[视频内容已省略]"
-    return "[媒体内容已省略]"
-
-
-def _replace_blocks(messages, should_replace, placeholder_of):
-    """遍历消息内容块，按谓词替换并尽量把单块结果还原成纯字符串。"""
-    result = []
-    for msg in messages:
-        content = getattr(msg, "content", None)
-        if not isinstance(content, list):
-            result.append(msg)
-            continue
-        new_content = []
-        changed = False
-        for block in content:
-            if should_replace(block):
-                changed = True
-                new_content.append({"type": "text", "text": placeholder_of(block)})
-            else:
-                new_content.append(block)
-        if changed:
-            # 若过滤后只剩一个 text 块，转回纯字符串内容
-            if (
-                len(new_content) == 1
-                and isinstance(new_content[0], dict)
-                and new_content[0].get("type") == "text"
-            ):
-                msg = msg.model_copy(update={"content": new_content[0]["text"]})
-            else:
-                msg = msg.model_copy(update={"content": new_content})
-        result.append(msg)
-    return result
-
-
-def strip_media_content(messages):
-    """把消息列表中的多模态内容块（图片 / 文件 / 音视频）替换为文本占位。
-
-    DeepSeek 等纯文本模型收到 image_url 或 file 块会直接 400
-    invalid_request_error，例如
-    ``.messages[63]: file must have a file_id or file_data``。
-
-    幂等：对已过滤的消息重复执行无副作用。
-    """
-
-    def _should_replace(block):
-        return isinstance(block, dict) and block.get("type") in MEDIA_BLOCK_TYPES
-
-    return _replace_blocks(messages, _should_replace, _media_placeholder)
-
-
-# 向后兼容：该函数最初只处理图片，现扩展到所有多模态块
-strip_image_content = strip_media_content
-
-
-def _is_incomplete_media_block(block) -> bool:
-    """判断多媒体块是否缺少 API 要求的必填字段（缺了会连累整次请求被拒）。"""
-    if not isinstance(block, dict):
-        return False
-    btype = block.get("type")
-    if btype in ("file", "input_file"):
-        # OpenAI 要求 file 块必须带 file_id 或 file_data
-        return not (block.get("file_id") or block.get("file_data"))
-    if btype == "image_url":
-        return not (block.get("image_url") or {}).get("url")
-    return False
-
-
-def _incomplete_placeholder(block: dict) -> str:
-    if block.get("type") in ("file", "input_file"):
-        name = block.get("filename") or block.get("name") or ""
-        return f"[文件引用不完整已省略{('：' + name[:60]) if name else ''}]"
-    return "[图片引用不完整已省略]"
-
-
-def drop_incomplete_media_blocks(messages):
-    """移除不完整的多媒体块，避免整次请求被 API 拒绝。
-
-    即使模型声明支持多模态也要执行：历史上出现过 file 块只带 filename、
-    既无 file_id 也无 file_data 的情况，OpenAI 会以
-    ``file must have a file_id or file_data`` 拒绝整个请求。
-    """
-    return _replace_blocks(
-        messages, _is_incomplete_media_block, _incomplete_placeholder
-    )
+    for key in _REASONING_KEYS:
+        val = additional_kwargs.get(key)
+        if val:
+            return val
+    return ""
 
 
 def resolve_llm_config(config: Config, model_name: str | None):
@@ -231,91 +110,54 @@ def create_model(config: Config, model_name: str | None = None):
 
     if protocol == "openai":
         return _create_openai_compatible(llm_config)
-    elif protocol == "anthropic":
+    if protocol == "anthropic":
         return _create_anthropic_compatible(llm_config)
-    else:
-        raise ValueError(
-            f"Unsupported protocol: {protocol}. Use 'openai' or 'anthropic'."
-        )
+    raise ValueError(
+        f"Unsupported protocol: {protocol}. Use 'openai' or 'anthropic'."
+    )
 
 
 class ReasoningChatOpenAI(ChatOpenAI):
-    """ChatOpenAI 子类，承载两个独立职责（Phase 1 仅做结构分清，不改行为）：
+    """ChatOpenAI 子类：暴露 OpenAI 兼容接口返回的思考内容。
 
-    职责 A - 多模态清理：在流式/非流式入口统一处理消息内容块
-        （不再区分模型是否支持视觉）：
-        1) 剔除不完整的块（如既无 file_id 也无 file_data 的 file 块、
-           缺 url 的 image_url）——这类块会让 API 拒绝**整个请求**；
-        2) 其余多模态块（image_url / file / 音视频等）降级为文本占位，
-           避免 DeepSeek 等纯文本模型收到它们报 400 invalid_request_error。
-    职责 B - reasoning 提取：把 OpenAI 兼容接口返回的思考内容
-        (reasoning_content / reasoning / reason_content) 写入 additional_kwargs，
-        供前端展示。
+    基类不提取非标准字段 ``reasoning_content`` 等（见 langchain_openai
+    ``BaseChatOpenAI`` 文档）。这里把思考同时暴露为两处：
+    - ``additional_kwargs["reasoning_content"]`` —— 旧消费者用 ``extract_reasoning`` 读取；
+    - ``content`` 里的 ``reasoning`` 内容块 —— v3 事件流只从内容块产出
+      ``reasoning-delta``，前端据此流式显示思考过程。
     """
 
-    # ── 职责 A：多模态清理 ───────────────────────────────────────────
-    def _sanitize_messages(self, messages, **kwargs):
-        """发送前统一清理消息内容块（不区分模型是否支持视觉）。
-
-        1) 剔除不完整的块：缺 file_id/file_data 的 file、缺 url 的 image_url
-           —— 这类块会让 API 拒绝**整个请求**；
-        2) 其余多模态块降级为文本占位，保证纯文本模型不会 400。
-        """
-        messages = drop_incomplete_media_blocks(messages)
-        return strip_media_content(messages), kwargs
-
-    async def _astream(self, messages, stop=None, **kwargs):
-        messages, kwargs = self._sanitize_messages(messages, **kwargs)
-        async for chunk in super()._astream(messages, stop=stop, **kwargs):
-            yield chunk
-
-    async def _agenerate(self, messages, stop=None, run_manager=None, **kwargs):
-        messages, kwargs = self._sanitize_messages(messages, **kwargs)
-        return await super()._agenerate(
-            messages, stop=stop, run_manager=run_manager, **kwargs
-        )
-
-    def _stream(self, messages, stop=None, **kwargs):
-        messages, kwargs = self._sanitize_messages(messages, **kwargs)
-        yield from super()._stream(messages, stop=stop, **kwargs)
-
-    def _generate(self, messages, stop=None, run_manager=None, **kwargs):
-        messages, kwargs = self._sanitize_messages(messages, **kwargs)
-        return super()._generate(
-            messages, stop=stop, run_manager=run_manager, **kwargs
-        )
-
-    # ── 职责 B：reasoning 提取 ────────────────────────────────────────
     def _convert_chunk_to_generation_chunk(
-        self,
-        chunk: dict,
-        default_chunk_class: type,
-        base_generation_info: dict | None,
+        self, chunk, default_chunk_class, base_generation_info
     ):
         gen = super()._convert_chunk_to_generation_chunk(
             chunk, default_chunk_class, base_generation_info
         )
-        if gen is None:
-            return gen
-        msg = gen.message
-        if not isinstance(msg, AIMessageChunk):
-            return gen
-
         choices = chunk.get("choices") or chunk.get("chunk", {}).get("choices", [])
-        if not choices or choices[0].get("delta") is None:
+        delta = choices[0].get("delta") if choices else None
+        msg = getattr(gen, "message", None)
+        if delta is None or not isinstance(msg, AIMessageChunk):
             return gen
-        delta = choices[0]["delta"]
 
         reasoning = ""
         for key in _REASONING_KEYS:
             val = delta.get(key)
             if isinstance(val, str):
                 reasoning += val
+        if not reasoning:
+            return gen
 
-        if reasoning:
-            existing = msg.additional_kwargs.get("reasoning_content")
-            msg.additional_kwargs["reasoning_content"] = (existing or "") + reasoning
-
+        msg.additional_kwargs["reasoning_content"] = (
+            msg.additional_kwargs.get("reasoning_content") or ""
+        ) + reasoning
+        content = msg.content
+        blocks = (
+            list(content)
+            if isinstance(content, list)
+            else ([{"type": "text", "text": content}] if content else [])
+        )
+        blocks.append({"type": "reasoning", "reasoning": reasoning})
+        msg.content = blocks
         return gen
 
 
@@ -337,22 +179,15 @@ def _create_openai_compatible(llm_config) -> ChatOpenAI:
 
 
 def _create_anthropic_compatible(llm_config) -> ChatAnthropic:
-    """Create model using Anthropic-compatible API.
+    """Create model using Anthropic-compatible API (MiniMax / Bedrock / Anthropic).
 
-    Works with any provider that exposes an Anthropic-compatible endpoint,
-    such as MiniMax, AWS Bedrock, or direct Anthropic API.
-
-    Configure api_base in config.yaml, e.g.:
-    - MiniMax China: https://api.minimaxi.com/anthropic
-    - MiniMax Global: https://api.minimax.io/anthropic
-    - Anthropic direct: https://api.anthropic.com
+    Configure api_base in config.yaml, e.g. ``https://api.minimaxi.com/anthropic``.
     """
-    kwargs = {
-        "model": llm_config.model,
-        "api_key": llm_config.api_key,
-        "base_url": llm_config.api_base,
-        "max_retries": llm_config.retry.max_retries if llm_config.retry.enabled else 0,
-        "thinking": {"type": "enabled", "budget_tokens": ANTHROPIC_THINKING_BUDGET_TOKENS},
-        "max_tokens": ANTHROPIC_MAX_TOKENS,
-    }
-    return ChatAnthropic(**kwargs)
+    return ChatAnthropic(
+        model=llm_config.model,
+        api_key=llm_config.api_key,
+        base_url=llm_config.api_base,
+        max_retries=llm_config.retry.max_retries if llm_config.retry.enabled else 0,
+        thinking={"type": "enabled", "budget_tokens": ANTHROPIC_THINKING_BUDGET_TOKENS},
+        max_tokens=ANTHROPIC_MAX_TOKENS,
+    )
