@@ -775,8 +775,8 @@ window.copyCode = async function(btn) {
   z-index: 5;
   border-radius: 10px 10px 0 0;
 }
-/* 冻结（sticky 卡住）时补绘执行过程顶边框：wrapper 顶边框已随滚动移出可视区，
-   用 header 伪元素在可视区顶部重绘一条与 wrapper 圆角一致的顶边框，并与左右边框相接。 */
+/* 冻结（sticky 卡住）时不再用与静态边框同深的实线，改为「更淡的顶边 + 向下柔和阴影」，
+   保留顶部分隔层次的同时避免滚动时突兀的硬线。 */
 .process-wrapper.process-expanded .process-header.is-stuck::before {
   content: '';
   position: absolute;
@@ -784,10 +784,19 @@ window.copyCode = async function(btn) {
   right: -1px;
   top: 0;
   height: 0;
-  border-top: 1px solid var(--border-color, #e5e7eb);
+  border-top: 1px solid rgba(15, 23, 42, 0.06);
   border-top-left-radius: 10px;
   border-top-right-radius: 10px;
   pointer-events: none;
+}
+.process-wrapper.process-expanded .process-header.is-stuck {
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06), 0 2px 8px rgba(15, 23, 42, 0.05);
+}
+html[data-theme="dark"] .process-wrapper.process-expanded .process-header.is-stuck::before {
+  border-top-color: rgba(255, 255, 255, 0.08);
+}
+html[data-theme="dark"] .process-wrapper.process-expanded .process-header.is-stuck {
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.45), 0 2px 8px rgba(0, 0, 0, 0.3);
 }
 .process-header:hover {
   background: var(--bg-tertiary, #f1f5f9);
