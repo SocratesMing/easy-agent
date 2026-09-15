@@ -112,13 +112,8 @@
 <script setup>
 import { API_BASE_URL } from '../config.js'
 import { ref, computed, watch } from 'vue'
-import {
-  setupMarkedExtensions,
-  createMarkdownRenderer,
-  renderMarkdown,
-  installCodeCopyHandler,
-  escapeHtml
-} from '../markdownSetup.js'
+import { marked } from 'marked'
+import { setupMarkedExtensions, normalizeMathDelimiters } from '../markdownSetup.js'
 import hljs from 'highlight.js'
 import 'highlight.js/styles/github.css'
 
@@ -131,30 +126,19 @@ import '@vue-office/excel/lib/v3/index.css'
 import * as XLSX from 'xlsx'
 import { getStoredToken } from '../api/auth.js'
 
-// markdown 预览：与聊天区共用代码块结构（语言标签 + 复制按钮），
-// 高亮走 highlight.js，未识别语言时按自动识别处理。
-// 注：这里原先用 marked.setOptions({ highlight }) 挂高亮，那是 marked 4.x 的 API，
-// 5.x 起已移除（连同 headerIds），在当前的 marked 17 下完全无效。
-function highlightWithHljs(code, lang) {
-  const raw = (lang || '').toLowerCase()
-  const resolved = raw ? codeLangMap[raw] || raw : ''
-  let inner = ''
-  if (resolved && hljs.getLanguage(resolved)) {
-    try {
-      inner = hljs.highlight(code, { language: resolved }).value
-    } catch (e) {
-      console.warn('[FilePreview] 语法高亮失败:', raw, e)
+marked.setOptions({
+  breaks: true,
+  gfm: true,
+  headerIds: false,
+  highlight: function(code, lang) {
+    if (lang && hljs.getLanguage(lang)) {
+      try {
+        return hljs.highlight(code, { language: lang }).value
+      } catch (__) {}
     }
+    return hljs.highlightAuto(code).value
   }
-  if (!inner) inner = hljs.highlightAuto(code).value
-  const langClass = resolved ? ` class="language-${escapeHtml(resolved)}"` : ''
-  return `<pre class="hljs"><code${langClass}>${inner}</code></pre>`
-}
-
-const mdRenderer = createMarkdownRenderer({ highlight: highlightWithHljs })
-
-// 代码块复制按钮的全局处理函数（幂等），与聊天区共用
-installCodeCopyHandler()
+})
 
 const props = defineProps({
   filename: {
@@ -320,9 +304,11 @@ const csvData = computed(() => {
   return { headers, rows }
 })
 
-// escapeHtml 由 markdownSetup.js 统一提供（上面已 import）：
-// 共享版是纯字符串实现，且会额外转义引号，比原先的 createElement/innerHTML 版本更严格，
-// 用在 `class="language-${escapeHtml(x)}"` 这类属性拼接处更安全。
+function escapeHtml(text) {
+  const div = document.createElement('div')
+  div.textContent = text
+  return div.innerHTML
+}
 
 // 预览/下载基础 URL：定时任务工作目录走独立端点，否则走会话文件端点
 const previewBaseUrl = computed(() => props.taskId
@@ -347,7 +333,7 @@ function handleDownload() {
 
 const renderedMarkdown = computed(() => {
   if (!textContent.value) return ''
-  return renderMarkdown(textContent.value, mdRenderer)
+  return marked.parse(normalizeMathDelimiters(textContent.value))
 })
 
 const isText = computed(() => {
@@ -990,7 +976,7 @@ function handleClose() {
   margin-bottom: 16px;
 }
 
-:deep(.markdown-body :not(pre) > code) {
+:deep(.markdown-body code) {
   padding: 0.2em 0.4em;
   margin: 0;
   font-size: 85%;
@@ -1017,65 +1003,6 @@ function handleClose() {
   border-radius: 0;
   white-space: pre;
   display: block;
-}
-
-/* markdown 预览内的代码块：与聊天区一致的语言标签 + 复制按钮（浅色配色） */
-:deep(.markdown-body .code-block-wrapper) {
-  margin: 16px 0;
-  border: 1px solid #e1e4e8;
-  border-radius: 6px;
-  overflow: hidden;
-}
-
-:deep(.markdown-body .code-header) {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  background: #f1f3f5;
-  padding: 8px 12px;
-}
-
-:deep(.markdown-body .code-lang) {
-  font-size: 12px;
-  color: #57606a;
-  font-weight: 500;
-}
-
-:deep(.markdown-body .code-copy-btn) {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 4px 8px;
-  background: #ffffff;
-  border: 1px solid #d0d7de;
-  border-radius: 6px;
-  color: #57606a;
-  font-size: 12px;
-  cursor: pointer;
-  transition: all 0.2s;
-}
-
-:deep(.markdown-body .code-copy-btn:hover) {
-  background: #f3f4f6;
-  border-color: #afb8c1;
-  color: #24292f;
-}
-
-:deep(.markdown-body .code-copy-btn.copied) {
-  color: #16a34a;
-}
-
-:deep(.markdown-body .code-copy-btn svg) {
-  width: 13px;
-  height: 13px;
-}
-
-/* wrapper 内的 pre 交给 wrapper 统一裁切圆角与边框 */
-:deep(.markdown-body .code-block-wrapper pre) {
-  margin: 0;
-  border: none;
-  border-radius: 0;
-  background-color: #f6f8fa;
 }
 
 :deep(.markdown-body ul),
