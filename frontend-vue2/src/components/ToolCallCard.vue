@@ -1,9 +1,26 @@
 <template>
   <div class="tcc" :class="[card.card, { error: card.error }]">
     <button type="button" class="tcc-head" @click="expanded = !expanded" :aria-expanded="expanded">
-      <svg class="tcc-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <svg v-if="kindKey === 'terminal'" class="tcc-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <polyline points="4 17 10 11 4 5"></polyline><line x1="12" y1="19" x2="20" y2="19"></line>
+      </svg>
+      <svg v-else-if="kindKey === 'list'" class="tcc-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+        <line x1="8" y1="6" x2="21" y2="6"></line><line x1="8" y1="12" x2="21" y2="12"></line><line x1="8" y1="18" x2="21" y2="18"></line>
+        <line x1="3" y1="6" x2="3.01" y2="6"></line><line x1="3" y1="12" x2="3.01" y2="12"></line><line x1="3" y1="18" x2="3.01" y2="18"></line>
+      </svg>
+      <svg v-else-if="kindKey === 'search'" class="tcc-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+        <circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+      </svg>
+      <svg v-else-if="kindKey === 'read'" class="tcc-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline>
+      </svg>
+      <svg v-else-if="kindKey === 'edit'" class="tcc-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
+      </svg>
+      <svg v-else class="tcc-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path>
       </svg>
+      <span v-if="kindLabel" class="tcc-kind">{{ kindLabel }}</span>
       <span class="tcc-title">{{ card.title }}</span>
       <span v-if="card.meta" class="tcc-meta">{{ card.meta }}</span>
       <span v-if="pendingApproval" class="tcc-status pending">待审批</span>
@@ -84,6 +101,19 @@ export default {
     card() {
       return toolCard(this.toolName, this.args, this.result, this.success)
     },
+    kindKey() {
+      if (this.card.shape === 'paths') return 'list'
+      if (this.card.shape === 'matches') return 'search'
+      if (this.card.card === 'diff') return 'edit'
+      return this.card.card
+    },
+    kindLabel() {
+      // 写入/编辑的标题已含动作，不再重复显示类型标签
+      const map = {
+        terminal: '命令', list: '列出', search: '搜索', read: '读取', edit: '', other: '工具',
+      }
+      return this.kindKey in map ? map[this.kindKey] : '工具'
+    },
     prettyArgs() {
       try {
         return JSON.stringify(this.args || {}, null, 2).slice(0, 1000)
@@ -121,7 +151,16 @@ export default {
 }
 .tcc-head:hover { background: var(--bg-tertiary, #f1f5f9); }
 .tcc-icon { width: 15px; height: 15px; flex-shrink: 0; color: var(--text-secondary, #64748b); }
-.tcc-title { font-weight: 600; flex-shrink: 0; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tcc-kind {
+  flex-shrink: 0;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  line-height: 1.5;
+  background: var(--bg-tertiary, #f1f5f9);
+  color: var(--text-secondary, #64748b);
+}
+.tcc-title { font-weight: 500; color: var(--text-secondary, #64748b); flex-shrink: 0; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tcc-meta { color: var(--text-secondary, #64748b); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
 .tcc-status { flex-shrink: 0; font-size: 12px; color: var(--text-secondary, #64748b); }
 .tcc-status.err { color: #dc2626; }
