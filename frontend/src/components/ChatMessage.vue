@@ -179,8 +179,13 @@
 <script setup>
 import { ref, computed, onMounted, shallowRef, watch, nextTick, onBeforeUnmount } from 'vue'
 import { createHighlighter } from 'shiki'
-import { marked } from 'marked'
-import { setupMarkedExtensions, normalizeMathDelimiters } from '../markdownSetup.js'
+import {
+  setupMarkedExtensions,
+  createMarkdownRenderer,
+  renderMarkdown as renderMarkdownHtml,
+  installCodeCopyHandler,
+  escapeHtml
+} from '../markdownSetup.js'
 import FileIcon from './FileIcon.vue'
 import ToolCallCard from './ToolCallCard.vue'
 
@@ -539,56 +544,16 @@ function highlightCode(code, lang) {
   }
 }
 
-function escapeHtml(text) {
-  return text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#039;')
-}
+// 统一的 markdown 渲染器：代码块外壳、语言标签、复制按钮、外链处理
+// 都由 markdownSetup.js 提供（与 FilePreview 共用同一实现），
+// 代码高亮仍使用本组件持有的 shiki 实例。
+const renderer = createMarkdownRenderer({ highlight: highlightCode })
 
-const renderer = new marked.Renderer()
-
-renderer.code = function(token) {
-  let code = ''
-  let language = ''
-  
-  if (typeof token === 'object') {
-    code = token.text || token.raw || ''
-    language = token.lang || ''
-  } else {
-    code = arguments[0] || ''
-    language = arguments[1] || ''
-  }
-  
-  const langLabel = language || 'text'
-  const highlightedCode = highlightCode(code, language)
-  
-  return `<div class="code-block-wrapper">
-    <div class="code-header">
-      <span class="code-lang">${langLabel}</span>
-      <button class="code-copy-btn" onclick="copyCode(this)">
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
-          <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
-        </svg>
-        <span>复制</span>
-      </button>
-    </div>
-    ${highlightedCode}
-  </div>`
-}
+// 代码块复制按钮的全局处理函数（幂等），与 FilePreview 共用
+installCodeCopyHandler()
 
 function renderMarkdown(content) {
-  if (!content) return ''
-  try {
-    const normalized = normalizeMathDelimiters(content)
-    return marked.parse(normalized, { renderer, breaks: true, gfm: true })
-  } catch (e) {
-    console.error('Markdown 渲染失败:', e)
-    return escapeHtml(content)
-  }
+  return renderMarkdownHtml(content, renderer)
 }
 
 function formatJson(obj) {
@@ -714,25 +679,8 @@ function removeFile(index) {
   }
 }
 
-// 代码块复制：markdown 渲染产物通过 v-html 注入，按钮用 inline onclick 调全局函数。
-// 定义在模块级（而非 onMounted），保证任何渲染时机点击都能找到该函数。
-window.copyCode = async function(btn) {
-  const wrapper = btn.closest('.code-block-wrapper')
-  const codeEl = wrapper.querySelector('pre code') || wrapper.querySelector('pre')
-  const code = codeEl?.textContent || ''
-
-  const span = btn.querySelector('span')
-  const originalText = span ? span.textContent : ''
-  const ok = await copyTextToClipboard(code)
-  if (span) {
-    span.textContent = ok ? '已复制!' : '复制失败'
-    btn.classList.add(ok ? 'copied' : 'copy-error')
-    setTimeout(() => {
-      span.textContent = originalText
-      btn.classList.remove('copied', 'copy-error')
-    }, 2000)
-  }
-}
+// 代码块复制按钮的 window.copyCode 由 markdownSetup.js 的
+// installCodeCopyHandler() 统一注册（上面已调用），此处不再重复定义。
 </script>
 
 <style scoped>

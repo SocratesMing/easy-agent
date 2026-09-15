@@ -2,7 +2,10 @@
 // 通过 initialized 标志保证全局 marked 实例上的扩展只注册一次，
 // 避免 ChatMessage / FilePreview 等多个组件重复注册导致扩展冲突。
 //
-// 版本约定：marked 锁定 4.3.0（Renderer 回调为字符串参数签名，且支持 headerIds/mangle 选项）。
+// 版本约定：marked 使用 17.x —— Renderer 回调只接收一个 token 对象
+// （5.x 起由 (code, infostring) 字符串签名改为 token 对象）。
+// 下方回调内部保留了旧版字符串签名的兼容分支：一旦依赖被回退到 4.x，
+// 也不会静默渲染成 [object Object]。
 import { marked } from 'marked'
 import katexExtension from 'marked-katex-extension'
 import { markedEmoji } from 'marked-emoji'
@@ -151,8 +154,8 @@ export function installCodeCopyHandler() {
 /**
  * 创建统一的 markdown 渲染器（ChatMessage / FilePreview 共用同一套代码块结构）
  *
- * marked 4.x 的 Renderer 回调为字符串参数签名：
- *   code(code, infostring, escaped) / link(href, title, text)
+ * marked 5+ 的 Renderer 回调只接收 token 对象：
+ *   code(token) / link(token)；4.x 的字符串签名仍被兼容。
  *
  * @param {Object} options 配置
  * @param {(code: string, lang: string) => string} options.highlight 高亮函数，返回完整代码块 HTML（含 <pre>）
@@ -164,10 +167,21 @@ export function installCodeCopyHandler() {
 export function createMarkdownRenderer({ highlight, externalLinks = true }) {
   const renderer = new marked.Renderer()
 
-  renderer.code = function (code, infostring) {
-    const rawLang = (infostring || '').trim().split(/\s+/)[0]
+  renderer.code = function (token) {
+    // marked 5+ 只传 token 对象；4.x 仍是 (code, infostring) 字符串签名。
+    // 不做兼容会导致 code 参数变成对象，最终渲染出 [object Object]。
+    let code = ''
+    let infostring = ''
+    if (token && typeof token === 'object') {
+      code = token.text || token.raw || ''
+      infostring = token.lang || ''
+    } else {
+      code = token || ''
+      infostring = (arguments[1] || '')
+    }
+    const rawLang = String(infostring).trim().split(/\s+/)[0]
     const langLabel = escapeHtml(rawLang || 'text')
-    const highlighted = typeof highlight === 'function' ? highlight(code, rawLang) : ''
+    const highlighted = typeof highlight === 'function' ? highlight(String(code), rawLang) : ''
     return (
       '<div class="code-block-wrapper">' +
       '<div class="code-header">' +
@@ -180,12 +194,42 @@ export function createMarkdownRenderer({ highlight, externalLinks = true }) {
   }
 
   if (externalLinks) {
-    renderer.link = function (href, title, text) {
+    renderer.link = function (token) {
+      // 同样做双签名兼容（marked 5+ 传 token 对象）。
+      let href = ''
+      let title = ''
+      let text = ''
+      let tokens = null
+      if (token && typeof token === 'object') {
+        href = token.href || ''
+        title = token.title || ''
+        text = token.text || ''
+        tokens = token.tokens || null
+      } else {
+        href = token || ''
+        title = arguments[1] || ''
+        text = arguments[2] || ''
+      }
+
       const url = href || ''
       const isExternal = /^https?:\/\//i.test(url)
       const titleAttr = title ? ` title="${escapeHtml(title)}"` : ''
       const extra = isExternal ? ' target="_blank" rel="noopener noreferrer"' : ''
-      return `<a href="${escapeHtml(url)}"${titleAttr}${extra}>${text}</a>`
+
+      // marked 5+ 的 token.text 是未解析的原始 markdown，必须交回 marked 做 inline 解析，
+      // 否则链接文字里的 **加粗** / `代码` 等语法会原样显示。
+      let body = ''
+      if (tokens && this && this.parser) {
+        try {
+          body = this.parser.parseInline(tokens)
+        } catch (e) {
+          body = escapeHtml(text)
+        }
+      } else {
+        // 4.x 传入的 text 已是渲染好的 HTML，直接使用。
+        body = text
+      }
+      return `<a href="${escapeHtml(url)}"${titleAttr}${extra}>${body}</a>`
     }
   }
 
@@ -204,13 +248,12 @@ export function createMarkdownRenderer({ highlight, externalLinks = true }) {
 export function renderMarkdown(content, renderer) {
   if (!content) return ''
   try {
+    // headerIds / mangle 是 marked 4.x 专有选项，5.x 起已移除（传了会被忽略），
+    // 这里与 Vue3 侧保持一致的调用方式。
     return marked.parse(normalizeMathDelimiters(content), {
       renderer,
       breaks: true,
       gfm: true,
-      // 这两项为 marked 4.x 专有选项（5.x 起移除）：关闭标题 id 生成与邮箱混淆
-      headerIds: false,
-      mangle: false,
     })
   } catch (e) {
     console.error('Markdown 渲染失败:', e)
