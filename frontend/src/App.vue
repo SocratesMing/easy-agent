@@ -105,7 +105,7 @@
 
 <script setup>
 import { API_BASE_URL, APP_WELCOME_TITLE, appRuntime } from './config.js'
-import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import SessionList from './components/SessionList.vue'
 import Chat from './components/Chat.vue'
 import AssetsPanel from './components/AssetsPanel.vue'
@@ -117,7 +117,7 @@ import WorkspacePanel from './components/WorkspacePanel.vue'
 import SettingsPanel from './components/SettingsPanel.vue'
 import { createSession, listSessions, getChatHistory, deleteSession, sendMessage, resumeStream, renameSession, togglePinSession, getStreamStatus, attachStream } from './api/chat.js'
 import { uploadFile, deleteFile, getUserProfile, getSessionGeneratedFiles } from './api/files.js'
-import { logout as apiLogout, notifyLogout, getStoredToken, getStoredUsername, AUTH_EXPIRED_EVENT, USER_ACTIVITY_EVENT, authFetch, passwordlessLogin } from './api/auth.js'
+import { logout as apiLogout, notifyLogout, getStoredToken, getStoredUsername, AUTH_EXPIRED_EVENT, authFetch, passwordlessLogin } from './api/auth.js'
 import { getModels as fetchModels } from './api/settings.js'
 
 const sessions = ref([])
@@ -633,10 +633,6 @@ function applyAgentConfig(configData) {
   if (typeof configData.app_welcome_title === 'string' && configData.app_welcome_title.trim()) {
     welcomeTitle.value = configData.app_welcome_title
   }
-  // 空闲自动登出超时（分钟）；0 或非法值表示禁用
-  if (typeof configData.idle_logout_minutes === 'number' && configData.idle_logout_minutes >= 0) {
-    idleLogoutMs.value = configData.idle_logout_minutes * 60 * 1000
-  }
 }
 
 // 依据持久化的选择恢复初始会话视图：
@@ -721,9 +717,6 @@ async function handleWelcomeCompleted(profile) {
   loadModels()
   await loadSessions()
   await restoreInitialSession()
-  // 首次登录（欢迎页流程）后启动空闲登出计时器；
-  // 配置为 0（不登出）时 resetIdleTimer 内部直接跳过，不会触发登出
-  startIdleTimer()
 }
 
 async function handleLogout() {
@@ -756,39 +749,6 @@ async function handleLogout() {
   hasBootstrapped.value = false
   clearActiveSession()
   showWelcome.value = true
-}
-
-// ---- 无操作自动退出登录（后端按最近一次接口调用滑动续期；0 表示永不自动退出） ----
-let idleTimer = null
-// 空闲超时（毫秒）；0 或非法值表示禁用自动登出
-// 空闲登出以「后端配置」为准：拿到 /agent/auth/config 前不启用（0=禁用），
-// 避免配置未取到时用前端默认值把用户误登出。
-const idleLogoutMs = ref(0)
-function resetIdleTimer() {
-  if (idleTimer) clearTimeout(idleTimer)
-  if (showWelcome.value) return // 未登录不计时
-  if (idleLogoutMs.value <= 0) return // 已禁用
-  idleTimer = setTimeout(async () => {
-    // 流式响应进行中（即使暂时无数据到达）视为仍在与后端交互，不登出，重新计时
-    if (isStreaming.value) {
-      resetIdleTimer()
-      return
-    }
-    // handleLogout 内部已通知后端记录登出信息，此处直接调用即可
-    handleLogout()
-  }, idleLogoutMs.value)
-}
-function startIdleTimer() {
-  ;['mousemove', 'mousedown', 'keydown', 'click', 'scroll', 'touchstart'].forEach((evt) =>
-    window.addEventListener(evt, resetIdleTimer, { passive: true })
-  )
-  resetIdleTimer()
-}
-function stopIdleTimer() {
-  if (idleTimer) clearTimeout(idleTimer)
-  ;['mousemove', 'mousedown', 'keydown', 'click', 'scroll', 'touchstart'].forEach((evt) =>
-    window.removeEventListener(evt, resetIdleTimer)
-  )
 }
 
 async function handleUnregister() {
@@ -1197,8 +1157,6 @@ function createStreamChunkHandler(ctx) {
   }
 
   function onChunk(data) {
-    // 流式数据到达视为后端交互，重置空闲登出计时器
-    resetIdleTimer()
     const { type: eventType, content, duration, step, tool_name, tool_call_id: toolCallId, arguments: args, result, success, title } = data
     const sid = ctx.streamSessionId
 
@@ -1861,14 +1819,11 @@ async function handleRemoveFile(message, messageIndex, file) {
 
 onMounted(async () => {
   window.addEventListener(AUTH_EXPIRED_EVENT, handleLogout)
-  // 后端交互（API 调用）触发用户活动事件 -> 重置空闲登出计时器
-  window.addEventListener(USER_ACTIVITY_EVENT, resetIdleTimer)
   try {
     // URL 免密直登（?username=xxx&user_id=yyy）：成功则直接进入主界面
     if (await handlePasswordlessUrlLogin()) return
     await loadUserProfile()
     if (!showWelcome.value) {
-      startIdleTimer()
       // 拉取可选模型列表（不阻塞会话加载）
       loadModels()
       await loadSessions()
@@ -1878,11 +1833,6 @@ onMounted(async () => {
     // 未登录时也解除首屏门控，让 Welcome 登录页正常显示
     isBootstrapping.value = false
   }
-})
-
-onUnmounted(() => {
-  window.removeEventListener(USER_ACTIVITY_EVENT, resetIdleTimer)
-  stopIdleTimer()
 })
 </script>
 
