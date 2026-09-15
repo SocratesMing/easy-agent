@@ -290,7 +290,9 @@ export default {
         email: ''
       },
       // 空闲超时（毫秒）；0 或非法值表示禁用自动登出
-      idleLogoutMs: 5 * 60 * 1000,
+      // 空闲登出以「后端配置」为准：拿到 /agent/auth/config 前不启用（0=禁用），
+      // 避免配置未取到时用前端默认值把用户误登出。
+      idleLogoutMs: 0,
       // 非响应式定时器句柄
       filesCheckTimer: null,
       idleTimer: null

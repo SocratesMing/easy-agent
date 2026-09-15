@@ -84,6 +84,8 @@ requestInstance.interceptors.response.use(
     const response = error.response
     if (response && response.status === 401) {
       const detail = response.data && response.data.detail
+      // 打印原因，便于区分：空闲超时 / 被顶下线 / token 失效
+      console.warn('[auth] 401 未授权，判定登出 | 原因:', detail || '(无 detail)')
       if (detail && /其他设备|被迫下线/.test(detail)) {
         localStorage.setItem('auth_kicked', '1')
       }
@@ -238,6 +240,7 @@ export function streamHeaders(extraHeaders = {}) {
 export async function handleStreamResponse(response) {
   if (response.status === 401) {
     const detail = await response.json().catch(() => '')
+    console.warn('[auth] 流式请求 401 未授权，判定登出 | 原因:', detail || '(无 detail)')
     if (detail && /其他设备|被迫下线/.test(detail)) {
       localStorage.setItem('auth_kicked', '1')
     }

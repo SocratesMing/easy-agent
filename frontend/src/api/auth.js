@@ -33,12 +33,16 @@ export async function authFetch(url, options = {}) {
 
   if (response.status === 401) {
     // 识别"被踢下线"场景（账号在其他设备/IP 登录），设置标记供登录页提示用户
+    let detail = ''
     try {
       const errBody = await response.clone().json()
-      if (errBody && errBody.detail && /其他设备|被迫下线/.test(errBody.detail)) {
-        localStorage.setItem('auth_kicked', '1')
-      }
+      detail = (errBody && errBody.detail) || ''
     } catch (_) { /* ignore */ }
+    // 打印原因，便于区分：空闲超时 / 被顶下线 / token 失效
+    console.warn('[auth] 401 未授权，判定登出 | 接口:', url, '| 原因:', detail || '(无 detail)')
+    if (detail && /其他设备|被迫下线/.test(detail)) {
+      localStorage.setItem('auth_kicked', '1')
+    }
     clearAuth()
     dispatchAuthExpired()
     throw new Error('登录已过期，请重新登录')
