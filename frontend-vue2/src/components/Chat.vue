@@ -32,8 +32,17 @@
         </div>
       </div>
       <div class="chat-messages" ref="messagesRef" @scroll="handleScroll">
-        <div v-if="messages.length === 0" class="welcome-screen">
+        <div v-if="messages.length === 0 && !sessionLoading" class="welcome-screen">
           <h2>{{ welcomeTitle }}</h2>
+        </div>
+        <!-- 切换会话拉取历史期间：显示骨架，避免先闪出空欢迎页 -->
+        <div
+          v-if="sessionLoading && messages.length === 0"
+          class="session-loading-skeleton"
+          aria-busy="true"
+          aria-label="加载会话"
+        >
+          <div class="skeleton-block" v-for="i in 3" :key="i"></div>
         </div>
       
         <div
@@ -121,6 +130,10 @@ export default {
   messages: {
     type: Array,
     default: () => []
+  },
+  sessionLoading: {
+    type: Boolean,
+    default: false
   },
   currentSessionId: {
     type: String,
@@ -219,8 +232,9 @@ export default {
       {
         immediate: true,
         handler(newMessages) {
-          // 空会话显示居中输入框；有消息时输入框贴底
-          this.composerMode = newMessages.length === 0 ? 'center' : 'bottom'
+          // 空会话显示居中输入框；有消息时输入框贴底。
+          // 正在拉取历史时按「有会话」处理（贴底），避免先居中再跳到贴底。
+          this.composerMode = (newMessages.length === 0 && !this.sessionLoading) ? 'center' : 'bottom'
         }
       },
       {
@@ -236,6 +250,10 @@ export default {
         }
       }
     ],
+    sessionLoading(loading) {
+      // 加载历史期间贴底，避免居中布局随后跳动
+      this.composerMode = (this.messages.length === 0 && !loading) ? 'center' : 'bottom'
+    },
     scrollTrigger() {
       // 切换/加载会话时强制贴底
       this.isAtBottom = true
@@ -586,6 +604,32 @@ export default {
   font-weight: 600;
   color: #1e293b;
   margin: 0;
+}
+
+/* 切会话拉历史时的骨架屏：替代空欢迎页，避免"先闪空页面" */
+.session-loading-skeleton {
+  width: 100%;
+  max-width: 760px;
+  margin: 24px auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.session-loading-skeleton .skeleton-block {
+  height: 14px;
+  border-radius: 6px;
+  background: var(--border-color, #e2e8f0);
+  animation: skeleton-pulse 1.4s ease-in-out infinite;
+}
+
+.session-loading-skeleton .skeleton-block:nth-child(1) { width: 60%; }
+.session-loading-skeleton .skeleton-block:nth-child(2) { width: 88%; }
+.session-loading-skeleton .skeleton-block:nth-child(3) { width: 72%; }
+
+@keyframes skeleton-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
 }
 
 .preset-categories {
