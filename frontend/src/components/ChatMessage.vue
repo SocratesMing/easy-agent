@@ -69,87 +69,20 @@
                 </div>
               </div>
 
-              <!-- 工具调用块（合并参数、结果、耗时）- 隐藏 write_todos，因为已在侧边栏显示 -->
-              <div v-if="block.type === 'tool_call' && block.tool_name !== 'write_todos'" class="tool-call-block" :class="{ error: block.success === false }">
-                <div class="tool-call-header" @click="toggleToolCall(block.origIndex)">
-                  <svg class="tool-icon" :class="{ success: block.success === true, error: block.success === false, spinning: isToolRunning(block) }" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path>
-                  </svg>
-                  <span class="tool-name-badge">{{ block.tool_name }}</span>
-                  <span v-if="block.approval_status" class="approval-badge" :class="'status-' + block.approval_status">
-                    <svg v-if="block.approval_status === 'pending'" class="badge-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
-                    <svg v-else-if="block.approval_status === 'approved'" class="badge-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"></polyline></svg>
-                    <svg v-else class="badge-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
-                    <span class="badge-text">{{ block.approval_status === 'pending' ? '待审批' : block.approval_status === 'approved' ? '已批准' : '已拒绝' }}</span>
-                  </span>
-                  <template v-if="block.duration != null">
-                    <svg v-if="block.success" class="tool-status-icon success" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                      <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
-                      <polyline points="22 4 12 14.01 9 11.01"></polyline>
-                    </svg>
-                    <svg v-else class="tool-status-icon error" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                      <circle cx="12" cy="12" r="10"></circle>
-                      <line x1="15" y1="9" x2="9" y2="15"></line>
-                      <line x1="9" y1="9" x2="15" y2="15"></line>
-                    </svg>
-                  </template>
-                  <span v-if="block.duration != null" class="tool-duration">用时 {{ block.duration }} 秒</span>
-                  <span v-else-if="isToolRunning(block) && !block.approval_status" class="tool-status-text" :class="block.pending_approval ? 'pending' : 'executing'">
-                    {{ block.pending_approval ? '等待确认' : '执行中...' }}
-                  </span>
-                  <svg class="toggle-arrow" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" :class="{ rotated: isExpandedToolCall(block.origIndex) }">
-                    <polyline points="6 9 12 15 18 9"></polyline>
-                  </svg>
-                </div>
-                <div v-if="isExpandedToolCall(block.origIndex)" class="tool-call-body">
-                  <div v-if="block.pending_approval" class="tool-approval-section">
-                    <div class="approval-prompt">
-                      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="approval-warning-icon">
-                        <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path>
-                        <line x1="12" y1="9" x2="12" y2="13"></line>
-                        <line x1="12" y1="17" x2="12.01" y2="17"></line>
-                      </svg>
-                      <span>此操作将删除文件，需要您的确认</span>
-                    </div>
-                    <div v-if="block.file_paths && block.file_paths.length > 0" class="approval-file-list">
-                      <div v-for="(fp, fpi) in block.file_paths" :key="fpi" class="approval-file-item">
-                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="approval-file-icon">
-                          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
-                          <polyline points="14 2 14 8 20 8"></polyline>
-                        </svg>
-                        <span class="approval-file-path">{{ fp }}</span>
-                      </div>
-                    </div>
-                    <div class="approval-buttons">
-                      <button class="approval-btn approve" @click="emit('approve')">
-                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                          <polyline points="20 6 9 17 4 12"></polyline>
-                        </svg>
-                        批准
-                      </button>
-                      <button class="approval-btn reject" @click="emit('reject')">
-                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                          <line x1="18" y1="6" x2="6" y2="18"></line>
-                          <line x1="6" y1="6" x2="18" y2="18"></line>
-                        </svg>
-                        拒绝
-                      </button>
-                    </div>
-                  </div>
-                  <div v-if="hasArgs(block.arguments) && !block.pending_approval" class="tool-section">
-                    <div class="tool-section-label">参数</div>
-                    <pre class="tool-section-content">{{ truncateResult(formatJson(block.arguments), 1000) }}</pre>
-                  </div>
-                  <div v-if="block.result" class="tool-section">
-                    <div class="tool-section-label">结果</div>
-                    <pre class="tool-section-content" :class="{ error: block.success === false }">{{ truncateResult(block.result, 1000) }}</pre>
-                  </div>
-                  <div v-else-if="isToolRunning(block) && !block.pending_approval" class="tool-section">
-                    <div class="tool-section-label">结果</div>
-                    <div class="tool-executing-hint">等待执行结果...</div>
-                  </div>
-                </div>
-              </div>
+              <!-- 工具调用卡片（dsh 风格，默认收起；隐藏 write_todos）-->
+              <ToolCallCard
+                v-if="block.type === 'tool_call' && block.tool_name !== 'write_todos'"
+                :key="'p'+block.origIndex"
+                :tool-name="block.tool_name"
+                :args="block.arguments"
+                :result="block.result"
+                :success="block.success !== false"
+                :duration="block.duration"
+                :pending-approval="!!block.pending_approval"
+                :file-paths="block.file_paths || []"
+                @approve="$emit('approve')"
+                @reject="$emit('reject')"
+              />
 
               <!-- 中间穿插的正文（其后仍有思考/工具）放进处理过程内部按原序展示 -->
               <div v-if="block.type === 'content'" class="message-text process-inline-content" v-html="renderMarkdown(block.content)"></div>
@@ -185,27 +118,15 @@
         </div>
 
         <div v-if="message.tool_calls && message.tool_calls.filter(t => t.tool_name !== 'write_todos').length > 0" class="tool-calls-block">
-          <div class="tool-calls-header">
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path>
-            </svg>
-            <span>工具调用</span>
-          </div>
-          <div class="tool-calls-list">
-            <div v-for="(tool, idx) in message.tool_calls.filter(t => t.tool_name !== 'write_todos')" :key="idx" class="tool-call-item">
-              <div class="tool-name">
-                {{ tool.tool_name }}
-                <span v-if="tool.duration !== undefined" class="tool-duration">耗时 {{ tool.duration }}s</span>
-              </div>
-              <div v-if="tool.arguments" class="tool-args">
-                <pre>{{ formatJson(tool.arguments) }}</pre>
-              </div>
-              <div v-if="tool.result" class="tool-result" :class="{ error: !tool.success }">
-                <span class="result-label">{{ tool.success ? '结果:' : '错误:' }}</span>
-                <span class="result-content">{{ truncateResult(tool.result, 1000) }}</span>
-              </div>
-            </div>
-          </div>
+          <ToolCallCard
+            v-for="(tool, idx) in message.tool_calls.filter(t => t.tool_name !== 'write_todos')"
+            :key="idx"
+            :tool-name="tool.tool_name"
+            :args="tool.arguments"
+            :result="tool.result"
+            :success="tool.success !== false"
+            :duration="tool.duration"
+          />
         </div>
 
         <div v-if="message.content" class="message-text" v-html="renderMarkdown(message.content)"></div>
@@ -261,6 +182,7 @@ import { createHighlighter } from 'shiki'
 import { marked } from 'marked'
 import { setupMarkedExtensions, normalizeMathDelimiters } from '../markdownSetup.js'
 import FileIcon from './FileIcon.vue'
+import ToolCallCard from './ToolCallCard.vue'
 
 // 注册 KaTeX 数学公式 + emoji 短代码扩展（幂等，仅执行一次）
 setupMarkedExtensions()
