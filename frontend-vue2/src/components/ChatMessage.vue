@@ -177,8 +177,8 @@
 </template>
 
 <script>
-import Vue from 'vue'
-import { createHighlighter } from 'shiki'
+import hljs from 'highlight.js'
+import 'highlight.js/styles/github-dark.css'
 import {
   setupMarkedExtensions,
   createMarkdownRenderer,
@@ -204,6 +204,8 @@ const langAliases = {
   'c++': 'cpp',
   'c#': 'csharp',
   'cs': 'csharp',
+  // highlight.js 没有 vue 语法，按 FilePreview 的做法回退到 xml
+  'vue': 'xml',
 }
 
 // 处理过程类型：思考 + 工具调用（排除已在侧边栏显示的 write_todos）
@@ -214,56 +216,21 @@ function isProcessType(b) {
   )
 }
 
-// Shiki 高亮器：全局单例（所有消息组件共用，避免每条消息各初始化一次）。
-// 就绪状态用 Vue.observable 承载：模块级普通变量没有响应式，shiki 异步加载完成后
-// 已渲染的代码块不会重新渲染，会一直停留在无高亮的兜底样式上（Vue3 版用 shallowRef
-// 天然具备该能力）。渲染时读取 highlightState.ready 建立依赖即可自动重渲染。
-let highlighter = null
-let highlighterPromise = null
-const highlightState = Vue.observable({ ready: false })
-
-// 高亮结果缓存：流式输出时每来一个分片都会整段重渲染，未变化的代码块可命中缓存，
-// 避免重复调用 shiki（尤其是长回复里包含多段代码时）。
+// 代码高亮：highlight.js（同步 API，没有异步初始化，因此不再需要就绪标记来触发重渲染）。
+// 语言别名与配色（github-dark）与 FilePreview 保持一致，两处代码块样式统一。
 const highlightCache = new Map()
 const HIGHLIGHT_CACHE_MAX = 200
 const HIGHLIGHT_CACHE_CODE_MAX = 20000
 
 function fallbackPre(code) {
-  return `<pre class="shiki" style="background: #0d1117; padding: 12px 16px; border-radius: 8px; overflow-x: auto; border: 1px solid #21262d;"><code style="color: #c9d1d9; font-family: 'Fira Code', Consolas, monospace; font-size: 13px;">${escapeHtml(code)}</code></pre>`
-}
-
-function ensureHighlighter() {
-  if (highlighter) return Promise.resolve(highlighter)
-  if (highlighterPromise) return highlighterPromise
-  highlighterPromise = createHighlighter({
-    // 代码块统一使用深色（亮黑）底色，因此高亮主题也用 dark 版本，
-    // 否则浅色主题的 token 颜色放到深底上会发灰、对比度不足。
-    themes: ['github-dark'],
-    langs: ['javascript', 'typescript', 'python', 'java', 'cpp', 'c', 'go', 'rust', 'html', 'css', 'json', 'yaml', 'markdown', 'bash', 'shell', 'sql', 'xml', 'vue', 'jsx', 'tsx', 'text']
-  })
-    .then((h) => {
-      highlighter = h
-      highlightState.ready = true
-      return h
-    })
-    .catch((e) => {
-      console.error('Shiki 初始化失败:', e)
-      highlighterPromise = null
-      return null
-    })
-  return highlighterPromise
+  return `<pre class="hljs" style="background: #0d1117; padding: 12px 16px; border-radius: 8px; overflow-x: auto; border: 1px solid #21262d;"><code style="color: #c9d1d9; font-family: 'Fira Code', Consolas, monospace; font-size: 13px;">${escapeHtml(code)}</code></pre>`
 }
 
 function highlightCode(code, lang) {
-  if (!highlighter) {
-    return fallbackPre(code)
-  }
-
-  const normalizedLang = lang ? lang.toLowerCase() : 'text'
+  const normalizedLang = lang ? String(lang).toLowerCase() : ''
   const mappedLang = langAliases[normalizedLang] || normalizedLang
-
-  const loadedLangs = highlighter.getLoadedLanguages()
-  const validLang = loadedLangs.includes(mappedLang) ? mappedLang : 'text'
+  // 未识别/未注册的语言交给 highlightAuto 自动识别，避免对未知语言抛错
+  const validLang = mappedLang && hljs.getLanguage(mappedLang) ? mappedLang : ''
 
   const cacheKey = validLang + '\u0000' + code
   const cacheable = code.length <= HIGHLIGHT_CACHE_CODE_MAX
@@ -273,10 +240,13 @@ function highlightCode(code, lang) {
   }
 
   try {
-    const html = highlighter.codeToHtml(code, {
-      lang: validLang,
-      theme: 'github-dark'
-    })
+    let inner = ''
+    if (validLang) {
+      inner = hljs.highlight(code, { language: validLang }).value
+    }
+    if (!inner) inner = hljs.highlightAuto(code).value
+    const langClass = validLang ? ` class="language-${escapeHtml(validLang)}"` : ''
+    const html = `<pre class="hljs"><code${langClass}>${inner}</code></pre>`
     if (cacheable) {
       if (highlightCache.size >= HIGHLIGHT_CACHE_MAX) {
         // 简易淘汰：清掉最早写入的一项
@@ -286,13 +256,13 @@ function highlightCode(code, lang) {
     }
     return html
   } catch (e) {
-    console.error('Shiki 高亮失败:', e, 'lang:', validLang)
+    console.error('代码高亮失败:', e, 'lang:', validLang)
     return fallbackPre(code)
   }
 }
 
 // 统一的 markdown 渲染器（代码块结构、外链处理由 markdownSetup 提供），
-// 代码高亮仍使用本组件持有的 shiki 实例
+// 代码高亮使用上面的 highlight.js 实现
 const renderer = createMarkdownRenderer({ highlight: highlightCode })
 
 // 代码块复制按钮的全局处理函数（幂等），FilePreview 也复用同一实现
@@ -522,9 +492,6 @@ export default {
       if (this.processExpanded) this.$nextTick(this.updateStuck)
     },
   },
-  mounted() {
-    ensureHighlighter()
-  },
   beforeDestroy() {
     if (this._scrollEl && this._onScroll) this._scrollEl.removeEventListener('scroll', this._onScroll)
   },
@@ -589,8 +556,6 @@ export default {
     },
     renderMarkdown(content) {
       if (!content) return ''
-      // 读取就绪标记建立渲染依赖：shiki 加载完成后自动重渲染，代码块不会停在兜底样式
-      void highlightState.ready
       return renderMarkdownHtml(content, renderer)
     },
     formatJson(obj) {
@@ -1180,12 +1145,12 @@ html[data-theme="dark"] .process-body .process-inline-content {
   font-size: 13px;
 }
 
-.thinking-text ::v-deep .code-block-wrapper .shiki {
+.thinking-text ::v-deep .code-block-wrapper .hljs {
   background: transparent !important;
   margin: 0;
 }
 
-.thinking-text ::v-deep .code-block-wrapper .shiki code {
+.thinking-text ::v-deep .code-block-wrapper .hljs code {
   font-family: 'Fira Code', 'Consolas', 'Monaco', monospace;
   font-size: 13px;
 }
@@ -1991,7 +1956,7 @@ html[data-theme="dark"] .approval-badge.status-rejected {
   color: #c9d1d9;
 }
 
-.message-text ::v-deep .code-block-wrapper .shiki {
+.message-text ::v-deep .code-block-wrapper .hljs {
   background: #0d1117 !important;
   padding: 12px 16px;
   margin: 0;
@@ -1999,7 +1964,7 @@ html[data-theme="dark"] .approval-badge.status-rejected {
   overflow-x: auto;
 }
 
-.message-text ::v-deep .code-block-wrapper .shiki code {
+.message-text ::v-deep .code-block-wrapper .hljs code {
   display: block;
   font-family: 'Fira Code', 'Consolas', 'Monaco', monospace;
   font-size: 13px;
@@ -2058,8 +2023,8 @@ html[data-theme="dark"] .approval-badge.status-rejected {
 }
 
 /* ========== 黑色主题：代码块 ========== */
-/* shiki 用 github-light 主题生成内联白色背景的 HTML，
-   dark 主题下需强制覆盖，否则代码块背景/边框仍为白色 */
+/* 代码块统一使用亮黑底色（highlight.js 的 github-dark 主题），
+   深色主题下把 pre 背景置为透明，让底色跟随外层容器，避免出现两层色差 */
 html[data-theme="dark"] .message-text ::v-deep .code-block-wrapper pre {
   background: transparent !important;
   border-color: #30363d !important;
@@ -2069,11 +2034,11 @@ html[data-theme="dark"] .message-text ::v-deep .code-block-wrapper pre code {
   color: #c9d1d9;
 }
 
-html[data-theme="dark"] .message-text ::v-deep .code-block-wrapper .shiki {
+html[data-theme="dark"] .message-text ::v-deep .code-block-wrapper .hljs {
   background: transparent !important;
 }
 
-html[data-theme="dark"] .message-text ::v-deep .code-block-wrapper .shiki code {
+html[data-theme="dark"] .message-text ::v-deep .code-block-wrapper .hljs code {
   color: #c9d1d9;
 }
 
@@ -2111,8 +2076,8 @@ html[data-theme="dark"] .thinking-text ::v-deep .code-block-wrapper pre code {
   color: #c9d1d9;
 }
 
-html[data-theme="dark"] .thinking-text ::v-deep .code-block-wrapper .shiki,
-html[data-theme="dark"] .thinking-text ::v-deep .code-block-wrapper .shiki code {
+html[data-theme="dark"] .thinking-text ::v-deep .code-block-wrapper .hljs,
+html[data-theme="dark"] .thinking-text ::v-deep .code-block-wrapper .hljs code {
   background: transparent !important;
   color: #c9d1d9;
 }

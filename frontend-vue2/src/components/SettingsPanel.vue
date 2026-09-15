@@ -517,7 +517,9 @@ export default {
     document.addEventListener('keydown', this.onDialogKeydown)
     this.$nextTick(() => {
       const active = this.$refs.dialogRef?.querySelector('.nav-item.active')
-      ;(active || this.$refs.dialogRef)?.focus()
+      // 优先把焦点交给当前选中项，没有选中项时退回弹窗容器本身
+      const target = active || this.$refs.dialogRef
+      if (target) target.focus()
     })
   },
   beforeDestroy() {
