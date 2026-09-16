@@ -405,6 +405,25 @@ class Database:
         self._ensure_unique_index(
             cursor, "users", "idx_users_employee_id", "employee_id"
         )
+        # 人员字段（knowledge 鉴权读取 account_status / organization_id 的前置迁移）。
+        # 幂等补列并带默认值；department_id 从既有 organization_id 回填，兼容旧库。
+        for col, col_def in (
+            ("display_name", "VARCHAR(127) DEFAULT ''"),
+            ("department_id", "VARCHAR(255) DEFAULT ''"),
+            ("department_name", "VARCHAR(255) DEFAULT ''"),
+            ("position", "VARCHAR(255) DEFAULT ''"),
+            ("mobile", "VARCHAR(64) DEFAULT ''"),
+            ("account_status", "VARCHAR(20) DEFAULT 'active'"),
+            ("personnel_source", "VARCHAR(255) DEFAULT ''"),
+        ):
+            self._ensure_column(cursor, "users", col, col_def)
+        try:
+            cursor.execute(
+                "UPDATE users SET department_id=organization_id "
+                "WHERE (department_id IS NULL OR department_id='')"
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"回填 users.department_id 失败（忽略）: {e}")
         # 空闲超时：最近一次接口调用时间（Unix 时间戳）。持久化到共享数据库，
         # 保证 uvicorn 多 worker（--workers > 1）下各进程读到一致的登录活跃状态。
         self._ensure_column(cursor, "users", "last_activity_at", "REAL")
@@ -1428,6 +1447,13 @@ class Database:
             bound_ip=row.get("bound_ip") or "",
             token_version=row.get("token_version") or 0,
             employee_id=row.get("employee_id") or "",
+            display_name=row.get("display_name") or "",
+            department_id=row.get("department_id") or row.get("organization_id") or "",
+            department_name=row.get("department_name") or "",
+            position=row.get("position") or "",
+            mobile=row.get("mobile") or "",
+            account_status=row.get("account_status") or "active",
+            personnel_source=row.get("personnel_source") or "",
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )
