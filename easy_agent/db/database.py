@@ -512,6 +512,17 @@ class Database:
             self._create_users_table(cursor)
             self._create_misc_tables(cursor, auto_inc)
             self._create_scheduled_task_tables(cursor)
+
+            # Narrow integration point: schema ownership stays in knowledge/.
+            from ..knowledge.schema import (
+                initialize_knowledge_schema,
+                validate_knowledge_schema_cursor,
+            )
+            if os.environ.get("AGENT_ENV", "").casefold() in {"prod", "production"}:
+                validate_knowledge_schema_cursor(self, cursor)
+            else:
+                initialize_knowledge_schema(self, cursor)
+
             conn.commit()
 
             # 修复 session_messages 表中缺失的消息行
@@ -605,6 +616,12 @@ class Database:
             cursor.execute(stmt)
         except Exception as e:
             logger.debug(f"唯一索引 {index_name} 未创建（通常为已存在）: {e}")
+
+    def _create_unique_index(
+        self, cursor, index_name: str, table_name: str, columns: str
+    ) -> None:
+        # knowledge/schema.py 沿用 sunya 的参数顺序（索引名在前）；复用本地实现。
+        self._ensure_unique_index(cursor, table_name, index_name, columns)
 
     def create_session(self, session_data: SessionModel) -> SessionModel:
         with self.get_connection() as conn:
