@@ -4,6 +4,8 @@ import logging
 import os
 import platform
 import sys
+import time
+import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
@@ -41,6 +43,10 @@ from .api import (
     skill_center_router,
     scheduled_tasks_router,
 )
+from .knowledge.api import router as knowledge_router
+from .knowledge.ops_api import router as knowledge_ops_router
+from .knowledge.lifecycle import startup_knowledge, shutdown_knowledge
+from .knowledge.operations_repository import KnowledgeOperationsRepository
 
 # Web Terminal 依赖 pty（POSIX 专用），Windows 不支持，故不加载该模块
 terminal_router = None
@@ -274,11 +280,29 @@ async def lifespan(app: FastAPI):
     else:
         logger.warning("⚠️ Agent 配置未加载")
 
+    # 仅当活动 YAML 含 knowledge: 段时才启动知识库：
+    # KnowledgeConfig.from_yaml 以「是否含 knowledge 键」判定应用配置，缺段时会
+    # 把整份应用配置按 strict extra=forbid 校验而报错 → 启动失败。缺段则记日志跳过。
+    knowledge_started = False
+    try:
+        import yaml
+
+        _raw = yaml.safe_load(Path(config_path).read_text(encoding="utf-8")) or {}
+        knowledge_started = isinstance(_raw, dict) and "knowledge" in _raw
+    except Exception as exc:
+        logger.warning(f"检测 knowledge 配置失败，按未启用处理: {exc}")
+    if knowledge_started:
+        await startup_knowledge(app, config_path)
+    else:
+        logger.info("ℹ️ 未配置 knowledge 段，跳过知识库启动")
+
     logger.info("=" * 60)
     logger.info("🚀 Easy Agent Web Service 启动完成")
     logger.info("=" * 60)
     yield
 
+    if knowledge_started:
+        await shutdown_knowledge(app)
     _shutdown_app(app)
 
 
@@ -351,6 +375,64 @@ async def log_requests(request: Request, call_next):
     logger.info(f"[请求] {request.method} {path} | IP: {client_ip}")
     return await call_next(request)
 
+
+# knowledge 可观测性中间件（additive）：只新增 request_id、X-Request-Id 响应头与
+# 日志；不修改响应体/状态码。仅当 knowledge 已配置且 audit.enabled 时，对
+# /agent/knowledge 请求写审计记录，写入失败只告警。
+@app.middleware("http")
+async def knowledge_observability(request: Request, call_next):
+    request_id = request.headers.get("X-Request-Id", "").strip()
+    if (
+        not request_id
+        or len(request_id) > 128
+        or "\r" in request_id
+        or "\n" in request_id
+    ):
+        request_id = str(uuid.uuid4())
+    request.state.request_id = request_id
+
+    started = time.perf_counter()
+    response = await call_next(request)
+    duration_ms = (time.perf_counter() - started) * 1000
+
+    response.headers["X-Request-Id"] = request_id
+    logger.info(
+        f"[响应] {request.method} {request.url.path} -> {response.status_code} "
+        f"| {duration_ms:.1f}ms | request_id={request_id}"
+    )
+
+    knowledge_config = getattr(request.app.state, "knowledge_config", None)
+    if (
+        knowledge_config is not None
+        and knowledge_config.audit.enabled
+        and request.url.path.startswith("/agent/knowledge")
+    ):
+        try:
+            db = getattr(request.app.state, "db", None)
+            if db is not None:
+                KnowledgeOperationsRepository(db).record_audit(
+                    request_id=request_id,
+                    actor_user_id=str(
+                        getattr(request.state, "actor_user_id", "") or "anonymous"
+                    ),
+                    actor_username=str(
+                        getattr(request.state, "actor_username", "") or "anonymous"
+                    ),
+                    action=f"http.{request.method.lower()}",
+                    object_type="http_request",
+                    object_id=request.url.path,
+                    outcome="success" if response.status_code < 400 else "failure",
+                    details={
+                        "status_code": response.status_code,
+                        "duration_ms": round(duration_ms, 1),
+                    },
+                    max_details_bytes=knowledge_config.audit.max_details_bytes,
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"知识库审计写入失败: {exc}")
+
+    return response
+
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     logger.error(f"全局异常: {str(exc)}", exc_info=True)
@@ -368,6 +450,8 @@ app.include_router(skill_center_router)
 if terminal_router is not None:
     app.include_router(terminal_router)
 app.include_router(scheduled_tasks_router)
+app.include_router(knowledge_router)
+app.include_router(knowledge_ops_router)
 
 
 @app.get("/agent/health", summary="健康检查", response_model=HealthResponse)
