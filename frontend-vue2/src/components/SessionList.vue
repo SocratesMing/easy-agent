@@ -169,6 +169,13 @@
           </svg>
           设置
         </button>
+        <button class="user-dropdown-item" @click="showKnowledge">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path>
+            <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path>
+          </svg>
+          知识库
+        </button>
         <button
           v-if="username === 'admin'"
           class="user-dropdown-item"
@@ -230,7 +237,7 @@ export default {
     default: false
   }
 },
-  emits: ['create-session', 'select-session', 'delete-session', 'rename-session', 'toggle-sidebar', 'show-assets', 'show-skill-center', 'show-scheduled-tasks', 'show-settings', 'show-user-management', 'logout', 'toggle-pin'],
+  emits: ['create-session', 'select-session', 'delete-session', 'rename-session', 'toggle-sidebar', 'show-assets', 'show-skill-center', 'show-scheduled-tasks', 'show-settings', 'show-user-management', 'show-knowledge', 'logout', 'toggle-pin'],
   data() {
     return {
       activeMenu: null,
@@ -367,6 +374,10 @@ export default {
     showUserManagement() {
       this.showUserMenu = false
       this.$emit('show-user-management')
+    },
+    showKnowledge() {
+      this.showUserMenu = false
+      this.$emit('show-knowledge')
     },
     handleLogout() {
       this.showUserMenu = false

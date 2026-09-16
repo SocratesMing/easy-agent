@@ -37,6 +37,7 @@
         @show-scheduled-tasks="handleShowScheduledTasks"
         @show-settings="showSettingsPanel = true"
         @show-user-management="showUserManagementPanel = true"
+        @show-knowledge="showKnowledge = true"
         @logout="handleLogout"
       />
       
@@ -52,6 +53,11 @@
         </svg>
       </button>
       
+      <KnowledgeWorkbench
+        v-if="showKnowledge"
+        @close="showKnowledge = false"
+      />
+
       <AssetsPanel v-if="showAssets" :visible="showAssets" @close="showAssets = false" />
 
       <SkillCenter v-if="showSkillCenter" @close="showSkillCenter = false" />
@@ -123,6 +129,7 @@ import AssetsPanel from './components/AssetsPanel.vue'
 import SkillCenter from './components/SkillCenter.vue'
 import ScheduledTasksPanel from './components/ScheduledTasksPanel.vue'
 import UserManagementPanel from './components/UserManagementPanel.vue'
+import KnowledgeWorkbench from './features/knowledge/KnowledgeWorkbench.vue'
 import Welcome from './components/Welcome.vue'
 import WorkspacePanel from './components/WorkspacePanel.vue'
 import SettingsPanel from './components/SettingsPanel.vue'
@@ -222,6 +229,7 @@ export default {
   components: {
     AssetsPanel,
     Chat,
+    KnowledgeWorkbench,
     ScheduledTasksPanel,
     SessionList,
     SettingsPanel,
@@ -281,6 +289,7 @@ export default {
       showScheduledTasks: false,
       showSettingsPanel: false,
       showUserManagementPanel: false,
+      showKnowledge: false,
       showWelcome: false,
       // 免密登录开关（模板用：未授权提示的文案按开关区分）
       passwordlessEnabled: PASSWORDLESS_LOGIN_ENABLED,
