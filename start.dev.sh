@@ -102,9 +102,12 @@ echo "  停止: Ctrl+C（同时关闭前后端）"
 echo "============================================================"
 
 # 后端：后台启动（热重载），记录 PID
+# --timeout-graceful-shutdown: uvicorn 默认无限等待现有连接结束，而本项目存在
+# SSE 长连接与终端 WebSocket，不设上限时 Ctrl+C 会一直停在 "Shutting down"。
 uv run python -m uvicorn easy_agent.app:app \
     --host "$HOST" \
     --port "$PORT" \
+    --timeout-graceful-shutdown 5 \
     --reload &
 BACKEND_PID=$!
 

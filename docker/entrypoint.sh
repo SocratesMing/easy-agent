@@ -65,8 +65,12 @@ echo "==> 前端运行期配置: API_BASE_URL=${RUNTIME_API_URL}  AGENT_ENV=${MO
 echo "==> 启动 Easy Agent (端口 8000)..."
 echo "============================================================"
 
+# --timeout-graceful-shutdown: `docker stop` 默认 10s 后 SIGKILL，
+# 而 uvicorn 默认无限等待现有连接（SSE 流式输出、终端 WebSocket），
+# 不设上限会导致容器每次都走到强杀、来不及优雅收尾。
 exec python -m uvicorn easy_agent.app:app \
     --host 0.0.0.0 \
     --port 8000 \
     --log-level info \
-    --no-access-log
+    --no-access-log \
+    --timeout-graceful-shutdown "${EASY_GRACEFUL_SHUTDOWN_SECONDS:-5}"

@@ -11,6 +11,14 @@ dependencies = [
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.34.0",
     "pymysql>=1.1.0",
+    # 连接池：MySQL 反解客户端 IP（skip_name_resolve=OFF）时新建连接约 130ms，
+    # 复用连接可把每次查询的固定开销降到 ~1ms
+    "DBUtils>=3.0.0",
+    # hbaseqa 业务（外汇行情问数）的 Thrift 客户端。
+    # HBase 有两个互不兼容的 Thrift 服务：happybase 走 Thrift1，本业务走 Thrift2
+    # （`hbase thrift2 start`），所以直接用 thriftpy2 在运行时加载 idl/hbase_thrift2.thrift，
+    # 不依赖 happybase。
+    "thriftpy2>=0.5.0",
 ]
 
 [dependency-groups]

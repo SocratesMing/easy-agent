@@ -17,6 +17,20 @@
       "headers": {
         "Authorization": "Bearer <在设置页生成的 Market MCP API Key>"
       }
+    },
+    "dataqa": {
+      "transport": "streamable_http",
+      "url": "http://127.0.0.1:8100/mcp/dataqa/",
+      "headers": {
+        "Authorization": "Bearer <在设置页生成的 DataQA MCP API Key>"
+      }
+    },
+    "hbaseqa": {
+      "transport": "streamable_http",
+      "url": "http://127.0.0.1:8100/mcp/hbaseqa/",
+      "headers": {
+        "Authorization": "Bearer <在设置页生成的 HBaseQA MCP API Key>"
+      }
     }
   }
 }

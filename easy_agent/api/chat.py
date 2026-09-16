@@ -22,6 +22,7 @@ from ..services import (
     unregister_stream_task,
     cancel_stream_task,
 )
+from ..services.mcp import _unpack_error
 from ..services.streaming import format_sse
 from ..utils import parse_file_content, SessionLogger, get_owned_session
 from .sessions import generate_workspace_name
@@ -166,9 +167,13 @@ async def _detached_event_stream(gen, session_id: str, sid: str):
             logger.info(f"[{sid}] 后台流式任务被取消（/cancel）")
             raise
         except Exception as e:
-            logger.error(f"[{sid}] 后台流式任务异常: {type(e).__name__}: {e}")
+            # MCP 传输异常是 anyio 的 ExceptionGroup，str(e) 只有
+            # "unhandled errors in a TaskGroup (1 sub-exception)" —— 真正原因
+            # （如 httpx.ReadTimeout / WinError 10053）只藏在子异常里，必须展开。
+            # exc_info 也要留：日志里有完整 traceback 才能定位到 30s/300s 读超时。
+            logger.exception(f"[{sid}] 后台流式任务异常")
             hub.broadcast(
-                format_sse({"type": "error", "content": f"处理失败: {e}"})
+                format_sse({"type": "error", "content": f"处理失败: {_unpack_error(e)}"})
             )
         finally:
             unregister_stream_task(session_id, bg)

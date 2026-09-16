@@ -169,6 +169,7 @@ def test_mcp_market_adds_global_server_to_user_config(tmp_path, monkeypatch):
 
 def test_mcp_api_key_generation_uses_current_user(monkeypatch):
     import easy_agent.services.mcp_api_keys as keys_service
+    from easy_agent.api import settings as settings_api
     from easy_agent.api.settings import IssueMcpApiKeyRequest
 
     captured = {}
@@ -179,12 +180,19 @@ def test_mcp_api_key_generation_uses_current_user(monkeypatch):
         return "generated-api-key"
 
     monkeypatch.setattr(keys_service, "issue_api_key", fake_issue)
+    # 隔离"回写到用户 mcp.json"的逻辑，该用例只验证身份传递
+    monkeypatch.setattr(settings_api, "_sync_business_key", lambda u, b, k: 0)
 
     result = asyncio.run(
         generate_mcp_api_key(IssueMcpApiKeyRequest(business="market"), "testuser")
     )
 
-    assert result == {"status": "ok", "api_key": "generated-api-key", "business": "market"}
+    assert result == {
+        "status": "ok",
+        "api_key": "generated-api-key",
+        "business": "market",
+        "synced_servers": 0,
+    }
     assert captured["username"] == "testuser"
     assert captured["business"] == "market"
 

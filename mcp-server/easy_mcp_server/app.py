@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib
 import logging
+import os
 import pkgutil
+import time
 from contextlib import AsyncExitStack, asynccontextmanager
 from typing import Iterable
-import os
 
 from fastapi import FastAPI
 from mcp.server.fastmcp import FastMCP
@@ -17,6 +19,18 @@ from . import businesses
 from .auth import BearerApiKeyMiddleware, MCP_PREFIX, ApiKeyVerifier
 
 logger = logging.getLogger("easy-mcp-server")
+
+DEFAULT_SHUTDOWN_TIMEOUT_SECONDS = 5
+
+
+def shutdown_timeout_seconds() -> int:
+    """关闭时等待进行中请求的上限（MCP_SHUTDOWN_TIMEOUT，缺省 5 秒）。
+
+    uvicorn 的 `--timeout-graceful-shutdown` 只覆盖连接与后台任务，
+    **不覆盖 lifespan 的收尾**，所以这里必须自己兜一层，否则 Ctrl+C 会卡住。
+    """
+    raw = os.environ.get("MCP_SHUTDOWN_TIMEOUT", "").strip()
+    return int(raw) if raw.isdigit() else DEFAULT_SHUTDOWN_TIMEOUT_SECONDS
 
 
 def discover_businesses() -> list[tuple[str, FastMCP]]:
@@ -84,10 +98,32 @@ def create_app(verifier: ApiKeyVerifier, businesses_override=None) -> FastAPI:
         # 关键：mount() 不会执行子应用的 lifespan，而 MCP session manager 必须
         # 在 lifespan 中启动（否则每个请求都会报 "Task group is not initialized"）。
         # 这里手动驱动每个业务的 session manager。
-        async with AsyncExitStack() as stack:
-            for _, mcp in items:
-                await stack.enter_async_context(mcp.session_manager.run())
+        #
+        # 不用 `async with AsyncExitStack()`：session manager 退出时会等待进行中的
+        # 请求（例如一次仍在跑的 HBase scan），业务代码一慢就把 lifespan 卡住，
+        # 表现为 Ctrl+C 后一直停在 "Shutting down"。改成显式 aclose + 超时兜底。
+        stack = AsyncExitStack()
+        for _, mcp in items:
+            await stack.enter_async_context(mcp.session_manager.run())
+        try:
             yield
+        finally:
+            # 阶段② 打点：uvicorn 的 --timeout-graceful-shutdown 覆盖不到这里，
+            # 卡在哪一步只能靠日志区分。
+            timeout = shutdown_timeout_seconds()
+            started = time.perf_counter()
+            logger.info("[mcp-server] 开始应用收尾（阶段②）...")
+            try:
+                await asyncio.wait_for(stack.aclose(), timeout=timeout)
+                logger.info(
+                    f"[mcp-server] 会话管理器已关闭"
+                    f"（耗时 {time.perf_counter() - started:.2f}s）"
+                )
+            except (asyncio.TimeoutError, TimeoutError):
+                # 超时说明有请求没退干净；此时进程本来就要结束，直接放行
+                logger.warning(
+                    f"[mcp-server] 会话管理器关闭超时（>{timeout}s），已放弃等待"
+                )
 
     app = FastAPI(title="Easy MCP Server", version="0.1.0", lifespan=lifespan)
     app.add_middleware(BearerApiKeyMiddleware, verifier=verifier)

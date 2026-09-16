@@ -17,7 +17,9 @@ from ..db import get_database
 logger = logging.getLogger(__name__)
 
 # 与 mcp-server/easy_mcp_server/businesses/ 下的业务包一一对应（包名即 URL 后缀）
-SUPPORTED_BUSINESSES: tuple[str, ...] = ("market",)
+# 前端设置页的业务下拉框、Key 签发白名单、自动注入 Key 的识别逻辑都由这个元组驱动，
+# 新增 mcp-server 业务包后必须同步加到这里，否则无法签发 Key。
+SUPPORTED_BUSINESSES: tuple[str, ...] = ("market", "dataqa", "hbaseqa")
 
 _KEY_PREFIX = "mcp_"  # 便于识别与日志脱敏
 

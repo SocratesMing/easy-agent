@@ -9,7 +9,7 @@ import uvicorn
 from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
 
-from easy_mcp_server.app import create_app, discover_businesses
+from easy_mcp_server.app import create_app, discover_businesses, shutdown_timeout_seconds
 
 from support import build_hello
 
@@ -17,6 +17,16 @@ from support import build_hello
 def test_discover_businesses_finds_market():
     names = [name for name, _ in discover_businesses()]
     assert "market" in names
+
+
+def test_shutdown_timeout_has_safe_default(monkeypatch):
+    """lifespan 收尾必须有上限，否则 Ctrl+C 会一直停在 "Shutting down"。"""
+    monkeypatch.setenv("MCP_SHUTDOWN_TIMEOUT", "")
+    assert shutdown_timeout_seconds() == 5
+    monkeypatch.setenv("MCP_SHUTDOWN_TIMEOUT", "1")
+    assert shutdown_timeout_seconds() == 1
+    monkeypatch.setenv("MCP_SHUTDOWN_TIMEOUT", "abc")
+    assert shutdown_timeout_seconds() == 5
 
 
 async def test_mount_url_with_trailing_slash(server):

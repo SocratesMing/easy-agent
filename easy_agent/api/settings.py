@@ -1,7 +1,11 @@
 """设置相关 API：记忆读写、系统提示词、Skills 列表、MCP 列表、模型列表"""
 
+import contextlib
 import json
 import logging
+import os
+import re
+import tempfile
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -208,6 +212,55 @@ async def get_models():
 # ── MCP ───────────────────────────────────────────────────────────────
 
 
+def _resolve_easy_business(server_config: dict[str, Any]) -> str | None:
+    """判断该 server 是否为 easy-agent 自家的 MCP 业务，是则返回业务名。
+
+    识别方式（按优先级）：
+    1. 市场条目里显式标注 ``"business": "dataqa"``
+    2. 从 URL 推断：``.../mcp/<业务>/``
+    """
+    from ..services.mcp_api_keys import is_supported_business
+
+    declared = server_config.get("business")
+    if isinstance(declared, str) and is_supported_business(declared):
+        return declared
+
+    url = str(server_config.get("url") or "")
+    match = re.search(r"/mcp/([^/]+)/?$", url)
+    if match and is_supported_business(match.group(1)):
+        return match.group(1)
+    return None
+
+
+def _needs_key_injection(server_config: dict[str, Any]) -> bool:
+    """Authorization 缺失或仍是占位符时才注入，避免覆盖用户自己填的 Key。"""
+    headers = server_config.get("headers") or {}
+    token = str(headers.get("Authorization") or "").replace("Bearer", "").strip()
+    return (not token) or token.startswith("<") or token.endswith(">")
+
+
+def _maybe_inject_api_key(
+    server_config: dict[str, Any], username: str
+) -> tuple[dict[str, Any], str | None]:
+    """自家业务且缺 Key 时自动签发，返回 (配置, 已注入的业务名或 None)。
+
+    Key 明文只写进用户自己的 mcp.json，不落库也不回显给前端——用户
+    不需要感知它的存在，后续由 MCP 子项目按 sha256 校验。
+    """
+    from ..services.mcp_api_keys import issue_api_key
+
+    business = _resolve_easy_business(server_config)
+    if not business or not _needs_key_injection(server_config):
+        return server_config, None
+
+    api_key = issue_api_key(username, business)
+    injected = dict(server_config)
+    headers = dict(injected.get("headers") or {})
+    headers["Authorization"] = f"Bearer {api_key}"
+    injected["headers"] = headers
+    return injected, business
+
+
 @router.get("/mcp", summary="获取当前用户的 MCP 服务配置")
 async def get_mcp_servers(
     username: Annotated[str, Depends(get_current_username)],
@@ -314,12 +367,44 @@ async def get_mcp_api_keys(
     }
 
 
+def _sync_business_key(username: str, business: str, api_key: str) -> int:
+    """把用户 mcp.json 中指向该业务的 server 的 Authorization 换成新 Key。
+
+    签发是"轮换"语义：旧 Key 在库里被覆盖后立即失效。若不回写用户配置，
+    他那些已经配好的 MCP（含后端自动注入的）会静默 401，且很难排查。
+    返回被更新的 server 数量。
+    """
+    _cfg = get_agent_config()
+    config: Config | None = _cfg["config"] if _cfg and _cfg.get("config") else None
+
+    raw = _read_user_mcp_raw(username, config)
+    servers: dict[str, Any] = raw.get("servers", {})
+    updated = 0
+    for server_config in servers.values():
+        if _resolve_easy_business(server_config) != business:
+            continue
+        headers = dict(server_config.get("headers") or {})
+        headers["Authorization"] = f"Bearer {api_key}"
+        server_config["headers"] = headers
+        updated += 1
+
+    if updated:
+        _write_user_mcp_raw(username, config, raw)
+        invalidate_mcp_cache(username)
+        invalidate_user_agents(username)
+    return updated
+
+
 @router.post("/mcp/api-key", summary="为当前用户生成指定业务的 MCP API Key")
 async def generate_mcp_api_key(
     request: IssueMcpApiKeyRequest,
     username: Annotated[str, Depends(get_current_username)],
 ):
-    """生成新的 API Key；数据库仅保存哈希，明文只返回一次。重签后旧 Key 失效。"""
+    """生成新的 API Key（轮换语义）；数据库仅保存哈希，明文只返回一次。
+
+    重签后旧 Key 立即失效，因此会顺手把用户 mcp.json 里该业务的
+    Authorization 同步为新 Key，避免已配置的 MCP 静默 401。
+    """
     from ..services.mcp_api_keys import issue_api_key, is_supported_business
 
     if not is_supported_business(request.business):
@@ -334,8 +419,27 @@ async def generate_mcp_api_key(
             detail="生成 MCP API Key 失败，请检查数据库配置",
         )
 
-    logger.info(f"生成 MCP API Key 成功 | 用户: {username} | 业务: {request.business}")
-    return {"status": "ok", "api_key": api_key, "business": request.business}
+    # Key 已经生效，回写失败不应把整个请求判为失败（否则用户以为没签发，
+    # 实际旧 Key 已失效，状态更难判断），只告警并回报同步数量。
+    synced = 0
+    try:
+        synced = _sync_business_key(username, request.business, api_key)
+    except Exception as e:
+        logger.warning(
+            f"回写新 Key 到用户 mcp.json 失败 | 用户: {username} | "
+            f"业务: {request.business} | {e}"
+        )
+
+    logger.info(
+        f"生成 MCP API Key 成功 | 用户: {username} | 业务: {request.business} | "
+        f"同步 server: {synced} 个"
+    )
+    return {
+        "status": "ok",
+        "api_key": api_key,
+        "business": request.business,
+        "synced_servers": synced,
+    }
 
 
 @router.post("/mcp/market/add", summary="从公共市场添加 MCP 到个人配置")
@@ -343,7 +447,11 @@ async def add_mcp_from_market(
     request: AddMarketMcpRequest,
     username: Annotated[str, Depends(get_current_username)],
 ):
-    """把市场中的全局 server 配置复制到当前用户 mcp.json。"""
+    """把市场中的全局 server 配置复制到当前用户 mcp.json。
+
+    若该服务是 easy-agent 自家的 MCP 业务（如 dataqa），会现场为当前用户
+    签发 API Key 并写入配置，用户无需手动生成与粘贴。
+    """
     _cfg = get_agent_config()
     config: Config | None = _cfg["config"] if _cfg and _cfg.get("config") else None
     market_config = load_mcp_config(None)
@@ -356,6 +464,14 @@ async def add_mcp_from_market(
     if request.name in existing:
         raise HTTPException(status_code=409, detail=f"MCP 服务已添加: {request.name}")
 
+    try:
+        server_config, injected_business = _maybe_inject_api_key(server_config, username)
+    except Exception as e:
+        logger.warning(f"市场添加时签发 MCP API Key 失败 | 用户: {username} | {e}")
+        raise HTTPException(
+            status_code=503, detail="生成 MCP API Key 失败，请检查数据库配置"
+        )
+
     existing[request.name] = dict(server_config)
     raw["servers"] = existing
     user_mcp_path = _write_user_mcp_raw(username, config, raw)
@@ -363,6 +479,7 @@ async def add_mcp_from_market(
     evicted = invalidate_user_agents(username)
     logger.info(
         f"从 MCP 市场添加 | 用户: {username} | 服务: {request.name} | "
+        f"自动签发 Key: {injected_business or '-'} | "
         f"路径: {user_mcp_path} | 失效 Agent: {evicted} 个"
     )
 
@@ -372,6 +489,7 @@ async def add_mcp_from_market(
         "servers": list(existing.keys()),
         "path": str(user_mcp_path),
         "agents_invalidated": evicted,
+        "api_key_injected": bool(injected_business),
     }
 
 
@@ -489,12 +607,34 @@ def _merge_mcp_env(existing: dict[str, Any], incoming: dict[str, Any]) -> dict[s
 
 
 def _write_user_mcp_raw(username: str, config: Config | None, payload: dict[str, Any]) -> Path:
-    """写入用户专属 mcp.json，返回文件路径。"""
+    """写入用户专属 mcp.json，返回文件路径。
+
+    原子写：先写同目录下的临时文件，fsync 落盘后再用 ``os.replace`` 覆盖目标。
+
+    直接 ``write_text`` 会先截断目标文件，若中途失败（进程被杀、磁盘写满、
+    序列化异常）就会留下半截 JSON，导致该用户所有 MCP 配置失效且无法回滚。
+    ``os.replace`` 在同一分区上是原子的：读方要么看到旧内容，要么看到新内容。
+    """
     user_mcp_path = Config.get_user_mcp_path(username, config)
     user_mcp_path.parent.mkdir(parents=True, exist_ok=True)
-    user_mcp_path.write_text(
-        json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8"
+    content = json.dumps(payload, indent=2, ensure_ascii=False)
+
+    # 临时文件必须与目标同目录，否则 os.replace 可能跨分区而失去原子性
+    fd, tmp_name = tempfile.mkstemp(
+        dir=str(user_mcp_path.parent),
+        prefix=f".{user_mcp_path.name}.",
+        suffix=".tmp",
     )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_name, user_mcp_path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp_name)
+        raise
     return user_mcp_path
 
 
@@ -560,12 +700,27 @@ async def add_mcp_server(
             detail=f"MCP 服务已存在: {', '.join(duplicates)}（请先删除或改名）",
         )
 
+    # 自家业务且 Authorization 仍是占位符时，现场签发 Key 写入
+    injected: list[str] = []
+    for name, server_config in new_servers.items():
+        try:
+            resolved, business = _maybe_inject_api_key(server_config, username)
+        except Exception as e:
+            logger.warning(f"添加 MCP 时签发 API Key 失败 | 用户: {username} | {e}")
+            raise HTTPException(
+                status_code=503, detail="生成 MCP API Key 失败，请检查数据库配置"
+            )
+        new_servers[name] = resolved
+        if business:
+            injected.append(name)
+
     # 合并写入
     existing.update(new_servers)
     raw["servers"] = existing
     user_mcp_path = _write_user_mcp_raw(username, config, raw)
     logger.info(
         f"添加 MCP | 用户: {username} | 新增: {list(new_servers.keys())} | "
+        f"自动签发 Key: {injected or '-'} | "
         f"总数: {len(existing)} | 路径: {user_mcp_path}"
     )
 
@@ -600,6 +755,7 @@ async def add_mcp_server(
         "servers": list(existing.keys()),
         "path": str(user_mcp_path),
         "agents_invalidated": evicted,
+        "api_key_injected": injected,
         "server_status": server_status,
     }
 

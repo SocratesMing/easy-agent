@@ -131,9 +131,11 @@ echo "  停止: Ctrl+C"
 echo "============================================================"
 
 # 使用 uv run 启动，确保使用项目虚拟环境
+# --timeout-graceful-shutdown: 容器/运维 stop 时不要无限等 SSE 长连接与终端 WebSocket
 exec uv run python -m uvicorn easy_agent.app:app \
     --host "$HOST" \
     --port "$PORT" \
     --workers "$WORKERS" \
     --log-level info \
-    --no-access-log
+    --no-access-log \
+    --timeout-graceful-shutdown "${EASY_GRACEFUL_SHUTDOWN_SECONDS:-5}"

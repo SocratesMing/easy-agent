@@ -142,6 +142,12 @@ def _start_scheduler() -> None:
 
 def _shutdown_app(app) -> None:
     """关闭定时任务调度器与数据库连接。"""
+    # ── 阶段②：lifespan 收尾 ──────────────────────────────────────────────
+    # 这个阶段**不受** uvicorn 的 --timeout-graceful-shutdown 约束（那只覆盖
+    # 连接与后台任务），所以在这里打点：Ctrl+C 后卡在哪一步一眼可见。
+    close_started = datetime.now()
+    logger.info("[关闭] 开始应用收尾（阶段②）...")
+
     try:
         shutdown_scheduler()
         logger.info("[关闭] 定时任务调度器已关闭")
@@ -151,7 +157,9 @@ def _shutdown_app(app) -> None:
     if hasattr(app.state, "db") and app.state.db:
         app.state.db.close()
 
-    logger.info("[关闭] 👋 服务已关闭")
+    logger.info(
+        f"[关闭] 👋 服务已关闭（收尾耗时 {(datetime.now() - close_started).total_seconds():.2f}s）"
+    )
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):

@@ -42,6 +42,7 @@ workspace/
 *~
 
 .pytest_cache/
+.pytest_tmp/
 .coverage
 htmlcov/
 .qoder
@@ -66,3 +67,7 @@ offline_deps/
 # IDE 智能体工作目录（含跨会话记忆，勿提交）
 .codebuddy/
 .codebuddy/
+
+# 测试运行时残留（环境变量未展开产生的字面量路径，如 ${TEST_DB_PATH}）
+${TEST_*}/
+${TEST_*}
