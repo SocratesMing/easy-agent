@@ -19,6 +19,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from langchain_core.messages import HumanMessage
+from starlette.concurrency import run_in_threadpool
 
 from .config import AgentConfig
 from .db import init_database
@@ -377,7 +378,7 @@ async def log_requests(request: Request, call_next):
 
 
 # knowledge 可观测性中间件（additive）：只新增 request_id、X-Request-Id 响应头与
-# 日志；不修改响应体/状态码。仅当 knowledge 已配置且 audit.enabled 时，对
+# 日志；不修改响应体/状态码。仅当 knowledge 已启用且 audit.enabled 时，对
 # /agent/knowledge 请求写审计记录，写入失败只告警。
 @app.middleware("http")
 async def knowledge_observability(request: Request, call_next):
@@ -404,13 +405,15 @@ async def knowledge_observability(request: Request, call_next):
     knowledge_config = getattr(request.app.state, "knowledge_config", None)
     if (
         knowledge_config is not None
+        and knowledge_config.enabled
         and knowledge_config.audit.enabled
         and request.url.path.startswith("/agent/knowledge")
     ):
         try:
             db = getattr(request.app.state, "db", None)
             if db is not None:
-                KnowledgeOperationsRepository(db).record_audit(
+                await run_in_threadpool(
+                    KnowledgeOperationsRepository(db).record_audit,
                     request_id=request_id,
                     actor_user_id=str(
                         getattr(request.state, "actor_user_id", "") or "anonymous"
