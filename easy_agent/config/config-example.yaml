@@ -260,7 +260,7 @@ knowledge:
     system_code: "${RAGFLOW_SYS_CODE:-EASYAGENT}"
     aaas_retrieval:
       enabled: true
-      auth_token: "${RAGFLOW_AAAS_AUTH_TOKEN:-aaas-test-token}"
+      auth_token: "${RAGFLOW_AAAS_AUTH_TOKEN:-}"
       request_system: EASYAGENT
       response_system: AIGCQA
       bank_number: "001"
@@ -477,7 +477,7 @@ knowledge:
   # In-bank deployments should mount NAS at the OS/container layer and only replace
   # this root through deployment configuration. NAS credentials never belong here.
   original_storage:
-    enabled: "${KNOWLEDGE_ORIGINAL_STORAGE_ENABLED:-true}"
+    enabled: "${KNOWLEDGE_ORIGINAL_STORAGE_ENABLED:-false}"
     required_for_upload: true
     driver: "${KNOWLEDGE_ORIGINAL_STORAGE_DRIVER:-local_fs}"
     filesystem:

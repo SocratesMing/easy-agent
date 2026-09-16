@@ -21,10 +21,14 @@ async def startup_knowledge(app: FastAPI, config_path: str | Path) -> None:
         config = KnowledgeConfig.load(config_path)
         app.state.knowledge_config = config
         app.state.ragflow_client = RagflowClient(config) if config.enabled else None
-        app.state.original_store = create_original_store(config)
+        # 禁用态零副作用：仅在启用时创建原文存储并做启动探测（迁移源无条件执行，
+        # 会 mkdir 原文目录、甚至因不可写而中止启动；此处为满足“禁用态不影响运行”的
+        # 有意偏离）。
+        app.state.original_store = create_original_store(config) if config.enabled else None
         store = app.state.original_store
         if (
-            config.original_storage.enabled
+            config.enabled
+            and config.original_storage.enabled
             and config.original_storage.health.probe_on_startup
             and (store is None or not store.health())
         ):
