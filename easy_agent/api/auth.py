@@ -21,6 +21,7 @@ from ..models.api import (
     UpdateUserProfileRequest,
     LoginRequest,
     RegisterRequest,
+    PasswordlessLoginRequest,
     ResetPasswordRequest,
     AuthResponse,
 )
@@ -31,7 +32,7 @@ from ..utils.auth import decode_access_token
 logger = logging.getLogger(__name__)
 
 router = APIRouter(
-    prefix="/api/auth",
+    prefix="/agent/auth",
     tags=["Authentication"],
 )
 
@@ -68,24 +69,11 @@ def _token_never_expires() -> bool:
     return False
 
 
-def _self_registration_enabled() -> bool:
-    """Return the explicit personnel provisioning policy, failing closed."""
-
-    try:
-        agent_config = get_agent_config()
-        config = agent_config.get("config") if agent_config else None
-        personnel = getattr(config, "personnel", None)
-        return bool(getattr(personnel, "self_registration_enabled", False))
-    except Exception as exc:
-        logger.warning("读取自助注册配置失败，已按关闭处理: %s", exc)
-        return False
-
-
-def _get_max_input_tokens() -> int:
+def _get_context_length() -> int:
     _cfg = get_agent_config()
     if _cfg and _cfg.get("config"):
-        return _cfg["config"].llm.max_input_tokens
-    return 200000
+        return _cfg["config"].llm.context_length
+    return 1_000_000
 
 
 def get_client_ip(request: Request) -> str:
@@ -109,30 +97,27 @@ async def register(
     http_request: Request,
     db: Annotated[Database, Depends(get_database)],
 ):
-    if not _self_registration_enabled():
-        raise HTTPException(
-            status_code=403,
-            detail="当前环境已关闭自助注册，请联系管理员创建账号",
-        )
+    cfg = get_agent_config()
+    policy = getattr(cfg.get("config"), "personnel", None) if cfg else None
+    if not getattr(policy, "self_registration_enabled", False):
+        raise HTTPException(status_code=403, detail="当前环境已关闭自助注册，请联系管理员创建账号")
+    # 工号全局唯一：先显式校验以便返回精确提示（register_user 内部还有一层兜底）
+    employee_id = request.employee_id.strip()
+    if db.get_user_by_employee_id(employee_id):
+        raise HTTPException(status_code=400, detail="工号已存在")
 
     # 注册不再绑定 IP（单点登录：登录不限制 IP，但同账号新登录会踢掉旧登录）
     user = db.register_user(
         username=request.username,
         password=request.password,
-        organization_id=request.organization_id,
-        email=request.email,
+        employee_id=employee_id,
     )
 
     if not user:
         raise HTTPException(status_code=400, detail="用户名已存在")
 
     # 注册即登录：递增 token 版本号并签发带 v 的 token
-    # The status predicate is part of the same UPDATE that increments the
-    # token version.  This prevents a concurrent admin disable from racing
-    # between the status check above and token issuance.
-    new_version = db.increment_user_token_version(
-        user.username, require_active=True
-    )
+    new_version = db.increment_user_token_version(user.username, require_active=True)
     if new_version <= 0:
         raise HTTPException(status_code=403, detail="账号已停用，请联系管理员")
     access_token = create_access_token(
@@ -144,7 +129,7 @@ async def register(
     # 注册即登录，同样缓存登录时间与活跃 IP
     _login_time_cache[user.username] = datetime.now()
     _active_login_ip[user.username] = get_client_ip(http_request)
-    touch_user_activity(user.username)
+    touch_user_activity(db, user.username)
 
     try:
         user_workspace = Config.get_user_workspace_dir(user.username)
@@ -159,17 +144,17 @@ async def register(
             f"[用户] 创建用户workspace失败 | 用户: {user.username} | 错误: {e}"
         )
 
-    max_input_tokens = _get_max_input_tokens()
+    context_length = _get_context_length()
 
     logger.info(
-        f"[用户] 注册成功 | 用户名: {user.username} | 机构ID: {user.organization_id} | 版本: {new_version}"
+        f"[用户] 注册成功 | 用户名: {user.username} | 工号: {user.employee_id} | 版本: {new_version}"
     )
 
     return AuthResponse(
         access_token=access_token,
         token_type="bearer",
         username=user.username,
-        max_input_tokens=max_input_tokens,
+        context_length=context_length,
     )
 
 
@@ -183,14 +168,14 @@ async def login(
     http_request: Request,
     db: Annotated[Database, Depends(get_database)],
 ):
-    user = db.get_user_by_username(request.username)
+    # 登录标识支持「用户名或工号」：工号全局唯一，无需额外消歧
+    user = db.get_user_by_account(request.username)
     if not user:
         raise HTTPException(status_code=401, detail="用户名或密码错误")
 
     user = db.verify_user_password(request.username, request.password)
     if not user:
         raise HTTPException(status_code=401, detail="用户名或密码错误")
-
     if user.account_status == "disabled":
         raise HTTPException(status_code=403, detail="账号已停用，请联系管理员")
 
@@ -198,11 +183,7 @@ async def login(
 
     # 单点登录：递增 token 版本号，使该用户此前在其他设备/IP 的登录立即失效
     prev_ip = _active_login_ip.get(user.username)
-    # Keep the active-account predicate in the same statement as the version
-    # increment so a concurrent admin disable cannot race token issuance.
-    new_version = db.increment_user_token_version(
-        user.username, require_active=True
-    )
+    new_version = db.increment_user_token_version(user.username, require_active=True)
     if new_version <= 0:
         raise HTTPException(status_code=403, detail="账号已停用，请联系管理员")
     access_token = create_access_token(
@@ -214,9 +195,9 @@ async def login(
     # 缓存登录时间（供登出接口打印）与当前活跃 IP（供下次登录判断异地踢人）
     _login_time_cache[user.username] = datetime.now()
     _active_login_ip[user.username] = client_ip
-    touch_user_activity(user.username)
+    touch_user_activity(db, user.username)
 
-    max_input_tokens = _get_max_input_tokens()
+    context_length = _get_context_length()
 
     if prev_ip and prev_ip != client_ip:
         logger.info(
@@ -230,7 +211,91 @@ async def login(
         access_token=access_token,
         token_type="bearer",
         username=user.username,
-        max_input_tokens=max_input_tokens,
+        context_length=context_length,
+    )
+
+
+@router.post(
+    "/login-passwordless",
+    response_model=AuthResponse,
+    summary="免密登录（用户名 + 用户ID，用户不存在时自动注册并登录）",
+)
+async def login_passwordless(
+    request: PasswordlessLoginRequest,
+    http_request: Request,
+    db: Annotated[Database, Depends(get_database)],
+):
+    """免密登录：用户名已存在则直接登录（忽略 user_id）；不存在则自动注册后登录。
+
+    新用户的 user_id 为 0/空时自动生成唯一 ID，否则使用传入值；
+    传入的 user_id 已被其他用户占用时返回 400。供外部系统通过 URL
+    携带用户名与用户ID 直登使用。
+    """
+    cfg = get_agent_config()
+    policy = getattr(cfg.get("config"), "personnel", None) if cfg else None
+    if not getattr(policy, "passwordless_login_enabled", False):
+        raise HTTPException(status_code=403, detail="当前环境未开启门户免密登录，请使用账号密码登录")
+    # admin 拥有用户管理权限，禁止免密登录，防止仅凭用户名冒充管理员
+    if request.username == "admin":
+        raise HTTPException(status_code=403, detail="admin 用户不支持免密登录")
+
+    user, created = db.get_or_create_passwordless_user(
+        username=request.username,
+        user_id=request.user_id,
+    )
+    if not user:
+        raise HTTPException(status_code=400, detail="用户ID已被其他用户使用")
+    if user.account_status == "disabled":
+        raise HTTPException(status_code=403, detail="账号已停用，请联系管理员")
+
+    client_ip = get_client_ip(http_request)
+    prev_ip = _active_login_ip.get(user.username)
+
+    # 与密码登录一致：递增 token 版本号实现单点登录，签发新 token
+    new_version = db.increment_user_token_version(user.username, require_active=True)
+    if new_version <= 0:
+        raise HTTPException(status_code=403, detail="账号已停用，请联系管理员")
+    access_token = create_access_token(
+        data={"sub": user.username, "v": new_version},
+        expires_delta=_get_token_lifetime(),
+        never_expires=_token_never_expires(),
+    )
+
+    _login_time_cache[user.username] = datetime.now()
+    _active_login_ip[user.username] = client_ip
+    touch_user_activity(db, user.username)
+
+    if created:
+        # 与注册接口一致：为免密新用户创建 workspace 目录
+        try:
+            user_workspace = Config.get_user_workspace_dir(user.username)
+            user_workspace.mkdir(parents=True, exist_ok=True)
+            user_upload = Config.get_user_upload_dir(user.username)
+            user_upload.mkdir(parents=True, exist_ok=True)
+            logger.info(
+                f"[用户] 创建用户workspace | 用户: {user.username} | 路径: {user_workspace}"
+            )
+        except Exception as e:
+            logger.warning(
+                f"[用户] 创建用户workspace失败 | 用户: {user.username} | 错误: {e}"
+            )
+
+    context_length = _get_context_length()
+
+    if prev_ip and prev_ip != client_ip:
+        logger.info(
+            f"[用户] 单点登录踢出旧会话 | 用户: {user.username} | 旧IP: {prev_ip} | 新IP: {client_ip}"
+        )
+    logger.info(
+        f"[用户] 免密登录成功 | 用户名: {user.username} | 自动注册: {created} | "
+        f"IP: {client_ip} | 版本: {new_version}"
+    )
+
+    return AuthResponse(
+        access_token=access_token,
+        token_type="bearer",
+        username=user.username,
+        context_length=context_length,
     )
 
 
@@ -247,9 +312,9 @@ async def logout(
     """
     now = datetime.now()
     cached_login = _login_time_cache.pop(username, None)
-    last_activity_timestamp = get_user_activity_time(username)
+    last_activity_timestamp = get_user_activity_time(db, username)
     _active_login_ip.pop(username, None)
-    clear_user_activity(username)
+    clear_user_activity(db, username)
     db.increment_user_token_version(username)
     login_time_str = "未知"
     duration_str = "未知"
@@ -296,6 +361,7 @@ async def get_profile(
         organization_id=user.organization_id,
         email=user.email,
         bound_ip=user.bound_ip,
+        employee_id=user.employee_id,
         created_at=user.created_at,
         updated_at=user.updated_at,
     )
@@ -330,6 +396,7 @@ async def update_profile(
         organization_id=user.organization_id,
         email=user.email,
         bound_ip=user.bound_ip,
+        employee_id=user.employee_id,
         created_at=user.created_at,
         updated_at=user.updated_at,
     )
@@ -387,6 +454,7 @@ async def list_users(
         users=[
             UserAccount(
                 username=user.username,
+                employee_id=user.employee_id,
                 created_at=user.created_at,
                 updated_at=user.updated_at,
             )
@@ -406,12 +474,8 @@ async def admin_reset_password(
 ):
     if admin_username != "admin":
         raise HTTPException(status_code=403, detail="仅管理员可以重置密码")
-
     if username == "admin":
-        raise HTTPException(
-            status_code=400,
-            detail="admin 用户不支持默认密码重置，请使用正常修改密码流程",
-        )
+        raise HTTPException(status_code=400, detail="管理员密码不能重置为默认密码")
 
     user = db.get_user_by_username(username)
     if not user:
@@ -437,22 +501,22 @@ async def get_auth_config(
     username: Annotated[str, Depends(get_current_username)],
 ):
     _cfg = get_agent_config()
-    max_input_tokens = 200000
+    context_length = 1_000_000
     preset_questions = []
     win = False
     agent_env = ""
     app_welcome_title = DEFAULT_APP_WELCOME_TITLE
     if _cfg and _cfg.get("config"):
-        max_input_tokens = _cfg["config"].llm.max_input_tokens
+        context_length = _cfg["config"].llm.context_length
         preset_questions = _cfg["config"].preset_questions or []
         win = bool(_cfg.get("win"))
         agent_env = _cfg.get("agent_env", "") or ""
         idle_logout_minutes = _cfg["config"].agent.idle_logout_minutes
         app_welcome_title = _cfg["config"].app_welcome_title
     else:
-        idle_logout_minutes = 5
+        idle_logout_minutes = 0
     return {
-        "max_input_tokens": max_input_tokens,
+        "context_length": context_length,
         "preset_questions": preset_questions,
         "win": win,
         "agent_env": agent_env,

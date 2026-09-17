@@ -21,5 +21,6 @@ cd "$PROJECT_ROOT"
 export DEEPSEEK_API_KEY="$(read_keychain_secret "$DEEPSEEK_SERVICE" " DeepSeek API key")"
 export RAGFLOW_API_KEY="$(read_keychain_secret "$RAGFLOW_SERVICE" " RAGFlow API key")"
 export AGENT_ENV="${AGENT_ENV:-dev}"
+export EASY_CONFIG="${EASY_CONFIG:-$PROJECT_ROOT/easy_agent/config/config.dev.yaml}"
 
 exec .venv/bin/python -m easy_agent.knowledge.worker

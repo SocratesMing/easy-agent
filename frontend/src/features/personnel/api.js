@@ -2,6 +2,7 @@ import { request, requestJson } from '../../api/request.js'
 import { buildPersonnelFilters, filenameFromContentDisposition } from './model.js'
 
 const ROOT = '/api/personnel'
+export const getLoginPolicy = () => requestJson({ url: `${ROOT}/login-policy`, method: 'get' })
 const KNOWLEDGE_ADMIN_ROOT = '/api/knowledge/v1/admin'
 
 export function listPersonnelUsers(filters = {}) {

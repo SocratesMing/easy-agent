@@ -21,7 +21,7 @@ from ..services import get_agent_config
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/skill-center", tags=["Skill Center"])
+router = APIRouter(prefix="/agent/skill-center", tags=["Skill Center"])
 
 
 def _parse_skill_metadata(skill_dir: Path) -> dict:

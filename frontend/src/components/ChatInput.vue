@@ -68,13 +68,11 @@
               title="选择模型"
             >
               <span class="model-btn-label">{{ currentModelLabel }}</span>
-              <span class="model-btn-count" v-if="models.length">{{ models.length }}</span>
               <svg class="model-btn-arrow" :class="{ open: showModelDropdown }" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <polyline points="6 9 12 15 18 9"></polyline>
               </svg>
             </button>
               <div v-if="showModelDropdown" class="model-dropdown-menu" :style="dropdownStyle" @click.stop>
-                <div class="model-dropdown-header">可选模型 · 共 {{ models.length }} 个</div>
                 <div
                   v-for="m in models"
                   :key="m.name"
@@ -83,7 +81,6 @@
                   @click="selectModel(m.name)"
                 >
                   <span class="model-item-name">{{ m.model || m.name }}</span>
-                  <span v-if="m.is_active" class="model-item-badge">默认</span>
                   <svg v-if="m.name === localSelectedModel" class="model-item-check" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
                     <polyline points="20 6 9 17 4 12"></polyline>
                   </svg>
@@ -91,12 +88,7 @@
               </div>
           </div>
 
-          <KnowledgeScopeSelector
-            :session-id="sessionId"
-            :disabled="isStreaming || disabled"
-            @create-session="emit('createSession')"
-          />
-
+          <KnowledgeScopeSelector :session-id="sessionId || ''" :disabled="isStreaming || disabled" @create-session="$emit('create-session')" />
           <label class="action-btn upload-btn" :class="{ disabled: isStreaming || disabled }" title="上传文件">
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path>
@@ -147,7 +139,7 @@
                   <span class="token-popup-label">本轮上下文占用</span>
                 </div>
                 <div class="token-popup-context-row">
-                  <span class="token-popup-context-value">{{ formatTokens(sessionUsage.context_tokens) }}/{{ formatTokens(sessionUsage.max_input_tokens) }}</span>
+                  <span class="token-popup-context-value">{{ formatTokens(sessionUsage.context_tokens) }}/{{ formatTokens(sessionUsage.context_length) }}</span>
                     <span class="token-popup-context-percent" :style="{ color: contextColor }">{{ contextPercent }}%</span>
                   </div>
                   <div class="token-popup-bar">
@@ -158,12 +150,16 @@
                 </div>
                 <div class="token-popup-divider"></div>
                 <div class="token-popup-row">
-                  <span class="token-popup-label">总输入 (Prompt)</span>
+                  <span class="token-popup-label">输入 Token</span>
                   <span class="token-popup-value input">{{ formatTokens(sessionUsage.input_tokens) }}</span>
                 </div>
                 <div class="token-popup-row">
-                  <span class="token-popup-label">总输出 (Completion)</span>
+                  <span class="token-popup-label">输出 Token</span>
                   <span class="token-popup-value output">{{ formatTokens(sessionUsage.output_tokens) }}</span>
+                </div>
+                <div class="token-popup-row">
+                  <span class="token-popup-label">思考 Token</span>
+                  <span class="token-popup-value reasoning">{{ formatTokens(sessionUsage.reasoning_tokens) }}</span>
                 </div>
               </div>
           </div>
@@ -201,472 +197,406 @@
 </template>
 
 <script>
-import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
 import { uploadFile, deleteFile } from '../api/files.js'
 import FileIcon from './FileIcon.vue'
 import KnowledgeScopeSelector from '../features/knowledge/KnowledgeScopeSelector.vue'
 
-export default {
-  components: { FileIcon, KnowledgeScopeSelector },
-  props: {
-  disabled: {
-    type: Boolean,
-    default: false
-  },
-  sessionId: {
-    type: String,
-    default: null
-  },
-  isStreaming: {
-    type: Boolean,
-    default: false
-  },
-  sessionUsage: {
-    type: Object,
-    default: () => ({ input_tokens: 0, output_tokens: 0, total_tokens: 0, max_input_tokens: null, auto_compress_tokens: null, context_tokens: 0 })
-  },
-  sessionDuration: {
-    type: Number,
-    default: 0
-  },
-  iterationCount: {
-    type: Number,
-    default: 0
-  },
-  models: {
-    type: Array,
-    default: () => []
-  },
-  selectedModel: {
-    type: String,
-    default: null
-  },
-  showFooter: {
-    type: Boolean,
-    default: false
-  }
-},
-  emits: ['send', 'stop', 'createSession', 'update:selectedModel', 'typing'],
-  setup(props, { emit }) {
-const message = ref('')
-const textareaRef = ref(null)
-const uploadedFiles = ref([])
 // 输入草稿持久化：页面刷新后恢复用户尚未发送的输入内容（“输入框的状态不变”）
 const DRAFT_KEY = 'easy_agent_input_draft'
 
-// 光标所在行高亮（overlay 技术：textareal 本身无法按行上色）
-const caretLineTop = ref(null)   // 高亮条 top，null 表示隐藏
-const lineHeight = ref(24)       // 行高（px）
-
-function updateCaretLine() {
-  const ta = textareaRef.value
-  if (!ta) return
-  const lh = parseFloat(getComputedStyle(ta).lineHeight)
-  if (!isNaN(lh) && lh > 0) lineHeight.value = lh
-  const pos = ta.selectionStart ?? 0
-  const lineIndex = ta.value.slice(0, pos).split('\n').length - 1
-  caretLineTop.value = lineIndex * lineHeight.value - ta.scrollTop
-}
-
-function hideCaretLine() {
-  caretLineTop.value = null
-}
-
-// 模型选择：本地双向绑定，变化时同步父组件
-const localSelectedModel = computed({
-  get: () => props.selectedModel,
-  set: (val) => emit('update:selectedModel', val)
-})
-
-// 自定义下拉菜单
-const showModelDropdown = ref(false)
-const modelDropdownRef = ref(null)
-const dropdownStyle = ref({})
-
-const currentModelLabel = computed(() => {
-  const m = props.models.find(m => m.name === props.selectedModel)
-  return m ? (m.model || m.name) : '选择模型'
-})
-
-function toggleModelDropdown() {
-  if (props.isStreaming || props.disabled) return
-  if (showModelDropdown.value) {
-    showModelDropdown.value = false
-    return
-  }
-  // 计算下拉菜单位置
-  if (modelDropdownRef.value) {
-    const rect = modelDropdownRef.value.getBoundingClientRect()
-    dropdownStyle.value = {
-      position: 'fixed',
-      bottom: `${window.innerHeight - rect.top + 6}px`,
-      left: `${rect.left}px`,
-      minWidth: `${Math.max(rect.width, 200)}px`,
+export default {
+  components: { FileIcon, KnowledgeScopeSelector },
+  props: {
+    disabled: {
+      type: Boolean,
+      default: false
+    },
+    sessionId: {
+      type: String,
+      default: null
+    },
+    isStreaming: {
+      type: Boolean,
+      default: false
+    },
+    sessionUsage: {
+      type: Object,
+      default: () => ({ input_tokens: 0, output_tokens: 0, reasoning_tokens: 0, context_length: null, auto_compress_tokens: null, context_tokens: 0 })
+    },
+    sessionDuration: {
+      type: Number,
+      default: 0
+    },
+    iterationCount: {
+      type: Number,
+      default: 0
+    },
+    models: {
+      type: Array,
+      default: () => []
+    },
+    selectedModel: {
+      type: String,
+      default: null
+    },
+    showFooter: {
+      type: Boolean,
+      default: false
     }
-  }
-  showModelDropdown.value = true
-}
-
-function selectModel(name) {
-  emit('update:selectedModel', name)
-  showModelDropdown.value = false
-  console.log(
-    `[${new Date().toISOString()}] [模型选择] 切换为: ${name}`
-  )
-}
-
-function closeModelDropdown(event) {
-  if (showModelDropdown.value && modelDropdownRef.value && !modelDropdownRef.value.contains(event.target)) {
-    showModelDropdown.value = false
-  }
-}
-
-const canSend = computed(() => {
-  return message.value.trim() || uploadedFiles.value.length > 0
-})
-
-const showTokenPopup = ref(false)
-
-// ========== 会话耗时 ==========
-// 后台未返回耗时数据（sessionDuration<=0）且「会话信息」弹窗打开时，前端按 1s
-// 间隔本地计时，让会话耗时实时更新；后台有数据时直接用后台值。
-const liveDuration = ref(0)
-let durationTimer = null
-const shouldCountLive = computed(
-  () => showTokenPopup.value && (!props.sessionDuration || props.sessionDuration <= 0)
-)
-const displayDuration = computed(() =>
-  shouldCountLive.value ? liveDuration.value : (props.sessionDuration || 0)
-)
-function startLiveDuration() {
-  stopLiveDuration()
-  liveDuration.value = 0
-  durationTimer = setInterval(() => {
-    liveDuration.value += 1
-  }, 1000)
-}
-function stopLiveDuration() {
-  if (durationTimer) {
-    clearInterval(durationTimer)
-    durationTimer = null
-  }
-}
-watch(shouldCountLive, (on) => {
-  if (on) startLiveDuration()
-  else stopLiveDuration()
-})
-
-const formattedDuration = computed(() => {
-  const total = Math.floor(displayDuration.value)
-  const h = Math.floor(total / 3600)
-  const m = Math.floor((total % 3600) / 60)
-  const s = total % 60
-  if (h > 0) {
-    return `${h}小时${m}分${s}秒`
-  }
-  if (m > 0) {
-    return `${m}分${s}秒`
-  }
-  return `${s}秒`
-})
-
-function toggleTokenPopup() {
-  showTokenPopup.value = !showTokenPopup.value
-}
-
-function closeTokenPopup() {
-  if (showTokenPopup.value) {
-    showTokenPopup.value = false
-  }
-}
-
-const showTokenRing = computed(() => {
-  return props.sessionUsage.total_tokens > 0 || props.sessionUsage.context_tokens > 0 || props.sessionDuration > 0 || props.iterationCount > 0
-})
-
-const contextPercent = computed(() => {
-  const u = props.sessionUsage
-  if (!u.max_input_tokens || u.max_input_tokens <= 0) return 0
-  // 分子使用「当前轮次的上下文窗口占用」(context_tokens)：即本轮喂给模型的输入 token 数，
-  // 与 max_input_tokens（上下文窗口上限）对比。不能用会话累计 total_tokens（多轮累加会很快 >100%）。
-  const ctxTokens = u.context_tokens || 0
-  return Math.min(100, Math.round(ctxTokens / u.max_input_tokens * 100))
-})
-
-const contextColor = computed(() => {
-  const p = contextPercent.value
-  if (p >= 80) return '#ef4444'
-  if (p >= 50) return '#f59e0b'
-  return '#22c55e'
-})
-
-const ringRef = ref(null)
-
-const popupStyle = computed(() => {
-  if (!ringRef.value) return {}
-  const rect = ringRef.value.getBoundingClientRect()
-  return {
-    position: 'fixed',
-    bottom: `${window.innerHeight - rect.top + 10}px`,
-    right: `${window.innerWidth - rect.right - 8}px`,
-  }
-})
-
-function formatTokens(n) {
-  if (!n) return '0'
-  if (n >= 1000) return (n / 1000).toFixed(1) + 'k'
-  return n.toString()
-}
-
-function formatSize(bytes) {
-  if (bytes < 1024) return bytes + ' B'
-  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
-  return (bytes / (1024 * 1024)).toFixed(1) + ' MB'
-}
-
-async function handleFileSelect(event) {
-  const files = Array.from(event.target.files)
-  
-  for (const file of files) {
-    // 创建文件项
-    const fileItem = {
-      file: file,
-      filename: file.name,
-      size: file.size,
-      uploadStatus: 'uploading',
-      uploadProgress: 0
-    }
-    
-    // 添加到数组
-    uploadedFiles.value.push(fileItem)
-    
-    // 强制触发初始渲染
-    uploadedFiles.value = [...uploadedFiles.value]
-    
-    try {
-      // 确保会话存在
-      let sessionId = props.sessionId
-      if (!sessionId) {
-        // 通知父组件创建会话
-        const sessionIdPromise = new Promise((resolve) => {
-          // 创建一个临时的监听器来等待会话创建完成
-          const unwatch = watch(
-            () => props.sessionId,
-            (newSessionId) => {
-              if (newSessionId) {
-                unwatch()
-                resolve(newSessionId)
-              }
-            }
-          )
-          // 触发会话创建
-          emit('createSession')
-        })
-        
-        // 等待会话创建完成
-        sessionId = await sessionIdPromise
-        
-        if (!sessionId) {
-          throw new Error('会话创建失败')
-        }
-      }
-      
-      // 调用实际的上传接口
-      const response = await uploadFile(sessionId, file, (progress) => {
-        // 找到对应的文件项并更新进度
-        const index = uploadedFiles.value.findIndex(f => f.file === file)
-        if (index !== -1) {
-          uploadedFiles.value[index].uploadProgress = progress
-          // 强制触发更新
-          uploadedFiles.value = [...uploadedFiles.value]
-        }
-      })
-      
-      // 找到对应的文件项并更新状态
-      const index = uploadedFiles.value.findIndex(f => f.file === file)
-      if (index !== -1) {
-        uploadedFiles.value[index].uploadStatus = 'completed'
-        uploadedFiles.value[index].uploadProgress = 100
-        uploadedFiles.value[index].filePath = response.file_path
-        uploadedFiles.value[index].id = response.id
-        // 强制触发更新
-        uploadedFiles.value = [...uploadedFiles.value]
-      }
-      
-      console.log('文件上传成功:', response)
-    } catch (error) {
-      // 找到对应的文件项并更新状态
-      const index = uploadedFiles.value.findIndex(f => f.file === file)
-      if (index !== -1) {
-        uploadedFiles.value[index].uploadStatus = 'error'
-        // 强制触发更新
-        uploadedFiles.value = [...uploadedFiles.value]
-      }
-      console.error('文件上传失败:', error)
-    }
-  }
-  
-  event.target.value = ''
-}
-
-async function removeFile(index) {
-  const file = uploadedFiles.value[index]
-  
-  // 如果文件已经上传成功，调用后台的删除接口
-  if (file && file.uploadStatus === 'completed' && file.id && props.sessionId) {
-    try {
-      await deleteFile(props.sessionId, file)
-      console.log('文件删除成功:', file.filename)
-    } catch (error) {
-      console.error('文件删除失败:', error)
-    }
-  }
-  
-  // 从前端列表中移除文件
-  uploadedFiles.value.splice(index, 1)
-  // 强制触发更新
-  uploadedFiles.value = [...uploadedFiles.value]
-}
-
-async function send() {
-  if (!canSend.value || props.disabled) return
-  
-  // 等待所有文件上传完成
-  const uploadingFiles = uploadedFiles.value.filter(f => f.uploadStatus === 'uploading')
-  if (uploadingFiles.length > 0) {
-    // 显示上传中提示
-    console.log('文件正在上传中，请稍候...')
-    // 可以添加一个loading状态或提示信息
-    return
-  }
-  
-  const filesToSend = uploadedFiles.value.map(f => ({
-    id: f.id,
-    filename: f.filename,
-    size: f.size,
-    file: f.file,
-    file_path: f.filePath || null,
-    type: f.file?.type || f.fileType || ''
-  }))
-
-  // 详细日志：记录发送操作、文件上传
-  const ts = new Date().toISOString()
-  console.log(`[${ts}] [发送消息] 内容: "${message.value.substring(0, 100)}" | 文件数: ${filesToSend.length}`)
-  if (filesToSend.length > 0) {
-    console.log(`[${ts}] [文件上传] ${filesToSend.map(f => `${f.filename}(${f.size}B)`).join(', ')}`)
-  }
-
-  emit('send', message.value.trim().replace(/\s+/g, ' '), filesToSend, null, true)
-  
-  message.value = ''
-  uploadedFiles.value = []
-  nextTick(() => autoResize())
-}
-
-function stop() {
-  emit('stop')
-}
-
-function autoResize() {
-  if (textareaRef.value) {
-    textareaRef.value.style.height = 'auto'
-    textareaRef.value.style.height = Math.min(textareaRef.value.scrollHeight, 150) + 'px'
-  }
-}
-
-function onInput() {
-  autoResize()
-  updateCaretLine()
-  emit('typing')
-}
-
-watch(message, (val) => {
-  try {
-    sessionStorage.setItem(DRAFT_KEY, val)
-  } catch (e) {
-    // 隐私模式等场景下 sessionStorage 可能不可用，忽略即可
-  }
-})
-
-watch(() => props.disabled, (val) => {
-  if (!val && textareaRef.value) {
-    textareaRef.value.focus()
-  }
-})
-
-onMounted(() => {
-  // 恢复刷新前的输入草稿
-  try {
-    const draft = sessionStorage.getItem(DRAFT_KEY)
-    if (draft) {
-      message.value = draft
-      nextTick(() => autoResize())
-    }
-  } catch (e) {
-    // 忽略草稿恢复失败
-  }
-  document.addEventListener('click', closeTokenPopup)
-  document.addEventListener('click', closeModelDropdown)
-})
-
-onUnmounted(() => {
-  document.removeEventListener('click', closeTokenPopup)
-  document.removeEventListener('click', closeModelDropdown)
-  stopLiveDuration()
-})
-
+  },
+  data() {
     return {
-      autoResize,
-      canSend,
-      caretLineTop,
-      closeModelDropdown,
-      closeTokenPopup,
-      computed,
-      contextColor,
-      contextPercent,
-      currentModelLabel,
-      deleteFile,
-      displayDuration,
-      DRAFT_KEY,
-      dropdownStyle,
-      durationTimer,
-      emit,
-      FileIcon,
-      formatSize,
-      formattedDuration,
-      formatTokens,
-      handleFileSelect,
-      hideCaretLine,
-      lineHeight,
-      liveDuration,
-      localSelectedModel,
-      message,
-      modelDropdownRef,
-      nextTick,
-      onInput,
-      onMounted,
-      onUnmounted,
-      popupStyle,
-      ref,
-      removeFile,
-      ringRef,
-      selectModel,
-      send,
-      shouldCountLive,
-      showModelDropdown,
-      showTokenPopup,
-      showTokenRing,
-      startLiveDuration,
-      stop,
-      stopLiveDuration,
-      textareaRef,
-      toggleModelDropdown,
-      toggleTokenPopup,
-      updateCaretLine,
-      uploadedFiles,
-      uploadFile,
-      watch,
+      message: '',
+      uploadedFiles: [],
+      // 光标所在行高亮（overlay 技术：textareal 本身无法按行上色）
+      caretLineTop: null, // 高亮条 top，null 表示隐藏
+      lineHeight: 24, // 行高（px）
+      // 自定义下拉菜单
+      showModelDropdown: false,
+      dropdownStyle: {},
+      showTokenPopup: false,
+      // ========== 会话耗时 ==========
+      liveDuration: 0,
+      durationTimer: null,
     }
+  },
+  computed: {
+    // 模型选择：本地双向绑定，变化时同步父组件
+    localSelectedModel: {
+      get() {
+        return this.selectedModel
+      },
+      set(val) {
+        this.$emit('update:selectedModel', val)
+      }
+    },
+    currentModelLabel() {
+      const m = this.models.find(m => m.name === this.selectedModel)
+      // 显示模型名（deepseek-v4-flash / deepseek-v4-pro），
+      // 而不是 provider 配置段名（deepseek / ark）
+      return m ? (m.model || m.name) : '选择模型'
+    },
+    canSend() {
+      return this.message.trim() || this.uploadedFiles.length > 0
+    },
+    // 后台未返回耗时数据（sessionDuration<=0）且「会话信息」弹窗打开时，前端按 1s
+    // 间隔本地计时，让会话耗时实时更新；后台有数据时直接用后台值。
+    shouldCountLive() {
+      return this.showTokenPopup && (!this.sessionDuration || this.sessionDuration <= 0)
+    },
+    displayDuration() {
+      return this.shouldCountLive ? this.liveDuration : (this.sessionDuration || 0)
+    },
+    formattedDuration() {
+      const total = Math.floor(this.displayDuration)
+      const h = Math.floor(total / 3600)
+      const m = Math.floor((total % 3600) / 60)
+      const s = total % 60
+      if (h > 0) {
+        return `${h}小时${m}分${s}秒`
+      }
+      if (m > 0) {
+        return `${m}分${s}秒`
+      }
+      return `${s}秒`
+    },
+    // 首页（尚未进入任何会话）不展示会话级用量：登录/注册后会从全局配置把
+    // context_length 写进 sessionUsage，但此时没有任何实际用量，
+    // 不能凭这个就显示上下文占用环。
+    showTokenRing() {
+      if (!this.sessionId) return false
+      return this.sessionUsage.input_tokens > 0 || this.sessionUsage.output_tokens > 0 || this.sessionUsage.reasoning_tokens > 0 || this.sessionUsage.context_tokens > 0 || this.sessionDuration > 0 || this.iterationCount > 0
+    },
+    contextPercent() {
+      const u = this.sessionUsage
+      if (!u.context_length || u.context_length <= 0) return 0
+      // 分子使用「当前轮次的上下文窗口占用」(context_tokens)：即本轮喂给模型的输入 token 数，
+      // 与 context_length（上下文窗口上限）对比（已不再统计会话累计总量）。
+      const ctxTokens = u.context_tokens || 0
+      return Math.min(100, Math.round(ctxTokens / u.context_length * 100))
+    },
+    contextColor() {
+      const p = this.contextPercent
+      if (p >= 80) return '#ef4444'
+      if (p >= 50) return '#f59e0b'
+      return '#22c55e'
+    },
+    popupStyle() {
+      const ring = this.$refs.ringRef
+      if (!ring) return {}
+      const rect = ring.getBoundingClientRect()
+      return {
+        position: 'fixed',
+        bottom: `${window.innerHeight - rect.top + 10}px`,
+        right: `${window.innerWidth - rect.right - 8}px`,
+      }
+    },
+  },
+  watch: {
+    shouldCountLive(on) {
+      if (on) this.startLiveDuration()
+      else this.stopLiveDuration()
+    },
+    message(val) {
+      try {
+        sessionStorage.setItem(DRAFT_KEY, val)
+      } catch (e) {
+        // 隐私模式等场景下 sessionStorage 可能不可用，忽略即可
+      }
+    },
+    disabled(val) {
+      if (!val) {
+        const ta = this.$refs.textareaRef
+        if (ta) ta.focus()
+      }
+    },
+  },
+  mounted() {
+    // 恢复刷新前的输入草稿
+    try {
+      const draft = sessionStorage.getItem(DRAFT_KEY)
+      if (draft) {
+        this.message = draft
+        this.$nextTick(() => this.autoResize())
+      }
+    } catch (e) {
+      // 忽略草稿恢复失败
+    }
+    document.addEventListener('click', this.closeTokenPopup)
+    document.addEventListener('click', this.closeModelDropdown)
+  },
+  beforeDestroy() {
+    document.removeEventListener('click', this.closeTokenPopup)
+    document.removeEventListener('click', this.closeModelDropdown)
+    this.stopLiveDuration()
+  },
+  methods: {
+    updateCaretLine() {
+      const ta = this.$refs.textareaRef
+      if (!ta) return
+      const lh = parseFloat(getComputedStyle(ta).lineHeight)
+      if (!isNaN(lh) && lh > 0) this.lineHeight = lh
+      const pos = ta.selectionStart ?? 0
+      const lineIndex = ta.value.slice(0, pos).split('\n').length - 1
+      this.caretLineTop = lineIndex * this.lineHeight - ta.scrollTop
+    },
+    hideCaretLine() {
+      this.caretLineTop = null
+    },
+    toggleModelDropdown() {
+      if (this.isStreaming || this.disabled) return
+      if (this.showModelDropdown) {
+        this.showModelDropdown = false
+        return
+      }
+      // 计算下拉菜单位置
+      const anchor = this.$refs.modelDropdownRef
+      if (anchor) {
+        const rect = anchor.getBoundingClientRect()
+        this.dropdownStyle = {
+          position: 'fixed',
+          bottom: `${window.innerHeight - rect.top + 6}px`,
+          left: `${rect.left}px`,
+          minWidth: `${Math.max(rect.width, 200)}px`,
+        }
+      }
+      this.showModelDropdown = true
+    },
+    selectModel(name) {
+      this.$emit('update:selectedModel', name)
+      this.showModelDropdown = false
+      console.log(
+        `[${new Date().toISOString()}] [模型选择] 切换为: ${name}`
+      )
+    },
+    closeModelDropdown(event) {
+      const anchor = this.$refs.modelDropdownRef
+      if (this.showModelDropdown && anchor && !anchor.contains(event.target)) {
+        this.showModelDropdown = false
+      }
+    },
+    startLiveDuration() {
+      this.stopLiveDuration()
+      this.liveDuration = 0
+      this.durationTimer = setInterval(() => {
+        this.liveDuration += 1
+      }, 1000)
+    },
+    stopLiveDuration() {
+      if (this.durationTimer) {
+        clearInterval(this.durationTimer)
+        this.durationTimer = null
+      }
+    },
+    toggleTokenPopup() {
+      this.showTokenPopup = !this.showTokenPopup
+    },
+    closeTokenPopup() {
+      if (this.showTokenPopup) {
+        this.showTokenPopup = false
+      }
+    },
+    formatTokens(n) {
+      if (!n) return '0'
+      if (n >= 1000) return (n / 1000).toFixed(1) + 'k'
+      return n.toString()
+    },
+    formatSize(bytes) {
+      if (bytes < 1024) return bytes + ' B'
+      if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
+      return (bytes / (1024 * 1024)).toFixed(1) + ' MB'
+    },
+    async handleFileSelect(event) {
+      const files = Array.from(event.target.files)
+
+      for (const file of files) {
+        // 创建文件项
+        const fileItem = {
+          file: file,
+          filename: file.name,
+          size: file.size,
+          uploadStatus: 'uploading',
+          uploadProgress: 0
+        }
+
+        // 添加到数组
+        this.uploadedFiles.push(fileItem)
+
+        // 强制触发初始渲染
+        this.uploadedFiles = [...this.uploadedFiles]
+
+        try {
+          // 确保会话存在
+          let sessionId = this.sessionId
+          if (!sessionId) {
+            // 通知父组件创建会话
+            const sessionIdPromise = new Promise((resolve) => {
+              // 创建一个临时的监听器来等待会话创建完成
+              const unwatch = this.$watch(
+                () => this.sessionId,
+                (newSessionId) => {
+                  if (newSessionId) {
+                    unwatch()
+                    resolve(newSessionId)
+                  }
+                }
+              )
+              // 触发会话创建
+              this.$emit('create-session')
+            })
+
+            // 等待会话创建完成
+            sessionId = await sessionIdPromise
+
+            if (!sessionId) {
+              throw new Error('会话创建失败')
+            }
+          }
+
+          // 调用实际的上传接口
+          const response = await uploadFile(sessionId, file, (progress) => {
+            // 找到对应的文件项并更新进度
+            const index = this.uploadedFiles.findIndex(f => f.file === file)
+            if (index !== -1) {
+              this.uploadedFiles[index].uploadProgress = progress
+              // 强制触发更新
+              this.uploadedFiles = [...this.uploadedFiles]
+            }
+          })
+
+          // 找到对应的文件项并更新状态
+          const index = this.uploadedFiles.findIndex(f => f.file === file)
+          if (index !== -1) {
+            this.uploadedFiles[index].uploadStatus = 'completed'
+            this.uploadedFiles[index].uploadProgress = 100
+            this.uploadedFiles[index].filePath = response.file_path
+            this.uploadedFiles[index].id = response.id
+            // 强制触发更新
+            this.uploadedFiles = [...this.uploadedFiles]
+          }
+
+          console.log('文件上传成功:', response)
+        } catch (error) {
+          // 找到对应的文件项并更新状态
+          const index = this.uploadedFiles.findIndex(f => f.file === file)
+          if (index !== -1) {
+            this.uploadedFiles[index].uploadStatus = 'error'
+            // 强制触发更新
+            this.uploadedFiles = [...this.uploadedFiles]
+          }
+          console.error('文件上传失败:', error)
+        }
+      }
+
+      event.target.value = ''
+    },
+    async removeFile(index) {
+      const file = this.uploadedFiles[index]
+
+      // 如果文件已经上传成功，调用后台的删除接口
+      if (file && file.uploadStatus === 'completed' && file.id && this.sessionId) {
+        try {
+          await deleteFile(this.sessionId, file)
+          console.log('文件删除成功:', file.filename)
+        } catch (error) {
+          console.error('文件删除失败:', error)
+        }
+      }
+
+      // 从前端列表中移除文件
+      this.uploadedFiles.splice(index, 1)
+      // 强制触发更新
+      this.uploadedFiles = [...this.uploadedFiles]
+    },
+    async send() {
+      if (!this.canSend || this.disabled) return
+
+      // 等待所有文件上传完成
+      const uploadingFiles = this.uploadedFiles.filter(f => f.uploadStatus === 'uploading')
+      if (uploadingFiles.length > 0) {
+        // 显示上传中提示
+        console.log('文件正在上传中，请稍候...')
+        // 可以添加一个loading状态或提示信息
+        return
+      }
+
+      const filesToSend = this.uploadedFiles.map(f => ({
+        id: f.id,
+        filename: f.filename,
+        size: f.size,
+        file: f.file,
+        file_path: f.filePath || null,
+        type: f.file?.type || f.fileType || ''
+      }))
+
+      // 详细日志：记录发送操作、文件上传
+      const ts = new Date().toISOString()
+      console.log(`[${ts}] [发送消息] 内容: "${this.message.substring(0, 100)}" | 文件数: ${filesToSend.length}`)
+      if (filesToSend.length > 0) {
+        console.log(`[${ts}] [文件上传] ${filesToSend.map(f => `${f.filename}(${f.size}B)`).join(', ')}`)
+      }
+
+      this.$emit('send', this.message.trim().replace(/\s+/g, ' '), filesToSend, null, true)
+
+      this.message = ''
+      this.uploadedFiles = []
+      this.$nextTick(() => this.autoResize())
+    },
+    stop() {
+      this.$emit('stop')
+    },
+    autoResize() {
+      const ta = this.$refs.textareaRef
+      if (ta) {
+        ta.style.height = 'auto'
+        ta.style.height = Math.min(ta.scrollHeight, 150) + 'px'
+      }
+    },
+    onInput() {
+      this.autoResize()
+      this.updateCaretLine()
+      this.$emit('typing')
+    },
   },
 }
 </script>
@@ -691,7 +621,7 @@ onUnmounted(() => {
   border-radius: 16px;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
   transition: all 0.3s ease;
-  overflow: visible;
+  overflow: hidden;
 }
 
 .input-box:focus-within {
@@ -991,29 +921,11 @@ html[data-theme="dark"] .context-ring-wrapper {
   text-overflow: ellipsis;
 }
 
-.model-btn-count {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 16px;
-  height: 16px;
-  padding: 0 4px;
-  border-radius: 8px;
-  background: var(--border-color);
-  color: var(--text-secondary);
-  font-size: 10px;
-  font-weight: 600;
-  line-height: 1;
-}
 
 .model-btn:hover:not(.disabled) .model-btn-label {
   color: #0ea5e9;
 }
 
-.model-btn:hover:not(.disabled) .model-btn-count {
-  background: color-mix(in srgb, var(--accent-color) 25%, transparent);
-  color: var(--accent-color);
-}
 
 .model-btn-arrow {
   width: 12px;
@@ -1055,16 +967,6 @@ html[data-theme="dark"] .context-ring-wrapper {
   background: color-mix(in srgb, var(--accent-color) 12%, transparent);
 }
 
-.model-dropdown-header {
-  padding: 6px 10px 8px;
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--text-secondary);
-  letter-spacing: 0.02em;
-  border-bottom: 1px solid var(--border-color);
-  margin-bottom: 4px;
-}
-
 .model-item-name {
   font-size: 13px;
   font-weight: 600;
@@ -1074,16 +976,6 @@ html[data-theme="dark"] .context-ring-wrapper {
   text-overflow: ellipsis;
   flex: 1;
   min-width: 0;
-}
-
-.model-item-badge {
-  font-size: 10px;
-  font-weight: 600;
-  padding: 2px 6px;
-  border-radius: 4px;
-  background: #dcfce7;
-  color: #16a34a;
-  flex-shrink: 0;
 }
 
 .model-item-check {
@@ -1273,16 +1165,23 @@ html[data-theme="dark"] .context-ring-wrapper {
   color: var(--text-secondary);
 }
 
+/* 语义色：11px 小字需满足 WCAG AA 4.5:1（对白色背景）。
+   原 indigo-500 / cyan-500 / purple-500 仅 4.46:1 / 2.43:1 / 3.92:1，
+   均不达标，故整体加深到 600~700 档（6.2~7.0:1） */
 .token-popup-value.input {
-  color: #6366f1;
+  color: #4f46e5;
 }
 
 .token-popup-value.output {
-  color: #06b6d4;
+  color: #0e7490;
+}
+
+.token-popup-value.reasoning {
+  color: #7e22ce;
 }
 
 .token-popup-value.duration-value {
-  color: #6366f1;
+  color: #4f46e5;
   font-weight: 600;
 }
 

@@ -3,19 +3,19 @@
     <div class="welcome-modal">
       <div class="welcome-header">
         <h1>{{ APP_TITLE }}</h1>
-        <p>账号由 admin 统一配置，请使用已分配账号登录</p>
+        <p>{{ isLogin ? '请登录您的账号' : '创建新账号开始使用' }}</p>
       </div>
 
       <form @submit.prevent="handleSubmit" class="welcome-form">
         <div class="form-group">
           <label for="username">
-            用户名 <span class="required">*</span>
+            {{ isLogin ? '用户名 / 工号' : '用户名' }} <span class="required">*</span>
           </label>
           <input
             id="username"
             v-model="form.username"
             type="text"
-            placeholder="用户名: admin"
+            :placeholder="isLogin ? '请输入用户名或工号' : '用户名: admin'"
             required
             ref="usernameInput"
           />
@@ -35,17 +35,41 @@
           />
         </div>
 
-        <div v-if="error" class="error-message" role="alert">
+        <div class="form-group" v-if="!isLogin">
+          <label for="employeeId">
+            工号 <span class="required">*</span>
+            <span class="password-hint">（全局唯一，注册后不可更改）</span>
+          </label>
+          <input
+            id="employeeId"
+            v-model="form.employeeId"
+            type="text"
+            placeholder="请输入工号"
+            required
+          />
+        </div>
+
+        <div v-if="!isLogin" class="info-message">
+          账号支持单点登录：同账号新登录会自动踢掉此前的登录，登录不限制 IP
+        </div>
+
+        <div v-if="error" class="error-message">
           {{ error }}
         </div>
 
-        <button type="submit" class="submit-btn" :disabled="submitting || !form.username.trim() || !form.password.trim()">
-          {{ submitting ? '登录中...' : '登录' }}
+        <div v-if="success" class="success-message">
+          {{ success }}
+        </div>
+
+        <button type="submit" class="submit-btn" :disabled="submitting || !form.username.trim() || !form.password.trim() || (!isLogin && !form.employeeId.trim())">
+          {{ submitting ? (isLogin ? '登录中...' : '注册中...') : (isLogin ? '登录' : '注册') }}
         </button>
 
         <div class="form-footer">
-          <span class="account-provisioned">暂无账号？请联系管理员 admin 配置</span>
-          <span class="forgot-password-btn">忘记密码？请联系管理员 admin 重置</span>
+          <button v-if="selfRegistrationEnabled" type="button" @click="toggleMode" class="toggle-mode-btn">
+            {{ isLogin ? '还没有账号？立即注册' : '已有账号？立即登录' }}
+          </button>
+          <span v-if="isLogin" class="forgot-password-btn">忘记密码？请联系管理员 admin 重置</span>
         </div>
       </form>
     </div>
@@ -53,83 +77,107 @@
 </template>
 
 <script>
-import { ref, onMounted, nextTick } from 'vue'
-import { login } from '../api/auth.js'
-import { APP_TITLE } from '../config.js'
+import { login, register } from '../api/auth.js'
+import { getLoginPolicy } from '../features/personnel/api.js'
+
+// 应用名称：直接定义在前端（原 src/config.js 已移除）
+const APP_TITLE = 'Easy Agent'
 export default {
-  emits: ['completed'],
-  setup(props, { emit }) {
-const usernameInput = ref(null)
-const submitting = ref(false)
-const error = ref('')
-
-const form = ref({
-  username: '',
-  password: ''
-})
-
-async function handleSubmit() {
-  if (!form.value.username.trim()) {
-    error.value = '请输入用户名'
-    return
-  }
-
-  if (!form.value.password.trim()) {
-    error.value = '请输入密码'
-    return
-  }
-
-  if (form.value.password.length > 20) {
-    error.value = '密码长度不能超过20位'
-    return
-  }
-
-  submitting.value = true
-  error.value = ''
-
-  try {
-    const data = await login(form.value.username.trim(), form.value.password)
-
-    emit('completed', {
-      username: data.username,
-      token: data.access_token,
-      max_input_tokens: data.max_input_tokens
-    })
-  } catch (e) {
-    if (e.status === 404) {
-      error.value = '用户名不存在'
-    } else if (e.status === 401) {
-      error.value = '密码错误'
-    } else {
-      error.value = e.message || '登录失败，请重试'
-    }
-  } finally {
-    submitting.value = false
-  }
-}
-
-onMounted(() => {
-  // 检测是否因单点登录被踢下线（账号在其他设备登录）
-  if (localStorage.getItem('auth_kicked') === '1') {
-    localStorage.removeItem('auth_kicked')
-    error.value = '您的账号在其他设备登录，您已被迫下线，请重新登录'
-  }
-  nextTick(() => {
-    usernameInput.value?.focus()
-  })
-})
-
+  data() {
     return {
       APP_TITLE,
-      error,
-      form,
-      handleSubmit,
-      login,
-      nextTick,
-      onMounted,
-      ref,
-      submitting,
-      usernameInput,
+      submitting: false,
+      error: '',
+      success: '',
+      isLogin: true,
+      selfRegistrationEnabled: false,
+      form: {
+        username: '',
+        password: '',
+        employeeId: ''
+      }
+    }
+  },
+  mounted() {
+    getLoginPolicy().then(policy => { this.selfRegistrationEnabled = policy.self_registration_enabled === true }).catch(() => {})
+    // 检测是否因单点登录被踢下线（账号在其他设备登录）
+    if (localStorage.getItem('auth_kicked') === '1') {
+      localStorage.removeItem('auth_kicked')
+      this.error = '您的账号在其他设备登录，您已被迫下线，请重新登录'
+    }
+    this.$nextTick(() => {
+      if (this.$refs.usernameInput) this.$refs.usernameInput.focus()
+    })
+  },
+  methods: {
+    toggleMode() {
+      this.isLogin = !this.isLogin
+      this.error = ''
+      this.success = ''
+      this.form = {
+        username: '',
+        password: '',
+        employeeId: ''
+      }
+    },
+    async handleSubmit() {
+      if (!this.form.username.trim()) {
+        this.error = '请输入用户名'
+        return
+      }
+
+      if (!this.form.password.trim()) {
+        this.error = '请输入密码'
+        return
+      }
+
+      if (!this.isLogin && (this.form.password.length < 4 || this.form.password.length > 20)) {
+        this.error = '密码长度应为4-20位'
+        return
+      } else {
+        if (this.form.password.length > 20) {
+          this.error = '密码长度不能超过20位'
+          return
+        }
+      }
+
+      this.submitting = true
+      this.error = ''
+      this.success = ''
+
+      try {
+        let data
+        if (this.isLogin) {
+          data = await login(this.form.username.trim(), this.form.password)
+        } else {
+          if (!this.form.employeeId.trim()) {
+            this.error = '请输入工号'
+            this.submitting = false
+            return
+          }
+          data = await register(
+            this.form.username.trim(),
+            this.form.password,
+            this.form.employeeId.trim()
+          )
+        }
+
+        this.$emit('completed', {
+          username: data.username,
+          token: data.access_token,
+          context_length: data.context_length
+        })
+      } catch (e) {
+        if (e.status === 404) {
+          this.error = '用户名或工号不存在'
+        } else if (e.status === 401) {
+          this.error = '用户名/工号或密码错误'
+        } else {
+          this.error = e.message || (this.isLogin ? '登录失败，请重试' : '注册失败，请重试')
+        }
+      } finally {
+        this.submitting = false
+      }
     }
   },
 }
@@ -241,6 +289,24 @@ onMounted(() => {
   font-size: 14px;
 }
 
+.info-message {
+  padding: 12px 16px;
+  background: rgba(14, 165, 233, 0.1);
+  color: #0284c7;
+  border: 1px solid rgba(14, 165, 233, 0.25);
+  border-radius: 10px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.success-message {
+  padding: 12px 16px;
+  background: #d1fae5;
+  color: #059669;
+  border-radius: 10px;
+  font-size: 14px;
+}
+
 .submit-btn {
   padding: 14px 24px;
   border: none;
@@ -273,7 +339,21 @@ onMounted(() => {
   gap: 4px;
 }
 
-.account-provisioned,
+.toggle-mode-btn {
+  background: transparent;
+  border: none;
+  color: #0ea5e9;
+  font-size: 14px;
+  cursor: pointer;
+  padding: 8px 16px;
+  transition: all 0.2s;
+}
+
+.toggle-mode-btn:hover {
+  color: #0284c7;
+  text-decoration: underline;
+}
+
 .forgot-password-btn {
   background: transparent;
   border: none;

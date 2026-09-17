@@ -168,7 +168,7 @@ TERMINAL_HTML = """<!DOCTYPE html>
 
         function connectWS() {
             if (ws) { try { ws.close(); } catch(e) {} }
-            ws = new WebSocket(getWsBase() + '/api/terminal/ws');
+            ws = new WebSocket(getWsBase() + '/agent/terminal/ws');
             ws.binaryType = 'arraybuffer';
 
             ws.onopen = () => {
@@ -228,7 +228,7 @@ async def terminal_page():
     return HTMLResponse(content=TERMINAL_HTML)
 
 
-@router.websocket("/api/terminal/ws")
+@router.websocket("/agent/terminal/ws")
 async def terminal_ws(websocket: WebSocket):
     """WebSocket 终端接口。
 

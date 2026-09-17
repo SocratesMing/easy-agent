@@ -33,6 +33,7 @@ fi
 
 export DEEPSEEK_API_KEY EASY_JWT_SECRET
 export AGENT_ENV="${AGENT_ENV:-dev}"
+export EASY_CONFIG="${EASY_CONFIG:-$PROJECT_ROOT/easy_agent/config/config.dev.yaml}"
 
 exec .venv/bin/python -m uvicorn easy_agent.app:app \
   --host "$HOST" \

@@ -25,11 +25,9 @@ def run_web():
     project_root = Path(__file__).parent.parent
     os.chdir(project_root)
 
-    # 配置文件路径完全交给 app.py 的 lifespan 决定：
-    #   - EASY_CONFIG 优先（显式指定）
-    #   - AGENT_ENV=dev/test/prod -> config.{env}.yaml
-    #   - 未设置 -> 优先 config.dev.yaml，兜底 config.yaml
-    # 此处不再强制设置 EASY_CONFIG，避免覆盖 app.py 的回退逻辑。
+    from easy_agent.initialization import initialize_runtime
+
+    initialize_runtime()
 
     uvicorn.run(
         "easy_agent.app:app",
@@ -38,4 +36,5 @@ def run_web():
         reload=args.reload,
         workers=args.workers if not args.reload else 1,
         log_level="info",
+        log_config=None,
     )

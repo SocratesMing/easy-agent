@@ -9,7 +9,6 @@ easy-agent/
 ├── easy_agent/          # Python backend (FastAPI)
 │   ├── api/             # Routers: chat, auth, files, sessions, terminal, scheduled_tasks
 │   ├── services/        # Business logic: streaming, scheduler, agent_manager, mcp
-│   ├── domain/bloom/    # Bloomberg analysis domain logic
 │   ├── db/              # SQLite/MySQL database layer
 │   ├── models/          # Pydantic API & DB models
 │   ├── middleware/      # JWT auth middleware
@@ -32,7 +31,7 @@ uv sync                              # Install/sync Python dependencies
 uv pip install -e ".[dev]"           # Editable install with dev deps (alternative)
 easy-web --port 8000                 # Run backend (or: python main.py)
 pytest tests/ -v                     # Run the test suite
-pytest tests/test_basic.py -v        # Run a single test file
+pytest tests/integration/test_basic.py -v        # Run a single test file
 cd frontend && npm run dev           # Frontend dev server (proxies to backend :8000)
 cd frontend && npm run build         # Build SPA into frontend/dist/ (required before easy-web serves UI)
 ./start.prod.sh                      # Production startup
@@ -58,7 +57,8 @@ cd frontend && npm run build         # Build SPA into frontend/dist/ (required b
 
 ## Configuration & Security Tips
 
-- `config.yaml` is gitignored because it holds secrets-copy `config-example.yaml` as a template.
-- Per-environment configs (`config.dev.yaml`, `config.prod.yaml`, `config.test.yaml`) are selected via the `AGENT_ENV` variable.
+- `config.yaml` is the **single** backend config file, and it is gitignored — copy `config-example.yaml` as a template.
+- Environment differences are injected through `${VAR:-default}` placeholders, whose values come from `.env.{AGENT_ENV}` (`.env.dev` / `.env.test` / `.env.prod`, falling back to `.env`). See `.env.*.example` for the full variable list.
+- Legacy per-environment files (`config.dev.yaml`, `config.prod.yaml`, `config.test.yaml`) are no longer read by the backend.
 - Set `EASY_JWT_SECRET` for stable tokens across restarts; otherwise a random secret is generated each start, invalidating all sessions on restart.
 - Override the config path with the `EASY_CONFIG` environment variable.

@@ -27,7 +27,7 @@ from ..utils.task_logger import log_task_event
 logger = logging.getLogger(__name__)
 
 router = APIRouter(
-    prefix="/api/scheduled-tasks",
+    prefix="/agent/scheduled-tasks",
     tags=["Scheduled Tasks"],
 )
 

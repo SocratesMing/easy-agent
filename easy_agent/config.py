@@ -16,89 +16,63 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_APP_WELCOME_TITLE = "Easy Agent，让工作更简单"
 
+# Matches ${VAR} and ${VAR:-default} placeholders inside string values.
 _ENV_VAR_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
-_INT_RE = re.compile(r"^[+-]?(?:0|[1-9][0-9]*)$")
-_FLOAT_RE = re.compile(
-    r"^[+-]?(?:(?:[0-9]+\.[0-9]*)|(?:[0-9]*\.[0-9]+)|(?:[0-9]+[eE][+-]?[0-9]+))$"
-)
+
+# 最近一次配置解析中未取到值的占位符变量名（供启动日志提示，避免静默变空串）
+_unresolved_env_vars: list[str] = []
 
 
-def _parse_env_scalar(value: str) -> object:
-    lowered = value.lower()
-    if lowered == "true":
-        return True
-    if lowered == "false":
-        return False
-    if lowered in {"null", "none", "~"}:
-        return None
-    if _INT_RE.fullmatch(value):
-        return int(value)
-    if _FLOAT_RE.fullmatch(value):
-        return float(value)
-    return value
+def get_missing_env_vars() -> list[str]:
+    """返回最近一次 ``Config.from_yaml`` 中未取到值的 ``${VAR}`` 变量名。"""
+    return list(_unresolved_env_vars)
 
 
-def _expand_env_string(value: str) -> object:
-    """Expand only ${NAME} / ${NAME:-default}; never evaluate shell syntax."""
+def _ensure_project_env_loaded() -> None:
+    """解析配置前兜底加载项目根 .env（幂等）。
 
-    full_match = _ENV_VAR_RE.fullmatch(value)
+    ``${VAR}`` 的值来自 ``os.environ``；直接 ``python main.py`` 或 IDE 启动时，
+    shell 里 export 的变量常常传不进进程，这里保证无论入口如何都能取到 .env 的值。
+    """
+    try:
+        from .utils.env_loader import load_project_env
+    except Exception as e:  # pragma: no cover - 兜底，不影响配置解析
+        logger.debug(f"跳过项目根 .env 加载: {e}")
+        return
+    try:
+        load_project_env()
+    except Exception as e:
+        logger.warning(f"⚠️ 加载项目根 .env 失败（忽略）: {e}")
 
-    def replace(match: re.Match[str]) -> str:
-        env_value = os.environ.get(match.group(1))
-        if env_value is not None:
-            return env_value
+
+def _expand_env(value: str, missing: set[str]) -> str:
+    """Resolve ${VAR} / ${VAR:-default} placeholders in a single string."""
+
+    def _replace(match: "re.Match[str]") -> str:
+        name = match.group(1)
         default = match.group(2)
-        return default if default is not None else match.group(0)
+        env_value = os.environ.get(name)
+        if env_value:
+            return env_value
+        if default is not None:
+            return default
+        missing.add(name)
+        return ""
 
-    expanded = _ENV_VAR_RE.sub(replace, value)
-    if full_match and not _ENV_VAR_RE.search(expanded):
-        return _parse_env_scalar(expanded)
-    return expanded
-
-
-def _expand_env_recursive(value: object) -> object:
-    if isinstance(value, str):
-        return _expand_env_string(value)
-    if isinstance(value, list):
-        return [_expand_env_recursive(item) for item in value]
-    if isinstance(value, dict):
-        return {key: _expand_env_recursive(item) for key, item in value.items()}
-    return value
+    return _ENV_VAR_RE.sub(_replace, value)
 
 
-def _find_unresolved_paths(value: object, path: str = "") -> set[str]:
-    found: set[str] = set()
-    if isinstance(value, str) and _ENV_VAR_RE.search(value):
-        found.add(path or "<root>")
-    elif isinstance(value, list):
-        for index, item in enumerate(value):
-            found.update(_find_unresolved_paths(item, f"{path}[{index}]"))
-    elif isinstance(value, dict):
-        for key, item in value.items():
-            child = f"{path}.{key}" if path else str(key)
-            found.update(_find_unresolved_paths(item, child))
-    return found
-
-
-def _runtime_config_view(data: dict[str, Any]) -> dict[str, Any]:
-    """Return only configuration branches consumed by the selected runtime."""
-
-    active_model = str(data.get("model", "minimax"))
-    models = data.get("models") if isinstance(data.get("models"), dict) else {}
-    database = (
-        data.get("database") if isinstance(data.get("database"), dict) else {}
-    )
-    database_type = str(database.get("type", "sqlite"))
-    selected: dict[str, Any] = {
-        key: value for key, value in data.items() if key not in {"models", "database"}
-    }
-    selected["models"] = {active_model: models.get(active_model, {})}
-    selected["database"] = {
-        "type": database_type,
-        "fallback_to_sqlite": database.get("fallback_to_sqlite", False),
-        database_type: database.get(database_type, {}),
-    }
-    return selected
+def _expand_env_recursive(obj: Any, missing: set[str] | None = None) -> Any:
+    """Recursively expand env-var placeholders inside parsed YAML data."""
+    if missing is None:
+        missing = set()
+    if isinstance(obj, str):
+        return _expand_env(obj, missing)
+    if isinstance(obj, dict):
+        return {k: _expand_env_recursive(v, missing) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_expand_env_recursive(item, missing) for item in obj]
+    return obj
 
 
 class RetryConfig(BaseModel):
@@ -113,10 +87,9 @@ class ProviderConfig(BaseModel):
     api_key: str = ""
     model: str = ""
     api_base: str = ""
-    max_input_tokens: int = 200000
+    # 未显式配置时的默认上下文窗口（1M）；实际值以各 provider 段配置为准。
+    context_length: int = 1_000_000
     protocol: str = "openai"  # "openai" or "anthropic"
-    supports_vision: bool = False  # 是否支持视觉/图片输入；False 时自动过滤 image_url 内容块
-    timeout_seconds: float = 60.0  # 单次模型请求超时，防止代理断连后无限等待
 
 
 class LLMConfig(BaseModel):
@@ -126,19 +99,14 @@ class LLMConfig(BaseModel):
     api_base: str | None = None
     model: str = "claude-sonnet-4-6"
     provider: str = "minimax"
-    max_input_tokens: int = 200000  # Model context window size
+    context_length: int = 1_000_000  # Model context window size
     protocol: str = "openai"  # "openai" or "anthropic"
-    supports_vision: bool = False  # 是否支持视觉/图片输入
-    timeout_seconds: float = 60.0
     retry: RetryConfig = Field(default_factory=RetryConfig)
 
 
 class ToolsConfig(BaseModel):
     skills_dir: str = "./skills"
     prompts_dir: str = "./prompts"
-    read_file_line_limit: int = 2000
-    """read_file 内置工具每次读取的行数，默认 2000。"""
-
 
 class SQLiteConfig(BaseModel):
     """SQLite configuration"""
@@ -174,19 +142,8 @@ class DatabaseConfig(BaseModel):
     """Database configuration - supports SQLite and MySQL"""
 
     type: str = "sqlite"
-    # MySQL deployments must fail closed.  A silent fallback creates a second,
-    # divergent personnel store and can invalidate authorization decisions.
-    fallback_to_sqlite: bool = False
     sqlite: SQLiteConfig = Field(default_factory=SQLiteConfig)
     mysql: MySQLConfig = Field(default_factory=MySQLConfig)
-
-
-class PersonnelConfig(BaseModel):
-    """Personnel provisioning and account-source policy."""
-
-    # Fail closed unless a controlled deployment explicitly opts into the
-    # legacy public registration flow.
-    self_registration_enabled: bool = False
 
 
 class AgentConfig(BaseModel):
@@ -195,12 +152,16 @@ class AgentConfig(BaseModel):
     max_steps: int = 50
     workspace_dir: str = "./workspace"
     memories_dir: str = "./memories"
-    log_dir: str = "./logs"
     sessions_dir: str = "./sessions"
-    system_prompt_path: str = "system_prompt.md"
-    idle_logout_minutes: int = 5
+    prompt_path: str = "prompts"
+    """提示词目录（相对配置目录），内含 system.md、fragments/ 与 memory_*.md。
+
+    目录不存在时依次回落：包内 ``easy_agent/config/prompts`` → 内置默认提示词。
+    也可用环境变量 EASY_PROMPTS_DIR 指向外部目录覆盖。
+    """
+    idle_logout_minutes: int = 0
     """登录态空闲超时（分钟）：后端以最近一次接口调用为起点滑动续期，
-    前端超过该时长无操作时自动退出到登录页。设为 0 表示永不过期。"""
+    前端超过该时长无操作时自动退出到登录页。0 表示永不过期（默认，后台不启用登录超时机制）。"""
     denied_dirs: list[str | dict[str, Any]] = Field(default_factory=list)
     """禁止智能体读写的虚拟路径目录列表。
 
@@ -226,21 +187,6 @@ class AgentConfig(BaseModel):
     环境。Windows 暂无等效沙箱，默认拒绝 execute；仅在可信单用户环境才可设为
     False 直接执行宿主机命令。
     """
-
-
-class LogConfig(BaseModel):
-    """日志配置：可在配置文件中指定日志目录、文件名、格式与级别。
-
-    - dir:    日志目录（也可用环境变量 EASY_LOG_DIR 覆盖）
-    - file:   日志文件名（留空则默认 easy_agent.log）
-    - format: logging 格式串，支持 %(asctime)s/%(name)s/%(levelname)s/%(message)s 等
-    - level:  日志级别，默认 info（info/debug/warning/error）
-    """
-
-    dir: str = "./logs"
-    file: str = ""
-    format: str = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-    level: str = "info"
 
 
 class MCPToolConfig(BaseModel):
@@ -275,13 +221,17 @@ class PresetQuestionGroup(BaseModel):
     questions: list[str] = Field(default_factory=list)
 
 
+class PersonnelConfig(BaseModel):
+    self_registration_enabled: bool = False
+    passwordless_login_enabled: bool = False
+
+
 class Config(BaseModel):
     """Main configuration class"""
 
     llm: LLMConfig
     agent: AgentConfig
     tools: ToolsConfig
-    log: LogConfig = Field(default_factory=LogConfig)
     summarization: SummarizationConfig = Field(default_factory=SummarizationConfig)
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
     personnel: PersonnelConfig = Field(default_factory=PersonnelConfig)
@@ -307,7 +257,7 @@ class Config(BaseModel):
     @classmethod
     def load(cls) -> "Config":
         """Load configuration from the default search path."""
-        config_path = cls.get_default_config_path()
+        config_path = cls.resolve_config_path()
         if not config_path.exists():
             raise FileNotFoundError(
                 "Configuration file not found. Place config.yaml in easy_agent/config/ directory."
@@ -320,27 +270,34 @@ class Config(BaseModel):
         explicit_path: str | Path | None = None,
         config_dir: str | Path | None = None,
     ) -> Path:
-        """Resolve the active YAML path; values are expanded by :meth:`from_yaml`."""
+        """Resolve the active YAML config without expanding config values."""
         if explicit_path is None:
             explicit_path = os.environ.get("EASY_CONFIG")
         if explicit_path:
             return Path(explicit_path)
 
+        # 统一单一配置：只读 config.yaml。环境差异（路径 / 窗口 / 阈值 / 模型名）
+        # 一律通过 ${VAR:-默认值} 占位符从 .env.{AGENT_ENV} 注入，不再按 AGENT_ENV
+        # 选择不同的 yaml —— config.{dev,test,prod}.yaml 已废弃。
         base_dir = Path(config_dir) if config_dir else cls.get_package_dir() / "config"
-        agent_env = os.environ.get("AGENT_ENV", "dev").lower()
-        if agent_env in ("dev", "test", "prod"):
-            candidate = base_dir / f"config.{agent_env}.yaml"
-            if candidate.exists():
-                return candidate
-
-        dev_candidate = base_dir / "config.dev.yaml"
-        if dev_candidate.exists():
-            return dev_candidate
-        return base_dir / "config.yaml"
+        unified = base_dir / "config.yaml"
+        if unified.exists():
+            return unified
+        # Preserve existing knowledge deployments without moving their config/data.
+        legacy = base_dir / f"config.{os.environ.get('AGENT_ENV', 'dev').lower()}.yaml"
+        return legacy if legacy.exists() else unified
 
     @classmethod
     def from_yaml(cls, config_path: str | Path) -> "Config":
-        """Load configuration from YAML file"""
+        """Load configuration from YAML file
+
+        YAML 中的字符串支持 ``${VAR}`` / ``${VAR:-默认值}`` 占位符，值取自
+        ``os.environ``（项目根 .env 会在解析前自动注入），用于不入库的敏感配置。
+        未取到值且无默认值的变量按空串处理，变量名记录在 ``get_missing_env_vars()``。
+        """
+        global _unresolved_env_vars
+        _unresolved_env_vars = []
+
         config_path = Path(config_path)
 
         if not config_path.exists():
@@ -349,20 +306,54 @@ class Config(BaseModel):
         with open(config_path, encoding="utf-8") as f:
             data = yaml.safe_load(f)
 
-        if not isinstance(data, dict) or not data:
+        if not data:
             raise ValueError("Configuration file is empty")
 
-        data = _expand_env_recursive(data)
-        unresolved = sorted(_find_unresolved_paths(_runtime_config_view(data)))
-        if unresolved:
-            raise ValueError(
-                "Selected runtime configuration has unresolved environment variables at: "
-                + ", ".join(unresolved)
-            )
+        # Expand ${ENV_VAR} / ${ENV_VAR:-default} placeholders (e.g. api_key, password).
+        _ensure_project_env_loaded()
+        missing: set[str] = set()
+        data = _expand_env_recursive(data, missing)
+        # Read legacy model context limits without changing the stored YAML.
+        for model in [data.get("llm", {}), *data.get("models", {}).values()]:
+            if isinstance(model, dict) and "context_length" not in model and "max_input_tokens" in model:
+                model["context_length"] = model["max_input_tokens"]
+        _unresolved_env_vars = sorted(missing)
 
         # Parse active model selection
         active_model = data.get("model", "minimax")
 
+        # Parse provider-specific model configs
+        models = cls._parse_models(data)
+
+        # Resolve active model config
+        llm_config = cls._parse_llm_config(data, models, active_model)
+
+        agent_config = cls._parse_agent_config(data)
+
+        tools_config = cls._parse_tools_config(data)
+
+        db_config = cls._parse_database_config(data)
+
+        summ_config = cls._parse_summarization_config(data)
+
+        return cls(
+            llm=llm_config,
+            agent=agent_config,
+            tools=tools_config,
+            summarization=summ_config,
+            database=db_config,
+            personnel=PersonnelConfig(**data.get("personnel", {})),
+            models=models,
+            active_model=active_model,
+            preset_questions=data.get("preset_questions", []),
+            app_welcome_title=data.get(
+                "app_welcome_title", DEFAULT_APP_WELCOME_TITLE
+            ),
+        )
+
+    @staticmethod
+    def _parse_models(data: dict) -> dict[str, ProviderConfig]:
+        """解析 models 段：每个 provider 的 api_key / model / api_base 等。"""
         # Parse provider-specific model configs
         models_data = data.get("models", {})
         models: dict[str, ProviderConfig] = {}
@@ -373,12 +364,14 @@ class Config(BaseModel):
                     api_key=mcfg.get("api_key", ""),
                     model=mcfg.get("model", ""),
                     api_base=mcfg.get("api_base", ""),
-                    max_input_tokens=mcfg.get("max_input_tokens", 200000),
+                    context_length=mcfg.get("context_length", 1_000_000),
                     protocol=mcfg.get("protocol", "openai"),
-                    supports_vision=mcfg.get("supports_vision", False),
-                    timeout_seconds=mcfg.get("timeout_seconds", 60.0),
                 )
+        return models
 
+    @staticmethod
+    def _parse_llm_config(data: dict, models: dict, active_model: str) -> LLMConfig:
+        """解析当前激活模型为 LLMConfig，并校验 api_key 非空。"""
         # Resolve active model config
         active_cfg = models.get(active_model, ProviderConfig())
         if not active_cfg.api_key:
@@ -393,47 +386,45 @@ class Config(BaseModel):
             max_retries=retry_data.get("max_retries", 3),
         )
 
-        llm_config = LLMConfig(
+        return LLMConfig(
             api_key=active_cfg.api_key,
             api_base=active_cfg.api_base or None,
             model=active_cfg.model or "claude-sonnet-4-6",
             provider=active_cfg.provider or active_model,
-            max_input_tokens=active_cfg.max_input_tokens or 200000,
+            context_length=active_cfg.context_length or 1_000_000,
             protocol=active_cfg.protocol or "openai",
-            supports_vision=active_cfg.supports_vision,
-            timeout_seconds=active_cfg.timeout_seconds,
             retry=retry_config,
         )
 
-        agent_config = AgentConfig(
+    @staticmethod
+    def _parse_agent_config(data: dict) -> AgentConfig:
+        """解析 agent 段（工作目录、记忆目录、提示词路径等）。"""
+        return AgentConfig(
             max_steps=data.get("max_steps", 50),
             workspace_dir=data.get("workspace_dir", "./workspace"),
             memories_dir=data.get("memories_dir", "./memories"),
-            log_dir=data.get("log_dir", "./logs"),
             sessions_dir=data.get("sessions_dir", "./sessions"),
-            system_prompt_path=data.get("system_prompt_path", "system_prompt.md"),
-            idle_logout_minutes=data.get("idle_logout_minutes", 5),
+            # 旧字段 system_prompt_path 仅作兼容（值为单文件时按单文件读取）
+            prompt_path=data.get("prompt_path")
+            or data.get("system_prompt_path")
+            or "prompts",
+            idle_logout_minutes=data.get("idle_logout_minutes", 0),
             denied_dirs=data.get("denied_dirs", []),
             external_dirs=data.get("external_dirs", {}),
         )
 
+    @staticmethod
+    def _parse_tools_config(data: dict) -> ToolsConfig:
+        """解析 tools 段（技能目录、提示词目录、读取行数上限）。"""
         tools_data = data.get("tools", {})
-        tools_config = ToolsConfig(
+        return ToolsConfig(
             skills_dir=tools_data.get("skills_dir", "./skills"),
             prompts_dir=tools_data.get("prompts_dir", "./prompts"),
-            read_file_line_limit=tools_data.get("read_file_line_limit", 2000),
         )
 
-        log_data = data.get("log", {})
-        log_config = LogConfig(
-            dir=log_data.get("dir", "./logs"),
-            file=log_data.get("file", ""),
-            format=log_data.get(
-                "format", "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-            ),
-            level=log_data.get("level", "info"),
-        )
-
+    @staticmethod
+    def _parse_database_config(data: dict) -> DatabaseConfig:
+        """解析 database 段（sqlite / mysql 及其连接池参数）。"""
         db_data = data.get("database", {})
         sqlite_data = (
             db_data.get("sqlite", {}) if isinstance(db_data.get("sqlite"), dict) else {}
@@ -446,9 +437,8 @@ class Config(BaseModel):
             if isinstance(mysql_data.get("pool"), dict)
             else {}
         )
-        db_config = DatabaseConfig(
+        return DatabaseConfig(
             type=db_data.get("type", "sqlite"),
-            fallback_to_sqlite=db_data.get("fallback_to_sqlite", False),
             sqlite=SQLiteConfig(path=sqlite_data.get("path", "./data/easy_agent.db")),
             mysql=MySQLConfig(
                 host=mysql_data.get("host", "127.0.0.1"),
@@ -469,36 +459,14 @@ class Config(BaseModel):
             ),
         )
 
+    @staticmethod
+    def _parse_summarization_config(data: dict) -> SummarizationConfig:
+        """解析 summarization 段（压缩阈值与目标比例）。"""
         summ_data = data.get("summarization", {})
-        summ_config = SummarizationConfig(
+        return SummarizationConfig(
             enabled=summ_data.get("enabled", True),
             compression_threshold=summ_data.get("compression_threshold", 0.8),
             compression_target=summ_data.get("compression_target", 0.1),
-        )
-
-        personnel_data = data.get("personnel", {})
-        if not isinstance(personnel_data, dict):
-            personnel_data = {}
-        personnel_config = PersonnelConfig(
-            self_registration_enabled=personnel_data.get(
-                "self_registration_enabled", False
-            )
-        )
-
-        return cls(
-            llm=llm_config,
-            agent=agent_config,
-            tools=tools_config,
-            log=log_config,
-            summarization=summ_config,
-            database=db_config,
-            personnel=personnel_config,
-            models=models,
-            active_model=active_model,
-            preset_questions=data.get("preset_questions", []),
-            app_welcome_title=data.get(
-                "app_welcome_title", DEFAULT_APP_WELCOME_TITLE
-            ),
         )
 
     def ensure_directories(self) -> list[str]:
@@ -516,11 +484,9 @@ class Config(BaseModel):
         candidates: list[tuple[str, str]] = [
             ("workspace", self.agent.workspace_dir),
             ("memories", self.agent.memories_dir),
-            ("log_dir", self.agent.log_dir),
             ("sessions", self.agent.sessions_dir),
             ("skills", self.tools.skills_dir),
             ("prompts", self.tools.prompts_dir),
-            ("log", self.log.dir),
         ]
 
         # SQLite database file -> its parent directory.
@@ -698,8 +664,4 @@ class Config(BaseModel):
 
     @classmethod
     def get_default_config_path(cls) -> Path:
-        config_path = cls.find_config_file("config.yaml")
-        if config_path:
-            return config_path
-
-        return cls.get_package_dir() / "config" / "config.yaml"
+        return cls.resolve_config_path()

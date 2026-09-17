@@ -6,15 +6,17 @@
       "args": ["-y", "@anthropic/modelcontextprotocol-tools-filesystem", "/tmp"],
       "env": {}
     },
-    "example-sse-api": {
-      "transport": "sse",
+    "example-http-api": {
+      "transport": "streamable_http",
       "url": "http://localhost:3000/mcp",
       "headers": {}
     },
-    "example-http-api": {
-      "transport": "http",
-      "url": "http://localhost:8000/mcp",
-      "headers": {}
+    "market-data": {
+      "transport": "streamable_http",
+      "url": "http://127.0.0.1:8100/mcp/market/",
+      "headers": {
+        "Authorization": "Bearer <在设置页生成的 Market MCP API Key>"
+      }
     }
   }
 }

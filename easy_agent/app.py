@@ -1,17 +1,18 @@
 """FastAPI application entry point"""
 
+import asyncio
 import logging
-from logging.handlers import TimedRotatingFileHandler
 import os
 import platform
-import re
 import sys
-import threading
 import time
-import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
+
+from .initialization import initialize_runtime
+
+runtime_initialization = initialize_runtime()
 
 import uvicorn
 from fastapi import FastAPI, Request
@@ -19,27 +20,30 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from langchain_core.messages import HumanMessage
 
-from .config import Config, AgentConfig
+from .config import AgentConfig
 from .db import init_database
-from .domain.bloom.bloom_scheduler import start_scheduler
 from .knowledge.api import router as knowledge_router
-from .knowledge.ops_api import router as knowledge_ops_router
+from .knowledge.lifecycle import shutdown_knowledge, startup_knowledge
+from .knowledge.legacy_routes import LegacyHostRoutes
 from .knowledge.observability import audit_metadata, metrics, resolve_request_id, should_audit
 from .knowledge.operations_repository import KnowledgeOperationsRepository
-from .knowledge.lifecycle import shutdown_knowledge, startup_knowledge
+from .knowledge.ops_api import router as knowledge_ops_router
 from .personnel import router as personnel_router
 from .model import create_model
 from .models.api import HealthResponse
 from .services import get_agent_config, init_agent_config
 from .services import init_scheduler, shutdown_scheduler, reload_all_tasks
+from .services.prompt_loader import (
+    configure_prompts_dir,
+    get_prompts_dir,
+    load_system_prompt,
+)
 from .skills import find_skills_root, discover_skills
 from .api import (
     chat_router,
     sessions_router,
     files_router,
     auth_router,
-    bloom_router,
-    forex_router,
     completion_router,
     prompts_router,
     settings_router,
@@ -60,238 +64,56 @@ frontend_dist = os.path.join(
 
 agent_config = None
 db_instance = None
-_ROTATED_LOG_SUFFIX = re.compile(r"^\.\d{4}-\d{2}-\d{2}$", re.ASCII)
 
 
-def setup_logging(log_config: dict | None = None):
-    """按配置文件中的 log 段初始化日志。
-
-    log_config 字段：
-        dir:    日志目录（环境变量 EASY_LOG_DIR 可覆盖）
-        file:   日志文件名（留空则默认 easy_agent.log）
-        format: logging 格式串（% 风格：%(asctime)s 等）
-        level:  日志级别（默认 info）
-    lifespan 会调用两次（先默认、后按配置），故每次调用都按新配置重建 handler。
-    """
-    cfg = log_config or {}
-    log_dir = os.getenv("EASY_LOG_DIR") or cfg.get("dir") or "./logs"
-    log_file_name = cfg.get("file") or "easy_agent.log"
-    fmt = (
-        cfg.get("format")
-        or "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-    )
-    level_name = (cfg.get("level") or "info").lower()
-    level = getattr(logging, level_name.upper(), logging.INFO)
-
-    root_logger = logging.getLogger()
-    # 先移除已有 handler，确保按新配置重建（支持运行期按配置重设）
-    for h in list(root_logger.handlers):
-        root_logger.removeHandler(h)
-        try:
-            h.close()
-        except Exception:
-            pass
-
-    log_dir_path = Path(log_dir)
-    log_dir_path.mkdir(parents=True, exist_ok=True)
-    log_file = log_dir_path / log_file_name
-
-    formatter = _CustomFormatter(
-        fmt=fmt,
-        datefmt="%Y-%m-%d %H:%M:%S",
-        style="%",
-    )
-
-    console_handler = logging.StreamHandler()
-    console_handler.setLevel(level)
-    console_handler.setFormatter(formatter)
-    console_handler.addFilter(_RunidFilter())
-
-    # 按天滚动：每天午夜切分新日志文件，保留最近 30 天，文件名追加日期后缀
-    # （如 easy_agent.log.2026-08-14）。空文件（当天无日志）不生成旋转文件。
-    file_handler = TimedRotatingFileHandler(
-        log_file,
-        when="midnight",
-        interval=1,
-        backupCount=30,
-        encoding="utf-8",
-        delay=True,
-    )
-    file_handler.suffix = "%Y-%m-%d"
-    file_handler.extMatch = _ROTATED_LOG_SUFFIX
-    file_handler.setLevel(level)
-    file_handler.setFormatter(formatter)
-    file_handler.addFilter(_RunidFilter())
-
-    root_logger.setLevel(level)
-    root_logger.addHandler(console_handler)
-    root_logger.addHandler(file_handler)
-
-    uvicorn_logger = logging.getLogger("uvicorn")
-    uvicorn_logger.setLevel(level)
-    uvicorn_logger.addHandler(console_handler)
-    uvicorn_logger.addHandler(file_handler)
-
-    uvicorn_access_logger = logging.getLogger("uvicorn.access")
-    uvicorn_access_logger.setLevel(level)
-    uvicorn_access_logger.addHandler(console_handler)
-    uvicorn_access_logger.addHandler(file_handler)
-
-    # deepagents 的技能名校验仅允许小写字母+连字符，但本项目部分技能
-    # （如 strategy_fx）因 Python 反射加载要求必须使用下划线命名，无法改名。
-    #该校验仅为 WARNING 且不影响加载（向后兼容），故屏蔽此噪声日志。
-    logging.getLogger("deepagents.middleware.skills").setLevel(logging.ERROR)
-
-    return str(log_file)
-
-
-class _RunidFilter(logging.Filter):
-    def filter(self, record):
-        if not hasattr(record, "runid"):
-            record.runid = "-"
-        return True
-
-
-class _CustomFormatter(logging.Formatter):
-    def formatTime(self, record, datefmt=None):
-        ct = datetime.fromtimestamp(record.created)
-        if datefmt:
-            s = ct.strftime(datefmt)
-        else:
-            s = ct.strftime("%Y-%m-%d %H:%M:%S")
-        return f"{s}.{int(record.msecs * 1000):06d}"
-
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    global agent_config, db_instance
-
-    project_root = Path(__file__).parent.parent
-    if str(project_root) not in sys.path:
-        sys.path.insert(0, str(project_root))
-    os.chdir(project_root)
-
-    # ── 环境识别 & 配置路径解析（先静默确定配置，再初始化日志格式）──
-    # AGENT_ENV 决定运行环境: dev | test | prod
-    # 1. 若设置了 EASY_CONFIG 环境变量，直接使用（entrypoint.sh 场景）
-    # 2. 若设置了 AGENT_ENV，按环境选择 config.{env}.yaml
-    # 3. 未设置时：优先 config.dev.yaml（开发默认），兜底 config.yaml
-    agent_env = os.environ.get("AGENT_ENV", "").lower()
-    # Windows 启动默认使用 dev 环境（除非用户显式设置了 AGENT_ENV 或 EASY_CONFIG）
-    if platform.system() == "Windows" and not os.environ.get("AGENT_ENV") and not os.environ.get("EASY_CONFIG"):
-        agent_env = "dev"
-    config_dir = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), "config"
-    )
-
-    if os.environ.get("EASY_CONFIG"):
-        config_path = os.environ["EASY_CONFIG"]
-    elif agent_env in ("dev", "test", "prod"):
-        candidate = os.path.join(config_dir, f"config.{agent_env}.yaml")
-        config_path = candidate if os.path.exists(candidate) else os.path.join(config_dir, "config.yaml")
-    else:
-        # 未设置 AGENT_ENV：优先 dev 配置，兜底 config.yaml
-        dev_candidate = os.path.join(config_dir, "config.dev.yaml")
-        config_path = dev_candidate if os.path.exists(dev_candidate) else os.path.join(config_dir, "config.yaml")
-        agent_env = "dev" if os.path.exists(dev_candidate) else "(默认)"
-
-    # 先加载配置并按其 log 段初始化日志格式，使启动日志从一开始就使用
-    # 配置文件中的 format（而非默认的 " - " 分隔格式）。
-    config = None
+async def _check_llm_connection(config) -> None:
+    """启动时探测 LLM 连通性；失败只告警，不阻断服务启动。"""
     try:
-        config = Config.from_yaml(config_path)
-        log_cfg = config.log.model_dump()
-    except Exception as e:
-        logger.error(
-            f"❌ 配置文件加载失败，服务将以降级模式启动（聊天等功能不可用）: {e}\n"
-            f"   请检查配置文件（{config_path}）的 active model 是否配置了 api_key，"
-            f"或对应的 ${{ENV_VAR}} 环境变量是否已设置。"
-        )
-        log_cfg = None
-
-    log_file = setup_logging(log_cfg)
-
-    logger.info("=" * 60)
-    logger.info("Easy Agent Web Service 初始化中...")
-    logger.info(f"项目目录: {project_root}")
-    logger.info(f"操作系统: {platform.system()} {platform.release()}")
-    logger.info(f"启动时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    logger.info("=" * 60)
-
-    await startup_knowledge(app, config_path)
-
-    # 打印环境信息和配置文件
-    logger.info("=" * 60)
-    logger.info(f"AGENT_ENV: {agent_env or '(未设置, 默认 dev)'}")
-    logger.info(f"配置文件: {config_path}")
-    logger.info("=" * 60)
-
-    if config:
-        logger.info(f"✅ 配置文件加载成功: {config_path}")
-
-        # 启动时创建配置文件中所有缺失的目录（workspace/memories/logs/sessions/
-        # skills/prompts/sqlite 父目录/external_dirs 宿主机路径等）
-        created_dirs = config.ensure_directories()
-        if created_dirs:
-            logger.info(f"📁 已创建 {len(created_dirs)} 个配置目录: {created_dirs}")
-        else:
-            logger.info("📁 配置目录均已存在，无需创建")
-
+        llm = create_model(config)
         logger.info(
-            f"日志初始化完成 | 目录: {log_cfg.get('dir')} | 文件: {log_file} | 级别: {log_cfg.get('level')}"
+            f"🔌 正在测试 LLM 连接 | provider: {config.llm.provider} | model: {config.llm.model}"
         )
-        logger.info(f"LLM Provider: {config.llm.provider}")
-        logger.info(f"LLM Model: {config.llm.model}")
-        logger.info(f"LLM Protocol: {config.llm.protocol}")
-        logger.info(f"Database Type: {config.database.type}")
-    else:
-        logger.warning("⚠️ 配置未加载，后续将使用内置默认值（部分功能可能不可用）")
 
-    if config:
-        try:
-            llm = create_model(config)
-            logger.info(
-                f"🔌 正在测试 LLM 连接 | provider: {config.llm.provider} | model: {config.llm.model}"
-            )
+        resp = await llm.ainvoke([HumanMessage(content="hi")])
+        reply = resp.content if hasattr(resp, "content") else str(resp)
+        logger.info(f"✅ LLM 连接成功 | 回复: {reply[:100]}")
+    except Exception as e:
+        logger.warning(f"⚠️ LLM 连接失败: {e}")
+        logger.warning("⚠️ 服务将继续启动，但聊天功能可能不可用")
 
-            resp = await llm.ainvoke([HumanMessage(content="hi")])
-            reply = resp.content if hasattr(resp, "content") else str(resp)
-            logger.info(f"✅ LLM 连接成功 | 回复: {reply[:100]}")
-        except Exception as e:
-            logger.warning(f"⚠️ LLM 连接失败: {e}")
-            logger.warning("⚠️ 服务将继续启动，但聊天功能可能不可用")
+
+def _init_database_and_state(app, config) -> None:
+    """初始化数据库，并挂到 app.state.db 与全局 db_instance。"""
+    global db_instance
 
     try:
         db_config = config.database.model_dump() if config else {}
         db = init_database(db_config)
         app.state.db = db
         db_instance = db
-        logger.info("✅ 数据库初始化完成")
+        logger.info(
+            f"✅ 数据库初始化完成 | 实际类型: {getattr(db, 'db_type', 'unknown')}"
+        )
     except Exception as e:
         logger.error(f"❌ 数据库初始化失败: {e}")
         raise
 
-    if (
-        config
-        and hasattr(config.agent, "system_prompt_path")
-        and config.agent.system_prompt_path
-    ):
-        config_dir = os.path.dirname(os.path.abspath(config_path))
-        system_prompt_path = os.path.join(config_dir, config.agent.system_prompt_path)
-    else:
-        system_prompt_path = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)), "config", "system_prompt.md"
-        )
 
-    if os.path.exists(system_prompt_path):
-        with open(system_prompt_path, "r", encoding="utf-8") as f:
-            system_prompt = f.read()
-        logger.info(
-            f"✅ 系统提示词加载成功: {system_prompt_path} ({len(system_prompt)} 字符)"
-        )
-    else:
-        system_prompt = "你是一个有帮助的 AI 助手。"
-        logger.warning(f"⚠️ 系统提示词文件不存在: {system_prompt_path}，使用默认提示词")
+def _prepare_system_prompt(config, config_path) -> str:
+    """加载提示词目录与系统提示词、追加当前时间，返回最终 system_prompt。"""
+    # 提示词统一由 prompt_loader 从 agent.prompt_path 指向的目录加载：
+    # system.md + fragments/*.md，缺失时逐级回落到内置默认提示词。
+    # 同时把该目录设为全局提示词目录，使记忆类提示词也从同一处读取。
+    config_dir = os.path.dirname(os.path.abspath(config_path)) if config_path else None
+    prompt_path = (
+        getattr(config.agent, "prompt_path", "prompts") if config else "prompts"
+    )
+    configure_prompts_dir(prompt_path, base_dir=config_dir)
+    system_prompt = load_system_prompt(prompt_path=prompt_path, config_dir=config_dir)
+    logger.info(
+        f"✅ 系统提示词加载完成 | 提示词目录: {get_prompts_dir()} "
+        f"({len(system_prompt)} 字符)"
+    )
 
     # 打印工作目录与记忆目录的绝对路径（记忆文件按用户/会话动态生成，故给出基目录与模板路径）
     # 配置未加载（config 为 None）时使用 AgentConfig 默认值，保证降级启动不崩溃
@@ -312,6 +134,103 @@ async def lifespan(app: FastAPI):
         f"\n## 当前时间\n"
         f"{now_dt.strftime('%Y-%m-%d %H:%M:%S')} (时区: {tz_name})\n"
     )
+    return system_prompt
+
+
+def _start_scheduler() -> None:
+    """启动定时任务调度器（AsyncIOScheduler）；失败只告警。"""
+    # 定时任务调度器（AsyncIOScheduler）
+    try:
+        scheduler = init_scheduler()
+        scheduler.start()
+        reload_all_tasks()
+        logger.info("✅ 定时任务调度器已启动 (AsyncIOScheduler)")
+    except Exception as e:
+        logger.warning(f"⚠️ 定时任务调度器启动失败: {e}")
+
+
+def _shutdown_app(app) -> None:
+    """关闭定时任务调度器与数据库连接。"""
+    try:
+        shutdown_scheduler()
+        logger.info("[关闭] 定时任务调度器已关闭")
+    except Exception as e:
+        logger.warning(f"[关闭] 定时任务调度器关闭失败: {e}")
+
+    if hasattr(app.state, "db") and app.state.db:
+        app.state.db.close()
+
+    logger.info("[关闭] 👋 服务已关闭")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global agent_config, db_instance
+
+    project_root = Path(__file__).parent.parent
+    if str(project_root) not in sys.path:
+        sys.path.insert(0, str(project_root))
+    os.chdir(project_root)
+
+    environment = runtime_initialization.environment
+    agent_env = environment.agent_env
+    config_path = runtime_initialization.config_path
+    config = runtime_initialization.config
+    config_error = runtime_initialization.config_error
+    log_files = runtime_initialization.log_files
+
+    logger.info("=" * 60)
+    logger.info("Easy Agent Web Service 初始化中...")
+    logger.info(f"项目目录: {project_root}")
+    logger.info(f"操作系统: {platform.system()} {platform.release()}")
+    logger.info(f"启动时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    logger.info("=" * 60)
+
+    # 打印环境信息和配置文件
+    logger.info("=" * 60)
+    logger.info(f"AGENT_ENV: {agent_env or '(未设置, 默认 dev)'}")
+    logger.info(f"配置文件: {config_path}")
+    logger.info("=" * 60)
+
+    if config_error:
+        logger.error(
+            f"❌ 配置文件加载失败，服务将以降级模式启动（聊天等功能不可用）: {config_error}"
+        )
+        logger.error(
+            f"   请检查 {config_path} 是否存在，且其中的 ${{ENV_VAR}} 占位符都能在"
+            "项目根 .env（或运行环境）中取到值；active model 也必须配置 api_key。"
+        )
+
+    if config:
+        logger.info(f"✅ 配置文件加载成功: {config_path}")
+
+        # 启动时创建配置文件中所有缺失的目录（workspace/memories/logs/sessions/
+        # skills/prompts/sqlite 父目录/external_dirs 宿主机路径等）
+        created_dirs = config.ensure_directories()
+        if created_dirs:
+            logger.info(f"📁 已创建 {len(created_dirs)} 个配置目录: {created_dirs}")
+        else:
+            logger.info("📁 配置目录均已存在，无需创建")
+
+        logger.info(
+            f"日志初始化完成 | 目录: {Path(log_files.get('proc', '')).parent} | "
+            f"运行日志: {log_files.get('proc')} | 错误日志: {log_files.get('err')} | "
+            f"通信日志: {log_files.get('comm')}"
+        )
+        logger.info(f"LLM Provider: {config.llm.provider}")
+        logger.info(f"LLM Model: {config.llm.model}")
+        logger.info(f"LLM Protocol: {config.llm.protocol}")
+        logger.info(f"Database Type: {config.database.type}")
+    else:
+        logger.warning("⚠️ 配置未加载，后续将使用内置默认值（部分功能可能不可用）")
+
+    await startup_knowledge(app, config_path)
+
+    if config:
+        await _check_llm_connection(config)
+
+    _init_database_and_state(app, config)
+
+    system_prompt = _prepare_system_prompt(config, config_path)
 
     if config:
         skills_dir_config = (
@@ -342,30 +261,27 @@ async def lifespan(app: FastAPI):
             )
             agent_config = {"config": config}
             logger.info("✅ Agent 配置加载成功")
+
+            # 让 deepagents 的 SummarizationMiddleware 使用 config 阈值（基准为
+            # config.llm.context_length）。必须在任何 create_deep_agent 之前执行：
+            # 官方默认的参数截断是 ("messages", 20)，消息一到 20 条就会把历史里
+            # write_file/execute 的参数砍掉，导致下一轮重建上下文时明显缩水。
+            try:
+                from .agent import install_config_summarization
+
+                install_config_summarization(config)
+            except Exception as exc:  # noqa: BLE001
+                logger.error(
+                    f"❌ SummarizationMiddleware 阈值接入失败"
+                    f"（已降级为 deepagents 默认摘要阈值）: "
+                    f"{type(exc).__name__}: {exc} | 通常是 deepagents 升级导致 "
+                    f"deepagents.graph.create_summarization_middleware 变更，"
+                    f"请对照其源码修正 agent.py 中的适配。"
+                )
         else:
             logger.warning("⚠️ 配置未加载，Agent 未初始化，聊天等功能将不可用")
 
-        try:
-            bloom_llm = create_model(config)
-            bloom_thread = threading.Thread(
-                target=start_scheduler,
-                args=(db, bloom_llm),
-                daemon=True,
-                name="bloom-scheduler",
-            )
-            bloom_thread.start()
-            logger.info("✅ 彭博定时任务已启动 (每日 17:00)")
-        except Exception as e:
-            logger.warning(f"⚠️ 彭博定时任务启动失败: {e}")
-
-        # 定时任务调度器（AsyncIOScheduler）
-        try:
-            scheduler = init_scheduler()
-            scheduler.start()
-            reload_all_tasks()
-            logger.info("✅ 定时任务调度器已启动 (AsyncIOScheduler)")
-        except Exception as e:
-            logger.warning(f"⚠️ 定时任务调度器启动失败: {e}")
+        _start_scheduler()
     else:
         logger.warning("⚠️ Agent 配置未加载")
 
@@ -374,18 +290,8 @@ async def lifespan(app: FastAPI):
     logger.info("=" * 60)
     yield
 
-    try:
-        shutdown_scheduler()
-        logger.info("[关闭] 定时任务调度器已关闭")
-    except Exception as e:
-        logger.warning(f"[关闭] 定时任务调度器关闭失败: {e}")
-
     await shutdown_knowledge(app)
-
-    if hasattr(app.state, "db") and app.state.db:
-        app.state.db.close()
-
-    logger.info("[关闭] 👋 服务已关闭")
+    _shutdown_app(app)
 
 
 app = FastAPI(
@@ -402,15 +308,9 @@ app = FastAPI(
 #   - 默认放行所有来源（"*"），兼容开发期跨域直连与同 pod 部署；
 #   - 生产环境如需收紧，设置环境变量 EASY_CORS_ALLOW_ORIGINS 为逗号分隔的可信域名，
 #     例如 "https://app.example.com,https://admin.example.com"。
-_cors_raw = os.getenv("EASY_CORS_ALLOW_ORIGINS")
-if _cors_raw:
-    allow_origins = [o.strip() for o in _cors_raw.split(",") if o.strip()]
-else:
-    allow_origins = ["*"]
-
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=allow_origins,
+    allow_origins=runtime_initialization.environment.cors_allow_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -456,17 +356,18 @@ async def log_requests(request: Request, call_next):
     request.state.request_id = request_id
     path = request.url.path
     if (
-        path in ("/", "/health")
+        path in ("/", "/health", "/api/health", "/agent/health")
         or path.startswith(_ACCESS_SKIP_PREFIXES)
         or path.endswith(_ACCESS_SKIP_SUFFIXES)
     ):
         response = await call_next(request)
         response.headers["X-Request-Id"] = request_id
         return response
+
     client_ip = _get_client_ip(request)
     started = time.monotonic()
-    logger.info("[请求] %s %s | IP: %s | request_id=%s", request.method, path, client_ip, request_id)
     status_code = 500
+    logger.info("[请求] %s %s | IP: %s | request_id=%s", request.method, path, client_ip, request_id)
     try:
         response = await call_next(request)
         status_code = response.status_code
@@ -474,7 +375,7 @@ async def log_requests(request: Request, call_next):
         return response
     finally:
         duration = time.monotonic() - started
-        if path.startswith("/api/knowledge/"):
+        if path.startswith(("/api/knowledge/", "/api/personnel")):
             metrics.observe(request.method, path, status_code, duration)
         if should_audit(path, request.method):
             db = getattr(request.app.state, "db", None)
@@ -505,11 +406,10 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 
 app.include_router(chat_router)
+app.add_middleware(LegacyHostRoutes)
 app.include_router(sessions_router)
 app.include_router(files_router)
 app.include_router(auth_router)
-app.include_router(bloom_router)
-app.include_router(forex_router)
 app.include_router(completion_router)
 app.include_router(prompts_router)
 app.include_router(settings_router)
@@ -522,7 +422,7 @@ app.include_router(knowledge_ops_router)
 app.include_router(personnel_router)
 
 
-@app.get("/api/health", summary="健康检查", response_model=HealthResponse)
+@app.get("/agent/health", summary="健康检查", response_model=HealthResponse)
 async def health_check():
     return HealthResponse(
         status="healthy",
@@ -531,7 +431,7 @@ async def health_check():
     )
 
 
-@app.get("/api/config", summary="获取Agent配置")
+@app.get("/agent/config", summary="获取Agent配置")
 async def get_config():
     _cfg = get_agent_config()
     if _cfg:
@@ -541,6 +441,17 @@ async def get_config():
             "model": _cfg["config"].llm.model,
         }
     return {"status": "not initialized"}
+
+
+
+@app.get("/api/health", summary="健康检查", response_model=HealthResponse)
+async def api_health_check():
+    return await health_check()
+
+
+@app.get("/api/config", summary="获取Agent配置")
+async def api_get_config():
+    return await get_config()
 
 
 @app.get("/", response_class=FileResponse)
@@ -565,12 +476,11 @@ async def serve_static(full_path: str):
 
 
 def run_server(host: str = "0.0.0.0", port: int = 8000):
-    setup_logging()
-
     uvicorn.run(
         "easy_agent.app:app",
         host=host,
         port=port,
         reload=False,
         log_level="info",
+        log_config=None,
     )

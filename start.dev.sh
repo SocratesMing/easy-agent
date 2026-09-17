@@ -83,11 +83,9 @@ else
 fi
 
 # ---------- 配置文件检查 ----------
-CONFIG_FILE="$PROJECT_ROOT/easy_agent/config/config.${AGENT_ENV}.yaml"
-if [[ ! -f "$CONFIG_FILE" ]]; then
-    echo "⚠️  配置文件不存在: $CONFIG_FILE，将回退到 config.yaml"
-    CONFIG_FILE="$PROJECT_ROOT/easy_agent/config/config.yaml"
-fi
+# 后端只使用唯一配置文件 config.yaml；环境差异由 .env.{AGENT_ENV} 注入
+CONFIG_FILE="${EASY_CONFIG:-$PROJECT_ROOT/easy_agent/config/config.dev.yaml}"
+export EASY_CONFIG="$CONFIG_FILE"
 if [[ ! -f "$CONFIG_FILE" ]]; then
     echo "❌ 配置文件不存在: $CONFIG_FILE"
     exit 1

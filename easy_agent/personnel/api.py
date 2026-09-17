@@ -33,6 +33,15 @@ from ..knowledge.operations_repository import KnowledgeOperationsRepository
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/personnel", tags=["Personnel"])
+
+
+@router.get("/login-policy")
+def login_policy():
+    """Public UI capability flags; no users, credentials or infrastructure data."""
+    from ..services import get_agent_config
+    state = get_agent_config()
+    policy = getattr(state.get("config"), "personnel", None) if state else None
+    return {"self_registration_enabled": bool(getattr(policy, "self_registration_enabled", False))}
 MAX_EXCEL_BYTES = 5 * 1024 * 1024
 
 

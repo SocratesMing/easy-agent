@@ -1,0 +1,1311 @@
+<template>
+  <div class="chat-input-container">
+    <div class="input-box">
+      <div v-if="uploadedFiles.length > 0" class="uploaded-files">
+        <div 
+          v-for="(file, index) in uploadedFiles" 
+          :key="index" 
+          class="uploaded-file"
+        >
+          <div class="file-icon">
+            <FileIcon :filename="file.filename" :size="36" />
+          </div>
+          <div class="file-info">
+            <span class="file-name">{{ file.filename }}</span>
+            <div class="file-meta">
+              <span class="file-size">{{ formatSize(file.size) }}</span>
+              <div v-if="file.uploadStatus === 'uploading'" class="upload-progress">
+                <div class="progress-bar">
+                  <div class="progress-fill" :style="{ width: file.uploadProgress + '%' }"></div>
+                </div>
+                <span class="progress-text">{{ file.uploadProgress }}%</span>
+              </div>
+              <span v-else-if="file.uploadStatus === 'completed'" class="upload-status completed">上传完成</span>
+              <span v-else-if="file.uploadStatus === 'error'" class="upload-status error">上传失败</span>
+            </div>
+          </div>
+          <button @click="removeFile(index)" class="remove-file-btn">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="18" y1="6" x2="6" y2="18"></line>
+              <line x1="6" y1="6" x2="18" y2="18"></line>
+            </svg>
+          </button>
+        </div>
+      </div>
+      
+      <div class="input-row">
+        <div class="input-field">
+          <div
+            v-show="caretLineTop !== null"
+            class="caret-line"
+            :style="{ top: caretLineTop + 'px', height: lineHeight + 'px' }"
+          ></div>
+          <textarea
+            ref="textareaRef"
+            v-model="message"
+            @keydown.enter.exact.prevent="send"
+            @input="onInput"
+            @focus="updateCaretLine"
+            @blur="hideCaretLine"
+            @keyup="updateCaretLine"
+            @click="updateCaretLine"
+            @scroll="updateCaretLine"
+            placeholder=""
+            :disabled="disabled"
+            rows="1"
+          ></textarea>
+        </div>
+      </div>
+      
+      <div class="input-actions">
+        <div class="left-actions">
+          <div class="model-dropdown-wrapper" ref="modelDropdownRef">
+            <button
+              class="model-btn"
+              :class="{ disabled: isStreaming || disabled }"
+              :disabled="isStreaming || disabled"
+              @click="toggleModelDropdown"
+              title="选择模型"
+            >
+              <span class="model-btn-label">{{ currentModelLabel }}</span>
+              <svg class="model-btn-arrow" :class="{ open: showModelDropdown }" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="6 9 12 15 18 9"></polyline>
+              </svg>
+            </button>
+              <div v-if="showModelDropdown" class="model-dropdown-menu" :style="dropdownStyle" @click.stop>
+                <div
+                  v-for="m in models"
+                  :key="m.name"
+                  class="model-dropdown-item"
+                  :class="{ active: m.name === localSelectedModel }"
+                  @click="selectModel(m.name)"
+                >
+                  <span class="model-item-name">{{ m.model || m.name }}</span>
+                  <svg v-if="m.name === localSelectedModel" class="model-item-check" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="20 6 9 17 4 12"></polyline>
+                  </svg>
+                </div>
+              </div>
+          </div>
+
+          <label class="action-btn upload-btn" :class="{ disabled: isStreaming || disabled }" title="上传文件">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path>
+            </svg>
+            <input
+              type="file"
+              @change="handleFileSelect"
+              multiple
+              :disabled="isStreaming || disabled"
+              hidden
+            />
+          </label>
+        </div>
+        
+        <div class="right-actions">
+          <div 
+            v-if="showTokenRing" 
+            ref="ringRef"
+            class="context-ring-wrapper" 
+            @click.stop="toggleTokenPopup"
+          >
+            <span class="context-ring-inner">
+              <svg class="context-ring" viewBox="0 0 36 36">
+                <circle class="context-ring-bg" cx="18" cy="18" r="15.9" fill="none" stroke="#e5e7eb" stroke-width="3" />
+                <circle class="context-ring-fill" cx="18" cy="18" r="15.9" fill="none"
+                  :stroke="contextColor" stroke-width="3" stroke-linecap="round"
+                  :stroke-dasharray="`${contextPercent} ${100 - contextPercent}`"
+                  transform="rotate(-90 18 18)" />
+              </svg>
+            </span>
+            <span class="context-ring-text">{{ contextPercent }}%</span>
+            <!-- Vue 2.7 不支持 Teleport：弹窗留在 wrapper 内，依赖 wrapper 无 transform（hover 缩放作用于 .context-ring-inner）保证 fixed 定位正确 -->
+              <div v-if="showTokenPopup" class="token-popup" :style="popupStyle" @click.stop>
+                <div class="token-popup-title">会话信息</div>
+                <div class="token-popup-section">
+                  <div class="token-popup-row">
+                    <span class="token-popup-label">会话耗时</span>
+                    <span class="token-popup-value duration-value">{{ formattedDuration }}</span>
+                  </div>
+                  <div class="token-popup-row">
+                    <span class="token-popup-label">迭代次数</span>
+                    <span class="token-popup-value">{{ iterationCount }}</span>
+                  </div>
+                </div>
+                <div class="token-popup-divider"></div>
+                <div class="token-popup-section">
+                <div class="token-popup-row">
+                  <span class="token-popup-label">本轮上下文占用</span>
+                </div>
+                <div class="token-popup-context-row">
+                  <span class="token-popup-context-value">{{ formatTokens(sessionUsage.context_tokens) }}/{{ formatTokens(sessionUsage.context_length) }}</span>
+                    <span class="token-popup-context-percent" :style="{ color: contextColor }">{{ contextPercent }}%</span>
+                  </div>
+                  <div class="token-popup-bar">
+                    <div class="token-popup-bar-inner">
+                      <div class="token-popup-bar-fill" :style="{ width: contextPercent + '%', background: contextColor }"></div>
+                    </div>
+                  </div>
+                </div>
+                <div class="token-popup-divider"></div>
+                <div class="token-popup-row">
+                  <span class="token-popup-label">输入 Token</span>
+                  <span class="token-popup-value input">{{ formatTokens(sessionUsage.input_tokens) }}</span>
+                </div>
+                <div class="token-popup-row">
+                  <span class="token-popup-label">输出 Token</span>
+                  <span class="token-popup-value output">{{ formatTokens(sessionUsage.output_tokens) }}</span>
+                </div>
+                <div class="token-popup-row">
+                  <span class="token-popup-label">思考 Token</span>
+                  <span class="token-popup-value reasoning">{{ formatTokens(sessionUsage.reasoning_tokens) }}</span>
+                </div>
+              </div>
+          </div>
+          <button 
+            v-if="!isStreaming"
+            @click="send" 
+            class="action-btn send-btn"
+            :class="{ active: canSend }"
+            :disabled="!canSend || disabled"
+            title="发送"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="5" y1="12" x2="19" y2="12"></line>
+              <polyline points="12 5 19 12 12 19"></polyline>
+            </svg>
+          </button>
+          <button
+            v-if="isStreaming"
+            @click="stop"
+            class="action-btn stop-btn"
+            title="停止"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">
+              <rect x="6" y="6" width="12" height="12" rx="2"></rect>
+            </svg>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div v-if="showFooter" class="input-footer">
+      <span class="footer-text">内容由AI生成，请仔细甄别</span>
+    </div>
+  </div>
+</template>
+
+<script>
+import { uploadFile, deleteFile } from '../api/files.js'
+import FileIcon from './FileIcon.vue'
+
+// 输入草稿持久化：页面刷新后恢复用户尚未发送的输入内容（“输入框的状态不变”）
+const DRAFT_KEY = 'easy_agent_input_draft'
+
+export default {
+  components: { FileIcon },
+  props: {
+    disabled: {
+      type: Boolean,
+      default: false
+    },
+    sessionId: {
+      type: String,
+      default: null
+    },
+    isStreaming: {
+      type: Boolean,
+      default: false
+    },
+    sessionUsage: {
+      type: Object,
+      default: () => ({ input_tokens: 0, output_tokens: 0, reasoning_tokens: 0, context_length: null, auto_compress_tokens: null, context_tokens: 0 })
+    },
+    sessionDuration: {
+      type: Number,
+      default: 0
+    },
+    iterationCount: {
+      type: Number,
+      default: 0
+    },
+    models: {
+      type: Array,
+      default: () => []
+    },
+    selectedModel: {
+      type: String,
+      default: null
+    },
+    showFooter: {
+      type: Boolean,
+      default: false
+    }
+  },
+  data() {
+    return {
+      message: '',
+      uploadedFiles: [],
+      // 光标所在行高亮（overlay 技术：textareal 本身无法按行上色）
+      caretLineTop: null, // 高亮条 top，null 表示隐藏
+      lineHeight: 24, // 行高（px）
+      // 自定义下拉菜单
+      showModelDropdown: false,
+      dropdownStyle: {},
+      showTokenPopup: false,
+      // ========== 会话耗时 ==========
+      liveDuration: 0,
+      durationTimer: null,
+    }
+  },
+  computed: {
+    // 模型选择：本地双向绑定，变化时同步父组件
+    localSelectedModel: {
+      get() {
+        return this.selectedModel
+      },
+      set(val) {
+        this.$emit('update:selectedModel', val)
+      }
+    },
+    currentModelLabel() {
+      const m = this.models.find(m => m.name === this.selectedModel)
+      // 显示模型名（deepseek-v4-flash / deepseek-v4-pro），
+      // 而不是 provider 配置段名（deepseek / ark）
+      return m ? (m.model || m.name) : '选择模型'
+    },
+    canSend() {
+      return this.message.trim() || this.uploadedFiles.length > 0
+    },
+    // 后台未返回耗时数据（sessionDuration<=0）且「会话信息」弹窗打开时，前端按 1s
+    // 间隔本地计时，让会话耗时实时更新；后台有数据时直接用后台值。
+    shouldCountLive() {
+      return this.showTokenPopup && (!this.sessionDuration || this.sessionDuration <= 0)
+    },
+    displayDuration() {
+      return this.shouldCountLive ? this.liveDuration : (this.sessionDuration || 0)
+    },
+    formattedDuration() {
+      const total = Math.floor(this.displayDuration)
+      const h = Math.floor(total / 3600)
+      const m = Math.floor((total % 3600) / 60)
+      const s = total % 60
+      if (h > 0) {
+        return `${h}小时${m}分${s}秒`
+      }
+      if (m > 0) {
+        return `${m}分${s}秒`
+      }
+      return `${s}秒`
+    },
+    // 首页（尚未进入任何会话）不展示会话级用量：登录/注册后会从全局配置把
+    // context_length 写进 sessionUsage，但此时没有任何实际用量，
+    // 不能凭这个就显示上下文占用环。
+    showTokenRing() {
+      if (!this.sessionId) return false
+      return this.sessionUsage.input_tokens > 0 || this.sessionUsage.output_tokens > 0 || this.sessionUsage.reasoning_tokens > 0 || this.sessionUsage.context_tokens > 0 || this.sessionDuration > 0 || this.iterationCount > 0
+    },
+    contextPercent() {
+      const u = this.sessionUsage
+      if (!u.context_length || u.context_length <= 0) return 0
+      // 分子使用「当前轮次的上下文窗口占用」(context_tokens)：即本轮喂给模型的输入 token 数，
+      // 与 context_length（上下文窗口上限）对比（已不再统计会话累计总量）。
+      const ctxTokens = u.context_tokens || 0
+      return Math.min(100, Math.round(ctxTokens / u.context_length * 100))
+    },
+    contextColor() {
+      const p = this.contextPercent
+      if (p >= 80) return '#ef4444'
+      if (p >= 50) return '#f59e0b'
+      return '#22c55e'
+    },
+    popupStyle() {
+      const ring = this.$refs.ringRef
+      if (!ring) return {}
+      const rect = ring.getBoundingClientRect()
+      return {
+        position: 'fixed',
+        bottom: `${window.innerHeight - rect.top + 10}px`,
+        right: `${window.innerWidth - rect.right - 8}px`,
+      }
+    },
+  },
+  watch: {
+    shouldCountLive(on) {
+      if (on) this.startLiveDuration()
+      else this.stopLiveDuration()
+    },
+    message(val) {
+      try {
+        sessionStorage.setItem(DRAFT_KEY, val)
+      } catch (e) {
+        // 隐私模式等场景下 sessionStorage 可能不可用，忽略即可
+      }
+    },
+    disabled(val) {
+      if (!val) {
+        const ta = this.$refs.textareaRef
+        if (ta) ta.focus()
+      }
+    },
+  },
+  mounted() {
+    // 恢复刷新前的输入草稿
+    try {
+      const draft = sessionStorage.getItem(DRAFT_KEY)
+      if (draft) {
+        this.message = draft
+        this.$nextTick(() => this.autoResize())
+      }
+    } catch (e) {
+      // 忽略草稿恢复失败
+    }
+    document.addEventListener('click', this.closeTokenPopup)
+    document.addEventListener('click', this.closeModelDropdown)
+  },
+  beforeDestroy() {
+    document.removeEventListener('click', this.closeTokenPopup)
+    document.removeEventListener('click', this.closeModelDropdown)
+    this.stopLiveDuration()
+  },
+  methods: {
+    updateCaretLine() {
+      const ta = this.$refs.textareaRef
+      if (!ta) return
+      const lh = parseFloat(getComputedStyle(ta).lineHeight)
+      if (!isNaN(lh) && lh > 0) this.lineHeight = lh
+      const pos = ta.selectionStart ?? 0
+      const lineIndex = ta.value.slice(0, pos).split('\n').length - 1
+      this.caretLineTop = lineIndex * this.lineHeight - ta.scrollTop
+    },
+    hideCaretLine() {
+      this.caretLineTop = null
+    },
+    toggleModelDropdown() {
+      if (this.isStreaming || this.disabled) return
+      if (this.showModelDropdown) {
+        this.showModelDropdown = false
+        return
+      }
+      // 计算下拉菜单位置
+      const anchor = this.$refs.modelDropdownRef
+      if (anchor) {
+        const rect = anchor.getBoundingClientRect()
+        this.dropdownStyle = {
+          position: 'fixed',
+          bottom: `${window.innerHeight - rect.top + 6}px`,
+          left: `${rect.left}px`,
+          minWidth: `${Math.max(rect.width, 200)}px`,
+        }
+      }
+      this.showModelDropdown = true
+    },
+    selectModel(name) {
+      this.$emit('update:selectedModel', name)
+      this.showModelDropdown = false
+      console.log(
+        `[${new Date().toISOString()}] [模型选择] 切换为: ${name}`
+      )
+    },
+    closeModelDropdown(event) {
+      const anchor = this.$refs.modelDropdownRef
+      if (this.showModelDropdown && anchor && !anchor.contains(event.target)) {
+        this.showModelDropdown = false
+      }
+    },
+    startLiveDuration() {
+      this.stopLiveDuration()
+      this.liveDuration = 0
+      this.durationTimer = setInterval(() => {
+        this.liveDuration += 1
+      }, 1000)
+    },
+    stopLiveDuration() {
+      if (this.durationTimer) {
+        clearInterval(this.durationTimer)
+        this.durationTimer = null
+      }
+    },
+    toggleTokenPopup() {
+      this.showTokenPopup = !this.showTokenPopup
+    },
+    closeTokenPopup() {
+      if (this.showTokenPopup) {
+        this.showTokenPopup = false
+      }
+    },
+    formatTokens(n) {
+      if (!n) return '0'
+      if (n >= 1000) return (n / 1000).toFixed(1) + 'k'
+      return n.toString()
+    },
+    formatSize(bytes) {
+      if (bytes < 1024) return bytes + ' B'
+      if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
+      return (bytes / (1024 * 1024)).toFixed(1) + ' MB'
+    },
+    async handleFileSelect(event) {
+      const files = Array.from(event.target.files)
+
+      for (const file of files) {
+        // 创建文件项
+        const fileItem = {
+          file: file,
+          filename: file.name,
+          size: file.size,
+          uploadStatus: 'uploading',
+          uploadProgress: 0
+        }
+
+        // 添加到数组
+        this.uploadedFiles.push(fileItem)
+
+        // 强制触发初始渲染
+        this.uploadedFiles = [...this.uploadedFiles]
+
+        try {
+          // 确保会话存在
+          let sessionId = this.sessionId
+          if (!sessionId) {
+            // 通知父组件创建会话
+            const sessionIdPromise = new Promise((resolve) => {
+              // 创建一个临时的监听器来等待会话创建完成
+              const unwatch = this.$watch(
+                () => this.sessionId,
+                (newSessionId) => {
+                  if (newSessionId) {
+                    unwatch()
+                    resolve(newSessionId)
+                  }
+                }
+              )
+              // 触发会话创建
+              this.$emit('create-session')
+            })
+
+            // 等待会话创建完成
+            sessionId = await sessionIdPromise
+
+            if (!sessionId) {
+              throw new Error('会话创建失败')
+            }
+          }
+
+          // 调用实际的上传接口
+          const response = await uploadFile(sessionId, file, (progress) => {
+            // 找到对应的文件项并更新进度
+            const index = this.uploadedFiles.findIndex(f => f.file === file)
+            if (index !== -1) {
+              this.uploadedFiles[index].uploadProgress = progress
+              // 强制触发更新
+              this.uploadedFiles = [...this.uploadedFiles]
+            }
+          })
+
+          // 找到对应的文件项并更新状态
+          const index = this.uploadedFiles.findIndex(f => f.file === file)
+          if (index !== -1) {
+            this.uploadedFiles[index].uploadStatus = 'completed'
+            this.uploadedFiles[index].uploadProgress = 100
+            this.uploadedFiles[index].filePath = response.file_path
+            this.uploadedFiles[index].id = response.id
+            // 强制触发更新
+            this.uploadedFiles = [...this.uploadedFiles]
+          }
+
+          console.log('文件上传成功:', response)
+        } catch (error) {
+          // 找到对应的文件项并更新状态
+          const index = this.uploadedFiles.findIndex(f => f.file === file)
+          if (index !== -1) {
+            this.uploadedFiles[index].uploadStatus = 'error'
+            // 强制触发更新
+            this.uploadedFiles = [...this.uploadedFiles]
+          }
+          console.error('文件上传失败:', error)
+        }
+      }
+
+      event.target.value = ''
+    },
+    async removeFile(index) {
+      const file = this.uploadedFiles[index]
+
+      // 如果文件已经上传成功，调用后台的删除接口
+      if (file && file.uploadStatus === 'completed' && file.id && this.sessionId) {
+        try {
+          await deleteFile(this.sessionId, file)
+          console.log('文件删除成功:', file.filename)
+        } catch (error) {
+          console.error('文件删除失败:', error)
+        }
+      }
+
+      // 从前端列表中移除文件
+      this.uploadedFiles.splice(index, 1)
+      // 强制触发更新
+      this.uploadedFiles = [...this.uploadedFiles]
+    },
+    async send() {
+      if (!this.canSend || this.disabled) return
+
+      // 等待所有文件上传完成
+      const uploadingFiles = this.uploadedFiles.filter(f => f.uploadStatus === 'uploading')
+      if (uploadingFiles.length > 0) {
+        // 显示上传中提示
+        console.log('文件正在上传中，请稍候...')
+        // 可以添加一个loading状态或提示信息
+        return
+      }
+
+      const filesToSend = this.uploadedFiles.map(f => ({
+        id: f.id,
+        filename: f.filename,
+        size: f.size,
+        file: f.file,
+        file_path: f.filePath || null,
+        type: f.file?.type || f.fileType || ''
+      }))
+
+      // 详细日志：记录发送操作、文件上传
+      const ts = new Date().toISOString()
+      console.log(`[${ts}] [发送消息] 内容: "${this.message.substring(0, 100)}" | 文件数: ${filesToSend.length}`)
+      if (filesToSend.length > 0) {
+        console.log(`[${ts}] [文件上传] ${filesToSend.map(f => `${f.filename}(${f.size}B)`).join(', ')}`)
+      }
+
+      this.$emit('send', this.message.trim().replace(/\s+/g, ' '), filesToSend, null, true)
+
+      this.message = ''
+      this.uploadedFiles = []
+      this.$nextTick(() => this.autoResize())
+    },
+    stop() {
+      this.$emit('stop')
+    },
+    autoResize() {
+      const ta = this.$refs.textareaRef
+      if (ta) {
+        ta.style.height = 'auto'
+        ta.style.height = Math.min(ta.scrollHeight, 150) + 'px'
+      }
+    },
+    onInput() {
+      this.autoResize()
+      this.updateCaretLine()
+      this.$emit('typing')
+    },
+  },
+}
+</script>
+
+<style scoped>
+.chat-input-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 16px 24px 4px;
+  background: transparent;
+  /* 预留与消息区相同的滚动条 gutter，使输入框与消息（含「处理过程」）左右对齐。 */
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+}
+
+.input-box {
+  width: 80%;
+  max-width: 900px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 16px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+  transition: all 0.3s ease;
+  overflow: hidden;
+}
+
+.input-box:focus-within {
+  border-color: #0ea5e9;
+  box-shadow: 0 2px 12px rgba(14, 165, 233, 0.15);
+}
+
+.uploaded-files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 12px 16px;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-color);
+}
+
+.uploaded-file {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  padding: 10px 14px;
+  border-radius: 12px;
+  max-width: 250px;
+  flex-shrink: 0;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+  transition: all 0.2s ease;
+}
+
+.uploaded-file:hover {
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08);
+  border-color: var(--border-color);
+}
+
+.file-icon {
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.file-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.file-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.file-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.file-size {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.upload-progress {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.progress-bar {
+  width: 60px;
+  height: 4px;
+  background: var(--bg-tertiary);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #0ea5e9, #06b6d4);
+  border-radius: 2px;
+  transition: width 0.3s ease;
+}
+
+.progress-text {
+  font-size: 10px;
+  color: var(--text-secondary);
+  min-width: 35px;
+}
+
+.upload-status {
+  font-size: 10px;
+  font-weight: 500;
+  padding: 2px 6px;
+  border-radius: 8px;
+}
+
+.upload-status.completed {
+  color: #15803d;
+  background: #dcfce7;
+}
+
+.upload-status.error {
+  color: #b91c1c;
+  background: #fee2e2;
+}
+
+.remove-file-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  background: var(--bg-tertiary);
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  flex-shrink: 0;
+}
+
+.remove-file-btn:hover {
+  background: var(--border-color);
+  transform: scale(1.05);
+}
+
+.remove-file-btn svg {
+  width: 14px;
+  height: 14px;
+  color: var(--text-secondary);
+}
+
+.remove-file-btn:hover svg {
+  color: #dc2626;
+}
+
+.input-row {
+  padding: 12px 16px;
+  display: flex;
+  align-items: flex-end;
+  gap: 12px;
+}
+
+.input-field {
+  width: 100%;
+  position: relative;
+}
+
+/* 光标所在行高亮条（覆盖在 textarea 下层，仅深色模式可见） */
+.caret-line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  z-index: 0;
+  border-radius: 4px;
+  background: transparent;
+  pointer-events: none;
+}
+
+html[data-theme="dark"] .caret-line {
+  /* 光标所在行颜色与 textarea 区域背景一致，点击时不再出现突兀色带 */
+  background: var(--bg-tertiary) !important;
+}
+
+/* textarea 所在区域使用浅灰底（与全局深色风格一致） */
+html[data-theme="dark"] .input-field textarea {
+  background: var(--bg-tertiary) !important;
+}
+
+/* 整个输入框（容器、操作区、模型选择、上传按钮、textarea、光标行）
+   在深色模式下统一为浅灰色，保持视觉一致。 */
+html[data-theme="dark"] .input-box {
+  background: var(--bg-tertiary) !important;
+}
+
+html[data-theme="dark"] .input-actions {
+  background: var(--bg-tertiary) !important;
+}
+
+html[data-theme="dark"] .model-btn {
+  background: var(--bg-tertiary) !important;
+  border-color: var(--border-color) !important;
+}
+
+html[data-theme="dark"] .model-btn:hover:not(.disabled) {
+  background: color-mix(in srgb, var(--accent-color) 15%, var(--bg-tertiary)) !important;
+}
+
+html[data-theme="dark"] .upload-btn {
+  background: var(--bg-tertiary) !important;
+  border-color: #9ca3af !important;
+}
+
+html[data-theme="dark"] .upload-btn svg {
+  color: #ffffff !important;
+}
+
+/* token 用量圆环：全局深色规则把环底描边设成 var(--bg-tertiary)，
+   与灰色输入框背景同色导致不可见，黑色主题下改为白色圆环 */
+html[data-theme="dark"] .context-ring-bg {
+  stroke: #ffffff !important;
+}
+
+html[data-theme="dark"] .context-ring-wrapper {
+  border: 1px solid #ffffff !important;
+  border-radius: 50% !important;
+  box-sizing: border-box !important;
+}
+
+.input-field textarea {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  border: none;
+  background: transparent;
+  resize: none;
+  font-family: 'Microsoft YaHei', '微软雅黑', sans-serif;
+  font-size: 15px;
+  line-height: 1.6;
+  color: var(--text-primary);
+  max-height: 150px;
+  min-height: 24px;
+  padding: 0;
+  outline: none;
+}
+
+.input-field textarea::placeholder {
+  color: var(--text-secondary);
+  font-size: 14px;
+}
+
+.input-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 16px 12px;
+  border-top: none;
+  background: transparent;
+}
+
+.left-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.model-dropdown-wrapper {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.model-btn {
+  display: inline-flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 6px 12px;
+  height: 36px;
+  min-height: 36px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-secondary);
+  border-radius: 10px;
+  cursor: pointer;
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  white-space: nowrap;
+}
+
+.model-btn:hover:not(.disabled) {
+  border-color: rgba(14, 165, 233, 0.4);
+  background: color-mix(in srgb, var(--accent-color) 10%, transparent);
+  transform: translateY(-1px);
+}
+
+.model-btn.disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.model-btn-label {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  transition: color 0.25s ease;
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+
+.model-btn:hover:not(.disabled) .model-btn-label {
+  color: #0ea5e9;
+}
+
+
+.model-btn-arrow {
+  width: 12px;
+  height: 12px;
+  color: var(--text-secondary);
+  transition: transform 0.2s ease;
+}
+
+.model-btn-arrow.open {
+  transform: rotate(180deg);
+}
+
+.model-dropdown-menu {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  padding: 6px;
+  z-index: 9999;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.model-dropdown-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.model-dropdown-item:hover {
+  background: var(--bg-tertiary);
+}
+
+.model-dropdown-item.active {
+  background: color-mix(in srgb, var(--accent-color) 12%, transparent);
+}
+
+.model-item-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+  min-width: 0;
+}
+
+.model-item-check {
+  width: 16px;
+  height: 16px;
+  color: #0ea5e9;
+  flex-shrink: 0;
+}
+
+.right-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.action-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border: none;
+  background: transparent;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  flex-shrink: 0;
+}
+
+.action-btn svg {
+  width: 18px;
+  height: 18px;
+  color: var(--text-secondary);
+}
+
+.action-btn:hover {
+  background: var(--bg-tertiary);
+}
+
+.action-btn:hover svg {
+  color: #0ea5e9;
+}
+
+.send-btn {
+  width: 36px;
+  height: 36px;
+  border: none;
+  background: var(--bg-tertiary);
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.send-btn svg {
+  width: 18px;
+  height: 18px;
+  color: var(--text-secondary);
+  transition: all 0.2s;
+}
+
+.send-btn.active {
+  background: #0ea5e9;
+}
+
+.send-btn.active svg {
+  color: white;
+}
+
+.send-btn.active:hover:not(:disabled) {
+  transform: scale(1.05);
+  box-shadow: 0 2px 8px rgba(14, 165, 233, 0.3);
+}
+
+.send-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.stop-btn {
+  width: 36px;
+  height: 36px;
+  border: none;
+  background: #ef4444;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.stop-btn svg {
+  width: 16px;
+  height: 16px;
+  color: white;
+}
+
+.stop-btn:hover {
+  transform: scale(1.05);
+  box-shadow: 0 2px 8px rgba(239, 68, 68, 0.3);
+}
+
+.context-ring-wrapper {
+  position: relative;
+  width: 36px;
+  height: 36px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.context-ring-inner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.2s;
+}
+
+.context-ring-wrapper:hover .context-ring-inner {
+  transform: scale(1.1);
+}
+
+.context-ring {
+  width: 36px;
+  height: 36px;
+}
+
+.context-ring-bg {
+  stroke: var(--border-color);
+}
+
+.context-ring-text {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font-size: 9px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  line-height: 1;
+  pointer-events: none;
+}
+
+.token-popup {
+  position: fixed;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  padding: 14px 16px;
+  min-width: 200px;
+  z-index: 9999;
+  cursor: default;
+}
+
+.token-popup-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 10px;
+}
+
+.token-popup-section {
+  margin-bottom: 2px;
+}
+
+.token-popup-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 3px 0;
+}
+
+.token-popup-label {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.token-popup-value {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+/* 语义色：11px 小字需满足 WCAG AA 4.5:1（对白色背景）。
+   原 indigo-500 / cyan-500 / purple-500 仅 4.46:1 / 2.43:1 / 3.92:1，
+   均不达标，故整体加深到 600~700 档（6.2~7.0:1） */
+.token-popup-value.input {
+  color: #4f46e5;
+}
+
+.token-popup-value.output {
+  color: #0e7490;
+}
+
+.token-popup-value.reasoning {
+  color: #7e22ce;
+}
+
+.token-popup-value.duration-value {
+  color: #4f46e5;
+  font-weight: 600;
+}
+
+.token-popup-context-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  padding: 2px 0 4px;
+}
+
+.token-popup-context-value {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.token-popup-context-percent {
+  font-size: 13px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.token-popup-divider {
+  height: 1px;
+  background: var(--bg-tertiary);
+  margin: 6px 0;
+}
+
+.token-popup-bar {
+  margin-top: 4px;
+}
+
+.token-popup-bar-inner {
+  height: 5px;
+  border-radius: 3px;
+  overflow: hidden;
+  background: var(--bg-tertiary);
+}
+
+.token-popup-bar-fill {
+  height: 100%;
+  border-radius: 3px;
+  transition: width 0.4s ease;
+}
+
+.upload-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-secondary);
+  border-radius: 10px;
+  cursor: pointer;
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.upload-btn svg {
+  width: 18px;
+  height: 18px;
+  color: var(--text-secondary);
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.upload-btn:hover:not(.disabled) {
+  border-color: rgba(124, 106, 239, 0.4);
+  background: rgba(124, 106, 239, 0.06);
+  transform: translateY(-1px);
+}
+
+.upload-btn:hover:not(.disabled) svg {
+  color: #7c6aef;
+  transform: scale(1.08);
+}
+
+.upload-btn:active:not(.disabled) {
+  transform: translateY(0);
+}
+
+.upload-btn.disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.copy-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border: none;
+  background: transparent;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.copy-btn svg {
+  width: 18px;
+  height: 18px;
+  color: var(--text-secondary);
+  transition: all 0.2s;
+}
+
+.copy-btn:hover:not(.disabled) {
+  background: var(--bg-tertiary);
+}
+
+.copy-btn:hover:not(.disabled) svg {
+  color: #0ea5e9;
+}
+
+.copy-btn.disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.input-footer {
+  margin-top: 2px;
+  text-align: center;
+}
+
+.footer-text {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+</style>

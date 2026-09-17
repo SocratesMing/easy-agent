@@ -4,35 +4,26 @@ set -e
 # ============================================================
 # Easy Agent Entrypoint
 # AGENT_ENV: prod (default) | test | dev
-# app.py 内部也通过 AGENT_ENV 选择配置文件，
-# 此脚本额外负责 envsubst（环境变量占位符替换）。
+# 后端只读唯一配置 config.yaml；AGENT_ENV 决定加载哪个 .env.{env}。
+# 此脚本负责 envsubst（环境变量占位符替换）并导出 EASY_CONFIG。
 # ============================================================
 
 MODE="${AGENT_ENV:-prod}"
 CONFIG_DIR="/app/easy_agent/config"
 
+# 后端只使用唯一配置文件 config.yaml；AGENT_ENV 仅决定加载哪个 .env.{env}
+CONFIG_FILE="$CONFIG_DIR/config.yaml"
+
 case "$MODE" in
-    prod)
-        CONFIG_FILE="$CONFIG_DIR/config.prod.yaml"
-        echo "==> 运行环境: PRODUCTION (AGENT_ENV=prod)"
-        ;;
-    test)
-        CONFIG_FILE="$CONFIG_DIR/config.test.yaml"
-        echo "==> 运行环境: TEST (AGENT_ENV=test)"
-        ;;
-    dev)
-        CONFIG_FILE="$CONFIG_DIR/config.dev.yaml"
-        echo "==> 运行环境: DEVELOPMENT (AGENT_ENV=dev)"
-        ;;
-    *)
-        echo "==> 未知 AGENT_ENV: $MODE, 回退到 config.yaml"
-        CONFIG_FILE="$CONFIG_DIR/config.yaml"
-        ;;
+    prod) echo "==> 运行环境: PRODUCTION (AGENT_ENV=prod → .env.prod)" ;;
+    test) echo "==> 运行环境: TEST (AGENT_ENV=test → .env.test)" ;;
+    dev)  echo "==> 运行环境: DEVELOPMENT (AGENT_ENV=dev → .env.dev)" ;;
+    *)    echo "==> 未知 AGENT_ENV: $MODE, 按 dev 处理（缺 .env.dev 时回退 .env）" ;;
 esac
 
 if [ ! -f "$CONFIG_FILE" ]; then
-    echo "WARNING: 配置文件不存在: $CONFIG_FILE, 回退到 config.yaml"
-    CONFIG_FILE="$CONFIG_DIR/config.yaml"
+    echo "ERROR: 配置文件不存在: $CONFIG_FILE"
+    exit 1
 fi
 
 echo "==> 使用配置文件: $CONFIG_FILE"

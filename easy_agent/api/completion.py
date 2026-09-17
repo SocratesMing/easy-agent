@@ -17,7 +17,7 @@ from ..services.agent_manager import get_agent_config
 
 logger = logging.getLogger("easy_agent.completion")
 
-router = APIRouter(prefix="/api/completion", tags=["Completion"])
+router = APIRouter(prefix="/agent/completion", tags=["Completion"])
 
 _ROLE_TO_MESSAGE = {
     "system": SystemMessage,

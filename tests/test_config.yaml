@@ -2,7 +2,7 @@
 # 路径均使用 ${ENV} 占位符，由 tests/conftest.py 在导入 app 之前注入临时目录，
 # 避免依赖宿主机真实配置与外部服务。
 
-# LLM 配置（/api/config、/api/auth/config 等会读取）
+# LLM 配置（/agent/config、/agent/auth/config 等会读取）
 llm:
   provider: "deepseek"
   model: "deepseek-v4-flash"
@@ -36,7 +36,7 @@ workspace_dir: "${TEST_WORKSPACE_DIR}"
 memories_dir: "${TEST_MEMORIES_DIR}"
 log_dir: "${TEST_LOG_DIR}"
 sessions_dir: "${TEST_SESSIONS_DIR}"
-system_prompt_path: "${TEST_SYSTEM_PROMPT}"
+prompt_path: "prompts"
 
 external_dirs: {}
 

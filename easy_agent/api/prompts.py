@@ -9,7 +9,7 @@ from ..config import Config
 
 logger = logging.getLogger("easy_agent.prompts")
 
-prompts_router = APIRouter(prefix="/api/prompts", tags=["Prompts"])
+prompts_router = APIRouter(prefix="/agent/prompts", tags=["Prompts"])
 
 
 def _get_prompts_dir() -> str:

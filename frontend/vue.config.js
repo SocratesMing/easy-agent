@@ -29,6 +29,17 @@ const vue2IconCompiler = {
 module.exports = defineConfig({
   transpileDependencies: ['element-ui'],
   productionSourceMap: false,
+  devServer: {
+    host: process.platform === 'win32' ? '127.0.0.1' : '0.0.0.0',
+    port: Number(process.env.PORT || 5173),
+    compress: false,
+    client: { webSocketURL: { port: 0 } },
+    proxy: Object.fromEntries(['/agent', '/api'].map(prefix => [prefix, {
+      target: process.env.VUE_APP_PROXY_TARGET || process.env.VUE_APP_API_BASE_URL || 'http://localhost:8000',
+      changeOrigin: true,
+      onProxyRes(response) { response.headers['cache-control'] = 'no-cache' },
+    }])),
+  },
   configureWebpack: {
     plugins: [Icons({ compiler: vue2IconCompiler, autoInstall: true })],
     devServer: {

@@ -10,6 +10,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 
+from ..agent import release_session_checkpointer
 from ..db import Database, get_database
 from ..models.db import SessionModel
 from ..models.api import (
@@ -42,12 +43,12 @@ def compute_session_usage(messages: list[dict]) -> dict | None:
     """从消息列表中计算会话级别的 token 用量。
 
     Returns:
-        包含 input_tokens/output_tokens/total_tokens/context_tokens/elapsed_time/step_count 的字典，
-        如果没有任何用量数据则返回 None。
+        包含 input_tokens/output_tokens/reasoning_tokens/context_tokens/
+        elapsed_time/step_count 的字典，如果没有任何用量数据则返回 None。
     """
     total_input = 0
     total_output = 0
-    total_tokens = 0
+    total_reasoning = 0
     context_tokens = 0
     total_elapsed = 0.0
     total_steps = 0
@@ -56,7 +57,8 @@ def compute_session_usage(messages: list[dict]) -> dict | None:
         msg_usage = msg.get("usage") or {}
         total_input += msg_usage.get("input_tokens", 0) or 0
         total_output += msg_usage.get("output_tokens", 0) or 0
-        total_tokens += msg_usage.get("total_tokens", 0) or 0
+        # 思考 token（output 的子集），仅用于拆分展示
+        total_reasoning += msg_usage.get("reasoning_tokens", 0) or 0
         total_elapsed += msg_usage.get("elapsed_time", 0) or 0
         total_steps += msg_usage.get("step_count", 0) or 0
 
@@ -77,7 +79,7 @@ def compute_session_usage(messages: list[dict]) -> dict | None:
         return {
             "input_tokens": total_input,
             "output_tokens": total_output,
-            "total_tokens": total_tokens,
+            "reasoning_tokens": total_reasoning,
             "context_tokens": context_tokens,
             "elapsed_time": round(total_elapsed, 2),
             "step_count": total_steps,
@@ -85,8 +87,8 @@ def compute_session_usage(messages: list[dict]) -> dict | None:
     return None
 
 
-def get_max_input_tokens() -> int | None:
-    """获取当前配置的 max_input_tokens。
+def get_context_length() -> int | None:
+    """获取当前配置的 context_length。
 
     优先复用启动时已初始化的全局配置（get_agent_config），避免每次请求重新读盘
     并依赖 Config.load 的默认搜索路径（生产环境可能读不到按 AGENT_ENV 选择的配置文件，
@@ -96,18 +98,18 @@ def get_max_input_tokens() -> int | None:
     try:
         cfg = get_agent_config()
         if cfg and cfg.get("config"):
-            return cfg["config"].llm.max_input_tokens
+            return cfg["config"].llm.context_length
     except Exception:
         pass
     try:
         cfg = Config.load()
-        return cfg.llm.max_input_tokens if cfg and cfg.llm else None
+        return cfg.llm.context_length if cfg and cfg.llm else None
     except Exception:
         return None
 
 
 router = APIRouter(
-    prefix="/api/sessions",
+    prefix="/agent/sessions",
     tags=["Sessions"],
 )
 
@@ -190,7 +192,7 @@ async def get_session(
     session = get_owned_session(db, session_id, username)
 
     usage = compute_session_usage(session.messages or [])
-    max_input_tokens = get_max_input_tokens()
+    context_length = get_context_length()
 
     return SessionDetail(
         session_id=session.session_id,
@@ -200,7 +202,7 @@ async def get_session(
         messages=redact_messages_reasoning(session.messages),
         todos=session.todos,
         usage=usage,
-        max_input_tokens=max_input_tokens,
+        context_length=context_length,
     )
 
 
@@ -262,6 +264,12 @@ async def delete_session(
     except Exception as e:
         logger.warning(f"移除缓存 Agent 失败: {e}")
 
+    # 释放该会话的 HITL checkpointer（未调用时由 agent.py 的 FIFO 上限兜底）
+    try:
+        release_session_checkpointer(session_id)
+    except Exception as e:
+        logger.warning(f"释放会话 checkpointer 失败: {e}")
+
     user_workspace_dir = Config.get_user_workspace_dir(username)
     # 候选工作区目录名：workspace_name（首轮/重命名后）与 session_id（旧会话回退）
     # agent.py 在 workspace_name 为空时会用 session_id 作目录名，故两者都尝试。
@@ -313,7 +321,7 @@ async def get_chat_history(
     session = get_owned_session(db, session_id, username)
 
     usage = compute_session_usage(session.messages or [])
-    max_input_tokens = get_max_input_tokens()
+    context_length = get_context_length()
 
     return GetChatHistoryResponse(
         session_id=session.session_id,
@@ -322,7 +330,7 @@ async def get_chat_history(
         created_at=session.created_at,
         updated_at=session.updated_at,
         usage=usage,
-        max_input_tokens=max_input_tokens,
+        context_length=context_length,
     )
 
 

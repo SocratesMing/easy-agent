@@ -1,8 +1,25 @@
 import { API_BASE_URL } from '../../config.js'
-import { authFetch, dispatchAuthExpired, getStoredToken } from '../../api/auth.js'
+import { dispatchAuthExpired, getStoredToken } from '../../api/auth.js'
 import { handleStreamResponse, streamHeaders, streamUrl } from '../../api/request.js'
 
+// Keep native Response semantics for binary previews, Range headers and error bodies.
+async function authFetch(url, options = {}) {
+  const token = getStoredToken()
+  const response = await fetch(url, {
+    ...options,
+    headers: { ...options.headers, ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+  })
+  if (response.status === 401) dispatchAuthExpired()
+  return response
+}
+
 const ROOT = `${API_BASE_URL}/api/knowledge/v1`
+
+export async function cancelMessage(sessionId) {
+  const response = await authFetch(`${API_BASE_URL}/agent/chat/cancel?session_id=${encodeURIComponent(sessionId)}`, { method: 'POST' })
+  if (!response.ok) return parseError(response)
+  return response.json()
+}
 
 async function parseError(response) {
   let payload = null

@@ -49,7 +49,7 @@ Environment variables:
 
 **Skills** (`skills.py`) — Discovers skills by scanning for directories containing `SKILL.md` or `README.md`. Skills are mounted at `/skills/` virtual path in the agent backend.
 
-**Web app** (`app.py`) — FastAPI app with lifespan that initializes config, database, vector store, system prompt, skills, shared npm deps, and Bloomberg scheduler. Serves Vue SPA from `frontend/dist/` with fallback to `index.html`. CORS enabled (all origins by default; tighten via `EASY_CORS_ALLOW_ORIGINS`). Registers routers from `easy_agent/api/`.
+**Web app** (`app.py`) — FastAPI app with lifespan that initializes config, database, vector store, system prompt, skills, and shared npm deps. Serves Vue SPA from `frontend/dist/` with fallback to `index.html`. CORS enabled (all origins by default; tighten via `EASY_CORS_ALLOW_ORIGINS`). Registers routers from `easy_agent/api/`.
 
 **Web runner** (`web_runner.py`) — Entry point for `easy-web` CLI command. Does `os.chdir(project_root)` and sets `EASY_CONFIG` env var before starting uvicorn.
 
@@ -59,8 +59,6 @@ Environment variables:
 - `sessions.py` — Session CRUD, workspace name generation
 - `auth.py` — Login/register endpoints
 - `files.py` — File upload/management
-- `bloom.py` — Bloomberg analysis endpoints
-- `forex.py` — Forex data endpoints
 - `prompts.py` — Prompt template management
 
 ### Services (`easy_agent/services/`)
@@ -76,7 +74,6 @@ Environment variables:
 - `utils/session_logger.py` — Per-session logging utility.
 - `models/api.py` — Pydantic request/response models for API endpoints.
 - `models/db.py` — Database model definitions.
-- `domain/bloom/` — Bloomberg analysis domain: classification, scheduling, repository, enums.
 
 ### Frontend (`frontend/`)
 

@@ -8,7 +8,6 @@ import logging
 import os
 import re
 import sqlite3
-import threading
 import uuid
 from contextlib import contextmanager
 from datetime import datetime
@@ -31,23 +30,6 @@ DATABASE_PATH = "./data/easy_agent.db"
 logger = logging.getLogger(__name__)
 
 
-def _bootstrap_admin_password() -> str:
-    """Read a one-time administrator secret without providing a weak fallback."""
-
-    password = os.environ.get("EASYAGENT_BOOTSTRAP_ADMIN_PASSWORD", "")
-    weak_values = {"admin", "123456", "password", "changeme", "easyagent"}
-    if (
-        len(password) < 12
-        or password.casefold() in weak_values
-        or len(set(password)) < 4
-    ):
-        raise RuntimeError(
-            "首次初始化需要通过 EASYAGENT_BOOTSTRAP_ADMIN_PASSWORD "
-            "注入长度不少于 12 位的强随机管理员密码"
-        )
-    return password
-
-
 def ensure_database_dir(db_path: str):
     db_dir = os.path.dirname(db_path)
     if db_dir and not os.path.exists(db_dir):
@@ -58,7 +40,6 @@ class Database:
     def __init__(self, db_config: dict = None):
         self.db_type = "sqlite"
         self._connection: Optional[sqlite3.Connection] = None
-        self._sqlite_lock = threading.RLock()
         self._pool = None
 
         if db_config:
@@ -81,9 +62,6 @@ class Database:
                         f"数据库: {self._mysql_config.get('database')} | 用户: {self._mysql_config.get('user')}"
                     )
                 except Exception as e:
-                    if not db_config.get("fallback_to_sqlite", False):
-                        logger.error(f"MySQL 连接失败且已禁止 SQLite 降级: {e}")
-                        raise
                     logger.warning(f"MySQL 连接失败，自动降级到 SQLite: {e}")
                     self.db_type = "sqlite"
                     self._pool = None
@@ -98,14 +76,28 @@ class Database:
 
     def _init_mysql_pool(self):
         db_name = self._mysql_config.get("database", "easy_agent")
+        host = self._mysql_config.get("host", "localhost")
+        port = self._mysql_config.get("port", 3306)
+        user = self._mysql_config.get("user", "root")
+        password = self._mysql_config.get("password", "")
+        charset = self._mysql_config.get("charset", "utf8mb4")
+        connect_timeout = self._mysql_config.get("connect_timeout", 10)
+        target = f"{user}@{host}:{port}/{db_name}"
+
+        if not password:
+            logger.warning(
+                "MySQL 密码为空：请检查当前环境配置文件中的 database.mysql.password，"
+                "并直接填写真实密码（改完必须重启后端）"
+            )
+
         try:
             conn = pymysql.connect(
-                host=self._mysql_config.get("host", "localhost"),
-                port=self._mysql_config.get("port", 3306),
-                user=self._mysql_config.get("user", "root"),
-                password=self._mysql_config.get("password", ""),
-                charset=self._mysql_config.get("charset", "utf8mb4"),
-                connect_timeout=self._mysql_config.get("connect_timeout", 10),
+                host=host,
+                port=port,
+                user=user,
+                password=password,
+                charset=charset,
+                connect_timeout=connect_timeout,
             )
             cursor = conn.cursor()
             cursor.execute(
@@ -115,7 +107,14 @@ class Database:
             conn.close()
             logger.info(f"MySQL数据库 '{db_name}' 已就绪")
         except Exception as e:
-            logger.info(f"创建数据库时出错（可能已存在）: {e}")
+            err = str(e)
+            if "using password: NO" in err:
+                hint = "（未发送密码：请检查 database.mysql.password 是否为空）"
+            elif "using password: YES" in err:
+                hint = "（密码错误，或该用户未对来源 host 授权，如 root@'172.17.0.1'）"
+            else:
+                hint = "（库已存在或无 CREATE 权限时可忽略）"
+            logger.warning(f"创建/连接 MySQL 数据库失败{hint}: {e} | 目标: {target}")
 
         pool_cfg = self._mysql_config.get("pool", {})
         self._pool = PooledDB(
@@ -126,24 +125,28 @@ class Database:
             maxcached=pool_cfg.get("pool_size", 5),
             blocking=True,
             maxusage=pool_cfg.get("pool_recycle", 3600),
-            host=self._mysql_config.get("host", "localhost"),
-            port=self._mysql_config.get("port", 3306),
-            user=self._mysql_config.get("user", "root"),
-            password=self._mysql_config.get("password", ""),
+            host=host,
+            port=port,
+            user=user,
+            password=password,
             database=db_name,
-            charset=self._mysql_config.get("charset", "utf8mb4"),
-            connect_timeout=self._mysql_config.get("connect_timeout", 10),
+            charset=charset,
+            connect_timeout=connect_timeout,
             read_timeout=self._mysql_config.get("read_timeout", 30),
             write_timeout=self._mysql_config.get("write_timeout", 30),
             cursorclass=pymysql.cursors.DictCursor,
         )
 
-        conn = self._pool.connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT VERSION()")
-        version = cursor.fetchone()
-        cursor.close()
-        conn.close()
+        try:
+            conn = self._pool.connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT VERSION()")
+            version = cursor.fetchone()
+            cursor.close()
+            conn.close()
+        except Exception as e:
+            raise ConnectionError(f"MySQL 连接失败 | 目标: {target} | 原因: {e}") from e
+
         ver_str = version["VERSION()"] if version else "未知"
         logger.info(f"MySQL连接成功 | 版本: {ver_str}")
 
@@ -154,7 +157,6 @@ class Database:
                 check_same_thread=False,
             )
             self._connection.row_factory = sqlite3.Row
-            self._connection.execute("PRAGMA foreign_keys = ON")
         return self._connection
 
     def _get_mysql_connection(self):
@@ -179,23 +181,13 @@ class Database:
 
     @contextmanager
     def get_connection(self):
-        # SQLite 降级模式下所有请求共用一个 connection。FastAPI
-        # threadpool 会让文件夹、文档和聊天请求并发使用它，因此必须
-        # 把一次完整事务串行化。MySQL 仍使用独立池化连接，不加此锁。
-        lock = self._sqlite_lock if self.db_type == "sqlite" else None
-        if lock is not None:
-            lock.acquire()
+        conn = self._get_connection()
         try:
-            conn = self._get_connection()
-            try:
-                yield conn
-                conn.commit()
-            except Exception:
-                conn.rollback()
-                raise
-        finally:
-            if lock is not None:
-                lock.release()
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
 
     def _execute(self, cursor, sql: str, params: tuple = None):
         if self.db_type == "mysql":
@@ -218,29 +210,273 @@ class Database:
                     pass
                 else:
                     raise
-
-    def _create_unique_index(
-        self,
-        cursor,
-        index_name: str,
-        table_name: str,
-        columns: str,
-    ):
-        if self.db_type == "sqlite":
-            cursor.execute(
-                f"CREATE UNIQUE INDEX IF NOT EXISTS {index_name} "
-                f"ON {table_name}({columns})"
+    def _create_sessions_table(self, cursor, messages_type):
+        cursor.execute(f"""
+            CREATE TABLE IF NOT EXISTS sessions (
+                session_id VARCHAR(255) PRIMARY KEY,
+                title TEXT NOT NULL,
+                messages {messages_type} NOT NULL,
+                created_at VARCHAR(50) NOT NULL,
+                updated_at VARCHAR(50) NOT NULL,
+                username VARCHAR(255) DEFAULT ''
             )
-        else:
+        """)
+        self._create_index(cursor, "idx_updated_at", "sessions", "updated_at")
+        self._ensure_column(
+            cursor, "sessions", "username", "VARCHAR(255) DEFAULT ''"
+        )
+        self._create_index(cursor, "idx_sessions_username", "sessions", "username")
+        self._ensure_column(
+            cursor, "sessions", "workspace_name", "VARCHAR(255) DEFAULT ''"
+        )
+        self._ensure_column(cursor, "sessions", "pinned", "INTEGER DEFAULT 0")
+
+        if self.db_type == "mysql":
             try:
                 cursor.execute(
-                    f"CREATE UNIQUE INDEX {index_name} ON {table_name}({columns})"
+                    "ALTER TABLE sessions MODIFY COLUMN messages MEDIUMTEXT NOT NULL"
                 )
-            except Exception as e:
-                if "Duplicate key name" in str(e) or "already exists" in str(e):
-                    pass
-                else:
-                    raise
+            except Exception:
+                pass
+            # 存量库继续升级到 LONGTEXT：MEDIUMTEXT(16MB) 在消息不截断后容易写满
+            try:
+                cursor.execute(
+                    "ALTER TABLE sessions MODIFY COLUMN messages LONGTEXT NOT NULL"
+                )
+            except Exception:
+                pass
+
+        self._ensure_column(cursor, "sessions", "todos", "TEXT DEFAULT NULL")
+
+    def _create_tool_call_records_table(self, cursor, auto_inc):
+        cursor.execute(f"""
+            CREATE TABLE IF NOT EXISTS tool_call_records (
+                id INTEGER PRIMARY KEY {auto_inc},
+                session_id VARCHAR(255) NOT NULL,
+                message_id VARCHAR(255) NOT NULL,
+                tool_name TEXT NOT NULL,
+                tool_call_id VARCHAR(255) NOT NULL,
+                arguments TEXT NOT NULL,
+                result TEXT,
+                success INTEGER NOT NULL DEFAULT 1,
+                duration REAL,
+                step INTEGER NOT NULL DEFAULT 0,
+                created_at VARCHAR(50) NOT NULL,
+                FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
+            )
+        """)
+        self._create_index(
+            cursor, "idx_tool_call_session", "tool_call_records", "session_id"
+        )
+        self._create_index(
+            cursor,
+            "idx_tool_call_message",
+            "tool_call_records",
+            "session_id, message_id",
+        )
+        self._ensure_column(cursor, "tool_call_records", "duration", "REAL")
+        self._ensure_column(
+            cursor, "tool_call_records", "step", "INTEGER NOT NULL DEFAULT 0"
+        )
+
+    def _create_thinking_records_table(self, cursor, auto_inc):
+        cursor.execute(f"""
+            CREATE TABLE IF NOT EXISTS thinking_records (
+                id INTEGER PRIMARY KEY {auto_inc},
+                session_id VARCHAR(255) NOT NULL,
+                message_id VARCHAR(255) NOT NULL,
+                step INTEGER NOT NULL DEFAULT 0,
+                content TEXT NOT NULL,
+                duration REAL,
+                created_at VARCHAR(50) NOT NULL,
+                FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
+            )
+        """)
+        self._create_index(
+            cursor, "idx_thinking_session", "thinking_records", "session_id"
+        )
+        self._create_index(
+            cursor,
+            "idx_thinking_message",
+            "thinking_records",
+            "session_id, message_id",
+        )
+
+    def _create_session_messages_table(self, cursor, auto_inc):
+        text_type = "TEXT" if self.db_type == "sqlite" else "MEDIUMTEXT"
+
+        cursor.execute(f"""
+            CREATE TABLE IF NOT EXISTS session_messages (
+                id INTEGER PRIMARY KEY {auto_inc},
+                session_id VARCHAR(255) NOT NULL,
+                role VARCHAR(20) NOT NULL,
+                content {text_type},
+                extra_data {text_type},
+                created_at VARCHAR(50) NOT NULL,
+                FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
+            )
+        """)
+        self._create_index(
+            cursor, "idx_session_messages_session", "session_messages", "session_id"
+        )
+        self._create_index(
+            cursor,
+            "idx_session_messages_session_role",
+            "session_messages",
+            "session_id, role",
+        )
+
+        if self.db_type == "mysql":
+            try:
+                cursor.execute(
+                    "ALTER TABLE session_messages MODIFY COLUMN content MEDIUMTEXT"
+                )
+                cursor.execute(
+                    "ALTER TABLE session_messages MODIFY COLUMN extra_data MEDIUMTEXT"
+                )
+            except Exception:
+                pass
+
+    def _create_files_tables(self, cursor, auto_inc):
+        cursor.execute(f"""
+            CREATE TABLE IF NOT EXISTS session_files (
+                id INTEGER PRIMARY KEY {auto_inc},
+                session_id VARCHAR(255) NOT NULL,
+                filename TEXT NOT NULL,
+                file_path TEXT NOT NULL,
+                file_type VARCHAR(50) NOT NULL,
+                size INTEGER NOT NULL,
+                uploaded_at VARCHAR(50) NOT NULL,
+                username VARCHAR(255) DEFAULT '',
+                FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
+            )
+        """)
+        self._ensure_column(cursor, "session_files", "username", "TEXT DEFAULT ''")
+
+        cursor.execute(f"""
+            CREATE TABLE IF NOT EXISTS generated_files (
+                id INTEGER PRIMARY KEY {auto_inc},
+                session_id VARCHAR(255) NOT NULL,
+                message_id VARCHAR(255) NOT NULL,
+                filename TEXT NOT NULL,
+                file_path TEXT NOT NULL,
+                file_type VARCHAR(50) NOT NULL,
+                size INTEGER NOT NULL,
+                created_at VARCHAR(50) NOT NULL,
+                FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
+            )
+        """)
+        self._create_index(
+            cursor, "idx_generated_files_session", "generated_files", "session_id"
+        )
+        self._create_index(
+            cursor,
+            "idx_generated_files_message",
+            "generated_files",
+            "session_id, message_id",
+        )
+        self._create_index(
+            cursor, "idx_session_files_session", "session_files", "session_id"
+        )
+        self._create_index(
+            cursor, "idx_session_files_username", "session_files", "username"
+        )
+
+    def _create_users_table(self, cursor):
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                user_id VARCHAR(255) PRIMARY KEY,
+                username VARCHAR(255) NOT NULL UNIQUE,
+                password_hash VARCHAR(255) DEFAULT '',
+                organization_id VARCHAR(255) DEFAULT '',
+                email VARCHAR(255) DEFAULT '',
+                created_at VARCHAR(50) NOT NULL,
+                updated_at VARCHAR(50) NOT NULL
+            )
+        """)
+        for col in ["password_hash", "organization_id", "email"]:
+            self._ensure_column(cursor, "users", col, "VARCHAR(255) DEFAULT ''")
+        self._ensure_column(cursor, "users", "bound_ip", "VARCHAR(45) DEFAULT ''")
+        # 单点登录：token 版本号，每次登录递增，旧 token 的 v 不匹配即被踢下线
+        self._ensure_column(cursor, "users", "token_version", "INTEGER DEFAULT 0")
+        # 工号：注册必填、全局唯一，登录时可替代用户名。默认 NULL 而非空串——
+        # 唯一索引允许多个 NULL，空串却只能有一个（免密自动注册的用户都没有工号）。
+        self._ensure_column(cursor, "users", "employee_id", "VARCHAR(255) DEFAULT NULL")
+        # Older personnel imports stored an unset employee ID as an empty string.
+        self._execute(cursor, "UPDATE users SET employee_id=NULL WHERE employee_id='' ")
+        self._ensure_unique_index(
+            cursor, "users", "idx_users_employee_id", "employee_id"
+        )
+        # 空闲超时：最近一次接口调用时间（Unix 时间戳）。持久化到共享数据库，
+        # 保证 uvicorn 多 worker（--workers > 1）下各进程读到一致的登录活跃状态。
+        self._ensure_column(cursor, "users", "last_activity_at", "REAL")
+        from ..personnel.user_fields import ensure_user_fields
+        ensure_user_fields(self, cursor)
+
+    def _create_misc_tables(self, cursor, auto_inc):
+        # MCP API Key：主应用签发，mcp-server 子项目只读校验。
+        # UNIQUE(username, business) 保证每用户每业务仅一把有效 key，重签即覆盖。
+        cursor.execute(f"""
+            CREATE TABLE IF NOT EXISTS mcp_api_keys (
+                id INTEGER PRIMARY KEY {auto_inc},
+                username VARCHAR(64) NOT NULL,
+                business VARCHAR(64) NOT NULL,
+                key_hash CHAR(64) NOT NULL UNIQUE,
+                created_at VARCHAR(50) NOT NULL,
+                updated_at VARCHAR(50) NOT NULL,
+                revoked INTEGER NOT NULL DEFAULT 0,
+                UNIQUE (username, business)
+            )
+        """)
+        self._create_index(
+            cursor, "idx_mcp_api_keys_user", "mcp_api_keys", "username"
+        )
+
+        cursor.execute(f"""
+            CREATE TABLE IF NOT EXISTS fmqt_lock (
+                id INTEGER PRIMARY KEY {auto_inc},
+                lock_key VARCHAR(255) NOT NULL UNIQUE,
+                created_at VARCHAR(50) NOT NULL
+            )
+        """)
+
+    def _create_scheduled_task_tables(self, cursor):
+        # 定时任务表
+        cursor.execute(f"""
+            CREATE TABLE IF NOT EXISTS scheduled_tasks (
+                task_id VARCHAR(255) PRIMARY KEY,
+                username VARCHAR(255) NOT NULL,
+                session_id VARCHAR(255) DEFAULT '',
+                name VARCHAR(255) NOT NULL,
+                description TEXT,
+                schedule_cron VARCHAR(255) NOT NULL,
+                task_prompt TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                created_at VARCHAR(50) NOT NULL,
+                updated_at VARCHAR(50) NOT NULL,
+                last_run_at VARCHAR(50) DEFAULT '',
+                next_run_at VARCHAR(50) DEFAULT ''
+            )
+        """)
+        self._ensure_column(cursor, "scheduled_tasks", "workspace_name", "VARCHAR(255) DEFAULT ''")
+        self._create_index(cursor, "idx_scheduled_tasks_username", "scheduled_tasks", "username")
+        self._create_index(cursor, "idx_scheduled_tasks_enabled", "scheduled_tasks", "enabled")
+
+        # 定时任务执行记录表
+        cursor.execute(f"""
+            CREATE TABLE IF NOT EXISTS scheduled_task_runs (
+                run_id VARCHAR(255) PRIMARY KEY,
+                task_id VARCHAR(255) NOT NULL,
+                session_id VARCHAR(255) DEFAULT '',
+                status VARCHAR(20) NOT NULL,
+                started_at VARCHAR(50) NOT NULL,
+                finished_at VARCHAR(50) DEFAULT '',
+                result_summary TEXT,
+                error_message TEXT
+            )
+        """)
+        self._create_index(cursor, "idx_scheduled_task_runs_task", "scheduled_task_runs", "task_id")
+
 
     def init_tables(self):
         with self.get_connection() as conn:
@@ -248,318 +484,24 @@ class Database:
 
             auto_inc = "AUTOINCREMENT" if self.db_type == "sqlite" else "AUTO_INCREMENT"
 
-            messages_type = "TEXT" if self.db_type == "sqlite" else "MEDIUMTEXT"
+            # MySQL 用 LONGTEXT(4GB)：会话消息不截断落库后体积可达数十 MB，
+            # MEDIUMTEXT(16MB) 会触发 1406 Data too long 导致保存失败。
+            # SQLite 的 TEXT 无实际长度限制，保持不变。
+            messages_type = "TEXT" if self.db_type == "sqlite" else "LONGTEXT"
 
-            cursor.execute(f"""
-                CREATE TABLE IF NOT EXISTS sessions (
-                    session_id VARCHAR(255) PRIMARY KEY,
-                    title TEXT NOT NULL,
-                    messages {messages_type} NOT NULL,
-                    created_at VARCHAR(50) NOT NULL,
-                    updated_at VARCHAR(50) NOT NULL,
-                    username VARCHAR(255) DEFAULT ''
-                )
-            """)
-            self._create_index(cursor, "idx_updated_at", "sessions", "updated_at")
-            self._ensure_column(
-                cursor, "sessions", "username", "VARCHAR(255) DEFAULT ''"
-            )
-            self._create_index(cursor, "idx_sessions_username", "sessions", "username")
-            self._ensure_column(
-                cursor, "sessions", "workspace_name", "VARCHAR(255) DEFAULT ''"
-            )
-            self._ensure_column(cursor, "sessions", "pinned", "INTEGER DEFAULT 0")
-
-            if self.db_type == "mysql":
-                try:
-                    cursor.execute(
-                        "ALTER TABLE sessions MODIFY COLUMN messages MEDIUMTEXT NOT NULL"
-                    )
-                except Exception:
-                    pass
-
-            self._ensure_column(cursor, "sessions", "todos", "TEXT DEFAULT NULL")
-
-            cursor.execute(f"""
-                CREATE TABLE IF NOT EXISTS tool_call_records (
-                    id INTEGER PRIMARY KEY {auto_inc},
-                    session_id VARCHAR(255) NOT NULL,
-                    message_id VARCHAR(255) NOT NULL,
-                    tool_name TEXT NOT NULL,
-                    tool_call_id VARCHAR(255) NOT NULL,
-                    arguments TEXT NOT NULL,
-                    result TEXT,
-                    success INTEGER NOT NULL DEFAULT 1,
-                    duration REAL,
-                    step INTEGER NOT NULL DEFAULT 0,
-                    created_at VARCHAR(50) NOT NULL,
-                    FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
-                )
-            """)
-            self._create_index(
-                cursor, "idx_tool_call_session", "tool_call_records", "session_id"
-            )
-            self._create_index(
-                cursor,
-                "idx_tool_call_message",
-                "tool_call_records",
-                "session_id, message_id",
-            )
-            self._ensure_column(cursor, "tool_call_records", "duration", "REAL")
-            self._ensure_column(
-                cursor, "tool_call_records", "step", "INTEGER NOT NULL DEFAULT 0"
-            )
-
-            cursor.execute(f"""
-                CREATE TABLE IF NOT EXISTS thinking_records (
-                    id INTEGER PRIMARY KEY {auto_inc},
-                    session_id VARCHAR(255) NOT NULL,
-                    message_id VARCHAR(255) NOT NULL,
-                    step INTEGER NOT NULL DEFAULT 0,
-                    content TEXT NOT NULL,
-                    duration REAL,
-                    created_at VARCHAR(50) NOT NULL,
-                    FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
-                )
-            """)
-            self._create_index(
-                cursor, "idx_thinking_session", "thinking_records", "session_id"
-            )
-            self._create_index(
-                cursor,
-                "idx_thinking_message",
-                "thinking_records",
-                "session_id, message_id",
-            )
-
-            text_type = "TEXT" if self.db_type == "sqlite" else "MEDIUMTEXT"
-
-            cursor.execute(f"""
-                CREATE TABLE IF NOT EXISTS session_messages (
-                    id INTEGER PRIMARY KEY {auto_inc},
-                    session_id VARCHAR(255) NOT NULL,
-                    role VARCHAR(20) NOT NULL,
-                    content {text_type},
-                    extra_data {text_type},
-                    created_at VARCHAR(50) NOT NULL,
-                    FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
-                )
-            """)
-            self._create_index(
-                cursor, "idx_session_messages_session", "session_messages", "session_id"
-            )
-            self._create_index(
-                cursor,
-                "idx_session_messages_session_role",
-                "session_messages",
-                "session_id, role",
-            )
-
-            if self.db_type == "mysql":
-                try:
-                    cursor.execute(
-                        "ALTER TABLE session_messages MODIFY COLUMN content MEDIUMTEXT"
-                    )
-                    cursor.execute(
-                        "ALTER TABLE session_messages MODIFY COLUMN extra_data MEDIUMTEXT"
-                    )
-                except Exception:
-                    pass
-
-            cursor.execute(f"""
-                CREATE TABLE IF NOT EXISTS session_files (
-                    id INTEGER PRIMARY KEY {auto_inc},
-                    session_id VARCHAR(255) NOT NULL,
-                    filename TEXT NOT NULL,
-                    file_path TEXT NOT NULL,
-                    file_type VARCHAR(50) NOT NULL,
-                    size INTEGER NOT NULL,
-                    uploaded_at VARCHAR(50) NOT NULL,
-                    username VARCHAR(255) DEFAULT '',
-                    FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
-                )
-            """)
-            self._ensure_column(cursor, "session_files", "username", "TEXT DEFAULT ''")
-
-            cursor.execute(f"""
-                CREATE TABLE IF NOT EXISTS generated_files (
-                    id INTEGER PRIMARY KEY {auto_inc},
-                    session_id VARCHAR(255) NOT NULL,
-                    message_id VARCHAR(255) NOT NULL,
-                    filename TEXT NOT NULL,
-                    file_path TEXT NOT NULL,
-                    file_type VARCHAR(50) NOT NULL,
-                    size INTEGER NOT NULL,
-                    created_at VARCHAR(50) NOT NULL,
-                    FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
-                )
-            """)
-            self._create_index(
-                cursor, "idx_generated_files_session", "generated_files", "session_id"
-            )
-            self._create_index(
-                cursor,
-                "idx_generated_files_message",
-                "generated_files",
-                "session_id, message_id",
-            )
-            self._create_index(
-                cursor, "idx_session_files_session", "session_files", "session_id"
-            )
-            self._create_index(
-                cursor, "idx_session_files_username", "session_files", "username"
-            )
-
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS users (
-                    user_id VARCHAR(255) PRIMARY KEY,
-                    username VARCHAR(255) NOT NULL UNIQUE,
-                    password_hash VARCHAR(255) DEFAULT '',
-                    organization_id VARCHAR(255) DEFAULT '',
-                    email VARCHAR(255) DEFAULT '',
-                    created_at VARCHAR(50) NOT NULL,
-                    updated_at VARCHAR(50) NOT NULL
-                )
-            """)
-            for col in ["password_hash", "organization_id", "email"]:
-                self._ensure_column(cursor, "users", col, "VARCHAR(255) DEFAULT ''")
-            self._ensure_column(cursor, "users", "bound_ip", "VARCHAR(45) DEFAULT ''")
-            # 单点登录：token 版本号，每次登录递增，旧 token 的 v 不匹配即被踢下线
-            self._ensure_column(cursor, "users", "token_version", "INTEGER DEFAULT 0")
-            # 人员管理扩展字段。organization_id 保留给现有权限代码，
-            # department_id 是人员管理中的明确部门标识，两者始终保持兼容。
-            personnel_columns = {
-                # NULL means "not supplied" so a normal UNIQUE index can enforce
-                # non-empty employee IDs while allowing many users without one.
-                "employee_id": "VARCHAR(64) DEFAULT NULL",
-                "display_name": "VARCHAR(127) DEFAULT ''",
-                "department_id": "VARCHAR(255) DEFAULT ''",
-                "department_name": "VARCHAR(255) DEFAULT ''",
-                "position": "VARCHAR(127) DEFAULT ''",
-                "mobile": "VARCHAR(64) DEFAULT ''",
-                "account_status": "VARCHAR(20) DEFAULT 'active'",
-                "personnel_source": "VARCHAR(255) DEFAULT ''",
-            }
-            for column, definition in personnel_columns.items():
-                self._ensure_column(cursor, "users", column, definition)
-            self._execute(
-                cursor,
-                "UPDATE users SET employee_id=NULL WHERE employee_id=''",
-            )
-            if self.db_type == "mysql":
-                cursor.execute(
-                    "ALTER TABLE users MODIFY employee_id VARCHAR(64) NULL DEFAULT NULL"
-                )
-            self._create_unique_index(
-                cursor,
-                "uq_users_employee_id",
-                "users",
-                "employee_id",
-            )
-            self._execute(
-                cursor,
-                """UPDATE users SET department_id=organization_id
-                   WHERE (department_id IS NULL OR department_id='')
-                     AND organization_id IS NOT NULL AND organization_id<>''""",
-            )
-
-            cursor.execute(f"""
-                CREATE TABLE IF NOT EXISTS fmqt_bloom (
-                    id INTEGER PRIMARY KEY {auto_inc},
-                    bloomCode VARCHAR(255) NOT NULL,
-                    bloomCodeCN VARCHAR(255) NOT NULL,
-                    pxLast REAL NOT NULL,
-                    lastUpdate VARCHAR(50),
-                    pxLastEod REAL NOT NULL,
-                    lastUpdateEod VARCHAR(50),
-                    type VARCHAR(100) NOT NULL,
-                    region VARCHAR(100) NOT NULL,
-                    bloomDate VARCHAR(50) NOT NULL,
-                    sbmTime BIGINT NOT NULL,
-                    creatDate VARCHAR(50) NOT NULL
-                )
-            """)
-            self._create_index(cursor, "idx_bloom_type", "fmqt_bloom", "type")
-            self._create_index(cursor, "idx_bloom_date", "fmqt_bloom", "bloomDate")
-            self._create_index(
-                cursor, "idx_bloom_type_date", "fmqt_bloom", "type, bloomDate"
-            )
-
-            cursor.execute(f"""
-                CREATE TABLE IF NOT EXISTS fmqt_bloom_analysis (
-                    id INTEGER PRIMARY KEY {auto_inc},
-                    pair VARCHAR(50) NOT NULL,
-                    signalLevel VARCHAR(20) NOT NULL,
-                    signalSide VARCHAR(100) NOT NULL,
-                    drive TEXT,
-                    contradict TEXT,
-                    operate TEXT,
-                    analysisDate VARCHAR(50) NOT NULL,
-                    creatDate VARCHAR(50) NOT NULL
-                )
-            """)
-            self._create_index(
-                cursor, "idx_bloom_analysis_date", "fmqt_bloom_analysis", "analysisDate"
-            )
-
-            cursor.execute(f"""
-                CREATE TABLE IF NOT EXISTS fmqt_lock (
-                    id INTEGER PRIMARY KEY {auto_inc},
-                    lock_key VARCHAR(255) NOT NULL UNIQUE,
-                    created_at VARCHAR(50) NOT NULL
-                )
-            """)
-
-            # 定时任务表
-            cursor.execute(f"""
-                CREATE TABLE IF NOT EXISTS scheduled_tasks (
-                    task_id VARCHAR(255) PRIMARY KEY,
-                    username VARCHAR(255) NOT NULL,
-                    session_id VARCHAR(255) DEFAULT '',
-                    name VARCHAR(255) NOT NULL,
-                    description TEXT,
-                    schedule_cron VARCHAR(255) NOT NULL,
-                    task_prompt TEXT NOT NULL,
-                    enabled INTEGER NOT NULL DEFAULT 1,
-                    created_at VARCHAR(50) NOT NULL,
-                    updated_at VARCHAR(50) NOT NULL,
-                    last_run_at VARCHAR(50) DEFAULT '',
-                    next_run_at VARCHAR(50) DEFAULT ''
-                )
-            """)
-            self._ensure_column(cursor, "scheduled_tasks", "workspace_name", "VARCHAR(255) DEFAULT ''")
-            self._create_index(cursor, "idx_scheduled_tasks_username", "scheduled_tasks", "username")
-            self._create_index(cursor, "idx_scheduled_tasks_enabled", "scheduled_tasks", "enabled")
-
-            # 定时任务执行记录表
-            cursor.execute(f"""
-                CREATE TABLE IF NOT EXISTS scheduled_task_runs (
-                    run_id VARCHAR(255) PRIMARY KEY,
-                    task_id VARCHAR(255) NOT NULL,
-                    session_id VARCHAR(255) DEFAULT '',
-                    status VARCHAR(20) NOT NULL,
-                    started_at VARCHAR(50) NOT NULL,
-                    finished_at VARCHAR(50) DEFAULT '',
-                    result_summary TEXT,
-                    error_message TEXT
-                )
-            """)
-            self._create_index(cursor, "idx_scheduled_task_runs_task", "scheduled_task_runs", "task_id")
-
-            # Narrow integration point: schema ownership stays in knowledge/.
-            from ..knowledge.schema import (
-                initialize_knowledge_schema,
-                validate_knowledge_schema_cursor,
-            )
-
-            # Production releases must run the explicit migration command
-            # before either Web or Worker starts.  Development/test keeps the
-            # backwards-compatible bootstrap path for disposable databases.
+            self._create_sessions_table(cursor, messages_type)
+            self._create_tool_call_records_table(cursor, auto_inc)
+            self._create_thinking_records_table(cursor, auto_inc)
+            self._create_session_messages_table(cursor, auto_inc)
+            self._create_files_tables(cursor, auto_inc)
+            self._create_users_table(cursor)
+            self._create_misc_tables(cursor, auto_inc)
+            self._create_scheduled_task_tables(cursor)
+            from ..knowledge.schema import initialize_knowledge_schema, validate_knowledge_schema_cursor
             if os.environ.get("AGENT_ENV", "").casefold() in {"prod", "production"}:
                 validate_knowledge_schema_cursor(self, cursor)
             else:
                 initialize_knowledge_schema(self, cursor)
-
             conn.commit()
 
             # 修复 session_messages 表中缺失的消息行
@@ -632,6 +574,27 @@ class Database:
             ]
             if column not in columns:
                 cursor.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_def}")
+
+    def _ensure_unique_index(
+        self, cursor, table: str, index_name: str, column: str
+    ) -> None:
+        """幂等地建唯一索引（两套方言没有统一的 IF NOT EXISTS 写法）。
+
+        失败只告警、不中断启动：唯一性仍由应用层（register_user）先行校验，
+        索引只负责在并发写入时兜底。
+        """
+        if self.db_type == "sqlite":
+            stmt = (
+                f"CREATE UNIQUE INDEX IF NOT EXISTS {index_name} "
+                f"ON {table}({column})"
+            )
+        else:
+            # MySQL 不支持 CREATE INDEX IF NOT EXISTS，重复创建会报 1061，忽略即可
+            stmt = f"CREATE UNIQUE INDEX {index_name} ON {table}({column})"
+        try:
+            cursor.execute(stmt)
+        except Exception as e:
+            logger.debug(f"唯一索引 {index_name} 未创建（通常为已存在）: {e}")
 
     def create_session(self, session_data: SessionModel) -> SessionModel:
         with self.get_connection() as conn:
@@ -726,21 +689,20 @@ class Database:
                     cursor,
                     """
                     SELECT session_id, title, messages, created_at, updated_at, username, workspace_name, pinned
-                    FROM sessions
-                    WHERE username = ? AND title NOT LIKE ? AND title NOT LIKE ?
+                    FROM sessions WHERE username = ? AND title NOT LIKE ?
                     ORDER BY pinned DESC, updated_at DESC LIMIT ? OFFSET ?
                     """,
-                    (username, "[定时任务]%", "[知识库问答]%", limit, offset),
+                    (username, "[定时任务]%", limit, offset),
                 )
             else:
                 self._execute(
                     cursor,
                     """
                     SELECT session_id, title, messages, created_at, updated_at, username, workspace_name, pinned
-                    FROM sessions WHERE title NOT LIKE ? AND title NOT LIKE ?
+                    FROM sessions WHERE title NOT LIKE ?
                     ORDER BY pinned DESC, updated_at DESC LIMIT ? OFFSET ?
                     """,
-                    ("[定时任务]%", "[知识库问答]%", limit, offset),
+                    ("[定时任务]%", limit, offset),
                 )
             rows = cursor.fetchall()
 
@@ -839,17 +801,24 @@ class Database:
                 self.update_session(session)
 
     def _sanitize_message_for_storage(self, message: dict) -> dict:
+        # 不做内容截断：历史上下文需要完整回灌给模型，落库时截断会导致
+        # 下一轮上下文 token 明显缩水（实测 50% → 36%）。
+        # 列类型 MySQL 为 MEDIUMTEXT(16MB)、SQLite 为 TEXT，足以容纳完整内容；
+        # 上下文体积改由 SummarizationMiddleware 在模型调用前按 token 阈值压缩。
         sanitized = {
             "role": message.get("role", ""),
-            "content": (message.get("content", "") or "")[:5000],
+            "content": message.get("content", "") or "",
             "timestamp": message.get("timestamp", ""),
         }
         if message.get("thinking"):
-            sanitized["thinking"] = message["thinking"][:2000]
+            sanitized["thinking"] = message["thinking"]
         if message.get("thinking_duration") is not None:
             sanitized["thinking_duration"] = message["thinking_duration"]
         if message.get("usage"):
             sanitized["usage"] = message["usage"]
+        for key in ("knowledge_evidence", "knowledge_warnings"):
+            if isinstance(message.get(key), list):
+                sanitized[key] = message[key]
         if message.get("tool_calls"):
             # 与 _sanitize_extra_data 对齐：不再截断为前 20 条。
             # HITL 恢复后新增的工具调用位于列表尾部，截断会导致历史会话中
@@ -859,7 +828,7 @@ class Database:
                     "tool_name": tc.get("tool_name", "") or tc.get("name", ""),
                     "tool_call_id": tc.get("tool_call_id", ""),
                     "arguments": tc.get("arguments", {}),
-                    "result": str(tc.get("result", ""))[:5000],
+                    "result": str(tc.get("result", "")),
                     "success": tc.get("success", True),
                     "duration": tc.get("duration"),
                     "step": tc.get("step", 0),
@@ -883,14 +852,14 @@ class Database:
                 block_type = b.get("type", "")
                 s = {"type": block_type, "order": b.get("order", 0)}
                 if block_type == "thinking":
-                    s["content"] = (b.get("content", "") or "")[:2000]
+                    s["content"] = b.get("content", "") or ""
                     s["duration"] = b.get("duration")
                     s["step"] = b.get("step", 0)
                 elif block_type == "tool_call":
                     s["tool_name"] = b.get("tool_name", "")
                     s["tool_call_id"] = b.get("tool_call_id", "")
                     s["arguments"] = b.get("arguments", {})
-                    s["result"] = str(b.get("result", ""))[:5000]
+                    s["result"] = str(b.get("result", ""))
                     s["success"] = b.get("success", True)
                     s["duration"] = b.get("duration")
                     s["step"] = b.get("step", 0)
@@ -903,10 +872,10 @@ class Database:
                     if b.get("file_paths"):
                         s["file_paths"] = b["file_paths"]
                 elif block_type == "content":
-                    s["content"] = (b.get("content", "") or "")[:5000]
+                    s["content"] = b.get("content", "") or ""
                     s["step"] = b.get("step", 0)
                 else:
-                    s["content"] = (b.get("content", "") or "")[:200]
+                    s["content"] = b.get("content", "") or ""
                 sanitized_blocks.append(s)
             # 按 order 排序恢复原始顺序
             sanitized_blocks.sort(key=lambda x: x.get("order", 0))
@@ -929,6 +898,75 @@ class Database:
                 session.updated_at = datetime.now().isoformat()
                 self.update_session(session)
 
+    def _sanitize_blocks(self, blocks: list) -> list:
+        """规范化 blocks：分离 content 与其他块、按类型挑选字段、按 order 还原顺序。
+
+        content 块不计入数量上限，避免正文被截断。
+        """
+        # 分离 content blocks 和其他 blocks，确保 content 不被截断
+        content_blocks = []
+        other_blocks = []
+        for b in blocks:
+            if b.get("type") == "content":
+                content_blocks.append(b)
+            else:
+                other_blocks.append(b)
+
+        # 保留全部非 content blocks（不再限制数量）：
+        # 长会话/多次 HITL 会产生数十至上百个 tool_call/thinking 块，
+        # 限制数量会导致后期（最晚出现的）块在历史记录中整体丢失。
+        # 列类型为 MEDIUMTEXT(16MB)，配合下方 max_len 渐进式裁剪控制体积。
+        max_other = 1000
+        truncated_other = other_blocks[:max_other]
+
+        sanitized_blocks = []
+        for b in truncated_other + content_blocks:
+            block_type = b.get("type", "")
+            sanitized = {"type": block_type, "order": b.get("order", 0)}
+            if block_type == "thinking":
+                sanitized["content"] = b.get("content", "") or ""
+                sanitized["duration"] = b.get("duration")
+                sanitized["step"] = b.get("step", 0)
+            elif block_type == "tool_call":
+                sanitized["tool_name"] = b.get("tool_name", "")
+                sanitized["tool_call_id"] = b.get("tool_call_id", "")
+                sanitized["arguments"] = b.get("arguments", {})
+                sanitized["result"] = str(b.get("result", ""))
+                sanitized["success"] = b.get("success", True)
+                sanitized["duration"] = b.get("duration")
+                sanitized["step"] = b.get("step", 0)
+                # 保留 HITL 审批标记，使历史会话也能显示「已批准/已拒绝/待审批」
+                if b.get("approval_status"):
+                    sanitized["approval_status"] = b["approval_status"]
+                if b.get("pending_approval"):
+                    sanitized["pending_approval"] = True
+                if b.get("file_paths"):
+                    sanitized["file_paths"] = b["file_paths"]
+            elif block_type == "content":
+                sanitized["content"] = b.get("content", "") or ""
+            else:
+                sanitized["content"] = b.get("content", "") or ""
+            sanitized_blocks.append(sanitized)
+        # 按 order 排序恢复原始顺序
+        sanitized_blocks.sort(key=lambda x: x.get("order", 0))
+        return sanitized_blocks
+
+    def _sanitize_tool_calls(self, tool_calls: list) -> list:
+        """规范化 tool_calls 字段（最多保留 1000 条）。"""
+        return [
+            {
+                "tool_name": tc.get("tool_name", "") or tc.get("name", ""),
+                "tool_call_id": tc.get("tool_call_id", ""),
+                "arguments": tc.get("arguments", {}),
+                "result": str(tc.get("result", "")),
+                "success": tc.get("success", True),
+                "duration": tc.get("duration"),
+                "step": tc.get("step", 0),
+                "approval_status": tc.get("approval_status"),
+            }
+            for tc in tool_calls[:1000]
+        ]
+
     def _sanitize_extra_data(self, message: dict) -> str | None:
         extra_keys = {
             k: v
@@ -941,73 +979,14 @@ class Database:
         if "blocks" in extra_keys:
             blocks = extra_keys["blocks"]
             if isinstance(blocks, list):
-                # 分离 content blocks 和其他 blocks，确保 content 不被截断
-                content_blocks = []
-                other_blocks = []
-                for b in blocks:
-                    if b.get("type") == "content":
-                        content_blocks.append(b)
-                    else:
-                        other_blocks.append(b)
-
-                # 保留全部非 content blocks（不再限制数量）：
-                # 长会话/多次 HITL 会产生数十至上百个 tool_call/thinking 块，
-                # 限制数量会导致后期（最晚出现的）块在历史记录中整体丢失。
-                # 列类型为 MEDIUMTEXT(16MB)，配合下方 max_len 渐进式裁剪控制体积。
-                max_other = 1000
-                truncated_other = other_blocks[:max_other]
-
-                sanitized_blocks = []
-                for b in truncated_other + content_blocks:
-                    block_type = b.get("type", "")
-                    sanitized = {"type": block_type, "order": b.get("order", 0)}
-                    if block_type == "thinking":
-                        sanitized["content"] = (b.get("content", "") or "")[:2000]
-                        sanitized["duration"] = b.get("duration")
-                        sanitized["step"] = b.get("step", 0)
-                    elif block_type == "tool_call":
-                        sanitized["tool_name"] = b.get("tool_name", "")
-                        sanitized["tool_call_id"] = b.get("tool_call_id", "")
-                        sanitized["arguments"] = b.get("arguments", {})
-                        sanitized["result"] = str(b.get("result", ""))[:5000]
-                        sanitized["success"] = b.get("success", True)
-                        sanitized["duration"] = b.get("duration")
-                        sanitized["step"] = b.get("step", 0)
-                        # 保留 HITL 审批标记，使历史会话也能显示「已批准/已拒绝/待审批」
-                        if b.get("approval_status"):
-                            sanitized["approval_status"] = b["approval_status"]
-                        if b.get("pending_approval"):
-                            sanitized["pending_approval"] = True
-                        if b.get("file_paths"):
-                            sanitized["file_paths"] = b["file_paths"]
-                    elif block_type == "content":
-                        sanitized["content"] = (b.get("content", "") or "")[:5000]
-                    else:
-                        sanitized["content"] = (b.get("content", "") or "")[:200]
-                    sanitized_blocks.append(sanitized)
-                # 按 order 排序恢复原始顺序
-                sanitized_blocks.sort(key=lambda x: x.get("order", 0))
-                extra_keys["blocks"] = sanitized_blocks
+                extra_keys["blocks"] = self._sanitize_blocks(blocks)
 
         if "tool_calls" in extra_keys:
             tool_calls = extra_keys["tool_calls"]
             if isinstance(tool_calls, list):
-                extra_keys["tool_calls"] = [
-                    {
-                        "tool_name": tc.get("tool_name", "") or tc.get("name", ""),
-                        "tool_call_id": tc.get("tool_call_id", ""),
-                        "arguments": tc.get("arguments", {}),
-                        "result": str(tc.get("result", ""))[:5000],
-                        "success": tc.get("success", True),
-                        "duration": tc.get("duration"),
-                        "step": tc.get("step", 0),
-                        "approval_status": tc.get("approval_status"),
-                    }
-                    for tc in tool_calls[:1000]
-                ]
+                extra_keys["tool_calls"] = self._sanitize_tool_calls(tool_calls)
 
-        if "thinking" in extra_keys and extra_keys["thinking"]:
-            extra_keys["thinking"] = extra_keys["thinking"][:2000]
+        # thinking 不截断：完整思考用于下一轮上下文；超大时由下方 max_len 渐进裁剪兜底
 
         result = json.dumps(extra_keys, ensure_ascii=False)
         max_len = 5_000_000
@@ -1284,14 +1263,14 @@ class Database:
             if username:
                 self._execute(
                     cursor,
-                    "SELECT COUNT(*) FROM sessions WHERE username=? AND title NOT LIKE ? AND title NOT LIKE ?",
-                    (username, "[定时任务]%", "[知识库问答]%"),
+                    "SELECT COUNT(*) FROM sessions WHERE username=? AND title NOT LIKE ?",
+                    (username, "[定时任务]%"),
                 )
             else:
                 self._execute(
                     cursor,
-                    "SELECT COUNT(*) FROM sessions WHERE title NOT LIKE ? AND title NOT LIKE ?",
-                    ("[定时任务]%", "[知识库问答]%"),
+                    "SELECT COUNT(*) FROM sessions WHERE title NOT LIKE ?",
+                    ("[定时任务]%",),
                 )
             row = cursor.fetchone()
             return row[0] if row else 0
@@ -1423,41 +1402,14 @@ class Database:
             rows = cursor.fetchall()
         return [dict(row) for row in rows]
 
-    @staticmethod
-    def _user_from_row(row) -> UserModel:
-        row = dict(row) if not isinstance(row, dict) else row
-        return UserModel(
-            user_id=row["user_id"],
-            username=row["username"],
-            password_hash=row.get("password_hash", ""),
-            organization_id=row.get("organization_id", ""),
-            email=row.get("email", ""),
-            bound_ip=row.get("bound_ip", ""),
-            token_version=row.get("token_version", 0),
-            employee_id=row.get("employee_id", "") or "",
-            display_name=row.get("display_name", ""),
-            department_id=row.get("department_id", "") or row.get("organization_id", ""),
-            department_name=row.get("department_name", ""),
-            position=row.get("position", ""),
-            mobile=row.get("mobile", ""),
-            account_status=row.get("account_status", "active") or "active",
-            personnel_source=row.get("personnel_source", ""),
-            created_at=row["created_at"],
-            updated_at=row["updated_at"],
-        )
-
     def create_user(self, user_data: UserModel) -> UserModel:
         with self.get_connection() as conn:
             cursor = conn.cursor()
             self._execute(
                 cursor,
                 """
-                INSERT INTO users (
-                    user_id, username, password_hash, organization_id, email,
-                    bound_ip, token_version, employee_id, display_name,
-                    department_id, department_name, position, mobile,
-                    account_status, personnel_source, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO users (user_id, username, password_hash, organization_id, email, bound_ip, token_version, employee_id, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     user_data.user_id,
@@ -1467,37 +1419,71 @@ class Database:
                     user_data.email,
                     user_data.bound_ip,
                     user_data.token_version,
+                    # 空工号统一存 NULL：唯一索引允许多个 NULL，空串却只能有一个
                     user_data.employee_id or None,
-                    user_data.display_name,
-                    user_data.department_id or user_data.organization_id,
-                    user_data.department_name,
-                    user_data.position,
-                    user_data.mobile,
-                    user_data.account_status,
-                    user_data.personnel_source,
                     user_data.created_at,
                     user_data.updated_at,
                 ),
             )
+            from ..personnel.user_fields import save_user_fields
+            save_user_fields(self, cursor, user_data)
         return user_data
+
+    @staticmethod
+    def _row_to_user(row) -> UserModel:
+        """users 表行 → UserModel。缺列时给默认值，兼容未迁移的旧库。"""
+        row = dict(row) if not isinstance(row, dict) else row
+        from ..personnel.user_fields import read_user_fields
+        return UserModel(
+            user_id=row["user_id"],
+            username=row["username"],
+            password_hash=row["password_hash"],
+            organization_id=row.get("organization_id") or "",
+            email=row.get("email") or "",
+            bound_ip=row.get("bound_ip") or "",
+            token_version=row.get("token_version") or 0,
+            employee_id=row.get("employee_id") or "",
+            **read_user_fields(row),
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )
 
     def get_user_by_username(self, username: str) -> Optional[UserModel]:
         with self.get_connection() as conn:
             cursor = conn.cursor()
             self._execute(cursor, "SELECT * FROM users WHERE username=?", (username,))
             row = cursor.fetchone()
-        if row is None:
-            return None
-        return self._user_from_row(row)
+        return self._row_to_user(row) if row is not None else None
 
     def get_user_by_id(self, user_id: str) -> Optional[UserModel]:
         with self.get_connection() as conn:
             cursor = conn.cursor()
             self._execute(cursor, "SELECT * FROM users WHERE user_id=?", (user_id,))
             row = cursor.fetchone()
-        if row is None:
+        return self._row_to_user(row) if row is not None else None
+
+    def get_user_by_employee_id(self, employee_id: str) -> Optional[UserModel]:
+        """按工号查用户（工号全局唯一；未设置工号的用户落库为 NULL）。"""
+        if not employee_id:
             return None
-        return self._user_from_row(row)
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            self._execute(
+                cursor, "SELECT * FROM users WHERE employee_id=?", (employee_id,)
+            )
+            row = cursor.fetchone()
+        return self._row_to_user(row) if row is not None else None
+
+    def get_user_by_account(self, account: str) -> Optional[UserModel]:
+        """按「用户名或工号」定位用户，供登录界面使用。
+
+        先精确匹配用户名，未命中再按工号匹配；工号全局唯一，无需额外消歧。
+        """
+        if not account:
+            return None
+        return self.get_user_by_username(account) or self.get_user_by_employee_id(
+            account
+        )
 
     def update_user(self, user_data: UserModel):
         with self.get_connection() as conn:
@@ -1505,9 +1491,7 @@ class Database:
             self._execute(
                 cursor,
                 """
-                UPDATE users SET username=?, password_hash=?, organization_id=?, email=?, bound_ip=?,
-                    employee_id=?, display_name=?, department_id=?, department_name=?,
-                    position=?, mobile=?, account_status=?, personnel_source=?, updated_at=?
+                UPDATE users SET username=?, password_hash=?, organization_id=?, email=?, bound_ip=?, employee_id=?, updated_at=?
                 WHERE user_id=?
                 """,
                 (
@@ -1517,17 +1501,13 @@ class Database:
                     user_data.email,
                     user_data.bound_ip,
                     user_data.employee_id or None,
-                    user_data.display_name,
-                    user_data.department_id or user_data.organization_id,
-                    user_data.department_name,
-                    user_data.position,
-                    user_data.mobile,
-                    user_data.account_status,
-                    user_data.personnel_source,
                     datetime.now().isoformat(),
                     user_data.user_id,
                 ),
             )
+
+            from ..personnel.user_fields import save_user_fields
+            save_user_fields(self, cursor, user_data)
 
     def bind_user_ip(self, username: str, ip: str) -> bool:
         user = self.get_user_by_username(username)
@@ -1582,16 +1562,113 @@ class Database:
         user = self.get_user_by_username(username)
         return user.token_version if user else 0
 
+    def touch_user_activity(self, username: str, timestamp: float) -> bool:
+        """更新用户最近活跃时间（Unix 时间戳），供 idle-logout 滑动续期。
+
+        数据落在共享数据库，多 worker 下任意进程都能读到同一个登录活跃状态。
+        """
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            self._execute(
+                cursor,
+                "UPDATE users SET last_activity_at=? WHERE username=?",
+                (timestamp, username),
+            )
+            return cursor.rowcount > 0
+
+    def get_user_activity_time(self, username: str) -> Optional[float]:
+        """读取用户最近活跃时间（Unix 时间戳），无记录返回 None。"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            self._execute(
+                cursor,
+                "SELECT last_activity_at FROM users WHERE username=?",
+                (username,),
+            )
+            row = cursor.fetchone()
+        if row is None:
+            return None
+        value = row["last_activity_at"] if isinstance(row, dict) else row[0]
+        if value is None or value == "":
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    # ── MCP API Key（主应用签发，mcp-server 子项目只读校验） ─────────────
+
+    def issue_mcp_api_key(self, username: str, business: str, key_hash: str) -> bool:
+        """签发（或重签）某用户某业务的 MCP API Key，明文不落库。"""
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        # upsert：sqlite 用 ON CONFLICT，mysql 用 ON DUPLICATE KEY UPDATE
+        if self.db_type == "sqlite":
+            upsert_sql = """
+                INSERT INTO mcp_api_keys (username, business, key_hash, created_at, updated_at, revoked)
+                VALUES (?, ?, ?, ?, ?, 0)
+                ON CONFLICT(username, business) DO UPDATE SET
+                    key_hash=excluded.key_hash, updated_at=excluded.updated_at, revoked=0
+            """
+        else:
+            upsert_sql = """
+                INSERT INTO mcp_api_keys (username, business, key_hash, created_at, updated_at, revoked)
+                VALUES (?, ?, ?, ?, ?, 0)
+                ON DUPLICATE KEY UPDATE
+                    key_hash=VALUES(key_hash), updated_at=VALUES(updated_at), revoked=0
+            """
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            self._execute(cursor, upsert_sql, (username, business, key_hash, now, now))
+        return True
+
+    def revoke_mcp_api_key(self, username: str, business: str) -> bool:
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            self._execute(
+                cursor,
+                "UPDATE mcp_api_keys SET revoked=1, updated_at=? WHERE username=? AND business=?",
+                (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), username, business),
+            )
+            return cursor.rowcount > 0
+
+    def get_mcp_api_keys(self, username: str) -> list[dict]:
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            self._execute(
+                cursor,
+                "SELECT business, created_at, updated_at, revoked "
+                "FROM mcp_api_keys WHERE username=? ORDER BY business",
+                (username,),
+            )
+            rows = cursor.fetchall()
+        return [dict(r) if not isinstance(r, dict) else r for r in rows]
+
+    def clear_user_activity(self, username: str) -> bool:
+        """清空用户活跃时间（登出时调用）。"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            self._execute(
+                cursor,
+                "UPDATE users SET last_activity_at=NULL WHERE username=?",
+                (username,),
+            )
+            return cursor.rowcount > 0
+
     def register_user(
         self,
         username: str,
         password: str,
-        organization_id: str = "",
-        email: str = "",
+        employee_id: str = "",
         bound_ip: str = "",
     ) -> Optional[UserModel]:
-        existing = self.get_user_by_username(username)
-        if existing:
+        """注册用户；用户名或工号任一已存在都返回 None（错误提示由调用方区分）。
+
+        机构ID 与邮箱不是注册项：注册时写空，前者可由管理员维护（用于系统提示词注入），
+        后者可由用户登录后通过资料接口补填。
+        """
+        if self.get_user_by_username(username):
+            return None
+        if employee_id and self.get_user_by_employee_id(employee_id):
             return None
 
         now = datetime.now().isoformat()
@@ -1600,22 +1677,66 @@ class Database:
             user_id=str(uuid.uuid4()),
             username=username,
             password_hash=password_hash,
-            organization_id=organization_id or "",
-            email=email or "",
+            organization_id="",
+            email="",
             bound_ip=bound_ip or "",
+            employee_id=employee_id or "",
             created_at=now,
             updated_at=now,
         )
-        self.create_user(user)
+        try:
+            self.create_user(user)
+        except Exception as e:  # noqa: BLE001
+            # 并发场景由唯一索引兜底（用户名/工号撞车）
+            logger.warning(f"注册用户失败（唯一约束冲突）| username={username}: {e}")
+            return None
         return user
 
-    def verify_user_password(self, username: str, password: str) -> Optional[UserModel]:
-        user = self.get_user_by_username(username)
+    def verify_user_password(self, account: str, password: str) -> Optional[UserModel]:
+        """校验密码登录。``account`` 可以是用户名或工号（工号全局唯一）。"""
+        user = self.get_user_by_account(account)
         if not user:
             return None
         if not verify_password(password, user.password_hash):
             return None
         return user
+
+    def get_or_create_passwordless_user(
+        self,
+        username: str,
+        user_id: str = "",
+    ) -> tuple[Optional[UserModel], bool]:
+        """免密登录：按用户名查找用户，不存在则注册。
+
+        - 用户名已存在：直接返回该用户，user_id 不参与匹配；
+        - 用户名不存在：user_id 为空或 "0" 时自动生成唯一 ID，否则使用传入值，
+          传入值已被其他用户占用时返回 (None, False)。
+
+        返回 (user, created)。
+        """
+        existing = self.get_user_by_username(username)
+        if existing:
+            return existing, False
+
+        if not user_id or user_id == "0":
+            user_id = str(uuid.uuid4())
+        elif self.get_user_by_id(user_id):
+            return None, False
+
+        now = datetime.now().isoformat()
+        user = UserModel(
+            user_id=user_id,
+            username=username,
+            # 免密用户不通过密码登录，写入随机密码哈希防止被猜测
+            password_hash=hash_password(uuid.uuid4().hex),
+            organization_id="",
+            email="",
+            bound_ip="",
+            created_at=now,
+            updated_at=now,
+        )
+        self.create_user(user)
+        return user, True
 
     def update_user_password(self, username: str, new_password_hash: str) -> bool:
         user = self.get_user_by_username(username)
@@ -1638,43 +1759,8 @@ class Database:
             return cursor.rowcount > 0
 
     def get_or_create_default_user(self) -> UserModel:
-        default_user = self.get_user_by_username("admin")
-        if default_user:
-            # Never repair an account to a public, well-known password.  A
-            # historical row without a credential must be provisioned with a
-            # one-time secret supplied by the deployment environment.
-            is_production = os.environ.get("AGENT_ENV", "").casefold() in {
-                "prod",
-                "production",
-            }
-            has_known_password = bool(default_user.password_hash) and any(
-                verify_password(candidate, default_user.password_hash)
-                for candidate in ("admin", "123456")
-            )
-            if not default_user.password_hash or (is_production and has_known_password):
-                password = _bootstrap_admin_password()
-                self.update_user_password("admin", hash_password(password))
-                default_user = self.get_user_by_username("admin")
-            elif has_known_password:
-                logger.warning(
-                    "开发环境 admin 仍使用公开弱密码；生产环境启动时将强制轮换"
-                )
-            return default_user
-
-        password = _bootstrap_admin_password()
-        now = datetime.now().isoformat()
-        user = UserModel(
-            user_id=str(uuid.uuid4()),
-            username="admin",
-            password_hash=hash_password(password),
-            organization_id="",
-            email="",
-            bound_ip="",
-            created_at=now,
-            updated_at=now,
-        )
-        self.create_user(user)
-        return user
+        from ..personnel.bootstrap import ensure_default_admin
+        return ensure_default_admin(self)
 
     def list_users(self, limit: int = 50, offset: int = 0) -> list[UserModel]:
         with self.get_connection() as conn:
@@ -1685,10 +1771,7 @@ class Database:
                 (limit, offset),
             )
             rows = cursor.fetchall()
-        result = []
-        for row in rows:
-            result.append(self._user_from_row(row))
-        return result
+        return [self._row_to_user(row) for row in rows]
 
     def count_users(self) -> int:
         with self.get_connection() as conn:
@@ -1791,7 +1874,7 @@ class Database:
     def get_generated_filenames(self, username: str) -> set[str]:
         """返回指定用户所有会话中生成的文件原始文件名集合。
 
-        用于资产页（/api/files/list）排除会话生成的文件，确保只展示用户上传的文件。
+        用于资产页（/agent/files/list）排除会话生成的文件，确保只展示用户上传的文件。
         """
         if not username:
             return set()
@@ -1933,8 +2016,6 @@ def init_database(db_config: dict = None) -> Database:
     global _db_instance
     db = Database(db_config)
     db.init_tables()
-    # 人员配置入口仅对 admin 开放。历史库可能存在空密码的 admin 行，
-    # 统一沿用既有初始化逻辑补齐，使首次迁移到 MySQL 后管理员可登录。
     db.get_or_create_default_user()
     _db_instance = db
     logger.info("✅ 数据库初始化完成")

@@ -21,8 +21,8 @@ from ..knowledge.chat_bridge import (
     prepare_knowledge_chat,
 )
 from ..knowledge.streaming import knowledge_chat_stream_generator
+from ..knowledge.host_streaming import chat_stream_generator
 from ..services import (
-    chat_stream_generator,
     resume_stream_generator,
     get_or_create_agent_for_session,
     remove_session_agent,
@@ -37,7 +37,7 @@ from .sessions import generate_workspace_name
 logger = logging.getLogger(__name__)
 
 router = APIRouter(
-    prefix="/api/chat",
+    prefix="/agent/chat",
     tags=["Chat"],
 )
 
