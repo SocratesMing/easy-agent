@@ -37,7 +37,7 @@
 
 <script>
 import { IconBookDashed, IconBookOpen, IconCheck, IconChevronDown, IconCircleAlert, IconLibrary, IconSearch, IconX } from './icons.js'
-import { getKnowledgeCapabilities, getSessionKnowledgeScope, listKnowledgeBases, replaceSessionKnowledgeScope } from './api.js'
+import { getKnowledgeStatus, getSessionKnowledgeScope, listKnowledgeBases, replaceSessionKnowledgeScope } from './api.js'
 
 export default {
   name: 'KnowledgeScopeSelector',
@@ -115,8 +115,8 @@ export default {
     async load() {
       this.error = ''
       try {
-        const capability = await getKnowledgeCapabilities()
-        this.enabled = Boolean(capability.enabled)
+        const status = await getKnowledgeStatus()
+        this.enabled = Boolean(status && status.enabled)
         if (!this.enabled) return
         const [baseResponse, scope] = await Promise.all([
           listKnowledgeBases({ pageSize: 100 }),

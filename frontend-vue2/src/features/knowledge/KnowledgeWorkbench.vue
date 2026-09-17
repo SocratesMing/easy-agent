@@ -11,12 +11,8 @@
         </div>
       </div>
       <div class="ke-topbar-actions">
-        <button
-          v-if="teamSpaceManagement.is_admin"
-          class="ke-button admin-access"
-          title="配置人员、部门及团队空间创建与管理权限"
-          @click="$emit('manage-personnel')"
-        ><IconUserRoundCog />人员与权限</button>
+        <!-- 人员与权限（sunya 的 manage-personnel）依赖 personnel 模块，尚未迁移；
+             该 emit 在 vue2 无监听者，故隐藏入口，避免点击无响应。 -->
         <span class="ke-health" :class="healthClass"><i></i>{{ healthLabel }}</span>
         <button class="ke-button quiet" @click="showOperations = true"><IconActivity />任务</button>
         <button class="ke-button primary" @click="openCreateBase"><IconPlus />新建知识库</button>
@@ -415,6 +411,22 @@ function clampLayout(value, min, max) {
   return Math.min(max, Math.max(min, value))
 }
 
+// crypto.randomUUID() 仅在安全上下文（https / localhost）可用；明文 HTTP 局域网访问时缺失，
+// 会导致上传排队失败。这里补一个基于 getRandomValues / Math.random 的回退。
+function randomId() {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID()
+  }
+  if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') {
+    const bytes = crypto.getRandomValues(new Uint8Array(16))
+    bytes[6] = (bytes[6] & 0x0f) | 0x40
+    bytes[8] = (bytes[8] & 0x3f) | 0x80
+    const hex = Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('')
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
+  }
+  return `id-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+}
+
 function storedLayoutNumber(key, fallback) {
   const value = Number(localStorage.getItem(key))
   return Number.isFinite(value) ? value : fallback
@@ -469,7 +481,7 @@ export default {
     IconUsers,
     IconX,
   },
-  emits: ['close', 'manage-personnel'],
+  emits: ['close'],
   data() {
     return {
       capabilities: { loaded: false, enabled: false },
@@ -944,7 +956,7 @@ export default {
       const uploadFolderId = this.selectedFolderId
       if (!uploadBaseId) return
       const pendingUploads = files.map(file => {
-        const queueId = crypto.randomUUID()
+        const queueId = randomId()
         const item = { id: queueId, optimisticId: `upload-${queueId}`, baseId: uploadBaseId, folderId: uploadFolderId, documentId: '', name: file.name, progress: 0, state: 'uploading', error: '' }
         this.uploadQueue.push(item)
         if (this.selectedBaseId === uploadBaseId && this.selectedFolderId === uploadFolderId && !this.search.trim() && !this.statusFilter) {

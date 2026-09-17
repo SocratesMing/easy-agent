@@ -155,7 +155,14 @@
           </button>
         </div>
       </template>
-      
+
+      <KnowledgeEvidence
+        v-if="hasKnowledgeEvidence"
+        :evidence="message.knowledge_evidence || []"
+        :warnings="message.knowledge_warnings || []"
+        :message-id="message.id || message.timestamp"
+      />
+
       <!-- 用户消息显示复制和重试按钮 -->
       <div v-if="message.role === 'user' && message.content" class="message-actions">
         <button class="action-btn retry-btn" @click="retryMessage" title="重新发送">
@@ -189,6 +196,7 @@ import {
 } from '../markdownSetup.js'
 import FileIcon from './FileIcon.vue'
 import ToolCallCard from './ToolCallCard.vue'
+import KnowledgeEvidence from '../features/knowledge/KnowledgeEvidence.vue'
 
 // 注册 KaTeX 数学公式 + emoji 短代码扩展（幂等，仅执行一次）
 setupMarkedExtensions()
@@ -269,7 +277,7 @@ const renderer = createMarkdownRenderer({ highlight: highlightCode })
 installCodeCopyHandler()
 
 export default {
-  components: { FileIcon, ToolCallCard },
+  components: { FileIcon, ToolCallCard, KnowledgeEvidence },
   props: {
     message: {
       type: Object,
@@ -295,7 +303,16 @@ export default {
       if (m.thinking) return true
       if (m.content) return true
       if (m.tool_calls && m.tool_calls.length > 0) return true
+      if (m.knowledge_evidence && m.knowledge_evidence.length > 0) return true
+      if (m.knowledge_warnings && m.knowledge_warnings.length > 0) return true
       return false
+    },
+    // 只有携带知识依据/告警的 assistant 消息才挂载 KnowledgeEvidence，
+    // 普通消息渲染结果与迁移前完全一致（KnowledgeEvidence 自身在空数组时也会渲染为空）。
+    hasKnowledgeEvidence() {
+      const m = this.message
+      if (m.role !== 'assistant') return false
+      return Boolean((m.knowledge_evidence && m.knowledge_evidence.length) || (m.knowledge_warnings && m.knowledge_warnings.length))
     },
     sortedBlocks() {
       // 从 blocks 字段构建（优先使用）
