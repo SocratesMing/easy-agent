@@ -1,0 +1,22 @@
+{
+  "code": 0,
+  "data": {
+    "chunks": [
+      {
+        "content": "sanitized fixture content",
+        "document_id": "doc_ready",
+        "document_keyword": "ready.pdf",
+        "id": "chunk_1",
+        "kb_id": "dataset_1",
+        "positions": [[1, 2, 3, 4, 5]],
+        "similarity": 0.91,
+        "term_similarity": 0.88,
+        "vector_similarity": 0.93
+      }
+    ],
+    "doc_aggs": [
+      {"count": 1, "doc_id": "doc_ready", "doc_name": "ready.pdf"}
+    ],
+    "total": 1
+  }
+}
