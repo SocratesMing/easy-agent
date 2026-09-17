@@ -47,6 +47,7 @@ from .api import (
 from .knowledge.api import router as knowledge_router
 from .knowledge.ops_api import router as knowledge_ops_router
 from .knowledge.lifecycle import startup_knowledge, shutdown_knowledge
+from .knowledge.observability import audit_metadata, should_audit
 from .knowledge.operations_repository import KnowledgeOperationsRepository
 
 # Web Terminal 依赖 pty（POSIX 专用），Windows 不支持，故不加载该模块
@@ -407,7 +408,9 @@ async def knowledge_observability(request: Request, call_next):
         knowledge_config is not None
         and knowledge_config.enabled
         and knowledge_config.audit.enabled
-        and request.url.path.startswith("/agent/knowledge")
+        # 复用模块自身策略：只审计写入路径，跳过端点已单独审计的读路径
+        # （should_audit 排除 /capabilities、/status、/health、/metrics 等）。
+        and should_audit(request.url.path, request.method)
     ):
         try:
             db = getattr(request.app.state, "db", None)
@@ -421,14 +424,12 @@ async def knowledge_observability(request: Request, call_next):
                     actor_username=str(
                         getattr(request.state, "actor_username", "") or "anonymous"
                     ),
-                    action=f"http.{request.method.lower()}",
-                    object_type="http_request",
-                    object_id=request.url.path,
-                    outcome="success" if response.status_code < 400 else "failure",
-                    details={
-                        "status_code": response.status_code,
-                        "duration_ms": round(duration_ms, 1),
-                    },
+                    **audit_metadata(
+                        request.url.path,
+                        request.method,
+                        response.status_code,
+                        duration_ms / 1000,
+                    ),
                     max_details_bytes=knowledge_config.audit.max_details_bytes,
                 )
         except Exception as exc:  # noqa: BLE001

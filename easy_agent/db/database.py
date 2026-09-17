@@ -514,14 +514,18 @@ class Database:
             self._create_scheduled_task_tables(cursor)
 
             # Narrow integration point: schema ownership stays in knowledge/.
-            from ..knowledge.schema import (
-                initialize_knowledge_schema,
-                validate_knowledge_schema_cursor,
-            )
-            if os.environ.get("AGENT_ENV", "").casefold() in {"prod", "production"}:
-                validate_knowledge_schema_cursor(self, cursor)
-            else:
+            # 有意偏离迁移来源：其 prod 分支调用 validate_knowledge_schema_cursor，
+            # 但本分支未迁移 schema 迁移 CLI（scripts/migrate_knowledge_schema.py），
+            # 存量 prod 库会因校验失败而无法启动。initialize_knowledge_schema 是
+            # 幂等且有 checksum 保护的，故始终调用它；失败只告警，绝不阻断启动。
+            from ..knowledge.schema import initialize_knowledge_schema
+
+            try:
                 initialize_knowledge_schema(self, cursor)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    f"知识库 schema 初始化失败（knowledge 功能将不可用，服务继续启动）: {e}"
+                )
 
             conn.commit()
 

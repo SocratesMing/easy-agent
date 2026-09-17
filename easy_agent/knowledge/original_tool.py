@@ -252,8 +252,11 @@ def create_knowledge_original_tool(
     workspace_dir: str | Path,
     config: KnowledgeConfig,
 ) -> KnowledgeOriginalTool | None:
+    # 先判禁用再建存储：create_original_store 会 mkdir，禁用态不应产生目录。
+    if not config.enabled:
+        return None
     store = create_original_store(config)
-    if not config.enabled or store is None:
+    if store is None:
         return None
     return KnowledgeOriginalTool(
         username=username,
