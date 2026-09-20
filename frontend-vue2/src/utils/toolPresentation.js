@@ -90,6 +90,16 @@ export function toolCard(toolName, args, result, success = true) {
         title: a.pattern || 'grep', meta: short(a.path || '', 60),
         error: success === false, raw: r,
       }
+    case 'web_search': {
+      // 联网搜索：标题为检索词，meta 显示结果条数，正文为带来源链接的结果列表
+      const m = /共 (\d+) 条结果/.exec(r)
+      return {
+        card: 'search', shape: 'matches', kind: 'search',
+        title: a.query || '联网搜索',
+        meta: m ? `${m[1]} 条结果` : '联网搜索',
+        error: success === false, raw: r,
+      }
+    }
     default:
       return {
         card: 'generic', kind: 'other', title: toolName || 'tool',

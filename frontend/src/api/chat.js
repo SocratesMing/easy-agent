@@ -135,7 +135,7 @@ export async function attachStream(sessionId, onChunk, signal) {
   }
 }
 
-export async function sendMessage(sessionId, message, onChunk, signal, enableDeepThink = true, files = [], model = null) {
+export async function sendMessage(sessionId, message, onChunk, signal, enableDeepThink = true, files = [], model = null, enableWebSearch = false) {
   const controller = new AbortController()
   const abortSignal = signal || controller.signal
 
@@ -144,6 +144,7 @@ export async function sendMessage(sessionId, message, onChunk, signal, enableDee
       message,
       message_id: generateMessageId(),
       enable_deep_think: enableDeepThink,
+      enable_web_search: enableWebSearch,
       files: files,
   }
   if (model) {

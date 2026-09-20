@@ -83,7 +83,7 @@ export default {
     // 兼容两种文件树来源：会话工作区或定时任务工作区
     loadTree(path, sessionId, taskId) {
       return taskId
-        ? getScheduledTaskWorkspace(path, taskId)
+        ? getScheduledTaskWorkspace(taskId, path)
         : getWorkspaceTree(path, sessionId)
     },
     async toggleExpand() {

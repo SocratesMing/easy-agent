@@ -474,6 +474,24 @@ class Database:
         self._create_index(cursor, "idx_scheduled_task_runs_task", "scheduled_task_runs", "task_id")
 
 
+    def _create_distributed_lock_table(self, cursor):
+        # 分布式锁表：多实例（多 pod）部署下防止同一任务被重复处理，
+        # 见 easy_agent/utils/distributed_lock.py。lock_key 为主键，抢锁即
+        # 「插入行 / 已过期则改写 owner」，插入失败即表示锁被其它实例占用。
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS distributed_locks (
+                lock_key VARCHAR(255) NOT NULL PRIMARY KEY,
+                owner VARCHAR(255) NOT NULL,
+                acquired_at VARCHAR(50) NOT NULL,
+                expires_at VARCHAR(50) NOT NULL,
+                updated_at VARCHAR(50) NOT NULL
+            )
+        """)
+        self._create_index(
+            cursor, "idx_distributed_locks_expires", "distributed_locks", "expires_at"
+        )
+
+
     def init_tables(self):
         with self.get_connection() as conn:
             cursor = conn.cursor()
@@ -493,6 +511,7 @@ class Database:
             self._create_users_table(cursor)
             self._create_misc_tables(cursor, auto_inc)
             self._create_scheduled_task_tables(cursor)
+            self._create_distributed_lock_table(cursor)
             conn.commit()
 
             # 修复 session_messages 表中缺失的消息行

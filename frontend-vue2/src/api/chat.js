@@ -134,7 +134,8 @@ export async function sendMessage(
   signal,
   enableDeepThink = true,
   files = [],
-  model = null
+  model = null,
+  enableWebSearch = false
 ) {
   const controller = new AbortController()
   const abortSignal = signal || controller.signal
@@ -143,6 +144,7 @@ export async function sendMessage(
     message,
     message_id: generateMessageId(),
     enable_deep_think: enableDeepThink,
+    enable_web_search: enableWebSearch,
     files,
   }
   if (model) payload.model = model

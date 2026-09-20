@@ -67,6 +67,10 @@
               @click="toggleModelDropdown"
               title="选择模型"
             >
+              <svg class="model-btn-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9L12 3z"></path>
+                <path d="M18.5 15.5l.7 1.9 1.9.7-1.9.7-.7 1.9-.7-1.9-1.9-.7 1.9-.7.7-1.9z"></path>
+              </svg>
               <span class="model-btn-label">{{ currentModelLabel }}</span>
               <svg class="model-btn-arrow" :class="{ open: showModelDropdown }" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <polyline points="6 9 12 15 18 9"></polyline>
@@ -100,6 +104,21 @@
               hidden
             />
           </label>
+
+          <button
+            type="button"
+            class="action-btn web-search-btn"
+            :class="{ active: webSearchEnabled, disabled: webSearchUnavailable || isStreaming || disabled }"
+            :disabled="webSearchUnavailable || isStreaming || disabled"
+            :title="webSearchTitle"
+            @click="toggleWebSearch"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="10"></circle>
+              <line x1="2" y1="12" x2="22" y2="12"></line>
+              <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path>
+            </svg>
+          </button>
         </div>
         
         <div class="right-actions">
@@ -197,6 +216,7 @@
 
 <script>
 import { uploadFile, deleteFile } from '../api/files.js'
+import { getWebSearchStatus } from '../api/settings.js'
 import FileIcon from './FileIcon.vue'
 
 // 输入草稿持久化：页面刷新后恢复用户尚未发送的输入内容（“输入框的状态不变”）
@@ -253,6 +273,10 @@ export default {
       showModelDropdown: false,
       dropdownStyle: {},
       showTokenPopup: false,
+      // ========== 联网搜索 ==========
+      // 默认关闭；未配置（api_key 缺失/功能关闭）时按钮置灰
+      webSearchEnabled: false,
+      webSearchStatus: { enabled: false, configured: false },
       // ========== 会话耗时 ==========
       liveDuration: 0,
       durationTimer: null,
@@ -276,6 +300,15 @@ export default {
     },
     canSend() {
       return this.message.trim() || this.uploadedFiles.length > 0
+    },
+    webSearchUnavailable() {
+      return !this.webSearchStatus.configured
+    },
+    webSearchTitle() {
+      if (!this.webSearchStatus.configured) {
+        return '联网搜索未配置（需配置 WEB_SEARCH_API_KEY 后重启后端）'
+      }
+      return this.webSearchEnabled ? '联网搜索已开启，点击关闭' : '联网搜索（点击开启）'
     },
     // 后台未返回耗时数据（sessionDuration<=0）且「会话信息」弹窗打开时，前端按 1s
     // 间隔本地计时，让会话耗时实时更新；后台有数据时直接用后台值。
@@ -362,6 +395,7 @@ export default {
     }
     document.addEventListener('click', this.closeTokenPopup)
     document.addEventListener('click', this.closeModelDropdown)
+    this.loadWebSearchStatus()
   },
   beforeDestroy() {
     document.removeEventListener('click', this.closeTokenPopup)
@@ -380,6 +414,26 @@ export default {
     },
     hideCaretLine() {
       this.caretLineTop = null
+    },
+    toggleWebSearch() {
+      if (this.webSearchUnavailable || this.isStreaming || this.disabled) return
+      this.webSearchEnabled = !this.webSearchEnabled
+      console.log(
+        `[${new Date().toISOString()}] [联网搜索] ${this.webSearchEnabled ? '已开启' : '已关闭'}`
+      )
+    },
+    async loadWebSearchStatus() {
+      try {
+        const data = await getWebSearchStatus()
+        this.webSearchStatus = {
+          enabled: !!data.enabled,
+          configured: !!data.configured,
+        }
+        if (!data.configured) this.webSearchEnabled = false
+      } catch (e) {
+        // 状态获取失败按「不可用」处理，避免用户开启后静默不生效
+        console.error('获取联网搜索状态失败:', e)
+      }
     },
     toggleModelDropdown() {
       if (this.isStreaming || this.disabled) return
@@ -574,7 +628,14 @@ export default {
         console.log(`[${ts}] [文件上传] ${filesToSend.map(f => `${f.filename}(${f.size}B)`).join(', ')}`)
       }
 
-      this.$emit('send', this.message.trim().replace(/\s+/g, ' '), filesToSend, null, true)
+      this.$emit(
+        'send',
+        this.message.trim().replace(/\s+/g, ' '),
+        filesToSend,
+        null,
+        true,
+        this.webSearchEnabled
+      )
 
       this.message = ''
       this.uploadedFiles = []
@@ -808,21 +869,63 @@ html[data-theme="dark"] .input-actions {
   background: var(--bg-tertiary) !important;
 }
 
-html[data-theme="dark"] .model-btn {
-  background: var(--bg-tertiary) !important;
-  border-color: var(--border-color) !important;
+/* 深色模式工具按钮：统一深灰底 + 暗色描边（原 #9ca3af 亮灰描边过于抢眼），
+   选择器带 .input-actions 前缀是为了压过 App.vue 里针对资产页 .upload-btn 的全局 !important 规则 */
+html[data-theme="dark"] .input-actions .model-btn,
+html[data-theme="dark"] .input-actions .upload-btn,
+html[data-theme="dark"] .input-actions .web-search-btn {
+  /* 输入框在深色下就是 --bg-tertiary，按钮同色会糊成一片，
+     掺一点主文字色提亮，形成可辨识的「芯片」层级 */
+  background: color-mix(in srgb, var(--text-primary) 7%, var(--bg-tertiary)) !important;
+  border-color: color-mix(in srgb, var(--text-primary) 14%, var(--border-color)) !important;
+  box-shadow: none !important;
 }
 
-html[data-theme="dark"] .model-btn:hover:not(.disabled) {
-  background: color-mix(in srgb, var(--accent-color) 15%, var(--bg-tertiary)) !important;
+html[data-theme="dark"] .input-actions .model-btn:hover:not(.disabled),
+html[data-theme="dark"] .input-actions .upload-btn:hover:not(.disabled),
+html[data-theme="dark"] .input-actions .web-search-btn:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--accent-color) 55%, var(--border-color)) !important;
+  background: color-mix(in srgb, var(--accent-color) 16%, var(--bg-tertiary)) !important;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35) !important;
 }
 
-html[data-theme="dark"] .upload-btn {
-  background: var(--bg-tertiary) !important;
-  border-color: #9ca3af !important;
+html[data-theme="dark"] .input-actions .model-btn-icon,
+html[data-theme="dark"] .input-actions .model-btn-label,
+html[data-theme="dark"] .input-actions .model-btn-arrow,
+html[data-theme="dark"] .input-actions .upload-btn svg,
+html[data-theme="dark"] .input-actions .web-search-btn svg {
+  color: var(--text-secondary) !important;
 }
 
-html[data-theme="dark"] .upload-btn svg {
+html[data-theme="dark"] .input-actions .model-btn:hover:not(.disabled) .model-btn-icon,
+html[data-theme="dark"] .input-actions .model-btn:hover:not(.disabled) .model-btn-label,
+html[data-theme="dark"] .input-actions .model-btn:hover:not(.disabled) .model-btn-arrow,
+html[data-theme="dark"] .input-actions .upload-btn:hover:not(.disabled) svg,
+html[data-theme="dark"] .input-actions .web-search-btn:hover:not(:disabled) svg {
+  color: var(--accent-color) !important;
+}
+
+html[data-theme="dark"] .input-actions .web-search-btn.active {
+  border-color: transparent !important;
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--accent-color) 85%, #ffffff),
+    var(--accent-color)
+  ) !important;
+  box-shadow: 0 2px 12px color-mix(in srgb, var(--accent-color) 45%, transparent) !important;
+}
+
+html[data-theme="dark"] .input-actions .web-search-btn.active:hover:not(:disabled) {
+  border-color: transparent !important;
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--accent-color) 92%, #ffffff),
+    var(--accent-color)
+  ) !important;
+  box-shadow: 0 4px 16px color-mix(in srgb, var(--accent-color) 55%, transparent) !important;
+}
+
+html[data-theme="dark"] .input-actions .web-search-btn.active svg {
   color: #ffffff !important;
 }
 
@@ -872,7 +975,7 @@ html[data-theme="dark"] .context-ring-wrapper {
 .left-actions {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
 }
 
 .model-dropdown-wrapper {
@@ -887,21 +990,43 @@ html[data-theme="dark"] .context-ring-wrapper {
   align-items: center;
   justify-content: center;
   gap: 6px;
-  padding: 6px 12px;
+  padding: 0 10px 0 11px;
+  max-width: 220px;
   height: 36px;
   min-height: 36px;
   border: 1px solid var(--border-color);
   background: var(--bg-secondary);
   border-radius: 10px;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05);
   cursor: pointer;
-  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: background 0.22s ease, border-color 0.22s ease, box-shadow 0.22s ease,
+    transform 0.22s cubic-bezier(0.4, 0, 0.2, 1);
   white-space: nowrap;
 }
 
+/* 星形图标：给「模型选择」一个视觉锚点，避免三个按钮里只有它是纯文字 */
+.model-btn-icon {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  color: var(--accent-color);
+  transition: transform 0.25s ease;
+}
+
 .model-btn:hover:not(.disabled) {
-  border-color: rgba(14, 165, 233, 0.4);
-  background: color-mix(in srgb, var(--accent-color) 10%, transparent);
+  border-color: color-mix(in srgb, var(--accent-color) 45%, var(--border-color));
+  background: color-mix(in srgb, var(--accent-color) 8%, var(--bg-secondary));
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--accent-color) 18%, transparent);
   transform: translateY(-1px);
+}
+
+.model-btn:hover:not(.disabled) .model-btn-icon {
+  transform: rotate(-15deg) scale(1.12);
+}
+
+.model-btn:active:not(.disabled) {
+  transform: translateY(0) scale(0.98);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05);
 }
 
 .model-btn.disabled {
@@ -911,29 +1036,41 @@ html[data-theme="dark"] .context-ring-wrapper {
 
 .model-btn-label {
   font-size: 12px;
-  font-weight: 500;
+  font-weight: 600;
   color: var(--text-secondary);
-  transition: color 0.25s ease;
-  max-width: 140px;
+  transition: color 0.22s ease;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-
 .model-btn:hover:not(.disabled) .model-btn-label {
-  color: #0ea5e9;
+  color: var(--accent-color);
 }
-
 
 .model-btn-arrow {
   width: 12px;
   height: 12px;
+  flex-shrink: 0;
   color: var(--text-secondary);
-  transition: transform 0.2s ease;
+  transition: transform 0.2s ease, color 0.22s ease;
+}
+
+.model-btn:hover:not(.disabled) .model-btn-arrow {
+  color: var(--accent-color);
 }
 
 .model-btn-arrow.open {
   transform: rotate(180deg);
+}
+
+/* 键盘可达性：工具按钮共用一致的焦点环 */
+.model-btn:focus-visible,
+.upload-btn:focus-visible,
+.web-search-btn:focus-visible,
+.send-btn:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent-color) 65%, transparent);
+  outline-offset: 2px;
 }
 
 .model-dropdown-menu {
@@ -1226,7 +1363,10 @@ html[data-theme="dark"] .context-ring-wrapper {
   transition: width 0.4s ease;
 }
 
-.upload-btn {
+/* 上传附件 / 联网搜索：与模型选择同规格的图标按钮，
+   hover 统一走主题强调色（此前上传紫、搜索蓝两套 hover 色不一致） */
+.upload-btn,
+.web-search-btn {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1235,35 +1375,71 @@ html[data-theme="dark"] .context-ring-wrapper {
   border: 1px solid var(--border-color);
   background: var(--bg-secondary);
   border-radius: 10px;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05);
   cursor: pointer;
-  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: background 0.22s ease, border-color 0.22s ease, box-shadow 0.22s ease,
+    transform 0.22s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
-.upload-btn svg {
+.upload-btn svg,
+.web-search-btn svg {
   width: 18px;
   height: 18px;
   color: var(--text-secondary);
-  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: color 0.22s ease, transform 0.22s ease;
 }
 
-.upload-btn:hover:not(.disabled) {
-  border-color: rgba(124, 106, 239, 0.4);
-  background: rgba(124, 106, 239, 0.06);
+.upload-btn:hover:not(.disabled),
+.web-search-btn:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--accent-color) 45%, var(--border-color));
+  background: color-mix(in srgb, var(--accent-color) 8%, var(--bg-secondary));
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--accent-color) 18%, transparent);
   transform: translateY(-1px);
 }
 
-.upload-btn:hover:not(.disabled) svg {
-  color: #7c6aef;
+.upload-btn:hover:not(.disabled) svg,
+.web-search-btn:hover:not(:disabled) svg {
+  color: var(--accent-color);
   transform: scale(1.08);
 }
 
-.upload-btn:active:not(.disabled) {
-  transform: translateY(0);
+.upload-btn:active:not(.disabled),
+.web-search-btn:active:not(:disabled) {
+  transform: translateY(0) scale(0.96);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05);
 }
 
-.upload-btn.disabled {
+.upload-btn.disabled,
+.web-search-btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+/* 开启态：主题强调色填充 + 光晕（浅色蓝 / 深色紫），与「发送」激活态呼应 */
+.web-search-btn.active {
+  border-color: transparent;
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--accent-color) 85%, #ffffff),
+    var(--accent-color)
+  );
+  box-shadow: 0 2px 10px color-mix(in srgb, var(--accent-color) 35%, transparent);
+}
+
+.web-search-btn.active svg {
+  color: #ffffff;
+  transform: none;
+}
+
+/* 开启态 hover 仍保持实心填充，避免被上面的通用 hover 规则洗成半透明 */
+.web-search-btn.active:hover:not(:disabled) {
+  border-color: transparent;
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--accent-color) 92%, #ffffff),
+    var(--accent-color)
+  );
+  box-shadow: 0 4px 14px color-mix(in srgb, var(--accent-color) 45%, transparent);
 }
 
 .copy-btn {

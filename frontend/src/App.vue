@@ -1585,7 +1585,7 @@ function createStreamChunkHandler(ctx) {
   return { onChunk: (data) => runInSession(ctx.streamSessionId, ctx, () => onChunk(data)) }
 }
 
-async function handleSendMessage(message, files = [], signal, enableDeepThink = true) {
+async function handleSendMessage(message, files = [], signal, enableDeepThink = true, enableWebSearch = false) {
   const userMsgId = `user-${Date.now()}`
   const preStreamUsage = { ...sessionUsage.value }
   // 记录本次请求开始前已累计的耗时和迭代次数，用于流式过程中实时累加
@@ -1706,7 +1706,16 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
       }
     }
 
-    await sendMessage(currentSessionId.value, message, onChunk, abortSignal, enableDeepThink, files, selectedModel.value)
+    await sendMessage(
+      currentSessionId.value,
+      message,
+      onChunk,
+      abortSignal,
+      enableDeepThink,
+      files,
+      selectedModel.value,
+      enableWebSearch
+    )
 
     await expandWorkspaceAfterSessionCompletion(streamSessionId)
   } catch (e) {
