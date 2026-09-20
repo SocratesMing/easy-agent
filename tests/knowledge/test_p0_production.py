@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import io
 import json
+import asyncio
 from pathlib import Path
 from zipfile import ZipFile
 
 import pytest
 import yaml
+from pymysql.err import InterfaceError, OperationalError
 
 from easy_agent.knowledge.config import KnowledgeConfig
 from easy_agent.knowledge.auth import KnowledgePrincipal
@@ -69,6 +71,56 @@ class WorkerRagflow:
 
     async def list_documents(self, **kwargs):
         return {"docs": list(self.documents.values()), "total": len(self.documents)}
+
+
+@pytest.mark.parametrize("phase", ["maintain", "process_one"])
+@pytest.mark.parametrize("error", [InterfaceError(0, ""), OperationalError(2013, "lost connection")])
+async def test_worker_recovers_database_disconnect(db, tmp_path, monkeypatch, phase, error):
+    config = enabled_config(tmp_path, monkeypatch)
+    config.operations.worker.poll_interval_seconds = 0.001
+    config.operations.worker.retry_backoff_seconds = 0.001
+    worker = KnowledgeTaskWorker(db, config, WorkerRagflow(), None)
+    calls = {"maintain": 0, "process_one": 0}
+
+    async def maintain():
+        calls["maintain"] += 1
+        if phase == "maintain" and calls["maintain"] == 1:
+            raise error
+
+    async def process_one():
+        calls["process_one"] += 1
+        if phase == "process_one" and calls["process_one"] == 1:
+            raise error
+        worker.stop()
+        return True
+
+    monkeypatch.setattr(worker, "maintain", maintain)
+    monkeypatch.setattr(worker, "process_one", process_one)
+    await asyncio.wait_for(worker.run_forever(), timeout=1)
+    assert calls["maintain"] == 2
+    assert calls["process_one"] == (2 if phase == "process_one" else 1)
+
+
+async def test_worker_does_not_hide_permanent_database_errors(db, tmp_path, monkeypatch):
+    worker = KnowledgeTaskWorker(db, enabled_config(tmp_path, monkeypatch), WorkerRagflow(), None)
+
+    async def maintain():
+        raise OperationalError(1054, "unknown column")
+
+    monkeypatch.setattr(worker, "maintain", maintain)
+    with pytest.raises(OperationalError):
+        await worker.run_forever()
+
+
+async def test_worker_can_stop_during_database_retry(db, tmp_path, monkeypatch):
+    worker = KnowledgeTaskWorker(db, enabled_config(tmp_path, monkeypatch), WorkerRagflow(), None)
+
+    async def maintain():
+        worker.stop()
+        raise InterfaceError(0, "")
+
+    monkeypatch.setattr(worker, "maintain", maintain)
+    await asyncio.wait_for(worker.run_forever(), timeout=1)
 
 
 def test_numbered_schema_and_durable_task_idempotency(db):
