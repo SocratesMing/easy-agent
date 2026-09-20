@@ -144,6 +144,7 @@
             :selectedId="selectedFile?.id"
             :depth="0"
             :sessionId="currentSessionId"
+            :taskId="taskId"
             @select="handleSelectFile"
           @download="handleDownloadFile"
           />
@@ -166,6 +167,7 @@
         :filename="activeTab?.name || ''"
         :filePath="activeTab?.file_path || ''"
         :sessionId="currentSessionId"
+        :taskId="taskId"
         :visible="showPreview"
         inline
         @close="closeTab(activeTabId)"
@@ -187,11 +189,15 @@ import {
 import FileTreeNode from './FileTreeNode.vue'
 import FilePreview from './FilePreview.vue'
 import { getWorkspaceTree } from '../api/files'
+import { getScheduledTaskWorkspace } from '../api/scheduledTasks'
 import { getStoredToken } from '../api/auth.js'
 
 const props = defineProps({
   username: { type: String, default: '' },
   currentSessionId: { type: String, default: null },
+  // 定时任务工作目录模式：传入 taskId 时改为读取该任务的工作目录，
+  // 其余（文件树 / 标签页 / 预览 / 下载 / 全屏）与会话工作区完全共用。
+  taskId: { type: String, default: '' },
   isStreaming: { type: Boolean, default: false },
   visible: { type: Boolean, default: true },
 })
@@ -360,18 +366,26 @@ const activeTab = computed(
 // 有激活的文件 tab 即处于预览态（沿用原 showPreview 的语义）
 const showPreview = computed(() => activeTab.value !== null)
 
+// 数据源标识：定时任务工作目录（taskId）优先，否则会话工作区（currentSessionId）。
+// 两种来源共用同一套「文件树 + 标签页 + 预览」，只有取数与下载地址不同。
+const activeSourceKey = computed(() => props.taskId || props.currentSessionId || '')
+
 async function buildWorkspaceTree() {
+  const taskId = props.taskId
   const sessionId = props.currentSessionId
-  if (!sessionId) {
+  const sourceKey = taskId || sessionId
+  if (!sourceKey) {
     workspaceTreeData.value = []
     return
   }
   isLoading.value = true
   error.value = null
   try {
-    const response = await getWorkspaceTree('', sessionId)
-    // 切换会话期间到达的旧响应丢弃，避免工作区内容串会话
-    if (props.currentSessionId !== sessionId) return
+    const response = taskId
+      ? await getScheduledTaskWorkspace(taskId, '')
+      : await getWorkspaceTree('', sessionId)
+    // 切换来源期间到达的旧响应丢弃，避免工作区内容串会话 / 串任务
+    if (activeSourceKey.value !== sourceKey) return
     workspaceTreeData.value = (response.items || []).map(item => ({
       id: item.path,
       name: item.name,
@@ -381,11 +395,11 @@ async function buildWorkspaceTree() {
       file_path: item.path,
     }))
   } catch (e) {
-    if (props.currentSessionId !== sessionId) return
+    if (activeSourceKey.value !== sourceKey) return
     error.value = '加载工作区失败: ' + e.message
     workspaceTreeData.value = []
   } finally {
-    if (props.currentSessionId === sessionId) isLoading.value = false
+    if (activeSourceKey.value === sourceKey) isLoading.value = false
   }
 }
 
@@ -428,10 +442,15 @@ function handleDownloadFile(file) {
   const token = getStoredToken()
   const params = new URLSearchParams()
   params.set('file_path', filePath)
-  params.set('session_id', props.currentSessionId)
   params.set('download', 'true')
   if (token) params.set('token', token)
-  const url = `${API_BASE_URL}/agent/files/preview?${params.toString()}`
+  let url
+  if (props.taskId) {
+    url = `${API_BASE_URL}/agent/scheduled-tasks/${props.taskId}/workspace/file?${params.toString()}`
+  } else {
+    params.set('session_id', props.currentSessionId)
+    url = `${API_BASE_URL}/agent/files/preview?${params.toString()}`
+  }
   const link = document.createElement('a')
   link.href = url
   link.download = file.name
@@ -450,15 +469,15 @@ watch(() => props.isStreaming, (newVal, oldVal) => {
   }
 })
 
-// 会话切换时工作区视图必须整体重来：清空已打开的文件标签、选中态与预览，
-// 否则旧会话的预览/标签会残留在新会话下（其 file_path 在新会话中无效）。
+// 数据源切换（会话或定时任务）时工作区视图必须整体重来：清空已打开的文件标签、
+// 选中态与预览，否则旧来源的预览/标签会残留（其 file_path 在新来源中无效）。
 function resetWorkspaceView() {
   openTabs.value = []
   activeTabId.value = TREE_TAB
   selectedFile.value = null
 }
 
-watch(() => props.currentSessionId, () => {
+watch(activeSourceKey, () => {
   resetWorkspaceView()
   refresh()
 })
@@ -765,6 +784,27 @@ onMounted(() => {
 .wp-tab-close svg {
   width: 11px;
   height: 11px;
+}
+
+/* 标签栏在浅色下是「页面底色」，深色下沿用同一逻辑（面板 #1a1a1a 上压更深的 #000），
+   否则会保留一块刺眼的浅色条 */
+html[data-theme="dark"] .wp-tabs {
+  background: var(--bg-primary);
+}
+
+html[data-theme="dark"] .wp-tab:hover {
+  background: var(--bg-tertiary);
+}
+
+html[data-theme="dark"] .wp-tab.active {
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  border-bottom-color: var(--accent-color, #0ea5e9);
+}
+
+html[data-theme="dark"] .wp-tab-action:hover,
+html[data-theme="dark"] .wp-tab-close:hover {
+  background: rgba(255, 255, 255, 0.14);
 }
 
 /* 预览挂载层：从「头部 44px + 标签栏 34px」下方开始 */

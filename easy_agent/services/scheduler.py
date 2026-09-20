@@ -16,6 +16,7 @@ from apscheduler.triggers.cron import CronTrigger
 
 from ..db import get_database
 from ..models.db import ScheduledTaskModel, ScheduledTaskRunModel, SessionModel
+from ..utils.distributed_lock import get_distributed_lock
 from ..utils.task_logger import log_task_event
 from langchain_core.callbacks import BaseCallbackHandler
 
@@ -29,6 +30,10 @@ running_tasks: dict[str, "asyncio.Task"] = {}
 # 已进入「停止中」状态的任务（被暂停或删除），用于在途执行结束后的二次校验，
 # 确保即使 asyncio 取消未能立即中断 agent 调用，运行结果也不会被记为成功。
 stopping_tasks: set[str] = set()
+
+# 因分布式锁丢失（续约失败）被中止的任务：用于区分「暂停/删除」与「锁被抢占」
+# 两种取消原因，运行记录里写出真实原因。
+lock_lost_tasks: set[str] = set()
 
 
 def get_task_workspace_name(db, task: ScheduledTaskModel) -> str:
@@ -47,8 +52,34 @@ def get_task_workspace_name(db, task: ScheduledTaskModel) -> str:
     return f"scheduled_{task.task_id}"
 
 
+def task_lock_name(task_id: str) -> str:
+    """定时任务的分布式锁逻辑名（最终 key 由锁模块拼上配置里的 key_prefix）。
+
+    锁覆盖「本次运行」全程：同一 task 在任意实例上并发触发（cron 到点、手动
+    触发、本机重复触发）时，只有一个实例能真正执行。
+    """
+    return f"scheduled_task:{task_id}"
+
+
 class _TaskAborted(Exception):
     """任务在运行过程中被暂停/删除，主动中止 agent 调用。"""
+
+
+async def _renew_task_lock(handle, task_id: str, running: "asyncio.Task | None") -> None:
+    """锁续约心跳：续约失败说明锁已被其它实例抢占，取消在途执行避免重复写入。"""
+    try:
+        while True:
+            await asyncio.sleep(handle.renew_interval_seconds)
+            if not handle.renew():
+                logger.error(
+                    f"[{task_id[-5:]}] 分布式锁已丢失（过期后被其它实例接管），中止本次执行"
+                )
+                lock_lost_tasks.add(task_id)
+                if running is not None and not running.done():
+                    running.cancel()
+                return
+    except asyncio.CancelledError:
+        return
 
 
 class _PauseAwareCallback(BaseCallbackHandler):
@@ -162,6 +193,20 @@ def unregister_scheduled_task(task_id: str, task: ScheduledTaskModel | None = No
 def reload_all_tasks():
     """启动时从 DB 加载所有 enabled 的定时任务。"""
     db = get_database()
+    lock = get_distributed_lock()
+    try:
+        lock.cleanup_expired()
+    except Exception as e:
+        logger.warning(f"清理过期分布式锁失败（忽略）: {e}")
+    if lock.enabled:
+        logger.info(
+            f"🔒 分布式锁已启用 | key_prefix={lock.config.key_prefix} | "
+            f"ttl={lock.config.ttl_seconds}s"
+        )
+    else:
+        logger.info(
+            "🔒 分布式锁未启用（单实例部署无需开启；多 pod 部署请设置 distributed_lock.enabled）"
+        )
     tasks = db.list_all_enabled_scheduled_tasks()
     count = 0
     for task in tasks:
@@ -191,9 +236,32 @@ async def _execute_task(task_id: str):
     if not task or not task.enabled:
         return
 
+    # 多实例部署：同一 cron 会在每个 pod 各触发一次，先抢分布式锁，只有抢到的实例
+    # 真正执行。未启用分布式锁（单实例部署）时 acquired 恒为 True，行为与之前一致。
+    lock_handle = get_distributed_lock().acquire(task_lock_name(task_id))
+    if not lock_handle.acquired:
+        logger.info(
+            f"[{task_id[-5:]}] 任务已在其它实例执行中，本次触发跳过（分布式锁）| owner={lock_handle.owner}"
+        )
+        log_task_event(
+            username=task.username,
+            task_id=task_id,
+            operation="skip_locked",
+            detail="其它实例持有分布式锁，本次触发跳过",
+        )
+        return
+
     # 登记在途运行，便于暂停/删除时中断
-    running_tasks[task_id] = asyncio.current_task()
+    running = asyncio.current_task()
+    running_tasks[task_id] = running
     cancelled = False
+
+    # 执行时长可能超过锁的 TTL，需周期性续约；续约失败说明锁已被其它实例接管
+    lock_heartbeat = (
+        asyncio.create_task(_renew_task_lock(lock_handle, task_id, running))
+        if lock_handle.enabled
+        else None
+    )
 
     run_id = str(uuid.uuid4())
     now = datetime.now()
@@ -340,6 +408,10 @@ async def _execute_task(task_id: str):
             duration_seconds=round(duration, 3),
         )
     finally:
+        lock_lost = task_id in lock_lost_tasks
+        lock_lost_tasks.discard(task_id)
+        if lock_heartbeat is not None:
+            lock_heartbeat.cancel()
         running_tasks.pop(task_id, None)
         stopping_tasks.discard(task_id)
         if agent is not None:
@@ -351,7 +423,19 @@ async def _execute_task(task_id: str):
         next_run = nrt.strftime("%Y-%m-%d %H:%M:%S") if nrt else ""
         db.update_scheduled_task_run_times(task_id, started_at, next_run)
         if cancelled:
+            cancel_reason = (
+                "分布式锁已丢失（可能已被其它实例接管），在途执行已取消"
+                if lock_lost
+                else "任务被暂停/删除，在途执行已取消"
+            )
             db.update_scheduled_task_run(
                 run_id, status="cancelled", finished_at=datetime.now().isoformat(),
-                error_message="任务被暂停/删除，在途执行已取消",
+                error_message=cancel_reason,
+            )
+        # 最后释放锁：等本次运行的记录都写完之后，其它实例才能接管这个任务
+        try:
+            lock_handle.release()
+        except Exception as e:
+            logger.warning(
+                f"[{task_id[-5:]}] 释放分布式锁失败（TTL 到期后会自动失效）: {e}"
             )

@@ -50,6 +50,9 @@ def _is_error_result(text: str) -> bool:
     stripped = text.strip()
     if stripped.startswith("Error:") or stripped.startswith("Error "):
         return True
+    # 项目内自定义工具（scheduled_task / web_search / knowledge 等）的失败约定
+    if stripped.startswith("错误："):
+        return True
     if stripped.startswith("Cannot write to"):
         return True
     if "[Command failed with exit code" in stripped:

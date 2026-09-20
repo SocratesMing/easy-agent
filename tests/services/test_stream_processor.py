@@ -242,6 +242,15 @@ def test_tool_result_error_detection():
     assert p.blocks[0]["success"] is False
 
 
+def test_tool_result_chinese_error_detection():
+    """自定义工具（web_search 等）以「错误：」开头的返回值也应标记为失败。"""
+    p = StreamProcessor(sid="s1")
+    p.handle("updates", {"model": {"messages": [_ai_with_tool_call()]}})
+    tr = p.handle("updates", {"tools": {"messages": [
+        ToolMessage(content="错误：联网搜索超时，请稍后重试。", tool_call_id="tc1", name="web_search")]}})[0]
+    assert tr["success"] is False
+
+
 def test_tool_result_ok_success_true():
     p = StreamProcessor(sid="s1")
     p.handle("updates", {"model": {"messages": [_ai_with_tool_call()]}})

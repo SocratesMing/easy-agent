@@ -9,6 +9,7 @@ from ..agent import EasyAgent
 from ..config import Config
 from ..db import get_database
 from ..model import create_model
+from ..tools.web_search import create_web_search_tool
 from .mcp import get_mcp_tools as load_mcp_tools_for_user
 
 logger = logging.getLogger("easy-agent.chat_service")
@@ -67,8 +68,16 @@ def init_agent_config(
 async def get_or_create_agent_for_session(
     session_id: str, username: str = "default", workspace_name: str = "",
    enable_hitl: bool = True, model_name: str | None = None,
+    enable_web_search: bool | None = None,
     system_prompt_extra: str = "",
 ) -> EasyAgent:
+    """获取（或创建）会话 Agent。
+
+    ``enable_web_search`` 取 True 时注入 ``web_search`` 工具并追加联网搜索提示词，
+    取 False/None 时不注入。取 None 表示「跟随缓存」——用于 HITL 审批恢复等
+    不带本轮开关的场景：若该会话已有缓存 Agent 则原样复用（不因开关差异驱逐，
+    否则会重建 Agent 而丢失 checkpointer 中的中断态导致恢复失败）。
+    """
     global _session_agents, _agent_config
 
     if _agent_config is None:
@@ -77,12 +86,35 @@ async def get_or_create_agent_for_session(
     config = _agent_config["config"]
     effective_model = model_name or config.active_model
 
-    # 模型切换：若缓存的 Agent 使用了不同模型，驱逐后重建
+    # 联网搜索：仅在「本轮请求开启」且「web_search 已配置 api_url + api_key」时注入。
+    # 未配置 api_key（或功能关闭）时静默降级为未开启，不影响其余功能。
+    web_search_tool = (
+        create_web_search_tool(config, user_id=Config.sanitize_username(username))
+        if enable_web_search
+        else None
+    )
+    web_search_enabled = web_search_tool is not None
+    if enable_web_search and not web_search_enabled:
+        logger.warning(
+            f"[{session_id[-5:]}] 已请求联网搜索，但 web_search 未配置 api_url/api_key，本轮按未开启处理"
+        )
+
+    # 模型切换 / 联网搜索开关变化：缓存的 Agent 不匹配，驱逐后重建
     cached = _session_agents.get(session_id)
     if cached is not None:
-        if effective_model != getattr(cached, "model_name", None):
+        cached_web_search = bool(getattr(cached, "enable_web_search", False))
+        # enable_web_search=None（如 HITL 恢复）：不比较开关，直接复用缓存 Agent
+        search_matches = (
+            enable_web_search is None or web_search_enabled == cached_web_search
+        )
+        if (
+            effective_model != getattr(cached, "model_name", None)
+            or not search_matches
+        ):
             logger.info(
-                f"[{session_id[-5:]}] 模型切换 | {getattr(cached, 'model_name', '?')} -> {effective_model} | 驱逐旧 Agent 重建"
+                f"[{session_id[-5:]}] Agent 参数变化 | "
+                f"model: {getattr(cached, 'model_name', '?')} -> {effective_model} | "
+                f"web_search: {cached_web_search} -> {web_search_enabled} | 驱逐旧 Agent 重建"
             )
             _session_agents.pop(session_id, None)
         else:
@@ -158,6 +190,10 @@ async def get_or_create_agent_for_session(
         except Exception as e:
             logger.warning(f"[{session_id[-5:]}] 注入定时任务工具失败: {e}")
 
+    if web_search_tool is not None:
+        tools.append(web_search_tool)
+        logger.info(f"[{session_id[-5:]}] 🌐 联网搜索已开启（注入 web_search 工具）")
+
     agent = EasyAgent(
         config=config,
         system_prompt=_agent_config["system_prompt"],
@@ -169,6 +205,7 @@ async def get_or_create_agent_for_session(
         organization_id=organization_id,
        enable_hitl=enable_hitl,
        model_name=model_name,
+        enable_web_search=web_search_enabled,
         system_prompt_extra=system_prompt_extra,
    )
     _session_agents[session_id] = agent
