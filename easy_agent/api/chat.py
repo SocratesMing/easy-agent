@@ -408,7 +408,19 @@ async def chat_stream(
 
     return StreamingResponse(
         _detached_event_stream(
-            stream_generator,
+            chat_stream_generator(
+                request=request,
+                db=db,
+                agent=agent,
+                session_id=session_id,
+                message_id=message_id,
+                username=username,
+                http_request=http_request,
+                parsed_content=parsed_content,
+                session_logger=session_logger,
+                context_prefix=knowledge_chat.context,
+                initial_events=knowledge_chat.initial_events,
+            ),
             session_id,
             sid,
         ),

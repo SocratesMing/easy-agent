@@ -1,7 +1,7 @@
 """Keep existing knowledge clients working with the host /agent API prefix."""
 
 class LegacyHostRoutes:
-    PREFIXES = ("auth", "chat", "sessions", "files", "settings", "prompts", "skills", "scheduled-tasks", "terminal")
+    PREFIXES = ("auth", "chat", "sessions", "files", "settings", "prompts", "skills", "scheduled-tasks", "terminal", "knowledge")
 
     def __init__(self, app):
         self.app = app

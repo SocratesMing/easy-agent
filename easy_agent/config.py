@@ -275,6 +275,18 @@ class DistributedLockConfig(BaseModel):
     """``acquire(wait_seconds>0)`` 等待抢锁时的轮询间隔（秒）。"""
 
 
+class PersonnelConfig(BaseModel):
+    """Personnel provisioning and account-source policy."""
+
+    # Fail closed unless a controlled deployment explicitly opts into the
+    # legacy public registration flow.
+    self_registration_enabled: bool = False
+    """自助注册开关：默认关闭，登录页不显示注册入口。"""
+
+    passwordless_login_enabled: bool = False
+    """门户免密登录开关：默认关闭；启用后外部系统可通过用户名+用户ID 直登。"""
+
+
 class Config(BaseModel):
     """Main configuration class"""
 

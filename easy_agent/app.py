@@ -503,6 +503,7 @@ if terminal_router is not None:
 app.include_router(scheduled_tasks_router)
 app.include_router(knowledge_router)
 app.include_router(knowledge_ops_router)
+app.include_router(personnel_router)
 
 
 @app.get("/agent/health", summary="健康检查", response_model=HealthResponse)
