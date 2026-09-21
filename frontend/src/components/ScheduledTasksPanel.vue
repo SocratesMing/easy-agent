@@ -1,5 +1,5 @@
 <template>
-  <div class="scheduled-tasks-panel">
+  <div class="scheduled-tasks-panel" :class="{ 'has-workspace': workspaceModalVisible }">
     <div class="panel-nav">
       <span class="nav-title">定时任务</span>
       <button class="refresh-btn" @click="refresh" :disabled="loading" title="刷新">
@@ -150,15 +150,38 @@
       type="danger"
     />
 
-    <!-- 工作目录：直接复用会话工作区面板（同一套文件树 / 标签页 / 内嵌预览 / 全屏 /
-         拖拽宽度），只把数据源换成定时任务工作目录，交互与正常会话保持一致 -->
-    <div class="stp-workspace-area">
-      <WorkspacePanel
-        :taskId="workspaceTaskId"
-        :visible="workspaceModalVisible"
-        @toggle="closeWorkspace"
-      />
+    <!-- 工作目录侧边面板：从右侧滑入并挤压定时任务页面，风格对齐正常会话工作区 -->
+    <div class="workspace-side-panel" :class="{ open: workspaceModalVisible }">
+      <div class="workspace-side-header">
+        <span class="workspace-side-title">工作目录</span>
+        <button class="workspace-refresh-btn" @click="loadWorkspace" :disabled="workspaceLoading">刷新</button>
+        <button class="workspace-close-btn" @click="closeWorkspace">×</button>
+      </div>
+      <div class="workspace-side-body">
+        <div v-if="workspaceLoading" class="ws-loading">加载中...</div>
+        <div v-else-if="workspaceItems.length === 0" class="ws-empty">该工作目录暂无文件</div>
+        <div v-else class="ws-tree">
+          <FileTreeNode
+            v-for="item in workspaceItems"
+            :key="item.path"
+            :item="item"
+            :taskId="workspaceTaskId"
+            :selectedId="selectedFile ? selectedFile.path : null"
+            @select="handleWorkspaceSelect"
+            @download="handleWorkspaceDownload"
+          />
+        </div>
+      </div>
     </div>
+
+    <FilePreview
+      v-if="previewVisible"
+      :visible="previewVisible"
+      :filePath="selectedFile ? selectedFile.path : ''"
+      :filename="selectedFile ? selectedFile.name : ''"
+      :taskId="workspaceTaskId"
+      @close="previewVisible = false"
+    />
   </div>
 </template>
 
@@ -169,127 +192,33 @@ import {
   deleteScheduledTask,
   toggleScheduledTask,
   runScheduledTaskNow,
+  getScheduledTaskWorkspace,
 } from '../api/scheduledTasks.js'
 import ConfirmDialog from './ConfirmDialog.vue'
-import WorkspacePanel from './WorkspacePanel.vue'
-
-defineEmits(['close'])
-
-const tasks = ref([])
-const loading = ref(false)
-const expandedTaskId = ref(null)
-const runs = ref([])
-const runsLoading = ref(false)
-const runLoading = ref(null)
-const expandedRuns = ref(new Set())
-const runsCollapsed = ref(true)
-const toast = ref(null)
-const confirmDialog = ref(null)
-const pendingDeleteTaskName = ref('')
-
-// 工作目录面板状态：只保留「是否展开 + 当前任务」，文件树/预览由 WorkspacePanel 负责
-const workspaceModalVisible = ref(false)
-const workspaceTaskId = ref('')
-
-async function openWorkspace(task) {
-  // 再次点击同一任务的「查看工作目录」时收起面板
-  if (workspaceModalVisible.value && workspaceTaskId.value === task.task_id) {
-    closeWorkspace()
-    return
-  }
-  workspaceTaskId.value = task.task_id
-  workspaceModalVisible.value = true
-}
-
-function closeWorkspace() {
-  workspaceModalVisible.value = false
-}
-
-function showToast(message, type = 'success') {
-  toast.value = { message, type }
-  setTimeout(() => { toast.value = null }, 3000)
-}
-
-async function refresh() {
-  loading.value = true
-  try {
-    tasks.value = await getScheduledTasks()
-  } catch (e) {
-    showToast(e.message, 'error')
-  } finally {
-    loading.value = false
-  }
-}
-
-async function toggleExpand(taskId) {
-  if (expandedTaskId.value === taskId) {
-    expandedTaskId.value = null
-    return
-  }
-  expandedTaskId.value = taskId
-  expandedRuns.value = new Set()
-  runsCollapsed.value = true
-  await loadRuns(taskId)
-}
-
-async function loadRuns(taskId) {
-  runsLoading.value = true
-  try {
-    runs.value = await getScheduledTaskRuns(taskId)
-  } catch (e) {
-    showToast(e.message, 'error')
-    runs.value = []
-  } finally {
-    runsLoading.value = false
-  }
-}
-
-function toggleRunExpand(runId) {
-  const next = new Set(expandedRuns.value)
-  if (next.has(runId)) {
-    next.delete(runId)
-  } else {
-    next.add(runId)
-  }
-  expandedRuns.value = next
-}
-
-function toggleRunsCollapse() {
-  runsCollapsed.value = !runsCollapsed.value
-}
-
-async function handleToggle(task) {
-  try {
-    await toggleScheduledTask(task.task_id)
-    showToast(task.enabled ? '已暂停' : '已启用')
-    await refresh()
-  } catch (e) {
-    showToast(e.message, 'error')
-  }
-}
-
-async function handleRun(task) {
-  runLoading.value = task.task_id
-  try {
-    await runScheduledTaskNow(task.task_id)
-    showToast('已触发执行')
-    setTimeout(() => loadRuns(task.task_id), 2000)
-  } catch (e) {
-    showToast(e.message, 'error')
-  } finally {
-    runLoading.value = null
-  }
-}
-
-async function handleDelete(task) {
-  pendingDeleteTaskName.value = task.name
-  const confirmed = await confirmDialog.value.show()
-  if (!confirmed) return
-  try {
-    await deleteScheduledTask(task.task_id)
-    showToast('已删除')
-    if (expandedTaskId.value === task.task_id) {
-      expandedTaskId.value = null
+import FileTreeNode from './FileTreeNode.vue'
+import FilePreview from './FilePreview.vue'
+import { getStoredToken } from '../api/auth.js'
+export default {
+  components: { ConfirmDialog, FilePreview, FileTreeNode },
+  data() {
+    return {
+      tasks: [],
+      loading: false,
+      expandedTaskId: null,
+      runs: [],
+      runsLoading: false,
+      runLoading: null,
+      expandedRuns: new Set(),
+      runsCollapsed: true,
+      toast: null,
+      pendingDeleteTaskName: '',
+      // 工作目录弹窗状态
+      workspaceModalVisible: false,
+      workspaceTaskId: '',
+      workspaceItems: [],
+      workspaceLoading: false,
+      selectedFile: null,
+      previewVisible: false,
     }
   },
   mounted() {
@@ -453,34 +382,19 @@ async function handleDelete(task) {
   flex: 1;
   min-width: 0;
   position: relative;
-  /* 两列网格：左侧定时任务列表，右侧工作区（复用会话页同款 WorkspacePanel）。
-     用网格把工作区作为真正的兄弟列，展开时挤压列表而不是用 fixed 面板遮住内容。 */
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  grid-template-rows: auto minmax(0, 1fr);
+  display: flex;
+  flex-direction: column;
   height: 100%;
   background: var(--bg-primary, #f5f5f5);
+  transition: margin-right 0.25s ease;
 }
 
-/* 顶部栏与任务列表占左列；工作区占满右列整列高度（与会话页布局一致） */
-.stp-workspace-area {
-  grid-column: 2;
-  grid-row: 1 / -1;
-  position: relative;
-  z-index: 1;
-  display: flex;
-  height: 100%;
-}
-
-/* 工作区页面内全屏时抬高整列：.stp-workspace-area 的 z-index:1 会形成层叠
-   上下文，把内部 fixed 全屏面板的层级一起限制住（与会话页 .workspace-area 同理） */
-.stp-workspace-area:has(.workspace-panel.is-fullscreen) {
-  z-index: 150;
+.scheduled-tasks-panel.has-workspace {
+  /* 目录面板滑入时挤压定时任务页面，宽度与正常工作区一致 */
+  margin-right: 260px;
 }
 
 .panel-nav {
-  grid-column: 1;
-  grid-row: 1;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -529,8 +443,6 @@ async function handleDelete(task) {
 }
 
 .panel-content {
-  grid-column: 1;
-  grid-row: 2;
   flex: 1;
   overflow-y: auto;
   padding: 12px 16px;
@@ -917,6 +829,94 @@ async function handleDelete(task) {
   color: #dc2626;
   white-space: pre-wrap;
   word-break: break-all;
+}
+
+/* 工作目录弹窗 */
+.workspace-side-panel {
+  position: fixed;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: 260px;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-card, #fff);
+  border-left: 1px solid var(--border-color, #e5e5e5);
+  box-shadow: -4px 0 16px rgba(0, 0, 0, 0.08);
+  transform: translateX(100%);
+  transition: transform 0.25s ease;
+}
+
+.workspace-side-panel.open {
+  transform: translateX(0);
+}
+
+.workspace-side-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border-color, #e5e5e5);
+  flex-shrink: 0;
+}
+
+.workspace-side-title {
+  flex: 1;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary, #333);
+}
+
+.workspace-refresh-btn {
+  padding: 4px 12px;
+  border: 1px solid var(--border-color, #e5e5e5);
+  border-radius: 8px;
+  background: var(--bg-card, #fff);
+  font-size: 13px;
+  color: var(--accent, #6c5ce7);
+  cursor: pointer;
+}
+
+.workspace-refresh-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.workspace-close-btn {
+  width: 30px;
+  height: 30px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  font-size: 22px;
+  line-height: 1;
+  color: var(--text-tertiary, #999);
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.workspace-close-btn:hover {
+  background: var(--bg-hover, #f1f5f9);
+}
+
+.workspace-side-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px 16px;
+}
+
+.ws-loading, .ws-empty {
+  padding: 40px 0;
+  text-align: center;
+  font-size: 13px;
+  color: var(--text-tertiary, #aaa);
+}
+
+.ws-tree {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 
 .toast {
