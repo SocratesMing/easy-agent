@@ -13,8 +13,6 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from pymysql.err import InterfaceError, OperationalError
-
 from ..config import Config
 from ..db.database import Database
 from .config import KnowledgeConfig
@@ -386,36 +384,17 @@ class KnowledgeTaskWorker:
     async def run_forever(self) -> None:
         logger.info("knowledge worker started | worker_id=%s", self.worker_id)
         while not self._stop.is_set():
-            delay = self.config.operations.worker.poll_interval_seconds
-            try:
-                if (
-                    datetime.now(UTC) - self._last_maintenance
-                ).total_seconds() >= self.config.operations.worker.heartbeat_interval_seconds:
-                    await self.maintain()
-                    self._last_maintenance = datetime.now(UTC)
-                processed = await self.process_one()
-            except (InterfaceError, OperationalError) as exc:
-                # A dropped DB connection must not terminate the durable worker.
-                # Leave claimed tasks to the existing stale-lease recovery path.
-                # Do not disguise schema/authentication errors.
-                code = exc.args[0] if exc.args else None
-                if isinstance(exc, OperationalError) and code not in {
-                    1040, 1205, 1213, 2002, 2003, 2006, 2013, 2055,
-                }:
-                    raise
-                logger.warning(
-                    "knowledge worker database temporarily unavailable; retrying | "
-                    "worker_id=%s error_type=%s error_code=%s",
-                    self.worker_id, type(exc).__name__, code,
-                )
-                self._last_maintenance = datetime.min.replace(tzinfo=UTC)
-                processed = False
-                delay = max(delay, self.config.operations.worker.retry_backoff_seconds)
+            if (
+                datetime.now(UTC) - self._last_maintenance
+            ).total_seconds() >= self.config.operations.worker.heartbeat_interval_seconds:
+                await self.maintain()
+                self._last_maintenance = datetime.now(UTC)
+            processed = await self.process_one()
             if not processed:
                 try:
                     await asyncio.wait_for(
                         self._stop.wait(),
-                        timeout=delay,
+                        timeout=self.config.operations.worker.poll_interval_seconds,
                     )
                 except TimeoutError:
                     pass

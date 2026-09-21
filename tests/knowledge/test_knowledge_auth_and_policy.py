@@ -94,6 +94,13 @@ async def test_knowledge_identity_rejects_disabled_user(db):
             account_status="disabled",
         )
     )
+    # create_user 只落核心列（人员列由迁移/同步任务维护），此处按契约的
+    # personnel 前置条件显式置为 disabled。
+    with db.get_connection() as conn:
+        conn.execute(
+            "UPDATE users SET account_status='disabled' WHERE username=?",
+            ("alice",),
+        )
     token = create_access_token({"sub": "alice", "v": 0})
 
     with pytest.raises(HTTPException) as exc_info:

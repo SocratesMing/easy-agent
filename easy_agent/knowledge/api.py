@@ -72,7 +72,7 @@ from .service import KnowledgeService, KnowledgeServiceError
 from .quality import validate_answer_citations
 
 
-router = APIRouter(prefix="/api/knowledge/v1", tags=["knowledge-engineering"])
+router = APIRouter(prefix="/agent/knowledge/v1", tags=["knowledge-engineering"])
 
 _KNOWLEDGE_CHAT_TITLE_PREFIX = "[知识库问答]"
 

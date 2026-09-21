@@ -16,6 +16,14 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_APP_WELCOME_TITLE = "Easy Agent，让工作更简单"
 
+# 联网搜索默认地址（config.yaml 未显式配置 api_url 时按 provider 取用）：
+#   tavily   —— Tavily Search API（https://docs.tavily.com）
+#   internal —— 内网 WebSearch 接口文档中的测试环境地址，生产地址需自行覆盖
+DEFAULT_WEB_SEARCH_API_URLS = {
+    "tavily": "https://api.tavily.com/search",
+    "internal": "http://28.221.28.7:10089/api/v1/webSearch",
+}
+
 # Matches ${VAR} and ${VAR:-default} placeholders inside string values.
 _ENV_VAR_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
 
@@ -213,6 +221,31 @@ class SummarizationConfig(BaseModel):
     )
 
 
+class WebSearchConfig(BaseModel):
+    """联网搜索配置（输入框地球按钮）。
+
+    与 models 段一致，各字段支持 config.yaml 中的 ``${VAR:-默认值}`` 占位符，
+    实际取值来自 ``.env.{AGENT_ENV}``（复用同一套配置加载逻辑）。
+    api_key 为空视为未配置：前端联网搜索按钮置灰、后端不注入 search 工具。
+    """
+
+    enabled: bool = True
+    provider: str = "tavily"
+    api_url: str = ""
+    """留空时按 provider 取 DEFAULT_WEB_SEARCH_API_URLS 中的默认地址。"""
+    api_key: str = ""
+    search_depth: str = "basic"
+    """仅 tavily：basic / advanced / fast / ultra-fast。"""
+    topic: str = "general"
+    """仅 tavily：general / news / finance；带时间范围的检索会自动改用 news。"""
+    timeout_seconds: float = 30.0
+    default_time_range: str = "NoLimit"
+    max_results: int = 10
+    main_text_max_chars: int = 500
+    """单条结果的摘要展示上限（Tavily content / 内网 summary、mainText 回填均适用；
+    0 表示不返回正文节选与摘要截断）。"""
+
+
 class PresetQuestionGroup(BaseModel):
     """预设问题分组，可在配置文件中按分类组织。"""
 
@@ -221,9 +254,25 @@ class PresetQuestionGroup(BaseModel):
     questions: list[str] = Field(default_factory=list)
 
 
-class PersonnelConfig(BaseModel):
-    self_registration_enabled: bool = False
-    passwordless_login_enabled: bool = False
+class DistributedLockConfig(BaseModel):
+    """多实例（多 pod / 多 worker）部署下的分布式锁配置。
+
+    锁表建在数据库里（MySQL 场景依赖 InnoDB 行锁保证互斥），用于避免同一任务
+    被多个实例重复处理，典型场景是定时任务：每个 pod 都会注册同一批 cron，
+    到点后只有抢到锁的实例真正执行。
+
+    默认关闭：单实例部署保持引入分布式锁之前的行为，且不产生任何额外查询。
+    """
+
+    enabled: bool = False
+    key_prefix: str = "easy_agent"
+    """锁 key 前缀：多套系统共用同一个库时避免键冲突。"""
+    ttl_seconds: float = 300.0
+    """锁的存活时间（秒）：持有者崩溃后，其它实例最多等待该时长即可接管。"""
+    renew_interval_seconds: float = 100.0
+    """长任务的续约间隔（秒），实际取 min(本值, ttl/3)，须小于 ttl_seconds。"""
+    retry_interval_seconds: float = 1.0
+    """``acquire(wait_seconds>0)`` 等待抢锁时的轮询间隔（秒）。"""
 
 
 class Config(BaseModel):
@@ -233,6 +282,10 @@ class Config(BaseModel):
     agent: AgentConfig
     tools: ToolsConfig
     summarization: SummarizationConfig = Field(default_factory=SummarizationConfig)
+    web_search: WebSearchConfig = Field(default_factory=WebSearchConfig)
+    distributed_lock: DistributedLockConfig = Field(
+        default_factory=DistributedLockConfig
+    )
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
     personnel: PersonnelConfig = Field(default_factory=PersonnelConfig)
     models: dict[str, ProviderConfig] = Field(default_factory=dict)
@@ -336,11 +389,17 @@ class Config(BaseModel):
 
         summ_config = cls._parse_summarization_config(data)
 
+        web_search_config = cls._parse_web_search_config(data)
+
+        distributed_lock_config = cls._parse_distributed_lock_config(data)
+
         return cls(
             llm=llm_config,
             agent=agent_config,
             tools=tools_config,
             summarization=summ_config,
+            web_search=web_search_config,
+            distributed_lock=distributed_lock_config,
             database=db_config,
             personnel=PersonnelConfig(**data.get("personnel", {})),
             models=models,
@@ -457,6 +516,47 @@ class Config(BaseModel):
                 read_timeout=mysql_data.get("read_timeout", 30),
                 write_timeout=mysql_data.get("write_timeout", 30),
             ),
+        )
+
+    @staticmethod
+    def _parse_web_search_config(data: dict) -> WebSearchConfig:
+        """解析 web_search 段（联网搜索地址 / api_key / 超时等）。
+
+        api_url / api_key 通常写成 ``${WEB_SEARCH_API_URL}`` / ``${WEB_SEARCH_API_KEY}``，
+        由 ``_expand_env_recursive`` 提前展开，这里只做字段级默认值兜底。
+        """
+        ws_data = data.get("web_search", {})
+        if not isinstance(ws_data, dict):
+            ws_data = {}
+        return WebSearchConfig(
+            enabled=ws_data.get("enabled", True),
+            provider=ws_data.get("provider", "tavily"),
+            api_url=ws_data.get("api_url", ""),
+            api_key=ws_data.get("api_key", ""),
+            search_depth=ws_data.get("search_depth", "basic"),
+            topic=ws_data.get("topic", "general"),
+            timeout_seconds=ws_data.get("timeout_seconds", 30.0),
+            default_time_range=ws_data.get("default_time_range", "NoLimit"),
+            max_results=ws_data.get("max_results", 10),
+            main_text_max_chars=ws_data.get("main_text_max_chars", 500),
+        )
+
+    @staticmethod
+    def _parse_distributed_lock_config(data: dict) -> DistributedLockConfig:
+        """解析 distributed_lock 段（多实例部署下的分布式锁开关与 TTL）。
+
+        enabled 通常写成 ``${DISTRIBUTED_LOCK_ENABLED:-false}``，由
+        ``_expand_env_recursive`` 提前展开（字符串取值由 Pydantic 归一为 bool）。
+        """
+        dl_data = data.get("distributed_lock", {})
+        if not isinstance(dl_data, dict):
+            dl_data = {}
+        return DistributedLockConfig(
+            enabled=dl_data.get("enabled", False),
+            key_prefix=dl_data.get("key_prefix", "easy_agent"),
+            ttl_seconds=dl_data.get("ttl_seconds", 300.0),
+            renew_interval_seconds=dl_data.get("renew_interval_seconds", 100.0),
+            retry_interval_seconds=dl_data.get("retry_interval_seconds", 1.0),
         )
 
     @staticmethod

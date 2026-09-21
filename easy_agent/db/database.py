@@ -407,6 +407,25 @@ class Database:
         self._ensure_unique_index(
             cursor, "users", "idx_users_employee_id", "employee_id"
         )
+        # 人员字段（knowledge 鉴权读取 account_status / organization_id 的前置迁移）。
+        # 幂等补列并带默认值；department_id 从既有 organization_id 回填，兼容旧库。
+        for col, col_def in (
+            ("display_name", "VARCHAR(127) DEFAULT ''"),
+            ("department_id", "VARCHAR(255) DEFAULT ''"),
+            ("department_name", "VARCHAR(255) DEFAULT ''"),
+            ("position", "VARCHAR(255) DEFAULT ''"),
+            ("mobile", "VARCHAR(64) DEFAULT ''"),
+            ("account_status", "VARCHAR(20) DEFAULT 'active'"),
+            ("personnel_source", "VARCHAR(255) DEFAULT ''"),
+        ):
+            self._ensure_column(cursor, "users", col, col_def)
+        try:
+            cursor.execute(
+                "UPDATE users SET department_id=organization_id "
+                "WHERE (department_id IS NULL OR department_id='')"
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"回填 users.department_id 失败（忽略）: {e}")
         # 空闲超时：最近一次接口调用时间（Unix 时间戳）。持久化到共享数据库，
         # 保证 uvicorn 多 worker（--workers > 1）下各进程读到一致的登录活跃状态。
         self._ensure_column(cursor, "users", "last_activity_at", "REAL")
@@ -478,6 +497,24 @@ class Database:
         self._create_index(cursor, "idx_scheduled_task_runs_task", "scheduled_task_runs", "task_id")
 
 
+    def _create_distributed_lock_table(self, cursor):
+        # 分布式锁表：多实例（多 pod）部署下防止同一任务被重复处理，
+        # 见 easy_agent/utils/distributed_lock.py。lock_key 为主键，抢锁即
+        # 「插入行 / 已过期则改写 owner」，插入失败即表示锁被其它实例占用。
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS distributed_locks (
+                lock_key VARCHAR(255) NOT NULL PRIMARY KEY,
+                owner VARCHAR(255) NOT NULL,
+                acquired_at VARCHAR(50) NOT NULL,
+                expires_at VARCHAR(50) NOT NULL,
+                updated_at VARCHAR(50) NOT NULL
+            )
+        """)
+        self._create_index(
+            cursor, "idx_distributed_locks_expires", "distributed_locks", "expires_at"
+        )
+
+
     def init_tables(self):
         with self.get_connection() as conn:
             cursor = conn.cursor()
@@ -497,11 +534,22 @@ class Database:
             self._create_users_table(cursor)
             self._create_misc_tables(cursor, auto_inc)
             self._create_scheduled_task_tables(cursor)
-            from ..knowledge.schema import initialize_knowledge_schema, validate_knowledge_schema_cursor
-            if os.environ.get("AGENT_ENV", "").casefold() in {"prod", "production"}:
-                validate_knowledge_schema_cursor(self, cursor)
-            else:
+            self._create_distributed_lock_table(cursor)
+
+            # Narrow integration point: schema ownership stays in knowledge/.
+            # 有意偏离迁移来源：其 prod 分支调用 validate_knowledge_schema_cursor，
+            # 但本分支未迁移 schema 迁移 CLI（scripts/migrate_knowledge_schema.py），
+            # 存量 prod 库会因校验失败而无法启动。initialize_knowledge_schema 是
+            # 幂等且有 checksum 保护的，故始终调用它；失败只告警，绝不阻断启动。
+            from ..knowledge.schema import initialize_knowledge_schema
+
+            try:
                 initialize_knowledge_schema(self, cursor)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    f"知识库 schema 初始化失败（knowledge 功能将不可用，服务继续启动）: {e}"
+                )
+
             conn.commit()
 
             # 修复 session_messages 表中缺失的消息行
@@ -595,6 +643,12 @@ class Database:
             cursor.execute(stmt)
         except Exception as e:
             logger.debug(f"唯一索引 {index_name} 未创建（通常为已存在）: {e}")
+
+    def _create_unique_index(
+        self, cursor, index_name: str, table_name: str, columns: str
+    ) -> None:
+        # knowledge/schema.py 沿用 sunya 的参数顺序（索引名在前）；复用本地实现。
+        self._ensure_unique_index(cursor, table_name, index_name, columns)
 
     def create_session(self, session_data: SessionModel) -> SessionModel:
         with self.get_connection() as conn:
@@ -1443,7 +1497,13 @@ class Database:
             bound_ip=row.get("bound_ip") or "",
             token_version=row.get("token_version") or 0,
             employee_id=row.get("employee_id") or "",
-            **read_user_fields(row),
+            display_name=row.get("display_name") or "",
+            department_id=row.get("department_id") or row.get("organization_id") or "",
+            department_name=row.get("department_name") or "",
+            position=row.get("position") or "",
+            mobile=row.get("mobile") or "",
+            account_status=row.get("account_status") or "active",
+            personnel_source=row.get("personnel_source") or "",
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )

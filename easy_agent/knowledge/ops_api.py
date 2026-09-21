@@ -24,7 +24,7 @@ from .models import (
 )
 
 
-router = APIRouter(prefix="/api/knowledge/v1/admin", tags=["knowledge-operations"])
+router = APIRouter(prefix="/agent/knowledge/v1/admin", tags=["knowledge-operations"])
 
 
 def _admin(principal: Annotated[KnowledgePrincipal, Depends(get_knowledge_principal)]):

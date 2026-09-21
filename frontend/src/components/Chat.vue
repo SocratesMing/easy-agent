@@ -204,27 +204,88 @@ export default {
       // 流式更新仅在贴底时自动滚动，避免抢占用户阅读上方内容；用户滚回底部后自动恢复跟随。
       isAtBottom: true,
     }
-  },
-  computed: {
-    // 顶部信息行：会话时间（居中）+ 操作区（任务规划、展开工作区，贴右）。
-    // 三者中任意一个需要展示时，这一行才占位 —— 首页（无会话）保持干净，
-    // 否则会破坏 .chat-content.is-center 的垂直居中。
-    showSessionTime() {
-      return !!this.sessionCreatedAt && this.messages.length > 0
-    },
-    showWorkspaceBtn() {
-      return !!this.currentSessionId && !this.workspaceExpanded
-    },
-    showTopbar() {
-      return this.showSessionTime || this.todos.length > 0 || this.showWorkspaceBtn
-    },
-    canGoToPrevUserMessage() {
-      return this.userMessageIndices.length > 0 && this.currentUserMessageIndex < this.userMessageIndices.length - 1
-    },
-    canGoToNextUserMessage() {
-      // 未滚动到底部时持续显示“回到下一个用户问题”按钮，
-      // 让用户能逐条向下跳转，最后再回到会话底部
-      return this.userMessageIndices.length > 0 && !this.isAtBottom
+  } else {
+    // 已到最后一个用户问题（或未经过导航）：直接滚动到会话底部
+    currentUserMessageIndex.value = -1
+    nextTick(() => {
+      const el = messagesRef.value
+      if (el) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
+    })
+  }
+}
+
+function handleSend(message, files, signal, enableDeepThink = true, enableWebSearch = false) {
+  emit('sendMessage', message, files, signal, enableDeepThink, enableWebSearch)
+}
+
+function handleRemoveFile(file, messageIndex) {
+  // 从事件参数中获取file，然后从messages中获取对应的message
+  const message = props.messages[messageIndex]
+  emit('removeFile', message, messageIndex, file)
+}
+
+function handleRetry(content) {
+  // 向上传递重试事件
+  emit('retry', content)
+}
+
+function handleApprove() {
+  emit('approve')
+}
+
+function handleReject() {
+  emit('reject')
+}
+
+function handleStop() {
+  emit('stop')
+}
+
+function handleCreateSession() {
+  emit('createSession')
+}
+
+function handleQuickAction(message, index) {
+  // 兼容旧引用（已无 deck），直接走预设点击
+  onPresetClick(message)
+}
+
+function onPresetClick(message) {
+  composerMode.value = 'bottom'
+  isAtBottom.value = true
+  emit('sendMessage', message, [], null, true, false)
+}
+
+function onSend(message, files, signal, enableDeepThink, enableWebSearch) {
+  composerMode.value = 'bottom'
+  isAtBottom.value = true
+  handleSend(message, files, signal, enableDeepThink, enableWebSearch)
+}
+
+// 是否贴底：用户位于滚动容器底部时为 true，向上滚动查看历史时为 false。
+// 流式更新仅在贴底时自动滚动，避免抢占用户阅读上方内容；用户滚回底部后自动恢复跟随。
+const isAtBottom = ref(true)
+
+function handleScroll() {
+  const el = messagesRef.value
+  if (!el) return
+  const threshold = 80
+  const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < threshold
+  isAtBottom.value = atBottom
+  // 手动滚动回到最底部时，同步复位「上一个/下一个问题」导航索引：
+  // 此前索引停留在历史问题位置，会导致回到底部后「回到上一个问题」按钮
+  // 按旧索引计算而消失（按钮状态与真实滚动位置脱节）。
+  if (atBottom && currentUserMessageIndex.value !== -1) {
+    currentUserMessageIndex.value = -1
+  }
+}
+
+function scrollToBottom(force = false) {
+  nextTick(() => {
+    const el = messagesRef.value
+    if (!el) return
+    if (force || isAtBottom.value) {
+      el.scrollTop = el.scrollHeight
     }
   },
   watch: {

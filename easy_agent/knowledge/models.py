@@ -1,4 +1,4 @@
-"""Public DTO contract for ``/api/knowledge/v1``.
+"""Public DTO contract for ``/agent/knowledge/v1``.
 
 These models intentionally expose only EasyAgent-local identifiers and stable
 domain states. RAGFlow IDs, response codes, parser fields, and endpoints never

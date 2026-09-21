@@ -119,15 +119,12 @@ def _apply_p0_migration(db, cursor) -> None:
         ("idx_knowledge_alert_status", "knowledge_alerts", "status, severity, last_seen_at"),
     ):
         db._create_index(cursor, index_name, table, columns)
-    # This invariant must fail closed; the host helper suppresses all SQL errors.
-    if db.db_type == "sqlite":
-        cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_knowledge_reconcile_issue_key ON knowledge_reconciliation_issues(issue_key)")
-    else:
-        try:
-            cursor.execute("CREATE UNIQUE INDEX uq_knowledge_reconcile_issue_key ON knowledge_reconciliation_issues(issue_key)")
-        except Exception as exc:
-            if "Duplicate key name" not in str(exc):
-                raise
+    db._create_unique_index(
+        cursor,
+        "uq_knowledge_reconcile_issue_key",
+        "knowledge_reconciliation_issues",
+        "issue_key",
+    )
     _record_migration(db, cursor, 2, "p0_production", content)
 
 

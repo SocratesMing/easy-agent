@@ -13,7 +13,7 @@ from ..db import Database
 from ..model import create_model
 from ..models.api import ChatRequest
 from ..services.agent_manager import get_agent_config
-from .host_streaming import build_assistant_message_dict, format_sse
+from ..services.streaming import build_assistant_message_dict, format_sse
 
 logger = logging.getLogger("easy_agent.chat_service")
 

@@ -36,6 +36,7 @@ from .logger import AgentLogger
 from .model import create_model, extract_reasoning
 from .landlock import landlock_usable
 from .sandbox import bwrap_usable, run_landlocked, run_sandboxed
+from .tools.web_search import WEB_SEARCH_SYSTEM_PROMPT
 
 
 logger = logging.getLogger(__name__)
@@ -637,6 +638,7 @@ class EasyAgent:
         organization_id: str = "",
        enable_hitl: bool = True,
        model_name: str | None = None,
+        enable_web_search: bool = False,
         system_prompt_extra: str = "",
    ):
         """初始化 EasyAgent 实例，配置工作区隔离和运行时上下文。
@@ -656,6 +658,9 @@ class EasyAgent:
                 提供时替代 session_id 作为目录名。
             mcp_tools: MCP 工具列表，作为额外工具注入智能体。
             organization_id: 用户所属机构ID，注册后不可更改，将注入系统提示词。
+            enable_web_search: 是否开启联网搜索。为 True 时在系统提示词中加入
+                联网搜索行为约束（web_search 工具本身由 agent_manager 注入，
+                仅在 web_search 配置了 api_key 时才为 True）。
         """
         self.config = config
         self.username = username
@@ -666,6 +671,7 @@ class EasyAgent:
         self.mcp_tools = mcp_tools or []
         self.organization_id = organization_id or ""
         self.enable_hitl = enable_hitl
+        self.enable_web_search = enable_web_search
         self.safe_username = Config.sanitize_username(username)
         # 注入给 shell 执行环境的变量（LocalShellBackend 默认 inherit_env=False，
         # 环境为空 dict，这里只追加用户名，不继承宿主环境以免泄露密钥等变量）
@@ -715,6 +721,7 @@ class EasyAgent:
             for part in (
                 system_prompt.strip(),
                 user_info.strip(),
+                WEB_SEARCH_SYSTEM_PROMPT.strip() if self.enable_web_search else "",
                 system_prompt_extra.strip(),
             )
             if part

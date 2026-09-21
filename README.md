@@ -75,7 +75,8 @@ easy-agent/
 │   │   └── ...
 │   │
 │   ├── tools/
-│   │   └── scheduled_task.py     # CreateScheduledTaskTool（供 LLM 调用）
+│   │   ├── scheduled_task.py     # CreateScheduledTaskTool（供 LLM 调用）
+│   │   └── web_search.py         # WebSearchTool（联网搜索，输入框地球按钮开启）
 │   │
 │   ├── db/database.py            # 数据访问层（SQLite + MySQL）
 │   ├── models/                   # Pydantic / dataclass 模型
@@ -235,6 +236,19 @@ summarization:
   enabled: true
   compression_threshold: 0.8
 
+# 联网搜索（输入框地球按钮；地址与 api_key 复用 ${VAR} 环境变量注入逻辑）
+web_search:
+  enabled: true
+  provider: "tavily"                                   # tavily（默认）| internal（内网 WebSearch 接口）
+  api_url: ""                                          # 留空按 provider 取默认地址，可用 WEB_SEARCH_API_URL 覆盖
+  api_key: "${WEB_SEARCH_API_KEY}"                     # Tavily key（tvly- 开头），为空则前端按钮置灰
+  search_depth: "basic"                                # 仅 tavily：basic/advanced/fast/ultra-fast
+  topic: "general"                                     # 仅 tavily：general/news/finance；带时间范围时自动用 news
+  timeout_seconds: 30
+  default_time_range: "NoLimit"                        # NoLimit/OneDay/OneWeek/OneMonth/OneYear 或 YYYY-MM-DD..YYYY-MM-DD
+  max_results: 10                                      # 单次返回条数（tavily 上限 20）
+  main_text_max_chars: 500                             # 单条结果摘要展示上限
+
 # 数据库（sqlite 或 mysql）
 database:
   type: "mysql"
@@ -245,6 +259,13 @@ database:
     password: "Test1234"
     database: "agent"
 
+# 分布式锁（多 pod / 多 worker 部署开启，避免定时任务等被重复执行）
+distributed_lock:
+  enabled: false                                       # 对应 DISTRIBUTED_LOCK_ENABLED，单实例部署保持 false
+  key_prefix: "easy_agent"                             # 多套系统共用一个库时用于区分
+  ttl_seconds: 300                                     # 锁存活时间：持有者崩溃后其它实例最多等这么久即可接管
+  renew_interval_seconds: 100                          # 长任务续约间隔，实际取 min(本值, ttl/3)
+  retry_interval_seconds: 1                            # 等待抢锁（wait_seconds>0）时的轮询间隔
 
 # 外部目录映射（虚拟路径 → 宿主机路径）
 external_dirs:
@@ -321,7 +342,7 @@ external_dirs:
 | GET  | `/agent/terminal/history` | 命令历史 |
 
 ### 其他
-`/agent/prompts/*`、`/agent/settings/*`
+`/agent/prompts/*`、`/agent/settings/*`（含 `GET /agent/settings/web-search`：联网搜索可用性）
 
 ---
 
@@ -335,7 +356,14 @@ external_dirs:
 - **生成**：让 Agent 帮你生成 docx/pdf/pptx/xlsx，生成的文件会出现在"资产"和当前会话的"生成文件"区
 - **预览**：双击文件即可在线预览
 
-### 3. 定时任务（AI 自动创建）
+### 3. 联网搜索（输入框地球按钮）
+- 输入框左侧地球按钮可开启/关闭联网搜索（默认关闭，仅对开启后发送的消息生效）
+- 开启后 Agent 获得 `web_search` 工具，遇到时效性内容会先检索公开网页，并在回答中给出来源链接
+- 按钮置灰表示未配置：需在 `.env.{AGENT_ENV}` 中配置 `WEB_SEARCH_API_KEY`（Tavily key 在 https://app.tavily.com 申请，`tvly-` 开头）并重启后端
+- 默认 provider 为 **Tavily**（`https://api.tavily.com/search`），支持 `search_depth` / `topic` / `max_results` / 时间范围 / 域名过滤；把 `WEB_SEARCH_PROVIDER` 设为 `internal` 可切回内网 WebSearch 接口（支持 `timeRange` / `sites` / `blockHosts`）
+- 单次检索超时由 `web_search.timeout_seconds` 控制；接口地址可用 `WEB_SEARCH_API_URL` 覆盖
+
+### 4. 定时任务（AI 自动创建）
 直接用自然语言告诉 Agent：
 > "每天早上 8 点检查一下 workspace 下的文件数量"
 > "每周一上午 9 点汇总本周新增的文档"
@@ -353,19 +381,19 @@ Agent 会自动解析调度意图并调用 `create_scheduled_task` 工具，参�
 
 执行记录审计日志保存在：`workspace/{username}/cron/{task_id}.log`（JSONL 格式）。
 
-### 4. 网页终端
+### 5. 网页终端
 - 在对话中需要执行复杂命令时，可直接通过 Web Terminal 交互
 - 终端支持虚拟路径（用户视角）→ 宿主机实际路径的透明翻译
 - 危险命令（`rm` 删除文件）会触发审批弹窗，必须用户确认
 - 目录删除命令（`rmdir` / `rm -r` / `rm -rf`）会被直接拒绝
 
-### 5. 技能中心
+### 6. 技能中心
 - "公共技能"区展示系统预置技能（数据分析、文档处理、量化回测等）
 - 点击 + 即可加入"我的技能"
 - 在对话中 LLM 会自动识别可调用的技能并加载 SKILL.md
 - 自定义技能：把 `SKILL.md` 放进 `skills/your-skill/` 目录即可
 
-### 6. MCP 工具
+### 7. MCP 工具
 - 在设置面板中配置 MCP 服务，支持添加/删除/开关
 - 添加时粘贴 JSON 格式的 MCP 配置（以 `servers` 下的名称识别）
 - 删除时后端自动卸载对应 MCP，即时生效
@@ -446,11 +474,39 @@ A: 检查 `api_base` 是否可达，`api_key` 是否有效。日志文件 `logs/
 **Q: 定时任务不触发？**
 A: 查看日志中 `Scheduler started` 是否出现。`apscheduler` 必须随服务一起启动。可执行 `GET /agent/scheduled-tasks` 验证任务是否注册。
 
+**Q: 多 pod / 多副本部署时定时任务被重复执行？**
+A: 每个实例都会注册同一批 cron，需要开启分布式锁：在 `.env.{AGENT_ENV}` 中设置 `DISTRIBUTED_LOCK_ENABLED=true`（或直接改 `config.yaml` 的 `distributed_lock.enabled`）。开启后同一时刻只有一个实例真正执行，任务被跳过的触发会记录 `operation=skip_locked` 的审计日志。多实例下的其它注意事项见 [docs/distributed-lock.md](docs/distributed-lock.md)。
+
 **Q: 如何添加自定义模型 provider？**
 A: 在 `easy_agent/model.py` 中扩展 `create_model()`，并在 `config.yaml` 的 `models.<name>` 中添加新条目。
 
 ---
 
-## 十二、License
+## 十二、多 pod 部署与分布式锁
+
+服务部署在多个 pod（或 uvicorn `--workers > 1`）时，同一件事可能被多个实例各做一遍，
+最典型的是定时任务：每个实例都会注册同一批 cron。项目提供基于数据库的分布式锁
+（`easy_agent/utils/distributed_lock.py`，锁表 `distributed_locks`），由配置开关
+`distributed_lock.enabled` 控制，默认关闭（单实例部署不产生任何额外数据库访问）。
+
+```bash
+# 多副本部署：在 .env.{AGENT_ENV} 中开启
+DISTRIBUTED_LOCK_ENABLED=true
+```
+
+**已用锁保护**：定时任务的 cron 触发与手动触发（同一时刻只有一个实例执行）。
+
+**仍需留意的多实例场景**（详见 [docs/distributed-lock.md](docs/distributed-lock.md)）：
+
+- 暂停/删除任务只能中断「收到请求的那个实例」上的在途执行；
+- 会话 SSE 事件流、HITL 中断态、Agent 缓存都在进程内存里，跨实例不可见（需要会话粘性）；
+- 登录 IP/时间等提示性缓存按实例维护；
+- 共享 NAS 上同一文件的并发追加/覆盖（如任务审计日志）。
+
+**无需额外处理**：知识库任务队列已是「DB 抢占 + 心跳」模型；建表/补列等启动动作幂等。
+
+---
+
+## 十三、License
 
 MIT License © 2026 Easy Agent Team

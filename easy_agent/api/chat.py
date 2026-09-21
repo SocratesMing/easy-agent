@@ -299,7 +299,8 @@ async def chat_stream(
 
     logger.info(
         f"[{sid}] 聊天请求 | message: {request.message[:50]}{'...' if len(request.message) > 50 else ''} | "
-        f"deep_think: {request.enable_deep_think} | model: {request.model or '(active)'}"
+        f"deep_think: {request.enable_deep_think} | "
+        f"web_search: {request.enable_web_search} | model: {request.model or '(active)'}"
     )
 
     if session_id is None:
@@ -399,41 +400,11 @@ async def chat_stream(
         message_id=message_id,
     )
 
-    if is_knowledge_panel_session:
-        # Same public endpoint/SSE protocol, but a separate no-tool executor.
-        # DeepAgent always adds built-in filesystem and shell tools even when
-        # MCP tools are disabled, so it is not a valid knowledge-only boundary.
-        stream_generator = knowledge_chat_stream_generator(
-            request=request,
-            db=db,
-            session_id=session_id,
-            message_id=message_id,
-            username=username,
-            knowledge_context=knowledge_chat.context or empty_knowledge_context(),
-            knowledge_evidence=knowledge_chat.evidence,
-            knowledge_warnings=knowledge_chat.warnings,
-            session_logger=session_logger,
-        )
-    else:
-        agent = await get_or_create_agent_for_session(
-            session_id, username, workspace_name, model_name=request.model,
-            system_prompt_extra=system_prompt_extra,
-            enable_hitl=True,
-        )
-        stream_generator = chat_stream_generator(
-            request=request,
-            db=db,
-            agent=agent,
-            session_id=session_id,
-            message_id=message_id,
-            username=username,
-            http_request=http_request,
-            parsed_content=parsed_content,
-            session_logger=session_logger,
-            context_prefix=knowledge_chat.context,
-            initial_events=knowledge_chat.initial_events,
-            assistant_metadata=knowledge_chat.assistant_metadata,
-        )
+    agent = await get_or_create_agent_for_session(
+        session_id, username, workspace_name, model_name=request.model,
+        system_prompt_extra=system_prompt_extra,
+        enable_web_search=request.enable_web_search,
+    )
 
     return StreamingResponse(
         _detached_event_stream(

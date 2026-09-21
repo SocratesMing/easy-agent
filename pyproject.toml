@@ -28,6 +28,8 @@ dependencies = [
     "apscheduler>=3.10.0,<4.0.0",
     "langchain-mcp-adapters>=0.1.0",
     "requests>=2.34.2",
+    "httpx>=0.27,<1",
+    "mysql-mcp-server>=0.4.0",
 ]
 
 [project.scripts]

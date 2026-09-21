@@ -37,6 +37,7 @@
         @show-scheduled-tasks="handleShowScheduledTasks"
         @show-settings="showSettingsPanel = true"
         @show-user-management="showUserManagementPanel = true"
+        @show-knowledge="showKnowledge = true"
         @logout="handleLogout"
       />
       
@@ -52,6 +53,11 @@
         </svg>
       </button>
       
+      <KnowledgeWorkbench
+        v-if="showKnowledge"
+        @close="showKnowledge = false"
+      />
+
       <AssetsPanel v-if="showAssets" :visible="showAssets" @close="showAssets = false" />
 
       <SkillCenter v-if="showSkillCenter" @close="showSkillCenter = false" />
@@ -123,6 +129,7 @@ import AssetsPanel from './components/AssetsPanel.vue'
 import SkillCenter from './components/SkillCenter.vue'
 import ScheduledTasksPanel from './components/ScheduledTasksPanel.vue'
 import UserManagementPanel from './components/UserManagementPanel.vue'
+import KnowledgeWorkbench from './features/knowledge/KnowledgeWorkbench.vue'
 import Welcome from './components/Welcome.vue'
 import WorkspacePanel from './components/WorkspacePanel.vue'
 import SettingsPanel from './components/SettingsPanel.vue'
@@ -222,6 +229,7 @@ export default {
   components: {
     AssetsPanel,
     Chat,
+    KnowledgeWorkbench,
     ScheduledTasksPanel,
     SessionList,
     SettingsPanel,
@@ -281,6 +289,7 @@ export default {
       showScheduledTasks: false,
       showSettingsPanel: false,
       showUserManagementPanel: false,
+      showKnowledge: false,
       showWelcome: false,
       // 免密登录开关（模板用：未授权提示的文案按开关区分）
       passwordlessEnabled: PASSWORDLESS_LOGIN_ENABLED,
@@ -1682,7 +1691,7 @@ export default {
       // 事件按「所属会话」路由：后台会话写入其自身缓冲，不污染当前展示
       return { onChunk: (data) => this.runInSession(ctx.streamSessionId, ctx, () => onChunk(data)) }
     },
-    async handleSendMessage(message, files = [], signal, enableDeepThink = true) {
+    async handleSendMessage(message, files = [], signal, enableDeepThink = true, enableWebSearch = false) {
       const userMsgId = `user-${Date.now()}`
       const preStreamUsage = { ...this.sessionUsage }
       // 记录本次请求开始前已累计的耗时和迭代次数，用于流式过程中实时累加
@@ -1803,7 +1812,16 @@ export default {
           }
         }
 
-        await sendMessage(this.currentSessionId, message, onChunk, abortSignal, enableDeepThink, files, this.selectedModel)
+        await sendMessage(
+          this.currentSessionId,
+          message,
+          onChunk,
+          abortSignal,
+          enableDeepThink,
+          files,
+          this.selectedModel,
+          enableWebSearch
+        )
 
         await this.refreshSessionFiles(null, 500)
       } catch (e) {

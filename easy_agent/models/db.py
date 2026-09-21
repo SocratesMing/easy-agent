@@ -29,6 +29,7 @@ class UserModel:
     # 工号：注册必填、全局唯一；登录时可替代用户名。免密自动注册的用户没有工号，
     # 此时为空串（落库为 NULL，以便唯一索引允许多个空值）。
     employee_id: str = ""
+    # 人员信息列（knowledge 鉴权前置）：由迁移脚本/同步任务维护，注册时均为空
     display_name: str = ""
     department_id: str = ""
     department_name: str = ""

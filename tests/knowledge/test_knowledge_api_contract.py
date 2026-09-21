@@ -32,7 +32,7 @@ def _enabled_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Knowledg
 
 
 def test_capabilities_is_always_available_when_module_disabled(client: TestClient):
-    response = client.get("/api/knowledge/v1/capabilities")
+    response = client.get("/agent/knowledge/v1/capabilities")
 
     assert response.status_code == 200
     assert response.json() == {
@@ -50,7 +50,7 @@ def test_enabled_capabilities_never_exposes_endpoint_or_secret(
 ):
     app.state.knowledge_config = _enabled_config(tmp_path, monkeypatch)
 
-    response = client.get("/api/knowledge/v1/capabilities")
+    response = client.get("/agent/knowledge/v1/capabilities")
 
     assert response.status_code == 200
     body = response.json()
@@ -64,7 +64,7 @@ def test_enabled_capabilities_never_exposes_endpoint_or_secret(
 
 def test_capabilities_is_present_in_openapi_contract():
     schema = app.openapi()
-    operation = schema["paths"]["/api/knowledge/v1/capabilities"]["get"]
+    operation = schema["paths"]["/agent/knowledge/v1/capabilities"]["get"]
 
     assert operation["tags"] == ["knowledge-engineering"]
     assert "200" in operation["responses"]

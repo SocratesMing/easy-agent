@@ -11,7 +11,7 @@ from typing import Any
 
 
 _SAFE_REQUEST_ID = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
-_AUDITED_PREFIXES = ("/api/knowledge/v1", "/api/personnel")
+_AUDITED_PREFIXES = ("/agent/knowledge/v1", "/api/personnel")
 
 
 class KnowledgeMetrics:
