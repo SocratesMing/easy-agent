@@ -446,9 +446,12 @@ export default {
           pageSize,
         })
         if (sequence !== loadSequence) return
-        const page = normalizePersonnelPage(payload)
-        users.value = page.items
-        total.value = page.total
+        // 注意：此处变量不可命名为 page——会遮蔽外层分页 ref page，
+        // 经 Babel regenerator 编译后（var 提升 + 统一重命名）会把请求参数里的
+        // page.value 一并改写为未初始化的局部变量，导致 "reading 'value'" 报错。
+        const pageData = normalizePersonnelPage(payload)
+        users.value = pageData.items
+        total.value = pageData.total
       } catch (error) {
         if (sequence !== loadSequence) return
         notify(resolveError(error, '获取人员列表失败'), 'error')
