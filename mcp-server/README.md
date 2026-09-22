@@ -34,7 +34,7 @@ Easy Agent 的独立 MCP（Model Context Protocol）服务子项目，使用 [uv
 ```bash
 # 加一个业务包，重启，主应用立刻能看到
 mkdir easy_mcp_server/businesses/forex   # 内含 build() -> FastMCP
-uv run uvicorn easy_mcp_server.main:app --port 8100
+uv run uvicorn easy_mcp_server.main:app --port 8174
 # 日志：业务注册表已更新: strategyqa
 ```
 
@@ -73,7 +73,7 @@ cd mcp-server
 uv sync                                   # 安装依赖
 cp .env.example .env                      # 填写 MySQL 连接等配置
 uv run python -m pytest                   # 运行测试
-uv run uvicorn easy_mcp_server.main:app --host 0.0.0.0 --port 8100 \
+uv run uvicorn easy_mcp_server.main:app --host 0.0.0.0 --port 8174 \
     --timeout-graceful-shutdown 5         # 启动
 ```
 
@@ -109,7 +109,9 @@ WebSocket），所以启动时要显式给上限：
 
 | 业务 | 路径 | 说明 |
 | --- | --- | --- |
-| `strategyqa` | `/mcp/strategyqa/` | 问数：策略表（`fmut2_strategy_manage`）领域工具 + 通用只读 SQL |
+| `strategyqa` | `/mcp/strategyqa/` | 问数：策略表（`fmut2_strategy_manage`），行级隔离，只能看自己创建的策略 |
+| `fxbar` | `/mcp/fxbar/` | 问数：外汇 K 线（`HSDC_HDS2_BAR_FX`）**大表**，公共行情，默认只返回最近窗口 |
+| `investment_research` | `/mcp/investment_research/` | 投资研究：iData 数据分析看板（机构当日 / 个券机构 / 债券借贷），10 个工具 |
 
 **新增**业务只删/加这个目录即可（重启服务后主应用自动感知）；
 **删除**业务除了删目录，还要清共享库里的残留记录，见下文「删除业务」。
@@ -162,6 +164,92 @@ WebSocket），所以启动时要显式给上限：
 5. `AUTH_VIEW=0` 的记录谁都不能看（含作者），已在 SQL 里固定过滤
 6. `ORDER BY` 走字段白名单映射，模型无法借此注入
 
+### fxbar：外汇 K 线问数（大表）
+
+表 `HSDC_HDS2_BAR_FX` 是外汇市场**高频 K 线大表**（6 档频率 × 多币对 × 多渠道 ×
+双边报价）。与 `strategyqa` 相反——它是**公共行情，不做行级隔离**，风险不在权限而在
+性能：一次不设边界的查询就能拖垮数据库。所以领域层把收敛做成硬约束：
+
+- `CONTRACT_CODE` 必填（没有它等于整表扫描）
+- `FREQUENCY` 必填且必须在白名单内（`1M/5M/15M/1H/4H/1D`，缺省 `1H`）
+- **时间窗**：不传时间参数时只查「最近 `FX_DEFAULT_WINDOW_HOURS` 小时」（缺省 24）；
+  显式范围超过 `FX_MAX_WINDOW_DAYS`（缺省 31 天）时从结束时间往前自动收敛，
+  并在返回里标记 `window.clamped = true`——**收敛而不是报错**，避免模型反复试错
+- 结果强制 `LIMIT`（缺省 500）并按 `TIME DESC`（最新在前）
+- 缺省只查 `FX_CHANNELS`（缺省 `BEST,FXALL`）；传 `channel='ALL'` 放开全部渠道
+
+领域工具：
+
+- `describe_fx_schema`（口径字典，先看这个）
+- `list_fx_instruments`（**有哪些合约可查**：合约 + 渠道 + K 线根数 + 时间覆盖范围；
+  只扫最近 `days`，缺省 7 天）
+- `get_fx_bars`（K 线明细；用 `days=N` 或 `start_time`/`end_time` 指定时间段）
+- `get_latest_fx_quote`（某合约最新一根 K 线）
+- **结构探索**：`list_tables` / `describe_table`
+
+同样**不提供** `query`（任意 SQL）——不是权限原因，而是大表上模型写出全表扫的代价
+不可控。
+
+"某币对最近一个月行情"这类问题要显式给范围，例如
+`get_fx_bars(contract_code='EURUSD', frequency='1D', start_time='2026-09-01', end_time='2026-09-21')`；
+缺省窗口只覆盖最近一段，模型需要"再往前看"时会自己带上 `start_time`。
+
+几个坑：
+
+1. `TIME` / `START_TIMESTAMP` / `END_TIMESTAMP` 都是**毫秒级 UTC 时间戳**；
+   参数 `start_time` / `end_time` 也按 UTC 解释（否则同一句话在不同时区会查出不同结果）
+2. `OPEN` / `HIGH` / `LOW` / `CLOSE` 是**汇率**（`decimal(32,10)`），不是涨跌幅
+3. `TRADE_VOLUME`（基础货币）与 `TRADE_AMT`（计价货币）量纲不同，不能相加
+4. `ROW_KEY` 是拼接主键（`ENTITY+INSTRUMENT+CONTRACT_CODE+FREQUENCY+TIME`），
+   信息冗余，本服务不返回
+5. 表可能与主库**不在同一个 database**：填 `FX_SCHEMA` 即可，不需要改代码
+
+### investment_research：iData 数据分析看板
+
+投资研究类问数业务（公共数据，不做行级隔离）。当前包含 iData 看板的三个页面场景：
+
+| 场景 | 表 | 内容 |
+| --- | --- | --- |
+| 机构当日 | `fmqt_bond_exec_part_data` | 现券成交分机构统计（机构 × 期限 × 券种 × 买卖） |
+| 个券机构 | `fmqt_bond_trade_counterpart_analysis` | 个债交易对手分析（单券 × 机构） |
+| 债券借贷 | `fmqt_bond_lending_analysis` | 借贷余额与集中度 |
+| 大模型点评 | `fmqt_idata_llm_analysis` | 已生成的点评正文 |
+
+**10 个工具**，由原始 29 条 SQL / 20 个接口收敛而来（合并思路见
+`iData-MCP工具设计.md`）：
+
+| 工具 | 说明 |
+| --- | --- |
+| `describe_idata_schema` | 口径字典（表、枚举、单位、陷阱） |
+| `get_trade_dates` | 交易日查询统一入口（最新 / 上一交易日 / 最近 N 个 / 区间） |
+| `get_institution_flow` | 机构流向：靠 `group_by` 切换单日矩阵 / 多日趋势 / 期限堆叠 |
+| `list_bonds` | 某日个券列表（代码 + 简称，支持模糊搜索） |
+| `get_bond_counterparts` | 某券各机构净买卖 + 成交量占比 + 主力买卖 |
+| `get_bond_trend` | 某券多日的机构 × 日期趋势 |
+| `list_top_active_bonds` | 活跃券排行（按 Σ\|净买卖\|） |
+| `get_lending_snapshot` | 借贷快照（余额 / 集中度 / 较前日变化 / 核心跟踪券） |
+| `get_lending_trend` | 借贷余额与集中度走势 |
+| `get_llm_comment` | 取某场景已生成的大模型点评 |
+
+三条硬约束（固化在领域层，调用方无法放松）：
+
+1. **金额统一亿元**，字段名带 `_yi` 后缀（原文档"有的元、有的亿元"已消除）
+2. **`date` 留空 → 自动取该表最新交易日**（所有工具一致）
+3. **机构当日表的合计行隔离**：`include_total` 决定用合计行还是明细行，
+   混用会让金额翻倍
+
+几个坑：
+
+1. `GROUP BY` 维度走**白名单映射**（`group_by` 传键名而非列名），非法值**直接报错**
+   而不是静默回退——静默回退会让模型拿到错误维度的数据却以为是对的
+2. 借贷余额口径固定为 `STATISTIC_AMT_TYPE='19' AND STATISTIC_AMT_SIDE='1'`，不是成交量
+3. `BOND_CONCENTRATION` 可能为 NULL，工具层按 0 兜底
+4. 单次查询最多 60 个交易日（超了报错），避免 SQL 膨胀
+5. 表可能与主库**不在同一个 database**：填 `IDATA_SCHEMA` 即可，不需要改代码
+
+**新增场景的方式**：在本包内加一个领域模块（如 `xxx.py`），在 `server.py` 里挂上工具即可，
+不用新建业务包。
+
 ### 安全与可见性（由 querykit 提供）
 
 SQL 网关强制：单条语句、`SELECT/WITH` 开头、屏蔽写操作与系统库、自动补 `LIMIT`
@@ -204,7 +292,7 @@ def build() -> FastMCP:
   "servers": {
     "strategyqa": {
       "transport": "streamable_http",
-      "url": "http://<mcp-server 地址>:8100/mcp/strategyqa/",
+      "url": "http://<mcp-server 地址>:8174/mcp/strategyqa/",
       "headers": { "Authorization": "Bearer <API Key>" }
     }
   }

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 
 import pytest
 import uvicorn
@@ -8,6 +9,21 @@ import uvicorn
 from easy_mcp_server.app import create_app
 
 from support import FakeKeyStore, build_hello
+
+
+@pytest.fixture(autouse=True, scope="session")
+def bypass_loopback_proxy():
+    """测试全部打回环地址，必须绕开本机代理。
+
+    开发者开了代理（Clash / Charles / 公司透明代理）时，127.0.0.1 的请求会被
+    接管：本该返回 421 的 Host 校验用例拿到 502，表现为"测试结果取决于本机
+    开没开代理"。httpx 只在创建 client 时读一次 NO_PROXY，session 级设够用。
+    """
+    existing = os.environ.get("NO_PROXY", "")
+    merged = ",".join(filter(None, [existing, "127.0.0.1", "localhost", "::1"]))
+    os.environ["NO_PROXY"] = merged
+    os.environ["no_proxy"] = merged
+
 
 # 单测必须只取决于测试自身的设定，不能受开发者本地 .env 影响。
 # 注意是"设值"而不是"删除"：删除后 load_env() 会重新把 .env 的值注入回来。
@@ -20,6 +36,17 @@ _ISOLATED_ENV = {
     "STRATEGY_TABLE": "fmut2_strategy_manage",
     "STRATEGY_ALLOWED_TABLES": "",
     "STRATEGY_DENY_TABLES": "",
+    "FX_TABLE": "HSDC_HDS2_BAR_FX",
+    "FX_SCHEMA": "",
+    "FX_CHANNELS": "",
+    "FX_DEFAULT_FREQUENCY": "",
+    "FX_DEFAULT_WINDOW_HOURS": "",
+    "FX_MAX_WINDOW_DAYS": "",
+    "FX_ALLOWED_TABLES": "",
+    "FX_DENY_TABLES": "",
+    "IDATA_SCHEMA": "",
+    "IDATA_ALLOWED_TABLES": "",
+    "IDATA_DENY_TABLES": "",
 }
 
 

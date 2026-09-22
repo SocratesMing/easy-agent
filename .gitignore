@@ -71,3 +71,10 @@ offline_deps/
 # 测试运行时残留（环境变量未展开产生的字面量路径，如 ${TEST_DB_PATH}）
 ${TEST_*}/
 ${TEST_*}
+
+# macOS 元数据（Windows 上无意义，勿提交）
+.DS_Store
+
+# 打包产物（如拷贝到内网的 mcp-server.zip / 分卷包，大体积二进制勿提交）
+*.zip
+*.zip.0*

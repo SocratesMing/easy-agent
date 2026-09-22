@@ -161,3 +161,34 @@ def test_policy_from_env_reads_business_prefix(monkeypatch):
 def test_policy_from_env_empty_means_unrestricted(monkeypatch):
     monkeypatch.setenv("STRATEGY_ALLOWED_TABLES", "")
     assert policy_from_env("STRATEGY_").allowed is None
+
+
+def test_policy_default_allowed_used_when_env_missing(monkeypatch):
+    """业务只涉及固定几张表时，缺省应收敛到它们，而不是放开为"不限制"。"""
+    monkeypatch.setenv("IDATA_ALLOWED_TABLES", "")
+    policy = policy_from_env("IDATA_", default_allowed=("t1", "t2"))
+    assert policy.is_visible("t1") is True
+    assert policy.is_visible("t2") is True
+    assert policy.is_visible("some_other_table") is False
+
+
+def test_policy_env_overrides_default_allowed(monkeypatch):
+    """显式配置优先于缺省白名单。"""
+    monkeypatch.setenv("IDATA_ALLOWED_TABLES", "t3")
+    policy = policy_from_env("IDATA_", default_allowed=("t1",))
+    assert policy.is_visible("t3") is True
+    assert policy.is_visible("t1") is False
+
+
+def test_policy_default_allowed_still_lets_denied_win(monkeypatch):
+    """缺省白名单里若混进敏感表，黑名单仍要拦下。"""
+    monkeypatch.setenv("IDATA_ALLOWED_TABLES", "")
+    policy = policy_from_env("IDATA_", default_allowed=("mcp_api_keys", "t1"))
+    assert policy.is_visible("mcp_api_keys") is False
+    assert policy.is_visible("t1") is True
+
+
+def test_policy_default_allowed_ignored_when_none(monkeypatch):
+    """不传 default_allowed 时保持原行为，不影响已有业务（strategyqa/fxbar）。"""
+    monkeypatch.setenv("STRATEGY_ALLOWED_TABLES", "")
+    assert policy_from_env("STRATEGY_", default_allowed=None).allowed is None

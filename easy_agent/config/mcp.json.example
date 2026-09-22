@@ -2,7 +2,7 @@
   "servers": {
     "strategyqa": {
       "transport": "streamable_http",
-      "url": "http://127.0.0.1:8100/mcp/strategyqa/",
+      "url": "http://127.0.0.1:8174/mcp/strategyqa/",
       "headers": {
         "Authorization": "Bearer <在设置页生成的 StrategyQA MCP API Key>"
       }

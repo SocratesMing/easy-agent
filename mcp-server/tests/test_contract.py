@@ -49,8 +49,8 @@ def test_business_names_do_not_import_business_packages():
 def test_business_url_has_trailing_slash():
     """尾斜杠不能省：MCP 客户端不跟随 307（/mcp/x 会 307 到 /mcp/x/）。"""
     assert (
-        contract.business_url("http://127.0.0.1:8100", "market")
-        == "http://127.0.0.1:8100/mcp/market/"
+        contract.business_url("http://127.0.0.1:8174", "strategyqa")
+        == "http://127.0.0.1:8174/mcp/strategyqa/"
     )
 
 
@@ -62,12 +62,12 @@ def test_business_url_normalizes_base_trailing_slash():
 
 
 def test_business_from_url_matches_contract_and_main_app_rule():
-    base = "http://127.0.0.1:8100"
+    base = "http://127.0.0.1:8174"
     for name in contract.business_names():
         assert contract.business_from_url(contract.business_url(base, name)) == name
 
     # 主应用设置页用的是同一形态（含无尾斜杠写法）
-    assert contract.business_from_url(f"{base}/mcp/market") == "market"
+    assert contract.business_from_url(f"{base}/mcp/strategyqa") == "strategyqa"
     assert contract.business_from_url("http://127.0.0.1:8005/sse") is None
 
 
@@ -121,7 +121,7 @@ def test_publish_swallows_db_failure(monkeypatch):
 
     monkeypatch.setattr(registry, "connection", boom)
 
-    assert registry.publish(["market"]) == 0
+    assert registry.publish(["strategyqa"]) == 0
 
 
 def test_publish_upserts_every_business(monkeypatch):
@@ -149,9 +149,12 @@ def test_publish_upserts_every_business(monkeypatch):
 
     monkeypatch.setattr(registry, "connection", lambda: _Conn())
 
-    assert registry.publish(["market", "strategyqa"]) == 2
+    assert registry.publish(["strategyqa", "investment_research"]) == 2
 
     # 第一次是自愈建表，之后每个业务一条 upsert
     assert len(executed) == 3
     assert executed[0][0] == contract.business_registry_table_sql()
-    assert [params[0] for _, params in executed[1:]] == ["market", "strategyqa"]
+    assert [params[0] for _, params in executed[1:]] == [
+        "strategyqa",
+        "investment_research",
+    ]

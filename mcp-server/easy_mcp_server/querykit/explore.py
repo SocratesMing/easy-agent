@@ -49,12 +49,19 @@ class ExplorePolicy:
         return self.schema or str(mysql_config().get("database") or "")
 
 
-def policy_from_env(prefix: str = "QUERYKIT_") -> ExplorePolicy:
+def policy_from_env(
+    prefix: str = "QUERYKIT_",
+    default_allowed: tuple[str, ...] | None = None,
+) -> ExplorePolicy:
     """从环境变量构造策略：``{prefix}ALLOWED_TABLES`` / ``{prefix}DENY_TABLES``。
 
     业务包通常传自己的前缀，例如 ``policy_from_env("STRATEGY_")``。
+
+    ``default_allowed`` 用于"该业务只涉及固定几张表、本就不该看到别家表"的场景：
+    未配 ``{prefix}ALLOWED_TABLES`` 时**以它作为白名单**，而不是放开为"不限制"。
+    留空（None，缺省）维持原行为——模型能看到同库中除敏感表外的所有表。
     """
-    allowed = env_list(f"{prefix}ALLOWED_TABLES") or None
+    allowed = env_list(f"{prefix}ALLOWED_TABLES") or default_allowed
     denied = DEFAULT_DENY_TABLES + env_list(f"{prefix}DENY_TABLES")
     return ExplorePolicy(allowed=allowed, denied=denied)
 

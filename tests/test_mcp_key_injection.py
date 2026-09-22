@@ -36,12 +36,12 @@ def _offline_businesses(monkeypatch):
 
 
 def test_resolve_business_from_url():
-    cfg = {"url": "http://127.0.0.1:8100/mcp/strategyqa/", "headers": {}}
+    cfg = {"url": "http://127.0.0.1:8174/mcp/strategyqa/", "headers": {}}
     assert settings_api._resolve_easy_business(cfg) == "strategyqa"
 
 
 def test_resolve_business_from_url_without_trailing_slash():
-    cfg = {"url": "http://127.0.0.1:8100/mcp/strategyqa"}
+    cfg = {"url": "http://127.0.0.1:8174/mcp/strategyqa"}
     assert settings_api._resolve_easy_business(cfg) == "strategyqa"
 
 
@@ -90,7 +90,7 @@ def test_injects_key_for_own_business_with_placeholder(monkeypatch):
 
     monkeypatch.setattr(keys_service, "issue_api_key", fake_issue)
     cfg = {
-        "url": "http://127.0.0.1:8100/mcp/strategyqa/",
+        "url": "http://127.0.0.1:8174/mcp/strategyqa/",
         "headers": {"Authorization": "Bearer <占位符>"},
     }
 
@@ -123,7 +123,7 @@ def test_skips_foreign_server(monkeypatch):
 def test_keeps_user_supplied_key(monkeypatch):
     monkeypatch.setattr(keys_service, "issue_api_key", lambda u, b: "new-key")
     cfg = {
-        "url": "http://127.0.0.1:8100/mcp/strategyqa/",
+        "url": "http://127.0.0.1:8174/mcp/strategyqa/",
         "headers": {"Authorization": "Bearer mcp_mine"},
     }
 
@@ -137,7 +137,7 @@ def test_each_user_gets_own_key(monkeypatch):
     monkeypatch.setattr(
         keys_service, "issue_api_key", lambda username, business: f"key_of_{username}"
     )
-    cfg = {"url": "http://127.0.0.1:8100/mcp/strategyqa/", "headers": {}}
+    cfg = {"url": "http://127.0.0.1:8174/mcp/strategyqa/", "headers": {}}
 
     alice, _ = settings_api._maybe_inject_api_key(dict(cfg), "alice")
     bob, _ = settings_api._maybe_inject_api_key(dict(cfg), "bob")
@@ -170,7 +170,7 @@ def _patch_mcp_path(monkeypatch, target: Path) -> None:
 def test_atomic_write_produces_valid_json(monkeypatch):
     target = _workdir() / "alice" / "mcp.json"
     _patch_mcp_path(monkeypatch, target)
-    payload = {"servers": {"strategyqa": {"url": "http://127.0.0.1:8100/mcp/strategyqa/"}}}
+    payload = {"servers": {"strategyqa": {"url": "http://127.0.0.1:8174/mcp/strategyqa/"}}}
 
     result = settings_api._write_user_mcp_raw("alice", None, payload)
 
@@ -232,7 +232,7 @@ def test_sync_updates_matching_server_key(monkeypatch):
             {
                 "servers": {
                     "strategyqa": {
-                        "url": "http://127.0.0.1:8100/mcp/strategyqa/",
+                        "url": "http://127.0.0.1:8174/mcp/strategyqa/",
                         "headers": {"Authorization": "Bearer old_key"},
                     },
                     "akshare": {
@@ -262,7 +262,7 @@ def test_sync_updates_multiple_servers_of_same_business(monkeypatch):
         json.dumps(
             {
                 "servers": {
-                    "strategyqa": {"url": "http://127.0.0.1:8100/mcp/strategyqa/", "headers": {}},
+                    "strategyqa": {"url": "http://127.0.0.1:8174/mcp/strategyqa/", "headers": {}},
                     "strategyqa-2": {"url": "https://mcp.example.com/mcp/strategyqa/", "headers": {}},
                 }
             }
