@@ -65,6 +65,9 @@ class ChatRequest(BaseModel):
     session_id: Optional[str] = Field(default=None, description="会话ID")
     message_id: Optional[str] = Field(default=None, description="消息ID")
     enable_deep_think: bool = Field(default=False, description="是否启用深度思考")
+    enable_web_search: bool = Field(
+        default=False, description="是否开启联网搜索（输入框地球按钮）"
+    )
     files: Optional[List[dict]] = Field(default=None, description="上传的文件列表")
     model: Optional[str] = Field(
         default=None,

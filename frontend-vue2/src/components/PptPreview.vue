@@ -21,22 +21,17 @@
 </template>
 
 <script>
-import { computed } from 'vue'
 export default {
+  name: 'PptPreview',
   props: {
-  fileUrl: {
-    type: String,
-    default: ''
-  },
-  fileType: {
-    type: String,
-    default: 'PPT'
-  }
-},
-  setup(props, { emit }) {
-    return {
-      computed,
-    }
+    fileUrl: {
+      type: String,
+      default: '',
+    },
+    fileType: {
+      type: String,
+      default: 'PPT',
+    },
   },
 }
 </script>

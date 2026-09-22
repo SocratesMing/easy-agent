@@ -60,6 +60,7 @@
       <Chat
         v-else-if="!showAssets && !showSkillCenter && !showScheduledTasks"
         :messages="messages"
+        :sessionLoading="sessionLoading"
         :currentSessionId="currentSessionId"
         :sessionCreatedAt="currentSessionCreatedAt"
         :isStreaming="isStreaming"
@@ -105,7 +106,7 @@
 
 <script setup>
 import { API_BASE_URL, APP_WELCOME_TITLE, appRuntime } from './config.js'
-import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import SessionList from './components/SessionList.vue'
 import Chat from './components/Chat.vue'
 import AssetsPanel from './components/AssetsPanel.vue'
@@ -117,7 +118,7 @@ import WorkspacePanel from './components/WorkspacePanel.vue'
 import SettingsPanel from './components/SettingsPanel.vue'
 import { createSession, listSessions, getChatHistory, deleteSession, sendMessage, resumeStream, renameSession, togglePinSession, getStreamStatus, attachStream } from './api/chat.js'
 import { uploadFile, deleteFile, getUserProfile, getSessionGeneratedFiles } from './api/files.js'
-import { logout as apiLogout, notifyLogout, getStoredToken, getStoredUsername, AUTH_EXPIRED_EVENT, USER_ACTIVITY_EVENT, authFetch, passwordlessLogin } from './api/auth.js'
+import { logout as apiLogout, notifyLogout, getStoredToken, getStoredUsername, AUTH_EXPIRED_EVENT, authFetch, passwordlessLogin } from './api/auth.js'
 import { getModels as fetchModels } from './api/settings.js'
 
 const sessions = ref([])
@@ -312,6 +313,7 @@ async function attachToStreamingSession(sessionId, opts = {}) {
   markStreaming(sessionId)
 
   if (displayed) {
+    sessionLoading.value = true
     try {
       const history = await getChatHistory(sessionId)
       if (currentSessionId.value !== sessionId) {
@@ -336,6 +338,8 @@ async function attachToStreamingSession(sessionId, opts = {}) {
       }
     } catch (e) {
       console.error('加载聊天历史失败:', e)
+    } finally {
+      sessionLoading.value = false
     }
   }
 
@@ -459,7 +463,19 @@ async function attachToStreamingSession(sessionId, opts = {}) {
         sessionStates.value[sessionId].isStreaming = false
         sessionStates.value[sessionId].abortController = null
       }
+      // 列表"进行中"标记此时移除（显示已完成）：以服务端历史为准回填完整内容
+      await syncSessionFromServer(sessionId)
       if (displayed) {
+        // 兜底：挂载流结束时确保占位消息不再标记 loading，避免页面残留"执行中"
+        let idx = messages.value.findIndex(m => m.id === attachId)
+        if (idx === -1) {
+          for (let i = messages.value.length - 1; i >= 0; i--) {
+            if (messages.value[i].role === 'assistant' && messages.value[i].loading) { idx = i; break }
+          }
+        }
+        if (idx !== -1 && messages.value[idx].loading) {
+          messages.value[idx] = { ...messages.value[idx], loading: false }
+        }
         streamingAssistantId.value = null
         saveCurrentSessionState()
       }
@@ -541,6 +557,138 @@ function restoreSessionState(sessionId) {
   return false
 }
 
+// ── 会话级流式隔离 ──────────────────────────────────────────────────────
+// 一个流事件只应写入「它所属会话」的数据，不能写当前正在查看的会话，否则多会话
+// 并行流式（A 流式中新建/切换到 B）会串台：A 的增量被追加进 B 的 messages。
+// 做法：展示中的会话（sid === loadedSessionId）直接用全局 refs；后台会话临时把全局
+// refs 指向其 sessionStates 缓冲，处理完立即还原（全程同步，不会触发中途渲染）。
+function ensureSessionState(sid) {
+  let st = sessionStates.value[sid]
+  if (!st) {
+    st = {
+      messages: [],
+      isStreaming: true,
+      sessionUsage: {
+        input_tokens: 0,
+        output_tokens: 0,
+        reasoning_tokens: 0,
+        context_length: sessionUsage.value.context_length,
+        auto_compress_tokens: null,
+        context_tokens: 0,
+      },
+      sessionDuration: 0,
+      iterationCount: 0,
+      abortController: null,
+      todos: [],
+      streamingAssistantId: null,
+      assistantMsgId: null,
+    }
+  }
+  sessionStates.value = { ...sessionStates.value, [sid]: st }
+  return st
+}
+
+function runInSession(sid, ctx, fn) {
+  if (!sid || sid === loadedSessionId.value) return fn() // 展示中的会话：直接用全局 refs
+  const st = ensureSessionState(sid)
+  const saved = {
+    messages: messages.value,
+    usage: sessionUsage.value,
+    duration: sessionDuration.value,
+    iterations: iterationCount.value,
+    todos: currentTodos.value,
+    streamingAssistantId: streamingAssistantId.value,
+    assistantMsgId: ctx ? ctx.assistantMsgId : undefined,
+  }
+  messages.value = st.messages
+  sessionUsage.value = st.sessionUsage
+  sessionDuration.value = st.sessionDuration
+  iterationCount.value = st.iterationCount
+  currentTodos.value = st.todos
+  streamingAssistantId.value = st.streamingAssistantId
+  if (ctx) ctx.assistantMsgId = st.assistantMsgId
+  const restore = () => {
+    st.messages = messages.value
+    st.sessionUsage = sessionUsage.value
+    st.sessionDuration = sessionDuration.value
+    st.iterationCount = iterationCount.value
+    st.todos = currentTodos.value
+    st.streamingAssistantId = streamingAssistantId.value
+    if (ctx) st.assistantMsgId = ctx.assistantMsgId
+    sessionStates.value = { ...sessionStates.value, [sid]: st }
+    messages.value = saved.messages
+    sessionUsage.value = saved.usage
+    sessionDuration.value = saved.duration
+    iterationCount.value = saved.iterations
+    currentTodos.value = saved.todos
+    streamingAssistantId.value = saved.streamingAssistantId
+    if (ctx) ctx.assistantMsgId = saved.assistantMsgId
+  }
+  let result
+  try {
+    result = fn()
+  } catch (e) {
+    restore()
+    throw e
+  }
+  // fn 可能返回 Promise（如流结束后的异步收尾）：等它 settle 后再还原，避免中途串台
+  if (result && typeof result.then === 'function') {
+    return result.finally(restore)
+  }
+  restore()
+  return result
+}
+
+// 以服务端历史为准回填某会话：流式结束（列表"进行中"标记移除）后调用。
+// 本地增量流状态在后台收尾/事件未命中时可能不完整，history 接口返回的是后端
+// 完整落库消息，用它回填可保证"列表已完成"时页面渲染完整内容（无需刷新）。
+async function syncSessionFromServer(sessionId) {
+  if (!sessionId) return
+  if (!sessions.value.some(s => s.session_id === sessionId)) return // 会话已删除/切换用户，跳过
+  let history
+  try {
+    history = await getChatHistory(sessionId)
+  } catch (e) {
+    console.warn('回填会话历史失败:', e)
+    return
+  }
+  // 拉取期间该会话若又开始了新一轮流式，别用旧历史覆盖
+  if (isSessionStreaming(sessionId)) return
+
+  const usage = history.usage || null
+  if (currentSessionId.value === sessionId && loadedSessionId.value === sessionId) {
+    messages.value = history.messages || []
+    currentTodos.value = history.todos || []
+    if (usage) {
+      sessionUsage.value.input_tokens = usage.input_tokens || 0
+      sessionUsage.value.output_tokens = usage.output_tokens || 0
+      sessionUsage.value.reasoning_tokens = usage.reasoning_tokens || 0
+      sessionUsage.value.context_tokens = usage.context_tokens || 0
+      sessionDuration.value = usage.elapsed_time || 0
+      iterationCount.value = usage.step_count || 0
+    }
+    if (history.context_length) sessionUsage.value.context_length = history.context_length
+    scrollTrigger.value++
+  } else {
+    const st = ensureSessionState(sessionId)
+    st.messages = history.messages || []
+    st.todos = history.todos || []
+    if (usage) {
+      st.sessionUsage = {
+        ...st.sessionUsage,
+        input_tokens: usage.input_tokens || 0,
+        output_tokens: usage.output_tokens || 0,
+        reasoning_tokens: usage.reasoning_tokens || 0,
+        context_tokens: usage.context_tokens || 0,
+        context_length: history.context_length || st.sessionUsage.context_length,
+      }
+      st.sessionDuration = usage.elapsed_time || 0
+      st.iterationCount = usage.step_count || 0
+    }
+    sessionStates.value = { ...sessionStates.value, [sessionId]: st }
+  }
+}
+
 // HITL 历史恢复：从消息中重建待审批状态，使切换/重载会话后仍能显示审批按钮并继续执行。
 // 历史消息无前端 id，按 thread_id（= `${session_id}-${message_id}`）还原后端 message_id
 // 作为消息 id，保证恢复执行时记录使用一致的 message_id。监听 loadedSessionId 变化即可
@@ -587,6 +735,8 @@ const showWelcome = ref(false)
 // 首屏引导中：认证 + 会话列表 + 首次历史加载完成前不渲染聊天区，
 // 否则会先闪出空会话首页、会话时间下方那条分隔线也会闪一下。
 const isBootstrapping = ref(true)
+// 切换会话时正在从服务器拉取历史：期间不渲染空欢迎页，避免"先闪空会话页再出历史"
+const sessionLoading = ref(false)
 const scrollTrigger = ref(0)
 const userProfile = ref({
   username: '',
@@ -632,10 +782,6 @@ function applyAgentConfig(configData) {
   }
   if (typeof configData.app_welcome_title === 'string' && configData.app_welcome_title.trim()) {
     welcomeTitle.value = configData.app_welcome_title
-  }
-  // 空闲自动登出超时（分钟）；0 或非法值表示禁用
-  if (typeof configData.idle_logout_minutes === 'number' && configData.idle_logout_minutes >= 0) {
-    idleLogoutMs.value = configData.idle_logout_minutes * 60 * 1000
   }
 }
 
@@ -721,9 +867,6 @@ async function handleWelcomeCompleted(profile) {
   loadModels()
   await loadSessions()
   await restoreInitialSession()
-  // 首次登录（欢迎页流程）后启动空闲登出计时器；
-  // 配置为 0（不登出）时 resetIdleTimer 内部直接跳过，不会触发登出
-  startIdleTimer()
 }
 
 async function handleLogout() {
@@ -756,37 +899,6 @@ async function handleLogout() {
   hasBootstrapped.value = false
   clearActiveSession()
   showWelcome.value = true
-}
-
-// ---- 无操作自动退出登录（后端按最近一次接口调用滑动续期；0 表示永不自动退出） ----
-let idleTimer = null
-// 空闲超时（毫秒）；0 或非法值表示禁用自动登出
-const idleLogoutMs = ref(5 * 60 * 1000)
-function resetIdleTimer() {
-  if (idleTimer) clearTimeout(idleTimer)
-  if (showWelcome.value) return // 未登录不计时
-  if (idleLogoutMs.value <= 0) return // 已禁用
-  idleTimer = setTimeout(async () => {
-    // 流式响应进行中（即使暂时无数据到达）视为仍在与后端交互，不登出，重新计时
-    if (isStreaming.value) {
-      resetIdleTimer()
-      return
-    }
-    // handleLogout 内部已通知后端记录登出信息，此处直接调用即可
-    handleLogout()
-  }, idleLogoutMs.value)
-}
-function startIdleTimer() {
-  ;['mousemove', 'mousedown', 'keydown', 'click', 'scroll', 'touchstart'].forEach((evt) =>
-    window.addEventListener(evt, resetIdleTimer, { passive: true })
-  )
-  resetIdleTimer()
-}
-function stopIdleTimer() {
-  if (idleTimer) clearTimeout(idleTimer)
-  ;['mousemove', 'mousedown', 'keydown', 'click', 'scroll', 'touchstart'].forEach((evt) =>
-    window.removeEventListener(evt, resetIdleTimer)
-  )
 }
 
 async function handleUnregister() {
@@ -941,6 +1053,8 @@ async function handleSelectSession(sessionId) {
   // 缓存中没有，从服务器加载历史
   // 保留 context_length（全局上下文窗口），仅清空用量计数；
   // 若服务器返回了 context_length 则以其为准（见下方恢复逻辑）
+  // sessionLoading 门控：加载期间不渲染空欢迎页，避免"先闪空会话页再出历史"
+  sessionLoading.value = true
   sessionUsage.value = { input_tokens: 0, output_tokens: 0, reasoning_tokens: 0, context_length: sessionUsage.value.context_length, auto_compress_tokens: null, context_tokens: 0 }
   sessionDuration.value = 0
   iterationCount.value = 0
@@ -977,6 +1091,8 @@ async function handleSelectSession(sessionId) {
     // 置空 loadedSessionId 防止后续把错误数据写入缓存
     loadedSessionId.value = null
     refreshSessionFiles(sessionId)
+  } finally {
+    sessionLoading.value = false
   }
 }
 
@@ -989,12 +1105,17 @@ async function handleDeleteSession(sessionId) {
     delete sessionStates.value[sessionId]
 
     if (currentSessionId.value === sessionId) {
-      currentSessionId.value = sessions.value[0]?.session_id || null
-      if (currentSessionId.value && sessionStates.value[currentSessionId.value]) {
-        restoreSessionState(currentSessionId.value)
+      // 先清空归属（避免把已删除会话的界面数据再存回缓存），再决定回退到哪个会话
+      currentSessionId.value = null
+      loadedSessionId.value = null
+      messages.value = []
+      const nextId = sessions.value[0]?.session_id || null
+      if (nextId) {
+        // 复用切会话逻辑：加载其历史（含 sessionLoading 骨架屏），而不是留一个空欢迎页
+        await handleSelectSession(nextId)
       } else {
-        messages.value = []
-        loadedSessionId.value = null
+        // 没有剩余会话：回到新建会话首页
+        await handleCreateSession()
       }
     } else if (loadedSessionId.value === sessionId) {
       loadedSessionId.value = null
@@ -1195,20 +1316,25 @@ function createStreamChunkHandler(ctx) {
   }
 
   function onChunk(data) {
-    // 流式数据到达视为后端交互，重置空闲登出计时器
-    resetIdleTimer()
     const { type: eventType, content, duration, step, tool_name, tool_call_id: toolCallId, arguments: args, result, success, title } = data
     const sid = ctx.streamSessionId
 
     if (eventType === 'start') {
       if (!ctx.isResume) {
         currentTodos.value = []
-        if (data.session_id && !currentSessionId.value) {
+        // 仅「本次请求就是当前展示会话的新建」时才认领 session_id；
+        // 后台会话（ctx.streamSessionId 已确定）的 start 不得把界面抢过来。
+        if (data.session_id && !currentSessionId.value && !ctx.streamSessionId) {
           currentSessionId.value = data.session_id
           loadedSessionId.value = data.session_id
           loadSessions()
         }
         if (data.session_id) ctx.streamSessionId = data.session_id
+        // 标记该会话已有本页流处理器：切回时直接按缓存显示，避免再起一个 attach
+        // 处理器（会重复渲染同一段流）——send 链路专有，attach 链路由自身管理。
+        if (data.session_id && !ctx.attachMode) {
+          attachedStreamingSessions.value[data.session_id] = 'displayed'
+        }
         markStreaming(ctx.streamSessionId || currentSessionId.value)
       }
     } else if (eventType === 'token_usage') {
@@ -1455,10 +1581,11 @@ function createStreamChunkHandler(ctx) {
     }
   }
 
-  return { onChunk }
+  // 事件按「所属会话」路由：后台会话写入其自身缓冲，不污染当前展示
+  return { onChunk: (data) => runInSession(ctx.streamSessionId, ctx, () => onChunk(data)) }
 }
 
-async function handleSendMessage(message, files = [], signal, enableDeepThink = true) {
+async function handleSendMessage(message, files = [], signal, enableDeepThink = true, enableWebSearch = false) {
   const userMsgId = `user-${Date.now()}`
   const preStreamUsage = { ...sessionUsage.value }
   // 记录本次请求开始前已累计的耗时和迭代次数，用于流式过程中实时累加
@@ -1503,7 +1630,7 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
   let assistantMsgId = null
   let assistantMessageCreated = false
 
-  const { onChunk } = createStreamChunkHandler({
+  const streamCtx = {
     isResume: false,
     get assistantMsgId() { return assistantMsgId },
     set assistantMsgId(v) { assistantMsgId = v },
@@ -1561,7 +1688,8 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
         }
       }
     },
-  })
+  }
+  const { onChunk } = createStreamChunkHandler(streamCtx)
 
   try {
     markStreaming(currentSessionId.value)
@@ -1578,56 +1706,92 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
       }
     }
 
-    await sendMessage(currentSessionId.value, message, onChunk, abortSignal, enableDeepThink, files, selectedModel.value)
+    await sendMessage(
+      currentSessionId.value,
+      message,
+      onChunk,
+      abortSignal,
+      enableDeepThink,
+      files,
+      selectedModel.value,
+      enableWebSearch
+    )
 
     await expandWorkspaceAfterSessionCompletion(streamSessionId)
   } catch (e) {
     if (e.name === 'AbortError') {
       // Mark assistant message as complete (loading=false) so spinners stop
+      runInSession(streamSessionId, streamCtx, () => {
+        if (assistantMsgId) {
+          const idx = messages.value.findIndex(m => m.id === assistantMsgId)
+          if (idx !== -1) {
+            messages.value[idx].loading = false
+            messages.value[idx].created_at = new Date().toISOString()
+            messages.value[idx] = { ...messages.value[idx] }
+          }
+        }
+      })
+      return
+    }
+    console.error('发送消息失败:', e)
+    runInSession(streamSessionId, streamCtx, () => {
       if (assistantMsgId) {
         const idx = messages.value.findIndex(m => m.id === assistantMsgId)
         if (idx !== -1) {
           messages.value[idx].loading = false
-          messages.value[idx].content = messages.value[idx].content || currentContent || ''
-          messages.value[idx].created_at = new Date().toISOString()
+          messages.value[idx].error = e.message || '发送消息失败，请检查网络连接'
           messages.value[idx] = { ...messages.value[idx] }
+        } else {
+          // 消息不存在，添加一条错误消息
+          messages.value.push({
+            id: assistantMsgId,
+            role: 'assistant',
+            content: '',
+            error: e.message || '发送消息失败，请检查网络连接',
+            loading: false,
+            created_at: new Date().toISOString(),
+            blocks: []
+          })
         }
       }
-      return
+    })
+    // 仅当前展示会话的失败才提示到界面；后台会话失败不打扰当前会话
+    if (!streamSessionId || streamSessionId === loadedSessionId.value) {
+      error.value = e.message || '发送消息失败'
     }
-    console.error('发送消息失败:', e)
-    if (assistantMsgId) {
-      const idx = messages.value.findIndex(m => m.id === assistantMsgId)
-      if (idx !== -1) {
-        messages.value[idx].loading = false
-        messages.value[idx].error = e.message || '发送消息失败，请检查网络连接'
-        messages.value[idx] = { ...messages.value[idx] }
-      } else {
-        // 消息不存在，添加一条错误消息
-        messages.value.push({
-          id: assistantMsgId,
-          role: 'assistant',
-          content: '',
-          error: e.message || '发送消息失败，请检查网络连接',
-          loading: false,
-          created_at: new Date().toISOString(),
-          blocks: []
-        })
-      }
-    }
-    error.value = e.message || '发送消息失败'
   } finally {
     // HITL: 若有审批待处理，保持 isStreaming=true（用户需先审批）
     if (!pendingApproval.value) {
-      currentAbortController.value = null
-      streamingAssistantId.value = null
-
       const sid = streamSessionId
+      const isDisplayed = !sid || sid === loadedSessionId.value
+      // 兜底：流已结束（列表"进行中"标记即将移除），若该会话的消息仍标记 loading
+      // 就强制收尾，避免"会话列表已显示完成、会话页仍显示执行中"。
+      // done 事件未命中目标消息时会残留 loading=true，此处与其兜底一致。
+      runInSession(sid, streamCtx, () => {
+        let idx = assistantMsgId ? messages.value.findIndex(m => m.id === assistantMsgId) : -1
+        if (idx === -1) {
+          for (let i = messages.value.length - 1; i >= 0; i--) {
+            if (messages.value[i].role === 'assistant' && messages.value[i].loading) { idx = i; break }
+          }
+        }
+        if (idx !== -1 && messages.value[idx].loading) {
+          messages.value[idx] = { ...messages.value[idx], loading: false }
+        }
+      })
+      // 只有展示中的会话才清显示级状态；后台流结束不能动当前会话的停止按钮等
+      if (isDisplayed) {
+        currentAbortController.value = null
+        streamingAssistantId.value = null
+      }
       if (sid && sessionStates.value[sid]) {
         sessionStates.value[sid].isStreaming = false
         sessionStates.value[sid].abortController = null
+        if (!isDisplayed) sessionStates.value[sid].streamingAssistantId = null
       }
+      if (sid) delete attachedStreamingSessions.value[sid]
       unmarkStreaming(sid)
+      // 列表"进行中"标记此时移除（显示已完成）：以服务端历史为准回填，保证完整渲染
+      await syncSessionFromServer(sid)
 
       await loadSessions()
     }
@@ -1763,6 +1927,8 @@ async function handleToolApproval(decision) {
       }
       unmarkStreaming(sid)
       saveCurrentSessionState()
+      // 审批恢复流结束：以服务端历史为准回填，保证完整渲染
+      await syncSessionFromServer(sid)
       await loadSessions()
     }
   }
@@ -1859,14 +2025,11 @@ async function handleRemoveFile(message, messageIndex, file) {
 
 onMounted(async () => {
   window.addEventListener(AUTH_EXPIRED_EVENT, handleLogout)
-  // 后端交互（API 调用）触发用户活动事件 -> 重置空闲登出计时器
-  window.addEventListener(USER_ACTIVITY_EVENT, resetIdleTimer)
   try {
     // URL 免密直登（?username=xxx&user_id=yyy）：成功则直接进入主界面
     if (await handlePasswordlessUrlLogin()) return
     await loadUserProfile()
     if (!showWelcome.value) {
-      startIdleTimer()
       // 拉取可选模型列表（不阻塞会话加载）
       loadModels()
       await loadSessions()
@@ -1876,11 +2039,6 @@ onMounted(async () => {
     // 未登录时也解除首屏门控，让 Welcome 登录页正常显示
     isBootstrapping.value = false
   }
-})
-
-onUnmounted(() => {
-  window.removeEventListener(USER_ACTIVITY_EVENT, resetIdleTimer)
-  stopIdleTimer()
 })
 </script>
 

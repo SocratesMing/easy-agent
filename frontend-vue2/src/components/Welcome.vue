@@ -77,121 +77,104 @@
 </template>
 
 <script>
-import { ref, onMounted, nextTick } from 'vue'
 import { login, register } from '../api/auth.js'
-import { APP_TITLE } from '../config.js'
+
+// 应用名称：直接定义在前端（原 src/config.js 已移除）
+const APP_TITLE = 'Easy Agent'
 export default {
-  emits: ['completed'],
-  setup(props, { emit }) {
-const usernameInput = ref(null)
-const submitting = ref(false)
-const error = ref('')
-const success = ref('')
-const isLogin = ref(true)
-
-const form = ref({
-  username: '',
-  password: '',
-  employeeId: ''
-})
-
-function toggleMode() {
-  isLogin.value = !isLogin.value
-  error.value = ''
-  success.value = ''
-  form.value = {
-    username: '',
-    password: '',
-    employeeId: ''
-  }
-}
-
-async function handleSubmit() {
-  if (!form.value.username.trim()) {
-    error.value = '请输入用户名'
-    return
-  }
-
-  if (!form.value.password.trim()) {
-    error.value = '请输入密码'
-    return
-  }
-
-  if (!isLogin.value && (form.value.password.length < 4 || form.value.password.length > 20)) {
-    error.value = '密码长度应为4-20位'
-    return
-  } else {
-    if (form.value.password.length > 20) {
-      error.value = '密码长度不能超过20位'
-      return
-    }
-  }
-
-  submitting.value = true
-  error.value = ''
-  success.value = ''
-
-  try {
-    let data
-    if (isLogin.value) {
-      data = await login(form.value.username.trim(), form.value.password)
-    } else {
-      if (!form.value.employeeId.trim()) {
-        error.value = '请输入工号'
-        submitting.value = false
-        return
-      }
-      data = await register(
-        form.value.username.trim(),
-        form.value.password,
-        form.value.employeeId.trim()
-      )
-    }
-
-    emit('completed', {
-      username: data.username,
-      token: data.access_token,
-      context_length: data.context_length
-    })
-  } catch (e) {
-    if (e.status === 404) {
-      error.value = '用户名或工号不存在'
-    } else if (e.status === 401) {
-      error.value = '用户名/工号或密码错误'
-    } else {
-      error.value = e.message || (isLogin.value ? '登录失败，请重试' : '注册失败，请重试')
-    }
-  } finally {
-    submitting.value = false
-  }
-}
-
-onMounted(() => {
-  // 检测是否因单点登录被踢下线（账号在其他设备登录）
-  if (localStorage.getItem('auth_kicked') === '1') {
-    localStorage.removeItem('auth_kicked')
-    error.value = '您的账号在其他设备登录，您已被迫下线，请重新登录'
-  }
-  nextTick(() => {
-    usernameInput.value?.focus()
-  })
-})
-
+  data() {
     return {
       APP_TITLE,
-      error,
-      form,
-      handleSubmit,
-      isLogin,
-      login,
-      nextTick,
-      onMounted,
-      ref,
-      register,
-      submitting,
-      success,
-      toggleMode,
-      usernameInput,
+      submitting: false,
+      error: '',
+      success: '',
+      isLogin: true,
+      form: {
+        username: '',
+        password: '',
+        employeeId: ''
+      }
+    }
+  },
+  mounted() {
+    // 检测是否因单点登录被踢下线（账号在其他设备登录）
+    if (localStorage.getItem('auth_kicked') === '1') {
+      localStorage.removeItem('auth_kicked')
+      this.error = '您的账号在其他设备登录，您已被迫下线，请重新登录'
+    }
+    this.$nextTick(() => {
+      if (this.$refs.usernameInput) this.$refs.usernameInput.focus()
+    })
+  },
+  methods: {
+    toggleMode() {
+      this.isLogin = !this.isLogin
+      this.error = ''
+      this.success = ''
+      this.form = {
+        username: '',
+        password: '',
+        employeeId: ''
+      }
+    },
+    async handleSubmit() {
+      if (!this.form.username.trim()) {
+        this.error = '请输入用户名'
+        return
+      }
+
+      if (!this.form.password.trim()) {
+        this.error = '请输入密码'
+        return
+      }
+
+      if (!this.isLogin && (this.form.password.length < 4 || this.form.password.length > 20)) {
+        this.error = '密码长度应为4-20位'
+        return
+      } else {
+        if (this.form.password.length > 20) {
+          this.error = '密码长度不能超过20位'
+          return
+        }
+      }
+
+      this.submitting = true
+      this.error = ''
+      this.success = ''
+
+      try {
+        let data
+        if (this.isLogin) {
+          data = await login(this.form.username.trim(), this.form.password)
+        } else {
+          if (!this.form.employeeId.trim()) {
+            this.error = '请输入工号'
+            this.submitting = false
+            return
+          }
+          data = await register(
+            this.form.username.trim(),
+            this.form.password,
+            this.form.employeeId.trim()
+          )
+        }
+
+        this.$emit('completed', {
+          username: data.username,
+          token: data.access_token,
+          context_length: data.context_length
+        })
+      } catch (e) {
+        if (e.status === 404) {
+          this.error = '用户名或工号不存在'
+        } else if (e.status === 401) {
+          this.error = '用户名/工号或密码错误'
+        } else {
+          this.error = e.message || (this.isLogin ? '登录失败，请重试' : '注册失败，请重试')
+        }
+      } finally {
+        this.submitting = false
+      }
     }
   },
 }

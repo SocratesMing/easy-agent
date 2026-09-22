@@ -1,21 +1,21 @@
-import { request, requestBlob, requestJson } from './request.js'
+import request, { requestBlob } from '../utils/request.js'
 
 export async function getPublicSkills() {
-  return requestJson(
+  return request(
     { url: '/agent/skill-center/public-skills', method: 'get' },
     '获取公共技能列表失败'
   )
 }
 
 export async function getUserSkills() {
-  return requestJson(
+  return request(
     { url: '/agent/skill-center/user-skills', method: 'get' },
     '获取用户技能列表失败'
   )
 }
 
 export async function addSkillToUser(dirName) {
-  return requestJson(
+  return request(
     {
       url: '/agent/skill-center/add-skill',
       method: 'post',
@@ -26,7 +26,7 @@ export async function addSkillToUser(dirName) {
 }
 
 export async function removeSkillFromUser(dirName) {
-  return requestJson(
+  return request(
     {
       url: '/agent/skill-center/remove-skill',
       method: 'post',
@@ -39,14 +39,12 @@ export async function removeSkillFromUser(dirName) {
 export async function importSkill(file) {
   const formData = new FormData()
   formData.append('file', file)
-  const response = await request({
+  return request({
     url: '/agent/skill-center/import-skill',
     method: 'post',
     data: formData,
   })
-  return response.data
 }
-
 export async function downloadSkill(dirName) {
   const blob = await requestBlob({
     url: `/agent/skill-center/download-skill/${encodeURIComponent(dirName)}`,

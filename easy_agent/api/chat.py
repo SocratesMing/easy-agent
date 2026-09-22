@@ -287,7 +287,8 @@ async def chat_stream(
 
     logger.info(
         f"[{sid}] 聊天请求 | message: {request.message[:50]}{'...' if len(request.message) > 50 else ''} | "
-        f"deep_think: {request.enable_deep_think} | model: {request.model or '(active)'}"
+        f"deep_think: {request.enable_deep_think} | "
+        f"web_search: {request.enable_web_search} | model: {request.model or '(active)'}"
     )
 
     if session_id is None:
@@ -377,6 +378,7 @@ async def chat_stream(
     agent = await get_or_create_agent_for_session(
         session_id, username, workspace_name, model_name=request.model,
         system_prompt_extra=system_prompt_extra,
+        enable_web_search=request.enable_web_search,
     )
 
     return StreamingResponse(

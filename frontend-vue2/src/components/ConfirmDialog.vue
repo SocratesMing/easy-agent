@@ -36,66 +36,58 @@
 </template>
 
 <script>
-import { ref } from 'vue'
 export default {
+  name: 'ConfirmDialog',
   props: {
-  title: {
-    type: String,
-    default: '确认'
+    title: {
+      type: String,
+      default: '确认',
+    },
+    message: {
+      type: String,
+      default: '确定要执行此操作吗？',
+    },
+    confirmText: {
+      type: String,
+      default: '确定',
+    },
+    cancelText: {
+      type: String,
+      default: '取消',
+    },
+    type: {
+      type: String,
+      default: 'warning',
+    },
   },
-  message: {
-    type: String,
-    default: '确定要执行此操作吗？'
-  },
-  confirmText: {
-    type: String,
-    default: '确定'
-  },
-  cancelText: {
-    type: String,
-    default: '取消'
-  },
-  type: {
-    type: String,
-    default: 'warning'
-  }
-},
-  emits: ['confirm', 'cancel'],
-  setup(props, { emit }) {
-const visible = ref(false)
-let resolvePromise = null
-
-function show() {
-  visible.value = true
-  return new Promise((resolve) => {
-    resolvePromise = resolve
-  })
-}
-
-function handleConfirm() {
-  visible.value = false
-  if (resolvePromise) {
-    resolvePromise(true)
-    resolvePromise = null
-  }
-  emit('confirm')
-}
-
-function handleCancel() {
-  visible.value = false
-  if (resolvePromise) {
-    resolvePromise(false)
-    resolvePromise = null
-  }
-  emit('cancel')
-}
-
+  data() {
     return {
-      handleCancel,
-      handleConfirm,
-      show,
-      visible,
+      visible: false,
     }
+  },
+  methods: {
+    show() {
+      this.visible = true
+      return new Promise((resolve) => {
+        this._resolvePromise = resolve
+      })
+    },
+    handleConfirm() {
+      this.visible = false
+      if (this._resolvePromise) {
+        this._resolvePromise(true)
+        this._resolvePromise = null
+      }
+      this.$emit('confirm')
+    },
+    handleCancel() {
+      this.visible = false
+      if (this._resolvePromise) {
+        this._resolvePromise(false)
+        this._resolvePromise = null
+      }
+      this.$emit('cancel')
+    },
   },
 }
 </script>

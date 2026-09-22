@@ -73,7 +73,7 @@ const props = defineProps({
 // 兼容两种文件树来源：会话工作区或定时任务工作区
 const loadTree = (path, sessionId, taskId) =>
   taskId
-    ? getScheduledTaskWorkspace(path, taskId)
+    ? getScheduledTaskWorkspace(taskId, path)
     : getWorkspaceTree(path, sessionId)
 
 const emit = defineEmits(['select', 'download'])

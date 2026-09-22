@@ -27,6 +27,7 @@ from ..services.mcp import (
 )
 from ..services import get_agent_config, invalidate_user_agents
 from ..services.prompt_loader import load_system_prompt
+from ..tools.web_search import TIME_RANGE_VALUES, is_web_search_available, resolve_provider
 
 logger = logging.getLogger(__name__)
 
@@ -198,6 +199,46 @@ async def get_models():
         f"active: {config.active_model}"
     )
     return {"models": models, "active_model": config.active_model}
+
+
+# ── 联网搜索 ──────────────────────────────────────────────────────────
+
+
+@router.get("/web-search", summary="获取联网搜索配置状态（公共接口，无需登录）")
+async def get_web_search_status():
+    """返回联网搜索是否可用，供前端决定输入框地球按钮是否可点击。
+
+    与 /models 一致，只暴露「是否可用」与时间范围选项，**不返回** api_url / api_key。
+    api_key 为空或功能关闭时 configured=false，前端按钮置灰并提示未配置。
+    """
+    _cfg = get_agent_config()
+    if not _cfg or not _cfg.get("config"):
+        raise HTTPException(status_code=503, detail="Agent 配置未初始化")
+    config: Config = _cfg["config"]
+
+    ws = getattr(config, "web_search", None)
+    enabled = bool(getattr(ws, "enabled", False))
+    configured = is_web_search_available(config)
+    if configured:
+        reason = ""
+    elif not enabled:
+        reason = "disabled"
+    else:
+        reason = "not_configured"
+
+    logger.info(
+        f"获取联网搜索状态 | enabled={enabled} | configured={configured} | reason={reason or '-'}"
+    )
+    return {
+        "enabled": enabled,
+        "configured": configured,
+        "reason": reason,
+        "provider": resolve_provider(config),
+        "default_time_range": str(
+            getattr(ws, "default_time_range", "NoLimit") or "NoLimit"
+        ),
+        "time_ranges": list(TIME_RANGE_VALUES),
+    }
 
 
 # ── MCP ───────────────────────────────────────────────────────────────

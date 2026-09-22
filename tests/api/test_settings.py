@@ -69,6 +69,64 @@ def test_models_hides_models_without_api_key(client, monkeypatch):
     assert data["active_model"] == "with-key"
 
 
+def test_web_search_status_not_configured(client):
+    """未配置 api_key（测试配置默认）时 configured=false，前端按钮置灰。"""
+    resp = client.get("/agent/settings/web-search")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["enabled"] is True
+    assert data["configured"] is False
+    assert data["reason"] == "not_configured"
+    assert "NoLimit" in data["time_ranges"]
+    # 不泄露 api_url / api_key
+    assert "api_key" not in data and "api_url" not in data
+
+
+def test_web_search_status_configured(client, monkeypatch):
+    from types import SimpleNamespace
+
+    cfg = SimpleNamespace(
+        web_search=SimpleNamespace(
+            enabled=True,
+            provider="tavily",
+            api_url="http://search.example/api/v1/webSearch",
+            api_key="ws-key",
+            default_time_range="OneWeek",
+        )
+    )
+    monkeypatch.setattr(settings_api, "get_agent_config", lambda: {"config": cfg})
+
+    resp = client.get("/agent/settings/web-search")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["configured"] is True
+    assert data["reason"] == ""
+    assert data["provider"] == "tavily"
+    assert data["default_time_range"] == "OneWeek"
+
+
+def test_web_search_status_disabled(client, monkeypatch):
+    from types import SimpleNamespace
+
+    cfg = SimpleNamespace(
+        web_search=SimpleNamespace(
+            enabled=False,
+            provider="tavily",
+            api_url="http://search.example/api/v1/webSearch",
+            api_key="ws-key",
+            default_time_range="NoLimit",
+        )
+    )
+    monkeypatch.setattr(settings_api, "get_agent_config", lambda: {"config": cfg})
+
+    resp = client.get("/agent/settings/web-search")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["enabled"] is False
+    assert data["configured"] is False
+    assert data["reason"] == "disabled"
+
+
 def test_mcp_list(client):
     resp = client.get("/agent/settings/mcp")
     assert resp.status_code == 200

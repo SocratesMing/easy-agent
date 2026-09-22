@@ -32,8 +32,17 @@
         </div>
       </div>
       <div class="chat-messages" ref="messagesRef" @scroll="handleScroll">
-        <div v-if="messages.length === 0" class="welcome-screen">
+        <div v-if="messages.length === 0 && !sessionLoading" class="welcome-screen">
           <h2>{{ welcomeTitle }}</h2>
+        </div>
+        <!-- 切换会话拉取历史期间：显示骨架，避免先闪出空欢迎页 -->
+        <div
+          v-if="sessionLoading && messages.length === 0"
+          class="session-loading-skeleton"
+          aria-busy="true"
+          aria-label="加载会话"
+        >
+          <div class="skeleton-block" v-for="i in 3" :key="i"></div>
         </div>
       
         <div
@@ -110,17 +119,21 @@
 </template>
 
 <script>
-import { ref, watch, nextTick, computed, onMounted, onUnmounted } from 'vue'
 import ChatMessage from './ChatMessage.vue'
 import ChatInput from './ChatInput.vue'
 import TodoListPanel from './TodoListPanel.vue'
-import { APP_WELCOME_TITLE } from '../config.js'
+// 首页欢迎语：直接定义在前端（原 src/config.js 已移除）
+const APP_WELCOME_TITLE = 'Easy Agent，让工作化繁为简'
 export default {
   components: { ChatInput, ChatMessage, TodoListPanel },
   props: {
   messages: {
     type: Array,
     default: () => []
+  },
+  sessionLoading: {
+    type: Boolean,
+    default: false
   },
   currentSessionId: {
     type: String,
@@ -179,237 +192,192 @@ export default {
     default: APP_WELCOME_TITLE
   }
 },
-  emits: ['send-message', 'stop', 'remove-file', 'create-session', 'approve', 'reject', 'update:selectedModel', 'toggle-workspace'],
-  setup(props, { emit }) {
-// 首页布局模式：center=空会话时输入框居中，bottom=对话中输入框贴底
-const composerMode = ref('center')
-
-const deckTop = ref(0)
-const deckVisibleCount = 3 // keep
-
-
-
-watch(() => props.messages, (newMessages) => {
-  // 空会话显示居中输入框；有消息时输入框贴底
-  composerMode.value = newMessages.length === 0 ? 'center' : 'bottom'
-}, { immediate: true })
-
-// 顶部信息行：会话时间（居中）+ 操作区（任务规划、展开工作区，贴右）。
-// 三者中任意一个需要展示时，这一行才占位 —— 首页（无会话）保持干净，
-// 否则会破坏 .chat-content.is-center 的垂直居中。
-const showSessionTime = computed(() => !!props.sessionCreatedAt && props.messages.length > 0)
-const showWorkspaceBtn = computed(() => !!props.currentSessionId && !props.workspaceExpanded)
-const showTopbar = computed(() =>
-  showSessionTime.value || props.todos.length > 0 || showWorkspaceBtn.value
-)
-
-
-const messagesRef = ref(null)
-
-function formatSessionTime(isoStr) {
-  if (!isoStr) return ''
-  const d = new Date(isoStr)
-  const y = d.getFullYear()
-  const m = String(d.getMonth() + 1).padStart(2, '0')
-  const day = String(d.getDate()).padStart(2, '0')
-  const h = String(d.getHours()).padStart(2, '0')
-  const min = String(d.getMinutes()).padStart(2, '0')
-  return `${y}-${m}-${day} ${h}:${min}`
-}
-const messageEls = ref([])
-const currentUserMessageIndex = ref(-1)
-const userMessageIndices = ref([])
-
-function updateUserMessageIndices() {
-  userMessageIndices.value = props.messages
-    .map((msg, index) => msg.role === 'user' ? index : -1)
-    .filter(index => index !== -1)
-    .reverse()
-  currentUserMessageIndex.value = -1
-}
-
-const canGoToPrevUserMessage = computed(() => {
-  return userMessageIndices.value.length > 0 && currentUserMessageIndex.value < userMessageIndices.value.length - 1
-})
-
-const canGoToNextUserMessage = computed(() => {
-  // 未滚动到底部时持续显示“回到下一个用户问题”按钮，
-  // 让用户能逐条向下跳转，最后再回到会话底部
-  return userMessageIndices.value.length > 0 && !isAtBottom.value
-})
-
-onMounted(() => {
-  updateUserMessageIndices()
-})
-
-function goToPrevUserMessage() {
-  if (userMessageIndices.value.length === 0) return
-  
-  if (currentUserMessageIndex.value === -1) {
-    currentUserMessageIndex.value = 0
-  } else if (currentUserMessageIndex.value < userMessageIndices.value.length - 1) {
-    currentUserMessageIndex.value++
-  }
-  
-  const targetIndex = userMessageIndices.value[currentUserMessageIndex.value]
-  
-  if (targetIndex !== undefined && messageEls.value[targetIndex]) {
-    messageEls.value[targetIndex].scrollIntoView({ behavior: 'smooth', block: 'center' })
-  }
-}
-
-function goToNextUserMessage() {
-  if (currentUserMessageIndex.value > 0) {
-    // 还有更靠后的用户问题：逐条向下跳转
-    currentUserMessageIndex.value--
-    const targetIndex = userMessageIndices.value[currentUserMessageIndex.value]
-    if (targetIndex !== undefined && messageEls.value[targetIndex]) {
-      messageEls.value[targetIndex].scrollIntoView({ behavior: 'smooth', block: 'center' })
-    }
-  } else {
-    // 已到最后一个用户问题（或未经过导航）：直接滚动到会话底部
-    currentUserMessageIndex.value = -1
-    nextTick(() => {
-      const el = messagesRef.value
-      if (el) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
-    })
-  }
-}
-
-function handleSend(message, files, signal, enableDeepThink = true) {
-  emit('send-message', message, files, signal, enableDeepThink)
-}
-
-function handleRemoveFile(file, messageIndex) {
-  // 从事件参数中获取file，然后从messages中获取对应的message
-  const message = props.messages[messageIndex]
-  emit('remove-file', message, messageIndex, file)
-}
-
-function handleRetry(content) {
-  // 向上传递重试事件
-  emit('retry', content)
-}
-
-function handleApprove() {
-  emit('approve')
-}
-
-function handleReject() {
-  emit('reject')
-}
-
-function handleStop() {
-  emit('stop')
-}
-
-function handleCreateSession() {
-  emit('create-session')
-}
-
-function handleQuickAction(message, index) {
-  // 兼容旧引用（已无 deck），直接走预设点击
-  onPresetClick(message)
-}
-
-function onPresetClick(message) {
-  composerMode.value = 'bottom'
-  isAtBottom.value = true
-  emit('send-message', message, [], null, true, false)
-}
-
-function onSend(message, files, signal, enableDeepThink) {
-  composerMode.value = 'bottom'
-  isAtBottom.value = true
-  handleSend(message, files, signal, enableDeepThink)
-}
-
-// 是否贴底：用户位于滚动容器底部时为 true，向上滚动查看历史时为 false。
-// 流式更新仅在贴底时自动滚动，避免抢占用户阅读上方内容；用户滚回底部后自动恢复跟随。
-const isAtBottom = ref(true)
-
-function handleScroll() {
-  const el = messagesRef.value
-  if (!el) return
-  const threshold = 80
-  const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < threshold
-  isAtBottom.value = atBottom
-  // 手动滚动回到最底部时，同步复位「上一个/下一个问题」导航索引：
-  // 此前索引停留在历史问题位置，会导致回到底部后「回到上一个问题」按钮
-  // 按旧索引计算而消失（按钮状态与真实滚动位置脱节）。
-  if (atBottom && currentUserMessageIndex.value !== -1) {
-    currentUserMessageIndex.value = -1
-  }
-}
-
-function scrollToBottom(force = false) {
-  nextTick(() => {
-    const el = messagesRef.value
-    if (!el) return
-    if (force || isAtBottom.value) {
-      el.scrollTop = el.scrollHeight
-    }
-  })
-}
-
-watch(() => props.messages, (newMessages, oldMessages) => {
-  // 流式更新或新增消息时，仅在用户贴底时自动滚动；用户向上查看历史时不打断
-  if (props.isStreaming || (newMessages?.length || 0) > (oldMessages?.length || 0)) {
-    scrollToBottom()
-  }
-  nextTick(() => {
-    updateUserMessageIndices()
-  })
-}, { deep: true })
-
-watch(() => props.scrollTrigger, () => {
-  // 切换/加载会话时强制贴底
-  isAtBottom.value = true
-  scrollToBottom(true)
-})
-
+  data() {
     return {
-      APP_WELCOME_TITLE,
-      canGoToNextUserMessage,
-      canGoToPrevUserMessage,
-      ChatInput,
-      ChatMessage,
-      composerMode,
-      computed,
-      currentUserMessageIndex,
-      deckTop,
-      deckVisibleCount,
-      formatSessionTime,
-      showSessionTime,
-      showTopbar,
-      showWorkspaceBtn,
-      goToNextUserMessage,
-      goToPrevUserMessage,
-      handleApprove,
-      handleCreateSession,
-      handleQuickAction,
-      handleReject,
-      handleRemoveFile,
-      handleRetry,
-      handleScroll,
-      handleSend,
-      handleStop,
-      isAtBottom,
-      messageEls,
-      messagesRef,
-      nextTick,
-      onMounted,
-      onPresetClick,
-      onSend,
-      onUnmounted,
-      ref,
-      scrollToBottom,
-      TodoListPanel,
-      updateUserMessageIndices,
-      userMessageIndices,
-      watch,
+      // 首页布局模式：center=空会话时输入框居中，bottom=对话中输入框贴底
+      composerMode: 'center',
+      deckTop: 0,
+      deckVisibleCount: 3, // keep
+      currentUserMessageIndex: -1,
+      userMessageIndices: [],
+      // 是否贴底：用户位于滚动容器底部时为 true，向上滚动查看历史时为 false。
+      // 流式更新仅在贴底时自动滚动，避免抢占用户阅读上方内容；用户滚回底部后自动恢复跟随。
+      isAtBottom: true,
     }
   },
+  computed: {
+    // 顶部信息行：会话时间（居中）+ 操作区（任务规划、展开工作区，贴右）。
+    // 三者中任意一个需要展示时，这一行才占位 —— 首页（无会话）保持干净，
+    // 否则会破坏 .chat-content.is-center 的垂直居中。
+    showSessionTime() {
+      return !!this.sessionCreatedAt && this.messages.length > 0
+    },
+    showWorkspaceBtn() {
+      return !!this.currentSessionId && !this.workspaceExpanded
+    },
+    showTopbar() {
+      return this.showSessionTime || this.todos.length > 0 || this.showWorkspaceBtn
+    },
+    canGoToPrevUserMessage() {
+      return this.userMessageIndices.length > 0 && this.currentUserMessageIndex < this.userMessageIndices.length - 1
+    },
+    canGoToNextUserMessage() {
+      // 未滚动到底部时持续显示“回到下一个用户问题”按钮，
+      // 让用户能逐条向下跳转，最后再回到会话底部
+      return this.userMessageIndices.length > 0 && !this.isAtBottom
+    }
+  },
+  watch: {
+    messages: [
+      {
+        immediate: true,
+        handler(newMessages) {
+          // 空会话显示居中输入框；有消息时输入框贴底。
+          // 正在拉取历史时按「有会话」处理（贴底），避免先居中再跳到贴底。
+          this.composerMode = (newMessages.length === 0 && !this.sessionLoading) ? 'center' : 'bottom'
+        }
+      },
+      {
+        deep: true,
+        handler(newMessages, oldMessages) {
+          // 流式更新或新增消息时，仅在用户贴底时自动滚动；用户向上查看历史时不打断
+          if (this.isStreaming || (newMessages?.length || 0) > (oldMessages?.length || 0)) {
+            this.scrollToBottom()
+          }
+          this.$nextTick(() => {
+            this.updateUserMessageIndices()
+          })
+        }
+      }
+    ],
+    sessionLoading(loading) {
+      // 加载历史期间贴底，避免居中布局随后跳动
+      this.composerMode = (this.messages.length === 0 && !loading) ? 'center' : 'bottom'
+    },
+    scrollTrigger() {
+      // 切换/加载会话时强制贴底
+      this.isAtBottom = true
+      this.scrollToBottom(true)
+    }
+  },
+  mounted() {
+    this.updateUserMessageIndices()
+  },
+  beforeDestroy() {
+  },
+  methods: {
+    formatSessionTime(isoStr) {
+      if (!isoStr) return ''
+      const d = new Date(isoStr)
+      const y = d.getFullYear()
+      const m = String(d.getMonth() + 1).padStart(2, '0')
+      const day = String(d.getDate()).padStart(2, '0')
+      const h = String(d.getHours()).padStart(2, '0')
+      const min = String(d.getMinutes()).padStart(2, '0')
+      return `${y}-${m}-${day} ${h}:${min}`
+    },
+    updateUserMessageIndices() {
+      this.userMessageIndices = this.messages
+        .map((msg, index) => msg.role === 'user' ? index : -1)
+        .filter(index => index !== -1)
+        .reverse()
+      this.currentUserMessageIndex = -1
+    },
+    goToPrevUserMessage() {
+      if (this.userMessageIndices.length === 0) return
+      
+      if (this.currentUserMessageIndex === -1) {
+        this.currentUserMessageIndex = 0
+      } else if (this.currentUserMessageIndex < this.userMessageIndices.length - 1) {
+        this.currentUserMessageIndex++
+      }
+      
+      const targetIndex = this.userMessageIndices[this.currentUserMessageIndex]
+      const els = this.$refs.messageEls || []
+      
+      if (targetIndex !== undefined && els[targetIndex]) {
+        els[targetIndex].scrollIntoView({ behavior: 'smooth', block: 'center' })
+      }
+    },
+    goToNextUserMessage() {
+      if (this.currentUserMessageIndex > 0) {
+        // 还有更靠后的用户问题：逐条向下跳转
+        this.currentUserMessageIndex--
+        const targetIndex = this.userMessageIndices[this.currentUserMessageIndex]
+        const els = this.$refs.messageEls || []
+        if (targetIndex !== undefined && els[targetIndex]) {
+          els[targetIndex].scrollIntoView({ behavior: 'smooth', block: 'center' })
+        }
+      } else {
+        // 已到最后一个用户问题（或未经过导航）：直接滚动到会话底部
+        this.currentUserMessageIndex = -1
+        this.$nextTick(() => {
+          const el = this.$refs.messagesRef
+          if (el) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
+        })
+      }
+    },
+    handleSend(message, files, signal, enableDeepThink = true, enableWebSearch = false) {
+      this.$emit('send-message', message, files, signal, enableDeepThink, enableWebSearch)
+    },
+    handleRemoveFile(file, messageIndex) {
+      // 从事件参数中获取file，然后从messages中获取对应的message
+      const message = this.messages[messageIndex]
+      this.$emit('remove-file', message, messageIndex, file)
+    },
+    handleRetry(content) {
+      // 向上传递重试事件
+      this.$emit('retry', content)
+    },
+    handleApprove() {
+      this.$emit('approve')
+    },
+    handleReject() {
+      this.$emit('reject')
+    },
+    handleStop() {
+      this.$emit('stop')
+    },
+    handleCreateSession() {
+      this.$emit('create-session')
+    },
+    handleQuickAction(message, index) {
+      // 兼容旧引用（已无 deck），直接走预设点击
+      this.onPresetClick(message)
+    },
+    onPresetClick(message) {
+      this.composerMode = 'bottom'
+      this.isAtBottom = true
+      this.$emit('send-message', message, [], null, true, false)
+    },
+    onSend(message, files, signal, enableDeepThink, enableWebSearch) {
+      this.composerMode = 'bottom'
+      this.isAtBottom = true
+      this.handleSend(message, files, signal, enableDeepThink, enableWebSearch)
+    },
+    handleScroll() {
+      const el = this.$refs.messagesRef
+      if (!el) return
+      const threshold = 80
+      const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < threshold
+      this.isAtBottom = atBottom
+      // 手动滚动回到最底部时，同步复位「上一个/下一个问题」导航索引：
+      // 此前索引停留在历史问题位置，会导致回到底部后「回到上一个问题」按钮
+      // 按旧索引计算而消失（按钮状态与真实滚动位置脱节）。
+      if (atBottom && this.currentUserMessageIndex !== -1) {
+        this.currentUserMessageIndex = -1
+      }
+    },
+    scrollToBottom(force = false) {
+      this.$nextTick(() => {
+        const el = this.$refs.messagesRef
+        if (!el) return
+        if (force || this.isAtBottom) {
+          el.scrollTop = el.scrollHeight
+        }
+      })
+    }
+  }
 }
 </script>
 
@@ -636,6 +604,32 @@ watch(() => props.scrollTrigger, () => {
   font-weight: 600;
   color: #1e293b;
   margin: 0;
+}
+
+/* 切会话拉历史时的骨架屏：替代空欢迎页，避免"先闪空页面" */
+.session-loading-skeleton {
+  width: 100%;
+  max-width: 760px;
+  margin: 24px auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.session-loading-skeleton .skeleton-block {
+  height: 14px;
+  border-radius: 6px;
+  background: var(--border-color, #e2e8f0);
+  animation: skeleton-pulse 1.4s ease-in-out infinite;
+}
+
+.session-loading-skeleton .skeleton-block:nth-child(1) { width: 60%; }
+.session-loading-skeleton .skeleton-block:nth-child(2) { width: 88%; }
+.session-loading-skeleton .skeleton-block:nth-child(3) { width: 72%; }
+
+@keyframes skeleton-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
 }
 
 .preset-categories {

@@ -1,49 +1,49 @@
-import { requestJson } from './request.js'
+import request from '../utils/request.js'
 
 export async function getMemory() {
-  return requestJson(
+  return request(
     { url: '/agent/settings/memory', method: 'get' },
     '获取记忆失败'
   )
 }
 
 export async function updateMemory(content) {
-  return requestJson(
+  return request(
     { url: '/agent/settings/memory', method: 'put', data: { content } },
     '更新记忆失败'
   )
 }
 
 export async function getSystemPrompt() {
-  return requestJson(
+  return request(
     { url: '/agent/settings/system-prompt', method: 'get' },
     '获取系统提示词失败'
   )
 }
 
 export async function getSkills() {
-  return requestJson(
+  return request(
     { url: '/agent/settings/skills', method: 'get' },
     '获取 Skills 列表失败'
   )
 }
 
 export async function getMcpServers() {
-  return requestJson(
+  return request(
     { url: '/agent/settings/mcp', method: 'get' },
     '获取 MCP 配置失败'
   )
 }
 
 export async function getMcpMarket() {
-  return requestJson(
+  return request(
     { url: '/agent/settings/mcp/market', method: 'get' },
     '获取 MCP 市场失败'
   )
 }
 
 export async function addMcpFromMarket(name) {
-  return requestJson(
+  return request(
     {
       url: '/agent/settings/mcp/market/add',
       method: 'post',
@@ -54,14 +54,14 @@ export async function addMcpFromMarket(name) {
 }
 
 export async function updateMcpServers(servers) {
-  return requestJson(
+  return request(
     { url: '/agent/settings/mcp', method: 'put', data: { servers } },
     '更新 MCP 配置失败'
   )
 }
 
 export async function addMcpServer(config) {
-  return requestJson(
+  return request(
     {
       url: '/agent/settings/mcp/server',
       method: 'post',
@@ -72,7 +72,7 @@ export async function addMcpServer(config) {
 }
 
 export async function deleteMcpServer(name) {
-  return requestJson(
+  return request(
     {
       url: `/agent/settings/mcp/server/${encodeURIComponent(name)}`,
       method: 'delete',
@@ -82,21 +82,28 @@ export async function deleteMcpServer(name) {
 }
 
 export async function getModels() {
-  return requestJson(
+  return request(
     { url: '/agent/settings/models', method: 'get' },
     '获取模型列表失败'
   )
 }
 
+export async function getWebSearchStatus() {
+  return request(
+    { url: '/agent/settings/web-search', method: 'get' },
+    '获取联网搜索状态失败'
+  )
+}
+
 export async function getMcpApiKeyStatuses() {
-  return requestJson(
+  return request(
     { url: '/agent/settings/mcp/api-keys', method: 'get' },
     '获取 MCP API Key 状态失败'
   )
 }
 
 export async function generateMcpApiKey(business) {
-  return requestJson(
+  return request(
     {
       url: '/agent/settings/mcp/api-key',
       method: 'post',
