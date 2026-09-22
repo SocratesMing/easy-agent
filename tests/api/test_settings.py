@@ -184,17 +184,17 @@ def test_mcp_api_key_generation_uses_current_user(monkeypatch):
     monkeypatch.setattr(settings_api, "_sync_business_key", lambda u, b, k: 0)
 
     result = asyncio.run(
-        generate_mcp_api_key(IssueMcpApiKeyRequest(business="market"), "testuser")
+        generate_mcp_api_key(IssueMcpApiKeyRequest(business="strategyqa"), "testuser")
     )
 
     assert result == {
         "status": "ok",
         "api_key": "generated-api-key",
-        "business": "market",
+        "business": "strategyqa",
         "synced_servers": 0,
     }
     assert captured["username"] == "testuser"
-    assert captured["business"] == "market"
+    assert captured["business"] == "strategyqa"
 
 
 def test_mcp_api_key_rejects_unknown_business():
@@ -219,7 +219,7 @@ def test_mcp_api_key_generation_maps_database_failure(monkeypatch):
 
     with pytest.raises(HTTPException) as exc_info:
         asyncio.run(
-            generate_mcp_api_key(IssueMcpApiKeyRequest(business="market"), "testuser")
+            generate_mcp_api_key(IssueMcpApiKeyRequest(business="strategyqa"), "testuser")
         )
 
     assert exc_info.value.status_code == 503

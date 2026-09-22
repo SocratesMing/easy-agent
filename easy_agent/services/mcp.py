@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import shutil
+import time
 from pathlib import Path
 from typing import Any
 
@@ -206,6 +207,31 @@ def normalize_servers_mapping(
 # Per-path MCP tool cache: {resolved_path_str: (mtime, tools)}
 _mcp_tools_cache: dict[str, tuple[float, list]] = {}
 
+# 失效 server 的冷却期：连不上后这段时间内不再重试。没有它的话，一个坏条目
+# 会让每次加载工具都白等一遍连接超时（stdio 拉起子进程 / http 建连）。
+MCP_FAILURE_COOLDOWN_SECONDS = 60.0
+# {(mcp.json 路径, server 名): 冷却截止时间（time.monotonic 基准）}
+# 用路径+名字做键：不同用户的 mcp.json 可能有同名 server，冷却不能互相牵连。
+_server_failure_until: dict[tuple[str, str], float] = {}
+
+
+async def _load_server_tools(name: str, cfg: dict[str, Any]) -> tuple[list, str]:
+    """加载单个 MCP server 的工具，返回 ``(tools, error)``（error 为空表示成功）。
+
+    把单个 server 的失败隔离在这一层：调用方跳过它继续加载其他 server。
+    早先的实现是 ``MultiServerMCPClient(整个 config).get_tools()``，任何一个
+    server 连不上都会整体抛异常，被 except 吞掉后返回空列表 —— 用户所有 MCP
+    工具一起消失，日志里只有一行 "Failed to load MCP tools"，极难排查。
+    """
+    precheck = _stdio_precheck(cfg)
+    if precheck:
+        return [], precheck
+    try:
+        client = MultiServerMCPClient({name: cfg})
+        return await client.get_tools(), ""
+    except Exception as e:
+        return [], _unpack_error(e)
+
 
 async def get_mcp_tools(username: str | None = None) -> list:
     """Get all MCP tools as LangChain tools via langchain-mcp-adapters.
@@ -214,14 +240,21 @@ async def get_mcp_tools(username: str | None = None) -> list:
         username: When provided, loads the per-user mcp.json if it exists,
             otherwise the global file.
 
-    Creates a MultiServerMCPClient from mcp.json config and loads all
-    available tools. Returns a list of LangChain BaseTool instances that
-    can be passed directly to create_agent / create_deep_agent.
+    Loads every server in mcp.json **one by one** and aggregates the tools.
+    A server that fails to connect is skipped with a warning instead of
+    taking down the whole list. Returns a list of LangChain BaseTool
+    instances that can be passed directly to create_agent /
+    create_deep_agent.
 
     Tools are cached per resolved config file path + mtime, so editing the
     mcp.json and requesting tools again automatically picks up the change
     (dynamic reload). MultiServerMCPClient is stateless by default — each
     tool invocation creates a fresh MCP session and cleans up afterwards.
+
+    The cache is only written when **every** server loaded successfully:
+    otherwise the next call retries (broken servers throttled by
+    ``MCP_FAILURE_COOLDOWN_SECONDS``), so a recovered server comes back
+    without touching mcp.json.
     """
     config_path = _resolve_mcp_config_path(username)
     if not config_path:
@@ -245,19 +278,41 @@ async def get_mcp_tools(username: str | None = None) -> list:
         _mcp_tools_cache[path_key] = (mtime, [])
         return []
 
-    try:
-        client = MultiServerMCPClient(config)
-        tools = await client.get_tools()
+    now = time.monotonic()
+    tools: list = []
+    failed: list[tuple[str, str]] = []
+    for name, cfg in config.items():
+        cooldown_key = (path_key, name)
+        if _server_failure_until.get(cooldown_key, 0.0) > now:
+            failed.append((name, "上次连接失败，冷却期内跳过（不阻塞本次加载）"))
+            continue
+
+        loaded, error = await _load_server_tools(name, cfg)
+        if error:
+            _server_failure_until[cooldown_key] = now + MCP_FAILURE_COOLDOWN_SECONDS
+            failed.append((name, error))
+            continue
+
+        _server_failure_until.pop(cooldown_key, None)
+        tools.extend(loaded)
+
+    for name, error in failed:
+        logger.warning(f"MCP server 加载失败，已跳过 | {name}: {error}")
+
+    if failed:
         logger.info(
-            f"MCP tools loaded ({path_key}, mtime={mtime}): {len(tools)} tool(s)"
+            f"MCP tools loaded ({path_key}): {len(tools)} tool(s)，"
+            f"跳过 {len(failed)}/{len(config)} 个 server（未写缓存，下次重试）"
         )
-        for t in tools:
-            logger.info(f"  └─ {t.name}")
-        _mcp_tools_cache[path_key] = (mtime, tools)
         return tools
-    except Exception as e:
-        logger.warning(f"Failed to load MCP tools ({path_key}): {e}")
-        return []
+
+    logger.info(
+        f"MCP tools loaded ({path_key}, mtime={mtime}): {len(tools)} tool(s)"
+    )
+    for t in tools:
+        logger.info(f"  └─ {t.name}")
+    _mcp_tools_cache[path_key] = (mtime, tools)
+    return tools
 
 
 def invalidate_mcp_cache(username: str | None = None) -> None:
@@ -266,9 +321,12 @@ def invalidate_mcp_cache(username: str | None = None) -> None:
     With ``username``, drops the cache entry for that user's mcp.json (and the
     global cache when falling back). Without ``username``, clears the entire
     cache. Call after writing a new mcp.json to force a reload on next use.
+
+    连带清掉失效冷却：用户改了配置就该立刻重试，不该继续被上一轮的失败压着。
     """
     if username is None:
         _mcp_tools_cache.clear()
+        _server_failure_until.clear()
         logger.info("MCP tools cache cleared (all entries)")
         return
 
@@ -284,6 +342,9 @@ def invalidate_mcp_cache(username: str | None = None) -> None:
         if gkey in _mcp_tools_cache:
             _mcp_tools_cache.pop(gkey, None)
             logger.info(f"MCP tools cache invalidated for global ({gkey})")
+
+    for stale_key in [k for k in _server_failure_until if k[0] in (key, str(global_path or ""))]:
+        _server_failure_until.pop(stale_key, None)
 
 
 async def validate_mcp_servers(
@@ -303,20 +364,16 @@ async def validate_mcp_servers(
 
     results: list[dict[str, Any]] = []
     for name, cfg in config.items():
-        try:
-            precheck = _stdio_precheck(cfg)
-            if precheck:
-                results.append({
-                    "name": name,
-                    "status": "error",
-                    "tools_count": 0,
-                    "error": precheck,
-                })
-                logger.warning(f"MCP 校验 | {name} ❌ 配置预检失败: {precheck}")
-                continue
-            single_config = {name: cfg}
-            client = MultiServerMCPClient(single_config)
-            tools = await client.get_tools()
+        tools, error = await _load_server_tools(name, cfg)
+        if error:
+            results.append({
+                "name": name,
+                "status": "error",
+                "tools_count": 0,
+                "error": error,
+            })
+            logger.warning(f"MCP 校验 | {name} ❌ 失败: {error}")
+        else:
             results.append({
                 "name": name,
                 "status": "ok",
@@ -324,13 +381,4 @@ async def validate_mcp_servers(
                 "error": "",
             })
             logger.info(f"MCP 校验 | {name} ✅ 成功 ({len(tools)} 工具)")
-        except Exception as e:
-            err_text = _unpack_error(e)
-            results.append({
-                "name": name,
-                "status": "error",
-                "tools_count": 0,
-                "error": err_text,
-            })
-            logger.warning(f"MCP 校验 | {name} ❌ 失败: {err_text}")
     return results

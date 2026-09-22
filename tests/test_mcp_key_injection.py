@@ -17,23 +17,38 @@ import easy_agent.services.mcp_api_keys as keys_service
 from easy_agent.api import settings as settings_api
 
 
+@pytest.fixture(autouse=True)
+def _offline_businesses(monkeypatch):
+    """业务清单固定为内置兜底，避免测试依赖共享库里的 mcp_businesses。
+
+    真实运行时清单来自 mcp-server 登记的表；这里关心的是识别/注入逻辑本身，
+    所以把它隔离掉。清单来源的行为在下面单独测。
+    """
+    monkeypatch.setattr(
+        keys_service,
+        "supported_businesses",
+        lambda: keys_service.SUPPORTED_BUSINESSES,
+    )
+    keys_service.invalidate_business_cache()
+
+
 # ── 业务识别 ────────────────────────────────────────────────────────────
 
 
 def test_resolve_business_from_url():
-    cfg = {"url": "http://127.0.0.1:8100/mcp/dataqa/", "headers": {}}
-    assert settings_api._resolve_easy_business(cfg) == "dataqa"
+    cfg = {"url": "http://127.0.0.1:8100/mcp/strategyqa/", "headers": {}}
+    assert settings_api._resolve_easy_business(cfg) == "strategyqa"
 
 
 def test_resolve_business_from_url_without_trailing_slash():
-    cfg = {"url": "http://127.0.0.1:8100/mcp/market"}
-    assert settings_api._resolve_easy_business(cfg) == "market"
+    cfg = {"url": "http://127.0.0.1:8100/mcp/strategyqa"}
+    assert settings_api._resolve_easy_business(cfg) == "strategyqa"
 
 
 def test_resolve_business_from_declared_field():
     """市场条目可显式标注业务，URL 不规范时也能识别。"""
-    cfg = {"url": "https://mcp.example.com/gateway", "business": "dataqa"}
-    assert settings_api._resolve_easy_business(cfg) == "dataqa"
+    cfg = {"url": "https://mcp.example.com/gateway", "business": "strategyqa"}
+    assert settings_api._resolve_easy_business(cfg) == "strategyqa"
 
 
 def test_resolve_business_returns_none_for_foreign_server():
@@ -75,15 +90,15 @@ def test_injects_key_for_own_business_with_placeholder(monkeypatch):
 
     monkeypatch.setattr(keys_service, "issue_api_key", fake_issue)
     cfg = {
-        "url": "http://127.0.0.1:8100/mcp/dataqa/",
+        "url": "http://127.0.0.1:8100/mcp/strategyqa/",
         "headers": {"Authorization": "Bearer <占位符>"},
     }
 
     result, business = settings_api._maybe_inject_api_key(cfg, "alice")
 
-    assert business == "dataqa"
-    assert issued == [("alice", "dataqa")]
-    assert result["headers"]["Authorization"] == "Bearer mcp_key_alice_dataqa"
+    assert business == "strategyqa"
+    assert issued == [("alice", "strategyqa")]
+    assert result["headers"]["Authorization"] == "Bearer mcp_key_alice_strategyqa"
     # 原配置不应被就地修改
     assert cfg["headers"]["Authorization"] == "Bearer <占位符>"
 
@@ -108,7 +123,7 @@ def test_skips_foreign_server(monkeypatch):
 def test_keeps_user_supplied_key(monkeypatch):
     monkeypatch.setattr(keys_service, "issue_api_key", lambda u, b: "new-key")
     cfg = {
-        "url": "http://127.0.0.1:8100/mcp/dataqa/",
+        "url": "http://127.0.0.1:8100/mcp/strategyqa/",
         "headers": {"Authorization": "Bearer mcp_mine"},
     }
 
@@ -122,7 +137,7 @@ def test_each_user_gets_own_key(monkeypatch):
     monkeypatch.setattr(
         keys_service, "issue_api_key", lambda username, business: f"key_of_{username}"
     )
-    cfg = {"url": "http://127.0.0.1:8100/mcp/dataqa/", "headers": {}}
+    cfg = {"url": "http://127.0.0.1:8100/mcp/strategyqa/", "headers": {}}
 
     alice, _ = settings_api._maybe_inject_api_key(dict(cfg), "alice")
     bob, _ = settings_api._maybe_inject_api_key(dict(cfg), "bob")
@@ -155,7 +170,7 @@ def _patch_mcp_path(monkeypatch, target: Path) -> None:
 def test_atomic_write_produces_valid_json(monkeypatch):
     target = _workdir() / "alice" / "mcp.json"
     _patch_mcp_path(monkeypatch, target)
-    payload = {"servers": {"dataqa": {"url": "http://127.0.0.1:8100/mcp/dataqa/"}}}
+    payload = {"servers": {"strategyqa": {"url": "http://127.0.0.1:8100/mcp/strategyqa/"}}}
 
     result = settings_api._write_user_mcp_raw("alice", None, payload)
 
@@ -216,8 +231,8 @@ def test_sync_updates_matching_server_key(monkeypatch):
         json.dumps(
             {
                 "servers": {
-                    "dataqa": {
-                        "url": "http://127.0.0.1:8100/mcp/dataqa/",
+                    "strategyqa": {
+                        "url": "http://127.0.0.1:8100/mcp/strategyqa/",
                         "headers": {"Authorization": "Bearer old_key"},
                     },
                     "akshare": {
@@ -232,11 +247,11 @@ def test_sync_updates_matching_server_key(monkeypatch):
     _patch_mcp_path(monkeypatch, target)
     _patch_side_effects(monkeypatch)
 
-    changed = settings_api._sync_business_key("alice", "dataqa", "mcp_new_key")
+    changed = settings_api._sync_business_key("alice", "strategyqa", "mcp_new_key")
 
     assert changed == 1
     data = json.loads(target.read_text(encoding="utf-8"))
-    assert data["servers"]["dataqa"]["headers"]["Authorization"] == "Bearer mcp_new_key"
+    assert data["servers"]["strategyqa"]["headers"]["Authorization"] == "Bearer mcp_new_key"
     # 别人的 server 不能被碰
     assert data["servers"]["akshare"]["headers"]["Authorization"] == "Bearer keep_me"
 
@@ -247,8 +262,8 @@ def test_sync_updates_multiple_servers_of_same_business(monkeypatch):
         json.dumps(
             {
                 "servers": {
-                    "dataqa": {"url": "http://127.0.0.1:8100/mcp/dataqa/", "headers": {}},
-                    "dataqa-2": {"url": "https://mcp.example.com/mcp/dataqa/", "headers": {}},
+                    "strategyqa": {"url": "http://127.0.0.1:8100/mcp/strategyqa/", "headers": {}},
+                    "strategyqa-2": {"url": "https://mcp.example.com/mcp/strategyqa/", "headers": {}},
                 }
             }
         ),
@@ -257,9 +272,9 @@ def test_sync_updates_multiple_servers_of_same_business(monkeypatch):
     _patch_mcp_path(monkeypatch, target)
     _patch_side_effects(monkeypatch)
 
-    assert settings_api._sync_business_key("alice", "dataqa", "mcp_new") == 2
+    assert settings_api._sync_business_key("alice", "strategyqa", "mcp_new") == 2
     data = json.loads(target.read_text(encoding="utf-8"))
-    for name in ("dataqa", "dataqa-2"):
+    for name in ("strategyqa", "strategyqa-2"):
         assert data["servers"][name]["headers"]["Authorization"] == "Bearer mcp_new"
 
 
@@ -270,7 +285,7 @@ def test_sync_returns_zero_without_matching_server(monkeypatch):
     _patch_mcp_path(monkeypatch, target)
     _patch_side_effects(monkeypatch)
 
-    assert settings_api._sync_business_key("alice", "dataqa", "mcp_new") == 0
+    assert settings_api._sync_business_key("alice", "strategyqa", "mcp_new") == 0
     assert json.loads(target.read_text(encoding="utf-8")) == original
 
 
@@ -279,5 +294,5 @@ def test_sync_creates_nothing_when_user_has_no_mcp_file(monkeypatch):
     _patch_mcp_path(monkeypatch, target)
     _patch_side_effects(monkeypatch)
 
-    assert settings_api._sync_business_key("alice", "dataqa", "mcp_new") == 0
+    assert settings_api._sync_business_key("alice", "strategyqa", "mcp_new") == 0
     assert not target.exists()

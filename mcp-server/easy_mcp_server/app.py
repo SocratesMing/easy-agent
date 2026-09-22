@@ -6,16 +6,15 @@ import asyncio
 import importlib
 import logging
 import os
-import pkgutil
 import time
 from contextlib import AsyncExitStack, asynccontextmanager
 from typing import Iterable
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
-from . import businesses
+from . import __version__, businesses, contract, db, registry
 from .auth import BearerApiKeyMiddleware, MCP_PREFIX, ApiKeyVerifier
 
 logger = logging.getLogger("easy-mcp-server")
@@ -38,17 +37,18 @@ def discover_businesses() -> list[tuple[str, FastMCP]]:
 
     A business is a package under ``businesses/`` exposing ``build() -> FastMCP``.
     The package name becomes the URL suffix.
+
+    业务清单由 ``contract.business_names()`` 提供（唯一事实来源），这里只负责
+    把它们 import 起来并调用工厂——发现规则不允许在别处再抄一份。
     """
     found: list[tuple[str, FastMCP]] = []
-    for info in pkgutil.iter_modules(businesses.__path__):
-        if not info.ispkg:
-            continue
-        module = importlib.import_module(f"{businesses.__name__}.{info.name}")
+    for name in contract.business_names():
+        module = importlib.import_module(f"{businesses.__name__}.{name}")
         build = getattr(module, "build", None)
         if not callable(build):
-            logger.warning(f"业务包 {info.name} 缺少 build()，已跳过")
+            logger.warning(f"业务包 {name} 缺少 build()，已跳过")
             continue
-        found.append((info.name, build()))
+        found.append((name, build()))
     return found
 
 
@@ -88,19 +88,29 @@ def create_app(verifier: ApiKeyVerifier, businesses_override=None) -> FastAPI:
     Args:
         verifier: callable resolving ``(business, api_key)`` to a username.
         businesses_override: optional list of ``(name, FastMCP)`` for tests.
+            传入它还**关闭**业务注册表发布——测试不该写共享库。
     """
+    use_discovery = businesses_override is None
     items = list(
         businesses_override if businesses_override is not None else discover_businesses()
     )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        # 把业务清单发布到共享库 mcp_businesses，主应用据此渲染设置页并签发 Key。
+        # 放在 lifespan 而不是模块导入期：只有当服务真的要对外提供业务时才登记。
+        if use_discovery:
+            # 数据库目标先打出来：库名与主应用不一致时症状是"签了 key 却一律 401"，
+            # 没有任何报错指向配置。配置非法也不阻塞启动（describe_target 自己兜住）。
+            logger.info(f"[mcp-server] MySQL 目标: {db.describe_target()}")
+            registry.publish(name for name, _ in items)
+
         # 关键：mount() 不会执行子应用的 lifespan，而 MCP session manager 必须
         # 在 lifespan 中启动（否则每个请求都会报 "Task group is not initialized"）。
         # 这里手动驱动每个业务的 session manager。
         #
         # 不用 `async with AsyncExitStack()`：session manager 退出时会等待进行中的
-        # 请求（例如一次仍在跑的 HBase scan），业务代码一慢就把 lifespan 卡住，
+        # 请求（例如一次仍在跑的慢查询），业务代码一慢就把 lifespan 卡住，
         # 表现为 Ctrl+C 后一直停在 "Shutting down"。改成显式 aclose + 超时兜底。
         stack = AsyncExitStack()
         for _, mcp in items:
@@ -133,6 +143,27 @@ def create_app(verifier: ApiKeyVerifier, businesses_override=None) -> FastAPI:
     @app.get("/health", summary="健康检查（免鉴权）")
     async def health():
         return {"status": "ok", "businesses": mounted}
+
+    @app.get("/manifest", summary="对外契约：业务清单与 URL 形态（免鉴权）")
+    async def manifest(request: Request):
+        """本模块对外承诺的机器可读版本，见 ``contract.py``。
+
+        不依赖共享库：主应用若不想读 ``mcp_businesses`` 表，也可以直接拉这个
+        端点来发现业务清单（两种方式等价，任选其一）。
+        """
+        base = str(request.base_url).rstrip("/")
+        return {
+            "module": "easy-mcp-server",
+            "version": __version__,
+            "auth": {
+                "scheme": "Bearer",
+                "key_prefix": contract.API_KEY_PREFIX,
+            },
+            "businesses": [
+                {"name": name, "url": contract.business_url(base, name)}
+                for name in mounted
+            ],
+        }
 
     if not mounted:
         logger.warning("[mcp-server] 未发现任何业务包")

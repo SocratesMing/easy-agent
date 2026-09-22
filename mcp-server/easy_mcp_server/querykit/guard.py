@@ -1,6 +1,6 @@
-"""问数 SQL 安全网关：把模型生成的 SQL 收敛为"单条只读 SELECT"。
+"""SQL 只读网关：把模型生成的 SQL 收敛为"单条只读 SELECT"。
 
-问数场景无法像 market 那样枚举固定语句，必须接受模型生成的 SQL，
+问数场景无法像固定参数化的工具那样枚举语句，必须接受模型生成的 SQL，
 所以在执行前统一做四层收敛：
 
 1. 去注释后再判断，避免注释绕过关键字检查
@@ -8,18 +8,17 @@
 3. 只允许 SELECT / WITH 开头，屏蔽写操作与系统库
 4. 强制返回行数上限（缺省自动补 LIMIT）
 
+这是**主要防线**；:mod:`pool` 里的会话级只读是第二道兜底。
+
 已知边界：`;` 若出现在字符串字面量中会误杀（保守拒绝，不冒险放行）。
 """
 
 from __future__ import annotations
 
-import os
 import re
 from typing import Any
 
-from ...env import load_env
-
-DEFAULT_MAX_ROWS = 500
+from .config import max_rows
 
 # 只处理 -- 与 /* */：MySQL 的 # 注释必须独占行首/空白之后，
 # 而 `#` 常出现在字符串字面量里，剥离反而会破坏 SQL。
@@ -37,13 +36,6 @@ _FORBIDDEN_RE = re.compile(
 _SYSTEM_SCHEMA_RE = re.compile(
     r"\b(information_schema|mysql|performance_schema|sys)\s*\.", re.I
 )
-
-
-def max_rows() -> int:
-    """单次查询返回的最大行数（DATAQA_MAX_ROWS，缺省 500）。"""
-    load_env()
-    raw = os.environ.get("DATAQA_MAX_ROWS", "").strip()
-    return int(raw) if raw.isdigit() and int(raw) > 0 else DEFAULT_MAX_ROWS
 
 
 def strip_comments(sql: str) -> str:
@@ -74,7 +66,10 @@ def _apply_limit(sql: str, limit: int) -> str:
 
 
 def assert_readonly(sql: str, limit: int | None = None) -> str:
-    """校验并归一化 SQL，返回可安全执行的语句；不合法则抛 ValueError。"""
+    """校验并归一化 SQL，返回可安全执行的语句；不合法则抛 ValueError。
+
+    ``limit`` 为 None 时取 QUERYKIT_MAX_ROWS。
+    """
     statement = strip_comments(sql).strip().rstrip(";").strip()
     if not statement:
         raise ValueError("SQL 为空")

@@ -3,20 +3,22 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 
 import httpx
 import uvicorn
 from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
 
+import easy_mcp_server.app as app_mod
 from easy_mcp_server.app import create_app, discover_businesses, shutdown_timeout_seconds
 
 from support import build_hello
 
 
-def test_discover_businesses_finds_market():
+def test_discover_businesses_finds_strategyqa():
     names = [name for name, _ in discover_businesses()]
-    assert "market" in names
+    assert "strategyqa" in names
 
 
 def test_shutdown_timeout_has_safe_default(monkeypatch):
@@ -57,6 +59,47 @@ async def test_health_is_public(server):
     body = resp.json()
     assert body["status"] == "ok"
     assert "hello" in body["businesses"]
+
+
+async def test_startup_logs_db_target_and_publishes_registry(monkeypatch, key_store, caplog):
+    """启动时必须打数据库目标并登记业务清单。
+
+    库名与主应用不一致时的症状是"签了 key 却一律 401"，没有任何报错指向配置，
+    所以启动日志这一行是排查入口，值得钉住。
+
+    刻意不 setenv MYSQL_* 来构造期望值：setenv 会被 monkeypatch 回滚，而
+    ``env.load_env()`` 只把 .env 注入 ``os.environ`` 一次（`_LOADED` 幂等），
+    被回滚掉的值不会重新注入 —— 后续依赖真实库的用例会静默掉到缺省库名而失败。
+    """
+    expected_target = app_mod.db.describe_target()
+
+    published: list[list[str]] = []
+    monkeypatch.setattr(
+        app_mod.registry, "publish", lambda names: published.append(list(names)) or 0
+    )
+    monkeypatch.setattr(app_mod, "discover_businesses", lambda: [("hello", build_hello())])
+
+    app = create_app(key_store.verify)
+    with caplog.at_level(logging.INFO, logger="easy-mcp-server"):
+        async with app.router.lifespan_context(app):
+            pass
+
+    assert published == [["hello"]]
+    assert any(
+        "MySQL" in record.message and expected_target in record.message
+        for record in caplog.records
+    ), [r.message for r in caplog.records]
+
+
+async def test_manifest_is_public_and_machine_readable(server):
+    """对外契约端点：主应用可据此发现业务清单（与读 mcp_businesses 表等价）。"""
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(f"{server}/manifest")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["auth"] == {"scheme": "Bearer", "key_prefix": "mcp_"}
+    urls = {item["name"]: item["url"] for item in body["businesses"]}
+    assert urls["hello"].endswith("/mcp/hello/")
 
 
 async def test_unknown_business_returns_401(server):

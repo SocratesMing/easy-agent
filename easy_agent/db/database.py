@@ -412,6 +412,7 @@ class Database:
     def _create_misc_tables(self, cursor, auto_inc):
         # MCP API Key：主应用签发，mcp-server 子项目只读校验。
         # UNIQUE(username, business) 保证每用户每业务仅一把有效 key，重签即覆盖。
+        # 契约归属：mcp-server/easy_mcp_server/contract.py（改结构需两侧同步）。
         cursor.execute(f"""
             CREATE TABLE IF NOT EXISTS mcp_api_keys (
                 id INTEGER PRIMARY KEY {auto_inc},
@@ -427,6 +428,18 @@ class Database:
         self._create_index(
             cursor, "idx_mcp_api_keys_user", "mcp_api_keys", "username"
         )
+
+        # MCP 业务清单：由 mcp-server 启动时写入（它是业务清单的所有者），
+        # 主应用只读——设置页的业务下拉与 Key 签发白名单都以此为准。
+        # 表为空（mcp-server 未部署或从未启动）时主应用回退到内置兜底清单。
+        # 契约归属同上：mcp-server/easy_mcp_server/contract.py
+        cursor.execute(f"""
+            CREATE TABLE IF NOT EXISTS mcp_businesses (
+                name VARCHAR(64) PRIMARY KEY,
+                created_at VARCHAR(50) NOT NULL,
+                updated_at VARCHAR(50) NOT NULL
+            )
+        """)
 
         cursor.execute(f"""
             CREATE TABLE IF NOT EXISTS fmqt_lock (
@@ -1612,6 +1625,22 @@ class Database:
             )
             rows = cursor.fetchall()
         return [dict(r) if not isinstance(r, dict) else r for r in rows]
+
+    def list_mcp_businesses(self) -> list[str]:
+        """读取 mcp-server 登记的业务清单（它启动时写入 ``mcp_businesses``）。
+
+        表不存在或读失败时返回空列表，由调用方回退到内置兜底清单——
+        「发现通道」不可用不该让设置页整体不可用。
+        """
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                self._execute(cursor, "SELECT name FROM mcp_businesses ORDER BY name")
+                rows = cursor.fetchall()
+        except Exception as e:
+            logger.warning(f"读取 mcp_businesses 失败（将回退内置业务清单）: {e}")
+            return []
+        return [str(r["name"]) if isinstance(r, dict) else str(r[0]) for r in rows]
 
     def clear_user_activity(self, username: str) -> bool:
         """清空用户活跃时间（登出时调用）。"""

@@ -2,15 +2,18 @@
 
 只做只读校验，签发由主应用负责（表结构同样由主应用维护）。
 校验结果做短 TTL 缓存，避免每次工具调用都查库。
+
+表名与哈希算法都属于对外契约，统一从 :mod:`easy_mcp_server.contract` 取，
+避免本模块内部出现第二份定义。
 """
 
 from __future__ import annotations
 
-import hashlib
 import logging
 import time
 
 from .auth import ApiKeyVerifier
+from .contract import API_KEY_TABLE, hash_api_key
 from .db import fetch_one
 
 logger = logging.getLogger("easy-mcp-server")
@@ -19,15 +22,13 @@ logger = logging.getLogger("easy-mcp-server")
 _CACHE: dict[tuple[str, str], tuple[str, float]] = {}
 DEFAULT_TTL_SECONDS = 60.0
 
-
-def hash_api_key(api_key: str) -> str:
-    return hashlib.sha256(api_key.encode("utf-8")).hexdigest()
+__all__ = ["hash_api_key", "create_mysql_verifier", "clear_cache", "DEFAULT_TTL_SECONDS"]
 
 
 def _lookup(business: str, key_hash: str) -> str | None:
     try:
         row = fetch_one(
-            "SELECT username FROM mcp_api_keys "
+            f"SELECT username FROM {API_KEY_TABLE} "
             "WHERE business=%s AND key_hash=%s AND revoked=0",
             (business, key_hash),
         )

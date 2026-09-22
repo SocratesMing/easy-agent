@@ -33,15 +33,6 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/agent/settings", tags=["Settings"])
 
 
-def _market_mysql_config() -> dict[str, Any] | None:
-    """Use the backend database config for in-process Market MCP operations."""
-    agent_config = get_agent_config() or {}
-    config = agent_config.get("config") or Config.load()
-    if config.database.type != "mysql":
-        return None
-    return config.database.mysql.model_dump()
-
-
 # ── 记忆 ──────────────────────────────────────────────────────────────
 
 
@@ -216,8 +207,11 @@ def _resolve_easy_business(server_config: dict[str, Any]) -> str | None:
     """判断该 server 是否为 easy-agent 自家的 MCP 业务，是则返回业务名。
 
     识别方式（按优先级）：
-    1. 市场条目里显式标注 ``"business": "dataqa"``
+    1. 市场条目里显式标注 ``"business": "strategyqa"``
     2. 从 URL 推断：``.../mcp/<业务>/``
+
+    URL 形态 ``/mcp/<业务>/`` 属于 mcp-server 的对外契约
+    （``easy_mcp_server/contract.py::business_url``），这里只是消费方。
     """
     from ..services.mcp_api_keys import is_supported_business
 
@@ -351,8 +345,12 @@ class IssueMcpApiKeyRequest(BaseModel):
 async def get_mcp_api_keys(
     username: Annotated[str, Depends(get_current_username)],
 ):
-    """返回每个业务的 key 是否已生成与更新时间（不含任何密钥信息）。"""
-    from ..services.mcp_api_keys import SUPPORTED_BUSINESSES, list_key_status
+    """返回每个业务的 key 是否已生成与更新时间（不含任何密钥信息）。
+
+    业务清单来自 mcp-server 登记的 ``mcp_businesses``（见 mcp_api_keys 模块），
+    新增/下线业务由子项目决定，本接口无需改动。
+    """
+    from ..services.mcp_api_keys import list_key_status, supported_businesses
 
     statuses = {row["business"]: row for row in list_key_status(username)}
     return {
@@ -362,7 +360,7 @@ async def get_mcp_api_keys(
                 "issued": name in statuses and not statuses[name]["revoked"],
                 "updated_at": statuses.get(name, {}).get("updated_at"),
             }
-            for name in SUPPORTED_BUSINESSES
+            for name in supported_businesses()
         ]
     }
 
@@ -449,7 +447,7 @@ async def add_mcp_from_market(
 ):
     """把市场中的全局 server 配置复制到当前用户 mcp.json。
 
-    若该服务是 easy-agent 自家的 MCP 业务（如 dataqa），会现场为当前用户
+    若该服务是 easy-agent 自家的 MCP 业务（如 strategyqa），会现场为当前用户
     签发 API Key 并写入配置，用户无需手动生成与粘贴。
     """
     _cfg = get_agent_config()

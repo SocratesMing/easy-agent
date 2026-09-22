@@ -1,4 +1,4 @@
-"""问数只读数据源：连接池 + 会话只读加固。
+"""进程级 MySQL 只读连接池 + 会话加固。
 
 **为什么要连接池**：MySQL 侧 `skip_name_resolve=OFF` 时，每接受一个新连接都要
 对客户端 IP 做反向 DNS 解析。本地实测单次新建连接约 130ms，而查询本身不到 1ms。
@@ -6,16 +6,16 @@
 
 **加固为什么放在 creator 里**：会话级只读（`TRANSACTION READ ONLY`）与执行超时
 只需要在"连接建立"时设置一次。把它写进连接工厂，则池内新建与断线重连都会带上
-加固状态，复用连接时零额外开销。注意 guard.py 的 SQL 校验仍是主要防线，加固是兜底。
+加固状态，复用连接时零额外开销。注意 :mod:`guard` 的 SQL 校验仍是主要防线。
 
-连接池是**进程内**的：多进程部署时每个进程各持有一个池，实际连接数 =
-进程数 × `MYSQL_POOL_SIZE`，需确保小于 MySQL 的 `max_connections`。
+**池是进程级单例**：所有业务共用同一个 MySQL 连接池，避免"每个业务各持一份"。
+多进程部署时实际连接数 = 进程数 × ``QUERYKIT_POOL_SIZE``，需小于 MySQL 的
+``max_connections``。
 """
 
 from __future__ import annotations
 
 import logging
-import os
 import threading
 from contextlib import contextmanager
 from typing import Any, Iterator
@@ -23,30 +23,13 @@ from typing import Any, Iterator
 import pymysql
 from dbutils.pooled_db import PooledDB
 
-from ...db import mysql_config
-from ...env import load_env
+from ..db import mysql_config
+from .config import pool_size, query_timeout_ms
 
 logger = logging.getLogger("easy-mcp-server")
 
-DEFAULT_TIMEOUT_MS = 10_000
-DEFAULT_POOL_SIZE = 5
-
 _pool_lock = threading.Lock()
 _pool: PooledDB | None = None
-
-
-def query_timeout_ms() -> int:
-    """单次查询超时毫秒数（DATAQA_QUERY_TIMEOUT_MS，缺省 10000）。"""
-    load_env()
-    raw = os.environ.get("DATAQA_QUERY_TIMEOUT_MS", "").strip()
-    return int(raw) if raw.isdigit() and int(raw) > 0 else DEFAULT_TIMEOUT_MS
-
-
-def pool_size() -> int:
-    """连接池上限（MYSQL_POOL_SIZE，缺省 10）。"""
-    load_env()
-    raw = os.environ.get("MYSQL_POOL_SIZE", "").strip()
-    return int(raw) if raw.isdigit() and int(raw) > 0 else DEFAULT_POOL_SIZE
 
 
 def _harden(conn: Any) -> None:
@@ -59,7 +42,7 @@ def _harden(conn: Any) -> None:
             try:
                 cursor.execute(statement)
             except Exception as e:  # pragma: no cover - 依赖数据库版本/权限
-                logger.warning(f"[dataqa] 会话加固失败（{label}）: {e}")
+                logger.warning(f"[querykit] 会话加固失败（{label}）: {e}")
 
 
 def _create_connection() -> Any:
@@ -70,7 +53,7 @@ def _create_connection() -> Any:
 
 
 def get_pool() -> PooledDB:
-    """懒创建进程内连接池（首次调用时才建，避免服务启动即依赖数据库）。"""
+    """懒创建进程级连接池（首次调用时才建，避免服务启动即依赖数据库）。"""
     global _pool
     if _pool is not None:
         return _pool
@@ -89,7 +72,7 @@ def get_pool() -> PooledDB:
                 ping=1,  # 取出时检查可用性，断线自动重连
                 reset=True,  # 归还时回滚未提交事务
             )
-            logger.info(f"[dataqa] MySQL 连接池已创建（预热 {size} 个连接）")
+            logger.info(f"[querykit] MySQL 连接池已创建（预热 {size} 个连接）")
     return _pool
 
 
@@ -101,7 +84,7 @@ def reset_pool() -> None:
             try:
                 _pool.close()
             except Exception as e:  # pragma: no cover
-                logger.warning(f"[dataqa] 关闭连接池失败: {e}")
+                logger.warning(f"[querykit] 关闭连接池失败: {e}")
             _pool = None
 
 

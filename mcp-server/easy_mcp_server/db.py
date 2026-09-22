@@ -37,6 +37,20 @@ def mysql_config() -> dict[str, Any]:
     return config
 
 
+def describe_target() -> str:
+    """连接目标的可读描述（不含口令），用于启动日志。
+
+    库名配错时的症状是"主应用签了 key，本服务一律 401"，没有任何报错指向
+    配置，启动时打一行目标能省掉大量排查。配置本身非法时不抛异常——
+    诊断信息不该反过来成为启动失败的原因。
+    """
+    try:
+        config = mysql_config()
+    except Exception as e:
+        return f"<配置无效: {e}>"
+    return f"{config['host']}:{config['port']}/{config['database']}"
+
+
 @contextmanager
 def connection() -> Iterator[pymysql.connections.Connection]:
     conn = pymysql.connect(**mysql_config())

@@ -1,35 +1,10 @@
 {
   "servers": {
-    "example-filesystem": {
-      "transport": "stdio",
-      "command": "npx",
-      "args": ["-y", "@anthropic/modelcontextprotocol-tools-filesystem", "/tmp"],
-      "env": {}
-    },
-    "example-http-api": {
+    "strategyqa": {
       "transport": "streamable_http",
-      "url": "http://localhost:3000/mcp",
-      "headers": {}
-    },
-    "market-data": {
-      "transport": "streamable_http",
-      "url": "http://127.0.0.1:8100/mcp/market/",
+      "url": "http://127.0.0.1:8100/mcp/strategyqa/",
       "headers": {
-        "Authorization": "Bearer <在设置页生成的 Market MCP API Key>"
-      }
-    },
-    "dataqa": {
-      "transport": "streamable_http",
-      "url": "http://127.0.0.1:8100/mcp/dataqa/",
-      "headers": {
-        "Authorization": "Bearer <在设置页生成的 DataQA MCP API Key>"
-      }
-    },
-    "hbaseqa": {
-      "transport": "streamable_http",
-      "url": "http://127.0.0.1:8100/mcp/hbaseqa/",
-      "headers": {
-        "Authorization": "Bearer <在设置页生成的 HBaseQA MCP API Key>"
+        "Authorization": "Bearer <在设置页生成的 StrategyQA MCP API Key>"
       }
     }
   }

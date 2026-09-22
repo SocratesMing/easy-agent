@@ -2,7 +2,7 @@
 
 Each business domain lives in :mod:`easy_mcp_server.businesses` as a package
 exposing a ``build() -> FastMCP`` factory. The package name becomes the URL
-suffix, e.g. ``businesses/market`` is served at ``/mcp/market/``.
+suffix, e.g. ``businesses/strategyqa`` is served at ``/mcp/strategyqa/``.
 """
 
 __all__ = ["__version__"]
