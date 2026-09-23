@@ -12,8 +12,8 @@ const CopyPlugin = require('copy-webpack-plugin')
 const PROXY_TARGETS = {
   dev: 'http://localhost:8080',
   test: 'http://192.168.1.100:8007',
-  prod: 'http://192.168.1.200:8080',
-  win: 'http://127.0.0.1:8080',
+  prod: 'http://192.168.1.200:8000',
+  win: 'http://127.0.0.1:8000',
 }
 
 const AGENT_ENV =
