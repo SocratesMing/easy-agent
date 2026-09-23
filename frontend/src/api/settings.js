@@ -112,9 +112,3 @@ export async function getWebSearchStatus() {
     '获取联网搜索状态失败'
   )
 }
-
-export async function getWebSearchStatus() {
-  const response = await authFetch(`${API_BASE_URL}/agent/settings/web-search`)
-  if (!response.ok) throw new Error('获取联网搜索状态失败')
-  return await response.json()
-}

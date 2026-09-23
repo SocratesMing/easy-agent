@@ -232,71 +232,151 @@ function setReactive(target, key, value) {
   }
 }
 
-async function handleSendMessage(message, files = [], signal, enableDeepThink = true, enableWebSearch = false) {
-  const userMsgId = `user-${Date.now()}`
-  const preStreamUsage = { ...sessionUsage.value }
-  // 记录本次请求开始前已累计的耗时和迭代次数，用于流式过程中实时累加
-  const preStreamDuration = sessionDuration.value
-  const preStreamIterationCount = iterationCount.value
-  // 本次流所属的会话 ID（新会话在 start 事件后才有值）。
-  // 用于用户中途切换会话时，把用量更新写入所属会话的缓存而非当前显示
-  let streamSessionId = currentSessionId.value
-
-  let contentWithFiles = message.trim().replace(/\s+/g, ' ')
-
-  const userMessage = {
-    id: userMsgId,
-    role: 'user',
-    content: contentWithFiles,
-    files: files.map(f => ({
-      filename: f.filename,
-      size: f.size,
-      type: f.file.type,
-      file_path: f.file_path || null
-    })),
-    created_at: new Date().toISOString()
-  }
-
-  messages.value.push(userMessage)
-
-  // 立即创建 assistant 占位消息，显示等待动画
-  const assistantPlaceholderId = `assistant-${Date.now()}`
-  const assistantPlaceholder = {
-    id: assistantPlaceholderId,
-    role: 'assistant',
-    content: '',
-    created_at: null,
-    thinking: '',
-    tool_calls: [],
-    blocks: [],
-    loading: true
-  }
-  messages.value.push(assistantPlaceholder)
-  streamingAssistantId.value = assistantPlaceholderId
-
-  let assistantMsgId = null
-  let assistantMessageCreated = false
-
-  const streamCtx = {
-    isResume: false,
-    get assistantMsgId() { return assistantMsgId },
-    set assistantMsgId(v) { assistantMsgId = v },
-    get streamSessionId() { return streamSessionId },
-    set streamSessionId(v) { streamSessionId = v },
-    preStreamUsage,
-    preStreamIterationCount,
-    preStreamDuration,
-    initialBlockOrder: 0,
-    ensureMessage: () => {
-      if (!assistantMessageCreated) {
-        if (assistantPlaceholderId && messages.value.find(m => m.id === assistantPlaceholderId)) {
-          assistantMsgId = assistantPlaceholderId
-        } else {
-          assistantMsgId = `assistant-${Date.now()}`
-          messages.value.push({
-            id: assistantMsgId, role: 'assistant', content: '',
-            created_at: null, thinking: '', tool_calls: [], blocks: [], loading: true,
-          })
+export default {
+  components: {
+    SidebarResizeHandle,
+    KnowledgeWorkbench,
+    AssetsPanel,
+    Chat,
+    ScheduledTasksPanel,
+    SessionList,
+    SettingsPanel,
+    SkillCenter,
+    UserManagementPanel,
+    Welcome,
+    WorkspacePanel,
+  },
+  data() {
+    return {
+      sessions: [],
+      currentSessionId: null,
+      currentSessionHasFiles: false,
+      // bootstrap（认证 + 会话列表 + 首个会话历史）完成前不写入，避免用初始 null 覆盖已存值
+      hasBootstrapped: false,
+      // 模型选择：从配置加载可选列表，默认选 active model
+      availableModels: [],
+      selectedModel: null,
+      welcomeTitle: APP_WELCOME_TITLE,
+      // 「未授权」提示态（登录页关闭且免密登录未成功时显示）
+      authBlocked: false,
+      // 切换会话正在拉取历史：期间不渲染空欢迎页，避免"先闪空会话页再出历史"
+      sessionLoading: false,
+      // 会话状态缓存：为每个会话保存独立的流式状态
+      sessionStates: {},
+      // 当前界面上展示的数据（messages/sessionUsage 等）实际所属的会话 ID。
+      // 与 currentSessionId 的区别：切换会话后、历史数据加载完成前，currentSessionId 已指向新会话，
+      // 但界面数据仍属于旧会话。保存缓存必须以 loadedSessionId 为 key，否则会把旧数据/清零的用量
+      // 错误地存到新会话名下，导致来回切换时 token 用量显示为 0。
+      loadedSessionId: null,
+      messages: [],
+      // 多个会话可同时流式：记录所有正在流式输出的会话 id（会话列表逐个显示"进行中"徽标）
+      streamingSessions: [],
+      // 最近开始流式的会话（页面刷新后据此重新挂载）
+      lastStreamingSession: null,
+      // 当前正在流式输出的 assistant 消息 id（组件级，供 handleStop 等跨函数使用；
+      // 之前误引用 handleSendMessage 的局部变量 assistantMsgId 导致停止按钮抛 ReferenceError）
+      streamingAssistantId: null,
+      error: null,
+      currentAbortController: null,
+      // HITL: 审批待处理状态，存储 { threadId, assistantMsgId }
+      pendingApproval: null,
+      sessionUsage: { input_tokens: 0, output_tokens: 0, reasoning_tokens: 0, context_length: null, auto_compress_tokens: null, context_tokens: 0 },
+      // 当前会话累计耗时（秒），每次 AI 回复完成后累加
+      sessionDuration: 0,
+      // 当前会话累计迭代次数（step 数），每次 AI 回复完成后累加
+      iterationCount: 0,
+      currentTodos: [],
+      presetQuestions: [],
+      // 本页已建立实时挂载的会话及模式（避免重复挂载/重复回放）：
+      // { [sessionId]: 'displayed' | 'background' }
+      attachedStreamingSessions: {},
+      isSidebarCollapsed: false,
+      isWorkspaceCollapsed: true,
+      showAssets: false,
+      showKnowledge: false,
+      sidebarWidth: 280,
+      showSkillCenter: false,
+      showScheduledTasks: false,
+      showSettingsPanel: false,
+      showUserManagementPanel: false,
+      showWelcome: false,
+      // 免密登录开关（模板用：未授权提示的文案按开关区分）
+      passwordlessEnabled: PASSWORDLESS_LOGIN_ENABLED,
+      // 首屏引导中：认证 + 会话列表 + 首次历史加载完成前不渲染聊天区，
+      // 否则会先闪出空会话首页、会话时间下方那条分隔线也会闪一下。
+      isBootstrapping: true,
+      scrollTrigger: 0,
+      userProfile: {
+        username: '',
+        organization_id: '',
+        email: ''
+      },
+      // 非响应式定时器句柄
+      filesCheckTimer: null
+    }
+  },
+  computed: {
+    currentSessionCreatedAt() {
+      if (!this.currentSessionId) return null
+      const session = this.sessions.find(s => s.session_id === this.currentSessionId)
+      return session && session.created_at ? session.created_at : null
+    },
+    // 输入框状态：当前展示的会话正在流式时才显示停止按钮与 token 用量
+    isStreaming() {
+      return this.isSessionStreaming(this.currentSessionId)
+    }
+  },
+  watch: {
+    // 刷新后恢复到用户刷新前所在的会话；bootstrap 完成前不写入，避免用初始 null 覆盖已存值
+    currentSessionId(sid) {
+      if (!this.hasBootstrapped) return
+      try {
+        localStorage.setItem(ACTIVE_SESSION_KEY, sid || NEW_SESSION_MARK)
+      } catch (_) { /* localStorage 不可用时忽略 */ }
+    },
+    // 流式会话集合变化 -> 持久化到 sessionStorage（页面刷新后据此恢复）
+    streamingSessions() {
+      this.saveStreamState()
+    },
+    lastStreamingSession() {
+      this.saveStreamState()
+    },
+    // HITL 历史恢复：切换/重载会话后重建待审批状态
+    loadedSessionId() {
+      this.reconstructPendingApproval()
+    }
+  },
+  mounted() {
+    // 页面标题（原 src/config.js 中设置，现收敛到组件内）
+    document.title = APP_TITLE
+    // 登录开关自检：两者同时关闭时没有任何登录入口，属于配置错误
+    if (!LOGIN_PAGE_ENABLED && !PASSWORDLESS_LOGIN_ENABLED) {
+      console.warn(
+        '[登录] LOGIN_PAGE_ENABLED 与 PASSWORDLESS_LOGIN_ENABLED 同时为 false，将无任何登录入口，请检查配置'
+      )
+    }
+    console.info(
+      `[登录] 登录页=${LOGIN_PAGE_ENABLED ? '开启' : '关闭'} | 免密登录=${PASSWORDLESS_LOGIN_ENABLED ? '开启' : '关闭'}`
+    )
+    window.addEventListener(AUTH_EXPIRED_EVENT, this.handleLogout)
+    this.initApp()
+  },
+  methods: {
+    // 应用初始化：免密登录 -> 加载用户资料 -> 恢复会话与流式任务
+    async initApp() {
+      try {
+        // URL 免密直登（?username=xxx&user_id=yyy）：成功则直接进入主界面
+        if (await this.handlePasswordlessUrlLogin()) return
+        // 免密登录（仅登录页关闭时生效）：由前端模拟用户信息直接登录，
+        // 成功后 handleWelcomeCompleted 已完成首屏引导（此路径不调用 loadUserProfile）
+        if (!LOGIN_PAGE_ENABLED && PASSWORDLESS_LOGIN_ENABLED && (await this.handlePasswordlessLogin())) return
+        // 免密关闭或免密失败：走常规资料加载（无有效登录态时回落到登录页 / 未授权提示）
+        await this.loadUserProfile()
+        if (!this.showWelcome && !this.authBlocked) {
+          // 拉取可选模型列表（不阻塞会话加载）
+          this.loadModels()
+          await this.loadSessions()
+          await this.restoreInitialSession()
         }
       } finally {
         // 未登录时也解除首屏门控，让 Welcome 登录页正常显示
@@ -1462,46 +1542,62 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
               setReactive(this.messages, idx, { ...this.messages[idx] })
             }
           }
-          messages.value[idx] = { ...messages.value[idx], blocks: [...messages.value[idx].blocks] }
-        }
-      }
-    },
-  }
-  const { onChunk } = createStreamChunkHandler(streamCtx)
-
-  try {
-    markStreaming(currentSessionId.value)
-    const controller = new AbortController()
-    currentAbortController.value = controller
-    const abortSignal = signal || controller.signal
-
-    // 更新会话缓存状态
-    if (currentSessionId.value) {
-      sessionStates.value[currentSessionId.value] = {
-        ...sessionStates.value[currentSessionId.value],
-        isStreaming: true,
-        abortController: controller
-      }
-    }
-
-    await sendMessage(
-      currentSessionId.value,
-      message,
-      onChunk,
-      abortSignal,
-      enableDeepThink,
-      files,
-      selectedModel.value,
-      enableWebSearch
-    )
-
-    await expandWorkspaceAfterSessionCompletion(streamSessionId)
-  } catch (e) {
-    if (e.name === 'AbortError') {
-      // Mark assistant message as complete (loading=false) so spinners stop
-      runInSession(streamSessionId, streamCtx, () => {
-        if (assistantMsgId) {
-          const idx = messages.value.findIndex(m => m.id === assistantMsgId)
+        } else if (eventType === 'thinking_end') {
+          touchBlocks()
+          if (ctx.isResume) {
+            // 健壮地为对应思考块设置 duration。HITL 恢复流中，思考之后往往紧跟
+            // tool_call/tool_result 事件，currentBlock 已被改写为工具块或 null，
+            // 仅依赖 currentBlock 会导致思考块 duration 一直为 null（前端误显示
+            // "正在思考…"）。因此优先按 step 匹配，再回退到 currentBlock 与最后
+            // 一个无 duration 的思考块。
+            const idx = findIdx()
+            if (idx !== -1) {
+              let blockIdx = this.messages[idx].blocks.findIndex(b => b.type === 'thinking' && b.step === (step || 0))
+              if (blockIdx === -1 && currentBlock && currentBlock.type === 'thinking') {
+                blockIdx = this.messages[idx].blocks.indexOf(currentBlock)
+              }
+              if (blockIdx === -1) {
+                for (let i = this.messages[idx].blocks.length - 1; i >= 0; i--) {
+                  if (this.messages[idx].blocks[i].type === 'thinking') { blockIdx = i; break }
+                }
+              }
+              if (blockIdx !== -1) {
+                setReactive(this.messages[idx].blocks, blockIdx, { ...this.messages[idx].blocks[blockIdx], duration: duration || 0 })
+                setReactive(this.messages, idx, { ...this.messages[idx], blocks: [...this.messages[idx].blocks] })
+              }
+            }
+          } else {
+            updateThinkingDuration(duration || 0, step || 0)
+          }
+          currentThinking = ''
+          currentBlock = null
+        } else if (eventType === 'content_start') {
+          if (!currentBlock || currentBlock.type !== 'content') {
+            currentContent = ''
+            currentBlock = null
+            addBlock('content', { content: '', step: step || 0 })
+          }
+        } else if (eventType === 'content') {
+          const targetStep = step || 0
+          // 正文块必须带 step，否则按 step 排序时会落到顶部（step=0）。同一 step 的
+          // 正文分段到达（reopen）时复用已有正文块，避免同 step 产生多个正文块。
+          if (!currentBlock || currentBlock.type !== 'content' || currentBlock.step !== targetStep) {
+            const idx0 = findIdx()
+            let existing = null
+            if (idx0 !== -1) existing = this.messages[idx0].blocks.find(b => b.type === 'content' && b.step === targetStep)
+            if (existing) {
+              currentContent = (existing.content || '') + (content || '')
+              currentBlock = existing
+            } else {
+              currentContent = content || ''
+              currentBlock = null
+              addBlock('content', { content: currentContent, step: targetStep })
+            }
+          } else {
+            currentContent += content || ''
+          }
+          if (currentBlock && currentBlock.type === 'content') currentBlock.content = currentContent
+          const idx = findIdx()
           if (idx !== -1) {
             if (ctx.isResume) this.messages[idx].content = (this.messages[idx].content || '') + (content || '')
             touchBlocks()
