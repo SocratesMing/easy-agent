@@ -10,10 +10,10 @@ const CopyPlugin = require('copy-webpack-plugin')
 // 当前环境取自 .env.<mode> 中的 VUE_APP_AGENT_ENV（由 scripts/env-mode.mjs 决定加载哪个
 // .env 文件），也可用 VUE_APP_PROXY_TARGET 直接覆盖代理目标。
 const PROXY_TARGETS = {
-  dev: 'http://localhost:8000',
+  dev: 'http://localhost:8080',
   test: 'http://192.168.1.100:8007',
-  prod: 'http://192.168.1.200:8000',
-  win: 'http://127.0.0.1:8000',
+  prod: 'http://192.168.1.200:8080',
+  win: 'http://127.0.0.1:8080',
 }
 
 const AGENT_ENV =
