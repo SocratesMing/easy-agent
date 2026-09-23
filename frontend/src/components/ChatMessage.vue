@@ -211,12 +211,214 @@ const langAliases = {
   'vue': 'xml',
 }
 
-// 处理过程类型：思考 + 工具调用（排除已在侧边栏显示的 write_todos）
-function isProcessType(b) {
-  return (
-    b.type === 'thinking' ||
-    (b.type === 'tool_call' && b.tool_name !== 'write_todos')
-  )
+onMounted(async () => {
+  try {
+    highlighter.value = await createHighlighter({
+      themes: ['github-light'],
+      langs: ['javascript', 'typescript', 'python', 'java', 'cpp', 'c', 'go', 'rust', 'html', 'css', 'json', 'yaml', 'markdown', 'bash', 'shell', 'sql', 'xml', 'vue', 'jsx', 'tsx', 'text']
+    })
+  } catch (e) {
+    console.error('Shiki 初始化失败:', e)
+  }
+})
+
+watch(() => props.message.id, () => {
+  expandedThinking.value = {}
+  expandedTool.value = {}
+})
+
+// 判断 assistant 消息是否有任何可见内容
+const hasAnyContent = computed(() => {
+  const m = props.message
+  if (m.blocks && m.blocks.length > 0) return true
+  if (m.thinking) return true
+  if (m.content) return true
+  if (m.tool_calls && m.tool_calls.length > 0) return true
+  return false
+})
+
+const sortedBlocks = computed(() => {
+  // 从 blocks 字段构建（优先使用）
+  if (props.message.blocks && props.message.blocks.length > 0) {
+    // 严格按大模型返回顺序（创建顺序 order）展示，不做按 step/类型的二次重排：
+    // 旧数据 content 块无 step，按 step 重排会把它排到顶部；按 order 原序则正文
+    //（创建最晚、order 最大）自然落在最后。同一 step「先思考后工具」由创建顺序保证
+    //（reopen 时思考晚于工具创建的极端情况，已在 addBlock 中用更小的 order 纠正）。
+    const sorted = [...props.message.blocks].sort((a, b) => (a.order || 0) - (b.order || 0))
+    // 兼容数据：blocks 存在但没有 content 类型的 block 时，从 message.content 补充。
+    // 正文是模型最终输出的回答，应排在所有思考/工具块之后（与实时流式中 content
+    // 事件最后到达的顺序一致）；原先插到首个思考块之前，会导致历史会话正文显示在最顶部。
+    const hasContentBlock = sorted.some(b => b.type === 'content')
+    if (!hasContentBlock && props.message.content) {
+      sorted.push({
+        type: 'content',
+        content: props.message.content,
+        order: sorted.length
+      })
+      // 重新排列 order
+      sorted.forEach((b, i) => { b.order = i })
+    }
+    // 防御性合并：将同一 step 的思考块合并为一张「思考过程」卡片。
+    // 即使流式过程中因事件时序/乱序产生了重复思考块，也能保证一个 step 的思考内容
+    // 渲染为单张卡片，而非被拆成「我是」「大模型」等多段。
+    const merged = []
+    const thinkingByStep = new Map()
+    for (const b of sorted) {
+      if (b.type === 'thinking') {
+        const key = (b.step === undefined || b.step === null) ? '__nostep__' : b.step
+        const prev = thinkingByStep.get(key)
+        if (prev) {
+          prev.content = (prev.content || '') + (b.content || '')
+          if (b.duration != null) prev.duration = b.duration
+          continue
+        }
+        const clone = { ...b }
+        thinkingByStep.set(key, clone)
+        merged.push(clone)
+        continue
+      }
+      merged.push(b)
+    }
+    return merged
+  }
+
+  // 否则从旧数据格式创建 blocks（用于从数据库加载的消息）
+  const blocks = []
+
+  // 添加思考 block
+  if (props.message.thinking) {
+    blocks.push({
+      type: 'thinking',
+      content: props.message.thinking,
+      duration: props.message.thinking_duration,
+      step: 0,
+      order: 0
+    })
+  }
+
+  // 添加工具调用 blocks（合并参数、结果、耗时到一个卡片）
+  if (props.message.tool_calls && props.message.tool_calls.length > 0) {
+    props.message.tool_calls.forEach((tool, idx) => {
+      const tcArgs = tool.arguments && typeof tool.arguments === 'object' && Object.keys(tool.arguments).length > 0
+        ? tool.arguments
+        : {}
+      blocks.push({
+        type: 'tool_call',
+        tool_name: tool.tool_name,
+        arguments: tcArgs,
+        result: tool.result || '',
+        success: tool.success !== false,
+        duration: tool.duration,
+        step: tool.step || 0,
+        approval_status: tool.approval_status || undefined,
+        order: idx + 1
+      })
+    })
+  }
+
+  // 添加内容 block
+  if (props.message.content) {
+    blocks.push({
+      type: 'content',
+      content: props.message.content,
+      order: blocks.length + 1
+    })
+  }
+
+  return blocks
+})
+
+// 处理过程：思考 + 工具调用（排除已在侧边栏显示的 write_todos）。
+// 正文统一由 finalContentBlocks 完整渲染，不再作为「中间穿插」放进执行过程——
+// 后端按模型 turn 把正文拆成多个 content 块，若只取最后一块，被工具调用隔开的
+// 表格/代码片段会丢失；拼接所有块才能保证实时与历史渲染一致。
+// origIndex 保留在 sortedBlocks 中的原始下标，供折叠状态函数定位 block。
+const _isProcessType = (b) =>
+  b.type === 'thinking' || (b.type === 'tool_call' && b.tool_name !== 'write_todos')
+
+// 最终正文：仅当消息完成（非流式且无待审批 HITL）时，取 order 最大的一段 content
+// 展示在处理过程之后；思考/工具执行过程中到达的中间正文按返回顺序渲染在执行过程
+// 内部（process-inline-content），不混入最终正文区。
+const finalContentBlocks = computed(() => {
+  const contents = sortedBlocks.value
+    .map((b, i) => ({ ...b, origIndex: i }))
+    .filter((b) => b.type === 'content')
+  if (contents.length === 0) return []
+  contents.sort((a, b) => (a.order || 0) - (b.order || 0))
+  // 有思考/工具执行过程时：流式/HITL 期间中间正文留在执行过程内部按序展示，
+  // 完成后才把最后一段正文移到过程之后；
+  // 无执行过程（纯正文回复）时：流式中也要实时显示在过程外。
+  const hasProcess = sortedBlocks.value.some(_isProcessType)
+  if (!isMessageFinished.value && hasProcess) return []
+  return [contents[contents.length - 1]]
+})
+
+const processBlocks = computed(() => {
+  const finalOrigIndex = finalContentBlocks.value[0]?.origIndex
+  const result = []
+  sortedBlocks.value.forEach((b, i) => {
+    if (_isProcessType(b)) {
+      result.push({ ...b, origIndex: i })
+      return
+    }
+    // 非最终正文的 content -> 中间穿插，按返回顺序纳入执行过程内部展示
+    if (b.type === 'content' && i !== finalOrigIndex) {
+      result.push({ ...b, origIndex: i })
+    }
+  })
+  return result
+})
+
+// 消息是否已真正完成：非流式中（loading=false）且无待审批（pending_approval）
+const isMessageFinished = computed(() =>
+  !props.message.loading && !props.message.pending_approval
+)
+
+// 「步骤数」仅统计思考与工具调用，不含穿插的正文。
+const processStepCount = computed(() =>
+  processBlocks.value.filter((b) => _isProcessType(b)).length
+)
+
+// 处理是否仍在进行：消息仍在流式（loading）即视为处理中，扫光动画保持；流式结束
+// （loading=false）动画消失。与正文位置解耦，避免正文一出现动画就关、后续工具仍在
+// 跑却无动画提示的问题。
+const isProcessActive = computed(() => !!props.message.loading)
+
+// 处理过程默认折叠（含实时会话），由用户手动展开/折叠；新过程到达不自动展开，
+// 避免打断用户已收起的查看状态。
+const processExpanded = ref(false)
+// 用户是否手动操作过执行过程的展开/折叠：一旦手动操作，本次消息内不再自动展开。
+// 必须加这道闸——流式期间 blocks 每次变化都会让下面的 watch 重新求值，否则用户
+// 点折叠会被「自动展开」立刻顶回去，表现为「流式返回时点击折叠按钮无效」。
+const processToggledByUser = ref(false)
+
+// 流式期间只要出现穿插正文（思考/工具之间的中间正文），自动展开执行过程，
+// 让中间正文按返回顺序可见；完成后保持用户手动展开/收起的状态。
+watch(
+  () => [
+    props.message.loading,
+    processBlocks.value.some((b) => b.type === 'content'),
+  ],
+  ([loading, hasInlineContent]) => {
+    if (processToggledByUser.value) return
+    if (loading && hasInlineContent && !processExpanded.value) {
+      processExpanded.value = true
+    }
+  },
+  { immediate: true }
+)
+
+// 出现待审批的工具调用（HITL）时自动展开，便于用户查看审批提示。
+const hasPendingApproval = computed(() =>
+  processBlocks.value.some(b => b.type === 'tool_call' && b.approval_status === 'pending')
+)
+watch(() => hasPendingApproval.value, (pending) => {
+  if (pending) processExpanded.value = true
+})
+
+function toggleProcess() {
+  processToggledByUser.value = true
+  processExpanded.value = !processExpanded.value
 }
 
 // 代码高亮：highlight.js（同步 API，没有异步初始化，因此不再需要就绪标记来触发重渲染）。

@@ -292,6 +292,9 @@ export default {
       // 处理过程默认展开（含实时会话），由用户手动展开/折叠；新过程到达不自动展开，
       // 避免打断用户已收起的查看状态。
       processExpanded: true,
+      // 用户手动操作过展开/折叠后，本次消息内不再自动展开：流式期间 blocks 每次变化
+      // 都会触发下面的 watch，否则点击折叠会被自动展开顶回去（点击折叠无效）。
+      processToggledByUser: false,
       isStuck: false,
     }
   },
@@ -466,6 +469,7 @@ export default {
     // 流式期间只要出现穿插正文（思考/工具之间的中间正文），自动展开执行过程，
     // 让中间正文按返回顺序可见；完成后保持用户手动展开/收起的状态。
     hasProcessInlineContent(val) {
+      if (this.processToggledByUser) return
       if (this.message.loading && val && !this.processExpanded) {
         this.processExpanded = true
       }
@@ -473,6 +477,7 @@ export default {
     'message.loading': {
       immediate: true,
       handler(loading) {
+        if (this.processToggledByUser) return
         if (loading && this.hasProcessInlineContent && !this.processExpanded) {
           this.processExpanded = true
         }
@@ -558,6 +563,7 @@ export default {
       return this.expandedTool[key] !== false
     },
     toggleProcess() {
+      this.processToggledByUser = true
       this.processExpanded = !this.processExpanded
     },
     // 执行过程头部冻结（sticky 卡住）检测：卡住时补绘顶边框——wrapper 顶边框已随滚动

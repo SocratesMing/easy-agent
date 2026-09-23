@@ -251,6 +251,14 @@ async def _execute_task(task_id: str):
         )
         return
 
+    # 抢锁成功也要留痕：多 pod 部署下这是判断「本月次执行到底加没加锁」的唯一线索，
+    # 只记失败/跳过会让日志里完全看不到分布式锁的存在。
+    if lock_handle.enabled:
+        logger.info(
+            f"[{task_id[-5:]}] 🔒 已获取分布式锁 | task={task.name} | key={lock_handle.key} | "
+            f"owner={lock_handle.owner} | ttl={lock_handle.ttl_seconds}s"
+        )
+
     # 登记在途运行，便于暂停/删除时中断
     running = asyncio.current_task()
     running_tasks[task_id] = running
@@ -434,7 +442,9 @@ async def _execute_task(task_id: str):
             )
         # 最后释放锁：等本次运行的记录都写完之后，其它实例才能接管这个任务
         try:
-            lock_handle.release()
+            released = lock_handle.release()
+            if released and lock_handle.enabled:
+                logger.info(f"[{task_id[-5:]}] 🔓 已释放分布式锁 | task={task.name}")
         except Exception as e:
             logger.warning(
                 f"[{task_id[-5:]}] 释放分布式锁失败（TTL 到期后会自动失效）: {e}"

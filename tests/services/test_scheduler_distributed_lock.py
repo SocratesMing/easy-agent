@@ -6,6 +6,7 @@
 """
 
 import asyncio
+import logging
 from types import SimpleNamespace
 
 import pytest
@@ -136,6 +137,24 @@ async def test_disabled_lock_keeps_previous_behaviour(db, monkeypatch, patched):
         cursor = conn.cursor()
         db._execute(cursor, "SELECT COUNT(*) FROM distributed_locks")
         assert cursor.fetchone()[0] == 0
+
+
+@pytest.mark.asyncio
+async def test_lock_acquire_and_release_are_logged(
+    db, monkeypatch, patched, caplog: pytest.LogCaptureFixture
+):
+    """开启分布式锁时，抢锁/释放都必须打日志，否则多 pod 部署下无法确认锁是否生效
+    （用户反馈：定时任务执行时日志里看不到任何分布式锁输出）。"""
+    _create_task(db)
+    monkeypatch.setattr(sched, "get_distributed_lock", lambda: _use_lock(db, "pod-self"))
+
+    with caplog.at_level(logging.INFO, logger="easy_agent.scheduler"):
+        await sched._execute_task(TASK_ID)
+
+    text = caplog.text
+    assert "已获取分布式锁" in text, f"缺少抢锁日志: {text}"
+    assert "已释放分布式锁" in text, f"缺少释放日志: {text}"
+    assert "owner=pod-self" in text
 
 
 @pytest.mark.asyncio

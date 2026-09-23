@@ -83,6 +83,9 @@ _detached_bg_tasks: "set[asyncio.Task]" = set()
 # 先回放本流已产生的全部事件，再持续接收后续事件（页面刷新不中断流式展示）。
 _session_stream_hubs: "dict[str, _StreamHub]" = {}
 _STREAM_HUB_TTL_SECONDS = 120.0
+# 订阅者队列的余量：回放必须完整（历史上限 10000 条，见 broadcast），
+# 队列容量按「当前历史长度 + 余量」分配，用于容纳回放期间新产生的事件。
+_SUBSCRIBER_QUEUE_SLACK = 1000
 
 
 class _StreamHub:
@@ -101,12 +104,15 @@ class _StreamHub:
         self._cleanup_handle: asyncio.TimerHandle | None = None
 
     def subscribe(self) -> asyncio.Queue:
-        q: asyncio.Queue = asyncio.Queue(maxsize=1000)
+        # 容量必须容纳「整段历史回放 + 运行中新增事件」。早期实现固定
+        # maxsize=1000 且满即 break，历史超过 1000 条时会把中间事件静默丢掉——
+        # 表现为长流程（多轮工具 + 大量 thinking 增量）刷新页面后，重连的回放里
+        # 只剩早期思考、tool_call 卡片消失（工具事件正好落在被丢弃的区间）。
+        q: asyncio.Queue = asyncio.Queue(
+            maxsize=len(self.history) + _SUBSCRIBER_QUEUE_SLACK
+        )
         for item in self.history:
-            try:
-                q.put_nowait(item)
-            except asyncio.QueueFull:
-                break
+            q.put_nowait(item)
         if self.done:
             q.put_nowait(None)
         else:
@@ -128,8 +134,15 @@ class _StreamHub:
             try:
                 q.put_nowait(item)
             except asyncio.QueueFull:
-                # 慢消费者：直接断开，避免阻塞后台流式任务
+                # 慢消费者：直接断开，避免阻塞后台流式任务；但必须先投一个 EOF，
+                # 否则订阅方的 SSE 生成器会永远 await 在一张不再有人写入的队列上
+                # （连接挂起、前端"执行中"状态无法收尾）。
                 self.unsubscribe(q)
+                try:
+                    q.get_nowait()  # 腾出一格
+                    q.put_nowait(None)
+                except (asyncio.QueueEmpty, asyncio.QueueFull):
+                    pass
 
     def close(self) -> None:
         if self.done:

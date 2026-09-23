@@ -115,7 +115,7 @@ async function readSseStream(response, onChunk, abortSignal, controller) {
   }
 }
 
-export async function attachStream(sessionId, onChunk, signal) {
+export async function sendMessage(sessionId, message, onChunk, signal, enableDeepThink = true, files = [], model = null, enableWebSearch = false) {
   const controller = new AbortController()
   const abortSignal = signal || controller.signal
   const response = await handleStreamResponse(

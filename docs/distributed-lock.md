@@ -13,8 +13,6 @@
 | --- | --- | --- | --- |
 | 定时任务 cron 触发 | `easy_agent/services/scheduler.py`（`reload_all_tasks` / `_execute_task`）、`easy_agent/app.py`（`_start_scheduler`） | 每个 pod 启动时都会把 DB 里所有 enabled 任务注册进自己的 APScheduler，同一 cron 到点后所有 pod 各触发一次：任务被重复执行、重复建 session/run 记录、重复调 LLM | ✅ 已用分布式锁互斥，开关 `distributed_lock.enabled` |
 | 手动触发任务 `POST /{task_id}/run` | `easy_agent/api/scheduled_tasks.py` | 请求只落在某一个 pod 上，只有该 pod 的调度器会执行；但可能与其它 pod 的 cron 触发同时进行 | ✅ 与 cron 共用同一把锁，并发触发只有一个真正执行 |
-| 知识库任务队列 | `easy_agent/knowledge/worker.py`（`claim_next_task` / `heartbeat_task` / `recover_stale_tasks`） | 已经是「DB 条件 UPDATE 抢占 + 心跳续期 + 超时回收」的多 worker 安全模型 | ✅ 已有 DB 抢占机制，无需再加锁 |
-| 知识库对账与告警维护 | `KnowledgeTaskWorker.maintain()` → `KnowledgeReconciler.run()` | 每个 worker 都会跑对账扫描与告警 upsert；写入是幂等的，但会重复扫描远端、重复执行修复动作（浪费配额） | ⚠️ 可选优化：用同一把锁让单个 worker 执行对账 |
 
 ### 2. 进程内状态类（不是重复执行，但多实例下行为不一致）
 

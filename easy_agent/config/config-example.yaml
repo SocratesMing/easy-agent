@@ -76,7 +76,7 @@ web_search:
   provider: "${WEB_SEARCH_PROVIDER:-tavily}"  # tavily（默认）| internal（内网 WebSearch 接口）
   # 留空 = 用 provider 默认地址：tavily → https://api.tavily.com/search
   #                              internal → http://28.221.28.7:10089/api/v1/webSearch（测试环境）
-  api_url: "${WEB_SEARCH_API_URL:-http://28.221.28.7:10089/api/v1/webSearch}"
+  api_url: "${WEB_SEARCH_API_URL:-}"
   api_key: "${WEB_SEARCH_API_KEY}"  # tavily 在 https://app.tavily.com 申请（tvly- 开头）
   search_depth: "${WEB_SEARCH_SEARCH_DEPTH:-basic}"  # 仅 tavily：basic | advanced | fast | ultra-fast
   topic: "${WEB_SEARCH_TOPIC:-general}"  # 仅 tavily：general | news | finance；带时间范围时自动用 news

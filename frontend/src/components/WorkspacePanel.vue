@@ -144,6 +144,7 @@
             :selectedId="selectedFile?.id"
             :depth="0"
             :sessionId="currentSessionId"
+            :taskId="taskId"
             @select="handleSelectFile"
           @download="handleDownloadFile"
           />
@@ -166,6 +167,7 @@
         :filename="activeTab?.name || ''"
         :filePath="activeTab?.file_path || ''"
         :sessionId="currentSessionId"
+        :taskId="taskId"
         :visible="showPreview"
         inline
         @close="closeTab(activeTabId)"
@@ -178,10 +180,22 @@
 import FileTreeNode from './FileTreeNode.vue'
 import FilePreview from './FilePreview.vue'
 import { getWorkspaceTree } from '../api/files'
+import { getScheduledTaskWorkspace } from '../api/scheduledTasks'
 import { getStoredToken } from '../api/auth.js'
 
-// 文件树固定在第一个 tab；宽度/动画常量集中在此
-const TREE_TAB = '__tree__'
+const props = defineProps({
+  username: { type: String, default: '' },
+  currentSessionId: { type: String, default: null },
+  // 定时任务工作目录模式：传入 taskId 时改为读取该任务的工作目录，
+  // 其余（文件树 / 标签页 / 预览 / 下载 / 全屏）与会话工作区完全共用。
+  taskId: { type: String, default: '' },
+  isStreaming: { type: Boolean, default: false },
+  visible: { type: Boolean, default: true },
+})
+
+const emit = defineEmits(['toggle'])
+
+// ── 面板宽度（可拖拽，宽度持久化到 localStorage）──────────────────
 const WIDTH_KEY = 'workspace_panel_width'
 const WIDTH_MIN = 220
 const WIDTH_MAX = 640
@@ -214,254 +228,131 @@ export default {
       panelWidth: Number(localStorage.getItem(WIDTH_KEY)) || WIDTH_DEFAULT,
       isResizing: false,
 
-      // ── 全屏（页面内铺满视口）───────────────────────────────────
-      isFullscreen: false,
+// 数据源标识：定时任务工作目录（taskId）优先，否则会话工作区（currentSessionId）。
+// 两种来源共用同一套「文件树 + 标签页 + 预览」，只有取数与下载地址不同。
+const activeSourceKey = computed(() => props.taskId || props.currentSessionId || '')
 
-      // 折叠时延迟卸载内容：让内容跟着宽度一起被 overflow 裁进去，
-      // 否则会变成「内容先消失、再收起一条空白面板」，观感很生硬
-      renderContent: this.visible,
-      // 折叠/展开的宽度动画期间为 true：此时暂停预览内容的布局与绘制（见 CSS）。
-      // 面板宽度逐帧变化会让 iframe / office 预览反复重排，是卡顿的主要来源。
-      isPanelAnimating: false,
-      unloadTimer: null,
-      animTimer: null,
-    }
-  },
-  computed: {
-    activeTab() {
-      return this.openTabs.find((t) => t.id === this.activeTabId) || null
-    },
-    // 有激活的文件 tab 即处于预览态（沿用原 showPreview 的语义）
-    showPreview() {
-      return this.activeTab !== null
-    },
-    panelStyle() {
-      if (this.isFullscreen) {
-        return {
-          position: 'fixed',
-          top: '0',
-          right: '0',
-          bottom: '0',
-          left: '0',
-          width: '100%',
-          zIndex: '150',
-          // 宽度瞬变交给 FLIP 位移动画呈现，自身不再补间
-          transition: 'none',
-        }
-      }
-      return { width: this.visible ? `${this.panelWidth}px` : '0px' }
-    },
-  },
-  watch: {
-    visible: [
-      // 折叠/展开的宽度动画与延迟卸载
-      function (v) {
-        this.isPanelAnimating = true
-        clearTimeout(this.animTimer)
-        this.animTimer = setTimeout(() => {
-          this.isPanelAnimating = false
-        }, ANIM_MS)
-
-        clearTimeout(this.unloadTimer)
-        if (v) {
-          this.renderContent = true
-        } else {
-          this.unloadTimer = setTimeout(() => {
-            this.renderContent = false
-          }, ANIM_MS)
-        }
-      },
-      function (newVal) {
-        if (newVal) {
-          this.refresh()
-        }
-      },
-    ],
-    isStreaming(newVal, oldVal) {
-      if (oldVal === true && newVal === false) {
-        setTimeout(() => this.refresh(), 300)
-      }
-    },
-    currentSessionId() {
-      this.resetWorkspaceView()
-      this.refresh()
-    },
-  },
-  methods: {
-    // ── 全屏（页面内铺满视口）───────────────────────────────────
-    // 用 position: fixed 覆盖浏览器视口 —— 不是 Fullscreen API（那会把地址栏/
-    // 标签栏也收起，用户不要整屏全屏）。视口全屏的 Esc 退出需要自己监听。
-    // FLIP 过渡：切换前记录位置，切换后（fixed 全屏生效）先反向位移 + 淡入，
-    // 再动画回位 —— 面板看起来是从原位置「滑入」全屏，而不是瞬移。
-    // 只用 translate 不用 scale，内容不会被拉伸变形。
-    playFullscreenFlip(el, first) {
-      if (!el || !first) return
-      const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches
-      if (reduced) return
-      this.$nextTick(() => {
-        requestAnimationFrame(() => {
-          const last = el.getBoundingClientRect()
-          const dx = first.left - last.left
-          const dy = first.top - last.top
-          if (Math.abs(dx) < 1 && Math.abs(dy) < 1) return
-          // FLIP 期间禁用 width transition，避免宽度过渡与位移动画叠加
-          el.style.transition = 'none'
-          const anim = el.animate(
-            [
-              { transform: `translate(${dx}px, ${dy}px)`, opacity: 0.55 },
-              { transform: 'translate(0, 0)', opacity: 1 },
-            ],
-            { duration: 280, easing: 'cubic-bezier(0.2, 0.7, 0.3, 1)' }
-          )
-          const done = anim.finished
-            ? anim.finished
-            : new Promise((resolve) => { anim.onfinish = resolve })
-          done.then(() => { el.style.transition = '' }).catch(() => { el.style.transition = '' })
-        })
-      })
-    },
-    toggleFullscreen() {
-      const el = this.$refs.rootEl
-      const first = el ? el.getBoundingClientRect() : null
-      // 同步先禁掉 width transition：状态切换会让宽度瞬变，交给 FLIP 位移动画呈现，
-      // 动画结束后由 playFullscreenFlip 恢复默认过渡
-      if (el) el.style.transition = 'none'
-      this.isFullscreen = !this.isFullscreen
-      this.playFullscreenFlip(el, first)
-    },
-    handleCollapse() {
-      // 先退出全屏再收起：否则面板会带着全屏宽度进入折叠动画
-      this.isFullscreen = false
-      this.$emit('toggle')
-    },
-    onKeydown(e) {
-      if (e.key === 'Escape' && this.isFullscreen) {
-        this.isFullscreen = false
-      }
-    },
-    startResize(e) {
-      this.isResizing = true
-      e.preventDefault()
-      document.addEventListener('mousemove', this.onResize)
-      document.addEventListener('mouseup', this.stopResize)
-      document.body.style.cursor = 'col-resize'
-      document.body.style.userSelect = 'none'
-    },
-    onResize(e) {
-      if (!this.isResizing) return
-      // 面板贴右侧，宽度 = 视口右边缘到鼠标的距离
-      const next = window.innerWidth - e.clientX
-      this.panelWidth = Math.min(WIDTH_MAX, Math.max(WIDTH_MIN, next))
-    },
-    stopResize() {
-      if (!this.isResizing) return
-      this.isResizing = false
-      document.removeEventListener('mousemove', this.onResize)
-      document.removeEventListener('mouseup', this.stopResize)
-      document.body.style.cursor = ''
-      document.body.style.userSelect = ''
-      localStorage.setItem(WIDTH_KEY, String(Math.round(this.panelWidth)))
-    },
-    async buildWorkspaceTree() {
-      const sessionId = this.currentSessionId
-      if (!sessionId) {
-        this.workspaceTreeData = []
-        return
-      }
-      this.isLoading = true
-      this.error = null
-      try {
-        const response = await getWorkspaceTree('', sessionId)
-        // 切换会话期间到达的旧响应丢弃，避免工作区内容串会话
-        if (this.currentSessionId !== sessionId) return
-        this.workspaceTreeData = (response.items || []).map((item) => ({
-          id: item.path,
-          name: item.name,
-          type: item.type,
-          size: item.size,
-          file_type:
-            item.type === 'file'
-              ? item.name.split('.').pop().toLowerCase()
-              : '',
-          file_path: item.path,
-        }))
-      } catch (e) {
-        if (this.currentSessionId !== sessionId) return
-        this.error = '加载工作区失败: ' + e.message
-        this.workspaceTreeData = []
-      } finally {
-        if (this.currentSessionId === sessionId) this.isLoading = false
-      }
-    },
-    tabIdOf(file) {
-      return String(file.id || file.file_path || file.path || file.name || '')
-    },
-    handleSelectFile(file) {
-      this.selectedFile = file
-      const id = this.tabIdOf(file)
-      if (!id) return
-      // 已经打开过就只切换，不重复建 tab
-      if (!this.openTabs.some((t) => t.id === id)) {
-        this.openTabs.push({
-          id,
-          name: file.name || '',
-          file_path: file.file_path || file.path || '',
-        })
-      }
-      this.activeTabId = id
-    },
-    downloadTab(tab) {
-      this.handleDownloadFile({ name: tab.name, file_path: tab.file_path })
-    },
-    closeTab(id) {
-      const idx = this.openTabs.findIndex((t) => t.id === id)
-      if (idx === -1) return
-      this.openTabs.splice(idx, 1)
-      if (this.activeTabId === id) {
-        // 关闭当前 tab：优先接管右侧邻居，其次左侧，都没有则回到文件树
-        const next = this.openTabs[Math.min(idx, this.openTabs.length - 1)]
-        this.activeTabId = next ? next.id : this.TREE_TAB
-      }
-    },
-    handleDownloadFile(file) {
-      const filePath = file.file_path || file.path
-      const token = getStoredToken()
-      const params = new URLSearchParams()
-      params.set('file_path', filePath)
-      params.set('session_id', this.currentSessionId)
-      params.set('download', 'true')
-      if (token) params.set('token', token)
-      // 相对路径：开发由 vue.config.js 的 proxy 转发，生产与后端同源
-      const url = `/agent/files/preview?${params.toString()}`
-      const link = document.createElement('a')
-      link.href = url
-      link.download = file.name
-      document.body.appendChild(link)
-      link.click()
-      document.body.removeChild(link)
-    },
-    refresh() {
-      this.buildWorkspaceTree()
-    },
-    // 会话切换时工作区视图必须整体重来：清空已打开的文件标签、选中态与预览，
-    // 否则旧会话的预览/标签会残留在新会话下（其 file_path 在新会话中无效）。
-    resetWorkspaceView() {
-      this.openTabs = []
-      this.activeTabId = this.TREE_TAB
-      this.selectedFile = null
-    },
-  },
-  mounted() {
-    document.addEventListener('keydown', this.onKeydown)
-    this.buildWorkspaceTree()
-  },
-  beforeDestroy() {
-    document.removeEventListener('keydown', this.onKeydown)
-    this.stopResize()
-    clearTimeout(this.unloadTimer)
-    clearTimeout(this.animTimer)
-  },
+async function buildWorkspaceTree() {
+  const taskId = props.taskId
+  const sessionId = props.currentSessionId
+  const sourceKey = taskId || sessionId
+  if (!sourceKey) {
+    workspaceTreeData.value = []
+    return
+  }
+  isLoading.value = true
+  error.value = null
+  try {
+    const response = taskId
+      ? await getScheduledTaskWorkspace(taskId, '')
+      : await getWorkspaceTree('', sessionId)
+    // 切换来源期间到达的旧响应丢弃，避免工作区内容串会话 / 串任务
+    if (activeSourceKey.value !== sourceKey) return
+    workspaceTreeData.value = (response.items || []).map(item => ({
+      id: item.path,
+      name: item.name,
+      type: item.type,
+      size: item.size,
+      file_type: item.type === 'file' ? item.name.split('.').pop().toLowerCase() : '',
+      file_path: item.path,
+    }))
+  } catch (e) {
+    if (activeSourceKey.value !== sourceKey) return
+    error.value = '加载工作区失败: ' + e.message
+    workspaceTreeData.value = []
+  } finally {
+    if (activeSourceKey.value === sourceKey) isLoading.value = false
+  }
 }
+
+function tabIdOf(file) {
+  return String(file.id || file.file_path || file.path || file.name || '')
+}
+
+function handleSelectFile(file) {
+  selectedFile.value = file
+  const id = tabIdOf(file)
+  if (!id) return
+  // 已经打开过就只切换，不重复建 tab
+  if (!openTabs.value.some(t => t.id === id)) {
+    openTabs.value.push({
+      id,
+      name: file.name || '',
+      file_path: file.file_path || file.path || '',
+    })
+  }
+  activeTabId.value = id
+}
+
+function downloadTab(tab) {
+  handleDownloadFile({ name: tab.name, file_path: tab.file_path })
+}
+
+function closeTab(id) {
+  const idx = openTabs.value.findIndex(t => t.id === id)
+  if (idx === -1) return
+  openTabs.value.splice(idx, 1)
+  if (activeTabId.value === id) {
+    // 关闭当前 tab：优先接管右侧邻居，其次左侧，都没有则回到文件树
+    const next = openTabs.value[Math.min(idx, openTabs.value.length - 1)]
+    activeTabId.value = next ? next.id : TREE_TAB
+  }
+}
+
+function handleDownloadFile(file) {
+  const filePath = file.file_path || file.path
+  const token = getStoredToken()
+  const params = new URLSearchParams()
+  params.set('file_path', filePath)
+  params.set('download', 'true')
+  if (token) params.set('token', token)
+  let url
+  if (props.taskId) {
+    url = `${API_BASE_URL}/agent/scheduled-tasks/${props.taskId}/workspace/file?${params.toString()}`
+  } else {
+    params.set('session_id', props.currentSessionId)
+    url = `${API_BASE_URL}/agent/files/preview?${params.toString()}`
+  }
+  const link = document.createElement('a')
+  link.href = url
+  link.download = file.name
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
+}
+
+function refresh() {
+  buildWorkspaceTree()
+}
+
+watch(() => props.isStreaming, (newVal, oldVal) => {
+  if (oldVal === true && newVal === false) {
+    setTimeout(() => refresh(), 300)
+  }
+})
+
+// 数据源切换（会话或定时任务）时工作区视图必须整体重来：清空已打开的文件标签、
+// 选中态与预览，否则旧来源的预览/标签会残留（其 file_path 在新来源中无效）。
+function resetWorkspaceView() {
+  openTabs.value = []
+  activeTabId.value = TREE_TAB
+  selectedFile.value = null
+}
+
+watch(activeSourceKey, () => {
+  resetWorkspaceView()
+  refresh()
+})
+
+watch(() => props.visible, (newVal) => {
+  if (newVal) {
+    refresh()
+  }
+})
+
+onMounted(() => {
+  buildWorkspaceTree()
+})
 </script>
 
 <style scoped>
@@ -732,6 +623,27 @@ export default {
 .wp-tab-close svg {
   width: 11px;
   height: 11px;
+}
+
+/* 标签栏在浅色下是「页面底色」，深色下沿用同一逻辑（面板 #1a1a1a 上压更深的 #000），
+   否则会保留一块刺眼的浅色条 */
+html[data-theme="dark"] .wp-tabs {
+  background: var(--bg-primary);
+}
+
+html[data-theme="dark"] .wp-tab:hover {
+  background: var(--bg-tertiary);
+}
+
+html[data-theme="dark"] .wp-tab.active {
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  border-bottom-color: var(--accent-color, #0ea5e9);
+}
+
+html[data-theme="dark"] .wp-tab-action:hover,
+html[data-theme="dark"] .wp-tab-close:hover {
+  background: rgba(255, 255, 255, 0.14);
 }
 
 /* 预览挂载层：从「头部 44px + 标签栏 34px」下方开始 */
