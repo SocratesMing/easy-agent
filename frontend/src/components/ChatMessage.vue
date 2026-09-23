@@ -390,6 +390,10 @@ const isProcessActive = computed(() => !!props.message.loading)
 // 处理过程默认折叠（含实时会话），由用户手动展开/折叠；新过程到达不自动展开，
 // 避免打断用户已收起的查看状态。
 const processExpanded = ref(false)
+// 用户是否手动操作过执行过程的展开/折叠：一旦手动操作，本次消息内不再自动展开。
+// 必须加这道闸——流式期间 blocks 每次变化都会让下面的 watch 重新求值，否则用户
+// 点折叠会被「自动展开」立刻顶回去，表现为「流式返回时点击折叠按钮无效」。
+const processToggledByUser = ref(false)
 
 // 流式期间只要出现穿插正文（思考/工具之间的中间正文），自动展开执行过程，
 // 让中间正文按返回顺序可见；完成后保持用户手动展开/收起的状态。
@@ -399,6 +403,7 @@ watch(
     processBlocks.value.some((b) => b.type === 'content'),
   ],
   ([loading, hasInlineContent]) => {
+    if (processToggledByUser.value) return
     if (loading && hasInlineContent && !processExpanded.value) {
       processExpanded.value = true
     }
@@ -415,6 +420,7 @@ watch(() => hasPendingApproval.value, (pending) => {
 })
 
 function toggleProcess() {
+  processToggledByUser.value = true
   processExpanded.value = !processExpanded.value
 }
 
