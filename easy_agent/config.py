@@ -482,6 +482,7 @@ class Config(BaseModel):
             idle_logout_minutes=data.get("idle_logout_minutes", 0),
             denied_dirs=data.get("denied_dirs", []),
             external_dirs=data.get("external_dirs", {}),
+            sandbox_enabled=data.get("sandbox_enabled", True),
         )
 
     @staticmethod
