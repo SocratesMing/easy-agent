@@ -98,6 +98,10 @@ class ProviderConfig(BaseModel):
     # 未显式配置时的默认上下文窗口（1M）；实际值以各 provider 段配置为准。
     context_length: int = 1_000_000
     protocol: str = "openai"  # "openai" or "anthropic"
+    # 额外的请求头（透传给 LLM 客户端）。值里可用 ``{session_id}`` 占位符，
+    # 调用时会替换为当前会话标识——部分网关（如 OpenCode Go）强制要求稳定的
+    # 会话标识（x-opencode-session）与自定义 User-Agent，缺失会直接 400。
+    headers: dict[str, str] = Field(default_factory=dict)
 
 
 class LLMConfig(BaseModel):
@@ -109,6 +113,7 @@ class LLMConfig(BaseModel):
     provider: str = "minimax"
     context_length: int = 1_000_000  # Model context window size
     protocol: str = "openai"  # "openai" or "anthropic"
+    headers: dict[str, str] = Field(default_factory=dict)
     retry: RetryConfig = Field(default_factory=RetryConfig)
 
 
@@ -437,6 +442,7 @@ class Config(BaseModel):
                     api_base=mcfg.get("api_base", ""),
                     context_length=mcfg.get("context_length", 1_000_000),
                     protocol=mcfg.get("protocol", "openai"),
+                    headers=dict(mcfg.get("headers") or {}),
                 )
         return models
 
@@ -464,6 +470,7 @@ class Config(BaseModel):
             provider=active_cfg.provider or active_model,
             context_length=active_cfg.context_length or 1_000_000,
             protocol=active_cfg.protocol or "openai",
+            headers=dict(active_cfg.headers or {}),
             retry=retry_config,
         )
 

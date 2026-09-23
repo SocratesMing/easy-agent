@@ -847,7 +847,12 @@ class EasyAgent:
         """
         from .model import resolve_llm_config
 
-        model = create_model(self.config, model_name=self.model_name)
+        # 带上会话标识：配置里若声明了 ``{session_id}`` 请求头占位符（如 OpenCode Go
+        # 要求的 x-opencode-session），会替换成本会话 id，保证同一会话稳定、
+        # 不同会话可区分（网关用于路由与 prompt 缓存）。
+        model = create_model(
+            self.config, model_name=self.model_name, session_id=self.session_id
+        )
         self.model = model
 
         # 解析实际使用的模型配置（而非 config.llm 默认配置）用于日志

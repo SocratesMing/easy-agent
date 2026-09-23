@@ -9,6 +9,7 @@ is handled by the public ``resolve_llm_config``.
 """
 
 import logging
+import os
 
 from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import AIMessageChunk
@@ -191,11 +192,37 @@ def resolve_llm_config(config: Config, model_name: str | None):
         provider=provider.provider or model_name,
         context_length=provider.context_length or 1_000_000,
         protocol=provider.protocol or "openai",
+        headers=dict(provider.headers or {}),
         retry=retry,
     )
 
 
-def create_model(config: Config, model_name: str | None = None):
+# 未显式传 session_id 时的兜底会话标识：进程内稳定即可——网关只要求「稳定」，
+# 用于路由优化与 prompt 缓存。按会话区分时由调用方（EasyAgent）传入真实 session_id。
+_PROCESS_SESSION_ID = f"easy-agent-{os.getpid()}"
+
+
+def build_request_headers(
+    llm_config: LLMConfig, session_id: str | None = None
+) -> dict[str, str] | None:
+    """把 config 里的 ``headers`` 展开成实际请求头（``{session_id}`` 占位符做替换）。
+
+    用途：部分 OpenAI 兼容网关（如 OpenCode Go）要求客户端自带 User-Agent 与稳定的
+    会话标识请求头，缺失会直接 400（``MissingSessionID``）。没有配置 headers 时
+    返回 None，保持原有行为不变。
+    """
+    if not llm_config.headers:
+        return None
+    sid = session_id or _PROCESS_SESSION_ID
+    return {
+        key: str(value).replace("{session_id}", sid)
+        for key, value in llm_config.headers.items()
+    }
+
+
+def create_model(
+    config: Config, model_name: str | None = None, session_id: str | None = None
+):
     """Create LLM model instance based on protocol.
 
     The protocol field in config determines which API client to use:
@@ -207,6 +234,9 @@ def create_model(config: Config, model_name: str | None = None):
         model_name: Optional model key (from ``config.models``). When provided
             and present, the corresponding provider config is used instead of
             the active model. Useful for per-request model selection.
+        session_id: Optional conversation id, substituted into configured
+            request headers (``{session_id}``). Falls back to a stable
+            per-process id.
 
     Returns:
         LangChain chat model instance.
@@ -230,9 +260,13 @@ def create_model(config: Config, model_name: str | None = None):
     )
 
     if protocol == "openai":
-        return _create_openai_compatible(llm_config)
+        return _create_openai_compatible(
+            llm_config, default_headers=build_request_headers(llm_config, session_id)
+        )
     elif protocol == "anthropic":
-        return _create_anthropic_compatible(llm_config)
+        return _create_anthropic_compatible(
+            llm_config, default_headers=build_request_headers(llm_config, session_id)
+        )
     else:
         raise ValueError(
             f"Unsupported protocol: {protocol}. Use 'openai' or 'anthropic'."
@@ -319,8 +353,11 @@ class ReasoningChatOpenAI(ChatOpenAI):
         return gen
 
 
-def _create_openai_compatible(llm_config) -> ChatOpenAI:
+def _create_openai_compatible(
+    llm_config, default_headers: dict[str, str] | None = None
+) -> ChatOpenAI:
     """Create model using OpenAI-compatible API."""
+    extra = {"default_headers": default_headers} if default_headers else {}
     return ReasoningChatOpenAI(
         model=llm_config.model,
         api_key=llm_config.api_key,
@@ -333,10 +370,13 @@ def _create_openai_compatible(llm_config) -> ChatOpenAI:
         # 话请求不会带 stream_options={"include_usage": true}，这些服务便不在流末尾
         # 返回 usage_metadata，前端「输入/输出/思考 Token」与「本轮上下文占用」会恒为 0。
         stream_usage=True,
+        **extra,
     )
 
 
-def _create_anthropic_compatible(llm_config) -> ChatAnthropic:
+def _create_anthropic_compatible(
+    llm_config, default_headers: dict[str, str] | None = None
+) -> ChatAnthropic:
     """Create model using Anthropic-compatible API.
 
     Works with any provider that exposes an Anthropic-compatible endpoint,
@@ -355,4 +395,6 @@ def _create_anthropic_compatible(llm_config) -> ChatAnthropic:
         "thinking": {"type": "enabled", "budget_tokens": ANTHROPIC_THINKING_BUDGET_TOKENS},
         "max_tokens": ANTHROPIC_MAX_TOKENS,
     }
+    if default_headers:
+        kwargs["default_headers"] = default_headers
     return ChatAnthropic(**kwargs)
