@@ -18,7 +18,6 @@
           @click="$emit('managePersonnel')"
         ><IconUserRoundCog />人员与权限</button>
         <span class="ke-health" :class="healthClass"><i></i>{{ healthLabel }}</span>
-        <button class="ke-button quiet" @click="showOperations = true"><IconActivity />任务</button>
         <button class="ke-button primary" @click="openCreateBase"><IconPlus />新建知识库</button>
       </div>
     </header>
@@ -380,26 +379,12 @@
       </div>
     </div>
 
-    <div v-if="showOperations" class="ke-drawer-mask" @click.self="showOperations = false">
-      <aside class="ke-drawer">
-        <header><div><h2>任务中心</h2><p>查看资料导入与解析进度</p></div><button aria-label="关闭" @click="showOperations = false"><IconX /></button></header>
-        <button class="ke-button quiet refresh" @click="loadOperations"><IconRefreshCw />刷新</button>
-        <div v-for="operation in operations" :key="operation.id" class="ke-operation">
-          <div><span class="ke-operation-icon"><IconFileClock /></span><div><strong>{{ operationLabel(operation.type) }}</strong><small>{{ formatDate(operation.updated_at) }}</small></div><span class="ke-status" :class="operation.status"><i></i>{{ operationStatusLabel(operation.status) }}</span></div>
-          <div class="ke-progress"><i :style="{ width: `${Math.round((operation.progress || 0) * 100)}%` }"></i></div>
-          <p v-if="operation.error">{{ operation.error.message }}</p>
-        </div>
-        <div v-if="!operations.length" class="ke-empty-small"><IconActivity /><span>暂无任务</span></div>
-      </aside>
-    </div>
-
     <Transition name="ke-toast"><div v-if="toast" class="ke-toast" :class="toast.type"><IconCircleCheck v-if="toast.type !== 'error'" /><IconCircleAlert v-else />{{ toast.message }}</div></Transition>
   </section>
 </template>
 
 <script>
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
-import IconActivity from '~icons/lucide/activity'
 import IconArrowLeft from '~icons/lucide/arrow-left'
 import IconArrowUp from '~icons/lucide/arrow-up'
 import IconArrowUpRight from '~icons/lucide/arrow-up-right'
@@ -472,7 +457,6 @@ export default {
     DocxPreview,
     ExcelPreview,
     FileIcon,
-    IconActivity,
     IconArrowLeft,
     IconArrowUp,
     IconArrowUpRight,
@@ -541,7 +525,6 @@ const viewMode = ref(localStorage.getItem('ke-view-mode') || 'list')
 const dragging = ref(false)
 const uploadQueue = ref([])
 const operations = ref([])
-const showOperations = ref(false)
 const askOpen = ref(true)
 const clampLayout = (value, min, max) => Math.min(max, Math.max(min, value))
 const storedLayoutNumber = (key, fallback) => {
@@ -1238,7 +1221,6 @@ onUnmounted(() => { stopQuestion('unmount'); finishKnowledgeResize(); stopPollin
       showBaseModal,
       showFolderModal,
       showMoveModal,
-      showOperations,
       showPermissionModal,
       spaceLabel,
       spaces,
