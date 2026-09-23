@@ -182,15 +182,17 @@ def import_personnel_excel(
 def download_import_template(_: Annotated[str, Depends(require_admin)]):
     workbook = Workbook()
     sheet = workbook.active
-    sheet.title = "人员信息"
-    headers = ["账号", "姓名", "部门编号", "部门名称", "员工编号", "邮箱", "岗位", "手机号", "状态"]
+    sheet.title = "部门结构"
+    # 部门结构模板：部门 > 处室 > 团队 > 个人。列序：姓名、sso账号、部门、处室、团队。
+    headers = ["姓名", "sso账号", "部门", "处室", "团队"]
     sheet.append(headers)
-    sheet.append(["zhangsan", "张三", "dept-market", "金融市场部", "E0001", "zhangsan@example.com", "分析师", "13800000000", "启用"])
+    # 仅一行示例，姓名标注「示例」；导入时请删除本行后填写真实数据。
+    sheet.append(["张三（示例）", "zhangsan", "金融市场部", "交易一处", "固收团队"])
     for cell in sheet[1]:
         cell.font = Font(bold=True, color="FFFFFF")
         cell.fill = PatternFill("solid", fgColor="2563EB")
-    for column in "ABCDEFGHI":
-        sheet.column_dimensions[column].width = 18
+    for column in "ABCDE":
+        sheet.column_dimensions[column].width = 20
     output = BytesIO()
     workbook.save(output)
     workbook.close()

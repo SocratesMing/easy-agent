@@ -22,6 +22,8 @@ export function normalizePersonnelUser(user = {}) {
     employee_id: String(user.employee_id || ''),
     department_id: String(user.department_id || user.organization_id || ''),
     department_name: String(user.department_name || ''),
+    division_name: String(user.division_name || ''),
+    team_name: String(user.team_name || ''),
     email: String(user.email || ''),
     position: String(user.position || ''),
     mobile: String(user.mobile || user.phone || ''),
@@ -54,6 +56,8 @@ export function emptyPersonnelForm() {
     employee_id: '',
     department_id: '',
     department_name: '',
+    division_name: '',
+    team_name: '',
     email: '',
     position: '',
     mobile: '',
@@ -73,6 +77,8 @@ export function buildPersonnelPayload(form) {
     employee_id: trimmed(form.employee_id),
     department_id: trimmed(form.department_id),
     department_name: trimmed(form.department_name),
+    division_name: trimmed(form.division_name),
+    team_name: trimmed(form.team_name),
     email: trimmed(form.email),
     position: trimmed(form.position),
     mobile: trimmed(form.mobile),
@@ -91,6 +97,8 @@ export function validatePersonnelForm(form) {
   if (!payload.display_name) errors.display_name = '请填写姓名'
   if (!payload.department_id) errors.department_id = '请填写部门编号'
   if (!payload.department_name) errors.department_name = '请填写部门名称'
+  if (!payload.division_name) errors.division_name = '请填写处室'
+  if (!payload.team_name) errors.team_name = '请填写团队'
   if (!payload.source) errors.personnel_source = '请填写人员信息来源'
   if (payload.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(payload.email)) {
     errors.email = '邮箱格式不正确'

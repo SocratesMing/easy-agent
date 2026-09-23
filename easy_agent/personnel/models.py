@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from typing import Literal
 
-from pydantic import AliasChoices, BaseModel, Field, field_validator
+from pydantic import AliasChoices, BaseModel, Field, field_validator, model_validator
 
 AccountStatus = Literal["active", "disabled"]
 # Usernames become directory names in the legacy EasyAgent workspace layout.
@@ -33,8 +33,12 @@ def normalize_status(value: object) -> str:
 
 class PersonnelBase(BaseModel):
     display_name: str = Field(min_length=1, max_length=127)
-    department_id: str = Field(min_length=1, max_length=255)
+    # 组织结构：部门 > 处室 > 团队。处室/团队可选；部门编号可省略，
+    # 省略时自动回填为部门名称（Excel 部门结构导入即按此生成）。
+    department_id: str = Field(default="", max_length=255)
     department_name: str = Field(min_length=1, max_length=255)
+    division_name: str = Field(default="", max_length=255)
+    team_name: str = Field(default="", max_length=255)
     employee_id: str = Field(default="", max_length=64)
     email: str = Field(default="", max_length=255)
     position: str = Field(default="", max_length=127)
@@ -50,6 +54,8 @@ class PersonnelBase(BaseModel):
         "display_name",
         "department_id",
         "department_name",
+        "division_name",
+        "team_name",
         "employee_id",
         "email",
         "position",
@@ -65,6 +71,12 @@ class PersonnelBase(BaseModel):
     @classmethod
     def validate_status(cls, value: object) -> str:
         return normalize_status(value)
+
+    @model_validator(mode="after")
+    def fill_department_id(self) -> "PersonnelBase":
+        if not self.department_id:
+            self.department_id = self.department_name
+        return self
 
 
 class PersonnelCreateRequest(PersonnelBase):
@@ -90,6 +102,8 @@ class PersonnelRecord(BaseModel):
     display_name: str = ""
     department_id: str = ""
     department_name: str = ""
+    division_name: str = ""
+    team_name: str = ""
     email: str = ""
     position: str = ""
     mobile: str = ""

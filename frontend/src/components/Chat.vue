@@ -317,8 +317,8 @@ export default {
         })
       }
     },
-    handleSend(message, files, signal, enableDeepThink = true) {
-      this.$emit('send-message', message, files, signal, enableDeepThink)
+    handleSend(message, files, signal, enableDeepThink = true, enableWebSearch = false) {
+      this.$emit('send-message', message, files, signal, enableDeepThink, enableWebSearch)
     },
     handleRemoveFile(file, messageIndex) {
       // 从事件参数中获取file，然后从messages中获取对应的message
@@ -350,10 +350,10 @@ export default {
       this.isAtBottom = true
       this.$emit('send-message', message, [], null, true, false)
     },
-    onSend(message, files, signal, enableDeepThink) {
+    onSend(message, files, signal, enableDeepThink, enableWebSearch) {
       this.composerMode = 'bottom'
       this.isAtBottom = true
-      this.handleSend(message, files, signal, enableDeepThink)
+      this.handleSend(message, files, signal, enableDeepThink, enableWebSearch)
     },
     handleScroll() {
       const el = this.$refs.messagesRef

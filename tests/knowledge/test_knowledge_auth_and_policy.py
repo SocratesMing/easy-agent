@@ -132,15 +132,19 @@ async def test_knowledge_identity_rejects_legacy_token_without_version(db):
 
 
 @pytest.mark.parametrize(
-    ("space_type", "base_department", "permissions", "expected"),
+    ("space_type", "base_department", "permissions", "team_viewer", "expected"),
     [
-        ("personal", None, [], None),
-        ("team", "dept-market", [], KnowledgeBaseRole.VIEWER),
-        ("team", "dept-other", [], None),
+        ("personal", None, [], False, None),
+        # Same department alone no longer grants visibility (fail-closed);
+        # the explicit viewer allowlist does.
+        ("team", "dept-market", [], False, None),
+        ("team", "dept-market", [], True, KnowledgeBaseRole.VIEWER),
+        ("team", "dept-other", [], True, KnowledgeBaseRole.VIEWER),
         (
             "shared",
             None,
             [{"subject_type": "department", "subject_id": "dept-market", "role": "viewer"}],
+            False,
             KnowledgeBaseRole.VIEWER,
         ),
         (
@@ -150,12 +154,13 @@ async def test_knowledge_identity_rejects_legacy_token_without_version(db):
                 {"subject_type": "department", "subject_id": "dept-market", "role": "viewer"},
                 {"subject_type": "user", "subject_id": "user-2", "role": "maintainer"},
             ],
+            False,
             KnowledgeBaseRole.MAINTAINER,
         ),
     ],
 )
 def test_effective_role_uses_strongest_direct_or_department_grant(
-    space_type, base_department, permissions, expected
+    space_type, base_department, permissions, team_viewer, expected
 ):
     principal = KnowledgePrincipal("user-2", "bob", "dept-market")
     base = {
@@ -164,7 +169,7 @@ def test_effective_role_uses_strongest_direct_or_department_grant(
         "department_id": base_department,
     }
 
-    assert effective_role(base, principal, permissions) == expected
+    assert effective_role(base, principal, permissions, team_viewer=team_viewer) == expected
 
 
 def test_owner_is_always_manager_and_empty_department_never_matches():

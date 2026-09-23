@@ -153,6 +153,32 @@ class TeamSpaceManagerUpdateResponse(ContractModel):
     manager: TeamSpaceManagerSummary | None = None
 
 
+class TeamSpaceViewerSummary(ContractModel):
+    user_id: str
+    username: str
+    display_name: str = ""
+    department_id: str
+    department_name: str = ""
+    account_status: Literal["active", "disabled"]
+    granted_by: str
+    granted_at: datetime
+    updated_at: datetime
+
+
+class TeamSpaceViewerListResponse(ContractModel):
+    items: list[TeamSpaceViewerSummary] = Field(default_factory=list)
+
+
+class TeamSpaceViewerUpdateRequest(ContractModel):
+    enabled: StrictBool
+
+
+class TeamSpaceViewerUpdateResponse(ContractModel):
+    user_id: str
+    enabled: StrictBool
+    viewer: TeamSpaceViewerSummary | None = None
+
+
 class KnowledgeBaseListResponse(ContractModel):
     items: list[KnowledgeBaseSummary]
     page: PageInfo

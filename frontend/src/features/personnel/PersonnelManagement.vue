@@ -12,7 +12,7 @@
           </span>
           <div>
             <h2 id="personnel-title">人员与部门</h2>
-            <p>统一维护账号、部门归属，并指定谁可创建和管理团队空间</p>
+            <p>统一维护账号、部门归属，并指定谁可创建和管理公共空间</p>
           </div>
         </div>
         <button class="pm-icon-btn" type="button" title="关闭" aria-label="关闭人员管理" @click="$emit('close')">
@@ -62,7 +62,7 @@
         </button>
       </div>
 
-      <section class="pm-team-access-guide" aria-label="团队空间权限说明">
+      <section class="pm-team-access-guide" aria-label="公共空间权限说明">
         <span aria-hidden="true">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z" />
@@ -70,9 +70,9 @@
           </svg>
         </span>
         <div>
-          <strong>团队空间创建与管理授权</strong>
-          <p>在人员列表的“团队空间权限”列打开开关，该账号即可创建并管理所属部门的团队知识库。admin 默认拥有全局权限，无需给自己授权。</p>
-          <small>这是全局团队空间权限；单个知识库的查看者、维护者和管理员，仍在该知识库的“成员”中配置。</small>
+          <strong>公共空间查看与授权管理</strong>
+          <p>公共空间权限分两级：<strong>可查看</strong>控制能否浏览公共知识库（默认关闭，未授权者看不到公共空间）；<strong>可创建/管理</strong>在此基础上允许创建并管理所属部门的公共知识库（隐含查看权限）。admin 默认拥有全局权限，无需给自己授权。</p>
+          <small>这是全局公共空间权限；单个知识库的查看者、维护者和管理员，仍在该知识库的“成员”中配置。</small>
         </div>
       </section>
 
@@ -92,7 +92,7 @@
         <i></i>
         <div><strong>{{ activeCount }}</strong><span>当前列表已启用</span></div>
         <i></i>
-        <div><strong>{{ teamManagerCount }}</strong><span>团队空间管理员</span></div>
+        <div><strong>{{ teamManagerCount }}</strong><span>公共空间管理员</span></div>
         <span class="pm-summary-tip">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z" /><path d="m9 12 2 2 4-4" />
@@ -106,24 +106,25 @@
           <table class="pm-table">
             <thead>
               <tr>
-                <th>账号 / 姓名</th>
-                <th>工号</th>
+                <th>姓名</th>
+                <th>SSO账号</th>
                 <th>部门</th>
-                <th>岗位 / 联系方式</th>
+                <th>处室</th>
+                <th>团队</th>
                 <th>信息来源</th>
-                <th>团队空间权限</th>
+                <th class="pm-nowrap">公共空间权限</th>
                 <th>状态</th>
                 <th class="pm-actions-head">操作</th>
               </tr>
             </thead>
             <tbody>
               <tr v-if="loading">
-                <td colspan="8">
+                <td colspan="9">
                   <div class="pm-loading"><span></span>正在加载人员信息…</div>
                 </td>
               </tr>
               <tr v-else-if="users.length === 0">
-                <td colspan="8">
+                <td colspan="9">
                   <div class="pm-empty">
                     <span>
                       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7">
@@ -141,33 +142,44 @@
                   <td>
                     <div class="pm-person">
                       <span>{{ avatarText(user) }}</span>
-                      <div><strong>{{ user.display_name || '未填写姓名' }}</strong><small>{{ user.username }}</small></div>
+                      <div><strong>{{ user.display_name || '未填写姓名' }}</strong></div>
                     </div>
                   </td>
-                  <td><span class="pm-cell-main">{{ user.employee_id || '—' }}</span></td>
-                  <td>
-                    <div class="pm-stacked"><strong>{{ user.department_name || '未填写部门名称' }}</strong><small>{{ user.department_id || '—' }}</small></div>
-                  </td>
-                  <td>
-                    <div class="pm-stacked"><strong>{{ user.position || '—' }}</strong><small>{{ contactText(user) }}</small></div>
-                  </td>
+                  <td><span class="pm-cell-main">{{ user.username || '—' }}</span></td>
+                  <td><span class="pm-cell-main">{{ user.department_name || '未填写部门名称' }}</span></td>
+                  <td><span class="pm-cell-main">{{ user.division_name || '—' }}</span></td>
+                  <td><span class="pm-cell-main">{{ user.team_name || '—' }}</span></td>
                   <td><span class="pm-source" :title="user.personnel_source || '未记录'">{{ user.personnel_source || '未记录' }}</span></td>
                   <td>
                     <span v-if="user.username === 'admin'" class="pm-access-note global">全局管理</span>
-                    <button
-                      v-else
-                      class="pm-permission-switch"
-                      :class="{ active: isTeamManager(user), pending: teamPermissionUserId === user.user_id }"
-                      type="button"
-                      role="switch"
-                      :aria-checked="isTeamManager(user) ? 'true' : 'false'"
-                      :disabled="teamPermissionUserId === user.user_id || (!isTeamManager(user) && !canGrantTeamManager(user))"
-                      :title="teamPermissionTitle(user)"
-                      @click="toggleTeamPermission(user)"
-                    >
-                      <i><span></span></i>
-                      <strong>{{ isTeamManager(user) ? '可创建/管理' : '仅查看' }}</strong>
-                    </button>
+                    <div v-else class="pm-permission-stack">
+                      <button
+                        class="pm-permission-switch"
+                        :class="{ active: isTeamViewer(user), pending: teamViewerUserId === user.user_id }"
+                        type="button"
+                        role="switch"
+                        :aria-checked="isTeamViewer(user) ? 'true' : 'false'"
+                        :disabled="teamViewerUserId === user.user_id || (!isTeamViewer(user) && user.account_status === 'disabled')"
+                        :title="teamViewerTitle(user)"
+                        @click="toggleTeamViewer(user)"
+                      >
+                        <i><span></span></i>
+                        <strong>{{ isTeamViewer(user) ? '可查看' : '不可查看' }}</strong>
+                      </button>
+                      <button
+                        class="pm-permission-switch"
+                        :class="{ active: isTeamManager(user), pending: teamPermissionUserId === user.user_id }"
+                        type="button"
+                        role="switch"
+                        :aria-checked="isTeamManager(user) ? 'true' : 'false'"
+                        :disabled="teamPermissionUserId === user.user_id || (!isTeamManager(user) && !canGrantTeamManager(user))"
+                        :title="teamPermissionTitle(user)"
+                        @click="toggleTeamPermission(user)"
+                      >
+                        <i><span></span></i>
+                        <strong>{{ isTeamManager(user) ? '可创建/管理' : '不可创建' }}</strong>
+                      </button>
+                    </div>
                   </td>
                   <td><span class="pm-status" :class="user.account_status"><i></i>{{ statusLabel(user.account_status) }}</span></td>
                   <td>
@@ -217,7 +229,7 @@
           </header>
           <form class="pm-form" @submit.prevent="saveUser">
             <label>
-              <span>账号 <b>*</b></span>
+              <span>SSO账号 <b>*</b></span>
               <input v-model="form.username" :disabled="Boolean(editingUserId)" autocomplete="off" placeholder="例：zhangsan" />
               <small v-if="formErrors.username" class="pm-field-error">{{ formErrors.username }}</small>
             </label>
@@ -247,6 +259,16 @@
               <span>部门名称 <b>*</b></span>
               <input v-model="form.department_name" autocomplete="off" placeholder="例：金融市场部" />
               <small v-if="formErrors.department_name" class="pm-field-error">{{ formErrors.department_name }}</small>
+            </label>
+            <label>
+              <span>处室 <b>*</b></span>
+              <input v-model="form.division_name" autocomplete="off" placeholder="例：交易一处" />
+              <small v-if="formErrors.division_name" class="pm-field-error">{{ formErrors.division_name }}</small>
+            </label>
+            <label>
+              <span>团队 <b>*</b></span>
+              <input v-model="form.team_name" autocomplete="off" placeholder="例：固收团队" />
+              <small v-if="formErrors.team_name" class="pm-field-error">{{ formErrors.team_name }}</small>
             </label>
             <label>
               <span>岗位</span>
@@ -358,6 +380,8 @@ import {
   listPersonnelUsers,
   listTeamSpaceManagers,
   setTeamSpaceManager,
+  listTeamSpaceViewers,
+  setTeamSpaceViewer,
   updatePersonnelUser,
 } from './api.js'
 import {
@@ -387,6 +411,8 @@ export default {
     const downloadingTemplate = ref(false)
     const teamManagerIds = ref(new Set())
     const teamPermissionUserId = ref('')
+    const teamViewerIds = ref(new Set())
+    const teamViewerUserId = ref('')
 
     const showEditor = ref(false)
     const editingUserId = ref('')
@@ -469,12 +495,60 @@ export default {
             .filter(Boolean)
         )
       } catch (error) {
-        notify(resolveError(error, '获取团队空间权限失败'), 'error')
+        notify(resolveError(error, '获取公共空间权限失败'), 'error')
       }
     }
 
     function isTeamManager(user) {
       return teamManagerIds.value.has(String(user.user_id || ''))
+    }
+
+    async function loadTeamViewers() {
+      try {
+        const payload = await listTeamSpaceViewers()
+        teamViewerIds.value = new Set(
+          (payload && Array.isArray(payload.items) ? payload.items : [])
+            .map(item => String(item.user_id || ''))
+            .filter(Boolean)
+        )
+      } catch (error) {
+        notify(resolveError(error, '获取公共空间查看权限失败'), 'error')
+      }
+    }
+
+    function isTeamViewer(user) {
+      return teamManagerIds.value.has(String(user.user_id || ''))
+        || teamViewerIds.value.has(String(user.user_id || ''))
+    }
+
+    function teamViewerTitle(user) {
+      if (teamViewerUserId.value === user.user_id) return '正在保存查看权限'
+      if (isTeamManager(user)) return '可创建/管理已隐含查看权限，无需单独授权'
+      if (!isTeamViewer(user) && user.account_status === 'disabled') return '停用账号不能获得公共空间查看权限'
+      return isTeamViewer(user)
+        ? '点击取消其公共空间查看权限'
+        : '点击授予其公共空间查看权限（仅浏览公共知识库）'
+    }
+
+    async function toggleTeamViewer(user) {
+      const userId = String(user.user_id || '')
+      if (!userId || teamViewerUserId.value || isTeamManager(user)) return
+      const enabled = !isTeamViewer(user)
+      teamViewerUserId.value = userId
+      try {
+        await setTeamSpaceViewer(userId, enabled)
+        const next = new Set(teamViewerIds.value)
+        if (enabled) next.add(userId)
+        else next.delete(userId)
+        teamViewerIds.value = next
+        notify(enabled
+          ? `已授权 ${user.display_name || user.username} 查看公共空间`
+          : `已取消 ${user.display_name || user.username} 的公共空间查看权限`)
+      } catch (error) {
+        notify(resolveError(error, '设置公共空间查看权限失败'), 'error')
+      } finally {
+        teamViewerUserId.value = ''
+      }
     }
 
     function canGrantTeamManager(user) {
@@ -484,11 +558,11 @@ export default {
     function teamPermissionTitle(user) {
       if (teamPermissionUserId.value === user.user_id) return '正在保存权限'
       if (isTeamManager(user) && user.account_status === 'disabled') return '权限已暂停；可点击移除授权'
-      if (!isTeamManager(user) && user.account_status === 'disabled') return '停用账号不能获得团队空间权限'
-      if (!isTeamManager(user) && !String(user.department_id || '').trim()) return '账号缺少部门，不能获得团队空间权限'
+      if (!isTeamManager(user) && user.account_status === 'disabled') return '停用账号不能获得公共空间权限'
+      if (!isTeamManager(user) && !String(user.department_id || '').trim()) return '账号缺少部门，不能获得公共空间权限'
       return isTeamManager(user)
-        ? '点击取消其所属部门团队空间的创建与管理权限'
-        : '点击授予其所属部门团队空间的创建与管理权限'
+        ? '点击取消其所属部门公共空间的创建与管理权限'
+        : '点击授予其所属部门公共空间的创建与管理权限'
     }
 
     async function toggleTeamPermission(user) {
@@ -500,10 +574,10 @@ export default {
         await setTeamSpaceManager(userId, enabled)
         teamManagerIds.value = updateTeamManagerIds(teamManagerIds.value, userId, enabled)
         notify(enabled
-          ? `已授权 ${user.display_name || user.username} 管理本部门团队空间`
-          : `已取消 ${user.display_name || user.username} 的团队空间管理权限`)
+          ? `已授权 ${user.display_name || user.username} 管理本部门公共空间`
+          : `已取消 ${user.display_name || user.username} 的公共空间管理权限`)
       } catch (error) {
-        notify(resolveError(error, '设置团队空间权限失败'), 'error')
+        notify(resolveError(error, '设置公共空间权限失败'), 'error')
       } finally {
         teamPermissionUserId.value = ''
       }
@@ -549,6 +623,8 @@ export default {
         employee_id: user.employee_id,
         department_id: user.department_id,
         department_name: user.department_name,
+        division_name: user.division_name || '',
+        team_name: user.team_name || '',
         email: user.email,
         position: user.position,
         mobile: user.mobile,
@@ -704,6 +780,7 @@ export default {
     onMounted(() => {
       loadUsers()
       loadTeamManagers()
+      loadTeamViewers()
     })
     onBeforeUnmount(() => {
       if (filterTimer) clearTimeout(filterTimer)
@@ -736,6 +813,7 @@ export default {
       importResultText,
       importSource,
       isTeamManager,
+      isTeamViewer,
       importing,
       keyword,
       loadUsers,
@@ -759,7 +837,10 @@ export default {
       teamManagerCount,
       teamPermissionTitle,
       teamPermissionUserId,
+      teamViewerTitle,
+      teamViewerUserId,
       toggleTeamPermission,
+      toggleTeamViewer,
       canGrantTeamManager,
       total,
       totalPages,
@@ -967,24 +1048,22 @@ export default {
 .pm-table-wrap { height: 100%; overflow: auto; background: var(--bg-primary); border: 1px solid var(--border-color); border-radius: 12px; }
 .pm-table { width: 100%; min-width: 1160px; border-collapse: separate; border-spacing: 0; table-layout: fixed; }
 .pm-table th { position: sticky; top: 0; z-index: 1; padding: 11px 13px; color: var(--text-secondary); background: var(--bg-tertiary); border-bottom: 1px solid var(--border-color); text-align: left; font-size: 11px; font-weight: 650; }
-.pm-table th:nth-child(1) { width: 190px; }
-.pm-table th:nth-child(2) { width: 100px; }
-.pm-table th:nth-child(3) { width: 165px; }
-.pm-table th:nth-child(4) { width: 185px; }
-.pm-table th:nth-child(5) { width: 155px; }
-.pm-table th:nth-child(6) { width: 145px; }
-.pm-table th:nth-child(7) { width: 82px; }
-.pm-table th:nth-child(8) { width: 155px; }
+.pm-table th:nth-child(1) { width: 170px; }
+.pm-table th:nth-child(2) { width: 110px; }
+.pm-table th:nth-child(3) { width: 150px; }
+.pm-table th:nth-child(4) { width: 100px; }
+.pm-table th:nth-child(5) { width: 100px; }
+.pm-table th:nth-child(6) { width: 95px; }
+.pm-table th:nth-child(7) { width: 165px; }
+.pm-table th:nth-child(8) { width: 75px; }
 .pm-table td { height: 64px; padding: 9px 13px; color: var(--text-primary); border-bottom: 1px solid var(--border-color); vertical-align: middle; font-size: 12px; }
 .pm-table tbody tr:last-child td { border-bottom: 0; }
 .pm-table tbody tr:hover td { background: color-mix(in srgb, var(--accent-color, #0ea5e9) 3%, transparent); }
 .pm-actions-head { text-align: right !important; }
 .pm-person { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .pm-person > span { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; width: 34px; height: 34px; color: #0369a1; background: rgba(14, 165, 233, .12); border-radius: 10px; font-size: 13px; font-weight: 700; }
-.pm-person div, .pm-stacked { display: flex; flex-direction: column; min-width: 0; }
-.pm-person strong, .pm-stacked strong, .pm-person small, .pm-stacked small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.pm-person strong, .pm-stacked strong { color: var(--text-primary); font-weight: 600; }
-.pm-person small, .pm-stacked small { margin-top: 2px; color: var(--text-secondary); font-size: 10px; }
+.pm-person div { display: flex; flex-direction: column; min-width: 0; }
+.pm-person strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-primary); font-weight: 600; }
 .pm-cell-main { overflow-wrap: anywhere; }
 .pm-source { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-secondary); }
 .pm-status { display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px; border-radius: 999px; font-size: 10px; font-weight: 600; }
@@ -993,9 +1072,11 @@ export default {
 .pm-status.active i { background: #10b981; }
 .pm-status.disabled { color: #64748b; background: rgba(100, 116, 139, .12); }
 .pm-status.disabled i { background: #94a3b8; }
-.pm-access-note { display: inline-flex; align-items: center; min-height: 25px; padding: 0 8px; color: var(--text-secondary); background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 999px; font-size: 10px; font-weight: 650; }
+.pm-access-note { display: inline-flex; align-items: center; min-height: 25px; padding: 0 8px; color: var(--text-secondary); background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 999px; font-size: 10px; font-weight: 650; white-space: nowrap; }
 .pm-access-note.global { color: #0369a1; background: rgba(14, 165, 233, .1); border-color: rgba(14, 165, 233, .2); }
-.pm-permission-switch { display: inline-flex; align-items: center; gap: 7px; padding: 3px 0; color: var(--text-secondary); background: transparent; border: 0; cursor: pointer; }
+.pm-permission-stack { display: flex; flex-direction: column; gap: 2px; align-items: flex-start; }
+.pm-nowrap { white-space: nowrap; }
+.pm-permission-switch { display: inline-flex; align-items: center; gap: 7px; padding: 3px 0; color: var(--text-secondary); background: transparent; border: 0; cursor: pointer; white-space: nowrap; }
 .pm-permission-switch:disabled { opacity: .5; cursor: not-allowed; }
 .pm-permission-switch > i { position: relative; display: inline-block; flex: 0 0 auto; width: 29px; height: 17px; background: #cbd5e1; border-radius: 999px; transition: background .18s ease; }
 .pm-permission-switch > i > span { position: absolute; top: 2px; left: 2px; width: 13px; height: 13px; background: #fff; border-radius: 50%; box-shadow: 0 1px 3px rgba(15, 23, 42, .25); transition: transform .18s ease; }

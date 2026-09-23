@@ -542,7 +542,12 @@ async def api_get_config():
 async def serve_frontend():
     index_html = os.path.join(frontend_dist, "index.html")
     if os.path.exists(index_html):
-        return FileResponse(index_html)
+        # 入口 HTML 禁止缓存：打包产物文件名固定（/js/app.js），旧缓存会指向
+        # 已下线的接口/入口，出现 405、旧界面等问题。
+        return FileResponse(
+            index_html,
+            headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+        )
     return FileResponse(os.path.join(frontend_dist, "index.html"))
 
 
@@ -550,11 +555,16 @@ async def serve_frontend():
 async def serve_static(full_path: str):
     static_file = os.path.join(frontend_dist, full_path)
     if os.path.exists(static_file) and os.path.isfile(static_file):
-        return FileResponse(static_file)
+        # 静态产物文件名固定（/js/app.js）：no-cache 禁止启发式强缓存，
+        # 强制走协商缓存（ETag/Last-Modified 变了即拉新），新版本部署后普通刷新即可生效。
+        return FileResponse(static_file, headers={"Cache-Control": "no-cache"})
 
     index_html = os.path.join(frontend_dist, "index.html")
     if os.path.exists(index_html):
-        return FileResponse(index_html)
+        return FileResponse(
+            index_html,
+            headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+        )
 
     return JSONResponse({"error": "Not found"}, status_code=404)
 

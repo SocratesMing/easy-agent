@@ -4,6 +4,8 @@ USER_FIELDS = {
     "display_name": "",
     "department_id": "",
     "department_name": "",
+    "division_name": "",
+    "team_name": "",
     "position": "",
     "mobile": "",
     "account_status": "active",

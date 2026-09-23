@@ -10,7 +10,8 @@ from openpyxl import load_workbook
 
 from .models import PersonnelCreateRequest
 
-EXCEL_COLUMNS = {
+# 旧版列式模板：一行一个人员，部门为单级编号/名称。
+LEGACY_EXCEL_COLUMNS = {
     "账号": "username",
     "姓名": "display_name",
     "部门编号": "department_id",
@@ -21,7 +22,17 @@ EXCEL_COLUMNS = {
     "手机号": "mobile",
     "状态": "account_status",
 }
-REQUIRED_HEADERS = {"账号", "姓名", "部门编号", "部门名称"}
+LEGACY_REQUIRED_HEADERS = {"账号", "姓名", "部门编号", "部门名称"}
+
+# 新版部门结构模板（列序即下载模板顺序）：姓名、sso账号、部门、处室、团队。
+STRUCTURE_EXCEL_COLUMNS = {
+    "姓名": "display_name",
+    "sso账号": "username",
+    "部门": "department_name",
+    "处室": "division_name",
+    "团队": "team_name",
+}
+STRUCTURE_REQUIRED_HEADERS = {"姓名", "sso账号", "部门"}
 MAX_IMPORT_ROWS = 5000
 MAX_UNCOMPRESSED_BYTES = 50 * 1024 * 1024
 MAX_ARCHIVE_ENTRIES = 1000
@@ -91,8 +102,15 @@ def parse_personnel_excel(content: bytes, source: str) -> list[PersonnelCreateRe
             raise PersonnelExcelError(["Excel 不能为空"])
 
         headers = [str(value or "").strip() for value in raw_headers]
-        missing = sorted(REQUIRED_HEADERS - set(headers))
-        unknown = [header for header in headers if header and header not in EXCEL_COLUMNS]
+        # 按表头选择格式：新版部门结构模板（姓名/sso账号/部门/处室/团队）含
+        # 「sso账号/部门/处室/团队」任一特征列即按新格式校验；否则按旧版列式
+        # 模板解析，存量 Excel 仍可导入。
+        if any(marker in headers for marker in ("sso账号", "部门", "处室", "团队")):
+            columns, required = STRUCTURE_EXCEL_COLUMNS, STRUCTURE_REQUIRED_HEADERS
+        else:
+            columns, required = LEGACY_EXCEL_COLUMNS, LEGACY_REQUIRED_HEADERS
+        missing = sorted(required - set(headers))
+        unknown = [header for header in headers if header and header not in columns]
         header_errors = []
         if missing:
             header_errors.append(f"缺少必填列：{'、'.join(missing)}")
@@ -112,8 +130,12 @@ def parse_personnel_excel(content: bytes, source: str) -> list[PersonnelCreateRe
                 break
             if not any(value not in (None, "") for value in values):
                 continue
+            # 跳过模板示例行（姓名标注「（示例）」），防止原样导入模板建出假账号。
+            first_cell = str(values[0] or "").strip() if values else ""
+            if first_cell.endswith("（示例）") or first_cell.endswith("(示例)"):
+                continue
             raw = {
-                EXCEL_COLUMNS[header]: values[index]
+                columns[header]: values[index]
                 for index, header in enumerate(headers)
                 if header and index < len(values)
             }

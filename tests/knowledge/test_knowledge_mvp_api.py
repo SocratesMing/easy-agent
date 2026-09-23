@@ -627,6 +627,16 @@ def test_admin_allowlist_controls_team_space_create_and_management_immediately(
         },
     )
     assert admin_created.status_code == 201, admin_created.text
+    # Fail-closed: same-department carol cannot even see the team base until
+    # the viewer allowlist grants her access.
+    assert client.get(
+        f"/agent/knowledge/v1/bases/{admin_created.json()['id']}", headers=carol
+    ).status_code == 404
+    assert client.put(
+        "/agent/knowledge/v1/admin/team-space-viewers/user-carol",
+        headers=admin,
+        json={"enabled": True},
+    ).status_code == 200
     assert client.get(
         f"/agent/knowledge/v1/bases/{admin_created.json()['id']}", headers=carol
     ).json()["role"] == "viewer"
@@ -660,6 +670,15 @@ def test_admin_allowlist_controls_team_space_create_and_management_immediately(
     assert created.status_code == 201, created.text
     base_id = created.json()["id"]
 
+    # Fail-closed: bob shares alice's department but has no grant yet.
+    assert client.get(
+        f"/agent/knowledge/v1/bases/{base_id}", headers=bob
+    ).status_code == 404
+    assert client.put(
+        "/agent/knowledge/v1/admin/team-space-viewers/user-bob",
+        headers=admin,
+        json={"enabled": True},
+    ).status_code == 200
     bob_view = client.get(f"/agent/knowledge/v1/bases/{base_id}", headers=bob)
     assert bob_view.status_code == 200
     assert bob_view.json()["role"] == "viewer"

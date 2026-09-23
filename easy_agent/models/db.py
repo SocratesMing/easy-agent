@@ -33,6 +33,9 @@ class UserModel:
     display_name: str = ""
     department_id: str = ""
     department_name: str = ""
+    # 组织结构：部门 > 处室 > 团队
+    division_name: str = ""
+    team_name: str = ""
     position: str = ""
     mobile: str = ""
     account_status: str = "active"

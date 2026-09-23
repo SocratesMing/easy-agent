@@ -76,6 +76,7 @@
         v-if="showKnowledge"
         @close="showKnowledge = false"
         @managePersonnel="handleShowUserManagement"
+        @chat-session-prepared="loadSessions"
       />
 
       <Chat
@@ -1160,6 +1161,10 @@ export default {
       if (!this.currentSessionId) {
         const newSession = await createSession(initialTitle || '新会话', this.userProfile.username || null)
         this.currentSessionId = newSession.session_id
+        // 预创建的 DB 会话即当前展示会话：同步标记 loadedSessionId，
+        // 否则随后的流式事件会被 runInSession 视为「后台会话」只写入
+        // sessionStates 缓冲而不渲染，表现为一直"正在思考"、刷新后才出现。
+        this.loadedSessionId = newSession.session_id
         const existingIndex = this.sessions.findIndex(s => s.session_id === newSession.session_id)
         if (existingIndex === -1) {
           const session = {
@@ -1730,7 +1735,7 @@ export default {
       // 事件按「所属会话」路由：后台会话写入其自身缓冲，不污染当前展示
       return { onChunk: (data) => this.runInSession(ctx.streamSessionId, ctx, () => onChunk(data)) }
     },
-    async handleSendMessage(message, files = [], signal, enableDeepThink = true) {
+    async handleSendMessage(message, files = [], signal, enableDeepThink = true, enableWebSearch = false) {
       const userMsgId = `user-${Date.now()}`
       const preStreamUsage = { ...this.sessionUsage }
       // 记录本次请求开始前已累计的耗时和迭代次数，用于流式过程中实时累加
@@ -1851,7 +1856,7 @@ export default {
           }
         }
 
-        await sendMessage(this.currentSessionId, message, onChunk, abortSignal, enableDeepThink, files, this.selectedModel)
+        await sendMessage(this.currentSessionId, message, onChunk, abortSignal, enableDeepThink, files, this.selectedModel, enableWebSearch)
 
         await this.refreshSessionFiles(null, 500)
       } catch (e) {

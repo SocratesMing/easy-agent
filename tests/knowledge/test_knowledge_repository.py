@@ -7,7 +7,7 @@ import sqlite3
 import pytest
 
 from easy_agent.knowledge.repository import KnowledgeRepository
-from easy_agent.models.db import SessionModel
+from easy_agent.models.db import SessionModel, UserModel
 
 
 def test_base_folder_document_permission_and_operation_crud(db):
@@ -95,9 +95,49 @@ def test_uniqueness_and_candidate_visibility(db):
     with pytest.raises(sqlite3.IntegrityError):
         repository.create_folder(base_id=base["id"], name="同名")
 
+    # Fail-closed: same-department membership alone no longer lists team
+    # bases; the viewer/manager allowlists do (granted below).
+    db.create_user(
+        UserModel(
+            user_id="member",
+            username="member",
+            password_hash="",
+            organization_id="dept-market",
+        )
+    )
+    db.create_user(
+        UserModel(
+            user_id="outsider",
+            username="outsider",
+            password_hash="",
+            organization_id="dept-other",
+        )
+    )
+    assert repository.list_candidate_bases(
+        user_id="member", department_id="dept-market"
+    ) == []
+    repository.grant_team_space_viewer(user_id="member", granted_by="admin")
     assert repository.list_candidate_bases(
         user_id="member", department_id="dept-market"
     )[0]["id"] == base["id"]
+    assert repository.list_candidate_bases(
+        user_id="outsider", department_id="dept-other"
+    ) == []
+    # manager 白名单与 viewer 白名单同部门限定：同部门用户授权后可见。
+    db.create_user(
+        UserModel(
+            user_id="manager_peer",
+            username="manager_peer",
+            password_hash="",
+            organization_id="dept-market",
+        )
+    )
+    repository.grant_team_space_manager(user_id="manager_peer", granted_by="admin")
+    assert repository.list_candidate_bases(
+        user_id="manager_peer", department_id="dept-market"
+    )[0]["id"] == base["id"]
+    # 跨部门边界：outsider 即使被授予 manager 也看不到其它部门的库。
+    repository.grant_team_space_manager(user_id="outsider", granted_by="admin")
     assert repository.list_candidate_bases(
         user_id="outsider", department_id="dept-other"
     ) == []

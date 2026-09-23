@@ -77,14 +77,21 @@ class KnowledgeRepository:
         department_id: str | None,
         include_all_team_spaces: bool = False,
     ) -> list[dict[str, Any]]:
-        parameters: list[object] = [user_id, user_id]
+        """List bases visible to one user.
+
+        Team knowledge bases require an explicit grant: owner, team-space
+        manager, team-space viewer, or a per-base department permission row.
+        The previous "same department sees everything" default was revoked in
+        favour of the fail-closed viewer allowlist (migration 0005).
+        """
+
+        parameters: list[object] = [user_id, user_id, user_id, user_id]
         department_sql = ""
         if department_id:
             department_sql = """
-                OR (b.space_type='team' AND b.department_id=?)
                 OR (p.subject_type='department' AND p.subject_id=?)
             """
-            parameters.extend([department_id, department_id])
+            parameters.append(department_id)
         admin_sql = " OR b.space_type='team'" if include_all_team_spaces else ""
         with self.db.get_connection() as conn:
             cursor = conn.cursor()
@@ -96,6 +103,16 @@ class KnowledgeRepository:
                 LEFT JOIN knowledge_permissions p ON p.base_id=b.id
                 WHERE b.status!='deleted' AND (b.owner_user_id=?
                    OR (p.subject_type='user' AND p.subject_id=?)
+                   OR (b.space_type='team' AND EXISTS (
+                        SELECT 1 FROM knowledge_team_space_managers m
+                        JOIN users mu ON mu.user_id=m.user_id
+                        WHERE m.user_id=?
+                          AND COALESCE(NULLIF(mu.department_id, ''), mu.organization_id)=b.department_id))
+                   OR (b.space_type='team' AND EXISTS (
+                        SELECT 1 FROM knowledge_team_space_viewers v
+                        JOIN users vu ON vu.user_id=v.user_id
+                        WHERE v.user_id=?
+                          AND COALESCE(NULLIF(vu.department_id, ''), vu.organization_id)=b.department_id))
                    {department_sql}
                    {admin_sql}
                    )
@@ -152,26 +169,34 @@ class KnowledgeRepository:
             )
             return [dict(row) for row in cursor.fetchall()]
 
-    def list_team_space_managers(self) -> list[dict[str, Any]]:
+    # 公共空间 manager/viewer 白名单共用同一套 grant 表结构，
+    # 差异只在表名与文案 label；表名由代码内硬编码传入，不来自用户输入。
+    def _list_team_space_grants(self, table: str) -> list[dict[str, Any]]:
         """List grants, including suspended users so admin can explicitly revoke them."""
 
         with self.db.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(
-                """
-                SELECT m.user_id, m.granted_by, m.granted_at, m.updated_at,
+                f"""
+                SELECT g.user_id, g.granted_by, g.granted_at, g.updated_at,
                        u.username, u.display_name, u.account_status,
                        COALESCE(NULLIF(u.department_id, ''), u.organization_id) AS department_id,
                        u.department_name
-                FROM knowledge_team_space_managers m
-                JOIN users u ON u.user_id=m.user_id
+                FROM {table} g
+                JOIN users u ON u.user_id=g.user_id
                 ORDER BY u.department_name, u.display_name, u.username
                 """
             )
             return [dict(row) for row in cursor.fetchall()]
 
-    def grant_team_space_manager(
-        self, *, user_id: str, granted_by: str
+    def _grant_team_space_permission(
+        self,
+        *,
+        table: str,
+        user_id: str,
+        granted_by: str,
+        label: str,
+        require_department: bool,
     ) -> dict[str, Any]:
         timestamp = _now()
         with self.db.get_connection() as conn:
@@ -188,21 +213,21 @@ class KnowledgeRepository:
                 raise LookupError("用户不存在")
             user = dict(user) if not isinstance(user, dict) else user
             if str(user.get("username")) == "admin":
-                raise ValueError("admin 已具有全局团队空间管理权限")
+                raise ValueError(f"admin 已具有全局公共空间{label}权限")
             if str(user.get("account_status") or "active") != "active":
-                raise ValueError("停用账号不能获得团队空间管理权限")
-            if not str(user.get("department_id") or "").strip():
-                raise ValueError("账号缺少部门，不能获得团队空间管理权限")
+                raise ValueError(f"停用账号不能获得公共空间{label}权限")
+            if require_department and not str(user.get("department_id") or "").strip():
+                raise ValueError("账号缺少部门，不能获得公共空间管理权限")
             self.db._execute(
                 cursor,
-                "SELECT user_id FROM knowledge_team_space_managers WHERE user_id=?",
+                f"SELECT user_id FROM {table} WHERE user_id=?",
                 (user_id,),
             )
             if cursor.fetchone() is None:
                 self.db._execute(
                     cursor,
-                    """
-                    INSERT INTO knowledge_team_space_managers
+                    f"""
+                    INSERT INTO {table}
                         (user_id, granted_by, granted_at, updated_at)
                     VALUES (?, ?, ?, ?)
                     """,
@@ -211,26 +236,76 @@ class KnowledgeRepository:
             else:
                 self.db._execute(
                     cursor,
-                    """
-                    UPDATE knowledge_team_space_managers
-                    SET granted_by=?, updated_at=? WHERE user_id=?
-                    """,
+                    f"UPDATE {table} SET granted_by=?, updated_at=? WHERE user_id=?",
                     (granted_by, timestamp, user_id),
                 )
-        for item in self.list_team_space_managers():
+        for item in self._list_team_space_grants(table):
             if str(item["user_id"]) == user_id:
                 return item
-        raise RuntimeError("团队空间管理权限保存失败")
+        raise RuntimeError(f"公共空间{label}权限保存失败")
 
-    def revoke_team_space_manager(self, user_id: str) -> bool:
+    def _revoke_team_space_grant(self, table: str, user_id: str) -> bool:
         with self.db.get_connection() as conn:
             cursor = conn.cursor()
             self.db._execute(
                 cursor,
-                "DELETE FROM knowledge_team_space_managers WHERE user_id=?",
+                f"DELETE FROM {table} WHERE user_id=?",
                 (user_id,),
             )
             return cursor.rowcount > 0
+
+    def list_team_space_managers(self) -> list[dict[str, Any]]:
+        return self._list_team_space_grants("knowledge_team_space_managers")
+
+    def grant_team_space_manager(
+        self, *, user_id: str, granted_by: str
+    ) -> dict[str, Any]:
+        return self._grant_team_space_permission(
+            table="knowledge_team_space_managers",
+            user_id=user_id,
+            granted_by=granted_by,
+            label="管理",
+            require_department=True,
+        )
+
+    def revoke_team_space_manager(self, user_id: str) -> bool:
+        return self._revoke_team_space_grant("knowledge_team_space_managers", user_id)
+
+    def is_team_space_viewer(self, user_id: str) -> bool:
+        """Return whether the user holds a team-space view grant."""
+
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            self.db._execute(
+                cursor,
+                """
+                SELECT 1
+                FROM knowledge_team_space_viewers v
+                JOIN users u ON u.user_id=v.user_id
+                WHERE v.user_id=?
+                  AND u.account_status='active'
+                  AND u.username<>'admin'
+                """,
+                (user_id,),
+            )
+            return cursor.fetchone() is not None
+
+    def list_team_space_viewers(self) -> list[dict[str, Any]]:
+        return self._list_team_space_grants("knowledge_team_space_viewers")
+
+    def grant_team_space_viewer(
+        self, *, user_id: str, granted_by: str
+    ) -> dict[str, Any]:
+        return self._grant_team_space_permission(
+            table="knowledge_team_space_viewers",
+            user_id=user_id,
+            granted_by=granted_by,
+            label="查看",
+            require_department=False,
+        )
+
+    def revoke_team_space_viewer(self, user_id: str) -> bool:
+        return self._revoke_team_space_grant("knowledge_team_space_viewers", user_id)
 
     def update_base(self, base_id: str, **fields: object) -> dict[str, Any] | None:
         allowed = {

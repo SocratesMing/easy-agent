@@ -3,7 +3,7 @@
 from io import BytesIO
 
 import pytest
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 
 from easy_agent.app import app
 from easy_agent.middleware import get_current_username
@@ -289,3 +289,83 @@ def test_template_is_admin_only_and_valid_xlsx(client):
     assert response.status_code == 200
     assert response.content.startswith(b"PK")
     assert "personnel_import_template.xlsx" in response.headers["content-disposition"]
+    sheet = load_workbook(BytesIO(response.content)).active
+    assert [cell.value for cell in sheet[1]] == ["姓名", "sso账号", "部门", "处室", "团队"]
+
+
+def test_structure_excel_import_builds_org_path(client, db):
+    client = _as_admin(client)
+    content = _xlsx(
+        ["姓名", "sso账号", "部门", "处室", "团队"],
+        [
+            ["张三", "struct_zhangsan", "金融市场部", "交易一处", "固收团队"],
+            ["李四", "struct_lisi", "金融市场部", "交易一处", "固收团队"],
+            ["王五", "struct_wangwu", "金融市场部", "交易二处", ""],
+            ["赵六", "struct_zhaoliu", "信息技术部", None, None],
+        ],
+    )
+    response = client.post(
+        "/api/personnel/import",
+        data={"source": "部门结构导入"},
+        files={"file": ("部门结构.xlsx", content, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["created"] == 4
+
+    zhangsan = db.get_user_by_username("struct_zhangsan")
+    assert zhangsan.display_name == "张三"
+    assert zhangsan.department_name == "金融市场部"
+    # 部门编号不再手填：自动取部门名称
+    assert zhangsan.department_id == "金融市场部"
+    assert zhangsan.division_name == "交易一处"
+    assert zhangsan.team_name == "固收团队"
+
+    wangwu = db.get_user_by_username("struct_wangwu")
+    assert wangwu.division_name == "交易二处"
+    assert wangwu.team_name == ""
+
+    zhaoliu = db.get_user_by_username("struct_zhaoliu")
+    assert zhaoliu.department_name == "信息技术部"
+    assert zhaoliu.division_name == ""
+    assert zhaoliu.team_name == ""
+
+
+def test_template_has_single_marked_example_row(client):
+    client = _as_admin(client)
+    response = client.get("/api/personnel/import-template")
+    assert response.status_code == 200
+    sheet = load_workbook(BytesIO(response.content)).active
+    rows = [tuple(cell.value for cell in row) for row in sheet.iter_rows()]
+    assert len(rows) == 2  # 表头 + 唯一一条示例
+    assert "（示例）" in str(rows[1][0])
+
+
+def test_structure_excel_skips_template_example_rows(client):
+    client = _as_admin(client)
+    content = _xlsx(
+        ["姓名", "sso账号", "部门", "处室", "团队"],
+        [
+            ["张三（示例）", "zhangsan", "金融市场部", "交易一处", "固收团队"],
+            ["李四", "real_lisi", "金融市场部", "交易一处", "固收团队"],
+        ],
+    )
+    response = client.post(
+        "/api/personnel/import",
+        data={"source": "测试"},
+        files={"file": ("部门结构.xlsx", content, "application/vnd.openxmlformats-officedocument.spreadsheetml")},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["created"] == 1
+    assert response.json()["total"] == 1
+
+
+def test_structure_excel_rejects_missing_required_columns(client):
+    client = _as_admin(client)
+    missing = _xlsx(["姓名", "部门"], [["张三", "金融市场部"]])
+    response = client.post(
+        "/api/personnel/import",
+        data={"source": "测试"},
+        files={"file": ("部门结构.xlsx", missing, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+    )
+    assert response.status_code == 422
+    assert "sso账号" in str(response.json()["detail"])

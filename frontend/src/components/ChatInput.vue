@@ -101,6 +101,20 @@
               hidden
             />
           </label>
+          <button
+            class="action-btn web-search-btn"
+            :class="{ active: webSearchEnabled && webSearchAvailable, unavailable: !webSearchAvailable, disabled: isStreaming || disabled }"
+            :disabled="isStreaming || disabled"
+            :title="webSearchTitle"
+            :aria-pressed="webSearchEnabled ? 'true' : 'false'"
+            @click="toggleWebSearch"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="10"></circle>
+              <line x1="2" y1="12" x2="22" y2="12"></line>
+              <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path>
+            </svg>
+          </button>
         </div>
         
         <div class="right-actions">
@@ -198,6 +212,7 @@
 
 <script>
 import { uploadFile, deleteFile } from '../api/files.js'
+import { getWebSearchStatus } from '../api/settings.js'
 import FileIcon from './FileIcon.vue'
 import KnowledgeScopeSelector from '../features/knowledge/KnowledgeScopeSelector.vue'
 
@@ -248,6 +263,10 @@ export default {
     return {
       message: '',
       uploadedFiles: [],
+      // 联网搜索：available=false 时按钮置灰（后端未启用或未配置 api_key）
+      webSearchEnabled: false,
+      webSearchAvailable: false,
+      webSearchReason: '',
       // 光标所在行高亮（overlay 技术：textareal 本身无法按行上色）
       caretLineTop: null, // 高亮条 top，null 表示隐藏
       lineHeight: 24, // 行高（px）
@@ -261,6 +280,14 @@ export default {
     }
   },
   computed: {
+    webSearchTitle() {
+      if (!this.webSearchAvailable) {
+        if (this.webSearchReason === 'disabled') return '联网搜索未启用'
+        if (this.webSearchReason === 'not_configured') return '联网搜索未配置 API Key'
+        return '联网搜索不可用'
+      }
+      return this.webSearchEnabled ? '已开启联网搜索' : '联网搜索'
+    },
     // 模型选择：本地双向绑定，变化时同步父组件
     localSelectedModel: {
       get() {
@@ -352,6 +379,13 @@ export default {
     },
   },
   mounted() {
+    // 联网搜索可用性：公共接口，失败时按不可用处理（按钮置灰）
+    getWebSearchStatus()
+      .then(status => {
+        this.webSearchAvailable = Boolean(status && status.configured)
+        this.webSearchReason = (status && status.reason) || ''
+      })
+      .catch(() => { this.webSearchAvailable = false; this.webSearchReason = 'unreachable' })
     // 恢复刷新前的输入草稿
     try {
       const draft = sessionStorage.getItem(DRAFT_KEY)
@@ -371,6 +405,22 @@ export default {
     this.stopLiveDuration()
   },
   methods: {
+    async toggleWebSearch() {
+      if (this.isStreaming || this.disabled) return
+      // 页面加载可能早于后端配置完成（状态在 mounted 固化）：
+      // 灰色态点击时先重查一次，配置就绪则本次点击直接点亮（符合点击意图）。
+      if (!this.webSearchAvailable) {
+        try {
+          const status = await getWebSearchStatus()
+          this.webSearchAvailable = Boolean(status && status.configured)
+          this.webSearchReason = (status && status.reason) || ''
+        } catch (_) {
+          /* 查询失败保持不可用 */
+        }
+        if (!this.webSearchAvailable) return
+      }
+      this.webSearchEnabled = !this.webSearchEnabled
+    },
     updateCaretLine() {
       const ta = this.$refs.textareaRef
       if (!ta) return
@@ -576,7 +626,7 @@ export default {
         console.log(`[${ts}] [文件上传] ${filesToSend.map(f => `${f.filename}(${f.size}B)`).join(', ')}`)
       }
 
-      this.$emit('send', this.message.trim().replace(/\s+/g, ' '), filesToSend, null, true)
+      this.$emit('send', this.message.trim().replace(/\s+/g, ' '), filesToSend, null, true, this.webSearchEnabled && this.webSearchAvailable)
 
       this.message = ''
       this.uploadedFiles = []
@@ -1013,6 +1063,29 @@ html[data-theme="dark"] .context-ring-wrapper {
 
 .action-btn:hover {
   background: var(--bg-tertiary);
+}
+
+/* 联网搜索按钮：点亮（图标变蓝）= 启用；灰色 = 未启用。
+   启用态不加背景色块，仅图标高亮；未配置时半透明且屏蔽 hover/点击的一切高亮反馈。 */
+.web-search-btn.active {
+  background: transparent;
+}
+.web-search-btn.active svg {
+  color: #0ea5e9;
+}
+.web-search-btn.unavailable {
+  opacity: 0.45;
+  cursor: pointer;
+}
+.web-search-btn.unavailable:hover {
+  background: transparent;
+}
+.web-search-btn.unavailable:hover svg {
+  color: var(--text-secondary);
+}
+.web-search-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
 }
 
 .action-btn:hover svg {

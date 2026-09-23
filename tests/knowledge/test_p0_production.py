@@ -100,7 +100,7 @@ def test_numbered_schema_and_durable_task_idempotency(db):
     with db.get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT version FROM knowledge_schema_migrations ORDER BY version")
-        assert [row[0] if not isinstance(row, dict) else row["version"] for row in cursor.fetchall()] == [1, 2, 3, 4]
+        assert [row[0] if not isinstance(row, dict) else row["version"] for row in cursor.fetchall()] == [1, 2, 3, 4, 5]
 
 
 def test_deleted_resources_do_not_keep_actionable_dead_letter_alerts(db):
@@ -137,7 +137,7 @@ def test_deleted_resources_do_not_keep_actionable_dead_letter_alerts(db):
 
 
 def test_schema_validation_rejects_a_changed_migration_checksum(db):
-    assert [item["version"] for item in validate_knowledge_schema(db)] == [1, 2, 3, 4]
+    assert [item["version"] for item in validate_knowledge_schema(db)] == [1, 2, 3, 4, 5]
     with db.get_connection() as conn:
         cursor = conn.cursor()
         db._execute(

@@ -7,7 +7,6 @@ bank production contract intact.  It must never be enabled in-bank.
 from __future__ import annotations
 
 from copy import deepcopy
-from typing import Any
 
 from ..config import LocalV017BridgeConfig
 

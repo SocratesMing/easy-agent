@@ -3,14 +3,12 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
 import signal
 import socket
 import uuid
 from datetime import UTC, datetime, timedelta
-from pathlib import Path, PurePosixPath
 from typing import Any
 
 from ..config import Config

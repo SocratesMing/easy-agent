@@ -220,70 +220,13 @@ knowledge:
     # http://gw.caqp.eprod.cncb:8081 through deployment environment variables.
     base_url: "${RAGFLOW_BANK_BASE_URL:-http://29.240.86.22:9380}"
     api_prefix: "${RAGFLOW_API_PREFIX:-/api/v1}"
-    # Every operation is configurable so a bank route/method difference does not
-    # require code changes. request_encoding: query | json | multipart | none.
+    # All 32 interfaces from 行内api.docx are hardcoded as the bank contract in
+    # easy_agent/knowledge/config.py (BANK_API_OPERATIONS). Deployment YAML only
+    # overrides environment-specific addresses, e.g. the AaaS retrieval gateway
+    # (FT: http://29.225.225.253:8081 / PRD: http://gw.caqp.eprod.cncb:8081).
     operations:
-      create_dataset:
-        method: POST
-        path: "/datasets"
-        request_encoding: json
-        response_contract: dataset
-      list_datasets:
-        method: GET
-        path: "/datasets"
-        request_encoding: query
-        response_contract: dataset_list
-      update_dataset:
-        method: PUT
-        path: "/datasets/{dataset_id}"
-        request_encoding: json
-        response_contract: empty_or_boolean
-      delete_datasets:
-        method: DELETE
-        path: "/datasets"
-        request_encoding: json
-        response_contract: empty_or_boolean
-      upload_documents:
-        method: POST
-        path: "/datasets/{dataset_id}/documents"
-        request_encoding: multipart
-        response_contract: document_list
-      list_documents:
-        method: GET
-        path: "/datasets/{dataset_id}/documents"
-        request_encoding: query
-        response_contract: document_list
-      update_document:
-        method: PUT
-        path: "/datasets/{dataset_id}/documents/{document_id}"
-        request_encoding: json
-        response_contract: empty_or_boolean
-      download_document:
-        method: GET
-        path: "/datasets/{dataset_id}/documents/{document_id}"
-        request_encoding: none
-        response_contract: binary
-      delete_documents:
-        method: DELETE
-        path: "/datasets/{dataset_id}/documents"
-        request_encoding: json
-        response_contract: empty_or_boolean
-      start_parsing:
-        method: POST
-        path: "/datasets/{dataset_id}/chunks"
-        request_encoding: json
-        response_contract: empty_or_boolean
-      stop_parsing:
-        method: DELETE
-        path: "/datasets/{dataset_id}/chunks"
-        request_encoding: json
-        response_contract: empty_or_boolean
       retrieve:
-        method: POST
         base_url: "${RAGFLOW_BANK_RETRIEVAL_BASE_URL:-http://29.225.225.253:8081}"
-        path: "/AIGCQA/api/rag_retrieval"
-        request_encoding: json
-        response_contract: retrieval_result
 
   auth:
     mode: "${RAGFLOW_AUTH_MODE:-bearer}"
@@ -574,6 +517,7 @@ knowledge:
     insecure_http_hosts:
       - 127.0.0.1
       - localhost
+      - 192.168.88.100
       - 29.240.86.22
       - 29.225.225.253
       - server.aigcqa.eprod.cncb

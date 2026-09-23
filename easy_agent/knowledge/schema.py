@@ -179,6 +179,31 @@ def _apply_session_scope_order_migration(db, cursor) -> None:
     _record_migration(db, cursor, 4, "session_scope_order", content)
 
 
+def _apply_team_space_viewer_migration(db, cursor) -> None:
+    path = _MIGRATIONS_DIR / "0005_team_space_viewers.sql"
+    content = path.read_text(encoding="utf-8")
+    db._execute(
+        cursor,
+        "SELECT checksum FROM knowledge_schema_migrations WHERE version=?",
+        (5,),
+    )
+    current = cursor.fetchone()
+    if current:
+        if str(_row_value(current, "checksum")) != _migration_checksum(content):
+            raise RuntimeError("knowledge migration 5 checksum mismatch")
+        return
+
+    for statement in _split_sql(content):
+        cursor.execute(statement)
+    db._create_index(
+        cursor,
+        "idx_knowledge_team_viewers_granted_by",
+        "knowledge_team_space_viewers",
+        "granted_by, updated_at",
+    )
+    _record_migration(db, cursor, 5, "team_space_viewers", content)
+
+
 def expected_knowledge_migrations() -> dict[int, tuple[str, str]]:
     """Return immutable migration metadata used by deploy-time validation."""
 
@@ -192,11 +217,15 @@ def expected_knowledge_migrations() -> dict[int, tuple[str, str]]:
     session_scope_content = (
         _MIGRATIONS_DIR / "0004_session_scope_order.sql"
     ).read_text(encoding="utf-8")
+    team_viewer_content = (
+        _MIGRATIONS_DIR / "0005_team_space_viewers.sql"
+    ).read_text(encoding="utf-8")
     return {
         1: ("mvp_baseline", _migration_checksum(baseline)),
         2: ("p0_production", _migration_checksum(p0_content)),
         3: ("team_space_managers", _migration_checksum(team_manager_content)),
         4: ("session_scope_order", _migration_checksum(session_scope_content)),
+        5: ("team_space_viewers", _migration_checksum(team_viewer_content)),
     }
 
 
@@ -472,3 +501,4 @@ def initialize_knowledge_schema(db, cursor) -> None:
     _apply_p0_migration(db, cursor)
     _apply_team_space_manager_migration(db, cursor)
     _apply_session_scope_order_migration(db, cursor)
+    _apply_team_space_viewer_migration(db, cursor)

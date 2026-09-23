@@ -34,6 +34,8 @@ def _row_to_dict(row) -> dict:
         or value.get("organization_id", "")
         or "",
         "department_name": value.get("department_name", "") or "",
+        "division_name": value.get("division_name", "") or "",
+        "team_name": value.get("team_name", "") or "",
         "email": value.get("email", "") or "",
         "position": value.get("position", "") or "",
         "mobile": value.get("mobile", "") or "",
@@ -118,13 +120,14 @@ def create_personnel(db: Database, item: PersonnelCreateRequest) -> dict:
                 """INSERT INTO users (
                     user_id, username, password_hash, organization_id, email, bound_ip,
                     token_version, employee_id, display_name, department_id,
-                    department_name, position, mobile, account_status, personnel_source,
-                    created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, '', 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    department_name, division_name, team_name, position, mobile,
+                    account_status, personnel_source, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, '', 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     str(uuid.uuid4()), item.username, hash_password(DEFAULT_PASSWORD),
                     item.department_id, item.email, item.employee_id or None,
                     item.display_name, item.department_id, item.department_name,
+                    item.division_name, item.team_name,
                     item.position, item.mobile, item.account_status, item.source,
                     now, now,
                 ),
@@ -149,12 +152,14 @@ def update_personnel(db: Database, user_id: str, item: PersonnelUpdateRequest) -
             db._execute(
                 cursor,
                 """UPDATE users SET organization_id=?, email=?, employee_id=?, display_name=?,
-                    department_id=?, department_name=?, position=?, mobile=?, account_status=?,
+                    department_id=?, department_name=?, division_name=?, team_name=?,
+                    position=?, mobile=?, account_status=?,
                     personnel_source=?, token_version=CASE WHEN ?='disabled' THEN token_version+1 ELSE token_version END,
                     updated_at=? WHERE user_id=?""",
                 (
                     item.department_id, item.email, item.employee_id or None,
                     item.display_name, item.department_id, item.department_name,
+                    item.division_name, item.team_name,
                     item.position, item.mobile, item.account_status, item.source,
                     item.account_status, now, user_id,
                 ),
@@ -210,12 +215,14 @@ def _import_personnel_transaction(
                 db._execute(
                     cursor,
                     """UPDATE users SET organization_id=?, email=?, employee_id=?, display_name=?,
-                        department_id=?, department_name=?, position=?, mobile=?, account_status=?,
+                        department_id=?, department_name=?, division_name=?, team_name=?,
+                        position=?, mobile=?, account_status=?,
                         personnel_source=?, token_version=CASE WHEN ?='disabled' THEN token_version+1 ELSE token_version END,
                         updated_at=? WHERE username=?""",
                     (
                         item.department_id, item.email, item.employee_id or None, item.display_name,
-                        item.department_id, item.department_name, item.position, item.mobile,
+                        item.department_id, item.department_name, item.division_name, item.team_name,
+                        item.position, item.mobile,
                         item.account_status, item.source, item.account_status, now, item.username,
                     ),
                 )
@@ -226,13 +233,14 @@ def _import_personnel_transaction(
                     """INSERT INTO users (
                         user_id, username, password_hash, organization_id, email, bound_ip,
                         token_version, employee_id, display_name, department_id,
-                        department_name, position, mobile, account_status, personnel_source,
-                        created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, '', 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        department_name, division_name, team_name, position, mobile,
+                        account_status, personnel_source, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, '', 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         str(uuid.uuid4()), item.username, default_password_hash,
                         item.department_id, item.email, item.employee_id or None, item.display_name,
-                        item.department_id, item.department_name, item.position, item.mobile,
+                        item.department_id, item.department_name, item.division_name, item.team_name,
+                        item.position, item.mobile,
                         item.account_status, item.source, now, now,
                     ),
                 )

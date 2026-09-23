@@ -25,7 +25,7 @@ from .domain import (
     OperationStatus,
     OperationType,
 )
-from .ragflow import RagflowBinary, RagflowClient, RagflowError
+from .ragflow import RagflowClient, RagflowError
 from .config import KnowledgeConfig
 from .auth import KnowledgePrincipal
 from .models import (
@@ -137,8 +137,14 @@ def effective_role(
     base: Mapping[str, object],
     principal: KnowledgePrincipal,
     permissions: Iterable[Mapping[str, object]],
+    *,
+    team_viewer: bool = False,
 ) -> KnowledgeBaseRole | None:
-    """Return the strongest allowed role for one user and one-level department."""
+    """Return the strongest allowed role for one user.
+
+    Team knowledge bases no longer default to department-wide visibility;
+    membership is granted explicitly via the team-space viewer allowlist.
+    """
 
     if str(base.get("owner_user_id", "")) == principal.user_id:
         return KnowledgeBaseRole.MANAGER
@@ -148,12 +154,7 @@ def effective_role(
         return None
 
     candidates: list[KnowledgeBaseRole] = []
-    base_department = str(base.get("department_id") or "").strip()
-    if (
-        visibility == KnowledgeBaseVisibility.TEAM
-        and principal.department_id
-        and principal.department_id == base_department
-    ):
+    if visibility == KnowledgeBaseVisibility.TEAM and team_viewer:
         candidates.append(KnowledgeBaseRole.VIEWER)
 
     candidates.extend(_matching_permission_roles(principal, permissions))
@@ -222,6 +223,7 @@ class KnowledgeService:
         self.config = config
         self.operations_repository = KnowledgeOperationsRepository(repository.db)
         self._team_manager_cache: dict[str, bool] = {}
+        self._team_viewer_cache: dict[str, bool] = {}
         self.original_store = (
             original_store
             if original_store is not None
@@ -284,30 +286,48 @@ class KnowledgeService:
             )
         return self._team_manager_cache[principal.user_id]
 
+    async def _has_team_viewer_grant(self, principal: KnowledgePrincipal) -> bool:
+        if principal.username == "admin":
+            return True
+        if principal.user_id not in self._team_viewer_cache:
+            self._team_viewer_cache[principal.user_id] = await self._repo(
+                self.repository.is_team_space_viewer, principal.user_id
+            )
+        return self._team_viewer_cache[principal.user_id]
+
     async def _effective_role(
         self,
         base: Mapping[str, object],
         principal: KnowledgePrincipal,
         permissions: Iterable[Mapping[str, object]],
     ) -> KnowledgeBaseRole | None:
-        """Apply the global team-manager allowlist after normal base grants.
+        """Apply the global team-manager/viewer allowlists after base grants.
 
-        The global allowlist controls department-wide management and creation.
-        Per-base roles are a separate scope: admin may grant maintainer or
-        manager on one team knowledge base without granting creation rights for
-        other team spaces.
+        The manager allowlist controls department-wide management and creation
+        and implies view access; the viewer allowlist grants read-only access
+        to team knowledge bases.  Per-base roles are a separate scope: admin
+        may grant maintainer or manager on one team knowledge base without
+        granting creation rights for other team spaces.
         """
 
         permission_rows = list(permissions)
-        role = effective_role(base, principal, permission_rows)
         if str(base.get("space_type")) != KnowledgeBaseVisibility.TEAM.value:
-            return role
+            return effective_role(base, principal, permission_rows)
         if principal.username == "admin":
             return KnowledgeBaseRole.MANAGER
         same_department = bool(principal.department_id) and (
             principal.department_id == str(base.get("department_id") or "").strip()
         )
-        if same_department and await self._has_team_management_grant(principal):
+        has_manager_grant = await self._has_team_management_grant(principal)
+        # Both allowlists are bounded to the holder's own department; the
+        # manager grant implies view access, the viewer grant is read-only.
+        has_viewer_grant = same_department and (
+            has_manager_grant or await self._has_team_viewer_grant(principal)
+        )
+        role = effective_role(
+            base, principal, permission_rows, team_viewer=has_viewer_grant
+        )
+        if same_department and has_manager_grant:
             return KnowledgeBaseRole.MANAGER
         if str(base.get("owner_user_id", "")) == principal.user_id:
             explicit_roles = _matching_permission_roles(
@@ -551,7 +571,7 @@ class KnowledgeService:
             if not await self._has_team_management_grant(principal):
                 raise KnowledgeServiceError(
                     "KNOWLEDGE_TEAM_SPACE_MANAGER_REQUIRED",
-                    "当前账号未获得团队空间创建与管理权限，请联系 admin 配置",
+                    "当前账号未获得公共空间创建与管理权限，请联系 admin 配置",
                     status_code=403,
                 )
             if principal.username == "admin":
@@ -561,7 +581,7 @@ class KnowledgeService:
                 if not target_department_id:
                     raise KnowledgeServiceError(
                         "KNOWLEDGE_DEPARTMENT_REQUIRED",
-                        "请选择团队空间所属部门",
+                        "请选择公共空间所属部门",
                         status_code=422,
                     )
                 active_departments = await self._repo(
@@ -581,7 +601,7 @@ class KnowledgeService:
                 if not principal.department_id:
                     raise KnowledgeServiceError(
                         "KNOWLEDGE_DEPARTMENT_REQUIRED",
-                        "创建团队空间知识库需要有效部门",
+                        "创建公共空间知识库需要有效部门",
                         status_code=422,
                     )
                 if (
@@ -590,7 +610,7 @@ class KnowledgeService:
                 ):
                     raise KnowledgeServiceError(
                         "KNOWLEDGE_DEPARTMENT_FORBIDDEN",
-                        "只能在当前账号所属部门创建团队空间",
+                        "只能在当前账号所属部门创建公共空间",
                         status_code=403,
                     )
                 target_department_id = principal.department_id

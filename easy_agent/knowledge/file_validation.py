@@ -6,7 +6,6 @@ import logging
 import shutil
 import subprocess
 import tempfile
-from io import BytesIO
 from pathlib import Path
 from typing import BinaryIO
 from zipfile import BadZipFile, ZipFile

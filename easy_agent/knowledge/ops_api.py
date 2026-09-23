@@ -21,6 +21,10 @@ from .models import (
     TeamSpaceManagerSummary,
     TeamSpaceManagerUpdateRequest,
     TeamSpaceManagerUpdateResponse,
+    TeamSpaceViewerListResponse,
+    TeamSpaceViewerSummary,
+    TeamSpaceViewerUpdateRequest,
+    TeamSpaceViewerUpdateResponse,
 )
 
 
@@ -50,7 +54,7 @@ def _team_manager_summary(item: dict) -> TeamSpaceManagerSummary:
 @router.get(
     "/team-space-managers",
     response_model=TeamSpaceManagerListResponse,
-    summary="查询团队空间管理员白名单",
+    summary="查询公共空间管理员白名单",
 )
 async def list_team_space_managers(
     _: Annotated[KnowledgePrincipal, Depends(_admin)],
@@ -65,7 +69,7 @@ async def list_team_space_managers(
 @router.put(
     "/team-space-managers/{user_id}",
     response_model=TeamSpaceManagerUpdateResponse,
-    summary="设置单个账号的团队空间管理权限",
+    summary="设置单个账号的公共空间管理权限",
 )
 async def set_team_space_manager(
     user_id: str,
@@ -119,6 +123,95 @@ async def set_team_space_manager(
         user_id=user_id,
         enabled=payload.enabled,
         manager=manager,
+    )
+
+
+def _team_viewer_summary(item: dict) -> TeamSpaceViewerSummary:
+    return TeamSpaceViewerSummary(
+        user_id=str(item["user_id"]),
+        username=str(item["username"]),
+        display_name=str(item.get("display_name") or ""),
+        department_id=str(item.get("department_id") or ""),
+        department_name=str(item.get("department_name") or ""),
+        account_status=str(item.get("account_status") or "active"),
+        granted_by=str(item["granted_by"]),
+        granted_at=item["granted_at"],
+        updated_at=item["updated_at"],
+    )
+
+
+@router.get(
+    "/team-space-viewers",
+    response_model=TeamSpaceViewerListResponse,
+    summary="查询公共空间可查看权限白名单",
+)
+async def list_team_space_viewers(
+    _: Annotated[KnowledgePrincipal, Depends(_admin)],
+    db: Annotated[Database, Depends(get_database)],
+) -> TeamSpaceViewerListResponse:
+    rows = await run_in_threadpool(KnowledgeRepository(db).list_team_space_viewers)
+    return TeamSpaceViewerListResponse(
+        items=[_team_viewer_summary(item) for item in rows]
+    )
+
+
+@router.put(
+    "/team-space-viewers/{user_id}",
+    response_model=TeamSpaceViewerUpdateResponse,
+    summary="设置单个账号的公共空间查看权限",
+)
+async def set_team_space_viewer(
+    user_id: str,
+    payload: TeamSpaceViewerUpdateRequest,
+    request: Request,
+    principal: Annotated[KnowledgePrincipal, Depends(_admin)],
+    db: Annotated[Database, Depends(get_database)],
+) -> TeamSpaceViewerUpdateResponse:
+    repository = KnowledgeRepository(db)
+    viewer = None
+    try:
+        if payload.enabled:
+            row = await run_in_threadpool(
+                repository.grant_team_space_viewer,
+                user_id=user_id,
+                granted_by=principal.user_id,
+            )
+            viewer = _team_viewer_summary(row)
+        else:
+            target = await run_in_threadpool(db.get_user_by_id, user_id)
+            if target is None:
+                raise LookupError("用户不存在")
+            if target.username == "admin":
+                raise ValueError("admin 的全局权限不可取消")
+            await run_in_threadpool(repository.revoke_team_space_viewer, user_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    config = getattr(request.app.state, "knowledge_config", None)
+    if config is None or config.audit.enabled:
+        await run_in_threadpool(
+            KnowledgeOperationsRepository(db).record_audit,
+            request_id=str(getattr(request.state, "request_id", "unknown")),
+            actor_user_id=principal.user_id,
+            actor_username=principal.username,
+            action=(
+                "team_space_viewer.grant"
+                if payload.enabled
+                else "team_space_viewer.revoke"
+            ),
+            object_type="team_space_viewer",
+            object_id=user_id,
+            details={"enabled": payload.enabled},
+            max_details_bytes=getattr(
+                getattr(config, "audit", None), "max_details_bytes", 4096
+            ),
+        )
+    return TeamSpaceViewerUpdateResponse(
+        user_id=user_id,
+        enabled=payload.enabled,
+        viewer=viewer,
     )
 
 
