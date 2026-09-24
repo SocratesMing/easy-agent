@@ -1,10 +1,13 @@
-"""知识工程 BFF 端点（/agent/knowledge/v1，31 个端点与旧版契约一致）。
+"""知识工程 BFF 端点（/agent/knowledge/v1，按前端实际调用面裁剪）。
 
 与旧版 ``easy_agent/knowledge/api.py`` 的差异：
-- 上游能力清单改为 Ragflow v0.26.3 标准 HTTP API 操作集合；
+- 仅保留前端工作台与聊天链路用到的端点（能力/恢复/单查/独立检索等
+  无调用者端点已删除）；
+- 身份解析（KnowledgePrincipal）内联本文件，不再单列 auth 模块；
+- 管理员运维端点只保留公共空间管理/查看白名单（/admin/*），
+  原 ops_api 模块已删除；
 - 原文存储固定为本地落盘（``app.state.knowledge_original_store``）；
-- 问答质量基线（无证据文案/提示词版本/引用校验）内联本文件，
-  不再依赖独立 quality 模块与 quality_baseline 配置段。
+- 问答质量基线（无证据文案/提示词版本/引用校验）内联本文件。
 """
 
 from __future__ import annotations
@@ -12,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import re
 import uuid
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Annotated, Literal
 from urllib.parse import quote
@@ -38,7 +42,7 @@ from ..model import create_model
 from ..models.api import ChatRequest
 from ..models.db import SessionModel
 from ..services import cancel_stream_task, get_agent_config, remove_session_agent
-from .auth import KnowledgePrincipal, get_knowledge_principal
+from ..utils.auth import decode_access_token
 from .config import KnowledgeConfig
 from .models import (
     AskRequest,
@@ -57,7 +61,6 @@ from .models import (
     KnowledgeBaseListResponse,
     KnowledgeBaseSummary,
     KnowledgeBaseUpdateRequest,
-    KnowledgeCapabilitiesResponse,
     KnowledgeModuleStatus,
     KnowledgeStatusResponse,
     OperationListResponse,
@@ -65,55 +68,24 @@ from .models import (
     PermissionListResponse,
     PermissionReplaceRequest,
     PermissionSubjectListResponse,
-    RetrieveRequest,
-    RetrieveResponse,
     SessionKnowledgeScopeRequest,
     SessionKnowledgeScopeResponse,
+    TeamSpaceManagerListResponse,
+    TeamSpaceManagerSummary,
+    TeamSpaceManagerUpdateRequest,
+    TeamSpaceManagerUpdateResponse,
+    TeamSpaceViewerListResponse,
+    TeamSpaceViewerSummary,
+    TeamSpaceViewerUpdateRequest,
+    TeamSpaceViewerUpdateResponse,
 )
-from .ragflow import RagflowClient, RagflowError
+from .operations_repository import KnowledgeOperationsRepository
+from .ragflow import RagflowError
 from .repository import KnowledgeRepository
 from .service import KnowledgeService, KnowledgeServiceError
 
 
 router = APIRouter(prefix="/agent/knowledge/v1", tags=["knowledge-engineering"])
-
-# Ragflow v0.26.3 标准 HTTP API 操作集合（与 ragflow 客户端方法一一对应）
-_RAGFLOW_API_OPERATIONS = frozenset(
-    {
-        "add_model",
-        "delete_models",
-        "list_models",
-        "get_global_models",
-        "set_global_models",
-        "create_dataset",
-        "delete_datasets",
-        "update_dataset",
-        "list_datasets",
-        "upload_documents",
-        "upload_cbcm_documents",
-        "update_document",
-        "download_document",
-        "list_documents",
-        "delete_documents",
-        "parse_documents",
-        "stop_parsing",
-        "add_chunk",
-        "list_chunks",
-        "delete_chunks",
-        "update_chunk",
-        "retrieve",
-        "create_chat_assistant",
-        "update_chat_assistant",
-        "delete_chat_assistants",
-        "list_chat_assistants",
-        "create_session",
-        "update_session",
-        "list_sessions",
-        "delete_sessions",
-        "ask_chat",
-        "join_team",
-    }
-)
 
 _KNOWLEDGE_CHAT_TITLE_PREFIX = "[知识库问答]"
 
@@ -124,6 +96,69 @@ PROMPT_VERSION = "knowledge-answer-v1"
 _CITATION_RE = re.compile(r"\[知识依据(\d+)\]")
 
 
+# ---------------------------------------------------------------------------
+# 请求级身份（fail-closed，无遗留请求头/默认用户回退）
+# ---------------------------------------------------------------------------
+@dataclass(frozen=True, slots=True)
+class KnowledgePrincipal:
+    user_id: str
+    username: str
+    department_id: str | None
+
+
+async def get_knowledge_principal(
+    http_request: Request,
+    db: Annotated[Database, Depends(get_database)],
+) -> KnowledgePrincipal:
+    """解析可信用户，不接受遗留请求头/默认用户回退。"""
+
+    authorization = http_request.headers.get("Authorization", "")
+    scheme, separator, token = authorization.partition(" ")
+    if not separator or scheme.lower() != "bearer" or not token.strip():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Knowledge authentication required",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    payload = decode_access_token(token.strip())
+    username = payload.get("sub") if payload else None
+    token_version = payload.get("v") if payload else None
+    user = db.get_user_by_username(username) if username else None
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired knowledge credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    if user.account_status == "disabled":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Account disabled",
+        )
+
+    if token_version is None or token_version != user.token_version:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Knowledge credentials have been revoked",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    department_id = user.organization_id.strip() or None
+    http_request.state.actor_user_id = user.user_id
+    http_request.state.actor_username = user.username
+    http_request.state.actor_department_id = department_id
+    return KnowledgePrincipal(
+        user_id=user.user_id,
+        username=user.username,
+        department_id=department_id,
+    )
+
+
+# ---------------------------------------------------------------------------
+# 问答质量基线与隐藏会话
+# ---------------------------------------------------------------------------
 def _validate_answer_citations(
     answer: str, evidence: list[Evidence]
 ) -> tuple[str, list[str]]:
@@ -237,39 +272,8 @@ async def _call(awaitable):
 
 
 # ---------------------------------------------------------------------------
-# 模块能力与状态
+# 模块状态
 # ---------------------------------------------------------------------------
-@router.get(
-    "/capabilities",
-    summary="获取知识工程能力",
-    response_model=KnowledgeCapabilitiesResponse,
-)
-async def get_capabilities(request: Request) -> KnowledgeCapabilitiesResponse:
-    config = _get_knowledge_config(request)
-    if not config.enabled:
-        return KnowledgeCapabilitiesResponse(
-            enabled=False,
-            status=KnowledgeModuleStatus.DISABLED,
-        )
-    # 新版固定本地原文存储：启用即具备原文能力
-    original_ready = (
-        getattr(request.app.state, "knowledge_original_store", None) is not None
-    )
-    return KnowledgeCapabilitiesResponse(
-        enabled=True,
-        status=KnowledgeModuleStatus.CONFIGURED,
-        upstream_capabilities=sorted(_RAGFLOW_API_OPERATIONS),
-        features={
-            "document_retry": True,
-            "document_preview": True,
-            "original_document_storage": original_ready,
-            "agent_original_access": original_ready,
-            "user_department_permissions": True,
-            "session_knowledge_scope": True,
-        },
-    )
-
-
 @router.get("/status", response_model=KnowledgeStatusResponse)
 async def get_status(
     request: Request,
@@ -338,15 +342,6 @@ async def create_base(
     )
 
 
-@router.get("/bases/{base_id}", response_model=KnowledgeBaseSummary)
-async def get_base(
-    base_id: str,
-    service: Annotated[KnowledgeService, Depends(_service)],
-    principal: Annotated[KnowledgePrincipal, Depends(get_knowledge_principal)],
-) -> KnowledgeBaseSummary:
-    return await _call(service.get_base(base_id, principal))
-
-
 @router.patch("/bases/{base_id}", response_model=KnowledgeBaseSummary)
 async def update_base(
     base_id: str,
@@ -381,22 +376,6 @@ async def delete_base(
         )
     )
     return Response(status_code=status.HTTP_204_NO_CONTENT)
-
-
-@router.post("/bases/{base_id}/restore", response_model=KnowledgeBaseSummary)
-async def restore_base(
-    base_id: str,
-    request: Request,
-    service: Annotated[KnowledgeService, Depends(_service)],
-    principal: Annotated[KnowledgePrincipal, Depends(get_knowledge_principal)],
-) -> KnowledgeBaseSummary:
-    return await _call(
-        service.restore_base(
-            base_id=base_id,
-            principal=principal,
-            request_id=_request_id(request),
-        )
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -697,28 +676,8 @@ async def retry_document(
     )
 
 
-@router.post(
-    "/documents/{document_id}/restore",
-    response_model=DocumentUploadAccepted,
-    status_code=status.HTTP_202_ACCEPTED,
-)
-async def restore_document(
-    document_id: str,
-    request: Request,
-    service: Annotated[KnowledgeService, Depends(_service)],
-    principal: Annotated[KnowledgePrincipal, Depends(get_knowledge_principal)],
-) -> DocumentUploadAccepted:
-    return await _call(
-        service.restore_document(
-            document_id=document_id,
-            principal=principal,
-            request_id=_request_id(request),
-        )
-    )
-
-
 # ---------------------------------------------------------------------------
-# 操作记录
+# 操作记录（仅列表）
 # ---------------------------------------------------------------------------
 @router.get("/operations", response_model=OperationListResponse)
 async def list_operations(
@@ -733,22 +692,6 @@ async def list_operations(
             principal=principal,
             page=page,
             page_size=page_size,
-            request_id=_request_id(request),
-        )
-    )
-
-
-@router.get("/operations/{operation_id}", response_model=OperationSummary)
-async def get_operation(
-    operation_id: str,
-    request: Request,
-    service: Annotated[KnowledgeService, Depends(_service)],
-    principal: Annotated[KnowledgePrincipal, Depends(get_knowledge_principal)],
-) -> OperationSummary:
-    return await _call(
-        service.get_operation(
-            operation_id=operation_id,
-            principal=principal,
             request_id=_request_id(request),
         )
     )
@@ -802,28 +745,8 @@ async def find_permission_subjects(
 
 
 # ---------------------------------------------------------------------------
-# 检索与问答
+# 问答
 # ---------------------------------------------------------------------------
-@router.post("/bases/{base_id}/retrieve", response_model=RetrieveResponse)
-async def retrieve(
-    base_id: str,
-    payload: RetrieveRequest,
-    request: Request,
-    service: Annotated[KnowledgeService, Depends(_service)],
-    principal: Annotated[KnowledgePrincipal, Depends(get_knowledge_principal)],
-) -> RetrieveResponse:
-    return await _call(
-        service.retrieve(
-            base_id=base_id,
-            principal=principal,
-            question=payload.question,
-            document_ids=payload.document_ids,
-            top_n=payload.top_n,
-            request_id=_request_id(request),
-        )
-    )
-
-
 async def _answer(
     question: str, evidence: list[Evidence]
 ) -> tuple[str, list[str]]:
@@ -891,7 +814,7 @@ async def ask(
 ) -> AskResponse:
     request_id = _request_id(request)
     retrieved = await _call(
-        service.retrieve(
+        service._retrieve_base_evidence(
             base_id=base_id,
             principal=principal,
             question=payload.question,
@@ -1045,6 +968,193 @@ async def replace_session_scope(
             principal=principal,
             base_ids=payload.base_ids,
         )
+    )
+
+
+# ---------------------------------------------------------------------------
+# 管理员：公共空间管理/查看白名单
+# ---------------------------------------------------------------------------
+def _admin(principal: Annotated[KnowledgePrincipal, Depends(get_knowledge_principal)]):
+    if principal.username != "admin":
+        raise HTTPException(status_code=403, detail="仅管理员可查看运维信息")
+    return principal
+
+
+def _team_manager_summary(item: dict) -> TeamSpaceManagerSummary:
+    return TeamSpaceManagerSummary(
+        user_id=str(item["user_id"]),
+        username=str(item["username"]),
+        display_name=str(item.get("display_name") or ""),
+        department_id=str(item.get("department_id") or ""),
+        department_name=str(item.get("department_name") or ""),
+        account_status=str(item.get("account_status") or "active"),
+        granted_by=str(item["granted_by"]),
+        granted_at=item["granted_at"],
+        updated_at=item["updated_at"],
+    )
+
+
+@router.get(
+    "/admin/team-space-managers",
+    response_model=TeamSpaceManagerListResponse,
+    summary="查询公共空间管理员白名单",
+)
+async def list_team_space_managers(
+    _: Annotated[KnowledgePrincipal, Depends(_admin)],
+    db: Annotated[Database, Depends(get_database)],
+) -> TeamSpaceManagerListResponse:
+    rows = await run_in_threadpool(KnowledgeRepository(db).list_team_space_managers)
+    return TeamSpaceManagerListResponse(
+        items=[_team_manager_summary(item) for item in rows]
+    )
+
+
+@router.put(
+    "/admin/team-space-managers/{user_id}",
+    response_model=TeamSpaceManagerUpdateResponse,
+    summary="设置单个账号的公共空间管理权限",
+)
+async def set_team_space_manager(
+    user_id: str,
+    payload: TeamSpaceManagerUpdateRequest,
+    request: Request,
+    principal: Annotated[KnowledgePrincipal, Depends(_admin)],
+    db: Annotated[Database, Depends(get_database)],
+) -> TeamSpaceManagerUpdateResponse:
+    repository = KnowledgeRepository(db)
+    manager = None
+    try:
+        if payload.enabled:
+            row = await run_in_threadpool(
+                repository.grant_team_space_manager,
+                user_id=user_id,
+                granted_by=principal.user_id,
+            )
+            manager = _team_manager_summary(row)
+        else:
+            target = await run_in_threadpool(db.get_user_by_id, user_id)
+            if target is None:
+                raise LookupError("用户不存在")
+            if target.username == "admin":
+                raise ValueError("admin 的全局权限不可取消")
+            await run_in_threadpool(repository.revoke_team_space_manager, user_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    config = getattr(request.app.state, "knowledge_config", None)
+    if config is None or config.audit.enabled:
+        await run_in_threadpool(
+            KnowledgeOperationsRepository(db).record_audit,
+            request_id=str(getattr(request.state, "request_id", "unknown")),
+            actor_user_id=principal.user_id,
+            actor_username=principal.username,
+            action=(
+                "team_space_manager.grant"
+                if payload.enabled
+                else "team_space_manager.revoke"
+            ),
+            object_type="team_space_manager",
+            object_id=user_id,
+            details={"enabled": payload.enabled},
+            max_details_bytes=getattr(
+                getattr(config, "audit", None), "max_details_bytes", 4096
+            ),
+        )
+    return TeamSpaceManagerUpdateResponse(
+        user_id=user_id,
+        enabled=payload.enabled,
+        manager=manager,
+    )
+
+
+def _team_viewer_summary(item: dict) -> TeamSpaceViewerSummary:
+    return TeamSpaceViewerSummary(
+        user_id=str(item["user_id"]),
+        username=str(item["username"]),
+        display_name=str(item.get("display_name") or ""),
+        department_id=str(item.get("department_id") or ""),
+        department_name=str(item.get("department_name") or ""),
+        account_status=str(item.get("account_status") or "active"),
+        granted_by=str(item["granted_by"]),
+        granted_at=item["granted_at"],
+        updated_at=item["updated_at"],
+    )
+
+
+@router.get(
+    "/admin/team-space-viewers",
+    response_model=TeamSpaceViewerListResponse,
+    summary="查询公共空间可查看权限白名单",
+)
+async def list_team_space_viewers(
+    _: Annotated[KnowledgePrincipal, Depends(_admin)],
+    db: Annotated[Database, Depends(get_database)],
+) -> TeamSpaceViewerListResponse:
+    rows = await run_in_threadpool(KnowledgeRepository(db).list_team_space_viewers)
+    return TeamSpaceViewerListResponse(
+        items=[_team_viewer_summary(item) for item in rows]
+    )
+
+
+@router.put(
+    "/admin/team-space-viewers/{user_id}",
+    response_model=TeamSpaceViewerUpdateResponse,
+    summary="设置单个账号的公共空间查看权限",
+)
+async def set_team_space_viewer(
+    user_id: str,
+    payload: TeamSpaceViewerUpdateRequest,
+    request: Request,
+    principal: Annotated[KnowledgePrincipal, Depends(_admin)],
+    db: Annotated[Database, Depends(get_database)],
+) -> TeamSpaceViewerUpdateResponse:
+    repository = KnowledgeRepository(db)
+    viewer = None
+    try:
+        if payload.enabled:
+            row = await run_in_threadpool(
+                repository.grant_team_space_viewer,
+                user_id=user_id,
+                granted_by=principal.user_id,
+            )
+            viewer = _team_viewer_summary(row)
+        else:
+            target = await run_in_threadpool(db.get_user_by_id, user_id)
+            if target is None:
+                raise LookupError("用户不存在")
+            if target.username == "admin":
+                raise ValueError("admin 的全局权限不可取消")
+            await run_in_threadpool(repository.revoke_team_space_viewer, user_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    config = getattr(request.app.state, "knowledge_config", None)
+    if config is None or config.audit.enabled:
+        await run_in_threadpool(
+            KnowledgeOperationsRepository(db).record_audit,
+            request_id=str(getattr(request.state, "request_id", "unknown")),
+            actor_user_id=principal.user_id,
+            actor_username=principal.username,
+            action=(
+                "team_space_viewer.grant"
+                if payload.enabled
+                else "team_space_viewer.revoke"
+            ),
+            object_type="team_space_viewer",
+            object_id=user_id,
+            details={"enabled": payload.enabled},
+            max_details_bytes=getattr(
+                getattr(config, "audit", None), "max_details_bytes", 4096
+            ),
+        )
+    return TeamSpaceViewerUpdateResponse(
+        user_id=user_id,
+        enabled=payload.enabled,
+        viewer=viewer,
     )
 
 

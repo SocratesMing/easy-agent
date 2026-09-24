@@ -2,8 +2,8 @@
 
 主要裁剪：queue/inline 双模式（新版上传/删除全部同步内联）、原文存储的
 NAS 多实现工厂（收敛为本地磁盘存储）、completed_document_probe 完成度
-探测（依赖旧版兼容配置）。删除改为纯软删除（保留上游资源，恢复窗口内
-可完整还原），物理清理不在本模块范围。
+探测（依赖旧版兼容配置）。删除为纯软删除（保留上游资源），恢复端点已随
+前端调用面裁剪移除，物理清理不在本模块范围。
 
 检索走 Ragflow 标准检索接口（retrieve，POST /api/v1/retrieval）。
 """
@@ -18,12 +18,15 @@ from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
-from typing import Any, BinaryIO, Callable
+from typing import TYPE_CHECKING, Any, BinaryIO, Callable
 
 from starlette.concurrency import run_in_threadpool
 
-from .auth import KnowledgePrincipal
-from .config import KnowledgeConfig, UPSTREAM_DOCUMENT_STATUS_MAPPING
+from .config import (
+    KnowledgeConfig,
+    UPSTREAM_DOCUMENT_STATUS_MAPPING,
+    UploadSecurityConfig,
+)
 from .file_validation import UploadValidationError, validate_upload
 from .models import (
     AllowedAction,
@@ -59,15 +62,37 @@ from .operations_repository import KnowledgeOperationsRepository
 from .ragflow import RagflowClient, RagflowError
 from .repository import KnowledgeRepository
 
+if TYPE_CHECKING:  # 仅供类型注解（api 与 service 相互引用，运行时无循环导入）
+    from .api import KnowledgePrincipal
 
 # 上游解析超过该时长仍未完成时标记失败（与旧版 parsing_poll 默认一致）
 PARSE_TIMEOUT_SECONDS = 1800.0
-# 软删除恢复窗口（天）；窗口过后不再允许恢复（与旧版删除保留期默认一致）
+# 软删除保留期（天）：到期后由数据库 purge_after 字段标记，物理清理不在本模块范围
 SOFT_DELETE_RETENTION_DAYS = 30
 # 证据最低得分阈值（与旧版 quality_baseline 默认一致，0.0 即不过滤）
 MINIMUM_EVIDENCE_SCORE = 0.0
 # 本地原文根目录（运行期目录，gitignored）
 DEFAULT_ORIGINALS_ROOT = Path("data") / "knowledge_originals"
+
+# 数据集创建与解析策略固定参数（v2 扁平配置不再承载，代码内固定）
+DATASET_PERMISSION = "me"
+CHUNK_METHOD = "naive"
+PARSER_CONFIG: dict[str, object] = {
+    "chunk_token_num": 512,
+    "layout_recognize": True,
+    "html4excel": False,
+    "delimiter": "\n!?;。；！？",
+    "task_page_size": 12,
+    "method": "minerullm",
+    "parent_retrieval": False,
+    "raptor": {"use_raptor": False},
+}
+# 检索固定参数（与旧版 defaults.retrieval 默认值一致）
+RETRIEVAL_SIMILARITY_THRESHOLD = 0.2
+RETRIEVAL_VECTOR_SIMILARITY_WEIGHT = 0.3
+RETRIEVAL_TOP_K = 1024
+# 上传安全校验参数（YAML 不再配置，代码内固定）
+_UPLOAD_SECURITY = UploadSecurityConfig()
 
 _ROLE_RANK = {
     KnowledgeBaseRole.VIEWER: 1,
@@ -92,7 +117,6 @@ _MAINTAINER_ACTIONS = _VIEWER_ACTIONS | frozenset(
         AllowedAction.MOVE_DOCUMENT,
         AllowedAction.DELETE_DOCUMENT,
         AllowedAction.RETRY_DOCUMENT,
-        AllowedAction.RESTORE_DOCUMENT,
     }
 )
 _MANAGER_ACTIONS = _MAINTAINER_ACTIONS | frozenset(
@@ -100,7 +124,6 @@ _MANAGER_ACTIONS = _MAINTAINER_ACTIONS | frozenset(
         AllowedAction.EDIT_BASE,
         AllowedAction.MANAGE_PERMISSIONS,
         AllowedAction.DELETE_BASE,
-        AllowedAction.RESTORE_BASE,
     }
 )
 
@@ -143,7 +166,7 @@ class OriginalReadHandle:
 
 
 class LocalOriginalStore:
-    """本地磁盘原文存储：原子写入、路径穿越防护、隔离区与恢复。"""
+    """本地磁盘原文存储：原子写入与路径穿越防护。"""
 
     provider = "filesystem"
     _SAFE_ID = re.compile(r"^[A-Za-z0-9-]{1,255}$")
@@ -251,43 +274,6 @@ class LocalOriginalStore:
                 "ORIGINAL_STORAGE_UNSAFE_PATH", "原文存储路径无效", retryable=False
             )
         return OriginalReadHandle(path, stat.st_size)
-
-    def quarantine(self, storage_key: str) -> str:
-        source = self._path(storage_key)
-        quarantine_key = str(PurePosixPath("quarantine", storage_key))
-        target = self._path(quarantine_key)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            source.replace(target)
-        except OSError as exc:
-            raise OriginalStorageError(
-                "ORIGINAL_STORAGE_DELETE_FAILED", "原文移入隔离区失败", retryable=True
-            ) from exc
-        return quarantine_key
-
-    def restore(self, storage_key: str, target_key: str) -> str:
-        source = self._path(storage_key)
-        target = self._path(target_key)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        if target.exists():
-            raise OriginalStorageError(
-                "ORIGINAL_STORAGE_CONFLICT", "原文恢复目标已存在", retryable=False
-            )
-        try:
-            source.replace(target)
-        except OSError as exc:
-            raise OriginalStorageError(
-                "ORIGINAL_STORAGE_RESTORE_FAILED", "原文恢复失败", retryable=True
-            ) from exc
-        return target_key
-
-    def purge(self, storage_key: str) -> None:
-        try:
-            self._path(storage_key).unlink(missing_ok=True)
-        except OSError as exc:
-            raise OriginalStorageError(
-                "ORIGINAL_STORAGE_DELETE_FAILED", "原文删除失败", retryable=True
-            ) from exc
 
     def health(self) -> bool:
         try:
@@ -473,10 +459,7 @@ class KnowledgeService:
             raise KnowledgeServiceError(
                 "KNOWLEDGE_FORBIDDEN", "当前用户无权执行该操作", status_code=403
             )
-        if (
-            str(base.get("status")) == KnowledgeBaseStatus.DELETED.value
-            and action != AllowedAction.RESTORE_BASE
-        ):
+        if str(base.get("status")) == KnowledgeBaseStatus.DELETED.value:
             raise KnowledgeServiceError(
                 "KNOWLEDGE_NOT_FOUND", "知识资源不存在", status_code=404
             )
@@ -737,7 +720,7 @@ class KnowledgeService:
             space_type=visibility.value,
             owner_user_id=principal.user_id,
             department_id=target_department_id,
-            embedding_model=self.config.defaults.dataset.embedding_model,
+            embedding_model=self.config.embedding.model,
         )
         operation = await self._repo(
             self.repository.create_operation,
@@ -755,10 +738,10 @@ class KnowledgeService:
             remote = await self.ragflow.create_dataset(
                 name=remote_name,
                 description=description,
-                embedding_model=self.config.defaults.dataset.embedding_model or None,
-                permission=self.config.defaults.dataset.permission,
-                chunk_method=self.config.defaults.parsing.chunk_method,
-                parser_config=self.config.defaults.parsing.parser_config,
+                embedding_model=self.config.embedding.model or None,
+                permission=DATASET_PERMISSION,
+                chunk_method=CHUNK_METHOD,
+                parser_config=PARSER_CONFIG,
             )
             base = await self._repo(
                 self.repository.update_base,
@@ -830,7 +813,7 @@ class KnowledgeService:
         principal: KnowledgePrincipal,
         request_id: str,
     ) -> None:
-        """软删除知识库：保留上游数据集与原文，恢复窗口内可完整还原。"""
+        """软删除知识库：保留上游数据集与原文，不做物理清理。"""
         del request_id
         await self._authorized_base(base_id, principal, AllowedAction.DELETE_BASE)
         deleted_at = datetime.now(UTC)
@@ -843,65 +826,6 @@ class KnowledgeService:
             deleted_by=principal.user_id,
             purge_after=purge_after.isoformat(),
         )
-
-    async def restore_base(
-        self,
-        *,
-        base_id: str,
-        principal: KnowledgePrincipal,
-        request_id: str,
-    ) -> KnowledgeBaseSummary:
-        del request_id
-        base, role = await self._authorized_base(
-            base_id, principal, AllowedAction.RESTORE_BASE
-        )
-        if str(base.get("status")) != KnowledgeBaseStatus.DELETED.value:
-            raise KnowledgeServiceError(
-                "KNOWLEDGE_RESTORE_NOT_ALLOWED",
-                "当前知识库不需要恢复",
-                status_code=409,
-            )
-        purge_after = base.get("purge_after")
-        if purge_after:
-            try:
-                if datetime.fromisoformat(str(purge_after)) <= datetime.now(UTC):
-                    raise KnowledgeServiceError(
-                        "KNOWLEDGE_RESTORE_EXPIRED",
-                        "知识库已超过恢复期",
-                        status_code=409,
-                    )
-            except ValueError as exc:
-                raise KnowledgeServiceError(
-                    "KNOWLEDGE_RESTORE_NOT_ALLOWED",
-                    "知识库恢复信息无效",
-                    status_code=409,
-                ) from exc
-        base = await self._repo(
-            self.repository.update_base,
-            base_id,
-            status=KnowledgeBaseStatus.ACTIVE.value,
-            deleted_at=None,
-            deleted_by=None,
-            purge_after=None,
-        )
-        operation = await self._repo(
-            self.repository.create_operation,
-            operation_type=OperationType.DATASET_RESTORE.value,
-            resource_type="base",
-            resource_id=base_id,
-            phase=OperationPhase.COMPLETED.value,
-            status=OperationStatus.SUCCEEDED.value,
-            created_by=principal.user_id,
-            retryable=False,
-        )
-        operation = await self._repo(
-            self.repository.update_operation,
-            operation["id"],
-            current_count=1,
-            progress=1.0,
-        )
-        assert base is not None and operation is not None
-        return await self._base_summary(base, role)
 
     # ---------------- 文件夹 ----------------
 
@@ -1398,7 +1322,7 @@ class KnowledgeService:
                 filename=safe_name,
                 content_type=content_type or "application/octet-stream",
                 size_bytes=size_bytes,
-                config=self.config.upload_security,
+                config=_UPLOAD_SECURITY,
             )
         except UploadValidationError as exc:
             raise KnowledgeServiceError(
@@ -1524,8 +1448,8 @@ class KnowledgeService:
             await self.ragflow.update_document(
                 str(base["remote_dataset_id"]),
                 remote_id,
-                chunk_method=self.config.defaults.parsing.chunk_method,
-                parser_config=self.config.defaults.parsing.parser_config,
+                chunk_method=CHUNK_METHOD,
+                parser_config=PARSER_CONFIG,
             )
             await self.ragflow.parse_documents(
                 str(base["remote_dataset_id"]), [remote_id]
@@ -1692,7 +1616,7 @@ class KnowledgeService:
         principal: KnowledgePrincipal,
         request_id: str,
     ) -> None:
-        """软删除文档：保留上游文档与本地原文，恢复窗口内可还原。"""
+        """软删除文档：保留上游文档与本地原文，不做物理清理。"""
         del request_id
         document = await self._repo(self.repository.get_document, document_id)
         if document is None:
@@ -1809,8 +1733,8 @@ class KnowledgeService:
             await self.ragflow.update_document(
                 str(base["remote_dataset_id"]),
                 new_remote_id,
-                chunk_method=self.config.defaults.parsing.chunk_method,
-                parser_config=self.config.defaults.parsing.parser_config,
+                chunk_method=CHUNK_METHOD,
+                parser_config=PARSER_CONFIG,
             )
             await self.ragflow.parse_documents(
                 str(base["remote_dataset_id"]), [new_remote_id]
@@ -1864,133 +1788,9 @@ class KnowledgeService:
             operation=self._operation_summary(operation, request_id),
         )
 
-    async def restore_document(
-        self,
-        *,
-        document_id: str,
-        principal: KnowledgePrincipal,
-        request_id: str,
-    ) -> DocumentUploadAccepted:
-        """恢复软删除文档：还原状态字段后立即用本地原文重新解析。"""
-        document = await self._repo(self.repository.get_document, document_id)
-        if document is None:
-            raise KnowledgeServiceError(
-                "KNOWLEDGE_NOT_FOUND", "知识资源不存在", status_code=404
-            )
-        _, role = await self._authorized_base(
-            str(document["base_id"]), principal, AllowedAction.RESTORE_DOCUMENT
-        )
-        if str(document["status"]) != DocumentStatus.DELETED.value:
-            raise KnowledgeServiceError(
-                "KNOWLEDGE_RESTORE_NOT_ALLOWED", "当前文档不需要恢复", status_code=409
-            )
-        purge_after = document.get("purge_after")
-        if purge_after:
-            try:
-                if datetime.fromisoformat(str(purge_after)) <= datetime.now(UTC):
-                    raise KnowledgeServiceError(
-                        "KNOWLEDGE_RESTORE_EXPIRED", "文档已超过恢复期", status_code=409
-                    )
-            except ValueError:
-                raise KnowledgeServiceError(
-                    "KNOWLEDGE_RESTORE_NOT_ALLOWED", "文档恢复信息无效", status_code=409
-                )
-        original = await self._repo(self.repository.get_original_object, document_id)
-        if original is None or str(original.get("status")) == "deleted":
-            raise KnowledgeServiceError(
-                "KNOWLEDGE_DOCUMENT_NOT_AVAILABLE", "文档原文已不可用", status_code=409
-            )
-        if str(original.get("status")) == "quarantined":
-            if self.original_store is None:
-                raise KnowledgeServiceError(
-                    "ORIGINAL_STORAGE_NOT_READY",
-                    "原文存储未就绪",
-                    status_code=503,
-                    retryable=True,
-                )
-            storage_key = str(original["storage_key"])
-            target_key = storage_key.removeprefix("quarantine/")
-            try:
-                await self._repo(
-                    self.original_store.restore, storage_key, target_key
-                )
-                await self._repo(
-                    self.repository.update_original_object,
-                    document_id,
-                    storage_key=target_key,
-                    status="available",
-                    quarantined_at=None,
-                    error_code=None,
-                    error_message=None,
-                )
-            except OriginalStorageError as exc:
-                raise KnowledgeServiceError(
-                    exc.code, "原文恢复失败", status_code=503, retryable=exc.retryable
-                ) from exc
-        await self._repo(
-            self.repository.update_document,
-            document_id,
-            status=DocumentStatus.FAILED.value,
-            deleted_at=None,
-            deleted_by=None,
-            purge_after=None,
-            error_code=None,
-            error_message=None,
-        )
-        return await self.retry_document(
-            document_id=document_id, principal=principal, request_id=request_id
-        )
-
-    async def list_document_chunks(
-        self,
-        *,
-        document_id: str,
-        principal: KnowledgePrincipal,
-        page: int = 1,
-        page_size: int = 20,
-        keywords: str | None = None,
-    ) -> dict[str, Any]:
-        """chunk 预览：按分页返回文档解析后的切片内容。"""
-        document = await self._repo(self.repository.get_document, document_id)
-        if document is None:
-            raise KnowledgeServiceError(
-                "KNOWLEDGE_NOT_FOUND", "知识资源不存在", status_code=404
-            )
-        await self._authorized_base(
-            str(document["base_id"]), principal, AllowedAction.VIEW
-        )
-        remote_document_id = document.get("remote_document_id")
-        if not remote_document_id:
-            raise KnowledgeServiceError(
-                "KNOWLEDGE_DOCUMENT_NOT_AVAILABLE",
-                "文档尚未提交知识底座，暂无切片",
-                status_code=409,
-            )
-        base = await self._repo(self.repository.get_base, str(document["base_id"]))
-        if base is None or not base.get("remote_dataset_id"):
-            raise KnowledgeServiceError(
-                "KNOWLEDGE_DOCUMENT_NOT_AVAILABLE",
-                "文档尚未提交知识底座，暂无切片",
-                status_code=409,
-            )
-        try:
-            result = await self.ragflow.list_chunks(
-                dataset_id=str(base["remote_dataset_id"]),
-                document_id=str(remote_document_id),
-                keywords=keywords or None,
-                page=page,
-                page_size=min(page_size, 100),
-            )
-        except RagflowError as exc:
-            raise self._upstream_error(exc) from exc
-        return {
-            "chunks": result.get("chunks", []),
-            "total": int(result.get("total") or 0),
-        }
-
     # ---------------- 检索与问答 ----------------
 
-    async def retrieve(
+    async def _retrieve_base_evidence(
         self,
         *,
         base_id: str,
@@ -2026,17 +1826,15 @@ class KnowledgeService:
             return RetrieveResponse(
                 evidence=[], warnings=["当前范围没有可检索的已解析文档"], request_id=request_id
             )
-        retrieval = self.config.defaults.retrieval
         try:
             result = await self.ragflow.retrieve(
                 question=question,
                 dataset_ids=[str(base["remote_dataset_id"])],
                 document_ids=[str(item["remote_document_id"]) for item in documents],
                 page_size=top_n,
-                similarity_threshold=retrieval.similarity_threshold,
-                vector_similarity_weight=retrieval.vector_similarity_weight,
-                top_k=retrieval.top_k,
-                rerank_id=retrieval.rerank_id or None,
+                similarity_threshold=RETRIEVAL_SIMILARITY_THRESHOLD,
+                vector_similarity_weight=RETRIEVAL_VECTOR_SIMILARITY_WEIGHT,
+                top_k=RETRIEVAL_TOP_K,
             )
         except RagflowError as exc:
             raise self._upstream_error(exc) from exc
@@ -2090,7 +1888,7 @@ class KnowledgeService:
         evidence: list[Evidence] = []
         warnings: list[str] = []
         for base_id in scope.base_ids:
-            result = await self.retrieve(
+            result = await self._retrieve_base_evidence(
                 base_id=base_id,
                 principal=principal,
                 question=question,
@@ -2172,20 +1970,6 @@ class KnowledgeService:
             items=[self._operation_summary(row, request_id) for row in rows],
             page=PageInfo(page=page, page_size=page_size, total=total),
         )
-
-    async def get_operation(
-        self,
-        *,
-        operation_id: str,
-        principal: KnowledgePrincipal,
-        request_id: str,
-    ) -> OperationSummary:
-        row = await self._repo(self.repository.get_operation, operation_id)
-        if row is None or str(row["created_by"]) != principal.user_id:
-            raise KnowledgeServiceError(
-                "KNOWLEDGE_NOT_FOUND", "知识任务不存在", status_code=404
-            )
-        return self._operation_summary(row, request_id)
 
     async def get_session_scope(
         self, *, session_id: str, principal: KnowledgePrincipal

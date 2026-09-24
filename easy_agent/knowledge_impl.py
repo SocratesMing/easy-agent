@@ -46,7 +46,6 @@ if KNOWLEDGE_IMPL == "v2":
         should_audit,
     )
     from .knowledges.operations_repository import KnowledgeOperationsRepository
-    from .knowledges.ops_api import router as knowledge_ops_router
     from .knowledges.chat_bridge import (
         authorize_scoped_chat,
         empty_knowledge_context,
@@ -67,7 +66,6 @@ else:
         should_audit,
     )
     from .knowledge.operations_repository import KnowledgeOperationsRepository
-    from .knowledge.ops_api import router as knowledge_ops_router
     from .knowledge.chat_bridge import (
         authorize_scoped_chat,
         empty_knowledge_context,
@@ -93,7 +91,6 @@ __all__ = [
     "extend_agent_tools",
     "is_knowledge_panel_title",
     "knowledge_chat_stream_generator",
-    "knowledge_ops_router",
     "knowledge_panel_system_prompt",
     "knowledge_router",
     "metrics",

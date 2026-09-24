@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from fastapi import HTTPException, Request
 
 from ..db import Database
-from .auth import get_knowledge_principal
+from .api import get_knowledge_principal
 from .config import KnowledgeConfig
 from .repository import KnowledgeRepository
 from .service import KnowledgeService, KnowledgeServiceError

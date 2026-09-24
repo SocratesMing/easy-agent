@@ -36,7 +36,6 @@ from .knowledge_impl import (
     startup_knowledge,
 )
 from .knowledge_impl import knowledge_router
-from .knowledge_impl import knowledge_ops_router
 from .personnel import router as personnel_router
 from .model import create_model
 from .models.api import HealthResponse
@@ -505,7 +504,6 @@ if terminal_router is not None:
     app.include_router(terminal_router)
 app.include_router(scheduled_tasks_router)
 app.include_router(knowledge_router)
-app.include_router(knowledge_ops_router)
 app.include_router(personnel_router)
 
 

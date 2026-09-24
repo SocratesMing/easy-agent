@@ -120,32 +120,5 @@ class KnowledgeOperationsRepository:
             )
         return {"id": event_id, "request_id": request_id, "created_at": timestamp}
 
-    def list_audits(self, *, limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
-        with self.db.get_connection() as conn:
-            cursor = conn.cursor()
-            self.db._execute(
-                cursor,
-                """
-                SELECT * FROM knowledge_audit_events
-                ORDER BY created_at DESC LIMIT ? OFFSET ?
-                """,
-                (limit, offset),
-            )
-            return [dict(item) for item in cursor.fetchall()]
-
-    def task_counts(self) -> dict[str, int]:
-        """按状态统计 knowledge_tasks（新版无写入方，保留供指标端点兼容）。"""
-        result = {key: 0 for key in ("queued", "retry", "running", "succeeded", "dead_letter")}
-        with self.db.get_connection() as conn:
-            cursor = conn.cursor()
-            self.db._execute(
-                cursor,
-                "SELECT status, COUNT(*) AS count FROM knowledge_tasks GROUP BY status",
-            )
-            for item in cursor.fetchall():
-                row = dict(item) if isinstance(item, dict) else {"status": item[0], "count": item[1]}
-                result[str(row["status"])] = int(row["count"])
-        return result
-
 
 __all__ = ["KnowledgeOperationsRepository", "utc_now"]

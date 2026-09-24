@@ -94,11 +94,9 @@ class AllowedAction(str, Enum):
     MOVE_DOCUMENT = "move_document"
     DELETE_DOCUMENT = "delete_document"
     RETRY_DOCUMENT = "retry_document"
-    RESTORE_DOCUMENT = "restore_document"
     EDIT_BASE = "edit_base"
     MANAGE_PERMISSIONS = "manage_permissions"
     DELETE_BASE = "delete_base"
-    RESTORE_BASE = "restore_base"
 
 
 class KnowledgeModuleStatus(str, Enum):
@@ -505,15 +503,6 @@ class KnowledgeStatusResponse(ContractModel):
     status: KnowledgeModuleStatus
 
 
-class KnowledgeCapabilitiesResponse(ContractModel):
-    schema_version: Literal[1] = 1
-    api_version: Literal["v1"] = "v1"
-    enabled: StrictBool
-    status: KnowledgeModuleStatus
-    upstream_capabilities: list[str] = Field(default_factory=list)
-    features: dict[str, StrictBool] = Field(default_factory=dict)
-
-
 # ---------------------------------------------------------------------------
 # 问答流式事件
 # ---------------------------------------------------------------------------
@@ -575,7 +564,6 @@ __all__ = [
     "KnowledgeBaseSummary",
     "KnowledgeBaseUpdateRequest",
     "KnowledgeBaseVisibility",
-    "KnowledgeCapabilitiesResponse",
     "KnowledgeErrorResponse",
     "KnowledgeModuleStatus",
     "KnowledgeStatusResponse",

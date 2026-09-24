@@ -1,10 +1,14 @@
-"""新版知识库模块配置。
+"""新版知识库模块配置（v2 扁平结构）。
 
 上游为本地部署的 Ragflow v0.26.3 开源服务（标准官方 HTTP API），地址与
 凭据由环境变量占位注入：``RAGFLOW_BASE_URL``、``RAGFLOW_API_KEY``。
-二者均无默认回退：模块启用时若任一为空，按 fail-closed 路径报错并提示
-填写。旧版配置中的 bridge/local compat、quality/reconciliation、
-transport/observability 等段已裁剪。
+二者均无默认回退：模块启用时若任一为空或残留未解析占位符，按
+fail-closed 路径报错并提示填写。
+
+只认这些 YAML 键：``implementation``（透传不校验）/ ``enabled`` /
+``base_url`` / ``api_key`` / ``embedding.model`` / ``audit`` / ``limits``。
+旧版 endpoint / auth / bank_api / adapter / tls / defaults 等嵌套段
+不再解析；解析策略、检索参数与上传安全开关为代码内固定值。
 """
 
 from __future__ import annotations
@@ -22,10 +26,6 @@ from pydantic import BaseModel, Field, SecretStr, ValidationError, model_validat
 from ..config import Config
 
 logger = logging.getLogger(__name__)
-
-# 认证方式写死为 Bearer（Ragflow 官方 API 标准）
-AUTH_HEADER = "Authorization"
-AUTH_SCHEME = "Bearer"
 
 # 上游文档 run 状态（官方 list documents 接口）映射为本地 DocumentStatus 值
 UPSTREAM_DOCUMENT_STATUS_MAPPING: dict[str, str] = {
@@ -46,58 +46,26 @@ class KnowledgeConfigError(ValueError):
     """知识库配置不可用时抛出。"""
 
 
-class DatasetDefaultsConfig(BaseModel):
-    permission: str = "me"           # 上游知识库保持私有，授权以本地为准
-    embedding_model: str = ""       # 形如 "bge-OA@Xinference"
+class EmbeddingConfig(BaseModel):
+    # Ragflow 上注册的 embedding 模型标识（"model@provider" 格式），创建知识库时随请求提交
+    model: str = ""
 
 
-class ParsingDefaultsConfig(BaseModel):
-    chunk_method: str = "naive"
-    parser_config: dict[str, Any] = Field(
-        default_factory=lambda: {
-            "chunk_token_num": 512,
-            "layout_recognize": True,
-            "html4excel": False,
-            "delimiter": "\n!?;。；！？",
-            "task_page_size": 12,
-            "method": "minerullm",
-            "parent_retrieval": False,
-            "raptor": {"use_raptor": False},
-        }
-    )
-
-
-class RetrievalDefaultsConfig(BaseModel):
-    page_size: int = Field(default=10, ge=1)
-    similarity_threshold: float = Field(default=0.2, ge=0, le=1)
-    vector_similarity_weight: float = Field(default=0.3, ge=0, le=1)
-    top_k: int = Field(default=1024, ge=1)
-    rerank_id: str = ""
-
-
-class DefaultsConfig(BaseModel):
-    dataset: DatasetDefaultsConfig = Field(default_factory=DatasetDefaultsConfig)
-    parsing: ParsingDefaultsConfig = Field(default_factory=ParsingDefaultsConfig)
-    retrieval: RetrievalDefaultsConfig = Field(default_factory=RetrievalDefaultsConfig)
+class AuditConfig(BaseModel):
+    enabled: bool = True
+    max_details_bytes: int = Field(default=4096, ge=256, le=65536)
 
 
 class LimitsConfig(BaseModel):
     max_file_size_mb: int = Field(default=100, gt=0)
     max_request_size_mb: int = Field(default=110, gt=0)
-    max_files_per_request: int = Field(default=20, gt=0)
+    max_files_per_request: int = Field(default=1, gt=0)
     max_dataset_name_utf8_bytes: int = Field(default=127, gt=0)
     max_filename_utf8_bytes: int = Field(default=127, gt=0)
     allowed_extensions: list[str] = Field(
         default_factory=lambda: ["pdf", "doc", "docx", "txt", "md", "xls", "xlsx", "csv", "ppt", "pptx"]
     )
-    max_datasets_per_query: int = Field(default=20, gt=0)
     max_documents_per_query: int = Field(default=500, gt=0)
-
-
-class AuditConfig(BaseModel):
-    enabled: bool = True
-    retention_days: int = Field(default=365, ge=30)
-    max_details_bytes: int = Field(default=4096, ge=256, le=65536)
 
 
 class VirusScanConfig(BaseModel):
@@ -108,27 +76,24 @@ class VirusScanConfig(BaseModel):
 
 
 class UploadSecurityConfig(BaseModel):
+    """上传安全校验参数（file_validation 使用；YAML 不再配置，值为代码内固定）。"""
+
     reject_empty_files: bool = True
-    verify_magic: bool = True
+    verify_magic: bool = False
     reject_office_macros: bool = True
     virus_scan: VirusScanConfig = Field(default_factory=VirusScanConfig)
 
 
 class KnowledgeConfig(BaseModel):
-    """校验后的知识库配置（应用启动时加载一次）。
+    """校验后的知识库配置（应用启动时加载一次）。"""
 
-    端点与凭据优先取主配置 YAML ``knowledges``（兼容旧版 ``knowledge``）段，
-    支持 ``${VAR:-默认}`` 占位；其次取环境变量。无默认地址回退：模块启用时
-    base_url / api_key 任一为空即 fail-closed 报错，提示填写。
-    """
-
+    implementation: str = "v2"  # 实现选择器（knowledge_impl.py）透传字段，不校验取值
     enabled: bool = False
     base_url: str = ""
     api_key: SecretStr = SecretStr("")  # Bearer 凭据（RAGFLOW_API_KEY）
-    defaults: DefaultsConfig = Field(default_factory=DefaultsConfig)
-    limits: LimitsConfig = Field(default_factory=LimitsConfig)
+    embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
     audit: AuditConfig = Field(default_factory=AuditConfig)
-    upload_security: UploadSecurityConfig = Field(default_factory=UploadSecurityConfig)
+    limits: LimitsConfig = Field(default_factory=LimitsConfig)
 
     @model_validator(mode="after")
     def _endpoint_required_when_enabled(self) -> "KnowledgeConfig":
@@ -141,7 +106,7 @@ class KnowledgeConfig(BaseModel):
 
     @classmethod
     def load(cls, config_path: str | Path | None = None) -> "KnowledgeConfig":
-        """从 EasyAgent 主配置 YAML 加载；文件缺失时退回纯环境变量构造。"""
+        """从 EasyAgent 主配置 YAML 的 knowledge 段加载；文件缺失时退回纯环境变量构造。"""
         if config_path is not None:
             path = Path(config_path)
             if not path.is_file():
@@ -158,47 +123,20 @@ class KnowledgeConfig(BaseModel):
             raise KnowledgeConfigError(f"配置文件包含无效 YAML: {exc}") from None
         if not isinstance(raw, dict):
             raise KnowledgeConfigError("应用配置必须是 YAML mapping")
-        # 新版优先读 knowledges 段；兼容旧版 knowledge 段中的已知字段
-        section = raw.get("knowledges") if isinstance(raw.get("knowledges"), dict) else raw.get("knowledge")
-        return cls.from_mapping(_expand_env_recursive(section), _expand_env_recursive(raw.get("small_models")))
+        return cls.from_mapping(_expand_env_recursive(raw.get("knowledge")))
 
     @classmethod
-    def from_mapping(
-        cls, section: Mapping[str, Any] | None, small_models: Mapping[str, Any] | None = None
-    ) -> "KnowledgeConfig":
-        """从已展开占位符的 knowledge 配置段构造；未识别的旧版字段直接忽略。"""
+    def from_mapping(cls, section: Mapping[str, Any] | None) -> "KnowledgeConfig":
+        """从已展开占位符的 knowledge 配置段构造；未识别的键直接忽略。"""
         section = dict(section or {})
-        endpoint = _as_mapping(section.get("endpoint"))
-        auth = _as_mapping(section.get("auth"))
-        defaults = dict(_as_mapping(section.get("defaults")))
-        dataset = dict(_as_mapping(defaults.get("dataset")))
-        retrieval = dict(_as_mapping(defaults.get("retrieval")))
-        # 兼容旧版：embedding / rerank 未显式配置时回填 small_models 段
-        small_models = _as_mapping(small_models)
-        if not dataset.get("embedding_model") and _as_mapping(small_models.get("embedding")).get("model"):
-            dataset["embedding_model"] = small_models["embedding"]["model"]
-        if not retrieval.get("rerank_id") and _as_mapping(small_models.get("reranker")).get("model"):
-            retrieval["rerank_id"] = small_models["reranker"]["model"]
-        defaults["dataset"] = dataset
-        defaults["retrieval"] = retrieval
         payload = {
+            "implementation": section.get("implementation", "v2"),
             "enabled": section.get("enabled", _env_bool("KNOWLEDGE_ENABLED", False)),
-            "base_url": (
-                section.get("base_url")
-                or endpoint.get("base_url")  # 兼容旧版 endpoint.base_url
-                or os.environ.get("RAGFLOW_BASE_URL")
-                or ""
-            ),
-            "api_key": (
-                section.get("api_key")
-                or auth.get("credential")  # 兼容旧版 auth.credential
-                or os.environ.get("RAGFLOW_API_KEY")
-                or ""
-            ),
-            "defaults": defaults,
-            "limits": _as_mapping(section.get("limits")),
+            "base_url": section.get("base_url") or os.environ.get("RAGFLOW_BASE_URL") or "",
+            "api_key": section.get("api_key") or os.environ.get("RAGFLOW_API_KEY") or "",
+            "embedding": {"model": str(_as_mapping(section.get("embedding")).get("model") or "")},
             "audit": _as_mapping(section.get("audit")),
-            "upload_security": _as_mapping(section.get("upload_security")),
+            "limits": _as_mapping(section.get("limits")),
         }
         # fail-closed：模块启用时禁止残留未解析的 ${VAR} 占位符
         # （防止 "${RAGFLOW_API_KEY}" 字面量被当作真实密钥静默放行）
@@ -219,7 +157,7 @@ class KnowledgeConfig(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# ${VAR:-default} 占位符解析（与旧版语法一致）
+# ${VAR:-default} 占位符解析
 # ---------------------------------------------------------------------------
 _ENV_VAR_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
 _INT_RE = re.compile(r"^[+-]?(?:0|[1-9][0-9]*)$")
@@ -294,8 +232,6 @@ def _find_unresolved(value: object, path: str = "") -> set[str]:
 
 
 __all__ = [
-    "AUTH_HEADER",
-    "AUTH_SCHEME",
     "KnowledgeConfig",
     "KnowledgeConfigError",
     "UPSTREAM_DOCUMENT_STATUS_MAPPING",

@@ -19,7 +19,7 @@ from langchain_core.tools import BaseTool
 from pydantic import BaseModel, ConfigDict, Field
 
 from ..db import get_database
-from .auth import KnowledgePrincipal
+from .api import KnowledgePrincipal
 from .config import KnowledgeConfig
 from .models import AllowedAction
 from .operations_repository import KnowledgeOperationsRepository
