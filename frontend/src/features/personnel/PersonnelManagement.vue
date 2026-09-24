@@ -357,12 +357,11 @@
             </label>
 
             <div v-if="importError" class="pm-inline-error" role="alert">{{ importError }}</div>
-            <div v-if="importResultText" class="pm-inline-success" role="status">{{ importResultText }}</div>
           </div>
 
           <footer class="pm-dialog-actions">
-            <button class="pm-btn pm-quiet" type="button" :disabled="importing" @click="closeImport">{{ importResultText ? '完成' : '取消' }}</button>
-            <button class="pm-btn pm-primary" type="button" :disabled="importing || !canImport || Boolean(importResultText)" @click="submitImport">{{ importing ? '导入中…' : '开始导入' }}</button>
+            <button class="pm-btn pm-quiet" type="button" :disabled="importing" @click="closeImport">取消</button>
+            <button class="pm-btn pm-primary" type="button" :disabled="importing || !canImport" @click="submitImport">{{ importing ? '导入中…' : '开始导入' }}</button>
           </footer>
         </section>
       </div>
@@ -427,7 +426,6 @@ export default {
     const importFileInput = ref(null)
     const importing = ref(false)
     const importError = ref('')
-    const importResultText = ref('')
 
     let loadSequence = 0
     let filterTimer = null
@@ -687,7 +685,6 @@ export default {
       importSource.value = ''
       importFile.value = null
       importError.value = ''
-      importResultText.value = ''
       if (importFileInput.value) importFileInput.value.value = ''
       showImport.value = true
     }
@@ -700,7 +697,6 @@ export default {
     function chooseImportFile(event) {
       const file = event.target.files && event.target.files[0]
       importError.value = ''
-      importResultText.value = ''
       importFile.value = null
       if (!file) return
       if (!file.name.toLowerCase().endsWith('.xlsx')) {
@@ -720,13 +716,13 @@ export default {
       if (!canImport.value || importing.value) return
       importing.value = true
       importError.value = ''
-      importResultText.value = ''
       try {
         const result = await importPersonnelUsers(importFile.value, importSource.value.trim())
-        importResultText.value = summarizeImportResult(result)
-        notify(importResultText.value)
+        notify(summarizeImportResult(result))
         page.value = 1
         await loadUsers()
+        // 导入成功直接关闭弹窗，结果摘要走顶部通知；失败时留在弹窗内展示错误
+        showImport.value = false
       } catch (error) {
         importError.value = resolveError(error, '导入人员信息失败')
       } finally {
@@ -810,7 +806,6 @@ export default {
       importError,
       importFile,
       importFileInput,
-      importResultText,
       importSource,
       isTeamManager,
       isTeamViewer,
@@ -1157,9 +1152,7 @@ export default {
 .pm-file-picker > span:last-child { display: flex; flex-direction: column; min-width: 0; }
 .pm-file-picker strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-primary); font-size: 12px; }
 .pm-file-picker small { margin-top: 2px; color: var(--text-secondary); font-size: 10px; }
-.pm-inline-error, .pm-inline-success { padding: 9px 11px; border-radius: 8px; font-size: 11px; }
-.pm-inline-error { color: #dc2626; background: rgba(239, 68, 68, .08); border: 1px solid rgba(239, 68, 68, .2); }
-.pm-inline-success { color: #047857; background: rgba(16, 185, 129, .08); border: 1px solid rgba(16, 185, 129, .2); }
+.pm-inline-error { padding: 9px 11px; border-radius: 8px; font-size: 11px; color: #dc2626; background: rgba(239, 68, 68, .08); border: 1px solid rgba(239, 68, 68, .2); }
 
 @media (max-width: 980px) {
   .pm-overlay { padding: 10px; }
