@@ -337,7 +337,7 @@
       <div class="ke-modal wide">
         <header><div><h3>成员与权限</h3><p>邀请用户或部门，共同使用「{{ selectedBase ? selectedBase.name : '' }}」。</p></div><button aria-label="关闭" @click="showPermissionModal = false"><IconX /></button></header>
         <div class="ke-subject-search">
-          <select v-model="subjectType" @change="searchSubjects"><option value="user">用户</option><option value="department">部门</option></select>
+          <select v-model="subjectType"><option value="user">用户</option><option value="department">部门</option></select>
           <label class="ke-search-box"><IconSearch /><input v-model="subjectQuery" placeholder="搜索用户名或部门" @input="scheduleSubjectSearch" /></label>
         </div>
         <div v-if="subjectResults.length" class="ke-subject-results">
@@ -609,6 +609,9 @@ const folderForm = reactive({ id: '', name: '', parentId: '' })
 const confirmation = reactive({ open: false, title: '', description: '', confirmLabel: '确认删除', tone: 'danger' })
 const permissionItems = ref([])
 const subjectType = ref('user')
+// select 上 v-model 与 @change 存在监听时序问题（@change 先于模型更新触发），
+// 改用 watch 保证切换类型后用新值刷新候选列表
+watch(subjectType, () => { if (showPermissionModal.value) searchSubjects() })
 const subjectQuery = ref('')
 const subjectResults = ref([])
 const toast = ref(null)
