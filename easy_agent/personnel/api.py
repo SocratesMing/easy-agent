@@ -29,7 +29,7 @@ from .repository import (
     list_personnel,
     update_personnel,
 )
-from ..knowledge.operations_repository import KnowledgeOperationsRepository
+from ..knowledge_impl import KnowledgeOperationsRepository
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/personnel", tags=["Personnel"])

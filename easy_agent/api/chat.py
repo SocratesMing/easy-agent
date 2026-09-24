@@ -13,15 +13,15 @@ from ..db import Database, get_database
 from ..models.db import SessionModel
 from ..models.api import ChatRequest, ResumeRequest
 from ..middleware import get_current_username
-from ..knowledge.chat_bridge import (
+from ..knowledge_impl import (
     authorize_scoped_chat,
+    chat_stream_generator,
     empty_knowledge_context,
     is_knowledge_panel_title,
+    knowledge_chat_stream_generator,
     knowledge_panel_system_prompt,
     prepare_knowledge_chat,
 )
-from ..knowledge.streaming import knowledge_chat_stream_generator
-from ..knowledge.host_streaming import chat_stream_generator
 from ..services import (
     resume_stream_generator,
     get_or_create_agent_for_session,

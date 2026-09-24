@@ -714,6 +714,9 @@ class KnowledgeConfig(StrictConfigModel):
     """Validated knowledge configuration loaded once during app lifespan."""
 
     schema_version: StrictInt = 1
+    # 实现选择键（legacy | v2）：由 knowledge_impl 选择器读取；旧版自身不使用，
+    # 仅声明为可选字段以便 strict 校验放行（见 app.py / knowledge_impl.py）。
+    implementation: str = "legacy"
     enabled: StrictBool = False
     adapter: AdapterConfig = Field(default_factory=AdapterConfig)
     endpoint: EndpointConfig | None = None

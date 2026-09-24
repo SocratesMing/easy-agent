@@ -24,12 +24,19 @@ from starlette.concurrency import run_in_threadpool
 
 from .config import AgentConfig
 from .db import init_database
-from .knowledge.api import router as knowledge_router
-from .knowledge.lifecycle import shutdown_knowledge, startup_knowledge
-from .knowledge.legacy_routes import LegacyHostRoutes
-from .knowledge.observability import audit_metadata, metrics, resolve_request_id, should_audit
-from .knowledge.operations_repository import KnowledgeOperationsRepository
-from .knowledge.ops_api import router as knowledge_ops_router
+from .knowledge_impl import (
+    KNOWLEDGE_IMPL,
+    LegacyHostRoutes,
+    KnowledgeOperationsRepository,
+    audit_metadata,
+    metrics,
+    resolve_request_id,
+    should_audit,
+    shutdown_knowledge,
+    startup_knowledge,
+)
+from .knowledge_impl import knowledge_router
+from .knowledge_impl import knowledge_ops_router
 from .personnel import router as personnel_router
 from .model import create_model
 from .models.api import HealthResponse
@@ -52,11 +59,6 @@ from .api import (
     skill_center_router,
     scheduled_tasks_router,
 )
-from .knowledge.api import router as knowledge_router
-from .knowledge.ops_api import router as knowledge_ops_router
-from .knowledge.lifecycle import startup_knowledge, shutdown_knowledge
-from .knowledge.observability import audit_metadata, should_audit
-from .knowledge.operations_repository import KnowledgeOperationsRepository
 
 # Web Terminal 依赖 pty（POSIX 专用），Windows 不支持，故不加载该模块
 terminal_router = None
@@ -304,6 +306,7 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         logger.warning(f"检测 knowledge 配置失败，按未启用处理: {exc}")
     if knowledge_started:
+        logger.info(f"📚 知识库实现: {KNOWLEDGE_IMPL}")
         await startup_knowledge(app, config_path)
     else:
         logger.info("ℹ️ 未配置 knowledge 段，跳过知识库启动")
