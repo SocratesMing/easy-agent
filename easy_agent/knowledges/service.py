@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import logging
 import re
 import uuid
 from collections.abc import Iterable, Iterator, Mapping
@@ -64,6 +65,8 @@ from .repository import KnowledgeRepository
 
 if TYPE_CHECKING:  # 仅供类型注解（api 与 service 相互引用，运行时无循环导入）
     from .api import KnowledgePrincipal
+
+logger = logging.getLogger(__name__)
 
 # 上游解析超过该时长仍未完成时标记失败（与旧版 parsing_poll 默认一致）
 PARSE_TIMEOUT_SECONDS = 1800.0
