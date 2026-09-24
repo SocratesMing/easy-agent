@@ -659,6 +659,9 @@ class RagflowClient:
             docs 内 run 字段标识解析状态（UNSTART/RUNNING/DONE/FAIL/CANCEL）。
         """
         self._require_non_empty(dataset_id, "dataset_id")
+        # Ragflow 契约：page_size 上限 100，超出直接 code=100 拒绝
+        if page_size is not None and page_size > 100:
+            page_size = 100
         query = self._clean_query(
             {
                 "page": page,

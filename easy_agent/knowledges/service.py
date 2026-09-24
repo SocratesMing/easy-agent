@@ -79,12 +79,9 @@ DATASET_PERMISSION = "me"
 CHUNK_METHOD = "naive"
 PARSER_CONFIG: dict[str, object] = {
     "chunk_token_num": 512,
-    "layout_recognize": True,
+    "layout_recognize": "DeepDOC",
     "html4excel": False,
     "delimiter": "\n!?;。；！？",
-    "task_page_size": 12,
-    "method": "minerullm",
-    "parent_retrieval": False,
     "raptor": {"use_raptor": False},
 }
 # 检索固定参数（与旧版 defaults.retrieval 默认值一致）
@@ -1097,7 +1094,12 @@ class KnowledgeService:
                 page=1,
                 page_size=self.config.limits.max_documents_per_query,
             )
-        except RagflowError:
+        except RagflowError as exc:
+            # 轮询失败只跳过本轮，但必须留痕，否则状态不回传时无从排查
+            logger.warning(
+                "刷新上游文档状态失败 base=%s dataset=%s: %s",
+                base.get("id"), remote_dataset_id, exc,
+            )
             return
         docs = upstream.get("docs", []) if isinstance(upstream, dict) else []
         remote_ids = [str(item.get("id")) for item in docs if item.get("id")]

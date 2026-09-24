@@ -126,6 +126,7 @@ def initialize_knowledge_schema(db: Database, cursor) -> None:
             error_message TEXT,
             created_by VARCHAR(255) NOT NULL,
             created_at VARCHAR(50) NOT NULL,
+            updated_at VARCHAR(50),
             stored_at VARCHAR(50),
             quarantined_at VARCHAR(50),
             deleted_at VARCHAR(50),
@@ -137,6 +138,10 @@ def initialize_knowledge_schema(db: Database, cursor) -> None:
     """)
     db._create_index(
         cursor, "idx_knowledge_document_objects_document", "knowledge_document_objects", "document_id, status"
+    )
+    # 存量库（v2 建表初期版本）幂等补列：repository._update_by_id 统一刷新 updated_at
+    db._ensure_column(
+        cursor, "knowledge_document_objects", "updated_at", "VARCHAR(50) DEFAULT NULL"
     )
     db._create_index(
         cursor, "idx_knowledge_document_objects_status", "knowledge_document_objects", "status, created_at"

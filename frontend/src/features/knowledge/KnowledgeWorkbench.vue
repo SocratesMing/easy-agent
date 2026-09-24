@@ -994,7 +994,12 @@ function applyAgentEvent(event, baseId, generation) {
   } else if (event.type === 'error') {
     streamDone = true
     agentMessage.value.loading = false
-    agentMessage.value.error = event.content || '处理失败'
+    // 后端正常下发字符串；若拿到对象（如嵌套 error/message），提取可读文案，
+    // 避免模板渲染出 "[object Object]"
+    const content = event.content
+    agentMessage.value.error = typeof content === 'string'
+      ? (content || '处理失败')
+      : (content?.message || content?.error || '处理失败')
     askError.value = agentMessage.value.error
   }
   touchAgentMessage()
