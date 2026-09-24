@@ -1,4 +1,4 @@
-"""Fail-closed identity dependency used only by knowledge routes."""
+"""新版知识库路由的请求级身份依赖（fail-closed，无旧版回退路径）。"""
 
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ async def get_knowledge_principal(
     http_request: Request,
     db: Annotated[Database, Depends(get_database)],
 ) -> KnowledgePrincipal:
-    """Resolve a trusted user without legacy header/default-user fallbacks."""
+    """解析可信用户，不接受遗留请求头/默认用户回退。"""
 
     authorization = http_request.headers.get("Authorization", "")
     scheme, separator, token = authorization.partition(" ")

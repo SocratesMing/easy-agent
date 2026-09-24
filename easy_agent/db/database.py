@@ -538,12 +538,10 @@ class Database:
             self._create_scheduled_task_tables(cursor)
             self._create_distributed_lock_table(cursor)
 
-            # Narrow integration point: schema ownership stays in knowledge/.
-            # 有意偏离迁移来源：其 prod 分支调用 validate_knowledge_schema_cursor，
-            # 但本分支未迁移 schema 迁移 CLI（scripts/migrate_knowledge_schema.py），
-            # 存量 prod 库会因校验失败而无法启动。initialize_knowledge_schema 是
-            # 幂等且有 checksum 保护的，故始终调用它；失败只告警，绝不阻断启动。
-            from ..knowledge.schema import initialize_knowledge_schema
+            # Narrow integration point: schema ownership stays in knowledges/ (v2).
+            # initialize_knowledge_schema 幂等且与旧版表结构同构（存量数据无缝），
+            # 失败只告警，绝不阻断启动。
+            from ..knowledges.schema import initialize_knowledge_schema
 
             try:
                 initialize_knowledge_schema(self, cursor)

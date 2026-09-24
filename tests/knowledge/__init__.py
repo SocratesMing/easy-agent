@@ -1,1 +1,0 @@
-"""Knowledge-engineering test package."""

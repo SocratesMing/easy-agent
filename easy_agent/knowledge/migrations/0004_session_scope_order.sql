@@ -1,3 +1,0 @@
--- EasyAgent knowledge schema v4: cross-database ordering for selected bases.
--- The portable column addition is performed by schema.py because SQLite and
--- MySQL use different metadata syntax for idempotent ALTER TABLE operations.
