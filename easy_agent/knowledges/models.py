@@ -503,6 +503,15 @@ class KnowledgeStatusResponse(ContractModel):
     status: KnowledgeModuleStatus
 
 
+class KnowledgeCapabilitiesResponse(ContractModel):
+    """知识工程能力声明（前端 KnowledgeWorkbench 启用判断依据）。"""
+
+    enabled: StrictBool
+    status: KnowledgeModuleStatus
+    upstream_capabilities: list[str] = []
+    features: dict[str, bool] = {}
+
+
 # ---------------------------------------------------------------------------
 # 问答流式事件
 # ---------------------------------------------------------------------------

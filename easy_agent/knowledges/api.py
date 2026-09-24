@@ -61,6 +61,7 @@ from .models import (
     KnowledgeBaseListResponse,
     KnowledgeBaseSummary,
     KnowledgeBaseUpdateRequest,
+    KnowledgeCapabilitiesResponse,
     KnowledgeModuleStatus,
     KnowledgeStatusResponse,
     OperationListResponse,
@@ -274,6 +275,31 @@ async def _call(awaitable):
 # ---------------------------------------------------------------------------
 # 模块状态
 # ---------------------------------------------------------------------------
+@router.get("/capabilities", response_model=KnowledgeCapabilitiesResponse)
+async def get_capabilities(
+    request: Request,
+    principal: Annotated[KnowledgePrincipal, Depends(get_knowledge_principal)],
+) -> KnowledgeCapabilitiesResponse:
+    del principal
+    config = _get_knowledge_config(request)
+    if not config.enabled:
+        return KnowledgeCapabilitiesResponse(
+            enabled=False, status=KnowledgeModuleStatus.DISABLED
+        )
+    return KnowledgeCapabilitiesResponse(
+        enabled=True,
+        status=KnowledgeModuleStatus.CONFIGURED,
+        features={
+            "document_retry": True,
+            "document_preview": True,
+            "original_document_storage": True,
+            "agent_original_access": True,
+            "user_department_permissions": True,
+            "session_knowledge_scope": True,
+        },
+    )
+
+
 @router.get("/status", response_model=KnowledgeStatusResponse)
 async def get_status(
     request: Request,
