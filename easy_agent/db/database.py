@@ -8,6 +8,7 @@ import logging
 import os
 import re
 import sqlite3
+import threading
 import uuid
 from contextlib import contextmanager
 from datetime import datetime
@@ -41,6 +42,9 @@ class Database:
         self.db_type = "sqlite"
         self._connection: Optional[sqlite3.Connection] = None
         self._pool = None
+        # SQLite 单连接被多线程共享（check_same_thread=False），必须串行化访问，
+        # 否则并发 commit 会触发 SystemError / cannot commit - no transaction is active
+        self._sqlite_lock = threading.RLock()
 
         if db_config:
             configured_type = db_config.get("type", "sqlite")
@@ -181,13 +185,24 @@ class Database:
 
     @contextmanager
     def get_connection(self):
-        conn = self._get_connection()
-        try:
-            yield conn
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
+        if self.db_type == "mysql":
+            conn = self._get_connection()
+            try:
+                yield conn
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+            return
+        # SQLite：单连接多线程共享，整段访问（含 commit/rollback）持锁串行化
+        with self._sqlite_lock:
+            conn = self._get_connection()
+            try:
+                yield conn
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
 
     def _execute(self, cursor, sql: str, params: tuple = None):
         if self.db_type == "mysql":

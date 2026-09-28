@@ -14,6 +14,7 @@ import hashlib
 import io
 import logging
 import re
+import time
 import uuid
 from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
@@ -422,6 +423,9 @@ class KnowledgeService:
         self.original_store = (
             original_store if original_store is not None else LocalOriginalStore()
         )
+        # refresh_base_documents 节流：避免页面反复加载触发全量上游刷新
+        self._last_refresh_at: dict[str, float] = {}
+        self._refresh_min_interval = 15.0
 
     async def _repo(self, method, *args, **kwargs):
         return await run_in_threadpool(method, *args, **kwargs)
@@ -429,14 +433,34 @@ class KnowledgeService:
     @staticmethod
     def _upstream_error(exc: RagflowError) -> KnowledgeServiceError:
         status_code = 503 if exc.retryable else 502
+        logger.warning("知识底座上游错误: %s", exc)
+        prefix = "知识底座暂时不可用" if exc.retryable else "知识底座请求失败"
         return KnowledgeServiceError(
             "KNOWLEDGE_UPSTREAM_UNAVAILABLE"
             if exc.retryable
             else "KNOWLEDGE_UPSTREAM_ERROR",
-            "知识底座暂时不可用" if exc.retryable else "知识底座请求失败",
+            f"{prefix}: {exc}",
             status_code=status_code,
             retryable=exc.retryable,
         )
+
+    async def _parse_actually_running(self, base: dict, remote_id: str) -> bool:
+        """核查远端文档解析是否实际已启动。
+
+        Ragflow 触发解析存在竞态误报：任务已入队（文档 run=RUNNING）但响应
+        返回 code=100 IndexError。此时应按成功处理，避免误标失败、留下孤儿文档。
+        """
+        try:
+            data = await self.ragflow.list_documents(
+                str(base["remote_dataset_id"]), document_id=remote_id
+            )
+        except RagflowError:
+            return False
+        docs = data.get("docs") if isinstance(data, dict) else data
+        if isinstance(docs, list) and docs:
+            run = str(docs[0].get("run", "")).upper()
+            return run in {"RUNNING", "DONE"}
+        return False
 
     async def _authorized_base(
         self,
@@ -1091,6 +1115,12 @@ class KnowledgeService:
         remote_dataset_id = base.get("remote_dataset_id")
         if not remote_dataset_id:
             return
+        # 节流：15 秒内同一知识库不重复全量刷新（worker 与页面加载共用）
+        now = time.monotonic()
+        last = self._last_refresh_at.get(str(base["id"]), 0.0)
+        if now - last < self._refresh_min_interval:
+            return
+        self._last_refresh_at[str(base["id"])] = now
         try:
             upstream = await self.ragflow.list_documents(
                 str(remote_dataset_id),
@@ -1122,6 +1152,13 @@ class KnowledgeService:
             progress = upstream_doc.get("progress")
             if not isinstance(progress, (int, float)) or not 0 <= progress <= 1:
                 progress = None
+            # 状态与进度均无变化的文档直接跳过：稳态轮询时避免海量无效
+            # DB 查询/写入（每篇文档否则要 4 次串行 DB 往返，几百篇就是分钟级）
+            if (
+                str(local.get("status")) == status.value
+                and local.get("progress") == progress
+            ):
+                continue
             latest_operation: Mapping[str, Any] | None = None
             if status in {DocumentStatus.PENDING, DocumentStatus.PROCESSING}:
                 active_operation = await self._repo(
@@ -1317,7 +1354,7 @@ class KnowledgeService:
         }:
             raise KnowledgeServiceError(
                 "KNOWLEDGE_FILE_TYPE_NOT_ALLOWED",
-                "不支持该文件类型",
+                f"不支持该文件类型（后缀 .{extension or '无'}）",
                 status_code=422,
             )
         try:
@@ -1456,9 +1493,17 @@ class KnowledgeService:
                 chunk_method=CHUNK_METHOD,
                 parser_config=PARSER_CONFIG,
             )
-            await self.ragflow.parse_documents(
-                str(base["remote_dataset_id"]), [remote_id]
-            )
+            try:
+                await self.ragflow.parse_documents(
+                    str(base["remote_dataset_id"]), [remote_id]
+                )
+            except RagflowError as exc:
+                if not await self._parse_actually_running(base, remote_id):
+                    raise
+                logger.warning(
+                    "RAGFlow 触发解析误报(%s)，文档实际已开始解析，按成功处理",
+                    exc,
+                )
             document = await self._repo(
                 self.repository.update_document,
                 document["id"],
@@ -1741,9 +1786,17 @@ class KnowledgeService:
                 chunk_method=CHUNK_METHOD,
                 parser_config=PARSER_CONFIG,
             )
-            await self.ragflow.parse_documents(
-                str(base["remote_dataset_id"]), [new_remote_id]
-            )
+            try:
+                await self.ragflow.parse_documents(
+                    str(base["remote_dataset_id"]), [new_remote_id]
+                )
+            except RagflowError as exc:
+                if not await self._parse_actually_running(base, new_remote_id):
+                    raise
+                logger.warning(
+                    "RAGFlow 触发解析误报(%s)，文档实际已开始解析，按成功处理",
+                    exc,
+                )
             document = await self._repo(
                 self.repository.update_document,
                 document_id,
