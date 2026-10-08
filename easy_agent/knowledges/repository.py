@@ -395,6 +395,32 @@ class KnowledgeRepository:
             self.db._execute(cursor, "SELECT * FROM knowledge_folders WHERE id=?", (folder_id,))
             return _row_dict(cursor.fetchone())
 
+    def find_folder_by_name(
+        self, base_id: str, name: str, parent_id: str | None = None
+    ) -> dict[str, Any] | None:
+        """按 (base_id, parent_id, name) 查找文件夹；parent_id 为 None 时匹配根级。
+
+        唯一约束放宽为 (base_id, parent_id, name) 后，parent_id 为 NULL 的
+        根级同名不再受数据库唯一性保护（NULL 不参与唯一判断），由本方法
+        供服务层显式查重兜底。
+        """
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            if parent_id is None:
+                self.db._execute(
+                    cursor,
+                    "SELECT * FROM knowledge_folders "
+                    "WHERE base_id=? AND name=? AND parent_id IS NULL",
+                    (base_id, name),
+                )
+            else:
+                self.db._execute(
+                    cursor,
+                    "SELECT * FROM knowledge_folders WHERE base_id=? AND name=? AND parent_id=?",
+                    (base_id, name, parent_id),
+                )
+            return _row_dict(cursor.fetchone())
+
     def list_folders(self, base_id: str) -> list[dict[str, Any]]:
         with self.db.get_connection() as conn:
             cursor = conn.cursor()
@@ -536,6 +562,37 @@ class KnowledgeRepository:
             f"d.base_id=? AND {column} IN ({placeholders}) AND d.status!='deleted'",
             (base_id, *values),
         )
+
+    def list_purgeable_documents(
+        self, now_iso: str, *, limit: int = 100
+    ) -> list[dict[str, Any]]:
+        """软删除保留期已到、仍持有远端副本的文档（含所属库已删除到期的）。
+
+        两类命中：文档自身 status=deleted 且 purge_after 到期；所属库
+        status∈(deleted, deleting) 且库 purge_after 到期（删库时文档未逐个
+        软删除，按库的保留期统一清理远端副本）。purge_after 为 ISO 字符串，
+        同格式下字符串比较与时序一致。
+        """
+        sql = """
+            SELECT d.id AS document_id, d.base_id, d.remote_document_id,
+                   b.remote_dataset_id AS base_remote_dataset_id
+            FROM knowledge_documents d
+            JOIN knowledge_bases b ON b.id = d.base_id
+            WHERE d.remote_document_id IS NOT NULL
+              AND d.remote_document_id != ''
+              AND (
+                    (d.status = 'deleted'
+                     AND d.purge_after IS NOT NULL AND d.purge_after <= ?)
+                 OR (b.status IN ('deleted', 'deleting')
+                     AND b.purge_after IS NOT NULL AND b.purge_after <= ?)
+                  )
+            ORDER BY d.updated_at
+            LIMIT ?
+        """
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            self.db._execute(cursor, sql, (now_iso, now_iso, limit))
+            return [dict(row) for row in cursor.fetchall()]
 
     def update_document(self, document_id: str, **fields: object) -> dict[str, Any] | None:
         self._update_by_id("knowledge_documents", document_id, _DOCUMENT_UPDATE_FIELDS, fields)

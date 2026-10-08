@@ -9,10 +9,19 @@ MVP 库缺失的列（软删除、版本等）通过 ``_ensure_column`` 就地�
 from __future__ import annotations
 
 import logging
+import re
 
 from ..db.database import Database
 
 logger = logging.getLogger(__name__)
+
+# 旧版 knowledge_folders 唯一约束 (base_id, name)：目录树同步要求同一知识库
+# 内不同父节点下允许同名子文件夹（如 2026-09-12/中金公司 与 2026-09-13/中金公司），
+# 需放宽为 (base_id, parent_id, name)。
+_LEGACY_FOLDER_UNIQUE_RE = re.compile(
+    r"UNIQUE\s*\(\s*`?base_id`?\s*,\s*`?name`?\s*\)", re.IGNORECASE
+)
+_NEW_FOLDER_UNIQUE_NAME = "uk_knowledge_folders_base_parent_name"
 
 # 旧版 MVP 建表后由 P0 迁移追加的列；对已存在的库幂等补齐
 _BASE_P0_COLUMNS = (
@@ -68,11 +77,12 @@ def initialize_knowledge_schema(db: Database, cursor) -> None:
             sort_order INTEGER NOT NULL DEFAULT 0,
             created_at VARCHAR(50) NOT NULL,
             updated_at VARCHAR(50) NOT NULL,
-            UNIQUE(base_id, name),
+            UNIQUE(base_id, parent_id, name),
             FOREIGN KEY (base_id) REFERENCES knowledge_bases(id) ON DELETE CASCADE
         )
     """)
     db._ensure_column(cursor, "knowledge_folders", "parent_id", "VARCHAR(255) DEFAULT NULL")
+    _migrate_folder_unique_constraint(db, cursor)
     db._create_index(cursor, "idx_knowledge_folders_base", "knowledge_folders", "base_id")
     db._create_index(cursor, "idx_knowledge_folders_parent", "knowledge_folders", "parent_id")
 
@@ -308,8 +318,84 @@ def initialize_knowledge_schema(db: Database, cursor) -> None:
         )
     """)
     db._create_index(
-        cursor, "idx_knowledge_team_viewers_granted_by", "knowledge_team_space_viewers", "granted_by, updated_at"
+        cursor, "idx_knowledge_team_viewers_granted_by", "knowledge_team_space_viewers", "granted_by, granted_at"
     )
+
+
+def _migrate_folder_unique_constraint(db: Database, cursor) -> None:
+    """将存量 knowledge_folders 唯一约束 (base_id, name) 迁移为 (base_id, parent_id, name)。
+
+    幂等：新约束已存在时跳过。SQLite 通过重建表实现（项目未开启
+    PRAGMA foreign_keys，DROP 不会被 knowledge_documents 的外键引用阻挡）；
+    MySQL 通过 DROP INDEX / ADD UNIQUE KEY 实现。parent_id 为 NULL 的根级
+    同名不受数据库唯一性保护（NULL 不参与唯一判断），由服务层显式查重兜底。
+    """
+    try:
+        if db.db_type == "mysql":
+            _migrate_folder_unique_mysql(cursor)
+        else:
+            _migrate_folder_unique_sqlite(cursor)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"knowledge_folders 唯一约束迁移检查失败（可忽略新装库）: {exc}")
+
+
+def _migrate_folder_unique_mysql(cursor) -> None:
+    cursor.execute("SHOW INDEX FROM knowledge_folders")
+    rows = cursor.fetchall()
+    columns_by_index: dict[str, list[str]] = {}
+    for row in rows:
+        if int(row["Non_unique"]) != 0:
+            continue
+        columns_by_index.setdefault(str(row["Key_name"]), []).append(str(row["Column_name"]))
+    has_legacy = any(columns == ["base_id", "name"] for columns in columns_by_index.values())
+    has_new = any(
+        columns == ["base_id", "parent_id", "name"] for columns in columns_by_index.values()
+    )
+    if has_new:
+        return
+    if not has_legacy:
+        return
+    legacy_name = next(
+        name for name, columns in columns_by_index.items() if columns == ["base_id", "name"]
+    )
+    cursor.execute(f"ALTER TABLE knowledge_folders DROP INDEX `{legacy_name}`")
+    cursor.execute(
+        "ALTER TABLE knowledge_folders "
+        f"ADD UNIQUE KEY `{_NEW_FOLDER_UNIQUE_NAME}` (base_id, parent_id, name)"
+    )
+    logger.info("knowledge_folders 唯一约束已迁移: (base_id, name) → (base_id, parent_id, name)")
+
+
+def _migrate_folder_unique_sqlite(cursor) -> None:
+    cursor.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='knowledge_folders'"
+    )
+    row = cursor.fetchone()
+    create_sql = (row["sql"] if row is not None else "") or ""
+    if not _LEGACY_FOLDER_UNIQUE_RE.search(create_sql):
+        return
+    cursor.execute("""
+        CREATE TABLE knowledge_folders_migrate (
+            id VARCHAR(255) PRIMARY KEY,
+            base_id VARCHAR(255) NOT NULL,
+            parent_id VARCHAR(255),
+            name VARCHAR(127) NOT NULL,
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            created_at VARCHAR(50) NOT NULL,
+            updated_at VARCHAR(50) NOT NULL,
+            UNIQUE(base_id, parent_id, name),
+            FOREIGN KEY (base_id) REFERENCES knowledge_bases(id) ON DELETE CASCADE
+        )
+    """)
+    cursor.execute("""
+        INSERT INTO knowledge_folders_migrate
+            (id, base_id, parent_id, name, sort_order, created_at, updated_at)
+        SELECT id, base_id, parent_id, name, sort_order, created_at, updated_at
+        FROM knowledge_folders
+    """)
+    cursor.execute("DROP TABLE knowledge_folders")
+    cursor.execute("ALTER TABLE knowledge_folders_migrate RENAME TO knowledge_folders")
+    logger.info("knowledge_folders 唯一约束已迁移: (base_id, name) → (base_id, parent_id, name)")
 
 
 __all__ = ["initialize_knowledge_schema"]

@@ -2,14 +2,16 @@
 
 主要裁剪：queue/inline 双模式（新版上传/删除全部同步内联）、原文存储的
 NAS 多实现工厂（收敛为本地磁盘存储）、completed_document_probe 完成度
-探测（依赖旧版兼容配置）。删除为纯软删除（保留上游资源），恢复端点已随
-前端调用面裁剪移除，物理清理不在本模块范围。
+探测（依赖旧版兼容配置）。删除为软删除：本地保留记录与原文，远端
+（Ragflow）副本暂存 SOFT_DELETE_RETENTION_DAYS 后由清理 worker
+（KnowledgePurgeWorker）到期删除，恢复端点已随前端调用面裁剪移除。
 
 检索走 Ragflow 标准检索接口（retrieve，POST /api/v1/retrieval）。
 """
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import io
 import logging
@@ -61,7 +63,7 @@ from .models import (
     TeamSpaceManagementCapability,
 )
 from .operations_repository import KnowledgeOperationsRepository
-from .ragflow import RagflowClient, RagflowError
+from .ragflow import RagflowClient, RagflowError, RagflowNotFoundError
 from .repository import KnowledgeRepository
 
 if TYPE_CHECKING:  # 仅供类型注解（api 与 service 相互引用，运行时无循环导入）
@@ -71,7 +73,7 @@ logger = logging.getLogger(__name__)
 
 # 上游解析超过该时长仍未完成时标记失败（与旧版 parsing_poll 默认一致）
 PARSE_TIMEOUT_SECONDS = 1800.0
-# 软删除保留期（天）：到期后由数据库 purge_after 字段标记，物理清理不在本模块范围
+# 软删除保留期（天）：远端副本暂存天数，到期由 KnowledgePurgeWorker 清理
 SOFT_DELETE_RETENTION_DAYS = 30
 # 证据最低得分阈值（与旧版 quality_baseline 默认一致，0.0 即不过滤）
 MINIMUM_EVIDENCE_SCORE = 0.0
@@ -94,6 +96,28 @@ RETRIEVAL_VECTOR_SIMILARITY_WEIGHT = 0.3
 RETRIEVAL_TOP_K = 1024
 # 上传安全校验参数（YAML 不再配置，代码内固定）
 _UPLOAD_SECURITY = UploadSecurityConfig()
+
+# 共享数据集：所有走共享模式的个人/公共知识库共用同一个 Ragflow 数据集。
+# 个人库文档通过 meta_fields={"owner_user_id": ...} 打个人标签，检索时
+# 携带同名过滤条件实现个人隔离（与 document_ids 范围约束形成双重隔离）。
+SHARED_DATASET_NAME = "EA_SHARED"
+# 进程级缓存（KnowledgeService 每请求实例化，共享数据集 ID 必须跨实例复用）
+_shared_dataset_id: str | None = None
+_shared_dataset_lock: asyncio.Lock | None = None
+
+
+def _get_shared_dataset_lock() -> asyncio.Lock:
+    """惰性创建模块级锁（避免 import 时绑定事件循环的兼容问题）。"""
+    global _shared_dataset_lock
+    if _shared_dataset_lock is None:
+        _shared_dataset_lock = asyncio.Lock()
+    return _shared_dataset_lock
+
+
+def reset_shared_dataset_cache() -> None:
+    """清空共享数据集 ID 进程级缓存（测试用）。"""
+    global _shared_dataset_id
+    _shared_dataset_id = None
 
 _ROLE_RANK = {
     KnowledgeBaseRole.VIEWER: 1,
@@ -382,22 +406,6 @@ class KnowledgeServiceError(RuntimeError):
         self.retryable = retryable
 
 
-def _truncate_utf8(value: str, max_bytes: int) -> str:
-    encoded = value.encode("utf-8")
-    if len(encoded) <= max_bytes:
-        return value
-    return encoded[:max_bytes].decode("utf-8", errors="ignore")
-
-
-def _upstream_dataset_name(base_id: object, max_bytes: int) -> str:
-    """构造行内数据集 API 要求的 ASCII 唯一名称（字母/数字/下划线）。"""
-    safe_id = "".join(
-        character if character.isascii() and character.isalnum() else "_"
-        for character in str(base_id)
-    ).strip("_")
-    return _truncate_utf8(f"EA_{safe_id}", max_bytes)
-
-
 def _map_upstream_status(run: object) -> str:
     return UPSTREAM_DOCUMENT_STATUS_MAPPING.get(str(run or "")) or DocumentStatus.UNKNOWN.value
 
@@ -444,6 +452,84 @@ class KnowledgeService:
             retryable=exc.retryable,
         )
 
+    async def _ensure_shared_dataset(self) -> str:
+        """查找或创建共享数据集，返回其 ID（进程级缓存）。
+
+        创建参数与旧版按库建数据集保持一致（embedding 模型取知识库配置，
+        缺省用 Ragflow 租户默认模型）。多进程并发创建的竞态由"失败后重查"
+        兜底：Ragflow 数据集名称全局唯一，后创建方会收到错误，重查即可复用。
+        """
+        global _shared_dataset_id
+        if _shared_dataset_id:
+            return _shared_dataset_id
+        async with _get_shared_dataset_lock():
+            if _shared_dataset_id:
+                return _shared_dataset_id
+            found = await self._find_shared_dataset()
+            if found is None:
+                try:
+                    remote = await self.ragflow.create_dataset(
+                        name=SHARED_DATASET_NAME,
+                        description="EasyAgent 共享知识库（个人/公共库共用）",
+                        embedding_model=self.config.embedding.model or None,
+                        permission=DATASET_PERMISSION,
+                        chunk_method=CHUNK_METHOD,
+                        parser_config=PARSER_CONFIG,
+                    )
+                    _shared_dataset_id = str(remote["id"])
+                except RagflowError:
+                    # 并发竞态：其他进程/实例刚创建了同名数据集 → 重查复用
+                    found = await self._find_shared_dataset()
+                    if found is None:
+                        raise
+                    _shared_dataset_id = found
+            else:
+                _shared_dataset_id = found
+            logger.info("共享数据集就绪 | id=%s", _shared_dataset_id)
+            return _shared_dataset_id
+
+    async def _find_shared_dataset(self) -> str | None:
+        """分页拉取数据集列表，客户端按名称精确匹配查找共享数据集。
+
+        注意：不能用 ``name`` 查询参数过滤——定制版 Ragflow 对不存在的
+        名称也返回 code=102 权限错误（实测），只能全量列表后本地匹配。
+        未找到返回 None；Ragflow 异常同样返回 None（由调用方兜底）。
+        """
+        try:
+            page = 1
+            while page <= 20:  # 安全上限：2000 个数据集
+                result = await self.ragflow.list_datasets(page=page, page_size=100)
+                datasets = result.get("datasets") if isinstance(result, dict) else None
+                items = datasets or []
+                for item in items:
+                    if (
+                        isinstance(item, dict)
+                        and str(item.get("name")) == SHARED_DATASET_NAME
+                    ):
+                        return str(item["id"])
+                # 客户端列表分支返回的 total 为本页长度：不满一页即到末尾
+                if len(items) < 100:
+                    return None
+                page += 1
+        except RagflowError:
+            return None
+        return None
+
+    async def _dataset_id_for(self, base: Mapping[str, Any]) -> str:
+        """数据集路由：存量库沿用自有数据集，共享库（remote_dataset_id 为空）
+        统一落到共享数据集。"""
+        own = str(base.get("remote_dataset_id") or "").strip()
+        if own:
+            return own
+        return await self._ensure_shared_dataset()
+
+    @staticmethod
+    def _personal_meta_fields(base: Mapping[str, Any]) -> dict[str, Any] | None:
+        """个人库文档标签：以库主用户 ID 标识归属，检索时按此过滤。"""
+        if str(base.get("space_type")) == KnowledgeBaseVisibility.PERSONAL.value:
+            return {"owner_user_id": str(base["owner_user_id"])}
+        return None
+
     async def _parse_actually_running(self, base: dict, remote_id: str) -> bool:
         """核查远端文档解析是否实际已启动。
 
@@ -452,7 +538,7 @@ class KnowledgeService:
         """
         try:
             data = await self.ragflow.list_documents(
-                str(base["remote_dataset_id"]), document_id=remote_id
+                await self._dataset_id_for(base), document_id=remote_id
             )
         except RagflowError:
             return False
@@ -746,57 +832,23 @@ class KnowledgeService:
             department_id=target_department_id,
             embedding_model=self.config.embedding.model,
         )
-        operation = await self._repo(
+        # 纯本地创建（同建文件夹）：不再调用 Ragflow 建数据集，
+        # remote_dataset_id 保持 NULL 表示走共享数据集。
+        base = await self._repo(
+            self.repository.update_base,
+            base["id"],
+            status=KnowledgeBaseStatus.ACTIVE.value,
+        )
+        # 操作记录直接落终态，保留审计轨迹
+        await self._repo(
             self.repository.create_operation,
             operation_type=OperationType.DATASET_CREATE.value,
             resource_type="base",
             resource_id=base["id"],
-            phase=OperationPhase.CONFIGURING.value,
-            status=OperationStatus.RUNNING.value,
+            phase=OperationPhase.COMPLETED.value,
+            status=OperationStatus.SUCCEEDED.value,
             created_by=principal.user_id,
         )
-        remote_name = _upstream_dataset_name(
-            base["id"], self.config.limits.max_dataset_name_utf8_bytes
-        )
-        try:
-            remote = await self.ragflow.create_dataset(
-                name=remote_name,
-                description=description,
-                embedding_model=self.config.embedding.model or None,
-                permission=DATASET_PERMISSION,
-                chunk_method=CHUNK_METHOD,
-                parser_config=PARSER_CONFIG,
-            )
-            base = await self._repo(
-                self.repository.update_base,
-                base["id"],
-                remote_dataset_id=str(remote["id"]),
-                status=KnowledgeBaseStatus.ACTIVE.value,
-            )
-            await self._repo(
-                self.repository.update_operation,
-                operation["id"],
-                phase=OperationPhase.COMPLETED.value,
-                status=OperationStatus.SUCCEEDED.value,
-                current_count=1,
-                progress=1.0,
-            )
-        except RagflowError as exc:
-            await self._repo(
-                self.repository.update_base,
-                base["id"],
-                status=KnowledgeBaseStatus.FAILED.value,
-            )
-            await self._repo(
-                self.repository.update_operation,
-                operation["id"],
-                phase=OperationPhase.FAILED.value,
-                status=OperationStatus.FAILED.value,
-                retryable=exc.retryable,
-                error_code=exc.code,
-                error_message="知识底座创建失败",
-            )
-            raise self._upstream_error(exc) from exc
         assert base is not None
         return await self._base_summary(base, KnowledgeBaseRole.MANAGER)
 
@@ -837,7 +889,8 @@ class KnowledgeService:
         principal: KnowledgePrincipal,
         request_id: str,
     ) -> None:
-        """软删除知识库：保留上游数据集与原文，不做物理清理。"""
+        """软删除知识库：本地保留记录，其文档的远端副本暂存保留期后由
+        清理 worker 统一删除。"""
         del request_id
         await self._authorized_base(base_id, principal, AllowedAction.DELETE_BASE)
         deleted_at = datetime.now(UTC)
@@ -908,12 +961,23 @@ class KnowledgeService:
                 if cursor is None:
                     break
         try:
+            existing = await self._repo(
+                self.repository.find_folder_by_name, base_id, name, parent_id
+            )
+            if existing is not None:
+                raise KnowledgeServiceError(
+                    "KNOWLEDGE_FOLDER_EXISTS",
+                    "同名文件夹已存在",
+                    status_code=409,
+                )
             row = await self._repo(
                 self.repository.create_folder,
                 base_id=base_id,
                 name=name,
                 parent_id=parent_id,
             )
+        except KnowledgeServiceError:
+            raise
         except Exception as exc:
             if "UNIQUE" in str(exc).upper() or "DUPLICATE" in str(exc).upper():
                 raise KnowledgeServiceError(
@@ -946,9 +1010,24 @@ class KnowledgeService:
             str(folder["base_id"]), principal, AllowedAction.EDIT_FOLDER
         )
         try:
+            if str(folder["name"]) != name:
+                existing = await self._repo(
+                    self.repository.find_folder_by_name,
+                    str(folder["base_id"]),
+                    name,
+                    folder.get("parent_id"),
+                )
+                if existing is not None:
+                    raise KnowledgeServiceError(
+                        "KNOWLEDGE_FOLDER_EXISTS",
+                        "同名文件夹已存在",
+                        status_code=409,
+                    )
             row = await self._repo(
                 self.repository.update_folder, folder_id, name=name
             )
+        except KnowledgeServiceError:
+            raise
         except Exception as exc:
             if "UNIQUE" in str(exc).upper() or "DUPLICATE" in str(exc).upper():
                 raise KnowledgeServiceError(
@@ -1110,20 +1189,28 @@ class KnowledgeService:
     async def refresh_base_documents(
         self, base: Mapping[str, Any], *, request_id: str = ""
     ) -> None:
-        """用上游文档状态刷新本地投影；供 list_documents 与后台轮询共用。"""
+        """用上游文档状态刷新本地投影；供 list_documents 与后台轮询共用。
+
+        存量自有数据集库：全量列表刷新（原行为不变）。
+        共享数据集库（remote_dataset_id 为空）：仅对本库 pending/processing
+        的文档逐个查询——共享数据集文档量会超过 list_documents 的
+        page_size 上限（100），全量列表既低效又会漏同步；逐文档轮询在
+        稳态（全部 ready）时零 API 调用。
+        """
         del request_id
-        remote_dataset_id = base.get("remote_dataset_id")
-        if not remote_dataset_id:
-            return
-        # 节流：15 秒内同一知识库不重复全量刷新（worker 与页面加载共用）
+        remote_dataset_id = str(base.get("remote_dataset_id") or "").strip()
+        # 节流：15 秒内同一知识库不重复刷新（worker 与页面加载共用）
         now = time.monotonic()
         last = self._last_refresh_at.get(str(base["id"]), 0.0)
         if now - last < self._refresh_min_interval:
             return
         self._last_refresh_at[str(base["id"])] = now
+        if not remote_dataset_id:
+            await self._refresh_shared_base_documents(base)
+            return
         try:
             upstream = await self.ragflow.list_documents(
-                str(remote_dataset_id),
+                remote_dataset_id,
                 page=1,
                 page_size=self.config.limits.max_documents_per_query,
             )
@@ -1148,120 +1235,168 @@ class KnowledgeService:
             local = by_remote.get(str(upstream_doc.get("id")))
             if local is None:
                 continue
-            status = DocumentStatus(_map_upstream_status(upstream_doc.get("run")))
-            progress = upstream_doc.get("progress")
-            if not isinstance(progress, (int, float)) or not 0 <= progress <= 1:
-                progress = None
-            # 状态与进度均无变化的文档直接跳过：稳态轮询时避免海量无效
-            # DB 查询/写入（每篇文档否则要 4 次串行 DB 往返，几百篇就是分钟级）
-            if (
-                str(local.get("status")) == status.value
-                and local.get("progress") == progress
-            ):
+            await self._apply_upstream_doc_status(local, upstream_doc)
+
+    async def _refresh_shared_base_documents(self, base: Mapping[str, Any]) -> None:
+        """共享数据集库的状态刷新：逐个轮询本库解析中的文档。"""
+        try:
+            dataset_id = await self._dataset_id_for(base)
+        except RagflowError as exc:
+            logger.warning(
+                "共享数据集解析失败 base=%s: %s", base.get("id"), exc
+            )
+            return
+        limit = self.config.limits.max_documents_per_query
+        active_docs: list[dict[str, Any]] = []
+        for status_value in ("pending", "processing"):
+            active_docs.extend(
+                await self._repo(
+                    self.repository.list_documents,
+                    str(base["id"]),
+                    status=status_value,
+                    limit=limit,
+                    offset=0,
+                )
+            )
+        for local in active_docs:
+            remote_id = str(local.get("remote_document_id") or "").strip()
+            if not remote_id:
                 continue
-            latest_operation: Mapping[str, Any] | None = None
-            if status in {DocumentStatus.PENDING, DocumentStatus.PROCESSING}:
-                active_operation = await self._repo(
-                    self.repository.get_active_document_operation,
-                    str(local["id"]),
+            try:
+                upstream = await self.ragflow.list_documents(
+                    dataset_id, document_id=remote_id
                 )
-                latest_operation = active_operation or await self._repo(
-                    self.repository.get_latest_document_operation, str(local["id"])
+            except RagflowError as exc:
+                logger.warning(
+                    "刷新共享库文档状态失败 base=%s doc=%s: %s",
+                    base.get("id"), local.get("id"), exc,
                 )
-                started_at = (
-                    latest_operation.get("created_at") if latest_operation else None
-                )
-                try:
-                    started = datetime.fromisoformat(str(started_at))
-                    if started.tzinfo is None:
-                        started = started.replace(tzinfo=UTC)
-                    elapsed = (datetime.now(UTC) - started).total_seconds()
-                except (TypeError, ValueError):
-                    elapsed = 0.0
-                # 之前判定超时的文档保持失败，除非上游已给出终态
-                was_timed_out = (
-                    str(local.get("error_code") or "") == "KNOWLEDGE_PARSE_TIMEOUT"
-                )
-                if was_timed_out:
-                    continue
-                if elapsed > PARSE_TIMEOUT_SECONDS:
-                    timeout_message = (
-                        f"解析超过 {int(PARSE_TIMEOUT_SECONDS)} 秒仍未完成，请拆分文件后重试"
-                    )
-                    await self._repo(
-                        self.repository.update_document,
-                        str(local["id"]),
-                        status=DocumentStatus.FAILED.value,
-                        progress=None,
-                        error_code="KNOWLEDGE_PARSE_TIMEOUT",
-                        error_message=timeout_message,
-                    )
-                    await self._repo(
-                        self.repository.update_active_document_operations,
-                        str(local["id"]),
-                        phase=OperationPhase.FAILED.value,
-                        status=OperationStatus.FAILED.value,
-                        progress=None,
-                        retryable=True,
-                        error_code="KNOWLEDGE_PARSE_TIMEOUT",
-                        error_message=timeout_message,
-                    )
-                    continue
-            values: dict[str, object] = {"status": status.value, "progress": progress}
-            if status == DocumentStatus.FAILED:
-                values.update(
-                    {
-                        "error_code": "KNOWLEDGE_PARSE_FAILED",
-                        "error_message": str(
-                            upstream_doc.get("progress_msg") or "文档解析失败"
-                        ),
-                    }
-                )
-            elif status == DocumentStatus.READY:
-                values.update({"error_code": None, "error_message": None})
-            await self._repo(self.repository.update_document, local["id"], **values)
-            operation_values: dict[str, object] = {"progress": progress}
-            if status == DocumentStatus.READY:
-                operation_values.update(
-                    {
-                        "phase": OperationPhase.COMPLETED.value,
-                        "status": OperationStatus.SUCCEEDED.value,
-                        "current_count": 1,
-                        "progress": 1.0,
-                        "retryable": False,
-                        "error_code": None,
-                        "error_message": None,
-                    }
-                )
-            elif status == DocumentStatus.FAILED:
-                operation_values.update(
-                    {
-                        "phase": OperationPhase.FAILED.value,
-                        "status": OperationStatus.FAILED.value,
-                        "retryable": True,
-                        "error_code": "KNOWLEDGE_PARSE_FAILED",
-                        "error_message": str(
-                            upstream_doc.get("progress_msg") or "文档解析失败"
-                        ),
-                    }
-                )
-            updated_operation_count = await self._repo(
-                self.repository.update_active_document_operations,
+                continue
+            docs = upstream.get("docs") if isinstance(upstream, dict) else None
+            if not isinstance(docs, list) or not docs:
+                continue
+            upstream_doc = docs[0]
+            if isinstance(upstream_doc, dict):
+                await self._apply_upstream_doc_status(local, upstream_doc)
+
+    async def _apply_upstream_doc_status(
+        self, local: Mapping[str, Any], upstream_doc: Mapping[str, Any]
+    ) -> None:
+        """按上游文档状态更新本地投影（状态/进度/超时判定/操作记录）。"""
+        status = DocumentStatus(_map_upstream_status(upstream_doc.get("run")))
+        progress = upstream_doc.get("progress")
+        if not isinstance(progress, (int, float)) or not 0 <= progress <= 1:
+            progress = None
+        # 状态与进度均无变化的文档直接跳过：稳态轮询时避免海量无效
+        # DB 查询/写入（每篇文档否则要 4 次串行 DB 往返，几百篇就是分钟级）
+        if (
+            str(local.get("status")) == status.value
+            and local.get("progress") == progress
+        ):
+            return
+        latest_operation: Mapping[str, Any] | None = None
+        if status in {DocumentStatus.PENDING, DocumentStatus.PROCESSING}:
+            active_operation = await self._repo(
+                self.repository.get_active_document_operation,
                 str(local["id"]),
+            )
+            latest_operation = active_operation or await self._repo(
+                self.repository.get_latest_document_operation, str(local["id"])
+            )
+            started_at = (
+                latest_operation.get("created_at") if latest_operation else None
+            )
+            try:
+                started = datetime.fromisoformat(str(started_at))
+                if started.tzinfo is None:
+                    started = started.replace(tzinfo=UTC)
+                elapsed = (datetime.now(UTC) - started).total_seconds()
+            except (TypeError, ValueError):
+                elapsed = 0.0
+            # 之前判定超时的文档保持失败，除非上游已给出终态
+            was_timed_out = (
+                str(local.get("error_code") or "") == "KNOWLEDGE_PARSE_TIMEOUT"
+            )
+            if was_timed_out:
+                return
+            if elapsed > PARSE_TIMEOUT_SECONDS:
+                timeout_message = (
+                    f"解析超过 {int(PARSE_TIMEOUT_SECONDS)} 秒仍未完成，请拆分文件后重试"
+                )
+                await self._repo(
+                    self.repository.update_document,
+                    str(local["id"]),
+                    status=DocumentStatus.FAILED.value,
+                    progress=None,
+                    error_code="KNOWLEDGE_PARSE_TIMEOUT",
+                    error_message=timeout_message,
+                )
+                await self._repo(
+                    self.repository.update_active_document_operations,
+                    str(local["id"]),
+                    phase=OperationPhase.FAILED.value,
+                    status=OperationStatus.FAILED.value,
+                    progress=None,
+                    retryable=True,
+                    error_code="KNOWLEDGE_PARSE_TIMEOUT",
+                    error_message=timeout_message,
+                )
+                return
+        values: dict[str, object] = {"status": status.value, "progress": progress}
+        if status == DocumentStatus.FAILED:
+            values.update(
+                {
+                    "error_code": "KNOWLEDGE_PARSE_FAILED",
+                    "error_message": str(
+                        upstream_doc.get("progress_msg") or "文档解析失败"
+                    ),
+                }
+            )
+        elif status == DocumentStatus.READY:
+            values.update({"error_code": None, "error_message": None})
+        await self._repo(self.repository.update_document, local["id"], **values)
+        operation_values: dict[str, object] = {"progress": progress}
+        if status == DocumentStatus.READY:
+            operation_values.update(
+                {
+                    "phase": OperationPhase.COMPLETED.value,
+                    "status": OperationStatus.SUCCEEDED.value,
+                    "current_count": 1,
+                    "progress": 1.0,
+                    "retryable": False,
+                    "error_code": None,
+                    "error_message": None,
+                }
+            )
+        elif status == DocumentStatus.FAILED:
+            operation_values.update(
+                {
+                    "phase": OperationPhase.FAILED.value,
+                    "status": OperationStatus.FAILED.value,
+                    "retryable": True,
+                    "error_code": "KNOWLEDGE_PARSE_FAILED",
+                    "error_message": str(
+                        upstream_doc.get("progress_msg") or "文档解析失败"
+                    ),
+                }
+            )
+        updated_operation_count = await self._repo(
+            self.repository.update_active_document_operations,
+            str(local["id"]),
+            **operation_values,
+        )
+        if (
+            status == DocumentStatus.READY
+            and not updated_operation_count
+            and latest_operation is not None
+            and str(latest_operation.get("error_code") or "")
+            == "KNOWLEDGE_PARSE_TIMEOUT"
+        ):
+            await self._repo(
+                self.repository.update_operation,
+                str(latest_operation["id"]),
                 **operation_values,
             )
-            if (
-                status == DocumentStatus.READY
-                and not updated_operation_count
-                and latest_operation is not None
-                and str(latest_operation.get("error_code") or "")
-                == "KNOWLEDGE_PARSE_TIMEOUT"
-            ):
-                await self._repo(
-                    self.repository.update_operation,
-                    str(latest_operation["id"]),
-                    **operation_values,
-                )
 
     async def list_documents(
         self,
@@ -1468,8 +1603,9 @@ class KnowledgeService:
         # ---- 上传 RAGFlow 并触发解析 ----
         source = self.original_store.open(storage_key)
         try:
+            dataset_id = await self._dataset_id_for(base)
             remote_documents = await self.ragflow.upload_documents(
-                str(base["remote_dataset_id"]),
+                dataset_id,
                 [(safe_name, source.open_binary(), content_type or "application/octet-stream")],
             )
             if not remote_documents or not remote_documents[0].get("id"):
@@ -1487,15 +1623,17 @@ class KnowledgeService:
                 phase=OperationPhase.CONFIGURING.value,
                 progress=0.6,
             )
+            # 个人库文档打个人标签（owner_user_id）后再触发解析入库
             await self.ragflow.update_document(
-                str(base["remote_dataset_id"]),
+                dataset_id,
                 remote_id,
                 chunk_method=CHUNK_METHOD,
                 parser_config=PARSER_CONFIG,
+                meta_fields=self._personal_meta_fields(base),
             )
             try:
                 await self.ragflow.parse_documents(
-                    str(base["remote_dataset_id"]), [remote_id]
+                    dataset_id, [remote_id]
                 )
             except RagflowError as exc:
                 if not await self._parse_actually_running(base, remote_id):
@@ -1644,7 +1782,7 @@ class KnowledgeService:
             )
         try:
             binary = await self.ragflow.download_document(
-                dataset_id=str(base["remote_dataset_id"]),
+                dataset_id=await self._dataset_id_for(base),
                 document_id=str(document["remote_document_id"]),
             )
         except RagflowError as exc:
@@ -1666,7 +1804,8 @@ class KnowledgeService:
         principal: KnowledgePrincipal,
         request_id: str,
     ) -> None:
-        """软删除文档：保留上游文档与本地原文，不做物理清理。"""
+        """软删除文档：本地保留记录与原文，远端副本暂存保留期后由清理
+        worker 删除（purge_expired_documents）。"""
         del request_id
         document = await self._repo(self.repository.get_document, document_id)
         if document is None:
@@ -1690,6 +1829,51 @@ class KnowledgeService:
             purge_after=purge_after.isoformat(),
             progress=None,
         )
+
+    async def purge_expired_documents(self, *, limit: int = 100) -> int:
+        """清理软删除保留期（30 天）已到文档的远端副本，返回本次清理数。
+
+        由后台清理 worker 周期调用；覆盖两类：文档自身软删除到期、所属
+        知识库软删除到期（删库时文档未逐个软删除）。远端删除成功（或远端
+        已不存在，幂等）后清空本地 remote_document_id 防止死链；本地软
+        删除记录与原文保留，误删仍可通过重新上传恢复。单文档失败不阻断
+        其余清理，留待下轮重试。
+        """
+        now_iso = datetime.now(UTC).isoformat()
+        rows = await self._repo(
+            self.repository.list_purgeable_documents, now_iso, limit=limit
+        )
+        if not rows:
+            return 0
+        purged = 0
+        for row in rows:
+            dataset_id = str(row.get("base_remote_dataset_id") or "").strip()
+            if not dataset_id:
+                # 共享数据集模式：路由到 EA_SHARED（含进程级缓存）
+                dataset_id = await self._ensure_shared_dataset()
+            try:
+                await self.ragflow.delete_documents(
+                    dataset_id=dataset_id,
+                    document_ids=[str(row["remote_document_id"])],
+                )
+            except RagflowNotFoundError:
+                pass  # 远端已不存在：视为已清理，落本地防重扫
+            except RagflowError as exc:
+                logger.warning(
+                    "清理到期文档远端副本失败（下轮重试） | doc=%s: %s",
+                    row["document_id"],
+                    exc,
+                )
+                continue
+            await self._repo(
+                self.repository.update_document,
+                str(row["document_id"]),
+                remote_document_id=None,
+            )
+            purged += 1
+        if purged:
+            logger.info("软删除保留期到期清理完成 | 清理远端文档数=%s", purged)
+        return purged
 
     async def retry_document(
         self,
@@ -1744,6 +1928,7 @@ class KnowledgeService:
         )
         source: BinaryIO | None = None
         try:
+            dataset_id = await self._dataset_id_for(base)
             if has_local_original:
                 handle = await self._repo(
                     self.original_store.open, str(original_record["storage_key"])
@@ -1751,13 +1936,13 @@ class KnowledgeService:
                 source = handle.open_binary()
             else:
                 legacy = await self.ragflow.download_document(
-                    dataset_id=str(base["remote_dataset_id"]),
+                    dataset_id=dataset_id,
                     document_id=str(remote_id),
                 )
                 source = io.BytesIO(legacy.content)
             if remote_id:
                 await self.ragflow.delete_documents(
-                    dataset_id=str(base["remote_dataset_id"]),
+                    dataset_id=dataset_id,
                     document_ids=[str(remote_id)],
                 )
             await self._repo(
@@ -1769,7 +1954,7 @@ class KnowledgeService:
                 error_message=None,
             )
             remote_documents = await self.ragflow.upload_documents(
-                str(base["remote_dataset_id"]),
+                dataset_id,
                 [(str(document["name"]), source, str(document["content_type"]))],
             )
             if not remote_documents or not remote_documents[0].get("id"):
@@ -1780,15 +1965,17 @@ class KnowledgeService:
                 document_id,
                 remote_document_id=new_remote_id,
             )
+            # 重试上传同样需要保持个人标签
             await self.ragflow.update_document(
-                str(base["remote_dataset_id"]),
+                dataset_id,
                 new_remote_id,
                 chunk_method=CHUNK_METHOD,
                 parser_config=PARSER_CONFIG,
+                meta_fields=self._personal_meta_fields(base),
             )
             try:
                 await self.ragflow.parse_documents(
-                    str(base["remote_dataset_id"]), [new_remote_id]
+                    dataset_id, [new_remote_id]
                 )
             except RagflowError as exc:
                 if not await self._parse_actually_running(base, new_remote_id):
@@ -1885,14 +2072,21 @@ class KnowledgeService:
                 evidence=[], warnings=["当前范围没有可检索的已解析文档"], request_id=request_id
             )
         try:
+            # 个人库走共享数据集时，检索携带个人标签过滤条件
+            # （与 document_ids 范围约束形成双重隔离；存量自有数据集库不打
+            # 标签、不过滤，保持原行为）
+            retrieval_meta: dict[str, Any] | None = None
+            if not str(base.get("remote_dataset_id") or "").strip():
+                retrieval_meta = self._personal_meta_fields(base)
             result = await self.ragflow.retrieve(
                 question=question,
-                dataset_ids=[str(base["remote_dataset_id"])],
+                dataset_ids=[await self._dataset_id_for(base)],
                 document_ids=[str(item["remote_document_id"]) for item in documents],
                 page_size=top_n,
                 similarity_threshold=RETRIEVAL_SIMILARITY_THRESHOLD,
                 vector_similarity_weight=RETRIEVAL_VECTOR_SIMILARITY_WEIGHT,
                 top_k=RETRIEVAL_TOP_K,
+                meta_fields=retrieval_meta,
             )
         except RagflowError as exc:
             raise self._upstream_error(exc) from exc

@@ -1,9 +1,10 @@
-"""后台解析状态轮询 worker。
+"""后台 worker：解析状态轮询 + 软删除保留期清理。
 
 旧版 worker 是「任务队列消费者」（claim_next_task/心跳/死信/对账/过期清理），
 新版上传与重试已内联在 ``KnowledgeService.upload_document`` 中同步完成，
-worker 只剩一件事：周期性把上游解析进度（pending/processing）拉回本地投影。
-任务队列、心跳、对账与物理清理随基础层裁剪一并移除。
+解析轮询 worker 只负责把上游解析进度（pending/processing）拉回本地投影；
+清理 worker 负责在软删除保留期（30 天）到期后删除远端（Ragflow）文档副本，
+避免共享数据集无限膨胀。任务队列、心跳与对账随基础层裁剪一并移除。
 """
 
 from __future__ import annotations
@@ -87,7 +88,7 @@ class KnowledgeParsePollWorker:
             except Exception as exc:
                 logger.warning("知识库轮询读取 base=%s 失败: %s", base_id, exc)
                 continue
-            if base is None or not base.get("remote_dataset_id"):
+            if base is None:
                 continue
             try:
                 await service.refresh_base_documents(base)
@@ -142,4 +143,93 @@ class KnowledgeParsePollWorker:
             pass
 
 
-__all__ = ["KnowledgeParsePollWorker"]
+class KnowledgePurgeWorker:
+    """软删除保留期到期清理：周期删除远端（Ragflow）文档副本。
+
+    删除文档/知识库为软删除（本地保留记录与原文），远端副本暂存
+    SOFT_DELETE_RETENTION_DAYS（30 天）后由本 worker 清理，期间可恢复。
+    """
+
+    def __init__(
+        self,
+        *,
+        config: KnowledgeConfig,
+        ragflow: RagflowClient,
+        db_provider: Callable[[], Database | None],
+        purge_interval_seconds: float = 3600.0,
+        batch_limit: int = 100,
+    ):
+        self.config = config
+        self.ragflow = ragflow
+        # 数据库在宿主 lifespan 中晚于本 worker 初始化，必须惰性获取
+        self._db_provider = db_provider
+        self.purge_interval_seconds = purge_interval_seconds
+        self.batch_limit = batch_limit
+        self._stop = asyncio.Event()
+        self._task: asyncio.Task | None = None
+
+    @property
+    def is_running(self) -> bool:
+        return self._task is not None and not self._task.done()
+
+    async def purge_once(self) -> int:
+        """单轮清理；返回本次清理的远端文档数。数据库未就绪时静默跳过。"""
+
+        db = self._db_provider()
+        if db is None:
+            return 0
+        service = KnowledgeService(
+            KnowledgeRepository(db), self.ragflow, self.config
+        )
+        return await service.purge_expired_documents(limit=self.batch_limit)
+
+    async def run_forever(self) -> None:
+        logger.info(
+            "知识库软删除清理 worker 已启动 | interval=%ss, batch=%s",
+            self.purge_interval_seconds,
+            self.batch_limit,
+        )
+        try:
+            while not self._stop.is_set():
+                try:
+                    await self.purge_once()
+                except Exception as exc:
+                    logger.warning("知识库清理单轮执行失败: %s", exc)
+                try:
+                    await asyncio.wait_for(
+                        self._stop.wait(), timeout=self.purge_interval_seconds
+                    )
+                except TimeoutError:
+                    pass
+        except asyncio.CancelledError:
+            pass
+        finally:
+            logger.info("知识库软删除清理 worker 已停止")
+
+    def start(self) -> None:
+        """在当前事件循环中启动后台清理任务（幂等）。"""
+
+        if self.is_running:
+            return
+        self._stop.clear()
+        self._task = asyncio.create_task(
+            self.run_forever(), name="knowledge-purge-worker"
+        )
+
+    async def stop(self) -> None:
+        """请求停止并等待后台任务收尾。"""
+
+        self._stop.set()
+        task = self._task
+        if task is None:
+            return
+        self._task = None
+        if not task.done():
+            task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+
+__all__ = ["KnowledgeParsePollWorker", "KnowledgePurgeWorker"]

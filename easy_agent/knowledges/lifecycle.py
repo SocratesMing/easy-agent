@@ -17,7 +17,7 @@ from starlette.concurrency import run_in_threadpool
 from .config import KnowledgeConfig, KnowledgeConfigError
 from .ragflow import RagflowClient
 from .service import LocalOriginalStore
-from .worker import KnowledgeParsePollWorker
+from .worker import KnowledgeParsePollWorker, KnowledgePurgeWorker
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +41,7 @@ async def startup_knowledge(app: FastAPI, config_path: str | Path) -> None:
         app.state.ragflow_client = None
         app.state.knowledge_original_store = None
         app.state.knowledge_worker = None
+        app.state.knowledge_purge_worker = None
         logger.info("知识库配置加载成功 | status=disabled")
         return
 
@@ -61,11 +62,25 @@ async def startup_knowledge(app: FastAPI, config_path: str | Path) -> None:
     )
     worker.start()
     app.state.knowledge_worker = worker
+
+    # 软删除保留期（30 天）到期后清理远端文档副本，防止共享数据集膨胀
+    purge_worker = KnowledgePurgeWorker(
+        config=config,
+        ragflow=app.state.ragflow_client,
+        db_provider=lambda: getattr(app.state, "db", None),
+    )
+    purge_worker.start()
+    app.state.knowledge_purge_worker = purge_worker
     logger.info("知识库配置加载成功 | status=enabled")
 
 
 async def shutdown_knowledge(app: FastAPI) -> None:
-    """停止轮询 worker 并关闭模块持有的连接。"""
+    """停止后台 worker 并关闭模块持有的连接。"""
+
+    purge_worker = getattr(app.state, "knowledge_purge_worker", None)
+    if purge_worker is not None:
+        await purge_worker.stop()
+        app.state.knowledge_purge_worker = None
 
     worker = getattr(app.state, "knowledge_worker", None)
     if worker is not None:
