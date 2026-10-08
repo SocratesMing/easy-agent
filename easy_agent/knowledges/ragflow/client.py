@@ -1,22 +1,29 @@
-"""Ragflow v0.26.3 本地服务标准 HTTP API 客户端（新版 knowledges 模块）。
+"""RAG 平台 HTTP API 客户端（新版 knowledges 模块）。
 
 设计约定:
-- 接口路径、HTTP 方法、请求参数均按 Ragflow v0.26.3 官方 HTTP API 实现
-  （标准 /api/v1/* 路径），客户端内不读任何环境变量；base_url / api_key
-  由服务层从配置（RAGFLOW_BASE_URL / RAGFLOW_API_KEY）解析后经构造函数注入。
-- 每个请求自动携带 ``Authorization: Bearer {api_key}``。
-- 响应统一按 ``{"code": 0, "data": ...}`` 信封解码，成功时返回 ``data``
-  字段原样内容（可能为 dict / list / bool / None）；非 0 code 与非 2xx
-  HTTP 状态码转译为 errors.py 中的稳定异常。
+- 接口路径、HTTP 方法、请求参数按《RAG平台应用接入接口文档 v1.1.1》
+  （RI001–RI011，标准 /api/v1/* 路径）实现；文档未提及的 Ragflow v0.26.3
+  原生接口（模型/聊天助手/会话/团队管理等）保持原实现不变。客户端内不读
+  任何环境变量；base_url / api_key 由服务层从配置（RAGFLOW_BASE_URL /
+  RAGFLOW_API_KEY）解析后经构造函数注入。
+- 每个请求自动携带 ``Authorization: Bearer {api_key}`` 与
+  ``stdsysserialnum`` 全局链路追踪流水号（令牌+yyyyMMddHHmmss+六位随机数）。
+- 响应统一按 ``{"code": <int>, "data": ..., "message": "..."}`` 信封解码，
+  成功码兼容平台统一信封 ``code=200`` 与 Ragflow 原生 ``code=0``，成功时
+  返回 ``data`` 字段原样内容（可能为 dict / list / bool / None）；其它
+  code（400/401/404/422/429/500/503 等）与非 2xx HTTP 状态码转译为
+  errors.py 中的稳定异常。
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import random
 import re
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, BinaryIO
 from urllib.parse import quote
 
@@ -33,9 +40,18 @@ from .errors import (
 
 logger = logging.getLogger(__name__)
 
-# 响应信封约定（Ragflow 官方 API 各接口响应示例）。
-_SUCCESS_CODE = 0
+# 响应信封约定：RAG 平台统一信封成功码为 200（《接入文档 v1.1.1》统一响应
+# 编码），Ragflow 原生接口成功码为 0；两者均按成功解码。
+_SUCCESS_CODES = frozenset({0, 200})
 _AUTH_ERROR_CODES = frozenset({109})
+# 平台统一响应编码（文档"统一响应编码"章节）→ 稳定异常类型。
+_PLATFORM_ERROR_EXC: dict[int, type[RagflowError]] = {
+    401: RagflowAuthenticationError,
+    404: RagflowNotFoundError,
+    429: RagflowRateLimitError,
+    500: RagflowUnavailableError,
+    503: RagflowUnavailableError,
+}
 # 信封 message 中的"资源不存在/无权访问"特征，用于转译 NotFound 异常。
 _NOT_FOUND_MARKERS = (
     "not exist",
@@ -66,7 +82,10 @@ class RagflowBinary:
 
 
 class RagflowClient:
-    """Ragflow v0.26.3 标准 HTTP API 客户端：32 个接口的类型化异步封装。
+    """RAG 平台 HTTP API 客户端：39 个接口的类型化异步封装。
+
+    覆盖《RAG平台应用接入接口文档 v1.1.1》RI001–RI011 全部 11 个接入接口，
+    以及文档未提及、维持原状的 Ragflow v0.26.3 原生管理接口。
 
     用法::
 
@@ -117,10 +136,21 @@ class RagflowClient:
 
     # ─────────────────────────── 请求基础设施 ───────────────────────────
 
+    def _trace_serial(self) -> str:
+        """生成 stdsysserialnum 全局链路追踪流水号。
+
+        规则（《接入文档 v1.1.1》RI001 请求说明）：
+        ``<令牌>+yyyyMMddHHmmss+六位随机数``，令牌即 Bearer 认证凭据。
+        """
+        stamp = datetime.now().strftime("%Y%m%d%H%M%S")
+        suffix = f"{random.randint(0, 999999):06d}"
+        return f"{self._api_key}{stamp}{suffix}"
+
     def _base_headers(self) -> dict[str, str]:
-        """所有请求共用的 Bearer 认证头。"""
+        """所有请求共用头：Bearer 认证 + stdsysserialnum 链路追踪流水号。"""
         return {
             "Authorization": f"Bearer {self._api_key}",
+            "stdsysserialnum": self._trace_serial(),
         }
 
     async def _request(
@@ -130,6 +160,7 @@ class RagflowClient:
         *,
         query: dict[str, Any] | None = None,
         json_body: dict[str, Any] | None = None,
+        form: dict[str, Any] | None = None,
         files: list[tuple[str, tuple[str, bytes | BinaryIO, str]]] | None = None,
         expect_binary: bool = False,
     ) -> Any:
@@ -141,6 +172,9 @@ class RagflowClient:
             request_kwargs["params"] = query
         if json_body is not None:
             request_kwargs["json"] = json_body
+        if form is not None:
+            # 与 files 同时提供时，httpx 自动合并为 multipart/form-data 字段。
+            request_kwargs["data"] = form
         if files is not None:
             request_kwargs["files"] = files
 
@@ -221,7 +255,11 @@ class RagflowClient:
         )
 
     def _decode_envelope(self, response: httpx.Response) -> Any:
-        """解码 ``{"code": 0, "data": ...}`` 信封并转译业务错误。"""
+        """解码 ``{"code": <int>, "data": ...}`` 信封并转译业务错误。
+
+        成功码兼容平台统一信封 ``code=200`` 与 Ragflow 原生 ``code=0``；
+        失败时按文档"统一响应编码"映射稳定异常（message 格式 ``{说明}:{msg}``）。
+        """
         if not self._is_json(response):
             raise RagflowContractError("RAGFlow 返回了非 JSON 响应")
         try:
@@ -233,7 +271,7 @@ class RagflowClient:
         code = payload.get("code")
         if code is None:
             raise RagflowContractError("RAGFlow 响应缺少 code 字段")
-        if code == _SUCCESS_CODE:
+        if code in _SUCCESS_CODES:
             return payload.get("data")
 
         message = str(payload.get("message") or "")
@@ -244,6 +282,9 @@ class RagflowClient:
             )
         if any(marker in lowered for marker in _NOT_FOUND_MARKERS):
             raise RagflowNotFoundError(message or "RAGFlow 目标资源不存在")
+        platform_exc = _PLATFORM_ERROR_EXC.get(code)
+        if platform_exc is not None:
+            raise platform_exc(message or f"RAG 平台业务失败(code={code})")
         detail = f": {message}" if message else ""
         raise RagflowError(
             f"RAGFlow 业务失败(code={code}){detail}",
@@ -509,15 +550,20 @@ class RagflowClient:
         self,
         dataset_id: str,
         files: list[tuple[str, bytes | BinaryIO, str]],
+        *,
+        metadata: dict[str, Any] | str | None = None,
     ) -> list[dict[str, Any]]:
-        """上传文档（文档 2.1：POST /api/v1/datasets/{dataset_id}/documents）。
+        """上传文档（RI006：POST /api/v1/datasets/{dataset_id}/documents）。
 
         Args:
             dataset_id: 目标知识库 ID。
-            files: (文件名, 文件内容, MIME 类型) 元组列表，支持多文件。
+            files: (文件名, 文件内容, MIME 类型) 元组列表，``file`` 字段
+                多文件时重复提交。
+            metadata: 可选 key/value 自定义元数据（文档示例字段），dict 时
+                序列化为 JSON 字符串随表单提交。
 
         Returns:
-            文档对象列表（含 id/name/run 等字段）。
+            文档对象列表（含 id/name/dataset_id/run 等字段）。
         """
         self._require_non_empty(dataset_id, "dataset_id")
         if not files:
@@ -526,10 +572,19 @@ class RagflowClient:
             ("file", (filename, content, content_type))
             for filename, content, content_type in files
         ]
+        form: dict[str, Any] | None = None
+        if metadata is not None:
+            form = {
+                "metadata": (
+                    json.dumps(metadata, ensure_ascii=False)
+                    if isinstance(metadata, dict)
+                    else metadata
+                )
+            }
         path = self._format_path(
             "/api/v1/datasets/{dataset_id}/documents", dataset_id=dataset_id
         )
-        data = await self._request("POST", path, files=multipart)
+        data = await self._request("POST", path, files=multipart, form=form)
         if not isinstance(data, list) or not data:
             raise RagflowContractError("RAGFlow 上传文档未返回文档列表")
         return data
@@ -652,7 +707,11 @@ class RagflowClient:
         document_id: str | None = None,
         name: str | None = None,
     ) -> dict[str, Any]:
-        """查询知识库文档列表（文档 2.5：GET /api/v1/datasets/{dataset_id}/documents）。
+        """查询知识库文档列表（RI007：GET /api/v1/datasets/{dataset_id}/documents）。
+
+        文档规定查询参数：page / page_size（默认 30）/ keywords /
+        document_id（按文档 id 精确过滤）；orderby / desc / name 为文档
+        未提及的可选参数，保持原状。
 
         Returns:
             ``{"docs": [...], "total": n}`` 形式的 data 字段，
@@ -669,7 +728,7 @@ class RagflowClient:
                 "orderby": orderby,
                 "desc": desc,
                 "keywords": keywords,
-                "id": document_id,
+                "document_id": document_id,
                 "name": name,
             }
         )
@@ -922,6 +981,61 @@ class RagflowClient:
             raise RagflowContractError("RAGFlow 检索结果格式不符")
         return data
 
+    async def search_datasets(
+        self,
+        *,
+        question: str,
+        dataset_ids: list[str],
+        top_k: int | None = None,
+        page: int | None = None,
+        size: int | None = None,
+        similarity_threshold: float | None = None,
+        vector_similarity_weight: float | None = None,
+        highlight: bool | None = None,
+        use_kg: bool | None = None,
+    ) -> dict[str, Any]:
+        """知识库语义检索（RI009：POST /api/v1/datasets/search）。
+
+        与 ``retrieve``（Ragflow 原生 ``/api/v1/retrieval``，文档未提及、
+        保持原状）并列的平台检索接口；参数名以《接入文档 v1.1.1》为准：
+        每页条数为 ``size``（服务端默认 10），召回条数为 ``top_k``（默认 5）。
+
+        Args:
+            question: 检索问题（必填）。
+            dataset_ids: 知识库 id 列表（必填）。
+            top_k: 召回条数，服务端默认 5。
+            page: 页码，服务端默认 1。
+            size: 每页条数，服务端默认 10。
+            similarity_threshold: 相似度阈值，服务端默认 0.2。
+            vector_similarity_weight: 向量相似度权重，服务端默认 0.3。
+            highlight: 是否高亮命中文本，默认 false。
+            use_kg: 是否启用知识图谱，默认 false。
+
+        Returns:
+            ``{"chunks": [...], "doc_aggs": [...], "total": n}`` 形式的
+            data 字段，chunks 内含 chunk_id/content_with_weight/doc_id/
+            kb_id/highlight/similarity 等字段。
+        """
+        self._require_non_empty(question, "question")
+        self._require_ids(dataset_ids, "dataset_ids")
+        body = self._clean_body(
+            {
+                "question": question,
+                "dataset_ids": dataset_ids,
+                "top_k": top_k,
+                "page": page,
+                "size": size,
+                "similarity_threshold": similarity_threshold,
+                "vector_similarity_weight": vector_similarity_weight,
+                "highlight": highlight,
+                "use_kg": use_kg,
+            }
+        )
+        data = await self._request("POST", "/api/v1/datasets/search", json_body=body)
+        if not isinstance(data, dict):
+            raise RagflowContractError("RAG 平台知识库检索结果格式不符")
+        return data
+
     # ─────────────────────────── 4 聊天助手管理 ───────────────────────────
 
     async def create_chat_assistant(
@@ -1147,6 +1261,201 @@ class RagflowClient:
         if not isinstance(data, dict):
             raise RagflowContractError("RAGFlow 加入团队响应格式不符")
         return data
+
+    # ─────────────────────────── 7 RAG 平台资源目录接入（RI001–RI004 / RI010） ───────────────────────────
+
+    async def upload_files_by_tree(
+        self,
+        *,
+        files: list[tuple[str, bytes | BinaryIO, str]],
+        tree_code: str,
+        metadata: dict[str, Any] | str | None = None,
+        datasets: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        """按资源目录上传文档（RI001：POST /api/v1/abac/files）。
+
+        按全行统一目录编码把知识文档挂到对应资源目录，一次请求可传多个
+        文件，响应 data 数组返回每个文件状态信息。
+
+        Args:
+            files: (文件名, 文件内容, MIME 类型) 元组列表；``files`` 字段
+                多文件时重复提交。
+            tree_code: 知识目录编码（必填）。
+            metadata: key/value 自定义元数据（JSON 字符串），dict 时序列化；
+                RAG 检索可通过 metadata 过滤文档提升准确率。
+            datasets: 目标知识库 id 列表；未提供则按目录与知识库映射关系
+                批量调度加工。
+
+        Returns:
+            每个文件的上传结果列表（name/status/error/file 字段，file 内含
+            id/tree_id/mime_type/size_bytes/metadata 等）。
+        """
+        if not files:
+            raise ValueError("files 不能为空")
+        self._require_non_empty(tree_code, "tree_code")
+        form: dict[str, Any] = {"tree_code": tree_code}
+        if metadata is not None:
+            form["metadata"] = (
+                json.dumps(metadata, ensure_ascii=False)
+                if isinstance(metadata, dict)
+                else metadata
+            )
+        if datasets:
+            form["datasets"] = datasets
+        multipart = [
+            ("files", (filename, content, content_type))
+            for filename, content, content_type in files
+        ]
+        data = await self._request(
+            "POST", "/api/v1/abac/files", files=multipart, form=form
+        )
+        if not isinstance(data, list):
+            raise RagflowContractError("RAG 平台资源目录上传未返回结果数组")
+        return data
+
+    async def upload_cbcm_files_by_tree(
+        self,
+        *,
+        tree_code: str,
+        service_id: str,
+        batch_id: str,
+        file_part: str,
+        object_name: str,
+        file_list: list[str] | None = None,
+        metadata: dict[str, Any] | str | None = None,
+        datasets: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        """按资源目录上传内容管理平台（CBCM）文档（RI002：POST /api/v1/abac/files/cbcm）。
+
+        从 CBCM 内容管理平台按批次拉取文件挂到 tree_code 对应资源目录，
+        不传本地文件。响应字段与 RI001 相同。
+
+        Args:
+            tree_code: 知识目录编码（必填）。
+            service_id: 服务 ID（必填）。
+            batch_id: 批次 ID（必填）。
+            file_part: 文件部分标识（必填）。
+            object_name: 对象名称（必填）。
+            file_list: 文件列表编号；不传则批次下全部文件。
+            metadata: key/value 自定义元数据（JSON 字符串），dict 时序列化。
+            datasets: 实时解析加工到目标知识库 id 列表；未提供则按目录与
+                知识库映射关系批量调度加工。
+        """
+        for field in (tree_code, service_id, batch_id, file_part, object_name):
+            if not field:
+                raise ValueError(
+                    "tree_code/service_id/batch_id/file_part/object_name 均为必填"
+                )
+        body = self._clean_body(
+            {
+                "tree_code": tree_code,
+                "serviceId": service_id,
+                "batchId": batch_id,
+                "filePart": file_part,
+                "objectName": object_name,
+                "FileList": file_list,
+                "metadata": (
+                    metadata
+                    if metadata is None or isinstance(metadata, str)
+                    else json.dumps(metadata, ensure_ascii=False)
+                ),
+                "datasets": datasets,
+            }
+        )
+        data = await self._request("POST", "/api/v1/abac/files/cbcm", json_body=body)
+        if not isinstance(data, list):
+            raise RagflowContractError("RAG 平台 CBCM 上传未返回结果数组")
+        return data
+
+    async def search_by_scene(
+        self,
+        *,
+        scene_codes: list[str],
+        question: str,
+        top_k: int,
+        datasets: list[str] | None = None,
+        meta_data_filter: dict[str, Any] | None = None,
+        rerank: str | None = None,
+    ) -> dict[str, Any]:
+        """按应用场景语义检索知识（RI003：POST /api/v1/abac/search）。
+
+        按场景编码检索已绑定知识库，返回命中切片，调用方无需自行维护
+        知识库 id。
+
+        Args:
+            scene_codes: 场景编码列表（必填）。
+            question: 检索问题（必填）。
+            top_k: 返回条数（必填）。
+            datasets: 知识库 id 列表（可选）。
+            meta_data_filter: 元数据过滤条件，形如
+                ``{"method": "manual", "logic": "and", "manual":
+                [{"key": ..., "value": ..., "op": "="}]}``。
+            rerank: 是否启用 rerank 模型精细打分，``"Y"`` / ``"N"``，
+                服务端默认 ``"N"``。
+
+        Returns:
+            ``{"chunks": [...], "doc_aggs": [...], "labels": ..., "total": n}``
+            形式的 data 字段。
+        """
+        self._require_non_empty(question, "question")
+        if not scene_codes or any(not code for code in scene_codes):
+            raise ValueError("scene_codes 必须为非空编码列表")
+        if top_k is None or top_k <= 0:
+            raise ValueError("top_k 必须为正整数")
+        if rerank is not None and rerank not in ("Y", "N"):
+            raise ValueError("rerank 仅支持 Y / N")
+        body = self._clean_body(
+            {
+                "scene_code": scene_codes,
+                "question": question,
+                "top_k": top_k,
+                "datasets": datasets,
+                "meta_data_filter": meta_data_filter,
+                "rerank": rerank,
+            }
+        )
+        data = await self._request("POST", "/api/v1/abac/search", json_body=body)
+        if not isinstance(data, dict):
+            raise RagflowContractError("RAG 平台场景检索结果格式不符")
+        return data
+
+    async def list_scene_knowledge_bases(
+        self,
+        *,
+        scene_code: str,
+        page: int | None = None,
+        page_size: int | None = None,
+    ) -> dict[str, Any]:
+        """按应用场景查询可用知识库（RI004：GET /api/v1/abac/kb）。
+
+        Args:
+            scene_code: 场景编码（必填）。
+            page: 页码，服务端默认 1。
+            page_size: 每页条数，服务端默认 100。
+
+        Returns:
+            ``{"items": [...], "total": n, "page": p, "page_size": s}`` 形式
+            的 data 字段，items 内含 id/name/description/tenant_id/app_name/
+            doc_num/chunk_num/status/has_access 等字段。
+        """
+        self._require_non_empty(scene_code, "scene_code")
+        query = self._clean_query(
+            {"page": page, "page_size": page_size, "scene_code": scene_code}
+        )
+        data = await self._request("GET", "/api/v1/abac/kb", query=query)
+        if not isinstance(data, dict):
+            raise RagflowContractError("RAG 平台场景知识库列表格式不符")
+        return data
+
+    async def delete_file_by_tree(self, file_id: str) -> None:
+        """按资源目录删除文档（RI010：DELETE /api/v1/abac/files/{id}）。
+
+        按文件 id 删除资源目录下的文档；若文件已导入知识库，平台先按
+        记录调用 Ragflow 删除对应文档再删本地文件。删除后不可恢复。
+        """
+        self._require_non_empty(file_id, "file_id")
+        path = self._format_path("/api/v1/abac/files/{file_id}", file_id=file_id)
+        await self._request("DELETE", path)
 
     # ─────────────────────────── 健康检查 ───────────────────────────
 
