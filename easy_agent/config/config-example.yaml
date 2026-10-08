@@ -174,6 +174,31 @@ knowledge:
   audit:
     enabled: true
     max_details_bytes: 4096
+  # 外部目录树同步（ai_kb → 知识库板块）：开关开启时，启动后台任务将
+  # sql_file 指向的 SQL dump 执行到 database 指定的 MySQL 库（不存在时自动
+  # 创建），并按 kb_catalog 目录树（库→年→年月→年月日→机构…）幂等创建
+  # 知识库与文件夹；重复执行不会重复创建。
+  catalog_sync:
+    # 总开关：false 时启动流程零副作用
+    enabled: "${KNOWLEDGE_CATALOG_SYNC_ENABLED:-false}"
+    # SQL dump 文件路径（相对路径以项目根为基准；含 kb_catalog/kb_doc 表）
+    sql_file: "${KNOWLEDGE_CATALOG_SYNC_SQL_FILE:-}"
+    # 执行 dump 的目标 MySQL 库名（仅允许字母/数字/下划线）
+    database: "${KNOWLEDGE_CATALOG_SYNC_DATABASE:-ai_kb}"
+    # 同步创建的知识库归属用户与空间类型（personal | team）
+    owner_username: admin
+    space_type: team
+    # team 空间可选的所属部门（留空则不归属部门，admin 仍可见）
+    department_id: ""
+    # 同步的最大目录层级（1=仅创建知识库；dump 中机构层为 5）
+    max_level: 5
+    # 外部 MySQL 连接覆盖：host 留空时复用主库 database.mysql 连接参数；
+    # 主库为 SQLite 时必须提供完整连接信息
+    mysql:
+      host: ""
+      port: 3306
+      user: ""
+      password: ""
   # 上传 / 列表限额
   limits:
     max_file_size_mb: 100

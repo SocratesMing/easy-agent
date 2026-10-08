@@ -32,7 +32,9 @@ from .knowledge_impl import (
     metrics,
     resolve_request_id,
     should_audit,
+    shutdown_catalog_sync,
     shutdown_knowledge,
+    startup_catalog_sync,
     startup_knowledge,
 )
 from .knowledge_impl import knowledge_router
@@ -238,6 +240,10 @@ async def lifespan(app: FastAPI):
 
     _init_database_and_state(app, config)
 
+    # 外部目录树同步（ai_kb → 知识库板块）：由 knowledge.catalog_sync.enabled
+    # 开关控制，后台执行，失败仅记日志不阻断启动
+    await startup_catalog_sync(app)
+
     system_prompt = _prepare_system_prompt(config, config_path)
 
     if config:
@@ -317,6 +323,7 @@ async def lifespan(app: FastAPI):
 
     if knowledge_started:
         await shutdown_knowledge(app)
+    await shutdown_catalog_sync(app)
     _shutdown_app(app)
 
 

@@ -6,7 +6,8 @@
 fail-closed 路径报错并提示填写。
 
 只认这些 YAML 键：``implementation``（透传不校验）/ ``enabled`` /
-``base_url`` / ``api_key`` / ``embedding.model`` / ``audit`` / ``limits``。
+``base_url`` / ``api_key`` / ``embedding.model`` / ``audit`` / ``limits`` /
+``catalog_sync``（外部目录树同步，含 enabled 总开关）。
 旧版 endpoint / auth / bank_api / adapter / tls / defaults 等嵌套段
 不再解析；解析策略、检索参数与上传安全开关为代码内固定值。
 """
@@ -84,6 +85,41 @@ class UploadSecurityConfig(BaseModel):
     virus_scan: VirusScanConfig = Field(default_factory=VirusScanConfig)
 
 
+class CatalogSyncMySQLConfig(BaseModel):
+    """外部目录库（ai_kb）MySQL 连接覆盖；host 留空时复用主库连接参数。"""
+
+    host: str = ""
+    port: int = Field(default=3306, gt=0)
+    user: str = ""
+    password: SecretStr = SecretStr("")
+    charset: str = "utf8mb4"
+
+
+class CatalogSyncConfig(BaseModel):
+    """外部目录树同步配置（ai_kb SQL dump → 知识库板块）。
+
+    enabled 为总开关：关闭时启动流程零副作用。sql_file 指向含
+    kb_catalog / kb_doc 表结构与数据的 MySQL dump 文件，同步前会将其
+    执行到 database 指定的 MySQL 库（不存在时自动创建），再按
+    kb_catalog 目录树（库→年→月→日→机构…）幂等地创建知识库与文件夹。
+    """
+
+    enabled: bool = False
+    sql_file: str = ""
+    database: str = "ai_kb"
+    owner_username: str = "admin"
+    space_type: str = "team"  # personal | team
+    department_id: str = ""
+    max_level: int = Field(default=5, ge=1, le=10)
+    mysql: CatalogSyncMySQLConfig = Field(default_factory=CatalogSyncMySQLConfig)
+
+    @model_validator(mode="after")
+    def _space_type_allowed(self) -> "CatalogSyncConfig":
+        if self.space_type not in {"personal", "team"}:
+            raise ValueError("catalog_sync.space_type 仅支持 personal / team")
+        return self
+
+
 class KnowledgeConfig(BaseModel):
     """校验后的知识库配置（应用启动时加载一次）。"""
 
@@ -94,6 +130,7 @@ class KnowledgeConfig(BaseModel):
     embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
     audit: AuditConfig = Field(default_factory=AuditConfig)
     limits: LimitsConfig = Field(default_factory=LimitsConfig)
+    catalog_sync: CatalogSyncConfig = Field(default_factory=CatalogSyncConfig)
 
     @model_validator(mode="after")
     def _endpoint_required_when_enabled(self) -> "KnowledgeConfig":
@@ -129,6 +166,15 @@ class KnowledgeConfig(BaseModel):
     def from_mapping(cls, section: Mapping[str, Any] | None) -> "KnowledgeConfig":
         """从已展开占位符的 knowledge 配置段构造；未识别的键直接忽略。"""
         section = dict(section or {})
+        catalog_section = _as_mapping(section.get("catalog_sync"))
+        if not catalog_section:
+            catalog_section = {
+                "enabled": _env_bool("KNOWLEDGE_CATALOG_SYNC_ENABLED", False),
+                "sql_file": os.environ.get("KNOWLEDGE_CATALOG_SYNC_SQL_FILE") or "",
+                "database": os.environ.get("KNOWLEDGE_CATALOG_SYNC_DATABASE") or "ai_kb",
+            }
+        else:
+            catalog_section["mysql"] = _as_mapping(catalog_section.get("mysql"))
         payload = {
             "implementation": section.get("implementation", "v2"),
             "enabled": section.get("enabled", _env_bool("KNOWLEDGE_ENABLED", False)),
@@ -137,6 +183,7 @@ class KnowledgeConfig(BaseModel):
             "embedding": {"model": str(_as_mapping(section.get("embedding")).get("model") or "")},
             "audit": _as_mapping(section.get("audit")),
             "limits": _as_mapping(section.get("limits")),
+            "catalog_sync": catalog_section,
         }
         # fail-closed：模块启用时禁止残留未解析的 ${VAR} 占位符
         # （防止 "${RAGFLOW_API_KEY}" 字面量被当作真实密钥静默放行）

@@ -35,6 +35,11 @@ def resolve_knowledge_impl() -> str:
 KNOWLEDGE_IMPL = resolve_knowledge_impl()
 
 from .knowledges.api import router as knowledge_router  # noqa: E402
+from .knowledges.catalog_sync import (  # noqa: E402
+    run_catalog_sync,
+    shutdown_catalog_sync,
+    startup_catalog_sync,
+)
 from .knowledges.lifecycle import shutdown_knowledge, startup_knowledge  # noqa: E402
 from .knowledges.observability import (  # noqa: E402
     audit_metadata,
@@ -106,7 +111,10 @@ __all__ = [
     "metrics",
     "prepare_knowledge_chat",
     "resolve_request_id",
+    "run_catalog_sync",
     "should_audit",
+    "shutdown_catalog_sync",
     "shutdown_knowledge",
+    "startup_catalog_sync",
     "startup_knowledge",
 ]
