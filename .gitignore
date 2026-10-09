@@ -70,3 +70,12 @@ offline_deps/
 
 # IDE 智能体工作目录（含跨会话记忆，勿提交）
 .codebuddy/
+
+# macOS
+.DS_Store
+
+# Trae 本地会话文档
+.trae/
+
+# 部署打包产物（本地分发用）
+easy-agent-portable.zip
