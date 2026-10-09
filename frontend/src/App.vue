@@ -1469,14 +1469,48 @@ function createStreamChunkHandler(ctx) {
         const idx = findIdx()
         if (idx !== -1) { messages.value[idx].loading = false; messages.value[idx] = { ...messages.value[idx] } }
       }
-    } else if (eventType === 'tool_call') {
+    } else if (eventType === 'tool_call_delta') {
+      // 大参数工具（write_file/edit_file）的 arguments 分片快照：模型还在生成
+      // 文件内容时就先把当前快照合入对应工具卡片，diff 实时增长；完整参数随后由
+      // tool_call 事件权威覆盖（同一 tool_call_id）。
       if (!ctx.isResume) ensureMessage()
       const idx = findIdx()
       if (idx !== -1) {
         const callId = toolCallId || `tool-${tool_name}`
         const existingBlockIdx = messages.value[idx].blocks.findIndex(b => b.type === 'tool_call' && (b.id === callId || b.tool_call_id === callId))
         if (existingBlockIdx !== -1) {
-          messages.value[idx].blocks[existingBlockIdx].arguments = args || {}
+          const prev = messages.value[idx].blocks[existingBlockIdx]
+          messages.value[idx].blocks[existingBlockIdx] = { ...prev, arguments: args || prev.arguments || {}, streaming: true }
+        } else {
+          addBlock('tool_call', { id: callId, tool_name: tool_name || '', arguments: args || {}, result: '', success: true, step: step || 0, streaming: true })
+          if (!ctx.isResume) currentToolCalls.push({ tool_call_id: callId, tool_name: tool_name || '', arguments: args || {}, result: '', success: true })
+        }
+        touchBlocks()
+      }
+    } else if (eventType === 'tool_call') {
+      if (!ctx.isResume) ensureMessage()
+      const idx = findIdx()
+      if (idx !== -1) {
+        const callId = toolCallId || `tool-${tool_name}`
+        let existingBlockIdx = messages.value[idx].blocks.findIndex(b => b.type === 'tool_call' && (b.id === callId || b.tool_call_id === callId))
+        if (existingBlockIdx === -1) {
+          // 参数分片阶段若无 id（部分 provider 首个分片才带 id），临时块的 key 是
+          // `tool-<name>`；此处按工具名回退匹配仍在 streaming 的占位块，避免重复卡片。
+          existingBlockIdx = messages.value[idx].blocks.findIndex(b => b.type === 'tool_call' && b.streaming && b.tool_name === tool_name)
+        }
+        if (existingBlockIdx !== -1) {
+          const prev = messages.value[idx].blocks[existingBlockIdx]
+          // 参数分片阶段的临时块：用权威参数覆盖，补齐 id/step，并清掉 streaming 标记。
+          messages.value[idx].blocks[existingBlockIdx] = { ...prev, id: toolCallId || prev.id, tool_call_id: toolCallId || prev.tool_call_id, arguments: args || prev.arguments || {}, step: step || prev.step || 0, streaming: false }
+          if (!ctx.isResume) {
+            const tracked = currentToolCalls.find(tc => tc.tool_call_id === callId)
+            if (tracked) {
+              tracked.arguments = args || tracked.arguments
+              tracked.tool_name = tool_name || tracked.tool_name
+            } else {
+              currentToolCalls.push({ tool_call_id: callId, tool_name: tool_name || '', arguments: args || {}, result: '', success: true })
+            }
+          }
           currentBlock = messages.value[idx].blocks[existingBlockIdx]
           touchBlocks()
         } else {
@@ -1499,9 +1533,12 @@ function createStreamChunkHandler(ctx) {
       }
       const idx = findIdx()
       if (idx !== -1) {
-        const blockIdx = messages.value[idx].blocks.findIndex(b => b.type === 'tool_call' && (b.id === callId || b.tool_call_id === callId))
+        let blockIdx = messages.value[idx].blocks.findIndex(b => b.type === 'tool_call' && (b.id === callId || b.tool_call_id === callId))
+        if (blockIdx === -1) {
+          blockIdx = messages.value[idx].blocks.findIndex(b => b.type === 'tool_call' && b.streaming && b.tool_name === tool_name)
+        }
         if (blockIdx !== -1) {
-          const blk = { ...messages.value[idx].blocks[blockIdx], arguments: args || messages.value[idx].blocks[blockIdx].arguments, result: parseMCPResult(result || ''), success: success !== false, duration: toolDuration }
+          const blk = { ...messages.value[idx].blocks[blockIdx], arguments: args || messages.value[idx].blocks[blockIdx].arguments, result: parseMCPResult(result || ''), success: success !== false, duration: toolDuration, streaming: false }
           if (ctx.isResume) blk.loading = false
           messages.value[idx].blocks[blockIdx] = blk
           touchBlocks()
@@ -1517,6 +1554,9 @@ function createStreamChunkHandler(ctx) {
         messages.value[idx].pending_approval = null
         pendingApproval.value = null
         messages.value[idx].created_at = new Date().toISOString()
+        // 兜底：任何未收到完整参数的 streaming 占位块在流结束时清掉标记，
+        // 避免工具卡片一直停留在「写入中…」。
+        for (const b of messages.value[idx].blocks || []) { if (b.streaming) b.streaming = false }
         if (ctx.isResume) {
           if (Array.isArray(data.blocks) && data.blocks.length > 0) messages.value[idx].blocks = data.blocks.map(b => ({ ...b }))
           for (const b of messages.value[idx].blocks) { if (b.type === 'thinking' && b.duration == null) b.duration = 0 }
