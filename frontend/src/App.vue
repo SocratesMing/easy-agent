@@ -1620,15 +1620,63 @@ export default {
             const idx = findIdx()
             if (idx !== -1) { this.messages[idx].loading = false; setReactive(this.messages, idx, { ...this.messages[idx] }) }
           }
-        } else if (eventType === 'tool_call') {
+        } else if (eventType === 'tool_call_delta') {
+          // 大参数工具（write_file/edit_file）的 arguments 分片快照：模型还在生成
+          // 文件内容时就先把当前快照合入对应工具卡片，diff 实时增长；完整参数随后由
+          // tool_call 事件权威覆盖（同一 tool_call_id）。
           if (!ctx.isResume) ensureMessage()
           const idx = findIdx()
           if (idx !== -1) {
             const callId = toolCallId || `tool-${toolName}`
             const existingBlockIdx = this.messages[idx].blocks.findIndex(b => b.type === 'tool_call' && (b.id === callId || b.tool_call_id === callId))
             if (existingBlockIdx !== -1) {
-              this.messages[idx].blocks[existingBlockIdx].arguments = args || {}
-              currentBlock = this.messages[idx].blocks[existingBlockIdx]
+              const prev = this.messages[idx].blocks[existingBlockIdx]
+              setReactive(this.messages[idx].blocks, existingBlockIdx, { ...prev, arguments: args || prev.arguments || {}, streaming: true })
+            } else {
+              // 必须先清空 currentBlock：否则 addBlock 会把本次调用并进上一个 tool_call 块。
+              currentBlock = null
+              addBlock('tool_call', { id: callId, tool_name: toolName || '', arguments: args || {}, result: '', success: true, step: step || 0, streaming: true })
+              if (!ctx.isResume) currentToolCalls.push({ tool_call_id: callId, tool_name: toolName || '', arguments: args || {}, result: '', success: true })
+            }
+            touchBlocks()
+          }
+        } else if (eventType === 'tool_call') {
+          if (!ctx.isResume) ensureMessage()
+          const idx = findIdx()
+          if (idx !== -1) {
+            const callId = toolCallId || `tool-${toolName}`
+            let existingBlockIdx = this.messages[idx].blocks.findIndex(b => b.type === 'tool_call' && (b.id === callId || b.tool_call_id === callId))
+            if (existingBlockIdx === -1) {
+              // 参数分片阶段若无 id（部分 provider 首个分片才带 id），临时块的 key 是
+              // `tool-<name>`；此处按工具名回退匹配仍在 streaming 的占位块，避免重复卡片。
+              existingBlockIdx = this.messages[idx].blocks.findIndex(b => b.type === 'tool_call' && b.streaming && b.tool_name === toolName)
+            }
+            if (existingBlockIdx !== -1) {
+              // 参数分片阶段的临时块：用权威参数覆盖，补齐 id/step，并清掉 streaming 标记。
+              const prev = this.messages[idx].blocks[existingBlockIdx]
+              const merged = {
+                ...prev,
+                id: toolCallId || prev.id,
+                tool_call_id: toolCallId || prev.tool_call_id,
+                arguments: args || prev.arguments || {},
+                step: step || prev.step || 0,
+                streaming: false,
+              }
+              setReactive(this.messages[idx].blocks, existingBlockIdx, merged)
+              currentBlock = merged
+              if (!ctx.isResume) {
+                // 占位阶段可能只有 `tool-<name>` 这个临时 id，按工具名回退匹配，
+                // 并用权威 id 覆盖，保证后续 tool_result 能对上同一条记录。
+                const tracked = currentToolCalls.find(tc => tc.tool_call_id === callId)
+                  || currentToolCalls.find(tc => tc.tool_call_id === `tool-${toolName}`)
+                if (tracked) {
+                  tracked.tool_call_id = callId
+                  tracked.arguments = args || tracked.arguments
+                  tracked.tool_name = toolName || tracked.tool_name
+                } else {
+                  currentToolCalls.push({ tool_call_id: callId, tool_name: toolName || '', arguments: args || {}, result: '', success: true })
+                }
+              }
               touchBlocks()
             } else {
               currentBlock = null
@@ -1650,9 +1698,14 @@ export default {
           }
           const idx = findIdx()
           if (idx !== -1) {
-            const blockIdx = this.messages[idx].blocks.findIndex(b => b.type === 'tool_call' && (b.id === callId || b.tool_call_id === callId))
+            let blockIdx = this.messages[idx].blocks.findIndex(b => b.type === 'tool_call' && (b.id === callId || b.tool_call_id === callId))
+            if (blockIdx === -1) {
+              // 兜底：只收到过参数分片（tool_call 事件缺失）时，按工具名匹配仍在
+              // streaming 的占位块，避免工具卡片停在「写入中…」。
+              blockIdx = this.messages[idx].blocks.findIndex(b => b.type === 'tool_call' && b.streaming && b.tool_name === toolName)
+            }
             if (blockIdx !== -1) {
-              const blk = { ...this.messages[idx].blocks[blockIdx], arguments: args || this.messages[idx].blocks[blockIdx].arguments, result: parseMCPResult(result || ''), success: success !== false, duration: toolDuration }
+              const blk = { ...this.messages[idx].blocks[blockIdx], arguments: args || this.messages[idx].blocks[blockIdx].arguments, result: parseMCPResult(result || ''), success: success !== false, duration: toolDuration, streaming: false }
               if (ctx.isResume) blk.loading = false
               setReactive(this.messages[idx].blocks, blockIdx, blk)
               touchBlocks()
@@ -1668,6 +1721,11 @@ export default {
             this.messages[idx].pending_approval = null
             this.pendingApproval = null
             this.messages[idx].created_at = new Date().toISOString()
+            // 兜底：任何未收到完整参数的 streaming 占位块在流结束时清掉标记，
+            // 避免工具卡片一直停留在「写入中…」。（map 生成新数组，Vue2 下才可响应）
+            if ((this.messages[idx].blocks || []).some(b => b.streaming)) {
+              setReactive(this.messages, idx, { ...this.messages[idx], blocks: this.messages[idx].blocks.map(b => (b.streaming ? { ...b, streaming: false } : b)) })
+            }
             if (ctx.isResume) {
               if (Array.isArray(data.blocks) && data.blocks.length > 0) this.messages[idx].blocks = data.blocks.map(b => ({ ...b }))
               for (const b of this.messages[idx].blocks) { if (b.type === 'thinking' && b.duration == null) b.duration = 0 }
