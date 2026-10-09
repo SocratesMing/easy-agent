@@ -83,6 +83,13 @@ export function createFolder(baseId, name, parentId = '') {
   })
 }
 
+export function ensureFolders(baseId, { folderId = '', paths = [] } = {}) {
+  return request(`/bases/${encodeURIComponent(baseId)}/folders/ensure`, {
+    method: 'POST',
+    json: { folder_id: folderId || null, paths },
+  })
+}
+
 export function updateFolder(folderId, name) {
   return request(`/folders/${encodeURIComponent(folderId)}`, {
     method: 'PATCH',
@@ -103,7 +110,7 @@ export function listDocuments(baseId, { page = 1, pageSize = 100, folderId = '',
   return request(`/bases/${encodeURIComponent(baseId)}/documents?${params}`)
 }
 
-export function uploadDocument(baseId, file, { folderId = '', onProgress } = {}) {
+export function uploadDocument(baseId, file, { folderId = '', relativePath = '', onProgress } = {}) {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest()
     xhr.open('POST', `${ROOT}/bases/${encodeURIComponent(baseId)}/documents`)
@@ -137,6 +144,8 @@ export function uploadDocument(baseId, file, { folderId = '', onProgress } = {})
     const form = new FormData()
     form.append('file', file)
     if (folderId) form.append('folder_id', folderId)
+    // 文件夹上传时携带原始相对路径，后端据此逐级建目录保留层级
+    if (relativePath) form.append('relative_path', relativePath)
     xhr.send(form)
   })
 }

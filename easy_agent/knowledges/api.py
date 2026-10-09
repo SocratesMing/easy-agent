@@ -54,6 +54,8 @@ from .models import (
     DocumentUploadAccepted,
     Evidence,
     FolderCreateRequest,
+    FolderEnsureRequest,
+    FolderEnsureResponse,
     FolderListResponse,
     FolderSummary,
     FolderUpdateRequest,
@@ -437,6 +439,24 @@ async def create_folder(
     )
 
 
+@router.post("/bases/{base_id}/folders/ensure", response_model=FolderEnsureResponse)
+async def ensure_folders(
+    base_id: str,
+    payload: FolderEnsureRequest,
+    service: Annotated[KnowledgeService, Depends(_service)],
+    principal: Annotated[KnowledgePrincipal, Depends(get_knowledge_principal)],
+) -> FolderEnsureResponse:
+    """文件夹上传时批量确保目录树存在（空目录也会创建），幂等。"""
+    return await _call(
+        service.ensure_folders(
+            base_id=base_id,
+            folder_id=payload.folder_id,
+            paths=payload.paths,
+            principal=principal,
+        )
+    )
+
+
 @router.patch("/folders/{folder_id}", response_model=FolderSummary)
 async def update_folder(
     folder_id: str,
@@ -552,6 +572,7 @@ async def upload_document(
     principal: Annotated[KnowledgePrincipal, Depends(get_knowledge_principal)],
     files: list[UploadFile] = File(..., alias="file"),
     folder_id: str | None = Form(default=None),
+    relative_path: Annotated[str | None, Form(max_length=1024)] = None,
     idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
 ) -> DocumentUploadAccepted:
     limit = service.config.limits.max_files_per_request
@@ -587,6 +608,7 @@ async def upload_document(
             principal=principal,
             request_id=_request_id(request),
             idempotency_key=idempotency_key,
+            relative_path=relative_path,
         )
     )
 

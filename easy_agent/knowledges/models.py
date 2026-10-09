@@ -294,6 +294,25 @@ class FolderListResponse(ContractModel):
     items: list[FolderSummary]
 
 
+class FolderEnsureRequest(ContractModel):
+    """文件夹上传时批量确保目录树存在（含空目录），路径为相对路径段列表。"""
+
+    paths: list[str] = Field(default_factory=list, max_length=200)
+    folder_id: str | None = None
+
+    @field_validator("paths")
+    @classmethod
+    def paths_not_overlong(cls, value: list[str]) -> list[str]:
+        for item in value:
+            if len(item) > 1024:
+                raise ValueError("path too long")
+        return value
+
+
+class FolderEnsureResponse(ContractModel):
+    ensured: int = Field(ge=0)
+
+
 # ---------------------------------------------------------------------------
 # 文档与上传
 # ---------------------------------------------------------------------------

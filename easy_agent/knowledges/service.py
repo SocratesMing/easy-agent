@@ -39,6 +39,7 @@ from .models import (
     DocumentSummary,
     DocumentUploadAccepted,
     Evidence,
+    FolderEnsureResponse,
     FolderListResponse,
     FolderSummary,
     KnowledgeBaseListResponse,
@@ -998,6 +999,133 @@ class KnowledgeService:
             updated_at=row["updated_at"],
         )
 
+    async def _folder_chain_depth(
+        self, base_id: str, folder_id: str | None
+    ) -> int:
+        """文件夹层级深度：自身记 1，逐级向上到库根；库根（无文件夹）为 0。"""
+        depth = 0
+        current = folder_id
+        seen: set[str] = set()
+        while current:
+            if current in seen:  # 脏数据环保护
+                break
+            seen.add(current)
+            folder = await self._repo(self.repository.get_folder, current)
+            if folder is None or str(folder["base_id"]) != base_id:
+                raise KnowledgeServiceError(
+                    "KNOWLEDGE_FOLDER_NOT_FOUND", "文件夹不存在", status_code=404
+                )
+            depth += 1
+            current = str(folder.get("parent_id") or "") or None
+        return depth
+
+    async def _ensure_folder_chain(
+        self, base_id: str, folder_id: str | None, relative_path: str
+    ) -> str | None:
+        """按上传相对路径逐级 find-or-create 文件夹，返回叶子文件夹 ID。
+
+        relative_path 形如「资料/报告/2026/q1.pdf」（浏览器 webkitRelativePath），
+        最后一段视为文件名，其余段自 folder_id（或库根）起逐级创建，保留上传
+        时的目录层级。
+        """
+        segments = [
+            part.strip()
+            for part in re.split(r"[\\/]+", relative_path)
+            if part.strip()
+        ]
+        dirs = segments[:-1] if len(segments) > 1 else []
+        return await self._ensure_folder_dirs(base_id, folder_id, dirs)
+
+    async def _ensure_folder_dirs(
+        self, base_id: str, folder_id: str | None, dirs: list[str]
+    ) -> str | None:
+        """逐级 find-or-create 目录段，返回叶子文件夹 ID；空段列表原样返回。
+
+        同级同名文件夹已存在则直接复用，重复上传不产生重复目录。段名拒绝
+        「.」「..」与超长名，深度沿用 create_folder 的 5 层上限。
+        """
+        for segment in dirs:
+            if segment in {".", ".."} or len(segment) > 127:
+                raise KnowledgeServiceError(
+                    "KNOWLEDGE_INVALID_UPLOAD_PATH",
+                    "上传路径包含非法目录名",
+                    status_code=422,
+                )
+        current = folder_id
+        depth = await self._folder_chain_depth(base_id, current)
+        for segment in dirs:
+            existing = await self._repo(
+                self.repository.find_folder_by_name, base_id, segment, current
+            )
+            if existing is None and depth >= 5:
+                raise KnowledgeServiceError(
+                    "KNOWLEDGE_FOLDER_DEPTH_LIMIT",
+                    "文件夹最多支持 5 层",
+                    status_code=409,
+                )
+            if existing is None:
+                try:
+                    row = await self._repo(
+                        self.repository.create_folder,
+                        base_id=base_id,
+                        name=segment,
+                        parent_id=current,
+                    )
+                    current = str(row["id"])
+                except Exception as exc:
+                    # 并发下撞唯一约束：回读已创建的同名文件夹复用
+                    if "UNIQUE" not in str(exc).upper() and "DUPLICATE" not in str(
+                        exc
+                    ).upper():
+                        raise
+                    existing = await self._repo(
+                        self.repository.find_folder_by_name,
+                        base_id,
+                        segment,
+                        current,
+                    )
+                    if existing is None:
+                        raise
+                    current = str(existing["id"])
+            else:
+                current = str(existing["id"])
+            depth += 1
+        return current
+
+    async def ensure_folders(
+        self,
+        *,
+        base_id: str,
+        folder_id: str | None,
+        paths: list[str],
+        principal: KnowledgePrincipal,
+    ) -> FolderEnsureResponse:
+        """批量确保相对目录树存在（文件夹上传的空目录补齐），幂等。
+
+        paths 为纯目录相对路径（如「资料/报告」），自 folder_id（或库根）起
+        逐级 find-or-create；返回实际处理的路径数。权限门槛与上传一致
+        （UPLOAD），因为它是文件夹上传流程的一部分。
+        """
+        await self._authorized_base(base_id, principal, AllowedAction.UPLOAD)
+        if folder_id:
+            folder = await self._repo(self.repository.get_folder, folder_id)
+            if folder is None or str(folder["base_id"]) != base_id:
+                raise KnowledgeServiceError(
+                    "KNOWLEDGE_FOLDER_NOT_FOUND", "文件夹不存在", status_code=404
+                )
+        ensured = 0
+        for raw_path in paths:
+            segments = [
+                part.strip()
+                for part in re.split(r"[\\/]+", str(raw_path or ""))
+                if part.strip()
+            ]
+            if not segments:
+                continue
+            await self._ensure_folder_dirs(base_id, folder_id, segments)
+            ensured += 1
+        return FolderEnsureResponse(ensured=ensured)
+
     async def update_folder(
         self, *, folder_id: str, name: str, principal: KnowledgePrincipal
     ) -> FolderSummary:
@@ -1448,8 +1576,13 @@ class KnowledgeService:
         principal: KnowledgePrincipal,
         request_id: str,
         idempotency_key: str | None = None,
+        relative_path: str | None = None,
     ) -> DocumentUploadAccepted:
-        """上传文档：校验 → 本地落盘原文 → 上传 RAGFlow → 配置解析器 → 触发解析。"""
+        """上传文档：校验 → 本地落盘原文 → 上传 RAGFlow → 配置解析器 → 触发解析。
+
+        relative_path 为浏览器文件夹上传的原始相对路径（webkitRelativePath），
+        非空时按其目录段逐级 find-or-create 文件夹后落入叶子目录。
+        """
         del idempotency_key
         base, role = await self._authorized_base(
             base_id, principal, AllowedAction.UPLOAD
@@ -1462,6 +1595,10 @@ class KnowledgeService:
                     "文件夹不存在",
                     status_code=404,
                 )
+        if relative_path:
+            folder_id = await self._ensure_folder_chain(
+                base_id, folder_id, relative_path
+            )
         if (
             await self._repo(self.repository.count_documents, base_id)
             >= self.config.limits.max_documents_per_query

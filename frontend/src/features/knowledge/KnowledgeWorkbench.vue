@@ -447,7 +447,7 @@ import {
 } from './utils/uploadPresentation.js'
 import {
   createFolder, createKnowledgeBase, deleteDocument, deleteFolder,
-  deleteKnowledgeBase, getDocumentBlob, getKnowledgeCapabilities, getKnowledgeStatus,
+  deleteKnowledgeBase, ensureFolders, getDocumentBlob, getKnowledgeCapabilities, getKnowledgeStatus,
   listDocuments, listFolders, listKnowledgeBases, listKnowledgeOperations, listPermissions,
   moveDocument, prepareKnowledgeChatSession, replacePermissions, retryDocument, searchPermissionSubjects, updateFolder,
   updateKnowledgeBase, uploadDocument,
@@ -795,7 +795,7 @@ async function removeFolder() {
   try { const parentId = folder.parent_id || ''; await deleteFolder(folder.id); selectedFolderId.value = parentId; await Promise.all([loadFolders(), loadDocuments()]); notify('文件夹已删除') } catch (error) { handleError(error) }
 }
 
-async function handleFiles(event) { const files = Array.from(event.target.files || []); event.target.value = ''; await uploadFiles(files) }
+async function handleFiles(event) { const files = Array.from(event.target.files || []); event.target.value = ''; await uploadFiles(files.map(file => ({ file, relativePath: '' }))) }
 async function handleFolderFiles(event) {
   const files = Array.from(event.target.files || [])
   event.target.value = ''
@@ -803,7 +803,7 @@ async function handleFolderFiles(event) {
   const skipped = files.length - picked.length
   if (skipped > 0) notify(`已跳过 ${skipped} 个隐藏或临时文件`)
   if (!picked.length) return
-  await uploadFiles(picked)
+  await uploadFiles(picked.map(file => ({ file, relativePath: file.webkitRelativePath || '' })))
 }
 function isFolderImportableFile(file) {
   const relativePath = file.webkitRelativePath || ''
@@ -812,31 +812,86 @@ function isFolderImportableFile(file) {
   if (file.name.startsWith('~$') || file.name === 'Thumbs.db' || file.name === 'desktop.ini') return false
   return true
 }
-async function handleDrop(event) { dragging.value = false; if (!selectedBase.value || !can('upload')) return; await uploadFiles(Array.from(event.dataTransfer?.files || [])) }
-async function uploadFiles(files) {
+function isHiddenDirSegment(segment) { return segment.startsWith('.') || segment === '__MACOSX' || segment === 'node_modules' }
+function isJunkFileName(name) { return name.startsWith('.') || name.startsWith('~$') || name === 'Thumbs.db' || name === 'desktop.ini' }
+async function collectDroppedEntry(entry, parentPath, result) {
+  // 递归展开拖入的目录树：文件带完整相对路径，目录全量收集（含空目录）
+  if (entry.isFile) {
+    const dirSegments = parentPath ? parentPath.split('/').filter(Boolean) : []
+    if (dirSegments.some(isHiddenDirSegment) || isJunkFileName(entry.name)) { result.skipped += 1; return }
+    const file = await new Promise((resolve, reject) => entry.file(resolve, reject))
+    result.files.push({ file, relativePath: parentPath + entry.name })
+    let cursor = parentPath
+    while (cursor) {
+      result.nonEmpty.add(cursor.replace(/\/+$/, ''))
+      const slash = cursor.slice(0, -1).lastIndexOf('/')
+      cursor = slash >= 0 ? cursor.slice(0, slash + 1) : ''
+    }
+    return
+  }
+  if (isHiddenDirSegment(entry.name)) return
+  const dirPath = parentPath + entry.name
+  result.dirs.add(dirPath)
+  const reader = entry.createReader()
+  // readEntries 每批最多返回 100 条，循环读到空批为止
+  while (true) {
+    const batch = await new Promise((resolve, reject) => reader.readEntries(resolve, reject))
+    if (!batch.length) break
+    for (const child of batch) await collectDroppedEntry(child, `${dirPath}/`, result)
+  }
+}
+async function uploadDroppedEntries(entries) {
+  const result = { files: [], dirs: new Set(), nonEmpty: new Set(), skipped: 0 }
+  for (const entry of entries) await collectDroppedEntry(entry, '', result)
+  if (result.skipped > 0) notify(`已跳过 ${result.skipped} 个隐藏或临时文件`)
+  // 空目录先补齐（非空目录随文件上传自动创建），把整个文件夹结构搬进知识库
+  const emptyDirs = [...result.dirs].filter(dir => !result.nonEmpty.has(dir))
+  if (emptyDirs.length) {
+    try { await ensureFolders(selectedBaseId.value, { folderId: selectedFolderId.value, paths: emptyDirs }) }
+    catch (error) { handleError(error) }
+  }
+  if (result.files.length) await uploadFiles(result.files)
+  else if (emptyDirs.length) await loadFolders()
+}
+async function handleDrop(event) {
+  dragging.value = false
+  if (!selectedBase.value || !can('upload')) return
+  // entry 必须在事件同步阶段取出（DataTransfer 会在 await 后失效）
+  const entries = Array.from(event.dataTransfer?.items || [])
+    .map(item => (item.webkitGetAsEntry ? item.webkitGetAsEntry() : null))
+    .filter(Boolean)
+  if (entries.length) { await uploadDroppedEntries(entries); return }
+  await uploadFiles(Array.from(event.dataTransfer?.files || []).map(file => ({ file, relativePath: '' })))
+}
+async function uploadFiles(items) {
   const uploadBaseId = selectedBaseId.value
   const uploadFolderId = selectedFolderId.value
   if (!uploadBaseId) return
-  const pendingUploads = files.map(file => {
+  const pendingUploads = items.map(({ file, relativePath }) => {
     const queueId = crypto.randomUUID()
-    const item = reactive({ id: queueId, optimisticId: `upload-${queueId}`, baseId: uploadBaseId, folderId: uploadFolderId, documentId: '', name: file.webkitRelativePath || file.name, progress: 0, state: 'uploading', error: '' })
+    const item = reactive({ id: queueId, optimisticId: `upload-${queueId}`, baseId: uploadBaseId, folderId: uploadFolderId, documentId: '', name: relativePath || file.name, progress: 0, state: 'uploading', error: '' })
     uploadQueue.value.push(item)
     if (selectedBaseId.value === uploadBaseId && selectedFolderId.value === uploadFolderId && !search.value.trim() && !statusFilter.value) {
       documents.value = [createOptimisticUploadDocument(file, item), ...documents.value]
       documentsPage.value = { ...documentsPage.value, total: Number(documentsPage.value.total || 0) + 1 }
     }
-    return { file, item }
+    return { file, relativePath, item }
   })
-  for (const { file, item } of pendingUploads) {
+  for (const { file, relativePath, item } of pendingUploads) {
     try {
-      const result = await uploadDocument(uploadBaseId, file, { folderId: uploadFolderId, onProgress: value => {
+      const result = await uploadDocument(uploadBaseId, file, { folderId: uploadFolderId, relativePath, onProgress: value => {
         if (value >= 100) { item.progress = 95; item.state = 'saving' }
         else item.progress = Math.min(value, 95)
       } })
       item.documentId = result.document.id
       item.progress = 100; item.state = 'processing'
       const optimisticIndex = documents.value.findIndex(doc => doc.id === item.optimisticId)
-      if (optimisticIndex >= 0) documents.value.splice(optimisticIndex, 1, { ...result.document, optimistic: false })
+      if (optimisticIndex >= 0 && (result.document.folder_id || '') === (uploadFolderId || '')) documents.value.splice(optimisticIndex, 1, { ...result.document, optimistic: false })
+      else if (optimisticIndex >= 0) {
+        // 文档按相对路径落入了子文件夹，当前视图不再展示
+        documents.value.splice(optimisticIndex, 1)
+        documentsPage.value = { ...documentsPage.value, total: Math.max(0, Number(documentsPage.value.total || 1) - 1) }
+      }
     } catch (error) {
       const optimisticIndex = documents.value.findIndex(doc => doc.id === item.optimisticId)
       if (optimisticIndex >= 0) {
@@ -846,7 +901,7 @@ async function uploadFiles(files) {
       item.state = 'failed'; item.error = error.message; handleError(error)
     }
   }
-  if (selectedBaseId.value === uploadBaseId) await loadDocuments()
+  if (selectedBaseId.value === uploadBaseId) await Promise.all([loadDocuments(), loadFolders()])
   await loadOperations()
 }
 function syncUploadQueue() {
