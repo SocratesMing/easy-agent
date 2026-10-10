@@ -29,6 +29,13 @@ export function updatePersonnelUser(userId, payload) {
   }, '更新人员失败')
 }
 
+export function deletePersonnelUser(userId) {
+  return requestJson({
+    url: `${ROOT}/users/${encodeURIComponent(userId)}`,
+    method: 'delete',
+  }, '删除人员失败')
+}
+
 export function importPersonnelUsers(file, source) {
   const form = new FormData()
   form.append('file', file)

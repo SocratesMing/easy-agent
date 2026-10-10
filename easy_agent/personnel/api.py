@@ -6,7 +6,7 @@ import logging
 from io import BytesIO
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile
 from fastapi.responses import StreamingResponse
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill
@@ -25,6 +25,7 @@ from .repository import (
     PersonnelConflictError,
     PersonnelNotFoundError,
     create_personnel,
+    delete_personnel,
     import_personnel,
     list_personnel,
     update_personnel,
@@ -137,6 +138,27 @@ def edit_personnel_user(
     logger.info("[人员管理] 编辑 | 管理员: %s | user_id: %s | 来源: %s", admin, user_id, payload.source)
     _audit(request, db, admin, "personnel.update", user_id, {"source": payload.source})
     return PersonnelRecord(**record)
+
+
+@router.delete("/users/{user_id}", status_code=204, summary="删除人员")
+def delete_personnel_user(
+    user_id: str,
+    request: Request,
+    admin: Annotated[str, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_database)],
+):
+    try:
+        record = delete_personnel(db, user_id)
+    except PersonnelNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except PersonnelConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    logger.info(
+        "[人员管理] 删除 | 管理员: %s | user_id: %s | 账号: %s",
+        admin, user_id, record["username"],
+    )
+    _audit(request, db, admin, "personnel.delete", user_id, {"username": record["username"]})
+    return Response(status_code=204)
 
 
 @router.post("/import", response_model=PersonnelImportResponse, summary="Excel 导入人员")

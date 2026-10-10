@@ -170,6 +170,46 @@ def update_personnel(db: Database, user_id: str, item: PersonnelUpdateRequest) -
     return _row_to_dict(updated.__dict__)
 
 
+def delete_personnel(db: Database, user_id: str) -> dict:
+    """删除人员账号，并清理其在知识库侧的授权关联（同一事务内完成）。
+
+    - admin 账号不可删除；
+    - 名下仍有未删除知识库时阻断，避免产生无人管理的库；
+    - 一并移除：知识库成员授权、公共空间管理员/查看者白名单、会话知识范围。
+    """
+
+    current = db.get_user_by_id(user_id)
+    if not current:
+        raise PersonnelNotFoundError("用户不存在")
+    if current.username == "admin":
+        raise PersonnelConflictError("admin 账号不可删除")
+    record = _row_to_dict(current.__dict__)
+    with db.get_connection() as connection:
+        cursor = connection.cursor()
+        db._execute(
+            cursor,
+            "SELECT COUNT(*) AS total FROM knowledge_bases "
+            "WHERE owner_user_id=? AND status<>'deleted'",
+            (user_id,),
+        )
+        count_row = cursor.fetchone()
+        owned = int((dict(count_row) if not isinstance(count_row, dict) else count_row)["total"])
+        if owned:
+            raise PersonnelConflictError(
+                f"该人员名下还有 {owned} 个知识库，请先删除或移交后再删除人员"
+            )
+        db._execute(
+            cursor,
+            "DELETE FROM knowledge_permissions WHERE subject_type='user' AND subject_id=?",
+            (user_id,),
+        )
+        db._execute(cursor, "DELETE FROM knowledge_team_space_managers WHERE user_id=?", (user_id,))
+        db._execute(cursor, "DELETE FROM knowledge_team_space_viewers WHERE user_id=?", (user_id,))
+        db._execute(cursor, "DELETE FROM session_knowledge_scopes WHERE user_id=?", (user_id,))
+        db._execute(cursor, "DELETE FROM users WHERE user_id=?", (user_id,))
+    return record
+
+
 def _import_personnel_transaction(
     db: Database, items: list[PersonnelCreateRequest]
 ) -> tuple[int, int]:

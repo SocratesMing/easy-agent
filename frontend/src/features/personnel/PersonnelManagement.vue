@@ -198,6 +198,15 @@
                       >
                         {{ user.username === 'admin' ? '不可重置' : (resettingUsername === user.username ? '重置中…' : '重置密码') }}
                       </button>
+                      <button
+                        type="button"
+                        class="danger"
+                        :disabled="user.username === 'admin' || deletingUserId === user.user_id"
+                        :title="user.username === 'admin' ? '系统管理员账号不可删除' : '删除该人员账号'"
+                        @click="removeUser(user)"
+                      >
+                        {{ deletingUserId === user.user_id ? '删除中…' : '删除' }}
+                      </button>
                     </div>
                   </td>
                 </tr>
@@ -374,6 +383,7 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { resetUserPassword } from '../../api/auth.js'
 import {
   createPersonnelUser,
+  deletePersonnelUser,
   getPersonnelImportTemplate,
   importPersonnelUsers,
   listPersonnelUsers,
@@ -407,6 +417,7 @@ export default {
     const noticeText = ref('')
     const noticeType = ref('success')
     const resettingUsername = ref('')
+    const deletingUserId = ref('')
     const downloadingTemplate = ref(false)
     const teamManagerIds = ref(new Set())
     const teamPermissionUserId = ref('')
@@ -681,6 +692,29 @@ export default {
       }
     }
 
+    async function removeUser(user) {
+      if (user.username === 'admin') return
+      const label = user.display_name || user.username
+      const confirmed = window.confirm(
+        `确认删除人员 ${label}（${user.username}）？\n` +
+        '删除后该账号无法登录，其公共空间授权与知识库成员身份将一并移除；' +
+        '名下仍有知识库时会被阻止，请先处理其知识库。'
+      )
+      if (!confirmed) return
+      deletingUserId.value = user.user_id
+      try {
+        await deletePersonnelUser(user.user_id)
+        notify(`已删除 ${label}（${user.username}）`)
+        // 删除的是当前页最后一条时回退一页，避免停留在空页
+        if (users.value.length === 1 && page.value > 1) page.value -= 1
+        await Promise.all([loadUsers(), loadTeamManagers(), loadTeamViewers()])
+      } catch (error) {
+        notify(resolveError(error, '删除人员失败'), 'error')
+      } finally {
+        deletingUserId.value = ''
+      }
+    }
+
     function openImport() {
       importSource.value = ''
       importFile.value = null
@@ -794,6 +828,7 @@ export default {
       closeEditor,
       closeImport,
       contactText,
+      deletingUserId,
       departmentId,
       downloadTemplate,
       downloadingTemplate,
@@ -821,6 +856,7 @@ export default {
       page,
       pageEnd,
       pageStart,
+      removeUser,
       resetPassword,
       resettingUsername,
       saveUser,
@@ -1084,6 +1120,8 @@ export default {
 .pm-row-actions { display: flex; align-items: center; justify-content: flex-end; gap: 5px; }
 .pm-row-actions button { padding: 5px 7px; white-space: nowrap; color: var(--accent-color, #0284c7); background: transparent; border: 0; border-radius: 6px; font-size: 10px; cursor: pointer; }
 .pm-row-actions button:hover:not(:disabled) { background: rgba(14, 165, 233, .1); }
+.pm-row-actions button.danger { color: #dc2626; }
+.pm-row-actions button.danger:hover:not(:disabled) { background: rgba(220, 38, 38, .1); }
 
 .pm-loading, .pm-empty { display: flex; align-items: center; justify-content: center; color: var(--text-secondary); }
 .pm-loading { min-height: 220px; gap: 9px; }

@@ -369,3 +369,80 @@ def test_structure_excel_rejects_missing_required_columns(client):
     )
     assert response.status_code == 422
     assert "sso账号" in str(response.json()["detail"])
+
+
+def test_delete_personnel_requires_admin(client):
+    assert client.delete("/api/personnel/users/whatever").status_code == 403
+
+
+def test_delete_personnel_guards(client, db):
+    client = _as_admin(client)
+    admin = db.get_user_by_username("admin")
+    assert admin is not None
+    assert client.delete(f"/api/personnel/users/{admin.user_id}").status_code == 409
+    assert client.delete("/api/personnel/users/nonexistent-user").status_code == 404
+
+
+def _count_rows(db, sql, params):
+    with db.get_connection() as connection:
+        cursor = connection.cursor()
+        db._execute(cursor, sql, params)
+        row = cursor.fetchone()
+    return int((dict(row) if not isinstance(row, dict) else row)["n"])
+
+
+def test_delete_personnel_blocked_while_owning_bases_and_cleans_grants(client, db):
+    from datetime import datetime
+
+    client = _as_admin(client)
+    created = client.post("/api/personnel/users", json=_payload(username="to_delete", employee_id="E9999"))
+    assert created.status_code == 201, created.text
+    user_id = created.json()["user_id"]
+    now = datetime.now().isoformat()
+
+    with db.get_connection() as connection:
+        cursor = connection.cursor()
+        db._execute(
+            cursor,
+            "INSERT INTO knowledge_bases (id, name, description, space_type, owner_user_id, "
+            "department_id, embedding_model, status, created_at, updated_at) "
+            "VALUES ('base-x', '测试库', '', 'personal', ?, NULL, 'test-model', 'active', ?, ?)",
+            (user_id, now, now),
+        )
+        db._execute(
+            cursor,
+            "INSERT INTO knowledge_permissions (id, base_id, subject_type, subject_id, role, "
+            "created_by, created_at, updated_at) "
+            "VALUES ('perm-1', 'base-x', 'user', ?, 'viewer', 'admin', ?, ?)",
+            (user_id, now, now),
+        )
+        db._execute(
+            cursor,
+            "INSERT INTO knowledge_team_space_managers (user_id, granted_by, granted_at, updated_at) "
+            "VALUES (?, 'admin', ?, ?)",
+            (user_id, now, now),
+        )
+        db._execute(
+            cursor,
+            "INSERT INTO knowledge_team_space_viewers (user_id, granted_by, granted_at, updated_at) "
+            "VALUES (?, 'admin', ?, ?)",
+            (user_id, now, now),
+        )
+
+    # 名下有未删除知识库 → 409，账号与授权保持原样
+    blocked = client.delete(f"/api/personnel/users/{user_id}")
+    assert blocked.status_code == 409
+    assert "知识库" in str(blocked.json()["detail"])
+    assert db.get_user_by_id(user_id) is not None
+
+    # 知识库进入软删除状态后即可删除人员
+    with db.get_connection() as connection:
+        cursor = connection.cursor()
+        db._execute(cursor, "UPDATE knowledge_bases SET status='deleted' WHERE id='base-x'")
+    ok = client.delete(f"/api/personnel/users/{user_id}")
+    assert ok.status_code == 204
+
+    assert db.get_user_by_id(user_id) is None
+    assert _count_rows(db, "SELECT COUNT(*) AS n FROM knowledge_permissions WHERE subject_id=?", (user_id,)) == 0
+    assert _count_rows(db, "SELECT COUNT(*) AS n FROM knowledge_team_space_managers WHERE user_id=?", (user_id,)) == 0
+    assert _count_rows(db, "SELECT COUNT(*) AS n FROM knowledge_team_space_viewers WHERE user_id=?", (user_id,)) == 0
