@@ -19,6 +19,7 @@
     <template v-else-if="!isBootstrapping">
       <SessionList
         v-show="!isSidebarCollapsed"
+        :style="{ width: sidebarWidth + 'px', flexShrink: 0 }"
         :sessions="sessions"
         :currentSessionId="currentSessionId"
         :streamingSessionIds="streamingSessions"
@@ -26,6 +27,8 @@
         :organizationId="userProfile.organization_id"
         :email="userProfile.email"
         :showAssets="showAssets"
+        :showKnowledge="showKnowledge"
+        @show-knowledge="handleShowKnowledge"
         @create-session="handleCreateSession"
         @select-session="handleSelectSession"
         @delete-session="handleDeleteSession"
@@ -36,10 +39,10 @@
         @show-skill-center="handleShowSkillCenter"
         @show-scheduled-tasks="handleShowScheduledTasks"
         @show-settings="showSettingsPanel = true"
-        @show-user-management="showUserManagementPanel = true"
-        @show-knowledge="showKnowledge = true"
+        @show-user-management="handleShowUserManagement"
         @logout="handleLogout"
       />
+      <SidebarResizeHandle v-if="!isSidebarCollapsed" v-model="sidebarWidth" />
       
       <button 
         v-if="isSidebarCollapsed"
@@ -53,11 +56,6 @@
         </svg>
       </button>
       
-      <KnowledgeWorkbench
-        v-if="showKnowledge"
-        @close="showKnowledge = false"
-      />
-
       <AssetsPanel v-if="showAssets" :visible="showAssets" @close="showAssets = false" />
 
       <SkillCenter v-if="showSkillCenter" @close="showSkillCenter = false" />
@@ -74,8 +72,15 @@
         @close="showUserManagementPanel = false"
       />
       
+      <KnowledgeWorkbench
+        v-if="showKnowledge"
+        @close="showKnowledge = false"
+        @manage-personnel="handleShowUserManagement"
+        @chat-session-prepared="loadSessions"
+      />
+
       <Chat
-        v-else-if="!showAssets && !showSkillCenter && !showScheduledTasks"
+        v-else-if="!showUserManagementPanel && !showAssets && !showSkillCenter && !showScheduledTasks"
         :messages="messages"
         :sessionLoading="sessionLoading"
         :currentSessionId="currentSessionId"
@@ -103,7 +108,7 @@
         @reject="handleToolApproval('reject')"
       />
 
-      <div v-if="currentSessionId && !showAssets && !showSkillCenter" class="workspace-area">
+      <div v-if="currentSessionId && !showKnowledge && !showUserManagementPanel && !showAssets && !showSkillCenter" class="workspace-area">
         <WorkspacePanel
           :username="userProfile.username"
           :currentSessionId="currentSessionId"
@@ -128,8 +133,9 @@ import Chat from './components/Chat.vue'
 import AssetsPanel from './components/AssetsPanel.vue'
 import SkillCenter from './components/SkillCenter.vue'
 import ScheduledTasksPanel from './components/ScheduledTasksPanel.vue'
-import UserManagementPanel from './components/UserManagementPanel.vue'
+import UserManagementPanel from './features/personnel/PersonnelManagement.vue'
 import KnowledgeWorkbench from './features/knowledge/KnowledgeWorkbench.vue'
+import SidebarResizeHandle from './features/knowledge/SidebarResizeHandle.vue'
 import Welcome from './components/Welcome.vue'
 import WorkspacePanel from './components/WorkspacePanel.vue'
 import SettingsPanel from './components/SettingsPanel.vue'
@@ -137,6 +143,7 @@ import { createSession, listSessions, getChatHistory, deleteSession, sendMessage
 import { uploadFile, deleteFile, getUserProfile, getSessionGeneratedFiles } from './api/files.js'
 import { logout as apiLogout, notifyLogout, getStoredToken, getStoredUsername, AUTH_EXPIRED_EVENT, authFetch, passwordlessLogin } from './api/auth.js'
 import { getModels as fetchModels } from './api/settings.js'
+import { isRestorableUserProfile } from './utils/userProfile.js'
 
 // ── 应用级常量（原 src/config.js 已移除，直接定义在组件内）────────────
 // 应用名称与首页欢迎语；后端 /agent/auth/config 返回的 app_welcome_title 仍可在运行期覆盖
@@ -227,9 +234,10 @@ function setReactive(target, key, value) {
 
 export default {
   components: {
+    SidebarResizeHandle,
+    KnowledgeWorkbench,
     AssetsPanel,
     Chat,
-    KnowledgeWorkbench,
     ScheduledTasksPanel,
     SessionList,
     SettingsPanel,
@@ -285,11 +293,12 @@ export default {
       isSidebarCollapsed: false,
       isWorkspaceCollapsed: true,
       showAssets: false,
+      showKnowledge: false,
+      sidebarWidth: 280,
       showSkillCenter: false,
       showScheduledTasks: false,
       showSettingsPanel: false,
       showUserManagementPanel: false,
-      showKnowledge: false,
       showWelcome: false,
       // 免密登录开关（模板用：未授权提示的文案按开关区分）
       passwordlessEnabled: PASSWORDLESS_LOGIN_ENABLED,
@@ -883,19 +892,37 @@ export default {
       this.isSidebarCollapsed = !this.isSidebarCollapsed
     },
     handleShowAssets() {
+      this.showKnowledge = false
       this.showAssets = !this.showAssets
       this.showSkillCenter = false
       this.showScheduledTasks = false
     },
     handleShowSkillCenter() {
+      this.showKnowledge = false
       this.showSkillCenter = !this.showSkillCenter
       this.showAssets = false
       this.showScheduledTasks = false
     },
     handleShowScheduledTasks() {
+      this.showKnowledge = false
       this.showScheduledTasks = !this.showScheduledTasks
       this.showAssets = false
       this.showSkillCenter = false
+    },
+    handleShowKnowledge() {
+      this.showKnowledge = !this.showKnowledge
+      this.showAssets = false
+      this.showSkillCenter = false
+      this.showScheduledTasks = false
+      this.showSettingsPanel = false
+      this.showUserManagementPanel = false
+    },
+    handleShowUserManagement() {
+      this.showUserManagementPanel = true
+      this.showKnowledge = false
+      this.showAssets = false
+      this.showSkillCenter = false
+      this.showScheduledTasks = false
     },
     applyAgentConfig(configData) {
       if (!configData) return
@@ -992,6 +1019,7 @@ export default {
       await this.restoreInitialSession()
     },
     async handleLogout() {
+      this.showKnowledge = false
       // 通知后端记录登出（用户名/上次登录缓存时间/在线时长），best-effort。
       // 仅在仍持有 token 时通知：被动登出（401 被踢下线/过期）时 token 已被 clearAuth
       // 清除，再调登出接口会再次 401 触发 AUTH_EXPIRED 事件造成循环。
@@ -1048,7 +1076,7 @@ export default {
 
       try {
         const profile = await getUserProfile()
-        if (!profile.username || profile.username === 'admin') {
+        if (!isRestorableUserProfile(profile)) {
           this.requireLogin()
           return
         }
@@ -1133,6 +1161,10 @@ export default {
       if (!this.currentSessionId) {
         const newSession = await createSession(initialTitle || '新会话', this.userProfile.username || null)
         this.currentSessionId = newSession.session_id
+        // 预创建的 DB 会话即当前展示会话：同步标记 loadedSessionId，
+        // 否则随后的流式事件会被 runInSession 视为「后台会话」只写入
+        // sessionStates 缓冲而不渲染，表现为一直"正在思考"、刷新后才出现。
+        this.loadedSessionId = newSession.session_id
         const existingIndex = this.sessions.findIndex(s => s.session_id === newSession.session_id)
         if (existingIndex === -1) {
           const session = {
@@ -1146,6 +1178,8 @@ export default {
       return this.currentSessionId
     },
     async handleCreateSession() {
+      this.showKnowledge = false
+      this.showUserManagementPanel = false
       this.saveCurrentSessionState()
 
       this.showAssets = false
@@ -1164,6 +1198,8 @@ export default {
       this.refreshSessionFiles(null)
     },
     async handleSelectSession(sessionId) {
+      this.showKnowledge = false
+      this.showUserManagementPanel = false
       // 保存当前会话状态
       this.saveCurrentSessionState()
 
@@ -1445,6 +1481,14 @@ export default {
             }
             this.markStreaming(ctx.streamSessionId || this.currentSessionId)
           }
+        } else if (eventType === 'knowledge_evidence') {
+          ensureMessage()
+          const idx = findIdx()
+          if (idx !== -1) setReactive(this.messages, idx, {
+            ...this.messages[idx],
+            knowledge_evidence: Array.isArray(data.evidence) ? data.evidence : [],
+            knowledge_warnings: Array.isArray(data.warnings) ? data.warnings : [],
+          })
         } else if (eventType === 'token_usage') {
           applyUsage(data, ctx.streamSessionId)
         } else if (eventType === 'thinking_start') {
@@ -1576,15 +1620,63 @@ export default {
             const idx = findIdx()
             if (idx !== -1) { this.messages[idx].loading = false; setReactive(this.messages, idx, { ...this.messages[idx] }) }
           }
-        } else if (eventType === 'tool_call') {
+        } else if (eventType === 'tool_call_delta') {
+          // 大参数工具（write_file/edit_file）的 arguments 分片快照：模型还在生成
+          // 文件内容时就先把当前快照合入对应工具卡片，diff 实时增长；完整参数随后由
+          // tool_call 事件权威覆盖（同一 tool_call_id）。
           if (!ctx.isResume) ensureMessage()
           const idx = findIdx()
           if (idx !== -1) {
             const callId = toolCallId || `tool-${toolName}`
             const existingBlockIdx = this.messages[idx].blocks.findIndex(b => b.type === 'tool_call' && (b.id === callId || b.tool_call_id === callId))
             if (existingBlockIdx !== -1) {
-              this.messages[idx].blocks[existingBlockIdx].arguments = args || {}
-              currentBlock = this.messages[idx].blocks[existingBlockIdx]
+              const prev = this.messages[idx].blocks[existingBlockIdx]
+              setReactive(this.messages[idx].blocks, existingBlockIdx, { ...prev, arguments: args || prev.arguments || {}, streaming: true })
+            } else {
+              // 必须先清空 currentBlock：否则 addBlock 会把本次调用并进上一个 tool_call 块。
+              currentBlock = null
+              addBlock('tool_call', { id: callId, tool_name: toolName || '', arguments: args || {}, result: '', success: true, step: step || 0, streaming: true })
+              if (!ctx.isResume) currentToolCalls.push({ tool_call_id: callId, tool_name: toolName || '', arguments: args || {}, result: '', success: true })
+            }
+            touchBlocks()
+          }
+        } else if (eventType === 'tool_call') {
+          if (!ctx.isResume) ensureMessage()
+          const idx = findIdx()
+          if (idx !== -1) {
+            const callId = toolCallId || `tool-${toolName}`
+            let existingBlockIdx = this.messages[idx].blocks.findIndex(b => b.type === 'tool_call' && (b.id === callId || b.tool_call_id === callId))
+            if (existingBlockIdx === -1) {
+              // 参数分片阶段若无 id（部分 provider 首个分片才带 id），临时块的 key 是
+              // `tool-<name>`；此处按工具名回退匹配仍在 streaming 的占位块，避免重复卡片。
+              existingBlockIdx = this.messages[idx].blocks.findIndex(b => b.type === 'tool_call' && b.streaming && b.tool_name === toolName)
+            }
+            if (existingBlockIdx !== -1) {
+              // 参数分片阶段的临时块：用权威参数覆盖，补齐 id/step，并清掉 streaming 标记。
+              const prev = this.messages[idx].blocks[existingBlockIdx]
+              const merged = {
+                ...prev,
+                id: toolCallId || prev.id,
+                tool_call_id: toolCallId || prev.tool_call_id,
+                arguments: args || prev.arguments || {},
+                step: step || prev.step || 0,
+                streaming: false,
+              }
+              setReactive(this.messages[idx].blocks, existingBlockIdx, merged)
+              currentBlock = merged
+              if (!ctx.isResume) {
+                // 占位阶段可能只有 `tool-<name>` 这个临时 id，按工具名回退匹配，
+                // 并用权威 id 覆盖，保证后续 tool_result 能对上同一条记录。
+                const tracked = currentToolCalls.find(tc => tc.tool_call_id === callId)
+                  || currentToolCalls.find(tc => tc.tool_call_id === `tool-${toolName}`)
+                if (tracked) {
+                  tracked.tool_call_id = callId
+                  tracked.arguments = args || tracked.arguments
+                  tracked.tool_name = toolName || tracked.tool_name
+                } else {
+                  currentToolCalls.push({ tool_call_id: callId, tool_name: toolName || '', arguments: args || {}, result: '', success: true })
+                }
+              }
               touchBlocks()
             } else {
               currentBlock = null
@@ -1606,9 +1698,14 @@ export default {
           }
           const idx = findIdx()
           if (idx !== -1) {
-            const blockIdx = this.messages[idx].blocks.findIndex(b => b.type === 'tool_call' && (b.id === callId || b.tool_call_id === callId))
+            let blockIdx = this.messages[idx].blocks.findIndex(b => b.type === 'tool_call' && (b.id === callId || b.tool_call_id === callId))
+            if (blockIdx === -1) {
+              // 兜底：只收到过参数分片（tool_call 事件缺失）时，按工具名匹配仍在
+              // streaming 的占位块，避免工具卡片停在「写入中…」。
+              blockIdx = this.messages[idx].blocks.findIndex(b => b.type === 'tool_call' && b.streaming && b.tool_name === toolName)
+            }
             if (blockIdx !== -1) {
-              const blk = { ...this.messages[idx].blocks[blockIdx], arguments: args || this.messages[idx].blocks[blockIdx].arguments, result: parseMCPResult(result || ''), success: success !== false, duration: toolDuration }
+              const blk = { ...this.messages[idx].blocks[blockIdx], arguments: args || this.messages[idx].blocks[blockIdx].arguments, result: parseMCPResult(result || ''), success: success !== false, duration: toolDuration, streaming: false }
               if (ctx.isResume) blk.loading = false
               setReactive(this.messages[idx].blocks, blockIdx, blk)
               touchBlocks()
@@ -1624,6 +1721,11 @@ export default {
             this.messages[idx].pending_approval = null
             this.pendingApproval = null
             this.messages[idx].created_at = new Date().toISOString()
+            // 兜底：任何未收到完整参数的 streaming 占位块在流结束时清掉标记，
+            // 避免工具卡片一直停留在「写入中…」。（map 生成新数组，Vue2 下才可响应）
+            if ((this.messages[idx].blocks || []).some(b => b.streaming)) {
+              setReactive(this.messages, idx, { ...this.messages[idx], blocks: this.messages[idx].blocks.map(b => (b.streaming ? { ...b, streaming: false } : b)) })
+            }
             if (ctx.isResume) {
               if (Array.isArray(data.blocks) && data.blocks.length > 0) this.messages[idx].blocks = data.blocks.map(b => ({ ...b }))
               for (const b of this.messages[idx].blocks) { if (b.type === 'thinking' && b.duration == null) b.duration = 0 }
@@ -1812,16 +1914,7 @@ export default {
           }
         }
 
-        await sendMessage(
-          this.currentSessionId,
-          message,
-          onChunk,
-          abortSignal,
-          enableDeepThink,
-          files,
-          this.selectedModel,
-          enableWebSearch
-        )
+        await sendMessage(this.currentSessionId, message, onChunk, abortSignal, enableDeepThink, files, this.selectedModel, enableWebSearch)
 
         await this.refreshSessionFiles(null, 500)
       } catch (e) {

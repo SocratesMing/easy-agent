@@ -10,7 +10,7 @@
           </svg>
         </button>
       </div>
-      
+
       <div class="modal-body">
         <div class="file-list">
           <div
@@ -32,7 +32,7 @@
             暂无生成的文件
           </div>
         </div>
-        
+
         <div class="file-preview">
           <div v-if="selectedFile" class="preview-content">
             <div class="preview-header">
@@ -106,11 +106,11 @@ export default {
     formatTime(timeStr) {
       if (!timeStr) return ''
       const date = new Date(timeStr)
-      return date.toLocaleString('zh-CN', { 
-        month: '2-digit', 
-        day: '2-digit', 
-        hour: '2-digit', 
-        minute: '2-digit' 
+      return date.toLocaleString('zh-CN', {
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit'
       })
     }
   },

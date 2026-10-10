@@ -80,6 +80,7 @@
                 :duration="block.duration"
                 :pending-approval="!!block.pending_approval"
                 :file-paths="block.file_paths || []"
+                :streaming="!!block.streaming"
                 @approve="$emit('approve')"
                 @reject="$emit('reject')"
               />
@@ -155,13 +156,8 @@
           </button>
         </div>
       </template>
-
-      <KnowledgeEvidence
-        v-if="hasKnowledgeEvidence"
-        :evidence="message.knowledge_evidence || []"
-        :warnings="message.knowledge_warnings || []"
-        :message-id="message.id || message.timestamp"
-      />
+      
+      <KnowledgeEvidence v-if="message.role === 'assistant'" :evidence="message.knowledge_evidence || []" :warnings="message.knowledge_warnings || []" />
 
       <!-- 用户消息显示复制和重试按钮 -->
       <div v-if="message.role === 'user' && message.content" class="message-actions">
@@ -195,8 +191,8 @@ import {
   escapeHtml,
 } from '../markdownSetup.js'
 import FileIcon from './FileIcon.vue'
-import ToolCallCard from './ToolCallCard.vue'
 import KnowledgeEvidence from '../features/knowledge/KnowledgeEvidence.vue'
+import ToolCallCard from './ToolCallCard.vue'
 
 // 注册 KaTeX 数学公式 + emoji 短代码扩展（幂等，仅执行一次）
 setupMarkedExtensions()
@@ -292,8 +288,9 @@ export default {
       // 处理过程默认展开（含实时会话），由用户手动展开/折叠；新过程到达不自动展开，
       // 避免打断用户已收起的查看状态。
       processExpanded: true,
-      // 用户手动操作过展开/折叠后，本次消息内不再自动展开：流式期间 blocks 每次变化
-      // 都会触发下面的 watch，否则点击折叠会被自动展开顶回去（点击折叠无效）。
+      // 用户是否手动操作过执行过程的展开/折叠：一旦手动操作，本次消息内不再自动展开。
+      // 必须加这道闸——流式期间 blocks 每次变化都会触发自动展开 watcher，否则用户
+      // 点折叠会被「自动展开」立刻顶回去，表现为「流式返回时点击折叠按钮无效」。
       processToggledByUser: false,
       isStuck: false,
     }
@@ -306,16 +303,7 @@ export default {
       if (m.thinking) return true
       if (m.content) return true
       if (m.tool_calls && m.tool_calls.length > 0) return true
-      if (m.knowledge_evidence && m.knowledge_evidence.length > 0) return true
-      if (m.knowledge_warnings && m.knowledge_warnings.length > 0) return true
       return false
-    },
-    // 只有携带知识依据/告警的 assistant 消息才挂载 KnowledgeEvidence，
-    // 普通消息渲染结果与迁移前完全一致（KnowledgeEvidence 自身在空数组时也会渲染为空）。
-    hasKnowledgeEvidence() {
-      const m = this.message
-      if (m.role !== 'assistant') return false
-      return Boolean((m.knowledge_evidence && m.knowledge_evidence.length) || (m.knowledge_warnings && m.knowledge_warnings.length))
     },
     sortedBlocks() {
       // 从 blocks 字段构建（优先使用）

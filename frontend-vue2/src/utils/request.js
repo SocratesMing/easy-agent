@@ -249,8 +249,18 @@ export async function handleStreamResponse(response) {
     throw new Error('登录已过期，请重新登录')
   }
   if (!response.ok) {
-    const detail = await response.json().catch(() => ({}))
-    throw new Error(detail.detail || `请求失败: ${response.status}`)
+    const payload = await response.json().catch(() => ({}))
+    // FastAPI HTTPException 的 detail 可能是字符串或 {code,message,retryable} 对象，
+    // 直接 new Error(detail.detail) 会把对象变成 "[object Object]"
+    const detail = payload?.detail
+    const message = typeof detail === 'string'
+      ? detail
+      : detail?.message || payload?.message || `请求失败: ${response.status}`
+    const error = new Error(message)
+    error.status = response.status
+    error.code = detail?.code || payload?.code
+    error.retryable = Boolean(detail?.retryable ?? payload?.retryable)
+    throw error
   }
   return response
 }

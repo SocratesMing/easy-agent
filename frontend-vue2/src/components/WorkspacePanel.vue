@@ -144,7 +144,6 @@
             :selectedId="selectedFile?.id"
             :depth="0"
             :sessionId="currentSessionId"
-            :taskId="taskId"
             @select="handleSelectFile"
           @download="handleDownloadFile"
           />
@@ -167,7 +166,6 @@
         :filename="activeTab?.name || ''"
         :filePath="activeTab?.file_path || ''"
         :sessionId="currentSessionId"
-        :taskId="taskId"
         :visible="showPreview"
         inline
         @close="closeTab(activeTabId)"
@@ -180,7 +178,6 @@
 import FileTreeNode from './FileTreeNode.vue'
 import FilePreview from './FilePreview.vue'
 import { getWorkspaceTree } from '../api/files'
-import { getScheduledTaskWorkspace } from '../api/scheduledTasks'
 import { getStoredToken } from '../api/auth.js'
 
 // 文件树固定在第一个 tab；宽度/动画常量集中在此
@@ -196,9 +193,6 @@ export default {
   props: {
     username: { type: String, default: '' },
     currentSessionId: { type: String, default: null },
-    // 定时任务工作目录模式：传入 taskId 时改为读取该任务的工作目录，
-    // 其余（文件树 / 标签页 / 预览 / 下载 / 全屏）与会话工作区完全共用。
-    taskId: { type: String, default: '' },
     isStreaming: { type: Boolean, default: false },
     visible: { type: Boolean, default: true },
   },
@@ -234,11 +228,6 @@ export default {
     }
   },
   computed: {
-    // 数据源标识：定时任务工作目录（taskId）优先，否则会话工作区（currentSessionId）。
-    // 两种来源共用同一套「文件树 + 标签页 + 预览」，只有取数与下载地址不同。
-    activeSourceKey() {
-      return this.taskId || this.currentSessionId || ''
-    },
     activeTab() {
       return this.openTabs.find((t) => t.id === this.activeTabId) || null
     },
@@ -293,7 +282,7 @@ export default {
         setTimeout(() => this.refresh(), 300)
       }
     },
-    activeSourceKey() {
+    currentSessionId() {
       this.resetWorkspaceView()
       this.refresh()
     },
@@ -374,21 +363,17 @@ export default {
       localStorage.setItem(WIDTH_KEY, String(Math.round(this.panelWidth)))
     },
     async buildWorkspaceTree() {
-      const taskId = this.taskId
       const sessionId = this.currentSessionId
-      const sourceKey = taskId || sessionId
-      if (!sourceKey) {
+      if (!sessionId) {
         this.workspaceTreeData = []
         return
       }
       this.isLoading = true
       this.error = null
       try {
-        const response = taskId
-          ? await getScheduledTaskWorkspace(taskId, '')
-          : await getWorkspaceTree('', sessionId)
-        // 切换来源期间到达的旧响应丢弃，避免工作区内容串会话 / 串任务
-        if (this.activeSourceKey !== sourceKey) return
+        const response = await getWorkspaceTree('', sessionId)
+        // 切换会话期间到达的旧响应丢弃，避免工作区内容串会话
+        if (this.currentSessionId !== sessionId) return
         this.workspaceTreeData = (response.items || []).map((item) => ({
           id: item.path,
           name: item.name,
@@ -401,11 +386,11 @@ export default {
           file_path: item.path,
         }))
       } catch (e) {
-        if (this.activeSourceKey !== sourceKey) return
+        if (this.currentSessionId !== sessionId) return
         this.error = '加载工作区失败: ' + e.message
         this.workspaceTreeData = []
       } finally {
-        if (this.activeSourceKey === sourceKey) this.isLoading = false
+        if (this.currentSessionId === sessionId) this.isLoading = false
       }
     },
     tabIdOf(file) {
@@ -443,16 +428,11 @@ export default {
       const token = getStoredToken()
       const params = new URLSearchParams()
       params.set('file_path', filePath)
+      params.set('session_id', this.currentSessionId)
       params.set('download', 'true')
       if (token) params.set('token', token)
       // 相对路径：开发由 vue.config.js 的 proxy 转发，生产与后端同源
-      let url
-      if (this.taskId) {
-        url = `/agent/scheduled-tasks/${this.taskId}/workspace/file?${params.toString()}`
-      } else {
-        params.set('session_id', this.currentSessionId)
-        url = `/agent/files/preview?${params.toString()}`
-      }
+      const url = `/agent/files/preview?${params.toString()}`
       const link = document.createElement('a')
       link.href = url
       link.download = file.name
@@ -463,8 +443,8 @@ export default {
     refresh() {
       this.buildWorkspaceTree()
     },
-    // 数据源切换（会话或定时任务）时工作区视图必须整体重来：清空已打开的文件标签、
-    // 选中态与预览，否则旧来源的预览/标签会残留（其 file_path 在新来源中无效）。
+    // 会话切换时工作区视图必须整体重来：清空已打开的文件标签、选中态与预览，
+    // 否则旧会话的预览/标签会残留在新会话下（其 file_path 在新会话中无效）。
     resetWorkspaceView() {
       this.openTabs = []
       this.activeTabId = this.TREE_TAB

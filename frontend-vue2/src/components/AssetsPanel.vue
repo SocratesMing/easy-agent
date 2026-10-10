@@ -231,7 +231,7 @@ export default {
         '代码': ['py', 'js', 'ts', 'vue', 'html', 'css', 'json', 'xml', 'java', 'go', 'rs', 'c', 'cpp', 'h', 'sh', 'bat'],
         '数据': ['csv', 'sql', 'db', 'sqlite', 'parquet', 'avro'],
       }
-      
+
       for (const [cat, exts] of Object.entries(categoryMap)) {
         if (exts.includes(ext)) return cat
       }

@@ -11,6 +11,10 @@
  *   4. v-for 必须绑定 :key
  *   5. v-if 与 v-for 不得出现在同一元素（Vue2 中 v-for 优先，与 Vue3 相反）
  *   6. 事件名必须是 kebab-case（Vue2 不做大小写转换）
+ *
+ * 说明：项目实际依赖为 Vue 2.7.16，按 AGENTS.md 约定允许 Vue 2.7 内置
+ * Composition API（ref/computed/watch + setup()）；<script setup> 与 Vue 3
+ * 专属语法仍被禁止（由 vue2Compat.test.js 与下方规则共同强制）。
  */
 import fs from 'node:fs'
 import path from 'node:path'
@@ -70,9 +74,6 @@ const VUE3_PATTERNS = [
   [/(?<!:):deep\s*\(/, 'Vue3 :deep()（Vue2 用 ::v-deep）'],
   [/\$slots\.[a-zA-Z]+\s*\(/, 'Vue3 插槽函数式调用'],
   [/\bupdate:modelValue\b|\bmodelValue\b/, 'Vue3 v-model 约定 modelValue（Vue2 为 value/input）'],
-  // Vue2.6 兼容：组件必须用选项式 API，不得使用 2.7 的 Composition API
-  [/\bsetup\s*\(/, 'Vue2.7 setup()（Vue2.6 用 data/computed/methods）'],
-  [/import\s*\{[^}]*\}\s*from\s*['"]vue['"]/, 'Vue2.7 具名导入（Vue2.6 用默认导入 Vue / 选项式 API）'],
 ]
 
 for (const f of files) {

@@ -21,11 +21,11 @@
         <span>新建会话</span>
       </button>
       
-      <button @click="$emit('show-assets')" class="action-btn assets">
+      <button @click="$emit('show-knowledge')" class="action-btn assets" :class="{ active: showKnowledge }">
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
         </svg>
-        <span>资产</span>
+        <span>知识库</span>
       </button>
 
       <button @click="$emit('show-skill-center')" class="action-btn skill-center">
@@ -60,7 +60,7 @@
           v-for="session in group.sessions"
           :key="session.session_id"
           class="session-item"
-          :class="{ active: !showAssets && session.session_id === currentSessionId, streaming: streamingSessionIds.includes(session.session_id) }"
+          :class="{ active: !showKnowledge && !showAssets && session.session_id === currentSessionId, streaming: streamingSessionIds.includes(session.session_id) }"
           @click="$emit('select-session', session.session_id)"
         >
           <div class="session-info">
@@ -169,26 +169,6 @@
           </svg>
           设置
         </button>
-        <button class="user-dropdown-item" @click="showKnowledge">
-          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path>
-            <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path>
-          </svg>
-          知识库
-        </button>
-        <button
-          v-if="username === 'admin'"
-          class="user-dropdown-item"
-          @click="showUserManagement"
-        >
-          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
-            <circle cx="9" cy="7" r="4"></circle>
-            <path d="M23 21v-2a4 4 0 0 0-3-3.87"></path>
-            <path d="M16 3.13a4 4 0 0 1 0 7.75"></path>
-          </svg>
-          用户管理
-        </button>
         <div class="user-dropdown-divider"></div>
         <button class="user-dropdown-item logout-item" @click="handleLogout">
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -208,6 +188,7 @@
 const APP_TITLE = 'Easy Agent'
 export default {
   props: {
+  showKnowledge: { type: Boolean, default: false },
   sessions: {
     type: Array,
     default: () => []
@@ -237,7 +218,7 @@ export default {
     default: false
   }
 },
-  emits: ['create-session', 'select-session', 'delete-session', 'rename-session', 'toggle-sidebar', 'show-assets', 'show-skill-center', 'show-scheduled-tasks', 'show-settings', 'show-user-management', 'show-knowledge', 'logout', 'toggle-pin'],
+  emits: ['create-session', 'select-session', 'delete-session', 'rename-session', 'toggle-sidebar', 'show-assets', 'show-skill-center', 'show-scheduled-tasks', 'show-settings', 'show-user-management', 'logout', 'toggle-pin'],
   data() {
     return {
       activeMenu: null,
@@ -374,10 +355,6 @@ export default {
     showUserManagement() {
       this.showUserMenu = false
       this.$emit('show-user-management')
-    },
-    showKnowledge() {
-      this.showUserMenu = false
-      this.$emit('show-knowledge')
     },
     handleLogout() {
       this.showUserMenu = false

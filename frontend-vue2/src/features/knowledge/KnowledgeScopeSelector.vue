@@ -6,7 +6,7 @@
       <IconChevronDown class="chevron" :class="{ rotated: open }" />
     </button>
 
-    <transition name="scope-popover">
+    <Transition name="scope-popover">
       <div v-if="open" class="scope-panel" :style="panelStyle">
         <header>
           <div><strong>选择本次对话使用的知识库</strong><small>每次提问仅从所选知识库检索，并保留来源依据</small></div>
@@ -31,16 +31,16 @@
           <button class="save" :disabled="saving" @click="save">{{ saving ? '保存中…' : '应用' }}</button>
         </footer>
       </div>
-    </transition>
+    </Transition>
   </div>
 </template>
 
 <script>
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { IconBookDashed, IconBookOpen, IconCheck, IconChevronDown, IconCircleAlert, IconLibrary, IconSearch, IconX } from './icons.js'
-import { getKnowledgeStatus, getSessionKnowledgeScope, listKnowledgeBases, replaceSessionKnowledgeScope } from './api.js'
+import { getKnowledgeCapabilities, getSessionKnowledgeScope, listKnowledgeBases, replaceSessionKnowledgeScope } from './api.js'
 
 export default {
-  name: 'KnowledgeScopeSelector',
   components: {
     IconBookDashed,
     IconBookOpen,
@@ -56,137 +56,148 @@ export default {
     disabled: { type: Boolean, default: false },
   },
   emits: ['create-session', 'change'],
-  data() {
+  setup(props, { emit }) {
+const rootRef = ref(null)
+const enabled = ref(false)
+const open = ref(false)
+const bases = ref([])
+const selected = ref([])
+const draft = ref([])
+const query = ref('')
+const saving = ref(false)
+const creatingSession = ref(false)
+const error = ref('')
+const pendingOpen = ref(false)
+const panelStyle = ref({})
+const visibleBases = computed(() => {
+  const keyword = query.value.trim().toLowerCase()
+  return bases.value.filter(base => !keyword || base.name.toLowerCase().includes(keyword) || (base.description || '').toLowerCase().includes(keyword))
+})
+const selectedBaseNames = computed(() => selected.value
+  .map((id) => {
+    const base = bases.value.find(item => item.id === id)
+    return base ? base.name : ''
+  })
+  .filter(Boolean))
+const triggerLabel = computed(() => {
+  if (!selectedBaseNames.value.length) return '选择知识库'
+  if (selectedBaseNames.value.length === 1) return selectedBaseNames.value[0]
+  return `${selectedBaseNames.value[0]} 等 ${selectedBaseNames.value.length} 个`
+})
+
+async function load() {
+  error.value = ''
+  try {
+    const capability = await getKnowledgeCapabilities()
+    enabled.value = Boolean(capability.enabled)
+    if (!enabled.value) return
+    const [baseResponse, scope] = await Promise.all([
+      listKnowledgeBases({ pageSize: 100 }),
+      props.sessionId ? getSessionKnowledgeScope(props.sessionId) : Promise.resolve({ base_ids: [] })
+    ])
+    bases.value = baseResponse.items || []
+    selected.value = scope.base_ids || []
+    draft.value = [...selected.value]
+  } catch (reason) { error.value = reason.message || '知识范围加载失败' }
+}
+
+function togglePopover() {
+  if (props.disabled) return
+  if (!props.sessionId) {
+    if (creatingSession.value) return
+    creatingSession.value = true
+    pendingOpen.value = true
+    emit('create-session')
+    return
+  }
+  if (!open.value) {
+    draft.value = [...selected.value]
+    query.value = ''
+    error.value = ''
+    updatePanelPosition()
+  }
+  open.value = !open.value
+}
+
+function updatePanelPosition() {
+  if (!rootRef.value) return
+  const rect = rootRef.value.getBoundingClientRect()
+  const viewportPadding = 12
+  const panelWidth = Math.min(360, window.innerWidth - viewportPadding * 2)
+  const left = Math.min(
+    Math.max(rect.left, viewportPadding),
+    Math.max(viewportPadding, window.innerWidth - panelWidth - viewportPadding)
+  )
+  panelStyle.value = {
+    position: 'fixed',
+    left: `${left}px`,
+    right: 'auto',
+    top: 'auto',
+    bottom: `${Math.max(viewportPadding, window.innerHeight - rect.top + 8)}px`,
+    width: `${panelWidth}px`,
+  }
+}
+
+function handleViewportChange() {
+  if (open.value) updatePanelPosition()
+}
+async function save() {
+  saving.value = true; error.value = ''
+  try {
+    const response = await replaceSessionKnowledgeScope(props.sessionId, draft.value)
+    selected.value = response.base_ids || []
+    draft.value = [...selected.value]
+    open.value = false
+    emit('change', [...selected.value])
+  }
+  catch (reason) { error.value = reason.message || '知识范围保存失败' }
+  finally { saving.value = false }
+}
+function handleOutside(event) { if (open.value && rootRef.value && !rootRef.value.contains(event.target)) open.value = false }
+function roleLabel(role) { return ({ viewer: '查看者', maintainer: '维护者', manager: '管理员' })[role] || role }
+function spaceLabel(space) { return ({ personal: '个人', team: '团队', shared: '共享' })[space] || space }
+
+watch(() => props.sessionId, async (sessionId) => {
+  await load()
+  if (sessionId && pendingOpen.value) {
+    creatingSession.value = false
+    pendingOpen.value = false
+    draft.value = [...selected.value]
+    updatePanelPosition()
+    open.value = true
+  }
+})
+onMounted(() => {
+  load()
+  document.addEventListener('pointerdown', handleOutside)
+  window.addEventListener('resize', handleViewportChange)
+})
+onUnmounted(() => {
+  document.removeEventListener('pointerdown', handleOutside)
+  window.removeEventListener('resize', handleViewportChange)
+})
+
     return {
-      enabled: false,
-      open: false,
-      bases: [],
-      selected: [],
-      draft: [],
-      query: '',
-      saving: false,
-      creatingSession: false,
-      error: '',
-      pendingOpen: false,
-      panelStyle: {},
+      bases,
+      creatingSession,
+      disabled: computed(() => props.disabled),
+      draft,
+      enabled,
+      error,
+      load,
+      open,
+      panelStyle,
+      query,
+      roleLabel,
+      rootRef,
+      save,
+      saving,
+      selected,
+      spaceLabel,
+      togglePopover,
+      triggerLabel,
+      visibleBases,
     }
-  },
-  computed: {
-    visibleBases() {
-      const keyword = this.query.trim().toLowerCase()
-      return this.bases.filter(base => !keyword || base.name.toLowerCase().includes(keyword) || (base.description || '').toLowerCase().includes(keyword))
-    },
-    selectedBaseNames() {
-      return this.selected
-        .map((id) => {
-          const base = this.bases.find(item => item.id === id)
-          return base ? base.name : ''
-        })
-        .filter(Boolean)
-    },
-    triggerLabel() {
-      if (!this.selectedBaseNames.length) return '选择知识库'
-      if (this.selectedBaseNames.length === 1) return this.selectedBaseNames[0]
-      return `${this.selectedBaseNames[0]} 等 ${this.selectedBaseNames.length} 个`
-    },
-  },
-  watch: {
-    async sessionId(sessionId) {
-      await this.load()
-      if (sessionId && this.pendingOpen) {
-        this.creatingSession = false
-        this.pendingOpen = false
-        this.draft = [...this.selected]
-        this.updatePanelPosition()
-        this.open = true
-      }
-    },
-  },
-  mounted() {
-    this.load()
-    document.addEventListener('pointerdown', this.handleOutside)
-    window.addEventListener('resize', this.handleViewportChange)
-  },
-  beforeDestroy() {
-    document.removeEventListener('pointerdown', this.handleOutside)
-    window.removeEventListener('resize', this.handleViewportChange)
-  },
-  methods: {
-    async load() {
-      this.error = ''
-      try {
-        const status = await getKnowledgeStatus()
-        this.enabled = Boolean(status && status.enabled)
-        if (!this.enabled) return
-        const [baseResponse, scope] = await Promise.all([
-          listKnowledgeBases({ pageSize: 100 }),
-          this.sessionId ? getSessionKnowledgeScope(this.sessionId) : Promise.resolve({ base_ids: [] }),
-        ])
-        this.bases = baseResponse.items || []
-        this.selected = scope.base_ids || []
-        this.draft = [...this.selected]
-      } catch (reason) { this.error = reason.message || '知识范围加载失败' }
-    },
-    togglePopover() {
-      if (this.disabled) return
-      if (!this.sessionId) {
-        if (this.creatingSession) return
-        this.creatingSession = true
-        this.pendingOpen = true
-        this.$emit('create-session')
-        return
-      }
-      if (!this.open) {
-        this.draft = [...this.selected]
-        this.query = ''
-        this.error = ''
-        this.updatePanelPosition()
-      }
-      this.open = !this.open
-    },
-    updatePanelPosition() {
-      const root = this.$refs.rootRef
-      if (!root) return
-      const rect = root.getBoundingClientRect()
-      const viewportPadding = 12
-      const panelWidth = Math.min(360, window.innerWidth - viewportPadding * 2)
-      const left = Math.min(
-        Math.max(rect.left, viewportPadding),
-        Math.max(viewportPadding, window.innerWidth - panelWidth - viewportPadding)
-      )
-      this.panelStyle = {
-        position: 'fixed',
-        left: `${left}px`,
-        right: 'auto',
-        top: 'auto',
-        bottom: `${Math.max(viewportPadding, window.innerHeight - rect.top + 8)}px`,
-        width: `${panelWidth}px`,
-      }
-    },
-    handleViewportChange() {
-      if (this.open) this.updatePanelPosition()
-    },
-    async save() {
-      this.saving = true
-      this.error = ''
-      try {
-        const response = await replaceSessionKnowledgeScope(this.sessionId, this.draft)
-        this.selected = response.base_ids || []
-        this.draft = [...this.selected]
-        this.open = false
-        this.$emit('change', [...this.selected])
-      } catch (reason) { this.error = reason.message || '知识范围保存失败' } finally { this.saving = false }
-    },
-    handleOutside(event) {
-      const root = this.$refs.rootRef
-      if (this.open && root && !root.contains(event.target)) this.open = false
-    },
-    roleLabel(role) {
-      return ({ viewer: '查看者', maintainer: '维护者', manager: '管理员' })[role] || role
-    },
-    spaceLabel(space) {
-      return ({ personal: '个人', team: '团队', shared: '共享' })[space] || space
-    },
   },
 }
 </script>

@@ -44,7 +44,7 @@
         >
           <div class="skeleton-block" v-for="i in 3" :key="i"></div>
         </div>
-      
+
         <div
         v-for="(msg, index) in messages"
         :key="msg.id"
@@ -285,16 +285,16 @@ export default {
     },
     goToPrevUserMessage() {
       if (this.userMessageIndices.length === 0) return
-      
+
       if (this.currentUserMessageIndex === -1) {
         this.currentUserMessageIndex = 0
       } else if (this.currentUserMessageIndex < this.userMessageIndices.length - 1) {
         this.currentUserMessageIndex++
       }
-      
+
       const targetIndex = this.userMessageIndices[this.currentUserMessageIndex]
       const els = this.$refs.messageEls || []
-      
+
       if (targetIndex !== undefined && els[targetIndex]) {
         els[targetIndex].scrollIntoView({ behavior: 'smooth', block: 'center' })
       }

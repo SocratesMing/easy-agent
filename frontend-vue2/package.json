@@ -6,6 +6,7 @@
     "dev": "node scripts/run-vite.mjs dev",
     "build": "node scripts/run-vite.mjs build",
     "preview": "vue-cli-service preview",
+    "test:unit": "node --test src/utils/*.test.js src/features/knowledge/utils/*.test.js src/features/personnel/*.test.js",
     "lint:vue2": "node scripts/check-vue2-syntax.mjs",
     "serve": "node scripts/print-serve-env.mjs && npx --yes serve -s dist/"
   },
