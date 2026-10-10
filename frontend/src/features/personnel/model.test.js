@@ -40,6 +40,8 @@ test('normalizes list responses without coupling the UI to a response envelope',
     employee_id: '',
     department_id: 'market',
     department_name: '',
+    division_name: '',
+    team_name: '',
     email: '',
     position: '',
     mobile: '',
@@ -69,14 +71,16 @@ test('trims form values and does not put a password in personnel payloads', () =
   assert.equal(Object.hasOwn(payload, 'password'), false)
 })
 
-test('requires the four import identity fields and a frontend-provided source', () => {
+test('requires the six import identity fields and a frontend-provided source', () => {
   const errors = validatePersonnelForm({ account_status: 'active' })
 
   assert.deepEqual(Object.keys(errors).sort(), [
     'department_id',
     'department_name',
     'display_name',
+    'division_name',
     'personnel_source',
+    'team_name',
     'username',
   ])
 })
