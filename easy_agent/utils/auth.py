@@ -100,10 +100,3 @@ def decode_access_token(token: str, verify_exp: bool = True) -> Optional[dict]:
         return payload
     except JWTError:
         return None
-
-
-def get_username_from_token(token: str) -> Optional[str]:
-    payload = decode_access_token(token)
-    if payload:
-        return payload.get("sub")
-    return None

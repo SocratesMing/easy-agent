@@ -35,19 +35,3 @@ def get_owned_session(
     if not session or (session.username or "") != (username or ""):
         raise HTTPException(status_code=404, detail="会话不存在")
     return session
-
-
-def session_owned_by(
-    db: "Database", session_id: str, username: str
-) -> "SessionModel | None":
-    """Return the session if it exists **and** belongs to *username*.
-
-    Returns ``None`` when the session does not exist or is owned by another
-    user.  Use this when the caller needs to distinguish "not found / not mine"
-    from a genuine error (e.g. ``chat_stream`` creates a new session when the
-    ID is unknown but must reject an ID that belongs to someone else).
-    """
-    session = db.get_session(session_id)
-    if not session or (session.username or "") != (username or ""):
-        return None
-    return session

@@ -12,7 +12,7 @@ import pytest
 from fastapi import HTTPException
 
 from easy_agent.models.db import SessionModel
-from easy_agent.utils.session import get_owned_session, session_owned_by
+from easy_agent.utils.session import get_owned_session
 
 
 def _make_session(session_id: str, username: str) -> SessionModel:
@@ -57,12 +57,6 @@ def test_get_owned_session_404_for_missing(two_user_sessions):
     with pytest.raises(HTTPException) as exc:
         get_owned_session(two_user_sessions, "nonexistent", "userA")
     assert exc.value.status_code == 404
-
-
-def test_session_owned_by_returns_none_cross_user(two_user_sessions):
-    assert session_owned_by(two_user_sessions, "sess-A", "userB") is None
-    assert session_owned_by(two_user_sessions, "sess-A", "userA") is not None
-    assert session_owned_by(two_user_sessions, "nope", "userA") is None
 
 
 # ---------------------------------------------------------------------------

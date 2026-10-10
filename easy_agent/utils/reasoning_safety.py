@@ -12,21 +12,6 @@ from copy import deepcopy
 SAFE_REASONING_SUMMARY = "正在分析并组织回答"
 
 
-def safe_reasoning_event(event: dict, announced_steps: set[int]) -> dict | None:
-    if event.get("type") != "thinking":
-        return event
-    step = int(event.get("step") or 0)
-    if step in announced_steps:
-        return None
-    announced_steps.add(step)
-    return {
-        "type": "thinking",
-        "content": SAFE_REASONING_SUMMARY,
-        "full_content": SAFE_REASONING_SUMMARY,
-        "step": step,
-    }
-
-
 def safe_blocks(blocks: list | None) -> list:
     safe: list[dict] = []
     for block in blocks or []:

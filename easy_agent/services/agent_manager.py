@@ -172,7 +172,7 @@ async def get_or_create_agent_for_session(
     # 构建 tools 列表：MCP 工具 + 定时任务工具（仅 HITL 模式下注入）
     tools = list(mcp_tools)
 
-    # Narrow integration point; 按配置选择 legacy/v2 知识库实现。
+    # Narrow integration point; 知识库工具注入入口。
     from ..knowledge_impl import extend_agent_tools
 
     tools = extend_agent_tools(

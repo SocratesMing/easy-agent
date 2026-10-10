@@ -170,7 +170,7 @@ TEXT_EXTENSIONS = {
 }
 
 
-def parse_file_content(file_path: str, mime_type: str = "") -> str:
+def parse_file_content(file_path: str) -> str:
     ext = os.path.splitext(file_path)[1].lower()
     path = Path(file_path)
 
