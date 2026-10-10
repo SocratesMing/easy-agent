@@ -863,12 +863,21 @@ async function handleDrop(event) {
   if (entries.length) { await uploadDroppedEntries(entries); return }
   await uploadFiles(Array.from(event.dataTransfer?.files || []).map(file => ({ file, relativePath: '' })))
 }
+// crypto.randomUUID 仅安全上下文（HTTPS/localhost）可用；
+// 局域网 HTTP 访问时回退 Math.random 生成（仅作前端队列 ID，无安全要求）
+function genQueueId() {
+  if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID()
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+    const r = (Math.random() * 16) | 0
+    return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16)
+  })
+}
 async function uploadFiles(items) {
   const uploadBaseId = selectedBaseId.value
   const uploadFolderId = selectedFolderId.value
   if (!uploadBaseId) return
   const pendingUploads = items.map(({ file, relativePath }) => {
-    const queueId = crypto.randomUUID()
+    const queueId = genQueueId()
     const item = reactive({ id: queueId, optimisticId: `upload-${queueId}`, baseId: uploadBaseId, folderId: uploadFolderId, documentId: '', name: relativePath || file.name, progress: 0, state: 'uploading', error: '' })
     uploadQueue.value.push(item)
     if (selectedBaseId.value === uploadBaseId && selectedFolderId.value === uploadFolderId && !search.value.trim() && !statusFilter.value) {
