@@ -11,6 +11,9 @@ Events emitted to frontend:
   content          {content}
   content_end      {}
   tool_call        {tool_name, tool_call_id, arguments, step}
+  tool_call_delta  {tool_name, tool_call_id, arguments, step}  大参数工具（write_file/edit_file）
+                   # 参数分片生成过程中的临时快照，用于前端实时渲染正在写入的内容；
+                   # 完整参数随后由 tool_call 事件权威覆盖。
   tool_result      {tool_name, tool_call_id, arguments, result, success, duration, step}
   todo_list        {todos, step}
   token_usage      {input_tokens, output_tokens, reasoning_tokens, context_length, auto_compress_tokens}

@@ -548,3 +548,48 @@ def test_token_usage_reports_last_call_not_accumulated():
     done = p.finalize(session_id="s", elapsed_time=0.1)[0]
     assert done["usage"]["input_tokens"] == 150
     assert done["usage"]["output_tokens"] == 30
+
+
+def test_tool_call_chunks_stream_args_for_write_file():
+    """write_file 的 arguments 分片（tool_call_chunks）应下发 tool_call_delta，
+    让前端在模型生成文件内容的过程中实时渲染 diff。"""
+    p = StreamProcessor(sid="s1")
+    def feed(frag):
+        # 绕开 40ms 节流，逐片验证
+        p._arg_stream.get(0, {})
+        return p.handle("messages", (AIMessageChunk(content="", tool_call_chunks=[frag]), {}))
+
+    e1 = feed({"name": "write_file", "args": '{"file_path": "demo.md", "content": "# T', "id": "tc1", "index": 0})
+    p._arg_stream[0]["last_emit"] = 0.0
+    e2 = feed({"name": None, "args": 'itle\\nline1\\n', "id": None, "index": 0})
+    p._arg_stream[0]["last_emit"] = 0.0
+    e3 = feed({"name": None, "args": 'line2\\n"}', "id": None, "index": 0})
+
+    deltas = [e for e in e1 + e2 + e3 if e["type"] == "tool_call_delta"]
+    assert len(deltas) == 3
+    assert deltas[0]["tool_name"] == "write_file"
+    assert deltas[0]["tool_call_id"] == "tc1"
+    assert deltas[0]["arguments"] == {"file_path": "demo.md", "content": "# T"}
+    # 最后一片能得到完整 content（parse_partial_json 允许截断解析）
+    assert deltas[-1]["arguments"]["content"] == "# Title\nline1\nline2\n"
+    # 完整 AIMessage 到达后清空累积状态
+    p.handle("updates", {"model": {"messages": [AIMessage(
+        content="",
+        tool_calls=[{"name": "write_file", "args": {"file_path": "demo.md", "content": "# Title\nline1\nline2\n"}, "id": "tc1"}],
+    )]}})
+    assert p._arg_stream == {}
+
+
+def test_tool_call_chunks_ignored_for_small_arg_tools():
+    """非大参数工具（如 ls）不下发参数流式事件，避免无意义的前端重渲染。"""
+    p = StreamProcessor(sid="s1")
+    events = p.handle("messages", (AIMessageChunk(content="", tool_call_chunks=[
+        {"name": "ls", "args": '{"path": "/workspace/"}', "id": "tc1", "index": 0}
+    ]), {}))
+    assert not any(e["type"] == "tool_call_delta" for e in events)
+
+
+def test_parse_partial_args_tolerates_truncated_json():
+    assert StreamProcessor._parse_partial_args('{"a": 1, "b": "x') == {"a": 1, "b": "x"}
+    assert StreamProcessor._parse_partial_args("not json") is None
+    assert StreamProcessor._parse_partial_args("[1, 2]") is None

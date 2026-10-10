@@ -101,6 +101,26 @@ with get_distributed_lock().locked("reconcile", wait_seconds=5) as handle:
 - **只保护数据库可见的临界区**：跨实例的进程内状态（见上文第 2 类）不会被这把锁解决。
 - 锁表由 `Database.init_tables()` 创建，MySQL 账号需要有建表/改表权限。
 
+### 启动性能：schema 版本与快速路径
+
+多副本部署时每个 pod 启动都会调用 `Database.init_tables()`。过去这一步无条件跑
+一整套「建表 + 补列 + 建索引 + ALTER 改列」，在 MySQL 上是 40+ 次网络往返，
+其中 `ALTER TABLE ... MODIFY COLUMN`（`sessions.messages`、`session_messages.content`
+等）会**重建整表**，会话表到几十 MB 时单条就可能几秒，叠加多 pod 同时启动，
+表现为「连接 MySQL 很久」。
+
+现在 `init_tables()` 在库里的 `schema_meta.schema_version` 与代码常量
+`easy_agent/db/database.py:SCHEMA_VERSION` 一致、且 `EXPECTED_TABLES` 里的关键表
+都在时，只发少量探测 SQL（建 meta 表 + 读版本 + 校验表 + 一条聚合比对）就返回，
+不再重复建表/改列；同时：
+
+- 加列探测按表缓存列信息（`users` 原先要 8 次 `SHOW COLUMNS`，现在每表最多 1 次）；
+- `ALTER ... MODIFY` 只在列类型确实不满足时执行（如 messages 还不是 LONGTEXT）；
+- 启动时的消息自愈改为一条聚合 SQL 找出条数不一致的会话，只重建这些会话。
+
+> ⚠️ **改动任何表结构（建表/加列/改列/建索引）后，必须把 `SCHEMA_VERSION` +1**，
+> 并同步更新 `EXPECTED_TABLES`。否则已升级的库会一直命中快速路径，变更不会生效。
+
 ## 三、定时任务接入方式
 
 `easy_agent/services/scheduler.py` 的 `_execute_task` 已接入：

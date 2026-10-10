@@ -80,6 +80,7 @@
                 :duration="block.duration"
                 :pending-approval="!!block.pending_approval"
                 :file-paths="block.file_paths || []"
+                :streaming="!!block.streaming"
                 @approve="$emit('approve')"
                 @reject="$emit('reject')"
               />
