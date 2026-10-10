@@ -1,7 +1,4 @@
-"""请求关联 ID、内存指标与审计元数据辅助（对照旧版精简）。
-
-裁剪内容：/api/personnel 前缀审计（属宿主遗留路由）与 metrics token。
-"""
+"""请求关联 ID、内存指标与审计元数据辅助。"""
 
 from __future__ import annotations
 
@@ -27,6 +24,8 @@ class KnowledgeMetrics:
         )
 
     def observe(self, method: str, route: str, status: int, seconds: float) -> None:
+        """聚合一次请求：按（方法, 归一化路由, 状态码）计数并累加耗时。"""
+
         route = self.normalized_route(route)
         with self._lock:
             self._requests[(method, route, status)] += 1
@@ -36,6 +35,8 @@ class KnowledgeMetrics:
 
     @staticmethod
     def normalized_route(path: str) -> str:
+        """把路径中的 UUID 归一为 /{id} 并截断，防止指标标签基数膨胀。"""
+
         return re.sub(
             r"/[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}",
             "/{id}",
@@ -43,6 +44,8 @@ class KnowledgeMetrics:
         )[:240]
 
     def prometheus(self, task_counts: dict[str, int]) -> str:
+        """渲染 Prometheus 文本：HTTP 请求计数/耗时 counter 与任务状态 gauge。"""
+
         lines = [
             "# HELP easyagent_knowledge_http_requests_total Knowledge HTTP requests.",
             "# TYPE easyagent_knowledge_http_requests_total counter",
@@ -88,6 +91,8 @@ def resolve_request_id(candidate: str | None) -> str:
 
 
 def should_audit(path: str, method: str) -> bool:
+    """判断是否纳入审计：仅知识 API 前缀，排除探活/状态类只读端点（method 暂不参与判断）。"""
+
     del method
     if not path.startswith(_AUDITED_PREFIXES):
         return False

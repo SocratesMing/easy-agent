@@ -1,9 +1,4 @@
-"""新版知识库 CRUD 数据访问层。
-
-表名/列与旧版完全一致（复用现有数据）；方法签名与旧版
-``knowledge/repository.py`` 保持兼容，裁剪了对账、回收站巡检等
-服务层不再使用的查询分支。
-"""
+"""知识库 CRUD 数据访问层。"""
 
 from __future__ import annotations
 
@@ -13,7 +8,7 @@ from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime
 from typing import Any
 
-from ..db.database import Database
+from ...db.database import Database
 
 logger = logging.getLogger(__name__)
 

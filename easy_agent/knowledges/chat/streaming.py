@@ -1,24 +1,97 @@
-"""No-tool LLM stream used by the knowledge side panel."""
+"""知识模块流式层：主聊天的知识上下文适配 + 知识面板无工具问答流。
+
+- ``chat_stream_generator``：主聊天（带工具的宿主 agent 流）的知识适配——
+  注入知识上下文前缀、透传宿主流、结束后持久化证据元数据；
+- ``knowledge_chat_stream_generator``：知识面板（问问知识库）的无工具
+  纯问答流，直接 astream 大模型。
+"""
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from typing import AsyncGenerator
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
-from ..db import Database
-from ..model import create_model
-from ..models.api import ChatRequest
-from ..services.agent_manager import get_agent_config
-from ..services.streaming import build_assistant_message_dict, format_sse
+from ...db import Database
+from ...model import create_model
+from ...models.api import ChatRequest
+from ...services.agent_manager import get_agent_config
+from ...services.streaming import (
+    build_assistant_message_dict as host_message,
+    chat_stream_generator as host_stream,
+    format_sse,
+)
 
 logger = logging.getLogger("easy_agent.chat_service")
 
 
+# ---------------------------------------------------------------------------
+# 消息构建：在宿主契约上合并知识证据元数据
+# ---------------------------------------------------------------------------
+def build_assistant_message_dict(*, extra_fields=None, **kwargs):
+    """在宿主消息契约基础上合并知识证据等扩展字段。"""
+
+    message = host_message(**kwargs)
+    message.update(extra_fields or {})
+    return message
+
+
+# ---------------------------------------------------------------------------
+# 主聊天：知识上下文前缀注入 + 证据元数据持久化
+# ---------------------------------------------------------------------------
+async def chat_stream_generator(*, context_prefix=None, initial_events=None,
+                                assistant_metadata=None, **kwargs):
+    """主聊天流的知识适配：注入上下文前缀、转发宿主流并持久化证据元数据。
+
+    首个宿主事件后插入 initial_events（知识证据事件）；流结束
+    （done/error/approval_required）或生成器被关闭时，把 assistant_metadata
+    合并进最后一条 assistant 消息落库。
+    """
+
+    content = kwargs.get("parsed_content") or kwargs["request"].message
+    if context_prefix:
+        kwargs["parsed_content"] = f"{context_prefix}\n\n## 用户当前问题\n{content}"
+    stream = host_stream(**kwargs)
+
+    def persist_metadata():
+        """把证据元数据合并进最后一条 assistant 消息并双写持久化。"""
+
+        if not assistant_metadata:
+            return
+        db, session_id = kwargs["db"], kwargs["session_id"]
+        session = db.get_session(session_id)
+        if session and session.messages and session.messages[-1].get("role") == "assistant":
+            message = {**session.messages[-1], **assistant_metadata}
+            db.update_last_assistant_message(session_id, message)
+            db.update_last_assistant_message_row(session_id, message)
+
+    try:
+        first = True
+        async for event in stream:
+            if assistant_metadata:
+                payload = json.loads(event.removeprefix("data: ").strip())
+                if payload.get("type") in {"done", "error", "approval_required"}:
+                    persist_metadata()
+            yield event
+            if first:
+                first = False
+                for initial in initial_events or []:
+                    yield format_sse(initial)
+    finally:
+        await stream.aclose()
+        persist_metadata()
+
+
+# ---------------------------------------------------------------------------
+# 知识面板（问问知识库）：无工具纯问答流
+# ---------------------------------------------------------------------------
 def _chunk_text(content) -> str:
+    """把模型分片 content 统一提取为纯文本（兼容 str 与多模态 list）。"""
+
     if isinstance(content, str):
         return content
     if not isinstance(content, list):
@@ -116,7 +189,7 @@ async def knowledge_chat_stream_generator(
             content=answer, thinking="", thinking_duration=stage_block["duration"],
             tool_call_records=[], blocks=blocks,
             input_tokens=usage["input_tokens"], output_tokens=usage["output_tokens"],
-            total_tokens=usage["total_tokens"], context_tokens=usage["input_tokens"],
+            context_tokens=usage["input_tokens"],
             elapsed_time=elapsed, step_count=1,
             extra_fields={
                 "knowledge_evidence": knowledge_evidence or [],

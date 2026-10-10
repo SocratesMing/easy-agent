@@ -12,8 +12,8 @@
   `0.7495989923161519`，无 warning。
 - 知识工程测试复验结果为 `56 passed`；浏览器复验 RAGFlow 知识库页面、
   EasyAgent 团队空间、部门查看者权限和文档列表均正常。
-- 新增 `scripts/start.dev.ragflow.local.sh` 和
-  `scripts/status.dev.ragflow.local.sh`，分别用于无破坏启动和状态检查。
+- 新增 `easy_agent/knowledges/scripts/start.dev.ragflow.local.sh` 和
+  `easy_agent/knowledges/scripts/status.dev.ragflow.local.sh`，分别用于无破坏启动和状态检查。
 
 ## 验收环境
 

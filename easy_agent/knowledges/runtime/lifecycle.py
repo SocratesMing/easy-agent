@@ -1,9 +1,8 @@
 """知识库模块生命周期：配置加载 fail-fast、运行时资源挂载与回收。
 
-与旧版的差异：
-- 幂等：宿主可能重复调用 startup，以 ``app.state.knowledge_config`` 为守卫；
-- 数据库晚于本函数初始化，worker 通过 ``db_provider`` 惰性获取连接；
-- 原文存储固定为 ``LocalOriginalStore``，不再有可配置的存储后端。
+幂等：宿主可能重复调用 startup，以 ``app.state.knowledge_config`` 为守卫；
+数据库晚于本函数初始化，worker 通过 ``db_provider`` 惰性获取连接；
+原文存储固定为 ``LocalOriginalStore``，无可配置的存储后端。
 """
 
 from __future__ import annotations
@@ -14,9 +13,9 @@ from pathlib import Path
 from fastapi import FastAPI
 from starlette.concurrency import run_in_threadpool
 
-from .config import KnowledgeConfig, KnowledgeConfigError
-from .ragflow import RagflowClient
-from .service import LocalOriginalStore
+from ..core.config import KnowledgeConfig, KnowledgeConfigError
+from ..ragflow import RagflowClient
+from ..service import LocalOriginalStore
 from .worker import KnowledgeParsePollWorker, KnowledgePurgeWorker
 
 logger = logging.getLogger(__name__)

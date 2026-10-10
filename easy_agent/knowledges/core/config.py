@@ -1,4 +1,4 @@
-"""新版知识库模块配置（v2 扁平结构）。
+"""知识库模块配置（扁平结构）。
 
 上游为本地部署的 Ragflow v0.26.3 开源服务（标准官方 HTTP API），地址与
 凭据由环境变量占位注入：``RAGFLOW_BASE_URL``、``RAGFLOW_API_KEY``。
@@ -8,8 +8,7 @@ fail-closed 路径报错并提示填写。
 只认这些 YAML 键：``implementation``（透传不校验）/ ``enabled`` /
 ``base_url`` / ``api_key`` / ``embedding.model`` / ``audit`` / ``limits`` /
 ``catalog_sync``（外部目录树同步，含 enabled 总开关）。
-旧版 endpoint / auth / bank_api / adapter / tls / defaults 等嵌套段
-不再解析；解析策略、检索参数与上传安全开关为代码内固定值。
+解析策略、检索参数与上传安全开关为代码内固定值。
 """
 
 from __future__ import annotations
@@ -24,7 +23,7 @@ from typing import Any
 import yaml
 from pydantic import BaseModel, Field, SecretStr, ValidationError, model_validator
 
-from ..config import Config
+from ...config import Config
 
 logger = logging.getLogger(__name__)
 

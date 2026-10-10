@@ -29,8 +29,8 @@ env/
 venv/
 ENV/
 
-# 便携运行时（嵌入式 Python + 依赖，仅本地分发用，勿提交）
-runtime/
+# 便携运行时（嵌入式 Python + 依赖，仅本地分发用，勿提交；仅限仓库根目录）
+/runtime/
 
 workspace/
 *.log

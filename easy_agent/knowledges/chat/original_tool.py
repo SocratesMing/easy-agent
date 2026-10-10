@@ -1,8 +1,7 @@
 """带权限校验的 Agent 原文访问工具。
 
 不暴露、不挂载底层存储路径；materialize 把原文安全复制进当前会话
-工作区。读取上限（旧版 original_storage.reads 配置段的固定值）：
-单文件 100MB、会话总量 200MB、落盘文件 TTL 3600 秒。
+工作区。读取上限：单文件 100MB、会话总量 200MB、落盘文件 TTL 3600 秒。
 """
 
 from __future__ import annotations
@@ -18,13 +17,13 @@ from typing import Any, Literal
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, ConfigDict, Field
 
-from ..db import get_database
-from .api import KnowledgePrincipal
-from .config import KnowledgeConfig
-from .models import AllowedAction
-from .operations_repository import KnowledgeOperationsRepository
-from .repository import KnowledgeRepository
-from .service import (
+from ...db import get_database
+from ..api import KnowledgePrincipal
+from ..core.config import KnowledgeConfig
+from ..core.models import AllowedAction
+from ..core.operations_repository import KnowledgeOperationsRepository
+from ..core.repository import KnowledgeRepository
+from ..service import (
     LocalOriginalStore,
     OriginalStorageError,
     allowed_actions,
@@ -34,13 +33,15 @@ from .service import (
 
 _SAFE_FILENAME = re.compile(r"[^A-Za-z0-9._\-\u4e00-\u9fff]+")
 
-# Agent 原文读取上限（旧版配置的固定值，新版写死）
+# Agent 原文读取上限
 MAX_AGENT_FILE_SIZE_MB = 100
 MAX_AGENT_TOTAL_SIZE_MB = 200
 MATERIALIZED_FILE_TTL_SECONDS = 3600
 
 
 class KnowledgeOriginalArgs(BaseModel):
+    """工具入参 schema：action 三选一，按动作携带 base_id / document_id。"""
+
     action: Literal["list", "metadata", "materialize"] = Field(
         ...,
         description=(
@@ -81,6 +82,8 @@ class KnowledgeOriginalTool(BaseTool):
         return self._execute(**kwargs)
 
     def _principal(self) -> KnowledgePrincipal:
+        """按用户名实时重建 principal，用户已删除或失效时立即拒绝。"""
+
         user = get_database().get_user_by_username(self.username)
         if user is None:
             raise PermissionError("当前用户不存在或已失效")
@@ -96,6 +99,8 @@ class KnowledgeOriginalTool(BaseTool):
         base_id: str,
         principal: KnowledgePrincipal,
     ) -> dict[str, Any]:
+        """校验知识库可访问且角色含 DOWNLOAD 权限，返回库记录。"""
+
         base = repository.get_base(base_id)
         if base is None:
             raise FileNotFoundError("知识资源不存在")
@@ -113,6 +118,8 @@ class KnowledgeOriginalTool(BaseTool):
         action: str,
         result: str,
     ) -> None:
+        """把工具动作写入审计日志（受 audit 开关控制，失败静默）。"""
+
         if principal is None or not document_id:
             return
         if not self.knowledge_config.audit.enabled:
@@ -137,6 +144,12 @@ class KnowledgeOriginalTool(BaseTool):
             pass
 
     def _execute(self, action: str, base_id: str = "", document_id: str = "") -> str:
+        """执行 list / metadata / materialize 动作，错误转成模型可读文本。
+
+        materialize 先清理 TTL 过期副本并核验会话总量配额，再经临时文件
+        原子落盘（大小 + SHA-256 双重完整性校验），成功后返回工作区相对路径。
+        """
+
         db = get_database()
         repository = KnowledgeRepository(db)
         principal: KnowledgePrincipal | None = None
@@ -264,6 +277,7 @@ def create_knowledge_original_tool(
     workspace_dir: str | Path,
     config: KnowledgeConfig,
 ) -> KnowledgeOriginalTool | None:
+    """构造带权限校验的原文工具；知识模块禁用时返回 None。"""
     # 先判禁用再建存储：LocalOriginalStore 构造会 mkdir，禁用态不应产生目录
     if not config.enabled:
         return None

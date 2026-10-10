@@ -1,9 +1,9 @@
-"""新版知识库数据库 schema：表名/列与旧版完全一致，幂等初始化。
+"""知识库数据库 schema：幂等初始化。
 
-与旧版模块共用同一套表结构，可直接切到现有库而不迁移数据；旧版
-MVP 库缺失的列（软删除、版本等）通过 ``_ensure_column`` 就地补齐。
-相比旧版裁剪了 reconciliation / alert / runtime_heartbeat 表（对账
-与可观测性不在新版范围内）及迁移账本表。
+已存在的库通过 ``_ensure_column`` 就地补齐缺失列（软删除、版本等），
+可直接使用现有库而不迁移数据。不含 reconciliation / alert /
+runtime_heartbeat 及迁移账本表。废弃对象（knowledge_tasks 死表、
+无查询支撑的二级索引）由 ``_cleanup_legacy_schema`` 幂等清除。
 """
 
 from __future__ import annotations
@@ -11,19 +11,19 @@ from __future__ import annotations
 import logging
 import re
 
-from ..db.database import Database
+from ...db.database import Database
 
 logger = logging.getLogger(__name__)
 
-# 旧版 knowledge_folders 唯一约束 (base_id, name)：目录树同步要求同一知识库
-# 内不同父节点下允许同名子文件夹（如 2026-09-12/中金公司 与 2026-09-13/中金公司），
-# 需放宽为 (base_id, parent_id, name)。
-_LEGACY_FOLDER_UNIQUE_RE = re.compile(
+# 目录树同步要求同一知识库内不同父节点下允许同名子文件夹
+# （如 2026-09-12/中金公司 与 2026-09-13/中金公司），唯一约束需为
+# (base_id, parent_id, name)；既有库可能存在 (base_id, name) 约束，需放宽。
+_FOLDER_UNIQUE_RE = re.compile(
     r"UNIQUE\s*\(\s*`?base_id`?\s*,\s*`?name`?\s*\)", re.IGNORECASE
 )
-_NEW_FOLDER_UNIQUE_NAME = "uk_knowledge_folders_base_parent_name"
+_FOLDER_UNIQUE_NAME = "uk_knowledge_folders_base_parent_name"
 
-# 旧版 MVP 建表后由 P0 迁移追加的列；对已存在的库幂等补齐
+# 对已存在的库幂等补齐这些列
 _BASE_P0_COLUMNS = (
     ("deleted_at", "VARCHAR(50) DEFAULT NULL"),
     ("deleted_by", "VARCHAR(255) DEFAULT NULL"),
@@ -39,8 +39,7 @@ def initialize_knowledge_schema(db: Database, cursor) -> None:
     """创建知识库模块全部数据表与索引（已存在时幂等跳过）。
 
     首个参数为 :class:`~easy_agent.db.database.Database` 实例（提供
-    ``_execute`` / ``_create_index`` / ``_ensure_column`` 的跨库实现），
-    与旧版调用方式保持一致。
+    ``_execute`` / ``_create_index`` / ``_ensure_column`` 的跨库实现）。
     """
 
     # ---- 知识库（个人/公共空间） ----
@@ -65,7 +64,6 @@ def initialize_knowledge_schema(db: Database, cursor) -> None:
     for column, definition in _BASE_P0_COLUMNS:
         db._ensure_column(cursor, "knowledge_bases", column, definition)
     db._create_index(cursor, "idx_knowledge_bases_owner", "knowledge_bases", "owner_user_id")
-    db._create_index(cursor, "idx_knowledge_bases_department", "knowledge_bases", "department_id")
 
     # ---- 文件夹 ----
     cursor.execute("""
@@ -116,7 +114,8 @@ def initialize_knowledge_schema(db: Database, cursor) -> None:
         db._ensure_column(cursor, "knowledge_documents", column, definition)
     db._create_index(cursor, "idx_knowledge_documents_base", "knowledge_documents", "base_id")
     db._create_index(cursor, "idx_knowledge_documents_folder", "knowledge_documents", "folder_id")
-    db._create_index(cursor, "idx_knowledge_documents_status", "knowledge_documents", "status")
+    # 清理 worker 的全局扫描依赖 (status, purge_after) 复合索引，其最左前缀
+    # 已覆盖任何按 status 起查的路径，无需单列 status 索引。
     db._create_index(cursor, "idx_knowledge_documents_purge", "knowledge_documents", "status, purge_after")
 
     # ---- 原始文件对象 ----
@@ -146,15 +145,11 @@ def initialize_knowledge_schema(db: Database, cursor) -> None:
             FOREIGN KEY (document_id) REFERENCES knowledge_documents(id) ON DELETE CASCADE
         )
     """)
-    db._create_index(
-        cursor, "idx_knowledge_document_objects_document", "knowledge_document_objects", "document_id, status"
-    )
+    # 查询仅按 document_id 取最新版本，UNIQUE(document_id, object_version)
+    # 最左前缀已覆盖，无需额外二级索引。
     # 存量库（v2 建表初期版本）幂等补列：repository._update_by_id 统一刷新 updated_at
     db._ensure_column(
         cursor, "knowledge_document_objects", "updated_at", "VARCHAR(50) DEFAULT NULL"
-    )
-    db._create_index(
-        cursor, "idx_knowledge_document_objects_status", "knowledge_document_objects", "status, created_at"
     )
 
     # ---- 原始文件访问审计 ----
@@ -240,38 +235,6 @@ def initialize_knowledge_schema(db: Database, cursor) -> None:
     db._ensure_column(cursor, "session_knowledge_scopes", "sort_order", "INTEGER NOT NULL DEFAULT 0")
     db._create_index(cursor, "idx_session_knowledge_user", "session_knowledge_scopes", "user_id, session_id")
 
-    # ---- 异步任务队列（上传/解析等后台任务） ----
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS knowledge_tasks (
-            id VARCHAR(255) PRIMARY KEY,
-            operation_id VARCHAR(255) NOT NULL,
-            task_type VARCHAR(40) NOT NULL,
-            resource_type VARCHAR(40) NOT NULL,
-            resource_id VARCHAR(255) NOT NULL,
-            idempotency_key VARCHAR(128) NOT NULL UNIQUE,
-            payload_json TEXT NOT NULL,
-            status VARCHAR(30) NOT NULL,
-            attempt_count INTEGER NOT NULL DEFAULT 0,
-            max_attempts INTEGER NOT NULL DEFAULT 3,
-            available_at VARCHAR(50) NOT NULL,
-            locked_by VARCHAR(255),
-            locked_at VARCHAR(50),
-            heartbeat_at VARCHAR(50),
-            timeout_at VARCHAR(50),
-            request_id VARCHAR(128) NOT NULL,
-            created_by VARCHAR(255) NOT NULL,
-            last_error_code VARCHAR(100),
-            last_error_message TEXT,
-            created_at VARCHAR(50) NOT NULL,
-            updated_at VARCHAR(50) NOT NULL,
-            completed_at VARCHAR(50),
-            FOREIGN KEY (operation_id) REFERENCES knowledge_operations(id) ON DELETE CASCADE
-        )
-    """)
-    db._create_index(cursor, "idx_knowledge_tasks_claim", "knowledge_tasks", "status, available_at")
-    db._create_index(cursor, "idx_knowledge_tasks_resource", "knowledge_tasks", "resource_type, resource_id")
-    db._create_index(cursor, "idx_knowledge_tasks_operation", "knowledge_tasks", "operation_id")
-
     # ---- 审计事件 ----
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS knowledge_audit_events (
@@ -295,7 +258,7 @@ def initialize_knowledge_schema(db: Database, cursor) -> None:
         cursor, "idx_knowledge_audit_object", "knowledge_audit_events", "object_type, object_id, created_at"
     )
 
-    # ---- 公共空间管理/查看白名单 ----
+    # ---- 公共空间管理/查看白名单（仅按 PK user_id 查询，无需二级索引） ----
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS knowledge_team_space_managers (
             user_id VARCHAR(255) PRIMARY KEY,
@@ -305,9 +268,6 @@ def initialize_knowledge_schema(db: Database, cursor) -> None:
             FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
         )
     """)
-    db._create_index(
-        cursor, "idx_knowledge_team_managers_granted_by", "knowledge_team_space_managers", "granted_by, updated_at"
-    )
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS knowledge_team_space_viewers (
             user_id VARCHAR(255) PRIMARY KEY,
@@ -317,9 +277,41 @@ def initialize_knowledge_schema(db: Database, cursor) -> None:
             FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
         )
     """)
-    db._create_index(
-        cursor, "idx_knowledge_team_viewers_granted_by", "knowledge_team_space_viewers", "granted_by, granted_at"
+
+    _cleanup_legacy_schema(db, cursor)
+
+
+def _cleanup_legacy_schema(db: Database, cursor) -> None:
+    """幂等清除废弃的表与索引（仅限显式列出的对象，逐个容错跳过）。
+
+    - knowledge_tasks：数据库任务队列设计已被进程内 worker 取代，全库无读写；
+    - 其余为无查询路径支撑的二级索引（建表初期预留，从未被使用）。
+    """
+
+    # 死表：SQLite / MySQL 均支持 DROP TABLE IF EXISTS
+    try:
+        cursor.execute("DROP TABLE IF EXISTS knowledge_tasks")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"删除废弃表 knowledge_tasks 失败（可忽略）: {exc}")
+
+    # 死索引：MySQL 无 DROP INDEX IF EXISTS，逐个尝试；SQLite 语法不含表名
+    legacy_indexes = (
+        ("knowledge_bases", "idx_knowledge_bases_department"),
+        ("knowledge_documents", "idx_knowledge_documents_status"),
+        ("knowledge_document_objects", "idx_knowledge_document_objects_document"),
+        ("knowledge_document_objects", "idx_knowledge_document_objects_status"),
+        ("knowledge_team_space_managers", "idx_knowledge_team_managers_granted_by"),
+        ("knowledge_team_space_viewers", "idx_knowledge_team_viewers_granted_by"),
     )
+    for table, index in legacy_indexes:
+        try:
+            if db.db_type == "mysql":
+                cursor.execute(f"DROP INDEX `{index}` ON `{table}`")
+            else:
+                cursor.execute(f"DROP INDEX IF EXISTS `{index}`")
+        except Exception:  # noqa: BLE001
+            # 索引不存在（新装库）即目标状态，静默跳过
+            pass
 
 
 def _migrate_folder_unique_constraint(db: Database, cursor) -> None:
@@ -347,21 +339,23 @@ def _migrate_folder_unique_mysql(cursor) -> None:
         if int(row["Non_unique"]) != 0:
             continue
         columns_by_index.setdefault(str(row["Key_name"]), []).append(str(row["Column_name"]))
-    has_legacy = any(columns == ["base_id", "name"] for columns in columns_by_index.values())
+    has_base_name_unique = any(
+        columns == ["base_id", "name"] for columns in columns_by_index.values()
+    )
     has_new = any(
         columns == ["base_id", "parent_id", "name"] for columns in columns_by_index.values()
     )
     if has_new:
         return
-    if not has_legacy:
+    if not has_base_name_unique:
         return
-    legacy_name = next(
+    base_name_unique_name = next(
         name for name, columns in columns_by_index.items() if columns == ["base_id", "name"]
     )
-    cursor.execute(f"ALTER TABLE knowledge_folders DROP INDEX `{legacy_name}`")
+    cursor.execute(f"ALTER TABLE knowledge_folders DROP INDEX `{base_name_unique_name}`")
     cursor.execute(
         "ALTER TABLE knowledge_folders "
-        f"ADD UNIQUE KEY `{_NEW_FOLDER_UNIQUE_NAME}` (base_id, parent_id, name)"
+        f"ADD UNIQUE KEY `{_FOLDER_UNIQUE_NAME}` (base_id, parent_id, name)"
     )
     logger.info("knowledge_folders 唯一约束已迁移: (base_id, name) → (base_id, parent_id, name)")
 
@@ -372,7 +366,7 @@ def _migrate_folder_unique_sqlite(cursor) -> None:
     )
     row = cursor.fetchone()
     create_sql = (row["sql"] if row is not None else "") or ""
-    if not _LEGACY_FOLDER_UNIQUE_RE.search(create_sql):
+    if not _FOLDER_UNIQUE_RE.search(create_sql):
         return
     cursor.execute("""
         CREATE TABLE knowledge_folders_migrate (

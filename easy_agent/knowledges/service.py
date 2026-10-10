@@ -1,10 +1,9 @@
-"""新版知识库核心业务服务（对照旧版 service.py 精简重写）。
+"""知识库核心业务服务。
 
-主要裁剪：queue/inline 双模式（新版上传/删除全部同步内联）、原文存储的
-NAS 多实现工厂（收敛为本地磁盘存储）、completed_document_probe 完成度
-探测（依赖旧版兼容配置）。删除为软删除：本地保留记录与原文，远端
-（Ragflow）副本暂存 SOFT_DELETE_RETENTION_DAYS 后由清理 worker
-（KnowledgePurgeWorker）到期删除，恢复端点已随前端调用面裁剪移除。
+上传/删除全部同步内联；原文存储为本地磁盘存储（``LocalOriginalStore``）。
+删除为软删除：本地保留记录与原文，远端（Ragflow）副本暂存
+SOFT_DELETE_RETENTION_DAYS 后由清理 worker（KnowledgePurgeWorker）
+到期删除。
 
 检索走 Ragflow 标准检索接口（retrieve，POST /api/v1/retrieval）。
 """
@@ -26,13 +25,13 @@ from typing import TYPE_CHECKING, Any, BinaryIO, Callable
 
 from starlette.concurrency import run_in_threadpool
 
-from .config import (
+from .core.config import (
     KnowledgeConfig,
     UPSTREAM_DOCUMENT_STATUS_MAPPING,
     UploadSecurityConfig,
 )
-from .file_validation import UploadValidationError, validate_upload
-from .models import (
+from .core.file_validation import UploadValidationError, validate_upload
+from .core.models import (
     AllowedAction,
     DocumentListResponse,
     DocumentStatus,
@@ -63,25 +62,25 @@ from .models import (
     TeamSpaceDepartmentSummary,
     TeamSpaceManagementCapability,
 )
-from .operations_repository import KnowledgeOperationsRepository
+from .core.operations_repository import KnowledgeOperationsRepository
 from .ragflow import RagflowClient, RagflowError, RagflowNotFoundError
-from .repository import KnowledgeRepository
+from .core.repository import KnowledgeRepository
 
 if TYPE_CHECKING:  # 仅供类型注解（api 与 service 相互引用，运行时无循环导入）
     from .api import KnowledgePrincipal
 
 logger = logging.getLogger(__name__)
 
-# 上游解析超过该时长仍未完成时标记失败（与旧版 parsing_poll 默认一致）
+# 上游解析超过该时长仍未完成时标记失败
 PARSE_TIMEOUT_SECONDS = 1800.0
 # 软删除保留期（天）：远端副本暂存天数，到期由 KnowledgePurgeWorker 清理
 SOFT_DELETE_RETENTION_DAYS = 30
-# 证据最低得分阈值（与旧版 quality_baseline 默认一致，0.0 即不过滤）
+# 证据最低得分阈值（0.0 即不过滤）
 MINIMUM_EVIDENCE_SCORE = 0.0
 # 本地原文根目录（运行期目录，gitignored）
 DEFAULT_ORIGINALS_ROOT = Path("data") / "knowledge_originals"
 
-# 数据集创建与解析策略固定参数（v2 扁平配置不再承载，代码内固定）
+# 数据集创建与解析策略固定参数（扁平配置不承载，代码内固定）
 DATASET_PERMISSION = "me"
 CHUNK_METHOD = "naive"
 PARSER_CONFIG: dict[str, object] = {
@@ -91,7 +90,7 @@ PARSER_CONFIG: dict[str, object] = {
     "delimiter": "\n!?;。；！？",
     "raptor": {"use_raptor": False},
 }
-# 检索固定参数（与旧版 defaults.retrieval 默认值一致）
+# 检索固定参数
 RETRIEVAL_SIMILARITY_THRESHOLD = 0.2
 RETRIEVAL_VECTOR_SIMILARITY_WEIGHT = 0.3
 RETRIEVAL_TOP_K = 1024
@@ -155,9 +154,11 @@ _MANAGER_ACTIONS = _MAINTAINER_ACTIONS | frozenset(
 
 
 # ---------------------------------------------------------------------------
-# 本地原文存储（旧版 storage/filesystem.py 的精简版）
+# 本地原文存储
 # ---------------------------------------------------------------------------
 class OriginalStorageError(RuntimeError):
+    """原文存储异常：携带错误码与可重试标记。"""
+
     def __init__(self, code: str, message: str, *, retryable: bool = True):
         super().__init__(message)
         self.code = code
@@ -177,6 +178,8 @@ class OriginalReadHandle:
         return self.path.open("rb")
 
     def iter_bytes(self, start: int = 0, end: int | None = None) -> Iterator[bytes]:
+        """按 [start, end] 闭区间分段读取文件字节。"""
+
         remaining_end = self.size_bytes - 1 if end is None else min(end, self.size_bytes - 1)
         if start < 0 or remaining_end < start:
             return
@@ -211,6 +214,8 @@ class LocalOriginalStore:
         return value
 
     def build_key(self, base_id: str, document_id: str, filename: str) -> str:
+        """构造原文存储键：v1/{库 ID 前两位}/{库 ID}/{文档 ID}/original.{后缀}。"""
+
         base_id = self._safe_id(base_id, "base id")
         document_id = self._safe_id(document_id, "document id")
         suffix = Path(filename).suffix.lower().lstrip(".")
@@ -218,6 +223,8 @@ class LocalOriginalStore:
         return str(PurePosixPath("v1", base_id[:2], base_id, document_id, f"original.{extension}"))
 
     def _path(self, storage_key: str) -> Path:
+        """校验存储键并解析为根目录内安全路径（防穿越与符号链接）。"""
+
         pure = PurePosixPath(storage_key)
         if pure.is_absolute() or not pure.parts or any(part in {"", ".", ".."} for part in pure.parts):
             raise OriginalStorageError(
@@ -288,6 +295,8 @@ class LocalOriginalStore:
             ) from exc
 
     def open(self, storage_key: str) -> OriginalReadHandle:
+        """打开原文只读句柄；文件缺失或路径异常时抛存储异常。"""
+
         path = self._path(storage_key)
         try:
             stat = path.stat()
@@ -302,6 +311,8 @@ class LocalOriginalStore:
         return OriginalReadHandle(path, stat.st_size)
 
     def health(self) -> bool:
+        """探测根目录可写性：写入并删除一个探测文件。"""
+
         try:
             probe = self.root / f".health-{uuid.uuid4().hex}"
             probe.write_bytes(b"ok")
@@ -316,6 +327,8 @@ class LocalOriginalStore:
 # ---------------------------------------------------------------------------
 @dataclass(frozen=True)
 class KnowledgeDocumentBinary:
+    """文档二进制内容封装：供响应层按区间分段读取。"""
+
     size_bytes: int
     content_type: str
     sha256: str | None
@@ -336,6 +349,8 @@ def _matching_permission_roles(
     principal: KnowledgePrincipal,
     permissions: Iterable[Mapping[str, object]],
 ) -> list[KnowledgeBaseRole]:
+    """筛出与当前用户（本人或所在部门）匹配的授权角色。"""
+
     roles: list[KnowledgeBaseRole] = []
     for permission in permissions:
         subject_type = str(permission.get("subject_type", ""))
@@ -380,6 +395,8 @@ def effective_role(
 
 
 def allowed_actions(role: KnowledgeBaseRole | None) -> list[AllowedAction]:
+    """按角色映射允许的操作清单（排序后返回）。"""
+
     if role == KnowledgeBaseRole.MANAGER:
         actions = _MANAGER_ACTIONS
     elif role == KnowledgeBaseRole.MAINTAINER:
@@ -392,6 +409,8 @@ def allowed_actions(role: KnowledgeBaseRole | None) -> list[AllowedAction]:
 
 
 class KnowledgeServiceError(RuntimeError):
+    """知识服务业务异常：携带错误码、HTTP 状态码与可重试标记。"""
+
     def __init__(
         self,
         code: str,
@@ -415,6 +434,8 @@ def _map_upstream_status(run: object) -> str:
 # 服务主体
 # ---------------------------------------------------------------------------
 class KnowledgeService:
+    """知识模块核心服务：组合本地仓储投影与 Ragflow 上游操作。"""
+
     def __init__(
         self,
         repository: KnowledgeRepository,
@@ -437,10 +458,14 @@ class KnowledgeService:
         self._refresh_min_interval = 15.0
 
     async def _repo(self, method, *args, **kwargs):
+        """将同步仓储调用放入线程池执行，避免阻塞事件循环。"""
+
         return await run_in_threadpool(method, *args, **kwargs)
 
     @staticmethod
     def _upstream_error(exc: RagflowError) -> KnowledgeServiceError:
+        """将 Ragflow 上游异常统一转换为服务层业务错误（可重试→503）。"""
+
         status_code = 503 if exc.retryable else 502
         logger.warning("知识底座上游错误: %s", exc)
         prefix = "知识底座暂时不可用" if exc.retryable else "知识底座请求失败"
@@ -456,9 +481,9 @@ class KnowledgeService:
     async def _ensure_shared_dataset(self) -> str:
         """查找或创建共享数据集，返回其 ID（进程级缓存）。
 
-        创建参数与旧版按库建数据集保持一致（embedding 模型取知识库配置，
-        缺省用 Ragflow 租户默认模型）。多进程并发创建的竞态由"失败后重查"
-        兜底：Ragflow 数据集名称全局唯一，后创建方会收到错误，重查即可复用。
+        创建参数：embedding 模型取知识库配置，缺省用 Ragflow 租户默认模型。
+        多进程并发创建的竞态由"失败后重查"兜底：Ragflow 数据集名称全局唯一，
+        后创建方会收到错误，重查即可复用。
         """
         global _shared_dataset_id
         if _shared_dataset_id:
@@ -555,6 +580,11 @@ class KnowledgeService:
         principal: KnowledgePrincipal,
         action: AllowedAction = AllowedAction.VIEW,
     ) -> tuple[dict[str, Any], KnowledgeBaseRole]:
+        """校验用户对知识库的操作权限，返回 (库记录, 有效角色)。
+
+        无权限或已软删除按 404 处理（不暴露资源存在性），操作越权按 403。
+        """
+
         base = await self._repo(self.repository.get_base, base_id)
         if base is None:
             raise KnowledgeServiceError(
@@ -577,6 +607,8 @@ class KnowledgeService:
         return base, role
 
     async def _has_team_management_grant(self, principal: KnowledgePrincipal) -> bool:
+        """判断用户是否在公共空间管理白名单（admin 直通，结果按用户缓存）。"""
+
         if principal.username == "admin":
             return True
         if principal.user_id not in self._team_manager_cache:
@@ -586,6 +618,8 @@ class KnowledgeService:
         return self._team_manager_cache[principal.user_id]
 
     async def _has_team_viewer_grant(self, principal: KnowledgePrincipal) -> bool:
+        """判断用户是否在公共空间查看白名单（admin 直通，结果按用户缓存）。"""
+
         if principal.username == "admin":
             return True
         if principal.user_id not in self._team_viewer_cache:
@@ -626,6 +660,8 @@ class KnowledgeService:
     async def _base_summary(
         self, base: Mapping[str, Any], role: KnowledgeBaseRole
     ) -> KnowledgeBaseSummary:
+        """组装知识库摘要：含文档数与当前角色可用操作。"""
+
         count = await self._repo(self.repository.count_documents, str(base["id"]))
         return KnowledgeBaseSummary(
             id=str(base["id"]),
@@ -646,6 +682,8 @@ class KnowledgeService:
         role: KnowledgeBaseRole,
         request_id: str,
     ) -> DocumentSummary:
+        """将文档行转换为摘要模型，并归一化错误与进度字段。"""
+
         error = None
         if document.get("error_code") or document.get("error_message"):
             error = KnowledgeErrorResponse(
@@ -682,6 +720,8 @@ class KnowledgeService:
     def _operation_summary(
         operation: Mapping[str, Any], request_id: str
     ) -> OperationSummary:
+        """将操作记录行转换为摘要模型，并归一化错误与进度字段。"""
+
         error = None
         if operation.get("error_code") or operation.get("error_message"):
             error = KnowledgeErrorResponse(
@@ -715,6 +755,8 @@ class KnowledgeService:
     async def list_bases(
         self, principal: KnowledgePrincipal, *, page: int, page_size: int
     ) -> KnowledgeBaseListResponse:
+        """分页列出用户可见的知识库，附带公共空间管理能力信息。"""
+
         is_admin = principal.username == "admin"
         has_team_management_grant = await self._has_team_management_grant(principal)
         departments: list[TeamSpaceDepartmentSummary] = []
@@ -766,6 +808,8 @@ class KnowledgeService:
     async def get_base(
         self, base_id: str, principal: KnowledgePrincipal
     ) -> KnowledgeBaseSummary:
+        """查询单个知识库详情（含角色与可用操作）。"""
+
         base, role = await self._authorized_base(base_id, principal)
         return await self._base_summary(base, role)
 
@@ -779,6 +823,8 @@ class KnowledgeService:
         request_id: str,
         department_id: str | None = None,
     ) -> KnowledgeBaseSummary:
+        """创建知识库：公共空间需管理白名单且归属本部门；纯本地建库，走共享数据集。"""
+
         del request_id
         target_department_id: str | None = None
         requested_department_id = (department_id or "").strip() or None
@@ -864,8 +910,8 @@ class KnowledgeService:
     ) -> KnowledgeBaseSummary:
         """更新知识库名称与描述。
 
-        上游数据集名称由 base_id 派生（不可变），新版行内 update_dataset
-        契约亦不含 description，故本操作仅更新本地投影。
+        上游数据集名称由 base_id 派生（不可变），update_dataset 契约亦
+        不含 description，故本操作仅更新本地投影。
         """
         del request_id
         base, role = await self._authorized_base(
@@ -910,6 +956,8 @@ class KnowledgeService:
     async def list_folders(
         self, base_id: str, principal: KnowledgePrincipal
     ) -> FolderListResponse:
+        """列出知识库内全部文件夹（含文档与子文件夹计数）。"""
+
         _, role = await self._authorized_base(base_id, principal)
         rows = await self._repo(self.repository.list_folders, base_id)
         return FolderListResponse(
@@ -937,6 +985,8 @@ class KnowledgeService:
         parent_id: str | None,
         principal: KnowledgePrincipal,
     ) -> FolderSummary:
+        """创建文件夹：校验层级深度（最多 5 层）与同级重名。"""
+
         _, role = await self._authorized_base(
             base_id, principal, AllowedAction.CREATE_FOLDER
         )
@@ -1129,6 +1179,8 @@ class KnowledgeService:
     async def update_folder(
         self, *, folder_id: str, name: str, principal: KnowledgePrincipal
     ) -> FolderSummary:
+        """重命名文件夹，同级重名时冲突报错。"""
+
         folder = await self._repo(self.repository.get_folder, folder_id)
         if folder is None:
             raise KnowledgeServiceError(
@@ -1180,6 +1232,8 @@ class KnowledgeService:
     async def delete_folder(
         self, *, folder_id: str, principal: KnowledgePrincipal
     ) -> None:
+        """删除空文件夹；非空文件夹拒绝删除。"""
+
         folder = await self._repo(self.repository.get_folder, folder_id)
         if folder is None:
             raise KnowledgeServiceError(
@@ -1201,6 +1255,8 @@ class KnowledgeService:
     async def get_permissions(
         self, base_id: str, principal: KnowledgePrincipal
     ) -> PermissionListResponse:
+        """查询知识库授权列表（需管理权限）。"""
+
         await self._authorized_base(
             base_id, principal, AllowedAction.MANAGE_PERMISSIONS
         )
@@ -1223,6 +1279,8 @@ class KnowledgeService:
         principal: KnowledgePrincipal,
         items: list[PermissionEntry],
     ) -> PermissionListResponse:
+        """全量替换授权列表：主体去重、所有者权限不可变、公共空间高角色仅 admin 可变更。"""
+
         base, _ = await self._authorized_base(
             base_id, principal, AllowedAction.MANAGE_PERMISSIONS
         )
@@ -1300,6 +1358,8 @@ class KnowledgeService:
         subject_type: str,
         query: str,
     ) -> PermissionSubjectListResponse:
+        """按类型与关键字搜索可授权的用户或部门。"""
+
         await self._authorized_base(
             base_id, principal, AllowedAction.MANAGE_PERMISSIONS
         )
@@ -1539,6 +1599,8 @@ class KnowledgeService:
         query: str | None,
         request_id: str,
     ) -> DocumentListResponse:
+        """分页列出知识库文档；返回前先刷新上游解析状态。"""
+
         base, role = await self._authorized_base(base_id, principal)
         await self.refresh_base_documents(base, request_id=request_id)
         rows = await self._repo(
@@ -1837,6 +1899,8 @@ class KnowledgeService:
         principal: KnowledgePrincipal,
         request_id: str,
     ) -> DocumentSummary:
+        """移动文档到目标文件夹（目标须属于同一知识库）。"""
+
         document = await self._repo(self.repository.get_document, document_id)
         if document is None:
             raise KnowledgeServiceError(
@@ -2072,11 +2136,11 @@ class KnowledgeService:
                 )
                 source = handle.open_binary()
             else:
-                legacy = await self.ragflow.download_document(
+                downloaded = await self.ragflow.download_document(
                     dataset_id=dataset_id,
                     document_id=str(remote_id),
                 )
-                source = io.BytesIO(legacy.content)
+                source = io.BytesIO(downloaded.content)
             if remote_id:
                 await self.ragflow.delete_documents(
                     dataset_id=dataset_id,
@@ -2346,6 +2410,8 @@ class KnowledgeService:
         page_size: int,
         request_id: str,
     ) -> OperationListResponse:
+        """分页查询当前用户发起的操作记录。"""
+
         rows = await self._repo(
             self.repository.list_operations,
             created_by=principal.user_id,
@@ -2363,6 +2429,8 @@ class KnowledgeService:
     async def get_session_scope(
         self, *, session_id: str, principal: KnowledgePrincipal
     ) -> SessionKnowledgeScopeResponse:
+        """读取会话知识范围，并剔除已失去权限的知识库。"""
+
         session = await self._repo(self.repository.db.get_session, session_id)
         if session is None or session.username != principal.username:
             raise KnowledgeServiceError(
@@ -2398,6 +2466,8 @@ class KnowledgeService:
         principal: KnowledgePrincipal,
         base_ids: list[str],
     ) -> SessionKnowledgeScopeResponse:
+        """替换会话知识范围：要求所选知识库向量模型一致。"""
+
         session = await self._repo(self.repository.db.get_session, session_id)
         if session is None or session.username != principal.username:
             raise KnowledgeServiceError(

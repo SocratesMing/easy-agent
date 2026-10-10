@@ -8,9 +8,9 @@ import io
 import pytest
 
 from easy_agent.knowledges.api import KnowledgePrincipal
-from easy_agent.knowledges.config import KnowledgeConfig
-from easy_agent.knowledges.models import KnowledgeBaseVisibility
-from easy_agent.knowledges.repository import KnowledgeRepository
+from easy_agent.knowledges.core.config import KnowledgeConfig
+from easy_agent.knowledges.core.models import KnowledgeBaseVisibility
+from easy_agent.knowledges.core.repository import KnowledgeRepository
 from easy_agent.knowledges.service import (
     SHARED_DATASET_NAME,
     KnowledgeService,
@@ -323,12 +323,12 @@ async def test_retrieve_public_shared_base_has_no_filter(db, tmp_path):
     assert ragflow.retrieve_calls[0]["meta_fields"] is None
 
 
-async def test_retrieve_legacy_base_uses_own_dataset_without_filter(db, tmp_path):
+async def test_retrieve_base_with_own_dataset_without_filter(db, tmp_path):
     ragflow = _FakeRagflow()
     service = _make_service(db, ragflow, tmp_path)
     base = _create_base_row(db, space_type="personal", owner_user_id="u-1")
     repository = KnowledgeRepository(db)
-    repository.update_base(base["id"], remote_dataset_id="ds-legacy")
+    repository.update_base(base["id"], remote_dataset_id="ds-own")
     _add_document(
         db, str(base["id"]), name="c.txt", status="ready", remote_document_id="rd-3"
     )
@@ -343,14 +343,14 @@ async def test_retrieve_legacy_base_uses_own_dataset_without_filter(db, tmp_path
     )
 
     call = ragflow.retrieve_calls[0]
-    # 存量自有数据集库：沿用旧数据集，且不打标签过滤（旧文档无标签）
-    assert call["dataset_ids"] == ["ds-legacy"]
+    # 存量自有数据集库：沿用自有数据集，且不打标签过滤（旧文档无标签）
+    assert call["dataset_ids"] == ["ds-own"]
     assert call["meta_fields"] is None
     # 未触发共享数据集查找
     assert ragflow.listed_datasets_calls == []
 
 
-async def test_dataset_id_for_prefers_legacy_dataset(db, tmp_path):
+async def test_dataset_id_for_prefers_own_dataset(db, tmp_path):
     ragflow = _FakeRagflow()
     service = _make_service(db, ragflow, tmp_path)
 
@@ -392,13 +392,13 @@ async def test_refresh_shared_base_polls_only_active_documents(db, tmp_path):
     assert len(ragflow.document_queries) == 1
 
 
-async def test_refresh_legacy_base_keeps_full_list_behavior(db, tmp_path):
+async def test_refresh_base_with_own_dataset_keeps_full_list_behavior(db, tmp_path):
     ragflow = _FakeRagflow()
     service = _make_service(db, ragflow, tmp_path)
     base = _create_base_row(db, space_type="personal", owner_user_id="u-1")
     # 绑定自有数据集后必须用更新后的行（refresh 按传入的 base 字典路由）
     base = KnowledgeRepository(db).update_base(
-        base["id"], remote_dataset_id="ds-legacy"
+        base["id"], remote_dataset_id="ds-own"
     )
     _add_document(
         db, str(base["id"]), name="x.txt", status="ready",

@@ -11,11 +11,11 @@ from dataclasses import dataclass
 
 from fastapi import HTTPException, Request
 
-from ..db import Database
-from .api import get_knowledge_principal
-from .config import KnowledgeConfig
-from .repository import KnowledgeRepository
-from .service import KnowledgeService, KnowledgeServiceError
+from ...db import Database
+from ..api import get_knowledge_principal
+from ..core.config import KnowledgeConfig
+from ..core.repository import KnowledgeRepository
+from ..service import KnowledgeService, KnowledgeServiceError
 
 
 _KNOWLEDGE_CHAT_TITLE_PREFIX = "[知识库问答]"
@@ -39,6 +39,8 @@ class KnowledgeChatContext:
 
     @property
     def initial_events(self) -> list[dict]:
+        """有证据或告警时产出首条 knowledge_evidence 事件，否则不发。"""
+
         if not self.evidence and not self.warnings:
             return []
         return [
@@ -51,6 +53,8 @@ class KnowledgeChatContext:
 
     @property
     def assistant_metadata(self) -> dict:
+        """待合并进最终 assistant 消息的证据元数据；无内容时为空。"""
+
         if self.context is None and not self.evidence and not self.warnings:
             return {}
         return {
@@ -60,14 +64,20 @@ class KnowledgeChatContext:
 
 
 def is_knowledge_panel_title(title: str) -> bool:
+    """判断会话标题是否属于知识面板问答（供聊天路由分流）。"""
+
     return (title or "").startswith(_KNOWLEDGE_CHAT_TITLE_PREFIX)
 
 
 def knowledge_panel_system_prompt() -> str:
+    """返回知识面板问答专用的受限系统提示词。"""
+
     return _KNOWLEDGE_CHAT_SYSTEM_PROMPT
 
 
 def empty_knowledge_context() -> str:
+    """构造空目录、空依据的兜底知识上下文（未绑定或无检索结果时使用）。"""
+
     return _build_knowledge_context([], [])
 
 

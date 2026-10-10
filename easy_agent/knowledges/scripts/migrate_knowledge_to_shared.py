@@ -7,14 +7,14 @@
 
 本脚本处理存量数据：
 1. 遍历仍绑定自有数据集（remote_dataset_id 非空）的知识库；
-2. 逐文档迁入共享数据集（本地原文优先，缺失时从旧数据集下载），
+2. 逐文档迁入共享数据集（本地原文优先，缺失时从原数据集下载），
    个人库文档补打 owner_user_id 标签；
 3. 某库全部文档迁移成功后清空其 remote_dataset_id（此后走共享模式）；
-4. 汇总旧数据集，交互确认后批量删除（有失败文档的库保留旧数据集）。
+4. 汇总原数据集，交互确认后批量删除（有失败文档的库保留原数据集）。
 
 用法：
-    uv run python scripts/migrate_knowledge_to_shared.py            # 预览（dry-run）
-    uv run python scripts/migrate_knowledge_to_shared.py --apply    # 执行迁移
+    uv run python easy_agent/knowledges/scripts/migrate_knowledge_to_shared.py            # 预览（dry-run）
+    uv run python easy_agent/knowledges/scripts/migrate_knowledge_to_shared.py --apply    # 执行迁移
 
 幂等可重跑：文档迁移成功后本地 remote_document_id 已指向共享数据集，
 重跑时自动跳过；有失败文档的库修复后重跑即可。
@@ -29,15 +29,15 @@ import sys
 from pathlib import Path
 from typing import Any
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from easy_agent.db.database import Database, init_database  # noqa: E402
-from easy_agent.knowledges.config import KnowledgeConfig  # noqa: E402
-from easy_agent.knowledges.models import DocumentStatus  # noqa: E402
+from easy_agent.knowledges.core.config import KnowledgeConfig  # noqa: E402
+from easy_agent.knowledges.core.models import DocumentStatus  # noqa: E402
 from easy_agent.knowledges.ragflow import RagflowClient, RagflowError  # noqa: E402
-from easy_agent.knowledges.repository import KnowledgeRepository  # noqa: E402
+from easy_agent.knowledges.core.repository import KnowledgeRepository  # noqa: E402
 from easy_agent.knowledges.service import (  # noqa: E402
     CHUNK_METHOD,
     PARSER_CONFIG,
@@ -50,7 +50,7 @@ from easy_agent.utils.env_loader import load_project_env  # noqa: E402
 _PAGE_SIZE = 200
 
 
-def _load_legacy_bases(db: Database) -> list[dict[str, Any]]:
+def _load_unmigrated_bases(db: Database) -> list[dict[str, Any]]:
     """读取仍绑定自有数据集的未删除知识库（repository 未提供全量列表，走直查）。"""
     with db.get_connection() as conn:
         cursor = conn.cursor()
@@ -149,12 +149,12 @@ async def _migrate_document(
         if not remote_id:
             return "failed", "本地原文不可用且无远端副本"
         try:
-            legacy = await ragflow.download_document(
+            downloaded = await ragflow.download_document(
                 dataset_id=old_dataset_id, document_id=remote_id
             )
         except RagflowError as exc:
-            return "failed", f"从旧数据集下载失败: {exc}"
-        source = io.BytesIO(legacy.content)
+            return "failed", f"从原数据集下载失败: {exc}"
+        source = io.BytesIO(downloaded.content)
 
     try:
         try:
@@ -220,7 +220,7 @@ async def run(args: argparse.Namespace) -> int:
     store = LocalOriginalStore()
     service = KnowledgeService(repository, ragflow, config, original_store=store)
 
-    bases = _load_legacy_bases(db)
+    bases = _load_unmigrated_bases(db)
     if not bases:
         print("没有需要迁移的存量知识库（均未绑定自有数据集）")
         return 0

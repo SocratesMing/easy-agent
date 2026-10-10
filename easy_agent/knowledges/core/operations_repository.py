@@ -1,9 +1,4 @@
-"""知识库审计事件与任务计数的持久化访问（对照旧版精简）。
-
-裁剪内容：任务队列写入/认领/心跳（新版上传为同步内联流程，不再落
-knowledge_tasks）、reconciliation / alert / runtime_heartbeat 系列方法
-（对应表已随新版 schema 一并裁剪）。
-"""
+"""知识库审计事件与任务计数的持久化访问。"""
 
 from __future__ import annotations
 
@@ -13,7 +8,7 @@ from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any
 
-from ..db import Database
+from ...db import Database
 
 
 _SENSITIVE_MARKERS = (
@@ -31,10 +26,6 @@ _SENSITIVE_MARKERS = (
 
 def utc_now() -> str:
     return datetime.now(UTC).isoformat()
-
-
-def _row(row) -> dict[str, Any] | None:
-    return dict(row) if row is not None else None
 
 
 def _safe_details(value: object, *, max_bytes: int = 4096) -> str:
@@ -121,4 +112,4 @@ class KnowledgeOperationsRepository:
         return {"id": event_id, "request_id": request_id, "created_at": timestamp}
 
 
-__all__ = ["KnowledgeOperationsRepository", "utc_now"]
+__all__ = ["KnowledgeOperationsRepository"]

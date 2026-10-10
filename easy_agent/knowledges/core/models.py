@@ -1,7 +1,7 @@
-"""新版知识库对外 DTO 契约（/agent/knowledge/v1，字段与旧版前端契约一致）。
+"""知识库对外 DTO 契约（/agent/knowledge/v1）。
 
 只暴露 EasyAgent 本地标识与稳定领域状态；RAGFlow 的 ID、响应码、解析器
-字段与端点不越过 BFF 边界。领域枚举（旧版 domain 包）合并至本文件。
+字段与端点不越过 BFF 边界。领域枚举定义于本文件。
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
 
 
 # ---------------------------------------------------------------------------
-# 领域枚举（取值与旧版完全一致）
+# 领域枚举
 # ---------------------------------------------------------------------------
 class KnowledgeBaseStatus(str, Enum):
     CREATING = "creating"
@@ -119,11 +119,6 @@ class KnowledgeErrorResponse(ContractModel):
     details: dict[str, Any] = Field(default_factory=dict)
     retryable: StrictBool = False
     request_id: str
-
-
-class CursorPage(ContractModel):
-    next_cursor: str | None = None
-    has_more: StrictBool = False
 
 
 class PageInfo(ContractModel):
@@ -574,7 +569,6 @@ __all__ = [
     "AskResponse",
     "AskWarningEvent",
     "ConversationTurn",
-    "CursorPage",
     "DocumentListResponse",
     "DocumentMoveRequest",
     "DocumentStatus",

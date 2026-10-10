@@ -144,18 +144,6 @@ denied_dirs:
   - path: "/user-skills"
     operations: ["write"]
 
-# ===== Small Model Configuration =====
-# Embedding/reranking model metadata is parsed by easy_agent/small_model.py.
-small_models:
-  embedding:
-    provider: "ragflow"
-    model: "${RAGFLOW_EMBEDDING_MODEL:-bge-m3:latest@Ollama}"
-    api_base: "${RAGFLOW_BASE_URL:-http://127.0.0.1:9380}"
-  reranker:
-    provider: "ragflow"
-    model: "${RAGFLOW_RERANK_MODEL:-}"
-    api_base: "${RAGFLOW_BASE_URL:-http://127.0.0.1:9380}"
-
 # ===== Knowledge Base Configuration =====
 # The independent easy_agent/knowledge package owns this schema and lifecycle.
 knowledge:
@@ -333,7 +321,7 @@ knowledge:
     dataset:
       # Keep upstream private; EasyAgent remains the authorization authority.
       permission: "${RAGFLOW_DATASET_PERMISSION:-me}"
-      embedding_model: ""  # Injected from small_models.embedding
+      embedding_model: ""
     parsing:
       default_profile: standard
       profiles:
@@ -382,7 +370,7 @@ knowledge:
       similarity_threshold: 0.2
       vector_similarity_weight: 0.3
       top_k: 1024
-      rerank_id: ""  # Injected from small_models.reranker
+      rerank_id: ""
       require_non_empty_document_filter: true
       enforce_single_embedding_model: true
       # Never truncate or fall back to a broader dataset-only query.

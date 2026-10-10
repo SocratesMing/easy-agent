@@ -1,4 +1,4 @@
-"""RAG 平台 HTTP API 客户端（新版 knowledges 模块）。
+"""RAG 平台 HTTP API 客户端（knowledges 模块）。
 
 设计约定:
 - 接口路径、HTTP 方法、请求参数按《RAG平台应用接入接口文档 v1.1.1》
@@ -248,6 +248,8 @@ class RagflowClient:
 
     @staticmethod
     def _is_json(response: httpx.Response) -> bool:
+        """按 Content-Type 判断响应是否 JSON（含 application/*+json）。"""
+
         media_type = response.headers.get("content-type", "").split(";", 1)[0]
         media_type = media_type.strip().lower()
         return media_type == "application/json" or (

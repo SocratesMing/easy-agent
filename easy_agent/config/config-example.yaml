@@ -157,12 +157,12 @@ denied_dirs:
     operations: ["write"]
 
 # ===== Knowledge Configuration (RAGFlow) =====
-# v2 知识库模块（knowledges 包，对接本地 Ragflow v0.26.3 标准 API）。
+# 知识库模块（knowledges 包，对接本地 Ragflow v0.26.3 标准 API）。
 # 扁平结构：仅认以下键。解析策略 / 检索参数 / 上传安全开关为模块内固定值。
 # fail-closed：enabled 且 RAGFLOW_BASE_URL / RAGFLOW_API_KEY 为空或未解析
 # 占位符残留时，后端拒绝启动。
 knowledge:
-  # 实现选择：legacy（旧版 knowledge 包，配置结构见 tests/fixtures/knowledge-config.yaml）| v2（knowledges 包）
+  # 实现标识（仅支持 v2，其他值告警回退）
   implementation: v2
   enabled: "${KNOWLEDGE_ENABLED:-false}"
   base_url: "${RAGFLOW_BASE_URL:-}"

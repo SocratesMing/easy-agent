@@ -1,18 +1,15 @@
 """知识工程 BFF 端点（/agent/knowledge/v1，按前端实际调用面裁剪）。
 
-与旧版 ``easy_agent/knowledge/api.py`` 的差异：
-- 仅保留前端工作台与聊天链路用到的端点（能力/恢复/单查/独立检索等
-  无调用者端点已删除）；
-- 身份解析（KnowledgePrincipal）内联本文件，不再单列 auth 模块；
-- 管理员运维端点只保留公共空间管理/查看白名单（/admin/*），
-  原 ops_api 模块已删除；
-- 原文存储固定为本地落盘（``app.state.knowledge_original_store``）；
-- 问答质量基线（无证据文案/提示词版本/引用校验）内联本文件。
+端点只保留前端工作台与聊天链路用到的能力；身份解析（KnowledgePrincipal）
+内联本文件；管理员运维端点只保留公共空间管理/查看白名单（/admin/*）；
+原文存储固定为本地落盘（``app.state.knowledge_original_store``）；
+问答质量基线（无证据文案/提示词版本/引用校验）内联本文件。
 """
 
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 import uuid
 from dataclasses import dataclass
@@ -43,8 +40,8 @@ from ..models.api import ChatRequest
 from ..models.db import SessionModel
 from ..services import cancel_stream_task, get_agent_config, remove_session_agent
 from ..utils.auth import decode_access_token
-from .config import KnowledgeConfig
-from .models import (
+from .core.config import KnowledgeConfig
+from .core.models import (
     AskRequest,
     AskResponse,
     DocumentListResponse,
@@ -82,17 +79,19 @@ from .models import (
     TeamSpaceViewerUpdateRequest,
     TeamSpaceViewerUpdateResponse,
 )
-from .operations_repository import KnowledgeOperationsRepository
+from .core.operations_repository import KnowledgeOperationsRepository
 from .ragflow import RagflowError
-from .repository import KnowledgeRepository
+from .core.repository import KnowledgeRepository
 from .service import KnowledgeService, KnowledgeServiceError
 
+
+logger = logging.getLogger("easy_agent.knowledge.upload")
 
 router = APIRouter(prefix="/agent/knowledge/v1", tags=["knowledge-engineering"])
 
 _KNOWLEDGE_CHAT_TITLE_PREFIX = "[知识库问答]"
 
-# 问答质量基线（旧版 quality_baseline 配置段的固定值）
+# 问答质量基线
 NO_ANSWER_TEXT = "当前授权知识范围内没有足够证据回答该问题。"
 PROMPT_VERSION = "knowledge-answer-v1"
 
@@ -104,6 +103,8 @@ _CITATION_RE = re.compile(r"\[知识依据(\d+)\]")
 # ---------------------------------------------------------------------------
 @dataclass(frozen=True, slots=True)
 class KnowledgePrincipal:
+    """请求级身份：由 Bearer 令牌解析出的用户、用户名与部门。"""
+
     user_id: str
     username: str
     department_id: str | None
@@ -225,10 +226,14 @@ async def _ensure_knowledge_chat_session(
 
 
 def _get_knowledge_config(request: Request) -> KnowledgeConfig:
+    """读取应用级知识模块配置，未注入时回退默认配置。"""
+
     return getattr(request.app.state, "knowledge_config", KnowledgeConfig())
 
 
 def _request_id(request: Request) -> str:
+    """解析请求追踪 ID：优先请求状态，其次 X-Request-Id 头，否则随机生成。"""
+
     state_request_id = getattr(request.state, "request_id", "")
     if state_request_id:
         return str(state_request_id)
@@ -242,6 +247,8 @@ def _service(
     request: Request,
     db: Annotated[Database, Depends(get_database)],
 ) -> KnowledgeService:
+    """构建知识服务实例；模块未启用或 Ragflow 客户端未就绪时返回 503。"""
+
     config = _get_knowledge_config(request)
     if not config.enabled:
         raise HTTPException(
@@ -261,6 +268,8 @@ def _service(
 
 
 async def _call(awaitable):
+    """统一执行服务调用，将业务错误转换为带错误码的 HTTP 异常。"""
+
     try:
         return await awaitable
     except KnowledgeServiceError as exc:
@@ -282,6 +291,8 @@ async def get_capabilities(
     request: Request,
     principal: Annotated[KnowledgePrincipal, Depends(get_knowledge_principal)],
 ) -> KnowledgeCapabilitiesResponse:
+    """查询知识模块能力开关与特性清单。"""
+
     del principal
     config = _get_knowledge_config(request)
     if not config.enabled:
@@ -307,6 +318,8 @@ async def get_status(
     request: Request,
     principal: Annotated[KnowledgePrincipal, Depends(get_knowledge_principal)],
 ) -> KnowledgeStatusResponse:
+    """查询知识模块整体状态：配置、Ragflow 与原文存储逐项探测。"""
+
     del principal
     config = _get_knowledge_config(request)
     if not config.enabled:
@@ -344,6 +357,8 @@ async def list_bases(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
 ) -> KnowledgeBaseListResponse:
+    """分页列出当前用户有权限访问的知识库。"""
+
     return await _call(service.list_bases(principal, page=page, page_size=page_size))
 
 
@@ -358,6 +373,8 @@ async def create_base(
     service: Annotated[KnowledgeService, Depends(_service)],
     principal: Annotated[KnowledgePrincipal, Depends(get_knowledge_principal)],
 ) -> KnowledgeBaseSummary:
+    """创建知识库（个人空间/公共空间），公共空间需管理白名单授权。"""
+
     return await _call(
         service.create_base(
             principal=principal,
@@ -378,6 +395,8 @@ async def update_base(
     service: Annotated[KnowledgeService, Depends(_service)],
     principal: Annotated[KnowledgePrincipal, Depends(get_knowledge_principal)],
 ) -> KnowledgeBaseSummary:
+    """更新知识库名称与描述。"""
+
     return await _call(
         service.update_base(
             base_id=base_id,
@@ -396,6 +415,8 @@ async def delete_base(
     service: Annotated[KnowledgeService, Depends(_service)],
     principal: Annotated[KnowledgePrincipal, Depends(get_knowledge_principal)],
 ) -> Response:
+    """软删除知识库，远端副本由清理 worker 延迟删除。"""
+
     await _call(
         service.delete_base(
             base_id=base_id,
@@ -415,6 +436,8 @@ async def list_folders(
     service: Annotated[KnowledgeService, Depends(_service)],
     principal: Annotated[KnowledgePrincipal, Depends(get_knowledge_principal)],
 ) -> FolderListResponse:
+    """列出知识库内的全部文件夹。"""
+
     return await _call(service.list_folders(base_id, principal))
 
 
@@ -429,6 +452,8 @@ async def create_folder(
     service: Annotated[KnowledgeService, Depends(_service)],
     principal: Annotated[KnowledgePrincipal, Depends(get_knowledge_principal)],
 ) -> FolderSummary:
+    """在知识库内创建文件夹（层级最多 5 层）。"""
+
     return await _call(
         service.create_folder(
             base_id=base_id,
@@ -464,6 +489,8 @@ async def update_folder(
     service: Annotated[KnowledgeService, Depends(_service)],
     principal: Annotated[KnowledgePrincipal, Depends(get_knowledge_principal)],
 ) -> FolderSummary:
+    """重命名文件夹。"""
+
     return await _call(
         service.update_folder(
             folder_id=folder_id, name=payload.name, principal=principal
@@ -477,6 +504,8 @@ async def delete_folder(
     service: Annotated[KnowledgeService, Depends(_service)],
     principal: Annotated[KnowledgePrincipal, Depends(get_knowledge_principal)],
 ) -> Response:
+    """删除文件夹（仅允许删除空文件夹）。"""
+
     await _call(service.delete_folder(folder_id=folder_id, principal=principal))
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
@@ -497,6 +526,8 @@ async def list_documents(
     q: str | None = Query(default=None, max_length=200),
     direct_only: bool = Query(default=False),
 ) -> DocumentListResponse:
+    """分页列出知识库文档，支持状态过滤与关键字搜索。"""
+
     return await _call(
         service.list_documents(
             base_id=base_id,
@@ -513,6 +544,8 @@ async def list_documents(
 
 
 def _upload_size(file: UploadFile) -> int:
+    """获取上传文件的字节大小，读取后恢复原文件指针位置。"""
+
     position = file.file.tell()
     file.file.seek(0, 2)
     size = file.file.tell()
@@ -535,11 +568,15 @@ _DOWNLOAD_CONTENT_TYPES = {
 
 
 def _download_content_type(filename: str, fallback: str) -> str:
+    """按文件后缀推断下载响应的 Content-Type，未知后缀回退给定值。"""
+
     suffix = "." + filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
     return _DOWNLOAD_CONTENT_TYPES.get(suffix, fallback or "application/octet-stream")
 
 
 def _parse_single_range(value: str, size: int) -> tuple[int, int]:
+    """解析单区间 Range 头为闭区间 [start, end]，非法值抛 ValueError。"""
+
     match = re.fullmatch(r"bytes=(\d*)-(\d*)", value.strip())
     if not match or "," in value or size <= 0:
         raise ValueError("invalid range")
@@ -575,6 +612,8 @@ async def upload_document(
     relative_path: Annotated[str | None, Form(max_length=1024)] = None,
     idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
 ) -> DocumentUploadAccepted:
+    """上传单个文档：先落盘原文再提交上游解析，返回 202 受理。"""
+
     limit = service.config.limits.max_files_per_request
     if len(files) != 1 or len(files) > limit:
         raise HTTPException(
@@ -586,31 +625,53 @@ async def upload_document(
             },
         )
     file = files[0]
-    size_bytes = await run_in_threadpool(_upload_size, file)
-    if size_bytes > service.config.limits.max_request_size_mb * 1024 * 1024:
-        raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail={
-                "code": "KNOWLEDGE_REQUEST_TOO_LARGE",
-                "message": "上传请求超过限制",
-                "retryable": False,
-            },
+    filename = file.filename or "<未命名>"
+    try:
+        size_bytes = await run_in_threadpool(_upload_size, file)
+        if size_bytes > service.config.limits.max_request_size_mb * 1024 * 1024:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail={
+                    "code": "KNOWLEDGE_REQUEST_TOO_LARGE",
+                    "message": "上传请求超过限制",
+                    "retryable": False,
+                },
+            )
+        await file.seek(0)
+        accepted = await _call(
+            service.upload_document(
+                base_id=base_id,
+                folder_id=folder_id,
+                filename=file.filename or "",
+                content_type=file.content_type or "application/octet-stream",
+                size_bytes=size_bytes,
+                content=file.file,
+                principal=principal,
+                request_id=_request_id(request),
+                idempotency_key=idempotency_key,
+                relative_path=relative_path,
+            )
         )
-    await file.seek(0)
-    return await _call(
-        service.upload_document(
-            base_id=base_id,
-            folder_id=folder_id,
-            filename=file.filename or "",
-            content_type=file.content_type or "application/octet-stream",
-            size_bytes=size_bytes,
-            content=file.file,
-            principal=principal,
-            request_id=_request_id(request),
-            idempotency_key=idempotency_key,
-            relative_path=relative_path,
+    except HTTPException as exc:
+        detail = exc.detail if isinstance(exc.detail, dict) else {}
+        logger.warning(
+            "[知识库] 文档上传失败 | 文件=%s | 知识库=%s | 用户=%s | %s | %s",
+            filename,
+            base_id,
+            principal.username,
+            detail.get("code") or f"HTTP_{exc.status_code}",
+            detail.get("message") or (exc.detail if isinstance(exc.detail, str) else ""),
         )
+        raise
+    logger.info(
+        "[知识库] 文档上传成功 | 文件=%s | 知识库=%s | 用户=%s | 文档ID=%s | 大小=%dKB",
+        filename,
+        base_id,
+        principal.username,
+        accepted.document.id,
+        max(size_bytes, 0) // 1024,
     )
+    return accepted
 
 
 @router.patch("/documents/{document_id}", response_model=DocumentSummary)
@@ -621,6 +682,8 @@ async def move_document(
     service: Annotated[KnowledgeService, Depends(_service)],
     principal: Annotated[KnowledgePrincipal, Depends(get_knowledge_principal)],
 ) -> DocumentSummary:
+    """移动文档到指定文件夹。"""
+
     return await _call(
         service.move_document(
             document_id=document_id,
@@ -639,6 +702,8 @@ async def get_document_content(
     principal: Annotated[KnowledgePrincipal, Depends(get_knowledge_principal)],
     disposition: Literal["inline", "attachment"] = Query(default="inline"),
 ) -> Response:
+    """下载或在线预览文档原文，支持单区间 Range 请求。"""
+
     document, binary = await _call(
         service.download_document(
             document_id=document_id,
@@ -692,6 +757,8 @@ async def delete_document(
     service: Annotated[KnowledgeService, Depends(_service)],
     principal: Annotated[KnowledgePrincipal, Depends(get_knowledge_principal)],
 ) -> Response:
+    """软删除文档，本地保留记录与原文。"""
+
     await _call(
         service.delete_document(
             document_id=document_id,
@@ -714,6 +781,8 @@ async def retry_document(
     principal: Annotated[KnowledgePrincipal, Depends(get_knowledge_principal)],
     idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
 ) -> DocumentUploadAccepted:
+    """重试失败的文档解析，返回 202 受理。"""
+
     return await _call(
         service.retry_document(
             document_id=document_id,
@@ -735,6 +804,8 @@ async def list_operations(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, ge=1, le=100),
 ) -> OperationListResponse:
+    """分页查询当前用户发起的操作记录。"""
+
     return await _call(
         service.list_operations(
             principal=principal,
@@ -754,6 +825,8 @@ async def get_permissions(
     service: Annotated[KnowledgeService, Depends(_service)],
     principal: Annotated[KnowledgePrincipal, Depends(get_knowledge_principal)],
 ) -> PermissionListResponse:
+    """查询知识库的授权列表。"""
+
     return await _call(service.get_permissions(base_id, principal))
 
 
@@ -764,6 +837,8 @@ async def replace_permissions(
     service: Annotated[KnowledgeService, Depends(_service)],
     principal: Annotated[KnowledgePrincipal, Depends(get_knowledge_principal)],
 ) -> PermissionListResponse:
+    """全量替换知识库授权列表。"""
+
     return await _call(
         service.replace_permissions(
             base_id=base_id, principal=principal, items=payload.items
@@ -782,6 +857,8 @@ async def find_permission_subjects(
     subject_type: Literal["user", "department"] = Query(alias="type"),
     q: str = Query(default="", max_length=100),
 ) -> PermissionSubjectListResponse:
+    """按类型与关键字搜索可授权主体（用户/部门）。"""
+
     return await _call(
         service.find_permission_subjects(
             base_id=base_id,
@@ -860,6 +937,8 @@ async def ask(
     service: Annotated[KnowledgeService, Depends(_service)],
     principal: Annotated[KnowledgePrincipal, Depends(get_knowledge_principal)],
 ) -> AskResponse:
+    """在当前知识库检索证据并生成带引用标注的回答。"""
+
     request_id = _request_id(request)
     retrieved = await _call(
         service._retrieve_base_evidence(
@@ -995,6 +1074,8 @@ async def get_session_scope(
     service: Annotated[KnowledgeService, Depends(_service)],
     principal: Annotated[KnowledgePrincipal, Depends(get_knowledge_principal)],
 ) -> SessionKnowledgeScopeResponse:
+    """查询会话已选定的知识库范围。"""
+
     return await _call(
         service.get_session_scope(session_id=session_id, principal=principal)
     )
@@ -1010,6 +1091,8 @@ async def replace_session_scope(
     service: Annotated[KnowledgeService, Depends(_service)],
     principal: Annotated[KnowledgePrincipal, Depends(get_knowledge_principal)],
 ) -> SessionKnowledgeScopeResponse:
+    """全量替换会话的知识库范围。"""
+
     return await _call(
         service.replace_session_scope(
             session_id=session_id,
@@ -1023,12 +1106,16 @@ async def replace_session_scope(
 # 管理员：公共空间管理/查看白名单
 # ---------------------------------------------------------------------------
 def _admin(principal: Annotated[KnowledgePrincipal, Depends(get_knowledge_principal)]):
+    """管理员守卫依赖：非 admin 账号一律 403。"""
+
     if principal.username != "admin":
         raise HTTPException(status_code=403, detail="仅管理员可查看运维信息")
     return principal
 
 
 def _team_manager_summary(item: dict) -> TeamSpaceManagerSummary:
+    """将数据库行转换为公共空间管理员摘要模型。"""
+
     return TeamSpaceManagerSummary(
         user_id=str(item["user_id"]),
         username=str(item["username"]),
@@ -1051,6 +1138,8 @@ async def list_team_space_managers(
     _: Annotated[KnowledgePrincipal, Depends(_admin)],
     db: Annotated[Database, Depends(get_database)],
 ) -> TeamSpaceManagerListResponse:
+    """查询公共空间管理员白名单。"""
+
     rows = await run_in_threadpool(KnowledgeRepository(db).list_team_space_managers)
     return TeamSpaceManagerListResponse(
         items=[_team_manager_summary(item) for item in rows]
@@ -1069,6 +1158,8 @@ async def set_team_space_manager(
     principal: Annotated[KnowledgePrincipal, Depends(_admin)],
     db: Annotated[Database, Depends(get_database)],
 ) -> TeamSpaceManagerUpdateResponse:
+    """授予或撤销账号的公共空间管理权限。"""
+
     repository = KnowledgeRepository(db)
     manager = None
     try:
@@ -1118,6 +1209,8 @@ async def set_team_space_manager(
 
 
 def _team_viewer_summary(item: dict) -> TeamSpaceViewerSummary:
+    """将数据库行转换为公共空间查看者摘要模型。"""
+
     return TeamSpaceViewerSummary(
         user_id=str(item["user_id"]),
         username=str(item["username"]),
@@ -1140,6 +1233,8 @@ async def list_team_space_viewers(
     _: Annotated[KnowledgePrincipal, Depends(_admin)],
     db: Annotated[Database, Depends(get_database)],
 ) -> TeamSpaceViewerListResponse:
+    """查询公共空间可查看权限白名单。"""
+
     rows = await run_in_threadpool(KnowledgeRepository(db).list_team_space_viewers)
     return TeamSpaceViewerListResponse(
         items=[_team_viewer_summary(item) for item in rows]
@@ -1158,6 +1253,8 @@ async def set_team_space_viewer(
     principal: Annotated[KnowledgePrincipal, Depends(_admin)],
     db: Annotated[Database, Depends(get_database)],
 ) -> TeamSpaceViewerUpdateResponse:
+    """授予或撤销账号的公共空间查看权限。"""
+
     repository = KnowledgeRepository(db)
     viewer = None
     try:

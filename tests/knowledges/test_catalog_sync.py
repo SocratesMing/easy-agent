@@ -9,20 +9,20 @@ from types import SimpleNamespace
 
 import pytest
 
-from easy_agent.knowledges.catalog_sync import (
+from easy_agent.knowledges.runtime.catalog_sync import (
     CatalogSyncError,
     CatalogSyncer,
     run_catalog_sync,
     split_sql_statements,
     startup_catalog_sync,
 )
-from easy_agent.knowledges.config import (
+from easy_agent.knowledges.core.config import (
     CatalogSyncConfig,
     KnowledgeConfig,
     KnowledgeConfigError,
 )
-from easy_agent.knowledges.repository import KnowledgeRepository
-from easy_agent.knowledges.schema import initialize_knowledge_schema
+from easy_agent.knowledges.core.repository import KnowledgeRepository
+from easy_agent.knowledges.core.schema import initialize_knowledge_schema
 
 
 class _FakeApp:
@@ -212,14 +212,14 @@ async def test_sync_respects_max_level(db):
     assert "中金公司" not in names
 
 
-async def test_sync_reuses_legacy_base_with_own_dataset(db):
+async def test_sync_reuses_base_with_own_dataset(db):
     # 存量库已绑定自有数据集：按名称复用且不改绑定（迁共享由迁移脚本负责）
     repo = KnowledgeRepository(db)
     existing = repo.create_base(
         name="md投研报告", description="", space_type="team", owner_user_id="u-admin",
         department_id=None, embedding_model="",
     )
-    repo.update_base(existing["id"], remote_dataset_id="ds-legacy", status="active")
+    repo.update_base(existing["id"], remote_dataset_id="ds-own", status="active")
 
     syncer = _make_syncer(db)
     stats = await syncer.sync(_catalog_rows())
@@ -228,7 +228,7 @@ async def test_sync_reuses_legacy_base_with_own_dataset(db):
     assert stats["bases_created"] == 0
     bases = _query(db, "SELECT * FROM knowledge_bases")
     assert len(bases) == 1
-    assert bases[0]["remote_dataset_id"] == "ds-legacy"
+    assert bases[0]["remote_dataset_id"] == "ds-own"
 
 
 # ---------------------------------------------------------------------------
@@ -255,8 +255,8 @@ def test_folder_unique_constraint_scope(db):
     assert repo.find_folder_by_name(base["id"], "not-exist", None) is None
 
 
-def test_legacy_folder_unique_constraint_migrated(db):
-    # 模拟存量库：把唯一约束降回旧版 (base_id, name)
+def test_folder_unique_constraint_migrated(db):
+    # 模拟存量库：把唯一约束降回 (base_id, name)
     with db.get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("DROP TABLE knowledge_folders")
@@ -278,7 +278,7 @@ def test_legacy_folder_unique_constraint_migrated(db):
 
     repo = KnowledgeRepository(db)
     base = repo.create_base(
-        name="legacy", description="", space_type="team", owner_user_id="u",
+        name="existing", description="", space_type="team", owner_user_id="u",
         department_id=None, embedding_model="",
     )
     d1 = repo.create_folder(base_id=base["id"], name="2026")

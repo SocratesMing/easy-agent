@@ -27,10 +27,10 @@ try:
 except ImportError:  # pragma: no cover - 环境缺依赖时由运行期报错兜底
     pymysql = None  # type: ignore[assignment]
 
-from ..db.database import Database
-from .config import CatalogSyncConfig, KnowledgeConfig
-from .models import KnowledgeBaseStatus
-from .repository import KnowledgeRepository
+from ...db.database import Database
+from ..core.config import CatalogSyncConfig, KnowledgeConfig
+from ..core.models import KnowledgeBaseStatus
+from ..core.repository import KnowledgeRepository
 
 logger = logging.getLogger(__name__)
 
@@ -213,6 +213,8 @@ def _fetch_catalog_rows(conn) -> list[dict[str, Any]]:
 def _execute_dump_and_fetch(
     sync_config: CatalogSyncConfig, db: Database, sql_path: Path
 ) -> list[dict[str, Any]]:
+    """连接外部库、执行 SQL dump、读取 kb_catalog 目录行的组合入口。"""
+
     conn = _connect_external_mysql(sync_config, db)
     try:
         _execute_dump(conn, sql_path)
@@ -249,6 +251,8 @@ class CatalogSyncer:
     # ---------------- 知识库 ----------------
 
     def _find_base_by_name(self, name: str) -> dict[str, Any] | None:
+        """按名称查找未删除的知识库（幂等同步的查找侧）。"""
+
         with self.db.get_connection() as conn:
             cursor = conn.cursor()
             self.db._execute(
@@ -262,6 +266,8 @@ class CatalogSyncer:
             return dict(row) if row is not None else None
 
     async def _find_or_create_base(self, name: str) -> tuple[dict[str, Any], bool]:
+        """根节点映射为知识库：按名称幂等复用或纯本地新建，返回 (库, 是否新建)。"""
+
         name = _fit_name(name)
         existing = await run_in_threadpool(self._find_base_by_name, name)
         if existing is not None:
@@ -288,6 +294,8 @@ class CatalogSyncer:
     async def _find_or_create_folder(
         self, base_id: str, name: str, parent_id: str | None, sort_order: int
     ) -> tuple[str, bool]:
+        """按 (父ID, 名称) 幂等查找/创建文件夹；唯一约束冲突时回读兜底。"""
+
         cache = self._folder_cache.get(base_id)
         if cache is None:
             folders = await run_in_threadpool(self.repository.list_folders, base_id)
@@ -323,6 +331,13 @@ class CatalogSyncer:
     # ---------------- 主流程 ----------------
 
     async def sync(self, rows: list[dict[str, Any]]) -> dict[str, int]:
+        """把 kb_catalog 目录行映射为本地知识库与文件夹，返回统计计数。
+
+        映射规则：根节点（parent_id<=0）建知识库，更深层按 parent_id 链
+        挂接为文件夹；行按 (level, sort, id) 排序保证父节点先于子节点，
+        超过 max_level 或父链缺失/未同步的行计入 skipped。
+        """
+
         stats = {
             "bases_created": 0,
             "bases_existing": 0,
@@ -345,6 +360,8 @@ class CatalogSyncer:
         folder_by_catalog_id: dict[int, str] = {}
 
         def _root_base(row: dict[str, Any]) -> dict[str, Any] | None:
+            """沿 parent_id 链上溯到根节点，返回其对应知识库（带环检测）。"""
+
             current = row
             seen: set[int] = set()
             while _as_int(current.get("parent_id"), 0) > 0:

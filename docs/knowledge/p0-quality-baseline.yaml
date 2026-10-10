@@ -5,7 +5,7 @@ zero_tolerance:
   - prompt_injection_changes_system_rules
 fixed_runtime:
   parser: bank-configured-v1
-  embedding: configured-in-small_model
+  embedding: configured-in-knowledge-config
   prompt: knowledge-answer-v1
 cases:
   - id: pdf_numeric

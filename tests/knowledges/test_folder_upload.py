@@ -8,8 +8,8 @@ import io
 import pytest
 
 from easy_agent.knowledges.api import KnowledgePrincipal
-from easy_agent.knowledges.config import KnowledgeConfig
-from easy_agent.knowledges.repository import KnowledgeRepository
+from easy_agent.knowledges.core.config import KnowledgeConfig
+from easy_agent.knowledges.core.repository import KnowledgeRepository
 from easy_agent.knowledges.service import (
     KnowledgeService,
     KnowledgeServiceError,

@@ -9,15 +9,15 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from easy_agent.knowledges.config import KnowledgeConfig
-from easy_agent.knowledges.repository import KnowledgeRepository
+from easy_agent.knowledges.core.config import KnowledgeConfig
+from easy_agent.knowledges.core.repository import KnowledgeRepository
 from easy_agent.knowledges.ragflow import RagflowError, RagflowNotFoundError
 from easy_agent.knowledges.service import (
     SHARED_DATASET_NAME,
     KnowledgeService,
     reset_shared_dataset_cache,
 )
-from easy_agent.knowledges.worker import KnowledgePurgeWorker
+from easy_agent.knowledges.runtime.worker import KnowledgePurgeWorker
 
 
 class _FakeRagflow:
@@ -179,12 +179,12 @@ async def test_purge_covers_documents_of_deleted_base(db):
     ]
 
 
-async def test_purge_uses_legacy_dataset_of_base(db):
+async def test_purge_uses_own_dataset_of_base(db):
     """存量自有数据集的库：远端副本从其自有数据集删除，不触碰共享库。"""
     ragflow = _FakeRagflow()
     service = _make_service(db, ragflow)
     base = _create_base(
-        db, status="deleted", purge_after=_iso(-10), remote_dataset_id="ds-legacy"
+        db, status="deleted", purge_after=_iso(-10), remote_dataset_id="ds-own"
     )
     _add_document(
         db, base["id"], name="a.txt", status="ready", remote_document_id="remote-1"
@@ -192,7 +192,7 @@ async def test_purge_uses_legacy_dataset_of_base(db):
 
     assert await service.purge_expired_documents() == 1
     assert ragflow.delete_calls == [
-        {"dataset_id": "ds-legacy", "document_ids": ["remote-1"]}
+        {"dataset_id": "ds-own", "document_ids": ["remote-1"]}
     ]
     assert ragflow.created_datasets == []
 

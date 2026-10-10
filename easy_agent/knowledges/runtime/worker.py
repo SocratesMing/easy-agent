@@ -1,10 +1,9 @@
 """后台 worker：解析状态轮询 + 软删除保留期清理。
 
-旧版 worker 是「任务队列消费者」（claim_next_task/心跳/死信/对账/过期清理），
-新版上传与重试已内联在 ``KnowledgeService.upload_document`` 中同步完成，
+上传与重试内联在 ``KnowledgeService.upload_document`` 中同步完成，
 解析轮询 worker 只负责把上游解析进度（pending/processing）拉回本地投影；
 清理 worker 负责在软删除保留期（30 天）到期后删除远端（Ragflow）文档副本，
-避免共享数据集无限膨胀。任务队列、心跳与对账随基础层裁剪一并移除。
+避免共享数据集无限膨胀。
 """
 
 from __future__ import annotations
@@ -13,11 +12,11 @@ import asyncio
 import logging
 from typing import Any, Callable
 
-from ..db import Database
-from .config import KnowledgeConfig
-from .ragflow import RagflowClient
-from .repository import KnowledgeRepository
-from .service import KnowledgeService, LocalOriginalStore
+from ...db import Database
+from ..core.config import KnowledgeConfig
+from ..ragflow import RagflowClient
+from ..core.repository import KnowledgeRepository
+from ..service import KnowledgeService, LocalOriginalStore
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +36,8 @@ class KnowledgeParsePollWorker:
         db_provider: Callable[[], Database | None],
         poll_interval_seconds: float = 5.0,
     ):
+        """初始化解析轮询 worker；poll_interval_seconds 为轮询间隔（默认 5 秒）。"""
+
         self.config = config
         self.ragflow = ragflow
         self.original_store = original_store
@@ -99,6 +100,12 @@ class KnowledgeParsePollWorker:
         return processed > 0
 
     async def run_forever(self) -> None:
+        """轮询主循环：每 poll_interval_seconds（默认 5 秒）拉取一轮上游进度。
+
+        单轮异常只记日志不退出循环；间隔等待可被 stop 事件立即唤醒，保证
+        关停及时。仍处于 pending/processing 的文档由后续轮次持续跟进。
+        """
+
         logger.info("知识库解析轮询 worker 已启动 | interval=%ss", self.poll_interval_seconds)
         try:
             while not self._stop.is_set():
@@ -159,6 +166,8 @@ class KnowledgePurgeWorker:
         purge_interval_seconds: float = 3600.0,
         batch_limit: int = 100,
     ):
+        """初始化清理 worker；默认每 3600 秒执行一轮，每轮最多清 batch_limit（默认 100）条。"""
+
         self.config = config
         self.ragflow = ragflow
         # 数据库在宿主 lifespan 中晚于本 worker 初始化，必须惰性获取
@@ -184,6 +193,11 @@ class KnowledgePurgeWorker:
         return await service.purge_expired_documents(limit=self.batch_limit)
 
     async def run_forever(self) -> None:
+        """清理主循环：每 purge_interval_seconds（默认 1 小时）清一轮到期远端文档。
+
+        单轮异常只记日志不退出；等待期间可被 stop 事件提前唤醒。
+        """
+
         logger.info(
             "知识库软删除清理 worker 已启动 | interval=%ss, batch=%s",
             self.purge_interval_seconds,
