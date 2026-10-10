@@ -154,9 +154,9 @@ cd easy-agent
 uv sync
 
 # 3. 安装前端依赖并构建
-cd frontend
+cd frontend-vue2
 npm install
-npm run build          # 生产构建到 frontend/dist/
+npm run build          # 生产构建到 frontend-vue2/dist/
 cd ..
 
 # 4. 配置 LLM（编辑 easy_agent/config/config.yaml）
@@ -434,9 +434,9 @@ uv run uvicorn easy_agent.app:app --host 0.0.0.0 --port 8000 --reload
 
 ### 前端开发模式（热更新）
 ```bash
-cd frontend
+cd frontend-vue2
 npm run dev
-# 默认 http://localhost:5173，通过 webpack devServer 代理转发 /agent、/api 到后端（默认 :8000）
+# 默认 http://localhost:5173，通过 webpack devServer 代理转发 /agent、/api 到后端（默认 :8080）
 ```
 
 ### 代码风格

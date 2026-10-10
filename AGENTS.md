@@ -15,8 +15,8 @@ easy-agent/
 │   ├── tools/           # Agent-callable tools
 │   ├── skills/          # SKILL.md-based skill bundles
 │   └── config/          # YAML configs + system_prompt.md
-├── frontend/            # Vue 2.7 + Element UI SPA, Vue CLI/webpack build (src/components, src/api)
-├── frontend-vue2/       # 开发者的 Vue 2 源码基线（上游保留目录，勿删勿精简；见 docs/merge-history-2026-09-17-vue26.md）
+├── frontend/            # Vue 2.7 + Element UI SPA（历史构建产物仍在，源码停更）
+├── frontend-vue2/       # 前端开发基线（2026-10-10 起开发与构建均在此；勿删勿精简；见 docs/merge-history-2026-09-17-vue26.md）
 ├── tests/               # pytest tests (test_*.py) and manual demo scripts
 ├── main.py              # uvicorn entry point
 ├── pyproject.toml       # Project metadata & deps (managed by uv)
@@ -33,8 +33,8 @@ uv pip install -e ".[dev]"           # Editable install with dev deps (alternati
 easy-web --port 8000                 # Run backend (or: python main.py)
 pytest tests/ -v                     # Run the test suite
 pytest tests/integration/test_basic.py -v        # Run a single test file
-cd frontend && npm run dev           # Frontend dev server (proxies to backend :8000)
-cd frontend && npm run build         # Build SPA into frontend/dist/ (required before easy-web serves UI)
+cd frontend-vue2 && npm run dev     # Frontend dev server (proxies to backend :8080)
+cd frontend-vue2 && npm run build   # Build SPA into frontend-vue2/dist/ (required before easy-web serves UI)
 ./start.prod.sh                      # Production startup
 ```
 

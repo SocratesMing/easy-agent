@@ -68,8 +68,11 @@ if platform.system() != "Windows":
 
 logger = logging.getLogger(__name__)
 
+# 前端静态目录：2026-10-10 起以 frontend-vue2/（开发基线）的构建产物为准
 frontend_dist = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "frontend", "dist"
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "frontend-vue2",
+    "dist",
 )
 
 agent_config = None

@@ -9,7 +9,7 @@
 #   ./start.prod.sh --skip-build    # 跳过前端构建（已构建过）
 #
 # AGENT_ENV: prod (默认) | test | dev
-# 前端构建后由后端 FastAPI 静态托管（frontend/dist/）
+# 前端构建后由后端 FastAPI 静态托管（frontend-vue2/dist/）
 # ============================================================
 set -e
 
@@ -96,18 +96,18 @@ echo "[3/4] 构建前端..."
 if [[ "$SKIP_BUILD" == "true" ]]; then
     echo "  ⏭  已跳过（--skip-build）"
 else
-    cd "$PROJECT_ROOT/frontend"
+    cd "$PROJECT_ROOT/frontend-vue2"
     npm install --registry=https://registry.npmmirror.com
-    # AGENT_ENV 已在环境中，vite.config.js 会据此选择 .env.prod
+    # AGENT_ENV 已在环境中，vue.config.js 会据此选择 .env.prod
     npm run build
     cd "$PROJECT_ROOT"
-    echo "  ✅ 前端构建完成 -> frontend/dist/"
+    echo "  ✅ 前端构建完成 -> frontend-vue2/dist/"
 fi
 
 # 校验前端产物存在
-if [[ ! -f "$PROJECT_ROOT/frontend/dist/index.html" ]]; then
-    echo "❌ 前端构建产物不存在: frontend/dist/index.html"
-    echo "   请移除 --skip-build 或手动执行: cd frontend && npm run build"
+if [[ ! -f "$PROJECT_ROOT/frontend-vue2/dist/index.html" ]]; then
+    echo "❌ 前端构建产物不存在: frontend-vue2/dist/index.html"
+    echo "   请移除 --skip-build 或手动执行: cd frontend-vue2 && npm run build"
     exit 1
 fi
 
@@ -127,7 +127,7 @@ echo ""
 echo "[4/4] 启动服务..."
 echo "============================================================"
 echo "  🚀 Easy Agent 启动中... (http://${HOST}:${PORT})"
-echo "  前端: 由后端静态托管 (frontend/dist/)"
+echo "  前端: 由后端静态托管 (frontend-vue2/dist/)"
 echo "  停止: Ctrl+C"
 echo "============================================================"
 

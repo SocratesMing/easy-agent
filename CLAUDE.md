@@ -5,7 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 ```bash
-# Run web server (serves frontend from frontend/dist/)
+# Run web server (serves frontend from frontend-vue2/dist/)
 easy-web [--port 8000] [--reload]
 
 # Alternative: run via main.py
@@ -49,7 +49,7 @@ Environment variables:
 
 **Skills** (`skills.py`) — Discovers skills by scanning for directories containing `SKILL.md` or `README.md`. Skills are mounted at `/skills/` virtual path in the agent backend.
 
-**Web app** (`app.py`) — FastAPI app with lifespan that initializes config, database, vector store, system prompt, skills, and shared npm deps. Serves Vue SPA from `frontend/dist/` with fallback to `index.html`. CORS enabled (all origins by default; tighten via `EASY_CORS_ALLOW_ORIGINS`). Registers routers from `easy_agent/api/`.
+**Web app** (`app.py`) — FastAPI app with lifespan that initializes config, database, vector store, system prompt, skills, and shared npm deps. Serves Vue SPA from `frontend-vue2/dist/` with fallback to `index.html`. CORS enabled (all origins by default; tighten via `EASY_CORS_ALLOW_ORIGINS`). Registers routers from `easy_agent/api/`.
 
 **Web runner** (`web_runner.py`) — Entry point for `easy-web` CLI command. Does `os.chdir(project_root)` and sets `EASY_CONFIG` env var before starting uvicorn.
 
@@ -109,7 +109,7 @@ Vue 2.7 (Options API; built-in Composition API functions allowed, `<script setup
 - **Context compression** via `SummarizationMiddleware` — configurable threshold/target in config, triggers on token count
 - **Agent cache is in-memory only** — server restarts lose all cached agents
 - **`web_runner.py` does `os.chdir(project_root)`** — important for relative path resolution
-- **`frontend/dist/` not committed** — must `npm run build` before `easy-web` can serve the UI
+- **`frontend-vue2/dist/` not committed** — must `npm run build` (in `frontend-vue2/`) before `easy-web` can serve the UI
 - **No CI/CD or Docker** — deployment is manual via uvicorn
 - **Per-user dependency isolation** — each user gets `workspace/{username}/.deps/` with shared `node_modules` and Python `.venv`, symlinked into session workspaces
 - **Per-user memory files** — stored at `memories/{username}/{username}_AGENTS.md`, read/written by agent for long-term context

@@ -43,7 +43,7 @@ export EASY_CONFIG="$CONFIG_FILE"
 
 # ---------- 运行期注入前端配置（后端地址 / AGENT_ENV 在容器启动时才知道）----------
 # 前端在构建镜像时无法预知后端地址，这里根据运行期环境变量写出
-# /app/frontend/dist/runtime-config.js（window.__RUNTIME_CONFIG__），
+# /app/frontend-vue2/dist/runtime-config.js（window.__RUNTIME_CONFIG__），
 # 由前端在运行时读取，覆盖构建期固化的 VITE_API_BASE_URL。
 RUNTIME_API_URL="${API_BASE_URL:-}"
 RUNTIME_APP_TITLE="${APP_TITLE:-Easy Agent}"
@@ -52,7 +52,7 @@ if [ -z "$RUNTIME_API_URL" ]; then
   # 适用于 uvicorn 同进程托管前端的部署；serve 分离部署请显式传 API_BASE_URL。
   RUNTIME_API_URL="/"
 fi
-cat > /app/frontend/dist/runtime-config.js <<EOF
+cat > /app/frontend-vue2/dist/runtime-config.js <<EOF
 // 本文件由启动脚本根据运行期环境变量自动生成，请勿手工编辑。
 window.__RUNTIME_CONFIG__ = {
   API_BASE_URL: "${RUNTIME_API_URL}",

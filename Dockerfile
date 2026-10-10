@@ -10,14 +10,14 @@ FROM node:20-slim AS frontend-builder
 ARG AGENT_ENV=prod
 ENV AGENT_ENV=${AGENT_ENV}
 
-WORKDIR /build/frontend
+WORKDIR /build/frontend-vue2
 
 # Install dependencies first (cache layer)
-COPY frontend/package.json frontend/package-lock.json* ./
+COPY frontend-vue2/package.json frontend-vue2/package-lock.json* ./
 RUN npm install --registry=https://registry.npmmirror.com
 
 # Copy frontend source and build
-COPY frontend/ ./
+COPY frontend-vue2/ ./
 RUN npm run build
 
 # ---------- Stage 2: Backend Runtime ----------
@@ -60,7 +60,7 @@ COPY easy_agent/ ./easy_agent/
 RUN uv pip install --system --no-cache --no-deps -e .
 
 # Copy frontend build output
-COPY --from=frontend-builder /build/frontend/dist ./frontend/dist/
+COPY --from=frontend-builder /build/frontend-vue2/dist ./frontend-vue2/dist/
 
 # Copy entrypoint script
 COPY docker/entrypoint.sh /entrypoint.sh
