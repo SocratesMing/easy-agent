@@ -18,7 +18,7 @@ Easy Agent 是一个开箱即用的 AI Agent 平台，让大模型能够：
 - 由模型自行识别用户意图并创建定时任务
 - 通过网页终端（Web Terminal）进行交互式操作
 
-前后端一体化部署：后端 FastAPI 提供 REST + SSE 流式接口，前端 Vue 3 单页应用。
+前后端一体化部署：后端 FastAPI 提供 REST + SSE 流式接口，前端 Vue 2.7 单页应用（Element UI + Vue CLI）。
 
 ---
 
@@ -87,9 +87,9 @@ easy-agent/
 │   │   └── system_prompt.md      # Agent 系统提示词
 │   └── utils/task_logger.py      # 定时任务审计日志
 │
-├── frontend/                     # 前端（Vue 3 + Vite + Element-Free）
+├── frontend/                     # 前端（Vue 2.7 + Element UI + Vue CLI）
 │   ├── package.json
-│   ├── vite.config.js
+│   ├── vue.config.js
 │   ├── index.html
 │   └── src/
 │       ├── main.js
@@ -204,7 +204,7 @@ docker run -d \
 配置文件路径可用 `EASY_CONFIG=/path/to/xxx.yaml` 覆盖（`Config.resolve_config_path()`），
 终端会打印环境信息与加载的配置文件路径。
 YAML 中的 `api_key`、`password` 等值支持 `${ENV_VAR}` / `${ENV_VAR:-默认值}` 占位符，在加载配置时从 `os.environ` 解析；项目根 `.env` 会在配置解析前自动注入（见 `easy_agent/utils/env_loader.py`），未取到值的变量名会在启动日志里以 WARNING 列出。
-前端 `vite.config.js` 在构建时读取 `AGENT_ENV` 映射为 Vite mode（dev→development / test→test / prod→production），加载对应的 `.env.[mode]` 文件，并在终端输出配置横幅。
+前端构建入口（`frontend/scripts/run-vite.mjs`，实际调用 Vue CLI）按 `AGENT_ENV` 映射为构建 mode（dev→development / test→test / prod→production），加载对应的 `.env.[mode]` 文件，并在终端输出配置横幅。
 
 ---
 
@@ -436,12 +436,12 @@ uv run uvicorn easy_agent.app:app --host 0.0.0.0 --port 8000 --reload
 ```bash
 cd frontend
 npm run dev
-# 默认 http://localhost:5173，通过 Vite 代理转发 API 到 :8000
+# 默认 http://localhost:5173，通过 webpack devServer 代理转发 /agent、/api 到后端（默认 :8000）
 ```
 
 ### 代码风格
 - Python：遵循 PEP 8，使用 `ruff` 检查
-- Vue：Composition API + `<script setup>`，scoped 样式
+- Vue：Vue 2.7 Options API（禁用 `<script setup>`，由 `src/utils/vue2Compat.test.js` 守卫），scoped 样式
 
 ### 测试
 ```bash

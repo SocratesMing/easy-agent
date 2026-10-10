@@ -77,7 +77,7 @@ Environment variables:
 
 ### Frontend (`frontend/`)
 
-Vue 3 (Composition API `<script setup>`) + Vite + Tailwind CSS 4. **No Vue Router** — routing is manual via boolean refs in `App.vue`. **No state management library** — all state lives in `App.vue` and passes down as props.
+Vue 2.7 (Options API; built-in Composition API functions allowed, `<script setup>` forbidden — guarded by `src/utils/vue2Compat.test.js`) + Element UI + Vue CLI (webpack). **No Vue Router** — routing is manual via boolean refs in `App.vue`. **No state management library** — all state lives in `App.vue` and passes down as props.
 
 - `api/auth.js` — `authFetch()` wrapper adds JWT header, dispatches `auth-expired` custom event on 401. Tokens in `localStorage` keys `mini_agent_token` / `mini_agent_username`.
 - `api/chat.js` — `sendMessage()` reads SSE via `ReadableStream`, parses `data:` lines, calls `onChunk(data)` per event
