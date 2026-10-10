@@ -16,6 +16,7 @@ easy-agent/
 │   ├── skills/          # SKILL.md-based skill bundles
 │   └── config/          # YAML configs + system_prompt.md
 ├── frontend/            # Vue 2.7 + Element UI SPA, Vue CLI/webpack build (src/components, src/api)
+├── frontend-vue2/       # 开发者的 Vue 2 源码基线（上游保留目录，勿删勿精简；见 docs/merge-history-2026-09-17-vue26.md）
 ├── tests/               # pytest tests (test_*.py) and manual demo scripts
 ├── main.py              # uvicorn entry point
 ├── pyproject.toml       # Project metadata & deps (managed by uv)
