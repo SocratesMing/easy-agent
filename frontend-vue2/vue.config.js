@@ -26,7 +26,9 @@ module.exports = defineConfig({
   productionSourceMap: false,
 
   devServer: {
-    host: process.platform === 'win32' ? '127.0.0.1' : '0.0.0.0',
+    // 默认仅本机可访问；设 DEV_HOST=0.0.0.0 可开放局域网访问（vue-cli 的
+    // --host 参数会被本配置覆盖，故用环境变量作为开关）。
+    host: process.env.DEV_HOST || (process.platform === 'win32' ? '127.0.0.1' : '0.0.0.0'),
     port: Number(process.env.PORT || 5173),
     // SSE 流式必须关闭压缩：webpack-dev-server 默认 compress=true 会对
     // text/event-stream 做 gzip，gzip 流要攒满缓冲块才 flush，导致事件被
