@@ -394,13 +394,14 @@ Agent 会自动解析调度意图并调用 `create_scheduled_task` 工具，参�
 - 自定义技能：把 `SKILL.md` 放进 `skills/your-skill/` 目录即可
 
 ### 7. MCP 工具
-- 在设置面板中配置 MCP 服务，支持添加/删除/开关
+- 在设置面板中配置 MCP 服务，支持添加（手动配置 / 从公共市场添加）/删除/开关/预览
 - 添加时粘贴 JSON 格式的 MCP 配置（以 `servers` 下的名称识别）
 - 删除时后端自动卸载对应 MCP，即时生效
 - 用户 MCP 配置保存在 `workspace/{username}/mcp.json`
 - 自建 MCP 服务已拆分为独立子项目 `mcp-server/`（uv 管理，按业务分 URL 后缀
-  如 `/mcp/market/`，仅需配置 URL + API Key 即可接入），详见 `mcp-server/README.md`；
-  API Key 在设置页按"用户 × 业务"生成，历史 key 迁移见 `scripts/migrate_market_mcp_keys.py`
+  如 `/mcp/market/`，配置 URL + API Key 即可接入），详见 `mcp-server/README.md`；
+  API Key 已不在设置页签发（表 `mcp_api_keys` 仅由 mcp-server 只读校验），
+  历史 key 迁移见 `scripts/migrate_market_mcp_keys.py`
 
 ---
 

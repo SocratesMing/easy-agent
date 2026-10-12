@@ -94,21 +94,3 @@ export async function getWebSearchStatus() {
     '获取联网搜索状态失败'
   )
 }
-
-export async function getMcpApiKeyStatuses() {
-  return request(
-    { url: '/agent/settings/mcp/api-keys', method: 'get' },
-    '获取 MCP API Key 状态失败'
-  )
-}
-
-export async function generateMcpApiKey(business) {
-  return request(
-    {
-      url: '/agent/settings/mcp/api-key',
-      method: 'post',
-      data: { business },
-    },
-    '生成 MCP API Key 失败'
-  )
-}

@@ -10,7 +10,6 @@ from fastapi import HTTPException
 from easy_agent.api.settings import (
     AddMarketMcpRequest,
     add_mcp_from_market,
-    generate_mcp_api_key,
     get_mcp_market,
     get_mcp_servers,
     router,
@@ -223,64 +222,6 @@ def test_mcp_market_adds_global_server_to_user_config(tmp_path, monkeypatch):
     market_routes = {route.path: getattr(route, "methods", set()) for route in router.routes}
     assert "/agent/settings/mcp/market" in market_routes
     assert "/agent/settings/mcp/market/add" in market_routes
-
-
-def test_mcp_api_key_generation_uses_current_user(monkeypatch):
-    import easy_agent.services.mcp_api_keys as keys_service
-    from easy_agent.api.settings import IssueMcpApiKeyRequest
-
-    captured = {}
-
-    def fake_issue(username, business):
-        captured["username"] = username
-        captured["business"] = business
-        return "generated-api-key"
-
-    monkeypatch.setattr(keys_service, "issue_api_key", fake_issue)
-
-    result = asyncio.run(
-        generate_mcp_api_key(IssueMcpApiKeyRequest(business="market"), "testuser")
-    )
-
-    assert result == {"status": "ok", "api_key": "generated-api-key", "business": "market"}
-    assert captured["username"] == "testuser"
-    assert captured["business"] == "market"
-
-
-def test_mcp_api_key_rejects_unknown_business():
-    from easy_agent.api.settings import IssueMcpApiKeyRequest
-
-    with pytest.raises(HTTPException) as exc_info:
-        asyncio.run(
-            generate_mcp_api_key(IssueMcpApiKeyRequest(business="nope"), "testuser")
-        )
-
-    assert exc_info.value.status_code == 400
-
-
-def test_mcp_api_key_generation_maps_database_failure(monkeypatch):
-    import easy_agent.services.mcp_api_keys as keys_service
-    from easy_agent.api.settings import IssueMcpApiKeyRequest
-
-    def fake_issue(username, business):
-        raise RuntimeError("database unavailable")
-
-    monkeypatch.setattr(keys_service, "issue_api_key", fake_issue)
-
-    with pytest.raises(HTTPException) as exc_info:
-        asyncio.run(
-            generate_mcp_api_key(IssueMcpApiKeyRequest(business="market"), "testuser")
-        )
-
-    assert exc_info.value.status_code == 503
-    assert "数据库" in exc_info.value.detail
-
-
-def test_mcp_api_key_routes_are_registered():
-    paths = {route.path for route in router.routes}
-
-    assert "/agent/settings/mcp/api-key" in paths
-    assert "/agent/settings/mcp/api-keys" in paths
 
 
 def test_main_app_never_imports_mcp_server_subproject():

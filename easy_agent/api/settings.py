@@ -331,54 +331,6 @@ class AddMarketMcpRequest(BaseModel):
     name: str
 
 
-class IssueMcpApiKeyRequest(BaseModel):
-    business: str
-
-
-@router.get("/mcp/api-keys", summary="获取当前用户各业务的 MCP API Key 状态")
-async def get_mcp_api_keys(
-    username: Annotated[str, Depends(get_current_username)],
-):
-    """返回每个业务的 key 是否已生成与更新时间（不含任何密钥信息）。"""
-    from ..services.mcp_api_keys import SUPPORTED_BUSINESSES, list_key_status
-
-    statuses = {row["business"]: row for row in list_key_status(username)}
-    return {
-        "businesses": [
-            {
-                "business": name,
-                "issued": name in statuses and not statuses[name]["revoked"],
-                "updated_at": statuses.get(name, {}).get("updated_at"),
-            }
-            for name in SUPPORTED_BUSINESSES
-        ]
-    }
-
-
-@router.post("/mcp/api-key", summary="为当前用户生成指定业务的 MCP API Key")
-async def generate_mcp_api_key(
-    request: IssueMcpApiKeyRequest,
-    username: Annotated[str, Depends(get_current_username)],
-):
-    """生成新的 API Key；数据库仅保存哈希，明文只返回一次。重签后旧 Key 失效。"""
-    from ..services.mcp_api_keys import issue_api_key, is_supported_business
-
-    if not is_supported_business(request.business):
-        raise HTTPException(status_code=400, detail=f"不支持的 MCP 业务: {request.business}")
-
-    try:
-        api_key = issue_api_key(username, request.business)
-    except Exception as e:
-        logger.warning(f"生成 MCP API Key 失败 | 用户: {username} | 错误: {e}")
-        raise HTTPException(
-            status_code=503,
-            detail="生成 MCP API Key 失败，请检查数据库配置",
-        )
-
-    logger.info(f"生成 MCP API Key 成功 | 用户: {username} | 业务: {request.business}")
-    return {"status": "ok", "api_key": api_key, "business": request.business}
-
-
 @router.post("/mcp/market/add", summary="从公共市场添加 MCP 到个人配置")
 async def add_mcp_from_market(
     request: AddMarketMcpRequest,
