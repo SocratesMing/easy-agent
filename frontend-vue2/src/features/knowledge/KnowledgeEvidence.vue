@@ -7,7 +7,7 @@
       @click="expanded = !expanded"
     >
       <span>
-        知识依据 {{ displayCount }} 条<template v-if="citedCount > 0 && citedCount < evidence.length">（共检索 {{ evidence.length }} 条）</template>
+        知识依据 {{ displayCount }} 条
       </span>
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" :class="{ rotated: expanded }">
         <polyline points="6 9 12 15 18 9"></polyline>
@@ -18,16 +18,15 @@
         {{ warnings.join('；') }}
       </div>
       <article
-        v-for="(item, index) in evidence"
+        v-for="(item, index) in displayEvidence"
         :key="`${item.document_id}-${index}`"
         :data-cite="index + 1"
         class="knowledge-citation-card"
-        :class="{ cited: isCited(index) }"
+        :class="{ cited: citedCount > 0 }"
       >
         <div class="knowledge-citation-title">
           <span>[知识依据{{ index + 1 }}]</span>
           {{ item.document_name }}
-          <em v-if="isCited(index)" class="knowledge-citation-badge">已引用</em>
         </div>
         <div v-if="item.metadata && item.metadata.base_name" class="knowledge-citation-base">
           {{ item.metadata.base_name }}
@@ -70,9 +69,17 @@ export default {
     citedCount() {
       return this.citedNumbers.length
     },
-    // 头部展示条数：回答有明确引用时以引用数为准，否则回退为检索条数
+    // 实际展示的依据：有明确引用时仅展示被引用的条目，按正文引用顺序重新编号；
+    // 无引用时回退为全部展示（保持原始编号）
+    displayEvidence() {
+      if (this.citedCount > 0) {
+        return this.citedNumbers.map((num) => this.evidence[num - 1]).filter(Boolean)
+      }
+      return this.evidence
+    },
+    // 头部展示条数：与实际展示的依据条数一致
     displayCount() {
-      return this.citedCount > 0 ? this.citedCount : this.evidence.length
+      return this.displayEvidence.length
     },
   },
   watch: {
@@ -81,9 +88,6 @@ export default {
     },
   },
   methods: {
-    isCited(index) {
-      return this.citedNumbers.indexOf(index + 1) !== -1
-    },
     // 展开面板并滚动定位到第 number 条依据卡片（供正文锚点点击调用）
     jumpTo(number) {
       if (!number) return

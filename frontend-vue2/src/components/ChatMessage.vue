@@ -1,5 +1,9 @@
 <template>
   <div class="message" :class="[message.role]">
+    <!-- 助手头像（左侧） -->
+    <div v-if="message.role === 'assistant'" class="message-avatar assistant-avatar">
+      <EasyLogo :size="32" />
+    </div>
     <div class="message-content" @click="handleContentClick">
       <!-- 文件卡片 -->
       <div v-if="message.files && message.files.length > 0" class="files-container">
@@ -176,6 +180,13 @@
         </button>
       </div>
     </div>
+    <!-- 用户头像（右侧） -->
+    <div v-if="message.role === 'user'" class="message-avatar user-avatar">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+        <circle cx="12" cy="7" r="4"></circle>
+      </svg>
+    </div>
   </div>
 </template>
 
@@ -191,6 +202,7 @@ import {
   escapeHtml,
 } from '../markdownSetup.js'
 import FileIcon from './FileIcon.vue'
+import EasyLogo from './EasyLogo.vue'
 import KnowledgeEvidence from '../features/knowledge/KnowledgeEvidence.vue'
 import ToolCallCard from './ToolCallCard.vue'
 
@@ -222,11 +234,17 @@ function isProcessType(b) {
 
 // 将回答中的 [知识依据N] / [知识库依据N] 标记转为可点击锚点，
 // 点击后由 handleContentClick 委托处理，展开证据面板并滚动到对应依据卡片。
-function linkKnowledgeCitations(content) {
+// citeMap：原始依据编号 → 展示编号（面板仅展示被引用依据并按引用顺序重新编号，
+// 正文锚点同步改写，保证正文标记与面板卡片编号一致）。
+function linkKnowledgeCitations(content, citeMap) {
   if (typeof content !== 'string') return content
+  const map = citeMap || {}
   return content.replace(
     /\[知识(?:库)?依据\s*(\d+)\]/g,
-    (match, num) => `<a class="ke-cite" data-cite="${num}">${match}</a>`
+    (match, num) => {
+      const display = map[num] || Number(num)
+      return `<a class="ke-cite" data-cite="${display}">[知识依据${display}]</a>`
+    }
   )
 }
 
@@ -283,7 +301,7 @@ const renderer = createMarkdownRenderer({ highlight: highlightCode })
 installCodeCopyHandler()
 
 export default {
-  components: { FileIcon, ToolCallCard, KnowledgeEvidence },
+  components: { FileIcon, ToolCallCard, KnowledgeEvidence, EasyLogo },
   props: {
     message: {
       type: Object,
@@ -323,6 +341,24 @@ export default {
         .map(block => block.content || '')
         .join('\n')
       return `${this.message.content || ''}\n${blockText}`
+    },
+    // 引用编号重排映射：按正文出现顺序把原始依据编号映射为 1..N 连续编号，
+    // 与 KnowledgeEvidence 的展示编号规则保持一致（仅重排有效引用编号）
+    citeNumberMap() {
+      const evidenceCount = (this.message.knowledge_evidence || []).length
+      if (!evidenceCount) return {}
+      const pattern = /\[知识(?:库)?依据\s*(\d+)\]/g
+      const seen = []
+      let match
+      while ((match = pattern.exec(this.citationSourceText || '')) !== null) {
+        const value = Number(match[1])
+        if (value > 0 && value <= evidenceCount && seen.indexOf(value) === -1) {
+          seen.push(value)
+        }
+      }
+      const map = {}
+      seen.forEach((value, i) => { map[value] = i + 1 })
+      return map
     },
     sortedBlocks() {
       // 从 blocks 字段构建（优先使用）
@@ -586,7 +622,7 @@ export default {
     },
     renderMarkdown(content) {
       if (!content) return ''
-      return renderMarkdownHtml(linkKnowledgeCitations(content), renderer)
+      return renderMarkdownHtml(linkKnowledgeCitations(content, this.citeNumberMap), renderer)
     },
     // 事件委托：点击正文里的 [知识依据N] 锚点 → 展开证据面板并定位到第 N 条依据
     handleContentClick(event) {
@@ -870,6 +906,35 @@ html[data-theme="dark"] .process-body .process-inline-content {
 .message.assistant .message-content {
   align-items: flex-start;
   width: 100%;
+}
+
+/* 消息头像 */
+.message-avatar {
+  flex-shrink: 0;
+  align-self: flex-start;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 2px;
+  user-select: none;
+}
+
+.message.assistant .message-avatar.assistant-avatar {
+  background: transparent;
+}
+
+.message.user .message-avatar.user-avatar {
+  background: linear-gradient(135deg, #60a5fa, #3b82f6);
+  color: #fff;
+  box-shadow: 0 1px 3px rgba(59, 130, 246, 0.3);
+}
+
+.message.user .message-avatar.user-avatar svg {
+  width: 18px;
+  height: 18px;
 }
 
 /* 文件容器样式 */
