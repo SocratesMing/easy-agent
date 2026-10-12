@@ -433,6 +433,7 @@ async def chat_stream(
                 session_logger=session_logger,
                 context_prefix=knowledge_chat.context,
                 initial_events=knowledge_chat.initial_events,
+                assistant_metadata=knowledge_chat.assistant_metadata,
             ),
             session_id,
             sid,

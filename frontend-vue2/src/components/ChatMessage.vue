@@ -1,6 +1,6 @@
 <template>
   <div class="message" :class="[message.role]">
-    <div class="message-content">
+    <div class="message-content" @click="handleContentClick">
       <!-- 文件卡片 -->
       <div v-if="message.files && message.files.length > 0" class="files-container">
         <div 
@@ -157,7 +157,7 @@
         </div>
       </template>
       
-      <KnowledgeEvidence v-if="message.role === 'assistant'" :evidence="message.knowledge_evidence || []" :warnings="message.knowledge_warnings || []" />
+      <KnowledgeEvidence v-if="message.role === 'assistant'" ref="knowledgeEvidence" :evidence="message.knowledge_evidence || []" :warnings="message.knowledge_warnings || []" :content="citationSourceText" />
 
       <!-- 用户消息显示复制和重试按钮 -->
       <div v-if="message.role === 'user' && message.content" class="message-actions">
@@ -217,6 +217,16 @@ function isProcessType(b) {
   return (
     b.type === 'thinking' ||
     (b.type === 'tool_call' && b.tool_name !== 'write_todos')
+  )
+}
+
+// 将回答中的 [知识依据N] / [知识库依据N] 标记转为可点击锚点，
+// 点击后由 handleContentClick 委托处理，展开证据面板并滚动到对应依据卡片。
+function linkKnowledgeCitations(content) {
+  if (typeof content !== 'string') return content
+  return content.replace(
+    /\[知识(?:库)?依据\s*(\d+)\]/g,
+    (match, num) => `<a class="ke-cite" data-cite="${num}">${match}</a>`
   )
 }
 
@@ -304,6 +314,15 @@ export default {
       if (m.content) return true
       if (m.tool_calls && m.tool_calls.length > 0) return true
       return false
+    },
+    // 供证据面板解析实际引用的完整正文（兼容 content 直存与 blocks 分块两种消息形态）
+    citationSourceText() {
+      const blocks = Array.isArray(this.message.blocks) ? this.message.blocks : []
+      const blockText = blocks
+        .filter(block => block && block.type === 'content')
+        .map(block => block.content || '')
+        .join('\n')
+      return `${this.message.content || ''}\n${blockText}`
     },
     sortedBlocks() {
       // 从 blocks 字段构建（优先使用）
@@ -567,7 +586,19 @@ export default {
     },
     renderMarkdown(content) {
       if (!content) return ''
-      return renderMarkdownHtml(content, renderer)
+      return renderMarkdownHtml(linkKnowledgeCitations(content), renderer)
+    },
+    // 事件委托：点击正文里的 [知识依据N] 锚点 → 展开证据面板并定位到第 N 条依据
+    handleContentClick(event) {
+      const target = event.target
+      if (!target || typeof target.closest !== 'function') return
+      const link = target.closest('a.ke-cite')
+      if (!link) return
+      event.preventDefault()
+      const evidence = this.$refs.knowledgeEvidence
+      if (evidence && typeof evidence.jumpTo === 'function') {
+        evidence.jumpTo(Number(link.dataset.cite) || 0)
+      }
     },
     formatJson(obj) {
       try {
@@ -1662,6 +1693,19 @@ html[data-theme="dark"] .approval-badge.status-rejected {
 }
 
 /* GitHub 风格 emoji 短代码渲染后的 unicode 字符 */
+/* 知识依据锚点：[知识依据N] 渲染为可点击链接，点击跳转证据面板对应卡片 */
+.message-text ::v-deep a.ke-cite {
+  color: #2563eb;
+  text-decoration: underline;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.message-text ::v-deep a.ke-cite:hover {
+  color: #1d4ed8;
+  background: #eff6ff;
+}
+
 .message-text ::v-deep .github-emoji {
   display: inline;
   vertical-align: -0.125em;
