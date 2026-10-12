@@ -189,16 +189,19 @@ export function listPermissions(baseId) {
   return request(`/bases/${encodeURIComponent(baseId)}/permissions`)
 }
 
-export function replacePermissions(baseId, items) {
+// 权限管理：userIds 为勾选的可见人员；勾选名单非空时该库仅勾选人员可见
+export function replacePermissions(baseId, userIds) {
   return request(`/bases/${encodeURIComponent(baseId)}/permissions`, {
     method: 'PUT',
-    json: { items },
+    json: {
+      items: userIds.map(id => ({ subject_type: 'user', subject_id: id, role: 'viewer' })),
+      restrict_access: userIds.length > 0,
+    },
   })
 }
 
-export function searchPermissionSubjects(baseId, type, q = '') {
-  const params = new URLSearchParams({ type, q })
-  return request(`/bases/${encodeURIComponent(baseId)}/permission-subjects?${params}`)
+export function listPermissionDirectory(baseId) {
+  return request(`/bases/${encodeURIComponent(baseId)}/permission-directory`)
 }
 
 export function askKnowledgeBase(baseId, payload) {

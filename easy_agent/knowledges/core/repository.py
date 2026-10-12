@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 _BASE_UPDATE_FIELDS = {
     "remote_dataset_id", "name", "description", "status",
-    "deleted_at", "deleted_by", "purge_after",
+    "deleted_at", "deleted_by", "purge_after", "access_restricted",
 }
 _DOCUMENT_UPDATE_FIELDS = {
     "remote_document_id", "folder_id", "status", "progress", "error_code",
@@ -161,13 +161,18 @@ class KnowledgeRepository:
     ) -> list[dict[str, Any]]:
         """列出一个用户可见的知识库。
 
-        公共（team）空间需要显式授权：owner、空间管理/查看白名单，
-        或单库 department 权限行（fail-closed，不再默认同部门可见）。
+        公共（team）空间默认对本部门账号可见（只读）；跨部门访问需要
+        owner、空间管理白名单或单库权限行。access_restricted=1 的库进入
+        勾选名单模式：同部门默认可见与部门授权行均被屏蔽，仅勾选人员、
+        owner、空间管理白名单（含 admin）可见。
         """
         parameters: list[object] = [user_id, user_id, user_id, user_id]
         department_sql = ""
         if department_id:
-            department_sql = " OR (p.subject_type='department' AND p.subject_id=?)"
+            department_sql = (
+                " OR (p.subject_type='department' AND p.subject_id=?"
+                " AND COALESCE(b.access_restricted, 0)=0)"
+            )
             parameters.append(department_id)
         admin_sql = " OR b.space_type='team'" if include_all_team_spaces else ""
         with self.db.get_connection() as conn:
@@ -184,11 +189,10 @@ class KnowledgeRepository:
                         JOIN users mu ON mu.user_id=m.user_id
                         WHERE m.user_id=?
                           AND COALESCE(NULLIF(mu.department_id, ''), mu.organization_id)=b.department_id))
-                   OR (b.space_type='team' AND EXISTS (
-                        SELECT 1 FROM knowledge_team_space_viewers v
-                        JOIN users vu ON vu.user_id=v.user_id
-                        WHERE v.user_id=?
-                          AND COALESCE(NULLIF(vu.department_id, ''), vu.organization_id)=b.department_id))
+                   OR (b.space_type='team' AND COALESCE(b.access_restricted, 0)=0 AND EXISTS (
+                        SELECT 1 FROM users du
+                        WHERE du.user_id=?
+                          AND COALESCE(NULLIF(du.department_id, ''), du.organization_id)=b.department_id))
                    {department_sql}{admin_sql})
                 ORDER BY b.updated_at DESC
                 """,
@@ -228,23 +232,6 @@ class KnowledgeRepository:
                   AND u.account_status='active'
                   AND u.username<>'admin'
                   AND COALESCE(u.department_id, u.organization_id, '')<>''
-                """,
-                (user_id,),
-            )
-            return cursor.fetchone() is not None
-
-    def is_team_space_viewer(self, user_id: str) -> bool:
-        """用户是否持有公共空间查看授权。"""
-        with self.db.get_connection() as conn:
-            cursor = conn.cursor()
-            self.db._execute(
-                cursor,
-                """
-                SELECT 1 FROM knowledge_team_space_viewers v
-                JOIN users u ON u.user_id=v.user_id
-                WHERE v.user_id=?
-                  AND u.account_status='active'
-                  AND u.username<>'admin'
                 """,
                 (user_id,),
             )
@@ -351,18 +338,6 @@ class KnowledgeRepository:
 
     def revoke_team_space_manager(self, user_id: str) -> bool:
         return self._revoke_team_space_grant("knowledge_team_space_managers", user_id)
-
-    def list_team_space_viewers(self) -> list[dict[str, Any]]:
-        return self._list_team_space_grants("knowledge_team_space_viewers")
-
-    def grant_team_space_viewer(self, *, user_id: str, granted_by: str) -> dict[str, Any]:
-        return self._grant_team_space_permission(
-            table="knowledge_team_space_viewers",
-            user_id=user_id, granted_by=granted_by, label="查看", require_department=False,
-        )
-
-    def revoke_team_space_viewer(self, user_id: str) -> bool:
-        return self._revoke_team_space_grant("knowledge_team_space_viewers", user_id)
 
     # ---------------- 文件夹 ----------------
 
@@ -728,37 +703,35 @@ class KnowledgeRepository:
                 )
         return self.list_permissions(base_id)
 
-    def find_permission_subjects(
-        self, *, subject_type: str, query: str, limit: int = 20
-    ) -> list[dict[str, str]]:
-        pattern = f"%{query.lower()}%"
+    def list_permission_directory_users(
+        self, *, exclude_user_id: str = ""
+    ) -> list[dict[str, Any]]:
+        """列出权限管理可选人员目录（在职账号，含部门/处室/团队层级）。
+
+        exclude_user_id 用于剔除库 owner——owner 天然可见，无需出现在
+        勾选名单中。部门标识优先 department_id，缺失时回退 organization_id。
+        """
+
+        department_expr = "COALESCE(NULLIF(department_id, ''), NULLIF(organization_id, ''))"
         with self.db.get_connection() as conn:
             cursor = conn.cursor()
-            if subject_type == "user":
-                self.db._execute(
-                    cursor,
-                    """
-                    SELECT user_id AS subject_id, username AS label, organization_id AS secondary
-                    FROM users
-                    WHERE LOWER(username) LIKE ? OR LOWER(email) LIKE ?
-                    ORDER BY username LIMIT ?
-                    """,
-                    (pattern, pattern, limit),
-                )
-            elif subject_type == "department":
-                self.db._execute(
-                    cursor,
-                    """
-                    SELECT DISTINCT organization_id AS subject_id,
-                           organization_id AS label, '' AS secondary
-                    FROM users
-                    WHERE organization_id!='' AND LOWER(organization_id) LIKE ?
-                    ORDER BY organization_id LIMIT ?
-                    """,
-                    (pattern, limit),
-                )
-            else:
-                raise ValueError("unsupported permission subject type")
+            self.db._execute(
+                cursor,
+                f"""
+                SELECT user_id,
+                       COALESCE(username, '') AS username,
+                       COALESCE(NULLIF(display_name, ''), username, '') AS display_name,
+                       COALESCE({department_expr}, '') AS department_id,
+                       COALESCE(NULLIF(department_name, ''), {department_expr}, '') AS department_name,
+                       COALESCE(division_name, '') AS division_name,
+                       COALESCE(team_name, '') AS team_name
+                FROM users
+                WHERE account_status='active' AND username<>'admin'
+                  AND (?='' OR user_id<>?)
+                ORDER BY department_name, division_name, team_name, display_name
+                """,
+                (exclude_user_id, exclude_user_id),
+            )
             return [dict(row) for row in cursor.fetchall()]
 
     # ---------------- 操作记录 ----------------

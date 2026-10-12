@@ -78,18 +78,3 @@ export function setTeamSpaceManager(userId, enabled) {
     data: { enabled: Boolean(enabled) },
   }, '设置公共空间权限失败')
 }
-
-export function listTeamSpaceViewers() {
-  return requestJson({
-    url: `${KNOWLEDGE_ADMIN_ROOT}/team-space-viewers`,
-    method: 'get',
-  }, '获取公共空间查看权限失败')
-}
-
-export function setTeamSpaceViewer(userId, enabled) {
-  return requestJson({
-    url: `${KNOWLEDGE_ADMIN_ROOT}/team-space-viewers/${encodeURIComponent(userId)}`,
-    method: 'put',
-    data: { enabled: Boolean(enabled) },
-  }, '设置公共空间查看权限失败')
-}

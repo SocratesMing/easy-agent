@@ -28,8 +28,13 @@ _BASE_P0_COLUMNS = (
     ("deleted_at", "VARCHAR(50) DEFAULT NULL"),
     ("deleted_by", "VARCHAR(255) DEFAULT NULL"),
     ("purge_after", "VARCHAR(50) DEFAULT NULL"),
+    # 权限管理勾选名单模式：1=仅勾选人员可见（屏蔽公共空间默认同部门可见）
+    ("access_restricted", "INTEGER NOT NULL DEFAULT 0"),
 )
-_DOCUMENT_P0_COLUMNS = _BASE_P0_COLUMNS + (
+_DOCUMENT_P0_COLUMNS = (
+    ("deleted_at", "VARCHAR(50) DEFAULT NULL"),
+    ("deleted_by", "VARCHAR(255) DEFAULT NULL"),
+    ("purge_after", "VARCHAR(50) DEFAULT NULL"),
     ("previous_status", "VARCHAR(30) DEFAULT NULL"),
     ("document_version", "INTEGER NOT NULL DEFAULT 1"),
 )
@@ -58,7 +63,8 @@ def initialize_knowledge_schema(db: Database, cursor) -> None:
             updated_at VARCHAR(50) NOT NULL,
             deleted_at VARCHAR(50) DEFAULT NULL,
             deleted_by VARCHAR(255) DEFAULT NULL,
-            purge_after VARCHAR(50) DEFAULT NULL
+            purge_after VARCHAR(50) DEFAULT NULL,
+            access_restricted INTEGER NOT NULL DEFAULT 0
         )
     """)
     for column, definition in _BASE_P0_COLUMNS:

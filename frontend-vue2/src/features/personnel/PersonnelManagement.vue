@@ -70,9 +70,9 @@
           </svg>
         </span>
         <div>
-          <strong>公共空间查看与授权管理</strong>
-          <p>公共空间权限分两级：<strong>可查看</strong>控制能否浏览公共知识库（默认关闭，未授权者看不到公共空间）；<strong>可创建/管理</strong>在此基础上允许创建并管理所属部门的公共知识库（隐含查看权限）。admin 默认拥有全局权限，无需给自己授权。</p>
-          <small>这是全局公共空间权限；单个知识库的查看者、维护者和管理员，仍在该知识库的“成员”中配置。</small>
+          <strong>公共空间授权管理</strong>
+          <p>公共空间对<strong>本部门成员默认可见（只读）</strong>，无需单独授权；<strong>可创建/管理</strong>授权允许创建并管理所属部门的公共知识库。admin 默认拥有全局权限，无需给自己授权。</p>
+          <small>这是全局公共空间权限；单个知识库的可见人员，可在该知识库的「权限管理」中按部门、处室、团队勾选配置。</small>
         </div>
       </section>
 
@@ -153,19 +153,6 @@
                   <td>
                     <span v-if="user.username === 'admin'" class="pm-access-note global">全局管理</span>
                     <div v-else class="pm-permission-stack">
-                      <button
-                        class="pm-permission-switch"
-                        :class="{ active: isTeamViewer(user), pending: teamViewerUserId === user.user_id }"
-                        type="button"
-                        role="switch"
-                        :aria-checked="isTeamViewer(user) ? 'true' : 'false'"
-                        :disabled="teamViewerUserId === user.user_id || (!isTeamViewer(user) && user.account_status === 'disabled')"
-                        :title="teamViewerTitle(user)"
-                        @click="toggleTeamViewer(user)"
-                      >
-                        <i><span></span></i>
-                        <strong>{{ isTeamViewer(user) ? '可查看' : '不可查看' }}</strong>
-                      </button>
                       <button
                         class="pm-permission-switch"
                         :class="{ active: isTeamManager(user), pending: teamPermissionUserId === user.user_id }"
@@ -389,8 +376,6 @@ import {
   listPersonnelUsers,
   listTeamSpaceManagers,
   setTeamSpaceManager,
-  listTeamSpaceViewers,
-  setTeamSpaceViewer,
   updatePersonnelUser,
 } from './api.js'
 import {
@@ -421,8 +406,6 @@ export default {
     const downloadingTemplate = ref(false)
     const teamManagerIds = ref(new Set())
     const teamPermissionUserId = ref('')
-    const teamViewerIds = ref(new Set())
-    const teamViewerUserId = ref('')
 
     const showEditor = ref(false)
     const editingUserId = ref('')
@@ -510,54 +493,6 @@ export default {
 
     function isTeamManager(user) {
       return teamManagerIds.value.has(String(user.user_id || ''))
-    }
-
-    async function loadTeamViewers() {
-      try {
-        const payload = await listTeamSpaceViewers()
-        teamViewerIds.value = new Set(
-          (payload && Array.isArray(payload.items) ? payload.items : [])
-            .map(item => String(item.user_id || ''))
-            .filter(Boolean)
-        )
-      } catch (error) {
-        notify(resolveError(error, '获取公共空间查看权限失败'), 'error')
-      }
-    }
-
-    function isTeamViewer(user) {
-      return teamManagerIds.value.has(String(user.user_id || ''))
-        || teamViewerIds.value.has(String(user.user_id || ''))
-    }
-
-    function teamViewerTitle(user) {
-      if (teamViewerUserId.value === user.user_id) return '正在保存查看权限'
-      if (isTeamManager(user)) return '可创建/管理已隐含查看权限，无需单独授权'
-      if (!isTeamViewer(user) && user.account_status === 'disabled') return '停用账号不能获得公共空间查看权限'
-      return isTeamViewer(user)
-        ? '点击取消其公共空间查看权限'
-        : '点击授予其公共空间查看权限（仅浏览公共知识库）'
-    }
-
-    async function toggleTeamViewer(user) {
-      const userId = String(user.user_id || '')
-      if (!userId || teamViewerUserId.value || isTeamManager(user)) return
-      const enabled = !isTeamViewer(user)
-      teamViewerUserId.value = userId
-      try {
-        await setTeamSpaceViewer(userId, enabled)
-        const next = new Set(teamViewerIds.value)
-        if (enabled) next.add(userId)
-        else next.delete(userId)
-        teamViewerIds.value = next
-        notify(enabled
-          ? `已授权 ${user.display_name || user.username} 查看公共空间`
-          : `已取消 ${user.display_name || user.username} 的公共空间查看权限`)
-      } catch (error) {
-        notify(resolveError(error, '设置公共空间查看权限失败'), 'error')
-      } finally {
-        teamViewerUserId.value = ''
-      }
     }
 
     function canGrantTeamManager(user) {
@@ -697,7 +632,7 @@ export default {
       const label = user.display_name || user.username
       const confirmed = window.confirm(
         `确认删除人员 ${label}（${user.username}）？\n` +
-        '删除后该账号无法登录，其公共空间授权与知识库成员身份将一并移除；' +
+        '删除后该账号无法登录，其公共空间授权与知识库可见授权将一并移除；' +
         '名下仍有知识库时会被阻止，请先处理其知识库。'
       )
       if (!confirmed) return
@@ -707,7 +642,7 @@ export default {
         notify(`已删除 ${label}（${user.username}）`)
         // 删除的是当前页最后一条时回退一页，避免停留在空页
         if (users.value.length === 1 && page.value > 1) page.value -= 1
-        await Promise.all([loadUsers(), loadTeamManagers(), loadTeamViewers()])
+        await Promise.all([loadUsers(), loadTeamManagers()])
       } catch (error) {
         notify(resolveError(error, '删除人员失败'), 'error')
       } finally {
@@ -810,7 +745,6 @@ export default {
     onMounted(() => {
       loadUsers()
       loadTeamManagers()
-      loadTeamViewers()
     })
     onBeforeUnmount(() => {
       if (filterTimer) clearTimeout(filterTimer)
@@ -843,7 +777,6 @@ export default {
       importFileInput,
       importSource,
       isTeamManager,
-      isTeamViewer,
       importing,
       keyword,
       loadUsers,
@@ -868,10 +801,7 @@ export default {
       teamManagerCount,
       teamPermissionTitle,
       teamPermissionUserId,
-      teamViewerTitle,
-      teamViewerUserId,
       toggleTeamPermission,
-      toggleTeamViewer,
       canGrantTeamManager,
       total,
       totalPages,

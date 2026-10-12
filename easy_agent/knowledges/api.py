@@ -67,17 +67,13 @@ from .core.models import (
     OperationSummary,
     PermissionListResponse,
     PermissionReplaceRequest,
-    PermissionSubjectListResponse,
+    PermissionDirectoryListResponse,
     SessionKnowledgeScopeRequest,
     SessionKnowledgeScopeResponse,
     TeamSpaceManagerListResponse,
     TeamSpaceManagerSummary,
     TeamSpaceManagerUpdateRequest,
     TeamSpaceManagerUpdateResponse,
-    TeamSpaceViewerListResponse,
-    TeamSpaceViewerSummary,
-    TeamSpaceViewerUpdateRequest,
-    TeamSpaceViewerUpdateResponse,
 )
 from .core.operations_repository import KnowledgeOperationsRepository
 from .ragflow import RagflowError
@@ -879,36 +875,30 @@ async def replace_permissions(
     service: Annotated[KnowledgeService, Depends(_service)],
     principal: Annotated[KnowledgePrincipal, Depends(get_knowledge_principal)],
 ) -> PermissionListResponse:
-    """全量替换知识库授权列表。"""
+    """全量替换知识库可见人员名单并更新受限标记。"""
 
     return await _call(
         service.replace_permissions(
-            base_id=base_id, principal=principal, items=payload.items
+            base_id=base_id,
+            principal=principal,
+            items=payload.items,
+            restrict_access=payload.restrict_access,
         )
     )
 
 
 @router.get(
-    "/bases/{base_id}/permission-subjects",
-    response_model=PermissionSubjectListResponse,
+    "/bases/{base_id}/permission-directory",
+    response_model=PermissionDirectoryListResponse,
 )
-async def find_permission_subjects(
+async def get_permission_directory(
     base_id: str,
     service: Annotated[KnowledgeService, Depends(_service)],
     principal: Annotated[KnowledgePrincipal, Depends(get_knowledge_principal)],
-    subject_type: Literal["user", "department"] = Query(alias="type"),
-    q: str = Query(default="", max_length=100),
-) -> PermissionSubjectListResponse:
-    """按类型与关键字搜索可授权主体（用户/部门）。"""
+) -> PermissionDirectoryListResponse:
+    """查询权限管理可选人员目录（按部门/处室/团队分组展示的前置数据）。"""
 
-    return await _call(
-        service.find_permission_subjects(
-            base_id=base_id,
-            principal=principal,
-            subject_type=subject_type,
-            query=q,
-        )
-    )
+    return await _call(service.get_permission_directory(base_id, principal))
 
 
 # ---------------------------------------------------------------------------
@@ -1247,101 +1237,6 @@ async def set_team_space_manager(
         user_id=user_id,
         enabled=payload.enabled,
         manager=manager,
-    )
-
-
-def _team_viewer_summary(item: dict) -> TeamSpaceViewerSummary:
-    """将数据库行转换为公共空间查看者摘要模型。"""
-
-    return TeamSpaceViewerSummary(
-        user_id=str(item["user_id"]),
-        username=str(item["username"]),
-        display_name=str(item.get("display_name") or ""),
-        department_id=str(item.get("department_id") or ""),
-        department_name=str(item.get("department_name") or ""),
-        account_status=str(item.get("account_status") or "active"),
-        granted_by=str(item["granted_by"]),
-        granted_at=item["granted_at"],
-        updated_at=item["updated_at"],
-    )
-
-
-@router.get(
-    "/admin/team-space-viewers",
-    response_model=TeamSpaceViewerListResponse,
-    summary="查询公共空间可查看权限白名单",
-)
-async def list_team_space_viewers(
-    _: Annotated[KnowledgePrincipal, Depends(_admin)],
-    db: Annotated[Database, Depends(get_database)],
-) -> TeamSpaceViewerListResponse:
-    """查询公共空间可查看权限白名单。"""
-
-    rows = await run_in_threadpool(KnowledgeRepository(db).list_team_space_viewers)
-    return TeamSpaceViewerListResponse(
-        items=[_team_viewer_summary(item) for item in rows]
-    )
-
-
-@router.put(
-    "/admin/team-space-viewers/{user_id}",
-    response_model=TeamSpaceViewerUpdateResponse,
-    summary="设置单个账号的公共空间查看权限",
-)
-async def set_team_space_viewer(
-    user_id: str,
-    payload: TeamSpaceViewerUpdateRequest,
-    request: Request,
-    principal: Annotated[KnowledgePrincipal, Depends(_admin)],
-    db: Annotated[Database, Depends(get_database)],
-) -> TeamSpaceViewerUpdateResponse:
-    """授予或撤销账号的公共空间查看权限。"""
-
-    repository = KnowledgeRepository(db)
-    viewer = None
-    try:
-        if payload.enabled:
-            row = await run_in_threadpool(
-                repository.grant_team_space_viewer,
-                user_id=user_id,
-                granted_by=principal.user_id,
-            )
-            viewer = _team_viewer_summary(row)
-        else:
-            target = await run_in_threadpool(db.get_user_by_id, user_id)
-            if target is None:
-                raise LookupError("用户不存在")
-            if target.username == "admin":
-                raise ValueError("admin 的全局权限不可取消")
-            await run_in_threadpool(repository.revoke_team_space_viewer, user_id)
-    except LookupError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-
-    config = getattr(request.app.state, "knowledge_config", None)
-    if config is None or config.audit.enabled:
-        await run_in_threadpool(
-            KnowledgeOperationsRepository(db).record_audit,
-            request_id=str(getattr(request.state, "request_id", "unknown")),
-            actor_user_id=principal.user_id,
-            actor_username=principal.username,
-            action=(
-                "team_space_viewer.grant"
-                if payload.enabled
-                else "team_space_viewer.revoke"
-            ),
-            object_type="team_space_viewer",
-            object_id=user_id,
-            details={"enabled": payload.enabled},
-            max_details_bytes=getattr(
-                getattr(config, "audit", None), "max_details_bytes", 4096
-            ),
-        )
-    return TeamSpaceViewerUpdateResponse(
-        user_id=user_id,
-        enabled=payload.enabled,
-        viewer=viewer,
     )
 
 

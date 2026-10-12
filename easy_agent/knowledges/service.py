@@ -53,10 +53,10 @@ from .core.models import (
     OperationSummary,
     OperationType,
     PageInfo,
+    PermissionDirectoryListResponse,
+    PermissionDirectoryUser,
     PermissionEntry,
     PermissionListResponse,
-    PermissionSubject,
-    PermissionSubjectListResponse,
     RetrieveResponse,
     SessionKnowledgeScopeResponse,
     TeamSpaceDepartmentSummary,
@@ -91,8 +91,10 @@ PARSER_CONFIG: dict[str, object] = {
     "raptor": {"use_raptor": False},
 }
 # 检索固定参数
-RETRIEVAL_SIMILARITY_THRESHOLD = 0.2
-RETRIEVAL_VECTOR_SIMILARITY_WEIGHT = 0.3
+# 阈值 0.3：过滤弱相关 chunk，避免模型被迫引用边缘依据导致标注错位
+RETRIEVAL_SIMILARITY_THRESHOLD = 0.3
+# 向量权重 0.5：向量/关键词各占一半，提升语义相关性、降低表面用词匹配的干扰
+RETRIEVAL_VECTOR_SIMILARITY_WEIGHT = 0.5
 RETRIEVAL_TOP_K = 1024
 # 上传安全校验参数（YAML 不再配置，代码内固定）
 _UPLOAD_SECURITY = UploadSecurityConfig()
@@ -368,6 +370,15 @@ def _matching_permission_roles(
     return roles
 
 
+def _base_access_restricted(base: Mapping[str, object]) -> bool:
+    """知识库是否处于勾选名单（仅勾选人员可见）模式。"""
+
+    try:
+        return bool(int(base.get("access_restricted") or 0))
+    except (TypeError, ValueError):
+        return False
+
+
 def effective_role(
     base: Mapping[str, object],
     principal: KnowledgePrincipal,
@@ -377,8 +388,8 @@ def effective_role(
 ) -> KnowledgeBaseRole | None:
     """计算用户在单个知识库上的最强角色。
 
-    公共（team）空间不再默认同部门可见，须通过显式授权或公共空间
-    查看/管理白名单获得访问。
+    公共（team）空间默认对本部门账号只读可见（team_viewer），
+    跨部门访问须通过单库权限行或 owner 身份获得。
     """
     if str(base.get("owner_user_id", "")) == principal.user_id:
         return KnowledgeBaseRole.MANAGER
@@ -449,7 +460,6 @@ class KnowledgeService:
         self.config = config
         self.operations_repository = KnowledgeOperationsRepository(repository.db)
         self._team_manager_cache: dict[str, bool] = {}
-        self._team_viewer_cache: dict[str, bool] = {}
         self.original_store = (
             original_store if original_store is not None else LocalOriginalStore()
         )
@@ -617,24 +627,13 @@ class KnowledgeService:
             )
         return self._team_manager_cache[principal.user_id]
 
-    async def _has_team_viewer_grant(self, principal: KnowledgePrincipal) -> bool:
-        """判断用户是否在公共空间查看白名单（admin 直通，结果按用户缓存）。"""
-
-        if principal.username == "admin":
-            return True
-        if principal.user_id not in self._team_viewer_cache:
-            self._team_viewer_cache[principal.user_id] = await self._repo(
-                self.repository.is_team_space_viewer, principal.user_id
-            )
-        return self._team_viewer_cache[principal.user_id]
-
     async def _effective_role(
         self,
         base: Mapping[str, object],
         principal: KnowledgePrincipal,
         permissions: Iterable[Mapping[str, object]],
     ) -> KnowledgeBaseRole | None:
-        """在单库授权之上叠加公共空间管理/查看白名单（均限定本部门）。"""
+        """在单库授权之上叠加公共空间管理白名单（均限定本部门）。"""
         permission_rows = list(permissions)
         if str(base.get("space_type")) != KnowledgeBaseVisibility.TEAM.value:
             return effective_role(base, principal, permission_rows)
@@ -644,10 +643,10 @@ class KnowledgeService:
             principal.department_id == str(base.get("department_id") or "").strip()
         )
         has_manager_grant = await self._has_team_management_grant(principal)
-        has_viewer_grant = same_department and (
-            has_manager_grant or await self._has_team_viewer_grant(principal)
-        )
-        role = effective_role(base, principal, permission_rows, team_viewer=has_viewer_grant)
+        # 公共空间默认对本部门账号只读可见；勾选名单（access_restricted）
+        # 模式下默认可见让位于勾选人员；管理白名单则升级为 MANAGER。
+        team_viewer = same_department and not _base_access_restricted(base)
+        role = effective_role(base, principal, permission_rows, team_viewer=team_viewer)
         if same_department and has_manager_grant:
             return KnowledgeBaseRole.MANAGER
         if str(base.get("owner_user_id", "")) == principal.user_id:
@@ -1255,9 +1254,9 @@ class KnowledgeService:
     async def get_permissions(
         self, base_id: str, principal: KnowledgePrincipal
     ) -> PermissionListResponse:
-        """查询知识库授权列表（需管理权限）。"""
+        """查询知识库授权列表与受限标记（需管理权限）。"""
 
-        await self._authorized_base(
+        base, _ = await self._authorized_base(
             base_id, principal, AllowedAction.MANAGE_PERMISSIONS
         )
         rows = await self._repo(self.repository.list_permissions, base_id)
@@ -1269,7 +1268,8 @@ class KnowledgeService:
                     role=row["role"],
                 )
                 for row in rows
-            ]
+            ],
+            restrict_access=_base_access_restricted(base),
         )
 
     async def replace_permissions(
@@ -1278,8 +1278,14 @@ class KnowledgeService:
         base_id: str,
         principal: KnowledgePrincipal,
         items: list[PermissionEntry],
+        restrict_access: bool = False,
     ) -> PermissionListResponse:
-        """全量替换授权列表：主体去重、所有者权限不可变、公共空间高角色仅 admin 可变更。"""
+        """全量替换可见人员名单并更新勾选名单（受限）标记。
+
+        权限管理新语义：仅支持按人员授权，角色一律为查看者（viewer）；
+        restrict_access=True 时该库进入勾选名单模式，公共空间默认的
+        同部门可见让位于勾选人员（owner、admin、部门管理白名单不受影响）。
+        """
 
         base, _ = await self._authorized_base(
             base_id, principal, AllowedAction.MANAGE_PERMISSIONS
@@ -1290,49 +1296,43 @@ class KnowledgeService:
                 "个人空间知识库不可授权",
                 status_code=409,
             )
-        seen: set[tuple[str, str]] = set()
+        seen: set[str] = set()
         payload: list[dict[str, str]] = []
         for item in items:
-            key = (item.subject_type, item.subject_id)
-            if key in seen:
+            if item.subject_type != "user":
+                raise KnowledgeServiceError(
+                    "KNOWLEDGE_PERMISSION_SUBJECT_UNSUPPORTED",
+                    "权限管理仅支持按人员授权",
+                    status_code=409,
+                )
+            subject_id = item.subject_id.strip()
+            if subject_id in seen:
                 raise KnowledgeServiceError(
                     "KNOWLEDGE_DUPLICATE_PERMISSION",
                     "授权主体重复",
                     status_code=409,
                 )
-            if item.subject_type == "user" and item.subject_id == base["owner_user_id"]:
+            if subject_id == str(base["owner_user_id"] or ""):
                 raise KnowledgeServiceError(
                     "KNOWLEDGE_OWNER_PERMISSION_IMMUTABLE",
                     "所有者权限不可修改",
                     status_code=409,
                 )
-            seen.add(key)
-            payload.append(item.model_dump(mode="json"))
-        if (
-            str(base["space_type"]) == KnowledgeBaseVisibility.TEAM.value
-            and principal.username != "admin"
-        ):
-            existing_rows = await self._repo(self.repository.list_permissions, base_id)
-            existing_elevated = {
-                (
-                    str(row["subject_type"]),
-                    str(row["subject_id"]),
-                    str(row["role"]),
-                )
-                for row in existing_rows
-                if str(row["role"]) != KnowledgeBaseRole.VIEWER.value
-            }
-            requested_elevated = {
-                (item["subject_type"], item["subject_id"], item["role"])
-                for item in payload
-                if item["role"] != KnowledgeBaseRole.VIEWER.value
-            }
-            if requested_elevated != existing_elevated:
-                raise KnowledgeServiceError(
-                    "KNOWLEDGE_TEAM_ROLE_ADMIN_REQUIRED",
-                    "仅 admin 可授予或变更团队知识库的维护者和管理员角色",
-                    status_code=403,
-                )
+            seen.add(subject_id)
+            payload.append(
+                {
+                    "subject_type": "user",
+                    "subject_id": subject_id,
+                    "role": KnowledgeBaseRole.VIEWER.value,
+                }
+            )
+        # 先落受限标记再替换名单（fail-closed）：名单替换失败时最多是
+        # 「可见面更窄」，不会出现已声明受限但仍对同部门开放的窗口。
+        await self._repo(
+            self.repository.update_base,
+            base_id,
+            access_restricted=1 if restrict_access else 0,
+        )
         rows = await self._repo(
             self.repository.replace_permissions,
             base_id=base_id,
@@ -1347,29 +1347,24 @@ class KnowledgeService:
                     role=row["role"],
                 )
                 for row in rows
-            ]
+            ],
+            restrict_access=restrict_access,
         )
 
-    async def find_permission_subjects(
-        self,
-        *,
-        base_id: str,
-        principal: KnowledgePrincipal,
-        subject_type: str,
-        query: str,
-    ) -> PermissionSubjectListResponse:
-        """按类型与关键字搜索可授权的用户或部门。"""
+    async def get_permission_directory(
+        self, base_id: str, principal: KnowledgePrincipal
+    ) -> PermissionDirectoryListResponse:
+        """查询权限管理可选人员目录（在职账号，剔除 owner 与 admin）。"""
 
-        await self._authorized_base(
+        base, _ = await self._authorized_base(
             base_id, principal, AllowedAction.MANAGE_PERMISSIONS
         )
         rows = await self._repo(
-            self.repository.find_permission_subjects,
-            subject_type=subject_type,
-            query=query,
+            self.repository.list_permission_directory_users,
+            exclude_user_id=str(base.get("owner_user_id") or ""),
         )
-        return PermissionSubjectListResponse(
-            items=[PermissionSubject(subject_type=subject_type, **row) for row in rows]
+        return PermissionDirectoryListResponse(
+            items=[PermissionDirectoryUser(**row) for row in rows]
         )
 
     # ---------------- 文档 ----------------

@@ -220,32 +220,6 @@ class TeamSpaceManagerUpdateResponse(ContractModel):
     manager: TeamSpaceManagerSummary | None = None
 
 
-class TeamSpaceViewerSummary(ContractModel):
-    user_id: str
-    username: str
-    display_name: str = ""
-    department_id: str
-    department_name: str = ""
-    account_status: Literal["active", "disabled"]
-    granted_by: str
-    granted_at: datetime
-    updated_at: datetime
-
-
-class TeamSpaceViewerListResponse(ContractModel):
-    items: list[TeamSpaceViewerSummary] = Field(default_factory=list)
-
-
-class TeamSpaceViewerUpdateRequest(ContractModel):
-    enabled: StrictBool
-
-
-class TeamSpaceViewerUpdateResponse(ContractModel):
-    user_id: str
-    enabled: StrictBool
-    viewer: TeamSpaceViewerSummary | None = None
-
-
 class KnowledgeBaseListResponse(ContractModel):
     items: list[KnowledgeBaseSummary]
     page: PageInfo
@@ -419,21 +393,29 @@ class PermissionEntry(ContractModel):
 
 class PermissionReplaceRequest(ContractModel):
     items: list[PermissionEntry] = Field(default_factory=list, max_length=200)
+    # 勾选名单模式：True 时该库仅勾选人员可见（屏蔽公共空间默认同部门可见）
+    restrict_access: bool = False
 
 
 class PermissionListResponse(ContractModel):
     items: list[PermissionEntry]
+    restrict_access: bool = False
 
 
-class PermissionSubject(ContractModel):
-    subject_type: Literal["user", "department"]
-    subject_id: str
-    label: str
-    secondary: str = ""
+class PermissionDirectoryUser(ContractModel):
+    """权限管理人员目录条目（在职账号，含部门/处室/团队层级字段）。"""
+
+    user_id: str
+    username: str = ""
+    display_name: str = ""
+    department_id: str = ""
+    department_name: str = ""
+    division_name: str = ""
+    team_name: str = ""
 
 
-class PermissionSubjectListResponse(ContractModel):
-    items: list[PermissionSubject]
+class PermissionDirectoryListResponse(ContractModel):
+    items: list[PermissionDirectoryUser]
 
 
 # ---------------------------------------------------------------------------
@@ -599,8 +581,8 @@ __all__ = [
     "PermissionEntry",
     "PermissionListResponse",
     "PermissionReplaceRequest",
-    "PermissionSubject",
-    "PermissionSubjectListResponse",
+    "PermissionDirectoryListResponse",
+    "PermissionDirectoryUser",
     "RetrieveRequest",
     "RetrieveResponse",
     "SessionKnowledgeScopeRequest",
@@ -611,10 +593,6 @@ __all__ = [
     "TeamSpaceManagerSummary",
     "TeamSpaceManagerUpdateRequest",
     "TeamSpaceManagerUpdateResponse",
-    "TeamSpaceViewerListResponse",
-    "TeamSpaceViewerSummary",
-    "TeamSpaceViewerUpdateRequest",
-    "TeamSpaceViewerUpdateResponse",
     "UploadBatchAccepted",
     "UploadItemAccepted",
 ]
