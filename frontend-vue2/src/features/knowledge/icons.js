@@ -23,6 +23,8 @@ import rawIconFileText from '~icons/lucide/file-text'
 import rawIconFiles from '~icons/lucide/files'
 import rawIconFolder from '~icons/lucide/folder'
 import rawIconFolderPlus from '~icons/lucide/folder-plus'
+import rawIconPause from '~icons/lucide/pause'
+import rawIconPlay from '~icons/lucide/play'
 import rawIconLayoutGrid from '~icons/lucide/layout-grid'
 import rawIconLibrary from '~icons/lucide/library'
 import rawIconList from '~icons/lucide/list'
@@ -90,6 +92,8 @@ export const IconFileText = icon(rawIconFileText)
 export const IconFiles = icon(rawIconFiles)
 export const IconFolder = icon(rawIconFolder)
 export const IconFolderPlus = icon(rawIconFolderPlus)
+export const IconPause = icon(rawIconPause)
+export const IconPlay = icon(rawIconPlay)
 export const IconLayoutGrid = icon(rawIconLayoutGrid)
 export const IconLibrary = icon(rawIconLibrary)
 export const IconList = icon(rawIconList)

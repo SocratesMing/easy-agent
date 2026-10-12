@@ -153,8 +153,13 @@
                   <option value="">全部状态</option>
                   <option value="pending">待处理</option>
                   <option value="processing">解析中</option>
+                  <option value="cancel_requested">取消中</option>
+                  <option value="cancelled">已取消</option>
+                  <option value="paused">已暂停</option>
                   <option value="ready">已就绪</option>
                   <option value="failed">失败</option>
+                  <option value="deleting">删除中</option>
+                  <option value="unknown">未知</option>
                 </select>
               </label>
               <div class="ke-view-switch" aria-label="资料视图">
@@ -174,8 +179,11 @@
           </section>
 
           <section v-if="visibleUploadQueue.length" class="ke-upload-queue">
-            <header><strong>导入进度</strong><span>{{ visibleUploadQueue.length }} 个文件</span></header>
-            <div class="ke-upload-items">
+            <header>
+              <button type="button" class="ke-upload-toggle" :aria-expanded="uploadQueueExpanded ? 'true' : 'false'" @click="uploadQueueExpanded = !uploadQueueExpanded"><strong>导入进度</strong><span>{{ visibleUploadQueue.length }} 个文件</span><IconChevronDown :class="{ rotated: !uploadQueueExpanded }" /></button>
+              <button v-if="hasClearableUploads" class="ke-upload-clear" @click="clearFinishedUploads">{{ clearUploadsLabel }}</button>
+            </header>
+            <div v-show="uploadQueueExpanded" class="ke-upload-items">
               <div v-for="item in visibleUploadQueue" :key="item.id" class="ke-upload-item">
                 <span class="ke-mini-file"><IconFileText /></span>
                 <div><strong>{{ item.name }}</strong><div class="ke-progress"><i :style="{ width: `${item.progress}%` }"></i></div></div>
@@ -221,6 +229,8 @@
                   <button v-if="!doc.optimistic" title="下载" @click="downloadDocument(doc)"><IconDownload /><span>下载</span></button>
                   <button v-if="doc.allowed_actions.includes('move_document')" title="移动" @click="openMoveDocument(doc)"><IconFolder /><span>移动</span></button>
                   <button v-if="['failed', 'cancelled', 'unknown'].includes(doc.status) && doc.allowed_actions.includes('retry_document')" title="重试解析" @click="retryDoc(doc)"><IconRefreshCw /><span>重试</span></button>
+                  <button v-if="['pending', 'processing'].includes(doc.status) && doc.allowed_actions.includes('retry_document')" title="暂停解析任务" @click="pauseDoc(doc)"><IconPause /><span>暂停</span></button>
+                  <button v-if="doc.status === 'paused' && doc.allowed_actions.includes('retry_document')" title="恢复解析任务" @click="resumeDoc(doc)"><IconPlay /><span>恢复</span></button>
                   <button v-if="doc.allowed_actions.includes('delete_document')" class="danger-text" title="删除" @click="removeDocument(doc)"><IconTrash2 /><span>删除</span></button>
                 </div>
               </article>
@@ -414,7 +424,9 @@ import {
   IconList,
   IconListFilter,
   IconPanelRightClose,
+  IconPause,
   IconPencil,
+  IconPlay,
   IconPlus,
   IconRefreshCw,
   IconSearch,
@@ -453,7 +465,7 @@ import {
   createFolder, createKnowledgeBase, deleteDocument, deleteFolder,
   deleteKnowledgeBase, ensureFolders, getDocumentBlob, getKnowledgeCapabilities, getKnowledgeStatus,
   listDocuments, listFolders, listKnowledgeBases, listKnowledgeOperations, listPermissions,
-  moveDocument, prepareKnowledgeChatSession, replacePermissions, retryDocument, searchPermissionSubjects, updateFolder,
+  moveDocument, pauseDocument, prepareKnowledgeChatSession, replacePermissions, resumeDocument, retryDocument, searchPermissionSubjects, updateFolder,
   updateKnowledgeBase, uploadDocument,
 } from './api.js'
 
@@ -487,7 +499,9 @@ export default {
     IconList,
     IconListFilter,
     IconPanelRightClose,
+    IconPause,
     IconPencil,
+    IconPlay,
     IconPlus,
     IconRefreshCw,
     IconSearch,
@@ -530,6 +544,7 @@ const statusFilter = ref('')
 const viewMode = ref(localStorage.getItem('ke-view-mode') || 'list')
 const dragging = ref(false)
 const uploadQueue = ref([])
+const uploadQueueExpanded = ref(true) // 导入进度面板折叠状态：默认展开
 const operations = ref([])
 const askOpen = ref(true)
 const clampLayout = (value, min, max) => Math.min(max, Math.max(min, value))
@@ -631,9 +646,22 @@ let documentRequestSequence = 0
 const selectedBase = computed(() => bases.value.find(item => item.id === selectedBaseId.value) || null)
 const currentFolders = computed(() => folders.value.filter(item => (item.parent_id || '') === selectedFolderId.value))
 const currentFolder = computed(() => folders.value.find(item => item.id === selectedFolderId.value) || null)
+// 完成的行保留展示"解析完成"，避免批量解析结束时集体消失、看不到逐个完成的过程
 const visibleUploadQueue = computed(() => uploadQueue.value.filter(
-  item => item.baseId === selectedBaseId.value && item.state !== 'ready'
+  item => item.baseId === selectedBaseId.value
 ))
+const hasClearableUploads = computed(() => uploadQueue.value.some(
+  item => item.baseId === selectedBaseId.value && (item.state === 'ready' || item.state === 'failed')
+))
+const clearUploadsLabel = computed(() => {
+  const items = uploadQueue.value.filter(
+    item => item.baseId === selectedBaseId.value && (item.state === 'ready' || item.state === 'failed'),
+  )
+  const failed = items.some(item => item.state === 'failed')
+  const ready = items.some(item => item.state === 'ready')
+  if (failed && ready) return '清除已结束'
+  return failed ? '清除失败' : '清除已完成'
+})
 const folderBreadcrumbs = computed(() => {
   const chain = []
   const visited = new Set()
@@ -649,7 +677,7 @@ const folderOptions = computed(() => folders.value.map(folder => ({ ...folder, p
 const healthClass = computed(() => health.value?.ready ? 'ready' : 'degraded')
 const healthLabel = computed(() => health.value?.ready ? '知识服务正常' : '知识服务待就绪')
 const hasActiveWork = computed(() => documents.value.some(
-  item => !item.optimistic && ['pending', 'processing', 'deleting'].includes(item.status),
+  item => !item.optimistic && ['pending', 'processing', 'cancel_requested', 'deleting'].includes(item.status),
 ))
 const hasCurrentUploadRequest = computed(() => uploadQueue.value.some(
   item => item.baseId === selectedBaseId.value && ['uploading', 'saving'].includes(item.state),
@@ -876,11 +904,53 @@ function genQueueId() {
     return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16)
   })
 }
+// 重复文档预检：直接上传（不带相对路径）的文件与目标目录已有文档按文件名比对，
+// 存在同名时弹确认框——确认则全部上传，取消则跳过重复文件仅传新文件。
+// 文件夹导入的内容落入子目录，不在此检测；预检接口失败不阻塞上传。
+async function confirmDuplicateUploads(items, baseId, folderId) {
+  const directFiles = items.filter(it => it.file && !it.relativePath)
+  if (!directFiles.length) return items
+  const existingNames = new Set()
+  try {
+    let page = 1
+    for (;;) {
+      const response = await listDocuments(baseId, { folderId, directOnly: true, page, pageSize: 100 })
+      const list = response.items || []
+      for (const doc of list) existingNames.add(doc.name)
+      const total = Number((response.page || {}).total || 0)
+      if (!list.length || list.length < 100 || existingNames.size >= total) break
+      page += 1
+    }
+  } catch (_) {
+    return items
+  }
+  const duplicates = directFiles.filter(it => existingNames.has(it.file.name))
+  if (!duplicates.length) return items
+  const shown = duplicates.slice(0, 5).map(it => `「${it.file.name}」`).join('、')
+  const suffix = duplicates.length > 5 ? ` 等 ${duplicates.length} 个文件` : ''
+  const confirmed = await askConfirmation({
+    title: '存在同名文档',
+    description: `当前目录已有 ${duplicates.length} 个同名文件：${shown}${suffix}。继续上传会生成重复文档。`,
+    confirmLabel: '仍然上传',
+  })
+  if (confirmed) return items
+  const remaining = items.filter(it => it.relativePath || !existingNames.has(it.file.name))
+  if (!remaining.length) {
+    notify('所选文件均已存在，已取消上传')
+    return []
+  }
+  notify(`已跳过 ${duplicates.length} 个重复文件，继续上传其余 ${remaining.length} 个`)
+  return remaining
+}
 async function uploadFiles(items) {
   const uploadBaseId = selectedBaseId.value
   const uploadFolderId = selectedFolderId.value
   if (!uploadBaseId) return
-  const pendingUploads = items.map(({ file, relativePath }) => {
+  const uploadItems = await confirmDuplicateUploads(items, uploadBaseId, uploadFolderId)
+  if (!uploadItems.length) return
+  // 新批次开始时清掉上一批的"解析完成"行，面板聚焦本次导入
+  uploadQueue.value = uploadQueue.value.filter(item => item.state !== 'ready')
+  const pendingUploads = uploadItems.map(({ file, relativePath }) => {
     const queueId = genQueueId()
     const item = reactive({ id: queueId, optimisticId: `upload-${queueId}`, baseId: uploadBaseId, folderId: uploadFolderId, documentId: '', name: relativePath || file.name, progress: 0, state: 'uploading', error: '' })
     uploadQueue.value.push(item)
@@ -925,8 +995,8 @@ function syncUploadQueue() {
     if (document.status === 'ready') { item.state = 'ready'; item.progress = 100 }
     else if (document.status === 'failed') { item.state = 'failed'; item.error = document.error?.message || '解析失败' }
   }
-  uploadQueue.value = uploadQueue.value.filter(item => item.state !== 'ready')
 }
+function clearFinishedUploads() { uploadQueue.value = uploadQueue.value.filter(item => item.state !== 'ready' && item.state !== 'failed') }
 async function moveDoc(doc, folderId) { try { await moveDocument(doc.id, folderId); await Promise.all([loadDocuments(), loadFolders()]); notify('文档已移动') } catch (error) { handleError(error) } }
 function openMoveDocument(doc) { movingDocument.value = doc; moveTargetFolderId.value = doc.folder_id || ''; showMoveModal.value = true }
 async function confirmMoveDocument() {
@@ -936,6 +1006,8 @@ async function confirmMoveDocument() {
   finally { saving.value = false }
 }
 async function retryDoc(doc) { try { await retryDocument(doc.id); await Promise.all([loadDocuments(), loadOperations()]); notify('已重新提交解析') } catch (error) { handleError(error) } }
+async function pauseDoc(doc) { try { await pauseDocument(doc.id); await Promise.all([loadDocuments(), loadOperations()]); notify('已暂停解析任务，可随时恢复') } catch (error) { handleError(error) } }
+async function resumeDoc(doc) { try { await resumeDocument(doc.id); await Promise.all([loadDocuments(), loadOperations()]); notify('已恢复解析任务，重新排队中') } catch (error) { handleError(error) } }
 async function removeDocument(doc) {
   if (!await askConfirmation({ title: '删除这篇资料？', description: `「${doc.name}」将从知识库中永久移除。`, confirmLabel: '删除资料' })) return
   try { await deleteDocument(doc.id); await Promise.all([loadDocuments(), loadOperations()]); notify('文档已删除') } catch (error) { handleError(error) }
@@ -1198,7 +1270,7 @@ function documentStatusText(doc) {
 function processingElapsed(doc) {
   return processingElapsedText(doc, operations.value)
 }
-function statusLabel(status) { return ({ pending: '待处理', processing: '解析中', ready: '已就绪', failed: '失败', cancelled: '已取消', deleting: '删除中', unknown: '未知' })[status] || status }
+function statusLabel(status) { return ({ pending: '待处理', processing: '解析中', cancel_requested: '取消中', ready: '已就绪', failed: '失败', cancelled: '已取消', paused: '已暂停', deleting: '删除中', unknown: '未知' })[status] || status }
 function operationStatusLabel(status) { return ({ accepted: '已受理', running: '进行中', succeeded: '成功', failed: '失败', partial_failed: '部分失败' })[status] || status }
 function operationLabel(type) { return ({ dataset_create: '创建知识库', dataset_delete: '删除知识库', document_upload: '上传文档', document_parse: '解析文档', document_delete: '删除文档' })[type] || type }
 function uploadStateLabel(item) { return item.state === 'failed' ? item.error || '失败' : item.state === 'ready' ? '解析完成' : item.state === 'processing' ? '等待解析' : item.state === 'saving' ? '正在保存原文' : `${item.progress}%` }
@@ -1304,6 +1376,8 @@ onUnmounted(() => { stopQuestion('unmount'); finishKnowledgeResize(); stopPollin
       spaces,
       startKnowledgeResize,
       statusFilter,
+      pauseDoc,
+      resumeDoc,
       statusLabel,
       stopQuestion,
       subjectQuery,
@@ -1315,8 +1389,12 @@ onUnmounted(() => { stopQuestion('unmount'); finishKnowledgeResize(); stopPollin
       teamSpaceOptionSuffix,
       toast,
       uploadQueue,
+      uploadQueueExpanded,
       uploadStateLabel,
       visibleUploadQueue,
+      hasClearableUploads,
+      clearFinishedUploads,
+      clearUploadsLabel,
       viewMode,
     }
   },
@@ -1326,7 +1404,7 @@ onUnmounted(() => { stopQuestion('unmount'); finishKnowledgeResize(); stopPollin
 <style scoped>
 .ke-shell{--ke-accent:var(--accent-color);--ke-accent-dark:var(--accent-color);--ke-accent-soft:color-mix(in srgb,var(--accent-color) 12%,transparent);--ke-ink:var(--text-primary);--ke-muted:var(--text-secondary);--ke-line:var(--border-color);--ke-bg:var(--bg-primary);position:relative;container-type:inline-size;flex:1;min-width:0;height:100%;display:flex;flex-direction:column;background:var(--ke-bg);color:var(--ke-ink);font-family:inherit}.ke-shell button,.ke-shell input,.ke-shell select,.ke-shell textarea{font:inherit}.ke-shell svg{width:16px;height:16px;flex:none}.ke-topbar{height:64px;flex:none;background:var(--bg-secondary);border-bottom:1px solid var(--ke-line);display:flex;align-items:center;justify-content:space-between;padding:0 20px;z-index:5}.ke-topbar-title,.ke-topbar-actions,.ke-inline-actions,.ke-title-row,.ke-base-meta,.ke-tool-row{display:flex;align-items:center}.ke-topbar-title{gap:10px}.ke-topbar-title h1{font-size:17px;line-height:1.2;margin:0;font-weight:650}.ke-topbar-title span{display:block;margin-top:3px;color:var(--text-secondary);font-size:11px}.ke-topbar-actions{gap:8px}.ke-button{height:34px;border:1px solid var(--border-color);background:var(--bg-secondary);border-radius:9px;padding:0 12px;display:inline-flex;align-items:center;justify-content:center;gap:6px;color:var(--text-secondary);font-size:12px;cursor:pointer;transition:.18s ease;box-sizing:border-box}.ke-button:hover{background:var(--bg-tertiary);border-color:var(--border-color)}.ke-button.primary{background:var(--ke-accent);border-color:var(--ke-accent);color:#fff;box-shadow:0 3px 10px color-mix(in srgb,var(--ke-accent) 22%,transparent)}.ke-button.primary:hover{background:var(--ke-accent-dark);border-color:var(--ke-accent-dark);transform:translateY(-1px)}.ke-button.quiet{background:var(--bg-secondary)}.ke-button.danger{background:#d94b4b;border-color:#d94b4b;color:#fff}.ke-button.icon-only{width:34px;padding:0}.ke-button:disabled,.ke-icon-button:disabled{opacity:.45;cursor:not-allowed;transform:none}.ke-icon-button{width:32px;height:32px;border:1px solid var(--border-color);background:var(--bg-secondary);border-radius:9px;display:grid;place-items:center;color:var(--text-secondary);cursor:pointer;transition:.18s}.ke-icon-button:hover{background:var(--bg-tertiary);color:var(--text-primary)}.ke-icon-button.subtle{border-color:transparent;background:transparent}.danger-hover:hover,.danger-text{color:#cc4545!important;background:#fff3f2!important;border-color:#f3cdca!important}.ke-health{display:inline-flex;align-items:center;gap:6px;color:var(--text-secondary);font-size:11px;margin-right:4px}.ke-health i,.ke-status i{width:7px;height:7px;border-radius:50%;background:#e2a22e}.ke-health.ready i,.ke-status.ready i,.ke-status.succeeded i{background:var(--ke-accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--ke-accent) 12%,transparent)}
 .ke-workspace{position:relative;flex:1;min-height:0;display:grid;grid-template-columns:var(--ke-library-width,252px) 6px minmax(490px,1fr) 6px var(--ke-ask-width,344px);gap:0}.ke-workspace.ask-closed{grid-template-columns:var(--ke-library-width,252px) 6px minmax(540px,1fr)}.ke-library-panel,.ke-content-panel,.ke-ask-panel{min-height:0;background:#fff}.ke-library-panel{border-right:1px solid var(--ke-line);display:flex;flex-direction:column;padding:18px 12px 12px}.ke-resizer{position:relative;width:6px;min-width:6px;cursor:col-resize;touch-action:none;z-index:25;outline:none;background:var(--bg-secondary)}.ke-resizer:after{content:"";position:absolute;inset:0 2px;background:transparent;transition:.15s}.ke-resizer:hover:after,.ke-resizer:focus-visible:after,:global(body.ke-layout-resizing) .ke-resizer:after{background:var(--accent-color);box-shadow:0 0 0 2px color-mix(in srgb,var(--accent-color) 14%,transparent)}.ke-library-heading{display:flex;align-items:center;justify-content:space-between;padding:0 4px 14px}.ke-library-heading>div{display:flex;flex-direction:column;gap:3px}.ke-library-heading strong{font-size:14px}.ke-library-heading small{font-size:10px;color:#9aa09c}.ke-search-box{height:34px;border:1px solid #e1e5e2;background:#fafbfa;border-radius:9px;display:flex;align-items:center;gap:7px;padding:0 9px;color:#9ba29e;transition:.18s}.ke-search-box:focus-within{border-color:#9fd8c0;background:#fff;box-shadow:0 0 0 3px rgba(37,161,111,.08)}.ke-search-box input{min-width:0;flex:1;border:0;outline:0;background:transparent;color:#303632;font-size:12px}.ke-search-box button{border:0;background:transparent;color:#9aa19c;display:grid;place-items:center;padding:0;cursor:pointer}.sidebar-search{margin-bottom:14px}.ke-space-tabs{display:flex;flex-direction:column;gap:3px}.ke-space-tabs button{height:36px;border:0;background:transparent;border-radius:9px;padding:0 10px;display:grid;grid-template-columns:18px 1fr auto;gap:8px;text-align:left;align-items:center;color:#68716b;font-size:12px;cursor:pointer}.ke-space-tabs button:hover{background:#f5f7f5}.ke-space-tabs button.active{background:var(--ke-accent-soft);color:var(--ke-accent-dark);font-weight:600}.ke-space-tabs b{font-weight:500;font-size:10px;color:#9aa19d}.ke-base-list{flex:1;min-height:0;overflow:auto;padding-top:14px;margin-top:12px;border-top:1px solid #f0f2f0}.ke-base-card{width:100%;border:1px solid transparent;background:transparent;border-radius:11px;padding:8px;display:flex;gap:9px;align-items:center;text-align:left;color:inherit;cursor:pointer;transition:.18s}.ke-base-card:hover{background:#f8faf8}.ke-base-card.active{background:#f2f8f5;border-color:#d9eee4}.ke-base-cover,.ke-hero-cover{display:grid;place-items:center;background:linear-gradient(145deg,#45bd8a,#229568);color:#fff;box-shadow:inset 0 0 0 1px rgba(255,255,255,.18)}.ke-base-cover{width:34px;height:40px;border-radius:5px 9px 9px 5px}.ke-base-cover.team,.ke-hero-cover.team{background:linear-gradient(145deg,#5d9ee8,#557bc8)}.ke-base-cover.shared,.ke-hero-cover.shared{background:linear-gradient(145deg,#a788e7,#795fc4)}.ke-base-copy{display:flex;flex:1;min-width:0;flex-direction:column;gap:4px}.ke-base-copy strong{font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ke-base-copy small{font-size:10px;color:#959c97}.ke-chevron{width:13px!important;color:#bec3bf;opacity:0}.ke-base-card:hover .ke-chevron,.ke-base-card.active .ke-chevron{opacity:1}.ke-empty-small{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;color:#a2a9a4;text-align:center;font-size:11px;padding:32px 12px}.ke-empty-small svg{width:25px;height:25px}.ke-empty-small button{border:0;background:transparent;color:var(--ke-accent-dark);font-size:11px;cursor:pointer}.ke-library-tip{display:flex;align-items:flex-start;gap:7px;background:#f8faf8;border-radius:9px;padding:10px;color:#929994;font-size:9px;line-height:1.45}.ke-library-tip svg{width:14px;height:14px;color:#72a78e}
-.ke-content-panel{position:relative;display:flex;flex-direction:column;overflow:hidden;background:#fff}.ke-base-hero{flex:none;padding:24px 26px 20px;display:flex;justify-content:space-between;gap:18px;border-bottom:1px solid var(--ke-line)}.ke-base-identity{display:flex;gap:15px;min-width:0}.ke-hero-cover{width:48px;height:58px;border-radius:7px 12px 12px 7px}.ke-hero-cover svg{width:22px;height:22px}.ke-title-row{gap:9px}.ke-title-row h2{margin:0;font-size:20px;line-height:1.3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ke-role{padding:3px 7px;background:#f1f4f2;border-radius:5px;color:#768078;font-size:9px}.ke-base-identity p{max-width:620px;margin:6px 0 10px;color:#868e89;font-size:11px;line-height:1.55;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ke-base-meta{gap:14px;color:#9aa09c;font-size:9px}.ke-base-meta span{display:flex;align-items:center;gap:4px}.ke-base-meta svg{width:12px;height:12px}.ke-inline-actions{gap:6px;align-self:flex-start}.ke-content-toolbar{flex:none;padding:13px 20px 12px;border-bottom:1px solid var(--ke-line)}.ke-folder-tabs{display:flex;align-items:center;gap:4px;overflow-x:auto;padding-bottom:11px}.ke-folder-tabs button{height:28px;border:0;background:transparent;border-radius:7px;padding:0 8px;display:flex;align-items:center;gap:5px;color:#777f7a;font-size:10px;white-space:nowrap;cursor:pointer}.ke-folder-tabs button:hover{background:#f5f7f5}.ke-folder-tabs button.active{background:#edf7f2;color:var(--ke-accent-dark);font-weight:600}.ke-folder-tabs button span{color:#9ca39e;font-size:9px}.ke-folder-tabs svg{width:12px;height:12px}.ke-folder-tabs .folder-add{color:var(--ke-accent-dark);margin-left:3px}.ke-folder-tabs .folder-manage{width:27px;padding:0;justify-content:center}.ke-tool-row{gap:7px}.ke-tool-row>.ke-search-box{flex:1;max-width:300px}.ke-select-wrap{height:34px;border:1px solid #e1e5e2;background:#fff;border-radius:9px;padding:0 8px;display:flex;align-items:center;color:#929a94}.ke-select-wrap select,.ke-folder-select select{border:0;outline:0;background:transparent;color:#636b66;font-size:10px}.ke-view-switch{height:34px;background:#f3f5f3;border-radius:9px;padding:3px;display:flex}.ke-view-switch button{width:28px;border:0;background:transparent;color:#9aa19c;border-radius:7px;display:grid;place-items:center;cursor:pointer}.ke-view-switch button.active{background:#fff;color:#3d4640;box-shadow:0 1px 4px rgba(30,45,35,.1)}.ke-upload-queue{flex:none;max-height:280px;display:flex;flex-direction:column;margin:12px 20px 0;border:1px solid #e3e8e4;border-radius:11px;background:#fbfcfb;padding:11px}.ke-upload-queue header{display:flex;align-items:center;gap:7px;margin-bottom:8px;font-size:10px;flex:none}.ke-upload-queue header span{color:#9ba19d}.ke-upload-items{flex:1;min-height:0;overflow-y:auto}.ke-upload-item{display:grid;grid-template-columns:28px 1fr 72px;gap:8px;align-items:center;padding:6px 0}.ke-mini-file{width:26px;height:28px;border-radius:6px;background:#edf7f2;color:var(--ke-accent);display:grid;place-items:center}.ke-upload-item>div{min-width:0}.ke-upload-item strong{display:block;font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:4px}.ke-progress{height:4px;background:#e8ece9;border-radius:8px;overflow:hidden}.ke-progress i{display:block;height:100%;background:var(--ke-accent);transition:width .3s}.ke-upload-item>b{font-size:9px;font-weight:500;color:#7f8782}.ke-upload-item>b.failed{color:#d54e4e}
+.ke-content-panel{position:relative;display:flex;flex-direction:column;overflow:hidden;background:#fff}.ke-base-hero{flex:none;padding:24px 26px 20px;display:flex;justify-content:space-between;gap:18px;border-bottom:1px solid var(--ke-line)}.ke-base-identity{display:flex;gap:15px;min-width:0}.ke-hero-cover{width:48px;height:58px;border-radius:7px 12px 12px 7px}.ke-hero-cover svg{width:22px;height:22px}.ke-title-row{gap:9px}.ke-title-row h2{margin:0;font-size:20px;line-height:1.3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ke-role{padding:3px 7px;background:#f1f4f2;border-radius:5px;color:#768078;font-size:9px}.ke-base-identity p{max-width:620px;margin:6px 0 10px;color:#868e89;font-size:11px;line-height:1.55;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ke-base-meta{gap:14px;color:#9aa09c;font-size:9px}.ke-base-meta span{display:flex;align-items:center;gap:4px}.ke-base-meta svg{width:12px;height:12px}.ke-inline-actions{gap:6px;align-self:flex-start}.ke-content-toolbar{flex:none;padding:13px 20px 12px;border-bottom:1px solid var(--ke-line)}.ke-folder-tabs{display:flex;align-items:center;gap:4px;overflow-x:auto;padding-bottom:11px}.ke-folder-tabs button{height:28px;border:0;background:transparent;border-radius:7px;padding:0 8px;display:flex;align-items:center;gap:5px;color:#777f7a;font-size:10px;white-space:nowrap;cursor:pointer}.ke-folder-tabs button:hover{background:#f5f7f5}.ke-folder-tabs button.active{background:#edf7f2;color:var(--ke-accent-dark);font-weight:600}.ke-folder-tabs button span{color:#9ca39e;font-size:9px}.ke-folder-tabs svg{width:12px;height:12px}.ke-folder-tabs .folder-add{color:var(--ke-accent-dark);margin-left:3px}.ke-folder-tabs .folder-manage{width:27px;padding:0;justify-content:center}.ke-tool-row{gap:7px}.ke-tool-row>.ke-search-box{flex:1;max-width:300px}.ke-select-wrap{height:34px;border:1px solid #e1e5e2;background:#fff;border-radius:9px;padding:0 8px;display:flex;align-items:center;color:#929a94}.ke-select-wrap select,.ke-folder-select select{border:0;outline:0;background:transparent;color:#636b66;font-size:10px}.ke-view-switch{height:34px;background:#f3f5f3;border-radius:9px;padding:3px;display:flex}.ke-view-switch button{width:28px;border:0;background:transparent;color:#9aa19c;border-radius:7px;display:grid;place-items:center;cursor:pointer}.ke-view-switch button.active{background:#fff;color:#3d4640;box-shadow:0 1px 4px rgba(30,45,35,.1)}.ke-upload-queue{flex:none;max-height:280px;display:flex;flex-direction:column;margin:12px 20px 0;border:1px solid #e3e8e4;border-radius:11px;background:#fbfcfb;padding:11px}.ke-upload-queue header{display:flex;align-items:center;gap:7px;margin-bottom:8px;font-size:10px;flex:none}.ke-upload-queue header span{color:#9ba19d}.ke-upload-items{flex:1;min-height:0;overflow-y:auto}.ke-upload-item{display:grid;grid-template-columns:28px 1fr 72px;gap:8px;align-items:center;padding:6px 0}.ke-mini-file{width:26px;height:28px;border-radius:6px;background:#edf7f2;color:var(--ke-accent);display:grid;place-items:center}.ke-upload-item>div{min-width:0}.ke-upload-item strong{display:block;font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:4px}.ke-progress{height:4px;background:#e8ece9;border-radius:8px;overflow:hidden}.ke-progress i{display:block;height:100%;background:var(--ke-accent);transition:width .3s}.ke-upload-item>b{font-size:9px;font-weight:500;color:#7f8782}.ke-upload-item>b.saving,.ke-upload-item>b.processing{color:#4b91e4}.ke-upload-item>b.ready{color:var(--ke-accent-dark)}.ke-upload-item>b.failed{color:#d54e4e}.ke-upload-clear{margin-left:auto;border:0;background:transparent;padding:2px 6px;border-radius:6px;color:#9aa19c;font-size:9px;cursor:pointer}.ke-upload-clear:hover{background:#f2f5f3;color:var(--ke-accent-dark)}.ke-upload-toggle{display:flex;align-items:center;gap:7px;border:0;background:transparent;padding:0;font-size:10px;font-weight:600;color:inherit;cursor:pointer}.ke-upload-toggle span{color:#9ba19d;font-weight:400}.ke-upload-toggle svg{width:12px;height:12px;flex:none;color:#9aa19c;transition:transform .18s}.ke-upload-toggle svg.rotated{transform:rotate(-90deg)}
 .ke-import-wrap{position:relative;display:inline-flex}
 .ke-import-caret{width:13px!important;height:13px;transition:transform .15s ease}
 .ke-import-wrap:hover .ke-import-caret,.ke-import-wrap:focus-within .ke-import-caret{transform:rotate(180deg)}
@@ -1343,7 +1421,7 @@ onUnmounted(() => { stopQuestion('unmount'); finishKnowledgeResize(); stopPollin
 .sidebar-search{margin-bottom:12px}.ke-space-list{flex:1;min-height:0;overflow:auto;display:flex;flex-direction:column;gap:4px}.ke-space-group{border-radius:11px;overflow:hidden}.ke-space-group.active{background:#f8faf8}.ke-space-trigger{width:100%;min-height:48px;border:0;background:transparent;border-radius:10px;padding:7px 8px;display:grid;grid-template-columns:19px minmax(0,1fr) auto 14px;gap:8px;align-items:center;text-align:left;color:#5f6862;cursor:pointer}.ke-space-trigger:hover{background:#f4f7f5}.ke-space-group.active>.ke-space-trigger{color:var(--ke-accent-dark);background:#eef7f3}.ke-space-trigger>span{display:flex;min-width:0;flex-direction:column;gap:2px}.ke-space-trigger strong{font-size:11px}.ke-space-trigger small{font-size:8px;color:#999f9b;font-weight:400}.ke-space-trigger b{font-size:9px;font-weight:500;color:#979f99}.ke-space-trigger>svg:last-child{width:12px;height:12px;transition:transform .18s}.ke-space-trigger>svg.rotated{transform:rotate(180deg)}.ke-space-bases{margin:5px 0 8px 17px;padding-left:9px;border-left:2px solid #d9e9e0;display:flex;flex-direction:column;gap:2px}.ke-space-bases .ke-base-card{border-radius:9px;padding:6px 7px;gap:8px}.ke-space-bases .ke-base-card.active{background:#fff;box-shadow:0 2px 8px rgba(31,68,47,.05)}.ke-space-bases .ke-base-cover{width:26px;height:30px;flex:none}.ke-space-bases .ke-base-copy{gap:1px}.ke-space-bases .ke-base-copy strong{font-size:11px;line-height:1.3}.ke-space-bases .ke-base-copy small{font-size:9px;line-height:1.3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ke-space-empty{padding:10px 6px;color:#9ba29d;font-size:9px;display:flex;align-items:center;justify-content:space-between;gap:6px}.ke-space-empty>small{display:block;max-width:105px;text-align:right;color:#9ba29d;line-height:1.35}.ke-space-empty button{border:0;background:transparent;color:var(--ke-accent-dark);display:flex;align-items:center;gap:3px;cursor:pointer}
 .ke-folder-breadcrumbs{min-height:30px;display:flex;align-items:center;gap:3px;padding-bottom:11px;overflow-x:auto}.ke-folder-breadcrumbs>svg,.ke-folder-crumb>svg{width:12px;height:12px;color:#b3b8b5}.ke-folder-breadcrumbs>button,.ke-folder-crumb>button{height:28px;border:0;background:transparent;border-radius:7px;padding:0 7px;color:#8b928e;font-size:10px;white-space:nowrap;cursor:pointer}.ke-folder-breadcrumbs>button:hover,.ke-folder-breadcrumbs>button.current,.ke-folder-crumb>button:hover,.ke-folder-crumb>button.current{background:#f1f6f3;color:#27312b;font-weight:600}.ke-folder-crumb{display:inline-flex;align-items:center;gap:3px}.ke-folder-breadcrumbs .ke-folder-back{width:28px;padding:0;display:grid;place-items:center}.ke-folder-actions{display:flex;align-items:center;gap:3px;margin-left:auto;padding-left:12px}.ke-folder-actions button{height:28px;border:0;background:#f5f7f5;border-radius:7px;padding:0 7px;display:flex;align-items:center;gap:4px;color:#6e7771;font-size:9px;white-space:nowrap;cursor:pointer}.ke-folder-actions button:first-child{color:var(--ke-accent-dark);background:#edf7f2}.ke-folder-actions svg{width:12px;height:12px}
 .ke-folder-grid{grid-column:1/-1;display:flex;flex-direction:column;gap:2px;margin-bottom:11px}.ke-folder-card{width:100%;height:62px;border:0;border-bottom:1px solid #f0f2f0;background:#fff;padding:5px 10px;display:grid;grid-template-columns:54px minmax(0,1fr) 18px;gap:10px;align-items:center;text-align:left;color:inherit;border-radius:8px;cursor:pointer}.ke-folder-card:hover{background:#f8faf8}.ke-folder-art{position:relative;width:49px;height:35px;border-radius:4px 5px 5px 5px;background:linear-gradient(180deg,#bce7d1,#a8dbc0);color:#fff;display:grid;place-items:center}.ke-folder-art:before{content:"";position:absolute;left:3px;top:-6px;width:22px;height:8px;border-radius:4px 5px 0 0;background:#9bd5b8}.ke-folder-art svg{position:relative;width:23px;height:23px}.ke-folder-card>span:nth-child(2){display:flex;min-width:0;flex-direction:column;gap:4px}.ke-folder-card strong{font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ke-folder-card small{font-size:9px;color:#acb1ae}.ke-folder-card>svg{color:#c1c6c2;width:14px;height:14px}
-.ke-status.processing i,.ke-status.running i{animation:none}.ke-processing-age{margin-left:auto;color:#9aa19c;font-size:9px;white-space:nowrap}.ke-preview-modal>div:not(header){flex:1;min-height:0;overflow:auto}.ke-preview-modal ::v-deep .docx-wrapper{min-height:100%;background:#eef1ef}.ke-preview-modal ::v-deep .vue-office-excel{height:100%}.ke-preview-modal ::v-deep .pptx-preview-wrapper{height:100%;overflow:auto}
+.ke-status.paused i{background:#9aa19c}.ke-status.processing i,.ke-status.running i{animation:none}.ke-processing-age{margin-left:auto;color:#9aa19c;font-size:9px;white-space:nowrap}.ke-preview-modal>div:not(header){flex:1;min-height:0;overflow:auto}.ke-preview-modal ::v-deep .docx-wrapper{min-height:100%;background:#eef1ef}.ke-preview-modal ::v-deep .vue-office-excel{height:100%}.ke-preview-modal ::v-deep .pptx-preview-wrapper{height:100%;overflow:auto}
 @keyframes ke-pulse{50%{opacity:.35}}@keyframes ke-spin{to{transform:rotate(360deg)}}@keyframes ke-shimmer{0%{background-position:100% 0}100%{background-position:0 0}}
 @container(max-width:1100px){.ke-workspace,.ke-workspace.ask-closed{grid-template-columns:var(--ke-library-width,220px) 6px minmax(0,1fr)}.ke-resizer.ask{display:none}.ke-workspace:not(.ask-closed) .ke-content-panel{margin-right:min(var(--ke-ask-width,360px),88cqw)}.ke-ask-panel{position:absolute;right:0;top:0;bottom:0;width:min(var(--ke-ask-width,360px),88cqw);z-index:20;box-shadow:-14px 0 35px rgba(28,43,33,.13)}.ke-base-meta span:last-child{display:none}.ke-tool-row{flex-wrap:wrap}.ke-tool-row>.ke-search-box{max-width:none}.list .ke-document-card{grid-template-columns:minmax(180px,1fr) 190px 130px}}
 @container(max-width:700px){.ke-topbar{padding:0 10px}.ke-topbar-title span,.ke-topbar-actions .quiet{display:none}.ke-workspace,.ke-workspace.ask-closed{display:block}.ke-library-panel,.ke-resizer{display:none}.ke-content-panel{height:100%}.ke-base-hero{padding:18px 15px}.ke-inline-actions{position:absolute;right:14px}.ke-base-identity{padding-right:80px}.ke-base-meta{flex-wrap:wrap}.ke-content-toolbar{padding:11px 12px}.ke-documents{padding:12px}.ke-documents.grid{grid-template-columns:1fr}.ke-view-switch{display:none}.list .ke-document-card{display:block}.list .ke-document-details{margin-top:12px}.list .ke-row-actions{margin-top:8px;justify-content:flex-start}.ke-base-identity p{white-space:normal;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}}
