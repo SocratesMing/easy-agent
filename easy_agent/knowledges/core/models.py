@@ -42,6 +42,7 @@ class DocumentStatus(str, Enum):
     PROCESSING = "processing"
     CANCEL_REQUESTED = "cancel_requested"
     CANCELLED = "cancelled"
+    PAUSED = "paused"
     READY = "ready"
     FAILED = "failed"
     DELETING = "deleting"

@@ -793,6 +793,48 @@ async def retry_document(
     )
 
 
+@router.post(
+    "/documents/{document_id}/pause",
+    status_code=status.HTTP_200_OK,
+)
+async def pause_document(
+    document_id: str,
+    request: Request,
+    service: Annotated[KnowledgeService, Depends(_service)],
+    principal: Annotated[KnowledgePrincipal, Depends(get_knowledge_principal)],
+) -> dict:
+    """暂停未就绪文档的解析任务（等待解析/解析中可暂停，已暂停可恢复）。"""
+
+    return await _call(
+        service.pause_document(
+            document_id=document_id,
+            principal=principal,
+            request_id=_request_id(request),
+        )
+    )
+
+
+@router.post(
+    "/documents/{document_id}/resume",
+    status_code=status.HTTP_200_OK,
+)
+async def resume_document(
+    document_id: str,
+    request: Request,
+    service: Annotated[KnowledgeService, Depends(_service)],
+    principal: Annotated[KnowledgePrincipal, Depends(get_knowledge_principal)],
+) -> dict:
+    """恢复已暂停文档的解析任务，重新提交解析队列。"""
+
+    return await _call(
+        service.resume_document(
+            document_id=document_id,
+            principal=principal,
+            request_id=_request_id(request),
+        )
+    )
+
+
 # ---------------------------------------------------------------------------
 # 操作记录（仅列表）
 # ---------------------------------------------------------------------------

@@ -165,6 +165,14 @@ export function retryDocument(documentId) {
   return request(`/documents/${encodeURIComponent(documentId)}/retry`, { method: 'POST' })
 }
 
+export function pauseDocument(documentId) {
+  return request(`/documents/${encodeURIComponent(documentId)}/pause`, { method: 'POST' })
+}
+
+export function resumeDocument(documentId) {
+  return request(`/documents/${encodeURIComponent(documentId)}/resume`, { method: 'POST' })
+}
+
 export async function getDocumentBlob(documentId, disposition = 'inline') {
   const response = await authFetch(
     `${ROOT}/documents/${encodeURIComponent(documentId)}/content?disposition=${disposition}`,

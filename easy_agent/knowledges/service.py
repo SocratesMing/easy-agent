@@ -1471,6 +1471,10 @@ class KnowledgeService:
         self, local: Mapping[str, Any], upstream_doc: Mapping[str, Any]
     ) -> None:
         """按上游文档状态更新本地投影（状态/进度/超时判定/操作记录）。"""
+        # 本地已暂停的文档不受上游覆盖：stop 后上游 run 回落 UNSTART，
+        # 不拦截会被刷新循环拉回 pending，暂停态就丢了
+        if str(local.get("status")) == DocumentStatus.PAUSED.value:
+            return
         status = DocumentStatus(_map_upstream_status(upstream_doc.get("run")))
         progress = upstream_doc.get("progress")
         if not isinstance(progress, (int, float)) or not 0 <= progress <= 1:
@@ -2075,6 +2079,100 @@ class KnowledgeService:
         if purged:
             logger.info("软删除保留期到期清理完成 | 清理远端文档数=%s", purged)
         return purged
+
+    async def pause_document(
+        self,
+        *,
+        document_id: str,
+        principal: KnowledgePrincipal,
+        request_id: str,
+    ) -> Mapping[str, Any]:
+        """暂停未就绪文档的解析任务：退出解析队列，保留原文可随时恢复。"""
+        del request_id
+        document = await self._repo(self.repository.get_document, document_id)
+        if document is None:
+            raise KnowledgeServiceError(
+                "KNOWLEDGE_NOT_FOUND", "知识资源不存在", status_code=404
+            )
+        base, _role = await self._authorized_base(
+            str(document["base_id"]), principal, AllowedAction.RETRY_DOCUMENT
+        )
+        if str(document["status"]) not in {
+            DocumentStatus.PENDING.value,
+            DocumentStatus.PROCESSING.value,
+        }:
+            raise KnowledgeServiceError(
+                "KNOWLEDGE_PAUSE_NOT_ALLOWED",
+                "仅未就绪（等待解析/解析中）的文档支持暂停",
+                status_code=409,
+            )
+        remote_id = str(document.get("remote_document_id") or "").strip()
+        if not remote_id:
+            raise KnowledgeServiceError(
+                "KNOWLEDGE_PAUSE_NO_REMOTE",
+                "文档尚未同步到解析服务，无法暂停",
+                status_code=409,
+            )
+        dataset_id = await self._dataset_id_for(base)
+        try:
+            await self.ragflow.stop_parsing(dataset_id, [remote_id])
+        except RagflowError as exc:
+            raise KnowledgeServiceError(
+                "KNOWLEDGE_PAUSE_FAILED", f"暂停解析失败: {exc}", status_code=502
+            ) from exc
+        return await self._repo(
+            self.repository.update_document,
+            document_id,
+            status=DocumentStatus.PAUSED.value,
+            progress=None,
+        )
+
+    async def resume_document(
+        self,
+        *,
+        document_id: str,
+        principal: KnowledgePrincipal,
+        request_id: str,
+    ) -> Mapping[str, Any]:
+        """恢复已暂停文档：重新提交解析队列，回到待解析状态。"""
+        del request_id
+        document = await self._repo(self.repository.get_document, document_id)
+        if document is None:
+            raise KnowledgeServiceError(
+                "KNOWLEDGE_NOT_FOUND", "知识资源不存在", status_code=404
+            )
+        base, _role = await self._authorized_base(
+            str(document["base_id"]), principal, AllowedAction.RETRY_DOCUMENT
+        )
+        if str(document["status"]) != DocumentStatus.PAUSED.value:
+            raise KnowledgeServiceError(
+                "KNOWLEDGE_RESUME_NOT_ALLOWED",
+                "仅已暂停的文档支持恢复",
+                status_code=409,
+            )
+        remote_id = str(document.get("remote_document_id") or "").strip()
+        if not remote_id:
+            raise KnowledgeServiceError(
+                "KNOWLEDGE_RESUME_NO_REMOTE",
+                "文档尚未同步到解析服务，无法恢复",
+                status_code=409,
+            )
+        dataset_id = await self._dataset_id_for(base)
+        try:
+            await self.ragflow.parse_documents(dataset_id, [remote_id])
+        except RagflowError as exc:
+            if not await self._parse_actually_running(base, remote_id):
+                raise KnowledgeServiceError(
+                    "KNOWLEDGE_RESUME_FAILED",
+                    f"恢复解析失败: {exc}",
+                    status_code=502,
+                ) from exc
+        return await self._repo(
+            self.repository.update_document,
+            document_id,
+            status=DocumentStatus.PENDING.value,
+            progress=None,
+        )
 
     async def retry_document(
         self,

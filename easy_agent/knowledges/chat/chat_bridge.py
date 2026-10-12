@@ -113,6 +113,7 @@ def _build_knowledge_context(
         "processing": "解析中，暂不可检索",
         "failed": "解析失败，暂不可检索",
         "cancelled": "已取消，暂不可检索",
+        "paused": "已暂停，暂不可检索",
         "deleting": "删除中，暂不可检索",
     }
     catalog = document_catalog or []
