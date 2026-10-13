@@ -1,7 +1,8 @@
 <template>
   <!-- inline 模式不 Teleport：需要留在工作区 DOM 内，absolute 才能相对它定位 -->
   <Teleport to="body" :disabled="inline">
-    <div v-if="visible" class="preview-overlay" :class="{ 'is-inline': inline }" @click.self="handleClose">
+    <div v-if="visible" class="preview-overlay" :class="{ 'is-inline': inline }" @mousedown="overlayPress = markOverlayPress($event)"
+    @click.self="overlayClickCloses($event, overlayPress, handleClose)">
       <div class="preview-dialog">
         <div class="preview-header">
           <h3 class="preview-title">{{ filename }}</h3>
@@ -111,6 +112,7 @@
 
 <script setup>
 import { API_BASE_URL } from '../config.js'
+import { overlayClickCloses, markOverlayPress } from '../utils/overlayClick.js'
 import { ref, computed, watch } from 'vue'
 import { marked } from 'marked'
 import { setupMarkedExtensions, normalizeMathDelimiters } from '../markdownSetup.js'

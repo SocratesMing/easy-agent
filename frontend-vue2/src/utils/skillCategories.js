@@ -1,9 +1,9 @@
 /**
  * 技能分类前端辅助（Vue2 版，与 frontend/src/utils/skillCategories.js 保持一致）。
  *
- * 类别本身由后端管理（`/agent/skill-center/categories`，用户级持久化），技能归属由
- * 列表 / 详情接口的 `category_id` + `category_name` 给出（显式归属优先，缺省按技能
- * 内容自动归类）。这里只保留两件事：
+ * 类别本身由后端管理（`/agent/skill-center/categories`，用户级持久化）；技能的归属在
+ * **技能创建时自动归类定稿**，之后不再变动，由列表 / 详情接口的 `category_id` +
+ * `category_name` 给出，前端只做展示与筛选。这里只保留两件事：
  * 1. 虚拟兜底类别常量（后端也返回，这里用于首次渲染的占位）；
  * 2. 类别 id → SkillIcon 配色 key 的映射（自定义类别按 id 哈希取色，保证有区分度）。
  */

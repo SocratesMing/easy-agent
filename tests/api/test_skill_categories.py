@@ -126,6 +126,24 @@ def test_skill_created_by_content_is_auto_categorized(client):
         assert rows[name]["category_name"]
 
 
+def test_long_body_code_keywords_do_not_override_description(client):
+    """正文里的技术词汇不能压过技能名/描述。
+
+    真实案例：docx 技能正文 20KB 且带脚本，满是 python / git / npm，等权参与时会被
+    误判成「代码开发」；名称与描述应占更高权重。
+    """
+    name = "weighted_auto_cat_demo"
+    noisy_body = "\n".join(
+        ["---", "name: Word 文档处理", "description: 读写与转换 Word 文档", "---", ""]
+        + ["python javascript java git npm 脚本示例"] * 50
+    )
+    _make_skill(name, noisy_body)
+
+    added = client.post(f"{BASE}/add-skill", json={"dir_name": name})
+
+    assert added.json()["category_id"] == "doc"
+
+
 def test_auto_categorize_matches_custom_category_name(client):
     """自定义类别的名称也参与自动识别：技能内容提到它时自动归入该类。"""
     name = "auto_cat_finance"
@@ -224,3 +242,50 @@ def test_broken_store_falls_back_to_builtin(client):
 
     data = client.get(f"{BASE}/categories").json()
     assert [item["id"] for item in data["categories"]][:1] == ["doc"]
+
+
+# ── 分类在创建时定稿，之后不再变动 ─────────────────────────────────────
+
+def test_category_is_finalized_at_creation(client):
+    """创建即定稿：即使推断为「通用技能」也写入归属记录（不再实时推断）。"""
+    name = "finalize_default_demo"
+    _make_skill(name, "---\nname: zzz\ndescription: qqq\n---\n")
+
+    added = client.post(f"{BASE}/add-skill", json={"dir_name": name})
+
+    assert added.json()["category_id"] == "default"
+    assert skill_categories.load_store("testuser")["assignments"][name] == "default"
+
+
+def test_category_does_not_change_after_creation(client):
+    """分类定稿后不再随内容变动：技能内容换领域后仍用创建时的分类。"""
+    name = "frozen_category_demo"
+    _make_skill(name, "---\nname: 销售数据分析\ndescription: 数据清洗与报表\n---\n")
+    client.post(f"{BASE}/add-skill", json={"dir_name": name})
+    rows = client.get(f"{BASE}/user-skills").json()["skills"]
+    assert next(r for r in rows if r["dir_name"] == name)["category_id"] == "data"
+
+    # 把已入库的技能改成完全不同的领域：分类仍是创建时定下的「数据分析」
+    (skill_library.user_skills_dir("testuser") / name / "SKILL.md").write_text(
+        "---\nname: 品牌海报设计\ndescription: 生成海报与配色方案\n---\n",
+        encoding="utf-8",
+    )
+
+    rows = client.get(f"{BASE}/user-skills").json()["skills"]
+    assert next(r for r in rows if r["dir_name"] == name)["category_id"] == "data"
+
+
+def test_legacy_skill_assignment_backfilled_on_listing(client):
+    """早于该规则的历史技能（无归属记录）在首次列出时按内容补录一次。"""
+    name = "legacy_backfill_demo"
+    legacy = skill_library.user_skills_dir("testuser") / name
+    legacy.mkdir(parents=True, exist_ok=True)
+    (legacy / "SKILL.md").write_text(
+        "---\nname: PDF 文档转换\ndescription: PDF 转 Word\n---\n", encoding="utf-8"
+    )
+    assert not skill_categories.load_store("testuser")["assignments"].get(name)
+
+    rows = client.get(f"{BASE}/user-skills").json()["skills"]
+
+    assert next(r for r in rows if r["dir_name"] == name)["category_id"] == "doc"
+    assert skill_categories.load_store("testuser")["assignments"][name] == "doc"
