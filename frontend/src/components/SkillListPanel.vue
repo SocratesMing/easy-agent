@@ -154,7 +154,12 @@
         </div>
 
         <div v-else class="skills-grid">
-          <div v-for="card in filteredCards" :key="card.key" class="skill-card">
+          <div
+            v-for="card in filteredCards"
+            :key="card.key"
+            class="skill-card"
+            :class="{ 'menu-open': pickerCard === card.key }"
+          >
             <div class="skill-card-inner">
               <button class="skill-card-open" @click="openDetail(card)">
                 <SkillIcon :icon="card.icon" :category="iconCategoryFor(card.categoryId)" />
@@ -1079,6 +1084,8 @@ onMounted(load)
 }
 
 .skill-card {
+  /* 定位上下文：菜单打开时本卡片要抬到兄弟卡片之上 */
+  position: relative;
   display: flex;
   flex-direction: column;
   border: 1px solid var(--border-color);
@@ -1087,6 +1094,13 @@ onMounted(load)
   /* 不裁切子元素：归类菜单是绝对定位浮层，需要溢出于卡片底部 */
   overflow: visible;
   transition: border-color 0.18s ease, box-shadow 0.18s ease, transform 0.18s ease;
+}
+
+/* hover 的 transform 会让卡片自成层叠上下文（z-index: auto），DOM 靠后的兄弟卡片
+   会整块盖住卡片内的绝对定位菜单。菜单打开时显式提升层级即可（兄弟卡片按 0 处理，
+   取值保持低位，避免与 Tab 悬浮提示、添加技能下拉等浮层抢层级）。 */
+.skill-card.menu-open {
+  z-index: 2;
 }
 
 .skill-card:hover {
