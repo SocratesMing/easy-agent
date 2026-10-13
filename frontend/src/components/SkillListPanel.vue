@@ -2,7 +2,7 @@
   技能列表（技能 Tab 主视图）：
   - 工具条：搜索 / 已安装(n) 筛选 / 添加技能（下拉：上传技能 = zip 导入、创建技能占位）
   - 分类 chips：全部 + 后端返回的用户类别（可「管理分类」新建/重命名/删除/排序）
-  - 列表：按类别分组展示，每组一个标题 + 计数
+  - 列表：不分组的平铺网格（分类只体现在 chips 筛选与卡片上的归类标签）
   - 卡片：图标 / 名称 / 状态标签 / 右侧操作（未添加显示 +，已添加显示对勾标记；
     切到「已安装」筛选后已添加的显示启用开关）/ 单行描述 / 底部真实指标
     + 底部分类标签：点开可把技能改到别的类别或恢复自动归类
@@ -131,113 +131,104 @@
           <p>{{ emptyText }}</p>
         </div>
 
-        <div v-else class="skill-groups">
-          <section v-for="group in skillGroups" :key="group.id" class="skill-group">
-            <div class="group-header">
-              <h4 class="group-title">{{ group.name }}</h4>
-              <span class="group-count">{{ group.cards.length }}</span>
+        <div v-else class="skills-grid">
+          <div v-for="card in filteredCards" :key="card.key" class="skill-card">
+            <div class="skill-card-inner">
+              <button class="skill-card-open" @click="openDetail(card)">
+                <SkillIcon :icon="card.icon" :category="iconCategoryFor(card.categoryId)" />
+                <span class="skill-card-body">
+                  <span class="skill-card-name-row">
+                    <span class="skill-card-name">{{ card.name }}</span>
+                    <span v-if="card.source === 'local'" class="skill-tag">导入</span>
+                    <span v-else-if="card.installed && !card.enabled" class="skill-tag off">已停用</span>
+                  </span>
+                  <span class="skill-card-desc">{{ card.description || '暂无描述' }}</span>
+                </span>
+              </button>
+
+              <!-- 只有切到「已安装」筛选（即进入管理已装技能的语境）才给启用/停用开关，
+                   默认浏览视图不显示开关 -->
+              <ToggleSwitch
+                v-if="card.installed && installedOnly"
+                :model-value="card.enabled"
+                :loading="togglingKey === card.key"
+                :aria-label="`${card.enabled ? '停用' : '启用'}技能 ${card.name}`"
+                @change="handleToggle(card, $event)"
+              />
+              <!-- 已添加：只给一个对勾状态标记（不写文字），停用时降为灰色 -->
+              <span
+                v-else-if="card.installed"
+                class="skill-added-tag"
+                :class="{ off: !card.enabled }"
+                role="img"
+                :aria-label="card.enabled ? '已添加到我的技能（已启用）' : '已添加到我的技能（已停用）'"
+                :title="card.enabled ? '已添加到我的技能（已启用）' : '已添加到我的技能（已停用）'"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true">
+                  <polyline points="20 6 9 17 4 12" />
+                </svg>
+              </span>
+              <button
+                v-else
+                class="add-icon-btn"
+                :disabled="addingKey === card.key"
+                :aria-label="`添加技能 ${card.name}`"
+                :title="'添加到我的技能'"
+                @click="handleAdd(card)"
+              >
+                <div v-if="addingKey === card.key" class="btn-spinner-sm"></div>
+                <svg v-else xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true">
+                  <line x1="12" y1="5" x2="12" y2="19" />
+                  <line x1="5" y1="12" x2="19" y2="12" />
+                </svg>
+              </button>
             </div>
 
-            <div class="skills-grid">
-              <div v-for="card in group.cards" :key="card.key" class="skill-card">
-                <div class="skill-card-inner">
-                  <button class="skill-card-open" @click="openDetail(card)">
-                    <SkillIcon :icon="card.icon" :category="iconCategoryFor(card.categoryId)" />
-                    <span class="skill-card-body">
-                      <span class="skill-card-name-row">
-                        <span class="skill-card-name">{{ card.name }}</span>
-                        <span v-if="card.source === 'local'" class="skill-tag">导入</span>
-                        <span v-else-if="card.installed && !card.enabled" class="skill-tag off">已停用</span>
-                      </span>
-                      <span class="skill-card-desc">{{ card.description || '暂无描述' }}</span>
-                    </span>
-                  </button>
+            <div class="skill-card-footer">
+              <span>{{ card.stats.file_count }} 个文件</span>
+              <span class="dot">·</span>
+              <span>{{ formatSize(card.stats.size_bytes) }}</span>
+              <span class="dot">·</span>
+              <span>{{ formatTime(card.stats.updated_at) }}</span>
 
-                  <!-- 只有切到「已安装」筛选（即进入管理已装技能的语境）才给启用/停用开关，
-                       默认浏览视图不显示开关 -->
-                  <ToggleSwitch
-                    v-if="card.installed && installedOnly"
-                    :model-value="card.enabled"
-                    :loading="togglingKey === card.key"
-                    :aria-label="`${card.enabled ? '停用' : '启用'}技能 ${card.name}`"
-                    @change="handleToggle(card, $event)"
-                  />
-                  <!-- 已添加：只给一个对勾状态标记（不写文字），停用时降为灰色 -->
-                  <span
-                    v-else-if="card.installed"
-                    class="skill-added-tag"
-                    :class="{ off: !card.enabled }"
-                    role="img"
-                    :aria-label="card.enabled ? '已添加到我的技能（已启用）' : '已添加到我的技能（已停用）'"
-                    :title="card.enabled ? '已添加到我的技能（已启用）' : '已添加到我的技能（已停用）'"
-                  >
-                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true">
-                      <polyline points="20 6 9 17 4 12" />
-                    </svg>
-                  </span>
+              <div class="category-picker">
+                <button
+                  class="category-picker-btn"
+                  type="button"
+                  :aria-expanded="pickerCard === card.key ? 'true' : 'false'"
+                  :title="'调整「' + card.name + '」的类别'"
+                  @click.stop="toggleCategoryPicker(card)"
+                >
+                  {{ card.categoryName }}
+                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                    <polyline points="6 9 12 15 18 9" />
+                  </svg>
+                </button>
+
+                <div v-if="pickerCard === card.key" class="category-picker-menu" role="menu">
                   <button
-                    v-else
-                    class="add-icon-btn"
-                    :disabled="addingKey === card.key"
-                    :aria-label="`添加技能 ${card.name}`"
-                    :title="'添加到我的技能'"
-                    @click="handleAdd(card)"
+                    v-for="option in pickerOptions(card)"
+                    :key="option.id"
+                    class="picker-item"
+                    :class="{ active: option.active }"
+                    type="button"
+                    role="menuitem"
+                    @click.stop="handleAssign(card, option.id)"
                   >
-                    <div v-if="addingKey === card.key" class="btn-spinner-sm"></div>
-                    <svg v-else xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true">
-                      <line x1="12" y1="5" x2="12" y2="19" />
-                      <line x1="5" y1="12" x2="19" y2="12" />
-                    </svg>
+                    {{ option.name }}
                   </button>
-                </div>
-
-                <div class="skill-card-footer">
-                  <span>{{ card.stats.file_count }} 个文件</span>
-                  <span class="dot">·</span>
-                  <span>{{ formatSize(card.stats.size_bytes) }}</span>
-                  <span class="dot">·</span>
-                  <span>{{ formatTime(card.stats.updated_at) }}</span>
-
-                  <div class="category-picker">
-                    <button
-                      class="category-picker-btn"
-                      type="button"
-                      :aria-expanded="pickerCard === card.key ? 'true' : 'false'"
-                      :title="'调整「' + card.name + '」的类别'"
-                      @click.stop="toggleCategoryPicker(card)"
-                    >
-                      {{ card.categoryName }}
-                      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
-                        <polyline points="6 9 12 15 18 9" />
-                      </svg>
-                    </button>
-
-                    <div v-if="pickerCard === card.key" class="category-picker-menu" role="menu">
-                      <button
-                        v-for="option in pickerOptions(card)"
-                        :key="option.id"
-                        class="picker-item"
-                        :class="{ active: option.active }"
-                        type="button"
-                        role="menuitem"
-                        @click.stop="handleAssign(card, option.id)"
-                      >
-                        {{ option.name }}
-                      </button>
-                      <button
-                        class="picker-item picker-manage"
-                        type="button"
-                        role="menuitem"
-                        @click.stop="openCategoryManager"
-                      >
-                        管理分类…
-                      </button>
-                    </div>
-                  </div>
+                  <button
+                    class="picker-item picker-manage"
+                    type="button"
+                    role="menuitem"
+                    @click.stop="openCategoryManager"
+                  >
+                    管理分类…
+                  </button>
                 </div>
               </div>
             </div>
-          </section>
+          </div>
         </div>
       </div>
     </template>
@@ -417,31 +408,6 @@ const filteredCards = computed(() => {
   })
 })
 
-/**
- * 分组展示：按类别顺序把筛选结果切成若干组，只保留有技能的组。
- * 归属到已删除类别的技能（数据异常）用卡片自带名称兜底，避免丢卡片。
- */
-const skillGroups = computed(() => {
-  const buckets = new Map()
-  for (const card of filteredCards.value) {
-    if (!buckets.has(card.categoryId)) {
-      buckets.set(card.categoryId, { id: card.categoryId, name: card.categoryName, cards: [] })
-    }
-    buckets.get(card.categoryId).cards.push(card)
-  }
-
-  const ordered = []
-  for (const item of orderedCategories.value) {
-    const bucket = buckets.get(item.id)
-    if (bucket) {
-      ordered.push({ ...bucket, name: item.name })
-      buckets.delete(item.id)
-    }
-  }
-  // 兜底：出现未知类别（如后端类别被删但技能仍带旧归属）时追加在末尾
-  for (const bucket of buckets.values()) ordered.push(bucket)
-  return ordered
-})
 
 const emptyText = computed(() => {
   if (keyword.value.trim()) return `没有匹配「${keyword.value.trim()}」的技能`
@@ -873,40 +839,6 @@ onMounted(load)
 }
 
 /* ── 类别分组 ── */
-.skill-groups {
-  display: flex;
-  flex-direction: column;
-  gap: 18px;
-}
-
-.skill-group {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.group-header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.group-title {
-  margin: 0;
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text-primary);
-}
-
-.group-count {
-  padding: 1px 7px;
-  border-radius: 999px;
-  background: var(--bg-tertiary);
-  font-size: 11.5px;
-  color: var(--text-secondary);
-  font-variant-numeric: tabular-nums;
-}
-
 /* ── 卡片上的归类入口 ── */
 .category-picker {
   position: relative;
