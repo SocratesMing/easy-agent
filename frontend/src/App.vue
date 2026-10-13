@@ -2603,15 +2603,6 @@ html[data-theme="dark"] .skill-center {
   background: var(--bg-primary) !important;
 }
 
-html[data-theme="dark"] .skill-center-header {
-  background: var(--bg-secondary) !important;
-  border-color: var(--border-color) !important;
-}
-
-html[data-theme="dark"] .skill-center-header h2 {
-  color: var(--text-primary) !important;
-}
-
 html[data-theme="dark"] .skill-center-content {
   background: var(--bg-primary) !important;
 }
@@ -2636,18 +2627,6 @@ html[data-theme="dark"] .skill-card-name {
 
 html[data-theme="dark"] .skill-card-desc {
   color: var(--text-secondary) !important;
-}
-
-html[data-theme="dark"] .skill-card-icon {
-  color: var(--text-primary) !important;
-}
-
-html[data-theme="dark"] .add-skill-btn {
-  color: var(--accent-color) !important;
-}
-
-html[data-theme="dark"] .add-skill-btn:hover {
-  background: rgba(124, 106, 239, 0.15) !important;
 }
 
 /* ========== 工作区面板 ========== */
@@ -3237,40 +3216,25 @@ html[data-theme="dark"] .spinner {
 
 /* ========== 技能中心暗黑模式补充 ========== */
 html[data-theme="dark"] .skill-center,
-html[data-theme="dark"] .skill-center-header,
 html[data-theme="dark"] .skill-center-content,
 html[data-theme="dark"] .skill-center .tabs {
   background: transparent !important;
 }
 
-html[data-theme="dark"] .skill-center-header h2 {
-  color: var(--text-primary) !important;
-}
-
-html[data-theme="dark"] .skill-center .tab {
+/* 仅主 Tab（.main-tab）：技能子 Tab 有自己的一套样式，不要被这里接管 */
+html[data-theme="dark"] .skill-center .main-tab {
   background: transparent !important;
-  border-color: var(--border-color) !important;
-  color: var(--text-primary) !important;
+  color: var(--text-secondary) !important;
 }
 
-html[data-theme="dark"] .skill-center .tab:hover {
-  background: var(--bg-tertiary) !important;
-}
-
-html[data-theme="dark"] .skill-center .tab.active {
-  background: var(--accent-color) !important;
-  border-color: var(--accent-color) !important;
-  color: #fff !important;
-}
-
-html[data-theme="dark"] .skill-center .tab-count {
+html[data-theme="dark"] .skill-center .main-tab:hover {
   background: var(--bg-tertiary) !important;
   color: var(--text-primary) !important;
 }
 
-html[data-theme="dark"] .skill-center .tab.active .tab-count {
-  background: rgba(255, 255, 255, 0.2) !important;
-  color: #fff !important;
+html[data-theme="dark"] .skill-center .main-tab.active {
+  background: color-mix(in srgb, var(--accent-color) 22%, transparent) !important;
+  color: var(--accent-color) !important;
 }
 
 html[data-theme="dark"] .skill-card {
@@ -3298,67 +3262,6 @@ html[data-theme="dark"] .add-icon-btn {
 
 html[data-theme="dark"] .add-icon-btn:hover:not(:disabled) {
   background: var(--border-color) !important;
-}
-
-html[data-theme="dark"] .add-icon-btn.added {
-  background: var(--bg-tertiary) !important;
-  color: var(--text-secondary) !important;
-}
-
-html[data-theme="dark"] .remove-icon-btn:hover:not(:disabled) {
-  background: rgba(239, 68, 68, 0.15) !important;
-  border-color: rgba(239, 68, 68, 0.4) !important;
-}
-
-html[data-theme="dark"] .popover-card {
-  background: var(--bg-secondary) !important;
-  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5), 0 0 0 1px var(--border-color) !important;
-}
-
-html[data-theme="dark"] .popover-name {
-  color: var(--text-primary) !important;
-}
-
-html[data-theme="dark"] .popover-category {
-  color: var(--text-secondary) !important;
-}
-
-html[data-theme="dark"] .popover-desc {
-  color: var(--text-primary) !important;
-}
-
-html[data-theme="dark"] .popover-close {
-  color: var(--text-secondary) !important;
-}
-
-html[data-theme="dark"] .popover-close:hover {
-  background: var(--bg-tertiary) !important;
-  color: var(--text-primary) !important;
-}
-
-html[data-theme="dark"] .popover-btn {
-  background: var(--bg-tertiary) !important;
-  border-color: var(--accent-color) !important;
-  color: var(--accent-color) !important;
-}
-
-html[data-theme="dark"] .popover-btn:hover:not(:disabled) {
-  background: var(--border-color) !important;
-}
-
-html[data-theme="dark"] .popover-btn.added {
-  background: var(--bg-tertiary) !important;
-  border-color: var(--border-color) !important;
-  color: var(--text-secondary) !important;
-}
-
-html[data-theme="dark"] .popover-btn.remove {
-  border-color: rgba(239, 68, 68, 0.5) !important;
-  color: #f87171 !important;
-}
-
-html[data-theme="dark"] .popover-btn.remove:hover:not(:disabled) {
-  background: rgba(239, 68, 68, 0.15) !important;
 }
 
 html[data-theme="dark"] .retry-btn {
