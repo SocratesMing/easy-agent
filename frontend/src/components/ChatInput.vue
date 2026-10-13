@@ -1,6 +1,6 @@
 <template>
   <div class="chat-input-container">
-    <div class="input-box">
+    <div class="input-box" ref="inputBoxRef">
       <div v-if="uploadedFiles.length > 0" class="uploaded-files">
         <div 
           v-for="(file, index) in uploadedFiles" 
@@ -34,6 +34,30 @@
       </div>
       
       <div class="input-row">
+        <!-- 已选技能：与输入文字同一行展示（只显示图标 + 名称，发送时还原为 /技能名） -->
+        <div v-if="selectedSkills.length > 0" class="selected-skills">
+          <div
+            v-for="skill in selectedSkills"
+            :key="skill.dir_name"
+            class="selected-skill"
+            :title="skill.description || skill.dir_name"
+          >
+            <SkillIcon :icon="skill.icon" :category="iconCategoryFor(skill.category_id)" size="xs" />
+            <span class="selected-skill-name">{{ skill.name || skill.dir_name }}</span>
+            <button
+              type="button"
+              class="selected-skill-remove"
+              :aria-label="`移除技能 ${skill.name || skill.dir_name}`"
+              @click="removeSelectedSkill(skill)"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
+                <line x1="18" y1="6" x2="6" y2="18" />
+                <line x1="6" y1="6" x2="18" y2="18" />
+              </svg>
+            </button>
+          </div>
+        </div>
+
         <div class="input-field">
           <div
             v-show="caretLineTop !== null"
@@ -43,7 +67,7 @@
           <textarea
             ref="textareaRef"
             v-model="message"
-            @keydown.enter.exact.prevent="send"
+            @keydown="onKeydown"
             @input="onInput"
             @focus="updateCaretLine"
             @blur="hideCaretLine"
@@ -209,6 +233,48 @@
       </div>
     </div>
 
+    <!-- 技能选择面板：输入 / 后出现在输入框上方（Teleport 到 body，避免被输入框裁切） -->
+    <Teleport to="body">
+      <div
+        v-if="skillPickerOpen"
+        ref="skillPickerRef"
+        class="skill-picker"
+        :style="skillPickerStyle"
+        @click.stop
+      >
+        <div class="skill-picker-header">
+          <span>选择技能</span>
+          <span class="skill-picker-hint">↑↓ 选择 · Enter 确认 · Esc 关闭</span>
+        </div>
+
+        <div v-if="skillPickerLoading" class="skill-picker-state">正在加载技能…</div>
+        <div v-else-if="filteredSkills.length === 0" class="skill-picker-state">
+          {{ skillOptions.length === 0 ? '还没有可用的技能，先到技能中心添加并启用' : '没有匹配的技能' }}
+        </div>
+
+        <ul v-else class="skill-picker-list" role="listbox" aria-label="可用技能">
+          <li
+            v-for="(skill, index) in filteredSkills"
+            :key="skill.dir_name"
+            class="skill-picker-item"
+            :class="{ active: index === skillPickerIndex }"
+            role="option"
+            :aria-selected="index === skillPickerIndex ? 'true' : 'false'"
+            @mouseenter="skillPickerIndex = index"
+            @mousedown.prevent="selectSkill(skill)"
+            @click="selectSkill(skill)"
+          >
+            <SkillIcon :icon="skill.icon" :category="iconCategoryFor(skill.category_id)" size="xs" />
+            <span class="skill-picker-body">
+              <span class="skill-picker-name">{{ skill.name || skill.dir_name }}</span>
+              <span class="skill-picker-desc">{{ skill.description || '暂无描述' }}</span>
+            </span>
+            <span class="skill-picker-slash">/{{ skill.dir_name }}</span>
+          </li>
+        </ul>
+      </div>
+    </Teleport>
+
     <div v-if="showFooter" class="input-footer">
       <span class="footer-text">内容由AI生成，请仔细甄别</span>
     </div>
@@ -219,7 +285,11 @@
 import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
 import { uploadFile, deleteFile } from '../api/files.js'
 import { getWebSearchStatus } from '../api/settings.js'
+import { getUserSkills } from '../api/skills.js'
+import { iconCategoryFor } from '../utils/skillCategories.js'
+import { buildSkillPayload, parseSlashQuery } from '../utils/skillSlash.js'
 import FileIcon from './FileIcon.vue'
+import SkillIcon from './SkillIcon.vue'
 
 const props = defineProps({
   disabled: {
@@ -265,6 +335,170 @@ const emit = defineEmits(['send', 'stop', 'createSession', 'update:selectedModel
 const message = ref('')
 const textareaRef = ref(null)
 const uploadedFiles = ref([])
+
+// ========== 技能选择（输入 / 唤起） ==========
+// 输入框里只展示「工具图标 + 技能名」，实际发给模型的是 /技能目录名 + 用户输入。
+// 只有启用状态的技能会被 Agent 加载，停用技能即使手打 /name 也不生效，故只列启用的。
+const selectedSkills = ref([])
+const skillPickerOpen = ref(false)
+const skillPickerIndex = ref(0)
+const skillPickerLoading = ref(false)
+const skillOptions = ref([])
+const skillQuery = ref('')
+const slashStart = ref(-1)
+const inputBoxRef = ref(null)
+const skillPickerRef = ref(null)
+const skillPickerStyle = ref({})
+let skillLoadedAt = 0
+
+const filteredSkills = computed(() => {
+  const q = skillQuery.value.trim().toLowerCase()
+  if (!q) return skillOptions.value
+  return skillOptions.value.filter(s =>
+    (s.dir_name || '').toLowerCase().includes(q) ||
+    (s.name || '').toLowerCase().includes(q) ||
+    (s.description || '').toLowerCase().includes(q)
+  )
+})
+
+async function loadSkillOptions() {
+  const now = Date.now()
+  // 技能列表变动不频繁，60s 内复用上次结果，避免每次输入 / 都打接口
+  if (skillOptions.value.length && now - skillLoadedAt < 60000) return
+  skillPickerLoading.value = true
+  try {
+    const data = await getUserSkills()
+    skillOptions.value = (data.skills || []).filter(s => s.enabled)
+    skillLoadedAt = now
+  } catch (e) {
+    console.error('获取技能列表失败:', e)
+  } finally {
+    skillPickerLoading.value = false
+  }
+}
+
+/** 面板出现在输入框上方（与模型下拉一致的 Teleport + fixed 定位方式） */
+function updateSkillPickerPosition() {
+  const box = inputBoxRef.value
+  if (!box) return
+  const rect = box.getBoundingClientRect()
+  skillPickerStyle.value = {
+    position: 'fixed',
+    bottom: `${window.innerHeight - rect.top + 8}px`,
+    left: `${rect.left}px`,
+    width: `${rect.width}px`,
+  }
+}
+
+/** 判定光标前是否为「/查询词」（/ 位于开头或空白之后），决定展开或收起面板 */
+function updateSkillPicker() {
+  const ta = textareaRef.value
+  if (!ta) return
+  const caret = ta.selectionStart ?? ta.value.length
+  const slash = parseSlashQuery(ta.value, caret)
+  if (!slash) {
+    closeSkillPicker()
+    return
+  }
+
+  slashStart.value = slash.start
+  skillQuery.value = slash.query
+  skillPickerIndex.value = 0
+  skillPickerOpen.value = true
+  updateSkillPickerPosition()
+  loadSkillOptions()
+}
+
+function closeSkillPicker() {
+  skillPickerOpen.value = false
+  skillPickerIndex.value = 0
+  skillQuery.value = ''
+  slashStart.value = -1
+}
+
+/** 选中技能：删掉刚输入的 /查询词，并把它挂成输入框里的技能标签 */
+async function selectSkill(skill) {
+  if (!skillPickerOpen.value || !skill) return
+
+  const ta = textareaRef.value
+  const caret = ta?.selectionStart ?? message.value.length
+  // 以当前光标为准重算一次 /查询词 的范围，避免用户中途改动文本后误删内容
+  const slash = parseSlashQuery(message.value, caret)
+  const start = slash ? slash.start : caret
+  message.value = message.value.slice(0, start) + message.value.slice(caret)
+
+  if (!selectedSkills.value.some(s => s.dir_name === skill.dir_name)) {
+    selectedSkills.value = [...selectedSkills.value, skill]
+  }
+
+  closeSkillPicker()
+  await nextTick()
+  autoResize()
+  if (ta) {
+    const pos = Math.min(start, message.value.length)
+    ta.focus()
+    ta.setSelectionRange(pos, pos)
+  }
+  updateCaretLine()
+  console.log(`[${new Date().toISOString()}] [技能选择] ${skill.dir_name}`)
+}
+
+function removeSelectedSkill(skill) {
+  selectedSkills.value = selectedSkills.value.filter(s => s.dir_name !== skill.dir_name)
+}
+
+/** 键盘：面板打开时接管 ↑↓ / Enter / Esc，其余情况保持原有 Enter 发送 */
+function onKeydown(event) {
+  if (skillPickerOpen.value) {
+    const count = filteredSkills.value.length
+    if (event.key === 'ArrowDown' && count > 0) {
+      event.preventDefault()
+      skillPickerIndex.value = (skillPickerIndex.value + 1) % count
+      return
+    }
+    if (event.key === 'ArrowUp' && count > 0) {
+      event.preventDefault()
+      skillPickerIndex.value = (skillPickerIndex.value - 1 + count) % count
+      return
+    }
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      closeSkillPicker()
+      return
+    }
+    if ((event.key === 'Enter' && !event.shiftKey) || event.key === 'Tab') {
+      const skill = filteredSkills.value[skillPickerIndex.value]
+      if (skill) {
+        event.preventDefault()
+        selectSkill(skill)
+        return
+      }
+      closeSkillPicker()
+    }
+  }
+
+  if (
+    event.key === 'Enter' &&
+    !event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey &&
+    !event.isComposing
+  ) {
+    event.preventDefault()
+    send()
+  }
+}
+
+/** 点击面板外的区域时收起技能面板 */
+function closeSkillPickerOnClick(event) {
+  if (!skillPickerOpen.value) return
+  const picker = skillPickerRef.value
+  if (picker && picker.contains(event.target)) return
+  closeSkillPicker()
+}
+
+/** 窗口尺寸变化时重新定位（移动端键盘弹出会触发 resize） */
+function handleViewportChange() {
+  if (skillPickerOpen.value) updateSkillPickerPosition()
+}
 
 // ========== 联网搜索 ==========
 // 开关状态仅本次页面会话有效（默认关闭）：开启后本轮消息携带 enable_web_search，
@@ -374,7 +608,7 @@ function closeModelDropdown(event) {
 }
 
 const canSend = computed(() => {
-  return message.value.trim() || uploadedFiles.value.length > 0
+  return message.value.trim() || uploadedFiles.value.length > 0 || selectedSkills.value.length > 0
 })
 
 const showTokenPopup = ref(false)
@@ -614,7 +848,7 @@ async function send() {
 
   emit(
     'send',
-    message.value.trim().replace(/\s+/g, ' '),
+    buildPayload(),
     filesToSend,
     null,
     true,
@@ -623,7 +857,17 @@ async function send() {
   
   message.value = ''
   uploadedFiles.value = []
+  selectedSkills.value = []
+  closeSkillPicker()
   nextTick(() => autoResize())
+}
+
+/**
+ * 实际发送给模型的内容：技能指令前缀 + 用户输入。
+ * 例：界面显示 [图标]PPT生成 +「生成一份PPT创作文档」→ 发送 `/pptx-generator 生成一份PPT创作文档`
+ */
+function buildPayload() {
+  return buildSkillPayload(selectedSkills.value, message.value)
 }
 
 function stop() {
@@ -640,6 +884,7 @@ function autoResize() {
 function onInput() {
   autoResize()
   updateCaretLine()
+  updateSkillPicker()
   emit('typing')
 }
 
@@ -670,12 +915,16 @@ onMounted(() => {
   }
   document.addEventListener('click', closeTokenPopup)
   document.addEventListener('click', closeModelDropdown)
+  document.addEventListener('click', closeSkillPickerOnClick)
+  window.addEventListener('resize', handleViewportChange)
   loadWebSearchStatus()
 })
 
 onUnmounted(() => {
   document.removeEventListener('click', closeTokenPopup)
   document.removeEventListener('click', closeModelDropdown)
+  document.removeEventListener('click', closeSkillPickerOnClick)
+  window.removeEventListener('resize', handleViewportChange)
   stopLiveDuration()
 })
 </script>
@@ -715,6 +964,160 @@ onUnmounted(() => {
   padding: 12px 16px;
   background: var(--bg-secondary);
   border-bottom: 1px solid var(--border-color);
+}
+
+/* ── 已选技能标签（只显示图标 + 名称，发送时还原为 /技能名） ── */
+.selected-skills {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  max-width: 100%;
+  padding-bottom: 3px;
+}
+
+.selected-skill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 6px 3px 4px;
+  border: 1px solid color-mix(in srgb, var(--accent-color) 35%, var(--border-color));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent-color) 10%, transparent);
+  max-width: 100%;
+}
+
+.selected-skill-name {
+  font-size: 12.5px;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 180px;
+}
+
+.selected-skill-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.selected-skill-remove:hover {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+.selected-skill-remove svg {
+  width: 11px;
+  height: 11px;
+}
+
+/* ── 技能选择面板（Teleport 到 body，样式不能依赖父级作用域） ── */
+.skill-picker {
+  z-index: 1200;
+  display: flex;
+  flex-direction: column;
+  max-height: min(320px, 42vh);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  background: var(--bg-primary);
+  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.18);
+  overflow: hidden;
+}
+
+.skill-picker-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border-color);
+  background: var(--bg-secondary);
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.skill-picker-hint {
+  font-size: 11px;
+  opacity: 0.8;
+}
+
+.skill-picker-state {
+  padding: 14px 12px;
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  text-align: center;
+}
+
+.skill-picker-list {
+  margin: 0;
+  padding: 6px;
+  list-style: none;
+  overflow-y: auto;
+}
+
+.skill-picker-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 8px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.skill-picker-item.active {
+  background: color-mix(in srgb, var(--accent-color) 12%, transparent);
+}
+
+.skill-picker-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.skill-picker-name {
+  font-size: 13px;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.skill-picker-desc {
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.skill-picker-slash {
+  flex-shrink: 0;
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+/* 移动端：面板更紧凑，去掉冗余提示 */
+@media (max-width: 48rem) {
+  .skill-picker {
+    max-height: min(240px, 38vh);
+  }
+
+  .skill-picker-hint {
+    display: none;
+  }
 }
 
 .uploaded-file {
@@ -851,10 +1254,15 @@ onUnmounted(() => {
   display: flex;
   align-items: flex-end;
   gap: 12px;
+  /* 技能标签与输入文字同一行；窄屏放不下时标签才换到上一行 */
+  flex-wrap: wrap;
 }
 
 .input-field {
-  width: 100%;
+  /* flex-basis 0：有技能标签时输入区仍留在同一行（basis 100% 会被 wrap 挤到下一行） */
+  flex: 1 1 0;
+  width: auto;
+  min-width: 120px;
   position: relative;
 }
 

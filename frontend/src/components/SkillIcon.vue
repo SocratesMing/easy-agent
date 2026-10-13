@@ -90,7 +90,7 @@ defineProps({
   icon: { type: String, default: '' },
   /** 分类 key：doc / code / design / data / api / default */
   category: { type: String, default: 'default' },
-  /** sm（卡片）/ lg（详情页头部） */
+  /** xs（输入框技能标签）/ sm（卡片）/ lg（详情页头部） */
   size: { type: String, default: 'sm' },
 })
 </script>
@@ -102,6 +102,21 @@ defineProps({
   justify-content: center;
   flex-shrink: 0;
   border-radius: 10px;
+}
+
+.skill-icon.xs {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+}
+
+.skill-icon.xs svg {
+  width: 13px;
+  height: 13px;
+}
+
+.skill-icon.xs .icon-emoji {
+  font-size: 12px;
 }
 
 .skill-icon.sm {
