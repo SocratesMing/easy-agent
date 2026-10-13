@@ -566,7 +566,8 @@ function handleUploadSkill() {
 const SKILL_DRAFT_KEY = 'easy_agent_input_draft'
 const SKILL_PENDING_KEY = 'easy_agent_pending_skill'
 const CREATE_SKILL_DIR = 'skill-creator'
-const CREATE_SKILL_PROMPT = '请帮我创建一个可以实现「......」的skill'
+// 预填文案点明产物目录：技能要直接写进个人技能库 /user-skills/，不要留在工作区
+const CREATE_SKILL_PROMPT = '请帮我创建一个可以实现「......」的 skill，直接保存到我的个人技能库 /user-skills/ 下'
 
 /**
  * 「添加技能」菜单：创建技能

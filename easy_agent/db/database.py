@@ -2078,6 +2078,21 @@ class Database:
             rows = cursor.fetchall()
         return [dict(row) for row in rows]
 
+    def delete_generated_file(self, file_id: int) -> bool:
+        """删除单条生成文件记录（例如技能已入库、工作区不再保留该文件）。"""
+        if file_id is None:
+            return False
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                self._execute(
+                    cursor, "DELETE FROM generated_files WHERE id=?", (file_id,)
+                )
+            return True
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"删除生成文件记录失败 | id={file_id} | {e}")
+            return False
+
     def get_generated_filenames(self, username: str) -> set[str]:
         """返回指定用户所有会话中生成的文件原始文件名集合。
 
