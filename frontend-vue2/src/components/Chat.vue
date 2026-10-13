@@ -5,18 +5,6 @@
       <!-- 顶部信息行：会话时间居中，操作区（任务规划 + 展开工作区）贴右。
            这三者此前分散在视口/聊天区右上角，位置互不相干；现在统一到同一行。 -->
       <div v-if="showTopbar" class="chat-topbar">
-        <!-- 当前专家标识：绝对定位在左侧，不影响会话时间的真正居中。
-             与「我的专家 -> 去使用」联动，点击 × 退出专家模式回到通用 Agent。 -->
-        <div v-if="activeExpert" class="chat-topbar-expert">
-          <span class="expert-label">专家</span>
-          <span class="expert-name" :title="activeExpert.export_name_cn">{{ activeExpert.export_name_cn }}</span>
-          <button class="expert-clear" @click="$emit('clear-expert')" title="退出专家模式">
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <line x1="18" y1="6" x2="6" y2="18"></line>
-              <line x1="6" y1="6" x2="18" y2="18"></line>
-            </svg>
-          </button>
-        </div>
         <div v-if="showSessionTime" class="session-created-time">
           <span class="session-time-pill">
             <svg class="session-time-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -96,9 +84,13 @@
         :models="models"
         :selectedModel="selectedModel"
         :showFooter="composerMode === 'bottom'"
+        :activeExpert="activeExpert"
+        :expertPrompt="expertPrompt"
         @update:selectedModel="$emit('update:selectedModel', $event)"
         @stop="handleStop"
         @create-session="handleCreateSession"
+        @clear-expert="$emit('clear-expert')"
+        @expert-prompt-applied="$emit('expert-prompt-applied')"
       />
 
       <!-- 分类预设问题：仅在首页（居中模式）展示，置于输入框下方，悬浮展开 -->
@@ -204,10 +196,16 @@ export default {
     default: APP_WELCOME_TITLE
   },
   // 当前会话选中的专家 Agent（{export_agent_id, export_name_cn} 或 null）。
-  // 非空时顶部显示专家标识，且本会话消息走 /agent/stream_export_run。
+  // 非空时输入框工具栏显示专家胶囊，且本会话消息走 /agent/stream_export_run。
   activeExpert: {
     type: Object,
     default: null
+  },
+  // 外部预填的问题（专家详情弹窗点「专家帮你做」示例）：透传给 ChatInput，
+  // 由其写入输入框后通过 expert-prompt-applied 通知 App 清空。
+  expertPrompt: {
+    type: String,
+    default: ''
   }
 },
   data() {
@@ -234,8 +232,7 @@ export default {
       return !!this.currentSessionId && !this.workspaceExpanded
     },
     showTopbar() {
-      // 选中专家后也必须占位：专家标识挂在 topbar 左侧，否则首页选完专家看不到当前身份。
-      return this.showSessionTime || this.todos.length > 0 || this.showWorkspaceBtn || !!this.activeExpert
+      return this.showSessionTime || this.todos.length > 0 || this.showWorkspaceBtn
     },
     canGoToPrevUserMessage() {
       return this.userMessageIndices.length > 0 && this.currentUserMessageIndex < this.userMessageIndices.length - 1
@@ -545,64 +542,6 @@ export default {
   display: flex;
   align-items: center;
   gap: 8px;
-}
-
-/* 当前专家标识：绝对定位在 topbar 左侧（操作区在右），与会话时间的居中互不干扰。 */
-.chat-topbar-expert {
-  position: absolute;
-  left: 24px;
-  top: 50%;
-  transform: translateY(-50%);
-  z-index: 40;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  max-width: 42%;
-  padding: 4px 6px 4px 10px;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--accent-color) 14%, transparent);
-  color: var(--accent-color);
-  font-size: 12px;
-  line-height: 1.4;
-}
-
-.chat-topbar-expert .expert-label {
-  flex-shrink: 0;
-  opacity: 0.75;
-}
-
-.chat-topbar-expert .expert-name {
-  font-weight: 600;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.chat-topbar-expert .expert-clear {
-  flex-shrink: 0;
-  width: 16px;
-  height: 16px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0;
-  border: none;
-  border-radius: 50%;
-  background: transparent;
-  color: inherit;
-  cursor: pointer;
-  opacity: 0.7;
-  transition: opacity 0.2s, background 0.2s;
-}
-
-.chat-topbar-expert .expert-clear:hover {
-  opacity: 1;
-  background: color-mix(in srgb, var(--accent-color) 22%, transparent);
-}
-
-.chat-topbar-expert .expert-clear svg {
-  width: 11px;
-  height: 11px;
 }
 
 /* 会话时间只作为行内内容；条状背景与分隔线已上移到 .chat-topbar */

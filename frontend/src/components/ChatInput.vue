@@ -121,6 +121,29 @@
               <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path>
             </svg>
           </button>
+
+          <!-- 当前专家标识：输入框工具栏内的胶囊（专家徽标 + 名称 + 退出×）。
+               与专家 Tab 的「使用」联动，点击 × 退出专家模式回到通用 Agent。 -->
+          <div
+            v-if="activeExpert"
+            class="expert-chip"
+            :title="`当前专家：${activeExpert.export_name_cn}（点击 × 退出专家模式）`"
+          >
+            <span class="expert-chip-badge">专家</span>
+            <span class="expert-chip-name">{{ activeExpert.export_name_cn }}</span>
+            <button
+              type="button"
+              class="expert-chip-clear"
+              :disabled="isStreaming || disabled"
+              aria-label="退出专家模式"
+              @click="emit('clearExpert')"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true">
+                <line x1="18" y1="6" x2="6" y2="18" />
+                <line x1="6" y1="6" x2="18" y2="18" />
+              </svg>
+            </button>
+          </div>
         </div>
         
         <div class="right-actions">
@@ -257,14 +280,44 @@ const props = defineProps({
   showFooter: {
     type: Boolean,
     default: false
+  },
+  // 当前会话选中的专家 Agent（{export_agent_id, export_name_cn} 或 null）。
+  // 非空时输入框工具栏显示专家胶囊，且本会话消息走 /agent/stream_export_run。
+  activeExpert: {
+    type: Object,
+    default: null
+  },
+  // 外部预填的问题（如专家详情弹窗点「专家帮你做」示例）：非空时写入输入框，
+  // 写入后立即 emit('prefillApplied') 通知父组件清空，避免重复触发。
+  prefillText: {
+    type: String,
+    default: ''
   }
 })
 
-const emit = defineEmits(['send', 'stop', 'createSession', 'update:selectedModel', 'typing'])
+const emit = defineEmits(['send', 'stop', 'createSession', 'update:selectedModel', 'typing', 'clearExpert', 'prefillApplied'])
 
 const message = ref('')
 const textareaRef = ref(null)
 const uploadedFiles = ref([])
+
+// 外部预填问题（专家详情弹窗的示例提示词）：写入输入框并聚焦，随后通知父组件清空。
+// immediate: 必须开启 —— 详情弹窗在 SkillCenter 面板里，点示例问题会关闭面板并让
+// Chat/ChatInput 重新挂载，此时 prefillText 初始值即非空；没有 immediate 的 watch
+// 只响应"变化"，挂载时的非空初始值会被整个丢掉，回填失效。
+watch(
+  () => props.prefillText,
+  (val) => {
+    if (!val) return
+    message.value = val
+    nextTick(() => {
+      autoResize()
+      textareaRef.value?.focus()
+    })
+    emit('prefillApplied')
+  },
+  { immediate: true }
+)
 
 // ========== 联网搜索 ==========
 // 开关状态仅本次页面会话有效（默认关闭）：开启后本轮消息携带 enable_web_search，
@@ -1454,6 +1507,79 @@ html[data-theme="dark"] .context-ring-wrapper {
     var(--accent-color)
   );
   box-shadow: 0 4px 14px color-mix(in srgb, var(--accent-color) 45%, transparent);
+}
+
+/* ── 当前专家胶囊：与左侧工具按钮同排同高，
+   浅强调底 +「专家」徽标 + 名称 + 退出×（样式参照设计稿）── */
+.expert-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 36px;
+  padding: 0 8px 0 6px;
+  max-width: 220px;
+  border: 1px solid color-mix(in srgb, var(--accent-color) 35%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--accent-color) 12%, var(--bg-secondary));
+  flex-shrink: 0;
+}
+
+.expert-chip-badge {
+  flex-shrink: 0;
+  padding: 2px 6px;
+  border-radius: 6px;
+  background: var(--accent-color);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.expert-chip-name {
+  min-width: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: color-mix(in srgb, var(--accent-color) 70%, var(--text-primary));
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.expert-chip-clear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: color-mix(in srgb, var(--accent-color) 70%, var(--text-primary));
+  cursor: pointer;
+  opacity: 0.7;
+  transition: opacity 0.2s ease, background 0.2s ease;
+}
+
+.expert-chip-clear:hover:not(:disabled) {
+  opacity: 1;
+  background: color-mix(in srgb, var(--accent-color) 22%, transparent);
+}
+
+.expert-chip-clear:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.expert-chip-clear:focus-visible {
+  outline: 2px solid var(--accent-color);
+  outline-offset: 1px;
+}
+
+.expert-chip-clear svg {
+  width: 10px;
+  height: 10px;
 }
 
 .copy-btn {

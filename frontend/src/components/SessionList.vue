@@ -35,14 +35,6 @@
         <span>专家 · 技能 · 连接器</span>
       </button>
 
-      <button @click="$emit('showExpertCenter')" class="action-btn expert-center">
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <circle cx="12" cy="8" r="6"></circle>
-          <path d="M15.477 12.89 17 22l-5-3-5 3 1.523-9.11"></path>
-        </svg>
-        <span>我的专家</span>
-      </button>
-
       <button @click="$emit('showScheduledTasks')" class="action-btn scheduled-tasks">
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <circle cx="12" cy="12" r="10"></circle>
@@ -208,7 +200,7 @@
 import { ref, nextTick, onMounted, computed } from 'vue'
 import { APP_TITLE } from '../config.js'
 
-const emit = defineEmits(['createSession', 'selectSession', 'deleteSession', 'renameSession', 'toggleSidebar', 'showAssets', 'showSkillCenter', 'showExpertCenter', 'showScheduledTasks', 'showSettings', 'showUserManagement', 'logout', 'togglePin'])
+const emit = defineEmits(['createSession', 'selectSession', 'deleteSession', 'renameSession', 'toggleSidebar', 'showAssets', 'showSkillCenter', 'showScheduledTasks', 'showSettings', 'showUserManagement', 'logout', 'togglePin'])
 
 const props = defineProps({
   sessions: {

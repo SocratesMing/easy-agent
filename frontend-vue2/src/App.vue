@@ -34,7 +34,6 @@
         @toggle-sidebar="toggleSidebar"
         @show-assets="handleShowAssets"
         @show-skill-center="handleShowSkillCenter"
-        @show-expert-center="handleShowExpertCenter"
         @show-scheduled-tasks="handleShowScheduledTasks"
         @show-settings="showSettingsPanel = true"
         @show-user-management="showUserManagementPanel = true"
@@ -55,12 +54,12 @@
       
       <AssetsPanel v-if="showAssets" :visible="showAssets" @close="showAssets = false" />
 
-      <SkillCenter v-if="showSkillCenter" @close="showSkillCenter = false" />
-
-      <ExpertCenter
-        v-if="showExpertCenter"
+      <!-- 专家/技能/连接器统一面板；initialTab 控制入口定位到哪个 Tab -->
+      <SkillCenter
+        v-if="showSkillCenter"
         :session-id="currentSessionId || ''"
-        @close="showExpertCenter = false"
+        :initial-tab="skillCenterTab"
+        @close="showSkillCenter = false"
         @use="handleUseExpert"
       />
 
@@ -77,7 +76,7 @@
       />
       
       <Chat
-        v-else-if="!showAssets && !showSkillCenter && !showExpertCenter && !showScheduledTasks"
+        v-else-if="!showAssets && !showSkillCenter && !showScheduledTasks"
         :messages="messages"
         :sessionLoading="sessionLoading"
         :currentSessionId="currentSessionId"
@@ -95,6 +94,8 @@
         :models="availableModels"
         :selectedModel="selectedModel"
         :activeExpert="selectedExpert"
+        :expertPrompt="expertPrompt"
+        @expert-prompt-applied="expertPrompt = ''"
         @update:selectedModel="selectedModel = $event"
         @toggle-workspace="isWorkspaceCollapsed = false"
         @send-message="handleSendMessage"
@@ -107,7 +108,7 @@
         @clear-expert="selectedExpert = null"
       />
 
-      <div v-if="currentSessionId && !showAssets && !showSkillCenter && !showExpertCenter" class="workspace-area">
+      <div v-if="currentSessionId && !showAssets && !showSkillCenter" class="workspace-area">
         <WorkspacePanel
           :username="userProfile.username"
           :currentSessionId="currentSessionId"
@@ -131,7 +132,6 @@ import SessionList from './components/SessionList.vue'
 import Chat from './components/Chat.vue'
 import AssetsPanel from './components/AssetsPanel.vue'
 import SkillCenter from './components/SkillCenter.vue'
-import ExpertCenter from './components/ExpertCenter.vue'
 import ScheduledTasksPanel from './components/ScheduledTasksPanel.vue'
 import UserManagementPanel from './components/UserManagementPanel.vue'
 import Welcome from './components/Welcome.vue'
@@ -234,7 +234,6 @@ export default {
   components: {
     AssetsPanel,
     Chat,
-    ExpertCenter,
     ScheduledTasksPanel,
     SessionList,
     SettingsPanel,
@@ -291,10 +290,15 @@ export default {
       isWorkspaceCollapsed: true,
       showAssets: false,
       showSkillCenter: false,
-      showExpertCenter: false,
+      // SkillCenter 当前定位的主 Tab（'experts' | 'skills' | 'connectors'）。
+      // 专家视图已并入 SkillCenter 的专家 Tab，本变量控制打开面板时落在哪个 Tab。
+      skillCenterTab: 'experts',
       // 当前选中的专家 Agent（{export_agent_id, export_name_cn, ...} 或 null）。
       // 非空时本会话消息改走 /agent/stream_export_run，由后端动态构建专家 Agent。
       selectedExpert: null,
+      // 专家详情弹窗点「专家帮你做」示例问题时，带回输入框的预填文本；
+      // 由 ChatInput 消费后通过 expert-prompt-applied 事件清空。
+      expertPrompt: '',
       showScheduledTasks: false,
       showSettingsPanel: false,
       showUserManagementPanel: false,
@@ -893,42 +897,38 @@ export default {
     handleShowAssets() {
       this.showAssets = !this.showAssets
       this.showSkillCenter = false
-      this.showExpertCenter = false
       this.showScheduledTasks = false
     },
     handleShowSkillCenter() {
+      // 专家视图已并入 SkillCenter 的专家 Tab，打开面板默认落在该 Tab
+      this.skillCenterTab = 'experts'
       this.showSkillCenter = !this.showSkillCenter
       this.showAssets = false
-      this.showExpertCenter = false
-      this.showScheduledTasks = false
-    },
-    handleShowExpertCenter() {
-      this.showExpertCenter = !this.showExpertCenter
-      this.showAssets = false
-      this.showSkillCenter = false
       this.showScheduledTasks = false
     },
     handleShowScheduledTasks() {
       this.showScheduledTasks = !this.showScheduledTasks
       this.showAssets = false
       this.showSkillCenter = false
-      this.showExpertCenter = false
     },
     /**
-     * 「我的专家 -> 去使用」：把专家挂到当前会话。
+     * 专家 Tab -> 卡片「召唤」/ 详情弹窗点示例问题：把专家挂到当前会话。
+     *
+     * prompt 非空时（点的是「专家帮你做」里的一条）额外把问题回填到输入框。
      *
      * 不强制新建会话：后端 thread_id = `{session_id}-{message_id}`，每条消息都是新线程，
      * 且 get_or_create_agent_for_session() 已按「专家是否变更」驱逐缓存，
      * 因此同一会话内切换专家能立即生效（详见 docs/expert-agent-solution.md）。
      */
-    handleUseExpert(expert) {
+    handleUseExpert(expert, prompt) {
       if (!expert || !expert.export_agent_id) return
       this.selectedExpert = {
         export_agent_id: expert.export_agent_id,
         export_name_cn: expert.export_name_cn,
         export_version: expert.export_version,
       }
-      this.showExpertCenter = false
+      this.expertPrompt = typeof prompt === 'string' ? prompt : ''
+      this.showSkillCenter = false
     },
     applyAgentConfig(configData) {
       if (!configData) return
@@ -1051,7 +1051,6 @@ export default {
       }
       this.showAssets = false
       this.showSkillCenter = false
-      this.showExpertCenter = false
       this.selectedExpert = null
       this.hasBootstrapped = false
       this.clearActiveSession()
@@ -1185,7 +1184,6 @@ export default {
 
       this.showAssets = false
       this.showSkillCenter = false
-      this.showExpertCenter = false
       // 新建会话回到干净状态：专家需在新会话里重新选择，避免误把旧专家的设定带进来
       this.selectedExpert = null
       this.showScheduledTasks = false
@@ -1207,7 +1205,6 @@ export default {
 
       this.showAssets = false
       this.showSkillCenter = false
-      this.showExpertCenter = false
       // 切换会话时不沿用上一个会话的专家选择（选择是当前工作台的临时状态）
       this.selectedExpert = null
       this.showScheduledTasks = false

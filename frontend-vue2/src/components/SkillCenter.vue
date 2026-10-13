@@ -1,6 +1,6 @@
 <!--
   「专家 · 技能 · 连接器」容器：三 Tab 即面板首行（上方不放标题栏等任何内容）。
-  - 专家：空态占位
+  - 专家：ExpertListPanel.vue（专家列表 / 新建 / 编辑 / 召唤）
   - 技能：SkillListPanel.vue（搜索 / 分类筛选 / 启用开关 / 详情页）
   - 连接器（= MCP）：ConnectorListPanel.vue，含两个子视图
     McpConfigEditorPanel.vue（mcp.json 原文编辑）/ McpAddPanel.vue（粘贴 JSON 添加）
@@ -53,13 +53,12 @@
       >
         <SkillListPanel v-if="activeTab === 'skills'" @close="$emit('close')" />
 
-        <div v-else-if="activeTab === 'experts'" class="center-empty">
-          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
-            <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
-            <circle cx="12" cy="7" r="4"></circle>
-          </svg>
-          <p>专家能力建设中，敬请期待</p>
-        </div>
+        <ExpertListPanel
+          v-else-if="activeTab === 'experts'"
+          :session-id="sessionId"
+          @use="(expert, prompt) => $emit('use', expert, prompt)"
+          @close="$emit('close')"
+        />
 
         <template v-else>
           <ConnectorListPanel
@@ -81,6 +80,7 @@
 
 <script>
 import SkillListPanel from './SkillListPanel.vue'
+import ExpertListPanel from './ExpertListPanel.vue'
 import ConnectorListPanel from './ConnectorListPanel.vue'
 import McpAddPanel from './McpAddPanel.vue'
 
@@ -96,23 +96,43 @@ const TAB_ICONS = {
 export default {
   components: {
     SkillListPanel,
+    ExpertListPanel,
     ConnectorListPanel,
     McpAddPanel,
     // Monaco 体积较大，编辑器面板懒加载：只在进入「MCP 服务管理」时才拉取
     McpConfigEditorPanel: () => import('./McpConfigEditorPanel.vue'),
   },
-  emits: ['close'],
+  props: {
+    // sessionId 仅透传给专家面板（创建专家时溯源用）；
+    // initialTab 允许外部入口直接打开并定位到指定 Tab，默认选中专家 Tab。
+    sessionId: {
+      type: String,
+      default: ''
+    },
+    initialTab: {
+      type: String,
+      default: 'experts',
+      validator: (v) => ['experts', 'skills', 'connectors'].includes(v)
+    }
+  },
+  emits: ['close', 'use'],
   data() {
     return {
       tabs: [
-        { key: 'experts', label: '专家', icon: TAB_ICONS.experts, hint: '专家：预置角色与人设（建设中，当前为空态）' },
+        { key: 'experts', label: '专家', icon: TAB_ICONS.experts, hint: '专家：创建与管理我的专家，选中「召唤」后按专家人设对话' },
         { key: 'skills', label: '技能', icon: TAB_ICONS.skills, hint: '技能：管理公共技能与我的技能，可添加/移除、导入 zip、查看 SKILL.md' },
         { key: 'connectors', label: '连接器', icon: TAB_ICONS.connectors, hint: '连接器（MCP）：一键添加内置连接器、编辑 mcp.json 原文、接入自定义 MCP 服务' },
       ],
-      activeTab: 'skills',
+      activeTab: this.initialTab,
       // 连接器内部视图：list（卡片列表）/ manage（mcp.json 编辑）/ add（粘贴 JSON 添加）
       connectorView: 'list',
     }
+  },
+  watch: {
+    // 外部在面板保持挂载的情况下改变 initialTab（如再次点击入口）时跟随切换
+    initialTab(tab) {
+      if (tab && tab !== this.activeTab) this.switchTab(tab)
+    },
   },
   methods: {
     switchTab(key) {
