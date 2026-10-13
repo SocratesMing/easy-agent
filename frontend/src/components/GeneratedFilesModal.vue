@@ -1,5 +1,6 @@
 <template>
-  <div v-if="visible" class="modal-overlay" @click.self="close">
+  <div v-if="visible" class="modal-overlay" @mousedown="overlayPress = markOverlayPress($event)"
+    @click.self="overlayClickCloses($event, overlayPress, close)">
     <div class="modal-content generated-files-modal">
       <div class="modal-header">
         <h3>生成的文件</h3>
@@ -59,6 +60,7 @@
 import { ref, watch } from 'vue'
 import FileIcon from './FileIcon.vue'
 import { API_BASE_URL } from '../config.js'
+import { overlayClickCloses, markOverlayPress } from '../utils/overlayClick.js'
 import { authFetch } from '../api/auth.js'
 
 const props = defineProps({
@@ -76,6 +78,8 @@ const emit = defineEmits(['close'])
 
 const selectedFile = ref(null)
 const fileContent = ref('')
+
+const overlayPress = ref(null)
 
 function close() {
   emit('close')

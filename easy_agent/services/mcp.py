@@ -128,7 +128,8 @@ def load_mcp_config(username: str | None = None) -> dict[str, dict[str, Any]]:
         )
         return {}
 
-    return _load_servers_from_file(config_path)
+    # Agent 工具加载：过滤停用（enabled: false）的 server
+    return _load_servers_from_file(config_path, active_only=True)
 
 
 def load_user_mcp_config(
@@ -151,7 +152,9 @@ def load_user_mcp_config(
     return _load_servers_from_file(user_path)
 
 
-def _load_servers_from_file(config_path: Path) -> dict[str, dict[str, Any]]:
+def _load_servers_from_file(
+    config_path: Path, active_only: bool = False
+) -> dict[str, dict[str, Any]]:
     """解析单个 mcp.json，返回归一化后的 servers 映射；任何异常都降级为空映射。"""
     try:
         with open(config_path, encoding="utf-8") as f:
@@ -180,6 +183,12 @@ def _load_servers_from_file(config_path: Path) -> dict[str, dict[str, Any]]:
             }
             result.update(normalize_servers_mapping(items))
 
+        # Agent 工具加载只取用户启用的 server（enabled: false 的跳过），
+        # 并剥离 enabled 标记，避免 MultiServerMCPClient 收到未知字段。
+        # 连接器页读取（load_user_mcp_config）不走这里——停用的也要显示「已安装」。
+        if active_only:
+            result = filter_active_servers(result)
+
         logger.info(
             f"MCP config loaded from {config_path}: "
             f"{len(result)} server(s) — {', '.join(result.keys())}"
@@ -189,6 +198,26 @@ def _load_servers_from_file(config_path: Path) -> dict[str, dict[str, Any]]:
     except Exception as e:
         logger.warning(f"Failed to load mcp.json ({config_path}): {e}")
         return {}
+
+
+def filter_active_servers(
+    servers: dict[str, Any],
+) -> dict[str, dict[str, Any]]:
+    """过滤掉用户停用（``enabled: false``）的 server，并剥离 enabled 标记。
+
+    用户 mcp.json 里每个 server 配置可带 ``enabled`` 布尔字段（连接器页的开关，
+    默认开启）。Agent 加载工具时只取启用项，且要把 enabled 键从配置里去掉——
+    MultiServerMCPClient 不认识该字段。其余读取/编辑场景不应使用本函数。
+    """
+    active: dict[str, dict[str, Any]] = {}
+    for name, cfg in servers.items():
+        if not isinstance(cfg, dict):
+            continue
+        if cfg.get("enabled") is False:
+            continue
+        cleaned = {k: v for k, v in cfg.items() if k != "enabled"}
+        active[name] = cleaned
+    return active
 
 
 def normalize_servers_mapping(

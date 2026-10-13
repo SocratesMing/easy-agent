@@ -184,6 +184,21 @@ class AgentConfig(BaseModel):
 
     operations 可选值：``read``、``write``，默认两者都禁止。
     通过 FilesystemPermission(mode="deny") 传入 create_deep_agent。
+
+    注意：``/user-skills`` 的 write 权限由 ``skill_write`` 接管（默认 new-only 会
+    忽略这里的 write 禁令并改用更细的规则），需要整体禁写时请设 skill_write=deny。
+    """
+
+    skill_write: str = "new-only"
+    """技能库（虚拟路径 /user-skills/）的写权限策略：
+
+    - ``new-only``（默认）：允许创建新技能目录并写入文件，禁止改动/删除已有技能，
+      点开头的路径（隐藏文件/目录）一律禁写；
+    - ``deny``：整个技能库禁止写入（旧行为）；
+    - ``allow``：不做额外限制。
+
+    通过 FilesystemPermission 传入 create_deep_agent，规则生成见
+    easy_agent.agent.EasyAgent._build_permissions。
     """
 
     external_dirs: dict[str, str] = Field(default_factory=dict)
@@ -509,6 +524,7 @@ class Config(BaseModel):
             or "prompts",
             idle_logout_minutes=data.get("idle_logout_minutes", 0),
             denied_dirs=data.get("denied_dirs", []),
+            skill_write=data.get("skill_write") or "new-only",
             external_dirs=data.get("external_dirs", {}),
         )
 

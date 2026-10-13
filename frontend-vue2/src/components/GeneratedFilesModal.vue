@@ -1,5 +1,6 @@
 <template>
-  <div v-if="visible" class="modal-overlay" @click.self="close">
+  <div v-if="visible" class="modal-overlay" @mousedown="overlayPress = markOverlayPress($event)"
+    @click.self="onOverlayClick">
     <div class="modal-content generated-files-modal">
       <div class="modal-header">
         <h3>生成的文件</h3>
@@ -57,6 +58,7 @@
 
 <script>
 import FileIcon from './FileIcon.vue'
+import { overlayClickCloses, markOverlayPress } from '../utils/overlayClick.js'
 import { requestText } from '../utils/request.js'
 export default {
   components: { FileIcon },
@@ -77,6 +79,14 @@ export default {
     }
   },
   methods: {
+    /** 遮罩点击关闭守卫：拖拽选择文本时（有非空选区）不关闭弹层 */
+    onOverlayClick(event) {
+      overlayClickCloses(event, this.overlayPress, () => this.close())
+    },
+    markOverlayPress(event) {
+      return markOverlayPress(event)
+    },
+
     close() {
       this.$emit('close')
       this.selectedFile = null

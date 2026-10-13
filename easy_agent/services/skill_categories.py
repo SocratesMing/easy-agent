@@ -54,6 +54,9 @@ MAX_CATEGORY_NAME_LEN = 24
 #: 自动归类时参与匹配的正文长度上限（避免大文件反复扫描）
 MAX_MATCH_BODY_CHARS = 4000
 
+#: 技能名 / 描述命中的权重倍数（正文里技术词汇出现概率高，不能与正文等权）
+BOOST_WEIGHT = 5
+
 #: 内置类别预置：首次使用时写入用户文件，并提供自动归类关键词
 BUILTIN_CATEGORIES: list[dict[str, Any]] = [
     {
@@ -366,10 +369,18 @@ def _keywords_for(category: dict[str, Any]) -> list[str]:
     return [kw.lower() for kw in keywords if kw]
 
 
-def infer_category_id(store: dict[str, Any], text: str) -> str:
-    """按关键词打分推断类别 id；无任何命中返回 ``default``。"""
+def infer_category_id(
+    store: dict[str, Any], text: str, boost_text: str = ""
+) -> str:
+    """按关键词打分推断类别 id；无任何命中返回 ``default``。
+
+    ``boost_text``（目录名 + 技能名 + 描述）里的命中按 ``BOOST_WEIGHT`` 倍计分：技能名与
+    描述最能说明技能属于哪一类，而长技能的正文里技术词汇（python / git / npm…）出现概率
+    很高，等权参与会把「文档处理」（docx，正文 20KB 且带脚本）误判成「代码开发」。
+    """
     haystack = (text or "").lower()
-    if not haystack:
+    boosted = (boost_text or "").lower()
+    if not haystack and not boosted:
         return DEFAULT_CATEGORY_ID
 
     best_id = DEFAULT_CATEGORY_ID
@@ -378,19 +389,22 @@ def infer_category_id(store: dict[str, Any], text: str) -> str:
     for category in categories:
         score = 0
         for keyword in _keywords_for(category):
-            if keyword and keyword in haystack:
-                # 长关键词更具区分度（"pdf" 比 "文档" 更能说明问题）
-                score += 2 if len(keyword) >= 4 else 1
+            if not keyword:
+                continue
+            # 长关键词更具区分度（"pdf" 比 "文档" 更能说明问题）
+            weight = 2 if len(keyword) >= 4 else 1
+            if keyword in boosted:
+                score += weight * BOOST_WEIGHT
+            elif keyword in haystack:
+                score += weight
         if score > best_score:
             best_id, best_score = category["id"], score
     return best_id
 
 
-def _match_text(dir_name: str, name: str = "", description: str = "", body: str = "") -> str:
-    """自动归类的输入文本：目录名 + 技能名 + 描述 + 正文片段。"""
-    return " ".join(part for part in (
-        dir_name, name, description, (body or "")[:MAX_MATCH_BODY_CHARS]
-    ) if part)
+def _match_text(dir_name: str, name: str = "", description: str = "") -> str:
+    """高权重匹配文本：目录名 + 技能名 + 描述（正文单独传，权重较低）。"""
+    return " ".join(part for part in (dir_name, name, description) if part)
 
 
 def resolve_from_store(
@@ -406,7 +420,11 @@ def resolve_from_store(
         return DEFAULT_CATEGORY_ID
     if assigned and any(item["id"] == assigned for item in store["categories"]):
         return assigned
-    return infer_category_id(store, _match_text(dir_name, name, description, body))
+    return infer_category_id(
+        store,
+        (body or "")[:MAX_MATCH_BODY_CHARS],
+        _match_text(dir_name, name, description),
+    )
 
 
 def auto_assign_skill(
@@ -416,18 +434,22 @@ def auto_assign_skill(
     description: str = "",
     body: str = "",
 ) -> str:
-    """技能创建（添加公共技能 / 导入 zip）时自动归类并落盘。
+    """技能创建（添加公共技能 / 导入 zip / 对话创建）时自动归类并落盘。
 
-    已存在显式归属时不覆盖（用户的选择优先），返回当前归属 id。
+    分类在创建时**一次定稿**：即使推断结果是「通用技能」也会写入归属记录，之后不再
+    随技能内容变化而变动；已有归属时不覆盖。
     """
     store = load_store(username)
     if store["assignments"].get(dir_name):
         return store["assignments"][dir_name]
 
-    category_id = infer_category_id(store, _match_text(dir_name, name, description, body))
-    if category_id != DEFAULT_CATEGORY_ID:
-        store["assignments"][dir_name] = category_id
-        save_store(username, store)
+    category_id = infer_category_id(
+        store,
+        (body or "")[:MAX_MATCH_BODY_CHARS],
+        _match_text(dir_name, name, description),
+    )
+    store["assignments"][dir_name] = category_id
+    save_store(username, store)
     logger.info(
         f"技能自动归类 | 用户: {username} | 技能: {dir_name} | 类别: {category_id}"
     )

@@ -1054,7 +1054,13 @@ class EasyAgent:
                 env=shell_env,
             )
 
-        if skills_paths and self.user_skills_dir.exists():
+        # 技能库路由总是挂载（即使当前一个技能都没有）：否则模型没有可写路径来创建
+        # 第一个技能。目录不存在时先建出来，保证 route 与 path_mappings 保持一致。
+        try:
+            self.user_skills_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            logger.warning(f"[{self.sid}] 创建用户技能目录失败: {e}")
+        if self.user_skills_dir.exists():
             user_skills_backend = LocalShellBackend(
                 root_dir=str(self.user_skills_dir.absolute()),
                 virtual_mode=True,
@@ -1142,27 +1148,41 @@ class EasyAgent:
         必须限定在已知 route 前缀下（如 /memories/、/user-skills/），
         否则会抛出 NotImplementedError。
 
+        ``/user-skills`` 的 write 权限额外由 ``agent.skill_write`` 接管（默认
+        new-only：可新建技能、不可改写已有技能），见 ``_build_skill_write_permissions``。
+        规则顺序即优先级（框架取第一条命中），因此技能库规则排在最前。
+
         Args:
             skills_paths: 已解析的技能虚拟路径列表，用于判断 /user-skills/
                 路由是否已挂载。未挂载时跳过对应 deny 规则，避免
                 FilesystemMiddleware NotImplementedError。
 
         Returns:
-            FilesystemPermission 列表，无配置时返回空列表。
+            FilesystemPermission 列表，无配置且技能库未挂载时返回空列表。
         """
         denied = self.config.agent.denied_dirs or []
-        if not denied:
-            return []
+        policy = self._skill_write_policy()
+        # 与 _build_backend 的挂载条件保持一致：技能目录存在即已挂载路由
+        skills_mounted = bool(skills_paths) or self.user_skills_dir.exists()
 
         existing_prefixes = [
             f"{self.workspace_virtual_path}/",
         ]
-        if skills_paths:
+        if skills_mounted:
             existing_prefixes.append("/user-skills/")
         for vp in (safe_external or {}):
             existing_prefixes.append(vp)
 
-        permissions = []
+        permissions: list[FilesystemPermission] = []
+
+        # 技能库写权限规则排在最先：框架按列表顺序取第一条命中，细规则必须先于通用规则
+        if skills_mounted and policy != "allow":
+            permissions.extend(self._build_skill_write_permissions(policy))
+            logger.info(
+                f"[{self.sid}] 🔒 技能库写权限 | skill_write={policy} | "
+                f"已有技能 {len(self._discover_user_skill_names())} 个（其内容禁止改写）"
+            )
+
         for item in denied:
             if isinstance(item, dict):
                 path = str(item.get("path", "")).rstrip("/")
@@ -1172,6 +1192,14 @@ class EasyAgent:
                 raw_ops = ["read", "write"]
             if not path:
                 continue
+            if path == "/user-skills" and "write" in raw_ops:
+                # /user-skills 的写权限由 agent.skill_write 接管：new-only 下需要允许
+                # 新建技能目录，整体禁写请改用 skill_write=deny，避免两套规则互相冲突
+                raw_ops = [op for op in raw_ops if op != "write"]
+                logger.info(
+                    f"[{self.sid}] ℹ️ /user-skills 的 write 权限由 "
+                    f"agent.skill_write={policy} 接管，已忽略 denied_dirs 中的同名禁令"
+                )
             glob_path = f"{path}/**"
             if not any(glob_path.startswith(prefix) for prefix in existing_prefixes):
                 logger.info(
@@ -1181,7 +1209,9 @@ class EasyAgent:
                 continue
             ops: list[FilesystemOperation] = [
                 op for op in raw_ops if op in ("read", "write")
-            ] or ["read", "write"]
+            ]
+            if not ops:
+                continue
             permissions.append(
                 FilesystemPermission(
                     operations=ops,
@@ -1195,6 +1225,64 @@ class EasyAgent:
             f"已配置 {len(permissions)} 条 deny 规则: {denied}"
         )
         return permissions
+
+    def _skill_write_policy(self) -> str:
+        """技能库写权限策略：new-only（默认）/ deny / allow，非法值回落 new-only。"""
+        policy = str(getattr(self.config.agent, "skill_write", "") or "").strip().lower()
+        return policy if policy in ("new-only", "deny", "allow") else "new-only"
+
+    def _build_skill_write_permissions(
+        self, policy: str
+    ) -> list[FilesystemPermission]:
+        """生成技能库写权限规则（第一条命中即生效，顺序有意义）。
+
+        目的：让模型能在对话里**新建**技能目录并写入 ``SKILL.md``，同时改不动、
+        删不掉用户已有的技能。
+
+        - ``deny``：整库禁写（含隐藏路径），旧行为
+        - ``new-only``：
+          1. 隐藏路径禁写：wcmatch 未开 DOTMATCH，``/user-skills/**`` 匹配不到点开头的
+             名字，必须显式列出才堵得住绕过；
+          2. 已有技能目录内容禁写：只放行"新建"，不允许改写/删除既有技能；
+          3. 技能库根下的一级条目禁写：挡住散落的单文件（``/user-skills/xxx.md``），
+             正常写入路径 ``/user-skills/<新技能>/SKILL.md`` 是两级，不受影响。
+        """
+        if policy == "deny":
+            return [
+                FilesystemPermission(
+                    operations=["write"],
+                    paths=[
+                        "/user-skills/**",
+                        "/user-skills/.**",
+                        "/user-skills/.*/**",
+                    ],
+                    mode="deny",
+                )
+            ]
+
+        rules = [
+            FilesystemPermission(
+                operations=["write"],
+                paths=["/user-skills/.**", "/user-skills/.*/**"],
+                mode="deny",
+            )
+        ]
+        for name in self._discover_user_skill_names():
+            rules.append(
+                FilesystemPermission(
+                    operations=["write"],
+                    paths=[f"/user-skills/{name}/**"],
+                    mode="deny",
+                )
+            )
+        rules.append(
+            FilesystemPermission(
+                operations=["write"],
+                paths=["/user-skills/*"],
+                mode="deny",
+            )
+        )
+        return rules
 
     def _discover_user_skill_names(self) -> list[str]:
         """发现用户 workspace/{username}/skills/ 目录下的技能名称列表"""

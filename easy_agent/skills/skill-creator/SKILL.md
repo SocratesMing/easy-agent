@@ -7,6 +7,26 @@ description: Create new skills, modify and improve existing skills, and measure 
 
 A skill for creating new skills and iteratively improving them.
 
+## 本环境约定：技能直接建在个人技能库（Easy Agent，优先于本文档其他位置的说法）
+
+本项目里「个人技能库」固定在 `/user-skills/`，它与当前会话工作区 `/workspace/` 是**两个不同目录**：
+
+- **用 `write_file` 直接把技能写到 `/user-skills/<技能名>/SKILL.md`**，一步到位。技能只有落在
+  `/user-skills/<技能名>/` 下才会被识别；写到 `/workspace/` 里不会被当成技能，还要靠系统搬移一次，
+  所以不要在工作区留副本、也不要写草稿再复制。
+- 本环境的 shell 命令受沙箱限制（macOS 等无 bwrap/Landlock 的环境会被直接拒绝，`mkdir`、`cp`、
+  `mv`、`rm -r` 都不可用），所以不要用命令行建目录或搬运目录；需要删除时用 `rm`（不带 `-r`）。
+- 权限：只能**新建**技能。改写或删除 `/user-skills/` 下已有技能会被拒绝（`permission denied`），
+  点开头的隐藏路径同样禁写。用户要求修改已有技能时，先说明该限制并请用户在技能中心操作。
+- 技能目录名用小写字母与连字符（如 `pdf-report`），与 `SKILL.md` frontmatter 中的 `name` 保持一致；
+  `SKILL.md` 必须包含 `name`、`description` 两个字段（`description` 决定技能何时被触发，要写具体）。
+- 一个技能一个目录，只放它真正需要的文件（如 `scripts/`、`references/`）；不要打包成 `.skill`
+  等压缩包，也不要只留在 `/tmp`（不进技能库，重启即丢）。
+- 技能写完后告知用户：已保存到个人技能库、可在「技能中心」查看与调整分类；同一会话的下一条消息
+  即可加载新技能（系统会刷新技能清单）。
+- 本文档其他位置提到的 `without_skill/outputs/`、`/tmp/skill-name/`、`scripts.package_skill` 产出的
+  `.skill` 文件等路径与流程在本项目不适用。
+
 At a high level, the process of creating a skill goes like this:
 
 - Decide what you want the skill to do and roughly how it should do it

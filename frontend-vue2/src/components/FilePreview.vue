@@ -1,5 +1,6 @@
 <template>
-    <div v-if="visible" class="preview-overlay" :class="{ 'is-inline': inline }" @click.self="handleClose">
+    <div v-if="visible" class="preview-overlay" :class="{ 'is-inline': inline }" @mousedown="overlayPress = markOverlayPress($event)"
+    @click.self="onOverlayClick">
       <div class="preview-dialog">
         <div class="preview-header">
           <h3 class="preview-title">{{ filename }}</h3>
@@ -104,6 +105,7 @@ import {
 } from '../markdownSetup.js'
 import hljs from 'highlight.js'
 import 'highlight.js/styles/github-dark.css'
+import { overlayClickCloses, markOverlayPress } from '../utils/overlayClick.js'
 import DocxPreview from './DocxPreview.vue'
 import ExcelPreview from './ExcelPreview.vue'
 import * as XLSX from 'xlsx'
@@ -194,6 +196,7 @@ export default {
   },
   data() {
     return {
+      overlayPress: null,
       loading: false,
       error: '',
       textContent: '',
@@ -339,6 +342,14 @@ export default {
     },
   },
   methods: {
+    /** 遮罩点击关闭守卫：拖拽选择文本时（有非空选区）不关闭预览 */
+    onOverlayClick(event) {
+      overlayClickCloses(event, this.overlayPress, () => this.handleClose())
+    },
+    markOverlayPress(event) {
+      return markOverlayPress(event)
+    },
+
     handleDownload() {
       const token = getStoredToken()
       const params = new URLSearchParams()
