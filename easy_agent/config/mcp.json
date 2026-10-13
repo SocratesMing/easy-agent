@@ -23,6 +23,19 @@
         "MYSQL_DATABASE": "${MYSQL_DATABASE:-agent}"
       },
       "transport": "stdio"
+    },
+    "jmfx-analysis": {
+      "transport": "stdio",
+      "command": "E:\\zx1\\easy-agent\\.venv\\Scripts\\python.exe",
+      "args": ["E:\\zx1\\easy-agent\\mcp\\jmfx_mcp_server.py"],
+      "env": {
+        "PYTHONUTF8": "1",
+        "PYTHONIOENCODING": "utf-8",
+        "JM_A_HOST": "${JM_A_HOST:-127.0.0.1}",
+        "JM_A_PORT": "${JM_A_PORT:-3306}",
+        "JM_A_USER": "${JM_A_USER:-jmfx_ro}",
+        "JM_A_DB": "${JM_A_DB:-jmfx_analysis}"
+      }
     }
   }
 }
