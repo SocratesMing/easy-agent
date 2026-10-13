@@ -280,6 +280,18 @@ class PresetQuestionGroup(BaseModel):
     questions: list[str] = Field(default_factory=list)
 
 
+class ExpertTag(BaseModel):
+    """专家 Agent 的分类标签（配置文件 ``expert_tags``）。
+
+    用于专家创建时的自动归类：把候选列表交给大模型，让它为每个专家挑一个
+    最匹配的 ``tag_id``；前端「专家」Tab 的筛选 chips 用 ``tag_name`` 渲染、
+    按 ``tag_id`` 过滤。
+    """
+
+    tag_id: str = ""
+    tag_name: str = ""
+
+
 class DistributedLockConfig(BaseModel):
     """多实例（多 pod / 多 worker）部署下的分布式锁配置。
 
@@ -316,7 +328,38 @@ class Config(BaseModel):
     models: dict[str, ProviderConfig] = Field(default_factory=dict)
     active_model: str = "minimax"
     preset_questions: list[PresetQuestionGroup] = Field(default_factory=list)
+    expert_tags: list[ExpertTag] = Field(default_factory=list)
+    """专家分类标签候选（创建专家时交给大模型做归类，见 ExpertTag）。"""
     app_welcome_title: str = DEFAULT_APP_WELCOME_TITLE
+
+    @field_validator("expert_tags", mode="before")
+    @classmethod
+    def _normalize_expert_tags(cls, value):
+        """兼容两种写法：``[{tag_id, tag_name}]`` 与 ``{tag_id: tag_name}`` 字典。
+
+        同时丢弃 ``tag_id`` / ``tag_name`` 为空的条目，避免配置写错时前端出现
+        空白 chip。
+        """
+        items: list[ExpertTag] = []
+        if isinstance(value, dict):
+            for key, name in value.items():
+                if str(key).strip() and str(name).strip():
+                    items.append(
+                        ExpertTag(tag_id=str(key).strip(), tag_name=str(name).strip())
+                    )
+            return items
+        if not isinstance(value, list):
+            return []
+        for item in value:
+            if isinstance(item, dict):
+                tag_id = str(item.get("tag_id") or item.get("id") or "").strip()
+                tag_name = str(item.get("tag_name") or item.get("name") or "").strip()
+                if tag_id and tag_name:
+                    items.append(ExpertTag(tag_id=tag_id, tag_name=tag_name))
+            elif isinstance(item, str) and item.strip():
+                # 只给了名字：用名字本身当 tag_id
+                items.append(ExpertTag(tag_id=item.strip(), tag_name=item.strip()))
+        return items
 
     @field_validator("preset_questions", mode="before")
     @classmethod
@@ -420,6 +463,7 @@ class Config(BaseModel):
             models=models,
             active_model=active_model,
             preset_questions=data.get("preset_questions", []),
+            expert_tags=data.get("expert_tags", []),
             app_welcome_title=data.get(
                 "app_welcome_title", DEFAULT_APP_WELCOME_TITLE
             ),

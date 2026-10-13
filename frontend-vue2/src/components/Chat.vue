@@ -90,10 +90,14 @@
         :models="models"
         :selectedModel="selectedModel"
         :showFooter="composerMode === 'bottom' && !isSidebar"
+        :activeExpert="activeExpert"
+        :expertPrompt="expertPrompt"
         @update:selectedModel="$emit('update:selectedModel', $event)"
         @stop="handleStop"
         @create-session="handleCreateSession"
         @openPanel="$emit('openPanel', $event)"
+        @clear-expert="$emit('clear-expert')"
+        @expert-prompt-applied="$emit('expert-prompt-applied')"
       />
 
       <!-- 分类预置问题：仅在首页（居中模式）展示。每个分类一张卡片（分类名即卡片头部，
@@ -245,6 +249,18 @@ export default {
   draftKey: {
     type: String,
     default: 'easy_agent_input_draft'
+  },
+  // 当前会话选中的专家 Agent（{export_agent_id, export_name_cn} 或 null）。
+  // 非空时输入框工具栏显示专家胶囊，且本会话消息走 /agent/stream_export_run。
+  activeExpert: {
+    type: Object,
+    default: null
+  },
+  // 外部预填的问题（专家详情弹窗点「专家帮你做」示例）：透传给 ChatInput，
+  // 由其写入输入框后通过 expert-prompt-applied 通知 App 清空。
+  expertPrompt: {
+    type: String,
+    default: ''
   }
 },
   data() {

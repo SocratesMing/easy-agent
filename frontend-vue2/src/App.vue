@@ -56,9 +56,11 @@
 
       <SkillCenter
         v-if="showSkillCenter"
+        :session-id="currentSessionId || ''"
         :initial-tab="skillCenterTab"
         @close="showSkillCenter = false"
         @create-skill="handleSkillCreate"
+        @use="handleUseExpert"
       />
 
       <ScheduledTasksPanel v-if="showScheduledTasks" @close="showScheduledTasks = false" />
@@ -91,6 +93,9 @@
         :sidebarCollapsed="isSidebarCollapsed"
         :models="availableModels"
         :selectedModel="selectedModel"
+        :activeExpert="selectedExpert"
+        :expertPrompt="expertPrompt"
+        @expert-prompt-applied="expertPrompt = ''"
         @update:selectedModel="selectedModel = $event"
         @toggle-workspace="isWorkspaceCollapsed = false"
         @send-message="handleSendMessage"
@@ -101,6 +106,7 @@
         @approve="handleToolApproval('approve')"
         @reject="handleToolApproval('reject')"
         @openPanel="openSkillCenterPanel"
+        @clear-expert="selectedExpert = null"
       />
 
       <div v-if="currentSessionId && !showAssets && !showSkillCenter" class="workspace-area">
@@ -146,6 +152,7 @@ import { chatStore } from './store/chatStore.js'
 import { buildPageContext } from './utils/pageContext.js'
 import { logout as apiLogout, notifyLogout, getStoredToken, getStoredUsername, AUTH_EXPIRED_EVENT, authFetch, passwordlessLogin } from './api/auth.js'
 import { getModels as fetchModels } from './api/settings.js'
+import { streamExportRun } from './api/expert.js'
 
 // ── 应用级常量（原 src/config.js 已移除，直接定义在组件内）────────────
 // 应用名称与首页欢迎语；后端 /agent/auth/config 返回的 app_welcome_title 仍可在运行期覆盖
@@ -223,7 +230,9 @@ export default {
       isWorkspaceCollapsed: true,
       showAssets: false,
       showSkillCenter: false,
-      skillCenterTab: 'skills',
+      skillCenterTab: 'experts',
+      selectedExpert: null,
+      expertPrompt: '',
       showScheduledTasks: false,
       showSettingsPanel: false,
       showUserManagementPanel: false,
@@ -423,6 +432,7 @@ export default {
       this.showSkillCenter = true
     },
     handleShowSkillCenter() {
+      this.skillCenterTab = 'experts'
       this.showSkillCenter = !this.showSkillCenter
       this.showAssets = false
       this.showScheduledTasks = false
@@ -430,6 +440,25 @@ export default {
     handleShowScheduledTasks() {
       this.showScheduledTasks = !this.showScheduledTasks
       this.showAssets = false
+      this.showSkillCenter = false
+    },
+    /**
+     * 专家 Tab -> 卡片「召唤」/ 详情弹窗点示例问题：把专家挂到当前会话。
+     *
+     * prompt 非空时（点的是「专家帮你做」里的一条）额外把问题回填到输入框。
+     *
+     * 不强制新建会话：后端 thread_id = `{session_id}-{message_id}`，每条消息都是新线程，
+     * 且 get_or_create_agent_for_session() 已按「专家是否变更」驱逐缓存，
+     * 因此同一会话内切换专家能立即生效（详见 docs/expert-agent-solution.md）。
+     */
+    handleUseExpert(expert, prompt) {
+      if (!expert || !expert.export_agent_id) return
+      this.selectedExpert = {
+        export_agent_id: expert.export_agent_id,
+        export_name_cn: expert.export_name_cn,
+        export_version: expert.export_version,
+      }
+      this.expertPrompt = typeof prompt === 'string' ? prompt : ''
       this.showSkillCenter = false
     },
     applyAgentConfig(configData) {
@@ -553,6 +582,7 @@ export default {
       }
       this.showAssets = false
       this.showSkillCenter = false
+      this.selectedExpert = null
       this.hasBootstrapped = false
       this.clearActiveSession()
       this.requireLogin()
@@ -666,6 +696,8 @@ export default {
     beforeSessionChange(kind) {
       this.showAssets = false
       this.showSkillCenter = false
+      // 新建会话回到干净状态：专家需在新会话里重新选择，避免误把旧专家的设定带进来
+      this.selectedExpert = null
       this.showScheduledTasks = false
       if (kind === 'create') this.showSettingsPanel = false
     },

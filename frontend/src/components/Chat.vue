@@ -80,10 +80,14 @@
         :models="models"
         :selectedModel="selectedModel"
         :showFooter="composerMode === 'bottom'"
+        :activeExpert="activeExpert"
+        :prefillText="expertPrompt"
         @update:selectedModel="(v) => emit('update:selectedModel', v)"
         @stop="handleStop"
         @createSession="handleCreateSession"
         @openPanel="(tab) => emit('openPanel', tab)"
+        @clearExpert="emit('clearExpert')"
+        @prefillApplied="emit('expertPromptApplied')"
       />
 
       <!-- 分类预置问题：仅在首页（居中模式）展示。每个分类一张卡片（分类名即卡片头部，
@@ -229,6 +233,18 @@ const props = defineProps({
   welcomeTitle: {
     type: String,
     default: APP_WELCOME_TITLE
+  },
+  // 当前会话选中的专家 Agent（{export_agent_id, export_name_cn} 或 null）。
+  // 非空时输入框工具栏显示专家胶囊，且本会话消息走 /agent/stream_export_run。
+  activeExpert: {
+    type: Object,
+    default: null
+  },
+  // 待回填到输入框的问题（专家详情弹窗点「专家帮你做」示例），写入后由
+  // expertPromptApplied 事件通知父组件清空。
+  expertPrompt: {
+    type: String,
+    default: ''
   }
 })
 
@@ -325,7 +341,7 @@ const showTopbar = computed(() =>
   showSessionTime.value || props.todos.length > 0 || showWorkspaceBtn.value
 )
 
-const emit = defineEmits(['sendMessage', 'presetSend', 'stop', 'removeFile', 'createSession', 'approve', 'reject', 'update:selectedModel', 'toggleWorkspace', 'openPanel'])
+const emit = defineEmits(['sendMessage', 'presetSend', 'stop', 'removeFile', 'createSession', 'approve', 'reject', 'update:selectedModel', 'toggleWorkspace', 'clearExpert', 'expertPromptApplied', 'openPanel'])
 const messagesRef = ref(null)
 
 function formatSessionTime(isoStr) {
@@ -729,6 +745,7 @@ watch(() => props.scrollTrigger, () => {
   gap: 8px;
 }
 
+/* 当前专家标识：绝对定位在 topbar 左侧（操作区在右），与会话时间的居中互不干扰。 */
 /* 会话时间只作为行内内容；条状背景与分隔线已上移到 .chat-topbar */
 .session-created-time {
   display: flex;
