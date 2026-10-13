@@ -274,6 +274,10 @@ async def add_skill_to_user(
         shutil.copytree(str(source_dir), str(temp_dir))
         temp_dir.rename(target_dir)
 
+        # 已缓存的 Agent 持有旧技能列表（技能在 Agent 构造时固化），必须失效重建，
+        # 否则新添加的技能要等 Agent 因其它原因重建或进程重启才生效
+        invalidate_user_agents(username)
+
         abs_target = target_dir.resolve()
         logger.info(
             f"技能添加成功 | 用户: {username} | 技能: {request.dir_name} | 目标绝对路径: {abs_target}"
