@@ -258,3 +258,66 @@ def test_skill_detail_rejects_bad_input(client):
     assert client.get(
         "/agent/skill-center/skill-detail", params={"dir_name": "not-exist", "scope": "user"}
     ).status_code == 404
+
+
+# ── 缓存 Agent 失效 ────────────────────────────────────────────────────
+# 技能列表在 Agent 构造时固化（backend 路由 + create_deep_agent(skills=...)），
+# Agent 又按 session 缓存在进程内存里，所以技能变更后必须让缓存失效，
+# 否则已有会话仍按旧技能列表工作。
+
+
+def _plant_cached_agent(session_id: str):
+    """往进程内 Agent 缓存放一个假实例，用于断言接口是否把它清掉。"""
+    from types import SimpleNamespace
+
+    from easy_agent.config import Config
+    from easy_agent.services import agent_manager
+
+    agent = SimpleNamespace(safe_username=Config.sanitize_username("testuser"))
+    agent_manager._session_agents[session_id] = agent
+    return agent_manager
+
+
+def test_add_skill_invalidates_cached_agent(client):
+    """新增技能后缓存 Agent 必须失效，否则新技能在已有会话中不生效。"""
+    name = "invalidate_add_demo"
+    _make_fake_skill(name)
+    sid = "sess-add-invalidate"
+    manager = _plant_cached_agent(sid)
+    try:
+        resp = client.post("/agent/skill-center/add-skill", json={"dir_name": name})
+        assert resp.status_code == 200
+        assert sid not in manager._session_agents
+    finally:
+        manager._session_agents.pop(sid, None)
+        manager.remove_session_agent(sid)
+        shutil.rmtree(SKILLS_ROOT / name, ignore_errors=True)
+
+
+def test_disable_and_enable_invalidate_cached_agent(client):
+    """停用 / 启用同样要使缓存 Agent 失效（下次对话按新状态加载）。"""
+    name = "invalidate_toggle_demo"
+    _make_fake_skill(name)
+    sid = "sess-toggle-invalidate"
+    manager = _plant_cached_agent(sid)
+    try:
+        assert client.post(
+            "/agent/skill-center/add-skill", json={"dir_name": name}
+        ).status_code == 200
+
+        # 新增已使缓存失效，重新放一个假实例再验证停用 / 启用
+        _plant_cached_agent(sid)
+        assert client.post(
+            "/agent/skill-center/disable-skill", json={"dir_name": name}
+        ).status_code == 200
+        assert sid not in manager._session_agents
+
+        _plant_cached_agent(sid)
+        assert client.post(
+            "/agent/skill-center/enable-skill", json={"dir_name": name}
+        ).status_code == 200
+        assert sid not in manager._session_agents
+    finally:
+        manager._session_agents.pop(sid, None)
+        manager.remove_session_agent(sid)
+        shutil.rmtree(SKILLS_ROOT / name, ignore_errors=True)

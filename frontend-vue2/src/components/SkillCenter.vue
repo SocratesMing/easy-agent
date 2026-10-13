@@ -2,8 +2,8 @@
   「专家 · 技能 · 连接器」容器：三 Tab 即面板首行（上方不放标题栏等任何内容）。
   - 专家：ExpertListPanel.vue（专家列表 / 新建 / 编辑 / 召唤）
   - 技能：SkillListPanel.vue（搜索 / 分类筛选 / 启用开关 / 详情页）
-  - 连接器（= MCP）：ConnectorListPanel.vue，含两个子视图
-    McpConfigEditorPanel.vue（mcp.json 原文编辑）/ McpAddPanel.vue（粘贴 JSON 添加）
+  - 连接器（= MCP）：ConnectorListPanel.vue（含「已安装」筛选）+ McpConfigEditorPanel.vue
+    （mcp.json 原文编辑；粘贴 JSON 添加已并入编辑器，不再单独提供添加页）
 
   主 Tab 交互：静止/悬停/选中三态 + 内容切换动效 + ←/→/Home/End 键盘切换 +
   ≤768px 横向滚动（关闭按钮固定在右侧）。
@@ -51,7 +51,11 @@
         :aria-labelledby="`tab-${activeTab}`"
         tabindex="0"
       >
-        <SkillListPanel v-if="activeTab === 'skills'" @close="$emit('close')" />
+        <SkillListPanel
+          v-if="activeTab === 'skills'"
+          @close="$emit('close')"
+          @create-skill="$emit('create-skill')"
+        />
 
         <ExpertListPanel
           v-else-if="activeTab === 'experts'"
@@ -59,19 +63,26 @@
           @use="(expert, prompt) => $emit('use', expert, prompt)"
           @close="$emit('close')"
         />
+        <div v-else-if="activeTab === 'experts'" class="center-empty">
+          <span class="empty-icon">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+              <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+              <circle cx="12" cy="7" r="4"></circle>
+            </svg>
+          </span>
+          <p class="empty-title">专家能力建设中</p>
+          <p class="empty-sub">这里将提供预置角色与人设，可一键切换专家视角</p>
+        </div>
 
         <template v-else>
           <ConnectorListPanel
             v-if="connectorView === 'list'"
             @manage="connectorView = 'manage'"
-            @add="connectorView = 'add'"
           />
           <McpConfigEditorPanel
-            v-else-if="connectorView === 'manage'"
+            v-else
             @back="connectorView = 'list'"
-            @add="connectorView = 'add'"
           />
-          <McpAddPanel v-else @back="connectorView = 'list'" />
         </template>
       </div>
     </Transition>
@@ -82,7 +93,6 @@
 import SkillListPanel from './SkillListPanel.vue'
 import ExpertListPanel from './ExpertListPanel.vue'
 import ConnectorListPanel from './ConnectorListPanel.vue'
-import McpAddPanel from './McpAddPanel.vue'
 
 const T = 'xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="15" height="15" aria-hidden="true"'
 
@@ -98,7 +108,6 @@ export default {
     SkillListPanel,
     ExpertListPanel,
     ConnectorListPanel,
-    McpAddPanel,
     // Monaco 体积较大，编辑器面板懒加载：只在进入「MCP 服务管理」时才拉取
     McpConfigEditorPanel: () => import('./McpConfigEditorPanel.vue'),
   },
@@ -109,6 +118,7 @@ export default {
       type: String,
       default: ''
     },
+    // 从「+」菜单进入时可指定初始 Tab（experts / skills / connectors）
     initialTab: {
       type: String,
       default: 'experts',
@@ -116,6 +126,13 @@ export default {
     }
   },
   emits: ['close', 'use'],
+  // create-skill：技能列表「创建技能」入口，由外层接手跳转新会话预填指令
+  emits: ['close', 'create-skill'],
+  watch: {
+    initialTab(v) {
+      if (v && v !== this.activeTab) this.activeTab = v
+    },
+  },
   data() {
     return {
       tabs: [
@@ -123,8 +140,8 @@ export default {
         { key: 'skills', label: '技能', icon: TAB_ICONS.skills, hint: '技能：管理公共技能与我的技能，可添加/移除、导入 zip、查看 SKILL.md' },
         { key: 'connectors', label: '连接器', icon: TAB_ICONS.connectors, hint: '连接器（MCP）：一键添加内置连接器、编辑 mcp.json 原文、接入自定义 MCP 服务' },
       ],
-      activeTab: this.initialTab,
-      // 连接器内部视图：list（卡片列表）/ manage（mcp.json 编辑）/ add（粘贴 JSON 添加）
+      activeTab: this.initialTab || 'skills',
+      // 连接器内部视图：list（卡片列表）/ manage（mcp.json 编辑）
       connectorView: 'list',
     }
   },
@@ -180,19 +197,25 @@ export default {
   align-items: center;
   gap: 12px;
   min-width: 0;
-  padding: 16px 24px;
+  padding: 14px 24px;
   background: transparent;
   border-bottom: 1px solid var(--border-color);
 }
 
-/* Tab 行：窄屏自动换行（不横向滚动），下方悬浮提示才不会被裁掉 */
+/* Tab 行：分段控件（track + thumb）。窄屏自动换行，下方悬浮提示才不会被裁掉 */
 .tabs-list {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 4px;
   min-width: 0;
-  flex: 1;
+  max-width: 100%;
+  width: max-content;
+  margin-right: auto;
+  padding: 4px;
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  background: var(--bg-secondary);
 }
 
 .tab {
@@ -201,11 +224,11 @@ export default {
   align-items: center;
   gap: 6px;
   flex-shrink: 0;
-  padding: 8px 14px;
-  border: none;
-  border-radius: 8px;
+  padding: 7px 14px;
+  border: 1px solid transparent;
+  border-radius: 9px;
   background: transparent;
-  font-size: 14px;
+  font-size: 13.5px;
   font-weight: 500;
   line-height: 1.4;
   color: var(--text-secondary);
@@ -213,7 +236,7 @@ export default {
   cursor: pointer;
   touch-action: manipulation;
   /* 显式列属性，避免 transition: all */
-  transition: background-color 0.18s ease, color 0.18s ease;
+  transition: background-color 0.18s ease, border-color 0.18s ease, color 0.18s ease, box-shadow 0.18s ease;
 }
 
 .tab-icon {
@@ -330,15 +353,22 @@ export default {
   color: var(--text-primary);
 }
 
-/* 选中：淡 accent 药丸（跟随主题令牌） */
+/* 选中：淡 accent 药丸 + 描边 + 轻阴影，明暗主题下都有明确层次 */
 .tab.active {
-  background: color-mix(in srgb, var(--accent-color) 14%, transparent);
+  background: color-mix(in srgb, var(--accent-color) 12%, var(--bg-surface));
+  border-color: color-mix(in srgb, var(--accent-color) 30%, transparent);
   color: var(--accent-color);
   font-weight: 600;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06);
 }
 
 .tab.active:hover {
-  background: color-mix(in srgb, var(--accent-color) 20%, transparent);
+  background: color-mix(in srgb, var(--accent-color) 18%, var(--bg-surface));
+}
+
+/* 选中态的图标用主色，视觉上更快被识别 */
+.tab.active .tab-icon {
+  color: var(--accent-color);
 }
 
 .tab:focus-visible {
@@ -353,7 +383,7 @@ export default {
   flex-shrink: 0;
   border: none;
   background: transparent;
-  border-radius: 8px;
+  border-radius: 9px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -371,8 +401,8 @@ export default {
 }
 
 .close-btn svg {
-  width: 20px;
-  height: 20px;
+  width: 18px;
+  height: 18px;
   color: var(--text-secondary);
 }
 
@@ -421,14 +451,43 @@ export default {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 12px;
+  gap: 4px;
+  padding: 32px;
+  text-align: center;
   color: var(--text-secondary);
-  font-size: 14px;
 }
 
-.center-empty svg {
-  width: 48px;
-  height: 48px;
+.empty-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 56px;
+  height: 56px;
+  margin-bottom: 10px;
+  border: 1px solid var(--border-color);
+  border-radius: 16px;
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+}
+
+.empty-icon svg {
+  width: 26px;
+  height: 26px;
+}
+
+.empty-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.empty-sub {
+  margin: 2px 0 0;
+  max-width: 320px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text-secondary);
 }
 
 @media (max-width: 48rem) {
@@ -438,7 +497,7 @@ export default {
   }
 
   .tab {
-    padding: 8px 12px;
+    padding: 7px 12px;
     font-size: 13px;
   }
 }

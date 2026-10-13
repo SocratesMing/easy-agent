@@ -17,7 +17,12 @@ from ..config import Config
 from ..db import Database, get_database
 from ..middleware import get_current_username
 from ..skills import discover_skills
-from ..services import get_agent_config, invalidate_user_agents, skill_library
+from ..services import (
+    get_agent_config,
+    invalidate_user_agents,
+    skill_categories,
+    skill_library,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +32,35 @@ router = APIRouter(prefix="/agent/skill-center", tags=["Skill Center"])
 def _parse_skill_metadata(skill_dir: Path) -> dict:
     """从 SKILL.md / README.md 的 frontmatter 解析技能元数据（实现见 services/skill_library）。"""
     return skill_library.skill_metadata(skill_dir)
+
+
+def _resolve_row_category(
+    store: dict,
+    dir_name: str,
+    metadata: dict,
+    skill_dir: Path,
+) -> str:
+    """单条技能的归属 id：显式归属优先，缺省时才读正文做关键词推断。"""
+    if store["assignments"].get(dir_name):
+        return skill_categories.resolve_from_store(
+            store, dir_name, metadata.get("name", ""), metadata.get("description", "")
+        )
+
+    _, body = skill_library.read_skill_document(skill_dir)
+    return skill_categories.resolve_from_store(
+        store,
+        dir_name,
+        metadata.get("name", ""),
+        metadata.get("description", ""),
+        body,
+    )
+
+
+def _category_name_map(store: dict) -> dict:
+    """id -> 类别名（含虚拟兜底类别）。"""
+    names = {item["id"]: item["name"] for item in store["categories"]}
+    names[skill_categories.DEFAULT_CATEGORY_ID] = skill_categories.DEFAULT_CATEGORY_NAME
+    return names
 
 
 def _get_user_skills_dir(username: str) -> Path:
@@ -66,10 +100,14 @@ async def list_public_skills(
         for item in skill_library.list_user_skill_dirs(username)
     }
 
+    store = skill_categories.load_store(username)
+    category_names = _category_name_map(store)
+
     result = []
     for skill in skills:
         skill_dir = Path(skill["path"])
         metadata = _parse_skill_metadata(skill_dir)
+        category_id = _resolve_row_category(store, skill_dir.name, metadata, skill_dir)
         result.append({
             "name": metadata["name"],
             "dir_name": skill_dir.name,
@@ -78,6 +116,8 @@ async def list_public_skills(
             "version": metadata.get("version", ""),
             "added": skill_dir.name in installed,
             "enabled": installed.get(skill_dir.name, False),
+            "category_id": category_id,
+            "category_name": category_names.get(category_id, skill_categories.DEFAULT_CATEGORY_NAME),
             "stats": skill_library.skill_stats(skill_dir),
         })
 
@@ -98,10 +138,14 @@ async def list_user_skills(
     user_skills_dir = _get_user_skills_dir(username)
     abs_user_skills_dir = str(user_skills_dir.absolute())
 
+    store = skill_categories.load_store(username)
+    category_names = _category_name_map(store)
+
     result = []
     for item in skill_library.list_user_skill_dirs(username):
         skill_dir = item["path"]
         metadata = _parse_skill_metadata(skill_dir)
+        category_id = _resolve_row_category(store, skill_dir.name, metadata, skill_dir)
         result.append({
             "name": metadata["name"],
             "dir_name": skill_dir.name,
@@ -110,6 +154,8 @@ async def list_user_skills(
             "version": metadata.get("version", ""),
             "path": str(skill_dir),
             "enabled": item["enabled"],
+            "category_id": category_id,
+            "category_name": category_names.get(category_id, skill_categories.DEFAULT_CATEGORY_NAME),
             "stats": skill_library.skill_stats(skill_dir),
         })
 
@@ -122,6 +168,170 @@ async def list_user_skills(
         f"技能数量: {len(result)}（启用 {enabled_count}）"
     )
     return {"skills": result, "enabled_count": enabled_count}
+
+
+# ── 技能分类 ──────────────────────────────────────────────────────────
+
+
+@router.get("/categories", summary="获取技能类别列表与归属")
+async def list_skill_categories(
+    username: Annotated[str, Depends(get_current_username)],
+):
+    """类别列表（按用户自定义顺序）+ 各技能的显式归属记录。
+
+    技能的实际归属以列表接口返回的 ``category_id`` 为准：显式归属优先，缺省时按
+    技能内容自动推断。``assignments`` 只包含用户手动或创建技能时自动写入的记录。
+    """
+    store = skill_categories.load_store(username)
+    return {
+        "categories": skill_categories.list_categories(username),
+        "default_category": {
+            "id": skill_categories.DEFAULT_CATEGORY_ID,
+            "name": skill_categories.DEFAULT_CATEGORY_NAME,
+        },
+        "assignments": dict(store["assignments"]),
+    }
+
+
+class CreateCategoryRequest(BaseModel):
+    name: str
+
+
+@router.post("/create-category", summary="新建技能类别")
+async def create_category(
+    request: CreateCategoryRequest,
+    username: Annotated[str, Depends(get_current_username)],
+):
+    """新建自定义类别，追加在类别列表末尾。"""
+    try:
+        category = skill_categories.create_category(username, request.name)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    return {
+        "status": "ok",
+        "category": category,
+        "message": f"类别「{category['name']}」已创建",
+    }
+
+
+class RenameCategoryRequest(BaseModel):
+    category_id: str
+    name: str
+
+
+@router.post("/rename-category", summary="重命名技能类别")
+async def rename_category(
+    request: RenameCategoryRequest,
+    username: Annotated[str, Depends(get_current_username)],
+):
+    try:
+        category = skill_categories.rename_category(
+            username, request.category_id, request.name
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"类别 '{request.category_id}' 不存在")
+
+    return {
+        "status": "ok",
+        "category": category,
+        "message": f"类别已重命名为「{category['name']}」",
+    }
+
+
+class DeleteCategoryRequest(BaseModel):
+    category_id: str
+
+
+@router.post("/delete-category", summary="删除技能类别")
+async def delete_category(
+    request: DeleteCategoryRequest,
+    username: Annotated[str, Depends(get_current_username)],
+):
+    """删除类别；该类别下技能的归属记录一并清空（回落到自动归类）。"""
+    try:
+        result = skill_categories.delete_category(username, request.category_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"类别 '{request.category_id}' 不存在")
+
+    return {
+        "status": "ok",
+        "unassigned": result["unassigned"],
+        "message": f"类别「{result['name']}」已删除",
+    }
+
+
+class ReorderCategoriesRequest(BaseModel):
+    category_ids: list[str]
+
+
+@router.post("/reorder-categories", summary="调整技能类别顺序")
+async def reorder_categories(
+    request: ReorderCategoriesRequest,
+    username: Annotated[str, Depends(get_current_username)],
+):
+    """按传入 id 顺序重排类别；未列出的类别排在末尾（保持原有相对顺序）。"""
+    categories = skill_categories.reorder_categories(username, request.category_ids)
+    return {"status": "ok", "categories": categories}
+
+
+class AssignCategoryRequest(BaseModel):
+    dir_name: str
+    #: 目标类别 id；空字符串表示清除显式归属、恢复自动归类
+    category_id: str = ""
+
+
+@router.post("/assign-category", summary="设置技能所属类别")
+async def assign_category(
+    request: AssignCategoryRequest,
+    username: Annotated[str, Depends(get_current_username)],
+):
+    """把技能归入指定类别（公共技能与已添加的用户技能都可标注）。
+
+    ``category_id`` 传空字符串即取消手动归类，恢复按内容自动判断。
+    """
+    root = _public_skills_root()
+    is_user_skill = skill_library.find_user_skill(username, request.dir_name) is not None
+    is_public_skill = root is not None and skill_library.is_skill_dir(
+        root / request.dir_name
+    )
+    if not is_user_skill and not is_public_skill:
+        raise HTTPException(status_code=404, detail=f"技能 '{request.dir_name}' 不存在")
+
+    try:
+        resolved = skill_categories.assign_skill(
+            username, request.dir_name, request.category_id
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except KeyError:
+        raise HTTPException(
+            status_code=404, detail=f"类别 '{request.category_id}' 不存在"
+        )
+
+    store = skill_categories.load_store(username)
+    if not resolved:
+        # 取消手动归类：按技能内容重新推断，返回前端应展示的类别
+        found = skill_library.find_user_skill(username, request.dir_name)
+        if found:
+            skill_dir = Path(found["path"])
+        else:
+            skill_dir = root / request.dir_name if root is not None else None
+        if skill_dir is not None:
+            metadata = _parse_skill_metadata(skill_dir)
+            resolved = _resolve_row_category(store, request.dir_name, metadata, skill_dir)
+    category_names = _category_name_map(store)
+    return {
+        "status": "ok",
+        "dir_name": request.dir_name,
+        "category_id": resolved,
+        "category_name": category_names.get(
+            resolved, skill_categories.DEFAULT_CATEGORY_NAME
+        ),
+        "message": "已更新技能类别",
+    }
 
 
 # ── 技能详情 / 启用停用 ────────────────────────────────────────────────
@@ -167,6 +377,9 @@ async def get_skill_detail(
     metadata = _parse_skill_metadata(skill_dir)
     doc_file, content = skill_library.read_skill_document(skill_dir)
 
+    store = skill_categories.load_store(username)
+    category_id = _resolve_row_category(store, dir_name, metadata, skill_dir)
+
     return {
         "name": metadata["name"],
         "dir_name": dir_name,
@@ -174,6 +387,10 @@ async def get_skill_detail(
         "description": metadata["description"],
         "icon": metadata["icon"],
         "version": metadata.get("version", ""),
+        "category_id": category_id,
+        "category_name": _category_name_map(store).get(
+            category_id, skill_categories.DEFAULT_CATEGORY_NAME
+        ),
         "doc_file": doc_file,
         "content": content,
         "added": dir_name in installed,
@@ -274,11 +491,25 @@ async def add_skill_to_user(
         shutil.copytree(str(source_dir), str(temp_dir))
         temp_dir.rename(target_dir)
 
+        # 已缓存的 Agent 持有旧技能列表（技能在 Agent 构造时固化），必须失效重建，
+        # 否则新添加的技能要等 Agent 因其它原因重建或进程重启才生效
+        invalidate_user_agents(username)
+
+        # 技能创建时按内容自动归类（用户之后可在技能中心手动调整）
+        category_id = skill_categories.auto_assign_skill_dir(
+            username, request.dir_name, target_dir
+        )
+
         abs_target = target_dir.resolve()
         logger.info(
-            f"技能添加成功 | 用户: {username} | 技能: {request.dir_name} | 目标绝对路径: {abs_target}"
+            f"技能添加成功 | 用户: {username} | 技能: {request.dir_name} | "
+            f"目标绝对路径: {abs_target} | 类别: {category_id}"
         )
-        return {"status": "ok", "message": f"技能 '{request.dir_name}' 添加成功"}
+        return {
+            "status": "ok",
+            "category_id": category_id,
+            "message": f"技能 '{request.dir_name}' 添加成功",
+        }
 
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=f"权限不足，无法复制技能文件: {e}")
@@ -453,10 +684,19 @@ async def import_skill_zip(
         else:
             skill_src.rename(target_dir)
 
-        logger.info(f"技能导入成功 | 用户: {username} | 技能: {safe_name}")
+        # 与「添加公共技能」保持一致：导入后让缓存 Agent 失效，并自动归类
+        invalidate_user_agents(username)
+        category_id = skill_categories.auto_assign_skill_dir(
+            username, safe_name, target_dir
+        )
+
+        logger.info(
+            f"技能导入成功 | 用户: {username} | 技能: {safe_name} | 类别: {category_id}"
+        )
         return {
             "status": "ok",
             "dir_name": safe_name,
+            "category_id": category_id,
             "message": f"技能 '{safe_name}' 导入成功",
         }
 

@@ -43,13 +43,13 @@
       
       <AssetsPanel v-if="showAssets" :visible="showAssets" @close="showAssets = false" />
 
-      <!-- 专家/技能/连接器统一面板；initialTab 控制侧边栏入口定位到哪个 Tab -->
       <SkillCenter
         v-if="showSkillCenter"
         :session-id="currentSessionId || ''"
         :initial-tab="skillCenterTab"
         @close="showSkillCenter = false"
         @use="handleUseExpert"
+        @create-skill="handleSkillCreate"
       />
 
       <ScheduledTasksPanel v-if="showScheduledTasks" @close="showScheduledTasks = false" />
@@ -88,6 +88,7 @@
         @update:selectedModel="selectedModel = $event"
         @toggle-workspace="isWorkspaceCollapsed = false"
         @sendMessage="handleSendMessage"
+        @presetSend="handlePresetSend"
         @createSession="ensureCurrentSession"
         @removeFile="handleRemoveFile"
         @stop="handleStop"
@@ -95,6 +96,7 @@
         @approve="handleToolApproval('approve')"
         @reject="handleToolApproval('reject')"
         @clearExpert="selectedExpert = null"
+        @openPanel="openSkillCenterPanel"
       />
 
       <div v-if="currentSessionId && !showAssets && !showSkillCenter" class="workspace-area">
@@ -740,14 +742,8 @@ const isSidebarCollapsed = ref(false)
 const isWorkspaceCollapsed = ref(true)
 const showAssets = ref(false)
 const showSkillCenter = ref(false)
-// SkillCenter 当前定位的主 Tab（'experts' | 'skills' | 'connectors'）。
-// 默认选中专家 Tab；进入面板后由用户自由切换，重开面板沿用上次的 Tab。
 const skillCenterTab = ref('experts')
-// 当前选中的专家 Agent（{export_agent_id, export_name_cn, ...} 或 null）。
-// 非空时本会话消息改走 /agent/stream_export_run，由后端动态构建专家 Agent。
 const selectedExpert = ref(null)
-// 待回填到输入框的问题（专家详情弹窗点「专家帮你做」示例），由 ChatInput 写入后
-// 通过 expertPromptApplied 事件清空
 const expertPrompt = ref('')
 const showScheduledTasks = ref(false)
 const showSettingsPanel = ref(false)
@@ -773,6 +769,12 @@ function handleShowAssets() {
   showAssets.value = !showAssets.value
   showSkillCenter.value = false
   showScheduledTasks.value = false
+}
+
+function openSkillCenterPanel(tab) {
+  // 「+」菜单入口：打开面板并直接定位到专家/技能/连接器
+  skillCenterTab.value = tab
+  showSkillCenter.value = true
 }
 
 function handleShowSkillCenter() {
@@ -1044,6 +1046,14 @@ async function ensureCurrentSession(initialTitle = '') {
   return currentSessionId.value
 }
 
+/**
+ * 技能中心的「创建技能」：预填内容已写入 sessionStorage，
+ * 这里新建会话并关闭技能中心，ChatInput 随之重新挂载、自动恢复技能标签与提示词。
+ */
+async function handleSkillCreate() {
+  await handleCreateSession()
+}
+
 async function handleCreateSession() {
   saveCurrentSessionState()
 
@@ -1062,6 +1072,14 @@ async function handleCreateSession() {
   sessionDuration.value = 0
   iterationCount.value = 0
   refreshSessionFiles(null)
+}
+
+// 预置问题发送：点击首页预置问题卡片后，该问题作为「新对话的第一条消息」发出。
+// 无论当前是否已选中会话（如刷新后恢复的空会话），都先按「新建对话」把状态
+// 切回全新首页，再走正常发送；当前无会话时后端会在 start 事件里返回新会话 id。
+async function handlePresetSend(message, files, signal, enableDeepThink, enableWebSearch) {
+  await handleCreateSession()
+  handleSendMessage(message, files, signal, enableDeepThink, enableWebSearch)
 }
 
 async function handleSelectSession(sessionId) {
@@ -2672,7 +2690,7 @@ html[data-theme="dark"] .skill-center-content {
 }
 
 html[data-theme="dark"] .skill-card {
-  background: var(--bg-secondary) !important;
+  background: var(--bg-surface) !important;
   border-color: var(--border-color) !important;
 }
 
@@ -3017,40 +3035,8 @@ html[data-theme="dark"] .file-type {
   color: var(--text-primary) !important;
 }
 
-/* 预设问题卡片堆叠 */
-html[data-theme="dark"] .preset-card {
-  background: var(--bg-secondary) !important;
-  border-color: var(--border-color) !important;
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4) !important;
-}
-
-html[data-theme="dark"] .preset-card.is-front {
-  border-color: var(--accent-color, #0ea5e9) !important;
-  box-shadow: 0 10px 30px rgba(14, 165, 233, 0.25) !important;
-}
-
-html[data-theme="dark"] .preset-card-text {
-  color: var(--text-primary) !important;
-}
-
-html[data-theme="dark"] .preset-card-index,
-html[data-theme="dark"] .preset-card-foot {
-  color: var(--text-muted) !important;
-}
-
-html[data-theme="dark"] .preset-nav-btn {
-  background: var(--bg-secondary) !important;
-  border-color: var(--border-color) !important;
-  color: var(--text-primary) !important;
-}
-
-html[data-theme="dark"] .preset-dot {
-  background: var(--border-color) !important;
-}
-
-html[data-theme="dark"] .preset-dot.active {
-  background: var(--accent-color, #0ea5e9) !important;
-}
+/* 预设问题卡片：样式全部走语义化令牌（--bg-secondary / --text-primary ...），
+   深浅主题自动适配，这里无需额外覆盖。 */
 
 /* 滚动按钮 */
 html[data-theme="dark"] .scroll-btn {
@@ -3297,7 +3283,8 @@ html[data-theme="dark"] .skill-center .main-tab:hover {
 }
 
 html[data-theme="dark"] .skill-center .main-tab.active {
-  background: color-mix(in srgb, var(--accent-color) 22%, transparent) !important;
+  background: color-mix(in srgb, var(--accent-color) 18%, var(--bg-surface)) !important;
+  border-color: color-mix(in srgb, var(--accent-color) 34%, transparent) !important;
   color: var(--accent-color) !important;
 }
 
@@ -3452,42 +3439,7 @@ html[data-theme="dark"] .model-item-badge {
   color: #4ade80 !important;
 }
 
-/* ========== 首页预设问题（分类标签 + 悬浮面板 + 问题卡片）========== */
-html[data-theme="dark"] .preset-category-tab {
-  background: var(--bg-tertiary) !important;
-  border-color: var(--border-color) !important;
-  color: var(--text-secondary) !important;
-}
-
-html[data-theme="dark"] .preset-category-tab:hover {
-  border-color: var(--accent-color) !important;
-  color: var(--accent-color) !important;
-}
-
-html[data-theme="dark"] .preset-category-tab.active {
-  background: color-mix(in srgb, var(--accent-color) 22%, var(--bg-tertiary)) !important;
-  border-color: var(--accent-color) !important;
-  color: var(--accent-color) !important;
-}
-
-html[data-theme="dark"] .preset-category-panel {
-  background: var(--bg-secondary) !important;
-  border-color: var(--border-color) !important;
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5) !important;
-}
-
-html[data-theme="dark"] .preset-chip {
-  background: var(--bg-tertiary) !important;
-  border-color: var(--border-color) !important;
-  color: var(--text-secondary) !important;
-}
-
-html[data-theme="dark"] .preset-chip:hover {
-  border-color: var(--accent-color) !important;
-  color: var(--accent-color) !important;
-  transform: translateY(-1px);
-}
-
+/* ========== 首页预设问题：卡片样式走语义化令牌，深浅主题自动适配 ========== */
 /* ========== 聊天页（Chat.vue）深色适配 ========== */
 html[data-theme="dark"] .chat-container {
   background: var(--bg-primary) !important;
@@ -3505,29 +3457,6 @@ html[data-theme="dark"] .welcome-screen {
 }
 html[data-theme="dark"] .welcome-screen h2 {
   color: var(--text-primary) !important;
-}
-html[data-theme="dark"] .preset-card {
-  background: var(--bg-secondary) !important;
-  border-color: var(--border-color) !important;
-}
-html[data-theme="dark"] .preset-card-text {
-  color: var(--text-primary) !important;
-}
-html[data-theme="dark"] .preset-card-foot {
-  color: var(--text-secondary) !important;
-}
-html[data-theme="dark"] .preset-nav-btn {
-  background: var(--bg-secondary) !important;
-  border-color: var(--border-color) !important;
-  color: var(--text-secondary) !important;
-}
-html[data-theme="dark"] .preset-nav-btn:hover {
-  background: var(--bg-tertiary) !important;
-  border-color: var(--accent-color) !important;
-  color: var(--accent-color) !important;
-}
-html[data-theme="dark"] .preset-dot {
-  background: var(--border-color) !important;
 }
 html[data-theme="dark"] .scroll-btn {
   background: var(--bg-secondary) !important;

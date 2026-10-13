@@ -136,7 +136,7 @@
 <script setup>
 import { ref, computed, watch, onMounted } from 'vue'
 import { getSkillDetail, enableSkill, disableSkill, addSkillToUser, removeSkillFromUser } from '../api/skills.js'
-import { getSkillCategory, getCategoryLabel } from '../utils/skillCategories.js'
+import { DEFAULT_CATEGORY, iconCategoryFor } from '../utils/skillCategories.js'
 import SkillIcon from './SkillIcon.vue'
 import ToggleSwitch from './ToggleSwitch.vue'
 
@@ -156,8 +156,10 @@ const descExpanded = ref(false)
 const confirmingRemove = ref(false)
 const toast = ref({ show: false, message: '', type: 'success' })
 
-const category = computed(() => getSkillCategory(props.dirName))
-const categoryLabel = computed(() => getCategoryLabel(props.dirName))
+const category = computed(() => iconCategoryFor(detail.value?.category_id))
+const categoryLabel = computed(
+  () => detail.value?.category_name || DEFAULT_CATEGORY.name
+)
 const stats = computed(() => detail.value?.stats || { file_count: 0, size_bytes: 0, updated_at: null })
 // 描述超过 3 行（约 120 字）才给「展开」
 const descLong = computed(() => (detail.value?.description || '').length > 120)
@@ -278,7 +280,7 @@ onMounted(load)
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 16px 24px;
+  padding: 14px 24px;
   border-bottom: 1px solid var(--border-color);
 }
 
@@ -286,9 +288,10 @@ onMounted(load)
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 8px 12px;
+  height: 34px;
+  padding: 0 12px;
   border: none;
-  border-radius: 8px;
+  border-radius: 9px;
   background: transparent;
   font-size: 13px;
   color: var(--text-secondary);
@@ -526,9 +529,11 @@ onMounted(load)
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 8px 14px;
-  border-radius: 8px;
+  height: 38px;
+  padding: 0 16px;
+  border-radius: 10px;
   font-size: 13px;
+  font-weight: 500;
   cursor: pointer;
   transition: background-color 0.18s ease, border-color 0.18s ease, color 0.18s ease;
 }
@@ -537,6 +542,7 @@ onMounted(load)
   border: 1px solid var(--accent-color);
   background: var(--accent-color);
   color: #fff;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
 }
 
 .action-btn-primary:hover {
@@ -545,7 +551,7 @@ onMounted(load)
 
 .action-btn-outline {
   border: 1px solid var(--border-color);
-  background: transparent;
+  background: var(--bg-surface);
   color: var(--text-primary);
 }
 

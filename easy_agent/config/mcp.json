@@ -1,5 +1,5 @@
 {
-  "_comment": "内置连接器目录。每条 = 一份可直接写入用户 mcp.json 的 MCP 服务配置：{id, name, description, icon, config}；id 同时作为写入 mcp.json 的 server 名，必须唯一且为安全标识符。config 支持 transport=stdio（command/args/env）或 streamable_http/sse（url/headers）。改这里不需要重启后端（每次请求现读）。",
+  "_comment": "公共 MCP 连接器目录（连接器页「公共」卡片的数据源，由 services/connectors.py 读取）。每条 = 一份可直接写入用户 mcp.json 的 MCP 服务配置：{id, name, description, icon, config}；id 同时作为写入用户 mcp.json 的 server 名，必须唯一且为安全标识符。config 支持 transport=stdio（command/args/env）或 streamable_http/sse（url/headers）。改这里不需要重启后端（每次请求现读）。注意：本文件放在 config 目录，同时会被当作「全局 mcp.json」用于 Agent 加载；因为它没有 servers 字段，所以不会给任何用户自动加载 MCP —— 请勿在此文件里加 servers，那会让所有未自建 mcp.json 的用户自动加载这些服务。",
   "connectors": [
     {
       "id": "market-data",
@@ -9,7 +9,9 @@
       "config": {
         "transport": "streamable_http",
         "url": "http://127.0.0.1:8100/mcp/market/",
-        "headers": { "Authorization": "Bearer <API Key>" }
+        "headers": {
+          "Authorization": "Bearer <API Key>"
+        }
       }
     },
     {
@@ -20,7 +22,11 @@
       "config": {
         "transport": "stdio",
         "command": "npx",
-        "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+        "args": [
+          "-y",
+          "@modelcontextprotocol/server-filesystem",
+          "/tmp"
+        ],
         "env": {}
       }
     },
@@ -32,7 +38,9 @@
       "config": {
         "transport": "stdio",
         "command": "uvx",
-        "args": ["mcp-server-fetch"],
+        "args": [
+          "mcp-server-fetch"
+        ],
         "env": {}
       }
     },
@@ -44,7 +52,11 @@
       "config": {
         "transport": "stdio",
         "command": "uvx",
-        "args": ["mcp-server-git", "--repository", "/path/to/repo"],
+        "args": [
+          "mcp-server-git",
+          "--repository",
+          "/path/to/repo"
+        ],
         "env": {}
       }
     },
@@ -56,7 +68,10 @@
       "config": {
         "transport": "stdio",
         "command": "npx",
-        "args": ["-y", "@modelcontextprotocol/server-everything"],
+        "args": [
+          "-y",
+          "@modelcontextprotocol/server-everything"
+        ],
         "env": {}
       }
     }

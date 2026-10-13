@@ -1,48 +1,27 @@
 /**
- * 技能分类：按技能目录名映射到固定 5 类（+ 通用兜底）。
+ * 技能分类前端辅助（Vue2 版，与 frontend/src/utils/skillCategories.js 保持一致）。
  *
- * 沿用改造前 SkillListPanel 里的映射表，只是抽出来共用；
- * 分类只用于「分类 chips 筛选」与图标配色，后端不做分类字段。
+ * 类别本身由后端管理（`/agent/skill-center/categories`，用户级持久化），技能归属由
+ * 列表 / 详情接口的 `category_id` + `category_name` 给出（显式归属优先，缺省按技能
+ * 内容自动归类）。这里只保留两件事：
+ * 1. 虚拟兜底类别常量（后端也返回，这里用于首次渲染的占位）；
+ * 2. 类别 id → SkillIcon 配色 key 的映射（自定义类别按 id 哈希取色，保证有区分度）。
  */
 
-export const CATEGORIES = [
-  { key: 'all', label: '全部' },
-  { key: 'doc', label: '文档处理' },
-  { key: 'code', label: '代码开发' },
-  { key: 'design', label: '设计创意' },
-  { key: 'data', label: '数据分析' },
-  { key: 'api', label: 'API集成' },
-  { key: 'default', label: '通用技能' },
-]
+/** 虚拟兜底类别：既不是用户类别，也不能被删除 */
+export const DEFAULT_CATEGORY = { id: 'default', name: '通用技能' }
 
-const CATEGORY_PRESETS = {
-  doc: ['pdf', 'docx', 'pptx', 'xlsx', 'doc-coauthoring'],
-  code: ['mcp-builder', 'skill-creator', 'claude-api'],
-  design: [
-    'frontend-design',
-    'canvas-design',
-    'theme-factory',
-    'brand-guidelines',
-    'algorithmic-art',
-    'web-artifacts-builder',
-  ],
-  data: ['webapp-testing', 'strategy_fx'],
-  api: ['internal-comms', 'slack-gif-creator'],
-}
+/** SkillIcon 内置的配色 / 图标 key */
+const ICON_KEYS = ['doc', 'code', 'design', 'data', 'api', 'default']
 
-const LABELS = Object.fromEntries(CATEGORIES.map((item) => [item.key, item.label]))
+/** 类别 id → SkillIcon 配色 key */
+export function iconCategoryFor(categoryId) {
+  if (!categoryId) return 'default'
+  if (ICON_KEYS.includes(categoryId)) return categoryId
 
-/** 目录名 → 分类 key（未命中返回 default） */
-export function getSkillCategory(skill) {
-  const dirName = typeof skill === 'string' ? skill : skill?.dir_name
-  if (!dirName) return 'default'
-  for (const [key, presets] of Object.entries(CATEGORY_PRESETS)) {
-    if (presets.includes(dirName)) return key
+  let hash = 0
+  for (const ch of String(categoryId)) {
+    hash = (hash * 31 + ch.codePointAt(0)) % 9973
   }
-  return 'default'
-}
-
-/** 目录名 → 中文分类名 */
-export function getCategoryLabel(skill) {
-  return LABELS[getSkillCategory(skill)] || LABELS.default
+  return ICON_KEYS[hash % ICON_KEYS.length]
 }
