@@ -136,7 +136,7 @@
 <script setup>
 import { ref, computed, watch, onMounted } from 'vue'
 import { getSkillDetail, enableSkill, disableSkill, addSkillToUser, removeSkillFromUser } from '../api/skills.js'
-import { getSkillCategory, getCategoryLabel } from '../utils/skillCategories.js'
+import { DEFAULT_CATEGORY, iconCategoryFor } from '../utils/skillCategories.js'
 import SkillIcon from './SkillIcon.vue'
 import ToggleSwitch from './ToggleSwitch.vue'
 
@@ -156,8 +156,10 @@ const descExpanded = ref(false)
 const confirmingRemove = ref(false)
 const toast = ref({ show: false, message: '', type: 'success' })
 
-const category = computed(() => getSkillCategory(props.dirName))
-const categoryLabel = computed(() => getCategoryLabel(props.dirName))
+const category = computed(() => iconCategoryFor(detail.value?.category_id))
+const categoryLabel = computed(
+  () => detail.value?.category_name || DEFAULT_CATEGORY.name
+)
 const stats = computed(() => detail.value?.stats || { file_count: 0, size_bytes: 0, updated_at: null })
 // 描述超过 3 行（约 120 字）才给「展开」
 const descLong = computed(() => (detail.value?.description || '').length > 120)

@@ -1,12 +1,16 @@
 <!--
   技能列表（技能 Tab 主视图）：
-  - 工具条：搜索 / 已安装(n) 筛选 / 添加技能（zip 导入）
-  - 分类 chips：全部 + 5 类（沿用 skillCategories 映射）
-  - 卡片：图标 / 名称 / 状态标签 / 启用开关（未安装则 +）/ 单行描述 / 底部真实指标
+  - 工具条：搜索 / 已安装(n) 筛选 / 添加技能（下拉：上传技能 = zip 导入、创建技能占位）
+  - 分类 chips：全部 + 后端返回的用户类别（可「管理分类」新建/重命名/删除/排序）
+  - 列表：按类别分组展示，每组一个标题 + 计数
+  - 卡片：图标 / 名称 / 状态标签 / 右侧操作（未添加显示 +，已添加显示对勾标记；
+    切到「已安装」筛选后已添加的显示启用开关）/ 单行描述 / 底部真实指标
+    + 底部分类标签：点开可把技能改到别的类别或恢复自动归类
   - 点卡片名称 → 详情页（SkillDetailPanel）
 -->
 <template>
-  <div class="skill-panel">
+  <!-- 点击空白处收起卡片的归类下拉与「添加技能」菜单 -->
+  <div class="skill-panel" @click="closeOverlays">
     <SkillDetailPanel
       v-if="detailTarget"
       :dir-name="detailTarget.dirName"
@@ -43,33 +47,69 @@
           class="installed-filter"
           :class="{ active: installedOnly }"
           :aria-pressed="installedOnly ? 'true' : 'false'"
+          title="只看已安装的技能；启用 / 停用开关在此视图显示"
           @click="installedOnly = !installedOnly"
         >
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="3" y="3" width="18" height="18" rx="3" />
+            <polyline points="8 12.5 11 15.5 16 9" />
+          </svg>
           已安装<span class="filter-count">{{ installedCount }}</span>
         </button>
 
-        <button class="action-btn-primary" :disabled="importing" @click="triggerImport">
-          <div v-if="importing" class="btn-spinner-sm"></div>
-          <svg v-else xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
-            <line x1="12" y1="5" x2="12" y2="19" />
-            <line x1="5" y1="12" x2="19" y2="12" />
-          </svg>
-          {{ importing ? '导入中…' : '添加技能' }}
-        </button>
+        <div class="add-skill-menu">
+          <button
+            class="action-btn-primary"
+            :disabled="importing"
+            aria-haspopup="menu"
+            :aria-expanded="addMenuOpen ? 'true' : 'false'"
+            @click.stop="addMenuOpen = !addMenuOpen"
+          >
+            <div v-if="importing" class="btn-spinner-sm"></div>
+            <svg v-else xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+              <line x1="12" y1="5" x2="12" y2="19" />
+              <line x1="5" y1="12" x2="19" y2="12" />
+            </svg>
+            {{ importing ? '导入中…' : '添加技能' }}
+          </button>
+
+          <div v-if="addMenuOpen" class="add-skill-menu-list" role="menu">
+            <button class="add-menu-item" type="button" role="menuitem" @click.stop="handleUploadSkill">
+              上传技能
+            </button>
+            <button class="add-menu-item" type="button" role="menuitem" @click.stop="handleCreateSkill">
+              创建技能
+            </button>
+          </div>
+        </div>
         <input ref="fileInputRef" type="file" accept=".zip" class="hidden-file-input" @change="handleImportFile" />
       </div>
 
       <div class="category-chips" role="group" aria-label="按分类筛选">
         <button
-          v-for="item in categories"
-          :key="item.key"
+          v-for="item in chipCategories"
+          :key="item.id"
           class="chip"
-          :class="{ active: category === item.key }"
-          :aria-pressed="category === item.key ? 'true' : 'false'"
-          @click="category = item.key"
+          :class="{ active: category === item.id }"
+          :aria-pressed="category === item.id ? 'true' : 'false'"
+          @click="category = item.id"
         >
-          {{ item.label }}
-          <span v-if="categoryCounts[item.key]" class="chip-count">{{ categoryCounts[item.key] }}</span>
+          {{ item.name }}
+          <span v-if="categoryCounts[item.id]" class="chip-count">{{ categoryCounts[item.id] }}</span>
+        </button>
+        <button class="chip chip-manage" type="button" @click="openCategoryManager">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+            <line x1="4" y1="21" x2="4" y2="14" />
+            <line x1="4" y1="10" x2="4" y2="3" />
+            <line x1="12" y1="21" x2="12" y2="12" />
+            <line x1="12" y1="8" x2="12" y2="3" />
+            <line x1="20" y1="21" x2="20" y2="16" />
+            <line x1="20" y1="12" x2="20" y2="3" />
+            <line x1="1" y1="14" x2="7" y2="14" />
+            <line x1="9" y1="8" x2="15" y2="8" />
+            <line x1="17" y1="16" x2="23" y2="16" />
+          </svg>
+          管理分类
         </button>
       </div>
 
@@ -91,55 +131,125 @@
           <p>{{ emptyText }}</p>
         </div>
 
-        <div v-else class="skills-grid">
-          <div v-for="card in filteredCards" :key="card.key" class="skill-card">
-            <div class="skill-card-inner">
-              <button class="skill-card-open" @click="openDetail(card)">
-                <SkillIcon :icon="card.icon" :category="card.category" />
-                <span class="skill-card-body">
-                  <span class="skill-card-name-row">
-                    <span class="skill-card-name">{{ card.name }}</span>
-                    <span v-if="card.source === 'local'" class="skill-tag">导入</span>
-                    <span v-else-if="card.installed && !card.enabled" class="skill-tag off">已停用</span>
+        <div v-else class="skill-groups">
+          <section v-for="group in skillGroups" :key="group.id" class="skill-group">
+            <div class="group-header">
+              <h4 class="group-title">{{ group.name }}</h4>
+              <span class="group-count">{{ group.cards.length }}</span>
+            </div>
+
+            <div class="skills-grid">
+              <div v-for="card in group.cards" :key="card.key" class="skill-card">
+                <div class="skill-card-inner">
+                  <button class="skill-card-open" @click="openDetail(card)">
+                    <SkillIcon :icon="card.icon" :category="iconCategoryFor(card.categoryId)" />
+                    <span class="skill-card-body">
+                      <span class="skill-card-name-row">
+                        <span class="skill-card-name">{{ card.name }}</span>
+                        <span v-if="card.source === 'local'" class="skill-tag">导入</span>
+                        <span v-else-if="card.installed && !card.enabled" class="skill-tag off">已停用</span>
+                      </span>
+                      <span class="skill-card-desc">{{ card.description || '暂无描述' }}</span>
+                    </span>
+                  </button>
+
+                  <!-- 只有切到「已安装」筛选（即进入管理已装技能的语境）才给启用/停用开关，
+                       默认浏览视图不显示开关 -->
+                  <ToggleSwitch
+                    v-if="card.installed && installedOnly"
+                    :model-value="card.enabled"
+                    :loading="togglingKey === card.key"
+                    :aria-label="`${card.enabled ? '停用' : '启用'}技能 ${card.name}`"
+                    @change="handleToggle(card, $event)"
+                  />
+                  <!-- 已添加：只给一个对勾状态标记（不写文字），停用时降为灰色 -->
+                  <span
+                    v-else-if="card.installed"
+                    class="skill-added-tag"
+                    :class="{ off: !card.enabled }"
+                    role="img"
+                    :aria-label="card.enabled ? '已添加到我的技能（已启用）' : '已添加到我的技能（已停用）'"
+                    :title="card.enabled ? '已添加到我的技能（已启用）' : '已添加到我的技能（已停用）'"
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true">
+                      <polyline points="20 6 9 17 4 12" />
+                    </svg>
                   </span>
-                  <span class="skill-card-desc">{{ card.description || '暂无描述' }}</span>
-                </span>
-              </button>
+                  <button
+                    v-else
+                    class="add-icon-btn"
+                    :disabled="addingKey === card.key"
+                    :aria-label="`添加技能 ${card.name}`"
+                    :title="'添加到我的技能'"
+                    @click="handleAdd(card)"
+                  >
+                    <div v-if="addingKey === card.key" class="btn-spinner-sm"></div>
+                    <svg v-else xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true">
+                      <line x1="12" y1="5" x2="12" y2="19" />
+                      <line x1="5" y1="12" x2="19" y2="12" />
+                    </svg>
+                  </button>
+                </div>
 
-              <ToggleSwitch
-                v-if="card.installed"
-                :model-value="card.enabled"
-                :loading="togglingKey === card.key"
-                :aria-label="`${card.enabled ? '停用' : '启用'}技能 ${card.name}`"
-                @change="handleToggle(card, $event)"
-              />
-              <button
-                v-else
-                class="add-icon-btn"
-                :disabled="addingKey === card.key"
-                :aria-label="`添加技能 ${card.name}`"
-                :title="'添加到我的技能'"
-                @click="handleAdd(card)"
-              >
-                <div v-if="addingKey === card.key" class="btn-spinner-sm"></div>
-                <svg v-else xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true">
-                  <line x1="12" y1="5" x2="12" y2="19" />
-                  <line x1="5" y1="12" x2="19" y2="12" />
-                </svg>
-              </button>
-            </div>
+                <div class="skill-card-footer">
+                  <span>{{ card.stats.file_count }} 个文件</span>
+                  <span class="dot">·</span>
+                  <span>{{ formatSize(card.stats.size_bytes) }}</span>
+                  <span class="dot">·</span>
+                  <span>{{ formatTime(card.stats.updated_at) }}</span>
 
-            <div class="skill-card-footer">
-              <span>{{ card.stats.file_count }} 个文件</span>
-              <span class="dot">·</span>
-              <span>{{ formatSize(card.stats.size_bytes) }}</span>
-              <span class="dot">·</span>
-              <span>{{ formatTime(card.stats.updated_at) }}</span>
+                  <div class="category-picker">
+                    <button
+                      class="category-picker-btn"
+                      type="button"
+                      :aria-expanded="pickerCard === card.key ? 'true' : 'false'"
+                      :title="'调整「' + card.name + '」的类别'"
+                      @click.stop="toggleCategoryPicker(card)"
+                    >
+                      {{ card.categoryName }}
+                      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                        <polyline points="6 9 12 15 18 9" />
+                      </svg>
+                    </button>
+
+                    <div v-if="pickerCard === card.key" class="category-picker-menu" role="menu">
+                      <button
+                        v-for="option in pickerOptions(card)"
+                        :key="option.id"
+                        class="picker-item"
+                        :class="{ active: option.active }"
+                        type="button"
+                        role="menuitem"
+                        @click.stop="handleAssign(card, option.id)"
+                      >
+                        {{ option.name }}
+                      </button>
+                      <button
+                        class="picker-item picker-manage"
+                        type="button"
+                        role="menuitem"
+                        @click.stop="openCategoryManager"
+                      >
+                        管理分类…
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
             </div>
-          </div>
+          </section>
         </div>
       </div>
     </template>
+
+    <SkillCategoryManager
+      v-if="categoryManagerOpen"
+      :categories="categories"
+      :default-category="defaultCategory"
+      :counts="categoryCounts"
+      @close="categoryManagerOpen = false"
+      @changed="handleCategoriesChanged"
+    />
 
     <Transition name="toast">
       <div v-if="toast.show" class="toast" :class="toast.type" role="status" aria-live="polite">
@@ -157,18 +267,23 @@ import {
   enableSkill,
   disableSkill,
   importSkill,
+  getSkillCategories,
+  assignSkillCategory,
 } from '../api/skills.js'
-import { CATEGORIES, getSkillCategory } from '../utils/skillCategories.js'
+import { DEFAULT_CATEGORY, iconCategoryFor } from '../utils/skillCategories.js'
 import SkillIcon from './SkillIcon.vue'
 import SkillDetailPanel from './SkillDetailPanel.vue'
+import SkillCategoryManager from './SkillCategoryManager.vue'
 import ToggleSwitch from './ToggleSwitch.vue'
 
 export default {
-  components: { SkillIcon, SkillDetailPanel, ToggleSwitch },
+  components: { SkillIcon, SkillDetailPanel, SkillCategoryManager, ToggleSwitch },
   emits: ['close'],
   data() {
     return {
-      categories: CATEGORIES,
+      // 类别由后端管理（用户级持久化），默认兜底类别固定为「通用技能」
+      categories: [],
+      defaultCategory: DEFAULT_CATEGORY,
       loading: false,
       error: '',
       publicSkills: [],
@@ -180,6 +295,11 @@ export default {
       togglingKey: null,
       importing: false,
       detailTarget: null,
+      // 卡片上的归类下拉：记录当前展开的卡片 key
+      pickerCard: null,
+      categoryManagerOpen: false,
+      // 「添加技能」下拉菜单（上传技能 / 创建技能）
+      addMenuOpen: false,
       toast: { show: false, message: '', type: 'success' },
     }
   },
@@ -202,7 +322,8 @@ export default {
           description: skill.description,
           icon: skill.icon,
           version: skill.version,
-          category: getSkillCategory(skill),
+          categoryId: skill.category_id || DEFAULT_CATEGORY.id,
+          categoryName: skill.category_name || DEFAULT_CATEGORY.name,
           installed: !!skill.added,
           enabled: !!skill.enabled,
           stats: skill.stats || { file_count: 0, size_bytes: 0, updated_at: null },
@@ -220,17 +341,17 @@ export default {
           description: skill.description,
           icon: skill.icon,
           version: skill.version,
-          category: getSkillCategory(skill),
+          categoryId: skill.category_id || DEFAULT_CATEGORY.id,
+          categoryName: skill.category_name || DEFAULT_CATEGORY.name,
           installed: true,
           enabled: !!skill.enabled,
           stats: skill.stats || { file_count: 0, size_bytes: 0, updated_at: null },
         })
       }
 
-      // 已安装的排前面，其次按分类、名称
+      // 已安装的排前面，其次按名称（类别顺序在分组时处理）
       return list.sort((a, b) => (
         Number(b.installed) - Number(a.installed) ||
-        a.category.localeCompare(b.category) ||
         a.name.localeCompare(b.name, 'zh-Hans-CN')
       ))
     },
@@ -242,16 +363,29 @@ export default {
     categoryCounts() {
       const counts = { all: this.cards.length }
       for (const card of this.cards) {
-        counts[card.category] = (counts[card.category] || 0) + 1
+        counts[card.categoryId] = (counts[card.categoryId] || 0) + 1
       }
       return counts
+    },
+
+    /** 类别展示顺序：用户类别按 order，兜底类别固定最后 */
+    orderedCategories() {
+      return [...this.categories, { ...this.defaultCategory, builtin: false }]
+    },
+
+    /** chips：全部 + 有技能的类别（空类别不进筛选条，可在「管理分类」里看到） */
+    chipCategories() {
+      return [
+        { id: 'all', name: '全部' },
+        ...this.orderedCategories.filter((item) => this.categoryCounts[item.id]),
+      ]
     },
 
     filteredCards() {
       const kw = this.keyword.trim().toLowerCase()
       return this.cards.filter((card) => {
         if (this.installedOnly && !card.installed) return false
-        if (this.category !== 'all' && card.category !== this.category) return false
+        if (this.category !== 'all' && card.categoryId !== this.category) return false
         if (!kw) return true
         return (
           card.name.toLowerCase().includes(kw) ||
@@ -259,6 +393,31 @@ export default {
           card.dirName.toLowerCase().includes(kw)
         )
       })
+    },
+
+    /**
+     * 分组展示：按类别顺序把筛选结果切成若干组，只保留有技能的组。
+     * 归属到已删除类别的技能（数据异常）用卡片自带名称兜底，避免丢卡片。
+     */
+    skillGroups() {
+      const buckets = new Map()
+      for (const card of this.filteredCards) {
+        if (!buckets.has(card.categoryId)) {
+          buckets.set(card.categoryId, { id: card.categoryId, name: card.categoryName, cards: [] })
+        }
+        buckets.get(card.categoryId).cards.push(card)
+      }
+
+      const ordered = []
+      for (const item of this.orderedCategories) {
+        const bucket = buckets.get(item.id)
+        if (bucket) {
+          ordered.push({ ...bucket, name: item.name })
+          buckets.delete(item.id)
+        }
+      }
+      for (const bucket of buckets.values()) ordered.push(bucket)
+      return ordered
     },
 
     emptyText() {
@@ -299,9 +458,15 @@ export default {
     },
 
     async fetchSkills() {
-      const [publicData, userData] = await Promise.all([getPublicSkills(), getUserSkills()])
+      const [publicData, userData, categoryData] = await Promise.all([
+        getPublicSkills(),
+        getUserSkills(),
+        getSkillCategories(),
+      ])
       this.publicSkills = publicData.skills || []
       this.userSkills = userData.skills || []
+      this.categories = categoryData.categories || []
+      this.defaultCategory = categoryData.default_category || DEFAULT_CATEGORY
     },
 
     async load() {
@@ -325,6 +490,52 @@ export default {
 
     openDetail(card) {
       this.detailTarget = { dirName: card.dirName, scope: card.scope }
+    },
+
+    // ── 类别归类 ────────────────────────────────────────────────────────
+
+    /** 暴露给模板：类别 id → SkillIcon 配色 key */
+    iconCategoryFor(categoryId) {
+      return iconCategoryFor(categoryId)
+    },
+
+    toggleCategoryPicker(card) {
+      this.pickerCard = this.pickerCard === card.key ? null : card.key
+    },
+
+    /** 归类下拉里的选项：全部类别 + 「自动归类」（清除显式归属） */
+    pickerOptions(card) {
+      return [
+        ...this.orderedCategories.map((item) => ({
+          id: item.id,
+          name: item.name,
+          active: item.id === card.categoryId,
+        })),
+        { id: '', name: '自动归类', active: false },
+      ]
+    },
+
+    async handleAssign(card, categoryId) {
+      this.pickerCard = null
+      if (categoryId === card.categoryId) return
+      try {
+        const result = await assignSkillCategory(card.dirName, categoryId)
+        await this.refresh()
+        this.showToast(`「${card.name}」已归入「${result.category_name || '通用技能'}」`)
+      } catch (e) {
+        this.showToast(e.message || '更新技能类别失败', 'error')
+      }
+    },
+
+    openCategoryManager() {
+      this.pickerCard = null
+      this.categoryManagerOpen = true
+    },
+
+    /** 类别管理面板改动后：刷新类别与分组 */
+    async handleCategoriesChanged(message) {
+      await this.refresh()
+      if (message) this.showToast(message)
     },
 
     async handleAdd(card) {
@@ -351,6 +562,24 @@ export default {
       } finally {
         this.togglingKey = null
       }
+    },
+
+    /** 收起所有浮层（点面板空白处时触发） */
+    closeOverlays() {
+      this.pickerCard = null
+      this.addMenuOpen = false
+    },
+
+    /** 「添加技能」菜单：上传技能 = 原有的 zip 导入 */
+    handleUploadSkill() {
+      this.addMenuOpen = false
+      this.triggerImport()
+    },
+
+    /** 「添加技能」菜单：创建技能（功能待实现，先占位） */
+    handleCreateSkill() {
+      this.addMenuOpen = false
+      this.showToast('创建技能功能开发中')
     },
 
     triggerImport() {
@@ -490,6 +719,12 @@ export default {
   outline-offset: 2px;
 }
 
+.installed-filter svg {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+}
+
 .filter-count {
   font-variant-numeric: tabular-nums;
 }
@@ -545,6 +780,47 @@ export default {
   color: var(--accent-color);
 }
 
+/* ── 「添加技能」下拉菜单 ── */
+.add-skill-menu {
+  position: relative;
+}
+
+.add-skill-menu-list {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 8;
+  min-width: 132px;
+  display: flex;
+  flex-direction: column;
+  padding: 6px;
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  background: var(--bg-secondary);
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.18);
+}
+
+.add-menu-item {
+  padding: 8px 10px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  text-align: left;
+  font-size: 13px;
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+
+.add-menu-item:hover {
+  background: var(--bg-tertiary);
+}
+
+.add-menu-item:focus-visible {
+  outline: 2px solid var(--accent-color);
+  outline-offset: -2px;
+}
+
 .hidden-file-input {
   display: none;
 }
@@ -594,6 +870,135 @@ export default {
   font-variant-numeric: tabular-nums;
 }
 
+/* 管理分类入口：推到 chips 行末尾 */
+.chip-manage {
+  margin-left: auto;
+  gap: 6px;
+}
+
+.chip-manage svg {
+  width: 13px;
+  height: 13px;
+}
+
+/* ── 类别分组 ── */
+.skill-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.skill-group {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.group-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.group-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.group-count {
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--bg-tertiary);
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── 卡片上的归类入口 ── */
+.category-picker {
+  position: relative;
+  margin-left: auto;
+}
+
+.category-picker-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border: 1px solid var(--border-color);
+  border-radius: 999px;
+  background: transparent;
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: border-color 0.18s ease, color 0.18s ease;
+}
+
+.category-picker-btn:hover {
+  border-color: var(--accent-color);
+  color: var(--accent-color);
+}
+
+.category-picker-btn:focus-visible {
+  outline: 2px solid var(--accent-color);
+  outline-offset: 2px;
+}
+
+.category-picker-btn svg {
+  width: 11px;
+  height: 11px;
+}
+
+/* 归类菜单：绝对定位浮层，避免撑高卡片、连带同行卡片出现空白下拉区 */
+.category-picker-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 6;
+  min-width: 132px;
+  max-height: 210px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  padding: 6px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--bg-secondary);
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.18);
+}
+
+.picker-item {
+  padding: 6px 8px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  text-align: left;
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.picker-item:hover {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+.picker-item.active {
+  color: var(--accent-color);
+}
+
+.picker-item:focus-visible {
+  outline: 2px solid var(--accent-color);
+  outline-offset: -2px;
+}
+
+.picker-manage {
+  color: var(--accent-color);
+}
+
 /* ── 内容区 ── */
 .skill-center-content {
   min-width: 0;
@@ -634,7 +1039,8 @@ export default {
   border: 1px solid var(--border-color);
   border-radius: 10px;
   background: var(--bg-secondary);
-  overflow: hidden;
+  /* 不裁切子元素：归类菜单是绝对定位浮层，需要溢出于卡片底部 */
+  overflow: visible;
   transition: border-color 0.18s ease, box-shadow 0.18s ease;
 }
 
@@ -739,6 +1145,32 @@ export default {
   color: var(--accent-color);
 }
 
+/* 默认视图里「已添加」的状态标记：只一个对勾，尺寸与 + 按钮一致以保持卡片对齐 */
+.skill-added-tag {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  border: 1px solid color-mix(in srgb, var(--accent-color) 35%, var(--border-color));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent-color) 12%, transparent);
+  color: var(--accent-color);
+}
+
+/* 已添加但被停用：降为中性灰，避免看起来仍是启用状态 */
+.skill-added-tag.off {
+  border-color: var(--border-color);
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+}
+
+.skill-added-tag svg {
+  width: 14px;
+  height: 14px;
+}
+
 .add-icon-btn:disabled {
   opacity: 0.6;
   cursor: not-allowed;
@@ -761,6 +1193,9 @@ export default {
   padding: 8px 12px;
   border-top: 1px solid var(--border-color);
   background: var(--bg-tertiary);
+  /* 卡片不再裁切子元素，这里自己贴合卡片圆角 */
+  border-bottom-left-radius: 9px;
+  border-bottom-right-radius: 9px;
   font-size: 11.5px;
   color: var(--text-secondary);
   font-variant-numeric: tabular-nums;

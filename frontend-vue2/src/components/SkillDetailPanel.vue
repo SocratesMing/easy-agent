@@ -135,7 +135,7 @@
 
 <script>
 import { getSkillDetail, enableSkill, disableSkill, addSkillToUser, removeSkillFromUser } from '../api/skills.js'
-import { getSkillCategory, getCategoryLabel } from '../utils/skillCategories.js'
+import { DEFAULT_CATEGORY, iconCategoryFor } from '../utils/skillCategories.js'
 import SkillIcon from './SkillIcon.vue'
 import ToggleSwitch from './ToggleSwitch.vue'
 
@@ -160,10 +160,10 @@ export default {
   },
   computed: {
     category() {
-      return getSkillCategory(this.dirName)
+      return iconCategoryFor(this.detail && this.detail.category_id)
     },
     categoryLabel() {
-      return getCategoryLabel(this.dirName)
+      return (this.detail && this.detail.category_name) || DEFAULT_CATEGORY.name
     },
     stats() {
       return (this.detail && this.detail.stats) || { file_count: 0, size_bytes: 0, updated_at: null }
