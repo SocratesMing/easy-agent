@@ -87,6 +87,7 @@
 import SkillListPanel from './SkillListPanel.vue'
 import ConnectorListPanel from './ConnectorListPanel.vue'
 import McpAddPanel from './McpAddPanel.vue'
+import { setPageContextExtra } from '../utils/pageContext.js'
 
 const T = 'xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="15" height="15" aria-hidden="true"'
 
@@ -117,6 +118,25 @@ export default {
       // 连接器内部视图：list（卡片列表）/ manage（mcp.json 编辑）/ add（粘贴 JSON 添加）
       connectorView: 'list',
     }
+  },
+  computed: {
+    aiContextText() {
+      const tab = this.tabs.find(t => t.key === this.activeTab)
+      if (!tab) return ''
+      const view = this.activeTab === 'connectors' && this.connectorView !== 'list'
+        ? `（${this.connectorView === 'manage' ? '编辑 mcp.json' : '添加 MCP 服务'}）`
+        : ''
+      return `技能中心当前标签：${tab.label}${view}。${tab.hint}`
+    },
+  },
+  watch: {
+    aiContextText: {
+      immediate: true,
+      handler(text) { setPageContextExtra('skill-center', text) },
+    },
+  },
+  beforeDestroy() {
+    setPageContextExtra('skill-center', null)
   },
   methods: {
     switchTab(key) {

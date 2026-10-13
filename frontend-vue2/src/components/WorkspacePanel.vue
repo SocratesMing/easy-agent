@@ -182,6 +182,7 @@ import FilePreview from './FilePreview.vue'
 import { getWorkspaceTree } from '../api/files'
 import { getScheduledTaskWorkspace } from '../api/scheduledTasks'
 import { getStoredToken } from '../api/auth.js'
+import { setPageContextExtra } from '../utils/pageContext.js'
 
 // 文件树固定在第一个 tab；宽度/动画常量集中在此
 const TREE_TAB = '__tree__'
@@ -234,6 +235,13 @@ export default {
     }
   },
   computed: {
+    aiContextText() {
+      const f = this.visible && this.selectedFile
+      if (!f) return ''
+      const name = f.name || f.filename || ''
+      const path = f.path || f.file_path || ''
+      return `工作区正在查看文件：${name}${path && path !== name ? `（${path}）` : ''}`
+    },
     // 数据源标识：定时任务工作目录（taskId）优先，否则会话工作区（currentSessionId）。
     // 两种来源共用同一套「文件树 + 标签页 + 预览」，只有取数与下载地址不同。
     activeSourceKey() {
@@ -264,6 +272,10 @@ export default {
     },
   },
   watch: {
+    aiContextText: {
+      immediate: true,
+      handler(text) { setPageContextExtra('workspace', text) },
+    },
     visible: [
       // 折叠/展开的宽度动画与延迟卸载
       function (v) {
@@ -476,6 +488,7 @@ export default {
     this.buildWorkspaceTree()
   },
   beforeDestroy() {
+    setPageContextExtra('workspace', null)
     document.removeEventListener('keydown', this.onKeydown)
     this.stopResize()
     clearTimeout(this.unloadTimer)

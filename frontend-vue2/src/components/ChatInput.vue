@@ -332,6 +332,15 @@ export default {
     showFooter: {
       type: Boolean,
       default: false
+    },
+    draftKey: {
+      type: String,
+      default: DRAFT_KEY
+    },
+    // 是否消费技能中心「创建技能」预置的待选技能（只应由主页面输入框消费）
+    consumePendingSkill: {
+      type: Boolean,
+      default: true
     }
   },
   data() {
@@ -463,7 +472,7 @@ export default {
     },
     message(val) {
       try {
-        sessionStorage.setItem(DRAFT_KEY, val)
+        sessionStorage.setItem(this.draftKey, val)
       } catch (e) {
         // 隐私模式等场景下 sessionStorage 可能不可用，忽略即可
       }
@@ -478,7 +487,7 @@ export default {
   mounted() {
     // 恢复刷新前的输入草稿
     try {
-      const draft = sessionStorage.getItem(DRAFT_KEY)
+      const draft = sessionStorage.getItem(this.draftKey)
       if (draft) {
         this.message = draft
         this.$nextTick(() => this.autoResize())
@@ -487,7 +496,7 @@ export default {
       // 忽略草稿恢复失败
     }
     // 恢复待选技能（技能中心「创建技能」等入口预置），读取后即清除
-    this.restorePendingSkill()
+    if (this.consumePendingSkill) this.restorePendingSkill()
 
     document.addEventListener('click', this.closeTokenPopup)
     document.addEventListener('click', this.closeModelDropdown)
@@ -503,6 +512,22 @@ export default {
     this.stopLiveDuration()
   },
   methods: {
+    /** 供父组件调用：聚焦输入框并把光标移到末尾 */
+    focusInput() {
+      this.$nextTick(() => {
+        const ta = this.$refs.textareaRef
+        if (!ta || ta.disabled) return
+        ta.focus()
+        const end = ta.value.length
+        ta.setSelectionRange(end, end)
+      })
+    },
+    /** 供父组件调用：替换输入内容（如侧边栏的快捷提问、划词提问） */
+    setDraft(text) {
+      this.message = text || ''
+      this.$nextTick(() => this.autoResize())
+      this.focusInput()
+    },
     updateCaretLine() {
       const ta = this.$refs.textareaRef
       if (!ta) return
