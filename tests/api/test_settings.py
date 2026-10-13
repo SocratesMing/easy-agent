@@ -1,22 +1,13 @@
-"""接口 /agent/settings 的测试：模型列表、MCP 服务器查询与增删。"""
+"""接口 /agent/settings 的测试：模型列表、系统提示词、联网搜索状态。
 
-import asyncio
+MCP（连接器）接口已迁到 ``/agent/connectors``，用例见 tests/api/test_connectors.py。
+"""
+
 import json
 from pathlib import Path
 
-import pytest
-from fastapi import HTTPException
-
-from easy_agent.api.settings import (
-    AddMarketMcpRequest,
-    add_mcp_from_market,
-    get_mcp_market,
-    get_mcp_servers,
-    router,
-)
 import easy_agent.api.settings as settings_api
 
-from easy_agent.config import Config
 from easy_agent.services import mcp as mcp_mod
 
 
@@ -124,104 +115,6 @@ def test_web_search_status_disabled(client, monkeypatch):
     assert data["enabled"] is False
     assert data["configured"] is False
     assert data["reason"] == "disabled"
-
-
-def test_mcp_list(client):
-    resp = client.get("/agent/settings/mcp")
-    assert resp.status_code == 200
-    data = resp.json()
-    assert "servers" in data
-    assert "source" in data
-    assert "user_mcp_path" in data
-    assert isinstance(data["servers"], list)
-
-
-def test_mcp_update_and_server_crud(client):
-    # 1) 清空所有 MCP server（servers 为 dict，不是 list）
-    r = client.put("/agent/settings/mcp", json={"servers": {}})
-    assert r.status_code == 200
-
-    # 2) 新增一个本地 stdio 测试服务（body 字段为 config）
-    add = client.post(
-        "/agent/settings/mcp/server",
-        json={
-            "config": {
-                "name": "unit-test-server",
-                "transport": "stdio",
-                "command": "echo",
-                "args": [],
-            }
-        },
-    )
-    assert add.status_code == 200
-    body = add.json()
-    assert "unit-test-server" in body["added"]
-
-    # 3) 删除该服务
-    d = client.delete("/agent/settings/mcp/server/unit-test-server")
-    assert d.status_code == 200
-
-
-def test_mcp_market_adds_global_server_to_user_config(tmp_path, monkeypatch):
-    global_path = tmp_path / "market-mcp.json"
-    user_path = tmp_path / "user-mcp.json"
-    global_path.write_text(
-        json.dumps(
-            {
-                "servers": {
-                    "market-server": {
-                        "type": "sse",
-                        "url": "https://mcp.example.com/sse",
-                        "env": {"MCP_TOKEN": "secret-token"},
-                    }
-                }
-            },
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(
-        Config,
-        "get_user_mcp_path",
-        classmethod(lambda cls, username, config=None: user_path),
-    )
-    monkeypatch.setattr(mcp_mod, "_find_mcp_config", lambda: global_path)
-
-    market_data = asyncio.run(get_mcp_market("testuser"))
-    assert market_data["source"] == "global"
-    assert len(market_data["servers"]) == 1
-    server = market_data["servers"][0]
-    assert server["name"] == "market-server"
-    assert server["transport"] == "sse"
-    assert server["added"] is False
-    assert server["env_keys"] == ["MCP_TOKEN"]
-    assert server["_raw"]["env"] == {"MCP_TOKEN": "***"}
-
-    added = asyncio.run(
-        add_mcp_from_market(AddMarketMcpRequest(name="market-server"), "testuser")
-    )
-    assert added["added"] == ["market-server"]
-
-    market_data = asyncio.run(get_mcp_market("testuser"))
-    assert market_data["servers"][0]["added"] is True
-
-    current = asyncio.run(get_mcp_servers("testuser"))
-    assert current["source"] == "user"
-    assert current["servers"][0]["origin"] == "user"
-    assert current["servers"][0]["_raw"]["env"] == {"MCP_TOKEN": "***"}
-
-    with pytest.raises(HTTPException) as exc_info:
-        asyncio.run(
-            add_mcp_from_market(AddMarketMcpRequest(name="market-server"), "testuser")
-        )
-    assert exc_info.value.status_code == 409
-
-    saved = json.loads(user_path.read_text(encoding="utf-8"))
-    assert saved["servers"]["market-server"]["env"]["MCP_TOKEN"] == "secret-token"
-
-    market_routes = {route.path: getattr(route, "methods", set()) for route in router.routes}
-    assert "/agent/settings/mcp/market" in market_routes
-    assert "/agent/settings/mcp/market/add" in market_routes
 
 
 def test_main_app_never_imports_mcp_server_subproject():
