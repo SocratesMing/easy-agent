@@ -810,7 +810,7 @@ export default {
     handleMenuPanel(tab) {
       this.showPlusMenu = false
       this.subpanelCategory = null
-      this.$emit('openPanel', tab)
+      this.$emit('open-panel', tab)
     },
     // 供父组件把预置问题完整文本填进输入框（卡片上最多显示 3 行，长问题展示不全）
     setMessage(text) {

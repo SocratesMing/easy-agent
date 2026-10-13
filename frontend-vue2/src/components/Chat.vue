@@ -88,7 +88,7 @@
         @update:selectedModel="$emit('update:selectedModel', $event)"
         @stop="handleStop"
         @create-session="handleCreateSession"
-        @openPanel="$emit('openPanel', $event)"
+        @open-panel="$emit('open-panel', $event)"
       />
 
       <!-- 分类预置问题：仅在首页（居中模式）展示。每个分类一张卡片（分类名即卡片头部，

@@ -99,10 +99,10 @@
             <!-- 启用开关：已安装项显示（停用后 Agent 不加载其工具，配置保留） -->
             <ToggleSwitch
               v-if="card.installed"
-              :modelValue="card.enabled"
+              :value="card.enabled"
               :loading="toggling === card.key"
               :ariaLabel="(card.enabled ? '停用' : '启用') + card.name"
-              @change="toggle(card)"
+              @input="toggle(card)"
               @click.native.stop
             />
             <button
@@ -157,10 +157,10 @@
           <!-- 启用开关：已安装项可在详情里直接启/停 -->
           <ToggleSwitch
             v-if="detail.installed"
-            :modelValue="detail.enabled"
+            :value="detail.enabled"
             :loading="toggling === detail.key"
             :ariaLabel="(detail.enabled ? '停用' : '启用') + detail.name"
-            @change="toggle(detail)"
+            @input="toggle(detail)"
           />
           <button class="detail-close-btn" title="关闭" @click="detail = null">
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">

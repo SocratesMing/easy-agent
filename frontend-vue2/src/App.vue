@@ -111,7 +111,7 @@
         @retry="handleRetry"
         @approve="handleToolApproval('approve')"
         @reject="handleToolApproval('reject')"
-        @openPanel="openSkillCenterPanel"
+        @open-panel="openSkillCenterPanel"
       />
 
       <div v-if="currentSessionId && !showKnowledge && !showUserManagementPanel && !showAssets && !showSkillCenter" class="workspace-area">
