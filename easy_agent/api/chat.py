@@ -18,8 +18,6 @@ from ..knowledge_impl import (
     chat_stream_generator,
     empty_knowledge_context,
     is_knowledge_panel_title,
-    knowledge_chat_stream_generator,
-    knowledge_panel_system_prompt,
     prepare_knowledge_chat,
 )
 from ..services import (
@@ -373,8 +371,6 @@ async def chat_stream(
                 logger.warning(f"[{session_id[-5:]}] 文件解析为空: {filename}")
 
     system_prompt_parts = []
-    if is_knowledge_panel_session:
-        system_prompt_parts.append(knowledge_panel_system_prompt())
     if file_context_parts:
         if is_new_session:
             sections = [

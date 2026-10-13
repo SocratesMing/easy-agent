@@ -50,13 +50,9 @@ from .knowledges.chat.chat_bridge import (  # noqa: E402
     authorize_scoped_chat,
     empty_knowledge_context,
     is_knowledge_panel_title,
-    knowledge_panel_system_prompt,
     prepare_knowledge_chat,
 )
-from .knowledges.chat.streaming import (  # noqa: E402
-    chat_stream_generator,
-    knowledge_chat_stream_generator,
-)
+from .knowledges.chat.streaming import chat_stream_generator  # noqa: E402
 from .knowledges.chat.agent_extension import extend_agent_tools  # noqa: E402
 
 
@@ -105,9 +101,7 @@ __all__ = [
     "empty_knowledge_context",
     "extend_agent_tools",
     "is_knowledge_panel_title",
-    "knowledge_chat_stream_generator",
     "knowledge_router",
-    "knowledge_panel_system_prompt",
     "metrics",
     "prepare_knowledge_chat",
     "resolve_request_id",
