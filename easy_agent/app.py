@@ -40,6 +40,7 @@ from .api import (
     settings_router,
     skill_center_router,
     scheduled_tasks_router,
+    expert_router,
 )
 
 # Web Terminal 依赖 pty（POSIX 专用），Windows 不支持，故不加载该模块
@@ -368,6 +369,7 @@ app.include_router(skill_center_router)
 if terminal_router is not None:
     app.include_router(terminal_router)
 app.include_router(scheduled_tasks_router)
+app.include_router(expert_router)
 
 
 @app.get("/agent/health", summary="健康检查", response_model=HealthResponse)
