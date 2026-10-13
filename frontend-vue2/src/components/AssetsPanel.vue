@@ -136,6 +136,7 @@ import request from '../utils/request.js'
 import FileIcon from './FileIcon.vue'
 import ConfirmDialog from './ConfirmDialog.vue'
 import FilePreview from './FilePreview.vue'
+import { setPageContextExtra } from '../utils/pageContext.js'
 
 const categoryIcons = {
   '全部': '📁',
@@ -166,6 +167,13 @@ export default {
     }
   },
   computed: {
+    aiContextText() {
+      const parts = [`资产分类：${this.activeTab}`]
+      if (this.previewFile && this.previewFile.visible && this.previewFile.filename) {
+        parts.push(`正在预览文件：${this.previewFile.filename}（${this.previewFile.filePath}）`)
+      }
+      return parts.join('；')
+    },
     filesWithCategory() {
       return this.allFiles.map(file => ({
         ...file,
@@ -194,10 +202,17 @@ export default {
       if (newVal) {
         this.refreshAssets()
       }
-    }
+    },
+    aiContextText: {
+      immediate: true,
+      handler(text) { setPageContextExtra('assets', text) },
+    },
   },
   mounted() {
     this.refreshAssets()
+  },
+  beforeDestroy() {
+    setPageContextExtra('assets', null)
   },
   methods: {
     toggleDropdown(filePath) {

@@ -86,6 +86,8 @@
 <script>
 import SkillListPanel from './SkillListPanel.vue'
 import ConnectorListPanel from './ConnectorListPanel.vue'
+import { setPageContextExtra } from '../utils/pageContext.js'
+
 
 const T = 'xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="15" height="15" aria-hidden="true"'
 
@@ -109,11 +111,6 @@ export default {
   },
   // create-skill：技能列表「创建技能」入口，由外层接手跳转新会话预填指令
   emits: ['close', 'create-skill'],
-  watch: {
-    initialTab(v) {
-      if (v && v !== this.activeTab) this.activeTab = v
-    },
-  },
   data() {
     return {
       tabs: [
@@ -126,6 +123,29 @@ export default {
       connectorView: 'list',
     }
   },
+  computed: {
+    aiContextText() {
+      const tab = this.tabs.find(t => t.key === this.activeTab)
+      if (!tab) return ''
+      const view = this.activeTab === 'connectors' && this.connectorView !== 'list'
+        ? `（${this.connectorView === 'manage' ? '编辑 mcp.json' : '添加 MCP 服务'}）`
+        : ''
+      return `技能中心当前标签：${tab.label}${view}。${tab.hint}`
+    },
+  },
+  watch: {
+    initialTab(v) {
+      if (v && v !== this.activeTab) this.activeTab = v
+    },
+    aiContextText: {
+      immediate: true,
+      handler(text) { setPageContextExtra('skill-center', text) },
+    },
+  },
+  beforeDestroy() {
+    setPageContextExtra('skill-center', null)
+  },
+
   methods: {
     switchTab(key) {
       if (this.activeTab === key) return

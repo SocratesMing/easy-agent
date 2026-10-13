@@ -1,5 +1,5 @@
 <template>
-  <div class="chat-container">
+  <div class="chat-container" :class="{ 'is-sidebar': isSidebar }">
     <div class="chat-main">
     <div class="chat-content" :class="composerMode === 'center' ? 'is-center' : 'is-bottom'">
       <!-- 顶部信息行：会话时间居中，操作区（任务规划 + 展开工作区）贴右。
@@ -19,7 +19,7 @@
                （那会让折叠会话列表时任务胶囊一起消失）。 -->
           <TodoListPanel :todos="todos" />
           <button
-            v-if="currentSessionId && !workspaceExpanded"
+            v-if="showWorkspaceBtn"
             class="expand-workspace-inline"
             @click="$emit('toggle-workspace')"
             title="展开工作区"
@@ -33,7 +33,9 @@
       </div>
       <div class="chat-messages" ref="messagesRef" @scroll="handleScroll">
         <div v-if="messages.length === 0 && !sessionLoading" class="welcome-screen">
-          <h2>{{ welcomeTitle }}</h2>
+          <slot name="welcome">
+            <h2>{{ welcomeTitle }}</h2>
+          </slot>
         </div>
         <!-- 切换会话拉取历史期间：显示骨架，避免先闪出空欢迎页 -->
         <div
@@ -72,9 +74,12 @@
         </svg>
       </button>
 
+      <slot name="composer-prefix"></slot>
       <ChatInput
         ref="composerRef"
         class="composer"
+        :draft-key="draftKey"
+        :consume-pending-skill="!isSidebar"
         @send="onSend"
         :disabled="isStreaming"
         :isStreaming="isStreaming"
@@ -84,7 +89,7 @@
         :iterationCount="iterationCount"
         :models="models"
         :selectedModel="selectedModel"
-        :showFooter="composerMode === 'bottom'"
+        :showFooter="composerMode === 'bottom' && !isSidebar"
         @update:selectedModel="$emit('update:selectedModel', $event)"
         @stop="handleStop"
         @create-session="handleCreateSession"
@@ -93,16 +98,18 @@
 
       <!-- 分类预置问题：仅在首页（居中模式）展示。每个分类一张卡片（分类名即卡片头部，
            不再单独放标签栏），最多展示三张；卡片内多个预置问题堆叠，
-           鼠标滚轮（或左右方向键）在卡片上滑动即可来回切换子问题。 -->
+           鼠标滚轮（或左右方向键）在卡片上滑动即可来回切换子问题。
+           侧边栏变体不展示预置问题。 -->
       <div
         class="preset-area"
-        v-if="composerMode === 'center' && displayedPresetGroups.length"
+        v-if="composerMode === 'center' && displayedPresetGroups.length && !isSidebar"
       >
         <div
           class="preset-cards"
           :class="'count-' + displayedPresetGroups.length"
           @mouseleave="onPresetLeave"
         >
+
           <div
             class="preset-deck"
             v-for="(group, gi) in displayedPresetGroups"
@@ -228,6 +235,16 @@ export default {
   welcomeTitle: {
     type: String,
     default: APP_WELCOME_TITLE
+  },
+  // main：主页面对话；sidebar：AI 侧边栏（窄栏布局，输入框始终贴底，不展示工作区入口）
+  variant: {
+    type: String,
+    default: 'main'
+  },
+  // 输入草稿的 sessionStorage key：侧边栏与主页面各存一份，互不覆盖
+  draftKey: {
+    type: String,
+    default: 'easy_agent_input_draft'
   }
 },
   data() {
@@ -246,18 +263,22 @@ export default {
     }
   },
   computed: {
+    isSidebar() {
+      return this.variant === 'sidebar'
+    },
     // 预置问题：只展示前三个分类（后端可能传入更多，按需求截断）
     displayedPresetGroups() {
       return (this.presetQuestions || []).slice(0, 3)
     },
+
     // 顶部信息行：会话时间（居中）+ 操作区（任务规划、展开工作区，贴右）。
     // 三者中任意一个需要展示时，这一行才占位 —— 首页（无会话）保持干净，
     // 否则会破坏 .chat-content.is-center 的垂直居中。
     showSessionTime() {
-      return !!this.sessionCreatedAt && this.messages.length > 0
+      return !this.isSidebar && !!this.sessionCreatedAt && this.messages.length > 0
     },
     showWorkspaceBtn() {
-      return !!this.currentSessionId && !this.workspaceExpanded
+      return !this.isSidebar && !!this.currentSessionId && !this.workspaceExpanded
     },
     showTopbar() {
       return this.showSessionTime || this.todos.length > 0 || this.showWorkspaceBtn
@@ -295,7 +316,7 @@ export default {
         handler(newMessages) {
           // 空会话显示居中输入框；有消息时输入框贴底。
           // 正在拉取历史时按「有会话」处理（贴底），避免先居中再跳到贴底。
-          this.composerMode = (newMessages.length === 0 && !this.sessionLoading) ? 'center' : 'bottom'
+          this.composerMode = (newMessages.length === 0 && !this.sessionLoading && !this.isSidebar) ? 'center' : 'bottom'
         }
       },
       {
@@ -313,7 +334,7 @@ export default {
     ],
     sessionLoading(loading) {
       // 加载历史期间贴底，避免居中布局随后跳动
-      this.composerMode = (this.messages.length === 0 && !loading) ? 'center' : 'bottom'
+      this.composerMode = (this.messages.length === 0 && !loading && !this.isSidebar) ? 'center' : 'bottom'
     },
     scrollTrigger() {
       // 切换/加载会话时强制贴底
@@ -327,6 +348,14 @@ export default {
   beforeDestroy() {
   },
   methods: {
+    focusComposer() {
+      const c = this.$refs.composerRef
+      if (c) c.focusInput()
+    },
+    setComposerText(text) {
+      const c = this.$refs.composerRef
+      if (c) c.setDraft(text)
+    },
     formatSessionTime(isoStr) {
       if (!isoStr) return ''
       const d = new Date(isoStr)
@@ -1103,5 +1132,71 @@ html[data-theme="dark"] .preset-card.is-front:hover {
   50% {
     opacity: 0.5;
   }
+}
+
+/* ── AI 侧边栏形态：窄栏下收紧留白，空态不再居中放大 ── */
+.chat-container.is-sidebar {
+  --chat-surface: var(--bg-secondary, #ffffff);
+}
+
+.chat-container.is-sidebar .chat-topbar {
+  height: 36px;
+  padding: 0 12px;
+  justify-content: flex-end;
+}
+
+.chat-container.is-sidebar .chat-topbar-actions {
+  right: 12px;
+}
+
+.chat-container.is-sidebar .chat-messages {
+  padding: 0 14px;
+}
+
+.chat-container.is-sidebar .chat-messages::before,
+.chat-container.is-sidebar .chat-messages::after {
+  flex-basis: 14px;
+}
+
+.chat-container.is-sidebar .welcome-screen {
+  flex: 1;
+  justify-content: center;
+}
+
+.chat-container.is-sidebar .scroll-btn {
+  right: 14px;
+  width: 32px;
+  height: 32px;
+}
+
+.chat-container.is-sidebar .scroll-btn svg {
+  width: 16px;
+  height: 16px;
+}
+
+.chat-container.is-sidebar .scroll-btn.prev {
+  bottom: 150px;
+}
+
+.chat-container.is-sidebar .scroll-btn.next {
+  bottom: 192px;
+}
+
+.chat-container.is-sidebar ::v-deep .chat-input-container {
+  padding: 8px 12px 12px;
+}
+
+.chat-container.is-sidebar ::v-deep .input-box {
+  width: 100%;
+  border-radius: 14px;
+}
+
+.chat-container.is-sidebar ::v-deep .message.user,
+.chat-container.is-sidebar ::v-deep .message.assistant {
+  width: 100%;
+}
+
+.chat-container.is-sidebar .chat-content.is-bottom .composer {
+  animation: none;
 }
 </style>
