@@ -216,7 +216,7 @@ WebSocket），所以启动时要显式给上限：
 | 大模型点评 | `fmqt_idata_llm_analysis` | 已生成的点评正文 |
 | 国内宏观预测 | `fmqt_forecast_*`（六张表） | 报告、指标预测、模型明细、SHAP 归因和已存解读 |
 | 利率择时 | `fmqt_predictions_rates`, `fmqt_prediction_runs_rates` | 已存预测、运行审计、回测快照和因子解释 |
-| 周度研报观点 | `weekly_data` | 周度机构观点、资产共识、研报出处与市场综述 |
+| 周度研报观点 | `weekly_analyzer_data` | 周度机构观点、资产共识、研报出处与市场综述 |
 | 周度宏观预测 | `weekly_macro_data` | 指标、机构预测、覆盖数、数值均值与文字众数 |
 
 各领域先调用对应的 `describe_*_schema` 工具查看表、枚举、单位和口径说明。领域入口为：

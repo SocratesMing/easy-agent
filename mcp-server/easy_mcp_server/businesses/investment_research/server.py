@@ -46,14 +46,27 @@ INSTRUCTIONS = (
 )
 
 
+def _all_allowed_tables() -> tuple[str, ...]:
+    """本业务四个场景涉及的全部表，作为结构探索白名单的缺省值。
+
+    每个场景模块各自声明 ``default_allowed_tables()``，这里做汇总——只用单个
+    场景的话，模型做结构探索时看不到其它场景的表。
+    """
+    return tuple(
+        table
+        for scenario in (idata, domestic_macro, rates_timing, weekly_research)
+        for table in scenario.default_allowed_tables()
+    )
+
+
 def _policy():
     """结构探索的可见性策略。
 
-    iData 只涉及固定四张表，所以**缺省就把白名单收敛到它们**——不这样做的
-    话，模型做结构探索时能看到同库里所有业务表。IDATA_ALLOWED_TABLES 可覆盖，
-    IDATA_DENY_TABLES 可追加屏蔽。
+    缺省把白名单收敛到本业务四个场景**全部**的表（不这样做的话，模型做结构
+    探索时能看到同库里所有业务表）。``IDATA_ALLOWED_TABLES`` 可整体覆盖，
+    ``IDATA_DENY_TABLES`` 可追加屏蔽。
     """
-    return policy_from_env("IDATA_", default_allowed=idata.default_allowed_tables())
+    return policy_from_env("IDATA_", default_allowed=_all_allowed_tables())
 
 
 async def _query(sql: str, params: tuple[Any, ...]) -> list[dict[str, Any]]:

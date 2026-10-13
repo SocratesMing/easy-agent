@@ -4,7 +4,7 @@
 每条包含：用途（业务逻辑）、参数、可直接执行的 SQL、返回字段。
 
 两页数据来自同一次研报分析流程，**分别存放在两张互不关联的表**：
-观点矩阵 = `weekly_data`，宏观预测表 = `weekly_macro_data`（各自以 `week` 为唯一键，一周一行）。
+观点矩阵 = `weekly_analyzer_data`，宏观预测表 = `weekly_macro_data`（各自以 `week` 为唯一键，一周一行）。
 
 ---
 
@@ -25,7 +25,7 @@
 
 ## 一、观点矩阵
 
-**表名**：`weekly_data`（一周一行）
+**表名**：`weekly_analyzer_data`（一周一行）
 
 | 字段 | 含义 |
 |---|---|
@@ -69,7 +69,7 @@
 **业务**：周选择器可选范围。
 
 ```sql
-SELECT week FROM weekly_data
+SELECT week FROM weekly_analyzer_data
 ORDER BY week DESC;
 ```
 
@@ -86,7 +86,7 @@ SELECT w.week,
        (SELECT SUM(JSON_LENGTH(JSON_EXTRACT(o.opinions,'$')))
           FROM JSON_TABLE(JSON_EXTRACT(w.data_json,'$.views'),'$[*]'
                COLUMNS(opinions JSON PATH '$.opinions')) o) AS opinions
-FROM (SELECT week, data_json FROM weekly_data WHERE week = '20260928-20261004') w;
+FROM (SELECT week, data_json FROM weekly_analyzer_data WHERE week = '20260928-20261004') w;
 ```
 
 **返回**：`institutions`（机构数）、`opinions`（观点数）
@@ -99,7 +99,7 @@ FROM (SELECT week, data_json FROM weekly_data WHERE week = '20260928-20261004') 
 
 ```sql
 SELECT w.week, jt.institution, op.category, op.asset, op.direction
-FROM weekly_data w,
+FROM weekly_analyzer_data w,
      JSON_TABLE(JSON_EXTRACT(w.data_json,'$.views'), '$[*]' COLUMNS(
          institution VARCHAR(64) PATH '$.institution',
          opinions    JSON        PATH '$.opinions')) jt,
@@ -118,7 +118,7 @@ WHERE w.week = '20260928-20261004';
 
 ```sql
 SELECT w.week, jt.institution, op.asset, op.direction
-FROM weekly_data w,
+FROM weekly_analyzer_data w,
      JSON_TABLE(JSON_EXTRACT(w.data_json,'$.views'),'$[*]' COLUMNS(
          institution VARCHAR(64) PATH '$.institution',
          opinions    JSON        PATH '$.opinions')) jt,
@@ -139,7 +139,7 @@ WHERE w.week = '20260928-20261004'
 
 ```sql
 SELECT jt.institution, op.direction, COUNT(*) AS n
-FROM weekly_data w,
+FROM weekly_analyzer_data w,
      JSON_TABLE(JSON_EXTRACT(w.data_json,'$.views'),'$[*]' COLUMNS(
          institution VARCHAR(64) PATH '$.institution',
          opinions    JSON        PATH '$.opinions')) jt,
@@ -162,7 +162,7 @@ SELECT op.asset,
        SUM(op.direction='看涨') AS bull,
        SUM(op.direction='看跌') AS bear,
        SUM(op.direction='中性') AS neutral
-FROM weekly_data w,
+FROM weekly_analyzer_data w,
      JSON_TABLE(JSON_EXTRACT(w.data_json,'$.views'),'$[*]' COLUMNS(opinions JSON PATH '$.opinions')) jt,
      JSON_TABLE(jt.opinions,'$[*]' COLUMNS(
          asset VARCHAR(64) PATH '$.asset', direction VARCHAR(16) PATH '$.direction')) op
@@ -181,7 +181,7 @@ ORDER BY (bull+bear) DESC;
 
 ```sql
 SELECT op.asset, op.direction, s.report, LEFT(s.passage, 120) AS passage_head
-FROM weekly_data w,
+FROM weekly_analyzer_data w,
      JSON_TABLE(JSON_EXTRACT(w.data_json,'$.views'),'$[*]' COLUMNS(opinions JSON PATH '$.opinions')) jt,
      JSON_TABLE(jt.opinions,'$[*]' COLUMNS(
          asset     VARCHAR(64) PATH '$.asset',
@@ -203,7 +203,7 @@ WHERE w.week = '20260928-20261004' AND op.asset = '美元指数(DXY)';
 
 ```sql
 SELECT DISTINCT w.week, op.direction, op.price, op.price_date
-FROM weekly_data w,
+FROM weekly_analyzer_data w,
      JSON_TABLE(JSON_EXTRACT(w.data_json,'$.views'),'$[*]' COLUMNS(opinions JSON PATH '$.opinions')) jt,
      JSON_TABLE(jt.opinions,'$[*]' COLUMNS(
          asset      VARCHAR(64) PATH '$.asset',
@@ -222,7 +222,7 @@ ORDER BY w.week DESC;
 
 ```sql
 SELECT week, market_overview
-FROM weekly_data
+FROM weekly_analyzer_data
 WHERE week = '20260928-20261004';
 ```
 

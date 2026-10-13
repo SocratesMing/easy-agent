@@ -11,7 +11,7 @@ from ...env import load_env
 from ...querykit import assert_identifier, env_list, max_rows
 
 TABLES: dict[str, str] = {
-    "opinions": "weekly_data",
+    "opinions": "weekly_analyzer_data",
     "macro": "weekly_macro_data",
 }
 DEFAULT_ROW_LIMIT = 500

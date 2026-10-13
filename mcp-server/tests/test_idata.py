@@ -6,7 +6,12 @@ import pytest
 
 import easy_mcp_server.businesses.investment_research.server as idata_server
 from easy_mcp_server import context
-from easy_mcp_server.businesses.investment_research import idata
+from easy_mcp_server.businesses.investment_research import (
+    domestic_macro,
+    idata,
+    rates_timing,
+    weekly_research,
+)
 from easy_mcp_server.businesses.investment_research.server import build
 
 LATEST = "20260828"
@@ -357,14 +362,36 @@ def test_schema_help_documents_units_and_pitfalls():
 # ── 探索可见性（缺省收敛到四张业务表） ──────────────────────────────────
 
 
-def test_policy_defaults_to_the_four_business_tables(monkeypatch):
-    """缺省就收敛白名单——否则模型做结构探索时能看到同库里所有业务表。"""
+def test_policy_defaults_to_all_scenario_tables(monkeypatch):
+    """缺省收敛到**四个场景全部**的表。
+
+    只收单场景的话，模型做结构探索时看不到其它场景的表。这类"白名单漏接线"
+    在新增场景时很容易复发，故用汇总断言钉住。
+    """
     monkeypatch.setenv("IDATA_ALLOWED_TABLES", "")
     policy = idata_server._policy()
-    assert policy.allowed == tuple(idata.TABLES.values())
-    for table in idata.TABLES.values():
+    expected = {
+        *idata.TABLES.values(),
+        *domestic_macro.TABLES.values(),
+        *rates_timing.TABLES.values(),
+        *weekly_research.TABLES.values(),
+    }
+    assert set(policy.allowed or ()) == expected
+    for table in expected:
         assert policy.is_visible(table) is True
     assert policy.is_visible("some_other_table") is False
+
+
+def test_weekly_tables_match_business_schema():
+    """表名钉住。
+
+    业务方给的 SQL 清单里写成 `weekly_data`，实际库里是 `weekly_analyzer_data`；
+    这类错误只会在运行时才报 "Table ... doesn't exist"，用测试提前挡一道。
+    """
+    assert weekly_research.TABLES == {
+        "opinions": "weekly_analyzer_data",
+        "macro": "weekly_macro_data",
+    }
 
 
 def test_policy_can_be_overridden_by_env(monkeypatch):
@@ -416,9 +443,14 @@ async def _call(mcp, name: str, **kwargs):
     return result
 
 
-async def test_exactly_ten_tools(captured):
+async def test_core_idata_tools_registered(captured):
+    """iData 看板的 10 个工具必须都在。
+
+    刻意断言"包含"而不是"相等"：同一业务下还会挂其它场景（宏观预测、利率择时、
+    研报观点），用相等断言会导致每加一个场景就得改这个文件。
+    """
     names = await _tool_names(build())
-    assert names == {
+    assert {
         "describe_idata_schema",
         "get_trade_dates",
         "get_institution_flow",
@@ -429,7 +461,7 @@ async def test_exactly_ten_tools(captured):
         "get_lending_snapshot",
         "get_lending_trend",
         "get_llm_comment",
-    }
+    } <= names
 
 
 async def test_omitted_date_falls_back_to_latest(captured):
