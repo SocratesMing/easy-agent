@@ -67,6 +67,7 @@
           <textarea
             ref="textareaRef"
             v-model="message"
+            v-tip:hover="'输入消息，Enter 发送 · Shift+Enter 换行 · 输入 / 唤起技能选择'"
             @keydown="onKeydown"
             @input="onInput"
             @focus="updateCaretLine"
@@ -90,7 +91,7 @@
               class="action-btn plus-btn"
               :class="{ disabled: isStreaming || disabled }"
               :disabled="isStreaming || disabled"
-              title="添加"
+              v-tip="'添加文件 · 专家 · 技能 · 连接器'"
               aria-haspopup="menu"
               :aria-expanded="showPlusMenu ? 'true' : 'false'"
               @click="togglePlusMenu"
@@ -100,9 +101,8 @@
                 <line x1="5" y1="12" x2="19" y2="12"></line>
               </svg>
             </button>
-            <div v-if="showPlusMenu" class="plus-menu" :class="{ 'is-list': plusMenuMode === 'list' }" :style="plusMenuStyle" @click.stop>
-                <template v-if="plusMenuMode === 'menu'">
-                <button type="button" class="plus-menu-item" @click="handleMenuAddFile">
+            <div v-if="showPlusMenu" class="plus-menu" :style="plusMenuStyle" @click.stop @mouseenter="cancelPlusClose" @mouseleave="schedulePlusClose">
+                <button type="button" class="plus-menu-item" @mouseenter="hoverPlusItem('file')" @click="handleMenuAddFile">
                   <svg class="plus-menu-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                     <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
                     <polyline points="14 2 14 8 20 8"></polyline>
@@ -114,7 +114,7 @@
                     <polyline points="9 18 15 12 9 6"></polyline>
                   </svg>
                 </button>
-                <button type="button" class="plus-menu-item" @click="openPlusList('experts')">
+                <button type="button" class="plus-menu-item" @mouseenter="hoverPlusItem('experts')" @click="openSubpanel('experts', $event)">
                   <svg class="plus-menu-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                     <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
                     <circle cx="12" cy="7" r="4"></circle>
@@ -124,7 +124,7 @@
                     <polyline points="9 18 15 12 9 6"></polyline>
                   </svg>
                 </button>
-                <button type="button" class="plus-menu-item" @click="openPlusList('skills')">
+                <button type="button" class="plus-menu-item" @mouseenter="hoverPlusItem('skills')" @click="openSubpanel('skills', $event)">
                   <svg class="plus-menu-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                     <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon>
                   </svg>
@@ -133,7 +133,7 @@
                     <polyline points="9 18 15 12 9 6"></polyline>
                   </svg>
                 </button>
-                <button type="button" class="plus-menu-item" @click="openPlusList('connectors')">
+                <button type="button" class="plus-menu-item" @mouseenter="hoverPlusItem('connectors')" @click="openSubpanel('connectors', $event)">
                   <svg class="plus-menu-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                     <path d="M12 22v-5"></path>
                     <path d="M9 8V2"></path>
@@ -145,39 +145,35 @@
                     <polyline points="9 18 15 12 9 6"></polyline>
                   </svg>
                 </button>
-                </template>
 
-                <!-- 二级列表：展示当前用户自己的条目（不跳转页面） -->
-                <template v-else>
-                  <div class="plus-menu-head">
-                    <button type="button" class="plus-menu-back" title="返回" @click="plusMenuMode = 'menu'">
-                      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                        <line x1="19" y1="12" x2="5" y2="12"></line>
-                        <polyline points="12 19 5 12 12 5"></polyline>
-                      </svg>
-                    </button>
-                    <span class="plus-menu-title">{{ plusListTitle }}</span>
-                    <span class="plus-menu-count">{{ plusList.length }}</span>
-                  </div>
-                  <div class="plus-menu-list">
-                    <div v-if="plusListLoading" class="plus-list-hint">加载中…</div>
-                    <div v-else-if="plusListError" class="plus-list-hint error">{{ plusListError }}</div>
-                    <div v-else-if="plusList.length === 0" class="plus-list-hint">{{ plusListEmptyText }}</div>
-                    <div v-else v-for="item in plusList" :key="item.key" class="plus-list-item">
-                      <span class="plus-list-icon" :class="{ initial: !item.icon }">{{ item.icon || item.initial }}</span>
-                      <span class="plus-list-body">
-                        <span class="plus-list-name-row">
-                          <span class="plus-list-name">{{ item.name }}</span>
-                          <span v-if="item.tag" class="plus-list-tag" :class="item.tagType">{{ item.tag }}</span>
-                        </span>
-                        <span class="plus-list-desc">{{ item.desc }}</span>
-                      </span>
-                    </div>
-                  </div>
-                  <button type="button" class="plus-menu-footer" @click="handleMenuPanel(plusListCategory)">
-                    在管理面板中打开 →
-                  </button>
-                </template>
+            <!-- 「+」菜单二级浮动面板：主菜单常驻，子面板显示在触发项旁边。
+                 skills / experts / connectors → 对应的用户条目列表。悬停或点击触发，互斥显示。 -->
+            <div v-if="subpanelCategory" class="plus-subpanel" :style="plusSubpanelStyle" @click.stop @mouseenter="cancelPlusClose" @mouseleave="schedulePlusClose">
+              <div class="plus-subpanel-head">
+                <span class="plus-subpanel-title">{{ plusListTitle }}</span>
+                <span class="plus-menu-count">{{ plusList.length }}</span>
+              </div>
+              <div class="plus-subpanel-list">
+                <div v-if="plusListLoading" class="plus-list-hint">加载中…</div>
+                <div v-else-if="plusListError" class="plus-list-hint error">{{ plusListError }}</div>
+                <div v-else-if="plusList.length === 0" class="plus-list-hint">{{ plusListEmptyText }}</div>
+                <div v-else v-for="item in plusList" :key="item.key" class="plus-list-item">
+                  <span class="plus-list-icon" :class="{ initial: !item.icon }">{{ item.icon || item.initial }}</span>
+                  <span class="plus-list-body">
+                    <span class="plus-list-name-row">
+                      <span class="plus-list-name">{{ item.name }}</span>
+                      <span v-if="item.tag" class="plus-list-tag" :class="item.tagType">{{ item.tag }}</span>
+                    </span>
+                    <span class="plus-list-desc">{{ item.desc }}</span>
+                  </span>
+                </div>
+              </div>
+              <div class="plus-subpanel-footer">
+                <button type="button" class="plus-subpanel-manage" @click="handleMenuPanel(subpanelCategory)">
+                  在管理面板中打开 →
+                </button>
+              </div>
+            </div>
             </div>
           </div>
           <input
@@ -196,7 +192,7 @@
               :class="{ disabled: isStreaming || disabled }"
               :disabled="isStreaming || disabled"
               @click="toggleModelDropdown"
-              title="选择模型"
+              v-tip="'切换模型'"
             >
               <svg class="model-btn-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9L12 3z"></path>
@@ -228,7 +224,7 @@
             class="action-btn web-search-btn"
             :class="{ active: webSearchEnabled, disabled: webSearchUnavailable || isStreaming || disabled }"
             :disabled="webSearchUnavailable || isStreaming || disabled"
-            :title="webSearchTitle"
+            v-tip="webSearchTitle"
             @click="toggleWebSearch"
           >
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -305,7 +301,7 @@
             class="action-btn send-btn"
             :class="{ active: canSend }"
             :disabled="!canSend || disabled"
-            title="发送"
+            v-tip="'发送（Enter）'"
           >
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <line x1="5" y1="12" x2="19" y2="12"></line>
@@ -316,7 +312,7 @@
             v-if="isStreaming"
             @click="stop"
             class="action-btn stop-btn"
-            title="停止"
+            v-tip="'停止生成'"
           >
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">
               <rect x="6" y="6" width="12" height="12" rx="2"></rect>
@@ -439,7 +435,9 @@ export default {
       // 自定义下拉菜单
       showModelDropdown: false,
       showPlusMenu: false,
-      plusMenuMode: 'menu',
+      subpanelCategory: null,
+      plusSubpanelStyle: {},
+      plusHoverTimer: null,
       plusListCategory: '',
       plusList: [],
       plusListLoading: false,
@@ -616,6 +614,7 @@ export default {
     document.removeEventListener('click', this.closeSkillPickerOnClick)
     window.removeEventListener('resize', this.handleViewportChange)
     document.removeEventListener('click', this.closePlusMenu)
+    this.cancelPlusClose()
     this.stopLiveDuration()
   },
   methods: {
@@ -687,6 +686,7 @@ export default {
       if (this.isStreaming || this.disabled) return
       if (this.showPlusMenu) {
         this.showPlusMenu = false
+        this.cancelPlusClose()
         return
       }
       // 菜单贴着按钮上方弹出（与模型下拉同款定位方式）
@@ -700,17 +700,19 @@ export default {
           minWidth: '188px',
         }
       }
-      this.plusMenuMode = 'menu'
+      this.subpanelCategory = null
       this.showPlusMenu = true
     },
     closePlusMenu(event) {
       const anchor = this.$refs.plusMenuRef
       if (this.showPlusMenu && anchor && !anchor.contains(event.target)) {
         this.showPlusMenu = false
+        this.subpanelCategory = null
       }
     },
     handleMenuAddFile() {
       this.showPlusMenu = false
+      this.subpanelCategory = null
       const input = this.$refs.fileInputRef
       if (input) input.click()
     },
@@ -718,12 +720,57 @@ export default {
     // 数据来源均为当前用户：技能 = user-skills（含已停用）；连接器 = 用户 mcp.json
     // 中已安装的内置连接器 + 自定义服务；专家暂无数据。
     openPlusList(category) {
-      this.plusMenuMode = 'list'
       this.plusListCategory = category
       this.plusListLoading = true
       this.plusListError = ''
       this.plusList = []
       this.loadPlusList(category)
+    },
+    // 打开二级浮动面板（主菜单常驻）：定位到触发项右侧，底部超视口时上移
+    openSubpanel(category, event) {
+      // click 触发同面板已打开则翻转关闭；hover 触发保持
+      if (this.subpanelCategory === category) return
+      this.subpanelCategory = category
+      const rect = event.currentTarget.getBoundingClientRect()
+      const estimatedHeight = 420
+      const top = Math.max(8, Math.min(rect.top - 8, window.innerHeight - estimatedHeight - 8))
+      const left = rect.right + 10 + 380 > window.innerWidth ? Math.max(8, rect.left - 390) : rect.right + 10
+      this.plusSubpanelStyle = {
+        position: 'fixed',
+        top: `${top}px`,
+        left: `${left}px`,
+      }
+      this.openPlusList(category)
+    },
+    // ========== 悬停触发二级面板 ==========
+    // 鼠标悬停主菜单项即切换对应面板，无需点击；点击仍保留（触屏/键盘回退）。
+    // 鼠标离开菜单区域超过 250ms 才整体关闭。
+    cancelPlusClose() {
+      if (this.plusHoverTimer) {
+        clearTimeout(this.plusHoverTimer)
+        this.plusHoverTimer = null
+      }
+    },
+    schedulePlusClose() {
+      this.cancelPlusClose()
+      this.plusHoverTimer = setTimeout(() => {
+        this.plusHoverTimer = null
+        this.showPlusMenu = false
+        this.subpanelCategory = null
+      }, 250)
+    },
+    hoverPlusItem(category) {
+      this.cancelPlusClose()
+      if (category === 'experts' || category === 'skills' || category === 'connectors') {
+        // openSubpanel 需要事件定位；hover 无事件对象时用菜单项元素
+        const el = [...this.$el.querySelectorAll('.plus-menu-item')].find(i => i.textContent.includes(
+          { experts: '专家', skills: '技能', connectors: '连接器' }[category]
+        ))
+        this.openSubpanel(category, { currentTarget: el })
+        return
+      }
+      // 其余项（如添加文件）收起子面板，主菜单保持
+      this.subpanelCategory = null
     },
     async loadPlusList(category) {
       try {
@@ -773,6 +820,7 @@ export default {
     // 列表底部入口：跳到「专家·技能·连接器」面板做完整管理
     handleMenuPanel(tab) {
       this.showPlusMenu = false
+      this.subpanelCategory = null
       this.$emit('openPanel', tab)
     },
     // 供父组件把预置问题完整文本填进输入框（卡片上最多显示 3 行，长问题展示不全）
@@ -2420,5 +2468,60 @@ html[data-theme="dark"] .plus-list-tag.custom {
 .footer-text {
   font-size: 12px;
   color: var(--text-secondary);
+}
+</style>
+
+<style>
+/* ========== 「+」菜单二级浮动面板（主菜单常驻） ========== */
+.plus-subpanel {
+  width: 380px;
+  max-width: 90vw;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-secondary, #fff);
+  border: 1px solid var(--border-color, #e2e8f0);
+  border-radius: 12px;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.14);
+  padding: 12px;
+  z-index: 9999;
+}
+.plus-subpanel-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 4px 8px;
+}
+.plus-subpanel-title {
+  flex: 1;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary, #1e293b);
+}
+.plus-subpanel-list {
+  max-height: 300px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  scrollbar-width: thin;
+}
+.plus-subpanel-footer {
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border-color, #e2e8f0);
+}
+.plus-subpanel-manage {
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  font-size: 13px;
+  color: var(--text-secondary, #64748b);
+  cursor: pointer;
+  text-align: center;
+}
+.plus-subpanel-manage:hover {
+  background: rgba(15, 23, 42, 0.05);
 }
 </style>

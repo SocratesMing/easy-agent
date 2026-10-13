@@ -1,78 +1,29 @@
 {
-  "_comment": "公共 MCP 连接器目录（连接器页「公共」卡片的数据源，由 services/connectors.py 读取）。每条 = 一份可直接写入用户 mcp.json 的 MCP 服务配置：{id, name, description, icon, config}；id 同时作为写入用户 mcp.json 的 server 名，必须唯一且为安全标识符。config 支持 transport=stdio（command/args/env）或 streamable_http/sse（url/headers）。改这里不需要重启后端（每次请求现读）。注意：本文件放在 config 目录，同时会被当作「全局 mcp.json」用于 Agent 加载；因为它没有 servers 字段，所以不会给任何用户自动加载 MCP —— 请勿在此文件里加 servers，那会让所有未自建 mcp.json 的用户自动加载这些服务。",
+  "_comment": "公共 MCP 连接器目录（连接器页「公共」卡片的数据源，由 services/connectors.py 读取）。每条 = 一份可直接写入用户 mcp.json 的 MCP 服务配置：{id, name, description, icon, fields, config}；id 同时作为写入用户 mcp.json 的 server 名，必须唯一且为安全标识符。fields 声明安装时需要用户填写的字段（key 为 config 内路径，支持 env.X / headers.X / args.N）。config 支持 transport=stdio（command/args/env）或 streamable_http/sse（url/headers）。改这里不需要重启后端（每次请求现读）。注意：本文件放在 config 目录，同时会被当作「全局 mcp.json」用于 Agent 加载；因为它没有 servers 字段，所以不会给任何用户自动加载 MCP —— 请勿在此文件里加 servers，那会让所有未自建 mcp.json 的用户自动加载这些服务。",
   "connectors": [
     {
-      "id": "market-data",
-      "name": "行情数据（自建）",
-      "description": "本仓库 mcp-server 子项目的 market 业务：查行情与个人持仓。需先启动 mcp-server，并把 Authorization 里的 API Key 换成真实值",
-      "icon": "chart-line",
+      "id": "mysql",
+      "name": "MySQL 数据库",
+      "description": "官方 mysql-mcp-server（stdio，uvx 拉起，需本机已装 uv/uvx）：对 MySQL 数据库做查询与分析。添加时填写连接信息，安装后可在连接器详情中修改",
+      "icon": "database-outline",
+      "fields": [
+        { "key": "env.MYSQL_HOST", "label": "主机地址", "placeholder": "127.0.0.1", "required": true },
+        { "key": "env.MYSQL_PORT", "label": "端口", "placeholder": "3306", "required": true },
+        { "key": "env.MYSQL_USER", "label": "用户名", "placeholder": "root", "required": true },
+        { "key": "env.MYSQL_PASSWORD", "label": "密码", "placeholder": "数据库密码", "required": true },
+        { "key": "env.MYSQL_DATABASE", "label": "数据库名", "placeholder": "agent", "required": true }
+      ],
       "config": {
-        "transport": "streamable_http",
-        "url": "http://127.0.0.1:8100/mcp/market/",
-        "headers": {
-          "Authorization": "Bearer <API Key>"
+        "type": "stdio",
+        "command": "uvx",
+        "args": ["--from", "mysql-mcp-server", "mysql_mcp_server"],
+        "env": {
+          "MYSQL_HOST": "127.0.0.1",
+          "MYSQL_PORT": "3306",
+          "MYSQL_USER": "root",
+          "MYSQL_PASSWORD": "Test1234",
+          "MYSQL_DATABASE": "agent"
         }
-      }
-    },
-    {
-      "id": "filesystem",
-      "name": "本地文件系统",
-      "description": "官方 filesystem MCP（stdio，npx 拉起）：把 args 末尾的目录换成允许访问的绝对路径后即可读写文件",
-      "icon": "folder-outline",
-      "config": {
-        "transport": "stdio",
-        "command": "npx",
-        "args": [
-          "-y",
-          "@modelcontextprotocol/server-filesystem",
-          "/tmp"
-        ],
-        "env": {}
-      }
-    },
-    {
-      "id": "fetch",
-      "name": "网页抓取",
-      "description": "官方 fetch MCP（stdio，uvx 拉起，需本机已装 uv/uvx）：抓取网页并转成 Markdown",
-      "icon": "web",
-      "config": {
-        "transport": "stdio",
-        "command": "uvx",
-        "args": [
-          "mcp-server-fetch"
-        ],
-        "env": {}
-      }
-    },
-    {
-      "id": "git",
-      "name": "Git 仓库",
-      "description": "官方 git MCP（stdio，uvx 拉起）：把 --repository 换成你的仓库绝对路径，可查日志、差异与提交历史",
-      "icon": "source-branch",
-      "config": {
-        "transport": "stdio",
-        "command": "uvx",
-        "args": [
-          "mcp-server-git",
-          "--repository",
-          "/path/to/repo"
-        ],
-        "env": {}
-      }
-    },
-    {
-      "id": "everything",
-      "name": "官方测试服务（everything）",
-      "description": "官方 everything MCP（stdio，npx 拉起）：自带 echo / add / longRunning 等工具，用来验证 MCP 链路是否打通，无需任何配置",
-      "icon": "flask-outline",
-      "config": {
-        "transport": "stdio",
-        "command": "npx",
-        "args": [
-          "-y",
-          "@modelcontextprotocol/server-everything"
-        ],
-        "env": {}
       }
     }
   ]

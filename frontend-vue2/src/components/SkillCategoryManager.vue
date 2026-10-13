@@ -5,7 +5,8 @@
   - 变动即时落库（后端持久化），通过 changed 事件让列表刷新分组
 -->
 <template>
-  <div class="category-manager-mask" @click.self="$emit('close')">
+  <div class="category-manager-mask" @mousedown="overlayPress = markOverlayPress($event)"
+  @click.self="onOverlayClick">
     <div class="category-manager" role="dialog" aria-modal="true" aria-label="管理技能类别">
       <div class="manager-header">
         <h3>管理分类</h3>
@@ -121,6 +122,7 @@ import {
   deleteSkillCategory,
   reorderSkillCategories,
 } from '../api/skills.js'
+import { overlayClickCloses, markOverlayPress } from '../utils/overlayClick.js'
 
 export default {
   props: {
@@ -134,6 +136,7 @@ export default {
   emits: ['close', 'changed'],
   data() {
     return {
+      overlayPress: null,
       newName: '',
       editingId: '',
       editingName: '',
@@ -162,6 +165,14 @@ export default {
     },
   },
   methods: {
+    /** 遮罩点击关闭守卫：拖拽选择文本时（有非空选区）不关闭弹层 */
+    onOverlayClick(event) {
+      overlayClickCloses(event, this.overlayPress, () => this.$emit('close'))
+    },
+    markOverlayPress(event) {
+      return markOverlayPress(event)
+    },
+
     showToast(message, type = 'success') {
       this.toast = { show: true, message, type }
       setTimeout(() => { this.toast = { ...this.toast, show: false } }, 2400)

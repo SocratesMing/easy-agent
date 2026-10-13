@@ -15,9 +15,9 @@ export async function getConnectors() {
   return ensureJson(data, '/agent/connectors', '获取连接器失败')
 }
 
-export async function installConnector(id) {
+export async function installConnector(id, values = {}, validate = true) {
   const data = await request(
-    { url: '/agent/connectors/install', method: 'post', data: { id } },
+    { url: '/agent/connectors/install', method: 'post', data: { id, values, validate } },
     '安装连接器失败'
   )
   return ensureJson(data, '/agent/connectors/install', '安装连接器失败')
@@ -29,6 +29,34 @@ export async function uninstallConnector(id) {
     '卸载连接器失败'
   )
   return ensureJson(data, '/agent/connectors/uninstall', '卸载连接器失败')
+}
+
+/** 启用/停用已安装的连接器（开关，默认开启） */
+export async function toggleConnector(id, enabled) {
+  const url = '/agent/connectors/toggle'
+  const data = await request({ url, method: 'post', data: { id, enabled } }, '切换连接器开关失败')
+  return ensureJson(data, url, '切换连接器开关失败')
+}
+
+/** 查看已安装连接器实际暴露的工具列表（{tools, error}） */
+export async function getConnectorTools(name) {
+  const url = `/agent/connectors/tools?name=${encodeURIComponent(name)}`
+  const data = await request({ url, method: 'get' }, '获取工具列表失败')
+  return ensureJson(data, url, '获取工具列表失败')
+}
+
+/** 校验所有已安装 MCP 的连接状态（{statuses: [{name, status, tools_count, error}]}） */
+export async function getConnectorsStatus() {
+  const url = '/agent/connectors/status'
+  const data = await request({ url, method: 'get' }, '获取连接状态失败')
+  return ensureJson(data, url, '获取连接状态失败')
+}
+
+/** 修改已安装连接器的白名单配置字段（url / key 等，值为 {字段路径: 新值}） */
+export async function updateConnectorConfig(id, values) {
+  const url = '/agent/connectors/config'
+  const data = await request({ url, method: 'put', data: { id, values } }, '保存连接器配置失败')
+  return ensureJson(data, url, '保存连接器配置失败')
 }
 
 export async function deleteMcpServer(name) {

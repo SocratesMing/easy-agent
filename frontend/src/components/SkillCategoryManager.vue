@@ -5,7 +5,8 @@
   - 变动即时落库（后端持久化），通过 changed 事件让列表刷新分组
 -->
 <template>
-  <div class="category-manager-mask" @click.self="$emit('close')">
+  <div class="category-manager-mask" @mousedown="overlayPress = markOverlayPress($event)"
+  @click.self="overlayClickCloses($event, overlayPress, () => $emit('close'))">
     <div class="category-manager" role="dialog" aria-modal="true" aria-label="管理技能类别">
       <div class="manager-header">
         <h3>管理分类</h3>
@@ -116,6 +117,7 @@
 
 <script setup>
 import { computed, ref } from 'vue'
+import { overlayClickCloses, markOverlayPress } from '../utils/overlayClick.js'
 import {
   createSkillCategory,
   renameSkillCategory,
@@ -123,6 +125,7 @@ import {
   reorderSkillCategories,
 } from '../api/skills.js'
 
+const overlayPress = ref(null)
 const props = defineProps({
   /** 用户类别（含内置预置，按 order 排序） */
   categories: { type: Array, default: () => [] },

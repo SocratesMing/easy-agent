@@ -102,8 +102,31 @@ def load_catalog(path: str | Path | None = None) -> list[dict[str, Any]]:
             "description": str(raw.get("description") or ""),
             "icon": str(raw.get("icon") or ""),
             "config": config,
+            # 需要用户填写的字段（鉴权 Key、路径等）：[{key, label, placeholder, required}]
+            # key 是 config 内的路径："headers.Authorization" / "env.TCA_TOKEN" / "args.1"
+            "fields": _normalize_fields(raw.get("fields")),
         })
     return result
+
+
+def _normalize_fields(raw: Any) -> list[dict[str, Any]]:
+    """规范化目录条目的 fields 声明，非法项跳过。"""
+    if not isinstance(raw, list):
+        return []
+    fields: list[dict[str, Any]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        key = str(item.get("key") or "").strip()
+        if not key:
+            continue
+        fields.append({
+            "key": key,
+            "label": str(item.get("label") or key),
+            "placeholder": str(item.get("placeholder") or ""),
+            "required": bool(item.get("required", True)),
+        })
+    return fields
 
 
 def find_catalog_entry(
@@ -139,19 +162,33 @@ def catalog_connectors(username: str, config: Any = None) -> dict[str, Any]:
     # 混进来会把目录里的条目误判成「已安装」。
     user_servers = load_user_mcp_config(username, config) or {}
 
-    connectors = [
-        {**entry, "installed": entry["id"] in user_servers}
-        for entry in entries
-    ]
+    connectors = []
+    for entry in entries:
+        user_cfg = user_servers.get(entry["id"])
+        installed = user_cfg is not None
+        item = {
+            **entry,
+            "installed": installed,
+            # 开关状态：已安装项读用户配置（默认开启），未安装项视为开启
+            "enabled": bool(user_cfg.get("enabled", True)) if user_cfg else True,
+        }
+        if installed:
+            # 已安装项回填用户实际配置（可能已改过 url/key），供详情页编辑展示
+            item["user_config"] = user_cfg
+        connectors.append(item)
+
     catalog_ids = {entry["id"] for entry in entries}
     custom = sorted(
         (
-            {"name": name, "config": cfg}
+            {"name": name, "config": cfg, "enabled": bool(cfg.get("enabled", True))}
             for name, cfg in user_servers.items()
             if name not in catalog_ids
         ),
         key=lambda item: item["name"],
     )
+
+    # 已安装的排在列表前面（含自定义项，由前端统一合并排序）
+    connectors.sort(key=lambda c: not c["installed"])
 
     return {
         "connectors": connectors,
