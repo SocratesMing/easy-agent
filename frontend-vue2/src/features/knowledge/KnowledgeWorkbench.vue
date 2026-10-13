@@ -187,8 +187,8 @@
               </button>
             </div>
 
-            <div v-if="loadingDocuments && !documents.length" class="ke-document-skeletons">
-              <span v-for="index in 6" :key="index"></span>
+            <div v-if="loadingDocuments && !documents.length" class="ke-document-loading">
+              <p>文档加载中<span v-for="index in 3" :key="index" class="ke-dot"></span></p>
             </div>
 
             <template v-else-if="documents.length">
@@ -255,6 +255,7 @@
         <header class="ke-ask-header">
           <div class="ke-ai-avatar"><IconSparkles /></div>
           <div><strong>问问知识库</strong><small>{{ selectedBase ? `基于「${selectedBase.name}」` : '选择知识库后开始提问' }}</small></div>
+          <button class="ke-icon-button subtle" :disabled="asking || !selectedBase" aria-label="新对话" title="开启新对话（删除当前问答记录）" @click="startNewChat"><IconMessageSquarePlus /></button>
           <button v-if="asking" class="ke-icon-button subtle ke-stop-button" aria-label="停止回答" title="停止回答" @click="stopQuestion('user')"><IconSquare /></button>
           <button class="ke-icon-button subtle" aria-label="收起问答" title="收起问答" @click="askOpen = false"><IconPanelRightClose /></button>
         </header>
@@ -461,6 +462,7 @@ import {
   IconLibrary,
   IconList,
   IconListFilter,
+  IconMessageSquarePlus,
   IconPanelRightClose,
   IconPause,
   IconPencil,
@@ -485,7 +487,7 @@ import DocxPreview from '../../components/DocxPreview.vue'
 import ExcelPreview from '../../components/ExcelPreview.vue'
 import FileIcon from '../../components/FileIcon.vue'
 import ChatMessage from '../../components/ChatMessage.vue'
-import { attachStream, getChatHistory, sendMessage } from '../../api/chat.js'
+import { attachStream, deleteSession, getChatHistory, sendMessage } from '../../api/chat.js'
 import { cancelMessage } from './api.js'
 import { processingElapsedText } from './utils/presentation.js'
 import {
@@ -531,6 +533,7 @@ export default {
     IconLibrary,
     IconList,
     IconListFilter,
+    IconMessageSquarePlus,
     IconPanelRightClose,
     IconPause,
     IconPencil,
@@ -651,6 +654,9 @@ const lastQuestion = ref('')
 const agentMessage = ref(null)
 // 面板内已完成的历史问答：[{question, message}]，多轮问答均可回看（含各自的知识引用）
 const askHistory = ref([])
+// 已拉取过问答历史的知识库 ID（含历史为空的库），避免重复请求；切换知识库时重置
+const askHistoryBaseId = ref('')
+let askHistoryFetching = false
 const askBody = ref(null)
 const asking = ref(false)
 const askError = ref('')
@@ -743,6 +749,18 @@ async function loadBases(preferredId = '') {
   else if (basesForSpace(selectedSpace.value).length) await selectBase(basesForSpace(selectedSpace.value)[0].id)
   else { selectedBaseId.value = ''; folders.value = []; documents.value = [] }
 }
+async function refreshBaseCounts() {
+  // 仅刷新左侧列表数据（document_count 等），不触发 selectBase 的选中/视图副作用
+  try {
+    const response = await listKnowledgeBases({ pageSize: 100 })
+    bases.value = response.items || []
+    Object.assign(
+      teamSpaceManagement,
+      { can_create: false, can_manage: false, department_id: null, is_admin: false, departments: [] },
+      response.team_space_management || {}
+    )
+  } catch (_) { /* 数量刷新失败不影响主流程 */ }
+}
 async function selectSpace(space) {
   selectedSpace.value = space
   if (selectedBase.value?.visibility === space) return
@@ -753,7 +771,7 @@ async function selectSpace(space) {
 async function selectBase(baseId) {
   if (asking.value && selectedBaseId.value !== baseId) stopQuestion('switch')
   if (selectedBaseId.value !== baseId) { documents.value = []; folders.value = [] }
-  selectedBaseId.value = baseId; selectedFolderId.value = ''; agentMessage.value = null; askError.value = ''; askHistory.value = []; lastQuestion.value = ''
+  selectedBaseId.value = baseId; selectedFolderId.value = ''; agentMessage.value = null; askError.value = ''; askHistory.value = []; askHistoryBaseId.value = ''; lastQuestion.value = ''
   await Promise.all([loadFolders(), loadDocuments({ initial: true })])
   await loadOperations()
 }
@@ -1011,7 +1029,7 @@ async function uploadFiles(items) {
     }
   }
   if (selectedBaseId.value === uploadBaseId) await Promise.all([loadDocuments(), loadFolders()])
-  await loadOperations()
+  await Promise.all([loadOperations(), refreshBaseCounts()])
 }
 async function moveDoc(doc, folderId) { try { await moveDocument(doc.id, folderId); await Promise.all([loadDocuments(), loadFolders()]); notify('文档已移动') } catch (error) { handleError(error) } }
 function openMoveDocument(doc) { movingDocument.value = doc; moveTargetFolderId.value = doc.folder_id || ''; showMoveModal.value = true }
@@ -1026,21 +1044,23 @@ async function pauseDoc(doc) { try { await pauseDocument(doc.id); await Promise.
 async function resumeDoc(doc) { try { await resumeDocument(doc.id); await Promise.all([loadDocuments(), loadOperations()]); notify('已恢复解析任务，重新排队中') } catch (error) { handleError(error) } }
 async function removeDocument(doc) {
   if (!await askConfirmation({ title: '删除这篇资料？', description: `「${doc.name}」将从知识库中永久移除。`, confirmLabel: '删除资料' })) return
-  try { await deleteDocument(doc.id); await Promise.all([loadDocuments(), loadOperations()]); notify('文档已删除') } catch (error) { handleError(error) }
-}
+  try { await deleteDocument(doc.id); await Promise.all([loadDocuments(), loadOperations(), refreshBaseCounts()]); notify('文档已删除') } catch (error) { handleError(error) } }
 
-function previewable(doc) { return !doc.optimistic && (/^(application\/pdf|text\/|image\/)/.test(doc.content_type || '') || /\.(md|txt|docx|xlsx?|pptx)$/i.test(doc.name || '')) }
+function previewable(doc) { return !doc.optimistic && (/^(application\/pdf|text\/|image\/)/.test(doc.content_type || '') || /\.(md|txt|docx?|xlsx?|pptx)$/i.test(doc.name || '')) }
 async function previewDocument(doc) {
   closePreview()
   Object.assign(preview, { open: true, loading: true, name: doc.name, kind: '', url: '', text: '' })
   try {
-    const { blob } = await getDocumentBlob(doc.id, 'inline')
+    const legacyDoc = /\.doc$/i.test(doc.name || '')
+    const result = await getDocumentBlob(doc.id, 'inline', legacyDoc ? 'docx' : '')
+    if (result instanceof Error) throw result
+    const { blob } = result
     if ((doc.content_type || '').startsWith('text/') || /\.(md|txt)$/i.test(doc.name)) { preview.kind = 'text'; preview.text = await blob.text() }
     else {
       preview.url = URL.createObjectURL(blob)
       if (/\.xlsx?$/i.test(doc.name)) preview.kind = 'excel'
       else
-      preview.kind = /\.docx$/i.test(doc.name) ? 'docx' : /\.pptx$/i.test(doc.name) ? 'pptx' : (doc.content_type || '').startsWith('image/') ? 'image' : 'frame'
+      preview.kind = /\.docx?$/i.test(doc.name) ? 'docx' : /\.pptx$/i.test(doc.name) ? 'pptx' : (doc.content_type || '').startsWith('image/') ? 'image' : 'frame'
     }
   } catch (error) { closePreview(); handleError(error) }
   finally { preview.loading = false }
@@ -1313,11 +1333,101 @@ function retryQuestion() {
   question.value = lastQuestion.value
   submitQuestion()
 }
+
+// 开启新对话：删除当前知识库的面板隐藏会话，之后的提问不带历史、从零开始
+async function startNewChat() {
+  const baseId = selectedBaseId.value
+  if (!baseId || asking.value) return
+  if (!askHistory.value.length && !agentMessage.value) return
+  const confirmed = await askConfirmation({
+    title: '开启新对话？',
+    description: '当前知识库的问答记录将被删除，之后提问将从全新对话开始。',
+    confirmLabel: '开启新对话',
+  })
+  if (!confirmed) return
+  // 先 peek 只读探测：拿到隐藏会话 ID 才执行删除；404 说明本就没有记录
+  try {
+    const prepared = await prepareKnowledgeChatSession(baseId, { peek: true })
+    try {
+      await deleteSession(prepared.session_id)
+      // 会话已从服务端删除，通知外层刷新会话列表
+      emit('chat-session-prepared')
+    } catch (error) {
+      handleError(error)
+      return
+    }
+  } catch (_) { /* peek 404：无会话记录，仅清空本地状态 */ }
+  askHistory.value = []
+  askHistoryBaseId.value = ''
+  agentMessage.value = null
+  askError.value = ''
+  lastQuestion.value = ''
+  question.value = ''
+  notify('已开启新对话')
+}
 // 面板问答区滚动到底部（发送新问题/载入历史后定位到最新一轮）
 function scrollAskToBottom() {
   const el = askBody.value
   if (el && el.scrollHeight > el.clientHeight) el.scrollTop = el.scrollHeight
 }
+
+// 把服务端会话消息解析为面板问答条目（问题气泡 + 含知识引用的回答）
+function parseAskHistory(messages) {
+  const entries = []
+  let pendingQuestion = ''
+  for (const item of (messages || [])) {
+    const content = String(item?.content || '').trim()
+    if (!content) continue
+    if (item.role === 'user') { pendingQuestion = content; continue }
+    if (item.role === 'assistant') {
+      entries.push({
+        question: pendingQuestion,
+        message: {
+          ...item,
+          id: item.id || `ke-history-${entries.length}`,
+          role: 'assistant',
+          blocks: Array.isArray(item.blocks) ? item.blocks : [],
+          knowledge_evidence: Array.isArray(item.knowledge_evidence) ? item.knowledge_evidence : [],
+          knowledge_warnings: Array.isArray(item.knowledge_warnings) ? item.knowledge_warnings : [],
+          loading: false,
+        },
+      })
+      pendingQuestion = ''
+    }
+  }
+  return entries
+}
+
+// 拉取指定知识库的问答历史（打开面板/切换库时预取；首次提问时复用兜底）。
+// preparedSessionId 由调用方传入时可跳过会话准备。预取走 peek 只读探测：
+// 会话不存在返回 404 且不创建记录——点击知识库不应自动生成
+// 「[知识库问答]」会话，只有真正提问才落记录。滚动必须等历史渲染完成
+// （nextTick），否则 scrollTop 停留在赋值前的旧高度，表现为视口停在最早的对话。
+async function loadAskHistory(baseId, preparedSessionId = '') {
+  if (!baseId || askHistoryFetching || askHistoryBaseId.value === baseId) return
+  askHistoryFetching = true
+  try {
+    let sessionId = preparedSessionId
+    if (!sessionId) {
+      const prepared = await prepareKnowledgeChatSession(baseId, { peek: true })
+      if (selectedBaseId.value !== baseId) return
+      sessionId = prepared.session_id
+    }
+    activeChatSessionId = sessionId
+    const history = await getChatHistory(sessionId)
+    if (selectedBaseId.value !== baseId) return
+    askHistory.value = parseAskHistory(history.messages)
+    // 仅会话确实存在时标记已拉取；peek 404 时不标记，下次打开重新探测
+    askHistoryBaseId.value = baseId
+    nextTick(() => scrollAskToBottom())
+  } catch { /* 历史拉取失败不阻塞提问，面板欢迎页兜底 */ }
+  finally { askHistoryFetching = false }
+}
+
+// 打开问答面板或切换知识库时预取历史，重新进入工作台也能直接回看此前的问答
+watch(() => [askOpen.value, selectedBaseId.value], () => {
+  if (askOpen.value && selectedBaseId.value) loadAskHistory(selectedBaseId.value)
+})
 
 async function submitQuestion(suggested = '') {
   if (suggested) question.value = suggested
@@ -1353,38 +1463,9 @@ async function submitQuestion(suggested = '') {
     const prepared = await prepareKnowledgeChatSession(baseId)
     if (generation !== askGeneration) return
     activeChatSessionId = prepared.session_id
-    // 首次对该库提问时拉取服务端已累积的问答历史（刷新页面/切回知识库场景），
-    // 让此前的每一轮问答（含各自知识引用）都可在面板内回看。
-    if (!askHistory.value.length) {
-      try {
-        const history = await getChatHistory(prepared.session_id)
-        if (generation !== askGeneration) return
-        const entries = []
-        let pendingQuestion = ''
-        for (const item of (history.messages || [])) {
-          const content = String(item?.content || '').trim()
-          if (!content) continue
-          if (item.role === 'user') { pendingQuestion = content; continue }
-          if (item.role === 'assistant') {
-            entries.push({
-              question: pendingQuestion,
-              message: {
-                ...item,
-                id: item.id || `ke-history-${entries.length}`,
-                role: 'assistant',
-                blocks: Array.isArray(item.blocks) ? item.blocks : [],
-                knowledge_evidence: Array.isArray(item.knowledge_evidence) ? item.knowledge_evidence : [],
-                knowledge_warnings: Array.isArray(item.knowledge_warnings) ? item.knowledge_warnings : [],
-                loading: false,
-              },
-            })
-            pendingQuestion = ''
-          }
-        }
-        askHistory.value = entries
-        scrollAskToBottom()
-      } catch { /* 历史拉取失败不阻塞本次提问 */ }
-    }
+    // 首次对该库提问时兜底拉取历史（面板打开/切换库时已预取过的不重复请求）
+    if (!askHistory.value.length) await loadAskHistory(baseId, prepared.session_id)
+    if (generation !== askGeneration) return
     // 问答会话刚入库（或复用）：通知外层立即刷新会话列表，避免"新对话/刷新页面才出现"。
     emit('chat-session-prepared')
     const onChunk = event => applyAgentEvent(event, baseId, generation)
@@ -1562,6 +1643,7 @@ onUnmounted(() => { stopQuestion('unmount'); finishKnowledgeResize(); stopPollin
       spaceLabel,
       spaces,
       startKnowledgeResize,
+      startNewChat,
       statusFilter,
       pauseDoc,
       resumeDoc,
@@ -1592,7 +1674,7 @@ onUnmounted(() => { stopQuestion('unmount'); finishKnowledgeResize(); stopPollin
 .ke-import-option{display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:8px;color:#3d4640;font-size:11px;cursor:pointer;white-space:nowrap}
 .ke-import-option:hover{background:#f2f8f5;color:var(--ke-accent-dark)}
 .ke-import-option svg{width:14px;height:14px;color:#69726c}
-.ke-documents{flex:1;min-height:0;overflow:auto;padding:18px 20px 28px}.ke-documents.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));align-content:start;gap:10px}.ke-document-card{position:relative;border:1px solid #e6eae7;border-radius:12px;background:#fff;padding:10px 12px;min-width:0;transition:.18s}.grid .ke-document-card{display:flex;flex-direction:column}.ke-document-card:hover{border-color:#ccd8d1;box-shadow:0 8px 24px rgba(39,64,48,.07);transform:translateY(-1px)}.ke-doc-open{width:100%;border:0;background:transparent;padding:0;display:grid;grid-template-columns:30px minmax(0,1fr);align-items:start;column-gap:8px;text-align:left;min-width:0;color:inherit;cursor:pointer}.ke-doc-open:disabled{cursor:default}.ke-file-icon{width:30px;min-width:30px;height:34px;box-sizing:border-box;display:grid;place-items:center;border-radius:8px;background:#f7f9f7;overflow:hidden}.ke-document-copy{width:100%;min-width:0;overflow:hidden;display:flex;flex-direction:column;gap:3px}.ke-doc-title{display:flex;align-items:baseline;gap:6px;min-width:0;max-width:100%}.ke-document-copy strong{min-width:0;font-size:11px;line-height:1.45;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ke-document-copy small{color:#9aa19c;font-size:9px;white-space:nowrap;flex-shrink:0}.ke-document-details{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:8px}.grid .ke-document-details{margin-top:auto;padding-top:8px}.ke-status{display:inline-flex;align-items:center;gap:5px;color:#6e7771;font-size:9px;white-space:nowrap}.ke-status i{width:6px;height:6px}.ke-status em{font-style:normal;color:#9aa19c}.ke-status.processing i,.ke-status.running i{background:#4b91e4;animation:ke-pulse 1.2s infinite}.ke-status.failed i,.ke-status.partial_failed i{background:#e25555}.ke-folder-select{min-width:0;display:flex;align-items:center;gap:3px;color:#9aa19c}.ke-folder-select svg{width:11px;height:11px}.ke-folder-select select{max-width:80px;text-overflow:ellipsis}.ke-error-text{font-size:9px;color:#cc4b4b;line-height:1.4;margin:7px 0 0}.ke-row-actions{position:absolute;right:9px;top:9px;display:flex;align-items:center;gap:2px;background:rgba(255,255,255,.96);border-radius:8px;padding:2px;opacity:0;transform:translateY(-3px);transition:.16s;box-shadow:0 2px 10px rgba(30,45,35,.08)}.ke-document-card:hover .ke-row-actions,.ke-row-actions:focus-within{opacity:1;transform:none}.ke-row-actions button{height:22px;border:0;background:transparent;border-radius:6px;padding:0 5px;display:flex;align-items:center;gap:3px;color:#69726c;font-size:9px;cursor:pointer}.ke-row-actions button:hover{background:#f2f5f3;color:#26312a}.ke-row-actions svg{width:11px;height:11px}.list.ke-documents{padding-top:8px}.list .ke-document-card{border-width:0 0 1px;border-radius:0;padding:7px 8px;display:grid;grid-template-columns:minmax(220px,1fr) 240px 145px;align-items:center;gap:10px}.list .ke-document-card:hover{transform:none;box-shadow:none;background:#fafbfa}.list .ke-document-details{margin:0}.list .ke-row-actions{position:static;opacity:1;transform:none;box-shadow:none;justify-content:flex-end}.list .ke-row-actions button span{display:none}.list .ke-error-text{grid-column:1/-1}.ke-document-skeletons{grid-column:1/-1;display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px}.ke-document-skeletons span{height:96px;border-radius:12px;background:linear-gradient(90deg,#f4f6f4 25%,#fafbfa 37%,#f4f6f4 63%);background-size:400% 100%;animation:ke-shimmer 1.4s infinite}.ke-empty-documents{grid-column:1/-1;align-self:center;margin:auto;display:flex;flex-direction:column;align-items:center;text-align:center;padding:45px 20px}.ke-empty-icon,.ke-empty-illustration{width:60px;height:60px;border-radius:18px;background:var(--ke-accent-soft);color:var(--ke-accent);display:grid;place-items:center}.ke-empty-icon svg,.ke-empty-illustration svg{width:27px;height:27px}.ke-empty-documents .ke-import-wrap{width:auto;height:auto}.ke-empty-documents h3{margin:14px 0 5px;font-size:14px}.ke-empty-documents p{margin:0 0 15px;color:#929994;font-size:11px}.ke-drop-mask{position:absolute;inset:10px;z-index:15;border:2px dashed #71c39f;border-radius:16px;background:rgba(237,250,244,.94);display:grid;place-items:center;pointer-events:none}.ke-drop-mask>div{display:flex;flex-direction:column;align-items:center;gap:7px;color:var(--ke-accent-dark)}.ke-drop-mask svg{width:36px;height:36px}.ke-drop-mask strong{font-size:15px}.ke-drop-mask span{color:#7b8c82;font-size:11px}
+.ke-documents{flex:1;min-height:0;overflow:auto;padding:18px 20px 28px}.ke-documents.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));align-content:start;gap:10px}.ke-document-card{position:relative;border:1px solid #e6eae7;border-radius:12px;background:#fff;padding:10px 12px;min-width:0;transition:.18s}.grid .ke-document-card{display:flex;flex-direction:column}.ke-document-card:hover{border-color:#ccd8d1;box-shadow:0 8px 24px rgba(39,64,48,.07);transform:translateY(-1px)}.ke-doc-open{width:100%;border:0;background:transparent;padding:0;display:grid;grid-template-columns:30px minmax(0,1fr);align-items:start;column-gap:8px;text-align:left;min-width:0;color:inherit;cursor:pointer}.ke-doc-open:disabled{cursor:default}.ke-file-icon{width:30px;min-width:30px;height:34px;box-sizing:border-box;display:grid;place-items:center;border-radius:8px;background:#f7f9f7;overflow:hidden}.ke-document-copy{width:100%;min-width:0;overflow:hidden;display:flex;flex-direction:column;gap:3px}.ke-doc-title{display:flex;align-items:baseline;gap:6px;min-width:0;max-width:100%}.ke-document-copy strong{min-width:0;font-size:11px;line-height:1.45;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ke-document-copy small{color:#9aa19c;font-size:9px;white-space:nowrap;flex-shrink:0}.ke-document-details{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:8px}.grid .ke-document-details{margin-top:auto;padding-top:8px}.ke-status{display:inline-flex;align-items:center;gap:5px;color:#6e7771;font-size:9px;white-space:nowrap}.ke-status i{width:6px;height:6px}.ke-status em{font-style:normal;color:#9aa19c}.ke-status.processing i,.ke-status.running i{background:#4b91e4;animation:ke-pulse 1.2s infinite}.ke-status.failed i,.ke-status.partial_failed i{background:#e25555}.ke-folder-select{min-width:0;display:flex;align-items:center;gap:3px;color:#9aa19c}.ke-folder-select svg{width:11px;height:11px}.ke-folder-select select{max-width:80px;text-overflow:ellipsis}.ke-error-text{font-size:9px;color:#cc4b4b;line-height:1.4;margin:7px 0 0}.ke-row-actions{position:absolute;right:9px;top:9px;display:flex;align-items:center;gap:2px;background:rgba(255,255,255,.96);border-radius:8px;padding:2px;opacity:0;transform:translateY(-3px);transition:.16s;box-shadow:0 2px 10px rgba(30,45,35,.08)}.ke-document-card:hover .ke-row-actions,.ke-row-actions:focus-within{opacity:1;transform:none}.ke-row-actions button{height:22px;border:0;background:transparent;border-radius:6px;padding:0 5px;display:flex;align-items:center;gap:3px;color:#69726c;font-size:9px;cursor:pointer}.ke-row-actions button:hover{background:#f2f5f3;color:#26312a}.ke-row-actions svg{width:11px;height:11px}.list.ke-documents{padding-top:8px}.list .ke-document-card{border-width:0 0 1px;border-radius:0;padding:7px 8px;display:grid;grid-template-columns:minmax(220px,1fr) 240px 145px;align-items:center;gap:10px}.list .ke-document-card:hover{transform:none;box-shadow:none;background:#fafbfa}.list .ke-document-details{margin:0;align-self:start;padding-top:2px}.list .ke-row-actions{position:static;opacity:1;transform:none;box-shadow:none;justify-content:flex-end;align-self:center}.list .ke-row-actions button span{display:none}.list .ke-error-text{grid-column:1/-1}.ke-document-loading{grid-column:1/-1;min-height:220px;display:flex;align-items:center;justify-content:center;color:var(--text-secondary);font-size:12px}.ke-document-loading p{margin:0;display:inline-flex;align-items:center}.ke-dot{width:4px;height:4px;margin-left:4px;border-radius:50%;background:currentColor;animation:ke-dot-pulse 1.2s infinite}.ke-dot:nth-child(2){animation-delay:.2s}.ke-dot:nth-child(3){animation-delay:.4s}.ke-empty-documents{grid-column:1/-1;align-self:center;margin:auto;display:flex;flex-direction:column;align-items:center;text-align:center;padding:45px 20px}.ke-empty-icon,.ke-empty-illustration{width:60px;height:60px;border-radius:18px;background:var(--ke-accent-soft);color:var(--ke-accent);display:grid;place-items:center}.ke-empty-icon svg,.ke-empty-illustration svg{width:27px;height:27px}.ke-empty-documents .ke-import-wrap{width:auto;height:auto}.ke-empty-documents h3{margin:14px 0 5px;font-size:14px}.ke-empty-documents p{margin:0 0 15px;color:#929994;font-size:11px}.ke-drop-mask{position:absolute;inset:10px;z-index:15;border:2px dashed #71c39f;border-radius:16px;background:rgba(237,250,244,.94);display:grid;place-items:center;pointer-events:none}.ke-drop-mask>div{display:flex;flex-direction:column;align-items:center;gap:7px;color:var(--ke-accent-dark)}.ke-drop-mask svg{width:36px;height:36px}.ke-drop-mask strong{font-size:15px}.ke-drop-mask span{color:#7b8c82;font-size:11px}
 .ke-ask-panel{border-left:1px solid var(--ke-line);display:flex;flex-direction:column;overflow:hidden;background:#fcfdfc}.ke-ask-header{height:67px;flex:none;padding:0 14px;display:flex;align-items:center;gap:9px;border-bottom:1px solid var(--ke-line);background:#fff}.ke-ai-avatar{width:31px;height:31px;border-radius:10px;background:linear-gradient(145deg,#32b981,#21865f);color:#fff;display:grid;place-items:center;box-shadow:0 4px 12px rgba(37,161,111,.2)}.ke-ai-avatar.small{width:23px;height:23px;border-radius:7px}.ke-ai-avatar.small svg{width:12px;height:12px}.ke-ask-header>div:nth-child(2){display:flex;flex:1;min-width:0;flex-direction:column;gap:3px}.ke-ask-header strong{font-size:12px}.ke-ask-header small{font-size:9px;color:#969d98;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ke-answer{flex:1;min-height:0;overflow:auto;padding:18px}.ke-history-entry{display:flex;flex-direction:column;gap:8px;padding-bottom:12px;margin-bottom:12px;border-bottom:1px dashed #e8ece9}.ke-history-entry:last-of-type{border-bottom:0}.ke-answer-welcome{height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center}.ke-answer-orb{width:52px;height:52px;border-radius:18px;background:radial-gradient(circle at 30% 25%,#fff 0,#e4f7ee 35%,#cceede 100%);color:var(--ke-accent);display:grid;place-items:center;box-shadow:0 8px 25px rgba(38,126,88,.12)}.ke-answer-orb svg{width:24px;height:24px}.ke-answer-welcome h3{font-size:14px;margin:15px 0 6px}.ke-answer-welcome>p{max-width:235px;margin:0;color:#8d9690;font-size:10px;line-height:1.7}.ke-question-suggestions{width:100%;margin-top:19px;display:flex;flex-direction:column;gap:7px}.ke-question-suggestions button{border:1px solid #e3e8e4;background:#fff;border-radius:10px;padding:10px 11px;display:flex;justify-content:space-between;align-items:center;color:#626b65;text-align:left;font-size:10px;cursor:pointer;transition:.16s}.ke-question-suggestions button:hover{border-color:#b9ddcb;background:#f5fbf8;color:var(--ke-accent-dark)}.ke-question-suggestions svg{width:12px;height:12px}.ke-answer-loading{height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;color:#8b948e;font-size:10px}.ke-question-bubble{margin-left:28px;padding:9px 11px;border-radius:11px 3px 11px 11px;background:#eef7f3;color:#3f4d45;font-size:11px;line-height:1.55}.ke-answer-label{display:flex;align-items:center;gap:7px;margin:18px 0 10px;font-size:10px}.ke-answer-text{font-size:11px;line-height:1.85;color:#3e4741;white-space:pre-wrap}.ke-evidence-title{display:flex;align-items:center;gap:5px;margin:18px 0 7px;color:#737d76;font-size:10px;font-weight:600}.ke-evidence-title svg{width:13px;height:13px}.ke-evidence{width:100%;margin-top:7px;padding:10px;border:1px solid #e3e8e4;border-radius:10px;background:#fff;text-align:left;color:inherit;cursor:pointer}.ke-evidence:hover{border-color:#c6ddd1;background:#fbfdfc}.ke-evidence>div{display:flex;gap:7px;align-items:center;font-size:9px}.ke-evidence b{width:18px;height:18px;border-radius:5px;background:var(--ke-accent-soft);color:var(--ke-accent-dark);display:grid;place-items:center}.ke-evidence strong{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ke-evidence span{margin-left:auto;color:#9aa19c}.ke-evidence p{font-size:9px;line-height:1.55;color:#747d77;margin:7px 0 0;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}.ke-warning{display:flex;gap:6px;color:#a56a14;font-size:9px;line-height:1.5}.ke-warning svg{width:13px;height:13px}.ke-ask-form{flex:none;padding:12px 14px 13px}.ke-composer{border:1px solid #dce3de;background:#fff;border-radius:13px;padding:8px 9px;box-shadow:0 5px 18px rgba(42,62,49,.06);transition:.18s}.ke-composer:focus-within{border-color:#91ceb2;box-shadow:0 0 0 3px rgba(37,161,111,.08)}.ke-composer.disabled{background:#f7f8f7}.ke-composer textarea{width:100%;min-height:50px;box-sizing:border-box;border:0;outline:0;resize:none;background:transparent;color:#303733;font-size:11px;line-height:1.55}.ke-composer>div{display:flex;align-items:center;justify-content:space-between}.ke-composer>div span{display:flex;align-items:center;gap:4px;color:#9aa19c;font-size:8px}.ke-composer>div span svg{width:11px;height:11px}.ke-composer>div button{width:28px;height:28px;border:0;border-radius:9px;background:var(--ke-accent);color:#fff;display:grid;place-items:center;cursor:pointer}.ke-composer>div button:disabled{background:#d8ddda;cursor:not-allowed}.ke-ask-form>small{display:block;margin-top:6px;text-align:center;color:#a1a7a3;font-size:8px}.ke-ask-fab{position:absolute;right:20px;bottom:20px;height:40px;border:0;border-radius:20px;background:var(--ke-accent);color:#fff;padding:0 15px;display:flex;align-items:center;gap:7px;box-shadow:0 8px 24px rgba(37,161,111,.25);cursor:pointer;z-index:10}.ke-ask-fab span{font-size:11px}
 .ke-loading-page,.ke-empty-page{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;color:#858e88}.ke-loading-page p{font-size:11px}.ke-empty-page h2{font-size:17px;color:#303632;margin:15px 0 6px}.ke-empty-page p{font-size:11px;margin:0 0 16px}.ke-empty-page.compact{height:100%}.ke-spinner{width:22px;height:22px;border:2px solid #dce9e2;border-top-color:var(--ke-accent);border-radius:50%;animation:ke-spin .75s linear infinite}
 .ke-modal-mask,.ke-drawer-mask{position:fixed;inset:0;background:rgba(26,31,28,.38);z-index:1200;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(2px)}.ke-modal{width:min(430px,calc(100vw - 32px));max-height:90vh;overflow:auto;background:#fff;border-radius:16px;padding:21px;box-shadow:0 24px 65px rgba(23,35,27,.2)}.ke-modal.small{width:min(360px,calc(100vw - 32px))}.ke-modal.wide{width:min(600px,calc(100vw - 32px))}.ke-modal header,.ke-preview-modal header,.ke-drawer header{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}.ke-modal header h3,.ke-preview-modal h3,.ke-drawer h2{margin:0;font-size:16px}.ke-modal header p,.ke-drawer header p{margin:4px 0 0;color:#929a95;font-size:10px;line-height:1.5}.ke-modal header>button,.ke-preview-modal header>button,.ke-drawer header>button{width:30px;height:30px;border:0;background:transparent;border-radius:8px;display:grid;place-items:center;color:#7d8580;cursor:pointer}.ke-modal header>button:hover,.ke-preview-modal header>button:hover,.ke-drawer header>button:hover{background:#f3f5f3}.ke-modal>label{display:flex;flex-direction:column;gap:6px;margin-top:16px;color:#59615c;font-size:11px}.ke-modal input,.ke-modal select,.ke-modal textarea{width:100%;box-sizing:border-box;border:1px solid #dfe4e0;border-radius:9px;background:#fff;padding:9px 10px;color:#303632;outline:0;font-size:11px}.ke-modal input:focus,.ke-modal select:focus,.ke-modal textarea:focus{border-color:#91ceb2;box-shadow:0 0 0 3px rgba(37,161,111,.07)}.ke-modal textarea{min-height:82px;resize:vertical}.ke-modal label>small{color:#9ba19d;font-size:9px;line-height:1.5}.ke-modal footer{display:flex;justify-content:flex-end;gap:8px;margin-top:20px}.ke-perm-loading{margin-top:18px;padding:26px 0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;color:var(--text-secondary);font-size:11px}.ke-perm-loading p{margin:0}.ke-perm-loading .ke-spinner{flex:none}.ke-perm-toolbar{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:16px;padding:8px 12px;border:1px solid #e3e7e4;border-radius:10px;background:#f8faf8;color:#7d8580;font-size:10px}.ke-perm-toolbar strong{color:var(--ke-accent-dark);font-size:12px}.ke-perm-tree{margin-top:7px;border:1px solid #e3e7e4;border-radius:10px;max-height:340px;overflow:auto;padding:6px 10px;background:#fff}.ke-perm-branch+.ke-perm-branch{margin-top:4px}.ke-perm-row{display:grid;grid-template-columns:24px 18px 1fr auto;gap:7px;align-items:center;padding:7px 4px;border-radius:8px}.ke-perm-row:hover{background:#f7faf8}.ke-perm-row.level-dept>.ke-perm-name{font-weight:650;font-size:12px;color:#3d4640}.ke-perm-row.level-division>.ke-perm-name{font-weight:600;font-size:11px;color:#4a544d;padding-left:2px}.ke-perm-row.level-team>.ke-perm-name{font-weight:500;font-size:11px;color:#59615c;padding-left:2px}.ke-perm-name{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ke-perm-count{color:#9aa19c;font-size:9px}.ke-perm-caret{width:22px;height:22px;padding:0;border:0;background:transparent;border-radius:6px;display:grid;place-items:center;color:#9aa19c;cursor:pointer}.ke-perm-caret:hover{background:#eef3ef;color:#59615c}.ke-perm-caret svg{width:13px;height:13px;transition:transform .15s ease}.ke-perm-caret svg.rotated{transform:rotate(-90deg)}.ke-perm-children{margin-left:24px;border-left:1px dashed #dfe4e0;padding-left:8px}.ke-perm-user{display:grid;grid-template-columns:18px 1fr auto;gap:8px;align-items:center;padding:5px 4px;border-radius:8px;cursor:pointer;color:#3d4640;font-size:11px}.ke-perm-user:hover{background:#f7faf8}.ke-perm-user span{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ke-perm-user small{color:#9aa19c;font-size:9px}.ke-perm-empty{margin:0;padding:22px 10px;color:#9aa19c;text-align:center;font-size:10px}.ke-perm-tree input[type=checkbox]{width:15px;height:15px;flex:none;box-sizing:border-box;margin:0;padding:0;border:0;background:transparent;accent-color:var(--ke-accent);cursor:pointer}.ke-modal.confirm{text-align:center;width:min(360px,calc(100vw - 32px));overflow:visible}.ke-confirm-icon{width:45px;height:45px;margin:0 auto 12px;border-radius:14px;background:#fff1ef;color:#d34c4c;display:grid;place-items:center}.ke-confirm-icon svg{width:22px;height:22px}.ke-modal.confirm h3{font-size:16px;margin:0}.ke-modal.confirm>p{font-size:10px;color:#838b86;line-height:1.65;margin:8px 10px}.ke-modal.confirm footer{justify-content:center}.preview-mask{padding:24px}.ke-preview-modal{width:min(1080px,94vw);height:min(820px,90vh);background:#fff;border-radius:15px;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 24px 70px rgba(18,29,22,.24)}.ke-preview-modal header{height:55px;flex:none;align-items:center;padding:0 16px;border-bottom:1px solid var(--ke-line)}.ke-preview-modal header>div{display:flex;align-items:center;gap:8px;min-width:0}.ke-preview-modal h3{font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ke-preview-modal iframe,.ke-preview-modal img,.ke-preview-modal pre{flex:1;min-height:0;width:100%;border:0;object-fit:contain;background:#f5f7f5;overflow:auto;box-sizing:border-box;padding:16px}.ke-drawer-mask{justify-content:flex-end;align-items:stretch}.ke-drawer{width:min(400px,90vw);background:#fff;padding:20px;overflow:auto;box-shadow:-18px 0 50px rgba(28,38,31,.13)}.ke-drawer .refresh{margin:15px 0;width:100%}.ke-operation{padding:12px 0;border-top:1px solid #edf0ed}.ke-operation>div:first-child{display:grid;grid-template-columns:30px 1fr auto;gap:8px;align-items:center;margin-bottom:9px}.ke-operation-icon{width:28px;height:28px;background:#f2f6f3;color:#6f7c74;border-radius:8px;display:grid;place-items:center}.ke-operation>div:first-child>div{display:flex;flex-direction:column;gap:2px}.ke-operation strong{font-size:10px}.ke-operation small{color:#949c97;font-size:8px}.ke-operation p{color:#c94a4a;font-size:9px}.ke-toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%);background:#26342c;color:#fff;border-radius:10px;padding:10px 14px;z-index:1600;display:flex;align-items:center;gap:7px;font-size:11px;box-shadow:0 9px 28px rgba(22,36,27,.24)}.ke-toast.error{background:#b83f43}.ke-toast svg{width:14px;height:14px}.ke-toast-enter-active,.ke-toast-leave-active{transition:.2s}.ke-toast-enter-from,.ke-toast-leave-to{opacity:0;transform:translate(-50%,8px)}
@@ -1601,7 +1683,7 @@ onUnmounted(() => { stopQuestion('unmount'); finishKnowledgeResize(); stopPollin
 .ke-folder-breadcrumbs{min-height:30px;display:flex;align-items:center;gap:3px;padding-bottom:11px;overflow-x:auto}.ke-folder-breadcrumbs>svg,.ke-folder-crumb>svg{width:12px;height:12px;color:#b3b8b5}.ke-folder-breadcrumbs>button,.ke-folder-crumb>button{height:28px;border:0;background:transparent;border-radius:7px;padding:0 7px;color:#8b928e;font-size:10px;white-space:nowrap;cursor:pointer}.ke-folder-breadcrumbs>button:hover,.ke-folder-breadcrumbs>button.current,.ke-folder-crumb>button:hover,.ke-folder-crumb>button.current{background:#f1f6f3;color:#27312b;font-weight:600}.ke-folder-crumb{display:inline-flex;align-items:center;gap:3px}.ke-folder-breadcrumbs .ke-folder-back{width:28px;padding:0;display:grid;place-items:center}.ke-folder-actions{display:flex;align-items:center;gap:3px;margin-left:auto;padding-left:12px}.ke-folder-actions button{height:28px;border:0;background:#f5f7f5;border-radius:7px;padding:0 7px;display:flex;align-items:center;gap:4px;color:#6e7771;font-size:9px;white-space:nowrap;cursor:pointer}.ke-folder-actions button:first-child{color:var(--ke-accent-dark);background:#edf7f2}.ke-folder-actions svg{width:12px;height:12px}
 .ke-folder-grid{grid-column:1/-1;display:flex;flex-direction:column;gap:2px;margin-bottom:11px}.ke-folder-card{width:100%;height:62px;border:0;border-bottom:1px solid #f0f2f0;background:#fff;padding:5px 10px;display:grid;grid-template-columns:54px minmax(0,1fr) 18px;gap:10px;align-items:center;text-align:left;color:inherit;border-radius:8px;cursor:pointer}.ke-folder-card:hover{background:#f8faf8}.ke-folder-art{position:relative;width:49px;height:35px;border-radius:4px 5px 5px 5px;background:linear-gradient(180deg,#bce7d1,#a8dbc0);color:#fff;display:grid;place-items:center}.ke-folder-art:before{content:"";position:absolute;left:3px;top:-6px;width:22px;height:8px;border-radius:4px 5px 0 0;background:#9bd5b8}.ke-folder-art svg{position:relative;width:23px;height:23px}.ke-folder-card>span:nth-child(2){display:flex;min-width:0;flex-direction:column;gap:4px}.ke-folder-card strong{font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ke-folder-card small{font-size:9px;color:#acb1ae}.ke-folder-card>svg{color:#c1c6c2;width:14px;height:14px}
 .ke-status.paused i{background:#9aa19c}.ke-status.processing i,.ke-status.running i{animation:none}.ke-processing-age{margin-left:auto;color:#9aa19c;font-size:9px;white-space:nowrap}.ke-preview-modal>div:not(header){flex:1;min-height:0;overflow:auto}.ke-preview-modal ::v-deep .docx-wrapper{min-height:100%;background:#eef1ef}.ke-preview-modal ::v-deep .vue-office-excel{height:100%}.ke-preview-modal ::v-deep .pptx-preview-wrapper{height:100%;overflow:auto}
-@keyframes ke-pulse{50%{opacity:.35}}@keyframes ke-spin{to{transform:rotate(360deg)}}@keyframes ke-shimmer{0%{background-position:100% 0}100%{background-position:0 0}}
+@keyframes ke-pulse{50%{opacity:.35}}@keyframes ke-spin{to{transform:rotate(360deg)}}@keyframes ke-dot-pulse{0%,100%{opacity:.2}50%{opacity:1}}
 @container(max-width:1100px){.ke-workspace,.ke-workspace.ask-closed{grid-template-columns:var(--ke-library-width,220px) 6px minmax(0,1fr)}.ke-resizer.ask{display:none}.ke-workspace:not(.ask-closed) .ke-content-panel{margin-right:min(var(--ke-ask-width,360px),88cqw)}.ke-ask-panel{position:absolute;right:0;top:0;bottom:0;width:min(var(--ke-ask-width,360px),88cqw);z-index:20;box-shadow:-14px 0 35px rgba(28,43,33,.13)}.ke-base-meta span:last-child{display:none}.ke-tool-row{flex-wrap:wrap}.ke-tool-row>.ke-search-box{max-width:none}.list .ke-document-card{grid-template-columns:minmax(180px,1fr) 190px 130px}}
 @container(max-width:700px){.ke-topbar{padding:0 10px}.ke-topbar-title span,.ke-topbar-actions .quiet{display:none}.ke-workspace,.ke-workspace.ask-closed{display:block}.ke-library-panel,.ke-resizer{display:none}.ke-content-panel{height:100%}.ke-base-hero{padding:18px 15px}.ke-inline-actions{position:absolute;right:14px}.ke-base-identity{padding-right:80px}.ke-base-meta{flex-wrap:wrap}.ke-content-toolbar{padding:11px 12px}.ke-documents{padding:12px}.ke-documents.grid{grid-template-columns:1fr}.ke-view-switch{display:none}.list .ke-document-card{display:block}.list .ke-document-details{margin-top:12px}.list .ke-row-actions{margin-top:8px;justify-content:flex-start}.ke-base-identity p{white-space:normal;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}}
 

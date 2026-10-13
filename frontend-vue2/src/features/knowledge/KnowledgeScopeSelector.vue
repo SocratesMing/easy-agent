@@ -1,6 +1,6 @@
 <template>
   <div v-if="enabled" ref="rootRef" class="scope-selector">
-    <button class="scope-trigger" :class="{ active: selected.length }" :aria-expanded="open" :disabled="disabled || saving || creatingSession" @click.stop="togglePopover">
+    <button class="scope-trigger" :class="{ active: selected.length }" :aria-expanded="open" :disabled="disabled || creatingSession" @click.stop="togglePopover">
       <IconLibrary />
       <span>{{ creatingSession ? '正在准备会话…' : triggerLabel }}</span>
       <IconChevronDown class="chevron" :class="{ rotated: open }" />
@@ -17,7 +17,7 @@
 
         <div class="scope-list">
           <label v-for="base in visibleBases" :key="base.id" class="scope-item" :class="{ checked: draft.includes(base.id) }">
-            <input v-model="draft" type="checkbox" :value="base.id" :disabled="saving" />
+            <input v-model="draft" type="checkbox" :value="base.id" />
             <span class="scope-book" :class="base.visibility"><IconBookOpen /></span>
             <span class="scope-copy"><strong>{{ base.name }}</strong><small>{{ spaceLabel(base.visibility) }} · {{ roleLabel(base.role) }} · {{ base.document_count || 0 }} 篇资料</small></span>
             <span class="scope-check"><IconCheck /></span>
@@ -27,8 +27,8 @@
 
         <div v-if="error" class="scope-error"><IconCircleAlert />{{ error }}</div>
         <footer>
-          <button class="clear" :disabled="saving || !draft.length" @click="draft = []">清空选择</button>
-          <button class="save" :disabled="saving" @click="save">{{ saving ? '保存中…' : '应用' }}</button>
+          <button class="clear" :disabled="!draft.length" @click="draft = []">清空选择</button>
+          <small class="autosave-hint">{{ error ? '' : (saving ? '保存中…' : '勾选即自动应用') }}</small>
         </footer>
       </div>
     </Transition>
@@ -141,18 +141,34 @@ function updatePanelPosition() {
 function handleViewportChange() {
   if (open.value) updatePanelPosition()
 }
-async function save() {
+let saveSeq = 0
+function sameSet(a, b) {
+  const ka = [...a].sort().join('|')
+  const kb = [...b].sort().join('|')
+  return ka === kb
+}
+async function persist(snapshot) {
+  const seq = ++saveSeq
   saving.value = true; error.value = ''
   try {
-    const response = await replaceSessionKnowledgeScope(props.sessionId, draft.value)
+    const response = await replaceSessionKnowledgeScope(props.sessionId, snapshot)
+    if (seq !== saveSeq) return  // 已有更新的勾选在保存，丢弃过期响应
     selected.value = response.base_ids || []
-    draft.value = [...selected.value]
-    open.value = false
     emit('change', [...selected.value])
   }
-  catch (reason) { error.value = reason.message || '知识范围保存失败' }
-  finally { saving.value = false }
+  catch (reason) {
+    if (seq === saveSeq) error.value = reason.message || '知识范围保存失败'
+  }
+  finally {
+    if (seq === saveSeq) saving.value = false
+  }
 }
+watch(draft, () => {
+  if (!open.value || !props.sessionId) return
+  const snapshot = [...draft.value]
+  if (sameSet(snapshot, selected.value)) return  // 打开面板时的同步赋值，无实际变化
+  persist(snapshot)
+}, { deep: true })
 function handleOutside(event) { if (open.value && rootRef.value && !rootRef.value.contains(event.target)) open.value = false }
 function roleLabel(role) { return ({ viewer: '查看者', maintainer: '维护者', manager: '管理员' })[role] || role }
 function spaceLabel(space) { return ({ personal: '个人', team: '团队', shared: '共享' })[space] || space }
@@ -190,7 +206,6 @@ onUnmounted(() => {
       query,
       roleLabel,
       rootRef,
-      save,
       saving,
       selected,
       spaceLabel,
@@ -226,6 +241,7 @@ onUnmounted(() => {
 .scope-copy strong{font-size:12px}.scope-copy small{font-size:10px}.scope-item.checked .scope-check{border-color:var(--accent-color);background:var(--accent-color)}
 .scope-panel footer{border-top-color:var(--border-color)}
 .scope-panel footer .clear{color:var(--text-secondary);background:transparent}
+.scope-panel footer .autosave-hint{font-size:10px;color:var(--text-secondary);margin-left:auto}
 .scope-panel footer .save{border-color:var(--accent-color);background:var(--accent-color);font-size:12px}
 @media(max-width:700px){.scope-selector{right:auto;top:auto}.scope-panel{left:auto;right:-76px;width:min(360px,calc(100vw - 24px))}}
 </style>

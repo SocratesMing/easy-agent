@@ -29,6 +29,7 @@ import rawIconLayoutGrid from '~icons/lucide/layout-grid'
 import rawIconLibrary from '~icons/lucide/library'
 import rawIconList from '~icons/lucide/list'
 import rawIconListFilter from '~icons/lucide/list-filter'
+import rawIconMessageSquarePlus from '~icons/lucide/message-square-plus'
 import rawIconPanelRightClose from '~icons/lucide/panel-right-close'
 import rawIconPencil from '~icons/lucide/pencil'
 import rawIconPlus from '~icons/lucide/plus'
@@ -98,6 +99,7 @@ export const IconLayoutGrid = icon(rawIconLayoutGrid)
 export const IconLibrary = icon(rawIconLibrary)
 export const IconList = icon(rawIconList)
 export const IconListFilter = icon(rawIconListFilter)
+export const IconMessageSquarePlus = icon(rawIconMessageSquarePlus)
 export const IconPanelRightClose = icon(rawIconPanelRightClose)
 export const IconPencil = icon(rawIconPencil)
 export const IconPlus = icon(rawIconPlus)

@@ -173,9 +173,10 @@ export function resumeDocument(documentId) {
   return request(`/documents/${encodeURIComponent(documentId)}/resume`, { method: 'POST' })
 }
 
-export async function getDocumentBlob(documentId, disposition = 'inline') {
+export async function getDocumentBlob(documentId, disposition = 'inline', convert = '') {
+  const convertQuery = convert ? `&convert=${convert}` : ''
   const response = await authFetch(
-    `${ROOT}/documents/${encodeURIComponent(documentId)}/content?disposition=${disposition}`,
+    `${ROOT}/documents/${encodeURIComponent(documentId)}/content?disposition=${disposition}${convertQuery}`,
     { responseType: 'blob' }
   )
   if (!response.ok) return parseError(response)
@@ -208,8 +209,11 @@ export function askKnowledgeBase(baseId, payload) {
   return request(`/bases/${encodeURIComponent(baseId)}/ask`, { method: 'POST', json: payload })
 }
 
-export function prepareKnowledgeChatSession(baseId) {
-  return request(`/bases/${encodeURIComponent(baseId)}/chat-session`, { method: 'POST' })
+// peek=true 只读探测：会话不存在返回 404 且不创建会话记录，用于打开面板预取历史；
+// 实际提问时用默认调用，此时才生成「[知识库问答]」会话记录。
+export function prepareKnowledgeChatSession(baseId, { peek = false } = {}) {
+  const suffix = peek ? '?peek=true' : ''
+  return request(`/bases/${encodeURIComponent(baseId)}/chat-session${suffix}`, { method: 'POST' })
 }
 
 export async function askKnowledgeBaseStream(baseId, payload, onChunk, signal) {
