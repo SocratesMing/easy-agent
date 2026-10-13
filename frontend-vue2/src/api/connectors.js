@@ -31,14 +31,6 @@ export async function uninstallConnector(id) {
   return ensureJson(data, '/agent/connectors/uninstall', '卸载连接器失败')
 }
 
-export async function addMcpConfig(config) {
-  const data = await request(
-    { url: '/agent/connectors/mcp', method: 'post', data: { config } },
-    '添加 MCP 服务失败'
-  )
-  return ensureJson(data, '/agent/connectors/mcp', '添加 MCP 服务失败')
-}
-
 export async function deleteMcpServer(name) {
   const url = `/agent/connectors/mcp/${encodeURIComponent(name)}`
   const data = await request({ url, method: 'delete' }, '删除 MCP 服务失败')

@@ -56,6 +56,7 @@
 
       <SkillCenter
         v-if="showSkillCenter"
+        :initial-tab="skillCenterTab"
         @close="showSkillCenter = false"
         @create-skill="handleSkillCreate"
       />
@@ -99,6 +100,7 @@
         @retry="handleRetry"
         @approve="handleToolApproval('approve')"
         @reject="handleToolApproval('reject')"
+        @openPanel="openSkillCenterPanel"
       />
 
       <div v-if="currentSessionId && !showAssets && !showSkillCenter" class="workspace-area">
@@ -282,6 +284,7 @@ export default {
       isWorkspaceCollapsed: true,
       showAssets: false,
       showSkillCenter: false,
+      skillCenterTab: 'skills',
       showScheduledTasks: false,
       showSettingsPanel: false,
       showUserManagementPanel: false,
@@ -881,6 +884,11 @@ export default {
       this.showAssets = !this.showAssets
       this.showSkillCenter = false
       this.showScheduledTasks = false
+    },
+    openSkillCenterPanel(tab) {
+      // 「+」菜单入口：打开面板并直接定位到专家/技能/连接器
+      this.skillCenterTab = tab
+      this.showSkillCenter = true
     },
     handleShowSkillCenter() {
       this.showSkillCenter = !this.showSkillCenter
@@ -3046,40 +3054,8 @@ html[data-theme="dark"] .file-type {
   color: var(--text-primary) !important;
 }
 
-/* 预设问题卡片堆叠 */
-html[data-theme="dark"] .preset-card {
-  background: var(--bg-secondary) !important;
-  border-color: var(--border-color) !important;
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4) !important;
-}
-
-html[data-theme="dark"] .preset-card.is-front {
-  border-color: var(--accent-color, #0ea5e9) !important;
-  box-shadow: 0 10px 30px rgba(14, 165, 233, 0.25) !important;
-}
-
-html[data-theme="dark"] .preset-card-text {
-  color: var(--text-primary) !important;
-}
-
-html[data-theme="dark"] .preset-card-index,
-html[data-theme="dark"] .preset-card-foot {
-  color: var(--text-muted) !important;
-}
-
-html[data-theme="dark"] .preset-nav-btn {
-  background: var(--bg-secondary) !important;
-  border-color: var(--border-color) !important;
-  color: var(--text-primary) !important;
-}
-
-html[data-theme="dark"] .preset-dot {
-  background: var(--border-color) !important;
-}
-
-html[data-theme="dark"] .preset-dot.active {
-  background: var(--accent-color, #0ea5e9) !important;
-}
+/* 预设问题卡片：样式全部走语义化令牌（--bg-secondary / --text-primary ...），
+   深浅主题自动适配，这里无需额外覆盖。 */
 
 /* 滚动按钮 */
 html[data-theme="dark"] .scroll-btn {
@@ -3481,42 +3457,7 @@ html[data-theme="dark"] .model-item-badge {
   color: #4ade80 !important;
 }
 
-/* ========== 首页预设问题（分类标签 + 悬浮面板 + 问题卡片）========== */
-html[data-theme="dark"] .preset-category-tab {
-  background: var(--bg-tertiary) !important;
-  border-color: var(--border-color) !important;
-  color: var(--text-secondary) !important;
-}
-
-html[data-theme="dark"] .preset-category-tab:hover {
-  border-color: var(--accent-color) !important;
-  color: var(--accent-color) !important;
-}
-
-html[data-theme="dark"] .preset-category-tab.active {
-  background: color-mix(in srgb, var(--accent-color) 22%, var(--bg-tertiary)) !important;
-  border-color: var(--accent-color) !important;
-  color: var(--accent-color) !important;
-}
-
-html[data-theme="dark"] .preset-category-panel {
-  background: var(--bg-secondary) !important;
-  border-color: var(--border-color) !important;
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5) !important;
-}
-
-html[data-theme="dark"] .preset-chip {
-  background: var(--bg-tertiary) !important;
-  border-color: var(--border-color) !important;
-  color: var(--text-secondary) !important;
-}
-
-html[data-theme="dark"] .preset-chip:hover {
-  border-color: var(--accent-color) !important;
-  color: var(--accent-color) !important;
-  transform: translateY(-1px);
-}
-
+/* ========== 首页预设问题：卡片样式走语义化令牌，深浅主题自动适配 ========== */
 /* ========== 聊天页（Chat.vue）深色适配 ========== */
 html[data-theme="dark"] .chat-container {
   background: var(--bg-primary) !important;
@@ -3534,29 +3475,6 @@ html[data-theme="dark"] .welcome-screen {
 }
 html[data-theme="dark"] .welcome-screen h2 {
   color: var(--text-primary) !important;
-}
-html[data-theme="dark"] .preset-card {
-  background: var(--bg-secondary) !important;
-  border-color: var(--border-color) !important;
-}
-html[data-theme="dark"] .preset-card-text {
-  color: var(--text-primary) !important;
-}
-html[data-theme="dark"] .preset-card-foot {
-  color: var(--text-secondary) !important;
-}
-html[data-theme="dark"] .preset-nav-btn {
-  background: var(--bg-secondary) !important;
-  border-color: var(--border-color) !important;
-  color: var(--text-secondary) !important;
-}
-html[data-theme="dark"] .preset-nav-btn:hover {
-  background: var(--bg-tertiary) !important;
-  border-color: var(--accent-color) !important;
-  color: var(--accent-color) !important;
-}
-html[data-theme="dark"] .preset-dot {
-  background: var(--border-color) !important;
 }
 html[data-theme="dark"] .scroll-btn {
   background: var(--bg-secondary) !important;

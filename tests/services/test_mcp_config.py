@@ -77,6 +77,48 @@ def test_load_mcp_config_accepts_mcpservers_key(tmp_path, monkeypatch):
     assert loaded["akshare-mcp"]["url"] == "http://127.0.0.1:8005/sse"
 
 
+def test_load_user_mcp_config_never_falls_back_to_global(tmp_path, monkeypatch):
+    """load_user_mcp_config 只认用户自己的 mcp.json，不回退全局。
+
+    连接器页的 installed 判断依赖这个语义：config/mcp.json 同时是全局 mcp.json，
+    回退会让公共目录里的条目全被误判成「已安装」。
+    """
+    from easy_agent.config import Config
+
+    global_file = tmp_path / "global-mcp.json"
+    global_file.write_text(
+        json.dumps({"servers": {"from-global": {"transport": "stdio", "command": "echo"}}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(mcp_mod, "_find_mcp_config", lambda: global_file)
+    user_path = tmp_path / "user" / "mcp.json"
+
+    # 用户文件不存在 → 空（而不是全局里的 from-global）
+    monkeypatch.setattr(Config, "get_user_mcp_path", classmethod(lambda cls, u, c=None: user_path))
+    assert mcp_mod.load_user_mcp_config("someone") == {}
+    # 全局回退仍然只影响 load_mcp_config
+    assert "from-global" in mcp_mod.load_mcp_config("someone")
+
+    # 用户文件存在 → 只返回用户自己的
+    user_path.parent.mkdir(parents=True, exist_ok=True)
+    user_path.write_text(
+        json.dumps({"servers": {"mine": {"transport": "stdio", "command": "echo"}}}),
+        encoding="utf-8",
+    )
+    assert set(mcp_mod.load_user_mcp_config("someone")) == {"mine"}
+
+
+def test_load_user_mcp_config_survives_broken_json(tmp_path, monkeypatch):
+    """用户 mcp.json 损坏时降级为空映射，不抛异常。"""
+    from easy_agent.config import Config
+
+    user_path = tmp_path / "mcp.json"
+    user_path.write_text("{broken", encoding="utf-8")
+    monkeypatch.setattr(Config, "get_user_mcp_path", classmethod(lambda cls, u, c=None: user_path))
+
+    assert mcp_mod.load_user_mcp_config("someone") == {}
+
+
 def test_normalize_servers_mapping_unwraps_polluted_mcpservers():
     """旧版误存的 {"servers": {"mcpServers": {"akshare-mcp": {...}}}} 应被展开。"""
     polluted = {

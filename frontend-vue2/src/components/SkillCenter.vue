@@ -2,8 +2,8 @@
   「专家 · 技能 · 连接器」容器：三 Tab 即面板首行（上方不放标题栏等任何内容）。
   - 专家：空态占位
   - 技能：SkillListPanel.vue（搜索 / 分类筛选 / 启用开关 / 详情页）
-  - 连接器（= MCP）：ConnectorListPanel.vue，含两个子视图
-    McpConfigEditorPanel.vue（mcp.json 原文编辑）/ McpAddPanel.vue（粘贴 JSON 添加）
+  - 连接器（= MCP）：ConnectorListPanel.vue（含「已安装」筛选）+ McpConfigEditorPanel.vue
+    （mcp.json 原文编辑；粘贴 JSON 添加已并入编辑器，不再单独提供添加页）
 
   主 Tab 交互：静止/悬停/选中三态 + 内容切换动效 + ←/→/Home/End 键盘切换 +
   ≤768px 横向滚动（关闭按钮固定在右侧）。
@@ -69,14 +69,11 @@
           <ConnectorListPanel
             v-if="connectorView === 'list'"
             @manage="connectorView = 'manage'"
-            @add="connectorView = 'add'"
           />
           <McpConfigEditorPanel
-            v-else-if="connectorView === 'manage'"
+            v-else
             @back="connectorView = 'list'"
-            @add="connectorView = 'add'"
           />
-          <McpAddPanel v-else @back="connectorView = 'list'" />
         </template>
       </div>
     </Transition>
@@ -86,7 +83,6 @@
 <script>
 import SkillListPanel from './SkillListPanel.vue'
 import ConnectorListPanel from './ConnectorListPanel.vue'
-import McpAddPanel from './McpAddPanel.vue'
 
 const T = 'xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="15" height="15" aria-hidden="true"'
 
@@ -101,11 +97,20 @@ export default {
   components: {
     SkillListPanel,
     ConnectorListPanel,
-    McpAddPanel,
     // Monaco 体积较大，编辑器面板懒加载：只在进入「MCP 服务管理」时才拉取
     McpConfigEditorPanel: () => import('./McpConfigEditorPanel.vue'),
   },
+  props: {
+    // 从「+」菜单进入时可指定初始 Tab（experts / skills / connectors）
+    initialTab: { type: String, default: 'skills' },
+  },
+  // create-skill：技能列表「创建技能」入口，由外层接手跳转新会话预填指令
   emits: ['close', 'create-skill'],
+  watch: {
+    initialTab(v) {
+      if (v && v !== this.activeTab) this.activeTab = v
+    },
+  },
   data() {
     return {
       tabs: [
@@ -113,8 +118,8 @@ export default {
         { key: 'skills', label: '技能', icon: TAB_ICONS.skills, hint: '技能：管理公共技能与我的技能，可添加/移除、导入 zip、查看 SKILL.md' },
         { key: 'connectors', label: '连接器', icon: TAB_ICONS.connectors, hint: '连接器（MCP）：一键添加内置连接器、编辑 mcp.json 原文、接入自定义 MCP 服务' },
       ],
-      activeTab: 'skills',
-      // 连接器内部视图：list（卡片列表）/ manage（mcp.json 编辑）/ add（粘贴 JSON 添加）
+      activeTab: this.initialTab || 'skills',
+      // 连接器内部视图：list（卡片列表）/ manage（mcp.json 编辑）
       connectorView: 'list',
     }
   },

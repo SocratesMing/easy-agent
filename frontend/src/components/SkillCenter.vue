@@ -2,8 +2,8 @@
   「专家 · 技能 · 连接器」容器：三 Tab 即面板首行（上方不放标题栏等任何内容）。
   - 专家：空态占位
   - 技能：SkillListPanel.vue（搜索 / 分类筛选 / 启用开关 / 详情页）
-  - 连接器（= MCP）：ConnectorListPanel.vue，含两个子视图
-    McpConfigEditorPanel.vue（mcp.json 原文编辑）/ McpAddPanel.vue（粘贴 JSON 添加）
+  - 连接器（= MCP）：ConnectorListPanel.vue（含「已安装」筛选）+ McpConfigEditorPanel.vue
+    （mcp.json 原文编辑；粘贴 JSON 添加已并入编辑器，不再单独提供添加页）
 
   主 Tab 交互：静止/悬停/选中三态 + 内容切换动效 + ←/→/Home/End 键盘切换 +
   ≤768px 横向滚动（关闭按钮固定在右侧）。
@@ -69,14 +69,11 @@
           <ConnectorListPanel
             v-if="connectorView === 'list'"
             @manage="connectorView = 'manage'"
-            @add="connectorView = 'add'"
           />
           <McpConfigEditorPanel
-            v-else-if="connectorView === 'manage'"
+            v-else
             @back="connectorView = 'list'"
-            @add="connectorView = 'add'"
           />
-          <McpAddPanel v-else @back="connectorView = 'list'" />
         </template>
       </div>
     </Transition>
@@ -84,14 +81,19 @@
 </template>
 
 <script setup>
-import { ref, nextTick, defineAsyncComponent } from 'vue'
+import { ref, nextTick, watch, defineAsyncComponent } from 'vue'
 import SkillListPanel from './SkillListPanel.vue'
 import ConnectorListPanel from './ConnectorListPanel.vue'
-import McpAddPanel from './McpAddPanel.vue'
 
 // Monaco 体积较大，编辑器面板懒加载：只在进入「MCP 服务管理」时才拉取
 const McpConfigEditorPanel = defineAsyncComponent(() => import('./McpConfigEditorPanel.vue'))
 
+const props = defineProps({
+  // 从「+」菜单进入时可指定初始 Tab（experts / skills / connectors）
+  initialTab: { type: String, default: 'skills' },
+})
+
+// create-skill：技能列表「创建技能」入口，由外层（App）接手跳转新会话预填指令
 defineEmits(['close', 'create-skill'])
 
 const T = 'xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="15" height="15" aria-hidden="true"'
@@ -118,8 +120,11 @@ const tabs = [
   },
 ]
 
-const activeTab = ref('skills')
-// 连接器内部视图：list（卡片列表）/ manage（mcp.json 编辑）/ add（粘贴 JSON 添加）
+const activeTab = ref(props.initialTab)
+watch(() => props.initialTab, (v) => {
+  if (v && v !== activeTab.value) activeTab.value = v
+})
+// 连接器内部视图：list（卡片列表）/ manage（mcp.json 编辑）
 const connectorView = ref('list')
 const rootRef = ref(null)
 

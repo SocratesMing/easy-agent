@@ -404,10 +404,13 @@ Agent 会自动解析调度意图并调用 `create_scheduled_task` 工具，参�
   如 `/mcp/market/`，配置 URL + API Key 即可接入），详见 `mcp-server/README.md`
 
 ### 7. MCP（连接器）配置
-- 连接器 Tab 右上角「自定义连接器」进入 **MCP 服务管理**：直接编辑 `workspace/{username}/mcp.json` 原文（带行号的 JSON 编辑器，保存后即时生效）
-- 「添加 MCP」整页粘贴 JSON 配置（支持 `servers` / `mcpServers` / 对象 / 单条四种格式，以 `servers` 下的名称识别并判重）
+- 连接器 Tab 工具条有「已安装(n)」筛选：点开只显示已安装的 MCP（内置目录中已添加的 + 用户自定义的）
+- 连接器 Tab 右上角「自定义连接器」进入 **MCP 服务管理**：直接编辑 `workspace/{username}/mcp.json` 原文（带行号的 JSON 编辑器，保存后即时生效）；添加自定义 MCP 也在这里改 JSON 完成，管理页不再单独提供「+ 添加 MCP」按钮（`POST /agent/connectors/mcp` 接口保留，支持 `servers` / `mcpServers` / 对象 / 单条四种格式）
 - 后端接口：`/agent/connectors`（目录 + 自定义项）、`/agent/connectors/install|uninstall`、`/agent/connectors/mcp*`（增删改原文）
-- 内置连接器目录：`easy_agent/connectors/catalog.json`，每条 `{id,name,description,icon,config}`（`id` 即写入 mcp.json 的 server 名）；改这个文件不用重启后端，随包预置 5 条示例：`market-data`（自建 market MCP）/ `filesystem` / `fetch` / `git` / `everything`
+- 公共 MCP 配置：`easy_agent/config/mcp.json`（与 `config.yaml` 同目录，查找顺序 `./easy_agent/config` → `~/.easy-agent/config` → 包内 `config`，由 `Config.find_config_file` 解析），每条 `{id,name,description,icon,config}`（`id` 即写入用户 mcp.json 的 server 名）；改这个文件不用重启后端（每次请求现读），随包预置 5 条示例：`market-data`（自建 market MCP）/ `filesystem` / `fetch` / `git` / `everything`
+  - ⚠️ 该文件位于 config 目录，同时会被当作「全局 mcp.json」用于 Agent 加载。它没有 `servers` 字段，因此不会给任何用户自动加载 MCP；**不要往里面加 `servers`**（会让所有未自建 mcp.json 的用户自动加载这些服务）
+  - 连接器页的「已安装」判断只读用户自己的 `workspace/{username}/mcp.json`，不受这份公共配置影响
+- 格式规范（顶层 `connectors` 数组，字段非法/重复/缺 name 或缺 config 的条目会被跳过并记 warning，页面始终可用）
 - API Key 已不在设置页签发（表 `mcp_api_keys` 仅由 mcp-server 只读校验），
   历史 key 迁移见 `scripts/migrate_market_mcp_keys.py`
 

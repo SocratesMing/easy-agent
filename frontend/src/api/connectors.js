@@ -58,10 +58,6 @@ export async function uninstallConnector(id) {
   return send('POST', '/uninstall', { id }, '卸载连接器失败')
 }
 
-export async function addMcpConfig(config) {
-  return send('POST', '/mcp', { config }, '添加 MCP 服务失败')
-}
-
 export async function deleteMcpServer(name) {
   return send('DELETE', `/mcp/${encodeURIComponent(name)}`, undefined, '删除 MCP 服务失败')
 }

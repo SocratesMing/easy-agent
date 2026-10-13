@@ -12,6 +12,15 @@
         </svg>
         <input v-model="keyword" type="text" placeholder="搜索连接器" aria-label="搜索连接器" />
       </div>
+      <button
+        class="installed-filter"
+        :class="{ active: installedOnly }"
+        :aria-pressed="installedOnly ? 'true' : 'false'"
+        :title="`只看已安装的 ${installedCount} 个 MCP 服务`"
+        @click="installedOnly = !installedOnly"
+      >
+        已安装<span class="filter-count">{{ installedCount }}</span>
+      </button>
       <button class="custom-connector-btn" @click="$emit('manage')">
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <line x1="4" y1="21" x2="4" y2="14"></line>
@@ -45,7 +54,7 @@
           <path d="M6 8h12v3a6 6 0 0 1-12 0z"></path>
           <path d="M12 17v5"></path>
         </svg>
-        <p>{{ keyword ? '没有匹配的连接器' : '暂无连接器，点右上角「自定义连接器」添加 MCP 服务' }}</p>
+        <p>{{ emptyText }}</p>
       </div>
 
       <div v-else class="connector-grid">
@@ -141,13 +150,14 @@ import {
   uninstallConnector,
 } from '../api/connectors.js'
 
-defineEmits(['manage', 'add'])
+defineEmits(['manage'])
 
 const loading = ref(false)
 const error = ref('')
 const connectors = ref([])
 const customServers = ref([])
 const keyword = ref('')
+const installedOnly = ref(false)
 
 const installing = ref('')
 const removing = ref('')
@@ -169,7 +179,7 @@ const cards = computed(() => {
   const match = (text) => !kw || String(text || '').toLowerCase().includes(kw)
 
   const fromCatalog = connectors.value
-    .filter(c => match(c.name) || match(c.id) || match(c.description))
+    .filter(c => (!installedOnly.value || c.installed) && (match(c.name) || match(c.id) || match(c.description)))
     .map(c => ({
       key: c.id,
       name: c.name,
@@ -195,6 +205,17 @@ const cards = computed(() => {
     }))
 
   return [...fromCatalog, ...fromUser]
+})
+
+// 已安装数 = 内置目录中已添加的 + 用户自定义（自定义项必然已安装）
+const installedCount = computed(
+  () => connectors.value.filter(c => c.installed).length + customServers.value.length,
+)
+
+const emptyText = computed(() => {
+  if (keyword.value.trim()) return '没有匹配的连接器'
+  if (installedOnly.value) return '还没有已安装的 MCP，点卡片上的 + 添加，或「自定义连接器」编辑配置'
+  return '暂无连接器，点右上角「自定义连接器」编辑 mcp.json 添加 MCP 服务'
 })
 
 const detailSnippet = computed(() => {
@@ -296,10 +317,8 @@ onMounted(load)
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+  gap: 10px;
   padding: 16px 24px;
-  border-bottom: 1px solid #e2e8f0;
 }
 
 .connector-search {
@@ -307,7 +326,7 @@ onMounted(load)
   align-items: center;
   gap: 8px;
   flex: 1;
-  max-width: 360px;
+  max-width: 320px;
   height: 36px;
   padding: 0 12px;
   border: 1px solid var(--border-color);
@@ -336,26 +355,68 @@ onMounted(load)
   display: flex;
   align-items: center;
   gap: 6px;
+  margin-left: auto;
   height: 36px;
   padding: 0 16px;
-  border: 1px solid var(--border-color);
+  border: none;
   border-radius: 8px;
-  background: var(--bg-secondary);
-  color: var(--text-primary);
+  background: var(--accent-color, #0ea5e9);
+  color: #ffffff;
   font-size: 14px;
+  font-weight: 500;
   cursor: pointer;
   transition: all 0.2s;
   white-space: nowrap;
 }
 
 .custom-connector-btn:hover {
-  background: var(--bg-tertiary);
-  border-color: #cbd5e1;
+  background: color-mix(in srgb, var(--accent-color, #0ea5e9) 86%, #000);
+}
+
+.custom-connector-btn:focus-visible {
+  outline: 2px solid var(--accent-color, #0ea5e9);
+  outline-offset: 2px;
 }
 
 .custom-connector-btn svg {
   width: 16px;
   height: 16px;
+}
+
+.installed-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 36px;
+  padding: 0 14px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  font-size: 14px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.2s;
+}
+
+.installed-filter:hover {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+.installed-filter.active {
+  border-color: #0ea5e9;
+  background: rgba(14, 165, 233, 0.1);
+  color: #0ea5e9;
+}
+
+.installed-filter:focus-visible {
+  outline: 2px solid #0ea5e9;
+  outline-offset: 2px;
+}
+
+.installed-filter .filter-count {
+  font-variant-numeric: tabular-nums;
 }
 
 .connector-notice {
@@ -729,15 +790,31 @@ html[data-theme="dark"] .connector-detail-card {
 }
 
 html[data-theme="dark"] .connector-search,
-html[data-theme="dark"] .custom-connector-btn,
 html[data-theme="dark"] .connector-snippet {
   background: var(--bg-tertiary);
   border-color: var(--border-color);
   color: var(--text-primary);
 }
 
+html[data-theme="dark"] .custom-connector-btn {
+  background: var(--accent-color, #0ea5e9);
+  border: none;
+  color: #ffffff;
+}
+
 html[data-theme="dark"] .connector-search input {
   color: var(--text-primary);
+}
+
+html[data-theme="dark"] .installed-filter {
+  background: var(--bg-tertiary);
+  border-color: var(--border-color);
+  color: var(--text-secondary);
+}
+
+html[data-theme="dark"] .installed-filter.active {
+  background: rgba(14, 165, 233, 0.18);
+  color: #7dd3fc;
 }
 
 html[data-theme="dark"] .connector-notice.success {
