@@ -242,10 +242,10 @@ async function move(index, delta) {
   max-height: min(560px, 88vh);
   display: flex;
   flex-direction: column;
-  border-radius: 12px;
+  border-radius: 14px;
   border: 1px solid var(--border-color);
-  background: var(--bg-secondary);
-  box-shadow: 0 18px 48px rgba(15, 23, 42, 0.28);
+  background: var(--bg-surface);
+  box-shadow: 0 18px 48px rgba(15, 23, 42, 0.24);
 }
 
 .manager-header {
@@ -278,10 +278,11 @@ async function move(index, delta) {
 .create-row input {
   flex: 1;
   min-width: 0;
-  padding: 7px 12px;
+  height: 36px;
+  padding: 0 12px;
   border: 1px solid var(--border-color);
-  border-radius: 8px;
-  background: var(--bg-tertiary);
+  border-radius: 10px;
+  background: var(--bg-secondary);
   color: var(--text-primary);
   font-size: 13px;
 }
@@ -304,10 +305,15 @@ async function move(index, delta) {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 7px 10px;
+  padding: 8px 10px;
   border: 1px solid var(--border-color);
-  border-radius: 8px;
-  background: var(--bg-tertiary);
+  border-radius: 10px;
+  background: var(--bg-secondary);
+  transition: border-color 0.18s ease;
+}
+
+.category-row:hover {
+  border-color: color-mix(in srgb, var(--accent-color) 30%, var(--border-color));
 }
 
 .row-main {
@@ -414,12 +420,14 @@ async function move(index, delta) {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 7px 14px;
+  height: 36px;
+  padding: 0 16px;
   border: none;
-  border-radius: 8px;
+  border-radius: 10px;
   background: var(--accent-color);
   color: #fff;
   font-size: 13px;
+  font-weight: 500;
   cursor: pointer;
 }
 

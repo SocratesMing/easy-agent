@@ -103,13 +103,15 @@ export default {
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-  border-radius: 10px;
+  border-radius: 12px;
+  /* 同色系内描边：让图标块在卡片上有清晰边界，又不喧宾夺主 */
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 16%, transparent);
 }
 
 .skill-icon.xs {
   width: 22px;
   height: 22px;
-  border-radius: 6px;
+  border-radius: 7px;
 }
 
 .skill-icon.xs svg {
@@ -129,7 +131,7 @@ export default {
 .skill-icon.lg {
   width: 56px;
   height: 56px;
-  border-radius: 14px;
+  border-radius: 16px;
 }
 
 .skill-icon svg {
@@ -153,63 +155,63 @@ export default {
 }
 
 .skill-icon.doc {
-  background: #fef3c7;
+  background: color-mix(in srgb, #f59e0b 15%, var(--bg-surface));
   color: #d97706;
 }
 
 .skill-icon.code {
-  background: #ede9fe;
+  background: color-mix(in srgb, #8b5cf6 15%, var(--bg-surface));
   color: #7c3aed;
 }
 
 .skill-icon.design {
-  background: #fce7f3;
+  background: color-mix(in srgb, #ec4899 15%, var(--bg-surface));
   color: #db2777;
 }
 
 .skill-icon.data {
-  background: #d1fae5;
+  background: color-mix(in srgb, #10b981 15%, var(--bg-surface));
   color: #059669;
 }
 
 .skill-icon.api {
-  background: #e0e7ff;
+  background: color-mix(in srgb, #6366f1 15%, var(--bg-surface));
   color: #4f46e5;
 }
 
 .skill-icon.default {
-  background: #f0f9ff;
-  color: #0ea5e9;
+  background: color-mix(in srgb, #0ea5e9 15%, var(--bg-surface));
+  color: #0284c7;
 }
 
 /* 深色主题：底色降低明度、字色提亮，保持可读性 */
 html[data-theme="dark"] .skill-icon.doc {
-  background: #452c09;
+  background: color-mix(in srgb, #f59e0b 24%, var(--bg-surface));
   color: #fbbf24;
 }
 
 html[data-theme="dark"] .skill-icon.code {
-  background: #2e1065;
+  background: color-mix(in srgb, #8b5cf6 26%, var(--bg-surface));
   color: #c4b5fd;
 }
 
 html[data-theme="dark"] .skill-icon.design {
-  background: #4c0519;
+  background: color-mix(in srgb, #ec4899 24%, var(--bg-surface));
   color: #f9a8d4;
 }
 
 html[data-theme="dark"] .skill-icon.data {
-  background: #064e3b;
+  background: color-mix(in srgb, #10b981 24%, var(--bg-surface));
   color: #6ee7b7;
 }
 
 html[data-theme="dark"] .skill-icon.api {
-  background: #312e81;
+  background: color-mix(in srgb, #6366f1 26%, var(--bg-surface));
   color: #a5b4fc;
 }
 
 html[data-theme="dark"] .skill-icon.default {
-  background: #0c4a6e;
+  background: color-mix(in srgb, #0ea5e9 26%, var(--bg-surface));
   color: #7dd3fc;
 }
 </style>

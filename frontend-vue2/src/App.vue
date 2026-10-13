@@ -2709,7 +2709,7 @@ html[data-theme="dark"] .skill-center-content {
 }
 
 html[data-theme="dark"] .skill-card {
-  background: var(--bg-secondary) !important;
+  background: var(--bg-surface) !important;
   border-color: var(--border-color) !important;
 }
 
@@ -3302,7 +3302,8 @@ html[data-theme="dark"] .skill-center .main-tab:hover {
 }
 
 html[data-theme="dark"] .skill-center .main-tab.active {
-  background: color-mix(in srgb, var(--accent-color) 22%, transparent) !important;
+  background: color-mix(in srgb, var(--accent-color) 18%, var(--bg-surface)) !important;
+  border-color: color-mix(in srgb, var(--accent-color) 34%, transparent) !important;
   color: var(--accent-color) !important;
 }
 
