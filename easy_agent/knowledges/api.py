@@ -78,7 +78,15 @@ from .core.models import (
 from .core.operations_repository import KnowledgeOperationsRepository
 from .ragflow import RagflowError
 from .core.repository import KnowledgeRepository
-from .service import KnowledgeService, KnowledgeServiceError
+from .doc_converter import (
+    DOCX_MIME,
+    DocConverterError,
+    convert_doc_to_docx_bytes,
+    docx_cache_get,
+    docx_cache_key,
+    docx_cache_put,
+)
+from .service import KnowledgeDocumentBinary, KnowledgeService, KnowledgeServiceError
 
 
 logger = logging.getLogger("easy_agent.knowledge.upload")
@@ -188,13 +196,21 @@ async def _ensure_knowledge_chat_session(
     db: Database,
     service: KnowledgeService,
     principal: KnowledgePrincipal,
+    create_missing: bool = True,
 ) -> tuple[SessionModel, KnowledgeBaseSummary]:
-    """创建或刷新右侧问答的隐藏会话，并锁定当前知识库范围。"""
+    """创建或刷新右侧问答的隐藏会话，并锁定当前知识库范围。
+
+    create_missing=False 时只读探测（peek）：会话不存在直接 404，不创建
+    会话记录，供「打开面板预取历史」使用——点击知识库本身不应生成
+    「[知识库问答]」会话记录；真正提问时才创建。
+    """
 
     base = await _call(service.get_base(base_id, principal))
     session_id = _knowledge_chat_session_id(principal, base_id)
     session = db.get_session(session_id)
     if session is None:
+        if not create_missing:
+            raise HTTPException(status_code=404, detail="知识库问答会话不存在")
         now = datetime.now().isoformat()
         workspace_name = f"knowledge_{base_id[:12]}"
         session = SessionModel(
@@ -211,13 +227,14 @@ async def _ensure_knowledge_chat_session(
     elif session.username != principal.username:
         raise HTTPException(status_code=404, detail="知识库问答会话不存在")
 
-    await _call(
-        service.replace_session_scope(
-            session_id=session_id,
-            principal=principal,
-            base_ids=[base_id],
+    if create_missing:
+        await _call(
+            service.replace_session_scope(
+                session_id=session_id,
+                principal=principal,
+                base_ids=[base_id],
+            )
         )
-    )
     return session, base
 
 
@@ -690,6 +707,34 @@ async def move_document(
     )
 
 
+async def _docx_preview_binary(
+    document_id: str, document: dict, binary: KnowledgeDocumentBinary
+) -> KnowledgeDocumentBinary:
+    """把 .doc 原文懒转换为 .docx 供预览；结果缓存到 data/docx_cache。"""
+    key = docx_cache_key(document_id, binary.sha256, binary.size_bytes)
+    payload = await run_in_threadpool(docx_cache_get, key)
+    if payload is None:
+        raw = b"".join(binary.iter_bytes(0, binary.size_bytes - 1))
+        try:
+            payload = await run_in_threadpool(
+                convert_doc_to_docx_bytes, str(document["name"]), raw
+            )
+        except DocConverterError as exc:
+            raise HTTPException(status_code=415, detail=str(exc)) from exc
+        await run_in_threadpool(docx_cache_put, key, payload)
+
+    def _iter(start: int, end: int | None, _payload: bytes = payload):
+        stop = None if end is None else end + 1
+        return iter((_payload[start:stop],))
+
+    return KnowledgeDocumentBinary(
+        size_bytes=len(payload),
+        content_type=DOCX_MIME,
+        sha256=None,
+        iterator_factory=_iter,
+    )
+
+
 @router.get("/documents/{document_id}/content")
 async def get_document_content(
     document_id: str,
@@ -697,6 +742,7 @@ async def get_document_content(
     service: Annotated[KnowledgeService, Depends(_service)],
     principal: Annotated[KnowledgePrincipal, Depends(get_knowledge_principal)],
     disposition: Literal["inline", "attachment"] = Query(default="inline"),
+    convert: Literal["", "docx"] = Query(default=""),
 ) -> Response:
     """下载或在线预览文档原文，支持单区间 Range 请求。"""
 
@@ -707,6 +753,20 @@ async def get_document_content(
             request_id=_request_id(request),
         )
     )
+    if convert == "docx" and str(document["name"]).lower().endswith(".doc"):
+        binary = await _docx_preview_binary(document_id, document, binary)
+        docx_name = re.sub(r"\.doc$", "", str(document["name"]), flags=re.I) + ".docx"
+        return StreamingResponse(
+            binary.iter_bytes(0, binary.size_bytes - 1),
+            media_type=DOCX_MIME,
+            headers={
+                "Content-Disposition": (
+                    f"{disposition}; filename*=UTF-8''{quote(docx_name, safe='')}"
+                ),
+                "X-Content-Type-Options": "nosniff",
+                "Content-Length": str(binary.size_bytes),
+            },
+        )
     filename = quote(str(document["name"]), safe="")
     size = binary.size_bytes
     headers = {
@@ -1060,11 +1120,14 @@ async def prepare_easyagent_chat_session(
     db: Annotated[Database, Depends(get_database)],
     service: Annotated[KnowledgeService, Depends(_service)],
     principal: Annotated[KnowledgePrincipal, Depends(get_knowledge_principal)],
+    peek: bool = Query(False),
 ) -> SessionKnowledgeScopeResponse:
     """为右侧面板准备 EasyAgent 隐藏会话。
 
     这个接口只处理权限和知识范围；真正问答由前端直接调用
     与新对话完全相同的宿主流式聊天端点。
+    peek=true 时只读探测：会话不存在返回 404 且不创建记录，用于
+    打开面板预取历史；只有实际提问（默认调用）才生成会话记录。
     """
 
     session, _ = await _ensure_knowledge_chat_session(
@@ -1072,6 +1135,7 @@ async def prepare_easyagent_chat_session(
         db=db,
         service=service,
         principal=principal,
+        create_missing=not peek,
     )
     return SessionKnowledgeScopeResponse(
         session_id=session.session_id,
