@@ -43,7 +43,11 @@
       
       <AssetsPanel v-if="showAssets" :visible="showAssets" @close="showAssets = false" />
 
-      <SkillCenter v-if="showSkillCenter" @close="showSkillCenter = false" />
+      <SkillCenter
+        v-if="showSkillCenter"
+        @close="showSkillCenter = false"
+        @create-skill="handleSkillCreate"
+      />
 
       <ScheduledTasksPanel v-if="showScheduledTasks" @close="showScheduledTasks = false" />
       
@@ -1001,6 +1005,14 @@ async function ensureCurrentSession(initialTitle = '') {
     }
   }
   return currentSessionId.value
+}
+
+/**
+ * 技能中心的「创建技能」：预填内容已写入 sessionStorage，
+ * 这里新建会话并关闭技能中心，ChatInput 随之重新挂载、自动恢复技能标签与提示词。
+ */
+async function handleSkillCreate() {
+  await handleCreateSession()
 }
 
 async function handleCreateSession() {

@@ -291,6 +291,9 @@ import SkillIcon from './SkillIcon.vue'
 // 输入草稿持久化：页面刷新后恢复用户尚未发送的输入内容（“输入框的状态不变”）
 const DRAFT_KEY = 'easy_agent_input_draft'
 
+// 待选技能：由技能中心「创建技能」等入口写入，本组件挂载时恢复成技能标签
+const PENDING_SKILL_KEY = 'easy_agent_pending_skill'
+
 export default {
   components: { FileIcon, SkillIcon },
   props: {
@@ -483,6 +486,9 @@ export default {
     } catch (e) {
       // 忽略草稿恢复失败
     }
+    // 恢复待选技能（技能中心「创建技能」等入口预置），读取后即清除
+    this.restorePendingSkill()
+
     document.addEventListener('click', this.closeTokenPopup)
     document.addEventListener('click', this.closeModelDropdown)
     document.addEventListener('click', this.closeSkillPickerOnClick)
@@ -857,6 +863,34 @@ export default {
 
     removeSelectedSkill(skill) {
       this.selectedSkills = this.selectedSkills.filter(s => s.dir_name !== skill.dir_name)
+    },
+
+    /**
+     * 恢复「待选技能」：技能中心「创建技能」等入口会把技能写进 sessionStorage，
+     * 面板关闭后本组件重新挂载时读出来挂成技能标签（读后即清除，避免下次误挂）。
+     */
+    restorePendingSkill() {
+      let raw = null
+      try {
+        raw = sessionStorage.getItem(PENDING_SKILL_KEY)
+        if (raw) sessionStorage.removeItem(PENDING_SKILL_KEY)
+      } catch (_) { /* 隐私模式等场景忽略 */ }
+      if (!raw) return
+
+      try {
+        const skill = JSON.parse(raw)
+        const exists = this.selectedSkills.some(s => s.dir_name === skill.dir_name)
+        if (skill && skill.dir_name && !exists) {
+          this.selectedSkills = [...this.selectedSkills, skill]
+          this.$nextTick(() => {
+            this.autoResize()
+            const ta = this.$refs.textareaRef
+            if (ta) ta.focus()
+          })
+        }
+      } catch (e) {
+        console.error('恢复待选技能失败:', e)
+      }
     },
 
     /** 键盘：面板打开时接管 ↑↓ / Enter / Esc，其余情况保持原有 Enter 发送 */

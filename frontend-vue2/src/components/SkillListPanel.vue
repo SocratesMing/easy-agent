@@ -267,9 +267,16 @@ import SkillDetailPanel from './SkillDetailPanel.vue'
 import SkillCategoryManager from './SkillCategoryManager.vue'
 import ToggleSwitch from './ToggleSwitch.vue'
 
+// 创建技能：跳转到新会话，并把 skill-creator 技能与提示词预填进输入框。
+// 预填内容通过 sessionStorage 传递：技能中心关闭后 ChatInput 会重新挂载并读取。
+const SKILL_DRAFT_KEY = 'easy_agent_input_draft'
+const SKILL_PENDING_KEY = 'easy_agent_pending_skill'
+const CREATE_SKILL_DIR = 'skill-creator'
+const CREATE_SKILL_PROMPT = '请帮我创建一个可以实现「......」的skill'
+
 export default {
   components: { SkillIcon, SkillDetailPanel, SkillCategoryManager, ToggleSwitch },
-  emits: ['close'],
+  emits: ['close', 'create-skill'],
   data() {
     return {
       // 类别由后端管理（用户级持久化），默认兜底类别固定为「通用技能」
@@ -544,9 +551,42 @@ export default {
     },
 
     /** 「添加技能」菜单：创建技能（功能待实现，先占位） */
-    handleCreateSkill() {
+    /**
+     * 「添加技能」菜单：创建技能
+     *
+     * 1. 确保 skill-creator 已添加到「我的技能」（未安装时 Agent 侧拿不到这个技能）；
+     * 2. 写入预填草稿 + 待选技能，供 ChatInput 挂载时恢复；
+     * 3. 上抛 create-skill，由 App 切换到新会话。
+     */
+    async handleCreateSkill() {
       this.addMenuOpen = false
-      this.showToast('创建技能功能开发中')
+
+      const card = this.cards.find((item) => item.dirName === CREATE_SKILL_DIR)
+      if (!card || !card.installed) {
+        try {
+          await addSkillToUser(CREATE_SKILL_DIR)
+        } catch (e) {
+          // 已添加等情况直接忽略，只有真正的失败才提示
+          if (!String((e && e.message) || '').includes('已添加')) {
+            this.showToast((e && e.message) || '准备创建技能失败', 'error')
+          }
+        }
+      }
+
+      try {
+        sessionStorage.setItem(SKILL_DRAFT_KEY, CREATE_SKILL_PROMPT)
+        sessionStorage.setItem(
+          SKILL_PENDING_KEY,
+          JSON.stringify({
+            dir_name: CREATE_SKILL_DIR,
+            name: (card && card.name) || CREATE_SKILL_DIR,
+            icon: (card && card.icon) || '',
+            category_id: (card && card.categoryId) || 'default',
+          })
+        )
+      } catch (_) { /* 隐私模式等场景忽略 */ }
+
+      this.$emit('create-skill')
     },
 
     triggerImport() {

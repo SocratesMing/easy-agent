@@ -447,6 +447,32 @@ function removeSelectedSkill(skill) {
   selectedSkills.value = selectedSkills.value.filter(s => s.dir_name !== skill.dir_name)
 }
 
+/**
+ * 恢复「待选技能」：技能中心「创建技能」等入口会把技能写进 sessionStorage，
+ * 面板关闭后本组件重新挂载时读出来挂成技能标签（读后即清除，避免下次误挂）。
+ */
+function restorePendingSkill() {
+  let raw = null
+  try {
+    raw = sessionStorage.getItem(PENDING_SKILL_KEY)
+    if (raw) sessionStorage.removeItem(PENDING_SKILL_KEY)
+  } catch (_) { /* 隐私模式等场景忽略 */ }
+  if (!raw) return
+
+  try {
+    const skill = JSON.parse(raw)
+    if (skill?.dir_name && !selectedSkills.value.some(s => s.dir_name === skill.dir_name)) {
+      selectedSkills.value = [...selectedSkills.value, skill]
+      nextTick(() => {
+        autoResize()
+        textareaRef.value?.focus()
+      })
+    }
+  } catch (e) {
+    console.error('恢复待选技能失败:', e)
+  }
+}
+
 /** 键盘：面板打开时接管 ↑↓ / Enter / Esc，其余情况保持原有 Enter 发送 */
 function onKeydown(event) {
   if (skillPickerOpen.value) {
@@ -537,6 +563,9 @@ async function loadWebSearchStatus() {
 
 // 输入草稿持久化：页面刷新后恢复用户尚未发送的输入内容（“输入框的状态不变”）
 const DRAFT_KEY = 'easy_agent_input_draft'
+
+// 待选技能：由技能中心「创建技能」等入口写入，本组件挂载时恢复成技能标签
+const PENDING_SKILL_KEY = 'easy_agent_pending_skill'
 
 // 光标所在行高亮（overlay 技术：textareal 本身无法按行上色）
 const caretLineTop = ref(null)   // 高亮条 top，null 表示隐藏
@@ -913,6 +942,9 @@ onMounted(() => {
   } catch (e) {
     // 忽略草稿恢复失败
   }
+
+  // 恢复待选技能（技能中心「创建技能」等入口预置），读取后即清除
+  restorePendingSkill()
   document.addEventListener('click', closeTokenPopup)
   document.addEventListener('click', closeModelDropdown)
   document.addEventListener('click', closeSkillPickerOnClick)

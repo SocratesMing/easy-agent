@@ -51,7 +51,11 @@
         :aria-labelledby="`tab-${activeTab}`"
         tabindex="0"
       >
-        <SkillListPanel v-if="activeTab === 'skills'" @close="$emit('close')" />
+        <SkillListPanel
+          v-if="activeTab === 'skills'"
+          @close="$emit('close')"
+          @create-skill="$emit('create-skill')"
+        />
 
         <div v-else-if="activeTab === 'experts'" class="center-empty">
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
@@ -88,7 +92,7 @@ import McpAddPanel from './McpAddPanel.vue'
 // Monaco 体积较大，编辑器面板懒加载：只在进入「MCP 服务管理」时才拉取
 const McpConfigEditorPanel = defineAsyncComponent(() => import('./McpConfigEditorPanel.vue'))
 
-defineEmits(['close'])
+defineEmits(['close', 'create-skill'])
 
 const T = 'xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="15" height="15" aria-hidden="true"'
 
