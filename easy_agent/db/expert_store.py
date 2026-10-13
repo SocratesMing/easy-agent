@@ -13,6 +13,7 @@
 
 import json
 import logging
+import re
 from datetime import datetime
 from typing import Any, Optional
 
@@ -68,6 +69,18 @@ COLUMNS = (
 def now_iso() -> str:
     """统一的时间戳口径：ISO 字符串（与 sessions.created_at 一致）。"""
     return datetime.now().isoformat(timespec="seconds")
+
+
+_WHITESPACE_RE = re.compile(r"\s+")
+
+
+def normalize_name_cn(value: Any) -> str:
+    """专家中文名的比较口径：忽略全部空白（含全角空格）+ 忽略大小写。
+
+    用户手工输入时很容易多打一个空格或大小写不一致，若按原样比较就会漏判，
+    出现「看起来一模一样」的两条记录（正是本次要修的 Bug）。
+    """
+    return _WHITESPACE_RE.sub("", str(value or "")).casefold()
 
 
 def _row_to_dict(row: Any) -> dict:
@@ -209,6 +222,48 @@ class ExpertStore:
             self.db._execute(cursor, sql, (expert_agent_id, user_id))
             row = cursor.fetchone()
         return _row_to_dict(row) if row else None
+
+    def find_by_name_cn(
+        self, user_id: str, name_cn: str, exclude_agent_id: str = ""
+    ) -> Optional[dict]:
+        """按中文名查找本用户下「未删除」专家中的重名记录（创建/修改时的重名校验）。
+
+        比较口径见 :func:`normalize_name_cn`（忽略空白与大小写）。
+        **已删除（disabled）的记录不参与校验**：它们已从列表里移除，名字视为
+        可复用——否则「删掉重建同名专家」会被莫名其妙地拦住。
+
+        Args:
+            user_id: 归属用户（``users.user_id``）。
+            name_cn: 待校验的中文名。
+            exclude_agent_id: 需要排除的专家 ID（修改时不与自己比）。
+
+        Returns:
+            命中的记录（至少含 ``export_agent_id`` / ``export_name_cn`` /
+            ``agent_status``）；无冲突返回 ``None``。
+        """
+        target = normalize_name_cn(name_cn)
+        if not target:
+            return None
+
+        sql = (
+            "SELECT export_agent_id, export_name_cn, agent_status "
+            "FROM expert_agents WHERE user_id=? AND agent_status<>?"
+        )
+        params: list[Any] = [user_id, STATUS_DISABLED]
+        if exclude_agent_id:
+            sql += " AND export_agent_id<>?"
+            params.append(exclude_agent_id)
+
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            self.db._execute(cursor, sql, tuple(params))
+            rows = cursor.fetchall()
+
+        for row in rows:
+            data = dict(row)
+            if normalize_name_cn(data.get("export_name_cn")) == target:
+                return data
+        return None
 
     def list_by_user(
         self,

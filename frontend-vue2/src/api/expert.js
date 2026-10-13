@@ -17,8 +17,8 @@ import request, {
   streamUrl,
 } from '../utils/request.js'
 
-/** 创建专家 */
-export async function addExpert({ nameCn, prompt, tagId = '', sessionId = null, model = null }) {
+/** 创建专家（分类标签 tag_id 由大模型自动生成，无需前端传入） */
+export async function addExpert({ nameCn, prompt, sessionId = null, model = null }) {
   return request(
     {
       url: '/agent/add',
@@ -27,7 +27,6 @@ export async function addExpert({ nameCn, prompt, tagId = '', sessionId = null, 
         type: 'agent',
         name_cn: nameCn,
         prompt,
-        tag_id: tagId,
         session_id: sessionId,
         model,
       },
@@ -41,7 +40,6 @@ export async function updateExpert({
   exportAgentId,
   nameCn = null,
   prompt = null,
-  tagId = null,
   model = null,
 }) {
   return request(
@@ -52,7 +50,6 @@ export async function updateExpert({
         export_agent_id: exportAgentId,
         name_cn: nameCn,
         prompt,
-        tag_id: tagId,
         modify_type: 'edit',
         model,
       },

@@ -216,6 +216,53 @@ def test_get_owned_rejects_other_user(db):
     assert store.get_owned("", "owner") is None
 
 
+# ── 中文名唯一性查找 ──────────────────────────────────────────────────
+
+
+def test_find_by_name_cn_matches_after_normalizing(db):
+    """比较口径：忽略空白（含全角空格）与大小写，避免「看起来一样」的重名。"""
+    store = ExpertStore(db)
+    _make(store, expert_id="e1", user_id="u1", export_name_cn="量化策略专家")
+
+    assert store.find_by_name_cn("u1", "量化策略专家")["export_agent_id"] == "e1"
+    assert store.find_by_name_cn("u1", "  量化策略专家  ")["export_agent_id"] == "e1"
+    assert store.find_by_name_cn("u1", "量化 策略\u3000专家")["export_agent_id"] == "e1"
+    assert store.find_by_name_cn("u1", "量化策略分析师") is None
+    assert store.find_by_name_cn("u1", "") is None
+
+    store2 = ExpertStore(db)
+    _make(store2, expert_id="e2", user_id="u1", export_name_cn="Quant-Factor")
+    assert store2.find_by_name_cn("u1", "quant-factor")["export_agent_id"] == "e2"
+
+
+def test_find_by_name_cn_scopes(db):
+    """只看本用户；exclude_agent_id 用于修改时排除自己。"""
+    store = ExpertStore(db)
+    _make(store, expert_id="e1", user_id="u1", export_name_cn="甲")
+    _make(store, expert_id="e2", user_id="u2", export_name_cn="甲")
+
+    assert store.find_by_name_cn("u1", "甲")["export_agent_id"] == "e1"
+    assert store.find_by_name_cn("u2", "甲")["export_agent_id"] == "e2"
+    assert store.find_by_name_cn("u3", "甲") is None
+    assert store.find_by_name_cn("u1", "甲", exclude_agent_id="e1") is None
+
+
+def test_find_by_name_cn_excludes_soft_deleted(db):
+    """已删除（disabled）的记录不参与重名校验：名字视为可复用。"""
+    store = ExpertStore(db)
+    _make(store, expert_id="e1", user_id="u1", export_name_cn="待删专家")
+    store.delete("e1", "u1", hard=False)
+
+    assert store.find_by_name_cn("u1", "待删专家") is None
+
+    # 未删除的同名记录仍然命中
+    _make(store, expert_id="e2", user_id="u1", export_name_cn="待删专家")
+    hit = store.find_by_name_cn("u1", "待删专家")
+    assert hit is not None
+    assert hit["export_agent_id"] == "e2"
+    assert hit["agent_status"] == STATUS_ACTIVE
+
+
 # ── 列表 ──────────────────────────────────────────────────────────────
 
 

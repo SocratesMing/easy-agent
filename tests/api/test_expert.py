@@ -13,6 +13,7 @@ import pytest
 import easy_agent.api.chat as chat_api
 import easy_agent.api.expert as expert_api
 import easy_agent.services.agent_manager as am
+from easy_agent.db.expert_store import ExpertStore
 from easy_agent.models.db import SessionModel
 from easy_agent.services.expert_service import load_active_prompt
 
@@ -202,8 +203,8 @@ def test_add_expert_llm_failure_marks_failed(client, monkeypatch):
     assert listed["items"][0]["agent_status"] == "failed"
 
 
-def test_add_expert_keeps_manual_tag_when_llm_gives_none(client, monkeypatch):
-    """大模型没给（或给了非法）tag_id 时，保留创建时人工传入的分类。"""
+def test_add_expert_ignores_manual_tag_param(client, monkeypatch):
+    """tag_id 不再接收前端传参：即使请求体里带了也会被忽略，只认大模型归类结果。"""
     monkeypatch.setattr(
         expert_api, "create_model", lambda *a, **k: SimpleNamespace(name="fake-llm")
     )
@@ -223,7 +224,7 @@ def test_add_expert_keeps_manual_tag_when_llm_gives_none(client, monkeypatch):
         },
     )
     assert resp.status_code == 200, resp.text
-    assert resp.json()["tag_id"] == "macro_research"
+    assert resp.json()["tag_id"] == ""       # 大模型没归类 → 保持为空，不落手工值
 
 
 def test_update_expert_refreshes_generated_metadata(client, fake_llm):
@@ -300,6 +301,112 @@ def test_update_expert_invalid_name_400(client, fake_llm):
         json={"export_agent_id": created["export_agent_id"], "name_cn": "x" * 51},
     )
     assert resp.status_code == 400
+
+
+# ── 中文名唯一性（创建 / 修改） ────────────────────────────────────────
+
+
+def test_add_expert_duplicate_name_409(client, fake_llm):
+    """重名直接拦下：返回 409 + 可展示提示，且不再触发 LLM 生成。"""
+    assert _add(client, name="量化策略专家").status_code == 200
+    assert fake_llm["generate_calls"] == 1
+
+    resp = _add(client, name="量化策略专家", prompt="另一个描述")
+    assert resp.status_code == 409, resp.text
+    assert "已有同名的专家Agent" in resp.json()["detail"]
+    assert fake_llm["generate_calls"] == 1      # 未发生第二次生成
+
+    assert client.get("/agent/list").json()["total"] == 1
+
+
+def test_add_expert_duplicate_name_ignores_space_and_case(client, fake_llm):
+    _add(client, name="Quant Factor 专家")
+    resp = _add(client, name="  quant   factor 专家 ")
+    assert resp.status_code == 409
+
+
+def test_add_expert_same_name_as_deleted_ok(client, fake_llm):
+    """已删除（软删除）的专家不再占用名字：删掉后可重建同名专家。"""
+    created = _add(client, name="待删专家").json()
+    client.post("/agent/del", json={"export_agent_id": created["export_agent_id"]})
+
+    resp = _add(client, name="待删专家")
+    assert resp.status_code == 200, resp.text
+    assert client.get("/agent/list").json()["total"] == 1   # 已删除的不在列表里
+
+
+def test_add_expert_same_name_in_other_account_ok(client, fake_llm, db):
+    """重名只在本用户范围内判定，别人叫这个名字不影响自己创建。"""
+    ExpertStore(db).create(
+        {
+            "export_agent_id": "expert_other_00000001",
+            "user_id": "another-user",
+            "export_name_en": "quant-factor-advisor",
+            "export_name_cn": "量化策略专家",
+            "export_prompt": "别人的专家",
+            "agent_status": "active",
+            "export_version": 1,
+        }
+    )
+    assert _add(client, name="量化策略专家").status_code == 200
+
+
+def test_update_expert_duplicate_name_409(client, fake_llm, db):
+    """改名撞上其他专家：409 + 提示改名字，且版本不推进、生成不触发。"""
+    first = _add(client, name="专家甲").json()
+    second = _add(client, name="专家乙").json()
+    calls_before = fake_llm["generate_calls"]
+
+    resp = client.post(
+        "/agent/update",
+        json={
+            "export_agent_id": first["export_agent_id"],
+            "name_cn": "专家乙",
+            "prompt": "想改成别人的名字",
+            "modify_type": "edit",
+        },
+    )
+    assert resp.status_code == 409, resp.text
+    assert "请修改专家名称" in resp.json()["detail"]
+    assert fake_llm["generate_calls"] == calls_before
+
+    store = ExpertStore(db)
+    unchanged = store.get(first["export_agent_id"])
+    assert unchanged["export_name_cn"] == "专家甲"
+    assert unchanged["export_version"] == 1
+    assert store.get(second["export_agent_id"])["export_name_cn"] == "专家乙"
+
+
+def test_update_expert_same_name_not_blocked(client, fake_llm):
+    """原名保存（与自己同名）不应被误判为重名。"""
+    created = _add(client, name="量化策略专家").json()
+
+    resp = client.post(
+        "/agent/update",
+        json={
+            "export_agent_id": created["export_agent_id"],
+            "name_cn": "量化策略专家",
+            "prompt": "不改名，只改描述",
+            "modify_type": "edit",
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["export_name_cn"] == "量化策略专家"
+    assert resp.json()["export_version"] == 2
+
+
+def test_update_expert_name_of_deleted_expert_ok(client, fake_llm):
+    """改名撞上已删除的专家不算冲突（已删除的不参与重名校验）。"""
+    first = _add(client, name="专家甲").json()
+    gone = _add(client, name="专家乙").json()
+    client.post("/agent/del", json={"export_agent_id": gone["export_agent_id"]})
+
+    resp = client.post(
+        "/agent/update",
+        json={"export_agent_id": first["export_agent_id"], "name_cn": "专家乙"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["export_name_cn"] == "专家乙"
 
 
 # ── /agent/del ────────────────────────────────────────────────────────

@@ -110,10 +110,10 @@ const props = defineProps({
   },
 })
 
-const emit = defineEmits(['close', 'use'])
-
-// create-skill：技能列表「创建技能」入口，由外层（App）接手跳转新会话预填指令
-defineEmits(['close', 'create-skill'])
+// 面板事件：close=关闭容器；use=召唤专家（透传给 App）；create-skill=技能列表「创建技能」
+// 入口，由外层（App）接手跳转新会话预填指令。
+// 注意：defineEmits 在一个 SFC 里只能调用一次，此前两个声明合并到这里。
+const emit = defineEmits(['close', 'use', 'create-skill'])
 
 const T = 'xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="15" height="15" aria-hidden="true"'
 

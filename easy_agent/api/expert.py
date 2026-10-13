@@ -59,23 +59,28 @@ router = APIRouter(tags=["Expert"])
 
 
 class ExpertAddRequest(BaseModel):
-    """创建专家。``type`` 为需求要求的前端组装标识（本期仅做校验）。"""
+    """创建专家。``type`` 为需求要求的前端组装标识（本期仅做校验）。
+
+    分类标签 ``tag_id`` 不接收前端传参：它由大模型根据配置的 ``expert_tags``
+    自动归类（见 ``_generate_and_store``）。
+    """
 
     name_cn: str = Field(..., description="专家中文名（必填）")
     prompt: str = Field(..., description="用户对专家的描述 / 提示词（必填）")
     type: str = Field(default="agent", description="组装标识：agent=创建专家")
-    tag_id: str = Field(default="", description="分类标签（选填；留空则由大模型按 expert_tags 自动归类）")
     session_id: Optional[str] = Field(default=None, description="创建该专家的会话（溯源用）")
     model: Optional[str] = Field(default=None, description="用于生成配置的模型（config.models 的 key）")
 
 
 class ExpertUpdateRequest(BaseModel):
-    """修改专家：重新生成配置并写入新版本目录。"""
+    """修改专家：重新生成配置并写入新版本目录。
+
+    同 ``ExpertAddRequest``：``tag_id`` 不接收前端传参，修改后由大模型重新归类。
+    """
 
     export_agent_id: str = Field(..., description="专家 Agent ID")
     name_cn: Optional[str] = Field(default=None, description="专家中文名（不传则沿用）")
     prompt: Optional[str] = Field(default=None, description="专家描述（不传则沿用）")
-    tag_id: Optional[str] = Field(default=None, description="分类标签")
     modify_type: str = Field(default="edit", description="修改类型标识：edit=编辑")
     model: Optional[str] = Field(default=None, description="用于生成配置的模型")
 
@@ -165,6 +170,36 @@ def _tag_options(config) -> list[dict]:
         if tag_id and tag_name:
             options.append({"tag_id": tag_id, "tag_name": tag_name})
     return options
+
+
+def _ensure_name_available(
+    store: ExpertStore,
+    user_id: str,
+    name_cn: str,
+    *,
+    exclude_agent_id: str = "",
+    is_update: bool = False,
+) -> None:
+    """校验专家中文名在本用户下唯一（创建/修改共用）。
+
+    重名会让同一个列表里出现两张看不出区别的卡片，因此在**落库/生成之前**就
+    拦住。比较口径为「忽略空白 + 忽略大小写」；**已删除（软删除）的专家不参与
+    校验**——它们已从列表移除，名字视为可复用，否则「删掉重建同名专家」会被
+    莫名其妙地拦住。
+
+    Args:
+        exclude_agent_id: 修改场景传入自身 ID，避免「和自己重名」。
+        is_update: 提示语区分创建与修改（修改时额外引导用户改名）。
+
+    Raises:
+        HTTPException: 409 —— 已存在同名专家（``detail`` 为可直接展示的提示语）。
+    """
+    conflict = store.find_by_name_cn(user_id, name_cn, exclude_agent_id=exclude_agent_id)
+    if not conflict:
+        return
+
+    detail = "已有同名的专家Agent，请修改专家名称" if is_update else "已有同名的专家Agent"
+    raise HTTPException(status_code=409, detail=detail)
 
 
 async def _generate_and_store(
@@ -258,18 +293,23 @@ async def add_expert(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     user_id = _current_user_id(db, username)
-    expert_agent_id, name_en = build_expert_ids(request.name_cn)
+    name_cn = request.name_cn.strip()
     store = ExpertStore(db)
 
-    # 先落 building 占位行：即使生成途中进程崩溃，也能查到一条记录供前端重试
+    # 中文名唯一：同一用户下不允许出现同名专家（含已软删除的记录）
+    _ensure_name_available(store, user_id, name_cn)
+
+    expert_agent_id, name_en = build_expert_ids(request.name_cn)
+
+    # 先落 building 占位行：即使生成途中进程崩溃，也能查到一条记录供前端重试。
+    # tag_id 不收前端传参，先置空，由大模型自动归类后回写。
     store.create(
         {
             "export_agent_id": expert_agent_id,
             "session_id": request.session_id or "",
             "user_id": user_id,
-            "tag_id": request.tag_id or "",
             "export_name_en": name_en,
-            "export_name_cn": request.name_cn.strip(),
+            "export_name_cn": name_cn,
             "export_prompt": request.prompt,
             "export_description": "",
             "export_skills_names": [],
@@ -284,7 +324,7 @@ async def add_expert(
         db=db,
         username=username,
         expert_agent_id=expert_agent_id,
-        name_cn=request.name_cn.strip(),
+        name_cn=name_cn,
         user_prompt=request.prompt,
         version=1,
         model_name=request.model,
@@ -313,6 +353,15 @@ async def update_expert(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    # 改名时同样要求唯一（排除自己，否则原样保存也会被拦下）
+    _ensure_name_available(
+        store,
+        user_id,
+        name_cn,
+        exclude_agent_id=request.export_agent_id,
+        is_update=True,
+    )
+
     # ★ 新版本目录 v{n+1}，不覆盖 v{n}：防止运行中的旧会话读到半成品配置
     new_version = int(record.get("export_version") or 1) + 1
     await _generate_and_store(
@@ -325,11 +374,9 @@ async def update_expert(
         model_name=request.model,
         session_id=record.get("session_id") or None,
     )
-    # 元数据（中文名/描述）随本次修改一起刷新；tag_id 走大模型自动归类，
-    # 仅在调用方**显式**传入非空 tag_id 时才人工覆盖自动结果。
+    # 元数据（中文名/描述）随本次修改一起刷新；tag_id 不收前端传参，
+    # 由 _generate_and_store 里的大模型自动归类结果覆盖。
     meta = {"export_name_cn": name_cn, "export_prompt": user_prompt}
-    if request.tag_id:
-        meta["tag_id"] = request.tag_id
     store.update_fields(request.export_agent_id, meta)
 
     # 让该用户所有缓存 Agent 失效，下次请求用新版本的提示词重建
