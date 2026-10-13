@@ -227,3 +227,123 @@ def test_resolve_config_path_defaults_to_config_yaml(tmp_path, monkeypatch):
     resolved = Config.resolve_config_path(config_dir=tmp_path)
 
     assert resolved == tmp_path / "config.yaml"
+
+def test_config_expert_tags_list_form(tmp_path):
+    """expert_tags 支持 [{tag_id, tag_name}] 写法。"""
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+model: test-model
+models:
+  test-model:
+    provider: test-provider
+    api_key: "sk-test"
+expert_tags:
+  - { tag_id: macro_research, tag_name: 宏观投研 }
+  - tag_id: factor_analysis
+    tag_name: 因子分析
+  - tag_id: ""
+    tag_name: 空条目应被丢弃
+""",
+        encoding="utf-8",
+    )
+
+    config = Config.from_yaml(config_path)
+    assert [(t.tag_id, t.tag_name) for t in config.expert_tags] == [
+        ("macro_research", "宏观投研"),
+        ("factor_analysis", "因子分析"),
+    ]
+
+
+def test_config_expert_tags_dict_and_missing(tmp_path):
+    """兼容 {tag_id: tag_name} 字典写法；未配置时为空列表。"""
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+model: test-model
+models:
+  test-model:
+    provider: test-provider
+    api_key: "sk-test"
+expert_tags:
+  bond_research: 债券投研
+""",
+        encoding="utf-8",
+    )
+    config = Config.from_yaml(config_path)
+    assert [(t.tag_id, t.tag_name) for t in config.expert_tags] == [
+        ("bond_research", "债券投研")
+    ]
+
+    config_path2 = tmp_path / "config2.yaml"
+    config_path2.write_text(
+        """
+model: test-model
+models:
+  test-model:
+    provider: test-provider
+    api_key: "sk-test"
+""",
+        encoding="utf-8",
+    )
+    assert Config.from_yaml(config_path2).expert_tags == []
+
+def test_config_expert_tags_list_form(tmp_path):
+    """expert_tags 支持 [{tag_id, tag_name}] 写法。"""
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+model: test-model
+models:
+  test-model:
+    provider: test-provider
+    api_key: "sk-test"
+expert_tags:
+  - { tag_id: macro_research, tag_name: 宏观投研 }
+  - tag_id: factor_analysis
+    tag_name: 因子分析
+  - tag_id: ""
+    tag_name: 空条目应被丢弃
+""",
+        encoding="utf-8",
+    )
+
+    config = Config.from_yaml(config_path)
+    assert [(t.tag_id, t.tag_name) for t in config.expert_tags] == [
+        ("macro_research", "宏观投研"),
+        ("factor_analysis", "因子分析"),
+    ]
+
+
+def test_config_expert_tags_dict_and_missing(tmp_path):
+    """兼容 {tag_id: tag_name} 字典写法；未配置时为空列表。"""
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+model: test-model
+models:
+  test-model:
+    provider: test-provider
+    api_key: "sk-test"
+expert_tags:
+  bond_research: 债券投研
+""",
+        encoding="utf-8",
+    )
+    config = Config.from_yaml(config_path)
+    assert [(t.tag_id, t.tag_name) for t in config.expert_tags] == [
+        ("bond_research", "债券投研")
+    ]
+
+    config_path2 = tmp_path / "config2.yaml"
+    config_path2.write_text(
+        """
+model: test-model
+models:
+  test-model:
+    provider: test-provider
+    api_key: "sk-test"
+""",
+        encoding="utf-8",
+    )
+    assert Config.from_yaml(config_path2).expert_tags == []

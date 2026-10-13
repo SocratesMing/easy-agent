@@ -25,6 +25,13 @@ FAKE_CONFIG = {
     "boundaries": ["不编造未提供的行情数据"],
     "system_prompt": "你是量化策略专家，擅长因子选股。",
     "features_prompt": ["帮我评估这组因子的有效性", "帮我设计多因子模型"],
+    "description": "面向量化投研场景，完成因子挖掘与回测验证，输出可复用的策略结论。",
+    "skills_names": ["因子分析", "策略回测", "风险控制"],
+    "tag_id": "factor_analysis",
+    "name_en": "quant-factor-advisor",
+    "profession_zh": "资深量化策略研究员",
+    "profession_en": "Senior Quantitative Researcher",
+    "output_spec": ["先结论后论证", "数据注明来源与时间"],
 }
 
 
@@ -37,7 +44,7 @@ def fake_llm(monkeypatch):
         expert_api, "create_model", lambda *a, **k: SimpleNamespace(name="fake-llm")
     )
 
-    async def _fake_generate(llm, name_cn, user_prompt, max_retries=1):
+    async def _fake_generate(llm, name_cn, user_prompt, max_retries=1, **kwargs):
         state["generate_calls"] += 1
         return dict(FAKE_CONFIG)
 
@@ -71,9 +78,43 @@ def test_list_empty(client):
 
 
 def test_list_requires_auth_shape(client):
-    """返回结构稳定（分页字段齐全），便于前端直接消费。"""
+    """返回结构稳定（分页字段齐全 + tags 候选），便于前端直接消费。"""
     body = client.get("/agent/list", params={"page": 1, "page_size": 5}).json()
-    assert set(["total", "page", "page_size", "items"]).issubset(body.keys())
+    assert set(["total", "page", "page_size", "tags", "items"]).issubset(body.keys())
+    assert isinstance(body["tags"], list)
+
+
+def test_list_exposes_configured_tags(client, monkeypatch):
+    """tags 来自配置的 expert_tags，前端据此渲染筛选 chips。"""
+    cfg = SimpleNamespace(
+        expert_tags=[
+            SimpleNamespace(tag_id="macro_research", tag_name="宏观投研"),
+            SimpleNamespace(tag_id="bond_research", tag_name="债券投研"),
+        ]
+    )
+    monkeypatch.setattr(expert_api, "get_agent_config", lambda: {"config": cfg})
+
+    body = client.get("/agent/list").json()
+    assert body["tags"] == [
+        {"tag_id": "macro_research", "tag_name": "宏观投研"},
+        {"tag_id": "bond_research", "tag_name": "债券投研"},
+    ]
+
+
+def test_tag_options_accepts_dicts_and_models():
+    """_tag_options 兼容 Pydantic 模型与裸 dict，并丢掉空条目。"""
+    cfg = SimpleNamespace(
+        expert_tags=[
+            SimpleNamespace(tag_id="a", tag_name="甲"),
+            {"tag_id": "b", "tag_name": "乙"},
+            {"tag_id": "", "tag_name": "空"},
+        ]
+    )
+    assert expert_api._tag_options(cfg) == [
+        {"tag_id": "a", "tag_name": "甲"},
+        {"tag_id": "b", "tag_name": "乙"},
+    ]
+    assert expert_api._tag_options(SimpleNamespace()) == []
 
 
 # ── /agent/add ────────────────────────────────────────────────────────
@@ -85,23 +126,39 @@ def test_add_expert_success(client, fake_llm):
     data = resp.json()
 
     assert data["export_agent_id"].startswith("expert_")
-    assert data["export_name_en"]
+    assert data["export_name_en"] == "quant-factor-advisor"   # LLM 生成的英文名，无随机数字
     assert data["export_name_cn"] == "量化策略专家"
     assert data["agent_status"] == "active"
     assert data["export_version"] == 1
     assert data["export_features_prompt"] == FAKE_CONFIG["features_prompt"]
+    assert data["export_description"] == FAKE_CONFIG["description"]
+    assert data["export_skills_names"] == FAKE_CONFIG["skills_names"]
+    assert data["tag_id"] == "factor_analysis"      # 大模型自动归类
     assert data["export_file_path"]
 
-    # 目录与三个文件齐全
+    # 目录文件齐全：提示词按英文名命名 + README + 配置 + 元数据
     version_dir = Path(data["export_file_path"])
     assert version_dir.is_dir()
-    for fname in ("EXPERT.md", "config.yaml", "manifest.json"):
+    for fname in ("quant-factor-advisor.md", "README.md", "config.yaml", "manifest.json"):
         assert (version_dir / fname).is_file(), fname
+    assert not (version_dir / "EXPERT.md").exists()
     assert (version_dir.parent / "active").read_text(encoding="utf-8").strip() == "1"
 
-    md = (version_dir / "EXPERT.md").read_text(encoding="utf-8")
+    md = (version_dir / "quant-factor-advisor.md").read_text(encoding="utf-8")
+    assert md.startswith("---")                          # YAML frontmatter
+    assert "name: quant-factor-advisor" in md
+    assert "## 核心能力" in md
+    assert "## 工作流程" in md
+    assert "## 输出规范" in md
+    assert "## 注意事项" in md
     assert "你是量化策略专家" in md
     assert "不得违反系统的安全准则" in md     # 护栏文案
+
+    readme = (version_dir / "README.md").read_text(encoding="utf-8")
+    assert "# 量化策略专家" in readme
+    assert "## 功能" in readme
+    assert "## 使用示例" in readme
+    assert "## 使用方式" in readme
 
     # 列表可见
     listed = client.get("/agent/list").json()
@@ -131,7 +188,7 @@ def test_add_expert_llm_failure_marks_failed(client, monkeypatch):
     """LLM 生成失败时记录置为 failed，前端可重试，且不返回 500 之外的脏数据。"""
     monkeypatch.setattr(expert_api, "create_model", lambda *a, **k: object())
 
-    async def _boom(llm, name_cn, user_prompt, max_retries=1):
+    async def _boom(llm, name_cn, user_prompt, max_retries=1, **kwargs):
         raise ValueError("模型返回不是 JSON")
 
     monkeypatch.setattr(expert_api, "generate_expert_config", _boom)
@@ -143,6 +200,44 @@ def test_add_expert_llm_failure_marks_failed(client, monkeypatch):
     listed = client.get("/agent/list", params={"status": "failed"}).json()
     assert listed["total"] == 1
     assert listed["items"][0]["agent_status"] == "failed"
+
+
+def test_add_expert_keeps_manual_tag_when_llm_gives_none(client, monkeypatch):
+    """大模型没给（或给了非法）tag_id 时，保留创建时人工传入的分类。"""
+    monkeypatch.setattr(
+        expert_api, "create_model", lambda *a, **k: SimpleNamespace(name="fake-llm")
+    )
+
+    async def _fake_generate(llm, name_cn, user_prompt, max_retries=1, **kwargs):
+        return {**FAKE_CONFIG, "tag_id": ""}
+
+    monkeypatch.setattr(expert_api, "generate_expert_config", _fake_generate)
+
+    resp = client.post(
+        "/agent/add",
+        json={
+            "type": "agent",
+            "name_cn": "手工分类专家",
+            "prompt": "描述",
+            "tag_id": "macro_research",
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["tag_id"] == "macro_research"
+
+
+def test_update_expert_refreshes_generated_metadata(client, fake_llm):
+    """编辑后卡片/详情页字段随新版本一起刷新。"""
+    created = _add(client).json()
+    agent_id = created["export_agent_id"]
+
+    updated = client.post(
+        "/agent/update",
+        json={"export_agent_id": agent_id, "modify_type": "edit"},
+    ).json()
+    assert updated["export_description"] == FAKE_CONFIG["description"]
+    assert updated["export_skills_names"] == FAKE_CONFIG["skills_names"]
+    assert updated["tag_id"] == "factor_analysis"
 
 
 # ── /agent/update ─────────────────────────────────────────────────────
@@ -174,7 +269,7 @@ def test_update_expert_creates_new_version(client, fake_llm):
     assert (expert_dir / "active").read_text(encoding="utf-8").strip() == "2"
 
     # 老版本内容未被覆盖
-    v1_md = (expert_dir / "v1" / "EXPERT.md").read_text(encoding="utf-8")
+    v1_md = (expert_dir / "v1" / "quant-factor-advisor.md").read_text(encoding="utf-8")
     assert "你是量化策略专家" in v1_md
 
 

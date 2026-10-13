@@ -28,7 +28,8 @@ def _make(store, expert_id="expert_a_00000001", user_id="u1", **overrides):
         "export_name_en": "lianghua-abc12345",
         "export_name_cn": "量化策略专家",
         "export_prompt": "帮我创建一个量化策略专家",
-        "export_skills_ids": [],
+        "export_description": "面向量化投研场景，完成因子挖掘与回测验证。",
+        "export_skills_names": [],
         "export_features_prompt": ["帮我选股", "帮我做因子分析"],
         "export_file_path": "/tmp/experts/expert_a_00000001/v1",
         "agent_status": STATUS_ACTIVE,
@@ -65,7 +66,8 @@ def test_expert_agents_columns(db):
         "export_name_en",
         "export_name_cn",
         "export_prompt",
-        "export_skills_ids",
+        "export_description",
+        "export_skills_names",
         "export_features_prompt",
         "export_file_path",
         "agent_status",
@@ -118,7 +120,8 @@ def test_json_fields_roundtrip(db):
 
     record = store.get("expert_a_00000001")
     assert record["export_features_prompt"] == ["帮我选股", "帮我做因子分析"]
-    assert record["export_skills_ids"] == []
+    assert record["export_skills_names"] == []
+    assert record["export_description"] == "面向量化投研场景，完成因子挖掘与回测验证。"
 
 
 def test_json_field_bad_data_degrades_to_empty_list(db):
@@ -178,6 +181,26 @@ def test_create_defaults(db):
     assert record["tag_id"] == ""
     assert record["export_file_path"] == ""
     assert record["export_features_prompt"] == []
+    assert record["export_description"] == ""
+    assert record["export_skills_names"] == []
+
+
+def test_update_description_and_skills_names(db):
+    """卡片/详情页展示字段可更新，且技能标签走 JSON 编解码。"""
+    store = ExpertStore(db)
+    _make(store)
+    store.update_fields(
+        "expert_a_00000001",
+        {
+            "export_description": "一句话功能描述",
+            "export_skills_names": ["因子分析", "策略回测", "风险控制"],
+            "tag_id": "factor_analysis",
+        },
+    )
+    record = store.get("expert_a_00000001")
+    assert record["export_description"] == "一句话功能描述"
+    assert record["export_skills_names"] == ["因子分析", "策略回测", "风险控制"]
+    assert record["tag_id"] == "factor_analysis"
 
 
 # ── 归属校验 ──────────────────────────────────────────────────────────
