@@ -66,3 +66,6 @@ offline_deps/
 # IDE 智能体工作目录（含跨会话记忆，勿提交）
 .codebuddy/
 .codebuddy/
+.workbuddy/
+/docs/expert-agent-solution.md
+/docs/expert-skill-solution.md
