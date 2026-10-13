@@ -53,6 +53,40 @@ export async function importSkill(file) {
   return await response.json()
 }
 
+async function postToggle(url, dirName) {
+  const response = await authFetch(`${API_BASE_URL}${url}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ dir_name: dirName }),
+  })
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}))
+    throw new Error(data.detail || '操作失败')
+  }
+  return await response.json()
+}
+
+/** 启用技能（移回 Agent 加载目录） */
+export async function enableSkill(dirName) {
+  return postToggle('/agent/skill-center/enable-skill', dirName)
+}
+
+/** 停用技能（移出 Agent 加载目录，Agent 不再加载） */
+export async function disableSkill(dirName) {
+  return postToggle('/agent/skill-center/disable-skill', dirName)
+}
+
+/** 技能详情：正文（SKILL.md）+ 元数据 + 真实统计 */
+export async function getSkillDetail(dirName, scope) {
+  const query = new URLSearchParams({ dir_name: dirName, scope })
+  const response = await authFetch(`${API_BASE_URL}/agent/skill-center/skill-detail?${query}`)
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}))
+    throw new Error(data.detail || '获取技能详情失败')
+  }
+  return await response.json()
+}
+
 export async function downloadSkill(dirName) {
   const response = await authFetch(`${API_BASE_URL}/agent/skill-center/download-skill/${encodeURIComponent(dirName)}`)
   if (!response.ok) {

@@ -1,0 +1,64 @@
+{
+  "_comment": "内置连接器目录。每条 = 一份可直接写入用户 mcp.json 的 MCP 服务配置：{id, name, description, icon, config}；id 同时作为写入 mcp.json 的 server 名，必须唯一且为安全标识符。config 支持 transport=stdio（command/args/env）或 streamable_http/sse（url/headers）。改这里不需要重启后端（每次请求现读）。",
+  "connectors": [
+    {
+      "id": "market-data",
+      "name": "行情数据（自建）",
+      "description": "本仓库 mcp-server 子项目的 market 业务：查行情与个人持仓。需先启动 mcp-server，并把 Authorization 里的 API Key 换成真实值",
+      "icon": "chart-line",
+      "config": {
+        "transport": "streamable_http",
+        "url": "http://127.0.0.1:8100/mcp/market/",
+        "headers": { "Authorization": "Bearer <API Key>" }
+      }
+    },
+    {
+      "id": "filesystem",
+      "name": "本地文件系统",
+      "description": "官方 filesystem MCP（stdio，npx 拉起）：把 args 末尾的目录换成允许访问的绝对路径后即可读写文件",
+      "icon": "folder-outline",
+      "config": {
+        "transport": "stdio",
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+        "env": {}
+      }
+    },
+    {
+      "id": "fetch",
+      "name": "网页抓取",
+      "description": "官方 fetch MCP（stdio，uvx 拉起，需本机已装 uv/uvx）：抓取网页并转成 Markdown",
+      "icon": "web",
+      "config": {
+        "transport": "stdio",
+        "command": "uvx",
+        "args": ["mcp-server-fetch"],
+        "env": {}
+      }
+    },
+    {
+      "id": "git",
+      "name": "Git 仓库",
+      "description": "官方 git MCP（stdio，uvx 拉起）：把 --repository 换成你的仓库绝对路径，可查日志、差异与提交历史",
+      "icon": "source-branch",
+      "config": {
+        "transport": "stdio",
+        "command": "uvx",
+        "args": ["mcp-server-git", "--repository", "/path/to/repo"],
+        "env": {}
+      }
+    },
+    {
+      "id": "everything",
+      "name": "官方测试服务（everything）",
+      "description": "官方 everything MCP（stdio，npx 拉起）：自带 echo / add / longRunning 等工具，用来验证 MCP 链路是否打通，无需任何配置",
+      "icon": "flask-outline",
+      "config": {
+        "transport": "stdio",
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-everything"],
+        "env": {}
+      }
+    }
+  ]
+}

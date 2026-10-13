@@ -6,7 +6,7 @@ Easy Agent 的独立 MCP（Model Context Protocol）服务子项目，使用 [uv
 ```
 主应用 easy-agent          mcp-server 子项目
 ────────────────          ─────────────────
-设置页签发 API Key  ──写入──▶  mcp_api_keys 表（共享 MySQL）
+API Key 写入        ──落库──▶  mcp_api_keys 表（共享 MySQL）
 用户 mcp.json        ──HTTP──▶  /mcp/<业务>/  (Bearer key)
 ```
 
@@ -48,8 +48,8 @@ def build() -> FastMCP:
 
 ## 客户端接入（mcp.json）
 
-用户在主应用设置页为每个业务生成 API Key（每用户 × 每业务一把，明文只显示一次），
-然后把下面片段粘进 `mcp.json` 即可：
+先为每个业务准备一把 API Key（每用户 × 每业务一把，明文不入库，只存 sha256 到
+`mcp_api_keys` 表；主应用设置页已不提供签发入口），然后把下面片段粘进 `mcp.json` 即可：
 
 ```json
 {

@@ -17,7 +17,7 @@ from ..config import Config
 from ..db import Database, get_database
 from ..middleware import get_current_username
 from ..skills import discover_skills
-from ..services import get_agent_config
+from ..services import get_agent_config, invalidate_user_agents, skill_library
 
 logger = logging.getLogger(__name__)
 
@@ -25,55 +25,22 @@ router = APIRouter(prefix="/agent/skill-center", tags=["Skill Center"])
 
 
 def _parse_skill_metadata(skill_dir: Path) -> dict:
-    """从 SKILL.md 或 README.md 的 YAML frontmatter 中解析技能元数据"""
-    metadata = {
-        "name": skill_dir.name,
-        "description": "",
-        "icon": "",
-    }
-
-    for filename in ("SKILL.md", "README.md"):
-        filepath = skill_dir / filename
-        if not filepath.exists():
-            continue
-
-        content = filepath.read_text(encoding="utf-8")
-
-        # 解析 YAML frontmatter
-        fm_match = re.match(r"^---\s*\n(.*?)\n---", content, re.DOTALL)
-        if fm_match:
-            fm_text = fm_match.group(1)
-            for line in fm_text.split("\n"):
-                if line.startswith("name:"):
-                    metadata["name"] = line.split(":", 1)[1].strip().strip('"').strip("'")
-                elif line.startswith("description:"):
-                    desc = line.split(":", 1)[1].strip()
-                    # 处理引号包裹的描述
-                    if desc.startswith('"') and desc.endswith('"'):
-                        desc = desc[1:-1]
-                    elif desc.startswith("'") and desc.endswith("'"):
-                        desc = desc[1:-1]
-                    metadata["description"] = desc
-                elif line.startswith("icon:"):
-                    metadata["icon"] = line.split(":", 1)[1].strip().strip('"').strip("'")
-
-        # 如果没有 frontmatter description，取第一段非标题文本
-        if not metadata["description"]:
-            lines = content.split("\n")
-            for line in lines:
-                stripped = line.strip()
-                if stripped and not stripped.startswith("#") and not stripped.startswith("---"):
-                    metadata["description"] = stripped[:200]
-                    break
-
-        break  # 只读第一个找到的文件
-
-    return metadata
+    """从 SKILL.md / README.md 的 frontmatter 解析技能元数据（实现见 services/skill_library）。"""
+    return skill_library.skill_metadata(skill_dir)
 
 
 def _get_user_skills_dir(username: str) -> Path:
-    """获取用户的技能目录路径，遵循配置 agent.workspace_dir"""
-    return Config.get_user_workspace_dir(username) / "skills"
+    """用户技能目录（Agent 实际加载的目录，见 services/skill_library）。"""
+    return skill_library.user_skills_dir(username)
+
+
+def _public_skills_root() -> Path | None:
+    """公共技能目录（运行期配置优先）。"""
+    _cfg = get_agent_config()
+    skills_root = _cfg["config"].tools.skills_dir if _cfg else "./skills"
+    if not skills_root:
+        return None
+    return Path(skills_root)
 
 
 # ── 公共技能 ──────────────────────────────────────────────────────────
@@ -93,12 +60,11 @@ async def list_public_skills(
         f"📂 公共技能目录 | 目录: {abs_skills_root} | 技能数量: {len(skills)}"
     )
 
-    user_skills_dir = _get_user_skills_dir(username)
-    user_skill_names = set()
-    if user_skills_dir.exists():
-        for d in user_skills_dir.iterdir():
-            if d.is_dir() and (d / "SKILL.md").exists() or (d / "README.md").exists():
-                user_skill_names.add(d.name)
+    # dir_name -> enabled（含已停用：added=True 但 enabled=False）
+    installed = {
+        item["dir_name"]: item["enabled"]
+        for item in skill_library.list_user_skill_dirs(username)
+    }
 
     result = []
     for skill in skills:
@@ -109,7 +75,10 @@ async def list_public_skills(
             "dir_name": skill_dir.name,
             "description": metadata["description"],
             "icon": metadata["icon"],
-            "added": skill_dir.name in user_skill_names,
+            "version": metadata.get("version", ""),
+            "added": skill_dir.name in installed,
+            "enabled": installed.get(skill_dir.name, False),
+            "stats": skill_library.skill_stats(skill_dir),
         })
 
     return {"skills": result}
@@ -118,40 +87,143 @@ async def list_public_skills(
 # ── 用户技能 ──────────────────────────────────────────────────────────
 
 
-@router.get("/user-skills", summary="获取用户技能列表")
+@router.get("/user-skills", summary="获取用户技能列表（含已停用）")
 async def list_user_skills(
     username: Annotated[str, Depends(get_current_username)],
 ):
-    """从用户 workspace/{username}/skills/ 目录加载技能列表"""
+    """用户技能列表：启用（skills/）与停用（skills-disabled/）都会返回。
+
+    每个技能带 ``enabled`` 与真实统计（文件数/大小/更新时间），供卡片与详情页展示。
+    """
     user_skills_dir = _get_user_skills_dir(username)
     abs_user_skills_dir = str(user_skills_dir.absolute())
 
-    if not user_skills_dir.exists():
-        logger.info(
-            f"📂 用户技能目录不存在 | 用户: {username} | 目录: {abs_user_skills_dir} | 技能数量: 0"
-        )
-        return {"skills": []}
-
     result = []
-    for skill_dir in sorted(user_skills_dir.iterdir()):
-        if not skill_dir.is_dir():
-            continue
-        if not (skill_dir / "SKILL.md").exists() and not (skill_dir / "README.md").exists():
-            continue
-
+    for item in skill_library.list_user_skill_dirs(username):
+        skill_dir = item["path"]
         metadata = _parse_skill_metadata(skill_dir)
         result.append({
             "name": metadata["name"],
             "dir_name": skill_dir.name,
             "description": metadata["description"],
             "icon": metadata["icon"],
+            "version": metadata.get("version", ""),
             "path": str(skill_dir),
+            "enabled": item["enabled"],
+            "stats": skill_library.skill_stats(skill_dir),
         })
 
+    # 启用的排前面，其余按目录名
+    result.sort(key=lambda row: (not row["enabled"], row["dir_name"]))
+    enabled_count = sum(1 for row in result if row["enabled"])
+
     logger.info(
-        f"📂 用户技能目录 | 用户: {username} | 目录: {abs_user_skills_dir} | 技能数量: {len(result)}"
+        f"📂 用户技能目录 | 用户: {username} | 目录: {abs_user_skills_dir} | "
+        f"技能数量: {len(result)}（启用 {enabled_count}）"
     )
-    return {"skills": result}
+    return {"skills": result, "enabled_count": enabled_count}
+
+
+# ── 技能详情 / 启用停用 ────────────────────────────────────────────────
+
+
+@router.get("/skill-detail", summary="获取技能详情（含 SKILL.md 正文与统计）")
+async def get_skill_detail(
+    dir_name: str,
+    scope: str,
+    username: Annotated[str, Depends(get_current_username)],
+):
+    """技能详情：正文 + 元数据 + 统计。
+
+    Args:
+        dir_name: 技能目录名
+        scope: ``public``（公共技能库）或 ``user``（我的技能，含已停用）
+    """
+    if scope not in ("public", "user"):
+        raise HTTPException(status_code=400, detail="scope 只能是 public 或 user")
+
+    installed = {
+        item["dir_name"]: item["enabled"]
+        for item in skill_library.list_user_skill_dirs(username)
+    }
+
+    if scope == "public":
+        root = _public_skills_root()
+        if root is None:
+            raise HTTPException(status_code=400, detail="系统未配置公共技能目录")
+        skill_dir = root / dir_name
+        if not skill_library.is_skill_dir(skill_dir):
+            raise HTTPException(status_code=404, detail=f"公共技能 '{dir_name}' 不存在")
+        enabled = installed.get(dir_name, False)
+        path = None
+    else:
+        found = skill_library.find_user_skill(username, dir_name)
+        if not found:
+            raise HTTPException(status_code=404, detail=f"技能 '{dir_name}' 不存在")
+        skill_dir = found["path"]
+        enabled = found["enabled"]
+        path = str(skill_dir)
+
+    metadata = _parse_skill_metadata(skill_dir)
+    doc_file, content = skill_library.read_skill_document(skill_dir)
+
+    return {
+        "name": metadata["name"],
+        "dir_name": dir_name,
+        "scope": scope,
+        "description": metadata["description"],
+        "icon": metadata["icon"],
+        "version": metadata.get("version", ""),
+        "doc_file": doc_file,
+        "content": content,
+        "added": dir_name in installed,
+        "enabled": enabled,
+        "stats": skill_library.skill_stats(skill_dir),
+        "path": path,
+    }
+
+
+class ToggleSkillRequest(BaseModel):
+    dir_name: str
+
+
+def _toggle_user_skill(username: str, dir_name: str, enable: bool) -> dict:
+    """启用/停用用户技能，并让缓存中的 Agent 失效（下次对话即按新状态加载）。"""
+    try:
+        result = skill_library.set_skill_enabled(username, dir_name, enable)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail=f"技能 '{dir_name}' 不存在")
+    except FileExistsError:
+        raise HTTPException(
+            status_code=409,
+            detail=f"技能 '{dir_name}' 已在目标位置，请刷新后重试",
+        )
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="权限不足，无法移动技能目录")
+
+    invalidate_user_agents(username)
+    return {
+        "status": "ok",
+        "dir_name": dir_name,
+        "enabled": result["enabled"],
+        "message": f"技能 '{dir_name}' 已{'启用' if enable else '停用'}",
+    }
+
+
+@router.post("/enable-skill", summary="启用技能（移回 Agent 加载目录）")
+async def enable_skill(
+    request: ToggleSkillRequest,
+    username: Annotated[str, Depends(get_current_username)],
+):
+    return _toggle_user_skill(username, request.dir_name, True)
+
+
+@router.post("/disable-skill", summary="停用技能（移出 Agent 加载目录）")
+async def disable_skill(
+    request: ToggleSkillRequest,
+    username: Annotated[str, Depends(get_current_username)],
+):
+    return _toggle_user_skill(username, request.dir_name, False)
 
 
 # ── 添加技能 ──────────────────────────────────────────────────────────
@@ -226,24 +298,18 @@ class RemoveSkillRequest(BaseModel):
     dir_name: str
 
 
-@router.post("/remove-skill", summary="从用户目录移除技能")
+@router.post("/remove-skill", summary="从用户目录移除技能（含已停用）")
 async def remove_skill_from_user(
     request: RemoveSkillRequest,
     username: Annotated[str, Depends(get_current_username)],
 ):
-    """从用户 workspace/{username}/skills/ 目录下移除指定技能"""
-    user_skills_dir = _get_user_skills_dir(username)
-    target_dir = user_skills_dir / request.dir_name
-
-    if not target_dir.exists():
+    """彻底删除用户技能：启用目录与停用目录里的同名技能都会被移除。"""
+    if not skill_library.find_user_skill(username, request.dir_name):
         raise HTTPException(status_code=404, detail=f"技能 '{request.dir_name}' 不存在")
 
-    if not target_dir.is_dir():
-        raise HTTPException(status_code=400, detail=f"'{request.dir_name}' 不是有效的技能目录")
-
     try:
-        shutil.rmtree(str(target_dir))
-        logger.info(f"技能移除成功 | 用户: {username} | 技能: {request.dir_name}")
+        skill_library.remove_user_skill(username, request.dir_name)
+        invalidate_user_agents(username)
         return {"status": "ok", "message": f"技能 '{request.dir_name}' 已移除"}
     except PermissionError:
         raise HTTPException(status_code=403, detail="权限不足，无法删除技能文件")
