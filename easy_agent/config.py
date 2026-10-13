@@ -120,6 +120,12 @@ class LLMConfig(BaseModel):
 class ToolsConfig(BaseModel):
     skills_dir: str = "./skills"
     prompts_dir: str = "./prompts"
+    result_log_truncate: int = 200
+    """工具结果写入日志时的截断字符数（默认 200）。
+
+    仅影响日志展示长度，不改变工具返回给模型的内容；读取方见
+    ``agent.py`` / ``services/streaming.py`` 中的 LoggingMiddleware 与流式日志。
+    """
 
 class SQLiteConfig(BaseModel):
     """SQLite configuration"""
@@ -482,15 +488,17 @@ class Config(BaseModel):
             denied_dirs=data.get("denied_dirs", []),
             skill_write=data.get("skill_write") or "new-only",
             external_dirs=data.get("external_dirs", {}),
+            sandbox_enabled=data.get("sandbox_enabled", True),
         )
 
     @staticmethod
     def _parse_tools_config(data: dict) -> ToolsConfig:
-        """解析 tools 段（技能目录、提示词目录、读取行数上限）。"""
+        """解析 tools 段（技能目录、提示词目录、日志截断长度）。"""
         tools_data = data.get("tools", {})
         return ToolsConfig(
             skills_dir=tools_data.get("skills_dir", "./skills"),
             prompts_dir=tools_data.get("prompts_dir", "./prompts"),
+            result_log_truncate=tools_data.get("result_log_truncate", 200),
         )
 
     @staticmethod

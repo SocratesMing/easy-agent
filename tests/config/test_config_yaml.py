@@ -227,3 +227,73 @@ def test_resolve_config_path_defaults_to_config_yaml(tmp_path, monkeypatch):
     resolved = Config.resolve_config_path(config_dir=tmp_path)
 
     assert resolved == tmp_path / "config.yaml"
+
+
+def test_config_agent_sandbox_enabled_is_parsed(tmp_path, monkeypatch):
+    """回归：sandbox_enabled 必须真正解析进 agent 配置。
+
+    历史 bug：AgentConfig 声明了该字段，但 _parse_agent_config 漏传，
+    导致无论 config.yaml / SANDBOX_ENABLED 怎么写都恒定等于默认 True，
+    沙箱无法通过配置关闭。
+    """
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+model: test-model
+models:
+  test-model:
+    provider: test-provider
+    api_key: "sk-test"
+sandbox_enabled: ${CONFIG_TEST_SANDBOX:-true}
+""",
+        encoding="utf-8",
+    )
+
+    monkeypatch.delenv("CONFIG_TEST_SANDBOX", raising=False)
+    assert Config.from_yaml(config_path).agent.sandbox_enabled is True
+
+    monkeypatch.setenv("CONFIG_TEST_SANDBOX", "false")
+    assert Config.from_yaml(config_path).agent.sandbox_enabled is False
+
+    # 段缺失时保持默认开启
+    (tmp_path / "empty.yaml").write_text(
+        'model: test-model\nmodels:\n  test-model:\n    api_key: "sk-test"\n',
+        encoding="utf-8",
+    )
+    assert Config.from_yaml(tmp_path / "empty.yaml").agent.sandbox_enabled is True
+
+
+def test_config_tools_result_log_truncate_is_parsed(tmp_path):
+    """回归：tools.result_log_truncate 必须解析进 tools 配置。
+
+    历史 bug：ToolsConfig 未声明该字段，_parse_tools_config 也不读，
+    导致配置值被丢弃，消费方 getattr 永远回退硬编码默认值。
+    """
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+model: test-model
+models:
+  test-model:
+    provider: test-provider
+    api_key: "sk-test"
+tools:
+  result_log_truncate: 1234
+  skills_dir: /tmp/skills
+  prompts_dir: /tmp/prompts
+""",
+        encoding="utf-8",
+    )
+
+    config = Config.from_yaml(config_path)
+
+    assert config.tools.result_log_truncate == 1234
+    assert config.tools.skills_dir == "/tmp/skills"
+    assert config.tools.prompts_dir == "/tmp/prompts"
+
+    # 段缺失时回退默认 200
+    (tmp_path / "empty.yaml").write_text(
+        'model: test-model\nmodels:\n  test-model:\n    api_key: "sk-test"\n',
+        encoding="utf-8",
+    )
+    assert Config.from_yaml(tmp_path / "empty.yaml").tools.result_log_truncate == 200
