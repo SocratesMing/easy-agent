@@ -58,7 +58,12 @@
       
       <AssetsPanel v-if="showAssets" :visible="showAssets" @close="showAssets = false" />
 
-      <SkillCenter v-if="showSkillCenter" @close="showSkillCenter = false" />
+      <SkillCenter
+        v-if="showSkillCenter"
+        :initial-tab="skillCenterTab"
+        @close="showSkillCenter = false"
+        @create-skill="handleSkillCreate"
+      />
 
       <ScheduledTasksPanel v-if="showScheduledTasks" @close="showScheduledTasks = false" />
       
@@ -106,6 +111,7 @@
         @retry="handleRetry"
         @approve="handleToolApproval('approve')"
         @reject="handleToolApproval('reject')"
+        @openPanel="openSkillCenterPanel"
       />
 
       <div v-if="currentSessionId && !showKnowledge && !showUserManagementPanel && !showAssets && !showSkillCenter" class="workspace-area">
@@ -296,6 +302,7 @@ export default {
       showKnowledge: false,
       sidebarWidth: 280,
       showSkillCenter: false,
+      skillCenterTab: 'skills',
       showScheduledTasks: false,
       showSettingsPanel: false,
       showUserManagementPanel: false,
@@ -897,6 +904,11 @@ export default {
       this.showSkillCenter = false
       this.showScheduledTasks = false
     },
+    openSkillCenterPanel(tab) {
+      // 「+」菜单入口：打开面板并直接定位到专家/技能/连接器
+      this.skillCenterTab = tab
+      this.showSkillCenter = true
+    },
     handleShowSkillCenter() {
       this.showKnowledge = false
       this.showSkillCenter = !this.showSkillCenter
@@ -1177,6 +1189,14 @@ export default {
       }
       return this.currentSessionId
     },
+    /**
+     * 技能中心的「创建技能」：预填内容已写入 sessionStorage，
+     * 这里新建会话并关闭技能中心，ChatInput 随之重新挂载、自动恢复技能标签与提示词。
+     */
+    async handleSkillCreate() {
+      await this.handleCreateSession()
+    },
+
     async handleCreateSession() {
       this.showKnowledge = false
       this.showUserManagementPanel = false
@@ -2786,21 +2806,12 @@ html[data-theme="dark"] .skill-center {
   background: var(--bg-primary) !important;
 }
 
-html[data-theme="dark"] .skill-center-header {
-  background: var(--bg-secondary) !important;
-  border-color: var(--border-color) !important;
-}
-
-html[data-theme="dark"] .skill-center-header h2 {
-  color: var(--text-primary) !important;
-}
-
 html[data-theme="dark"] .skill-center-content {
   background: var(--bg-primary) !important;
 }
 
 html[data-theme="dark"] .skill-card {
-  background: var(--bg-secondary) !important;
+  background: var(--bg-surface) !important;
   border-color: var(--border-color) !important;
 }
 
@@ -2819,18 +2830,6 @@ html[data-theme="dark"] .skill-card-name {
 
 html[data-theme="dark"] .skill-card-desc {
   color: var(--text-secondary) !important;
-}
-
-html[data-theme="dark"] .skill-card-icon {
-  color: var(--text-primary) !important;
-}
-
-html[data-theme="dark"] .add-skill-btn {
-  color: var(--accent-color) !important;
-}
-
-html[data-theme="dark"] .add-skill-btn:hover {
-  background: rgba(124, 106, 239, 0.15) !important;
 }
 
 /* ========== 工作区面板 ========== */
@@ -3157,40 +3156,8 @@ html[data-theme="dark"] .file-type {
   color: var(--text-primary) !important;
 }
 
-/* 预设问题卡片堆叠 */
-html[data-theme="dark"] .preset-card {
-  background: var(--bg-secondary) !important;
-  border-color: var(--border-color) !important;
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4) !important;
-}
-
-html[data-theme="dark"] .preset-card.is-front {
-  border-color: var(--accent-color, #0ea5e9) !important;
-  box-shadow: 0 10px 30px rgba(14, 165, 233, 0.25) !important;
-}
-
-html[data-theme="dark"] .preset-card-text {
-  color: var(--text-primary) !important;
-}
-
-html[data-theme="dark"] .preset-card-index,
-html[data-theme="dark"] .preset-card-foot {
-  color: var(--text-muted) !important;
-}
-
-html[data-theme="dark"] .preset-nav-btn {
-  background: var(--bg-secondary) !important;
-  border-color: var(--border-color) !important;
-  color: var(--text-primary) !important;
-}
-
-html[data-theme="dark"] .preset-dot {
-  background: var(--border-color) !important;
-}
-
-html[data-theme="dark"] .preset-dot.active {
-  background: var(--accent-color, #0ea5e9) !important;
-}
+/* 预设问题卡片：样式全部走语义化令牌（--bg-secondary / --text-primary ...），
+   深浅主题自动适配，这里无需额外覆盖。 */
 
 /* 滚动按钮 */
 html[data-theme="dark"] .scroll-btn {
@@ -3420,40 +3387,26 @@ html[data-theme="dark"] .spinner {
 
 /* ========== 技能中心暗黑模式补充 ========== */
 html[data-theme="dark"] .skill-center,
-html[data-theme="dark"] .skill-center-header,
 html[data-theme="dark"] .skill-center-content,
 html[data-theme="dark"] .skill-center .tabs {
   background: transparent !important;
 }
 
-html[data-theme="dark"] .skill-center-header h2 {
-  color: var(--text-primary) !important;
-}
-
-html[data-theme="dark"] .skill-center .tab {
+/* 仅主 Tab（.main-tab）：技能子 Tab 有自己的一套样式，不要被这里接管 */
+html[data-theme="dark"] .skill-center .main-tab {
   background: transparent !important;
-  border-color: var(--border-color) !important;
-  color: var(--text-primary) !important;
+  color: var(--text-secondary) !important;
 }
 
-html[data-theme="dark"] .skill-center .tab:hover {
-  background: var(--bg-tertiary) !important;
-}
-
-html[data-theme="dark"] .skill-center .tab.active {
-  background: var(--accent-color) !important;
-  border-color: var(--accent-color) !important;
-  color: #fff !important;
-}
-
-html[data-theme="dark"] .skill-center .tab-count {
+html[data-theme="dark"] .skill-center .main-tab:hover {
   background: var(--bg-tertiary) !important;
   color: var(--text-primary) !important;
 }
 
-html[data-theme="dark"] .skill-center .tab.active .tab-count {
-  background: rgba(255, 255, 255, 0.2) !important;
-  color: #fff !important;
+html[data-theme="dark"] .skill-center .main-tab.active {
+  background: color-mix(in srgb, var(--accent-color) 18%, var(--bg-surface)) !important;
+  border-color: color-mix(in srgb, var(--accent-color) 34%, transparent) !important;
+  color: var(--accent-color) !important;
 }
 
 html[data-theme="dark"] .skill-card {
@@ -3481,67 +3434,6 @@ html[data-theme="dark"] .add-icon-btn {
 
 html[data-theme="dark"] .add-icon-btn:hover:not(:disabled) {
   background: var(--border-color) !important;
-}
-
-html[data-theme="dark"] .add-icon-btn.added {
-  background: var(--bg-tertiary) !important;
-  color: var(--text-secondary) !important;
-}
-
-html[data-theme="dark"] .remove-icon-btn:hover:not(:disabled) {
-  background: rgba(239, 68, 68, 0.15) !important;
-  border-color: rgba(239, 68, 68, 0.4) !important;
-}
-
-html[data-theme="dark"] .popover-card {
-  background: var(--bg-secondary) !important;
-  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5), 0 0 0 1px var(--border-color) !important;
-}
-
-html[data-theme="dark"] .popover-name {
-  color: var(--text-primary) !important;
-}
-
-html[data-theme="dark"] .popover-category {
-  color: var(--text-secondary) !important;
-}
-
-html[data-theme="dark"] .popover-desc {
-  color: var(--text-primary) !important;
-}
-
-html[data-theme="dark"] .popover-close {
-  color: var(--text-secondary) !important;
-}
-
-html[data-theme="dark"] .popover-close:hover {
-  background: var(--bg-tertiary) !important;
-  color: var(--text-primary) !important;
-}
-
-html[data-theme="dark"] .popover-btn {
-  background: var(--bg-tertiary) !important;
-  border-color: var(--accent-color) !important;
-  color: var(--accent-color) !important;
-}
-
-html[data-theme="dark"] .popover-btn:hover:not(:disabled) {
-  background: var(--border-color) !important;
-}
-
-html[data-theme="dark"] .popover-btn.added {
-  background: var(--bg-tertiary) !important;
-  border-color: var(--border-color) !important;
-  color: var(--text-secondary) !important;
-}
-
-html[data-theme="dark"] .popover-btn.remove {
-  border-color: rgba(239, 68, 68, 0.5) !important;
-  color: #f87171 !important;
-}
-
-html[data-theme="dark"] .popover-btn.remove:hover:not(:disabled) {
-  background: rgba(239, 68, 68, 0.15) !important;
 }
 
 html[data-theme="dark"] .retry-btn {
@@ -3668,42 +3560,7 @@ html[data-theme="dark"] .model-item-badge {
   color: #4ade80 !important;
 }
 
-/* ========== 首页预设问题（分类标签 + 悬浮面板 + 问题卡片）========== */
-html[data-theme="dark"] .preset-category-tab {
-  background: var(--bg-tertiary) !important;
-  border-color: var(--border-color) !important;
-  color: var(--text-secondary) !important;
-}
-
-html[data-theme="dark"] .preset-category-tab:hover {
-  border-color: var(--accent-color) !important;
-  color: var(--accent-color) !important;
-}
-
-html[data-theme="dark"] .preset-category-tab.active {
-  background: color-mix(in srgb, var(--accent-color) 22%, var(--bg-tertiary)) !important;
-  border-color: var(--accent-color) !important;
-  color: var(--accent-color) !important;
-}
-
-html[data-theme="dark"] .preset-category-panel {
-  background: var(--bg-secondary) !important;
-  border-color: var(--border-color) !important;
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5) !important;
-}
-
-html[data-theme="dark"] .preset-chip {
-  background: var(--bg-tertiary) !important;
-  border-color: var(--border-color) !important;
-  color: var(--text-secondary) !important;
-}
-
-html[data-theme="dark"] .preset-chip:hover {
-  border-color: var(--accent-color) !important;
-  color: var(--accent-color) !important;
-  transform: translateY(-1px);
-}
-
+/* ========== 首页预设问题：卡片样式走语义化令牌，深浅主题自动适配 ========== */
 /* ========== 聊天页（Chat.vue）深色适配 ========== */
 html[data-theme="dark"] .chat-container {
   background: var(--bg-primary) !important;
@@ -3721,29 +3578,6 @@ html[data-theme="dark"] .welcome-screen {
 }
 html[data-theme="dark"] .welcome-screen h2 {
   color: var(--text-primary) !important;
-}
-html[data-theme="dark"] .preset-card {
-  background: var(--bg-secondary) !important;
-  border-color: var(--border-color) !important;
-}
-html[data-theme="dark"] .preset-card-text {
-  color: var(--text-primary) !important;
-}
-html[data-theme="dark"] .preset-card-foot {
-  color: var(--text-secondary) !important;
-}
-html[data-theme="dark"] .preset-nav-btn {
-  background: var(--bg-secondary) !important;
-  border-color: var(--border-color) !important;
-  color: var(--text-secondary) !important;
-}
-html[data-theme="dark"] .preset-nav-btn:hover {
-  background: var(--bg-tertiary) !important;
-  border-color: var(--accent-color) !important;
-  color: var(--accent-color) !important;
-}
-html[data-theme="dark"] .preset-dot {
-  background: var(--border-color) !important;
 }
 html[data-theme="dark"] .scroll-btn {
   background: var(--bg-secondary) !important;

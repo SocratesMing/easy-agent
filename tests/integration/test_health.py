@@ -27,3 +27,22 @@ def test_app_metadata(client: TestClient):
     assert "/agent/auth/login" in routes
     assert "/agent/sessions" in routes
     assert "/agent/chat/stream" in routes
+
+
+def test_unknown_agent_path_returns_json_404(client: TestClient):
+    """未注册的 /agent/* 必须返回 JSON 404，不能落到 SPA 兜底返回 index.html。
+
+    否则前端 response.json() 会报 "Unexpected token '<'"，掩盖接口不存在的真实原因。
+    """
+    resp = client.get("/agent/not-a-real-endpoint")
+    assert resp.status_code == 404
+    assert resp.headers["content-type"].startswith("application/json")
+    assert resp.json() == {"detail": "Not Found"}
+
+
+def test_frontend_fallback_still_serves_html(client: TestClient):
+    """非 /agent 路径仍走 SPA 兜底（保持前端路由/静态资源行为不变）。"""
+    resp = client.get("/some/spa/route")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/html")
+

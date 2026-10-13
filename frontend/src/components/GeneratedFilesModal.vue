@@ -1,5 +1,6 @@
 <template>
-  <div v-if="visible" class="modal-overlay" @click.self="close">
+  <div v-if="visible" class="modal-overlay" @mousedown="overlayPress = markOverlayPress($event)"
+    @click.self="overlayClickCloses($event, overlayPress, close)">
     <div class="modal-content generated-files-modal">
       <div class="modal-header">
         <h3>生成的文件</h3>
@@ -57,68 +58,44 @@
 
 <script>
 import FileIcon from './FileIcon.vue'
-import { requestText } from '../utils/request.js'
-export default {
-  components: { FileIcon },
-  props: {
-    visible: {
-      type: Boolean,
-      default: false
-    },
-    files: {
-      type: Array,
-      default: () => []
-    }
+import { API_BASE_URL } from '../config.js'
+import { overlayClickCloses, markOverlayPress } from '../utils/overlayClick.js'
+import { authFetch } from '../api/auth.js'
+
+const props = defineProps({
+  visible: {
+    type: Boolean,
+    default: false
   },
-  data() {
-    return {
-      selectedFile: null,
-      fileContent: ''
-    }
-  },
-  methods: {
-    close() {
-      this.$emit('close')
-      this.selectedFile = null
-      this.fileContent = ''
-    },
-    async selectFile(file) {
-      this.selectedFile = file
-      try {
-        // 走统一请求层：相对路径请求 + 自动带上 Authorization 头
-        this.fileContent = await requestText(
-          {
-            url: '/agent/files/content',
-            method: 'get',
-            params: { file_path: file.file_path },
-          },
-          '无法加载文件内容'
-        )
-      } catch (e) {
-        this.fileContent = '加载文件内容失败: ' + e.message
-      }
-    },
-    formatFileSize(size) {
-      if (size < 1024) return size + ' B'
-      if (size < 1024 * 1024) return (size / 1024).toFixed(1) + ' KB'
-      return (size / 1024 / 1024).toFixed(1) + ' MB'
-    },
-    formatTime(timeStr) {
-      if (!timeStr) return ''
-      const date = new Date(timeStr)
-      return date.toLocaleString('zh-CN', {
-        month: '2-digit',
-        day: '2-digit',
-        hour: '2-digit',
-        minute: '2-digit'
-      })
-    }
-  },
-  watch: {
-    files() {
-      if (this.files.length > 0 && !this.selectedFile) {
-        this.selectFile(this.files[0])
-      }
+  files: {
+    type: Array,
+    default: () => []
+  }
+})
+
+const emit = defineEmits(['close'])
+
+const selectedFile = ref(null)
+const fileContent = ref('')
+
+const overlayPress = ref(null)
+
+function close() {
+  emit('close')
+  selectedFile.value = null
+  fileContent.value = ''
+}
+
+async function selectFile(file) {
+  selectedFile.value = file
+  try {
+    const response = await authFetch(
+      `${API_BASE_URL}/agent/files/content?file_path=${encodeURIComponent(file.file_path)}`
+    )
+    if (response.ok) {
+      fileContent.value = await response.text()
+    } else {
+      fileContent.value = '无法加载文件内容'
     }
   }
 }

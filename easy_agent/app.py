@@ -58,6 +58,7 @@ from .api import (
     prompts_router,
     settings_router,
     skill_center_router,
+    connectors_router,
     scheduled_tasks_router,
 )
 
@@ -510,6 +511,7 @@ app.include_router(completion_router)
 app.include_router(prompts_router)
 app.include_router(settings_router)
 app.include_router(skill_center_router)
+app.include_router(connectors_router)
 if terminal_router is not None:
     app.include_router(terminal_router)
 app.include_router(scheduled_tasks_router)
@@ -564,6 +566,13 @@ async def serve_frontend():
 
 @app.get("/{full_path:path}", response_class=FileResponse)
 async def serve_static(full_path: str):
+    # /agent/* 是接口命名空间，未匹配到任何路由时必须返回 JSON 404。
+    # 否则会落到下面的 SPA 兜底、以 200 + text/html 返回 index.html，
+    # 前端 response.json() 报 "Unexpected token '<'"，把「接口不存在
+    # （后端没重启 / 版本过旧）」这个真实原因完全掩盖掉。
+    if full_path == "agent" or full_path.startswith("agent/"):
+        return JSONResponse({"detail": "Not Found"}, status_code=404)
+
     static_file = os.path.join(frontend_dist, full_path)
     if os.path.exists(static_file) and os.path.isfile(static_file):
         # 静态产物文件名固定（/js/app.js）：no-cache 禁止启发式强缓存，

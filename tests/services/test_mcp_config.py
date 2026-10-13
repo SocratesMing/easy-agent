@@ -2,7 +2,7 @@
 
 import json
 
-from easy_agent.api.settings import _extract_servers, _merge_mcp_env
+from easy_agent.api.connectors import _extract_servers
 from easy_agent.services import mcp as mcp_mod
 
 
@@ -77,6 +77,48 @@ def test_load_mcp_config_accepts_mcpservers_key(tmp_path, monkeypatch):
     assert loaded["akshare-mcp"]["url"] == "http://127.0.0.1:8005/sse"
 
 
+def test_load_user_mcp_config_never_falls_back_to_global(tmp_path, monkeypatch):
+    """load_user_mcp_config 只认用户自己的 mcp.json，不回退全局。
+
+    连接器页的 installed 判断依赖这个语义：config/mcp.json 同时是全局 mcp.json，
+    回退会让公共目录里的条目全被误判成「已安装」。
+    """
+    from easy_agent.config import Config
+
+    global_file = tmp_path / "global-mcp.json"
+    global_file.write_text(
+        json.dumps({"servers": {"from-global": {"transport": "stdio", "command": "echo"}}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(mcp_mod, "_find_mcp_config", lambda: global_file)
+    user_path = tmp_path / "user" / "mcp.json"
+
+    # 用户文件不存在 → 空（而不是全局里的 from-global）
+    monkeypatch.setattr(Config, "get_user_mcp_path", classmethod(lambda cls, u, c=None: user_path))
+    assert mcp_mod.load_user_mcp_config("someone") == {}
+    # 全局回退仍然只影响 load_mcp_config
+    assert "from-global" in mcp_mod.load_mcp_config("someone")
+
+    # 用户文件存在 → 只返回用户自己的
+    user_path.parent.mkdir(parents=True, exist_ok=True)
+    user_path.write_text(
+        json.dumps({"servers": {"mine": {"transport": "stdio", "command": "echo"}}}),
+        encoding="utf-8",
+    )
+    assert set(mcp_mod.load_user_mcp_config("someone")) == {"mine"}
+
+
+def test_load_user_mcp_config_survives_broken_json(tmp_path, monkeypatch):
+    """用户 mcp.json 损坏时降级为空映射，不抛异常。"""
+    from easy_agent.config import Config
+
+    user_path = tmp_path / "mcp.json"
+    user_path.write_text("{broken", encoding="utf-8")
+    monkeypatch.setattr(Config, "get_user_mcp_path", classmethod(lambda cls, u, c=None: user_path))
+
+    assert mcp_mod.load_user_mcp_config("someone") == {}
+
+
 def test_normalize_servers_mapping_unwraps_polluted_mcpservers():
     """旧版误存的 {"servers": {"mcpServers": {"akshare-mcp": {...}}}} 应被展开。"""
     polluted = {
@@ -113,26 +155,3 @@ def test_unpack_error_flattens_exception_group():
         [FileNotFoundError(2, "No such file or directory")],
     )
     assert "No such file or directory" in mcp_mod._unpack_error(eg)
-
-
-def test_merge_mcp_env_keeps_real_values_for_masked_keys():
-    """前端把 env 脱敏成 *** 保存时，应保留磁盘上的真实值，不能写回 ***。"""
-    existing = {
-        "MYSQL_HOST": "localhost",
-        "MYSQL_PASSWORD": "Test1234",
-        "MYSQL_USER": "root",
-    }
-    incoming = {
-        "MYSQL_HOST": "***",
-        "MYSQL_PASSWORD": "***",
-        "MYSQL_USER": "root",
-        "MYSQL_DATABASE": "agent",
-    }
-    out = _merge_mcp_env(existing, incoming)
-    assert out["MYSQL_PASSWORD"] == "Test1234"
-    assert out["MYSQL_HOST"] == "localhost"
-    assert out["MYSQL_USER"] == "root"
-    assert out["MYSQL_DATABASE"] == "agent"
-    # 真正修改的键会写入
-    out2 = _merge_mcp_env(existing, {"MYSQL_PASSWORD": "NewPass"})
-    assert out2["MYSQL_PASSWORD"] == "NewPass"

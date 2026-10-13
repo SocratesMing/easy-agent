@@ -58,7 +58,12 @@
       
       <AssetsPanel v-if="showAssets" :visible="showAssets" @close="showAssets = false" />
 
-      <SkillCenter v-if="showSkillCenter" @close="showSkillCenter = false" />
+      <SkillCenter
+        v-if="showSkillCenter"
+        :initial-tab="skillCenterTab"
+        @close="showSkillCenter = false"
+        @create-skill="handleSkillCreate"
+      />
 
       <ScheduledTasksPanel v-if="showScheduledTasks" @close="showScheduledTasks = false" />
       
@@ -99,13 +104,15 @@
         :selectedModel="selectedModel"
         @update:selectedModel="selectedModel = $event"
         @toggle-workspace="isWorkspaceCollapsed = false"
-        @send-message="handleSendMessage"
-        @create-session="ensureCurrentSession"
-        @remove-file="handleRemoveFile"
+        @sendMessage="handleSendMessage"
+        @presetSend="handlePresetSend"
+        @createSession="ensureCurrentSession"
+        @removeFile="handleRemoveFile"
         @stop="handleStop"
         @retry="handleRetry"
         @approve="handleToolApproval('approve')"
         @reject="handleToolApproval('reject')"
+        @openPanel="openSkillCenterPanel"
       />
 
       <div v-if="currentSessionId && !showKnowledge && !showUserManagementPanel && !showAssets && !showSkillCenter" class="workspace-area">
@@ -191,6 +198,915 @@ const NEW_SESSION_MARK = '__new__'
 
 // ── 流式状态持久化（sessionStorage）─────────────────────────────────────
 const STREAM_STATE_KEY = 'easy_agent_stream_state'
+
+function saveStreamState() {
+  const ids = streamingSessions.value.filter(Boolean)
+  if (ids.length > 0) {
+    sessionStorage.setItem(STREAM_STATE_KEY, JSON.stringify({
+      streamingIds: ids,
+      lastActive: lastStreamingSession.value || ids[ids.length - 1],
+      streaming: true,
+      at: Date.now(),
+    }))
+  } else {
+    sessionStorage.removeItem(STREAM_STATE_KEY)
+  }
+}
+
+watch([streamingSessions, lastStreamingSession], saveStreamState)
+
+// 本页已建立实时挂载的会话及模式（避免重复挂载/重复回放）：
+// { [sessionId]: 'displayed' | 'background' }
+const attachedStreamingSessions = ref({})
+
+// 挂载到进行中的流式任务：回放该流已产生的事件并持续接收后续事件。
+// displayed=true：重建界面消息并持续更新（当前查看的会话）；
+// displayed=false：仅后台同步 token 用量、流结束时移除"进行中"标记，不触碰界面。
+async function attachToStreamingSession(sessionId, opts = {}) {
+  const { switchTo = false, displayed = true } = opts
+  if (!sessionId) return
+  const mode = displayed ? 'displayed' : 'background'
+  // 已展示挂载的会话无需重复挂载；后台挂载可被升级为展示挂载
+  if (attachedStreamingSessions.value[sessionId] === 'displayed') return
+  attachedStreamingSessions.value[sessionId] = mode
+
+  if (switchTo) {
+    currentSessionId.value = sessionId
+  }
+  // 展示挂载（含切换懒挂载）时，界面消息/用量归属于该会话；
+  // 否则 loadedSessionId 停留在旧会话，缓存写入错位，来回切换会显示空会话主页。
+  if (displayed) {
+    loadedSessionId.value = sessionId
+  }
+  markStreaming(sessionId)
+
+  if (displayed) {
+    sessionLoading.value = true
+    try {
+      const history = await getChatHistory(sessionId)
+      if (currentSessionId.value !== sessionId) {
+        // 加载期间用户已切换到其他会话：放弃本次挂载，避免覆盖当前展示
+        if (attachedStreamingSessions.value[sessionId] === mode) {
+          delete attachedStreamingSessions.value[sessionId]
+        }
+        return
+      }
+      messages.value = history.messages || []
+      currentTodos.value = history.todos || []
+      if (history.usage) {
+        sessionUsage.value.input_tokens = history.usage.input_tokens || 0
+        sessionUsage.value.output_tokens = history.usage.output_tokens || 0
+        sessionUsage.value.reasoning_tokens = history.usage.reasoning_tokens || 0
+        sessionUsage.value.context_tokens = history.usage.context_tokens || 0
+        sessionDuration.value = history.usage.elapsed_time || 0
+        iterationCount.value = history.usage.step_count || 0
+      }
+      if (history.context_length) {
+        sessionUsage.value.context_length = history.context_length
+      }
+    } catch (e) {
+      console.error('加载聊天历史失败:', e)
+    } finally {
+      sessionLoading.value = false
+    }
+  }
+
+  // 正在生成中的回复应是消息列表的最后一条：最后一条是 assistant 则原位替换为
+  // 空占位由回放重建（避免重复）；最后一条仍是用户消息则末尾追加占位。
+  // 此前按「倒数第一条 assistant」查找，会把上一轮历史 assistant 误替换，导致
+  // 正文渲染在最后一次用户输入的上方。
+  const attachId = `assistant-attach-${Date.now()}-${String(sessionId).slice(-5)}`
+  if (displayed) {
+    const lastMsg = messages.value[messages.value.length - 1]
+    const lastAssistantIdx = lastMsg && lastMsg.role === 'assistant'
+      ? messages.value.length - 1
+      : -1
+    const placeholder = {
+      id: attachId,
+      role: 'assistant',
+      content: '',
+      created_at: null,
+      thinking: '',
+      tool_calls: [],
+      blocks: [],
+      loading: true,
+    }
+    if (lastAssistantIdx === -1) {
+      messages.value.push(placeholder)
+    } else {
+      messages.value[lastAssistantIdx] = placeholder
+    }
+    streamingAssistantId.value = attachId
+  }
+
+  const { onChunk } = createStreamChunkHandler({
+    isResume: true,
+    attachMode: true,
+    get assistantMsgId() { return attachId },
+    set assistantMsgId(v) {},
+    streamSessionId: sessionId,
+    preStreamUsage: { ...sessionUsage.value },
+    preStreamIterationCount: iterationCount.value,
+    preStreamDuration: sessionDuration.value,
+    initialBlockOrder: 0,
+    onApprovalRequired: (data) => {
+      if (!displayed) return
+      pendingApproval.value = {
+        threadId: data.thread_id,
+        assistantMsgId: attachId,
+      }
+      if (attachId && data.action_requests) {
+        const idx = messages.value.findIndex(m => m.id === attachId)
+        if (idx !== -1) {
+          messages.value[idx].pending_approval = { thread_id: data.thread_id, action_requests: data.action_requests }
+          if (Array.isArray(data.blocks) && data.blocks.length > 0) {
+            messages.value[idx].blocks = data.blocks.map(b => ({ ...b }))
+          }
+          for (const ar of data.action_requests) {
+            let blk = messages.value[idx].blocks.find(
+              b => b.type === 'tool_call' && (b.tool_call_id === ar.tool_call_id || b.id === ar.tool_call_id)
+            )
+            if (!blk && ar.tool_name) {
+              for (let i = messages.value[idx].blocks.length - 1; i >= 0; i--) {
+                const b = messages.value[idx].blocks[i]
+                if (b.type === 'tool_call' && b.tool_name === ar.tool_name) { blk = b; break }
+              }
+            }
+            if (blk) {
+              blk.pending_approval = true
+              blk.approval_status = 'pending'
+              if (ar.tool_call_id) {
+                blk.tool_call_id = ar.tool_call_id
+                blk.id = ar.tool_call_id
+              }
+              if (ar.file_paths && ar.file_paths.length > 0) {
+                blk.file_paths = ar.file_paths
+              }
+            }
+          }
+          messages.value[idx] = { ...messages.value[idx], blocks: [...messages.value[idx].blocks] }
+        }
+      }
+    },
+  })
+
+  const controller = new AbortController()
+  if (displayed) currentAbortController.value = controller
+  if (!displayed && !sessionStates.value[sessionId]) {
+    // 后台挂载：确保会话缓存存在，供 token 用量回放写入
+    sessionStates.value[sessionId] = {
+      messages: [],
+      isStreaming: true,
+      sessionUsage: {
+        input_tokens: 0,
+        output_tokens: 0,
+        context_length: sessionUsage.value.context_length,
+        auto_compress_tokens: null,
+        context_tokens: 0,
+      },
+      sessionDuration: 0,
+      iterationCount: 0,
+      abortController: null,
+      todos: [],
+    }
+  }
+  try {
+    await attachStream(sessionId, onChunk, controller.signal)
+    if (displayed) {
+      await expandWorkspaceAfterSessionCompletion(sessionId)
+    }
+  } catch (e) {
+    if (e.name !== 'AbortError') {
+      console.error('挂载流式输出失败:', e)
+      if (displayed) error.value = e.message || '挂载流式输出失败'
+    }
+  } finally {
+    if (attachedStreamingSessions.value[sessionId] === mode) {
+      delete attachedStreamingSessions.value[sessionId]
+    }
+    if (!displayed || !pendingApproval.value) {
+      if (displayed) currentAbortController.value = null
+      unmarkStreaming(sessionId)
+      if (sessionStates.value[sessionId]) {
+        sessionStates.value[sessionId].isStreaming = false
+        sessionStates.value[sessionId].abortController = null
+      }
+      // 列表"进行中"标记此时移除（显示已完成）：以服务端历史为准回填完整内容
+      await syncSessionFromServer(sessionId)
+      if (displayed) {
+        // 兜底：挂载流结束时确保占位消息不再标记 loading，避免页面残留"执行中"
+        let idx = messages.value.findIndex(m => m.id === attachId)
+        if (idx === -1) {
+          for (let i = messages.value.length - 1; i >= 0; i--) {
+            if (messages.value[i].role === 'assistant' && messages.value[i].loading) { idx = i; break }
+          }
+        }
+        if (idx !== -1 && messages.value[idx].loading) {
+          messages.value[idx] = { ...messages.value[idx], loading: false }
+        }
+        streamingAssistantId.value = null
+        saveCurrentSessionState()
+      }
+      await loadSessions()
+    }
+  }
+}
+
+// 刷新后恢复全部进行中的流式任务：逐个查询后端状态，活跃的恢复"进行中"标记；
+// 最近活跃的会话直接重挂载，其余会话在切换到它时懒挂载。
+async function tryAttachLiveStream() {
+  let saved = null
+  try {
+    const raw = sessionStorage.getItem(STREAM_STATE_KEY)
+    if (!raw) return
+    saved = JSON.parse(raw)
+  } catch (e) {
+    return
+  }
+  if (!saved || !saved.streaming) return
+
+  const candidates = Array.isArray(saved.streamingIds) && saved.streamingIds.length
+    ? saved.streamingIds
+    : (saved.sessionId ? [saved.sessionId] : [])
+  const active = []
+  for (const sid of candidates) {
+    try {
+      const status = await getStreamStatus(sid)
+      if (status && status.active && !active.includes(sid)) active.push(sid)
+    } catch (e) {
+      // 会话可能已被删除：忽略
+    }
+  }
+  for (const sid of active) markStreaming(sid)
+
+  const attachTarget = saved.lastActive && active.includes(saved.lastActive)
+    ? saved.lastActive
+    : active[0]
+  if (attachTarget) {
+    attachToStreamingSession(attachTarget, { switchTo: true, displayed: true })
+  }
+  // 其余仍活跃的会话后台挂载：同步 token 用量、流结束时自动移除"进行中"标记
+  for (const sid of active) {
+    if (sid === attachTarget) continue
+    attachToStreamingSession(sid, { switchTo: false, displayed: false })
+  }
+  // 清理一次性恢复标记；仍活跃的流会通过 watch 重新写入持久化
+  saveStreamState()
+}
+
+// 保存当前会话状态到缓存（以界面数据实际所属的会话为 key，避免异步加载期间保存错位）
+function saveCurrentSessionState() {
+  if (!loadedSessionId.value) return
+  sessionStates.value[loadedSessionId.value] = {
+    messages: JSON.parse(JSON.stringify(messages.value)),
+    isStreaming: isStreaming.value,
+    sessionUsage: { ...sessionUsage.value },
+    sessionDuration: sessionDuration.value,
+    iterationCount: iterationCount.value,
+    abortController: currentAbortController.value,
+    todos: [...currentTodos.value]
+  }
+}
+
+// 从缓存恢复会话状态
+function restoreSessionState(sessionId) {
+  const state = sessionStates.value[sessionId]
+  if (state) {
+    messages.value = state.messages
+    // 输入框是否显示停止按钮由 isStreaming（当前会话是否在流式会话集合中）决定
+    sessionUsage.value = { ...state.sessionUsage }
+    sessionDuration.value = state.sessionDuration || 0
+    iterationCount.value = state.iterationCount || 0
+    currentAbortController.value = state.abortController
+    currentTodos.value = state.todos || []
+    loadedSessionId.value = sessionId
+    return true
+  }
+  return false
+}
+
+// ── 会话级流式隔离 ──────────────────────────────────────────────────────
+// 一个流事件只应写入「它所属会话」的数据，不能写当前正在查看的会话，否则多会话
+// 并行流式（A 流式中新建/切换到 B）会串台：A 的增量被追加进 B 的 messages。
+// 做法：展示中的会话（sid === loadedSessionId）直接用全局 refs；后台会话临时把全局
+// refs 指向其 sessionStates 缓冲，处理完立即还原（全程同步，不会触发中途渲染）。
+function ensureSessionState(sid) {
+  let st = sessionStates.value[sid]
+  if (!st) {
+    st = {
+      messages: [],
+      isStreaming: true,
+      sessionUsage: {
+        input_tokens: 0,
+        output_tokens: 0,
+        reasoning_tokens: 0,
+        context_length: sessionUsage.value.context_length,
+        auto_compress_tokens: null,
+        context_tokens: 0,
+      },
+      sessionDuration: 0,
+      iterationCount: 0,
+      abortController: null,
+      todos: [],
+      streamingAssistantId: null,
+      assistantMsgId: null,
+    }
+  }
+  sessionStates.value = { ...sessionStates.value, [sid]: st }
+  return st
+}
+
+function runInSession(sid, ctx, fn) {
+  if (!sid || sid === loadedSessionId.value) return fn() // 展示中的会话：直接用全局 refs
+  const st = ensureSessionState(sid)
+  const saved = {
+    messages: messages.value,
+    usage: sessionUsage.value,
+    duration: sessionDuration.value,
+    iterations: iterationCount.value,
+    todos: currentTodos.value,
+    streamingAssistantId: streamingAssistantId.value,
+    assistantMsgId: ctx ? ctx.assistantMsgId : undefined,
+  }
+  messages.value = st.messages
+  sessionUsage.value = st.sessionUsage
+  sessionDuration.value = st.sessionDuration
+  iterationCount.value = st.iterationCount
+  currentTodos.value = st.todos
+  streamingAssistantId.value = st.streamingAssistantId
+  if (ctx) ctx.assistantMsgId = st.assistantMsgId
+  const restore = () => {
+    st.messages = messages.value
+    st.sessionUsage = sessionUsage.value
+    st.sessionDuration = sessionDuration.value
+    st.iterationCount = iterationCount.value
+    st.todos = currentTodos.value
+    st.streamingAssistantId = streamingAssistantId.value
+    if (ctx) st.assistantMsgId = ctx.assistantMsgId
+    sessionStates.value = { ...sessionStates.value, [sid]: st }
+    messages.value = saved.messages
+    sessionUsage.value = saved.usage
+    sessionDuration.value = saved.duration
+    iterationCount.value = saved.iterations
+    currentTodos.value = saved.todos
+    streamingAssistantId.value = saved.streamingAssistantId
+    if (ctx) ctx.assistantMsgId = saved.assistantMsgId
+  }
+  let result
+  try {
+    result = fn()
+  } catch (e) {
+    restore()
+    throw e
+  }
+  // fn 可能返回 Promise（如流结束后的异步收尾）：等它 settle 后再还原，避免中途串台
+  if (result && typeof result.then === 'function') {
+    return result.finally(restore)
+  }
+  restore()
+  return result
+}
+
+// 以服务端历史为准回填某会话：流式结束（列表"进行中"标记移除）后调用。
+// 本地增量流状态在后台收尾/事件未命中时可能不完整，history 接口返回的是后端
+// 完整落库消息，用它回填可保证"列表已完成"时页面渲染完整内容（无需刷新）。
+async function syncSessionFromServer(sessionId) {
+  if (!sessionId) return
+  if (!sessions.value.some(s => s.session_id === sessionId)) return // 会话已删除/切换用户，跳过
+  let history
+  try {
+    history = await getChatHistory(sessionId)
+  } catch (e) {
+    console.warn('回填会话历史失败:', e)
+    return
+  }
+  // 拉取期间该会话若又开始了新一轮流式，别用旧历史覆盖
+  if (isSessionStreaming(sessionId)) return
+
+  const usage = history.usage || null
+  if (currentSessionId.value === sessionId && loadedSessionId.value === sessionId) {
+    messages.value = history.messages || []
+    currentTodos.value = history.todos || []
+    if (usage) {
+      sessionUsage.value.input_tokens = usage.input_tokens || 0
+      sessionUsage.value.output_tokens = usage.output_tokens || 0
+      sessionUsage.value.reasoning_tokens = usage.reasoning_tokens || 0
+      sessionUsage.value.context_tokens = usage.context_tokens || 0
+      sessionDuration.value = usage.elapsed_time || 0
+      iterationCount.value = usage.step_count || 0
+    }
+    if (history.context_length) sessionUsage.value.context_length = history.context_length
+    scrollTrigger.value++
+  } else {
+    const st = ensureSessionState(sessionId)
+    st.messages = history.messages || []
+    st.todos = history.todos || []
+    if (usage) {
+      st.sessionUsage = {
+        ...st.sessionUsage,
+        input_tokens: usage.input_tokens || 0,
+        output_tokens: usage.output_tokens || 0,
+        reasoning_tokens: usage.reasoning_tokens || 0,
+        context_tokens: usage.context_tokens || 0,
+        context_length: history.context_length || st.sessionUsage.context_length,
+      }
+      st.sessionDuration = usage.elapsed_time || 0
+      st.iterationCount = usage.step_count || 0
+    }
+    sessionStates.value = { ...sessionStates.value, [sessionId]: st }
+  }
+}
+
+// HITL 历史恢复：从消息中重建待审批状态，使切换/重载会话后仍能显示审批按钮并继续执行。
+// 历史消息无前端 id，按 thread_id（= `${session_id}-${message_id}`）还原后端 message_id
+// 作为消息 id，保证恢复执行时记录使用一致的 message_id。监听 loadedSessionId 变化即可
+// 覆盖所有历史加载路径（初始加载、切换会话、欢迎流程后加载、删除会话回退等）。
+function reconstructPendingApproval() {
+  // 流式进行中由 onApprovalRequired 管理审批状态，不重建以免覆盖
+  if (isStreaming.value) return
+  pendingApproval.value = null
+  if (!messages.value || messages.value.length === 0) return
+  const sid = currentSessionId.value || ''
+  for (let i = messages.value.length - 1; i >= 0; i--) {
+    const msg = messages.value[i]
+    // 末尾出现用户消息说明已发起新一轮对话，旧的待审批不再阻塞，不重建
+    if (msg.role === 'user') return
+    if (msg.role === 'assistant' && msg.pending_approval && msg.pending_approval.thread_id) {
+      const threadId = msg.pending_approval.thread_id
+      const backendMsgId = sid && threadId.startsWith(sid + '-')
+        ? threadId.slice(sid.length + 1)
+        : (msg.id || `hist-${i}-${Date.now()}`)
+      const blocks = (msg.blocks || []).map(b => {
+        if (b.type === 'tool_call' && b.approval_status === 'pending') {
+          return { ...b, pending_approval: true }
+        }
+        return b
+      })
+      const hasPending = blocks.some(b => b.type === 'tool_call' && b.approval_status === 'pending')
+      messages.value[i] = { ...msg, id: backendMsgId, blocks }
+      if (hasPending) {
+        pendingApproval.value = { threadId, assistantMsgId: backendMsgId }
+      }
+      break
+    }
+  }
+}
+watch(() => loadedSessionId.value, reconstructPendingApproval)
+const isSidebarCollapsed = ref(false)
+const isWorkspaceCollapsed = ref(true)
+const showAssets = ref(false)
+const showSkillCenter = ref(false)
+const skillCenterTab = ref('skills')
+const showScheduledTasks = ref(false)
+const showSettingsPanel = ref(false)
+const showUserManagementPanel = ref(false)
+const showWelcome = ref(false)
+// 首屏引导中：认证 + 会话列表 + 首次历史加载完成前不渲染聊天区，
+// 否则会先闪出空会话首页、会话时间下方那条分隔线也会闪一下。
+const isBootstrapping = ref(true)
+// 切换会话时正在从服务器拉取历史：期间不渲染空欢迎页，避免"先闪空会话页再出历史"
+const sessionLoading = ref(false)
+const scrollTrigger = ref(0)
+const userProfile = ref({
+  username: '',
+  organization_id: '',
+  email: ''
+})
+
+function toggleSidebar() {
+  isSidebarCollapsed.value = !isSidebarCollapsed.value
+}
+
+function handleShowAssets() {
+  showAssets.value = !showAssets.value
+  showSkillCenter.value = false
+  showScheduledTasks.value = false
+}
+
+function openSkillCenterPanel(tab) {
+  // 「+」菜单入口：打开面板并直接定位到专家/技能/连接器
+  skillCenterTab.value = tab
+  showSkillCenter.value = true
+}
+
+function handleShowSkillCenter() {
+  showSkillCenter.value = !showSkillCenter.value
+  showAssets.value = false
+  showScheduledTasks.value = false
+}
+
+function handleShowScheduledTasks() {
+  showScheduledTasks.value = !showScheduledTasks.value
+  showAssets.value = false
+  showSkillCenter.value = false
+}
+
+function applyAgentConfig(configData) {
+  if (!configData) return
+  if (configData.context_length) {
+    sessionUsage.value.context_length = configData.context_length
+  }
+  if (configData.preset_questions) {
+    presetQuestions.value = configData.preset_questions
+  }
+  if (typeof configData.win === 'boolean') {
+    appRuntime.win = configData.win
+  }
+  if (configData.agent_env) {
+    appRuntime.agentEnv = configData.agent_env
+  }
+  if (typeof configData.app_welcome_title === 'string' && configData.app_welcome_title.trim()) {
+    welcomeTitle.value = configData.app_welcome_title
+  }
+}
+
+// 依据持久化的选择恢复初始会话视图：
+//   - 上次所在会话（仍存在）→ 恢复该会话；
+//   - '__new__' → 保持新会话首页（currentSessionId 为 null）；
+//   - 无记录 / 会话已被删除 → 回退到列表第一个；列表为空则新会话首页。
+// 加载对应历史后解除首屏门控（isBootstrapping），避免闪出空首页与顶部分隔线。
+async function restoreInitialSession() {
+  let stored = null
+  try {
+    stored = localStorage.getItem(ACTIVE_SESSION_KEY)
+  } catch (_) { /* ignore */ }
+
+  let initialSessionId = null
+  if (stored === NEW_SESSION_MARK) {
+    initialSessionId = null
+  } else if (stored && sessions.value.some(s => s.session_id === stored)) {
+    initialSessionId = stored
+  } else if (sessions.value.length > 0) {
+    initialSessionId = sessions.value[0].session_id
+  }
+
+  if (initialSessionId) {
+    currentSessionId.value = initialSessionId
+    if (!restoreSessionState(initialSessionId)) {
+      try {
+        const history = await getChatHistory(initialSessionId)
+        // 加载期间用户可能已切换会话，丢弃过期响应（正常 bootstrap 期间 UI 门控，不会发生）
+        if (currentSessionId.value === initialSessionId) {
+          messages.value = history.messages || []
+          currentTodos.value = history.todos || []
+          if (history.usage) {
+            sessionUsage.value.input_tokens = history.usage.input_tokens || 0
+            sessionUsage.value.output_tokens = history.usage.output_tokens || 0
+            sessionUsage.value.reasoning_tokens = history.usage.reasoning_tokens || 0
+            sessionUsage.value.context_tokens = history.usage.context_tokens || 0
+            sessionDuration.value = history.usage.elapsed_time || 0
+            iterationCount.value = history.usage.step_count || 0
+          }
+          if (history.context_length) {
+            sessionUsage.value.context_length = history.context_length
+          }
+          loadedSessionId.value = initialSessionId
+        }
+      } catch (e) {
+        console.error('加载聊天历史失败:', e)
+      }
+    }
+  } else {
+    currentSessionId.value = null
+    messages.value = []
+    currentTodos.value = []
+    loadedSessionId.value = null
+  }
+
+  hasBootstrapped.value = true
+  try {
+    localStorage.setItem(ACTIVE_SESSION_KEY, currentSessionId.value || NEW_SESSION_MARK)
+  } catch (_) { /* ignore */ }
+  isBootstrapping.value = false
+
+  // 刷新前若正在流式，重新挂载并继续接收事件
+  await tryAttachLiveStream()
+}
+
+async function handleWelcomeCompleted(profile) {
+  isBootstrapping.value = true
+  userProfile.value = profile
+  showWelcome.value = false
+  if (profile.context_length) {
+    sessionUsage.value.context_length = profile.context_length
+  }
+  try {
+    const configResp = await authFetch(`${API_BASE_URL}/agent/auth/config`)
+    if (configResp.ok) {
+      const configData = await configResp.json()
+      applyAgentConfig(configData)
+    }
+  } catch (e) {
+    console.warn('获取模型配置失败:', e)
+  }
+  loadModels()
+  await loadSessions()
+  await restoreInitialSession()
+}
+
+async function handleLogout() {
+  // 通知后端记录登出（用户名/上次登录缓存时间/在线时长），best-effort。
+  // 仅在仍持有 token 时通知：被动登出（401 被踢下线/过期）时 token 已被 clearAuth
+  // 清除，再调登出接口会再次 401 触发 AUTH_EXPIRED 事件造成循环。
+  if (getStoredToken()) {
+    await notifyLogout()
+  }
+  apiLogout()
+  sessions.value = []
+  currentSessionId.value = null
+  loadedSessionId.value = null
+  sessionStates.value = {}
+  messages.value = []
+  streamingSessions.value = []
+  lastStreamingSession.value = null
+  attachedStreamingSessions.value = {}
+  streamingAssistantId.value = null
+  currentAbortController.value = null
+  sessionStorage.removeItem(STREAM_STATE_KEY)
+  sessionStorage.removeItem('easy_agent_input_draft')
+  userProfile.value = {
+    username: '',
+    organization_id: '',
+    email: ''
+  }
+  showAssets.value = false
+  showSkillCenter.value = false
+  hasBootstrapped.value = false
+  clearActiveSession()
+  showWelcome.value = true
+}
+
+async function handleUnregister() {
+  sessions.value = []
+  currentSessionId.value = null
+  loadedSessionId.value = null
+  sessionStates.value = {}
+  messages.value = []
+  userProfile.value = {
+    username: '',
+    organization_id: '',
+    email: ''
+  }
+  hasBootstrapped.value = false
+  clearActiveSession()
+  showWelcome.value = true
+}
+
+async function loadUserProfile() {
+  const storedToken = getStoredToken()
+  const storedUsername = getStoredUsername()
+
+  if (!storedToken || !storedUsername) {
+    showWelcome.value = true
+    return
+  }
+
+  try {
+    const profile = await getUserProfile()
+    if (!profile.username || profile.username === 'admin') {
+      showWelcome.value = true
+      return
+    }
+    userProfile.value = {
+      username: profile.username || '',
+      organization_id: profile.organization_id || '',
+      email: profile.email || ''
+    }
+  } catch (e) {
+    console.error('加载用户资料失败:', e)
+    showWelcome.value = true
+    return
+  }
+
+  try {
+    const configResp = await authFetch(`${API_BASE_URL}/agent/auth/config`)
+    if (configResp.ok) {
+      const configData = await configResp.json()
+      applyAgentConfig(configData)
+    }
+  } catch (e) {
+    console.warn('获取模型配置失败:', e)
+  }
+}
+
+// URL 免密直登：地址栏携带 ?username=xxx&user_id=yyy（user_id 可省略，默认 0）时
+// 直接免密登录进入主界面，优先级高于已存储的登录态。
+async function handlePasswordlessUrlLogin() {
+  const params = new URLSearchParams(window.location.search)
+  const username = params.get('username')
+  if (!username) return false
+  const userId = params.get('user_id') || '0'
+  try {
+    const data = await passwordlessLogin(username, userId)
+    // 清除地址栏中的凭证参数，避免留在浏览器历史/后端访问日志
+    window.history.replaceState({}, '', window.location.pathname)
+    await handleWelcomeCompleted({
+      username: data.username,
+      context_length: data.context_length
+    })
+    return true
+  } catch (e) {
+    console.error('URL 免密登录失败:', e)
+    return false
+  }
+}
+
+async function loadSessions() {
+  try {
+    const data = await listSessions(userProfile.value.username || null)
+    sessions.value = Array.isArray(data) ? data : (data.sessions || [])
+  } catch (e) {
+    console.error('加载会话列表失败:', e)
+    error.value = '加载会话列表失败'
+  }
+}
+
+async function ensureCurrentSession(initialTitle = '') {
+  if (!currentSessionId.value) {
+    const newSession = await createSession(initialTitle || '新会话', userProfile.value.username || null)
+    currentSessionId.value = newSession.session_id
+    const existingIndex = sessions.value.findIndex(s => s.session_id === newSession.session_id)
+    if (existingIndex === -1) {
+      const session = {
+        session_id: newSession.session_id,
+        title: newSession.title || initialTitle || '新会话',
+        created_at: newSession.created_at || new Date().toISOString()
+      }
+      sessions.value = [session, ...sessions.value]
+    }
+  }
+  return currentSessionId.value
+}
+
+/**
+ * 技能中心的「创建技能」：预填内容已写入 sessionStorage，
+ * 这里新建会话并关闭技能中心，ChatInput 随之重新挂载、自动恢复技能标签与提示词。
+ */
+async function handleSkillCreate() {
+  await handleCreateSession()
+}
+
+async function handleCreateSession() {
+  saveCurrentSessionState()
+
+  showAssets.value = false
+  showSkillCenter.value = false
+  showScheduledTasks.value = false
+  showSettingsPanel.value = false
+  currentSessionId.value = null
+  loadedSessionId.value = null
+  messages.value = []
+  currentTodos.value = []
+  // 注意：保留 context_length（全局上下文窗口，对所有会话通用），不重置为 null，
+  // 否则 contextPercent 分母为 null 时会强制显示为 0%
+  sessionUsage.value = { input_tokens: 0, output_tokens: 0, reasoning_tokens: 0, context_length: sessionUsage.value.context_length, auto_compress_tokens: null, context_tokens: 0 }
+  sessionDuration.value = 0
+  iterationCount.value = 0
+  refreshSessionFiles(null)
+}
+
+// 预置问题发送：点击首页预置问题卡片后，该问题作为「新对话的第一条消息」发出。
+// 无论当前是否已选中会话（如刷新后恢复的空会话），都先按「新建对话」把状态
+// 切回全新首页，再走正常发送；当前无会话时后端会在 start 事件里返回新会话 id。
+async function handlePresetSend(message, files, signal, enableDeepThink, enableWebSearch) {
+  await handleCreateSession()
+  handleSendMessage(message, files, signal, enableDeepThink, enableWebSearch)
+}
+
+async function handleSelectSession(sessionId) {
+  // 保存当前会话状态
+  saveCurrentSessionState()
+
+  showAssets.value = false
+  showSkillCenter.value = false
+  showScheduledTasks.value = false
+  currentSessionId.value = sessionId
+  // 切换后按当前会话是否正在流式输出决定输入框状态：
+  // 历史会话通常不是当前流式会话，应显示发送按钮而非停止按钮
+  // 输入框状态由 isStreaming（当前会话是否在流式会话集合中）自动决定
+
+  // 切换到进行中的会话：若本页尚未挂载其流式任务，懒挂载以继续接收事件
+  // （刷新后恢复出的多个进行中会话，除当前展示外都走这里）
+  if (isSessionStreaming(sessionId) && attachedStreamingSessions.value[sessionId] !== 'displayed') {
+    attachToStreamingSession(sessionId, { switchTo: false, displayed: true })
+    scrollTrigger.value++
+    await refreshSessionFiles(sessionId)
+    return
+  }
+
+  // 尝试从缓存恢复会话状态
+  if (restoreSessionState(sessionId)) {
+    scrollTrigger.value++
+    await refreshSessionFiles(sessionId)
+    return
+  }
+
+  // 缓存中没有，从服务器加载历史
+  // 保留 context_length（全局上下文窗口），仅清空用量计数；
+  // 若服务器返回了 context_length 则以其为准（见下方恢复逻辑）
+  // sessionLoading 门控：加载期间不渲染空欢迎页，避免"先闪空会话页再出历史"
+  sessionLoading.value = true
+  sessionUsage.value = { input_tokens: 0, output_tokens: 0, reasoning_tokens: 0, context_length: sessionUsage.value.context_length, auto_compress_tokens: null, context_tokens: 0 }
+  sessionDuration.value = 0
+  iterationCount.value = 0
+
+  try {
+    const history = await getChatHistory(sessionId)
+    // 加载期间用户可能又切换到了其他会话：丢弃过期响应，
+    // 避免覆盖当前显示的数据（token 用量、消息等）
+    if (currentSessionId.value !== sessionId) return
+    messages.value = history.messages || []
+    currentTodos.value = history.todos || []
+    // 从服务器返回的 usage 数据恢复 token 用量、会话耗时和迭代次数
+    if (history.usage) {
+      sessionUsage.value.input_tokens = history.usage.input_tokens || 0
+      sessionUsage.value.output_tokens = history.usage.output_tokens || 0
+      sessionUsage.value.reasoning_tokens = history.usage.reasoning_tokens || 0
+      sessionUsage.value.context_tokens = history.usage.context_tokens || 0
+      sessionDuration.value = history.usage.elapsed_time || 0
+      iterationCount.value = history.usage.step_count || 0
+    }
+    if (history.context_length) {
+      sessionUsage.value.context_length = history.context_length
+    }
+    // 数据加载完成，界面数据现在归属于该会话
+    loadedSessionId.value = sessionId
+    scrollTrigger.value++
+
+    await refreshSessionFiles(sessionId)
+  } catch (e) {
+    console.error('加载聊天历史失败:', e)
+    if (currentSessionId.value !== sessionId) return
+    error.value = '加载聊天历史失败'
+    // 加载失败时界面数据处于不一致状态（消息还是旧会话的、用量已清零），
+    // 置空 loadedSessionId 防止后续把错误数据写入缓存
+    loadedSessionId.value = null
+    refreshSessionFiles(sessionId)
+  } finally {
+    sessionLoading.value = false
+  }
+}
+
+async function handleDeleteSession(sessionId) {
+  try {
+    await deleteSession(sessionId)
+    sessions.value = sessions.value.filter(s => s.session_id !== sessionId)
+
+    // 清除会话缓存
+    delete sessionStates.value[sessionId]
+
+    if (currentSessionId.value === sessionId) {
+      // 先清空归属（避免把已删除会话的界面数据再存回缓存），再决定回退到哪个会话
+      currentSessionId.value = null
+      loadedSessionId.value = null
+      messages.value = []
+      const nextId = sessions.value[0]?.session_id || null
+      if (nextId) {
+        // 复用切会话逻辑：加载其历史（含 sessionLoading 骨架屏），而不是留一个空欢迎页
+        await handleSelectSession(nextId)
+      } else {
+        // 没有剩余会话：回到新建会话首页
+        await handleCreateSession()
+      }
+    } else if (loadedSessionId.value === sessionId) {
+      loadedSessionId.value = null
+    }
+    // 删除进行中的会话：同步移除流式标记，避免列表残留"进行中"徽标
+    unmarkStreaming(sessionId)
+    delete attachedStreamingSessions.value[sessionId]
+  } catch (e) {
+    console.error('删除会话失败:', e)
+    error.value = '删除会话失败'
+  }
+}
+
+async function handleRenameSession(sessionId, newTitle) {
+  try {
+    await renameSession(sessionId, newTitle)
+    const idx = sessions.value.findIndex(s => s.session_id === sessionId)
+    if (idx !== -1) {
+      sessions.value[idx] = { ...sessions.value[idx], title: newTitle }
+    }
+  } catch (e) {
+    console.error('重命名会话失败:', e)
+    error.value = '重命名会话失败'
+  }
+}
+
+async function handleTogglePin(sessionId) {
+  try {
+    const result = await togglePinSession(sessionId)
+    const idx = sessions.value.findIndex(s => s.session_id === sessionId)
+    if (idx !== -1) {
+      sessions.value[idx] = { ...sessions.value[idx], pinned: result.pinned }
+    }
+    // 重新排序：置顶在前
+    sessions.value.sort((a, b) => (b.pinned || 0) - (a.pinned || 0) || new Date(b.updated_at) - new Date(a.updated_at))
+  } catch (e) {
+    console.error('置顶操作失败:', e)
+    error.value = '置顶操作失败'
+  }
+}
 
 // MCP 工具结果解析：模块级函数，供正常流(handleSendMessage)与 HITL 恢复流(handleToolApproval)共用。
 // 注意：不要把它定义在某个函数内部，否则另一处引用会抛 ReferenceError，
@@ -2786,21 +3702,12 @@ html[data-theme="dark"] .skill-center {
   background: var(--bg-primary) !important;
 }
 
-html[data-theme="dark"] .skill-center-header {
-  background: var(--bg-secondary) !important;
-  border-color: var(--border-color) !important;
-}
-
-html[data-theme="dark"] .skill-center-header h2 {
-  color: var(--text-primary) !important;
-}
-
 html[data-theme="dark"] .skill-center-content {
   background: var(--bg-primary) !important;
 }
 
 html[data-theme="dark"] .skill-card {
-  background: var(--bg-secondary) !important;
+  background: var(--bg-surface) !important;
   border-color: var(--border-color) !important;
 }
 
@@ -2819,18 +3726,6 @@ html[data-theme="dark"] .skill-card-name {
 
 html[data-theme="dark"] .skill-card-desc {
   color: var(--text-secondary) !important;
-}
-
-html[data-theme="dark"] .skill-card-icon {
-  color: var(--text-primary) !important;
-}
-
-html[data-theme="dark"] .add-skill-btn {
-  color: var(--accent-color) !important;
-}
-
-html[data-theme="dark"] .add-skill-btn:hover {
-  background: rgba(124, 106, 239, 0.15) !important;
 }
 
 /* ========== 工作区面板 ========== */
@@ -3157,40 +4052,8 @@ html[data-theme="dark"] .file-type {
   color: var(--text-primary) !important;
 }
 
-/* 预设问题卡片堆叠 */
-html[data-theme="dark"] .preset-card {
-  background: var(--bg-secondary) !important;
-  border-color: var(--border-color) !important;
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4) !important;
-}
-
-html[data-theme="dark"] .preset-card.is-front {
-  border-color: var(--accent-color, #0ea5e9) !important;
-  box-shadow: 0 10px 30px rgba(14, 165, 233, 0.25) !important;
-}
-
-html[data-theme="dark"] .preset-card-text {
-  color: var(--text-primary) !important;
-}
-
-html[data-theme="dark"] .preset-card-index,
-html[data-theme="dark"] .preset-card-foot {
-  color: var(--text-muted) !important;
-}
-
-html[data-theme="dark"] .preset-nav-btn {
-  background: var(--bg-secondary) !important;
-  border-color: var(--border-color) !important;
-  color: var(--text-primary) !important;
-}
-
-html[data-theme="dark"] .preset-dot {
-  background: var(--border-color) !important;
-}
-
-html[data-theme="dark"] .preset-dot.active {
-  background: var(--accent-color, #0ea5e9) !important;
-}
+/* 预设问题卡片：样式全部走语义化令牌（--bg-secondary / --text-primary ...），
+   深浅主题自动适配，这里无需额外覆盖。 */
 
 /* 滚动按钮 */
 html[data-theme="dark"] .scroll-btn {
@@ -3420,40 +4283,26 @@ html[data-theme="dark"] .spinner {
 
 /* ========== 技能中心暗黑模式补充 ========== */
 html[data-theme="dark"] .skill-center,
-html[data-theme="dark"] .skill-center-header,
 html[data-theme="dark"] .skill-center-content,
 html[data-theme="dark"] .skill-center .tabs {
   background: transparent !important;
 }
 
-html[data-theme="dark"] .skill-center-header h2 {
-  color: var(--text-primary) !important;
-}
-
-html[data-theme="dark"] .skill-center .tab {
+/* 仅主 Tab（.main-tab）：技能子 Tab 有自己的一套样式，不要被这里接管 */
+html[data-theme="dark"] .skill-center .main-tab {
   background: transparent !important;
-  border-color: var(--border-color) !important;
-  color: var(--text-primary) !important;
+  color: var(--text-secondary) !important;
 }
 
-html[data-theme="dark"] .skill-center .tab:hover {
-  background: var(--bg-tertiary) !important;
-}
-
-html[data-theme="dark"] .skill-center .tab.active {
-  background: var(--accent-color) !important;
-  border-color: var(--accent-color) !important;
-  color: #fff !important;
-}
-
-html[data-theme="dark"] .skill-center .tab-count {
+html[data-theme="dark"] .skill-center .main-tab:hover {
   background: var(--bg-tertiary) !important;
   color: var(--text-primary) !important;
 }
 
-html[data-theme="dark"] .skill-center .tab.active .tab-count {
-  background: rgba(255, 255, 255, 0.2) !important;
-  color: #fff !important;
+html[data-theme="dark"] .skill-center .main-tab.active {
+  background: color-mix(in srgb, var(--accent-color) 18%, var(--bg-surface)) !important;
+  border-color: color-mix(in srgb, var(--accent-color) 34%, transparent) !important;
+  color: var(--accent-color) !important;
 }
 
 html[data-theme="dark"] .skill-card {
@@ -3481,67 +4330,6 @@ html[data-theme="dark"] .add-icon-btn {
 
 html[data-theme="dark"] .add-icon-btn:hover:not(:disabled) {
   background: var(--border-color) !important;
-}
-
-html[data-theme="dark"] .add-icon-btn.added {
-  background: var(--bg-tertiary) !important;
-  color: var(--text-secondary) !important;
-}
-
-html[data-theme="dark"] .remove-icon-btn:hover:not(:disabled) {
-  background: rgba(239, 68, 68, 0.15) !important;
-  border-color: rgba(239, 68, 68, 0.4) !important;
-}
-
-html[data-theme="dark"] .popover-card {
-  background: var(--bg-secondary) !important;
-  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5), 0 0 0 1px var(--border-color) !important;
-}
-
-html[data-theme="dark"] .popover-name {
-  color: var(--text-primary) !important;
-}
-
-html[data-theme="dark"] .popover-category {
-  color: var(--text-secondary) !important;
-}
-
-html[data-theme="dark"] .popover-desc {
-  color: var(--text-primary) !important;
-}
-
-html[data-theme="dark"] .popover-close {
-  color: var(--text-secondary) !important;
-}
-
-html[data-theme="dark"] .popover-close:hover {
-  background: var(--bg-tertiary) !important;
-  color: var(--text-primary) !important;
-}
-
-html[data-theme="dark"] .popover-btn {
-  background: var(--bg-tertiary) !important;
-  border-color: var(--accent-color) !important;
-  color: var(--accent-color) !important;
-}
-
-html[data-theme="dark"] .popover-btn:hover:not(:disabled) {
-  background: var(--border-color) !important;
-}
-
-html[data-theme="dark"] .popover-btn.added {
-  background: var(--bg-tertiary) !important;
-  border-color: var(--border-color) !important;
-  color: var(--text-secondary) !important;
-}
-
-html[data-theme="dark"] .popover-btn.remove {
-  border-color: rgba(239, 68, 68, 0.5) !important;
-  color: #f87171 !important;
-}
-
-html[data-theme="dark"] .popover-btn.remove:hover:not(:disabled) {
-  background: rgba(239, 68, 68, 0.15) !important;
 }
 
 html[data-theme="dark"] .retry-btn {
@@ -3668,42 +4456,7 @@ html[data-theme="dark"] .model-item-badge {
   color: #4ade80 !important;
 }
 
-/* ========== 首页预设问题（分类标签 + 悬浮面板 + 问题卡片）========== */
-html[data-theme="dark"] .preset-category-tab {
-  background: var(--bg-tertiary) !important;
-  border-color: var(--border-color) !important;
-  color: var(--text-secondary) !important;
-}
-
-html[data-theme="dark"] .preset-category-tab:hover {
-  border-color: var(--accent-color) !important;
-  color: var(--accent-color) !important;
-}
-
-html[data-theme="dark"] .preset-category-tab.active {
-  background: color-mix(in srgb, var(--accent-color) 22%, var(--bg-tertiary)) !important;
-  border-color: var(--accent-color) !important;
-  color: var(--accent-color) !important;
-}
-
-html[data-theme="dark"] .preset-category-panel {
-  background: var(--bg-secondary) !important;
-  border-color: var(--border-color) !important;
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5) !important;
-}
-
-html[data-theme="dark"] .preset-chip {
-  background: var(--bg-tertiary) !important;
-  border-color: var(--border-color) !important;
-  color: var(--text-secondary) !important;
-}
-
-html[data-theme="dark"] .preset-chip:hover {
-  border-color: var(--accent-color) !important;
-  color: var(--accent-color) !important;
-  transform: translateY(-1px);
-}
-
+/* ========== 首页预设问题：卡片样式走语义化令牌，深浅主题自动适配 ========== */
 /* ========== 聊天页（Chat.vue）深色适配 ========== */
 html[data-theme="dark"] .chat-container {
   background: var(--bg-primary) !important;
@@ -3721,29 +4474,6 @@ html[data-theme="dark"] .welcome-screen {
 }
 html[data-theme="dark"] .welcome-screen h2 {
   color: var(--text-primary) !important;
-}
-html[data-theme="dark"] .preset-card {
-  background: var(--bg-secondary) !important;
-  border-color: var(--border-color) !important;
-}
-html[data-theme="dark"] .preset-card-text {
-  color: var(--text-primary) !important;
-}
-html[data-theme="dark"] .preset-card-foot {
-  color: var(--text-secondary) !important;
-}
-html[data-theme="dark"] .preset-nav-btn {
-  background: var(--bg-secondary) !important;
-  border-color: var(--border-color) !important;
-  color: var(--text-secondary) !important;
-}
-html[data-theme="dark"] .preset-nav-btn:hover {
-  background: var(--bg-tertiary) !important;
-  border-color: var(--accent-color) !important;
-  color: var(--accent-color) !important;
-}
-html[data-theme="dark"] .preset-dot {
-  background: var(--border-color) !important;
 }
 html[data-theme="dark"] .scroll-btn {
   background: var(--bg-secondary) !important;

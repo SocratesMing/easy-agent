@@ -1,41 +1,30 @@
 {
-  "servers": {
-    "docs-langchain": {
-      "url": "https://docs.langchain.com/mcp",
-      "transport": "http"
-    },
-    "reference-langchain": {
-      "url": "https://reference.langchain.com/mcp",
-      "transport": "http"
-    },
-    "mysql": {
-      "command": "uvx",
-      "args": [
-        "--from",
-        "mysql-mcp-server",
-        "mysql_mcp_server"
+  "_comment": "公共 MCP 连接器目录（连接器页「公共」卡片的数据源，由 services/connectors.py 读取）。每条 = 一份可直接写入用户 mcp.json 的 MCP 服务配置：{id, name, description, icon, fields, config}；id 同时作为写入用户 mcp.json 的 server 名，必须唯一且为安全标识符。fields 声明安装时需要用户填写的字段（key 为 config 内路径，支持 env.X / headers.X / args.N）。config 支持 transport=stdio（command/args/env）或 streamable_http/sse（url/headers）。改这里不需要重启后端（每次请求现读）。注意：本文件放在 config 目录，同时会被当作「全局 mcp.json」用于 Agent 加载；因为它没有 servers 字段，所以不会给任何用户自动加载 MCP —— 请勿在此文件里加 servers，那会让所有未自建 mcp.json 的用户自动加载这些服务。",
+  "connectors": [
+    {
+      "id": "mysql",
+      "name": "MySQL 数据库",
+      "description": "官方 mysql-mcp-server（stdio，uvx 拉起，需本机已装 uv/uvx）：对 MySQL 数据库做查询与分析。添加时填写连接信息，安装后可在连接器详情中修改",
+      "icon": "database-outline",
+      "fields": [
+        { "key": "env.MYSQL_HOST", "label": "主机地址", "placeholder": "127.0.0.1", "required": true },
+        { "key": "env.MYSQL_PORT", "label": "端口", "placeholder": "3306", "required": true },
+        { "key": "env.MYSQL_USER", "label": "用户名", "placeholder": "root", "required": true },
+        { "key": "env.MYSQL_PASSWORD", "label": "密码", "placeholder": "数据库密码", "required": true },
+        { "key": "env.MYSQL_DATABASE", "label": "数据库名", "placeholder": "agent", "required": true }
       ],
-      "env": {
-        "MYSQL_HOST": "${MYSQL_HOST:-127.0.0.1}",
-        "MYSQL_PORT": "${MYSQL_PORT:-3306}",
-        "MYSQL_USER": "${MYSQL_USER:-root}",
-        "MYSQL_PASSWORD": "${MYSQL_PASSWORD}",
-        "MYSQL_DATABASE": "${MYSQL_DATABASE:-agent}"
-      },
-      "transport": "stdio"
-    },
-    "jmfx-analysis": {
-      "transport": "stdio",
-      "command": "E:\\zx1\\easy-agent\\.venv\\Scripts\\python.exe",
-      "args": ["E:\\zx1\\easy-agent\\mcp\\jmfx_mcp_server.py"],
-      "env": {
-        "PYTHONUTF8": "1",
-        "PYTHONIOENCODING": "utf-8",
-        "JM_A_HOST": "${JM_A_HOST:-127.0.0.1}",
-        "JM_A_PORT": "${JM_A_PORT:-3306}",
-        "JM_A_USER": "${JM_A_USER:-jmfx_ro}",
-        "JM_A_DB": "${JM_A_DB:-jmfx_analysis}"
+      "config": {
+        "type": "stdio",
+        "command": "uvx",
+        "args": ["--from", "mysql-mcp-server", "mysql_mcp_server"],
+        "env": {
+          "MYSQL_HOST": "127.0.0.1",
+          "MYSQL_PORT": "3306",
+          "MYSQL_USER": "root",
+          "MYSQL_PASSWORD": "Test1234",
+          "MYSQL_DATABASE": "agent"
+        }
       }
     }
-  }
+  ]
 }

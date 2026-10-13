@@ -7,6 +7,7 @@ import 'element-ui/lib/theme-chalk/index.css'
 import 'highlight.js/styles/github-dark.css'
 import App from './App.vue'
 import { loadStoredThemeColors } from './theme.js'
+import { tipDirective } from './directives/tip.js'
 
 Vue.use(ElementUI)
 Vue.config.productionTip = false
@@ -14,6 +15,4 @@ Vue.config.productionTip = false
 // 挂载前应用持久化的颜色令牌（无自定义时即浅色默认值）
 loadStoredThemeColors()
 
-new Vue({
-  render: (h) => h(App),
-}).$mount('#app')
+createApp(App).directive('tip', tipDirective).mount('#app')

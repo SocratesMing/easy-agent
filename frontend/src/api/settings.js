@@ -28,59 +28,6 @@ export async function getSkills() {
   )
 }
 
-export async function getMcpServers() {
-  return request(
-    { url: '/agent/settings/mcp', method: 'get' },
-    '获取 MCP 配置失败'
-  )
-}
-
-export async function getMcpMarket() {
-  return request(
-    { url: '/agent/settings/mcp/market', method: 'get' },
-    '获取 MCP 市场失败'
-  )
-}
-
-export async function addMcpFromMarket(name) {
-  return request(
-    {
-      url: '/agent/settings/mcp/market/add',
-      method: 'post',
-      data: { name },
-    },
-    '添加 MCP 市场服务失败'
-  )
-}
-
-export async function updateMcpServers(servers) {
-  return request(
-    { url: '/agent/settings/mcp', method: 'put', data: { servers } },
-    '更新 MCP 配置失败'
-  )
-}
-
-export async function addMcpServer(config) {
-  return request(
-    {
-      url: '/agent/settings/mcp/server',
-      method: 'post',
-      data: { config },
-    },
-    '添加 MCP 服务失败'
-  )
-}
-
-export async function deleteMcpServer(name) {
-  return request(
-    {
-      url: `/agent/settings/mcp/server/${encodeURIComponent(name)}`,
-      method: 'delete',
-    },
-    '删除 MCP 服务失败'
-  )
-}
-
 export async function getModels() {
   return request(
     { url: '/agent/settings/models', method: 'get' },

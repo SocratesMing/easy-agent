@@ -7,9 +7,13 @@ import 'element-ui/lib/theme-chalk/index.css'
 import 'highlight.js/styles/github-dark.css'
 import App from './App.vue'
 import { loadStoredThemeColors } from './theme.js'
+import tipDirective from './directives/tip.js'
 
 Vue.use(ElementUI)
 Vue.config.productionTip = false
+
+// 悬浮提示指令（单例浮层，hover/focus 触发，触摸设备点击切换）
+Vue.directive('tip', tipDirective)
 
 // 挂载前应用持久化的颜色令牌（无自定义时即浅色默认值）
 loadStoredThemeColors()

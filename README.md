@@ -30,7 +30,7 @@ Easy Agent 是一个开箱即用的 AI Agent 平台，让大模型能够：
 | 多会话管理 | 会话隔离、上下文压缩、会话耗时/迭代统计 |
 | 文件工具 | 上传/下载/预览/生成（docx、pdf、pptx、xlsx、图片、代码） |
 | 网页终端 | 基于 xterm.js 的 Web Shell，含路径翻译与命令拦截 |
-| 技能中心 | 公共/个人技能分类管理，支持自定义 SKILL.md |
+| 专家 · 技能 · 连接器 | 三 Tab：专家（预留）/ 公共与个人技能管理（自定义 SKILL.md）/ 连接器（MCP 服务卡片、mcp.json 原文编辑） |
 | 定时任务 | LLM 自动识别调度意图，APScheduler 执行，可视化执行记录 |
 | HITL 审批 | 文件删除前必须用户确认，目录删除直接拒绝 |
 | 路径翻译 | 虚拟路径 ↔ 宿主机实际路径，保护主机目录结构 |
@@ -312,10 +312,13 @@ external_dirs:
 ### 技能中心
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET  | `/agent/skill-center/public-skills` | 公共技能列表 |
-| GET  | `/agent/skill-center/user-skills` | 用户技能列表 |
+| GET  | `/agent/skill-center/public-skills` | 公共技能列表（含 `added` / `enabled` / 统计） |
+| GET  | `/agent/skill-center/user-skills` | 用户技能列表（含已停用，`enabled` 区分） |
+| GET  | `/agent/skill-center/skill-detail` | 技能详情：`scope=public\|user` + SKILL.md 正文 + 统计 |
 | POST | `/agent/skill-center/add-skill` | 添加技能 |
-| POST | `/agent/skill-center/remove-skill` | 移除技能 |
+| POST | `/agent/skill-center/remove-skill` | 移除技能（启用/停用目录里的都删） |
+| POST | `/agent/skill-center/enable-skill` | 启用（移回 Agent 加载目录） |
+| POST | `/agent/skill-center/disable-skill` | 停用（移出 Agent 加载目录） |
 
 ### 定时任务
 | 方法 | 路径 | 说明 |
@@ -387,20 +390,29 @@ Agent 会自动解析调度意图并调用 `create_scheduled_task` 工具，参�
 - 危险命令（`rm` 删除文件）会触发审批弹窗，必须用户确认
 - 目录删除命令（`rmdir` / `rm -r` / `rm -rf`）会被直接拒绝
 
-### 6. 技能中心
-- "公共技能"区展示系统预置技能（数据分析、文档处理、量化回测等）
-- 点击 + 即可加入"我的技能"
-- 在对话中 LLM 会自动识别可调用的技能并加载 SKILL.md
-- 自定义技能：把 `SKILL.md` 放进 `skills/your-skill/` 目录即可
-
-### 7. MCP 工具
-- 在设置面板中配置 MCP 服务，支持添加/删除/开关
-- 添加时粘贴 JSON 格式的 MCP 配置（以 `servers` 下的名称识别）
-- 删除时后端自动卸载对应 MCP，即时生效
-- 用户 MCP 配置保存在 `workspace/{username}/mcp.json`
+### 6. 专家 · 技能 · 连接器（原技能中心）
+- 入口：左侧导航栏「专家 · 技能 · 连接器」；面板**首行即三个 Tab**（上方不放标题栏等任何内容），关闭按钮在 Tab 行最右侧
+- 三个 Tab：
+  - **专家**：预留（当前为空态）
+  - **技能**：顶部工具条（搜索 / 已安装(n) 筛选 / 添加技能）+ 分类 chips（全部 + 5 类）+ 技能卡片（图标 / 名称 / 描述 / 「N 个文件 · 大小 · 更新时间」真实指标）。
+    - 卡片右上角：未安装显示 `+`（一键加入「我的技能」），已安装显示**启用开关**
+    - 点卡片进**详情页**：大图标 / 名称 / 版本 / 描述（可展开）/ 去试试 / 移除技能 + 「概述」= SKILL.md 正文 + 「更多」= 版本/位置/文件数/大小/更新时间
+    - 停用 = 把技能目录移到 `workspace/{username}/skills-disabled/`（Agent 只扫 `skills/`，因此停用后真的不加载；重新打开即移回）
+    - 自定义技能把 `SKILL.md` 放进 `skills/your-skill/` 目录，或用「添加技能」导入 zip
+  - **连接器**（= MCP）：卡片列表 + 搜索；点卡片弹出描述与对应的 mcp.json 片段（可复制），已安装的可在弹层里移除
 - 自建 MCP 服务已拆分为独立子项目 `mcp-server/`（uv 管理，按业务分 URL 后缀
-  如 `/mcp/market/`，仅需配置 URL + API Key 即可接入），详见 `mcp-server/README.md`；
-  API Key 在设置页按"用户 × 业务"生成，历史 key 迁移见 `scripts/migrate_market_mcp_keys.py`
+  如 `/mcp/market/`，配置 URL + API Key 即可接入），详见 `mcp-server/README.md`
+
+### 7. MCP（连接器）配置
+- 连接器 Tab 工具条有「已安装(n)」筛选：点开只显示已安装的 MCP（内置目录中已添加的 + 用户自定义的）
+- 连接器 Tab 右上角「自定义连接器」进入 **MCP 服务管理**：直接编辑 `workspace/{username}/mcp.json` 原文（带行号的 JSON 编辑器，保存后即时生效）；添加自定义 MCP 也在这里改 JSON 完成，管理页不再单独提供「+ 添加 MCP」按钮（`POST /agent/connectors/mcp` 接口保留，支持 `servers` / `mcpServers` / 对象 / 单条四种格式）
+- 后端接口：`/agent/connectors`（目录 + 自定义项）、`/agent/connectors/install|uninstall`、`/agent/connectors/mcp*`（增删改原文）
+- 公共 MCP 配置：`easy_agent/config/mcp.json`（与 `config.yaml` 同目录，查找顺序 `./easy_agent/config` → `~/.easy-agent/config` → 包内 `config`，由 `Config.find_config_file` 解析），每条 `{id,name,description,icon,config}`（`id` 即写入用户 mcp.json 的 server 名）；改这个文件不用重启后端（每次请求现读），随包预置 5 条示例：`market-data`（自建 market MCP）/ `filesystem` / `fetch` / `git` / `everything`
+  - ⚠️ 该文件位于 config 目录，同时会被当作「全局 mcp.json」用于 Agent 加载。它没有 `servers` 字段，因此不会给任何用户自动加载 MCP；**不要往里面加 `servers`**（会让所有未自建 mcp.json 的用户自动加载这些服务）
+  - 连接器页的「已安装」判断只读用户自己的 `workspace/{username}/mcp.json`，不受这份公共配置影响
+- 格式规范（顶层 `connectors` 数组，字段非法/重复/缺 name 或缺 config 的条目会被跳过并记 warning，页面始终可用）
+- API Key 已不在设置页签发（表 `mcp_api_keys` 仅由 mcp-server 只读校验），
+  历史 key 迁移见 `scripts/migrate_market_mcp_keys.py`
 
 ---
 

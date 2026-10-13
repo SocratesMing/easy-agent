@@ -144,77 +144,19 @@ distributed_lock:
   retry_interval_seconds: ${DISTRIBUTED_LOCK_RETRY_INTERVAL:-1}  # 等待抢锁（wait_seconds>0）时的轮询间隔（秒）
 
 # ===== Vector Store Configuration (Chroma + Sentence Transformers) =====
+# 技能库（虚拟路径 /user-skills）写权限：
+#   new-only（默认）= 允许在对话里新建技能，禁止改写/删除已有技能，隐藏路径一律禁写
+#   deny            = 整个技能库禁止写入
+#   allow           = 不做额外限制
+# new-only / allow 下会忽略 denied_dirs 里针对 /user-skills 的 write 禁令
+# （见 easy_agent/agent.py::_build_permissions）。
+skill_write: ${SKILL_WRITE:-new-only}
+
 # 禁止智能体读写的虚拟路径目录列表（通过 permissions deny 规则限制）
 # 路径必须是虚拟路径（以 / 开头），且必须是 CompositeBackend 已挂载的 route 前缀。
 # 系统会自动为路径补充 /** glob 通配符递归匹配子目录。
 # 支持两种格式：
-#   - 字符串："/strategy-workspace"                       → 默认禁止 read+write
-#   - 字典：  {path: "/user-skills", operations: ["write"]} → 只禁止指定操作
-# operations 可选值：read、write。user-skills 建议只禁止 write，
-# 允许模型读取 SKILL.md 和 reference 文件以正常使用技能。
-denied_dirs:
-  - path: "/user-skills"
-    operations: ["write"]
-
-# ===== Knowledge Configuration (RAGFlow) =====
-# 知识库模块（knowledges 包，对接本地 Ragflow v0.26.3 标准 API）。
-# 扁平结构：仅认以下键。解析策略 / 检索参数 / 上传安全开关为模块内固定值。
-# fail-closed：enabled 且 RAGFLOW_BASE_URL / RAGFLOW_API_KEY 为空或未解析
-# 占位符残留时，后端拒绝启动。
-knowledge:
-  # 实现标识（仅支持 v2，其他值告警回退）
-  implementation: v2
-  enabled: "${KNOWLEDGE_ENABLED:-false}"
-  base_url: "${RAGFLOW_BASE_URL:-}"
-  api_key: "${RAGFLOW_API_KEY:-}"
-  # Ragflow 上注册的 embedding 模型标识（"model@provider" 格式），创建知识库时随请求提交
-  embedding:
-    model: "${RAGFLOW_EMBEDDING_MODEL:-}"
-  # 审计事件记录开关与 details 截断上限
-  audit:
-    enabled: true
-    max_details_bytes: 4096
-  # 外部目录树同步（ai_kb → 知识库板块）：开关开启时，启动后台任务将
-  # sql_file 指向的 SQL dump 执行到 database 指定的 MySQL 库（不存在时自动
-  # 创建），并按 kb_catalog 目录树（库→年→年月→年月日→机构…）幂等创建
-  # 知识库与文件夹；重复执行不会重复创建。
-  catalog_sync:
-    # 总开关：false 时启动流程零副作用
-    enabled: "${KNOWLEDGE_CATALOG_SYNC_ENABLED:-false}"
-    # SQL dump 文件路径（相对路径以项目根为基准；含 kb_catalog/kb_doc 表）
-    sql_file: "${KNOWLEDGE_CATALOG_SYNC_SQL_FILE:-}"
-    # 执行 dump 的目标 MySQL 库名（仅允许字母/数字/下划线）
-    database: "${KNOWLEDGE_CATALOG_SYNC_DATABASE:-ai_kb}"
-    # 同步创建的知识库归属用户与空间类型（personal | team）
-    owner_username: admin
-    space_type: team
-    # team 空间可选的所属部门（留空则不归属部门，admin 仍可见）
-    department_id: ""
-    # 同步的最大目录层级（1=仅创建知识库；dump 中机构层为 5）
-    max_level: 5
-    # 外部 MySQL 连接覆盖：host 留空时复用主库 database.mysql 连接参数；
-    # 主库为 SQLite 时必须提供完整连接信息
-    mysql:
-      host: ""
-      port: 3306
-      user: ""
-      password: ""
-  # 上传 / 列表限额
-  limits:
-    max_file_size_mb: 100
-    max_request_size_mb: 110
-    max_files_per_request: 1
-    max_dataset_name_utf8_bytes: 127
-    max_filename_utf8_bytes: 255
-    allowed_extensions:
-      - pdf
-      - doc
-      - docx
-      - txt
-      - md
-      - xls
-      - xlsx
-      - csv
-      - ppt
-      - pptx
-    max_documents_per_query: 1000
+#   - 字符串："/strategy-workspace"                        → 默认禁止 read+write
+#   - 字典：  {path: "/strategy-workspace", operations: ["write"]} → 只禁止指定操作
+# operations 可选值：read、write。技能库的写权限请改用上面的 skill_write。
+denied_dirs: []
