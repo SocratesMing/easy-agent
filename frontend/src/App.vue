@@ -23,6 +23,7 @@
         @toggleSidebar="toggleSidebar"
         @showAssets="handleShowAssets"
         @showSkillCenter="handleShowSkillCenter"
+        @showExpertCenter="handleShowExpertCenter"
         @showScheduledTasks="handleShowScheduledTasks"
         @showSettings="showSettingsPanel = true"
         @showUserManagement="showUserManagementPanel = true"
@@ -45,6 +46,13 @@
 
       <SkillCenter v-if="showSkillCenter" @close="showSkillCenter = false" />
 
+      <ExpertCenter
+        v-if="showExpertCenter"
+        :session-id="currentSessionId || ''"
+        @close="showExpertCenter = false"
+        @use="handleUseExpert"
+      />
+
       <ScheduledTasksPanel v-if="showScheduledTasks" @close="showScheduledTasks = false" />
       
       <SettingsPanel
@@ -58,7 +66,7 @@
       />
       
       <Chat
-        v-else-if="!showAssets && !showSkillCenter && !showScheduledTasks"
+        v-else-if="!showAssets && !showSkillCenter && !showExpertCenter && !showScheduledTasks"
         :messages="messages"
         :sessionLoading="sessionLoading"
         :currentSessionId="currentSessionId"
@@ -75,6 +83,7 @@
         :sidebarCollapsed="isSidebarCollapsed"
         :models="availableModels"
         :selectedModel="selectedModel"
+        :activeExpert="selectedExpert"
         @update:selectedModel="selectedModel = $event"
         @toggle-workspace="isWorkspaceCollapsed = false"
         @sendMessage="handleSendMessage"
@@ -84,9 +93,10 @@
         @retry="handleRetry"
         @approve="handleToolApproval('approve')"
         @reject="handleToolApproval('reject')"
+        @clearExpert="selectedExpert = null"
       />
 
-      <div v-if="currentSessionId && !showAssets && !showSkillCenter" class="workspace-area">
+      <div v-if="currentSessionId && !showAssets && !showSkillCenter && !showExpertCenter" class="workspace-area">
         <WorkspacePanel
           :username="userProfile.username"
           :currentSessionId="currentSessionId"
@@ -111,6 +121,7 @@ import SessionList from './components/SessionList.vue'
 import Chat from './components/Chat.vue'
 import AssetsPanel from './components/AssetsPanel.vue'
 import SkillCenter from './components/SkillCenter.vue'
+import ExpertCenter from './components/ExpertCenter.vue'
 import ScheduledTasksPanel from './components/ScheduledTasksPanel.vue'
 import UserManagementPanel from './components/UserManagementPanel.vue'
 import Welcome from './components/Welcome.vue'
@@ -120,6 +131,7 @@ import { createSession, listSessions, getChatHistory, deleteSession, sendMessage
 import { uploadFile, deleteFile, getUserProfile, getSessionGeneratedFiles } from './api/files.js'
 import { logout as apiLogout, notifyLogout, getStoredToken, getStoredUsername, AUTH_EXPIRED_EVENT, authFetch, passwordlessLogin } from './api/auth.js'
 import { getModels as fetchModels } from './api/settings.js'
+import { streamExportRun } from './api/expert.js'
 
 const sessions = ref([])
 const currentSessionId = ref(null)
@@ -728,6 +740,10 @@ const isSidebarCollapsed = ref(false)
 const isWorkspaceCollapsed = ref(true)
 const showAssets = ref(false)
 const showSkillCenter = ref(false)
+const showExpertCenter = ref(false)
+// 当前选中的专家 Agent（{export_agent_id, export_name_cn, ...} 或 null）。
+// 非空时本会话消息改走 /agent/stream_export_run，由后端动态构建专家 Agent。
+const selectedExpert = ref(null)
 const showScheduledTasks = ref(false)
 const showSettingsPanel = ref(false)
 const showUserManagementPanel = ref(false)
@@ -751,13 +767,39 @@ function toggleSidebar() {
 function handleShowAssets() {
   showAssets.value = !showAssets.value
   showSkillCenter.value = false
+  showExpertCenter.value = false
   showScheduledTasks.value = false
 }
 
 function handleShowSkillCenter() {
   showSkillCenter.value = !showSkillCenter.value
   showAssets.value = false
+  showExpertCenter.value = false
   showScheduledTasks.value = false
+}
+
+function handleShowExpertCenter() {
+  showExpertCenter.value = !showExpertCenter.value
+  showAssets.value = false
+  showSkillCenter.value = false
+  showScheduledTasks.value = false
+}
+
+/**
+ * 「我的专家 -> 去使用」：把专家挂到当前会话。
+ *
+ * 不强制新建会话：后端 thread_id = `{session_id}-{message_id}`，每条消息都是新线程，
+ * 且 get_or_create_agent_for_session() 已按「专家是否变更」驱逐缓存，
+ * 因此同一会话内切换专家能立即生效（详见 docs/expert-agent-solution.md）。
+ */
+function handleUseExpert(expert) {
+  if (!expert || !expert.export_agent_id) return
+  selectedExpert.value = {
+    export_agent_id: expert.export_agent_id,
+    export_name_cn: expert.export_name_cn,
+    export_version: expert.export_version,
+  }
+  showExpertCenter.value = false
 }
 
 function handleShowScheduledTasks() {
@@ -896,6 +938,8 @@ async function handleLogout() {
   }
   showAssets.value = false
   showSkillCenter.value = false
+  showExpertCenter.value = false
+  selectedExpert.value = null
   hasBootstrapped.value = false
   clearActiveSession()
   showWelcome.value = true
@@ -1008,6 +1052,8 @@ async function handleCreateSession() {
 
   showAssets.value = false
   showSkillCenter.value = false
+  showExpertCenter.value = false
+  selectedExpert.value = null
   showScheduledTasks.value = false
   showSettingsPanel.value = false
   currentSessionId.value = null
@@ -1028,6 +1074,9 @@ async function handleSelectSession(sessionId) {
 
   showAssets.value = false
   showSkillCenter.value = false
+  showExpertCenter.value = false
+  // 切换会话时不沿用上一个会话的专家选择（选择是当前工作台的临时状态）
+  selectedExpert.value = null
   showScheduledTasks.value = false
   currentSessionId.value = sessionId
   // 切换后按当前会话是否正在流式输出决定输入框状态：
@@ -1746,16 +1795,36 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
       }
     }
 
-    await sendMessage(
-      currentSessionId.value,
-      message,
-      onChunk,
-      abortSignal,
-      enableDeepThink,
-      files,
-      selectedModel.value,
-      enableWebSearch
-    )
+    // 专家模式：改走 /agent/stream_export_run，由后端按选中的专家动态构建 Agent
+    // （加载该专家当前生效版本的提示词，未选中的情况退化为通用 Agent）。
+    // SSE 事件格式与 /agent/chat/stream 完全一致，因此 onChunk 复用同一处理器。
+    // 未选专家时保持原有链路，行为不变。
+    if (selectedExpert.value && selectedExpert.value.export_agent_id) {
+      await streamExportRun(
+        {
+          message,
+          sessionId: currentSessionId.value,
+          expertAgentId: selectedExpert.value.export_agent_id,
+          model: selectedModel.value,
+          enableDeepThink,
+          enableWebSearch,
+          files,
+        },
+        onChunk,
+        abortSignal
+      )
+    } else {
+      await sendMessage(
+        currentSessionId.value,
+        message,
+        onChunk,
+        abortSignal,
+        enableDeepThink,
+        files,
+        selectedModel.value,
+        enableWebSearch
+      )
+    }
 
     await expandWorkspaceAfterSessionCompletion(streamSessionId)
   } catch (e) {
