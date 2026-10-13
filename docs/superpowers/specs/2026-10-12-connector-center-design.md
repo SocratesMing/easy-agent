@@ -30,7 +30,7 @@
 
 ## 目标与验收
 
-- 侧边栏「技能中心」入口打开的面板顶部为三个 Tab：专家 / 技能 / 连接器；技能 Tab 行为与改造前完全一致（公共技能 / 我的技能 / 导入 / 添加 / 移除 / 下载）。
+- 侧边栏「专家 · 技能 · 连接器」入口打开的面板**首行即三个 Tab**（专家 / 技能 / 连接器，上方不放任何内容）；技能 Tab 行为与改造前完全一致（公共技能 / 我的技能 / 导入 / 添加 / 移除 / 下载）。
 - 设置弹窗只剩「记忆 / 提示词」，MCP 相关状态、函数、样式全部移除。
 - 连接器 Tab 三个视图可互相跳转：
   - 列表视图：搜索框过滤 + 「自定义连接器」按钮 + 卡片网格；库存为空时显示空态引导。
@@ -43,7 +43,7 @@
 
 ## 非目标
 
-- 不做「专家」Tab 内容：本期仅空态占位，文案「专家能力建设中，敬请期待」（可随时改）。
+- 不做「专家」Tab 内容（本期仅空态占位，文案待定）。
 - 不预置第三方 SaaS 连接器目录（`catalog.json` 本期为空数组，只落结构与加载链路）。
 - 不做连接器的启用/停用开关（取代方案：在 JSON 里增删该条目）。
 - 不做 `mcp.json` 的服务端共享/多用户市场。
@@ -64,9 +64,10 @@ SkillCenter.vue（容器：header + 三 Tab + 连接器视图状态机）
 ```
 
 - Tab 状态：`activeTab: 'experts' | 'skills' | 'connectors'`。
+- 面板**首行即三个 Tab**（上方不放标题栏、名称等任何内容）；关闭按钮置于 Tab 行最右侧——原先的「技能中心」标题栏整块删除。
+- 入口文案随面板改名：侧边栏按钮由「技能中心」改为「专家 · 技能 · 连接器」。
 - 连接器视图状态：`connectorView: 'list' | 'manage' | 'add'`，放在容器里，由子组件 `emit` 切换（`ConnectorListPanel` emit `manage`/`add`，编辑器与添加页 emit `back`）。
 - 「技能」Tab 原有交互（公共/我的、导入 zip、添加、移除、下载、加载态、错误重试）原样保留，不重构其内部逻辑，只搬家。
-- 侧边栏按钮文案保持「技能中心」不变（入口含义未变，只改面板内部结构）。
 
 ### ② 内置连接器目录
 
@@ -192,3 +193,19 @@ deleteMcpServer(name)      DELETE /agent/connectors/mcp/{name}
 - **文件体积**：`SkillCenter.vue` 若不拆分，改造后会突破 2000 行，故按 ① 的方式拆成容器 + 3 个面板。
 - **两份前端同步**：Vue3 用 `<script setup>`、Vue2 用 Options API，逻辑一致但代码不共享，需分别维护（沿用现状）。
 - **Monaco 体积**：编辑器会增大前端包，但依赖已存在（`CodePreview.vue` 已加载），不新增依赖。
+
+---
+
+## 追加：技能页改版（第二轮，按 CodeBuddy 技能页三张参考图）
+
+对齐参考图后的取舍（用户确认）：
+
+- **启用/停用开关真做**：停用 = `workspace/{user}/skills/{dir}` 原子重命名到 `workspace/{user}/skills-disabled/{dir}`；Agent 侧 `_resolve_skills_paths` 只认 `skills/`，因此停用即真的不加载。配套 `POST /agent/skill-center/enable-skill` / `disable-skill`，两者都会 `invalidate_user_agents(username)`（下次对话生效）；重复停用/启用幂等，目录不存在 404。
+- **卡片指标用本地真实数据**：文件数 / 总大小 / 最近更新时间（`services/skill_library.py::skill_stats`），替代参考图里的浏览量/下载量。
+- **分类沿用原有映射**：`frontend/src/utils/skillCategories.js`（doc/code/design/data/api + 通用，中文标签），chips = 全部 + 这 6 类，不引入新分类体系。
+- **本期范围**：列表页改造（搜索 / 已安装(n) 筛选 / 添加技能 / 分类 chips / 开关卡片 / 指标行）+ 详情页（SKILL.md 正文）。「已安装(n)」先做筛选，不做「来自市场 / 本地导入」分组与批量管理。
+- **详情页**：大图标 + 名称 + 版本 chip + 分类/位置/状态 + 描述（可展开）+ 「去试试」+「移除技能」（二次点击确认）+「概述」= SKILL.md 原文 + 「更多」= 版本/位置/文件数/大小/更新时间。参考图里的「⋯」菜单简化为直接的「移除技能」按钮；「概述」暂不做正文内搜索。
+- **去试试**：写 `sessionStorage.easy_agent_input_draft`（`ChatInput` 挂载时读取草稿）+ 关闭面板回到对话，不需要新后端接口。
+- **后端新增** `GET /agent/skill-center/skill-detail?scope=public|user&dir_name=`；`remove-skill` 扩展为「启用/停用目录里的同名技能都能删」。
+- **前端新增**组件（两份前端一致）：`SkillIcon.vue`（分类配色图标）、`ToggleSwitch.vue`（role=switch）、`SkillDetailPanel.vue`（详情页）；`SkillListPanel.vue` 重写。
+- 列表「公共技能目录 + 用户目录里不在目录中的技能」合并展示，同一 `dir_name` 只出现一次（避免市场技能与其用户副本重复）。
