@@ -111,7 +111,7 @@ WebSocket），所以启动时要显式给上限：
 | --- | --- | --- |
 | `strategyqa` | `/mcp/strategyqa/` | 问数：策略表（`fmut2_strategy_manage`），行级隔离，只能看自己创建的策略 |
 | `fxbar` | `/mcp/fxbar/` | 问数：外汇 K 线（`HSDC_HDS2_BAR_FX`）**大表**，公共行情，默认只返回最近窗口 |
-| `investment_research` | `/mcp/investment_research/` | 投资研究：iData 数据分析看板（机构当日 / 个券机构 / 债券借贷），10 个工具 |
+| `investment_research` | `/mcp/investment_research/` | 投资研究：iData、国内宏观预测、利率择时、周度研报观点与宏观预测 |
 
 **新增**业务只删/加这个目录即可（重启服务后主应用自动感知）；
 **删除**业务除了删目录，还要清共享库里的残留记录，见下文「删除业务」。
@@ -204,9 +204,9 @@ WebSocket），所以启动时要显式给上限：
    信息冗余，本服务不返回
 5. 表可能与主库**不在同一个 database**：填 `FX_SCHEMA` 即可，不需要改代码
 
-### investment_research：iData 数据分析看板
+### investment_research：投资研究问数
 
-投资研究类问数业务（公共数据，不做行级隔离）。当前包含 iData 看板的三个页面场景：
+投资研究类问数业务（公共数据，不做行级隔离），目前由四个领域模块组成：
 
 | 场景 | 表 | 内容 |
 | --- | --- | --- |
@@ -214,8 +214,20 @@ WebSocket），所以启动时要显式给上限：
 | 个券机构 | `fmqt_bond_trade_counterpart_analysis` | 个债交易对手分析（单券 × 机构） |
 | 债券借贷 | `fmqt_bond_lending_analysis` | 借贷余额与集中度 |
 | 大模型点评 | `fmqt_idata_llm_analysis` | 已生成的点评正文 |
+| 国内宏观预测 | `fmqt_forecast_*`（六张表） | 报告、指标预测、模型明细、SHAP 归因和已存解读 |
+| 利率择时 | `fmqt_predictions_rates`, `fmqt_prediction_runs_rates` | 已存预测、运行审计、回测快照和因子解释 |
+| 周度研报观点 | `weekly_data` | 周度机构观点、资产共识、研报出处与市场综述 |
+| 周度宏观预测 | `weekly_macro_data` | 指标、机构预测、覆盖数、数值均值与文字众数 |
 
-**10 个工具**，由原始 29 条 SQL / 20 个接口收敛而来（合并思路见
+各领域先调用对应的 `describe_*_schema` 工具查看表、枚举、单位和口径说明。领域入口为：
+
+- `describe_idata_schema`、`describe_domestic_macro_schema`、`describe_rates_timing_schema`、
+  `describe_weekly_research_schema`
+- 国内宏观预测按 `forecast_month` 定位报告；后续查询使用 `report_id` / `indicator_id`
+- 利率择时工具仅读已保存结果，不开始训练、不调用大模型；预测概率保留 0—1 原值
+- 周度观点与周度宏观预测是两份独立数据；周标签格式为 `YYYYMMDD-YYYYMMDD`
+
+iData 保留原有 10 个工具，由原始 29 条 SQL / 20 个接口收敛而来（合并思路见
 `iData-MCP工具设计.md`）：
 
 | 工具 | 说明 |
@@ -247,8 +259,9 @@ WebSocket），所以启动时要显式给上限：
 4. 单次查询最多 60 个交易日（超了报错），避免 SQL 膨胀
 5. 表可能与主库**不在同一个 database**：填 `IDATA_SCHEMA` 即可，不需要改代码
 
-**新增场景的方式**：在本包内加一个领域模块（如 `xxx.py`），在 `server.py` 里挂上工具即可，
-不用新建业务包。
+各领域表可配置独立 schema；变量缺省时共用 `MYSQL_DATABASE`。参见 `.env.example` 中的
+`FORECAST_SCHEMA`、`RATES_SCHEMA` 与 `WEEKLY_RESEARCH_SCHEMA`。这些工具使用固定参数化查询，
+没有任意 SQL 输入能力。
 
 ### 安全与可见性（由 querykit 提供）
 
