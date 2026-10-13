@@ -251,6 +251,8 @@ export default {
     return {
       // 首页布局模式：center=空会话时输入框居中，bottom=对话中输入框贴底
       composerMode: 'center',
+      // 输入框当前内容是否为「预置问题预览填充态」
+      previewActive: false,
       // 预置问题：每张卡片当前展示的子问题下标（按卡片序号索引，最多三张）
       presetQuestionIndexes: [],
       deckTop: 0,
@@ -298,6 +300,7 @@ export default {
       if (mode !== 'center') {
         this.hoveredDeck = null
         this.lastPreview = ''
+        this.previewActive = false
       }
     },
     presetQuestions(groups) {
@@ -432,8 +435,9 @@ export default {
       this.$emit('create-session')
     },
     // ========== 预置问题：悬浮预览 ==========
-    // 悬浮时把该卡当前问题的完整文本实时填进输入框；移出预置问题区后恢复
-    // 悬浮前的内容（悬浮期间用户手动改过输入框则保留其修改）。
+    // 仅当输入框为空（或当前内容正是预览填充且未被修改）时悬浮才填充；
+    // 输入框已有用户内容时不填充、不覆盖。移出时若未修改预览文本则恢复
+    // 悬浮前内容（原为空 → 清空）；编辑过则保留其内容并解除预览态。
     fillPresetPreview(groupIndex) {
       const group = this.displayedPresetGroups[groupIndex]
       const question = group && group.questions ? group.questions[this.presetIndex(groupIndex)] : null
@@ -441,8 +445,21 @@ export default {
       this.lastPreview = question
       const composer = this.$refs.composerRef
       if (composer) composer.setMessage(question)
+      this.previewActive = true
+    },
+    // 是否允许悬浮填充：输入框为空，或内容仍是预览态且未被用户修改
+    canPresetPreview() {
+      const composer = this.$refs.composerRef
+      const current = composer ? composer.getMessage() : ''
+      if (!current.trim()) return true
+      return this.previewActive && current === this.lastPreview
     },
     onPresetEnter(groupIndex) {
+      if (!this.canPresetPreview()) {
+        // 输入框已有用户内容：不覆盖，仅记录悬浮位置（滚轮/圆点切换仍可用）
+        this.hoveredDeck = groupIndex
+        return
+      }
       if (this.hoveredDeck === null) {
         const composer = this.$refs.composerRef
         this.composerSnapshot = composer ? composer.getMessage() : ''
@@ -457,8 +474,13 @@ export default {
       const current = composer ? composer.getMessage() : ''
       const previewed = this.lastPreview
       this.lastPreview = ''
-      if (!previewed || current === previewed) {
-        if (composer) composer.setMessage(this.composerSnapshot)
+      if (this.previewActive) {
+        if (current === previewed) {
+          // 用户未修改预览：恢复悬浮前内容（原为空 → 清空）
+          if (composer) composer.setMessage(this.composerSnapshot)
+        }
+        // 用户编辑过预览文本：内容归用户保留，解除预览态
+        this.previewActive = false
       }
     },
     // 读取某张卡片当前子问题下标；数据变化导致越界时收敛到有效范围
@@ -477,8 +499,8 @@ export default {
       const next = this.presetQuestionIndexes.slice()
       next[groupIndex] = Math.max(0, Math.min(questionIndex, count - 1))
       this.presetQuestionIndexes = next
-      // 悬浮期间用滚轮/圆点切换子问题时，输入框预览实时跟随
-      if (this.hoveredDeck === groupIndex) this.fillPresetPreview(groupIndex)
+      // 悬浮期间用滚轮/圆点切换子问题时，输入框预览实时跟随（仅预览态允许）
+      if (this.hoveredDeck === groupIndex && this.canPresetPreview()) this.fillPresetPreview(groupIndex)
     },
     // 前后切换子问题；到端点后停在端点，不循环，避免长列表滚回开头
     stepPreset(groupIndex, delta) {

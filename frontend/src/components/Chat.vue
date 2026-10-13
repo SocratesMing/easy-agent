@@ -267,8 +267,8 @@ function setPresetQuestion(groupIndex, questionIndex) {
   const next = presetQuestionIndexes.value.slice()
   next[groupIndex] = Math.max(0, Math.min(questionIndex, count - 1))
   presetQuestionIndexes.value = next
-  // 悬浮期间用滚轮/圆点切换子问题时，输入框预览实时跟随
-  if (hoveredDeck.value === groupIndex) fillPresetPreview(groupIndex)
+  // 悬浮期间用滚轮/圆点切换子问题时，输入框预览实时跟随（仅预览态允许）
+  if (hoveredDeck.value === groupIndex && canPresetPreview()) fillPresetPreview(groupIndex)
 }
 
 // 前后切换子问题；到端点后不再循环（停在端点，避免长列表滚动时跳回开头）
@@ -436,11 +436,15 @@ function handleCreateSession() {
 }
 
 // ========== 预置问题：悬浮预览 ==========
-// 卡片上最多显示 3 行，长问题展示不全；悬浮时把完整文本实时填进输入框，
-// 移出预置问题区后恢复悬浮前的内容（悬浮期间用户手动改过输入框则保留其修改）。
+// 仅当输入框为空（或当前内容正是上一轮的预览填充且未被修改）时，悬浮才把
+// 完整文本填进输入框；输入框已有用户输入内容时不填充、不覆盖。
+// 移出时若用户未修改预览文本则恢复悬浮前内容（原为空 → 清空）；
+// 用户在预览基础上编辑过则保留其内容并解除预览态。
 const hoveredDeck = ref(null)
 const composerSnapshot = ref('')
 const lastPreview = ref('')
+// 输入框当前内容是否为「预览填充态」（填充过且未被用户修改）
+const previewActive = ref(false)
 
 function fillPresetPreview(groupIndex) {
   const group = displayedPresetGroups.value[groupIndex]
@@ -448,9 +452,22 @@ function fillPresetPreview(groupIndex) {
   if (question == null) return
   lastPreview.value = question
   composerRef.value?.setMessage(question)
+  previewActive.value = true
+}
+
+// 是否允许悬浮填充：输入框为空，或内容仍是预览态且未被用户修改
+function canPresetPreview() {
+  const current = composerRef.value?.getMessage() ?? ''
+  if (!current.trim()) return true
+  return previewActive.value && current === lastPreview.value
 }
 
 function onPresetEnter(groupIndex) {
+  if (!canPresetPreview()) {
+    // 输入框已有用户内容：不覆盖，仅记录悬浮位置（滚轮/圆点切换仍可用）
+    hoveredDeck.value = groupIndex
+    return
+  }
   if (hoveredDeck.value === null) {
     composerSnapshot.value = composerRef.value?.getMessage() ?? ''
   }
@@ -464,8 +481,13 @@ function onPresetLeave() {
   const current = composerRef.value?.getMessage() ?? ''
   const previewed = lastPreview.value
   lastPreview.value = ''
-  if (!previewed || current === previewed) {
-    composerRef.value?.setMessage(composerSnapshot.value)
+  if (previewActive.value) {
+    if (current === previewed) {
+      // 用户未修改预览：恢复悬浮前内容（原为空 → 清空）
+      composerRef.value?.setMessage(composerSnapshot.value)
+    }
+    // 用户编辑过预览文本：内容归用户保留，解除预览态
+    previewActive.value = false
   }
 }
 
@@ -474,6 +496,7 @@ watch(composerMode, (mode) => {
   if (mode !== 'center') {
     hoveredDeck.value = null
     lastPreview.value = ''
+    previewActive.value = false
   }
 })
 
