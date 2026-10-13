@@ -43,6 +43,7 @@ from ..services.expert_service import (
     generate_expert_config,
     load_active_prompt,
     remove_expert_dir,
+    slugify,
     validate_create_params,
     write_expert_version,
 )
@@ -63,7 +64,7 @@ class ExpertAddRequest(BaseModel):
     name_cn: str = Field(..., description="专家中文名（必填）")
     prompt: str = Field(..., description="用户对专家的描述 / 提示词（必填）")
     type: str = Field(default="agent", description="组装标识：agent=创建专家")
-    tag_id: str = Field(default="", description="分类标签（本期仅透传）")
+    tag_id: str = Field(default="", description="分类标签（选填；留空则由大模型按 expert_tags 自动归类）")
     session_id: Optional[str] = Field(default=None, description="创建该专家的会话（溯源用）")
     model: Optional[str] = Field(default=None, description="用于生成配置的模型（config.models 的 key）")
 
@@ -128,7 +129,8 @@ def _to_public(record: dict) -> dict:
         "export_name_en": record.get("export_name_en", ""),
         "export_name_cn": record.get("export_name_cn", ""),
         "export_prompt": record.get("export_prompt", ""),
-        "export_skills_ids": record.get("export_skills_ids", []),
+        "export_description": record.get("export_description", ""),
+        "export_skills_names": record.get("export_skills_names", []),
         "export_features_prompt": record.get("export_features_prompt", []),
         "export_file_path": record.get("export_file_path", ""),
         "agent_status": record.get("agent_status", ""),
@@ -145,6 +147,26 @@ def _get_config():
     return _cfg["config"]
 
 
+def _tag_options(config) -> list[dict]:
+    """取配置里的专家分类标签候选（``expert_tags``）。
+
+    兼容 Pydantic 模型与裸 dict 两种形态（测试里可能注入 dict），统一成
+    ``[{"tag_id": ..., "tag_name": ...}]``；配置缺失时返回空列表。
+    """
+    raw = getattr(config, "expert_tags", None) or []
+    options: list[dict] = []
+    for item in raw:
+        if isinstance(item, dict):
+            tag_id = str(item.get("tag_id") or "").strip()
+            tag_name = str(item.get("tag_name") or "").strip()
+        else:
+            tag_id = str(getattr(item, "tag_id", "") or "").strip()
+            tag_name = str(getattr(item, "tag_name", "") or "").strip()
+        if tag_id and tag_name:
+            options.append({"tag_id": tag_id, "tag_name": tag_name})
+    return options
+
+
 async def _generate_and_store(
     *,
     db: Database,
@@ -158,17 +180,28 @@ async def _generate_and_store(
 ) -> dict:
     """调 LLM 生成配置 -> 写版本目录 -> 刷新库记录。返回启用后的完整记录。
 
+    生成内容包含卡片/详情页展示用的 ``export_description``（≤300 字）与
+    ``export_skills_names``（3 个技能标签），以及大模型自动归类的 ``tag_id``
+    （候选来自配置文件的 ``expert_tags``，不在候选内的会被清空后回退原值）。
+
     失败时把 ``agent_status`` 置为 ``failed``（前端可重试），并抛出可读错误。
     """
     config = _get_config()
     store = ExpertStore(db)
+    tag_options = _tag_options(config)
     try:
         llm = create_model(config, model_name, session_id)
-        generated = await generate_expert_config(llm, name_cn, user_prompt)
+        generated = await generate_expert_config(
+            llm, name_cn, user_prompt, tag_options=tag_options
+        )
     except Exception as exc:  # noqa: BLE001
         logger.error("专家配置生成失败 | expert=%s | %s", expert_agent_id, exc)
         store.update_fields(expert_agent_id, {"agent_status": STATUS_FAILED})
         raise HTTPException(status_code=500, detail=f"专家配置生成失败：{exc}") from exc
+
+    # 英文标识名：优先用 LLM 生成的 name_en（如 stock-invest-advisor），
+    # 缺失/非法时回退为创建时的占位 slug。文件名不含随机数字（需求 §1）。
+    name_en = slugify(generated.get("name_en") or "", max_len=48)
 
     try:
         file_path = write_expert_version(
@@ -177,6 +210,7 @@ async def _generate_and_store(
             version,
             name_cn,
             generated,
+            name_en=name_en,
             model_name=model_name or getattr(config, "active_model", ""),
             raw_output=generated,
         )
@@ -185,15 +219,25 @@ async def _generate_and_store(
         store.update_fields(expert_agent_id, {"agent_status": STATUS_FAILED})
         raise HTTPException(status_code=500, detail=f"专家配置落盘失败：{exc}") from exc
 
-    store.update_fields(
-        expert_agent_id,
-        {
-            "export_file_path": file_path,
-            "export_features_prompt": generated.get("features_prompt", []),
-            "agent_status": STATUS_ACTIVE,
-            "export_version": int(version),
-        },
-    )
+    # 大模型自动归类：生成的 tag_id 有效时覆盖创建时传入的值；
+    # 无效/缺失（模型没选或选了候选之外的标签）时保留原值不动。
+    generated_tag = generated.get("tag_id") or ""
+    current_tag = (store.get(expert_agent_id) or {}).get("tag_id", "")
+
+    fields = {
+        "export_file_path": file_path,
+        "export_features_prompt": generated.get("features_prompt", []),
+        # 卡片/详情页展示字段
+        "export_description": generated.get("description", ""),
+        "export_skills_names": generated.get("skills_names", []),
+        "tag_id": generated_tag or current_tag or "",
+        "agent_status": STATUS_ACTIVE,
+        "export_version": int(version),
+    }
+    if name_en:
+        # LLM 生成了更贴切的英文标识名，回写覆盖创建时的占位 slug
+        fields["export_name_en"] = name_en
+    store.update_fields(expert_agent_id, fields)
     return store.get(expert_agent_id) or {}
 
 
@@ -227,7 +271,8 @@ async def add_expert(
             "export_name_en": name_en,
             "export_name_cn": request.name_cn.strip(),
             "export_prompt": request.prompt,
-            "export_skills_ids": [],
+            "export_description": "",
+            "export_skills_names": [],
             "export_features_prompt": [],
             "export_file_path": "",
             "agent_status": STATUS_BUILDING,
@@ -263,7 +308,6 @@ async def update_expert(
 
     name_cn = (request.name_cn or record.get("export_name_cn") or "").strip()
     user_prompt = request.prompt if request.prompt is not None else record.get("export_prompt", "")
-    tag_id = request.tag_id if request.tag_id is not None else record.get("tag_id", "")
     try:
         validate_create_params(name_cn, user_prompt)
     except ValueError as exc:
@@ -281,11 +325,12 @@ async def update_expert(
         model_name=request.model,
         session_id=record.get("session_id") or None,
     )
-    # 元数据（中文名/描述/标签）随本次修改一起刷新
-    store.update_fields(
-        request.export_agent_id,
-        {"export_name_cn": name_cn, "export_prompt": user_prompt, "tag_id": tag_id or ""},
-    )
+    # 元数据（中文名/描述）随本次修改一起刷新；tag_id 走大模型自动归类，
+    # 仅在调用方**显式**传入非空 tag_id 时才人工覆盖自动结果。
+    meta = {"export_name_cn": name_cn, "export_prompt": user_prompt}
+    if request.tag_id:
+        meta["tag_id"] = request.tag_id
+    store.update_fields(request.export_agent_id, meta)
 
     # 让该用户所有缓存 Agent 失效，下次请求用新版本的提示词重建
     invalidate_user_agents(username)
@@ -315,10 +360,17 @@ async def list_experts(
         page=page,
         page_size=page_size,
     )
+    # tags：分类标签候选（配置文件 expert_tags），前端渲染筛选 chips 用；
+    # 大模型自动归类后每个专家的 tag_id 即取自这份列表。
+    try:
+        tags = _tag_options(_get_config())
+    except HTTPException:
+        tags = []
     return {
         "total": total,
         "page": page,
         "page_size": page_size,
+        "tags": tags,
         "items": [_to_public(r) for r in items],
     }
 

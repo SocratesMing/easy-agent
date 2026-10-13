@@ -4,7 +4,7 @@
 
 - **只接收 ``Database`` 实例**，复用其 ``get_connection()`` / ``_execute()``，
   不往 ``database.py`` 的 2000+ 行里塞业务方法；
-- 列表型字段（``export_skills_ids`` / ``export_features_prompt``）以 JSON 字符串
+- 列表型字段（``export_skills_names`` / ``export_features_prompt``）以 JSON 字符串
   落库，读写时做 ``dumps`` / ``loads``，规避 MySQL 原生 JSON 类型的版本差异；
 - 删除默认为**软删除**（``agent_status='disabled'``），物理删除需显式传 ``hard=True``；
 - **不加外键约束**，只建索引（与本项目其余表一致）；
@@ -27,7 +27,7 @@ STATUS_FAILED = "failed"       # 生成失败，前端可重试
 STATUS_DISABLED = "disabled"   # 软删除
 
 # 落库时以 JSON 字符串存储的列表型字段
-_JSON_FIELDS = ("export_skills_ids", "export_features_prompt")
+_JSON_FIELDS = ("export_skills_names", "export_features_prompt")
 
 # 允许被 update_fields 更新的列（白名单，避免 SQL 注入与误更新主键）
 _UPDATABLE_COLUMNS = frozenset({
@@ -36,7 +36,8 @@ _UPDATABLE_COLUMNS = frozenset({
     "export_name_en",
     "export_name_cn",
     "export_prompt",
-    "export_skills_ids",
+    "export_description",
+    "export_skills_names",
     "export_features_prompt",
     "export_file_path",
     "agent_status",
@@ -53,7 +54,8 @@ COLUMNS = (
     "export_name_en",
     "export_name_cn",
     "export_prompt",
-    "export_skills_ids",
+    "export_description",
+    "export_skills_names",
     "export_features_prompt",
     "export_file_path",
     "agent_status",
@@ -118,7 +120,7 @@ class ExpertStore:
     def create(self, fields: dict) -> None:
         """插入一条专家记录（缺失列使用建表默认值）。
 
-        ``fields`` 里的 ``export_skills_ids`` / ``export_features_prompt`` 可传
+        ``fields`` 里的 ``export_skills_names`` / ``export_features_prompt`` 可传
         Python 列表，落库前会自动编码为 JSON 字符串。
         """
         payload = _encode(fields)
@@ -126,6 +128,7 @@ class ExpertStore:
         payload.setdefault("session_id", "")
         payload.setdefault("tag_id", "")
         payload.setdefault("export_prompt", "")
+        payload.setdefault("export_description", "")
         payload.setdefault("export_file_path", "")
         payload.setdefault("agent_status", STATUS_BUILDING)
         payload.setdefault("export_version", 1)

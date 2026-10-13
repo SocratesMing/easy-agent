@@ -155,3 +155,22 @@ distributed_lock:
 denied_dirs:
   - path: "/user-skills"
     operations: ["write"]
+
+# ===== Expert Tags =====
+# 专家 Agent 的分类标签候选：创建专家时整份列表会交给大模型，
+# 由它按专家功能挑一个最匹配的 tag_id 落库（tag_id 用于数据筛选，tag_name 用于展示）。
+# 前端「专家 · 技能 · 连接器 -> 专家」Tab 的筛选 chips 即按此列表渲染。
+expert_tags:
+  - { tag_id: macro_research, tag_name: 宏观投研 }
+  - { tag_id: bond_research, tag_name: 债券投研 }
+  - { tag_id: fx_research, tag_name: 外汇投研 }
+  - { tag_id: gold_research, tag_name: 黄金投研 }
+  - { tag_id: alm_calc, tag_name: 资负测算 }
+  - { tag_id: strategy_research, tag_name: 策略研究 }
+  - { tag_id: factor_analysis, tag_name: 因子分析 }
+  - { tag_id: equity_research, tag_name: 权益投研 }
+  - { tag_id: industry_research, tag_name: 行业研究 }
+  - { tag_id: credit_research, tag_name: 信用研究 }
+  - { tag_id: asset_allocation, tag_name: 资产配置 }
+  - { tag_id: risk_management, tag_name: 风险管理 }
+  - { tag_id: other, tag_name: 其他 }
