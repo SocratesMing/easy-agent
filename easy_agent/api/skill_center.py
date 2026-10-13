@@ -63,6 +63,30 @@ def _category_name_map(store: dict) -> dict:
     return names
 
 
+def _backfill_missing_assignments(username: str, store: dict, items: list[dict]) -> bool:
+    """给没有归属记录的历史技能按内容补录一次分类，返回是否有写入。
+
+    分类只在技能创建时定稿、之后不再变动；早于该规则的技能在此补录一次，
+    补录结果与当时的推断一致（``auto_assign_skill`` 幂等，已有归属不会覆盖）。
+    """
+    changed = False
+    for item in items:
+        skill_dir = item["path"]
+        if store["assignments"].get(skill_dir.name):
+            continue
+        metadata = _parse_skill_metadata(skill_dir)
+        _, body = skill_library.read_skill_document(skill_dir)
+        skill_categories.auto_assign_skill(
+            username,
+            skill_dir.name,
+            name=metadata.get("name", ""),
+            description=metadata.get("description", ""),
+            body=body,
+        )
+        changed = True
+    return changed
+
+
 def _get_user_skills_dir(username: str) -> Path:
     """用户技能目录（Agent 实际加载的目录，见 services/skill_library）。"""
     return skill_library.user_skills_dir(username)
@@ -139,10 +163,16 @@ async def list_user_skills(
     abs_user_skills_dir = str(user_skills_dir.absolute())
 
     store = skill_categories.load_store(username)
+    user_skill_items = skill_library.list_user_skill_dirs(username)
+
+    # 历史技能（早于「创建时自动归类」的技能）补录一次归属：分类一旦定稿就不再变动
+    if _backfill_missing_assignments(username, store, user_skill_items):
+        store = skill_categories.load_store(username)
+
     category_names = _category_name_map(store)
 
     result = []
-    for item in skill_library.list_user_skill_dirs(username):
+    for item in user_skill_items:
         skill_dir = item["path"]
         metadata = _parse_skill_metadata(skill_dir)
         category_id = _resolve_row_category(store, skill_dir.name, metadata, skill_dir)
@@ -177,10 +207,10 @@ async def list_user_skills(
 async def list_skill_categories(
     username: Annotated[str, Depends(get_current_username)],
 ):
-    """类别列表（按用户自定义顺序）+ 各技能的显式归属记录。
+    """类别列表 + 技能归属记录（供列表页的分类筛选使用）。
 
-    技能的实际归属以列表接口返回的 ``category_id`` 为准：显式归属优先，缺省时按
-    技能内容自动推断。``assignments`` 只包含用户手动或创建技能时自动写入的记录。
+    分类在技能创建时自动归类**定稿**，之后不再变动（前端不提供手动调整）；``assignments``
+    就是这份定稿记录，早于该规则的历史技能会在首次列出时补录一次。
     """
     store = skill_categories.load_store(username)
     return {

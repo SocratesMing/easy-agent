@@ -1,15 +1,14 @@
 <!--
   技能列表（技能 Tab 主视图）：
-  - 工具条：搜索 / 已安装(n) 筛选 / 添加技能（下拉：上传技能 = zip 导入、创建技能占位）
-  - 分类 chips：全部 + 后端返回的用户类别（可「管理分类」新建/重命名/删除/排序）
-  - 列表：不分组的平铺网格（分类只体现在 chips 筛选与卡片上的归类标签）
+  - 工具条：搜索 / 已安装(n) 筛选 / 添加技能（下拉：上传技能 = zip 导入、创建技能）
+  - 分类 chips：全部 + 有技能的用户类别（分类在技能创建时自动归类定稿，这里只做筛选）
+  - 列表：不分组的平铺网格（分类只体现在 chips 筛选与卡片底部的只读标签）
   - 卡片：图标 / 名称 / 状态标签 / 右侧操作（未添加显示 +，已添加显示对勾标记；
-    切到「已安装」筛选后已添加的显示启用开关）/ 单行描述 / 底部真实指标
-    + 底部分类标签：点开可把技能改到别的类别或恢复自动归类
+    切到「已安装」筛选后已添加的显示启用开关）/ 单行描述 / 底部真实指标 + 分类标签
   - 点卡片名称 → 详情页（SkillDetailPanel）
 -->
 <template>
-  <!-- 点击空白处收起卡片的归类下拉与「添加技能」菜单 -->
+  <!-- 点击空白处收起「添加技能」菜单 -->
   <div class="skill-panel" @click="closeOverlays">
     <SkillDetailPanel
       v-if="detailTarget"
@@ -97,20 +96,6 @@
           {{ item.name }}
           <span v-if="categoryCounts[item.id]" class="chip-count">{{ categoryCounts[item.id] }}</span>
         </button>
-        <button class="chip chip-manage" type="button" @click="openCategoryManager">
-          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
-            <line x1="4" y1="21" x2="4" y2="14" />
-            <line x1="4" y1="10" x2="4" y2="3" />
-            <line x1="12" y1="21" x2="12" y2="12" />
-            <line x1="12" y1="8" x2="12" y2="3" />
-            <line x1="20" y1="21" x2="20" y2="16" />
-            <line x1="20" y1="12" x2="20" y2="3" />
-            <line x1="1" y1="14" x2="7" y2="14" />
-            <line x1="9" y1="8" x2="15" y2="8" />
-            <line x1="17" y1="16" x2="23" y2="16" />
-          </svg>
-          管理分类
-        </button>
       </div>
 
       <div class="skill-center-content">
@@ -154,12 +139,7 @@
         </div>
 
         <div v-else class="skills-grid">
-          <div
-            v-for="card in filteredCards"
-            :key="card.key"
-            class="skill-card"
-            :class="{ 'menu-open': pickerCard === card.key }"
-          >
+          <div v-for="card in filteredCards" :key="card.key" class="skill-card">
             <div class="skill-card-inner">
               <button class="skill-card-open" @click="openDetail(card)">
                 <SkillIcon :icon="card.icon" :category="iconCategoryFor(card.categoryId)" />
@@ -212,62 +192,24 @@
             </div>
 
             <div class="skill-card-footer">
-              <span>{{ card.stats.file_count }} 个文件</span>
-              <span class="dot">·</span>
-              <span>{{ formatSize(card.stats.size_bytes) }}</span>
-              <span class="dot">·</span>
-              <span>{{ formatTime(card.stats.updated_at) }}</span>
+              <!-- 统计信息合成一行：空间不足时整体省略，避免逐字换行导致卡片高度不一致 -->
+              <span
+                class="skill-card-meta"
+                :title="`${card.stats.file_count} 个文件 · ${formatSize(card.stats.size_bytes)} · ${formatTime(card.stats.updated_at)}`"
+              >
+                {{ card.stats.file_count }} 个文件 · {{ formatSize(card.stats.size_bytes) }} ·
+                {{ formatTime(card.stats.updated_at) }}
+              </span>
 
-              <div class="category-picker">
-                <button
-                  class="category-picker-btn"
-                  type="button"
-                  :aria-expanded="pickerCard === card.key ? 'true' : 'false'"
-                  :title="'调整「' + card.name + '」的类别'"
-                  @click.stop="toggleCategoryPicker(card)"
-                >
-                  {{ card.categoryName }}
-                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
-                    <polyline points="6 9 12 15 18 9" />
-                  </svg>
-                </button>
-
-                <div v-if="pickerCard === card.key" class="category-picker-menu" role="menu">
-                  <button
-                    v-for="option in pickerOptions(card)"
-                    :key="option.id"
-                    class="picker-item"
-                    :class="{ active: option.active }"
-                    type="button"
-                    role="menuitem"
-                    @click.stop="handleAssign(card, option.id)"
-                  >
-                    {{ option.name }}
-                  </button>
-                  <button
-                    class="picker-item picker-manage"
-                    type="button"
-                    role="menuitem"
-                    @click.stop="openCategoryManager"
-                  >
-                    管理分类…
-                  </button>
-                </div>
-              </div>
+              <!-- 分类在创建时自动归类定稿，之后只做展示（不再支持手动调整） -->
+              <span class="skill-category-tag" :title="`分类：${card.categoryName}`">
+                {{ card.categoryName }}
+              </span>
             </div>
           </div>
         </div>
       </div>
     </template>
-
-    <SkillCategoryManager
-      v-if="categoryManagerOpen"
-      :categories="categories"
-      :default-category="defaultCategory"
-      :counts="categoryCounts"
-      @close="categoryManagerOpen = false"
-      @changed="handleCategoriesChanged"
-    />
 
     <Transition name="toast">
       <div v-if="toast.show" class="toast" :class="toast.type" role="status" aria-live="polite">
@@ -287,12 +229,10 @@ import {
   disableSkill,
   importSkill,
   getSkillCategories,
-  assignSkillCategory,
 } from '../api/skills.js'
 import { DEFAULT_CATEGORY, iconCategoryFor } from '../utils/skillCategories.js'
 import SkillIcon from './SkillIcon.vue'
 import SkillDetailPanel from './SkillDetailPanel.vue'
-import SkillCategoryManager from './SkillCategoryManager.vue'
 import ToggleSwitch from './ToggleSwitch.vue'
 
 const emit = defineEmits(['close', 'create-skill'])
@@ -311,12 +251,9 @@ const fileInputRef = ref(null)
 const detailTarget = ref(null)
 const toast = ref({ show: false, message: '', type: 'success' })
 
-// 类别由后端管理（用户级持久化），默认兜底类别固定为「通用技能」
+// 类别来自后端（用户级持久化，技能创建时自动归类定稿），默认兜底类别固定为「通用技能」
 const categories = ref([])
 const defaultCategory = ref(DEFAULT_CATEGORY)
-// 卡片上的归类下拉：记录当前展开的卡片 key
-const pickerCard = ref(null)
-const categoryManagerOpen = ref(false)
 // 「添加技能」下拉菜单（上传技能 / 创建技能）
 const addMenuOpen = ref(false)
 
@@ -415,7 +352,7 @@ const orderedCategories = computed(() => [
   { ...defaultCategory.value, builtin: false },
 ])
 
-/** chips：全部 + 有技能的类别（空类别不进筛选条，可在「管理分类」里看到） */
+/** chips：全部 + 有技能的类别（空类别不进筛选条） */
 const chipCategories = computed(() => [
   { id: 'all', name: '全部' },
   ...orderedCategories.value.filter((item) => categoryCounts.value[item.id]),
@@ -478,47 +415,6 @@ async function refresh() {
   } catch (_) { /* 静默失败，保留旧数据 */ }
 }
 
-// ── 类别归类 ──────────────────────────────────────────────────────────
-
-function toggleCategoryPicker(card) {
-  pickerCard.value = pickerCard.value === card.key ? null : card.key
-}
-
-/** 归类下拉里的选项：全部类别 + 「自动归类」（清除显式归属） */
-function pickerOptions(card) {
-  return [
-    ...orderedCategories.value.map((item) => ({
-      id: item.id,
-      name: item.name,
-      active: item.id === card.categoryId,
-    })),
-    { id: '', name: '自动归类', active: false },
-  ]
-}
-
-async function handleAssign(card, categoryId) {
-  pickerCard.value = null
-  if (categoryId === card.categoryId) return
-  try {
-    const result = await assignSkillCategory(card.dirName, categoryId)
-    await refresh()
-    showToast(`「${card.name}」已归入「${result.category_name || '通用技能'}」`)
-  } catch (e) {
-    showToast(e.message || '更新技能类别失败', 'error')
-  }
-}
-
-function openCategoryManager() {
-  pickerCard.value = null
-  categoryManagerOpen.value = true
-}
-
-/** 类别管理面板改动后：刷新类别与分组 */
-async function handleCategoriesChanged(message) {
-  await refresh()
-  if (message) showToast(message)
-}
-
 function openDetail(card) {
   detailTarget.value = { dirName: card.dirName, scope: card.scope }
 }
@@ -549,9 +445,8 @@ async function handleToggle(card, next) {
   }
 }
 
-/** 收起所有浮层（点面板空白处时触发） */
+/** 收起「添加技能」下拉（点面板空白处时触发） */
 function closeOverlays() {
-  pickerCard.value = null
   addMenuOpen.value = false
 }
 
@@ -913,104 +808,21 @@ onMounted(load)
   opacity: 1;
 }
 
-/* 管理分类入口：推到 chips 行末尾，虚线区分「筛选」与「操作」 */
-.chip-manage {
-  margin-left: auto;
-  gap: 6px;
-  border-style: dashed;
-}
-
-.chip-manage:hover {
-  border-style: solid;
-}
-
-.chip-manage svg {
-  width: 13px;
-  height: 13px;
-}
-
-/* ── 类别分组 ── */
-/* ── 卡片上的归类入口 ── */
-.category-picker {
-  position: relative;
-  margin-left: auto;
-}
-
-.category-picker-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 3px 9px;
-  border: 1px solid var(--border-color);
+/* 分类标签：只读展示（分类在技能创建时自动归类定稿，之后不再变动） */
+.skill-category-tag {
+  display: inline-block;
+  flex: 0 0 auto;
+  max-width: 42%;
+  padding: 3px 10px;
+  border: 1px solid color-mix(in srgb, var(--accent-color) 22%, var(--border-color));
   border-radius: 999px;
-  background: var(--bg-surface);
+  background: color-mix(in srgb, var(--accent-color) 8%, var(--bg-surface));
   font-size: 11.5px;
-  color: var(--text-secondary);
-  cursor: pointer;
-  transition: border-color 0.18s ease, color 0.18s ease;
-}
-
-.category-picker-btn:hover {
-  border-color: var(--accent-color);
-  color: var(--accent-color);
-}
-
-.category-picker-btn:focus-visible {
-  outline: 2px solid var(--accent-color);
-  outline-offset: 2px;
-}
-
-.category-picker-btn svg {
-  width: 11px;
-  height: 11px;
-}
-
-/* 归类菜单：绝对定位浮层，避免撑高卡片、连带同行卡片出现空白下拉区 */
-.category-picker-menu {
-  position: absolute;
-  right: 0;
-  top: calc(100% + 6px);
-  z-index: 6;
-  min-width: 140px;
-  max-height: 210px;
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  padding: 6px;
-  border: 1px solid var(--border-color);
-  border-radius: 10px;
-  background: var(--bg-surface);
-  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.16);
-}
-
-.picker-item {
-  padding: 7px 9px;
-  border: none;
-  border-radius: 7px;
-  background: transparent;
-  text-align: left;
-  font-size: 12.5px;
-  color: var(--text-secondary);
-  cursor: pointer;
-  transition: background-color 0.15s ease, color 0.15s ease;
-}
-
-.picker-item:hover {
-  background: var(--bg-tertiary);
-  color: var(--text-primary);
-}
-
-.picker-item.active {
-  color: var(--accent-color);
-}
-
-.picker-item:focus-visible {
-  outline: 2px solid var(--accent-color);
-  outline-offset: -2px;
-}
-
-.picker-manage {
-  color: var(--accent-color);
+  line-height: 1.6;
+  color: color-mix(in srgb, var(--accent-color) 80%, var(--text-secondary));
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* ── 内容区 ── */
@@ -1085,23 +897,15 @@ onMounted(load)
 }
 
 .skill-card {
-  /* 定位上下文：菜单打开时本卡片要抬到兄弟卡片之上 */
+  /* 定位上下文：卡片内元素（如角标/浮层）需要以此为参照 */
   position: relative;
   display: flex;
   flex-direction: column;
   border: 1px solid var(--border-color);
   border-radius: 14px;
   background: var(--bg-surface);
-  /* 不裁切子元素：归类菜单是绝对定位浮层，需要溢出于卡片底部 */
   overflow: visible;
   transition: border-color 0.18s ease, box-shadow 0.18s ease, transform 0.18s ease;
-}
-
-/* hover 的 transform 会让卡片自成层叠上下文（z-index: auto），DOM 靠后的兄弟卡片
-   会整块盖住卡片内的绝对定位菜单。菜单打开时显式提升层级即可（兄弟卡片按 0 处理，
-   取值保持低位，避免与 Tab 悬浮提示、添加技能下拉等浮层抢层级）。 */
-.skill-card.menu-open {
-  z-index: 2;
 }
 
 .skill-card:hover {
@@ -1151,6 +955,8 @@ onMounted(load)
 }
 
 .skill-card-name {
+  flex: 1 1 auto;
+  min-width: 0;
   font-size: 14px;
   font-weight: 600;
   letter-spacing: -0.01em;
@@ -1162,6 +968,7 @@ onMounted(load)
 
 .skill-tag {
   flex-shrink: 0;
+  white-space: nowrap;
   padding: 2px 7px;
   border-radius: 6px;
   background: color-mix(in srgb, var(--accent-color) 14%, transparent);
@@ -1177,6 +984,8 @@ onMounted(load)
 }
 
 .skill-card-desc {
+  /* 固定两行高度：描述长短不一时卡片内部结构保持一致 */
+  min-height: calc(1.55em * 2);
   font-size: 12.5px;
   line-height: 1.55;
   color: var(--text-secondary);
@@ -1185,7 +994,8 @@ onMounted(load)
   line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
-  overflow-wrap: anywhere;
+  /* 只在必要时断词，避免把中文词组从中间切开 */
+  overflow-wrap: break-word;
 }
 
 .add-icon-btn {
@@ -1253,7 +1063,9 @@ onMounted(load)
 .skill-card-footer {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
+  /* 贴合卡片底部：内容行数不同的卡片，信息条也保持在同一水平线上 */
+  margin-top: auto;
   padding: 9px 14px;
   border-top: 1px solid var(--border-color);
   background: color-mix(in srgb, var(--bg-tertiary) 55%, var(--bg-surface));
@@ -1265,8 +1077,13 @@ onMounted(load)
   font-variant-numeric: tabular-nums;
 }
 
-.skill-card-footer .dot {
-  opacity: 0.5;
+/* 统计信息：单行展示，放不下时整体省略，不允许逐字断行 */
+.skill-card-meta {
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .btn-spinner-sm {
