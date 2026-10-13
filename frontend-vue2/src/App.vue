@@ -34,6 +34,7 @@
         @toggle-sidebar="toggleSidebar"
         @show-assets="handleShowAssets"
         @show-skill-center="handleShowSkillCenter"
+        @show-expert-center="handleShowExpertCenter"
         @show-scheduled-tasks="handleShowScheduledTasks"
         @show-settings="showSettingsPanel = true"
         @show-user-management="showUserManagementPanel = true"
@@ -56,6 +57,13 @@
 
       <SkillCenter v-if="showSkillCenter" @close="showSkillCenter = false" />
 
+      <ExpertCenter
+        v-if="showExpertCenter"
+        :session-id="currentSessionId || ''"
+        @close="showExpertCenter = false"
+        @use="handleUseExpert"
+      />
+
       <ScheduledTasksPanel v-if="showScheduledTasks" @close="showScheduledTasks = false" />
       
       <SettingsPanel
@@ -69,7 +77,7 @@
       />
       
       <Chat
-        v-else-if="!showAssets && !showSkillCenter && !showScheduledTasks"
+        v-else-if="!showAssets && !showSkillCenter && !showExpertCenter && !showScheduledTasks"
         :messages="messages"
         :sessionLoading="sessionLoading"
         :currentSessionId="currentSessionId"
@@ -86,6 +94,7 @@
         :sidebarCollapsed="isSidebarCollapsed"
         :models="availableModels"
         :selectedModel="selectedModel"
+        :activeExpert="selectedExpert"
         @update:selectedModel="selectedModel = $event"
         @toggle-workspace="isWorkspaceCollapsed = false"
         @send-message="handleSendMessage"
@@ -95,9 +104,10 @@
         @retry="handleRetry"
         @approve="handleToolApproval('approve')"
         @reject="handleToolApproval('reject')"
+        @clear-expert="selectedExpert = null"
       />
 
-      <div v-if="currentSessionId && !showAssets && !showSkillCenter" class="workspace-area">
+      <div v-if="currentSessionId && !showAssets && !showSkillCenter && !showExpertCenter" class="workspace-area">
         <WorkspacePanel
           :username="userProfile.username"
           :currentSessionId="currentSessionId"
@@ -121,6 +131,7 @@ import SessionList from './components/SessionList.vue'
 import Chat from './components/Chat.vue'
 import AssetsPanel from './components/AssetsPanel.vue'
 import SkillCenter from './components/SkillCenter.vue'
+import ExpertCenter from './components/ExpertCenter.vue'
 import ScheduledTasksPanel from './components/ScheduledTasksPanel.vue'
 import UserManagementPanel from './components/UserManagementPanel.vue'
 import Welcome from './components/Welcome.vue'
@@ -130,6 +141,7 @@ import { createSession, listSessions, getChatHistory, deleteSession, sendMessage
 import { uploadFile, deleteFile, getUserProfile, getSessionGeneratedFiles } from './api/files.js'
 import { logout as apiLogout, notifyLogout, getStoredToken, getStoredUsername, AUTH_EXPIRED_EVENT, authFetch, passwordlessLogin } from './api/auth.js'
 import { getModels as fetchModels } from './api/settings.js'
+import { streamExportRun } from './api/expert.js'
 
 // ── 应用级常量（原 src/config.js 已移除，直接定义在组件内）────────────
 // 应用名称与首页欢迎语；后端 /agent/auth/config 返回的 app_welcome_title 仍可在运行期覆盖
@@ -222,6 +234,7 @@ export default {
   components: {
     AssetsPanel,
     Chat,
+    ExpertCenter,
     ScheduledTasksPanel,
     SessionList,
     SettingsPanel,
@@ -278,6 +291,10 @@ export default {
       isWorkspaceCollapsed: true,
       showAssets: false,
       showSkillCenter: false,
+      showExpertCenter: false,
+      // 当前选中的专家 Agent（{export_agent_id, export_name_cn, ...} 或 null）。
+      // 非空时本会话消息改走 /agent/stream_export_run，由后端动态构建专家 Agent。
+      selectedExpert: null,
       showScheduledTasks: false,
       showSettingsPanel: false,
       showUserManagementPanel: false,
@@ -876,17 +893,42 @@ export default {
     handleShowAssets() {
       this.showAssets = !this.showAssets
       this.showSkillCenter = false
+      this.showExpertCenter = false
       this.showScheduledTasks = false
     },
     handleShowSkillCenter() {
       this.showSkillCenter = !this.showSkillCenter
       this.showAssets = false
+      this.showExpertCenter = false
+      this.showScheduledTasks = false
+    },
+    handleShowExpertCenter() {
+      this.showExpertCenter = !this.showExpertCenter
+      this.showAssets = false
+      this.showSkillCenter = false
       this.showScheduledTasks = false
     },
     handleShowScheduledTasks() {
       this.showScheduledTasks = !this.showScheduledTasks
       this.showAssets = false
       this.showSkillCenter = false
+      this.showExpertCenter = false
+    },
+    /**
+     * 「我的专家 -> 去使用」：把专家挂到当前会话。
+     *
+     * 不强制新建会话：后端 thread_id = `{session_id}-{message_id}`，每条消息都是新线程，
+     * 且 get_or_create_agent_for_session() 已按「专家是否变更」驱逐缓存，
+     * 因此同一会话内切换专家能立即生效（详见 docs/expert-agent-solution.md）。
+     */
+    handleUseExpert(expert) {
+      if (!expert || !expert.export_agent_id) return
+      this.selectedExpert = {
+        export_agent_id: expert.export_agent_id,
+        export_name_cn: expert.export_name_cn,
+        export_version: expert.export_version,
+      }
+      this.showExpertCenter = false
     },
     applyAgentConfig(configData) {
       if (!configData) return
@@ -1009,6 +1051,8 @@ export default {
       }
       this.showAssets = false
       this.showSkillCenter = false
+      this.showExpertCenter = false
+      this.selectedExpert = null
       this.hasBootstrapped = false
       this.clearActiveSession()
       this.requireLogin()
@@ -1141,6 +1185,9 @@ export default {
 
       this.showAssets = false
       this.showSkillCenter = false
+      this.showExpertCenter = false
+      // 新建会话回到干净状态：专家需在新会话里重新选择，避免误把旧专家的设定带进来
+      this.selectedExpert = null
       this.showScheduledTasks = false
       this.showSettingsPanel = false
       this.currentSessionId = null
@@ -1160,6 +1207,9 @@ export default {
 
       this.showAssets = false
       this.showSkillCenter = false
+      this.showExpertCenter = false
+      // 切换会话时不沿用上一个会话的专家选择（选择是当前工作台的临时状态）
+      this.selectedExpert = null
       this.showScheduledTasks = false
       this.currentSessionId = sessionId
       // 切换后按当前会话是否正在流式输出决定输入框状态：
@@ -1803,16 +1853,36 @@ export default {
           }
         }
 
-        await sendMessage(
-          this.currentSessionId,
-          message,
-          onChunk,
-          abortSignal,
-          enableDeepThink,
-          files,
-          this.selectedModel,
-          enableWebSearch
-        )
+        // 专家模式：改走 /agent/stream_export_run，由后端按选中的专家动态构建 Agent
+        // （加载该专家当前生效版本的提示词，并对未选中的情况退化为通用 Agent）。
+        // SSE 事件格式与 /agent/chat/stream 完全一致，因此 onChunk 复用同一处理器。
+        // 未选专家时保持原有链路，行为不变。
+        if (this.selectedExpert && this.selectedExpert.export_agent_id) {
+          await streamExportRun(
+            {
+              message,
+              sessionId: this.currentSessionId,
+              expertAgentId: this.selectedExpert.export_agent_id,
+              model: this.selectedModel,
+              enableDeepThink,
+              enableWebSearch,
+              files,
+            },
+            onChunk,
+            abortSignal
+          )
+        } else {
+          await sendMessage(
+            this.currentSessionId,
+            message,
+            onChunk,
+            abortSignal,
+            enableDeepThink,
+            files,
+            this.selectedModel,
+            enableWebSearch
+          )
+        }
 
         await this.refreshSessionFiles(null, 500)
       } catch (e) {

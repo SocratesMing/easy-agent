@@ -35,6 +35,14 @@
         <span>技能中心</span>
       </button>
 
+      <button @click="$emit('show-expert-center')" class="action-btn expert-center">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="12" cy="8" r="6"></circle>
+          <path d="M15.477 12.89 17 22l-5-3-5 3 1.523-9.11"></path>
+        </svg>
+        <span>我的专家</span>
+      </button>
+
       <button @click="$emit('show-scheduled-tasks')" class="action-btn scheduled-tasks">
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <circle cx="12" cy="12" r="10"></circle>
@@ -230,7 +238,7 @@ export default {
     default: false
   }
 },
-  emits: ['create-session', 'select-session', 'delete-session', 'rename-session', 'toggle-sidebar', 'show-assets', 'show-skill-center', 'show-scheduled-tasks', 'show-settings', 'show-user-management', 'logout', 'toggle-pin'],
+  emits: ['create-session', 'select-session', 'delete-session', 'rename-session', 'toggle-sidebar', 'show-assets', 'show-skill-center', 'show-expert-center', 'show-scheduled-tasks', 'show-settings', 'show-user-management', 'logout', 'toggle-pin'],
   data() {
     return {
       activeMenu: null,
