@@ -128,6 +128,31 @@ def load_mcp_config(username: str | None = None) -> dict[str, dict[str, Any]]:
         )
         return {}
 
+    return _load_servers_from_file(config_path)
+
+
+def load_user_mcp_config(
+    username: str,
+    config: Config | None = None,
+) -> dict[str, dict[str, Any]]:
+    """只读当前用户自己的 mcp.json，**不做全局回退**。
+
+    连接器页用它判断「已安装 / 自定义」，避免把全局 mcp.json（config 目录下那份，
+    现在是公共连接器目录）里的内容误判成用户已安装。
+
+    Args:
+        username: 当前用户
+        config: 运行期 Config（用于解析 workspace 路径，可为 None）
+    """
+    user_path = Config.get_user_mcp_path(username, config)
+    if not user_path.exists():
+        return {}
+    logger.info(f"MCP config source: user file only ({user_path})")
+    return _load_servers_from_file(user_path)
+
+
+def _load_servers_from_file(config_path: Path) -> dict[str, dict[str, Any]]:
+    """解析单个 mcp.json，返回归一化后的 servers 映射；任何异常都降级为空映射。"""
     try:
         with open(config_path, encoding="utf-8") as f:
             data = json.load(f)

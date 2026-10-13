@@ -209,3 +209,12 @@ deleteMcpServer(name)      DELETE /agent/connectors/mcp/{name}
 - **后端新增** `GET /agent/skill-center/skill-detail?scope=public|user&dir_name=`；`remove-skill` 扩展为「启用/停用目录里的同名技能都能删」。
 - **前端新增**组件（两份前端一致）：`SkillIcon.vue`（分类配色图标）、`ToggleSwitch.vue`（role=switch）、`SkillDetailPanel.vue`（详情页）；`SkillListPanel.vue` 重写。
 - 列表「公共技能目录 + 用户目录里不在目录中的技能」合并展示，同一 `dir_name` 只出现一次（避免市场技能与其用户副本重复）。
+
+---
+
+## 追加：公共 MCP 配置迁到 `config/mcp.json`（第三轮）
+
+- 公共 MCP 目录文件从 `easy_agent/connectors/catalog.json` 迁到 **`config/mcp.json`**（与 `config.yaml` 同目录），文件格式与解析完全不变（`{"connectors": [{id,name,description,icon,config}]}`）。
+- 路径解析改为复用 `Config.find_config_file("mcp.json")`（`./easy_agent/config` → `~/.easy-agent/config` → 包内 `config`），源码运行与安装运行都能命中；文件缺失/JSON 非法/条目非法一律降级（跳过并记 warning），接口不抛异常。
+- 新增 `services/mcp.py::load_user_mcp_config(username, config)`：**只读用户自己的** `workspace/{username}/mcp.json`，不做全局回退。连接器页的 `installed` / `custom` 改用它 —— 因为 `config/mcp.json` 同时也是 Agent 加载用的「全局 mcp.json」，若用带全局回退的 `load_mcp_config`，一旦这份文件里出现 `servers`，目录里的条目会被整片误判成「已安装」。
+- Agent 的 MCP 加载语义不变：`config/mcp.json` 没有 `servers` 字段 → `load_mcp_config` 返回空 → 默认不加载任何 MCP（已用单测锁住）。

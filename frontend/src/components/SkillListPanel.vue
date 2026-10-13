@@ -114,25 +114,52 @@
       </div>
 
       <div class="skill-center-content">
-        <div v-if="loading" class="state-box">
-          <div class="spinner"></div>
-          <span>加载中…</span>
+        <!-- 加载态：骨架卡片，提前呈现最终布局，避免内容跳动 -->
+        <div v-if="loading" class="skills-grid" aria-busy="true" aria-live="polite">
+          <div v-for="n in 6" :key="n" class="skill-card skeleton-card">
+            <div class="skill-card-inner">
+              <span class="skeleton-block skeleton-icon"></span>
+              <span class="skeleton-lines">
+                <span class="skeleton-block skeleton-line w-60"></span>
+                <span class="skeleton-block skeleton-line w-90"></span>
+              </span>
+            </div>
+            <div class="skill-card-footer">
+              <span class="skeleton-block skeleton-line w-40"></span>
+            </div>
+          </div>
         </div>
 
         <div v-else-if="error" class="state-box">
-          <p>{{ error }}</p>
+          <span class="state-icon is-error">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
+              <circle cx="12" cy="12" r="9" />
+              <line x1="12" y1="8" x2="12" y2="13" />
+              <line x1="12" y1="16.5" x2="12" y2="16.6" />
+            </svg>
+          </span>
+          <p class="state-title">技能列表加载失败</p>
+          <p class="state-sub">{{ error }}</p>
           <button class="action-btn-outline" @click="load">重试</button>
         </div>
 
         <div v-else-if="filteredCards.length === 0" class="state-box">
-          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
-            <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
-          </svg>
-          <p>{{ emptyText }}</p>
+          <span class="state-icon">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
+              <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
+            </svg>
+          </span>
+          <p class="state-title">{{ emptyText }}</p>
+          <p class="state-sub">可以从公共技能库添加，或用「添加技能」上传技能压缩包</p>
         </div>
 
         <div v-else class="skills-grid">
-          <div v-for="card in filteredCards" :key="card.key" class="skill-card">
+          <div
+            v-for="card in filteredCards"
+            :key="card.key"
+            class="skill-card"
+            :class="{ 'menu-open': pickerCard === card.key }"
+          >
             <div class="skill-card-inner">
               <button class="skill-card-open" @click="openDetail(card)">
                 <SkillIcon :icon="card.icon" :category="iconCategoryFor(card.categoryId)" />
@@ -617,22 +644,28 @@ onMounted(load)
   display: flex;
   align-items: center;
   gap: 10px;
+  row-gap: 10px;
   flex-wrap: wrap;
-  padding: 16px 24px 0;
+  padding: 18px 24px 0;
 }
 
 .search-box {
   flex: 1;
   min-width: 160px;
   max-width: 320px;
+  height: 38px;
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 7px 12px;
+  padding: 0 12px;
   border: 1px solid var(--border-color);
-  border-radius: 8px;
-  background: var(--bg-secondary);
+  border-radius: 10px;
+  background: var(--bg-surface);
   transition: border-color 0.18s ease, box-shadow 0.18s ease;
+}
+
+.search-box:hover {
+  border-color: color-mix(in srgb, var(--accent-color) 35%, var(--border-color));
 }
 
 .search-box:focus-within {
@@ -689,10 +722,11 @@ onMounted(load)
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 7px 12px;
+  height: 38px;
+  padding: 0 13px;
   border: 1px solid var(--border-color);
-  border-radius: 8px;
-  background: transparent;
+  border-radius: 10px;
+  background: var(--bg-surface);
   font-size: 13px;
   color: var(--text-secondary);
   cursor: pointer;
@@ -730,14 +764,17 @@ onMounted(load)
   align-items: center;
   gap: 6px;
   margin-left: auto;
-  padding: 8px 14px;
+  height: 38px;
+  padding: 0 16px;
   border: 1px solid var(--accent-color);
-  border-radius: 8px;
+  border-radius: 10px;
   background: var(--accent-color);
   color: #fff;
   font-size: 13px;
+  font-weight: 500;
   cursor: pointer;
-  transition: background-color 0.18s ease;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
+  transition: background-color 0.18s ease, box-shadow 0.18s ease;
 }
 
 .action-btn-primary:hover:not(:disabled) {
@@ -762,13 +799,15 @@ onMounted(load)
 .action-btn-outline {
   display: inline-flex;
   align-items: center;
-  padding: 8px 14px;
+  height: 38px;
+  padding: 0 16px;
   border: 1px solid var(--border-color);
-  border-radius: 8px;
-  background: transparent;
+  border-radius: 10px;
+  background: var(--bg-surface);
   color: var(--text-primary);
   font-size: 13px;
   cursor: pointer;
+  transition: border-color 0.18s ease, color 0.18s ease;
 }
 
 .action-btn-outline:hover {
@@ -791,13 +830,13 @@ onMounted(load)
   flex-direction: column;
   padding: 6px;
   border: 1px solid var(--border-color);
-  border-radius: 10px;
-  background: var(--bg-secondary);
-  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.18);
+  border-radius: 12px;
+  background: var(--bg-surface);
+  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.16);
 }
 
 .add-menu-item {
-  padding: 8px 10px;
+  padding: 9px 10px;
   border: none;
   border-radius: 8px;
   background: transparent;
@@ -826,18 +865,20 @@ onMounted(load)
   display: flex;
   align-items: center;
   gap: 8px;
+  row-gap: 8px;
   flex-wrap: wrap;
-  padding: 12px 24px 0;
+  padding: 14px 24px 0;
 }
 
 .chip {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  padding: 5px 12px;
+  height: 28px;
+  padding: 0 12px;
   border: 1px solid var(--border-color);
   border-radius: 999px;
-  background: transparent;
+  background: var(--bg-surface);
   font-size: 12.5px;
   color: var(--text-secondary);
   cursor: pointer;
@@ -845,14 +886,15 @@ onMounted(load)
 }
 
 .chip:hover {
-  background: var(--bg-tertiary);
+  border-color: color-mix(in srgb, var(--accent-color) 35%, var(--border-color));
   color: var(--text-primary);
 }
 
 .chip.active {
   border-color: var(--accent-color);
-  background: color-mix(in srgb, var(--accent-color) 12%, transparent);
+  background: color-mix(in srgb, var(--accent-color) 12%, var(--bg-surface));
   color: var(--accent-color);
+  font-weight: 500;
 }
 
 .chip:focus-visible {
@@ -862,14 +904,23 @@ onMounted(load)
 
 .chip-count {
   font-size: 11.5px;
-  opacity: 0.8;
+  opacity: 0.7;
   font-variant-numeric: tabular-nums;
 }
 
-/* 管理分类入口：推到 chips 行末尾 */
+.chip.active .chip-count {
+  opacity: 1;
+}
+
+/* 管理分类入口：推到 chips 行末尾，虚线区分「筛选」与「操作」 */
 .chip-manage {
   margin-left: auto;
   gap: 6px;
+  border-style: dashed;
+}
+
+.chip-manage:hover {
+  border-style: solid;
 }
 
 .chip-manage svg {
@@ -888,10 +939,10 @@ onMounted(load)
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  padding: 2px 8px;
+  padding: 3px 9px;
   border: 1px solid var(--border-color);
   border-radius: 999px;
-  background: transparent;
+  background: var(--bg-surface);
   font-size: 11.5px;
   color: var(--text-secondary);
   cursor: pointer;
@@ -919,22 +970,22 @@ onMounted(load)
   right: 0;
   top: calc(100% + 6px);
   z-index: 6;
-  min-width: 132px;
+  min-width: 140px;
   max-height: 210px;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
   padding: 6px;
   border: 1px solid var(--border-color);
-  border-radius: 8px;
-  background: var(--bg-secondary);
-  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.18);
+  border-radius: 10px;
+  background: var(--bg-surface);
+  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.16);
 }
 
 .picker-item {
-  padding: 6px 8px;
+  padding: 7px 9px;
   border: none;
-  border-radius: 6px;
+  border-radius: 7px;
   background: transparent;
   text-align: left;
   font-size: 12.5px;
@@ -967,55 +1018,102 @@ onMounted(load)
   flex: 1;
   overflow-y: auto;
   overflow-x: hidden;
-  padding: 16px 24px 24px;
+  padding: 18px 24px 28px;
   position: relative;
+  scrollbar-width: thin;
 }
 
 .state-box {
   height: 100%;
-  min-height: 240px;
+  min-height: 260px;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   gap: 12px;
+  padding: 32px 24px;
   color: var(--text-secondary);
-  font-size: 14px;
+  font-size: 13.5px;
+  line-height: 1.6;
   text-align: center;
 }
 
-.state-box svg {
-  width: 44px;
-  height: 44px;
+.state-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 56px;
+  height: 56px;
+  margin-bottom: 4px;
+  border: 1px solid var(--border-color);
+  border-radius: 16px;
+  background: var(--bg-surface);
+  color: color-mix(in srgb, var(--text-secondary) 75%, transparent);
+}
+
+.state-icon.is-error {
+  border-color: color-mix(in srgb, #ef4444 30%, var(--border-color));
+  background: color-mix(in srgb, #ef4444 8%, var(--bg-surface));
+  color: #ef4444;
+}
+
+.state-icon svg {
+  width: 26px;
+  height: 26px;
+}
+
+.state-title {
+  margin: 0;
+  font-size: 14.5px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.state-sub {
+  margin: 0;
+  max-width: 340px;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--text-secondary);
 }
 
 .skills-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(280px, 100%), 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(min(272px, 100%), 1fr));
+  gap: 14px;
 }
 
 .skill-card {
+  /* 定位上下文：菜单打开时本卡片要抬到兄弟卡片之上 */
+  position: relative;
   display: flex;
   flex-direction: column;
   border: 1px solid var(--border-color);
-  border-radius: 10px;
-  background: var(--bg-secondary);
+  border-radius: 14px;
+  background: var(--bg-surface);
   /* 不裁切子元素：归类菜单是绝对定位浮层，需要溢出于卡片底部 */
   overflow: visible;
-  transition: border-color 0.18s ease, box-shadow 0.18s ease;
+  transition: border-color 0.18s ease, box-shadow 0.18s ease, transform 0.18s ease;
+}
+
+/* hover 的 transform 会让卡片自成层叠上下文（z-index: auto），DOM 靠后的兄弟卡片
+   会整块盖住卡片内的绝对定位菜单。菜单打开时显式提升层级即可（兄弟卡片按 0 处理，
+   取值保持低位，避免与 Tab 悬浮提示、添加技能下拉等浮层抢层级）。 */
+.skill-card.menu-open {
+  z-index: 2;
 }
 
 .skill-card:hover {
-  border-color: color-mix(in srgb, var(--accent-color) 45%, var(--border-color));
-  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.07);
+  border-color: color-mix(in srgb, var(--accent-color) 40%, var(--border-color));
+  box-shadow: 0 6px 20px rgba(15, 23, 42, 0.08);
+  transform: translateY(-1px);
 }
 
 .skill-card-inner {
   display: flex;
   align-items: flex-start;
-  gap: 10px;
-  padding: 12px 12px 10px;
+  gap: 12px;
+  padding: 14px 14px 12px;
 }
 
 .skill-card-open {
@@ -1023,7 +1121,7 @@ onMounted(load)
   min-width: 0;
   display: flex;
   align-items: flex-start;
-  gap: 10px;
+  gap: 12px;
   padding: 0;
   border: none;
   background: transparent;
@@ -1041,7 +1139,7 @@ onMounted(load)
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 4px;
 }
 
 .skill-card-name-row {
@@ -1054,6 +1152,7 @@ onMounted(load)
 .skill-card-name {
   font-size: 14px;
   font-weight: 600;
+  letter-spacing: -0.01em;
   color: var(--text-primary);
   white-space: nowrap;
   overflow: hidden;
@@ -1062,11 +1161,13 @@ onMounted(load)
 
 .skill-tag {
   flex-shrink: 0;
-  padding: 1px 6px;
-  border-radius: 5px;
+  padding: 2px 7px;
+  border-radius: 6px;
   background: color-mix(in srgb, var(--accent-color) 14%, transparent);
   color: var(--accent-color);
-  font-size: 11px;
+  font-size: 10.5px;
+  font-weight: 500;
+  line-height: 1.4;
 }
 
 .skill-tag.off {
@@ -1076,11 +1177,11 @@ onMounted(load)
 
 .skill-card-desc {
   font-size: 12.5px;
-  line-height: 1.5;
+  line-height: 1.55;
   color: var(--text-secondary);
   display: -webkit-box;
-  -webkit-line-clamp: 1;
-  line-clamp: 1;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
   overflow-wrap: anywhere;
@@ -1094,8 +1195,8 @@ onMounted(load)
   height: 28px;
   flex-shrink: 0;
   border: 1px solid var(--border-color);
-  border-radius: 8px;
-  background: transparent;
+  border-radius: 9px;
+  background: var(--bg-surface);
   color: var(--text-secondary);
   cursor: pointer;
   transition: background-color 0.18s ease, border-color 0.18s ease, color 0.18s ease;
@@ -1116,7 +1217,7 @@ onMounted(load)
   height: 28px;
   flex-shrink: 0;
   border: 1px solid color-mix(in srgb, var(--accent-color) 35%, var(--border-color));
-  border-radius: 8px;
+  border-radius: 9px;
   background: color-mix(in srgb, var(--accent-color) 12%, transparent);
   color: var(--accent-color);
 }
@@ -1152,12 +1253,12 @@ onMounted(load)
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 8px 12px;
+  padding: 9px 14px;
   border-top: 1px solid var(--border-color);
-  background: var(--bg-tertiary);
+  background: color-mix(in srgb, var(--bg-tertiary) 55%, var(--bg-surface));
   /* 卡片不再裁切子元素，这里自己贴合卡片圆角 */
-  border-bottom-left-radius: 9px;
-  border-bottom-right-radius: 9px;
+  border-bottom-left-radius: 13px;
+  border-bottom-right-radius: 13px;
   font-size: 11.5px;
   color: var(--text-secondary);
   font-variant-numeric: tabular-nums;
@@ -1174,15 +1275,6 @@ onMounted(load)
   border-top-color: var(--accent-color);
   border-radius: 50%;
   animation: skill-spin 0.7s linear infinite;
-}
-
-.spinner {
-  width: 22px;
-  height: 22px;
-  border: 2px solid var(--border-color);
-  border-top-color: var(--accent-color);
-  border-radius: 50%;
-  animation: skill-spin 0.8s linear infinite;
 }
 
 @keyframes skill-spin {
@@ -1221,7 +1313,6 @@ onMounted(load)
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .spinner,
   .btn-spinner-sm {
     animation: none;
   }
@@ -1246,6 +1337,71 @@ onMounted(load)
 
   .action-btn-primary {
     margin-left: 0;
+  }
+}
+/* ── 加载骨架（列表加载中占位，形似最终卡片） ── */
+.skeleton-card {
+  pointer-events: none;
+}
+
+.skeleton-block {
+  display: block;
+  border-radius: 6px;
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--border-color) 40%, transparent) 25%,
+    color-mix(in srgb, var(--border-color) 80%, transparent) 37%,
+    color-mix(in srgb, var(--border-color) 40%, transparent) 63%
+  );
+  background-size: 400% 100%;
+  animation: skeleton-shimmer 1.4s ease infinite;
+}
+
+.skeleton-icon {
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  flex-shrink: 0;
+}
+
+.skeleton-lines {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 5px;
+}
+
+.skeleton-line {
+  height: 11px;
+}
+
+.skeleton-line.w-40 {
+  width: 40%;
+}
+
+.skeleton-line.w-60 {
+  width: 60%;
+}
+
+.skeleton-line.w-90 {
+  width: 90%;
+}
+
+@keyframes skeleton-shimmer {
+  0% {
+    background-position: 100% 50%;
+  }
+
+  100% {
+    background-position: 0 50%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton-block {
+    animation: none;
   }
 }
 </style>

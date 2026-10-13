@@ -9,13 +9,6 @@
         <h3>MCP 服务管理</h3>
         <p class="mcp-view-desc">安装 MCP 服务，为 AI 扩展更多工具能力</p>
       </div>
-      <button class="action-btn-primary" @click="$emit('add')">
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-          <line x1="12" y1="5" x2="12" y2="19"></line>
-          <line x1="5" y1="12" x2="19" y2="12"></line>
-        </svg>
-        添加 MCP
-      </button>
     </div>
 
     <div class="mcp-editor-toolbar">
@@ -80,7 +73,7 @@ if (typeof self !== 'undefined' && !self.MonacoEnvironment) {
 }
 
 export default {
-  emits: ['back', 'add'],
+  emits: ['back'],
   data() {
     return {
       content: '',

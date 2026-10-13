@@ -83,7 +83,114 @@
       
       <div class="input-actions">
         <div class="left-actions">
-          <div class="model-dropdown-wrapper" ref="modelDropdownRef">
+            <!-- 「+」添加菜单：添加文件 / 专家 / 技能 / 连接器（Vue 2.7 无 Teleport，菜单留在 wrapper 内） -->
+          <div class="plus-menu-wrapper" ref="plusMenuRef">
+            <button
+              type="button"
+              class="action-btn plus-btn"
+              :class="{ disabled: isStreaming || disabled }"
+              :disabled="isStreaming || disabled"
+              title="添加"
+              aria-haspopup="menu"
+              :aria-expanded="showPlusMenu ? 'true' : 'false'"
+              @click="togglePlusMenu"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <line x1="12" y1="5" x2="12" y2="19"></line>
+                <line x1="5" y1="12" x2="19" y2="12"></line>
+              </svg>
+            </button>
+            <div v-if="showPlusMenu" class="plus-menu" :class="{ 'is-list': plusMenuMode === 'list' }" :style="plusMenuStyle" @click.stop>
+                <template v-if="plusMenuMode === 'menu'">
+                <button type="button" class="plus-menu-item" @click="handleMenuAddFile">
+                  <svg class="plus-menu-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                    <polyline points="14 2 14 8 20 8"></polyline>
+                    <line x1="12" y1="18" x2="12" y2="12"></line>
+                    <line x1="9" y1="15" x2="15" y2="15"></line>
+                  </svg>
+                  <span class="plus-menu-label">添加文件</span>
+                  <svg class="plus-menu-arrow" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="9 18 15 12 9 6"></polyline>
+                  </svg>
+                </button>
+                <button type="button" class="plus-menu-item" @click="openPlusList('experts')">
+                  <svg class="plus-menu-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+                    <circle cx="12" cy="7" r="4"></circle>
+                  </svg>
+                  <span class="plus-menu-label">专家</span>
+                  <svg class="plus-menu-arrow" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="9 18 15 12 9 6"></polyline>
+                  </svg>
+                </button>
+                <button type="button" class="plus-menu-item" @click="openPlusList('skills')">
+                  <svg class="plus-menu-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon>
+                  </svg>
+                  <span class="plus-menu-label">技能</span>
+                  <svg class="plus-menu-arrow" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="9 18 15 12 9 6"></polyline>
+                  </svg>
+                </button>
+                <button type="button" class="plus-menu-item" @click="openPlusList('connectors')">
+                  <svg class="plus-menu-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M12 22v-5"></path>
+                    <path d="M9 8V2"></path>
+                    <path d="M15 8V2"></path>
+                    <path d="M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8z"></path>
+                  </svg>
+                  <span class="plus-menu-label">连接器</span>
+                  <svg class="plus-menu-arrow" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="9 18 15 12 9 6"></polyline>
+                  </svg>
+                </button>
+                </template>
+
+                <!-- 二级列表：展示当前用户自己的条目（不跳转页面） -->
+                <template v-else>
+                  <div class="plus-menu-head">
+                    <button type="button" class="plus-menu-back" title="返回" @click="plusMenuMode = 'menu'">
+                      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <line x1="19" y1="12" x2="5" y2="12"></line>
+                        <polyline points="12 19 5 12 12 5"></polyline>
+                      </svg>
+                    </button>
+                    <span class="plus-menu-title">{{ plusListTitle }}</span>
+                    <span class="plus-menu-count">{{ plusList.length }}</span>
+                  </div>
+                  <div class="plus-menu-list">
+                    <div v-if="plusListLoading" class="plus-list-hint">加载中…</div>
+                    <div v-else-if="plusListError" class="plus-list-hint error">{{ plusListError }}</div>
+                    <div v-else-if="plusList.length === 0" class="plus-list-hint">{{ plusListEmptyText }}</div>
+                    <div v-else v-for="item in plusList" :key="item.key" class="plus-list-item">
+                      <span class="plus-list-icon" :class="{ initial: !item.icon }">{{ item.icon || item.initial }}</span>
+                      <span class="plus-list-body">
+                        <span class="plus-list-name-row">
+                          <span class="plus-list-name">{{ item.name }}</span>
+                          <span v-if="item.tag" class="plus-list-tag" :class="item.tagType">{{ item.tag }}</span>
+                        </span>
+                        <span class="plus-list-desc">{{ item.desc }}</span>
+                      </span>
+                    </div>
+                  </div>
+                  <button type="button" class="plus-menu-footer" @click="handleMenuPanel(plusListCategory)">
+                    在管理面板中打开 →
+                  </button>
+                </template>
+            </div>
+          </div>
+          <input
+            ref="fileInputRef"
+            type="file"
+            @change="handleFileSelect"
+            multiple
+            :disabled="isStreaming || disabled"
+            hidden
+          />
+
+
+        <div class="model-dropdown-wrapper" ref="modelDropdownRef">
             <button
               class="model-btn"
               :class="{ disabled: isStreaming || disabled }"
@@ -115,19 +222,6 @@
                 </div>
               </div>
           </div>
-
-          <label class="action-btn upload-btn" :class="{ disabled: isStreaming || disabled }" title="上传文件">
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path>
-            </svg>
-            <input
-              type="file"
-              @change="handleFileSelect"
-              multiple
-              :disabled="isStreaming || disabled"
-              hidden
-            />
-          </label>
 
           <button
             type="button"
@@ -285,6 +379,7 @@ import { getWebSearchStatus } from '../api/settings.js'
 import { getUserSkills } from '../api/skills.js'
 import { iconCategoryFor } from '../utils/skillCategories.js'
 import { buildSkillPayload, parseSlashQuery } from '../utils/skillSlash.js'
+import { getConnectors } from '../api/connectors.js'
 import FileIcon from './FileIcon.vue'
 import SkillIcon from './SkillIcon.vue'
 
@@ -352,6 +447,13 @@ export default {
       lineHeight: 24, // 行高（px）
       // 自定义下拉菜单
       showModelDropdown: false,
+      showPlusMenu: false,
+      plusMenuMode: 'menu',
+      plusListCategory: '',
+      plusList: [],
+      plusListLoading: false,
+      plusListError: '',
+      plusMenuStyle: {},
       dropdownStyle: {},
       showTokenPopup: false,
       // ========== 联网搜索 ==========
@@ -376,6 +478,18 @@ export default {
     }
   },
   computed: {
+    plusListTitle() {
+      const meta = { experts: '我的专家', skills: '我的技能', connectors: '我的连接器' }
+      return meta[this.plusListCategory] || ''
+    },
+    plusListEmptyText() {
+      const meta = {
+        experts: '暂无专家，敬请期待',
+        skills: '还没有自己的技能，可在「专家·技能·连接器」面板添加',
+        connectors: '还没有已添加的连接器，可在「专家·技能·连接器」面板添加',
+      }
+      return meta[this.plusListCategory] || '暂无内容'
+    },
     // 模型选择：本地双向绑定，变化时同步父组件
     localSelectedModel: {
       get() {
@@ -502,6 +616,7 @@ export default {
     document.addEventListener('click', this.closeModelDropdown)
     document.addEventListener('click', this.closeSkillPickerOnClick)
     window.addEventListener('resize', this.handleViewportChange)
+    document.addEventListener('click', this.closePlusMenu)
     this.loadWebSearchStatus()
   },
   beforeDestroy() {
@@ -509,6 +624,7 @@ export default {
     document.removeEventListener('click', this.closeModelDropdown)
     document.removeEventListener('click', this.closeSkillPickerOnClick)
     window.removeEventListener('resize', this.handleViewportChange)
+    document.removeEventListener('click', this.closePlusMenu)
     this.stopLiveDuration()
   },
   methods: {
@@ -591,6 +707,109 @@ export default {
       if (this.showModelDropdown && anchor && !anchor.contains(event.target)) {
         this.showModelDropdown = false
       }
+    },
+    togglePlusMenu() {
+      if (this.isStreaming || this.disabled) return
+      if (this.showPlusMenu) {
+        this.showPlusMenu = false
+        return
+      }
+      // 菜单贴着按钮上方弹出（与模型下拉同款定位方式）
+      const anchor = this.$refs.plusMenuRef
+      if (anchor) {
+        const rect = anchor.getBoundingClientRect()
+        this.plusMenuStyle = {
+          position: 'fixed',
+          bottom: `${window.innerHeight - rect.top + 6}px`,
+          left: `${rect.left}px`,
+          minWidth: '188px',
+        }
+      }
+      this.plusMenuMode = 'menu'
+      this.showPlusMenu = true
+    },
+    closePlusMenu(event) {
+      const anchor = this.$refs.plusMenuRef
+      if (this.showPlusMenu && anchor && !anchor.contains(event.target)) {
+        this.showPlusMenu = false
+      }
+    },
+    handleMenuAddFile() {
+      this.showPlusMenu = false
+      const input = this.$refs.fileInputRef
+      if (input) input.click()
+    },
+    // 二级列表：展示当前用户自己的条目（不跳转页面）
+    // 数据来源均为当前用户：技能 = user-skills（含已停用）；连接器 = 用户 mcp.json
+    // 中已安装的内置连接器 + 自定义服务；专家暂无数据。
+    openPlusList(category) {
+      this.plusMenuMode = 'list'
+      this.plusListCategory = category
+      this.plusListLoading = true
+      this.plusListError = ''
+      this.plusList = []
+      this.loadPlusList(category)
+    },
+    async loadPlusList(category) {
+      try {
+        if (category === 'skills') {
+          const data = await getUserSkills()
+          this.plusList = (data.skills || []).map((s) => ({
+            key: `skill:${s.dir_name}`,
+            name: s.name,
+            desc: s.description || '暂无描述',
+            icon: s.icon || '',
+            initial: (s.name || s.dir_name).slice(0, 1).toUpperCase(),
+            tag: s.enabled ? '已启用' : '已停用',
+            tagType: s.enabled ? 'on' : 'off',
+          }))
+        } else if (category === 'connectors') {
+          const data = await getConnectors()
+          const installed = (data.connectors || [])
+            .filter((c) => c.installed)
+            .map((c) => ({
+              key: `connector:${c.id}`,
+              name: c.name,
+              desc: c.description || '暂无描述',
+              icon: '',
+              initial: (c.name || c.id).slice(0, 1).toUpperCase(),
+              tag: '已添加',
+              tagType: 'on',
+            }))
+          const custom = (data.custom || []).map((c) => ({
+            key: `custom:${c.name}`,
+            name: c.name,
+            desc: '用户自定义 MCP 服务',
+            icon: '',
+            initial: (c.name || '').slice(0, 1).toUpperCase(),
+            tag: '自定义',
+            tagType: 'custom',
+          }))
+          this.plusList = installed.concat(custom)
+        } else {
+          this.plusList = []
+        }
+      } catch (e) {
+        this.plusListError = (e && e.message) || '加载失败'
+      } finally {
+        this.plusListLoading = false
+      }
+    },
+    // 列表底部入口：跳到「专家·技能·连接器」面板做完整管理
+    handleMenuPanel(tab) {
+      this.showPlusMenu = false
+      this.$emit('openPanel', tab)
+    },
+    // 供父组件把预置问题完整文本填进输入框（卡片上最多显示 3 行，长问题展示不全）
+    setMessage(text) {
+      this.message = text || ''
+      this.$nextTick(() => {
+        const ta = this.$refs.textareaRef
+        if (ta) ta.focus()
+      })
+    },
+    getMessage() {
+      return this.message
     },
     startLiveDuration() {
       this.stopLiveDuration()
@@ -1343,9 +1562,9 @@ html[data-theme="dark"] .input-actions {
 }
 
 /* 深色模式工具按钮：统一深灰底 + 暗色描边（原 #9ca3af 亮灰描边过于抢眼），
-   选择器带 .input-actions 前缀是为了压过 App.vue 里针对资产页 .upload-btn 的全局 !important 规则 */
+   选择器带 .input-actions 前缀是为了压过 App.vue 里针对资产页 .plus-btn 的全局 !important 规则 */
 html[data-theme="dark"] .input-actions .model-btn,
-html[data-theme="dark"] .input-actions .upload-btn,
+html[data-theme="dark"] .input-actions .plus-btn,
 html[data-theme="dark"] .input-actions .web-search-btn {
   /* 输入框在深色下就是 --bg-tertiary，按钮同色会糊成一片，
      掺一点主文字色提亮，形成可辨识的「芯片」层级 */
@@ -1355,7 +1574,7 @@ html[data-theme="dark"] .input-actions .web-search-btn {
 }
 
 html[data-theme="dark"] .input-actions .model-btn:hover:not(.disabled),
-html[data-theme="dark"] .input-actions .upload-btn:hover:not(.disabled),
+html[data-theme="dark"] .input-actions .plus-btn:hover:not(.disabled),
 html[data-theme="dark"] .input-actions .web-search-btn:hover:not(:disabled) {
   border-color: color-mix(in srgb, var(--accent-color) 55%, var(--border-color)) !important;
   background: color-mix(in srgb, var(--accent-color) 16%, var(--bg-tertiary)) !important;
@@ -1365,7 +1584,7 @@ html[data-theme="dark"] .input-actions .web-search-btn:hover:not(:disabled) {
 html[data-theme="dark"] .input-actions .model-btn-icon,
 html[data-theme="dark"] .input-actions .model-btn-label,
 html[data-theme="dark"] .input-actions .model-btn-arrow,
-html[data-theme="dark"] .input-actions .upload-btn svg,
+html[data-theme="dark"] .input-actions .plus-btn svg,
 html[data-theme="dark"] .input-actions .web-search-btn svg {
   color: var(--text-secondary) !important;
 }
@@ -1373,7 +1592,7 @@ html[data-theme="dark"] .input-actions .web-search-btn svg {
 html[data-theme="dark"] .input-actions .model-btn:hover:not(.disabled) .model-btn-icon,
 html[data-theme="dark"] .input-actions .model-btn:hover:not(.disabled) .model-btn-label,
 html[data-theme="dark"] .input-actions .model-btn:hover:not(.disabled) .model-btn-arrow,
-html[data-theme="dark"] .input-actions .upload-btn:hover:not(.disabled) svg,
+html[data-theme="dark"] .input-actions .plus-btn:hover:not(.disabled) svg,
 html[data-theme="dark"] .input-actions .web-search-btn:hover:not(:disabled) svg {
   color: var(--accent-color) !important;
 }
@@ -1539,7 +1758,7 @@ html[data-theme="dark"] .context-ring-wrapper {
 
 /* 键盘可达性：工具按钮共用一致的焦点环 */
 .model-btn:focus-visible,
-.upload-btn:focus-visible,
+.plus-btn:focus-visible,
 .web-search-btn:focus-visible,
 .send-btn:focus-visible {
   outline: 2px solid color-mix(in srgb, var(--accent-color) 65%, transparent);
@@ -1573,6 +1792,276 @@ html[data-theme="dark"] .context-ring-wrapper {
 
 .model-dropdown-item.active {
   background: color-mix(in srgb, var(--accent-color) 12%, transparent);
+}
+
+/* ========== 「+」添加菜单 ========== */
+.plus-menu {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  padding: 6px;
+  z-index: 9999;
+}
+
+.plus-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 12px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.15s ease;
+}
+
+.plus-menu-item:hover {
+  background: var(--bg-tertiary);
+}
+
+.plus-menu-item:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent-color) 65%, transparent);
+  outline-offset: -2px;
+}
+
+.plus-menu-icon {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  color: var(--text-secondary);
+}
+
+.plus-menu-label {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+
+.plus-menu-item:hover .plus-menu-icon {
+  color: var(--accent-color);
+}
+
+.plus-menu-arrow {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  color: var(--text-secondary);
+  opacity: 0.7;
+}
+
+html[data-theme="dark"] .plus-menu {
+  background: var(--bg-tertiary);
+  border-color: var(--border-color);
+}
+
+html[data-theme="dark"] .plus-menu-item:hover {
+  background: color-mix(in srgb, var(--text-primary) 8%, transparent);
+}
+
+/* 二级列表视图 */
+.plus-menu.is-list {
+  width: 300px;
+}
+
+.plus-menu-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px 8px;
+  border-bottom: 1px solid var(--border-color);
+  margin-bottom: 4px;
+}
+
+.plus-menu-back {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.plus-menu-back:hover {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+.plus-menu-back svg {
+  width: 14px;
+  height: 14px;
+}
+
+.plus-menu-back:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent-color) 65%, transparent);
+  outline-offset: 1px;
+}
+
+.plus-menu-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.plus-menu-count {
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.plus-menu-list {
+  max-height: 280px;
+  overflow-y: auto;
+}
+
+.plus-list-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  transition: background 0.15s ease;
+}
+
+.plus-list-item:hover {
+  background: var(--bg-tertiary);
+}
+
+.plus-list-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  border-radius: 8px;
+  font-size: 14px;
+  background: color-mix(in srgb, var(--accent-color) 12%, var(--bg-tertiary));
+}
+
+.plus-list-icon.initial {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--accent-color);
+}
+
+.plus-list-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.plus-list-name-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.plus-list-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.plus-list-tag {
+  flex-shrink: 0;
+  padding: 1px 6px;
+  border-radius: 5px;
+  font-size: 11px;
+}
+
+.plus-list-tag.on {
+  background: #dcfce7;
+  color: #16a34a;
+}
+
+.plus-list-tag.off {
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+}
+
+.plus-list-tag.custom {
+  background: #ede9fe;
+  color: #7c3aed;
+}
+
+.plus-list-desc {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  display: -webkit-box;
+  -webkit-line-clamp: 1;
+  line-clamp: 1;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
+.plus-list-hint {
+  padding: 16px 10px;
+  font-size: 13px;
+  color: var(--text-secondary);
+  text-align: center;
+}
+
+.plus-list-hint.error {
+  color: #dc2626;
+}
+
+.plus-menu-footer {
+  display: block;
+  width: 100%;
+  margin-top: 6px;
+  padding: 8px 10px 2px;
+  border: none;
+  border-top: 1px solid var(--border-color);
+  background: transparent;
+  font-size: 12px;
+  color: var(--text-secondary);
+  text-align: center;
+  cursor: pointer;
+  transition: color 0.15s ease;
+}
+
+.plus-menu-footer:hover {
+  color: var(--accent-color);
+}
+
+.plus-menu-footer:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent-color) 65%, transparent);
+  outline-offset: -1px;
+  border-radius: 6px;
+}
+
+html[data-theme="dark"] .plus-list-item:hover {
+  background: color-mix(in srgb, var(--text-primary) 8%, transparent);
+}
+
+html[data-theme="dark"] .plus-list-tag.on {
+  background: rgba(22, 163, 74, 0.2);
+  color: #86efac;
+}
+
+html[data-theme="dark"] .plus-list-tag.custom {
+  background: rgba(124, 58, 237, 0.2);
+  color: #c4b5fd;
 }
 
 .model-item-name {
@@ -1838,7 +2327,7 @@ html[data-theme="dark"] .context-ring-wrapper {
 
 /* 上传附件 / 联网搜索：与模型选择同规格的图标按钮，
    hover 统一走主题强调色（此前上传紫、搜索蓝两套 hover 色不一致） */
-.upload-btn,
+.plus-btn,
 .web-search-btn {
   display: flex;
   align-items: center;
@@ -1854,7 +2343,7 @@ html[data-theme="dark"] .context-ring-wrapper {
     transform 0.22s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
-.upload-btn svg,
+.plus-btn svg,
 .web-search-btn svg {
   width: 18px;
   height: 18px;
@@ -1862,7 +2351,7 @@ html[data-theme="dark"] .context-ring-wrapper {
   transition: color 0.22s ease, transform 0.22s ease;
 }
 
-.upload-btn:hover:not(.disabled),
+.plus-btn:hover:not(.disabled),
 .web-search-btn:hover:not(:disabled) {
   border-color: color-mix(in srgb, var(--accent-color) 45%, var(--border-color));
   background: color-mix(in srgb, var(--accent-color) 8%, var(--bg-secondary));
@@ -1870,19 +2359,19 @@ html[data-theme="dark"] .context-ring-wrapper {
   transform: translateY(-1px);
 }
 
-.upload-btn:hover:not(.disabled) svg,
+.plus-btn:hover:not(.disabled) svg,
 .web-search-btn:hover:not(:disabled) svg {
   color: var(--accent-color);
   transform: scale(1.08);
 }
 
-.upload-btn:active:not(.disabled),
+.plus-btn:active:not(.disabled),
 .web-search-btn:active:not(:disabled) {
   transform: translateY(0) scale(0.96);
   box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05);
 }
 
-.upload-btn.disabled,
+.plus-btn.disabled,
 .web-search-btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;

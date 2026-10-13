@@ -297,7 +297,7 @@ export default {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 16px 24px;
+  padding: 14px 24px;
   border-bottom: 1px solid var(--border-color);
 }
 
@@ -305,9 +305,10 @@ export default {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 8px 12px;
+  height: 34px;
+  padding: 0 12px;
   border: none;
-  border-radius: 8px;
+  border-radius: 9px;
   background: transparent;
   font-size: 13px;
   color: var(--text-secondary);
@@ -545,9 +546,11 @@ export default {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 8px 14px;
-  border-radius: 8px;
+  height: 38px;
+  padding: 0 16px;
+  border-radius: 10px;
   font-size: 13px;
+  font-weight: 500;
   cursor: pointer;
   transition: background-color 0.18s ease, border-color 0.18s ease, color 0.18s ease;
 }
@@ -556,6 +559,7 @@ export default {
   border: 1px solid var(--accent-color);
   background: var(--accent-color);
   color: #fff;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
 }
 
 .action-btn-primary:hover {
@@ -564,7 +568,7 @@ export default {
 
 .action-btn-outline {
   border: 1px solid var(--border-color);
-  background: transparent;
+  background: var(--bg-surface);
   color: var(--text-primary);
 }
 

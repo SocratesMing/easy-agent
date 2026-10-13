@@ -56,14 +56,49 @@ def test_load_catalog_returns_empty_for_missing_file(tmp_path):
     assert connectors_service.load_catalog(tmp_path / "nope.json") == []
 
 
+def test_public_mcp_path_is_config_dir_mcp_json():
+    """公共 MCP 配置固定为 config 目录下的 mcp.json。"""
+    path = connectors_service.resolve_public_mcp_path()
+    assert path is not None, "仓库里应存在 easy_agent/config/mcp.json"
+    assert path.name == "mcp.json"
+    assert path.parent.name == "config"
+    assert path.exists()
+
+
+def test_load_catalog_reads_resolved_public_path(tmp_path, monkeypatch):
+    """load_catalog() 走 resolve_public_mcp_path()，不再写死旧的 catalog.json 路径。"""
+    custom = tmp_path / "mcp.json"
+    custom.write_text(
+        json.dumps(
+            {
+                "connectors": [
+                    {"id": "from-config", "name": "来自 config", "config": {"transport": "stdio", "command": "echo"}}
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(connectors_service, "resolve_public_mcp_path", lambda: custom)
+
+    entries = connectors_service.load_catalog()
+    assert [e["id"] for e in entries] == ["from-config"]
+
+
+def test_load_catalog_returns_empty_when_public_file_absent(monkeypatch):
+    """配置文件缺失时降级为空目录，不抛异常。"""
+    monkeypatch.setattr(connectors_service, "resolve_public_mcp_path", lambda: None)
+    assert connectors_service.load_catalog() == []
+
+
 def test_load_catalog_returns_empty_for_broken_json(tmp_path):
-    broken = tmp_path / "catalog.json"
+    broken = tmp_path / "mcp.json"
     broken.write_text("{not json", encoding="utf-8")
     assert connectors_service.load_catalog(broken) == []
 
 
 def test_load_catalog_skips_invalid_entries(tmp_path):
-    catalog = tmp_path / "catalog.json"
+    catalog = tmp_path / "mcp.json"
     catalog.write_text(
         json.dumps(
             {
@@ -97,6 +132,31 @@ def test_connectors_list_empty_catalog(client, monkeypatch):
     assert data["connectors"] == []
     assert data["custom"] == []
     assert data["path"].endswith("mcp.json")
+
+
+def test_installed_ignores_global_mcp_fallback(client, demo_catalog, monkeypatch, tmp_path):
+    """全局 mcp.json（= config/mcp.json）里的内容不能被当成用户「已安装」。
+
+    config/mcp.json 同时是 Agent 加载用的全局 mcp.json；若有人往里加了 servers，
+    连接器页的 installed 判断必须仍只看用户自己的 workspace/{user}/mcp.json。
+    """
+    import easy_agent.services.mcp as mcp_service
+
+    global_file = tmp_path / "mcp.json"
+    global_file.write_text(
+        json.dumps(
+            {"servers": {"demo-connector": {"transport": "stdio", "command": "echo"}}}
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(mcp_service, "_find_mcp_config", lambda: global_file)
+
+    # 全局回退确实生效（Agent 侧会加载它）……
+    assert "demo-connector" in mcp_service.load_mcp_config("testuser")
+    # ……但连接器页仍视为未安装
+    data = client.get("/agent/connectors").json()
+    assert data["connectors"][0]["installed"] is False
+    assert data["custom"] == []
 
 
 def test_connectors_list_marks_installed_and_collects_custom(client, demo_catalog):
@@ -232,7 +292,7 @@ def test_mcp_routes_moved_off_settings(client):
     assert not any(p.startswith("/agent/settings/mcp") for p in legacy)
 
 
-# ── 随包发布的内置目录（防止 catalog.json 被改坏） ──────────────────────
+# ── 随包发布的公共 MCP 配置（防止 config/mcp.json 被改坏） ──────────────
 
 #: 内置目录里的示例连接器（允许增删，但这批 demo 必须齐）
 REQUIRED_DEMO_IDS = {"market-data", "filesystem", "fetch", "git", "everything"}
@@ -240,7 +300,7 @@ VALID_TRANSPORTS = {"stdio", "sse", "streamable_http", "streamable-http", "http"
 
 
 def test_shipped_catalog_is_valid():
-    """随包 catalog.json 必须可解析、id 唯一、字段完整、transport 与必需项匹配。"""
+    """随包 config/mcp.json 必须可解析、id 唯一、字段完整、transport 与必需项匹配。"""
     entries = connectors_service.load_catalog()
     assert len(entries) >= 5, f"内置目录条目过少: {len(entries)}"
 
@@ -266,7 +326,7 @@ def test_shipped_catalog_is_valid():
 
 
 def test_shipped_catalog_served_by_api(client):
-    """GET /agent/connectors 返回内置目录，未安装时 installed=False。"""
+    """GET /agent/connectors 返回公共目录，未安装时 installed=False。"""
     resp = client.get("/agent/connectors")
     assert resp.status_code == 200
     data = resp.json()

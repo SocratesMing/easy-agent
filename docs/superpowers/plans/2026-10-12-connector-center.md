@@ -93,3 +93,6 @@
 - [x] 两份 `npm run build`
 - [x] 真机渲染验收：三 Tab 切换、连接器空态、临时塞 1 条目录项验证卡片+弹层+装/卸、编辑器保存、添加 MCP 409、明暗主题（截图 + computedStyle 断言），验收后移除临时目录项
 - [x] 提交并推送
+
+> 后续变更：公共 MCP 目录文件已从 `easy_agent/connectors/catalog.json` 迁至 `config/mcp.json`
+> （格式与解析逻辑不变，见 spec 的「第三轮」追加说明）。

@@ -1,7 +1,7 @@
-"""内置连接器目录的加载与组装。
+"""公共 MCP 连接器目录的加载与组装。
 
-连接器 = 一条可直接写入用户 ``mcp.json`` 的 MCP 服务配置。目录数据文件为
-``easy_agent/connectors/catalog.json``，单条格式::
+连接器 = 一条可直接写入用户 ``mcp.json`` 的 MCP 服务配置。公共配置数据文件为
+``config/mcp.json``（与 config.yaml 同目录），单条格式::
 
     {
       "id": "market-data",          # 同时作为写入用户 mcp.json 的 server 名
@@ -11,7 +11,7 @@
       "config": {"transport": "streamable_http", "url": "...", "headers": {}}
     }
 
-目录文件缺失、JSON 非法或单项字段缺失时一律降级（跳过该条并记 warning），
+文件缺失、JSON 非法或单项字段缺失时一律降级（跳过该条并记 warning），
 不向调用方抛异常——连接器页应始终能打开。
 """
 
@@ -25,30 +25,48 @@ from typing import Any
 
 logger = logging.getLogger("easy-agent")
 
-# 目录数据文件：<项目>/easy_agent/connectors/catalog.json
-DEFAULT_CATALOG_PATH = Path(__file__).resolve().parent.parent / "connectors" / "catalog.json"
+#: 公共 MCP 配置文件名（放在 config 目录下，与 config.yaml 同级）
+PUBLIC_MCP_FILENAME = "mcp.json"
 
 # id 会作为 mcp.json 的 key 与前端 key，限制为安全标识符
 _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.\-]{0,63}$")
 
 
-def _resolve_catalog_path(path: str | Path | None = None) -> Path:
-    return Path(path) if path else DEFAULT_CATALOG_PATH
+def resolve_public_mcp_path() -> Path | None:
+    """定位公共 MCP 配置文件 ``config/mcp.json``，找不到返回 None。
+
+    复用 ``Config.find_config_file`` 的查找顺序（``./easy_agent/config`` →
+    ``~/.easy-agent/config`` → 包内 ``config``），与 config.yaml / 全局 mcp.json
+    的解析保持一致，保证源码运行与安装运行都能命中。
+    """
+    from ..config import Config
+
+    return Config.find_config_file(PUBLIC_MCP_FILENAME)
+
+
+def _resolve_catalog_path(path: str | Path | None = None) -> Path | None:
+    """显式路径优先（测试/单测用），否则解析 config/mcp.json。"""
+    return Path(path) if path else resolve_public_mcp_path()
 
 
 def load_catalog(path: str | Path | None = None) -> list[dict[str, Any]]:
-    """读取内置连接器目录，返回规范化后的条目列表。
+    """读取公共 MCP 配置，返回规范化后的条目列表。
 
     非法条目（id 不合法、缺 name、缺 config、id 重复、非对象）会被跳过。
     """
     catalog_file = _resolve_catalog_path(path)
+    if catalog_file is None:
+        logger.warning(
+            f"公共 MCP 配置文件不存在: config/{PUBLIC_MCP_FILENAME}（按空目录处理）"
+        )
+        return []
     try:
         data = json.loads(catalog_file.read_text(encoding="utf-8"))
     except FileNotFoundError:
-        logger.warning(f"连接器目录文件不存在: {catalog_file}（按空目录处理）")
+        logger.warning(f"公共 MCP 配置文件不存在: {catalog_file}（按空目录处理）")
         return []
     except Exception as e:
-        logger.warning(f"连接器目录解析失败: {catalog_file} | {e}")
+        logger.warning(f"公共 MCP 配置解析失败: {catalog_file} | {e}")
         return []
 
     items = data.get("connectors") if isinstance(data, dict) else data
@@ -114,10 +132,12 @@ def catalog_connectors(username: str, config: Any = None) -> dict[str, Any]:
         }
     """
     from ..config import Config
-    from .mcp import load_mcp_config
+    from .mcp import load_user_mcp_config
 
     entries = load_catalog()
-    user_servers = load_mcp_config(username) or {}
+    # 只看用户自己的 mcp.json（不回退全局）：全局那份现在是公共连接器目录，
+    # 混进来会把目录里的条目误判成「已安装」。
+    user_servers = load_user_mcp_config(username, config) or {}
 
     connectors = [
         {**entry, "installed": entry["id"] in user_servers}
