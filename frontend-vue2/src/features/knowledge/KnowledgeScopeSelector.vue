@@ -31,7 +31,7 @@
         </div>
 
         <div v-if="error && bases.length" class="scope-error">{{ error }}</div>
-        <div class="scope-footer">
+        <div v-if="showManage" class="scope-footer">
           <button type="button" class="scope-manage" @click="openManage">在管理面板中打开 →</button>
         </div>
       </div>
@@ -43,6 +43,7 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { IconBookOpen, IconChevronDown, IconLibrary } from './icons.js'
 import { getKnowledgeCapabilities, getSessionKnowledgeScope, listKnowledgeBases, replaceSessionKnowledgeScope } from './api.js'
+import { eventTarget } from '../../utils/domEvent.js'
 
 export default {
   components: {
@@ -58,6 +59,8 @@ export default {
     // 面板定位锚点（CSS 选择器）：加号菜单场景传「知识库」菜单项，
     // 面板贴着菜单项右侧弹出（与技能子面板同款定位）
     anchorSelector: { type: String, default: '' },
+    // 底部「在管理面板中打开」入口（SDK 未配置主站地址时无处可跳，隐藏）
+    showManage: { type: Boolean, default: true },
   },
   emits: ['create-session', 'change', 'manage'],
   setup(props, { emit }) {
@@ -194,7 +197,7 @@ watch(draft, () => {
   }
   persist(snapshot)
 }, { deep: true })
-function handleOutside(event) { if (open.value && rootRef.value && !rootRef.value.contains(event.target)) open.value = false }
+function handleOutside(event) { if (open.value && rootRef.value && !rootRef.value.contains(eventTarget(event))) open.value = false }
 function roleLabel(role) { return ({ viewer: '查看者', maintainer: '维护者', manager: '管理员' })[role] || role }
 function spaceLabel(space) { return ({ personal: '个人', team: '团队', shared: '共享' })[space] || space }
 

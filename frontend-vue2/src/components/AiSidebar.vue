@@ -224,6 +224,7 @@
               @approve="handleToolApproval('approve')"
               @reject="handleToolApproval('reject')"
               @open-panel="openManagePanel"
+              @open-knowledge="openManagePanel('knowledge')"
             >
               <template #welcome>
                 <div class="ais-welcome">
@@ -683,7 +684,7 @@ export default {
       this.$emit('open-in-main', this.currentSessionId)
       if (!this.isDocked) this.collapse()
     },
-    // 「+」菜单二级面板的「在管理面板中打开」：tab = experts / skills / connectors
+    // 「+」菜单二级面板的「在管理面板中打开」：tab = experts / skills / connectors / knowledge
     openManagePanel(tab) {
       this.$emit('open-panel', tab)
       if (!this.isDocked) this.collapse()

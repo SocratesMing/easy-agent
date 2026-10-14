@@ -194,6 +194,7 @@
             :disabled="isStreaming || disabled"
             hide-trigger
             anchor-selector=".plus-menu-item-knowledge"
+            :show-manage="showManageEntry"
             @mouseenter.native="cancelPlusClose"
             @mouseleave.native="schedulePlusClose"
             @create-session="$emit('create-session')"
@@ -241,7 +242,7 @@
           <button
             class="action-btn web-search-btn"
             :class="{ active: webSearchEnabled, disabled: webSearchUnavailable || isStreaming || disabled }"
-            :disabled="webSearchUnavailable || isStreaming || disabled"
+            :disabled="isStreaming || disabled"
             v-tip="webSearchTitle"
             @click="toggleWebSearch"
           >
@@ -536,6 +537,17 @@ export default {
     }
   },
   computed: {
+    webSearchUnavailable() {
+      return !this.webSearchAvailable
+    },
+    webSearchTitle() {
+      if (!this.webSearchAvailable) {
+        if (this.webSearchReason === 'disabled') return '联网搜索未启用（后端配置 web_search.enabled 为 false）'
+        if (this.webSearchReason === 'unreachable') return '联网搜索状态获取失败，点击重试'
+        return '联网搜索未配置（需配置 WEB_SEARCH_API_KEY 后重启后端）'
+      }
+      return this.webSearchEnabled ? '联网搜索已开启，点击关闭' : '联网搜索（点击开启）'
+    },
     plusListTitle() {
       const meta = { experts: '我的专家', skills: '我的技能', connectors: '我的连接器' }
       return meta[this.plusListCategory] || ''
@@ -684,7 +696,6 @@ export default {
     document.addEventListener('click', this.closeSkillPickerOnClick)
     window.addEventListener('resize', this.handleViewportChange)
     document.addEventListener('click', this.closePlusMenu)
-    this.loadWebSearchStatus()
     // 点示例问题会先关闭 SkillCenter 面板 → Chat/ChatInput 重新挂载，
     // 此时 expertPrompt 初始值即非空；watch 只响应"变化"，挂载时的初始值不会触发，
     // 因此在这里补一次（放在草稿恢复之后，确保示例问题覆盖草稿）。
@@ -797,8 +808,9 @@ export default {
       const anchor = this.$refs.plusMenuRef
       // 点击知识库面板内部不算「菜单外」（面板不在菜单 DOM 内，但属于同一浮层交互）
       const scopeRoot = this.$refs.knowledgeScope && this.$refs.knowledgeScope.$el
-      const inScope = scopeRoot && scopeRoot.contains(event.target)
-      if (this.showPlusMenu && anchor && !anchor.contains(event.target) && !inScope) {
+      const target = eventTarget(event)
+      const inScope = scopeRoot && scopeRoot.contains(target)
+      if (this.showPlusMenu && anchor && !anchor.contains(target) && !inScope) {
         this.showPlusMenu = false
         this.subpanelCategory = null
         if (this.$refs.knowledgeScope) this.$refs.knowledgeScope.closePopover()

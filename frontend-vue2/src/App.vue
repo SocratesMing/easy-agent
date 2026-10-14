@@ -461,6 +461,7 @@ export default {
       this.showScheduledTasks = false
     },
     openSkillCenterPanel(tab) {
+      if (tab === 'knowledge') return this.openKnowledgeWorkbench()
       // 「+」菜单入口：打开面板并直接定位到专家/技能/连接器
       this.skillCenterTab = tab
       this.showSkillCenter = true
@@ -541,7 +542,7 @@ export default {
       } catch (_) { /* ignore */ }
 
       // ?session=<id>：嵌入第三方页面的 AI 侧边栏「在主页面打开」时携带，优先打开该会话
-      // ?panel=experts|skills|connectors：AI 侧边栏「在管理面板中打开」时携带，打开对应管理面板
+      // ?panel=experts|skills|connectors|knowledge：AI 侧边栏「在管理面板中打开」时携带，打开对应管理面板
       const params = new URLSearchParams(window.location.search)
       const linked = params.get('session')
       const panel = params.get('panel')
@@ -551,7 +552,7 @@ export default {
         const query = params.toString()
         window.history.replaceState({}, '', window.location.pathname + (query ? `?${query}` : ''))
       }
-      if (['experts', 'skills', 'connectors'].includes(panel)) this.openSkillCenterPanel(panel)
+      if (['experts', 'skills', 'connectors', 'knowledge'].includes(panel)) this.openSkillCenterPanel(panel)
 
       let initialSessionId = null
       if (linked && this.sessions.some(s => s.session_id === linked)) {

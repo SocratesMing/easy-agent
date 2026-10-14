@@ -74,7 +74,7 @@ export interface EasyAgentSidebarOptions {
   onAuthExpired?: (error: Error) => void
   onOpenInMain?: (sessionId: string) => void
   /** 自定义「在管理面板中打开」：默认新标签页打开 mainAppUrl?panel=<tab> */
-  onOpenPanel?: (tab: 'experts' | 'skills' | 'connectors') => void
+  onOpenPanel?: (tab: 'experts' | 'skills' | 'connectors' | 'knowledge') => void
   onLayoutChange?: (layout: { dockWidth: number }) => void
 }
 

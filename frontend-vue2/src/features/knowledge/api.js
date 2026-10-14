@@ -1,6 +1,5 @@
-import { API_BASE_URL } from '../../config.js'
 import { dispatchAuthExpired, getStoredToken } from '../../api/auth.js'
-import { handleStreamResponse, streamHeaders, streamUrl } from '../../api/request.js'
+import { handleStreamResponse, streamHeaders, streamUrl } from '../../utils/request.js'
 
 // Keep native Response semantics for binary previews, Range headers and error bodies.
 async function authFetch(url, options = {}) {
@@ -13,10 +12,11 @@ async function authFetch(url, options = {}) {
   return response
 }
 
-const ROOT = `${API_BASE_URL}/api/knowledge/v1`
+// SDK 的 baseURL 在 configureRequest() 后才确定，不能在模块加载时固化
+const root = () => streamUrl('/api/knowledge/v1')
 
 export async function cancelMessage(sessionId) {
-  const response = await authFetch(`${API_BASE_URL}/agent/chat/cancel?session_id=${encodeURIComponent(sessionId)}`, { method: 'POST' })
+  const response = await authFetch(streamUrl(`/agent/chat/cancel?session_id=${encodeURIComponent(sessionId)}`), { method: 'POST' })
   if (!response.ok) return parseError(response)
   return response.json()
 }
@@ -47,7 +47,7 @@ async function request(path, options = {}) {
     init.body = JSON.stringify(options.json)
     delete init.json
   }
-  const response = await authFetch(`${ROOT}${path}`, init)
+  const response = await authFetch(`${root()}${path}`, init)
   if (!response.ok) return parseError(response)
   if (response.status === 204) return null
   return response.json()
@@ -113,7 +113,7 @@ export function listDocuments(baseId, { page = 1, pageSize = 100, folderId = '',
 export function uploadDocument(baseId, file, { folderId = '', relativePath = '', onProgress } = {}) {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest()
-    xhr.open('POST', `${ROOT}/bases/${encodeURIComponent(baseId)}/documents`)
+    xhr.open('POST', `${root()}/bases/${encodeURIComponent(baseId)}/documents`)
     const token = getStoredToken()
     if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`)
     xhr.responseType = 'json'
@@ -176,7 +176,7 @@ export function resumeDocument(documentId) {
 export async function getDocumentBlob(documentId, disposition = 'inline', convert = '') {
   const convertQuery = convert ? `&convert=${convert}` : ''
   const response = await authFetch(
-    `${ROOT}/documents/${encodeURIComponent(documentId)}/content?disposition=${disposition}${convertQuery}`,
+    `${root()}/documents/${encodeURIComponent(documentId)}/content?disposition=${disposition}${convertQuery}`,
     { responseType: 'blob' }
   )
   if (!response.ok) return parseError(response)
