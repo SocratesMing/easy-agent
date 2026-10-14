@@ -118,6 +118,7 @@
         v-if="userProfile.username"
         :pageContext="aiPageContext"
         @open-in-main="handleOpenSessionInMain"
+        @open-panel="openSkillCenterPanel"
       />
 
       <div v-if="error" class="error-toast">
@@ -456,13 +457,17 @@ export default {
       } catch (_) { /* ignore */ }
 
       // ?session=<id>：嵌入第三方页面的 AI 侧边栏「在主页面打开」时携带，优先打开该会话
+      // ?panel=experts|skills|connectors：AI 侧边栏「在管理面板中打开」时携带，打开对应管理面板
       const params = new URLSearchParams(window.location.search)
       const linked = params.get('session')
-      if (linked) {
+      const panel = params.get('panel')
+      if (linked || panel) {
         params.delete('session')
+        params.delete('panel')
         const query = params.toString()
         window.history.replaceState({}, '', window.location.pathname + (query ? `?${query}` : ''))
       }
+      if (['experts', 'skills', 'connectors'].includes(panel)) this.openSkillCenterPanel(panel)
 
       let initialSessionId = null
       if (linked && this.sessions.some(s => s.session_id === linked)) {

@@ -90,6 +90,7 @@
         :models="models"
         :selectedModel="selectedModel"
         :showFooter="composerMode === 'bottom' && !isSidebar"
+        :show-manage-entry="showManageEntry"
         @update:selectedModel="$emit('update:selectedModel', $event)"
         @stop="handleStop"
         @create-session="handleCreateSession"
@@ -245,6 +246,10 @@ export default {
   draftKey: {
     type: String,
     default: 'easy_agent_input_draft'
+  },
+  showManageEntry: {
+    type: Boolean,
+    default: true
   }
 },
   data() {

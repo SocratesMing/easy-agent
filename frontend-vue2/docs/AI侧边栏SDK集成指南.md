@@ -407,7 +407,7 @@ EasyAgentSidebar.init({
 | `baseURL` | `string` | `''` | Easy Agent 后端地址；为空时以相对路径请求当前域名 |
 | `auth` | `object` | — | 登录方式，见第 5 节：`token` / `getToken` / `username` + `userId` / `shareMainAppLogin` |
 | `pageContext` | `object \| string \| function` | — | 页面上下文，见第 6 节 |
-| `mainAppUrl` | `string` | — | Easy Agent 主站地址；配置后显示「在主站打开」，新标签页打开 `mainAppUrl?session=<会话ID>` |
+| `mainAppUrl` | `string` | — | Easy Agent 主站地址；配置后显示「在主站打开」，新标签页打开 `mainAppUrl?session=<会话ID>`；输入框「+」菜单的「在管理面板中打开」打开 `mainAppUrl?panel=<experts\|skills\|connectors>` |
 | `features` | `object` | 全部开启 | 功能开关：`launcher` 唤起按钮、`selectionAsk` 划词提问、`shortcut` 快捷键、`dock` 固定模式、`openInMain` 在主站打开 |
 | `defaultMode` | `'float' \| 'dock'` | `'float'` | 初始模式（用户切换后以用户选择为准） |
 | `launcherLabel` | `string` | `'问 AI'` | 唤起按钮文字 |
@@ -422,6 +422,7 @@ EasyAgentSidebar.init({
 | `onOpen` / `onClose` | `() => void` | — | 侧边栏打开 / 关闭 |
 | `onAuthExpired` | `(error) => void` | — | 登录过期且无法自动续期 |
 | `onOpenInMain` | `(sessionId) => void` | — | 自定义「在主站打开」的行为（配置后优先于 `mainAppUrl`） |
+| `onOpenPanel` | `(tab) => void` | — | 自定义「在管理面板中打开」的行为，`tab` 为 `experts` / `skills` / `connectors`（配置后优先于 `mainAppUrl`）。未配置 `mainAppUrl` / `onOpenInMain` / `onOpenPanel` 时该入口隐藏 |
 | `onLayoutChange` | `({ dockWidth }) => void` | — | 固定模式占用宽度变化（关闭或悬浮时为 0） |
 
 ---

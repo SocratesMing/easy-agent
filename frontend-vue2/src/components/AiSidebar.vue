@@ -212,6 +212,7 @@
               :iterationCount="iterationCount"
               :todos="currentTodos"
               :workspaceExpanded="true"
+              :show-manage-entry="feat.openInMain"
               :models="models"
               :selectedModel="selectedModel"
               @update:selectedModel="selectedModel = $event"
@@ -222,6 +223,7 @@
               @retry="handleRetry"
               @approve="handleToolApproval('approve')"
               @reject="handleToolApproval('reject')"
+              @openPanel="openManagePanel"
             >
               <template #welcome>
                 <div class="ais-welcome">
@@ -679,6 +681,11 @@ export default {
     openInMain() {
       if (!this.currentSessionId) return
       this.$emit('open-in-main', this.currentSessionId)
+      if (!this.isDocked) this.collapse()
+    },
+    // 「+」菜单二级面板的「在管理面板中打开」：tab = experts / skills / connectors
+    openManagePanel(tab) {
+      this.$emit('open-panel', tab)
       if (!this.isDocked) this.collapse()
     },
     focusComposer() {
