@@ -159,8 +159,12 @@
     .pages button.active { background: var(--accent-soft); border-color: #5eead4; color: #115e59; }
 
     .toolbar { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+    .log-head { display: flex; align-items: center; justify-content: space-between; }
+    .log-head h3 { margin: 4px 0 8px; }
+    .log-head button { padding: 3px 10px; font-size: 12px; }
     #log {
-      height: 220px;
+      height: 160px;
+      margin-bottom: 4px;
       overflow: auto;
       background: #0b1220;
       color: #cbd5e1;
@@ -204,6 +208,12 @@
         <span class="pill idle" id="stAuth">未初始化</span>
         <span class="pill idle" id="stOpen">侧边栏关闭</span>
       </div>
+
+      <div class="log-head">
+        <h3>事件日志</h3>
+        <button type="button" id="btnClearLog">清空</button>
+      </div>
+      <div id="log"></div>
 
       <h3>后端</h3>
       <label class="field">
@@ -273,12 +283,6 @@
         <button type="button" id="btnDestroy" disabled>销毁实例</button>
         <button type="button" id="btnCopyUrl">复制当前 URL</button>
       </div>
-
-      <h3>事件日志</h3>
-      <div class="toolbar">
-        <button type="button" id="btnClearLog">清空</button>
-      </div>
-      <div id="log"></div>
     </aside>
 
     <!-- 右侧：模拟业务页 -->
@@ -475,7 +479,7 @@
         document.getElementById('authPasswordless').classList.toggle('hidden', mode === 'token')
         document.getElementById('authToken').classList.toggle('hidden', mode !== 'token')
         var hints = {
-          passwordless: '免密需后端 personnel.passwordless_login_enabled: true。会触发单点登录。',
+          passwordless: '免密需后端 personnel.passwordless_login_enabled: true。单点登录：同一 username 在别处（主站、其他服务）登录会让本页 token 失效，联调请用专用用户名。',
           getToken: '本页用 fetch 调 /agent/auth/login-passwordless 模拟宿主后端换 token（推荐生产方式）。',
           token: '粘贴已有 access_token；过期后需手动更新或改用 getToken。',
         }
