@@ -1,6 +1,6 @@
 <!--
   「专家 · 技能 · 连接器」容器：三 Tab 即面板首行（上方不放标题栏等任何内容）。
-  - 专家：ExpertListPanel.vue（专家列表 / 新建 / 编辑 / 召唤）
+  - 专家：ExpertListPanel.vue（公共专家库[默认] / 我的专家 / 新建 / 编辑 / 召唤）
   - 技能：SkillListPanel.vue（搜索 / 分类筛选 / 启用开关 / 详情页）
   - 连接器（= MCP）：ConnectorListPanel.vue（含「已安装」筛选）+ McpConfigEditorPanel.vue
     （mcp.json 原文编辑；粘贴 JSON 添加已并入编辑器，不再单独提供添加页）
@@ -136,7 +136,7 @@ export default {
   data() {
     return {
       tabs: [
-        { key: 'experts', label: '专家', icon: TAB_ICONS.experts, hint: '专家：创建与管理我的专家，选中「召唤」后按专家人设对话' },
+        { key: 'experts', label: '专家', icon: TAB_ICONS.experts, hint: '专家：浏览公共专家库、管理我的专家，选中「召唤」后按专家人设对话' },
         { key: 'skills', label: '技能', icon: TAB_ICONS.skills, hint: '技能：管理公共技能与我的技能，可添加/移除、导入 zip、查看 SKILL.md' },
         { key: 'connectors', label: '连接器', icon: TAB_ICONS.connectors, hint: '连接器（MCP）：一键添加内置连接器、编辑 mcp.json 原文、接入自定义 MCP 服务' },
       ],
