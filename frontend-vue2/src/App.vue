@@ -107,6 +107,7 @@
         @reject="handleToolApproval('reject')"
         @openPanel="openSkillCenterPanel"
         @clear-expert="selectedExpert = null"
+        @select-expert="handleUseExpert"
       />
 
       <div v-if="currentSessionId && !showAssets && !showSkillCenter" class="workspace-area">

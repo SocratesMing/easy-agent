@@ -92,6 +92,7 @@
         @create-session="handleCreateSession"
         @openPanel="$emit('openPanel', $event)"
         @clear-expert="$emit('clear-expert')"
+        @select-expert="$emit('select-expert', $event)"
         @expert-prompt-applied="$emit('expert-prompt-applied')"
       />
 
