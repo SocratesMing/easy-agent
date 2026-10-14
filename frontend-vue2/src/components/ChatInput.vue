@@ -497,14 +497,20 @@ export default {
     canSend() {
       return this.message.trim() || this.uploadedFiles.length > 0 || this.selectedSkills.length > 0
     },
+    /**
+     * 技能检索：优先按「目录名 / 技能名」匹配；仅当没有任何名称命中时，才回退到描述匹配。
+     * 描述是一大段英文说明，几乎每个字母都能命中（如 m → manipulate / from / time），
+     * 直接参与匹配会让检索看起来「完全没生效」，因此降级为兜底。
+     */
     filteredSkills() {
       const q = this.skillQuery.trim().toLowerCase()
       if (!q) return this.skillOptions
-      return this.skillOptions.filter(s =>
+      const byName = this.skillOptions.filter(s =>
         (s.dir_name || '').toLowerCase().includes(q) ||
-        (s.name || '').toLowerCase().includes(q) ||
-        (s.description || '').toLowerCase().includes(q)
+        (s.name || '').toLowerCase().includes(q)
       )
+      if (byName.length > 0) return byName
+      return this.skillOptions.filter(s => (s.description || '').toLowerCase().includes(q))
     },
     webSearchUnavailable() {
       return !this.webSearchStatus.configured
@@ -1063,12 +1069,38 @@ export default {
       const box = this.$refs.inputBoxRef
       if (!box) return
       const rect = box.getBoundingClientRect()
+      const margin = 8
+      const maxPanelHeight = 320
+      const spaceAbove = rect.top - margin * 2
+      const spaceBelow = window.innerHeight - rect.bottom - margin * 2
+      // 技能装多之后面板会撑到最大高度：若仍按「贴着输入框上沿 + 固定高度」定位，
+      // 面板顶部会越过视口，首个技能被裁在屏幕外且怎么滚都够不着。因此改为优先向上
+      // 弹出、但把高度限制在输入框上方的可用空间内（下方空间明显更宽裕时才向下弹）。
+      const placeAbove = spaceAbove >= 160 || spaceAbove >= spaceBelow
+      const available = placeAbove ? spaceAbove : spaceBelow
+      const maxHeight = Math.max(96, Math.min(maxPanelHeight, available))
       this.skillPickerStyle = {
         position: 'fixed',
-        bottom: `${window.innerHeight - rect.top + 8}px`,
         left: `${rect.left}px`,
         width: `${rect.width}px`,
+        maxHeight: `${Math.round(maxHeight)}px`,
+        ...(placeAbove
+          ? { bottom: `${window.innerHeight - rect.top + margin}px` }
+          : { top: `${rect.bottom + margin}px` }),
       }
+    },
+
+    /** 键盘切换选项时把当前高亮项滚进可视区（只滚列表本身，不带动外层级） */
+    scrollActiveSkillIntoView() {
+      const picker = this.$refs.skillPickerRef
+      if (!picker) return
+      const list = picker.querySelector('.skill-picker-list')
+      const item = list && list.children[this.skillPickerIndex]
+      if (!list || !item) return
+      const top = item.offsetTop
+      const bottom = top + item.offsetHeight
+      if (top < list.scrollTop) list.scrollTop = top
+      else if (bottom > list.scrollTop + list.clientHeight) list.scrollTop = bottom - list.clientHeight
     },
 
     /** 判定光标前是否为「/查询词」（/ 位于开头或空白之后），决定展开或收起面板 */
@@ -1167,11 +1199,13 @@ export default {
         if (event.key === 'ArrowDown' && count > 0) {
           event.preventDefault()
           this.skillPickerIndex = (this.skillPickerIndex + 1) % count
+          this.$nextTick(() => this.scrollActiveSkillIntoView())
           return
         }
         if (event.key === 'ArrowUp' && count > 0) {
           event.preventDefault()
           this.skillPickerIndex = (this.skillPickerIndex - 1 + count) % count
+          this.$nextTick(() => this.scrollActiveSkillIntoView())
           return
         }
         if (event.key === 'Escape') {
@@ -1346,10 +1380,18 @@ export default {
 }
 
 .skill-picker-list {
+  /* 面板是定高 flex 容器：列表必须可收缩（min-height: 0）才会在内部滚动，
+     否则内容会撑破面板被外层 overflow: hidden 裁掉，滚动条也随之失效 */
+  flex: 1 1 auto;
+  min-height: 0;
+  /* 让列表成为条目的 offsetParent，键盘滚动用的 offsetTop 与 scrollTop 同源 */
+  position: relative;
   margin: 0;
   padding: 6px;
   list-style: none;
   overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
 }
 
 .skill-picker-item {
