@@ -147,6 +147,7 @@
 </template>
 
 <script>
+import Vue from 'vue'
 import SessionList from './components/SessionList.vue'
 import Chat from './components/Chat.vue'
 import AssetsPanel from './components/AssetsPanel.vue'
@@ -214,6 +215,20 @@ const NEW_SESSION_MARK = '__new__'
 
 // ── 流式状态持久化（sessionStorage）─────────────────────────────────────
 const STREAM_STATE_KEY = 'easy_agent_stream_state'
+
+/*
+ * Vue 2 无法检测「数组索引赋值」（arr[i] = x）与「对象属性新增」（obj.k = x），
+ * 只有 push/splice 等变异方法和 Vue.set 才会触发更新。Vue 3 基于 Proxy 没有这个限制，
+ * 因此迁移后必须统一走这里写入，否则流式内容不会逐步渲染。
+ */
+function setReactive(target, key, value) {
+  if (!target) return
+  if (Array.isArray(target)) {
+    if (key >= 0 && key < target.length) target.splice(key, 1, value)
+  } else {
+    Vue.set(target, key, value)
+  }
+}
 
 export default {
   components: {
@@ -784,10 +799,20 @@ export default {
 
       this.showAssets = false
       this.showSkillCenter = false
+      this.showScheduledTasks = false
+      this.showSettingsPanel = false
       // 新建会话回到干净状态：专家需在新会话里重新选择，避免误把旧专家的设定带进来
       this.selectedExpert = null
-      this.showScheduledTasks = false
-      if (kind === 'create') this.showSettingsPanel = false
+      this.currentSessionId = null
+      this.loadedSessionId = null
+      this.messages = []
+      this.currentTodos = []
+      // 注意：保留 context_length（全局上下文窗口，对所有会话通用），不重置为 null，
+      // 否则 contextPercent 分母为 null 时会强制显示为 0%
+      this.sessionUsage = { input_tokens: 0, output_tokens: 0, reasoning_tokens: 0, context_length: this.sessionUsage.context_length, auto_compress_tokens: null, context_tokens: 0 }
+      this.sessionDuration = 0
+      this.iterationCount = 0
+      this.refreshSessionFiles(null)
     },
     async handleSelectSession(sessionId) {
       this.showKnowledge = false
