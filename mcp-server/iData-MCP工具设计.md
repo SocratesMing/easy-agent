@@ -8,7 +8,7 @@
 > 落地位置：`easy_mcp_server/businesses/idata/`（业务包），领域模块为 `idata.py`，
 > MCP 端点为 `/mcp/idata/`。
 >
-> 注：本文写作时 iData 与宏观预测、利率择时、研报观点等场景同属 `investment_research`
+> 注：本文写作时 iData 与宏观预测、10年期国债趋势判断、研报观点等场景同属 `investment_research`
 > 一个业务包、共用一个端点。后续已拆为独立业务包，**路径与端点以拆分后为准**
 > （本文其余章节提及的 `/mcp/investment_research/` 均指当时的形态）。
 

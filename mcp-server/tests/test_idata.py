@@ -439,7 +439,7 @@ async def _call(mcp, name: str, **kwargs):
 async def test_core_idata_tools_registered(captured):
     """iData 看板的 10 个工具必须都在。
 
-    刻意断言"包含"而不是"相等"：同一业务下还会挂其它场景（宏观预测、利率择时、
+    刻意断言"包含"而不是"相等"：同一业务下还会挂其它场景（宏观预测、10年期国债趋势判断、
     研报观点），用相等断言会导致每加一个场景就得改这个文件。
     """
     names = await _tool_names(build())

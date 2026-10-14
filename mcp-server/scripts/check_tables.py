@@ -64,7 +64,7 @@ def _research_scenes() -> list[Scene]:
             tuple(domestic_macro.TABLES.values()),
             "FORECAST_SCHEMA",
         ),
-        Scene("rates_timing", "利率择时", tuple(rates_timing.TABLES.values()), "RATES_SCHEMA"),
+        Scene("rates_timing", "10年期国债趋势判断", tuple(rates_timing.TABLES.values()), "RATES_SCHEMA"),
         Scene(
             "weekly_research",
             "研报观点矩阵与宏观预测",

@@ -25,7 +25,7 @@
       "transport": "streamable_http",
       "url": "http://<mcp-server 地址>:8174/mcp/rates_timing/",
       "headers": {
-        "Authorization": "Bearer <在设置页生成的利率择时 MCP API Key>"
+        "Authorization": "Bearer <在设置页生成的 10 年期国债趋势判断 MCP API Key>"
       }
     },
     "weekly_research": {

@@ -113,7 +113,7 @@ WebSocket），所以启动时要显式给上限：
 | `fxbar` | `/mcp/fxbar/` | 问数：外汇 K 线（`HSDC_HDS2_BAR_FX`）**大表**，公共行情，默认只返回最近窗口 |
 | `idata` | `/mcp/idata/` | 投资研究：iData 债券看板（机构流向 / 个券机构 / 债券借贷 / 大模型点评） |
 | `macro_forecast` | `/mcp/macro_forecast/` | 投资研究：国内宏观经济指标预测（报告 / 指标 / 多模型预测 / SHAP 归因） |
-| `rates_timing` | `/mcp/rates_timing/` | 投资研究：利率择时（只读已保存的预测与运行审计） |
+| `rates_timing` | `/mcp/rates_timing/` | 投资研究：10年期国债趋势判断（只读已保存的预测与运行审计） |
 | `weekly_research` | `/mcp/weekly_research/` | 投资研究：周度研报观点矩阵与机构宏观预测 |
 | `gold_analysis` | `/mcp/gold_analysis/` | 投资研究：黄金价格多因子归因（单表宽表，收益率口径小数） |
 | `treasury_1y` | `/mcp/treasury_1y/` | 投资研究：1 年期国债模型（单表，结果存在 `result_json` 里） |
@@ -224,7 +224,7 @@ WebSocket），所以启动时要显式给上限：
 | `idata` | 债券借贷 | `fmqt_bond_lending_analysis` | 借贷余额与集中度 |
 | `idata` | 大模型点评 | `fmqt_idata_llm_analysis` | 已生成的点评正文 |
 | `macro_forecast` | 国内宏观预测 | `fmqt_forecast_*`（六张表） | 报告、指标预测、模型明细、SHAP 归因和已存解读 |
-| `rates_timing` | 利率择时 | `fmqt_predictions_rates`, `fmqt_prediction_runs_rates` | 已存预测、运行审计、回测快照和因子解释 |
+| `rates_timing` | 10年期国债趋势判断 | `fmqt_predictions_rates`, `fmqt_prediction_runs_rates` | 已存预测、运行审计、回测快照和因子解释 |
 | `weekly_research` | 周度研报观点 | `weekly_analyzer_data` | 周度机构观点、资产共识、研报出处与市场综述 |
 | `weekly_research` | 周度宏观预测 | `weekly_macro_data` | 指标、机构预测、覆盖数、数值均值与文字众数 |
 | `gold_analysis` | 黄金价格归因 | `fmqt_gold_analysis_result` | 六个因子分组的累计贡献（收益率口径小数） |
@@ -235,7 +235,7 @@ WebSocket），所以启动时要显式给上限：
 - `describe_idata_schema`、`describe_domestic_macro_schema`、`describe_rates_timing_schema`、
   `describe_weekly_research_schema`、`describe_gold_schema`、`describe_treasury_1y_schema`
 - 国内宏观预测按 `forecast_month` 定位报告；后续查询使用 `report_id` / `indicator_id`
-- 利率择时工具仅读已保存结果，不开始训练、不调用大模型；预测概率保留 0—1 原值
+- 10年期国债趋势判断工具仅读已保存结果，不开始训练、不调用大模型；预测概率保留 0—1 原值
 - 周度观点与周度宏观预测是两份独立数据；周标签格式为 `YYYYMMDD-YYYYMMDD`
 
 iData 保留原有 10 个工具，由原始 29 条 SQL / 20 个接口收敛而来（合并思路见

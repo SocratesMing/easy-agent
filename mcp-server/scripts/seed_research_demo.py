@@ -3,7 +3,7 @@
 覆盖四个场景（iData 场景见 ``seed_idata_demo.py``）：
 
 - **宏观预测**（6 张）：1 期报告 + 3 个指标 + 多模型预测 + SHAP 归因 + 入选特征 + 大模型解读
-- **利率择时**（2 张）：1 次成功运行 + 5 个交易日的预测
+- **10年期国债趋势判断**（2 张）：1 次成功运行 + 5 个交易日的预测
 - **研报观点**（2 张）：2 周的观点矩阵与宏观预测
 - **黄金归因**（1 张宽表）：2 个模型 × 30 个交易日
 
@@ -148,7 +148,7 @@ DDL: dict[str, tuple[str, ...]] = {
             PRIMARY KEY (id),
             UNIQUE KEY uk_signal_date (signal_date),
             KEY idx_run (run_id)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='利率择时预测结果（演示）'
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='10年期国债趋势判断预测结果（演示）'
         """,
         """
         CREATE TABLE IF NOT EXISTS fmqt_prediction_runs_rates (
@@ -186,7 +186,7 @@ DDL: dict[str, tuple[str, ...]] = {
             PRIMARY KEY (id),
             UNIQUE KEY uk_file_sha256 (file_sha256),
             KEY idx_status (status)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='利率择时运行审计（演示）'
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='10年期国债趋势判断运行审计（演示）'
         """,
     ),
     "weekly": (
@@ -264,7 +264,7 @@ SHAP_FEATURES: tuple[tuple[str, float], ...] = (
     ("社会融资规模:同比", 0.25),
 )
 
-# 利率择时：(日期, 上行概率, 真实类别) —— 概率跨过 0.5 与阈值 0.4734，便于看分档差异
+# 10年期国债趋势判断：(日期, 上行概率, 真实类别) —— 概率跨过 0.5 与阈值 0.4734，便于看分档差异
 RATES_ROWS: tuple[tuple[str, float, int], ...] = (
     ("2026-09-15", 0.4210, 0),
     ("2026-09-16", 0.4880, 1),
@@ -380,7 +380,7 @@ def _forecast_rows() -> dict[str, list[tuple[Any, ...]]]:
 
 
 def _rates_rows() -> dict[str, list[tuple[Any, ...]]]:
-    """利率择时：1 次成功的 LATEST 运行 + 5 个交易日预测。"""
+    """10年期国债趋势判断：1 次成功的 LATEST 运行 + 5 个交易日预测。"""
     run = (
         RUN_ID,
         "LATEST",
@@ -568,7 +568,7 @@ SCENES: dict[str, dict[str, Any]] = {
         "builder": _forecast_rows,
     },
     "rates": {
-        "title": "利率择时",
+        "title": "10年期国债趋势判断",
         "module": rates_timing,
         "tables": ("run", "prediction"),
         "builder": _rates_rows,

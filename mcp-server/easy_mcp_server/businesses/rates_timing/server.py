@@ -1,4 +1,4 @@
-"""利率择时模型 MCP 工具（只读已保存的预测与运行审计）
+"""10年期国债趋势判断 MCP 工具（只读已保存的预测与运行审计）
 
 挂载路径：``/mcp/rates_timing/``
 
@@ -82,11 +82,11 @@ def build() -> FastMCP:
         stateless_http=True,
     )
 
-    # ── 利率择时模型（只读已保存结果） ─────────────────────────────────
+    # ── 10年期国债趋势判断（只读已保存结果） ─────────────────────────────────
 
     @mcp.tool()
     def describe_rates_timing_schema() -> dict[str, Any]:
-        """查看利率择时模型的预测目标、概率单位、运行状态和解释证据口径。"""
+        """查看10年期国债趋势判断的预测目标、概率单位、运行状态和解释证据口径。"""
         username = current_username()
         logger.info(f"[rates_timing] describe_rates_timing_schema | 用户: {username}")
         return {"ok": True, **rates_timing.schema_help()}
