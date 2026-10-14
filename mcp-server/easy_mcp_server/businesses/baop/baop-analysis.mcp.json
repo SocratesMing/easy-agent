@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "baop-analysis": {
+      "type": "stdio",
+      "command": "C:\\Users\\issuser\\.workbuddy\\binaries\\python\\envs\\baop-mcp\\Scripts\\python.exe",
+      "args": [
+        "E:\\中信银行\\经营分析\\baop_mcp\\baop_mcp_server.py"
+      ],
+      "env": {}
+    }
+  }
+}
