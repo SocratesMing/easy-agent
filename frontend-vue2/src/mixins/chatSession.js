@@ -581,8 +581,11 @@ export default {
       try {
         const data = await listSessions(chatStore.username || null)
         this.sessions = Array.isArray(data) ? data : (data.sessions || [])
+        if (this.error === '加载会话列表失败') this.error = null
       } catch (e) {
         console.error('加载会话列表失败:', e)
+        // 401 由登录失效流程接管（SDK 自动重登后会再次加载），不提示
+        if (e && e.response && e.response.status === 401) return
         this.error = '加载会话列表失败'
       }
     },

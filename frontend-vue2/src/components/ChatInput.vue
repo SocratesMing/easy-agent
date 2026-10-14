@@ -178,7 +178,7 @@
                   </span>
                 </div>
               </div>
-              <div class="plus-subpanel-footer">
+              <div v-if="showManageEntry" class="plus-subpanel-footer">
                 <button type="button" class="plus-subpanel-manage" @click="handleMenuPanel(subpanelCategory)">
                   在管理面板中打开 →
                 </button>
@@ -487,6 +487,11 @@ export default {
     expertPrompt: {
       type: String,
       default: ''
+    },
+    // 「+」二级面板底部的「在管理面板中打开」入口（无可跳转的管理面板时隐藏）
+    showManageEntry: {
+      type: Boolean,
+      default: true
     }
   },
   data() {
@@ -822,13 +827,18 @@ export default {
       if (this.subpanelCategory === category) return
       this.subpanelCategory = category
       const rect = event.currentTarget.getBoundingClientRect()
-      const estimatedHeight = 420
-      const top = Math.max(8, Math.min(rect.top - 8, window.innerHeight - estimatedHeight - 8))
-      const left = rect.right + 10 + 380 > window.innerWidth ? Math.max(8, rect.left - 390) : rect.right + 10
+      // 面板高度随列表变化（最高约 420px）：下方放得下时顶边对齐触发项，否则底边对齐触发项向上展开，
+      // 两种情况面板都与触发项在垂直方向重叠，鼠标可水平移入
+      const maxHeight = 420
+      const left = rect.right + 6 + 380 > window.innerWidth ? Math.max(8, rect.left - 386) : rect.right + 6
+      const vertical = rect.top - 8 + maxHeight <= window.innerHeight - 8
+        ? { top: `${Math.max(8, rect.top - 8)}px` }
+        : { bottom: `${Math.max(8, window.innerHeight - rect.bottom - 8)}px` }
       this.plusSubpanelStyle = {
         position: 'fixed',
-        top: `${top}px`,
         left: `${left}px`,
+        maxHeight: `${window.innerHeight - 16}px`,
+        ...vertical,
       }
       this.openPlusList(category)
     },

@@ -139,6 +139,11 @@ database:
     read_timeout: 30
     write_timeout: 30
 
+# 人员账号策略：自助注册默认关；门户免密登录需显式开启（第三方侧边栏 / 宿主换 token 依赖此开关）
+personnel:
+  self_registration_enabled: false
+  passwordless_login_enabled: true
+
 # ===== Distributed Lock Configuration =====
 # 多实例（多 pod / 多 worker）部署的分布式锁（锁表 distributed_locks，见
 # easy_agent/utils/distributed_lock.py）。定时任务在每个 pod 都会注册同一批 cron，
