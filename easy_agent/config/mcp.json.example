@@ -6,6 +6,13 @@
       "headers": {
         "Authorization": "Bearer <在设置页生成的 StrategyQA MCP API Key>"
       }
+    },
+    "investment_research": {
+      "transport": "streamable_http",
+      "url": "http://127.0.0.1:8174/mcp/investment_research/",
+      "headers": {
+        "Authorization": "Bearer <在设置页生成的投资研究 MCP API Key>"
+      }
     }
   }
 }

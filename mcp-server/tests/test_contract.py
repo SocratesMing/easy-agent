@@ -149,12 +149,12 @@ def test_publish_upserts_every_business(monkeypatch):
 
     monkeypatch.setattr(registry, "connection", lambda: _Conn())
 
-    assert registry.publish(["strategyqa", "investment_research"]) == 2
+    assert registry.publish(["strategyqa", "idata"]) == 2
 
     # 第一次是自愈建表，之后每个业务一条 upsert
     assert len(executed) == 3
     assert executed[0][0] == contract.business_registry_table_sql()
     assert [params[0] for _, params in executed[1:]] == [
         "strategyqa",
-        "investment_research",
+        "idata",
     ]

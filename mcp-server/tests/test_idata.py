@@ -4,15 +4,11 @@ from __future__ import annotations
 
 import pytest
 
-import easy_mcp_server.businesses.investment_research.server as idata_server
+import easy_mcp_server.businesses.idata.server as idata_server
 from easy_mcp_server import context
-from easy_mcp_server.businesses.investment_research import (
-    domestic_macro,
-    idata,
-    rates_timing,
-    weekly_research,
-)
-from easy_mcp_server.businesses.investment_research.server import build
+from easy_mcp_server.businesses.idata import idata
+from easy_mcp_server.businesses.idata.server import build
+from easy_mcp_server.businesses.weekly_research import weekly_research
 
 LATEST = "20260828"
 PREV = "20260827"
@@ -362,24 +358,21 @@ def test_schema_help_documents_units_and_pitfalls():
 # ── 探索可见性（缺省收敛到四张业务表） ──────────────────────────────────
 
 
-def test_policy_defaults_to_all_scenario_tables(monkeypatch):
-    """缺省收敛到**四个场景全部**的表。
+def test_policy_defaults_to_idata_tables_only(monkeypatch):
+    """缺省收敛到本场景的四张表，且**看不到其它场景的表**。
 
-    只收单场景的话，模型做结构探索时看不到其它场景的表。这类"白名单漏接线"
-    在新增场景时很容易复发，故用汇总断言钉住。
+    拆成独立业务包后，每个包只管自己的表——这条同时验证了"隔离到位"。
     """
     monkeypatch.setenv("IDATA_ALLOWED_TABLES", "")
     policy = idata_server._policy()
-    expected = {
-        *idata.TABLES.values(),
-        *domestic_macro.TABLES.values(),
-        *rates_timing.TABLES.values(),
-        *weekly_research.TABLES.values(),
-    }
+    expected = set(idata.TABLES.values())
     assert set(policy.allowed or ()) == expected
     for table in expected:
         assert policy.is_visible(table) is True
-    assert policy.is_visible("some_other_table") is False
+    # 别的场景的表必须看不见
+    assert policy.is_visible("fmqt_forecast_report_meta") is False
+    assert policy.is_visible("fmqt_predictions_rates") is False
+    assert policy.is_visible("weekly_analyzer_data") is False
 
 
 def test_weekly_tables_match_business_schema():
@@ -428,7 +421,7 @@ async def _tool_names(mcp) -> set[str]:
 
 
 async def _call(mcp, name: str, **kwargs):
-    context.set_identity("tester", "investment_research")
+    context.set_identity("tester", "idata")
     try:
         result = await mcp.call_tool(name, kwargs)
     finally:
