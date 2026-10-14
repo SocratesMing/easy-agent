@@ -5,9 +5,12 @@
 >
 > 原始 SQL 与口径注释**完整保留在原文档**，作为核对实现的事实依据——本文只做"怎么封装"。
 >
-> 落地位置：`easy_mcp_server/businesses/investment_research/`（业务包），
-> iData 是其中的第一个场景模块 `idata.py`；后续新看板作为同级模块加入，共用同一个
-> MCP 端点 `/mcp/investment_research/`。
+> 落地位置：`easy_mcp_server/businesses/idata/`（业务包），领域模块为 `idata.py`，
+> MCP 端点为 `/mcp/idata/`。
+>
+> 注：本文写作时 iData 与宏观预测、利率择时、研报观点等场景同属 `investment_research`
+> 一个业务包、共用一个端点。后续已拆为独立业务包，**路径与端点以拆分后为准**
+> （本文其余章节提及的 `/mcp/investment_research/` 均指当时的形态）。
 
 ---
 

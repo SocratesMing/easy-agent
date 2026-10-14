@@ -111,7 +111,14 @@ WebSocket），所以启动时要显式给上限：
 | --- | --- | --- |
 | `strategyqa` | `/mcp/strategyqa/` | 问数：策略表（`fmut2_strategy_manage`），行级隔离，只能看自己创建的策略 |
 | `fxbar` | `/mcp/fxbar/` | 问数：外汇 K 线（`HSDC_HDS2_BAR_FX`）**大表**，公共行情，默认只返回最近窗口 |
-| `investment_research` | `/mcp/investment_research/` | 投资研究：iData、国内宏观预测、利率择时、周度研报观点与宏观预测 |
+| `idata` | `/mcp/idata/` | 投资研究：iData 债券看板（机构流向 / 个券机构 / 债券借贷 / 大模型点评） |
+| `macro_forecast` | `/mcp/macro_forecast/` | 投资研究：国内宏观经济指标预测（报告 / 指标 / 多模型预测 / SHAP 归因） |
+| `rates_timing` | `/mcp/rates_timing/` | 投资研究：利率择时（只读已保存的预测与运行审计） |
+| `weekly_research` | `/mcp/weekly_research/` | 投资研究：周度研报观点矩阵与机构宏观预测 |
+| `gold_analysis` | `/mcp/gold_analysis/` | 投资研究：黄金价格多因子归因（单表宽表，收益率口径小数） |
+
+> 上面五个业务原先同属 `investment_research` 一个包（54 个工具挤在一个 MCP 服务里，
+> 每次请求都要带上全部工具定义）。已拆为独立业务包，各自一个端点、Key 与表可见性白名单。
 
 **新增**业务只删/加这个目录即可（重启服务后主应用自动感知）；
 **删除**业务除了删目录，还要清共享库里的残留记录，见下文「删除业务」。
