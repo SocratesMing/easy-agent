@@ -10,6 +10,7 @@ from ..config import Config
 from ..db import get_database
 from ..model import create_model
 from ..tools.web_search import create_web_search_tool
+from ..utils.prompt_probe import describe_prompt, prompt_fingerprint
 from .mcp import get_mcp_tools as load_mcp_tools_for_user
 
 logger = logging.getLogger("easy-agent.chat_service")
@@ -132,10 +133,22 @@ async def get_or_create_agent_for_session(
                 f"model: {getattr(cached, 'model_name', '?')} -> {effective_model} | "
                 f"web_search: {cached_web_search} -> {web_search_enabled} | "
                 f"expert: {_session_expert.get(session_id, '') or '(通用)'} -> "
-                f"{expert_key or '(通用)'} | 驱逐旧 Agent 重建"
+                f"{expert_key or '(通用)'} | 驱逐旧 Agent 重建 | "
+                f"{describe_prompt('本轮 extra', system_prompt_extra)} | "
+                f"旧终稿指纹={prompt_fingerprint(getattr(cached, 'system_prompt', ''))}"
             )
             _session_agents.pop(session_id, None)
         else:
+            # 缓存命中：本轮传入的 extra 会被**忽略**（复用旧 Agent 的提示词）。
+            # 因此这里同时打印「本轮 extra」与「缓存 Agent 终稿」两组指纹：一致说明
+            # 复用的确实是本轮该用的提示词；若不一致，说明本轮内容被缓存吞掉了
+            # （专家内容变更时应由 /agent/update -> invalidate_user_agents 驱逐，
+            #  这两组指纹不一致即为「驱逐漏了」的告警信号）。
+            logger.info(
+                f"[{session_id[-5:]}] ♻️ Agent 缓存命中 | expert: {expert_key or '(通用)'} | "
+                f"{describe_prompt('本轮 extra', system_prompt_extra)} | "
+                f"{describe_prompt('缓存终稿', getattr(cached, 'system_prompt', ''))}"
+            )
             return cached
 
     if not workspace_name:
@@ -219,7 +232,9 @@ async def get_or_create_agent_for_session(
     logger.info(
         f"[{session_id[-5:]}] Agent 实例创建成功 | workspace: {agent.workspace_dir} | "
         f"model: {agent.model_name} | mcp_tools: {len(tools)} | "
-        f"expert: {expert_key or '(通用)'}"
+        f"expert: {expert_key or '(通用)'} | "
+        f"{describe_prompt('本轮 extra', system_prompt_extra)} | "
+        f"{describe_prompt('终稿 system_prompt', getattr(agent, 'system_prompt', ''))}"
     )
     return agent
 

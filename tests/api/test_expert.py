@@ -675,3 +675,137 @@ def test_resume_generic_session_passes_empty_expert(client, db, stub_resume):
 
 def test_resume_unknown_session_404(client, stub_resume):
     assert _resume(client, "no-such-session").status_code == 404
+
+
+# ── 公共（预置）专家：列表 + 召唤 ──────────────────────────────────────
+
+PUBLIC_PROMPT = "你是「预置演示专家」，只回答宏观策略相关问题。"
+PUBLIC_NAME = "预置演示专家"
+
+
+@pytest.fixture()
+def public_root(tmp_path, monkeypatch):
+    """把公共专家目录指向临时目录，不依赖仓库自带的 exports/。
+
+    应用启动时已加载 agent 配置（tools.experts_dir 指向仓库 exports/），故这里
+    直接替换 ``public_expert_service.public_experts_root``，保证用例只看到自造数据。
+    """
+    from easy_agent.services import public_expert_service
+
+    root = tmp_path / "exports"
+    root.mkdir()
+    monkeypatch.setattr(public_expert_service, "public_experts_root", lambda: root)
+    return root
+
+
+def _write_public_expert(
+    root,
+    expert_id="preset_demo",
+    *,
+    name_cn=PUBLIC_NAME,
+    prompt=PUBLIC_PROMPT,
+    tag_id="macro_research",
+):
+    """写一个平铺布局的公共专家目录（config.yaml + 提示词 md）。"""
+    expert_dir = root / expert_id
+    expert_dir.mkdir(parents=True, exist_ok=True)
+    (expert_dir / "config.yaml").write_text(
+        "\n".join(
+            [
+                f"expert_agent_id: {expert_id}",
+                f"name_cn: {name_cn}",
+                "name_en: preset-demo",
+                "version: 1",
+                f"tag_id: {tag_id}",
+                "description: 预置演示专家的功能描述",
+                "skills_names: [宏观投研, 利率研判]",
+                "features_prompt: [帮我解读最新的社融数据]",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (expert_dir / "preset-demo.md").write_text(prompt, encoding="utf-8")
+    return expert_dir
+
+
+def test_public_list_returns_presets(client, public_root):
+    _write_public_expert(public_root)
+    resp = client.get("/agent/public-list")
+    assert resp.status_code == 200
+
+    data = resp.json()
+    assert data["total"] == 1
+    item = data["items"][0]
+    assert item["export_agent_id"] == "preset_demo"
+    assert item["export_name_cn"] == PUBLIC_NAME
+    assert item["tag_id"] == "macro_research"
+    assert item["export_skills_names"] == ["宏观投研", "利率研判"]
+    assert item["agent_status"] == "active"
+    # 只读标记：前端据此隐藏「编辑 / 删除」
+    assert item["scope"] == "public"
+    # 与 /agent/list 的响应同构（tags 供 chips 复用）
+    assert isinstance(data["tags"], list)
+
+
+def test_public_list_empty_when_dir_missing(client, tmp_path, monkeypatch):
+    from easy_agent.services import public_expert_service
+
+    monkeypatch.setattr(
+        public_expert_service, "public_experts_root", lambda: tmp_path / "nope"
+    )
+    resp = client.get("/agent/public-list")
+    assert resp.status_code == 200
+    assert resp.json()["items"] == []
+
+
+def test_stream_run_with_public_expert_injects_prompt(client, public_root, stub_stream):
+    """召唤公共专家：不查库也能把提示词注入系统提示词。"""
+    _write_public_expert(public_root)
+
+    resp = client.post(
+        "/agent/stream_export_run",
+        json={"message": "解读一下最新的社融数据", "expert_agent_id": "preset_demo"},
+    )
+    assert resp.status_code == 200
+    assert "data:" in resp.text
+
+    kwargs = stub_stream["agent_kwargs"]
+    assert kwargs["expert_agent_id"] == "preset_demo"
+    assert PUBLIC_PROMPT in kwargs["system_prompt_extra"]
+
+
+def test_stream_run_public_expert_without_prompt_404(client, public_root, stub_stream):
+    """公共专家的提示词文件缺失 = 该预置专家不存在（列表不展示、召唤 404）。
+
+    与「我的专家」的策略不同：那边有数据库记录兜底，磁盘缺失时降级为通用 Agent；
+    公共专家的存在标志就是提示词文件本身，缺失属打包错误，必须显式暴露而不是
+    静默地用通用 Agent 回答（否则用户以为召唤成功了）。
+    """
+    expert_dir = _write_public_expert(public_root)
+    (expert_dir / "preset-demo.md").unlink()
+
+    # 列表里不再出现
+    assert client.get("/agent/public-list").json()["items"] == []
+
+    resp = client.post(
+        "/agent/stream_export_run",
+        json={"message": "hi", "expert_agent_id": "preset_demo"},
+    )
+    assert resp.status_code == 404
+
+
+def test_my_expert_wins_over_same_id_in_public_dir(
+    client, fake_llm, public_root, stub_stream
+):
+    """同一个 ID 同时命中我的专家与公共专家时，以「我的专家」为准。"""
+    agent_id = _add(client).json()["export_agent_id"]
+    _write_public_expert(public_root, expert_id=agent_id)
+
+    resp = client.post(
+        "/agent/stream_export_run",
+        json={"message": "hi", "expert_agent_id": agent_id},
+    )
+    assert resp.status_code == 200
+    injected = stub_stream["agent_kwargs"]["system_prompt_extra"]
+    assert "你是量化策略专家" in injected
+    assert PUBLIC_PROMPT not in injected

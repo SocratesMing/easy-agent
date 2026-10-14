@@ -695,6 +695,7 @@ def load_active_prompt(
     version_dir = get_version_dir(username, expert_agent_id, version)
     prompt_path = _find_prompt_file(version_dir)
     try:
+        logger.info("读取专家提示词文件，当前用户为：%s，专家智能体id：%s，版本号为：%s，文件路径为： %s", username, expert_agent_id, version, prompt_path)
         if prompt_path and prompt_path.is_file():
             return prompt_path.read_text(encoding="utf-8"), version, str(version_dir)
     except OSError as exc:  # noqa: BLE001

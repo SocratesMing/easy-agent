@@ -5,6 +5,7 @@
  *   POST /agent/add                创建专家
  *   POST /agent/update             修改专家（新版本目录）
  *   GET  /agent/list               我的专家列表
+ *   GET  /agent/public-list        公共（预置）专家列表
  *   POST /agent/del                删除专家（默认软删）
  *   POST /agent/stream_export_run  选中专家执行（SSE）
  *
@@ -79,6 +80,20 @@ export async function listExperts({
       },
     },
     '获取专家列表失败'
+  )
+}
+
+/**
+ * 公共（预置）专家列表：随项目内置的专家（`exports/` 目录），只读，
+ * 不区分用户。字段与 listExperts 的 items 一致（另带 `scope: 'public'`）。
+ */
+export async function listPublicExperts() {
+  return request(
+    {
+      url: '/agent/public-list',
+      method: 'get',
+    },
+    '获取公共专家列表失败'
   )
 }
 

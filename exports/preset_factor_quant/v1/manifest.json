@@ -1,0 +1,10 @@
+{
+  "expert_agent_id": "preset_factor_quant",
+  "name_cn": "量化因子研究员",
+  "name_en": "quant-factor-researcher",
+  "version": 1,
+  "prompt_file": "quant-factor-researcher.md",
+  "generated_at": "2026-10-14T09:30:00",
+  "model": "preset",
+  "raw_llm_output": null
+}

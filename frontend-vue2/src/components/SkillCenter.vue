@@ -1,6 +1,6 @@
 <!--
   「专家 · 技能 · 连接器」容器：三 Tab 即面板首行（上方不放标题栏等任何内容）。
-  - 专家：ExpertListPanel.vue（专家列表 / 新建 / 编辑 / 召唤）
+  - 专家：ExpertListPanel.vue（公共专家库[默认] / 我的专家 / 新建 / 编辑 / 召唤）
   - 技能：SkillListPanel.vue（搜索 / 分类筛选 / 启用开关 / 详情页）
   - 连接器（= MCP）：ConnectorListPanel.vue（含「已安装」筛选）+ McpConfigEditorPanel.vue
     （mcp.json 原文编辑；粘贴 JSON 添加已并入编辑器，不再单独提供添加页）

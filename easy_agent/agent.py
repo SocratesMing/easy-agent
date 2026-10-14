@@ -37,6 +37,7 @@ from .model import create_model, extract_reasoning
 from .landlock import landlock_usable
 from .sandbox import bwrap_usable, run_landlocked, run_sandboxed
 from .tools.web_search import WEB_SEARCH_SYSTEM_PROMPT
+from .utils.prompt_probe import describe_prompt, prompt_fingerprint
 
 
 logger = logging.getLogger(__name__)
@@ -727,6 +728,28 @@ class EasyAgent:
             if part
         ]
         self.system_prompt = "\n\n".join(prompt_parts) + "\n"
+
+        # ── 系统提示词可观测日志（专家 Agent 提示词链路校验，可观测点 ③） ──
+        # 记录终稿的「总字符数 + 指纹 + 各分段字符数」，用于验证：
+        #   · 专家提示词确实进了模型终稿（extra 非空且语法长度吻合）；
+        #   · 指纹能与 api/expert.py / agent_manager.py 记录的指纹串成一条链；
+        #   · 未挂专家（通用 Agent）时明确显示 extra 为空，避免误判。
+        logger.info(
+            f"[{self.sid}] 🧾 系统提示词已组装 | 终稿={len(self.system_prompt)} 字符 | "
+            f"指纹={prompt_fingerprint(self.system_prompt)} | "
+            f"基础={len(system_prompt.strip())} 字符 | "
+            f"联网搜索附加={len(WEB_SEARCH_SYSTEM_PROMPT.strip()) if self.enable_web_search else 0} 字符 | "
+            f"动态附加={len(system_prompt_extra.strip())} 字符"
+        )
+        if system_prompt_extra.strip():
+            logger.info(
+                f"[{self.sid}] ✅ 动态附加内容已注入系统提示词 | "
+                f"{describe_prompt('extra（含专家提示词）', system_prompt_extra)}"
+            )
+        else:
+            logger.info(
+                f"[{self.sid}] ➖ 无动态附加内容（通用 Agent，未注入专家提示词）"
+            )
 
         self.max_steps = config.agent.max_steps
         self.logger = AgentLogger()

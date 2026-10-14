@@ -1,8 +1,15 @@
 <!--
   专家列表（「专家 · 技能 · 连接器」容器的专家 Tab 主视图）。
 
+  两个视图（面板内切换，不改动 SkillCenter.vue）：
+  - **公共专家（默认）**：预置专家库，来自后端 exports 目录（GET /agent/public-list）。
+    保留完整的浏览体验：搜索 + 分类 chips（tag_name 展示、tag_id 过滤）。
+    卡片只读：无「编辑 / 删除」，状态位显示「预置」。
+  - **我的专家**：自己创建的专家（GET /agent/list），**仅列表**——无搜索、无分类筛选，
+    卡片编辑/删除可用。入口是工具条「新建专家」右侧的「我的专家」按钮。
+
   样式与交互对齐 SkillListPanel.vue（技能 Tab）：
-  - 工具条：搜索 / 新建专家
+  - 工具条：搜索 / 新建专家 / 我的专家
   - 分类 chips：全部 + 配置里的标签（tag_name 展示、tag_id 过滤，见 /agent/list 的 tags）
   - 卡片：头像 / 名称 + 状态徽标 / 单行功能描述（export_description）/ 技能标签
     （export_skills_names，最多 3 个）/ 底部 版本·更新时间·分类
@@ -11,13 +18,15 @@
   - 点卡片 → 专家详情弹窗（功能描述[逐条换行] / 技能标签 / 专家帮你做 / 版本与 ID）
 
   数据与后端接口（easy_agent/api/expert.py）：
+  GET /agent/public-list（公共专家目录，字段与 /agent/list 一致，另带 scope="public"）
   GET /agent/list（keyword 服务端模糊搜索；已删除（软删除）的专家不在列表展示；
   响应里的 tags 为 config.yaml 的 expert_tags 候选）
 -->
 <template>
   <div class="expert-panel">
     <div class="expert-toolbar">
-      <div class="search-box">
+      <!-- 公共专家视图：搜索框（我的专家视图不提供搜索，改为「返回」入口） -->
+      <div v-if="view === 'public'" class="search-box">
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
           <circle cx="11" cy="11" r="8" />
           <line x1="21" y1="21" x2="16.65" y2="16.65" />
@@ -38,19 +47,42 @@
           </svg>
         </button>
       </div>
+      <button v-else class="back-btn" title="返回公共专家列表" @click="switchView('public')">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+          <line x1="19" y1="12" x2="5" y2="12" />
+          <polyline points="12 19 5 12 12 5" />
+        </svg>
+        返回公共专家
+      </button>
 
-      <button class="action-btn-primary" :disabled="submitting" @click="openCreate">
+      <!-- 新建专家：仅公共专家视图展示（我的专家视图按需求去掉该入口，
+           需要创建时经「返回公共专家」回到公共视图） -->
+      <button v-if="view === 'public'" class="action-btn-primary" :disabled="submitting" @click="openCreate">
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
           <line x1="12" y1="5" x2="12" y2="19" />
           <line x1="5" y1="12" x2="19" y2="12" />
         </svg>
         新建专家
       </button>
+
+      <!-- 我的专家：与「新建专家」同款主色按钮（mine-btn 只调间距，保证两按钮紧挨且同高） -->
+      <button
+        v-if="view === 'public'"
+        class="action-btn-primary mine-btn"
+        title="查看我创建的专家（可编辑、删除）"
+        @click="switchView('mine')"
+      >
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+          <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+          <circle cx="12" cy="7" r="4" />
+        </svg>
+        我的专家
+      </button>
     </div>
 
-    <!-- 分类 chips：按 tag_id 过滤，文案取配置里的 tag_name（不再按状态过滤；
-         生成中/失败等状态仍以卡片右上角徽标呈现） -->
-    <div class="status-chips" role="group" aria-label="按分类筛选">
+    <!-- 分类 chips：仅公共专家视图提供（我的专家视图按需求只做纯列表，
+         不给搜索与分类筛选） -->
+    <div v-if="view === 'public'" class="status-chips" role="group" aria-label="按分类筛选">
       <button
         class="chip"
         :class="{ active: tagFilter === 'all' }"
@@ -72,6 +104,14 @@
         <span v-if="tagCounts[item.tag_id]" class="chip-count">{{ tagCounts[item.tag_id] }}</span>
       </button>
     </div>
+
+    <!-- 我的专家视图的说明条：顶替 chips 行，保持两种视图的纵向节奏一致 -->
+    <div v-else class="view-bar">
+      <span class="view-title">我的专家</span>
+      <span v-if="experts.length" class="chip-count">{{ experts.length }}</span>
+      <span class="view-tip">仅展示你自己创建的专家，可编辑与删除</span>
+    </div>
+
 
     <div class="expert-center-content">
       <div v-if="loading" class="state-box">
@@ -108,7 +148,9 @@
             <div class="expert-card-body">
               <div class="expert-card-name-row">
                 <span class="expert-card-name" :title="item.export_name_cn">{{ item.export_name_cn }}</span>
-                <span v-if="item.agent_status === 'active'" class="expert-tag">可用</span>
+                <!-- 公共（预置）专家：只读，状态位固定显示「预置」 -->
+                <span v-if="isPublic(item)" class="expert-tag">预置</span>
+                <span v-else-if="item.agent_status === 'active'" class="expert-tag">可用</span>
                 <span v-else-if="item.agent_status === 'building'" class="expert-tag warn">生成中</span>
                 <span v-else-if="item.agent_status === 'failed'" class="expert-tag off">生成失败</span>
                 <span v-else class="expert-tag off">已删除</span>
@@ -142,8 +184,11 @@
               <span class="footer-tag">{{ tagNameOf(item.tag_id) }}</span>
             </template>
             <span class="footer-actions">
-              <button class="footer-btn" :disabled="item.agent_status === 'disabled'" @click.stop="openEdit(item)">编辑</button>
-              <button class="footer-btn danger" :disabled="item.agent_status === 'disabled'" @click.stop="confirmDelete(item)">删除</button>
+              <!-- 公共（预置）专家只读：不给编辑/删除入口（内容随发行包更新） -->
+              <template v-if="!isPublic(item)">
+                <button class="footer-btn" :disabled="item.agent_status === 'disabled'" @click.stop="openEdit(item)">编辑</button>
+                <button class="footer-btn danger" :disabled="item.agent_status === 'disabled'" @click.stop="confirmDelete(item)">删除</button>
+              </template>
             </span>
           </div>
         </div>
@@ -283,6 +328,7 @@ import {
   addExpert,
   deleteExpert,
   listExperts,
+  listPublicExperts,
   updateExpert,
 } from '../api/expert.js'
 
@@ -299,14 +345,20 @@ const CREATE_TEMPLATE =
   '典型使用场景：[请描述你希望在什么情况下使用它]\n' +
   '期望输出：[请描述你希望它产出什么形式的结果]'
 
-// 一次性拉取（含软删），分类/关键词都在前端过滤，交互与技能 Tab 的客户端过滤一致
-const experts = ref([])
-/** 分类标签候选（后端 /agent/list 的 tags，来自 config.yaml 的 expert_tags） */
+// 当前视图：public=公共专家（预置，默认）/ mine=我的专家（自己创建的，纯列表）
+const view = ref('public')
+/** 公共（预置）专家：来自导出目录，只读 */
+const publicExperts = ref([])
+/** 我的专家：来自数据库，可编辑/删除 */
+const myExperts = ref([])
+/** 当前视图的数据源（模板与下方所有过滤逻辑统一读它） */
+const experts = computed(() => (view.value === 'public' ? publicExperts.value : myExperts.value))
+/** 分类标签候选（后端下发的 tags，来自 config.yaml 的 expert_tags；两视图共用） */
 const tagOptions = ref([])
 const loading = ref(false)
 const error = ref('')
 const keyword = ref('')
-/** 当前选中的分类 tag_id（'all' = 全部）；按 tag 过滤，不再按状态过滤 */
+/** 当前选中的分类 tag_id（'all' = 全部）；按 tag 过滤，不再按状态过滤（仅公共专家视图） */
 const tagFilter = ref('all')
 
 const dialogVisible = ref(false)
@@ -350,6 +402,9 @@ function tagNameOf(tagId) {
 }
 
 const filteredExperts = computed(() => {
+  // 我的专家视图：纯列表，不做关键词/分类过滤（需求）
+  if (view.value !== 'public') return experts.value
+
   const kw = keyword.value.trim().toLowerCase()
   return experts.value.filter((item) => {
     if (tagFilter.value !== 'all') {
@@ -368,12 +423,18 @@ const filteredExperts = computed(() => {
 })
 
 const emptyText = computed(() => {
+  if (view.value === 'mine') return '你还没有创建专家，点上方「返回公共专家」后，在公共视图右上角「新建专家」创建一个吧'
   if (keyword.value.trim()) return `没有匹配「${keyword.value.trim()}」的专家`
   if (tagFilter.value !== 'all') {
     return `「${tagNameOf(tagFilter.value)}」分类下暂无专家`
   }
-  return '还没有专家，点右上角「新建专家」创建一个吧'
+  return '公共专家目录为空，可在 exports/ 目录下新增预置专家'
 })
+
+/** 公共（预置）专家：只读（无编辑/删除入口） */
+function isPublic(item) {
+  return item?.scope === 'public'
+}
 
 function showToast(message, type = 'success') {
   toast.value = { show: true, message, type }
@@ -477,15 +538,36 @@ function formatTime(iso) {
   return new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium' }).format(date)
 }
 
+/**
+ * 拉取当前视图的数据。
+ *
+ * - public：公共（预置）专家目录，只读；
+ * - mine：我的专家（数据库），已删除（软删）的专家不再展示。
+ *
+ * 分类标签候选（tags）两个接口都会下发，取到即缓存，供卡片底部的 tag_name 展示。
+ */
+async function loadExperts(scope) {
+  if (scope === 'mine') {
+    const data = await listExperts({ includeDisabled: false })
+    myExperts.value = data.items || []
+    if (!tagOptions.value.length && Array.isArray(data.tags)) tagOptions.value = data.tags
+    return
+  }
+  const data = await listPublicExperts()
+  publicExperts.value = data.items || []
+  if (Array.isArray(data.tags) && data.tags.length) tagOptions.value = data.tags
+}
+
 async function refresh() {
   loading.value = true
   error.value = ''
   try {
-    // 已删除（软删除）的专家不再展示到列表
-    const data = await listExperts({ includeDisabled: false })
-    experts.value = data.items || []
-    tagOptions.value = Array.isArray(data.tags) ? data.tags : []
-    if (tagFilter.value !== 'all' && !tagOptions.value.some((t) => t.tag_id === tagFilter.value)) {
+    await loadExperts(view.value)
+    if (
+      view.value === 'public' &&
+      tagFilter.value !== 'all' &&
+      !tagOptions.value.some((t) => t.tag_id === tagFilter.value)
+    ) {
       // 选中的分类在下发列表里已不存在（配置调整）→ 回到「全部」
       tagFilter.value = 'all'
     }
@@ -496,12 +578,19 @@ async function refresh() {
   }
 }
 
-async function refreshSilently() {
+async function refreshSilently(scope = view.value) {
   try {
-    const data = await listExperts({ includeDisabled: false })
-    experts.value = data.items || []
-    tagOptions.value = Array.isArray(data.tags) ? data.tags : []
+    await loadExperts(scope)
   } catch (_) { /* 静默失败，保留旧数据 */ }
+}
+
+/** 切换视图：我的专家视图不带搜索与分类筛选，切换时把过滤条件复位 */
+function switchView(next) {
+  if (view.value === next) return
+  view.value = next
+  keyword.value = ''
+  tagFilter.value = 'all'
+  refresh()
 }
 
 function clearKeyword() {
@@ -563,12 +652,24 @@ async function submit() {
       showToast(`已创建「${form.nameCn.trim()}」`)
     }
     dialogVisible.value = false
-    await refreshSilently()
+    await gotoMyExperts()
   } catch (e) {
     dialogError.value = e.message || '提交失败'
   } finally {
     submitting.value = false
   }
+}
+
+/** 创建/编辑完成后定位到「我的专家」并刷新（新建的专家就归在这里） */
+async function gotoMyExperts() {
+  if (view.value !== 'mine') {
+    view.value = 'mine'
+    keyword.value = ''
+    tagFilter.value = 'all'
+    await refresh()
+    return
+  }
+  await refreshSilently('mine')
 }
 
 async function confirmDelete(item) {
@@ -578,7 +679,7 @@ async function confirmDelete(item) {
   if (!ok) return
   try {
     await deleteExpert(item.export_agent_id, false)
-    await refreshSilently()
+    await refreshSilently('mine')
     showToast(`已删除「${item.export_name_cn}」`)
   } catch (e) {
     showToast(e.message || '删除失败', 'error')
@@ -709,8 +810,16 @@ onMounted(refresh)
   background: var(--accent-color);
   color: #fff;
   font-size: 13px;
+  /* 防止按钮文案在窄容器里折行（折行会导致按钮高度不一致） */
+  white-space: nowrap;
   cursor: pointer;
   transition: background-color 0.18s ease;
+}
+
+/* 「我的专家」入口：与「新建专家」并排紧挨（间距 8px），
+   其余配色 / 高度 / 字号完全复用 .action-btn-primary */
+.action-btn-primary.mine-btn {
+  margin-left: 8px;
 }
 
 .action-btn-primary:hover:not(:disabled) {
@@ -748,6 +857,57 @@ onMounted(refresh)
 .action-btn-outline:hover {
   border-color: var(--accent-color);
   color: var(--accent-color);
+}
+
+/* ── 「我的专家」视图：返回公共专家的入口（顶替搜索框的占位）── */
+.back-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-right: auto;
+  padding: 7px 12px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  font-size: 13px;
+  cursor: pointer;
+  transition: border-color 0.18s ease, color 0.18s ease;
+}
+
+.back-btn:hover {
+  border-color: var(--accent-color);
+  color: var(--accent-color);
+}
+
+.back-btn:focus-visible {
+  outline: 2px solid var(--accent-color);
+  outline-offset: 2px;
+}
+
+.back-btn svg {
+  width: 15px;
+  height: 15px;
+}
+
+/* ── 「我的专家」视图的说明条（顶替 chips 行，保持两视图纵向节奏一致）── */
+.view-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 12px 24px 0;
+}
+
+.view-title {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.view-tip {
+  font-size: 12.5px;
+  color: var(--text-secondary);
 }
 
 /* ── 状态 chips ── */
@@ -1491,6 +1651,11 @@ onMounted(refresh)
 
   .action-btn-primary {
     margin-left: 0;
+  }
+
+  /* 窄屏下两按钮换行排列，保持 8px 间距 */
+  .action-btn-primary.mine-btn {
+    margin-left: 8px;
   }
 }
 

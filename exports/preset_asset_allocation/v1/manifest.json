@@ -1,0 +1,10 @@
+{
+  "expert_agent_id": "preset_asset_allocation",
+  "name_cn": "个人企业资产配置研究员",
+  "name_en": "asset-allocation-advisor",
+  "version": 1,
+  "prompt_file": "asset-allocation-advisor.md",
+  "generated_at": "2026-10-14T10:35:00",
+  "model": "preset",
+  "raw_llm_output": null
+}

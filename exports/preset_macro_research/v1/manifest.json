@@ -1,0 +1,10 @@
+{
+  "expert_agent_id": "preset_macro_research",
+  "name_cn": "宏观策略研究员",
+  "name_en": "macro-research-advisor",
+  "version": 1,
+  "prompt_file": "macro-research-advisor.md",
+  "generated_at": "2026-10-14T09:30:00",
+  "model": "preset",
+  "raw_llm_output": null
+}
