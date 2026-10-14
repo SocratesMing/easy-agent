@@ -124,7 +124,7 @@ def build() -> FastMCP:
         """
         # 纯计算，无 IO，保持同步以免占用线程池
         username = current_username()
-        logger.info(f"[investment_research] describe_idata_schema | 用户: {username}")
+        logger.info(f"[idata] describe_idata_schema | 用户: {username}")
         return {"ok": True, **idata.schema_help()}
 
     # ── 交易日 ──────────────────────────────────────────────────────────
@@ -164,12 +164,12 @@ def build() -> FastMCP:
         try:
             rows = await _query(sql, params)
         except Exception as e:
-            logger.warning(f"[investment_research] get_trade_dates 失败 | 用户: {username} | {e}")
+            logger.warning(f"[idata] get_trade_dates 失败 | 用户: {username} | {e}")
             return {"ok": False, "error": str(e)}
 
         dates = [str(r["d"]) for r in rows]
         logger.info(
-            f"[investment_research] get_trade_dates | 用户: {username} | "
+            f"[idata] get_trade_dates | 用户: {username} | "
             f"source={source} | {len(dates)} 个"
         )
         return {"ok": True, "source": source, "count": len(dates), "dates": dates}
@@ -234,12 +234,12 @@ def build() -> FastMCP:
         try:
             rows = await _query(sql, params)
         except Exception as e:
-            logger.warning(f"[investment_research] get_institution_flow 失败 | 用户: {username} | {e}")
+            logger.warning(f"[idata] get_institution_flow 失败 | 用户: {username} | {e}")
             return {"ok": False, "error": str(e)}
 
         items = idata.decorate_flow(rows)
         logger.info(
-            f"[investment_research] get_institution_flow | 用户: {username} | "
+            f"[idata] get_institution_flow | 用户: {username} | "
             f"日期={resolve_dates} | 维度={group_by or ['institution']} | 行数={len(items)}"
         )
         return {
@@ -283,11 +283,11 @@ def build() -> FastMCP:
         try:
             rows = await _query(sql, params)
         except Exception as e:
-            logger.warning(f"[investment_research] list_bonds 失败 | 用户: {username} | {e}")
+            logger.warning(f"[idata] list_bonds 失败 | 用户: {username} | {e}")
             return {"ok": False, "error": str(e)}
 
         logger.info(
-            f"[investment_research] list_bonds | 用户: {username} | "
+            f"[idata] list_bonds | 用户: {username} | "
             f"日期={resolve_dates[0]} | 行数={len(rows)}"
         )
         return {
@@ -329,13 +329,13 @@ def build() -> FastMCP:
         try:
             rows = await _query(sql, params)
         except Exception as e:
-            logger.warning(f"[investment_research] get_bond_counterparts 失败 | 用户: {username} | {e}")
+            logger.warning(f"[idata] get_bond_counterparts 失败 | 用户: {username} | {e}")
             return {"ok": False, "error": str(e)}
 
         items = idata.decorate_bond_rows(rows)
         buyer, seller = idata.pick_extremes(items)
         logger.info(
-            f"[investment_research] get_bond_counterparts | 用户: {username} | "
+            f"[idata] get_bond_counterparts | 用户: {username} | "
             f"{bond_id} | 日期={resolve_dates} | 行数={len(items)}"
         )
         return {
@@ -384,12 +384,12 @@ def build() -> FastMCP:
         try:
             rows = await _query(sql, params)
         except Exception as e:
-            logger.warning(f"[investment_research] get_bond_trend 失败 | 用户: {username} | {e}")
+            logger.warning(f"[idata] get_bond_trend 失败 | 用户: {username} | {e}")
             return {"ok": False, "error": str(e)}
 
         items = idata.decorate_bond_rows(rows)
         logger.info(
-            f"[investment_research] get_bond_trend | 用户: {username} | "
+            f"[idata] get_bond_trend | 用户: {username} | "
             f"{bond_id} | 日期数={len(resolve_dates)} | 行数={len(items)}"
         )
         return {
@@ -427,12 +427,12 @@ def build() -> FastMCP:
         try:
             rows = await _query(sql, params)
         except Exception as e:
-            logger.warning(f"[investment_research] list_top_active_bonds 失败 | 用户: {username} | {e}")
+            logger.warning(f"[idata] list_top_active_bonds 失败 | 用户: {username} | {e}")
             return {"ok": False, "error": str(e)}
 
         ranked = idata.rank_active_bonds(rows, top=max(1, min(int(top or 8), 50)))
         logger.info(
-            f"[investment_research] list_top_active_bonds | 用户: {username} | "
+            f"[idata] list_top_active_bonds | 用户: {username} | "
             f"日期={resolve_dates[0]} | 原始行={len(rows)} | 返回={len(ranked)}"
         )
         return {
@@ -505,11 +505,11 @@ def build() -> FastMCP:
                 core = idata.filter_core_bonds(snapshot, day_rows, top=top)
                 snapshot = core
         except Exception as e:
-            logger.warning(f"[investment_research] get_lending_snapshot 失败 | 用户: {username} | {e}")
+            logger.warning(f"[idata] get_lending_snapshot 失败 | 用户: {username} | {e}")
             return {"ok": False, "error": str(e)}
 
         logger.info(
-            f"[investment_research] get_lending_snapshot | 用户: {username} | "
+            f"[idata] get_lending_snapshot | 用户: {username} | "
             f"日期={today} | 行数={len(snapshot)} | 环比={bool(changes)}"
         )
         return {
@@ -553,12 +553,12 @@ def build() -> FastMCP:
         try:
             rows = await _query(sql, params)
         except Exception as e:
-            logger.warning(f"[investment_research] get_lending_trend 失败 | 用户: {username} | {e}")
+            logger.warning(f"[idata] get_lending_trend 失败 | 用户: {username} | {e}")
             return {"ok": False, "error": str(e)}
 
         items = idata.decorate_lending_rows(rows)
         logger.info(
-            f"[investment_research] get_lending_trend | 用户: {username} | "
+            f"[idata] get_lending_trend | 用户: {username} | "
             f"code={code or '全部'} | 日期数={len(resolve_dates)} | 行数={len(items)}"
         )
         return {
@@ -592,17 +592,17 @@ def build() -> FastMCP:
         try:
             rows = await _query(sql, params)
         except Exception as e:
-            logger.warning(f"[investment_research] get_llm_comment 失败 | 用户: {username} | {e}")
+            logger.warning(f"[idata] get_llm_comment 失败 | 用户: {username} | {e}")
             return {"ok": False, "error": str(e)}
 
         if not rows:
-            logger.info(f"[investment_research] get_llm_comment 未命中 | 用户: {username} | {scene}")
+            logger.info(f"[idata] get_llm_comment 未命中 | 用户: {username} | {scene}")
             return {
                 "ok": False,
                 "error": f"场景 {scene} 没有成功生成的点评（可换 date 或稍后再试）。",
             }
 
-        logger.info(f"[investment_research] get_llm_comment | 用户: {username} | {scene}")
+        logger.info(f"[idata] get_llm_comment | 用户: {username} | {scene}")
         return {"ok": True, "scene": scene, "comment": json_safe(rows[0])}
 
     return mcp

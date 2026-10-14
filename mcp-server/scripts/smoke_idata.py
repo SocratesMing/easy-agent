@@ -18,9 +18,9 @@ import sys
 from typing import Any
 
 from easy_mcp_server import context
-from easy_mcp_server.businesses.investment_research.server import build
+from easy_mcp_server.businesses.idata.server import build
 
-BUSINESS = "investment_research"
+BUSINESS = "idata"
 
 
 async def _call(mcp, name: str, **kwargs) -> dict[str, Any]:

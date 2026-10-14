@@ -88,7 +88,7 @@ def build() -> FastMCP:
     def describe_rates_timing_schema() -> dict[str, Any]:
         """查看利率择时模型的预测目标、概率单位、运行状态和解释证据口径。"""
         username = current_username()
-        logger.info(f"[investment_research] describe_rates_timing_schema | 用户: {username}")
+        logger.info(f"[rates_timing] describe_rates_timing_schema | 用户: {username}")
         return {"ok": True, **rates_timing.schema_help()}
 
     @mcp.tool()
@@ -175,7 +175,7 @@ def build() -> FastMCP:
             rows = await _query(page_sql, page_params)
         except Exception as e:
             logger.warning(
-                f"[investment_research] list_rates_predictions 失败 | "
+                f"[rates_timing] list_rates_predictions 失败 | "
                 f"域=rates_timing | 用户: {username} | {e}"
             )
             return {"ok": False, "error": str(e)}

@@ -211,25 +211,27 @@ WebSocket），所以启动时要显式给上限：
    信息冗余，本服务不返回
 5. 表可能与主库**不在同一个 database**：填 `FX_SCHEMA` 即可，不需要改代码
 
-### investment_research：投资研究问数
+### 投资研究：五个独立业务
 
-投资研究类问数业务（公共数据，不做行级隔离），目前由四个领域模块组成：
+投资研究类问数业务（公共数据，不做行级隔离）。原先这些场景同属 `investment_research`
+一个包、共用一个端点，已拆为**五个独立业务包**，各自一个端点、Key 与表可见性白名单：
 
-| 场景 | 表 | 内容 |
-| --- | --- | --- |
-| 机构当日 | `fmqt_bond_exec_part_data` | 现券成交分机构统计（机构 × 期限 × 券种 × 买卖） |
-| 个券机构 | `fmqt_bond_trade_counterpart_analysis` | 个债交易对手分析（单券 × 机构） |
-| 债券借贷 | `fmqt_bond_lending_analysis` | 借贷余额与集中度 |
-| 大模型点评 | `fmqt_idata_llm_analysis` | 已生成的点评正文 |
-| 国内宏观预测 | `fmqt_forecast_*`（六张表） | 报告、指标预测、模型明细、SHAP 归因和已存解读 |
-| 利率择时 | `fmqt_predictions_rates`, `fmqt_prediction_runs_rates` | 已存预测、运行审计、回测快照和因子解释 |
-| 周度研报观点 | `weekly_analyzer_data` | 周度机构观点、资产共识、研报出处与市场综述 |
-| 周度宏观预测 | `weekly_macro_data` | 指标、机构预测、覆盖数、数值均值与文字众数 |
+| 业务 | 场景 | 表 | 内容 |
+| --- | --- | --- | --- |
+| `idata` | 机构当日 | `fmqt_bond_exec_part_data` | 现券成交分机构统计（机构 × 期限 × 券种 × 买卖） |
+| `idata` | 个券机构 | `fmqt_bond_trade_counterpart_analysis` | 个债交易对手分析（单券 × 机构） |
+| `idata` | 债券借贷 | `fmqt_bond_lending_analysis` | 借贷余额与集中度 |
+| `idata` | 大模型点评 | `fmqt_idata_llm_analysis` | 已生成的点评正文 |
+| `macro_forecast` | 国内宏观预测 | `fmqt_forecast_*`（六张表） | 报告、指标预测、模型明细、SHAP 归因和已存解读 |
+| `rates_timing` | 利率择时 | `fmqt_predictions_rates`, `fmqt_prediction_runs_rates` | 已存预测、运行审计、回测快照和因子解释 |
+| `weekly_research` | 周度研报观点 | `weekly_analyzer_data` | 周度机构观点、资产共识、研报出处与市场综述 |
+| `weekly_research` | 周度宏观预测 | `weekly_macro_data` | 指标、机构预测、覆盖数、数值均值与文字众数 |
+| `gold_analysis` | 黄金价格归因 | `fmqt_gold_analysis_result` | 六个因子分组的累计贡献（收益率口径小数） |
 
 各领域先调用对应的 `describe_*_schema` 工具查看表、枚举、单位和口径说明。领域入口为：
 
 - `describe_idata_schema`、`describe_domestic_macro_schema`、`describe_rates_timing_schema`、
-  `describe_weekly_research_schema`
+  `describe_weekly_research_schema`、`describe_gold_schema`
 - 国内宏观预测按 `forecast_month` 定位报告；后续查询使用 `report_id` / `indicator_id`
 - 利率择时工具仅读已保存结果，不开始训练、不调用大模型；预测概率保留 0—1 原值
 - 周度观点与周度宏观预测是两份独立数据；周标签格式为 `YYYYMMDD-YYYYMMDD`

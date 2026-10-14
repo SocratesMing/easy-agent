@@ -87,7 +87,7 @@ def build() -> FastMCP:
     def describe_domestic_macro_schema() -> dict[str, Any]:
         """查看国内宏观预测报告、指标、模型明细、SHAP 与解读表的口径。"""
         username = current_username()
-        logger.info(f"[investment_research] describe_domestic_macro_schema | 用户: {username}")
+        logger.info(f"[macro_forecast] describe_domestic_macro_schema | 用户: {username}")
         return {"ok": True, **domestic_macro.schema_help()}
 
     @mcp.tool()

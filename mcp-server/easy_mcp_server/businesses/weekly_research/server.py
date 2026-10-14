@@ -88,7 +88,7 @@ def build() -> FastMCP:
     def describe_weekly_research_schema() -> dict[str, Any]:
         """查看周度观点矩阵和宏观预测 JSON 表的查询口径及数值/文字区别。"""
         username = current_username()
-        logger.info(f"[investment_research] describe_weekly_research_schema | 用户: {username}")
+        logger.info(f"[weekly_research] describe_weekly_research_schema | 用户: {username}")
         return {"ok": True, **weekly_research.schema_help()}
 
     @mcp.tool()

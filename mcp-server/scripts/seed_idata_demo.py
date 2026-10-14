@@ -21,7 +21,7 @@ import argparse
 import sys
 from typing import Any
 
-from easy_mcp_server.businesses.investment_research import idata
+from easy_mcp_server.businesses.idata import idata
 from easy_mcp_server.db import connection
 
 # ── 建表语句（字段与顺序照 iData数据分析看板.md） ───────────────────────
