@@ -99,7 +99,7 @@ def test_direct_library_write_is_categorized_only(agent, db):
 
 
 def test_direct_write_with_ambiguous_content_keeps_default_category(agent, db):
-    """内容与内置关键词都不沾边时回落「通用技能」，不写归属但技能照常可用。"""
+    """内容与内置关键词都不沾边时归入「通用技能」，且同样写入归属（分类创建时定稿）。"""
     skill_dir = skill_library.user_skills_dir(USERNAME) / "my-first-skill"
     skill_dir.mkdir(parents=True)
     (skill_dir / "SKILL.md").write_text(
@@ -111,7 +111,7 @@ def test_direct_write_with_ambiguous_content_keeps_default_category(agent, db):
 
     assert [item["dir_name"] for item in registered] == ["my-first-skill"]
     assert skill_dir.exists()
-    assert "my-first-skill" not in _assignments(USERNAME)
+    assert _assignments(USERNAME).get("my-first-skill") == "default"
 
 
 def test_non_skill_writes_are_ignored(agent, db):
