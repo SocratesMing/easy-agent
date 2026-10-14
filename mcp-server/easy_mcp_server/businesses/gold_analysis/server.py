@@ -60,6 +60,23 @@ async def _resolve_date(model: str | None, creation_time: str | None) -> str | N
     return await _latest(model)
 
 
+async def _resolve_or_error(
+    model: str | None, creation_time: str | None
+) -> tuple[str | None, dict[str, Any] | None]:
+    """解析目标日期；参数非法或库里无数据时返回 (None, 可直接返回的错误结果)。
+
+    日期解析发生在 ``_domain_query`` 之前，若不在这里兜住，``ValueError`` 会逃到
+    MCP 层变成 ``ToolError``，与其它工具统一的 ``{"ok": false, "error": ...}`` 不一致。
+    """
+    try:
+        target = await _resolve_date(model, creation_time)
+    except ValueError as e:
+        return None, {"ok": False, "error": str(e)}
+    if target is None:
+        return None, {"ok": False, "error": "表内没有任何归因记录"}
+    return target, None
+
+
 async def _domain_query(
     domain: str,
     tool: str,
@@ -135,9 +152,9 @@ def build() -> FastMCP:
         comparison. creation_time omitted means the latest date.
         """
         username = current_username()
-        target = await _resolve_date(model, creation_time)
-        if target is None:
-            return {"ok": False, "error": "表内没有任何归因记录"}
+        target, error = await _resolve_or_error(model, creation_time)
+        if error is not None:
+            return error
         return await _domain_query(
             "gold",
             "get_gold_prev_date",
@@ -191,9 +208,9 @@ def build() -> FastMCP:
         means the latest trading day.
         """
         username = current_username()
-        target = await _resolve_date(model, creation_time)
-        if target is None:
-            return {"ok": False, "error": "表内没有任何归因记录"}
+        target, error = await _resolve_or_error(model, creation_time)
+        if error is not None:
+            return error
         return await _domain_query(
             "gold",
             "get_gold_attribution",
@@ -208,9 +225,9 @@ def build() -> FastMCP:
         between them is model uncertainty. creation_time omitted means the latest date.
         """
         username = current_username()
-        target = await _resolve_date(None, creation_time)
-        if target is None:
-            return {"ok": False, "error": "表内没有任何归因记录"}
+        target, error = await _resolve_or_error(None, creation_time)
+        if error is not None:
+            return error
         return await _domain_query(
             "gold",
             "compare_gold_models",
