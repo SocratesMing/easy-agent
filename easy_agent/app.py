@@ -93,7 +93,7 @@ def _init_database_and_state(app, config) -> None:
 
 
 def _prepare_system_prompt(config, config_path) -> str:
-    """加载提示词目录与系统提示词、追加当前时间，返回最终 system_prompt。"""
+    """加载提示词目录与系统提示词，返回最终 system_prompt。"""
     # 提示词统一由 prompt_loader 从 agent.prompt_path 指向的目录加载：
     # system.md + fragments/*.md，缺失时逐级回落到内置默认提示词。
     # 同时把该目录设为全局提示词目录，使记忆类提示词也从同一处读取。
@@ -120,13 +120,6 @@ def _prepare_system_prompt(config, config_path) -> str:
     logger.info(f"   会话记忆文件: {_ws_abs}/{{username}}/session/{{workspace_name}}/memory.md")
     logger.info("=" * 60)
 
-    # 注入当前时间和时区，供定时任务 cron 表达式生成参考
-    now_dt = datetime.now().astimezone()
-    tz_name = now_dt.strftime("%Z") or "Asia/Shanghai"
-    system_prompt += (
-        f"\n## 当前时间\n"
-        f"{now_dt.strftime('%Y-%m-%d %H:%M:%S')} (时区: {tz_name})\n"
-    )
     return system_prompt
 
 
