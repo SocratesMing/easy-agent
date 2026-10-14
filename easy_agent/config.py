@@ -98,6 +98,10 @@ class ProviderConfig(BaseModel):
     # 未显式配置时的默认上下文窗口（1M）；实际值以各 provider 段配置为准。
     context_length: int = 1_000_000
     protocol: str = "openai"  # "openai" or "anthropic"
+    # 额外的请求头（透传给 LLM 客户端）。值里可用 ``{session_id}`` 占位符，
+    # 调用时会替换为当前会话标识——部分网关（如 OpenCode Go）强制要求稳定的
+    # 会话标识（x-opencode-session）与自定义 User-Agent，缺失会直接 400。
+    headers: dict[str, str] = Field(default_factory=dict)
 
 
 class LLMConfig(BaseModel):
@@ -109,12 +113,19 @@ class LLMConfig(BaseModel):
     provider: str = "minimax"
     context_length: int = 1_000_000  # Model context window size
     protocol: str = "openai"  # "openai" or "anthropic"
+    headers: dict[str, str] = Field(default_factory=dict)
     retry: RetryConfig = Field(default_factory=RetryConfig)
 
 
 class ToolsConfig(BaseModel):
     skills_dir: str = "./skills"
     prompts_dir: str = "./prompts"
+    result_log_truncate: int = 200
+    """工具结果写入日志时的截断字符数（默认 200）。
+
+    仅影响日志展示长度，不改变工具返回给模型的内容；读取方见
+    ``agent.py`` / ``services/streaming.py`` 中的 LoggingMiddleware 与流式日志。
+    """
 
 class SQLiteConfig(BaseModel):
     """SQLite configuration"""
@@ -179,6 +190,21 @@ class AgentConfig(BaseModel):
 
     operations 可选值：``read``、``write``，默认两者都禁止。
     通过 FilesystemPermission(mode="deny") 传入 create_deep_agent。
+
+    注意：``/user-skills`` 的 write 权限由 ``skill_write`` 接管（默认 new-only 会
+    忽略这里的 write 禁令并改用更细的规则），需要整体禁写时请设 skill_write=deny。
+    """
+
+    skill_write: str = "new-only"
+    """技能库（虚拟路径 /user-skills/）的写权限策略：
+
+    - ``new-only``（默认）：允许创建新技能目录并写入文件，禁止改动/删除已有技能，
+      点开头的路径（隐藏文件/目录）一律禁写；
+    - ``deny``：整个技能库禁止写入（旧行为）；
+    - ``allow``：不做额外限制。
+
+    通过 FilesystemPermission 传入 create_deep_agent，规则生成见
+    easy_agent.agent.EasyAgent._build_permissions。
     """
 
     external_dirs: dict[str, str] = Field(default_factory=dict)
@@ -254,6 +280,18 @@ class PresetQuestionGroup(BaseModel):
     questions: list[str] = Field(default_factory=list)
 
 
+class ExpertTag(BaseModel):
+    """专家 Agent 的分类标签（配置文件 ``expert_tags``）。
+
+    用于专家创建时的自动归类：把候选列表交给大模型，让它为每个专家挑一个
+    最匹配的 ``tag_id``；前端「专家」Tab 的筛选 chips 用 ``tag_name`` 渲染、
+    按 ``tag_id`` 过滤。
+    """
+
+    tag_id: str = ""
+    tag_name: str = ""
+
+
 class DistributedLockConfig(BaseModel):
     """多实例（多 pod / 多 worker）部署下的分布式锁配置。
 
@@ -290,7 +328,38 @@ class Config(BaseModel):
     models: dict[str, ProviderConfig] = Field(default_factory=dict)
     active_model: str = "minimax"
     preset_questions: list[PresetQuestionGroup] = Field(default_factory=list)
+    expert_tags: list[ExpertTag] = Field(default_factory=list)
+    """专家分类标签候选（创建专家时交给大模型做归类，见 ExpertTag）。"""
     app_welcome_title: str = DEFAULT_APP_WELCOME_TITLE
+
+    @field_validator("expert_tags", mode="before")
+    @classmethod
+    def _normalize_expert_tags(cls, value):
+        """兼容两种写法：``[{tag_id, tag_name}]`` 与 ``{tag_id: tag_name}`` 字典。
+
+        同时丢弃 ``tag_id`` / ``tag_name`` 为空的条目，避免配置写错时前端出现
+        空白 chip。
+        """
+        items: list[ExpertTag] = []
+        if isinstance(value, dict):
+            for key, name in value.items():
+                if str(key).strip() and str(name).strip():
+                    items.append(
+                        ExpertTag(tag_id=str(key).strip(), tag_name=str(name).strip())
+                    )
+            return items
+        if not isinstance(value, list):
+            return []
+        for item in value:
+            if isinstance(item, dict):
+                tag_id = str(item.get("tag_id") or item.get("id") or "").strip()
+                tag_name = str(item.get("tag_name") or item.get("name") or "").strip()
+                if tag_id and tag_name:
+                    items.append(ExpertTag(tag_id=tag_id, tag_name=tag_name))
+            elif isinstance(item, str) and item.strip():
+                # 只给了名字：用名字本身当 tag_id
+                items.append(ExpertTag(tag_id=item.strip(), tag_name=item.strip()))
+        return items
 
     @field_validator("preset_questions", mode="before")
     @classmethod
@@ -394,6 +463,7 @@ class Config(BaseModel):
             models=models,
             active_model=active_model,
             preset_questions=data.get("preset_questions", []),
+            expert_tags=data.get("expert_tags", []),
             app_welcome_title=data.get(
                 "app_welcome_title", DEFAULT_APP_WELCOME_TITLE
             ),
@@ -414,6 +484,7 @@ class Config(BaseModel):
                     api_base=mcfg.get("api_base", ""),
                     context_length=mcfg.get("context_length", 1_000_000),
                     protocol=mcfg.get("protocol", "openai"),
+                    headers=dict(mcfg.get("headers") or {}),
                 )
         return models
 
@@ -441,6 +512,7 @@ class Config(BaseModel):
             provider=active_cfg.provider or active_model,
             context_length=active_cfg.context_length or 1_000_000,
             protocol=active_cfg.protocol or "openai",
+            headers=dict(active_cfg.headers or {}),
             retry=retry_config,
         )
 
@@ -458,16 +530,19 @@ class Config(BaseModel):
             or "prompts",
             idle_logout_minutes=data.get("idle_logout_minutes", 0),
             denied_dirs=data.get("denied_dirs", []),
+            skill_write=data.get("skill_write") or "new-only",
             external_dirs=data.get("external_dirs", {}),
+            sandbox_enabled=data.get("sandbox_enabled", True),
         )
 
     @staticmethod
     def _parse_tools_config(data: dict) -> ToolsConfig:
-        """解析 tools 段（技能目录、提示词目录、读取行数上限）。"""
+        """解析 tools 段（技能目录、提示词目录、日志截断长度）。"""
         tools_data = data.get("tools", {})
         return ToolsConfig(
             skills_dir=tools_data.get("skills_dir", "./skills"),
             prompts_dir=tools_data.get("prompts_dir", "./prompts"),
+            result_log_truncate=tools_data.get("result_log_truncate", 200),
         )
 
     @staticmethod

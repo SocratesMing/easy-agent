@@ -11,6 +11,9 @@ Events emitted to frontend:
   content          {content}
   content_end      {}
   tool_call        {tool_name, tool_call_id, arguments, step}
+  tool_call_delta  {tool_name, tool_call_id, arguments, step}  大参数工具（write_file/edit_file）
+                   # 参数分片生成过程中的临时快照，用于前端实时渲染正在写入的内容；
+                   # 完整参数随后由 tool_call 事件权威覆盖。
   tool_result      {tool_name, tool_call_id, arguments, result, success, duration, step}
   todo_list        {todos, step}
   token_usage      {input_tokens, output_tokens, reasoning_tokens, context_length, auto_compress_tokens}
@@ -572,6 +575,153 @@ def _maybe_rename_workspace(agent, db, session_id, tool_call_records, sid):
         logger.warning(f"[{sid}] Workspace rename failed: {e}")
 
 
+def _resolve_recorded_path(agent, raw_path: str, skills_root: Path) -> Path:
+    """把 generated_files 里记录的路径还原成真实路径（兼容虚拟路径记录）。
+
+    write_file 传绝对虚拟路径（/workspace/... 或 /user-skills/...）时，记录里存的是
+    虚拟路径原文，需要按挂载映射翻译回真实路径才能操作文件。``skills_root`` 必须与
+    技能中心列目录时用的目录一致（来自 skill_library.user_skills_dir）。
+    """
+    text = str(raw_path or "")
+    if not text:
+        return Path("")
+    if text.startswith("/user-skills/"):
+        return skills_root / text[len("/user-skills/") :]
+    virtual_root = f"{agent.workspace_virtual_path}/"
+    if text.startswith(virtual_root):
+        return agent.workspace_dir / text[len(virtual_root) :]
+    return Path(text)
+
+
+def _drop_generated_records(
+    agent, db, session_id, target_dir: Path, skills_root: Path
+) -> int:
+    """删除落在 target_dir 内的生成文件记录（文件已移出工作区，文件面板不该再显示）。"""
+    removed = 0
+    try:
+        for row in db.get_generated_files(session_id) or []:
+            real = _resolve_recorded_path(agent, row.get("file_path", ""), skills_root)
+            try:
+                inside = target_dir.resolve() in real.resolve().parents
+            except (OSError, ValueError):
+                inside = False
+            if inside:
+                db.delete_generated_file(row.get("id"))
+                removed += 1
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[{session_id[-5:]}] 清理生成文件记录失败: {e}")
+    return removed
+
+
+def _register_session_skills(agent, db, session_id, sid) -> list[dict]:
+    """会话结束后把本次创建的技能收进技能库，工作区不留副本。
+
+    依据本次会话的 ``generated_files``（每次 write_file 都有记录）判断模型把技能写
+    到了哪里，比全量扫描工作区更精确：
+
+    1) 直接写进技能库（``/user-skills/<技能>/SKILL.md``）：文件已在位，补自动归类；
+    2) 写在工作区（``<workspace>/.../SKILL.md``）：``register_skill_source`` 移动入库，
+       并删除对应的生成文件记录，避免文件面板显示已不存在的文件。
+
+    入库后调用 ``invalidate_user_agents`` 让下一条消息（同一会话）就能加载新技能。
+    整个过程失败只记日志，不影响会话收尾。
+    """
+    if agent is None or db is None:
+        return []
+    username = getattr(agent, "username", "") or ""
+    if not username:
+        return []
+
+    try:
+        from . import agent_manager, skill_categories, skill_library
+
+        # 以技能中心的目录为准（而非 Agent 实例字段），保证"入库了就能在技能中心看到"
+        skills_root = skill_library.user_skills_dir(username)
+        registered: list[dict] = []
+        seen: set[str] = set()
+
+        for row in db.get_generated_files(session_id) or []:
+            real = _resolve_recorded_path(agent, row.get("file_path", ""), skills_root)
+            # 只以 SKILL.md 识别技能目录（其余文件随目录一起迁移）
+            if real.name != "SKILL.md":
+                continue
+            skill_dir = real.parent
+            if not skill_dir.is_dir() or skill_dir.name.startswith("."):
+                continue
+
+            parent_is_library = False
+            try:
+                parent_is_library = skill_dir.parent.resolve() == skills_root.resolve()
+            except (OSError, ValueError):
+                pass
+
+            if parent_is_library:
+                # 已在技能库：只需按内容归类（权限策略已限制为"只能新建"）。
+                # 记录一并删除：技能不在工作区，文件面板不该再列它（点开也取不到）。
+                if skill_dir.name in seen:
+                    continue
+                seen.add(skill_dir.name)
+                _auto_assign_skill_category(username, skill_dir, sid, skill_categories)
+                dropped = _drop_generated_records(
+                    agent, db, session_id, skill_dir, skills_root
+                )
+                registered.append(
+                    {
+                        "dir_name": skill_dir.name,
+                        "source": "direct",
+                        "path": skill_dir,
+                        "dropped_records": dropped,
+                    }
+                )
+                continue
+
+            # 写在工作区：登记进技能库（移动），并清掉工作区侧的记录
+            if skill_dir.name in seen:
+                continue
+            seen.add(skill_dir.name)
+            try:
+                result = skill_library.register_skill_source(username, skill_dir)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"[{sid}] 技能登记失败 | {skill_dir} | {e}")
+                continue
+            _auto_assign_skill_category(username, result["path"], sid, skill_categories)
+            dropped = _drop_generated_records(
+                agent, db, session_id, skill_dir, skills_root
+            )
+            registered.append(
+                {
+                    "dir_name": result["dir_name"],
+                    "source": "workspace",
+                    "path": result["path"],
+                    "renamed": result["renamed"],
+                    "warnings": result["warnings"],
+                    "dropped_records": dropped,
+                }
+            )
+
+        if registered:
+            # 技能清单在 Agent 构造时固化：入库后必须驱逐缓存，下一条消息才能加载
+            agent_manager.invalidate_user_agents(username)
+            logger.info(
+                f"[{sid}] ✅ 技能已入库 | "
+                + " | ".join(
+                    f"{item['dir_name']}（来源: {item['source']}）" for item in registered
+                )
+            )
+        return registered
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[{sid}] 技能入库流程异常: {e}")
+        return []
+
+
+def _auto_assign_skill_category(username: str, skill_dir: Path, sid: str, skill_categories) -> None:
+    """按技能名/描述/正文自动归类（失败不影响入库本身）。"""
+    try:
+        skill_categories.auto_assign_skill_dir(username, skill_dir.name, skill_dir)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[{sid}] 技能自动归类失败 | {skill_dir} | {e}")
+
+
 def _submit_memory_updates(agent, session_id, db, raw_user_msg, accumulated_response, sid):
     """将「会话级 memory.md」与「用户级 AGENTS.md」的记忆更新提交到后台线程执行。
 
@@ -981,6 +1131,10 @@ async def chat_stream_generator(
 
         # Workspace rename（抽取为公共函数，主生成器与 HITL resume 生成器复用）
         _maybe_rename_workspace(agent, db, session_id, tool_call_records, sid)
+
+        # 技能入库：对话创建的技能落到技能库，工作区不留副本（须在 rename 之后，
+        # 此时工作区路径与生成文件记录都已定稿）
+        _register_session_skills(agent, db, session_id, sid)
 
         # 会话级 + 用户级记忆持久化（复用公共函数，主生成器与 HITL resume 生成器一致，
         # 确保首轮即使触发 HITL、在批准后任务真正完成时也会生成 memory.md 并在第二轮加载）
@@ -1508,6 +1662,7 @@ async def resume_stream_generator(
         # 此处复用与主生成器一致的公共函数，保证第二轮能加载第一轮总结）。
         # 注意：仅在任务真正完成（非嵌套中断，嵌套中断已提前 return）时执行。
         _maybe_rename_workspace(agent, db, session_id, tool_call_records, sid)
+        _register_session_skills(agent, db, session_id, sid)
         _submit_memory_updates(agent, session_id, db, original_user_msg, accumulated_response, sid)
 
         logger.info(

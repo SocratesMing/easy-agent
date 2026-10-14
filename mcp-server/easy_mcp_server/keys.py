@@ -1,6 +1,7 @@
 """API Key 校验：Bearer key -> username。
 
-只做只读校验，签发由主应用负责（表结构同样由主应用维护）。
+只做只读校验；签发/吊销/建表见 :mod:`scripts.init_keys`（表结构由本侧维护，
+与主应用那份同源同构）。
 校验结果做短 TTL 缓存，避免每次工具调用都查库。
 
 表名与哈希算法都属于对外契约，统一从 :mod:`easy_mcp_server.contract` 取，

@@ -23,8 +23,17 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
+from langchain_core.utils.json import parse_partial_json
 
 from ..model import extract_reasoning
+
+
+# 需要「参数流式渲染」的工具：这些工具的 arguments 体量很大（write_file 的
+# content、edit_file 的 new_string 动辄几 KB～几十 KB）。若只在 updates 模式收到
+# 完整 AIMessage 时才下发 tool_call，用户在模型生成文件内容的整个过程中看不到
+# 任何反馈（大文件可能要等十几秒）。这里解析 messages 模式的 tool_call_chunks
+# 分片参数，边收边下发 tool_call_delta，前端即可实时渲染正在写入的文件内容。
+STREAM_ARG_TOOLS = {"write_file", "edit_file", "write_tool"}
 
 
 def _truncate(text, limit: int) -> str:
@@ -144,6 +153,11 @@ class StreamProcessor:
         # 保存上一段已结束的 duration，使该 turn 最终"用时"为各段之和。
         self._thinking_duration_acc = 0.0
 
+        # tool_call_chunks 参数流式累积：index -> {id, name, raw, last_emit}。
+        # 仅在 messages 模式解析大参数工具（见 STREAM_ARG_TOOLS）时使用，
+        # 每个 model turn 结束（updates 的完整 AIMessage 到达）时清空。
+        self._arg_stream: dict = {}
+
     def _thinking_text(self) -> str:
         blk = next((b for b in self.blocks if b.get("type") == "thinking"), None)
         return blk.get("content", "") if blk else ""
@@ -249,6 +263,9 @@ class StreamProcessor:
                            "tool_call_id": tid, "arguments": args,
                            "step": self.current_step})
             events.extend(self._maybe_todo_from_args(name, tid, args))
+        # 本 turn 的参数流式分片已被完整 tool_calls 取代：清空累积状态，
+        # 供下一个 turn（tool_call_chunks 的 index 从 0 重新开始）重新累积。
+        self._arg_stream.clear()
         self.consume_usage_metadata(m)
         events.extend(self._emit_token_usage())
         return events
@@ -299,6 +316,7 @@ class StreamProcessor:
             return events
         rc = extract_reasoning(getattr(chunk, "additional_kwargs", {}))
         content = chunk.content or ""
+        tcc = getattr(chunk, "tool_call_chunks", None) or []
         if rc:
             # 去重：当前 turn 的思考块已存在（_step_advanced_this_turn=True，即继续
             # 思考或重开同一 step）时，部分 provider/LangGraph 会在流末尾重放整段
@@ -394,7 +412,72 @@ class StreamProcessor:
             # 若丢弃纯空白 chunk，标题/表格/代码块之间的换行会缺失，
             # 导致 markdown 实时渲染成原始文本（历史记录用的是完整文本所以正常）。
             events.append({"type": "content", "content": content, "step": self.current_step})
+        # 大参数工具（write_file/edit_file）的 arguments 分片：边收边解析出当前
+        # 快照，下发 tool_call_delta 供前端实时渲染正在写入的内容。
+        if tcc:
+            events.extend(self._handle_tool_call_chunks(tcc))
         return events
+
+    def _handle_tool_call_chunks(self, tcc) -> list[dict]:
+        """累积 tool_call_chunks 的裸参数串，为大参数工具下发参数快照。
+
+        OpenAI 兼容流把 tool_calls 的 arguments 按 token 分片下发（首个分片带
+        id/name，后续分片只有 args 片段）。这里按 ``index`` 累积原始 JSON 串，
+        用 parse_partial_json 解析出「当前最优快照」（允许截断），只对
+        STREAM_ARG_TOOLS 名单内的工具下发 ``tool_call_delta``。完整参数随后仍由
+        updates 模式的 ``tool_call`` 事件权威覆盖，二者不冲突。
+
+        为控制超大文件的开销，按 40ms 节流解析与下发；最后一次快照由最终
+        ``tool_call`` 事件补齐，不会丢内容。
+        """
+        events = []
+        now = time.time()
+        for tc in tcc:
+            idx = tc.get("index")
+            if idx is None:
+                idx = 0
+            state = self._arg_stream.get(idx)
+            if state is None:
+                state = {"id": "", "name": "", "raw": "", "last_emit": 0.0}
+                self._arg_stream[idx] = state
+            tid = tc.get("id") or ""
+            name = tc.get("name") or ""
+            if tid and not state["id"]:
+                state["id"] = tid
+            if name and not state["name"]:
+                state["name"] = name
+            frag = tc.get("args")
+            if frag:
+                state["raw"] += frag if isinstance(frag, str) else json.dumps(frag)
+            if state["name"] not in STREAM_ARG_TOOLS or not state["raw"]:
+                continue
+            # 节流：常规文件 40ms 一次；参数越大解析越贵（每次都是全量部分解析），
+            # 按体积自适应放宽到最多 ~0.4s 一次，避免超大文件出现 O(n^2) 解析开销。
+            raw_len = len(state["raw"])
+            min_interval = 0.04 if raw_len < 20000 else min(0.4, 0.04 + raw_len / 2_000_000)
+            if now - state["last_emit"] < min_interval:
+                continue
+            state["last_emit"] = now
+            parsed = self._parse_partial_args(state["raw"])
+            if not parsed:
+                continue
+            events.append({
+                "type": "tool_call_delta",
+                "tool_name": state["name"],
+                "tool_call_id": state["id"] or f"tool-{state['name']}",
+                "arguments": parsed,
+                "step": self.current_step,
+            })
+        return events
+
+    @staticmethod
+    def _parse_partial_args(raw: str):
+        """尽力解析可能被截断的 arguments JSON 串，失败返回 None。"""
+        try:
+            parsed = parse_partial_json(raw)
+        except Exception:  # noqa: BLE001 - 任意解析异常都不应中断流式输出
+            return None
+        return parsed if isinstance(parsed, dict) else None
 
     def _usage_payload(self, elapsed_time: float) -> dict:
         """统一的用量负载（``token_usage`` 事件与 ``done`` 事件共用）。"""

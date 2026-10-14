@@ -78,3 +78,8 @@ ${TEST_*}
 # 打包产物（如拷贝到内网的 mcp-server.zip / 分卷包，大体积二进制勿提交）
 *.zip
 *.zip.0*
+
+# 来自 vue26-1013
+.workbuddy/
+/docs/expert-agent-solution.md
+/docs/expert-skill-solution.md

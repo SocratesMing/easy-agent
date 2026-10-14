@@ -8,6 +8,7 @@ import logging
 import os
 import re
 import sqlite3
+import time
 import uuid
 from contextlib import contextmanager
 from datetime import datetime
@@ -29,6 +30,33 @@ from ..utils.auth import hash_password, verify_password
 DATABASE_PATH = "./data/easy_agent.db"
 logger = logging.getLogger(__name__)
 
+# 库表结构版本号。**任何建表 / 加列 / 改列 / 建索引 / 新建表的变更都必须把它 +1**，
+# 否则已经升级过的库会一直命中「结构已是最新」的快速启动路径，变更不会生效。
+# 见 init_tables()：版本一致时跳过整轮建表 + 补列 + 建索引探测（MySQL 上这一步
+# 过去要 40+ 次网络往返，多副本部署时每个 pod 启动都要跑一遍，是启动慢的主因）。
+SCHEMA_VERSION = 4
+SCHEMA_VERSION_TABLE = "schema_meta"
+SCHEMA_VERSION_KEY = "schema_version"
+
+# 快速路径的兜底校验：这些表必须全部存在，缺任何一个都回退到完整初始化。
+# 新增表时除了加进这里，同样要 bump SCHEMA_VERSION。
+EXPECTED_TABLES = (
+    "sessions",
+    "session_messages",
+    "session_files",
+    "generated_files",
+    "tool_call_records",
+    "thinking_records",
+    "users",
+    "mcp_api_keys",
+    "mcp_businesses",
+    "fmqt_lock",
+    "scheduled_tasks",
+    "scheduled_task_runs",
+    "distributed_locks",
+    "expert_agents",
+)
+
 
 def ensure_database_dir(db_path: str):
     db_dir = os.path.dirname(db_path)
@@ -41,6 +69,12 @@ class Database:
         self.db_type = "sqlite"
         self._connection: Optional[sqlite3.Connection] = None
         self._pool = None
+        # 每张表的列名缓存：一轮初始化里 _ensure_column 会对同一张表查很多次
+        # （users 就有 8 次），缓存后每张表最多一次 SHOW COLUMNS / PRAGMA。
+        self._column_cache: dict[str, set[str]] = {}
+        # 每张表的「列名 -> 类型」缓存（仅 MySQL 用），用于判断 ALTER MODIFY 是否
+        # 真的需要执行：MODIFY 会重建整表，sessions 表几十 MB 时单条就可能几秒。
+        self._column_type_cache: dict[str, dict[str, str]] = {}
 
         if db_config:
             configured_type = db_config.get("type", "sqlite")
@@ -232,19 +266,16 @@ class Database:
         self._ensure_column(cursor, "sessions", "pinned", "INTEGER DEFAULT 0")
 
         if self.db_type == "mysql":
-            try:
-                cursor.execute(
-                    "ALTER TABLE sessions MODIFY COLUMN messages MEDIUMTEXT NOT NULL"
-                )
-            except Exception:
-                pass
-            # 存量库继续升级到 LONGTEXT：MEDIUMTEXT(16MB) 在消息不截断后容易写满
-            try:
-                cursor.execute(
-                    "ALTER TABLE sessions MODIFY COLUMN messages LONGTEXT NOT NULL"
-                )
-            except Exception:
-                pass
+            # 只在实际类型不满足时改列：MODIFY 会重建整表，sessions 表较大时
+            # 单条就可能耗时数秒，每次启动都执行是完全没有必要的开销。
+            messages_col_type = self._column_type(cursor, "sessions", "messages")
+            if "longtext" not in messages_col_type:
+                try:
+                    cursor.execute(
+                        "ALTER TABLE sessions MODIFY COLUMN messages LONGTEXT NOT NULL"
+                    )
+                except Exception:
+                    pass
 
         self._ensure_column(cursor, "sessions", "todos", "TEXT DEFAULT NULL")
 
@@ -327,15 +358,25 @@ class Database:
         )
 
         if self.db_type == "mysql":
-            try:
-                cursor.execute(
-                    "ALTER TABLE session_messages MODIFY COLUMN content MEDIUMTEXT"
-                )
-                cursor.execute(
-                    "ALTER TABLE session_messages MODIFY COLUMN extra_data MEDIUMTEXT"
-                )
-            except Exception:
-                pass
+            # 同 sessions.messages：列类型已满足时不再 MODIFY（避免整表重建）。
+            if "mediumtext" not in self._column_type(
+                cursor, "session_messages", "content"
+            ):
+                try:
+                    cursor.execute(
+                        "ALTER TABLE session_messages MODIFY COLUMN content MEDIUMTEXT"
+                    )
+                except Exception:
+                    pass
+            if "mediumtext" not in self._column_type(
+                cursor, "session_messages", "extra_data"
+            ):
+                try:
+                    cursor.execute(
+                        "ALTER TABLE session_messages MODIFY COLUMN extra_data MEDIUMTEXT"
+                    )
+                except Exception:
+                    pass
 
     def _create_files_tables(self, cursor, auto_inc):
         cursor.execute(f"""
@@ -525,54 +566,213 @@ class Database:
 
 
     def init_tables(self):
+        """幂等地初始化库表结构。
+
+        启动性能：MySQL 场景下完整建表流程要 40+ 次网络往返（建表建索引 +
+        每张表 SHOW COLUMNS + ALTER MODIFY 改列 + 全量消息修复扫描），多副本
+        部署时每个 pod 启动都要跑一遍，是「连接 MySQL 很久」的主因。这里加一层
+        schema 版本快速路径：库里记录的结构版本与代码一致、且期望的表都在时，
+        只发 3 条探测 SQL 就返回，不再重复建表/补列/扫描。
+
+        **改动任何表结构后必须把 SCHEMA_VERSION +1**，否则旧库不会走完整迁移。
+        """
+        started = time.monotonic()
         with self.get_connection() as conn:
             cursor = conn.cursor()
 
-            auto_inc = "AUTOINCREMENT" if self.db_type == "sqlite" else "AUTO_INCREMENT"
+            current_version = self._ensure_schema_meta_table(cursor)
+            conn.commit()
 
-            # MySQL 用 LONGTEXT(4GB)：会话消息不截断落库后体积可达数十 MB，
-            # MEDIUMTEXT(16MB) 会触发 1406 Data too long 导致保存失败。
-            # SQLite 的 TEXT 无实际长度限制，保持不变。
-            messages_type = "TEXT" if self.db_type == "sqlite" else "LONGTEXT"
-
-            self._create_sessions_table(cursor, messages_type)
-            self._create_tool_call_records_table(cursor, auto_inc)
-            self._create_thinking_records_table(cursor, auto_inc)
-            self._create_session_messages_table(cursor, auto_inc)
-            self._create_files_tables(cursor, auto_inc)
-            self._create_users_table(cursor)
-            self._create_misc_tables(cursor, auto_inc)
-            self._create_scheduled_task_tables(cursor)
-            self._create_distributed_lock_table(cursor)
-
-            # Narrow integration point: schema ownership stays in knowledge/.
-            # 有意偏离迁移来源：其 prod 分支调用 validate_knowledge_schema_cursor，
-            # 但本分支未迁移 schema 迁移 CLI（scripts/migrate_knowledge_schema.py），
-            # 存量 prod 库会因校验失败而无法启动。initialize_knowledge_schema 是
-            # 幂等且有 checksum 保护的，故始终调用它；失败只告警，绝不阻断启动。
-            from ..knowledge.schema import initialize_knowledge_schema
-
-            try:
-                initialize_knowledge_schema(self, cursor)
-            except Exception as e:  # noqa: BLE001
-                logger.warning(
-                    f"知识库 schema 初始化失败（knowledge 功能将不可用，服务继续启动）: {e}"
+            if current_version == SCHEMA_VERSION and self._schema_tables_present(cursor):
+                logger.info(
+                    f"数据库结构已是最新（schema_version={SCHEMA_VERSION}），"
+                    f"跳过建表检查 | 耗时 {time.monotonic() - started:.2f}s"
                 )
+                # 结构无需迁移时仍跑一次轻量数据自愈：只发 1 条聚合 SQL 比对
+                # 条数，只有真的不一致的会话才会被重建。
+                self._repair_missing_message_rows(cursor)
+                conn.commit()
+                return
 
+            self._init_tables_full(cursor)
             conn.commit()
 
-            # 修复 session_messages 表中缺失的消息行
+            # 修复 session_messages 表中缺失的消息行（仅在结构变更/首次启动时执行）
             self._repair_missing_message_rows(cursor)
+            self._store_schema_version(cursor)
             conn.commit()
+
+        logger.info(f"数据库结构初始化/升级完成 | 耗时 {time.monotonic() - started:.2f}s")
+
+    def _init_tables_full(self, cursor):
+        """完整建表 + 补列 + 建索引流程（仅在结构变更或首次启动时执行）。"""
+        self._column_cache.clear()
+        self._column_type_cache.clear()
+
+        auto_inc = "AUTOINCREMENT" if self.db_type == "sqlite" else "AUTO_INCREMENT"
+
+        # MySQL 用 LONGTEXT(4GB)：会话消息不截断落库后体积可达数十 MB，
+        # MEDIUMTEXT(16MB) 会触发 1406 Data too long 导致保存失败。
+        # SQLite 的 TEXT 无实际长度限制，保持不变。
+        messages_type = "TEXT" if self.db_type == "sqlite" else "LONGTEXT"
+
+        self._create_sessions_table(cursor, messages_type)
+        self._create_tool_call_records_table(cursor, auto_inc)
+        self._create_thinking_records_table(cursor, auto_inc)
+        self._create_session_messages_table(cursor, auto_inc)
+        self._create_files_tables(cursor, auto_inc)
+        self._create_users_table(cursor)
+        self._create_misc_tables(cursor, auto_inc)
+        self._create_scheduled_task_tables(cursor)
+        self._create_distributed_lock_table(cursor)
+        self._create_expert_tables(cursor)
+
+        # Narrow integration point: schema ownership stays in knowledge/.
+        # 有意偏离迁移来源：其 prod 分支调用 validate_knowledge_schema_cursor，
+        # 但本分支未迁移 schema 迁移 CLI（scripts/migrate_knowledge_schema.py），
+        # 存量 prod 库会因校验失败而无法启动。initialize_knowledge_schema 是
+        # 幂等且有 checksum 保护的，故始终调用它；失败只告警，绝不阻断启动。
+        from ..knowledge.schema import initialize_knowledge_schema
+
+        try:
+            initialize_knowledge_schema(self, cursor)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                f"知识库 schema 初始化失败（knowledge 功能将不可用，服务继续启动）: {e}"
+            )
+
+    def _create_expert_tables(self, cursor):
+        """专家 Agent 表 expert_agents（见 docs/expert-agent-solution.md §3.1）。
+
+        建表口径：
+        - ``export_run_file_path`` 按需求「（删除）」不建；
+        - ``export_skills_names``：专家技能标签（中文名数组，JSON 字符串），由大模型
+          根据用户描述生成 2~3 个；前端卡片最多展示 3 个；
+        - ``export_description``：专家主要功能描述（大模型生成，≤300 字），
+          用于卡片与详情页展示；
+        - ``tag_id``：分类标签，由大模型在配置的 ``expert_tags`` 候选中选一个，
+          前端「专家」Tab 的筛选 chips 按它过滤（``tag_name`` 取自配置文件）；
+        - 时间统一 ``VARCHAR(50)`` 存 ISO 字符串，与 sessions/scheduled_tasks 现有
+          约定一致，规避 SQLite/MySQL 双栈的 DATETIME 类型分歧；
+        - 列表型字段（skills_names / features_prompt）用 TEXT 存 JSON 字符串；
+        - 不加外键约束，只建索引，与本项目其余表一致。
+        """
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS expert_agents (
+                export_agent_id VARCHAR(255) PRIMARY KEY,
+                session_id VARCHAR(255) DEFAULT '',
+                user_id VARCHAR(255) NOT NULL,
+                tag_id VARCHAR(255) DEFAULT '',
+                export_name_en VARCHAR(255) NOT NULL,
+                export_name_cn VARCHAR(255) NOT NULL,
+                export_prompt TEXT,
+                export_description TEXT,
+                export_skills_names TEXT,
+                export_features_prompt TEXT,
+                export_file_path VARCHAR(1024) DEFAULT '',
+                agent_status VARCHAR(32) NOT NULL DEFAULT 'active',
+                export_version INTEGER NOT NULL DEFAULT 1,
+                create_timestamp VARCHAR(50) NOT NULL,
+                update_timestamp VARCHAR(50) NOT NULL
+            )
+        """)
+        self._create_index(
+            cursor, "idx_expert_agents_user", "expert_agents", "user_id"
+        )
+        self._create_index(
+            cursor, "idx_expert_agents_status", "expert_agents", "agent_status"
+        )
+
+    def _ensure_schema_meta_table(self, cursor) -> int:
+        """建 schema_meta 表（若缺）并返回库中记录的结构版本号（无记录返回 0）。"""
+        if self.db_type == "sqlite":
+            cursor.execute(
+                f"CREATE TABLE IF NOT EXISTS {SCHEMA_VERSION_TABLE} "
+                "(meta_key TEXT PRIMARY KEY, meta_value TEXT NOT NULL)"
+            )
+        else:
+            cursor.execute(
+                f"CREATE TABLE IF NOT EXISTS {SCHEMA_VERSION_TABLE} "
+                "(meta_key VARCHAR(64) NOT NULL PRIMARY KEY, "
+                "meta_value VARCHAR(255) NOT NULL)"
+            )
+        self._execute(
+            cursor,
+            f"SELECT meta_value FROM {SCHEMA_VERSION_TABLE} WHERE meta_key=?",
+            (SCHEMA_VERSION_KEY,),
+        )
+        row = cursor.fetchone()
+        if not row:
+            return 0
+        raw = row["meta_value"] if isinstance(row, dict) else row[0]
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return 0
+
+    def _store_schema_version(self, cursor) -> None:
+        value = str(SCHEMA_VERSION)
+        if self.db_type == "sqlite":
+            self._execute(
+                cursor,
+                f"INSERT OR REPLACE INTO {SCHEMA_VERSION_TABLE} "
+                "(meta_key, meta_value) VALUES (?, ?)",
+                (SCHEMA_VERSION_KEY, value),
+            )
+        else:
+            self._execute(
+                cursor,
+                f"INSERT INTO {SCHEMA_VERSION_TABLE} (meta_key, meta_value) VALUES (?, ?) "
+                "ON DUPLICATE KEY UPDATE meta_value=VALUES(meta_value)",
+                (SCHEMA_VERSION_KEY, value),
+            )
+
+    def _schema_tables_present(self, cursor) -> bool:
+        """快速校验关键表是否齐全；有任何缺失都回退到完整初始化。"""
+        try:
+            if self.db_type == "sqlite":
+                self._execute(
+                    cursor, "SELECT name FROM sqlite_master WHERE type='table'"
+                )
+                rows = cursor.fetchall()
+                names = {r["name"] if isinstance(r, dict) else r[0] for r in rows}
+            else:
+                self._execute(cursor, "SHOW TABLES")
+                rows = cursor.fetchall()
+                names = set()
+                for r in rows:
+                    if isinstance(r, dict):
+                        names.update(r.values())
+                    else:
+                        names.add(r[0])
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"读取表清单失败，回退到完整初始化: {e}")
+            return False
+        return all(t in names for t in EXPECTED_TABLES)
 
     def _repair_missing_message_rows(self, cursor):
-        """修复 session_messages 表中缺失或被覆盖的消息行（从 sessions 表 JSON 重建）"""
+        """修复 session_messages 表中缺失或被覆盖的消息行（从 sessions 表 JSON 重建）。
+
+        启动性能：先用一条聚合 SQL 找出「JSON 消息条数与 session_messages 行数
+        不一致」的会话，只对这些会话取回消息体并重建；一致时（绝大多数情况）
+        完全不加载任何消息内容。原实现会 SELECT 全表 messages 并逐会话 COUNT，
+        会话多、消息大时启动明显变慢。
+        """
         try:
-            self._execute(cursor, "SELECT session_id, messages FROM sessions")
+            mismatched_ids = self._find_mismatched_sessions(cursor)
+            if not mismatched_ids:
+                return
+
+            self._execute(
+                cursor, "SELECT session_id, messages FROM sessions"
+            )
             sessions = cursor.fetchall()
+
             repaired_sessions = 0
             for s in sessions:
                 sid = s["session_id"] if isinstance(s, dict) else s[0]
+                if sid not in mismatched_ids:
+                    continue
                 raw_msgs = s["messages"] if isinstance(s, dict) else s[1]
                 if not raw_msgs:
                     continue
@@ -580,36 +780,26 @@ class Database:
                     json.loads(raw_msgs) if isinstance(raw_msgs, str) else raw_msgs
                 )
 
-                # 获取当前 session_messages 中的行数
+                # 行数不一致：删除旧行，从 JSON 重建
                 self._execute(
                     cursor,
-                    "SELECT COUNT(*) as cnt FROM session_messages WHERE session_id=?",
+                    "DELETE FROM session_messages WHERE session_id=?",
                     (sid,),
                 )
-                row = cursor.fetchone()
-                row_count = row["cnt"] if isinstance(row, dict) else row[0]
-
-                if row_count != len(json_messages):
-                    # 行数不一致：删除旧行，从 JSON 重建
+                for msg in json_messages:
+                    role = msg.get("role", "user")
+                    content = msg.get("content", "")
+                    extra_data = self._sanitize_extra_data(msg)
+                    timestamp = msg.get("timestamp", datetime.now().isoformat())
                     self._execute(
                         cursor,
-                        "DELETE FROM session_messages WHERE session_id=?",
-                        (sid,),
+                        """
+                        INSERT INTO session_messages (session_id, role, content, extra_data, created_at)
+                        VALUES (?, ?, ?, ?, ?)
+                        """,
+                        (sid, role, content, extra_data, timestamp),
                     )
-                    for msg in json_messages:
-                        role = msg.get("role", "user")
-                        content = msg.get("content", "")
-                        extra_data = self._sanitize_extra_data(msg)
-                        timestamp = msg.get("timestamp", datetime.now().isoformat())
-                        self._execute(
-                            cursor,
-                            """
-                            INSERT INTO session_messages (session_id, role, content, extra_data, created_at)
-                            VALUES (?, ?, ?, ?, ?)
-                            """,
-                            (sid, role, content, extra_data, timestamp),
-                        )
-                    repaired_sessions += 1
+                repaired_sessions += 1
             if repaired_sessions > 0:
                 logger.info(
                     f"数据修复：重建了 {repaired_sessions} 个会话的 session_messages 行"
@@ -617,20 +807,73 @@ class Database:
         except Exception as e:
             logger.warning(f"修复 session_messages 缺失行时出错: {e}")
 
+    def _find_mismatched_sessions(self, cursor) -> set[str]:
+        """返回 messages JSON 条数与 session_messages 行数不一致的会话 id 集合。
+
+        单条 SQL 完成比对（不走 Python 逐会话循环），MySQL 用 JSON_LENGTH，
+        SQLite 用 json_array_length；两侧都要求 messages 是合法 JSON 数组，
+        避免脏数据 / 非数组结构被误判或触发函数报错。
+        """
+        if self.db_type == "sqlite":
+            sql = (
+                "SELECT s.session_id FROM sessions s "
+                "WHERE json_valid(s.messages) AND json_type(s.messages) = 'array' "
+                "AND json_array_length(s.messages) <> ("
+                "  SELECT COUNT(*) FROM session_messages m "
+                "  WHERE m.session_id = s.session_id)"
+            )
+        else:
+            sql = (
+                "SELECT s.session_id FROM sessions s "
+                "WHERE JSON_VALID(s.messages) AND JSON_TYPE(s.messages) = 'ARRAY' "
+                "AND JSON_LENGTH(s.messages) <> ("
+                "  SELECT COUNT(*) FROM session_messages m "
+                "  WHERE m.session_id = s.session_id)"
+            )
+        self._execute(cursor, sql)
+        rows = cursor.fetchall()
+        return {r["session_id"] if isinstance(r, dict) else r[0] for r in rows}
+
     def _ensure_column(self, cursor, table: str, column: str, col_def: str):
+        columns = self._table_columns(cursor, table)
+        if column not in columns:
+            cursor.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_def}")
+            columns.add(column)
+
+    def _table_columns(self, cursor, table: str) -> set[str]:
+        """返回表的所有列名（同一轮初始化内缓存，避免重复 SHOW COLUMNS / PRAGMA）。
+
+        users 一张表历史上要探测 8 次列，缓存后每张表最多查一次；MySQL 下每次
+        SHOW COLUMNS 都是一次网络往返，这是启动慢的次要来源之一。
+        """
+        cached = self._column_cache.get(table)
+        if cached is not None:
+            return cached
         if self.db_type == "sqlite":
             cursor.execute(f"PRAGMA table_info({table})")
-            columns = [col[1] for col in cursor.fetchall()]
-            if column not in columns:
-                cursor.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_def}")
+            columns = {col[1] for col in cursor.fetchall()}
         else:
             cursor.execute(f"SHOW COLUMNS FROM {table}")
-            columns = [
-                col["Field"] if isinstance(col, dict) else col[0]
-                for col in cursor.fetchall()
-            ]
-            if column not in columns:
-                cursor.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_def}")
+            rows = cursor.fetchall()
+            columns = set()
+            types: dict[str, str] = {}
+            for col in rows:
+                if isinstance(col, dict):
+                    name = col.get("Field", "")
+                    types[name] = str(col.get("Type", ""))
+                else:
+                    name = col[0]
+                    types[name] = str(col[1]) if len(col) > 1 else ""
+                columns.add(name)
+            self._column_type_cache[table] = types
+        self._column_cache[table] = columns
+        return columns
+
+    def _column_type(self, cursor, table: str, column: str) -> str:
+        """返回列类型（小写，仅 MySQL 有意义）；缓存未命中时先填充表的列信息。"""
+        if table not in self._column_type_cache:
+            self._table_columns(cursor, table)
+        return self._column_type_cache.get(table, {}).get(column, "").lower()
 
     def _ensure_unique_index(
         self, cursor, table: str, index_name: str, column: str
@@ -1954,6 +2197,21 @@ class Database:
             )
             rows = cursor.fetchall()
         return [dict(row) for row in rows]
+
+    def delete_generated_file(self, file_id: int) -> bool:
+        """删除单条生成文件记录（例如技能已入库、工作区不再保留该文件）。"""
+        if file_id is None:
+            return False
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                self._execute(
+                    cursor, "DELETE FROM generated_files WHERE id=?", (file_id,)
+                )
+            return True
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"删除生成文件记录失败 | id={file_id} | {e}")
+            return False
 
     def get_generated_filenames(self, username: str) -> set[str]:
         """返回指定用户所有会话中生成的文件原始文件名集合。

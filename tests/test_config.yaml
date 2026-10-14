@@ -49,7 +49,6 @@ tools:
   result_log_truncate: 200
   skills_dir: "${TEST_SKILLS_DIR}"
   prompts_dir: "${TEST_PROMPTS_DIR}"
-  read_file_line_limit: 2000
 
 database:
   type: "sqlite"

@@ -42,7 +42,9 @@ from .api import (
     prompts_router,
     settings_router,
     skill_center_router,
+    connectors_router,
     scheduled_tasks_router,
+    expert_router,
 )
 from .knowledge.api import router as knowledge_router
 from .knowledge.ops_api import router as knowledge_ops_router
@@ -99,7 +101,7 @@ def _init_database_and_state(app, config) -> None:
 
 
 def _prepare_system_prompt(config, config_path) -> str:
-    """加载提示词目录与系统提示词、追加当前时间，返回最终 system_prompt。"""
+    """加载提示词目录与系统提示词，返回最终 system_prompt。"""
     # 提示词统一由 prompt_loader 从 agent.prompt_path 指向的目录加载：
     # system.md + fragments/*.md，缺失时逐级回落到内置默认提示词。
     # 同时把该目录设为全局提示词目录，使记忆类提示词也从同一处读取。
@@ -126,13 +128,6 @@ def _prepare_system_prompt(config, config_path) -> str:
     logger.info(f"   会话记忆文件: {_ws_abs}/{{username}}/session/{{workspace_name}}/memory.md")
     logger.info("=" * 60)
 
-    # 注入当前时间和时区，供定时任务 cron 表达式生成参考
-    now_dt = datetime.now().astimezone()
-    tz_name = now_dt.strftime("%Z") or "Asia/Shanghai"
-    system_prompt += (
-        f"\n## 当前时间\n"
-        f"{now_dt.strftime('%Y-%m-%d %H:%M:%S')} (时区: {tz_name})\n"
-    )
     return system_prompt
 
 
@@ -459,11 +454,13 @@ app.include_router(completion_router)
 app.include_router(prompts_router)
 app.include_router(settings_router)
 app.include_router(skill_center_router)
+app.include_router(connectors_router)
 if terminal_router is not None:
     app.include_router(terminal_router)
 app.include_router(scheduled_tasks_router)
 app.include_router(knowledge_router)
 app.include_router(knowledge_ops_router)
+app.include_router(expert_router)
 
 
 @app.get("/agent/health", summary="健康检查", response_model=HealthResponse)
@@ -497,6 +494,13 @@ async def serve_frontend():
 
 @app.get("/{full_path:path}", response_class=FileResponse)
 async def serve_static(full_path: str):
+    # /agent/* 是接口命名空间，未匹配到任何路由时必须返回 JSON 404。
+    # 否则会落到下面的 SPA 兜底、以 200 + text/html 返回 index.html，
+    # 前端 response.json() 报 "Unexpected token '<'"，把「接口不存在
+    # （后端没重启 / 版本过旧）」这个真实原因完全掩盖掉。
+    if full_path == "agent" or full_path.startswith("agent/"):
+        return JSONResponse({"detail": "Not Found"}, status_code=404)
+
     static_file = os.path.join(frontend_dist, full_path)
     if os.path.exists(static_file) and os.path.isfile(static_file):
         return FileResponse(static_file)

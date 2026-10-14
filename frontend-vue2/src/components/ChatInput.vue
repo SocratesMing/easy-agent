@@ -1,6 +1,6 @@
 <template>
   <div class="chat-input-container">
-    <div class="input-box">
+    <div class="input-box" ref="inputBoxRef">
       <div v-if="uploadedFiles.length > 0" class="uploaded-files">
         <div 
           v-for="(file, index) in uploadedFiles" 
@@ -34,6 +34,30 @@
       </div>
       
       <div class="input-row">
+        <!-- 已选技能：与输入文字同一行展示（只显示图标 + 名称，发送时还原为 /技能名） -->
+        <div v-if="selectedSkills.length > 0" class="selected-skills">
+          <div
+            v-for="skill in selectedSkills"
+            :key="skill.dir_name"
+            class="selected-skill"
+            :title="skill.description || skill.dir_name"
+          >
+            <SkillIcon :icon="skill.icon" :category="iconCategoryFor(skill.category_id)" size="xs" />
+            <span class="selected-skill-name">{{ skill.name || skill.dir_name }}</span>
+            <button
+              type="button"
+              class="selected-skill-remove"
+              :aria-label="`移除技能 ${skill.name || skill.dir_name}`"
+              @click="removeSelectedSkill(skill)"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
+                <line x1="18" y1="6" x2="6" y2="18" />
+                <line x1="6" y1="6" x2="18" y2="18" />
+              </svg>
+            </button>
+          </div>
+        </div>
+
         <div class="input-field">
           <div
             v-show="caretLineTop !== null"
@@ -43,7 +67,8 @@
           <textarea
             ref="textareaRef"
             v-model="message"
-            @keydown.enter.exact.prevent="send"
+            v-tip:hover="'输入消息，Enter 发送 · Shift+Enter 换行 · 输入 / 唤起技能选择'"
+            @keydown="onKeydown"
             @input="onInput"
             @focus="updateCaretLine"
             @blur="hideCaretLine"
@@ -59,13 +84,115 @@
       
       <div class="input-actions">
         <div class="left-actions">
-          <div class="model-dropdown-wrapper" ref="modelDropdownRef">
+            <!-- 「+」添加菜单：添加文件 / 专家 / 技能 / 连接器（Vue 2.7 无 Teleport，菜单留在 wrapper 内） -->
+          <div class="plus-menu-wrapper" ref="plusMenuRef">
+            <button
+              type="button"
+              class="action-btn plus-btn"
+              :class="{ disabled: isStreaming || disabled }"
+              :disabled="isStreaming || disabled"
+              v-tip="'添加文件 · 专家 · 技能 · 连接器'"
+              aria-haspopup="menu"
+              :aria-expanded="showPlusMenu ? 'true' : 'false'"
+              @click="togglePlusMenu"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <line x1="12" y1="5" x2="12" y2="19"></line>
+                <line x1="5" y1="12" x2="19" y2="12"></line>
+              </svg>
+            </button>
+            <div v-if="showPlusMenu" class="plus-menu" :style="plusMenuStyle" @click.stop @mouseenter="cancelPlusClose" @mouseleave="schedulePlusClose">
+                <button type="button" class="plus-menu-item" @mouseenter="hoverPlusItem('file')" @click="handleMenuAddFile">
+                  <svg class="plus-menu-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                    <polyline points="14 2 14 8 20 8"></polyline>
+                    <line x1="12" y1="18" x2="12" y2="12"></line>
+                    <line x1="9" y1="15" x2="15" y2="15"></line>
+                  </svg>
+                  <span class="plus-menu-label">添加文件</span>
+                  <svg class="plus-menu-arrow" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="9 18 15 12 9 6"></polyline>
+                  </svg>
+                </button>
+                <button type="button" class="plus-menu-item" @mouseenter="hoverPlusItem('experts')" @click="openSubpanel('experts', $event)">
+                  <svg class="plus-menu-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+                    <circle cx="12" cy="7" r="4"></circle>
+                  </svg>
+                  <span class="plus-menu-label">专家</span>
+                  <svg class="plus-menu-arrow" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="9 18 15 12 9 6"></polyline>
+                  </svg>
+                </button>
+                <button type="button" class="plus-menu-item" @mouseenter="hoverPlusItem('skills')" @click="openSubpanel('skills', $event)">
+                  <svg class="plus-menu-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon>
+                  </svg>
+                  <span class="plus-menu-label">技能</span>
+                  <svg class="plus-menu-arrow" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="9 18 15 12 9 6"></polyline>
+                  </svg>
+                </button>
+                <button type="button" class="plus-menu-item" @mouseenter="hoverPlusItem('connectors')" @click="openSubpanel('connectors', $event)">
+                  <svg class="plus-menu-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M12 22v-5"></path>
+                    <path d="M9 8V2"></path>
+                    <path d="M15 8V2"></path>
+                    <path d="M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8z"></path>
+                  </svg>
+                  <span class="plus-menu-label">连接器</span>
+                  <svg class="plus-menu-arrow" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="9 18 15 12 9 6"></polyline>
+                  </svg>
+                </button>
+
+            <!-- 「+」菜单二级浮动面板：主菜单常驻，子面板显示在触发项旁边。
+                 skills / experts / connectors → 对应的用户条目列表。悬停或点击触发，互斥显示。 -->
+            <div v-if="subpanelCategory" class="plus-subpanel" :style="plusSubpanelStyle" @click.stop @mouseenter="cancelPlusClose" @mouseleave="schedulePlusClose">
+              <div class="plus-subpanel-head">
+                <span class="plus-subpanel-title">{{ plusListTitle }}</span>
+                <span class="plus-menu-count">{{ plusList.length }}</span>
+              </div>
+              <div class="plus-subpanel-list">
+                <div v-if="plusListLoading" class="plus-list-hint">加载中…</div>
+                <div v-else-if="plusListError" class="plus-list-hint error">{{ plusListError }}</div>
+                <div v-else-if="plusList.length === 0" class="plus-list-hint">{{ plusListEmptyText }}</div>
+                <div v-else v-for="item in plusList" :key="item.key" class="plus-list-item">
+                  <span class="plus-list-icon" :class="{ initial: !item.icon }">{{ item.icon || item.initial }}</span>
+                  <span class="plus-list-body">
+                    <span class="plus-list-name-row">
+                      <span class="plus-list-name">{{ item.name }}</span>
+                      <span v-if="item.tag" class="plus-list-tag" :class="item.tagType">{{ item.tag }}</span>
+                    </span>
+                    <span class="plus-list-desc">{{ item.desc }}</span>
+                  </span>
+                </div>
+              </div>
+              <div class="plus-subpanel-footer">
+                <button type="button" class="plus-subpanel-manage" @click="handleMenuPanel(subpanelCategory)">
+                  在管理面板中打开 →
+                </button>
+              </div>
+            </div>
+            </div>
+          </div>
+          <input
+            ref="fileInputRef"
+            type="file"
+            @change="handleFileSelect"
+            multiple
+            :disabled="isStreaming || disabled"
+            hidden
+          />
+
+
+        <div class="model-dropdown-wrapper" ref="modelDropdownRef">
             <button
               class="model-btn"
               :class="{ disabled: isStreaming || disabled }"
               :disabled="isStreaming || disabled"
               @click="toggleModelDropdown"
-              title="选择模型"
+              v-tip="'切换模型'"
             >
               <svg class="model-btn-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9L12 3z"></path>
@@ -92,31 +219,12 @@
               </div>
           </div>
 
-          <KnowledgeScopeSelector
-            :session-id="sessionId"
-            :disabled="isStreaming || disabled"
-            @create-session="$emit('create-session')"
-          />
-
-          <label class="action-btn upload-btn" :class="{ disabled: isStreaming || disabled }" title="上传文件">
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path>
-            </svg>
-            <input
-              type="file"
-              @change="handleFileSelect"
-              multiple
-              :disabled="isStreaming || disabled"
-              hidden
-            />
-          </label>
-
           <button
             type="button"
             class="action-btn web-search-btn"
             :class="{ active: webSearchEnabled, disabled: webSearchUnavailable || isStreaming || disabled }"
             :disabled="webSearchUnavailable || isStreaming || disabled"
-            :title="webSearchTitle"
+            v-tip="webSearchTitle"
             @click="toggleWebSearch"
           >
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -125,6 +233,29 @@
               <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path>
             </svg>
           </button>
+
+          <!-- 当前专家标识：输入框工具栏内的胶囊（专家徽标 + 名称 + 退出×）。
+               与专家 Tab 的「召唤」联动，点击 × 退出专家模式回到通用 Agent。 -->
+          <div
+            v-if="activeExpert"
+            class="expert-chip"
+            :title="`当前专家：${activeExpert.export_name_cn}（点击 × 退出专家模式）`"
+          >
+            <span class="expert-chip-badge">专家</span>
+            <span class="expert-chip-name">{{ activeExpert.export_name_cn }}</span>
+            <button
+              type="button"
+              class="expert-chip-clear"
+              :disabled="isStreaming || disabled"
+              aria-label="退出专家模式"
+              @click="$emit('clear-expert')"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true">
+                <line x1="18" y1="6" x2="6" y2="18"></line>
+                <line x1="6" y1="6" x2="18" y2="18"></line>
+              </svg>
+            </button>
+          </div>
         </div>
         
         <div class="right-actions">
@@ -193,7 +324,7 @@
             class="action-btn send-btn"
             :class="{ active: canSend }"
             :disabled="!canSend || disabled"
-            title="发送"
+            v-tip="'发送（Enter）'"
           >
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <line x1="5" y1="12" x2="19" y2="12"></line>
@@ -204,7 +335,7 @@
             v-if="isStreaming"
             @click="stop"
             class="action-btn stop-btn"
-            title="停止"
+            v-tip="'停止生成'"
           >
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">
               <rect x="6" y="6" width="12" height="12" rx="2"></rect>
@@ -212,6 +343,47 @@
           </button>
         </div>
       </div>
+    </div>
+
+    <!-- 技能选择面板：输入 / 后出现在输入框上方。
+         Vue 2.7 不支持 Teleport，用 fixed 定位脱离 .input-box 的 overflow: hidden 裁切 -->
+    <div
+      v-if="skillPickerOpen"
+      ref="skillPickerRef"
+      class="skill-picker"
+      :style="skillPickerStyle"
+      @click.stop
+    >
+      <div class="skill-picker-header">
+        <span>选择技能</span>
+        <span class="skill-picker-hint">↑↓ 选择 · Enter 确认 · Esc 关闭</span>
+      </div>
+
+      <div v-if="skillPickerLoading" class="skill-picker-state">正在加载技能…</div>
+      <div v-else-if="filteredSkills.length === 0" class="skill-picker-state">
+        {{ skillOptions.length === 0 ? '还没有可用的技能，先到技能中心添加并启用' : '没有匹配的技能' }}
+      </div>
+
+      <ul v-else class="skill-picker-list" role="listbox" aria-label="可用技能">
+        <li
+          v-for="(skill, index) in filteredSkills"
+          :key="skill.dir_name"
+          class="skill-picker-item"
+          :class="{ active: index === skillPickerIndex }"
+          role="option"
+          :aria-selected="index === skillPickerIndex ? 'true' : 'false'"
+          @mouseenter="skillPickerIndex = index"
+          @mousedown.prevent="selectSkill(skill)"
+          @click="selectSkill(skill)"
+        >
+          <SkillIcon :icon="skill.icon" :category="iconCategoryFor(skill.category_id)" size="xs" />
+          <span class="skill-picker-body">
+            <span class="skill-picker-name">{{ skill.name || skill.dir_name }}</span>
+            <span class="skill-picker-desc">{{ skill.description || '暂无描述' }}</span>
+          </span>
+          <span class="skill-picker-slash">/{{ skill.dir_name }}</span>
+        </li>
+      </ul>
     </div>
 
     <div v-if="showFooter" class="input-footer">
@@ -223,14 +395,21 @@
 <script>
 import { uploadFile, deleteFile } from '../api/files.js'
 import { getWebSearchStatus } from '../api/settings.js'
+import { getUserSkills } from '../api/skills.js'
+import { iconCategoryFor } from '../utils/skillCategories.js'
+import { buildSkillPayload, parseSlashQuery } from '../utils/skillSlash.js'
+import { getConnectors } from '../api/connectors.js'
 import FileIcon from './FileIcon.vue'
-import KnowledgeScopeSelector from '../features/knowledge/KnowledgeScopeSelector.vue'
+import SkillIcon from './SkillIcon.vue'
 
 // 输入草稿持久化：页面刷新后恢复用户尚未发送的输入内容（“输入框的状态不变”）
 const DRAFT_KEY = 'easy_agent_input_draft'
 
+// 待选技能：由技能中心「创建技能」等入口写入，本组件挂载时恢复成技能标签
+const PENDING_SKILL_KEY = 'easy_agent_pending_skill'
+
 export default {
-  components: { FileIcon, KnowledgeScopeSelector },
+  components: { FileIcon, SkillIcon },
   props: {
     disabled: {
       type: Boolean,
@@ -267,6 +446,27 @@ export default {
     showFooter: {
       type: Boolean,
       default: false
+    },
+    draftKey: {
+      type: String,
+      default: DRAFT_KEY
+    },
+    // 是否消费技能中心「创建技能」预置的待选技能（只应由主页面输入框消费）
+    consumePendingSkill: {
+      type: Boolean,
+      default: true
+    },
+    // 当前会话选中的专家 Agent（{export_agent_id, export_name_cn} 或 null）。
+    // 非空时输入框工具栏显示专家胶囊，且本会话消息走 /agent/stream_export_run。
+    activeExpert: {
+      type: Object,
+      default: null
+    },
+    // 外部预填的问题（如专家详情弹窗点「专家帮你做」示例）：非空时写入输入框，
+    // 写入后立即 $emit('expert-prompt-applied') 通知父组件清空，避免重复触发。
+    expertPrompt: {
+      type: String,
+      default: ''
     }
   },
   data() {
@@ -278,6 +478,15 @@ export default {
       lineHeight: 24, // 行高（px）
       // 自定义下拉菜单
       showModelDropdown: false,
+      showPlusMenu: false,
+      subpanelCategory: null,
+      plusSubpanelStyle: {},
+      plusHoverTimer: null,
+      plusListCategory: '',
+      plusList: [],
+      plusListLoading: false,
+      plusListError: '',
+      plusMenuStyle: {},
       dropdownStyle: {},
       showTokenPopup: false,
       // ========== 联网搜索 ==========
@@ -287,9 +496,33 @@ export default {
       // ========== 会话耗时 ==========
       liveDuration: 0,
       durationTimer: null,
+      // ========== 技能选择（输入 / 唤起） ==========
+      // 输入框里只展示「工具图标 + 技能名」，实际发给模型的是 /技能目录名 + 用户输入。
+      // 只有启用状态的技能会被 Agent 加载，停用技能即使手打 /name 也不生效，故只列启用的。
+      selectedSkills: [],
+      skillPickerOpen: false,
+      skillPickerIndex: 0,
+      skillPickerLoading: false,
+      skillOptions: [],
+      skillQuery: '',
+      slashStart: -1,
+      skillPickerStyle: {},
+      skillLoadedAt: 0,
     }
   },
   computed: {
+    plusListTitle() {
+      const meta = { experts: '我的专家', skills: '我的技能', connectors: '我的连接器' }
+      return meta[this.plusListCategory] || ''
+    },
+    plusListEmptyText() {
+      const meta = {
+        experts: '暂无专家，敬请期待',
+        skills: '还没有自己的技能，可在「专家·技能·连接器」面板添加',
+        connectors: '还没有已添加的连接器，可在「专家·技能·连接器」面板添加',
+      }
+      return meta[this.plusListCategory] || '暂无内容'
+    },
     // 模型选择：本地双向绑定，变化时同步父组件
     localSelectedModel: {
       get() {
@@ -306,7 +539,16 @@ export default {
       return m ? (m.model || m.name) : '选择模型'
     },
     canSend() {
-      return this.message.trim() || this.uploadedFiles.length > 0
+      return this.message.trim() || this.uploadedFiles.length > 0 || this.selectedSkills.length > 0
+    },
+    filteredSkills() {
+      const q = this.skillQuery.trim().toLowerCase()
+      if (!q) return this.skillOptions
+      return this.skillOptions.filter(s =>
+        (s.dir_name || '').toLowerCase().includes(q) ||
+        (s.name || '').toLowerCase().includes(q) ||
+        (s.description || '').toLowerCase().includes(q)
+      )
     },
     webSearchUnavailable() {
       return !this.webSearchStatus.configured
@@ -377,7 +619,7 @@ export default {
     },
     message(val) {
       try {
-        sessionStorage.setItem(DRAFT_KEY, val)
+        sessionStorage.setItem(this.draftKey, val)
       } catch (e) {
         // 隐私模式等场景下 sessionStorage 可能不可用，忽略即可
       }
@@ -388,11 +630,15 @@ export default {
         if (ta) ta.focus()
       }
     },
+    // 外部预填问题变化时（如专家详情弹窗再点一条示例）写入输入框
+    expertPrompt(val) {
+      this.applyExpertPrompt(val)
+    },
   },
   mounted() {
     // 恢复刷新前的输入草稿
     try {
-      const draft = sessionStorage.getItem(DRAFT_KEY)
+      const draft = sessionStorage.getItem(this.draftKey)
       if (draft) {
         this.message = draft
         this.$nextTick(() => this.autoResize())
@@ -400,16 +646,59 @@ export default {
     } catch (e) {
       // 忽略草稿恢复失败
     }
+    // 恢复待选技能（技能中心「创建技能」等入口预置），读取后即清除
+    if (this.consumePendingSkill) this.restorePendingSkill()
+
     document.addEventListener('click', this.closeTokenPopup)
     document.addEventListener('click', this.closeModelDropdown)
+    document.addEventListener('click', this.closeSkillPickerOnClick)
+    window.addEventListener('resize', this.handleViewportChange)
+    document.addEventListener('click', this.closePlusMenu)
     this.loadWebSearchStatus()
+    // 点示例问题会先关闭 SkillCenter 面板 → Chat/ChatInput 重新挂载，
+    // 此时 expertPrompt 初始值即非空；watch 只响应"变化"，挂载时的初始值不会触发，
+    // 因此在这里补一次（放在草稿恢复之后，确保示例问题覆盖草稿）。
+    if (this.expertPrompt) this.applyExpertPrompt(this.expertPrompt)
   },
   beforeDestroy() {
     document.removeEventListener('click', this.closeTokenPopup)
     document.removeEventListener('click', this.closeModelDropdown)
+    document.removeEventListener('click', this.closeSkillPickerOnClick)
+    window.removeEventListener('resize', this.handleViewportChange)
+    document.removeEventListener('click', this.closePlusMenu)
+    this.cancelPlusClose()
     this.stopLiveDuration()
   },
   methods: {
+    /** 供父组件调用：聚焦输入框并把光标移到末尾 */
+    focusInput() {
+      this.$nextTick(() => {
+        const ta = this.$refs.textareaRef
+        if (!ta || ta.disabled) return
+        ta.focus()
+        const end = ta.value.length
+        ta.setSelectionRange(end, end)
+      })
+    },
+    /** 供父组件调用：替换输入内容（如侧边栏的快捷提问、划词提问） */
+    setDraft(text) {
+      this.message = text || ''
+      this.$nextTick(() => this.autoResize())
+      this.focusInput()
+    },
+    /**
+     * 外部预填问题（专家详情弹窗的示例提示词）：写入输入框并聚焦，随后通知父组件清空。
+     */
+    applyExpertPrompt(val) {
+      if (!val) return
+      this.message = val
+      this.$nextTick(() => {
+        this.autoResize()
+        const ta = this.$refs.textareaRef
+        if (ta) ta.focus()
+      })
+      this.$emit('expert-prompt-applied')
+    },
     updateCaretLine() {
       const ta = this.$refs.textareaRef
       if (!ta) return
@@ -473,6 +762,158 @@ export default {
       if (this.showModelDropdown && anchor && !anchor.contains(event.target)) {
         this.showModelDropdown = false
       }
+    },
+    togglePlusMenu() {
+      if (this.isStreaming || this.disabled) return
+      if (this.showPlusMenu) {
+        this.showPlusMenu = false
+        this.cancelPlusClose()
+        return
+      }
+      // 菜单贴着按钮上方弹出（与模型下拉同款定位方式）
+      const anchor = this.$refs.plusMenuRef
+      if (anchor) {
+        const rect = anchor.getBoundingClientRect()
+        this.plusMenuStyle = {
+          position: 'fixed',
+          bottom: `${window.innerHeight - rect.top + 6}px`,
+          left: `${rect.left}px`,
+          minWidth: '188px',
+        }
+      }
+      this.subpanelCategory = null
+      this.showPlusMenu = true
+    },
+    closePlusMenu(event) {
+      const anchor = this.$refs.plusMenuRef
+      if (this.showPlusMenu && anchor && !anchor.contains(event.target)) {
+        this.showPlusMenu = false
+        this.subpanelCategory = null
+      }
+    },
+    handleMenuAddFile() {
+      this.showPlusMenu = false
+      this.subpanelCategory = null
+      const input = this.$refs.fileInputRef
+      if (input) input.click()
+    },
+    // 二级列表：展示当前用户自己的条目（不跳转页面）
+    // 数据来源均为当前用户：技能 = user-skills（含已停用）；连接器 = 用户 mcp.json
+    // 中已安装的内置连接器 + 自定义服务；专家暂无数据。
+    openPlusList(category) {
+      this.plusListCategory = category
+      this.plusListLoading = true
+      this.plusListError = ''
+      this.plusList = []
+      this.loadPlusList(category)
+    },
+    // 打开二级浮动面板（主菜单常驻）：定位到触发项右侧，底部超视口时上移
+    openSubpanel(category, event) {
+      // click 触发同面板已打开则翻转关闭；hover 触发保持
+      if (this.subpanelCategory === category) return
+      this.subpanelCategory = category
+      const rect = event.currentTarget.getBoundingClientRect()
+      const estimatedHeight = 420
+      const top = Math.max(8, Math.min(rect.top - 8, window.innerHeight - estimatedHeight - 8))
+      const left = rect.right + 10 + 380 > window.innerWidth ? Math.max(8, rect.left - 390) : rect.right + 10
+      this.plusSubpanelStyle = {
+        position: 'fixed',
+        top: `${top}px`,
+        left: `${left}px`,
+      }
+      this.openPlusList(category)
+    },
+    // ========== 悬停触发二级面板 ==========
+    // 鼠标悬停主菜单项即切换对应面板，无需点击；点击仍保留（触屏/键盘回退）。
+    // 鼠标离开菜单区域超过 250ms 才整体关闭。
+    cancelPlusClose() {
+      if (this.plusHoverTimer) {
+        clearTimeout(this.plusHoverTimer)
+        this.plusHoverTimer = null
+      }
+    },
+    schedulePlusClose() {
+      this.cancelPlusClose()
+      this.plusHoverTimer = setTimeout(() => {
+        this.plusHoverTimer = null
+        this.showPlusMenu = false
+        this.subpanelCategory = null
+      }, 250)
+    },
+    hoverPlusItem(category) {
+      this.cancelPlusClose()
+      if (category === 'experts' || category === 'skills' || category === 'connectors') {
+        // openSubpanel 需要事件定位；hover 无事件对象时用菜单项元素
+        const el = [...this.$el.querySelectorAll('.plus-menu-item')].find(i => i.textContent.includes(
+          { experts: '专家', skills: '技能', connectors: '连接器' }[category]
+        ))
+        this.openSubpanel(category, { currentTarget: el })
+        return
+      }
+      // 其余项（如添加文件）收起子面板，主菜单保持
+      this.subpanelCategory = null
+    },
+    async loadPlusList(category) {
+      try {
+        if (category === 'skills') {
+          const data = await getUserSkills()
+          this.plusList = (data.skills || []).map((s) => ({
+            key: `skill:${s.dir_name}`,
+            name: s.name,
+            desc: s.description || '暂无描述',
+            icon: s.icon || '',
+            initial: (s.name || s.dir_name).slice(0, 1).toUpperCase(),
+            tag: s.enabled ? '已启用' : '已停用',
+            tagType: s.enabled ? 'on' : 'off',
+          }))
+        } else if (category === 'connectors') {
+          const data = await getConnectors()
+          const installed = (data.connectors || [])
+            .filter((c) => c.installed)
+            .map((c) => ({
+              key: `connector:${c.id}`,
+              name: c.name,
+              desc: c.description || '暂无描述',
+              icon: '',
+              initial: (c.name || c.id).slice(0, 1).toUpperCase(),
+              tag: '已添加',
+              tagType: 'on',
+            }))
+          const custom = (data.custom || []).map((c) => ({
+            key: `custom:${c.name}`,
+            name: c.name,
+            desc: '用户自定义 MCP 服务',
+            icon: '',
+            initial: (c.name || '').slice(0, 1).toUpperCase(),
+            tag: '自定义',
+            tagType: 'custom',
+          }))
+          this.plusList = installed.concat(custom)
+        } else {
+          this.plusList = []
+        }
+      } catch (e) {
+        this.plusListError = (e && e.message) || '加载失败'
+      } finally {
+        this.plusListLoading = false
+      }
+    },
+    // 列表底部入口：跳到「专家·技能·连接器」面板做完整管理
+    handleMenuPanel(tab) {
+      this.showPlusMenu = false
+      this.subpanelCategory = null
+      this.$emit('openPanel', tab)
+    },
+    // 供父组件把预置问题完整文本填进输入框（卡片上最多显示 3 行，长问题展示不全）
+    setMessage(text) {
+      this.message = text || ''
+      this.$nextTick(() => {
+        const ta = this.$refs.textareaRef
+        if (ta) ta.focus()
+      })
+    },
+    getMessage() {
+      return this.message
     },
     startLiveDuration() {
       this.stopLiveDuration()
@@ -637,7 +1078,7 @@ export default {
 
       this.$emit(
         'send',
-        this.message.trim().replace(/\s+/g, ' '),
+        this.buildPayload(),
         filesToSend,
         null,
         true,
@@ -646,7 +1087,17 @@ export default {
 
       this.message = ''
       this.uploadedFiles = []
+      this.selectedSkills = []
+      this.closeSkillPicker()
       this.$nextTick(() => this.autoResize())
+    },
+
+    /**
+     * 实际发送给模型的内容：技能指令前缀 + 用户输入。
+     * 例：界面显示 [图标]PPT生成 +「生成一份PPT创作文档」→ 发送 `/pptx-generator 生成一份PPT创作文档`
+     */
+    buildPayload() {
+      return buildSkillPayload(this.selectedSkills, this.message)
     },
     stop() {
       this.$emit('stop')
@@ -661,7 +1112,186 @@ export default {
     onInput() {
       this.autoResize()
       this.updateCaretLine()
+      this.updateSkillPicker()
       this.$emit('typing')
+    },
+
+    // ========== 技能选择（输入 / 唤起） ==========
+
+    /** 暴露给模板：类别 id → SkillIcon 配色 key */
+    iconCategoryFor(categoryId) {
+      return iconCategoryFor(categoryId)
+    },
+
+    async loadSkillOptions() {
+      const now = Date.now()
+      // 技能列表变动不频繁，60s 内复用上次结果，避免每次输入 / 都打接口
+      if (this.skillOptions.length && now - this.skillLoadedAt < 60000) return
+      this.skillPickerLoading = true
+      try {
+        const data = await getUserSkills()
+        this.skillOptions = (data.skills || []).filter(s => s.enabled)
+        this.skillLoadedAt = now
+      } catch (e) {
+        console.error('获取技能列表失败:', e)
+      } finally {
+        this.skillPickerLoading = false
+      }
+    },
+
+    /** 面板出现在输入框上方（Vue2 无 Teleport，用 fixed 定位脱离 overflow: hidden） */
+    updateSkillPickerPosition() {
+      const box = this.$refs.inputBoxRef
+      if (!box) return
+      const rect = box.getBoundingClientRect()
+      this.skillPickerStyle = {
+        position: 'fixed',
+        bottom: `${window.innerHeight - rect.top + 8}px`,
+        left: `${rect.left}px`,
+        width: `${rect.width}px`,
+      }
+    },
+
+    /** 判定光标前是否为「/查询词」（/ 位于开头或空白之后），决定展开或收起面板 */
+    updateSkillPicker() {
+      const ta = this.$refs.textareaRef
+      if (!ta) return
+      const caret = ta.selectionStart === null || ta.selectionStart === undefined
+        ? ta.value.length
+        : ta.selectionStart
+      const slash = parseSlashQuery(ta.value, caret)
+      if (!slash) {
+        this.closeSkillPicker()
+        return
+      }
+
+      this.slashStart = slash.start
+      this.skillQuery = slash.query
+      this.skillPickerIndex = 0
+      this.skillPickerOpen = true
+      this.updateSkillPickerPosition()
+      this.loadSkillOptions()
+    },
+
+    closeSkillPicker() {
+      this.skillPickerOpen = false
+      this.skillPickerIndex = 0
+      this.skillQuery = ''
+      this.slashStart = -1
+    },
+
+    /** 选中技能：删掉刚输入的 /查询词，并把它挂成输入框里的技能标签 */
+    async selectSkill(skill) {
+      if (!this.skillPickerOpen || !skill) return
+
+      const ta = this.$refs.textareaRef
+      const caret = ta && ta.selectionStart !== null && ta.selectionStart !== undefined
+        ? ta.selectionStart
+        : this.message.length
+      // 以当前光标为准重算一次 /查询词 的范围，避免用户中途改动文本后误删内容
+      const slash = parseSlashQuery(this.message, caret)
+      const start = slash ? slash.start : caret
+      this.message = this.message.slice(0, start) + this.message.slice(caret)
+
+      if (!this.selectedSkills.some(s => s.dir_name === skill.dir_name)) {
+        this.selectedSkills = [...this.selectedSkills, skill]
+      }
+
+      this.closeSkillPicker()
+      await this.$nextTick()
+      this.autoResize()
+      if (ta) {
+        const pos = Math.min(start, this.message.length)
+        ta.focus()
+        ta.setSelectionRange(pos, pos)
+      }
+      this.updateCaretLine()
+      console.log(`[${new Date().toISOString()}] [技能选择] ${skill.dir_name}`)
+    },
+
+    removeSelectedSkill(skill) {
+      this.selectedSkills = this.selectedSkills.filter(s => s.dir_name !== skill.dir_name)
+    },
+
+    /**
+     * 恢复「待选技能」：技能中心「创建技能」等入口会把技能写进 sessionStorage，
+     * 面板关闭后本组件重新挂载时读出来挂成技能标签（读后即清除，避免下次误挂）。
+     */
+    restorePendingSkill() {
+      let raw = null
+      try {
+        raw = sessionStorage.getItem(PENDING_SKILL_KEY)
+        if (raw) sessionStorage.removeItem(PENDING_SKILL_KEY)
+      } catch (_) { /* 隐私模式等场景忽略 */ }
+      if (!raw) return
+
+      try {
+        const skill = JSON.parse(raw)
+        const exists = this.selectedSkills.some(s => s.dir_name === skill.dir_name)
+        if (skill && skill.dir_name && !exists) {
+          this.selectedSkills = [...this.selectedSkills, skill]
+          this.$nextTick(() => {
+            this.autoResize()
+            const ta = this.$refs.textareaRef
+            if (ta) ta.focus()
+          })
+        }
+      } catch (e) {
+        console.error('恢复待选技能失败:', e)
+      }
+    },
+
+    /** 键盘：面板打开时接管 ↑↓ / Enter / Esc，其余情况保持原有 Enter 发送 */
+    onKeydown(event) {
+      if (this.skillPickerOpen) {
+        const count = this.filteredSkills.length
+        if (event.key === 'ArrowDown' && count > 0) {
+          event.preventDefault()
+          this.skillPickerIndex = (this.skillPickerIndex + 1) % count
+          return
+        }
+        if (event.key === 'ArrowUp' && count > 0) {
+          event.preventDefault()
+          this.skillPickerIndex = (this.skillPickerIndex - 1 + count) % count
+          return
+        }
+        if (event.key === 'Escape') {
+          event.preventDefault()
+          this.closeSkillPicker()
+          return
+        }
+        if ((event.key === 'Enter' && !event.shiftKey) || event.key === 'Tab') {
+          const skill = this.filteredSkills[this.skillPickerIndex]
+          if (skill) {
+            event.preventDefault()
+            this.selectSkill(skill)
+            return
+          }
+          this.closeSkillPicker()
+        }
+      }
+
+      if (
+        event.key === 'Enter' &&
+        !event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey &&
+        !event.isComposing
+      ) {
+        event.preventDefault()
+        this.send()
+      }
+    },
+
+    /** 点击面板外的区域时收起技能面板 */
+    closeSkillPickerOnClick(event) {
+      if (!this.skillPickerOpen) return
+      const picker = this.$refs.skillPickerRef
+      if (picker && picker.contains(event.target)) return
+      this.closeSkillPicker()
+    },
+
+    /** 窗口尺寸变化时重新定位（移动端键盘弹出会触发 resize） */
+    handleViewportChange() {
+      if (this.skillPickerOpen) this.updateSkillPickerPosition()
     },
   },
 }
@@ -702,6 +1332,160 @@ export default {
   padding: 12px 16px;
   background: var(--bg-secondary);
   border-bottom: 1px solid var(--border-color);
+}
+
+/* ── 已选技能标签（只显示图标 + 名称，发送时还原为 /技能名） ── */
+.selected-skills {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  max-width: 100%;
+  padding-bottom: 3px;
+}
+
+.selected-skill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 6px 3px 4px;
+  border: 1px solid color-mix(in srgb, var(--accent-color) 35%, var(--border-color));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent-color) 10%, transparent);
+  max-width: 100%;
+}
+
+.selected-skill-name {
+  font-size: 12.5px;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 180px;
+}
+
+.selected-skill-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.selected-skill-remove:hover {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+.selected-skill-remove svg {
+  width: 11px;
+  height: 11px;
+}
+
+/* ── 技能选择面板（fixed 定位，脱离 .input-box 的 overflow: hidden） ── */
+.skill-picker {
+  z-index: 1200;
+  display: flex;
+  flex-direction: column;
+  max-height: min(320px, 42vh);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  background: var(--bg-primary);
+  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.18);
+  overflow: hidden;
+}
+
+.skill-picker-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border-color);
+  background: var(--bg-secondary);
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.skill-picker-hint {
+  font-size: 11px;
+  opacity: 0.8;
+}
+
+.skill-picker-state {
+  padding: 14px 12px;
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  text-align: center;
+}
+
+.skill-picker-list {
+  margin: 0;
+  padding: 6px;
+  list-style: none;
+  overflow-y: auto;
+}
+
+.skill-picker-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 8px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.skill-picker-item.active {
+  background: color-mix(in srgb, var(--accent-color) 12%, transparent);
+}
+
+.skill-picker-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.skill-picker-name {
+  font-size: 13px;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.skill-picker-desc {
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.skill-picker-slash {
+  flex-shrink: 0;
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+/* 移动端：面板更紧凑，去掉冗余提示 */
+@media (max-width: 48rem) {
+  .skill-picker {
+    max-height: min(240px, 38vh);
+  }
+
+  .skill-picker-hint {
+    display: none;
+  }
 }
 
 .uploaded-file {
@@ -838,10 +1622,15 @@ export default {
   display: flex;
   align-items: flex-end;
   gap: 12px;
+  /* 技能标签与输入文字同一行；窄屏放不下时标签才换到上一行 */
+  flex-wrap: wrap;
 }
 
 .input-field {
-  width: 100%;
+  /* flex-basis 0：有技能标签时输入区仍留在同一行（basis 100% 会被 wrap 挤到下一行） */
+  flex: 1 1 0;
+  width: auto;
+  min-width: 120px;
   position: relative;
 }
 
@@ -877,9 +1666,9 @@ html[data-theme="dark"] .input-actions {
 }
 
 /* 深色模式工具按钮：统一深灰底 + 暗色描边（原 #9ca3af 亮灰描边过于抢眼），
-   选择器带 .input-actions 前缀是为了压过 App.vue 里针对资产页 .upload-btn 的全局 !important 规则 */
+   选择器带 .input-actions 前缀是为了压过 App.vue 里针对资产页 .plus-btn 的全局 !important 规则 */
 html[data-theme="dark"] .input-actions .model-btn,
-html[data-theme="dark"] .input-actions .upload-btn,
+html[data-theme="dark"] .input-actions .plus-btn,
 html[data-theme="dark"] .input-actions .web-search-btn {
   /* 输入框在深色下就是 --bg-tertiary，按钮同色会糊成一片，
      掺一点主文字色提亮，形成可辨识的「芯片」层级 */
@@ -889,7 +1678,7 @@ html[data-theme="dark"] .input-actions .web-search-btn {
 }
 
 html[data-theme="dark"] .input-actions .model-btn:hover:not(.disabled),
-html[data-theme="dark"] .input-actions .upload-btn:hover:not(.disabled),
+html[data-theme="dark"] .input-actions .plus-btn:hover:not(.disabled),
 html[data-theme="dark"] .input-actions .web-search-btn:hover:not(:disabled) {
   border-color: color-mix(in srgb, var(--accent-color) 55%, var(--border-color)) !important;
   background: color-mix(in srgb, var(--accent-color) 16%, var(--bg-tertiary)) !important;
@@ -899,7 +1688,7 @@ html[data-theme="dark"] .input-actions .web-search-btn:hover:not(:disabled) {
 html[data-theme="dark"] .input-actions .model-btn-icon,
 html[data-theme="dark"] .input-actions .model-btn-label,
 html[data-theme="dark"] .input-actions .model-btn-arrow,
-html[data-theme="dark"] .input-actions .upload-btn svg,
+html[data-theme="dark"] .input-actions .plus-btn svg,
 html[data-theme="dark"] .input-actions .web-search-btn svg {
   color: var(--text-secondary) !important;
 }
@@ -907,7 +1696,7 @@ html[data-theme="dark"] .input-actions .web-search-btn svg {
 html[data-theme="dark"] .input-actions .model-btn:hover:not(.disabled) .model-btn-icon,
 html[data-theme="dark"] .input-actions .model-btn:hover:not(.disabled) .model-btn-label,
 html[data-theme="dark"] .input-actions .model-btn:hover:not(.disabled) .model-btn-arrow,
-html[data-theme="dark"] .input-actions .upload-btn:hover:not(.disabled) svg,
+html[data-theme="dark"] .input-actions .plus-btn:hover:not(.disabled) svg,
 html[data-theme="dark"] .input-actions .web-search-btn:hover:not(:disabled) svg {
   color: var(--accent-color) !important;
 }
@@ -1073,7 +1862,7 @@ html[data-theme="dark"] .context-ring-wrapper {
 
 /* 键盘可达性：工具按钮共用一致的焦点环 */
 .model-btn:focus-visible,
-.upload-btn:focus-visible,
+.plus-btn:focus-visible,
 .web-search-btn:focus-visible,
 .send-btn:focus-visible {
   outline: 2px solid color-mix(in srgb, var(--accent-color) 65%, transparent);
@@ -1107,6 +1896,276 @@ html[data-theme="dark"] .context-ring-wrapper {
 
 .model-dropdown-item.active {
   background: color-mix(in srgb, var(--accent-color) 12%, transparent);
+}
+
+/* ========== 「+」添加菜单 ========== */
+.plus-menu {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  padding: 6px;
+  z-index: 9999;
+}
+
+.plus-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 12px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.15s ease;
+}
+
+.plus-menu-item:hover {
+  background: var(--bg-tertiary);
+}
+
+.plus-menu-item:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent-color) 65%, transparent);
+  outline-offset: -2px;
+}
+
+.plus-menu-icon {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  color: var(--text-secondary);
+}
+
+.plus-menu-label {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+
+.plus-menu-item:hover .plus-menu-icon {
+  color: var(--accent-color);
+}
+
+.plus-menu-arrow {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  color: var(--text-secondary);
+  opacity: 0.7;
+}
+
+html[data-theme="dark"] .plus-menu {
+  background: var(--bg-tertiary);
+  border-color: var(--border-color);
+}
+
+html[data-theme="dark"] .plus-menu-item:hover {
+  background: color-mix(in srgb, var(--text-primary) 8%, transparent);
+}
+
+/* 二级列表视图 */
+.plus-menu.is-list {
+  width: 300px;
+}
+
+.plus-menu-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px 8px;
+  border-bottom: 1px solid var(--border-color);
+  margin-bottom: 4px;
+}
+
+.plus-menu-back {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.plus-menu-back:hover {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+.plus-menu-back svg {
+  width: 14px;
+  height: 14px;
+}
+
+.plus-menu-back:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent-color) 65%, transparent);
+  outline-offset: 1px;
+}
+
+.plus-menu-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.plus-menu-count {
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.plus-menu-list {
+  max-height: 280px;
+  overflow-y: auto;
+}
+
+.plus-list-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  transition: background 0.15s ease;
+}
+
+.plus-list-item:hover {
+  background: var(--bg-tertiary);
+}
+
+.plus-list-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  border-radius: 8px;
+  font-size: 14px;
+  background: color-mix(in srgb, var(--accent-color) 12%, var(--bg-tertiary));
+}
+
+.plus-list-icon.initial {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--accent-color);
+}
+
+.plus-list-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.plus-list-name-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.plus-list-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.plus-list-tag {
+  flex-shrink: 0;
+  padding: 1px 6px;
+  border-radius: 5px;
+  font-size: 11px;
+}
+
+.plus-list-tag.on {
+  background: #dcfce7;
+  color: #16a34a;
+}
+
+.plus-list-tag.off {
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+}
+
+.plus-list-tag.custom {
+  background: #ede9fe;
+  color: #7c3aed;
+}
+
+.plus-list-desc {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  display: -webkit-box;
+  -webkit-line-clamp: 1;
+  line-clamp: 1;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
+.plus-list-hint {
+  padding: 16px 10px;
+  font-size: 13px;
+  color: var(--text-secondary);
+  text-align: center;
+}
+
+.plus-list-hint.error {
+  color: #dc2626;
+}
+
+.plus-menu-footer {
+  display: block;
+  width: 100%;
+  margin-top: 6px;
+  padding: 8px 10px 2px;
+  border: none;
+  border-top: 1px solid var(--border-color);
+  background: transparent;
+  font-size: 12px;
+  color: var(--text-secondary);
+  text-align: center;
+  cursor: pointer;
+  transition: color 0.15s ease;
+}
+
+.plus-menu-footer:hover {
+  color: var(--accent-color);
+}
+
+.plus-menu-footer:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent-color) 65%, transparent);
+  outline-offset: -1px;
+  border-radius: 6px;
+}
+
+html[data-theme="dark"] .plus-list-item:hover {
+  background: color-mix(in srgb, var(--text-primary) 8%, transparent);
+}
+
+html[data-theme="dark"] .plus-list-tag.on {
+  background: rgba(22, 163, 74, 0.2);
+  color: #86efac;
+}
+
+html[data-theme="dark"] .plus-list-tag.custom {
+  background: rgba(124, 58, 237, 0.2);
+  color: #c4b5fd;
 }
 
 .model-item-name {
@@ -1372,7 +2431,7 @@ html[data-theme="dark"] .context-ring-wrapper {
 
 /* 上传附件 / 联网搜索：与模型选择同规格的图标按钮，
    hover 统一走主题强调色（此前上传紫、搜索蓝两套 hover 色不一致） */
-.upload-btn,
+.plus-btn,
 .web-search-btn {
   display: flex;
   align-items: center;
@@ -1388,7 +2447,7 @@ html[data-theme="dark"] .context-ring-wrapper {
     transform 0.22s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
-.upload-btn svg,
+.plus-btn svg,
 .web-search-btn svg {
   width: 18px;
   height: 18px;
@@ -1396,7 +2455,7 @@ html[data-theme="dark"] .context-ring-wrapper {
   transition: color 0.22s ease, transform 0.22s ease;
 }
 
-.upload-btn:hover:not(.disabled),
+.plus-btn:hover:not(.disabled),
 .web-search-btn:hover:not(:disabled) {
   border-color: color-mix(in srgb, var(--accent-color) 45%, var(--border-color));
   background: color-mix(in srgb, var(--accent-color) 8%, var(--bg-secondary));
@@ -1404,19 +2463,19 @@ html[data-theme="dark"] .context-ring-wrapper {
   transform: translateY(-1px);
 }
 
-.upload-btn:hover:not(.disabled) svg,
+.plus-btn:hover:not(.disabled) svg,
 .web-search-btn:hover:not(:disabled) svg {
   color: var(--accent-color);
   transform: scale(1.08);
 }
 
-.upload-btn:active:not(.disabled),
+.plus-btn:active:not(.disabled),
 .web-search-btn:active:not(:disabled) {
   transform: translateY(0) scale(0.96);
   box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05);
 }
 
-.upload-btn.disabled,
+.plus-btn.disabled,
 .web-search-btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
@@ -1447,6 +2506,79 @@ html[data-theme="dark"] .context-ring-wrapper {
     var(--accent-color)
   );
   box-shadow: 0 4px 14px color-mix(in srgb, var(--accent-color) 45%, transparent);
+}
+
+/* ── 当前专家胶囊：与左侧工具按钮同排同高，
+   浅强调底 +「专家」徽标 + 名称 + 退出×（样式参照设计稿）── */
+.expert-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 36px;
+  padding: 0 8px 0 6px;
+  max-width: 220px;
+  border: 1px solid color-mix(in srgb, var(--accent-color) 35%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--accent-color) 12%, var(--bg-secondary));
+  flex-shrink: 0;
+}
+
+.expert-chip-badge {
+  flex-shrink: 0;
+  padding: 2px 6px;
+  border-radius: 6px;
+  background: var(--accent-color);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.expert-chip-name {
+  min-width: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: color-mix(in srgb, var(--accent-color) 70%, var(--text-primary));
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.expert-chip-clear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: color-mix(in srgb, var(--accent-color) 70%, var(--text-primary));
+  cursor: pointer;
+  opacity: 0.7;
+  transition: opacity 0.2s ease, background 0.2s ease;
+}
+
+.expert-chip-clear:hover:not(:disabled) {
+  opacity: 1;
+  background: color-mix(in srgb, var(--accent-color) 22%, transparent);
+}
+
+.expert-chip-clear:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.expert-chip-clear:focus-visible {
+  outline: 2px solid var(--accent-color);
+  outline-offset: 1px;
+}
+
+.expert-chip-clear svg {
+  width: 10px;
+  height: 10px;
 }
 
 .copy-btn {
@@ -1490,5 +2622,60 @@ html[data-theme="dark"] .context-ring-wrapper {
 .footer-text {
   font-size: 12px;
   color: var(--text-secondary);
+}
+</style>
+
+<style>
+/* ========== 「+」菜单二级浮动面板（主菜单常驻） ========== */
+.plus-subpanel {
+  width: 380px;
+  max-width: 90vw;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-secondary, #fff);
+  border: 1px solid var(--border-color, #e2e8f0);
+  border-radius: 12px;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.14);
+  padding: 12px;
+  z-index: 9999;
+}
+.plus-subpanel-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 4px 8px;
+}
+.plus-subpanel-title {
+  flex: 1;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary, #1e293b);
+}
+.plus-subpanel-list {
+  max-height: 300px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  scrollbar-width: thin;
+}
+.plus-subpanel-footer {
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border-color, #e2e8f0);
+}
+.plus-subpanel-manage {
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  font-size: 13px;
+  color: var(--text-secondary, #64748b);
+  cursor: pointer;
+  text-align: center;
+}
+.plus-subpanel-manage:hover {
+  background: rgba(15, 23, 42, 0.05);
 }
 </style>

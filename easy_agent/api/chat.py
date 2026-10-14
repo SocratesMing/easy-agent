@@ -17,6 +17,7 @@ from ..services import (
     chat_stream_generator,
     resume_stream_generator,
     get_or_create_agent_for_session,
+    get_session_expert,
     remove_session_agent,
     register_stream_task,
     unregister_stream_task,
@@ -77,6 +78,9 @@ _detached_bg_tasks: "set[asyncio.Task]" = set()
 # 先回放本流已产生的全部事件，再持续接收后续事件（页面刷新不中断流式展示）。
 _session_stream_hubs: "dict[str, _StreamHub]" = {}
 _STREAM_HUB_TTL_SECONDS = 120.0
+# 订阅者队列的余量：回放必须完整（历史上限 10000 条，见 broadcast），
+# 队列容量按「当前历史长度 + 余量」分配，用于容纳回放期间新产生的事件。
+_SUBSCRIBER_QUEUE_SLACK = 1000
 
 
 class _StreamHub:
@@ -95,12 +99,15 @@ class _StreamHub:
         self._cleanup_handle: asyncio.TimerHandle | None = None
 
     def subscribe(self) -> asyncio.Queue:
-        q: asyncio.Queue = asyncio.Queue(maxsize=1000)
+        # 容量必须容纳「整段历史回放 + 运行中新增事件」。早期实现固定
+        # maxsize=1000 且满即 break，历史超过 1000 条时会把中间事件静默丢掉——
+        # 表现为长流程（多轮工具 + 大量 thinking 增量）刷新页面后，重连的回放里
+        # 只剩早期思考、tool_call 卡片消失（工具事件正好落在被丢弃的区间）。
+        q: asyncio.Queue = asyncio.Queue(
+            maxsize=len(self.history) + _SUBSCRIBER_QUEUE_SLACK
+        )
         for item in self.history:
-            try:
-                q.put_nowait(item)
-            except asyncio.QueueFull:
-                break
+            q.put_nowait(item)
         if self.done:
             q.put_nowait(None)
         else:
@@ -122,8 +129,15 @@ class _StreamHub:
             try:
                 q.put_nowait(item)
             except asyncio.QueueFull:
-                # 慢消费者：直接断开，避免阻塞后台流式任务
+                # 慢消费者：直接断开，避免阻塞后台流式任务；但必须先投一个 EOF，
+                # 否则订阅方的 SSE 生成器会永远 await 在一张不再有人写入的队列上
+                # （连接挂起、前端"执行中"状态无法收尾）。
                 self.unsubscribe(q)
+                try:
+                    q.get_nowait()  # 腾出一格
+                    q.put_nowait(None)
+                except (asyncio.QueueEmpty, asyncio.QueueFull):
+                    pass
 
     def close(self) -> None:
         if self.done:
@@ -353,6 +367,16 @@ async def chat_stream(
             ]
             parsed_content = "\n\n".join(file_contents) + "\n\n" + request.message
 
+    page_context = (request.page_context or "").strip()
+    if page_context:
+        parsed_content = (
+            "<page_context>\n"
+            "以下是用户发起提问时所在页面的上下文，仅供参考；与问题无关时忽略。\n"
+            f"{page_context}\n"
+            "</page_context>\n\n"
+            + parsed_content
+        )
+
     user_message = {
         "role": "user",
         "content": request.message,
@@ -360,6 +384,8 @@ async def chat_stream(
     }
     if request.files:
         user_message["files"] = request.files
+    if page_context:
+        user_message["page_context"] = page_context
     db.add_message(session_id, user_message)
     db.add_message_row(session_id, user_message)
 
@@ -461,8 +487,19 @@ async def chat_resume(
     session = get_owned_session(db, session_id, username)
     workspace_name = session.workspace_name or ""
 
-    # 复用缓存的 Agent 实例（保留 checkpointer 中的 interrupt 状态）
-    agent = await get_or_create_agent_for_session(session_id, username, workspace_name)
+    # 复用缓存的 Agent 实例（保留 checkpointer 中的 interrupt 状态）。
+    # 必须带上该会话当前生效的专家 ID，否则「在专家会话里触发 HITL 审批 -> 恢复」
+    # 会被判定为「专家变更」而驱逐缓存，重建出通用 Agent（人设丢失）。
+    # 取值安全性：_session_expert 与 _session_agents 同生共死（只在 Agent 创建成功后
+    # 一起写入、清理时一起删除），因此这里取到的值要么与缓存中的专家一致 —— 命中缓存
+    # 原样复用、人设保留；要么为 ""（缓存已失效）—— 等价于通用 Agent 重建，
+    # 行为与引入专家模块之前逐字一致。
+    agent = await get_or_create_agent_for_session(
+        session_id,
+        username,
+        workspace_name,
+        expert_agent_id=get_session_expert(session_id),
+    )
 
     return StreamingResponse(
         _detached_event_stream(

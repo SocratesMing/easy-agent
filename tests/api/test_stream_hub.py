@@ -67,3 +67,56 @@ async def test_detached_event_stream_yields_and_publishes_to_hub():
     assert hub is not None
     assert hub.done is True
     assert hub.history == chunks
+
+
+async def test_replay_is_complete_when_history_exceeds_queue_slack():
+    """回归：长流程刷新后「只有思考、工具卡片消失」。
+
+    长任务（多轮工具 + 大量 thinking 增量，每个增量都是一个 SSE 事件）会让中枢
+    历史超过 1000 条。旧实现回放用固定 maxsize=1000 的队列且满即 break，导致
+    刷新后重连的客户端只拿到最早 1000 条，中间（含 tool_call）被静默丢弃。
+    """
+    hub = _StreamHub("s1")
+    total = 1500
+    for i in range(total):
+        if i == 1000:
+            # 工具事件落在历史中段——正是旧实现被丢弃的区间
+            hub.broadcast(
+                _sse(
+                    {
+                        "type": "tool_call",
+                        "tool_name": "execute",
+                        "tool_call_id": "call-mid",
+                        "arguments": {"command": "ls -la"},
+                        "step": 1,
+                    }
+                )
+            )
+        hub.broadcast(_sse({"type": "content", "content": f"chunk-{i}"}))
+
+    q = hub.subscribe()
+    replayed = []
+    while not q.empty():
+        replayed.append(q.get_nowait())
+
+    assert len(replayed) == total + 1, f"回放应完整，实际只回放 {len(replayed)}/{total + 1} 条"
+    assert any("tool_call" in item for item in replayed), "中段的 tool_call 事件必须出现在回放里"
+    assert "chunk-0" in replayed[0]
+    assert "chunk-1499" in replayed[-1]
+
+
+async def test_slow_consumer_gets_eof_instead_of_hanging():
+    """慢消费者被断开时必须收到收尾信号，不能永远 await 在空队列上。"""
+    hub = _StreamHub("s1")
+    q = hub.subscribe()
+    capacity = q.maxsize
+
+    # 广播超过队列容量，触发慢消费者断开分支
+    for i in range(capacity + 50):
+        hub.broadcast(_sse({"type": "content", "content": f"c{i}"}))
+
+    items = []
+    while not q.empty():
+        items.append(q.get_nowait())
+
+    assert items[-1] is None, "断开的订阅者应先收到 EOF（None），否则 SSE 连接会永久挂起"

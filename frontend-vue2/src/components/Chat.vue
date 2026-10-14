@@ -1,5 +1,5 @@
 <template>
-  <div class="chat-container">
+  <div class="chat-container" :class="{ 'is-sidebar': isSidebar }">
     <div class="chat-main">
     <div class="chat-content" :class="composerMode === 'center' ? 'is-center' : 'is-bottom'">
       <!-- 顶部信息行：会话时间居中，操作区（任务规划 + 展开工作区）贴右。
@@ -19,7 +19,7 @@
                （那会让折叠会话列表时任务胶囊一起消失）。 -->
           <TodoListPanel :todos="todos" />
           <button
-            v-if="currentSessionId && !workspaceExpanded"
+            v-if="showWorkspaceBtn"
             class="expand-workspace-inline"
             @click="$emit('toggle-workspace')"
             title="展开工作区"
@@ -33,7 +33,9 @@
       </div>
       <div class="chat-messages" ref="messagesRef" @scroll="handleScroll">
         <div v-if="messages.length === 0 && !sessionLoading" class="welcome-screen">
-          <h2>{{ welcomeTitle }}</h2>
+          <slot name="welcome">
+            <h2>{{ welcomeTitle }}</h2>
+          </slot>
         </div>
         <!-- 切换会话拉取历史期间：显示骨架，避免先闪出空欢迎页 -->
         <div
@@ -72,8 +74,12 @@
         </svg>
       </button>
 
+      <slot name="composer-prefix"></slot>
       <ChatInput
+        ref="composerRef"
         class="composer"
+        :draft-key="draftKey"
+        :consume-pending-skill="!isSidebar"
         @send="onSend"
         :disabled="isStreaming"
         :isStreaming="isStreaming"
@@ -83,32 +89,75 @@
         :iterationCount="iterationCount"
         :models="models"
         :selectedModel="selectedModel"
-        :showFooter="composerMode === 'bottom'"
+        :showFooter="composerMode === 'bottom' && !isSidebar"
+        :activeExpert="activeExpert"
+        :expertPrompt="expertPrompt"
         @update:selectedModel="$emit('update:selectedModel', $event)"
         @stop="handleStop"
         @create-session="handleCreateSession"
+        @openPanel="$emit('openPanel', $event)"
+        @clear-expert="$emit('clear-expert')"
+        @expert-prompt-applied="$emit('expert-prompt-applied')"
       />
 
-      <!-- 分类预设问题：仅在首页（居中模式）展示，置于输入框下方，悬浮展开 -->
-      <div class="preset-categories" v-if="composerMode === 'center' && presetQuestions.length">
-        <div class="preset-category-tabs">
+      <!-- 分类预置问题：仅在首页（居中模式）展示。每个分类一张卡片（分类名即卡片头部，
+           不再单独放标签栏），最多展示三张；卡片内多个预置问题堆叠，
+           鼠标滚轮（或左右方向键）在卡片上滑动即可来回切换子问题。
+           侧边栏变体不展示预置问题。 -->
+      <div
+        class="preset-area"
+        v-if="composerMode === 'center' && displayedPresetGroups.length && !isSidebar"
+      >
+        <div
+          class="preset-cards"
+          :class="'count-' + displayedPresetGroups.length"
+          @mouseleave="onPresetLeave"
+        >
+
           <div
-            class="preset-category"
-            v-for="(group, gi) in presetQuestions"
+            class="preset-deck"
+            v-for="(group, gi) in displayedPresetGroups"
             :key="gi"
+            :class="'accent-' + (gi % 3)"
+            role="group"
+            tabindex="0"
+            :aria-label="group.category + ' 预置问题'"
+            @mouseenter="onPresetEnter(gi)"
+            @wheel="onPresetWheel($event, gi)"
+            @keydown.left.prevent="stepPreset(gi, -1)"
+            @keydown.right.prevent="stepPreset(gi, 1)"
           >
-            <button type="button" class="preset-category-tab">
-              <span v-if="group.icon" class="preset-category-icon">{{ group.icon }}</span>
-              <span>{{ group.category }}</span>
-            </button>
-            <div class="preset-category-panel">
+            <div class="preset-deck-head">
+              <span class="preset-deck-title">
+                <span v-if="group.icon" class="preset-deck-title-icon">{{ group.icon }}</span>
+                {{ group.category }}
+              </span>
+              <span class="preset-deck-count">
+                {{ group.questions.length }} 条<template v-if="group.questions.length > 1"> · 滚动切换</template>
+              </span>
+            </div>
+            <div class="preset-deck-stage">
+              <div
+                v-for="(q, i) in group.questions"
+                :key="i"
+                class="preset-card"
+                :class="presetCardClass(gi, i)"
+                :style="presetCardStyle(gi, i)"
+                :aria-hidden="i !== presetIndex(gi)"
+              >
+                <span class="preset-card-text">{{ q }}</span>
+              </div>
+            </div>
+            <div class="preset-deck-dots" v-if="group.questions.length > 1">
               <button
                 v-for="(q, i) in group.questions"
                 :key="i"
                 type="button"
-                class="preset-chip"
-                @click="onPresetClick(q)"
-              >{{ q }}</button>
+                class="preset-dot"
+                :class="{ active: i === presetIndex(gi) }"
+                :aria-label="'第 ' + (i + 1) + ' 条预置问题'"
+                @click="setPresetQuestion(gi, i)"
+              ></button>
             </div>
           </div>
         </div>
@@ -190,12 +239,38 @@ export default {
   welcomeTitle: {
     type: String,
     default: APP_WELCOME_TITLE
+  },
+  // main：主页面对话；sidebar：AI 侧边栏（窄栏布局，输入框始终贴底，不展示工作区入口）
+  variant: {
+    type: String,
+    default: 'main'
+  },
+  // 输入草稿的 sessionStorage key：侧边栏与主页面各存一份，互不覆盖
+  draftKey: {
+    type: String,
+    default: 'easy_agent_input_draft'
+  },
+  // 当前会话选中的专家 Agent（{export_agent_id, export_name_cn} 或 null）。
+  // 非空时输入框工具栏显示专家胶囊，且本会话消息走 /agent/stream_export_run。
+  activeExpert: {
+    type: Object,
+    default: null
+  },
+  // 外部预填的问题（专家详情弹窗点「专家帮你做」示例）：透传给 ChatInput，
+  // 由其写入输入框后通过 expert-prompt-applied 通知 App 清空。
+  expertPrompt: {
+    type: String,
+    default: ''
   }
 },
   data() {
     return {
       // 首页布局模式：center=空会话时输入框居中，bottom=对话中输入框贴底
       composerMode: 'center',
+      // 输入框当前内容是否为「预置问题预览填充态」
+      previewActive: false,
+      // 预置问题：每张卡片当前展示的子问题下标（按卡片序号索引，最多三张）
+      presetQuestionIndexes: [],
       deckTop: 0,
       deckVisibleCount: 3, // keep
       currentUserMessageIndex: -1,
@@ -206,14 +281,22 @@ export default {
     }
   },
   computed: {
+    isSidebar() {
+      return this.variant === 'sidebar'
+    },
+    // 预置问题：只展示前三个分类（后端可能传入更多，按需求截断）
+    displayedPresetGroups() {
+      return (this.presetQuestions || []).slice(0, 3)
+    },
+
     // 顶部信息行：会话时间（居中）+ 操作区（任务规划、展开工作区，贴右）。
     // 三者中任意一个需要展示时，这一行才占位 —— 首页（无会话）保持干净，
     // 否则会破坏 .chat-content.is-center 的垂直居中。
     showSessionTime() {
-      return !!this.sessionCreatedAt && this.messages.length > 0
+      return !this.isSidebar && !!this.sessionCreatedAt && this.messages.length > 0
     },
     showWorkspaceBtn() {
-      return !!this.currentSessionId && !this.workspaceExpanded
+      return !this.isSidebar && !!this.currentSessionId && !this.workspaceExpanded
     },
     showTopbar() {
       return this.showSessionTime || this.todos.length > 0 || this.showWorkspaceBtn
@@ -228,13 +311,31 @@ export default {
     }
   },
   watch: {
+    composerMode(mode) {
+      // 离开首页（开始对话）时复位悬浮状态
+      if (mode !== 'center') {
+        this.hoveredDeck = null
+        this.lastPreview = ''
+        this.previewActive = false
+      }
+    },
+    presetQuestions(groups) {
+      // 配置重新拉取后分类/子问题数量可能变化，收敛每张卡片的下标避免越界
+      const next = []
+      ;(groups || []).slice(0, 3).forEach((group, i) => {
+        const count = (group && group.questions ? group.questions.length : 0)
+        const cur = this.presetQuestionIndexes[i] || 0
+        next[i] = count ? Math.min(cur, count - 1) : 0
+      })
+      this.presetQuestionIndexes = next
+    },
     messages: [
       {
         immediate: true,
         handler(newMessages) {
           // 空会话显示居中输入框；有消息时输入框贴底。
           // 正在拉取历史时按「有会话」处理（贴底），避免先居中再跳到贴底。
-          this.composerMode = (newMessages.length === 0 && !this.sessionLoading) ? 'center' : 'bottom'
+          this.composerMode = (newMessages.length === 0 && !this.sessionLoading && !this.isSidebar) ? 'center' : 'bottom'
         }
       },
       {
@@ -252,7 +353,7 @@ export default {
     ],
     sessionLoading(loading) {
       // 加载历史期间贴底，避免居中布局随后跳动
-      this.composerMode = (this.messages.length === 0 && !loading) ? 'center' : 'bottom'
+      this.composerMode = (this.messages.length === 0 && !loading && !this.isSidebar) ? 'center' : 'bottom'
     },
     scrollTrigger() {
       // 切换/加载会话时强制贴底
@@ -266,6 +367,14 @@ export default {
   beforeDestroy() {
   },
   methods: {
+    focusComposer() {
+      const c = this.$refs.composerRef
+      if (c) c.focusInput()
+    },
+    setComposerText(text) {
+      const c = this.$refs.composerRef
+      if (c) c.setDraft(text)
+    },
     formatSessionTime(isoStr) {
       if (!isoStr) return ''
       const d = new Date(isoStr)
@@ -341,14 +450,104 @@ export default {
     handleCreateSession() {
       this.$emit('create-session')
     },
-    handleQuickAction(message, index) {
-      // 兼容旧引用（已无 deck），直接走预设点击
-      this.onPresetClick(message)
+    // ========== 预置问题：悬浮预览 ==========
+    // 仅当输入框为空（或当前内容正是预览填充且未被修改）时悬浮才填充；
+    // 输入框已有用户内容时不填充、不覆盖。移出时若未修改预览文本则恢复
+    // 悬浮前内容（原为空 → 清空）；编辑过则保留其内容并解除预览态。
+    fillPresetPreview(groupIndex) {
+      const group = this.displayedPresetGroups[groupIndex]
+      const question = group && group.questions ? group.questions[this.presetIndex(groupIndex)] : null
+      if (question == null) return
+      this.lastPreview = question
+      const composer = this.$refs.composerRef
+      if (composer) composer.setMessage(question)
+      this.previewActive = true
     },
-    onPresetClick(message) {
-      this.composerMode = 'bottom'
-      this.isAtBottom = true
-      this.$emit('send-message', message, [], null, true, false)
+    // 是否允许悬浮填充：输入框为空，或内容仍是预览态且未被用户修改
+    canPresetPreview() {
+      const composer = this.$refs.composerRef
+      const current = composer ? composer.getMessage() : ''
+      if (!current.trim()) return true
+      return this.previewActive && current === this.lastPreview
+    },
+    onPresetEnter(groupIndex) {
+      if (!this.canPresetPreview()) {
+        // 输入框已有用户内容：不覆盖，仅记录悬浮位置（滚轮/圆点切换仍可用）
+        this.hoveredDeck = groupIndex
+        return
+      }
+      if (this.hoveredDeck === null) {
+        const composer = this.$refs.composerRef
+        this.composerSnapshot = composer ? composer.getMessage() : ''
+      }
+      this.hoveredDeck = groupIndex
+      this.fillPresetPreview(groupIndex)
+    },
+    onPresetLeave() {
+      if (this.hoveredDeck === null) return
+      this.hoveredDeck = null
+      const composer = this.$refs.composerRef
+      const current = composer ? composer.getMessage() : ''
+      const previewed = this.lastPreview
+      this.lastPreview = ''
+      if (this.previewActive) {
+        if (current === previewed) {
+          // 用户未修改预览：恢复悬浮前内容（原为空 → 清空）
+          if (composer) composer.setMessage(this.composerSnapshot)
+        }
+        // 用户编辑过预览文本：内容归用户保留，解除预览态
+        this.previewActive = false
+      }
+    },
+    // 读取某张卡片当前子问题下标；数据变化导致越界时收敛到有效范围
+    presetIndex(groupIndex) {
+      const group = this.displayedPresetGroups[groupIndex]
+      const count = (group && group.questions ? group.questions.length : 0)
+      if (!count) return 0
+      const cur = this.presetQuestionIndexes[groupIndex] || 0
+      return Math.min(cur, count - 1)
+    },
+    // 切到某张卡片的指定子问题（越界自动收敛）
+    setPresetQuestion(groupIndex, questionIndex) {
+      const group = this.displayedPresetGroups[groupIndex]
+      const count = (group && group.questions ? group.questions.length : 0)
+      if (!count) return
+      const next = this.presetQuestionIndexes.slice()
+      next[groupIndex] = Math.max(0, Math.min(questionIndex, count - 1))
+      this.presetQuestionIndexes = next
+      // 悬浮期间用滚轮/圆点切换子问题时，输入框预览实时跟随（仅预览态允许）
+      if (this.hoveredDeck === groupIndex && this.canPresetPreview()) this.fillPresetPreview(groupIndex)
+    },
+    // 前后切换子问题；到端点后停在端点，不循环，避免长列表滚回开头
+    stepPreset(groupIndex, delta) {
+      this.setPresetQuestion(groupIndex, this.presetIndex(groupIndex) + delta)
+    },
+    // 鼠标滚轮在卡片上滑动切换子问题。仅在还有其它子问题时拦截滚动，
+    // 否则交还页面正常滚动，避免单条预置问题把整页滚动锁死。
+    onPresetWheel(event, groupIndex) {
+      const group = this.displayedPresetGroups[groupIndex]
+      const count = (group && group.questions ? group.questions.length : 0)
+      if (count <= 1) return
+      const delta = event.deltaY !== 0 ? event.deltaY : event.deltaX
+      if (!delta) return
+      const current = this.presetIndex(groupIndex)
+      const atStart = current <= 0
+      const atEnd = current >= count - 1
+      if ((delta < 0 && atStart) || (delta > 0 && atEnd)) return
+      event.preventDefault()
+      this.stepPreset(groupIndex, delta > 0 ? 1 : -1)
+    },
+    // 堆叠效果：当前卡在最前，其余卡在其后依次露出一点，形成一摞
+    presetCardClass(groupIndex, questionIndex) {
+      const current = this.presetIndex(groupIndex)
+      if (questionIndex === current) return 'is-front'
+      return questionIndex < current ? 'is-before' : 'is-after'
+    },
+    presetCardStyle(groupIndex, questionIndex) {
+      // 只渲染当前问题；切换交给圆点/滚轮，配合 CSS 的 opacity 过渡淡入淡出
+      return questionIndex === this.presetIndex(groupIndex)
+        ? { zIndex: 30 }
+        : { zIndex: 10, opacity: '0', pointerEvents: 'none' }
     },
     onSend(message, files, signal, enableDeepThink, enableWebSearch) {
       this.composerMode = 'bottom'
@@ -632,276 +831,236 @@ export default {
   50% { opacity: 0.45; }
 }
 
-.preset-categories {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
+/* 预置问题卡片区：与输入框同宽（80% / 最大 900px），一行最多三张、每张卡自带分类头部 */
+.preset-area {
+  /* 与 .chat-input-container 相同的左右内边距与滚动条预留，
+     使 80% 宽的卡片区与输入框左右边缘严格对齐 */
+  padding: 0 24px;
+  width: 100%;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+}
+
+.preset-cards {
+  display: grid;
   gap: 14px;
-  margin: 24px auto 0;
-  width: 100%;
-  max-width: 720px;
+  margin: 20px auto 0;
+  width: 80%;
+  max-width: 900px;
 }
 
-.preset-category-tabs {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  width: 100%;
-  gap: 10px;
+/* 卡片数量决定列数：1/2/3 张时列数自适应，宽度始终与输入框对齐 */
+.preset-cards.count-1 {
+  grid-template-columns: minmax(0, 1fr);
 }
 
-.preset-category-tab {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 8px 16px;
-  background: #f8fafc;
-  border: 1px solid #e2e8f0;
-  border-radius: 999px;
-  font-size: 13px;
-  font-weight: 600;
-  color: #475569;
-  cursor: pointer;
-  transition: all 0.2s ease;
+.preset-cards.count-2 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
-.preset-category-tab:hover {
-  border-color: #bae6fd;
-  color: #0284c7;
+.preset-cards.count-3 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
-.preset-category-tab.active {
-  background: #e0f2fe;
-  border-color: #7dd3fc;
-  color: #0369a1;
+@media (max-width: 1024px) {
+  .preset-cards.count-3 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
-.preset-category-icon {
-  font-size: 14px;
+@media (max-width: 680px) {
+  .preset-cards.count-2,
+  .preset-cards.count-3 {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
-.preset-category {
+/* 单张卡片：无边框，用「分类色渐变底 + 白色浮层」分层表达；
+   三张卡各带一种主题色（天蓝 / 紫 / 翠绿），角落再叠一团柔光增色 */
+.preset-deck {
   position: relative;
-}
-
-.preset-category-panel {
-  position: absolute;
-  top: 100%;
-  left: 50%;
-  transform: translateX(-50%) translateY(-6px);
   display: flex;
   flex-direction: column;
-  align-items: stretch;
-  gap: 10px;
-  width: 360px;
-  max-width: 82vw;
-  max-height: 0;
-  opacity: 0;
+  padding: 14px 14px 12px;
+  border-radius: 16px;
+  border: none;
   overflow: hidden;
-  pointer-events: none;
-  background: linear-gradient(180deg, #f8fafc 0%, #f0f9ff 100%);
-  border: 1px solid #e2e8f0;
-  border-radius: 12px;
-  padding: 0 12px;
-  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.10);
-  transition: max-height 0.35s ease, opacity 0.3s ease,
-    transform 0.3s ease, padding 0.3s ease;
-  z-index: 20;
+  background: linear-gradient(
+    150deg,
+    color-mix(in srgb, var(--preset-accent) 16%, var(--bg-secondary, #ffffff)) 0%,
+    color-mix(in srgb, var(--preset-accent) 7%, var(--bg-secondary, #ffffff)) 48%,
+    var(--bg-secondary, #ffffff) 100%
+  );
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+  outline: none;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
 }
 
-.preset-category:hover .preset-category-panel,
-.preset-category:focus-within .preset-category-panel {
-  max-height: 320px;
-  opacity: 1;
-  transform: translateX(-50%) translateY(0);
-  pointer-events: auto;
-  padding: 12px;
-}
-
-.preset-chip {
-  width: 100%;
-  padding: 12px 16px;
-  background: #f8fafc;
-  border: 1px solid #e2e8f0;
-  border-radius: 10px;
-  font-size: 13px;
-  color: #475569;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  text-align: center;
-}
-
-.preset-chip:hover {
-  background: #f0f9ff;
-  border-color: #bae6fd;
-  color: #0284c7;
-  transform: translateY(-1px);
-}
-
-.preset-deck-stage {
-  position: relative;
-  width: 440px;
-  max-width: 92vw;
-  height: 188px;
-}
-
-.preset-card {
+.preset-deck::after {
+  content: '';
   position: absolute;
-  top: 0;
-  left: 50%;
-  width: 100%;
-  min-height: 150px;
-  padding: 20px 22px;
-  background: white;
-  border: 1px solid #e2e8f0;
-  border-radius: 18px;
-  box-shadow: 0 6px 20px rgba(15, 23, 42, 0.08);
-  cursor: pointer;
-  transition: transform 0.4s cubic-bezier(0.22, 1, 0.36, 1),
-    opacity 0.4s ease, box-shadow 0.25s ease;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  text-align: left;
-  transform-origin: center top;
+  top: -34px;
+  right: -34px;
+  width: 96px;
+  height: 96px;
+  border-radius: 50%;
+  background: radial-gradient(
+    circle,
+    color-mix(in srgb, var(--preset-accent) 24%, transparent) 0%,
+    transparent 70%
+  );
+  pointer-events: none;
 }
 
-.preset-card.is-front {
-  box-shadow: 0 10px 30px rgba(14, 165, 233, 0.18);
-  border-color: #bae6fd;
+.preset-deck:hover,
+.preset-deck:focus-visible {
+  transform: translateY(-2px);
+  box-shadow: 0 14px 30px -12px color-mix(in srgb, var(--preset-accent) 55%, transparent),
+    0 2px 6px rgba(15, 23, 42, 0.05);
 }
 
-.preset-card.is-front:hover {
-  box-shadow: 0 14px 38px rgba(14, 165, 233, 0.28);
+.preset-deck:focus-visible {
+  outline: 2px solid var(--preset-accent, #0ea5e9);
+  outline-offset: 2px;
 }
 
-.preset-card.is-back {
-  cursor: pointer;
-}
+/* 三张卡的主题色：天蓝 / 紫 / 翠绿 */
+.preset-deck.accent-0 { --preset-accent: #0ea5e9; }
+.preset-deck.accent-1 { --preset-accent: #8b5cf6; }
+.preset-deck.accent-2 { --preset-accent: #10b981; }
 
-.preset-card-top {
+.preset-deck-head {
+  position: relative;
+  z-index: 1;
   display: flex;
   align-items: center;
   gap: 8px;
+  margin-bottom: 12px;
 }
 
-.preset-card-icon {
-  display: flex;
+/* 分类图标放进主题色圆片（替代原先的细色条） */
+.preset-deck-title-icon {
+  display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 30px;
-  height: 30px;
+  width: 26px;
+  height: 26px;
   border-radius: 9px;
-  background: linear-gradient(135deg, #e0f2fe, #f0f9ff);
-  color: #0ea5e9;
+  font-size: 14px;
+  background: color-mix(in srgb, var(--preset-accent) 20%, #ffffff);
+}
+
+.preset-deck-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text-primary, #1e293b);
+}
+
+.preset-deck-count {
+  margin-left: auto;
+  font-size: 12px;
+  font-weight: 500;
+  color: color-mix(in srgb, var(--preset-accent) 62%, var(--text-secondary, #64748b));
   flex-shrink: 0;
 }
 
-.preset-card-icon svg {
-  width: 17px;
-  height: 17px;
+/* 卡片堆叠区：高度固定，子问题卡在内部绝对定位叠放 */
+.preset-deck-stage {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  height: 132px;
 }
 
-.preset-card-tag {
-  font-size: 12px;
-  font-weight: 600;
-  color: #0ea5e9;
-  letter-spacing: 0.05em;
+/* 子问题卡：无边框、背景与分类卡融为一体，同一时刻只显示当前问题 */
+.preset-card {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  padding: 12px 14px;
+  background: transparent;
+  border: none;
+  border-radius: 12px;
+  text-align: left;
+  transform-origin: center bottom;
+  transition: transform 0.3s cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 0.3s ease, background-color 0.2s ease, box-shadow 0.2s ease;
 }
 
-.preset-card-index {
-  margin-left: auto;
-  font-size: 12px;
-  color: #94a3b8;
+/* 悬停时垫一层主题色浅底，作为「可点击」暗示 */
+.preset-card.is-front:hover {
+  background: color-mix(in srgb, var(--preset-accent) 9%, transparent);
 }
 
 .preset-card-text {
-  flex: 1;
   margin: 0;
-  font-size: 17px;
+  font-size: 15px;
   font-weight: 600;
-  line-height: 1.5;
-  color: #1e293b;
+  line-height: 1.55;
+  color: var(--text-primary, #1e293b);
   display: -webkit-box;
   -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
   overflow: hidden;
+  word-break: break-word;
 }
 
-.preset-card-foot {
+.preset-deck-dots {
+  position: relative;
+  z-index: 1;
   display: flex;
   align-items: center;
-  justify-content: flex-end;
+  justify-content: center;
   gap: 6px;
-  font-size: 13px;
-  color: #64748b;
-}
-
-.preset-send-arrow {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 22px;
-  height: 22px;
-  border-radius: 50%;
-  background: #0ea5e9;
-  color: white;
-  font-size: 14px;
-  transition: transform 0.2s ease;
-}
-
-.preset-card.is-front:hover .preset-send-arrow {
-  transform: translateX(3px);
-}
-
-.preset-nav {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  margin-top: 26px;
-}
-
-.preset-nav-btn {
-  width: 34px;
-  height: 34px;
-  border-radius: 50%;
-  border: 1px solid #e2e8f0;
-  background: white;
-  color: #475569;
-  font-size: 18px;
-  line-height: 1;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: all 0.2s ease;
-}
-
-.preset-nav-btn:hover {
-  border-color: #0ea5e9;
-  color: #0ea5e9;
-  background: #f0f9ff;
-}
-
-.preset-dots {
-  display: flex;
-  align-items: center;
-  gap: 8px;
+  margin-top: 10px;
 }
 
 .preset-dot {
-  width: 8px;
-  height: 8px;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
-  background: #cbd5e1;
+  border: none;
+  padding: 0;
+  background: color-mix(in srgb, var(--preset-accent) 24%, transparent);
   cursor: pointer;
   transition: all 0.2s ease;
 }
 
+.preset-dot:focus-visible {
+  outline: 2px solid var(--preset-accent, #0ea5e9);
+  outline-offset: 2px;
+}
+
 .preset-dot.active {
-  width: 22px;
-  border-radius: 4px;
-  background: #0ea5e9;
+  width: 16px;
+  border-radius: 3px;
+  background: var(--preset-accent, #0ea5e9);
+}
+
+/* 深色主题：底色换成暗面分层，主题色透明度调高保持可辨 */
+html[data-theme="dark"] .preset-deck {
+  background: linear-gradient(
+    150deg,
+    color-mix(in srgb, var(--preset-accent) 30%, #0f172a) 0%,
+    color-mix(in srgb, var(--preset-accent) 14%, #0f172a) 52%,
+    #0f172a 100%
+  );
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
+}
+
+html[data-theme="dark"] .preset-deck-title-icon {
+  background: color-mix(in srgb, var(--preset-accent) 32%, #0f172a);
+}
+
+html[data-theme="dark"] .preset-card.is-front:hover {
+  background: color-mix(in srgb, var(--preset-accent) 20%, transparent);
 }
 
 /* 相对聊天容器定位（而非视口）：工作区分栏后聊天区会收窄，用 fixed 会飘到
@@ -1011,5 +1170,71 @@ export default {
   50% {
     opacity: 0.5;
   }
+}
+
+/* ── AI 侧边栏形态：窄栏下收紧留白，空态不再居中放大 ── */
+.chat-container.is-sidebar {
+  --chat-surface: var(--bg-secondary, #ffffff);
+}
+
+.chat-container.is-sidebar .chat-topbar {
+  height: 36px;
+  padding: 0 12px;
+  justify-content: flex-end;
+}
+
+.chat-container.is-sidebar .chat-topbar-actions {
+  right: 12px;
+}
+
+.chat-container.is-sidebar .chat-messages {
+  padding: 0 14px;
+}
+
+.chat-container.is-sidebar .chat-messages::before,
+.chat-container.is-sidebar .chat-messages::after {
+  flex-basis: 14px;
+}
+
+.chat-container.is-sidebar .welcome-screen {
+  flex: 1;
+  justify-content: center;
+}
+
+.chat-container.is-sidebar .scroll-btn {
+  right: 14px;
+  width: 32px;
+  height: 32px;
+}
+
+.chat-container.is-sidebar .scroll-btn svg {
+  width: 16px;
+  height: 16px;
+}
+
+.chat-container.is-sidebar .scroll-btn.prev {
+  bottom: 150px;
+}
+
+.chat-container.is-sidebar .scroll-btn.next {
+  bottom: 192px;
+}
+
+.chat-container.is-sidebar ::v-deep .chat-input-container {
+  padding: 8px 12px 12px;
+}
+
+.chat-container.is-sidebar ::v-deep .input-box {
+  width: 100%;
+  border-radius: 14px;
+}
+
+.chat-container.is-sidebar ::v-deep .message.user,
+.chat-container.is-sidebar ::v-deep .message.assistant {
+  width: 100%;
+}
+
+.chat-container.is-sidebar .chat-content.is-bottom .composer {
+  animation: none;
 }
 </style>

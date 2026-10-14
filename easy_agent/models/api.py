@@ -73,6 +73,11 @@ class ChatRequest(BaseModel):
         default=None,
         description="模型名称（config.models 的 key，如 deepseek/glm）。为空时使用 active model",
     )
+    page_context: Optional[str] = Field(
+        default=None,
+        max_length=8000,
+        description="AI 侧边栏附带的页面/功能上下文（用户唤起 AI 时所在页面的描述），仅提供给模型参考",
+    )
 
 
 class ResumeRequest(BaseModel):

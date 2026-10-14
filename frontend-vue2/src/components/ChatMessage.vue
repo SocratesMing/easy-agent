@@ -1,6 +1,18 @@
 <template>
   <div class="message" :class="[message.role]">
     <div class="message-content">
+      <!-- AI 侧边栏发起的消息：展示随消息附带的页面上下文 -->
+      <div
+        v-if="message.role === 'user' && message.page_context"
+        class="page-context-chip"
+        :title="message.page_context"
+      >
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"></path>
+          <circle cx="12" cy="10" r="3"></circle>
+        </svg>
+        <span>{{ pageContextText }}</span>
+      </div>
       <!-- 文件卡片 -->
       <div v-if="message.files && message.files.length > 0" class="files-container">
         <div 
@@ -155,14 +167,7 @@
           </button>
         </div>
       </template>
-
-      <KnowledgeEvidence
-        v-if="hasKnowledgeEvidence"
-        :evidence="message.knowledge_evidence || []"
-        :warnings="message.knowledge_warnings || []"
-        :message-id="message.id || message.timestamp"
-      />
-
+      
       <!-- 用户消息显示复制和重试按钮 -->
       <div v-if="message.role === 'user' && message.content" class="message-actions">
         <button class="action-btn retry-btn" @click="retryMessage" title="重新发送">
@@ -196,7 +201,7 @@ import {
 } from '../markdownSetup.js'
 import FileIcon from './FileIcon.vue'
 import ToolCallCard from './ToolCallCard.vue'
-import KnowledgeEvidence from '../features/knowledge/KnowledgeEvidence.vue'
+import { pageContextLabel } from '../utils/pageContext.js'
 
 // 注册 KaTeX 数学公式 + emoji 短代码扩展（幂等，仅执行一次）
 setupMarkedExtensions()
@@ -277,7 +282,7 @@ const renderer = createMarkdownRenderer({ highlight: highlightCode })
 installCodeCopyHandler()
 
 export default {
-  components: { FileIcon, ToolCallCard, KnowledgeEvidence },
+  components: { FileIcon, ToolCallCard },
   props: {
     message: {
       type: Object,
@@ -292,10 +297,16 @@ export default {
       // 处理过程默认展开（含实时会话），由用户手动展开/折叠；新过程到达不自动展开，
       // 避免打断用户已收起的查看状态。
       processExpanded: true,
+      // 用户手动操作过展开/折叠后，本次消息内不再自动展开：流式期间 blocks 每次变化
+      // 都会触发下面的 watch，否则点击折叠会被自动展开顶回去（点击折叠无效）。
+      processToggledByUser: false,
       isStuck: false,
     }
   },
   computed: {
+    pageContextText() {
+      return pageContextLabel(this.message.page_context)
+    },
     // 判断 assistant 消息是否有任何可见内容
     hasAnyContent() {
       const m = this.message
@@ -303,16 +314,7 @@ export default {
       if (m.thinking) return true
       if (m.content) return true
       if (m.tool_calls && m.tool_calls.length > 0) return true
-      if (m.knowledge_evidence && m.knowledge_evidence.length > 0) return true
-      if (m.knowledge_warnings && m.knowledge_warnings.length > 0) return true
       return false
-    },
-    // 只有携带知识依据/告警的 assistant 消息才挂载 KnowledgeEvidence，
-    // 普通消息渲染结果与迁移前完全一致（KnowledgeEvidence 自身在空数组时也会渲染为空）。
-    hasKnowledgeEvidence() {
-      const m = this.message
-      if (m.role !== 'assistant') return false
-      return Boolean((m.knowledge_evidence && m.knowledge_evidence.length) || (m.knowledge_warnings && m.knowledge_warnings.length))
     },
     sortedBlocks() {
       // 从 blocks 字段构建（优先使用）
@@ -466,6 +468,7 @@ export default {
     // 流式期间只要出现穿插正文（思考/工具之间的中间正文），自动展开执行过程，
     // 让中间正文按返回顺序可见；完成后保持用户手动展开/收起的状态。
     hasProcessInlineContent(val) {
+      if (this.processToggledByUser) return
       if (this.message.loading && val && !this.processExpanded) {
         this.processExpanded = true
       }
@@ -473,6 +476,7 @@ export default {
     'message.loading': {
       immediate: true,
       handler(loading) {
+        if (this.processToggledByUser) return
         if (loading && this.hasProcessInlineContent && !this.processExpanded) {
           this.processExpanded = true
         }
@@ -558,6 +562,7 @@ export default {
       return this.expandedTool[key] !== false
     },
     toggleProcess() {
+      this.processToggledByUser = true
       this.processExpanded = !this.processExpanded
     },
     // 执行过程头部冻结（sticky 卡住）检测：卡住时补绘顶边框——wrapper 顶边框已随滚动
@@ -845,6 +850,35 @@ html[data-theme="dark"] .process-body .process-inline-content {
 .message.assistant .message-content {
   align-items: flex-start;
   width: 100%;
+}
+
+.page-context-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  margin-bottom: 4px;
+  padding: 2px 9px 2px 7px;
+  border: 1px solid var(--border-color, #e2e8f0);
+  border-radius: 999px;
+  background: var(--bg-primary, #f8fafc);
+  color: var(--text-secondary, #64748b);
+  font-size: 12px;
+  line-height: 1.6;
+  cursor: help;
+}
+
+.page-context-chip svg {
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
+  color: var(--accent-color, #0ea5e9);
+}
+
+.page-context-chip span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* 文件容器样式 */

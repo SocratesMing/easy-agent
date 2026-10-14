@@ -43,7 +43,14 @@
       
       <AssetsPanel v-if="showAssets" :visible="showAssets" @close="showAssets = false" />
 
-      <SkillCenter v-if="showSkillCenter" @close="showSkillCenter = false" />
+      <SkillCenter
+        v-if="showSkillCenter"
+        :session-id="currentSessionId || ''"
+        :initial-tab="skillCenterTab"
+        @close="showSkillCenter = false"
+        @use="handleUseExpert"
+        @create-skill="handleSkillCreate"
+      />
 
       <ScheduledTasksPanel v-if="showScheduledTasks" @close="showScheduledTasks = false" />
       
@@ -75,15 +82,21 @@
         :sidebarCollapsed="isSidebarCollapsed"
         :models="availableModels"
         :selectedModel="selectedModel"
+        :activeExpert="selectedExpert"
+        :expertPrompt="expertPrompt"
+        @expertPromptApplied="expertPrompt = ''"
         @update:selectedModel="selectedModel = $event"
         @toggle-workspace="isWorkspaceCollapsed = false"
         @sendMessage="handleSendMessage"
+        @presetSend="handlePresetSend"
         @createSession="ensureCurrentSession"
         @removeFile="handleRemoveFile"
         @stop="handleStop"
         @retry="handleRetry"
         @approve="handleToolApproval('approve')"
         @reject="handleToolApproval('reject')"
+        @clearExpert="selectedExpert = null"
+        @openPanel="openSkillCenterPanel"
       />
 
       <div v-if="currentSessionId && !showAssets && !showSkillCenter" class="workspace-area">
@@ -120,6 +133,7 @@ import { createSession, listSessions, getChatHistory, deleteSession, sendMessage
 import { uploadFile, deleteFile, getUserProfile, getSessionGeneratedFiles } from './api/files.js'
 import { logout as apiLogout, notifyLogout, getStoredToken, getStoredUsername, AUTH_EXPIRED_EVENT, authFetch, passwordlessLogin } from './api/auth.js'
 import { getModels as fetchModels } from './api/settings.js'
+import { streamExportRun } from './api/expert.js'
 
 const sessions = ref([])
 const currentSessionId = ref(null)
@@ -728,6 +742,9 @@ const isSidebarCollapsed = ref(false)
 const isWorkspaceCollapsed = ref(true)
 const showAssets = ref(false)
 const showSkillCenter = ref(false)
+const skillCenterTab = ref('experts')
+const selectedExpert = ref(null)
+const expertPrompt = ref('')
 const showScheduledTasks = ref(false)
 const showSettingsPanel = ref(false)
 const showUserManagementPanel = ref(false)
@@ -754,10 +771,35 @@ function handleShowAssets() {
   showScheduledTasks.value = false
 }
 
+function openSkillCenterPanel(tab) {
+  // 「+」菜单入口：打开面板并直接定位到专家/技能/连接器
+  skillCenterTab.value = tab
+  showSkillCenter.value = true
+}
+
 function handleShowSkillCenter() {
   showSkillCenter.value = !showSkillCenter.value
   showAssets.value = false
   showScheduledTasks.value = false
+}
+
+/**
+ * 「专家 Tab -> 使用」（及任何来源的专家选中）：把专家挂到当前会话。
+ *
+ * 不强制新建会话：后端 thread_id = `{session_id}-{message_id}`，每条消息都是新线程，
+ * 且 get_or_create_agent_for_session() 已按「专家是否变更」驱逐缓存，
+ * 因此同一会话内切换专家能立即生效（详见 docs/expert-agent-solution.md）。
+ */
+function handleUseExpert(expert, prompt) {
+  if (!expert || !expert.export_agent_id) return
+  selectedExpert.value = {
+    export_agent_id: expert.export_agent_id,
+    export_name_cn: expert.export_name_cn,
+    export_version: expert.export_version,
+  }
+  showSkillCenter.value = false
+  // 详情弹窗点了示例问题：召唤专家的同时把问题回填到输入框（用户确认后发送）
+  expertPrompt.value = typeof prompt === 'string' ? prompt : ''
 }
 
 function handleShowScheduledTasks() {
@@ -896,6 +938,7 @@ async function handleLogout() {
   }
   showAssets.value = false
   showSkillCenter.value = false
+  selectedExpert.value = null
   hasBootstrapped.value = false
   clearActiveSession()
   showWelcome.value = true
@@ -1003,11 +1046,20 @@ async function ensureCurrentSession(initialTitle = '') {
   return currentSessionId.value
 }
 
+/**
+ * 技能中心的「创建技能」：预填内容已写入 sessionStorage，
+ * 这里新建会话并关闭技能中心，ChatInput 随之重新挂载、自动恢复技能标签与提示词。
+ */
+async function handleSkillCreate() {
+  await handleCreateSession()
+}
+
 async function handleCreateSession() {
   saveCurrentSessionState()
 
   showAssets.value = false
   showSkillCenter.value = false
+  selectedExpert.value = null
   showScheduledTasks.value = false
   showSettingsPanel.value = false
   currentSessionId.value = null
@@ -1022,12 +1074,22 @@ async function handleCreateSession() {
   refreshSessionFiles(null)
 }
 
+// 预置问题发送：点击首页预置问题卡片后，该问题作为「新对话的第一条消息」发出。
+// 无论当前是否已选中会话（如刷新后恢复的空会话），都先按「新建对话」把状态
+// 切回全新首页，再走正常发送；当前无会话时后端会在 start 事件里返回新会话 id。
+async function handlePresetSend(message, files, signal, enableDeepThink, enableWebSearch) {
+  await handleCreateSession()
+  handleSendMessage(message, files, signal, enableDeepThink, enableWebSearch)
+}
+
 async function handleSelectSession(sessionId) {
   // 保存当前会话状态
   saveCurrentSessionState()
 
   showAssets.value = false
   showSkillCenter.value = false
+  // 切换会话时不沿用上一个会话的专家选择（选择是当前工作台的临时状态）
+  selectedExpert.value = null
   showScheduledTasks.value = false
   currentSessionId.value = sessionId
   // 切换后按当前会话是否正在流式输出决定输入框状态：
@@ -1469,14 +1531,48 @@ function createStreamChunkHandler(ctx) {
         const idx = findIdx()
         if (idx !== -1) { messages.value[idx].loading = false; messages.value[idx] = { ...messages.value[idx] } }
       }
-    } else if (eventType === 'tool_call') {
+    } else if (eventType === 'tool_call_delta') {
+      // 大参数工具（write_file/edit_file）的 arguments 分片快照：模型还在生成
+      // 文件内容时就先把当前快照合入对应工具卡片，diff 实时增长；完整参数随后由
+      // tool_call 事件权威覆盖（同一 tool_call_id）。
       if (!ctx.isResume) ensureMessage()
       const idx = findIdx()
       if (idx !== -1) {
         const callId = toolCallId || `tool-${tool_name}`
         const existingBlockIdx = messages.value[idx].blocks.findIndex(b => b.type === 'tool_call' && (b.id === callId || b.tool_call_id === callId))
         if (existingBlockIdx !== -1) {
-          messages.value[idx].blocks[existingBlockIdx].arguments = args || {}
+          const prev = messages.value[idx].blocks[existingBlockIdx]
+          messages.value[idx].blocks[existingBlockIdx] = { ...prev, arguments: args || prev.arguments || {}, streaming: true }
+        } else {
+          addBlock('tool_call', { id: callId, tool_name: tool_name || '', arguments: args || {}, result: '', success: true, step: step || 0, streaming: true })
+          if (!ctx.isResume) currentToolCalls.push({ tool_call_id: callId, tool_name: tool_name || '', arguments: args || {}, result: '', success: true })
+        }
+        touchBlocks()
+      }
+    } else if (eventType === 'tool_call') {
+      if (!ctx.isResume) ensureMessage()
+      const idx = findIdx()
+      if (idx !== -1) {
+        const callId = toolCallId || `tool-${tool_name}`
+        let existingBlockIdx = messages.value[idx].blocks.findIndex(b => b.type === 'tool_call' && (b.id === callId || b.tool_call_id === callId))
+        if (existingBlockIdx === -1) {
+          // 参数分片阶段若无 id（部分 provider 首个分片才带 id），临时块的 key 是
+          // `tool-<name>`；此处按工具名回退匹配仍在 streaming 的占位块，避免重复卡片。
+          existingBlockIdx = messages.value[idx].blocks.findIndex(b => b.type === 'tool_call' && b.streaming && b.tool_name === tool_name)
+        }
+        if (existingBlockIdx !== -1) {
+          const prev = messages.value[idx].blocks[existingBlockIdx]
+          // 参数分片阶段的临时块：用权威参数覆盖，补齐 id/step，并清掉 streaming 标记。
+          messages.value[idx].blocks[existingBlockIdx] = { ...prev, id: toolCallId || prev.id, tool_call_id: toolCallId || prev.tool_call_id, arguments: args || prev.arguments || {}, step: step || prev.step || 0, streaming: false }
+          if (!ctx.isResume) {
+            const tracked = currentToolCalls.find(tc => tc.tool_call_id === callId)
+            if (tracked) {
+              tracked.arguments = args || tracked.arguments
+              tracked.tool_name = tool_name || tracked.tool_name
+            } else {
+              currentToolCalls.push({ tool_call_id: callId, tool_name: tool_name || '', arguments: args || {}, result: '', success: true })
+            }
+          }
           currentBlock = messages.value[idx].blocks[existingBlockIdx]
           touchBlocks()
         } else {
@@ -1499,9 +1595,12 @@ function createStreamChunkHandler(ctx) {
       }
       const idx = findIdx()
       if (idx !== -1) {
-        const blockIdx = messages.value[idx].blocks.findIndex(b => b.type === 'tool_call' && (b.id === callId || b.tool_call_id === callId))
+        let blockIdx = messages.value[idx].blocks.findIndex(b => b.type === 'tool_call' && (b.id === callId || b.tool_call_id === callId))
+        if (blockIdx === -1) {
+          blockIdx = messages.value[idx].blocks.findIndex(b => b.type === 'tool_call' && b.streaming && b.tool_name === tool_name)
+        }
         if (blockIdx !== -1) {
-          const blk = { ...messages.value[idx].blocks[blockIdx], arguments: args || messages.value[idx].blocks[blockIdx].arguments, result: parseMCPResult(result || ''), success: success !== false, duration: toolDuration }
+          const blk = { ...messages.value[idx].blocks[blockIdx], arguments: args || messages.value[idx].blocks[blockIdx].arguments, result: parseMCPResult(result || ''), success: success !== false, duration: toolDuration, streaming: false }
           if (ctx.isResume) blk.loading = false
           messages.value[idx].blocks[blockIdx] = blk
           touchBlocks()
@@ -1517,6 +1616,9 @@ function createStreamChunkHandler(ctx) {
         messages.value[idx].pending_approval = null
         pendingApproval.value = null
         messages.value[idx].created_at = new Date().toISOString()
+        // 兜底：任何未收到完整参数的 streaming 占位块在流结束时清掉标记，
+        // 避免工具卡片一直停留在「写入中…」。
+        for (const b of messages.value[idx].blocks || []) { if (b.streaming) b.streaming = false }
         if (ctx.isResume) {
           if (Array.isArray(data.blocks) && data.blocks.length > 0) messages.value[idx].blocks = data.blocks.map(b => ({ ...b }))
           for (const b of messages.value[idx].blocks) { if (b.type === 'thinking' && b.duration == null) b.duration = 0 }
@@ -1706,16 +1808,36 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
       }
     }
 
-    await sendMessage(
-      currentSessionId.value,
-      message,
-      onChunk,
-      abortSignal,
-      enableDeepThink,
-      files,
-      selectedModel.value,
-      enableWebSearch
-    )
+    // 专家模式：改走 /agent/stream_export_run，由后端按选中的专家动态构建 Agent
+    // （加载该专家当前生效版本的提示词，未选中的情况退化为通用 Agent）。
+    // SSE 事件格式与 /agent/chat/stream 完全一致，因此 onChunk 复用同一处理器。
+    // 未选专家时保持原有链路，行为不变。
+    if (selectedExpert.value && selectedExpert.value.export_agent_id) {
+      await streamExportRun(
+        {
+          message,
+          sessionId: currentSessionId.value,
+          expertAgentId: selectedExpert.value.export_agent_id,
+          model: selectedModel.value,
+          enableDeepThink,
+          enableWebSearch,
+          files,
+        },
+        onChunk,
+        abortSignal
+      )
+    } else {
+      await sendMessage(
+        currentSessionId.value,
+        message,
+        onChunk,
+        abortSignal,
+        enableDeepThink,
+        files,
+        selectedModel.value,
+        enableWebSearch
+      )
+    }
 
     await expandWorkspaceAfterSessionCompletion(streamSessionId)
   } catch (e) {
@@ -2563,21 +2685,12 @@ html[data-theme="dark"] .skill-center {
   background: var(--bg-primary) !important;
 }
 
-html[data-theme="dark"] .skill-center-header {
-  background: var(--bg-secondary) !important;
-  border-color: var(--border-color) !important;
-}
-
-html[data-theme="dark"] .skill-center-header h2 {
-  color: var(--text-primary) !important;
-}
-
 html[data-theme="dark"] .skill-center-content {
   background: var(--bg-primary) !important;
 }
 
 html[data-theme="dark"] .skill-card {
-  background: var(--bg-secondary) !important;
+  background: var(--bg-surface) !important;
   border-color: var(--border-color) !important;
 }
 
@@ -2596,18 +2709,6 @@ html[data-theme="dark"] .skill-card-name {
 
 html[data-theme="dark"] .skill-card-desc {
   color: var(--text-secondary) !important;
-}
-
-html[data-theme="dark"] .skill-card-icon {
-  color: var(--text-primary) !important;
-}
-
-html[data-theme="dark"] .add-skill-btn {
-  color: var(--accent-color) !important;
-}
-
-html[data-theme="dark"] .add-skill-btn:hover {
-  background: rgba(124, 106, 239, 0.15) !important;
 }
 
 /* ========== 工作区面板 ========== */
@@ -2934,40 +3035,8 @@ html[data-theme="dark"] .file-type {
   color: var(--text-primary) !important;
 }
 
-/* 预设问题卡片堆叠 */
-html[data-theme="dark"] .preset-card {
-  background: var(--bg-secondary) !important;
-  border-color: var(--border-color) !important;
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4) !important;
-}
-
-html[data-theme="dark"] .preset-card.is-front {
-  border-color: var(--accent-color, #0ea5e9) !important;
-  box-shadow: 0 10px 30px rgba(14, 165, 233, 0.25) !important;
-}
-
-html[data-theme="dark"] .preset-card-text {
-  color: var(--text-primary) !important;
-}
-
-html[data-theme="dark"] .preset-card-index,
-html[data-theme="dark"] .preset-card-foot {
-  color: var(--text-muted) !important;
-}
-
-html[data-theme="dark"] .preset-nav-btn {
-  background: var(--bg-secondary) !important;
-  border-color: var(--border-color) !important;
-  color: var(--text-primary) !important;
-}
-
-html[data-theme="dark"] .preset-dot {
-  background: var(--border-color) !important;
-}
-
-html[data-theme="dark"] .preset-dot.active {
-  background: var(--accent-color, #0ea5e9) !important;
-}
+/* 预设问题卡片：样式全部走语义化令牌（--bg-secondary / --text-primary ...），
+   深浅主题自动适配，这里无需额外覆盖。 */
 
 /* 滚动按钮 */
 html[data-theme="dark"] .scroll-btn {
@@ -3197,40 +3266,26 @@ html[data-theme="dark"] .spinner {
 
 /* ========== 技能中心暗黑模式补充 ========== */
 html[data-theme="dark"] .skill-center,
-html[data-theme="dark"] .skill-center-header,
 html[data-theme="dark"] .skill-center-content,
 html[data-theme="dark"] .skill-center .tabs {
   background: transparent !important;
 }
 
-html[data-theme="dark"] .skill-center-header h2 {
-  color: var(--text-primary) !important;
-}
-
-html[data-theme="dark"] .skill-center .tab {
+/* 仅主 Tab（.main-tab）：技能子 Tab 有自己的一套样式，不要被这里接管 */
+html[data-theme="dark"] .skill-center .main-tab {
   background: transparent !important;
-  border-color: var(--border-color) !important;
-  color: var(--text-primary) !important;
+  color: var(--text-secondary) !important;
 }
 
-html[data-theme="dark"] .skill-center .tab:hover {
-  background: var(--bg-tertiary) !important;
-}
-
-html[data-theme="dark"] .skill-center .tab.active {
-  background: var(--accent-color) !important;
-  border-color: var(--accent-color) !important;
-  color: #fff !important;
-}
-
-html[data-theme="dark"] .skill-center .tab-count {
+html[data-theme="dark"] .skill-center .main-tab:hover {
   background: var(--bg-tertiary) !important;
   color: var(--text-primary) !important;
 }
 
-html[data-theme="dark"] .skill-center .tab.active .tab-count {
-  background: rgba(255, 255, 255, 0.2) !important;
-  color: #fff !important;
+html[data-theme="dark"] .skill-center .main-tab.active {
+  background: color-mix(in srgb, var(--accent-color) 18%, var(--bg-surface)) !important;
+  border-color: color-mix(in srgb, var(--accent-color) 34%, transparent) !important;
+  color: var(--accent-color) !important;
 }
 
 html[data-theme="dark"] .skill-card {
@@ -3258,67 +3313,6 @@ html[data-theme="dark"] .add-icon-btn {
 
 html[data-theme="dark"] .add-icon-btn:hover:not(:disabled) {
   background: var(--border-color) !important;
-}
-
-html[data-theme="dark"] .add-icon-btn.added {
-  background: var(--bg-tertiary) !important;
-  color: var(--text-secondary) !important;
-}
-
-html[data-theme="dark"] .remove-icon-btn:hover:not(:disabled) {
-  background: rgba(239, 68, 68, 0.15) !important;
-  border-color: rgba(239, 68, 68, 0.4) !important;
-}
-
-html[data-theme="dark"] .popover-card {
-  background: var(--bg-secondary) !important;
-  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5), 0 0 0 1px var(--border-color) !important;
-}
-
-html[data-theme="dark"] .popover-name {
-  color: var(--text-primary) !important;
-}
-
-html[data-theme="dark"] .popover-category {
-  color: var(--text-secondary) !important;
-}
-
-html[data-theme="dark"] .popover-desc {
-  color: var(--text-primary) !important;
-}
-
-html[data-theme="dark"] .popover-close {
-  color: var(--text-secondary) !important;
-}
-
-html[data-theme="dark"] .popover-close:hover {
-  background: var(--bg-tertiary) !important;
-  color: var(--text-primary) !important;
-}
-
-html[data-theme="dark"] .popover-btn {
-  background: var(--bg-tertiary) !important;
-  border-color: var(--accent-color) !important;
-  color: var(--accent-color) !important;
-}
-
-html[data-theme="dark"] .popover-btn:hover:not(:disabled) {
-  background: var(--border-color) !important;
-}
-
-html[data-theme="dark"] .popover-btn.added {
-  background: var(--bg-tertiary) !important;
-  border-color: var(--border-color) !important;
-  color: var(--text-secondary) !important;
-}
-
-html[data-theme="dark"] .popover-btn.remove {
-  border-color: rgba(239, 68, 68, 0.5) !important;
-  color: #f87171 !important;
-}
-
-html[data-theme="dark"] .popover-btn.remove:hover:not(:disabled) {
-  background: rgba(239, 68, 68, 0.15) !important;
 }
 
 html[data-theme="dark"] .retry-btn {
@@ -3445,42 +3439,7 @@ html[data-theme="dark"] .model-item-badge {
   color: #4ade80 !important;
 }
 
-/* ========== 首页预设问题（分类标签 + 悬浮面板 + 问题卡片）========== */
-html[data-theme="dark"] .preset-category-tab {
-  background: var(--bg-tertiary) !important;
-  border-color: var(--border-color) !important;
-  color: var(--text-secondary) !important;
-}
-
-html[data-theme="dark"] .preset-category-tab:hover {
-  border-color: var(--accent-color) !important;
-  color: var(--accent-color) !important;
-}
-
-html[data-theme="dark"] .preset-category-tab.active {
-  background: color-mix(in srgb, var(--accent-color) 22%, var(--bg-tertiary)) !important;
-  border-color: var(--accent-color) !important;
-  color: var(--accent-color) !important;
-}
-
-html[data-theme="dark"] .preset-category-panel {
-  background: var(--bg-secondary) !important;
-  border-color: var(--border-color) !important;
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5) !important;
-}
-
-html[data-theme="dark"] .preset-chip {
-  background: var(--bg-tertiary) !important;
-  border-color: var(--border-color) !important;
-  color: var(--text-secondary) !important;
-}
-
-html[data-theme="dark"] .preset-chip:hover {
-  border-color: var(--accent-color) !important;
-  color: var(--accent-color) !important;
-  transform: translateY(-1px);
-}
-
+/* ========== 首页预设问题：卡片样式走语义化令牌，深浅主题自动适配 ========== */
 /* ========== 聊天页（Chat.vue）深色适配 ========== */
 html[data-theme="dark"] .chat-container {
   background: var(--bg-primary) !important;
@@ -3498,29 +3457,6 @@ html[data-theme="dark"] .welcome-screen {
 }
 html[data-theme="dark"] .welcome-screen h2 {
   color: var(--text-primary) !important;
-}
-html[data-theme="dark"] .preset-card {
-  background: var(--bg-secondary) !important;
-  border-color: var(--border-color) !important;
-}
-html[data-theme="dark"] .preset-card-text {
-  color: var(--text-primary) !important;
-}
-html[data-theme="dark"] .preset-card-foot {
-  color: var(--text-secondary) !important;
-}
-html[data-theme="dark"] .preset-nav-btn {
-  background: var(--bg-secondary) !important;
-  border-color: var(--border-color) !important;
-  color: var(--text-secondary) !important;
-}
-html[data-theme="dark"] .preset-nav-btn:hover {
-  background: var(--bg-tertiary) !important;
-  border-color: var(--accent-color) !important;
-  color: var(--accent-color) !important;
-}
-html[data-theme="dark"] .preset-dot {
-  background: var(--border-color) !important;
 }
 html[data-theme="dark"] .scroll-btn {
   background: var(--bg-secondary) !important;

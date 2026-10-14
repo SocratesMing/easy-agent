@@ -24,10 +24,10 @@
       <span class="tcc-title">{{ card.title }}</span>
       <span v-if="card.meta" class="tcc-meta">{{ card.meta }}</span>
       <span v-if="pendingApproval" class="tcc-status pending">待审批</span>
+      <span v-else-if="isRunning" class="tcc-status running">{{ runningLabel }}</span>
       <span v-else-if="duration != null" class="tcc-status" :class="card.error ? 'err' : 'ok'">
         <span class="tcc-mark" aria-hidden="true">{{ card.error ? '✕' : '✓' }}</span>{{ duration }}s
       </span>
-      <span v-else class="tcc-status running">执行中…</span>
       <svg class="tcc-arrow" :class="{ rotated: expanded }" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
         <polyline points="6 9 12 15 18 9"></polyline>
       </svg>
@@ -48,31 +48,32 @@
       </div>
 
       <template v-else-if="card.card === 'diff'">
-        <pre class="tcc-diff"><span
+        <div v-if="isRunning && streaming" class="tcc-streaming-hint">正在写入…</div>
+        <pre class="tcc-code flush"><span
           v-for="(line, i) in card.diffs[0].lines"
           :key="i"
-          class="tcc-diff-line"
+          class="tcc-code-line"
           :class="line.type"
-        >{{ line.type === 'add' ? '+ ' : '- ' }}{{ line.text }}
+        >{{ diffPrefix(line) }}{{ line.text }}
 </span></pre>
       </template>
 
-      <ul v-else-if="card.card === 'search' && card.shape === 'paths'" class="tcc-paths">
+      <ul v-else-if="card.card === 'search' && card.shape === 'paths'" class="tcc-code-list">
         <li v-for="(p, i) in card.paths" :key="i">{{ p }}</li>
-        <li v-if="!card.paths.length" class="tcc-empty">无匹配</li>
+        <li v-if="!card.paths.length" class="tcc-code-empty">无匹配</li>
       </ul>
 
-      <pre v-else-if="card.card === 'search'" class="tcc-pre">{{ card.raw }}</pre>
-      <pre v-else-if="card.card === 'terminal' || card.card === 'read'" class="tcc-pre">{{ card.body || '(无内容)' }}</pre>
+      <pre v-else-if="card.card === 'search'" class="tcc-code">{{ card.raw }}</pre>
+      <pre v-else-if="card.card === 'terminal' || card.card === 'read'" class="tcc-code">{{ card.body || '(无内容)' }}</pre>
 
       <template v-else>
         <div v-if="card.args && Object.keys(card.args).length" class="tcc-section">
           <div class="tcc-label">参数</div>
-          <pre class="tcc-pre">{{ prettyArgs }}</pre>
+          <pre class="tcc-code">{{ prettyArgs }}</pre>
         </div>
         <div v-if="card.body" class="tcc-section">
           <div class="tcc-label">结果</div>
-          <pre class="tcc-pre">{{ card.body }}</pre>
+          <pre class="tcc-code">{{ card.body }}</pre>
         </div>
       </template>
     </div>
@@ -80,7 +81,7 @@
 </template>
 
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { toolCard } from '../utils/toolPresentation.js'
 
 const props = defineProps({
@@ -91,6 +92,7 @@ const props = defineProps({
   duration: { type: [Number, null], default: null },
   pendingApproval: { type: Boolean, default: false },
   filePaths: { type: Array, default: () => [] },
+  streaming: { type: Boolean, default: false },
 })
 
 defineEmits(['approve', 'reject'])
@@ -104,10 +106,41 @@ const kindKey = computed(() => {
   return card.value.card
 })
 const kindLabel = computed(() => ({
-  // 写入/编辑的标题已含动作，不再重复显示类型标签
+  // 写入/编辑的标题已含动作（「写入 xxx」/「编辑 xxx」），不再显示类型徽标，
+  // 否则会渲染成「写入 写入 xxx」这类重复文案。
   terminal: '命令', list: '列出', search: '搜索', read: '读取', edit: '', other: '工具',
 }[kindKey.value] ?? '工具'))
+// 参数流式写入期间自动展开，让用户实时看到正在生成的文件内容；
+// 一旦收到完整参数（streaming 转为 false）即释放自动展开，尊重用户手动折叠。
 const expanded = ref(props.pendingApproval)
+let _streamOpened = false
+watch(() => props.streaming, (v) => {
+  if (v && !expanded.value) {
+    expanded.value = true
+    _streamOpened = true
+  } else if (!v && _streamOpened && expanded.value) {
+    expanded.value = false
+    _streamOpened = false
+  } else if (!v) {
+    _streamOpened = false
+  }
+})
+// 状态语义统一：pendingApproval 首位；isRunning = 尚未拿到工具结果(duration==null)
+// 且当前没有待审批。三类工具（写入 / 命令 / 读取）此时展示一致的前缀与颜色，
+// 而不是「写入显示写入中 / 命令和读取直接显示执行中 / 流式写入自己再展示一条提示」。
+const isRunning = computed(() => props.duration == null && !props.pendingApproval)
+const runningLabel = computed(() =>
+  props.streaming ? '写入中…' : '执行中…'
+)
+
+// diff 前缀：写入(全 add)不需要前缀，让文字与命令/读取从同一缩进起点开始；
+// 编辑(有 del/add)保留 +/- 前缀，表达「这一行来自哪个方向」。
+const diffPrefix = (line) => {
+  const lines = card.value.diffs?.[0]?.lines
+  if (lines && lines.length > 0 && lines.every(l => l.type === 'add')) return ''
+  return line.type === 'add' ? '+ ' : '- '
+}
+
 const prettyArgs = computed(() => {
   try {
     return JSON.stringify(props.args || {}, null, 2).slice(0, 1000)
@@ -161,28 +194,30 @@ const prettyArgs = computed(() => {
 .tcc-arrow.rotated { transform: rotate(180deg); }
 
 .tcc-body { border-top: 1px solid var(--border-color, #e2e8f0); padding: 8px 10px; }
-.tcc-pre {
+.tcc-code {
   margin: 0;
   padding: 8px 10px;
   background: #0d1117;
-  color: #c9d1d9;
+  color: #e6edf3;
   border-radius: 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
   font-size: 12px;
-  line-height: 1.5;
+  line-height: 1.6;
   white-space: pre-wrap;
   word-break: break-all;
   max-height: 320px;
   overflow: auto;
+  tab-size: 4;
 }
-.tcc-diff { margin: 0; font-size: 12px; line-height: 1.5; background: #0d1117; border-radius: 6px; padding: 6px 0; overflow: auto; max-height: 320px; }
-.tcc-diff-line { display: block; padding: 0 10px; color: #c9d1d9; white-space: pre-wrap; word-break: break-all; }
-.tcc-diff-line.add { background: rgba(63, 185, 80, 0.15); color: #7ee787; }
-.tcc-diff-line.del { background: rgba(248, 81, 73, 0.15); color: #ffa198; }
-.tcc-paths { margin: 0; padding-left: 18px; font-size: 12px; line-height: 1.6; color: var(--text-primary, #1f2937); max-height: 320px; overflow: auto; }
-.tcc-empty { list-style: none; color: var(--text-secondary, #64748b); margin-left: -12px; }
+.tcc-code.flush { padding-left: 0; padding-right: 0; }
+.tcc-code-line { display: block; padding: 0 10px; }
+.tcc-code-line.add { background: rgba(63, 185, 80, 0.15); }
+.tcc-code-line.del { background: rgba(248, 81, 73, 0.15); }
+.tcc-code-list { margin: 0; padding: 8px 10px 8px 28px; background: #0d1117; color: #e6edf3; border-radius: 6px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace; font-size: 12px; line-height: 1.6; max-height: 320px; overflow: auto; }
+.tcc-code-empty { list-style: none; margin-left: -18px; color: var(--text-secondary, #64748b); }
 .tcc-section + .tcc-section { margin-top: 8px; }
 .tcc-label { font-size: 12px; color: var(--text-secondary, #64748b); margin-bottom: 4px; }
-
+.tcc-streaming-hint { margin-bottom: 4px; font-size: 12px; color: var(--text-secondary, #64748b); }
 .tcc-approval-prompt { font-size: 13px; color: #b45309; margin-bottom: 6px; }
 .tcc-approval-files { margin: 0 0 8px; padding-left: 18px; font-size: 12px; color: var(--text-secondary, #64748b); }
 .tcc-approval-actions { display: flex; gap: 8px; }

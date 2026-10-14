@@ -341,6 +341,55 @@ async def get_mcp_servers(
     }
 
 
+def _market_entries() -> list[tuple[str, dict[str, Any]]]:
+    """读取公共 MCP 目录，兼容两种顶层格式。
+
+    - ``connectors`` 数组（vue26 的连接器目录）：``{connectors: [{id, config}]}``
+    - ``servers`` 映射（原市场写法）：``{servers: {name: config}}``
+
+    两种都读：连接器目录不会被 Agent 当作全局 mcp.json 自动加载，是更安全的载
+    体；``servers`` 映射保留以兼容内网既有配置。同名条目以 ``connectors`` 优先。
+
+    ``load_mcp_config(None)`` 只提取 ``servers``，读到连接器格式会静默返回空，
+    故这里直接读原始 JSON。
+    """
+    # 与 load_mcp_config 共用同一个路径解析入口，避免两处各找一遍文件
+    from ..services.mcp import _find_mcp_config
+
+    path = _find_mcp_config()
+    if not path:
+        return []
+    try:
+        raw = json.loads(Path(path).read_text(encoding="utf-8"))
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"读取公共 MCP 目录失败（按空处理）: {path} | {e}")
+        return []
+    if not isinstance(raw, dict):
+        return []
+
+    entries: list[tuple[str, dict[str, Any]]] = []
+    seen: set[str] = set()
+
+    connectors = raw.get("connectors")
+    if isinstance(connectors, list):
+        for item in connectors:
+            if not isinstance(item, dict):
+                continue
+            name = item.get("id")
+            cfg = item.get("config")
+            if isinstance(name, str) and name and isinstance(cfg, dict):
+                entries.append((name, cfg))
+                seen.add(name)
+
+    servers = raw.get("servers")
+    if isinstance(servers, dict):
+        for name, cfg in servers.items():
+            if isinstance(cfg, dict) and name not in seen:
+                entries.append((name, cfg))
+
+    return entries
+
+
 @router.get("/mcp/market", summary="获取公共 MCP 市场列表")
 async def get_mcp_market(
     username: Annotated[str, Depends(get_current_username)],
@@ -348,7 +397,7 @@ async def get_mcp_market(
     """读取全局 mcp.json 作为公共市场，并标记当前用户是否已添加。"""
     _cfg = get_agent_config()
     config: Config | None = _cfg["config"] if _cfg and _cfg.get("config") else None
-    market_config = load_mcp_config(None)
+    market_config = dict(_market_entries())
     user_servers = _read_user_mcp_raw(username, config).get("servers", {})
 
     servers = []
@@ -493,7 +542,7 @@ async def add_mcp_from_market(
     """
     _cfg = get_agent_config()
     config: Config | None = _cfg["config"] if _cfg and _cfg.get("config") else None
-    market_config = load_mcp_config(None)
+    market_config = dict(_market_entries())
     server_config = market_config.get(request.name)
     if not server_config:
         raise HTTPException(status_code=404, detail=f"MCP 市场服务不存在: {request.name}")

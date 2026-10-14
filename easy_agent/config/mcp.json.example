@@ -49,5 +49,155 @@
         "Authorization": "Bearer <在设置页生成的 1 年期国债模型 MCP API Key>"
       }
     }
-  }
+  },
+  "connectors": [
+    {
+      "id": "strategyqa",
+      "name": "StrategyQA 策略问数",
+      "description": "投资研究：用自然语言查询策略数据",
+      "icon": "analytics-outline",
+      "fields": [
+        {
+          "key": "headers.Authorization",
+          "label": "MCP API Key",
+          "placeholder": "自家业务可留空，添加时自动签发",
+          "required": false
+        }
+      ],
+      "config": {
+        "type": "streamable_http",
+        "url": "http://<mcp-server 地址>:8174/mcp/strategyqa/",
+        "headers": {
+          "Authorization": "Bearer "
+        }
+      }
+    },
+    {
+      "id": "idata",
+      "name": "iData 数据分析看板",
+      "description": "投资研究：iData 债券分析看板数据",
+      "icon": "bar-chart-outline",
+      "fields": [
+        {
+          "key": "headers.Authorization",
+          "label": "MCP API Key",
+          "placeholder": "自家业务可留空，添加时自动签发",
+          "required": false
+        }
+      ],
+      "config": {
+        "type": "streamable_http",
+        "url": "http://<mcp-server 地址>:8174/mcp/idata/",
+        "headers": {
+          "Authorization": "Bearer "
+        }
+      }
+    },
+    {
+      "id": "macro_forecast",
+      "name": "国内宏观指标预测",
+      "description": "投资研究：宏观指标预测与因子贡献",
+      "icon": "trending-up-outline",
+      "fields": [
+        {
+          "key": "headers.Authorization",
+          "label": "MCP API Key",
+          "placeholder": "自家业务可留空，添加时自动签发",
+          "required": false
+        }
+      ],
+      "config": {
+        "type": "streamable_http",
+        "url": "http://<mcp-server 地址>:8174/mcp/macro_forecast/",
+        "headers": {
+          "Authorization": "Bearer "
+        }
+      }
+    },
+    {
+      "id": "rates_timing",
+      "name": "10 年期国债趋势判断",
+      "description": "投资研究：已落库的趋势判断与运行审计",
+      "icon": "pulse-outline",
+      "fields": [
+        {
+          "key": "headers.Authorization",
+          "label": "MCP API Key",
+          "placeholder": "自家业务可留空，添加时自动签发",
+          "required": false
+        }
+      ],
+      "config": {
+        "type": "streamable_http",
+        "url": "http://<mcp-server 地址>:8174/mcp/rates_timing/",
+        "headers": {
+          "Authorization": "Bearer "
+        }
+      }
+    },
+    {
+      "id": "weekly_research",
+      "name": "研报观点矩阵",
+      "description": "投资研究：周度机构观点与宏观预测",
+      "icon": "newspaper-outline",
+      "fields": [
+        {
+          "key": "headers.Authorization",
+          "label": "MCP API Key",
+          "placeholder": "自家业务可留空，添加时自动签发",
+          "required": false
+        }
+      ],
+      "config": {
+        "type": "streamable_http",
+        "url": "http://<mcp-server 地址>:8174/mcp/weekly_research/",
+        "headers": {
+          "Authorization": "Bearer "
+        }
+      }
+    },
+    {
+      "id": "gold_analysis",
+      "name": "黄金价格驱动因子",
+      "description": "投资研究：黄金价格驱动因子归因",
+      "icon": "diamond-outline",
+      "fields": [
+        {
+          "key": "headers.Authorization",
+          "label": "MCP API Key",
+          "placeholder": "自家业务可留空，添加时自动签发",
+          "required": false
+        }
+      ],
+      "config": {
+        "type": "streamable_http",
+        "url": "http://<mcp-server 地址>:8174/mcp/gold_analysis/",
+        "headers": {
+          "Authorization": "Bearer "
+        }
+      }
+    },
+    {
+      "id": "treasury_1y",
+      "name": "1 年期国债模型",
+      "description": "投资研究：1 年期国债收益率信号与已存解释",
+      "icon": "stats-chart-outline",
+      "fields": [
+        {
+          "key": "headers.Authorization",
+          "label": "MCP API Key",
+          "placeholder": "自家业务可留空，添加时自动签发",
+          "required": false
+        }
+      ],
+      "config": {
+        "type": "streamable_http",
+        "url": "http://<mcp-server 地址>:8174/mcp/treasury_1y/",
+        "headers": {
+          "Authorization": "Bearer "
+        }
+      }
+    }
+  ],
+  "_comment": "自家投资研究业务（strategyqa / idata / …）也登记在这里：它们由 mcp-server 子项目提供，添加时由主应用自动签发并注入 API Key。"
 }
