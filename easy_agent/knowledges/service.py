@@ -821,10 +821,29 @@ class KnowledgeService:
         visibility: KnowledgeBaseVisibility,
         request_id: str,
         department_id: str | None = None,
+        restrict_access: bool = False,
+        permission_user_ids: list[str] | None = None,
     ) -> KnowledgeBaseSummary:
-        """创建知识库：公共空间需管理白名单且归属本部门；纯本地建库，走共享数据集。"""
+        """创建知识库：公共空间需管理白名单且归属本部门；纯本地建库，走共享数据集。
+
+        创建即配置可见性（仅公共空间）：勾选名单模式下仅勾选人员可见，
+        语义与创建后的权限管理（replace_permissions）完全一致。
+        """
 
         del request_id
+        permission_ids: list[str] = []
+        for raw in permission_user_ids or []:
+            user_id = str(raw or "").strip()
+            if user_id and user_id != principal.user_id and user_id not in permission_ids:
+                permission_ids.append(user_id)
+        if visibility == KnowledgeBaseVisibility.PERSONAL and (restrict_access or permission_ids):
+            raise KnowledgeServiceError(
+                "KNOWLEDGE_PERSONAL_NOT_SHAREABLE",
+                "个人空间知识库不可授权",
+                status_code=409,
+            )
+        # 勾选了初始名单即视为进入受限模式（同权限管理语义：名单决定可见面）
+        effective_restricted = bool(restrict_access or permission_ids)
         target_department_id: str | None = None
         requested_department_id = (department_id or "").strip() or None
         if visibility == KnowledgeBaseVisibility.TEAM:
@@ -880,11 +899,28 @@ class KnowledgeService:
         )
         # 纯本地创建（同建文件夹）：不再调用 Ragflow 建数据集，
         # remote_dataset_id 保持 NULL 表示走共享数据集。
+        # 勾选名单模式（仅公共空间）：受限标记与激活一并落库（fail-closed）。
+        restricted_values = {"access_restricted": 1} if effective_restricted else {}
         base = await self._repo(
             self.repository.update_base,
             base["id"],
             status=KnowledgeBaseStatus.ACTIVE.value,
+            **restricted_values,
         )
+        if permission_ids:
+            await self._repo(
+                self.repository.replace_permissions,
+                base_id=base["id"],
+                permissions=[
+                    {
+                        "subject_type": "user",
+                        "subject_id": user_id,
+                        "role": KnowledgeBaseRole.VIEWER.value,
+                    }
+                    for user_id in permission_ids
+                ],
+                created_by=principal.user_id,
+            )
         # 操作记录直接落终态，保留审计轨迹
         await self._repo(
             self.repository.create_operation,
@@ -1362,6 +1398,29 @@ class KnowledgeService:
         rows = await self._repo(
             self.repository.list_permission_directory_users,
             exclude_user_id=str(base.get("owner_user_id") or ""),
+        )
+        return PermissionDirectoryListResponse(
+            items=[PermissionDirectoryUser(**row) for row in rows]
+        )
+
+    async def get_creation_permission_directory(
+        self, principal: KnowledgePrincipal
+    ) -> PermissionDirectoryListResponse:
+        """创建知识库时的可选人员目录（在职账号，剔除本人与 admin）。
+
+        与库权限管理目录同一数据源；门槛对齐公共空间创建：需管理白名单授权，
+        避免任意账号拉取全员通讯目录。
+        """
+
+        if not await self._has_team_management_grant(principal):
+            raise KnowledgeServiceError(
+                "KNOWLEDGE_TEAM_SPACE_MANAGER_REQUIRED",
+                "当前账号未获得公共空间创建与管理权限，请联系 admin 配置",
+                status_code=403,
+            )
+        rows = await self._repo(
+            self.repository.list_permission_directory_users,
+            exclude_user_id=str(principal.user_id or ""),
         )
         return PermissionDirectoryListResponse(
             items=[PermissionDirectoryUser(**row) for row in rows]

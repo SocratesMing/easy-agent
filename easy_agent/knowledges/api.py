@@ -396,6 +396,8 @@ async def create_base(
             visibility=payload.visibility,
             request_id=_request_id(request),
             department_id=payload.department_id,
+            restrict_access=payload.restrict_access,
+            permission_user_ids=payload.permission_user_ids,
         )
     )
 
@@ -959,6 +961,19 @@ async def get_permission_directory(
     """查询权限管理可选人员目录（按部门/处室/团队分组展示的前置数据）。"""
 
     return await _call(service.get_permission_directory(base_id, principal))
+
+
+@router.get(
+    "/bases/permission-directory",
+    response_model=PermissionDirectoryListResponse,
+)
+async def get_creation_permission_directory(
+    service: Annotated[KnowledgeService, Depends(_service)],
+    principal: Annotated[KnowledgePrincipal, Depends(get_knowledge_principal)],
+) -> PermissionDirectoryListResponse:
+    """创建知识库时的可选人员目录（不依赖具体库，需公共空间管理白名单）。"""
+
+    return await _call(service.get_creation_permission_directory(principal))
 
 
 # ---------------------------------------------------------------------------
