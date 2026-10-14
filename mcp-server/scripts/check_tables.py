@@ -43,20 +43,39 @@ class Scene:
         )
 
 
-def _investment_research_scenes() -> list[Scene]:
-    """投资研究业务的四个场景（表名取自各领域模块）。"""
-    from easy_mcp_server.businesses.investment_research import (
-        domestic_macro,
-        idata,
-        rates_timing,
-        weekly_research,
-    )
+def _research_scenes() -> list[Scene]:
+    """投资研究相关的五个业务包（表名取自各领域模块）。
+
+    原先这四个（+黄金）场景同属 ``investment_research`` 一个包，现已拆为独立业务，
+    各自一个 MCP 服务与 API Key。
+    """
+    from easy_mcp_server.businesses.gold_analysis import gold_analysis
+    from easy_mcp_server.businesses.idata import idata
+    from easy_mcp_server.businesses.macro_forecast import domestic_macro
+    from easy_mcp_server.businesses.rates_timing import rates_timing
+    from easy_mcp_server.businesses.weekly_research import weekly_research
 
     return [
-        Scene("investment_research", "1 iData 数据分析看板", tuple(idata.TABLES.values()), "IDATA_SCHEMA"),
-        Scene("investment_research", "2 国内宏观经济指标预测", tuple(domestic_macro.TABLES.values()), "FORECAST_SCHEMA"),
-        Scene("investment_research", "3 利率择时", tuple(rates_timing.TABLES.values()), "RATES_SCHEMA"),
-        Scene("investment_research", "4 研报观点矩阵与宏观预测", tuple(weekly_research.TABLES.values()), "WEEKLY_RESEARCH_SCHEMA"),
+        Scene("idata", "iData 数据分析看板", tuple(idata.TABLES.values()), "IDATA_SCHEMA"),
+        Scene(
+            "macro_forecast",
+            "国内宏观经济指标预测",
+            tuple(domestic_macro.TABLES.values()),
+            "FORECAST_SCHEMA",
+        ),
+        Scene("rates_timing", "利率择时", tuple(rates_timing.TABLES.values()), "RATES_SCHEMA"),
+        Scene(
+            "weekly_research",
+            "研报观点矩阵与宏观预测",
+            tuple(weekly_research.TABLES.values()),
+            "WEEKLY_RESEARCH_SCHEMA",
+        ),
+        Scene(
+            "gold_analysis",
+            "黄金价格多因子归因",
+            tuple(gold_analysis.TABLES.values()),
+            "GOLD_SCHEMA",
+        ),
     ]
 
 
@@ -84,9 +103,9 @@ def collect_scenes() -> list[Scene]:
     if fxbar is not None:
         scenes.append(fxbar)
     try:
-        scenes.extend(_investment_research_scenes())
-    except ImportError as exc:  # 内网可能没带该业务包
-        print(f"[skip] investment_research 场景未加载: {exc}", file=sys.stderr)
+        scenes.extend(_research_scenes())
+    except ImportError as exc:  # 内网可能没带部分业务包
+        print(f"[skip] 部分业务包未加载: {exc}", file=sys.stderr)
     return scenes
 
 

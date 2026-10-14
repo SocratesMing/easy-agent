@@ -2,16 +2,44 @@
   "servers": {
     "strategyqa": {
       "transport": "streamable_http",
-      "url": "http://127.0.0.1:8174/mcp/strategyqa/",
+      "url": "http://<mcp-server 地址>:8174/mcp/strategyqa/",
       "headers": {
         "Authorization": "Bearer <在设置页生成的 StrategyQA MCP API Key>"
       }
     },
-    "investment_research": {
+    "idata": {
       "transport": "streamable_http",
-      "url": "http://127.0.0.1:8174/mcp/investment_research/",
+      "url": "http://<mcp-server 地址>:8174/mcp/idata/",
       "headers": {
-        "Authorization": "Bearer <在设置页生成的投资研究 MCP API Key>"
+        "Authorization": "Bearer <在设置页生成的 iData MCP API Key>"
+      }
+    },
+    "macro_forecast": {
+      "transport": "streamable_http",
+      "url": "http://<mcp-server 地址>:8174/mcp/macro_forecast/",
+      "headers": {
+        "Authorization": "Bearer <在设置页生成的宏观预测 MCP API Key>"
+      }
+    },
+    "rates_timing": {
+      "transport": "streamable_http",
+      "url": "http://<mcp-server 地址>:8174/mcp/rates_timing/",
+      "headers": {
+        "Authorization": "Bearer <在设置页生成的利率择时 MCP API Key>"
+      }
+    },
+    "weekly_research": {
+      "transport": "streamable_http",
+      "url": "http://<mcp-server 地址>:8174/mcp/weekly_research/",
+      "headers": {
+        "Authorization": "Bearer <在设置页生成的研报观点 MCP API Key>"
+      }
+    },
+    "gold_analysis": {
+      "transport": "streamable_http",
+      "url": "http://<mcp-server 地址>:8174/mcp/gold_analysis/",
+      "headers": {
+        "Authorization": "Bearer <在设置页生成的黄金归因 MCP API Key>"
       }
     }
   }

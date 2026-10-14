@@ -1,22 +1,23 @@
-"""投资研究业务演示数据：建 11 张表并写入最小自洽数据（本地联调用）。
+"""投资研究相关场景的演示数据：建表并写入最小自洽数据（本地联调用）。
 
-覆盖三个新场景（iData 场景见 ``seed_idata_demo.py``）：
+覆盖四个场景（iData 场景见 ``seed_idata_demo.py``）：
 
 - **宏观预测**（6 张）：1 期报告 + 3 个指标 + 多模型预测 + SHAP 归因 + 入选特征 + 大模型解读
 - **利率择时**（2 张）：1 次成功运行 + 5 个交易日的预测
 - **研报观点**（2 张）：2 周的观点矩阵与宏观预测
+- **黄金归因**（1 张宽表）：2 个模型 × 30 个交易日
 
 表结构照 ``docs/MCP_docs/*_SQL清单_MCP信息.md``；字段名与各领域模块
-（``domestic_macro`` / ``rates_timing`` / ``weekly_research``）SQL 里引用的完全一致，
-多一列无妨，少一列工具就会报 ``Unknown column``。
+（``domestic_macro`` / ``rates_timing`` / ``weekly_research`` / ``gold_analysis``）
+SQL 里引用的完全一致，多一列无妨，少一列工具就会报 ``Unknown column``。
 
 id 一律显式给出、不设 AUTO_INCREMENT：写入用 ``INSERT ... VALUES (...)`` 不带列名，
 自增列会让列数对不上。
 
 用法（在 mcp-server 目录下）::
 
-    uv run python -m scripts.seed_research_demo                  # 三个场景全建
-    uv run python -m scripts.seed_research_demo --scene weekly    # 只建某个场景
+    uv run python -m scripts.seed_research_demo                  # 四个场景全建
+    uv run python -m scripts.seed_research_demo --scene gold      # 只建某个场景
     uv run python -m scripts.seed_research_demo --drop            # 只清理
 
 脚本幂等：重复执行会先清空这些表的演示数据再重新写入。
@@ -27,13 +28,13 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from datetime import date, timedelta
 from typing import Any
 
-from easy_mcp_server.businesses.investment_research import (
-    domestic_macro,
-    rates_timing,
-    weekly_research,
-)
+from easy_mcp_server.businesses.gold_analysis import gold_analysis
+from easy_mcp_server.businesses.macro_forecast import domestic_macro
+from easy_mcp_server.businesses.rates_timing import rates_timing
+from easy_mcp_server.businesses.weekly_research import weekly_research
 from easy_mcp_server.db import connection
 
 # ── 建表语句 ────────────────────────────────────────────────────────────
@@ -205,6 +206,23 @@ DDL: dict[str, tuple[str, ...]] = {
             `indicator_count` INT                  COMMENT '指标行数',
             PRIMARY KEY (`week`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='周度机构宏观预测（演示）'
+        """,
+    ),
+    "gold": (
+        """
+        CREATE TABLE IF NOT EXISTS fmqt_gold_analysis_result (
+            id                INT           NOT NULL,
+            model_name        VARCHAR(32)   NOT NULL COMMENT '多元线性回归 / 随机森林',
+            creation_time     DATE          NOT NULL COMMENT '数据日期（展示区间截止日）',
+            comex_volume      DECIMAL(18,6)          COMMENT 'COMEX成交量',
+            fund_flow         DECIMAL(18,6)          COMMENT '资金流向（SPDR 黄金 ETF 持有量）',
+            usd_factor        DECIMAL(18,6)          COMMENT '美元因素',
+            treasury_factor   DECIMAL(18,6)          COMMENT '美债因素',
+            risk_sentiment    DECIMAL(18,6)          COMMENT '风险情绪（WTI+VIX）',
+            commodity_factor  DECIMAL(18,6)          COMMENT '商品（LME 铜）',
+            PRIMARY KEY (id),
+            UNIQUE KEY uk_model_date (model_name, creation_time)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='黄金价格多因子归因结果（演示）'
         """,
     ),
 }
@@ -459,8 +477,30 @@ def _weekly_rows() -> dict[str, list[tuple[Any, ...]]]:
     return {"opinions": opinions, "macro": macro}
 
 
-# ── 场景编排 ────────────────────────────────────────────────────────────
+def _gold_rows() -> dict[str, list[tuple[Any, ...]]]:
+    """黄金归因：2 个模型 × 30 个交易日，最后一天与文档示例完全一致。
 
+    数值是收益率口径的小数（0.0185 = 1.85%）。越早的日期按比例略小，便于看趋势
+    与环比；最后一天取文档给出的示例值，方便逐列核对真实口径。
+    """
+    end = date(2026, 9, 28)
+    days = [(end - timedelta(days=29 - index)).isoformat() for index in range(30)]
+    base: dict[str, tuple[float, ...]] = {
+        "多元线性回归": (-0.0002, 0.0185, -0.0108, 0.0057, -0.0080, 0.0143),
+        "随机森林": (0.0002, 0.0148, 0.0052, -0.0018, -0.0023, 0.0039),
+    }
+
+    rows: list[tuple[Any, ...]] = []
+    row_id = 1
+    for model, values in base.items():
+        for index, day in enumerate(days):
+            factor = 1.0 if index == len(days) - 1 else 0.6 + 0.4 * index / (len(days) - 1)
+            rows.append((row_id, model, day, *(round(v * factor, 6) for v in values)))
+            row_id += 1
+    return {"main": rows}
+
+
+# ── 场景编排 ────────────────────────────────────────────────────────────
 SCENES: dict[str, dict[str, Any]] = {
     "forecast": {
         "title": "宏观预测",
@@ -486,6 +526,12 @@ SCENES: dict[str, dict[str, Any]] = {
         "module": weekly_research,
         "tables": ("opinions", "macro"),
         "builder": _weekly_rows,
+    },
+    "gold": {
+        "title": "黄金价格多因子归因",
+        "module": gold_analysis,
+        "tables": ("main",),
+        "builder": _gold_rows,
     },
 }
 
