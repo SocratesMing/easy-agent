@@ -84,4 +84,6 @@ const size = (f) => `${(readFileSync(resolve(outDir, f)).length / 1024).toFixed(
 console.log(`\n[build-sdk] ${pkg.name}@${pkg.version} → dist-sdk/`)
 console.log(`  ${NAME}.umd.min.js  ${size(`${NAME}.umd.min.js`)}  （CSS 已内联）`)
 console.log(`  ${NAME}.common.js   ${size(`${NAME}.common.js`)}`)
+console.log(`  demo.html          第三方联调页（配置面板 / 三种鉴权 / 页面上下文）`)
+console.log(`  本地验证：cd dist-sdk && python3 -m http.server 5181`)
 console.log(`  发布：cd dist-sdk && npm publish\n`)

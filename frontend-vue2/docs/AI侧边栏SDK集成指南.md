@@ -97,13 +97,27 @@ cd frontend-vue2 && npm run build:sdk
 
 完成后页面右侧出现「问 AI」按钮，点击或按 `Ctrl/⌘ + J` 打开侧边栏。
 
-完整可运行示例见产物中的 `demo.html`：
+完整可运行联调页见产物中的 `demo.html`（模拟第三方 ERP 宿主：配置面板、三种鉴权、页面上下文切换、实例方法与事件日志）：
 
 ```bash
+cd frontend-vue2 && npm run build:sdk
 cd dist-sdk && python3 -m http.server 5181
-# 浏览器打开（免密用户 sdk_demo，需后端可免密登录）：
-# http://localhost:5181/demo.html?baseURL=http://localhost:8080&username=sdk_demo
 ```
+
+浏览器打开示例：
+
+```text
+# 免密登录（后端需 personnel.passwordless_login_enabled: true）
+http://localhost:5181/demo.html?baseURL=http://183.196.130.56:22332&username=chj&userId=123456&auto=1
+
+# 模拟宿主后端换 token（推荐集成方式）
+http://localhost:5181/demo.html?baseURL=http://183.196.130.56:22332&auth=getToken&username=chj&userId=123456&auto=1
+
+# 已有 token
+http://localhost:5181/demo.html?baseURL=http://183.196.130.56:22332&token=<access_token>&auto=1
+```
+
+页面左侧可改 `baseURL` / 鉴权 / 功能开关后点「应用并初始化」；右侧业务区可测划词提问、行级 AI 分析、`setPageContext` 切页等。
 
 ---
 
@@ -582,9 +596,9 @@ cd frontend-vue2
 # 2. 构建：产物输出到 dist-sdk/（已在 .gitignore 中）
 npm run build:sdk
 
-# 3. 本地验证：dist-sdk/demo.html
+# 3. 本地验证：dist-sdk/demo.html（联调面板，见上文第 3 节）
 cd dist-sdk && python3 -m http.server 5181
-# http://localhost:5181/demo.html?baseURL=http://localhost:8080&username=sdk_demo
+# http://localhost:5181/demo.html?baseURL=<后端>&username=sdk_demo&auto=1
 
 # 4. 发布到 npm 私服
 npm publish --registry https://npm.example.com/
