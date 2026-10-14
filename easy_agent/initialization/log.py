@@ -28,6 +28,12 @@ LOG_ROTATION_WHEN = "midnight"
 LOG_ROTATION_INTERVAL = 1
 LOG_BACKUP_COUNT = 30
 
+# 轮转文件后缀匹配：按天（2026-09-09）、大小触发带时刻（2026-09-09_11-22-33）、
+# 同秒序号（2026-09-09.1）；不匹配无关文件（2026-09-09.extra），避免误删。
+_ROTATED_LOG_SUFFIX = re.compile(
+    r"^\d{4}-\d{2}-\d{2}(?:_\d{2}-\d{2}-\d{2})?(?:\.\d+)?$"
+)
+
 
 class _RunidFilter(logging.Filter):
     def filter(self, record):
@@ -137,9 +143,7 @@ def _build_file_handler(
         max_bytes=LOG_MAX_BYTES,
     )
     handler.suffix = "%Y-%m-%d"
-    handler.extMatch = re.compile(
-        r"^\d{4}-\d{2}-\d{2}(?:_\d{2}-\d{2}-\d{2})?(?:\.\d+)?$"
-    )
+    handler.extMatch = _ROTATED_LOG_SUFFIX
     handler.setLevel(level)
     handler.setFormatter(formatter)
     handler.addFilter(_RunidFilter())

@@ -26,50 +26,45 @@
         </tbody>
       </table>
     </div>
-    <div v-else class="preview-loading">加载中...</div>
+    <div v-else class="preview-loading">{{ previewError || '加载中...' }}</div>
   </div>
 </template>
 
-<script setup>
+<script>
 import { ref, onMounted, watch } from 'vue'
 import ExcelJS from 'exceljs'
-
-const props = defineProps({
+import { workbookToPreviewSheets } from '../utils/excelPreviewRows.js'
+export default {
+  props: {
   fileUrl: {
     type: String,
     default: ''
   }
-})
-
+},
+  setup(props, { emit }) {
 const sheets = ref([])
 const activeSheet = ref(0)
+const previewError = ref('')
 
 async function loadExcel() {
   if (!props.fileUrl) return
   
   try {
+    previewError.value = ''
     const response = await fetch(props.fileUrl)
+    if (!response.ok) throw new Error(`HTTP ${response.status}`)
     const arrayBuffer = await response.arrayBuffer()
     
     const workbook = new ExcelJS.Workbook()
     await workbook.xlsx.load(arrayBuffer)
     
-    sheets.value = workbook.worksheets.map(ws => {
-      const data = []
-      ws.eachRow((row, rowNumber) => {
-        const rowData = []
-        row.eachCell({ includeEmpty: true }, cell => {
-          rowData[cell.column - 1] = cell.value ?? ''
-        })
-        data.push(rowData)
-      })
-      return { name: ws.name, data }
-    })
+    sheets.value = workbookToPreviewSheets(workbook)
     
     activeSheet.value = 0
   } catch (e) {
     console.error('Excel preview error:', e)
     sheets.value = []
+    previewError.value = '无法预览该 Excel 文件，请下载后查看'
   }
 }
 
@@ -80,6 +75,19 @@ onMounted(() => {
 watch(() => props.fileUrl, () => {
   loadExcel()
 })
+
+    return {
+      activeSheet,
+      ExcelJS,
+      loadExcel,
+      onMounted,
+      previewError,
+      ref,
+      sheets,
+      watch,
+    }
+  },
+}
 </script>
 
 <style scoped>

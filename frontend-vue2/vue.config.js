@@ -13,7 +13,7 @@ const PROXY_TARGETS = {
   dev: 'http://localhost:8080',
   test: 'http://192.168.1.100:8007',
   prod: 'http://192.168.1.200:8000',
-  win: 'http://127.0.0.1:8000',
+  win: 'http://127.0.0.1:8080',
 }
 
 const AGENT_ENV =
@@ -29,8 +29,13 @@ module.exports = defineConfig({
   productionSourceMap: false,
 
   devServer: {
-    host: process.platform === 'win32' ? '127.0.0.1' : '0.0.0.0',
+    // 默认仅本机可访问；设 DEV_HOST=0.0.0.0 可开放局域网访问（vue-cli 的
+    // --host 参数会被本配置覆盖，故用环境变量作为开关）。
+    host: process.env.DEV_HOST || (process.platform === 'win32' ? '127.0.0.1' : '0.0.0.0'),
     port: Number(process.env.PORT || 5173),
+    // 静态资源一律 no-cache：防止局域网访客浏览器缓存旧版 index.html/JS，
+    // 打开出旧版应用（缺新模块/路由时表现为点入口显示 404，且新接口请求不发）。
+    headers: { 'Cache-Control': 'no-cache' },
     // SSE 流式必须关闭压缩：webpack-dev-server 默认 compress=true 会对
     // text/event-stream 做 gzip，gzip 流要攒满缓冲块才 flush，导致事件被
     // 一次性延迟到流结束才到达（表现为「后端已 step2，前端仍显示正在响应」）。
@@ -51,6 +56,13 @@ module.exports = defineConfig({
         onProxyRes(proxyRes) {
           proxyRes.headers['cache-control'] = 'no-cache'
         },
+      },
+      // /api 旧前缀（知识库 /api/knowledge/v1、人员 /api/personnel）后端有
+      // legacy 兼容路由：缓存了旧版前端的浏览器（SPA 旧 JS 用旧前缀）在 dev
+      // server 上会 404，必须一并代理到后端，旧页面才能继续工作。
+      '/api': {
+        target: PROXY_TARGET,
+        changeOrigin: true,
       },
     },
   },

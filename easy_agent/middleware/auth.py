@@ -101,6 +101,8 @@ def verify_token_sso(token: str, db: Database) -> Optional[str]:
     user = db.get_user_by_username(username)
     if not user:
         return None
+    if user.account_status == "disabled":
+        return None
     if token_v is None or user.token_version != token_v:
         return None
     if not _user_session_is_active(db, username):
@@ -124,6 +126,8 @@ async def get_current_username(
             if username:
                 user = db.get_user_by_username(username)
                 if user:
+                    if user.account_status == "disabled":
+                        raise HTTPException(status_code=403, detail="账号已停用")
                     # 单点登录：token 中的 v 必须等于 DB 当前 token_version，
                     # 否则说明该账号已在其他设备/IP 登录，当前 token 立即失效。
                     if token_v is None or user.token_version != token_v:

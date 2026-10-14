@@ -91,7 +91,7 @@
               class="action-btn plus-btn"
               :class="{ disabled: isStreaming || disabled }"
               :disabled="isStreaming || disabled"
-              v-tip="'添加文件 · 专家 · 技能 · 连接器'"
+              v-tip="'添加文件 · 知识库 · 专家 · 技能 · 连接器'"
               aria-haspopup="menu"
               :aria-expanded="showPlusMenu ? 'true' : 'false'"
               @click="togglePlusMenu"
@@ -110,6 +110,16 @@
                     <line x1="9" y1="15" x2="15" y2="15"></line>
                   </svg>
                   <span class="plus-menu-label">添加文件</span>
+                  <svg class="plus-menu-arrow" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="9 18 15 12 9 6"></polyline>
+                  </svg>
+                </button>
+                <button type="button" class="plus-menu-item plus-menu-item-knowledge" @mouseenter="enterKnowledgeItem" @click="openKnowledgeScope">
+                  <svg class="plus-menu-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path>
+                    <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path>
+                  </svg>
+                  <span class="plus-menu-label">知识库</span>
                   <svg class="plus-menu-arrow" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                     <polyline points="9 18 15 12 9 6"></polyline>
                   </svg>
@@ -176,6 +186,19 @@
             </div>
             </div>
           </div>
+          <!-- 知识库引用：仅由加号菜单「知识库」入口打开（常驻触发按钮隐藏），
+               面板与技能子面板同款样式，锚到「知识库」菜单项右侧弹出 -->
+          <KnowledgeScopeSelector
+            ref="knowledgeScope"
+            :session-id="sessionId || ''"
+            :disabled="isStreaming || disabled"
+            hide-trigger
+            anchor-selector=".plus-menu-item-knowledge"
+            @mouseenter.native="cancelPlusClose"
+            @mouseleave.native="schedulePlusClose"
+            @create-session="$emit('create-session')"
+            @manage="openKnowledgeManage"
+          />
           <input
             ref="fileInputRef"
             type="file"
@@ -194,10 +217,6 @@
               @click="toggleModelDropdown"
               v-tip="'切换模型'"
             >
-              <svg class="model-btn-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9L12 3z"></path>
-                <path d="M18.5 15.5l.7 1.9 1.9.7-1.9.7-.7 1.9-.7-1.9-1.9-.7 1.9-.7.7-1.9z"></path>
-              </svg>
               <span class="model-btn-label">{{ currentModelLabel }}</span>
               <svg class="model-btn-arrow" :class="{ open: showModelDropdown }" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <polyline points="6 9 12 15 18 9"></polyline>
@@ -220,7 +239,6 @@
           </div>
 
           <button
-            type="button"
             class="action-btn web-search-btn"
             :class="{ active: webSearchEnabled, disabled: webSearchUnavailable || isStreaming || disabled }"
             :disabled="webSearchUnavailable || isStreaming || disabled"
@@ -402,6 +420,7 @@ import { getConnectors } from '../api/connectors.js'
 import { eventTarget } from '../utils/domEvent.js'
 import FileIcon from './FileIcon.vue'
 import SkillIcon from './SkillIcon.vue'
+import KnowledgeScopeSelector from '../features/knowledge/KnowledgeScopeSelector.vue'
 
 // 输入草稿持久化：页面刷新后恢复用户尚未发送的输入内容（“输入框的状态不变”）
 const DRAFT_KEY = 'easy_agent_input_draft'
@@ -410,7 +429,7 @@ const DRAFT_KEY = 'easy_agent_input_draft'
 const PENDING_SKILL_KEY = 'easy_agent_pending_skill'
 
 export default {
-  components: { FileIcon, SkillIcon },
+  components: { FileIcon, SkillIcon, KnowledgeScopeSelector },
   props: {
     disabled: {
       type: Boolean,
@@ -474,6 +493,10 @@ export default {
     return {
       message: '',
       uploadedFiles: [],
+      // 联网搜索：available=false 时按钮置灰（后端未启用或未配置 api_key）
+      webSearchEnabled: false,
+      webSearchAvailable: false,
+      webSearchReason: '',
       // 光标所在行高亮（overlay 技术：textareal 本身无法按行上色）
       caretLineTop: null, // 高亮条 top，null 表示隐藏
       lineHeight: 24, // 行高（px）
@@ -490,10 +513,6 @@ export default {
       plusMenuStyle: {},
       dropdownStyle: {},
       showTokenPopup: false,
-      // ========== 联网搜索 ==========
-      // 默认关闭；未配置（api_key 缺失/功能关闭）时按钮置灰
-      webSearchEnabled: false,
-      webSearchStatus: { enabled: false, configured: false },
       // ========== 会话耗时 ==========
       liveDuration: 0,
       durationTimer: null,
@@ -550,15 +569,6 @@ export default {
         (s.name || '').toLowerCase().includes(q) ||
         (s.description || '').toLowerCase().includes(q)
       )
-    },
-    webSearchUnavailable() {
-      return !this.webSearchStatus.configured
-    },
-    webSearchTitle() {
-      if (!this.webSearchStatus.configured) {
-        return '联网搜索未配置（需配置 WEB_SEARCH_API_KEY 后重启后端）'
-      }
-      return this.webSearchEnabled ? '联网搜索已开启，点击关闭' : '联网搜索（点击开启）'
     },
     // 后台未返回耗时数据（sessionDuration<=0）且「会话信息」弹窗打开时，前端按 1s
     // 间隔本地计时，让会话耗时实时更新；后台有数据时直接用后台值。
@@ -618,6 +628,13 @@ export default {
       if (on) this.startLiveDuration()
       else this.stopLiveDuration()
     },
+    // 会话切换/新建时清空已添加文件：文件属于原会话，不得残留到新会话。
+    // 注意 oldVal 为 null（新对话加文件时触发的建会话）不清，否则会清掉刚选的文件。
+    sessionId(newVal, oldVal) {
+      if (oldVal && newVal !== oldVal) {
+        this.uploadedFiles = []
+      }
+    },
     message(val) {
       try {
         sessionStorage.setItem(this.draftKey, val)
@@ -637,6 +654,13 @@ export default {
     },
   },
   mounted() {
+    // 联网搜索可用性：公共接口，失败时按不可用处理（按钮置灰）
+    getWebSearchStatus()
+      .then(status => {
+        this.webSearchAvailable = Boolean(status && status.configured)
+        this.webSearchReason = (status && status.reason) || ''
+      })
+      .catch(() => { this.webSearchAvailable = false; this.webSearchReason = 'unreachable' })
     // 恢复刷新前的输入草稿
     try {
       const draft = sessionStorage.getItem(this.draftKey)
@@ -671,25 +695,22 @@ export default {
     this.stopLiveDuration()
   },
   methods: {
-    /** 供父组件调用：聚焦输入框并把光标移到末尾 */
-    focusInput() {
-      this.$nextTick(() => {
-        const ta = this.$refs.textareaRef
-        if (!ta || ta.disabled) return
-        ta.focus()
-        const end = ta.value.length
-        ta.setSelectionRange(end, end)
-      })
+    async toggleWebSearch() {
+      if (this.isStreaming || this.disabled) return
+      // 页面加载可能早于后端配置完成（状态在 mounted 固化）：
+      // 灰色态点击时先重查一次，配置就绪则本次点击直接点亮（符合点击意图）。
+      if (!this.webSearchAvailable) {
+        try {
+          const status = await getWebSearchStatus()
+          this.webSearchAvailable = Boolean(status && status.configured)
+          this.webSearchReason = (status && status.reason) || ''
+        } catch (_) {
+          /* 查询失败保持不可用 */
+        }
+        if (!this.webSearchAvailable) return
+      }
+      this.webSearchEnabled = !this.webSearchEnabled
     },
-    /** 供父组件调用：替换输入内容（如侧边栏的快捷提问、划词提问） */
-    setDraft(text) {
-      this.message = text || ''
-      this.$nextTick(() => this.autoResize())
-      this.focusInput()
-    },
-    /**
-     * 外部预填问题（专家详情弹窗的示例提示词）：写入输入框并聚焦，随后通知父组件清空。
-     */
     applyExpertPrompt(val) {
       if (!val) return
       this.message = val
@@ -711,26 +732,6 @@ export default {
     },
     hideCaretLine() {
       this.caretLineTop = null
-    },
-    toggleWebSearch() {
-      if (this.webSearchUnavailable || this.isStreaming || this.disabled) return
-      this.webSearchEnabled = !this.webSearchEnabled
-      console.log(
-        `[${new Date().toISOString()}] [联网搜索] ${this.webSearchEnabled ? '已开启' : '已关闭'}`
-      )
-    },
-    async loadWebSearchStatus() {
-      try {
-        const data = await getWebSearchStatus()
-        this.webSearchStatus = {
-          enabled: !!data.enabled,
-          configured: !!data.configured,
-        }
-        if (!data.configured) this.webSearchEnabled = false
-      } catch (e) {
-        // 状态获取失败按「不可用」处理，避免用户开启后静默不生效
-        console.error('获取联网搜索状态失败:', e)
-      }
     },
     toggleModelDropdown() {
       if (this.isStreaming || this.disabled) return
@@ -768,6 +769,8 @@ export default {
       if (this.isStreaming || this.disabled) return
       if (this.showPlusMenu) {
         this.showPlusMenu = false
+        this.subpanelCategory = null
+        if (this.$refs.knowledgeScope) this.$refs.knowledgeScope.closePopover()
         this.cancelPlusClose()
         return
       }
@@ -787,14 +790,19 @@ export default {
     },
     closePlusMenu(event) {
       const anchor = this.$refs.plusMenuRef
-      if (this.showPlusMenu && anchor && !anchor.contains(eventTarget(event))) {
+      // 点击知识库面板内部不算「菜单外」（面板不在菜单 DOM 内，但属于同一浮层交互）
+      const scopeRoot = this.$refs.knowledgeScope && this.$refs.knowledgeScope.$el
+      const inScope = scopeRoot && scopeRoot.contains(event.target)
+      if (this.showPlusMenu && anchor && !anchor.contains(event.target) && !inScope) {
         this.showPlusMenu = false
         this.subpanelCategory = null
+        if (this.$refs.knowledgeScope) this.$refs.knowledgeScope.closePopover()
       }
     },
     handleMenuAddFile() {
       this.showPlusMenu = false
       this.subpanelCategory = null
+      if (this.$refs.knowledgeScope) this.$refs.knowledgeScope.closePopover()
       const input = this.$refs.fileInputRef
       if (input) input.click()
     },
@@ -839,10 +847,13 @@ export default {
         this.plusHoverTimer = null
         this.showPlusMenu = false
         this.subpanelCategory = null
+        if (this.$refs.knowledgeScope) this.$refs.knowledgeScope.closePopover()
       }, 250)
     },
     hoverPlusItem(category) {
       this.cancelPlusClose()
+      // 切到其他菜单项时收起知识库面板，避免两个浮层叠着
+      if (this.$refs.knowledgeScope) this.$refs.knowledgeScope.closePopover()
       if (category === 'experts' || category === 'skills' || category === 'connectors') {
         // openSubpanel 需要事件定位；hover 无事件对象时用菜单项元素
         const el = [...this.$el.querySelectorAll('.plus-menu-item')].find(i => i.textContent.includes(
@@ -903,7 +914,26 @@ export default {
     handleMenuPanel(tab) {
       this.showPlusMenu = false
       this.subpanelCategory = null
-      this.$emit('openPanel', tab)
+      this.$emit('open-panel', tab)
+    },
+    // 加号菜单「知识库」：与技能子面板一致，点击保持主菜单常驻，面板贴菜单项右侧弹出
+    openKnowledgeScope() {
+      this.cancelPlusClose()
+      this.subpanelCategory = null
+      if (this.$refs.knowledgeScope) this.$refs.knowledgeScope.openPopover()
+    },
+    // hover 到「知识库」菜单项即展开选择面板（并收起其他子面板），无需点击
+    enterKnowledgeItem() {
+      this.cancelPlusClose()
+      this.subpanelCategory = null
+      if (this.$refs.knowledgeScope) this.$refs.knowledgeScope.openPopover()
+    },
+    // 知识库子面板底部入口：关闭菜单并打开知识库工作台
+    openKnowledgeManage() {
+      this.showPlusMenu = false
+      this.subpanelCategory = null
+      if (this.$refs.knowledgeScope) this.$refs.knowledgeScope.closePopover()
+      this.$emit('open-knowledge')
     },
     // 供父组件把预置问题完整文本填进输入框（卡片上最多显示 3 行，长问题展示不全）
     setMessage(text) {
@@ -1333,6 +1363,10 @@ export default {
   padding: 12px 16px;
   background: var(--bg-secondary);
   border-bottom: 1px solid var(--border-color);
+  /* 最多显示三行文件块（60px×3 + gap 12px×2），超出滚动查看 */
+  max-height: 204px;
+  overflow-y: auto;
+  box-sizing: border-box;
 }
 
 /* ── 已选技能标签（只显示图标 + 名称，发送时还原为 /技能名） ── */
@@ -1772,7 +1806,7 @@ html[data-theme="dark"] .context-ring-wrapper {
 .left-actions {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
 }
 
 .model-dropdown-wrapper {
@@ -1787,43 +1821,21 @@ html[data-theme="dark"] .context-ring-wrapper {
   align-items: center;
   justify-content: center;
   gap: 6px;
-  padding: 0 10px 0 11px;
-  max-width: 220px;
+  padding: 6px 12px;
   height: 36px;
   min-height: 36px;
   border: 1px solid var(--border-color);
   background: var(--bg-secondary);
   border-radius: 10px;
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05);
   cursor: pointer;
-  transition: background 0.22s ease, border-color 0.22s ease, box-shadow 0.22s ease,
-    transform 0.22s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
   white-space: nowrap;
 }
 
-/* 星形图标：给「模型选择」一个视觉锚点，避免三个按钮里只有它是纯文字 */
-.model-btn-icon {
-  width: 14px;
-  height: 14px;
-  flex-shrink: 0;
-  color: var(--accent-color);
-  transition: transform 0.25s ease;
-}
-
 .model-btn:hover:not(.disabled) {
-  border-color: color-mix(in srgb, var(--accent-color) 45%, var(--border-color));
-  background: color-mix(in srgb, var(--accent-color) 8%, var(--bg-secondary));
-  box-shadow: 0 4px 12px color-mix(in srgb, var(--accent-color) 18%, transparent);
+  border-color: rgba(14, 165, 233, 0.4);
+  background: color-mix(in srgb, var(--accent-color) 10%, transparent);
   transform: translateY(-1px);
-}
-
-.model-btn:hover:not(.disabled) .model-btn-icon {
-  transform: rotate(-15deg) scale(1.12);
-}
-
-.model-btn:active:not(.disabled) {
-  transform: translateY(0) scale(0.98);
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05);
 }
 
 .model-btn.disabled {
@@ -1833,28 +1845,25 @@ html[data-theme="dark"] .context-ring-wrapper {
 
 .model-btn-label {
   font-size: 12px;
-  font-weight: 600;
+  font-weight: 500;
   color: var(--text-secondary);
-  transition: color 0.22s ease;
-  min-width: 0;
+  transition: color 0.25s ease;
+  max-width: 140px;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
+
 .model-btn:hover:not(.disabled) .model-btn-label {
-  color: var(--accent-color);
+  color: #0ea5e9;
 }
+
 
 .model-btn-arrow {
   width: 12px;
   height: 12px;
-  flex-shrink: 0;
   color: var(--text-secondary);
-  transition: transform 0.2s ease, color 0.22s ease;
-}
-
-.model-btn:hover:not(.disabled) .model-btn-arrow {
-  color: var(--accent-color);
+  transition: transform 0.2s ease;
 }
 
 .model-btn-arrow.open {
@@ -2217,6 +2226,29 @@ html[data-theme="dark"] .plus-list-tag.custom {
   background: var(--bg-tertiary);
 }
 
+/* 联网搜索按钮：点亮（图标变蓝）= 启用；灰色 = 未启用。
+   启用态不加背景色块，仅图标高亮；未配置时半透明且屏蔽 hover/点击的一切高亮反馈。 */
+.web-search-btn.active {
+  background: transparent;
+}
+.web-search-btn.active svg {
+  color: #0ea5e9;
+}
+.web-search-btn.unavailable {
+  opacity: 0.45;
+  cursor: pointer;
+}
+.web-search-btn.unavailable:hover {
+  background: transparent;
+}
+.web-search-btn.unavailable:hover svg {
+  color: var(--text-secondary);
+}
+.web-search-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
 .action-btn:hover svg {
   color: #0ea5e9;
 }
@@ -2442,10 +2474,8 @@ html[data-theme="dark"] .plus-list-tag.custom {
   border: 1px solid var(--border-color);
   background: var(--bg-secondary);
   border-radius: 10px;
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05);
   cursor: pointer;
-  transition: background 0.22s ease, border-color 0.22s ease, box-shadow 0.22s ease,
-    transform 0.22s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .plus-btn svg,
@@ -2453,7 +2483,7 @@ html[data-theme="dark"] .plus-list-tag.custom {
   width: 18px;
   height: 18px;
   color: var(--text-secondary);
-  transition: color 0.22s ease, transform 0.22s ease;
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .plus-btn:hover:not(.disabled),
@@ -2480,106 +2510,6 @@ html[data-theme="dark"] .plus-list-tag.custom {
 .web-search-btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
-}
-
-/* 开启态：主题强调色填充 + 光晕（浅色蓝 / 深色紫），与「发送」激活态呼应 */
-.web-search-btn.active {
-  border-color: transparent;
-  background: linear-gradient(
-    135deg,
-    color-mix(in srgb, var(--accent-color) 85%, #ffffff),
-    var(--accent-color)
-  );
-  box-shadow: 0 2px 10px color-mix(in srgb, var(--accent-color) 35%, transparent);
-}
-
-.web-search-btn.active svg {
-  color: #ffffff;
-  transform: none;
-}
-
-/* 开启态 hover 仍保持实心填充，避免被上面的通用 hover 规则洗成半透明 */
-.web-search-btn.active:hover:not(:disabled) {
-  border-color: transparent;
-  background: linear-gradient(
-    135deg,
-    color-mix(in srgb, var(--accent-color) 92%, #ffffff),
-    var(--accent-color)
-  );
-  box-shadow: 0 4px 14px color-mix(in srgb, var(--accent-color) 45%, transparent);
-}
-
-/* ── 当前专家胶囊：与左侧工具按钮同排同高，
-   浅强调底 +「专家」徽标 + 名称 + 退出×（样式参照设计稿）── */
-.expert-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  height: 36px;
-  padding: 0 8px 0 6px;
-  max-width: 220px;
-  border: 1px solid color-mix(in srgb, var(--accent-color) 35%, transparent);
-  border-radius: 10px;
-  background: color-mix(in srgb, var(--accent-color) 12%, var(--bg-secondary));
-  flex-shrink: 0;
-}
-
-.expert-chip-badge {
-  flex-shrink: 0;
-  padding: 2px 6px;
-  border-radius: 6px;
-  background: var(--accent-color);
-  color: #fff;
-  font-size: 10px;
-  font-weight: 600;
-  line-height: 1.4;
-}
-
-.expert-chip-name {
-  min-width: 0;
-  font-size: 12px;
-  font-weight: 600;
-  color: color-mix(in srgb, var(--accent-color) 70%, var(--text-primary));
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.expert-chip-clear {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 16px;
-  height: 16px;
-  flex-shrink: 0;
-  padding: 0;
-  border: none;
-  border-radius: 50%;
-  background: transparent;
-  color: color-mix(in srgb, var(--accent-color) 70%, var(--text-primary));
-  cursor: pointer;
-  opacity: 0.7;
-  transition: opacity 0.2s ease, background 0.2s ease;
-}
-
-.expert-chip-clear:hover:not(:disabled) {
-  opacity: 1;
-  background: color-mix(in srgb, var(--accent-color) 22%, transparent);
-}
-
-.expert-chip-clear:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-
-.expert-chip-clear:focus-visible {
-  outline: 2px solid var(--accent-color);
-  outline-offset: 1px;
-}
-
-.expert-chip-clear svg {
-  width: 10px;
-  height: 10px;
 }
 
 .copy-btn {

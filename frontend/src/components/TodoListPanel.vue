@@ -68,35 +68,47 @@
   </div>
 </template>
 
-<script setup>
-import { computed, ref, onMounted, onBeforeUnmount } from 'vue'
-
-const props = defineProps({
-  todos: {
-    type: Array,
-    default: () => []
-  }
-})
-
-// 默认收起：展开态是浮层，收起时完全不占布局高度（此前默认展开会推挤会话内容）
-const expanded = ref(false)
-const rootRef = ref(null)
-
-const completedCount = computed(() => props.todos.filter(t => t.status === 'completed').length)
-const progressPercent = computed(() => {
-  if (props.todos.length === 0) return 0
-  return Math.round((completedCount.value / props.todos.length) * 100)
-})
-// 有任务执行中时胶囊做呼吸提示 —— 收起态也能看出"还在跑"
-const hasInProgress = computed(() => props.todos.some(t => t.status === 'in_progress'))
-
-function onDocClick(e) {
-  if (expanded.value && rootRef.value && !rootRef.value.contains(e.target)) {
-    expanded.value = false
-  }
+<script>
+export default {
+  props: {
+    todos: {
+      type: Array,
+      default: () => []
+    }
+  },
+  data() {
+    return {
+      // 默认收起：展开态是浮层，收起时完全不占布局高度（此前默认展开会推挤会话内容）
+      expanded: false,
+    }
+  },
+  computed: {
+    completedCount() {
+      return this.todos.filter(t => t.status === 'completed').length
+    },
+    progressPercent() {
+      if (this.todos.length === 0) return 0
+      return Math.round((this.completedCount / this.todos.length) * 100)
+    },
+    // 有任务执行中时胶囊做呼吸提示 —— 收起态也能看出"还在跑"
+    hasInProgress() {
+      return this.todos.some(t => t.status === 'in_progress')
+    },
+  },
+  mounted() {
+    document.addEventListener('click', this.onDocClick)
+  },
+  beforeDestroy() {
+    document.removeEventListener('click', this.onDocClick)
+  },
+  methods: {
+    onDocClick(e) {
+      if (this.expanded && this.$refs.rootRef && !this.$refs.rootRef.contains(e.target)) {
+        this.expanded = false
+      }
+    },
+  },
 }
-onMounted(() => document.addEventListener('click', onDocClick))
-onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
 </script>
 
 <style scoped>

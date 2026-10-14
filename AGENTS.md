@@ -1,6 +1,6 @@
 # Repository Guidelines
 
-Contributor guide for **easy-agent**, an AI agent web app built on LangChain DeepAgents with a FastAPI backend and Vue 3 frontend.
+Contributor guide for **easy-agent**, an AI agent web app built on LangChain DeepAgents with a FastAPI backend and Vue 2.7 frontend.
 
 ## Project Structure & Module Organization
 
@@ -15,7 +15,8 @@ easy-agent/
 │   ├── tools/           # Agent-callable tools
 │   ├── skills/          # SKILL.md-based skill bundles
 │   └── config/          # YAML configs + system_prompt.md
-├── frontend/            # Vue 3 + Vite + Tailwind CSS 4 SPA (src/components, src/api)
+├── frontend/            # Vue 2.7 + Element UI SPA（历史构建产物仍在，源码停更）
+├── frontend-vue2/       # 前端开发基线（2026-10-10 起开发与构建均在此；勿删勿精简；见 docs/merge-history-2026-09-17-vue26.md）
 ├── tests/               # pytest tests (test_*.py) and manual demo scripts
 ├── main.py              # uvicorn entry point
 ├── pyproject.toml       # Project metadata & deps (managed by uv)
@@ -32,16 +33,16 @@ uv pip install -e ".[dev]"           # Editable install with dev deps (alternati
 easy-web --port 8000                 # Run backend (or: python main.py)
 pytest tests/ -v                     # Run the test suite
 pytest tests/integration/test_basic.py -v        # Run a single test file
-cd frontend && npm run dev           # Frontend dev server (proxies to backend :8000)
-cd frontend && npm run build         # Build SPA into frontend/dist/ (required before easy-web serves UI)
+cd frontend-vue2 && npm run dev     # Frontend dev server (proxies to backend :8080)
+cd frontend-vue2 && npm run build   # Build SPA into frontend-vue2/dist/ (required before easy-web serves UI)
 ./start.prod.sh                      # Production startup
 ```
 
 ## Coding Style & Naming Conventions
 
 - **Python**: requires 3.11+. Four-space indentation, `snake_case` for functions/variables, `PascalCase` for classes. No project-wide linter is configured-match surrounding files.
-- **Frontend**: Vue 3 Composition API with `<script setup>`. Components are `PascalCase.vue`; API modules in `frontend/src/api/` are camelCase `.js`.
-- **Config**: Environment config YAML files in `easy_agent/config/` are local and gitignored; copy `config-example.yaml` and write real values directly.
+- **Frontend**: Vue 2.7, primarily Options API. Vue 2.7 built-in Composition API functions (`ref`/`computed`/`watch`) are allowed; `<script setup>` and Vue 3-only syntax are forbidden (enforced by `src/utils/vue2Compat.test.js`). Components are `PascalCase.vue`; API modules in `frontend/src/api/` are camelCase `.js`.
+- **Config**: YAML files in `easy_agent/config/`; sensitive values use `${ENV_VAR}` placeholders resolved at load time.
 
 ## Testing Guidelines
 

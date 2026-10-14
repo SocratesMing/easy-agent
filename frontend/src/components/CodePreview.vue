@@ -2,11 +2,11 @@
   <div class="code-preview-container" ref="containerRef"></div>
 </template>
 
-<script setup>
+<script>
 import { ref, onMounted, watch, onUnmounted, shallowRef, nextTick } from 'vue'
 import * as monaco from 'monaco-editor'
-
-const props = defineProps({
+export default {
+  props: {
   content: {
     type: String,
     default: ''
@@ -19,8 +19,8 @@ const props = defineProps({
     type: Boolean,
     default: true
   }
-})
-
+},
+  setup(props, { emit }) {
 const containerRef = ref(null)
 const editor = shallowRef(null)
 
@@ -131,6 +131,23 @@ onUnmounted(() => {
     editor.value = null
   }
 })
+
+    return {
+      containerRef,
+      editor,
+      getLanguage,
+      initEditor,
+      languageMap,
+      monaco,
+      nextTick,
+      onMounted,
+      onUnmounted,
+      ref,
+      shallowRef,
+      watch,
+    }
+  },
+}
 </script>
 
 <style scoped>

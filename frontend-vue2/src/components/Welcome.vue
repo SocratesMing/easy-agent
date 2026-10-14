@@ -66,7 +66,7 @@
         </button>
 
         <div class="form-footer">
-          <button type="button" @click="toggleMode" class="toggle-mode-btn">
+          <button v-if="selfRegistrationEnabled" type="button" @click="toggleMode" class="toggle-mode-btn">
             {{ isLogin ? '还没有账号？立即注册' : '已有账号？立即登录' }}
           </button>
           <span v-if="isLogin" class="forgot-password-btn">忘记密码？请联系管理员 admin 重置</span>
@@ -78,6 +78,7 @@
 
 <script>
 import { login, register } from '../api/auth.js'
+import { getLoginPolicy } from '../features/personnel/api.js'
 
 // 应用名称：直接定义在前端（原 src/config.js 已移除）
 const APP_TITLE = 'Easy Agent'
@@ -89,6 +90,7 @@ export default {
       error: '',
       success: '',
       isLogin: true,
+      selfRegistrationEnabled: false,
       form: {
         username: '',
         password: '',
@@ -97,6 +99,7 @@ export default {
     }
   },
   mounted() {
+    getLoginPolicy().then(policy => { this.selfRegistrationEnabled = policy.self_registration_enabled === true }).catch(() => {})
     // 检测是否因单点登录被踢下线（账号在其他设备登录）
     if (localStorage.getItem('auth_kicked') === '1') {
       localStorage.removeItem('auth_kicked')

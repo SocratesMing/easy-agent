@@ -39,19 +39,21 @@
   </div>
 </template>
 
-<script setup>
+<script>
 import { ref, onMounted, watch, onUnmounted } from 'vue'
 import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.mjs'
 import pdfjsWorker from 'pdfjs-dist/legacy/build/pdf.worker.min.mjs?url'
-
-pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker
-
-const props = defineProps({
+export default {
+  props: {
   fileUrl: {
     type: String,
     default: ''
   }
-})
+},
+  setup(props, { emit }) {
+pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker
+
+
 
 const containerRef = ref(null)
 const canvasRef = ref(null)
@@ -176,6 +178,33 @@ onUnmounted(() => {
     pdfDoc.destroy()
   }
 })
+
+    return {
+      canvasRef,
+      CMAP_URL,
+      containerRef,
+      currentPage,
+      errorMsg,
+      loading,
+      loadPdf,
+      nextPage,
+      onMounted,
+      onUnmounted,
+      pdfDoc,
+      pdfjsLib,
+      pdfjsWorker,
+      prevPage,
+      ref,
+      renderPage,
+      scale,
+      STANDARD_FONT_DATA_URL,
+      totalPages,
+      watch,
+      zoomIn,
+      zoomOut,
+    }
+  },
+}
 </script>
 
 <style scoped>

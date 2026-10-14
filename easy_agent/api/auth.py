@@ -97,6 +97,10 @@ async def register(
     http_request: Request,
     db: Annotated[Database, Depends(get_database)],
 ):
+    cfg = get_agent_config()
+    policy = getattr(cfg.get("config"), "personnel", None) if cfg else None
+    if not getattr(policy, "self_registration_enabled", False):
+        raise HTTPException(status_code=403, detail="当前环境已关闭自助注册，请联系管理员创建账号")
     # 工号全局唯一：先显式校验以便返回精确提示（register_user 内部还有一层兜底）
     employee_id = request.employee_id.strip()
     if db.get_user_by_employee_id(employee_id):
@@ -113,7 +117,9 @@ async def register(
         raise HTTPException(status_code=400, detail="用户名已存在")
 
     # 注册即登录：递增 token 版本号并签发带 v 的 token
-    new_version = db.increment_user_token_version(user.username)
+    new_version = db.increment_user_token_version(user.username, require_active=True)
+    if new_version <= 0:
+        raise HTTPException(status_code=403, detail="账号已停用，请联系管理员")
     access_token = create_access_token(
         data={"sub": user.username, "v": new_version},
         expires_delta=_get_token_lifetime(),
@@ -170,12 +176,16 @@ async def login(
     user = db.verify_user_password(request.username, request.password)
     if not user:
         raise HTTPException(status_code=401, detail="用户名或密码错误")
+    if user.account_status == "disabled":
+        raise HTTPException(status_code=403, detail="账号已停用，请联系管理员")
 
     client_ip = get_client_ip(http_request)
 
     # 单点登录：递增 token 版本号，使该用户此前在其他设备/IP 的登录立即失效
     prev_ip = _active_login_ip.get(user.username)
-    new_version = db.increment_user_token_version(user.username)
+    new_version = db.increment_user_token_version(user.username, require_active=True)
+    if new_version <= 0:
+        raise HTTPException(status_code=403, detail="账号已停用，请联系管理员")
     access_token = create_access_token(
         data={"sub": user.username, "v": new_version},
         expires_delta=_get_token_lifetime(),
@@ -221,6 +231,10 @@ async def login_passwordless(
     传入的 user_id 已被其他用户占用时返回 400。供外部系统通过 URL
     携带用户名与用户ID 直登使用。
     """
+    cfg = get_agent_config()
+    policy = getattr(cfg.get("config"), "personnel", None) if cfg else None
+    if not getattr(policy, "passwordless_login_enabled", False):
+        raise HTTPException(status_code=403, detail="当前环境未开启门户免密登录，请使用账号密码登录")
     # admin 拥有用户管理权限，禁止免密登录，防止仅凭用户名冒充管理员
     if request.username == "admin":
         raise HTTPException(status_code=403, detail="admin 用户不支持免密登录")
@@ -231,12 +245,16 @@ async def login_passwordless(
     )
     if not user:
         raise HTTPException(status_code=400, detail="用户ID已被其他用户使用")
+    if user.account_status == "disabled":
+        raise HTTPException(status_code=403, detail="账号已停用，请联系管理员")
 
     client_ip = get_client_ip(http_request)
     prev_ip = _active_login_ip.get(user.username)
 
     # 与密码登录一致：递增 token 版本号实现单点登录，签发新 token
-    new_version = db.increment_user_token_version(user.username)
+    new_version = db.increment_user_token_version(user.username, require_active=True)
+    if new_version <= 0:
+        raise HTTPException(status_code=403, detail="账号已停用，请联系管理员")
     access_token = create_access_token(
         data={"sub": user.username, "v": new_version},
         expires_delta=_get_token_lifetime(),
@@ -456,6 +474,8 @@ async def admin_reset_password(
 ):
     if admin_username != "admin":
         raise HTTPException(status_code=403, detail="仅管理员可以重置密码")
+    if username == "admin":
+        raise HTTPException(status_code=400, detail="管理员密码不能重置为默认密码")
 
     user = db.get_user_by_username(username)
     if not user:

@@ -278,16 +278,11 @@
               @click="toggleModelDropdown"
               v-tip="'切换模型'"
             >
-              <svg class="model-btn-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9L12 3z"></path>
-                <path d="M18.5 15.5l.7 1.9 1.9.7-1.9.7-.7 1.9-.7-1.9-1.9-.7 1.9-.7.7-1.9z"></path>
-              </svg>
               <span class="model-btn-label">{{ currentModelLabel }}</span>
               <svg class="model-btn-arrow" :class="{ open: showModelDropdown }" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <polyline points="6 9 12 15 18 9"></polyline>
               </svg>
             </button>
-            <Teleport to="body">
               <div v-if="showModelDropdown" class="model-dropdown-menu" :style="dropdownStyle" @click.stop>
                 <div
                   v-for="m in models"
@@ -302,11 +297,9 @@
                   </svg>
                 </div>
               </div>
-            </Teleport>
           </div>
 
           <button
-            type="button"
             class="action-btn web-search-btn"
             :class="{ active: webSearchEnabled, disabled: webSearchUnavailable || isStreaming || disabled }"
             :disabled="webSearchUnavailable || isStreaming || disabled"
@@ -351,15 +344,17 @@
             class="context-ring-wrapper" 
             @click.stop="toggleTokenPopup"
           >
-            <svg class="context-ring" viewBox="0 0 36 36">
-              <circle class="context-ring-bg" cx="18" cy="18" r="15.9" fill="none" stroke="#e5e7eb" stroke-width="3" />
-              <circle class="context-ring-fill" cx="18" cy="18" r="15.9" fill="none"
-                :stroke="contextColor" stroke-width="3" stroke-linecap="round"
-                :stroke-dasharray="`${contextPercent} ${100 - contextPercent}`"
-                transform="rotate(-90 18 18)" />
-            </svg>
+            <span class="context-ring-inner">
+              <svg class="context-ring" viewBox="0 0 36 36">
+                <circle class="context-ring-bg" cx="18" cy="18" r="15.9" fill="none" stroke="#e5e7eb" stroke-width="3" />
+                <circle class="context-ring-fill" cx="18" cy="18" r="15.9" fill="none"
+                  :stroke="contextColor" stroke-width="3" stroke-linecap="round"
+                  :stroke-dasharray="`${contextPercent} ${100 - contextPercent}`"
+                  transform="rotate(-90 18 18)" />
+              </svg>
+            </span>
             <span class="context-ring-text">{{ contextPercent }}%</span>
-            <Teleport to="body">
+            <!-- Vue 2.7 不支持 Teleport：弹窗留在 wrapper 内，依赖 wrapper 无 transform（hover 缩放作用于 .context-ring-inner）保证 fixed 定位正确 -->
               <div v-if="showTokenPopup" class="token-popup" :style="popupStyle" @click.stop>
                 <div class="token-popup-title">会话信息</div>
                 <div class="token-popup-section">
@@ -401,7 +396,6 @@
                   <span class="token-popup-value reasoning">{{ formatTokens(sessionUsage.reasoning_tokens) }}</span>
                 </div>
               </div>
-            </Teleport>
           </div>
           <button
             v-if="!isStreaming"
@@ -478,8 +472,7 @@
   </div>
 </template>
 
-<script setup>
-import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
+<script>
 import { uploadFile, deleteFile } from '../api/files.js'
 import { getWebSearchStatus } from '../api/settings.js'
 import { getUserSkills, importSkill } from '../api/skills.js'
@@ -1267,96 +1260,376 @@ async function handleFileSelect(event) {
       uploadStatus: 'uploading',
       uploadProgress: 0
     }
-    
-    // 添加到数组
-    uploadedFiles.value.push(fileItem)
-    
-    // 强制触发初始渲染
-    uploadedFiles.value = [...uploadedFiles.value]
-    
-    try {
-      // 确保会话存在
-      let sessionId = props.sessionId
-      if (!sessionId) {
-        // 通知父组件创建会话
-        const sessionIdPromise = new Promise((resolve) => {
-          // 创建一个临时的监听器来等待会话创建完成
-          const unwatch = watch(
-            () => props.sessionId,
-            (newSessionId) => {
-              if (newSessionId) {
-                unwatch()
-                resolve(newSessionId)
-              }
-            }
-          )
-          // 触发会话创建
-          emit('createSession')
-        })
-        
-        // 等待会话创建完成
-        sessionId = await sessionIdPromise
-        
-        if (!sessionId) {
-          throw new Error('会话创建失败')
-        }
+  },
+  computed: {
+    webSearchTitle() {
+      if (!this.webSearchAvailable) {
+        if (this.webSearchReason === 'disabled') return '联网搜索未启用'
+        if (this.webSearchReason === 'not_configured') return '联网搜索未配置 API Key'
+        return '联网搜索不可用'
       }
-      
-      // 调用实际的上传接口
-      const response = await uploadFile(sessionId, file, (progress) => {
-        // 找到对应的文件项并更新进度
-        const index = uploadedFiles.value.findIndex(f => f.file === file)
-        if (index !== -1) {
-          uploadedFiles.value[index].uploadProgress = progress
-          // 强制触发更新
-          uploadedFiles.value = [...uploadedFiles.value]
-        }
+      return this.webSearchEnabled ? '已开启联网搜索' : '联网搜索'
+    },
+    // 模型选择：本地双向绑定，变化时同步父组件
+    localSelectedModel: {
+      get() {
+        return this.selectedModel
+      },
+      set(val) {
+        this.$emit('update:selectedModel', val)
+      }
+    },
+    currentModelLabel() {
+      const m = this.models.find(m => m.name === this.selectedModel)
+      // 显示模型名（deepseek-v4-flash / deepseek-v4-pro），
+      // 而不是 provider 配置段名（deepseek / ark）
+      return m ? (m.model || m.name) : '选择模型'
+    },
+    canSend() {
+      return this.message.trim() || this.uploadedFiles.length > 0
+    },
+    // 后台未返回耗时数据（sessionDuration<=0）且「会话信息」弹窗打开时，前端按 1s
+    // 间隔本地计时，让会话耗时实时更新；后台有数据时直接用后台值。
+    shouldCountLive() {
+      return this.showTokenPopup && (!this.sessionDuration || this.sessionDuration <= 0)
+    },
+    displayDuration() {
+      return this.shouldCountLive ? this.liveDuration : (this.sessionDuration || 0)
+    },
+    formattedDuration() {
+      const total = Math.floor(this.displayDuration)
+      const h = Math.floor(total / 3600)
+      const m = Math.floor((total % 3600) / 60)
+      const s = total % 60
+      if (h > 0) {
+        return `${h}小时${m}分${s}秒`
+      }
+      if (m > 0) {
+        return `${m}分${s}秒`
+      }
+      return `${s}秒`
+    },
+    // 首页（尚未进入任何会话）不展示会话级用量：登录/注册后会从全局配置把
+    // context_length 写进 sessionUsage，但此时没有任何实际用量，
+    // 不能凭这个就显示上下文占用环。
+    showTokenRing() {
+      if (!this.sessionId) return false
+      return this.sessionUsage.input_tokens > 0 || this.sessionUsage.output_tokens > 0 || this.sessionUsage.reasoning_tokens > 0 || this.sessionUsage.context_tokens > 0 || this.sessionDuration > 0 || this.iterationCount > 0
+    },
+    contextPercent() {
+      const u = this.sessionUsage
+      if (!u.context_length || u.context_length <= 0) return 0
+      // 分子使用「当前轮次的上下文窗口占用」(context_tokens)：即本轮喂给模型的输入 token 数，
+      // 与 context_length（上下文窗口上限）对比（已不再统计会话累计总量）。
+      const ctxTokens = u.context_tokens || 0
+      return Math.min(100, Math.round(ctxTokens / u.context_length * 100))
+    },
+    contextColor() {
+      const p = this.contextPercent
+      if (p >= 80) return '#ef4444'
+      if (p >= 50) return '#f59e0b'
+      return '#22c55e'
+    },
+    popupStyle() {
+      const ring = this.$refs.ringRef
+      if (!ring) return {}
+      const rect = ring.getBoundingClientRect()
+      return {
+        position: 'fixed',
+        bottom: `${window.innerHeight - rect.top + 10}px`,
+        right: `${window.innerWidth - rect.right - 8}px`,
+      }
+    },
+  },
+  watch: {
+    shouldCountLive(on) {
+      if (on) this.startLiveDuration()
+      else this.stopLiveDuration()
+    },
+    message(val) {
+      try {
+        sessionStorage.setItem(DRAFT_KEY, val)
+      } catch (e) {
+        // 隐私模式等场景下 sessionStorage 可能不可用，忽略即可
+      }
+    },
+    disabled(val) {
+      if (!val) {
+        const ta = this.$refs.textareaRef
+        if (ta) ta.focus()
+      }
+    },
+  },
+  mounted() {
+    // 联网搜索可用性：公共接口，失败时按不可用处理（按钮置灰）
+    getWebSearchStatus()
+      .then(status => {
+        this.webSearchAvailable = Boolean(status && status.configured)
+        this.webSearchReason = (status && status.reason) || ''
       })
-      
-      // 找到对应的文件项并更新状态
-      const index = uploadedFiles.value.findIndex(f => f.file === file)
-      if (index !== -1) {
-        uploadedFiles.value[index].uploadStatus = 'completed'
-        uploadedFiles.value[index].uploadProgress = 100
-        uploadedFiles.value[index].filePath = response.file_path
-        uploadedFiles.value[index].id = response.id
-        // 强制触发更新
-        uploadedFiles.value = [...uploadedFiles.value]
-      }
-      
-      console.log('文件上传成功:', response)
-    } catch (error) {
-      // 找到对应的文件项并更新状态
-      const index = uploadedFiles.value.findIndex(f => f.file === file)
-      if (index !== -1) {
-        uploadedFiles.value[index].uploadStatus = 'error'
-        // 强制触发更新
-        uploadedFiles.value = [...uploadedFiles.value]
-      }
-      console.error('文件上传失败:', error)
-    }
-  }
-  
-  event.target.value = ''
-}
-
-async function removeFile(index) {
-  const file = uploadedFiles.value[index]
-  
-  // 如果文件已经上传成功，调用后台的删除接口
-  if (file && file.uploadStatus === 'completed' && file.id && props.sessionId) {
+      .catch(() => { this.webSearchAvailable = false; this.webSearchReason = 'unreachable' })
+    // 恢复刷新前的输入草稿
     try {
-      await deleteFile(props.sessionId, file)
-      console.log('文件删除成功:', file.filename)
-    } catch (error) {
-      console.error('文件删除失败:', error)
+      const draft = sessionStorage.getItem(DRAFT_KEY)
+      if (draft) {
+        this.message = draft
+        this.$nextTick(() => this.autoResize())
+      }
+    } catch (e) {
+      // 忽略草稿恢复失败
     }
-  }
-  
-  // 从前端列表中移除文件
-  uploadedFiles.value.splice(index, 1)
-  // 强制触发更新
-  uploadedFiles.value = [...uploadedFiles.value]
+    document.addEventListener('click', this.closeTokenPopup)
+    document.addEventListener('click', this.closeModelDropdown)
+  },
+  beforeDestroy() {
+    document.removeEventListener('click', this.closeTokenPopup)
+    document.removeEventListener('click', this.closeModelDropdown)
+    this.stopLiveDuration()
+  },
+  methods: {
+    async toggleWebSearch() {
+      if (this.isStreaming || this.disabled) return
+      // 页面加载可能早于后端配置完成（状态在 mounted 固化）：
+      // 灰色态点击时先重查一次，配置就绪则本次点击直接点亮（符合点击意图）。
+      if (!this.webSearchAvailable) {
+        try {
+          const status = await getWebSearchStatus()
+          this.webSearchAvailable = Boolean(status && status.configured)
+          this.webSearchReason = (status && status.reason) || ''
+        } catch (_) {
+          /* 查询失败保持不可用 */
+        }
+        if (!this.webSearchAvailable) return
+      }
+      this.webSearchEnabled = !this.webSearchEnabled
+    },
+    updateCaretLine() {
+      const ta = this.$refs.textareaRef
+      if (!ta) return
+      const lh = parseFloat(getComputedStyle(ta).lineHeight)
+      if (!isNaN(lh) && lh > 0) this.lineHeight = lh
+      const pos = ta.selectionStart ?? 0
+      const lineIndex = ta.value.slice(0, pos).split('\n').length - 1
+      this.caretLineTop = lineIndex * this.lineHeight - ta.scrollTop
+    },
+    hideCaretLine() {
+      this.caretLineTop = null
+    },
+    toggleModelDropdown() {
+      if (this.isStreaming || this.disabled) return
+      if (this.showModelDropdown) {
+        this.showModelDropdown = false
+        return
+      }
+      // 计算下拉菜单位置
+      const anchor = this.$refs.modelDropdownRef
+      if (anchor) {
+        const rect = anchor.getBoundingClientRect()
+        this.dropdownStyle = {
+          position: 'fixed',
+          bottom: `${window.innerHeight - rect.top + 6}px`,
+          left: `${rect.left}px`,
+          minWidth: `${Math.max(rect.width, 200)}px`,
+        }
+      }
+      this.showModelDropdown = true
+    },
+    selectModel(name) {
+      this.$emit('update:selectedModel', name)
+      this.showModelDropdown = false
+      console.log(
+        `[${new Date().toISOString()}] [模型选择] 切换为: ${name}`
+      )
+    },
+    closeModelDropdown(event) {
+      const anchor = this.$refs.modelDropdownRef
+      if (this.showModelDropdown && anchor && !anchor.contains(event.target)) {
+        this.showModelDropdown = false
+      }
+    },
+    startLiveDuration() {
+      this.stopLiveDuration()
+      this.liveDuration = 0
+      this.durationTimer = setInterval(() => {
+        this.liveDuration += 1
+      }, 1000)
+    },
+    stopLiveDuration() {
+      if (this.durationTimer) {
+        clearInterval(this.durationTimer)
+        this.durationTimer = null
+      }
+    },
+    toggleTokenPopup() {
+      this.showTokenPopup = !this.showTokenPopup
+    },
+    closeTokenPopup() {
+      if (this.showTokenPopup) {
+        this.showTokenPopup = false
+      }
+    },
+    formatTokens(n) {
+      if (!n) return '0'
+      if (n >= 1000) return (n / 1000).toFixed(1) + 'k'
+      return n.toString()
+    },
+    formatSize(bytes) {
+      if (bytes < 1024) return bytes + ' B'
+      if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
+      return (bytes / (1024 * 1024)).toFixed(1) + ' MB'
+    },
+    async handleFileSelect(event) {
+      const files = Array.from(event.target.files)
+
+      for (const file of files) {
+        // 创建文件项
+        const fileItem = {
+          file: file,
+          filename: file.name,
+          size: file.size,
+          uploadStatus: 'uploading',
+          uploadProgress: 0
+        }
+
+        // 添加到数组
+        this.uploadedFiles.push(fileItem)
+
+        // 强制触发初始渲染
+        this.uploadedFiles = [...this.uploadedFiles]
+
+        try {
+          // 确保会话存在
+          let sessionId = this.sessionId
+          if (!sessionId) {
+            // 通知父组件创建会话
+            const sessionIdPromise = new Promise((resolve) => {
+              // 创建一个临时的监听器来等待会话创建完成
+              const unwatch = this.$watch(
+                () => this.sessionId,
+                (newSessionId) => {
+                  if (newSessionId) {
+                    unwatch()
+                    resolve(newSessionId)
+                  }
+                }
+              )
+              // 触发会话创建
+              this.$emit('create-session')
+            })
+
+            // 等待会话创建完成
+            sessionId = await sessionIdPromise
+
+            if (!sessionId) {
+              throw new Error('会话创建失败')
+            }
+          }
+
+          // 调用实际的上传接口
+          const response = await uploadFile(sessionId, file, (progress) => {
+            // 找到对应的文件项并更新进度
+            const index = this.uploadedFiles.findIndex(f => f.file === file)
+            if (index !== -1) {
+              this.uploadedFiles[index].uploadProgress = progress
+              // 强制触发更新
+              this.uploadedFiles = [...this.uploadedFiles]
+            }
+          })
+
+          // 找到对应的文件项并更新状态
+          const index = this.uploadedFiles.findIndex(f => f.file === file)
+          if (index !== -1) {
+            this.uploadedFiles[index].uploadStatus = 'completed'
+            this.uploadedFiles[index].uploadProgress = 100
+            this.uploadedFiles[index].filePath = response.file_path
+            this.uploadedFiles[index].id = response.id
+            // 强制触发更新
+            this.uploadedFiles = [...this.uploadedFiles]
+          }
+
+          console.log('文件上传成功:', response)
+        } catch (error) {
+          // 找到对应的文件项并更新状态
+          const index = this.uploadedFiles.findIndex(f => f.file === file)
+          if (index !== -1) {
+            this.uploadedFiles[index].uploadStatus = 'error'
+            // 强制触发更新
+            this.uploadedFiles = [...this.uploadedFiles]
+          }
+          console.error('文件上传失败:', error)
+        }
+      }
+
+      event.target.value = ''
+    },
+    async removeFile(index) {
+      const file = this.uploadedFiles[index]
+
+      // 如果文件已经上传成功，调用后台的删除接口
+      if (file && file.uploadStatus === 'completed' && file.id && this.sessionId) {
+        try {
+          await deleteFile(this.sessionId, file)
+          console.log('文件删除成功:', file.filename)
+        } catch (error) {
+          console.error('文件删除失败:', error)
+        }
+      }
+
+      // 从前端列表中移除文件
+      this.uploadedFiles.splice(index, 1)
+      // 强制触发更新
+      this.uploadedFiles = [...this.uploadedFiles]
+    },
+    async send() {
+      if (!this.canSend || this.disabled) return
+
+      // 等待所有文件上传完成
+      const uploadingFiles = this.uploadedFiles.filter(f => f.uploadStatus === 'uploading')
+      if (uploadingFiles.length > 0) {
+        // 显示上传中提示
+        console.log('文件正在上传中，请稍候...')
+        // 可以添加一个loading状态或提示信息
+        return
+      }
+
+      const filesToSend = this.uploadedFiles.map(f => ({
+        id: f.id,
+        filename: f.filename,
+        size: f.size,
+        file: f.file,
+        file_path: f.filePath || null,
+        type: f.file?.type || f.fileType || ''
+      }))
+
+      // 详细日志：记录发送操作、文件上传
+      const ts = new Date().toISOString()
+      console.log(`[${ts}] [发送消息] 内容: "${this.message.substring(0, 100)}" | 文件数: ${filesToSend.length}`)
+      if (filesToSend.length > 0) {
+        console.log(`[${ts}] [文件上传] ${filesToSend.map(f => `${f.filename}(${f.size}B)`).join(', ')}`)
+      }
+
+      this.$emit('send', this.message.trim().replace(/\s+/g, ' '), filesToSend, null, true, this.webSearchEnabled && this.webSearchAvailable)
+
+      this.message = ''
+      this.uploadedFiles = []
+      this.$nextTick(() => this.autoResize())
+    },
+    stop() {
+      this.$emit('stop')
+    },
+    autoResize() {
+      const ta = this.$refs.textareaRef
+      if (ta) {
+        ta.style.height = 'auto'
+        ta.style.height = Math.min(ta.scrollHeight, 150) + 'px'
+      }
+    },
+    onInput() {
+      this.autoResize()
+      this.updateCaretLine()
+      this.$emit('typing')
+    },
+  },
 }
 
 async function send() {
@@ -1970,7 +2243,7 @@ html[data-theme="dark"] .context-ring-wrapper {
 .left-actions {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
 }
 
 .model-dropdown-wrapper {
@@ -1985,43 +2258,21 @@ html[data-theme="dark"] .context-ring-wrapper {
   align-items: center;
   justify-content: center;
   gap: 6px;
-  padding: 0 10px 0 11px;
-  max-width: 220px;
+  padding: 6px 12px;
   height: 36px;
   min-height: 36px;
   border: 1px solid var(--border-color);
   background: var(--bg-secondary);
   border-radius: 10px;
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05);
   cursor: pointer;
-  transition: background 0.22s ease, border-color 0.22s ease, box-shadow 0.22s ease,
-    transform 0.22s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
   white-space: nowrap;
 }
 
-/* 星形图标：给「模型选择」一个视觉锚点，避免三个按钮里只有它是纯文字 */
-.model-btn-icon {
-  width: 14px;
-  height: 14px;
-  flex-shrink: 0;
-  color: var(--accent-color);
-  transition: transform 0.25s ease;
-}
-
 .model-btn:hover:not(.disabled) {
-  border-color: color-mix(in srgb, var(--accent-color) 45%, var(--border-color));
-  background: color-mix(in srgb, var(--accent-color) 8%, var(--bg-secondary));
-  box-shadow: 0 4px 12px color-mix(in srgb, var(--accent-color) 18%, transparent);
+  border-color: rgba(14, 165, 233, 0.4);
+  background: color-mix(in srgb, var(--accent-color) 10%, transparent);
   transform: translateY(-1px);
-}
-
-.model-btn:hover:not(.disabled) .model-btn-icon {
-  transform: rotate(-15deg) scale(1.12);
-}
-
-.model-btn:active:not(.disabled) {
-  transform: translateY(0) scale(0.98);
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05);
 }
 
 .model-btn.disabled {
@@ -2031,28 +2282,25 @@ html[data-theme="dark"] .context-ring-wrapper {
 
 .model-btn-label {
   font-size: 12px;
-  font-weight: 600;
+  font-weight: 500;
   color: var(--text-secondary);
-  transition: color 0.22s ease;
-  min-width: 0;
+  transition: color 0.25s ease;
+  max-width: 140px;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
+
 .model-btn:hover:not(.disabled) .model-btn-label {
-  color: var(--accent-color);
+  color: #0ea5e9;
 }
+
 
 .model-btn-arrow {
   width: 12px;
   height: 12px;
-  flex-shrink: 0;
   color: var(--text-secondary);
-  transition: transform 0.2s ease, color 0.22s ease;
-}
-
-.model-btn:hover:not(.disabled) .model-btn-arrow {
-  color: var(--accent-color);
+  transition: transform 0.2s ease;
 }
 
 .model-btn-arrow.open {
@@ -2696,6 +2944,29 @@ html[data-theme="dark"] .plus-list-tag.custom {
   background: var(--bg-tertiary);
 }
 
+/* 联网搜索按钮：点亮（图标变蓝）= 启用；灰色 = 未启用。
+   启用态不加背景色块，仅图标高亮；未配置时半透明且屏蔽 hover/点击的一切高亮反馈。 */
+.web-search-btn.active {
+  background: transparent;
+}
+.web-search-btn.active svg {
+  color: #0ea5e9;
+}
+.web-search-btn.unavailable {
+  opacity: 0.45;
+  cursor: pointer;
+}
+.web-search-btn.unavailable:hover {
+  background: transparent;
+}
+.web-search-btn.unavailable:hover svg {
+  color: var(--text-secondary);
+}
+.web-search-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
 .action-btn:hover svg {
   color: #0ea5e9;
 }
@@ -2771,10 +3042,16 @@ html[data-theme="dark"] .plus-list-tag.custom {
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
+}
+
+.context-ring-inner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
   transition: transform 0.2s;
 }
 
-.context-ring-wrapper:hover {
+.context-ring-wrapper:hover .context-ring-inner {
   transform: scale(1.1);
 }
 
@@ -2915,10 +3192,8 @@ html[data-theme="dark"] .plus-list-tag.custom {
   border: 1px solid var(--border-color);
   background: var(--bg-secondary);
   border-radius: 10px;
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05);
   cursor: pointer;
-  transition: background 0.22s ease, border-color 0.22s ease, box-shadow 0.22s ease,
-    transform 0.22s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .plus-btn svg,
@@ -2926,7 +3201,7 @@ html[data-theme="dark"] .plus-list-tag.custom {
   width: 18px;
   height: 18px;
   color: var(--text-secondary);
-  transition: color 0.22s ease, transform 0.22s ease;
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .plus-btn:hover:not(.disabled),
@@ -2953,106 +3228,6 @@ html[data-theme="dark"] .plus-list-tag.custom {
 .web-search-btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
-}
-
-/* 开启态：主题强调色填充 + 光晕（浅色蓝 / 深色紫），与「发送」激活态呼应 */
-.web-search-btn.active {
-  border-color: transparent;
-  background: linear-gradient(
-    135deg,
-    color-mix(in srgb, var(--accent-color) 85%, #ffffff),
-    var(--accent-color)
-  );
-  box-shadow: 0 2px 10px color-mix(in srgb, var(--accent-color) 35%, transparent);
-}
-
-.web-search-btn.active svg {
-  color: #ffffff;
-  transform: none;
-}
-
-/* 开启态 hover 仍保持实心填充，避免被上面的通用 hover 规则洗成半透明 */
-.web-search-btn.active:hover:not(:disabled) {
-  border-color: transparent;
-  background: linear-gradient(
-    135deg,
-    color-mix(in srgb, var(--accent-color) 92%, #ffffff),
-    var(--accent-color)
-  );
-  box-shadow: 0 4px 14px color-mix(in srgb, var(--accent-color) 45%, transparent);
-}
-
-/* ── 当前专家胶囊：与左侧工具按钮同排同高，
-   浅强调底 +「专家」徽标 + 名称 + 退出×（样式参照设计稿）── */
-.expert-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  height: 36px;
-  padding: 0 8px 0 6px;
-  max-width: 220px;
-  border: 1px solid color-mix(in srgb, var(--accent-color) 35%, transparent);
-  border-radius: 10px;
-  background: color-mix(in srgb, var(--accent-color) 12%, var(--bg-secondary));
-  flex-shrink: 0;
-}
-
-.expert-chip-badge {
-  flex-shrink: 0;
-  padding: 2px 6px;
-  border-radius: 6px;
-  background: var(--accent-color);
-  color: #fff;
-  font-size: 10px;
-  font-weight: 600;
-  line-height: 1.4;
-}
-
-.expert-chip-name {
-  min-width: 0;
-  font-size: 12px;
-  font-weight: 600;
-  color: color-mix(in srgb, var(--accent-color) 70%, var(--text-primary));
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.expert-chip-clear {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 16px;
-  height: 16px;
-  flex-shrink: 0;
-  padding: 0;
-  border: none;
-  border-radius: 50%;
-  background: transparent;
-  color: color-mix(in srgb, var(--accent-color) 70%, var(--text-primary));
-  cursor: pointer;
-  opacity: 0.7;
-  transition: opacity 0.2s ease, background 0.2s ease;
-}
-
-.expert-chip-clear:hover:not(:disabled) {
-  opacity: 1;
-  background: color-mix(in srgb, var(--accent-color) 22%, transparent);
-}
-
-.expert-chip-clear:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-
-.expert-chip-clear:focus-visible {
-  outline: 2px solid var(--accent-color);
-  outline-offset: 1px;
-}
-
-.expert-chip-clear svg {
-  width: 10px;
-  height: 10px;
 }
 
 .copy-btn {

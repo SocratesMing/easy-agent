@@ -58,8 +58,10 @@ export function toolCard(toolName, args, result, success = true) {
       }
     case 'write_file': {
       const path = a.file_path || a.path || ''
+      // 标题直接「动作 + 完整路径」，不再「动作 + 文件名」配一行路径 meta，
+      // 避免同一个文件名与路径在头部重复出现。
       return {
-        card: 'diff', kind: 'edit', title: `写入 ${baseName(path)}`, meta: short(path, 60),
+        card: 'diff', kind: 'edit', title: `写入 ${short(path, 64)}`, meta: '',
         error: success === false,
         diffs: [{ path, lines: String(a.content ?? '').split('\n').map(t => ({ type: 'add', text: t })) }],
       }
@@ -70,7 +72,7 @@ export function toolCard(toolName, args, result, success = true) {
       for (const t of String(a.old_string ?? '').split('\n')) lines.push({ type: 'del', text: t })
       for (const t of String(a.new_string ?? '').split('\n')) lines.push({ type: 'add', text: t })
       return {
-        card: 'diff', kind: 'edit', title: `编辑 ${baseName(path)}`, meta: short(path, 60),
+        card: 'diff', kind: 'edit', title: `编辑 ${short(path, 64)}`, meta: '',
         error: success === false,
         diffs: [{ path, lines }],
       }

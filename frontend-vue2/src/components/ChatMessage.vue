@@ -1,6 +1,10 @@
 <template>
   <div class="message" :class="[message.role]">
-    <div class="message-content">
+    <!-- 助手头像（左侧） -->
+    <div v-if="message.role === 'assistant'" class="message-avatar assistant-avatar">
+      <EasyLogo :size="32" />
+    </div>
+    <div class="message-content" @click="handleContentClick">
       <!-- AI 侧边栏发起的消息：展示随消息附带的页面上下文 -->
       <div
         v-if="message.role === 'user' && message.page_context"
@@ -92,6 +96,7 @@
                 :duration="block.duration"
                 :pending-approval="!!block.pending_approval"
                 :file-paths="block.file_paths || []"
+                :streaming="!!block.streaming"
                 @approve="$emit('approve')"
                 @reject="$emit('reject')"
               />
@@ -168,6 +173,8 @@
         </div>
       </template>
       
+      <KnowledgeEvidence v-if="message.role === 'assistant'" ref="knowledgeEvidence" :evidence="message.knowledge_evidence || []" :warnings="message.knowledge_warnings || []" :content="citationSourceText" />
+
       <!-- 用户消息显示复制和重试按钮 -->
       <div v-if="message.role === 'user' && message.content" class="message-actions">
         <button class="action-btn retry-btn" @click="retryMessage" title="重新发送">
@@ -185,6 +192,13 @@
         </button>
       </div>
     </div>
+    <!-- 用户头像（右侧） -->
+    <div v-if="message.role === 'user'" class="message-avatar user-avatar">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+        <circle cx="12" cy="7" r="4"></circle>
+      </svg>
+    </div>
   </div>
 </template>
 
@@ -200,6 +214,8 @@ import {
   escapeHtml,
 } from '../markdownSetup.js'
 import FileIcon from './FileIcon.vue'
+import EasyLogo from './EasyLogo.vue'
+import KnowledgeEvidence from '../features/knowledge/KnowledgeEvidence.vue'
 import ToolCallCard from './ToolCallCard.vue'
 import { pageContextLabel } from '../utils/pageContext.js'
 
@@ -226,6 +242,22 @@ function isProcessType(b) {
   return (
     b.type === 'thinking' ||
     (b.type === 'tool_call' && b.tool_name !== 'write_todos')
+  )
+}
+
+// 将回答中的 [知识依据N] / [知识库依据N] 标记转为可点击锚点，
+// 点击后由 handleContentClick 委托处理，展开证据面板并滚动到对应依据卡片。
+// citeMap：原始依据编号 → 展示编号（面板仅展示被引用依据并按引用顺序重新编号，
+// 正文锚点同步改写，保证正文标记与面板卡片编号一致）。
+function linkKnowledgeCitations(content, citeMap) {
+  if (typeof content !== 'string') return content
+  const map = citeMap || {}
+  return content.replace(
+    /\[知识(?:库)?依据\s*(\d+)\]/g,
+    (match, num) => {
+      const display = map[num] || Number(num)
+      return `<a class="ke-cite" data-cite="${display}">[知识依据${display}]</a>`
+    }
   )
 }
 
@@ -282,7 +314,7 @@ const renderer = createMarkdownRenderer({ highlight: highlightCode })
 installCodeCopyHandler()
 
 export default {
-  components: { FileIcon, ToolCallCard },
+  components: { FileIcon, ToolCallCard, KnowledgeEvidence, EasyLogo },
   props: {
     message: {
       type: Object,
@@ -297,8 +329,9 @@ export default {
       // 处理过程默认展开（含实时会话），由用户手动展开/折叠；新过程到达不自动展开，
       // 避免打断用户已收起的查看状态。
       processExpanded: true,
-      // 用户手动操作过展开/折叠后，本次消息内不再自动展开：流式期间 blocks 每次变化
-      // 都会触发下面的 watch，否则点击折叠会被自动展开顶回去（点击折叠无效）。
+      // 用户是否手动操作过执行过程的展开/折叠：一旦手动操作，本次消息内不再自动展开。
+      // 必须加这道闸——流式期间 blocks 每次变化都会触发自动展开 watcher，否则用户
+      // 点折叠会被「自动展开」立刻顶回去，表现为「流式返回时点击折叠按钮无效」。
       processToggledByUser: false,
       isStuck: false,
     }
@@ -315,6 +348,33 @@ export default {
       if (m.content) return true
       if (m.tool_calls && m.tool_calls.length > 0) return true
       return false
+    },
+    // 供证据面板解析实际引用的完整正文（兼容 content 直存与 blocks 分块两种消息形态）
+    citationSourceText() {
+      const blocks = Array.isArray(this.message.blocks) ? this.message.blocks : []
+      const blockText = blocks
+        .filter(block => block && block.type === 'content')
+        .map(block => block.content || '')
+        .join('\n')
+      return `${this.message.content || ''}\n${blockText}`
+    },
+    // 引用编号重排映射：按正文出现顺序把原始依据编号映射为 1..N 连续编号，
+    // 与 KnowledgeEvidence 的展示编号规则保持一致（仅重排有效引用编号）
+    citeNumberMap() {
+      const evidenceCount = (this.message.knowledge_evidence || []).length
+      if (!evidenceCount) return {}
+      const pattern = /\[知识(?:库)?依据\s*(\d+)\]/g
+      const seen = []
+      let match
+      while ((match = pattern.exec(this.citationSourceText || '')) !== null) {
+        const value = Number(match[1])
+        if (value > 0 && value <= evidenceCount && seen.indexOf(value) === -1) {
+          seen.push(value)
+        }
+      }
+      const map = {}
+      seen.forEach((value, i) => { map[value] = i + 1 })
+      return map
     },
     sortedBlocks() {
       // 从 blocks 字段构建（优先使用）
@@ -578,7 +638,19 @@ export default {
     },
     renderMarkdown(content) {
       if (!content) return ''
-      return renderMarkdownHtml(content, renderer)
+      return renderMarkdownHtml(linkKnowledgeCitations(content, this.citeNumberMap), renderer)
+    },
+    // 事件委托：点击正文里的 [知识依据N] 锚点 → 展开证据面板并定位到第 N 条依据
+    handleContentClick(event) {
+      const target = event.target
+      if (!target || typeof target.closest !== 'function') return
+      const link = target.closest('a.ke-cite')
+      if (!link) return
+      event.preventDefault()
+      const evidence = this.$refs.knowledgeEvidence
+      if (evidence && typeof evidence.jumpTo === 'function') {
+        evidence.jumpTo(Number(link.dataset.cite) || 0)
+      }
     },
     formatJson(obj) {
       try {
@@ -852,6 +924,36 @@ html[data-theme="dark"] .process-body .process-inline-content {
   width: 100%;
 }
 
+/* 消息头像 */
+.message-avatar {
+  flex-shrink: 0;
+  align-self: flex-start;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 2px;
+  user-select: none;
+}
+
+.message.assistant .message-avatar.assistant-avatar {
+  background: transparent;
+}
+
+.message.user .message-avatar.user-avatar {
+  background: linear-gradient(135deg, #60a5fa, #3b82f6);
+  color: #fff;
+  box-shadow: 0 1px 3px rgba(59, 130, 246, 0.3);
+}
+
+.message.user .message-avatar.user-avatar svg {
+  width: 18px;
+  height: 18px;
+}
+
+/* AI 侧边栏消息的页面上下文胶囊 */
 .page-context-chip {
   display: inline-flex;
   align-items: center;
@@ -1702,6 +1804,19 @@ html[data-theme="dark"] .approval-badge.status-rejected {
 }
 
 /* GitHub 风格 emoji 短代码渲染后的 unicode 字符 */
+/* 知识依据锚点：[知识依据N] 渲染为可点击链接，点击跳转证据面板对应卡片 */
+.message-text ::v-deep a.ke-cite {
+  color: #2563eb;
+  text-decoration: underline;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.message-text ::v-deep a.ke-cite:hover {
+  color: #1d4ed8;
+  background: #eff6ff;
+}
+
 .message-text ::v-deep .github-emoji {
   display: inline;
   vertical-align: -0.125em;

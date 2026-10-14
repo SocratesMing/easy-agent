@@ -1,103 +1,57 @@
-import { API_BASE_URL } from '../config.js'
+import request, {
+  AUTH_EXPIRED_EVENT,
+  USER_ACTIVITY_EVENT,
+  clearAuth,
+  dispatchAuthExpired,
+  dispatchUserActivity,
+  getAuthHeaders,
+  getStoredToken,
+  getStoredUsername,
+  requestRaw,
+  storeAuth,
+} from '../utils/request.js'
 
-const TOKEN_KEY = 'mini_agent_token'
-const USERNAME_KEY = 'mini_agent_username'
-
-export const AUTH_EXPIRED_EVENT = 'auth-expired'
-// 用户活动事件：后端交互（API 调用/流式数据）时派发，前端据此重置空闲自动登出计时器
-export const USER_ACTIVITY_EVENT = 'user-activity'
-
-export function dispatchUserActivity() {
-  window.dispatchEvent(new CustomEvent(USER_ACTIVITY_EVENT))
-}
-
-export function dispatchAuthExpired() {
-  window.dispatchEvent(new CustomEvent(AUTH_EXPIRED_EVENT))
+export {
+  AUTH_EXPIRED_EVENT,
+  USER_ACTIVITY_EVENT,
+  clearAuth,
+  dispatchAuthExpired,
+  dispatchUserActivity,
+  getAuthHeaders,
+  getStoredToken,
+  getStoredUsername,
+  storeAuth,
 }
 
 export async function authFetch(url, options = {}) {
-  // 任何后端 API 调用都视为用户活动，重置空闲登出计时器
-  dispatchUserActivity()
-  const token = getStoredToken()
-  const headers = {
-    ...options.headers,
-  }
-  if (token) {
-    headers['Authorization'] = `Bearer ${token}`
-  }
-
-  const response = await fetch(url, {
-    ...options,
-    headers,
+  const response = await requestRaw({
+    url,
+    method: options.method || 'get',
+    headers: options.headers,
+    data: options.body,
+    signal: options.signal,
   })
 
-  if (response.status === 401) {
-    // 识别"被踢下线"场景（账号在其他设备/IP 登录），设置标记供登录页提示用户
-    let detail = ''
-    try {
-      const errBody = await response.clone().json()
-      detail = (errBody && errBody.detail) || ''
-    } catch (_) { /* ignore */ }
-    // 打印原因，便于区分：空闲超时 / 被顶下线 / token 失效
-    console.warn('[auth] 401 未授权，判定登出 | 接口:', url, '| 原因:', detail || '(无 detail)')
-    if (detail && /其他设备|被迫下线/.test(detail)) {
-      localStorage.setItem('auth_kicked', '1')
-    }
-    clearAuth()
-    dispatchAuthExpired()
-    throw new Error('登录已过期，请重新登录')
+  return {
+    ok: response.status >= 200 && response.status < 300,
+    status: response.status,
+    json: async () => response.data,
+    text: async () => String(response.data),
+    blob: async () => response.data,
   }
-
-  return response
-}
-
-export function getStoredToken() {
-  return localStorage.getItem(TOKEN_KEY)
-}
-
-export function getStoredUsername() {
-  return localStorage.getItem(USERNAME_KEY)
-}
-
-export function storeAuth(token, username) {
-  localStorage.setItem(TOKEN_KEY, token)
-  localStorage.setItem(USERNAME_KEY, username)
-}
-
-export function clearAuth() {
-  localStorage.removeItem(TOKEN_KEY)
-  localStorage.removeItem(USERNAME_KEY)
-}
-
-export function getAuthHeaders() {
-  const token = getStoredToken()
-  if (token) {
-    return {
-      'Authorization': `Bearer ${token}`
-    }
-  }
-  return {}
 }
 
 // 登录：username 字段既接受用户名，也接受工号（后端按「用户名或工号」定位用户），
-// 两种情况都必须校验密码。走 URL 免密直登请用 passwordlessLogin。
+// 两种情况都必须校验密码。免密登录请用 passwordlessLogin。
 export async function login(username, password) {
-  const response = await fetch(`${API_BASE_URL}/agent/auth/login`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json'
+  const data = await request(
+    {
+      url: '/agent/auth/login',
+      method: 'post',
+      data: { username, password },
     },
-    body: JSON.stringify({ username, password })
-  })
-
-  if (!response.ok) {
-    const error = await response.json()
-    const err = new Error(error.detail || '登录失败')
-    err.status = response.status
-    throw err
-  }
-
-  const data = await response.json()
+    '登录失败'
+  )
   storeAuth(data.access_token, data.username)
   return data
 }
@@ -105,46 +59,32 @@ export async function login(username, password) {
 // 免密登录：用户名已存在直接登录；不存在则自动注册后登录。
 // userId 为 0/空时由后端为新用户自动生成唯一 user_id。
 export async function passwordlessLogin(username, userId = '0') {
-  const response = await fetch(`${API_BASE_URL}/agent/auth/login-passwordless`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json'
+  const data = await request(
+    {
+      url: '/agent/auth/login-passwordless',
+      method: 'post',
+      data: { username, user_id: userId },
     },
-    body: JSON.stringify({ username, user_id: userId })
-  })
-
-  if (!response.ok) {
-    const error = await response.json().catch(() => null)
-    const err = new Error((error && error.detail) || '免密登录失败')
-    err.status = response.status
-    throw err
-  }
-
-  const data = await response.json()
+    '免密登录失败'
+  )
   storeAuth(data.access_token, data.username)
   return data
 }
 
 // 注册：仅需用户名 + 密码 + 工号（工号必填且全局唯一，注册后不可更改）
 export async function register(username, password, employeeId = '') {
-  const response = await fetch(`${API_BASE_URL}/agent/auth/register`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json'
+  const data = await request(
+    {
+      url: '/agent/auth/register',
+      method: 'post',
+      data: {
+        username,
+        password,
+        employee_id: employeeId,
+      },
     },
-    body: JSON.stringify({
-      username,
-      password,
-      employee_id: employeeId
-    })
-  })
-
-  if (!response.ok) {
-    const error = await response.json()
-    throw new Error(error.detail || '注册失败')
-  }
-
-  const data = await response.json()
+    '注册失败'
+  )
   storeAuth(data.access_token, data.username)
   return data
 }
@@ -155,70 +95,58 @@ export async function logout() {
 
 export async function notifyLogout() {
   try {
-    await authFetch(`${API_BASE_URL}/agent/auth/logout`, { method: 'POST' })
-  } catch (e) {
-    // best-effort：登出通知失败不影响前端登出流程
+    await request({ url: '/agent/auth/logout', method: 'post' })
+  } catch (error) {
+    // Best-effort logout notification.
   }
 }
 
 export async function unregister() {
-  const response = await authFetch(`${API_BASE_URL}/agent/auth/unregister`, {
-    method: 'DELETE'
-  })
-
-  if (!response.ok) {
-    const error = await response.json()
-    throw new Error(error.detail || '注销失败')
-  }
-
+  const data = await request(
+    { url: '/agent/auth/unregister', method: 'delete' },
+    '注销失败'
+  )
   clearAuth()
-  return await response.json()
+  return data
 }
 
 export async function listUsers() {
-  const response = await authFetch(`${API_BASE_URL}/agent/auth/admin/users`)
-
-  if (!response.ok) {
-    const error = await response.json()
-    throw new Error(error.detail || '获取用户列表失败')
-  }
-
-  return await response.json()
+  return request(
+    { url: '/agent/auth/admin/users', method: 'get' },
+    '获取用户列表失败'
+  )
 }
 
 export async function resetUserPassword(username) {
-  const response = await authFetch(
-    `${API_BASE_URL}/agent/auth/admin/users/${encodeURIComponent(username)}/reset-password`,
-    { method: 'POST' }
+  return request(
+    {
+      url: `/agent/auth/admin/users/${encodeURIComponent(username)}/reset-password`,
+      method: 'post',
+    },
+    '密码重置失败'
   )
+}
 
-  if (!response.ok) {
-    const error = await response.json()
-    throw new Error(error.detail || '密码重置失败')
-  }
-
-  return await response.json()
+export async function getAuthConfig() {
+  return request({ url: '/agent/auth/config', method: 'get' })
 }
 
 export async function getCurrentUser() {
   const username = getStoredUsername()
-  if (!username) {
-    return null
-  }
+  if (!username) return null
 
-  const response = await fetch(`${API_BASE_URL}/agent/auth/me?username=${encodeURIComponent(username)}`, {
-    headers: {
-      ...getAuthHeaders()
-    }
-  })
-
-  if (!response.ok) {
-    if (response.status === 404) {
+  try {
+    return await request({
+      url: '/agent/auth/me',
+      method: 'get',
+      params: { username },
+    })
+  } catch (error) {
+    if (error.response && error.response.status === 404) {
       clearAuth()
       return null
     }
-    throw new Error('获取用户信息失败')
+    error.message = '获取用户信息失败'
+    throw error
   }
-
-  return await response.json()
 }
