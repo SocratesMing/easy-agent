@@ -91,7 +91,7 @@
               class="action-btn plus-btn"
               :class="{ disabled: isStreaming || disabled }"
               :disabled="isStreaming || disabled"
-              v-tip="'添加文件 · 专家 · 技能 · 连接器'"
+              v-tip="'添加文件 · 知识库 · 专家 · 技能 · 连接器'"
               aria-haspopup="menu"
               :aria-expanded="showPlusMenu ? 'true' : 'false'"
               @click="togglePlusMenu"
@@ -110,6 +110,16 @@
                     <line x1="9" y1="15" x2="15" y2="15"></line>
                   </svg>
                   <span class="plus-menu-label">添加文件</span>
+                  <svg class="plus-menu-arrow" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="9 18 15 12 9 6"></polyline>
+                  </svg>
+                </button>
+                <button type="button" class="plus-menu-item" @mouseenter="cancelPlusClose" @click="openKnowledgeScope">
+                  <svg class="plus-menu-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path>
+                    <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path>
+                  </svg>
+                  <span class="plus-menu-label">知识库</span>
                   <svg class="plus-menu-arrow" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                     <polyline points="9 18 15 12 9 6"></polyline>
                   </svg>
@@ -176,6 +186,15 @@
             </div>
             </div>
           </div>
+          <!-- 知识库引用：仅由加号菜单「知识库」入口打开（常驻触发按钮隐藏），面板定位锚到加号按钮 -->
+          <KnowledgeScopeSelector
+            ref="knowledgeScope"
+            :session-id="sessionId || ''"
+            :disabled="isStreaming || disabled"
+            hide-trigger
+            anchor-selector=".plus-btn"
+            @create-session="$emit('create-session')"
+          />
           <input
             ref="fileInputRef"
             type="file"
@@ -373,6 +392,7 @@ import { buildSkillPayload, parseSlashQuery } from '../utils/skillSlash.js'
 import { getConnectors } from '../api/connectors.js'
 import FileIcon from './FileIcon.vue'
 import SkillIcon from './SkillIcon.vue'
+import KnowledgeScopeSelector from '../features/knowledge/KnowledgeScopeSelector.vue'
 
 // 输入草稿持久化：页面刷新后恢复用户尚未发送的输入内容（“输入框的状态不变”）
 const DRAFT_KEY = 'easy_agent_input_draft'
@@ -381,7 +401,7 @@ const DRAFT_KEY = 'easy_agent_input_draft'
 const PENDING_SKILL_KEY = 'easy_agent_pending_skill'
 
 export default {
-  components: { FileIcon, SkillIcon },
+  components: { FileIcon, SkillIcon, KnowledgeScopeSelector },
   props: {
     disabled: {
       type: Boolean,
@@ -558,6 +578,13 @@ export default {
     shouldCountLive(on) {
       if (on) this.startLiveDuration()
       else this.stopLiveDuration()
+    },
+    // 会话切换/新建时清空已添加文件：文件属于原会话，不得残留到新会话。
+    // 注意 oldVal 为 null（新对话加文件时触发的建会话）不清，否则会清掉刚选的文件。
+    sessionId(newVal, oldVal) {
+      if (oldVal && newVal !== oldVal) {
+        this.uploadedFiles = []
+      }
     },
     message(val) {
       try {
@@ -811,6 +838,14 @@ export default {
       this.showPlusMenu = false
       this.subpanelCategory = null
       this.$emit('open-panel', tab)
+    },
+    // 加号菜单「知识库」：关闭菜单并打开知识范围选择器（勾选即生效）
+    openKnowledgeScope() {
+      this.showPlusMenu = false
+      this.subpanelCategory = null
+      this.$nextTick(() => {
+        if (this.$refs.knowledgeScope) this.$refs.knowledgeScope.togglePopover()
+      })
     },
     // 供父组件把预置问题完整文本填进输入框（卡片上最多显示 3 行，长问题展示不全）
     setMessage(text) {
@@ -1240,6 +1275,10 @@ export default {
   padding: 12px 16px;
   background: var(--bg-secondary);
   border-bottom: 1px solid var(--border-color);
+  /* 最多显示三行文件块（60px×3 + gap 12px×2），超出滚动查看 */
+  max-height: 204px;
+  overflow-y: auto;
+  box-sizing: border-box;
 }
 
 /* ── 已选技能标签（只显示图标 + 名称，发送时还原为 /技能名） ── */

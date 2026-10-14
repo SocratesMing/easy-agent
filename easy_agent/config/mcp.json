@@ -25,6 +25,33 @@
           "MYSQL_DATABASE": "agent"
         }
       }
+    },
+    {
+      "id": "jmfx-analysis",
+      "name": "金融市场经营分析",
+      "description": "金融市场部经营数据查询（stdio，本机部署）：团队/组合损益排名、营收与非息收入对比、经营指标、负债规模构成等，返回文字结论+表格+图表。需本机已部署 MySQL jmfx_analysis 库与 mcp/jmfx_mcp_server.py；连接信息默认本机，安装时可留空，修改后可在连接器详情中编辑",
+      "icon": "chart-line",
+      "fields": [
+        { "key": "env.JM_A_HOST", "label": "主机地址", "placeholder": "127.0.0.1", "required": false },
+        { "key": "env.JM_A_PORT", "label": "端口", "placeholder": "3306", "required": false },
+        { "key": "env.JM_A_USER", "label": "用户名", "placeholder": "jmfx_ro", "required": false },
+        { "key": "env.JM_A_PASSWORD", "label": "密码", "placeholder": "Jmfx_RO@2026", "required": false },
+        { "key": "env.JM_A_DB", "label": "数据库名", "placeholder": "jmfx_analysis", "required": false }
+      ],
+      "config": {
+        "type": "stdio",
+        "command": "E:\\zx1\\easy-agent\\.venv\\Scripts\\python.exe",
+        "args": ["E:\\zx1\\easy-agent\\mcp\\jmfx_mcp_server.py"],
+        "env": {
+          "PYTHONUTF8": "1",
+          "PYTHONIOENCODING": "utf-8",
+          "JM_A_HOST": "127.0.0.1",
+          "JM_A_PORT": "3306",
+          "JM_A_USER": "jmfx_ro",
+          "JM_A_PASSWORD": "Jmfx_RO@2026",
+          "JM_A_DB": "jmfx_analysis"
+        }
+      }
     }
   ]
 }

@@ -1,5 +1,5 @@
 <template>
-  <div v-if="enabled" ref="rootRef" class="scope-selector">
+  <div v-if="enabled" ref="rootRef" class="scope-selector" :class="{ 'trigger-hidden': hideTrigger }">
     <button class="scope-trigger" :class="{ active: selected.length }" :aria-expanded="open" :disabled="disabled || creatingSession" @click.stop="togglePopover">
       <IconLibrary />
       <span>{{ creatingSession ? '正在准备会话…' : triggerLabel }}</span>
@@ -54,6 +54,10 @@ export default {
   props: {
     sessionId: { type: String, default: '' },
     disabled: { type: Boolean, default: false },
+    // 隐藏常驻触发按钮（入口由宿主提供，如加号菜单）
+    hideTrigger: { type: Boolean, default: false },
+    // 触发按钮隐藏后的面板定位锚点（CSS 选择器，如 ".plus-btn"）
+    anchorSelector: { type: String, default: '' },
   },
   emits: ['create-session', 'change'],
   setup(props, { emit }) {
@@ -121,7 +125,8 @@ function togglePopover() {
 
 function updatePanelPosition() {
   if (!rootRef.value) return
-  const rect = rootRef.value.getBoundingClientRect()
+  const anchor = (props.anchorSelector && document.querySelector(props.anchorSelector)) || rootRef.value
+  const rect = anchor.getBoundingClientRect()
   const viewportPadding = 12
   const panelWidth = Math.min(360, window.innerWidth - viewportPadding * 2)
   const left = Math.min(
@@ -222,6 +227,7 @@ onUnmounted(() => {
 
 /* Match the native EasyAgent composer instead of using a standalone green theme. */
 .scope-selector{position:relative;right:auto;top:auto;z-index:50;font-family:inherit;display:inline-flex;min-width:0}
+.scope-selector.trigger-hidden .scope-trigger{display:none}
 .scope-trigger{height:36px;max-width:230px;border-color:var(--border-color);background:var(--bg-secondary);border-radius:10px;padding:0 10px;color:var(--text-secondary);font-size:12px;box-shadow:none}
 .scope-trigger>span{max-width:165px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .scope-trigger:hover:not(:disabled){border-color:color-mix(in srgb,var(--accent-color) 40%,var(--border-color));background:color-mix(in srgb,var(--accent-color) 10%,transparent);transform:translateY(-1px)}
