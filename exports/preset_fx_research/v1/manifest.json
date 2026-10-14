@@ -1,0 +1,10 @@
+{
+  "expert_agent_id": "preset_fx_research",
+  "name_cn": "外汇研究员",
+  "name_en": "fx-research-analyst",
+  "version": 1,
+  "prompt_file": "fx-research-analyst.md",
+  "generated_at": "2026-10-14T10:35:00",
+  "model": "preset",
+  "raw_llm_output": null
+}

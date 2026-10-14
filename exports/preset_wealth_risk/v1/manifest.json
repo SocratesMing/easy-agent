@@ -1,0 +1,10 @@
+{
+  "expert_agent_id": "preset_wealth_risk",
+  "name_cn": "个人财富风险管理研究员",
+  "name_en": "wealth-risk-researcher",
+  "version": 1,
+  "prompt_file": "wealth-risk-researcher.md",
+  "generated_at": "2026-10-14T10:35:00",
+  "model": "preset",
+  "raw_llm_output": null
+}
