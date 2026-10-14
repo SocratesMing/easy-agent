@@ -63,7 +63,7 @@ npm install @easy-agent/ai-sidebar
 cd frontend-vue2 && npm run build:sdk
 
 # ③ 把 dist-sdk/ 整个目录放到静态服务器 / CDN，例如：
-#    https://cdn.example.com/easy-agent-sidebar/1.0.0/easy-agent-sidebar.umd.min.js
+#    https://cdn.example.com/easy-agent-sidebar/1.0.1/easy-agent-sidebar.umd.min.js
 ```
 
 ---
@@ -73,7 +73,7 @@ cd frontend-vue2 && npm run build:sdk
 在宿主页面 `</body>` 之前加入：
 
 ```html
-<script src="https://cdn.example.com/easy-agent-sidebar/1.0.0/easy-agent-sidebar.umd.min.js"></script>
+<script src="https://cdn.example.com/easy-agent-sidebar/1.0.1/easy-agent-sidebar.umd.min.js"></script>
 <script>
   const sidebar = EasyAgentSidebar.init({
     // Easy Agent 后端地址
@@ -553,7 +553,7 @@ EasyAgentSidebar.init({
 不能。SDK 为单例，重复调用 `init()` 会返回已有实例；需要重建时先 `destroy()`。
 
 **Q：数学公式显示为普通字体？**
-通过打包器引入时 SDK 无法推断字体位置。把 `dist-sdk/fonts/` 部署到静态服务器，并设置 `assetsBaseURL: 'https://cdn.example.com/easy-agent-sidebar/1.0.0/'`。
+通过打包器引入时 SDK 无法推断字体位置。把 `dist-sdk/fonts/` 部署到静态服务器，并设置 `assetsBaseURL: 'https://cdn.example.com/easy-agent-sidebar/1.0.1/'`。
 
 **Q：固定模式下宿主顶栏没有让出空间？**
 `position: fixed; right: 0` 的元素不受 `body` 的 `margin-right` 影响，参照第 9.5 节自行处理。
@@ -596,3 +596,23 @@ npm publish --registry https://npm.example.com/
 - 构建后把抽取出的 CSS 以字符串回填进 JS（SDK 运行时注入影子根），因此产物是单文件；
 - SDK 构建中 `highlight.js` 使用官方常用语言子集 `highlight.js/lib/common`，主站不受影响；
 - 主站 `App.vue` 支持 `?session=<会话ID>` 打开指定会话，供「在主站打开」使用。
+
+### Node 14 兼容
+
+SDK 的构建与使用都支持 Node 14（`sdk/package.json` 中 `engines.node` 为 `>=14`）：
+
+```bash
+# 用 Node 14 构建（nvm 示例）
+nvm use 14
+cd frontend-vue2 && npm run build:sdk
+```
+
+| 方面 | 处理方式 |
+| --- | --- |
+| 构建脚本 | `scripts/build-sdk.mjs` 不使用 `import.meta.dirname`（Node 20.11+）与 `node:` 前缀导入 |
+| 文件图标 | `unplugin-icons` 23 与 `@iconify/utils` 为纯 ESM，Node 14 无法加载；SDK 构建改用 `scripts/iconify-raw-webpack.cjs`，从 `@iconify/json` 生成与原来一致的 SVG 字符串（主站构建不变） |
+| 产物语法 | 依赖全部经 Babel 转译（`transpileDependencies: true`），目标 Chrome 64 / Edge 79 / Firefox 67 / Safari 12，terser 压缩限制为 `ecma: 2018`，产物不含 `?.`、`??` 等 ES2020 语法 |
+
+因此 Node 14 时代的宿主工程（webpack 4 / vue-cli 4，其解析器 acorn 6 最高只识别 ES2019）可以直接 `import EasyAgentSidebar from '@easy-agent/ai-sidebar'` 打包，无需为 SDK 额外配置 Babel。
+
+> 主站（`npm run dev` / `npm run build`）仍需 Node 20：`scripts/run-vite.mjs`、`unplugin-icons` 等依赖要求较新的 Node。
