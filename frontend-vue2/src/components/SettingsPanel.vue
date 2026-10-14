@@ -120,10 +120,19 @@ import {
   updateMemory,
   getSystemPrompt,
 } from '../api/settings.js'
-import { marked } from 'marked'
-import { setupMarkedExtensions } from '../markdownSetup.js'
+import {
+  createMarkdownRenderer,
+  renderMarkdown as renderMarkdownHtml,
+  installCodeCopyHandler,
+  escapeHtml,
+  setupMarkedExtensions,
+} from '../markdownSetup.js'
 
 setupMarkedExtensions()
+
+const renderer = createMarkdownRenderer({ highlight: (code) => `<pre class="hljs"><code>${escapeHtml(code || "")}</code></pre>` })
+
+installCodeCopyHandler()
 
 export default {
   data() {
@@ -163,7 +172,7 @@ export default {
         return '<p class="memory-empty">暂无记忆内容，点击右上角「编辑」添加</p>'
       }
       try {
-        return marked.parse(raw, { breaks: true, gfm: true })
+        return renderMarkdownHtml(raw, renderer)
       } catch (e) {
         console.error('记忆 Markdown 渲染失败:', e)
         return `<pre>${this.escapeHtml(raw)}</pre>`
@@ -176,7 +185,7 @@ export default {
         return '<p class="memory-empty">暂无系统提示词</p>'
       }
       try {
-        return marked.parse(raw, { breaks: true, gfm: true })
+        return renderMarkdownHtml(raw, renderer)
       } catch (e) {
         console.error('系统提示词 Markdown 渲染失败:', e)
         return `<pre>${this.escapeHtml(raw)}</pre>`

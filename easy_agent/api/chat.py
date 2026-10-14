@@ -23,6 +23,7 @@ from ..knowledge_impl import (
 from ..services import (
     resume_stream_generator,
     get_or_create_agent_for_session,
+    get_session_expert,
     remove_session_agent,
     register_stream_task,
     unregister_stream_task,
@@ -387,6 +388,16 @@ async def chat_stream(
             parsed_content = "\n\n".join(file_contents) + "\n\n" + request.message
     system_prompt_extra = "\n\n".join(system_prompt_parts)
 
+    page_context = (request.page_context or "").strip()
+    if page_context:
+        parsed_content = (
+            "<page_context>\n"
+            "以下是用户发起提问时所在页面的上下文，仅供参考；与问题无关时忽略。\n"
+            f"{page_context}\n"
+            "</page_context>\n\n"
+            + parsed_content
+        )
+
     user_message = {
         "role": "user",
         "content": request.message,
@@ -394,6 +405,8 @@ async def chat_stream(
     }
     if request.files:
         user_message["files"] = request.files
+    if page_context:
+        user_message["page_context"] = page_context
     db.add_message(session_id, user_message)
     db.add_message_row(session_id, user_message)
 
@@ -498,8 +511,19 @@ async def chat_resume(
     session = get_owned_session(db, session_id, username)
     workspace_name = session.workspace_name or ""
 
-    # 复用缓存的 Agent 实例（保留 checkpointer 中的 interrupt 状态）
-    agent = await get_or_create_agent_for_session(session_id, username, workspace_name)
+    # 复用缓存的 Agent 实例（保留 checkpointer 中的 interrupt 状态）。
+    # 必须带上该会话当前生效的专家 ID，否则「在专家会话里触发 HITL 审批 -> 恢复」
+    # 会被判定为「专家变更」而驱逐缓存，重建出通用 Agent（人设丢失）。
+    # 取值安全性：_session_expert 与 _session_agents 同生共死（只在 Agent 创建成功后
+    # 一起写入、清理时一起删除），因此这里取到的值要么与缓存中的专家一致 —— 命中缓存
+    # 原样复用、人设保留；要么为 ""（缓存已失效）—— 等价于通用 Agent 重建，
+    # 行为与引入专家模块之前逐字一致。
+    agent = await get_or_create_agent_for_session(
+        session_id,
+        username,
+        workspace_name,
+        expert_agent_id=get_session_expert(session_id),
+    )
 
     return StreamingResponse(
         _detached_event_stream(

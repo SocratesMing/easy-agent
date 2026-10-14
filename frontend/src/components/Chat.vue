@@ -89,6 +89,8 @@
         @stop="handleStop"
         @createSession="handleCreateSession"
         @openPanel="(tab) => emit('openPanel', tab)"
+        @clearExpert="emit('clearExpert')"
+        @prefillApplied="emit('expertPromptApplied')"
       />
 
       <!-- 分类预置问题：仅在首页（居中模式）展示。每个分类一张卡片（分类名即卡片头部，
@@ -230,6 +232,18 @@ export default {
   welcomeTitle: {
     type: String,
     default: APP_WELCOME_TITLE
+  },
+  // 当前会话选中的专家 Agent（{export_agent_id, export_name_cn} 或 null）。
+  // 非空时输入框工具栏显示专家胶囊，且本会话消息走 /agent/stream_export_run。
+  activeExpert: {
+    type: Object,
+    default: null
+  },
+  // 待回填到输入框的问题（专家详情弹窗点「专家帮你做」示例），写入后由
+  // expertPromptApplied 事件通知父组件清空。
+  expertPrompt: {
+    type: String,
+    default: ''
   }
 })
 
@@ -268,8 +282,8 @@ function setPresetQuestion(groupIndex, questionIndex) {
   const next = presetQuestionIndexes.value.slice()
   next[groupIndex] = Math.max(0, Math.min(questionIndex, count - 1))
   presetQuestionIndexes.value = next
-  // 悬浮期间用滚轮/圆点切换子问题时，输入框预览实时跟随
-  if (hoveredDeck.value === groupIndex) fillPresetPreview(groupIndex)
+  // 悬浮期间用滚轮/圆点切换子问题时，输入框预览实时跟随（仅预览态允许）
+  if (hoveredDeck.value === groupIndex && canPresetPreview()) fillPresetPreview(groupIndex)
 }
 
 // 前后切换子问题；到端点后不再循环（停在端点，避免长列表滚动时跳回开头）
@@ -326,7 +340,7 @@ const showTopbar = computed(() =>
   showSessionTime.value || props.todos.length > 0 || showWorkspaceBtn.value
 )
 
-const emit = defineEmits(['sendMessage', 'presetSend', 'stop', 'removeFile', 'createSession', 'approve', 'reject', 'update:selectedModel', 'toggleWorkspace', 'openPanel'])
+const emit = defineEmits(['sendMessage', 'presetSend', 'stop', 'removeFile', 'createSession', 'approve', 'reject', 'update:selectedModel', 'toggleWorkspace', 'clearExpert', 'expertPromptApplied', 'openPanel'])
 const messagesRef = ref(null)
 
 function formatSessionTime(isoStr) {
@@ -437,11 +451,15 @@ function handleCreateSession() {
 }
 
 // ========== 预置问题：悬浮预览 ==========
-// 卡片上最多显示 3 行，长问题展示不全；悬浮时把完整文本实时填进输入框，
-// 移出预置问题区后恢复悬浮前的内容（悬浮期间用户手动改过输入框则保留其修改）。
+// 仅当输入框为空（或当前内容正是上一轮的预览填充且未被修改）时，悬浮才把
+// 完整文本填进输入框；输入框已有用户输入内容时不填充、不覆盖。
+// 移出时若用户未修改预览文本则恢复悬浮前内容（原为空 → 清空）；
+// 用户在预览基础上编辑过则保留其内容并解除预览态。
 const hoveredDeck = ref(null)
 const composerSnapshot = ref('')
 const lastPreview = ref('')
+// 输入框当前内容是否为「预览填充态」（填充过且未被用户修改）
+const previewActive = ref(false)
 
 function fillPresetPreview(groupIndex) {
   const group = displayedPresetGroups.value[groupIndex]
@@ -449,9 +467,22 @@ function fillPresetPreview(groupIndex) {
   if (question == null) return
   lastPreview.value = question
   composerRef.value?.setMessage(question)
+  previewActive.value = true
+}
+
+// 是否允许悬浮填充：输入框为空，或内容仍是预览态且未被用户修改
+function canPresetPreview() {
+  const current = composerRef.value?.getMessage() ?? ''
+  if (!current.trim()) return true
+  return previewActive.value && current === lastPreview.value
 }
 
 function onPresetEnter(groupIndex) {
+  if (!canPresetPreview()) {
+    // 输入框已有用户内容：不覆盖，仅记录悬浮位置（滚轮/圆点切换仍可用）
+    hoveredDeck.value = groupIndex
+    return
+  }
   if (hoveredDeck.value === null) {
     composerSnapshot.value = composerRef.value?.getMessage() ?? ''
   }
@@ -465,8 +496,13 @@ function onPresetLeave() {
   const current = composerRef.value?.getMessage() ?? ''
   const previewed = lastPreview.value
   lastPreview.value = ''
-  if (!previewed || current === previewed) {
-    composerRef.value?.setMessage(composerSnapshot.value)
+  if (previewActive.value) {
+    if (current === previewed) {
+      // 用户未修改预览：恢复悬浮前内容（原为空 → 清空）
+      composerRef.value?.setMessage(composerSnapshot.value)
+    }
+    // 用户编辑过预览文本：内容归用户保留，解除预览态
+    previewActive.value = false
   }
 }
 
@@ -475,6 +511,7 @@ watch(composerMode, (mode) => {
   if (mode !== 'center') {
     hoveredDeck.value = null
     lastPreview.value = ''
+    previewActive.value = false
   }
 })
 
@@ -842,6 +879,7 @@ function scrollToBottom(force = false) {
   gap: 8px;
 }
 
+/* 当前专家标识：绝对定位在 topbar 左侧（操作区在右），与会话时间的居中互不干扰。 */
 /* 会话时间只作为行内内容；条状背景与分隔线已上移到 .chat-topbar */
 .session-created-time {
   display: flex;
@@ -990,23 +1028,18 @@ function scrollToBottom(force = false) {
   }
 }
 
-/* 单张卡片：无边框，用「分类色渐变底 + 白色浮层」分层表达；
-   三张卡各带一种主题色（天蓝 / 紫 / 翠绿），角落再叠一团柔光增色 */
+/* 单张卡片：主页面主色只做少量强调，底色交给语义化表面层，
+   用细边框和柔和投影区分层级；各分组不再各用一套艳丽色相 */
 .preset-deck {
   position: relative;
   display: flex;
   flex-direction: column;
   padding: 14px 14px 12px;
   border-radius: 16px;
-  border: none;
+  border: 1px solid var(--border-color, #e2e8f0);
   overflow: hidden;
-  background: linear-gradient(
-    150deg,
-    color-mix(in srgb, var(--preset-accent) 16%, var(--bg-secondary, #ffffff)) 0%,
-    color-mix(in srgb, var(--preset-accent) 7%, var(--bg-secondary, #ffffff)) 48%,
-    var(--bg-secondary, #ffffff) 100%
-  );
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+  background: var(--bg-secondary, #ffffff);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.028);
   outline: none;
   transition: transform 0.2s ease, box-shadow 0.2s ease;
 }
@@ -1021,8 +1054,8 @@ function scrollToBottom(force = false) {
   border-radius: 50%;
   background: radial-gradient(
     circle,
-    color-mix(in srgb, var(--preset-accent) 24%, transparent) 0%,
-    transparent 70%
+    color-mix(in srgb, var(--preset-accent) 8%, transparent) 0%,
+    transparent 68%
   );
   pointer-events: none;
 }
@@ -1030,7 +1063,7 @@ function scrollToBottom(force = false) {
 .preset-deck:hover,
 .preset-deck:focus-visible {
   transform: translateY(-2px);
-  box-shadow: 0 14px 30px -12px color-mix(in srgb, var(--preset-accent) 55%, transparent),
+  box-shadow: 0 10px 24px -14px color-mix(in srgb, var(--preset-accent) 32%, transparent),
     0 2px 6px rgba(15, 23, 42, 0.05);
 }
 
@@ -1039,10 +1072,10 @@ function scrollToBottom(force = false) {
   outline-offset: 2px;
 }
 
-/* 三张卡的主题色：天蓝 / 紫 / 翠绿 */
-.preset-deck.accent-0 { --preset-accent: #0ea5e9; }
-.preset-deck.accent-1 { --preset-accent: #8b5cf6; }
-.preset-deck.accent-2 { --preset-accent: #10b981; }
+/* 三张卡使用同一主色，避免首页出现过多高饱和分类色 */
+.preset-deck.accent-0 { --preset-accent: var(--accent-color, #0ea5e9); }
+.preset-deck.accent-1 { --preset-accent: var(--accent-color, #0ea5e9); }
+.preset-deck.accent-2 { --preset-accent: var(--accent-color, #0ea5e9); }
 
 .preset-deck-head {
   position: relative;
@@ -1062,7 +1095,7 @@ function scrollToBottom(force = false) {
   height: 26px;
   border-radius: 9px;
   font-size: 14px;
-  background: color-mix(in srgb, var(--preset-accent) 20%, #ffffff);
+  background: color-mix(in srgb, var(--preset-accent) 12%, var(--bg-tertiary, #f1f5f9));
 }
 
 .preset-deck-title {
@@ -1078,7 +1111,7 @@ function scrollToBottom(force = false) {
   margin-left: auto;
   font-size: 12px;
   font-weight: 500;
-  color: color-mix(in srgb, var(--preset-accent) 62%, var(--text-secondary, #64748b));
+  color: var(--text-secondary, #64748b);
   flex-shrink: 0;
 }
 
@@ -1112,7 +1145,7 @@ function scrollToBottom(force = false) {
 
 /* 悬停时垫一层主题色浅底，作为「可点击」暗示 */
 .preset-card.is-front:hover {
-  background: color-mix(in srgb, var(--preset-accent) 9%, transparent);
+  background: color-mix(in srgb, var(--preset-accent) 5%, transparent);
 }
 
 .preset-card-text {
@@ -1144,7 +1177,7 @@ function scrollToBottom(force = false) {
   border-radius: 50%;
   border: none;
   padding: 0;
-  background: color-mix(in srgb, var(--preset-accent) 24%, transparent);
+  background: color-mix(in srgb, var(--preset-accent) 18%, var(--border-color, #e2e8f0));
   cursor: pointer;
   transition: all 0.2s ease;
 }
@@ -1160,23 +1193,8 @@ function scrollToBottom(force = false) {
   background: var(--preset-accent, #0ea5e9);
 }
 
-/* 深色主题：底色换成暗面分层，主题色透明度调高保持可辨 */
-html[data-theme="dark"] .preset-deck {
-  background: linear-gradient(
-    150deg,
-    color-mix(in srgb, var(--preset-accent) 30%, #0f172a) 0%,
-    color-mix(in srgb, var(--preset-accent) 14%, #0f172a) 52%,
-    #0f172a 100%
-  );
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
-}
-
-html[data-theme="dark"] .preset-deck-title-icon {
-  background: color-mix(in srgb, var(--preset-accent) 32%, #0f172a);
-}
-
 html[data-theme="dark"] .preset-card.is-front:hover {
-  background: color-mix(in srgb, var(--preset-accent) 20%, transparent);
+  background: color-mix(in srgb, var(--preset-accent) 10%, transparent);
 }
 
 /* 相对聊天容器定位（而非视口）：工作区分栏后聊天区会收窄，用 fixed 会飘到

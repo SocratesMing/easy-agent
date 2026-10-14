@@ -34,7 +34,7 @@ def test_load_environment_returns_isolated_environment_state(tmp_path, monkeypat
 
 
 def test_setup_logging_creates_three_service_log_files(tmp_path, monkeypatch):
-    from easy_agent.initialization import logging as logging_config
+    from easy_agent.initialization import log as logging_config
     from easy_agent.initialization import setup_logging
     from uvicorn.config import LOGGING_CONFIG
 
@@ -110,7 +110,7 @@ def test_setup_logging_creates_three_service_log_files(tmp_path, monkeypatch):
 
 def test_setup_logging_uses_compiled_rotation_matcher(tmp_path, monkeypatch):
     from easy_agent.initialization import setup_logging
-    from easy_agent.initialization import logging as logging_config
+    from easy_agent.initialization import log as logging_config
 
     root_logger = logging.getLogger()
     saved_handlers = root_logger.handlers[:]
@@ -154,7 +154,7 @@ def test_setup_logging_uses_compiled_rotation_matcher(tmp_path, monkeypatch):
 
 def test_setup_logging_rotates_when_log_exceeds_size_limit(tmp_path, monkeypatch):
     from easy_agent.initialization import setup_logging
-    from easy_agent.initialization import logging as logging_config
+    from easy_agent.initialization import log as logging_config
 
     assert logging_config.LOG_MAX_BYTES == 50 * 1024 * 1024
 

@@ -1,4 +1,4 @@
-from easy_agent.initialization.logging import _ROTATED_LOG_SUFFIX
+from easy_agent.initialization.log import _ROTATED_LOG_SUFFIX
 
 
 def test_rotated_log_suffix_is_a_compiled_fullmatch_pattern():

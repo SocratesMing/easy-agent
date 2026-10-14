@@ -142,6 +142,7 @@ export async function sendMessage(sessionId, message, onChunk, signal, enableDee
     payload.model = model
   }
   if (model) payload.model = model
+  if (pageContext) payload.page_context = pageContext
 
   const response = await handleStreamResponse(
     await fetch(streamUrl('/agent/chat/stream'), {

@@ -179,6 +179,7 @@ import FileTreeNode from './FileTreeNode.vue'
 import FilePreview from './FilePreview.vue'
 import { getWorkspaceTree } from '../api/files'
 import { getStoredToken } from '../api/auth.js'
+import { setPageContextExtra } from '../utils/pageContext.js'
 
 // 文件树固定在第一个 tab；宽度/动画常量集中在此
 const TREE_TAB = '__tree__'
@@ -253,6 +254,10 @@ export default {
     },
   },
   watch: {
+    aiContextText: {
+      immediate: true,
+      handler(text) { setPageContextExtra('workspace', text) },
+    },
     visible: [
       // 折叠/展开的宽度动画与延迟卸载
       function (v) {
@@ -456,6 +461,7 @@ export default {
     this.buildWorkspaceTree()
   },
   beforeDestroy() {
+    setPageContextExtra('workspace', null)
     document.removeEventListener('keydown', this.onKeydown)
     this.stopResize()
     clearTimeout(this.unloadTimer)

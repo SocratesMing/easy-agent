@@ -15,39 +15,62 @@ export const AUTH_EXPIRED_EVENT = 'auth-expired'
 /** 用户活动事件名：每次请求前派发，用于空闲检测 */
 export const USER_ACTIVITY_EVENT = 'user-activity'
 
-const TOKEN_KEY = 'mini_agent_token'
-const USERNAME_KEY = 'mini_agent_username'
+/**
+ * 运行时配置。主应用使用默认值（同源相对路径、mini_agent_* 存储键、window 事件）；
+ * AI 侧边栏 SDK 嵌入第三方页面时通过 configureRequest() 覆盖：
+ *   - baseURL：后端地址（跨域直连），流式接口同样拼接该前缀；
+ *   - tokenKey / usernameKey：登录态存储键，避免与宿主页面或主应用互相覆盖；
+ *   - onAuthExpired：401 回调，替代 window 事件，避免触发宿主页面同名事件的监听。
+ */
+const runtime = {
+  baseURL: '',
+  tokenKey: 'mini_agent_token',
+  usernameKey: 'mini_agent_username',
+  onAuthExpired: null,
+}
+
+/** 覆盖运行时配置（仅 SDK 使用） */
+export function configureRequest(options = {}) {
+  Object.assign(runtime, options)
+  runtime.baseURL = String(runtime.baseURL || '').replace(/\/+$/, '')
+  requestInstance.defaults.baseURL = runtime.baseURL || undefined
+}
 
 /** 派发用户活动事件（标记用户仍在使用，避免被判定为空闲） */
 export function dispatchUserActivity() {
+  if (runtime.onAuthExpired) return
   window.dispatchEvent(new CustomEvent(USER_ACTIVITY_EVENT))
 }
 
 /** 派发登录态失效事件（token 过期 / 被顶下线） */
 export function dispatchAuthExpired() {
+  if (runtime.onAuthExpired) {
+    runtime.onAuthExpired()
+    return
+  }
   window.dispatchEvent(new CustomEvent(AUTH_EXPIRED_EVENT))
 }
 
 /** 读取本地存储的 token */
 export function getStoredToken() {
-  return localStorage.getItem(TOKEN_KEY)
+  return localStorage.getItem(runtime.tokenKey)
 }
 
 /** 读取本地存储的用户名 */
 export function getStoredUsername() {
-  return localStorage.getItem(USERNAME_KEY)
+  return localStorage.getItem(runtime.usernameKey)
 }
 
 /** 保存登录态（token + 用户名） */
 export function storeAuth(token, username) {
-  localStorage.setItem(TOKEN_KEY, token)
-  localStorage.setItem(USERNAME_KEY, username)
+  localStorage.setItem(runtime.tokenKey, token)
+  localStorage.setItem(runtime.usernameKey, username)
 }
 
 /** 清除登录态 */
 export function clearAuth() {
-  localStorage.removeItem(TOKEN_KEY)
-  localStorage.removeItem(USERNAME_KEY)
+  localStorage.removeItem(runtime.tokenKey)
+  localStorage.removeItem(runtime.usernameKey)
 }
 
 /** 生成带 Bearer token 的请求头（未登录时返回空对象） */
@@ -202,7 +225,7 @@ export async function requestArrayBuffer(config) {
 /**
  * 拼接流式接口地址（SSE / fetch 使用）
  *
- * 与 axios 一致使用相对路径，由开发代理或同源后端接管。
+ * 与 axios 一致：默认相对路径，由开发代理或同源后端接管；SDK 配置了 baseURL 时拼接前缀。
  *
  * @param {string} path 接口路径，如 '/agent/chat/stream'
  * @returns {string} 请求地址
@@ -210,7 +233,7 @@ export async function requestArrayBuffer(config) {
  * streamUrl('/agent/chat/stream')
  */
 export function streamUrl(path) {
-  return path
+  return runtime.baseURL + path
 }
 
 /**

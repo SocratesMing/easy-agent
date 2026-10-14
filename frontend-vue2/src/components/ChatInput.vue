@@ -251,6 +251,29 @@
               <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path>
             </svg>
           </button>
+
+          <!-- 当前专家标识：输入框工具栏内的胶囊（专家徽标 + 名称 + 退出×）。
+               与专家 Tab 的「召唤」联动，点击 × 退出专家模式回到通用 Agent。 -->
+          <div
+            v-if="activeExpert"
+            class="expert-chip"
+            :title="`当前专家：${activeExpert.export_name_cn}（点击 × 退出专家模式）`"
+          >
+            <span class="expert-chip-badge">专家</span>
+            <span class="expert-chip-name">{{ activeExpert.export_name_cn }}</span>
+            <button
+              type="button"
+              class="expert-chip-clear"
+              :disabled="isStreaming || disabled"
+              aria-label="退出专家模式"
+              @click="$emit('clear-expert')"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true">
+                <line x1="18" y1="6" x2="6" y2="18"></line>
+                <line x1="6" y1="6" x2="18" y2="18"></line>
+              </svg>
+            </button>
+          </div>
         </div>
         
         <div class="right-actions">
@@ -394,6 +417,7 @@ import { getUserSkills } from '../api/skills.js'
 import { iconCategoryFor } from '../utils/skillCategories.js'
 import { buildSkillPayload, parseSlashQuery } from '../utils/skillSlash.js'
 import { getConnectors } from '../api/connectors.js'
+import { eventTarget } from '../utils/domEvent.js'
 import FileIcon from './FileIcon.vue'
 import SkillIcon from './SkillIcon.vue'
 import KnowledgeScopeSelector from '../features/knowledge/KnowledgeScopeSelector.vue'
@@ -442,6 +466,27 @@ export default {
     showFooter: {
       type: Boolean,
       default: false
+    },
+    draftKey: {
+      type: String,
+      default: DRAFT_KEY
+    },
+    // 是否消费技能中心「创建技能」预置的待选技能（只应由主页面输入框消费）
+    consumePendingSkill: {
+      type: Boolean,
+      default: true
+    },
+    // 当前会话选中的专家 Agent（{export_agent_id, export_name_cn} 或 null）。
+    // 非空时输入框工具栏显示专家胶囊，且本会话消息走 /agent/stream_export_run。
+    activeExpert: {
+      type: Object,
+      default: null
+    },
+    // 外部预填的问题（如专家详情弹窗点「专家帮你做」示例）：非空时写入输入框，
+    // 写入后立即 $emit('expert-prompt-applied') 通知父组件清空，避免重复触发。
+    expertPrompt: {
+      type: String,
+      default: ''
     }
   },
   data() {
@@ -592,7 +637,7 @@ export default {
     },
     message(val) {
       try {
-        sessionStorage.setItem(DRAFT_KEY, val)
+        sessionStorage.setItem(this.draftKey, val)
       } catch (e) {
         // 隐私模式等场景下 sessionStorage 可能不可用，忽略即可
       }
@@ -602,6 +647,10 @@ export default {
         const ta = this.$refs.textareaRef
         if (ta) ta.focus()
       }
+    },
+    // 外部预填问题变化时（如专家详情弹窗再点一条示例）写入输入框
+    expertPrompt(val) {
+      this.applyExpertPrompt(val)
     },
   },
   mounted() {
@@ -614,7 +663,7 @@ export default {
       .catch(() => { this.webSearchAvailable = false; this.webSearchReason = 'unreachable' })
     // 恢复刷新前的输入草稿
     try {
-      const draft = sessionStorage.getItem(DRAFT_KEY)
+      const draft = sessionStorage.getItem(this.draftKey)
       if (draft) {
         this.message = draft
         this.$nextTick(() => this.autoResize())
@@ -623,7 +672,7 @@ export default {
       // 忽略草稿恢复失败
     }
     // 恢复待选技能（技能中心「创建技能」等入口预置），读取后即清除
-    this.restorePendingSkill()
+    if (this.consumePendingSkill) this.restorePendingSkill()
 
     document.addEventListener('click', this.closeTokenPopup)
     document.addEventListener('click', this.closeModelDropdown)
@@ -631,6 +680,10 @@ export default {
     window.addEventListener('resize', this.handleViewportChange)
     document.addEventListener('click', this.closePlusMenu)
     this.loadWebSearchStatus()
+    // 点示例问题会先关闭 SkillCenter 面板 → Chat/ChatInput 重新挂载，
+    // 此时 expertPrompt 初始值即非空；watch 只响应"变化"，挂载时的初始值不会触发，
+    // 因此在这里补一次（放在草稿恢复之后，确保示例问题覆盖草稿）。
+    if (this.expertPrompt) this.applyExpertPrompt(this.expertPrompt)
   },
   beforeDestroy() {
     document.removeEventListener('click', this.closeTokenPopup)
@@ -657,6 +710,16 @@ export default {
         if (!this.webSearchAvailable) return
       }
       this.webSearchEnabled = !this.webSearchEnabled
+    },
+    applyExpertPrompt(val) {
+      if (!val) return
+      this.message = val
+      this.$nextTick(() => {
+        this.autoResize()
+        const ta = this.$refs.textareaRef
+        if (ta) ta.focus()
+      })
+      this.$emit('expert-prompt-applied')
     },
     updateCaretLine() {
       const ta = this.$refs.textareaRef
@@ -698,7 +761,7 @@ export default {
     },
     closeModelDropdown(event) {
       const anchor = this.$refs.modelDropdownRef
-      if (this.showModelDropdown && anchor && !anchor.contains(event.target)) {
+      if (this.showModelDropdown && anchor && !anchor.contains(eventTarget(event))) {
         this.showModelDropdown = false
       }
     },
@@ -1253,7 +1316,7 @@ export default {
     closeSkillPickerOnClick(event) {
       if (!this.skillPickerOpen) return
       const picker = this.$refs.skillPickerRef
-      if (picker && picker.contains(event.target)) return
+      if (picker && picker.contains(eventTarget(event))) return
       this.closeSkillPicker()
     },
 

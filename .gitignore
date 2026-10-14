@@ -70,6 +70,11 @@ offline_deps/
 
 # IDE 智能体工作目录（含跨会话记忆，勿提交）
 .codebuddy/
+.workbuddy/
+
+# 内部方案文档（本地参考，不入库）
+/docs/expert-agent-solution.md
+/docs/expert-skill-solution.md
 
 # macOS
 .DS_Store

@@ -1,5 +1,5 @@
 <template>
-  <div class="chat-container">
+  <div class="chat-container" :class="{ 'is-sidebar': isSidebar }">
     <div class="chat-main">
     <div class="chat-content" :class="composerMode === 'center' ? 'is-center' : 'is-bottom'">
       <!-- 顶部信息行：会话时间居中，操作区（任务规划 + 展开工作区）贴右。
@@ -19,7 +19,7 @@
                （那会让折叠会话列表时任务胶囊一起消失）。 -->
           <TodoListPanel :todos="todos" />
           <button
-            v-if="currentSessionId && !workspaceExpanded"
+            v-if="showWorkspaceBtn"
             class="expand-workspace-inline"
             @click="$emit('toggle-workspace')"
             title="展开工作区"
@@ -33,7 +33,9 @@
       </div>
       <div class="chat-messages" ref="messagesRef" @scroll="handleScroll">
         <div v-if="messages.length === 0 && !sessionLoading" class="welcome-screen">
-          <h2>{{ welcomeTitle }}</h2>
+          <slot name="welcome">
+            <h2>{{ welcomeTitle }}</h2>
+          </slot>
         </div>
         <!-- 切换会话拉取历史期间：显示骨架，避免先闪出空欢迎页 -->
         <div
@@ -72,9 +74,12 @@
         </svg>
       </button>
 
+      <slot name="composer-prefix"></slot>
       <ChatInput
         ref="composerRef"
         class="composer"
+        :draft-key="draftKey"
+        :consume-pending-skill="!isSidebar"
         @send="onSend"
         :disabled="isStreaming"
         :isStreaming="isStreaming"
@@ -84,26 +89,32 @@
         :iterationCount="iterationCount"
         :models="models"
         :selectedModel="selectedModel"
-        :showFooter="composerMode === 'bottom'"
+        :showFooter="composerMode === 'bottom' && !isSidebar"
+        :activeExpert="activeExpert"
+        :expertPrompt="expertPrompt"
         @update:selectedModel="$emit('update:selectedModel', $event)"
         @stop="handleStop"
         @create-session="handleCreateSession"
         @open-panel="$emit('open-panel', $event)"
         @open-knowledge="$emit('open-knowledge', $event)"
+        @clear-expert="$emit('clear-expert')"
+        @expert-prompt-applied="$emit('expert-prompt-applied')"
       />
 
       <!-- 分类预置问题：仅在首页（居中模式）展示。每个分类一张卡片（分类名即卡片头部，
            不再单独放标签栏），最多展示三张；卡片内多个预置问题堆叠，
-           鼠标滚轮（或左右方向键）在卡片上滑动即可来回切换子问题。 -->
+           鼠标滚轮（或左右方向键）在卡片上滑动即可来回切换子问题。
+           侧边栏变体不展示预置问题。 -->
       <div
         class="preset-area"
-        v-if="composerMode === 'center' && displayedPresetGroups.length"
+        v-if="composerMode === 'center' && displayedPresetGroups.length && !isSidebar"
       >
         <div
           class="preset-cards"
           :class="'count-' + displayedPresetGroups.length"
           @mouseleave="onPresetLeave"
         >
+
           <div
             class="preset-deck"
             v-for="(group, gi) in displayedPresetGroups"
@@ -229,12 +240,36 @@ export default {
   welcomeTitle: {
     type: String,
     default: APP_WELCOME_TITLE
+  },
+  // main：主页面对话；sidebar：AI 侧边栏（窄栏布局，输入框始终贴底，不展示工作区入口）
+  variant: {
+    type: String,
+    default: 'main'
+  },
+  // 输入草稿的 sessionStorage key：侧边栏与主页面各存一份，互不覆盖
+  draftKey: {
+    type: String,
+    default: 'easy_agent_input_draft'
+  },
+  // 当前会话选中的专家 Agent（{export_agent_id, export_name_cn} 或 null）。
+  // 非空时输入框工具栏显示专家胶囊，且本会话消息走 /agent/stream_export_run。
+  activeExpert: {
+    type: Object,
+    default: null
+  },
+  // 外部预填的问题（专家详情弹窗点「专家帮你做」示例）：透传给 ChatInput，
+  // 由其写入输入框后通过 expert-prompt-applied 通知 App 清空。
+  expertPrompt: {
+    type: String,
+    default: ''
   }
 },
   data() {
     return {
       // 首页布局模式：center=空会话时输入框居中，bottom=对话中输入框贴底
       composerMode: 'center',
+      // 输入框当前内容是否为「预置问题预览填充态」
+      previewActive: false,
       // 预置问题：每张卡片当前展示的子问题下标（按卡片序号索引，最多三张）
       presetQuestionIndexes: [],
       deckTop: 0,
@@ -247,18 +282,22 @@ export default {
     }
   },
   computed: {
+    isSidebar() {
+      return this.variant === 'sidebar'
+    },
     // 预置问题：只展示前三个分类（后端可能传入更多，按需求截断）
     displayedPresetGroups() {
       return (this.presetQuestions || []).slice(0, 3)
     },
+
     // 顶部信息行：会话时间（居中）+ 操作区（任务规划、展开工作区，贴右）。
     // 三者中任意一个需要展示时，这一行才占位 —— 首页（无会话）保持干净，
     // 否则会破坏 .chat-content.is-center 的垂直居中。
     showSessionTime() {
-      return !!this.sessionCreatedAt && this.messages.length > 0
+      return !this.isSidebar && !!this.sessionCreatedAt && this.messages.length > 0
     },
     showWorkspaceBtn() {
-      return !!this.currentSessionId && !this.workspaceExpanded
+      return !this.isSidebar && !!this.currentSessionId && !this.workspaceExpanded
     },
     showTopbar() {
       return this.showSessionTime || this.todos.length > 0 || this.showWorkspaceBtn
@@ -278,6 +317,7 @@ export default {
       if (mode !== 'center') {
         this.hoveredDeck = null
         this.lastPreview = ''
+        this.previewActive = false
       }
     },
     presetQuestions(groups) {
@@ -296,7 +336,7 @@ export default {
         handler(newMessages) {
           // 空会话显示居中输入框；有消息时输入框贴底。
           // 正在拉取历史时按「有会话」处理（贴底），避免先居中再跳到贴底。
-          this.composerMode = (newMessages.length === 0 && !this.sessionLoading) ? 'center' : 'bottom'
+          this.composerMode = (newMessages.length === 0 && !this.sessionLoading && !this.isSidebar) ? 'center' : 'bottom'
         }
       },
       {
@@ -314,7 +354,7 @@ export default {
     ],
     sessionLoading(loading) {
       // 加载历史期间贴底，避免居中布局随后跳动
-      this.composerMode = (this.messages.length === 0 && !loading) ? 'center' : 'bottom'
+      this.composerMode = (this.messages.length === 0 && !loading && !this.isSidebar) ? 'center' : 'bottom'
     },
     scrollTrigger() {
       // 切换/加载会话时强制贴底
@@ -328,6 +368,14 @@ export default {
   beforeDestroy() {
   },
   methods: {
+    focusComposer() {
+      const c = this.$refs.composerRef
+      if (c) c.focusInput()
+    },
+    setComposerText(text) {
+      const c = this.$refs.composerRef
+      if (c) c.setDraft(text)
+    },
     formatSessionTime(isoStr) {
       if (!isoStr) return ''
       const d = new Date(isoStr)
@@ -404,8 +452,9 @@ export default {
       this.$emit('create-session')
     },
     // ========== 预置问题：悬浮预览 ==========
-    // 悬浮时把该卡当前问题的完整文本实时填进输入框；移出预置问题区后恢复
-    // 悬浮前的内容（悬浮期间用户手动改过输入框则保留其修改）。
+    // 仅当输入框为空（或当前内容正是预览填充且未被修改）时悬浮才填充；
+    // 输入框已有用户内容时不填充、不覆盖。移出时若未修改预览文本则恢复
+    // 悬浮前内容（原为空 → 清空）；编辑过则保留其内容并解除预览态。
     fillPresetPreview(groupIndex) {
       const group = this.displayedPresetGroups[groupIndex]
       const question = group && group.questions ? group.questions[this.presetIndex(groupIndex)] : null
@@ -413,8 +462,21 @@ export default {
       this.lastPreview = question
       const composer = this.$refs.composerRef
       if (composer) composer.setMessage(question)
+      this.previewActive = true
+    },
+    // 是否允许悬浮填充：输入框为空，或内容仍是预览态且未被用户修改
+    canPresetPreview() {
+      const composer = this.$refs.composerRef
+      const current = composer ? composer.getMessage() : ''
+      if (!current.trim()) return true
+      return this.previewActive && current === this.lastPreview
     },
     onPresetEnter(groupIndex) {
+      if (!this.canPresetPreview()) {
+        // 输入框已有用户内容：不覆盖，仅记录悬浮位置（滚轮/圆点切换仍可用）
+        this.hoveredDeck = groupIndex
+        return
+      }
       if (this.hoveredDeck === null) {
         const composer = this.$refs.composerRef
         this.composerSnapshot = composer ? composer.getMessage() : ''
@@ -429,8 +491,13 @@ export default {
       const current = composer ? composer.getMessage() : ''
       const previewed = this.lastPreview
       this.lastPreview = ''
-      if (!previewed || current === previewed) {
-        if (composer) composer.setMessage(this.composerSnapshot)
+      if (this.previewActive) {
+        if (current === previewed) {
+          // 用户未修改预览：恢复悬浮前内容（原为空 → 清空）
+          if (composer) composer.setMessage(this.composerSnapshot)
+        }
+        // 用户编辑过预览文本：内容归用户保留，解除预览态
+        this.previewActive = false
       }
     },
     // 读取某张卡片当前子问题下标；数据变化导致越界时收敛到有效范围
@@ -449,8 +516,8 @@ export default {
       const next = this.presetQuestionIndexes.slice()
       next[groupIndex] = Math.max(0, Math.min(questionIndex, count - 1))
       this.presetQuestionIndexes = next
-      // 悬浮期间用滚轮/圆点切换子问题时，输入框预览实时跟随
-      if (this.hoveredDeck === groupIndex) this.fillPresetPreview(groupIndex)
+      // 悬浮期间用滚轮/圆点切换子问题时，输入框预览实时跟随（仅预览态允许）
+      if (this.hoveredDeck === groupIndex && this.canPresetPreview()) this.fillPresetPreview(groupIndex)
     },
     // 前后切换子问题；到端点后停在端点，不循环，避免长列表滚回开头
     stepPreset(groupIndex, delta) {
@@ -1104,5 +1171,71 @@ html[data-theme="dark"] .preset-card.is-front:hover {
   50% {
     opacity: 0.5;
   }
+}
+
+/* ── AI 侧边栏形态：窄栏下收紧留白，空态不再居中放大 ── */
+.chat-container.is-sidebar {
+  --chat-surface: var(--bg-secondary, #ffffff);
+}
+
+.chat-container.is-sidebar .chat-topbar {
+  height: 36px;
+  padding: 0 12px;
+  justify-content: flex-end;
+}
+
+.chat-container.is-sidebar .chat-topbar-actions {
+  right: 12px;
+}
+
+.chat-container.is-sidebar .chat-messages {
+  padding: 0 14px;
+}
+
+.chat-container.is-sidebar .chat-messages::before,
+.chat-container.is-sidebar .chat-messages::after {
+  flex-basis: 14px;
+}
+
+.chat-container.is-sidebar .welcome-screen {
+  flex: 1;
+  justify-content: center;
+}
+
+.chat-container.is-sidebar .scroll-btn {
+  right: 14px;
+  width: 32px;
+  height: 32px;
+}
+
+.chat-container.is-sidebar .scroll-btn svg {
+  width: 16px;
+  height: 16px;
+}
+
+.chat-container.is-sidebar .scroll-btn.prev {
+  bottom: 150px;
+}
+
+.chat-container.is-sidebar .scroll-btn.next {
+  bottom: 192px;
+}
+
+.chat-container.is-sidebar ::v-deep .chat-input-container {
+  padding: 8px 12px 12px;
+}
+
+.chat-container.is-sidebar ::v-deep .input-box {
+  width: 100%;
+  border-radius: 14px;
+}
+
+.chat-container.is-sidebar ::v-deep .message.user,
+.chat-container.is-sidebar ::v-deep .message.assistant {
+  width: 100%;
+}
+
+.chat-container.is-sidebar .chat-content.is-bottom .composer {
+  animation: none;
 }
 </style>

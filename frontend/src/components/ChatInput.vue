@@ -312,6 +312,29 @@
               <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path>
             </svg>
           </button>
+
+          <!-- 当前专家标识：输入框工具栏内的胶囊（专家徽标 + 名称 + 退出×）。
+               与专家 Tab 的「使用」联动，点击 × 退出专家模式回到通用 Agent。 -->
+          <div
+            v-if="activeExpert"
+            class="expert-chip"
+            :title="`当前专家：${activeExpert.export_name_cn}（点击 × 退出专家模式）`"
+          >
+            <span class="expert-chip-badge">专家</span>
+            <span class="expert-chip-name">{{ activeExpert.export_name_cn }}</span>
+            <button
+              type="button"
+              class="expert-chip-clear"
+              :disabled="isStreaming || disabled"
+              aria-label="退出专家模式"
+              @click="emit('clearExpert')"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true">
+                <line x1="18" y1="6" x2="6" y2="18" />
+                <line x1="6" y1="6" x2="18" y2="18" />
+              </svg>
+            </button>
+          </div>
         </div>
         
         <div class="right-actions">
@@ -495,14 +518,44 @@ const props = defineProps({
   showFooter: {
     type: Boolean,
     default: false
+  },
+  // 当前会话选中的专家 Agent（{export_agent_id, export_name_cn} 或 null）。
+  // 非空时输入框工具栏显示专家胶囊，且本会话消息走 /agent/stream_export_run。
+  activeExpert: {
+    type: Object,
+    default: null
+  },
+  // 外部预填的问题（如专家详情弹窗点「专家帮你做」示例）：非空时写入输入框，
+  // 写入后立即 emit('prefillApplied') 通知父组件清空，避免重复触发。
+  prefillText: {
+    type: String,
+    default: ''
   }
 })
 
-const emit = defineEmits(['send', 'stop', 'createSession', 'update:selectedModel', 'typing', 'openPanel'])
+const emit = defineEmits(['send', 'stop', 'createSession', 'update:selectedModel', 'typing', 'clearExpert', 'prefillApplied', 'openPanel'])
 
 const message = ref('')
 const textareaRef = ref(null)
 const uploadedFiles = ref([])
+
+// 外部预填问题（专家详情弹窗的示例提示词）：写入输入框并聚焦，随后通知父组件清空。
+// immediate: 必须开启 —— 详情弹窗在 SkillCenter 面板里，点示例问题会关闭面板并让
+// Chat/ChatInput 重新挂载，此时 prefillText 初始值即非空；没有 immediate 的 watch
+// 只响应"变化"，挂载时的非空初始值会被整个丢掉，回填失效。
+watch(
+  () => props.prefillText,
+  (val) => {
+    if (!val) return
+    message.value = val
+    nextTick(() => {
+      autoResize()
+      textareaRef.value?.focus()
+    })
+    emit('prefillApplied')
+  },
+  { immediate: true }
+)
 
 // ========== 技能选择（输入 / 唤起） ==========
 // 输入框里只展示「工具图标 + 技能名」，实际发给模型的是 /技能目录名 + 用户输入。
