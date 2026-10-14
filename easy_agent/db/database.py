@@ -8,6 +8,7 @@ import logging
 import os
 import re
 import sqlite3
+import threading
 import time
 import uuid
 from contextlib import contextmanager
@@ -34,12 +35,13 @@ logger = logging.getLogger(__name__)
 # 否则已经升级过的库会一直命中「结构已是最新」的快速启动路径，变更不会生效。
 # 见 init_tables()：版本一致时跳过整轮建表 + 补列 + 建索引探测（MySQL 上这一步
 # 过去要 40+ 次网络往返，多副本部署时每个 pod 启动都要跑一遍，是启动慢的主因）。
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 SCHEMA_VERSION_TABLE = "schema_meta"
 SCHEMA_VERSION_KEY = "schema_version"
 
 # 快速路径的兜底校验：这些表必须全部存在，缺任何一个都回退到完整初始化。
 # 新增表时除了加进这里，同样要 bump SCHEMA_VERSION。
+# knowledge_* 由 knowledges/ 模块（v2）在完整初始化里创建，一并列出以便缺失时自愈。
 EXPECTED_TABLES = (
     "sessions",
     "session_messages",
@@ -53,6 +55,12 @@ EXPECTED_TABLES = (
     "scheduled_tasks",
     "scheduled_task_runs",
     "distributed_locks",
+    "knowledge_bases",
+    "knowledge_folders",
+    "knowledge_documents",
+    "knowledge_document_objects",
+    "knowledge_operations",
+    "knowledge_audit_events",
 )
 
 
@@ -67,6 +75,9 @@ class Database:
         self.db_type = "sqlite"
         self._connection: Optional[sqlite3.Connection] = None
         self._pool = None
+        # SQLite 单连接被多线程共享（check_same_thread=False），必须串行化访问，
+        # 否则并发 commit 会触发 SystemError / cannot commit - no transaction is active
+        self._sqlite_lock = threading.RLock()
         # 每张表的列名缓存：一轮初始化里 _ensure_column 会对同一张表查很多次
         # （users 就有 8 次），缓存后每张表最多一次 SHOW COLUMNS / PRAGMA。
         self._column_cache: dict[str, set[str]] = {}
@@ -213,13 +224,24 @@ class Database:
 
     @contextmanager
     def get_connection(self):
-        conn = self._get_connection()
-        try:
-            yield conn
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
+        if self.db_type == "mysql":
+            conn = self._get_connection()
+            try:
+                yield conn
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+            return
+        # SQLite：单连接多线程共享，整段访问（含 commit/rollback）持锁串行化
+        with self._sqlite_lock:
+            conn = self._get_connection()
+            try:
+                yield conn
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
 
     def _execute(self, cursor, sql: str, params: tuple = None):
         if self.db_type == "mysql":
@@ -441,12 +463,37 @@ class Database:
         # 工号：注册必填、全局唯一，登录时可替代用户名。默认 NULL 而非空串——
         # 唯一索引允许多个 NULL，空串却只能有一个（免密自动注册的用户都没有工号）。
         self._ensure_column(cursor, "users", "employee_id", "VARCHAR(255) DEFAULT NULL")
+        # Older personnel imports stored an unset employee ID as an empty string.
+        self._execute(cursor, "UPDATE users SET employee_id=NULL WHERE employee_id='' ")
         self._ensure_unique_index(
             cursor, "users", "idx_users_employee_id", "employee_id"
         )
+        # 人员字段（knowledge 鉴权读取 account_status / organization_id 的前置迁移）。
+        # 幂等补列并带默认值；department_id 从既有 organization_id 回填，兼容旧库。
+        for col, col_def in (
+            ("display_name", "VARCHAR(127) DEFAULT ''"),
+            ("department_id", "VARCHAR(255) DEFAULT ''"),
+            ("department_name", "VARCHAR(255) DEFAULT ''"),
+            ("division_name", "VARCHAR(255) DEFAULT ''"),
+            ("team_name", "VARCHAR(255) DEFAULT ''"),
+            ("position", "VARCHAR(255) DEFAULT ''"),
+            ("mobile", "VARCHAR(64) DEFAULT ''"),
+            ("account_status", "VARCHAR(20) DEFAULT 'active'"),
+            ("personnel_source", "VARCHAR(255) DEFAULT ''"),
+        ):
+            self._ensure_column(cursor, "users", col, col_def)
+        try:
+            cursor.execute(
+                "UPDATE users SET department_id=organization_id "
+                "WHERE (department_id IS NULL OR department_id='')"
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"回填 users.department_id 失败（忽略）: {e}")
         # 空闲超时：最近一次接口调用时间（Unix 时间戳）。持久化到共享数据库，
         # 保证 uvicorn 多 worker（--workers > 1）下各进程读到一致的登录活跃状态。
         self._ensure_column(cursor, "users", "last_activity_at", "REAL")
+        from ..personnel.user_fields import ensure_user_fields
+        ensure_user_fields(self, cursor)
 
     def _create_misc_tables(self, cursor, auto_inc):
         # MCP API Key：主应用签发，mcp-server 子项目只读校验。
@@ -591,6 +638,22 @@ class Database:
         self._create_misc_tables(cursor, auto_inc)
         self._create_scheduled_task_tables(cursor)
         self._create_distributed_lock_table(cursor)
+
+        # Narrow integration point: schema ownership stays in knowledges/ (v2).
+        # initialize_knowledge_schema 幂等且与旧版表结构同构（存量数据无缝），
+        # 失败只告警，绝不阻断启动。
+        #
+        # 注意：这里随「完整初始化」执行，命中 schema 版本快速路径时不再重复调用。
+        # 因此 knowledge 模块的表结构变更同样需要 bump SCHEMA_VERSION，否则存量库
+        # 会一直跳过建表/补列。见 tests/db/test_knowledge_schema_init.py。
+        from ..knowledges.core.schema import initialize_knowledge_schema
+
+        try:
+            initialize_knowledge_schema(self, cursor)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                f"知识库 schema 初始化失败（knowledge 功能将不可用，服务继续启动）: {e}"
+            )
 
     def _ensure_schema_meta_table(self, cursor) -> int:
         """建 schema_meta 表（若缺）并返回库中记录的结构版本号（无记录返回 0）。"""
@@ -804,6 +867,12 @@ class Database:
             cursor.execute(stmt)
         except Exception as e:
             logger.debug(f"唯一索引 {index_name} 未创建（通常为已存在）: {e}")
+
+    def _create_unique_index(
+        self, cursor, index_name: str, table_name: str, columns: str
+    ) -> None:
+        # knowledge/schema.py 沿用 sunya 的参数顺序（索引名在前）；复用本地实现。
+        self._ensure_unique_index(cursor, table_name, index_name, columns)
 
     def create_session(self, session_data: SessionModel) -> SessionModel:
         with self.get_connection() as conn:
@@ -1025,6 +1094,9 @@ class Database:
             sanitized["thinking_duration"] = message["thinking_duration"]
         if message.get("usage"):
             sanitized["usage"] = message["usage"]
+        for key in ("knowledge_evidence", "knowledge_warnings"):
+            if isinstance(message.get(key), list):
+                sanitized[key] = message[key]
         if message.get("tool_calls"):
             # 与 _sanitize_extra_data 对齐：不再截断为前 20 条。
             # HITL 恢复后新增的工具调用位于列表尾部，截断会导致历史会话中
@@ -1631,12 +1703,15 @@ class Database:
                     user_data.updated_at,
                 ),
             )
+            from ..personnel.user_fields import save_user_fields
+            save_user_fields(self, cursor, user_data)
         return user_data
 
     @staticmethod
     def _row_to_user(row) -> UserModel:
         """users 表行 → UserModel。缺列时给默认值，兼容未迁移的旧库。"""
         row = dict(row) if not isinstance(row, dict) else row
+        from ..personnel.user_fields import read_user_fields
         return UserModel(
             user_id=row["user_id"],
             username=row["username"],
@@ -1646,6 +1721,15 @@ class Database:
             bound_ip=row.get("bound_ip") or "",
             token_version=row.get("token_version") or 0,
             employee_id=row.get("employee_id") or "",
+            display_name=row.get("display_name") or "",
+            department_id=row.get("department_id") or row.get("organization_id") or "",
+            department_name=row.get("department_name") or "",
+            division_name=row.get("division_name") or "",
+            team_name=row.get("team_name") or "",
+            position=row.get("position") or "",
+            mobile=row.get("mobile") or "",
+            account_status=row.get("account_status") or "active",
+            personnel_source=row.get("personnel_source") or "",
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )
@@ -1708,6 +1792,9 @@ class Database:
                 ),
             )
 
+            from ..personnel.user_fields import save_user_fields
+            save_user_fields(self, cursor, user_data)
+
     def bind_user_ip(self, username: str, ip: str) -> bool:
         user = self.get_user_by_username(username)
         if not user:
@@ -1727,24 +1814,35 @@ class Database:
             return ""
         return user.bound_ip
 
-    def increment_user_token_version(self, username: str) -> int:
+    def increment_user_token_version(
+        self, username: str, *, require_active: bool = False
+    ) -> int:
         """单点登录：递增用户的 token 版本号并返回新值。
 
         每次登录调用，使该用户此前签发的 JWT（v 不等于新值）在下次鉴权时失效，
         从而实现「新登录踢掉旧登录」。
         """
-        user = self.get_user_by_username(username)
-        if not user:
-            return 0
-        new_version = user.token_version + 1
         with self.get_connection() as conn:
             cursor = conn.cursor()
+            active_clause = " AND account_status<>'disabled'" if require_active else ""
             self._execute(
                 cursor,
-                "UPDATE users SET token_version=?, updated_at=? WHERE username=?",
-                (new_version, datetime.now().isoformat(), username),
+                "UPDATE users SET token_version=COALESCE(token_version, 0)+1, "
+                f"updated_at=? WHERE username=?{active_clause}",
+                (datetime.now().isoformat(), username),
             )
-        return new_version
+            if cursor.rowcount <= 0:
+                return 0
+            self._execute(
+                cursor,
+                "SELECT token_version FROM users WHERE username=?",
+                (username,),
+            )
+            row = cursor.fetchone()
+        if not row:
+            return 0
+        value = dict(row) if not isinstance(row, dict) else row
+        return int(value["token_version"])
 
     def get_user_token_version(self, username: str) -> int:
         user = self.get_user_by_username(username)
@@ -1947,27 +2045,8 @@ class Database:
             return cursor.rowcount > 0
 
     def get_or_create_default_user(self) -> UserModel:
-        default_user = self.get_user_by_username("admin")
-        if default_user:
-            # 保证 admin 默认密码为 admin（补齐历史空密码/无密码的存量数据）
-            if not default_user.password_hash:
-                self.update_user_password("admin", hash_password("admin"))
-                default_user = self.get_user_by_username("admin")
-            return default_user
-
-        now = datetime.now().isoformat()
-        user = UserModel(
-            user_id=str(uuid.uuid4()),
-            username="admin",
-            password_hash=hash_password("admin"),
-            organization_id="",
-            email="",
-            bound_ip="",
-            created_at=now,
-            updated_at=now,
-        )
-        self.create_user(user)
-        return user
+        from ..personnel.bootstrap import ensure_default_admin
+        return ensure_default_admin(self)
 
     def list_users(self, limit: int = 50, offset: int = 0) -> list[UserModel]:
         with self.get_connection() as conn:
@@ -2238,6 +2317,7 @@ def init_database(db_config: dict = None) -> Database:
     global _db_instance
     db = Database(db_config)
     db.init_tables()
+    db.get_or_create_default_user()
     _db_instance = db
     logger.info("✅ 数据库初始化完成")
     return db

@@ -80,74 +80,88 @@
   </div>
 </template>
 
-<script setup>
-import { ref, computed, watch } from 'vue'
+<script>
 import { toolCard } from '../utils/toolPresentation.js'
 
-const props = defineProps({
-  toolName: { type: String, default: '' },
-  args: { type: [Object, Array, null], default: null },
-  result: { type: [String, null], default: '' },
-  success: { type: Boolean, default: true },
-  duration: { type: [Number, null], default: null },
-  pendingApproval: { type: Boolean, default: false },
-  filePaths: { type: Array, default: () => [] },
-  streaming: { type: Boolean, default: false },
-})
-
-defineEmits(['approve', 'reject'])
-
-const card = computed(() => toolCard(props.toolName, props.args, props.result, props.success))
-// 头部按类型区分：命令(terminal)/列表(ls,glob)/搜索(grep)/读取/编辑/工具
-const kindKey = computed(() => {
-  if (card.value.shape === 'paths') return 'list'
-  if (card.value.shape === 'matches') return 'search'
-  if (card.value.card === 'diff') return 'edit'
-  return card.value.card
-})
-const kindLabel = computed(() => ({
-  // 写入/编辑的标题已含动作（「写入 xxx」/「编辑 xxx」），不再显示类型徽标，
-  // 否则会渲染成「写入 写入 xxx」这类重复文案。
-  terminal: '命令', list: '列出', search: '搜索', read: '读取', edit: '', other: '工具',
-}[kindKey.value] ?? '工具'))
-// 参数流式写入期间自动展开，让用户实时看到正在生成的文件内容；
-// 一旦收到完整参数（streaming 转为 false）即释放自动展开，尊重用户手动折叠。
-const expanded = ref(props.pendingApproval)
-let _streamOpened = false
-watch(() => props.streaming, (v) => {
-  if (v && !expanded.value) {
-    expanded.value = true
-    _streamOpened = true
-  } else if (!v && _streamOpened && expanded.value) {
-    expanded.value = false
-    _streamOpened = false
-  } else if (!v) {
-    _streamOpened = false
-  }
-})
-// 状态语义统一：pendingApproval 首位；isRunning = 尚未拿到工具结果(duration==null)
-// 且当前没有待审批。三类工具（写入 / 命令 / 读取）此时展示一致的前缀与颜色，
-// 而不是「写入显示写入中 / 命令和读取直接显示执行中 / 流式写入自己再展示一条提示」。
-const isRunning = computed(() => props.duration == null && !props.pendingApproval)
-const runningLabel = computed(() =>
-  props.streaming ? '写入中…' : '执行中…'
-)
-
-// diff 前缀：写入(全 add)不需要前缀，让文字与命令/读取从同一缩进起点开始；
-// 编辑(有 del/add)保留 +/- 前缀，表达「这一行来自哪个方向」。
-const diffPrefix = (line) => {
-  const lines = card.value.diffs?.[0]?.lines
-  if (lines && lines.length > 0 && lines.every(l => l.type === 'add')) return ''
-  return line.type === 'add' ? '+ ' : '- '
+export default {
+  name: 'ToolCallCard',
+  props: {
+    toolName: { type: String, default: '' },
+    args: { type: [Object, Array], default: null },
+    result: { type: [String, null], default: '' },
+    success: { type: Boolean, default: true },
+    duration: { type: [Number, null], default: null },
+    pendingApproval: { type: Boolean, default: false },
+    filePaths: { type: Array, default: () => [] },
+    streaming: { type: Boolean, default: false },
+  },
+  emits: ['approve', 'reject'],
+  data() {
+    return { expanded: this.pendingApproval }
+  },
+  created() {
+    // 自动展开是否由本轮流式写入触发，用于在 streaming 结束后收回自动展开
+    this._streamOpened = false
+  },
+  watch: {
+    // 参数流式写入期间自动展开，让用户实时看到正在生成的文件内容；
+    // 一旦收到完整参数（streaming 转为 false）即释放自动展开，尊重用户手动折叠。
+    streaming(v) {
+      if (v && !this.expanded) {
+        this.expanded = true
+        this._streamOpened = true
+      } else if (!v && this._streamOpened && this.expanded) {
+        this.expanded = false
+        this._streamOpened = false
+      } else if (!v) {
+        this._streamOpened = false
+      }
+    },
+  },
+  computed: {
+    card() {
+      return toolCard(this.toolName, this.args, this.result, this.success)
+    },
+    kindKey() {
+      if (this.card.shape === 'paths') return 'list'
+      if (this.card.shape === 'matches') return 'search'
+      if (this.card.card === 'diff') return 'edit'
+      return this.card.card
+    },
+    kindLabel() {
+      // 写入/编辑的标题已含动作，不再重复显示类型标签
+      const map = {
+        terminal: '命令', list: '列出', search: '搜索', read: '读取', edit: '', other: '工具',
+      }
+      return this.kindKey in map ? map[this.kindKey] : '工具'
+    },
+    // 状态语义统一：pendingApproval 首位；isRunning = 尚未拿到工具结果(duration==null)
+    // 且当前没有待审批。三类工具（写入 / 命令 / 读取）此时展示一致的前缀与颜色。
+    isRunning() {
+      return this.duration == null && !this.pendingApproval
+    },
+    runningLabel() {
+      return this.streaming ? '写入中…' : '执行中…'
+    },
+    prettyArgs() {
+      try {
+        return JSON.stringify(this.args || {}, null, 2).slice(0, 1000)
+      } catch (_) {
+        return String(this.args)
+      }
+    },
+  },
+  methods: {
+    // diff 前缀：写入(全 add)不需要前缀，让文字与命令/读取从同一缩进起点开始；
+    // 编辑(有 del/add)保留 +/- 前缀，表达「这一行来自哪个方向」。
+    diffPrefix(line) {
+      const diffs = this.card && this.card.diffs
+      const lines = diffs && diffs[0] ? diffs[0].lines : null
+      if (lines && lines.length > 0 && lines.every(l => l.type === 'add')) return ''
+      return line.type === 'add' ? '+ ' : '- '
+    },
+  },
 }
-
-const prettyArgs = computed(() => {
-  try {
-    return JSON.stringify(props.args || {}, null, 2).slice(0, 1000)
-  } catch (_) {
-    return String(props.args)
-  }
-})
 </script>
 
 <style scoped>
@@ -218,6 +232,7 @@ const prettyArgs = computed(() => {
 .tcc-section + .tcc-section { margin-top: 8px; }
 .tcc-label { font-size: 12px; color: var(--text-secondary, #64748b); margin-bottom: 4px; }
 .tcc-streaming-hint { margin-bottom: 4px; font-size: 12px; color: var(--text-secondary, #64748b); }
+
 .tcc-approval-prompt { font-size: 13px; color: #b45309; margin-bottom: 6px; }
 .tcc-approval-files { margin: 0 0 8px; padding-left: 18px; font-size: 12px; color: var(--text-secondary, #64748b); }
 .tcc-approval-actions { display: flex; gap: 8px; }

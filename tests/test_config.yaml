@@ -63,5 +63,13 @@ database:
     database: "agent"
     charset: "utf8mb4"
 
+# 保留既有注册接口测试；开发/生产配置均显式关闭。
+personnel:
+  self_registration_enabled: true
+
 denied_dirs: []
 preset_questions: []
+
+knowledge:
+  schema_version: 1
+  enabled: false

@@ -141,12 +141,15 @@ export async function sendMessage(
   const controller = new AbortController()
   const abortSignal = signal || controller.signal
   const payload = {
-    session_id: sessionId,
-    message,
-    message_id: generateMessageId(),
-    enable_deep_think: enableDeepThink,
-    enable_web_search: enableWebSearch,
-    files,
+      session_id: sessionId,
+      message,
+      message_id: generateMessageId(),
+      enable_deep_think: enableDeepThink,
+      enable_web_search: enableWebSearch,
+      files: files,
+  }
+  if (model) {
+    payload.model = model
   }
   if (model) payload.model = model
   if (pageContext) payload.page_context = pageContext

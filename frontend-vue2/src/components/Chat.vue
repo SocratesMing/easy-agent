@@ -46,7 +46,7 @@
         >
           <div class="skeleton-block" v-for="i in 3" :key="i"></div>
         </div>
-      
+
         <div
         v-for="(msg, index) in messages"
         :key="msg.id"
@@ -93,7 +93,8 @@
         @update:selectedModel="$emit('update:selectedModel', $event)"
         @stop="handleStop"
         @create-session="handleCreateSession"
-        @openPanel="$emit('openPanel', $event)"
+        @open-panel="$emit('open-panel', $event)"
+        @open-knowledge="$emit('open-knowledge', $event)"
       />
 
       <!-- 分类预置问题：仅在首页（居中模式）展示。每个分类一张卡片（分类名即卡片头部，
@@ -375,16 +376,16 @@ export default {
     },
     goToPrevUserMessage() {
       if (this.userMessageIndices.length === 0) return
-      
+
       if (this.currentUserMessageIndex === -1) {
         this.currentUserMessageIndex = 0
       } else if (this.currentUserMessageIndex < this.userMessageIndices.length - 1) {
         this.currentUserMessageIndex++
       }
-      
+
       const targetIndex = this.userMessageIndices[this.currentUserMessageIndex]
       const els = this.$refs.messageEls || []
-      
+
       if (targetIndex !== undefined && els[targetIndex]) {
         els[targetIndex].scrollIntoView({ behavior: 'smooth', block: 'center' })
       }

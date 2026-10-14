@@ -136,10 +136,6 @@ class SessionLogger:
         with open(self.log_file, "w", encoding="utf-8") as f:
             json.dump(self._data, f, ensure_ascii=False, indent=2)
 
-    def set_system_prompt(self, prompt: str):
-        self._data["system_prompt"] = prompt
-        self._flush()
-
     def log_user_message(
         self, message: str, files: Optional[list] = None, message_id: str = ""
     ):
@@ -195,25 +191,6 @@ class SessionLogger:
         self._data["entries"].append(entry)
         self._flush()
 
-    def log_thinking(
-        self,
-        content: str,
-        step: int = 0,
-        duration: Optional[float] = None,
-        message_id: str = "",
-    ):
-        entry = {
-            "type": "thinking",
-            "timestamp": datetime.now().isoformat(),
-            "message_id": message_id,
-            "step": step,
-            "content": content,
-        }
-        if duration is not None:
-            entry["duration"] = duration
-        self._data["entries"].append(entry)
-        self._flush()
-
     def log_tool_call(
         self,
         tool_name: str,
@@ -238,28 +215,5 @@ class SessionLogger:
         }
         if duration is not None:
             entry["duration"] = duration
-        self._data["entries"].append(entry)
-        self._flush()
-
-    def log_context_compression(
-        self, summary: str, original_count: int, compressed_count: int
-    ):
-        entry = {
-            "type": "context_compression",
-            "timestamp": datetime.now().isoformat(),
-            "summary": summary,
-            "original_message_count": original_count,
-            "compressed_message_count": compressed_count,
-        }
-        self._data["entries"].append(entry)
-        self._flush()
-
-    def log_error(self, error: str, context: str = ""):
-        entry = {
-            "type": "error",
-            "timestamp": datetime.now().isoformat(),
-            "error": error,
-            "context": context,
-        }
         self._data["entries"].append(entry)
         self._flush()

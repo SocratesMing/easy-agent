@@ -102,7 +102,7 @@ def test_project_structure():
     assert (base_path / "easy_agent" / "initialization" / "runtime.py").exists()
     assert (base_path / "easy_agent" / "db" / "database.py").exists()
 
-    assert (base_path / "frontend" / "package.json").exists()
+    assert (base_path / "frontend-vue2" / "package.json").exists()
     assert (base_path / "pyproject.toml").exists()
 
 

@@ -20,10 +20,10 @@
         <span v-if="detail && detail.version" class="version-chip">v{{ detail.version }}</span>
         <ToggleSwitch
           v-if="detail && detail.added"
-          :model-value="!!detail.enabled"
+          :value="!!detail.enabled"
           :loading="toggling"
           :aria-label="detail.enabled ? '停用技能' : '启用技能'"
-          @change="handleToggle"
+          @input="handleToggle"
         />
       </div>
     </div>

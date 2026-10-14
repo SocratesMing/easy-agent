@@ -13,7 +13,7 @@ from typing import Any
 
 from langchain_mcp_adapters.client import MultiServerMCPClient
 
-from easy_agent.config import Config
+from easy_agent.config import Config, _expand_env_recursive
 
 logger = logging.getLogger("easy-agent")
 
@@ -159,6 +159,8 @@ def _load_servers_from_file(
     try:
         with open(config_path, encoding="utf-8") as f:
             data = json.load(f)
+        data = _expand_env_recursive(data)
+
         servers = data.get("servers")
         if servers is None:
             # 兼容标准 Claude Desktop 格式 {"mcpServers": {"name": {...}}}

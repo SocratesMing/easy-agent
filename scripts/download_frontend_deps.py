@@ -111,7 +111,7 @@ def main() -> int:
         return 2
 
     root = repo_root()
-    fe_dir = Path(args.frontend_dir) if args.frontend_dir else root / "frontend"
+    fe_dir = Path(args.frontend_dir) if args.frontend_dir else root / "frontend-vue2"
     if not (fe_dir / "package.json").exists():
         print(f"[error] 找不到前端 package.json: {fe_dir}", file=sys.stderr)
         return 1

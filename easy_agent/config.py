@@ -295,6 +295,18 @@ class DistributedLockConfig(BaseModel):
     """``acquire(wait_seconds>0)`` 等待抢锁时的轮询间隔（秒）。"""
 
 
+class PersonnelConfig(BaseModel):
+    """Personnel provisioning and account-source policy."""
+
+    # Fail closed unless a controlled deployment explicitly opts into the
+    # legacy public registration flow.
+    self_registration_enabled: bool = False
+    """自助注册开关：默认关闭，登录页不显示注册入口。"""
+
+    passwordless_login_enabled: bool = False
+    """门户免密登录开关：默认关闭；启用后外部系统可通过用户名+用户ID 直登。"""
+
+
 class Config(BaseModel):
     """Main configuration class"""
 
@@ -307,6 +319,7 @@ class Config(BaseModel):
         default_factory=DistributedLockConfig
     )
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
+    personnel: PersonnelConfig = Field(default_factory=PersonnelConfig)
     models: dict[str, ProviderConfig] = Field(default_factory=dict)
     active_model: str = "minimax"
     preset_questions: list[PresetQuestionGroup] = Field(default_factory=list)
@@ -352,7 +365,12 @@ class Config(BaseModel):
         # 一律通过 ${VAR:-默认值} 占位符从 .env.{AGENT_ENV} 注入，不再按 AGENT_ENV
         # 选择不同的 yaml —— config.{dev,test,prod}.yaml 已废弃。
         base_dir = Path(config_dir) if config_dir else cls.get_package_dir() / "config"
-        return base_dir / "config.yaml"
+        unified = base_dir / "config.yaml"
+        if unified.exists():
+            return unified
+        # Preserve existing knowledge deployments without moving their config/data.
+        legacy = base_dir / f"config.{os.environ.get('AGENT_ENV', 'dev').lower()}.yaml"
+        return legacy if legacy.exists() else unified
 
     @classmethod
     def from_yaml(cls, config_path: str | Path) -> "Config":
@@ -380,6 +398,10 @@ class Config(BaseModel):
         _ensure_project_env_loaded()
         missing: set[str] = set()
         data = _expand_env_recursive(data, missing)
+        # Read legacy model context limits without changing the stored YAML.
+        for model in [data.get("llm", {}), *data.get("models", {}).values()]:
+            if isinstance(model, dict) and "context_length" not in model and "max_input_tokens" in model:
+                model["context_length"] = model["max_input_tokens"]
         _unresolved_env_vars = sorted(missing)
 
         # Parse active model selection
@@ -411,6 +433,7 @@ class Config(BaseModel):
             web_search=web_search_config,
             distributed_lock=distributed_lock_config,
             database=db_config,
+            personnel=PersonnelConfig(**data.get("personnel", {})),
             models=models,
             active_model=active_model,
             preset_questions=data.get("preset_questions", []),
@@ -482,6 +505,7 @@ class Config(BaseModel):
             denied_dirs=data.get("denied_dirs", []),
             skill_write=data.get("skill_write") or "new-only",
             external_dirs=data.get("external_dirs", {}),
+            sandbox_enabled=data.get("sandbox_enabled", True),
         )
 
     @staticmethod

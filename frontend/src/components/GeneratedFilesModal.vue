@@ -11,7 +11,7 @@
           </svg>
         </button>
       </div>
-      
+
       <div class="modal-body">
         <div class="file-list">
           <div
@@ -33,7 +33,7 @@
             暂无生成的文件
           </div>
         </div>
-        
+
         <div class="file-preview">
           <div v-if="selectedFile" class="preview-content">
             <div class="preview-header">
@@ -56,8 +56,7 @@
   </div>
 </template>
 
-<script setup>
-import { ref, watch } from 'vue'
+<script>
 import FileIcon from './FileIcon.vue'
 import { API_BASE_URL } from '../config.js'
 import { overlayClickCloses, markOverlayPress } from '../utils/overlayClick.js'
@@ -98,33 +97,8 @@ async function selectFile(file) {
     } else {
       fileContent.value = '无法加载文件内容'
     }
-  } catch (e) {
-    fileContent.value = '加载文件内容失败: ' + e.message
   }
 }
-
-function formatFileSize(size) {
-  if (size < 1024) return size + ' B'
-  if (size < 1024 * 1024) return (size / 1024).toFixed(1) + ' KB'
-  return (size / 1024 / 1024).toFixed(1) + ' MB'
-}
-
-function formatTime(timeStr) {
-  if (!timeStr) return ''
-  const date = new Date(timeStr)
-  return date.toLocaleString('zh-CN', { 
-    month: '2-digit', 
-    day: '2-digit', 
-    hour: '2-digit', 
-    minute: '2-digit' 
-  })
-}
-
-watch(() => props.files, () => {
-  if (props.files.length > 0 && !selectedFile.value) {
-    selectFile(props.files[0])
-  }
-})
 </script>
 
 <style scoped>

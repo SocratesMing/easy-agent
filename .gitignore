@@ -29,6 +29,9 @@ env/
 venv/
 ENV/
 
+# 便携运行时（嵌入式 Python + 依赖，仅本地分发用，勿提交；仅限仓库根目录）
+/runtime/
+
 workspace/
 *.log
 
@@ -47,6 +50,8 @@ htmlcov/
 .qoder
 
 tests/chat_history/
+# Local QA evidence can contain request/response payloads and document metadata.
+test-results/
 
 data/
 logs/
@@ -65,4 +70,12 @@ offline_deps/
 
 # IDE 智能体工作目录（含跨会话记忆，勿提交）
 .codebuddy/
-.codebuddy/
+
+# macOS
+.DS_Store
+
+# Trae 本地会话文档
+.trae/
+
+# 部署打包产物（本地分发用）
+easy-agent-portable.zip

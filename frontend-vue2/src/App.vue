@@ -19,6 +19,7 @@
     <template v-else-if="!isBootstrapping">
       <SessionList
         v-show="!isSidebarCollapsed"
+        :style="{ width: sidebarWidth + 'px', flexShrink: 0 }"
         :sessions="sessions"
         :currentSessionId="currentSessionId"
         :streamingSessionIds="streamingSessions"
@@ -26,6 +27,8 @@
         :organizationId="userProfile.organization_id"
         :email="userProfile.email"
         :showAssets="showAssets"
+        :showKnowledge="showKnowledge"
+        @show-knowledge="handleShowKnowledge"
         @create-session="handleCreateSession"
         @select-session="handleSelectSession"
         @delete-session="handleDeleteSession"
@@ -36,9 +39,10 @@
         @show-skill-center="handleShowSkillCenter"
         @show-scheduled-tasks="handleShowScheduledTasks"
         @show-settings="showSettingsPanel = true"
-        @show-user-management="showUserManagementPanel = true"
+        @show-user-management="handleShowUserManagement"
         @logout="handleLogout"
       />
+      <SidebarResizeHandle v-if="!isSidebarCollapsed" v-model="sidebarWidth" />
       
       <button 
         v-if="isSidebarCollapsed"
@@ -73,8 +77,15 @@
         @close="showUserManagementPanel = false"
       />
       
+      <KnowledgeWorkbench
+        v-if="showKnowledge"
+        @close="showKnowledge = false"
+        @manage-personnel="handleShowUserManagement"
+        @chat-session-prepared="loadSessions"
+      />
+
       <Chat
-        v-else-if="!showAssets && !showSkillCenter && !showScheduledTasks"
+        v-else-if="!showUserManagementPanel && !showAssets && !showSkillCenter && !showScheduledTasks"
         :messages="messages"
         :sessionLoading="sessionLoading"
         :currentSessionId="currentSessionId"
@@ -100,10 +111,11 @@
         @retry="handleRetry"
         @approve="handleToolApproval('approve')"
         @reject="handleToolApproval('reject')"
-        @openPanel="openSkillCenterPanel"
+        @open-panel="openSkillCenterPanel"
+        @open-knowledge="openKnowledgeWorkbench"
       />
 
-      <div v-if="currentSessionId && !showAssets && !showSkillCenter" class="workspace-area">
+      <div v-if="currentSessionId && !showKnowledge && !showUserManagementPanel && !showAssets && !showSkillCenter" class="workspace-area">
         <WorkspacePanel
           :username="userProfile.username"
           :currentSessionId="currentSessionId"
@@ -134,7 +146,9 @@ import Chat from './components/Chat.vue'
 import AssetsPanel from './components/AssetsPanel.vue'
 import SkillCenter from './components/SkillCenter.vue'
 import ScheduledTasksPanel from './components/ScheduledTasksPanel.vue'
-import UserManagementPanel from './components/UserManagementPanel.vue'
+import UserManagementPanel from './features/personnel/PersonnelManagement.vue'
+import KnowledgeWorkbench from './features/knowledge/KnowledgeWorkbench.vue'
+import SidebarResizeHandle from './features/knowledge/SidebarResizeHandle.vue'
 import Welcome from './components/Welcome.vue'
 import WorkspacePanel from './components/WorkspacePanel.vue'
 import SettingsPanel from './components/SettingsPanel.vue'
@@ -146,6 +160,7 @@ import { chatStore } from './store/chatStore.js'
 import { buildPageContext } from './utils/pageContext.js'
 import { logout as apiLogout, notifyLogout, getStoredToken, getStoredUsername, AUTH_EXPIRED_EVENT, authFetch, passwordlessLogin } from './api/auth.js'
 import { getModels as fetchModels } from './api/settings.js'
+import { isRestorableUserProfile } from './utils/userProfile.js'
 
 // ── 应用级常量（原 src/config.js 已移除，直接定义在组件内）────────────
 // 应用名称与首页欢迎语；后端 /agent/auth/config 返回的 app_welcome_title 仍可在运行期覆盖
@@ -197,6 +212,8 @@ const STREAM_STATE_KEY = 'easy_agent_stream_state'
 export default {
   components: {
     AiSidebar,
+    SidebarResizeHandle,
+    KnowledgeWorkbench,
     AssetsPanel,
     Chat,
     ScheduledTasksPanel,
@@ -222,6 +239,8 @@ export default {
       isSidebarCollapsed: false,
       isWorkspaceCollapsed: true,
       showAssets: false,
+      showKnowledge: false,
+      sidebarWidth: 280,
       showSkillCenter: false,
       skillCenterTab: 'skills',
       showScheduledTasks: false,
@@ -413,6 +432,7 @@ export default {
       this.isSidebarCollapsed = !this.isSidebarCollapsed
     },
     handleShowAssets() {
+      this.showKnowledge = false
       this.showAssets = !this.showAssets
       this.showSkillCenter = false
       this.showScheduledTasks = false
@@ -422,15 +442,41 @@ export default {
       this.skillCenterTab = tab
       this.showSkillCenter = true
     },
+    openKnowledgeWorkbench() {
+      // 「+」菜单知识库子面板入口：打开知识库工作台
+      this.showKnowledge = true
+      this.showAssets = false
+      this.showSkillCenter = false
+      this.showScheduledTasks = false
+      this.showSettingsPanel = false
+      this.showUserManagementPanel = false
+    },
     handleShowSkillCenter() {
+      this.showKnowledge = false
       this.showSkillCenter = !this.showSkillCenter
       this.showAssets = false
       this.showScheduledTasks = false
     },
     handleShowScheduledTasks() {
+      this.showKnowledge = false
       this.showScheduledTasks = !this.showScheduledTasks
       this.showAssets = false
       this.showSkillCenter = false
+    },
+    handleShowKnowledge() {
+      this.showKnowledge = !this.showKnowledge
+      this.showAssets = false
+      this.showSkillCenter = false
+      this.showScheduledTasks = false
+      this.showSettingsPanel = false
+      this.showUserManagementPanel = false
+    },
+    handleShowUserManagement() {
+      this.showUserManagementPanel = true
+      this.showKnowledge = false
+      this.showAssets = false
+      this.showSkillCenter = false
+      this.showScheduledTasks = false
     },
     applyAgentConfig(configData) {
       if (!configData) return
@@ -538,6 +584,7 @@ export default {
       await this.restoreInitialSession()
     },
     async handleLogout() {
+      this.showKnowledge = false
       // 通知后端记录登出（用户名/上次登录缓存时间/在线时长），best-effort。
       // 仅在仍持有 token 时通知：被动登出（401 被踢下线/过期）时 token 已被 clearAuth
       // 清除，再调登出接口会再次 401 触发 AUTH_EXPIRED 事件造成循环。
@@ -594,7 +641,7 @@ export default {
 
       try {
         const profile = await getUserProfile()
-        if (!profile.username || profile.username === 'admin') {
+        if (!isRestorableUserProfile(profile)) {
           this.requireLogin()
           return
         }
@@ -669,15 +716,11 @@ export default {
         return false
       }
     },
-    /**
-     * 技能中心的「创建技能」：预填内容已写入 sessionStorage，
-     * 这里新建会话并关闭技能中心，ChatInput 随之重新挂载、自动恢复技能标签与提示词。
-     */
-    async handleSkillCreate() {
-      await this.handleCreateSession()
-    },
     // chatSessionMixin 钩子：主页面新建/切换会话时回到对话视图
+    // （showKnowledge/showUserManagementPanel 为 feature 侧引入的互斥面板，一并收起）
     beforeSessionChange(kind) {
+      this.showKnowledge = false
+      this.showUserManagementPanel = false
       this.showAssets = false
       this.showSkillCenter = false
       this.showScheduledTasks = false
@@ -686,7 +729,7 @@ export default {
     // AI 侧边栏「在主页面打开」：主对话区切到该会话
     async handleOpenSessionInMain(sessionId) {
       if (!sessionId) return
-      if (sessionId === this.currentSessionId && !this.showAssets && !this.showSkillCenter && !this.showScheduledTasks) return
+      if (sessionId === this.currentSessionId && !this.showAssets && !this.showSkillCenter && !this.showScheduledTasks && !this.showKnowledge && !this.showUserManagementPanel) return
       await this.handleSelectSession(sessionId)
     },
   }

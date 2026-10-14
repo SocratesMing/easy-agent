@@ -1,8 +1,8 @@
 """pytest 公共夹具。
 
 策略：
-- 通过 EASY_CONFIG 指向 tests/test_config.yaml，并用环境变量将数据库/工作区/记忆/技能等
-  路径重定向到临时目录，避免依赖宿主机真实配置与外部服务。
+- 根据 tests/test_config.yaml 生成一份路径已解析的临时配置，并通过 EASY_CONFIG
+  指向它；生产配置保持“YAML 值不做环境变量插值”的最新语义。
 - 每个测试使用独立的内存 SQLite 数据库（:memory:），保证隔离。
 - 固定当前用户名为 "testuser"，绕过 JWT 校验，方便接口测试；
   需要验证真实鉴权的用例可在测试内临时移除 get_current_username 的 override。
@@ -16,6 +16,7 @@ import uuid
 from pathlib import Path
 
 import pytest
+import yaml
 
 # 手动演示脚本 / 陈旧单测，不纳入接口与业务场景测试套件：
 # - test_v3_streaming.py：需真实 config.yaml + 联网调用 LLM，模块级 test_* 协程会被收集并执行 sys.exit(1)
@@ -27,7 +28,7 @@ _TMP = Path(tempfile.mkdtemp(prefix="easy_agent_test_"))
 
 # 在导入 app 之前设置环境变量，确保 lifespan 加载测试配置成功
 os.environ["EASY_JWT_SECRET"] = "test-secret-for-easy-agent-tests"
-os.environ["EASY_CONFIG"] = str(TEST_ROOT / "test_config.yaml")
+os.environ["EASYAGENT_BOOTSTRAP_ADMIN_PASSWORD"] = "Test-Admin-Bootstrap-2026!"
 os.environ["TEST_WORKSPACE_DIR"] = str(_TMP / "workspace")
 os.environ["TEST_MEMORIES_DIR"] = str(_TMP / "memories")
 os.environ["TEST_LOG_DIR"] = str(_TMP / "logs")
@@ -40,6 +41,24 @@ os.environ["TEST_SYSTEM_PROMPT"] = str(TEST_ROOT / "system_prompt.md")
 
 for _d in ("workspace", "memories", "logs", "sessions", "skills", "prompts", "uploads"):
     (_TMP / _d).mkdir(parents=True, exist_ok=True)
+
+# 最新 EasyAgent 的主配置不再展开 ${ENV}。测试仍需为每次运行使用独立临时
+# 目录，因此在导入 app 前生成已解析的测试 YAML，而不改变生产配置语义。
+with (TEST_ROOT / "test_config.yaml").open(encoding="utf-8") as _f:
+    _test_config = yaml.safe_load(_f)
+_test_config["workspace_dir"] = os.environ["TEST_WORKSPACE_DIR"]
+_test_config["memories_dir"] = os.environ["TEST_MEMORIES_DIR"]
+_test_config["log_dir"] = os.environ["TEST_LOG_DIR"]
+_test_config["sessions_dir"] = os.environ["TEST_SESSIONS_DIR"]
+_test_config["system_prompt_path"] = os.environ["TEST_SYSTEM_PROMPT"]
+_test_config["tools"]["skills_dir"] = os.environ["TEST_SKILLS_DIR"]
+_test_config["tools"]["prompts_dir"] = os.environ["TEST_PROMPTS_DIR"]
+_test_config["database"]["sqlite"]["path"] = os.environ["TEST_DB_PATH"]
+_test_config["knowledge"] = {"schema_version": 1, "enabled": False}
+_resolved_test_config = _TMP / "test_config.resolved.yaml"
+with _resolved_test_config.open("w", encoding="utf-8") as _f:
+    yaml.safe_dump(_test_config, _f, allow_unicode=True, sort_keys=False)
+os.environ["EASY_CONFIG"] = str(_resolved_test_config)
 
 from fastapi.testclient import TestClient  # noqa: E402
 
