@@ -41,6 +41,13 @@
       "headers": {
         "Authorization": "Bearer <在设置页生成的黄金归因 MCP API Key>"
       }
+    },
+    "treasury_1y": {
+      "transport": "streamable_http",
+      "url": "http://<mcp-server 地址>:8174/mcp/treasury_1y/",
+      "headers": {
+        "Authorization": "Bearer <在设置页生成的 1 年期国债模型 MCP API Key>"
+      }
     }
   }
 }

@@ -56,6 +56,9 @@ _ISOLATED_ENV = {
     "GOLD_SCHEMA": "",
     "GOLD_ALLOWED_TABLES": "",
     "GOLD_DENY_TABLES": "",
+    "TREASURY_1Y_SCHEMA": "",
+    "TREASURY_1Y_ALLOWED_TABLES": "",
+    "TREASURY_1Y_DENY_TABLES": "",
 }
 
 

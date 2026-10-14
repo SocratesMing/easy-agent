@@ -34,6 +34,7 @@ from typing import Any
 from easy_mcp_server.businesses.gold_analysis import gold_analysis
 from easy_mcp_server.businesses.macro_forecast import domestic_macro
 from easy_mcp_server.businesses.rates_timing import rates_timing
+from easy_mcp_server.businesses.treasury_1y import treasury_1y
 from easy_mcp_server.businesses.weekly_research import weekly_research
 from easy_mcp_server.db import connection
 
@@ -223,6 +224,17 @@ DDL: dict[str, tuple[str, ...]] = {
             PRIMARY KEY (id),
             UNIQUE KEY uk_model_date (model_name, creation_time)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='黄金价格多因子归因结果（演示）'
+        """,
+    ),
+    "treasury_1y": (
+        """
+        CREATE TABLE IF NOT EXISTS fmqt_treasury_1y_history (
+            `signal_date` DATE        NOT NULL COMMENT '结果参考日期，唯一',
+            `result_json` JSON        NOT NULL COMMENT '当日完整结果对象',
+            `created_at`  DATETIME(6) NOT NULL COMMENT '首次写入时间 UTC',
+            `updated_at`  DATETIME(6) NOT NULL COMMENT '最近写入时间 UTC',
+            PRIMARY KEY (`signal_date`)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='1年期国债模型历史结果（演示）'
         """,
     ),
 }
@@ -500,6 +512,46 @@ def _gold_rows() -> dict[str, list[tuple[Any, ...]]]:
     return {"main": rows}
 
 
+def _treasury_1y_rows() -> dict[str, list[tuple[Any, ...]]]:
+    """1 年期国债模型：35 个日期，完整结果放在 result_json 里。
+
+    口径按文档：``prob_up_7d`` 等是 0—1 小数，``yield_pct`` 是百分数原值
+    （1.2147 即 1.2147%）；每三个日期留一个 ``yield_change_2d_bp`` 为 null，
+    用于验证 null 不会被当成 0。
+    """
+    end = date(2026, 10, 10)
+    days = [(end - timedelta(days=34 - index)).isoformat() for index in range(35)]
+    rows: list[tuple[Any, ...]] = []
+
+    for index, day in enumerate(days):
+        prob_up = round(0.40 + 0.01 * (index % 25), 6)
+        payload = {
+            "signal_date": day,
+            "strategy_id": "curve_funding_7d_mtht_v3",
+            "yield_pct": round(1.10 + 0.005 * (index % 20), 4),
+            "yield_percentile_756": round(0.3 + 0.6 * (index % 10) / 10, 6),
+            "prob_up_7d": prob_up,
+            "prob_down_7d": round(1 - prob_up, 6),
+            "trade_threshold": 0.65,
+            "signal_blocked": 1 if index % 7 == 0 else 0,
+            "production_guard": "保护条件触发：概率未达阈值" if index % 7 == 0 else "",
+            "funding_signal": (-1, 0, 1)[index % 3],
+            "funding_advice": "资金面偏松，可适度加仓" if index % 3 == 2 else "资金面中性，观望",
+            "mt_signal": (-1, 0, 1)[index % 3],
+            "ht_signal": (0, 1, -1)[index % 3],
+            "technical_signal": (-1, 0, 1)[(index + 1) % 3],
+            "technical_advice": "技术面偏多，趋势向上" if (index + 1) % 3 == 2 else "技术面中性",
+            "yield_change_2d_bp": None if index % 3 == 0 else round(-3.5 + index % 7, 2),
+            "funding_explanation": "资金利率下行，流动性宽松，对债市偏友好。",
+            "technical_explanation": "均线多头排列，动量指标走强。",
+            "funding_source": "资金面工作簿",
+            "technical_source": "技术面工作簿",
+        }
+        rows.append((day, json.dumps(payload, ensure_ascii=False), GENERATED_AT, GENERATED_AT))
+
+    return {"main": rows}
+
+
 # ── 场景编排 ────────────────────────────────────────────────────────────
 SCENES: dict[str, dict[str, Any]] = {
     "forecast": {
@@ -532,6 +584,12 @@ SCENES: dict[str, dict[str, Any]] = {
         "module": gold_analysis,
         "tables": ("main",),
         "builder": _gold_rows,
+    },
+    "treasury_1y": {
+        "title": "1 年期国债模型",
+        "module": treasury_1y,
+        "tables": ("main",),
+        "builder": _treasury_1y_rows,
     },
 }
 

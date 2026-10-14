@@ -53,6 +53,7 @@ def _research_scenes() -> list[Scene]:
     from easy_mcp_server.businesses.idata import idata
     from easy_mcp_server.businesses.macro_forecast import domestic_macro
     from easy_mcp_server.businesses.rates_timing import rates_timing
+    from easy_mcp_server.businesses.treasury_1y import treasury_1y
     from easy_mcp_server.businesses.weekly_research import weekly_research
 
     return [
@@ -75,6 +76,12 @@ def _research_scenes() -> list[Scene]:
             "黄金价格多因子归因",
             tuple(gold_analysis.TABLES.values()),
             "GOLD_SCHEMA",
+        ),
+        Scene(
+            "treasury_1y",
+            "1 年期国债模型",
+            tuple(treasury_1y.TABLES.values()),
+            "TREASURY_1Y_SCHEMA",
         ),
     ]
 

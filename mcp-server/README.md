@@ -116,6 +116,7 @@ WebSocket），所以启动时要显式给上限：
 | `rates_timing` | `/mcp/rates_timing/` | 投资研究：利率择时（只读已保存的预测与运行审计） |
 | `weekly_research` | `/mcp/weekly_research/` | 投资研究：周度研报观点矩阵与机构宏观预测 |
 | `gold_analysis` | `/mcp/gold_analysis/` | 投资研究：黄金价格多因子归因（单表宽表，收益率口径小数） |
+| `treasury_1y` | `/mcp/treasury_1y/` | 投资研究：1 年期国债模型（单表，结果存在 `result_json` 里） |
 
 > 上面五个业务原先同属 `investment_research` 一个包（54 个工具挤在一个 MCP 服务里，
 > 每次请求都要带上全部工具定义）。已拆为独立业务包，各自一个端点、Key 与表可见性白名单。
@@ -227,11 +228,12 @@ WebSocket），所以启动时要显式给上限：
 | `weekly_research` | 周度研报观点 | `weekly_analyzer_data` | 周度机构观点、资产共识、研报出处与市场综述 |
 | `weekly_research` | 周度宏观预测 | `weekly_macro_data` | 指标、机构预测、覆盖数、数值均值与文字众数 |
 | `gold_analysis` | 黄金价格归因 | `fmqt_gold_analysis_result` | 六个因子分组的累计贡献（收益率口径小数） |
+| `treasury_1y` | 1 年期国债模型 | `fmqt_treasury_1y_history` | 收益率、上下行概率、资金面/技术面信号与已存解释（结果在 `result_json` 内） |
 
 各领域先调用对应的 `describe_*_schema` 工具查看表、枚举、单位和口径说明。领域入口为：
 
 - `describe_idata_schema`、`describe_domestic_macro_schema`、`describe_rates_timing_schema`、
-  `describe_weekly_research_schema`、`describe_gold_schema`
+  `describe_weekly_research_schema`、`describe_gold_schema`、`describe_treasury_1y_schema`
 - 国内宏观预测按 `forecast_month` 定位报告；后续查询使用 `report_id` / `indicator_id`
 - 利率择时工具仅读已保存结果，不开始训练、不调用大模型；预测概率保留 0—1 原值
 - 周度观点与周度宏观预测是两份独立数据；周标签格式为 `YYYYMMDD-YYYYMMDD`
