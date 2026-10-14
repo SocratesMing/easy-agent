@@ -106,7 +106,7 @@ async def _domain_query(
 
 def build() -> FastMCP:
     mcp = FastMCP(
-        "idata",
+        "iData 数据分析看板",
         instructions=INSTRUCTIONS,
         streamable_http_path="/",
         stateless_http=True,

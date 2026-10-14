@@ -51,7 +51,7 @@ def _policy():
 
 def build() -> FastMCP:
     mcp = FastMCP(
-        "strategyqa",
+        "策略问数",
         instructions=INSTRUCTIONS,
         streamable_http_path="/",
         stateless_http=True,

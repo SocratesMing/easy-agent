@@ -155,7 +155,7 @@ async def _domain_query(
 
 def build() -> FastMCP:
     mcp = FastMCP(
-        "treasury_1y",
+        "1 年期国债模型",
         instructions=INSTRUCTIONS,
         streamable_http_path="/",
         stateless_http=True,

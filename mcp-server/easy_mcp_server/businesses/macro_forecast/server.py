@@ -75,7 +75,7 @@ async def _domain_query(
 
 def build() -> FastMCP:
     mcp = FastMCP(
-        "macro_forecast",
+        "国内宏观指标预测",
         instructions=INSTRUCTIONS,
         streamable_http_path="/",
         stateless_http=True,

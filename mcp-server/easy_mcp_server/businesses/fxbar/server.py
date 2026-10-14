@@ -51,7 +51,7 @@ def _policy():
 
 def build() -> FastMCP:
     mcp = FastMCP(
-        "fxbar",
+        "外汇 K 线",
         instructions=INSTRUCTIONS,
         streamable_http_path="/",
         stateless_http=True,

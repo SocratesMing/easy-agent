@@ -76,7 +76,7 @@ async def _domain_query(
 
 def build() -> FastMCP:
     mcp = FastMCP(
-        "weekly_research",
+        "研报观点矩阵",
         instructions=INSTRUCTIONS,
         streamable_http_path="/",
         stateless_http=True,

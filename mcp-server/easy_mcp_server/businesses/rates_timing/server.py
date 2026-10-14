@@ -76,7 +76,7 @@ async def _domain_query(
 
 def build() -> FastMCP:
     mcp = FastMCP(
-        "rates_timing",
+        "10 年期国债趋势判断",
         instructions=INSTRUCTIONS,
         streamable_http_path="/",
         stateless_http=True,

@@ -110,7 +110,7 @@ async def _domain_query(
 
 def build() -> FastMCP:
     mcp = FastMCP(
-        "gold_analysis",
+        "黄金价格驱动因子",
         instructions=INSTRUCTIONS,
         streamable_http_path="/",
         stateless_http=True,
