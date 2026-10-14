@@ -1,4 +1,5 @@
-"""Admin-only personnel management API."""
+"""Personnel management API: admin and team-space managers (whitelisted
+department editors) share the same full access; everyone else gets 403."""
 
 from __future__ import annotations
 
@@ -13,6 +14,7 @@ from openpyxl.styles import Font, PatternFill
 
 from ..db import Database, get_database
 from ..middleware import get_current_username
+from ..knowledges.core.repository import KnowledgeRepository
 from .excel_import import PersonnelExcelError, parse_personnel_excel
 from .models import (
     PersonnelCreateRequest,
@@ -49,16 +51,16 @@ MAX_EXCEL_BYTES = 5 * 1024 * 1024
 def _audit(
     request: Request,
     db: Database,
-    admin: str,
+    operator: str,
     action: str,
     object_id: str,
     details: dict | None = None,
 ) -> None:
-    user = db.get_user_by_username(admin)
+    user = db.get_user_by_username(operator)
     KnowledgeOperationsRepository(db).record_audit(
         request_id=str(getattr(request.state, "request_id", "unknown")),
-        actor_user_id=user.user_id if user else admin,
-        actor_username=admin,
+        actor_user_id=user.user_id if user else operator,
+        actor_username=operator,
         action=action,
         object_type="personnel",
         object_id=object_id,
@@ -66,22 +68,25 @@ def _audit(
     )
 
 
-def require_admin(
+def require_personnel_editor(
     request: Request,
     username: Annotated[str, Depends(get_current_username)],
     db: Annotated[Database, Depends(get_database)],
 ) -> str:
-    if username != "admin":
-        raise HTTPException(status_code=403, detail="仅 admin 账户可以配置人员信息")
+    """人员管理守卫：admin 与公共空间管理员（白名单）同权全量访问，其余 403。"""
     user = db.get_user_by_username(username)
-    request.state.actor_user_id = user.user_id if user else username
+    if not user:
+        raise HTTPException(status_code=403, detail="账号不存在或已被删除")
+    request.state.actor_user_id = user.user_id
     request.state.actor_username = username
+    if username != "admin" and not KnowledgeRepository(db).is_team_space_manager(user.user_id):
+        raise HTTPException(status_code=403, detail="仅 admin 或公共空间管理员可以配置人员信息")
     return username
 
 
 @router.get("/users", response_model=PersonnelListResponse, summary="查询人员信息")
 def get_personnel_users(
-    _: Annotated[str, Depends(require_admin)],
+    _: Annotated[str, Depends(require_personnel_editor)],
     db: Annotated[Database, Depends(get_database)],
     keyword: str = Query(default="", max_length=100),
     account_status: str = Query(default="", pattern="^(|active|disabled)$"),
@@ -109,15 +114,15 @@ def get_personnel_users(
 def add_personnel_user(
     payload: PersonnelCreateRequest,
     request: Request,
-    admin: Annotated[str, Depends(require_admin)],
+    operator: Annotated[str, Depends(require_personnel_editor)],
     db: Annotated[Database, Depends(get_database)],
 ):
     try:
         record = create_personnel(db, payload)
     except PersonnelConflictError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    logger.info("[人员管理] 手动新增 | 管理员: %s | 账号: %s | 来源: %s", admin, payload.username, payload.source)
-    _audit(request, db, admin, "personnel.create", str(record["user_id"]), {"source": payload.source})
+    logger.info("[人员管理] 手动新增 | 操作人: %s | 账号: %s | 来源: %s", operator, payload.username, payload.source)
+    _audit(request, db, operator, "personnel.create", str(record["user_id"]), {"source": payload.source})
     return PersonnelRecord(**record)
 
 
@@ -126,7 +131,7 @@ def edit_personnel_user(
     user_id: str,
     payload: PersonnelUpdateRequest,
     request: Request,
-    admin: Annotated[str, Depends(require_admin)],
+    operator: Annotated[str, Depends(require_personnel_editor)],
     db: Annotated[Database, Depends(get_database)],
 ):
     try:
@@ -135,8 +140,8 @@ def edit_personnel_user(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except PersonnelConflictError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    logger.info("[人员管理] 编辑 | 管理员: %s | user_id: %s | 来源: %s", admin, user_id, payload.source)
-    _audit(request, db, admin, "personnel.update", user_id, {"source": payload.source})
+    logger.info("[人员管理] 编辑 | 操作人: %s | user_id: %s | 来源: %s", operator, user_id, payload.source)
+    _audit(request, db, operator, "personnel.update", user_id, {"source": payload.source})
     return PersonnelRecord(**record)
 
 
@@ -144,7 +149,7 @@ def edit_personnel_user(
 def delete_personnel_user(
     user_id: str,
     request: Request,
-    admin: Annotated[str, Depends(require_admin)],
+    operator: Annotated[str, Depends(require_personnel_editor)],
     db: Annotated[Database, Depends(get_database)],
 ):
     try:
@@ -154,17 +159,17 @@ def delete_personnel_user(
     except PersonnelConflictError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     logger.info(
-        "[人员管理] 删除 | 管理员: %s | user_id: %s | 账号: %s",
-        admin, user_id, record["username"],
+        "[人员管理] 删除 | 操作人: %s | user_id: %s | 账号: %s",
+        operator, user_id, record["username"],
     )
-    _audit(request, db, admin, "personnel.delete", user_id, {"username": record["username"]})
+    _audit(request, db, operator, "personnel.delete", user_id, {"username": record["username"]})
     return Response(status_code=204)
 
 
 @router.post("/import", response_model=PersonnelImportResponse, summary="Excel 导入人员")
 def import_personnel_excel(
     request: Request,
-    admin: Annotated[str, Depends(require_admin)],
+    operator: Annotated[str, Depends(require_personnel_editor)],
     db: Annotated[Database, Depends(get_database)],
     file: UploadFile = File(...),
     source: str = Form(..., min_length=1, max_length=255),
@@ -188,11 +193,11 @@ def import_personnel_excel(
     except PersonnelConflictError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     logger.info(
-        "[人员管理] Excel导入 | 管理员: %s | 来源: %s | 新增: %s | 更新: %s",
-        admin, source, created, updated,
+        "[人员管理] Excel导入 | 操作人: %s | 来源: %s | 新增: %s | 更新: %s",
+        operator, source, created, updated,
     )
     _audit(
-        request, db, admin, "personnel.import", "excel-batch",
+        request, db, operator, "personnel.import", "excel-batch",
         {"source": source, "total": len(items), "created": created, "updated": updated},
     )
     return PersonnelImportResponse(
@@ -201,7 +206,7 @@ def import_personnel_excel(
 
 
 @router.get("/import-template", summary="下载人员导入模板")
-def download_import_template(_: Annotated[str, Depends(require_admin)]):
+def download_import_template(_: Annotated[str, Depends(require_personnel_editor)]):
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "部门结构"

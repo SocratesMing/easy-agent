@@ -12,7 +12,7 @@
       </div>
       <div class="ke-topbar-actions">
         <button
-          v-if="teamSpaceManagement.is_admin && selectedSpace === 'team'"
+          v-if="teamSpaceManagement.can_manage && selectedSpace === 'team'"
           class="ke-button admin-access"
           title="配置人员、部门及公共空间创建与管理权限"
           @click="$emit('manage-personnel')"

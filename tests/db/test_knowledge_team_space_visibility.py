@@ -105,6 +105,35 @@ async def test_same_department_user_gets_default_viewer_role(db, tmp_path):
     assert await service._effective_role(base, other, []) is None
 
 
+async def test_team_space_manager_gets_manager_role_across_departments(db, tmp_path):
+    """白名单账号同权：对所有公共库（含跨部门）直通 MANAGER，列表全量可见。"""
+    _insert_user(db, "u-owner", "owner", "dept-a")
+    _insert_user(db, "u-mgr", "mgr", "dept-a")
+    # other 为 base-b 本部门普通账号（默认 VIEWER）；out 为跨部门普通账号（不可见）
+    _insert_user(db, "u-other", "other", "dept-b")
+    _insert_user(db, "u-out", "out", "dept-c")
+    _insert_team_base(db, "base-a", "dept-a", owner_user_id="u-owner")
+    _insert_team_base(db, "base-b", "dept-b", owner_user_id="u-owner")
+    _grant_team_space_manager(db, "u-mgr")
+
+    repository = KnowledgeRepository(db)
+    service = _service(db, tmp_path)
+    mgr = KnowledgePrincipal(user_id="u-mgr", username="mgr", department_id="dept-a")
+    other = KnowledgePrincipal(user_id="u-other", username="other", department_id="dept-b")
+    out = KnowledgePrincipal(user_id="u-out", username="out", department_id="dept-c")
+
+    base_b = repository.get_base("base-b")
+    assert await service._effective_role(base_b, mgr, []) == KnowledgeBaseRole.MANAGER
+    # 普通账号行为不变：本部门默认 VIEWER，跨部门不可见
+    assert await service._effective_role(base_b, other, []) == KnowledgeBaseRole.VIEWER
+    assert await service._effective_role(base_b, out, []) is None
+
+    response = await service.list_bases(mgr, page=1, page_size=20)
+    assert {item.id for item in response.items} == {"base-a", "base-b"}
+    assert all(item.role == KnowledgeBaseRole.MANAGER for item in response.items)
+    assert all("manage_permissions" in item.allowed_actions for item in response.items)
+
+
 async def test_restricted_team_base_only_visible_to_selected_users(db, tmp_path):
     """勾选名单模式：保存勾选人员后仅勾选者可见，取消后恢复默认。"""
     _insert_user(db, "u-owner", "owner", "dept-a")
