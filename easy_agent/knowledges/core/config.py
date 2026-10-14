@@ -47,7 +47,7 @@ class KnowledgeConfigError(ValueError):
 
 
 class EmbeddingConfig(BaseModel):
-    # Ragflow 上注册的 embedding 模型标识（"model@provider" 格式），创建知识库时随请求提交
+    # 可选；空字符串时 create_dataset 传 None，由 Ragflow 使用其默认 embedding
     model: str = ""
 
 
