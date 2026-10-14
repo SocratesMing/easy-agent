@@ -1,0 +1,10 @@
+{
+  "expert_agent_id": "preset_gold_investment",
+  "name_cn": "黄金投研专家",
+  "name_en": "gold-investment-researcher",
+  "version": 1,
+  "prompt_file": "gold-investment-researcher.md",
+  "generated_at": "2026-10-14T22:40:00",
+  "model": "preset",
+  "raw_llm_output": null
+}

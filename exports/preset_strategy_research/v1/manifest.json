@@ -1,0 +1,10 @@
+{
+  "expert_agent_id": "preset_strategy_research",
+  "name_cn": "策略研究专家",
+  "name_en": "strategy-research-specialist",
+  "version": 1,
+  "prompt_file": "strategy-research-specialist.md",
+  "generated_at": "2026-10-14T22:40:00",
+  "model": "preset",
+  "raw_llm_output": null
+}
