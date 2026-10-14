@@ -90,7 +90,8 @@ const triggerLabel = computed(() => {
 
 async function load() {
   error.value = ''
-  loading.value = true
+  // 已有数据时静默刷新，避免面板每次展开都闪「加载中」
+  loading.value = !bases.value.length
   try {
     const capability = await getKnowledgeCapabilities()
     enabled.value = Boolean(capability.enabled)
@@ -100,8 +101,11 @@ async function load() {
       props.sessionId ? getSessionKnowledgeScope(props.sessionId) : Promise.resolve({ base_ids: [] })
     ])
     bases.value = baseResponse.items || []
-    selected.value = scope.base_ids || []
-    draft.value = [...selected.value]
+    // 面板打开期间用户已勾选（保存中）时，以保存结果为准，不用旧快照覆盖
+    if (!saving.value && !creatingSession.value) {
+      selected.value = scope.base_ids || []
+      draft.value = [...selected.value]
+    }
   } catch (reason) { error.value = reason.message || '知识范围加载失败' }
   finally { loading.value = false }
 }
@@ -123,20 +127,28 @@ function togglePopover() {
   open.value = !open.value
 }
 
-// 供加号菜单 hover/click 展开：幂等打开面板（不新建会话，勾选时才落库）
-function openPopover() {
+// 供加号菜单 hover/click 展开：幂等打开面板（不新建会话，勾选时才落库）。
+// anchor 为触发的菜单项元素；每次展开都重新拉取列表，主页面新建的知识库无需刷新页面即可看到
+let anchorEl = null
+async function openPopover(anchor) {
   if (props.disabled || open.value || creatingSession.value) return
+  if (anchor) anchorEl = anchor
   draft.value = [...selected.value]
   error.value = ''
   updatePanelPosition()
   open.value = true
+  await load()
 }
 function closePopover() { if (open.value) open.value = false }
 
 // 面板贴着锚点（如加号菜单「知识库」菜单项）右侧弹出，
 // 定位方式与 ChatInput 的技能/连接器子面板（openSubpanel）保持一致
 function updatePanelPosition() {
-  const anchor = (props.anchorSelector && document.querySelector(props.anchorSelector)) || rootRef.value
+  // 页面上可能同时存在多个输入框（主对话区 + AI 侧边栏），且 SDK 运行在 Shadow DOM 中，
+  // 不能用 document.querySelector 全局查找锚点
+  const anchor = (anchorEl && anchorEl.isConnected ? anchorEl : null)
+    || (props.anchorSelector && rootRef.value && rootRef.value.getRootNode().querySelector(props.anchorSelector))
+    || rootRef.value
   if (!anchor) return
   const rect = anchor.getBoundingClientRect()
   const panelWidth = Math.min(380, window.innerWidth * 0.9)

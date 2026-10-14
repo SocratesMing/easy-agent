@@ -414,7 +414,8 @@
 <script>
 import { uploadFile, deleteFile } from '../api/files.js'
 import { getWebSearchStatus } from '../api/settings.js'
-import { getUserSkills } from '../api/skills.js'
+import { getPublicSkills, getUserSkills } from '../api/skills.js'
+import { listExperts } from '../api/expert.js'
 import { iconCategoryFor } from '../utils/skillCategories.js'
 import { buildSkillPayload, parseSlashQuery } from '../utils/skillSlash.js'
 import { getConnectors } from '../api/connectors.js'
@@ -554,9 +555,9 @@ export default {
     },
     plusListEmptyText() {
       const meta = {
-        experts: '暂无专家，敬请期待',
-        skills: '还没有自己的技能，可在「专家·技能·连接器」面板添加',
-        connectors: '还没有已添加的连接器，可在「专家·技能·连接器」面板添加',
+        experts: '暂无专家，可在「专家·技能·连接器」面板创建',
+        skills: '暂无可用技能',
+        connectors: '暂无可用连接器',
       }
       return meta[this.plusListCategory] || '暂无内容'
     },
@@ -823,9 +824,9 @@ export default {
       const input = this.$refs.fileInputRef
       if (input) input.click()
     },
-    // 二级列表：展示当前用户自己的条目（不跳转页面）
-    // 数据来源均为当前用户：技能 = user-skills（含已停用）；连接器 = 用户 mcp.json
-    // 中已安装的内置连接器 + 自定义服务；专家暂无数据。
+    // 二级列表（不跳转页面），与「专家·技能·连接器」面板同口径：
+    // 技能 = 用户技能（含已停用）+ 公共目录未添加项；连接器 = 已安装 + 自定义 + 目录未安装项；
+    // 专家 = 我的专家列表。
     openPlusList(category) {
       this.plusListCategory = category
       this.plusListLoading = true
@@ -890,29 +891,49 @@ export default {
     async loadPlusList(category) {
       try {
         if (category === 'skills') {
-          const data = await getUserSkills()
-          this.plusList = (data.skills || []).map((s) => ({
+          const [publicData, userData] = await Promise.all([getPublicSkills(), getUserSkills()])
+          const toItem = (s, tag, tagType) => ({
             key: `skill:${s.dir_name}`,
             name: s.name,
             desc: s.description || '暂无描述',
             icon: s.icon || '',
             initial: (s.name || s.dir_name).slice(0, 1).toUpperCase(),
-            tag: s.enabled ? '已启用' : '已停用',
-            tagType: s.enabled ? 'on' : 'off',
+            tag,
+            tagType,
+          })
+          // 与「专家·技能·连接器」面板同口径：已添加（含本地导入）在前，公共目录未添加的在后
+          const userSkills = userData.skills || []
+          const added = new Set(userSkills.map((s) => s.dir_name))
+          this.plusList = userSkills
+            .map((s) => toItem(s, s.enabled ? '已启用' : '已停用', s.enabled ? 'on' : 'off'))
+            .concat((publicData.skills || [])
+              .filter((s) => !added.has(s.dir_name))
+              .map((s) => toItem(s, '未添加', 'off')))
+        } else if (category === 'experts') {
+          const data = await listExperts({ pageSize: 20 })
+          this.plusList = (data.items || []).map((e) => ({
+            key: `expert:${e.export_agent_id}`,
+            name: e.export_name_cn,
+            desc: String(e.export_description || '').replace(/\s*\n+\s*/g, ' ').trim() || '暂无描述',
+            icon: '',
+            initial: String(e.export_name_cn || '').trim().slice(0, 1).toUpperCase() || '专',
+            tag: e.export_version ? `v${e.export_version}` : '',
+            tagType: 'off',
           }))
         } else if (category === 'connectors') {
           const data = await getConnectors()
-          const installed = (data.connectors || [])
-            .filter((c) => c.installed)
-            .map((c) => ({
-              key: `connector:${c.id}`,
-              name: c.name,
-              desc: c.description || '暂无描述',
-              icon: '',
-              initial: (c.name || c.id).slice(0, 1).toUpperCase(),
-              tag: '已添加',
-              tagType: 'on',
-            }))
+          const toItem = (c, tag, tagType) => ({
+            key: `connector:${c.id}`,
+            name: c.name,
+            desc: c.description || '暂无描述',
+            icon: '',
+            initial: (c.name || c.id).slice(0, 1).toUpperCase(),
+            tag,
+            tagType,
+          })
+          const catalog = data.connectors || []
+          const installed = catalog.filter((c) => c.installed).map((c) => toItem(c, '已添加', 'on'))
+          const available = catalog.filter((c) => !c.installed).map((c) => toItem(c, '未添加', 'off'))
           const custom = (data.custom || []).map((c) => ({
             key: `custom:${c.name}`,
             name: c.name,
@@ -922,9 +943,7 @@ export default {
             tag: '自定义',
             tagType: 'custom',
           }))
-          this.plusList = installed.concat(custom)
-        } else {
-          this.plusList = []
+          this.plusList = installed.concat(custom, available)
         }
       } catch (e) {
         this.plusListError = (e && e.message) || '加载失败'
@@ -939,16 +958,16 @@ export default {
       this.$emit('open-panel', tab)
     },
     // 加号菜单「知识库」：与技能子面板一致，点击保持主菜单常驻，面板贴菜单项右侧弹出
-    openKnowledgeScope() {
+    openKnowledgeScope(event) {
       this.cancelPlusClose()
       this.subpanelCategory = null
-      if (this.$refs.knowledgeScope) this.$refs.knowledgeScope.openPopover()
+      if (this.$refs.knowledgeScope) this.$refs.knowledgeScope.openPopover(event && event.currentTarget)
     },
     // hover 到「知识库」菜单项即展开选择面板（并收起其他子面板），无需点击
-    enterKnowledgeItem() {
+    enterKnowledgeItem(event) {
       this.cancelPlusClose()
       this.subpanelCategory = null
-      if (this.$refs.knowledgeScope) this.$refs.knowledgeScope.openPopover()
+      if (this.$refs.knowledgeScope) this.$refs.knowledgeScope.openPopover(event && event.currentTarget)
     },
     // 知识库子面板底部入口：关闭菜单并打开知识库工作台
     openKnowledgeManage() {
