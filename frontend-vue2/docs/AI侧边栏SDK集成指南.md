@@ -117,6 +117,8 @@ http://localhost:5181/demo.html?baseURL=http://183.196.130.56:22332&auth=getToke
 http://localhost:5181/demo.html?baseURL=http://183.196.130.56:22332&token=<access_token>&auto=1
 ```
 
+Docker 部署的前端镜像同样内置该页面（`dist-sdk/` 打包到 `/sdk/`），无需本地起服务：`http://<前端地址>/sdk/demo.html?username=<用户>&userId=<工号>&auto=1`，例如 `http://183.196.130.56:22333/sdk/demo.html`。
+
 页面左侧可改 `baseURL` / 鉴权 / 功能开关后点「应用并初始化」；右侧业务区可测划词提问、行级 AI 分析、`setPageContext` 切页等。
 
 ---

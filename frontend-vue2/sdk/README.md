@@ -24,3 +24,5 @@ http://localhost:5181/demo.html?baseURL=<后端地址>&username=<用户>&userId=
 - 划词提问、行级 `open({ context, prompt })`、实例方法与事件回调
 
 源文件：`frontend-vue2/sdk/demo.html`（`build:sdk` 会复制到 `dist-sdk/`）。
+
+Docker 前端镜像会把 `dist-sdk/` 打包到 `/sdk/`，部署后可直接访问 `http://<前端地址>/sdk/demo.html`；因此构建前端镜像前需先执行 `npm run build:sdk`。
