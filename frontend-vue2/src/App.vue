@@ -233,6 +233,7 @@ function setReactive(target, key, value) {
 
 export default {
   components: {
+    AiSidebar,
     SidebarResizeHandle,
     KnowledgeWorkbench,
     AssetsPanel,
