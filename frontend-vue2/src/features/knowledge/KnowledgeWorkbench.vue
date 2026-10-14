@@ -249,7 +249,7 @@
           <div><strong>问问知识库</strong><small>{{ selectedBase ? `基于「${selectedBase.name}」` : '选择知识库后开始提问' }}</small></div>
           <button class="ke-icon-button subtle" :disabled="asking || !selectedBase" aria-label="新对话" title="开启新对话（删除当前问答记录）" @click="startNewChat"><IconMessageSquarePlus /></button>
           <button v-if="asking" class="ke-icon-button subtle ke-stop-button" aria-label="停止回答" title="停止回答" @click="stopQuestion('user')"><IconSquare /></button>
-          <button class="ke-icon-button subtle" aria-label="收起问答" title="收起问答" @click="askOpen = false"><IconPanelRightClose /></button>
+          <button class="ke-icon-button subtle" aria-label="收起问答" title="收起问答" @click="closeAskPanel"><IconPanelRightClose /></button>
         </header>
 
         <div class="ke-answer" ref="askBody">
@@ -285,7 +285,7 @@
         </form>
       </aside>
 
-      <button v-else class="ke-ask-fab" @click="askOpen = true"><IconSparkles /><span>问问知识库</span></button>
+      <button v-else class="ke-ask-fab" @click="openAskPanel"><IconSparkles /><span>问问知识库</span></button>
     </div>
 
     <div v-if="showBaseModal" class="ke-modal-mask" @click.self="showBaseModal = false">
@@ -430,7 +430,7 @@
 </template>
 
 <script>
-import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import { computed, getCurrentInstance, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 // 图标统一走 ./icons.js（vue2 构建栈为 unplugin-icons raw 编译 + 函数式组件包装），
 // 组件用法 <IconX /> 与 frontend/ 直接导入 ~icons 的模板写法保持一致。
 import {
@@ -601,6 +601,27 @@ const dragging = ref(false)
 const uploadQueue = ref([])
 const operations = ref([])
 const askOpen = ref(true)
+// 窄容器（≤1100px，与下方 container query 断点一致）下问答面板是 absolute 浮层，
+// 会盖住文档列表的文档名；默认收起为悬浮按钮，用户点开后才以浮层展示。
+// 拖动外层会话栏宽度导致容器跨入窄断点时同样自动收起（用户刚手动展开的除外）。
+const ASK_FLOATING_BREAKPOINT = 1100
+let askUserOpened = false
+let shellWidthObserver = null
+function openAskPanel() { askUserOpened = true; askOpen.value = true }
+function closeAskPanel() { askUserOpened = false; askOpen.value = false }
+function watchShellWidth() {
+  // 组件根元素即 .ke-shell（Options API setup 返回的 ref 不绑定模板 ref，故走 $el）
+  const shell = getCurrentInstance()?.proxy?.$el
+  if (!shell || typeof ResizeObserver === 'undefined') return
+  if (shell.clientWidth <= ASK_FLOATING_BREAKPOINT) askOpen.value = false
+  shellWidthObserver = new ResizeObserver(() => {
+    if (shell.clientWidth <= ASK_FLOATING_BREAKPOINT && askOpen.value && !askUserOpened) askOpen.value = false
+  })
+  shellWidthObserver.observe(shell)
+}
+function stopShellWidthWatch() {
+  if (shellWidthObserver) { shellWidthObserver.disconnect(); shellWidthObserver = null }
+}
 const clampLayout = (value, min, max) => Math.min(max, Math.max(min, value))
 const storedLayoutNumber = (key, fallback) => {
   const value = Number(localStorage.getItem(key))
@@ -1563,8 +1584,8 @@ function formatSize(size = 0) { if (size < 1024) return `${size} B`; if (size < 
 function formatDate(value) { return value ? new Date(value).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '-' }
 
 // Vue 2.7 的生命周期适配对 async hook 返回值处理与 Vue 3 不同，用同步包装启动异步初始化。
-onMounted(() => { initialize() })
-onUnmounted(() => { stopQuestion('unmount'); finishKnowledgeResize(); stopPolling(); closePreview(); clearTimeout(toastTimer); resolveConfirmation(false) })
+onMounted(() => { initialize(); watchShellWidth() })
+onUnmounted(() => { stopQuestion('unmount'); finishKnowledgeResize(); stopPolling(); closePreview(); clearTimeout(toastTimer); resolveConfirmation(false); stopShellWidthWatch() })
 
     return {
       addFolder,
@@ -1576,6 +1597,8 @@ onUnmounted(() => { stopQuestion('unmount'); finishKnowledgeResize(); stopPollin
       askWidth,
       asking,
       baseCount,
+      closeAskPanel,
+      openAskPanel,
       baseForm,
       baseModalMode,
       baseQuery,
@@ -1709,10 +1732,10 @@ onUnmounted(() => { stopQuestion('unmount'); finishKnowledgeResize(); stopPollin
 .ke-folder-grid{grid-column:1/-1;display:flex;flex-direction:column;gap:2px;margin-bottom:11px}.ke-folder-card{width:100%;height:62px;border:0;border-bottom:1px solid #f0f2f0;background:#fff;padding:5px 10px;display:grid;grid-template-columns:54px minmax(0,1fr) 18px;gap:10px;align-items:center;text-align:left;color:inherit;border-radius:8px;cursor:pointer}.ke-folder-card:hover{background:#f8faf8}.ke-folder-art{position:relative;width:49px;height:35px;border-radius:4px 5px 5px 5px;background:linear-gradient(180deg,#bce7d1,#a8dbc0);color:#fff;display:grid;place-items:center}.ke-folder-art:before{content:"";position:absolute;left:3px;top:-6px;width:22px;height:8px;border-radius:4px 5px 0 0;background:#9bd5b8}.ke-folder-art svg{position:relative;width:23px;height:23px}.ke-folder-card>span:nth-child(2){display:flex;min-width:0;flex-direction:column;gap:4px}.ke-folder-card strong{font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ke-folder-card small{font-size:9px;color:#acb1ae}.ke-folder-card>svg{color:#c1c6c2;width:14px;height:14px}
 .ke-status.paused i{background:#9aa19c}.ke-status.processing i,.ke-status.running i{animation:none}.ke-processing-age{margin-left:auto;color:#9aa19c;font-size:9px;white-space:nowrap}.ke-preview-modal>div:not(header){flex:1;min-height:0;overflow:auto}.ke-preview-modal ::v-deep .docx-wrapper{min-height:100%;background:#eef1ef}.ke-preview-modal ::v-deep .vue-office-excel{height:100%}.ke-preview-modal ::v-deep .pptx-preview-wrapper{height:100%;overflow:auto}
 @keyframes ke-pulse{50%{opacity:.35}}@keyframes ke-spin{to{transform:rotate(360deg)}}@keyframes ke-dot-pulse{0%,100%{opacity:.2}50%{opacity:1}}
-@container ke-shell (max-width:1100px){.ke-workspace,.ke-workspace.ask-closed{grid-template-columns:var(--ke-library-width,220px) 6px minmax(0,1fr)}.ke-resizer.ask{display:none}.ke-workspace:not(.ask-closed) .ke-content-panel{margin-right:min(var(--ke-ask-width,360px),88cqw)}.ke-ask-panel{position:absolute;right:0;top:0;bottom:0;width:min(var(--ke-ask-width,360px),88cqw);z-index:20;box-shadow:-14px 0 35px rgba(28,43,33,.13)}.ke-base-meta span:last-child{display:none}.ke-tool-row{flex-wrap:wrap}.ke-tool-row>.ke-search-box{max-width:none}.list .ke-document-card{grid-template-columns:minmax(180px,1fr) 190px 130px}}
-/* 内容面板被拖窄时：隐藏大小/日期等次要信息，为文档名让出空间。 */
-@container ke-content (max-width:640px){.list .ke-doc-title small{display:none}}
-@container ke-shell (max-width:700px){.ke-topbar{padding:0 10px}.ke-topbar-title span,.ke-topbar-actions .quiet{display:none}.ke-workspace,.ke-workspace.ask-closed{display:block}.ke-library-panel,.ke-resizer{display:none}.ke-content-panel{height:100%}.ke-base-hero{padding:18px 15px}.ke-inline-actions{position:absolute;right:14px}.ke-base-identity{padding-right:80px}.ke-base-meta{flex-wrap:wrap}.ke-content-toolbar{padding:11px 12px}.ke-documents{padding:12px}.ke-documents.grid{grid-template-columns:1fr}.ke-view-switch{display:none}.list .ke-document-card{display:block}.list .ke-document-details{margin-top:12px;margin-right:0}.list .ke-row-actions{margin-top:8px;justify-content:flex-start}.ke-base-identity p{white-space:normal;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}}
+@container ke-shell (max-width:1100px){.ke-workspace,.ke-workspace.ask-closed{grid-template-columns:var(--ke-library-width,220px) 6px minmax(0,1fr) 6px 0}.ke-workspace:not(.ask-closed) .ke-content-panel{margin-right:min(var(--ke-ask-width,360px),50cqw)}.ke-ask-panel{position:absolute;right:0;top:0;bottom:0;width:min(var(--ke-ask-width,360px),50cqw);z-index:20;box-shadow:-14px 0 35px rgba(28,43,33,.13)}.ke-base-meta span:last-child{display:none}.ke-tool-row{flex-wrap:wrap}.ke-tool-row>.ke-search-box{max-width:none}.list .ke-document-card{grid-template-columns:minmax(180px,1fr) 190px 130px}/* 浮层模式下文档列被问答面板压缩：文档名放开换行，保证完整可见不被截断 */.ke-document-copy strong{white-space:normal;word-break:break-word}}
+/* 内容面板被拖窄时：隐藏大小/日期等次要信息，为文档名让出空间；文档名放开换行防截断。 */
+@container ke-content (max-width:640px){.list .ke-doc-title small{display:none}.ke-document-copy strong{white-space:normal;word-break:break-word}}
+@container ke-shell (max-width:700px){.ke-topbar{padding:0 10px}.ke-topbar-title span,.ke-topbar-actions .quiet{display:none}.ke-workspace,.ke-workspace.ask-closed{display:block}.ke-library-panel,.ke-resizer.library{display:none}.ke-content-panel{height:100%}.ke-base-hero{padding:18px 15px}.ke-inline-actions{position:absolute;right:14px}.ke-base-identity{padding-right:80px}.ke-base-meta{flex-wrap:wrap}.ke-content-toolbar{padding:11px 12px}.ke-documents{padding:12px}.ke-documents.grid{grid-template-columns:1fr}.ke-view-switch{display:none}.list .ke-document-card{display:block}.list .ke-document-details{margin-top:12px;margin-right:0}.list .ke-row-actions{margin-top:8px;justify-content:flex-start}.ke-base-identity p{white-space:normal;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}/* 左侧导航隐藏后文档列占满容器：问答浮层拉宽上限收紧到给文档列保底 220px */.ke-ask-panel{width:min(var(--ke-ask-width,360px),calc(100cqw - 220px))}.ke-workspace:not(.ask-closed) .ke-content-panel{margin-right:min(var(--ke-ask-width,360px),calc(100cqw - 220px))}}
 
 /* EasyAgent surface and dark-mode alignment. */
 .ke-library-panel,.ke-content-panel,.ke-ask-panel,.ke-ask-header,.ke-document-card,.ke-folder-card,.ke-modal,.ke-preview-modal,.ke-drawer,.ke-composer,.ke-evidence,.ke-question-suggestions button{background:var(--bg-secondary);color:var(--text-primary)}

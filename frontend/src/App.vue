@@ -60,8 +60,10 @@
 
       <SkillCenter
         v-if="showSkillCenter"
+        :session-id="currentSessionId || ''"
         :initial-tab="skillCenterTab"
         @close="showSkillCenter = false"
+        @use="handleUseExpert"
         @create-skill="handleSkillCreate"
       />
 
@@ -102,6 +104,9 @@
         :sidebarCollapsed="isSidebarCollapsed"
         :models="availableModels"
         :selectedModel="selectedModel"
+        :activeExpert="selectedExpert"
+        :expertPrompt="expertPrompt"
+        @expertPromptApplied="expertPrompt = ''"
         @update:selectedModel="selectedModel = $event"
         @toggle-workspace="isWorkspaceCollapsed = false"
         @sendMessage="handleSendMessage"
@@ -112,6 +117,7 @@
         @retry="handleRetry"
         @approve="handleToolApproval('approve')"
         @reject="handleToolApproval('reject')"
+        @clearExpert="selectedExpert = null"
         @openPanel="openSkillCenterPanel"
       />
 
@@ -656,7 +662,9 @@ const isSidebarCollapsed = ref(false)
 const isWorkspaceCollapsed = ref(true)
 const showAssets = ref(false)
 const showSkillCenter = ref(false)
-const skillCenterTab = ref('skills')
+const skillCenterTab = ref('experts')
+const selectedExpert = ref(null)
+const expertPrompt = ref('')
 const showScheduledTasks = ref(false)
 const showSettingsPanel = ref(false)
 const showUserManagementPanel = ref(false)
@@ -693,6 +701,25 @@ function handleShowSkillCenter() {
   showSkillCenter.value = !showSkillCenter.value
   showAssets.value = false
   showScheduledTasks.value = false
+}
+
+/**
+ * 「专家 Tab -> 使用」（及任何来源的专家选中）：把专家挂到当前会话。
+ *
+ * 不强制新建会话：后端 thread_id = `{session_id}-{message_id}`，每条消息都是新线程，
+ * 且 get_or_create_agent_for_session() 已按「专家是否变更」驱逐缓存，
+ * 因此同一会话内切换专家能立即生效（详见 docs/expert-agent-solution.md）。
+ */
+function handleUseExpert(expert, prompt) {
+  if (!expert || !expert.export_agent_id) return
+  selectedExpert.value = {
+    export_agent_id: expert.export_agent_id,
+    export_name_cn: expert.export_name_cn,
+    export_version: expert.export_version,
+  }
+  showSkillCenter.value = false
+  // 详情弹窗点了示例问题：召唤专家的同时把问题回填到输入框（用户确认后发送）
+  expertPrompt.value = typeof prompt === 'string' ? prompt : ''
 }
 
 function handleShowScheduledTasks() {
@@ -831,6 +858,7 @@ async function handleLogout() {
   }
   showAssets.value = false
   showSkillCenter.value = false
+  selectedExpert.value = null
   hasBootstrapped.value = false
   clearActiveSession()
   showWelcome.value = true
@@ -951,6 +979,7 @@ async function handleCreateSession() {
 
   showAssets.value = false
   showSkillCenter.value = false
+  selectedExpert.value = null
   showScheduledTasks.value = false
   showSettingsPanel.value = false
   currentSessionId.value = null
@@ -979,6 +1008,8 @@ async function handleSelectSession(sessionId) {
 
   showAssets.value = false
   showSkillCenter.value = false
+  // 切换会话时不沿用上一个会话的专家选择（选择是当前工作台的临时状态）
+  selectedExpert.value = null
   showScheduledTasks.value = false
   currentSessionId.value = sessionId
   // 切换后按当前会话是否正在流式输出决定输入框状态：

@@ -115,30 +115,32 @@ def test_update_memory_enforces_compact_budget_without_task_mode(tmp_path):
     assert str(MAX_MEMORY_CHARS) in llm.calls[1]
 
 
-def test_long_term_memory_uses_compact_context_budget():
+def test_long_term_memory_uses_structured_context_budget():
     prompt = build_long_term_memory_update_prompt(
         current_memory="",
-        user_message="帮我写一句问候语",
-        assistant_response="你好，祝你今天顺利！",
+        user_message="我最近在做一个 AI 项目，想让你记住我的工作背景。",
+        assistant_response="已记录长期背景。",
         max_chars=4000,
     )
 
     assert str(MAX_LONG_TERM_MEMORY_CHARS) in prompt
+    assert "1500" in prompt
     assert "跨会话长期有效" in prompt
-    assert "## 用户偏好" in prompt
-    assert "## 项目背景" in prompt
-    assert "## 可复用经验" in prompt
+    assert "## 工作背景" in prompt
+    assert "## 个人背景" in prompt
+    assert "## 当前关注" in prompt
+    assert "## 近期动态" in prompt
     assert "一次性任务" in prompt
 
 
-def test_long_term_memory_update_enforces_compact_budget(tmp_path):
+def test_long_term_memory_update_enforces_structured_budget(tmp_path):
     class FakeLLM:
         def __init__(self):
             self.calls = []
 
         def invoke(self, messages):
             self.calls.append(messages[0].content)
-            return type("Response", (), {"content": "x" * 900})()
+            return type("Response", (), {"content": "x" * 1500})()
 
     llm = FakeLLM()
     memory_file = tmp_path / "AGENTS.md"
@@ -151,6 +153,6 @@ def test_long_term_memory_update_enforces_compact_budget(tmp_path):
     )
 
     assert updated is True
-    assert len(memory_file.read_text(encoding="utf-8")) <= 800
-    assert "不超过 800 字符" in llm.calls[0]
-    assert "不超过 800 个字符" in llm.calls[1]
+    assert len(memory_file.read_text(encoding="utf-8")) <= 1500
+    assert "不超过 1500 字符" in llm.calls[0]
+    assert "不超过 1500 个字符" in llm.calls[1]

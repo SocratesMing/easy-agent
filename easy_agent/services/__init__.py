@@ -7,6 +7,7 @@ from .agent_manager import (
     cancel_stream_task,
     get_agent_config,
     invalidate_user_agents,
+    get_session_expert,
 )
 from .streaming import chat_stream_generator, resume_stream_generator
 from .scheduler import (
@@ -27,6 +28,7 @@ __all__ = [
     "cancel_stream_task",
     "get_agent_config",
     "invalidate_user_agents",
+    "get_session_expert",
     "chat_stream_generator",
     "resume_stream_generator",
     "init_scheduler",

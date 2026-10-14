@@ -15,6 +15,10 @@ from .mcp import get_mcp_tools as load_mcp_tools_for_user
 logger = logging.getLogger("easy-agent.chat_service")
 
 _session_agents: dict[str, EasyAgent] = {}
+# 会话 → 当前生效的专家 Agent ID（"" 表示通用 Agent）。
+# 与 _session_agents 同性质（进程内缓存），用于判断「专家是否变更」——
+# 变更时必须驱逐 Agent 缓存，否则会出现「换专家不生效」与「专家人设黏在普通聊天上」。
+_session_expert: dict[str, str] = {}
 _session_stream_tasks: dict[str, asyncio.Task[None]] = {}
 _agent_config: dict = None
 _llm_instance = None
@@ -70,6 +74,7 @@ async def get_or_create_agent_for_session(
    enable_hitl: bool = True, model_name: str | None = None,
     enable_web_search: bool | None = None,
     system_prompt_extra: str = "",
+    expert_agent_id: str | None = None,
 ) -> EasyAgent:
     """获取（或创建）会话 Agent。
 
@@ -77,14 +82,21 @@ async def get_or_create_agent_for_session(
     取 False/None 时不注入。取 None 表示「跟随缓存」——用于 HITL 审批恢复等
     不带本轮开关的场景：若该会话已有缓存 Agent 则原样复用（不因开关差异驱逐，
     否则会重建 Agent 而丢失 checkpointer 中的中断态导致恢复失败）。
+
+    ``expert_agent_id`` 为当前选中的专家 Agent ID（``None`` 与 ``""`` 等价，都表示
+    通用 Agent）。专家提示词由调用方通过 ``system_prompt_extra`` 传入，这里只负责
+    「专家变更 -> 驱逐缓存」，确保同一会话在专家之间、专家与通用之间来回切换都能
+    立即生效。不传该参数时行为与引入本参数前**逐字一致**。
     """
-    global _session_agents, _agent_config
+    global _session_agents, _session_expert, _agent_config
 
     if _agent_config is None:
         raise RuntimeError("Agent 配置未初始化")
 
     config = _agent_config["config"]
     effective_model = model_name or config.active_model
+    # None 与 "" 等价：都表示「本次请求不挂专家（通用 Agent）」
+    expert_key = expert_agent_id or ""
 
     # 联网搜索：仅在「本轮请求开启」且「web_search 已配置 api_url + api_key」时注入。
     # 未配置 api_key（或功能关闭）时静默降级为未开启，不影响其余功能。
@@ -99,7 +111,7 @@ async def get_or_create_agent_for_session(
             f"[{session_id[-5:]}] 已请求联网搜索，但 web_search 未配置 api_url/api_key，本轮按未开启处理"
         )
 
-    # 模型切换 / 联网搜索开关变化：缓存的 Agent 不匹配，驱逐后重建
+    # 模型切换 / 联网搜索开关变化 / 专家变更：缓存的 Agent 不匹配，驱逐后重建
     cached = _session_agents.get(session_id)
     if cached is not None:
         cached_web_search = bool(getattr(cached, "enable_web_search", False))
@@ -107,14 +119,20 @@ async def get_or_create_agent_for_session(
         search_matches = (
             enable_web_search is None or web_search_enabled == cached_web_search
         )
+        # 专家变更同样必须驱逐：否则「换专家不生效」，且专家人设会黏在后续的
+        # 普通聊天上（模型与联网开关都没变，缓存会一直命中）。
+        expert_changed = expert_key != _session_expert.get(session_id, "")
         if (
             effective_model != getattr(cached, "model_name", None)
             or not search_matches
+            or expert_changed
         ):
             logger.info(
                 f"[{session_id[-5:]}] Agent 参数变化 | "
                 f"model: {getattr(cached, 'model_name', '?')} -> {effective_model} | "
-                f"web_search: {cached_web_search} -> {web_search_enabled} | 驱逐旧 Agent 重建"
+                f"web_search: {cached_web_search} -> {web_search_enabled} | "
+                f"expert: {_session_expert.get(session_id, '') or '(通用)'} -> "
+                f"{expert_key or '(通用)'} | 驱逐旧 Agent 重建"
             )
             _session_agents.pop(session_id, None)
         else:
@@ -209,9 +227,11 @@ async def get_or_create_agent_for_session(
         system_prompt_extra=system_prompt_extra,
    )
     _session_agents[session_id] = agent
+    _session_expert[session_id] = expert_key
     logger.info(
         f"[{session_id[-5:]}] Agent 实例创建成功 | workspace: {agent.workspace_dir} | "
-        f"model: {agent.model_name} | mcp_tools: {len(tools)}"
+        f"model: {agent.model_name} | mcp_tools: {len(tools)} | "
+        f"expert: {expert_key or '(通用)'}"
     )
     return agent
 
@@ -223,7 +243,7 @@ def invalidate_user_agents(username: str) -> int:
     that the next request rebuilds the agent with fresh settings. Returns the
     number of evicted agents.
     """
-    global _session_agents
+    global _session_agents, _session_expert
     if not username:
         return 0
     safe = Config.sanitize_username(username)
@@ -233,6 +253,7 @@ def invalidate_user_agents(username: str) -> int:
     ]
     for sid in to_remove:
         _session_agents.pop(sid, None)
+        _session_expert.pop(sid, None)
     logger.info(
         f"用户 {username} 的缓存 Agent 已失效 | 清除 {len(to_remove)} 个 | sessions={to_remove}"
     )
@@ -240,10 +261,18 @@ def invalidate_user_agents(username: str) -> int:
 
 
 def remove_session_agent(session_id: str):
-    global _session_agents
+    global _session_agents, _session_expert
+    # 专家记录一并清除：否则下次请求会因 expert_key 与残留值相同而误判「未变更」，
+    # 跳过本应发生的重建。清除后「未变更」的判定自动退化为「与 ""（通用）相同」。
+    _session_expert.pop(session_id, None)
     if session_id in _session_agents:
         del _session_agents[session_id]
         logger.info(f"[{session_id[-5:]}] Agent 缓存已清除")
+
+
+def get_session_expert(session_id: str) -> str:
+    """返回会话当前生效的专家 Agent ID（"" 表示通用 Agent）。主要供测试与排查使用。"""
+    return _session_expert.get(session_id, "")
 
 
 def register_stream_task(session_id: str, task: asyncio.Task[None]) -> None:

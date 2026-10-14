@@ -11,6 +11,17 @@ import 'katex/dist/katex.min.css'
 
 let initialized = false
 
+// HTML 转义：用于把原始文本安全地拼进 v-html 渲染的 HTML 中
+// （SettingsPanel 等组件的 Markdown 渲染兜底路径共用）
+export function escapeHtml(text) {
+  return String(text)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;')
+}
+
 // 将模型可能“内联”写出的块级公式 $$...$$ 规整到独立行，
 // 否则 marked-katex-extension 的行内规则要求 $$ 前后有空格、块级规则要求 $$ 位于行首，
 // 模型把公式嵌在段落中间（如 `text$$x$$text`）时不会被识别，最终以纯文本显示。

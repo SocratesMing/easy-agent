@@ -62,7 +62,7 @@ from .core.models import (
     TeamSpaceDepartmentSummary,
     TeamSpaceManagementCapability,
 )
-from .core.operations_repository import KnowledgeOperationsRepository
+from .core.operations_repository import KnowledgeOperationsRepository 
 from .ragflow import RagflowClient, RagflowError, RagflowNotFoundError
 from .core.repository import KnowledgeRepository
 

@@ -127,17 +127,7 @@ export async function attachStream(sessionId, onChunk, signal) {
   await readSseStream(response, onChunk, abortSignal, controller)
 }
 
-export async function sendMessage(
-  sessionId,
-  message,
-  onChunk,
-  signal,
-  enableDeepThink = true,
-  files = [],
-  model = null,
-  enableWebSearch = false,
-  pageContext = null
-) {
+export async function sendMessage(sessionId, message, onChunk, signal, enableDeepThink = true, files = [], model = null, enableWebSearch = false, pageContext = null) {
   const controller = new AbortController()
   const abortSignal = signal || controller.signal
   const payload = {
@@ -149,9 +139,8 @@ export async function sendMessage(
       files: files,
   }
   if (model) {
-    payload.model = model
+      payload.model = model
   }
-  if (model) payload.model = model
   if (pageContext) payload.page_context = pageContext
 
   const response = await handleStreamResponse(

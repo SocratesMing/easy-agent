@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 # 否则已经升级过的库会一直命中「结构已是最新」的快速启动路径，变更不会生效。
 # 见 init_tables()：版本一致时跳过整轮建表 + 补列 + 建索引探测（MySQL 上这一步
 # 过去要 40+ 次网络往返，多副本部署时每个 pod 启动都要跑一遍，是启动慢的主因）。
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 SCHEMA_VERSION_TABLE = "schema_meta"
 SCHEMA_VERSION_KEY = "schema_version"
 
@@ -61,6 +61,7 @@ EXPECTED_TABLES = (
     "knowledge_document_objects",
     "knowledge_operations",
     "knowledge_audit_events",
+    "expert_agents",
 )
 
 
@@ -638,6 +639,49 @@ class Database:
         self._create_misc_tables(cursor, auto_inc)
         self._create_scheduled_task_tables(cursor)
         self._create_distributed_lock_table(cursor)
+        self._create_expert_tables(cursor)
+
+    def _create_expert_tables(self, cursor):
+        """专家 Agent 表 expert_agents（见 docs/expert-agent-solution.md §3.1）。
+
+        建表口径：
+        - ``export_run_file_path`` 按需求「（删除）」不建；
+        - ``export_skills_names``：专家技能标签（中文名数组，JSON 字符串），由大模型
+          根据用户描述生成 2~3 个；前端卡片最多展示 3 个；
+        - ``export_description``：专家主要功能描述（大模型生成，≤300 字），
+          用于卡片与详情页展示；
+        - ``tag_id``：分类标签，由大模型在配置的 ``expert_tags`` 候选中选一个，
+          前端「专家」Tab 的筛选 chips 按它过滤（``tag_name`` 取自配置文件）；
+        - 时间统一 ``VARCHAR(50)`` 存 ISO 字符串，与 sessions/scheduled_tasks 现有
+          约定一致，规避 SQLite/MySQL 双栈的 DATETIME 类型分歧；
+        - 列表型字段（skills_names / features_prompt）用 TEXT 存 JSON 字符串；
+        - 不加外键约束，只建索引，与本项目其余表一致。
+        """
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS expert_agents (
+                export_agent_id VARCHAR(255) PRIMARY KEY,
+                session_id VARCHAR(255) DEFAULT '',
+                user_id VARCHAR(255) NOT NULL,
+                tag_id VARCHAR(255) DEFAULT '',
+                export_name_en VARCHAR(255) NOT NULL,
+                export_name_cn VARCHAR(255) NOT NULL,
+                export_prompt TEXT,
+                export_description TEXT,
+                export_skills_names TEXT,
+                export_features_prompt TEXT,
+                export_file_path VARCHAR(1024) DEFAULT '',
+                agent_status VARCHAR(32) NOT NULL DEFAULT 'active',
+                export_version INTEGER NOT NULL DEFAULT 1,
+                create_timestamp VARCHAR(50) NOT NULL,
+                update_timestamp VARCHAR(50) NOT NULL
+            )
+        """)
+        self._create_index(
+            cursor, "idx_expert_agents_user", "expert_agents", "user_id"
+        )
+        self._create_index(
+            cursor, "idx_expert_agents_status", "expert_agents", "agent_status"
+        )
 
         # Narrow integration point: schema ownership stays in knowledges/ (v2).
         # initialize_knowledge_schema 幂等且与旧版表结构同构（存量数据无缝），

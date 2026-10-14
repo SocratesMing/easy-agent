@@ -924,35 +924,6 @@ html[data-theme="dark"] .process-body .process-inline-content {
   width: 100%;
 }
 
-.page-context-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  max-width: 100%;
-  margin-bottom: 4px;
-  padding: 2px 9px 2px 7px;
-  border: 1px solid var(--border-color, #e2e8f0);
-  border-radius: 999px;
-  background: var(--bg-primary, #f8fafc);
-  color: var(--text-secondary, #64748b);
-  font-size: 12px;
-  line-height: 1.6;
-  cursor: help;
-}
-
-.page-context-chip svg {
-  width: 12px;
-  height: 12px;
-  flex-shrink: 0;
-  color: var(--accent-color, #0ea5e9);
-}
-
-.page-context-chip span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 /* 消息头像 */
 .message-avatar {
   flex-shrink: 0;
@@ -980,6 +951,36 @@ html[data-theme="dark"] .process-body .process-inline-content {
 .message.user .message-avatar.user-avatar svg {
   width: 18px;
   height: 18px;
+}
+
+/* AI 侧边栏消息的页面上下文胶囊 */
+.page-context-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  margin-bottom: 4px;
+  padding: 2px 9px 2px 7px;
+  border: 1px solid var(--border-color, #e2e8f0);
+  border-radius: 999px;
+  background: var(--bg-primary, #f8fafc);
+  color: var(--text-secondary, #64748b);
+  font-size: 12px;
+  line-height: 1.6;
+  cursor: help;
+}
+
+.page-context-chip svg {
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
+  color: var(--accent-color, #0ea5e9);
+}
+
+.page-context-chip span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* 文件容器样式 */
