@@ -69,6 +69,8 @@
 </template>
 
 <script>
+import { eventTarget } from '../utils/domEvent.js'
+
 export default {
   props: {
     todos: {
@@ -103,7 +105,7 @@ export default {
   },
   methods: {
     onDocClick(e) {
-      if (this.expanded && this.$refs.rootRef && !this.$refs.rootRef.contains(e.target)) {
+      if (this.expanded && this.$refs.rootRef && !this.$refs.rootRef.contains(eventTarget(e))) {
         this.expanded = false
       }
     },

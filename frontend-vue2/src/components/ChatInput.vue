@@ -376,6 +376,7 @@ import { getUserSkills } from '../api/skills.js'
 import { iconCategoryFor } from '../utils/skillCategories.js'
 import { buildSkillPayload, parseSlashQuery } from '../utils/skillSlash.js'
 import { getConnectors } from '../api/connectors.js'
+import { eventTarget } from '../utils/domEvent.js'
 import FileIcon from './FileIcon.vue'
 import SkillIcon from './SkillIcon.vue'
 
@@ -703,7 +704,7 @@ export default {
     },
     closeModelDropdown(event) {
       const anchor = this.$refs.modelDropdownRef
-      if (this.showModelDropdown && anchor && !anchor.contains(event.target)) {
+      if (this.showModelDropdown && anchor && !anchor.contains(eventTarget(event))) {
         this.showModelDropdown = false
       }
     },
@@ -730,7 +731,7 @@ export default {
     },
     closePlusMenu(event) {
       const anchor = this.$refs.plusMenuRef
-      if (this.showPlusMenu && anchor && !anchor.contains(event.target)) {
+      if (this.showPlusMenu && anchor && !anchor.contains(eventTarget(event))) {
         this.showPlusMenu = false
         this.subpanelCategory = null
       }
@@ -1229,7 +1230,7 @@ export default {
     closeSkillPickerOnClick(event) {
       if (!this.skillPickerOpen) return
       const picker = this.$refs.skillPickerRef
-      if (picker && picker.contains(event.target)) return
+      if (picker && picker.contains(eventTarget(event))) return
       this.closeSkillPicker()
     },
 
