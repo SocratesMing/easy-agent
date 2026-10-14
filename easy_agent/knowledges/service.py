@@ -633,22 +633,25 @@ class KnowledgeService:
         principal: KnowledgePrincipal,
         permissions: Iterable[Mapping[str, object]],
     ) -> KnowledgeBaseRole | None:
-        """在单库授权之上叠加公共空间管理白名单（均限定本部门）。"""
+        """在单库授权之上叠加公共空间管理白名单。
+
+        admin 与公共空间管理员（白名单账号）对所有公共库直通 MANAGER（同权）；
+        其余账号维持本部门默认只读、勾选名单与单库授权逻辑。
+        """
         permission_rows = list(permissions)
         if str(base.get("space_type")) != KnowledgeBaseVisibility.TEAM.value:
             return effective_role(base, principal, permission_rows)
         if principal.username == "admin":
             return KnowledgeBaseRole.MANAGER
+        if await self._has_team_management_grant(principal):
+            return KnowledgeBaseRole.MANAGER
         same_department = bool(principal.department_id) and (
             principal.department_id == str(base.get("department_id") or "").strip()
         )
-        has_manager_grant = await self._has_team_management_grant(principal)
         # 公共空间默认对本部门账号只读可见；勾选名单（access_restricted）
-        # 模式下默认可见让位于勾选人员；管理白名单则升级为 MANAGER。
+        # 模式下默认可见让位于勾选人员。
         team_viewer = same_department and not _base_access_restricted(base)
         role = effective_role(base, principal, permission_rows, team_viewer=team_viewer)
-        if same_department and has_manager_grant:
-            return KnowledgeBaseRole.MANAGER
         if str(base.get("owner_user_id", "")) == principal.user_id:
             explicit_roles = _matching_permission_roles(principal, permission_rows)
             return max([KnowledgeBaseRole.VIEWER, *explicit_roles], key=_ROLE_RANK.__getitem__)
@@ -773,7 +776,7 @@ class KnowledgeService:
             self.repository.list_candidate_bases,
             user_id=principal.user_id,
             department_id=principal.department_id,
-            include_all_team_spaces=is_admin,
+            include_all_team_spaces=has_team_management_grant,
         )
         visible: list[tuple[dict[str, Any], KnowledgeBaseRole]] = []
         for base in candidates:

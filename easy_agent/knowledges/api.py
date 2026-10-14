@@ -1216,11 +1216,16 @@ async def replace_session_scope(
 # ---------------------------------------------------------------------------
 # 管理员：公共空间管理/查看白名单
 # ---------------------------------------------------------------------------
-def _admin(principal: Annotated[KnowledgePrincipal, Depends(get_knowledge_principal)]):
-    """管理员守卫依赖：非 admin 账号一律 403。"""
+def _admin(
+    principal: Annotated[KnowledgePrincipal, Depends(get_knowledge_principal)],
+    db: Annotated[Database, Depends(get_database)],
+):
+    """白名单守卫依赖：admin 与公共空间管理员（白名单账号）均可访问。"""
 
     if principal.username != "admin":
-        raise HTTPException(status_code=403, detail="仅管理员可查看运维信息")
+        repo = KnowledgeRepository(db)
+        if not repo.is_team_space_manager(principal.user_id):
+            raise HTTPException(status_code=403, detail="仅 admin 或公共空间管理员可访问")
     return principal
 
 
