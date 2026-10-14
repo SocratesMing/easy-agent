@@ -66,6 +66,7 @@ tools:
   result_log_truncate: 200  # 工具结果在日志中的截断字符数（默认 200）
   skills_dir: "${SKILLS_DIR:-./skills}"   # Skills directory path
   prompts_dir: "${PROMPTS_DIR:-/qts/prompts}" # Prompts directory path (for forex, etc.)
+  experts_dir: "${EXPERTS_DIR:-./exports}"   # 公共（预置）专家目录：只读扫描，见 services/public_expert_service.py
   read_file_line_limit: 2000  # read_file 内置工具每次读取的行数（默认 2000）
 
 # ===== Web Search Configuration =====

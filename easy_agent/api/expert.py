@@ -38,6 +38,7 @@ from ..services import (
     get_or_create_agent_for_session,
     invalidate_user_agents,
 )
+from ..services import public_expert_service
 from ..services.expert_service import (
     build_expert_ids,
     generate_expert_config,
@@ -277,6 +278,73 @@ async def _generate_and_store(
     return store.get(expert_agent_id) or {}
 
 
+def _load_expert_prompt(
+    db: Database, username: str, expert_agent_id: str, sid: str
+) -> tuple[str, str, str]:
+    """解析一个专家 ID 对应的提示词（「我的专家」优先，「公共专家」兜底）。
+
+    解析顺序故意如此：同一个 ID 若同时存在于用户库与公共目录，**以用户自己的为准**
+    （用户可编辑的那份），避免预置内容无提示地覆盖用户改动。
+
+    Args:
+        expert_agent_id: 前端回传的专家 ID（我的专家 ID 或公共专家目录名）。
+
+    Returns:
+        ``(expert_id, prompt_text, source)``；``prompt_text`` 为空串表示读取失败
+        （调用方降级为通用 Agent，不阻断对话）；``source`` 取 ``"mine"`` / ``"public"``
+        / ``""``。
+
+    Raises:
+        HTTPException: 404 —— 我的专家与公共专家都找不到该 ID；
+            400 —— 命中的是我的专家但状态不是「可用」（生成失败 / 已停用）。
+    """
+    if not expert_agent_id:
+        return "", "", ""
+
+    # ── 1. 我的专家（数据库归属校验） ──────────────────────────────────
+    user_id = _current_user_id(db, username)
+    record = ExpertStore(db).get_owned(expert_agent_id, user_id)
+    if record is not None:
+        if record.get("agent_status") != STATUS_ACTIVE:
+            raise HTTPException(
+                status_code=400, detail="专家已停用或生成失败，无法执行"
+            )
+        prompt_text, version, version_dir = load_active_prompt(username, expert_agent_id)
+        if prompt_text.strip():
+            logger.info(
+                f"[{sid}] 📌 专家提示词已加载 | 来源=我的专家 | expert={expert_agent_id} | "
+                f"v{version} | {describe_prompt('内容', prompt_text)} | dir={version_dir}"
+            )
+            return expert_agent_id, prompt_text, "mine"
+        # 磁盘目录被清 / 文件缺失：降级为通用 Agent，不阻断用户对话
+        logger.warning(
+            f"[{sid}] 专家提示词读取失败，本轮降级为通用 Agent | 来源=我的专家 | "
+            f"expert={expert_agent_id} | v{version} | {version_dir}"
+        )
+        return "", "", ""
+
+    # ── 2. 公共（预置）专家：只读目录，不落库 ─────────────────────────
+    public = public_expert_service.find_public_expert(expert_agent_id)
+    if public is None:
+        raise HTTPException(status_code=404, detail="专家不存在")
+
+    prompt_text, version, prompt_path = public_expert_service.load_public_prompt(
+        expert_agent_id
+    )
+    if prompt_text.strip():
+        logger.info(
+            f"[{sid}] 📌 专家提示词已加载 | 来源=公共专家 | expert={expert_agent_id} | "
+            f"v{version} | {describe_prompt('内容', prompt_text)} | file={prompt_path}"
+        )
+        return expert_agent_id, prompt_text, "public"
+
+    logger.warning(
+        f"[{sid}] 专家提示词读取失败，本轮降级为通用 Agent | 来源=公共专家 | "
+        f"expert={expert_agent_id} | v{version} | {prompt_path}"
+    )
+    return "", "", ""
+
+
 # ── 接口 ──────────────────────────────────────────────────────────────
 
 
@@ -423,6 +491,32 @@ async def list_experts(
     }
 
 
+@router.get("/agent/public-list", summary="获取公共（预置）专家列表")
+async def list_public_experts():
+    """公共专家 = 随项目预置的专家目录（默认 ``exports/``），**只读**。
+
+    不查库、不按用户区分：所有用户看到同一份列表；卡片字段与
+    ``/agent/list`` 保持一致（另带 ``scope="public"``），前端可复用同一套
+    卡片与召唤链路。列表不下发提示词全文，召唤时按需读取。
+    """
+    items = public_expert_service.discover_public_experts()
+    # tags：与 /agent/list 同一份分类候选（配置文件 expert_tags），前端 chips 复用
+    try:
+        tags = _tag_options(_get_config())
+    except HTTPException:
+        tags = []
+    root = public_expert_service.public_experts_root()
+    logger.info(
+        "📂 公共专家列表 | 目录: %s | 数量: %s", root.absolute(), len(items)
+    )
+    return {
+        "total": len(items),
+        "tags": tags,
+        "dir": str(root.absolute()),
+        "items": items,
+    }
+
+
 @router.post("/agent/del", summary="删除专家 Agent")
 async def delete_expert(
     request: ExpertDelRequest,
@@ -502,37 +596,17 @@ async def stream_export_run(
                 db.update_session(session)
 
     # ── 2. 专家校验与提示词加载 ────────────────────────────────────────
+    # 我的专家（数据库）优先，公共专家（exports 目录）兜底；找不到 ID 时 404。
+    # 加载日志（含长度/指纹/开头）在 _load_expert_prompt 内统一打印（可观测点 ①）。
     expert_prompt = ""
     expert_id = ""
     if request.expert_agent_id:
-        user_id = _current_user_id(db, username)
-        record = ExpertStore(db).get_owned(request.expert_agent_id, user_id)
-        if record is None:
-            raise HTTPException(status_code=404, detail="专家不存在")
-        if record.get("agent_status") != STATUS_ACTIVE:
-            raise HTTPException(
-                status_code=400, detail="专家已停用或生成失败，无法执行"
-            )
-
-        prompt_text, version, version_dir = load_active_prompt(
-            username, request.expert_agent_id
+        expert_id, expert_prompt, _source = _load_expert_prompt(
+            db, username, request.expert_agent_id, sid
         )
-        if prompt_text.strip():
-            expert_prompt = prompt_text
-            expert_id = request.expert_agent_id
-            # 可观测点 ①：专家提示词从磁盘加载（长度 + 指纹 + 开头片段）。
-            # 该指纹应与 agent_manager / agent 侧记录的一致，三者串起来即证明
-            # 「动态加载的专家提示词确实进了模型终稿」。
-            logger.info(
-                f"[{sid}] 📌 专家提示词已加载 | expert={request.expert_agent_id} | "
-                f"v{version} | {describe_prompt('内容', prompt_text)} | dir={version_dir}"
-            )
-        else:
-            # 磁盘目录被清 / 文件缺失：降级为通用 Agent，不阻断用户对话
-            logger.warning(
-                f"[{sid}] 专家提示词读取失败，本轮降级为通用 Agent | "
-                f"expert={request.expert_agent_id} | v{version} | {version_dir}"
-            )
+        if not expert_prompt:
+            # 读取失败（目录被清 / 文件缺失）：降级为通用 Agent，不阻断对话
+            expert_id = ""
 
     # ── 3. 文件解析 + 系统提示词附加内容 ───────────────────────────────
     parsed_content = request.message

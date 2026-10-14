@@ -120,6 +120,8 @@ class LLMConfig(BaseModel):
 class ToolsConfig(BaseModel):
     skills_dir: str = "./skills"
     prompts_dir: str = "./prompts"
+    experts_dir: str = "./exports"
+    """公共（预置）专家目录：只读扫描，见 services/public_expert_service.py。"""
 
 class SQLiteConfig(BaseModel):
     """SQLite configuration"""
@@ -535,6 +537,7 @@ class Config(BaseModel):
         return ToolsConfig(
             skills_dir=tools_data.get("skills_dir", "./skills"),
             prompts_dir=tools_data.get("prompts_dir", "./prompts"),
+            experts_dir=tools_data.get("experts_dir", "./exports"),
         )
 
     @staticmethod
