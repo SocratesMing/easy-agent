@@ -112,6 +112,7 @@
         @approve="handleToolApproval('approve')"
         @reject="handleToolApproval('reject')"
         @open-panel="openSkillCenterPanel"
+        @open-knowledge="openKnowledgeWorkbench"
       />
 
       <div v-if="currentSessionId && !showKnowledge && !showUserManagementPanel && !showAssets && !showSkillCenter" class="workspace-area">
@@ -908,6 +909,15 @@ export default {
       // 「+」菜单入口：打开面板并直接定位到专家/技能/连接器
       this.skillCenterTab = tab
       this.showSkillCenter = true
+    },
+    openKnowledgeWorkbench() {
+      // 「+」菜单知识库子面板入口：打开知识库工作台
+      this.showKnowledge = true
+      this.showAssets = false
+      this.showSkillCenter = false
+      this.showScheduledTasks = false
+      this.showSettingsPanel = false
+      this.showUserManagementPanel = false
     },
     handleShowSkillCenter() {
       this.showKnowledge = false

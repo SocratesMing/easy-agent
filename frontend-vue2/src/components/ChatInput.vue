@@ -114,7 +114,7 @@
                     <polyline points="9 18 15 12 9 6"></polyline>
                   </svg>
                 </button>
-                <button type="button" class="plus-menu-item" @mouseenter="cancelPlusClose" @click="openKnowledgeScope">
+                <button type="button" class="plus-menu-item plus-menu-item-knowledge" @mouseenter="enterKnowledgeItem" @click="openKnowledgeScope">
                   <svg class="plus-menu-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                     <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path>
                     <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path>
@@ -186,14 +186,18 @@
             </div>
             </div>
           </div>
-          <!-- 知识库引用：仅由加号菜单「知识库」入口打开（常驻触发按钮隐藏），面板定位锚到加号按钮 -->
+          <!-- 知识库引用：仅由加号菜单「知识库」入口打开（常驻触发按钮隐藏），
+               面板与技能子面板同款样式，锚到「知识库」菜单项右侧弹出 -->
           <KnowledgeScopeSelector
             ref="knowledgeScope"
             :session-id="sessionId || ''"
             :disabled="isStreaming || disabled"
             hide-trigger
-            anchor-selector=".plus-btn"
+            anchor-selector=".plus-menu-item-knowledge"
+            @mouseenter.native="cancelPlusClose"
+            @mouseleave.native="schedulePlusClose"
             @create-session="$emit('create-session')"
+            @manage="openKnowledgeManage"
           />
           <input
             ref="fileInputRef"
@@ -702,6 +706,8 @@ export default {
       if (this.isStreaming || this.disabled) return
       if (this.showPlusMenu) {
         this.showPlusMenu = false
+        this.subpanelCategory = null
+        if (this.$refs.knowledgeScope) this.$refs.knowledgeScope.closePopover()
         this.cancelPlusClose()
         return
       }
@@ -721,14 +727,19 @@ export default {
     },
     closePlusMenu(event) {
       const anchor = this.$refs.plusMenuRef
-      if (this.showPlusMenu && anchor && !anchor.contains(event.target)) {
+      // 点击知识库面板内部不算「菜单外」（面板不在菜单 DOM 内，但属于同一浮层交互）
+      const scopeRoot = this.$refs.knowledgeScope && this.$refs.knowledgeScope.$el
+      const inScope = scopeRoot && scopeRoot.contains(event.target)
+      if (this.showPlusMenu && anchor && !anchor.contains(event.target) && !inScope) {
         this.showPlusMenu = false
         this.subpanelCategory = null
+        if (this.$refs.knowledgeScope) this.$refs.knowledgeScope.closePopover()
       }
     },
     handleMenuAddFile() {
       this.showPlusMenu = false
       this.subpanelCategory = null
+      if (this.$refs.knowledgeScope) this.$refs.knowledgeScope.closePopover()
       const input = this.$refs.fileInputRef
       if (input) input.click()
     },
@@ -773,10 +784,13 @@ export default {
         this.plusHoverTimer = null
         this.showPlusMenu = false
         this.subpanelCategory = null
+        if (this.$refs.knowledgeScope) this.$refs.knowledgeScope.closePopover()
       }, 250)
     },
     hoverPlusItem(category) {
       this.cancelPlusClose()
+      // 切到其他菜单项时收起知识库面板，避免两个浮层叠着
+      if (this.$refs.knowledgeScope) this.$refs.knowledgeScope.closePopover()
       if (category === 'experts' || category === 'skills' || category === 'connectors') {
         // openSubpanel 需要事件定位；hover 无事件对象时用菜单项元素
         const el = [...this.$el.querySelectorAll('.plus-menu-item')].find(i => i.textContent.includes(
@@ -839,13 +853,24 @@ export default {
       this.subpanelCategory = null
       this.$emit('open-panel', tab)
     },
-    // 加号菜单「知识库」：关闭菜单并打开知识范围选择器（勾选即生效）
+    // 加号菜单「知识库」：与技能子面板一致，点击保持主菜单常驻，面板贴菜单项右侧弹出
     openKnowledgeScope() {
+      this.cancelPlusClose()
+      this.subpanelCategory = null
+      if (this.$refs.knowledgeScope) this.$refs.knowledgeScope.openPopover()
+    },
+    // hover 到「知识库」菜单项即展开选择面板（并收起其他子面板），无需点击
+    enterKnowledgeItem() {
+      this.cancelPlusClose()
+      this.subpanelCategory = null
+      if (this.$refs.knowledgeScope) this.$refs.knowledgeScope.openPopover()
+    },
+    // 知识库子面板底部入口：关闭菜单并打开知识库工作台
+    openKnowledgeManage() {
       this.showPlusMenu = false
       this.subpanelCategory = null
-      this.$nextTick(() => {
-        if (this.$refs.knowledgeScope) this.$refs.knowledgeScope.togglePopover()
-      })
+      if (this.$refs.knowledgeScope) this.$refs.knowledgeScope.closePopover()
+      this.$emit('open-knowledge')
     },
     // 供父组件把预置问题完整文本填进输入框（卡片上最多显示 3 行，长问题展示不全）
     setMessage(text) {
