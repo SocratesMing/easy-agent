@@ -341,7 +341,7 @@ async def get_mcp_servers(
     }
 
 
-def _market_entries() -> list[tuple[str, dict[str, Any]]]:
+def _market_entries() -> list[dict[str, Any]]:
     """读取公共 MCP 目录，兼容两种顶层格式。
 
     - ``connectors`` 数组（vue26 的连接器目录）：``{connectors: [{id, config}]}``
@@ -367,7 +367,7 @@ def _market_entries() -> list[tuple[str, dict[str, Any]]]:
     if not isinstance(raw, dict):
         return []
 
-    entries: list[tuple[str, dict[str, Any]]] = []
+    entries: list[dict[str, Any]] = []
     seen: set[str] = set()
 
     connectors = raw.get("connectors")
@@ -378,16 +378,31 @@ def _market_entries() -> list[tuple[str, dict[str, Any]]]:
             name = item.get("id")
             cfg = item.get("config")
             if isinstance(name, str) and name and isinstance(cfg, dict):
-                entries.append((name, cfg))
+                entries.append(
+                    {
+                        "id": name,
+                        # 界面上展示的名字；条目没写 name 时退回 id
+                        "name": str(item.get("name") or name),
+                        "description": str(item.get("description") or ""),
+                        "config": cfg,
+                    }
+                )
                 seen.add(name)
 
     servers = raw.get("servers")
     if isinstance(servers, dict):
         for name, cfg in servers.items():
             if isinstance(cfg, dict) and name not in seen:
-                entries.append((name, cfg))
+                entries.append(
+                    {"id": name, "name": name, "description": "", "config": cfg}
+                )
 
     return entries
+
+
+def _market_configs() -> dict[str, dict[str, Any]]:
+    """``{id: config}`` 视图，供"从市场添加"按名字取配置。"""
+    return {item["id"]: item["config"] for item in _market_entries()}
 
 
 @router.get("/mcp/market", summary="获取公共 MCP 市场列表")
@@ -397,16 +412,21 @@ async def get_mcp_market(
     """读取全局 mcp.json 作为公共市场，并标记当前用户是否已添加。"""
     _cfg = get_agent_config()
     config: Config | None = _cfg["config"] if _cfg and _cfg.get("config") else None
-    market_config = dict(_market_entries())
+    market_items = _market_entries()
     user_servers = _read_user_mcp_raw(username, config).get("servers", {})
 
     servers = []
-    for name, cfg in market_config.items():
+    for item in market_items:
+        name = item["id"]
+        cfg = item["config"]
         raw = dict(cfg)
         if "env" in raw and isinstance(raw["env"], dict):
             raw["env"] = {key: "***" for key in raw["env"]}
         servers.append({
             "name": name,
+            # display_name 是中文展示名；name 保持英文 id（写入用户 mcp.json 的 server 名）
+            "display_name": item["name"],
+            "description": item["description"],
             "transport": cfg.get("transport", cfg.get("type", "unknown")),
             "command": cfg.get("command", ""),
             "args": cfg.get("args", []),
@@ -542,7 +562,7 @@ async def add_mcp_from_market(
     """
     _cfg = get_agent_config()
     config: Config | None = _cfg["config"] if _cfg and _cfg.get("config") else None
-    market_config = dict(_market_entries())
+    market_config = _market_configs()
     server_config = market_config.get(request.name)
     if not server_config:
         raise HTTPException(status_code=404, detail=f"MCP 市场服务不存在: {request.name}")
