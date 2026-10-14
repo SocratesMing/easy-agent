@@ -127,6 +127,7 @@
             @wheel="onPresetWheel($event, gi)"
             @keydown.left.prevent="stepPreset(gi, -1)"
             @keydown.right.prevent="stepPreset(gi, 1)"
+            @keydown.enter.prevent="onPresetCardClick(gi)"
           >
             <div class="preset-deck-head">
               <span class="preset-deck-title">
@@ -145,6 +146,7 @@
                 :class="presetCardClass(gi, i)"
                 :style="presetCardStyle(gi, i)"
                 :aria-hidden="i !== presetIndex(gi)"
+                @click="onPresetCardClick(gi)"
               >
                 <span class="preset-card-text">{{ q }}</span>
               </div>
@@ -270,6 +272,8 @@ export default {
       composerMode: 'center',
       // 输入框当前内容是否为「预置问题预览填充态」
       previewActive: false,
+      // 本次发送是否来自预置问题卡片点击：onSend 据此改走 preset-send 事件
+      presetSendPending: false,
       // 预置问题：每张卡片当前展示的子问题下标（按卡片序号索引，最多三张）
       presetQuestionIndexes: [],
       deckTop: 0,
@@ -550,9 +554,36 @@ export default {
         ? { zIndex: 30 }
         : { zIndex: 10, opacity: '0', pointerEvents: 'none' }
     },
+    // ========== 预置问题：点击发送 ==========
+    // 点击卡片把该问题作为「新对话的第一条消息」发出：先复用悬浮预览的填入逻辑
+    // 把完整文本写进输入框，再触发输入框自身的发送（走上传等待、canSend 校验、
+    // 清空草稿等与手动发送完全一致的链路），不复制一份发送实现。
+    // presetSendPending 标记本次 send 来自预置问题卡片，onSend 里据此改走
+    // preset-send 事件，由 App 侧先落到全新会话再发送。
+    onPresetCardClick(groupIndex) {
+      const group = this.displayedPresetGroups[groupIndex]
+      const question = group && group.questions ? group.questions[this.presetIndex(groupIndex)] : null
+      if (question == null) return
+      // 点击即发送，悬浮预览状态不再需要（移出时的草稿恢复逻辑会干扰发送）
+      this.hoveredDeck = null
+      this.lastPreview = ''
+      this.presetSendPending = true
+      const composer = this.$refs.composerRef
+      if (composer) composer.setMessage(question)
+      if (composer) composer.triggerSend()
+      // triggerSend 因 disabled/canSend 未真正发出时，复位标记避免影响后续手动发送
+      if (composer && composer.getMessage() === question) {
+        this.presetSendPending = false
+      }
+    },
     onSend(message, files, signal, enableDeepThink, enableWebSearch) {
       this.composerMode = 'bottom'
       this.isAtBottom = true
+      if (this.presetSendPending) {
+        this.presetSendPending = false
+        this.$emit('preset-send', message, files, signal, enableDeepThink, enableWebSearch)
+        return
+      }
       this.handleSend(message, files, signal, enableDeepThink, enableWebSearch)
     },
     handleScroll() {

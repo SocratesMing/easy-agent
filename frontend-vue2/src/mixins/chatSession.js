@@ -99,6 +99,10 @@ export default {
       get() { return chatStore.streamingSessions },
       set(v) { chatStore.streamingSessions = v },
     },
+    pendingApprovalSessions: {
+      get() { return chatStore.pendingApprovalSessions },
+      set(v) { chatStore.pendingApprovalSessions = v },
+    },
     lastStreamingSession: {
       get() { return chatStore.lastStreamingSession },
       set(v) { chatStore.lastStreamingSession = v },
@@ -199,6 +203,33 @@ export default {
     isSessionStreaming(sid) {
       return !!sid && this.streamingSessions.includes(sid)
     },
+    // ---- 会话列表"待审批"标识 ----
+    // 判定口径与 ChatMessage 的 hasPendingApproval 一致：tool_call 块 pending，
+    // 或消息级 pending_approval（thread_id）仍存在。历史接口可能给数组形态，一并兼容。
+    hasPendingApprovalInMessages(msgs) {
+      return (msgs || []).some(m =>
+        (m.pending_approval && (m.pending_approval.thread_id || (Array.isArray(m.pending_approval) && m.pending_approval.length))) ||
+        (Array.isArray(m.blocks) && m.blocks.some(b => b.type === 'tool_call' && b.approval_status === 'pending'))
+      )
+    },
+    // 待审批产生/消失时增删列表徽标标记（store 共享，主面板与侧边栏同时可见）
+    syncPendingApprovalFlag(sessionId, hasPending) {
+      if (!sessionId) return
+      const list = this.pendingApprovalSessions
+      const has = list.includes(sessionId)
+      if (hasPending && !has) list.push(sessionId)
+      else if (!hasPending && has) list.splice(list.indexOf(sessionId), 1)
+    },
+    // 以本地消息缓存（当前界面或会话级缓存）为准重算某会话的待审批状态。
+    // 审批决策后、服务端历史回填后调用，保证徽标随状态流转及时消失。
+    recomputePendingApprovalFlag(sessionId) {
+      if (!sessionId) return
+      const cur = this.currentSessionId
+      const msgs = cur === sessionId
+        ? this.messages
+        : ((this.sessionStates[sessionId] || {}).messages)
+      this.syncPendingApprovalFlag(sessionId, this.hasPendingApprovalInMessages(msgs))
+    },
     // 挂载到进行中的流式任务：回放该流已产生的事件并持续接收后续事件。
     // displayed=true：重建界面消息并持续更新（当前查看的会话）；
     // displayed=false：仅后台同步 token 用量、流结束时移除"进行中"标记，不触碰界面。
@@ -295,6 +326,8 @@ export default {
             threadId: data.thread_id,
             assistantMsgId: attachId,
           }
+          // 会话列表立即亮起"待审批"标识
+          this.syncPendingApprovalFlag(sessionId, true)
           if (attachId && data.action_requests) {
             const idx = this.messages.findIndex(m => m.id === attachId)
             if (idx !== -1) {
@@ -370,6 +403,8 @@ export default {
           }
           // 列表"进行中"标记此时移除（显示已完成）：以服务端历史为准回填完整内容
           await this.syncSessionFromServer(sessionId)
+          // 流结束回填后重算"待审批"标识（审批已被处理/失效则熄灭，仍 pending 则保持）
+          this.recomputePendingApprovalFlag(sessionId)
           if (displayed) {
             // 同上兜底：挂载流结束时确保占位消息不再标记 loading，避免页面残留"执行中"
             let idx = this.messages.findIndex(m => m.id === attachId)
@@ -576,6 +611,8 @@ export default {
           break
         }
       }
+      // 以重建结果为准刷新会话列表"待审批"标识（无待审批/已被新一轮对话打断时熄灭）
+      this.recomputePendingApprovalFlag(this.currentSessionId)
     },
     async loadSessions() {
       try {
@@ -689,6 +726,9 @@ export default {
     async handleDeleteSession(sessionId) {
       try {
         await deleteSession(sessionId)
+        // 会话删除后其"待审批/进行中"标识同步移除
+        this.syncPendingApprovalFlag(sessionId, false)
+        this.unmarkStreaming(sessionId)
         this.sessions = this.sessions.filter(s => s.session_id !== sessionId)
 
         // 清除会话缓存
@@ -1207,6 +1247,9 @@ export default {
         },
         onApprovalRequired: (data) => {
           this.pendingApproval = { threadId: data.thread_id, assistantMsgId }
+          // 会话列表立即亮起"待审批"标识（streamCtx 见下方 createStreamChunkHandler(streamCtx)，
+          // 回调执行时已初始化完毕；普通流可能属于后台会话，优先取其 streamSessionId）
+          this.syncPendingApprovalFlag(streamCtx.streamSessionId || this.currentSessionId, true)
           if (assistantMsgId && data.action_requests) {
             const idx = this.messages.findIndex(m => m.id === assistantMsgId)
             if (idx !== -1) {
@@ -1400,6 +1443,8 @@ export default {
           setReactive(this.messages, idx, { ...this.messages[idx], blocks: [...this.messages[idx].blocks] })
         }
       }
+      // 本次决策已落地，重算标识（若恢复流中再遇嵌套审批会立即重新亮起）
+      this.recomputePendingApprovalFlag(sessionId)
 
       const { onChunk } = this.createStreamChunkHandler({
         isResume: true,
@@ -1415,6 +1460,8 @@ export default {
             threadId: data.thread_id,
             assistantMsgId,
           }
+          // 决策后标识可能已被重算熄灭，嵌套审批到达时重新亮起
+          this.syncPendingApprovalFlag(sessionId, true)
           if (assistantMsgId && data.action_requests) {
             const idx = this.messages.findIndex(m => m.id === assistantMsgId)
             if (idx !== -1) {
@@ -1504,6 +1551,7 @@ export default {
           this.saveCurrentSessionState()
           // 审批恢复流结束：以服务端历史为准回填，保证完整渲染
           await this.syncSessionFromServer(sid)
+          this.recomputePendingApprovalFlag(sid)
           await this.loadSessions()
         }
       }

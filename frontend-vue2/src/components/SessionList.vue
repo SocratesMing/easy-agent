@@ -74,6 +74,7 @@
               <span v-if="streamingSessionIds.includes(session.session_id)" class="streaming-badge" title="进行中">
                 <span class="streaming-dot"></span>
               </span>
+              <span v-if="pendingApprovalSessionIds.includes(session.session_id)" class="approval-flag" title="该会话存在待审批操作，需处理后才能继续">待审批</span>
             </div>
           </div>
           <div class="session-actions">
@@ -198,6 +199,10 @@ export default {
     default: null
   },
   streamingSessionIds: {
+    type: Array,
+    default: () => []
+  },
+  pendingApprovalSessionIds: {
     type: Array,
     default: () => []
   },
@@ -582,6 +587,26 @@ export default {
 @keyframes streaming-pulse {
   0%, 100% { opacity: 1; transform: scale(1); }
   50% { opacity: 0.35; transform: scale(0.65); }
+}
+
+/* 待审批标识：琥珀色小徽标，与"进行中"绿点区分；小尺寸淡底，不喧宾夺主 */
+.approval-flag {
+  flex-shrink: 0;
+  margin-left: 2px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(245, 158, 11, 0.14);
+  color: #b45309;
+  font-size: 10px;
+  line-height: 1.5;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+html[data-theme="dark"] .approval-flag {
+  background: rgba(251, 191, 36, 0.16);
+  /* 全局暗色规则用 !important 压文字色，此处需同级覆盖（见 memory 既有结论） */
+  color: #fbbf24 !important;
 }
 
 .session-actions {

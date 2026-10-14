@@ -23,6 +23,7 @@
         :sessions="sessions"
         :currentSessionId="currentSessionId"
         :streamingSessionIds="streamingSessions"
+        :pendingApprovalSessionIds="pendingApprovalSessions"
         :username="userProfile.username"
         :organizationId="userProfile.organization_id"
         :email="userProfile.email"
@@ -111,6 +112,7 @@
         @update:selectedModel="selectedModel = $event"
         @toggle-workspace="isWorkspaceCollapsed = false"
         @send-message="handleSendMessage"
+        @preset-send="handlePresetSend"
         @create-session="ensureCurrentSession"
         @remove-file="handleRemoveFile"
         @stop="handleStop"
@@ -892,6 +894,11 @@ export default {
     async handleDeleteSession(sessionId) {
       try {
         await deleteSession(sessionId)
+        // 会话删除后其"待审批/进行中"标识同步移除
+        const pendIdx = chatStore.pendingApprovalSessions.indexOf(sessionId)
+        if (pendIdx !== -1) chatStore.pendingApprovalSessions.splice(pendIdx, 1)
+        const streamIdx = chatStore.streamingSessions.indexOf(sessionId)
+        if (streamIdx !== -1) chatStore.streamingSessions.splice(streamIdx, 1)
         this.sessions = this.sessions.filter(s => s.session_id !== sessionId)
 
         // 清除会话缓存
@@ -1410,6 +1417,12 @@ export default {
       // 事件按「所属会话」路由：后台会话写入其自身缓冲，不污染当前展示
       return { onChunk: (data) => this.runInSession(ctx.streamSessionId, ctx, () => onChunk(data)) }
     },
+    // 预置问题卡片点击发送：无论当前是否已选中会话，都先按「新建对话」把状态
+    // 切回全新首页再走正常发送；当前无会话时后端会在 start 事件里返回新会话 id。
+    async handlePresetSend(message, files, signal, enableDeepThink, enableWebSearch) {
+      await this.handleCreateSession()
+      this.handleSendMessage(message, files, signal, enableDeepThink, enableWebSearch)
+    },
     async handleSendMessage(message, files = [], signal, enableDeepThink = true, enableWebSearch = false) {
       const userMsgId = `user-${Date.now()}`
       const preStreamUsage = { ...this.sessionUsage }
@@ -1482,6 +1495,9 @@ export default {
         },
         onApprovalRequired: (data) => {
           this.pendingApproval = { threadId: data.thread_id, assistantMsgId }
+          // 会话列表立即亮起"待审批"标识（streamCtx 见下方，回调执行时已初始化完毕；
+          // 普通流可能属于后台会话，优先取其 streamSessionId）
+          this.syncPendingApprovalFlag(streamCtx.streamSessionId || this.currentSessionId, true)
           if (assistantMsgId && data.action_requests) {
             const idx = this.messages.findIndex(m => m.id === assistantMsgId)
             if (idx !== -1) {
@@ -1615,6 +1631,8 @@ export default {
           this.unmarkStreaming(sid)
           // 列表"进行中"标记此时移除（显示已完成）：以服务端历史为准回填，保证完整渲染
           await this.syncSessionFromServer(sid)
+          // 挂载流结束回填后重算"待审批"标识（审批已被处理/失效则熄灭，仍 pending 则保持）
+          this.recomputePendingApprovalFlag(sid)
 
           await this.loadSessions()
         }
@@ -1646,6 +1664,8 @@ export default {
           setReactive(this.messages, idx, { ...this.messages[idx], blocks: [...this.messages[idx].blocks] })
         }
       }
+      // 本次决策已落地，重算"待审批"标识（若恢复流中再遇嵌套审批会立即重新亮起）
+      this.recomputePendingApprovalFlag(sessionId)
 
       const { onChunk } = this.createStreamChunkHandler({
         isResume: true,
@@ -1661,6 +1681,8 @@ export default {
             threadId: data.thread_id,
             assistantMsgId,
           }
+          // 决策后标识可能已被重算熄灭，嵌套审批到达时重新亮起
+          this.syncPendingApprovalFlag(sessionId, true)
           if (assistantMsgId && data.action_requests) {
             const idx = this.messages.findIndex(m => m.id === assistantMsgId)
             if (idx !== -1) {
@@ -1750,6 +1772,7 @@ export default {
           this.saveCurrentSessionState()
           // 审批恢复流结束：以服务端历史为准回填，保证完整渲染
           await this.syncSessionFromServer(sid)
+          this.recomputePendingApprovalFlag(sid)
           await this.loadSessions()
         }
       }

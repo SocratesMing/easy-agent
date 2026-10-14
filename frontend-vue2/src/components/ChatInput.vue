@@ -1123,6 +1123,12 @@ export default {
       this.$nextTick(() => this.autoResize())
     },
 
+    // 供父组件（预置问题卡片点击）走输入框的正常发送链路：复用 send() 的
+    // 上传等待、canSend/disabled 校验与清空逻辑，不重复实现一份发送
+    triggerSend() {
+      this.send()
+    },
+
     /**
      * 实际发送给模型的内容：技能指令前缀 + 用户输入。
      * 例：界面显示 [图标]PPT生成 +「生成一份PPT创作文档」→ 发送 `/pptx-generator 生成一份PPT创作文档`

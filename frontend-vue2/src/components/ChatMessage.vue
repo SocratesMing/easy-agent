@@ -1,9 +1,5 @@
 <template>
   <div class="message" :class="[message.role]">
-    <!-- 助手头像（左侧） -->
-    <div v-if="message.role === 'assistant'" class="message-avatar assistant-avatar">
-      <EasyLogo :size="32" />
-    </div>
     <div class="message-content" @click="handleContentClick">
       <!-- AI 侧边栏发起的消息：展示随消息附带的页面上下文 -->
       <div
@@ -192,13 +188,6 @@
         </button>
       </div>
     </div>
-    <!-- 用户头像（右侧） -->
-    <div v-if="message.role === 'user'" class="message-avatar user-avatar">
-      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
-        <circle cx="12" cy="7" r="4"></circle>
-      </svg>
-    </div>
   </div>
 </template>
 
@@ -214,7 +203,6 @@ import {
   escapeHtml,
 } from '../markdownSetup.js'
 import FileIcon from './FileIcon.vue'
-import EasyLogo from './EasyLogo.vue'
 import KnowledgeEvidence from '../features/knowledge/KnowledgeEvidence.vue'
 import ToolCallCard from './ToolCallCard.vue'
 import { pageContextLabel } from '../utils/pageContext.js'
@@ -314,7 +302,7 @@ const renderer = createMarkdownRenderer({ highlight: highlightCode })
 installCodeCopyHandler()
 
 export default {
-  components: { FileIcon, ToolCallCard, KnowledgeEvidence, EasyLogo },
+  components: { FileIcon, ToolCallCard, KnowledgeEvidence },
   props: {
     message: {
       type: Object,
@@ -922,35 +910,6 @@ html[data-theme="dark"] .process-body .process-inline-content {
 .message.assistant .message-content {
   align-items: flex-start;
   width: 100%;
-}
-
-/* 消息头像 */
-.message-avatar {
-  flex-shrink: 0;
-  align-self: flex-start;
-  width: 32px;
-  height: 32px;
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  margin-top: 2px;
-  user-select: none;
-}
-
-.message.assistant .message-avatar.assistant-avatar {
-  background: transparent;
-}
-
-.message.user .message-avatar.user-avatar {
-  background: linear-gradient(135deg, #60a5fa, #3b82f6);
-  color: #fff;
-  box-shadow: 0 1px 3px rgba(59, 130, 246, 0.3);
-}
-
-.message.user .message-avatar.user-avatar svg {
-  width: 18px;
-  height: 18px;
 }
 
 /* AI 侧边栏消息的页面上下文胶囊 */
@@ -1805,6 +1764,67 @@ html[data-theme="dark"] .approval-badge.status-rejected {
 
 /* GitHub 风格 emoji 短代码渲染后的 unicode 字符 */
 /* 知识依据锚点：[知识依据N] 渲染为可点击链接，点击跳转证据面板对应卡片 */
+/* 正文内超链接：全局 a 重置（style.css 里 color/text-decoration: inherit）
+   会抹掉链接外观，这里恢复可辨识样式，保证 [标题](URL) 与裸 URL 一眼可点 */
+.message-text ::v-deep a {
+  color: var(--accent-color, #2563eb);
+  text-decoration: underline;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+
+.message-text ::v-deep a:hover {
+  text-decoration: none;
+  opacity: 0.8;
+}
+
+/* 来源卡片：AI 回复里「标题 + 链接」独立行美化成卡片，不展示裸 URL，点击跳转。
+   连续卡片装进 flex 容器，从左到右排列、装不下自动换行 */
+.message-text ::v-deep .msg-source-cards {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+  margin: 3px 0;
+}
+
+.message-text ::v-deep a.msg-source-card {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  max-width: 100%;
+  margin: 0;
+  padding: 7px 12px;
+  border: 1px solid rgba(37, 99, 235, 0.28);
+  border-radius: 10px;
+  background: rgba(37, 99, 235, 0.05);
+  color: #2563eb;
+  font-weight: 500;
+  line-height: 1.4;
+  text-decoration: none;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+  transition: background 0.15s ease-out, border-color 0.15s ease-out;
+}
+
+.message-text ::v-deep a.msg-source-card:hover {
+  background: rgba(37, 99, 235, 0.1);
+  border-color: rgba(37, 99, 235, 0.5);
+  text-decoration: none;
+}
+
+.message-text ::v-deep a.msg-source-card svg {
+  flex-shrink: 0;
+  width: 15px;
+  height: 15px;
+}
+
+html[data-theme="dark"] .message-text ::v-deep a.msg-source-card {
+  background: rgba(96, 165, 250, 0.1);
+  border-color: rgba(96, 165, 250, 0.35);
+}
+
 .message-text ::v-deep a.ke-cite {
   color: #2563eb;
   text-decoration: underline;
@@ -1917,6 +1937,31 @@ html[data-theme="dark"] .approval-badge.status-rejected {
 .message-text ::v-deep ul, .message-text ::v-deep ol {
   margin: 20px 0;
   padding-left: 28px;
+  /* 全局 reset（style.css）抹掉了 list-style，这里恢复项目符号，
+     否则列表只剩 28px 缩进、看不到圆点/序号，像凭空缩进 */
+  list-style-position: outside;
+}
+
+.message-text ::v-deep ul {
+  list-style: disc;
+}
+
+.message-text ::v-deep ol {
+  list-style: decimal;
+}
+
+/* 嵌套列表：符号逐层变化，层级归属更清晰 */
+.message-text ::v-deep ul ul {
+  list-style: circle;
+}
+
+.message-text ::v-deep ul ul ul {
+  list-style: square;
+}
+
+.message-text ::v-deep ul ul, .message-text ::v-deep ol ol,
+.message-text ::v-deep ul ol, .message-text ::v-deep ol ul {
+  margin: 6px 0 2px;
 }
 
 .message-text ::v-deep li {
