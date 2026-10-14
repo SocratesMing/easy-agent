@@ -41,10 +41,33 @@ def test_system_prompt_matches_easy_agent_workflow():
     assert "中文" in prompt
     assert "破坏性操作" in prompt
     assert "密钥" in prompt
+    assert "工作方式" in prompt
+    assert "命令结果" in prompt
+    assert "关键歧义" in prompt
+
+    # 安全与隔离
+    assert "安全与隔离" in prompt
+    assert "按用户与会话隔离" in prompt
+    assert "目录删除" in prompt
+
+    # 专家优先级
+    assert "专家模式" in prompt
+    assert "不得降低安全" in prompt
+
+    # 交付与工作区
+    assert "交付物" in prompt
+    assert "工作区" in prompt
 
     # 记忆体系
     assert "系统自动维护" in prompt
     assert "不要手动改写记忆文件" in prompt
+
+    # 长期记忆结构与预算
+    assert "工作背景" in prompt
+    assert "个人背景" in prompt
+    assert "当前关注" in prompt
+    assert "近期动态" in prompt
+    assert "1500 字符" in prompt
 
     # 已废弃的旧表述不应再出现
     assert "业务场景" not in prompt

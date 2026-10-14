@@ -120,14 +120,85 @@ import {
   getSystemPrompt,
 } from '../api/settings.js'
 import { marked } from 'marked'
-import { setupMarkedExtensions } from '../markdownSetup.js'
+import { setupMarkedExtensions, normalizeMathDelimiters, escapeHtml } from '../markdownSetup.js'
 
 setupMarkedExtensions()
+
+const renderer = new marked.Renderer()
+
+renderer.code = function(token) {
+  const code = typeof token === 'object' ? (token.text || token.raw || '') : String(token || '')
+  const lang = typeof token === 'object' ? (token.lang || '') : String(arguments[1] || '')
+  const langLabel = lang || 'text'
+  return `<div class="code-block-wrapper">
+    <div class="code-header">
+      <span class="code-lang">${escapeHtml(langLabel)}</span>
+      <button class="code-copy-btn" onclick="copyCode(this)">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+          <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+        </svg>
+        <span>复制</span>
+      </button>
+    </div>
+    <pre><code>${escapeHtml(code)}</code></pre>
+  </div>`
+}
+
+function settingsRenderMarkdown(content) {
+  if (!content) return ''
+  try {
+    return marked.parse(normalizeMathDelimiters(content), {
+      renderer,
+      breaks: true,
+      gfm: true,
+    })
+  } catch (e) {
+    console.error('Markdown 渲染失败:', e)
+    return content
+  }
+}
 
 const emit = defineEmits(['close'])
 
 // 设置弹窗：Esc 关闭 + 打开时聚焦当前标签，导航支持方向键切换（WAI-ARIA tabs）
 const dialogRef = ref(null)
+
+// 设置页可能先于聊天消息加载，这里确保代码块复制按钮可用（幂等）。
+if (typeof window !== 'undefined' && !window.copyCode) {
+  window.copyCode = async function(btn) {
+    const wrapper = btn.closest('.code-block-wrapper')
+    const codeEl = wrapper.querySelector('pre code') || wrapper.querySelector('pre')
+    const code = codeEl?.textContent || ''
+
+    const span = btn.querySelector('span')
+    const originalText = span ? span.textContent : ''
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(code)
+        if (span) span.textContent = '已复制!'
+      } else {
+        throw new Error('Clipboard API unavailable')
+      }
+    } catch (e) {
+      const textarea = document.createElement('textarea')
+      textarea.value = code
+      textarea.setAttribute('readonly', '')
+      textarea.style.position = 'fixed'
+      textarea.style.top = '-9999px'
+      document.body.appendChild(textarea)
+      textarea.select()
+      const ok = document.execCommand('copy')
+      document.body.removeChild(textarea)
+      if (span) span.textContent = ok ? '已复制!' : '复制失败'
+    }
+    btn.classList.add('copied')
+    setTimeout(() => {
+      if (span) span.textContent = originalText
+      btn.classList.remove('copied')
+    }, 2000)
+  }
+}
 
 function onDialogKeydown(e) {
   if (e.key === 'Escape') emit('close')
@@ -196,11 +267,6 @@ async function loadTabData() {
   }
 }
 
-function escapeHtml(text) {
-  return String(text).replace(/[&<>"']/g, (c) => ({
-    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
-  })[c])
-}
 
 // 预览态：把记忆内容按 Markdown 渲染
 const renderedMemory = computed(() => {
@@ -209,7 +275,7 @@ const renderedMemory = computed(() => {
     return '<p class="memory-empty">暂无记忆内容，点击右上角「编辑」添加</p>'
   }
   try {
-    return marked.parse(raw, { breaks: true, gfm: true })
+    return settingsRenderMarkdown(raw)
   } catch (e) {
     console.error('记忆 Markdown 渲染失败:', e)
     return `<pre>${escapeHtml(raw)}</pre>`
@@ -223,7 +289,7 @@ const renderedPrompt = computed(() => {
     return '<p class="memory-empty">暂无系统提示词</p>'
   }
   try {
-    return marked.parse(raw, { breaks: true, gfm: true })
+    return settingsRenderMarkdown(raw)
   } catch (e) {
     console.error('系统提示词 Markdown 渲染失败:', e)
     return `<pre>${escapeHtml(raw)}</pre>`
@@ -848,5 +914,122 @@ html[data-theme="dark"] .settings-header h2 {
 
 html[data-theme="dark"] .panel-desc {
   color: var(--text-secondary);
+}
+
+<style>
+/* 设置页 Markdown 预览：与聊天区一致的代码块结构（语言标签 + 复制按钮）。
+   全局样式用于穿透 v-html 的动态节点。 */
+.markdown-body .code-block-wrapper {
+  margin: 0 0 12px;
+  border: 1px solid #e1e4e8;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.markdown-body .code-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: #f1f3f5;
+  padding: 8px 14px;
+  border-bottom: 1px solid #e1e4e8;
+}
+
+.markdown-body .code-lang {
+  font-size: 12px;
+  color: #57606a;
+  font-weight: 500;
+}
+
+.markdown-body .code-copy-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  background: #fff;
+  border: 1px solid #d0d7de;
+  border-radius: 6px;
+  color: #57606a;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.markdown-body .code-copy-btn:hover {
+  background: #f3f4f6;
+  border-color: #8c959f;
+  color: #24292e;
+}
+
+.markdown-body .code-copy-btn.copied {
+  color: #22c55e;
+}
+
+.markdown-body .code-copy-btn svg {
+  width: 13px;
+  height: 13px;
+}
+
+.markdown-body .code-block-wrapper pre,
+.markdown-body .code-block-wrapper .shiki {
+  margin: 0;
+  padding: 12px 14px;
+  border-radius: 0;
+  border: none;
+  border-top: none;
+  background: #f6f8fa;
+  color: #24292e;
+  overflow-x: auto;
+}
+
+.markdown-body .code-block-wrapper pre code,
+.markdown-body .code-block-wrapper .shiki code {
+  display: block;
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  white-space: pre;
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+html[data-theme="dark"] .markdown-body .code-block-wrapper {
+  border-color: #30363d;
+}
+
+html[data-theme="dark"] .markdown-body .code-header {
+  background: #161b22;
+  border-bottom-color: #30363d;
+}
+
+html[data-theme="dark"] .markdown-body .code-lang,
+html[data-theme="dark"] .markdown-body .code-copy-btn {
+  color: #8b949e;
+}
+
+html[data-theme="dark"] .markdown-body .code-copy-btn {
+  background: #21262d;
+  border-color: #30363d;
+}
+
+html[data-theme="dark"] .markdown-body .code-copy-btn:hover {
+  background: #30363d;
+  border-color: #8b949e;
+  color: #c9d1d9;
+}
+
+html[data-theme="dark"] .markdown-body .code-block-wrapper pre,
+html[data-theme="dark"] .markdown-body .code-block-wrapper .shiki,
+html[data-theme="dark"] .markdown-body .code-block-wrapper pre code,
+html[data-theme="dark"] .markdown-body .code-block-wrapper .shiki code {
+  background: transparent;
+  color: #c9d1d9;
+}
+
+html[data-theme="dark"] .memory-preview :not(pre) > code,
+html[data-theme="dark"] .prompt-preview :not(pre) > code {
+  background: #30363d !important;
+  color: #c9d1d9 !important;
 }
 </style>

@@ -122,19 +122,19 @@ const tabs = [
   {
     key: 'experts',
     label: '专家',
-    hint: '专家：创建与管理我的专家，选中「召唤」后按专家人设对话',
+    hint: '通过专家的经验完成任务',
     icon: `<svg ${T}><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>`,
   },
   {
     key: 'skills',
     label: '技能',
-    hint: '技能：管理公共技能与我的技能，可添加/移除、导入 zip、查看 SKILL.md',
+    hint: '适合完成特定的任务',
     icon: `<svg ${T}><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>`,
   },
   {
     key: 'connectors',
     label: '连接器',
-    hint: '连接器（MCP）：一键添加内置连接器、编辑 mcp.json 原文、接入自定义 MCP 服务',
+    hint: '连接外部应用数据',
     icon: `<svg ${T}><path d="M9 2v6"/><path d="M15 2v6"/><path d="M6 8h12v3a6 6 0 0 1-12 0z"/><path d="M12 17v5"/></svg>`,
   },
 ]

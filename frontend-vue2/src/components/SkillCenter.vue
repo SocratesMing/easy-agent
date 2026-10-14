@@ -133,9 +133,9 @@ export default {
   data() {
     return {
       tabs: [
-        { key: 'experts', label: '专家', icon: TAB_ICONS.experts, hint: '专家：创建与管理我的专家，选中「召唤」后按专家人设对话' },
-        { key: 'skills', label: '技能', icon: TAB_ICONS.skills, hint: '技能：管理公共技能与我的技能，可添加/移除、导入 zip、查看 SKILL.md' },
-        { key: 'connectors', label: '连接器', icon: TAB_ICONS.connectors, hint: '连接器（MCP）：一键添加内置连接器、编辑 mcp.json 原文、接入自定义 MCP 服务' },
+        { key: 'experts', label: '专家', icon: TAB_ICONS.experts, hint: '通过专家的经验完成任务' },
+        { key: 'skills', label: '技能', icon: TAB_ICONS.skills, hint: '适合完成特定的任务' },
+        { key: 'connectors', label: '连接器', icon: TAB_ICONS.connectors, hint: '连接外部应用数据' },
       ],
       activeTab: this.initialTab || 'skills',
       // 连接器内部视图：list（卡片列表）/ manage（mcp.json 编辑）
