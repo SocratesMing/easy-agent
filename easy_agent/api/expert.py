@@ -48,6 +48,7 @@ from ..services.expert_service import (
     write_expert_version,
 )
 from ..utils import SessionLogger, parse_file_content
+from ..utils.prompt_probe import describe_prompt
 from .chat import _detached_event_stream, create_new_session, generate_session_title
 
 logger = logging.getLogger(__name__)
@@ -519,9 +520,12 @@ async def stream_export_run(
         if prompt_text.strip():
             expert_prompt = prompt_text
             expert_id = request.expert_agent_id
+            # 可观测点 ①：专家提示词从磁盘加载（长度 + 指纹 + 开头片段）。
+            # 该指纹应与 agent_manager / agent 侧记录的一致，三者串起来即证明
+            # 「动态加载的专家提示词确实进了模型终稿」。
             logger.info(
-                f"[{sid}] 已加载专家提示词 | expert={request.expert_agent_id} | "
-                f"v{version} | {len(prompt_text)} 字符 | {version_dir}"
+                f"[{sid}] 📌 专家提示词已加载 | expert={request.expert_agent_id} | "
+                f"v{version} | {describe_prompt('内容', prompt_text)} | dir={version_dir}"
             )
         else:
             # 磁盘目录被清 / 文件缺失：降级为通用 Agent，不阻断用户对话
@@ -566,6 +570,13 @@ async def stream_export_run(
     if expert_prompt:
         extra_parts.append(expert_prompt)
     system_prompt_extra = "\n\n".join(extra_parts)
+
+    # 可观测点 ②（前半）：交给 agent_manager 的动态附加内容已组装完成。
+    # 这里能看到专家提示词 + 文件内容拼接后的最终 extra（未挂专家时为空）。
+    logger.info(
+        f"[{sid}] 🧩 动态附加内容已组装 | expert={expert_id or '(通用)'} | "
+        f"文件块={len(file_context_parts)} | {describe_prompt('extra', system_prompt_extra)}"
+    )
 
     # ── 4. 落用户消息（与 chat.py 一致） ───────────────────────────────
     user_message = {
