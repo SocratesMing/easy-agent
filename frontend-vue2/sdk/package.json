@@ -1,0 +1,26 @@
+{
+  "name": "@easy-agent/ai-sidebar",
+  "version": "1.0.0",
+  "description": "Easy Agent AI 侧边栏 SDK：任意 Web 页面一行代码接入 AI 对话侧边栏（流式对话、历史会话、技能 / MCP、页面上下文）",
+  "main": "easy-agent-sidebar.common.js",
+  "unpkg": "easy-agent-sidebar.umd.min.js",
+  "jsdelivr": "easy-agent-sidebar.umd.min.js",
+  "types": "index.d.ts",
+  "files": [
+    "easy-agent-sidebar.common.js",
+    "easy-agent-sidebar.umd.js",
+    "easy-agent-sidebar.umd.min.js",
+    "fonts",
+    "index.d.ts",
+    "demo.html",
+    "README.md"
+  ],
+  "keywords": [
+    "easy-agent",
+    "ai",
+    "sidebar",
+    "chat",
+    "sdk"
+  ],
+  "license": "UNLICENSED"
+}

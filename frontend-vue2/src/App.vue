@@ -484,8 +484,19 @@ export default {
         stored = localStorage.getItem(ACTIVE_SESSION_KEY)
       } catch (_) { /* ignore */ }
 
+      // ?session=<id>：嵌入第三方页面的 AI 侧边栏「在主页面打开」时携带，优先打开该会话
+      const params = new URLSearchParams(window.location.search)
+      const linked = params.get('session')
+      if (linked) {
+        params.delete('session')
+        const query = params.toString()
+        window.history.replaceState({}, '', window.location.pathname + (query ? `?${query}` : ''))
+      }
+
       let initialSessionId = null
-      if (stored === NEW_SESSION_MARK) {
+      if (linked && this.sessions.some(s => s.session_id === linked)) {
+        initialSessionId = linked
+      } else if (stored === NEW_SESSION_MARK) {
         initialSessionId = null
       } else if (stored && this.sessions.some(s => s.session_id === stored)) {
         initialSessionId = stored
@@ -674,7 +685,10 @@ export default {
       try {
         const data = await passwordlessLogin(username, userId)
         // 清除地址栏中的凭证参数，避免留在浏览器历史/后端访问日志
-        window.history.replaceState({}, '', window.location.pathname)
+        params.delete('username')
+        params.delete('user_id')
+        const query = params.toString()
+        window.history.replaceState({}, '', window.location.pathname + (query ? `?${query}` : ''))
         await this.handleWelcomeCompleted({
           username: data.username,
           context_length: data.context_length

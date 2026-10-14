@@ -1,12 +1,12 @@
 <template>
   <div
     class="ais-root"
-    :class="{ 'is-docked': isDockedOpen }"
+    :class="{ 'is-docked': isDockedOpen, 'is-embedded': embedded }"
     :style="rootStyle"
   >
     <!-- 唤起按钮：贴右边缘，可上下拖动（位置持久化），Ctrl/⌘ + J 同样可唤起 -->
     <button
-      v-show="!open"
+      v-show="!open && feat.launcher"
       ref="launcherRef"
       type="button"
       class="ais-launcher"
@@ -21,7 +21,7 @@
         <path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9L12 3z"></path>
         <path d="M18.5 15.5l.7 1.9 1.9.7-1.9.7-.7 1.9-.7-1.9-1.9-.7 1.9-.7.7-1.9z"></path>
       </svg>
-      <span class="ais-launcher-label">问 AI</span>
+      <span class="ais-launcher-label">{{ launcherLabel }}</span>
       <span v-if="unread || anySidebarStreaming" class="ais-launcher-dot"></span>
     </button>
 
@@ -105,6 +105,7 @@
                 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
               </button>
               <button
+                v-if="feat.openInMain"
                 type="button"
                 class="ais-icon-btn"
                 title="在主页面打开此会话"
@@ -114,6 +115,7 @@
                 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><polyline points="15 3 21 3 21 9"></polyline><line x1="10" y1="14" x2="21" y2="3"></line></svg>
               </button>
               <button
+                v-if="feat.dock"
                 type="button"
                 class="ais-icon-btn"
                 :class="{ active: isDocked }"
@@ -226,7 +228,7 @@
                   <div class="ais-welcome-mark">
                     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9L12 3z"></path><path d="M18.5 15.5l.7 1.9 1.9.7-1.9.7-.7 1.9-.7-1.9-1.9-.7 1.9-.7.7-1.9z"></path></svg>
                   </div>
-                  <h3>有什么可以帮你？</h3>
+                  <h3>{{ welcomeTitle }}</h3>
                   <p class="ais-welcome-sub">
                     已了解你正在
                     <strong>{{ pageContext ? pageContext.title : '当前页面' }}</strong>，
@@ -305,6 +307,7 @@ import Chat from './Chat.vue'
 import chatSessionMixin from '../mixins/chatSession.js'
 import { chatStore } from '../store/chatStore.js'
 import { formatPageContext, setExternalPageContext } from '../utils/pageContext.js'
+import { eventTarget } from '../utils/domEvent.js'
 
 const PREFS_KEY = 'easy_agent_ai_sidebar_prefs'
 const PAGE_SESSIONS_KEY = 'easy_agent_ai_page_sessions'
@@ -315,6 +318,13 @@ const RAIL_WIDTH = 52
 const NARROW_VIEWPORT = 768
 const MAX_PAGE_SESSIONS = 20
 const QUOTE_MAX = 2000
+const DEFAULT_FEATURES = {
+  launcher: true,
+  selectionAsk: true,
+  shortcut: true,
+  dock: true,
+  openInMain: true,
+}
 
 function readJson(storage, key, fallback) {
   try {
@@ -341,13 +351,42 @@ export default {
       type: Object,
       default: null,
     },
+    // 嵌入第三方页面（SDK）：根节点 fixed 定位，固定模式由宿主据 layout-change 让出空间
+    embedded: {
+      type: Boolean,
+      default: false,
+    },
+    // 功能开关，未传的项取 DEFAULT_FEATURES
+    features: {
+      type: Object,
+      default: () => ({}),
+    },
+    // 是否挂载 window.EasyAgentAI（SDK 由实例方法代替，避免多实例互相覆盖）
+    exposeGlobal: {
+      type: Boolean,
+      default: true,
+    },
+    // 用户未切换过模式时的初始模式：float | dock
+    defaultMode: {
+      type: String,
+      default: 'float',
+    },
+    launcherLabel: {
+      type: String,
+      default: '问 AI',
+    },
+    welcomeTitle: {
+      type: String,
+      default: '有什么可以帮你？',
+    },
   },
   data() {
     const prefs = readJson(localStorage, PREFS_KEY, {})
+    const savedMode = prefs.mode === 'dock' || prefs.mode === 'float' ? prefs.mode : this.defaultMode
     return {
       open: false,
       collapsed: false,
-      mode: prefs.mode === 'dock' ? 'dock' : 'float',
+      mode: savedMode === 'dock' ? 'dock' : 'float',
       width: Number(prefs.width) || DEFAULT_WIDTH,
       launcherTop: Number(prefs.launcherTop) || Math.round(window.innerHeight * 0.62),
       viewportWidth: window.innerWidth,
@@ -374,11 +413,14 @@ export default {
     models() {
       return chatStore.models
     },
+    feat() {
+      return { ...DEFAULT_FEATURES, ...this.features }
+    },
     isNarrowViewport() {
       return this.viewportWidth < NARROW_VIEWPORT
     },
     isDocked() {
-      return this.mode === 'dock' && !this.isNarrowViewport
+      return this.feat.dock && this.mode === 'dock' && !this.isNarrowViewport
     },
     isDockedOpen() {
       return this.open && this.isDocked
@@ -393,7 +435,12 @@ export default {
     },
     // 固定模式下根节点参与 App 的 flex 分栏（占位推开页面内容）；悬浮模式不占位
     rootStyle() {
+      if (this.embedded) return null
       return { width: this.isDockedOpen ? this.effectiveWidth + 'px' : '0px' }
+    },
+    // 固定模式下需要宿主页面让出的宽度（嵌入模式通过 layout-change 通知宿主）
+    dockWidth() {
+      return this.isDockedOpen ? this.effectiveWidth : 0
     },
     panelStyle() {
       return { width: this.effectiveWidth + 'px' }
@@ -480,6 +527,15 @@ export default {
       // 页面变化后重新默认附带上下文
       if (!prev || !next || next.key !== prev.key) this.includeContext = true
     },
+    open(v) {
+      this.$emit('open-change', v)
+    },
+    dockWidth: {
+      immediate: true,
+      handler(width) {
+        this.$emit('layout-change', { dockWidth: width })
+      },
+    },
   },
   created() {
     this.unwatchContextLength = this.$watch(
@@ -504,12 +560,14 @@ export default {
     document.addEventListener('mousedown', this.onDocumentMouseDown)
     window.addEventListener('scroll', this.hideSelectionAsk, true)
     this.clampLauncher()
-    // 供嵌入的宿主页面调用：window.EasyAgentAI.open({ prompt, context, newSession })
-    window.EasyAgentAI = {
-      open: (opts) => this.openSidebar(opts || {}),
-      close: () => this.close(),
-      toggle: () => this.toggle(),
-      setContext: (text) => setExternalPageContext(text),
+    // 供宿主页面调用：window.EasyAgentAI.open({ prompt, context, newSession })
+    if (this.exposeGlobal) {
+      window.EasyAgentAI = {
+        open: (opts) => this.openSidebar(opts || {}),
+        close: () => this.close(),
+        toggle: () => this.toggle(),
+        setContext: (text) => setExternalPageContext(text),
+      }
     }
   },
   beforeDestroy() {
@@ -523,7 +581,7 @@ export default {
     if (this.unwatchContextLength) this.unwatchContextLength()
     if (this.unwatchActiveModel) this.unwatchActiveModel()
     if (this.currentAbortController) this.currentAbortController.abort()
-    if (window.EasyAgentAI) delete window.EasyAgentAI
+    if (this.exposeGlobal && window.EasyAgentAI) delete window.EasyAgentAI
   },
   methods: {
     // ── chatSessionMixin 钩子 ─────────────────────────────────────────
@@ -607,6 +665,16 @@ export default {
       if (this.renamingId) return
       if (sessionId !== this.currentSessionId) this.handleSelectSession(sessionId)
       this.showHistory = false
+    },
+    // 供 SDK 调用：打开侧边栏并直接发送一条消息
+    async sendFromHost(text) {
+      if (!text) return
+      this.openSidebar()
+      if (this.isStreaming) {
+        this.setComposer(text)
+        return
+      }
+      await this.handleSendMessage(text)
     },
     openInMain() {
       if (!this.currentSessionId) return
@@ -755,12 +823,14 @@ export default {
 
     // ── 划词提问 ──────────────────────────────────────────────────────
     onDocumentMouseDown(e) {
-      if (this.selectionAsk.visible && !(e.target.closest && e.target.closest('.ais-selection-ask'))) {
+      const target = eventTarget(e)
+      if (this.selectionAsk.visible && !(target && target.closest && target.closest('.ais-selection-ask'))) {
         this.hideSelectionAsk()
       }
     },
     onDocumentMouseUp(e) {
-      const target = e.target
+      if (!this.feat.selectionAsk) return
+      const target = eventTarget(e)
       if (!target || !target.closest) return
       if (target.closest('.ais-panel, .ais-launcher, .ais-selection-ask, input, textarea, [contenteditable="true"]')) return
       // 等浏览器完成选区更新后再读取
@@ -791,6 +861,7 @@ export default {
 
     // ── 全局事件 ──────────────────────────────────────────────────────
     onGlobalKeydown(e) {
+      if (!this.feat.shortcut) return
       if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && (e.key === 'j' || e.key === 'J')) {
         e.preventDefault()
         if (this.open && this.collapsed) this.expand()
@@ -824,6 +895,20 @@ export default {
 .ais-root.is-docked {
   /* 高于设置/用户管理弹窗遮罩（1000），弹窗打开时也能继续使用 AI */
   z-index: 1001;
+}
+
+/* 嵌入第三方页面：不参与宿主布局，固定模式的面板贴视口右侧，宿主自行让出宽度 */
+.ais-root.is-embedded {
+  position: fixed;
+  top: 0;
+  right: 0;
+  width: 0;
+  height: 100vh;
+}
+
+.ais-root.is-embedded .ais-panel.is-docked {
+  position: fixed;
+  height: 100vh;
 }
 
 /* ── 唤起按钮 ── */
