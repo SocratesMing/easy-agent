@@ -205,6 +205,11 @@ export function listPermissionDirectory(baseId) {
   return request(`/bases/${encodeURIComponent(baseId)}/permission-directory`)
 }
 
+// 创建知识库时的可选人员目录（不依赖具体库，需公共空间管理白名单）
+export function listCreationPermissionDirectory() {
+  return request('/bases/permission-directory')
+}
+
 export function askKnowledgeBase(baseId, payload) {
   return request(`/bases/${encodeURIComponent(baseId)}/ask`, { method: 'POST', json: payload })
 }

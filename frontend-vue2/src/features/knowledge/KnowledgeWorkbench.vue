@@ -306,6 +306,73 @@
           </select>
           <small>所选部门的在职成员将默认获得查看权限。</small>
         </label>
+        <div v-if="baseModalMode === 'create' && baseForm.visibility === 'team'" class="ke-create-perm">
+          <label class="ke-create-perm-toggle">
+            <input type="checkbox" v-model="createPermRestricted" />
+            <span>限定可见人员</span>
+            <small>开启后仅勾选人员可查看；不开启则所选部门在职成员默认可见。创建后可随时在权限管理中调整。</small>
+          </label>
+          <template v-if="createPermRestricted">
+            <div v-if="createPermLoading" class="ke-perm-loading"><span class="ke-spinner"></span><p>正在加载人员目录…</p></div>
+            <template v-else>
+              <div class="ke-perm-toolbar">
+                <span>已选 <strong>{{ createPermSelectedTotal }}</strong> / {{ createPermDirectoryTotal }} 人</span>
+              </div>
+              <div class="ke-perm-tree ke-create-perm-tree">
+                <section v-for="dept in createPermTree" :key="dept.key" class="ke-perm-branch">
+                  <div class="ke-perm-row level-dept">
+                    <button type="button" class="ke-perm-caret" title="展开/收起" @click="toggleCreatePermExpand(dept.key)"><IconChevronDown :class="{ rotated: isCreatePermCollapsed(dept.key) }" /></button>
+                    <input type="checkbox" v-indeterminate="permNodeIndeterminate(dept)" :checked="permNodeChecked(dept)" @change="togglePermNode(dept, $event.target.checked)" />
+                    <span class="ke-perm-name">{{ dept.name }}</span>
+                    <small class="ke-perm-count">{{ permSelectedCount(dept) }}/{{ dept.allUsers.length }}</small>
+                  </div>
+                  <div v-show="!isCreatePermCollapsed(dept.key)" class="ke-perm-children">
+                    <label v-for="user in dept.users" :key="user.user_id" class="ke-perm-user">
+                      <input type="checkbox" :checked="user.checked" @change="user.checked = $event.target.checked" />
+                      <span>{{ user.display_name }}</span>
+                      <small>{{ user.username }}</small>
+                    </label>
+                    <section v-for="division in dept.divisions" :key="division.key" class="ke-perm-branch">
+                      <div class="ke-perm-row level-division">
+                        <button type="button" class="ke-perm-caret" title="展开/收起" @click="toggleCreatePermExpand(division.key)"><IconChevronDown :class="{ rotated: isCreatePermCollapsed(division.key) }" /></button>
+                        <input type="checkbox" v-indeterminate="permNodeIndeterminate(division)" :checked="permNodeChecked(division)" @change="togglePermNode(division, $event.target.checked)" />
+                        <span class="ke-perm-name">{{ division.name }}</span>
+                        <small class="ke-perm-count">{{ permSelectedCount(division) }}/{{ division.allUsers.length }}</small>
+                      </div>
+                      <div v-show="!isCreatePermCollapsed(division.key)" class="ke-perm-children">
+                        <label v-for="user in division.users" :key="user.user_id" class="ke-perm-user">
+                          <input type="checkbox" :checked="user.checked" @change="user.checked = $event.target.checked" />
+                          <span>{{ user.display_name }}</span>
+                          <small>{{ user.username }}</small>
+                        </label>
+                        <section v-for="team in division.teams" :key="team.key" class="ke-perm-branch">
+                          <div class="ke-perm-row level-team">
+                            <button type="button" class="ke-perm-caret" title="展开/收起" @click="toggleCreatePermExpand(team.key)"><IconChevronDown :class="{ rotated: isCreatePermCollapsed(team.key) }" /></button>
+                            <input type="checkbox" v-indeterminate="permNodeIndeterminate(team)" :checked="permNodeChecked(team)" @change="togglePermNode(team, $event.target.checked)" />
+                            <span class="ke-perm-name">{{ team.name }}</span>
+                            <small class="ke-perm-count">{{ permSelectedCount(team) }}/{{ team.allUsers.length }}</small>
+                          </div>
+                          <div v-show="!isCreatePermCollapsed(team.key)" class="ke-perm-children">
+                            <label v-for="user in team.users" :key="user.user_id" class="ke-perm-user">
+                              <input type="checkbox" :checked="user.checked" @change="user.checked = $event.target.checked" />
+                              <span>{{ user.display_name }}</span>
+                              <small>{{ user.username }}</small>
+                            </label>
+                          </div>
+                        </section>
+                      </div>
+                    </section>
+                  </div>
+                </section>
+                <p v-if="!createPermTree.length" class="ke-perm-empty">暂无可选人员，请先在人员与部门中导入账号。</p>
+              </div>
+              <p class="ke-permission-note">
+                <template v-if="createPermSelectedTotal > 0">创建后，该知识库仅勾选人员及所有者、空间管理员可见；未勾选人员（含本部门其他成员）不可见。</template>
+                <template v-else>未勾选任何人员，创建后仅所有者与空间管理员可见。</template>
+              </p>
+            </template>
+          </template>
+        </div>
         <footer><button type="button" class="ke-button quiet" @click="showBaseModal = false">取消</button><button class="ke-button primary" :disabled="saving">{{ saving ? '保存中…' : baseModalMode === 'create' ? '创建知识库' : '保存修改' }}</button></footer>
       </form>
     </div>
@@ -494,7 +561,7 @@ import {
 import {
   createFolder, createKnowledgeBase, deleteDocument, deleteFolder,
   deleteKnowledgeBase, ensureFolders, getDocumentBlob, getKnowledgeCapabilities, getKnowledgeStatus,
-  listDocuments, listFolders, listKnowledgeBases, listKnowledgeOperations, listPermissionDirectory, listPermissions,
+  listCreationPermissionDirectory, listDocuments, listFolders, listKnowledgeBases, listKnowledgeOperations, listPermissionDirectory, listPermissions,
   moveDocument, pauseDocument, prepareKnowledgeChatSession, replacePermissions, resumeDocument, retryDocument, updateFolder,
   updateKnowledgeBase, uploadDocument,
 } from './api.js'
@@ -716,6 +783,13 @@ const permissionDirectoryLoading = ref(false)
 const permissionRestricted = ref(false)
 const permissionCollapsed = ref({})
 let permissionLoadSeq = 0
+// 创建知识库时的可见人员配置（与权限管理同款三级树，独立状态避免串扰）
+const createPermDirectory = ref([])
+const createPermTree = ref([])
+const createPermLoading = ref(false)
+const createPermRestricted = ref(false)
+const createPermCollapsed = ref({})
+let createPermLoadSeq = 0
 const toast = ref(null)
 const preview = reactive({ open: false, loading: false, name: '', kind: '', url: '', text: '', buffer: null })
 let pollTimer = null
@@ -748,6 +822,8 @@ const hasCurrentUploadRequest = computed(() => uploadQueue.value.some(
 ))
 const permSelectedTotal = computed(() => permissionDirectory.value.filter(user => user.checked).length)
 const permDirectoryTotal = computed(() => permissionDirectory.value.length)
+const createPermSelectedTotal = computed(() => createPermDirectory.value.filter(user => user.checked).length)
+const createPermDirectoryTotal = computed(() => createPermDirectory.value.length)
 
 watch(hasActiveWork, active => active ? startPolling() : stopPolling())
 watch(viewMode, value => localStorage.setItem('ke-view-mode', value))
@@ -865,6 +941,8 @@ function openCreateBase() {
     visibility,
     department_id: defaultTeamDepartmentId(teamSpaceManagement),
   })
+  resetCreatePermissions()
+  if (visibility === 'team') ensureCreatePermDirectory()
   baseModalMode.value = 'create'
   showBaseModal.value = true
 }
@@ -878,7 +956,16 @@ async function saveBase() {
         description: baseForm.description || '',
         visibility: baseForm.visibility,
       }
-      if (baseForm.visibility === 'team') payload.department_id = baseForm.department_id || null
+      if (baseForm.visibility === 'team') {
+        payload.department_id = baseForm.department_id || null
+        // 创建即配置可见性：开启名单或勾选了人员即进入受限模式（仅勾选人员可见）
+        if (createPermRestricted.value || createPermSelectedTotal.value > 0) {
+          payload.restrict_access = true
+          payload.permission_user_ids = createPermDirectory.value
+            .filter(user => user.checked)
+            .map(user => user.user_id)
+        }
+      }
       const created = await createKnowledgeBase(payload)
       selectedSpace.value = created.visibility
       await loadBases(created.id)
@@ -1255,6 +1342,50 @@ async function savePermissions() {
   } catch (error) { handleError(error) } finally { saving.value = false }
 }
 
+// ---------------- 创建知识库：可见人员配置（复用权限管理三级树） ----------------
+
+function isCreatePermCollapsed(key) { return Boolean(createPermCollapsed.value[key]) }
+function toggleCreatePermExpand(key) {
+  const next = { ...createPermCollapsed.value }
+  if (next[key]) delete next[key]
+  else next[key] = true
+  createPermCollapsed.value = next
+}
+
+function resetCreatePermissions() {
+  createPermLoadSeq += 1  // 在途请求作废
+  createPermDirectory.value = []
+  createPermTree.value = []
+  createPermRestricted.value = false
+  createPermCollapsed.value = {}
+  createPermLoading.value = false
+}
+
+async function ensureCreatePermDirectory() {
+  if (createPermDirectory.value.length || createPermLoading.value) return
+  const seq = ++createPermLoadSeq
+  createPermLoading.value = true
+  try {
+    const response = await listCreationPermissionDirectory()
+    if (seq !== createPermLoadSeq) return
+    const users = (response.items || []).map(item => ({ ...item, checked: false }))
+    createPermDirectory.value = users
+    createPermTree.value = buildPermissionTree(users)
+  } catch (error) {
+    if (seq !== createPermLoadSeq) return
+    handleError(error)
+    createPermDirectory.value = []
+    createPermTree.value = []
+  } finally {
+    if (seq === createPermLoadSeq) createPermLoading.value = false
+  }
+}
+
+// 创建弹窗切到公共空间时懒加载人员目录（个人空间无权限配置）
+watch(() => [baseModalMode.value, baseForm.visibility], ([mode, visibility]) => {
+  if (mode === 'create' && visibility === 'team') ensureCreatePermDirectory()
+})
+
 function touchAgentMessage() {
   if (!agentMessage.value) return
   agentMessage.value = {
@@ -1611,6 +1742,13 @@ onUnmounted(() => { stopQuestion('unmount'); finishKnowledgeResize(); stopPollin
       closePreview,
       confirmation,
       confirmMoveDocument,
+      createPermDirectoryTotal,
+      createPermLoading,
+      createPermRestricted,
+      createPermSelectedTotal,
+      createPermTree,
+      isCreatePermCollapsed,
+      toggleCreatePermExpand,
       currentFolder,
       currentFolders,
       documents,
@@ -1752,7 +1890,7 @@ onUnmounted(() => { stopQuestion('unmount'); finishKnowledgeResize(); stopPollin
 .ke-folder-art{background:linear-gradient(180deg,#7dd3fc,#38bdf8)}.ke-folder-art:before{background:#0ea5e9}
 .ke-preview-loading{flex:1;min-height:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;color:var(--text-secondary);font-size:11px}.ke-preview-loading p{margin:0}.ke-preview-loading .ke-spinner{flex:none}
 .ke-stop-button{color:#d14b4b!important}.ke-answer-text{min-height:18px}.ke-stream-cursor{display:inline-block;width:2px;height:1em;margin-left:3px;vertical-align:-2px;background:var(--accent-color);animation:ke-cursor-blink .8s steps(2,end) infinite}.ke-ask-error{margin-top:14px;padding:11px;border:1px solid color-mix(in srgb,#d14b4b 28%,var(--border-color));border-radius:10px;background:color-mix(in srgb,#d14b4b 7%,var(--bg-secondary));color:var(--text-secondary);font-size:10px;line-height:1.55;display:grid;grid-template-columns:16px minmax(0,1fr) auto;gap:7px;align-items:start}.ke-ask-error>svg{width:15px;height:15px;color:#d14b4b;margin-top:1px}.ke-ask-error p{margin:0}.ke-ask-error button{border:0;background:transparent;color:var(--accent-color);font-weight:600;display:flex;align-items:center;gap:4px;cursor:pointer}.ke-ask-error button svg{width:12px;height:12px}@keyframes ke-cursor-blink{50%{opacity:0}}
-.ke-agent-message{width:100%;min-width:0}.ke-agent-message ::v-deep .message.assistant{width:100%;max-width:none;margin:0;padding:0}.ke-agent-message ::v-deep .message-content{min-width:0}.ke-agent-message ::v-deep .process-wrapper,.ke-agent-message ::v-deep .knowledge-citations{box-sizing:border-box}.ke-permission-note{margin:10px 0 0;color:var(--text-secondary);font-size:9px;line-height:1.5}
+.ke-agent-message{width:100%;min-width:0}.ke-agent-message ::v-deep .message.assistant{width:100%;max-width:none;margin:0;padding:0}.ke-agent-message ::v-deep .message-content{min-width:0}.ke-agent-message ::v-deep .process-wrapper,.ke-agent-message ::v-deep .knowledge-citations{box-sizing:border-box}.ke-permission-note{margin:10px 0 0;color:var(--text-secondary);font-size:9px;line-height:1.5}.ke-create-perm{margin-top:16px;border:1px solid #e3e7e4;border-radius:10px;padding:12px;background:#fbfdfb}.ke-create-perm-toggle{display:grid;grid-template-columns:16px auto 1fr;gap:8px;align-items:start;cursor:pointer;color:#3d4640;font-size:12px}.ke-create-perm-toggle input{width:16px;height:16px;margin:1px 0 0;accent-color:var(--ke-accent);cursor:pointer}.ke-create-perm-toggle span{font-weight:600;white-space:nowrap}.ke-create-perm-toggle small{grid-column:2/4;color:#9ba19d;font-size:9px;line-height:1.5;white-space:normal}.ke-create-perm .ke-perm-toolbar{margin-top:12px}.ke-create-perm-tree{max-height:240px}
 /* 弹窗内的搜索框：.ke-modal input 会给嵌套 input 误加边框/内边距，形成框中框，这里显式还原 */
 .ke-modal .ke-search-box input{width:auto;min-width:0;flex:1;border:0;outline:0;background:transparent;padding:0;color:var(--text-primary);font-size:12px}
 </style>

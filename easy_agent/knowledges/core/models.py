@@ -136,6 +136,9 @@ class KnowledgeBaseCreateRequest(ContractModel):
     description: str = Field(default="", max_length=2000)
     visibility: KnowledgeBaseVisibility
     department_id: str | None = Field(default=None, max_length=255)
+    # 创建即配置可见性：勾选名单模式开关 + 初始可见人员（仅公共空间库有效）
+    restrict_access: StrictBool = False
+    permission_user_ids: list[str] = Field(default_factory=list)
 
     @field_validator("name")
     @classmethod
@@ -151,6 +154,18 @@ class KnowledgeBaseCreateRequest(ContractModel):
         if value is None:
             return None
         return value.strip() or None
+
+    @field_validator("permission_user_ids")
+    @classmethod
+    def normalize_permission_user_ids(cls, value: list[str]) -> list[str]:
+        seen: set[str] = set()
+        normalized: list[str] = []
+        for item in value:
+            user_id = (item or "").strip()
+            if user_id and user_id not in seen:
+                seen.add(user_id)
+                normalized.append(user_id)
+        return normalized
 
 
 class KnowledgeBaseUpdateRequest(ContractModel):
