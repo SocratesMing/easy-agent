@@ -37,8 +37,6 @@ from ..services import (
     get_agent_config,
     get_or_create_agent_for_session,
     invalidate_user_agents,
-    parse_connector_directives,
-    resolve_connector_servers,
 )
 from ..services import public_expert_service, skill_library
 from ..services.expert_service import (
@@ -99,7 +97,7 @@ class ExpertRunRequest(BaseModel):
 
     message: str = Field(
         ...,
-        description="用户消息内容（可为空：只挂技能/连接器、或只上传文件时没有正文）",
+        description="用户消息内容（可为空：只挂技能、或只上传文件时没有正文）",
         min_length=0,
     )
     session_id: Optional[str] = Field(default=None, description="会话ID；不传则新建会话")
@@ -111,13 +109,6 @@ class ExpertRunRequest(BaseModel):
     enable_deep_think: bool = Field(default=False, description="是否启用深度思考")
     enable_web_search: bool = Field(default=False, description="是否开启联网搜索")
     files: Optional[List[dict]] = Field(default=None, description="上传的文件列表")
-    connectors: Optional[List[str]] = Field(
-        default=None,
-        description=(
-            "本轮选中的连接器展示名（输入框「+」面板选中项），据此只注入这些连接器的 MCP 工具。"
-            "为空或未传时回退解析消息文本里的「使用连接器[名称]」（兼容旧前端/手打指令）"
-        ),
-    )
     skills: Optional[List[str]] = Field(
         default=None,
         description=(
@@ -582,12 +573,11 @@ async def stream_export_run(
     http_request: Request,
     username: Annotated[str, Depends(get_current_username)],
 ):
-    # 正文可以为空：只挂技能 / 连接器，或只上传文件时本来就没有正文（与 chat.py 一致）
+    # 正文可以为空：只挂技能 / 只上传文件时本来就没有正文（与 chat.py 一致）
     if (
         not (request.message or "").strip()
         and not request.files
         and not request.skills
-        and not request.connectors
     ):
         raise HTTPException(status_code=400, detail="消息内容不能为空")
 
@@ -608,8 +598,6 @@ async def stream_export_run(
         )
     if turn_skills:
         turn_fallback_name = turn_skills[0]["name"]
-    elif request.connectors:
-        turn_fallback_name = request.connectors[0]
     else:
         turn_fallback_name = ""
 
@@ -732,23 +720,10 @@ async def stream_export_run(
         message_id=message_id,
     )
 
-    # 本轮连接器（与 chat.py 一致）：优先用请求体的结构化字段 connectors（输入框选中项，展示名），
-    # 同时兼容消息文本里的「使用连接器[X]」指令（旧前端 / 手打指令），合并去重后只注入这些工具。
-    connector_names = list(request.connectors or []) + parse_connector_directives(
-        request.message
-    )
-    connector_servers, unknown_connectors = resolve_connector_servers(
-        connector_names, username
-    )
-    if connector_servers or unknown_connectors:
-        logger.info(
-            f"[{sid}] 🔌 连接器指令 | 命中: {connector_servers or '无'} | "
-            f"未识别: {unknown_connectors or '无'}"
-        )
-
     # ── 5. 获取（必要时驱逐重建）会话 Agent ────────────────────────────
     # 专家变更的驱逐判断在 get_or_create_agent_for_session() 内部统一处理，
     # 这里只需把 expert_agent_id 传进去（不传时等价于通用 Agent，行为与改动前一致）。
+    # 连接器不随每轮提交：agent_manager 按会话读取输入框「+」面板开关写入的集合。
     agent = await get_or_create_agent_for_session(
         session_id,
         username,
@@ -757,7 +732,6 @@ async def stream_export_run(
         system_prompt_extra=system_prompt_extra,
         enable_web_search=request.enable_web_search,
         expert_agent_id=expert_id,
-        connector_servers=connector_servers,
     )
 
     chat_request = ChatRequest(

@@ -123,9 +123,8 @@ export async function streamExportRun(payload, onChunk, signal) {
     enable_deep_think: !!payload.enableDeepThink,
     enable_web_search: !!payload.enableWebSearch,
     files: payload.files || null,
-    // 已选连接器走结构化字段（消息文本里不再带「使用连接器[名称]」）
-    connectors: payload.connectors && payload.connectors.length ? payload.connectors : null,
-    // 已选技能同样走结构化字段（技能目录名），`/目录名` 由后端拼进模型输入
+    // 已选技能走结构化字段（技能目录名），`/目录名` 由后端拼进模型输入。
+    // 连接器不走这里：本会话启用哪些连接器由 /agent/connectors/session 单独设置。
     skills: payload.skills && payload.skills.length ? payload.skills : null,
   }
   if (payload.model) body.model = payload.model

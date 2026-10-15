@@ -1,22 +1,8 @@
 """接口 /agent/chat 的测试：流式对话与取消。"""
-import json
 from pathlib import Path
 from types import SimpleNamespace
 
-import pytest
-
 import easy_agent.api.chat as chat_api
-import easy_agent.services.connectors as connectors_service
-from easy_agent.config import Config
-
-
-@pytest.fixture(autouse=True)
-def _clean_user_mcp():
-    """连接器用例会写用户 mcp.json，用例前后都清掉，避免相互污染。"""
-    path = Config.get_user_mcp_path("testuser")
-    path.unlink(missing_ok=True)
-    yield
-    path.unlink(missing_ok=True)
 
 
 def test_chat_stream_returns_tokens(client):
@@ -27,8 +13,7 @@ def test_chat_stream_returns_tokens(client):
 
 
 def test_stream_empty_message_400(client):
-    # 正文允许为空（只挂技能/连接器、只上传文件时本来就没有正文），
-    # 但三者全空不算有效请求 → 400。
+    # 正文允许为空（只挂技能、只上传文件时本来就没有正文），但两者全空不算有效请求 → 400。
     resp = client.post("/agent/chat/stream", json={"message": ""})
     assert resp.status_code == 400
 
@@ -88,28 +73,9 @@ def test_cancel_no_active_stream(client):
     assert resp.json()["status"] == "cancelled"
 
 
-# ── 「使用连接器[X]」指令（输入框连接器胶囊） ──────────────────────────
-
-
-_MCP_CONTENT = json.dumps(
-    {
-        "servers": {
-            "demo-connector": {"transport": "stdio", "command": "echo"},
-            "内部知识检索": {"transport": "stdio", "command": "echo"},
-            "停用的连接器": {"transport": "stdio", "command": "echo", "enabled": False},
-        }
-    },
-    ensure_ascii=False,
-)
-
-
-def _patch_catalog(monkeypatch):
-    """假目录只提供「演示连接器」：其 id 就是用户 mcp.json 里的 server 名。"""
-    monkeypatch.setattr(
-        connectors_service,
-        "load_catalog",
-        lambda path=None: [{"id": "demo-connector", "name": "演示连接器", "config": {}}],
-    )
+# ── 连接器不再随每轮消息提交 ─────────────────────────────────────────────
+# 输入框「+」→ 连接器面板的连接器开关改为「会话级」：由 /agent/connectors/session
+# 写入 agent_manager，Agent 创建时按会话读取（见 tests/api/test_connectors.py）。
 
 
 def _capture_agent(monkeypatch):
@@ -127,124 +93,14 @@ def _capture_agent(monkeypatch):
     return captured
 
 
-def test_stream_parses_connector_directive(client, monkeypatch):
-    """消息里的「使用连接器[X]」要解析成 mcp.json 的 server 名，并透传给 Agent 创建。"""
-    _patch_catalog(monkeypatch)
-    # 用户已装：一个目录连接器（消息里用展示名）+ 一个自定义 server + 一个停用项
-    assert client.put(
-        "/agent/connectors/mcp/raw", json={"content": _MCP_CONTENT}
-    ).status_code == 200
-    captured = _capture_agent(monkeypatch)
-
-    resp = client.post(
-        "/agent/chat/stream",
-        json={"message": "使用连接器[演示连接器] 使用连接器[内部知识检索] 使用连接器[停用的连接器] 帮我看看"},
-    )
-
-    assert resp.status_code == 200
-    # 展示名映射为目录 id；自定义 server 名原样；停用项也解析出来（由 mcp 加载层跳过并提示）
-    assert captured["agent_kwargs"]["connector_servers"] == [
-        "demo-connector",
-        "内部知识检索",
-        "停用的连接器",
-    ]
-
-
-def test_stream_connector_directive_unknown_name_ignored(client, monkeypatch):
-    """未安装的连接器名只记日志，不影响其余连接器，也不阻断对话。"""
-    _patch_catalog(monkeypatch)
-    assert client.put(
-        "/agent/connectors/mcp/raw", json={"content": _MCP_CONTENT}
-    ).status_code == 200
-    captured = _capture_agent(monkeypatch)
-
-    resp = client.post(
-        "/agent/chat/stream",
-        json={"message": "使用连接器[根本没装] 使用连接器[演示连接器] 你好"},
-    )
-
-    assert resp.status_code == 200
-    assert captured["agent_kwargs"]["connector_servers"] == ["demo-connector"]
-
-
-def test_stream_without_directive_passes_empty_connectors(client, monkeypatch):
-    """没选连接器时传空列表（= 注入全部启用连接器），与改动前行为一致。"""
+def test_stream_does_not_pass_connectors_to_agent(client, monkeypatch):
+    """chat 路由不再向 Agent 创建逻辑透传任何连接器参数。"""
     captured = _capture_agent(monkeypatch)
 
     resp = client.post("/agent/chat/stream", json={"message": "你好"})
 
     assert resp.status_code == 200
-    assert captured["agent_kwargs"]["connector_servers"] == []
-
-
-def test_stream_uses_structured_connectors_field(client, monkeypatch):
-    """请求体 connectors 字段（新前端）：消息文本里没有暗号，也照样只注入选中的连接器。"""
-    _patch_catalog(monkeypatch)
-    assert client.put(
-        "/agent/connectors/mcp/raw", json={"content": _MCP_CONTENT}
-    ).status_code == 200
-    captured = _capture_agent(monkeypatch)
-
-    resp = client.post(
-        "/agent/chat/stream",
-        json={"message": "帮我看看", "connectors": ["演示连接器", "内部知识检索"]},
-    )
-
-    assert resp.status_code == 200
-    assert captured["agent_kwargs"]["connector_servers"] == [
-        "demo-connector",
-        "内部知识检索",
-    ]
-
-
-def test_stream_merges_structured_field_and_text_directive(client, monkeypatch):
-    """字段与消息文本指令同时存在时合并去重（字段顺序在前），手打指令不受影响。"""
-    _patch_catalog(monkeypatch)
-    assert client.put(
-        "/agent/connectors/mcp/raw", json={"content": _MCP_CONTENT}
-    ).status_code == 200
-    captured = _capture_agent(monkeypatch)
-
-    resp = client.post(
-        "/agent/chat/stream",
-        json={
-            "message": "使用连接器[演示连接器] 顺便看看",
-            "connectors": ["内部知识检索", "演示连接器"],
-        },
-    )
-
-    assert resp.status_code == 200
-    assert captured["agent_kwargs"]["connector_servers"] == [
-        "内部知识检索",
-        "demo-connector",
-    ]
-
-
-def test_stream_empty_connectors_field_falls_back_to_text(client, monkeypatch):
-    """显式传空数组（新前端没选连接器）时行为不变：仍按文本解析，无指令则为空。"""
-    captured = _capture_agent(monkeypatch)
-
-    resp = client.post("/agent/chat/stream", json={"message": "你好", "connectors": []})
-
-    assert resp.status_code == 200
-    assert captured["agent_kwargs"]["connector_servers"] == []
-
-
-def test_stream_connectors_field_unknown_name_ignored(client, monkeypatch):
-    """字段里未安装的名字：只记日志，不阻断对话，也不影响其他连接器。"""
-    _patch_catalog(monkeypatch)
-    assert client.put(
-        "/agent/connectors/mcp/raw", json={"content": _MCP_CONTENT}
-    ).status_code == 200
-    captured = _capture_agent(monkeypatch)
-
-    resp = client.post(
-        "/agent/chat/stream",
-        json={"message": "你好", "connectors": ["根本没装", "演示连接器"]},
-    )
-
-    assert resp.status_code == 200
-    assert captured["agent_kwargs"]["connector_servers"] == ["demo-connector"]
+    assert "connector_servers" not in captured["agent_kwargs"]
 
 
 # ── 「/技能目录名」指令（输入框技能胶囊）────────────────────────────────

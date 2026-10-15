@@ -19,7 +19,13 @@ from langchain_mcp_adapters.client import MultiServerMCPClient
 
 from ..config import Config
 from ..middleware import get_current_username
-from ..services import get_agent_config, invalidate_user_agents
+from ..services import (
+    get_agent_config,
+    get_session_connectors,
+    invalidate_user_agents,
+    resolve_connector_servers,
+    set_session_connectors,
+)
 from ..services.connectors import catalog_connectors, find_catalog_entry
 from ..services.mcp import (
     _unpack_error,
@@ -401,6 +407,68 @@ async def toggle_connector(
         "status": "ok",
         "id": request.id,
         "enabled": request.enabled,
+        "agents_invalidated": evicted,
+    }
+
+
+# ── 会话级开关（输入框「+」→ 连接器面板，仅本次会话临时生效） ──────────────
+
+
+class SessionConnectorsRequest(BaseModel):
+    """会话级连接器开关：全量提交该会话当前**启用**的连接器。
+
+    元素为公共目录的 id 或自定义 server 名（与 mcp.json 的 server key 一致），
+    由 ``resolve_connector_servers`` 归一化。空列表表示该会话把所有连接器都关掉。
+    """
+
+    session_id: str
+    connectors: list[str] = []
+
+
+@router.get("/session", summary="查询会话级连接器开关（null = 尚未设置，等价于全部启用）")
+async def get_session_connector_switches(
+    session_id: str,
+    username: Annotated[str, Depends(get_current_username)],
+):
+    """返回该会话显式启用的连接器 server 名列表。
+
+    ``connectors: null`` 表示这个会话还没动过开关（默认全部启用），
+    与「空数组 = 用户把开关全部关闭」是两种不同状态。
+    """
+    servers = get_session_connectors(session_id)
+    return {
+        "session_id": session_id,
+        "connectors": None if servers is None else list(servers),
+    }
+
+
+@router.post("/session", summary="设置会话级连接器开关（仅本次会话，不写 mcp.json）")
+async def set_session_connector_switches(
+    request: SessionConnectorsRequest,
+    username: Annotated[str, Depends(get_current_username)],
+):
+    """全量写入该会话的连接器启用集合，并驱逐其缓存 Agent 让新工具集立即生效。
+
+    与 ``/toggle``（持久开关，写用户 mcp.json 的 ``enabled``）区分：这里只影响
+    当前会话的 Agent 工具集，进程重启或换会话即回到默认的「全部启用」。
+    """
+    servers, unknown = resolve_connector_servers(
+        request.connectors, username, _runtime_config()
+    )
+    evicted = set_session_connectors(request.session_id, servers)
+    if unknown:
+        logger.warning(
+            f"会话连接器开关存在未识别项（未安装 / 已停用 / 名称不符），已忽略: {unknown}"
+        )
+    logger.info(
+        f"设置会话连接器开关 | 用户: {username} | 会话: {request.session_id} | "
+        f"启用: {servers or '(全部关闭)'} | 驱逐 Agent: {evicted} 个"
+    )
+    return {
+        "status": "ok",
+        "session_id": request.session_id,
+        "connectors": servers,
+        "unknown": unknown,
         "agents_invalidated": evicted,
     }
 

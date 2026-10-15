@@ -1176,7 +1176,7 @@ export default {
       // 事件按「所属会话」路由：后台会话写入其自身缓冲，不污染当前展示
       return { onChunk: (data) => this.runInSession(ctx.streamSessionId, ctx, () => onChunk(data)) }
     },
-    async handleSendMessage(message, files = [], signal, enableDeepThink = true, enableWebSearch = false, connectors = [], skills = []) {
+    async handleSendMessage(message, files = [], signal, enableDeepThink = true, enableWebSearch = false, skills = []) {
       const userMsgId = `user-${Date.now()}`
       const preStreamUsage = { ...this.sessionUsage }
       // 记录本次请求开始前已累计的耗时和迭代次数，用于流式过程中实时累加
@@ -1317,9 +1317,8 @@ export default {
               enableDeepThink,
               enableWebSearch,
               files,
-              // 已选连接器（「+」→ 连接器）：结构化字段，不进消息文本
-              connectors,
-              // 已选技能：结构化字段（技能目录名），`/目录名` 由后端拼进模型输入
+              // 已选技能：结构化字段（技能目录名），`/目录名` 由后端拼进模型输入。
+              // 连接器不随消息提交：本会话启用哪些连接器由 /agent/connectors/session 设置。
               skills,
             },
             onChunk,
@@ -1336,7 +1335,6 @@ export default {
             this.selectedModel,
             enableWebSearch,
             pageContext,
-            connectors,
             skills
           )
         }

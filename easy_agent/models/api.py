@@ -82,13 +82,6 @@ class ChatRequest(BaseModel):
         max_length=8000,
         description="AI 侧边栏附带的页面/功能上下文（用户唤起 AI 时所在页面的描述），仅提供给模型参考",
     )
-    connectors: Optional[List[str]] = Field(
-        default=None,
-        description=(
-            "本轮选中的连接器展示名（输入框「+」面板选中项），据此只注入这些连接器的 MCP 工具。"
-            "为空或未传时回退解析消息文本里的「使用连接器[名称]」（兼容旧前端/手打指令）"
-        ),
-    )
     skills: Optional[List[str]] = Field(
         default=None,
         description=(

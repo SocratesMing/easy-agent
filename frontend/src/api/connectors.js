@@ -89,3 +89,30 @@ export async function getMcpRaw() {
 export async function saveMcpRaw(content) {
   return send('PUT', '/mcp/raw', { content }, '保存 mcp.json 失败')
 }
+
+/**
+ * 查询会话级连接器开关（输入框「+」→ 连接器面板）。
+ * 返回 { session_id, connectors }：connectors 为 null 表示该会话还没动过开关（全部启用），
+ * 空数组表示用户把开关全部关闭 —— 两种状态含义不同。
+ */
+export async function getSessionConnectors(sessionId) {
+  return send(
+    'GET',
+    `/session?session_id=${encodeURIComponent(sessionId)}`,
+    undefined,
+    '获取会话连接器开关失败'
+  )
+}
+
+/**
+ * 全量设置会话级连接器开关（仅本次会话有效，不写 mcp.json）。
+ * connectors 为当前启用的连接器标识（目录 id / 自定义 server 名），空数组 = 全部关闭。
+ */
+export async function setSessionConnectors(sessionId, connectors) {
+  return send(
+    'POST',
+    '/session',
+    { session_id: sessionId, connectors },
+    '保存会话连接器开关失败'
+  )
+}

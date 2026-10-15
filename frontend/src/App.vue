@@ -1078,9 +1078,9 @@ async function handleCreateSession() {
 // 预置问题发送：点击首页预置问题卡片后，该问题作为「新对话的第一条消息」发出。
 // 无论当前是否已选中会话（如刷新后恢复的空会话），都先按「新建对话」把状态
 // 切回全新首页，再走正常发送；当前无会话时后端会在 start 事件里返回新会话 id。
-async function handlePresetSend(message, files, signal, enableDeepThink, enableWebSearch, connectors, skills) {
+async function handlePresetSend(message, files, signal, enableDeepThink, enableWebSearch, skills) {
   await handleCreateSession()
-  handleSendMessage(message, files, signal, enableDeepThink, enableWebSearch, connectors, skills)
+  handleSendMessage(message, files, signal, enableDeepThink, enableWebSearch, skills)
 }
 
 async function handleSelectSession(sessionId) {
@@ -1688,7 +1688,7 @@ function createStreamChunkHandler(ctx) {
   return { onChunk: (data) => runInSession(ctx.streamSessionId, ctx, () => onChunk(data)) }
 }
 
-async function handleSendMessage(message, files = [], signal, enableDeepThink = true, enableWebSearch = false, connectors = [], skills = []) {
+async function handleSendMessage(message, files = [], signal, enableDeepThink = true, enableWebSearch = false, skills = []) {
   const userMsgId = `user-${Date.now()}`
   const preStreamUsage = { ...sessionUsage.value }
   // 记录本次请求开始前已累计的耗时和迭代次数，用于流式过程中实时累加
@@ -1827,8 +1827,6 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
           enableDeepThink,
           enableWebSearch,
           files,
-          // 已选连接器（「+」→ 连接器）：结构化字段，不进消息文本
-          connectors,
           // 已选技能：结构化字段（技能目录名），`/目录名` 由后端拼进模型输入
           skills,
         },
@@ -1845,7 +1843,6 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
         files,
         selectedModel.value,
         enableWebSearch,
-        connectors,
         skills
       )
     }
