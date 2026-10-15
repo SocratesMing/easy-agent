@@ -93,6 +93,7 @@ def _new_scenes() -> list[Scene]:
     """
     from easy_mcp_server.businesses.fomc import fomc
     from easy_mcp_server.businesses.g7_fx import g7_fx
+    from easy_mcp_server.businesses.gold_monthly import gold_monthly
     from easy_mcp_server.businesses.gold_weekly import gold_weekly
     from easy_mcp_server.businesses.us_cpi import us_cpi
 
@@ -102,6 +103,12 @@ def _new_scenes() -> list[Scene]:
             "黄金周频预测",
             tuple(gold_weekly.TABLES.values()),
             "GOLD_WEEKLY_SCHEMA",
+        ),
+        Scene(
+            "gold_monthly",
+            "黄金月频预测",
+            tuple(gold_monthly.TABLES.values()),
+            "GOLD_MONTHLY_SCHEMA",
         ),
         Scene("g7_fx", "G7外汇研判", tuple(g7_fx.TABLES.values()), "G7_FX_SCHEMA"),
         Scene("fomc", "美联储议息会议", tuple(fomc.TABLES.values()), "FOMC_SCHEMA"),

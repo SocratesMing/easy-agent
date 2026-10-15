@@ -237,6 +237,16 @@
         "transport": "streamable_http",
         "url": "http://127.0.0.1:8174/mcp/us_cpi/"
       }
+    },
+    {
+      "id": "gold_monthly",
+      "name": "黄金月频预测",
+      "description": "投资研究：黄金（XAUUSD）未来一个月方向预测与已兑现的命中率统计",
+      "business": "gold_monthly",
+      "config": {
+        "transport": "streamable_http",
+        "url": "http://127.0.0.1:8174/mcp/gold_monthly/"
+      }
     }
   ],
   "_comment": "自家投资研究业务（strategyqa / idata / …）也登记在这里：它们由 mcp-server 子项目提供，添加时由主应用自动签发并注入 API Key。"

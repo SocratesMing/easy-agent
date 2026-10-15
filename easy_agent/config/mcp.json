@@ -241,6 +241,16 @@
         "transport": "streamable_http",
         "url": "http://127.0.0.1:8174/mcp/us_cpi/"
       }
+    },
+    {
+      "id": "gold_monthly",
+      "name": "黄金月频预测",
+      "description": "投资研究：黄金（XAUUSD）未来一个月方向预测与已兑现的命中率统计",
+      "business": "gold_monthly",
+      "config": {
+        "transport": "streamable_http",
+        "url": "http://127.0.0.1:8174/mcp/gold_monthly/"
+      }
     }
   ]
 }
