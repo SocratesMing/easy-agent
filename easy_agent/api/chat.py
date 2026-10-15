@@ -47,9 +47,11 @@ router = APIRouter(
 # 具体显示宽度由前端省略号控制，这里保留足够信息量即可。
 SESSION_TITLE_MAX_LEN = 30
 
-# 会话标题里的技能指令前缀：输入框挂技能时把已选技能拼成 `/目录名 用户输入` 发给后端
-# （见前端 utils/skillSlash.js），标题直接取首条消息就会带上整串指令，
-# 会话列表看起来是「/demo-skill 测试对话」。这里只摘掉 `/目录名` 令牌本身。
+# 会话标题里的指令前缀：输入框把已选「连接器」与「技能」还原成指令前缀发给模型
+# （见前端 utils/skillSlash.js），例如 `使用连接器[高德地图] /docx 帮我排个版`。
+# 标题直接取首条消息就会带上整串指令，会话列表看起来就是指令原文。
+# 连接器指令格式固定（方括号内即连接器名），技能指令必须命中用户实际拥有的技能。
+_CONNECTOR_DIRECTIVE_PATTERN = re.compile(r"^使用连接器\[([^\]]+)\]")
 _SKILL_TOKEN_PATTERN = re.compile(r"^/(\S+)")
 
 
@@ -62,16 +64,32 @@ def _skill_display_name(skill_dir, fallback: str) -> str:
         return fallback
 
 
-def split_skill_prefix(message: str, username: str | None) -> tuple[str, str]:
-    """拆掉消息开头拼接的技能指令，返回 (剩余正文, 首个技能的展示名)。
+def _strip_connector_directives(text: str) -> tuple[str, str]:
+    """摘掉开头连续拼接的连接器指令，返回 (剩余文本, 首个连接器名)。
 
-    目录名必须命中用户实际拥有的技能（含已停用），据此避免误删 `/workspace`、
-    `/user-skills` 这类路径开头——历史上确实有用户这么提问。未命中、用户名为空
-    或技能目录不可读时原样返回；展示名可能为空字符串。
+    连接器指令由输入框生成、格式固定，不需要校验名字是否存在。
     """
-    text = (message or "").strip()
+    first_name = ""
+    while True:
+        matched = _CONNECTOR_DIRECTIVE_PATTERN.match(text)
+        if not matched:
+            break
+        first_name = first_name or matched.group(1).strip()
+        text = text[matched.end() :].strip()
+    return text, first_name
+
+
+def split_leading_directives(message: str, username: str | None) -> tuple[str, str]:
+    """拆掉消息开头拼接的内部指令，返回 (剩余正文, 兜底展示名)。
+
+    先摘格式固定的 `使用连接器[名称]`，再摘 `/技能目录名`；技能目录名必须命中用户
+    实际拥有的技能（含已停用），据此避免误删 `/workspace`、`/user-skills` 这类路径
+    开头——历史上确实有用户这么提问。兜底展示名用于「只选了技能/连接器、没输入内容」
+    时充当标题（技能展示名优先，其次连接器名），可能为空字符串。
+    """
+    text, connector_name = _strip_connector_directives((message or "").strip())
     if not text or not username:
-        return text, ""
+        return text, connector_name
 
     try:
         skills = {
@@ -80,9 +98,9 @@ def split_skill_prefix(message: str, username: str | None) -> tuple[str, str]:
         }
     except Exception as exc:  # noqa: BLE001
         logger.warning(f"读取用户技能目录失败，会话标题保留原文 | 用户: {username} | {exc}")
-        return text, ""
+        return text, connector_name
     if not skills:
-        return text, ""
+        return text, connector_name
 
     rest = text
     first_dir = ""
@@ -95,7 +113,7 @@ def split_skill_prefix(message: str, username: str | None) -> tuple[str, str]:
         rest = rest[matched.end() :].strip()
 
     if not first_dir:
-        return text, ""
+        return text, connector_name
     return rest, _skill_display_name(skills[first_dir], first_dir)
 
 
@@ -104,13 +122,13 @@ def generate_session_title(
 ) -> str:
     """根据首条消息或首个上传文件生成会话标题。
 
-    首条消息可能是 `/技能名 用户输入`（输入框挂技能时拼接的指令），标题只保留用户
-    真正输入的内容；只发了一条技能指令（如 `/docx`）时用技能展示名兜底，避免标题
-    只剩一个斜杠指令。
+    首条消息可能带着输入框拼接的指令前缀（`使用连接器[名称]` / `/技能名`），标题只
+    保留用户真正输入的内容；只选了技能或连接器、没输入内容时用其展示名兜底，避免
+    标题只剩一串指令原文。
     """
     if message and message.strip():
-        body, skill_name = split_skill_prefix(message, username)
-        title = body or skill_name or message.strip()
+        body, fallback_name = split_leading_directives(message, username)
+        title = body or fallback_name or message.strip()
     elif files and len(files) > 0:
         title = files[0].get("filename", "文件")
     else:
