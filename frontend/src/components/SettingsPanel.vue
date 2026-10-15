@@ -120,14 +120,85 @@ import {
   getSystemPrompt,
 } from '../api/settings.js'
 import { marked } from 'marked'
-import { setupMarkedExtensions } from '../markdownSetup.js'
+import { setupMarkedExtensions, normalizeMathDelimiters, escapeHtml } from '../markdownSetup.js'
 
 setupMarkedExtensions()
+
+const renderer = new marked.Renderer()
+
+renderer.code = function(token) {
+  const code = typeof token === 'object' ? (token.text || token.raw || '') : String(token || '')
+  const lang = typeof token === 'object' ? (token.lang || '') : String(arguments[1] || '')
+  const langLabel = lang || 'text'
+  return `<div class="code-block-wrapper">
+    <div class="code-header">
+      <span class="code-lang">${escapeHtml(langLabel)}</span>
+      <button class="code-copy-btn" onclick="copyCode(this)">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+          <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+        </svg>
+        <span>复制</span>
+      </button>
+    </div>
+    <pre><code>${escapeHtml(code)}</code></pre>
+  </div>`
+}
+
+function settingsRenderMarkdown(content) {
+  if (!content) return ''
+  try {
+    return marked.parse(normalizeMathDelimiters(content), {
+      renderer,
+      breaks: true,
+      gfm: true,
+    })
+  } catch (e) {
+    console.error('Markdown 渲染失败:', e)
+    return content
+  }
+}
 
 const emit = defineEmits(['close'])
 
 // 设置弹窗：Esc 关闭 + 打开时聚焦当前标签，导航支持方向键切换（WAI-ARIA tabs）
 const dialogRef = ref(null)
+
+// 设置页可能先于聊天消息加载，这里确保代码块复制按钮可用（幂等）。
+if (typeof window !== 'undefined' && !window.copyCode) {
+  window.copyCode = async function(btn) {
+    const wrapper = btn.closest('.code-block-wrapper')
+    const codeEl = wrapper.querySelector('pre code') || wrapper.querySelector('pre')
+    const code = codeEl?.textContent || ''
+
+    const span = btn.querySelector('span')
+    const originalText = span ? span.textContent : ''
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(code)
+        if (span) span.textContent = '已复制!'
+      } else {
+        throw new Error('Clipboard API unavailable')
+      }
+    } catch (e) {
+      const textarea = document.createElement('textarea')
+      textarea.value = code
+      textarea.setAttribute('readonly', '')
+      textarea.style.position = 'fixed'
+      textarea.style.top = '-9999px'
+      document.body.appendChild(textarea)
+      textarea.select()
+      const ok = document.execCommand('copy')
+      document.body.removeChild(textarea)
+      if (span) span.textContent = ok ? '已复制!' : '复制失败'
+    }
+    btn.classList.add('copied')
+    setTimeout(() => {
+      if (span) span.textContent = originalText
+      btn.classList.remove('copied')
+    }, 2000)
+  }
+}
 
 function onDialogKeydown(e) {
   if (e.key === 'Escape') emit('close')
@@ -196,11 +267,6 @@ async function loadTabData() {
   }
 }
 
-function escapeHtml(text) {
-  return String(text).replace(/[&<>"']/g, (c) => ({
-    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
-  })[c])
-}
 
 // 预览态：把记忆内容按 Markdown 渲染
 const renderedMemory = computed(() => {
@@ -209,7 +275,7 @@ const renderedMemory = computed(() => {
     return '<p class="memory-empty">暂无记忆内容，点击右上角「编辑」添加</p>'
   }
   try {
-    return marked.parse(raw, { breaks: true, gfm: true })
+    return settingsRenderMarkdown(raw)
   } catch (e) {
     console.error('记忆 Markdown 渲染失败:', e)
     return `<pre>${escapeHtml(raw)}</pre>`
@@ -223,7 +289,7 @@ const renderedPrompt = computed(() => {
     return '<p class="memory-empty">暂无系统提示词</p>'
   }
   try {
-    return marked.parse(raw, { breaks: true, gfm: true })
+    return settingsRenderMarkdown(raw)
   } catch (e) {
     console.error('系统提示词 Markdown 渲染失败:', e)
     return `<pre>${escapeHtml(raw)}</pre>`
@@ -848,5 +914,312 @@ html[data-theme="dark"] .settings-header h2 {
 
 html[data-theme="dark"] .panel-desc {
   color: var(--text-secondary);
+}
+
+<style>
+/* 设置页 Markdown 预览：v-html 动态节点不带 scoped data 属性，
+   这里用全局选择器穿透，避免标题/列表/表格退化为正文样式。 */
+.memory-preview h1,
+.memory-preview h2,
+.memory-preview h3,
+.memory-preview h4,
+.memory-preview h5,
+.memory-preview h6,
+.prompt-preview h1,
+.prompt-preview h2,
+.prompt-preview h3,
+.prompt-preview h4,
+.prompt-preview h5,
+.prompt-preview h6 {
+  margin: 18px 0 10px;
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--text-primary, #1e293b);
+}
+
+.memory-preview h1,
+.prompt-preview h1 {
+  font-size: 22px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border-color, #e2e8f0);
+}
+
+.memory-preview h2,
+.prompt-preview h2 {
+  font-size: 18px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--border-color, #e2e8f0);
+}
+
+.memory-preview h3,
+.prompt-preview h3 {
+  font-size: 16px;
+}
+
+.memory-preview h4,
+.prompt-preview h4 {
+  font-size: 15px;
+}
+
+.memory-preview h5,
+.memory-preview h6,
+.prompt-preview h5,
+.prompt-preview h6 {
+  font-size: 14px;
+}
+
+.memory-preview p,
+.prompt-preview p {
+  margin: 0 0 12px;
+}
+
+.memory-preview ul,
+.memory-preview ol,
+.prompt-preview ul,
+.prompt-preview ol {
+  margin: 0 0 12px;
+  padding-left: 22px;
+}
+
+.memory-preview li,
+.prompt-preview li {
+  margin: 4px 0;
+}
+
+.memory-preview code,
+.prompt-preview code {
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(100, 116, 139, 0.15);
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+  font-size: 0.9em;
+}
+
+.memory-preview pre,
+.prompt-preview pre,
+.code-block-wrapper pre {
+  margin: 0;
+}
+
+.memory-preview blockquote,
+.prompt-preview blockquote {
+  margin: 0 0 12px;
+  padding: 2px 0 2px 12px;
+  border-left: 3px solid #0ea5e9;
+  color: var(--text-secondary, #64748b);
+}
+
+.memory-preview a,
+.prompt-preview a {
+  color: #0ea5e9;
+  text-decoration: none;
+}
+
+.memory-preview a:hover,
+.prompt-preview a:hover {
+  text-decoration: underline;
+}
+
+.memory-preview table,
+.prompt-preview table {
+  width: 100%;
+  margin: 0 0 12px;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.memory-preview th,
+.memory-preview td,
+.prompt-preview th,
+.prompt-preview td {
+  padding: 6px 10px;
+  border: 1px solid var(--border-color, #e2e8f0);
+  text-align: left;
+}
+
+.memory-preview th,
+.prompt-preview th {
+  background: rgba(100, 116, 139, 0.08);
+  font-weight: 600;
+}
+
+.memory-preview hr,
+.prompt-preview hr {
+  margin: 16px 0;
+  border: none;
+  border-top: 1px solid var(--border-color, #e2e8f0);
+}
+
+.memory-preview img,
+.prompt-preview img {
+  max-width: 100%;
+}
+
+.memory-preview :first-child,
+.prompt-preview :first-child {
+  margin-top: 0;
+}
+
+.memory-preview :last-child,
+.prompt-preview :last-child {
+  margin-bottom: 0;
+}
+
+html[data-theme='dark'] .memory-preview,
+html[data-theme='dark'] .prompt-preview {
+  color: #e5e7eb;
+}
+
+html[data-theme='dark'] .memory-preview h1,
+html[data-theme='dark'] .memory-preview h2,
+html[data-theme='dark'] .memory-preview h3,
+html[data-theme='dark'] .memory-preview h4,
+html[data-theme='dark'] .memory-preview h5,
+html[data-theme='dark'] .memory-preview h6,
+html[data-theme='dark'] .prompt-preview h1,
+html[data-theme='dark'] .prompt-preview h2,
+html[data-theme='dark'] .prompt-preview h3,
+html[data-theme='dark'] .prompt-preview h4,
+html[data-theme='dark'] .prompt-preview h5,
+html[data-theme='dark'] .prompt-preview h6 {
+  color: #f8fafc;
+  border-bottom-color: #30363d;
+}
+
+html[data-theme='dark'] .memory-preview blockquote,
+html[data-theme='dark'] .prompt-preview blockquote {
+  color: #94a3b8;
+}
+
+html[data-theme='dark'] .memory-preview table,
+html[data-theme='dark'] .prompt-preview table,
+html[data-theme='dark'] .memory-preview th,
+html[data-theme='dark'] .memory-preview td,
+html[data-theme='dark'] .prompt-preview th,
+html[data-theme='dark'] .prompt-preview td {
+  border-color: #30363d;
+}
+
+html[data-theme='dark'] .memory-preview th,
+html[data-theme='dark'] .prompt-preview th {
+  background: rgba(148, 163, 184, 0.12);
+}
+</style>
+
+<style>
+/* 设置页 Markdown 预览：与聊天区一致的代码块结构（语言标签 + 复制按钮）。
+   全局样式用于穿透 v-html 的动态节点。 */
+.markdown-body .code-block-wrapper {
+  margin: 0 0 12px;
+  border: 1px solid #e1e4e8;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.markdown-body .code-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: #f1f3f5;
+  padding: 8px 14px;
+  border-bottom: 1px solid #e1e4e8;
+}
+
+.markdown-body .code-lang {
+  font-size: 12px;
+  color: #57606a;
+  font-weight: 500;
+}
+
+.markdown-body .code-copy-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  background: #fff;
+  border: 1px solid #d0d7de;
+  border-radius: 6px;
+  color: #57606a;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.markdown-body .code-copy-btn:hover {
+  background: #f3f4f6;
+  border-color: #8c959f;
+  color: #24292e;
+}
+
+.markdown-body .code-copy-btn.copied {
+  color: #22c55e;
+}
+
+.markdown-body .code-copy-btn svg {
+  width: 13px;
+  height: 13px;
+}
+
+.markdown-body .code-block-wrapper pre,
+.markdown-body .code-block-wrapper .shiki {
+  margin: 0;
+  padding: 12px 14px;
+  border-radius: 0;
+  border: none;
+  border-top: none;
+  background: #f6f8fa;
+  color: #24292e;
+  overflow-x: auto;
+}
+
+.markdown-body .code-block-wrapper pre code,
+.markdown-body .code-block-wrapper .shiki code {
+  display: block;
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  white-space: pre;
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+html[data-theme="dark"] .markdown-body .code-block-wrapper {
+  border-color: #30363d;
+}
+
+html[data-theme="dark"] .markdown-body .code-header {
+  background: #161b22;
+  border-bottom-color: #30363d;
+}
+
+html[data-theme="dark"] .markdown-body .code-lang,
+html[data-theme="dark"] .markdown-body .code-copy-btn {
+  color: #8b949e;
+}
+
+html[data-theme="dark"] .markdown-body .code-copy-btn {
+  background: #21262d;
+  border-color: #30363d;
+}
+
+html[data-theme="dark"] .markdown-body .code-copy-btn:hover {
+  background: #30363d;
+  border-color: #8b949e;
+  color: #c9d1d9;
+}
+
+html[data-theme="dark"] .markdown-body .code-block-wrapper pre,
+html[data-theme="dark"] .markdown-body .code-block-wrapper .shiki,
+html[data-theme="dark"] .markdown-body .code-block-wrapper pre code,
+html[data-theme="dark"] .markdown-body .code-block-wrapper .shiki code {
+  background: transparent;
+  color: #c9d1d9;
+}
+
+html[data-theme="dark"] .memory-preview :not(pre) > code,
+html[data-theme="dark"] .prompt-preview :not(pre) > code {
+  background: #30363d !important;
+  color: #c9d1d9 !important;
 }
 </style>

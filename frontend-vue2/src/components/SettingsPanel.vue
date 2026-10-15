@@ -120,10 +120,19 @@ import {
   updateMemory,
   getSystemPrompt,
 } from '../api/settings.js'
-import { marked } from 'marked'
-import { setupMarkedExtensions } from '../markdownSetup.js'
+import {
+  createMarkdownRenderer,
+  renderMarkdown as renderMarkdownHtml,
+  installCodeCopyHandler,
+  escapeHtml,
+  setupMarkedExtensions,
+} from '../markdownSetup.js'
 
 setupMarkedExtensions()
+
+const renderer = createMarkdownRenderer({ highlight: (code) => `<pre class="hljs"><code>${escapeHtml(code || "")}</code></pre>` })
+
+installCodeCopyHandler()
 
 export default {
   data() {
@@ -163,7 +172,7 @@ export default {
         return '<p class="memory-empty">暂无记忆内容，点击右上角「编辑」添加</p>'
       }
       try {
-        return marked.parse(raw, { breaks: true, gfm: true })
+        return renderMarkdownHtml(raw, renderer)
       } catch (e) {
         console.error('记忆 Markdown 渲染失败:', e)
         return `<pre>${this.escapeHtml(raw)}</pre>`
@@ -176,7 +185,7 @@ export default {
         return '<p class="memory-empty">暂无系统提示词</p>'
       }
       try {
-        return marked.parse(raw, { breaks: true, gfm: true })
+        return renderMarkdownHtml(raw, renderer)
       } catch (e) {
         console.error('系统提示词 Markdown 渲染失败:', e)
         return `<pre>${this.escapeHtml(raw)}</pre>`
@@ -924,5 +933,195 @@ html[data-theme="dark"] .settings-header h2 {
 
 html[data-theme="dark"] .panel-desc {
   color: var(--text-secondary);
+}
+</style>
+
+<style>
+/* 设置页 Markdown 预览：v-html 动态节点不带 scoped data 属性，
+   这里用全局选择器穿透，避免标题/列表/表格退化为正文样式。 */
+.memory-preview h1,
+.memory-preview h2,
+.memory-preview h3,
+.memory-preview h4,
+.memory-preview h5,
+.memory-preview h6,
+.prompt-preview h1,
+.prompt-preview h2,
+.prompt-preview h3,
+.prompt-preview h4,
+.prompt-preview h5,
+.prompt-preview h6 {
+  margin: 18px 0 10px;
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--text-primary, #1e293b);
+}
+
+.memory-preview h1,
+.prompt-preview h1 {
+  font-size: 22px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border-color, #e2e8f0);
+}
+
+.memory-preview h2,
+.prompt-preview h2 {
+  font-size: 18px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--border-color, #e2e8f0);
+}
+
+.memory-preview h3,
+.prompt-preview h3 {
+  font-size: 16px;
+}
+
+.memory-preview h4,
+.prompt-preview h4 {
+  font-size: 15px;
+}
+
+.memory-preview h5,
+.memory-preview h6,
+.prompt-preview h5,
+.prompt-preview h6 {
+  font-size: 14px;
+}
+
+.memory-preview p,
+.prompt-preview p {
+  margin: 0 0 12px;
+}
+
+.memory-preview ul,
+.memory-preview ol,
+.prompt-preview ul,
+.prompt-preview ol {
+  margin: 0 0 12px;
+  padding-left: 22px;
+}
+
+.memory-preview li,
+.prompt-preview li {
+  margin: 4px 0;
+}
+
+.memory-preview code,
+.prompt-preview code {
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(100, 116, 139, 0.15);
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+  font-size: 0.9em;
+}
+
+.memory-preview pre,
+.prompt-preview pre,
+.code-block-wrapper pre {
+  margin: 0;
+}
+
+.memory-preview blockquote,
+.prompt-preview blockquote {
+  margin: 0 0 12px;
+  padding: 2px 0 2px 12px;
+  border-left: 3px solid #0ea5e9;
+  color: var(--text-secondary, #64748b);
+}
+
+.memory-preview a,
+.prompt-preview a {
+  color: #0ea5e9;
+  text-decoration: none;
+}
+
+.memory-preview a:hover,
+.prompt-preview a:hover {
+  text-decoration: underline;
+}
+
+.memory-preview table,
+.prompt-preview table {
+  width: 100%;
+  margin: 0 0 12px;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.memory-preview th,
+.memory-preview td,
+.prompt-preview th,
+.prompt-preview td {
+  padding: 6px 10px;
+  border: 1px solid var(--border-color, #e2e8f0);
+  text-align: left;
+}
+
+.memory-preview th,
+.prompt-preview th {
+  background: rgba(100, 116, 139, 0.08);
+  font-weight: 600;
+}
+
+.memory-preview hr,
+.prompt-preview hr {
+  margin: 16px 0;
+  border: none;
+  border-top: 1px solid var(--border-color, #e2e8f0);
+}
+
+.memory-preview img,
+.prompt-preview img {
+  max-width: 100%;
+}
+
+.memory-preview :first-child,
+.prompt-preview :first-child {
+  margin-top: 0;
+}
+
+.memory-preview :last-child,
+.prompt-preview :last-child {
+  margin-bottom: 0;
+}
+
+html[data-theme='dark'] .memory-preview,
+html[data-theme='dark'] .prompt-preview {
+  color: #e5e7eb;
+}
+
+html[data-theme='dark'] .memory-preview h1,
+html[data-theme='dark'] .memory-preview h2,
+html[data-theme='dark'] .memory-preview h3,
+html[data-theme='dark'] .memory-preview h4,
+html[data-theme='dark'] .memory-preview h5,
+html[data-theme='dark'] .memory-preview h6,
+html[data-theme='dark'] .prompt-preview h1,
+html[data-theme='dark'] .prompt-preview h2,
+html[data-theme='dark'] .prompt-preview h3,
+html[data-theme='dark'] .prompt-preview h4,
+html[data-theme='dark'] .prompt-preview h5,
+html[data-theme='dark'] .prompt-preview h6 {
+  color: #f8fafc;
+  border-bottom-color: #30363d;
+}
+
+html[data-theme='dark'] .memory-preview blockquote,
+html[data-theme='dark'] .prompt-preview blockquote {
+  color: #94a3b8;
+}
+
+html[data-theme='dark'] .memory-preview table,
+html[data-theme='dark'] .prompt-preview table,
+html[data-theme='dark'] .memory-preview th,
+html[data-theme='dark'] .memory-preview td,
+html[data-theme='dark'] .prompt-preview th,
+html[data-theme='dark'] .prompt-preview td {
+  border-color: #30363d;
+}
+
+html[data-theme='dark'] .memory-preview th,
+html[data-theme='dark'] .prompt-preview th {
+  background: rgba(148, 163, 184, 0.12);
 }
 </style>

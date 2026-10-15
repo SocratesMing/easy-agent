@@ -362,6 +362,16 @@ async def chat_stream(
             ]
             parsed_content = "\n\n".join(file_contents) + "\n\n" + request.message
 
+    page_context = (request.page_context or "").strip()
+    if page_context:
+        parsed_content = (
+            "<page_context>\n"
+            "以下是用户发起提问时所在页面的上下文，仅供参考；与问题无关时忽略。\n"
+            f"{page_context}\n"
+            "</page_context>\n\n"
+            + parsed_content
+        )
+
     user_message = {
         "role": "user",
         "content": request.message,
@@ -369,6 +379,8 @@ async def chat_stream(
     }
     if request.files:
         user_message["files"] = request.files
+    if page_context:
+        user_message["page_context"] = page_context
     db.add_message(session_id, user_message)
     db.add_message_row(session_id, user_message)
 

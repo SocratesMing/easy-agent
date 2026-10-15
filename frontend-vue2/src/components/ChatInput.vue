@@ -480,6 +480,7 @@ import { getUserSkills } from '../api/skills.js'
 import { iconCategoryFor } from '../utils/skillCategories.js'
 import { buildSkillPayload, parseSlashQuery } from '../utils/skillSlash.js'
 import { getConnectors } from '../api/connectors.js'
+import { eventTarget } from '../utils/domEvent.js'
 import { listExperts, listPublicExperts } from '../api/expert.js'
 import FileIcon from './FileIcon.vue'
 import SkillIcon from './SkillIcon.vue'
@@ -528,6 +529,15 @@ export default {
     showFooter: {
       type: Boolean,
       default: false
+    },
+    draftKey: {
+      type: String,
+      default: DRAFT_KEY
+    },
+    // 是否消费技能中心「创建技能」预置的待选技能（只应由主页面输入框消费）
+    consumePendingSkill: {
+      type: Boolean,
+      default: true
     },
     // 当前会话选中的专家 Agent（{export_agent_id, export_name_cn} 或 null）。
     // 非空时输入框工具栏显示专家胶囊，且本会话消息走 /agent/stream_export_run。
@@ -723,7 +733,7 @@ export default {
     },
     message(val) {
       try {
-        sessionStorage.setItem(DRAFT_KEY, val)
+        sessionStorage.setItem(this.draftKey, val)
       } catch (e) {
         // 隐私模式等场景下 sessionStorage 可能不可用，忽略即可
       }
@@ -742,7 +752,7 @@ export default {
   mounted() {
     // 恢复刷新前的输入草稿
     try {
-      const draft = sessionStorage.getItem(DRAFT_KEY)
+      const draft = sessionStorage.getItem(this.draftKey)
       if (draft) {
         this.message = draft
         this.$nextTick(() => this.autoResize())
@@ -751,7 +761,7 @@ export default {
       // 忽略草稿恢复失败
     }
     // 恢复待选技能（技能中心「创建技能」等入口预置），读取后即清除
-    this.restorePendingSkill()
+    if (this.consumePendingSkill) this.restorePendingSkill()
 
     document.addEventListener('click', this.closeTokenPopup)
     document.addEventListener('click', this.closeModelDropdown)
@@ -774,6 +784,22 @@ export default {
     this.stopLiveDuration()
   },
   methods: {
+    /** 供父组件调用：聚焦输入框并把光标移到末尾 */
+    focusInput() {
+      this.$nextTick(() => {
+        const ta = this.$refs.textareaRef
+        if (!ta || ta.disabled) return
+        ta.focus()
+        const end = ta.value.length
+        ta.setSelectionRange(end, end)
+      })
+    },
+    /** 供父组件调用：替换输入内容（如侧边栏的快捷提问、划词提问） */
+    setDraft(text) {
+      this.message = text || ''
+      this.$nextTick(() => this.autoResize())
+      this.focusInput()
+    },
     /**
      * 外部预填问题（专家详情弹窗的示例提示词）：写入输入框并聚焦，随后通知父组件清空。
      */
@@ -847,7 +873,7 @@ export default {
     },
     closeModelDropdown(event) {
       const anchor = this.$refs.modelDropdownRef
-      if (this.showModelDropdown && anchor && !anchor.contains(event.target)) {
+      if (this.showModelDropdown && anchor && !anchor.contains(eventTarget(event))) {
         this.showModelDropdown = false
       }
     },
@@ -874,7 +900,7 @@ export default {
     },
     closePlusMenu(event) {
       const anchor = this.$refs.plusMenuRef
-      if (this.showPlusMenu && anchor && !anchor.contains(event.target)) {
+      if (this.showPlusMenu && anchor && !anchor.contains(eventTarget(event))) {
         this.showPlusMenu = false
         this.subpanelCategory = null
       }
@@ -1461,7 +1487,7 @@ export default {
     closeSkillPickerOnClick(event) {
       if (!this.skillPickerOpen) return
       const picker = this.$refs.skillPickerRef
-      if (picker && picker.contains(event.target)) return
+      if (picker && picker.contains(eventTarget(event))) return
       this.closeSkillPicker()
     },
 

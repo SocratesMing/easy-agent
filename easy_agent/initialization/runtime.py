@@ -6,7 +6,7 @@ from pathlib import Path
 
 from ..config import AgentConfig, Config, get_missing_env_vars
 from .environment import EnvironmentInitialization, load_environment
-from .logging import setup_logging
+from .log import setup_logging
 
 logger = logging.getLogger(__name__)
 
