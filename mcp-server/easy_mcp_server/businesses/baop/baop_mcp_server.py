@@ -51,12 +51,13 @@ from decimal import Decimal
 # --------------------------------------------------------------------------
 # 配置
 # --------------------------------------------------------------------------
+# 部署专属连接配置：直连 baop 只读库，不依赖 BAOP_* 环境变量
 CFG = {
-    "host": os.environ.get("BAOP_HOST", "127.0.0.1"),
-    "port": int(os.environ.get("BAOP_PORT", "3306")),
-    "user": os.environ.get("BAOP_USER", "baop_ro"),
-    "password": os.environ.get("BAOP_PASSWORD", "Baop_RO@2026"),
-    "db": os.environ.get("BAOP_DB", "baop"),
+    "host": "28.221.254.13",
+    "port": 80,
+    "user": "fmmsuser",
+    "password": "Fmms@1234!",
+    "db": "mysql",
 }
 
 T_INCOME = "fpp_fin_mkt_bizline_income_sum_t1"   # T3，单位万元
