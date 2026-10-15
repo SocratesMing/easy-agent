@@ -11,7 +11,8 @@ test('admin personnel and permission entry lives in the knowledge top bar', asyn
   const app = await readFile(path.join(frontendRoot, 'src/App.vue'), 'utf8')
 
   assert.doesNotMatch(sessionList, /人员与权限/)
-  assert.match(workbench, /v-if="teamSpaceManagement\.is_admin && selectedSpace === 'team'"[\s\S]{0,500}人员与权限/)
+  // 人员管理入口对 admin 与公共空间管理员（白名单，can_manage）开放
+  assert.match(workbench, /v-if="teamSpaceManagement\.can_manage && selectedSpace === 'team'"[\s\S]{0,500}人员与权限/)
   assert.match(workbench, /\$emit\('managePersonnel'\)/)
   assert.match(app, /@managePersonnel="handleShowUserManagement"/)
 })
