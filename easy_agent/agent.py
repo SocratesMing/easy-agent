@@ -600,8 +600,8 @@ class _PathTranslatingShell(LocalShellBackend):
             if self._is_windows
             else (
                 "Error: 当前环境不支持 bwrap 与 Landlock，无法安全执行 shell 命令，已拒绝执行。\n"
-                "请在容器启动时添加 --cap-add SYS_ADMIN --security-opt apparmor=unconfined "
-                "以启用 bwrap 沙箱，或在配置中设置 agent.sandbox_enabled=false（仅限可信单用户环境）。"
+                "请在容器启动时添加 --security-opt seccomp=unconfined --security-opt apparmor=unconfined "
+                "--security-opt systempaths=unconfined 以启用 bwrap 沙箱。"
             )
         )
         return ExecuteResponse(
