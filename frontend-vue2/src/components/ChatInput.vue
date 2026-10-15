@@ -850,6 +850,22 @@ export default {
       })
       this.$emit('expert-prompt-applied')
     },
+    /** 供父组件调用：聚焦输入框并把光标移到末尾（如侧边栏打开时） */
+    focusInput() {
+      this.$nextTick(() => {
+        const ta = this.$refs.textareaRef
+        if (!ta || ta.disabled) return
+        ta.focus()
+        const end = ta.value.length
+        ta.setSelectionRange(end, end)
+      })
+    },
+    /** 供父组件调用：替换输入内容（如侧边栏的快捷提问、划词提问） */
+    setDraft(text) {
+      this.message = text || ''
+      this.$nextTick(() => this.autoResize())
+      this.focusInput()
+    },
     updateCaretLine() {
       const ta = this.$refs.textareaRef
       if (!ta) return
