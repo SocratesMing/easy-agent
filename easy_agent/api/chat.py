@@ -29,6 +29,7 @@ from ..services import (
     register_stream_task,
     unregister_stream_task,
     cancel_stream_task,
+    parse_message_connectors,
 )
 from ..services import skill_library
 from ..services.streaming import format_sse
@@ -490,10 +491,23 @@ async def chat_stream(
         message_id=message_id,
     )
 
+    # 「使用连接器[X]」指令解析：输入框里选中的连接器会前置在消息文本中，
+    # 这里翻译成 mcp.json 的 server 名，交给 agent_manager 只注入这些连接器的工具。
+    # 未识别的名字只记日志，不影响其余连接器生效（也不阻断对话）。
+    connector_servers, unknown_connectors = parse_message_connectors(
+        request.message, username
+    )
+    if connector_servers or unknown_connectors:
+        logger.info(
+            f"[{sid}] 🔌 连接器指令 | 命中: {connector_servers or '无'} | "
+            f"未识别: {unknown_connectors or '无'}"
+        )
+
     agent = await get_or_create_agent_for_session(
         session_id, username, workspace_name, model_name=request.model,
         system_prompt_extra=system_prompt_extra,
         enable_web_search=request.enable_web_search,
+        connector_servers=connector_servers,
     )
 
     return StreamingResponse(
@@ -586,6 +600,8 @@ async def chat_resume(
     # 一起写入、清理时一起删除），因此这里取到的值要么与缓存中的专家一致 —— 命中缓存
     # 原样复用、人设保留；要么为 ""（缓存已失效）—— 等价于通用 Agent 重建，
     # 行为与引入专家模块之前逐字一致。
+    # 连接器（使用连接器[X]）同理不传：get_or_create_agent_for_session 取 None 时
+    # 「跟随缓存」——不因连接器差异驱逐缓存 Agent（重建时仍沿用该会话已记录的选择）。
     agent = await get_or_create_agent_for_session(
         session_id,
         username,

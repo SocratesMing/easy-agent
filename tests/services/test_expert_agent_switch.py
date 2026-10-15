@@ -44,12 +44,13 @@ def manager(db, monkeypatch, tmp_path):
     """把 agent_manager 的外部依赖全部换成本地假实现。"""
     am._session_agents.clear()
     am._session_expert.clear()
+    am._session_connectors.clear()
     _FakeAgent.instances = []
 
     monkeypatch.setattr(am, "EasyAgent", _FakeAgent)
     monkeypatch.setattr(am, "get_database", lambda: db)
 
-    async def _no_mcp(_user=None):
+    async def _no_mcp(_user=None, server_names=None):
         return []
 
     monkeypatch.setattr(am, "load_mcp_tools_for_user", _no_mcp)

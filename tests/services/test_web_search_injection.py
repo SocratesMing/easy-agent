@@ -28,7 +28,7 @@ def _patch_manager(monkeypatch, config):
         {"config": config, "system_prompt": "SYS", "skills_root": "", "agent_env": "test", "win": False},
     )
 
-    async def _no_mcp(_username=None):
+    async def _no_mcp(_username=None, server_names=None):
         return []
 
     monkeypatch.setattr(agent_manager, "load_mcp_tools_for_user", _no_mcp)
