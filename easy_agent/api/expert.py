@@ -591,7 +591,9 @@ async def stream_export_run(
         else:
             workspace_name = session.workspace_name or ""
             if len(session.messages) == 0:
-                session.title = generate_session_title(request.message, request.files)
+                session.title = generate_session_title(
+                    request.message, request.files, username
+                )
                 session.updated_at = datetime.now().isoformat()
                 db.update_session(session)
 

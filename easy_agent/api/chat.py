@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import re
 import uuid
 from datetime import datetime
 from typing import Annotated
@@ -29,6 +30,7 @@ from ..services import (
     unregister_stream_task,
     cancel_stream_task,
 )
+from ..services import skill_library
 from ..services.streaming import format_sse
 from ..utils import parse_file_content, SessionLogger, get_owned_session
 from .sessions import generate_workspace_name
@@ -40,15 +42,79 @@ router = APIRouter(
     tags=["Chat"],
 )
 
-def generate_session_title(message: str, files: list | None) -> str:
-    """根据首条消息或首个上传文件生成会话标题。"""
+# 会话标题最长字数：太短列表里只剩「测试下」这种断句，太长又会撑破侧边栏，
+# 具体显示宽度由前端省略号控制，这里保留足够信息量即可。
+SESSION_TITLE_MAX_LEN = 30
+
+# 会话标题里的技能指令前缀：输入框挂技能时把已选技能拼成 `/目录名 用户输入` 发给后端
+# （见前端 utils/skillSlash.js），标题直接取首条消息就会带上整串指令，
+# 会话列表看起来是「/demo-skill 测试对话」。这里只摘掉 `/目录名` 令牌本身。
+_SKILL_TOKEN_PATTERN = re.compile(r"^/(\S+)")
+
+
+def _skill_display_name(skill_dir, fallback: str) -> str:
+    """技能展示名（SKILL.md frontmatter 的 name），读取失败退回目录名。"""
+    try:
+        return skill_library.skill_metadata(skill_dir).get("name") or fallback
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"读取技能元数据失败 | {skill_dir} | {exc}")
+        return fallback
+
+
+def split_skill_prefix(message: str, username: str | None) -> tuple[str, str]:
+    """拆掉消息开头拼接的技能指令，返回 (剩余正文, 首个技能的展示名)。
+
+    目录名必须命中用户实际拥有的技能（含已停用），据此避免误删 `/workspace`、
+    `/user-skills` 这类路径开头——历史上确实有用户这么提问。未命中、用户名为空
+    或技能目录不可读时原样返回；展示名可能为空字符串。
+    """
+    text = (message or "").strip()
+    if not text or not username:
+        return text, ""
+
+    try:
+        skills = {
+            item["dir_name"]: item["path"]
+            for item in skill_library.list_user_skill_dirs(username)
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"读取用户技能目录失败，会话标题保留原文 | 用户: {username} | {exc}")
+        return text, ""
+    if not skills:
+        return text, ""
+
+    rest = text
+    first_dir = ""
+    while True:
+        matched = _SKILL_TOKEN_PATTERN.match(rest)
+        if not matched or matched.group(1) not in skills:
+            break
+        if not first_dir:
+            first_dir = matched.group(1)
+        rest = rest[matched.end() :].strip()
+
+    if not first_dir:
+        return text, ""
+    return rest, _skill_display_name(skills[first_dir], first_dir)
+
+
+def generate_session_title(
+    message: str, files: list | None, username: str | None = None
+) -> str:
+    """根据首条消息或首个上传文件生成会话标题。
+
+    首条消息可能是 `/技能名 用户输入`（输入框挂技能时拼接的指令），标题只保留用户
+    真正输入的内容；只发了一条技能指令（如 `/docx`）时用技能展示名兜底，避免标题
+    只剩一个斜杠指令。
+    """
     if message and message.strip():
-        title = message.strip()
-        return title[:15] + "..." if len(title) > 15 else title
+        body, skill_name = split_skill_prefix(message, username)
+        title = body or skill_name or message.strip()
     elif files and len(files) > 0:
-        filename = files[0].get("filename", "文件")
-        return filename[:15] + "..." if len(filename) > 15 else filename
-    return "未命名会话"
+        title = files[0].get("filename", "文件")
+    else:
+        return "未命名会话"
+    return title[:SESSION_TITLE_MAX_LEN] + "..." if len(title) > SESSION_TITLE_MAX_LEN else title
 
 
 def create_new_session(
@@ -60,7 +126,7 @@ def create_new_session(
 ) -> str:
     """创建新会话记录并返回其 workspace_name。"""
     now = datetime.now().isoformat()
-    session_title = generate_session_title(message, files)
+    session_title = generate_session_title(message, files, username)
     workspace_name = generate_workspace_name(session_id)
     session_data = SessionModel(
         session_id=session_id,
@@ -337,7 +403,9 @@ async def chat_stream(
                 len(session.messages) == 0
                 and not is_knowledge_panel_session
             ):
-                session.title = generate_session_title(request.message, request.files)
+                session.title = generate_session_title(
+                    request.message, request.files, username
+                )
                 session.updated_at = datetime.now().isoformat()
                 db.update_session(session)
 
