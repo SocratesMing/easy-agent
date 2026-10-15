@@ -196,6 +196,19 @@ expert_tags:
   - { tag_id: risk_management, tag_name: 风险管理 }
   - { tag_id: other, tag_name: 其他 }
 
+# ===== Upload Limits =====
+# 对话附件上传限额（输入框「+ → 添加文件」）。约束对象是「单个会话、单次对话」的
+# 附件：即输入框里待发送的文件列表，发送消息后输入框清空、额度自动重置。
+# 单位统一为 MB（1MB = 1024*1024 字节）。前端在选择文件时即时拦截，后端 upload
+# 接口对单文件大小兜底校验。
+# 注意：若把 max_total_size_mb 调到 >100，需同步调整 nginx 的 client_max_body_size
+# （见 docker/nginx-frontend.conf，现为 100m），否则会被 nginx 以 413 提前拦截。
+upload_limits:
+  enabled: ${UPLOAD_LIMITS_ENABLED:-true}            # false = 前后端都不限（应急开关）
+  max_file_size_mb: ${UPLOAD_MAX_FILE_SIZE_MB:-10}   # 单个文件大小上限
+  max_files_per_message: ${UPLOAD_MAX_FILES:-5}      # 单次对话附件数量上限
+  max_total_size_mb: ${UPLOAD_MAX_TOTAL_SIZE_MB:-20} # 单次对话附件总大小上限
+
 # ===== Knowledge / RAGFlow =====
 # 启用时需配置 RAGFLOW_BASE_URL + RAGFLOW_API_KEY（见 .env.*.example）
 # embedding.model 留空则使用 RAGFlow 默认 embedding，无需 RAGFLOW_EMBEDDING_MODEL
