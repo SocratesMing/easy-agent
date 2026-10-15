@@ -30,13 +30,19 @@ echo "==> 使用配置文件: $CONFIG_FILE"
 
 # Substitute environment variables in config file
 # Replaces ${VAR} or ${VAR:-default} patterns with actual values
-envsubst_args=$(grep -oP '\$\{[A-Za-z_][A-Za-z0-9_]*(?::-[^}]*)?\}' "$CONFIG_FILE" 2>/dev/null | sort -u | tr '\n' ' ')
-if [ -n "$envsubst_args" ]; then
-    echo "==> 替换配置文件中的环境变量: $envsubst_args"
-    var_names=$(echo "$envsubst_args" | grep -oP '\$\{[A-Za-z_][A-Za-z0-9_]*' | sed 's/\${//' | sort -u | while read var; do echo -n "\${$var} "; done)
-    envsubst "$var_names" < "$CONFIG_FILE" > /tmp/config_resolved.yaml
-    CONFIG_FILE="/tmp/config_resolved.yaml"
-    echo "==> 环境变量替换完成"
+# 后端 Config.from_yaml 本身也会解析 ${VAR:-default}；此处 envsubst 为可选加速。
+# 镜像未装 gettext-base 时跳过，避免 entrypoint 直接失败。
+if command -v envsubst >/dev/null 2>&1; then
+    envsubst_args=$(grep -oP '\$\{[A-Za-z_][A-Za-z0-9_]*(?::-[^}]*)?\}' "$CONFIG_FILE" 2>/dev/null | sort -u | tr '\n' ' ')
+    if [ -n "$envsubst_args" ]; then
+        echo "==> 替换配置文件中的环境变量: $envsubst_args"
+        var_names=$(echo "$envsubst_args" | grep -oP '\$\{[A-Za-z_][A-Za-z0-9_]*' | sed 's/\${//' | sort -u | while read var; do echo -n "\${$var} "; done)
+        envsubst "$var_names" < "$CONFIG_FILE" > /tmp/config_resolved.yaml
+        CONFIG_FILE="/tmp/config_resolved.yaml"
+        echo "==> 环境变量替换完成"
+    fi
+else
+    echo "==> 未找到 envsubst，跳过预替换（由 Python 配置加载器解析占位符）"
 fi
 
 export EASY_CONFIG="$CONFIG_FILE"

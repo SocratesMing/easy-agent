@@ -40,6 +40,7 @@ RUN apt-get update && \
         bash \
         procps \
         bubblewrap \
+        gettext-base \
         && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

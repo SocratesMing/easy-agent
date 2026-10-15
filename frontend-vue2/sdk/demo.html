@@ -3,69 +3,761 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>订单管理 · Easy Agent 侧边栏接入示例</title>
+  <title>第三方系统 · AI 侧边栏接入 Demo</title>
   <style>
-    body { margin: 0; font-family: system-ui, sans-serif; background: #f5f6f8; color: #222; }
-    header { display: flex; align-items: center; justify-content: space-between; padding: 14px 24px; background: #1f2937; color: #fff; }
-    main { padding: 24px; }
-    table { width: 100%; border-collapse: collapse; background: #fff; }
-    th, td { padding: 10px 12px; border-bottom: 1px solid #eee; text-align: left; }
-    button { padding: 6px 12px; border: 1px solid #d0d5dd; border-radius: 6px; background: #fff; cursor: pointer; }
-    .tips { margin: 16px 0; color: #666; font-size: 13px; }
+    :root {
+      --bg: #f3f4f6;
+      --panel: #ffffff;
+      --ink: #111827;
+      --muted: #6b7280;
+      --line: #e5e7eb;
+      --accent: #0f766e;
+      --accent-soft: #ccfbf1;
+      --warn: #b45309;
+      --danger: #b91c1c;
+      --ok: #047857;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      background: var(--bg);
+      color: var(--ink);
+      min-height: 100vh;
+    }
+    header.app-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 12px 20px;
+      background: #0f172a;
+      color: #f8fafc;
+    }
+    header .brand { font-weight: 700; letter-spacing: 0.02em; }
+    header .meta { font-size: 12px; color: #94a3b8; }
+    header .actions { display: flex; flex-wrap: wrap; gap: 8px; }
+    button, .btn {
+      appearance: none;
+      border: 1px solid #cbd5e1;
+      background: #fff;
+      color: #0f172a;
+      border-radius: 8px;
+      padding: 7px 12px;
+      font-size: 13px;
+      cursor: pointer;
+    }
+    button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+    button.danger { background: #fff; border-color: #fecaca; color: var(--danger); }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    header button { background: #1e293b; border-color: #334155; color: #e2e8f0; }
+    header button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+    .layout {
+      display: grid;
+      grid-template-columns: minmax(280px, 360px) 1fr;
+      gap: 16px;
+      padding: 16px;
+      max-width: 1400px;
+      margin: 0 auto;
+    }
+    @media (max-width: 960px) {
+      .layout { grid-template-columns: 1fr; }
+    }
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 16px;
+    }
+    .card h2 {
+      margin: 0 0 12px;
+      font-size: 15px;
+      font-weight: 700;
+    }
+    .card h3 {
+      margin: 16px 0 8px;
+      font-size: 13px;
+      color: var(--muted);
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    label.field {
+      display: block;
+      margin-bottom: 10px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+    label.field > span { display: block; margin-bottom: 4px; }
+    input[type="text"], select, textarea {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 8px 10px;
+      font: inherit;
+      font-size: 13px;
+      background: #fff;
+      color: var(--ink);
+    }
+    textarea { min-height: 72px; resize: vertical; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .checks { display: grid; gap: 6px; font-size: 13px; }
+    .checks label { display: flex; align-items: center; gap: 8px; color: var(--ink); }
+    .hint {
+      margin: 0 0 12px;
+      font-size: 12px;
+      line-height: 1.5;
+      color: var(--muted);
+    }
+    .status {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 10px;
+      border-radius: 999px;
+      font-size: 12px;
+      background: #f1f5f9;
+      color: #334155;
+      border: 1px solid var(--line);
+    }
+    .pill.ok { background: #ecfdf5; color: var(--ok); border-color: #a7f3d0; }
+    .pill.warn { background: #fffbeb; color: var(--warn); border-color: #fde68a; }
+    .pill.err { background: #fef2f2; color: var(--danger); border-color: #fecaca; }
+    .pill.idle { background: #f8fafc; color: var(--muted); }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+    th, td {
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+    }
+    th { background: #f8fafc; color: var(--muted); font-weight: 600; }
+    tr:hover td { background: #f8fafc; }
+    .badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 12px;
+      background: #e2e8f0;
+    }
+    .badge.overdue { background: #fee2e2; color: #991b1b; }
+    .badge.pending { background: #ffedd5; color: #9a3412; }
+    .badge.done { background: #dcfce7; color: #166534; }
+
+    .pages { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
+    .pages button.active { background: var(--accent-soft); border-color: #5eead4; color: #115e59; }
+
+    .toolbar { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+    .log-head { display: flex; align-items: center; justify-content: space-between; }
+    .log-head h3 { margin: 4px 0 8px; }
+    .log-head button { padding: 3px 10px; font-size: 12px; }
+    #log {
+      height: 160px;
+      margin-bottom: 4px;
+      overflow: auto;
+      background: #0b1220;
+      color: #cbd5e1;
+      border-radius: 8px;
+      padding: 10px 12px;
+      font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    #log .t { color: #64748b; }
+    #log .e { color: #fca5a5; }
+    #log .ok { color: #6ee7b7; }
+    .cfg-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+    .hidden { display: none !important; }
   </style>
 </head>
 <body>
-  <header>
-    <strong>某业务系统 · 订单管理</strong>
-    <span>
-      <button id="ask">让 AI 分析本页订单</button>
-      <button id="toggle">打开 / 关闭 AI</button>
-    </span>
+  <header class="app-bar">
+    <div>
+      <div class="brand">某 ERP · 业务演示页</div>
+      <div class="meta">模拟第三方宿主：用右侧面板配置后「应用并初始化」即可测 AI 侧边栏</div>
+    </div>
+    <div class="actions">
+      <button type="button" id="btnAsk" class="primary" disabled>让 AI 分析本页</button>
+      <button type="button" id="btnToggle" disabled>打开 / 关闭</button>
+      <button type="button" id="btnLogout" class="danger" disabled>宿主登出</button>
+    </div>
   </header>
-  <main>
-    <p class="tips">
-      这是第三方页面接入示例：右侧「问 AI」按钮唤起侧边栏，选中下面表格中的文字可「划词提问」。
-      地址栏参数：?baseURL=后端地址&amp;username=免密用户名（或 &amp;token=xxx）
-    </p>
-    <table id="orders">
-      <thead><tr><th>订单号</th><th>客户</th><th>金额</th><th>状态</th></tr></thead>
-      <tbody>
-        <tr><td>SO-20261001</td><td>华东某科技</td><td>¥ 128,000</td><td>待发货</td></tr>
-        <tr><td>SO-20261002</td><td>西南某制造</td><td>¥ 56,300</td><td>已逾期</td></tr>
-        <tr><td>SO-20261003</td><td>华北某零售</td><td>¥ 9,800</td><td>已完成</td></tr>
-      </tbody>
-    </table>
-  </main>
 
-  <!-- 1. 引入 SDK（单文件，CSS 已内联） -->
+  <div class="layout">
+    <!-- 左侧：SDK 配置（联调面板） -->
+    <aside class="card" id="configPanel">
+      <h2>SDK 联调配置</h2>
+      <p class="hint">
+        也可通过 URL 预填：
+        <code>?baseURL=…&amp;auth=passwordless&amp;username=chj&amp;userId=123456</code>
+      </p>
+
+      <div class="status" id="statusBar">
+        <span class="pill idle" id="stSdk">SDK 未加载</span>
+        <span class="pill idle" id="stAuth">未初始化</span>
+        <span class="pill idle" id="stOpen">侧边栏关闭</span>
+      </div>
+
+      <div class="log-head">
+        <h3>事件日志</h3>
+        <button type="button" id="btnClearLog">清空</button>
+      </div>
+      <div id="log"></div>
+
+      <h3>后端</h3>
+      <label class="field">
+        <span>baseURL（Easy Agent 后端）</span>
+        <input type="text" id="cfgBaseURL" placeholder="http://183.196.130.56:22332" />
+      </label>
+      <label class="field">
+        <span>mainAppUrl（可选，「在主站打开」）</span>
+        <input type="text" id="cfgMainAppUrl" placeholder="http://183.196.130.56:22333/" />
+      </label>
+
+      <h3>鉴权方式</h3>
+      <label class="field">
+        <span>auth</span>
+        <select id="cfgAuthMode">
+          <option value="passwordless">免密登录 username + userId</option>
+          <option value="getToken">宿主后端换 token（推荐，本页模拟）</option>
+          <option value="token">静态 token</option>
+        </select>
+      </label>
+      <div id="authPasswordless">
+        <div class="row">
+          <label class="field">
+            <span>username</span>
+            <input type="text" id="cfgUsername" value="sdk_demo" />
+          </label>
+          <label class="field">
+            <span>userId</span>
+            <input type="text" id="cfgUserId" value="0" />
+          </label>
+        </div>
+      </div>
+      <div id="authToken" class="hidden">
+        <label class="field">
+          <span>token</span>
+          <textarea id="cfgToken" placeholder="粘贴 access_token"></textarea>
+        </label>
+      </div>
+      <p class="hint" id="authHint">
+        免密需后端 <code>personnel.passwordless_login_enabled: true</code>。
+        getToken 模式会由本页模拟宿主后端调用免密接口换 token。
+      </p>
+
+      <h3>功能开关</h3>
+      <div class="checks">
+        <label><input type="checkbox" id="ftLauncher" checked /> launcher 右侧「问 AI」</label>
+        <label><input type="checkbox" id="ftSelection" checked /> selectionAsk 划词提问</label>
+        <label><input type="checkbox" id="ftShortcut" checked /> shortcut Ctrl/⌘+J</label>
+        <label><input type="checkbox" id="ftDock" checked /> dock 固定模式</label>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <label class="field">
+          <span>defaultMode</span>
+          <select id="cfgDefaultMode">
+            <option value="float">float</option>
+            <option value="dock">dock</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>launcherLabel</span>
+          <input type="text" id="cfgLauncherLabel" value="问 AI" />
+        </label>
+      </div>
+
+      <div class="cfg-actions">
+        <button type="button" class="primary" id="btnApply">应用并初始化</button>
+        <button type="button" id="btnDestroy" disabled>销毁实例</button>
+        <button type="button" id="btnCopyUrl">复制当前 URL</button>
+      </div>
+    </aside>
+
+    <!-- 右侧：模拟业务页 -->
+    <main>
+      <div class="card">
+        <h2>宿主业务页面</h2>
+        <p class="hint">切换下方「页面」会调用 <code>setPageContext</code>，用于验证会话按页面 key 复用与上下文注入。</p>
+        <div class="pages" id="pageTabs">
+          <button type="button" data-page="orders" class="active">订单列表</button>
+          <button type="button" data-page="contract">合同详情</button>
+          <button type="button" data-page="customer">客户档案</button>
+        </div>
+
+        <section id="page-orders">
+          <p class="hint">选中表格文字可测划词「问 AI」。行内按钮演示 <code>open({ context, prompt })</code>。</p>
+          <table id="orders">
+            <thead>
+              <tr><th>订单号</th><th>客户</th><th>金额</th><th>状态</th><th></th></tr>
+            </thead>
+            <tbody>
+              <tr data-no="SO-20261001" data-customer="华东某科技" data-amount="128000" data-status="待发货">
+                <td>SO-20261001</td><td>华东某科技</td><td>¥ 128,000</td>
+                <td><span class="badge pending">待发货</span></td>
+                <td><button type="button" class="btn-row-ai" disabled>AI 分析</button></td>
+              </tr>
+              <tr data-no="SO-20261002" data-customer="西南某制造" data-amount="56300" data-status="已逾期">
+                <td>SO-20261002</td><td>西南某制造</td><td>¥ 56,300</td>
+                <td><span class="badge overdue">已逾期</span></td>
+                <td><button type="button" class="btn-row-ai" disabled>AI 分析</button></td>
+              </tr>
+              <tr data-no="SO-20261003" data-customer="华北某零售" data-amount="9800" data-status="已完成">
+                <td>SO-20261003</td><td>华北某零售</td><td>¥ 9,800</td>
+                <td><span class="badge done">已完成</span></td>
+                <td><button type="button" class="btn-row-ai" disabled>AI 分析</button></td>
+              </tr>
+            </tbody>
+          </table>
+        </section>
+
+        <section id="page-contract" class="hidden">
+          <p><strong>合同编号</strong> HT-2026-0012</p>
+          <p><strong>甲方</strong> 华东某科技有限公司</p>
+          <p><strong>金额</strong> ¥ 1,280,000（分三期）</p>
+          <p><strong>风险点</strong> 逾期交付违约金条款不完整；验收标准引用了已废止的附件 B。</p>
+          <div class="toolbar">
+            <button type="button" id="btnContractAsk" disabled>针对本合同提问</button>
+          </div>
+        </section>
+
+        <section id="page-customer" class="hidden">
+          <p><strong>客户</strong> 西南某制造</p>
+          <p><strong>信用等级</strong> B+</p>
+          <p><strong>近 90 天逾期订单</strong> 2 笔，合计 ¥ 89,400</p>
+          <p><strong>联系人</strong> 王工 / 138****2210</p>
+          <div class="toolbar">
+            <button type="button" id="btnCustomerAsk" disabled>起草催款邮件</button>
+          </div>
+        </section>
+      </div>
+
+      <div class="card" style="margin-top:16px">
+        <h2>实例方法速测</h2>
+        <div class="toolbar">
+          <button type="button" id="btnOpenPrompt" disabled>open 预填提示</button>
+          <button type="button" id="btnNewSession" disabled>新建会话并提问</button>
+          <button type="button" id="btnReady" disabled>await ready</button>
+          <button type="button" id="btnVersion" disabled>打印 version</button>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <!-- 构建产物：npm run build:sdk 后与 demo.html 同目录；开发时也可指向 CDN / 绝对路径 -->
   <script src="./easy-agent-sidebar.umd.min.js"></script>
   <script>
-    const params = new URLSearchParams(location.search)
+    (function () {
+      var STORAGE_KEY = 'easy_agent_sdk_demo_cfg'
+      var params = new URLSearchParams(location.search)
+      var sidebar = null
+      var currentPage = 'orders'
+      var logEl = document.getElementById('log')
 
-    // 2. 初始化
-    const sidebar = EasyAgentSidebar.init({
-      baseURL: params.get('baseURL') || 'http://localhost:8080',
-      auth: params.get('token')
-        ? { token: params.get('token') }
-        : { username: params.get('username') || 'sdk_demo', userId: '0' },
-      mainAppUrl: params.get('mainAppUrl') || undefined,
-      // 3. 页面上下文：每次打开侧边栏时调用，随消息提供给 AI
-      pageContext: () => ({
-        key: 'orders',
-        title: '订单管理',
-        description: '用户正在查看订单列表，可进行发货、催款等操作',
-        suggestions: ['哪些订单需要优先处理？', '汇总本页订单金额', '给逾期客户写一封催款邮件'],
-        content: Array.from(document.querySelectorAll('#orders tbody tr'))
-          .map(tr => Array.from(tr.cells).map(td => td.textContent).join(' | '))
-          .join('\n'),
-      }),
-      onReady: () => console.log('[demo] 侧边栏就绪'),
-      onError: (e) => alert('AI 侧边栏初始化失败：' + e.message),
-    })
+      var PAGES = {
+        orders: {
+          key: 'orders',
+          title: '订单管理',
+          description: '用户正在查看订单列表，可进行发货、催款等操作',
+          suggestions: ['哪些订单需要优先处理？', '汇总本页订单金额', '给逾期客户写催款邮件'],
+          content: function () {
+            return Array.from(document.querySelectorAll('#orders tbody tr')).map(function (tr) {
+              return [
+                tr.dataset.no,
+                tr.dataset.customer,
+                '金额=' + tr.dataset.amount,
+                '状态=' + tr.dataset.status,
+              ].join(' | ')
+            }).join('\n')
+          },
+        },
+        contract: {
+          key: 'contract-detail',
+          title: '合同详情',
+          description: '用户正在审阅采购合同 HT-2026-0012',
+          suggestions: ['列出合同中的风险条款', '给出验收标准修订建议'],
+          content: function () {
+            return '合同编号：HT-2026-0012\n甲方：华东某科技有限公司\n金额：1280000 分三期\n风险：逾期违约金不完整；验收引用废止附件 B'
+          },
+        },
+        customer: {
+          key: 'customer-profile',
+          title: '客户档案',
+          description: '用户正在查看客户西南某制造的信用与逾期情况',
+          suggestions: ['评估该客户信用风险', '起草一封催款邮件'],
+          content: function () {
+            return '客户：西南某制造\n信用：B+\n近90天逾期：2笔共89400\n联系人：王工'
+          },
+        },
+      }
 
-    // 4. 业务按钮直接调用实例方法
-    document.getElementById('ask').onclick = () => sidebar.send('分析本页订单，指出风险并给出处理建议')
-    document.getElementById('toggle').onclick = () => sidebar.toggle()
+      function log(msg, level) {
+        var line = document.createElement('div')
+        var time = new Date().toLocaleTimeString()
+        line.innerHTML = '<span class="t">[' + time + ']</span> '
+        var span = document.createElement('span')
+        if (level === 'error') span.className = 'e'
+        if (level === 'ok') span.className = 'ok'
+        span.textContent = msg
+        line.appendChild(span)
+        logEl.appendChild(line)
+        logEl.scrollTop = logEl.scrollHeight
+        if (level === 'error') console.error('[demo]', msg)
+        else console.log('[demo]', msg)
+      }
+
+      function setPill(id, text, cls) {
+        var el = document.getElementById(id)
+        el.className = 'pill ' + (cls || 'idle')
+        el.textContent = text
+      }
+
+      function setReadyUi(ready) {
+        ;[
+          'btnAsk', 'btnToggle', 'btnLogout', 'btnDestroy',
+          'btnContractAsk', 'btnCustomerAsk', 'btnOpenPrompt',
+          'btnNewSession', 'btnReady', 'btnVersion',
+        ].forEach(function (id) {
+          document.getElementById(id).disabled = !ready
+        })
+        document.querySelectorAll('.btn-row-ai').forEach(function (b) {
+          b.disabled = !ready
+        })
+      }
+
+      function readForm() {
+        return {
+          baseURL: document.getElementById('cfgBaseURL').value.trim(),
+          mainAppUrl: document.getElementById('cfgMainAppUrl').value.trim(),
+          authMode: document.getElementById('cfgAuthMode').value,
+          username: document.getElementById('cfgUsername').value.trim(),
+          userId: document.getElementById('cfgUserId').value.trim() || '0',
+          token: document.getElementById('cfgToken').value.trim(),
+          features: {
+            launcher: document.getElementById('ftLauncher').checked,
+            selectionAsk: document.getElementById('ftSelection').checked,
+            shortcut: document.getElementById('ftShortcut').checked,
+            dock: document.getElementById('ftDock').checked,
+          },
+          defaultMode: document.getElementById('cfgDefaultMode').value,
+          launcherLabel: document.getElementById('cfgLauncherLabel').value.trim() || '问 AI',
+        }
+      }
+
+      function writeForm(cfg) {
+        if (!cfg) return
+        if (cfg.baseURL != null) document.getElementById('cfgBaseURL').value = cfg.baseURL
+        if (cfg.mainAppUrl != null) document.getElementById('cfgMainAppUrl').value = cfg.mainAppUrl
+        if (cfg.authMode) document.getElementById('cfgAuthMode').value = cfg.authMode
+        if (cfg.username != null) document.getElementById('cfgUsername').value = cfg.username
+        if (cfg.userId != null) document.getElementById('cfgUserId').value = cfg.userId
+        if (cfg.token != null) document.getElementById('cfgToken').value = cfg.token
+        if (cfg.features) {
+          document.getElementById('ftLauncher').checked = cfg.features.launcher !== false
+          document.getElementById('ftSelection').checked = cfg.features.selectionAsk !== false
+          document.getElementById('ftShortcut').checked = cfg.features.shortcut !== false
+          document.getElementById('ftDock').checked = cfg.features.dock !== false
+        }
+        if (cfg.defaultMode) document.getElementById('cfgDefaultMode').value = cfg.defaultMode
+        if (cfg.launcherLabel != null) document.getElementById('cfgLauncherLabel').value = cfg.launcherLabel
+        syncAuthFields()
+      }
+
+      function syncAuthFields() {
+        var mode = document.getElementById('cfgAuthMode').value
+        document.getElementById('authPasswordless').classList.toggle('hidden', mode === 'token')
+        document.getElementById('authToken').classList.toggle('hidden', mode !== 'token')
+        var hints = {
+          passwordless: '免密需后端 personnel.passwordless_login_enabled: true。单点登录：同一 username 在别处（主站、其他服务）登录会让本页 token 失效，联调请用专用用户名。',
+          getToken: '本页用 fetch 调 /agent/auth/login-passwordless 模拟宿主后端换 token（推荐生产方式）。',
+          token: '粘贴已有 access_token；过期后需手动更新或改用 getToken。',
+        }
+        document.getElementById('authHint').textContent = hints[mode] || ''
+      }
+
+      function saveCfg() {
+        try { localStorage.setItem(STORAGE_KEY, JSON.stringify(readForm())) } catch (e) {}
+      }
+
+      function loadInitialCfg() {
+        var stored = null
+        try { stored = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null') } catch (e) {}
+        var cfg = Object.assign({
+          baseURL: 'http://183.196.130.56:22332',
+          mainAppUrl: 'http://183.196.130.56:22333/',
+          authMode: 'passwordless',
+          username: 'sdk_demo',
+          userId: '0',
+          token: '',
+          features: { launcher: true, selectionAsk: true, shortcut: true, dock: true },
+          defaultMode: 'float',
+          launcherLabel: '问 AI',
+        }, stored || {})
+
+        // URL 参数优先
+        if (params.get('baseURL')) cfg.baseURL = params.get('baseURL')
+        if (params.get('mainAppUrl')) cfg.mainAppUrl = params.get('mainAppUrl')
+        if (params.get('auth')) cfg.authMode = params.get('auth')
+        if (params.get('username')) cfg.username = params.get('username')
+        if (params.get('userId') || params.get('user_id')) {
+          cfg.userId = params.get('userId') || params.get('user_id')
+        }
+        if (params.get('token')) {
+          cfg.authMode = 'token'
+          cfg.token = params.get('token')
+        }
+        writeForm(cfg)
+        return cfg
+      }
+
+      function buildPageContext() {
+        var page = PAGES[currentPage]
+        return {
+          key: page.key,
+          title: page.title,
+          description: page.description,
+          suggestions: page.suggestions.slice(),
+          content: typeof page.content === 'function' ? page.content() : page.content,
+        }
+      }
+
+      function buildAuth(cfg) {
+        if (cfg.authMode === 'token') {
+          if (!cfg.token) throw new Error('请填写 token')
+          return { token: cfg.token }
+        }
+        if (cfg.authMode === 'getToken') {
+          var base = cfg.baseURL.replace(/\/$/, '')
+          var username = cfg.username
+          var userId = cfg.userId || '0'
+          return {
+            getToken: function () {
+              log('宿主 getToken → POST ' + base + '/agent/auth/login-passwordless')
+              return fetch(base + '/agent/auth/login-passwordless', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ username: username, user_id: userId }),
+              }).then(function (resp) {
+                return resp.json().then(function (data) {
+                  if (!resp.ok) {
+                    var detail = (data && data.detail) || resp.statusText
+                    throw new Error('换取 token 失败：' + detail)
+                  }
+                  if (!data.access_token) throw new Error('响应缺少 access_token')
+                  log('宿主 getToken 成功 username=' + (data.username || username), 'ok')
+                  return data.access_token
+                })
+              })
+            },
+          }
+        }
+        if (!cfg.username) throw new Error('请填写 username')
+        return { username: cfg.username, userId: cfg.userId || '0' }
+      }
+
+      function destroySidebar() {
+        if (!sidebar) return
+        try { sidebar.destroy() } catch (e) { log('destroy: ' + e.message, 'error') }
+        sidebar = null
+        setReadyUi(false)
+        setPill('stAuth', '已销毁', 'idle')
+        setPill('stOpen', '侧边栏关闭', 'idle')
+        log('实例已 destroy')
+      }
+
+      function initSidebar() {
+        if (typeof EasyAgentSidebar === 'undefined') {
+          setPill('stSdk', '未找到 UMD 脚本', 'err')
+          log('请先 npm run build:sdk，再在 dist-sdk/ 目录启动静态服务打开本页', 'error')
+          alert('未加载 easy-agent-sidebar.umd.min.js。\n请执行：cd frontend-vue2 && npm run build:sdk\n然后：cd dist-sdk && python3 -m http.server 5181')
+          return
+        }
+        setPill('stSdk', 'SDK v' + (EasyAgentSidebar.version || '?'), 'ok')
+
+        var cfg = readForm()
+        saveCfg()
+        destroySidebar()
+        setPill('stAuth', '初始化中…', 'warn')
+        log('init baseURL=' + cfg.baseURL + ' auth=' + cfg.authMode)
+
+        var auth
+        try {
+          auth = buildAuth(cfg)
+        } catch (e) {
+          setPill('stAuth', '配置错误', 'err')
+          log(e.message, 'error')
+          alert(e.message)
+          return
+        }
+
+        sidebar = EasyAgentSidebar.init({
+          baseURL: cfg.baseURL,
+          auth: auth,
+          mainAppUrl: cfg.mainAppUrl || undefined,
+          pageContext: function () { return buildPageContext() },
+          features: cfg.features,
+          defaultMode: cfg.defaultMode,
+          launcherLabel: cfg.launcherLabel,
+          theme: { '--accent-color': '#0f766e' },
+          onReady: function () {
+            setReadyUi(true)
+            setPill('stAuth', '就绪 · ' + (cfg.authMode === 'token' ? 'token' : cfg.username), 'ok')
+            log('onReady', 'ok')
+          },
+          onError: function (e) {
+            setReadyUi(false)
+            setPill('stAuth', '失败', 'err')
+            log('onError: ' + (e && e.message), 'error')
+            alert('AI 侧边栏初始化失败：' + (e && e.message))
+          },
+          onOpen: function () {
+            setPill('stOpen', '侧边栏打开', 'ok')
+            log('onOpen')
+          },
+          onClose: function () {
+            setPill('stOpen', '侧边栏关闭', 'idle')
+            log('onClose')
+          },
+          onAuthExpired: function (e) {
+            setPill('stAuth', '登录过期', 'err')
+            log('onAuthExpired: ' + (e && e.message), 'error')
+          },
+          onLayoutChange: function (layout) {
+            log('onLayoutChange dockWidth=' + layout.dockWidth)
+          },
+        })
+
+        sidebar.ready.then(function () {
+          log('ready Promise resolved', 'ok')
+        }).catch(function (e) {
+          log('ready rejected: ' + (e && e.message), 'error')
+        })
+      }
+
+      function switchPage(name) {
+        currentPage = name
+        document.querySelectorAll('#pageTabs button').forEach(function (btn) {
+          btn.classList.toggle('active', btn.dataset.page === name)
+        })
+        ;['orders', 'contract', 'customer'].forEach(function (p) {
+          document.getElementById('page-' + p).classList.toggle('hidden', p !== name)
+        })
+        if (sidebar) {
+          sidebar.setPageContext(buildPageContext())
+          log('setPageContext → ' + name)
+        }
+      }
+
+      // —— 事件绑定 ——
+      document.getElementById('cfgAuthMode').onchange = syncAuthFields
+      document.getElementById('btnApply').onclick = initSidebar
+      document.getElementById('btnDestroy').onclick = destroySidebar
+      document.getElementById('btnClearLog').onclick = function () { logEl.innerHTML = '' }
+      document.getElementById('btnCopyUrl').onclick = function () {
+        var cfg = readForm()
+        var q = new URLSearchParams()
+        q.set('baseURL', cfg.baseURL)
+        q.set('auth', cfg.authMode)
+        if (cfg.mainAppUrl) q.set('mainAppUrl', cfg.mainAppUrl)
+        if (cfg.authMode !== 'token') {
+          q.set('username', cfg.username)
+          q.set('userId', cfg.userId)
+        } else if (cfg.token) {
+          q.set('token', cfg.token)
+        }
+        var url = location.origin + location.pathname + '?' + q.toString()
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(url).then(function () {
+            log('已复制 URL', 'ok')
+          }).catch(function () {
+            prompt('复制下面的地址：', url)
+          })
+        } else {
+          prompt('复制下面的地址：', url)
+        }
+      }
+
+      document.getElementById('btnAsk').onclick = function () {
+        sidebar.send('分析本页业务数据，指出风险并给出处理建议')
+      }
+      document.getElementById('btnToggle').onclick = function () { sidebar.toggle() }
+      document.getElementById('btnLogout').onclick = function () {
+        log('宿主登出 → sidebar.logout()')
+        sidebar.logout()
+        sidebar = null
+        setReadyUi(false)
+        setPill('stAuth', '已登出', 'idle')
+        setPill('stOpen', '侧边栏关闭', 'idle')
+      }
+      document.getElementById('btnOpenPrompt').onclick = function () {
+        sidebar.open({ prompt: '帮我用三句话总结当前页面' })
+      }
+      document.getElementById('btnNewSession').onclick = function () {
+        sidebar.open({
+          newSession: true,
+          prompt: '这是一个新会话测试：请确认你看到了页面上下文。',
+        })
+      }
+      document.getElementById('btnReady').onclick = function () {
+        sidebar.ready.then(function () { log('ready ok', 'ok') })
+          .catch(function (e) { log('ready fail: ' + e.message, 'error') })
+      }
+      document.getElementById('btnVersion').onclick = function () {
+        log('version=' + sidebar.version)
+      }
+      document.getElementById('btnContractAsk').onclick = function () {
+        sidebar.send('请针对本合同风险点给出修改建议')
+      }
+      document.getElementById('btnCustomerAsk').onclick = function () {
+        sidebar.send('根据该客户档案起草一封礼貌但强硬的催款邮件')
+      }
+
+      document.getElementById('pageTabs').onclick = function (e) {
+        var btn = e.target.closest('button[data-page]')
+        if (btn) switchPage(btn.dataset.page)
+      }
+
+      document.getElementById('orders').onclick = function (e) {
+        var btn = e.target.closest('.btn-row-ai')
+        if (!btn || !sidebar) return
+        var tr = btn.closest('tr')
+        sidebar.open({
+          newSession: true,
+          context: [
+            '订单号：' + tr.dataset.no,
+            '客户：' + tr.dataset.customer,
+            '金额：' + tr.dataset.amount,
+            '状态：' + tr.dataset.status,
+          ].join('\n'),
+          prompt: '分析这笔订单的风险，并给出处理建议',
+        })
+      }
+
+      // 启动：填表；若 URL 带 auto=1 或带足够参数则自动初始化
+      loadInitialCfg()
+      if (typeof EasyAgentSidebar !== 'undefined') {
+        setPill('stSdk', 'SDK v' + (EasyAgentSidebar.version || '?'), 'ok')
+      } else {
+        setPill('stSdk', 'UMD 未加载', 'err')
+      }
+      var auto = params.get('auto') === '1' || params.has('baseURL') || params.has('username') || params.has('token')
+      if (auto && typeof EasyAgentSidebar !== 'undefined') {
+        initSidebar()
+      } else {
+        log('填写左侧配置后点击「应用并初始化」。URL 加 auto=1 可自动启动。')
+      }
+    })()
   </script>
 </body>
 </html>

@@ -94,9 +94,9 @@ function normalizePageContext(ctx) {
   }
 }
 
-function withSessionParam(url, sessionId) {
+function withQueryParam(url, key, value) {
   const sep = url.includes('?') ? '&' : '?'
-  return `${url}${sep}session=${encodeURIComponent(sessionId)}`
+  return `${url}${sep}${key}=${encodeURIComponent(value)}`
 }
 
 /**
@@ -120,7 +120,8 @@ export function init(options = {}) {
   const auth = options.auth || {}
   const shareLogin = !!auth.shareMainAppLogin
   const features = { ...(options.features || {}) }
-  if (!options.mainAppUrl && !options.onOpenInMain) features.openInMain = false
+  // openInMain 同时控制「在主站打开会话」与「+」菜单的「在管理面板中打开」
+  if (!options.mainAppUrl && !options.onOpenInMain && !options.onOpenPanel) features.openInMain = false
 
   let bootstrapping = true
   let reauthing = null
@@ -200,7 +201,14 @@ export function init(options = {}) {
             if (typeof options.onOpenInMain === 'function') {
               options.onOpenInMain(sessionId)
             } else if (options.mainAppUrl) {
-              window.open(withSessionParam(options.mainAppUrl, sessionId), '_blank', 'noopener')
+              window.open(withQueryParam(options.mainAppUrl, 'session', sessionId), '_blank', 'noopener')
+            }
+          },
+          'open-panel': (tab) => {
+            if (typeof options.onOpenPanel === 'function') {
+              options.onOpenPanel(tab)
+            } else if (options.mainAppUrl) {
+              window.open(withQueryParam(options.mainAppUrl, 'panel', tab), '_blank', 'noopener')
             }
           },
         },

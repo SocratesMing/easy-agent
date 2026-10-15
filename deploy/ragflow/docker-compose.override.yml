@@ -1,0 +1,11 @@
+# 说明：官方 compose 同时挂两个 networks 在部分 Docker 版本会报错
+# 「Container cannot be connected to network endpoints」。
+# 因此推荐启动后手动接入共享网：
+#
+#   docker network connect --alias ragflow --alias ragflow-cpu \
+#     easyagent-net docker-ragflow-cpu-1
+#
+# 官方 docker/.env：
+#   RAGFLOW_IMAGE=swr.cn-north-4.myhuaweicloud.com/infiniflow/ragflow:v0.26.3
+#   SVR_WEB_HTTP_PORT=22331
+#   SVR_HTTP_PORT=22334

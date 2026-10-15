@@ -1,5 +1,4 @@
 const { defineConfig } = require('@vue/cli-service')
-const Icons = require('unplugin-icons/webpack')
 const CopyPlugin = require('copy-webpack-plugin')
 
 // ── 环境与后端地址（开发代理目标）──────────────────────────────────────────
@@ -21,11 +20,23 @@ const AGENT_ENV =
 const PROXY_TARGET =
   process.env.VUE_APP_PROXY_TARGET || PROXY_TARGETS[AGENT_ENV] || PROXY_TARGETS.dev
 
-// AI 侧边栏 SDK 构建（scripts/build-sdk.mjs 设置）：lib 模式，不含 PDF 预览，无需拷贝 pdf.js worker
+// AI 侧边栏 SDK 构建（scripts/build-sdk.mjs 设置）：lib 模式，不含 PDF 预览，无需拷贝 pdf.js worker。
+// SDK 需支持 Node 14 构建：unplugin-icons 23 为纯 ESM（Node 14 无法 require），改用等价的 CJS 实现
 const IS_SDK_BUILD = process.env.EASY_SDK_BUILD === '1'
 
+function iconsPlugin() {
+  if (IS_SDK_BUILD) {
+    const { IconifyRawPlugin } = require('./scripts/iconify-raw-webpack.cjs')
+    return new IconifyRawPlugin()
+  }
+  return require('unplugin-icons/webpack')({ compiler: 'raw', autoInstall: true })
+}
+
 module.exports = defineConfig({
-  transpileDependencies: ['element-ui'],
+  // SDK 的 common.js 会被宿主再次打包：依赖全部转译，避免 ?. / ?? 等语法让 webpack 4 宿主解析失败
+  transpileDependencies: IS_SDK_BUILD ? true : ['element-ui'],
+  // 压缩阶段同样限制在 ES2018，否则 terser 会把 `a != null ? a : b` 重新压成 `a ?? b`
+  ...(IS_SDK_BUILD ? { terser: { terserOptions: { ecma: 2018 } } } : {}),
   productionSourceMap: false,
 
   devServer: {
@@ -71,7 +82,7 @@ module.exports = defineConfig({
     // SDK 体积：全量 highlight.js（190+ 语言）换成官方常用语言子集，压缩后少约 700 KB
     resolve: IS_SDK_BUILD ? { alias: { 'highlight.js$': 'highlight.js/lib/common' } } : {},
     plugins: [
-      Icons({ compiler: 'raw', autoInstall: true }),
+      iconsPlugin(),
       // pdf.js 的 worker 必须与 pdfjs-dist 的安装版本严格一致，版本不同会直接报
       // "The API version does not match the Worker version"。Vue CLI(Webpack) 不支持
       // Vite 的 `?url` 语法，因此改为构建期从 node_modules 拷贝到输出根目录，

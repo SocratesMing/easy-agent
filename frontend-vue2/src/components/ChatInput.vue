@@ -259,7 +259,7 @@
                   </span>
                 </div>
               </div>
-              <div class="plus-subpanel-footer">
+              <div v-if="showManageEntry" class="plus-subpanel-footer">
                 <button type="button" class="plus-subpanel-manage" @click="handleMenuPanel(subpanelCategory)">
                   在管理面板中打开 →
                 </button>
@@ -275,6 +275,7 @@
             :disabled="isStreaming || disabled"
             hide-trigger
             anchor-selector=".plus-menu-item-knowledge"
+            :show-manage="showManageEntry"
             @mouseenter.native="cancelPlusClose"
             @mouseleave.native="schedulePlusClose"
             @create-session="$emit('create-session')"
@@ -322,7 +323,7 @@
           <button
             class="action-btn web-search-btn"
             :class="{ active: webSearchEnabled, disabled: webSearchUnavailable || isStreaming || disabled }"
-            :disabled="webSearchUnavailable || isStreaming || disabled"
+            :disabled="isStreaming || disabled"
             v-tip="webSearchTitle"
             @click="toggleWebSearch"
           >
@@ -495,6 +496,7 @@
 import { uploadFile, deleteFile } from '../api/files.js'
 import { getWebSearchStatus } from '../api/settings.js'
 import { getUserSkills } from '../api/skills.js'
+import { listExperts } from '../api/expert.js'
 import { iconCategoryFor } from '../utils/skillCategories.js'
 import { buildSkillPayload, parseSlashQuery } from '../utils/skillSlash.js'
 import { getConnectors } from '../api/connectors.js'
@@ -569,6 +571,11 @@ export default {
     expertPrompt: {
       type: String,
       default: ''
+    },
+    // 「+」二级面板底部的「在管理面板中打开」入口（无可跳转的管理面板时隐藏）
+    showManageEntry: {
+      type: Boolean,
+      default: true
     }
   },
   data() {
@@ -619,6 +626,17 @@ export default {
     }
   },
   computed: {
+    webSearchUnavailable() {
+      return !this.webSearchAvailable
+    },
+    webSearchTitle() {
+      if (!this.webSearchAvailable) {
+        if (this.webSearchReason === 'disabled') return '联网搜索未启用（后端配置 web_search.enabled 为 false）'
+        if (this.webSearchReason === 'unreachable') return '联网搜索状态获取失败，点击重试'
+        return '联网搜索未配置（需配置 WEB_SEARCH_API_KEY 后重启后端）'
+      }
+      return this.webSearchEnabled ? '联网搜索已开启，点击关闭' : '联网搜索（点击开启）'
+    },
     plusListTitle() {
       const meta = { experts: '专家', skills: '我的技能', connectors: '我的连接器' }
       return meta[this.plusListCategory] || ''
@@ -644,7 +662,7 @@ export default {
     },
     plusListEmptyText() {
       const meta = {
-        experts: '暂无专家，敬请期待',
+        experts: '暂无专家，可在「专家·技能·连接器」面板创建',
         skills: '还没有自己的技能，可在「专家·技能·连接器」面板添加',
         connectors: '还没有已添加的连接器，可在「专家·技能·连接器」面板添加',
       }
@@ -792,7 +810,6 @@ export default {
     document.addEventListener('click', this.closeSkillPickerOnClick)
     window.addEventListener('resize', this.handleViewportChange)
     document.addEventListener('click', this.closePlusMenu)
-    this.loadWebSearchStatus()
     // 点示例问题会先关闭 SkillCenter 面板 → Chat/ChatInput 重新挂载，
     // 此时 expertPrompt 初始值即非空；watch 只响应"变化"，挂载时的初始值不会触发，
     // 因此在这里补一次（放在草稿恢复之后，确保示例问题覆盖草稿）。
@@ -905,8 +922,9 @@ export default {
       const anchor = this.$refs.plusMenuRef
       // 点击知识库面板内部不算「菜单外」（面板不在菜单 DOM 内，但属于同一浮层交互）
       const scopeRoot = this.$refs.knowledgeScope && this.$refs.knowledgeScope.$el
-      const inScope = scopeRoot && scopeRoot.contains(event.target)
-      if (this.showPlusMenu && anchor && !anchor.contains(event.target) && !inScope) {
+      const target = eventTarget(event)
+      const inScope = scopeRoot && scopeRoot.contains(target)
+      if (this.showPlusMenu && anchor && !anchor.contains(target) && !inScope) {
         this.showPlusMenu = false
         this.subpanelCategory = null
         if (this.$refs.knowledgeScope) this.$refs.knowledgeScope.closePopover()
@@ -920,8 +938,8 @@ export default {
       if (input) input.click()
     },
     // 二级列表：展示当前用户自己的条目（不跳转页面）
-    // 数据来源均为当前用户：技能 = user-skills（含已停用）；连接器 = 用户 mcp.json
-    // 中已安装的内置连接器 + 自定义服务；专家暂无数据。
+    // 技能 = user-skills（含已停用）；连接器 = 用户 mcp.json 中已安装的内置连接器 + 自定义服务；
+    // 专家 = 我的专家列表。
     openPlusList(category) {
       this.plusListCategory = category
       this.plusListLoading = true
@@ -939,13 +957,18 @@ export default {
       if (this.subpanelCategory === category) return
       this.subpanelCategory = category
       const rect = event.currentTarget.getBoundingClientRect()
-      const estimatedHeight = 420
-      const top = Math.max(8, Math.min(rect.top - 8, window.innerHeight - estimatedHeight - 8))
-      const left = rect.right + 10 + 380 > window.innerWidth ? Math.max(8, rect.left - 390) : rect.right + 10
+      // 面板高度随列表变化（最高约 420px）：下方放得下时顶边对齐触发项，否则底边对齐触发项向上展开，
+      // 两种情况面板都与触发项在垂直方向重叠，鼠标可水平移入
+      const maxHeight = 420
+      const left = rect.right + 6 + 380 > window.innerWidth ? Math.max(8, rect.left - 386) : rect.right + 6
+      const vertical = rect.top - 8 + maxHeight <= window.innerHeight - 8
+        ? { top: `${Math.max(8, rect.top - 8)}px` }
+        : { bottom: `${Math.max(8, window.innerHeight - rect.bottom - 8)}px` }
       this.plusSubpanelStyle = {
         position: 'fixed',
-        top: `${top}px`,
         left: `${left}px`,
+        maxHeight: `${window.innerHeight - 16}px`,
+        ...vertical,
       }
       this.openPlusList(category)
     },
@@ -1003,6 +1026,17 @@ export default {
             tag: s.enabled ? '已启用' : '已停用',
             tagType: s.enabled ? 'on' : 'off',
           }))
+        } else if (category === 'experts') {
+          const data = await listExperts({ pageSize: 20 })
+          this.plusList = (data.items || []).map((e) => ({
+            key: `expert:${e.export_agent_id}`,
+            name: e.export_name_cn,
+            desc: String(e.export_description || '').replace(/\s*\n+\s*/g, ' ').trim() || '暂无描述',
+            icon: '',
+            initial: String(e.export_name_cn || '').trim().slice(0, 1).toUpperCase() || '专',
+            tag: e.export_version ? `v${e.export_version}` : '',
+            tagType: 'off',
+          }))
         } else if (category === 'connectors') {
           const data = await getConnectors()
           const installed = (data.connectors || [])
@@ -1026,8 +1060,6 @@ export default {
             tagType: 'custom',
           }))
           this.plusList = installed.concat(custom)
-        } else {
-          this.plusList = []
         }
       } catch (e) {
         this.plusListError = (e && e.message) || '加载失败'
@@ -1090,16 +1122,16 @@ export default {
       this.$emit('open-panel', tab)
     },
     // 加号菜单「知识库」：与技能子面板一致，点击保持主菜单常驻，面板贴菜单项右侧弹出
-    openKnowledgeScope() {
+    openKnowledgeScope(event) {
       this.cancelPlusClose()
       this.subpanelCategory = null
-      if (this.$refs.knowledgeScope) this.$refs.knowledgeScope.openPopover()
+      if (this.$refs.knowledgeScope) this.$refs.knowledgeScope.openPopover(event && event.currentTarget)
     },
     // hover 到「知识库」菜单项即展开选择面板（并收起其他子面板），无需点击
-    enterKnowledgeItem() {
+    enterKnowledgeItem(event) {
       this.cancelPlusClose()
       this.subpanelCategory = null
-      if (this.$refs.knowledgeScope) this.$refs.knowledgeScope.openPopover()
+      if (this.$refs.knowledgeScope) this.$refs.knowledgeScope.openPopover(event && event.currentTarget)
     },
     // 知识库子面板底部入口：关闭菜单并打开知识库工作台
     openKnowledgeManage() {
