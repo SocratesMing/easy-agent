@@ -37,9 +37,10 @@ from ..services import (
     get_agent_config,
     get_or_create_agent_for_session,
     invalidate_user_agents,
-    parse_message_connectors,
+    parse_connector_directives,
+    resolve_connector_servers,
 )
-from ..services import public_expert_service
+from ..services import public_expert_service, skill_library
 from ..services.expert_service import (
     build_expert_ids,
     generate_expert_config,
@@ -96,7 +97,11 @@ class ExpertDelRequest(BaseModel):
 class ExpertRunRequest(BaseModel):
     """选中专家执行（SSE 流式），字段与 ``/agent/chat/stream`` 对齐。"""
 
-    message: str = Field(..., description="用户消息内容", min_length=1)
+    message: str = Field(
+        ...,
+        description="用户消息内容（可为空：只挂技能/连接器、或只上传文件时没有正文）",
+        min_length=0,
+    )
     session_id: Optional[str] = Field(default=None, description="会话ID；不传则新建会话")
     message_id: Optional[str] = Field(default=None, description="消息ID")
     expert_agent_id: Optional[str] = Field(
@@ -106,6 +111,21 @@ class ExpertRunRequest(BaseModel):
     enable_deep_think: bool = Field(default=False, description="是否启用深度思考")
     enable_web_search: bool = Field(default=False, description="是否开启联网搜索")
     files: Optional[List[dict]] = Field(default=None, description="上传的文件列表")
+    connectors: Optional[List[str]] = Field(
+        default=None,
+        description=(
+            "本轮选中的连接器展示名（输入框「+」面板选中项），据此只注入这些连接器的 MCP 工具。"
+            "为空或未传时回退解析消息文本里的「使用连接器[名称]」（兼容旧前端/手打指令）"
+        ),
+    )
+    skills: Optional[List[str]] = Field(
+        default=None,
+        description=(
+            "本轮选中的技能目录名（输入框技能胶囊选中项），后端据此把 `/目录名` 指令拼进"
+            "**模型输入**并落库到用户消息的 skills 字段（气泡按它渲染技能标签）。"
+            "为空或未传时回退解析消息文本开头的 `/目录名`（兼容旧前端/手打指令）"
+        ),
+    )
 
 
 # ── 辅助 ──────────────────────────────────────────────────────────────
@@ -562,12 +582,36 @@ async def stream_export_run(
     http_request: Request,
     username: Annotated[str, Depends(get_current_username)],
 ):
-    if not request.message:
+    # 正文可以为空：只挂技能 / 连接器，或只上传文件时本来就没有正文（与 chat.py 一致）
+    if (
+        not (request.message or "").strip()
+        and not request.files
+        and not request.skills
+        and not request.connectors
+    ):
         raise HTTPException(status_code=400, detail="消息内容不能为空")
 
     session_id = request.session_id
     message_id = request.message_id or str(uuid.uuid4())
     sid = session_id[-5:] if session_id else "new"
+
+    # 本轮技能（与 chat.py 一致）：优先用请求体 skills 字段（技能目录名），兼容消息文本
+    # 开头的 `/目录名` 指令；命中的指令只拼进模型输入，落库正文保持用户原话。
+    turn_skills, unknown_skills = skill_library.resolve_turn_skills(
+        request.skills, request.message, username
+    )
+    turn_skill_dirs = [item["dir_name"] for item in turn_skills]
+    if turn_skill_dirs or unknown_skills:
+        logger.info(
+            f"[{sid}] 🧩 技能指令 | 命中: {turn_skill_dirs or '无'} | "
+            f"未识别: {unknown_skills or '无'}"
+        )
+    if turn_skills:
+        turn_fallback_name = turn_skills[0]["name"]
+    elif request.connectors:
+        turn_fallback_name = request.connectors[0]
+    else:
+        turn_fallback_name = ""
 
     logger.info(
         f"[{sid}] 专家执行请求 | expert: {request.expert_agent_id or '(通用)'} | "
@@ -578,14 +622,14 @@ async def stream_export_run(
     if session_id is None:
         session_id = str(uuid.uuid4())
         workspace_name = create_new_session(
-            db, session_id, username, request.message, request.files
+            db, session_id, username, request.message, request.files, turn_fallback_name
         )
     else:
         session = db.get_session(session_id)
         if not session:
             session_id = str(uuid.uuid4())
             workspace_name = create_new_session(
-                db, session_id, username, request.message, request.files
+                db, session_id, username, request.message, request.files, turn_fallback_name
             )
         elif (session.username or "") != (username or ""):
             raise HTTPException(status_code=404, detail="会话不存在")
@@ -593,7 +637,7 @@ async def stream_export_run(
             workspace_name = session.workspace_name or ""
             if len(session.messages) == 0:
                 session.title = generate_session_title(
-                    request.message, request.files, username
+                    request.message, request.files, username, turn_fallback_name
                 )
                 session.updated_at = datetime.now().isoformat()
                 db.update_session(session)
@@ -612,7 +656,13 @@ async def stream_export_run(
             expert_id = ""
 
     # ── 3. 文件解析 + 系统提示词附加内容 ───────────────────────────────
-    parsed_content = request.message
+    # 模型输入 = 技能指令前缀 + 用户正文；落库正文保持用户原话（见请求开头的技能解析）。
+    # 旧前端消息文本里已有的 `/目录名` 保持原样，不重复拼。
+    model_message = skill_library.inject_skill_directives(
+        skill_library.pending_skill_directives(turn_skill_dirs, request.message),
+        request.message,
+    )
+    parsed_content = model_message
     _existing = db.get_session(session_id)
     is_new_session = (not _existing) or (len(_existing.messages) == 0)
 
@@ -639,7 +689,8 @@ async def stream_export_run(
             )
         else:
             file_contents = [f"[文件: {fn}]\n{c}" for fn, c in file_context_parts]
-            parsed_content = "\n\n".join(file_contents) + "\n\n" + request.message
+            # 技能指令跟在正文前（与改造前前端拼接的顺序一致），文件块仍在最前
+            parsed_content = "\n\n".join(file_contents) + "\n\n" + model_message
 
     # 专家提示词排在最后：agent.py 的拼接顺序为
     # [system_prompt, user_info, web_search_prompt, system_prompt_extra]，
@@ -663,6 +714,9 @@ async def stream_export_run(
     }
     if request.files:
         user_message["files"] = request.files
+    # 结构化技能目录名：气泡按它渲染技能标签，不再需要从消息文本里反扒 `/目录名`
+    if turn_skill_dirs:
+        user_message["skills"] = turn_skill_dirs
     db.add_message(session_id, user_message)
     db.add_message_row(session_id, user_message)
 
@@ -678,9 +732,13 @@ async def stream_export_run(
         message_id=message_id,
     )
 
-    # 「使用连接器[X]」指令解析（与 chat.py 一致）：选中的连接器只注入这些工具。
-    connector_servers, unknown_connectors = parse_message_connectors(
-        request.message, username
+    # 本轮连接器（与 chat.py 一致）：优先用请求体的结构化字段 connectors（输入框选中项，展示名），
+    # 同时兼容消息文本里的「使用连接器[X]」指令（旧前端 / 手打指令），合并去重后只注入这些工具。
+    connector_names = list(request.connectors or []) + parse_connector_directives(
+        request.message
+    )
+    connector_servers, unknown_connectors = resolve_connector_servers(
+        connector_names, username
     )
     if connector_servers or unknown_connectors:
         logger.info(

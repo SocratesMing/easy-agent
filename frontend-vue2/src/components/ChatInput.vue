@@ -34,65 +34,74 @@
       </div>
       
       <div class="input-row">
-        <!-- 已选技能：与输入文字同一行展示（只显示图标 + 名称，发送时还原为 /技能名） -->
-        <div v-if="selectedSkills.length > 0" class="selected-skills">
-          <div
-            v-for="skill in selectedSkills"
-            :key="skill.dir_name"
-            class="selected-skill"
-            :title="skill.description || skill.dir_name"
-          >
-            <SkillIcon :icon="skill.icon" :category="iconCategoryFor(skill.category_id)" size="xs" />
-            <span class="selected-skill-name">{{ skill.name || skill.dir_name }}</span>
-            <button
-              type="button"
-              class="selected-skill-remove"
-              :aria-label="`移除技能 ${skill.name || skill.dir_name}`"
-              @click="removeSelectedSkill(skill)"
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
-                <line x1="18" y1="6" x2="6" y2="18" />
-                <line x1="6" y1="6" x2="18" y2="18" />
-              </svg>
-            </button>
-          </div>
-        </div>
-
-        <!-- 已选连接器：与输入文字同一行展示（只显示连接器名，发送时还原为「使用连接器[名称]」） -->
-        <div v-if="selectedConnectors.length > 0" class="selected-connectors">
-          <div
-            v-for="connector in selectedConnectors"
-            :key="connector.name"
-            class="selected-connector"
-            :title="connector.desc || connector.name"
-          >
-            <svg class="selected-connector-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M12 22v-5"></path>
-              <path d="M9 8V2"></path>
-              <path d="M15 8V2"></path>
-              <path d="M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8z"></path>
-            </svg>
-            <span class="selected-connector-name">{{ connector.name }}</span>
-            <button
-              type="button"
-              class="selected-connector-remove"
-              :aria-label="`移除连接器 ${connector.name}`"
-              @click="removeSelectedConnector(connector)"
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
-                <line x1="18" y1="6" x2="6" y2="18" />
-                <line x1="6" y1="6" x2="18" y2="18" />
-              </svg>
-            </button>
-          </div>
-        </div>
-
         <div class="input-field">
           <div
             v-show="caretLineTop !== null"
             class="caret-line"
             :style="{ top: caretLineTop + 'px', height: lineHeight + 'px' }"
           ></div>
+          <!-- 镜像渲染层：真实显示的文字 + 内联胶囊，与 textarea 同字体/行高/宽度，两侧换行逐行一致。
+               textarea 文字透明，只负责输入、光标与选区；用户看到的文字都来自这一层（见 syncMirror）。
+               胶囊由此真正嵌在第一行文字里：第一行 = 胶囊 + 文字，第二行起文字占满整行。
+               已选技能：只在「用户输入阶段」显示（提交/切换会话/流式回答中都不显示，见 showSkillPills），
+               与连接器胶囊同一套可见性规则；`×` 可移除，发送时还原为 /技能名 -->
+          <div v-show="mirrorText || showSkillPills || showConnectorPills" ref="mirrorRef" class="input-mirror" aria-hidden="true">
+            <div v-if="showSkillPills || showConnectorPills" class="input-pills">
+              <div v-if="showSkillPills" class="selected-skills">
+                <div
+                  v-for="skill in selectedSkills"
+                  :key="skill.dir_name"
+                  class="selected-skill"
+                  :title="skill.description || skill.dir_name"
+                >
+                  <SkillIcon :icon="skill.icon" :category="iconCategoryFor(skill.category_id)" size="xs" />
+                  <span class="selected-skill-name">{{ skill.name || skill.dir_name }}</span>
+                  <button
+                    type="button"
+                    class="selected-skill-remove"
+                    :aria-label="`移除技能 ${skill.name || skill.dir_name}`"
+                    @click="removeSelectedSkill(skill)"
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
+                      <line x1="18" y1="6" x2="6" y2="18" />
+                      <line x1="6" y1="6" x2="18" y2="18" />
+                    </svg>
+                  </button>
+                </div>
+              </div>
+
+              <!-- 已选连接器：只在「用户输入阶段」显示（提交/切换会话/流式回答中都不显示，见 showConnectorPills），
+                   `×` 可移除，与「+」面板行内「已选」标构成两个取消入口。
+                   连接器以结构化字段 connectors 提交，不进消息文本。 -->
+              <div v-if="showConnectorPills" class="selected-connectors">
+                <div
+                  v-for="connector in selectedConnectors"
+                  :key="connector.name"
+                  class="selected-connector"
+                  :title="connector.desc || connector.name"
+                >
+                  <svg class="selected-connector-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M12 22v-5"></path>
+                    <path d="M9 8V2"></path>
+                    <path d="M15 8V2"></path>
+                    <path d="M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8z"></path>
+                  </svg>
+                  <span class="selected-connector-name">{{ connector.name }}</span>
+                  <button
+                    type="button"
+                    class="selected-connector-remove"
+                    :aria-label="`移除连接器 ${connector.name}`"
+                    @click="removeSelectedConnector(connector)"
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
+                      <line x1="18" y1="6" x2="6" y2="18" />
+                      <line x1="6" y1="6" x2="18" y2="18" />
+                    </svg>
+                  </button>
+                </div>
+              </div>
+            </div><span class="input-mirror-text">{{ mirrorText }}</span>
+          </div>
           <textarea
             ref="textareaRef"
             v-model="message"
@@ -545,7 +554,7 @@ import { uploadFile, deleteFile } from '../api/files.js'
 import { getWebSearchStatus } from '../api/settings.js'
 import { getUserSkills } from '../api/skills.js'
 import { iconCategoryFor } from '../utils/skillCategories.js'
-import { buildConnectorPayload, buildSkillPayload, parseSlashQuery } from '../utils/skillSlash.js'
+import { buildMessageText, parseSlashQuery } from '../utils/skillSlash.js'
 import { getConnectors } from '../api/connectors.js'
 import { eventTarget } from '../utils/domEvent.js'
 import { listExperts, listPublicExperts } from '../api/expert.js'
@@ -558,6 +567,12 @@ const DRAFT_KEY = 'easy_agent_input_draft'
 
 // 待选技能：由技能中心「创建技能」等入口写入，本组件挂载时恢复成技能标签
 const PENDING_SKILL_KEY = 'easy_agent_pending_skill'
+
+// 输入框最大高度：5 行（行高 1.6 × 15px = 24px）。文本再长就在框内滚动（右侧滚动条），
+// 输入框不再无限增高——与 CSS 的 max-height 保持一致，两处改要一起改。
+const TEXTAREA_MAX_ROWS = 5
+const TEXTAREA_LINE_HEIGHT = 24
+const TEXTAREA_MAX_HEIGHT = TEXTAREA_MAX_ROWS * TEXTAREA_LINE_HEIGHT
 
 export default {
   components: { FileIcon, SkillIcon, KnowledgeScopeSelector },
@@ -628,6 +643,8 @@ export default {
   data() {
     return {
       message: '',
+      // 镜像渲染层显示的文字（textarea 文字透明，用户看到的都是这一层，见 syncMirror）
+      mirrorText: '',
       uploadedFiles: [],
       // 联网搜索：available=false 时按钮置灰（后端未启用或未配置 api_key）
       webSearchEnabled: false,
@@ -663,7 +680,8 @@ export default {
       // 只有启用状态的技能会被 Agent 加载，停用技能即使手打 /name 也不生效，故只列启用的。
       selectedSkills: [],
       // ========== 连接器选择（「+」→ 连接器） ==========
-      // 输入框里只展示连接器名胶囊，实际发给模型的是「使用连接器[名称] + 用户输入」。
+      // 选中态只在「+」面板里可见（行尾「已选」标），不进输入框、也不拼进消息文本：
+      // 发送时以请求体 connectors 字段单独带给后端（见 send()），消息文本保持用户原话。
       // 元素形如 {name, desc}，name 即连接器/MCP 服务名（同一会话内按名称去重）。
       selectedConnectors: [],
       skillPickerOpen: false,
@@ -743,6 +761,21 @@ export default {
         this.selectedSkills.length > 0 || this.selectedConnectors.length > 0
     },
     /**
+     * 连接器胶囊只在「用户输入阶段」显示：已选中 且 本轮不在流式回答中。
+     * 「会话展示阶段」不显示靠 selectedConnectors 被清空保证（提交时清空、切换会话时清空），
+     * 这里的 !isStreaming 是第二道闸——流式渲染期间即使状态被意外写回也不露出胶囊。
+     */
+    showConnectorPills() {
+      return this.selectedConnectors.length > 0 && !this.isStreaming
+    },
+    /**
+     * 技能胶囊与连接器胶囊同一套规则：只在「用户输入阶段」显示（已选中 且 不在流式回答中）。
+     * 「会话展示阶段」不显示靠 selectedSkills 被清空保证（提交时清空、切换会话时清空）。
+     */
+    showSkillPills() {
+      return this.selectedSkills.length > 0 && !this.isStreaming
+    },
+    /**
      * 技能检索：优先按「目录名 / 技能名」匹配；仅当没有任何名称命中时，才回退到描述匹配。
      * 描述是一大段英文说明，几乎每个字母都能命中（如 m → manipulate / from / time），
      * 直接参与匹配会让检索看起来「完全没生效」，因此降级为兜底。
@@ -815,12 +848,18 @@ export default {
       if (on) this.startLiveDuration()
       else this.stopLiveDuration()
     },
-    // 会话切换/新建时清空已添加文件：文件属于原会话，不得残留到新会话。
-    // 注意 oldVal 为 null（新对话加文件时触发的建会话）不清，否则会清掉刚选的文件。
+    // 会话切换：文件保持原语义——oldVal 为 null（新对话加文件时触发的建会话）不清，
+    // 否则会清掉刚选的文件。
+    // 已选技能 / 已选连接器按「用户输入阶段 / 会话展示阶段」严格分区：任何 sessionId 变化都算
+    // 进入展示阶段（切历史会话 / 新建会话 / 从新建态点开历史会话），一律复位，
+    // 否则胶囊会残留到历史会话的输入框里。唯一例外是本组件自己发起的建会话
+    // （上传文件触发），由上传链路「先存后补」，见 handleFileSelect。
+    // 注：「待选技能」（技能中心创建技能）走 sessionStorage、在挂载时消费，不经 watcher，不受影响。
     sessionId(newVal, oldVal) {
-      if (oldVal && newVal !== oldVal) {
-        this.uploadedFiles = []
-      }
+      if (newVal === oldVal) return
+      if (oldVal) this.uploadedFiles = []
+      this.selectedConnectors = []
+      this.selectedSkills = []
     },
     message(val) {
       try {
@@ -828,6 +867,8 @@ export default {
       } catch (e) {
         // 隐私模式等场景下 sessionStorage 可能不可用，忽略即可
       }
+      // 程序化赋值（恢复草稿、切会话、发送后清空）不触发 input 事件，镜像层在这里补同步
+      this.$nextTick(() => this.syncMirror())
     },
     disabled(val) {
       if (!val) {
@@ -860,6 +901,7 @@ export default {
     }
     // 恢复待选技能（技能中心「创建技能」等入口预置），读取后即清除
     if (this.consumePendingSkill) this.restorePendingSkill()
+    this.syncMirror()
 
     document.addEventListener('click', this.closeTokenPopup)
     document.addEventListener('click', this.closeModelDropdown)
@@ -924,6 +966,7 @@ export default {
       this.focusInput()
     },
     updateCaretLine() {
+      this.syncMirror() // 聚焦/点击/按键/滚动都会走到这里，顺带把镜像层对齐（含 scrollTop）
       const ta = this.$refs.textareaRef
       if (!ta) return
       const lh = parseFloat(getComputedStyle(ta).lineHeight)
@@ -1373,6 +1416,10 @@ export default {
           // 确保会话存在
           let sessionId = this.sessionId
           if (!sessionId) {
+            // 建会话会让 sessionId 变化，上面的 watcher 会复位已选技能/连接器；
+            // 但此刻仍是「用户输入阶段」（文件刚选、技能/连接器刚选），故先存后补。
+            const keepConnectors = this.selectedConnectors
+            const keepSkills = this.selectedSkills
             // 通知父组件创建会话
             const sessionIdPromise = new Promise((resolve) => {
               // 创建一个临时的监听器来等待会话创建完成
@@ -1391,6 +1438,9 @@ export default {
 
             // 等待会话创建完成
             sessionId = await sessionIdPromise
+            // 补回输入阶段的选择（watcher 只在会话切换时复位，此处属本组件发起的建会话）
+            this.selectedConnectors = keepConnectors
+            this.selectedSkills = keepSkills
 
             if (!sessionId) {
               throw new Error('会话创建失败')
@@ -1486,7 +1536,11 @@ export default {
         filesToSend,
         null,
         true,
-        this.webSearchEnabled
+        this.webSearchEnabled,
+        // 连接器只以结构化参数带给后端，不进消息文本（否则气泡/标题/历史里会露出「使用连接器[名称]」）
+        this.selectedConnectors.map(c => c.name),
+        // 技能同理：以技能目录名提交（后端负责把 `/目录名` 拼进模型输入）
+        this.selectedSkills.map(s => s.dir_name)
       )
 
       this.message = ''
@@ -1497,19 +1551,12 @@ export default {
       this.$nextTick(() => this.autoResize())
     },
 
-    // 供父组件（预置问题卡片点击）走输入框的正常发送链路：复用 send() 的
-    // 上传等待、canSend/disabled 校验与清空逻辑，不重复实现一份发送
-    triggerSend() {
-      this.send()
-    },
-
     /**
-     * 实际发送给模型的内容：连接器指令 + 技能指令前缀 + 用户输入。
-     * 例1：界面显示 [图标]PPT生成 +「生成一份PPT」→ 发送 `/pptx-generator 生成一份PPT`
-     * 例2：界面显示 [接入]高德地图 +「帮我规划路线」→ 发送 `使用连接器[高德地图] 帮我规划路线`
+     * 发送的消息正文：只归一化用户输入，不拼任何指令前缀。
+     * 已选技能 / 连接器分别以 skills（目录名）、connectors（展示名）参数带给后端（见 send()）。
      */
     buildPayload() {
-      return buildConnectorPayload(this.selectedConnectors, this.selectedSkills, this.message)
+      return buildMessageText(this.message)
     },
     stop() {
       this.$emit('stop')
@@ -1518,13 +1565,30 @@ export default {
       const ta = this.$refs.textareaRef
       if (ta) {
         ta.style.height = 'auto'
-        ta.style.height = Math.min(ta.scrollHeight, 150) + 'px'
+        ta.style.height = Math.min(ta.scrollHeight, TEXTAREA_MAX_HEIGHT) + 'px'
+        this.syncMirror() // 高度变化会改变 textarea 的可滚动区间（scrollTop 被钳制），镜像层要跟上
       }
+    },
+    /**
+     * 把 textarea 的内容/滚动/滚动条占位同步给镜像渲染层。
+     * 输入（含输入法合成中）、程序化赋值、滚动后都要调，否则两侧文字会对不上。
+     */
+    syncMirror() {
+      const ta = this.$refs.textareaRef
+      const mirror = this.$refs.mirrorRef
+      if (!ta || !mirror) return
+      // 直接读 textarea：输入法合成中的文字 v-model 还没提交，镜像也要实时显示
+      this.mirrorText = ta.value
+      // 出现纵向滚动条后 textarea 内容区变窄，镜像补同等右内边距，保证两侧换行位置一致
+      const gutter = ta.offsetWidth - ta.clientWidth
+      mirror.style.paddingRight = gutter > 0 ? gutter + 'px' : ''
+      mirror.scrollTop = ta.scrollTop
     },
     onInput() {
       this.autoResize()
       this.updateCaretLine()
       this.updateSkillPicker()
+      this.syncMirror()
       this.$emit('typing')
     },
 
@@ -1778,19 +1842,109 @@ export default {
   box-sizing: border-box;
 }
 
-/* ── 已选技能 / 连接器标签（只显示图标 + 名称，发送时还原为 /技能名、使用连接器[名称]） ── */
-.selected-skills,
+/* ── 已选技能标签（只显示图标 + 名称，发送时还原为 /技能名） ── */
+/* 镜像渲染层：与 textarea 同字体/字号/行高/宽度，两侧文字换行位置才会逐行一致。
+   叠在 textarea 之上但 pointer-events:none，输入、光标、选区仍由下层 textarea 承担；
+   break-spaces + break-word 对齐 textarea 的默认换行规则（含行尾空格折行）。 */
+.input-mirror {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 2;
+  overflow: hidden;
+  pointer-events: none;
+  /* translateZ(0)：提升为独立合成层。Chromium 对「超长 inline 内容 + overflow:hidden +
+     程序化 scrollTop」的组合存在裁剪渗漏（内容被画到裁剪区外），强制独立层后消失 */
+  transform: translateZ(0);
+  font-family: 'Microsoft YaHei', '微软雅黑', sans-serif;
+  font-size: 15px;
+  line-height: 1.6;
+  color: var(--text-primary);
+  white-space: break-spaces;
+  overflow-wrap: break-word;
+}
+
+.input-mirror-text {
+  white-space: break-spaces;
+  overflow-wrap: break-word;
+}
+
+/* 技能/连接器胶囊容器：内联嵌在镜像文字流里 —— 第一行 = 胶囊 + 文字，第二行起文字占满整行。
+   pointer-events 恢复 auto：胶囊上的「×」要能点（镜像层本身不拦截输入事件） */
+.input-pills {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  max-width: 100%;
+  margin-right: 12px;
+  vertical-align: top;
+  pointer-events: auto;
+}
+
+.selected-skills {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.selected-skill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 6px 3px 4px;
+  border: 1px solid color-mix(in srgb, var(--accent-color) 35%, var(--border-color));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent-color) 10%, transparent);
+  max-width: 100%;
+}
+
+.selected-skill-name {
+  font-size: 12.5px;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 180px;
+}
+
+.selected-skill-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.selected-skill-remove:hover {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+.selected-skill-remove svg {
+  width: 11px;
+  height: 11px;
+}
+
+/* ── 已选连接器标签（仅「用户输入阶段」可见，见 showConnectorPills；`×` 可移除） ── */
 .selected-connectors {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 6px;
-  flex-shrink: 0;
-  max-width: 100%;
-  padding-bottom: 3px;
+  min-width: 0;
 }
 
-.selected-skill,
 .selected-connector {
   display: inline-flex;
   align-items: center;
@@ -1802,7 +1956,13 @@ export default {
   max-width: 100%;
 }
 
-.selected-skill-name,
+.selected-connector-icon {
+  width: 13px;
+  height: 13px;
+  flex-shrink: 0;
+  color: var(--accent-color);
+}
+
 .selected-connector-name {
   font-size: 12.5px;
   color: var(--text-primary);
@@ -1812,14 +1972,6 @@ export default {
   max-width: 180px;
 }
 
-.selected-connector-icon {
-  width: 13px;
-  height: 13px;
-  flex-shrink: 0;
-  color: var(--accent-color);
-}
-
-.selected-skill-remove,
 .selected-connector-remove {
   display: inline-flex;
   align-items: center;
@@ -1834,13 +1986,11 @@ export default {
   cursor: pointer;
 }
 
-.selected-skill-remove:hover,
 .selected-connector-remove:hover {
   background: var(--bg-tertiary);
   color: var(--text-primary);
 }
 
-.selected-skill-remove svg,
 .selected-connector-remove svg {
   width: 11px;
   height: 11px;
@@ -2090,9 +2240,10 @@ export default {
 .input-row {
   padding: 12px 16px;
   display: flex;
-  align-items: flex-end;
+  /* 顶部对齐：多行输入时胶囊与正文首行齐平（flex-end 会把胶囊压到最后一行） */
+  align-items: flex-start;
   gap: 12px;
-  /* 技能标签与输入文字同一行；窄屏放不下时标签才换到上一行 */
+  /* 技能标签与输入文字同一行；胶囊自身换行，不把输入区挤到下一行 */
   flex-wrap: wrap;
 }
 
@@ -2123,6 +2274,10 @@ html[data-theme="dark"] .caret-line {
 /* textarea 所在区域使用浅灰底（与全局深色风格一致） */
 html[data-theme="dark"] .input-field textarea {
   background: var(--bg-tertiary) !important;
+  /* App.vue 的全局深色规则给 textarea 强制 color: var(--text-primary) !important，
+     会把镜像层方案依赖的透明文字盖掉（暗色下出现镜像+本体双重文字），这里压回透明 */
+  color: transparent !important;
+  caret-color: var(--text-primary) !important;
 }
 
 /* 整个输入框（容器、操作区、模型选择、上传按钮、textarea、光标行）
@@ -2217,11 +2372,20 @@ html[data-theme="dark"] .context-ring-wrapper {
   font-family: 'Microsoft YaHei', '微软雅黑', sans-serif;
   font-size: 15px;
   line-height: 1.6;
-  color: var(--text-primary);
-  max-height: 150px;
+  /* 文字由上层的 .input-mirror 镜像层显示，这里只保留光标与选区（见 syncMirror） */
+  color: transparent;
+  caret-color: var(--text-primary);
+  /* 最多 5 行（行高 24px）：文本更长时在右侧出现滚动条，输入框不再无限增高 */
+  max-height: 120px;
+  overflow-y: auto;
   min-height: 24px;
   padding: 0;
   outline: none;
+}
+
+/* 选区高亮画在下层 textarea，镜像文字叠在其上，选中文字仍然可读 */
+.input-field textarea::selection {
+  background: color-mix(in srgb, var(--accent-color) 28%, transparent);
 }
 
 .input-field textarea::placeholder {

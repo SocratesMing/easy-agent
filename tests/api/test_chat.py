@@ -1,5 +1,6 @@
 """接口 /agent/chat 的测试：流式对话与取消。"""
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -25,10 +26,19 @@ def test_chat_stream_returns_tokens(client):
     assert "data:" in resp.text
 
 
-def test_stream_empty_message_422(client):
-    # 空消息在 pydantic 模型层即被 min_length=1 拒绝
+def test_stream_empty_message_400(client):
+    # 正文允许为空（只挂技能/连接器、只上传文件时本来就没有正文），
+    # 但三者全空不算有效请求 → 400。
     resp = client.post("/agent/chat/stream", json={"message": ""})
-    assert resp.status_code == 422
+    assert resp.status_code == 400
+
+
+def test_stream_empty_message_with_skills_ok(client, monkeypatch):
+    """只挂技能、没写正文：正文可以为空，请求照常执行。"""
+    _patch_skills(monkeypatch)
+    _patch_stream(monkeypatch)
+    resp = client.post("/agent/chat/stream", json={"message": "", "skills": ["docx"]})
+    assert resp.status_code == 200
 
 
 def test_stream_missing_message_422(client):
@@ -165,6 +175,213 @@ def test_stream_without_directive_passes_empty_connectors(client, monkeypatch):
 
     assert resp.status_code == 200
     assert captured["agent_kwargs"]["connector_servers"] == []
+
+
+def test_stream_uses_structured_connectors_field(client, monkeypatch):
+    """请求体 connectors 字段（新前端）：消息文本里没有暗号，也照样只注入选中的连接器。"""
+    _patch_catalog(monkeypatch)
+    assert client.put(
+        "/agent/connectors/mcp/raw", json={"content": _MCP_CONTENT}
+    ).status_code == 200
+    captured = _capture_agent(monkeypatch)
+
+    resp = client.post(
+        "/agent/chat/stream",
+        json={"message": "帮我看看", "connectors": ["演示连接器", "内部知识检索"]},
+    )
+
+    assert resp.status_code == 200
+    assert captured["agent_kwargs"]["connector_servers"] == [
+        "demo-connector",
+        "内部知识检索",
+    ]
+
+
+def test_stream_merges_structured_field_and_text_directive(client, monkeypatch):
+    """字段与消息文本指令同时存在时合并去重（字段顺序在前），手打指令不受影响。"""
+    _patch_catalog(monkeypatch)
+    assert client.put(
+        "/agent/connectors/mcp/raw", json={"content": _MCP_CONTENT}
+    ).status_code == 200
+    captured = _capture_agent(monkeypatch)
+
+    resp = client.post(
+        "/agent/chat/stream",
+        json={
+            "message": "使用连接器[演示连接器] 顺便看看",
+            "connectors": ["内部知识检索", "演示连接器"],
+        },
+    )
+
+    assert resp.status_code == 200
+    assert captured["agent_kwargs"]["connector_servers"] == [
+        "内部知识检索",
+        "demo-connector",
+    ]
+
+
+def test_stream_empty_connectors_field_falls_back_to_text(client, monkeypatch):
+    """显式传空数组（新前端没选连接器）时行为不变：仍按文本解析，无指令则为空。"""
+    captured = _capture_agent(monkeypatch)
+
+    resp = client.post("/agent/chat/stream", json={"message": "你好", "connectors": []})
+
+    assert resp.status_code == 200
+    assert captured["agent_kwargs"]["connector_servers"] == []
+
+
+def test_stream_connectors_field_unknown_name_ignored(client, monkeypatch):
+    """字段里未安装的名字：只记日志，不阻断对话，也不影响其他连接器。"""
+    _patch_catalog(monkeypatch)
+    assert client.put(
+        "/agent/connectors/mcp/raw", json={"content": _MCP_CONTENT}
+    ).status_code == 200
+    captured = _capture_agent(monkeypatch)
+
+    resp = client.post(
+        "/agent/chat/stream",
+        json={"message": "你好", "connectors": ["根本没装", "演示连接器"]},
+    )
+
+    assert resp.status_code == 200
+    assert captured["agent_kwargs"]["connector_servers"] == ["demo-connector"]
+
+
+# ── 「/技能目录名」指令（输入框技能胶囊）────────────────────────────────
+
+_SKILL_DIRS = [
+    {"dir_name": "docx", "path": "/tmp/skills/docx", "enabled": True},
+    {"dir_name": "pdf", "path": "/tmp/skills/pdf", "enabled": True},
+]
+_SKILL_DISPLAY_NAMES = {"docx": "Word 文档", "pdf": "PDF 文档"}
+
+
+def _patch_skills(monkeypatch):
+    """把用户技能目录固定为 docx / pdf，避免用例依赖本机实际安装的技能。"""
+    from easy_agent.services import skill_library
+
+    monkeypatch.setattr(
+        skill_library, "list_user_skill_dirs", lambda username: list(_SKILL_DIRS)
+    )
+    monkeypatch.setattr(
+        skill_library,
+        "skill_metadata",
+        lambda path: {"name": _SKILL_DISPLAY_NAMES.get(Path(str(path)).name, "")},
+    )
+
+
+def _patch_stream(monkeypatch):
+    """捕获交给生成器的 parsed_content / session_id（假生成器，不真跑 Agent）。"""
+    captured = {}
+
+    async def fake_get_agent(session_id, username, workspace_name, **kwargs):
+        captured["agent_kwargs"] = kwargs
+        return SimpleNamespace(workspace_dir=None, workspace_virtual_path="/workspace")
+
+    async def fake_stream(**kwargs):
+        captured["stream_kwargs"] = kwargs
+        yield 'data: {"type": "done"}\n\n'
+
+    monkeypatch.setattr(chat_api, "get_or_create_agent_for_session", fake_get_agent)
+    monkeypatch.setattr(chat_api, "chat_stream_generator", fake_stream)
+    return captured
+
+
+def _stored_user_message(db, captured):
+    session = db.get_session(captured["stream_kwargs"]["session_id"])
+    return session, session.messages[0]
+
+
+def test_stream_uses_structured_skills_field(client, db, monkeypatch):
+    """请求体 skills 字段（新前端）：`/目录名` 只进模型输入，落库正文与标题都是用户原话。"""
+    _patch_skills(monkeypatch)
+    captured = _patch_stream(monkeypatch)
+
+    resp = client.post(
+        "/agent/chat/stream", json={"message": "帮我排个版", "skills": ["docx"]}
+    )
+
+    assert resp.status_code == 200
+    assert captured["stream_kwargs"]["parsed_content"] == "/docx 帮我排个版"
+    session, user_message = _stored_user_message(db, captured)
+    assert user_message["content"] == "帮我排个版"
+    assert user_message["skills"] == ["docx"]
+    assert session.title == "帮我排个版"
+
+
+def test_stream_skills_only_without_text_uses_display_name(client, db, monkeypatch):
+    """只挂技能、没写正文：正文为空也放行，标题用技能展示名兜底。"""
+    _patch_skills(monkeypatch)
+    captured = _patch_stream(monkeypatch)
+
+    resp = client.post("/agent/chat/stream", json={"message": "", "skills": ["docx"]})
+
+    assert resp.status_code == 200
+    assert captured["stream_kwargs"]["parsed_content"] == "/docx"
+    session, user_message = _stored_user_message(db, captured)
+    assert user_message["content"] == ""
+    assert user_message["skills"] == ["docx"]
+    assert session.title == "Word 文档"
+
+
+def test_stream_merges_skills_field_and_text_directive(client, db, monkeypatch):
+    """字段与消息文本指令同时存在时合并去重（字段顺序在前），手打指令不受影响。"""
+    _patch_skills(monkeypatch)
+    captured = _patch_stream(monkeypatch)
+
+    resp = client.post(
+        "/agent/chat/stream", json={"message": "/pdf 帮我看看", "skills": ["docx"]}
+    )
+
+    assert resp.status_code == 200
+    assert captured["stream_kwargs"]["parsed_content"] == "/docx /pdf 帮我看看"
+    _session, user_message = _stored_user_message(db, captured)
+    assert user_message["skills"] == ["docx", "pdf"]
+
+
+def test_stream_legacy_skill_prefix_still_works(client, db, monkeypatch):
+    """旧前端（或手打 `/技能名`）：文本解析回退，落库正文保持原样，标题照旧剥前缀。"""
+    _patch_skills(monkeypatch)
+    captured = _patch_stream(monkeypatch)
+
+    resp = client.post("/agent/chat/stream", json={"message": "/docx 帮我排个版"})
+
+    assert resp.status_code == 200
+    assert captured["stream_kwargs"]["parsed_content"] == "/docx 帮我排个版"
+    session, user_message = _stored_user_message(db, captured)
+    assert user_message["content"] == "/docx 帮我排个版"
+    assert user_message["skills"] == ["docx"]
+    assert session.title == "帮我排个版"
+
+
+def test_stream_skills_field_unknown_dir_ignored(client, db, monkeypatch):
+    """字段里不属于该用户的目录名：只记日志，不拼指令、不落 skills 字段。"""
+    _patch_skills(monkeypatch)
+    captured = _patch_stream(monkeypatch)
+
+    resp = client.post(
+        "/agent/chat/stream", json={"message": "你好", "skills": ["根本没装"]}
+    )
+
+    assert resp.status_code == 200
+    assert captured["stream_kwargs"]["parsed_content"] == "你好"
+    _session, user_message = _stored_user_message(db, captured)
+    assert "skills" not in user_message
+
+
+def test_stream_path_like_text_not_treated_as_skill(client, db, monkeypatch):
+    """路径开头的正文（/workspace、/usr/bin）不被当成技能指令。"""
+    _patch_skills(monkeypatch)
+    captured = _patch_stream(monkeypatch)
+
+    resp = client.post(
+        "/agent/chat/stream", json={"message": "/workspace 下的文件帮我看看"}
+    )
+
+    assert resp.status_code == 200
+    assert captured["stream_kwargs"]["parsed_content"] == "/workspace 下的文件帮我看看"
+    _session, user_message = _stored_user_message(db, captured)
+    assert "skills" not in user_message
 
 
 def test_resume_missing_body_422(client):

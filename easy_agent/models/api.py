@@ -61,7 +61,11 @@ class MessageModel(BaseModel):
 
 
 class ChatRequest(BaseModel):
-    message: str = Field(..., description="用户消息内容", min_length=1)
+    message: str = Field(
+        ...,
+        description="用户消息内容（可为空：只挂技能/连接器、或只上传文件时没有正文）",
+        min_length=0,
+    )
     session_id: Optional[str] = Field(default=None, description="会话ID")
     message_id: Optional[str] = Field(default=None, description="消息ID")
     enable_deep_think: bool = Field(default=False, description="是否启用深度思考")
@@ -77,6 +81,21 @@ class ChatRequest(BaseModel):
         default=None,
         max_length=8000,
         description="AI 侧边栏附带的页面/功能上下文（用户唤起 AI 时所在页面的描述），仅提供给模型参考",
+    )
+    connectors: Optional[List[str]] = Field(
+        default=None,
+        description=(
+            "本轮选中的连接器展示名（输入框「+」面板选中项），据此只注入这些连接器的 MCP 工具。"
+            "为空或未传时回退解析消息文本里的「使用连接器[名称]」（兼容旧前端/手打指令）"
+        ),
+    )
+    skills: Optional[List[str]] = Field(
+        default=None,
+        description=(
+            "本轮选中的技能目录名（输入框技能胶囊选中项），后端据此把 `/目录名` 指令拼进"
+            "**模型输入**并落库到用户消息的 skills 字段（气泡按它渲染技能标签）。"
+            "为空或未传时回退解析消息文本开头的 `/目录名`（兼容旧前端/手打指令）"
+        ),
     )
 
 

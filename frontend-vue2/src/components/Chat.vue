@@ -106,6 +106,7 @@
       <!-- 分类预置问题：仅在首页（居中模式）展示。每个分类一张卡片（分类名即卡片头部，
            不再单独放标签栏），最多展示三张；卡片内多个预置问题堆叠，
            鼠标滚轮（或左右方向键）在卡片上滑动即可来回切换子问题。
+           点击卡片只把该问题填进输入框（不直接发送），用户可改完自己发。
            侧边栏变体不展示预置问题。 -->
       <div
         class="preset-area"
@@ -278,8 +279,6 @@ export default {
       composerMode: 'center',
       // 输入框当前内容是否为「预置问题预览填充态」
       previewActive: false,
-      // 本次发送是否来自预置问题卡片点击：onSend 据此改走 preset-send 事件
-      presetSendPending: false,
       // 预置问题：每张卡片当前展示的子问题下标（按卡片序号索引，最多三张）
       presetQuestionIndexes: [],
       deckTop: 0,
@@ -437,8 +436,8 @@ export default {
         })
       }
     },
-    handleSend(message, files, signal, enableDeepThink = true, enableWebSearch = false) {
-      this.$emit('send-message', message, files, signal, enableDeepThink, enableWebSearch)
+    handleSend(message, files, signal, enableDeepThink = true, enableWebSearch = false, connectors = [], skills = []) {
+      this.$emit('send-message', message, files, signal, enableDeepThink, enableWebSearch, connectors, skills)
     },
     handleRemoveFile(file, messageIndex) {
       // 从事件参数中获取file，然后从messages中获取对应的message
@@ -560,37 +559,25 @@ export default {
         ? { zIndex: 30 }
         : { zIndex: 10, opacity: '0', pointerEvents: 'none' }
     },
-    // ========== 预置问题：点击发送 ==========
-    // 点击卡片把该问题作为「新对话的第一条消息」发出：先复用悬浮预览的填入逻辑
-    // 把完整文本写进输入框，再触发输入框自身的发送（走上传等待、canSend 校验、
-    // 清空草稿等与手动发送完全一致的链路），不复制一份发送实现。
-    // presetSendPending 标记本次 send 来自预置问题卡片，onSend 里据此改走
-    // preset-send 事件，由 App 侧先落到全新会话再发送。
+    // ========== 预置问题：点击填入 ==========
+    // 点击卡片只把该问题的完整文本填进输入框（卡片上最多显示 3 行，长问题展示不全）
+    // 并把焦点交给输入框：发不发、要不要先改一改，由用户自己决定，不再自动发送。
+    // 填入的同时「落定」这次内容——清掉悬浮预览态，否则鼠标移出预置区时
+    // onPresetLeave 会按预览逻辑把输入框恢复成悬浮前的空值。
     onPresetCardClick(groupIndex) {
       const group = this.displayedPresetGroups[groupIndex]
       const question = group && group.questions ? group.questions[this.presetIndex(groupIndex)] : null
       if (question == null) return
-      // 点击即发送，悬浮预览状态不再需要（移出时的草稿恢复逻辑会干扰发送）
       this.hoveredDeck = null
       this.lastPreview = ''
-      this.presetSendPending = true
+      this.previewActive = false
       const composer = this.$refs.composerRef
       if (composer) composer.setMessage(question)
-      if (composer) composer.triggerSend()
-      // triggerSend 因 disabled/canSend 未真正发出时，复位标记避免影响后续手动发送
-      if (composer && composer.getMessage() === question) {
-        this.presetSendPending = false
-      }
     },
-    onSend(message, files, signal, enableDeepThink, enableWebSearch) {
+    onSend(message, files, signal, enableDeepThink, enableWebSearch, connectors, skills) {
       this.composerMode = 'bottom'
       this.isAtBottom = true
-      if (this.presetSendPending) {
-        this.presetSendPending = false
-        this.$emit('preset-send', message, files, signal, enableDeepThink, enableWebSearch)
-        return
-      }
-      this.handleSend(message, files, signal, enableDeepThink, enableWebSearch)
+      this.handleSend(message, files, signal, enableDeepThink, enableWebSearch, connectors, skills)
     },
     handleScroll() {
       const el = this.$refs.messagesRef

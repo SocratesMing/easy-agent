@@ -112,7 +112,6 @@
         @update:selectedModel="selectedModel = $event"
         @toggle-workspace="isWorkspaceCollapsed = false"
         @send-message="handleSendMessage"
-        @preset-send="handlePresetSend"
         @create-session="ensureCurrentSession"
         @remove-file="handleRemoveFile"
         @stop="handleStop"
@@ -1425,13 +1424,7 @@ export default {
       // 事件按「所属会话」路由：后台会话写入其自身缓冲，不污染当前展示
       return { onChunk: (data) => this.runInSession(ctx.streamSessionId, ctx, () => onChunk(data)) }
     },
-    // 预置问题卡片点击发送：无论当前是否已选中会话，都先按「新建对话」把状态
-    // 切回全新首页再走正常发送；当前无会话时后端会在 start 事件里返回新会话 id。
-    async handlePresetSend(message, files, signal, enableDeepThink, enableWebSearch) {
-      await this.handleCreateSession()
-      this.handleSendMessage(message, files, signal, enableDeepThink, enableWebSearch)
-    },
-    async handleSendMessage(message, files = [], signal, enableDeepThink = true, enableWebSearch = false) {
+    async handleSendMessage(message, files = [], signal, enableDeepThink = true, enableWebSearch = false, connectors = [], skills = []) {
       const userMsgId = `user-${Date.now()}`
       const preStreamUsage = { ...this.sessionUsage }
       // 记录本次请求开始前已累计的耗时和迭代次数，用于流式过程中实时累加
@@ -1455,6 +1448,10 @@ export default {
         })),
         created_at: new Date().toISOString()
       }
+      // 结构化技能目录名（与后端落库字段同形）：气泡按它渲染技能标签，不再依赖从
+      // 消息文本里反扒 `/技能名`。没有选中技能时不写该字段——手打 `/技能名` 的正文
+      // 仍按老规则从文本解析，行为和改造前一致。
+      if (skills.length > 0) userMessage.skills = [...skills]
 
       this.messages.push(userMessage)
 
@@ -1555,7 +1552,7 @@ export default {
           }
         }
 
-        await sendMessage(this.currentSessionId, message, onChunk, abortSignal, enableDeepThink, files, this.selectedModel, enableWebSearch)
+        await sendMessage(this.currentSessionId, message, onChunk, abortSignal, enableDeepThink, files, this.selectedModel, enableWebSearch, null, connectors, skills)
 
         await this.refreshSessionFiles(null, 500)
       } catch (e) {

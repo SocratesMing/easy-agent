@@ -3,6 +3,7 @@
 LLM 全程用假实现打桩，不发起任何网络请求；磁盘写入落在临时工作区。
 """
 
+import json
 import os
 from datetime import datetime
 from pathlib import Path
@@ -13,6 +14,8 @@ import pytest
 import easy_agent.api.chat as chat_api
 import easy_agent.api.expert as expert_api
 import easy_agent.services.agent_manager as am
+import easy_agent.services.connectors as connectors_service
+import easy_agent.services.skill_library as skill_library
 from easy_agent.db.expert_store import ExpertStore
 from easy_agent.models.db import SessionModel
 from easy_agent.services.expert_service import load_active_prompt
@@ -496,6 +499,77 @@ def test_stream_run_without_expert_uses_generic(client, fake_llm, stub_stream):
     assert "你是量化策略专家" not in kwargs["system_prompt_extra"]
 
 
+def test_stream_run_uses_structured_connectors_field(
+    client, fake_llm, stub_stream, monkeypatch
+):
+    """专家链路与 chat 一致：优先用请求体 connectors 字段（消息文本里不再带暗号）。"""
+    monkeypatch.setattr(
+        connectors_service,
+        "load_catalog",
+        lambda path=None: [{"id": "demo-connector", "name": "演示连接器", "config": {}}],
+    )
+    mcp_content = json.dumps(
+        {"servers": {"demo-connector": {"transport": "stdio", "command": "echo"}}},
+        ensure_ascii=False,
+    )
+    assert client.put(
+        "/agent/connectors/mcp/raw", json={"content": mcp_content}
+    ).status_code == 200
+
+    resp = client.post(
+        "/agent/stream_export_run",
+        json={"message": "帮我看看", "connectors": ["演示连接器"]},
+    )
+
+    assert resp.status_code == 200
+    assert stub_stream["agent_kwargs"]["connector_servers"] == ["demo-connector"]
+
+
+def test_stream_run_uses_structured_skills_field(
+    client, db, fake_llm, stub_stream, monkeypatch
+):
+    """专家链路与 chat 一致：`/技能目录名` 由请求体 skills 字段驱动，落库正文保持用户原话。"""
+    monkeypatch.setattr(
+        skill_library,
+        "list_user_skill_dirs",
+        lambda username: [{"dir_name": "docx", "path": "/tmp/skills/docx", "enabled": True}],
+    )
+    monkeypatch.setattr(skill_library, "skill_metadata", lambda path: {"name": "Word 文档"})
+
+    resp = client.post(
+        "/agent/stream_export_run",
+        json={"message": "帮我排个版", "skills": ["docx"]},
+    )
+
+    assert resp.status_code == 200
+    session = db.get_session(stub_stream["session_id"])
+    user_message = session.messages[0]
+    assert user_message["content"] == "帮我排个版"
+    assert user_message["skills"] == ["docx"]
+    assert session.title == "帮我排个版"
+
+
+def test_stream_run_skills_only_without_text_uses_display_name(
+    client, db, fake_llm, stub_stream, monkeypatch
+):
+    """只挂技能、没写正文：正文允许为空，标题用技能展示名兜底。"""
+    monkeypatch.setattr(
+        skill_library,
+        "list_user_skill_dirs",
+        lambda username: [{"dir_name": "docx", "path": "/tmp/skills/docx", "enabled": True}],
+    )
+    monkeypatch.setattr(skill_library, "skill_metadata", lambda path: {"name": "Word 文档"})
+
+    resp = client.post(
+        "/agent/stream_export_run", json={"message": "", "skills": ["docx"]}
+    )
+
+    assert resp.status_code == 200
+    session = db.get_session(stub_stream["session_id"])
+    assert session.title == "Word 文档"
+    assert session.messages[0]["skills"] == ["docx"]
+
+
 def test_stream_run_unknown_expert_404(client, fake_llm, stub_stream):
     resp = client.post(
         "/agent/stream_export_run",
@@ -584,8 +658,10 @@ def test_stream_run_other_users_session_404(client, fake_llm, stub_stream, db):
     assert resp.status_code == 404
 
 
-def test_stream_run_empty_message_422(client):
-    assert client.post("/agent/stream_export_run", json={"message": ""}).status_code == 422
+def test_stream_run_empty_message_400(client):
+    """正文允许为空（只挂技能/连接器），但三者全空 → 400。缺 message 字段仍 422。"""
+    assert client.post("/agent/stream_export_run", json={"message": ""}).status_code == 400
+    assert client.post("/agent/stream_export_run", json={}).status_code == 422
 
 
 # ── 端到端辅助：真实读回磁盘提示词 ────────────────────────────────────
