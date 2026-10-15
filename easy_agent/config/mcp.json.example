@@ -247,6 +247,16 @@
         "transport": "streamable_http",
         "url": "http://127.0.0.1:8174/mcp/gold_monthly/"
       }
+    },
+    {
+      "id": "fx_barometer",
+      "name": "外汇晴雨指数",
+      "description": "投资研究：USDCNY 外汇晴雨指数，3M/6M 分位区间与模型参数（非实时行情）",
+      "business": "fx_barometer",
+      "config": {
+        "transport": "streamable_http",
+        "url": "http://127.0.0.1:8174/mcp/fx_barometer/"
+      }
     }
   ],
   "_comment": "自家投资研究业务（strategyqa / idata / …）也登记在这里：它们由 mcp-server 子项目提供，添加时由主应用自动签发并注入 API Key。"

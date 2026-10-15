@@ -92,6 +92,7 @@ def _new_scenes() -> list[Scene]:
     与投资研究那批分开，便于内网只带其中一部分时分别跳过。
     """
     from easy_mcp_server.businesses.fomc import fomc
+    from easy_mcp_server.businesses.fx_barometer import fx_barometer
     from easy_mcp_server.businesses.g7_fx import g7_fx
     from easy_mcp_server.businesses.gold_monthly import gold_monthly
     from easy_mcp_server.businesses.gold_weekly import gold_weekly
@@ -103,6 +104,12 @@ def _new_scenes() -> list[Scene]:
             "黄金周频预测",
             tuple(gold_weekly.TABLES.values()),
             "GOLD_WEEKLY_SCHEMA",
+        ),
+        Scene(
+            "fx_barometer",
+            "外汇晴雨指数",
+            tuple(fx_barometer.TABLES.values()),
+            "FX_BAROMETER_SCHEMA",
         ),
         Scene(
             "gold_monthly",

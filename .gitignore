@@ -75,9 +75,11 @@ ${TEST_*}
 # macOS 元数据（Windows 上无意义，勿提交）
 .DS_Store
 
-# 打包产物（如拷贝到内网的 mcp-server.zip / 分卷包，大体积二进制勿提交）
+# 打包产物（如拷贝到内网的 mcp-server.zip / tar.gz，大体积二进制勿提交）
 *.zip
 *.zip.0*
+*.tar.gz
+*.tar
 
 # 来自 vue26-1013
 .workbuddy/
