@@ -248,12 +248,29 @@
                 <div v-if="plusListLoading" class="plus-list-hint">加载中…</div>
                 <div v-else-if="plusListError" class="plus-list-hint error">{{ plusListError }}</div>
                 <div v-else-if="plusList.length === 0" class="plus-list-hint">{{ plusListEmptyText }}</div>
-                <div v-else v-for="item in plusList" :key="item.key" class="plus-list-item">
+                <!-- 技能行可点击：点击即把技能挂成输入框里的技能令牌（再点取消）；连接器行仅作展示 -->
+                <div
+                  v-else
+                  v-for="item in plusList"
+                  :key="item.key"
+                  class="plus-list-item"
+                  :class="{
+                    selectable: isSkillListRow,
+                    selected: isSkillListRow && isSkillSelected(item.dir_name),
+                    'is-disabled': isSkillListRow && !item.enabled,
+                  }"
+                  :role="isSkillListRow ? 'button' : null"
+                  :tabindex="isSkillListRow && item.enabled ? 0 : null"
+                  :title="isSkillListRow ? (item.enabled ? `选择「${item.name}」` : '该技能已停用') : null"
+                  @click="toggleSkillFromPlus(item)"
+                  @keydown.enter.prevent="toggleSkillFromPlus(item)"
+                >
                   <span class="plus-list-icon" :class="{ initial: !item.icon }">{{ item.icon || item.initial }}</span>
                   <span class="plus-list-body">
                     <span class="plus-list-name-row">
                       <span class="plus-list-name">{{ item.name }}</span>
                       <span v-if="item.tag" class="plus-list-tag" :class="item.tagType">{{ item.tag }}</span>
+                      <span v-if="isSkillListRow && isSkillSelected(item.dir_name)" class="plus-list-selected">已选</span>
                     </span>
                     <span class="plus-list-desc">{{ item.desc }}</span>
                   </span>
@@ -667,6 +684,10 @@ export default {
       }
       return meta[this.plusListCategory] || '暂无内容'
     },
+    /** 当前子面板是否为技能列表（通用列表同时承载连接器，连接器不可点选） */
+    isSkillListRow() {
+      return this.subpanelCategory === 'skills'
+    },
     // 模型选择：本地双向绑定，变化时同步父组件
     localSelectedModel: {
       get() {
@@ -1018,10 +1039,12 @@ export default {
           const data = await getUserSkills()
           this.plusList = (data.skills || []).map((s) => ({
             key: `skill:${s.dir_name}`,
+            dir_name: s.dir_name,
             name: s.name,
             desc: s.description || '暂无描述',
             icon: s.icon || '',
             initial: (s.name || s.dir_name).slice(0, 1).toUpperCase(),
+            enabled: !!s.enabled,
             tag: s.enabled ? '已启用' : '已停用',
             tagType: s.enabled ? 'on' : 'off',
           }))
@@ -1065,6 +1088,31 @@ export default {
       } finally {
         this.plusListLoading = false
       }
+    },
+    // ========== 「+」菜单技能行：点击挂载 / 取消技能令牌 ==========
+    /** 该技能是否已挂到输入框（与「/」唤起技能共用 selectedSkills） */
+    isSkillSelected(dirName) {
+      if (!dirName) return false
+      return this.selectedSkills.some((s) => s.dir_name === dirName)
+    },
+    /**
+     * 点击技能行 = 挂载 / 取消技能令牌，令牌 UI 与「/」唤起技能完全一致。
+     * 停用技能不参与：Agent 只加载已启用的技能，挂上去也不会生效。
+     */
+    toggleSkillFromPlus(item) {
+      if (!this.isSkillListRow || !item || !item.dir_name || !item.enabled) return
+      if (this.isSkillSelected(item.dir_name)) {
+        this.selectedSkills = this.selectedSkills.filter((s) => s.dir_name !== item.dir_name)
+        return
+      }
+      this.selectedSkills = [...this.selectedSkills, {
+        dir_name: item.dir_name,
+        name: item.name,
+        description: item.desc,
+        icon: item.icon,
+        enabled: item.enabled,
+      }]
+      console.log(`[${new Date().toISOString()}] [技能选择] ${item.dir_name}`)
     },
     // ========== 专家快捷面板：行渲染与选择 ==========
     /** 头像取专家名首字（与专家 Tab 的 avatarChar 一致） */
@@ -1731,11 +1779,14 @@ export default {
   flex: 1;
   min-width: 0;
   display: flex;
-  flex-direction: column;
-  gap: 2px;
+  /* 单行展示：技能名与描述同行，描述超出宽度用省略号截断，避免整条占两行 */
+  flex-direction: row;
+  align-items: baseline;
+  gap: 8px;
 }
 
 .skill-picker-name {
+  flex-shrink: 0;
   font-size: 13px;
   color: var(--text-primary);
   overflow: hidden;
@@ -1744,6 +1795,8 @@ export default {
 }
 
 .skill-picker-desc {
+  flex: 1;
+  min-width: 0;
   font-size: 11.5px;
   color: var(--text-secondary);
   overflow: hidden;
@@ -2296,6 +2349,32 @@ html[data-theme="dark"] .plus-menu-item:hover {
 
 .plus-list-item:hover {
   background: var(--bg-tertiary);
+}
+
+/* 技能行可点选：选中态高亮，停用行不可点 */
+.plus-list-item.selectable {
+  cursor: pointer;
+}
+
+.plus-list-item.selected {
+  background: color-mix(in srgb, var(--accent-color) 12%, transparent);
+}
+
+.plus-list-item.is-disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.plus-list-item.is-disabled:hover {
+  background: transparent;
+}
+
+.plus-list-selected {
+  flex-shrink: 0;
+  margin-left: auto;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent-color);
 }
 
 .plus-list-icon {
