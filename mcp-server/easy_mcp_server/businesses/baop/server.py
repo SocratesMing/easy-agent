@@ -27,7 +27,7 @@ from .baop_mcp_server import INSTRUCTIONS, _register_tools
 def build() -> FastMCP:
     """构造并注册金融市场部经营分析业务，返回 FastMCP 实例。"""
     mcp = FastMCP(
-        "baop-analysis",
+        "金融市场部经营分析",
         instructions=INSTRUCTIONS,
         streamable_http_path="/",
         stateless_http=True,
