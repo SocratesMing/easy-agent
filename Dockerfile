@@ -33,8 +33,9 @@ ENV AGENT_ENV=${AGENT_ENV}
 # (unprivileged filesystem isolation; requires kernel >= 5.13). If neither
 # bwrap nor Landlock is available, shell execution is refused (fail-closed)
 # to prevent cross-user workspace access.
-# To enable full bwrap isolation, run the container with:
-#   --cap-add SYS_ADMIN --security-opt apparmor=unconfined
+# To enable full bwrap isolation (no SYS_ADMIN needed), run the container with:
+#   --security-opt seccomp=unconfined --security-opt apparmor=unconfined
+#   --security-opt systempaths=unconfined
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         bash \

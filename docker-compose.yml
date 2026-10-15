@@ -27,6 +27,13 @@ services:
     image: easy-agent:dev
     container_name: easy-agent-backend
     restart: unless-stopped
+    # bwrap 经非特权用户命名空间建隔离根目录，无需 SYS_ADMIN；Docker 默认的
+    # seccomp 拦截建命名空间、AppArmor 拦截 pivot_root、/proc 屏蔽路径拦截挂载新 procfs，
+    # 三者缺一 bwrap 都会降级为 Landlock
+    security_opt:
+      - seccomp=unconfined
+      - apparmor=unconfined
+      - systempaths=unconfined
     ports:
       - "22332:8000"
     env_file:
@@ -36,6 +43,8 @@ services:
       API_BASE_URL: "/"
     volumes:
       - ./.env.dev:/app/.env.dev:ro
+      # 宿主机改提示词后重启 backend 即生效
+      - ./easy_agent/config/prompts:/app/easy_agent/config/prompts
       - easy_agent_data:/app/data
       - easy_agent_workspace:/app/workspace
       - easy_agent_memories:/app/memories

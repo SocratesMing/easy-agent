@@ -151,16 +151,20 @@ def bwrap_usable() -> bool:
     for d in _SANDBOX_RO_DIRS:
         argv += ["--ro-bind-try", d, d]
     argv += ["--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp", "/usr/bin/true"]
+    reason = ""
     try:
         proc = subprocess.run(argv, capture_output=True, text=True, timeout=10)
         _bwrap_usable = proc.returncode == 0
+        reason = (proc.stderr or "").strip()
     except Exception as exc:  # noqa: BLE001
         _bwrap_usable = False
-        logger.warning("[sandbox] bwrap 探测异常: %s", exc)
+        reason = str(exc)
     if not _bwrap_usable:
         logger.warning(
-            "[sandbox] bwrap 不可用（可能缺少用户命名空间权限），"
-            "shell 命令降级为路径白名单检测（best-effort，建议启用 bwrap 获得完整隔离）"
+            "[sandbox] bwrap 不可用（%s），shell 命令降级为 Landlock 隔离。"
+            "容器内启用 bwrap 需 --security-opt seccomp=unconfined、"
+            "apparmor=unconfined、systempaths=unconfined",
+            reason or "未知原因",
         )
     return _bwrap_usable
 
@@ -325,8 +329,8 @@ def run_landlocked(
         return ExecuteResponse(
             output=(
                 "Error: 当前环境不支持 bwrap 与 Landlock，无法安全执行 shell 命令，已拒绝执行。"
-                "请在容器启动时添加 --cap-add SYS_ADMIN --security-opt apparmor=unconfined，"
-                "以启用 bwrap 沙箱；或在配置中设置 agent.sandbox_enabled=false（仅限可信单用户环境）。"
+                "请在容器启动时添加 --security-opt seccomp=unconfined --security-opt apparmor=unconfined "
+                "--security-opt systempaths=unconfined 以启用 bwrap 沙箱。"
             ),
             exit_code=127,
             truncated=False,
