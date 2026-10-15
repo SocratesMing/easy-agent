@@ -490,12 +490,18 @@ class KnowledgeService:
         )
 
     async def _ensure_shared_dataset(self) -> str:
-        """查找或创建共享数据集，返回其 ID（进程级缓存）。
+        """返回共享数据集 ID：配置指定库时直接透传，否则查找/创建（进程级缓存）。
 
+        配置了 shared_dataset_id 时不查找、不创建——适合共享/托管 RAGFlow
+        环境（仅授权使用某个既有数据集，不允许随意建库）；ID 是否真实存在
+        由后续 Ragflow 调用自然校验。未配置时按名称查找共享数据集，没有则创建。
         创建参数：embedding 模型取知识库配置，缺省用 Ragflow 租户默认模型。
         多进程并发创建的竞态由"失败后重查"兜底：Ragflow 数据集名称全局唯一，
         后创建方会收到错误，重查即可复用。
         """
+        configured = self.config.shared_dataset_id.strip()
+        if configured:
+            return configured
         global _shared_dataset_id
         if _shared_dataset_id:
             return _shared_dataset_id
