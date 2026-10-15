@@ -55,7 +55,7 @@ memories_dir: "${MEMORIES_DIR:-/qts/memories}"    # Long-term memory directory (
 sessions_dir: "${SESSIONS_DIR:-/qts/sessions}"     # 会话数据存储目录（项目相对路径）。实际路径：{sessions_dir}/{username}/{session_id}.json
 prompt_path: "prompts"  # 提示词目录（相对配置目录）：system.md + fragments/ + memory_*.md
 idle_logout_minutes: ${IDLE_LOGOUT_MINUTES:-0}   # 前端空闲自动登出（分钟）：用户超过该时长无界面操作或后端交互则退出到登录页；0 表示永不过期（默认，后台不启用登录超时机制）
-app_welcome_title: "Easy Agent，让工作更简单"  # 首页欢迎语
+app_welcome_title: "今天，你要研究什么"  # 首页欢迎语
 sandbox_enabled: ${SANDBOX_ENABLED:-true}    # Linux 使用 bwrap/Landlock；Windows 无等效沙箱时拒绝 execute。仅在可信单用户环境设为 false
 
 # 外部目录映射：虚拟路径前缀 → 宿主机实际路径
