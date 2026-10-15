@@ -131,6 +131,12 @@ database:
     read_timeout: 30
     write_timeout: 30
 
+# ===== Personnel Policy =====
+# 人员账号策略：默认仅 admin 手工新增或 Excel 导入，行内默认禁止自助注册。
+personnel:
+  self_registration_enabled: false   # 自助注册开关：true 时登录页显示注册入口，注册接口放行
+  passwordless_login_enabled: false   # 门户免密登录开关：true 时支持 ?username=&user_id= URL 直登与 /login-passwordless 接口（admin 账号不支持）
+
 # ===== Distributed Lock Configuration =====
 # 多实例（多 pod / 多 worker）部署的分布式锁（锁表 distributed_locks，见
 # easy_agent/utils/distributed_lock.py）。定时任务在每个 pod 都会注册同一批 cron，
