@@ -11,7 +11,7 @@
             <FileIcon :filename="file.filename" :size="36" />
           </div>
           <div class="file-info">
-            <span class="file-name">{{ file.filename }}</span>
+            <span class="file-name" :title="file.filename">{{ file.filename }}</span>
             <div class="file-meta">
               <span class="file-size">{{ formatSize(file.size) }}</span>
               <div v-if="file.uploadStatus === 'uploading'" class="upload-progress">

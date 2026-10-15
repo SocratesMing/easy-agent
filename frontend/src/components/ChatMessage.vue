@@ -12,7 +12,7 @@
             <FileIcon :filename="file.filename" :size="40" />
           </div>
           <div class="file-info">
-            <span class="file-name">{{ file.filename }}</span>
+            <span class="file-name" :title="file.filename">{{ file.filename }}</span>
             <div class="file-meta">
               <span class="file-size">{{ formatSize(file.size) }}</span>
               <span class="file-type">{{ getFileExtension(file.filename) }}</span>
