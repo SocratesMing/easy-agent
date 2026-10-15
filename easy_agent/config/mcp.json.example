@@ -197,6 +197,46 @@
           "Authorization": "Bearer "
         }
       }
+    },
+    {
+      "id": "gold_weekly",
+      "name": "黄金周频预测",
+      "description": "投资研究：黄金（XAUUSD）未来一周方向预测与已兑现的命中率统计",
+      "business": "gold_weekly",
+      "config": {
+        "transport": "streamable_http",
+        "url": "http://127.0.0.1:8174/mcp/gold_weekly/"
+      }
+    },
+    {
+      "id": "g7_fx",
+      "name": "G7外汇研判",
+      "description": "投资研究：G7 六个货币对的研判快照、回测指标与已存因子解释",
+      "business": "g7_fx",
+      "config": {
+        "transport": "streamable_http",
+        "url": "http://127.0.0.1:8174/mcp/g7_fx/"
+      }
+    },
+    {
+      "id": "fomc",
+      "name": "美联储议息会议",
+      "description": "投资研究：FOMC 声明对比、货币政策观点与市场反应",
+      "business": "fomc",
+      "config": {
+        "transport": "streamable_http",
+        "url": "http://127.0.0.1:8174/mcp/fomc/"
+      }
+    },
+    {
+      "id": "us_cpi",
+      "name": "美国CPI预测",
+      "description": "投资研究：美国 CPI 组级/分项/逐日预测、机构比较与官方历史",
+      "business": "us_cpi",
+      "config": {
+        "transport": "streamable_http",
+        "url": "http://127.0.0.1:8174/mcp/us_cpi/"
+      }
     }
   ],
   "_comment": "自家投资研究业务（strategyqa / idata / …）也登记在这里：它们由 mcp-server 子项目提供，添加时由主应用自动签发并注入 API Key。"

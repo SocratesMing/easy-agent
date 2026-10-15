@@ -86,6 +86,29 @@ def _research_scenes() -> list[Scene]:
     ]
 
 
+def _new_scenes() -> list[Scene]:
+    """后续新增的业务包（表名取自各领域模块）。
+
+    与投资研究那批分开，便于内网只带其中一部分时分别跳过。
+    """
+    from easy_mcp_server.businesses.fomc import fomc
+    from easy_mcp_server.businesses.g7_fx import g7_fx
+    from easy_mcp_server.businesses.gold_weekly import gold_weekly
+    from easy_mcp_server.businesses.us_cpi import us_cpi
+
+    return [
+        Scene(
+            "gold_weekly",
+            "黄金周频预测",
+            tuple(gold_weekly.TABLES.values()),
+            "GOLD_WEEKLY_SCHEMA",
+        ),
+        Scene("g7_fx", "G7外汇研判", tuple(g7_fx.TABLES.values()), "G7_FX_SCHEMA"),
+        Scene("fomc", "美联储议息会议", tuple(fomc.TABLES.values()), "FOMC_SCHEMA"),
+        Scene("us_cpi", "美国CPI预测", tuple(us_cpi.TABLES.values()), "US_CPI_SCHEMA"),
+    ]
+
+
 def _strategyqa_scene() -> Scene:
     table = os.environ.get("STRATEGY_TABLE", "fmut2_strategy_manage").strip()
     return Scene("strategyqa", "策略问数", (table,), "STRATEGY_SCHEMA")
@@ -113,6 +136,10 @@ def collect_scenes() -> list[Scene]:
         scenes.extend(_research_scenes())
     except ImportError as exc:  # 内网可能没带部分业务包
         print(f"[skip] 部分业务包未加载: {exc}", file=sys.stderr)
+    try:
+        scenes.extend(_new_scenes())
+    except ImportError as exc:  # 内网可能还没带最新这批业务包
+        print(f"[skip] 新增业务包未加载: {exc}", file=sys.stderr)
     return scenes
 
 
