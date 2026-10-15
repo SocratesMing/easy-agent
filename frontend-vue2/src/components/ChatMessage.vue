@@ -24,7 +24,7 @@
             <FileIcon :filename="file.filename" :size="40" />
           </div>
           <div class="file-info">
-            <span class="file-name">{{ file.filename }}</span>
+            <span class="file-name" :title="file.filename">{{ file.filename }}</span>
             <div class="file-meta">
               <span class="file-size">{{ formatSize(file.size) }}</span>
               <span class="file-type">{{ getFileExtension(file.filename) }}</span>
@@ -1095,6 +1095,11 @@ html[data-theme="dark"] .process-body .process-inline-content {
   gap: 8px;
   margin-bottom: 4px;
   width: 100%;
+}
+
+/* 用户消息：文件卡片整体右移，右缘与消息文本右缘对齐（助手消息保持左侧布局） */
+.message.user .message-content .files-container {
+  justify-content: flex-end;
 }
 
 /* 文件卡片样式 */

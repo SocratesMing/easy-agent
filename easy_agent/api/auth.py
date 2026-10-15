@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 
 from ..config import Config, DEFAULT_APP_WELCOME_TITLE
 from ..db import Database, get_database
+from ..knowledges.core.repository import KnowledgeRepository
 from ..middleware import get_current_username
 from ..middleware.auth import (
     clear_user_activity,
@@ -472,8 +473,11 @@ async def admin_reset_password(
     admin_username: Annotated[str, Depends(get_current_username)],
     db: Annotated[Database, Depends(get_database)],
 ):
-    if admin_username != "admin":
-        raise HTTPException(status_code=403, detail="仅管理员可以重置密码")
+    operator = db.get_user_by_username(admin_username)
+    if admin_username != "admin" and (
+        not operator or not KnowledgeRepository(db).is_team_space_manager(operator.user_id)
+    ):
+        raise HTTPException(status_code=403, detail="仅 admin 或公共空间管理员可以重置密码")
     if username == "admin":
         raise HTTPException(status_code=400, detail="管理员密码不能重置为默认密码")
 
@@ -485,7 +489,7 @@ async def admin_reset_password(
         raise HTTPException(status_code=500, detail="密码更新失败")
 
     db.increment_user_token_version(username)
-    logger.info(f"[用户] 管理员重置默认密码 | 管理员: {admin_username} | 用户名: {username}")
+    logger.info(f"[用户] 重置默认密码 | 操作人: {admin_username} | 用户名: {username}")
 
     return {
         "status": "success",

@@ -515,11 +515,9 @@ export default {
       this.showUserManagementPanel = false
     },
     handleShowUserManagement() {
+      // 人员管理是全屏遮罩弹层（pm-overlay，z-index 1000）：
+      // 不清除底层页面状态（知识库等），关闭后停留在打开前所在页面，而非跳回主页
       this.showUserManagementPanel = true
-      this.showKnowledge = false
-      this.showAssets = false
-      this.showSkillCenter = false
-      this.showScheduledTasks = false
     },
     applyAgentConfig(configData) {
       if (!configData) return

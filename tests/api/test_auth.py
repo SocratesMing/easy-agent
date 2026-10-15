@@ -171,6 +171,29 @@ async def test_non_admin_cannot_list_users_or_reset_password(db):
     assert reset_error.value.status_code == 403
 
 
+async def test_team_space_manager_can_reset_user_password_to_default(db):
+    db.register_user("dept_mgr", "secret123")
+    db.register_user("alice", "secret123")
+    manager_id = db.get_user_by_username("dept_mgr").user_id
+    with db.get_connection() as connection:
+        cursor = connection.cursor()
+        db._execute(
+            cursor,
+            "UPDATE users SET department_id='dept-market', organization_id='dept-market' WHERE username='dept_mgr'",
+        )
+        db._execute(
+            cursor,
+            "INSERT INTO knowledge_team_space_managers (user_id, granted_by, granted_at, updated_at) "
+            "VALUES (?, 'admin', '2026-10-14T00:00:00', '2026-10-14T00:00:00')",
+            (manager_id,),
+        )
+
+    result = await auth_mod.admin_reset_password("alice", "dept_mgr", db)
+
+    assert result["status"] == "success"
+    assert db.verify_user_password("alice", "123456") is not None
+
+
 async def test_legacy_reset_password_requires_admin(db):
     request = ResetPasswordRequest(username="alice", new_password="new12345")
 

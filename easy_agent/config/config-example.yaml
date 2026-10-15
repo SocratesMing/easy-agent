@@ -206,10 +206,14 @@ expert_tags:
 
 # ===== Knowledge / RAGFlow =====
 # 启用时需配置 RAGFLOW_BASE_URL + RAGFLOW_API_KEY（见 .env.*.example）
-# embedding.model 留空则使用 RAGFlow 默认 embedding，无需 RAGFLOW_EMBEDDING_MODEL
 knowledge:
   enabled: ${KNOWLEDGE_ENABLED:-false}
   base_url: "${RAGFLOW_BASE_URL}"
   api_key: "${RAGFLOW_API_KEY}"
+  # 指定既有 RAGFlow 数据集 ID（可选）：配置后共享库直接使用该数据集，
+  # 不按名称查找、不自动创建；留空则按 EA_SHARED 名称查找，没有时自动创建
+  shared_dataset_id: "${RAGFLOW_SHARED_DATASET_ID:-}"
+  # embedding 模型（可选）：配置后创建数据集使用该模型；
+  # 留空由 RAGFlow 使用其默认 embedding 模型
   embedding:
-    model: ""
+    model: "${RAGFLOW_EMBEDDING_MODEL:-}"

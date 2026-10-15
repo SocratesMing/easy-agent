@@ -6,8 +6,10 @@
 fail-closed 路径报错并提示填写。
 
 只认这些 YAML 键：``implementation``（透传不校验）/ ``enabled`` /
-``base_url`` / ``api_key`` / ``embedding.model`` / ``audit`` / ``limits`` /
-``catalog_sync``（外部目录树同步，含 enabled 总开关）。
+``base_url`` / ``api_key`` / ``shared_dataset_id``（指定既有共享数据集，
+空则按名称查找、没有时自动创建）/ ``embedding.model``（未配置时回退
+``RAGFLOW_EMBEDDING_MODEL``，留空由 Ragflow 用其默认模型）/ ``audit`` /
+``limits`` / ``catalog_sync``（外部目录树同步，含 enabled 总开关）。
 解析策略、检索参数与上传安全开关为代码内固定值。
 """
 
@@ -126,6 +128,9 @@ class KnowledgeConfig(BaseModel):
     enabled: bool = False
     base_url: str = ""
     api_key: SecretStr = SecretStr("")  # Bearer 凭据（RAGFLOW_API_KEY）
+    # 指定既有共享数据集 ID（RAGFLOW_SHARED_DATASET_ID）：非空时共享库
+    # 直接使用该数据集，不按名称查找、不自动创建；为空维持 find-or-create
+    shared_dataset_id: str = ""
     embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
     audit: AuditConfig = Field(default_factory=AuditConfig)
     limits: LimitsConfig = Field(default_factory=LimitsConfig)
@@ -179,7 +184,18 @@ class KnowledgeConfig(BaseModel):
             "enabled": section.get("enabled", _env_bool("KNOWLEDGE_ENABLED", False)),
             "base_url": section.get("base_url") or os.environ.get("RAGFLOW_BASE_URL") or "",
             "api_key": section.get("api_key") or os.environ.get("RAGFLOW_API_KEY") or "",
-            "embedding": {"model": str(_as_mapping(section.get("embedding")).get("model") or "")},
+            "shared_dataset_id": str(
+                section.get("shared_dataset_id")
+                or os.environ.get("RAGFLOW_SHARED_DATASET_ID")
+                or ""
+            ),
+            "embedding": {
+                "model": str(
+                    _as_mapping(section.get("embedding")).get("model")
+                    or os.environ.get("RAGFLOW_EMBEDDING_MODEL")
+                    or ""
+                )
+            },
             "audit": _as_mapping(section.get("audit")),
             "limits": _as_mapping(section.get("limits")),
             "catalog_sync": catalog_section,
