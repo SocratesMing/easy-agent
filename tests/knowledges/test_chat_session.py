@@ -53,3 +53,40 @@ def test_prepare_chat_session_creates_then_peek_readable(db, tmp_path):
     )
     assert peek.status_code == 200
     assert peek.json()["session_id"] == expected_id
+
+
+def test_rotate_keeps_old_session_and_switches_current(db, tmp_path):
+    """开启新对话：旧会话保留为历史，当前轮切换到全新会话。"""
+    service = _make_service(db, _FakeRagflow(), tmp_path)
+    base = _create_base_row(db)
+    principal = _principal()
+    client = _endpoint_client(service, principal)
+
+    first = client.post(f"/agent/knowledge/v1/bases/{base['id']}/chat-session")
+    first_id = first.json()["session_id"]
+
+    rotated = client.post(
+        f"/agent/knowledge/v1/bases/{base['id']}/chat-session/new"
+    )
+    assert rotated.status_code == 200
+    second_id = rotated.json()["session_id"]
+    assert second_id != first_id
+
+    # 旧会话保留为历史，不因轮换被删除
+    assert db.get_session(first_id) is not None
+
+    # prepare/peek 现在指向新的当前轮会话
+    peek = client.post(
+        f"/agent/knowledge/v1/bases/{base['id']}/chat-session?peek=true"
+    )
+    assert peek.status_code == 200
+    assert peek.json()["session_id"] == second_id
+
+    # 再轮换一次：第三轮，前两轮均保留
+    third = client.post(
+        f"/agent/knowledge/v1/bases/{base['id']}/chat-session/new"
+    )
+    third_id = third.json()["session_id"]
+    assert third_id not in (first_id, second_id)
+    assert db.get_session(first_id) is not None
+    assert db.get_session(second_id) is not None

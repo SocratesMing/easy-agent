@@ -174,6 +174,59 @@ async def test_ensure_shared_dataset_reuses_existing_by_name(db, tmp_path):
     assert ragflow.datasets_created == []
 
 
+async def test_configured_shared_dataset_id_bypasses_lookup_and_create(db, tmp_path):
+    """配置指定共享数据集 ID：直接透传，不查找、不创建，也不落进程缓存。"""
+    ragflow = _FakeRagflow()
+    service = KnowledgeService(
+        KnowledgeRepository(db),
+        ragflow,
+        KnowledgeConfig(
+            enabled=True,
+            base_url="http://ragflow",
+            api_key="rk",
+            shared_dataset_id="ds-designated",
+        ),
+        original_store=LocalOriginalStore(tmp_path / "originals"),
+    )
+
+    assert await service._ensure_shared_dataset() == "ds-designated"
+    assert ragflow.listed_datasets_calls == []
+    assert ragflow.datasets_created == []
+
+    # 指定库不依赖进程缓存（复位后依旧直接返回）
+    reset_shared_dataset_cache()
+    assert await service._ensure_shared_dataset() == "ds-designated"
+
+    # 数据集路由同样落到指定库：共享库（remote_dataset_id 为空）→ ds-designated
+    base = _create_base_row(db)
+    assert await service._dataset_id_for(base) == "ds-designated"
+
+
+def test_from_mapping_reads_shared_dataset_id(monkeypatch):
+    """配置解析：YAML 键 shared_dataset_id 生效；未提供时回退环境变量。"""
+    config = KnowledgeConfig.from_mapping({"shared_dataset_id": "ds-yaml"})
+    assert config.shared_dataset_id == "ds-yaml"
+
+    monkeypatch.setenv("RAGFLOW_SHARED_DATASET_ID", "ds-env")
+    assert KnowledgeConfig.from_mapping({}).shared_dataset_id == "ds-env"
+
+    monkeypatch.delenv("RAGFLOW_SHARED_DATASET_ID")
+    assert KnowledgeConfig.from_mapping({}).shared_dataset_id == ""
+
+
+def test_from_mapping_reads_embedding_model(monkeypatch):
+    """配置解析：embedding.model YAML 键生效；未提供时回退环境变量；
+    仍为空表示用 Ragflow 默认模型（create_dataset 传 None）。"""
+    config = KnowledgeConfig.from_mapping({"embedding": {"model": "bge-yaml"}})
+    assert config.embedding.model == "bge-yaml"
+
+    monkeypatch.setenv("RAGFLOW_EMBEDDING_MODEL", "bge-env")
+    assert KnowledgeConfig.from_mapping({}).embedding.model == "bge-env"
+
+    monkeypatch.delenv("RAGFLOW_EMBEDDING_MODEL")
+    assert KnowledgeConfig.from_mapping({}).embedding.model == ""
+
+
 async def test_find_shared_dataset_does_not_use_name_filter(db, tmp_path):
     """回归：定制版 Ragflow 的 name 过滤对不存在的名称也报 code=102
     权限错误，查找必须全量列表后本地匹配，不得依赖 name 查询参数。"""

@@ -1066,6 +1066,12 @@ class Database:
     def delete_session(self, session_id: str) -> bool:
         with self.get_connection() as conn:
             cursor = conn.cursor()
+            # 附属消息行必须一并删除：get_session 优先从 session_messages 表读消息，
+            # 若删除会话时留下孤儿行，之后重建同 ID 会话（如知识库隐藏会话）
+            # 会把旧消息读回并写进 messages JSON，表现为"删除后历史复活"
+            self._execute(
+                cursor, "DELETE FROM session_messages WHERE session_id=?", (session_id,)
+            )
             self._execute(
                 cursor, "DELETE FROM sessions WHERE session_id=?", (session_id,)
             )
