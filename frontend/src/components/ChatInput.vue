@@ -24,7 +24,13 @@
               <span v-else-if="file.uploadStatus === 'error'" class="upload-status error">上传失败</span>
             </div>
           </div>
-          <button @click="removeFile(index)" class="remove-file-btn">
+          <button
+            type="button"
+            @click="removeFile(index)"
+            class="remove-file-btn"
+            :aria-label="`删除文件 ${file.filename}`"
+            title="删除文件"
+          >
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <line x1="18" y1="6" x2="6" y2="18"></line>
               <line x1="6" y1="6" x2="18" y2="18"></line>
@@ -641,6 +647,9 @@ const emit = defineEmits(['send', 'stop', 'createSession', 'update:selectedModel
 const message = ref('')
 const textareaRef = ref(null)
 const uploadedFiles = ref([])
+
+// 并行上传时共享的「等待会话创建」Promise（避免重复触发 createSession）
+let pendingSessionPromise = null
 
 // 外部预填问题（专家详情弹窗的示例提示词）：写入输入框并聚焦，随后通知父组件清空。
 // immediate: 必须开启 —— 详情弹窗在 SkillCenter 面板里，点示例问题会关闭面板并让
@@ -1472,9 +1481,90 @@ function formatSize(bytes) {
   return (bytes / (1024 * 1024)).toFixed(1) + ' MB'
 }
 
+/**
+ * 确保会话存在并返回 sessionId（并行上传共享同一个创建 Promise，
+ * 避免一次选择多个文件时重复触发 createSession）。
+ */
+function ensureSessionId() {
+  if (props.sessionId) return Promise.resolve(props.sessionId)
+  if (!pendingSessionPromise) {
+    pendingSessionPromise = new Promise((resolve) => {
+      // 创建一个临时的监听器来等待会话创建完成
+      const unwatch = watch(
+        () => props.sessionId,
+        (newSessionId) => {
+          if (newSessionId) {
+            unwatch()
+            resolve(newSessionId)
+          }
+        }
+      )
+      // 触发会话创建
+      emit('createSession')
+    })
+  }
+  return pendingSessionPromise
+}
+
+/** 单个文件的上传流程（各文件并行执行，互不阻塞） */
+async function uploadOneFile(fileItem) {
+  const file = fileItem.file
+  try {
+    const sessionId = await ensureSessionId()
+    if (!sessionId) {
+      throw new Error('会话创建失败')
+    }
+
+    // 等待会话创建期间被用户点 × 删除：不再上传
+    if (fileItem.cancelled) return
+
+    // 调用实际的上传接口；holder 用于外部中断（删除上传中的文件）
+    const holder = {}
+    fileItem.xhrHolder = holder
+    const response = await uploadFile(sessionId, file, (progress) => {
+      // 找到对应的文件项并更新进度
+      if (fileItem.cancelled) return
+      const index = uploadedFiles.value.findIndex(f => f.file === file)
+      if (index !== -1) {
+        uploadedFiles.value[index].uploadProgress = progress
+        // 强制触发更新
+        uploadedFiles.value = [...uploadedFiles.value]
+      }
+    }, holder)
+
+    // 上传期间被用户删除：丢弃结果
+    if (fileItem.cancelled) return
+
+    // 找到对应的文件项并更新状态
+    const index = uploadedFiles.value.findIndex(f => f.file === file)
+    if (index !== -1) {
+      uploadedFiles.value[index].uploadStatus = 'completed'
+      uploadedFiles.value[index].uploadProgress = 100
+      uploadedFiles.value[index].filePath = response.file_path
+      uploadedFiles.value[index].id = response.id
+      // 强制触发更新
+      uploadedFiles.value = [...uploadedFiles.value]
+    }
+
+    console.log('文件上传成功:', response)
+  } catch (error) {
+    // 用户主动取消，不算失败
+    if (fileItem.cancelled) return
+    // 找到对应的文件项并更新状态
+    const index = uploadedFiles.value.findIndex(f => f.file === file)
+    if (index !== -1) {
+      uploadedFiles.value[index].uploadStatus = 'error'
+      // 强制触发更新
+      uploadedFiles.value = [...uploadedFiles.value]
+    }
+    console.error('文件上传失败:', error)
+  }
+}
+
 async function handleFileSelect(event) {
   const files = Array.from(event.target.files)
-  
+
+  // 并行上传：每个文件独立开始、独立进度，互不排队
   for (const file of files) {
     // 创建文件项
     const fileItem = {
@@ -1482,86 +1572,39 @@ async function handleFileSelect(event) {
       filename: file.name,
       size: file.size,
       uploadStatus: 'uploading',
-      uploadProgress: 0
+      uploadProgress: 0,
+      cancelled: false,
+      xhrHolder: null
     }
-    
+
     // 添加到数组
     uploadedFiles.value.push(fileItem)
-    
+
     // 强制触发初始渲染
     uploadedFiles.value = [...uploadedFiles.value]
-    
-    try {
-      // 确保会话存在
-      let sessionId = props.sessionId
-      if (!sessionId) {
-        // 通知父组件创建会话
-        const sessionIdPromise = new Promise((resolve) => {
-          // 创建一个临时的监听器来等待会话创建完成
-          const unwatch = watch(
-            () => props.sessionId,
-            (newSessionId) => {
-              if (newSessionId) {
-                unwatch()
-                resolve(newSessionId)
-              }
-            }
-          )
-          // 触发会话创建
-          emit('createSession')
-        })
-        
-        // 等待会话创建完成
-        sessionId = await sessionIdPromise
-        
-        if (!sessionId) {
-          throw new Error('会话创建失败')
-        }
-      }
-      
-      // 调用实际的上传接口
-      const response = await uploadFile(sessionId, file, (progress) => {
-        // 找到对应的文件项并更新进度
-        const index = uploadedFiles.value.findIndex(f => f.file === file)
-        if (index !== -1) {
-          uploadedFiles.value[index].uploadProgress = progress
-          // 强制触发更新
-          uploadedFiles.value = [...uploadedFiles.value]
-        }
-      })
-      
-      // 找到对应的文件项并更新状态
-      const index = uploadedFiles.value.findIndex(f => f.file === file)
-      if (index !== -1) {
-        uploadedFiles.value[index].uploadStatus = 'completed'
-        uploadedFiles.value[index].uploadProgress = 100
-        uploadedFiles.value[index].filePath = response.file_path
-        uploadedFiles.value[index].id = response.id
-        // 强制触发更新
-        uploadedFiles.value = [...uploadedFiles.value]
-      }
-      
-      console.log('文件上传成功:', response)
-    } catch (error) {
-      // 找到对应的文件项并更新状态
-      const index = uploadedFiles.value.findIndex(f => f.file === file)
-      if (index !== -1) {
-        uploadedFiles.value[index].uploadStatus = 'error'
-        // 强制触发更新
-        uploadedFiles.value = [...uploadedFiles.value]
-      }
-      console.error('文件上传失败:', error)
-    }
+
+    uploadOneFile(fileItem)
   }
-  
+
   event.target.value = ''
 }
 
 async function removeFile(index) {
   const file = uploadedFiles.value[index]
-  
+  if (!file) return
+
+  // 标记取消：排队/等待会话中的不再上传，上传中的立即中断请求
+  file.cancelled = true
+  if (file.uploadStatus === 'uploading' && file.xhrHolder && file.xhrHolder.xhr) {
+    try {
+      file.xhrHolder.xhr.abort()
+    } catch (e) {
+      /* 忽略中断异常 */
+    }
+  }
+
   // 如果文件已经上传成功，调用后台的删除接口
-  if (file && file.uploadStatus === 'completed' && file.id && props.sessionId) {
+  if (file.uploadStatus === 'completed' && file.id && props.sessionId) {
     try {
       await deleteFile(props.sessionId, file)
       console.log('文件删除成功:', file.filename)
@@ -1569,7 +1612,7 @@ async function removeFile(index) {
       console.error('文件删除失败:', error)
     }
   }
-  
+
   // 从前端列表中移除文件
   uploadedFiles.value.splice(index, 1)
   // 强制触发更新
@@ -1913,6 +1956,7 @@ defineExpose({ setMessage, getMessage, triggerSend })
 }
 
 .uploaded-file {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -2012,33 +2056,35 @@ defineExpose({ setMessage, getMessage, triggerSend })
   background: #fee2e2;
 }
 
+/* × 常驻卡片右上角角标：上传前/上传中/上传完成/失败均可点击删除。
+   兼容 Edge 114~155：仅用绝对定位 + 圆角 + 字面量回退，不用新特性。 */
 .remove-file-btn {
+  position: absolute;
+  top: -7px;
+  right: -7px;
+  z-index: 1;
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 24px;
-  height: 24px;
-  background: var(--bg-tertiary);
-  border: none;
-  border-radius: 6px;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  background: #334155;
+  border: 2px solid #ffffff;
+  border: 2px solid var(--bg-primary);
+  border-radius: 50%;
   cursor: pointer;
-  transition: all 0.2s ease;
-  flex-shrink: 0;
+  transition: background 0.2s ease;
 }
 
 .remove-file-btn:hover {
-  background: var(--border-color);
-  transform: scale(1.05);
+  background: #0f172a;
 }
 
 .remove-file-btn svg {
-  width: 14px;
-  height: 14px;
-  color: var(--text-secondary);
-}
-
-.remove-file-btn:hover svg {
-  color: #dc2626;
+  width: 10px;
+  height: 10px;
+  color: #ffffff;
 }
 
 .input-row {

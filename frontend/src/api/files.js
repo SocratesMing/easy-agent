@@ -1,18 +1,26 @@
 import { API_BASE_URL } from '../config.js'
 import { getAuthHeaders, authFetch, getStoredToken } from './auth.js'
 
-export async function uploadFile(sessionId, file, onProgress) {
+export async function uploadFile(sessionId, file, onProgress, xhrHolder) {
   return new Promise((resolve, reject) => {
     const formData = new FormData()
     formData.append('file', file)
 
     const xhr = new XMLHttpRequest()
 
+    // 把 xhr 交给调用方，用户点 × 删除"上传中"的文件时可在外部 abort()
+    if (xhrHolder) xhrHolder.xhr = xhr
+
     xhr.upload.addEventListener('progress', (progressEvent) => {
       if (onProgress && progressEvent.lengthComputable) {
         const percentCompleted = Math.round((progressEvent.loaded * 100) / progressEvent.total)
         onProgress(percentCompleted)
       }
+    })
+
+    // 用户主动取消：以"取消"结束 Promise，避免调用方永久挂起
+    xhr.addEventListener('abort', () => {
+      reject(new Error('上传已取消'))
     })
 
     xhr.addEventListener('load', () => {
