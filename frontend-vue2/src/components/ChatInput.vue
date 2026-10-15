@@ -315,14 +315,15 @@
             </svg>
           </button>
 
-          <!-- 当前专家标识：输入框工具栏内的胶囊（专家徽标 + 名称 + 退出×）。
-               与专家 Tab 的「召唤」联动，点击 × 退出专家模式回到通用 Agent。 -->
+          <!-- 当前专家标识：输入框工具栏内的胶囊（首字头像 + 名称 + 退出×）。
+               与专家 Tab 的「召唤」联动，点击 × 退出专家模式回到通用 Agent。
+               兼容性：不使用 flex gap / color-mix（IE 与旧版 Edge 不支持）。 -->
           <div
             v-if="activeExpert"
             class="expert-chip"
             :title="`当前专家：${activeExpert.export_name_cn}（点击 × 退出专家模式）`"
           >
-            <span class="expert-chip-badge">专家</span>
+            <span class="expert-chip-avatar">{{ expertAvatar(activeExpert) }}</span>
             <span class="expert-chip-name">{{ activeExpert.export_name_cn }}</span>
             <button
               type="button"
@@ -2718,37 +2719,45 @@ html[data-theme="dark"] .plus-list-tag.custom {
   box-shadow: 0 4px 14px color-mix(in srgb, var(--accent-color) 45%, transparent);
 }
 
-/* ── 当前专家胶囊：与左侧工具按钮同排同高，
-   浅强调底 +「专家」徽标 + 名称 + 退出×（样式参照设计稿）── */
+/* ── 当前专家胶囊：与左侧工具按钮同排同高，首字头像 + 名称 + 退出×。
+   边框/底色完全照搬左侧按钮（model-btn）的方案：纯 var()，不用 color-mix ——
+   用户 Edge 上 color-mix 计算异常（边框发黑）。IE 回退：字面量值在前。── */
 .expert-chip {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
   height: 36px;
   padding: 0 8px 0 6px;
   max-width: 220px;
-  border: 1px solid color-mix(in srgb, var(--accent-color) 35%, transparent);
+  border: 1px solid #e2e8f0;
+  border: 1px solid var(--border-color);
   border-radius: 10px;
-  background: color-mix(in srgb, var(--accent-color) 12%, var(--bg-secondary));
+  background: #ffffff;
+  background: var(--bg-secondary);
   flex-shrink: 0;
 }
 
-.expert-chip-badge {
+.expert-chip-avatar {
   flex-shrink: 0;
-  padding: 2px 6px;
-  border-radius: 6px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: #0ea5e9;
   background: var(--accent-color);
   color: #fff;
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 600;
-  line-height: 1.4;
+  line-height: 22px;
+  text-align: center;
+  user-select: none;
 }
 
 .expert-chip-name {
   min-width: 0;
+  margin: 0 6px;
   font-size: 12px;
   font-weight: 600;
-  color: color-mix(in srgb, var(--accent-color) 70%, var(--text-primary));
+  color: #0ea5e9;
+  color: var(--accent-color);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2765,7 +2774,8 @@ html[data-theme="dark"] .plus-list-tag.custom {
   border: none;
   border-radius: 50%;
   background: transparent;
-  color: color-mix(in srgb, var(--accent-color) 70%, var(--text-primary));
+  color: #0ea5e9;
+  color: var(--accent-color);
   cursor: pointer;
   opacity: 0.7;
   transition: opacity 0.2s ease, background 0.2s ease;
@@ -2773,7 +2783,8 @@ html[data-theme="dark"] .plus-list-tag.custom {
 
 .expert-chip-clear:hover:not(:disabled) {
   opacity: 1;
-  background: color-mix(in srgb, var(--accent-color) 22%, transparent);
+  background: #f1f5f9;
+  background: var(--bg-tertiary);
 }
 
 .expert-chip-clear:disabled {
