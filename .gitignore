@@ -81,6 +81,10 @@ ${TEST_*}
 *.tar.gz
 *.tar
 
+# 一次性临时脚本（改名前缀约定：_tmp_*.py），跑完即删，勿提交
+_tmp_*.py
+.tmp_*/
+
 # 来自 vue26-1013
 .workbuddy/
 /docs/expert-agent-solution.md
