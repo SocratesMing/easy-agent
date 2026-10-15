@@ -72,6 +72,9 @@ offline_deps/
 .codebuddy/
 .workbuddy/
 
+# playwright-cli 本地运行产物（浏览器截图/快照/控制台日志）
+.playwright-cli/
+
 # 内部方案文档（本地参考，不入库）
 /docs/expert-agent-solution.md
 /docs/expert-skill-solution.md
