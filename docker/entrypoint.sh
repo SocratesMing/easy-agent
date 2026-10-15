@@ -37,8 +37,11 @@ if command -v envsubst >/dev/null 2>&1; then
     if [ -n "$envsubst_args" ]; then
         echo "==> 替换配置文件中的环境变量: $envsubst_args"
         var_names=$(echo "$envsubst_args" | grep -oP '\$\{[A-Za-z_][A-Za-z0-9_]*' | sed 's/\${//' | sort -u | while read var; do echo -n "\${$var} "; done)
-        envsubst "$var_names" < "$CONFIG_FILE" > /tmp/config_resolved.yaml
-        CONFIG_FILE="/tmp/config_resolved.yaml"
+        # 必须与原配置同目录：prompt_path 等相对路径按配置文件所在目录解析，
+        # 写到 /tmp 会解析成 /tmp/prompts，提示词静默回落为内置默认值
+        RESOLVED_FILE="$CONFIG_DIR/.config.resolved.yaml"
+        envsubst "$var_names" < "$CONFIG_FILE" > "$RESOLVED_FILE"
+        CONFIG_FILE="$RESOLVED_FILE"
         echo "==> 环境变量替换完成"
     fi
 else
