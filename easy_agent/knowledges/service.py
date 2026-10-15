@@ -75,8 +75,8 @@ logger = logging.getLogger(__name__)
 PARSE_TIMEOUT_SECONDS = 1800.0
 # 软删除保留期（天）：远端副本暂存天数，到期由 KnowledgePurgeWorker 清理
 SOFT_DELETE_RETENTION_DAYS = 30
-# 证据最低得分阈值（0.0 即不过滤）
-MINIMUM_EVIDENCE_SCORE = 0.0
+# 证据最低得分阈值：低于该分的 chunk 不进证据列表，作为本地兜底过滤
+MINIMUM_EVIDENCE_SCORE = 0.4
 # 本地原文根目录（运行期目录，gitignored）
 DEFAULT_ORIGINALS_ROOT = Path("data") / "knowledge_originals"
 
@@ -91,8 +91,9 @@ PARSER_CONFIG: dict[str, object] = {
     "raptor": {"use_raptor": False},
 }
 # 检索固定参数
-# 阈值 0.3：过滤弱相关 chunk，避免模型被迫引用边缘依据导致标注错位
-RETRIEVAL_SIMILARITY_THRESHOLD = 0.3
+# 阈值 0.5：召回阶段即过滤无关 chunk（无关问题的混合分多在 0.3~0.5），
+# 让与知识库无关的问题返回空证据，而不是凑满 top_n 条弱相关依据
+RETRIEVAL_SIMILARITY_THRESHOLD = 0.5
 # 向量权重 0.5：向量/关键词各占一半，提升语义相关性、降低表面用词匹配的干扰
 RETRIEVAL_VECTOR_SIMILARITY_WEIGHT = 0.5
 RETRIEVAL_TOP_K = 1024

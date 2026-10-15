@@ -935,6 +935,11 @@ html[data-theme="dark"] .process-body .process-inline-content {
   width: 100%;
 }
 
+/* 用户消息：文件卡片整体右移，右缘与消息文本右缘对齐（助手消息保持左侧布局） */
+.message.user .message-content .files-container {
+  justify-content: flex-end;
+}
+
 /* 文件卡片样式 */
 .file-card {
   display: flex;
