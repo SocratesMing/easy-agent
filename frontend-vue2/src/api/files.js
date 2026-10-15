@@ -1,12 +1,14 @@
 import request, { requestBlob, requestText } from '../utils/request.js'
 
-export async function uploadFile(sessionId, file, onProgress) {
+export async function uploadFile(sessionId, file, onProgress, signal) {
   const formData = new FormData()
   formData.append('file', file)
   return request({
     url: `/agent/sessions/${sessionId}/upload`,
     method: 'post',
     data: formData,
+    // 用户点 × 删除"上传中"的文件时，通过 AbortSignal 中断请求
+    signal,
     onUploadProgress: (progressEvent) => {
       if (onProgress && progressEvent.total) {
         onProgress(Math.round((progressEvent.loaded * 100) / progressEvent.total))
