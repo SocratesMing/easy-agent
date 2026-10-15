@@ -2,17 +2,17 @@
   <div class="docx-preview-container" ref="containerRef"></div>
 </template>
 
-<script>
+<script setup>
 import { ref, onMounted, watch, onUnmounted } from 'vue'
 import { renderAsync } from 'docx-preview'
-export default {
-  props: {
+
+const props = defineProps({
   fileUrl: {
     type: String,
     default: ''
   }
-},
-  setup(props, { emit }) {
+})
+
 const containerRef = ref(null)
 
 async function loadDocx() {
@@ -59,18 +59,6 @@ onUnmounted(() => {
     containerRef.value.innerHTML = ''
   }
 })
-
-    return {
-      containerRef,
-      loadDocx,
-      onMounted,
-      onUnmounted,
-      ref,
-      renderAsync,
-      watch,
-    }
-  },
-}
 </script>
 
 <style scoped>
@@ -81,7 +69,7 @@ onUnmounted(() => {
   background: #f5f5f5;
 }
 
-.docx-preview-container ::v-deep(.docx-preview-content) {
+.docx-preview-container :deep(.docx-preview-content) {
   background: white;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
   margin: 16px auto;

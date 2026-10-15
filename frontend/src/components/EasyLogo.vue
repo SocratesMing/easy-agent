@@ -1,23 +1,16 @@
-<script>
+<script setup>
 import { computed } from 'vue'
-export default {
-  props: {
+
+const props = defineProps({
   size: {
     type: [Number, String],
     default: 36
   }
-},
-  setup(props, { emit }) {
+})
+
 const iconSize = computed(() => {
   return typeof props.size === 'number' ? `${props.size}px` : props.size
 })
-
-    return {
-      computed,
-      iconSize,
-    }
-  },
-}
 </script>
 
 <template>

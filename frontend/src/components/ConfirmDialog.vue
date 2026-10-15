@@ -1,4 +1,5 @@
 <template>
+  <Teleport to="body">
     <div v-if="visible" class="confirm-dialog-overlay" @click.self="handleCancel">
       <div class="confirm-dialog">
         <div class="confirm-icon" :class="type">
@@ -21,12 +22,13 @@
         </div>
       </div>
     </div>
+  </Teleport>
 </template>
 
-<script>
+<script setup>
 import { ref } from 'vue'
-export default {
-  props: {
+
+const props = defineProps({
   title: {
     type: String,
     default: '确认'
@@ -47,9 +49,10 @@ export default {
     type: String,
     default: 'warning'
   }
-},
-  emits: ['confirm', 'cancel'],
-  setup(props, { emit }) {
+})
+
+const emit = defineEmits(['confirm', 'cancel'])
+
 const visible = ref(false)
 let resolvePromise = null
 
@@ -78,18 +81,7 @@ function handleCancel() {
   emit('cancel')
 }
 
-
-
-    return {
-      handleCancel,
-      handleConfirm,
-      ref,
-      resolvePromise,
-      show,
-      visible,
-    }
-  },
-}
+defineExpose({ show })
 </script>
 
 <style scoped>

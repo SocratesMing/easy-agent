@@ -17,7 +17,7 @@ const _rt = (typeof window !== 'undefined' && window.__RUNTIME_CONFIG__) || {}
 const _envConfig = _rt.ENV_CONFIG || {}
 
 // 当前运行环境标识：优先用运行期注入的 AGENT_ENV，否则回退构建期 MODE。
-export const AGENT_ENV = _rt.AGENT_ENV || process.env.VUE_APP_AGENT_ENV || 'dev'
+export const AGENT_ENV = _rt.AGENT_ENV || import.meta.env.MODE || 'prod'
 
 // 后端地址解析优先级（高 -> 低）：
 //   1) 运行期显式覆盖：window.__RUNTIME_CONFIG__.API_BASE_URL；
@@ -26,14 +26,14 @@ export const AGENT_ENV = _rt.AGENT_ENV || process.env.VUE_APP_AGENT_ENV || 'dev'
 //   4) 兜底：空字符串 → '/agent/...' 相对路径，自动跟随页面当前 origin。
 // 末尾斜杠统一去除，避免拼出 "//agent/..." 这种错误协议相对地址。
 const _envApiBase = _envConfig[AGENT_ENV]?.API_BASE_URL || ''
-const _runtimeApiBase = _rt.API_BASE_URL || _envApiBase || ''
+const _runtimeApiBase = _rt.API_BASE_URL || _envApiBase || import.meta.env.VITE_API_BASE_URL || ''
 export const API_BASE_URL = (_runtimeApiBase ?? '').replace(/\/+$/, '')
-export const APP_TITLE = _rt.APP_TITLE || process.env.VUE_APP_TITLE || 'Easy Agent'
+export const APP_TITLE = _rt.APP_TITLE || import.meta.env.VITE_APP_TITLE || 'Easy Agent'
 export const APP_WELCOME_TITLE =
   _rt.APP_WELCOME_TITLE ||
-  process.env.VUE_APP_WELCOME_TITLE ||
+  import.meta.env.VITE_APP_WELCOME_TITLE ||
   `${APP_TITLE}，让工作更简单`
-export const BUILD_MODE = process.env.NODE_ENV || 'development'
+export const BUILD_MODE = import.meta.env.MODE || 'development'
 
 /**
  * 运行时环境信息，由后端 /agent/auth/config 在登录/加载时填充。

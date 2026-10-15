@@ -1,61 +1,42 @@
-import request from '../utils/request.js'
+import { API_BASE_URL } from '../config.js'
+import { authFetch } from './auth.js'
 
 export async function getMemory() {
-  return request(
-    { url: '/agent/settings/memory', method: 'get' },
-    '获取记忆失败'
-  )
+  const response = await authFetch(`${API_BASE_URL}/agent/settings/memory`)
+  if (!response.ok) throw new Error('获取记忆失败')
+  return await response.json()
 }
 
 export async function updateMemory(content) {
-  return request(
-    { url: '/agent/settings/memory', method: 'put', data: { content } },
-    '更新记忆失败'
-  )
+  const response = await authFetch(`${API_BASE_URL}/agent/settings/memory`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content }),
+  })
+  if (!response.ok) throw new Error('更新记忆失败')
+  return await response.json()
 }
 
 export async function getSystemPrompt() {
-  return request(
-    { url: '/agent/settings/system-prompt', method: 'get' },
-    '获取系统提示词失败'
-  )
+  const response = await authFetch(`${API_BASE_URL}/agent/settings/system-prompt`)
+  if (!response.ok) throw new Error('获取系统提示词失败')
+  return await response.json()
 }
 
 export async function getSkills() {
-  return request(
-    { url: '/agent/settings/skills', method: 'get' },
-    '获取 Skills 列表失败'
-  )
+  const response = await authFetch(`${API_BASE_URL}/agent/settings/skills`)
+  if (!response.ok) throw new Error('获取 Skills 列表失败')
+  return await response.json()
 }
 
 export async function getModels() {
-  return request(
-    { url: '/agent/settings/models', method: 'get' },
-    '获取模型列表失败'
-  )
-}
-
-export async function getMcpApiKeyStatuses() {
-  return request(
-    { url: '/agent/settings/mcp/api-keys', method: 'get' },
-    '获取 MCP API Key 状态失败'
-  )
-}
-
-export async function generateMcpApiKey(business) {
-  return request(
-    {
-      url: '/agent/settings/mcp/api-key',
-      method: 'post',
-      data: { business },
-    },
-    '生成 MCP API Key 失败'
-  )
+  const response = await authFetch(`${API_BASE_URL}/agent/settings/models`)
+  if (!response.ok) throw new Error('获取模型列表失败')
+  return await response.json()
 }
 
 export async function getWebSearchStatus() {
-  return request(
-    { url: '/agent/settings/web-search', method: 'get' },
-    '获取联网搜索状态失败'
-  )
+  const response = await authFetch(`${API_BASE_URL}/agent/settings/web-search`)
+  if (!response.ok) throw new Error('获取联网搜索状态失败')
+  return await response.json()
 }

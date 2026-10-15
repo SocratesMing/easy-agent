@@ -112,8 +112,8 @@
   </div>
 </template>
 
-<script>
-import { MessageBox } from 'element-ui'
+<script setup>
+import { ref, watch, onMounted, onBeforeUnmount, nextTick, computed } from 'vue'
 import {
   getMemory,
   updateMemory,
@@ -461,7 +461,7 @@ onBeforeUnmount(() => {
   justify-content: center;
 }
 
-.nav-icon ::v-deep svg {
+.nav-icon :deep(svg) {
   width: 20px;
   height: 20px;
 }

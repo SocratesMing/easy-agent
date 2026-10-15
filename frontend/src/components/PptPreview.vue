@@ -20,10 +20,10 @@
   </div>
 </template>
 
-<script>
+<script setup>
 import { computed } from 'vue'
-export default {
-  props: {
+
+const props = defineProps({
   fileUrl: {
     type: String,
     default: ''
@@ -32,13 +32,7 @@ export default {
     type: String,
     default: 'PPT'
   }
-},
-  setup(props, { emit }) {
-    return {
-      computed,
-    }
-  },
-}
+})
 </script>
 
 <style scoped>
