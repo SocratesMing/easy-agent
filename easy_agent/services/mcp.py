@@ -4,6 +4,7 @@ Uses langchain-mcp-adapters to connect to MCP servers and convert
 their tools into LangChain BaseTool instances for the agent.
 """
 
+import asyncio
 import json
 import logging
 import os
@@ -13,7 +14,7 @@ from typing import Any
 
 from langchain_mcp_adapters.client import MultiServerMCPClient
 
-from easy_agent.config import Config
+from easy_agent.config import Config, _expand_env_recursive
 
 logger = logging.getLogger("easy-agent")
 
@@ -159,6 +160,8 @@ def _load_servers_from_file(
     try:
         with open(config_path, encoding="utf-8") as f:
             data = json.load(f)
+        data = _expand_env_recursive(data)
+
         servers = data.get("servers")
         if servers is None:
             # 兼容标准 Claude Desktop 格式 {"mcpServers": {"name": {...}}}
@@ -257,25 +260,57 @@ def normalize_servers_mapping(
 # Public API
 # ---------------------------------------------------------------------------
 
-# Per-path MCP tool cache: {resolved_path_str: (mtime, tools)}
-_mcp_tools_cache: dict[str, tuple[float, list]] = {}
+# Per-path MCP tool cache: {resolved_path_str: (mtime, {server_name: [tools]})}
+# 按 server 分组缓存：既服务「注入全部启用连接器」，也服务「使用连接器[X]」只注入
+# 选中连接器（见 get_mcp_tools 的 server_names），两种取法复用同一份缓存、只补差量。
+_mcp_tools_cache: dict[str, tuple[float, dict[str, list]]] = {}
 
 
-async def get_mcp_tools(username: str | None = None) -> list:
-    """Get all MCP tools as LangChain tools via langchain-mcp-adapters.
+async def _load_server_tools(
+    client: MultiServerMCPClient, server_names: list[str]
+) -> dict[str, list]:
+    """并发加载若干 server 的工具。
+
+    单个 server 起不来只记 warning 并返回空列表，不拖累其他 server
+    （与连接器页的逐个探测状态一致）。
+    """
+
+    async def _load_one(name: str) -> tuple[str, list]:
+        try:
+            return name, await client.get_tools(server_name=name)
+        except Exception as e:
+            logger.warning(
+                f"Failed to load MCP tools from server {name}: {_unpack_error(e)}"
+            )
+            return name, []
+
+    pairs = await asyncio.gather(*(_load_one(name) for name in server_names))
+    return dict(pairs)
+
+
+async def get_mcp_tools(
+    username: str | None = None,
+    server_names: list[str] | None = None,
+) -> list:
+    """Get MCP tools as LangChain tools via langchain-mcp-adapters.
 
     Args:
         username: When provided, loads the per-user mcp.json if it exists,
             otherwise the global file.
+        server_names: 只加载这些连接器（MCP server）的工具；``None`` 表示加载全部
+            启用项。名字不在启用配置里的（未安装 / 已停用 / 名字不符）会被跳过并记
+            warning。用户消息里的「使用连接器[X]」解析结果由此传入，实现
+            「本轮只给模型挂上选中的连接器工具」。
 
-    Creates a MultiServerMCPClient from mcp.json config and loads all
+    Creates a MultiServerMCPClient from mcp.json config and loads the
     available tools. Returns a list of LangChain BaseTool instances that
     can be passed directly to create_agent / create_deep_agent.
 
-    Tools are cached per resolved config file path + mtime, so editing the
-    mcp.json and requesting tools again automatically picks up the change
-    (dynamic reload). MultiServerMCPClient is stateless by default — each
-    tool invocation creates a fresh MCP session and cleans up afterwards.
+    Tools are cached per resolved config file path + mtime（按 server 分组），
+    so editing the mcp.json and requesting tools again automatically picks up
+    the change (dynamic reload). 各 server 独立加载、独立容错：某个连接器不可用时
+    其余连接器的工具照常可用。MultiServerMCPClient is stateless by default —
+    each tool invocation creates a fresh MCP session and cleans up afterwards.
     """
     config_path = _resolve_mcp_config_path(username)
     if not config_path:
@@ -287,31 +322,49 @@ async def get_mcp_tools(username: str | None = None) -> list:
     except OSError:
         mtime = 0.0
 
-    cached = _mcp_tools_cache.get(path_key)
-    if cached and cached[0] == mtime:
-        logger.info(
-            f"MCP tools cache hit ({path_key}, mtime={mtime}): {len(cached[1])} tool(s)"
-        )
-        return cached[1]
-
     config = load_mcp_config(username)
     if not config:
-        _mcp_tools_cache[path_key] = (mtime, [])
+        _mcp_tools_cache[path_key] = (mtime, {})
         return []
 
-    try:
-        client = MultiServerMCPClient(config)
-        tools = await client.get_tools()
+    if server_names is None:
+        wanted = list(config)
+    else:
+        selected = [str(n).strip() for n in server_names if str(n).strip()]
+        wanted = [name for name in config if name in set(selected)]
+        unavailable = [n for n in dict.fromkeys(selected) if n not in config]
+        if unavailable:
+            logger.warning(
+                f"连接器指令指定的 server 未启用（未安装 / 已停用 / 名称不符），已跳过: "
+                f"{', '.join(unavailable)}"
+            )
+        if not wanted:
+            return []
+
+    cached = _mcp_tools_cache.get(path_key)
+    # 只有「同一文件 + 同一 mtime」的缓存可用；命中后按 server 补差量加载
+    cached_servers = cached[1] if cached and cached[0] == mtime else {}
+    missing = [name for name in wanted if name not in cached_servers]
+    if missing:
+        client = MultiServerMCPClient({name: config[name] for name in missing})
+        cached_servers = {**cached_servers, **await _load_server_tools(client, missing)}
+        total = sum(len(cached_servers.get(name, [])) for name in wanted)
         logger.info(
-            f"MCP tools loaded ({path_key}, mtime={mtime}): {len(tools)} tool(s)"
+            f"MCP tools loaded ({path_key}, mtime={mtime}): servers={missing} | "
+            f"{total} tool(s)"
         )
-        for t in tools:
-            logger.info(f"  └─ {t.name}")
-        _mcp_tools_cache[path_key] = (mtime, tools)
-        return tools
-    except Exception as e:
-        logger.warning(f"Failed to load MCP tools ({path_key}): {e}")
-        return []
+        for name in missing:
+            for t in cached_servers.get(name, []):
+                logger.info(f"  └─ [{name}] {t.name}")
+    else:
+        total = sum(len(cached_servers.get(name, [])) for name in wanted)
+        logger.info(
+            f"MCP tools cache hit ({path_key}, mtime={mtime}): servers={wanted} | "
+            f"{total} tool(s)"
+        )
+
+    _mcp_tools_cache[path_key] = (mtime, cached_servers)
+    return [t for name in wanted for t in cached_servers.get(name, [])]
 
 
 def invalidate_mcp_cache(username: str | None = None) -> None:

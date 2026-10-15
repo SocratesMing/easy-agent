@@ -13,7 +13,7 @@
 # 可用变量清单见 .env.dev.example / .env.test.example / .env.prod.example。
 
 # ===== LLM Configuration =====
-# Select which model to use: deepseek | ark
+# Select which model to use: deepseek | qwen | ark
 model: "${ACTIVE_MODEL:-deepseek}"
 
 # Provider-specific configurations
@@ -21,11 +21,20 @@ models:
   deepseek:
     provider: "deepseek"
     protocol: "openai"  # anthropic or openai
-    model: "${DEEPSEEK_MODEL:-deepseek-flash}"
+    model: "${DEEPSEEK_MODEL:-deepseek-v4-pro-0813}"
     api_key: "${DEEPSEEK_API_KEY}"
-    api_base: "https://api.deepseek.com"
-    context_length: ${DEEPSEEK_CONTEXT_LENGTH:-1000000}
-  
+    # 默认走阿里百炼 MaaS OpenAI 兼容；也可改回 https://api.deepseek.com
+    api_base: "${DEEPSEEK_API_BASE:-https://llm-tyyt06c5mq54ngq7.cn-beijing.maas.aliyuncs.com/compatible-mode/v1}"
+    context_length: ${DEEPSEEK_CONTEXT_LENGTH:-131072}
+
+  qwen:
+    provider: "qwen"
+    protocol: "openai"
+    model: "${QWEN_MODEL:-qwen-plus}"
+    api_key: "${QWEN_API_KEY}"
+    api_base: "${QWEN_API_BASE:-https://dashscope.aliyuncs.com/compatible-mode/v1}"
+    context_length: ${QWEN_CONTEXT_LENGTH:-131072}
+
   ark:
     provider: "ark"
     protocol: "openai"  # anthropic or openai
@@ -131,6 +140,13 @@ database:
     read_timeout: 30
     write_timeout: 30
 
+# ===== Personnel Policy =====
+# 人员账号策略：默认仅 admin 手工新增或 Excel 导入，行内默认禁止自助注册。
+# 门户免密登录需显式开启：第三方侧边栏 / 宿主换 token 依赖此开关（代码默认 false）。
+personnel:
+  self_registration_enabled: false   # 自助注册开关：true 时登录页显示注册入口，注册接口放行
+  passwordless_login_enabled: false   # 门户免密登录开关：true 时支持 ?username=&user_id= URL 直登与 /login-passwordless 接口（admin 账号不支持）
+
 # ===== Distributed Lock Configuration =====
 # 多实例（多 pod / 多 worker）部署的分布式锁（锁表 distributed_locks，见
 # easy_agent/utils/distributed_lock.py）。定时任务在每个 pod 都会注册同一批 cron，
@@ -179,3 +195,13 @@ expert_tags:
   - { tag_id: asset_allocation, tag_name: 资产配置 }
   - { tag_id: risk_management, tag_name: 风险管理 }
   - { tag_id: other, tag_name: 其他 }
+
+# ===== Knowledge / RAGFlow =====
+# 启用时需配置 RAGFLOW_BASE_URL + RAGFLOW_API_KEY（见 .env.*.example）
+# embedding.model 留空则使用 RAGFlow 默认 embedding，无需 RAGFLOW_EMBEDDING_MODEL
+knowledge:
+  enabled: ${KNOWLEDGE_ENABLED:-false}
+  base_url: "${RAGFLOW_BASE_URL}"
+  api_key: "${RAGFLOW_API_KEY}"
+  embedding:
+    model: ""

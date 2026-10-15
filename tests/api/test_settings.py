@@ -135,7 +135,7 @@ def test_main_app_never_imports_mcp_server_subproject():
     assert offenders == [], f"主应用 import 了 MCP 子项目: {offenders}"
 
 
-def test_mcp_config_preserves_environment_placeholders(tmp_path, monkeypatch):
+def test_mcp_config_expands_environment_placeholders(tmp_path, monkeypatch):
     global_path = tmp_path / "mcp.json"
     global_path.write_text(
         json.dumps(
@@ -161,6 +161,6 @@ def test_mcp_config_preserves_environment_placeholders(tmp_path, monkeypatch):
     config = mcp_mod.load_mcp_config(None)
 
     assert config["env-server"]["env"] == {
-        "MCP_PASSWORD": "${MCP_TEST_PASSWORD}",
-        "MCP_HOST": "${MCP_TEST_HOST:-127.0.0.1}",
+        "MCP_PASSWORD": "test-password",
+        "MCP_HOST": "127.0.0.1",
     }

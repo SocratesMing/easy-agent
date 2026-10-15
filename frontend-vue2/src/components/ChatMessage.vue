@@ -1,6 +1,6 @@
 <template>
   <div class="message" :class="[message.role]">
-    <div class="message-content">
+    <div class="message-content" @click="handleContentClick">
       <!-- AI 侧边栏发起的消息：展示随消息附带的页面上下文 -->
       <div
         v-if="message.role === 'user' && message.page_context"
@@ -92,6 +92,7 @@
                 :duration="block.duration"
                 :pending-approval="!!block.pending_approval"
                 :file-paths="block.file_paths || []"
+                :streaming="!!block.streaming"
                 @approve="$emit('approve')"
                 @reject="$emit('reject')"
               />
@@ -168,6 +169,8 @@
         </div>
       </template>
       
+      <KnowledgeEvidence v-if="message.role === 'assistant'" ref="knowledgeEvidence" :evidence="message.knowledge_evidence || []" :warnings="message.knowledge_warnings || []" :content="citationSourceText" />
+
       <!-- 用户消息显示复制和重试按钮 -->
       <div v-if="message.role === 'user' && message.content" class="message-actions">
         <button class="action-btn retry-btn" @click="retryMessage" title="重新发送">
@@ -200,6 +203,7 @@ import {
   escapeHtml,
 } from '../markdownSetup.js'
 import FileIcon from './FileIcon.vue'
+import KnowledgeEvidence from '../features/knowledge/KnowledgeEvidence.vue'
 import ToolCallCard from './ToolCallCard.vue'
 import { pageContextLabel } from '../utils/pageContext.js'
 
@@ -226,6 +230,22 @@ function isProcessType(b) {
   return (
     b.type === 'thinking' ||
     (b.type === 'tool_call' && b.tool_name !== 'write_todos')
+  )
+}
+
+// 将回答中的 [知识依据N] / [知识库依据N] 标记转为可点击锚点，
+// 点击后由 handleContentClick 委托处理，展开证据面板并滚动到对应依据卡片。
+// citeMap：原始依据编号 → 展示编号（面板仅展示被引用依据并按引用顺序重新编号，
+// 正文锚点同步改写，保证正文标记与面板卡片编号一致）。
+function linkKnowledgeCitations(content, citeMap) {
+  if (typeof content !== 'string') return content
+  const map = citeMap || {}
+  return content.replace(
+    /\[知识(?:库)?依据\s*(\d+)\]/g,
+    (match, num) => {
+      const display = map[num] || Number(num)
+      return `<a class="ke-cite" data-cite="${display}">[知识依据${display}]</a>`
+    }
   )
 }
 
@@ -282,7 +302,7 @@ const renderer = createMarkdownRenderer({ highlight: highlightCode })
 installCodeCopyHandler()
 
 export default {
-  components: { FileIcon, ToolCallCard },
+  components: { FileIcon, ToolCallCard, KnowledgeEvidence },
   props: {
     message: {
       type: Object,
@@ -297,8 +317,9 @@ export default {
       // 处理过程默认展开（含实时会话），由用户手动展开/折叠；新过程到达不自动展开，
       // 避免打断用户已收起的查看状态。
       processExpanded: true,
-      // 用户手动操作过展开/折叠后，本次消息内不再自动展开：流式期间 blocks 每次变化
-      // 都会触发下面的 watch，否则点击折叠会被自动展开顶回去（点击折叠无效）。
+      // 用户是否手动操作过执行过程的展开/折叠：一旦手动操作，本次消息内不再自动展开。
+      // 必须加这道闸——流式期间 blocks 每次变化都会触发自动展开 watcher，否则用户
+      // 点折叠会被「自动展开」立刻顶回去，表现为「流式返回时点击折叠按钮无效」。
       processToggledByUser: false,
       isStuck: false,
     }
@@ -315,6 +336,33 @@ export default {
       if (m.content) return true
       if (m.tool_calls && m.tool_calls.length > 0) return true
       return false
+    },
+    // 供证据面板解析实际引用的完整正文（兼容 content 直存与 blocks 分块两种消息形态）
+    citationSourceText() {
+      const blocks = Array.isArray(this.message.blocks) ? this.message.blocks : []
+      const blockText = blocks
+        .filter(block => block && block.type === 'content')
+        .map(block => block.content || '')
+        .join('\n')
+      return `${this.message.content || ''}\n${blockText}`
+    },
+    // 引用编号重排映射：按正文出现顺序把原始依据编号映射为 1..N 连续编号，
+    // 与 KnowledgeEvidence 的展示编号规则保持一致（仅重排有效引用编号）
+    citeNumberMap() {
+      const evidenceCount = (this.message.knowledge_evidence || []).length
+      if (!evidenceCount) return {}
+      const pattern = /\[知识(?:库)?依据\s*(\d+)\]/g
+      const seen = []
+      let match
+      while ((match = pattern.exec(this.citationSourceText || '')) !== null) {
+        const value = Number(match[1])
+        if (value > 0 && value <= evidenceCount && seen.indexOf(value) === -1) {
+          seen.push(value)
+        }
+      }
+      const map = {}
+      seen.forEach((value, i) => { map[value] = i + 1 })
+      return map
     },
     sortedBlocks() {
       // 从 blocks 字段构建（优先使用）
@@ -578,7 +626,19 @@ export default {
     },
     renderMarkdown(content) {
       if (!content) return ''
-      return renderMarkdownHtml(content, renderer)
+      return renderMarkdownHtml(linkKnowledgeCitations(content, this.citeNumberMap), renderer)
+    },
+    // 事件委托：点击正文里的 [知识依据N] 锚点 → 展开证据面板并定位到第 N 条依据
+    handleContentClick(event) {
+      const target = event.target
+      if (!target || typeof target.closest !== 'function') return
+      const link = target.closest('a.ke-cite')
+      if (!link) return
+      event.preventDefault()
+      const evidence = this.$refs.knowledgeEvidence
+      if (evidence && typeof evidence.jumpTo === 'function') {
+        evidence.jumpTo(Number(link.dataset.cite) || 0)
+      }
     },
     formatJson(obj) {
       try {
@@ -852,6 +912,7 @@ html[data-theme="dark"] .process-body .process-inline-content {
   width: 100%;
 }
 
+/* AI 侧边栏消息的页面上下文胶囊 */
 .page-context-chip {
   display: inline-flex;
   align-items: center;
@@ -1702,6 +1763,80 @@ html[data-theme="dark"] .approval-badge.status-rejected {
 }
 
 /* GitHub 风格 emoji 短代码渲染后的 unicode 字符 */
+/* 知识依据锚点：[知识依据N] 渲染为可点击链接，点击跳转证据面板对应卡片 */
+/* 正文内超链接：全局 a 重置（style.css 里 color/text-decoration: inherit）
+   会抹掉链接外观，这里恢复可辨识样式，保证 [标题](URL) 与裸 URL 一眼可点 */
+.message-text ::v-deep a {
+  color: var(--accent-color, #2563eb);
+  text-decoration: underline;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+
+.message-text ::v-deep a:hover {
+  text-decoration: none;
+  opacity: 0.8;
+}
+
+/* 来源卡片：AI 回复里「标题 + 链接」独立行美化成卡片，不展示裸 URL，点击跳转。
+   连续卡片装进 flex 容器，从左到右排列、装不下自动换行 */
+.message-text ::v-deep .msg-source-cards {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+  margin: 3px 0;
+}
+
+.message-text ::v-deep a.msg-source-card {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  max-width: 100%;
+  margin: 0;
+  padding: 7px 12px;
+  border: 1px solid rgba(37, 99, 235, 0.28);
+  border-radius: 10px;
+  background: rgba(37, 99, 235, 0.05);
+  color: #2563eb;
+  font-weight: 500;
+  line-height: 1.4;
+  text-decoration: none;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+  transition: background 0.15s ease-out, border-color 0.15s ease-out;
+}
+
+.message-text ::v-deep a.msg-source-card:hover {
+  background: rgba(37, 99, 235, 0.1);
+  border-color: rgba(37, 99, 235, 0.5);
+  text-decoration: none;
+}
+
+.message-text ::v-deep a.msg-source-card svg {
+  flex-shrink: 0;
+  width: 15px;
+  height: 15px;
+}
+
+html[data-theme="dark"] .message-text ::v-deep a.msg-source-card {
+  background: rgba(96, 165, 250, 0.1);
+  border-color: rgba(96, 165, 250, 0.35);
+}
+
+.message-text ::v-deep a.ke-cite {
+  color: #2563eb;
+  text-decoration: underline;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.message-text ::v-deep a.ke-cite:hover {
+  color: #1d4ed8;
+  background: #eff6ff;
+}
+
 .message-text ::v-deep .github-emoji {
   display: inline;
   vertical-align: -0.125em;
@@ -1802,6 +1937,31 @@ html[data-theme="dark"] .approval-badge.status-rejected {
 .message-text ::v-deep ul, .message-text ::v-deep ol {
   margin: 20px 0;
   padding-left: 28px;
+  /* 全局 reset（style.css）抹掉了 list-style，这里恢复项目符号，
+     否则列表只剩 28px 缩进、看不到圆点/序号，像凭空缩进 */
+  list-style-position: outside;
+}
+
+.message-text ::v-deep ul {
+  list-style: disc;
+}
+
+.message-text ::v-deep ol {
+  list-style: decimal;
+}
+
+/* 嵌套列表：符号逐层变化，层级归属更清晰 */
+.message-text ::v-deep ul ul {
+  list-style: circle;
+}
+
+.message-text ::v-deep ul ul ul {
+  list-style: square;
+}
+
+.message-text ::v-deep ul ul, .message-text ::v-deep ol ol,
+.message-text ::v-deep ul ol, .message-text ::v-deep ol ul {
+  margin: 6px 0 2px;
 }
 
 .message-text ::v-deep li {

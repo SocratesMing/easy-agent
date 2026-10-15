@@ -5,12 +5,12 @@
   <button
     type="button"
     class="toggle-switch"
-    :class="{ on: modelValue }"
+    :class="{ on: value }"
     role="switch"
-    :aria-checked="modelValue ? 'true' : 'false'"
-    :aria-label="ariaLabel || (modelValue ? '停用' : '启用')"
+    :aria-checked="value ? 'true' : 'false'"
+    :aria-label="ariaLabel || (value ? '停用' : '启用')"
     :disabled="disabled || loading"
-    @click="$emit('change', !modelValue)"
+    @click="$emit('input', !value)"
   >
     <span class="toggle-knob">
       <span v-if="loading" class="toggle-spinner"></span>
@@ -21,12 +21,12 @@
 <script>
 export default {
   props: {
-    modelValue: { type: Boolean, default: false },
+    value: { type: Boolean, default: false },
     loading: { type: Boolean, default: false },
     disabled: { type: Boolean, default: false },
     ariaLabel: { type: String, default: '' },
   },
-  emits: ['change'],
+  emits: ['input'],
 }
 </script>
 

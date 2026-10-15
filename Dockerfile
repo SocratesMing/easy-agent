@@ -10,14 +10,14 @@ FROM node:20-slim AS frontend-builder
 ARG AGENT_ENV=prod
 ENV AGENT_ENV=${AGENT_ENV}
 
-WORKDIR /build/frontend
+WORKDIR /build/frontend-vue2
 
 # Install dependencies first (cache layer)
-COPY frontend/package.json frontend/package-lock.json* ./
+COPY frontend-vue2/package.json frontend-vue2/package-lock.json* ./
 RUN npm install --registry=https://registry.npmmirror.com
 
 # Copy frontend source and build
-COPY frontend/ ./
+COPY frontend-vue2/ ./
 RUN npm run build
 
 # ---------- Stage 2: Backend Runtime ----------
@@ -33,13 +33,15 @@ ENV AGENT_ENV=${AGENT_ENV}
 # (unprivileged filesystem isolation; requires kernel >= 5.13). If neither
 # bwrap nor Landlock is available, shell execution is refused (fail-closed)
 # to prevent cross-user workspace access.
-# To enable full bwrap isolation, run the container with:
-#   --cap-add SYS_ADMIN --security-opt apparmor=unconfined
+# To enable full bwrap isolation (no SYS_ADMIN needed), run the container with:
+#   --security-opt seccomp=unconfined --security-opt apparmor=unconfined
+#   --security-opt systempaths=unconfined
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         bash \
         procps \
         bubblewrap \
+        gettext-base \
         && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -60,7 +62,7 @@ COPY easy_agent/ ./easy_agent/
 RUN uv pip install --system --no-cache --no-deps -e .
 
 # Copy frontend build output
-COPY --from=frontend-builder /build/frontend/dist ./frontend/dist/
+COPY --from=frontend-builder /build/frontend-vue2/dist ./frontend-vue2/dist/
 
 # Copy entrypoint script
 COPY docker/entrypoint.sh /entrypoint.sh

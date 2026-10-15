@@ -33,6 +33,130 @@ export function normalizeMathDelimiters(content) {
   return s
 }
 
+// ---------------------------------------------------------------------------
+// 来源卡片：把 AI 回复里「标题 + 链接」独立成行的来源美化成可点击卡片。
+// 诉求：不展示裸 URL，直接显示标题，点击标题跳转，卡片化外观。
+//   同花顺涨停复盘 http://xxx.shtml
+//   东方财富收评：https://xxx.html
+//   [东方财富收评](https://xxx.html)
+//   https://xxx.html（无标题时以域名作为卡片标题）
+// 完整地址放在卡片 title 属性里，悬停可查看但界面不展示。
+// ---------------------------------------------------------------------------
+
+const SOURCE_CARD_ICON =
+  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"' +
+  ' stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+  '<path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>' +
+  '<polyline points="15 3 21 3 21 9"></polyline>' +
+  '<line x1="10" y1="14" x2="21" y2="3"></line>' +
+  '</svg>'
+
+/** 纯链接行无标题时的兜底：展示可读域名 */
+function getSourceCardDomain(url) {
+  try {
+    return new URL(url).hostname.replace(/^www\./i, '')
+  } catch (e) {
+    return url
+  }
+}
+
+function buildSourceCardHtml(title, url) {
+  return (
+    '<a class="msg-source-card" href="' + escapeHtml(url) + '"' +
+    ' target="_blank" rel="noopener noreferrer"' +
+    ' title="' + escapeHtml(url) + '">' +
+    SOURCE_CARD_ICON +
+    '<span class="msg-source-card-title">' + escapeHtml(title) + '</span>' +
+    '</a>'
+  )
+}
+
+/** 清掉 URL 尾部被一并捕获的中文标点/收尾括号 */
+function trimUrlTail(url) {
+  return url.replace(/[。，、,.\)\]!?！？…；:：]+$/, '')
+}
+
+// 单行改写：命中来源链接模式则生成卡片 HTML（保留列表/标题前缀），否则原样返回
+function beautifySourceLine(raw) {
+  const lead = raw.match(/^(\s*(?:[-*+]|\d+[.)])?\s*#{0,6}\s*)/)
+  const prefix = lead ? lead[1] : ''
+  const line = raw.slice(prefix.length)
+  if (!line) return raw
+
+  // 1. markdown 链接独立成行：[标题](url)
+  let m = line.match(/^\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)$/)
+  if (m) return prefix + buildSourceCardHtml(m[1].trim(), m[2])
+
+  // 2. 标题 + 裸链接：「东方财富收评：url」「凤凰财经/中国证券报 url」
+  m = line.match(/^(.+?)\s*[:：，,]?\s*(https?:\/\/\S+)\s*$/)
+  if (m) {
+    let title = m[1].trim().replace(/[*_~`]+/g, '').replace(/[（(]+$/, '').trim()
+    // 结论句里顺带提到链接（标题里还有其他 URL）时不算来源行，保持普通渲染
+    if (!title || /https?:\/\//i.test(title) || title.length > 60) return raw
+    return prefix + buildSourceCardHtml(title, trimUrlTail(m[2]))
+  }
+
+  // 3. 纯链接行：没有可展示的标题，用域名替代
+  m = line.match(/^(https?:\/\/\S+)\s*$/)
+  if (m) {
+    const url = trimUrlTail(m[1])
+    return prefix + buildSourceCardHtml(getSourceCardDomain(url), url)
+  }
+
+  return raw
+}
+
+/** 判断该行是不是来源卡片（无列表前缀的独立卡片行才参与横向合并） */
+function isCardLine(line) {
+  return /^<a class="msg-source-card"[^]*<\/a>$/.test(line)
+}
+
+/** 连续卡片行包进 flex 容器：横向排列、装不下自动换行 */
+function wrapSourceCards(cardLines) {
+  return '<span class="msg-source-cards">' + cardLines.join(' ') + '</span>'
+}
+
+/**
+ * 来源链接美化：把 AI 回复里的「标题 + 链接」行改写成来源卡片。
+ * 连续的卡片行合并成一个 flex 容器（从左到右排列，超出自动换行）。
+ * 代码块（含流式期间未闭合的围栏）整体保护，其中的 URL 不改写。
+ *
+ * @param {string} content markdown 文本
+ * @returns {string} 替换后的 markdown 文本
+ * @example
+ * beautifySourceLinks('东方财富收评 https://finance.eastmoney.com/a/1.html')
+ */
+export function beautifySourceLinks(content) {
+  if (typeof content !== 'string' || !content) return content
+  const parts = content.split(/(```[\s\S]*?(?:```|$))/)
+  let out = ''
+  for (let i = 0; i < parts.length; i++) {
+    if (i % 2 === 1) {
+      // 奇数段是代码块本体，原样保留
+      out += parts[i]
+      continue
+    }
+    const lines = parts[i].split('\n').map(beautifySourceLine)
+    const grouped = []
+    let pendingCards = null
+    for (const line of lines) {
+      if (isCardLine(line)) {
+        if (pendingCards) pendingCards.push(line)
+        else pendingCards = [line]
+        continue
+      }
+      if (pendingCards) {
+        grouped.push(wrapSourceCards(pendingCards))
+        pendingCards = null
+      }
+      grouped.push(line)
+    }
+    if (pendingCards) grouped.push(wrapSourceCards(pendingCards))
+    out += grouped.join('\n')
+  }
+  return out
+}
+
 export function setupMarkedExtensions() {
   if (initialized) return
   initialized = true
@@ -204,7 +328,7 @@ export function createMarkdownRenderer({ highlight, externalLinks = true }) {
 export function renderMarkdown(content, renderer) {
   if (!content) return ''
   try {
-    return marked.parse(normalizeMathDelimiters(content), {
+    return marked.parse(beautifySourceLinks(normalizeMathDelimiters(content)), {
       renderer,
       breaks: true,
       gfm: true,

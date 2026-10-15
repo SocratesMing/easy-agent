@@ -92,10 +92,12 @@ def test_setup_logging_creates_three_service_log_files(tmp_path, monkeypatch):
         proc_file = Path(log_files["proc"])
         err_file = Path(log_files["err"])
         comm_file = Path(log_files["comm"])
+        # proc 收录全量日志：过程日志、错误日志、通信日志（uvicorn.access）均写入
         assert proc_file.read_text(encoding="utf-8") == (
             "WARNING log ready\n"
             "ERROR error ready\n"
             "WARNING uvicorn error ready\n"
+            "WARNING uvicorn access ready\n"
             "WARNING fastapi ready\n"
         )
         assert err_file.exists()

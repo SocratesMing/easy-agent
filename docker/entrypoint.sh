@@ -30,20 +30,29 @@ echo "==> 使用配置文件: $CONFIG_FILE"
 
 # Substitute environment variables in config file
 # Replaces ${VAR} or ${VAR:-default} patterns with actual values
-envsubst_args=$(grep -oP '\$\{[A-Za-z_][A-Za-z0-9_]*(?::-[^}]*)?\}' "$CONFIG_FILE" 2>/dev/null | sort -u | tr '\n' ' ')
-if [ -n "$envsubst_args" ]; then
-    echo "==> 替换配置文件中的环境变量: $envsubst_args"
-    var_names=$(echo "$envsubst_args" | grep -oP '\$\{[A-Za-z_][A-Za-z0-9_]*' | sed 's/\${//' | sort -u | while read var; do echo -n "\${$var} "; done)
-    envsubst "$var_names" < "$CONFIG_FILE" > /tmp/config_resolved.yaml
-    CONFIG_FILE="/tmp/config_resolved.yaml"
-    echo "==> 环境变量替换完成"
+# 后端 Config.from_yaml 本身也会解析 ${VAR:-default}；此处 envsubst 为可选加速。
+# 镜像未装 gettext-base 时跳过，避免 entrypoint 直接失败。
+if command -v envsubst >/dev/null 2>&1; then
+    envsubst_args=$(grep -oP '\$\{[A-Za-z_][A-Za-z0-9_]*(?::-[^}]*)?\}' "$CONFIG_FILE" 2>/dev/null | sort -u | tr '\n' ' ')
+    if [ -n "$envsubst_args" ]; then
+        echo "==> 替换配置文件中的环境变量: $envsubst_args"
+        var_names=$(echo "$envsubst_args" | grep -oP '\$\{[A-Za-z_][A-Za-z0-9_]*' | sed 's/\${//' | sort -u | while read var; do echo -n "\${$var} "; done)
+        # 必须与原配置同目录：prompt_path 等相对路径按配置文件所在目录解析，
+        # 写到 /tmp 会解析成 /tmp/prompts，提示词静默回落为内置默认值
+        RESOLVED_FILE="$CONFIG_DIR/.config.resolved.yaml"
+        envsubst "$var_names" < "$CONFIG_FILE" > "$RESOLVED_FILE"
+        CONFIG_FILE="$RESOLVED_FILE"
+        echo "==> 环境变量替换完成"
+    fi
+else
+    echo "==> 未找到 envsubst，跳过预替换（由 Python 配置加载器解析占位符）"
 fi
 
 export EASY_CONFIG="$CONFIG_FILE"
 
 # ---------- 运行期注入前端配置（后端地址 / AGENT_ENV 在容器启动时才知道）----------
 # 前端在构建镜像时无法预知后端地址，这里根据运行期环境变量写出
-# /app/frontend/dist/runtime-config.js（window.__RUNTIME_CONFIG__），
+# /app/frontend-vue2/dist/runtime-config.js（window.__RUNTIME_CONFIG__），
 # 由前端在运行时读取，覆盖构建期固化的 VITE_API_BASE_URL。
 RUNTIME_API_URL="${API_BASE_URL:-}"
 RUNTIME_APP_TITLE="${APP_TITLE:-Easy Agent}"
@@ -52,7 +61,7 @@ if [ -z "$RUNTIME_API_URL" ]; then
   # 适用于 uvicorn 同进程托管前端的部署；serve 分离部署请显式传 API_BASE_URL。
   RUNTIME_API_URL="/"
 fi
-cat > /app/frontend/dist/runtime-config.js <<EOF
+cat > /app/frontend-vue2/dist/runtime-config.js <<EOF
 // 本文件由启动脚本根据运行期环境变量自动生成，请勿手工编辑。
 window.__RUNTIME_CONFIG__ = {
   API_BASE_URL: "${RUNTIME_API_URL}",

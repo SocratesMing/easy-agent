@@ -39,7 +39,7 @@ export interface EasyAgentFeatures {
   shortcut?: boolean
   /** 悬浮 / 固定模式切换，默认 true */
   dock?: boolean
-  /** 「在主站打开」按钮，配置了 mainAppUrl 或 onOpenInMain 时默认 true */
+  /** 「在主站打开」按钮与「+」菜单的「在管理面板中打开」，配置了 mainAppUrl / onOpenInMain / onOpenPanel 时默认 true */
   openInMain?: boolean
 }
 
@@ -73,6 +73,8 @@ export interface EasyAgentSidebarOptions {
   onClose?: () => void
   onAuthExpired?: (error: Error) => void
   onOpenInMain?: (sessionId: string) => void
+  /** 自定义「在管理面板中打开」：默认新标签页打开 mainAppUrl?panel=<tab> */
+  onOpenPanel?: (tab: 'experts' | 'skills' | 'connectors' | 'knowledge') => void
   onLayoutChange?: (layout: { dockWidth: number }) => void
 }
 

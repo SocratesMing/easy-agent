@@ -8,7 +8,9 @@ from .agent_manager import (
     get_agent_config,
     invalidate_user_agents,
     get_session_expert,
+    get_session_connectors,
 )
+from .connectors import parse_message_connectors
 from .streaming import chat_stream_generator, resume_stream_generator
 from .scheduler import (
     init_scheduler,
@@ -29,6 +31,8 @@ __all__ = [
     "get_agent_config",
     "invalidate_user_agents",
     "get_session_expert",
+    "get_session_connectors",
+    "parse_message_connectors",
     "chat_stream_generator",
     "resume_stream_generator",
     "init_scheduler",

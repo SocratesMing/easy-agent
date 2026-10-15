@@ -15,7 +15,7 @@ import time
 
 # 服务日志硬编码配置。修改此处即可，不依赖 config.yaml 或环境变量。
 LOG_DIR = "./logs"
-LOG_SERVICE_NAME = ""
+LOG_SERVICE_NAME = "easy-agent"
 LOG_VERSION = "v01"
 LOG_PROC_FILE = "proc-{version}-{service_name}.log"
 LOG_ERR_FILE = "err-{version}-{service_name}.log"
@@ -27,6 +27,12 @@ LOG_MAX_BYTES = 50 * 1024 * 1024
 LOG_ROTATION_WHEN = "midnight"
 LOG_ROTATION_INTERVAL = 1
 LOG_BACKUP_COUNT = 30
+
+# 轮转文件后缀匹配：按天（2026-09-09）、大小触发带时刻（2026-09-09_11-22-33）、
+# 同秒序号（2026-09-09.1）；不匹配无关文件（2026-09-09.extra），避免误删。
+_ROTATED_LOG_SUFFIX = re.compile(
+    r"^\d{4}-\d{2}-\d{2}(?:_\d{2}-\d{2}-\d{2})?(?:\.\d+)?$"
+)
 
 
 class _RunidFilter(logging.Filter):
@@ -47,7 +53,7 @@ class _MillisecondFormatter(logging.Formatter):
 
 
 class _CommunicationFilter(logging.Filter):
-    def __init__(self, logger_names: list[str]):
+    def __init__(self, logger_names: tuple[str, ...] | list[str]):
         super().__init__()
         self._logger_names = tuple(logger_names)
 
@@ -57,11 +63,6 @@ class _CommunicationFilter(logging.Filter):
             or record.name.startswith(f"{logger_name}.")
             for logger_name in self._logger_names
         )
-
-
-class _ProcessFilter(_CommunicationFilter):
-    def filter(self, record):
-        return not super().filter(record)
 
 
 class _TimeSizeRotatingFileHandler(TimedRotatingFileHandler):
@@ -137,9 +138,7 @@ def _build_file_handler(
         max_bytes=LOG_MAX_BYTES,
     )
     handler.suffix = "%Y-%m-%d"
-    handler.extMatch = re.compile(
-        r"^\d{4}-\d{2}-\d{2}(?:_\d{2}-\d{2}-\d{2})?(?:\.\d+)?$"
-    )
+    handler.extMatch = _ROTATED_LOG_SUFFIX
     handler.setLevel(level)
     handler.setFormatter(formatter)
     handler.addFilter(_RunidFilter())
@@ -182,10 +181,11 @@ def setup_logging() -> dict[str, str]:
         "comm": log_dir_path
         / LOG_COMM_FILE.format(**name_values),
     }
-    process_filter = _ProcessFilter(communication_loggers)
     communication_filter = _CommunicationFilter(communication_loggers)
+    # proc 记录全量日志：启动/过程/错误/通信日志均写入 proc，
+    # err / comm 仅作为错误、通信的专项视图，proc 仍是完整流水。
     process_handler = _build_file_handler(
-        log_files["proc"], level, formatter, process_filter
+        log_files["proc"], level, formatter
     )
     error_handler = _build_file_handler(log_files["err"], logging.ERROR, formatter)
     communication_handler = _build_file_handler(

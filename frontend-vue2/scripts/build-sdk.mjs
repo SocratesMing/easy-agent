@@ -7,13 +7,15 @@
  *    单文件即可使用，无需另外引入 CSS；@font-face 单独回填（影子根内声明的字体不生效，由 SDK 注入宿主 document）
  * 3. 写入 npm 包元数据（sdk/ 下的 package.json、类型声明、演示页）与 README（集成指南）
  */
-import { spawnSync } from 'node:child_process'
-import { createRequire } from 'node:module'
-import { copyFileSync, existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { resolve } from 'node:path'
+// 需兼容 Node 14：不用 import.meta.dirname（Node 20.11+）与 node: 前缀导入
+import { spawnSync } from 'child_process'
+import { createRequire } from 'module'
+import { copyFileSync, existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
+import { dirname, resolve } from 'path'
+import { fileURLToPath } from 'url'
 
 const require = createRequire(import.meta.url)
-const root = resolve(import.meta.dirname, '..')
+const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const outDir = resolve(root, 'dist-sdk')
 const sdkDir = resolve(root, 'sdk')
 const NAME = 'easy-agent-sidebar'
@@ -82,4 +84,6 @@ const size = (f) => `${(readFileSync(resolve(outDir, f)).length / 1024).toFixed(
 console.log(`\n[build-sdk] ${pkg.name}@${pkg.version} → dist-sdk/`)
 console.log(`  ${NAME}.umd.min.js  ${size(`${NAME}.umd.min.js`)}  （CSS 已内联）`)
 console.log(`  ${NAME}.common.js   ${size(`${NAME}.common.js`)}`)
+console.log(`  demo.html          第三方联调页（配置面板 / 三种鉴权 / 页面上下文）`)
+console.log(`  本地验证：cd dist-sdk && python3 -m http.server 5181`)
 console.log(`  发布：cd dist-sdk && npm publish\n`)

@@ -1,9 +1,12 @@
 """FastAPI application entry point"""
 
+import asyncio
 import logging
 import os
 import platform
 import sys
+import time
+import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
@@ -17,9 +20,25 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from langchain_core.messages import HumanMessage
+from starlette.concurrency import run_in_threadpool
 
 from .config import AgentConfig
 from .db import init_database
+from .knowledge_impl import (
+    KNOWLEDGE_IMPL,
+    LegacyHostRoutes,
+    KnowledgeOperationsRepository,
+    audit_metadata,
+    metrics,
+    resolve_request_id,
+    should_audit,
+    shutdown_catalog_sync,
+    shutdown_knowledge,
+    startup_catalog_sync,
+    startup_knowledge,
+)
+from .knowledge_impl import knowledge_router
+from .personnel import router as personnel_router
 from .model import create_model
 from .models.api import HealthResponse
 from .services import get_agent_config, init_agent_config
@@ -51,8 +70,11 @@ if platform.system() != "Windows":
 
 logger = logging.getLogger(__name__)
 
+# 前端静态目录：2026-10-10 起以 frontend-vue2/（开发基线）的构建产物为准
 frontend_dist = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "frontend", "dist"
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "frontend-vue2",
+    "dist",
 )
 
 agent_config = None
@@ -209,10 +231,16 @@ async def lifespan(app: FastAPI):
     else:
         logger.warning("⚠️ 配置未加载，后续将使用内置默认值（部分功能可能不可用）")
 
+    await startup_knowledge(app, config_path)
+
     if config:
         await _check_llm_connection(config)
 
     _init_database_and_state(app, config)
+
+    # 外部目录树同步（ai_kb → 知识库板块）：由 knowledge.catalog_sync.enabled
+    # 开关控制，后台执行，失败仅记日志不阻断启动
+    await startup_catalog_sync(app)
 
     system_prompt = _prepare_system_prompt(config, config_path)
 
@@ -269,11 +297,31 @@ async def lifespan(app: FastAPI):
     else:
         logger.warning("⚠️ Agent 配置未加载")
 
+    # 仅当活动 YAML 含 knowledge: 段时才启动知识库：
+    # KnowledgeConfig.from_yaml 以「是否含 knowledge 键」判定应用配置，缺段时会
+    # 把整份应用配置按 strict extra=forbid 校验而报错 → 启动失败。缺段则记日志跳过。
+    knowledge_started = False
+    try:
+        import yaml
+
+        _raw = yaml.safe_load(Path(config_path).read_text(encoding="utf-8")) or {}
+        knowledge_started = isinstance(_raw, dict) and "knowledge" in _raw
+    except Exception as exc:
+        logger.warning(f"检测 knowledge 配置失败，按未启用处理: {exc}")
+    if knowledge_started:
+        logger.info(f"📚 知识库实现: {KNOWLEDGE_IMPL}")
+        await startup_knowledge(app, config_path)
+    else:
+        logger.info("ℹ️ 未配置 knowledge 段，跳过知识库启动")
+
     logger.info("=" * 60)
     logger.info("🚀 Easy Agent Web Service 启动完成")
     logger.info("=" * 60)
     yield
 
+    if knowledge_started:
+        await shutdown_knowledge(app)
+    await shutdown_catalog_sync(app)
     _shutdown_app(app)
 
 
@@ -335,24 +383,121 @@ _ACCESS_SKIP_SUFFIXES = (
 
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
+    request_id = resolve_request_id(request.headers.get("X-Request-Id"))
+    request.state.request_id = request_id
     path = request.url.path
     if (
-        path in ("/", "/health")
+        path in ("/", "/health", "/api/health", "/agent/health")
         or path.startswith(_ACCESS_SKIP_PREFIXES)
         or path.endswith(_ACCESS_SKIP_SUFFIXES)
     ):
-        return await call_next(request)
+        response = await call_next(request)
+        response.headers["X-Request-Id"] = request_id
+        return response
+
     client_ip = _get_client_ip(request)
-    logger.info(f"[请求] {request.method} {path} | IP: {client_ip}")
-    return await call_next(request)
+    started = time.monotonic()
+    status_code = 500
+    logger.info("[请求] %s %s | IP: %s | request_id=%s", request.method, path, client_ip, request_id)
+    try:
+        response = await call_next(request)
+        status_code = response.status_code
+        response.headers["X-Request-Id"] = request_id
+        return response
+    finally:
+        duration = time.monotonic() - started
+        if path.startswith(("/api/knowledge/", "/api/personnel")):
+            metrics.observe(request.method, path, status_code, duration)
+        if should_audit(path, request.method):
+            db = getattr(request.app.state, "db", None)
+            config = getattr(request.app.state, "knowledge_config", None)
+            if db is not None and (config is None or config.audit.enabled):
+                metadata = audit_metadata(path, request.method, status_code, duration)
+                try:
+                    await asyncio.to_thread(
+                        KnowledgeOperationsRepository(db).record_audit,
+                        request_id=request_id,
+                        actor_user_id=str(getattr(request.state, "actor_user_id", "anonymous")),
+                        actor_username=str(getattr(request.state, "actor_username", "anonymous")),
+                        max_details_bytes=getattr(getattr(config, "audit", None), "max_details_bytes", 4096),
+                        **metadata,
+                    )
+                except Exception:
+                    logger.exception("审计记录写入失败 | request_id=%s", request_id)
+
+
+# knowledge 可观测性中间件（additive）：只新增 request_id、X-Request-Id 响应头与
+# 日志；不修改响应体/状态码。仅当 knowledge 已启用且 audit.enabled 时，对
+# /agent/knowledge 请求写审计记录，写入失败只告警。
+@app.middleware("http")
+async def knowledge_observability(request: Request, call_next):
+    request_id = request.headers.get("X-Request-Id", "").strip()
+    if (
+        not request_id
+        or len(request_id) > 128
+        or "\r" in request_id
+        or "\n" in request_id
+    ):
+        request_id = str(uuid.uuid4())
+    request.state.request_id = request_id
+
+    started = time.perf_counter()
+    response = await call_next(request)
+    duration_ms = (time.perf_counter() - started) * 1000
+
+    response.headers["X-Request-Id"] = request_id
+    logger.info(
+        f"[响应] {request.method} {request.url.path} -> {response.status_code} "
+        f"| {duration_ms:.1f}ms | request_id={request_id}"
+    )
+
+    knowledge_config = getattr(request.app.state, "knowledge_config", None)
+    if (
+        knowledge_config is not None
+        and knowledge_config.enabled
+        and knowledge_config.audit.enabled
+        # 复用模块自身策略：只审计写入路径，跳过端点已单独审计的读路径
+        # （should_audit 排除 /capabilities、/status、/health、/metrics 等）。
+        and should_audit(request.url.path, request.method)
+    ):
+        try:
+            db = getattr(request.app.state, "db", None)
+            if db is not None:
+                await run_in_threadpool(
+                    KnowledgeOperationsRepository(db).record_audit,
+                    request_id=request_id,
+                    actor_user_id=str(
+                        getattr(request.state, "actor_user_id", "") or "anonymous"
+                    ),
+                    actor_username=str(
+                        getattr(request.state, "actor_username", "") or "anonymous"
+                    ),
+                    **audit_metadata(
+                        request.url.path,
+                        request.method,
+                        response.status_code,
+                        duration_ms / 1000,
+                    ),
+                    max_details_bytes=knowledge_config.audit.max_details_bytes,
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"知识库审计写入失败: {exc}")
+
+    return response
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
-    logger.error(f"全局异常: {str(exc)}", exc_info=True)
-    return JSONResponse(status_code=500, content={"detail": str(exc)})
+    request_id = str(getattr(request.state, "request_id", "unknown"))
+    logger.error("全局异常 | request_id=%s", request_id, exc_info=True)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "服务内部错误", "request_id": request_id},
+        headers={"X-Request-Id": request_id},
+    )
 
 
 app.include_router(chat_router)
+app.add_middleware(LegacyHostRoutes)
 app.include_router(sessions_router)
 app.include_router(files_router)
 app.include_router(auth_router)
@@ -364,6 +509,8 @@ app.include_router(connectors_router)
 if terminal_router is not None:
     app.include_router(terminal_router)
 app.include_router(scheduled_tasks_router)
+app.include_router(knowledge_router)
+app.include_router(personnel_router)
 app.include_router(expert_router)
 
 
@@ -388,11 +535,27 @@ async def get_config():
     return {"status": "not initialized"}
 
 
+
+@app.get("/api/health", summary="健康检查", response_model=HealthResponse)
+async def api_health_check():
+    return await health_check()
+
+
+@app.get("/api/config", summary="获取Agent配置")
+async def api_get_config():
+    return await get_config()
+
+
 @app.get("/", response_class=FileResponse)
 async def serve_frontend():
     index_html = os.path.join(frontend_dist, "index.html")
     if os.path.exists(index_html):
-        return FileResponse(index_html)
+        # 入口 HTML 禁止缓存：打包产物文件名固定（/js/app.js），旧缓存会指向
+        # 已下线的接口/入口，出现 405、旧界面等问题。
+        return FileResponse(
+            index_html,
+            headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+        )
     return FileResponse(os.path.join(frontend_dist, "index.html"))
 
 
@@ -407,11 +570,16 @@ async def serve_static(full_path: str):
 
     static_file = os.path.join(frontend_dist, full_path)
     if os.path.exists(static_file) and os.path.isfile(static_file):
-        return FileResponse(static_file)
+        # 静态产物文件名固定（/js/app.js）：no-cache 禁止启发式强缓存，
+        # 强制走协商缓存（ETag/Last-Modified 变了即拉新），新版本部署后普通刷新即可生效。
+        return FileResponse(static_file, headers={"Cache-Control": "no-cache"})
 
     index_html = os.path.join(frontend_dist, "index.html")
     if os.path.exists(index_html):
-        return FileResponse(index_html)
+        return FileResponse(
+            index_html,
+            headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+        )
 
     return JSONResponse({"error": "Not found"}, status_code=404)
 

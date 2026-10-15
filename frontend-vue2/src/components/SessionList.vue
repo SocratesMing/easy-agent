@@ -21,11 +21,11 @@
         <span>新建会话</span>
       </button>
       
-      <button @click="$emit('show-assets')" class="action-btn assets">
+      <button @click="$emit('show-knowledge')" class="action-btn assets" :class="{ active: showKnowledge }">
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
         </svg>
-        <span>资产</span>
+        <span>知识库</span>
       </button>
 
       <button @click="$emit('show-skill-center')" class="action-btn skill-center">
@@ -60,7 +60,7 @@
           v-for="session in group.sessions"
           :key="session.session_id"
           class="session-item"
-          :class="{ active: !showAssets && session.session_id === currentSessionId, streaming: streamingSessionIds.includes(session.session_id) }"
+          :class="{ active: !showKnowledge && !showAssets && session.session_id === currentSessionId, streaming: streamingSessionIds.includes(session.session_id) }"
           @click="$emit('select-session', session.session_id)"
         >
           <div class="session-info">
@@ -74,6 +74,7 @@
               <span v-if="streamingSessionIds.includes(session.session_id)" class="streaming-badge" title="进行中">
                 <span class="streaming-dot"></span>
               </span>
+              <span v-if="pendingApprovalSessionIds.includes(session.session_id)" class="approval-flag" title="该会话存在待审批操作，需处理后才能继续">待审批</span>
             </div>
           </div>
           <div class="session-actions">
@@ -169,19 +170,6 @@
           </svg>
           设置
         </button>
-        <button
-          v-if="username === 'admin'"
-          class="user-dropdown-item"
-          @click="showUserManagement"
-        >
-          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
-            <circle cx="9" cy="7" r="4"></circle>
-            <path d="M23 21v-2a4 4 0 0 0-3-3.87"></path>
-            <path d="M16 3.13a4 4 0 0 1 0 7.75"></path>
-          </svg>
-          用户管理
-        </button>
         <div class="user-dropdown-divider"></div>
         <button class="user-dropdown-item logout-item" @click="handleLogout">
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -201,6 +189,7 @@
 const APP_TITLE = 'Easy Agent'
 export default {
   props: {
+  showKnowledge: { type: Boolean, default: false },
   sessions: {
     type: Array,
     default: () => []
@@ -210,6 +199,10 @@ export default {
     default: null
   },
   streamingSessionIds: {
+    type: Array,
+    default: () => []
+  },
+  pendingApprovalSessionIds: {
     type: Array,
     default: () => []
   },
@@ -594,6 +587,26 @@ export default {
 @keyframes streaming-pulse {
   0%, 100% { opacity: 1; transform: scale(1); }
   50% { opacity: 0.35; transform: scale(0.65); }
+}
+
+/* 待审批标识：琥珀色小徽标，与"进行中"绿点区分；小尺寸淡底，不喧宾夺主 */
+.approval-flag {
+  flex-shrink: 0;
+  margin-left: 2px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(245, 158, 11, 0.14);
+  color: #b45309;
+  font-size: 10px;
+  line-height: 1.5;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+html[data-theme="dark"] .approval-flag {
+  background: rgba(251, 191, 36, 0.16);
+  /* 全局暗色规则用 !important 压文字色，此处需同级覆盖（见 memory 既有结论） */
+  color: #fbbf24 !important;
 }
 
 .session-actions {

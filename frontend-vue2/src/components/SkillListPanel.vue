@@ -157,10 +157,10 @@
                    默认浏览视图不显示开关 -->
               <ToggleSwitch
                 v-if="card.installed && installedOnly"
-                :model-value="card.enabled"
+                :value="card.enabled"
                 :loading="togglingKey === card.key"
                 :aria-label="`${card.enabled ? '停用' : '启用'}技能 ${card.name}`"
-                @change="handleToggle(card, $event)"
+                @input="handleToggle(card, $event)"
               />
               <!-- 已添加：只给一个对勾状态标记（不写文字），停用时降为灰色 -->
               <span

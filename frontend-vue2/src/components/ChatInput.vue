@@ -64,6 +64,35 @@
           </div>
         </div>
 
+        <!-- 已选连接器：与输入文字同一行展示（只显示连接器名，发送时还原为「使用连接器[名称]」） -->
+        <div v-if="selectedConnectors.length > 0" class="selected-connectors">
+          <div
+            v-for="connector in selectedConnectors"
+            :key="connector.name"
+            class="selected-connector"
+            :title="connector.desc || connector.name"
+          >
+            <svg class="selected-connector-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 22v-5"></path>
+              <path d="M9 8V2"></path>
+              <path d="M15 8V2"></path>
+              <path d="M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8z"></path>
+            </svg>
+            <span class="selected-connector-name">{{ connector.name }}</span>
+            <button
+              type="button"
+              class="selected-connector-remove"
+              :aria-label="`移除连接器 ${connector.name}`"
+              @click="removeSelectedConnector(connector)"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
+                <line x1="18" y1="6" x2="6" y2="18" />
+                <line x1="6" y1="6" x2="18" y2="18" />
+              </svg>
+            </button>
+          </div>
+        </div>
+
         <div class="input-field">
           <div
             v-show="caretLineTop !== null"
@@ -97,7 +126,7 @@
               class="action-btn plus-btn"
               :class="{ disabled: isStreaming || disabled }"
               :disabled="isStreaming || disabled"
-              v-tip="'添加文件 · 专家 · 技能 · 连接器'"
+              v-tip="'添加文件 · 知识库 · 专家 · 技能 · 连接器'"
               aria-haspopup="menu"
               :aria-expanded="showPlusMenu ? 'true' : 'false'"
               @click="togglePlusMenu"
@@ -116,6 +145,16 @@
                     <line x1="9" y1="15" x2="15" y2="15"></line>
                   </svg>
                   <span class="plus-menu-label">添加文件</span>
+                  <svg class="plus-menu-arrow" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="9 18 15 12 9 6"></polyline>
+                  </svg>
+                </button>
+                <button type="button" class="plus-menu-item plus-menu-item-knowledge" @mouseenter="enterKnowledgeItem" @click="openKnowledgeScope">
+                  <svg class="plus-menu-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path>
+                    <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path>
+                  </svg>
+                  <span class="plus-menu-label">知识库</span>
                   <svg class="plus-menu-arrow" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                     <polyline points="9 18 15 12 9 6"></polyline>
                   </svg>
@@ -244,7 +283,20 @@
                 <div v-if="plusListLoading" class="plus-list-hint">加载中…</div>
                 <div v-else-if="plusListError" class="plus-list-hint error">{{ plusListError }}</div>
                 <div v-else-if="plusList.length === 0" class="plus-list-hint">{{ plusListEmptyText }}</div>
-                <div v-else v-for="item in plusList" :key="item.key" class="plus-list-item">
+                <div
+                  v-else
+                  v-for="item in plusList"
+                  :key="item.key"
+                  class="plus-list-item"
+                  :class="{
+                    selectable: subpanelCategory === 'connectors',
+                    selected: isConnectorSelected(item)
+                  }"
+                  :title="subpanelCategory === 'connectors'
+                    ? (isConnectorSelected(item) ? '再次点击取消使用' : `使用连接器「${item.name}」`)
+                    : ''"
+                  @click="onPlusListItemClick(item)"
+                >
                   <span class="plus-list-icon" :class="{ initial: !item.icon }">{{ item.icon || item.initial }}</span>
                   <span class="plus-list-body">
                     <span class="plus-list-name-row">
@@ -253,9 +305,11 @@
                     </span>
                     <span class="plus-list-desc">{{ item.desc }}</span>
                   </span>
+                  <!-- 连接器可点击加入输入框：选中后行尾给「已选」标，与专家行的召唤态一致 -->
+                  <span v-if="isConnectorSelected(item)" class="plus-list-state">已选</span>
                 </div>
               </div>
-              <div class="plus-subpanel-footer">
+              <div v-if="showManageEntry" class="plus-subpanel-footer">
                 <button type="button" class="plus-subpanel-manage" @click="handleMenuPanel(subpanelCategory)">
                   在管理面板中打开 →
                 </button>
@@ -263,6 +317,20 @@
             </div>
             </div>
           </div>
+          <!-- 知识库引用：仅由加号菜单「知识库」入口打开（常驻触发按钮隐藏），
+               面板与技能子面板同款样式，锚到「知识库」菜单项右侧弹出 -->
+          <KnowledgeScopeSelector
+            ref="knowledgeScope"
+            :session-id="sessionId || ''"
+            :disabled="isStreaming || disabled"
+            hide-trigger
+            anchor-selector=".plus-menu-item-knowledge"
+            :show-manage="showManageEntry"
+            @mouseenter.native="cancelPlusClose"
+            @mouseleave.native="schedulePlusClose"
+            @create-session="$emit('create-session')"
+            @manage="openKnowledgeManage"
+          />
           <input
             ref="fileInputRef"
             type="file"
@@ -281,10 +349,6 @@
               @click="toggleModelDropdown"
               v-tip="'切换模型'"
             >
-              <svg class="model-btn-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9L12 3z"></path>
-                <path d="M18.5 15.5l.7 1.9 1.9.7-1.9.7-.7 1.9-.7-1.9-1.9-.7 1.9-.7.7-1.9z"></path>
-              </svg>
               <span class="model-btn-label">{{ currentModelLabel }}</span>
               <svg class="model-btn-arrow" :class="{ open: showModelDropdown }" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <polyline points="6 9 12 15 18 9"></polyline>
@@ -307,10 +371,9 @@
           </div>
 
           <button
-            type="button"
             class="action-btn web-search-btn"
             :class="{ active: webSearchEnabled, disabled: webSearchUnavailable || isStreaming || disabled }"
-            :disabled="webSearchUnavailable || isStreaming || disabled"
+            :disabled="isStreaming || disabled"
             v-tip="webSearchTitle"
             @click="toggleWebSearch"
           >
@@ -485,12 +548,13 @@ import { uploadFile, deleteFile } from '../api/files.js'
 import { getWebSearchStatus } from '../api/settings.js'
 import { getUserSkills } from '../api/skills.js'
 import { iconCategoryFor } from '../utils/skillCategories.js'
-import { buildSkillPayload, parseSlashQuery } from '../utils/skillSlash.js'
+import { buildConnectorPayload, buildSkillPayload, parseSlashQuery } from '../utils/skillSlash.js'
 import { getConnectors } from '../api/connectors.js'
 import { eventTarget } from '../utils/domEvent.js'
 import { listExperts, listPublicExperts } from '../api/expert.js'
 import FileIcon from './FileIcon.vue'
 import SkillIcon from './SkillIcon.vue'
+import KnowledgeScopeSelector from '../features/knowledge/KnowledgeScopeSelector.vue'
 
 // 输入草稿持久化：页面刷新后恢复用户尚未发送的输入内容（“输入框的状态不变”）
 const DRAFT_KEY = 'easy_agent_input_draft'
@@ -499,7 +563,7 @@ const DRAFT_KEY = 'easy_agent_input_draft'
 const PENDING_SKILL_KEY = 'easy_agent_pending_skill'
 
 export default {
-  components: { FileIcon, SkillIcon },
+  components: { FileIcon, SkillIcon, KnowledgeScopeSelector },
   props: {
     disabled: {
       type: Boolean,
@@ -557,12 +621,21 @@ export default {
     expertPrompt: {
       type: String,
       default: ''
+    },
+    // 「+」二级面板底部的「在管理面板中打开」入口（无可跳转的管理面板时隐藏）
+    showManageEntry: {
+      type: Boolean,
+      default: true
     }
   },
   data() {
     return {
       message: '',
       uploadedFiles: [],
+      // 联网搜索：available=false 时按钮置灰（后端未启用或未配置 api_key）
+      webSearchEnabled: false,
+      webSearchAvailable: false,
+      webSearchReason: '',
       // 光标所在行高亮（overlay 技术：textareal 本身无法按行上色）
       caretLineTop: null, // 高亮条 top，null 表示隐藏
       lineHeight: 24, // 行高（px）
@@ -585,10 +658,6 @@ export default {
       plusMenuStyle: {},
       dropdownStyle: {},
       showTokenPopup: false,
-      // ========== 联网搜索 ==========
-      // 默认关闭；未配置（api_key 缺失/功能关闭）时按钮置灰
-      webSearchEnabled: false,
-      webSearchStatus: { enabled: false, configured: false },
       // ========== 会话耗时 ==========
       liveDuration: 0,
       durationTimer: null,
@@ -596,6 +665,10 @@ export default {
       // 输入框里只展示「工具图标 + 技能名」，实际发给模型的是 /技能目录名 + 用户输入。
       // 只有启用状态的技能会被 Agent 加载，停用技能即使手打 /name 也不生效，故只列启用的。
       selectedSkills: [],
+      // ========== 连接器选择（「+」→ 连接器） ==========
+      // 输入框里只展示连接器名胶囊，实际发给模型的是「使用连接器[名称] + 用户输入」。
+      // 元素形如 {name, desc}，name 即连接器/MCP 服务名（同一会话内按名称去重）。
+      selectedConnectors: [],
       skillPickerOpen: false,
       skillPickerIndex: 0,
       skillPickerLoading: false,
@@ -607,6 +680,17 @@ export default {
     }
   },
   computed: {
+    webSearchUnavailable() {
+      return !this.webSearchAvailable
+    },
+    webSearchTitle() {
+      if (!this.webSearchAvailable) {
+        if (this.webSearchReason === 'disabled') return '联网搜索未启用（后端配置 web_search.enabled 为 false）'
+        if (this.webSearchReason === 'unreachable') return '联网搜索状态获取失败，点击重试'
+        return '联网搜索未配置（需配置 WEB_SEARCH_API_KEY 后重启后端）'
+      }
+      return this.webSearchEnabled ? '联网搜索已开启，点击关闭' : '联网搜索（点击开启）'
+    },
     plusListTitle() {
       const meta = { experts: '专家', skills: '我的技能', connectors: '我的连接器' }
       return meta[this.plusListCategory] || ''
@@ -632,7 +716,7 @@ export default {
     },
     plusListEmptyText() {
       const meta = {
-        experts: '暂无专家，敬请期待',
+        experts: '暂无专家，可在「专家·技能·连接器」面板创建',
         skills: '还没有自己的技能，可在「专家·技能·连接器」面板添加',
         connectors: '还没有已添加的连接器，可在「专家·技能·连接器」面板添加',
       }
@@ -654,7 +738,8 @@ export default {
       return m ? (m.model || m.name) : '选择模型'
     },
     canSend() {
-      return this.message.trim() || this.uploadedFiles.length > 0 || this.selectedSkills.length > 0
+      return this.message.trim() || this.uploadedFiles.length > 0 ||
+        this.selectedSkills.length > 0 || this.selectedConnectors.length > 0
     },
     /**
      * 技能检索：优先按「目录名 / 技能名」匹配；仅当没有任何名称命中时，才回退到描述匹配。
@@ -670,15 +755,6 @@ export default {
       )
       if (byName.length > 0) return byName
       return this.skillOptions.filter(s => (s.description || '').toLowerCase().includes(q))
-    },
-    webSearchUnavailable() {
-      return !this.webSearchStatus.configured
-    },
-    webSearchTitle() {
-      if (!this.webSearchStatus.configured) {
-        return '联网搜索未配置（需配置 WEB_SEARCH_API_KEY 后重启后端）'
-      }
-      return this.webSearchEnabled ? '联网搜索已开启，点击关闭' : '联网搜索（点击开启）'
     },
     // 后台未返回耗时数据（sessionDuration<=0）且「会话信息」弹窗打开时，前端按 1s
     // 间隔本地计时，让会话耗时实时更新；后台有数据时直接用后台值。
@@ -738,6 +814,13 @@ export default {
       if (on) this.startLiveDuration()
       else this.stopLiveDuration()
     },
+    // 会话切换/新建时清空已添加文件：文件属于原会话，不得残留到新会话。
+    // 注意 oldVal 为 null（新对话加文件时触发的建会话）不清，否则会清掉刚选的文件。
+    sessionId(newVal, oldVal) {
+      if (oldVal && newVal !== oldVal) {
+        this.uploadedFiles = []
+      }
+    },
     message(val) {
       try {
         sessionStorage.setItem(this.draftKey, val)
@@ -757,6 +840,13 @@ export default {
     },
   },
   mounted() {
+    // 联网搜索可用性：公共接口，失败时按不可用处理（按钮置灰）
+    getWebSearchStatus()
+      .then(status => {
+        this.webSearchAvailable = Boolean(status && status.configured)
+        this.webSearchReason = (status && status.reason) || ''
+      })
+      .catch(() => { this.webSearchAvailable = false; this.webSearchReason = 'unreachable' })
     // 恢复刷新前的输入草稿
     try {
       const draft = sessionStorage.getItem(this.draftKey)
@@ -775,7 +865,6 @@ export default {
     document.addEventListener('click', this.closeSkillPickerOnClick)
     window.addEventListener('resize', this.handleViewportChange)
     document.addEventListener('click', this.closePlusMenu)
-    this.loadWebSearchStatus()
     // 点示例问题会先关闭 SkillCenter 面板 → Chat/ChatInput 重新挂载，
     // 此时 expertPrompt 初始值即非空；watch 只响应"变化"，挂载时的初始值不会触发，
     // 因此在这里补一次（放在草稿恢复之后，确保示例问题覆盖草稿）。
@@ -791,7 +880,33 @@ export default {
     this.stopLiveDuration()
   },
   methods: {
-    /** 供父组件调用：聚焦输入框并把光标移到末尾 */
+    async toggleWebSearch() {
+      if (this.isStreaming || this.disabled) return
+      // 页面加载可能早于后端配置完成（状态在 mounted 固化）：
+      // 灰色态点击时先重查一次，配置就绪则本次点击直接点亮（符合点击意图）。
+      if (!this.webSearchAvailable) {
+        try {
+          const status = await getWebSearchStatus()
+          this.webSearchAvailable = Boolean(status && status.configured)
+          this.webSearchReason = (status && status.reason) || ''
+        } catch (_) {
+          /* 查询失败保持不可用 */
+        }
+        if (!this.webSearchAvailable) return
+      }
+      this.webSearchEnabled = !this.webSearchEnabled
+    },
+    applyExpertPrompt(val) {
+      if (!val) return
+      this.message = val
+      this.$nextTick(() => {
+        this.autoResize()
+        const ta = this.$refs.textareaRef
+        if (ta) ta.focus()
+      })
+      this.$emit('expert-prompt-applied')
+    },
+    /** 供父组件调用：聚焦输入框并把光标移到末尾（如侧边栏打开时） */
     focusInput() {
       this.$nextTick(() => {
         const ta = this.$refs.textareaRef
@@ -807,19 +922,6 @@ export default {
       this.$nextTick(() => this.autoResize())
       this.focusInput()
     },
-    /**
-     * 外部预填问题（专家详情弹窗的示例提示词）：写入输入框并聚焦，随后通知父组件清空。
-     */
-    applyExpertPrompt(val) {
-      if (!val) return
-      this.message = val
-      this.$nextTick(() => {
-        this.autoResize()
-        const ta = this.$refs.textareaRef
-        if (ta) ta.focus()
-      })
-      this.$emit('expert-prompt-applied')
-    },
     updateCaretLine() {
       const ta = this.$refs.textareaRef
       if (!ta) return
@@ -831,26 +933,6 @@ export default {
     },
     hideCaretLine() {
       this.caretLineTop = null
-    },
-    toggleWebSearch() {
-      if (this.webSearchUnavailable || this.isStreaming || this.disabled) return
-      this.webSearchEnabled = !this.webSearchEnabled
-      console.log(
-        `[${new Date().toISOString()}] [联网搜索] ${this.webSearchEnabled ? '已开启' : '已关闭'}`
-      )
-    },
-    async loadWebSearchStatus() {
-      try {
-        const data = await getWebSearchStatus()
-        this.webSearchStatus = {
-          enabled: !!data.enabled,
-          configured: !!data.configured,
-        }
-        if (!data.configured) this.webSearchEnabled = false
-      } catch (e) {
-        // 状态获取失败按「不可用」处理，避免用户开启后静默不生效
-        console.error('获取联网搜索状态失败:', e)
-      }
     },
     toggleModelDropdown() {
       if (this.isStreaming || this.disabled) return
@@ -888,6 +970,8 @@ export default {
       if (this.isStreaming || this.disabled) return
       if (this.showPlusMenu) {
         this.showPlusMenu = false
+        this.subpanelCategory = null
+        if (this.$refs.knowledgeScope) this.$refs.knowledgeScope.closePopover()
         this.cancelPlusClose()
         return
       }
@@ -907,20 +991,26 @@ export default {
     },
     closePlusMenu(event) {
       const anchor = this.$refs.plusMenuRef
-      if (this.showPlusMenu && anchor && !anchor.contains(eventTarget(event))) {
+      // 点击知识库面板内部不算「菜单外」（面板不在菜单 DOM 内，但属于同一浮层交互）
+      const scopeRoot = this.$refs.knowledgeScope && this.$refs.knowledgeScope.$el
+      const target = eventTarget(event)
+      const inScope = scopeRoot && scopeRoot.contains(target)
+      if (this.showPlusMenu && anchor && !anchor.contains(target) && !inScope) {
         this.showPlusMenu = false
         this.subpanelCategory = null
+        if (this.$refs.knowledgeScope) this.$refs.knowledgeScope.closePopover()
       }
     },
     handleMenuAddFile() {
       this.showPlusMenu = false
       this.subpanelCategory = null
+      if (this.$refs.knowledgeScope) this.$refs.knowledgeScope.closePopover()
       const input = this.$refs.fileInputRef
       if (input) input.click()
     },
     // 二级列表：展示当前用户自己的条目（不跳转页面）
-    // 数据来源均为当前用户：技能 = user-skills（含已停用）；连接器 = 用户 mcp.json
-    // 中已安装的内置连接器 + 自定义服务；专家暂无数据。
+    // 技能 = user-skills（含已停用）；连接器 = 用户 mcp.json 中已安装的内置连接器 + 自定义服务；
+    // 专家 = 我的专家列表。
     openPlusList(category) {
       this.plusListCategory = category
       this.plusListLoading = true
@@ -938,13 +1028,18 @@ export default {
       if (this.subpanelCategory === category) return
       this.subpanelCategory = category
       const rect = event.currentTarget.getBoundingClientRect()
-      const estimatedHeight = 420
-      const top = Math.max(8, Math.min(rect.top - 8, window.innerHeight - estimatedHeight - 8))
-      const left = rect.right + 10 + 380 > window.innerWidth ? Math.max(8, rect.left - 390) : rect.right + 10
+      // 面板高度随列表变化（最高约 420px）：下方放得下时顶边对齐触发项，否则底边对齐触发项向上展开，
+      // 两种情况面板都与触发项在垂直方向重叠，鼠标可水平移入
+      const maxHeight = 420
+      const left = rect.right + 6 + 380 > window.innerWidth ? Math.max(8, rect.left - 386) : rect.right + 6
+      const vertical = rect.top - 8 + maxHeight <= window.innerHeight - 8
+        ? { top: `${Math.max(8, rect.top - 8)}px` }
+        : { bottom: `${Math.max(8, window.innerHeight - rect.bottom - 8)}px` }
       this.plusSubpanelStyle = {
         position: 'fixed',
-        top: `${top}px`,
         left: `${left}px`,
+        maxHeight: `${window.innerHeight - 16}px`,
+        ...vertical,
       }
       this.openPlusList(category)
     },
@@ -963,10 +1058,13 @@ export default {
         this.plusHoverTimer = null
         this.showPlusMenu = false
         this.subpanelCategory = null
+        if (this.$refs.knowledgeScope) this.$refs.knowledgeScope.closePopover()
       }, 250)
     },
     hoverPlusItem(category) {
       this.cancelPlusClose()
+      // 切到其他菜单项时收起知识库面板，避免两个浮层叠着
+      if (this.$refs.knowledgeScope) this.$refs.knowledgeScope.closePopover()
       if (category === 'experts' || category === 'skills' || category === 'connectors') {
         // openSubpanel 需要事件定位；hover 无事件对象时用菜单项元素
         const el = [...this.$el.querySelectorAll('.plus-menu-item')].find(i => i.textContent.includes(
@@ -999,6 +1097,17 @@ export default {
             tag: s.enabled ? '已启用' : '已停用',
             tagType: s.enabled ? 'on' : 'off',
           }))
+        } else if (category === 'experts') {
+          const data = await listExperts({ pageSize: 20 })
+          this.plusList = (data.items || []).map((e) => ({
+            key: `expert:${e.export_agent_id}`,
+            name: e.export_name_cn,
+            desc: String(e.export_description || '').replace(/\s*\n+\s*/g, ' ').trim() || '暂无描述',
+            icon: '',
+            initial: String(e.export_name_cn || '').trim().slice(0, 1).toUpperCase() || '专',
+            tag: e.export_version ? `v${e.export_version}` : '',
+            tagType: 'off',
+          }))
         } else if (category === 'connectors') {
           const data = await getConnectors()
           const installed = (data.connectors || [])
@@ -1022,14 +1131,54 @@ export default {
             tagType: 'custom',
           }))
           this.plusList = installed.concat(custom)
-        } else {
-          this.plusList = []
         }
       } catch (e) {
         this.plusListError = (e && e.message) || '加载失败'
       } finally {
         this.plusListLoading = false
       }
+    },
+    // ========== 连接器选择：点行加入输入框胶囊 ==========
+    /** 是否为已选连接器（按名称去重，仅本会话有效） */
+    isConnectorSelected(item) {
+      if (!item || !item.name) return false
+      return this.selectedConnectors.some(c => c.name === item.name)
+    },
+    /**
+     * 通用条目列表行点击：目前只有连接器有行为（技能由输入 / 唤起选择）。
+     * 选完（含取消选择）即收起「+」菜单：选中态由输入框胶囊承载，要再选其他连接器
+     * 重新点「+」即可 —— 关闭行为与专家行「召唤」一致。
+     */
+    onPlusListItemClick(item) {
+      if (this.subpanelCategory !== 'connectors') return
+      this.toggleConnector(item)
+      this.hidePlusMenu()
+    },
+    /** 收起「+」菜单与其二级面板（含待执行的悬停关闭定时器、知识库浮层） */
+    hidePlusMenu() {
+      this.showPlusMenu = false
+      this.subpanelCategory = null
+      if (this.$refs.knowledgeScope) this.$refs.knowledgeScope.closePopover()
+      this.cancelPlusClose()
+    },
+    /**
+     * 点击连接器行：把它挂成输入框里的连接器胶囊（再点一次 = 取消）。
+     * 选中态由行尾「已选」标与输入框胶囊承载；菜单收起由调用方（行点击）负责。
+     */
+    toggleConnector(item) {
+      if (!item || !item.name) return
+      if (this.isConnectorSelected(item)) {
+        this.removeSelectedConnector(item)
+        return
+      }
+      this.selectedConnectors = [
+        ...this.selectedConnectors,
+        { name: item.name, desc: item.desc || '' }
+      ]
+      console.log(`[${new Date().toISOString()}] [连接器选择] ${item.name}`)
+    },
+    removeSelectedConnector(connector) {
+      this.selectedConnectors = this.selectedConnectors.filter(c => c.name !== connector.name)
     },
     // ========== 专家快捷面板：行渲染与选择 ==========
     /** 头像取专家名首字（与专家 Tab 的 avatarChar 一致） */
@@ -1083,7 +1232,26 @@ export default {
     handleMenuPanel(tab) {
       this.showPlusMenu = false
       this.subpanelCategory = null
-      this.$emit('openPanel', tab)
+      this.$emit('open-panel', tab)
+    },
+    // 加号菜单「知识库」：与技能子面板一致，点击保持主菜单常驻，面板贴菜单项右侧弹出
+    openKnowledgeScope(event) {
+      this.cancelPlusClose()
+      this.subpanelCategory = null
+      if (this.$refs.knowledgeScope) this.$refs.knowledgeScope.openPopover(event && event.currentTarget)
+    },
+    // hover 到「知识库」菜单项即展开选择面板（并收起其他子面板），无需点击
+    enterKnowledgeItem(event) {
+      this.cancelPlusClose()
+      this.subpanelCategory = null
+      if (this.$refs.knowledgeScope) this.$refs.knowledgeScope.openPopover(event && event.currentTarget)
+    },
+    // 知识库子面板底部入口：关闭菜单并打开知识库工作台
+    openKnowledgeManage() {
+      this.showPlusMenu = false
+      this.subpanelCategory = null
+      if (this.$refs.knowledgeScope) this.$refs.knowledgeScope.closePopover()
+      this.$emit('open-knowledge')
     },
     // 供父组件把预置问题完整文本填进输入框（卡片上最多显示 3 行，长问题展示不全）
     setMessage(text) {
@@ -1301,16 +1469,24 @@ export default {
       this.message = ''
       this.uploadedFiles = []
       this.selectedSkills = []
+      this.selectedConnectors = []
       this.closeSkillPicker()
       this.$nextTick(() => this.autoResize())
     },
 
+    // 供父组件（预置问题卡片点击）走输入框的正常发送链路：复用 send() 的
+    // 上传等待、canSend/disabled 校验与清空逻辑，不重复实现一份发送
+    triggerSend() {
+      this.send()
+    },
+
     /**
-     * 实际发送给模型的内容：技能指令前缀 + 用户输入。
-     * 例：界面显示 [图标]PPT生成 +「生成一份PPT创作文档」→ 发送 `/pptx-generator 生成一份PPT创作文档`
+     * 实际发送给模型的内容：连接器指令 + 技能指令前缀 + 用户输入。
+     * 例1：界面显示 [图标]PPT生成 +「生成一份PPT」→ 发送 `/pptx-generator 生成一份PPT`
+     * 例2：界面显示 [接入]高德地图 +「帮我规划路线」→ 发送 `使用连接器[高德地图] 帮我规划路线`
      */
     buildPayload() {
-      return buildSkillPayload(this.selectedSkills, this.message)
+      return buildConnectorPayload(this.selectedConnectors, this.selectedSkills, this.message)
     },
     stop() {
       this.$emit('stop')
@@ -1573,10 +1749,15 @@ export default {
   padding: 12px 16px;
   background: var(--bg-secondary);
   border-bottom: 1px solid var(--border-color);
+  /* 最多显示三行文件块（60px×3 + gap 12px×2），超出滚动查看 */
+  max-height: 204px;
+  overflow-y: auto;
+  box-sizing: border-box;
 }
 
-/* ── 已选技能标签（只显示图标 + 名称，发送时还原为 /技能名） ── */
-.selected-skills {
+/* ── 已选技能 / 连接器标签（只显示图标 + 名称，发送时还原为 /技能名、使用连接器[名称]） ── */
+.selected-skills,
+.selected-connectors {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -1586,7 +1767,8 @@ export default {
   padding-bottom: 3px;
 }
 
-.selected-skill {
+.selected-skill,
+.selected-connector {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -1597,7 +1779,8 @@ export default {
   max-width: 100%;
 }
 
-.selected-skill-name {
+.selected-skill-name,
+.selected-connector-name {
   font-size: 12.5px;
   color: var(--text-primary);
   overflow: hidden;
@@ -1606,7 +1789,15 @@ export default {
   max-width: 180px;
 }
 
-.selected-skill-remove {
+.selected-connector-icon {
+  width: 13px;
+  height: 13px;
+  flex-shrink: 0;
+  color: var(--accent-color);
+}
+
+.selected-skill-remove,
+.selected-connector-remove {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1620,12 +1811,14 @@ export default {
   cursor: pointer;
 }
 
-.selected-skill-remove:hover {
+.selected-skill-remove:hover,
+.selected-connector-remove:hover {
   background: var(--bg-tertiary);
   color: var(--text-primary);
 }
 
-.selected-skill-remove svg {
+.selected-skill-remove svg,
+.selected-connector-remove svg {
   width: 11px;
   height: 11px;
 }
@@ -2023,7 +2216,7 @@ html[data-theme="dark"] .context-ring-wrapper {
 .left-actions {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
 }
 
 .model-dropdown-wrapper {
@@ -2038,43 +2231,21 @@ html[data-theme="dark"] .context-ring-wrapper {
   align-items: center;
   justify-content: center;
   gap: 6px;
-  padding: 0 10px 0 11px;
-  max-width: 220px;
+  padding: 6px 12px;
   height: 36px;
   min-height: 36px;
   border: 1px solid var(--border-color);
   background: var(--bg-secondary);
   border-radius: 10px;
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05);
   cursor: pointer;
-  transition: background 0.22s ease, border-color 0.22s ease, box-shadow 0.22s ease,
-    transform 0.22s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
   white-space: nowrap;
 }
 
-/* 星形图标：给「模型选择」一个视觉锚点，避免三个按钮里只有它是纯文字 */
-.model-btn-icon {
-  width: 14px;
-  height: 14px;
-  flex-shrink: 0;
-  color: var(--accent-color);
-  transition: transform 0.25s ease;
-}
-
 .model-btn:hover:not(.disabled) {
-  border-color: color-mix(in srgb, var(--accent-color) 45%, var(--border-color));
-  background: color-mix(in srgb, var(--accent-color) 8%, var(--bg-secondary));
-  box-shadow: 0 4px 12px color-mix(in srgb, var(--accent-color) 18%, transparent);
+  border-color: rgba(14, 165, 233, 0.4);
+  background: color-mix(in srgb, var(--accent-color) 10%, transparent);
   transform: translateY(-1px);
-}
-
-.model-btn:hover:not(.disabled) .model-btn-icon {
-  transform: rotate(-15deg) scale(1.12);
-}
-
-.model-btn:active:not(.disabled) {
-  transform: translateY(0) scale(0.98);
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05);
 }
 
 .model-btn.disabled {
@@ -2084,28 +2255,25 @@ html[data-theme="dark"] .context-ring-wrapper {
 
 .model-btn-label {
   font-size: 12px;
-  font-weight: 600;
+  font-weight: 500;
   color: var(--text-secondary);
-  transition: color 0.22s ease;
-  min-width: 0;
+  transition: color 0.25s ease;
+  max-width: 140px;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
+
 .model-btn:hover:not(.disabled) .model-btn-label {
-  color: var(--accent-color);
+  color: #0ea5e9;
 }
+
 
 .model-btn-arrow {
   width: 12px;
   height: 12px;
-  flex-shrink: 0;
   color: var(--text-secondary);
-  transition: transform 0.2s ease, color 0.22s ease;
-}
-
-.model-btn:hover:not(.disabled) .model-btn-arrow {
-  color: var(--accent-color);
+  transition: transform 0.2s ease;
 }
 
 .model-btn-arrow.open {
@@ -2294,6 +2462,27 @@ html[data-theme="dark"] .plus-menu-item:hover {
   background: var(--bg-tertiary);
 }
 
+/* 可点选行（连接器）：加手型 + 已选态整行高亮（再点一次取消） */
+.plus-list-item.selectable {
+  cursor: pointer;
+}
+
+.plus-list-item.selected {
+  background: color-mix(in srgb, var(--accent-color) 14%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-color) 45%, transparent);
+}
+
+.plus-list-state {
+  flex-shrink: 0;
+  align-self: center;
+  padding: 1px 6px;
+  border-radius: 5px;
+  font-size: 11px;
+  font-weight: 500;
+  background: var(--accent-color);
+  color: #fff;
+}
+
 .plus-list-icon {
   display: flex;
   align-items: center;
@@ -2466,6 +2655,29 @@ html[data-theme="dark"] .plus-list-tag.custom {
 
 .action-btn:hover {
   background: var(--bg-tertiary);
+}
+
+/* 联网搜索按钮：点亮（图标变蓝）= 启用；灰色 = 未启用。
+   启用态不加背景色块，仅图标高亮；未配置时半透明且屏蔽 hover/点击的一切高亮反馈。 */
+.web-search-btn.active {
+  background: transparent;
+}
+.web-search-btn.active svg {
+  color: #0ea5e9;
+}
+.web-search-btn.unavailable {
+  opacity: 0.45;
+  cursor: pointer;
+}
+.web-search-btn.unavailable:hover {
+  background: transparent;
+}
+.web-search-btn.unavailable:hover svg {
+  color: var(--text-secondary);
+}
+.web-search-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
 }
 
 .action-btn:hover svg {
@@ -2693,10 +2905,8 @@ html[data-theme="dark"] .plus-list-tag.custom {
   border: 1px solid var(--border-color);
   background: var(--bg-secondary);
   border-radius: 10px;
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05);
   cursor: pointer;
-  transition: background 0.22s ease, border-color 0.22s ease, box-shadow 0.22s ease,
-    transform 0.22s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .plus-btn svg,
@@ -2704,7 +2914,7 @@ html[data-theme="dark"] .plus-list-tag.custom {
   width: 18px;
   height: 18px;
   color: var(--text-secondary);
-  transition: color 0.22s ease, transform 0.22s ease;
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .plus-btn:hover:not(.disabled),

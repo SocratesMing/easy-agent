@@ -13,8 +13,14 @@ from ..db import Database, get_database
 from ..models.db import SessionModel
 from ..models.api import ChatRequest, ResumeRequest
 from ..middleware import get_current_username
-from ..services import (
+from ..knowledge_impl import (
+    authorize_scoped_chat,
     chat_stream_generator,
+    empty_knowledge_context,
+    is_knowledge_panel_title,
+    prepare_knowledge_chat,
+)
+from ..services import (
     resume_stream_generator,
     get_or_create_agent_for_session,
     get_session_expert,
@@ -22,6 +28,7 @@ from ..services import (
     register_stream_task,
     unregister_stream_task,
     cancel_stream_task,
+    parse_message_connectors,
 )
 from ..services.streaming import format_sse
 from ..utils import parse_file_content, SessionLogger, get_owned_session
@@ -33,7 +40,6 @@ router = APIRouter(
     prefix="/agent/chat",
     tags=["Chat"],
 )
-
 
 def generate_session_title(message: str, files: list | None) -> str:
     """根据首条消息或首个上传文件生成会话标题。"""
@@ -291,6 +297,16 @@ async def chat_stream(
 
     session_id = request.session_id
     message_id = request.message_id or str(uuid.uuid4())
+    is_knowledge_panel_session = False
+
+    # 知识库会话必须独立执行 fail-closed 鉴权。即使宿主 EasyAgent 在测试、代理层或
+    # 行内环境中替换了通用聊天身份依赖，也不能让 X-Username 等兼容头绕过知识权限。
+    username = await authorize_scoped_chat(
+        request=http_request,
+        db=db,
+        session_id=session_id,
+        username=username,
+    )
 
     sid = session_id[-5:] if session_id else "new"
 
@@ -317,12 +333,22 @@ async def chat_stream(
             raise HTTPException(status_code=404, detail="会话不存在")
         else:
             workspace_name = session.workspace_name or ""
-            if len(session.messages) == 0:
+            is_knowledge_panel_session = is_knowledge_panel_title(session.title)
+            if (
+                len(session.messages) == 0
+                and not is_knowledge_panel_session
+            ):
                 session.title = generate_session_title(request.message, request.files)
                 session.updated_at = datetime.now().isoformat()
                 db.update_session(session)
 
     parsed_content = request.message
+    knowledge_chat = await prepare_knowledge_chat(
+        request=http_request,
+        db=db,
+        session_id=session_id,
+        question=request.message,
+    )
     # 判断是否为新建会话（首次消息）：新建会话的上传文件内容注入系统提示词，
     # 非首次会话则拼接到用户消息（保持原有行为）。
     _existing = db.get_session(session_id)
@@ -346,13 +372,13 @@ async def chat_stream(
             else:
                 logger.warning(f"[{session_id[-5:]}] 文件解析为空: {filename}")
 
-    system_prompt_extra = ""
+    system_prompt_parts = []
     if file_context_parts:
         if is_new_session:
             sections = [
                 f"### 文件: {fn}\n{c}" for fn, c in file_context_parts
             ]
-            system_prompt_extra = (
+            system_prompt_parts.append(
                 "## 用户上传的文件内容（已为你解析，请基于这些内容回应用户）\n\n"
                 + "\n\n".join(sections)
             )
@@ -361,6 +387,7 @@ async def chat_stream(
                 f"[文件: {fn}]\n{c}" for fn, c in file_context_parts
             ]
             parsed_content = "\n\n".join(file_contents) + "\n\n" + request.message
+    system_prompt_extra = "\n\n".join(system_prompt_parts)
 
     page_context = (request.page_context or "").strip()
     if page_context:
@@ -396,10 +423,23 @@ async def chat_stream(
         message_id=message_id,
     )
 
+    # 「使用连接器[X]」指令解析：输入框里选中的连接器会前置在消息文本中，
+    # 这里翻译成 mcp.json 的 server 名，交给 agent_manager 只注入这些连接器的工具。
+    # 未识别的名字只记日志，不影响其余连接器生效（也不阻断对话）。
+    connector_servers, unknown_connectors = parse_message_connectors(
+        request.message, username
+    )
+    if connector_servers or unknown_connectors:
+        logger.info(
+            f"[{sid}] 🔌 连接器指令 | 命中: {connector_servers or '无'} | "
+            f"未识别: {unknown_connectors or '无'}"
+        )
+
     agent = await get_or_create_agent_for_session(
         session_id, username, workspace_name, model_name=request.model,
         system_prompt_extra=system_prompt_extra,
         enable_web_search=request.enable_web_search,
+        connector_servers=connector_servers,
     )
 
     return StreamingResponse(
@@ -414,6 +454,9 @@ async def chat_stream(
                 http_request=http_request,
                 parsed_content=parsed_content,
                 session_logger=session_logger,
+                context_prefix=knowledge_chat.context,
+                initial_events=knowledge_chat.initial_events,
+                assistant_metadata=knowledge_chat.assistant_metadata,
             ),
             session_id,
             sid,
@@ -489,6 +532,8 @@ async def chat_resume(
     # 一起写入、清理时一起删除），因此这里取到的值要么与缓存中的专家一致 —— 命中缓存
     # 原样复用、人设保留；要么为 ""（缓存已失效）—— 等价于通用 Agent 重建，
     # 行为与引入专家模块之前逐字一致。
+    # 连接器（使用连接器[X]）同理不传：get_or_create_agent_for_session 取 None 时
+    # 「跟随缓存」——不因连接器差异驱逐缓存 Agent（重建时仍沿用该会话已记录的选择）。
     agent = await get_or_create_agent_for_session(
         session_id,
         username,
