@@ -1631,14 +1631,22 @@ async function send() {
     return
   }
   
-  const filesToSend = uploadedFiles.value.map(f => ({
-    id: f.id,
-    filename: f.filename,
-    size: f.size,
-    file: f.file,
-    file_path: f.filePath || null,
-    type: f.file?.type || f.fileType || ''
-  }))
+  // 只发送上传成功的文件：失败文件（无 id/file_path）不随消息发出、不在气泡中展示
+  const failedFiles = uploadedFiles.value.filter(f => f.uploadStatus === 'error')
+  if (failedFiles.length > 0) {
+    console.warn(`[发送消息] ${failedFiles.length} 个文件上传失败，已从本次发送中剔除:`,
+      failedFiles.map(f => f.filename).join(', '))
+  }
+  const filesToSend = uploadedFiles.value
+    .filter(f => f.uploadStatus === 'completed')
+    .map(f => ({
+      id: f.id,
+      filename: f.filename,
+      size: f.size,
+      file: f.file,
+      file_path: f.filePath || null,
+      type: f.file?.type || f.fileType || ''
+    }))
 
   // 详细日志：记录发送操作、文件上传
   const ts = new Date().toISOString()
