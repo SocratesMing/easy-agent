@@ -496,7 +496,6 @@
 import { uploadFile, deleteFile } from '../api/files.js'
 import { getWebSearchStatus } from '../api/settings.js'
 import { getUserSkills } from '../api/skills.js'
-import { listExperts } from '../api/expert.js'
 import { iconCategoryFor } from '../utils/skillCategories.js'
 import { buildSkillPayload, parseSlashQuery } from '../utils/skillSlash.js'
 import { getConnectors } from '../api/connectors.js'
