@@ -1,0 +1,10 @@
+{
+  "expert_agent_id": "preset_rate_bond",
+  "name_cn": "利率债投研专家",
+  "name_en": "rate-bond-researcher",
+  "version": 1,
+  "prompt_file": "rate-bond-researcher.md",
+  "generated_at": "2026-10-14T22:40:00",
+  "model": "preset",
+  "raw_llm_output": null
+}

@@ -87,6 +87,7 @@
         @createSession="handleCreateSession"
         @openPanel="(tab) => emit('openPanel', tab)"
         @clearExpert="emit('clearExpert')"
+        @selectExpert="(expert) => emit('selectExpert', expert)"
         @prefillApplied="emit('expertPromptApplied')"
       />
 
@@ -341,7 +342,7 @@ const showTopbar = computed(() =>
   showSessionTime.value || props.todos.length > 0 || showWorkspaceBtn.value
 )
 
-const emit = defineEmits(['sendMessage', 'presetSend', 'stop', 'removeFile', 'createSession', 'approve', 'reject', 'update:selectedModel', 'toggleWorkspace', 'clearExpert', 'expertPromptApplied', 'openPanel'])
+const emit = defineEmits(['sendMessage', 'presetSend', 'stop', 'removeFile', 'createSession', 'approve', 'reject', 'update:selectedModel', 'toggleWorkspace', 'clearExpert', 'selectExpert', 'expertPromptApplied', 'openPanel'])
 const messagesRef = ref(null)
 
 function formatSessionTime(isoStr) {

@@ -1,0 +1,10 @@
+{
+  "expert_agent_id": "preset_macro_investment",
+  "name_cn": "宏观投研专家",
+  "name_en": "macro-investment-researcher",
+  "version": 1,
+  "prompt_file": "macro-investment-researcher.md",
+  "generated_at": "2026-10-14T22:40:00",
+  "model": "preset",
+  "raw_llm_output": null
+}
