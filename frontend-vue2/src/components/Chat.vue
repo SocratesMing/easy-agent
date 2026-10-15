@@ -98,6 +98,7 @@
         @open-panel="$emit('open-panel', $event)"
         @open-knowledge="$emit('open-knowledge', $event)"
         @clear-expert="$emit('clear-expert')"
+        @select-expert="$emit('select-expert', $event)"
         @expert-prompt-applied="$emit('expert-prompt-applied')"
       />
 

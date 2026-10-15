@@ -118,6 +118,7 @@
         @approve="handleToolApproval('approve')"
         @reject="handleToolApproval('reject')"
         @clearExpert="selectedExpert = null"
+        @selectExpert="handleUseExpert"
         @openPanel="openSkillCenterPanel"
       />
 
