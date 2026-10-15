@@ -52,12 +52,16 @@ from decimal import Decimal
 # 配置
 # --------------------------------------------------------------------------
 # 部署专属连接配置：直连 baop 只读库，不依赖 BAOP_* 环境变量
+# ⚠️ 这是内网部署的实测连接值，改动前请先确认连通（可用 --selftest 自检）：
+#   - host / port / user / password：指向内网 baop 只读库
+#   - db 必须是 "baop"：三张 fpp_* 表建在 baop 库内。曾误配成 "mysql"（系统库），
+#     导致查询报 table doesn't exist；表名都是裸表名、不带库前缀，连错库必失败。
 CFG = {
     "host": "28.221.254.13",
     "port": 80,
     "user": "fmmsuser",
     "password": "Fmms@1234!",
-    "db": "mysql",
+    "db": "baop",
 }
 
 T_INCOME = "fpp_fin_mkt_bizline_income_sum_t1"   # T3，单位万元
