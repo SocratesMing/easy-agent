@@ -1,8 +1,9 @@
 /**
- * 输入框技能选择（slash 指令）的纯逻辑，便于单独验证与两版前端复用。
+ * 输入框「技能 / 连接器」选择还原为发送文本的纯逻辑，便于单独验证与两版前端复用。
  *
  * - `parseSlashQuery`：判断光标前是否刚输入了「/查询词」（/ 必须位于开头或空白之后）
  * - `buildSkillPayload`：把界面上的技能标签还原成发给模型的 `/技能目录名` 指令前缀
+ * - `buildConnectorPayload`：在上面基础上前置连接器胶囊对应的 `使用连接器[名称]` 指令
  */
 
 /** 匹配光标前的 `/查询词`（查询词内不含空白与 `/`） */
@@ -41,4 +42,25 @@ export function buildSkillPayload(skills, text) {
     .join(' ')
   if (!prefix) return body
   return body ? `${prefix} ${body}` : prefix
+}
+
+/**
+ * 组装实际发送给模型的内容：「技能指令」+「连接器指令」+ 用户输入。
+ *
+ * 连接器在界面上只显示胶囊名称，模型需要的是明确的使用指令，例如：
+ * 选了「高德地图」并输入「帮我规划路线」
+ * → `使用连接器[高德地图] 帮我规划路线`
+ *
+ * @param {Array<{name: string}>} connectors 已选连接器（按选择顺序）
+ * @param {Array<{dir_name: string}>} skills 已选技能（按选择顺序）
+ * @param {string} text 用户输入（原始文本，内部会压缩连续空白）
+ */
+export function buildConnectorPayload(connectors, skills, text) {
+  const base = buildSkillPayload(skills, text)
+  const directive = (connectors || [])
+    .map(connector => (connector && connector.name ? `使用连接器[${connector.name}]` : ''))
+    .filter(Boolean)
+    .join(' ')
+  if (!directive) return base
+  return base ? `${directive} ${base}` : directive
 }

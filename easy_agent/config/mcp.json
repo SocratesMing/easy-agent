@@ -25,6 +25,24 @@
           "MYSQL_DATABASE": "agent"
         }
       }
+    },
+    {
+      "id": "sqlite",
+      "name": "SQLite 数据库",
+      "description": "db-mcp-server（stdio，uvx 拉起，需本机已装 uv/uvx）：对 SQLite 数据库做查询与分析（默认只读，改 env.DB_MODE=read-write 可写）。添加时填写数据库文件路径，安装后可在连接器详情中修改",
+      "icon": "database-outline",
+      "fields": [
+        { "key": "env.DB_PATH", "label": "数据库文件路径", "placeholder": "/qts/data/easy_agent.db", "required": true }
+      ],
+      "config": {
+        "type": "stdio",
+        "command": "uvx",
+        "args": ["--with", "mcp<2", "db-mcp-server"],
+        "env": {
+          "DB_TYPE": "sqlite",
+          "DB_PATH": "/qts/data/easy_agent.db"
+        }
+      }
     }
   ]
 }

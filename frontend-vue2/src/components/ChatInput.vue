@@ -58,6 +58,35 @@
           </div>
         </div>
 
+        <!-- 已选连接器：与输入文字同一行展示（只显示连接器名，发送时还原为「使用连接器[名称]」） -->
+        <div v-if="selectedConnectors.length > 0" class="selected-connectors">
+          <div
+            v-for="connector in selectedConnectors"
+            :key="connector.name"
+            class="selected-connector"
+            :title="connector.desc || connector.name"
+          >
+            <svg class="selected-connector-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 22v-5"></path>
+              <path d="M9 8V2"></path>
+              <path d="M15 8V2"></path>
+              <path d="M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8z"></path>
+            </svg>
+            <span class="selected-connector-name">{{ connector.name }}</span>
+            <button
+              type="button"
+              class="selected-connector-remove"
+              :aria-label="`移除连接器 ${connector.name}`"
+              @click="removeSelectedConnector(connector)"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
+                <line x1="18" y1="6" x2="6" y2="18" />
+                <line x1="6" y1="6" x2="18" y2="18" />
+              </svg>
+            </button>
+          </div>
+        </div>
+
         <div class="input-field">
           <div
             v-show="caretLineTop !== null"
@@ -248,7 +277,20 @@
                 <div v-if="plusListLoading" class="plus-list-hint">加载中…</div>
                 <div v-else-if="plusListError" class="plus-list-hint error">{{ plusListError }}</div>
                 <div v-else-if="plusList.length === 0" class="plus-list-hint">{{ plusListEmptyText }}</div>
-                <div v-else v-for="item in plusList" :key="item.key" class="plus-list-item">
+                <div
+                  v-else
+                  v-for="item in plusList"
+                  :key="item.key"
+                  class="plus-list-item"
+                  :class="{
+                    selectable: subpanelCategory === 'connectors',
+                    selected: isConnectorSelected(item)
+                  }"
+                  :title="subpanelCategory === 'connectors'
+                    ? (isConnectorSelected(item) ? '再次点击取消使用' : `使用连接器「${item.name}」`)
+                    : ''"
+                  @click="onPlusListItemClick(item)"
+                >
                   <span class="plus-list-icon" :class="{ initial: !item.icon }">{{ item.icon || item.initial }}</span>
                   <span class="plus-list-body">
                     <span class="plus-list-name-row">
@@ -257,6 +299,8 @@
                     </span>
                     <span class="plus-list-desc">{{ item.desc }}</span>
                   </span>
+                  <!-- 连接器可点击加入输入框：选中后行尾给「已选」标，与专家行的召唤态一致 -->
+                  <span v-if="isConnectorSelected(item)" class="plus-list-state">已选</span>
                 </div>
               </div>
               <div v-if="showManageEntry" class="plus-subpanel-footer">
@@ -497,7 +541,7 @@ import { uploadFile, deleteFile } from '../api/files.js'
 import { getWebSearchStatus } from '../api/settings.js'
 import { getUserSkills } from '../api/skills.js'
 import { iconCategoryFor } from '../utils/skillCategories.js'
-import { buildSkillPayload, parseSlashQuery } from '../utils/skillSlash.js'
+import { buildConnectorPayload, buildSkillPayload, parseSlashQuery } from '../utils/skillSlash.js'
 import { getConnectors } from '../api/connectors.js'
 import { eventTarget } from '../utils/domEvent.js'
 import { listExperts, listPublicExperts } from '../api/expert.js'
@@ -614,6 +658,10 @@ export default {
       // 输入框里只展示「工具图标 + 技能名」，实际发给模型的是 /技能目录名 + 用户输入。
       // 只有启用状态的技能会被 Agent 加载，停用技能即使手打 /name 也不生效，故只列启用的。
       selectedSkills: [],
+      // ========== 连接器选择（「+」→ 连接器） ==========
+      // 输入框里只展示连接器名胶囊，实际发给模型的是「使用连接器[名称] + 用户输入」。
+      // 元素形如 {name, desc}，name 即连接器/MCP 服务名（同一会话内按名称去重）。
+      selectedConnectors: [],
       skillPickerOpen: false,
       skillPickerIndex: 0,
       skillPickerLoading: false,
@@ -683,7 +731,8 @@ export default {
       return m ? (m.model || m.name) : '选择模型'
     },
     canSend() {
-      return this.message.trim() || this.uploadedFiles.length > 0 || this.selectedSkills.length > 0
+      return this.message.trim() || this.uploadedFiles.length > 0 ||
+        this.selectedSkills.length > 0 || this.selectedConnectors.length > 0
     },
     /**
      * 技能检索：优先按「目录名 / 技能名」匹配；仅当没有任何名称命中时，才回退到描述匹配。
@@ -1066,6 +1115,48 @@ export default {
         this.plusListLoading = false
       }
     },
+    // ========== 连接器选择：点行加入输入框胶囊 ==========
+    /** 是否为已选连接器（按名称去重，仅本会话有效） */
+    isConnectorSelected(item) {
+      if (!item || !item.name) return false
+      return this.selectedConnectors.some(c => c.name === item.name)
+    },
+    /**
+     * 通用条目列表行点击：目前只有连接器有行为（技能由输入 / 唤起选择）。
+     * 选完（含取消选择）即收起「+」菜单：选中态由输入框胶囊承载，要再选其他连接器
+     * 重新点「+」即可 —— 关闭行为与专家行「召唤」一致。
+     */
+    onPlusListItemClick(item) {
+      if (this.subpanelCategory !== 'connectors') return
+      this.toggleConnector(item)
+      this.hidePlusMenu()
+    },
+    /** 收起「+」菜单与其二级面板（含待执行的悬停关闭定时器、知识库浮层） */
+    hidePlusMenu() {
+      this.showPlusMenu = false
+      this.subpanelCategory = null
+      if (this.$refs.knowledgeScope) this.$refs.knowledgeScope.closePopover()
+      this.cancelPlusClose()
+    },
+    /**
+     * 点击连接器行：把它挂成输入框里的连接器胶囊（再点一次 = 取消）。
+     * 选中态由行尾「已选」标与输入框胶囊承载；菜单收起由调用方（行点击）负责。
+     */
+    toggleConnector(item) {
+      if (!item || !item.name) return
+      if (this.isConnectorSelected(item)) {
+        this.removeSelectedConnector(item)
+        return
+      }
+      this.selectedConnectors = [
+        ...this.selectedConnectors,
+        { name: item.name, desc: item.desc || '' }
+      ]
+      console.log(`[${new Date().toISOString()}] [连接器选择] ${item.name}`)
+    },
+    removeSelectedConnector(connector) {
+      this.selectedConnectors = this.selectedConnectors.filter(c => c.name !== connector.name)
+    },
     // ========== 专家快捷面板：行渲染与选择 ==========
     /** 头像取专家名首字（与专家 Tab 的 avatarChar 一致） */
     expertAvatar(item) {
@@ -1323,6 +1414,7 @@ export default {
       this.message = ''
       this.uploadedFiles = []
       this.selectedSkills = []
+      this.selectedConnectors = []
       this.closeSkillPicker()
       this.$nextTick(() => this.autoResize())
     },
@@ -1334,11 +1426,12 @@ export default {
     },
 
     /**
-     * 实际发送给模型的内容：技能指令前缀 + 用户输入。
-     * 例：界面显示 [图标]PPT生成 +「生成一份PPT创作文档」→ 发送 `/pptx-generator 生成一份PPT创作文档`
+     * 实际发送给模型的内容：连接器指令 + 技能指令前缀 + 用户输入。
+     * 例1：界面显示 [图标]PPT生成 +「生成一份PPT」→ 发送 `/pptx-generator 生成一份PPT`
+     * 例2：界面显示 [接入]高德地图 +「帮我规划路线」→ 发送 `使用连接器[高德地图] 帮我规划路线`
      */
     buildPayload() {
-      return buildSkillPayload(this.selectedSkills, this.message)
+      return buildConnectorPayload(this.selectedConnectors, this.selectedSkills, this.message)
     },
     stop() {
       this.$emit('stop')
@@ -1607,8 +1700,9 @@ export default {
   box-sizing: border-box;
 }
 
-/* ── 已选技能标签（只显示图标 + 名称，发送时还原为 /技能名） ── */
-.selected-skills {
+/* ── 已选技能 / 连接器标签（只显示图标 + 名称，发送时还原为 /技能名、使用连接器[名称]） ── */
+.selected-skills,
+.selected-connectors {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -1618,7 +1712,8 @@ export default {
   padding-bottom: 3px;
 }
 
-.selected-skill {
+.selected-skill,
+.selected-connector {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -1629,7 +1724,8 @@ export default {
   max-width: 100%;
 }
 
-.selected-skill-name {
+.selected-skill-name,
+.selected-connector-name {
   font-size: 12.5px;
   color: var(--text-primary);
   overflow: hidden;
@@ -1638,7 +1734,15 @@ export default {
   max-width: 180px;
 }
 
-.selected-skill-remove {
+.selected-connector-icon {
+  width: 13px;
+  height: 13px;
+  flex-shrink: 0;
+  color: var(--accent-color);
+}
+
+.selected-skill-remove,
+.selected-connector-remove {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1652,12 +1756,14 @@ export default {
   cursor: pointer;
 }
 
-.selected-skill-remove:hover {
+.selected-skill-remove:hover,
+.selected-connector-remove:hover {
   background: var(--bg-tertiary);
   color: var(--text-primary);
 }
 
-.selected-skill-remove svg {
+.selected-skill-remove svg,
+.selected-connector-remove svg {
   width: 11px;
   height: 11px;
 }
@@ -2296,6 +2402,27 @@ html[data-theme="dark"] .plus-menu-item:hover {
 
 .plus-list-item:hover {
   background: var(--bg-tertiary);
+}
+
+/* 可点选行（连接器）：加手型 + 已选态整行高亮（再点一次取消） */
+.plus-list-item.selectable {
+  cursor: pointer;
+}
+
+.plus-list-item.selected {
+  background: color-mix(in srgb, var(--accent-color) 14%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-color) 45%, transparent);
+}
+
+.plus-list-state {
+  flex-shrink: 0;
+  align-self: center;
+  padding: 1px 6px;
+  border-radius: 5px;
+  font-size: 11px;
+  font-weight: 500;
+  background: var(--accent-color);
+  color: #fff;
 }
 
 .plus-list-icon {
