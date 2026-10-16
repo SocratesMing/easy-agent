@@ -99,30 +99,30 @@ web_search:
 # 一条问题对应首页一张卡片；最多展示 6 张（多配的部分按顺序截断），
 # 同一分类下写多条会依次展开成多张卡片。
 preset_questions:
-  - category: "文档生成"
-    icon: "📄"
+  - category: "宏观与资产研判"
+    icon: "❄️"
     questions:
-      - "帮我创建一份智能体介绍的 docx、ppt 和 pdf 文件"
-  - category: "量化策略"
-    icon: "📈"
-    questions:
-      - "帮我写一个双均线交叉策略，并在 1 小时周期上回测最近一年"
-  - category: "信息查询"
-    icon: "🔍"
-    questions:
-      - "今天 A 股哪些板块比较强势？"
-  - category: "财报解读"
+      - "结合国内外宏观指标判断增长与通胀方向，再落到 10 年期国债给出趋势研判与验证信号。"
+  - category: "大类配置"
     icon: "📊"
     questions:
-      - "帮我查一下贵州茅台的最新财报，并总结营收和毛利率的变化"
-  - category: "宏观研究"
-    icon: "🌐"
+      - "基于最新 CMA 与当前持仓，在 PVBP、RWA 与分中心久期约束下测算目标持仓与约束。"
+  - category: "组合管理"
+    icon: "📄"
     questions:
-      - "请帮我建立宏观研究框架，围绕增长、通胀与政策梳理关键问题、可用数据和验证步骤。先确认研究市场与时间范围。"
-  - category: "指标科普"
-    icon: "📚"
+      - "按信评、行业、期限、流动性与地域穿透信用债投组，标出久期集中区间与低流动性资产占比。"
+  - category: "策略工坊"
+    icon: "💻"
     questions:
-      - "解释一下 MACD 指标的原理、常用参数和买卖信号"
+      - "参考 XBOND 最优报价与经纪商跟随策略，新建一个债券日内做市策略并给出回测与验证方案。"
+  - category: "因子工坊"
+    icon: "📈"
+    questions:
+      - "围绕资金面、期限利差与机构行为挖掘利率债择时因子，并说明检验标准。"
+  - category: "数据底座"
+    icon: "🗄️"
+    questions:
+      - "调 USDCNH 近一周分钟 bar，算 5 分钟已实现波动率，并说明数据渠道与更新时点。"
 
 # ===== Database Configuration =====
 # Supports SQLite (local) or MySQL (remote)
@@ -203,6 +203,19 @@ expert_tags:
   - { tag_id: asset_allocation, tag_name: 资产配置 }
   - { tag_id: risk_management, tag_name: 风险管理 }
   - { tag_id: other, tag_name: 其他 }
+
+# ===== Upload Limits =====
+# 对话附件上传限额（输入框「+ → 添加文件」）。约束对象是「单个会话、单次对话」的
+# 附件：即输入框里待发送的文件列表，发送消息后输入框清空、额度自动重置。
+# 单位统一为 MB（1MB = 1024*1024 字节）。前端在选择文件时即时拦截，后端 upload
+# 接口对单文件大小兜底校验。
+# 注意：若把 max_total_size_mb 调到 >100，需同步调整 nginx 的 client_max_body_size
+# （见 docker/nginx-frontend.conf，现为 100m），否则会被 nginx 以 413 提前拦截。
+upload_limits:
+  enabled: ${UPLOAD_LIMITS_ENABLED:-true}            # false = 前后端都不限（应急开关）
+  max_file_size_mb: ${UPLOAD_MAX_FILE_SIZE_MB:-10}   # 单个文件大小上限
+  max_files_per_message: ${UPLOAD_MAX_FILES:-5}      # 单次对话附件数量上限
+  max_total_size_mb: ${UPLOAD_MAX_TOTAL_SIZE_MB:-20} # 单次对话附件总大小上限
 
 # ===== Knowledge / RAGFlow =====
 # 启用时需配置 RAGFLOW_BASE_URL + RAGFLOW_API_KEY（见 .env.*.example）

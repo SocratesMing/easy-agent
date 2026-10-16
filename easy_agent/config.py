@@ -327,6 +327,29 @@ class PersonnelConfig(BaseModel):
     """门户免密登录开关：默认关闭；启用后外部系统可通过用户名+用户ID 直登。"""
 
 
+class UploadLimitsConfig(BaseModel):
+    """对话附件上传限额（config.yaml 的 ``upload_limits`` 段）。
+
+    约束对象是**单个会话单次对话**的附件（输入框里待发送的文件列表），发送消息后
+    输入框清空、额度自动重置；不是"会话历史累计"。
+
+    单位统一为 MB（1MB = 1024*1024 字节），与前端 formatSize 一致。
+    校验点：前端选择文件时即时拦截（体验），后端 upload 接口对单文件兜底（权威）。
+
+    注意：若把 ``max_total_size_mb`` 调到大于 nginx 的 ``client_max_body_size``
+    （见 docker/nginx-frontend.conf，现为 100m），会被 nginx 以 413 提前拦截。
+    """
+
+    enabled: bool = True
+    """总开关：false 时前后端都不做限额校验（应急开关）。"""
+    max_file_size_mb: int = Field(default=10, gt=0)
+    """单个文件大小上限（MB）。"""
+    max_files_per_message: int = Field(default=5, gt=0)
+    """单次对话的附件数量上限（输入框内附件总数）。"""
+    max_total_size_mb: int = Field(default=20, gt=0)
+    """单次对话的附件总大小上限（MB）。"""
+
+
 class Config(BaseModel):
     """Main configuration class"""
 
@@ -340,6 +363,8 @@ class Config(BaseModel):
     )
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
     personnel: PersonnelConfig = Field(default_factory=PersonnelConfig)
+    upload_limits: UploadLimitsConfig = Field(default_factory=UploadLimitsConfig)
+    """对话附件上传限额（upload_limits 段）；缺失该段时使用默认值 10/5/20。"""
     models: dict[str, ProviderConfig] = Field(default_factory=dict)
     active_model: str = "minimax"
     preset_questions: list[PresetQuestionGroup] = Field(default_factory=list)
@@ -476,6 +501,8 @@ class Config(BaseModel):
 
         distributed_lock_config = cls._parse_distributed_lock_config(data)
 
+        upload_limits_config = cls._parse_upload_limits_config(data)
+
         return cls(
             llm=llm_config,
             agent=agent_config,
@@ -485,6 +512,7 @@ class Config(BaseModel):
             distributed_lock=distributed_lock_config,
             database=db_config,
             personnel=PersonnelConfig(**data.get("personnel", {})),
+            upload_limits=upload_limits_config,
             models=models,
             active_model=active_model,
             preset_questions=data.get("preset_questions", []),
@@ -648,6 +676,32 @@ class Config(BaseModel):
             renew_interval_seconds=dl_data.get("renew_interval_seconds", 100.0),
             retry_interval_seconds=dl_data.get("retry_interval_seconds", 1.0),
         )
+
+    @staticmethod
+    def _parse_upload_limits_config(data: dict) -> UploadLimitsConfig:
+        """解析 upload_limits 段（对话附件上传限额）。
+
+        缺失该段时使用默认值（10MB / 5 个 / 20MB），保证老配置文件可直接启动。
+        配置写歪（例如总量小于单文件上限）时只告警不中断启动：那种组合会让
+        "单文件校验通过、组合必然失败"，表现为所有文件都传不上去，需尽早提示。
+        """
+        ul_data = data.get("upload_limits", {})
+        if not isinstance(ul_data, dict):
+            ul_data = {}
+        limits = UploadLimitsConfig(
+            enabled=ul_data.get("enabled", True),
+            max_file_size_mb=ul_data.get("max_file_size_mb", 10),
+            max_files_per_message=ul_data.get("max_files_per_message", 5),
+            max_total_size_mb=ul_data.get("max_total_size_mb", 20),
+        )
+        if limits.max_total_size_mb < limits.max_file_size_mb:
+            logger.warning(
+                "⚠️ upload_limits 配置异常：max_total_size_mb(%s) < max_file_size_mb(%s)，"
+                "会导致单个文件合法但整体必然超限，请检查 config.yaml",
+                limits.max_total_size_mb,
+                limits.max_file_size_mb,
+            )
+        return limits
 
     @staticmethod
     def _parse_summarization_config(data: dict) -> SummarizationConfig:
