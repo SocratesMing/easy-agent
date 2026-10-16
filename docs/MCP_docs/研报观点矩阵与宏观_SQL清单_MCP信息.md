@@ -4,7 +4,7 @@
 每条给出用途（业务逻辑）、参数、可直接执行的 SQL、返回字段。
 
 两个模块的数据来自同一次研报分析流程，但**分别存放在两张互不关联的表**：
-观点矩阵 = `weekly_data`，美国宏观资产研判 = `weekly_macro_data`（各自以 `week` 为唯一键，一周一行）。
+观点矩阵 = `weekly_analyzer_data`，美国宏观资产研判 = `weekly_macro_data`（各自以 `week` 为唯一键，一周一行）。
 
 > ### 本版要点
 > 1. **面向 MySQL 5.7 编写**：不使用 `JSON_TABLE`（8.0 才有，5.7 上直接语法报错），数组展开统一用「序号表 seq」。
@@ -67,7 +67,7 @@ FROM (
   SELECT w.week,
          JSON_UNQUOTE(JSON_EXTRACT(w.views_json, CONCAT('$[',sv.i,'].institution'))) AS institution,
          JSON_EXTRACT(w.views_json, CONCAT('$[',sv.i,'].opinions'))                  AS ops_json
-  FROM (SELECT week, JSON_EXTRACT(data_json,'$.views') AS views_json FROM weekly_data WHERE week = '20260928-20261004' LIMIT 1) w, {{SEQ}} sv
+  FROM (SELECT week, JSON_EXTRACT(data_json,'$.views') AS views_json FROM weekly_analyzer_data WHERE week = '20260928-20261004' LIMIT 1) w, {{SEQ}} sv
   WHERE sv.i < JSON_LENGTH(w.views_json)
 ) v, {{SEQ}} so
 WHERE so.i < JSON_LENGTH(v.ops_json)
@@ -122,7 +122,7 @@ FROM (
 `{{V}}` 和 `{{M}}` 是**单周**版（`… WHERE week = '…' LIMIT 1`）。跨周查询（1.7 / 2.4）把这层子查询换成：
 
 ```sql
-SELECT DISTINCT week, JSON_EXTRACT(data_json,'$.views') AS views_json FROM weekly_data
+SELECT DISTINCT week, JSON_EXTRACT(data_json,'$.views') AS views_json FROM weekly_analyzer_data
 ```
 
 `DISTINCT` 是**强制物化**开关（见「通用约定 · 性能」），别删。换好之后就是把 `{{V_ALLWK}}` / `{{M_ALLWK}}` 当 `{{V}}` / `{{M}}` 用，只是不能再按 `week` 过滤。
@@ -131,15 +131,15 @@ SELECT DISTINCT week, JSON_EXTRACT(data_json,'$.views') AS views_json FROM weekl
 
 ```sql
 SELECT 'views' AS arr, MAX(JSON_LENGTH(v.views_json)) AS max_len
-FROM (SELECT DISTINCT week, JSON_EXTRACT(data_json,'$.views') AS views_json FROM weekly_data) v
+FROM (SELECT DISTINCT week, JSON_EXTRACT(data_json,'$.views') AS views_json FROM weekly_analyzer_data) v
 UNION ALL
 SELECT 'opinions', MAX(JSON_LENGTH(JSON_EXTRACT(v.views_json, CONCAT('$[',sv.i,'].opinions'))))
-FROM (SELECT DISTINCT week, JSON_EXTRACT(data_json,'$.views') AS views_json FROM weekly_data) v, {{SEQ}} sv
+FROM (SELECT DISTINCT week, JSON_EXTRACT(data_json,'$.views') AS views_json FROM weekly_analyzer_data) v, {{SEQ}} sv
 WHERE sv.i < JSON_LENGTH(v.views_json)
 UNION ALL
 SELECT 'sources', MAX(JSON_LENGTH(JSON_EXTRACT(v.ops_json, CONCAT('$[',so.i,'].sources'))))
 FROM (SELECT DISTINCT week, JSON_EXTRACT(w.views_json, CONCAT('$[',sv.i,'].opinions')) AS ops_json
-      FROM (SELECT DISTINCT week, JSON_EXTRACT(data_json,'$.views') AS views_json FROM weekly_data) w, {{SEQ}} sv
+      FROM (SELECT DISTINCT week, JSON_EXTRACT(data_json,'$.views') AS views_json FROM weekly_analyzer_data) w, {{SEQ}} sv
       WHERE sv.i < JSON_LENGTH(w.views_json)) v, {{SEQ}} so
 WHERE so.i < JSON_LENGTH(v.ops_json)
 UNION ALL
@@ -156,7 +156,7 @@ WHERE si.i < JSON_LENGTH(m.items_json);
 
 ## 一、观点矩阵
 
-**表名**：`weekly_data`（一周一行）
+**表名**：`weekly_analyzer_data`（一周一行）
 
 | 字段 | 含义 |
 |---|---|
@@ -202,7 +202,7 @@ WHERE si.i < JSON_LENGTH(m.items_json);
 **业务**：周选择器的可选范围。
 
 ```sql
-SELECT week FROM weekly_data ORDER BY week DESC;
+SELECT week FROM weekly_analyzer_data ORDER BY week DESC;
 ```
 
 ### 1.2 某周 机构数 / 观点数（⚠️ 不含宏观）
@@ -288,7 +288,7 @@ FROM (
          JSON_UNQUOTE(JSON_EXTRACT(JSON_EXTRACT(v.ops_json, CONCAT('$[',so.i,'].sources')), CONCAT('$[',s.i,'].passage'))) AS passage
   FROM (
     SELECT w.week, JSON_EXTRACT(w.views_json, CONCAT('$[',sv.i,'].opinions')) AS ops_json
-    FROM (SELECT week, JSON_EXTRACT(data_json,'$.views') AS views_json FROM weekly_data WHERE week = '20260928-20261004' LIMIT 1) w, {{SEQ}} sv
+    FROM (SELECT week, JSON_EXTRACT(data_json,'$.views') AS views_json FROM weekly_analyzer_data WHERE week = '20260928-20261004' LIMIT 1) w, {{SEQ}} sv
     WHERE sv.i < JSON_LENGTH(w.views_json)
   ) v, {{SEQ}} so, {{SEQ}} s
   WHERE so.i < JSON_LENGTH(v.ops_json)
@@ -324,7 +324,7 @@ ORDER BY x.week DESC;
 ### 1.8 周度综述正文
 
 ```sql
-SELECT week, market_overview FROM weekly_data WHERE week = '20260928-20261004';
+SELECT week, market_overview FROM weekly_analyzer_data WHERE week = '20260928-20261004';
 ```
 
 **返回**：`week`、`market_overview`（Markdown 正文）
@@ -368,7 +368,7 @@ SELECT week, market_overview FROM weekly_data WHERE week = '20260928-20261004';
 > `forecasts` 的 key 是机构名，value 通常是数值，**少数是文字**——例如
 > `美联储下次加息预期`：`{"汇丰":"12月","瑞银":"12月","花旗":"不动","高盛":"10月",…}`。文字值属正常数据，见 2.6 / 2.7。
 >
-> **取宏观一律用这张表**：`weekly_data.data_json` 里还留着一份 `macro_forecasts`（历史兼容字段），不要读它。
+> **取宏观一律用这张表**：`weekly_analyzer_data.data_json` 里还留着一份 `macro_forecasts`（历史兼容字段），不要读它。
 
 ### 2.1 有宏观数据的周（倒序）
 
@@ -522,6 +522,6 @@ ORDER BY n DESC;
 | 10 | 两个模块的 `category` 含义不同 | 观点里是资产分类（外汇 / 大宗…），宏观 `items[].category` 是指标分类（通胀 / 就业…），别混用 |
 | 11 | 最早几周没有 `views` 键 | 早期周 `data_json` 顶层是数组（结构不同），第一章的查询在这几周返回 0 行，属历史遗留 |
 | 12 | 跨表 JOIN 报 `Illegal mix of collations (1267)` | 两表 `week` 列排序规则可能不一致 → `ON m.week = w.week COLLATE utf8mb4_unicode_ci`（或与部署环境一致的排序规则） |
-| 13 | 宏观数据有历史兼容字段 | `weekly_data.data_json.macro_forecasts` 是旧的兼容字段，**取宏观一律用 `weekly_macro_data`** |
+| 13 | 宏观数据有历史兼容字段 | `weekly_analyzer_data.data_json.macro_forecasts` 是旧的兼容字段，**取宏观一律用 `weekly_macro_data`** |
 | 14 | JSON 路径里的引号不要加反斜杠 | 写 `CONCAT('$."', 机构名, '"')`：单引号串里的双引号无需转义；加反斜杠在 `NO_BACKSLASH_ESCAPES` 模式下会失效 |
 | 15 | `ONLY_FULL_GROUP_BY`（5.7 默认开启） | 本文档的聚合查询都把非聚合列写进了 `GROUP BY`，照抄即可 |

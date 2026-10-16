@@ -2,7 +2,7 @@
 
 口径照 ``docs/MCP_docs/研报观点矩阵与宏观_SQL清单_MCP信息.md``：
 
-- 观点矩阵 = ``weekly_data``（一周一行，``week`` 为唯一键）
+- 观点矩阵 = ``weekly_analyzer_data``（一周一行，``week`` 为唯一键）
 - 美国宏观资产研判 = ``weekly_macro_data``（一周一行，``week`` 为唯一键）
 - 两表**互不关联**，跨表 JOIN 要注意排序规则（可能报 1267）
 
@@ -34,7 +34,7 @@ from ...env import load_env
 from ...querykit import assert_identifier, env_list, max_rows
 
 TABLES: dict[str, str] = {
-    "opinions": "weekly_data",
+    "opinions": "weekly_analyzer_data",
     "macro": "weekly_macro_data",
 }
 
@@ -431,7 +431,7 @@ def schema_help() -> dict[str, Any]:
         "tables": {key: table_ref(key) for key in TABLES},
         "week_format": "YYYYMMDD-YYYYMMDD",
         "modules": {
-            "opinions": "观点矩阵（weekly_data，只含资产类观点）",
+            "opinions": "观点矩阵（weekly_analyzer_data，只含资产类观点）",
             "macro": "美国宏观资产研判（weekly_macro_data）",
         },
         "sql_dialect": (
@@ -456,7 +456,7 @@ def schema_help() -> dict[str, Any]:
         ),
         "seq_limit": SEQ_LIMIT,
         "not_available": (
-            "取宏观一律用 weekly_macro_data；weekly_data.data_json 里的 "
+            "取宏观一律用 weekly_macro_data；weekly_analyzer_data.data_json 里的 "
             "macro_forecasts 是历史兼容字段，不读它"
         ),
         "pitfalls": [
