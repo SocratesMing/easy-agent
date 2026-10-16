@@ -108,6 +108,26 @@ def get_context_length() -> int | None:
         return None
 
 
+def _get_max_file_size_mb() -> int | None:
+    """读取配置中的单文件上传大小上限（MB）。
+
+    返回 None 表示不做限制（``upload_limits.enabled=false`` 或读取配置失败）；
+    读取失败按"不拦"处理，避免配置异常时把上传功能整体打死。
+    与 get_context_length 一致：优先复用启动时初始化的全局配置，兜底读盘。
+    """
+    try:
+        cfg = get_agent_config()
+        if cfg and cfg.get("config"):
+            limits = getattr(cfg["config"], "upload_limits", None)
+            if limits is None:
+                return None
+            return int(limits.max_file_size_mb) if limits.enabled else None
+    except Exception as e:
+        logger.warning(f"读取上传限额配置失败（本次不做单文件大小限制）: {e}")
+        return None
+    return None
+
+
 router = APIRouter(
     prefix="/agent/sessions",
     tags=["Sessions"],
@@ -383,6 +403,27 @@ async def upload_session_file(
     file_path = upload_dir / saved_name
 
     content = await file.read()
+
+    # 单文件大小兜底（权威校验）：前端选文件时已按 upload_limits 拦截，这里防止
+    # 直接调接口绕过。超限直接拒绝且不落盘（上传总大小/数量属于"单次对话"的组合
+    # 约束，上传接口是单文件无状态请求，前端负责）。
+    max_file_size_mb = _get_max_file_size_mb()
+    if max_file_size_mb and len(content) > max_file_size_mb * 1024 * 1024:
+        actual_mb = round(len(content) / 1024 / 1024, 2)
+        logger.warning(
+            f"文件上传被拒（超过单文件上限）| 文件名: {safe_filename} | "
+            f"大小: {actual_mb}MB | 上限: {max_file_size_mb}MB | 用户: {username}"
+        )
+        raise HTTPException(
+            status_code=413,
+            detail={
+                "code": "UPLOAD_FILE_TOO_LARGE",
+                "message": f"单个文件不能超过 {max_file_size_mb}MB，当前 {actual_mb}MB",
+                "limit_mb": max_file_size_mb,
+                "actual_mb": actual_mb,
+            },
+        )
+
     file_path.write_bytes(content)
 
     ext = os.path.splitext(safe_filename)[1].lstrip(".") or "unknown"

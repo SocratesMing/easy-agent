@@ -228,3 +228,36 @@ async def get_web_search_status():
         "time_ranges": list(TIME_RANGE_VALUES),
     }
 
+
+# ── 上传限额 ──────────────────────────────────────────────────────────
+
+
+@router.get("/upload-limits", summary="获取上传限额（公共接口，无需登录）")
+async def get_upload_limits():
+    """返回对话附件上传限额，供前端在选文件时即时拦截并展示已用额度。
+
+    约束对象是「单个会话、单次对话」的附件（输入框待发送列表），发送后重置。
+    与 /models、/web-search 一致为公共接口：这些阈值不敏感，且 SDK 内嵌场景
+    需要一个不依赖登录态的取数通道。前端拉取失败时会回落到内置默认值
+    （10MB / 5 个 / 20MB），不会因接口异常而放行。
+    """
+    _cfg = get_agent_config()
+    if not _cfg or not _cfg.get("config"):
+        raise HTTPException(status_code=503, detail="Agent 配置未初始化")
+    config: Config = _cfg["config"]
+
+    limits = getattr(config, "upload_limits", None)
+    payload = {
+        "enabled": bool(getattr(limits, "enabled", True)),
+        "max_file_size_mb": int(getattr(limits, "max_file_size_mb", 10)),
+        "max_files_per_message": int(getattr(limits, "max_files_per_message", 5)),
+        "max_total_size_mb": int(getattr(limits, "max_total_size_mb", 20)),
+    }
+    logger.info(
+        f"获取上传限额 | enabled={payload['enabled']} | "
+        f"单文件 {payload['max_file_size_mb']}MB | "
+        f"数量 {payload['max_files_per_message']} | "
+        f"总量 {payload['max_total_size_mb']}MB"
+    )
+    return payload
+
