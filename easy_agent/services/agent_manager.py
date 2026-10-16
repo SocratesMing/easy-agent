@@ -258,6 +258,20 @@ async def get_or_create_agent_for_session(
         except Exception as e:
             logger.warning(f"[{session_id[-5:]}] 注入定时任务工具失败: {e}")
 
+    # 上传文件按需读取/重解析工具（file_context 启用时注入）：清单标"解析失败/未解析"
+    # 或模型需要原始内容时，由服务端到 uploadfiles/ 重新解析源文件并回填正文。
+    # 原始文件在工作区之外，模型的 grep/read_file 读不到，必须靠这个工具。
+    try:
+        _fc = getattr(config, "file_context", None)
+        if _fc is not None and getattr(_fc, "enabled", True):
+            from ..tools.session_file_reader import ReadUploadedFileTool
+            tools.append(
+                ReadUploadedFileTool(username=username, session_id=session_id or "")
+            )
+            logger.info(f"[{session_id[-5:]}] 📎 已注入 read_uploaded_file 工具")
+    except Exception as e:
+        logger.warning(f"[{session_id[-5:]}] 注入 read_uploaded_file 工具失败: {e}")
+
     if web_search_tool is not None:
         tools.append(web_search_tool)
         logger.info(f"[{session_id[-5:]}] 🌐 联网搜索已开启（注入 web_search 工具）")

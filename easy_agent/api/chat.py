@@ -31,6 +31,7 @@ from ..services import (
     cancel_stream_task,
 )
 from ..services import skill_library
+from ..services import session_uploads as file_context
 from ..services.streaming import format_sse
 from ..utils import parse_file_content, SessionLogger, get_owned_session
 from .sessions import generate_workspace_name
@@ -472,14 +473,24 @@ async def chat_stream(
         session_id=session_id,
         question=request.message,
     )
-    # 判断是否为新建会话（首次消息）：新建会话的上传文件内容注入系统提示词，
-    # 非首次会话则拼接到用户消息（保持原有行为）。
-    _existing = db.get_session(session_id)
-    is_new_session = (not _existing) or (len(_existing.messages) == 0)
+    # ── 上传文件内容 ─────────────────────────────────────────────────
+    # 新机制（config.file_context.enabled=true，默认）：
+    #   解析正文在**上传时**已落盘到会话工作区 uploads/，文件清单 uploads/index.md
+    #   由 agent.py 作为记忆文件注入 system prompt —— 后续每一轮（不必再上传）模型
+    #   都知道本会话传过哪些文件、正文在哪，并按需用内置 grep/read_file 检索，
+    #   不必每轮把全文塞进上下文。这里只补一小段"本轮上传文件的开头预览"，
+    #   让"传完立刻提问"少一次工具往返。
+    # 回退（enabled=false）：保持改造前行为——首轮把解析全文放进 system prompt，
+    #   非首轮把全文拼进用户消息（"第二轮起看不到文件内容"的旧问题即源于此）。
+    system_prompt_parts = []
+    if request.files and not file_context.is_enabled():
+        # 判断是否为新建会话（首次消息）：新建会话的上传文件内容注入系统提示词，
+        # 非首次会话则拼接到用户消息（保持原有行为）。
+        _existing = db.get_session(session_id)
+        is_new_session = (not _existing) or (len(_existing.messages) == 0)
 
-    # 依次解析上传文件内容（支持 docx/excel/pdf/txt/md 等）
-    file_context_parts = []
-    if request.files:
+        # 依次解析上传文件内容（支持 docx/excel/pdf/txt/md 等）
+        file_context_parts = []
         for file_info in request.files:
             file_path = file_info.get("file_path", "")
             if not file_path:
@@ -489,28 +500,37 @@ async def chat_stream(
             if content:
                 file_context_parts.append((filename, content))
                 logger.info(
-                    f"[{session_id[-5:]}] 📎 文件已解析 | {filename} | "
+                    f"[{session_id[-5:]}] 📎 文件已解析（回退模式）| {filename} | "
                     f"内容长度: {len(content)} 字符"
                 )
             else:
                 logger.warning(f"[{session_id[-5:]}] 文件解析为空: {filename}")
 
-    system_prompt_parts = []
-    if file_context_parts:
-        if is_new_session:
-            sections = [
-                f"### 文件: {fn}\n{c}" for fn, c in file_context_parts
-            ]
-            system_prompt_parts.append(
-                "## 用户上传的文件内容（已为你解析，请基于这些内容回应用户）\n\n"
-                + "\n\n".join(sections)
+        if file_context_parts:
+            if is_new_session:
+                sections = [
+                    f"### 文件: {fn}\n{c}" for fn, c in file_context_parts
+                ]
+                system_prompt_parts.append(
+                    "## 用户上传的文件内容（已为你解析，请基于这些内容回应用户）\n\n"
+                    + "\n\n".join(sections)
+                )
+            else:
+                file_contents = [
+                    f"[文件: {fn}]\n{c}" for fn, c in file_context_parts
+                ]
+                # 技能指令跟在正文前（与改造前前端拼接的顺序一致），文件块仍在最前
+                parsed_content = "\n\n".join(file_contents) + "\n\n" + model_message
+    elif request.files:
+        preview = file_context.build_turn_preview(
+            session_id, username, request.files, db
+        )
+        if preview:
+            parsed_content = preview + "\n\n" + parsed_content
+            logger.info(
+                f"[{session_id[-5:]}] 📎 已注入本轮上传文件开头预览 | {len(preview)} 字符"
             )
-        else:
-            file_contents = [
-                f"[文件: {fn}]\n{c}" for fn, c in file_context_parts
-            ]
-            # 技能指令跟在正文前（与改造前前端拼接的顺序一致），文件块仍在最前
-            parsed_content = "\n\n".join(file_contents) + "\n\n" + model_message
+
     system_prompt_extra = "\n\n".join(system_prompt_parts)
 
     page_context = (request.page_context or "").strip()

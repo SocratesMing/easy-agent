@@ -29,10 +29,10 @@
             class="uploaded-file"
           >
             <div class="file-icon">
-              <FileIcon :filename="file.filename" :size="36" />
+              <FileIcon :filename="file.filename" :size="26" />
             </div>
             <div class="file-info">
-              <span class="file-name">{{ file.filename }}</span>
+              <span class="file-name" :title="file.filename">{{ file.filename }}</span>
               <div class="file-meta">
                 <span class="file-size">{{ formatSize(file.size) }}</span>
                 <div v-if="file.uploadStatus === 'uploading'" class="upload-progress">
@@ -2872,13 +2872,19 @@ html[data-theme="dark"] .connector-switch.on {
   position: relative;
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   background: var(--bg-secondary);
   border: 1px solid var(--border-color);
-  padding: 10px 14px;
+  /* 右侧 26px 预留给卡片内右上角的 × 按钮，防止文件名顶到 × 下面 */
+  padding: 6px 26px 6px 10px;
   border-radius: 12px;
-  max-width: 250px;
-  flex-shrink: 0;
+  /* 自适应等分：一行最多放 3 个（220px 起步、300px 封顶），宽度随容器伸缩 */
+  flex: 1 1 220px;
+  max-width: 300px;
+  min-width: 0;
+  box-sizing: border-box;
+  height: 48px;
+  overflow: hidden;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
   transition: all 0.2s ease;
 }
@@ -2889,8 +2895,8 @@ html[data-theme="dark"] .connector-switch.on {
 }
 
 .file-icon {
-  width: 40px;
-  height: 40px;
+  width: 30px;
+  height: 30px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -2906,7 +2912,8 @@ html[data-theme="dark"] .connector-switch.on {
 }
 
 .file-name {
-  font-size: 13px;
+  font-size: 12px;
+  line-height: 16px;
   font-weight: 500;
   color: var(--text-primary);
   white-space: nowrap;
@@ -2917,11 +2924,13 @@ html[data-theme="dark"] .connector-switch.on {
 .file-meta {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
+  min-height: 16px;
 }
 
 .file-size {
   font-size: 11px;
+  line-height: 16px;
   color: var(--text-secondary);
 }
 
@@ -2948,14 +2957,16 @@ html[data-theme="dark"] .connector-switch.on {
 
 .progress-text {
   font-size: 10px;
+  line-height: 16px;
   color: var(--text-secondary);
   min-width: 35px;
 }
 
 .upload-status {
   font-size: 10px;
+  line-height: 14px;
   font-weight: 500;
-  padding: 2px 6px;
+  padding: 1px 6px;
   border-radius: 8px;
 }
 
@@ -2972,14 +2983,14 @@ html[data-theme="dark"] .connector-switch.on {
 /* 失败卡片上的「重试」：仅可重试的失败（非单文件超限）才渲染 */
 .retry-file-btn {
   flex-shrink: 0;
-  padding: 1px 7px;
+  padding: 0 6px;
   border: 1px solid #fca5a5;
   border-radius: 8px;
   background: #ffffff;
   background: var(--bg-secondary);
   color: #b91c1c;
   font-size: 10px;
-  line-height: 16px;
+  line-height: 14px;
   cursor: pointer;
 }
 
@@ -2987,18 +2998,18 @@ html[data-theme="dark"] .connector-switch.on {
   background: #fee2e2;
 }
 
-/* × 常驻卡片右上角角标：上传前/上传中/上传完成/失败均可点击删除。
+/* × 常驻卡片内部右上角：上传前/上传中/上传完成/失败均可点击删除。
    兼容 Edge 114~155：仅用绝对定位 + 圆角 + 字面量回退，不用新特性。 */
 .remove-file-btn {
   position: absolute;
-  top: -7px;
-  right: -7px;
+  top: 5px;
+  right: 5px;
   z-index: 1;
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 18px;
-  height: 18px;
+  width: 16px;
+  height: 16px;
   padding: 0;
   background: #334155;
   border: 2px solid #ffffff;
@@ -3013,8 +3024,8 @@ html[data-theme="dark"] .connector-switch.on {
 }
 
 .remove-file-btn svg {
-  width: 10px;
-  height: 10px;
+  width: 9px;
+  height: 9px;
   color: #ffffff;
 }
 

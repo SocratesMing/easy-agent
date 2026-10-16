@@ -217,6 +217,17 @@ upload_limits:
   max_files_per_message: ${UPLOAD_MAX_FILES:-5}      # 单次对话附件数量上限
   max_total_size_mb: ${UPLOAD_MAX_TOTAL_SIZE_MB:-20} # 单次对话附件总大小上限
 
+# ===== 上传文件解析与记忆（file_context）=====
+# 上传即解析：正文落盘到会话工作区 uploads/{文件名}.txt；文件清单 uploads/index.md
+# 作为会话记忆注入系统提示词，模型每轮都知道传过哪些文件并按需检索（grep/read_file），
+# 因此不会再出现"第二轮起看不到上一轮上传文件内容"的问题。
+file_context:
+  enabled: ${FILE_CONTEXT_ENABLED:-true}                     # false = 回退旧的全量注入（应急开关）
+  parse_max_file_size_mb: ${FILE_PARSE_MAX_MB:-20}           # 超过该大小的文件不做解析（仍记清单）
+  max_stored_chars: ${FILE_MAX_STORED_CHARS:-200000}         # 单文件落盘解析文本上限（字符）
+  manifest_max_chars: ${FILE_MANIFEST_MAX_CHARS:-2000}       # 上传清单上限，超出丢最旧条目
+  preview_max_chars: ${FILE_PREVIEW_MAX_CHARS:-2000}         # 本轮上传文件注入的开头预览（0 = 不注入）
+
 # ===== Knowledge / RAGFlow =====
 # 启用时需配置 RAGFLOW_BASE_URL + RAGFLOW_API_KEY（见 .env.*.example）
 knowledge:

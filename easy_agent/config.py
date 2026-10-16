@@ -350,6 +350,44 @@ class UploadLimitsConfig(BaseModel):
     """单次对话的附件总大小上限（MB）。"""
 
 
+class FileContextConfig(BaseModel):
+    """会话上传文件的解析落盘与记忆注入（config.yaml 的 ``file_context`` 段）。
+
+    解决的问题：改造前上传文件的解析全文只塞进"本轮带文件"的提示词，第二轮起
+    请求不再带文件，模型就看不到内容了（且首轮内容挂在内存中的 Agent 缓存上，
+    缓存一驱逐即丢失）。
+
+    机制（详见 ``services/session_uploads.py``）：
+    1. 上传即解析：解析文本落盘到会话工作区 ``uploads/{文件名}.txt``，一次解析、
+       全程复用；
+    2. 上传即记清单：文件名/大小/时间/解析状态写入 ``uploads/index.md``，该文件由
+       ``agent.py`` 作为**记忆文件**注入 system prompt，模型每轮都知道用户传过哪些
+       文件、正文在哪；
+    3. 正文不注入：模型按需用内置的 grep/read_file 工具在 ``uploads/`` 里检索，
+       避免每轮把全文塞进上下文撑爆窗口；
+    4. 本轮刚上传的文件额外注入开头预览（``preview_max_chars``），减少首问时的一次
+       工具往返。
+
+    ``enabled=False`` 时整体回退到改造前行为（上传不解析、清单不注入，聊天接口把
+    解析全文塞进提示词），作为应急回滚开关。
+    """
+
+    enabled: bool = True
+    """总开关：false 时回退旧的全量注入行为。"""
+
+    parse_max_file_size_mb: int = Field(default=20, gt=0)
+    """超过该大小的文件不做解析（仍记录清单条目），避免上传请求被解析阻塞。"""
+
+    max_stored_chars: int = Field(default=200000, gt=0)
+    """单个文件落盘的解析文本上限（字符）；超出截断并在清单中标注。"""
+
+    manifest_max_chars: int = Field(default=2000, gt=0)
+    """上传清单（``uploads/index.md``）字符上限；超出只保留最新的文件条目。"""
+
+    preview_max_chars: int = Field(default=2000, ge=0)
+    """本轮上传文件注入模型的开头预览字符数（多文件合计）；0 = 不注入预览。"""
+
+
 class Config(BaseModel):
     """Main configuration class"""
 
@@ -364,6 +402,7 @@ class Config(BaseModel):
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
     personnel: PersonnelConfig = Field(default_factory=PersonnelConfig)
     upload_limits: UploadLimitsConfig = Field(default_factory=UploadLimitsConfig)
+    file_context: FileContextConfig = Field(default_factory=FileContextConfig)
     """对话附件上传限额（upload_limits 段）；缺失该段时使用默认值 10/5/20。"""
     models: dict[str, ProviderConfig] = Field(default_factory=dict)
     active_model: str = "minimax"
@@ -503,6 +542,8 @@ class Config(BaseModel):
 
         upload_limits_config = cls._parse_upload_limits_config(data)
 
+        file_context_config = cls._parse_file_context_config(data)
+
         return cls(
             llm=llm_config,
             agent=agent_config,
@@ -513,6 +554,7 @@ class Config(BaseModel):
             database=db_config,
             personnel=PersonnelConfig(**data.get("personnel", {})),
             upload_limits=upload_limits_config,
+            file_context=file_context_config,
             models=models,
             active_model=active_model,
             preset_questions=data.get("preset_questions", []),
@@ -702,6 +744,23 @@ class Config(BaseModel):
                 limits.max_file_size_mb,
             )
         return limits
+
+    @staticmethod
+    def _parse_file_context_config(data: dict) -> FileContextConfig:
+        """解析 file_context 段（上传文件解析落盘 + 清单记忆）。
+
+        缺失该段时使用默认值，保证老配置文件可直接启动。
+        """
+        fc_data = data.get("file_context", {})
+        if not isinstance(fc_data, dict):
+            fc_data = {}
+        return FileContextConfig(
+            enabled=fc_data.get("enabled", True),
+            parse_max_file_size_mb=fc_data.get("parse_max_file_size_mb", 20),
+            max_stored_chars=fc_data.get("max_stored_chars", 200000),
+            manifest_max_chars=fc_data.get("manifest_max_chars", 2000),
+            preview_max_chars=fc_data.get("preview_max_chars", 2000),
+        )
 
     @staticmethod
     def _parse_summarization_config(data: dict) -> SummarizationConfig:
