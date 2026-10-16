@@ -4,6 +4,8 @@ import { deleteFile, getSessionGeneratedFiles } from '../api/files.js'
 import { authFetch } from '../api/auth.js'
 import { streamExportRun } from '../api/expert.js'
 import { chatBus, chatStore } from '../store/chatStore.js'
+import { parseLeadingSkillTokens } from '../utils/skillTokens.js'
+import { ensureSkillDirectoryLoaded, skillDirectoryStore } from '../store/skillDirectoryStore.js'
 
 // MCP 工具结果解析：模块级函数，供正常流(handleSendMessage)与 HITL 恢复流(handleToolApproval)共用。
 // 注意：不要把它定义在某个函数内部，否则另一处引用会抛 ReferenceError，
@@ -1542,6 +1544,7 @@ export default {
         },
       })
 
+      let resumeFailed = false
       try {
         const controller = new AbortController()
         this.currentAbortController = controller
@@ -1561,18 +1564,31 @@ export default {
       } catch (e) {
         if (e.name === 'AbortError') return
         console.error('恢复执行失败:', e)
+        resumeFailed = true
         const idx = this.messages.findIndex(m => m.id === assistantMsgId)
         if (idx !== -1) {
+          // 回滚乐观更新：请求根本没送达/未被受理时，本轮被批准的工具尚未在后端
+          // 执行（duration==null），恢复「待审批」让审批按钮可重试；否则徽章会停在
+          // 「已批准」而库里仍是 pending，刷新页面后状态回跳，看起来像"审批了却还在询问"
+          const rolledStatus = decision === 'approve' ? 'approved' : 'rejected'
+          for (const blk of this.messages[idx].blocks) {
+            if (blk.approval_status === rolledStatus && blk.duration == null) {
+              blk.approval_status = 'pending'
+              blk.pending_approval = true
+            }
+          }
           this.messages[idx].loading = false
-          this.messages[idx].error = e.message || '恢复执行失败'
-          setReactive(this.messages, idx, { ...this.messages[idx] })
+          this.messages[idx].error = `审批请求未生效：${e.message || '恢复执行失败'}，请重试`
+          setReactive(this.messages, idx, { ...this.messages[idx], blocks: [...this.messages[idx].blocks] })
         }
       } finally {
         // 如果 resumeStream 期间收到了新的 approval_required（onChunk 重新设置了
         // pendingApproval），则不清除，保持 isStreaming=true 等待用户审批
         const hasNewApproval = this.pendingApproval && this.pendingApproval !== currentApproval
         if (!hasNewApproval) {
-          this.pendingApproval = null
+          // 失败时保留审批上下文，让回滚出的「待审批」按钮可以再次点击重试；
+          // 否则 pendingApproval 被清空后 handleToolApproval 直接 return，按钮永久失效
+          this.pendingApproval = resumeFailed ? currentApproval : null
           this.currentAbortController = null
           this.streamingAssistantId = null
           const sid = sessionId
@@ -1582,14 +1598,18 @@ export default {
           }
           this.unmarkStreaming(sid)
           this.saveCurrentSessionState()
-          // 审批恢复流结束：以服务端历史为准回填，保证完整渲染
-          await this.syncSessionFromServer(sid)
+          // 审批恢复流结束：以服务端历史为准回填，保证完整渲染。
+          // 失败时跳过：服务端未变更（请求未送达），本地已回滚并保留了错误提示，
+          // 回填会把错误提示清掉
+          if (!resumeFailed) {
+            await this.syncSessionFromServer(sid)
+          }
           this.recomputePendingApprovalFlag(sid)
           await this.loadSessions()
         }
       }
     },
-    handleRetry(content) {
+    async handleRetry(content, skills = []) {
       // 直接重新发送消息内容，不经过输入框
       console.log('[handleRetry] content type:', typeof content, 'value:', content)
 
@@ -1606,8 +1626,17 @@ export default {
           return
         }
 
-        // 直接调用发送
-        this.handleSendMessage(content.trim())
+        // 重发带上本轮技能：优先用结构化 message.skills（后端落库正文是用户原话，
+        // 技能只存在 skills 字段）；老数据 content 带发送时拼接的 `/目录名` 前缀，
+        // 由前缀解析兜底（解析按已知目录名保守匹配，不误伤路径），两者合并去重
+        const trimmed = content.trim()
+        await ensureSkillDirectoryLoaded()
+        const parsed = parseLeadingSkillTokens(trimmed, skillDirectoryStore.names)
+        const turnSkills = [...new Set([
+          ...(Array.isArray(skills) ? skills.filter(Boolean) : []),
+          ...parsed.dirNames,
+        ])]
+        this.handleSendMessage(parsed.body.trim(), [], null, true, false, turnSkills)
       }
     },
     handleStop() {

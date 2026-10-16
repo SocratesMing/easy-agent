@@ -416,9 +416,9 @@ export default {
       const message = this.messages[messageIndex]
       this.$emit('remove-file', message, messageIndex, file)
     },
-    handleRetry(content) {
-      // 向上传递重试事件
-      this.$emit('retry', content)
+    handleRetry(content, skills) {
+      // 向上传递重试事件（content=正文，skills=本轮技能目录名）
+      this.$emit('retry', content, skills)
     },
     handleApprove() {
       this.$emit('approve')
