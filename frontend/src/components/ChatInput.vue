@@ -299,7 +299,7 @@
                     class="plus-expert-more"
                     @click="loadMoreExperts"
                   >
-                    还有 {{ myExpertsActive.length - visibleMyExperts.length }} 位 · 滚动或点击加载
+                    还有 {{ myExpertsActive.length - visibleMyExperts.length }} 位 · 点击加载
                   </button>
 
                   <div class="plus-experts-divider"></div>
@@ -333,7 +333,7 @@
                     class="plus-expert-more"
                     @click="loadMoreExperts"
                   >
-                    还有 {{ publicExperts.length - visiblePublicExperts.length }} 位 · 滚动或点击加载
+                    还有 {{ publicExperts.length - visiblePublicExperts.length }} 位 · 点击加载
                   </button>
                 </div>
                 <div class="skill-sub-footer">
