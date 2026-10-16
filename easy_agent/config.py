@@ -126,8 +126,14 @@ class ToolsConfig(BaseModel):
     仅影响日志展示长度，不改变工具返回给模型的内容；读取方见
     ``agent.py`` / ``services/streaming.py`` 中的 LoggingMiddleware 与流式日志。
     """
-    experts_dir: str = "./exports"
-    """公共（预置）专家目录：只读扫描，见 services/public_expert_service.py。"""
+    experts_dir: str = "./experts"
+    """公共（预置）专家目录：只读扫描，见 services/public_expert_service.py。
+
+    可写绝对路径（推荐生产环境，如 ``/qts/experts``）或相对路径；相对路径按
+    「进程 CWD → 项目根」顺序解析，因此改这里的目录后无需调整启动方式。
+    留空时退化为 ``<项目根>/experts``。环境变量 ``EASY_EXPERTS_DIR`` 可在
+    配置缺失时兜底（优先级低于本项）。
+    """
 
 class SQLiteConfig(BaseModel):
     """SQLite configuration"""
@@ -638,7 +644,7 @@ class Config(BaseModel):
             skills_dir=tools_data.get("skills_dir", "./skills"),
             prompts_dir=tools_data.get("prompts_dir", "./prompts"),
             result_log_truncate=tools_data.get("result_log_truncate", 200),
-            experts_dir=tools_data.get("experts_dir", "./exports"),
+            experts_dir=tools_data.get("experts_dir", "./experts"),
         )
 
     @staticmethod

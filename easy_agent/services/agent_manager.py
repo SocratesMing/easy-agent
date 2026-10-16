@@ -258,6 +258,23 @@ async def get_or_create_agent_for_session(
         except Exception as e:
             logger.warning(f"[{session_id[-5:]}] 注入定时任务工具失败: {e}")
 
+    # 专家写入工具（对话内「新建/修改专家」）：由 expert-creator 技能引导 Agent 产出
+    # 结构化配置后落库 + 落版本目录，替代原先只能在弹窗里慢慢等的方式。
+    try:
+        from ..tools.expert_writer import create_save_expert_tool
+
+        tools.append(
+            create_save_expert_tool(
+                username=username,
+                session_id=session_id or "",
+                config_model=model_name or "",
+                tag_options=getattr(config, "expert_tags", None),
+            )
+        )
+        logger.info(f"[{session_id[-5:]}] 🧑‍🔬 已注入 save_expert 工具")
+    except Exception as e:
+        logger.warning(f"[{session_id[-5:]}] 注入 save_expert 工具失败: {e}")
+
     # 上传文件按需读取/重解析工具（file_context 启用时注入）：清单标"解析失败/未解析"
     # 或模型需要原始内容时，由服务端到 uploadfiles/ 重新解析源文件并回填正文。
     # 原始文件在工作区之外，模型的 grep/read_file 读不到，必须靠这个工具。

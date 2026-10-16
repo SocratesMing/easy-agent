@@ -733,14 +733,14 @@ PUBLIC_NAME = "预置演示专家"
 
 @pytest.fixture()
 def public_root(tmp_path, monkeypatch):
-    """把公共专家目录指向临时目录，不依赖仓库自带的 exports/。
+    """把公共专家目录指向临时目录，不依赖仓库自带的 experts/。
 
-    应用启动时已加载 agent 配置（tools.experts_dir 指向仓库 exports/），故这里
+    应用启动时已加载 agent 配置（tools.experts_dir 指向仓库 experts/），故这里
     直接替换 ``public_expert_service.public_experts_root``，保证用例只看到自造数据。
     """
     from easy_agent.services import public_expert_service
 
-    root = tmp_path / "exports"
+    root = tmp_path / "experts"
     root.mkdir()
     monkeypatch.setattr(public_expert_service, "public_experts_root", lambda: root)
     return root

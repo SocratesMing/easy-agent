@@ -10,7 +10,7 @@
 | 4 | 目录里没有提示词 md | 跳过（不抛异常），并记 warning |
 | 5 | ID 查询 | find_public_expert 命中 / 未命中返回 None |
 | 6 | 读取提示词 | load_public_prompt 返回全文与版本；不存在返回空串 |
-| 7 | 根目录解析 | 配置缺失时用环境变量 EASY_EXPERTS_DIR，再退默认 ./exports |
+| 7 | 根目录解析 | 配置 > 环境变量 EASY_EXPERTS_DIR > 默认 <项目根>/experts；相对路径按 CWD→项目根解析 |
 
 用例完全离线：不碰数据库、不调模型，只读写 tmp_path。
 """
@@ -205,17 +205,84 @@ def test_root_env_over_default(monkeypatch, tmp_path):
 
 
 def test_root_default_when_nothing_set(monkeypatch):
+    """未配置任何目录时，默认锚定「项目根/experts」，不随进程 CWD 漂移。"""
     monkeypatch.setattr(agent_manager, "get_agent_config", lambda: {})
     monkeypatch.delenv(P.ENV_EXPERTS_DIR, raising=False)
-    # Path 会把 "./exports" 归一化为 "exports"，用 Path 比较而非字符串
-    assert P.public_experts_root() == Path(P.DEFAULT_EXPERTS_DIR)
+
+    root, source = P.public_experts_root_info()
+    assert source == "default"
+    anchored = P._project_root() / P.DEFAULT_EXPERTS_DIRNAME
+    if anchored.is_dir():
+        assert root == anchored
+    else:
+        # 非常规布局：退回旧口径（相对 CWD）
+        assert root == Path(P.DEFAULT_EXPERTS_DIR)
+
+
+def test_root_default_is_independent_of_cwd(tmp_path, monkeypatch):
+    """换启动目录后仍能找到预置专家（本次改动的核心诉求）。
+
+    用假的「项目根」做断言，避免往真实仓库目录里写测试数据。
+    """
+    fake_root = tmp_path / "proj"
+    fake_root.mkdir()
+    _flat_expert(fake_root / P.DEFAULT_EXPERTS_DIRNAME, "preset_cwd", name_en="cwd")
+
+    monkeypatch.setattr(agent_manager, "get_agent_config", lambda: {})
+    monkeypatch.setattr(P, "_project_root", lambda: fake_root)
+    monkeypatch.delenv(P.ENV_EXPERTS_DIR, raising=False)
+    monkeypatch.chdir(tmp_path)  # CWD 下没有 experts/
+
+    root, source = P.public_experts_root_info()
+    assert source == "default"
+    assert root == fake_root / P.DEFAULT_EXPERTS_DIRNAME
+    ids = [i["export_agent_id"] for i in P.discover_public_experts()]
+    assert ids == ["preset_cwd"]
+
+
+def test_root_relative_config_resolves_against_project_root(tmp_path, monkeypatch):
+    """配置里写相对目录时，CWD 下没有就按项目根找（部署换目录不必改启动方式）。"""
+    fake_root = tmp_path / "proj"
+    (fake_root / "my-experts").mkdir(parents=True)
+    monkeypatch.setattr(P, "_project_root", lambda: fake_root)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        agent_manager,
+        "get_agent_config",
+        lambda: {
+            "config": type(
+                "C", (), {"tools": type("T", (), {"experts_dir": "my-experts"})()}
+            )()
+        },
+    )
+    root, source = P.public_experts_root_info()
+    assert source == "config"
+    assert root == fake_root / "my-experts"
+
+
+def test_root_missing_dir_keeps_raw_path(tmp_path, monkeypatch):
+    """两处都不存在时保留原样（报错信息指向用户真正写下的位置）。"""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        agent_manager,
+        "get_agent_config",
+        lambda: {
+            "config": type(
+                "C", (), {"tools": type("T", (), {"experts_dir": "no-such-dir"})()}
+            )()
+        },
+    )
+    root, source = P.public_experts_root_info()
+    assert source == "config"
+    assert root == tmp_path / "no-such-dir"
+    assert P.public_experts_root_hint().startswith(str(root.absolute()))
 
 
 # ── 仓库内置预置专家的结构守门 ──────────────────────────────────────────
 # 目的：预置专家是随代码交付的内容资产，其目录结构与提示词结构与「我的专家」
 # 保持一致这件事必须由测试兜底，避免后续改动悄悄退化。
 
-REPO_EXPORTS = Path(__file__).resolve().parents[2] / "exports"
+REPO_EXPORTS = Path(__file__).resolve().parents[2] / "experts"
 
 #: 提示词 MD 必须包含的五段结构（与 services/expert_service.build_expert_md 对齐）
 REQUIRED_SECTIONS = ["## 核心能力", "## 工作流程", "## 输出规范", "## 注意事项"]
