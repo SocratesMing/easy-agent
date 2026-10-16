@@ -2484,8 +2484,8 @@ export default {
    视觉留白靠绝对定位的 ::before 向外扩画出来：它是绘制层、不占宽度，
    于是既有芯片的呼吸感（左右各 6px、上下各 4px），又保持与 textarea 逐像素对齐。
    pointer-events 恢复 auto：点击标签（含扩出来的留白）整段移除。
-   观感参照 CodeBuddy 的 mention chip：**浅强调色底 + 8px 圆角的矩形芯片（不是全胶囊）**、
-   深色名字（强调色会显得像一串蓝链接）、图标带方块底座、图标与名字之间留出间隙。 */
+   观感参照参考图的 chip：**浅强调色胶囊（全圆角、无边框）**、
+   深色名字 + 同色线条图标（强调色会显得像一串蓝链接）、图标与名字之间留出间隙。 */
 .input-skill-pill {
   position: relative;
   font: inherit;
@@ -2496,7 +2496,7 @@ export default {
   cursor: pointer;
 }
 
-/* 芯片底：比文字大一圈的圆角矩形 + 1px 淡描边，落在文字下层
+/* 芯片底：胶囊（全圆角）+ 浅强调色底、**不描边**，落在文字下层
    （z-index: -1 收进镜像层这个合成层，所以仍在 textarea 之上、在文字之下）。
 
    四边外扩量都是量出来的：
@@ -2507,18 +2507,20 @@ export default {
      （再提 0.5px 就轮到芯片偏高 0.67px，所以取这一档）。
   · 右：内收 9px —— 尾随的全角空格（1em ≈ 15px）里，6px 是芯片右内边距，余下 9px 就是
     芯片与后续文字的间隙，后面的字不会再压在芯片上。
-  · 左：外扩 6px —— 图标底座左缘到芯片边缘约 5px 留白；左边有「前置空格 + 全角斜线自带的
-    字形留白」可吃，不会压住前一个字。 */
+  · 左：外扩 6px —— 图标左缘到芯片边缘约 6px 留白；左边有「前置空格 + 全角斜线自带的
+    字形留白」可吃，不会压住前一个字。
+  · 底与圆角：color-mix(accent 24%, bg-secondary) 作底（此前 12% 太淡、要靠 1px 描边才看得见，
+    现在**无边框**，得让底色自己立起来，故加深到 24%，hover 32%）；border-radius: 999px 即胶囊
+    （芯片高 23px 时半径被 clamp 到 11.5px；不写死 px，免得将来改高度就露出直角）。 */
 
 .input-skill-pill::before {
   content: '';
   position: absolute;
   inset: -3.75px 9px -2.25px -6px;
   z-index: -1;
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--accent-color) 12%, var(--bg-secondary));
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-color) 22%, transparent);
-  transition: background 0.15s ease-out, box-shadow 0.15s ease-out;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent-color) 24%, var(--bg-secondary));
+  transition: background 0.15s ease-out;
 }
 
 /* 紧邻的两个标签：间隔全靠前一个标签尾随的全角空格（15px）。后一个沿用左侧 6px 外扩，
@@ -2530,8 +2532,7 @@ export default {
 
 
 .input-skill-pill:hover::before {
-  background: color-mix(in srgb, var(--accent-color) 18%, var(--bg-secondary));
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-color) 32%, transparent);
+  background: color-mix(in srgb, var(--accent-color) 32%, var(--bg-secondary));
 }
 
 /* `／`（全角斜线）占位框：字形必须真的写在 mark 里（镜像文本是 textarea 文本的逐字拷贝，
@@ -2543,12 +2544,13 @@ export default {
 }
 
 /* 图标：绝对定位在斜线占位框内、**左对齐**（不占布局宽度）。左对齐后右边剩下的
-   那点空白天然成为图标与名字之间的间隙（0.2em ≈ 3px），不用给标签加 padding。
+   那点空白天然成为图标与名字之间的间隙，不用给标签加 padding。
    尺寸用 em 随字号缩放、不能写死 px，否则换个字号/字体就会压到旁边的文字。
-   带一块分类色方块底座（referencing CodeBuddy 的 chip 图标），所以比原来更小巧；
-   底座与描边用 currentColor 混出来，深色主题下会跟着分类色的亮色版走。
+   形态参照参考图：**只有线条图标本身 —— 没有方块底座、没有描边**，颜色与名字同为
+   正文色（SkillIcon 在卡片/详情页按分类上色，这里是输入框里的第二形态，所以要压掉
+   它的底色与分类色；emoji 图标保持彩色，改不了也不该改）。
    （选择器特意写到三层，压过 SkillIcon 自身 .skill-icon.xs 的尺寸与暗色底规则；
-     Vue2 下子组件根节点带父组件的 scope 属性，scoped 选择器可直接命中） */
+    Vue2 下子组件根节点带父组件的 scope 属性，scoped 选择器可直接命中） */
 .input-skill-pill .input-skill-pill-mark .skill-icon {
   position: absolute;
   left: -0.06em;
@@ -2558,18 +2560,19 @@ export default {
   width: 0.86em;
   height: 0.86em;
   visibility: visible;
-  border-radius: 0.24em !important;
-  background: color-mix(in srgb, currentColor 14%, var(--bg-secondary)) !important;
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 22%, transparent) !important;
+  color: var(--text-primary) !important;
+  border-radius: 0 !important;
+  background: none !important;
+  box-shadow: none !important;
 }
 
 .input-skill-pill .input-skill-pill-mark .skill-icon svg {
-  width: 0.62em;
-  height: 0.62em;
+  width: 0.7em;
+  height: 0.7em;
 }
 
 .input-skill-pill .input-skill-pill-mark .skill-icon .icon-emoji {
-  font-size: 0.6em;
+  font-size: 0.66em;
   line-height: 1;
 }
 

@@ -88,7 +88,6 @@
         @update:selectedModel="selectedModel = $event"
         @toggle-workspace="isWorkspaceCollapsed = false"
         @sendMessage="handleSendMessage"
-        @presetSend="handlePresetSend"
         @createSession="ensureCurrentSession"
         @removeFile="handleRemoveFile"
         @stop="handleStop"
@@ -1073,14 +1072,6 @@ async function handleCreateSession() {
   sessionDuration.value = 0
   iterationCount.value = 0
   refreshSessionFiles(null)
-}
-
-// 预置问题发送：点击首页预置问题卡片后，该问题作为「新对话的第一条消息」发出。
-// 无论当前是否已选中会话（如刷新后恢复的空会话），都先按「新建对话」把状态
-// 切回全新首页，再走正常发送；当前无会话时后端会在 start 事件里返回新会话 id。
-async function handlePresetSend(message, files, signal, enableDeepThink, enableWebSearch, skills) {
-  await handleCreateSession()
-  handleSendMessage(message, files, signal, enableDeepThink, enableWebSearch, skills)
 }
 
 async function handleSelectSession(sessionId) {
