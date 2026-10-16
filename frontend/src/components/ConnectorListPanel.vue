@@ -323,7 +323,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
 import ToggleSwitch from './ToggleSwitch.vue'
 import {
   getConnectors,
@@ -335,6 +335,7 @@ import {
   getConnectorsStatus,
 } from '../api/connectors.js'
 import { overlayClickCloses, markOverlayPress } from '../utils/overlayClick.js'
+import { emitConnectorsChanged, onConnectorsChanged } from '../utils/connectorSync.js'
 
 defineEmits(['manage'])
 
@@ -389,6 +390,8 @@ const overlayPress = ref(null)
 const statusMap = ref({})
 const statusLoading = ref(false)
 const toggling = ref('')
+// 连接器状态变更事件的取消订阅函数（onMounted 注册、onUnmounted 解绑）
+let offConnectorsChanged = null
 const removing = ref('')
 const savingConfig = ref(false)
 const notice = ref('')
@@ -587,10 +590,13 @@ async function toggle(card) {
   if (toggling.value) return
   toggling.value = card.key
   try {
-    await toggleConnector(card.key, !card.enabled)
-    card.enabled = !card.enabled
+    const next = !card.enabled
+    await toggleConnector(card.key, next)
+    card.enabled = next
     await load()
-    showNotice(`已${card.enabled ? '启用' : '停用'}「${card.name}」`)
+    // 同步「+」菜单的连接器面板：两处是同一份状态（mcp.json 的 enabled）
+    emitConnectorsChanged(card.key, next, 'catalog-panel')
+    showNotice(`已${next ? '启用' : '停用'}「${card.name}」`)
   } catch (e) {
     showNotice(e.message || '操作失败', 'error')
   } finally {
@@ -728,7 +734,21 @@ async function copySnippet() {
   setTimeout(() => { copied.value = false }, 2000)
 }
 
-onMounted(load)
+/** 「+」菜单的连接器面板改了开关：重新拉取，保持两处显示一致（忽略自己派发的回声） */
+function onConnectorsChangedHandler(payload) {
+  if (!payload || payload.source === 'catalog-panel') return
+  load()
+}
+
+onMounted(() => {
+  load()
+  // 「+」菜单的连接器面板改了开关 → 本面板同步刷新（两处是同一份状态）
+  offConnectorsChanged = onConnectorsChanged(onConnectorsChangedHandler)
+})
+
+onUnmounted(() => {
+  if (offConnectorsChanged) offConnectorsChanged()
+})
 </script>
 
 <style scoped>
