@@ -14,6 +14,7 @@
 """
 
 import logging
+import time
 import uuid
 from datetime import datetime
 from typing import Annotated, List, Optional
@@ -358,6 +359,42 @@ def _load_expert_prompt(
     return "", "", ""
 
 
+def _expert_meta_for_message(
+    db: Database, username: str, expert_id: str
+) -> Optional[dict]:
+    """取「随消息落库」的专家元信息（``{"id": ..., "name": ...}``）。
+
+    用于回答面板的专家标识：把本轮专家写进用户消息随消息持久化，前端渲染 assistant
+    消息时取其上一条用户消息的该字段展示「头像 + 名称」，因此**刷新 / 历史加载后不丢**，
+    同一会话中不同轮次选了不同专家也能各自对应。
+
+    「我的专家」（数据库）优先，「公共专家」（目录）兜底；两处都取不到中文名时返回
+    ``None``（调用方不写该字段，前端按无专家兜底），不阻断本轮对话。
+    """
+    if not expert_id:
+        return None
+
+    name_cn = ""
+    try:
+        record = ExpertStore(db).get_owned(expert_id, _current_user_id(db, username))
+        if record:
+            name_cn = str(record.get("export_name_cn") or "").strip()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("专家名称读取失败（我的专家）| expert=%s | %s", expert_id, exc)
+
+    if not name_cn:
+        try:
+            public = public_expert_service.find_public_expert(expert_id)
+            if public:
+                name_cn = str(public.get("export_name_cn") or "").strip()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("专家名称读取失败（公共专家）| expert=%s | %s", expert_id, exc)
+
+    if not name_cn:
+        return None
+    return {"id": expert_id, "name": name_cn}
+
+
 # ── 接口 ──────────────────────────────────────────────────────────────
 
 
@@ -470,7 +507,7 @@ async def update_expert(
 
 
 @router.get("/agent/list", summary="获取专家 Agent 列表")
-async def list_experts(
+def list_experts(
     db: Annotated[Database, Depends(get_database)],
     username: Annotated[str, Depends(get_current_username)],
     keyword: str = Query("", description="按中英文名模糊搜索"),
@@ -479,6 +516,15 @@ async def list_experts(
     page: int = Query(1, ge=1, description="页码，从 1 开始"),
     page_size: int = Query(10, ge=1, le=20, description="每页条数"),
 ):
+    """我的专家列表（从数据库读取）。
+
+    注意：这里**故意用普通 ``def`` 而非 ``async def``**——本接口内的 DB 访问
+    （``get_user_by_username`` / ``list_by_user``）是同步阻塞调用，``async def``
+    会让它们直接占用事件循环：聊天流等长任务占住循环时，本接口会被动排队
+    （前端「+」面板表现为偶发数秒的「加载中…」）。改成 ``def`` 后 FastAPI 自动
+    放到线程池执行，互不拖累。
+    """
+    t0 = time.perf_counter()
     user_id = _current_user_id(db, username)
     store = ExpertStore(db)
     total, items = store.list_by_user(
@@ -495,6 +541,18 @@ async def list_experts(
         tags = _tag_options(_get_config())
     except HTTPException:
         tags = []
+    # 总耗时日志：覆盖 user_id 解析 + 分页查询 + tags 组装全过程（毫秒）。
+    # 偶发秒级耗时多半是等连接池 / SQLite 全局锁，对比这里的耗时与前端体感
+    # 即可定位瓶颈在接口内还是事件循环排队。
+    elapsed_ms = (time.perf_counter() - t0) * 1000
+    logger.info(
+        "📊 获取用户专家列表接口总耗时 | user=%s | 命中=%s/%s | keyword=%r | 耗时=%.1fms",
+        username,
+        len(items),
+        total,
+        keyword or "",
+        elapsed_ms,
+    )
     return {
         "total": total,
         "page": page,
@@ -505,13 +563,17 @@ async def list_experts(
 
 
 @router.get("/agent/public-list", summary="获取公共（预置）专家列表")
-async def list_public_experts():
-    """公共专家 = 随项目预置的专家目录（默认 ``exports/``），**只读**。
+def list_public_experts():
+    """公共专家 = 随项目预置的专家目录（默认 ``experts/``），**只读**。
 
     不查库、不按用户区分：所有用户看到同一份列表；卡片字段与
     ``/agent/list`` 保持一致（另带 ``scope="public"``），前端可复用同一套
     卡片与召唤链路。列表不下发提示词全文，召唤时按需读取。
+
+    与 ``/agent/list`` 同理用普通 ``def``：目录扫描是同步文件 IO，放线程池
+    执行，避免「+」面板打开时被事件循环上的其他任务拖慢。
     """
+    t0 = time.perf_counter()
     items = public_expert_service.discover_public_experts()
     # tags：与 /agent/list 同一份分类候选（配置文件 expert_tags），前端 chips 复用
     try:
@@ -520,7 +582,10 @@ async def list_public_experts():
         tags = []
     root = public_expert_service.public_experts_root()
     logger.info(
-        "📂 公共专家列表 | 目录: %s | 数量: %s", root.absolute(), len(items)
+        "📂 获取预置公共专家列表 | 目录: %s | 数量: %s | 耗时: %.1fms",
+        root.absolute(),
+        len(items),
+        (time.perf_counter() - t0) * 1000,
     )
     return {
         "total": len(items),
@@ -632,7 +697,7 @@ async def stream_export_run(
                 db.update_session(session)
 
     # ── 2. 专家校验与提示词加载 ────────────────────────────────────────
-    # 我的专家（数据库）优先，公共专家（exports 目录）兜底；找不到 ID 时 404。
+    # 我的专家（数据库）优先，公共专家（experts 目录）兜底；找不到 ID 时 404。
     # 加载日志（含长度/指纹/开头）在 _load_expert_prompt 内统一打印（可观测点 ①）。
     expert_prompt = ""
     expert_id = ""
@@ -709,11 +774,17 @@ async def stream_export_run(
     )
 
     # ── 4. 落用户消息（与 chat.py 一致） ───────────────────────────────
+    # 本轮使用的专家随用户消息一起落库（回答面板标识的数据来源，见
+    # _expert_meta_for_message）：刷新/历史加载后 assistant 消息仍能显示专家头像+名称，
+    # 同一会话不同轮次各自对应自己那一轮的专家。
+    expert_meta = _expert_meta_for_message(db, username, expert_id)
     user_message = {
         "role": "user",
         "content": request.message,
         "timestamp": datetime.now().isoformat(),
     }
+    if expert_meta:
+        user_message["expert"] = expert_meta
     if request.files:
         user_message["files"] = request.files
     # 结构化技能目录名：气泡按它渲染技能标签，不再需要从消息文本里反扒 `/目录名`
