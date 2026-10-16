@@ -89,6 +89,7 @@
 
       <Chat
         v-else-if="!showUserManagementPanel && !showAssets && !showSkillCenter && !showScheduledTasks"
+        ref="chatRef"
         :messages="messages"
         :sessionLoading="sessionLoading"
         :currentSessionId="currentSessionId"
@@ -114,6 +115,7 @@
         @send-message="handleSendMessage"
         @preset-send="handlePresetSend"
         @create-session="ensureCurrentSession"
+        @knowledge-scope-change="handleKnowledgeScopeChange"
         @remove-file="handleRemoveFile"
         @stop="handleStop"
         @retry="handleRetry"
@@ -789,6 +791,14 @@ export default {
           }
           this.sessions = [session, ...this.sessions]
         }
+        // 新建会话时把无会话期间暂存的知识范围落库（先于首条消息发送，后端才能读到）。
+        // $nextTick 等 sessionId prop 传导到输入框的知识库选择器后再落库
+        if (this.pendingKnowledgeScope && this.pendingKnowledgeScope.length) {
+          const pendingScope = this.pendingKnowledgeScope
+          this.pendingKnowledgeScope = null
+          await this.$nextTick()
+          if (this.$refs.chatRef) await this.$refs.chatRef.flushKnowledgeScopeSave(pendingScope)
+        }
       }
       return this.currentSessionId
     },
@@ -811,6 +821,8 @@ export default {
       this.showSettingsPanel = false
       // 新建会话回到干净状态：专家需在新会话里重新选择，避免误把旧专家的设定带进来
       this.selectedExpert = null
+      // 回到新对话页：无会话期间暂存的知识范围作废（重新勾选才有）
+      this.pendingKnowledgeScope = null
       this.currentSessionId = null
       this.loadedSessionId = null
       this.messages = []
@@ -831,6 +843,8 @@ export default {
       this.showAssets = false
       this.showSkillCenter = false
       this.showScheduledTasks = false
+      // 切换会话：无会话期间暂存的知识范围作废，目标会话以自己的服务端范围为准
+      this.pendingKnowledgeScope = null
       this.currentSessionId = sessionId
       // 切换后按当前会话是否正在流式输出决定输入框状态：
       // 历史会话通常不是当前流式会话，应显示发送按钮而非停止按钮
@@ -1430,6 +1444,11 @@ export default {
       this.handleSendMessage(message, files, signal, enableDeepThink, enableWebSearch)
     },
     async handleSendMessage(message, files = [], signal, enableDeepThink = true, enableWebSearch = false) {
+      // 无会话且已暂存知识范围：先建会话并落库知识范围（ensureCurrentSession 内完成）再发送，
+      // 确保后端处理首条消息时能从会话上读到知识范围
+      if (!this.currentSessionId && this.pendingKnowledgeScope && this.pendingKnowledgeScope.length) {
+        await this.ensureCurrentSession()
+      }
       const userMsgId = `user-${Date.now()}`
       const preStreamUsage = { ...this.sessionUsage }
       // 记录本次请求开始前已累计的耗时和迭代次数，用于流式过程中实时累加

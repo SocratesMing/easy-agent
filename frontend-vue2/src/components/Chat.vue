@@ -96,6 +96,7 @@
         @update:selectedModel="$emit('update:selectedModel', $event)"
         @stop="handleStop"
         @create-session="handleCreateSession"
+        @knowledge-scope-change="$emit('knowledge-scope-change', $event)"
         @open-panel="$emit('open-panel', $event)"
         @open-knowledge="$emit('open-knowledge', $event)"
         @clear-expert="$emit('clear-expert')"
@@ -460,6 +461,11 @@ export default {
     },
     handleCreateSession() {
       this.$emit('create-session')
+    },
+    // 宿主新建会话后调用：把无会话期间暂存的知识范围落库到新会话（透传给输入框）
+    flushKnowledgeScopeSave(baseIds) {
+      const composer = this.$refs.composerRef
+      return composer ? composer.flushKnowledgeScopeSave(baseIds) : Promise.resolve()
     },
     // ========== 预置问题：悬浮预览 ==========
     // 仅当输入框为空（或当前内容正是预览填充且未被修改）时悬浮才填充；

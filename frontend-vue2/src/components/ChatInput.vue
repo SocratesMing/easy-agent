@@ -332,7 +332,7 @@
             :show-manage="showManageEntry"
             @mouseenter.native="cancelPlusClose"
             @mouseleave.native="schedulePlusClose"
-            @create-session="$emit('create-session')"
+            @change="$emit('knowledge-scope-change', $event)"
             @manage="openKnowledgeManage"
           />
           <input
@@ -1380,6 +1380,15 @@ export default {
         })
       }
       return this._pendingSessionPromise
+    },
+    /**
+     * 宿主新建会话后调用：把无会话期间暂存的知识范围落库到新会话（透传给知识库选择器）。
+     * 调用前须确保 sessionId 已传导至选择器（宿主在 $nextTick 后调用）。
+     */
+    flushKnowledgeScopeSave(baseIds) {
+      return this.$refs.knowledgeScope
+        ? this.$refs.knowledgeScope.applyPendingScope(baseIds)
+        : Promise.resolve()
     },
     /** 单个文件的上传流程（各文件并行执行，互不阻塞） */
     async uploadOneFile(fileItem) {
