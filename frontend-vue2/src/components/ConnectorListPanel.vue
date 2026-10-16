@@ -328,6 +328,7 @@ import {
   getConnectorsStatus,
 } from '../api/connectors.js'
 import { overlayClickCloses, markOverlayPress } from '../utils/overlayClick.js'
+import { emitConnectorsChanged, onConnectorsChanged } from '../utils/connectorSync.js'
 
 // 连接器图标与主题色：目录 icon 名 → 语义 SVG（lucide 风格描边）；按 id 稳定分配主题色
 const CONNECTOR_ICON_PATHS = {
@@ -441,6 +442,11 @@ export default {
   },
   mounted() {
     this.load()
+    // 「+」菜单的连接器面板改了开关 → 本面板同步刷新（两处是同一份状态）
+    this.offConnectorsChanged = onConnectorsChanged(this.onConnectorsChanged)
+  },
+  beforeDestroy() {
+    if (this.offConnectorsChanged) this.offConnectorsChanged()
   },
   methods: {
     /** 遮罩点击关闭守卫：拖拽选择文本时（有非空选区）不关闭弹层 */
@@ -468,6 +474,11 @@ export default {
       this.notice = message
       this.noticeType = type
       setTimeout(() => { this.notice = '' }, 3000)
+    },
+    /** 「+」菜单的连接器面板改了开关：重新拉取，保持两处显示一致（忽略自己派发的回声） */
+    onConnectorsChanged(payload) {
+      if (!payload || payload.source === 'catalog-panel') return
+      this.load()
     },
     async load() {
       this.loading = true
@@ -570,10 +581,13 @@ export default {
       if (this.toggling) return
       this.toggling = card.key
       try {
-        await toggleConnector(card.key, !card.enabled)
-        card.enabled = !card.enabled
+        const next = !card.enabled
+        await toggleConnector(card.key, next)
+        card.enabled = next
         await this.load()
-        this.showNotice(`已${card.enabled ? '启用' : '停用'}「${card.name}」`)
+        // 同步「+」菜单的连接器面板：两处是同一份状态（mcp.json 的 enabled）
+        emitConnectorsChanged(card.key, next, 'catalog-panel')
+        this.showNotice(`已${next ? '启用' : '停用'}「${card.name}」`)
       } catch (e) {
         this.showNotice(e.message || '操作失败', 'error')
       } finally {
