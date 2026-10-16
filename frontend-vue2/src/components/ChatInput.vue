@@ -792,7 +792,7 @@ export default {
       skillPickerStyle: {},
       skillLoadedAt: 0,
       // 预选技能目录名（不以内联标签呈现）：外部入口（如专家面板「新建/修改专家」）
-      // 在草稿里用自然语言点名技能（"用「expert-creator」技能帮我创建专家：…"），
+      // 在草稿里用自然语言点名技能（"用「expert-creator」技能帮我创建：…"），
       // 这里只把技能记为已选，发送时随 skills 字段交给后端激活。
       preselectedSkillDirs: [],
     }
@@ -2276,7 +2276,7 @@ export default {
      * 面板关闭后本组件重新挂载时读出来挂成技能标签（读后即清除，避免下次误挂）。
      *
      * `insert_token === false` 时**不插标签**：草稿正文已用自然语言点名技能
-     * （如专家面板的「用「expert-creator」技能帮我创建专家：…」），这里只把技能
+     * （如专家面板的「用「expert-creator」技能帮我创建：…」），这里只把技能
      * 记为预选，发送时随 skills 字段交给后端激活。
      */
     restorePendingSkill() {

@@ -19,7 +19,7 @@
 
   新建 / 编辑专家（与「添加技能」同一套跳转，见 SkillListPanel.handleCreateSkill）：
   - 「新建专家」→ 确保 expert-creator 技能已安装 → 草稿写入 sessionStorage
-    （开头是「用「expert-creator」技能帮我创建专家：」，替代内联的 /expert-creator
+    （开头是「用「expert-creator」技能帮我创建：」，替代内联的 /expert-creator
     标签；技能以 insert_token:false 预选，发送时随 skills 字段激活）→
     `emit('create-expert')`，由 App 新开会话；ChatInput 挂载时恢复草稿与预选技能；
   - 卡片「编辑」→ 同上，但预填的是**当前专家参数 + 专家 ID** 的修改模板 →
@@ -319,8 +319,8 @@ const CREATE_TEMPLATE =
   '期望输出：[请描述你希望它产出什么形式的结果]'
 
 /** 草稿开头的一句自然语言点名（替代原先内联的 /expert-creator 标签） */
-const CREATE_LEAD = '用「expert-creator」技能帮我创建专家：'
-const EDIT_LEAD = '用「expert-creator」技能帮我修改专家：'
+const CREATE_LEAD = '用「expert-creator」技能帮我创建：'
+const EDIT_LEAD = '用「expert-creator」技能帮我修改：'
 
 // ── 对话内创建 / 修改专家（与「添加技能」同一套跳转机制）─────────────────
 // 面板只负责：确保 expert-creator 技能已安装 → 把模板写进 sessionStorage →
