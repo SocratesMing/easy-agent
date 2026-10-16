@@ -75,8 +75,8 @@ logger = logging.getLogger(__name__)
 PARSE_TIMEOUT_SECONDS = 1800.0
 # 软删除保留期（天）：远端副本暂存天数，到期由 KnowledgePurgeWorker 清理
 SOFT_DELETE_RETENTION_DAYS = 30
-# 证据最低得分阈值（0.0 即不过滤）
-MINIMUM_EVIDENCE_SCORE = 0.0
+# 证据最低得分阈值：低于该分的 chunk 不进证据列表，作为本地兜底过滤
+MINIMUM_EVIDENCE_SCORE = 0.4
 # 本地原文根目录（运行期目录，gitignored）
 DEFAULT_ORIGINALS_ROOT = Path("data") / "knowledge_originals"
 
@@ -91,8 +91,9 @@ PARSER_CONFIG: dict[str, object] = {
     "raptor": {"use_raptor": False},
 }
 # 检索固定参数
-# 阈值 0.3：过滤弱相关 chunk，避免模型被迫引用边缘依据导致标注错位
-RETRIEVAL_SIMILARITY_THRESHOLD = 0.3
+# 阈值 0.5：召回阶段即过滤无关 chunk（无关问题的混合分多在 0.3~0.5），
+# 让与知识库无关的问题返回空证据，而不是凑满 top_n 条弱相关依据
+RETRIEVAL_SIMILARITY_THRESHOLD = 0.5
 # 向量权重 0.5：向量/关键词各占一半，提升语义相关性、降低表面用词匹配的干扰
 RETRIEVAL_VECTOR_SIMILARITY_WEIGHT = 0.5
 RETRIEVAL_TOP_K = 1024
@@ -489,12 +490,18 @@ class KnowledgeService:
         )
 
     async def _ensure_shared_dataset(self) -> str:
-        """查找或创建共享数据集，返回其 ID（进程级缓存）。
+        """返回共享数据集 ID：配置指定库时直接透传，否则查找/创建（进程级缓存）。
 
+        配置了 shared_dataset_id 时不查找、不创建——适合共享/托管 RAGFlow
+        环境（仅授权使用某个既有数据集，不允许随意建库）；ID 是否真实存在
+        由后续 Ragflow 调用自然校验。未配置时按名称查找共享数据集，没有则创建。
         创建参数：embedding 模型取知识库配置，缺省用 Ragflow 租户默认模型。
         多进程并发创建的竞态由"失败后重查"兜底：Ragflow 数据集名称全局唯一，
         后创建方会收到错误，重查即可复用。
         """
+        configured = self.config.shared_dataset_id.strip()
+        if configured:
+            return configured
         global _shared_dataset_id
         if _shared_dataset_id:
             return _shared_dataset_id
@@ -633,22 +640,25 @@ class KnowledgeService:
         principal: KnowledgePrincipal,
         permissions: Iterable[Mapping[str, object]],
     ) -> KnowledgeBaseRole | None:
-        """在单库授权之上叠加公共空间管理白名单（均限定本部门）。"""
+        """在单库授权之上叠加公共空间管理白名单。
+
+        admin 与公共空间管理员（白名单账号）对所有公共库直通 MANAGER（同权）；
+        其余账号维持本部门默认只读、勾选名单与单库授权逻辑。
+        """
         permission_rows = list(permissions)
         if str(base.get("space_type")) != KnowledgeBaseVisibility.TEAM.value:
             return effective_role(base, principal, permission_rows)
         if principal.username == "admin":
             return KnowledgeBaseRole.MANAGER
+        if await self._has_team_management_grant(principal):
+            return KnowledgeBaseRole.MANAGER
         same_department = bool(principal.department_id) and (
             principal.department_id == str(base.get("department_id") or "").strip()
         )
-        has_manager_grant = await self._has_team_management_grant(principal)
         # 公共空间默认对本部门账号只读可见；勾选名单（access_restricted）
-        # 模式下默认可见让位于勾选人员；管理白名单则升级为 MANAGER。
+        # 模式下默认可见让位于勾选人员。
         team_viewer = same_department and not _base_access_restricted(base)
         role = effective_role(base, principal, permission_rows, team_viewer=team_viewer)
-        if same_department and has_manager_grant:
-            return KnowledgeBaseRole.MANAGER
         if str(base.get("owner_user_id", "")) == principal.user_id:
             explicit_roles = _matching_permission_roles(principal, permission_rows)
             return max([KnowledgeBaseRole.VIEWER, *explicit_roles], key=_ROLE_RANK.__getitem__)
@@ -773,7 +783,7 @@ class KnowledgeService:
             self.repository.list_candidate_bases,
             user_id=principal.user_id,
             department_id=principal.department_id,
-            include_all_team_spaces=is_admin,
+            include_all_team_spaces=has_team_management_grant,
         )
         visible: list[tuple[dict[str, Any], KnowledgeBaseRole]] = []
         for base in candidates:
@@ -821,10 +831,29 @@ class KnowledgeService:
         visibility: KnowledgeBaseVisibility,
         request_id: str,
         department_id: str | None = None,
+        restrict_access: bool = False,
+        permission_user_ids: list[str] | None = None,
     ) -> KnowledgeBaseSummary:
-        """创建知识库：公共空间需管理白名单且归属本部门；纯本地建库，走共享数据集。"""
+        """创建知识库：公共空间需管理白名单且归属本部门；纯本地建库，走共享数据集。
+
+        创建即配置可见性（仅公共空间）：勾选名单模式下仅勾选人员可见，
+        语义与创建后的权限管理（replace_permissions）完全一致。
+        """
 
         del request_id
+        permission_ids: list[str] = []
+        for raw in permission_user_ids or []:
+            user_id = str(raw or "").strip()
+            if user_id and user_id != principal.user_id and user_id not in permission_ids:
+                permission_ids.append(user_id)
+        if visibility == KnowledgeBaseVisibility.PERSONAL and (restrict_access or permission_ids):
+            raise KnowledgeServiceError(
+                "KNOWLEDGE_PERSONAL_NOT_SHAREABLE",
+                "个人空间知识库不可授权",
+                status_code=409,
+            )
+        # 勾选了初始名单即视为进入受限模式（同权限管理语义：名单决定可见面）
+        effective_restricted = bool(restrict_access or permission_ids)
         target_department_id: str | None = None
         requested_department_id = (department_id or "").strip() or None
         if visibility == KnowledgeBaseVisibility.TEAM:
@@ -880,11 +909,28 @@ class KnowledgeService:
         )
         # 纯本地创建（同建文件夹）：不再调用 Ragflow 建数据集，
         # remote_dataset_id 保持 NULL 表示走共享数据集。
+        # 勾选名单模式（仅公共空间）：受限标记与激活一并落库（fail-closed）。
+        restricted_values = {"access_restricted": 1} if effective_restricted else {}
         base = await self._repo(
             self.repository.update_base,
             base["id"],
             status=KnowledgeBaseStatus.ACTIVE.value,
+            **restricted_values,
         )
+        if permission_ids:
+            await self._repo(
+                self.repository.replace_permissions,
+                base_id=base["id"],
+                permissions=[
+                    {
+                        "subject_type": "user",
+                        "subject_id": user_id,
+                        "role": KnowledgeBaseRole.VIEWER.value,
+                    }
+                    for user_id in permission_ids
+                ],
+                created_by=principal.user_id,
+            )
         # 操作记录直接落终态，保留审计轨迹
         await self._repo(
             self.repository.create_operation,
@@ -1362,6 +1408,29 @@ class KnowledgeService:
         rows = await self._repo(
             self.repository.list_permission_directory_users,
             exclude_user_id=str(base.get("owner_user_id") or ""),
+        )
+        return PermissionDirectoryListResponse(
+            items=[PermissionDirectoryUser(**row) for row in rows]
+        )
+
+    async def get_creation_permission_directory(
+        self, principal: KnowledgePrincipal
+    ) -> PermissionDirectoryListResponse:
+        """创建知识库时的可选人员目录（在职账号，剔除本人与 admin）。
+
+        与库权限管理目录同一数据源；门槛对齐公共空间创建：需管理白名单授权，
+        避免任意账号拉取全员通讯目录。
+        """
+
+        if not await self._has_team_management_grant(principal):
+            raise KnowledgeServiceError(
+                "KNOWLEDGE_TEAM_SPACE_MANAGER_REQUIRED",
+                "当前账号未获得公共空间创建与管理权限，请联系 admin 配置",
+                status_code=403,
+            )
+        rows = await self._repo(
+            self.repository.list_permission_directory_users,
+            exclude_user_id=str(principal.user_id or ""),
         )
         return PermissionDirectoryListResponse(
             items=[PermissionDirectoryUser(**row) for row in rows]

@@ -24,7 +24,7 @@
             <FileIcon :filename="file.filename" :size="40" />
           </div>
           <div class="file-info">
-            <span class="file-name">{{ file.filename }}</span>
+            <span class="file-name" :title="file.filename">{{ file.filename }}</span>
             <div class="file-meta">
               <span class="file-size">{{ formatSize(file.size) }}</span>
               <span class="file-type">{{ getFileExtension(file.filename) }}</span>
@@ -32,7 +32,7 @@
           </div>
         </div>
       </div>
-      
+
       <!-- 等待响应动画：assistant 消息正在加载且无任何内容 -->
       <div v-if="message.role === 'assistant' && message.loading && !hasAnyContent" class="waiting-animation">
         <div class="waiting-dots">
@@ -103,7 +103,27 @@
           </div>
         </div>
         <template v-for="(block, idx) in finalContentBlocks">
-          <div v-if="block.type === 'content'" :key="'c'+block.origIndex" class="message-text" v-html="renderMarkdown(block.content)"></div>
+          <!-- 用户消息：技能标签与正文放在同一个气泡内横向排列（标签在左、正文在右），
+               避免标签独占一行；正文里的 /技能名 指令已去掉，由标签承载 -->
+          <div
+            v-if="block.type === 'content' && message.role === 'user'"
+            :key="'cu'+block.origIndex"
+            class="message-text user-bubble"
+          >
+            <span v-if="userSkillTokens.length > 0" class="message-skill-chips">
+              <span
+                v-for="skill in userSkillTokens"
+                :key="skill.dir_name"
+                class="message-skill-chip"
+                :title="skill.description || skill.dir_name"
+              >
+                <SkillIcon :icon="skill.icon || ''" :category="iconCategoryFor(skill.category_id)" size="xs" />
+                <span class="message-skill-chip-name">{{ skill.name || skill.dir_name }}</span>
+              </span>
+            </span>
+            <div v-if="block.content" class="user-bubble-body" v-html="renderMarkdown(block.content)"></div>
+          </div>
+          <div v-else-if="block.type === 'content'" :key="'c'+block.origIndex" class="message-text" v-html="renderMarkdown(block.content)"></div>
         </template>
       </template>
 
@@ -142,7 +162,7 @@
           />
         </div>
 
-        <div v-if="message.content" class="message-text" v-html="renderMarkdown(message.content)"></div>
+        <div v-if="displayContent" class="message-text" v-html="renderMarkdown(displayContent)"></div>
 
         <!-- 错误提示 -->
         <div v-if="message.error" class="message-error">
@@ -204,8 +224,12 @@ import {
 } from '../markdownSetup.js'
 import FileIcon from './FileIcon.vue'
 import KnowledgeEvidence from '../features/knowledge/KnowledgeEvidence.vue'
+import SkillIcon from './SkillIcon.vue'
 import ToolCallCard from './ToolCallCard.vue'
 import { pageContextLabel } from '../utils/pageContext.js'
+import { iconCategoryFor } from '../utils/skillCategories.js'
+import { parseLeadingSkillTokens } from '../utils/skillTokens.js'
+import { ensureSkillDirectoryLoaded, skillDirectoryStore } from '../store/skillDirectoryStore.js'
 
 // 注册 KaTeX 数学公式 + emoji 短代码扩展（幂等，仅执行一次）
 setupMarkedExtensions()
@@ -302,7 +326,7 @@ const renderer = createMarkdownRenderer({ highlight: highlightCode })
 installCodeCopyHandler()
 
 export default {
-  components: { FileIcon, ToolCallCard, KnowledgeEvidence },
+  components: { FileIcon, ToolCallCard, KnowledgeEvidence, SkillIcon },
   props: {
     message: {
       type: Object,
@@ -324,9 +348,53 @@ export default {
       isStuck: false,
     }
   },
+  created() {
+    // 技能目录（目录名 → 技能信息）：用于把用户消息里的 /技能名 前缀还原成技能标签
+    ensureSkillDirectoryLoaded()
+  },
   computed: {
     pageContextText() {
       return pageContextLabel(this.message.page_context)
+    },
+    /**
+     * 用户消息的技能标签与正文拆分。
+     *
+     * 优先读结构化的 `message.skills`（技能目录名，后端落库），展示名/图标按目录名反查
+     * 技能目录；老数据（改造前的消息、用户手打的 `/技能名`）没有该字段，仍按正文开头的
+     * `/目录名` 令牌解析还原——目录名不匹配时不解析，避免把 /usr/bin 这类路径误当技能。
+     * 其余角色的消息原样返回。
+     */
+    userSkillSplit() {
+      const content = this.message.content
+      if (this.message.role !== 'user') return { skills: [], body: content }
+
+      // 新数据：技能目录名由后端落库在 message.skills（结构化字段），按它渲染标签即可，
+      // 不再从正文里反扒前缀，也不依赖技能目录接口是否加载完成（展示名反查不到时用目录名兜底）。
+      const dirNames = Array.isArray(this.message.skills) ? this.message.skills : []
+      if (dirNames.length > 0) {
+        const parsed = parseLeadingSkillTokens(content, dirNames)
+        return {
+          skills: dirNames.map(name => skillDirectoryStore.byDirName[name] || { dir_name: name, name }),
+          body: parsed.body,
+        }
+      }
+
+      // 老数据（改造前落库的消息 / 手打 `/技能名`）：前缀还拼在正文里，按技能目录反查还原
+      const names = skillDirectoryStore.names
+      if (names.length === 0) return { skills: [], body: content }
+      const parsed = parseLeadingSkillTokens(content, names)
+      return {
+        skills: parsed.dirNames.map(name => skillDirectoryStore.byDirName[name]).filter(Boolean),
+        body: parsed.body,
+      }
+    },
+    /** 用户消息携带的技能标签（按 /技能名 出现顺序） */
+    userSkillTokens() {
+      return this.userSkillSplit.skills
+    },
+    /** 展示用正文：用户消息去掉开头的技能令牌，技能已由标签承载 */
+    displayContent() {
+      return this.userSkillSplit.body
     },
     // 判断 assistant 消息是否有任何可见内容
     hasAnyContent() {
@@ -375,11 +443,12 @@ export default {
         // 兼容数据：blocks 存在但没有 content 类型的 block 时，从 message.content 补充。
         // 正文是模型最终输出的回答，应排在所有思考/工具块之后（与实时流式中 content
         // 事件最后到达的顺序一致）；原先插到首个思考块之前，会导致历史会话正文显示在最顶部。
+        // 用 displayContent：用户消息的 /技能名 前缀已渲染成技能标签，正文里不再重复。
         const hasContentBlock = sorted.some(b => b.type === 'content')
-        if (!hasContentBlock && this.message.content) {
+        if (!hasContentBlock && this.displayContent) {
           sorted.push({
             type: 'content',
-            content: this.message.content,
+            content: this.displayContent,
             order: sorted.length
           })
           // 重新排列 order
@@ -443,11 +512,13 @@ export default {
         })
       }
 
-      // 添加内容 block
-      if (this.message.content) {
+      // 添加内容 block。用户消息即使正文为空（只挂了技能）也要建块：
+      // 技能标签挂在气泡里展示，没有气泡就没地方放标签。
+      const hasSkillChips = this.message.role === 'user' && this.userSkillTokens.length > 0
+      if (this.displayContent || hasSkillChips) {
         blocks.push({
           type: 'content',
-          content: this.message.content,
+          content: this.displayContent,
           order: blocks.length + 1
         })
       }
@@ -565,6 +636,10 @@ export default {
     if (this._scrollEl && this._onScroll) this._scrollEl.removeEventListener('scroll', this._onScroll)
   },
   methods: {
+    /** 暴露给模板：类别 id → SkillIcon 配色 key */
+    iconCategoryFor(categoryId) {
+      return iconCategoryFor(categoryId)
+    },
     // 使用 block 的唯一标识来跟踪展开状态
     getBlockKey(block, index) {
       return block.id || `${block.type}-${block.step || 0}-${block.tool_name || ''}-${index}`
@@ -699,7 +774,9 @@ export default {
     async copyMessage(ev) {
       if (!this.message.content) return
 
-      const text = this.cleanUserContent(this.message.content)
+      // 复制气泡里真正展示的正文：发送时拼接的 /技能名 前缀已由技能标签承载，
+      // 不再带进剪贴板（见 displayContent / userSkillSplit）
+      const text = this.cleanUserContent(this.displayContent)
       try {
         const ok = await copyTextToClipboard(text)
         const btn = ev?.currentTarget
@@ -942,6 +1019,75 @@ html[data-theme="dark"] .process-body .process-inline-content {
   white-space: nowrap;
 }
 
+/* 用户气泡：技能标签与正文同行（标签在左、正文在右并自行换行）。
+   align-items: center 让标签与正文行盒垂直居中；正文多行时标签也贴行盒中线，
+   不会出现「标签顶着首行、视觉上高一块」的错位感。
+   窄屏放不下时标签独占一行，正文换到下一行。 */
+.message.user .message-text.user-bubble {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+/* 用户气泡内的技能标签：与输入框「已选技能」同一套胶囊样式，但整体缩一档，
+   让标签高度（约 24px）落在正文行高（16px × 1.7 ≈ 27px）之内，居中后不突兀 */
+.message-skill-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+}
+
+.user-bubble .message-skill-chips {
+  flex-shrink: 0;
+}
+
+.message-skill-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  padding: 2px 8px 2px 3px;
+  border: 1px solid color-mix(in srgb, var(--accent-color, #0ea5e9) 40%, transparent);
+  border-radius: 999px;
+  /* 半透明底色：气泡底色深浅变化时都能自然贴合 */
+  background: color-mix(in srgb, var(--accent-color, #0ea5e9) 12%, transparent);
+}
+
+.message-skill-chip-name {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-primary, #1e293b);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 180px;
+}
+
+/* SkillIcon 的 xs 档（22px）在气泡里偏大：这里按标签比例缩到 18px */
+.message-skill-chip ::v-deep .skill-icon {
+  width: 18px;
+  height: 18px;
+  border-radius: 6px;
+}
+
+.message-skill-chip ::v-deep .skill-icon svg {
+  width: 11px;
+  height: 11px;
+}
+
+.message-skill-chip ::v-deep .skill-icon .icon-emoji {
+  font-size: 11px;
+}
+
+/* 气泡内正文：占满标签之后的剩余宽度，长文本正常换行 */
+.user-bubble-body {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
 /* 文件容器样式 */
 .files-container {
   display: flex;
@@ -949,6 +1095,11 @@ html[data-theme="dark"] .process-body .process-inline-content {
   gap: 8px;
   margin-bottom: 4px;
   width: 100%;
+}
+
+/* 用户消息：文件卡片整体右移，右缘与消息文本右缘对齐（助手消息保持左侧布局） */
+.message.user .message-content .files-container {
+  justify-content: flex-end;
 }
 
 /* 文件卡片样式 */

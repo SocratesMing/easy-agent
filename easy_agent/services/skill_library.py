@@ -330,3 +330,128 @@ def register_skill_source(
         "moved_from": source,
         "warnings": warnings,
     }
+
+
+# ── 「/技能目录名」指令解析与拼装 ──────────────────────────────────────────
+
+#: 技能指令形如 ``/技能目录名``：必须以消息开头（或紧跟在上一条令牌之后），
+#: 目录名限字母/数字开头、字母数字连字符下划线组成，且后面必须跟空白或消息结束。
+#: 这两个约束共同避免把 ``/usr/bin``、``/workspace/out`` 这类路径当成技能。
+SKILL_DIRECTIVE_RE = re.compile(r"^/([A-Za-z0-9][A-Za-z0-9_-]*)(?=\s|$)")
+
+#: 单轮最多解析的技能数：避免超长消息构造出大量目录查询
+MAX_SKILL_DIRECTIVES = 32
+
+
+def parse_skill_directives(message: str) -> list[str]:
+    """从消息文本里解析开头的 ``/技能目录名`` 指令。
+
+    旧前端（或用户手打）会把已选技能前置成指令，多条以空格分隔，例如::
+
+        /pptx-generator /docx 帮我排个版
+
+    只认「消息开头连续出现」的令牌，与前端 ``utils/skillTokens.js`` 的解析规则一致：
+    正文中间出现的 ``/技能名`` 是用户自己打的字，不当作发送时拼接的指令。
+
+    Returns:
+        按出现顺序去重后的目录名；无指令返回空列表。
+    """
+    text = (message or "").lstrip()
+    dirs: list[str] = []
+    seen: set[str] = set()
+    while text and len(dirs) < MAX_SKILL_DIRECTIVES:
+        matched = SKILL_DIRECTIVE_RE.match(text)
+        if not matched:
+            break
+        name = matched.group(1)
+        if name not in seen:
+            seen.add(name)
+            dirs.append(name)
+        text = text[matched.end():].lstrip()
+    return dirs
+
+
+def resolve_skill_dirs(
+    names: list[str],
+    username: str,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """把目录名映射为该用户实际拥有的技能（启用与停用都算）。
+
+    请求体的 ``skills`` 字段与消息文本里的 ``/目录名`` 指令都会经过这里校验：只有
+    真实存在于该用户技能库（``skills/`` 或 ``skills-disabled/``）的目录名才被放行，
+    其余归入未识别——调用方只记日志，既不阻断对话，也不给模型拼出无效指令。
+
+    Args:
+        names: ``parse_skill_directives`` 的结果，或请求体 ``skills`` 字段
+        username: 当前用户
+
+    Returns:
+        ``(命中的技能列表, 未识别的目录名列表)``，均保持输入顺序且去重。技能项形如
+        ``{"dir_name", "path", "enabled", "name"}``，其中 ``name`` 是 SKILL.md 的展示名。
+    """
+    if not names:
+        return [], []
+
+    by_dir_name = {item["dir_name"]: item for item in list_user_skill_dirs(username)}
+    resolved: list[dict[str, Any]] = []
+    unknown: list[str] = []
+    seen: set[str] = set()
+    for name in names:
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        item = by_dir_name.get(name)
+        if not item:
+            unknown.append(name)
+            continue
+        resolved.append({
+            "dir_name": item["dir_name"],
+            "path": item["path"],
+            "enabled": item["enabled"],
+            "name": skill_metadata(item["path"]).get("name") or item["dir_name"],
+        })
+    return resolved, unknown
+
+
+def resolve_turn_skills(
+    field_names: list[str] | None,
+    message: str,
+    username: str,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """本轮技能解析（chat 与专家链路共用）。
+
+    字段优先：请求体的 ``skills`` 字段是输入框的选中项（新前端），消息文本开头的
+    ``/目录名`` 是旧前端 / 用户手打的兼容写法，两者合并去重后交给
+    ``resolve_skill_dirs`` 校验归属。字段为空或缺省时行为与改造前逐字一致。
+    """
+    names = list(field_names or []) + parse_skill_directives(message)
+    return resolve_skill_dirs(names, username)
+
+
+def pending_skill_directives(dir_names: list[str], message: str) -> list[str]:
+    """挑出「需要新拼进模型输入」的技能目录名（消息文本开头尚未出现的那些）。
+
+    新前端的消息文本是用户原话 → 返回全部目录名；旧前端 / 手打 ``/目录名`` 时，文本里
+    已有的那份保持原样、原位置，这里不再重复拼，避免模型输入里出现两份同样的指令。
+    """
+    in_text = set(parse_skill_directives(message))
+    pending: list[str] = []
+    for name in dir_names:
+        if not name or name in in_text or name in pending:
+            continue
+        pending.append(name)
+    return pending
+
+
+def inject_skill_directives(dir_names: list[str], text: str) -> str:
+    """把技能指令前缀拼到文本开头，得到「给模型看的那一份」输入。
+
+    技能指令只进模型输入（``parsed_content``）；落库正文、气泡与会话标题用的都是用户
+    原话。没有需要新拼的目录名时原样返回 ``text``（不 Trim、不改写），保证旧前端的
+    行为与改造前逐字一致。
+    """
+    prefix = " ".join(f"/{name}" for name in dir_names if name)
+    if not prefix:
+        return text
+    body = (text or "").strip()
+    return f"{prefix} {body}".strip()

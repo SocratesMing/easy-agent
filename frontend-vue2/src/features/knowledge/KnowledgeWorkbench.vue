@@ -12,7 +12,7 @@
       </div>
       <div class="ke-topbar-actions">
         <button
-          v-if="teamSpaceManagement.is_admin && selectedSpace === 'team'"
+          v-if="teamSpaceManagement.can_manage && selectedSpace === 'team'"
           class="ke-button admin-access"
           title="配置人员、部门及公共空间创建与管理权限"
           @click="$emit('manage-personnel')"
@@ -306,6 +306,73 @@
           </select>
           <small>所选部门的在职成员将默认获得查看权限。</small>
         </label>
+        <div v-if="baseModalMode === 'create' && baseForm.visibility === 'team'" class="ke-create-perm">
+          <label class="ke-create-perm-toggle">
+            <input type="checkbox" v-model="createPermRestricted" />
+            <span>限定可见人员</span>
+            <small>开启后仅勾选人员可查看；不开启则所选部门在职成员默认可见。创建后可随时在权限管理中调整。</small>
+          </label>
+          <template v-if="createPermRestricted">
+            <div v-if="createPermLoading" class="ke-perm-loading"><span class="ke-spinner"></span><p>正在加载人员目录…</p></div>
+            <template v-else>
+              <div class="ke-perm-toolbar">
+                <span>已选 <strong>{{ createPermSelectedTotal }}</strong> / {{ createPermDirectoryTotal }} 人</span>
+              </div>
+              <div class="ke-perm-tree ke-create-perm-tree">
+                <section v-for="dept in createPermTree" :key="dept.key" class="ke-perm-branch">
+                  <div class="ke-perm-row level-dept">
+                    <button type="button" class="ke-perm-caret" title="展开/收起" @click="toggleCreatePermExpand(dept.key)"><IconChevronDown :class="{ rotated: isCreatePermCollapsed(dept.key) }" /></button>
+                    <input type="checkbox" v-indeterminate="permNodeIndeterminate(dept)" :checked="permNodeChecked(dept)" @change="togglePermNode(dept, $event.target.checked)" />
+                    <span class="ke-perm-name">{{ dept.name }}</span>
+                    <small class="ke-perm-count">{{ permSelectedCount(dept) }}/{{ dept.allUsers.length }}</small>
+                  </div>
+                  <div v-show="!isCreatePermCollapsed(dept.key)" class="ke-perm-children">
+                    <label v-for="user in dept.users" :key="user.user_id" class="ke-perm-user">
+                      <input type="checkbox" :checked="user.checked" @change="user.checked = $event.target.checked" />
+                      <span>{{ user.display_name }}</span>
+                      <small>{{ user.username }}</small>
+                    </label>
+                    <section v-for="division in dept.divisions" :key="division.key" class="ke-perm-branch">
+                      <div class="ke-perm-row level-division">
+                        <button type="button" class="ke-perm-caret" title="展开/收起" @click="toggleCreatePermExpand(division.key)"><IconChevronDown :class="{ rotated: isCreatePermCollapsed(division.key) }" /></button>
+                        <input type="checkbox" v-indeterminate="permNodeIndeterminate(division)" :checked="permNodeChecked(division)" @change="togglePermNode(division, $event.target.checked)" />
+                        <span class="ke-perm-name">{{ division.name }}</span>
+                        <small class="ke-perm-count">{{ permSelectedCount(division) }}/{{ division.allUsers.length }}</small>
+                      </div>
+                      <div v-show="!isCreatePermCollapsed(division.key)" class="ke-perm-children">
+                        <label v-for="user in division.users" :key="user.user_id" class="ke-perm-user">
+                          <input type="checkbox" :checked="user.checked" @change="user.checked = $event.target.checked" />
+                          <span>{{ user.display_name }}</span>
+                          <small>{{ user.username }}</small>
+                        </label>
+                        <section v-for="team in division.teams" :key="team.key" class="ke-perm-branch">
+                          <div class="ke-perm-row level-team">
+                            <button type="button" class="ke-perm-caret" title="展开/收起" @click="toggleCreatePermExpand(team.key)"><IconChevronDown :class="{ rotated: isCreatePermCollapsed(team.key) }" /></button>
+                            <input type="checkbox" v-indeterminate="permNodeIndeterminate(team)" :checked="permNodeChecked(team)" @change="togglePermNode(team, $event.target.checked)" />
+                            <span class="ke-perm-name">{{ team.name }}</span>
+                            <small class="ke-perm-count">{{ permSelectedCount(team) }}/{{ team.allUsers.length }}</small>
+                          </div>
+                          <div v-show="!isCreatePermCollapsed(team.key)" class="ke-perm-children">
+                            <label v-for="user in team.users" :key="user.user_id" class="ke-perm-user">
+                              <input type="checkbox" :checked="user.checked" @change="user.checked = $event.target.checked" />
+                              <span>{{ user.display_name }}</span>
+                              <small>{{ user.username }}</small>
+                            </label>
+                          </div>
+                        </section>
+                      </div>
+                    </section>
+                  </div>
+                </section>
+                <p v-if="!createPermTree.length" class="ke-perm-empty">暂无可选人员，请先在人员与部门中导入账号。</p>
+              </div>
+              <p class="ke-permission-note">
+                <template v-if="createPermSelectedTotal > 0">创建后，该知识库仅勾选人员及所有者、空间管理员可见；未勾选人员（含本部门其他成员）不可见。</template>
+                <template v-else>未勾选任何人员，创建后仅所有者与空间管理员可见。</template>
+              </p>
+            </template>
+          </template>
+        </div>
         <footer><button type="button" class="ke-button quiet" @click="showBaseModal = false">取消</button><button class="ke-button primary" :disabled="saving">{{ saving ? '保存中…' : baseModalMode === 'create' ? '创建知识库' : '保存修改' }}</button></footer>
       </form>
     </div>
@@ -479,7 +546,7 @@ import DocxPreview from '../../components/DocxPreview.vue'
 import ExcelPreview from '../../components/ExcelPreview.vue'
 import FileIcon from '../../components/FileIcon.vue'
 import ChatMessage from '../../components/ChatMessage.vue'
-import { attachStream, deleteSession, getChatHistory, sendMessage } from '../../api/chat.js'
+import { attachStream, getChatHistory, sendMessage } from '../../api/chat.js'
 import { cancelMessage } from './api.js'
 import { processingElapsedText } from './utils/presentation.js'
 import {
@@ -492,9 +559,9 @@ import {
   mergeServerDocumentsWithOptimistic,
 } from './utils/uploadPresentation.js'
 import {
-  createFolder, createKnowledgeBase, deleteDocument, deleteFolder,
+  createFolder, createKnowledgeBase, createKnowledgeChatRound, deleteDocument, deleteFolder,
   deleteKnowledgeBase, ensureFolders, getDocumentBlob, getKnowledgeCapabilities, getKnowledgeStatus,
-  listDocuments, listFolders, listKnowledgeBases, listKnowledgeOperations, listPermissionDirectory, listPermissions,
+  listCreationPermissionDirectory, listDocuments, listFolders, listKnowledgeBases, listKnowledgeOperations, listPermissionDirectory, listPermissions,
   moveDocument, pauseDocument, prepareKnowledgeChatSession, replacePermissions, resumeDocument, retryDocument, updateFolder,
   updateKnowledgeBase, uploadDocument,
 } from './api.js'
@@ -690,6 +757,8 @@ const askHistory = ref([])
 // 已拉取过问答历史的知识库 ID（含历史为空的库），避免重复请求；切换知识库时重置
 const askHistoryBaseId = ref('')
 let askHistoryFetching = false
+// 「开启新对话」重置计数：作废在途的历史拉取，防止已删除的旧历史复活
+let askHistoryResetCount = 0
 const askBody = ref(null)
 const asking = ref(false)
 const askError = ref('')
@@ -716,6 +785,13 @@ const permissionDirectoryLoading = ref(false)
 const permissionRestricted = ref(false)
 const permissionCollapsed = ref({})
 let permissionLoadSeq = 0
+// 创建知识库时的可见人员配置（与权限管理同款三级树，独立状态避免串扰）
+const createPermDirectory = ref([])
+const createPermTree = ref([])
+const createPermLoading = ref(false)
+const createPermRestricted = ref(false)
+const createPermCollapsed = ref({})
+let createPermLoadSeq = 0
 const toast = ref(null)
 const preview = reactive({ open: false, loading: false, name: '', kind: '', url: '', text: '', buffer: null })
 let pollTimer = null
@@ -748,6 +824,8 @@ const hasCurrentUploadRequest = computed(() => uploadQueue.value.some(
 ))
 const permSelectedTotal = computed(() => permissionDirectory.value.filter(user => user.checked).length)
 const permDirectoryTotal = computed(() => permissionDirectory.value.length)
+const createPermSelectedTotal = computed(() => createPermDirectory.value.filter(user => user.checked).length)
+const createPermDirectoryTotal = computed(() => createPermDirectory.value.length)
 
 watch(hasActiveWork, active => active ? startPolling() : stopPolling())
 watch(viewMode, value => localStorage.setItem('ke-view-mode', value))
@@ -865,6 +943,8 @@ function openCreateBase() {
     visibility,
     department_id: defaultTeamDepartmentId(teamSpaceManagement),
   })
+  resetCreatePermissions()
+  if (visibility === 'team') ensureCreatePermDirectory()
   baseModalMode.value = 'create'
   showBaseModal.value = true
 }
@@ -878,7 +958,16 @@ async function saveBase() {
         description: baseForm.description || '',
         visibility: baseForm.visibility,
       }
-      if (baseForm.visibility === 'team') payload.department_id = baseForm.department_id || null
+      if (baseForm.visibility === 'team') {
+        payload.department_id = baseForm.department_id || null
+        // 创建即配置可见性：开启名单或勾选了人员即进入受限模式（仅勾选人员可见）
+        if (createPermRestricted.value || createPermSelectedTotal.value > 0) {
+          payload.restrict_access = true
+          payload.permission_user_ids = createPermDirectory.value
+            .filter(user => user.checked)
+            .map(user => user.user_id)
+        }
+      }
       const created = await createKnowledgeBase(payload)
       selectedSpace.value = created.visibility
       await loadBases(created.id)
@@ -1092,11 +1181,12 @@ async function removeDocument(doc) {
 
 function previewable(doc) { return !doc.optimistic && (/^(application\/pdf|text\/|image\/)/.test(doc.content_type || '') || /\.(md|txt|docx?|xlsx?|pptx)$/i.test(doc.name || '')) }
 async function previewDocument(doc) {
+  // .doc 旧版格式已下线在线预览（原 doc->docx 转换链路移除），点击提示不支持
+  if (/\.doc$/i.test(doc.name || '')) { notify('暂不支持 .doc 格式预览，请下载后查看', 'error'); return }
   closePreview()
   Object.assign(preview, { open: true, loading: true, name: doc.name, kind: '', url: '', text: '' })
   try {
-    const legacyDoc = /\.doc$/i.test(doc.name || '')
-    const result = await getDocumentBlob(doc.id, 'inline', legacyDoc ? 'docx' : '')
+    const result = await getDocumentBlob(doc.id, 'inline')
     if (result instanceof Error) throw result
     const { blob } = result
     if ((doc.content_type || '').startsWith('text/') || /\.(md|txt)$/i.test(doc.name)) { preview.kind = 'text'; preview.text = await blob.text() }
@@ -1104,7 +1194,7 @@ async function previewDocument(doc) {
       preview.url = URL.createObjectURL(blob)
       if (/\.xlsx?$/i.test(doc.name)) preview.kind = 'excel'
       else
-      preview.kind = /\.docx?$/i.test(doc.name) ? 'docx' : /\.pptx$/i.test(doc.name) ? 'pptx' : (doc.content_type || '').startsWith('image/') ? 'image' : 'frame'
+      preview.kind = /\.docx$/i.test(doc.name) ? 'docx' : /\.pptx$/i.test(doc.name) ? 'pptx' : (doc.content_type || '').startsWith('image/') ? 'image' : 'frame'
     }
   } catch (error) { closePreview(); handleError(error) }
   finally { preview.loading = false }
@@ -1255,6 +1345,50 @@ async function savePermissions() {
   } catch (error) { handleError(error) } finally { saving.value = false }
 }
 
+// ---------------- 创建知识库：可见人员配置（复用权限管理三级树） ----------------
+
+function isCreatePermCollapsed(key) { return Boolean(createPermCollapsed.value[key]) }
+function toggleCreatePermExpand(key) {
+  const next = { ...createPermCollapsed.value }
+  if (next[key]) delete next[key]
+  else next[key] = true
+  createPermCollapsed.value = next
+}
+
+function resetCreatePermissions() {
+  createPermLoadSeq += 1  // 在途请求作废
+  createPermDirectory.value = []
+  createPermTree.value = []
+  createPermRestricted.value = false
+  createPermCollapsed.value = {}
+  createPermLoading.value = false
+}
+
+async function ensureCreatePermDirectory() {
+  if (createPermDirectory.value.length || createPermLoading.value) return
+  const seq = ++createPermLoadSeq
+  createPermLoading.value = true
+  try {
+    const response = await listCreationPermissionDirectory()
+    if (seq !== createPermLoadSeq) return
+    const users = (response.items || []).map(item => ({ ...item, checked: false }))
+    createPermDirectory.value = users
+    createPermTree.value = buildPermissionTree(users)
+  } catch (error) {
+    if (seq !== createPermLoadSeq) return
+    handleError(error)
+    createPermDirectory.value = []
+    createPermTree.value = []
+  } finally {
+    if (seq === createPermLoadSeq) createPermLoading.value = false
+  }
+}
+
+// 创建弹窗切到公共空间时懒加载人员目录（个人空间无权限配置）
+watch(() => [baseModalMode.value, baseForm.visibility], ([mode, visibility]) => {
+  if (mode === 'create' && visibility === 'team') ensureCreatePermDirectory()
+})
+
 function touchAgentMessage() {
   if (!agentMessage.value) return
   agentMessage.value = {
@@ -1378,29 +1512,37 @@ function retryQuestion() {
   submitQuestion()
 }
 
-// 开启新对话：删除当前知识库的面板隐藏会话，之后的提问不带历史、从零开始
+// 开启新对话：旧会话保留为历史（可在主界面会话列表回看），面板切换到全新会话
 async function startNewChat() {
   const baseId = selectedBaseId.value
   if (!baseId || asking.value) return
-  if (!askHistory.value.length && !agentMessage.value) return
+  // 历史仍在拉取时界面暂时为空，但服务端可能已有记录——放行走 peek 判定；
+  // 若在此返回，拉取完成后旧历史"复活"，表现为"点了新对话却仍有历史记录"
+  if (!askHistory.value.length && !agentMessage.value && !askHistoryFetching) return
   const confirmed = await askConfirmation({
     title: '开启新对话？',
-    description: '当前知识库的问答记录将被删除，之后提问将从全新对话开始。',
+    description: '当前问答将保留为历史会话（可在主界面会话列表回看），之后提问将从全新对话开始。',
     confirmLabel: '开启新对话',
   })
   if (!confirmed) return
-  // 先 peek 只读探测：拿到隐藏会话 ID 才执行删除；404 说明本就没有记录
+  // 先 peek 只读探测：有记录才轮换新会话；404 说明本就没有记录
   try {
-    const prepared = await prepareKnowledgeChatSession(baseId, { peek: true })
+    await prepareKnowledgeChatSession(baseId, { peek: true })
     try {
-      await deleteSession(prepared.session_id)
-      // 会话已从服务端删除，通知外层刷新会话列表
+      await createKnowledgeChatRound(baseId)
+      // 服务端已轮换出新会话，通知外层刷新会话列表（旧会话在列表中保留为历史）
       emit('chat-session-prepared')
     } catch (error) {
       handleError(error)
       return
     }
-  } catch (_) { /* peek 404：无会话记录，仅清空本地状态 */ }
+  } catch (error) {
+    // peek 404 = 本就没有问答记录，仅清空本地即可；其他错误必须提示并中止，
+    // 否则服务端仍是旧会话，下次提问会继续在旧会话里进行
+    if (error?.response?.status !== 404) { handleError(error); return }
+  }
+  // 作废在途的历史拉取：其响应可能在轮换之后到达，会把旧历史写回界面
+  askHistoryResetCount += 1
   askHistory.value = []
   askHistoryBaseId.value = ''
   agentMessage.value = null
@@ -1450,6 +1592,7 @@ function parseAskHistory(messages) {
 async function loadAskHistory(baseId, preparedSessionId = '') {
   if (!baseId || askHistoryFetching || askHistoryBaseId.value === baseId) return
   askHistoryFetching = true
+  const resetCount = askHistoryResetCount
   try {
     let sessionId = preparedSessionId
     if (!sessionId) {
@@ -1460,6 +1603,8 @@ async function loadAskHistory(baseId, preparedSessionId = '') {
     activeChatSessionId = sessionId
     const history = await getChatHistory(sessionId)
     if (selectedBaseId.value !== baseId) return
+    // 期间用户已「开启新对话」：丢弃本次响应，防止已删除的旧历史复活
+    if (resetCount !== askHistoryResetCount) return
     askHistory.value = parseAskHistory(history.messages)
     // 仅会话确实存在时标记已拉取；peek 404 时不标记，下次打开重新探测
     askHistoryBaseId.value = baseId
@@ -1611,6 +1756,13 @@ onUnmounted(() => { stopQuestion('unmount'); finishKnowledgeResize(); stopPollin
       closePreview,
       confirmation,
       confirmMoveDocument,
+      createPermDirectoryTotal,
+      createPermLoading,
+      createPermRestricted,
+      createPermSelectedTotal,
+      createPermTree,
+      isCreatePermCollapsed,
+      toggleCreatePermExpand,
       currentFolder,
       currentFolders,
       documents,
@@ -1723,7 +1875,7 @@ onUnmounted(() => { stopQuestion('unmount'); finishKnowledgeResize(); stopPollin
 .ke-import-option svg{width:14px;height:14px;color:#69726c}
 .ke-documents{flex:1;min-height:0;overflow:auto;padding:18px 20px 28px}.ke-documents.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));align-content:start;gap:10px}.ke-document-card{position:relative;border:1px solid #e6eae7;border-radius:12px;background:#fff;padding:10px 12px;min-width:0;transition:.18s}.grid .ke-document-card{display:flex;flex-direction:column}.ke-document-card:hover{border-color:#ccd8d1;box-shadow:0 8px 24px rgba(39,64,48,.07);transform:translateY(-1px)}.ke-doc-open{width:100%;border:0;background:transparent;padding:0;display:grid;grid-template-columns:30px minmax(0,1fr);align-items:start;column-gap:8px;text-align:left;min-width:0;color:inherit;cursor:pointer}.ke-doc-open:disabled{cursor:default}.ke-file-icon{width:30px;min-width:30px;height:34px;box-sizing:border-box;display:grid;place-items:center;border-radius:8px;background:#f7f9f7;overflow:hidden}.ke-document-copy{width:100%;min-width:0;overflow:hidden;display:flex;flex-direction:column;gap:3px}.ke-doc-title{display:flex;align-items:baseline;gap:6px;min-width:0;max-width:100%}.ke-document-copy strong{min-width:0;font-size:11px;line-height:1.45;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ke-document-copy small{color:#9aa19c;font-size:9px;white-space:nowrap;flex-shrink:0}.ke-document-details{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:8px}.grid .ke-document-details{margin-top:auto;padding-top:8px}.ke-status{display:inline-flex;align-items:center;gap:5px;color:#6e7771;font-size:9px;white-space:nowrap}.ke-status i{width:6px;height:6px}.ke-status em{font-style:normal;color:#9aa19c}.ke-status.processing i,.ke-status.running i{background:#4b91e4;animation:ke-pulse 1.2s infinite}.ke-status.failed i,.ke-status.partial_failed i{background:#e25555}.ke-folder-select{min-width:0;display:flex;align-items:center;gap:3px;color:#9aa19c}.ke-folder-select svg{width:11px;height:11px}.ke-folder-select select{max-width:80px;text-overflow:ellipsis}.ke-error-text{font-size:9px;color:#cc4b4b;line-height:1.4;margin:7px 0 0}.ke-row-actions{position:absolute;right:9px;top:9px;display:flex;align-items:center;gap:2px;background:rgba(255,255,255,.96);border-radius:8px;padding:2px;opacity:0;transform:translateY(-3px);transition:.16s;box-shadow:0 2px 10px rgba(30,45,35,.08)}.ke-document-card:hover .ke-row-actions,.ke-row-actions:focus-within{opacity:1;transform:none}.ke-row-actions button{height:22px;border:0;background:transparent;border-radius:6px;padding:0 5px;display:flex;align-items:center;gap:3px;color:#69726c;font-size:9px;cursor:pointer}.ke-row-actions button:hover{background:#f2f5f3;color:#26312a}.ke-row-actions svg{width:11px;height:11px}.list.ke-documents{padding-top:8px}.list .ke-document-card{border-width:0 0 1px;border-radius:0;padding:7px 8px;display:grid;grid-template-columns:minmax(220px,1fr) 240px 145px;align-items:center;gap:10px}.list .ke-doc-open{align-items:center}
 .list .ke-document-card:hover{transform:none;box-shadow:none;background:#fafbfa}.list .ke-document-details{margin:0 -10px 0 0;align-self:center;justify-content:flex-end}.list .ke-row-actions{position:static;opacity:1;transform:none;box-shadow:none;justify-content:flex-end;align-self:center}.list .ke-row-actions button span{display:none}.list .ke-error-text{grid-column:1/-1}.ke-document-loading{grid-column:1/-1;min-height:220px;display:flex;align-items:center;justify-content:center;color:var(--text-secondary);font-size:12px}.ke-document-loading p{margin:0;display:inline-flex;align-items:center}.ke-dot{width:4px;height:4px;margin-left:4px;border-radius:50%;background:currentColor;animation:ke-dot-pulse 1.2s infinite}.ke-dot:nth-child(2){animation-delay:.2s}.ke-dot:nth-child(3){animation-delay:.4s}.ke-empty-documents{grid-column:1/-1;align-self:center;margin:auto;display:flex;flex-direction:column;align-items:center;text-align:center;padding:45px 20px}.ke-empty-icon,.ke-empty-illustration{width:60px;height:60px;border-radius:18px;background:var(--ke-accent-soft);color:var(--ke-accent);display:grid;place-items:center}.ke-empty-icon svg,.ke-empty-illustration svg{width:27px;height:27px}.ke-empty-documents .ke-import-wrap{width:auto;height:auto}.ke-empty-documents h3{margin:14px 0 5px;font-size:14px}.ke-empty-documents p{margin:0 0 15px;color:#929994;font-size:11px}.ke-drop-mask{position:absolute;inset:10px;z-index:15;border:2px dashed #71c39f;border-radius:16px;background:rgba(237,250,244,.94);display:grid;place-items:center;pointer-events:none}.ke-drop-mask>div{display:flex;flex-direction:column;align-items:center;gap:7px;color:var(--ke-accent-dark)}.ke-drop-mask svg{width:36px;height:36px}.ke-drop-mask strong{font-size:15px}.ke-drop-mask span{color:#7b8c82;font-size:11px}
-.ke-ask-panel{border-left:1px solid var(--ke-line);display:flex;flex-direction:column;overflow:hidden;background:#fcfdfc}.ke-ask-header{height:67px;flex:none;padding:0 14px;display:flex;align-items:center;gap:9px;border-bottom:1px solid var(--ke-line);background:#fff}.ke-ai-avatar{width:31px;height:31px;border-radius:10px;background:linear-gradient(145deg,#32b981,#21865f);color:#fff;display:grid;place-items:center;box-shadow:0 4px 12px rgba(37,161,111,.2)}.ke-ai-avatar.small{width:23px;height:23px;border-radius:7px}.ke-ai-avatar.small svg{width:12px;height:12px}.ke-ask-header>div:nth-child(2){display:flex;flex:1;min-width:0;flex-direction:column;gap:3px}.ke-ask-header strong{font-size:12px}.ke-ask-header small{font-size:9px;color:#969d98;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ke-answer{flex:1;min-height:0;overflow:auto;padding:18px}.ke-history-entry{display:flex;flex-direction:column;gap:8px;padding-bottom:12px;margin-bottom:12px;border-bottom:1px dashed #e8ece9}.ke-history-entry:last-of-type{border-bottom:0}.ke-answer-welcome{height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center}.ke-answer-orb{width:52px;height:52px;border-radius:18px;background:radial-gradient(circle at 30% 25%,#fff 0,#e4f7ee 35%,#cceede 100%);color:var(--ke-accent);display:grid;place-items:center;box-shadow:0 8px 25px rgba(38,126,88,.12)}.ke-answer-orb svg{width:24px;height:24px}.ke-answer-welcome h3{font-size:14px;margin:15px 0 6px}.ke-answer-welcome>p{max-width:235px;margin:0;color:#8d9690;font-size:10px;line-height:1.7}.ke-question-suggestions{width:100%;margin-top:19px;display:flex;flex-direction:column;gap:7px}.ke-question-suggestions button{border:1px solid #e3e8e4;background:#fff;border-radius:10px;padding:10px 11px;display:flex;justify-content:space-between;align-items:center;color:#626b65;text-align:left;font-size:10px;cursor:pointer;transition:.16s}.ke-question-suggestions button:hover{border-color:#b9ddcb;background:#f5fbf8;color:var(--ke-accent-dark)}.ke-question-suggestions svg{width:12px;height:12px}.ke-answer-loading{height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;color:#8b948e;font-size:10px}.ke-question-bubble{margin-left:28px;padding:9px 11px;border-radius:11px 3px 11px 11px;background:#eef7f3;color:#3f4d45;font-size:11px;line-height:1.55}.ke-answer-label{display:flex;align-items:center;gap:7px;margin:18px 0 10px;font-size:10px}.ke-answer-text{font-size:11px;line-height:1.85;color:#3e4741;white-space:pre-wrap}.ke-evidence-title{display:flex;align-items:center;gap:5px;margin:18px 0 7px;color:#737d76;font-size:10px;font-weight:600}.ke-evidence-title svg{width:13px;height:13px}.ke-evidence{width:100%;margin-top:7px;padding:10px;border:1px solid #e3e8e4;border-radius:10px;background:#fff;text-align:left;color:inherit;cursor:pointer}.ke-evidence:hover{border-color:#c6ddd1;background:#fbfdfc}.ke-evidence>div{display:flex;gap:7px;align-items:center;font-size:9px}.ke-evidence b{width:18px;height:18px;border-radius:5px;background:var(--ke-accent-soft);color:var(--ke-accent-dark);display:grid;place-items:center}.ke-evidence strong{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ke-evidence span{margin-left:auto;color:#9aa19c}.ke-evidence p{font-size:9px;line-height:1.55;color:#747d77;margin:7px 0 0;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}.ke-warning{display:flex;gap:6px;color:#a56a14;font-size:9px;line-height:1.5}.ke-warning svg{width:13px;height:13px}.ke-ask-form{flex:none;padding:12px 14px 13px}.ke-composer{border:1px solid #dce3de;background:#fff;border-radius:13px;padding:8px 9px;box-shadow:0 5px 18px rgba(42,62,49,.06);transition:.18s}.ke-composer:focus-within{border-color:#91ceb2;box-shadow:0 0 0 3px rgba(37,161,111,.08)}.ke-composer.disabled{background:#f7f8f7}.ke-composer textarea{width:100%;min-height:50px;box-sizing:border-box;border:0;outline:0;resize:none;background:transparent;color:#303733;font-size:11px;line-height:1.55}.ke-composer>div{display:flex;align-items:center;justify-content:space-between}.ke-composer>div span{display:flex;align-items:center;gap:4px;color:#9aa19c;font-size:8px}.ke-composer>div span svg{width:11px;height:11px}.ke-composer>div button{width:28px;height:28px;border:0;border-radius:9px;background:var(--ke-accent);color:#fff;display:grid;place-items:center;cursor:pointer}.ke-composer>div button:disabled{background:#d8ddda;cursor:not-allowed}.ke-ask-form>small{display:block;margin-top:6px;text-align:center;color:#a1a7a3;font-size:8px}.ke-ask-fab{position:absolute;right:20px;bottom:20px;height:40px;border:0;border-radius:20px;background:var(--ke-accent);color:#fff;padding:0 15px;display:flex;align-items:center;gap:7px;box-shadow:0 8px 24px rgba(37,161,111,.25);cursor:pointer;z-index:10}.ke-ask-fab span{font-size:11px}
+.ke-ask-panel{border-left:1px solid var(--ke-line);display:flex;flex-direction:column;overflow:hidden;background:#fcfdfc}.ke-ask-header{height:67px;flex:none;padding:0 14px;display:flex;align-items:center;gap:9px;border-bottom:1px solid var(--ke-line);background:#fff}.ke-ai-avatar{width:31px;height:31px;border-radius:10px;background:linear-gradient(145deg,#32b981,#21865f);color:#fff;display:grid;place-items:center;box-shadow:0 4px 12px rgba(37,161,111,.2)}.ke-ai-avatar.small{width:23px;height:23px;border-radius:7px}.ke-ai-avatar.small svg{width:12px;height:12px}.ke-ask-header>div:nth-child(2){display:flex;flex:1;min-width:0;flex-direction:column;gap:3px}.ke-ask-header strong{font-size:12px}.ke-ask-header small{font-size:9px;color:#969d98;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ke-answer{flex:1;min-height:0;overflow:auto;padding:18px}.ke-history-entry{display:flex;flex-direction:column;gap:8px;padding-bottom:12px;margin-bottom:12px;border-bottom:1px dashed #e8ece9}.ke-history-entry:last-of-type{border-bottom:0}.ke-answer-welcome{height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center}.ke-answer-orb{width:52px;height:52px;border-radius:18px;background:radial-gradient(circle at 30% 25%,#fff 0,#e4f7ee 35%,#cceede 100%);color:var(--ke-accent);display:grid;place-items:center;box-shadow:0 8px 25px rgba(38,126,88,.12)}.ke-answer-orb svg{width:24px;height:24px}.ke-answer-welcome h3{font-size:14px;margin:15px 0 6px}.ke-answer-welcome>p{max-width:235px;margin:0;color:#8d9690;font-size:10px;line-height:1.7}.ke-question-suggestions{width:100%;margin-top:19px;display:flex;flex-direction:column;gap:7px}.ke-question-suggestions button{border:1px solid #e3e8e4;background:#fff;border-radius:10px;padding:10px 11px;display:flex;justify-content:space-between;align-items:center;color:#626b65;text-align:left;font-size:10px;cursor:pointer;transition:.16s}.ke-question-suggestions button:hover{border-color:#b9ddcb;background:#f5fbf8;color:var(--ke-accent-dark)}.ke-question-suggestions svg{width:12px;height:12px}.ke-answer-loading{height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;color:#8b948e;font-size:10px}.ke-question-bubble{margin-left:auto;width:fit-content;max-width:100%;padding:9px 11px;border-radius:11px 3px 11px 11px;background:#eef7f3;color:#3f4d45;font-size:11px;line-height:1.55}.ke-answer-label{display:flex;align-items:center;gap:7px;margin:18px 0 10px;font-size:10px}.ke-answer-text{font-size:11px;line-height:1.85;color:#3e4741;white-space:pre-wrap}.ke-evidence-title{display:flex;align-items:center;gap:5px;margin:18px 0 7px;color:#737d76;font-size:10px;font-weight:600}.ke-evidence-title svg{width:13px;height:13px}.ke-evidence{width:100%;margin-top:7px;padding:10px;border:1px solid #e3e8e4;border-radius:10px;background:#fff;text-align:left;color:inherit;cursor:pointer}.ke-evidence:hover{border-color:#c6ddd1;background:#fbfdfc}.ke-evidence>div{display:flex;gap:7px;align-items:center;font-size:9px}.ke-evidence b{width:18px;height:18px;border-radius:5px;background:var(--ke-accent-soft);color:var(--ke-accent-dark);display:grid;place-items:center}.ke-evidence strong{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ke-evidence span{margin-left:auto;color:#9aa19c}.ke-evidence p{font-size:9px;line-height:1.55;color:#747d77;margin:7px 0 0;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}.ke-warning{display:flex;gap:6px;color:#a56a14;font-size:9px;line-height:1.5}.ke-warning svg{width:13px;height:13px}.ke-ask-form{flex:none;padding:12px 14px 13px}.ke-composer{border:1px solid #dce3de;background:#fff;border-radius:13px;padding:8px 9px;box-shadow:0 5px 18px rgba(42,62,49,.06);transition:.18s}.ke-composer:focus-within{border-color:#91ceb2;box-shadow:0 0 0 3px rgba(37,161,111,.08)}.ke-composer.disabled{background:#f7f8f7}.ke-composer textarea{width:100%;min-height:50px;box-sizing:border-box;border:0;outline:0;resize:none;background:transparent;color:#303733;font-size:11px;line-height:1.55}.ke-composer>div{display:flex;align-items:center;justify-content:space-between}.ke-composer>div span{display:flex;align-items:center;gap:4px;color:#9aa19c;font-size:8px}.ke-composer>div span svg{width:11px;height:11px}.ke-composer>div button{width:28px;height:28px;border:0;border-radius:9px;background:var(--ke-accent);color:#fff;display:grid;place-items:center;cursor:pointer}.ke-composer>div button:disabled{background:#d8ddda;cursor:not-allowed}.ke-ask-form>small{display:block;margin-top:6px;text-align:center;color:#a1a7a3;font-size:8px}.ke-ask-fab{position:absolute;right:20px;bottom:20px;height:40px;border:0;border-radius:20px;background:var(--ke-accent);color:#fff;padding:0 15px;display:flex;align-items:center;gap:7px;box-shadow:0 8px 24px rgba(37,161,111,.25);cursor:pointer;z-index:10}.ke-ask-fab span{font-size:11px}
 .ke-loading-page,.ke-empty-page{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;color:#858e88}.ke-loading-page p{font-size:11px}.ke-empty-page h2{font-size:17px;color:#303632;margin:15px 0 6px}.ke-empty-page p{font-size:11px;margin:0 0 16px}.ke-empty-page.compact{height:100%}.ke-spinner{width:22px;height:22px;border:2px solid #dce9e2;border-top-color:var(--ke-accent);border-radius:50%;animation:ke-spin .75s linear infinite}
 .ke-modal-mask,.ke-drawer-mask{position:fixed;inset:0;background:rgba(26,31,28,.38);z-index:1200;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(2px)}.ke-modal{width:min(430px,calc(100vw - 32px));max-height:90vh;overflow:auto;background:#fff;border-radius:16px;padding:21px;box-shadow:0 24px 65px rgba(23,35,27,.2)}.ke-modal.small{width:min(360px,calc(100vw - 32px))}.ke-modal.wide{width:min(600px,calc(100vw - 32px))}.ke-modal header,.ke-preview-modal header,.ke-drawer header{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}.ke-modal header h3,.ke-preview-modal h3,.ke-drawer h2{margin:0;font-size:16px}.ke-modal header p,.ke-drawer header p{margin:4px 0 0;color:#929a95;font-size:10px;line-height:1.5}.ke-modal header>button,.ke-preview-modal header>button,.ke-drawer header>button{width:30px;height:30px;border:0;background:transparent;border-radius:8px;display:grid;place-items:center;color:#7d8580;cursor:pointer}.ke-modal header>button:hover,.ke-preview-modal header>button:hover,.ke-drawer header>button:hover{background:#f3f5f3}.ke-modal>label{display:flex;flex-direction:column;gap:6px;margin-top:16px;color:#59615c;font-size:11px}.ke-modal input,.ke-modal select,.ke-modal textarea{width:100%;box-sizing:border-box;border:1px solid #dfe4e0;border-radius:9px;background:#fff;padding:9px 10px;color:#303632;outline:0;font-size:11px}.ke-modal input:focus,.ke-modal select:focus,.ke-modal textarea:focus{border-color:#91ceb2;box-shadow:0 0 0 3px rgba(37,161,111,.07)}.ke-modal textarea{min-height:82px;resize:vertical}.ke-modal label>small{color:#9ba19d;font-size:9px;line-height:1.5}.ke-modal footer{display:flex;justify-content:flex-end;gap:8px;margin-top:20px}.ke-perm-loading{margin-top:18px;padding:26px 0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;color:var(--text-secondary);font-size:11px}.ke-perm-loading p{margin:0}.ke-perm-loading .ke-spinner{flex:none}.ke-perm-toolbar{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:16px;padding:8px 12px;border:1px solid #e3e7e4;border-radius:10px;background:#f8faf8;color:#7d8580;font-size:10px}.ke-perm-toolbar strong{color:var(--ke-accent-dark);font-size:12px}.ke-perm-tree{margin-top:7px;border:1px solid #e3e7e4;border-radius:10px;max-height:340px;overflow:auto;padding:6px 10px;background:#fff}.ke-perm-branch+.ke-perm-branch{margin-top:4px}.ke-perm-row{display:grid;grid-template-columns:24px 18px 1fr auto;gap:7px;align-items:center;padding:7px 4px;border-radius:8px}.ke-perm-row:hover{background:#f7faf8}.ke-perm-row.level-dept>.ke-perm-name{font-weight:650;font-size:12px;color:#3d4640}.ke-perm-row.level-division>.ke-perm-name{font-weight:600;font-size:11px;color:#4a544d;padding-left:2px}.ke-perm-row.level-team>.ke-perm-name{font-weight:500;font-size:11px;color:#59615c;padding-left:2px}.ke-perm-name{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ke-perm-count{color:#9aa19c;font-size:9px}.ke-perm-caret{width:22px;height:22px;padding:0;border:0;background:transparent;border-radius:6px;display:grid;place-items:center;color:#9aa19c;cursor:pointer}.ke-perm-caret:hover{background:#eef3ef;color:#59615c}.ke-perm-caret svg{width:13px;height:13px;transition:transform .15s ease}.ke-perm-caret svg.rotated{transform:rotate(-90deg)}.ke-perm-children{margin-left:24px;border-left:1px dashed #dfe4e0;padding-left:8px}.ke-perm-user{display:grid;grid-template-columns:18px 1fr auto;gap:8px;align-items:center;padding:5px 4px;border-radius:8px;cursor:pointer;color:#3d4640;font-size:11px}.ke-perm-user:hover{background:#f7faf8}.ke-perm-user span{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ke-perm-user small{color:#9aa19c;font-size:9px}.ke-perm-empty{margin:0;padding:22px 10px;color:#9aa19c;text-align:center;font-size:10px}.ke-perm-tree input[type=checkbox]{width:15px;height:15px;flex:none;box-sizing:border-box;margin:0;padding:0;border:0;background:transparent;accent-color:var(--ke-accent);cursor:pointer}.ke-modal.confirm{text-align:center;width:min(360px,calc(100vw - 32px));overflow:visible}.ke-confirm-icon{width:45px;height:45px;margin:0 auto 12px;border-radius:14px;background:#fff1ef;color:#d34c4c;display:grid;place-items:center}.ke-confirm-icon svg{width:22px;height:22px}.ke-modal.confirm h3{font-size:16px;margin:0}.ke-modal.confirm>p{font-size:10px;color:#838b86;line-height:1.65;margin:8px 10px}.ke-modal.confirm footer{justify-content:center}.preview-mask{padding:24px}.ke-preview-modal{width:min(1080px,94vw);height:min(820px,90vh);background:#fff;border-radius:15px;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 24px 70px rgba(18,29,22,.24)}.ke-preview-modal header{height:55px;flex:none;align-items:center;padding:0 16px;border-bottom:1px solid var(--ke-line)}.ke-preview-modal header>div{display:flex;align-items:center;gap:8px;min-width:0}.ke-preview-modal h3{font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ke-preview-modal iframe,.ke-preview-modal img,.ke-preview-modal pre{flex:1;min-height:0;width:100%;border:0;object-fit:contain;background:#f5f7f5;overflow:auto;box-sizing:border-box;padding:16px}.ke-drawer-mask{justify-content:flex-end;align-items:stretch}.ke-drawer{width:min(400px,90vw);background:#fff;padding:20px;overflow:auto;box-shadow:-18px 0 50px rgba(28,38,31,.13)}.ke-drawer .refresh{margin:15px 0;width:100%}.ke-operation{padding:12px 0;border-top:1px solid #edf0ed}.ke-operation>div:first-child{display:grid;grid-template-columns:30px 1fr auto;gap:8px;align-items:center;margin-bottom:9px}.ke-operation-icon{width:28px;height:28px;background:#f2f6f3;color:#6f7c74;border-radius:8px;display:grid;place-items:center}.ke-operation>div:first-child>div{display:flex;flex-direction:column;gap:2px}.ke-operation strong{font-size:10px}.ke-operation small{color:#949c97;font-size:8px}.ke-operation p{color:#c94a4a;font-size:9px}.ke-toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%);background:#26342c;color:#fff;border-radius:10px;padding:10px 14px;z-index:1600;display:flex;align-items:center;gap:7px;font-size:11px;box-shadow:0 9px 28px rgba(22,36,27,.24)}.ke-toast.error{background:#b83f43}.ke-toast svg{width:14px;height:14px}.ke-toast-enter-active,.ke-toast-leave-active{transition:.2s}.ke-toast-enter-from,.ke-toast-leave-to{opacity:0;transform:translate(-50%,8px)}
 .ke-workspace{grid-template-columns:var(--ke-library-width,252px) 6px minmax(490px,1fr) 6px var(--ke-ask-width,344px)}.ke-workspace.ask-closed{grid-template-columns:var(--ke-library-width,252px) 6px minmax(540px,1fr)}
@@ -1752,7 +1904,7 @@ onUnmounted(() => { stopQuestion('unmount'); finishKnowledgeResize(); stopPollin
 .ke-folder-art{background:linear-gradient(180deg,#7dd3fc,#38bdf8)}.ke-folder-art:before{background:#0ea5e9}
 .ke-preview-loading{flex:1;min-height:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;color:var(--text-secondary);font-size:11px}.ke-preview-loading p{margin:0}.ke-preview-loading .ke-spinner{flex:none}
 .ke-stop-button{color:#d14b4b!important}.ke-answer-text{min-height:18px}.ke-stream-cursor{display:inline-block;width:2px;height:1em;margin-left:3px;vertical-align:-2px;background:var(--accent-color);animation:ke-cursor-blink .8s steps(2,end) infinite}.ke-ask-error{margin-top:14px;padding:11px;border:1px solid color-mix(in srgb,#d14b4b 28%,var(--border-color));border-radius:10px;background:color-mix(in srgb,#d14b4b 7%,var(--bg-secondary));color:var(--text-secondary);font-size:10px;line-height:1.55;display:grid;grid-template-columns:16px minmax(0,1fr) auto;gap:7px;align-items:start}.ke-ask-error>svg{width:15px;height:15px;color:#d14b4b;margin-top:1px}.ke-ask-error p{margin:0}.ke-ask-error button{border:0;background:transparent;color:var(--accent-color);font-weight:600;display:flex;align-items:center;gap:4px;cursor:pointer}.ke-ask-error button svg{width:12px;height:12px}@keyframes ke-cursor-blink{50%{opacity:0}}
-.ke-agent-message{width:100%;min-width:0}.ke-agent-message ::v-deep .message.assistant{width:100%;max-width:none;margin:0;padding:0}.ke-agent-message ::v-deep .message-content{min-width:0}.ke-agent-message ::v-deep .process-wrapper,.ke-agent-message ::v-deep .knowledge-citations{box-sizing:border-box}.ke-permission-note{margin:10px 0 0;color:var(--text-secondary);font-size:9px;line-height:1.5}
+.ke-agent-message{width:100%;min-width:0}.ke-agent-message ::v-deep .message.assistant{width:100%;max-width:none;margin:0;padding:0}.ke-agent-message ::v-deep .message-content{min-width:0}.ke-agent-message ::v-deep .process-wrapper,.ke-agent-message ::v-deep .knowledge-citations{box-sizing:border-box}.ke-permission-note{margin:10px 0 0;color:var(--text-secondary);font-size:9px;line-height:1.5}.ke-create-perm{margin-top:16px;border:1px solid #e3e7e4;border-radius:10px;padding:12px;background:#fbfdfb}.ke-create-perm-toggle{display:grid;grid-template-columns:16px auto 1fr;gap:8px;align-items:start;cursor:pointer;color:#3d4640;font-size:12px}.ke-create-perm-toggle input{width:16px;height:16px;margin:1px 0 0;accent-color:var(--ke-accent);cursor:pointer}.ke-create-perm-toggle span{font-weight:600;white-space:nowrap}.ke-create-perm-toggle small{grid-column:2/4;color:#9ba19d;font-size:9px;line-height:1.5;white-space:normal}.ke-create-perm .ke-perm-toolbar{margin-top:12px}.ke-create-perm-tree{max-height:240px}
 /* 弹窗内的搜索框：.ke-modal input 会给嵌套 input 误加边框/内边距，形成框中框，这里显式还原 */
 .ke-modal .ke-search-box input{width:auto;min-width:0;flex:1;border:0;outline:0;background:transparent;padding:0;color:var(--text-primary);font-size:12px}
 </style>

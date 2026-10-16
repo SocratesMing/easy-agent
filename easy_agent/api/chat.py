@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import re
 import uuid
 from datetime import datetime
 from typing import Annotated
@@ -28,8 +29,8 @@ from ..services import (
     register_stream_task,
     unregister_stream_task,
     cancel_stream_task,
-    parse_message_connectors,
 )
+from ..services import skill_library
 from ..services.streaming import format_sse
 from ..utils import parse_file_content, SessionLogger, get_owned_session
 from .sessions import generate_workspace_name
@@ -41,15 +42,103 @@ router = APIRouter(
     tags=["Chat"],
 )
 
-def generate_session_title(message: str, files: list | None) -> str:
-    """根据首条消息或首个上传文件生成会话标题。"""
+# 会话标题最长字数：太短列表里只剩「测试下」这种断句，太长又会撑破侧边栏，
+# 具体显示宽度由前端省略号控制，这里保留足够信息量即可。
+SESSION_TITLE_MAX_LEN = 30
+
+# 会话标题里的指令前缀：输入框把已选「连接器」与「技能」还原成指令前缀发给模型
+# （见前端 utils/skillSlash.js），例如 `使用连接器[高德地图] /docx 帮我排个版`。
+# 标题直接取首条消息就会带上整串指令，会话列表看起来就是指令原文。
+# 连接器指令格式固定（方括号内即连接器名），技能指令必须命中用户实际拥有的技能。
+_CONNECTOR_DIRECTIVE_PATTERN = re.compile(r"^使用连接器\[([^\]]+)\]")
+_SKILL_TOKEN_PATTERN = re.compile(r"^/(\S+)")
+
+
+def _skill_display_name(skill_dir, fallback: str) -> str:
+    """技能展示名（SKILL.md frontmatter 的 name），读取失败退回目录名。"""
+    try:
+        return skill_library.skill_metadata(skill_dir).get("name") or fallback
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"读取技能元数据失败 | {skill_dir} | {exc}")
+        return fallback
+
+
+def _strip_connector_directives(text: str) -> tuple[str, str]:
+    """摘掉开头连续拼接的连接器指令，返回 (剩余文本, 首个连接器名)。
+
+    连接器指令由输入框生成、格式固定，不需要校验名字是否存在。
+    """
+    first_name = ""
+    while True:
+        matched = _CONNECTOR_DIRECTIVE_PATTERN.match(text)
+        if not matched:
+            break
+        first_name = first_name or matched.group(1).strip()
+        text = text[matched.end() :].strip()
+    return text, first_name
+
+
+def split_leading_directives(message: str, username: str | None) -> tuple[str, str]:
+    """拆掉消息开头拼接的内部指令，返回 (剩余正文, 兜底展示名)。
+
+    先摘格式固定的 `使用连接器[名称]`，再摘 `/技能目录名`；技能目录名必须命中用户
+    实际拥有的技能（含已停用），据此避免误删 `/workspace`、`/user-skills` 这类路径
+    开头——历史上确实有用户这么提问。兜底展示名用于「只选了技能/连接器、没输入内容」
+    时充当标题（技能展示名优先，其次连接器名），可能为空字符串。
+    """
+    text, connector_name = _strip_connector_directives((message or "").strip())
+    if not text or not username:
+        return text, connector_name
+
+    try:
+        skills = {
+            item["dir_name"]: item["path"]
+            for item in skill_library.list_user_skill_dirs(username)
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"读取用户技能目录失败，会话标题保留原文 | 用户: {username} | {exc}")
+        return text, connector_name
+    if not skills:
+        return text, connector_name
+
+    rest = text
+    first_dir = ""
+    while True:
+        matched = _SKILL_TOKEN_PATTERN.match(rest)
+        if not matched or matched.group(1) not in skills:
+            break
+        if not first_dir:
+            first_dir = matched.group(1)
+        rest = rest[matched.end() :].strip()
+
+    if not first_dir:
+        return text, connector_name
+    return rest, _skill_display_name(skills[first_dir], first_dir)
+
+
+def generate_session_title(
+    message: str,
+    files: list | None,
+    username: str | None = None,
+    fallback_name: str = "",
+) -> str:
+    """根据首条消息或首个上传文件生成会话标题。
+
+    首条消息可能带着旧前端拼接的指令前缀（`使用连接器[名称]` / `/技能名`），标题只
+    保留用户真正输入的内容。新前端把这些选择放进请求体结构化字段，消息文本本身就是
+    用户原话，此时**只挂技能/连接器、没写正文**的场景由 ``fallback_name``（技能展示名
+    优先、其次连接器名）兜底，避免标题只剩「未命名会话」这种信息量为零的结果。
+    """
     if message and message.strip():
-        title = message.strip()
-        return title[:15] + "..." if len(title) > 15 else title
+        body, text_fallback_name = split_leading_directives(message, username)
+        title = body or text_fallback_name or fallback_name or message.strip()
     elif files and len(files) > 0:
-        filename = files[0].get("filename", "文件")
-        return filename[:15] + "..." if len(filename) > 15 else filename
-    return "未命名会话"
+        title = files[0].get("filename", "文件")
+    elif fallback_name:
+        title = fallback_name
+    else:
+        return "未命名会话"
+    return title[:SESSION_TITLE_MAX_LEN] + "..." if len(title) > SESSION_TITLE_MAX_LEN else title
 
 
 def create_new_session(
@@ -58,10 +147,11 @@ def create_new_session(
     username: str,
     message: str,
     files: list | None,
+    fallback_name: str = "",
 ) -> str:
     """创建新会话记录并返回其 workspace_name。"""
     now = datetime.now().isoformat()
-    session_title = generate_session_title(message, files)
+    session_title = generate_session_title(message, files, username, fallback_name)
     workspace_name = generate_workspace_name(session_id)
     session_data = SessionModel(
         session_id=session_id,
@@ -292,7 +382,13 @@ async def chat_stream(
     username: Annotated[str, Depends(get_current_username)],
 ):
 
-    if not request.message:
+    # 正文可以为空：只挂技能 / 只上传文件时本来就没有正文，
+    # 三者全空才视为无效请求（与前端 canSend 的判定一致）。
+    if (
+        not (request.message or "").strip()
+        and not request.files
+        and not request.skills
+    ):
         raise HTTPException(status_code=400, detail="消息内容不能为空")
 
     session_id = request.session_id
@@ -310,6 +406,25 @@ async def chat_stream(
 
     sid = session_id[-5:] if session_id else "new"
 
+    # 本轮技能：优先用请求体的结构化字段 skills（输入框技能胶囊选中项，技能目录名），
+    # 同时兼容消息文本开头的 `/目录名` 指令（旧前端 / 手打指令），合并去重后校验归属
+    # （目录必须真实存在于该用户技能库，含已停用）。命中的指令**只拼进模型输入**
+    # （parsed_content），落库正文、气泡与会话标题用的都是用户原话。
+    turn_skills, unknown_skills = skill_library.resolve_turn_skills(
+        request.skills, request.message, username
+    )
+    turn_skill_dirs = [item["dir_name"] for item in turn_skills]
+    if turn_skill_dirs or unknown_skills:
+        logger.info(
+            f"[{sid}] 🧩 技能指令 | 命中: {turn_skill_dirs or '无'} | "
+            f"未识别: {unknown_skills or '无'}"
+        )
+    # 只挂技能、没写正文时的标题兜底（取技能展示名）
+    if turn_skills:
+        turn_fallback_name = turn_skills[0]["name"]
+    else:
+        turn_fallback_name = ""
+
     logger.info(
         f"[{sid}] 聊天请求 | message: {request.message[:50]}{'...' if len(request.message) > 50 else ''} | "
         f"deep_think: {request.enable_deep_think} | "
@@ -319,14 +434,14 @@ async def chat_stream(
     if session_id is None:
         session_id = str(uuid.uuid4())
         workspace_name = create_new_session(
-            db, session_id, username, request.message, request.files
+            db, session_id, username, request.message, request.files, turn_fallback_name
         )
     else:
         session = db.get_session(session_id)
         if not session:
             session_id = str(uuid.uuid4())
             workspace_name = create_new_session(
-                db, session_id, username, request.message, request.files
+                db, session_id, username, request.message, request.files, turn_fallback_name
             )
         elif (session.username or "") != (username or ""):
             # 会话属于其他用户 -> 拒绝访问，不泄露会话是否存在
@@ -338,11 +453,19 @@ async def chat_stream(
                 len(session.messages) == 0
                 and not is_knowledge_panel_session
             ):
-                session.title = generate_session_title(request.message, request.files)
+                session.title = generate_session_title(
+                    request.message, request.files, username, turn_fallback_name
+                )
                 session.updated_at = datetime.now().isoformat()
                 db.update_session(session)
 
-    parsed_content = request.message
+    # 模型输入 = 技能指令前缀 + 用户正文（技能指令不进落库文本，见上文解析处）；
+    # 旧前端消息文本里已有的 `/目录名` 保持原样，不重复拼。
+    model_message = skill_library.inject_skill_directives(
+        skill_library.pending_skill_directives(turn_skill_dirs, request.message),
+        request.message,
+    )
+    parsed_content = model_message
     knowledge_chat = await prepare_knowledge_chat(
         request=http_request,
         db=db,
@@ -386,7 +509,8 @@ async def chat_stream(
             file_contents = [
                 f"[文件: {fn}]\n{c}" for fn, c in file_context_parts
             ]
-            parsed_content = "\n\n".join(file_contents) + "\n\n" + request.message
+            # 技能指令跟在正文前（与改造前前端拼接的顺序一致），文件块仍在最前
+            parsed_content = "\n\n".join(file_contents) + "\n\n" + model_message
     system_prompt_extra = "\n\n".join(system_prompt_parts)
 
     page_context = (request.page_context or "").strip()
@@ -408,6 +532,9 @@ async def chat_stream(
         user_message["files"] = request.files
     if page_context:
         user_message["page_context"] = page_context
+    # 结构化技能目录名：气泡按它渲染技能标签，不再需要从消息文本里反扒 `/目录名`
+    if turn_skill_dirs:
+        user_message["skills"] = turn_skill_dirs
     db.add_message(session_id, user_message)
     db.add_message_row(session_id, user_message)
 
@@ -423,23 +550,12 @@ async def chat_stream(
         message_id=message_id,
     )
 
-    # 「使用连接器[X]」指令解析：输入框里选中的连接器会前置在消息文本中，
-    # 这里翻译成 mcp.json 的 server 名，交给 agent_manager 只注入这些连接器的工具。
-    # 未识别的名字只记日志，不影响其余连接器生效（也不阻断对话）。
-    connector_servers, unknown_connectors = parse_message_connectors(
-        request.message, username
-    )
-    if connector_servers or unknown_connectors:
-        logger.info(
-            f"[{sid}] 🔌 连接器指令 | 命中: {connector_servers or '无'} | "
-            f"未识别: {unknown_connectors or '无'}"
-        )
-
+    # 连接器不再随每轮消息提交：本会话启用哪些连接器由输入框「+」面板的开关决定
+    # （见 api/connectors.py 的 /agent/connectors/session），agent_manager 按会话读取。
     agent = await get_or_create_agent_for_session(
         session_id, username, workspace_name, model_name=request.model,
         system_prompt_extra=system_prompt_extra,
         enable_web_search=request.enable_web_search,
-        connector_servers=connector_servers,
     )
 
     return StreamingResponse(
@@ -532,8 +648,7 @@ async def chat_resume(
     # 一起写入、清理时一起删除），因此这里取到的值要么与缓存中的专家一致 —— 命中缓存
     # 原样复用、人设保留；要么为 ""（缓存已失效）—— 等价于通用 Agent 重建，
     # 行为与引入专家模块之前逐字一致。
-    # 连接器（使用连接器[X]）同理不传：get_or_create_agent_for_session 取 None 时
-    # 「跟随缓存」——不因连接器差异驱逐缓存 Agent（重建时仍沿用该会话已记录的选择）。
+    # 连接器无需传参：agent_manager 直接读该会话的开关记录，缓存失效时按同一套集合重建。
     agent = await get_or_create_agent_for_session(
         session_id,
         username,

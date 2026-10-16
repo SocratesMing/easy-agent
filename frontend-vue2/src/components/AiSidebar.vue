@@ -173,7 +173,7 @@
                         @keydown.esc.prevent="renamingId = null"
                         @blur="commitRename"
                       />
-                      <span v-else class="ais-history-name" :title="s.title" @dblclick.stop="beginRename(s)">{{ s.title || '新会话' }}</span>
+                      <span v-else class="ais-history-name" :title="sessionLabel(s)" @dblclick.stop="beginRename(s)">{{ sessionLabel(s) }}</span>
                       <span class="ais-history-time">{{ formatRelative(s.updated_at || s.created_at) }}</span>
                       <span class="ais-history-ops" @click.stop>
                         <button type="button" :title="s.pinned ? '取消置顶' : '置顶'" :class="{ on: s.pinned }" @click="handleTogglePin(s.session_id)">
@@ -309,7 +309,9 @@
 import Chat from './Chat.vue'
 import chatSessionMixin from '../mixins/chatSession.js'
 import { chatStore } from '../store/chatStore.js'
+import { ensureSkillDirectoryLoaded, skillFreeTitle } from '../store/skillDirectoryStore.js'
 import { formatPageContext, setExternalPageContext } from '../utils/pageContext.js'
+import { formatRelativeTime } from '../utils/relativeTime.js'
 import { eventTarget } from '../utils/domEvent.js'
 
 const PREFS_KEY = 'easy_agent_ai_sidebar_prefs'
@@ -454,7 +456,7 @@ export default {
     currentTitle() {
       if (!this.currentSessionId) return '新对话'
       const s = this.sessions.find(x => x.session_id === this.currentSessionId)
-      return (s && s.title) || '新会话'
+      return s ? this.sessionLabel(s) : '新会话'
     },
     anySidebarStreaming() {
       return Object.keys(this.attachedStreamingSessions).some(sid => this.isSessionStreaming(sid)) || this.isStreaming
@@ -481,7 +483,8 @@ export default {
     // 历史分组：置顶 / 当前页面 / 今天 / 近 7 天 / 更早
     historyGroups() {
       const q = this.historyQuery.trim().toLowerCase()
-      const list = this.sessions.filter(s => !q || (s.title || '').toLowerCase().includes(q))
+      // 检索按展示用标题匹配（已去掉 /技能名 前缀），保证「看到什么就能搜到什么」
+      const list = this.sessions.filter(s => !q || this.sessionLabel(s).toLowerCase().includes(q))
       const pageIds = (this.pageSessions[this.pageKey] || []).filter(id => list.some(s => s.session_id === id))
       const groups = []
       const pinned = list.filter(s => s.pinned)
@@ -541,6 +544,8 @@ export default {
     },
   },
   created() {
+    // 技能目录：历史会话标题里的 /技能名 前缀要按目录名反查才能去掉
+    ensureSkillDirectoryLoaded()
     this.unwatchContextLength = this.$watch(
       () => chatStore.contextLength,
       (len) => {
@@ -724,10 +729,18 @@ export default {
       writeJson(localStorage, this.pageSessionsStorageKey, this.pageSessions)
     },
 
+    /**
+     * 会话展示用标题：历史会话标题是首条消息原文，带技能时会形如
+     * `/demo-skill 测试对话`，这里去掉技能前缀只留用户真正输入的内容。
+     */
+    sessionLabel(session) {
+      return skillFreeTitle(session && session.title) || '新会话'
+    },
+
     // ── 历史会话操作 ──────────────────────────────────────────────────
     beginRename(session) {
       this.renamingId = session.session_id
-      this.renameText = session.title || ''
+      this.renameText = this.sessionLabel(session)
       this.$nextTick(() => {
         const refs = this.$refs.renameInputRef
         const el = Array.isArray(refs) ? refs[0] : refs
@@ -753,15 +766,7 @@ export default {
       this.confirmTimer = setTimeout(() => { this.confirmDeleteId = null }, 3000)
     },
     formatRelative(iso) {
-      if (!iso) return ''
-      const t = new Date(iso).getTime()
-      if (!t) return ''
-      const diff = Date.now() - t
-      if (diff < 60000) return '刚刚'
-      if (diff < 3600000) return `${Math.floor(diff / 60000)} 分钟前`
-      if (diff < 86400000) return `${Math.floor(diff / 3600000)} 小时前`
-      const d = new Date(t)
-      return `${d.getMonth() + 1}/${d.getDate()}`
+      return formatRelativeTime(iso)
     },
 
     // ── 拖动分隔栏改变宽度 ────────────────────────────────────────────

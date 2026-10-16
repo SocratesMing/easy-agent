@@ -173,10 +173,9 @@ export function resumeDocument(documentId) {
   return request(`/documents/${encodeURIComponent(documentId)}/resume`, { method: 'POST' })
 }
 
-export async function getDocumentBlob(documentId, disposition = 'inline', convert = '') {
-  const convertQuery = convert ? `&convert=${convert}` : ''
+export async function getDocumentBlob(documentId, disposition = 'inline') {
   const response = await authFetch(
-    `${root()}/documents/${encodeURIComponent(documentId)}/content?disposition=${disposition}${convertQuery}`,
+    `${root()}/documents/${encodeURIComponent(documentId)}/content?disposition=${disposition}`,
     { responseType: 'blob' }
   )
   if (!response.ok) return parseError(response)
@@ -205,6 +204,11 @@ export function listPermissionDirectory(baseId) {
   return request(`/bases/${encodeURIComponent(baseId)}/permission-directory`)
 }
 
+// 创建知识库时的可选人员目录（不依赖具体库，需公共空间管理白名单）
+export function listCreationPermissionDirectory() {
+  return request('/bases/permission-directory')
+}
+
 export function askKnowledgeBase(baseId, payload) {
   return request(`/bases/${encodeURIComponent(baseId)}/ask`, { method: 'POST', json: payload })
 }
@@ -214,6 +218,14 @@ export function askKnowledgeBase(baseId, payload) {
 export function prepareKnowledgeChatSession(baseId, { peek = false } = {}) {
   const suffix = peek ? '?peek=true' : ''
   return request(`/bases/${encodeURIComponent(baseId)}/chat-session${suffix}`, { method: 'POST' })
+}
+
+// 开启新一轮问答会话：旧会话保留为历史（主界面会话列表可回看），面板切换到全新会话
+export function createKnowledgeChatRound(baseId) {
+  return request(
+    `/bases/${encodeURIComponent(baseId)}/chat-session/new`,
+    { method: 'POST' }
+  )
 }
 
 export async function askKnowledgeBaseStream(baseId, payload, onChunk, signal) {

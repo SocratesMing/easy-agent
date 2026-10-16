@@ -1078,9 +1078,9 @@ async function handleCreateSession() {
 // 预置问题发送：点击首页预置问题卡片后，该问题作为「新对话的第一条消息」发出。
 // 无论当前是否已选中会话（如刷新后恢复的空会话），都先按「新建对话」把状态
 // 切回全新首页，再走正常发送；当前无会话时后端会在 start 事件里返回新会话 id。
-async function handlePresetSend(message, files, signal, enableDeepThink, enableWebSearch) {
+async function handlePresetSend(message, files, signal, enableDeepThink, enableWebSearch, skills) {
   await handleCreateSession()
-  handleSendMessage(message, files, signal, enableDeepThink, enableWebSearch)
+  handleSendMessage(message, files, signal, enableDeepThink, enableWebSearch, skills)
 }
 
 async function handleSelectSession(sessionId) {
@@ -1688,7 +1688,7 @@ function createStreamChunkHandler(ctx) {
   return { onChunk: (data) => runInSession(ctx.streamSessionId, ctx, () => onChunk(data)) }
 }
 
-async function handleSendMessage(message, files = [], signal, enableDeepThink = true, enableWebSearch = false) {
+async function handleSendMessage(message, files = [], signal, enableDeepThink = true, enableWebSearch = false, skills = []) {
   const userMsgId = `user-${Date.now()}`
   const preStreamUsage = { ...sessionUsage.value }
   // 记录本次请求开始前已累计的耗时和迭代次数，用于流式过程中实时累加
@@ -1712,6 +1712,10 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
     })),
     created_at: new Date().toISOString()
   }
+  // 结构化技能目录名（与后端落库字段同形）：气泡按它渲染技能标签，不再依赖从消息
+  // 文本里反扒 `/技能名`。没有选中技能时不写该字段——手打 `/技能名` 的正文仍按老规则
+  // 从文本解析，行为和改造前一致。
+  if (skills.length > 0) userMessage.skills = [...skills]
 
   messages.value.push(userMessage)
 
@@ -1823,6 +1827,8 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
           enableDeepThink,
           enableWebSearch,
           files,
+          // 已选技能：结构化字段（技能目录名），`/目录名` 由后端拼进模型输入
+          skills,
         },
         onChunk,
         abortSignal
@@ -1836,7 +1842,8 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
         enableDeepThink,
         files,
         selectedModel.value,
-        enableWebSearch
+        enableWebSearch,
+        skills
       )
     }
 

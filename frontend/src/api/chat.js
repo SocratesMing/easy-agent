@@ -135,7 +135,7 @@ export async function attachStream(sessionId, onChunk, signal) {
   }
 }
 
-export async function sendMessage(sessionId, message, onChunk, signal, enableDeepThink = true, files = [], model = null, enableWebSearch = false) {
+export async function sendMessage(sessionId, message, onChunk, signal, enableDeepThink = true, files = [], model = null, enableWebSearch = false, skills = []) {
   const controller = new AbortController()
   const abortSignal = signal || controller.signal
 
@@ -150,6 +150,9 @@ export async function sendMessage(sessionId, message, onChunk, signal, enableDee
   if (model) {
     payload.model = model
   }
+  // 已选技能以结构化字段提交（技能目录名），`/目录名` 由后端拼进模型输入（不进落库文本）。
+  // 连接器不随消息提交：本会话启用哪些连接器由 /agent/connectors/session 单独设置。
+  if (skills && skills.length) payload.skills = skills
 
   const response = await authFetch(`${API_BASE_URL}/agent/chat/stream`, {
     method: 'POST',

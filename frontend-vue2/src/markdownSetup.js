@@ -2,7 +2,11 @@
 // 通过 initialized 标志保证全局 marked 实例上的扩展只注册一次，
 // 避免 ChatMessage / FilePreview 等多个组件重复注册导致扩展冲突。
 //
-// 版本约定：marked 锁定 4.3.0（Renderer 回调为字符串参数签名，且支持 headerIds/mangle 选项）。
+// 版本约定：marked 锁定 17.x（Renderer 回调为 token 对象签名）。
+// 2026-10-15 由 4.3.0 升级，原因：4.3.0 的强调定界符匹配有缺陷——当 **...** 的内容以 ASCII 标点
+// 结尾（"、]、) 等）、且结尾 ** 后紧跟全角标点（：、（、、等）时，加粗不会被解析。
+// 实例：会话 xzz/6d3ae63e 的「**放量破位、呈"三连阴"**：10/13 …」渲染为字面量 **。
+// 注意 marked 5.x 起已移除 headerIds / mangle 选项，标题不再生成 id（与旧版关闭时行为一致）。
 import { marked } from 'marked'
 import katexExtension from 'marked-katex-extension'
 import { markedEmoji } from 'marked-emoji'
@@ -275,8 +279,9 @@ export function installCodeCopyHandler() {
 /**
  * 创建统一的 markdown 渲染器（ChatMessage / FilePreview 共用同一套代码块结构）
  *
- * marked 4.x 的 Renderer 回调为字符串参数签名：
- *   code(code, infostring, escaped) / link(href, title, text)
+ * marked 17.x 的 Renderer 回调为 token 对象签名：
+ *   code({ text, lang, escaped }) / link({ href, title, tokens })
+ * link 的可见文本需自行用 this.parser.parseInline(tokens) 渲染（覆盖后 marked 不再代劳）。
  *
  * @param {Object} options 配置
  * @param {(code: string, lang: string) => string} options.highlight 高亮函数，返回完整代码块 HTML（含 <pre>）
@@ -288,8 +293,9 @@ export function installCodeCopyHandler() {
 export function createMarkdownRenderer({ highlight, externalLinks = true }) {
   const renderer = new marked.Renderer()
 
-  renderer.code = function (code, infostring) {
-    const rawLang = (infostring || '').trim().split(/\s+/)[0]
+  renderer.code = function ({ text, lang }) {
+    const code = text || ''
+    const rawLang = (lang || '').trim().split(/\s+/)[0]
     const langLabel = escapeHtml(rawLang || 'text')
     const highlighted = typeof highlight === 'function' ? highlight(code, rawLang) : ''
     return (
@@ -304,8 +310,9 @@ export function createMarkdownRenderer({ highlight, externalLinks = true }) {
   }
 
   if (externalLinks) {
-    renderer.link = function (href, title, text) {
+    renderer.link = function ({ href, title, tokens }) {
       const url = href || ''
+      const text = this.parser.parseInline(tokens)
       const isExternal = /^https?:\/\//i.test(url)
       const titleAttr = title ? ` title="${escapeHtml(title)}"` : ''
       const extra = isExternal ? ' target="_blank" rel="noopener noreferrer"' : ''
@@ -332,9 +339,8 @@ export function renderMarkdown(content, renderer) {
       renderer,
       breaks: true,
       gfm: true,
-      // 这两项为 marked 4.x 专有选项（5.x 起移除）：关闭标题 id 生成与邮箱混淆
-      headerIds: false,
-      mangle: false,
+      // 显式同步：KaTeX / emoji 扩展均为同步扩展，结果直接是 HTML 字符串
+      async: false,
     })
   } catch (e) {
     console.error('Markdown 渲染失败:', e)
