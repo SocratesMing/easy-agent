@@ -39,6 +39,7 @@ from ..services import (
     invalidate_user_agents,
 )
 from ..services import public_expert_service, skill_library
+from ..services import session_uploads as file_context
 from ..services.expert_service import (
     build_expert_ids,
     generate_expert_config,
@@ -651,12 +652,15 @@ async def stream_export_run(
         request.message,
     )
     parsed_content = model_message
-    _existing = db.get_session(session_id)
-    is_new_session = (not _existing) or (len(_existing.messages) == 0)
 
     extra_parts: list[str] = []
     file_context_parts: list[tuple[str, str]] = []
-    if request.files:
+    if request.files and not file_context.is_enabled():
+        # 回退模式（config.file_context.enabled=false）：与 chat.py 一致，保持改造前
+        # 行为——首轮把解析全文放进 system prompt，非首轮拼进用户消息。
+        _existing = db.get_session(session_id)
+        is_new_session = (not _existing) or (len(_existing.messages) == 0)
+
         for file_info in request.files:
             file_path = file_info.get("file_path", "")
             if not file_path:
@@ -668,17 +672,27 @@ async def stream_export_run(
             else:
                 logger.warning(f"[{sid}] 文件解析为空: {filename}")
 
-    if file_context_parts:
-        if is_new_session:
-            sections = [f"### 文件: {fn}\n{c}" for fn, c in file_context_parts]
-            extra_parts.append(
-                "## 用户上传的文件内容（已为你解析，请基于这些内容回应用户）\n\n"
-                + "\n\n".join(sections)
-            )
-        else:
-            file_contents = [f"[文件: {fn}]\n{c}" for fn, c in file_context_parts]
-            # 技能指令跟在正文前（与改造前前端拼接的顺序一致），文件块仍在最前
-            parsed_content = "\n\n".join(file_contents) + "\n\n" + model_message
+        if file_context_parts:
+            if is_new_session:
+                sections = [f"### 文件: {fn}\n{c}" for fn, c in file_context_parts]
+                extra_parts.append(
+                    "## 用户上传的文件内容（已为你解析，请基于这些内容回应用户）\n\n"
+                    + "\n\n".join(sections)
+                )
+            else:
+                file_contents = [f"[文件: {fn}]\n{c}" for fn, c in file_context_parts]
+                # 技能指令跟在正文前（与改造前前端拼接的顺序一致），文件块仍在最前
+                parsed_content = "\n\n".join(file_contents) + "\n\n" + model_message
+    elif request.files:
+        # 新机制（默认）：解析正文与文件清单已在上传时落到会话工作区，清单作为记忆
+        # 注入 system prompt（见 services/session_uploads.py / agent.py），这里只注入
+        # 本轮上传文件的开头预览，减少"传完立刻提问"的一次工具往返。
+        preview = file_context.build_turn_preview(
+            session_id, username, request.files, db
+        )
+        if preview:
+            parsed_content = preview + "\n\n" + parsed_content
+            logger.info(f"[{sid}] 📎 已注入本轮上传文件开头预览 | {len(preview)} 字符")
 
     # 专家提示词排在最后：agent.py 的拼接顺序为
     # [system_prompt, user_info, web_search_prompt, system_prompt_extra]，
