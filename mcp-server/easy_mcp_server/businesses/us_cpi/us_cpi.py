@@ -6,7 +6,8 @@
   ``groups_json`` / ``leaves_json`` / ``daily_json`` 三个列是 **LONGTEXT 文本**，
   工具层解析成数组再筛选排序（不用 ``JSON_TABLE``）
 - 除官方历史外，**先定位 ``status='ready'`` 的报告**：给了 ``report_id`` 就只查它，
-  否则按 ``generated_at DESC, imported_at DESC, report_id DESC`` 取最新。
+  否则按 ``forecast_month DESC, generated_at DESC, imported_at DESC, report_id DESC``
+  取最新——**优先最新预测目标月**，不是最近跑过的一份旧月份报告。
   **一次工具调用固定同一个 report_id**，不能在多个子查询之间重新选最新版本
 - ``yoy`` / ``nsa_mom`` / ``sa_mom`` / ``weight`` 都是**百分数**（``0.4`` 表示 0.4%），
   不是小数比率；``weight`` 的 100 代表百分之百
@@ -25,6 +26,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from datetime import date
 from typing import Any
 
 from ...env import load_env
@@ -55,6 +57,19 @@ MODEL_COMPARE_GROUPS: tuple[str, ...] = ("总体", "核心")
 
 #: 百分数口径的字段（0.4 表示 0.4%）
 PERCENT_FIELDS: tuple[str, ...] = ("yoy", "nsa_mom", "sa_mom", "weight")
+
+#: 单位说明（原值返回，不换算；文档 §2.5）
+UNITS: dict[str, str] = {
+    "yoy": "NSA 同比涨幅；百分数数值（0.4 表示 0.4%）",
+    "nsa_mom": "NSA 环比涨幅；百分数数值",
+    "sa_mom": "SA 环比涨幅；百分数数值",
+    "weight": "占总体 CPI 权重；百分数数值（100 代表百分之百）",
+    "gap": "模型 − 机构/市场；百分点",
+    "correction": "逐日累计同比修正；百分点",
+    "baseline": "逐日同比月初惯性基线；百分数数值",
+    "nsa_index": "NSA 指数；保持源基期，不换算",
+    "nsa_yoy": "由当月/上年同月 NSA 指数算出的派生同比；百分数数值",
+}
 
 #: groups_json 的元素字段
 GROUP_FIELDS: tuple[str, ...] = (
@@ -97,6 +112,29 @@ DEFAULT_OFFICIAL_LIMIT = 1000
 MAX_OFFICIAL_LIMIT = 5000
 #: 开始月份未给时，从结束月向前回溯的自然月数
 OFFICIAL_DEFAULT_MONTHS = 12
+
+#: 稳定错误码（文档 §4.4）。无数据**不是**错误——返回成功空数组 + warning
+ERROR_INVALID_MONTH = "invalid_month"
+ERROR_INVALID_DATE = "invalid_date"
+ERROR_INVALID_PARAMETER = "invalid_parameter"
+ERROR_REPORT_NOT_FOUND = "report_not_found"
+ERROR_DB_UNAVAILABLE = "db_unavailable"
+ERROR_DB_TIMEOUT = "db_timeout"
+ERROR_SQL_EXECUTION_FAILED = "sql_execution_failed"
+ERROR_INVALID_STORED_JSON = "invalid_stored_json"
+ERROR_INTERNAL = "internal_error"
+
+ERROR_CODES: tuple[str, ...] = (
+    ERROR_INVALID_MONTH,
+    ERROR_INVALID_DATE,
+    ERROR_INVALID_PARAMETER,
+    ERROR_REPORT_NOT_FOUND,
+    ERROR_DB_UNAVAILABLE,
+    ERROR_DB_TIMEOUT,
+    ERROR_SQL_EXECUTION_FAILED,
+    ERROR_INVALID_STORED_JSON,
+    ERROR_INTERNAL,
+)
 
 _MONTH_RE = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -179,6 +217,66 @@ def validate_scope(value: str | None) -> str:
     if text not in (*RECORD_TYPES, "all"):
         raise ValueError(f"scope 只支持 main / far / all（收到 {value!r}）")
     return text
+
+
+def to_month_date(value: str | None, name: str = "month") -> date | None:
+    """外部月参数（``YYYY-MM``）→ **月首 date 对象**，用于 SQL 绑定。
+
+    文档 §4.1：外部只接受真实日历的 ``YYYY-MM``，进入查询前转成 ``date(YYYY, MM, 1)``；
+    不拿 ``YYYY-MM`` 去和库里的 DATE 列比字符串。
+    """
+    text = validate_month(value, name)
+    if not text:
+        return None
+    return date(int(text[:4]), int(text[5:7]), 1)
+
+
+def parse_bool(value: Any, name: str = "flag") -> bool:
+    """严格解析布尔：字符串 ``"false"`` / ``"0"`` / ``"no"`` 一律为 **假**。
+
+    文档 §5.4 明确要求「严格解析布尔，字符串 "false" 不得被当作真」——
+    Python 的 ``bool("false")`` 是 True，是个常见坑。
+    """
+    if value is None:
+        return False
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in ("true", "1", "yes", "y", "on", "是"):
+        return True
+    if text in ("false", "0", "no", "n", "off", "", "否"):
+        return False
+    raise ValueError(f"{name} 只接受布尔值（收到 {value!r}）")
+
+
+# ── 统一响应（文档 §4.4）───────────────────────────────────────────────
+
+
+def ok(data: list[Any], meta: dict[str, Any] | None = None) -> dict[str, Any]:
+    """成功响应：``{data, meta}``。
+
+    ``meta`` 至少带 ``warnings`` 与 ``truncated``；报告类工具另填
+    ``report_id`` / ``forecast_month`` / ``market_month`` / ``strategy_month`` /
+    ``generated_at`` / ``applied_filters`` / ``units``。
+    """
+    out = dict(meta or {})
+    out.setdefault("warnings", [])
+    out.setdefault("truncated", False)
+    out.setdefault("units", dict(UNITS))
+    return {"data": data, "meta": out}
+
+
+def fail(error: str, code: str = ERROR_INVALID_PARAMETER) -> dict[str, Any]:
+    """失败响应：``{ok: false, error, error_code}``。
+
+    只有**参数非法、报告不存在、数据库故障、存储 JSON 损坏**才算失败；
+    无数据一律走 :func:`ok` 配 warning。
+    """
+    if code not in ERROR_CODES:
+        code = ERROR_INTERNAL
+    return {"ok": False, "error": error, "error_code": code}
 
 
 def bounded_limit(
@@ -326,7 +424,8 @@ def schema_help() -> dict[str, Any]:
         ),
         "report_rule": (
             "除官方历史外先定位 status='ready' 的报告：给了 report_id 只查它，"
-            "否则按 generated_at DESC, imported_at DESC, report_id DESC 取最新；"
+            "否则按 forecast_month DESC → generated_at DESC → imported_at DESC → "
+            "report_id DESC 取最新——**优先最新预测目标月**，不是最近跑过的旧月份报告；"
             "一次工具调用固定同一个 report_id"
         ),
         "units": {
@@ -342,6 +441,38 @@ def schema_help() -> dict[str, Any]:
             RECORD_MAIN: "main 组级预测",
             RECORD_FAR: "far 远期预测",
         },
+        "response_contract": {
+            "success": (
+                "{data: [...], meta: {report_id, forecast_month, market_month, "
+                "strategy_month, generated_at, applied_filters, units, warnings, "
+                "truncated}}"
+            ),
+            "failure": "{ok: false, error, error_code}",
+            "error_codes": list(ERROR_CODES),
+            "no_data": (
+                "无数据**不是错误**：返回成功 + 空 data + warning；"
+                "只有参数非法 / 报告不存在 / 数据库故障 / 存储 JSON 损坏才返回失败"
+            ),
+            "date_params": (
+                "外部月参数只接受真实日历的 YYYY-MM，进入查询前转成月首 date；"
+                "外部日参数严格 YYYY-MM-DD"
+            ),
+        },
+        "official_history_meta": {
+            "data_source": "local_database",
+            "effective_end_month": "实际查询结束月",
+            "latest_observation_month": "所选指标最新有值月（可与用户指定结束月不同）",
+            "freshness_status": "unverified（未独立核对 BLS 官网）",
+            "note": (
+                "仅凭本地库最新观测月不能宣称 BLS 官网实时最新；"
+                "表不保留历次公布快照，不能直接做严格无前视偏差的事件回测"
+            ),
+        },
+        "input_files": (
+            "入库侧读取 model_results.json / market_expectations.json / "
+            "strategy_advice.txt / CPI_nsa_monthly.xlsx / CPI_sa_mom.xlsx；"
+            "路径可用 US_CPI_DIR 覆盖（MCP 只读服务不涉及，列此备查）"
+        ),
         "not_available": (
             "不重算市场中位数、不生成新策略、不把历史评价文字提取成模型可信度；"
             "官方历史不接受 report_id"
@@ -354,6 +485,10 @@ def schema_help() -> dict[str, Any]:
             "daily.baseline 只属于逐日场景，不是顶部 SA 环比基线",
             "event_sources 同一天在不同组重复保存，不能按组累计事件次数",
             "model_generated_at 是模型生成时间，不是策略撰写时间",
+            "市场比较时同比对同比、SA 环比对 SA 环比，不能把 nsa_mom 当 sa_mom",
+            "limit 按返回**记录条数**解释，不按月份数解释",
+            "官方历史默认结束月取 nsa_index/sa_mom 至少一个非 NULL 的最新月，"
+            "不拿旧月值冒充",
         ],
     }
 
@@ -362,7 +497,11 @@ def schema_help() -> dict[str, Any]:
 
 
 def resolve_report_sql(report_id: int | None = None) -> tuple[str, tuple[Any, ...]]:
-    """定位报告：给了 id 只查它，否则取最新 ready 报告。"""
+    """定位报告：给了 id 只查它，否则取最新 ready 报告。
+
+    排序按文档 §4.2：**``forecast_month DESC`` 优先**（最新预测目标月），
+    再 ``generated_at`` / ``imported_at`` / ``report_id``。
+    """
     if report_id is not None:
         return (
             f"SELECT report_id, forecast_month, official_latest_month, market_month, "
@@ -375,7 +514,8 @@ def resolve_report_sql(report_id: int | None = None) -> tuple[str, tuple[Any, ..
         f"SELECT report_id, forecast_month, official_latest_month, market_month, "
         f"strategy_month, generated_at, imported_at, model_sha256, market_sha256, "
         f"strategy_sha256 FROM {prediction_ref()} WHERE status = %s "
-        f"ORDER BY generated_at DESC, imported_at DESC, report_id DESC LIMIT 1",
+        f"ORDER BY forecast_month DESC, generated_at DESC, imported_at DESC, "
+        f"report_id DESC LIMIT 1",
         (READY_STATUS,),
     )
 
@@ -399,7 +539,8 @@ def reports_sql(
         f"strategy_month, generated_at, imported_at, model_sha256, market_sha256, "
         f"strategy_sha256 FROM {prediction_ref()} "
         f"WHERE {' AND '.join(conditions)} "
-        f"ORDER BY generated_at DESC, imported_at DESC, report_id DESC LIMIT {size}",
+        f"ORDER BY forecast_month DESC, generated_at DESC, imported_at DESC, "
+        f"report_id DESC LIMIT {size}",
         tuple(params),
     )
 
@@ -412,7 +553,8 @@ def prediction_arrays_sql(report_id: int | None = None) -> tuple[str, tuple[Any,
             f"SELECT p.report_id, p.forecast_month, p.groups_json, p.leaves_json, "
             f"p.daily_json FROM {prediction_ref()} AS p "
             f"WHERE p.status = %s "
-            f"ORDER BY p.generated_at DESC, p.imported_at DESC, p.report_id DESC LIMIT 1",
+            f"ORDER BY p.forecast_month DESC, p.generated_at DESC, p.imported_at DESC, "
+            f"p.report_id DESC LIMIT 1",
             (READY_STATUS,),
         )
     return (
@@ -434,8 +576,8 @@ def market_sql(
     if report_id is None:
         conditions.append(
             f"report_id = (SELECT report_id FROM {prediction_ref()} "
-            f"WHERE status = %s ORDER BY generated_at DESC, imported_at DESC, "
-            f"report_id DESC LIMIT 1)"
+            f"WHERE status = %s ORDER BY forecast_month DESC, generated_at DESC, "
+            f"imported_at DESC, report_id DESC LIMIT 1)"
         )
         params.append(READY_STATUS)
     else:
@@ -471,8 +613,8 @@ def strategy_sql(
     if report_id is None:
         conditions.append(
             f"a.report_id = (SELECT report_id FROM {prediction_ref()} "
-            f"WHERE status = %s ORDER BY generated_at DESC, imported_at DESC, "
-            f"report_id DESC LIMIT 1)"
+            f"WHERE status = %s ORDER BY forecast_month DESC, generated_at DESC, "
+            f"imported_at DESC, report_id DESC LIMIT 1)"
         )
         params.append(READY_STATUS)
     else:
@@ -493,16 +635,23 @@ def strategy_sql(
 
 
 def official_latest_month_sql(indicator: str | None = None) -> tuple[str, tuple[Any, ...]]:
-    """场景 7 辅助：所选指标最新有值月份（指标留空时取官方表最新月）。"""
+    """场景 7 辅助：所选指标**最新有值**月份（文档 §5.7）。
+
+    ``nsa_index`` / ``sa_mom`` 至少一个非 NULL 才算"有值"——当月可能已有记录
+    但两列都是 NULL，这时不能把它当最新可用月，也不拿旧月值冒充。
+    指标留空时取全表最新有值月。
+    """
     text = str(indicator or "").strip()
     if text:
         return (
             f"SELECT MAX(observation_month) AS latest_month FROM {official_ref()} "
-            f"WHERE indicator_name = %s",
-            (text,)
+            f"WHERE indicator_name = %s "
+            f"AND (nsa_index IS NOT NULL OR sa_mom IS NOT NULL)",
+            (text,),
         )
     return (
-        f"SELECT MAX(observation_month) AS latest_month FROM {official_ref()}",
+        f"SELECT MAX(observation_month) AS latest_month FROM {official_ref()} "
+        f"WHERE (nsa_index IS NOT NULL OR sa_mom IS NOT NULL)",
         (),
     )
 
@@ -515,23 +664,31 @@ def official_history_sql(
 ) -> tuple[str, tuple[Any, ...]]:
     """场景 7：官方历史 SA 环比与 NSA 指数（同比用同表去年同期算）。
 
-    ``limit`` 之外多取一行用于判断截断。
+    - 去年同期用 ``DATE_SUB(h.observation_month, INTERVAL 1 YEAR)`` 直接算，
+      **不用** ``DATE_FORMAT(..., '%Y-%m')``——那个字面量会被 pymysql 当 ``%``
+      模板解析（文档 §4.1.6）；
+    - 区间用 ``BETWEEN``，参数是**月首 date 对象**；
+    - ``ORDER BY observation_month DESC, indicator_name ASC``，多指标时同月内按名称排；
+    - ``limit`` 之外多取一行用于判断截断，最终至多 ``limit`` 条。
     """
     size = bounded_limit(limit, DEFAULT_OFFICIAL_LIMIT, MAX_OFFICIAL_LIMIT)
     conditions: list[str] = []
     params: list[Any] = []
+
+    start = to_month_date(start_month, "start_month")
+    end = to_month_date(end_month, "end_month")
+    if start is not None:
+        conditions.append("h.observation_month >= %s")
+        params.append(start)
+    if end is not None:
+        conditions.append("h.observation_month <= %s")
+        params.append(end)
+
     text = str(indicator or "").strip()
     if text:
         conditions.append("h.indicator_name = %s")
         params.append(text)
-    start = validate_month(start_month, "start_month")
-    end = validate_month(end_month, "end_month")
-    if start:
-        conditions.append("h.observation_month >= %s")
-        params.append(start)
-    if end:
-        conditions.append("h.observation_month <= %s")
-        params.append(end)
+
     where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
     return (
         f"SELECT h.observation_month, h.indicator_name, h.nsa_series_id, "
@@ -540,9 +697,9 @@ def official_history_sql(
         f"h.nsa_source_file, h.sa_source_file, h.updated_at "
         f"FROM {official_ref()} AS h "
         f"LEFT JOIN {official_ref()} AS y ON y.indicator_name = h.indicator_name "
-        f"AND y.observation_month = DATE_FORMAT("
-        f"DATE_SUB(STR_TO_DATE(CONCAT(h.observation_month, '-01'), '%Y-%m-%d'), "
-        f"INTERVAL 1 YEAR), '%Y-%m') {where} "
-        f"ORDER BY h.observation_month DESC LIMIT {size + 1}",
+        f"AND y.observation_month = DATE_SUB(h.observation_month, INTERVAL 1 YEAR) "
+        f"{where} "
+        f"ORDER BY h.observation_month DESC, h.indicator_name ASC "
+        f"LIMIT {size + 1}",
         tuple(params),
     )
