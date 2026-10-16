@@ -20,9 +20,12 @@ _session_agents: dict[str, EasyAgent] = {}
 # 与 _session_agents 同性质（进程内缓存），用于判断「专家是否变更」——
 # 变更时必须驱逐 Agent 缓存，否则会出现「换专家不生效」与「专家人设黏在普通聊天上」。
 _session_expert: dict[str, str] = {}
-# 会话 → 当前生效的连接器（用户消息里「使用连接器[X]」解析出的 mcp.json server 名，
-# 空元组表示未指定 = 注入全部启用连接器）。与 _session_agents 同性质（进程内缓存），
-# 用于判断「连接器是否变更」——变更时必须驱逐 Agent，否则上一轮的工具集会黏住。
+# 会话 → 本会话启用的连接器（mcp.json 的 server 名，由输入框「+」面板的开关写入，
+# 见 api/connectors.py 的 /agent/connectors/session）。与 _session_agents 同性质
+# （进程内缓存，仅本次会话临时生效，不落库、不改 mcp.json）：
+#   * key 不存在 = 尚未设置 → 注入全部启用连接器（新建会话的默认态）；
+#   * 空元组     = 显式全部关闭 → 不注入任何连接器的工具；
+# 写入路径（set_session_connectors）会同步驱逐该会话的缓存 Agent，否则旧工具集会黏住。
 _session_connectors: dict[str, tuple[str, ...]] = {}
 _session_stream_tasks: dict[str, asyncio.Task[None]] = {}
 _agent_config: dict = None
@@ -80,7 +83,6 @@ async def get_or_create_agent_for_session(
     enable_web_search: bool | None = None,
     system_prompt_extra: str = "",
     expert_agent_id: str | None = None,
-    connector_servers: list[str] | None = None,
 ) -> EasyAgent:
     """获取（或创建）会话 Agent。
 
@@ -94,12 +96,9 @@ async def get_or_create_agent_for_session(
     「专家变更 -> 驱逐缓存」，确保同一会话在专家之间、专家与通用之间来回切换都能
     立即生效。不传该参数时行为与引入本参数前**逐字一致**。
 
-    ``connector_servers`` 为本轮消息里「使用连接器[X]」解析出的连接器（mcp.json 的
-    server 名，见 ``services/connectors.py``）。空列表表示本轮**没有**指定连接器 ——
-    行为与引入本参数前一致，注入全部启用连接器的工具；非空时只注入这些连接器的工具，
-    且连接器变化会驱逐缓存 Agent（否则上一轮的工具集会黏住）。取 None 表示
-    「跟随缓存」：用于 HITL 审批恢复等不带本轮连接器的场景，不因连接器差异驱逐，
-    以保住 checkpointer 里的中断态（重建时沿用会话已记录的选择）。
+    连接器不再随每轮消息提交：本函数只读 ``_session_connectors`` 里该会话已记录的
+    启用集合（写入与「驱逐缓存 Agent」由 ``set_session_connectors`` 负责，见
+    ``api/connectors.py`` 的 ``/agent/connectors/session``）。
     """
     global _session_agents, _session_expert, _session_connectors, _agent_config
 
@@ -111,21 +110,10 @@ async def get_or_create_agent_for_session(
     # None 与 "" 等价：都表示「本次请求不挂专家（通用 Agent）」
     expert_key = expert_agent_id or ""
 
-    # 本轮连接器：「使用连接器[X]」解析出的 server 名。
-    # connector_key = None 表示调用方不带本轮连接器（跟随缓存）；() 表示本轮未指定。
-    connector_key = (
-        None
-        if connector_servers is None
-        else tuple(
-            dict.fromkeys(str(n).strip() for n in connector_servers if str(n).strip())
-        )
-    )
-    # 实际生效的连接器：本轮带了就用本轮的，否则沿用会话已记录的（缓存被清后重建
-    # 时也能保持同一套工具，与专家人设的处理方式一致）。
-    effective_connectors = (
-        connector_key if connector_key is not None
-        else _session_connectors.get(session_id, ())
-    )
+    # 本会话启用的连接器（mcp.json server 名，由输入框「+」面板的会话级开关写入）。
+    # key 不存在 = 尚未设置 → None = 注入全部启用连接器；空元组 = 全部关闭 → []。
+    recorded_connectors = _session_connectors.get(session_id)
+    only_connectors = None if recorded_connectors is None else list(recorded_connectors)
 
     # 联网搜索：仅在「本轮请求开启」且「web_search 已配置 api_url + api_key」时注入。
     # 未配置 api_key（或功能关闭）时静默降级为未开启，不影响其余功能。
@@ -150,18 +138,13 @@ async def get_or_create_agent_for_session(
         )
         # 专家变更同样必须驱逐：否则「换专家不生效」，且专家人设会黏在后续的
         # 普通聊天上（模型与联网开关都没变，缓存会一直命中）。
+        # 连接器变更的驱逐不在这里：会话级开关（set_session_connectors）写入时
+        # 就已直接驱逐过该会话的缓存 Agent。
         expert_changed = expert_key != _session_expert.get(session_id, "")
-        # 连接器变更同理：工具集不同必须重建，否则「选了连接器却没有它的工具」。
-        # connector_key 为 None（HITL 恢复等）时不比较，保住中断态。
-        connectors_changed = (
-            connector_key is not None
-            and connector_key != _session_connectors.get(session_id, ())
-        )
         if (
             effective_model != getattr(cached, "model_name", None)
             or not search_matches
             or expert_changed
-            or connectors_changed
         ):
             logger.info(
                 f"[{session_id[-5:]}] Agent 参数变化 | "
@@ -169,8 +152,8 @@ async def get_or_create_agent_for_session(
                 f"web_search: {cached_web_search} -> {web_search_enabled} | "
                 f"expert: {_session_expert.get(session_id, '') or '(通用)'} -> "
                 f"{expert_key or '(通用)'} | "
-                f"connectors: {_session_connectors.get(session_id, ()) or '(全部)'} -> "
-                f"{effective_connectors or '(全部)'} | 驱逐旧 Agent 重建 | "
+                f"connectors: {only_connectors if only_connectors is not None else '(全部)'} | "
+                f"驱逐旧 Agent 重建 | "
                 f"{describe_prompt('本轮 extra', system_prompt_extra)} | "
                 f"旧终稿指纹={prompt_fingerprint(getattr(cached, 'system_prompt', ''))}"
             )
@@ -213,18 +196,18 @@ async def get_or_create_agent_for_session(
     except Exception as e:
         logger.warning(f"[{session_id[-5:]}] 获取用户机构ID失败: {e}")
 
-    # 记录本轮生效的连接器：供后续「连接器是否变更」的比较，以及缓存被清后重建时沿用
-    _session_connectors[session_id] = effective_connectors
-    only_connectors = list(effective_connectors) or None
-    if only_connectors:
+    # 本会话的连接器集合只读不写：写入由 set_session_connectors 负责（会话级开关）。
+    if only_connectors is None:
+        logger.info(f"[{session_id[-5:]}] 🔌 未限定连接器，注入全部启用连接器的 MCP 工具")
+    elif only_connectors:
         logger.info(
-            f"[{session_id[-5:]}] 🔌 按连接器指令限定 MCP 工具 | {only_connectors}"
+            f"[{session_id[-5:]}] 🔌 按会话开关限定 MCP 工具 | {only_connectors}"
         )
     else:
-        logger.info(f"[{session_id[-5:]}] 🔌 未指定连接器，注入全部启用连接器的 MCP 工具")
+        logger.info(f"[{session_id[-5:]}] 🔌 本会话连接器已全部关闭，不注入连接器工具")
 
     # MCP 工具：用户专属 mcp.json 优先，无则按需加载全局 mcp.json；
-    # server_names=only_connectors 时只加载选中连接器的工具（None = 全部启用项）。
+    # server_names=only_connectors 时只加载这些连接器的工具（None = 全部启用项，[] = 不加载）。
     user_mcp_path = Config.get_user_mcp_path(username, config)
     if user_mcp_path.exists():
         logger.info(f"[{session_id[-5:]}] 加载用户专属 MCP | {user_mcp_path}")
@@ -312,7 +295,7 @@ def invalidate_user_agents(username: str) -> int:
     that the next request rebuilds the agent with fresh settings. Returns the
     number of evicted agents.
     """
-    global _session_agents, _session_expert, _session_connectors
+    global _session_agents, _session_expert
     if not username:
         return 0
     safe = Config.sanitize_username(username)
@@ -323,7 +306,9 @@ def invalidate_user_agents(username: str) -> int:
     for sid in to_remove:
         _session_agents.pop(sid, None)
         _session_expert.pop(sid, None)
-        _session_connectors.pop(sid, None)
+        # 会话级连接器开关（_session_connectors）刻意保留：它是用户在输入框里做的
+        # 显式选择，不该因为「改了 mcp.json」而静默复位；被卸载/停用的 server 会被
+        # MCP 加载层自动跳过并记 warning。
     logger.info(
         f"用户 {username} 的缓存 Agent 已失效 | 清除 {len(to_remove)} 个 | sessions={to_remove}"
     )
@@ -331,13 +316,13 @@ def invalidate_user_agents(username: str) -> int:
 
 
 def remove_session_agent(session_id: str):
-    global _session_agents, _session_expert, _session_connectors
+    global _session_agents, _session_expert
     # 专家记录一并清除：否则下次请求会因 expert_key 与残留值相同而误判「未变更」，
     # 跳过本应发生的重建。清除后「未变更」的判定自动退化为「与 ""（通用）相同」。
     _session_expert.pop(session_id, None)
-    # 连接器记录同理：清除后「未变更」的判定退化为「本轮未指定连接器」，
-    # 下一次请求会按本轮实际情况决定是否重建，并重新记录。
-    _session_connectors.pop(session_id, None)
+    # 连接器记录**不在这里清除**：它是用户在「+ → 连接器」面板里显式设置的会话级开关，
+    # 而本函数还会被「记忆更新 / 取消生成 / 定时任务结束」等场景调用，清掉会让用户
+    # 每次记忆更新后开关悄悄复位。会话真正终结（删除会话）由 clear_session_connectors 负责。
     if session_id in _session_agents:
         del _session_agents[session_id]
         logger.info(f"[{session_id[-5:]}] Agent 缓存已清除")
@@ -348,13 +333,49 @@ def get_session_expert(session_id: str) -> str:
     return _session_expert.get(session_id, "")
 
 
-def get_session_connectors(session_id: str) -> tuple[str, ...]:
-    """返回会话当前生效的连接器（server 名，空元组表示全部启用连接器）。
+def get_session_connectors(session_id: str) -> tuple[str, ...] | None:
+    """返回会话显式启用的连接器（mcp.json 的 server 名）。
 
-    与 ``get_session_expert`` 同理，主要供测试与排查使用：取值安全性依赖
-    ``_session_connectors`` 与 ``_session_agents`` 同生共死。
+    ``None`` 表示该会话尚未设置过开关 —— 等价于「全部启用连接器」；
+    空元组表示用户把开关全部关掉（不注入任何连接器工具）。
+    与 ``get_session_expert`` 同理，主要供接口（连接器开关状态查询）与排查使用。
     """
-    return _session_connectors.get(session_id, ())
+    return _session_connectors.get(session_id)
+
+
+def set_session_connectors(session_id: str, connector_servers: list[str]) -> int:
+    """写入会话级连接器启用集合（server 名，空列表 = 全部关闭），并驱逐缓存 Agent。
+
+    由 ``api/connectors.py`` 的 ``/agent/connectors/session`` 调用：输入框「+」面板里
+    的连接器开关切换后，前端把该会话**全部**启用项整体提交过来（全量覆盖，不落库、
+    不改 mcp.json，仅本次会话有效）。
+
+    集合变了必须驱逐该会话的缓存 Agent，否则旧工具集会黏住（下次请求会按新集合重建）。
+    返回被驱逐的 Agent 数，供接口回执与日志。
+    """
+    global _session_agents, _session_connectors
+    if not session_id:
+        return 0
+    normalized = tuple(
+        dict.fromkeys(str(n).strip() for n in connector_servers if str(n).strip())
+    )
+    _session_connectors[session_id] = normalized
+    evicted = 0
+    if session_id in _session_agents:
+        _session_agents.pop(session_id, None)
+        evicted = 1
+    logger.info(
+        f"[{session_id[-5:]}] 🔌 会话连接器开关已更新 | "
+        f"{list(normalized) if normalized else '(全部关闭)'} | 驱逐 Agent: {evicted} 个"
+    )
+    return evicted
+
+
+def clear_session_connectors(session_id: str) -> None:
+    """清除会话的连接器开关记录（会话被删除等「会话终结」场景专用）。"""
+    global _session_connectors
+    if _session_connectors.pop(session_id, None) is not None:
+        logger.info(f"[{session_id[-5:]}] 会话连接器开关记录已清除")
 
 
 def register_stream_task(session_id: str, task: asyncio.Task[None]) -> None:

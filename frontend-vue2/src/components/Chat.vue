@@ -3,8 +3,10 @@
     <div class="chat-main">
     <div class="chat-content" :class="composerMode === 'center' ? 'is-center' : 'is-bottom'">
       <!-- 顶部信息行：会话时间居中，操作区（任务规划 + 展开工作区）贴右。
-           这三者此前分散在视口/聊天区右上角，位置互不相干；现在统一到同一行。 -->
-      <div v-if="showTopbar" class="chat-topbar">
+           这三者此前分散在视口/聊天区右上角，位置互不相干；现在统一到同一行。
+           空会话（无消息、无任务）时只有右侧一个工作区按钮，这一行改为浮层不占位，
+           否则会在欢迎页上方压出一条 44px 白带 + 分隔线，破坏垂直居中。 -->
+      <div v-if="showTopbar" class="chat-topbar" :class="{ 'is-float': topbarFloating }">
         <div v-if="showSessionTime" class="session-created-time">
           <span class="session-time-pill">
             <svg class="session-time-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -74,6 +76,42 @@
         </svg>
       </button>
 
+      <!-- 预置问题卡片：仅在首页（居中模式）展示，位置在欢迎语与输入框之间。
+           一张卡片一条预置问题，问题内容直接展示在卡片里，不堆叠、不悬浮切换；
+           配置了多条时依次排列（最多 MAX_PRESET_CARDS 张）。
+           点击卡片把该问题填进输入框（不直接发送），用户可改完自己发。
+           侧边栏变体不展示预置问题。 -->
+      <div
+        class="preset-area"
+        v-if="composerMode === 'center' && displayedPresetCards.length && !isSidebar"
+      >
+        <div class="preset-cards" :class="'count-' + displayedPresetCards.length">
+          <div
+            class="preset-deck"
+            v-for="(card, ci) in displayedPresetCards"
+            :key="ci"
+            :class="'accent-' + (ci % 3)"
+            role="button"
+            tabindex="0"
+            :title="card.question"
+            @click="onPresetCardClick(ci)"
+            @keydown.enter.prevent="onPresetCardClick(ci)"
+          >
+            <div class="preset-deck-head">
+              <span class="preset-deck-title">
+                <span v-if="card.icon" class="preset-deck-title-icon">{{ card.icon }}</span>
+                {{ card.category }}
+              </span>
+            </div>
+            <div class="preset-deck-stage">
+              <div class="preset-card">
+                <span class="preset-card-text">{{ card.question }}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <slot name="composer-prefix"></slot>
       <ChatInput
         ref="composerRef"
@@ -103,71 +141,6 @@
         @select-expert="$emit('select-expert', $event)"
         @expert-prompt-applied="$emit('expert-prompt-applied')"
       />
-
-      <!-- 分类预置问题：仅在首页（居中模式）展示。每个分类一张卡片（分类名即卡片头部，
-           不再单独放标签栏），最多展示三张；卡片内多个预置问题堆叠，
-           鼠标滚轮（或左右方向键）在卡片上滑动即可来回切换子问题。
-           侧边栏变体不展示预置问题。 -->
-      <div
-        class="preset-area"
-        v-if="composerMode === 'center' && displayedPresetGroups.length && !isSidebar"
-      >
-        <div
-          class="preset-cards"
-          :class="'count-' + displayedPresetGroups.length"
-          @mouseleave="onPresetLeave"
-        >
-
-          <div
-            class="preset-deck"
-            v-for="(group, gi) in displayedPresetGroups"
-            :key="gi"
-            :class="'accent-' + (gi % 3)"
-            role="group"
-            tabindex="0"
-            :aria-label="group.category + ' 预置问题'"
-            @mouseenter="onPresetEnter(gi)"
-            @wheel="onPresetWheel($event, gi)"
-            @keydown.left.prevent="stepPreset(gi, -1)"
-            @keydown.right.prevent="stepPreset(gi, 1)"
-            @keydown.enter.prevent="onPresetCardClick(gi)"
-          >
-            <div class="preset-deck-head">
-              <span class="preset-deck-title">
-                <span v-if="group.icon" class="preset-deck-title-icon">{{ group.icon }}</span>
-                {{ group.category }}
-              </span>
-              <span class="preset-deck-count">
-                {{ group.questions.length }} 条<template v-if="group.questions.length > 1"> · 滚动切换</template>
-              </span>
-            </div>
-            <div class="preset-deck-stage">
-              <div
-                v-for="(q, i) in group.questions"
-                :key="i"
-                class="preset-card"
-                :class="presetCardClass(gi, i)"
-                :style="presetCardStyle(gi, i)"
-                :aria-hidden="i !== presetIndex(gi)"
-                @click="onPresetCardClick(gi)"
-              >
-                <span class="preset-card-text">{{ q }}</span>
-              </div>
-            </div>
-            <div class="preset-deck-dots" v-if="group.questions.length > 1">
-              <button
-                v-for="(q, i) in group.questions"
-                :key="i"
-                type="button"
-                class="preset-dot"
-                :class="{ active: i === presetIndex(gi) }"
-                :aria-label="'第 ' + (i + 1) + ' 条预置问题'"
-                @click="setPresetQuestion(gi, i)"
-              ></button>
-            </div>
-          </div>
-        </div>
-      </div>
     </div>
     </div>
   </div>
@@ -179,6 +152,8 @@ import ChatInput from './ChatInput.vue'
 import TodoListPanel from './TodoListPanel.vue'
 // 首页欢迎语：直接定义在前端（原 src/config.js 已移除）
 const APP_WELCOME_TITLE = 'Easy Agent，让工作化繁为简'
+// 预置问题卡片最多展示几张（一张卡片一条问题，多配的部分按顺序截断）
+const MAX_PRESET_CARDS = 6
 export default {
   components: { ChatInput, ChatMessage, TodoListPanel },
   props: {
@@ -277,12 +252,6 @@ export default {
     return {
       // 首页布局模式：center=空会话时输入框居中，bottom=对话中输入框贴底
       composerMode: 'center',
-      // 输入框当前内容是否为「预置问题预览填充态」
-      previewActive: false,
-      // 本次发送是否来自预置问题卡片点击：onSend 据此改走 preset-send 事件
-      presetSendPending: false,
-      // 预置问题：每张卡片当前展示的子问题下标（按卡片序号索引，最多三张）
-      presetQuestionIndexes: [],
       deckTop: 0,
       deckVisibleCount: 3, // keep
       currentUserMessageIndex: -1,
@@ -296,9 +265,23 @@ export default {
     isSidebar() {
       return this.variant === 'sidebar'
     },
-    // 预置问题：只展示前三个分类（后端可能传入更多，按需求截断）
-    displayedPresetGroups() {
-      return (this.presetQuestions || []).slice(0, 3)
+    // 预置问题卡片：一张卡片一条问题（后端按分类配置，同分类下配了多条就依次展开成多张卡），
+    // 依次排列且最多 MAX_PRESET_CARDS 张；空问题跳过，不占卡片位
+    displayedPresetCards() {
+      const cards = []
+      for (const group of (this.presetQuestions || [])) {
+        const questions = group && group.questions ? group.questions : []
+        for (const question of questions) {
+          if (cards.length >= MAX_PRESET_CARDS) return cards
+          if (question == null || !String(question).trim()) continue
+          cards.push({
+            category: (group && group.category) || '预设问题',
+            icon: (group && group.icon) || '',
+            question: String(question)
+          })
+        }
+      }
+      return cards
     },
 
     // 顶部信息行：会话时间（居中）+ 操作区（任务规划、展开工作区，贴右）。
@@ -313,6 +296,11 @@ export default {
     showTopbar() {
       return this.showSessionTime || this.todos.length > 0 || this.showWorkspaceBtn
     },
+    // 这一行只剩「展开工作区」按钮（空会话：没有会话时间、没有任务）时改为浮层不占位：
+    // 有会话时间或任务胶囊的行才是真顶栏，需要占住 44px 与工作区头部对齐。
+    topbarFloating() {
+      return !this.showSessionTime && this.todos.length === 0 && this.showWorkspaceBtn
+    },
     canGoToPrevUserMessage() {
       return this.userMessageIndices.length > 0 && this.currentUserMessageIndex < this.userMessageIndices.length - 1
     },
@@ -323,24 +311,6 @@ export default {
     }
   },
   watch: {
-    composerMode(mode) {
-      // 离开首页（开始对话）时复位悬浮状态
-      if (mode !== 'center') {
-        this.hoveredDeck = null
-        this.lastPreview = ''
-        this.previewActive = false
-      }
-    },
-    presetQuestions(groups) {
-      // 配置重新拉取后分类/子问题数量可能变化，收敛每张卡片的下标避免越界
-      const next = []
-      ;(groups || []).slice(0, 3).forEach((group, i) => {
-        const count = (group && group.questions ? group.questions.length : 0)
-        const cur = this.presetQuestionIndexes[i] || 0
-        next[i] = count ? Math.min(cur, count - 1) : 0
-      })
-      this.presetQuestionIndexes = next
-    },
     messages: [
       {
         immediate: true,
@@ -438,8 +408,8 @@ export default {
         })
       }
     },
-    handleSend(message, files, signal, enableDeepThink = true, enableWebSearch = false) {
-      this.$emit('send-message', message, files, signal, enableDeepThink, enableWebSearch)
+    handleSend(message, files, signal, enableDeepThink = true, enableWebSearch = false, skills = []) {
+      this.$emit('send-message', message, files, signal, enableDeepThink, enableWebSearch, skills)
     },
     handleRemoveFile(file, messageIndex) {
       // 从事件参数中获取file，然后从messages中获取对应的message
@@ -467,136 +437,21 @@ export default {
       const composer = this.$refs.composerRef
       return composer ? composer.flushKnowledgeScopeSave(baseIds) : Promise.resolve()
     },
-    // ========== 预置问题：悬浮预览 ==========
-    // 仅当输入框为空（或当前内容正是预览填充且未被修改）时悬浮才填充；
-    // 输入框已有用户内容时不填充、不覆盖。移出时若未修改预览文本则恢复
-    // 悬浮前内容（原为空 → 清空）；编辑过则保留其内容并解除预览态。
-    fillPresetPreview(groupIndex) {
-      const group = this.displayedPresetGroups[groupIndex]
-      const question = group && group.questions ? group.questions[this.presetIndex(groupIndex)] : null
+    // ========== 预置问题：点击填入 ==========
+    // 一张卡片一条问题，问题内容直接展示在卡片上；点击（或聚焦后回车）只把该问题的
+    // 完整文本填进输入框并把焦点交给它（卡片上最多显示 3 行，长问题展示不全）：
+    // 发不发、要不要先改一改，由用户自己决定，不自动发送。
+    onPresetCardClick(cardIndex) {
+      const card = this.displayedPresetCards[cardIndex]
+      const question = card ? card.question : null
       if (question == null) return
-      this.lastPreview = question
       const composer = this.$refs.composerRef
       if (composer) composer.setMessage(question)
-      this.previewActive = true
     },
-    // 是否允许悬浮填充：输入框为空，或内容仍是预览态且未被用户修改
-    canPresetPreview() {
-      const composer = this.$refs.composerRef
-      const current = composer ? composer.getMessage() : ''
-      if (!current.trim()) return true
-      return this.previewActive && current === this.lastPreview
-    },
-    onPresetEnter(groupIndex) {
-      if (!this.canPresetPreview()) {
-        // 输入框已有用户内容：不覆盖，仅记录悬浮位置（滚轮/圆点切换仍可用）
-        this.hoveredDeck = groupIndex
-        return
-      }
-      if (this.hoveredDeck === null) {
-        const composer = this.$refs.composerRef
-        this.composerSnapshot = composer ? composer.getMessage() : ''
-      }
-      this.hoveredDeck = groupIndex
-      this.fillPresetPreview(groupIndex)
-    },
-    onPresetLeave() {
-      if (this.hoveredDeck === null) return
-      this.hoveredDeck = null
-      const composer = this.$refs.composerRef
-      const current = composer ? composer.getMessage() : ''
-      const previewed = this.lastPreview
-      this.lastPreview = ''
-      if (this.previewActive) {
-        if (current === previewed) {
-          // 用户未修改预览：恢复悬浮前内容（原为空 → 清空）
-          if (composer) composer.setMessage(this.composerSnapshot)
-        }
-        // 用户编辑过预览文本：内容归用户保留，解除预览态
-        this.previewActive = false
-      }
-    },
-    // 读取某张卡片当前子问题下标；数据变化导致越界时收敛到有效范围
-    presetIndex(groupIndex) {
-      const group = this.displayedPresetGroups[groupIndex]
-      const count = (group && group.questions ? group.questions.length : 0)
-      if (!count) return 0
-      const cur = this.presetQuestionIndexes[groupIndex] || 0
-      return Math.min(cur, count - 1)
-    },
-    // 切到某张卡片的指定子问题（越界自动收敛）
-    setPresetQuestion(groupIndex, questionIndex) {
-      const group = this.displayedPresetGroups[groupIndex]
-      const count = (group && group.questions ? group.questions.length : 0)
-      if (!count) return
-      const next = this.presetQuestionIndexes.slice()
-      next[groupIndex] = Math.max(0, Math.min(questionIndex, count - 1))
-      this.presetQuestionIndexes = next
-      // 悬浮期间用滚轮/圆点切换子问题时，输入框预览实时跟随（仅预览态允许）
-      if (this.hoveredDeck === groupIndex && this.canPresetPreview()) this.fillPresetPreview(groupIndex)
-    },
-    // 前后切换子问题；到端点后停在端点，不循环，避免长列表滚回开头
-    stepPreset(groupIndex, delta) {
-      this.setPresetQuestion(groupIndex, this.presetIndex(groupIndex) + delta)
-    },
-    // 鼠标滚轮在卡片上滑动切换子问题。仅在还有其它子问题时拦截滚动，
-    // 否则交还页面正常滚动，避免单条预置问题把整页滚动锁死。
-    onPresetWheel(event, groupIndex) {
-      const group = this.displayedPresetGroups[groupIndex]
-      const count = (group && group.questions ? group.questions.length : 0)
-      if (count <= 1) return
-      const delta = event.deltaY !== 0 ? event.deltaY : event.deltaX
-      if (!delta) return
-      const current = this.presetIndex(groupIndex)
-      const atStart = current <= 0
-      const atEnd = current >= count - 1
-      if ((delta < 0 && atStart) || (delta > 0 && atEnd)) return
-      event.preventDefault()
-      this.stepPreset(groupIndex, delta > 0 ? 1 : -1)
-    },
-    // 堆叠效果：当前卡在最前，其余卡在其后依次露出一点，形成一摞
-    presetCardClass(groupIndex, questionIndex) {
-      const current = this.presetIndex(groupIndex)
-      if (questionIndex === current) return 'is-front'
-      return questionIndex < current ? 'is-before' : 'is-after'
-    },
-    presetCardStyle(groupIndex, questionIndex) {
-      // 只渲染当前问题；切换交给圆点/滚轮，配合 CSS 的 opacity 过渡淡入淡出
-      return questionIndex === this.presetIndex(groupIndex)
-        ? { zIndex: 30 }
-        : { zIndex: 10, opacity: '0', pointerEvents: 'none' }
-    },
-    // ========== 预置问题：点击发送 ==========
-    // 点击卡片把该问题作为「新对话的第一条消息」发出：先复用悬浮预览的填入逻辑
-    // 把完整文本写进输入框，再触发输入框自身的发送（走上传等待、canSend 校验、
-    // 清空草稿等与手动发送完全一致的链路），不复制一份发送实现。
-    // presetSendPending 标记本次 send 来自预置问题卡片，onSend 里据此改走
-    // preset-send 事件，由 App 侧先落到全新会话再发送。
-    onPresetCardClick(groupIndex) {
-      const group = this.displayedPresetGroups[groupIndex]
-      const question = group && group.questions ? group.questions[this.presetIndex(groupIndex)] : null
-      if (question == null) return
-      // 点击即发送，悬浮预览状态不再需要（移出时的草稿恢复逻辑会干扰发送）
-      this.hoveredDeck = null
-      this.lastPreview = ''
-      this.presetSendPending = true
-      const composer = this.$refs.composerRef
-      if (composer) composer.setMessage(question)
-      if (composer) composer.triggerSend()
-      // triggerSend 因 disabled/canSend 未真正发出时，复位标记避免影响后续手动发送
-      if (composer && composer.getMessage() === question) {
-        this.presetSendPending = false
-      }
-    },
-    onSend(message, files, signal, enableDeepThink, enableWebSearch) {
+    onSend(message, files, signal, enableDeepThink, enableWebSearch, skills) {
       this.composerMode = 'bottom'
       this.isAtBottom = true
-      if (this.presetSendPending) {
-        this.presetSendPending = false
-        this.$emit('preset-send', message, files, signal, enableDeepThink, enableWebSearch)
-        return
-      }
-      this.handleSend(message, files, signal, enableDeepThink, enableWebSearch)
+      this.handleSend(message, files, signal, enableDeepThink, enableWebSearch, skills)
     },
     handleScroll() {
       const el = this.$refs.messagesRef
@@ -758,6 +613,23 @@ export default {
   border-bottom: 1px solid var(--border-color, #e2e8f0);
 }
 
+/* 空会话：这一行只有右侧工作区按钮，不参与布局（否则欢迎页被顶下去 44px）。
+   浮层本身不吃点击，按钮单独放行，保证工作区入口仍可用。 */
+.chat-topbar.is-float {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 44px;
+  background: transparent;
+  border-bottom: none;
+  pointer-events: none;
+}
+
+.chat-topbar.is-float .chat-topbar-actions {
+  pointer-events: auto;
+}
+
 /* 右侧操作区：绝对定位以免影响时间的真正居中。
    z-index 让它（及其内部的浮层）压在消息区之上。 */
 .chat-topbar-actions {
@@ -875,11 +747,13 @@ export default {
   50% { opacity: 0.45; }
 }
 
-/* 预置问题卡片区：与输入框同宽（80% / 最大 900px），一行最多三张、每张卡自带分类头部 */
+/* 预置问题卡片区：夹在欢迎语与输入框之间，与输入框同宽（80% / 最大 900px），
+   一行最多三张、每张卡自带分类头部；上间距由 .chat-messages 的 24px 间距伪元素给出，
+   下间距用 8px 补足到与上侧相当的 24px（输入框自己还有 16px 上内边距）。 */
 .preset-area {
   /* 与 .chat-input-container 相同的左右内边距与滚动条预留，
      使 80% 宽的卡片区与输入框左右边缘严格对齐 */
-  padding: 0 24px;
+  padding: 0 24px 8px;
   width: 100%;
   overflow-y: auto;
   scrollbar-gutter: stable;
@@ -888,12 +762,13 @@ export default {
 .preset-cards {
   display: grid;
   gap: 14px;
-  margin: 20px auto 0;
+  margin: 0 auto;
   width: 80%;
   max-width: 900px;
 }
 
-/* 卡片数量决定列数：1/2/3 张时列数自适应，宽度始终与输入框对齐 */
+/* 卡片数量决定列数：1/2/3 张时列数自适应，4 张及以上固定三列、多余换行排列，
+   宽度始终与输入框对齐 */
 .preset-cards.count-1 {
   grid-template-columns: minmax(0, 1fr);
 }
@@ -902,40 +777,44 @@ export default {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
-.preset-cards.count-3 {
+.preset-cards.count-3,
+.preset-cards.count-4,
+.preset-cards.count-5,
+.preset-cards.count-6 {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 @media (max-width: 1024px) {
-  .preset-cards.count-3 {
+  .preset-cards.count-3,
+  .preset-cards.count-4,
+  .preset-cards.count-5,
+  .preset-cards.count-6 {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
 @media (max-width: 680px) {
   .preset-cards.count-2,
-  .preset-cards.count-3 {
+  .preset-cards.count-3,
+  .preset-cards.count-4,
+  .preset-cards.count-5,
+  .preset-cards.count-6 {
     grid-template-columns: minmax(0, 1fr);
   }
 }
 
-/* 单张卡片：无边框，用「分类色渐变底 + 白色浮层」分层表达；
-   三张卡各带一种主题色（天蓝 / 紫 / 翠绿），角落再叠一团柔光增色 */
+/* 单张卡片：主页面主色只做少量强调，底色交给语义化表面层，
+   用细边框和柔和投影区分层级；各分组不再各用一套艳丽色相 */
 .preset-deck {
   position: relative;
   display: flex;
   flex-direction: column;
   padding: 14px 14px 12px;
   border-radius: 16px;
-  border: none;
+  border: 1px solid var(--border-color, #e2e8f0);
   overflow: hidden;
-  background: linear-gradient(
-    150deg,
-    color-mix(in srgb, var(--preset-accent) 16%, var(--bg-secondary, #ffffff)) 0%,
-    color-mix(in srgb, var(--preset-accent) 7%, var(--bg-secondary, #ffffff)) 48%,
-    var(--bg-secondary, #ffffff) 100%
-  );
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+  background: var(--bg-secondary, #ffffff);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.028);
   outline: none;
   transition: transform 0.2s ease, box-shadow 0.2s ease;
 }
@@ -950,8 +829,8 @@ export default {
   border-radius: 50%;
   background: radial-gradient(
     circle,
-    color-mix(in srgb, var(--preset-accent) 24%, transparent) 0%,
-    transparent 70%
+    color-mix(in srgb, var(--preset-accent) 8%, transparent) 0%,
+    transparent 68%
   );
   pointer-events: none;
 }
@@ -959,7 +838,7 @@ export default {
 .preset-deck:hover,
 .preset-deck:focus-visible {
   transform: translateY(-2px);
-  box-shadow: 0 14px 30px -12px color-mix(in srgb, var(--preset-accent) 55%, transparent),
+  box-shadow: 0 10px 24px -14px color-mix(in srgb, var(--preset-accent) 32%, transparent),
     0 2px 6px rgba(15, 23, 42, 0.05);
 }
 
@@ -968,10 +847,10 @@ export default {
   outline-offset: 2px;
 }
 
-/* 三张卡的主题色：天蓝 / 紫 / 翠绿 */
-.preset-deck.accent-0 { --preset-accent: #0ea5e9; }
-.preset-deck.accent-1 { --preset-accent: #8b5cf6; }
-.preset-deck.accent-2 { --preset-accent: #10b981; }
+/* 三张卡使用同一主色，避免首页出现过多高饱和分类色 */
+.preset-deck.accent-0 { --preset-accent: var(--accent-color, #0ea5e9); }
+.preset-deck.accent-1 { --preset-accent: var(--accent-color, #0ea5e9); }
+.preset-deck.accent-2 { --preset-accent: var(--accent-color, #0ea5e9); }
 
 .preset-deck-head {
   position: relative;
@@ -991,7 +870,7 @@ export default {
   height: 26px;
   border-radius: 9px;
   font-size: 14px;
-  background: color-mix(in srgb, var(--preset-accent) 20%, #ffffff);
+  background: color-mix(in srgb, var(--preset-accent) 12%, var(--bg-tertiary, #f1f5f9));
 }
 
 .preset-deck-title {
@@ -1003,15 +882,7 @@ export default {
   color: var(--text-primary, #1e293b);
 }
 
-.preset-deck-count {
-  margin-left: auto;
-  font-size: 12px;
-  font-weight: 500;
-  color: color-mix(in srgb, var(--preset-accent) 62%, var(--text-secondary, #64748b));
-  flex-shrink: 0;
-}
-
-/* 卡片堆叠区：高度固定，子问题卡在内部绝对定位叠放 */
+/* 问题区：高度固定，问题长短不一也保证卡片大小一致 */
 .preset-deck-stage {
   position: relative;
   z-index: 1;
@@ -1019,28 +890,23 @@ export default {
   height: 132px;
 }
 
-/* 子问题卡：无边框、背景与分类卡融为一体，同一时刻只显示当前问题 */
+/* 问题内容：无边框、背景与分类卡融为一体 */
 .preset-card {
-  position: absolute;
-  inset: 0;
   display: flex;
   flex-direction: column;
-  justify-content: space-between;
-  gap: 10px;
   width: 100%;
+  height: 100%;
   padding: 12px 14px;
   background: transparent;
   border: none;
   border-radius: 12px;
   text-align: left;
-  transform-origin: center bottom;
-  transition: transform 0.3s cubic-bezier(0.22, 1, 0.36, 1),
-    opacity 0.3s ease, background-color 0.2s ease, box-shadow 0.2s ease;
+  transition: background-color 0.2s ease;
 }
 
-/* 悬停时垫一层主题色浅底，作为「可点击」暗示 */
-.preset-card.is-front:hover {
-  background: color-mix(in srgb, var(--preset-accent) 9%, transparent);
+/* 悬停时垫一层主题色浅底，作为「可点击」暗示（点击区域是整张卡片） */
+.preset-deck:hover .preset-card {
+  background: color-mix(in srgb, var(--preset-accent) 5%, transparent);
 }
 
 .preset-card-text {
@@ -1056,55 +922,10 @@ export default {
   word-break: break-word;
 }
 
-.preset-deck-dots {
-  position: relative;
-  z-index: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  margin-top: 10px;
-}
-
-.preset-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  border: none;
-  padding: 0;
-  background: color-mix(in srgb, var(--preset-accent) 24%, transparent);
-  cursor: pointer;
-  transition: all 0.2s ease;
-}
-
-.preset-dot:focus-visible {
-  outline: 2px solid var(--preset-accent, #0ea5e9);
-  outline-offset: 2px;
-}
-
-.preset-dot.active {
-  width: 16px;
-  border-radius: 3px;
-  background: var(--preset-accent, #0ea5e9);
-}
-
-/* 深色主题：底色换成暗面分层，主题色透明度调高保持可辨 */
-html[data-theme="dark"] .preset-deck {
-  background: linear-gradient(
-    150deg,
-    color-mix(in srgb, var(--preset-accent) 30%, #0f172a) 0%,
-    color-mix(in srgb, var(--preset-accent) 14%, #0f172a) 52%,
-    #0f172a 100%
-  );
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
-}
-
-html[data-theme="dark"] .preset-deck-title-icon {
-  background: color-mix(in srgb, var(--preset-accent) 32%, #0f172a);
-}
-
-html[data-theme="dark"] .preset-card.is-front:hover {
-  background: color-mix(in srgb, var(--preset-accent) 20%, transparent);
+/* 深色主题：底色由语义化表面层（--bg-secondary）自动承载，
+   仅把悬停垫底的主题色透明度调高保持可辨 */
+html[data-theme="dark"] .preset-deck:hover .preset-card {
+  background: color-mix(in srgb, var(--preset-accent) 10%, transparent);
 }
 
 /* 相对聊天容器定位（而非视口）：工作区分栏后聊天区会收窄，用 fixed 会飘到

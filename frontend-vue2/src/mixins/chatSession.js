@@ -1195,7 +1195,7 @@ export default {
       // 事件按「所属会话」路由：后台会话写入其自身缓冲，不污染当前展示
       return { onChunk: (data) => this.runInSession(ctx.streamSessionId, ctx, () => onChunk(data)) }
     },
-    async handleSendMessage(message, files = [], signal, enableDeepThink = true, enableWebSearch = false) {
+    async handleSendMessage(message, files = [], signal, enableDeepThink = true, enableWebSearch = false, skills = []) {
       // 无会话且已暂存知识范围：先建会话并落库知识范围（ensureCurrentSession 内完成）再发送，
       // 确保后端处理首条消息时能从会话上读到知识范围
       if (!this.currentSessionId && this.pendingKnowledgeScope && this.pendingKnowledgeScope.length) {
@@ -1226,6 +1226,8 @@ export default {
         })),
         created_at: new Date().toISOString()
       }
+      // 结构化技能目录名（与后端落库字段同形，见 App.vue 的同类实现）
+      if (skills.length > 0) userMessage.skills = [...skills]
 
       this.messages.push(userMessage)
 
@@ -1339,6 +1341,9 @@ export default {
               enableDeepThink,
               enableWebSearch,
               files,
+              // 已选技能：结构化字段（技能目录名），`/目录名` 由后端拼进模型输入。
+              // 连接器不随消息提交：本会话启用哪些连接器由 /agent/connectors/session 设置。
+              skills,
             },
             onChunk,
             abortSignal
@@ -1353,7 +1358,8 @@ export default {
             files,
             this.selectedModel,
             enableWebSearch,
-            pageContext
+            pageContext,
+            skills
           )
         }
 

@@ -40,41 +40,35 @@
       </div>
       
       <div class="input-row">
-        <!-- 已选技能：与输入文字同一行展示（只显示图标 + 名称，发送时还原为 /技能名） -->
-        <div v-if="selectedSkills.length > 0" class="selected-skills">
-          <div
-            v-for="skill in selectedSkills"
-            :key="skill.dir_name"
-            class="selected-skill"
-            :title="skill.description || skill.dir_name"
-          >
-            <SkillIcon :icon="skill.icon" :category="iconCategoryFor(skill.category_id)" size="xs" />
-            <span class="selected-skill-name">{{ skill.name || skill.dir_name }}</span>
-            <button
-              type="button"
-              class="selected-skill-remove"
-              :aria-label="`移除技能 ${skill.name || skill.dir_name}`"
-              @click="removeSelectedSkill(skill)"
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
-                <line x1="18" y1="6" x2="6" y2="18" />
-                <line x1="6" y1="6" x2="18" y2="18" />
-              </svg>
-            </button>
-          </div>
-        </div>
-
         <div class="input-field">
           <div
             v-show="caretLineTop !== null"
             class="caret-line"
             :style="{ top: caretLineTop + 'px', height: lineHeight + 'px' }"
           ></div>
+          <!-- 镜像渲染层：真实显示的文字 + 内联技能标签，与 textarea 同字体/行高/宽度，两侧换行逐行一致。
+               textarea 文字透明，只负责输入、光标与选区；用户看到的文字都来自这一层（见 syncMirror）。
+               技能标签（`/显示名`）是文本里的一段子串，这里只是把它渲染成带底色的内联标签：
+               字号/行高/字宽与正文完全相同、无任何水平 padding（见 .input-skill-pill），
+               所以两侧换行与光标位置逐像素对齐 ——「光标紧邻标签之后」= selectionStart === 标签结束下标，
+               Backspace 据此整段删掉标签；点击标签同样整段移除（标签里不再放 ×，避免改变宽度）。 -->
+          <div v-show="mirrorText" ref="mirrorRef" class="input-mirror" aria-hidden="true"
+            ><template v-for="(seg, index) in mirrorSegments" :key="index"
+              ><span v-if="seg.type === 'text'" class="input-mirror-text">{{ seg.text }}</span
+              ><span
+                v-else
+                class="input-skill-pill"
+                :title="`${seg.name}（点击移除）`"
+                @click.stop.prevent="removeSkillToken(seg.dirName)"
+              ><span class="input-skill-pill-mark">/</span>{{ seg.token.slice(1) }}</span
+            ></template
+          ></div>
           <textarea
             ref="textareaRef"
             v-model="message"
             v-tip.hover="'输入消息，Enter 发送 · Shift+Enter 换行 · 输入 / 唤起技能选择'"
             @keydown="onKeydown"
+            @beforeinput="onBeforeInput"
             @input="onInput"
             @focus="updateCaretLine"
             @blur="hideCaretLine"
@@ -108,7 +102,7 @@
               </svg>
             </button>
             <Teleport to="body">
-              <div v-if="showPlusMenu" class="plus-menu" :style="plusMenuStyle" @click.stop @mouseenter="cancelPlusClose" @mouseleave="schedulePlusClose">
+              <div v-if="showPlusMenu" ref="plusMenuListRef" class="plus-menu" :style="plusMenuStyle" @click.stop @mouseenter="cancelPlusClose" @mouseleave="schedulePlusClose">
                 <button type="button" class="plus-menu-item" @mouseenter="hoverPlusItem('file')" @click="handleMenuAddFile">
                   <svg class="plus-menu-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                     <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
@@ -140,7 +134,7 @@
                     <polyline points="9 18 15 12 9 6"></polyline>
                   </svg>
                 </button>
-                <button type="button" class="plus-menu-item" @mouseenter="hoverPlusItem('connectors', $event)" @click="openSubpanel('connectors', $event)">
+                <button type="button" class="plus-menu-item" data-category="connectors" @mouseenter="hoverPlusItem('connectors', $event)" @click="openSubpanel('connectors', $event)">
                   <svg class="plus-menu-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                     <path d="M12 22v-5"></path>
                     <path d="M9 8V2"></path>
@@ -184,8 +178,9 @@
                     :key="item.dir_name"
                     type="button"
                     class="skill-sub-item"
-                    :class="{ active: isSkillSelected(item.dir_name) }"
-                    @click="toggleSkillToken(item)"
+                    :class="{ active: isSkillSelected(item.dir_name), disabled: !item.enabled }"
+                    :title="item.enabled ? `选择「${item.name}」` : '该技能已停用'"
+                    @click="onSkillSubItemClick(item)"
                   >
                     <span class="skill-sub-icon" :style="{ background: item.iconBg, color: item.iconFg }">
                       <span v-if="item.icon" class="skill-sub-icon-emoji">{{ item.icon }}</span>
@@ -316,7 +311,8 @@
                 </div>
               </div>
 
-              <!-- 连接器：用户条目列表（与技能面板同款浮层交互，主菜单常驻） -->
+              <!-- 连接器：用户条目列表（与技能面板同款浮层交互，主菜单常驻）。
+                   行右侧是「会话级开关」：只影响本次会话的 Agent 工具集，不写 mcp.json。 -->
               <div
                 v-else-if="subpanelCategory === 'connectors'"
                 class="skill-submenu plus-subpanel"
@@ -327,13 +323,48 @@
               >
                 <div class="plus-subpanel-head">
                   <span class="plus-subpanel-title">{{ plusListTitle }}</span>
-                  <span class="plus-menu-count">{{ plusList.length }}</span>
+                  <span class="plus-menu-count">{{ filteredPlusList.length }}</span>
+                  <button
+                    type="button"
+                    class="plus-subpanel-search-btn"
+                    :class="{ active: showConnectorSearch }"
+                    :aria-label="showConnectorSearch ? '收起搜索' : '搜索连接器'"
+                    :aria-expanded="showConnectorSearch ? 'true' : 'false'"
+                    @click="toggleConnectorSearch"
+                  >
+                    <svg v-if="!showConnectorSearch" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                      <circle cx="11" cy="11" r="8"></circle>
+                      <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                    </svg>
+                    <svg v-else xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
+                      <line x1="18" y1="6" x2="6" y2="18" />
+                      <line x1="6" y1="6" x2="18" y2="18" />
+                    </svg>
+                  </button>
+                </div>
+                <div v-if="showConnectorSearch" class="skill-sub-search">
+                  <svg class="skill-sub-search-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <circle cx="11" cy="11" r="8"></circle>
+                    <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                  </svg>
+                  <input
+                    v-model="connectorKeyword"
+                    type="text"
+                    placeholder="搜索连接器"
+                    class="skill-sub-search-input"
+                  />
                 </div>
                 <div class="skill-sub-list">
                   <div v-if="plusListLoading" class="skill-sub-hint">加载中…</div>
                   <div v-else-if="plusListError" class="skill-sub-hint error">{{ plusListError }}</div>
                   <div v-else-if="plusList.length === 0" class="skill-sub-hint">{{ plusListEmptyText }}</div>
-                  <div v-else v-for="item in plusList" :key="item.key" class="plus-list-item">
+                  <div v-else-if="filteredPlusList.length === 0" class="skill-sub-hint">未找到匹配的连接器</div>
+                  <div
+                    v-else
+                    v-for="item in filteredPlusList"
+                    :key="item.key"
+                    class="plus-list-item connector-row"
+                  >
                     <span class="plus-list-icon" :class="{ initial: !item.icon }">{{ item.icon || item.initial }}</span>
                     <span class="plus-list-body">
                       <span class="plus-list-name-row">
@@ -342,7 +373,36 @@
                       </span>
                       <span class="plus-list-desc">{{ item.desc }}</span>
                     </span>
+                    <button
+                      type="button"
+                      role="switch"
+                      class="connector-switch"
+                      :class="{
+                        on: isConnectorOn(item),
+                        'is-off': isConnectorSwitchDisabled(item),
+                        'is-busy': isConnectorBusy(item),
+                      }"
+                      :disabled="isConnectorSwitchDisabled(item)"
+                      :aria-checked="isConnectorOn(item) ? 'true' : 'false'"
+                      :aria-busy="isConnectorBusy(item) ? 'true' : 'false'"
+                      :aria-label="connectorSwitchLabel(item)"
+                      :title="connectorSwitchTitle(item)"
+                      @click.stop="toggleConnectorSwitch(item)"
+                    >
+                      <span v-if="isConnectorBusy(item)" class="connector-switch-spinner"></span>
+                      <span class="connector-switch-knob"></span>
+                    </button>
                   </div>
+                </div>
+                <!-- 操作反馈：刚改过的连接器开关提示一句，并说明已同步到「专家·技能·连接器」 -->
+                <div
+                  v-if="connectorNotice"
+                  class="skill-sub-notice"
+                  :class="connectorNoticeType"
+                  role="status"
+                  aria-live="polite"
+                >
+                  {{ connectorNotice }}
                 </div>
                 <div class="skill-sub-footer">
                   <button type="button" class="skill-sub-footer-btn" @click="handleMenuPanel(subpanelCategory)">
@@ -585,11 +645,32 @@ import { uploadFile, deleteFile } from '../api/files.js'
 import { getWebSearchStatus } from '../api/settings.js'
 import { getUserSkills, importSkill } from '../api/skills.js'
 import { iconCategoryFor } from '../utils/skillCategories.js'
-import { buildSkillPayload, parseSlashQuery } from '../utils/skillSlash.js'
-import { getConnectors } from '../api/connectors.js'
+import { buildMessageText, parseSlashQuery } from '../utils/skillSlash.js'
+// 内联技能标签：标签文字 = textarea 文本里的子串，选中/删除/发送前的剥离都走这套纯逻辑
+import {
+  buildSegments,
+  buildTokenMap,
+  insertSkillToken,
+  reconcileTokenDeletion,
+  removeTokenSegments,
+  skillDirsInText,
+  skillSegments,
+  stripSkillTokens,
+  tokenAfterCaret,
+  tokenBeforeCaret,
+  tokenForSkill,
+} from '../utils/skillPillTokens.js'
+import { getConnectors, toggleConnector } from '../api/connectors.js'
+import { emitConnectorsChanged, onConnectorsChanged } from '../utils/connectorSync.js'
 import { listExperts, listPublicExperts } from '../api/expert.js'
 import FileIcon from './FileIcon.vue'
 import SkillIcon from './SkillIcon.vue'
+
+// 输入框最大高度：5 行（行高 1.6 × 15px = 24px）。文本再长就在框内滚动（右侧滚动条），
+// 输入框不再无限增高——与 CSS 的 max-height 保持一致，两处改要一起改。
+const TEXTAREA_MAX_ROWS = 5
+const TEXTAREA_LINE_HEIGHT = 24
+const TEXTAREA_MAX_HEIGHT = TEXTAREA_MAX_ROWS * TEXTAREA_LINE_HEIGHT
 
 const props = defineProps({
   disabled: {
@@ -670,9 +751,63 @@ watch(
 )
 
 // ========== 技能选择（输入 / 唤起） ==========
-// 输入框里只展示「工具图标 + 技能名」，实际发给模型的是 /技能目录名 + 用户输入。
-// 只有启用状态的技能会被 Agent 加载，停用技能即使手打 /name 也不生效，故只列启用的。
-const selectedSkills = ref([])
+// 已选技能不是独立数组，而是**文本里的内联标签**：token 形如 `/显示名`（见 utils/skillPillTokens.js）。
+// 标签的可见文字与 textarea 文本逐字相同，所以光标位置、Backspace 判定都是纯文本下标运算，
+// 桌面端 / 移动端 / 连续选多个技能的行为完全一致；选中状态由文本推导，不会与文本脱节。
+// 只有启用状态的技能会被 Agent 加载，停用技能即使手打 /name 也不生效，故选择面板只列启用的。
+const knownSkills = ref([])
+const tokenMap = computed(() => buildTokenMap(knownSkills.value))
+
+/** 记住技能元信息（标签 `/显示名` 要靠它反解技能）：/ 面板与「+」面板的接口都会往这里补 */
+function rememberSkills(skills) {
+  const incoming = (Array.isArray(skills) ? skills : []).filter((s) => s && s.dir_name)
+  if (!incoming.length) return
+  const byDir = new Map(knownSkills.value.map((s) => [s.dir_name, s]))
+  let changed = false
+  for (const skill of incoming) {
+    const prev = byDir.get(skill.dir_name)
+    if (!prev) {
+      byDir.set(skill.dir_name, skill)
+      changed = true
+    } else if ((prev.name || '') !== (skill.name || '')) {
+      // 技能改名后，标签要按最新显示名解析
+      byDir.set(skill.dir_name, { ...prev, ...skill })
+      changed = true
+    }
+  }
+  if (changed) knownSkills.value = Array.from(byDir.values())
+}
+// 连接器的启用状态改由「+」→ 连接器面板里的开关控制（与「专家·技能·连接器」面板同一份状态），
+// 不再点行插入输入框、也不再随每轮消息提交。
+
+// ========== 镜像渲染层（内联技能标签） ==========
+// textarea 的文字设为透明，用户看到的文字/标签都来自 .input-mirror 镜像层：
+// 标签是文本里的一段子串，这里按 token 把文本分段渲染（文字段 + 标签段），
+// 所以标签天然落在它在文本里的位置（第一行、句中、行尾都行）。
+// 镜像层必须与 textarea 逐像素同宽同字体，换行位置才会一致 —— 见 .input-mirror 的 CSS 注释。
+const mirrorRef = ref(null)
+const mirrorText = ref('')
+// 上一次 textarea 的文本：移动端兜底自愈要拿它做差分（见 onInput）
+let lastInputText = ''
+
+/**
+ * 把 textarea 的内容/滚动/滚动条占位同步给镜像层。
+ * 输入（含输入法合成中）、程序化赋值、滚动后都要调，否则两侧文字会对不上。
+ */
+function syncMirror() {
+  const ta = textareaRef.value
+  const mirror = mirrorRef.value
+  if (!ta || !mirror) return
+  // 直接读 textarea：输入法合成中的文字 v-model 还没提交，镜像也要实时显示
+  mirrorText.value = ta.value
+  lastInputText = ta.value
+  // 出现纵向滚动条后 textarea 内容区变窄，镜像补同等右内边距，保证两侧换行位置一致
+  const gutter = ta.offsetWidth - ta.clientWidth
+  mirror.style.paddingRight = gutter > 0 ? `${gutter}px` : ''
+  mirror.scrollTop = ta.scrollTop
+}
+
+
 const skillPickerOpen = ref(false)
 const skillPickerIndex = ref(0)
 const skillPickerLoading = ref(false)
@@ -683,6 +818,18 @@ const inputBoxRef = ref(null)
 const skillPickerRef = ref(null)
 const skillPickerStyle = ref({})
 let skillLoadedAt = 0
+
+// 镜像层的分段结果：普通文字段 + 技能标签段（标签文字与 textarea 文本逐字相同）
+const mirrorSegments = computed(() =>
+  buildSegments(
+    mirrorText.value,
+    tokenMap.value,
+    // 正在输入 `/查询词` 检索时，半截查询词不要立刻渲染成标签（否则边打字边闪）
+    skillPickerOpen.value ? { suppressStart: slashStart.value } : null
+  )
+)
+// 已选技能目录名（按出现顺序去重）：canSend 与发送时的 skills 字段
+const selectedSkillDirs = computed(() => skillDirsInText(message.value, tokenMap.value))
 
 /**
  * 技能检索：优先按「目录名 / 技能名」匹配；仅当没有任何名称命中时，才回退到描述匹配。
@@ -707,6 +854,8 @@ async function loadSkillOptions() {
   skillPickerLoading.value = true
   try {
     const data = await getUserSkills()
+    // 标签解析要认识所有技能（草稿里可能留着已停用技能的标签），故先登记全量再过滤面板列表
+    rememberSkills(data.skills || [])
     skillOptions.value = (data.skills || []).filter(s => s.enabled)
     skillLoadedAt = now
   } catch (e) {
@@ -779,35 +928,68 @@ function closeSkillPicker() {
   slashStart.value = -1
 }
 
-/** 选中技能：删掉刚输入的 /查询词，并把它挂成输入框里的技能标签 */
+/**
+ * 选中技能：删掉刚输入的 /查询词，在光标处插入内联标签 `/显示名`，光标停在标签之后。
+ * 已在文本里的同一技能不重复插入（光标落到已有标签之后）。
+ */
 async function selectSkill(skill) {
-  if (!skillPickerOpen.value || !skill) return
+  if (!skillPickerOpen.value || !skill || !skill.dir_name) return
 
   const ta = textareaRef.value
-  const caret = ta?.selectionStart ?? message.value.length
+  const base = ta?.value ?? message.value
+  const caret = ta?.selectionStart ?? base.length
   // 以当前光标为准重算一次 /查询词 的范围，避免用户中途改动文本后误删内容
-  const slash = parseSlashQuery(message.value, caret)
+  const slash = parseSlashQuery(base, caret)
   const start = slash ? slash.start : caret
-  message.value = message.value.slice(0, start) + message.value.slice(caret)
+  const cleared = base.slice(0, start) + base.slice(caret)
 
-  if (!selectedSkills.value.some(s => s.dir_name === skill.dir_name)) {
-    selectedSkills.value = [...selectedSkills.value, skill]
-  }
+  rememberSkills([skill])
+  const existing = skillSegments(cleared, tokenMap.value)
+    .find((seg) => seg.dirName === skill.dir_name)
+  const next = existing
+    ? { text: cleared, caret: existing.end }
+    : insertSkillToken(cleared, start, tokenForSkill(skill))
 
   closeSkillPicker()
-  await nextTick()
-  autoResize()
-  if (ta) {
-    const pos = Math.min(start, message.value.length)
-    ta.focus()
-    ta.setSelectionRange(pos, pos)
-  }
-  updateCaretLine()
+  await replaceTextWithCaret(next)
   console.log(`[${new Date().toISOString()}] [技能选择] ${skill.dir_name}`)
 }
 
-function removeSelectedSkill(skill) {
-  selectedSkills.value = selectedSkills.value.filter(s => s.dir_name !== skill.dir_name)
+/**
+ * 写入新文本并把光标放回指定下标（标签插入/删除后的统一收尾）。
+ * 等 DOM 更新后再设置光标，避免 v-model 回写把光标顶到末尾；焦点始终留在输入框。
+ */
+function replaceTextWithCaret(next) {
+  const ta = textareaRef.value
+  message.value = next.text
+  return nextTick(() => {
+    // v-model 可能在本轮 input 里把旧值又写回 message（输入事件的处理顺序由框架决定），
+    // 这里再断言一次，保证 ref 与 DOM 都是我们算好的文本，否则后续发送会带上半个标签。
+    if (message.value !== next.text) message.value = next.text
+    autoResize()
+    if (ta) {
+      if (ta.value !== next.text) ta.value = next.text
+      ta.focus()
+      ta.setSelectionRange(next.caret, next.caret)
+    }
+    updateCaretLine()
+    syncMirror()
+  })
+}
+
+/** 整段删除技能标签 + 复位光标（Backspace / Delete / 点击标签都走这里） */
+function applyTokenRemoval(base, segsToRemove) {
+  if (!Array.isArray(segsToRemove) || !segsToRemove.length) return
+  replaceTextWithCaret(removeTokenSegments(base, segsToRemove))
+}
+
+/** 点击标签 / 面板里取消选择：把该技能的标签从文本里整段删掉 */
+function removeSkillToken(dirName) {
+  const ta = textareaRef.value
+  const base = ta?.value ?? message.value
+  const segs = skillSegments(base, tokenMap.value).filter((seg) => seg.dirName === dirName)
+  if (!segs.length) return
+  applyTokenRemoval(base, segs)
 }
 
 /**
@@ -824,20 +1006,63 @@ function restorePendingSkill() {
 
   try {
     const skill = JSON.parse(raw)
-    if (skill?.dir_name && !selectedSkills.value.some(s => s.dir_name === skill.dir_name)) {
-      selectedSkills.value = [...selectedSkills.value, skill]
-      nextTick(() => {
-        autoResize()
-        textareaRef.value?.focus()
-      })
-    }
+    if (!skill?.dir_name) return
+    rememberSkills([skill])
+    const ta = textareaRef.value
+    const base = ta?.value ?? message.value
+    if (skillSegments(base, tokenMap.value).some((seg) => seg.dirName === skill.dir_name)) return
+    replaceTextWithCaret(insertSkillToken(base, base.length, tokenForSkill(skill)))
   } catch (e) {
     console.error('恢复待选技能失败:', e)
   }
 }
 
+/**
+ * Backspace / Delete 紧邻标签时整段删除标签（光标在别处则保持常规的逐字符删除）。
+ * 光标「紧邻标签之后」= selectionStart === 标签结束下标，与文本是同一套下标，桌面端/移动端一致。
+ */
+function handleTokenDeleteKey(event) {
+  if (event.isComposing) return false
+  if (event.key !== 'Backspace' && event.key !== 'Delete') return false
+  const ta = event.target
+  if (!ta || typeof ta.selectionStart !== 'number') return false
+  // 有选区时按常规删除（用户是在删一段选中的文本）
+  if (ta.selectionStart !== ta.selectionEnd) return false
+  const caret = ta.selectionStart
+  const seg = event.key === 'Backspace'
+    ? tokenBeforeCaret(ta.value, caret, tokenMap.value)
+    : tokenAfterCaret(ta.value, caret, tokenMap.value)
+  if (!seg) return false
+  event.preventDefault()
+  applyTokenRemoval(ta.value, [seg])
+  return true
+}
+
+/**
+ * beforeinput 路径：移动端（Android Chrome）Backspace 不给 keydown，键盘删除只能在这里拦。
+ * 拦截后自行整段删标签；拦不到的情况由 onInput 的差分自愈兜底（见 reconcileTokenDeletion）。
+ */
+function onBeforeInput(event) {
+  if (event.isComposing) return
+  const deleteBackward = event.inputType === 'deleteContentBackward'
+  const deleteForward = event.inputType === 'deleteContentForward'
+  if (!deleteBackward && !deleteForward) return
+  const ta = event.target
+  if (!ta || typeof ta.selectionStart !== 'number') return
+  if (ta.selectionStart !== ta.selectionEnd) return
+  const caret = ta.selectionStart
+  const seg = deleteBackward
+    ? tokenBeforeCaret(ta.value, caret, tokenMap.value)
+    : tokenAfterCaret(ta.value, caret, tokenMap.value)
+  if (!seg) return
+  event.preventDefault()
+  applyTokenRemoval(ta.value, [seg])
+}
+
 /** 键盘：面板打开时接管 ↑↓ / Enter / Esc，其余情况保持原有 Enter 发送 */
 function onKeydown(event) {
+  if (handleTokenDeleteKey(event)) return
+
   if (skillPickerOpen.value) {
     const count = filteredSkills.value.length
     if (event.key === 'ArrowDown' && count > 0) {
@@ -937,6 +1162,7 @@ const caretLineTop = ref(null)   // 高亮条 top，null 表示隐藏
 const lineHeight = ref(24)       // 行高（px）
 
 function updateCaretLine() {
+  syncMirror() // 聚焦/点击/按键/滚动都会走到这里，顺带把镜像层对齐（含 scrollTop）
   const ta = textareaRef.value
   if (!ta) return
   const lh = parseFloat(getComputedStyle(ta).lineHeight)
@@ -1005,6 +1231,8 @@ function closeModelDropdown(event) {
 const fileInputRef = ref(null)
 const showPlusMenu = ref(false)
 const plusMenuRef = ref(null)
+// 菜单本身（Teleport 到 body）：默认展开连接器子面板时要用它找「连接器」菜单项定位
+const plusMenuListRef = ref(null)
 const plusMenuStyle = ref({})
 
 function togglePlusMenu() {
@@ -1027,6 +1255,16 @@ function togglePlusMenu() {
   }
   subpanelCategory.value = null
   showPlusMenu.value = true
+  // 「+」= 展开连接器面板的触发器：菜单弹出后直接把连接器子面板展开在「连接器」
+  // 菜单项右侧（面板定位依赖该菜单项元素，要等 Teleport 渲染完成）。
+  nextTick(openConnectorsSubpanelFromMenu)
+}
+
+/** 「+」菜单打开时默认展开连接器子面板（定位参照菜单里的「连接器」项） */
+function openConnectorsSubpanelFromMenu() {
+  const anchor = plusMenuListRef.value?.querySelector('[data-category="connectors"]')
+  if (!anchor) return
+  openSubpanel('connectors', { currentTarget: anchor }, true)
 }
 
 function closePlusMenu(event) {
@@ -1092,6 +1330,12 @@ function openPlusList(category) {
   myExperts.value = []
   publicExperts.value = []
   plusExpertsLimit.value = 3
+  if (category === 'connectors') {
+    // 搜索框每次打开都收起；开关状态随连接器目录一起拉取（loadPlusList）
+    showConnectorSearch.value = false
+    connectorKeyword.value = ''
+    clearConnectorNotice()
+  }
   loadPlusList(category)
 }
 
@@ -1150,25 +1394,38 @@ async function loadPlusList(category) {
       }))
     } else if (category === 'connectors') {
       const data = await getConnectors()
+      // connectorId = 会话开关的标识，也是 mcp.json 的 server key（目录条目用 id，
+      // 自定义服务用 server 名）；mcp.json 层面已停用的项仍列出，但标出「已停用」。
       const installed = (data.connectors || [])
         .filter((c) => c.installed)
         .map((c) => ({
           key: `connector:${c.id}`,
+          connectorId: c.id,
           name: c.name,
           desc: c.description || '暂无描述',
           icon: '',
           initial: (c.name || c.id).slice(0, 1).toUpperCase(),
-          tag: '已添加',
-          tagType: 'on',
+          // mcp.json 里的启用状态：会话开关必须与它一致（停用 = 开关关闭），
+          // 「专家·技能·连接器」面板显示的也是这个值
+          enabled: c.enabled !== false,
+          // 启用时展示的 tag 单独存一份：开关来回切时按它还原（停用统一显示「已停用」）
+          enabledTag: '已添加',
+          enabledTagType: 'on',
+          tag: c.enabled === false ? '已停用' : '已添加',
+          tagType: c.enabled === false ? 'off' : 'on',
         }))
       const custom = (data.custom || []).map((c) => ({
         key: `custom:${c.name}`,
+        connectorId: c.name,
         name: c.name,
         desc: '用户自定义 MCP 服务',
         icon: '',
         initial: (c.name || '').slice(0, 1).toUpperCase(),
-        tag: '自定义',
-        tagType: 'custom',
+        enabled: c.enabled !== false,
+        enabledTag: '自定义',
+        enabledTagType: 'custom',
+        tag: c.enabled === false ? '已停用' : '自定义',
+        tagType: c.enabled === false ? 'off' : 'custom',
       }))
       plusList.value = [...installed, ...custom]
     } else {
@@ -1306,6 +1563,7 @@ async function loadSkillSubList() {
   skillListError.value = ''
   try {
     const data = await getUserSkills()
+    rememberSkills(data.skills || [])
     skillList.value = (data.skills || []).map((s, i) => {
       const name = s.name || s.dir_name
       const color = SKILL_ICON_COLORS[i % SKILL_ICON_COLORS.length]
@@ -1327,31 +1585,211 @@ async function loadSkillSubList() {
   }
 }
 
-// ========== 技能令牌：插入输入框，标识当前会话启用该技能 ==========
-// selectedSkills 由「/ 唤起」的技能选择逻辑（上方）持有，这里只做读写；
-// 面板选择时归一化为与 slash 选择一致的对象结构，令牌 UI（selected-skills）共用。
+// ========== 技能标签：插入输入框文本，标识本会话启用该技能 ==========
+// 「/ 唤起」与「+」→ 技能面板共用同一套文本标签（见 utils/skillPillTokens.js）：
+// 标签落在光标处，选中后光标停在标签之后，删除整段进行。
 function isSkillSelected(dirName) {
-  return selectedSkills.value.some((s) => s.dir_name === dirName)
+  return selectedSkillDirs.value.includes(dirName)
+}
+
+/**
+ * 「+」→ 技能子面板点行：挂载 / 取消技能标签，行为与「/」唤起技能完全一致。
+ * 停用技能不参与：Agent 只加载已启用的技能，挂上去也不会生效。
+ */
+function onSkillSubItemClick(item) {
+  if (!item || !item.dir_name || !item.enabled) return
+  toggleSkillToken(item)
 }
 
 function toggleSkillToken(item) {
   if (isSkillSelected(item.dir_name)) {
-    removeSelectedSkill(item)
-  } else {
-    selectedSkills.value = [...selectedSkills.value, {
-      dir_name: item.dir_name,
-      name: item.name,
-      description: item.desc,
-      icon: item.icon,
-      enabled: item.enabled,
-    }]
+    removeSkillToken(item.dir_name)
+    return
+  }
+  rememberSkills([{ ...item, description: item.description || item.desc }])
+  const ta = textareaRef.value
+  const base = ta?.value ?? message.value
+  const caret = typeof ta?.selectionStart === 'number' ? ta.selectionStart : base.length
+  replaceTextWithCaret(insertSkillToken(base, caret, tokenForSkill(item)))
+  console.log(`[${new Date().toISOString()}] [技能选择] ${item.dir_name}`)
+}
+
+// ========== 连接器开关（「+」→ 连接器，替代旧的「点行插入输入框胶囊」） ==========
+// 开关直接对应连接器自身的启用状态（用户 mcp.json 里每个 server 的 enabled），
+// 与「专家·技能·连接器」面板是同一份状态：这里改，那边实时跟着变（见 connectorSync.js）。
+// 正在提交的连接器 id（该行开关暂时禁用，避免连点产生竞态）。
+const connectorToggling = ref('')
+// 操作反馈：改完开关在面板内提示一句，3s 后自动消失
+const connectorNotice = ref('')
+const connectorNoticeType = ref('success')
+let connectorNoticeTimer = null
+// 连接器状态变更事件的取消订阅函数（onMounted 注册、onUnmounted 解绑）
+let offConnectorsChanged = null
+// 面板内的搜索：按钮展开输入框，按名称/描述过滤
+const showConnectorSearch = ref(false)
+const connectorKeyword = ref('')
+
+/** 连接器行在会话开关里的标识（目录条目用 id，自定义服务用 server 名） */
+function connectorKeyOf(item) {
+  return (item && item.connectorId) || ''
+}
+
+/** 【连接器】面板的搜索结果（其余分类的面板照旧用 plusList） */
+const filteredPlusList = computed(() => {
+  if (plusListCategory.value !== 'connectors') return plusList.value
+  const kw = connectorKeyword.value.trim().toLowerCase()
+  if (!kw) return plusList.value
+  return plusList.value.filter((item) => {
+    const name = String(item.name || '').toLowerCase()
+    const desc = String(item.desc || '').toLowerCase()
+    return name.includes(kw) || desc.includes(kw)
+  })
+})
+
+/**
+ * 连接器在 mcp.json 里是否启用。
+ * 「专家·技能·连接器」面板的开关读的是同一个字段：两处必须显示同一状态。
+ */
+function connectorEnabled(item) {
+  return !!item && item.enabled !== false
+}
+
+/** 该连接器的开关是否为「打开」 */
+function isConnectorOn(item) {
+  return !!connectorKeyOf(item) && connectorEnabled(item)
+}
+
+/**
+ * 开关是否不可点。
+ * 启用与停用都允许在本面板直接切换（与「专家·技能·连接器」面板同一份状态），
+ * 只有「正在提交该行」时才临时禁用，避免连点产生竞态。
+ */
+function isConnectorSwitchDisabled(item) {
+  const key = connectorKeyOf(item)
+  if (!key) return true
+  return connectorToggling.value === key
+}
+
+/** 该行开关是否正在提交（显示忙碌态的转圈） */
+function isConnectorBusy(item) {
+  const key = connectorKeyOf(item)
+  return !!key && connectorToggling.value === key
+}
+
+/** 开关的无障碍名称 */
+function connectorSwitchLabel(item) {
+  if (isConnectorBusy(item)) return `正在保存连接器 ${item.name} 的开关`
+  return `${isConnectorOn(item) ? '停用' : '启用'}连接器 ${item.name}`
+}
+
+/** 开关的 title：说清点下去会发生什么、以及会同步到哪里 */
+function connectorSwitchTitle(item) {
+  if (isConnectorBusy(item)) return '正在保存…'
+  return isConnectorOn(item)
+    ? '已启用（点击停用，「专家·技能·连接器」面板同步生效）'
+    : '已停用（点击启用，「专家·技能·连接器」面板同步生效）'
+}
+
+/** 面板内的操作反馈（连接器开关），ms 后自动消失 */
+function showConnectorNotice(message, type = 'success', ms = 2600) {
+  if (connectorNoticeTimer) clearTimeout(connectorNoticeTimer)
+  connectorNotice.value = message
+  connectorNoticeType.value = type
+  connectorNoticeTimer = setTimeout(() => {
+    connectorNoticeTimer = null
+    connectorNotice.value = ''
+  }, ms)
+}
+
+/** 清掉提示（打开面板时调用，避免看到上一次操作留下的文案） */
+function clearConnectorNotice() {
+  if (connectorNoticeTimer) clearTimeout(connectorNoticeTimer)
+  connectorNoticeTimer = null
+  connectorNotice.value = ''
+}
+
+/** 展开/收起面板内的搜索框（收起时清掉关键字，避免下次打开还停在过滤态） */
+function toggleConnectorSearch() {
+  showConnectorSearch.value = !showConnectorSearch.value
+  if (!showConnectorSearch.value) connectorKeyword.value = ''
+}
+
+/** 按最新状态刷新某个连接器行的开关与 tag（tag 停用时统一显示「已停用」） */
+function applyConnectorState(id, enabled) {
+  if (!id) return
+  const item = plusList.value.find((i) => connectorKeyOf(i) === id)
+  if (!item) return
+  item.enabled = !!enabled
+  item.tag = item.enabled ? (item.enabledTag || '') : '已停用'
+  item.tagType = item.enabled ? (item.enabledTagType || 'on') : 'off'
+}
+
+/** 其它面板（「专家·技能·连接器」）改了开关：同步本面板显示（忽略自己派发的回声） */
+function onConnectorsChangedHandler(payload) {
+  if (!payload || payload.source === 'plus-panel') return
+  applyConnectorState(payload.id, payload.enabled)
+}
+
+/**
+ * 切换连接器的启用状态：直接改连接器自身的开关（后端写用户 mcp.json 的 enabled，
+ * 全局生效），并广播给「专家·技能·连接器」面板，保证两处状态一致。
+ * 启用 → 停用、停用 → 启用都走这里，两个面板都可以操作。
+ */
+async function toggleConnectorSwitch(item) {
+  const id = connectorKeyOf(item)
+  if (!id) return
+  // 同一行正在提交时忽略连点（按钮此时也已 disabled）
+  if (connectorToggling.value) return
+  const next = !connectorEnabled(item)
+  connectorToggling.value = id
+  // 本面板先乐观更新（点下去立即有反馈，不等接口往返）
+  applyConnectorState(id, next)
+  try {
+    await toggleConnector(id, next)
+    // 只在真正改成功后才广播：对方收到后会重新拉取，若在请求途中广播，
+    // 它拉到的还是旧数据，会出现「跟着变一下又弹回去」的抖动
+    emitConnectorsChanged(id, next, 'plus-panel')
+    console.log(
+      `[${new Date().toISOString()}] [连接器开关] ${item.name} -> ${next ? '启用' : '停用'}`
+    )
+    showConnectorNotice(
+      `已${next ? '启用' : '停用'}「${item.name}」，已同步到「专家·技能·连接器」`
+    )
+  } catch (e) {
+    // 后端没改成功：只回滚本面板（对方从未收到通知，保持原状态即可）
+    applyConnectorState(id, !next)
+    showConnectorNotice(e.message || '切换连接器开关失败', 'error', 4000)
+  } finally {
+    connectorToggling.value = ''
   }
 }
 
-// 会话级状态：切换会话后复位，令牌不跨会话残留
-watch(() => props.sessionId, () => {
-  selectedSkills.value = []
+/** 收起「+」菜单与其二级面板（含待执行的悬停关闭定时器） */
+function hidePlusMenu() {
+  showPlusMenu.value = false
   subpanelCategory.value = null
+  cancelPlusClose()
+}
+
+// 会话切换：任何 sessionId 变化都算进入「会话展示阶段」（切历史会话 / 新建会话 /
+// 从新建态点开历史会话），令牌一律复位，不得残留到历史会话的输入框里。
+// 唯一例外是本组件自己发起的建会话（上传文件 / 切换连接器开关），由对应链路「先存后补」
+// （见 ensureSessionId），且不算真正的会话切换、不收起「+」面板。
+let selfCreatedSession = false
+
+watch(() => props.sessionId, (newVal, oldVal) => {
+  if (newVal === oldVal) return
+  // 本组件自己发起的建会话（上传文件 / 切换连接器开关）仍属「输入阶段的连续操作」，
+  // 不要收起正在用的「+」面板（否则点一下开关面板就消失，看不出刚做了什么）。
+  const ownCreate = selfCreatedSession
+  selfCreatedSession = false
+  if (!ownCreate) subpanelCategory.value = null
+  // 技能标签是文本的一部分：切会话时把标签从草稿里剥掉（等价于旧的「令牌复位」），
+  // 避免标签跟着草稿残留到历史会话的输入框里；本组件自己发起的建会话不算切换，保留标签。
+  if (!ownCreate) message.value = stripSkillTokens(message.value, tokenMap.value)
+  // 注：连接器开关不随会话走（它反映连接器自身的启用状态，与会话无关）
+  connectorKeyword.value = ''
+  showConnectorSearch.value = false
 })
 
 // ========== 从本地添加技能（.zip 导入） ==========
@@ -1375,7 +1813,11 @@ async function handleSkillImportFile(event) {
 }
 
 const canSend = computed(() => {
-  return message.value.trim() || uploadedFiles.value.length > 0 || selectedSkills.value.length > 0
+  return (
+    message.value.trim() ||
+    uploadedFiles.value.length > 0 ||
+    selectedSkillDirs.value.length > 0
+  )
 })
 
 const showTokenPopup = ref(false)
@@ -1484,6 +1926,10 @@ function formatSize(bytes) {
 /**
  * 确保会话存在并返回 sessionId（并行上传共享同一个创建 Promise，
  * 避免一次选择多个文件时重复触发 createSession）。
+ *
+ * 本组件自己发起的建会话会让 sessionId 变化：watcher 据此不收起「+」面板、
+ * 也不剥离输入框里的技能标签（此刻仍是「用户输入阶段」，文件刚选、技能刚选）。
+ * 连接器开关也走这里：新建态下切换开关时先建会话，再按 session_id 提交给后端。
  */
 function ensureSessionId() {
   if (props.sessionId) return Promise.resolve(props.sessionId)
@@ -1499,9 +1945,10 @@ function ensureSessionId() {
           }
         }
       )
-      // 触发会话创建
+      // 触发会话创建（标记为「自己发起」，watcher 据此不收起「+」面板）
+      selfCreatedSession = true
       emit('createSession')
-    })
+    }).then((sessionId) => sessionId)
   }
   return pendingSessionPromise
 }
@@ -1647,30 +2094,32 @@ async function send() {
     console.log(`[${ts}] [文件上传] ${filesToSend.map(f => `${f.filename}(${f.size}B)`).join(', ')}`)
   }
 
-  // 已选技能由 buildPayload 还原为「/技能目录名」指令前缀发给模型；
-  // 令牌为会话级启用状态，发送后保留（点 × 或切换会话才移除）
+  // 已选技能以 skills（技能目录名）参数单独交给后端；输入框里的内联标签只是 UI，
+  // 正文发送前会把标签整段剥掉（否则气泡/标题/历史里会露出 `/技能名` 这类暗号）。
+  // 连接器不随消息提交：本会话启用哪些连接器由「+」面板的连接器开关单独设置。
+  const turnSkills = selectedSkillDirs.value
   emit(
     'send',
     buildPayload(),
     filesToSend,
     null,
     true,
-    webSearchEnabled.value
+    webSearchEnabled.value,
+    turnSkills
   )
-  
+
   message.value = ''
   uploadedFiles.value = []
-  selectedSkills.value = []
   closeSkillPicker()
   nextTick(() => autoResize())
 }
 
 /**
- * 实际发送给模型的内容：技能指令前缀 + 用户输入。
- * 例：界面显示 [图标]PPT生成 +「生成一份PPT创作文档」→ 发送 `/pptx-generator 生成一份PPT创作文档`
+ * 发送的消息正文：剥掉内联技能标签、只归一化用户输入，不拼任何指令前缀。
+ * 已选技能以 skills（目录名）参数带给后端（见 send()）。
  */
 function buildPayload() {
-  return buildSkillPayload(selectedSkills.value, message.value)
+  return buildMessageText(stripSkillTokens(message.value, tokenMap.value))
 }
 
 function stop() {
@@ -1680,14 +2129,29 @@ function stop() {
 function autoResize() {
   if (textareaRef.value) {
     textareaRef.value.style.height = 'auto'
-    textareaRef.value.style.height = Math.min(textareaRef.value.scrollHeight, 150) + 'px'
+    textareaRef.value.style.height = Math.min(textareaRef.value.scrollHeight, TEXTAREA_MAX_HEIGHT) + 'px'
+    syncMirror() // 高度变化会改变 textarea 的可滚动区间（scrollTop 被钳制），镜像层要跟上
   }
 }
 
-function onInput() {
+function onInput(event) {
+  const ta = event?.target || textareaRef.value
+  // 移动端兜底（见 utils/skillPillTokens.js 的 reconcileTokenDeletion）：Android Chrome 的
+  // Backspace 不给 keydown、部分浏览器也没有 beforeinput，浏览器只啃掉标签的一两个字时，
+  // 在这里按「编辑前/后文本差分」把整个标签补删干净，避免留下半个标签的残缺文本。
+  if (ta && typeof ta.value === 'string') {
+    const healed = reconcileTokenDeletion(lastInputText, ta.value, ta.selectionStart, tokenMap.value)
+    if (healed) {
+      // replaceTextWithCaret 会复位光标并同步镜像层；lastInputText 由 syncMirror 更新
+      replaceTextWithCaret(healed)
+      emit('typing')
+      return
+    }
+  }
   autoResize()
   updateCaretLine()
   updateSkillPicker()
+  syncMirror()
   emit('typing')
 }
 
@@ -1698,6 +2162,9 @@ watch(message, (val) => {
     // 隐私模式等场景下 sessionStorage 可能不可用，忽略即可
   }
 })
+
+// 程序化赋值（恢复草稿、切会话、发送后清空）不触发 input 事件，镜像层在这里补同步
+watch(message, () => nextTick(syncMirror))
 
 watch(() => props.disabled, (val) => {
   if (!val && textareaRef.value) {
@@ -1717,14 +2184,20 @@ onMounted(() => {
     // 忽略草稿恢复失败
   }
 
+  // 技能列表先拉一次：草稿里可能留着技能标签，需要靠列表把 `/显示名` 反解回技能
+  loadSkillOptions()
+
   // 恢复待选技能（技能中心「创建技能」等入口预置），读取后即清除
   restorePendingSkill()
+  syncMirror()
   document.addEventListener('click', closeTokenPopup)
   document.addEventListener('click', closeModelDropdown)
   document.addEventListener('click', closeSkillPickerOnClick)
   window.addEventListener('resize', handleViewportChange)
   document.addEventListener('click', closePlusMenu)
   loadWebSearchStatus()
+  // 「专家·技能·连接器」面板里改了开关 → 本面板同步（两个面板不在同一组件树分支，走事件广播）
+  offConnectorsChanged = onConnectorsChanged(onConnectorsChangedHandler)
 })
 
 onUnmounted(() => {
@@ -1733,6 +2206,8 @@ onUnmounted(() => {
   document.removeEventListener('click', closeSkillPickerOnClick)
   window.removeEventListener('resize', handleViewportChange)
   document.removeEventListener('click', closePlusMenu)
+  if (offConnectorsChanged) offConnectorsChanged()
+  if (connectorNoticeTimer) clearTimeout(connectorNoticeTimer)
   cancelPlusClose()
   stopLiveDuration()
 })
@@ -1793,59 +2268,228 @@ defineExpose({ setMessage, getMessage, triggerSend })
   border-bottom: 1px solid var(--border-color);
 }
 
-/* ── 已选技能标签（只显示图标 + 名称，发送时还原为 /技能名） ── */
-.selected-skills {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-  flex-shrink: 0;
-  max-width: 100%;
-  padding-bottom: 3px;
-}
-
-.selected-skill {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 3px 6px 3px 4px;
-  border: 1px solid color-mix(in srgb, var(--accent-color) 35%, var(--border-color));
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--accent-color) 10%, transparent);
-  max-width: 100%;
-}
-
-.selected-skill-name {
-  font-size: 12.5px;
-  color: var(--text-primary);
+/* ── 内联技能标签（`/显示名`，发送时整段剥掉，技能走 skills 字段） ── */
+/* 镜像渲染层：与 textarea 同字体/字号/行高/宽度，两侧文字换行位置才会逐行一致。
+   叠在 textarea 之上但 pointer-events:none，输入、光标、选区仍由下层 textarea 承担；
+   break-spaces + break-word 对齐 textarea 的默认换行规则（含行尾空格折行）。 */
+.input-mirror {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  max-width: 180px;
+  pointer-events: none;
+  /* translateZ(0)：提升为独立合成层。Chromium 对「超长 inline 内容 + overflow:hidden +
+     程序化 scrollTop」的组合存在裁剪渗漏（内容被画到裁剪区外），强制独立层后消失 */
+  transform: translateZ(0);
+  font-family: 'Microsoft YaHei', '微软雅黑', sans-serif;
+  font-size: 15px;
+  line-height: 1.6;
+  color: var(--text-primary);
+  white-space: break-spaces;
+  overflow-wrap: break-word;
 }
 
-.selected-skill-remove {
+.input-mirror-text {
+  white-space: break-spaces;
+  overflow-wrap: break-word;
+}
+
+/* 内联技能标签：可见文字就是 textarea 文本里的 token（`/显示名`）。
+   硬约束（见 utils/skillPillTokens.js）：文字必须逐字等于 textarea 里的子串，且**不参与任何布局宽度** ——
+   所以这里只允许动颜色/背景/描边/透明度这类纯绘制属性，绝不能用 font-* / letter-spacing / padding /
+   border / margin（会把标签撑宽，导致镜像层与 textarea 换行错位、光标跑偏）。
+   视觉留白靠绝对定位的 ::before 向外扩 3px 画出来：它是绘制层、不占宽度，
+   于是既有胶囊的呼吸感，又保持与 textarea 逐像素对齐。
+   pointer-events 恢复 auto：点击标签（含扩出来的留白）整段移除。 */
+.input-skill-pill {
+  position: relative;
+  font: inherit;
+  line-height: inherit;
+  color: var(--accent-color);
+  pointer-events: auto;
+  user-select: none;
+  cursor: pointer;
+}
+
+/* 胶囊底：比文字大一点（竖 4px / 横 3px）的圆角底 + 1px 极淡描边，落在文字下层
+   （z-index: -1 收进镜像层这个合成层，所以仍在 textarea 之上、在文字之下） */
+.input-skill-pill::before {
+  content: '';
+  position: absolute;
+  inset: -4px -3px;
+  z-index: -1;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent-color) 12%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-color) 16%, transparent);
+  transition: background 0.15s ease-out, box-shadow 0.15s ease-out;
+}
+
+/* 紧邻的两个标签：相接侧各往里收 1px，让两个半透明底之间留出 2px 视觉间隙，
+   否则会贴成一块、看起来像一个畸形大胶囊（收 1px 对字形观感无影响）。
+   不支持 :has 的浏览器只是相接处贴在一起，不影响布局与点击。 */
+.input-skill-pill + .input-skill-pill::before {
+  left: 1px;
+}
+
+.input-skill-pill:has(+ .input-skill-pill)::before {
+  right: 1px;
+}
+
+.input-skill-pill:hover::before {
+  background: color-mix(in srgb, var(--accent-color) 20%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-color) 28%, transparent);
+}
+
+/* `/` 只是装饰性的命令前缀：压暗它，让显示名成为主体（透明度不改变字宽） */
+.input-skill-pill-mark {
+  font: inherit;
+  opacity: 0.45;
+}
+
+/* 暗色下 App.vue 的全局规则 `html[data-theme="dark"] span { color: var(--text-primary) !important }`
+   会把标签文字压成正文色（白）—— 这是刻意保留的：深色底上强调色对比度只有 ~3.5:1，
+   白色正文色反而更清楚，标签靠强调色底色 + 描边区分（字号/行高仍与正文完全一致）。 */
+
+/* ── 连接器面板：行内「会话级开关」（只影响本次会话的 Agent 工具集，不写 mcp.json） ── */
+.plus-list-item.connector-row {
+  cursor: default;
+}
+
+.connector-switch {
+  position: relative;
+  flex-shrink: 0;
+  width: 34px;
+  height: 18px;
+  margin-left: 8px;
+  padding: 0;
+  border: 1px solid var(--border-color);
+  border-radius: 999px;
+  background: var(--bg-tertiary);
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.connector-switch .connector-switch-knob {
+  position: absolute;
+  top: 1px;
+  left: 1px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #ffffff;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.25);
+  transition: transform 0.15s ease;
+}
+
+.connector-switch.on {
+  background: var(--accent-color);
+  border-color: var(--accent-color);
+}
+
+.connector-switch.on .connector-switch-knob {
+  transform: translateX(16px);
+}
+
+.connector-switch:focus-visible {
+  outline: 2px solid var(--accent-color);
+  outline-offset: 2px;
+}
+
+/* 提交中：明确禁止态（正常状态下开关任何一端都能点） */
+.connector-switch:disabled {
+  cursor: not-allowed;
+}
+
+.connector-switch.is-off:disabled {
+  opacity: 0.55;
+}
+
+/* 正在提交：开关中心转圈 */
+.connector-switch-spinner {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 10px;
+  height: 10px;
+  margin: -5px 0 0 -5px;
+  border: 1.5px solid var(--text-secondary);
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: connector-switch-spin 0.6s linear infinite;
+}
+
+@keyframes connector-switch-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.connector-switch.is-busy .connector-switch-knob {
+  opacity: 0.35;
+}
+
+/* 连接器面板内的操作反馈条（改完开关提示一句） */
+.skill-sub-notice {
+  margin: 6px 10px 0;
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  line-height: 1.5;
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+}
+
+.skill-sub-notice.error {
+  background: rgba(220, 38, 38, 0.08);
+  color: #dc2626;
+}
+
+html[data-theme="dark"] .skill-sub-notice {
+  background: #27272a;
+  color: #a1a1aa;
+}
+
+html[data-theme="dark"] .skill-sub-notice.error {
+  background: rgba(248, 113, 113, 0.12);
+  color: #f87171;
+}
+
+html[data-theme="dark"] .connector-switch {
+  background: #3f3f46;
+  border-color: #52525b;
+}
+
+html[data-theme="dark"] .connector-switch.on {
+  background: var(--accent-color);
+  border-color: var(--accent-color);
+}
+
+/* 面板头部右侧的搜索按钮（连接器面板） */
+.plus-subpanel-search-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 16px;
-  height: 16px;
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  margin-left: auto;
   padding: 0;
   border: none;
-  border-radius: 50%;
+  border-radius: 6px;
   background: transparent;
   color: var(--text-secondary);
   cursor: pointer;
 }
 
-.selected-skill-remove:hover {
+.plus-subpanel-search-btn:hover,
+.plus-subpanel-search-btn.active {
   background: var(--bg-tertiary);
   color: var(--text-primary);
 }
 
-.selected-skill-remove svg {
-  width: 11px;
-  height: 11px;
+.plus-subpanel-search-btn svg {
+  width: 14px;
+  height: 14px;
 }
 
 /* ── 技能选择面板（Teleport 到 body，样式不能依赖父级作用域） ── */
@@ -2090,9 +2734,10 @@ defineExpose({ setMessage, getMessage, triggerSend })
 .input-row {
   padding: 12px 16px;
   display: flex;
-  align-items: flex-end;
+  /* 顶部对齐：多行输入时胶囊与正文首行齐平（flex-end 会把胶囊压到最后一行） */
+  align-items: flex-start;
   gap: 12px;
-  /* 技能标签与输入文字同一行；窄屏放不下时标签才换到上一行 */
+  /* 技能标签与输入文字同一行；胶囊自身换行，不把输入区挤到下一行 */
   flex-wrap: wrap;
 }
 
@@ -2123,6 +2768,10 @@ html[data-theme="dark"] .caret-line {
 /* textarea 所在区域使用浅灰底（与全局深色风格一致） */
 html[data-theme="dark"] .input-field textarea {
   background: var(--bg-tertiary) !important;
+  /* App.vue 的全局深色规则给 textarea 强制 color: var(--text-primary) !important，
+     会把镜像层方案依赖的透明文字盖掉（暗色下出现镜像+本体双重文字），这里压回透明 */
+  color: transparent !important;
+  caret-color: var(--text-primary) !important;
 }
 
 /* 整个输入框（容器、操作区、模型选择、上传按钮、textarea、光标行）
@@ -2217,11 +2866,20 @@ html[data-theme="dark"] .context-ring-wrapper {
   font-family: 'Microsoft YaHei', '微软雅黑', sans-serif;
   font-size: 15px;
   line-height: 1.6;
-  color: var(--text-primary);
-  max-height: 150px;
+  /* 文字由上层的 .input-mirror 镜像层显示，这里只保留光标与选区（见 syncMirror） */
+  color: transparent;
+  caret-color: var(--text-primary);
+  /* 最多 5 行（行高 24px）：文本更长时在右侧出现滚动条，输入框不再无限增高 */
+  max-height: 120px;
+  overflow-y: auto;
   min-height: 24px;
   padding: 0;
   outline: none;
+}
+
+/* 选区高亮画在下层 textarea，镜像文字叠在其上，选中文字仍然可读 */
+.input-field textarea::selection {
+  background: color-mix(in srgb, var(--accent-color) 28%, transparent);
 }
 
 .input-field textarea::placeholder {
@@ -2510,6 +3168,27 @@ html[data-theme="dark"] .plus-menu-item:hover {
 
 .plus-list-item:hover {
   background: var(--bg-tertiary);
+}
+
+/* 可点选行（连接器）：加手型 + 已选态整行高亮（再点一次取消） */
+.plus-list-item.selectable {
+  cursor: pointer;
+}
+
+.plus-list-item.selected {
+  background: color-mix(in srgb, var(--accent-color) 14%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-color) 45%, transparent);
+}
+
+.plus-list-state {
+  flex-shrink: 0;
+  align-self: center;
+  padding: 1px 6px;
+  border-radius: 5px;
+  font-size: 11px;
+  font-weight: 500;
+  background: var(--accent-color);
+  color: #fff;
 }
 
 .plus-list-icon {
@@ -2911,6 +3590,16 @@ html[data-theme="dark"] .plus-expert-avatar.av-c7 { background: #12556b; color: 
 
 .skill-sub-item.active {
   background: color-mix(in srgb, var(--accent-color) 10%, transparent);
+}
+
+/* 停用技能不可挂载：Agent 只加载已启用的技能，挂上去也不会生效 */
+.skill-sub-item.disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.skill-sub-item.disabled:hover {
+  background: transparent;
 }
 
 .skill-sub-icon {

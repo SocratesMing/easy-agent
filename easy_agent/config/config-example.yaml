@@ -55,7 +55,7 @@ memories_dir: "${MEMORIES_DIR:-/qts/memories}"    # Long-term memory directory (
 sessions_dir: "${SESSIONS_DIR:-/qts/sessions}"     # 会话数据存储目录（项目相对路径）。实际路径：{sessions_dir}/{username}/{session_id}.json
 prompt_path: "prompts"  # 提示词目录（相对配置目录）：system.md + fragments/ + memory_*.md
 idle_logout_minutes: ${IDLE_LOGOUT_MINUTES:-0}   # 前端空闲自动登出（分钟）：用户超过该时长无界面操作或后端交互则退出到登录页；0 表示永不过期（默认，后台不启用登录超时机制）
-app_welcome_title: "Easy Agent，让工作更简单"  # 首页欢迎语
+app_welcome_title: "今天，你要研究什么"  # 首页欢迎语
 sandbox_enabled: ${SANDBOX_ENABLED:-true}    # Linux 使用 bwrap/Landlock；Windows 无等效沙箱时拒绝 execute。仅在可信单用户环境设为 false
 
 # 外部目录映射：虚拟路径前缀 → 宿主机实际路径
@@ -95,26 +95,34 @@ web_search:
   main_text_max_chars: ${WEB_SEARCH_MAIN_TEXT_CHARS:-500}  # 单条结果摘要展示上限（Tavily content 可能是整页正文）
 
 # ===== Preset Questions =====
-# Quick action questions shown on the welcome screen
+# Quick action questions shown on the welcome screen.
+# 一条问题对应首页一张卡片；最多展示 6 张（多配的部分按顺序截断），
+# 同一分类下写多条会依次展开成多张卡片。
 preset_questions:
-  - category: "文档处理"
+  - category: "文档生成"
     icon: "📄"
     questions:
-      - "帮我创建一份智能体介绍的docx,ppt和pdf文件"
-      - "帮我生成一份金融量化的pptx"
-      - "总结这份PDF的核心要点"
+      - "帮我创建一份智能体介绍的 docx、ppt 和 pdf 文件"
   - category: "量化策略"
     icon: "📈"
     questions:
-      - "帮我生成一个策略如下： 1、交易货币：EUR/USD， 2、周期：采用1小时图作为主信号周期， 3、核心指标包括：集合EMA(20)、MACD指实现入开仓； 4、止盈止损：止盈采用固定40点，止损采用固定100点。 5、持仓时间：无限制 6、回测区间 2021-01-01 至 2021-03-31 不需要回测，生成策略即可"
-      - "解释一下什么是动量策略"
-      - "帮我写一个双均线交叉策略"
+      - "帮我写一个双均线交叉策略，并在 1 小时周期上回测最近一年"
   - category: "信息查询"
     icon: "🔍"
     questions:
-      - "今天A股哪些板块比较强势？"
-      - "帮我查一下贵州茅台的最新财报"
-      - "解释一下MACD指标的原理"
+      - "今天 A 股哪些板块比较强势？"
+  - category: "财报解读"
+    icon: "📊"
+    questions:
+      - "帮我查一下贵州茅台的最新财报，并总结营收和毛利率的变化"
+  - category: "宏观研究"
+    icon: "🌐"
+    questions:
+      - "请帮我建立宏观研究框架，围绕增长、通胀与政策梳理关键问题、可用数据和验证步骤。先确认研究市场与时间范围。"
+  - category: "指标科普"
+    icon: "📚"
+    questions:
+      - "解释一下 MACD 指标的原理、常用参数和买卖信号"
 
 # ===== Database Configuration =====
 # Supports SQLite (local) or MySQL (remote)
