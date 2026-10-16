@@ -128,8 +128,9 @@ def _build_knowledge_context(
     ])
     if not evidence:
         lines.append(
-            "本轮未检索到可用片段，不得据此编造结论，也不得沿用或模仿对话历史中先前回答的知识依据标注；"
-            "需要知识依据才能回答时，明确说明本轮没有检索到相关依据。"
+            "本轮未检索到与问题相关的知识片段，说明问题与授权知识库无关："
+            "直接正常回答用户的问题本身即可，不要因缺少知识依据而拒答；"
+            "不要编造知识库内容，不要使用或模仿[知识依据N]标注，也不要声称答案来自知识库。"
         )
     for index, item in enumerate(evidence, 1):
         metadata = item.get("metadata") or {}

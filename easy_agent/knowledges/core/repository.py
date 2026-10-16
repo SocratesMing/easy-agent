@@ -904,5 +904,34 @@ class KnowledgeRepository:
             )
             return cursor.fetchone() is not None
 
+    def list_chat_session_rows(
+        self, *, user_id: str, base_id: str
+    ) -> list[tuple[str, str, str]]:
+        """按知识范围关联反查会话，返回 (session_id, username, title)，新创建者优先。
+
+        供面板问答定位「当前轮」会话：同一用户对同一知识库可能存在多轮
+        隐藏会话（开启新对话会轮换），created_at 最新者即当前轮。
+        """
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            self.db._execute(
+                cursor,
+                """
+                SELECT s.session_id, s.username, s.title
+                FROM sessions s
+                JOIN session_knowledge_scopes sc ON sc.session_id = s.session_id
+                WHERE sc.user_id=? AND sc.base_id=?
+                ORDER BY s.created_at DESC
+                """,
+                (user_id, base_id),
+            )
+            rows = cursor.fetchall()
+        return [
+            (row["session_id"], row["username"], row["title"])
+            if isinstance(row, dict)
+            else (row[0], row[1], row[2])
+            for row in rows
+        ]
+
 
 __all__ = ["KnowledgeRepository"]

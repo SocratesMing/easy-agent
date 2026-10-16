@@ -1,8 +1,15 @@
 /**
- * 输入框技能选择（slash 指令）的纯逻辑，便于单独验证与两版前端复用。
+ * 输入框技能选择（slash 检索）的纯逻辑，便于单独验证与两版前端复用。
  *
  * - `parseSlashQuery`：判断光标前是否刚输入了「/查询词」（/ 必须位于开头或空白之后）
- * - `buildSkillPayload`：把界面上的技能标签还原成发给模型的 `/技能目录名` 指令前缀
+ * - `buildMessageText`：归一化实际发送的消息正文（压缩空白，不拼任何指令前缀）
+ *
+ * 已选技能不进消息文本：以请求体的 `skills` 字段（技能目录名）单独传给后端，
+ * 由后端决定怎么交给模型（见 `api/chat.js` / `api/expert.js` 的 payload）。这样气泡、
+ * 会话标题与历史里都不会出现 `/技能名` 这类机器语言。
+ * 连接器不随消息提交：本会话启用哪些连接器由输入框「+」→ 连接器面板的开关设置
+ * （见 `api/connectors.js` 的 setSessionConnectors）。
+ * 后端仍兼容消息文本里的旧指令写法（旧前端 / 用户手打）。
  */
 
 /** 匹配光标前的 `/查询词`（查询词内不含空白与 `/`） */
@@ -24,21 +31,13 @@ export function parseSlashQuery(text, caret) {
 }
 
 /**
- * 组装实际发送给模型的内容：技能指令前缀 + 用户输入。
+ * 实际发送的消息正文：只做归一化（去首尾空白、压缩连续空白）。
  *
- * 界面显示的是「工具图标 + 技能名」，模型需要的是 `/目录名`，例如：
- * 选了 pptx-generator 并输入「生成一份PPT创作文档」
- * → `/pptx-generator 生成一份PPT创作文档`
+ * 技能以结构化字段单独提交，正文就是用户输入的原话——这样落库内容、气泡与会话
+ * 标题天然干净，不需要任何字符串清洗。
  *
- * @param {Array<{dir_name: string}>} skills 已选技能（按选择顺序）
- * @param {string} text 用户输入（原始文本，内部会压缩连续空白）
+ * @param {string} text 用户输入
  */
-export function buildSkillPayload(skills, text) {
-  const body = (text || '').trim().replace(/\s+/g, ' ')
-  const prefix = (skills || [])
-    .map(skill => (skill && skill.dir_name ? `/${skill.dir_name}` : ''))
-    .filter(Boolean)
-    .join(' ')
-  if (!prefix) return body
-  return body ? `${prefix} ${body}` : prefix
+export function buildMessageText(text) {
+  return (text || '').trim().replace(/\s+/g, ' ')
 }

@@ -1,10 +1,10 @@
-"""「使用连接器[X]」指令：文本解析、名字映射与按连接器注入 MCP 工具。
+"""连接器名字解析 + 「会话级连接器开关」注入 MCP 工具。
 
-前端输入框选中连接器后会把 ``使用连接器[展示名]`` 前置到消息文本里，后端据此：
-
-1. 解析出连接器名（可多条、可同名去重）；
-2. 映射为 mcp.json 的 server 名（展示名 → 目录 id；自定义连接器直接命中 server 名）；
-3. 只给本轮 Agent 注入这些连接器的工具，连接器变化时驱逐缓存的 Agent。
+1. ``parse_connector_directives`` / ``resolve_connector_servers`` 把连接器展示名（含
+   旧前端写进消息文本的 ``使用连接器[展示名]`` 指令）映射为 mcp.json 的 server 名 ——
+   输入框「+」→ 连接器面板的开关（``/agent/connectors/session``）复用同一套映射；
+2. ``agent_manager`` 按会话记录（``set_session_connectors``）决定给 Agent 注入哪些
+   连接器的工具：未设置 = 全部启用，空集合 = 全部关闭，变化时驱逐缓存 Agent。
 
 用例完全离线：目录读取 / mcp.json / MCP 客户端 / EasyAgent 全部打桩。
 """
@@ -244,53 +244,59 @@ def manager(monkeypatch, tmp_path):
     am._session_connectors.clear()
 
 
-async def _get(connectors_sel=None, model_name="deepseek"):
-    kwargs = {"model_name": model_name, "enable_web_search": False}
-    if connectors_sel is not None:
-        kwargs["connector_servers"] = connectors_sel
+async def _get(model_name="deepseek"):
     return await am.get_or_create_agent_for_session(
-        SID, "testuser", "ws-name", **kwargs
+        SID, "testuser", "ws-name", model_name=model_name, enable_web_search=False
     )
 
 
-async def test_no_connector_selected_loads_all(manager):
+async def test_session_without_switch_loads_all(manager):
+    """没动过开关的会话（新建会话默认态）：注入全部启用连接器，且缓存命中不重复加载。"""
     a1 = await _get()
     a2 = await _get()
 
-    assert a1 is a2                       # 未指定连接器：缓存命中，与改动前行为一致
-    assert manager == [None]              # server_names=None = 加载全部启用连接器；命中缓存不再加载
-    assert am.get_session_connectors(SID) == ()
+    assert a1 is a2                       # 未设置开关：缓存命中
+    assert manager == [None]              # server_names=None = 加载全部启用连接器
+    assert am.get_session_connectors(SID) is None
 
 
-async def test_selected_connector_limits_tools_and_evicts(manager):
+async def test_session_switch_limits_tools_and_evicts(manager):
+    """写入会话开关：立即驱逐缓存 Agent，下次请求只加载选中的连接器。"""
     await _get()
-    a2 = await _get(["gaode"])
+    evicted = am.set_session_connectors(SID, ["gaode"])
+    a2 = await _get()
 
+    assert evicted == 1                            # 有缓存 Agent -> 被驱逐
     assert _FakeAgent.instances[-1] is a2
-    assert len(_FakeAgent.instances) == 2          # 连接器变化 -> 驱逐重建
+    assert len(_FakeAgent.instances) == 2
     assert manager == [None, ["gaode"]]
     assert am.get_session_connectors(SID) == ("gaode",)
 
-    a3 = await _get(["gaode"])                     # 同一套连接器：缓存命中
+    a3 = await _get()                              # 同一套连接器：缓存命中
     assert a3 is a2
     assert len(_FakeAgent.instances) == 2
     assert manager == [None, ["gaode"]]
 
 
 async def test_switching_and_clearing_connectors_rebuilds(manager):
-    await _get(["gaode"])
-    await _get(["mysql", "gaode"])
-    c4 = await _get([])                            # 撤掉全部连接器 -> 回到「注入全部」
+    """开关多次变化逐次驱逐重建；全部关闭时传空列表（不再回退成「注入全部」）。"""
+    await _get()
+    am.set_session_connectors(SID, ["gaode"])
+    await _get()
+    am.set_session_connectors(SID, ["mysql", "gaode"])
+    await _get()
+    am.set_session_connectors(SID, [])
+    last = await _get()
 
-    assert _FakeAgent.instances[-1].model_name == "deepseek"
-    assert c4 is _FakeAgent.instances[-1]
-    assert manager == [["gaode"], ["mysql", "gaode"], None]
+    assert last is _FakeAgent.instances[-1]
+    assert manager == [None, ["gaode"], ["mysql", "gaode"], []]
     assert am.get_session_connectors(SID) == ()
 
 
 async def test_hitl_resume_keeps_cached_agent(manager):
-    """HITL 恢复不传连接器：不因连接器差异驱逐，保住 checkpointer 的中断态。"""
-    a1 = await _get(["gaode"])
+    """HITL 恢复不重设开关：不因连接器差异驱逐，保住 checkpointer 的中断态。"""
+    am.set_session_connectors(SID, ["gaode"])
+    a1 = await _get()
     resumed = await am.get_or_create_agent_for_session(
         SID, "testuser", "ws-name", model_name="deepseek"
     )
@@ -299,17 +305,28 @@ async def test_hitl_resume_keeps_cached_agent(manager):
     assert manager == [["gaode"]]                  # 未重新加载 MCP 工具
 
 
-async def test_follow_cache_rebuild_reuses_recorded_connectors(manager):
-    """缓存被其他路径驱逐后（如换模型）重建，仍沿用该会话已记录的连接器。"""
-    await _get(["gaode"])
-    await _get(model_name="other-model")           # 不传连接器 = 跟随缓存
+async def test_cache_rebuild_reuses_session_connectors(manager):
+    """缓存被其他路径驱逐后（如换模型）重建，仍沿用该会话的开关设置。"""
+    am.set_session_connectors(SID, ["gaode"])
+    await _get()
+    await _get(model_name="other-model")
 
     assert manager == [["gaode"], ["gaode"]]
     assert len(_FakeAgent.instances) == 2
 
 
-async def test_remove_session_agent_clears_connector_record(manager):
-    await _get(["gaode"])
+async def test_remove_session_agent_keeps_connector_record(manager):
+    """记忆更新 / 取消生成等场景也会调用 remove_session_agent：会话开关不得被清掉。"""
+    am.set_session_connectors(SID, ["gaode"])
+    await _get()
     am.remove_session_agent(SID)
 
-    assert am.get_session_connectors(SID) == ()
+    assert am.get_session_connectors(SID) == ("gaode",)
+
+
+async def test_clear_session_connectors_removes_record(manager):
+    """会话被删除时才清掉开关记录（clear_session_connectors）。"""
+    am.set_session_connectors(SID, ["gaode"])
+    am.clear_session_connectors(SID)
+
+    assert am.get_session_connectors(SID) is None

@@ -70,7 +70,7 @@
                 <path d="M2 17l10 5 10-5"></path>
                 <path d="M2 12l10 5 10-5"></path>
               </svg>
-              <span class="session-title-text">{{ session.title || '未命名会话' }}</span>
+              <span class="session-title-text">{{ sessionTitle(session) }}</span>
               <span v-if="streamingSessionIds.includes(session.session_id)" class="streaming-badge" title="进行中">
                 <span class="streaming-dot"></span>
               </span>
@@ -199,6 +199,7 @@
 <script setup>
 import { ref, nextTick, onMounted, computed } from 'vue'
 import { APP_TITLE } from '../config.js'
+import { ensureSkillDirectoryLoaded, skillFreeTitle } from '../store/skillDirectoryStore.js'
 
 const emit = defineEmits(['createSession', 'selectSession', 'deleteSession', 'renameSession', 'toggleSidebar', 'showAssets', 'showSkillCenter', 'showScheduledTasks', 'showSettings', 'showUserManagement', 'logout', 'togglePin'])
 
@@ -318,6 +319,15 @@ function toggleUserMenu(e) {
   showUserMenu.value = !showUserMenu.value
 }
 
+/**
+ * 侧边栏展示用标题：老会话标题是首条消息原文，可能带旧前端拼接的 `/技能名` 指令前缀，
+ * 这里按技能目录反查还原（见 store/skillDirectoryStore.js）。新会话标题本来就是用户原话，
+ * 目录名不匹配时原样返回。
+ */
+function sessionTitle(session) {
+  return skillFreeTitle(session && session.title) || '未命名会话'
+}
+
 function toggleMenu(sessionId, e) {
   if (e) {
     e.stopPropagation()
@@ -368,6 +378,8 @@ onMounted(() => {
     closeMenu()
     closeUserMenuSilent()
   })
+  // 标题里的 /技能名 前缀要按技能目录反查，目录加载完成后标题会自动刷新
+  ensureSkillDirectoryLoaded()
 })
 
 function closeUserMenuSilent() {

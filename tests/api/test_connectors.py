@@ -573,3 +573,80 @@ def test_connectors_status_endpoint(client, auth_catalog, monkeypatch):
     statuses = client.get("/agent/connectors/status").json()["statuses"]
     assert statuses[0]["status"] == "error"
     assert "403" in statuses[0]["error"]
+
+
+# ── 会话级连接器开关（输入框「+」→ 连接器面板的开关） ──────────────────
+
+
+def _install_auth_connector(client) -> None:
+    client.post(
+        "/agent/connectors/install",
+        json={
+            "id": "auth-connector",
+            "validate": False,
+            "values": {"headers.Authorization": "Bearer sk-123"},
+        },
+    )
+
+
+def test_session_switches_default_to_null(client):
+    """没动过开关的会话返回 null（= 全部启用），与「空数组 = 全部关闭」是两种状态。"""
+    from easy_agent.services import agent_manager as am
+
+    resp = client.get("/agent/connectors/session", params={"session_id": "sess-none"})
+    assert resp.status_code == 200
+    assert resp.json() == {"session_id": "sess-none", "connectors": None}
+    assert am.get_session_connectors("sess-none") is None
+
+
+def test_session_switches_write_and_read_back(client, auth_catalog):
+    """写入会话开关：映射成 server 名落到 agent_manager，查询接口原样返回。"""
+    from easy_agent.services import agent_manager as am
+
+    _install_auth_connector(client)
+    sid = "sess-switch"
+    try:
+        resp = client.post(
+            "/agent/connectors/session",
+            json={"session_id": sid, "connectors": ["auth-connector"]},
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["connectors"] == ["auth-connector"]
+        assert resp.json()["unknown"] == []
+        assert am.get_session_connectors(sid) == ("auth-connector",)
+
+        got = client.get("/agent/connectors/session", params={"session_id": sid})
+        assert got.status_code == 200
+        assert got.json()["connectors"] == ["auth-connector"]
+
+        # 全部关闭：提交空数组，查询仍是空数组（不能退化成 null/全部启用）
+        resp = client.post(
+            "/agent/connectors/session", json={"session_id": sid, "connectors": []}
+        )
+        assert resp.status_code == 200
+        assert resp.json()["connectors"] == []
+        assert am.get_session_connectors(sid) == ()
+        assert client.get(
+            "/agent/connectors/session", params={"session_id": sid}
+        ).json()["connectors"] == []
+    finally:
+        am.clear_session_connectors(sid)
+
+
+def test_session_switches_map_display_name_and_ignore_unknown(client, auth_catalog):
+    """展示名映射为目录 id（server 名）；未安装的名字进 unknown，不影响其余项。"""
+    from easy_agent.services import agent_manager as am
+
+    _install_auth_connector(client)
+    sid = "sess-unknown"
+    try:
+        resp = client.post(
+            "/agent/connectors/session",
+            json={"session_id": sid, "connectors": ["需要鉴权的连接器", "根本没装"]},
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["connectors"] == ["auth-connector"]
+        assert resp.json()["unknown"] == ["根本没装"]
+        assert am.get_session_connectors(sid) == ("auth-connector",)
+    finally:
+        am.clear_session_connectors(sid)

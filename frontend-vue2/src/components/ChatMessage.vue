@@ -24,7 +24,7 @@
             <FileIcon :filename="file.filename" :size="40" />
           </div>
           <div class="file-info">
-            <span class="file-name">{{ file.filename }}</span>
+            <span class="file-name" :title="file.filename">{{ file.filename }}</span>
             <div class="file-meta">
               <span class="file-size">{{ formatSize(file.size) }}</span>
               <span class="file-type">{{ getFileExtension(file.filename) }}</span>
@@ -357,17 +357,31 @@ export default {
       return pageContextLabel(this.message.page_context)
     },
     /**
-     * 用户消息开头的技能令牌与正文拆分。
-     * 发送时输入框把已选技能拼成 `/目录名 正文` 存在消息里（见 skillSlash.js），
-     * 这里按技能目录反查还原成标签；技能目录未加载或目录名不匹配时不解析，
-     * 避免把 /usr/bin 这类路径误当技能。其余角色的消息原样返回。
+     * 用户消息的技能标签与正文拆分。
+     *
+     * 优先读结构化的 `message.skills`（技能目录名，后端落库），展示名/图标按目录名反查
+     * 技能目录；老数据（改造前的消息、用户手打的 `/技能名`）没有该字段，仍按正文开头的
+     * `/目录名` 令牌解析还原——目录名不匹配时不解析，避免把 /usr/bin 这类路径误当技能。
+     * 其余角色的消息原样返回。
      */
     userSkillSplit() {
       const content = this.message.content
-      const names = skillDirectoryStore.names
-      if (this.message.role !== 'user' || names.length === 0) {
-        return { skills: [], body: content }
+      if (this.message.role !== 'user') return { skills: [], body: content }
+
+      // 新数据：技能目录名由后端落库在 message.skills（结构化字段），按它渲染标签即可，
+      // 不再从正文里反扒前缀，也不依赖技能目录接口是否加载完成（展示名反查不到时用目录名兜底）。
+      const dirNames = Array.isArray(this.message.skills) ? this.message.skills : []
+      if (dirNames.length > 0) {
+        const parsed = parseLeadingSkillTokens(content, dirNames)
+        return {
+          skills: dirNames.map(name => skillDirectoryStore.byDirName[name] || { dir_name: name, name }),
+          body: parsed.body,
+        }
       }
+
+      // 老数据（改造前落库的消息 / 手打 `/技能名`）：前缀还拼在正文里，按技能目录反查还原
+      const names = skillDirectoryStore.names
+      if (names.length === 0) return { skills: [], body: content }
       const parsed = parseLeadingSkillTokens(content, names)
       return {
         skills: parsed.dirNames.map(name => skillDirectoryStore.byDirName[name]).filter(Boolean),
@@ -755,16 +769,14 @@ export default {
         // 去掉 [workspace: ...] 标记行及前面的记忆/上下文前缀
         text = lines.slice(wsIdx + 1).join('\n')
       }
-      // 发送时拼接的 /技能名 前缀已由气泡上的技能标签承载，复制时一并去掉
-      if (skillDirectoryStore.names.length > 0) {
-        text = parseLeadingSkillTokens(text, skillDirectoryStore.names).body
-      }
       return text.replace(/^\s+/, '').replace(/\s+$/, '')
     },
     async copyMessage(ev) {
       if (!this.message.content) return
 
-      const text = this.cleanUserContent(this.message.content)
+      // 复制气泡里真正展示的正文：发送时拼接的 /技能名 前缀已由技能标签承载，
+      // 不再带进剪贴板（见 displayContent / userSkillSplit）
+      const text = this.cleanUserContent(this.displayContent)
       try {
         const ok = await copyTextToClipboard(text)
         const btn = ev?.currentTarget
@@ -1083,6 +1095,11 @@ html[data-theme="dark"] .process-body .process-inline-content {
   gap: 8px;
   margin-bottom: 4px;
   width: 100%;
+}
+
+/* 用户消息：文件卡片整体右移，右缘与消息文本右缘对齐（助手消息保持左侧布局） */
+.message.user .message-content .files-container {
+  justify-content: flex-end;
 }
 
 /* 文件卡片样式 */

@@ -3,8 +3,10 @@
     <div class="chat-main">
     <div class="chat-content" :class="composerMode === 'center' ? 'is-center' : 'is-bottom'">
       <!-- 顶部信息行：会话时间居中，操作区（任务规划 + 展开工作区）贴右。
-           这三者此前分散在视口/聊天区右上角，位置互不相干；现在统一到同一行。 -->
-      <div v-if="showTopbar" class="chat-topbar">
+           这三者此前分散在视口/聊天区右上角，位置互不相干；现在统一到同一行。
+           空会话（无消息、无任务）时只有右侧一个工作区按钮，这一行改为浮层不占位，
+           否则会在欢迎页上方压出一条 44px 白带 + 分隔线，破坏垂直居中。 -->
+      <div v-if="showTopbar" class="chat-topbar" :class="{ 'is-float': topbarFloating }">
         <div v-if="showSessionTime" class="session-created-time">
           <span class="session-time-pill">
             <svg class="session-time-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -341,6 +343,11 @@ const showWorkspaceBtn = computed(() => !!props.currentSessionId && !props.works
 const showTopbar = computed(() =>
   showSessionTime.value || props.todos.length > 0 || showWorkspaceBtn.value
 )
+// 这一行只剩「展开工作区」按钮（空会话：没有会话时间、没有任务）时改为浮层不占位：
+// 有会话时间或任务胶囊的行才是真顶栏，需要占住 44px 与工作区头部对齐。
+const topbarFloating = computed(
+  () => !showSessionTime.value && props.todos.length === 0 && showWorkspaceBtn.value
+)
 
 const emit = defineEmits(['sendMessage', 'presetSend', 'stop', 'removeFile', 'createSession', 'approve', 'reject', 'update:selectedModel', 'toggleWorkspace', 'clearExpert', 'selectExpert', 'expertPromptApplied', 'openPanel'])
 const messagesRef = ref(null)
@@ -421,8 +428,8 @@ function goToNextUserMessage() {
   }
 }
 
-function handleSend(message, files, signal, enableDeepThink = true, enableWebSearch = false) {
-  emit('sendMessage', message, files, signal, enableDeepThink, enableWebSearch)
+function handleSend(message, files, signal, enableDeepThink = true, enableWebSearch = false, skills = []) {
+  emit('sendMessage', message, files, signal, enableDeepThink, enableWebSearch, skills)
 }
 
 function handleRemoveFile(file, messageIndex) {
@@ -543,15 +550,15 @@ function onPresetCardClick(groupIndex) {
 
 const composerRef = ref(null)
 
-function onSend(message, files, signal, enableDeepThink, enableWebSearch) {
+function onSend(message, files, signal, enableDeepThink, enableWebSearch, skills) {
   composerMode.value = 'bottom'
   isAtBottom.value = true
   if (presetSendPending.value) {
     presetSendPending.value = false
-    emit('presetSend', message, files, signal, enableDeepThink, enableWebSearch)
+    emit('presetSend', message, files, signal, enableDeepThink, enableWebSearch, skills)
     return
   }
-  handleSend(message, files, signal, enableDeepThink, enableWebSearch)
+  handleSend(message, files, signal, enableDeepThink, enableWebSearch, skills)
 }
 
 // 是否贴底：用户位于滚动容器底部时为 true，向上滚动查看历史时为 false。
@@ -731,6 +738,23 @@ watch(() => props.scrollTrigger, () => {
   box-sizing: border-box;
   background: var(--chat-surface, #ffffff);
   border-bottom: 1px solid var(--border-color, #e2e8f0);
+}
+
+/* 空会话：这一行只有右侧工作区按钮，不参与布局（否则欢迎页被顶下去 44px）。
+   浮层本身不吃点击，按钮单独放行，保证工作区入口仍可用。 */
+.chat-topbar.is-float {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 44px;
+  background: transparent;
+  border-bottom: none;
+  pointer-events: none;
+}
+
+.chat-topbar.is-float .chat-topbar-actions {
+  pointer-events: auto;
 }
 
 /* 右侧操作区：绝对定位以免影响时间的真正居中。

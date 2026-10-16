@@ -29,7 +29,7 @@ from ..middleware import get_current_username
 from ..utils import get_owned_session
 from ..utils.reasoning_safety import redact_messages_reasoning
 from ..config import Config
-from ..services import get_agent_config, remove_session_agent
+from ..services import clear_session_connectors, get_agent_config, remove_session_agent
 
 logger = logging.getLogger(__name__)
 
@@ -263,6 +263,12 @@ async def delete_session(
         remove_session_agent(session_id)
     except Exception as e:
         logger.warning(f"移除缓存 Agent 失败: {e}")
+
+    # 会话级连接器开关记录随会话一起清掉（进程内缓存，不清理会残留到进程结束）
+    try:
+        clear_session_connectors(session_id)
+    except Exception as e:
+        logger.warning(f"清除会话连接器开关失败: {e}")
 
     # 释放该会话的 HITL checkpointer（未调用时由 agent.py 的 FIFO 上限兜底）
     try:
