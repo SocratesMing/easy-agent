@@ -215,7 +215,10 @@
               :show-manage-entry="feat.openInMain"
               :models="models"
               :selectedModel="selectedModel"
+              :activeExpert="selectedExpert"
               @update:selectedModel="selectedModel = $event"
+              @select-expert="handleUseExpert"
+              @clear-expert="selectedExpert = null"
               @send-message="handleSendMessage"
               @create-session="ensureCurrentSession"
               @remove-file="handleRemoveFile"
@@ -399,6 +402,8 @@ export default {
       launcherDragging: false,
       launcherMoved: false,
       selectedModel: chatStore.activeModel,
+      // 「+」菜单召唤的专家：chatSessionMixin 发送时据此改走专家执行接口
+      selectedExpert: null,
       showHistory: false,
       historyQuery: '',
       renamingId: null,
@@ -593,8 +598,18 @@ export default {
   },
   methods: {
     // ── chatSessionMixin 钩子 ─────────────────────────────────────────
-    beforeSessionChange() {
+    beforeSessionChange(kind) {
       this.showHistory = false
+      // 新建会话回到干净状态（与主页面一致）：专家需在新会话里重新选择
+      if (kind === 'create') this.selectedExpert = null
+    },
+    handleUseExpert(expert) {
+      if (!expert || !expert.export_agent_id) return
+      this.selectedExpert = {
+        export_agent_id: expert.export_agent_id,
+        export_name_cn: expert.export_name_cn,
+        export_version: expert.export_version,
+      }
     },
     getPageContextForSend() {
       const quote = this.quote

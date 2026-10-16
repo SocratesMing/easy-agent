@@ -23,6 +23,11 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from ..db import Database, get_database
+from ..knowledge_impl import (
+    authorize_scoped_chat,
+    chat_stream_generator,
+    prepare_knowledge_chat,
+)
 from ..db.expert_store import (
     STATUS_ACTIVE,
     STATUS_BUILDING,
@@ -33,7 +38,6 @@ from ..middleware import get_current_username
 from ..model import create_model
 from ..models.api import ChatRequest
 from ..services import (
-    chat_stream_generator,
     get_agent_config,
     get_or_create_agent_for_session,
     invalidate_user_agents,
@@ -583,6 +587,13 @@ async def stream_export_run(
 
     session_id = request.session_id
     message_id = request.message_id or str(uuid.uuid4())
+    # 已绑定知识范围的会话：与 chat.py 一致做 fail-closed 知识凭据复验
+    username = await authorize_scoped_chat(
+        request=http_request,
+        db=db,
+        session_id=session_id,
+        username=username,
+    )
     sid = session_id[-5:] if session_id else "new"
 
     # 本轮技能（与 chat.py 一致）：优先用请求体 skills 字段（技能目录名），兼容消息文本
@@ -651,6 +662,13 @@ async def stream_export_run(
         request.message,
     )
     parsed_content = model_message
+    # 会话勾选了知识库：专家模式同样按知识范围检索并注入依据（未绑定时为空上下文）
+    knowledge_chat = await prepare_knowledge_chat(
+        request=http_request,
+        db=db,
+        session_id=session_id,
+        question=request.message,
+    )
     _existing = db.get_session(session_id)
     is_new_session = (not _existing) or (len(_existing.messages) == 0)
 
@@ -756,6 +774,9 @@ async def stream_export_run(
                 http_request=http_request,
                 parsed_content=parsed_content,
                 session_logger=session_logger,
+                context_prefix=knowledge_chat.context,
+                initial_events=knowledge_chat.initial_events,
+                assistant_metadata=knowledge_chat.assistant_metadata,
             ),
             session_id,
             sid,

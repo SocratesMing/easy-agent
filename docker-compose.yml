@@ -45,6 +45,8 @@ services:
       - ./.env.dev:/app/.env.dev:ro
       # 宿主机改提示词后重启 backend 即生效
       - ./easy_agent/config/prompts:/app/easy_agent/config/prompts
+      # 公共（预置）专家目录：宿主机新增/修改专家后重启 backend 即生效
+      - ./exports:/app/exports
       - easy_agent_data:/app/data
       - easy_agent_workspace:/app/workspace
       - easy_agent_memories:/app/memories

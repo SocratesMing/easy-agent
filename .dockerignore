@@ -43,6 +43,7 @@ tests/
 *.md
 !easy_agent/config/**/*.md
 !deploy/**/*.md
+!exports/**/*.md
 
 
 # OS

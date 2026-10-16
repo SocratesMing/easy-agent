@@ -630,6 +630,9 @@ export default {
       if (!this.currentSessionId) {
         const newSession = await createSession(initialTitle || '新会话', chatStore.username || null)
         this.currentSessionId = newSession.session_id
+        // 预创建的会话即当前展示会话：不同步 loadedSessionId 时，随后的流式事件会被
+        // runInSession 当作「后台会话」只写缓存不渲染（一直「正在响应」）
+        this.loadedSessionId = newSession.session_id
         const existingIndex = this.sessions.findIndex(s => s.session_id === newSession.session_id)
         if (existingIndex === -1) {
           const session = {
