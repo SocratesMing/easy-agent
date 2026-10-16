@@ -50,6 +50,8 @@
         @close="showSkillCenter = false"
         @use="handleUseExpert"
         @create-skill="handleSkillCreate"
+        @create-expert="handleExpertCreate"
+        @edit-expert="handleExpertEdit"
       />
 
       <ScheduledTasksPanel v-if="showScheduledTasks" @close="showScheduledTasks = false" />
@@ -1052,6 +1054,36 @@ async function ensureCurrentSession(initialTitle = '') {
  * 这里新建会话并关闭技能中心，ChatInput 随之重新挂载、自动恢复技能标签与提示词。
  */
 async function handleSkillCreate() {
+  await handleCreateSession()
+}
+
+/**
+ * 专家面板「新建专家」：与「创建技能」完全一致 —— 预填草稿已由面板写入
+ * sessionStorage，这里新开一个对话窗口即可（ChatInput 挂载时自动恢复草稿 + 技能标签）。
+ */
+async function handleExpertCreate() {
+  await handleCreateSession()
+}
+
+/**
+ * 专家面板卡片「编辑」：预填草稿已由面板写入 sessionStorage。
+ *
+ * 窗口选择规则（按需求）：
+ * - 当前窗口就是**新会话**（无任何聊天记录）→ 直接把内容带入当前窗口，不新开；
+ * - 当前窗口**已有聊天记录** → 新开一个会话窗口，避免把修改指令混进既有上下文。
+ *
+ * 两种情况都只需「关闭面板」：Chat 因 v-else-if 会重新挂载，
+ * ChatInput 随之恢复草稿与技能标签。
+ */
+async function handleExpertEdit() {
+  const isEmptySession = !currentSessionId.value || messages.value.length === 0
+  if (isEmptySession) {
+    showAssets.value = false
+    showSkillCenter.value = false
+    showScheduledTasks.value = false
+    showSettingsPanel.value = false
+    return
+  }
   await handleCreateSession()
 }
 

@@ -791,6 +791,10 @@ export default {
       slashStart: -1,
       skillPickerStyle: {},
       skillLoadedAt: 0,
+      // 预选技能目录名（不以内联标签呈现）：外部入口（如专家面板「新建/修改专家」）
+      // 在草稿里用自然语言点名技能（"用「expert-creator」技能帮我创建专家：…"），
+      // 这里只把技能记为已选，发送时随 skills 字段交给后端激活。
+      preselectedSkillDirs: [],
     }
   },
   computed: {
@@ -928,9 +932,14 @@ export default {
         this.skillPickerOpen ? { suppressStart: this.slashStart } : null
       )
     },
-    /** 已选技能目录名（按出现顺序去重）：canSend 与发送时的 skills 字段 */
+    /** 已选技能目录名（按出现顺序去重）：canSend 与发送时的 skills 字段。
+     *  = 输入框内联标签 + 预选技能（preselectedSkillDirs，见 restorePendingSkill）。 */
     selectedSkillDirs() {
-      return skillDirsInText(this.message, this.tokenMap)
+      const dirs = this.preselectedSkillDirs.slice()
+      for (const dir of skillDirsInText(this.message, this.tokenMap)) {
+        if (!dirs.includes(dir)) dirs.push(dir)
+      }
+      return dirs
     },
     canSend() {
       return this.message.trim() || this.uploadedFiles.length > 0 ||
@@ -2019,6 +2028,8 @@ export default {
       this.message = ''
       this.uploadedFiles = []
       this.selectedSkills = []
+      // 预选技能已随本条消息提交，清掉避免影响下一条
+      this.preselectedSkillDirs = []
       this.dismissUploadNotice()
       this.closeSkillPicker()
       this.$nextTick(() => this.autoResize())
@@ -2260,6 +2271,14 @@ export default {
      * 恢复「待选技能」：技能中心「创建技能」等入口会把技能写进 sessionStorage，
      * 面板关闭后本组件重新挂载时读出来挂成技能标签（读后即清除，避免下次误挂）。
      */
+    /**
+     * 恢复「待选技能」：技能中心「创建技能」等入口会把技能写进 sessionStorage，
+     * 面板关闭后本组件重新挂载时读出来挂成技能标签（读后即清除，避免下次误挂）。
+     *
+     * `insert_token === false` 时**不插标签**：草稿正文已用自然语言点名技能
+     * （如专家面板的「用「expert-creator」技能帮我创建专家：…」），这里只把技能
+     * 记为预选，发送时随 skills 字段交给后端激活。
+     */
     restorePendingSkill() {
       let raw = null
       try {
@@ -2272,6 +2291,12 @@ export default {
         const skill = JSON.parse(raw)
         if (!skill || !skill.dir_name) return
         this.rememberSkills([skill])
+        if (skill.insert_token === false) {
+          if (!this.preselectedSkillDirs.includes(skill.dir_name)) {
+            this.preselectedSkillDirs.push(skill.dir_name)
+          }
+          return
+        }
         const ta = this.$refs.textareaRef
         const base = (ta && ta.value) || this.message
         if (skillSegments(base, this.tokenMap).some((seg) => seg.dirName === skill.dir_name)) return

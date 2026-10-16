@@ -980,8 +980,17 @@ const mirrorSegments = computed(() =>
     skillPickerOpen.value ? { suppressStart: slashStart.value } : null
   )
 )
-// 已选技能目录名（按出现顺序去重）：canSend 与发送时的 skills 字段
-const selectedSkillDirs = computed(() => skillDirsInText(message.value, tokenMap.value))
+// 已选技能目录名（按出现顺序去重）：canSend 与发送时的 skills 字段。
+// = 输入框内联标签 + 预选技能（preselectedSkillDirs，见 restorePendingSkill）：
+// 外部入口（如专家面板「新建/修改专家」）在草稿里用自然语言点名技能，
+// 不插内联标签、只把技能记为已选，发送时随 skills 字段交给后端激活。
+const preselectedSkillDirs = ref(new Set())
+
+const selectedSkillDirs = computed(() => {
+  const dirs = new Set(preselectedSkillDirs.value)
+  for (const dir of skillDirsInText(message.value, tokenMap.value)) dirs.add(dir)
+  return Array.from(dirs)
+})
 
 /**
  * 技能检索：优先按「目录名 / 技能名」匹配；仅当没有任何名称命中时，才回退到描述匹配。
@@ -1147,6 +1156,10 @@ function removeSkillToken(dirName) {
 /**
  * 恢复「待选技能」：技能中心「创建技能」等入口会把技能写进 sessionStorage，
  * 面板关闭后本组件重新挂载时读出来挂成技能标签（读后即清除，避免下次误挂）。
+ *
+ * `insert_token === false` 时**不插标签**：草稿正文已用自然语言点名技能
+ * （如专家面板的「用「expert-creator」技能帮我创建专家：…」），这里只把技能
+ * 记为预选，发送时随 skills 字段交给后端激活。
  */
 function restorePendingSkill() {
   let raw = null
@@ -1160,6 +1173,10 @@ function restorePendingSkill() {
     const skill = JSON.parse(raw)
     if (!skill?.dir_name) return
     rememberSkills([skill])
+    if (skill.insert_token === false) {
+      preselectedSkillDirs.value.add(skill.dir_name)
+      return
+    }
     const ta = textareaRef.value
     const base = ta?.value ?? message.value
     if (skillSegments(base, tokenMap.value).some((seg) => seg.dirName === skill.dir_name)) return
@@ -2323,6 +2340,8 @@ async function send() {
 
   message.value = ''
   uploadedFiles.value = []
+  // 预选技能已随本条消息提交，清掉避免影响下一条
+  preselectedSkillDirs.value = new Set()
   dismissUploadNotice()
   closeSkillPicker()
   nextTick(() => autoResize())
