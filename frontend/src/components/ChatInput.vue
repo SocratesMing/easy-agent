@@ -80,10 +80,11 @@
           ></div>
           <!-- 镜像渲染层：真实显示的文字 + 内联技能标签，与 textarea 同字体/行高/宽度，两侧换行逐行一致。
                textarea 文字透明，只负责输入、光标与选区；用户看到的文字都来自这一层（见 syncMirror）。
-               技能标签（`/显示名`）是文本里的一段子串，这里只是把它渲染成带底色的内联标签：
-               字号/行高/字宽与正文完全相同、无任何水平 padding（见 .input-skill-pill），
-               所以两侧换行与光标位置逐像素对齐 ——「光标紧邻标签之后」= selectionStart === 标签结束下标，
-               Backspace 据此整段删掉标签；点击标签同样整段移除（标签里不再放 ×，避免改变宽度）。 -->
+               技能标签是文本里的一段子串（`／显示名`，首字符是全角斜线）：这里把它渲染成「图标 + 名字」——
+               斜线的字形藏掉、图标绝对定位进它 1em 宽的占位框，所以布局宽度与 textarea 分毫不差，
+               长文本换行与光标位置逐像素对齐（见 .input-skill-pill-mark 的 CSS 注释）。
+               「光标紧邻标签之后」= selectionStart === 标签结束下标，Backspace 据此整段删掉标签；
+               点击标签同样整段移除（标签里不放 ×，避免改变宽度）。 -->
           <div v-show="mirrorText" ref="mirrorRef" class="input-mirror" aria-hidden="true"
             ><template v-for="(seg, index) in mirrorSegments" :key="index"
               ><span v-if="seg.type === 'text'" class="input-mirror-text">{{ seg.text }}</span
@@ -92,12 +93,13 @@
                 class="input-skill-pill"
                 :title="`${seg.name}（点击移除）`"
                 @click.stop.prevent="removeSkillToken(seg.dirName)"
-              ><span class="input-skill-pill-mark">/</span>{{ seg.token.slice(1) }}</span
+              ><span class="input-skill-pill-mark">／<SkillIcon :icon="seg.icon" :category="iconCategoryFor(seg.categoryId)" size="xs" /></span>{{ seg.label }}</span
             ></template
           ></div>
           <textarea
             ref="textareaRef"
             v-model="message"
+            spellcheck="false"
             v-tip.hover="'输入消息，Enter 发送 · Shift+Enter 换行 · 输入 / 唤起技能选择'"
             @keydown="onKeydown"
             @beforeinput="onBeforeInput"
@@ -677,12 +679,17 @@ import { uploadFile, deleteFile } from '../api/files.js'
 import { getWebSearchStatus, getUploadLimits } from '../api/settings.js'
 import { getUserSkills, importSkill } from '../api/skills.js'
 import { iconCategoryFor } from '../utils/skillCategories.js'
+
+// 镜像层为画出技能芯片的外扩留白，把裁剪盒向外扩了这么多 px（见 .input-mirror 的 padding/margin）：
+// 补滚动条占位时要一起加上，否则镜像内容比 textarea 窄、换行位置对不上。
+const MIRROR_BLEED = 6
 import { buildMessageText, parseSlashQuery } from '../utils/skillSlash.js'
 // 内联技能标签：标签文字 = textarea 文本里的子串，选中/删除/发送前的剥离都走这套纯逻辑
 import {
   buildSegments,
   buildTokenMap,
   insertSkillToken,
+  migrateLegacySkillTokens,
   reconcileTokenDeletion,
   removeTokenSegments,
   skillDirsInText,
@@ -954,8 +961,10 @@ function syncMirror() {
   mirrorText.value = ta.value
   lastInputText = ta.value
   // 出现纵向滚动条后 textarea 内容区变窄，镜像补同等右内边距，保证两侧换行位置一致
+  // （镜像自身还有 MIRROR_BLEED 的 padding 用于扩裁剪盒，要一起算进去，否则内容窄 6px 导致换行错位）
   const gutter = ta.offsetWidth - ta.clientWidth
-  mirror.style.paddingRight = gutter > 0 ? `${gutter}px` : ''
+  mirror.style.paddingRight = gutter > 0 ? `${gutter + MIRROR_BLEED}px` : ''
+  // 不加偏移：镜像的 padding-top 与负 margin-top 相互抵消，scrollTop 与 textarea 保持同值即可对齐
   mirror.scrollTop = ta.scrollTop
 }
 
@@ -1724,6 +1733,7 @@ async function loadSkillSubList() {
         name,
         desc: s.description || '暂无描述',
         icon: s.icon || '',
+        category_id: s.category_id,
         enabled: !!s.enabled,
         initial: name.slice(0, 1).toUpperCase(),
         iconBg: color.bg,
@@ -2398,8 +2408,16 @@ onMounted(() => {
     // 忽略草稿恢复失败
   }
 
-  // 技能列表先拉一次：草稿里可能留着技能标签，需要靠列表把 `/显示名` 反解回技能
+  // 技能列表先拉一次：草稿里可能留着技能标签，需要靠列表把 `／显示名` 反解回技能
   loadSkillOptions()
+    .then(() => {
+      // 旧版草稿里的半角 / 标签迁移成全角形式（要等技能列表就绪才能识别旧 token）
+      if (message.value) {
+        const migrated = migrateLegacySkillTokens(message.value, tokenMap.value)
+        if (migrated !== message.value) message.value = migrated
+      }
+    })
+    .catch(() => { /* 列表拉取失败时标签按普通文本显示，不影响输入 */ })
 
   // 恢复待选技能（技能中心「创建技能」等入口预置），读取后即清除
   restorePendingSkill()
@@ -2493,6 +2511,13 @@ defineExpose({ setMessage, getMessage, triggerSend })
   z-index: 2;
   overflow: hidden;
   pointer-events: none;
+  /* 裁剪盒向外扩 6px：overflow:hidden 是按 padding 盒裁剪的，而镜像内容正好从 padding 盒
+     边缘起步 —— 技能芯片向外扩的 4px 留白在**行首左侧 / 首行上沿 / 末行下沿**会被切平，
+     看起来像被切了一刀。padding 撑开裁剪区、再用等量负 margin 把盒子拉回来，内容位置与
+     宽度分毫不变（绝对定位 left+right 定宽，padding 与负 margin 相互抵消）。
+     注意 syncMirror 里补滚动条占位时要一并加上同样的 6px（MIRROR_BLEED）。 */
+  padding: 6px;
+  margin: -6px;
   /* translateZ(0)：提升为独立合成层。Chromium 对「超长 inline 内容 + overflow:hidden +
      程序化 scrollTop」的组合存在裁剪渗漏（内容被画到裁剪区外），强制独立层后消失 */
   transform: translateZ(0);
@@ -2509,61 +2534,104 @@ defineExpose({ setMessage, getMessage, triggerSend })
   overflow-wrap: break-word;
 }
 
-/* 内联技能标签：可见文字就是 textarea 文本里的 token（`/显示名`）。
+/* 内联技能标签：可见文字就是 textarea 文本里的 token（`／显示名`）。
    硬约束（见 utils/skillPillTokens.js）：文字必须逐字等于 textarea 里的子串，且**不参与任何布局宽度** ——
    所以这里只允许动颜色/背景/描边/透明度这类纯绘制属性，绝不能用 font-* / letter-spacing / padding /
    border / margin（会把标签撑宽，导致镜像层与 textarea 换行错位、光标跑偏）。
-   视觉留白靠绝对定位的 ::before 向外扩 3px 画出来：它是绘制层、不占宽度，
-   于是既有胶囊的呼吸感，又保持与 textarea 逐像素对齐。
-   pointer-events 恢复 auto：点击标签（含扩出来的留白）整段移除。 */
+   视觉留白靠绝对定位的 ::before 向外扩画出来：它是绘制层、不占宽度，
+   于是既有芯片的呼吸感（左右各 6px、上下各 4px），又保持与 textarea 逐像素对齐。
+   pointer-events 恢复 auto：点击标签（含扩出来的留白）整段移除。
+   观感参照 CodeBuddy 的 mention chip：**浅强调色底 + 8px 圆角的矩形芯片（不是全胶囊）**、
+   深色名字（强调色会显得像一串蓝链接）、图标带方块底座、图标与名字之间留出间隙。 */
 .input-skill-pill {
   position: relative;
   font: inherit;
   line-height: inherit;
-  color: var(--accent-color);
+  color: var(--text-primary);
   pointer-events: auto;
   user-select: none;
   cursor: pointer;
 }
 
-/* 胶囊底：比文字大一点（竖 4px / 横 3px）的圆角底 + 1px 极淡描边，落在文字下层
-   （z-index: -1 收进镜像层这个合成层，所以仍在 textarea 之上、在文字之下） */
+/* 芯片底：比文字大一圈的圆角矩形 + 1px 淡描边，落在文字下层
+   （z-index: -1 收进镜像层这个合成层，所以仍在 textarea 之上、在文字之下）。
+
+   四边外扩量都是量出来的：
+   · 竖：上下合计 6px → 芯片高 23px，**收在 24px 行高之内**，不会探到相邻行去
+     （之前上下各 4px = 25px，比行高还高，观感就是"高度和文字没对齐"）；
+     top 比 bottom 多 1.5px（整体上提 0.75px）：实测字心比 span 中心高 0.8~1.3px，
+     且拉丁字心比中文字心又高 0.5px —— 提完后两者的偏差一正一负、都在 0.4px 内，
+     （再提 0.5px 就轮到芯片偏高 0.67px，所以取这一档）。
+  · 右：内收 9px —— 尾随的全角空格（1em ≈ 15px）里，6px 是芯片右内边距，余下 9px 就是
+    芯片与后续文字的间隙，后面的字不会再压在芯片上。
+  · 左：外扩 6px —— 图标底座左缘到芯片边缘约 5px 留白；左边有「前置空格 + 全角斜线自带的
+    字形留白」可吃，不会压住前一个字。 */
+
 .input-skill-pill::before {
   content: '';
   position: absolute;
-  inset: -4px -3px;
+  inset: -3.75px 9px -2.25px -6px;
   z-index: -1;
   border-radius: 8px;
-  background: color-mix(in srgb, var(--accent-color) 12%, transparent);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-color) 16%, transparent);
+  background: color-mix(in srgb, var(--accent-color) 12%, var(--bg-secondary));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-color) 22%, transparent);
   transition: background 0.15s ease-out, box-shadow 0.15s ease-out;
 }
 
-/* 紧邻的两个标签：相接侧各往里收 1px，让两个半透明底之间留出 2px 视觉间隙，
-   否则会贴成一块、看起来像一个畸形大胶囊（收 1px 对字形观感无影响）。
-   不支持 :has 的浏览器只是相接处贴在一起，不影响布局与点击。 */
-.input-skill-pill + .input-skill-pill::before {
-  left: 1px;
+/* 紧邻的两个标签：间隔全靠前一个标签尾随的全角空格（15px）。后一个沿用左侧 6px 外扩，
+   前一个再多收 2px，两片半透明底之间才有约 5px 的缝（否则只剩 3px，看着会连成一片）。
+   :has 不支持时回落到 3px，仍不会重叠。 */
+.input-skill-pill:has(+ .input-skill-pill)::before {
+  right: 11px;
 }
 
-.input-skill-pill:has(+ .input-skill-pill)::before {
-  right: 1px;
-}
 
 .input-skill-pill:hover::before {
-  background: color-mix(in srgb, var(--accent-color) 20%, transparent);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-color) 28%, transparent);
+  background: color-mix(in srgb, var(--accent-color) 18%, var(--bg-secondary));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-color) 32%, transparent);
 }
 
-/* `/` 只是装饰性的命令前缀：压暗它，让显示名成为主体（透明度不改变字宽） */
+/* `／`（全角斜线）占位框：字形必须真的写在 mark 里（镜像文本是 textarea 文本的逐字拷贝，
+   少一个字换行/光标就会错位），visibility:hidden 只藏字形、盒子照常按字形步进占位
+   （正文 CJK 字体下 ≈ 1 个汉字宽）；图标再用 visibility:visible 画进来。 */
 .input-skill-pill-mark {
-  font: inherit;
-  opacity: 0.45;
+  position: relative;
+  visibility: hidden;
 }
 
-/* 暗色下 App.vue 的全局规则 `html[data-theme="dark"] span { color: var(--text-primary) !important }`
-   会把标签文字压成正文色（白）—— 这是刻意保留的：深色底上强调色对比度只有 ~3.5:1，
-   白色正文色反而更清楚，标签靠强调色底色 + 描边区分（字号/行高仍与正文完全一致）。 */
+/* 图标：绝对定位在斜线占位框内、**左对齐**（不占布局宽度）。左对齐后右边剩下的
+   那点空白天然成为图标与名字之间的间隙（0.2em ≈ 3px），不用给标签加 padding。
+   尺寸用 em 随字号缩放、不能写死 px，否则换个字号/字体就会压到旁边的文字。
+   带一块分类色方块底座（referencing CodeBuddy 的 chip 图标），所以比原来更小巧；
+   底座与描边用 currentColor 混出来，深色主题下会跟着分类色的亮色版走。
+   （选择器特意写到三层，压过 SkillIcon 自身 .skill-icon.xs 的尺寸与暗色底规则） */
+.input-skill-pill .input-skill-pill-mark .skill-icon {
+  position: absolute;
+  left: -0.06em;
+  /* 与芯片同步上提 0.5px（见 ::before 注释），图标才与字形墨迹同一条中线 */
+  top: calc(50% - 0.5px);
+  transform: translateY(-50%);
+  width: 0.86em;
+  height: 0.86em;
+  visibility: visible;
+  border-radius: 0.24em !important;
+  background: color-mix(in srgb, currentColor 14%, var(--bg-secondary)) !important;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 22%, transparent) !important;
+}
+
+.input-skill-pill .input-skill-pill-mark .skill-icon svg {
+  width: 0.62em;
+  height: 0.62em;
+}
+
+.input-skill-pill .input-skill-pill-mark .skill-icon .icon-emoji {
+  font-size: 0.6em;
+  line-height: 1;
+}
+
+/* 名字用正文色（浅色 #1e293b / 深色白）：强调色会显得像链接，正文色才像"芯片"。
+   深色下 App.vue 的全局 `html[data-theme="dark"] span { color: var(--text-primary) !important }`
+   刚好给出同样的结果，两套主题观感一致。 */
 
 /* ── 连接器面板：行内「会话级开关」（只影响本次会话的 Agent 工具集，不写 mcp.json） ── */
 .plus-list-item.connector-row {
