@@ -1,41 +1,73 @@
 <template>
   <div class="chat-input-container">
     <div class="input-box" ref="inputBoxRef">
-      <div v-if="uploadedFiles.length > 0" class="uploaded-files">
-        <div 
-          v-for="(file, index) in uploadedFiles" 
-          :key="index" 
-          class="uploaded-file"
+      <!-- 上传限额汇总提示（整批拒绝 / 文件被跳过时出现，2.6s 自动消失） -->
+      <div v-if="uploadNotice" class="upload-notice" role="status" aria-live="polite">
+        <span class="upload-notice-text">{{ uploadNotice }}</span>
+        <button
+          type="button"
+          class="upload-notice-close"
+          aria-label="关闭提示"
+          @click="dismissUploadNotice"
         >
-          <div class="file-icon">
-            <FileIcon :filename="file.filename" :size="36" />
-          </div>
-          <div class="file-info">
-            <span class="file-name" :title="file.filename">{{ file.filename }}</span>
-            <div class="file-meta">
-              <span class="file-size">{{ formatSize(file.size) }}</span>
-              <div v-if="file.uploadStatus === 'uploading'" class="upload-progress">
-                <div class="progress-bar">
-                  <div class="progress-fill" :style="{ width: file.uploadProgress + '%' }"></div>
-                </div>
-                <span class="progress-text">{{ file.uploadProgress }}%</span>
-              </div>
-              <span v-else-if="file.uploadStatus === 'completed'" class="upload-status completed">上传完成</span>
-              <span v-else-if="file.uploadStatus === 'error'" class="upload-status error">上传失败</span>
-            </div>
-          </div>
-          <button
-            type="button"
-            @click="removeFile(index)"
-            class="remove-file-btn"
-            :aria-label="`删除文件 ${file.filename}`"
-            title="删除文件"
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
+            <line x1="18" y1="6" x2="6" y2="18" />
+            <line x1="6" y1="6" x2="18" y2="18" />
+          </svg>
+        </button>
+      </div>
+
+      <div v-if="uploadedFiles.length > 0" class="uploaded-files">
+        <!-- 已用额度（大小 + 数量）常驻展示；失败文件不占额度，括号内单独说明 -->
+        <div v-if="limitsText" class="uploaded-meta">
+          <span class="uploaded-limits" :class="{ full: limitsFull }">{{ limitsText }}</span>
+        </div>
+        <div class="uploaded-files-list">
+          <div
+            v-for="(file, index) in uploadedFiles"
+            :key="index"
+            class="uploaded-file"
           >
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <line x1="18" y1="6" x2="6" y2="18"></line>
-              <line x1="6" y1="6" x2="18" y2="18"></line>
-            </svg>
-          </button>
+            <div class="file-icon">
+              <FileIcon :filename="file.filename" :size="36" />
+            </div>
+            <div class="file-info">
+              <span class="file-name">{{ file.filename }}</span>
+              <div class="file-meta">
+                <span class="file-size">{{ formatSize(file.size) }}</span>
+                <div v-if="file.uploadStatus === 'uploading'" class="upload-progress">
+                  <div class="progress-bar">
+                    <div class="progress-fill" :style="{ width: file.uploadProgress + '%' }"></div>
+                  </div>
+                  <span class="progress-text">{{ file.uploadProgress }}%</span>
+                </div>
+                <span v-else-if="file.uploadStatus === 'completed'" class="upload-status completed">上传完成</span>
+                <template v-else-if="file.uploadStatus === 'error'">
+                  <span class="upload-status error" :title="file.errorMessage || '上传失败'">上传失败</span>
+                  <button
+                    v-if="file.retryable"
+                    type="button"
+                    class="retry-file-btn"
+                    :aria-label="`重新上传 ${file.filename}`"
+                    title="重新上传"
+                    @click="retryUpload(index)"
+                  >重试</button>
+                </template>
+              </div>
+            </div>
+            <button
+              type="button"
+              @click="removeFile(index)"
+              class="remove-file-btn"
+              :aria-label="`删除文件 ${file.filename}`"
+              title="删除文件"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <line x1="18" y1="6" x2="6" y2="18"></line>
+                <line x1="6" y1="6" x2="18" y2="18"></line>
+              </svg>
+            </button>
+          </div>
         </div>
       </div>
       
@@ -580,7 +612,7 @@
 
 <script>
 import { uploadFile, deleteFile } from '../api/files.js'
-import { getWebSearchStatus } from '../api/settings.js'
+import { getWebSearchStatus, getUploadLimits } from '../api/settings.js'
 import { getUserSkills } from '../api/skills.js'
 import { iconCategoryFor } from '../utils/skillCategories.js'
 import { buildMessageText, parseSlashQuery } from '../utils/skillSlash.js'
@@ -694,6 +726,16 @@ export default {
       webSearchEnabled: false,
       webSearchAvailable: false,
       webSearchReason: '',
+      // 上传限额（后端 config.yaml 的 upload_limits 段，经 /agent/settings/upload-limits 下发）：
+      // 约束「单个会话、单次对话」的附件，发送后清空即重置。拉取失败保留此默认值，
+      // 绝不因接口异常而放行。
+      uploadLimits: { enabled: true, maxFileSizeMb: 10, maxFiles: 5, maxTotalMb: 20 },
+      // 上传限额汇总提示条文案（空串=不显示，2.6s 自动消失）
+      uploadNotice: '',
+      // 联网搜索：available=false 时按钮置灰（后端未启用或未配置 api_key）
+      webSearchEnabled: false,
+      webSearchAvailable: false,
+      webSearchReason: '',
       // 光标所在行高亮（overlay 技术：textareal 本身无法按行上色）
       caretLineTop: null, // 高亮条 top，null 表示隐藏
       lineHeight: 24, // 行高（px）
@@ -754,6 +796,44 @@ export default {
   computed: {
     webSearchUnavailable() {
       return !this.webSearchAvailable
+    },
+    webSearchTitle() {
+      if (!this.webSearchAvailable) {
+        if (this.webSearchReason === 'disabled') return '联网搜索未启用（后端配置 web_search.enabled 为 false）'
+        if (this.webSearchReason === 'unreachable') return '联网搜索状态获取失败，点击重试'
+        return '联网搜索未配置（需配置 WEB_SEARCH_API_KEY 后重启后端）'
+      }
+      return this.webSearchEnabled ? '联网搜索已开启，点击关闭' : '联网搜索（点击开启）'
+    },
+    webSearchUnavailable() {
+      return !this.webSearchAvailable
+    },
+    /** 计额口径：上传失败的文件不占额度（上传中/已上传都占） */
+    chargedFiles() {
+      return this.uploadedFiles.filter(f => f.uploadStatus !== 'error')
+    },
+    usedCount() {
+      return this.chargedFiles.length
+    },
+    usedBytes() {
+      return this.chargedFiles.reduce((sum, f) => sum + (f.size || 0), 0)
+    },
+    failedCount() {
+      return this.uploadedFiles.filter(f => f.uploadStatus === 'error').length
+    },
+    remainBytes() {
+      const max = this.mbToBytes(this.uploadLimits.maxTotalMb)
+      return Math.max(max - this.usedBytes, 0)
+    },
+    limitsText() {
+      const L = this.uploadLimits
+      if (!L.enabled) return ''
+      const failedTip = this.failedCount > 0 ? `（${this.failedCount} 个失败未计入）` : ''
+      return `已用 ${this.formatSize(this.usedBytes)} / ${L.maxTotalMb}MB · ${this.usedCount} / ${L.maxFiles} 个${failedTip}`
+    },
+    limitsFull() {
+      const L = this.uploadLimits
+      return L.enabled && this.usedCount >= L.maxFiles
     },
     webSearchTitle() {
       if (!this.webSearchAvailable) {
@@ -937,9 +1017,14 @@ export default {
     // 由 selfCreatedSession 标记跳过，见 ensureSessionId。
     // 注：连接器开关不再随会话走（它反映的是连接器自身的启用状态，与会话无关）；
     // 「待选技能」（技能中心创建技能）走 sessionStorage、在挂载时消费，不经 watcher，不受影响。
+    // 会话切换/新建时清空已添加文件：文件属于原会话，不得残留到新会话。
+    // 注意 oldVal 为 null（新对话加文件时触发的建会话）不清，否则会清掉刚选的文件。
     sessionId(newVal, oldVal) {
       if (newVal === oldVal) return
-      if (oldVal) this.uploadedFiles = []
+      if (oldVal && newVal !== oldVal) {
+        this.uploadedFiles = []
+        this.dismissUploadNotice()
+      }
       this.showConnectorSearch = false
       this.connectorKeyword = ''
       // 技能标签是文本的一部分：切会话时把标签从草稿里剥掉（等价于旧的「令牌复位」）。
@@ -996,6 +1081,9 @@ export default {
     // 「专家·技能·连接器」面板里改了开关 → 本面板同步（两个面板不在同一组件树分支，走事件广播）
     this.offConnectorsChanged = onConnectorsChanged(this.onConnectorsChanged)
 
+    // 上传限额：公共接口，失败时保留默认值（10MB / 5 个 / 20MB）
+    this.loadUploadLimits()
+
     document.addEventListener('click', this.closeTokenPopup)
     document.addEventListener('click', this.closeModelDropdown)
     document.addEventListener('click', this.closeSkillPickerOnClick)
@@ -1016,6 +1104,7 @@ export default {
     if (this.connectorNoticeTimer) clearTimeout(this.connectorNoticeTimer)
     this.cancelPlusClose()
     this.stopLiveDuration()
+    if (this._uploadNoticeTimer) clearTimeout(this._uploadNoticeTimer)
   },
   methods: {
     async toggleWebSearch() {
@@ -1592,6 +1681,127 @@ export default {
       if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
       return (bytes / (1024 * 1024)).toFixed(1) + ' MB'
     },
+    mbToBytes(mb) {
+      return (Number(mb) || 0) * 1024 * 1024
+    },
+    /** 拉取上传限额（公共接口）；失败保留默认值 10MB / 5 个 / 20MB */
+    async loadUploadLimits() {
+      try {
+        const data = await getUploadLimits()
+        const toPositive = (v, fallback) => (Number(v) > 0 ? Number(v) : fallback)
+        this.uploadLimits = {
+          enabled: data && data.enabled !== false,
+          maxFileSizeMb: toPositive(data && data.max_file_size_mb, 10),
+          maxFiles: toPositive(data && data.max_files_per_message, 5),
+          maxTotalMb: toPositive(data && data.max_total_size_mb, 20),
+        }
+      } catch (e) {
+        console.error('获取上传限额失败，使用默认限额（10MB / 5 个 / 20MB）:', e)
+      }
+    },
+    /** 汇总提示条：2.6s 自动消失，可手动关闭 */
+    showUploadNotice(text) {
+      if (!text) return
+      this.uploadNotice = text
+      if (this._uploadNoticeTimer) clearTimeout(this._uploadNoticeTimer)
+      this._uploadNoticeTimer = setTimeout(() => {
+        this.uploadNotice = ''
+      }, 2600)
+    },
+    dismissUploadNotice() {
+      if (this._uploadNoticeTimer) clearTimeout(this._uploadNoticeTimer)
+      this.uploadNotice = ''
+    },
+    /**
+     * 选出本批可以上传的文件（入列前校验，避免"传了一半才发现超限"）。
+     *
+     * 规则：
+     * - enabled=false 时不限；
+     * - 数量不满足（已有非失败数 + 本批数 > 上限）→ **整批拒绝**，让用户重新选择；
+     * - 逐个文件检查单文件大小与总大小 → **只跳过超限的那一个**，其余照常上传；
+     * - 失败文件不占额度，因此删除/失败都会立即释放名额与空间。
+     */
+    pickAcceptable(files) {
+      const L = this.uploadLimits
+      if (!L.enabled) return { accepted: [...files], rejected: [], batchRejected: false }
+
+      let count = this.usedCount
+      let total = this.usedBytes
+      const accepted = []
+      const rejected = []
+
+      if (count + files.length > L.maxFiles) {
+        return {
+          accepted: [],
+          rejected: files.map(f => ({ file: f, reason: 'count' })),
+          batchRejected: true,
+          message: `最多只能上传 ${L.maxFiles} 个文件（已用 ${count} 个），请重新选择`,
+        }
+      }
+
+      for (const file of files) {
+        if (file.size > this.mbToBytes(L.maxFileSizeMb)) {
+          rejected.push({ file, reason: 'file_size' })
+          continue
+        }
+        if (total + file.size > this.mbToBytes(L.maxTotalMb)) {
+          rejected.push({ file, reason: 'total' })
+          continue
+        }
+        accepted.push(file)
+        count += 1
+        total += file.size
+      }
+      return { accepted, rejected, batchRejected: false }
+    },
+    /** 把被拒文件拼成一条汇总提示 */
+    buildRejectNotice(result, acceptedCount) {
+      const L = this.uploadLimits
+      const parts = result.rejected.map(({ file, reason }) => {
+        if (reason === 'file_size') {
+          return `${file.name}（超过单文件上限 ${L.maxFileSizeMb}MB）`
+        }
+        if (reason === 'total') {
+          return `${file.name}（超出剩余空间 ${this.formatSize(this.remainBytes)}，总上限 ${L.maxTotalMb}MB）`
+        }
+        return file.name
+      })
+      const head = acceptedCount > 0
+        ? `已添加 ${acceptedCount} 个文件，忽略 ${result.rejected.length} 个：`
+        : `无法上传，已忽略 ${result.rejected.length} 个文件：`
+      return head + parts.join('；')
+    },
+    /** 重新上传一个失败的文件（复用同一个 File 对象，无需用户重新选择） */
+    retryUpload(index) {
+      const item = this.uploadedFiles[index]
+      if (!item || item.uploadStatus !== 'error' || !item.retryable) return
+
+      // 失败文件不占额度，所以重试等价于「新增一个文件」，同样受限额约束：
+      // 已满名额 / 超出剩余空间 / 超过单文件上限 时不允许重新上传
+      const L = this.uploadLimits
+      if (L.enabled) {
+        if (this.usedCount + 1 > L.maxFiles) {
+          this.showUploadNotice(`最多只能上传 ${L.maxFiles} 个文件（已用 ${this.usedCount} 个），无法重新上传 ${item.filename}`)
+          return
+        }
+        if (item.size > this.mbToBytes(L.maxFileSizeMb)) {
+          this.showUploadNotice(`${item.filename} 超过单文件上限 ${L.maxFileSizeMb}MB，无法重新上传`)
+          return
+        }
+        if (this.usedBytes + item.size > this.mbToBytes(L.maxTotalMb)) {
+          this.showUploadNotice(`${item.filename} 超出剩余空间 ${this.formatSize(this.remainBytes)}，无法重新上传`)
+          return
+        }
+      }
+
+      item.uploadStatus = 'uploading'
+      item.uploadProgress = 0
+      item.errorMessage = ''
+      item.retryable = false
+      item.cancelled = false
+      this.uploadedFiles = [...this.uploadedFiles]
+      this.uploadOneFile(item)
+    },
     /**
      * 确保会话存在并返回 sessionId（并行上传共享同一个创建 Promise，
      * 避免一次选择多个文件时重复触发 create-session）。
@@ -1668,7 +1878,14 @@ export default {
         // 找到对应的文件项并更新状态
         const index = this.uploadedFiles.findIndex(f => f.file === file)
         if (index !== -1) {
+          const reason = (error && error.message) || '上传失败'
+          // 超过单文件大小限制的失败不给「重试」（重试也没用），其余可重试
+          const isSizeLimit =
+            (error && error.code === 'UPLOAD_FILE_TOO_LARGE') ||
+            /不能超过\s*\d+(\.\d+)?\s*MB/.test(reason)
           this.uploadedFiles[index].uploadStatus = 'error'
+          this.uploadedFiles[index].errorMessage = reason
+          this.uploadedFiles[index].retryable = !isSizeLimit
           // 强制触发更新
           this.uploadedFiles = [...this.uploadedFiles]
         }
@@ -1677,9 +1894,25 @@ export default {
     },
     async handleFileSelect(event) {
       const files = Array.from(event.target.files)
+      // 先清空 input，避免同一文件二次选择不触发 change
+      event.target.value = ''
+      if (files.length === 0) return
+
+      // 入列前校验：通过的文件才入列、才上传
+      const result = this.pickAcceptable(files)
+
+      if (result.batchRejected) {
+        // 数量不满足：整批拒绝，让用户重新选择
+        this.showUploadNotice(result.message)
+        return
+      }
+      if (result.rejected.length > 0) {
+        // 单文件超限 / 超出剩余空间：只跳过这些文件，其余照常上传
+        this.showUploadNotice(this.buildRejectNotice(result, result.accepted.length))
+      }
 
       // 并行上传：每个文件独立开始、独立进度，互不排队
-      for (const file of files) {
+      for (const file of result.accepted) {
         // 创建文件项
         const fileItem = {
           file: file,
@@ -1688,7 +1921,9 @@ export default {
           uploadStatus: 'uploading',
           uploadProgress: 0,
           cancelled: false,
-          abortController: null
+          abortController: null,
+          errorMessage: '',
+          retryable: false
         }
 
         // 添加到数组
@@ -1743,14 +1978,22 @@ export default {
         return
       }
 
-      const filesToSend = this.uploadedFiles.map(f => ({
-        id: f.id,
-        filename: f.filename,
-        size: f.size,
-        file: f.file,
-        file_path: f.filePath || null,
-        type: f.file?.type || f.fileType || ''
-      }))
+      // 只发送上传成功的文件：失败文件（无 id/file_path）不随消息发出、不在气泡中展示
+      const failedFiles = this.uploadedFiles.filter(f => f.uploadStatus === 'error')
+      if (failedFiles.length > 0) {
+        console.warn(`[发送消息] ${failedFiles.length} 个文件上传失败，已从本次发送中剔除:`,
+          failedFiles.map(f => f.filename).join(', '))
+      }
+      const filesToSend = this.uploadedFiles
+        .filter(f => f.uploadStatus === 'completed')
+        .map(f => ({
+          id: f.id,
+          filename: f.filename,
+          size: f.size,
+          file: f.file,
+          file_path: f.filePath || null,
+          type: f.file?.type || f.fileType || ''
+        }))
 
       // 详细日志：记录发送操作、文件上传
       const ts = new Date().toISOString()
@@ -1775,6 +2018,8 @@ export default {
 
       this.message = ''
       this.uploadedFiles = []
+      this.selectedSkills = []
+      this.dismissUploadNotice()
       this.closeSkillPicker()
       this.$nextTick(() => this.autoResize())
     },
@@ -2166,10 +2411,9 @@ export default {
   box-shadow: 0 2px 12px rgba(14, 165, 233, 0.15);
 }
 
+/* ── 文件列表容器：额度行在上、文件卡片换行排布（原来是直接 flex-wrap 卡片） ── */
 .uploaded-files {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
+  display: block;
   padding: 12px 16px;
   background: var(--bg-secondary);
   border-bottom: 1px solid var(--border-color);
@@ -2548,6 +2792,82 @@ html[data-theme="dark"] .connector-switch.on {
   }
 }
 
+/* ── 上传限额提示条 / 额度行 / 重试按钮 ──
+   兼容 IE 与旧 Edge：只用了 flex + 圆角，颜色写成「字面量在前、var() 在后」；
+   不使用 color-mix、不使用 flex gap。── */
+.upload-notice {
+  display: flex;
+  align-items: center;
+  margin: 10px 16px 0;
+  padding: 7px 8px 7px 10px;
+  border: 1px solid #fcd34d;
+  border: 1px solid var(--warning-border, #fcd34d);
+  border-radius: 8px;
+  background: #fffbeb;
+  background: var(--warning-bg, #fffbeb);
+}
+
+.upload-notice-text {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #92400e;
+  color: var(--warning-text, #92400e);
+  word-break: break-all;
+}
+
+.upload-notice-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  margin-left: 8px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: #92400e;
+  color: var(--warning-text, #92400e);
+  cursor: pointer;
+  opacity: 0.75;
+}
+
+.upload-notice-close:hover {
+  opacity: 1;
+}
+
+.upload-notice-close svg {
+  width: 10px;
+  height: 10px;
+}
+
+.uploaded-meta {
+  width: 100%;
+  margin-bottom: 8px;
+  display: flex;
+  align-items: center;
+}
+
+.uploaded-limits {
+  font-size: 11.5px;
+  color: var(--text-secondary);
+}
+
+.uploaded-limits.full {
+  color: #b45309;
+  color: var(--warning-text, #b45309);
+}
+
+.uploaded-files-list {
+  width: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
 .uploaded-file {
   position: relative;
   display: flex;
@@ -2646,6 +2966,24 @@ html[data-theme="dark"] .connector-switch.on {
 
 .upload-status.error {
   color: #b91c1c;
+  background: #fee2e2;
+}
+
+/* 失败卡片上的「重试」：仅可重试的失败（非单文件超限）才渲染 */
+.retry-file-btn {
+  flex-shrink: 0;
+  padding: 1px 7px;
+  border: 1px solid #fca5a5;
+  border-radius: 8px;
+  background: #ffffff;
+  background: var(--bg-secondary);
+  color: #b91c1c;
+  font-size: 10px;
+  line-height: 16px;
+  cursor: pointer;
+}
+
+.retry-file-btn:hover {
   background: #fee2e2;
 }
 
