@@ -54,13 +54,17 @@
       >
         <div class="session-group-header">
           <span class="session-group-label">{{ group.label }}</span>
-          <span class="session-group-count">{{ group.sessions.length }}</span>
+          <span class="session-group-count">({{ group.sessions.length }})</span>
         </div>
         <div
-          v-for="session in group.sessions"
+          v-for="session in visibleSessions(group)"
           :key="session.session_id"
           class="session-item"
-          :class="{ active: !showKnowledge && !showAssets && session.session_id === currentSessionId, streaming: streamingSessionIds.includes(session.session_id) }"
+          :class="{
+            active: !showKnowledge && !showAssets && session.session_id === currentSessionId,
+            streaming: streamingSessionIds.includes(session.session_id),
+            'menu-open': activeMenu === session.session_id
+          }"
           @click="$emit('select-session', session.session_id)"
         >
           <div class="session-info">
@@ -70,13 +74,15 @@
                 <path d="M2 17l10 5 10-5"></path>
                 <path d="M2 12l10 5 10-5"></path>
               </svg>
-              <span class="session-title-text">{{ session.title || '未命名会话' }}</span>
+              <span class="session-title-text" :title="sessionTitle(session)">{{ sessionTitle(session) }}</span>
               <span v-if="streamingSessionIds.includes(session.session_id)" class="streaming-badge" title="进行中">
                 <span class="streaming-dot"></span>
               </span>
               <span v-if="pendingApprovalSessionIds.includes(session.session_id)" class="approval-flag" title="该会话存在待审批操作，需处理后才能继续">待审批</span>
             </div>
           </div>
+          <!-- 最后活跃时间：常显，鼠标悬浮时让位给操作按钮 -->
+          <span class="session-time">{{ relativeTime(session) }}</span>
           <div class="session-actions">
             <button @click="toggleMenu(session.session_id, $event)" class="menu-btn">
               <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">
@@ -111,6 +117,15 @@
             </div>
           </div>
         </div>
+
+        <!-- 分组内会话过多时先折叠，避免「更早」分组把侧边栏拉得很长 -->
+        <button
+          v-if="group.sessions.length > groupPreviewLimit"
+          class="session-more"
+          @click="toggleGroupExpand(group.label)"
+        >
+          {{ expandedGroups[group.label] ? '收起' : `查看更多 (${group.sessions.length - groupPreviewLimit})` }}
+        </button>
       </div>
 
       <div v-if="sessions.length === 0" class="empty-state">
@@ -185,6 +200,9 @@
 </template>
 
 <script>
+import { ensureSkillDirectoryLoaded, skillFreeTitle } from '../store/skillDirectoryStore.js'
+import { formatRelativeTime } from '../utils/relativeTime.js'
+
 // 应用名称：直接定义在前端（原 src/config.js 已移除）
 const APP_TITLE = 'Easy Agent'
 export default {
@@ -231,6 +249,9 @@ export default {
       newTitle: '',
       renamingSession: null,
       showUserMenu: false,
+      // 折叠的分组（键为分组名）：默认只展示前 N 条，其余走「查看更多」
+      expandedGroups: {},
+      groupPreviewLimit: 5,
       APP_TITLE
     }
   },
@@ -308,6 +329,25 @@ export default {
     }
   },
   methods: {
+    /**
+     * 会话列表展示用标题：历史会话标题是首条消息原文，带技能时会形如
+     * `/demo-skill 测试对话`，这里去掉技能前缀只留用户真正输入的内容。
+     */
+    sessionTitle(session) {
+      return skillFreeTitle(session && session.title) || '未命名会话'
+    },
+    /** 分组内实际渲染的会话：未展开时只返回前 N 条 */
+    visibleSessions(group) {
+      if (this.expandedGroups[group.label]) return group.sessions
+      return group.sessions.slice(0, this.groupPreviewLimit)
+    },
+    toggleGroupExpand(label) {
+      this.expandedGroups = { ...this.expandedGroups, [label]: !this.expandedGroups[label] }
+    },
+    /** 列表右侧的相对时间：取最后活跃时间，没有则退回创建时间 */
+    relativeTime(session) {
+      return formatRelativeTime(session && (session.updated_at || session.created_at))
+    },
     toggleUserMenu(e) {
       e.stopPropagation()
       this.showUserMenu = !this.showUserMenu
@@ -320,7 +360,9 @@ export default {
     },
     startRename(session) {
       this.renamingSession = session
-      this.newTitle = session.title || ''
+      // 预填展示用标题（已去掉 /技能名 前缀），用户直接在干净标题上改
+      const title = this.sessionTitle(session)
+      this.newTitle = title === '未命名会话' ? '' : title
       this.activeMenu = null
       this.showRenameModal = true
       this.$nextTick(() => {
@@ -367,6 +409,8 @@ export default {
     }
   },
   mounted() {
+    // 技能目录：会话标题里的 /技能名 前缀要按目录名反查才能去掉
+    ensureSkillDirectoryLoaded()
     document.addEventListener('click', () => {
       this.closeMenu()
       this.closeUserMenuSilent()
@@ -484,56 +528,83 @@ export default {
   scroll-behavior: smooth;
 }
 
-.session-group-header {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 8px 8px 4px;
-  margin-top: 4px;
-}
-
 .session-group {
-  margin-bottom: 4px;
+  margin-bottom: 2px;
 }
 
+/* 分组标题：「今天 (5)」——数量直接跟在标题后，不用独立徽标 */
 .session-group-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 6px 10px 2px;
-  font-size: 11px;
+  gap: 4px;
+  padding: 10px 10px 4px;
+  font-size: 12px;
   font-weight: 600;
-  color: #94a3b8;
+  color: var(--text-secondary, #64748b);
   user-select: none;
 }
 
 .session-group-count {
-  font-size: 10px;
   font-weight: 500;
-  color: #cbd5e1;
-  background: var(--bg-tertiary);
-  border-radius: 8px;
-  padding: 0 6px;
-  line-height: 16px;
+  opacity: 0.7;
 }
 
 .session-item {
+  position: relative;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 4px 8px;
+  gap: 8px;
+  height: 36px;
+  padding: 0 8px;
   border-radius: 8px;
   cursor: pointer;
-  transition: all 0.2s;
-  margin-bottom: 0;
+  font-size: 13px;
+  transition: background 0.15s;
 }
 
 .session-item:hover {
   background: var(--bg-tertiary);
 }
 
+/* 当前会话：中性灰底 + 标题加粗（与历史列表保持一致的克制高亮） */
 .session-item.active {
-  background: color-mix(in srgb, var(--accent-color) 20%, transparent);
+  background: var(--bg-tertiary);
+}
+
+.session-item.active .session-name {
+  font-weight: 600;
+}
+
+/* 相对时间常显，鼠标悬浮时隐藏，把位置让给「…」操作按钮 */
+.session-time {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--text-secondary, #64748b);
+  white-space: nowrap;
+}
+
+.session-item:hover .session-time,
+.session-item.menu-open .session-time {
+  display: none;
+}
+
+/* 「查看更多 (n)」：与列表项左对齐，样式比条目更轻 */
+.session-more {
+  display: block;
+  width: 100%;
+  padding: 6px 10px;
+  border: none;
+  background: transparent;
+  border-radius: 8px;
+  text-align: left;
+  font-size: 12px;
+  color: var(--text-secondary, #64748b);
+  cursor: pointer;
+}
+
+.session-more:hover {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
 }
 
 .session-item.streaming {
@@ -611,11 +682,23 @@ html[data-theme="dark"] .approval-flag {
 
 .session-actions {
   position: relative;
+  flex-shrink: 0;
+  opacity: 0;
+  /* 未悬浮时不参与命中，避免「看不见的按钮」抢走列表项的点击 */
+  pointer-events: none;
+  transition: opacity 0.15s;
+}
+
+/* 悬浮或菜单展开时常显：菜单展开时保持可见，否则鼠标移出条目菜单会一闪而过 */
+.session-item:hover .session-actions,
+.session-item.menu-open .session-actions {
+  opacity: 1;
+  pointer-events: auto;
 }
 
 .menu-btn {
-  width: 28px;
-  height: 28px;
+  width: 26px;
+  height: 26px;
   border: none;
   background: transparent;
   border-radius: 6px;
@@ -623,18 +706,13 @@ html[data-theme="dark"] .approval-flag {
   align-items: center;
   justify-content: center;
   cursor: pointer;
-  opacity: 0;
-  transition: all 0.2s;
+  transition: background 0.15s;
 }
 
 .menu-btn svg {
   width: 18px;
   height: 18px;
   color: var(--text-secondary);
-}
-
-.session-item:hover .menu-btn {
-  opacity: 1;
 }
 
 .menu-btn:hover {

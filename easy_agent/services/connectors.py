@@ -195,3 +195,107 @@ def catalog_connectors(username: str, config: Any = None) -> dict[str, Any]:
         "custom": custom,
         "path": str(Config.get_user_mcp_path(username, config)),
     }
+
+
+# ---------------------------------------------------------------------------
+# 「使用连接器[X]」指令解析
+# ---------------------------------------------------------------------------
+
+#: 输入框连接器胶囊对应的指令：``使用连接器[名称]``（中英文方括号都认，名称内允许空格）
+CONNECTOR_DIRECTIVE_RE = re.compile(r"使用连接器\s*[\[【]\s*([^\[\]【】]+?)\s*[\]】]")
+
+#: 单轮最多解析的连接器数：避免超长消息构造出大量解析与 MCP 加载
+MAX_CONNECTOR_DIRECTIVES = 32
+
+
+def parse_connector_directives(message: str) -> list[str]:
+    """从消息文本里解析「使用连接器[名称]」指令。
+
+    前端输入框选中连接器后会把这些指令前置到消息文本（多条以空格分隔），例如::
+
+        使用连接器[MySQL 数据库] 帮我看看订单表
+
+    返回按出现顺序去重后的连接器名（可能是展示名，也可能是 server 名，此处不做映射）；
+    空名字与超出 ``MAX_CONNECTOR_DIRECTIVES`` 的部分忽略。无指令返回空列表。
+    """
+    if not message:
+        return []
+    names: list[str] = []
+    seen: set[str] = set()
+    for matched in CONNECTOR_DIRECTIVE_RE.finditer(message):
+        name = matched.group(1).strip()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        names.append(name)
+        if len(names) >= MAX_CONNECTOR_DIRECTIVES:
+            break
+    return names
+
+
+def resolve_connector_servers(
+    names: list[str],
+    username: str,
+    config: Any = None,
+) -> tuple[list[str], list[str]]:
+    """把指令里的连接器名映射为 mcp.json 的 server 名。
+
+    前端胶囊展示、并写进消息文本的是连接器的**展示名**（公共目录的 name，如
+    「MySQL 数据库」），而 mcp.json 的 key 是目录 id（如 ``mysql``）；自定义连接器
+    则是用户自取的 server 名。因此按「先精确、后目录」两步匹配：
+
+    1. 用户 mcp.json 里的 server 名（自定义连接器，或用户手写的目录 id）；
+    2. 公共目录里 name 命中该名字、且该 id 确实在用户 mcp.json 里的条目 → 其 id。
+
+    只有「这个用户自己的连接器」会被命中：未安装的目录连接器、停用项、完全无关的名字
+    都归入未识别（停用项会被 mcp 加载层再提示一次「未启用已跳过」）。
+
+    Args:
+        names: ``parse_connector_directives`` 的结果
+        username: 当前用户
+        config: 运行期 ``Config``（可为 None，用于解析用户 mcp.json 路径）
+
+    Returns:
+        ``(命中的 server 名列表, 未识别的名字列表)``，均保持输入顺序且去重。
+    """
+    if not names:
+        return [], []
+    from .mcp import load_user_mcp_config
+
+    user_servers = load_user_mcp_config(username, config) or {}
+    # 目录展示名 -> id：同名多条时全部保留（调用方按名字已无法区分）
+    by_display_name: dict[str, list[str]] = {}
+    for entry in load_catalog():
+        by_display_name.setdefault(entry["name"], []).append(entry["id"])
+
+    servers: list[str] = []
+    unknown: list[str] = []
+    for name in names:
+        if name in user_servers:
+            matched = [name]
+        else:
+            matched = [
+                cid for cid in by_display_name.get(name, []) if cid in user_servers
+            ]
+        if not matched:
+            unknown.append(name)
+            continue
+        for server in matched:
+            if server not in servers:
+                servers.append(server)
+    return servers, unknown
+
+
+def parse_message_connectors(
+    message: str,
+    username: str,
+    config: Any = None,
+) -> tuple[list[str], list[str]]:
+    """一步完成「解析指令 + 映射为 server 名」，供 chat / 专家聊天接口共用。
+
+    Returns:
+        ``(命中的 server 名列表, 未识别的连接器名列表)``
+    """
+    return resolve_connector_servers(
+        parse_connector_directives(message), username, config
+    )

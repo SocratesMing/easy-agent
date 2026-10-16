@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import re
 import uuid
 from datetime import datetime
 from typing import Annotated
@@ -28,7 +29,9 @@ from ..services import (
     register_stream_task,
     unregister_stream_task,
     cancel_stream_task,
+    parse_message_connectors,
 )
+from ..services import skill_library
 from ..services.streaming import format_sse
 from ..utils import parse_file_content, SessionLogger, get_owned_session
 from .sessions import generate_workspace_name
@@ -40,15 +43,97 @@ router = APIRouter(
     tags=["Chat"],
 )
 
-def generate_session_title(message: str, files: list | None) -> str:
-    """根据首条消息或首个上传文件生成会话标题。"""
+# 会话标题最长字数：太短列表里只剩「测试下」这种断句，太长又会撑破侧边栏，
+# 具体显示宽度由前端省略号控制，这里保留足够信息量即可。
+SESSION_TITLE_MAX_LEN = 30
+
+# 会话标题里的指令前缀：输入框把已选「连接器」与「技能」还原成指令前缀发给模型
+# （见前端 utils/skillSlash.js），例如 `使用连接器[高德地图] /docx 帮我排个版`。
+# 标题直接取首条消息就会带上整串指令，会话列表看起来就是指令原文。
+# 连接器指令格式固定（方括号内即连接器名），技能指令必须命中用户实际拥有的技能。
+_CONNECTOR_DIRECTIVE_PATTERN = re.compile(r"^使用连接器\[([^\]]+)\]")
+_SKILL_TOKEN_PATTERN = re.compile(r"^/(\S+)")
+
+
+def _skill_display_name(skill_dir, fallback: str) -> str:
+    """技能展示名（SKILL.md frontmatter 的 name），读取失败退回目录名。"""
+    try:
+        return skill_library.skill_metadata(skill_dir).get("name") or fallback
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"读取技能元数据失败 | {skill_dir} | {exc}")
+        return fallback
+
+
+def _strip_connector_directives(text: str) -> tuple[str, str]:
+    """摘掉开头连续拼接的连接器指令，返回 (剩余文本, 首个连接器名)。
+
+    连接器指令由输入框生成、格式固定，不需要校验名字是否存在。
+    """
+    first_name = ""
+    while True:
+        matched = _CONNECTOR_DIRECTIVE_PATTERN.match(text)
+        if not matched:
+            break
+        first_name = first_name or matched.group(1).strip()
+        text = text[matched.end() :].strip()
+    return text, first_name
+
+
+def split_leading_directives(message: str, username: str | None) -> tuple[str, str]:
+    """拆掉消息开头拼接的内部指令，返回 (剩余正文, 兜底展示名)。
+
+    先摘格式固定的 `使用连接器[名称]`，再摘 `/技能目录名`；技能目录名必须命中用户
+    实际拥有的技能（含已停用），据此避免误删 `/workspace`、`/user-skills` 这类路径
+    开头——历史上确实有用户这么提问。兜底展示名用于「只选了技能/连接器、没输入内容」
+    时充当标题（技能展示名优先，其次连接器名），可能为空字符串。
+    """
+    text, connector_name = _strip_connector_directives((message or "").strip())
+    if not text or not username:
+        return text, connector_name
+
+    try:
+        skills = {
+            item["dir_name"]: item["path"]
+            for item in skill_library.list_user_skill_dirs(username)
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"读取用户技能目录失败，会话标题保留原文 | 用户: {username} | {exc}")
+        return text, connector_name
+    if not skills:
+        return text, connector_name
+
+    rest = text
+    first_dir = ""
+    while True:
+        matched = _SKILL_TOKEN_PATTERN.match(rest)
+        if not matched or matched.group(1) not in skills:
+            break
+        if not first_dir:
+            first_dir = matched.group(1)
+        rest = rest[matched.end() :].strip()
+
+    if not first_dir:
+        return text, connector_name
+    return rest, _skill_display_name(skills[first_dir], first_dir)
+
+
+def generate_session_title(
+    message: str, files: list | None, username: str | None = None
+) -> str:
+    """根据首条消息或首个上传文件生成会话标题。
+
+    首条消息可能带着输入框拼接的指令前缀（`使用连接器[名称]` / `/技能名`），标题只
+    保留用户真正输入的内容；只选了技能或连接器、没输入内容时用其展示名兜底，避免
+    标题只剩一串指令原文。
+    """
     if message and message.strip():
-        title = message.strip()
-        return title[:15] + "..." if len(title) > 15 else title
+        body, fallback_name = split_leading_directives(message, username)
+        title = body or fallback_name or message.strip()
     elif files and len(files) > 0:
-        filename = files[0].get("filename", "文件")
-        return filename[:15] + "..." if len(filename) > 15 else filename
-    return "未命名会话"
+        title = files[0].get("filename", "文件")
+    else:
+        return "未命名会话"
+    return title[:SESSION_TITLE_MAX_LEN] + "..." if len(title) > SESSION_TITLE_MAX_LEN else title
 
 
 def create_new_session(
@@ -60,7 +145,7 @@ def create_new_session(
 ) -> str:
     """创建新会话记录并返回其 workspace_name。"""
     now = datetime.now().isoformat()
-    session_title = generate_session_title(message, files)
+    session_title = generate_session_title(message, files, username)
     workspace_name = generate_workspace_name(session_id)
     session_data = SessionModel(
         session_id=session_id,
@@ -337,7 +422,9 @@ async def chat_stream(
                 len(session.messages) == 0
                 and not is_knowledge_panel_session
             ):
-                session.title = generate_session_title(request.message, request.files)
+                session.title = generate_session_title(
+                    request.message, request.files, username
+                )
                 session.updated_at = datetime.now().isoformat()
                 db.update_session(session)
 
@@ -422,10 +509,23 @@ async def chat_stream(
         message_id=message_id,
     )
 
+    # 「使用连接器[X]」指令解析：输入框里选中的连接器会前置在消息文本中，
+    # 这里翻译成 mcp.json 的 server 名，交给 agent_manager 只注入这些连接器的工具。
+    # 未识别的名字只记日志，不影响其余连接器生效（也不阻断对话）。
+    connector_servers, unknown_connectors = parse_message_connectors(
+        request.message, username
+    )
+    if connector_servers or unknown_connectors:
+        logger.info(
+            f"[{sid}] 🔌 连接器指令 | 命中: {connector_servers or '无'} | "
+            f"未识别: {unknown_connectors or '无'}"
+        )
+
     agent = await get_or_create_agent_for_session(
         session_id, username, workspace_name, model_name=request.model,
         system_prompt_extra=system_prompt_extra,
         enable_web_search=request.enable_web_search,
+        connector_servers=connector_servers,
     )
 
     return StreamingResponse(
@@ -518,6 +618,8 @@ async def chat_resume(
     # 一起写入、清理时一起删除），因此这里取到的值要么与缓存中的专家一致 —— 命中缓存
     # 原样复用、人设保留；要么为 ""（缓存已失效）—— 等价于通用 Agent 重建，
     # 行为与引入专家模块之前逐字一致。
+    # 连接器（使用连接器[X]）同理不传：get_or_create_agent_for_session 取 None 时
+    # 「跟随缓存」——不因连接器差异驱逐缓存 Agent（重建时仍沿用该会话已记录的选择）。
     agent = await get_or_create_agent_for_session(
         session_id,
         username,

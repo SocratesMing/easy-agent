@@ -37,6 +37,7 @@ from ..services import (
     get_agent_config,
     get_or_create_agent_for_session,
     invalidate_user_agents,
+    parse_message_connectors,
 )
 from ..services import public_expert_service
 from ..services.expert_service import (
@@ -591,7 +592,9 @@ async def stream_export_run(
         else:
             workspace_name = session.workspace_name or ""
             if len(session.messages) == 0:
-                session.title = generate_session_title(request.message, request.files)
+                session.title = generate_session_title(
+                    request.message, request.files, username
+                )
                 session.updated_at = datetime.now().isoformat()
                 db.update_session(session)
 
@@ -675,6 +678,16 @@ async def stream_export_run(
         message_id=message_id,
     )
 
+    # 「使用连接器[X]」指令解析（与 chat.py 一致）：选中的连接器只注入这些工具。
+    connector_servers, unknown_connectors = parse_message_connectors(
+        request.message, username
+    )
+    if connector_servers or unknown_connectors:
+        logger.info(
+            f"[{sid}] 🔌 连接器指令 | 命中: {connector_servers or '无'} | "
+            f"未识别: {unknown_connectors or '无'}"
+        )
+
     # ── 5. 获取（必要时驱逐重建）会话 Agent ────────────────────────────
     # 专家变更的驱逐判断在 get_or_create_agent_for_session() 内部统一处理，
     # 这里只需把 expert_agent_id 传进去（不传时等价于通用 Agent，行为与改动前一致）。
@@ -686,6 +699,7 @@ async def stream_export_run(
         system_prompt_extra=system_prompt_extra,
         enable_web_search=request.enable_web_search,
         expert_agent_id=expert_id,
+        connector_servers=connector_servers,
     )
 
     chat_request = ChatRequest(
