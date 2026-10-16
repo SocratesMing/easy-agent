@@ -589,6 +589,7 @@ import {
   buildSegments,
   buildTokenMap,
   insertSkillToken,
+  matchTokenAt,
   reconcileTokenDeletion,
   removeTokenSegments,
   skillDirsInText,
@@ -1948,15 +1949,24 @@ export default {
       else if (bottom > list.scrollTop + list.clientHeight) list.scrollTop = bottom - list.clientHeight
     },
 
-    /** 判定光标前是否为「/查询词」（/ 位于开头或空白之后），决定展开或收起面板 */
+    /** 判定光标前是否为「/查询词」（/ 位于开头、空白或已选标签之后），决定展开或收起面板 */
     updateSkillPicker() {
       const ta = this.$refs.textareaRef
       if (!ta) return
       const caret = ta.selectionStart === null || ta.selectionStart === undefined
         ? ta.value.length
         : ta.selectionStart
-      const slash = parseSlashQuery(ta.value, caret)
+      const slash = parseSlashQuery(ta.value, caret, this.tokenMap)
       if (!slash) {
+        this.closeSkillPicker()
+        return
+      }
+
+      // 查询词起点是一个完整技能标签、且光标已在标签内容之后（如 `/docx帮我排版`）：
+      // 用户打完标签直接贴内容，不是在检索——关掉面板让标签正常渲染（面板开着的
+      // 半截查询词抑制态会把标签当普通文字显示，看起来技能「失效」）
+      const leading = matchTokenAt(ta.value, slash.start, this.tokenMap)
+      if (leading && leading.end < caret) {
         this.closeSkillPicker()
         return
       }
@@ -1989,7 +1999,7 @@ export default {
         ? ta.selectionStart
         : base.length
       // 以当前光标为准重算一次 /查询词 的范围，避免用户中途改动文本后误删内容
-      const slash = parseSlashQuery(base, caret)
+      const slash = parseSlashQuery(base, caret, this.tokenMap)
       const start = slash ? slash.start : caret
       const cleared = base.slice(0, start) + base.slice(caret)
 

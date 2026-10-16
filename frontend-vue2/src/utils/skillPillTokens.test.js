@@ -5,6 +5,7 @@ import {
   buildSegments,
   buildTokenMap,
   insertSkillToken,
+  matchTokenAt,
   reconcileTokenDeletion,
   removeTokenSegments,
   skillDirsInText,
@@ -32,7 +33,8 @@ test('文本可原样还原（不丢字、不粘字）', () => {
     '',
     '帮我用 /Word 文档处理 排个版',
     '/Word 文档处理/PPT 生成 一起做',
-    '/docx 这是未知目录名，应当保持普通文字',
+    '/docx 这是已知目录名（已收录为标签 token，可正常还原）',
+    '/unknown-dir 这是未知目录名，应当保持普通文字',
     '路径 /usr/bin/env 不是技能',
     '/Word 文档处理第二行\n换行也正常',
   ]
@@ -67,6 +69,47 @@ test('同显示名的技能双方都回退目录名', () => {
   assert.equal(tokens.has('/同名技能'), false)
   assert.equal(tokens.get('/one').dir_name, 'one')
   assert.equal(tokens.get('/two').dir_name, 'two')
+})
+
+test('目录名 token 一并收录：手打 /目录名 也是合法标签', () => {
+  const tokens = map()
+  assert.equal(tokens.get('/docx').dir_name, 'docx')
+  assert.equal(tokens.get('/pptx-generator').dir_name, 'pptx-generator')
+
+  // 后面不加空格直接贴内容：标签照常渲染、发送时剥离并单独提取目录名
+  const segs = buildSegments('/docx帮我排版', tokens)
+  assert.deepEqual(segs.map((s) => s.type), ['skill', 'text'])
+  assert.equal(segs[0].dirName, 'docx')
+  assert.equal(text(segs), '/docx帮我排版')
+  assert.equal(skillDirsInText('/docx帮我排版', tokens).join(','), 'docx')
+  assert.equal(stripSkillTokens('/docx帮我排版', tokens), '帮我排版')
+
+  // 空格分隔同样命中
+  assert.equal(skillDirsInText('/docx 帮我排版', tokens).join(','), 'docx')
+  // 半截目录名不命中
+  assert.equal(skillDirsInText('/doc 帮我排版', tokens).length, 0)
+})
+
+test('目录名 token 撞别的技能显示名时显示名优先，双方都不丢失', () => {
+  // 技能 a 的目录名 token 恰好等于技能 b 的显示名 token
+  const tokens = buildTokenMap([
+    { dir_name: 'docx', name: '表格处理' },
+    { dir_name: 'other', name: 'docx' },
+  ])
+  assert.equal(tokens.get('/表格处理').dir_name, 'docx')
+  assert.equal(tokens.get('/docx').dir_name, 'other')
+  // a 的目录名 token 被显示名占用后不补录，但 a 仍有显示名 token
+  assert.equal(tokens.get('/表格处理').name, '表格处理')
+})
+
+test('matchTokenAt：完整标签命中并给出结束下标', () => {
+  const tokens = map()
+  assert.deepEqual(matchTokenAt('/docx帮我排版', 0, tokens), { token: '/docx', end: 5 })
+  assert.deepEqual(matchTokenAt('/Word 文档处理帮我排版', 0, tokens), { token: '/Word 文档处理', end: '/Word 文档处理'.length })
+  assert.equal(matchTokenAt('/doc 帮我排版', 0, tokens), null)
+  assert.equal(matchTokenAt('看 /docx', 2, tokens).token, '/docx')
+  assert.equal(matchTokenAt('docx', 0, tokens), null)
+  assert.equal(matchTokenAt('/docx', 9, tokens), null)
 })
 
 test('suppressStart 让正在检索的半截查询词保持普通文字', () => {

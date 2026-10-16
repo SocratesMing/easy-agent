@@ -35,9 +35,14 @@ export function tokenForSkill(skill) {
 /**
  * 建立「标签文本 → 技能」映射（token 必须唯一，否则无法由文本反解技能）。
  *
+ * 每个技能收录两个 token：显示名 token（`/Word 文档处理`，面板选中后插入的形式）
+ * 与目录名 token（`/docx`，天然唯一）。收录目录名后，手打 `/目录名+内容`
+ * ——包括后面不加空格直接贴内容——也能渲染成标签并在发送时还原成结构化 skills，
+ * 不再依赖后端解析文本前缀。
+ *
  * 两个技能显示名相同时**双方**都回退 `/目录名`（避免"谁先谁赢"的随机归属）；
- * 若回退后仍与该目录名撞上另一个技能的名字（极少数），后出现者不参与解析，
- * 只能靠「/ 面板选中」时的结构化 skills 字段生效。
+ * 若某个目录名 token 撞上另一个技能的显示名 token（极少数），后者（后出现的目录名）
+ * 不参与解析，只能靠「/ 面板选中」时的结构化 skills 字段生效。
  *
  * @param {Array<{dir_name?: string, name?: string}>} skills
  * @returns {Map<string, object>}
@@ -51,6 +56,7 @@ export function buildTokenMap(skills) {
   }
 
   const map = new Map()
+  // 第一遍：显示名 token（含重名回退），保持原有归属语义
   for (const skill of list) {
     let token = tokenForSkill(skill)
     if (nameCount.get(token) > 1) token = dirToken(skill)
@@ -59,7 +65,37 @@ export function buildTokenMap(skills) {
     if (owner && owner.dir_name !== skill.dir_name) continue
     map.set(token, skill)
   }
+  // 第二遍：目录名 token 仅在空闲时补录，不挤占第一遍已定的显示名归属
+  // （某技能显示名恰等于另一技能目录名时，显示名优先，双方都不丢失）
+  for (const skill of list) {
+    const dir = dirToken(skill)
+    if (dir && !map.has(dir)) map.set(dir, skill)
+  }
   return map
+}
+
+/**
+ * 文本 index 处是否是一个完整技能标签：命中返回 token 与结束下标。
+ * 只判断「此处是否为已知标签」，不判断左边界（由调用方保证，同 buildSegments）。
+ *
+ * @param {string} text
+ * @param {number} index
+ * @param {Map<string, object>} tokenMap
+ * @returns {{ token: string, end: number } | null}
+ */
+export function matchTokenAt(text, index, tokenMap) {
+  const value = typeof text === 'string' ? text : ''
+  if (!Number.isInteger(index) || index < 0 || index >= value.length) return null
+  if (value[index] !== '/') return null
+  const candidates = tokenMap instanceof Map
+    ? Array.from(tokenMap.keys()).sort((a, b) => b.length - a.length)
+    : []
+  for (const candidate of candidates) {
+    if (candidate.length > 1 && value.startsWith(candidate, index)) {
+      return { token: candidate, end: index + candidate.length }
+    }
+  }
+  return null
 }
 
 /**
