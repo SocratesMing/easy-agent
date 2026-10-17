@@ -1,3 +1,25 @@
+"""会话/长期记忆提示词契约测试。
+
+固定使用仓库内权威提示词目录（easy_agent/config/prompts），避免测试结果
+依赖“是否有 app lifespan 把提示词目录重定向到空目录”的隐式顺序（测试隔离）。
+"""
+
+from pathlib import Path
+
+import pytest
+
+from easy_agent.services import prompt_loader
+
+
+@pytest.fixture(autouse=True)
+def _use_authoritative_prompts():
+    old = prompt_loader._CONFIGURED_DIR
+    prompt_loader.configure_prompts_dir(
+        Path(__file__).resolve().parents[2] / "easy_agent" / "config" / "prompts"
+    )
+    yield
+    prompt_loader._CONFIGURED_DIR = old
+
 from easy_agent.services.memory_manager import (
     MAX_LONG_TERM_MEMORY_CHARS,
     MAX_MEMORY_CHARS,
@@ -16,10 +38,10 @@ def test_session_memory_prompt_preserves_project_handoff_context():
     )
 
     # 按契约校验（不锁死文案措辞）：具备恢复上下文所需的结构要素
-    assert "## 当前项目" in prompt
-    assert "## 下一步" in prompt
-    assert "## 关键决策" in prompt
-    assert "## 踩坑与解法" in prompt
+    assert "决策与理由" in prompt
+    assert "偏好与约定" in prompt
+    assert "一律不记" in prompt
+    assert "请总结当前项目的主要逻辑" in prompt
 
 
 def test_session_memory_prompt_keeps_restore_sections_and_safety_rules():
@@ -29,9 +51,8 @@ def test_session_memory_prompt_keeps_restore_sections_and_safety_rules():
         assistant_response="已完成实现。",
     )
 
-    assert "## 当前项目" in prompt
-    assert "## 下一步" in prompt
-    assert "## 踩坑与解法" in prompt
+    assert "决策与理由" in prompt
+    assert "偏好与约定" in prompt
     assert "原始日志" in prompt
     assert "密钥" in prompt
     assert str(MAX_MEMORY_CHARS) in prompt
@@ -86,8 +107,8 @@ def test_project_session_also_uses_compact_memory_prompt_budget():
 
     assert "输出模式" not in prompt
     assert str(MAX_MEMORY_CHARS) in prompt
-    assert "## 当前项目" in prompt
-    assert "## 踩坑与解法" in prompt
+    assert "决策与理由" in prompt
+    assert "偏好与约定" in prompt
 
 
 def test_update_memory_enforces_compact_budget_without_task_mode(tmp_path):

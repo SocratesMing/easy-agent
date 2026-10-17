@@ -1,5 +1,8 @@
 """Skill discovery utilities"""
 
+import logging
+from typing import Any
+
 from pathlib import Path
 
 
@@ -36,6 +39,7 @@ def find_skills_root(skills_dir: str | None = None) -> str | None:
 
     for search_path in search_paths:
         if search_path.exists() and search_path.is_dir():
+            # 仓库根 skills/ 为 canonical；包内 easy_agent/skills 仅作回退。
             return str(search_path.absolute())
 
     return None
@@ -77,18 +81,62 @@ def discover_skills(skills_dir: str | None = None) -> list[dict]:
                 continue
 
             skill_md = skill_dir / "SKILL.md"
-            skill_readme = skill_dir / "README.md"
-
-            if skill_md.exists() or skill_readme.exists():
+            if skill_md.exists():
                 seen_names.add(skill_name)
                 skills.append(
                     {
                         "name": skill_name,
                         "path": str(skill_dir.absolute()),
-                        "description_file": "SKILL.md"
-                        if skill_md.exists()
-                        else "README.md",
+                        "description_file": "SKILL.md",
                     }
                 )
 
     return skills
+
+
+logger = logging.getLogger(__name__)
+
+
+def parse_skill_frontmatter(text: str) -> tuple[dict[str, Any] | None, str | None]:
+    """解析 SKILL.md 的 YAML frontmatter；返回 (meta, error)。"""
+    if not text.startswith("---"):
+        return None, "缺少 frontmatter（文件需以 --- 开头）"
+    parts = text.split("---", 2)
+    if len(parts) < 3:
+        return None, "frontmatter 未闭合（缺少结束 ---）"
+    raw = parts[1]
+    try:
+        import yaml
+
+        meta = yaml.safe_load(raw)
+    except Exception as exc:  # noqa: BLE001
+        return None, f"frontmatter YAML 解析失败: {exc}"
+    if not isinstance(meta, dict):
+        return None, "frontmatter 不是键值映射"
+    return meta, None
+
+
+def validate_skills(skills_dir: str | None = None) -> list[dict]:
+    """校验每个 SKILL.md 的 frontmatter（name/description 必填）。
+
+    返回 ``[{"name", "path", "errors": [...]}]``；无问题的技能 ``errors`` 为空。
+    """
+    results: list[dict] = []
+    for skill in discover_skills(skills_dir):
+        path = Path(skill["path"]) / "SKILL.md"
+        errors: list[str] = []
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError as exc:
+            results.append({"name": skill["name"], "path": str(path), "errors": [f"读取失败: {exc}"]})
+            continue
+        meta, error = parse_skill_frontmatter(text)
+        if error:
+            errors.append(error)
+        elif meta is not None:
+            if not str(meta.get("name") or "").strip():
+                errors.append("frontmatter.name 为空")
+            if not str(meta.get("description") or "").strip():
+                errors.append("frontmatter.description 为空")
+        results.append({"name": skill["name"], "path": str(path), "errors": errors})
+    return results

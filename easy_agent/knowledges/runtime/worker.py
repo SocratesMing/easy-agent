@@ -35,6 +35,7 @@ class KnowledgeParsePollWorker:
         original_store: LocalOriginalStore | None = None,
         db_provider: Callable[[], Database | None],
         poll_interval_seconds: float = 5.0,
+        lock_provider: Callable[[], object] | None = None,
     ):
         """初始化解析轮询 worker；poll_interval_seconds 为轮询间隔（默认 5 秒）。"""
 
@@ -44,6 +45,13 @@ class KnowledgeParsePollWorker:
         # 数据库在宿主 lifespan 中晚于本 worker 初始化，必须惰性获取
         self._db_provider = db_provider
         self.poll_interval_seconds = poll_interval_seconds
+        # 多副本 leader 选举：同一轮只允许一个副本真正调用 Ragflow。
+        # 未启用分布式锁时 LockHandle.acquired 恒 True（单实例行为不变）。
+        if lock_provider is None:
+            from ...utils.distributed_lock import get_distributed_lock
+
+            lock_provider = get_distributed_lock
+        self._lock_provider = lock_provider
         self._stop = asyncio.Event()
         self._task: asyncio.Task | None = None
 
@@ -71,6 +79,20 @@ class KnowledgeParsePollWorker:
         db = self._db_provider()
         if db is None:
             return False
+
+        lock = self._lock_provider()
+        handle = lock.acquire(
+            "knowledge:parse-poll", ttl_seconds=max(30.0, self.poll_interval_seconds * 3)
+        )
+        try:
+            if not handle.acquired:
+                # 另有副本正在轮询；本轮直接跳过，避免 N 副本重复调用 Ragflow。
+                return False
+            return await self._poll_locked(db)
+        finally:
+            handle.release()
+
+    async def _poll_locked(self, db: Database) -> bool:
         try:
             base_ids = await asyncio.to_thread(self._pending_base_ids, db)
         except Exception as exc:

@@ -1,6 +1,7 @@
 """Preserve administrator bootstrap policy across host database upgrades."""
 
 import os
+from ..env import env_str
 import uuid
 from datetime import datetime
 
@@ -18,7 +19,7 @@ def bootstrap_password():
 def ensure_default_admin(db):
     user = db.get_user_by_username("admin")
     if user:
-        production = os.environ.get("AGENT_ENV", "").casefold() in {"prod", "production"}
+        production = env_str("AGENT_ENV").casefold() in {"prod", "production"}
         weak = bool(user.password_hash) and any(verify_password(p, user.password_hash) for p in ("admin", "123456"))
         if not user.password_hash or (production and weak):
             db.update_user_password("admin", hash_password(bootstrap_password()))
@@ -27,3 +28,9 @@ def ensure_default_admin(db):
     now = datetime.now().isoformat()
     return db.create_user(UserModel(user_id=str(uuid.uuid4()), username="admin",
         password_hash=hash_password(bootstrap_password()), created_at=now, updated_at=now))
+
+
+# 注册默认管理员策略：db 层通过注册表调用，避免静态 import personnel。
+from ..db.user_fields_registry import register_default_admin  # noqa: E402
+
+register_default_admin(ensure_default_admin)

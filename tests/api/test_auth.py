@@ -224,6 +224,27 @@ def test_auth_config(client):
     data = resp.json()
     assert "context_length" in data
     assert "preset_questions" in data
+    assert isinstance(data["preset_questions"], list)
+
+
+def test_auth_config_response_accepts_question_groups():
+    from easy_agent.models.api import AuthConfigResponse
+
+    model = AuthConfigResponse(
+        context_length=128000,
+        preset_questions=[
+            {
+                "category": "宏观与资产研判",
+                "icon": "❄️",
+                "questions": ["结合国内外宏观指标判断增长与通胀方向。"],
+            }
+        ],
+        win=False,
+        agent_env="dev",
+        idle_logout_minutes=0,
+        app_welcome_title="Easy Agent",
+    )
+    assert model.preset_questions[0].questions[0].startswith("结合")
 
 
 def test_register_requires_employee_id(client):

@@ -26,6 +26,7 @@ from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
 from langchain_core.utils.json import parse_partial_json
 
 from ..model import extract_reasoning
+from .sse import SSEEvent
 
 
 # 需要「参数流式渲染」的工具：这些工具的 arguments 体量很大（write_file 的
@@ -153,6 +154,19 @@ class StreamProcessor:
         # 保存上一段已结束的 duration，使该 turn 最终"用时"为各段之和。
         self._thinking_duration_acc = 0.0
 
+        # PERF: thinking 的 full_content 全量快照节流。
+        # 旧实现每个 chunk 都重发本 step 全量思考（O(n²)）：实测 71K 字符思考
+        # 会产生约 365MB SSE 与同等量级内存。前端同时支持「content 增量 append」
+        # 与「full_content SET 幂等覆盖」，因此只在首包/每 1.5s/每增长 8K 字符时
+        # 发送全量快照，既保留纠错能力又把带宽降到 O(n)。
+        self.THINKING_SNAPSHOT_INTERVAL = 1.5
+        self.THINKING_SNAPSHOT_MIN_GROWTH = 8192
+        self._thinking_snapshot_ts = 0.0
+        self._thinking_snapshot_len = 0
+        self._thinking_snapshot_step = -1
+        # 当前 step 的思考内容缓存：避免每 chunk 对 accumulated_thinking 做 O(n) 切片。
+        self._thinking_step_content = ""
+
         # tool_call_chunks 参数流式累积：index -> {id, name, raw, last_emit}。
         # 仅在 messages 模式解析大参数工具（见 STREAM_ARG_TOOLS）时使用，
         # 每个 model turn 结束（updates 的完整 AIMessage 到达）时清空。
@@ -224,7 +238,7 @@ class StreamProcessor:
             self.sid, self.current_step, dur, _content_len,
             _truncate(content, 100),
         )
-        return [{"type": "thinking_end", "duration": dur, "step": self.current_step}]
+        return [{"type": SSEEvent.THINKING_END, "duration": dur, "step": self.current_step}]
 
     def _on_ai_message(self, m: AIMessage) -> list[dict]:
         events = []
@@ -254,12 +268,12 @@ class StreamProcessor:
             self._step_tool_count += 1
             self.tool_call_start_times[tid] = time.time()
             self.blocks.append({
-                "type": "tool_call", "tool_name": name, "tool_call_id": tid,
+                "type": SSEEvent.TOOL_CALL, "tool_name": name, "tool_call_id": tid,
                 "arguments": args, "result": "", "success": True,
                 "duration": None, "step": self.current_step,
                 "order": len(self.blocks),
             })
-            events.append({"type": "tool_call", "tool_name": name,
+            events.append({"type": SSEEvent.TOOL_CALL, "tool_name": name,
                            "tool_call_id": tid, "arguments": args,
                            "step": self.current_step})
             events.extend(self._maybe_todo_from_args(name, tid, args))
@@ -293,7 +307,7 @@ class StreamProcessor:
                 blk["duration"] = duration
                 args = blk.get("arguments", {})
                 break
-        ev = {"type": "tool_result", "tool_name": name, "tool_call_id": tid,
+        ev = {"type": SSEEvent.TOOL_RESULT, "tool_name": name, "tool_call_id": tid,
               "arguments": args, "result": result, "success": not is_error,
               "duration": duration, "step": self.current_step}
         events.append(ev)
@@ -324,7 +338,7 @@ class StreamProcessor:
             # step 的思考内容重复（前端表现为"分两次渲染"）。检测到整段重复时跳过。
             # 新 turn 的首段思考（_step_advanced_this_turn=False）不在此列，不会被误跳过。
             if self._step_advanced_this_turn:
-                turn_thinking = self.accumulated_thinking[self.thinking_step_start_len:]
+                turn_thinking = self._thinking_step_content
                 # 命中条件：整段重复（聚合块等于本 turn 已累积思考），或大段重复块
                 #（>50 字符，前缀/后缀/中段均算，避免短增量误伤）。均为
                 # provider/LangGraph 流末尾重放，直接追加会让同一 step 的思考内容
@@ -339,6 +353,10 @@ class StreamProcessor:
                 if not self.is_in_thinking:
                     self.is_in_thinking = True
                     self.thinking_start_time = time.time()
+                    # 重新进入思考（同一 step 的分段）：强制下一包发送全量快照。
+                    self._thinking_snapshot_ts = 0.0
+                    self._thinking_snapshot_len = 0
+                    self._thinking_snapshot_step = -1
                     _prev_step = self.current_step
                     self._advance_step_for_turn()
                     # 每个 model turn（step）一张思考卡片，按 step 递增存储。仅当当前
@@ -353,12 +371,14 @@ class StreamProcessor:
                             break
                     if reused is not None:
                         self._thinking_duration_acc = reused.get("duration") or 0
+                        self._thinking_step_content = reused.get("content", "") or ""
                         # 不重置 duration=None：避免卡片在"思考过程"与"正在思考"间闪烁、
                         # 也避免同一步骤思考被视觉上分成两段。最终 _end_thinking 写入累计耗时。
                         # thinking_step_start_len 保留该块创建时的起点，使累积内容正确
                     else:
                         self._thinking_duration_acc = 0.0
                         self.thinking_step_start_len = len(self.accumulated_thinking)
+                        self._thinking_step_content = ""
                         # 进入新 step：先打印上一步汇总，再清空本步统计（供「stepN 结束」
                         # 汇总行按步重新累计）。(step 结束也会在工具边界/_on_tool_message
                         # 与 finalize 处打印，_step_end_logged 去重保证只打印一次)
@@ -369,20 +389,31 @@ class StreamProcessor:
                                             "content": "", "step": self.current_step, "duration": None})
                     # 仅在本轮思考「真正开始」时发送一次 thinking_start 事件（前端用），
                     # 日志改为在 _end_thinking 合并为一行（含推理内容预览），不在此单独打印。
-                    events.append({"type": "thinking_start", "step": self.current_step})
+                    events.append({"type": SSEEvent.THINKING_START, "step": self.current_step})
             self.accumulated_thinking += rc
-            step_content = ""
+            self._thinking_step_content += rc
+            step_content = self._thinking_step_content
             for blk in reversed(self.blocks):
                 if blk.get("type") == "thinking":
-                    blk["content"] = self.accumulated_thinking[self.thinking_step_start_len:]
-                    step_content = blk["content"]
+                    blk["content"] = step_content
                     break
-            # 同时发送增量(content)与完整内容(full_content)：新前端用 full_content
-            # 采用 SET 语义覆盖（幂等，重复/聚合增量也不会重复渲染）；旧前端仍 append
-            # content 增量（依赖后端去重保证正确）。双字段兼容新旧前端缓存，避免
-            # "后端发完整内容 + 旧前端 append" 导致的思考内容重复渲染。
-            events.append({"type": "thinking", "content": rc,
-                           "full_content": step_content, "step": self.current_step})
+            # 增量 content 每包都发（前端 append）；full_content 仅在首包/周期/大增量时
+            # 发送（前端 SET 幂等覆盖），避免 O(n²) 带宽与内存放大。
+            now = time.time()
+            need_snapshot = (
+                self._thinking_snapshot_step != self.current_step
+                or len(step_content) - self._thinking_snapshot_len >= self.THINKING_SNAPSHOT_MIN_GROWTH
+                or now - self._thinking_snapshot_ts >= self.THINKING_SNAPSHOT_INTERVAL
+            )
+            if need_snapshot:
+                self._thinking_snapshot_step = self.current_step
+                self._thinking_snapshot_ts = now
+                self._thinking_snapshot_len = len(step_content)
+                events.append({"type": SSEEvent.THINKING, "content": rc,
+                               "full_content": step_content, "step": self.current_step})
+            else:
+                events.append({"type": SSEEvent.THINKING, "content": rc,
+                               "step": self.current_step})
         if content and not getattr(chunk, "tool_call_chunks", None):
             events.extend(self._end_thinking())
             # 正文也按 step 计入 blocks（与思考/工具一致），持久化后历史会话能按
@@ -411,7 +442,7 @@ class StreamProcessor:
             # 空白 token（换行/缩进）同样下发事件：前端按 token 累积正文，
             # 若丢弃纯空白 chunk，标题/表格/代码块之间的换行会缺失，
             # 导致 markdown 实时渲染成原始文本（历史记录用的是完整文本所以正常）。
-            events.append({"type": "content", "content": content, "step": self.current_step})
+            events.append({"type": SSEEvent.CONTENT, "content": content, "step": self.current_step})
         # 大参数工具（write_file/edit_file）的 arguments 分片：边收边解析出当前
         # 快照，下发 tool_call_delta 供前端实时渲染正在写入的内容。
         if tcc:
@@ -462,7 +493,7 @@ class StreamProcessor:
             if not parsed:
                 continue
             events.append({
-                "type": "tool_call_delta",
+                "type": SSEEvent.TOOL_CALL_DELTA,
                 "tool_name": state["name"],
                 "tool_call_id": state["id"] or f"tool-{state['name']}",
                 "arguments": parsed,
@@ -501,7 +532,7 @@ class StreamProcessor:
             return []
         self._last_token_usage_time = now
         # 下发"最近一次模型调用"的用量（不累加）
-        return [{"type": "token_usage", **self._usage_payload(now - self.start_time)}]
+        return [{"type": SSEEvent.TOKEN_USAGE, **self._usage_payload(now - self.start_time)}]
 
     def _maybe_todo_from_args(self, name: str, tid: str, args) -> list[dict]:
         if name != "write_todos" or tid in self._todo_emitted_for:
@@ -510,7 +541,7 @@ class StreamProcessor:
         if not todos:
             return []
         self._todo_emitted_for.add(tid)
-        return [{"type": "todo_list", "todos": todos, "step": self.current_step}]
+        return [{"type": SSEEvent.TODO_LIST, "todos": todos, "step": self.current_step}]
 
     def _maybe_todo_from_result(self, name: str, tid: str, result: str) -> list[dict]:
         if name != "write_todos" or tid in self._todo_emitted_for:
@@ -528,7 +559,7 @@ class StreamProcessor:
         if not todos:
             return []
         self._todo_emitted_for.add(tid)
-        return [{"type": "todo_list", "todos": todos, "step": self.current_step}]
+        return [{"type": SSEEvent.TODO_LIST, "todos": todos, "step": self.current_step}]
 
     def consume_usage_metadata(self, m: AIMessage) -> None:
         um = getattr(m, "usage_metadata", None) or {}
@@ -626,13 +657,13 @@ class StreamProcessor:
         return out
 
     def start(self) -> list[dict]:
-        return [{"type": "start", "session_id": self.session_id}]
+        return [{"type": SSEEvent.START, "session_id": self.session_id}]
 
     def finalize(self, *, session_id, elapsed_time) -> list[dict]:
         # 确保最后一步（如纯正文收尾、无工具边界）的汇总日志被打印。
         self._log_step_end(self.current_step)
         return [{
-            "type": "done", "session_id": session_id,
+            "type": SSEEvent.DONE, "session_id": session_id,
             "elapsed_time": round(elapsed_time, 2),
             "usage": self._usage_payload(elapsed_time),
             "blocks": self._sse_blocks(),

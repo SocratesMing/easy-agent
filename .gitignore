@@ -79,6 +79,9 @@ offline_deps/
 /docs/expert-agent-solution.md
 /docs/expert-skill-solution.md
 
+# 本地分析脚本目录（临时排查产物，勿提交）
+/_analysis/
+
 # macOS
 .DS_Store
 

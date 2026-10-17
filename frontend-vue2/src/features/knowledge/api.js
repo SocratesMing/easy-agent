@@ -1,5 +1,6 @@
 import { dispatchAuthExpired, getStoredToken } from '../../api/auth.js'
 import { handleStreamResponse, streamHeaders, streamUrl } from '../../utils/request.js'
+import { readSSE } from '../../api/sse.js'
 
 // Keep native Response semantics for binary previews, Range headers and error bodies.
 async function authFetch(url, options = {}) {
@@ -237,31 +238,14 @@ export async function askKnowledgeBaseStream(baseId, payload, onChunk, signal) {
       signal,
     })
   )
-  const reader = response.body.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ''
-  try {
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-      buffer += decoder.decode(value, { stream: true })
-      const lines = buffer.split('\n')
-      buffer = lines.pop() || ''
-      for (const line of lines) {
-        if (!line.startsWith('data: ')) continue
-        let event
-        try { event = JSON.parse(line.slice(6)) } catch (_) { continue }
-        if (event.type === 'error') {
-          const error = new Error(event.content || '知识库问答失败')
-          error.code = event.code || 'KNOWLEDGE_AGENT_FAILED'
-          throw error
-        }
-        onChunk(event)
-      }
+  await readSSE(response, (event) => {
+    if (event.type === 'error') {
+      const error = new Error(event.content || '知识库问答失败')
+      error.code = event.code || 'KNOWLEDGE_AGENT_FAILED'
+      throw error
     }
-  } finally {
-    reader.releaseLock()
-  }
+    onChunk(event)
+  }, { signal })
 }
 
 export function cancelKnowledgeBaseAnswer(baseId) {

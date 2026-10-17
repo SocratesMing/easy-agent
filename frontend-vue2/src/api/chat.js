@@ -3,6 +3,7 @@ import request, {
   streamHeaders,
   streamUrl,
 } from '../utils/request.js'
+import { readSSE } from './sse.js'
 
 export async function createSession(title, username = null) {
   const data = { title }
@@ -80,41 +81,6 @@ export async function getStreamStatus(sessionId) {
   )
 }
 
-async function readSseStream(response, onChunk, abortSignal, controller) {
-  const reader = response.body.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ''
-
-  try {
-    while (true) {
-      if (abortSignal && abortSignal.aborted) {
-        controller.abort()
-        return
-      }
-
-      const { done, value } = await reader.read()
-      if (done) break
-
-      buffer += decoder.decode(value, { stream: true })
-      const lines = buffer.split('\n')
-      buffer = lines.pop() || ''
-
-      for (const line of lines) {
-        if (!line.startsWith('data: ')) continue
-        try {
-          const data = JSON.parse(line.slice(6))
-          onChunk(data)
-        } catch (error) {
-          console.error('解析 SSE 数据失败:', error)
-        }
-      }
-    }
-  } catch (error) {
-    if (error.name === 'AbortError') return
-    throw error
-  }
-}
-
 export async function attachStream(sessionId, onChunk, signal) {
   const controller = new AbortController()
   const abortSignal = signal || controller.signal
@@ -124,7 +90,7 @@ export async function attachStream(sessionId, onChunk, signal) {
       headers: streamHeaders(),
     })
   )
-  await readSseStream(response, onChunk, abortSignal, controller)
+  await readSSE(response, onChunk, { signal: abortSignal })
 }
 
 export async function sendMessage(sessionId, message, onChunk, signal, enableDeepThink = true, files = [], model = null, enableWebSearch = false, pageContext = null, skills = [], pendingExpertId = '') {
@@ -157,7 +123,7 @@ export async function sendMessage(sessionId, message, onChunk, signal, enableDee
       signal: abortSignal,
     })
   )
-  await readSseStream(response, onChunk, abortSignal, controller)
+  await readSSE(response, onChunk, { signal: abortSignal })
 }
 
 export async function resumeStream(
@@ -183,7 +149,7 @@ export async function resumeStream(
       signal: abortSignal,
     })
   )
-  await readSseStream(response, onChunk, abortSignal, controller)
+  await readSSE(response, onChunk, { signal: abortSignal })
 }
 
 function generateMessageId() {

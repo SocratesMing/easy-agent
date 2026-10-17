@@ -18,10 +18,9 @@ from pathlib import Path
 import pytest
 import yaml
 
-# 手动演示脚本 / 陈旧单测，不纳入接口与业务场景测试套件：
-# - test_v3_streaming.py：需真实 config.yaml + 联网调用 LLM，模块级 test_* 协程会被收集并执行 sys.exit(1)
-# - test_basic.py：引用了已移除的模块（easy_agent.web、Colors 等），在当前代码库下恒失败
-collect_ignore = ["test_v3_streaming.py", "test_basic.py"]
+# 说明：历史上用 collect_ignore 隐藏过 test_v3_streaming.py / test_basic.py。
+# 这两个文件已不存在；不要再用 collect_ignore 隐藏坏用例（审计 ARCH-11），
+# 需要暂时跳过的用例应使用 pytest.mark.skip(reason=...)，保持可见。
 
 TEST_ROOT = Path(__file__).parent
 _TMP = Path(tempfile.mkdtemp(prefix="easy_agent_test_"))
@@ -38,6 +37,14 @@ os.environ["TEST_PROMPTS_DIR"] = str(_TMP / "prompts")
 os.environ["TEST_UPLOADS_DIR"] = str(_TMP / "uploads")
 os.environ["TEST_DB_PATH"] = str(_TMP / "easy_agent.db")
 os.environ["TEST_SYSTEM_PROMPT"] = str(TEST_ROOT / "system_prompt.md")
+
+# FW-09：checkpointer 后端在 lifespan 内按业务库类型选择（默认官方 SQLite saver）。
+# 显式给一份临时路径，避免默认 data/checkpoints.db 写入仓库；每个 client fixture
+# 再覆盖成独立文件，保证测试之间不共享 HITL 中断态。
+os.environ["EASY_CHECKPOINT_BACKEND"] = "auto"
+os.environ["EASY_CHECKPOINT_SQLITE_PATH"] = str(_TMP / "checkpoints" / "shared.db")
+os.environ.pop("EASY_CHECKPOINT_POSTGRES_URI", None)
+(_TMP / "checkpoints").mkdir(parents=True, exist_ok=True)
 
 for _d in ("workspace", "memories", "logs", "sessions", "skills", "prompts", "uploads"):
     (_TMP / _d).mkdir(parents=True, exist_ok=True)
@@ -80,6 +87,14 @@ def db():
 
 @pytest.fixture()
 def client(db, monkeypatch):
+    # 每个测试独立 checkpoint 文件：lifespan 打开/关闭官方 saver，
+    # 避免 HITL 中断态跨用例串状态，也不写默认 data/checkpoints.db。
+    monkeypatch.setenv(
+        "EASY_CHECKPOINT_SQLITE_PATH",
+        str(_TMP / "checkpoints" / f"test_{uuid.uuid4().hex}.db"),
+    )
+    monkeypatch.delenv("EASY_CHECKPOINT_POSTGRES_URI", raising=False)
+
     # 将工作区相关路径重定向到临时目录
     monkeypatch.setattr(
         _config_mod.Config,

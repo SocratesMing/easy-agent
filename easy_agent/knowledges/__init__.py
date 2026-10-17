@@ -8,6 +8,9 @@ API）；服务与接口层 service / api；脚本 scripts。
 """
 
 from .api import router
+
+# 导入即向 db.schema_registry 注册 knowledge 建表函数（见 db/schema_registry.py）。
+from .core import schema as _schema  # noqa: F401,E402
 from .runtime.lifecycle import shutdown_knowledge, startup_knowledge
 from .runtime.observability import audit_metadata, metrics, resolve_request_id, should_audit
 from .core.operations_repository import KnowledgeOperationsRepository

@@ -62,9 +62,9 @@ MANIFEST_HEADER = """# 用户上传的文件（本会话）
 def _file_context_config():
     """取运行期 file_context 配置；不可用时返回 None（调用方按默认值处理）。"""
     try:
-        from .agent_manager import get_agent_config
+        from ..runtime_config import get_runtime_agent_config
 
-        cfg = get_agent_config()
+        cfg = get_runtime_agent_config()
         if cfg and cfg.get("config"):
             return getattr(cfg["config"], "file_context", None)
     except Exception as e:  # 配置未初始化（如单测直接调本模块）时不影响功能
@@ -202,6 +202,74 @@ def _body_indicates_failure(text: str) -> bool:
 
 
 # ── 落盘 ────────────────────────────────────────────────────────────────
+
+
+class UploadTooLargeError(Exception):
+    """上传文件超过配置的单文件上限。"""
+
+    def __init__(self, size: int, limit: int):
+        self.size = size
+        self.limit = limit
+        super().__init__(f"文件大小 {size} bytes 超过上限 {limit} bytes")
+
+
+def get_max_file_size_bytes() -> int | None:
+    """读取配置中的单文件上传大小上限（字节）；None = 不限制。"""
+    try:
+        from ..runtime_config import get_runtime_agent_config
+
+        cfg = get_runtime_agent_config()
+        if cfg and cfg.get("config"):
+            limits = getattr(cfg["config"], "upload_limits", None)
+            if limits is None:
+                return None
+            if not getattr(limits, "enabled", True):
+                return None
+            mb = int(limits.max_file_size_mb)
+            return mb * 1024 * 1024 if mb > 0 else None
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("读取上传限额配置失败（本次不做大小限制）: %s", exc)
+    return None
+
+
+_UNSET = object()
+
+
+async def save_upload_streaming(
+    upload,
+    dest: Path,
+    *,
+    chunk_size: int = 1024 * 1024,
+    max_bytes=_UNSET,
+) -> int:
+    """分块读取 UploadFile 并落盘，边读边计大小；超限立即中止并删除半成品。
+
+    避免 ``await file.read()`` 把整个请求体读进内存（大文件/并发上传打爆内存）。
+    ``max_bytes`` 不传时读取全局配置；显式传 ``None`` 表示本次不限制。
+    返回写入字节数。
+    """
+    dest = Path(dest)
+    limit = get_max_file_size_bytes() if max_bytes is _UNSET else max_bytes
+    total = 0
+    fd = open(dest, "wb")
+    try:
+        while True:
+            chunk = await upload.read(chunk_size)
+            if not chunk:
+                break
+            total += len(chunk)
+            if limit is not None and total > limit:
+                fd.close()
+                try:
+                    dest.unlink()
+                except OSError:
+                    pass
+                raise UploadTooLargeError(total, limit)
+            fd.write(chunk)
+    finally:
+        if not fd.closed:
+            fd.close()
+    return total
 
 
 def store_parsed_content(

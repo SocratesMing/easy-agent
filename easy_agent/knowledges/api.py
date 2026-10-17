@@ -48,6 +48,7 @@ from .core.models import (
     DocumentMoveRequest,
     DocumentStatus,
     DocumentSummary,
+    KnowledgeAskCancelResponse,
     DocumentUploadAccepted,
     Evidence,
     FolderCreateRequest,
@@ -1189,7 +1190,7 @@ async def rotate_easyagent_chat_session(
     )
 
 
-@router.post("/bases/{base_id}/ask/cancel")
+@router.post("/bases/{base_id}/ask/cancel", response_model=KnowledgeAskCancelResponse)
 async def cancel_easyagent_answer(
     base_id: str,
     db: Annotated[Database, Depends(get_database)],

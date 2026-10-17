@@ -17,6 +17,7 @@ import request, {
   streamHeaders,
   streamUrl,
 } from '../utils/request.js'
+import { readSSE } from './sse.js'
 
 /** 创建专家（分类标签 tag_id 由大模型自动生成，无需前端传入） */
 export async function addExpert({ nameCn, prompt, sessionId = null, model = null }) {
@@ -141,34 +142,6 @@ export async function streamExportRun(payload, onChunk, signal) {
     })
   )
 
-  await readSseStream(response, onChunk, abortSignal)
+  await readSSE(response, onChunk, { signal: abortSignal })
 }
 
-/** 本地 SSE 解析（与 chat.js 的 readSseStream 行为一致，避免改动既有模块） */
-async function readSseStream(response, onChunk, abortSignal) {
-  const reader = response.body.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ''
-
-  try {
-    while (true) {
-      if (abortSignal && abortSignal.aborted) return
-      const { done, value } = await reader.read()
-      if (done) break
-      buffer += decoder.decode(value, { stream: true })
-      const lines = buffer.split('\n')
-      buffer = lines.pop() || ''
-      for (const line of lines) {
-        if (!line.startsWith('data: ')) continue
-        try {
-          onChunk(JSON.parse(line.slice(6)))
-        } catch (error) {
-          console.error('解析 SSE 数据失败:', error)
-        }
-      }
-    }
-  } catch (error) {
-    if (error.name === 'AbortError') return
-    throw error
-  }
-}

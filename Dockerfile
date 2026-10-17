@@ -58,6 +58,13 @@ RUN uv export --frozen --no-dev --extra docs -o /tmp/requirements.txt \
 # Copy backend source
 COPY easy_agent/ ./easy_agent/
 
+# Copy runtime resources (skills / prompts / preset experts). Without these the
+# image starts with zero discoverable skills and zero preset experts, because
+# find_skills_root()/public_expert_service resolve relative to /app.
+COPY skills/ ./skills/
+COPY prompts/ ./prompts/
+COPY experts/ ./experts/
+
 # Editable 安装项目本体（脚本入口 easy-web / 包发现）
 RUN uv pip install --system --no-cache --no-deps -e .
 
@@ -76,7 +83,7 @@ EXPOSE 8000
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')" || exit 1
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/live')" || exit 1
 
 # Entrypoint starts uvicorn (app.py 内部已通过 AGENT_ENV 选择配置文件)
 ENTRYPOINT ["/entrypoint.sh"]

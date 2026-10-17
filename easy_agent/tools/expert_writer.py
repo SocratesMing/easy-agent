@@ -183,9 +183,9 @@ def resolve_owned_expert(db: Database, username: str, expert_agent_id: str):
 def _agent_config():
     """运行期配置（``{"config": Config, ...}``）；未初始化时返回 None。"""
     try:
-        from ..services.agent_manager import get_agent_config
+        from ..runtime_config import get_runtime_agent_config
 
-        cfg = get_agent_config()
+        cfg = get_runtime_agent_config()
         if cfg and cfg.get("config"):
             return cfg["config"]
     except Exception as exc:  # noqa: BLE001
@@ -499,7 +499,7 @@ class SaveExpertTool(BaseTool):
 
         # 该用户所有缓存 Agent 失效，下次请求用新版本提示词重建
         try:
-            from ..services.agent_manager import invalidate_user_agents
+            from ..runtime_config import invalidate_user_agents
 
             invalidate_user_agents(self.username)
         except Exception as exc:  # noqa: BLE001

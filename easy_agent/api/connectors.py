@@ -13,9 +13,26 @@ from pathlib import Path
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import Field
 from pydantic import BaseModel
 
 from langchain_mcp_adapters.client import MultiServerMCPClient
+
+from ..models.api import (
+    ConnectorConfigUpdateResponse,
+    ConnectorToolInfo,
+    ConnectorToolsResponse,
+    ConnectorToggleResponse,
+    McpAddResponse,
+    McpDeleteResponse,
+    McpRawResponse,
+    McpSaveResponse,
+    SessionConnectorSetResponse,
+    SessionConnectorSwitchesResponse,
+    ConnectorInstallResponse,
+    ConnectorStatusResponse,
+    ConnectorUninstallResponse,
+)
 
 from ..config import Config
 from ..middleware import get_current_username
@@ -143,7 +160,7 @@ async def _validate_one(name: str, cfg: dict[str, Any]) -> dict[str, Any]:
         return {"name": name, "status": "error", "tools_count": 0, "error": err_text}
 
 
-@router.get("/status", summary="校验当前用户所有已安装 MCP 的连接状态")
+@router.get("/status", summary="校验当前用户所有已安装 MCP 的连接状态", response_model=ConnectorStatusResponse)
 async def get_connectors_status(
     username: Annotated[str, Depends(get_current_username)],
 ):
@@ -197,10 +214,12 @@ class ConnectorInstallRequest(ConnectorIdRequest):
     默认 true（「运行」按钮语义：保存并立即验证连接）。
     """
     values: dict[str, str] = {}
-    validate: bool = True
+    # 字段名不能叫 validate（遮蔽 BaseModel.validate 会产生 Pydantic 警告）；
+    # 对外仍接受 JSON 字段 "validate"，保持前端契约不变。
+    validate_after_install: bool = Field(default=True, alias="validate")
 
 
-@router.post("/install", summary="安装内置连接器到用户 mcp.json")
+@router.post("/install", summary="安装内置连接器到用户 mcp.json", response_model=ConnectorInstallResponse)
 async def install_connector(
     request: ConnectorInstallRequest,
     username: Annotated[str, Depends(get_current_username)],
@@ -259,13 +278,13 @@ async def install_connector(
         "agents_invalidated": evicted,
         "server_status": (
             await _validate_servers([request.id], username)
-            if request.validate
+            if request.validate_after_install
             else []
         ),
     }
 
 
-@router.post("/uninstall", summary="卸载用户 mcp.json 中的连接器")
+@router.post("/uninstall", summary="卸载用户 mcp.json 中的连接器", response_model=ConnectorUninstallResponse)
 async def uninstall_connector(
     request: ConnectorIdRequest,
     username: Annotated[str, Depends(get_current_username)],
@@ -377,7 +396,7 @@ class ConnectorToggleRequest(BaseModel):
     enabled: bool
 
 
-@router.post("/toggle", summary="启用/停用已安装的连接器（开关）")
+@router.post("/toggle", summary="启用/停用已安装的连接器（开关）", response_model=ConnectorToggleResponse)
 async def toggle_connector(
     request: ConnectorToggleRequest,
     username: Annotated[str, Depends(get_current_username)],
@@ -425,7 +444,7 @@ class SessionConnectorsRequest(BaseModel):
     connectors: list[str] = []
 
 
-@router.get("/session", summary="查询会话级连接器开关（null = 尚未设置，等价于全部启用）")
+@router.get("/session", summary="查询会话级连接器开关（null = 尚未设置，等价于全部启用）", response_model=SessionConnectorSwitchesResponse)
 async def get_session_connector_switches(
     session_id: str,
     username: Annotated[str, Depends(get_current_username)],
@@ -442,7 +461,7 @@ async def get_session_connector_switches(
     }
 
 
-@router.post("/session", summary="设置会话级连接器开关（仅本次会话，不写 mcp.json）")
+@router.post("/session", summary="设置会话级连接器开关（仅本次会话，不写 mcp.json）", response_model=SessionConnectorSetResponse)
 async def set_session_connector_switches(
     request: SessionConnectorsRequest,
     username: Annotated[str, Depends(get_current_username)],
@@ -473,7 +492,7 @@ async def set_session_connector_switches(
     }
 
 
-@router.get("/tools", summary="查看已安装连接器的工具列表")
+@router.get("/tools", summary="查看已安装连接器的工具列表", response_model=ConnectorToolsResponse)
 async def list_connector_tools(
     name: str,
     username: Annotated[str, Depends(get_current_username)],
@@ -512,7 +531,7 @@ class ConnectorConfigUpdateRequest(BaseModel):
     values: dict[str, str]
 
 
-@router.put("/config", summary="修改已安装连接器的配置字段（url / key 等）")
+@router.put("/config", summary="修改已安装连接器的配置字段（url / key 等）", response_model=ConnectorConfigUpdateResponse)
 async def update_connector_config(
     request: ConnectorConfigUpdateRequest,
     username: Annotated[str, Depends(get_current_username)],
@@ -576,7 +595,7 @@ async def update_connector_config(
 # ── mcp.json 原文读写 ─────────────────────────────────────────────────
 
 
-@router.get("/mcp/raw", summary="读取用户 mcp.json 原文")
+@router.get("/mcp/raw", summary="读取用户 mcp.json 原文", response_model=McpRawResponse)
 async def get_mcp_raw(
     username: Annotated[str, Depends(get_current_username)],
 ):
@@ -596,7 +615,7 @@ class SaveMcpRawRequest(BaseModel):
     content: str
 
 
-@router.put("/mcp/raw", summary="保存用户 mcp.json 原文")
+@router.put("/mcp/raw", summary="保存用户 mcp.json 原文", response_model=McpSaveResponse)
 async def save_mcp_raw(
     request: SaveMcpRawRequest,
     username: Annotated[str, Depends(get_current_username)],
@@ -645,7 +664,7 @@ class AddMcpServerRequest(BaseModel):
     config: dict[str, Any]
 
 
-@router.post("/mcp", summary="粘贴 JSON 添加 MCP 服务")
+@router.post("/mcp", summary="粘贴 JSON 添加 MCP 服务", response_model=McpAddResponse)
 async def add_mcp_server(
     request: AddMcpServerRequest,
     username: Annotated[str, Depends(get_current_username)],
@@ -694,7 +713,7 @@ async def add_mcp_server(
     }
 
 
-@router.delete("/mcp/{name}", summary="删除指定 MCP 服务")
+@router.delete("/mcp/{name}", summary="删除指定 MCP 服务", response_model=McpDeleteResponse)
 async def delete_mcp_server(
     name: str,
     username: Annotated[str, Depends(get_current_username)],

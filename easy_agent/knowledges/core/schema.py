@@ -10,10 +10,15 @@ from __future__ import annotations
 
 import logging
 import re
+from typing import TYPE_CHECKING
 
-from ...db.database import Database
+if TYPE_CHECKING:  # 仅类型注解使用，避免 db.database <-> schema 的模块级循环
+    from ...db.database import Database
 
 logger = logging.getLogger(__name__)
+
+# 注册到 Database.init_tables()（schema 注册制，避免 db <-> knowledges 循环）。
+from ...db.schema_registry import register_schema_initializer  # noqa: E402
 
 # 目录树同步要求同一知识库内不同父节点下允许同名子文件夹
 # （如 2026-09-12/中金公司 与 2026-09-13/中金公司），唯一约束需为
@@ -399,3 +404,7 @@ def _migrate_folder_unique_sqlite(cursor) -> None:
 
 
 __all__ = ["initialize_knowledge_schema"]
+
+
+# 模块被 import 即注册（幂等：重复 import 不会重复注册）。
+register_schema_initializer(initialize_knowledge_schema)

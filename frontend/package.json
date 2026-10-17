@@ -5,9 +5,10 @@
   "type": "module",
   "scripts": {
     "dev": "node scripts/run-vite.mjs dev",
-    "build": "node scripts/run-vite.mjs build && sh scripts/generate-runtime-config.sh",
+    "build": "node scripts/run-vite.mjs build && bash scripts/generate-runtime-config.sh",
     "preview": "vite preview",
-    "serve": "sh scripts/generate-runtime-config.sh && node scripts/print-serve-env.mjs && npx --yes serve -s dist/"
+    "test:unit": "node --test src/api/*.test.js",
+    "serve": "bash scripts/generate-runtime-config.sh && node scripts/print-serve-env.mjs && npx --yes serve -s dist/"
   },
   "dependencies": {
     "@vue-office/docx": "^1.6.3",

@@ -7,12 +7,25 @@
 
 记忆文件位置：workspace/{username}/{workspace_name}/memory.md
 生命周期：会话创建时预创建工作区目录 → 首轮响应后写入 memory.md → 后续输入时自动加载
+
+结构化 sidecar：Markdown 旁的 memory.jsonl / AGENTS.jsonl（条目 / 来源 / 版本），
+Markdown 仍是权威读取文件；默认开启，EASY_STRUCTURED_MEMORY=0 回退旧行为。
 """
 
 import logging
 import time
 from pathlib import Path
 
+from .memory_store import (
+    SOURCE_DIRECT_WRITE,
+    SOURCE_IMPORT,
+    SOURCE_LLM_LONG_TERM,
+    SOURCE_LLM_SESSION,
+    content_digest,
+    structured_memory_enabled,
+    sync_from_markdown,
+    write_structured_memory,
+)
 from .prompt_loader import load_prompt, render
 
 logger = logging.getLogger("easy_agent.memory")
@@ -24,6 +37,10 @@ COMPRESS_THRESHOLD = 540
 # 用户级长期记忆（memories/{username}/AGENTS.md）上限，跨会话积累故比会话级更大
 MAX_LONG_TERM_MEMORY_CHARS = 1500
 LONG_TERM_COMPRESS_THRESHOLD = 1350
+
+# Markdown 一级标题（与提示词契约一致；结构化渲染复用同一标题）
+SESSION_MEMORY_TITLE = "会话记忆"
+LONG_TERM_MEMORY_TITLE = "用户长期记忆"
 
 # 提示词统一放在 easy_agent/config/prompts/ 下（文件为权威）；
 # 以下为文件缺失时的兜底文本，保证部署漏挂载仍能工作。
@@ -107,17 +124,68 @@ def read_memory(memory_file: Path) -> str:
         return ""
 
 
+def _write_markdown_file(memory_file: Path, content: str) -> None:
+    """只写 Markdown 记忆文件（权威读取文件），不触碰结构化 sidecar。"""
+    memory_file.parent.mkdir(parents=True, exist_ok=True)
+    memory_file.write_text(content, encoding="utf-8")
+
+
 def write_memory(memory_file: Path, content: str) -> None:
-    """写入记忆文件。"""
+    """写入记忆文件（Markdown 为权威），并尽力同步结构化 sidecar。
+
+    兼容旧调用方：签名与语义不变；日志只记录长度与内容 hash，不再打印全文。
+    """
     try:
-        memory_file.parent.mkdir(parents=True, exist_ok=True)
-        memory_file.write_text(content, encoding="utf-8")
+        _write_markdown_file(memory_file, content)
+        _import_legacy_markdown(memory_file, content, source=SOURCE_DIRECT_WRITE)
         logger.info(
-            f"记忆文件已更新: {memory_file} | 长度: {len(content)} 字符\n"
-            f"--- 记忆内容 ---\n{content}\n--- 记忆内容结束 ---"
+            f"记忆文件已更新: {memory_file} | 长度: {len(content)} 字符 | "
+            f"sha256: {content_digest(content)}"
         )
     except Exception as e:
         logger.error(f"写入记忆文件失败 {memory_file}: {e}")
+
+
+def _import_legacy_markdown(
+    memory_file: Path, markdown: str, *, source: str = SOURCE_IMPORT
+) -> bool:
+    """把已有 / 刚写入的 Markdown 首次导入结构化 sidecar（best effort）。
+
+    失败只告警，不影响 Markdown 权威路径；Markdown 未变化时按内容 hash 幂等跳过。
+    """
+    if not structured_memory_enabled() or not (markdown or "").strip():
+        return False
+    try:
+        return sync_from_markdown(memory_file, markdown=markdown, source=source)
+    except Exception as e:
+        logger.warning(f"旧 Markdown 导入结构化记忆失败（忽略）: {e}")
+        return False
+
+
+def _persist_structured_memory(
+    memory_file: Path,
+    markdown: str,
+    *,
+    title: str,
+    source: str,
+    max_chars: int,
+    previous_markdown: str = "",
+):
+    """写结构化 sidecar 并返回渲染后的 Markdown；关闭/失败时返回 None 由调用方回退。"""
+    if not structured_memory_enabled():
+        return None
+    try:
+        return write_structured_memory(
+            memory_file,
+            markdown,
+            title=title,
+            source=source,
+            max_chars=max_chars,
+            previous_markdown=previous_markdown,
+        )
+    except Exception as e:
+        logger.warning(f"结构化记忆写入失败，回退旧 Markdown 路径: {e}")
+        return None
 
 
 def needs_compression(content: str) -> bool:
@@ -260,6 +328,8 @@ def update_memory_after_session(
     start = time.time()
     try:
         current_memory = read_memory(memory_file)
+        # 首次升级时把旧 Markdown 导入 sidecar；已同步时按内容 hash 幂等跳过
+        _import_legacy_markdown(memory_file, current_memory)
 
         # 截断过长的会话内容，避免 token 浪费
         user_msg_trunc = (user_message or "")[:800]
@@ -305,12 +375,28 @@ def update_memory_after_session(
         if len(updated) > target_chars:
             updated = _hard_truncate(updated, target_chars)
 
-        write_memory(memory_file, updated)
+        result = _persist_structured_memory(
+            memory_file,
+            updated,
+            title=SESSION_MEMORY_TITLE,
+            source=SOURCE_LLM_SESSION,
+            max_chars=target_chars,
+            previous_markdown=current_memory,
+        )
+        if result is None:
+            # 解析失败 / 开关关闭：保持旧行为，Markdown 原文写入，不丢数据
+            write_memory(memory_file, updated)
+            final_content = updated
+            entry_count = 0
+        else:
+            _write_markdown_file(memory_file, result.markdown)
+            final_content = result.markdown
+            entry_count = result.entries
 
         elapsed = time.time() - start
         logger.info(
-            f"记忆更新完成 | 更新后长度: {len(updated)} 字符 | 耗时: {elapsed:.2f}s\n"
-            f"--- 记忆内容 ---\n{updated}\n--- 记忆内容结束 ---"
+            f"记忆更新完成 | 更新后长度: {len(final_content)} 字符 | 条目: {entry_count} | "
+            f"sha256: {content_digest(final_content)} | 耗时: {elapsed:.2f}s"
         )
         return True
     except Exception as e:
@@ -405,6 +491,8 @@ def update_long_term_memory_after_session(
     start = time.time()
     try:
         current_memory = read_memory(memory_file)
+        # 首次升级时把旧 Markdown 导入 sidecar；已同步时按内容 hash 幂等跳过
+        _import_legacy_markdown(memory_file, current_memory)
 
         # 截断过长的会话内容，避免 token 浪费
         user_msg_trunc = (user_message or "")[:800]
@@ -449,12 +537,29 @@ def update_long_term_memory_after_session(
         if len(updated) > target_chars:
             updated = _hard_truncate(updated, target_chars)
 
-        write_memory(memory_file, updated)
+        result = _persist_structured_memory(
+            memory_file,
+            updated,
+            title=LONG_TERM_MEMORY_TITLE,
+            source=SOURCE_LLM_LONG_TERM,
+            max_chars=target_chars,
+            previous_markdown=current_memory,
+        )
+        if result is None:
+            # 解析失败 / 开关关闭：保持旧行为，Markdown 原文写入，不丢数据
+            write_memory(memory_file, updated)
+            final_content = updated
+            entry_count = 0
+        else:
+            _write_markdown_file(memory_file, result.markdown)
+            final_content = result.markdown
+            entry_count = result.entries
 
         elapsed = time.time() - start
         logger.info(
-            f"用户长期记忆更新完成 | 更新后长度: {len(updated)} 字符 | 耗时: {elapsed:.2f}s\n"
-            f"--- 记忆内容 ---\n{updated}\n--- 记忆内容结束 ---"
+            f"用户长期记忆更新完成 | 更新后长度: {len(final_content)} 字符 | "
+            f"条目: {entry_count} | sha256: {content_digest(final_content)} | "
+            f"耗时: {elapsed:.2f}s"
         )
         return True
     except Exception as e:

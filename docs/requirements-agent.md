@@ -96,8 +96,10 @@ Easy Agent 是一个面向企业与个人用户的 AI Agent Web 应用。传统 
 
 - 执行过程以流式事件实时推送，覆盖思考、工具调用、工具结果、正文、用量等。
 - 事件类型至少包含：`start`、`thinking_start`、`thinking`、`thinking_end`、
-  `tool_call`、`tool_result`、`content`、`content_end`、`todo_list`、
-  `token_usage`、`approval_required`、`done`、`error`。
+  `tool_call`、`tool_call_delta`、`tool_result`、`content`、`content_end`、
+  `todo_list`、`token_usage`、`knowledge_evidence`、`approval_required`、
+  `done`、`error`。完整字段契约见 `docs/sse-events.md` 与
+  `easy_agent/services/sse.py`（唯一注册表）。
 - **AC1**：首个可见内容在请求发出后数秒内到达（受模型首 token 时延约束）。
 - **AC2**：客户端断线重连后可回放已产生的事件，不丢帧（弱网/刷新场景）。
 

@@ -33,3 +33,11 @@ def save_user_fields(db, cursor, user):
     db._execute(cursor,
         "UPDATE users SET " + ", ".join(f"{name}=?" for name in USER_FIELDS) + " WHERE user_id=?",
         tuple(values) + (user.user_id,))
+
+
+# 注册到 db.user_fields_registry：解除 db → personnel 静态依赖。
+from ..db.user_fields_registry import register_user_fields  # noqa: E402
+
+register_user_fields(
+    save=save_user_fields, read=read_user_fields, ensure=ensure_user_fields
+)

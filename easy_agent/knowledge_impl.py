@@ -7,6 +7,7 @@ knowledge.implementation 键仅作日志提示（仅支持 v2）。
 
 import logging
 import os
+from .env import env_str
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -14,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 def resolve_knowledge_impl() -> str:
     """读取活动 YAML 的 knowledge.implementation；无效值告警后回退 v2。"""
-    config_path = os.environ.get("EASY_CONFIG") or str(
+    config_path = env_str("EASY_CONFIG") or str(
         Path(__file__).resolve().parent / "config" / "config.yaml"
     )
     try:

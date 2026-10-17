@@ -154,6 +154,9 @@ class HealthResponse(BaseModel):
     status: str = Field(default="healthy", description="服务状态")
     agent_initialized: bool = Field(default=False, description="Agent 是否已初始化")
     database_initialized: bool = Field(default=False, description="数据库是否已初始化")
+    database_ready: bool = Field(default=False, description="数据库是否可连通")
+    workspace_ready: bool = Field(default=False, description="工作区是否可写")
+    detail: str = Field(default="", description="未就绪原因")
 
 
 class UpdateTitleRequest(BaseModel):
@@ -299,3 +302,232 @@ class ScheduledTaskRunInfo(BaseModel):
 class DeleteScheduledTaskResponse(BaseModel):
     status: str = Field(default="deleted", description="状态")
     task_id: str = Field(..., description="任务ID")
+
+
+# ── Settings API 响应模型（ARCH-08：新增/变更路由强制 response_model）──
+class MemoryContentResponse(BaseModel):
+    content: str
+    path: str
+
+
+class MemoryUpdateResponse(BaseModel):
+    status: str
+    chars: int
+
+
+class ContentResponse(BaseModel):
+    content: str
+
+
+class SkillInfo(BaseModel):
+    name: str
+    description: str
+    description_file: str
+
+
+class SkillsResponse(BaseModel):
+    skills: list[SkillInfo]
+
+
+class ModelInfo(BaseModel):
+    name: str
+    model: str
+    provider: str
+    protocol: str
+    context_length: int | None = None
+    is_active: bool
+
+
+class ModelsResponse(BaseModel):
+    models: list[ModelInfo]
+    active_model: str
+
+
+class WebSearchStatusResponse(BaseModel):
+    enabled: bool
+    configured: bool
+    reason: str
+    provider: str
+    default_time_range: str
+    time_ranges: list[str]
+
+
+class UploadLimitsResponse(BaseModel):
+    enabled: bool
+    max_file_size_mb: int
+    max_files_per_message: int
+    max_total_size_mb: int
+
+
+class StatusResponse(BaseModel):
+    status: str
+
+
+class MessageResponse(BaseModel):
+    status: str
+    message: str
+
+
+class PresetQuestionGroup(BaseModel):
+    """首页预置问题：一个分类展开成一张或多张卡片。"""
+
+    category: str = "预设问题"
+    icon: str = ""
+    questions: list[str] = []
+
+
+class AuthConfigResponse(BaseModel):
+    context_length: int
+    preset_questions: list[PresetQuestionGroup]
+    win: bool
+    agent_env: str
+    idle_logout_minutes: int
+    app_welcome_title: str
+
+
+class SessionTitleUpdateResponse(BaseModel):
+    status: str
+    session_id: str
+    title: str
+
+
+class SessionPinUpdateResponse(BaseModel):
+    status: str
+    session_id: str
+    pinned: int
+
+
+class SessionUploadResponse(BaseModel):
+    id: str
+    filename: str
+    file_path: str
+    file_type: str
+    size: int
+    uploaded_at: str
+    parsed: bool
+    parsed_path: str | None = None
+    parse_status: str | None = None
+
+
+class SessionGeneratedFileInfo(BaseModel):
+    id: int
+    filename: str
+    file_path: str
+    file_type: str
+    size: int
+    created_at: str
+
+
+class UploadFileResponse(BaseModel):
+    filename: str
+    file_path: str
+    file_type: str
+    size: int
+    uploaded_at: str
+
+
+class DeleteFileResponse(BaseModel):
+    status: str
+    file_id: int
+
+
+class ParseFileResponse(BaseModel):
+    file_path: str
+    content: str
+
+
+class ConnectorServerStatus(BaseModel):
+    name: str
+    status: str
+    tools_count: int
+    error: str = ""
+
+
+class ConnectorStatusResponse(BaseModel):
+    statuses: list[ConnectorServerStatus]
+
+
+class ConnectorInstallResponse(BaseModel):
+    status: str
+    installed: str
+    servers: list[str]
+    path: str
+    agents_invalidated: int
+    server_status: list[ConnectorServerStatus]
+
+
+class ConnectorUninstallResponse(BaseModel):
+    status: str
+    uninstalled: str
+    servers: list[str]
+    path: str
+    agents_invalidated: int
+
+
+class ConnectorToggleResponse(BaseModel):
+    status: str
+    id: str
+    enabled: bool
+    agents_invalidated: int
+
+
+class SessionConnectorSwitchesResponse(BaseModel):
+    session_id: str
+    connectors: list[str] | None
+
+
+class SessionConnectorSetResponse(BaseModel):
+    status: str
+    session_id: str
+    connectors: list[str]
+    unknown: list[str]
+    agents_invalidated: int
+
+
+class ConnectorToolInfo(BaseModel):
+    name: str
+    description: str
+
+
+class ConnectorToolsResponse(BaseModel):
+    name: str
+    tools: list[ConnectorToolInfo]
+    error: str = ""
+
+
+class ConnectorConfigUpdateResponse(BaseModel):
+    status: str
+    id: str
+    applied: list[str]
+    agents_invalidated: int
+    server_status: list[ConnectorServerStatus]
+
+
+class McpRawResponse(BaseModel):
+    path: str
+    content: str
+
+
+class McpSaveResponse(BaseModel):
+    status: str
+    path: str
+    servers: list[str]
+    agents_invalidated: int
+    server_status: list[ConnectorServerStatus]
+
+
+class McpAddResponse(BaseModel):
+    status: str
+    added: list[str]
+    servers: list[str]
+    path: str
+    agents_invalidated: int
+    server_status: list[ConnectorServerStatus]
+
+
+class McpDeleteResponse(BaseModel):
+    status: str
+    deleted: str
+    servers: list[str]
+    path: str
+    agents_invalidated: int

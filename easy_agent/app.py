@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import os
+from .env import env_bool
 import platform
 import sys
 import time
@@ -17,7 +18,11 @@ runtime_initialization = initialize_runtime()
 
 import uvicorn
 from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from .middleware.rate_limit import RateLimitMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from langchain_core.messages import HumanMessage
 from starlette.concurrency import run_in_threadpool
@@ -41,14 +46,14 @@ from .knowledge_impl import knowledge_router
 from .personnel import router as personnel_router
 from .model import create_model
 from .models.api import HealthResponse
-from .services import get_agent_config, init_agent_config
+from .services import drain_stream_tasks, get_agent_config, init_agent_config
 from .services import init_scheduler, shutdown_scheduler, reload_all_tasks
 from .services.prompt_loader import (
     configure_prompts_dir,
     get_prompts_dir,
     load_system_prompt,
 )
-from .skills import find_skills_root, discover_skills
+from .skills import find_skills_root, discover_skills, validate_skills
 from .api import (
     chat_router,
     sessions_router,
@@ -81,8 +86,17 @@ agent_config = None
 db_instance = None
 
 
-async def _check_llm_connection(config) -> None:
-    """启动时探测 LLM 连通性；失败只告警，不阻断服务启动。"""
+async def _check_llm_connection(config, agent_env: str = "") -> None:
+    """启动时探测 LLM 连通性；失败只告警，不阻断服务启动。
+
+    生产/多副本滚动发布时跳过（避免每个 pod 真打一发模型）。
+    设置 ``EASY_LLM_PROBE=1`` 可强制探测。
+    """
+    if not env_bool("EASY_LLM_PROBE") and (
+        agent_env == "prod" or env_bool("EASY_SKIP_LLM_PROBE")
+    ):
+        logger.info("跳过启动 LLM 探测（生产/多副本默认关闭，设置 EASY_LLM_PROBE=1 可打开）")
+        return
     try:
         llm = create_model(config)
         logger.info(
@@ -181,6 +195,13 @@ async def lifespan(app: FastAPI):
 
     environment = runtime_initialization.environment
     agent_env = environment.agent_env
+
+    # B3：生产环境 JWT 密钥 fail-fast。必须在启动期（而非模块 import 期）校验，
+    # 避免 pytest / 工具脚本仅 import 就失败；dev/test 保留 data/.jwt_secret 回退。
+    from .utils.auth import validate_production_jwt_secret
+
+    validate_production_jwt_secret(env=agent_env)
+
     config_path = runtime_initialization.config_path
     config = runtime_initialization.config
     config_error = runtime_initialization.config_error
@@ -234,9 +255,34 @@ async def lifespan(app: FastAPI):
     await startup_knowledge(app, config_path)
 
     if config:
-        await _check_llm_connection(config)
+        await _check_llm_connection(config, agent_env=agent_env)
 
     _init_database_and_state(app, config)
+
+    # 部署形态 fail-fast：生产多 worker/副本 + SQLite = 运行期随机丢消息/锁表，
+    # 这里在启动期直接拒绝（用户决策：生产强制 MySQL）。
+    from .utils.deployment import (
+        deployment_errors,
+        deployment_warnings,
+    )
+
+    _workers = None
+    _db_type = getattr(db_instance, "db_type", "unknown")
+    for _msg in deployment_warnings(
+        db_type=_db_type,
+        agent_env=agent_env,
+        workers=_workers,
+    ):
+        logger.warning("⚠️ 部署配置 | %s", _msg)
+    _errors = deployment_errors(
+        db_type=_db_type,
+        agent_env=agent_env,
+        workers=_workers,
+    )
+    if _errors:
+        for _msg in _errors:
+            logger.error("❌ 部署配置错误 | %s", _msg)
+        raise RuntimeError("; ".join(_errors))
 
     # 外部目录树同步（ai_kb → 知识库板块）：由 knowledge.catalog_sync.enabled
     # 开关控制，后台执行，失败仅记日志不阻断启动
@@ -256,6 +302,14 @@ async def lifespan(app: FastAPI):
             logger.info(f"📁 发现 {len(skills)} 个 skills:")
             for skill in skills:
                 logger.info(f"  - {skill['name']}: {skill['path']}")
+            # FW-06：启动期校验 frontmatter，坏技能只告警不阻断启动
+            skill_issues = [s for s in validate_skills(skills_root) if s["errors"]]
+            for issue in skill_issues:
+                logger.warning(
+                    "技能 frontmatter 校验失败 | %s | %s",
+                    issue["name"],
+                    "; ".join(issue["errors"]),
+                )
         else:
             skills_root = ""
             logger.info("ℹ️ 未发现任何 skills")
@@ -297,21 +351,37 @@ async def lifespan(app: FastAPI):
             except Exception as exc:  # noqa: BLE001
                 logger.warning(f"⚠️ 公共专家目录扫描失败: {type(exc).__name__}: {exc}")
 
-            # 让 deepagents 的 SummarizationMiddleware 使用 config 阈值（基准为
-            # config.llm.context_length）。必须在任何 create_deep_agent 之前执行：
-            # 官方默认的参数截断是 ("messages", 20)，消息一到 20 条就会把历史里
-            # write_file/execute 的参数砍掉，导致下一轮重建上下文时明显缩水。
-            try:
-                from .agent import install_config_summarization
+            # FW-09：默认官方 checkpointer（auto：postgres → sqlite → legacy）。
+            # B1：prod 多副本必须 Postgres；非 Postgres 在启动期 fail-fast（可用
+            # EASY_ALLOW_LEGACY_CHECKPOINTER=1 显式豁免），配置错误不再被静默吞掉。
+            from .checkpoints import (
+                CheckpointDeploymentError,
+                start_checkpoint_backend,
+            )
 
-                install_config_summarization(config)
+            try:
+                checkpoint_backend = await start_checkpoint_backend(agent_env=agent_env)
+                logger.info(f"✅ HITL checkpointer 后端: {checkpoint_backend}")
+            except CheckpointDeploymentError:
+                raise
             except Exception as exc:  # noqa: BLE001
                 logger.error(
-                    f"❌ SummarizationMiddleware 阈值接入失败"
-                    f"（已降级为 deepagents 默认摘要阈值）: "
-                    f"{type(exc).__name__}: {exc} | 通常是 deepagents 升级导致 "
-                    f"deepagents.graph.create_summarization_middleware 变更，"
-                    f"请对照其源码修正 agent.py 中的适配。"
+                    "HITL checkpointer 启动失败，回退业务库 MemorySaver 快照: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+
+            # B1：LangGraph Store（官方 AsyncPostgresStore / 业务库 SqlStore）。
+            # auto 在 EASY_STORE_POSTGRES_URI（缺省复用 EASY_CHECKPOINT_POSTGRES_URI）
+            # 存在且官方包可用时启用 PostgresStore，否则保持 SqlStore。
+            try:
+                from .stores import start_store_backend
+
+                store_backend = await start_store_backend()
+                logger.info(f"✅ LangGraph Store 后端: {store_backend}")
+            except Exception as exc:  # noqa: BLE001
+                logger.error(
+                    "LangGraph Store 启动失败，保持业务库 SqlStore: "
+                    f"{type(exc).__name__}: {exc}"
                 )
         else:
             logger.warning("⚠️ 配置未加载，Agent 未初始化，聊天等功能将不可用")
@@ -342,6 +412,25 @@ async def lifespan(app: FastAPI):
     logger.info("=" * 60)
     yield
 
+    await drain_stream_tasks()
+    try:
+        from .services.mcp_sessions import aclose_mcp_sessions
+
+        await aclose_mcp_sessions()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"关闭 MCP 持久 session 失败: {exc}")
+    try:
+        from .stores import shutdown_store
+
+        await shutdown_store()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"关闭 LangGraph Store 失败: {exc}")
+    try:
+        from .checkpoints import shutdown_checkpointers
+
+        await shutdown_checkpointers()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"关闭 checkpointer 失败: {exc}")
     if knowledge_started:
         await shutdown_knowledge(app)
     await shutdown_catalog_sync(app)
@@ -362,24 +451,21 @@ app = FastAPI(
 #   - 默认放行所有来源（"*"），兼容开发期跨域直连与同 pod 部署；
 #   - 生产环境如需收紧，设置环境变量 EASY_CORS_ALLOW_ORIGINS 为逗号分隔的可信域名，
 #     例如 "https://app.example.com,https://admin.example.com"。
+_cors_origins = runtime_initialization.environment.cors_allow_origins
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=runtime_initialization.environment.cors_allow_origins,
-    allow_credentials=True,
+    allow_origins=_cors_origins,
+    allow_credentials=_cors_origins != ["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(RateLimitMiddleware)
 
 
 def _get_client_ip(request: Request) -> str:
-    """从请求头或连接信息中提取客户端真实 IP。"""
-    forwarded = request.headers.get("X-Forwarded-For")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
-    real_ip = request.headers.get("X-Real-IP")
-    if real_ip:
-        return real_ip.strip()
-    return request.client.host if request.client else "unknown"
+    from .utils.client_ip import get_client_ip as _ip
+
+    return _ip(request)
 
 
 # HTTP 访问日志：记录每个请求的方法、路径、客户端 IP。
@@ -410,12 +496,15 @@ async def log_requests(request: Request, call_next):
     request.state.request_id = request_id
     path = request.url.path
     if (
-        path in ("/", "/health", "/api/health", "/agent/health")
+        path in ("/", "/health", "/api/health", "/agent/health", "/api/live", "/agent/live", "/api/ready", "/agent/ready")
         or path.startswith(_ACCESS_SKIP_PREFIXES)
         or path.endswith(_ACCESS_SKIP_SUFFIXES)
     ):
         response = await call_next(request)
         response.headers["X-Request-Id"] = request_id
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
+        response.headers.setdefault("Referrer-Policy", "same-origin")
         return response
 
     client_ip = _get_client_ip(request)
@@ -508,6 +597,38 @@ async def knowledge_observability(request: Request, call_next):
 
     return response
 
+@app.exception_handler(StarletteHTTPException)
+async def http_exception_handler(request: Request, exc: StarletteHTTPException):
+    """统一 HTTP 错误体：保留 detail（前端现有契约）+ 稳定 code。"""
+    detail = exc.detail
+    if isinstance(detail, (str, int, float, bool)) or detail is None:
+        payload = {"detail": detail or "请求失败"}
+    else:
+        payload = {"detail": detail}
+    payload["code"] = f"HTTP_{exc.status_code}"
+    request_id = getattr(request.state, "request_id", None)
+    if request_id:
+        payload["request_id"] = request_id
+    headers = dict(exc.headers or {})
+    if request_id:
+        headers.setdefault("X-Request-Id", str(request_id))
+    return JSONResponse(status_code=exc.status_code, content=jsonable_encoder(payload), headers=headers)
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """统一 422 校验错误体，避免把 Pydantic 内部对象直接返回给前端。"""
+    request_id = getattr(request.state, "request_id", None)
+    payload = {
+        "detail": "请求参数校验失败",
+        "code": "VALIDATION_ERROR",
+        "errors": jsonable_encoder(exc.errors()),
+    }
+    if request_id:
+        payload["request_id"] = request_id
+    return JSONResponse(status_code=422, content=payload)
+
+
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     request_id = str(getattr(request.state, "request_id", "unknown"))
@@ -537,13 +658,54 @@ app.include_router(personnel_router)
 app.include_router(expert_router)
 
 
+@app.get("/agent/live", summary="存活检查（liveness）", response_model=HealthResponse)
+@app.get("/api/live", summary="存活检查（liveness）", response_model=HealthResponse)
+async def liveness():
+    return HealthResponse(status="live")
+
+
 @app.get("/agent/health", summary="健康检查", response_model=HealthResponse)
 async def health_check():
+    return await liveness()
+
+
+async def _readiness_payload() -> HealthResponse:
+    from .services.health import ping_database, workspace_writable
+
+    db_ok, db_detail = ping_database(db_instance)
+    workspace_dir = "./workspace"
+    try:
+        cfg = get_agent_config()
+        if cfg and cfg.get("config"):
+            workspace_dir = cfg["config"].agent.workspace_dir
+    except Exception:
+        pass
+    ws_ok, ws_detail = workspace_writable(workspace_dir)
+    ready = db_ok and ws_ok and agent_config is not None
+    detail = ""
+    if not db_ok:
+        detail = f"database: {db_detail}"
+    elif not ws_ok:
+        detail = f"workspace: {ws_detail}"
+    elif agent_config is None:
+        detail = "agent not initialized"
     return HealthResponse(
-        status="healthy",
+        status="ready" if ready else "not_ready",
         agent_initialized=agent_config is not None,
         database_initialized=db_instance is not None,
+        database_ready=db_ok,
+        workspace_ready=ws_ok,
+        detail=detail,
     )
+
+
+@app.get("/agent/ready", summary="就绪检查（readiness）", response_model=HealthResponse)
+@app.get("/api/ready", summary="就绪检查（readiness）", response_model=HealthResponse)
+async def readiness():
+    payload = await _readiness_payload()
+    if payload.status != "ready":
+        return JSONResponse(status_code=503, content=payload.model_dump())
+    return payload
 
 
 @app.get("/agent/config", summary="获取Agent配置")

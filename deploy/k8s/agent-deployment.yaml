@@ -1,0 +1,125 @@
+# Multi-replica Easy Agent. Requires shared MySQL and RWX workspace storage.
+#
+# IMPORTANT: the application database (sessions/users/business tables) remains MySQL.
+# HITL checkpoints and the LangGraph Store use PostgreSQL via
+# EASY_CHECKPOINT_POSTGRES_URI, because LangGraph has no official MySQL
+# checkpointer/store. `easy-agent-secrets` must provide key `checkpoint-postgres-uri`.
+# Do not use Ingress sessionAffinity as the only consistency mechanism.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: easy-agent-config
+data:
+  AGENT_ENV: "prod"
+  # Must match spec.replicas below: detect_worker_count() reads this value, so a
+  # prod deployment can fail fast when HITL checkpoints are not on PostgreSQL.
+  EASY_REPLICA_COUNT: "2"
+  EASY_TRUST_PROXY: "1"
+  EASY_SKIP_LLM_PROBE: "1"
+  EASY_CHECKPOINT_BACKEND: "auto"
+  EASY_STORE_BACKEND: "auto"
+  # Explicitly off by default: non-Postgres checkpointer is rejected on prod.
+  EASY_ALLOW_LEGACY_CHECKPOINTER: "0"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: easy-agent-workspace
+spec:
+  accessModes: ["ReadWriteMany"]
+  resources:
+    requests:
+      storage: 50Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: easy-agent
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: easy-agent
+  template:
+    metadata:
+      labels:
+        app: easy-agent
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+        - name: easy-agent
+          image: easy-agent:latest
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: easy-agent-config
+            - secretRef:
+                name: easy-agent-secrets
+          env:
+            - name: EASY_JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: easy-agent-secrets
+                  key: jwt-secret
+            - name: EASY_CORS_ALLOW_ORIGINS
+              valueFrom:
+                secretKeyRef:
+                  name: easy-agent-secrets
+                  key: cors-origins
+            # HITL checkpointer (AsyncPostgresSaver) + LangGraph Store.
+            # This is NOT the application MySQL: sessions/business data stay in
+            # MySQL, only checkpoints/store rows live in PostgreSQL.
+            # Store auto mode reuses this URI when EASY_STORE_POSTGRES_URI is unset.
+            - name: EASY_CHECKPOINT_POSTGRES_URI
+              valueFrom:
+                secretKeyRef:
+                  name: easy-agent-secrets
+                  key: checkpoint-postgres-uri
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              add: ["SYS_ADMIN"]
+              drop: ["ALL"]
+          volumeMounts:
+            - name: shared
+              mountPath: /app/workspace
+              subPath: workspace
+            - name: shared
+              mountPath: /app/memories
+              subPath: memories
+            - name: data
+              mountPath: /app/data
+          livenessProbe:
+            httpGet:
+              path: /api/live
+              port: 8000
+            initialDelaySeconds: 20
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /api/ready
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+      volumes:
+        - name: shared
+          persistentVolumeClaim:
+            claimName: easy-agent-workspace
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: easy-agent
+spec:
+  selector:
+    app: easy-agent
+  ports:
+    - port: 80
+      targetPort: 8000

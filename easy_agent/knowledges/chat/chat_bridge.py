@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from fastapi import HTTPException, Request
 
 from ...db import Database
+from ...services.sse import SSEEvent
 from ..api import get_knowledge_principal
 from ..core.config import KnowledgeConfig
 from ..core.repository import KnowledgeRepository
@@ -37,7 +38,7 @@ class KnowledgeChatContext:
             return []
         return [
             {
-                "type": "knowledge_evidence",
+                "type": SSEEvent.KNOWLEDGE_EVIDENCE,
                 "evidence": self.evidence,
                 "warnings": self.warnings,
             }

@@ -70,17 +70,27 @@ class _TimeSizeRotatingFileHandler(TimedRotatingFileHandler):
         super().__init__(*args, **kwargs)
         self.maxBytes = max_bytes
         self._rollover_by_size = False
+        # 维护当前文件字节数：旧实现每条日志 flush()+fstat()，高日志量时同步
+        # IO 放大（T2 PERF-17）。这里用 stream.tell() 增量维护，O(1)。
+        self._current_bytes = self.stream.tell() if self.stream else 0
+
+    def emit(self, record):
+        super().emit(record)
+        try:
+            if self.stream is not None:
+                self._current_bytes = self.stream.tell()
+        except (OSError, ValueError):
+            pass
 
     def shouldRollover(self, record):
         if self.stream is None:
             self.stream = self._open()
+            self._current_bytes = 0
 
         if self.maxBytes > 0:
-            self.stream.flush()
-            current_size = os.fstat(self.stream.fileno()).st_size
             message = self.format(record) + self.terminator
             message_size = len(message.encode(self.encoding or "utf-8"))
-            if current_size + message_size >= self.maxBytes:
+            if self._current_bytes + message_size >= self.maxBytes:
                 self._rollover_by_size = True
                 return True
 

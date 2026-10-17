@@ -1,5 +1,6 @@
 """File management routes"""
 
+import asyncio
 import logging
 import os
 import uuid
@@ -10,11 +11,23 @@ from typing import Annotated, Optional
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse
 
-from ..db import Database, get_database
-from ..models.api import FileListResponse, FileInfo
+from ..db import get_database
+from ..db.repositories.file_repository import FileRepository
+from ..models.api import (
+    DeleteFileResponse,
+    FileInfo,
+    FileListResponse,
+    ParseFileResponse,
+    SessionGeneratedFileInfo,
+    UploadFileResponse,
+)
 from ..middleware import get_current_username
-from ..utils import parse_file_content, get_owned_session
+from ..utils import parse_file_content
 from ..config import Config
+from ..services.session_uploads import (
+    UploadTooLargeError,
+    save_upload_streaming,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +44,25 @@ router = APIRouter(
     prefix="/agent/files",
     tags=["Files"],
 )
+
+
+def get_file_repository(
+    db: Annotated[object, Depends(get_database)],
+) -> FileRepository:
+    """FastAPI 依赖：把进程级 ``Database`` 包装成 files 域 repository。
+
+    ``get_database`` 只出现在本 provider 内；路由函数只声明
+    ``Depends(get_file_repository)``。
+    """
+    return FileRepository(db)
+
+
+def _as_file_repository(value: object) -> FileRepository:
+    """兼容直接调用路由函数并传入 ``Database`` 的既有测试。"""
+    if isinstance(value, FileRepository):
+        return value
+    return FileRepository(value)
+
 
 _MIME_MAP = {
     ".pdf": "application/pdf",
@@ -147,15 +179,16 @@ def serve_workspace_file(
     )
 
 
-@router.get("/session/{session_id}", summary="获取会话生成的文件列表")
+@router.get("/session/{session_id}", summary="获取会话生成的文件列表", response_model=list[SessionGeneratedFileInfo])
 async def get_session_generated_files(
     session_id: str,
-    db: Annotated[Database, Depends(get_database)],
+    db: Annotated[FileRepository, Depends(get_file_repository)],
     username: Annotated[str, Depends(get_current_username)],
 ):
     # 校验会话归属，防止跨用户读取其他会话生成的文件
-    get_owned_session(db, session_id, username)
-    generated_files = db.get_generated_files(session_id)
+    repo = _as_file_repository(db)
+    repo.get_owned_session_meta(session_id, username)
+    generated_files = repo.get_generated_files(session_id)
 
     file_list = []
     for f in generated_files:
@@ -175,17 +208,18 @@ async def get_session_generated_files(
 
 @router.get("/list", summary="获取文件列表", response_model=FileListResponse)
 async def list_files(
-    db: Annotated[Database, Depends(get_database)],
+    db: Annotated[FileRepository, Depends(get_file_repository)],
     username: Annotated[str, Depends(get_current_username)],
     session_id: Optional[str] = Query(default=None),
     file_type: Optional[str] = Query(default=None),
 ):
+    repo = _as_file_repository(db)
     upload_dir, _ = get_user_dirs(username)
 
     if session_id:
         # 校验会话归属，防止跨用户读取其他会话的文件列表
-        get_owned_session(db, session_id, username)
-        files = db.get_session_files(session_id)
+        repo.get_owned_session_meta(session_id, username)
+        files = repo.get_session_files(session_id)
         file_list = []
         for f in files:
             fi = FileInfo(
@@ -224,7 +258,7 @@ async def list_files(
 
     # 排除会话中生成的文件：生成文件物理上位于 workspace 目录，正常不会出现在 uploads，
     # 此处以文件名为黑名单做双保险，确保资产页只展示用户上传的文件。
-    generated_names = db.get_generated_filenames(username)
+    generated_names = repo.get_generated_filenames(username)
     if generated_names:
         upload_files = [f for f in upload_files if f.filename not in generated_names]
 
@@ -235,13 +269,14 @@ async def list_files(
     return FileListResponse(files=all_files, total=len(all_files))
 
 
-@router.post("/upload", summary="上传文件")
+@router.post("/upload", summary="上传文件", response_model=UploadFileResponse)
 async def upload_file(
-    db: Annotated[Database, Depends(get_database)],
+    db: Annotated[FileRepository, Depends(get_file_repository)],
     username: Annotated[str, Depends(get_current_username)],
     file: UploadFile = File(...),
     session_id: Optional[str] = Query(default=None),
 ):
+    repo = _as_file_repository(db)
     upload_dir, workspace_dir = get_user_dirs(username)
 
     safe_filename = os.path.basename(file.filename or "unknown")
@@ -249,32 +284,42 @@ async def upload_file(
     saved_name = f"{file_id}_{safe_filename}"
     file_path = upload_dir / saved_name
 
-    content = await file.read()
-    file_path.write_bytes(content)
+    try:
+        size = await save_upload_streaming(file, file_path)
+    except UploadTooLargeError as exc:
+        raise HTTPException(
+            status_code=413,
+            detail={
+                "code": "UPLOAD_FILE_TOO_LARGE",
+                "message": f"单个文件不能超过 {exc.limit // (1024 * 1024)}MB",
+                "limit_mb": exc.limit // (1024 * 1024),
+                "actual_mb": round(exc.size / 1024 / 1024, 2),
+            },
+        ) from exc
 
     ext = os.path.splitext(safe_filename)[1].lstrip(".") or "unknown"
 
     if session_id:
         # 校验会话归属，防止向他人会话关联文件
-        get_owned_session(db, session_id, username)
-        db.add_session_file(
+        repo.get_owned_session_meta(session_id, username)
+        repo.add_session_file(
             session_id=session_id,
             filename=safe_filename,
             file_path=str(file_path),
             file_type=ext,
-            size=len(content),
+            size=size,
             username=username,
         )
 
     logger.info(
-        f"文件上传成功 | 文件名: {safe_filename} | 大小: {len(content)} bytes | 用户: {username}"
+        f"文件上传成功 | 文件名: {safe_filename} | 大小: {size} bytes | 用户: {username}"
     )
 
     return {
         "filename": safe_filename,
         "file_path": str(file_path),
         "file_type": ext,
-        "size": len(content),
+        "size": size,
         "uploaded_at": datetime.now().isoformat(),
     }
 
@@ -300,25 +345,26 @@ async def download_file(
     )
 
 
-@router.delete("/{file_id}", summary="删除文件")
+@router.delete("/{file_id}", summary="删除文件", response_model=DeleteFileResponse)
 async def delete_file(
     file_id: int,
-    db: Annotated[Database, Depends(get_database)],
+    db: Annotated[FileRepository, Depends(get_file_repository)],
     username: Annotated[str, Depends(get_current_username)],
 ):
-    success = db.delete_file(file_id, username=username)
+    repo = _as_file_repository(db)
+    success = repo.delete_file(file_id, username=username)
     if not success:
         raise HTTPException(status_code=404, detail="文件不存在")
 
     return {"status": "deleted", "file_id": file_id}
 
 
-@router.post("/parse", summary="解析文件内容")
+@router.post("/parse", summary="解析文件内容", response_model=ParseFileResponse)
 async def parse_file(
     username: Annotated[str, Depends(get_current_username)],
     file_path: str = Query(..., description="文件路径"),
 ):
-    content = parse_file_content(file_path)
+    content = await asyncio.to_thread(parse_file_content, file_path)
     return {"file_path": file_path, "content": content}
 
 
@@ -330,7 +376,7 @@ async def preview_file(
     token: Optional[str] = Query(default=None, description="认证token（iframe等无法设置Header时使用）"),
     download: Optional[bool] = Query(default=None, description="是否以下载方式返回"),
     target: Optional[str] = Query(default=None, description="转换为指定格式后返回，如 pdf（用 LibreOffice 转换，用于 PPT/XLS/DOC 预览）"),
-    db: Annotated[Database, Depends(get_database)] = None,
+    db: Annotated[FileRepository, Depends(get_file_repository)] = None,
 ):
     """返回工作区文件的原始内容，供前端预览组件使用。
 
@@ -340,26 +386,27 @@ async def preview_file(
     当指定 target=pdf 且文件为可转换的 Office 类型时，使用 LibreOffice 将文件转换为
     PDF 后返回，由前端内置查看器渲染（解决 @vue-office/pptx 等组件渲染不稳定的问题）。
     """
+    repo = _as_file_repository(db)
     # 认证：优先 Header，其次查询参数 token（均走单点登录 version 校验）
     username = None
     auth_header = request.headers.get("Authorization")
     if auth_header and auth_header.startswith("Bearer "):
         from ..middleware.auth import verify_token_sso
-        username = verify_token_sso(auth_header[7:], db)
+        username = verify_token_sso(auth_header[7:], repo.database)
     if not username and token:
         from ..middleware.auth import verify_token_sso
-        username = verify_token_sso(token, db)
+        username = verify_token_sso(token, repo.database)
     if not username:
-        default_user = db.get_or_create_default_user()
+        default_user = repo.get_or_create_default_user()
         username = default_user.username
 
     workspace_dir = Config.get_user_workspace_dir(username)
 
-    if session_id and db:
+    if session_id and repo:
         # 校验会话归属，防止通过他人 session_id 访问其工作区文件
-        session = get_owned_session(db, session_id, username)
-        if session.workspace_name:
-            workspace_dir = workspace_dir / "session" / session.workspace_name
+        session_meta = repo.get_owned_session_meta(session_id, username)
+        if session_meta["workspace_name"]:
+            workspace_dir = workspace_dir / "session" / session_meta["workspace_name"]
         else:
             workspace_dir = workspace_dir / "session" / session_id
 
@@ -375,7 +422,7 @@ async def preview_file(
     if target and target.lower() == "pdf":
         try:
             from ..services.document_convert import convert_to_pdf
-            pdf_path = convert_to_pdf(full_path, target="pdf")
+            pdf_path = await asyncio.to_thread(convert_to_pdf, full_path, "pdf")
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
         except Exception as e:
@@ -398,19 +445,20 @@ async def get_workspace_tree(
     session_id: Optional[str] = Query(
         default=None, description="会话ID，指定后只返回该会话的工作区目录"
     ),
-    db: Annotated[Database, Depends(get_database)] = None,
+    db: Annotated[FileRepository, Depends(get_file_repository)] = None,
 ):
+    repo = _as_file_repository(db)
     workspace_dir = Config.get_user_workspace_dir(username)
 
-    if session_id and db:
+    if session_id and repo:
         # 校验会话归属，防止通过他人 session_id 浏览其工作区文件树
-        session = get_owned_session(db, session_id, username)
-        if session.workspace_name:
-            workspace_dir = workspace_dir / "session" / session.workspace_name
+        session_meta = repo.get_owned_session_meta(session_id, username)
+        if session_meta["workspace_name"]:
+            workspace_dir = workspace_dir / "session" / session_meta["workspace_name"]
         else:
             workspace_dir = workspace_dir / "session" / session_id
         logger.info(
-            f"工作区文件树 | session_id={session_id} | workspace_name={session.workspace_name} | dir={workspace_dir}"
+            f"工作区文件树 | session_id={session_id} | workspace_name={session_meta['workspace_name']} | dir={workspace_dir}"
         )
     else:
         logger.info(f"工作区文件树 | 无 session_id | dir={workspace_dir}")

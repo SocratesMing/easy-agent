@@ -3,19 +3,31 @@
 import asyncio
 import logging
 import os
+from ..env import env_str
 import platform
+from collections import OrderedDict
+from typing import Any, Callable
 
 from ..agent import EasyAgent
+from ..agent_graph_cache import clear_agent_graph_cache, get_agent_graph_cache
 from ..config import Config
 from ..db import get_database
+from ..runtime_config import (
+    get_runtime_agent_config,
+    set_agent_invalidator,
+    set_runtime_agent_config,
+)
 from ..model import create_model
+from ..tools.registry import ToolBuildContext, build_session_tools
 from ..tools.web_search import create_web_search_tool
 from ..utils.prompt_probe import describe_prompt, prompt_fingerprint
 from .mcp import get_mcp_tools as load_mcp_tools_for_user
 
 logger = logging.getLogger("easy-agent.chat_service")
 
-_session_agents: dict[str, EasyAgent] = {}
+_session_agents: "OrderedDict[str, EasyAgent]" = OrderedDict()
+_AGENT_CACHE_MAX = 100
+_session_create_locks: dict[str, asyncio.Lock] = {}
 # 会话 → 当前生效的专家 Agent ID（"" 表示通用 Agent）。
 # 与 _session_agents 同性质（进程内缓存），用于判断「专家是否变更」——
 # 变更时必须驱逐 Agent 缓存，否则会出现「换专家不生效」与「专家人设黏在普通聊天上」。
@@ -50,7 +62,7 @@ def _is_windows() -> bool:
     ``AGENT_WIN`` environment variable (``1/true/yes/on`` -> True,
     ``0/false/no/off`` -> False).
     """
-    override = os.environ.get("AGENT_WIN", "").strip().lower()
+    override = env_str("AGENT_WIN").lower()
     if override in ("1", "true", "yes", "on"):
         return True
     if override in ("0", "false", "no", "off"):
@@ -80,12 +92,94 @@ def init_agent_config(
         "agent_env": agent_env or "",
         "win": _is_windows(),
     }
+    # 供 config/utils 等基础层读取，避免它们反向 import 本模块（ARCH-03）。
+    set_runtime_agent_config(_agent_config)
+    # D2：配置重载（启动/测试/热更新）后，旧编译图的模型/工具/提示词都可能已变，
+    # 直接清空进程内图缓存，避免复用过期图。
+    clear_agent_graph_cache()
+    # 下层工具（expert_writer）需要驱逐缓存时走这里，不再 import 本模块。
+    set_agent_invalidator(invalidate_user_agents)
 
     _llm_instance = create_model(config)
     logger.info(
         f"[初始化] Agent 配置初始化完成 | 环境: {agent_env or '(未设置)'} | "
         f"Windows: {_is_windows()} | LLM 流式已启用 | MCP 按需动态加载"
     )
+
+
+def _create_lock(session_id: str) -> asyncio.Lock:
+    lock = _session_create_locks.get(session_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _session_create_locks[session_id] = lock
+    return lock
+
+
+def _touch_agent_cache(session_id: str) -> None:
+    """命中即移到末尾（LRU）。测试可能把缓存替换成普通 dict，需兼容。"""
+    move = getattr(_session_agents, "move_to_end", None)
+    if callable(move):
+        move(session_id)
+
+
+def _evict_agent_cache(keep_session_id: str) -> None:
+    """按 LRU 淘汰 Agent，并同步清理所有会话级 side dict（避免内存泄漏）。"""
+    while len(_session_agents) > _AGENT_CACHE_MAX:
+        victim = next((sid for sid in _session_agents if sid != keep_session_id), None)
+        if victim is None:
+            break
+        _session_agents.pop(victim, None)
+        # 会话级附属状态与 Agent 同生共死；只清 Agent 会留下永久泄漏的字典项。
+        for side in (
+            _session_expert,
+            _session_creator,
+            _session_connectors,
+            _session_edit_targets,
+        ):
+            side.pop(victim, None)
+        lock = _session_create_locks.get(victim)
+        if lock is not None and not lock.locked() and not getattr(lock, "_waiters", None):
+            _session_create_locks.pop(victim, None)
+        logger.info(f"[{victim[-5:]}] Agent 缓存 LRU 淘汰（含 side dict 清理）")
+
+
+def _tool_factories() -> dict[str, Callable[..., Any]]:
+    """工具工厂表：由装配根提供，注册表只按名字取用。
+
+    为什么放在这里而不是 ``tools/registry.py``：``knowledge_impl`` 与
+    ``tools.scheduled_task`` 已位于既有的 knowledge→scheduler→agent_manager
+    SCC（``scripts/import_graph_whitelist.json`` 的 knowledge-chat-scheduler-core）
+    中，注册表一旦出现包内 import 边就会把 registry/hitl/agent 一并并进该 SCC。
+    工具工厂留在装配处后，注册表保持「无包内 import 边的叶子模块」，
+    import 图与白名单保持完全一致（见设计文档 §2.3 / §4）。
+
+    加载时机与改造前一致：知识库扩展每次装配都会 import（与改造前相同），
+    其余三个工厂在对应工具真正被构造时才 import——这样单个工具模块加载失败
+    只会让该工具被跳过（注册表逐条目告警），不会拖垮整次 Agent 创建。
+    """
+    from ..knowledge_impl import extend_agent_tools
+
+    def _scheduled_task(**kwargs: Any) -> Any:
+        from ..tools.scheduled_task import CreateScheduledTaskTool
+
+        return CreateScheduledTaskTool(**kwargs)
+
+    def _save_expert(**kwargs: Any) -> Any:
+        from ..tools.expert_writer import create_save_expert_tool
+
+        return create_save_expert_tool(**kwargs)
+
+    def _read_uploaded_file(**kwargs: Any) -> Any:
+        from ..tools.session_file_reader import ReadUploadedFileTool
+
+        return ReadUploadedFileTool(**kwargs)
+
+    return {
+        "access_knowledge_original": extend_agent_tools,
+        "create_scheduled_task": _scheduled_task,
+        "save_expert": _save_expert,
+        "read_uploaded_file": _read_uploaded_file,
+    }
 
 
 async def get_or_create_agent_for_session(
@@ -118,6 +212,28 @@ async def get_or_create_agent_for_session(
     「跟随缓存」：不因该项差异驱逐，复用已有 Agent。创建新 Agent 时按
     ``expert-creator 是否在 skill_dirs 中`` 注入。
     """
+    async with _create_lock(session_id):
+        return await _get_or_create_agent_unlocked(
+            session_id,
+            username=username,
+            workspace_name=workspace_name,
+            enable_hitl=enable_hitl,
+            model_name=model_name,
+            enable_web_search=enable_web_search,
+            system_prompt_extra=system_prompt_extra,
+            expert_agent_id=expert_agent_id,
+            skill_dirs=skill_dirs,
+        )
+
+
+async def _get_or_create_agent_unlocked(
+    session_id: str, username: str = "default", workspace_name: str = "",
+    enable_hitl: bool = True, model_name: str | None = None,
+    enable_web_search: bool | None = None,
+    system_prompt_extra: str = "",
+    expert_agent_id: str | None = None,
+    skill_dirs: list[str] | None = None,
+) -> EasyAgent:
     global _session_agents, _session_expert, _session_connectors, _agent_config
 
     if _agent_config is None:
@@ -131,6 +247,15 @@ async def get_or_create_agent_for_session(
     # 本会话启用的连接器（mcp.json server 名，由输入框「+」面板的会话级开关写入）。
     # key 不存在 = 尚未设置 → None = 注入全部启用连接器；空元组 = 全部关闭 → []。
     recorded_connectors = _session_connectors.get(session_id)
+    if recorded_connectors is None:
+        try:
+            from .session_runtime import load_connectors
+
+            recorded_connectors = load_connectors(get_database(), session_id)
+            if recorded_connectors is not None:
+                _session_connectors[session_id] = recorded_connectors
+        except Exception:
+            recorded_connectors = None
     only_connectors = None if recorded_connectors is None else list(recorded_connectors)
 
     # 联网搜索：仅在「本轮请求开启」且「web_search 已配置 api_url + api_key」时注入。
@@ -201,6 +326,7 @@ async def get_or_create_agent_for_session(
                 f"{describe_prompt('本轮 extra', system_prompt_extra)} | "
                 f"{describe_prompt('缓存终稿', getattr(cached, 'system_prompt', ''))}"
             )
+            _touch_agent_cache(session_id)
             return cached
 
     if not workspace_name:
@@ -269,66 +395,24 @@ async def get_or_create_agent_for_session(
             )
             mcp_tools = []
 
-    # 构建 tools 列表：MCP 工具 + 定时任务工具（仅 HITL 模式下注入）
-    tools = list(mcp_tools)
-
-    # Narrow integration point; 知识库工具注入入口。
-    from ..knowledge_impl import extend_agent_tools
-
-    tools = extend_agent_tools(
-        tools,
-        config=config,
-        username=username,
-        session_id=session_id,
-        workspace_name=workspace_name,
+    # 工具装配：MCP 工具作为基底，其余按工具注册表声明的条件/顺序追加。
+    # 工具元数据（是否内置/写操作/HITL/注入顺序）单一来源见 tools/registry.py；
+    # 本函数不再逐工具硬编码 if/append，新增工具只需改注册表。
+    tools = build_session_tools(
+        mcp_tools,
+        ToolBuildContext(
+            config=config,
+            username=username,
+            session_id=session_id,
+            workspace_name=workspace_name,
+            enable_hitl=enable_hitl,
+            model_name=model_name or "",
+            creator_requested=creator_requested,
+            web_search_tool=web_search_tool,
+            edit_targets=_session_edit_targets,
+            factories=_tool_factories(),
+        ),
     )
-
-    if enable_hitl:
-        try:
-            from ..tools.scheduled_task import CreateScheduledTaskTool
-            tools.append(CreateScheduledTaskTool(username=username, session_id=session_id or ""))
-        except Exception as e:
-            logger.warning(f"[{session_id[-5:]}] 注入定时任务工具失败: {e}")
-
-    # 专家写入工具（对话内「新建/修改专家」）：由 expert-creator 技能引导 Agent 产出
-    # 结构化配置后落库 + 落版本目录，替代原先只能在弹窗里慢慢等的方式。
-    # 仅在该技能激活的会话注入（creator_requested 为 None 只可能出现在 skill_dirs
-    # 未传的旧调用路径，此时保持注入以免破坏既有行为）；edit_targets 绑定表由
-    # 本模块持有，修改专家时 ID 以绑定值为准（用户消息不再携带专家 ID）。
-    if creator_requested is None or creator_requested:
-        try:
-            from ..tools.expert_writer import create_save_expert_tool
-
-            tools.append(
-                create_save_expert_tool(
-                    username=username,
-                    session_id=session_id or "",
-                    config_model=model_name or "",
-                    tag_options=getattr(config, "expert_tags", None),
-                    edit_targets=_session_edit_targets,
-                )
-            )
-            logger.info(f"[{session_id[-5:]}] 🧑‍🔬 已注入 save_expert 工具")
-        except Exception as e:
-            logger.warning(f"[{session_id[-5:]}] 注入 save_expert 工具失败: {e}")
-
-    # 上传文件按需读取/重解析工具（file_context 启用时注入）：清单标"解析失败/未解析"
-    # 或模型需要原始内容时，由服务端到 uploadfiles/ 重新解析源文件并回填正文。
-    # 原始文件在工作区之外，模型的 grep/read_file 读不到，必须靠这个工具。
-    try:
-        _fc = getattr(config, "file_context", None)
-        if _fc is not None and getattr(_fc, "enabled", True):
-            from ..tools.session_file_reader import ReadUploadedFileTool
-            tools.append(
-                ReadUploadedFileTool(username=username, session_id=session_id or "")
-            )
-            logger.info(f"[{session_id[-5:]}] 📎 已注入 read_uploaded_file 工具")
-    except Exception as e:
-        logger.warning(f"[{session_id[-5:]}] 注入 read_uploaded_file 工具失败: {e}")
-
-    if web_search_tool is not None:
-        tools.append(web_search_tool)
-        logger.info(f"[{session_id[-5:]}] 🌐 联网搜索已开启（注入 web_search 工具）")
 
     agent = EasyAgent(
         config=config,
@@ -345,8 +429,10 @@ async def get_or_create_agent_for_session(
         system_prompt_extra=system_prompt_extra,
    )
     _session_agents[session_id] = agent
+    _touch_agent_cache(session_id)
     _session_expert[session_id] = expert_key
     _session_creator[session_id] = bool(creator_requested)
+    _evict_agent_cache(session_id)
     logger.info(
         f"[{session_id[-5:]}] Agent 实例创建成功 | workspace: {agent.workspace_dir} | "
         f"model: {agent.model_name} | mcp_tools: {len(tools)} | "
@@ -378,8 +464,10 @@ def invalidate_user_agents(username: str) -> int:
         # 会话级连接器开关（_session_connectors）刻意保留：它是用户在输入框里做的
         # 显式选择，不该因为「改了 mcp.json」而静默复位；被卸载/停用的 server 会被
         # MCP 加载层自动跳过并记 warning。
+    evicted_graphs = get_agent_graph_cache().invalidate_user(safe)
     logger.info(
-        f"用户 {username} 的缓存 Agent 已失效 | 清除 {len(to_remove)} 个 | sessions={to_remove}"
+        f"用户 {username} 的缓存 Agent 已失效 | 清除 {len(to_remove)} 个 | "
+        f"编译图 {evicted_graphs} 张 | sessions={to_remove}"
     )
     return len(to_remove)
 
@@ -417,6 +505,12 @@ def set_session_edit_target(session_id: str, expert_agent_id: str) -> None:
             f"[{session_id[-5:]}] ✏️ 已绑定待修改专家 | expert={expert_agent_id}"
         )
     _session_edit_targets[session_id] = expert_agent_id
+    try:
+        from .session_runtime import save_edit_target
+
+        save_edit_target(get_database(), session_id, expert_agent_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"[{session_id[-5:]}] 待修改专家落库失败: {exc}")
 
 
 def get_session_edit_target(session_id: str) -> str:
@@ -456,6 +550,12 @@ def set_session_connectors(session_id: str, connector_servers: list[str]) -> int
         dict.fromkeys(str(n).strip() for n in connector_servers if str(n).strip())
     )
     _session_connectors[session_id] = normalized
+    try:
+        from .session_runtime import save_connectors
+
+        save_connectors(get_database(), session_id, list(normalized))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"[{session_id[-5:]}] 会话连接器落库失败: {exc}")
     evicted = 0
     if session_id in _session_agents:
         _session_agents.pop(session_id, None)
@@ -480,10 +580,28 @@ def register_stream_task(session_id: str, task: asyncio.Task[None]) -> None:
     若该会话已存在未完成的流式任务（通常不应发生），先取消旧的，
     避免多个 astream 协程并发写同一会话。
     """
+    from .session_runtime import SessionBusyError, acquire_stream
+
+    try:
+        acquire_stream(get_database(), session_id)
+    except SessionBusyError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"[{session_id[-5:]}] 会话流锁获取失败: {exc}")
     old = _session_stream_tasks.get(session_id)
-    if old and not old.done():
-        old.cancel()
+    if old and not old.done() and old is not task:
+        # 旧实现直接 old.cancel()：旧任务的 hub.close() 会把 EOF 发给新订阅者，
+        # 造成「新流 0 条内容即结束、旧流被静默取消」。改为显式拒绝并发。
+        raise SessionBusyError(
+            f"会话 {session_id} 正在生成回复，请等待完成或先取消当前生成"
+        )
     _session_stream_tasks[session_id] = task
+
+
+def is_session_streaming(session_id: str) -> bool:
+    """该会话当前是否有本进程内运行中的流式任务（用于并发互斥/409）。"""
+    task = _session_stream_tasks.get(session_id)
+    return bool(task and not task.done())
 
 
 def unregister_stream_task(
@@ -499,6 +617,12 @@ def unregister_stream_task(
         _session_stream_tasks.pop(session_id, None)
     elif _session_stream_tasks.get(session_id) is task:
         _session_stream_tasks.pop(session_id, None)
+    try:
+        from .session_runtime import release_stream
+
+        release_stream(get_database(), session_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"[{session_id[-5:]}] 会话流锁释放失败: {exc}")
 
 
 async def cancel_stream_task(session_id: str) -> bool:
@@ -510,6 +634,13 @@ async def cancel_stream_task(session_id: str) -> bool:
         True 表示确实取消了一个正在运行的任务。
     """
     import time as _time
+
+    try:
+        from .session_runtime import request_cancel
+
+        request_cancel(get_database(), session_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"[{session_id[-5:]}] 写入跨实例取消标记失败: {exc}")
 
     task = _session_stream_tasks.pop(session_id, None)
     if not task:
@@ -559,5 +690,24 @@ async def cancel_stream_task(session_id: str) -> bool:
     return True
 
 
+async def drain_stream_tasks(timeout: float = 20.0) -> None:
+    """Wait for in-flight SSE/astream tasks on shutdown, then cancel leftovers."""
+    tasks = [t for t in list(_session_stream_tasks.values()) if t and not t.done()]
+    if not tasks:
+        return
+    logger.info("关闭前等待 %s 个流式任务结束（最多 %.0fs）", len(tasks), timeout)
+    _done, pending = await asyncio.wait(tasks, timeout=timeout)
+    for task in pending:
+        task.cancel()
+    if pending:
+        await asyncio.gather(*pending, return_exceptions=True)
+
+
 def get_agent_config() -> dict:
-    return _agent_config
+    # 以 runtime_config 为准：测试/重载可直接 set_runtime_agent_config 生效，
+    # 同时保留模块级 _agent_config 变量供既有测试 monkeypatch。
+    return _agent_config or get_runtime_agent_config()
+
+
+# 模块导入即注册：expert_writer 等下层通过 runtime_config 调用，无需等待 init。
+set_agent_invalidator(invalidate_user_agents)

@@ -43,6 +43,9 @@ tests/
 *.md
 !easy_agent/config/**/*.md
 !deploy/**/*.md
+!skills/**/*.md
+!prompts/**/*.md
+!experts/**/*.md
 
 
 # OS

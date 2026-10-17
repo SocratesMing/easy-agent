@@ -1,0 +1,85 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend-fatal-lint:
+    name: Backend fatal lint (ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+      - name: Ruff (fatal errors only; style debt is tracked in docs/audit)
+        run: uvx ruff check --output-format=github .
+
+  architecture-gate:
+    name: Architecture gate (import SCC + double-write freeze)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # 阶段 0.1：import 图 SCC 白名单；新回边/环模块集合变化/白名单过期即失败。
+      - name: Import graph SCC (whitelist = existing cycles only)
+        run: python scripts/import_graph.py --check-scc
+      # 阶段 0.2：冻结 sessions.messages 双写与 Database 新业务方法。
+      - name: Double-write freeze (sessions.messages / Database facade)
+        run: python scripts/check_double_write.py
+
+  backend-tests:
+    name: Backend tests (pytest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+      - name: Install dependencies
+        run: uv sync --frozen --group dev --extra docs
+      - name: Collection gate (must be 0 errors)
+        run: uv run pytest --collect-only -q
+      - name: Run tests
+        run: uv run pytest -q
+
+  frontend-vue2:
+    name: Frontend Vue2 build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend-vue2
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend-vue2/package-lock.json
+      - run: npm ci
+      - run: npm run build
+      - run: npm run test:unit
+
+  frontend-vue3:
+    name: Frontend Vue3 build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm run build

@@ -31,6 +31,7 @@ Agent 的策略不同：公共专家的内容随发行包提供，缺文件属�
 
 import logging
 import os
+from ..env import env_str
 from pathlib import Path
 from typing import Any, Optional
 
@@ -121,7 +122,7 @@ def public_experts_root_info() -> tuple[Path, str]:
     if configured:
         return _resolve_relative(configured), "config"
 
-    env_raw = (os.environ.get(ENV_EXPERTS_DIR, "") or "").strip()
+    env_raw = env_str(ENV_EXPERTS_DIR)
     if env_raw:
         return _resolve_relative(env_raw), "env"
 

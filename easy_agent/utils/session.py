@@ -22,6 +22,20 @@ if TYPE_CHECKING:
     from ..models.db import SessionModel
 
 
+def get_owned_session_meta(
+    db: "Database", session_id: str, username: str
+) -> dict:
+    """轻量版 get_owned_session：只返回归属/工作区所需字段（不加载消息）。
+
+    用于只校验归属或只要 workspace_name 的接口（文件预览/下载、chat 取消/
+    resume 等），避免对长会话做全量消息加载。
+    """
+    meta = db.get_session_owner(session_id)
+    if not meta or (meta.get("username") or "") != (username or ""):
+        raise HTTPException(status_code=404, detail="会话不存在")
+    return meta
+
+
 def get_owned_session(
     db: "Database", session_id: str, username: str
 ) -> "SessionModel":

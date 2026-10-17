@@ -13,6 +13,9 @@ import pytest
 from easy_agent.db import database as dbmod
 from easy_agent.db.database import Database, SCHEMA_VERSION, EXPECTED_TABLES
 
+# 导入领域 schema 模块完成注册（Database.init_tables 通过 schema_registry 调用）
+import easy_agent.knowledges.core.schema  # noqa: E402,F401
+
 
 class _CountingCursor:
     """包一层真实 cursor，统计底层 execute 次数（≈ 数据库往返数）。"""
@@ -79,7 +82,8 @@ def test_fast_path_skips_ddl_when_schema_unchanged(sqlite_path):
     _, second = _init_with_count(sqlite_path)
     assert second < first
     # 快速路径只做：建 meta 表 + 读版本 + 校验表 + 数据自愈比对
-    assert second <= 8
+    # + 迁移账本 ensure/select（ARCH-16）；不做任何建表/补列/建索引 DDL。
+    assert second <= 12
 
 
 def test_schema_version_recorded(sqlite_path):
@@ -152,3 +156,9 @@ def test_expected_tables_match_created_schema(sqlite_path):
         cur.execute("SELECT name FROM sqlite_master WHERE type='table'")
         names = {r[0] for r in cur.fetchall()}
     assert set(EXPECTED_TABLES).issubset(names)
+
+
+def test_langgraph_store_mysql_primary_key_fits_utf8mb4():
+    """InnoDB utf8mb4 索引上限 3072 字节。"""
+    width = (dbmod.LANGGRAPH_STORE_NS_LEN + dbmod.LANGGRAPH_STORE_KEY_LEN) * 4
+    assert width <= 3072

@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+from collections import deque
 import re
 import uuid
 from datetime import datetime
@@ -10,7 +11,8 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
-from ..db import Database, get_database
+from ..db import get_database
+from ..db.repositories.chat_repository import ChatRepository
 from ..models.db import SessionModel
 from ..models.api import ChatRequest, ResumeRequest
 from ..middleware import get_current_username
@@ -28,13 +30,19 @@ from ..services import (
     remove_session_agent,
     register_stream_task,
     set_session_edit_target,
+    is_session_streaming,
     unregister_stream_task,
     cancel_stream_task,
 )
 from ..services import skill_library
 from ..services import session_uploads as file_context
+from ..services.sse import SSEEvent
 from ..services.streaming import format_sse
-from ..utils import parse_file_content, SessionLogger, get_owned_session
+from ..services.session_runtime import SessionBusyError
+from ..utils import (
+    parse_file_content,
+    SessionLogger,
+)
 from .sessions import generate_workspace_name
 
 logger = logging.getLogger(__name__)
@@ -43,6 +51,24 @@ router = APIRouter(
     prefix="/agent/chat",
     tags=["Chat"],
 )
+
+
+def get_chat_repository(
+    db: Annotated[object, Depends(get_database)],
+) -> ChatRepository:
+    """FastAPI 依赖：把进程级 ``Database`` 包装成 chat 域 repository。
+
+    ``get_database`` 只出现在本 provider 内；路由函数只声明
+    ``Depends(get_chat_repository)``。
+    """
+    return ChatRepository(db)
+
+
+def _as_chat_repository(value: object) -> ChatRepository:
+    """兼容直接调用路由函数并传入 ``Database`` 的既有测试。"""
+    if isinstance(value, ChatRepository):
+        return value
+    return ChatRepository(value)
 
 # 会话标题最长字数：太短列表里只剩「测试下」这种断句，太长又会撑破侧边栏，
 # 具体显示宽度由前端省略号控制，这里保留足够信息量即可。
@@ -144,7 +170,7 @@ def generate_session_title(
 
 
 def create_new_session(
-    db: Database,
+    repo: ChatRepository,
     session_id: str,
     username: str,
     message: str,
@@ -164,8 +190,8 @@ def create_new_session(
         username=username,
         workspace_name=workspace_name,
     )
-    db.create_session(session_data)
-    db.update_session_workspace_name(session_id, workspace_name)
+    repo.create_session(session_data)
+    repo.update_session_workspace_name(session_id, workspace_name)
     return workspace_name
 
 
@@ -175,6 +201,11 @@ _detached_bg_tasks: "set[asyncio.Task]" = set()
 # 先回放本流已产生的全部事件，再持续接收后续事件（页面刷新不中断流式展示）。
 _session_stream_hubs: "dict[str, _StreamHub]" = {}
 _STREAM_HUB_TTL_SECONDS = 120.0
+# 单会话流式事件历史的字符上限：长思考/长回复时避免 hub 无限占内存
+# （历史仍保留足够尾部供重连回放，超出后丢弃最早事件）。
+_HUB_HISTORY_MAX_CHARS = 4_000_000
+# 流锁续约间隔：默认 TTL 30 分钟，5 分钟续一次，避免长任务被其它副本误判过期。
+_STREAM_HEARTBEAT_SECONDS = 300.0
 # 订阅者队列的余量：回放必须完整（历史上限 10000 条，见 broadcast），
 # 队列容量按「当前历史长度 + 余量」分配，用于容纳回放期间新产生的事件。
 _SUBSCRIBER_QUEUE_SLACK = 1000
@@ -190,7 +221,8 @@ class _StreamHub:
 
     def __init__(self, session_id: str):
         self.session_id = session_id
-        self.history: list[str] = []
+        self.history: deque[str] = deque()
+        self._history_chars = 0
         self.done = False
         self._subscribers: list[asyncio.Queue] = []
         self._cleanup_handle: asyncio.TimerHandle | None = None
@@ -220,8 +252,12 @@ class _StreamHub:
     def broadcast(self, item: str | None) -> None:
         if item is not None:
             self.history.append(item)
-            if len(self.history) > 10000:
-                del self.history[: len(self.history) - 10000]
+            self._history_chars += len(item)
+            # deque.popleft O(1)；list.pop(0) 在大历史下是 O(n)，会造成 O(n²) 卡顿。
+            while len(self.history) > 10000:
+                self._history_chars -= len(self.history.popleft())
+            while self._history_chars > _HUB_HISTORY_MAX_CHARS and self.history:
+                self._history_chars -= len(self.history.popleft())
         for q in list(self._subscribers):
             try:
                 q.put_nowait(item)
@@ -252,7 +288,9 @@ class _StreamHub:
         )
 
 
-async def _detached_event_stream(gen, session_id: str, sid: str):
+async def _detached_event_stream(
+    gen, session_id: str, sid: str, renew_stream=None
+):
     """以「后台任务 + 事件中枢」驱动流式生成器，与客户端断开解耦。
 
     后台任务推进 astream 并把 SSE 分片入队；客户端断开（登出/超时/关页）时仅停止
@@ -260,6 +298,14 @@ async def _detached_event_stream(gen, session_id: str, sid: str):
     /cancel 仍生效：后台任务已 register_stream_task 注册，可被 task.cancel() 取消。
     刷新页面后，新客户端可通过 /stream/live 订阅同一中枢继续接收事件。
     """
+    # 兜底：同会话已有运行中的流时，返回独立错误流（绝不加入对方 hub，
+    # 否则新订阅者会收到旧流的 EOF/事件）。端点层通常已返回 409。
+    if is_session_streaming(session_id):
+        yield format_sse(
+            {"type": SSEEvent.ERROR, "content": "本会话正在生成回复，请等待完成或先取消当前生成"}
+        )
+        return
+
     hub = _session_stream_hubs.get(session_id)
     if hub is None or hub.done:
         hub = _StreamHub(session_id)
@@ -269,22 +315,60 @@ async def _detached_event_stream(gen, session_id: str, sid: str):
 
     async def _drive():
         bg = asyncio.current_task()
+        registered = False
+        heartbeat = None
         try:
             register_stream_task(session_id, bg)
+            registered = True
+
+            async def _heartbeat():
+                while True:
+                    await asyncio.sleep(_STREAM_HEARTBEAT_SECONDS)
+                    try:
+                        renewed = await asyncio.to_thread(
+                            renew_stream, session_id
+                        )
+                        if not renewed:
+                            logger.warning(
+                                f"[{sid}] 流锁续约失败（可能已被其它实例接管），停止续约"
+                            )
+                            return
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning(f"[{sid}] 流锁续约异常（忽略本次）: {exc}")
+
+            heartbeat = (
+                asyncio.create_task(_heartbeat())
+                if renew_stream is not None
+                else None
+            )
             async for chunk in gen:
                 # 广播给所有订阅者（原始客户端队列也是订阅者之一）
                 hub.broadcast(chunk)
+        except SessionBusyError as e:
+            # 进程内兜底：不向共享 hub 广播（会污染正在运行的流），只结束本请求队列。
+            logger.warning(f"[{sid}] 会话已被占用，拒绝并发流: {e}")
+            try:
+                queue.put_nowait(None)
+            except asyncio.QueueFull:
+                pass
         except asyncio.CancelledError:
             logger.info(f"[{sid}] 后台流式任务被取消（/cancel）")
             raise
         except Exception as e:
             logger.error(f"[{sid}] 后台流式任务异常: {type(e).__name__}: {e}")
             hub.broadcast(
-                format_sse({"type": "error", "content": f"处理失败: {e}"})
+                format_sse({"type": SSEEvent.ERROR, "content": f"处理失败: {e}"})
             )
         finally:
-            unregister_stream_task(session_id, bg)
-            hub.close()
+            if heartbeat is not None:
+                heartbeat.cancel()
+                try:
+                    await heartbeat
+                except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                    pass
+            if registered:
+                unregister_stream_task(session_id, bg)
+                hub.close()
 
     bg_task = asyncio.create_task(_drive())
     _detached_bg_tasks.add(bg_task)
@@ -313,11 +397,12 @@ def _stream_hub_for(session_id: str) -> _StreamHub | None:
 )
 async def chat_stream_status(
     session_id: str,
-    db: Annotated[Database, Depends(get_database)],
+    db: Annotated[ChatRepository, Depends(get_chat_repository)],
     username: Annotated[str, Depends(get_current_username)],
 ):
     # 校验会话归属（不存在的会话同样 404，避免泄露会话是否存在）
-    get_owned_session(db, session_id, username)
+    repo = _as_chat_repository(db)
+    repo.get_owned_session_meta(session_id, username)
     return {
         "session_id": session_id,
         "active": _stream_hub_for(session_id) is not None,
@@ -334,18 +419,19 @@ async def chat_stream_status(
 )
 async def chat_stream_live(
     session_id: str,
-    db: Annotated[Database, Depends(get_database)],
+    db: Annotated[ChatRepository, Depends(get_chat_repository)],
     username: Annotated[str, Depends(get_current_username)],
 ):
     # 校验会话归属
-    get_owned_session(db, session_id, username)
+    repo = _as_chat_repository(db)
+    repo.get_owned_session_meta(session_id, username)
     hub = _session_stream_hubs.get(session_id)
 
     async def event_source():
         if hub is None:
             yield format_sse(
                 {
-                    "type": "done",
+                    "type": SSEEvent.DONE,
                     "session_id": session_id,
                     "already_completed": True,
                 }
@@ -379,13 +465,14 @@ async def chat_stream_live(
 )
 async def chat_stream(
     request: ChatRequest,
-    db: Annotated[Database, Depends(get_database)],
+    db: Annotated[ChatRepository, Depends(get_chat_repository)],
     http_request: Request,
     username: Annotated[str, Depends(get_current_username)],
 ):
 
     # 正文可以为空：只挂技能 / 只上传文件时本来就没有正文，
     # 三者全空才视为无效请求（与前端 canSend 的判定一致）。
+    repo = _as_chat_repository(db)
     if (
         not (request.message or "").strip()
         and not request.files
@@ -401,7 +488,7 @@ async def chat_stream(
     # 行内环境中替换了通用聊天身份依赖，也不能让 X-Username 等兼容头绕过知识权限。
     username = await authorize_scoped_chat(
         request=http_request,
-        db=db,
+        db=repo.database,
         session_id=session_id,
         username=username,
     )
@@ -436,14 +523,14 @@ async def chat_stream(
     if session_id is None:
         session_id = str(uuid.uuid4())
         workspace_name = create_new_session(
-            db, session_id, username, request.message, request.files, turn_fallback_name
+            repo, session_id, username, request.message, request.files, turn_fallback_name
         )
     else:
-        session = db.get_session(session_id)
+        session = repo.get_session(session_id)
         if not session:
             session_id = str(uuid.uuid4())
             workspace_name = create_new_session(
-                db, session_id, username, request.message, request.files, turn_fallback_name
+                repo, session_id, username, request.message, request.files, turn_fallback_name
             )
         elif (session.username or "") != (username or ""):
             # 会话属于其他用户 -> 拒绝访问，不泄露会话是否存在
@@ -459,7 +546,20 @@ async def chat_stream(
                     request.message, request.files, username, turn_fallback_name
                 )
                 session.updated_at = datetime.now().isoformat()
-                db.update_session(session)
+                repo.update_session_meta(
+                    session.session_id,
+                    session.title,
+                    session.updated_at,
+                    session.username,
+                )
+
+    # 并发互斥：同一会话同一时刻只允许一条流式生成。否则两条流会共享 agent、
+    # last-assistant 行与 hub，互相覆盖/EOF（实测新流 0 条内容即结束）。
+    if is_session_streaming(session_id):
+        raise HTTPException(
+            status_code=409,
+            detail="本会话正在生成回复，请等待完成或先取消当前生成",
+        )
 
     # 模型输入 = 技能指令前缀 + 用户正文（技能指令不进落库文本，见上文解析处）；
     # 旧前端消息文本里已有的 `/目录名` 保持原样，不重复拼。
@@ -475,7 +575,7 @@ async def chat_stream(
     if request.pending_expert_id:
         from ..tools.expert_writer import resolve_owned_expert
 
-        owned = resolve_owned_expert(db, username, request.pending_expert_id)
+        owned = resolve_owned_expert(repo.database, username, request.pending_expert_id)
         if owned is not None:
             set_session_edit_target(session_id, request.pending_expert_id)
         else:
@@ -487,7 +587,7 @@ async def chat_stream(
     parsed_content = model_message
     knowledge_chat = await prepare_knowledge_chat(
         request=http_request,
-        db=db,
+        db=repo.database,
         session_id=session_id,
         question=request.message,
     )
@@ -504,7 +604,7 @@ async def chat_stream(
     if request.files and not file_context.is_enabled():
         # 判断是否为新建会话（首次消息）：新建会话的上传文件内容注入系统提示词，
         # 非首次会话则拼接到用户消息（保持原有行为）。
-        _existing = db.get_session(session_id)
+        _existing = repo.get_session(session_id)
         is_new_session = (not _existing) or (len(_existing.messages) == 0)
 
         # 依次解析上传文件内容（支持 docx/excel/pdf/txt/md 等）
@@ -541,7 +641,7 @@ async def chat_stream(
                 parsed_content = "\n\n".join(file_contents) + "\n\n" + model_message
     elif request.files:
         preview = file_context.build_turn_preview(
-            session_id, username, request.files, db
+            session_id, username, request.files, repo.database
         )
         if preview:
             parsed_content = preview + "\n\n" + parsed_content
@@ -573,8 +673,7 @@ async def chat_stream(
     # 结构化技能目录名：气泡按它渲染技能标签，不再需要从消息文本里反扒 `/目录名`
     if turn_skill_dirs:
         user_message["skills"] = turn_skill_dirs
-    db.add_message(session_id, user_message)
-    db.add_message_row(session_id, user_message)
+    repo.add_message(session_id, user_message)
 
     session_logger = SessionLogger(
         session_id=session_id,
@@ -601,7 +700,7 @@ async def chat_stream(
         _detached_event_stream(
             chat_stream_generator(
                 request=request,
-                db=db,
+                db=repo.database,
                 agent=agent,
                 session_id=session_id,
                 message_id=message_id,
@@ -615,6 +714,7 @@ async def chat_stream(
             ),
             session_id,
             sid,
+            renew_stream=repo.renew_stream,
         ),
         media_type="text/event-stream",
         headers={
@@ -632,7 +732,6 @@ async def chat_stream(
 )
 async def cancel_chat(
     session_id: str,
-    db: Annotated[Database, Depends(get_database)],
     username: Annotated[str, Depends(get_current_username)],
 ):
     sid = session_id[-5:] if session_id else "unknown"
@@ -663,10 +762,11 @@ async def cancel_chat(
 )
 async def chat_resume(
     request: ResumeRequest,
-    db: Annotated[Database, Depends(get_database)],
+    db: Annotated[ChatRepository, Depends(get_chat_repository)],
     http_request: Request,
     username: Annotated[str, Depends(get_current_username)],
 ):
+    repo = _as_chat_repository(db)
     session_id = request.session_id
     thread_id = request.thread_id
     sid = session_id[-5:] if session_id else "resume"
@@ -677,8 +777,25 @@ async def chat_resume(
     )
 
     # 获取会话的 workspace_name（校验归属，防止跨用户恢复他人会话）
-    session = get_owned_session(db, session_id, username)
-    workspace_name = session.workspace_name or ""
+    session_meta = repo.get_owned_session_meta(session_id, username)
+    workspace_name = session_meta["workspace_name"] or ""
+
+    # 同一会话已有流在跑时拒绝 resume（它依赖进程内缓存与 checkpointer 状态）。
+    if is_session_streaming(session_id):
+        raise HTTPException(
+            status_code=409,
+            detail="本会话正在生成回复，请等待完成或先取消当前生成",
+        )
+
+    # thread_id 由后端固定生成 ``f"{session_id}-{message_id}"``；绝不信任前端
+    # 传入的任意 thread_id：官方 Postgres checkpointer 是全局共享的，否则可读取/
+    # 续跑他人会话的 checkpoint（跨用户隔离绕过）。
+    expected_thread_prefix = f"{session_id}-"
+    if not thread_id or not thread_id.startswith(expected_thread_prefix):
+        logger.warning(
+            f"[{sid}] 拒绝非法的 HITL thread_id | session={session_id} | thread={thread_id}"
+        )
+        raise HTTPException(status_code=400, detail="非法的 thread_id")
 
     # 复用缓存的 Agent 实例（保留 checkpointer 中的 interrupt 状态）。
     # 必须带上该会话当前生效的专家 ID，否则「在专家会话里触发 HITL 审批 -> 恢复」
@@ -698,7 +815,7 @@ async def chat_resume(
     return StreamingResponse(
         _detached_event_stream(
             resume_stream_generator(
-                db=db,
+                db=repo.database,
                 agent=agent,
                 session_id=session_id,
                 thread_id=thread_id,
@@ -708,6 +825,7 @@ async def chat_resume(
             ),
             session_id,
             sid,
+            renew_stream=repo.renew_stream,
         ),
         media_type="text/event-stream",
         headers={

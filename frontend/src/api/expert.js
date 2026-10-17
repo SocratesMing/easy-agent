@@ -14,6 +14,7 @@
  */
 import { API_BASE_URL } from '../config.js'
 import { authFetch } from './auth.js'
+import { readSSE } from './sse.js'
 
 function generateMessageId() {
   return `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
@@ -137,35 +138,5 @@ export async function streamExportRun(payload, onChunk, signal) {
   })
   if (!response.ok) throw await _errorOf(response, '专家执行失败')
 
-  const reader = response.body.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ''
-
-  try {
-    while (true) {
-      if (abortSignal?.aborted) {
-        controller.abort()
-        return
-      }
-      const { done, value } = await reader.read()
-      if (done) break
-
-      buffer += decoder.decode(value, { stream: true })
-      const lines = buffer.split('\n')
-      buffer = lines.pop() || ''
-
-      for (const line of lines) {
-        if (line.startsWith('data: ')) {
-          try {
-            onChunk(JSON.parse(line.slice(6)))
-          } catch (e) {
-            console.error('解析 SSE 数据失败:', e)
-          }
-        }
-      }
-    }
-  } catch (e) {
-    if (e.name === 'AbortError') return
-    throw e
-  }
+  await readSSE(response, onChunk, { signal: abortSignal })
 }

@@ -1,9 +1,9 @@
 """SummarizationMiddleware 阈值接入测试。
 
-基准必须是配置文件里的 ``config.llm.context_length``：
+基准是配置里当前模型的 context_length：
 - 摘要 trigger/keep 按 compression_threshold / compression_target 折算；
-- **工具参数截断**同样按该比例折算（默认值是 ("messages", 20)，消息一到 20 条
-  就会把历史里 write_file/execute 的参数砍掉，导致下一轮上下文明显缩水）。
+- 工具参数截断同样按该比例折算（官方默认是 ("messages", 20)）。
+建图期间临时替换官方工厂，退出后还原。
 """
 
 import sys
@@ -14,8 +14,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 import deepagents.graph as _graph
 from deepagents.middleware.summarization import SummarizationMiddleware
 
-from easy_agent import agent as agent_mod
 from easy_agent.config import Config
+from easy_agent.summarization import configured_summarization, summarization_settings
 
 
 def _expected_thresholds(cfg) -> tuple[tuple, tuple]:
@@ -25,50 +25,36 @@ def _expected_thresholds(cfg) -> tuple[tuple, tuple]:
     return ("tokens", max(1, int(base * thr))), ("tokens", max(1, int(base * tgt)))
 
 
-def test_install_config_summarization_folds_fractions_into_config_limit(monkeypatch):
-    """trigger/keep/参数截断都应按 config.llm.context_length 折算。"""
+def test_summarization_settings_use_config_token_thresholds():
     cfg = Config.from_yaml(Config.resolve_config_path())
     exp_trigger, exp_keep = _expected_thresholds(cfg)
+    settings = summarization_settings(cfg, object())
 
-    captured: dict = {}
-
-    def _fake_init(self, *args, **kwargs):  # noqa: ARG001
-        captured.update(kwargs)
-
-    # 只记录构造参数，避免真实构造（不依赖模型实例与网络）
-    monkeypatch.setattr(SummarizationMiddleware, "__init__", _fake_init)
-    # 记录原工厂，测试结束由 monkeypatch 还原，避免污染其它用例
-    monkeypatch.setattr(
-        _graph, "create_summarization_middleware", _graph.create_summarization_middleware
-    )
-    monkeypatch.setattr(agent_mod, "_summarization_factory_installed", False)
-
-    agent_mod.install_config_summarization(cfg)
-    _graph.create_summarization_middleware(object(), object())
-
-    assert captured["trigger"] == exp_trigger
-    assert captured["keep"] == exp_keep
-
-    truncate = captured["truncate_args_settings"]
+    assert settings["trigger"] == exp_trigger
+    assert settings["keep"] == exp_keep
+    truncate = settings["truncate_args_settings"]
     assert truncate["trigger"] == exp_trigger
     assert truncate["keep"] == exp_keep
-    # 关键：不能退回官方的消息条数阈值
     assert truncate["trigger"] != ("messages", 20)
     assert truncate["max_length"] > 0
 
 
-def test_install_is_idempotent(monkeypatch):
-    """重复调用只替换一次工厂（有全局标志保护）。"""
+def test_configured_summarization_restores_factory(monkeypatch):
+    """建图上下文内使用官方 SummarizationMiddleware，退出后工厂还原。"""
     cfg = Config.from_yaml(Config.resolve_config_path())
+    exp_trigger, exp_keep = _expected_thresholds(cfg)
+    captured: dict = {}
+    original = _graph.create_summarization_middleware
 
-    monkeypatch.setattr(
-        _graph, "create_summarization_middleware", _graph.create_summarization_middleware
-    )
-    monkeypatch.setattr(agent_mod, "_summarization_factory_installed", False)
+    def _fake_init(self, *args, **kwargs):  # noqa: ARG001
+        captured.update(kwargs)
 
-    agent_mod.install_config_summarization(cfg)
-    factory_after_first = _graph.create_summarization_middleware
-    agent_mod.install_config_summarization(cfg)  # 第二次应直接 return
+    monkeypatch.setattr(SummarizationMiddleware, "__init__", _fake_init)
 
-    assert _graph.create_summarization_middleware is factory_after_first
-    assert agent_mod._summarization_factory_installed is True
+    with configured_summarization(cfg):
+        assert _graph.create_summarization_middleware is not original
+        _graph.create_summarization_middleware(object(), object())
+
+    assert _graph.create_summarization_middleware is original
+    assert captured["trigger"] == exp_trigger
+    assert captured["keep"] == exp_keep

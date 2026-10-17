@@ -26,43 +26,29 @@ except ImportError:
     PooledDB = None
 
 from ..models.db import SessionModel, UserModel, ScheduledTaskModel, ScheduledTaskRunModel
+from .repositories import session_runtime as session_runtime_repo
+from .repositories import agent_state as agent_state_repo
+from .repositories import scheduled_tasks as scheduled_tasks_repo
+from .repositories import session_records as session_records_repo
+from .repositories import sessions as sessions_repo
+from .repositories import files as files_repo
+from .repositories import mcp_api_keys as mcp_api_keys_repo
+from .repositories import users as users_repo
+from . import schema
 from ..utils.auth import hash_password, verify_password
 
 DATABASE_PATH = "./data/easy_agent.db"
 logger = logging.getLogger(__name__)
 
-# 库表结构版本号。**任何建表 / 加列 / 改列 / 建索引 / 新建表的变更都必须把它 +1**，
-# 否则已经升级过的库会一直命中「结构已是最新」的快速启动路径，变更不会生效。
-# 见 init_tables()：版本一致时跳过整轮建表 + 补列 + 建索引探测（MySQL 上这一步
-# 过去要 40+ 次网络往返，多副本部署时每个 pod 启动都要跑一遍，是启动慢的主因）。
-SCHEMA_VERSION = 3
-SCHEMA_VERSION_TABLE = "schema_meta"
-SCHEMA_VERSION_KEY = "schema_version"
-
-# 快速路径的兜底校验：这些表必须全部存在，缺任何一个都回退到完整初始化。
-# 新增表时除了加进这里，同样要 bump SCHEMA_VERSION。
-# knowledge_* 由 knowledges/ 模块（v2）在完整初始化里创建，一并列出以便缺失时自愈。
-EXPECTED_TABLES = (
-    "sessions",
-    "session_messages",
-    "session_files",
-    "generated_files",
-    "tool_call_records",
-    "thinking_records",
-    "users",
-    "mcp_api_keys",
-    "fmqt_lock",
-    "scheduled_tasks",
-    "scheduled_task_runs",
-    "distributed_locks",
-    "knowledge_bases",
-    "knowledge_folders",
-    "knowledge_documents",
-    "knowledge_document_objects",
-    "knowledge_operations",
-    "knowledge_audit_events",
-    "expert_agents",
+from .schema import (
+    EXPECTED_TABLES,
+    LANGGRAPH_STORE_KEY_LEN,
+    LANGGRAPH_STORE_NS_LEN,
+    SCHEMA_VERSION,
+    SCHEMA_VERSION_KEY,
+    SCHEMA_VERSION_TABLE,
 )
+
 
 
 def ensure_database_dir(db_path: str):
@@ -106,13 +92,9 @@ class Database:
                         f"数据库: {self._mysql_config.get('database')} | 用户: {self._mysql_config.get('user')}"
                     )
                 except Exception as e:
-                    logger.warning(f"MySQL 连接失败，自动降级到 SQLite: {e}")
-                    self.db_type = "sqlite"
-                    self._pool = None
-                    sqlite_cfg = db_config.get("sqlite", {})
-                    self.db_path = sqlite_cfg.get("path", DATABASE_PATH)
-                    ensure_database_dir(self.db_path)
-                    logger.info(f"降级后数据库类型: SQLite | 路径: {self.db_path}")
+                    raise RuntimeError(
+                        f"MySQL 连接失败，已禁止降级到 SQLite（多副本会各写各的库）: {e}"
+                    ) from e
         else:
             self.db_path = DATABASE_PATH
             ensure_database_dir(self.db_path)
@@ -199,8 +181,20 @@ class Database:
             self._connection = sqlite3.connect(
                 self.db_path,
                 check_same_thread=False,
+                timeout=30,
             )
             self._connection.row_factory = sqlite3.Row
+            # 单机/开发默认 SQLite：开启 WAL 提升读写并发，busy_timeout 降低跨进程
+            # 写入时 "database is locked" 概率；多副本生产仍要求 MySQL（见 deploy/k8s）。
+            for _pragma in (
+                "PRAGMA journal_mode=WAL",
+                "PRAGMA synchronous=NORMAL",
+                "PRAGMA busy_timeout=30000",
+            ):
+                try:
+                    self._connection.execute(_pragma)
+                except sqlite3.DatabaseError as _exc:  # 网络文件系统等不支持 WAL 时降级
+                    logger.warning("SQLite pragma 执行失败 | %s | %s", _pragma, _exc)
         return self._connection
 
     def _get_mysql_connection(self):
@@ -252,2112 +246,465 @@ class Database:
         else:
             cursor.execute(sql)
 
-    def _create_index(self, cursor, index_name: str, table_name: str, columns: str):
-        if self.db_type == "sqlite":
-            cursor.execute(
-                f"CREATE INDEX IF NOT EXISTS {index_name} ON {table_name}({columns})"
-            )
-        else:
-            try:
-                cursor.execute(f"CREATE INDEX {index_name} ON {table_name}({columns})")
-            except Exception as e:
-                if "Duplicate key name" in str(e) or "already exists" in str(e):
-                    pass
-                else:
-                    raise
-    def _create_sessions_table(self, cursor, messages_type):
-        cursor.execute(f"""
-            CREATE TABLE IF NOT EXISTS sessions (
-                session_id VARCHAR(255) PRIMARY KEY,
-                title TEXT NOT NULL,
-                messages {messages_type} NOT NULL,
-                created_at VARCHAR(50) NOT NULL,
-                updated_at VARCHAR(50) NOT NULL,
-                username VARCHAR(255) DEFAULT ''
-            )
-        """)
-        self._create_index(cursor, "idx_updated_at", "sessions", "updated_at")
-        self._ensure_column(
-            cursor, "sessions", "username", "VARCHAR(255) DEFAULT ''"
-        )
-        self._create_index(cursor, "idx_sessions_username", "sessions", "username")
-        self._ensure_column(
-            cursor, "sessions", "workspace_name", "VARCHAR(255) DEFAULT ''"
-        )
-        self._ensure_column(cursor, "sessions", "pinned", "INTEGER DEFAULT 0")
-
-        if self.db_type == "mysql":
-            # 只在实际类型不满足时改列：MODIFY 会重建整表，sessions 表较大时
-            # 单条就可能耗时数秒，每次启动都执行是完全没有必要的开销。
-            messages_col_type = self._column_type(cursor, "sessions", "messages")
-            if "longtext" not in messages_col_type:
-                try:
-                    cursor.execute(
-                        "ALTER TABLE sessions MODIFY COLUMN messages LONGTEXT NOT NULL"
-                    )
-                except Exception:
-                    pass
-
-        self._ensure_column(cursor, "sessions", "todos", "TEXT DEFAULT NULL")
-
-    def _create_tool_call_records_table(self, cursor, auto_inc):
-        cursor.execute(f"""
-            CREATE TABLE IF NOT EXISTS tool_call_records (
-                id INTEGER PRIMARY KEY {auto_inc},
-                session_id VARCHAR(255) NOT NULL,
-                message_id VARCHAR(255) NOT NULL,
-                tool_name TEXT NOT NULL,
-                tool_call_id VARCHAR(255) NOT NULL,
-                arguments TEXT NOT NULL,
-                result TEXT,
-                success INTEGER NOT NULL DEFAULT 1,
-                duration REAL,
-                step INTEGER NOT NULL DEFAULT 0,
-                created_at VARCHAR(50) NOT NULL,
-                FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
-            )
-        """)
-        self._create_index(
-            cursor, "idx_tool_call_session", "tool_call_records", "session_id"
-        )
-        self._create_index(
-            cursor,
-            "idx_tool_call_message",
-            "tool_call_records",
-            "session_id, message_id",
-        )
-        self._ensure_column(cursor, "tool_call_records", "duration", "REAL")
-        self._ensure_column(
-            cursor, "tool_call_records", "step", "INTEGER NOT NULL DEFAULT 0"
-        )
-
-    def _create_thinking_records_table(self, cursor, auto_inc):
-        cursor.execute(f"""
-            CREATE TABLE IF NOT EXISTS thinking_records (
-                id INTEGER PRIMARY KEY {auto_inc},
-                session_id VARCHAR(255) NOT NULL,
-                message_id VARCHAR(255) NOT NULL,
-                step INTEGER NOT NULL DEFAULT 0,
-                content TEXT NOT NULL,
-                duration REAL,
-                created_at VARCHAR(50) NOT NULL,
-                FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
-            )
-        """)
-        self._create_index(
-            cursor, "idx_thinking_session", "thinking_records", "session_id"
-        )
-        self._create_index(
-            cursor,
-            "idx_thinking_message",
-            "thinking_records",
-            "session_id, message_id",
-        )
-
-    def _create_session_messages_table(self, cursor, auto_inc):
-        text_type = "TEXT" if self.db_type == "sqlite" else "MEDIUMTEXT"
-
-        cursor.execute(f"""
-            CREATE TABLE IF NOT EXISTS session_messages (
-                id INTEGER PRIMARY KEY {auto_inc},
-                session_id VARCHAR(255) NOT NULL,
-                role VARCHAR(20) NOT NULL,
-                content {text_type},
-                extra_data {text_type},
-                created_at VARCHAR(50) NOT NULL,
-                FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
-            )
-        """)
-        self._create_index(
-            cursor, "idx_session_messages_session", "session_messages", "session_id"
-        )
-        self._create_index(
-            cursor,
-            "idx_session_messages_session_role",
-            "session_messages",
-            "session_id, role",
-        )
-
-        if self.db_type == "mysql":
-            # 同 sessions.messages：列类型已满足时不再 MODIFY（避免整表重建）。
-            if "mediumtext" not in self._column_type(
-                cursor, "session_messages", "content"
-            ):
-                try:
-                    cursor.execute(
-                        "ALTER TABLE session_messages MODIFY COLUMN content MEDIUMTEXT"
-                    )
-                except Exception:
-                    pass
-            if "mediumtext" not in self._column_type(
-                cursor, "session_messages", "extra_data"
-            ):
-                try:
-                    cursor.execute(
-                        "ALTER TABLE session_messages MODIFY COLUMN extra_data MEDIUMTEXT"
-                    )
-                except Exception:
-                    pass
-
-    def _create_files_tables(self, cursor, auto_inc):
-        cursor.execute(f"""
-            CREATE TABLE IF NOT EXISTS session_files (
-                id INTEGER PRIMARY KEY {auto_inc},
-                session_id VARCHAR(255) NOT NULL,
-                filename TEXT NOT NULL,
-                file_path TEXT NOT NULL,
-                file_type VARCHAR(50) NOT NULL,
-                size INTEGER NOT NULL,
-                uploaded_at VARCHAR(50) NOT NULL,
-                username VARCHAR(255) DEFAULT '',
-                FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
-            )
-        """)
-        self._ensure_column(cursor, "session_files", "username", "TEXT DEFAULT ''")
-
-        cursor.execute(f"""
-            CREATE TABLE IF NOT EXISTS generated_files (
-                id INTEGER PRIMARY KEY {auto_inc},
-                session_id VARCHAR(255) NOT NULL,
-                message_id VARCHAR(255) NOT NULL,
-                filename TEXT NOT NULL,
-                file_path TEXT NOT NULL,
-                file_type VARCHAR(50) NOT NULL,
-                size INTEGER NOT NULL,
-                created_at VARCHAR(50) NOT NULL,
-                FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
-            )
-        """)
-        self._create_index(
-            cursor, "idx_generated_files_session", "generated_files", "session_id"
-        )
-        self._create_index(
-            cursor,
-            "idx_generated_files_message",
-            "generated_files",
-            "session_id, message_id",
-        )
-        self._create_index(
-            cursor, "idx_session_files_session", "session_files", "session_id"
-        )
-        self._create_index(
-            cursor, "idx_session_files_username", "session_files", "username"
-        )
-
-    def _create_users_table(self, cursor):
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS users (
-                user_id VARCHAR(255) PRIMARY KEY,
-                username VARCHAR(255) NOT NULL UNIQUE,
-                password_hash VARCHAR(255) DEFAULT '',
-                organization_id VARCHAR(255) DEFAULT '',
-                email VARCHAR(255) DEFAULT '',
-                created_at VARCHAR(50) NOT NULL,
-                updated_at VARCHAR(50) NOT NULL
-            )
-        """)
-        for col in ["password_hash", "organization_id", "email"]:
-            self._ensure_column(cursor, "users", col, "VARCHAR(255) DEFAULT ''")
-        self._ensure_column(cursor, "users", "bound_ip", "VARCHAR(45) DEFAULT ''")
-        # 单点登录：token 版本号，每次登录递增，旧 token 的 v 不匹配即被踢下线
-        self._ensure_column(cursor, "users", "token_version", "INTEGER DEFAULT 0")
-        # 工号：注册必填、全局唯一，登录时可替代用户名。默认 NULL 而非空串——
-        # 唯一索引允许多个 NULL，空串却只能有一个（免密自动注册的用户都没有工号）。
-        self._ensure_column(cursor, "users", "employee_id", "VARCHAR(255) DEFAULT NULL")
-        # Older personnel imports stored an unset employee ID as an empty string.
-        self._execute(cursor, "UPDATE users SET employee_id=NULL WHERE employee_id='' ")
-        self._ensure_unique_index(
-            cursor, "users", "idx_users_employee_id", "employee_id"
-        )
-        # 人员字段（knowledge 鉴权读取 account_status / organization_id 的前置迁移）。
-        # 幂等补列并带默认值；department_id 从既有 organization_id 回填，兼容旧库。
-        for col, col_def in (
-            ("display_name", "VARCHAR(127) DEFAULT ''"),
-            ("department_id", "VARCHAR(255) DEFAULT ''"),
-            ("department_name", "VARCHAR(255) DEFAULT ''"),
-            ("division_name", "VARCHAR(255) DEFAULT ''"),
-            ("team_name", "VARCHAR(255) DEFAULT ''"),
-            ("position", "VARCHAR(255) DEFAULT ''"),
-            ("mobile", "VARCHAR(64) DEFAULT ''"),
-            ("account_status", "VARCHAR(20) DEFAULT 'active'"),
-            ("personnel_source", "VARCHAR(255) DEFAULT ''"),
-        ):
-            self._ensure_column(cursor, "users", col, col_def)
-        try:
-            cursor.execute(
-                "UPDATE users SET department_id=organization_id "
-                "WHERE (department_id IS NULL OR department_id='')"
-            )
-        except Exception as e:  # noqa: BLE001
-            logger.warning(f"回填 users.department_id 失败（忽略）: {e}")
-        # 空闲超时：最近一次接口调用时间（Unix 时间戳）。持久化到共享数据库，
-        # 保证 uvicorn 多 worker（--workers > 1）下各进程读到一致的登录活跃状态。
-        self._ensure_column(cursor, "users", "last_activity_at", "REAL")
-        from ..personnel.user_fields import ensure_user_fields
-        ensure_user_fields(self, cursor)
-
-    def _create_misc_tables(self, cursor, auto_inc):
-        # MCP API Key：主应用签发，mcp-server 子项目只读校验。
-        # UNIQUE(username, business) 保证每用户每业务仅一把有效 key，重签即覆盖。
-        cursor.execute(f"""
-            CREATE TABLE IF NOT EXISTS mcp_api_keys (
-                id INTEGER PRIMARY KEY {auto_inc},
-                username VARCHAR(64) NOT NULL,
-                business VARCHAR(64) NOT NULL,
-                key_hash CHAR(64) NOT NULL UNIQUE,
-                created_at VARCHAR(50) NOT NULL,
-                updated_at VARCHAR(50) NOT NULL,
-                revoked INTEGER NOT NULL DEFAULT 0,
-                UNIQUE (username, business)
-            )
-        """)
-        self._create_index(
-            cursor, "idx_mcp_api_keys_user", "mcp_api_keys", "username"
-        )
-
-        cursor.execute(f"""
-            CREATE TABLE IF NOT EXISTS fmqt_lock (
-                id INTEGER PRIMARY KEY {auto_inc},
-                lock_key VARCHAR(255) NOT NULL UNIQUE,
-                created_at VARCHAR(50) NOT NULL
-            )
-        """)
-
-    def _create_scheduled_task_tables(self, cursor):
-        # 定时任务表
-        cursor.execute(f"""
-            CREATE TABLE IF NOT EXISTS scheduled_tasks (
-                task_id VARCHAR(255) PRIMARY KEY,
-                username VARCHAR(255) NOT NULL,
-                session_id VARCHAR(255) DEFAULT '',
-                name VARCHAR(255) NOT NULL,
-                description TEXT,
-                schedule_cron VARCHAR(255) NOT NULL,
-                task_prompt TEXT NOT NULL,
-                enabled INTEGER NOT NULL DEFAULT 1,
-                created_at VARCHAR(50) NOT NULL,
-                updated_at VARCHAR(50) NOT NULL,
-                last_run_at VARCHAR(50) DEFAULT '',
-                next_run_at VARCHAR(50) DEFAULT ''
-            )
-        """)
-        self._ensure_column(cursor, "scheduled_tasks", "workspace_name", "VARCHAR(255) DEFAULT ''")
-        self._create_index(cursor, "idx_scheduled_tasks_username", "scheduled_tasks", "username")
-        self._create_index(cursor, "idx_scheduled_tasks_enabled", "scheduled_tasks", "enabled")
-
-        # 定时任务执行记录表
-        cursor.execute(f"""
-            CREATE TABLE IF NOT EXISTS scheduled_task_runs (
-                run_id VARCHAR(255) PRIMARY KEY,
-                task_id VARCHAR(255) NOT NULL,
-                session_id VARCHAR(255) DEFAULT '',
-                status VARCHAR(20) NOT NULL,
-                started_at VARCHAR(50) NOT NULL,
-                finished_at VARCHAR(50) DEFAULT '',
-                result_summary TEXT,
-                error_message TEXT
-            )
-        """)
-        self._create_index(cursor, "idx_scheduled_task_runs_task", "scheduled_task_runs", "task_id")
-
-
-    def _create_distributed_lock_table(self, cursor):
-        # 分布式锁表：多实例（多 pod）部署下防止同一任务被重复处理，
-        # 见 easy_agent/utils/distributed_lock.py。lock_key 为主键，抢锁即
-        # 「插入行 / 已过期则改写 owner」，插入失败即表示锁被其它实例占用。
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS distributed_locks (
-                lock_key VARCHAR(255) NOT NULL PRIMARY KEY,
-                owner VARCHAR(255) NOT NULL,
-                acquired_at VARCHAR(50) NOT NULL,
-                expires_at VARCHAR(50) NOT NULL,
-                updated_at VARCHAR(50) NOT NULL
-            )
-        """)
-        self._create_index(
-            cursor, "idx_distributed_locks_expires", "distributed_locks", "expires_at"
-        )
-
-
-    def init_tables(self):
-        """幂等地初始化库表结构。
-
-        启动性能：MySQL 场景下完整建表流程要 40+ 次网络往返（建表建索引 +
-        每张表 SHOW COLUMNS + ALTER MODIFY 改列 + 全量消息修复扫描），多副本
-        部署时每个 pod 启动都要跑一遍，是「连接 MySQL 很久」的主因。这里加一层
-        schema 版本快速路径：库里记录的结构版本与代码一致、且期望的表都在时，
-        只发 3 条探测 SQL 就返回，不再重复建表/补列/扫描。
-
-        **改动任何表结构后必须把 SCHEMA_VERSION +1**，否则旧库不会走完整迁移。
-        """
-        started = time.monotonic()
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-
-            current_version = self._ensure_schema_meta_table(cursor)
-            conn.commit()
-
-            if current_version == SCHEMA_VERSION and self._schema_tables_present(cursor):
-                logger.info(
-                    f"数据库结构已是最新（schema_version={SCHEMA_VERSION}），"
-                    f"跳过建表检查 | 耗时 {time.monotonic() - started:.2f}s"
-                )
-                # 结构无需迁移时仍跑一次轻量数据自愈：只发 1 条聚合 SQL 比对
-                # 条数，只有真的不一致的会话才会被重建。
-                self._repair_missing_message_rows(cursor)
-                conn.commit()
-                return
-
-            self._init_tables_full(cursor)
-            conn.commit()
-
-            # 修复 session_messages 表中缺失的消息行（仅在结构变更/首次启动时执行）
-            self._repair_missing_message_rows(cursor)
-            self._store_schema_version(cursor)
-            conn.commit()
-
-        logger.info(f"数据库结构初始化/升级完成 | 耗时 {time.monotonic() - started:.2f}s")
-
-    def _init_tables_full(self, cursor):
-        """完整建表 + 补列 + 建索引流程（仅在结构变更或首次启动时执行）。"""
-        self._column_cache.clear()
-        self._column_type_cache.clear()
-
-        auto_inc = "AUTOINCREMENT" if self.db_type == "sqlite" else "AUTO_INCREMENT"
-
-        # MySQL 用 LONGTEXT(4GB)：会话消息不截断落库后体积可达数十 MB，
-        # MEDIUMTEXT(16MB) 会触发 1406 Data too long 导致保存失败。
-        # SQLite 的 TEXT 无实际长度限制，保持不变。
-        messages_type = "TEXT" if self.db_type == "sqlite" else "LONGTEXT"
-
-        self._create_sessions_table(cursor, messages_type)
-        self._create_tool_call_records_table(cursor, auto_inc)
-        self._create_thinking_records_table(cursor, auto_inc)
-        self._create_session_messages_table(cursor, auto_inc)
-        self._create_files_tables(cursor, auto_inc)
-        self._create_users_table(cursor)
-        self._create_misc_tables(cursor, auto_inc)
-        self._create_scheduled_task_tables(cursor)
-        self._create_distributed_lock_table(cursor)
-        self._create_expert_tables(cursor)
-
-    def _create_expert_tables(self, cursor):
-        """专家 Agent 表 expert_agents（见 docs/expert-agent-solution.md §3.1）。
-
-        建表口径：
-        - ``export_run_file_path`` 按需求「（删除）」不建；
-        - ``export_skills_names``：专家技能标签（中文名数组，JSON 字符串），由大模型
-          根据用户描述生成 2~3 个；前端卡片最多展示 3 个；
-        - ``export_description``：专家主要功能描述（大模型生成，≤300 字），
-          用于卡片与详情页展示；
-        - ``tag_id``：分类标签，由大模型在配置的 ``expert_tags`` 候选中选一个，
-          前端「专家」Tab 的筛选 chips 按它过滤（``tag_name`` 取自配置文件）；
-        - 时间统一 ``VARCHAR(50)`` 存 ISO 字符串，与 sessions/scheduled_tasks 现有
-          约定一致，规避 SQLite/MySQL 双栈的 DATETIME 类型分歧；
-        - 列表型字段（skills_names / features_prompt）用 TEXT 存 JSON 字符串；
-        - 不加外键约束，只建索引，与本项目其余表一致。
-        """
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS expert_agents (
-                export_agent_id VARCHAR(255) PRIMARY KEY,
-                session_id VARCHAR(255) DEFAULT '',
-                user_id VARCHAR(255) NOT NULL,
-                tag_id VARCHAR(255) DEFAULT '',
-                export_name_en VARCHAR(255) NOT NULL,
-                export_name_cn VARCHAR(255) NOT NULL,
-                export_prompt TEXT,
-                export_description TEXT,
-                export_skills_names TEXT,
-                export_features_prompt TEXT,
-                export_file_path VARCHAR(1024) DEFAULT '',
-                agent_status VARCHAR(32) NOT NULL DEFAULT 'active',
-                export_version INTEGER NOT NULL DEFAULT 1,
-                create_timestamp VARCHAR(50) NOT NULL,
-                update_timestamp VARCHAR(50) NOT NULL
-            )
-        """)
-        self._create_index(
-            cursor, "idx_expert_agents_user", "expert_agents", "user_id"
-        )
-        self._create_index(
-            cursor, "idx_expert_agents_status", "expert_agents", "agent_status"
-        )
-
-        # Narrow integration point: schema ownership stays in knowledges/ (v2).
-        # initialize_knowledge_schema 幂等且与旧版表结构同构（存量数据无缝），
-        # 失败只告警，绝不阻断启动。
-        #
-        # 注意：这里随「完整初始化」执行，命中 schema 版本快速路径时不再重复调用。
-        # 因此 knowledge 模块的表结构变更同样需要 bump SCHEMA_VERSION，否则存量库
-        # 会一直跳过建表/补列。见 tests/db/test_knowledge_schema_init.py。
-        from ..knowledges.core.schema import initialize_knowledge_schema
-
-        try:
-            initialize_knowledge_schema(self, cursor)
-        except Exception as e:  # noqa: BLE001
-            logger.warning(
-                f"知识库 schema 初始化失败（knowledge 功能将不可用，服务继续启动）: {e}"
-            )
-
-    def _ensure_schema_meta_table(self, cursor) -> int:
-        """建 schema_meta 表（若缺）并返回库中记录的结构版本号（无记录返回 0）。"""
-        if self.db_type == "sqlite":
-            cursor.execute(
-                f"CREATE TABLE IF NOT EXISTS {SCHEMA_VERSION_TABLE} "
-                "(meta_key TEXT PRIMARY KEY, meta_value TEXT NOT NULL)"
-            )
-        else:
-            cursor.execute(
-                f"CREATE TABLE IF NOT EXISTS {SCHEMA_VERSION_TABLE} "
-                "(meta_key VARCHAR(64) NOT NULL PRIMARY KEY, "
-                "meta_value VARCHAR(255) NOT NULL)"
-            )
-        self._execute(
-            cursor,
-            f"SELECT meta_value FROM {SCHEMA_VERSION_TABLE} WHERE meta_key=?",
-            (SCHEMA_VERSION_KEY,),
-        )
-        row = cursor.fetchone()
-        if not row:
-            return 0
-        raw = row["meta_value"] if isinstance(row, dict) else row[0]
-        try:
-            return int(raw)
-        except (TypeError, ValueError):
-            return 0
-
-    def _store_schema_version(self, cursor) -> None:
-        value = str(SCHEMA_VERSION)
-        if self.db_type == "sqlite":
-            self._execute(
-                cursor,
-                f"INSERT OR REPLACE INTO {SCHEMA_VERSION_TABLE} "
-                "(meta_key, meta_value) VALUES (?, ?)",
-                (SCHEMA_VERSION_KEY, value),
-            )
-        else:
-            self._execute(
-                cursor,
-                f"INSERT INTO {SCHEMA_VERSION_TABLE} (meta_key, meta_value) VALUES (?, ?) "
-                "ON DUPLICATE KEY UPDATE meta_value=VALUES(meta_value)",
-                (SCHEMA_VERSION_KEY, value),
-            )
-
-    def _schema_tables_present(self, cursor) -> bool:
-        """快速校验关键表是否齐全；有任何缺失都回退到完整初始化。"""
-        try:
-            if self.db_type == "sqlite":
-                self._execute(
-                    cursor, "SELECT name FROM sqlite_master WHERE type='table'"
-                )
-                rows = cursor.fetchall()
-                names = {r["name"] if isinstance(r, dict) else r[0] for r in rows}
-            else:
-                self._execute(cursor, "SHOW TABLES")
-                rows = cursor.fetchall()
-                names = set()
-                for r in rows:
-                    if isinstance(r, dict):
-                        names.update(r.values())
-                    else:
-                        names.add(r[0])
-        except Exception as e:  # noqa: BLE001
-            logger.warning(f"读取表清单失败，回退到完整初始化: {e}")
-            return False
-        return all(t in names for t in EXPECTED_TABLES)
-
-    def _repair_missing_message_rows(self, cursor):
-        """修复 session_messages 表中缺失或被覆盖的消息行（从 sessions 表 JSON 重建）。
-
-        启动性能：先用一条聚合 SQL 找出「JSON 消息条数与 session_messages 行数
-        不一致」的会话，只对这些会话取回消息体并重建；一致时（绝大多数情况）
-        完全不加载任何消息内容。原实现会 SELECT 全表 messages 并逐会话 COUNT，
-        会话多、消息大时启动明显变慢。
-        """
-        try:
-            mismatched_ids = self._find_mismatched_sessions(cursor)
-            if not mismatched_ids:
-                return
-
-            self._execute(
-                cursor, "SELECT session_id, messages FROM sessions"
-            )
-            sessions = cursor.fetchall()
-
-            repaired_sessions = 0
-            for s in sessions:
-                sid = s["session_id"] if isinstance(s, dict) else s[0]
-                if sid not in mismatched_ids:
-                    continue
-                raw_msgs = s["messages"] if isinstance(s, dict) else s[1]
-                if not raw_msgs:
-                    continue
-                json_messages = (
-                    json.loads(raw_msgs) if isinstance(raw_msgs, str) else raw_msgs
-                )
-
-                # 行数不一致：删除旧行，从 JSON 重建
-                self._execute(
-                    cursor,
-                    "DELETE FROM session_messages WHERE session_id=?",
-                    (sid,),
-                )
-                for msg in json_messages:
-                    role = msg.get("role", "user")
-                    content = msg.get("content", "")
-                    extra_data = self._sanitize_extra_data(msg)
-                    timestamp = msg.get("timestamp", datetime.now().isoformat())
-                    self._execute(
-                        cursor,
-                        """
-                        INSERT INTO session_messages (session_id, role, content, extra_data, created_at)
-                        VALUES (?, ?, ?, ?, ?)
-                        """,
-                        (sid, role, content, extra_data, timestamp),
-                    )
-                repaired_sessions += 1
-            if repaired_sessions > 0:
-                logger.info(
-                    f"数据修复：重建了 {repaired_sessions} 个会话的 session_messages 行"
-                )
-        except Exception as e:
-            logger.warning(f"修复 session_messages 缺失行时出错: {e}")
-
-    def _find_mismatched_sessions(self, cursor) -> set[str]:
-        """返回 messages JSON 条数与 session_messages 行数不一致的会话 id 集合。
-
-        单条 SQL 完成比对（不走 Python 逐会话循环），MySQL 用 JSON_LENGTH，
-        SQLite 用 json_array_length；两侧都要求 messages 是合法 JSON 数组，
-        避免脏数据 / 非数组结构被误判或触发函数报错。
-        """
-        if self.db_type == "sqlite":
-            sql = (
-                "SELECT s.session_id FROM sessions s "
-                "WHERE json_valid(s.messages) AND json_type(s.messages) = 'array' "
-                "AND json_array_length(s.messages) <> ("
-                "  SELECT COUNT(*) FROM session_messages m "
-                "  WHERE m.session_id = s.session_id)"
-            )
-        else:
-            sql = (
-                "SELECT s.session_id FROM sessions s "
-                "WHERE JSON_VALID(s.messages) AND JSON_TYPE(s.messages) = 'ARRAY' "
-                "AND JSON_LENGTH(s.messages) <> ("
-                "  SELECT COUNT(*) FROM session_messages m "
-                "  WHERE m.session_id = s.session_id)"
-            )
-        self._execute(cursor, sql)
-        rows = cursor.fetchall()
-        return {r["session_id"] if isinstance(r, dict) else r[0] for r in rows}
-
-    def _ensure_column(self, cursor, table: str, column: str, col_def: str):
-        columns = self._table_columns(cursor, table)
-        if column not in columns:
-            cursor.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_def}")
-            columns.add(column)
-
-    def _table_columns(self, cursor, table: str) -> set[str]:
-        """返回表的所有列名（同一轮初始化内缓存，避免重复 SHOW COLUMNS / PRAGMA）。
-
-        users 一张表历史上要探测 8 次列，缓存后每张表最多查一次；MySQL 下每次
-        SHOW COLUMNS 都是一次网络往返，这是启动慢的次要来源之一。
-        """
-        cached = self._column_cache.get(table)
-        if cached is not None:
-            return cached
-        if self.db_type == "sqlite":
-            cursor.execute(f"PRAGMA table_info({table})")
-            columns = {col[1] for col in cursor.fetchall()}
-        else:
-            cursor.execute(f"SHOW COLUMNS FROM {table}")
-            rows = cursor.fetchall()
-            columns = set()
-            types: dict[str, str] = {}
-            for col in rows:
-                if isinstance(col, dict):
-                    name = col.get("Field", "")
-                    types[name] = str(col.get("Type", ""))
-                else:
-                    name = col[0]
-                    types[name] = str(col[1]) if len(col) > 1 else ""
-                columns.add(name)
-            self._column_type_cache[table] = types
-        self._column_cache[table] = columns
-        return columns
-
-    def _column_type(self, cursor, table: str, column: str) -> str:
-        """返回列类型（小写，仅 MySQL 有意义）；缓存未命中时先填充表的列信息。"""
-        if table not in self._column_type_cache:
-            self._table_columns(cursor, table)
-        return self._column_type_cache.get(table, {}).get(column, "").lower()
-
-    def _ensure_unique_index(
-        self, cursor, table: str, index_name: str, column: str
-    ) -> None:
-        """幂等地建唯一索引（两套方言没有统一的 IF NOT EXISTS 写法）。
-
-        失败只告警、不中断启动：唯一性仍由应用层（register_user）先行校验，
-        索引只负责在并发写入时兜底。
-        """
-        if self.db_type == "sqlite":
-            stmt = (
-                f"CREATE UNIQUE INDEX IF NOT EXISTS {index_name} "
-                f"ON {table}({column})"
-            )
-        else:
-            # MySQL 不支持 CREATE INDEX IF NOT EXISTS，重复创建会报 1061，忽略即可
-            stmt = f"CREATE UNIQUE INDEX {index_name} ON {table}({column})"
-        try:
-            cursor.execute(stmt)
-        except Exception as e:
-            logger.debug(f"唯一索引 {index_name} 未创建（通常为已存在）: {e}")
-
-    def _create_unique_index(
-        self, cursor, index_name: str, table_name: str, columns: str
-    ) -> None:
-        # knowledge/schema.py 沿用 sunya 的参数顺序（索引名在前）；复用本地实现。
-        self._ensure_unique_index(cursor, table_name, index_name, columns)
-
-    def create_session(self, session_data: SessionModel) -> SessionModel:
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            self._execute(
-                cursor,
-                """
-                INSERT INTO sessions (session_id, title, messages, created_at, updated_at, username)
-                VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    session_data.session_id,
-                    session_data.title,
-                    json.dumps(session_data.messages, ensure_ascii=False),
-                    session_data.created_at,
-                    session_data.updated_at,
-                    session_data.username,
-                ),
-            )
-        return session_data
-
-    def get_session(self, session_id: str) -> Optional[SessionModel]:
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            self._execute(
-                cursor,
-                """
-                SELECT session_id, title, messages, created_at, updated_at, username, workspace_name, todos
-                FROM sessions WHERE session_id = ?
-                """,
-                (session_id,),
-            )
-            row = cursor.fetchone()
-
-        if row is None:
-            return None
-
-        row = dict(row) if not isinstance(row, dict) else row
-
-        messages = self.get_messages_from_rows(session_id)
-        if not messages:
-            messages = json.loads(row["messages"]) if row["messages"] else []
-        else:
-            # 行数据存在时，检查 assistant 消息是否缺少 blocks/tool_calls
-            # 如果行数据不完整，用 sessions 表 JSON 中的数据补充
-            json_messages = json.loads(row["messages"]) if row["messages"] else []
-            if json_messages and len(json_messages) == len(messages):
-                for i, (row_msg, json_msg) in enumerate(zip(messages, json_messages)):
-                    if row_msg.get("role") == "assistant":
-                        row_has_blocks = bool(row_msg.get("blocks"))
-                        json_has_blocks = bool(json_msg.get("blocks"))
-                        row_has_tc = bool(row_msg.get("tool_calls"))
-                        json_has_tc = bool(json_msg.get("tool_calls"))
-                        # 如果行数据缺少 blocks/tool_calls 但 JSON 中有，使用 JSON 版本
-                        if (json_has_blocks and not row_has_blocks) or (
-                            json_has_tc and not row_has_tc
-                        ):
-                            messages[i] = json_msg
-            elif json_messages and len(json_messages) > len(messages):
-                # 行数据数量少于 JSON 数据，用 JSON 数据补充缺失的消息
-                for i in range(len(messages), len(json_messages)):
-                    messages.append(json_messages[i])
-
-        todos = []
-        todos_raw = row.get("todos", None)
-        if todos_raw:
-            try:
-                todos = (
-                    json.loads(todos_raw) if isinstance(todos_raw, str) else todos_raw
-                )
-            except (json.JSONDecodeError, ValueError):
-                todos = []
-
-        return SessionModel(
-            session_id=row["session_id"],
-            title=row["title"],
-            messages=messages,
-            created_at=row["created_at"],
-            updated_at=row["updated_at"],
-            username=row.get("username", ""),
-            workspace_name=row.get("workspace_name", ""),
-            todos=todos,
-        )
-
-    def list_sessions(
-        self, limit: int = 50, offset: int = 0, username: str = None
-    ) -> list[SessionModel]:
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            if username:
-                self._execute(
-                    cursor,
-                    """
-                    SELECT session_id, title, messages, created_at, updated_at, username, workspace_name, pinned
-                    FROM sessions WHERE username = ? AND title NOT LIKE ?
-                    ORDER BY pinned DESC, updated_at DESC LIMIT ? OFFSET ?
-                    """,
-                    (username, "[定时任务]%", limit, offset),
-                )
-            else:
-                self._execute(
-                    cursor,
-                    """
-                    SELECT session_id, title, messages, created_at, updated_at, username, workspace_name, pinned
-                    FROM sessions WHERE title NOT LIKE ?
-                    ORDER BY pinned DESC, updated_at DESC LIMIT ? OFFSET ?
-                    """,
-                    ("[定时任务]%", limit, offset),
-                )
-            rows = cursor.fetchall()
-
-        sessions = []
-        for row in rows:
-            row = dict(row) if not isinstance(row, dict) else row
-            sessions.append(
-                SessionModel(
-                    session_id=row["session_id"],
-                    title=row["title"],
-                    messages=json.loads(row["messages"]) if row["messages"] else [],
-                    created_at=row["created_at"],
-                    updated_at=row["updated_at"],
-                    username=row.get("username", ""),
-                    workspace_name=row.get("workspace_name", ""),
-                    pinned=int(row.get("pinned", 0)),
-                )
-            )
-        return sessions
-
-    def update_session(self, session_data: SessionModel):
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            self._execute(
-                cursor,
-                """
-                UPDATE sessions SET title=?, messages=?, updated_at=?, username=?
-                WHERE session_id=?
-                """,
-                (
-                    session_data.title,
-                    json.dumps(session_data.messages, ensure_ascii=False),
-                    session_data.updated_at,
-                    session_data.username,
-                    session_data.session_id,
-                ),
-            )
-
-    def delete_session(self, session_id: str) -> bool:
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            # 附属消息行必须一并删除：get_session 优先从 session_messages 表读消息，
-            # 若删除会话时留下孤儿行，之后重建同 ID 会话（如知识库隐藏会话）
-            # 会把旧消息读回并写进 messages JSON，表现为"删除后历史复活"
-            self._execute(
-                cursor, "DELETE FROM session_messages WHERE session_id=?", (session_id,)
-            )
-            self._execute(
-                cursor, "DELETE FROM sessions WHERE session_id=?", (session_id,)
-            )
-            return cursor.rowcount > 0
-
-    def update_session_workspace_name(self, session_id: str, workspace_name: str):
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            self._execute(
-                cursor,
-                "UPDATE sessions SET workspace_name=? WHERE session_id=?",
-                (workspace_name, session_id),
-            )
-
-    def update_session_todos(self, session_id: str, todos: list):
-        """Update the todo list for a session, replacing any existing plan."""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            self._execute(
-                cursor,
-                "UPDATE sessions SET todos=? WHERE session_id=?",
-                (json.dumps(todos, ensure_ascii=False), session_id),
-            )
-
-    def update_generated_file_paths(
-        self, session_id: str, old_prefix: str, new_prefix: str
-    ):
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            self._execute(
-                cursor,
-                "SELECT id, file_path FROM generated_files WHERE session_id=?",
-                (session_id,),
-            )
-            rows = cursor.fetchall()
-            for row in rows:
-                row_dict = dict(row) if not isinstance(row, dict) else row
-                old_path = row_dict["file_path"]
-                file_id = row_dict["id"]
-                if old_path.startswith(old_prefix):
-                    new_path = new_prefix + old_path[len(old_prefix) :]
-                    self._execute(
-                        cursor,
-                        "UPDATE generated_files SET file_path=? WHERE id=?",
-                        (new_path, file_id),
-                    )
-
-    def add_message(self, session_id: str, message: dict):
-        with self.get_connection() as conn:
-            conn.cursor()
-            session = self.get_session(session_id)
-            if session:
-                session.messages.append(message)
-                session.updated_at = datetime.now().isoformat()
-                self.update_session(session)
-
-    def _sanitize_message_for_storage(self, message: dict) -> dict:
-        # 不做内容截断：历史上下文需要完整回灌给模型，落库时截断会导致
-        # 下一轮上下文 token 明显缩水（实测 50% → 36%）。
-        # 列类型 MySQL 为 MEDIUMTEXT(16MB)、SQLite 为 TEXT，足以容纳完整内容；
-        # 上下文体积改由 SummarizationMiddleware 在模型调用前按 token 阈值压缩。
-        sanitized = {
-            "role": message.get("role", ""),
-            "content": message.get("content", "") or "",
-            "timestamp": message.get("timestamp", ""),
-        }
-        if message.get("thinking"):
-            sanitized["thinking"] = message["thinking"]
-        if message.get("thinking_duration") is not None:
-            sanitized["thinking_duration"] = message["thinking_duration"]
-        if message.get("usage"):
-            sanitized["usage"] = message["usage"]
-        for key in ("knowledge_evidence", "knowledge_warnings"):
-            if isinstance(message.get(key), list):
-                sanitized[key] = message[key]
-        if message.get("tool_calls"):
-            # 与 _sanitize_extra_data 对齐：不再截断为前 20 条。
-            # HITL 恢复后新增的工具调用位于列表尾部，截断会导致历史会话中
-            # HITL 之后的工具调用整体丢失。
-            sanitized["tool_calls"] = [
-                {
-                    "tool_name": tc.get("tool_name", "") or tc.get("name", ""),
-                    "tool_call_id": tc.get("tool_call_id", ""),
-                    "arguments": tc.get("arguments", {}),
-                    "result": str(tc.get("result", "")),
-                    "success": tc.get("success", True),
-                    "duration": tc.get("duration"),
-                    "step": tc.get("step", 0),
-                    "approval_status": tc.get("approval_status"),
-                }
-                for tc in message["tool_calls"][:1000]
-            ]
-        if message.get("blocks"):
-            # 分离 content blocks 和其他 blocks，确保 content 不被截断
-            content_blocks = [
-                b for b in message["blocks"] if b.get("type") == "content"
-            ]
-            other_blocks = [b for b in message["blocks"] if b.get("type") != "content"]
-
-            # 保留全部非 content blocks（原先仅保留前 30 个）：
-            # 长会话/HITL 恢复后产生的 thinking/tool_call 块 order 靠后，
-            # 截断会导致「切回历史会话时 HITL 之后的工具与思考过程不显示」。
-            # sessions.messages 列为 MEDIUMTEXT(16MB)，且各块 result/content 已做长度裁剪。
-            sanitized_blocks = []
-            for b in other_blocks[:1000] + content_blocks:
-                block_type = b.get("type", "")
-                s = {"type": block_type, "order": b.get("order", 0)}
-                if block_type == "thinking":
-                    s["content"] = b.get("content", "") or ""
-                    s["duration"] = b.get("duration")
-                    s["step"] = b.get("step", 0)
-                elif block_type == "tool_call":
-                    s["tool_name"] = b.get("tool_name", "")
-                    s["tool_call_id"] = b.get("tool_call_id", "")
-                    s["arguments"] = b.get("arguments", {})
-                    s["result"] = str(b.get("result", ""))
-                    s["success"] = b.get("success", True)
-                    s["duration"] = b.get("duration")
-                    s["step"] = b.get("step", 0)
-                    # 保留 HITL 审批标记：历史会话显示「已批准/已拒绝/待审批」，
-                    # 且恢复流依赖 approval_status == "pending" 定位待审批工具。
-                    if b.get("approval_status"):
-                        s["approval_status"] = b["approval_status"]
-                    if b.get("pending_approval"):
-                        s["pending_approval"] = True
-                    if b.get("file_paths"):
-                        s["file_paths"] = b["file_paths"]
-                elif block_type == "content":
-                    s["content"] = b.get("content", "") or ""
-                    s["step"] = b.get("step", 0)
-                else:
-                    s["content"] = b.get("content", "") or ""
-                sanitized_blocks.append(s)
-            # 按 order 排序恢复原始顺序
-            sanitized_blocks.sort(key=lambda x: x.get("order", 0))
-            sanitized["blocks"] = sanitized_blocks
-        if message.get("pending_approval"):
-            # HITL 待审批信息（thread_id + 操作详情），供历史会话恢复审批 UI 与继续执行
-            sanitized["pending_approval"] = message["pending_approval"]
-        return sanitized
-
-    def update_last_assistant_message(self, session_id: str, message: dict):
-        with self.get_connection() as conn:
-            conn.cursor()
-            session = self.get_session(session_id)
-            if session:
-                sanitized_msg = self._sanitize_message_for_storage(message)
-                if session.messages and session.messages[-1].get("role") == "assistant":
-                    session.messages[-1] = sanitized_msg
-                else:
-                    session.messages.append(sanitized_msg)
-                session.updated_at = datetime.now().isoformat()
-                self.update_session(session)
-
-    def _sanitize_blocks(self, blocks: list) -> list:
-        """规范化 blocks：分离 content 与其他块、按类型挑选字段、按 order 还原顺序。
-
-        content 块不计入数量上限，避免正文被截断。
-        """
-        # 分离 content blocks 和其他 blocks，确保 content 不被截断
-        content_blocks = []
-        other_blocks = []
-        for b in blocks:
-            if b.get("type") == "content":
-                content_blocks.append(b)
-            else:
-                other_blocks.append(b)
-
-        # 保留全部非 content blocks（不再限制数量）：
-        # 长会话/多次 HITL 会产生数十至上百个 tool_call/thinking 块，
-        # 限制数量会导致后期（最晚出现的）块在历史记录中整体丢失。
-        # 列类型为 MEDIUMTEXT(16MB)，配合下方 max_len 渐进式裁剪控制体积。
-        max_other = 1000
-        truncated_other = other_blocks[:max_other]
-
-        sanitized_blocks = []
-        for b in truncated_other + content_blocks:
-            block_type = b.get("type", "")
-            sanitized = {"type": block_type, "order": b.get("order", 0)}
-            if block_type == "thinking":
-                sanitized["content"] = b.get("content", "") or ""
-                sanitized["duration"] = b.get("duration")
-                sanitized["step"] = b.get("step", 0)
-            elif block_type == "tool_call":
-                sanitized["tool_name"] = b.get("tool_name", "")
-                sanitized["tool_call_id"] = b.get("tool_call_id", "")
-                sanitized["arguments"] = b.get("arguments", {})
-                sanitized["result"] = str(b.get("result", ""))
-                sanitized["success"] = b.get("success", True)
-                sanitized["duration"] = b.get("duration")
-                sanitized["step"] = b.get("step", 0)
-                # 保留 HITL 审批标记，使历史会话也能显示「已批准/已拒绝/待审批」
-                if b.get("approval_status"):
-                    sanitized["approval_status"] = b["approval_status"]
-                if b.get("pending_approval"):
-                    sanitized["pending_approval"] = True
-                if b.get("file_paths"):
-                    sanitized["file_paths"] = b["file_paths"]
-            elif block_type == "content":
-                sanitized["content"] = b.get("content", "") or ""
-            else:
-                sanitized["content"] = b.get("content", "") or ""
-            sanitized_blocks.append(sanitized)
-        # 按 order 排序恢复原始顺序
-        sanitized_blocks.sort(key=lambda x: x.get("order", 0))
-        return sanitized_blocks
-
-    def _sanitize_tool_calls(self, tool_calls: list) -> list:
-        """规范化 tool_calls 字段（最多保留 1000 条）。"""
-        return [
-            {
-                "tool_name": tc.get("tool_name", "") or tc.get("name", ""),
-                "tool_call_id": tc.get("tool_call_id", ""),
-                "arguments": tc.get("arguments", {}),
-                "result": str(tc.get("result", "")),
-                "success": tc.get("success", True),
-                "duration": tc.get("duration"),
-                "step": tc.get("step", 0),
-                "approval_status": tc.get("approval_status"),
-            }
-            for tc in tool_calls[:1000]
-        ]
-
-    def _sanitize_extra_data(self, message: dict) -> str | None:
-        extra_keys = {
-            k: v
-            for k, v in message.items()
-            if k not in ("role", "content", "timestamp")
-        }
-        if not extra_keys:
-            return None
-
-        if "blocks" in extra_keys:
-            blocks = extra_keys["blocks"]
-            if isinstance(blocks, list):
-                extra_keys["blocks"] = self._sanitize_blocks(blocks)
-
-        if "tool_calls" in extra_keys:
-            tool_calls = extra_keys["tool_calls"]
-            if isinstance(tool_calls, list):
-                extra_keys["tool_calls"] = self._sanitize_tool_calls(tool_calls)
-
-        # thinking 不截断：完整思考用于下一轮上下文；超大时由下方 max_len 渐进裁剪兜底
-
-        result = json.dumps(extra_keys, ensure_ascii=False)
-        max_len = 5_000_000
-        if len(result) <= max_len:
-            return result
-
-        # 渐进式修剪：逐步缩小 result 内容，而不是直接删除 blocks/tool_calls
-        for trim_round in range(10):
-            trimmed = False
-            if "blocks" in extra_keys and isinstance(extra_keys["blocks"], list):
-                for b in extra_keys["blocks"]:
-                    if (
-                        b.get("type") == "tool_call"
-                        and len(str(b.get("result", ""))) > 200
-                    ):
-                        b["result"] = str(b.get("result", ""))[:200]
-                        trimmed = True
-                    elif (
-                        b.get("type") == "thinking"
-                        and len(str(b.get("content", ""))) > 200
-                    ):
-                        b["content"] = str(b.get("content", ""))[:200]
-                        trimmed = True
-                    elif (
-                        b.get("type") == "content"
-                        and len(str(b.get("content", ""))) > 500
-                    ):
-                        b["content"] = str(b.get("content", ""))[:500]
-                        trimmed = True
-            if "tool_calls" in extra_keys and isinstance(
-                extra_keys["tool_calls"], list
-            ):
-                for tc in extra_keys["tool_calls"]:
-                    if len(str(tc.get("result", ""))) > 200:
-                        tc["result"] = str(tc.get("result", ""))[:200]
-                        trimmed = True
-            if "thinking" in extra_keys and len(str(extra_keys["thinking"])) > 200:
-                extra_keys["thinking"] = str(extra_keys["thinking"])[:200]
-                trimmed = True
-
-            if not trimmed:
-                break
-            result = json.dumps(extra_keys, ensure_ascii=False)
-            if len(result) <= max_len:
-                return result
-
-        # 最终兜底：如果仍然超限，移除 arguments 和 result 中较长的内容，
-        # 但保留 blocks 和 tool_calls 的结构（tool_name, success, duration 等元信息）
-        if len(result) > max_len:
-            if "blocks" in extra_keys and isinstance(extra_keys["blocks"], list):
-                for b in extra_keys["blocks"]:
-                    if b.get("type") == "tool_call":
-                        b["arguments"] = {}
-                        b["result"] = (
-                            (str(b.get("result", ""))[:100] + "...")
-                            if b.get("result")
-                            else ""
-                        )
-                    elif b.get("type") == "thinking":
-                        b["content"] = (
-                            (str(b.get("content", ""))[:100] + "...")
-                            if b.get("content")
-                            else ""
-                        )
-                    elif b.get("type") == "content":
-                        b["content"] = (
-                            (str(b.get("content", ""))[:200] + "...")
-                            if b.get("content")
-                            else ""
-                        )
-            if "tool_calls" in extra_keys and isinstance(
-                extra_keys["tool_calls"], list
-            ):
-                for tc in extra_keys["tool_calls"]:
-                    tc["arguments"] = {}
-                    tc["result"] = (
-                        (str(tc.get("result", ""))[:100] + "...")
-                        if tc.get("result")
-                        else ""
-                    )
-            result = json.dumps(extra_keys, ensure_ascii=False)
-        return result
-
-    def add_message_row(self, session_id: str, message: dict):
-        role = message.get("role", "user")
-        content = message.get("content", "")
-        extra_data = self._sanitize_extra_data(message)
-        timestamp = message.get("timestamp", datetime.now().isoformat())
-
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            self._execute(
-                cursor,
-                """
-                INSERT INTO session_messages (session_id, role, content, extra_data, created_at)
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                (session_id, role, content, extra_data, timestamp),
-            )
-            self._execute(
-                cursor,
-                "UPDATE sessions SET updated_at=? WHERE session_id=?",
-                (datetime.now().isoformat(), session_id),
-            )
-
-    def update_last_assistant_message_row(self, session_id: str, message: dict):
-        role = "assistant"
-        content = message.get("content", "")
-        extra_data = self._sanitize_extra_data(message)
-        timestamp = message.get("timestamp", datetime.now().isoformat())
-
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            # 检查最后一条消息是否是 assistant（不区分 role 排序取最后一条）
-            self._execute(
-                cursor,
-                "SELECT id, role FROM session_messages WHERE session_id=? ORDER BY id DESC LIMIT 1",
-                (session_id,),
-            )
-            last_row = cursor.fetchone()
-
-            if last_row and (
-                last_row["id"] if isinstance(last_row, dict) else last_row[0]
-            ):
-                last_role = (
-                    last_row["role"] if isinstance(last_row, dict) else last_row[1]
-                )
-                if last_role == "assistant":
-                    # 最后一条是 assistant，更新它
-                    msg_id = (
-                        last_row["id"] if isinstance(last_row, dict) else last_row[0]
-                    )
-                    self._execute(
-                        cursor,
-                        "UPDATE session_messages SET content=?, extra_data=?, created_at=? WHERE id=?",
-                        (content, extra_data, timestamp, msg_id),
-                    )
-                else:
-                    # 最后一条不是 assistant（通常是 user），新增一行
-                    self._execute(
-                        cursor,
-                        """
-                        INSERT INTO session_messages (session_id, role, content, extra_data, created_at)
-                        VALUES (?, ?, ?, ?, ?)
-                        """,
-                        (session_id, role, content, extra_data, timestamp),
-                    )
-            else:
-                # 没有任何消息，新增一行
-                self._execute(
-                    cursor,
-                    """
-                    INSERT INTO session_messages (session_id, role, content, extra_data, created_at)
-                    VALUES (?, ?, ?, ?, ?)
-                    """,
-                    (session_id, role, content, extra_data, timestamp),
-                )
-            self._execute(
-                cursor,
-                "UPDATE sessions SET updated_at=? WHERE session_id=?",
-                (datetime.now().isoformat(), session_id),
-            )
+    # ARCH-03 Phase 2: DDL/迁移已抽到 db/schema.py
+    def _create_index(self, *args, **kwargs):
+        return schema._create_index(self, *args, **kwargs)
+
+    def _create_sessions_table(self, *args, **kwargs):
+        return schema._create_sessions_table(self, *args, **kwargs)
+
+    def _create_tool_call_records_table(self, *args, **kwargs):
+        return schema._create_tool_call_records_table(self, *args, **kwargs)
+
+    def _create_thinking_records_table(self, *args, **kwargs):
+        return schema._create_thinking_records_table(self, *args, **kwargs)
+
+    def _create_session_messages_table(self, *args, **kwargs):
+        return schema._create_session_messages_table(self, *args, **kwargs)
+
+    def _create_files_tables(self, *args, **kwargs):
+        return schema._create_files_tables(self, *args, **kwargs)
+
+    def _create_users_table(self, *args, **kwargs):
+        return schema._create_users_table(self, *args, **kwargs)
+
+    def _create_misc_tables(self, *args, **kwargs):
+        return schema._create_misc_tables(self, *args, **kwargs)
+
+    def _create_scheduled_task_tables(self, *args, **kwargs):
+        return schema._create_scheduled_task_tables(self, *args, **kwargs)
+
+    def _create_session_runtime_table(self, *args, **kwargs):
+        return schema._create_session_runtime_table(self, *args, **kwargs)
+
+    def _create_langgraph_store_table(self, *args, **kwargs):
+        return schema._create_langgraph_store_table(self, *args, **kwargs)
+
+    def _create_agent_checkpoint_table(self, *args, **kwargs):
+        return schema._create_agent_checkpoint_table(self, *args, **kwargs)
+
+    def _create_distributed_lock_table(self, *args, **kwargs):
+        return schema._create_distributed_lock_table(self, *args, **kwargs)
+
+    def init_tables(self, *args, **kwargs):
+        return schema.init_tables(self, *args, **kwargs)
+
+    def _init_tables_full(self, *args, **kwargs):
+        return schema._init_tables_full(self, *args, **kwargs)
+
+    def _create_expert_tables(self, *args, **kwargs):
+        return schema._create_expert_tables(self, *args, **kwargs)
+
+    def _ensure_schema_meta_table(self, *args, **kwargs):
+        return schema._ensure_schema_meta_table(self, *args, **kwargs)
+
+    def _store_schema_version(self, *args, **kwargs):
+        return schema._store_schema_version(self, *args, **kwargs)
+
+    def _schema_tables_present(self, *args, **kwargs):
+        return schema._schema_tables_present(self, *args, **kwargs)
+
+    def _repair_missing_message_rows(self, *args, **kwargs):
+        return schema._repair_missing_message_rows(self, *args, **kwargs)
+
+    def _find_mismatched_sessions(self, *args, **kwargs):
+        return schema._find_mismatched_sessions(self, *args, **kwargs)
+
+    def _ensure_column(self, *args, **kwargs):
+        return schema._ensure_column(self, *args, **kwargs)
+
+    def _table_columns(self, *args, **kwargs):
+        return schema._table_columns(self, *args, **kwargs)
+
+    def _column_type(self, *args, **kwargs):
+        return schema._column_type(self, *args, **kwargs)
+
+    def _ensure_unique_index(self, *args, **kwargs):
+        return schema._ensure_unique_index(self, *args, **kwargs)
+
+    def _create_unique_index(self, *args, **kwargs):
+        return schema._create_unique_index(self, *args, **kwargs)
+
+    # ARCH-03 Phase 2: sessions/messages SQL 已抽到 db/repositories/sessions.py
+    def create_session(self, *args, **kwargs):
+        return sessions_repo.create_session(self, *args, **kwargs)
+
+    def get_session_owner(self, *args, **kwargs):
+        return sessions_repo.get_session_owner(self, *args, **kwargs)
+
+    def _get_legacy_session_messages(self, *args, **kwargs):
+        return sessions_repo._get_legacy_session_messages(self, *args, **kwargs)
+
+    def update_session_meta(self, *args, **kwargs):
+        return sessions_repo.update_session_meta(self, *args, **kwargs)
+
+    def get_session(self, *args, **kwargs):
+        return sessions_repo.get_session(self, *args, **kwargs)
+
+    def list_sessions(self, *args, **kwargs):
+        return sessions_repo.list_sessions(self, *args, **kwargs)
+
+    def update_session(self, *args, **kwargs):
+        return sessions_repo.update_session(self, *args, **kwargs)
+
+    def delete_session(self, *args, **kwargs):
+        return sessions_repo.delete_session(self, *args, **kwargs)
+
+    def update_session_workspace_name(self, *args, **kwargs):
+        return sessions_repo.update_session_workspace_name(self, *args, **kwargs)
+
+    def update_session_todos(self, *args, **kwargs):
+        return sessions_repo.update_session_todos(self, *args, **kwargs)
+
+    def update_generated_file_paths(self, *args, **kwargs):
+        return sessions_repo.update_generated_file_paths(self, *args, **kwargs)
+
+    def add_message(self, *args, **kwargs):
+        return sessions_repo.add_message(self, *args, **kwargs)
+
+    def _sanitize_message_for_storage(self, *args, **kwargs):
+        return sessions_repo._sanitize_message_for_storage(self, *args, **kwargs)
+
+    def update_last_assistant_message(self, *args, **kwargs):
+        return sessions_repo.update_last_assistant_message(self, *args, **kwargs)
+
+    def _sanitize_blocks(self, *args, **kwargs):
+        return sessions_repo._sanitize_blocks(self, *args, **kwargs)
+
+    def _sanitize_tool_calls(self, *args, **kwargs):
+        return sessions_repo._sanitize_tool_calls(self, *args, **kwargs)
+
+    def _sanitize_extra_data(self, *args, **kwargs):
+        return sessions_repo._sanitize_extra_data(self, *args, **kwargs)
+
+    def add_message_row(self, *args, **kwargs):
+        return sessions_repo.add_message_row(self, *args, **kwargs)
+
+    def update_last_assistant_message_row(self, *args, **kwargs):
+        return sessions_repo.update_last_assistant_message_row(self, *args, **kwargs)
+
+    def get_messages_from_rows(self, *args, **kwargs):
+        return sessions_repo.get_messages_from_rows(self, *args, **kwargs)
+
+    def get_messages(self, *args, **kwargs):
+        return sessions_repo.get_messages(self, *args, **kwargs)
+
+    def count_sessions(self, *args, **kwargs):
+        return sessions_repo.count_sessions(self, *args, **kwargs)
+
+    def update_session_title(self, *args, **kwargs):
+        return sessions_repo.update_session_title(self, *args, **kwargs)
+
+    def toggle_session_pin(self, *args, **kwargs):
+        return sessions_repo.toggle_session_pin(self, *args, **kwargs)
 
     @staticmethod
     def _try_repair_json(raw: str) -> dict | None:
-        if not raw:
-            return None
+        return sessions_repo.try_repair_json(raw)
 
-        def _scan_structural_ends(text: str) -> list[int]:
-            ends = []
-            in_str = False
-            esc = False
-            for i, ch in enumerate(text):
-                if esc:
-                    esc = False
-                    continue
-                if ch == "\\" and in_str:
-                    esc = True
-                    continue
-                if ch == '"':
-                    in_str = not in_str
-                    continue
-                if in_str:
-                    continue
-                if ch in ("}", "]"):
-                    ends.append(i)
-            return ends
-
-        def _close_brackets(candidate: str) -> dict | None:
-            in_str = False
-            esc = False
-            stack = []
-            for ch in candidate:
-                if esc:
-                    esc = False
-                    continue
-                if ch == "\\" and in_str:
-                    esc = True
-                    continue
-                if ch == '"':
-                    in_str = not in_str
-                    continue
-                if in_str:
-                    continue
-                if ch in ("{", "["):
-                    stack.append(ch)
-                elif ch in ("}", "]"):
-                    if stack:
-                        stack.pop()
-            for b in reversed(stack):
-                candidate += "}" if b == "{" else "]"
-            try:
-                return json.loads(candidate)
-            except (json.JSONDecodeError, TypeError):
-                return None
-
-        blocks_start = raw.find('"blocks": [')
-        if blocks_start > 0:
-            search_area = raw[: len(raw) - 200]
-            last_boundary = search_area.rfind('}, {"type"')
-            if last_boundary > blocks_start:
-                truncated = raw[: last_boundary + 1]
-                result = _close_brackets(truncated)
-                if result is not None:
-                    return result
-
-        structural_ends = _scan_structural_ends(raw)
-        for pos in reversed(structural_ends):
-            candidate = raw[: pos + 1]
-            result = _close_brackets(candidate)
-            if result is not None:
-                return result
-
-        return None
-
-    def get_messages_from_rows(self, session_id: str) -> list[dict]:
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            self._execute(
-                cursor,
-                "SELECT role, content, extra_data, created_at FROM session_messages WHERE session_id=? ORDER BY id",
-                (session_id,),
-            )
-            rows = cursor.fetchall()
-
-        messages = []
-        for row in rows:
-            d = dict(row) if not isinstance(row, dict) else row
-            msg = {
-                "role": d["role"],
-                "content": d["content"] or "",
-                "timestamp": d["created_at"],
-            }
-            if d.get("extra_data"):
-                raw = d["extra_data"]
-                try:
-                    extra = json.loads(raw)
-                    msg.update(extra)
-                except (json.JSONDecodeError, TypeError) as e:
-                    logger.warning(f"解析消息extra_data失败 session={session_id}: {e}")
-                    extra = self._try_repair_json(raw)
-                    if extra:
-                        msg.update(extra)
-            messages.append(msg)
-        return messages
-
-    def get_messages(self, session_id: str) -> list[dict]:
-        session = self.get_session(session_id)
-        return session.messages if session else []
-
-    def count_sessions(self, username: str = None) -> int:
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            if username:
-                self._execute(
-                    cursor,
-                    "SELECT COUNT(*) FROM sessions WHERE username=? AND title NOT LIKE ?",
-                    (username, "[定时任务]%"),
-                )
-            else:
-                self._execute(
-                    cursor,
-                    "SELECT COUNT(*) FROM sessions WHERE title NOT LIKE ?",
-                    ("[定时任务]%",),
-                )
-            row = cursor.fetchone()
-            return row[0] if row else 0
-
-    def update_session_title(self, session_id: str, title: str):
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            self._execute(
-                cursor,
-                "UPDATE sessions SET title=? WHERE session_id=?",
-                (title, session_id),
-            )
-
-    def toggle_session_pin(self, session_id: str) -> int:
-        """切换会话置顶状态，返回新的 pinned 值"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            self._execute(
-                cursor,
-                "SELECT pinned FROM sessions WHERE session_id=?",
-                (session_id,),
-            )
-            row = cursor.fetchone()
-            current = int(row["pinned"]) if row else 0
-            new_val = 0 if current else 1
-            self._execute(
-                cursor,
-                "UPDATE sessions SET pinned=? WHERE session_id=?",
-                (new_val, session_id),
-            )
-            return new_val
-
-    def record_tool_call(
-        self,
-        session_id: str,
-        message_id: str,
-        tool_name: str,
-        tool_call_id: str,
-        arguments: dict,
-        result: str = None,
-        success: bool = True,
-        duration: float = None,
-        step: int = 0,
-    ):
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            self._execute(
-                cursor,
-                """
-                INSERT INTO tool_call_records (session_id, message_id, tool_name, tool_call_id, arguments, result, success, duration, step, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    session_id,
-                    message_id,
-                    tool_name,
-                    tool_call_id,
-                    json.dumps(arguments, ensure_ascii=False),
-                    result,
-                    1 if success else 0,
-                    duration,
-                    step,
-                    datetime.now().isoformat(),
-                ),
-            )
+    # ARCH-03 Phase 2: 工具/思考记录 SQL 已抽到 db/repositories/session_records.py
+    def record_tool_call(self, session_id: str, message_id: str, tool_name: str,
+                         tool_call_id: str, arguments: dict, result: str = None,
+                         success: bool = True, duration: float = None, step: int = 0):
+        return session_records_repo.record_tool_call(
+            self, session_id, message_id, tool_name, tool_call_id, arguments,
+            result, success, duration, step,
+        )
 
     def get_tool_calls(self, session_id: str) -> list[dict]:
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            self._execute(
-                cursor,
-                "SELECT * FROM tool_call_records WHERE session_id=? ORDER BY created_at",
-                (session_id,),
-            )
-            rows = cursor.fetchall()
-        results = []
-        for row in rows:
-            d = dict(row)
-            if d.get("arguments"):
-                try:
-                    d["arguments"] = json.loads(d["arguments"])
-                except (json.JSONDecodeError, TypeError):
-                    pass
-            results.append(d)
-        return results
+        return session_records_repo.get_tool_calls(self, session_id)
 
-    def record_thinking(
-        self,
-        session_id: str,
-        message_id: str,
-        step: int,
-        content: str,
-        duration: float = None,
-    ):
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            # 同一 (session_id, message_id, step) 可能在一次 turn 内被多次记录
-            # （思考被分段结束时触发多次 thinking_end），先清除旧记录再写入，避免
-            # 历史思考记录出现重复行。
-            self._execute(
-                cursor,
-                "DELETE FROM thinking_records WHERE session_id=? AND message_id=? AND step=?",
-                (session_id, message_id, step),
-            )
-            self._execute(
-                cursor,
-                """
-                INSERT INTO thinking_records (session_id, message_id, step, content, duration, created_at)
-                VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    session_id,
-                    message_id,
-                    step,
-                    content,
-                    duration,
-                    datetime.now().isoformat(),
-                ),
-            )
+    def record_thinking(self, session_id: str, message_id: str, step: int,
+                        content: str, duration: float = None):
+        return session_records_repo.record_thinking(
+            self, session_id, message_id, step, content, duration
+        )
 
     def get_thinkings(self, session_id: str) -> list[dict]:
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            self._execute(
-                cursor,
-                "SELECT * FROM thinking_records WHERE session_id=? ORDER BY step, created_at",
-                (session_id,),
-            )
-            rows = cursor.fetchall()
-        return [dict(row) for row in rows]
+        return session_records_repo.get_thinkings(self, session_id)
 
-    def create_user(self, user_data: UserModel) -> UserModel:
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            self._execute(
-                cursor,
-                """
-                INSERT INTO users (user_id, username, password_hash, organization_id, email, bound_ip, token_version, employee_id, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    user_data.user_id,
-                    user_data.username,
-                    user_data.password_hash,
-                    user_data.organization_id,
-                    user_data.email,
-                    user_data.bound_ip,
-                    user_data.token_version,
-                    # 空工号统一存 NULL：唯一索引允许多个 NULL，空串却只能有一个
-                    user_data.employee_id or None,
-                    user_data.created_at,
-                    user_data.updated_at,
-                ),
-            )
-            from ..personnel.user_fields import save_user_fields
-            save_user_fields(self, cursor, user_data)
-        return user_data
+    # ARCH-03 Phase 2: users SQL 已抽到 db/repositories/users.py
+    def create_user(self, *args, **kwargs):
+        return users_repo.create_user(self, *args, **kwargs)
+
+    def get_user_by_username(self, *args, **kwargs):
+        return users_repo.get_user_by_username(self, *args, **kwargs)
+
+    def get_user_by_id(self, *args, **kwargs):
+        return users_repo.get_user_by_id(self, *args, **kwargs)
+
+    def get_user_by_employee_id(self, *args, **kwargs):
+        return users_repo.get_user_by_employee_id(self, *args, **kwargs)
+
+    def get_user_by_account(self, *args, **kwargs):
+        return users_repo.get_user_by_account(self, *args, **kwargs)
+
+    def update_user(self, *args, **kwargs):
+        return users_repo.update_user(self, *args, **kwargs)
+
+    def bind_user_ip(self, *args, **kwargs):
+        return users_repo.bind_user_ip(self, *args, **kwargs)
+
+    def get_user_bound_ip(self, *args, **kwargs):
+        return users_repo.get_user_bound_ip(self, *args, **kwargs)
+
+    def increment_user_token_version(self, *args, **kwargs):
+        return users_repo.increment_user_token_version(self, *args, **kwargs)
+
+    def get_user_token_version(self, *args, **kwargs):
+        return users_repo.get_user_token_version(self, *args, **kwargs)
+
+    def touch_user_activity(self, *args, **kwargs):
+        return users_repo.touch_user_activity(self, *args, **kwargs)
+
+    def get_user_activity_time(self, *args, **kwargs):
+        return users_repo.get_user_activity_time(self, *args, **kwargs)
+
+    def clear_user_activity(self, *args, **kwargs):
+        return users_repo.clear_user_activity(self, *args, **kwargs)
+
+    def register_user(self, *args, **kwargs):
+        return users_repo.register_user(self, *args, **kwargs)
+
+    def verify_user_password(self, *args, **kwargs):
+        return users_repo.verify_user_password(self, *args, **kwargs)
+
+    def get_or_create_passwordless_user(self, *args, **kwargs):
+        return users_repo.get_or_create_passwordless_user(self, *args, **kwargs)
+
+    def update_user_password(self, *args, **kwargs):
+        return users_repo.update_user_password(self, *args, **kwargs)
+
+    def delete_user(self, *args, **kwargs):
+        return users_repo.delete_user(self, *args, **kwargs)
+
+    def get_or_create_default_user(self, *args, **kwargs):
+        return users_repo.get_or_create_default_user(self, *args, **kwargs)
+
+    def list_users(self, *args, **kwargs):
+        return users_repo.list_users(self, *args, **kwargs)
+
+    def count_users(self, *args, **kwargs):
+        return users_repo.count_users(self, *args, **kwargs)
 
     @staticmethod
-    def _row_to_user(row) -> UserModel:
-        """users 表行 → UserModel。缺列时给默认值，兼容未迁移的旧库。"""
-        row = dict(row) if not isinstance(row, dict) else row
-        from ..personnel.user_fields import read_user_fields
-        return UserModel(
-            user_id=row["user_id"],
-            username=row["username"],
-            password_hash=row["password_hash"],
-            organization_id=row.get("organization_id") or "",
-            email=row.get("email") or "",
-            bound_ip=row.get("bound_ip") or "",
-            token_version=row.get("token_version") or 0,
-            employee_id=row.get("employee_id") or "",
-            display_name=row.get("display_name") or "",
-            department_id=row.get("department_id") or row.get("organization_id") or "",
-            department_name=row.get("department_name") or "",
-            division_name=row.get("division_name") or "",
-            team_name=row.get("team_name") or "",
-            position=row.get("position") or "",
-            mobile=row.get("mobile") or "",
-            account_status=row.get("account_status") or "active",
-            personnel_source=row.get("personnel_source") or "",
-            created_at=row["created_at"],
-            updated_at=row["updated_at"],
-        )
+    def _row_to_user(row):
+        return users_repo.row_to_user(row)
 
-    def get_user_by_username(self, username: str) -> Optional[UserModel]:
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            self._execute(cursor, "SELECT * FROM users WHERE username=?", (username,))
-            row = cursor.fetchone()
-        return self._row_to_user(row) if row is not None else None
+    # ARCH-03 Phase 2: MCP API Key SQL 已抽到 db/repositories/mcp_api_keys.py
+    def issue_mcp_api_key(self, *args, **kwargs):
+        return mcp_api_keys_repo.issue_mcp_api_key(self, *args, **kwargs)
 
-    def get_user_by_id(self, user_id: str) -> Optional[UserModel]:
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            self._execute(cursor, "SELECT * FROM users WHERE user_id=?", (user_id,))
-            row = cursor.fetchone()
-        return self._row_to_user(row) if row is not None else None
+    def revoke_mcp_api_key(self, *args, **kwargs):
+        return mcp_api_keys_repo.revoke_mcp_api_key(self, *args, **kwargs)
 
-    def get_user_by_employee_id(self, employee_id: str) -> Optional[UserModel]:
-        """按工号查用户（工号全局唯一；未设置工号的用户落库为 NULL）。"""
-        if not employee_id:
-            return None
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            self._execute(
-                cursor, "SELECT * FROM users WHERE employee_id=?", (employee_id,)
-            )
-            row = cursor.fetchone()
-        return self._row_to_user(row) if row is not None else None
+    def get_mcp_api_keys(self, *args, **kwargs):
+        return mcp_api_keys_repo.get_mcp_api_keys(self, *args, **kwargs)
 
-    def get_user_by_account(self, account: str) -> Optional[UserModel]:
-        """按「用户名或工号」定位用户，供登录界面使用。
+    # ARCH-03 Phase 2: users SQL 已抽到 db/repositories/users.py
+    def create_user(self, *args, **kwargs):
+        return users_repo.create_user(self, *args, **kwargs)
 
-        先精确匹配用户名，未命中再按工号匹配；工号全局唯一，无需额外消歧。
-        """
-        if not account:
-            return None
-        return self.get_user_by_username(account) or self.get_user_by_employee_id(
-            account
-        )
+    def get_user_by_username(self, *args, **kwargs):
+        return users_repo.get_user_by_username(self, *args, **kwargs)
 
-    def update_user(self, user_data: UserModel):
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            self._execute(
-                cursor,
-                """
-                UPDATE users SET username=?, password_hash=?, organization_id=?, email=?, bound_ip=?, employee_id=?, updated_at=?
-                WHERE user_id=?
-                """,
-                (
-                    user_data.username,
-                    user_data.password_hash,
-                    user_data.organization_id,
-                    user_data.email,
-                    user_data.bound_ip,
-                    user_data.employee_id or None,
-                    datetime.now().isoformat(),
-                    user_data.user_id,
-                ),
-            )
+    def get_user_by_id(self, *args, **kwargs):
+        return users_repo.get_user_by_id(self, *args, **kwargs)
 
-            from ..personnel.user_fields import save_user_fields
-            save_user_fields(self, cursor, user_data)
+    def get_user_by_employee_id(self, *args, **kwargs):
+        return users_repo.get_user_by_employee_id(self, *args, **kwargs)
 
-    def bind_user_ip(self, username: str, ip: str) -> bool:
-        user = self.get_user_by_username(username)
-        if not user:
-            return False
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            self._execute(
-                cursor,
-                "UPDATE users SET bound_ip=?, updated_at=? WHERE username=?",
-                (ip, datetime.now().isoformat(), username),
-            )
-            return cursor.rowcount > 0
+    def get_user_by_account(self, *args, **kwargs):
+        return users_repo.get_user_by_account(self, *args, **kwargs)
 
-    def get_user_bound_ip(self, username: str) -> str:
-        user = self.get_user_by_username(username)
-        if not user:
-            return ""
-        return user.bound_ip
+    def update_user(self, *args, **kwargs):
+        return users_repo.update_user(self, *args, **kwargs)
 
-    def increment_user_token_version(
-        self, username: str, *, require_active: bool = False
-    ) -> int:
-        """单点登录：递增用户的 token 版本号并返回新值。
+    def bind_user_ip(self, *args, **kwargs):
+        return users_repo.bind_user_ip(self, *args, **kwargs)
 
-        每次登录调用，使该用户此前签发的 JWT（v 不等于新值）在下次鉴权时失效，
-        从而实现「新登录踢掉旧登录」。
-        """
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            active_clause = " AND account_status<>'disabled'" if require_active else ""
-            self._execute(
-                cursor,
-                "UPDATE users SET token_version=COALESCE(token_version, 0)+1, "
-                f"updated_at=? WHERE username=?{active_clause}",
-                (datetime.now().isoformat(), username),
-            )
-            if cursor.rowcount <= 0:
-                return 0
-            self._execute(
-                cursor,
-                "SELECT token_version FROM users WHERE username=?",
-                (username,),
-            )
-            row = cursor.fetchone()
-        if not row:
-            return 0
-        value = dict(row) if not isinstance(row, dict) else row
-        return int(value["token_version"])
+    def get_user_bound_ip(self, *args, **kwargs):
+        return users_repo.get_user_bound_ip(self, *args, **kwargs)
 
-    def get_user_token_version(self, username: str) -> int:
-        user = self.get_user_by_username(username)
-        return user.token_version if user else 0
+    def increment_user_token_version(self, *args, **kwargs):
+        return users_repo.increment_user_token_version(self, *args, **kwargs)
 
-    def touch_user_activity(self, username: str, timestamp: float) -> bool:
-        """更新用户最近活跃时间（Unix 时间戳），供 idle-logout 滑动续期。
+    def get_user_token_version(self, *args, **kwargs):
+        return users_repo.get_user_token_version(self, *args, **kwargs)
 
-        数据落在共享数据库，多 worker 下任意进程都能读到同一个登录活跃状态。
-        """
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            self._execute(
-                cursor,
-                "UPDATE users SET last_activity_at=? WHERE username=?",
-                (timestamp, username),
-            )
-            return cursor.rowcount > 0
+    def touch_user_activity(self, *args, **kwargs):
+        return users_repo.touch_user_activity(self, *args, **kwargs)
 
-    def get_user_activity_time(self, username: str) -> Optional[float]:
-        """读取用户最近活跃时间（Unix 时间戳），无记录返回 None。"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            self._execute(
-                cursor,
-                "SELECT last_activity_at FROM users WHERE username=?",
-                (username,),
-            )
-            row = cursor.fetchone()
-        if row is None:
-            return None
-        value = row["last_activity_at"] if isinstance(row, dict) else row[0]
-        if value is None or value == "":
-            return None
-        try:
-            return float(value)
-        except (TypeError, ValueError):
-            return None
+    def get_user_activity_time(self, *args, **kwargs):
+        return users_repo.get_user_activity_time(self, *args, **kwargs)
 
-    # ── MCP API Key（主应用签发，mcp-server 子项目只读校验） ─────────────
+    def clear_user_activity(self, *args, **kwargs):
+        return users_repo.clear_user_activity(self, *args, **kwargs)
 
-    def issue_mcp_api_key(self, username: str, business: str, key_hash: str) -> bool:
-        """签发（或重签）某用户某业务的 MCP API Key，明文不落库。"""
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        # upsert：sqlite 用 ON CONFLICT，mysql 用 ON DUPLICATE KEY UPDATE
-        if self.db_type == "sqlite":
-            upsert_sql = """
-                INSERT INTO mcp_api_keys (username, business, key_hash, created_at, updated_at, revoked)
-                VALUES (?, ?, ?, ?, ?, 0)
-                ON CONFLICT(username, business) DO UPDATE SET
-                    key_hash=excluded.key_hash, updated_at=excluded.updated_at, revoked=0
-            """
-        else:
-            upsert_sql = """
-                INSERT INTO mcp_api_keys (username, business, key_hash, created_at, updated_at, revoked)
-                VALUES (?, ?, ?, ?, ?, 0)
-                ON DUPLICATE KEY UPDATE
-                    key_hash=VALUES(key_hash), updated_at=VALUES(updated_at), revoked=0
-            """
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            self._execute(cursor, upsert_sql, (username, business, key_hash, now, now))
-        return True
+    def register_user(self, *args, **kwargs):
+        return users_repo.register_user(self, *args, **kwargs)
 
-    def revoke_mcp_api_key(self, username: str, business: str) -> bool:
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            self._execute(
-                cursor,
-                "UPDATE mcp_api_keys SET revoked=1, updated_at=? WHERE username=? AND business=?",
-                (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), username, business),
-            )
-            return cursor.rowcount > 0
+    def verify_user_password(self, *args, **kwargs):
+        return users_repo.verify_user_password(self, *args, **kwargs)
 
-    def get_mcp_api_keys(self, username: str) -> list[dict]:
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            self._execute(
-                cursor,
-                "SELECT business, created_at, updated_at, revoked "
-                "FROM mcp_api_keys WHERE username=? ORDER BY business",
-                (username,),
-            )
-            rows = cursor.fetchall()
-        return [dict(r) if not isinstance(r, dict) else r for r in rows]
+    def get_or_create_passwordless_user(self, *args, **kwargs):
+        return users_repo.get_or_create_passwordless_user(self, *args, **kwargs)
 
-    def clear_user_activity(self, username: str) -> bool:
-        """清空用户活跃时间（登出时调用）。"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            self._execute(
-                cursor,
-                "UPDATE users SET last_activity_at=NULL WHERE username=?",
-                (username,),
-            )
-            return cursor.rowcount > 0
+    def update_user_password(self, *args, **kwargs):
+        return users_repo.update_user_password(self, *args, **kwargs)
 
-    def register_user(
-        self,
-        username: str,
-        password: str,
-        employee_id: str = "",
-        bound_ip: str = "",
-    ) -> Optional[UserModel]:
-        """注册用户；用户名或工号任一已存在都返回 None（错误提示由调用方区分）。
+    def delete_user(self, *args, **kwargs):
+        return users_repo.delete_user(self, *args, **kwargs)
 
-        机构ID 与邮箱不是注册项：注册时写空，前者可由管理员维护（用于系统提示词注入），
-        后者可由用户登录后通过资料接口补填。
-        """
-        if self.get_user_by_username(username):
-            return None
-        if employee_id and self.get_user_by_employee_id(employee_id):
-            return None
+    def get_or_create_default_user(self, *args, **kwargs):
+        return users_repo.get_or_create_default_user(self, *args, **kwargs)
 
-        now = datetime.now().isoformat()
-        password_hash = hash_password(password)
-        user = UserModel(
-            user_id=str(uuid.uuid4()),
-            username=username,
-            password_hash=password_hash,
-            organization_id="",
-            email="",
-            bound_ip=bound_ip or "",
-            employee_id=employee_id or "",
-            created_at=now,
-            updated_at=now,
-        )
-        try:
-            self.create_user(user)
-        except Exception as e:  # noqa: BLE001
-            # 并发场景由唯一索引兜底（用户名/工号撞车）
-            logger.warning(f"注册用户失败（唯一约束冲突）| username={username}: {e}")
-            return None
-        return user
+    def list_users(self, *args, **kwargs):
+        return users_repo.list_users(self, *args, **kwargs)
 
-    def verify_user_password(self, account: str, password: str) -> Optional[UserModel]:
-        """校验密码登录。``account`` 可以是用户名或工号（工号全局唯一）。"""
-        user = self.get_user_by_account(account)
-        if not user:
-            return None
-        if not verify_password(password, user.password_hash):
-            return None
-        return user
+    def count_users(self, *args, **kwargs):
+        return users_repo.count_users(self, *args, **kwargs)
 
-    def get_or_create_passwordless_user(
-        self,
-        username: str,
-        user_id: str = "",
-    ) -> tuple[Optional[UserModel], bool]:
-        """免密登录：按用户名查找用户，不存在则注册。
+    @staticmethod
+    def _row_to_user(row):
+        return users_repo.row_to_user(row)
 
-        - 用户名已存在：直接返回该用户，user_id 不参与匹配；
-        - 用户名不存在：user_id 为空或 "0" 时自动生成唯一 ID，否则使用传入值，
-          传入值已被其他用户占用时返回 (None, False)。
-
-        返回 (user, created)。
-        """
-        existing = self.get_user_by_username(username)
-        if existing:
-            return existing, False
-
-        if not user_id or user_id == "0":
-            user_id = str(uuid.uuid4())
-        elif self.get_user_by_id(user_id):
-            return None, False
-
-        now = datetime.now().isoformat()
-        user = UserModel(
-            user_id=user_id,
-            username=username,
-            # 免密用户不通过密码登录，写入随机密码哈希防止被猜测
-            password_hash=hash_password(uuid.uuid4().hex),
-            organization_id="",
-            email="",
-            bound_ip="",
-            created_at=now,
-            updated_at=now,
-        )
-        self.create_user(user)
-        return user, True
-
-    def update_user_password(self, username: str, new_password_hash: str) -> bool:
-        user = self.get_user_by_username(username)
-        if not user:
-            return False
-
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            self._execute(
-                cursor,
-                "UPDATE users SET password_hash=?, updated_at=? WHERE username=?",
-                (new_password_hash, datetime.now().isoformat(), username),
-            )
-            return cursor.rowcount > 0
-
-    def delete_user(self, username: str) -> bool:
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            self._execute(cursor, "DELETE FROM users WHERE username=?", (username,))
-            return cursor.rowcount > 0
-
-    def get_or_create_default_user(self) -> UserModel:
-        from ..personnel.bootstrap import ensure_default_admin
-        return ensure_default_admin(self)
-
-    def list_users(self, limit: int = 50, offset: int = 0) -> list[UserModel]:
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            self._execute(
-                cursor,
-                "SELECT * FROM users ORDER BY created_at DESC LIMIT ? OFFSET ?",
-                (limit, offset),
-            )
-            rows = cursor.fetchall()
-        return [self._row_to_user(row) for row in rows]
-
-    def count_users(self) -> int:
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            self._execute(cursor, "SELECT COUNT(*) AS total FROM users")
-            row = cursor.fetchone()
-        return int(row["total"]) if row else 0
-
-    def add_session_file(
-        self,
-        session_id: str,
-        filename: str,
-        file_path: str,
-        file_type: str,
-        size: int,
-        username: str = "",
-    ):
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            self._execute(
-                cursor,
-                """
-                INSERT INTO session_files (session_id, filename, file_path, file_type, size, uploaded_at, username)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    session_id,
-                    filename,
-                    file_path,
-                    file_type,
-                    size,
-                    datetime.now().isoformat(),
-                    username,
-                ),
-            )
+    # ARCH-03 Phase 2: 文件 SQL 已抽到 db/repositories/files.py
+    def add_session_file(self, *args, **kwargs):
+        return files_repo.add_session_file(self, *args, **kwargs)
 
     def get_session_files(self, session_id: str) -> list[dict]:
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            self._execute(
-                cursor,
-                "SELECT * FROM session_files WHERE session_id=? ORDER BY uploaded_at DESC",
-                (session_id,),
-            )
-            rows = cursor.fetchall()
-        return [dict(row) for row in rows]
+        return files_repo.get_session_files(self, session_id)
 
     def delete_file(self, file_id: int, username: str | None = None) -> bool:
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            if username:
-                self._execute(
-                    cursor,
-                    "DELETE FROM session_files WHERE id=? AND username=?",
-                    (file_id, username),
-                )
-            else:
-                self._execute(cursor, "DELETE FROM session_files WHERE id=?", (file_id,))
-            return cursor.rowcount > 0
+        return files_repo.delete_file(self, file_id, username)
 
-    def add_generated_file(
-        self,
-        session_id: str,
-        message_id: str,
-        filename: str,
-        file_path: str,
-        file_type: str,
-        size: int,
-    ):
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            self._execute(
-                cursor,
-                """
-                INSERT INTO generated_files (session_id, message_id, filename, file_path, file_type, size, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    session_id,
-                    message_id,
-                    filename,
-                    file_path,
-                    file_type,
-                    size,
-                    datetime.now().isoformat(),
-                ),
-            )
+    def add_generated_file(self, *args, **kwargs):
+        return files_repo.add_generated_file(self, *args, **kwargs)
 
     def get_generated_files(self, session_id: str) -> list[dict]:
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            self._execute(
-                cursor,
-                "SELECT * FROM generated_files WHERE session_id=? ORDER BY created_at DESC",
-                (session_id,),
-            )
-            rows = cursor.fetchall()
-        return [dict(row) for row in rows]
+        return files_repo.get_generated_files(self, session_id)
 
     def delete_generated_file(self, file_id: int) -> bool:
-        """删除单条生成文件记录（例如技能已入库、工作区不再保留该文件）。"""
-        if file_id is None:
-            return False
-        try:
-            with self.get_connection() as conn:
-                cursor = conn.cursor()
-                self._execute(
-                    cursor, "DELETE FROM generated_files WHERE id=?", (file_id,)
-                )
-            return True
-        except Exception as e:  # noqa: BLE001
-            logger.warning(f"删除生成文件记录失败 | id={file_id} | {e}")
-            return False
+        return files_repo.delete_generated_file(self, file_id)
 
     def get_generated_filenames(self, username: str) -> set[str]:
-        """返回指定用户所有会话中生成的文件原始文件名集合。
+        return files_repo.get_generated_filenames(self, username)
 
-        用于资产页（/agent/files/list）排除会话生成的文件，确保只展示用户上传的文件。
-        """
-        if not username:
-            return set()
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            self._execute(
-                cursor,
-                """
-                SELECT gf.filename FROM generated_files gf
-                JOIN sessions s ON gf.session_id = s.session_id
-                WHERE s.username = ?
-                """,
-                (username,),
-            )
-            rows = cursor.fetchall()
-        return {r["filename"] for r in rows if r["filename"]}
-
-    # ── 定时任务 CRUD ──────────────────────────────────────────────
-
+    # ARCH-03 Phase 2: 定时任务 SQL 已抽到 db/repositories/scheduled_tasks.py
     def create_scheduled_task(self, task: ScheduledTaskModel) -> ScheduledTaskModel:
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            self._execute(
-                cursor,
-                """INSERT INTO scheduled_tasks
-                   (task_id, username, session_id, workspace_name, name, description, schedule_cron,
-                    task_prompt, enabled, created_at, updated_at, last_run_at, next_run_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (task.task_id, task.username, task.session_id, task.workspace_name, task.name,
-                 task.description, task.schedule_cron, task.task_prompt, task.enabled,
-                 task.created_at, task.updated_at, task.last_run_at, task.next_run_at),
-            )
-        return task
+        return scheduled_tasks_repo.create_scheduled_task(self, task)
 
     def get_scheduled_task(self, task_id: str) -> ScheduledTaskModel | None:
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            self._execute(cursor, "SELECT * FROM scheduled_tasks WHERE task_id=?", (task_id,))
-            row = cursor.fetchone()
-        if not row:
-            return None
-        d = dict(row)
-        return ScheduledTaskModel(**d)
+        return scheduled_tasks_repo.get_scheduled_task(self, task_id)
 
     def list_scheduled_tasks(self, username: str, enabled_only: bool = False) -> list[ScheduledTaskModel]:
-        sql = "SELECT * FROM scheduled_tasks WHERE username=?"
-        params: list = [username]
-        if enabled_only:
-            sql += " AND enabled=1"
-        sql += " ORDER BY created_at DESC"
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            self._execute(cursor, sql, params)
-            rows = cursor.fetchall()
-        return [ScheduledTaskModel(**dict(r)) for r in rows]
+        return scheduled_tasks_repo.list_scheduled_tasks(self, username, enabled_only=enabled_only)
 
     def list_all_enabled_scheduled_tasks(self) -> list[ScheduledTaskModel]:
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            self._execute(cursor, "SELECT * FROM scheduled_tasks WHERE enabled=1")
-            rows = cursor.fetchall()
-        return [ScheduledTaskModel(**dict(r)) for r in rows]
+        return scheduled_tasks_repo.list_all_enabled_scheduled_tasks(self)
 
     def delete_scheduled_task(self, task_id: str) -> bool:
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            self._execute(cursor, "DELETE FROM scheduled_task_runs WHERE task_id=?", (task_id,))
-            self._execute(cursor, "DELETE FROM scheduled_tasks WHERE task_id=?", (task_id,))
-            return cursor.rowcount > 0
+        return scheduled_tasks_repo.delete_scheduled_task(self, task_id)
 
     def update_scheduled_task_status(self, task_id: str, enabled: bool):
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            self._execute(
-                cursor,
-                "UPDATE scheduled_tasks SET enabled=?, updated_at=? WHERE task_id=?",
-                (1 if enabled else 0, datetime.now().isoformat(), task_id),
-            )
+        return scheduled_tasks_repo.update_scheduled_task_status(self, task_id, enabled)
 
     def update_scheduled_task_run_times(self, task_id: str, last_run_at: str, next_run_at: str):
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            self._execute(
-                cursor,
-                "UPDATE scheduled_tasks SET last_run_at=?, next_run_at=? WHERE task_id=?",
-                (last_run_at, next_run_at, task_id),
-            )
+        return scheduled_tasks_repo.update_scheduled_task_run_times(
+            self, task_id, last_run_at, next_run_at
+        )
 
     def update_scheduled_task_workspace(self, task_id: str, workspace_name: str):
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            self._execute(
-                cursor,
-                "UPDATE scheduled_tasks SET workspace_name=? WHERE task_id=?",
-                (workspace_name, task_id),
-            )
+        return scheduled_tasks_repo.update_scheduled_task_workspace(
+            self, task_id, workspace_name
+        )
 
     def add_scheduled_task_run(self, run: ScheduledTaskRunModel) -> ScheduledTaskRunModel:
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            self._execute(
-                cursor,
-                """INSERT INTO scheduled_task_runs
-                   (run_id, task_id, session_id, status, started_at, finished_at, result_summary, error_message)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                (run.run_id, run.task_id, run.session_id, run.status,
-                 run.started_at, run.finished_at, run.result_summary, run.error_message),
-            )
-        return run
+        return scheduled_tasks_repo.add_scheduled_task_run(self, run)
 
     def update_scheduled_task_run(self, run_id: str, status: str, finished_at: str,
                                   result_summary: str = "", error_message: str = ""):
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            self._execute(
-                cursor,
-                """UPDATE scheduled_task_runs
-                   SET status=?, finished_at=?, result_summary=?, error_message=?
-                   WHERE run_id=?""",
-                (status, finished_at, result_summary, error_message, run_id),
-            )
+        return scheduled_tasks_repo.update_scheduled_task_run(
+            self, run_id, status, finished_at, result_summary, error_message
+        )
 
     def list_scheduled_task_runs(self, task_id: str, limit: int = 50) -> list[ScheduledTaskRunModel]:
+        return scheduled_tasks_repo.list_scheduled_task_runs(self, task_id, limit)
+
+    def ping(self) -> bool:
         with self.get_connection() as conn:
             cursor = conn.cursor()
-            self._execute(
-                cursor,
-                "SELECT * FROM scheduled_task_runs WHERE task_id=? ORDER BY started_at DESC LIMIT ?",
-                (task_id, limit),
-            )
-            rows = cursor.fetchall()
-        return [ScheduledTaskRunModel(**dict(r)) for r in rows]
+            self._execute(cursor, "SELECT 1")
+            cursor.fetchone()
+        return True
+
+    # ARCH-03 Phase 2: checkpoint/store SQL 已抽到 db/repositories/agent_state.py
+    def load_agent_checkpoint(self, session_id: str) -> bytes | None:
+        return agent_state_repo.load_agent_checkpoint(self, session_id)
+
+    def save_agent_checkpoint(self, session_id: str, payload: bytes) -> None:
+        return agent_state_repo.save_agent_checkpoint(self, session_id, payload)
+
+    def delete_agent_checkpoint(self, session_id: str) -> None:
+        return agent_state_repo.delete_agent_checkpoint(self, session_id)
+
+    def store_get(self, namespace: str, item_key: str) -> dict | None:
+        return agent_state_repo.store_get(self, namespace, item_key)
+
+    def store_put(self, namespace: str, item_key: str, value: str) -> None:
+        return agent_state_repo.store_put(self, namespace, item_key, value)
+
+    def store_delete(self, namespace: str, item_key: str) -> None:
+        return agent_state_repo.store_delete(self, namespace, item_key)
+
+    def store_search(self, namespace_prefix: str, *, limit: int = 10, offset: int = 0) -> list[dict]:
+        return agent_state_repo.store_search(
+            self, namespace_prefix, limit=limit, offset=offset
+        )
+
+    def store_list_namespaces(self) -> list[str]:
+        return agent_state_repo.store_list_namespaces(self)
+
+    # ARCH-03 Phase 2: session_runtime SQL 已抽到 db/repositories/session_runtime.py
+    def get_session_runtime(self, session_id: str) -> dict | None:
+        return session_runtime_repo.get_session_runtime(self, session_id)
+
+    def try_acquire_session_stream(
+        self, session_id: str, owner: str, until_iso: str, now_iso: str
+    ) -> tuple[bool, dict | None]:
+        return session_runtime_repo.try_acquire_session_stream(
+            self, session_id, owner, until_iso, now_iso
+        )
+
+    def renew_session_stream(
+        self, session_id: str, owner: str, until_iso: str, now_iso: str
+    ) -> bool:
+        return session_runtime_repo.renew_session_stream(
+            self, session_id, owner, until_iso, now_iso
+        )
+
+    def upsert_session_runtime(
+        self,
+        session_id: str,
+        *,
+        connectors=None,
+        edit_target=None,
+        stream_owner=None,
+        stream_until=None,
+        cancel_requested=None,
+        clear_connectors: bool = False,
+    ) -> None:
+        session_runtime_repo.upsert_session_runtime(
+            self,
+            session_id,
+            connectors=connectors,
+            edit_target=edit_target,
+            stream_owner=stream_owner,
+            stream_until=stream_until,
+            cancel_requested=cancel_requested,
+            clear_connectors=clear_connectors,
+        )
 
 
 _db_instance = None

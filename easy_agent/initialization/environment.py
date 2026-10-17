@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 import os
+from ..env import env_str
 
 from ..utils.env_loader import get_loaded_env_info, load_project_env
 
@@ -18,15 +19,20 @@ def load_environment() -> EnvironmentInitialization:
     """Load project environment values and expose startup metadata."""
     load_project_env()
     env_file, loaded_keys = get_loaded_env_info()
-    cors_raw = os.getenv("EASY_CORS_ALLOW_ORIGINS", "")
+    cors_raw = env_str("EASY_CORS_ALLOW_ORIGINS")
+    agent_env = env_str("AGENT_ENV").lower()
     cors_allow_origins = (
         [origin.strip() for origin in cors_raw.split(",") if origin.strip()]
         if cors_raw
         else ["*"]
     )
+    if agent_env == "prod" and cors_allow_origins == ["*"]:
+        raise RuntimeError(
+            "生产环境必须设置 EASY_CORS_ALLOW_ORIGINS 为逗号分隔的可信域名，禁止使用 *"
+        )
     return EnvironmentInitialization(
         env_file=env_file,
         loaded_keys=loaded_keys,
-        agent_env=os.getenv("AGENT_ENV", "").lower(),
+        agent_env=agent_env,
         cors_allow_origins=cors_allow_origins,
     )

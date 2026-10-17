@@ -261,10 +261,12 @@ def test_update_writes_next_version_and_keeps_previous(env, monkeypatch):
     expert_id = _expert_id_from(out)
 
     invalidated = {"n": 0}
-    import easy_agent.services.agent_manager as am
+    from easy_agent import runtime_config
 
     monkeypatch.setattr(
-        am, "invalidate_user_agents", lambda u: invalidated.__setitem__("n", invalidated["n"] + 1)
+        runtime_config,
+        "invalidate_user_agents",
+        lambda u: invalidated.__setitem__("n", invalidated["n"] + 1),
     )
 
     out2 = _call(

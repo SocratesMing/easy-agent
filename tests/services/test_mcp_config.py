@@ -47,9 +47,10 @@ def test_extract_servers_legacy_formats_still_work():
     assert _extract_servers(
         {"servers": {"y": {"type": "stdio", "command": "c"}}}
     ) == {"y": {"transport": "stdio", "command": "c"}}
+    # FW-10：http 是 streamable_http 的别名，归一化后统一为 streamable_http
     assert _extract_servers(
         {"name": "x", "type": "http", "url": "http://a"}
-    ) == {"x": {"transport": "http", "url": "http://a"}}
+    ) == {"x": {"transport": "streamable_http", "url": "http://a"}}
     assert _extract_servers(
         {"myserver": {"transport": "stdio", "command": "npx"}}
     ) == {"myserver": {"transport": "stdio", "command": "npx"}}

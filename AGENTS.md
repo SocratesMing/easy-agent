@@ -1,5 +1,16 @@
 # Repository Guidelines
 
+> ⚠️ **2026-10-17 审计更新**：本文件部分内容已过时，模块地图/命令/事实以
+> `docs/architecture-current.md` 为准。已知过时点：
+> - 前端同时存在 `frontend-vue2/`（Vue 2.7 + Element UI，后端当前托管）与
+>   `frontend/`（Vue 3.5 + Vite）两套基线，均在维护；
+> - 运行时技能为 7 个（不是 17 个）；agent 不挂载 `/skills/` 只读路由，用户技能在 `/user-skills/`；
+> - 已移除 `X-Username` 回退与“JWT secret 重启失效”（secret 持久化在 `data/.jwt_secret`）；
+> - 仓库已有 Dockerfile / docker-compose / k8s / `.github/workflows/ci.yml`；
+> - 新增模块：`knowledges/`、`personnel/`、`connectors`、`expert`、`checkpoints`、`sandbox`、
+>   `hitl`、`backends/`、`runtime_config`、`sse` 等。
+
+
 Contributor guide for **easy-agent**, an AI agent web app built on LangChain DeepAgents with a FastAPI backend and Vue 2.7 frontend.
 
 ## Project Structure & Module Organization

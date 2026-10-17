@@ -8,6 +8,8 @@ and records the result.
 
 import asyncio
 import logging
+import os
+from ..env import env_bool
 import uuid
 from datetime import datetime
 
@@ -16,6 +18,7 @@ from apscheduler.triggers.cron import CronTrigger
 
 from ..db import get_database
 from ..models.db import ScheduledTaskModel, ScheduledTaskRunModel, SessionModel
+from ..utils.deployment import detect_worker_count as _detect_worker_count
 from ..utils.distributed_lock import get_distributed_lock
 from ..utils.task_logger import log_task_event
 from langchain_core.callbacks import BaseCallbackHandler
@@ -204,6 +207,18 @@ def reload_all_tasks():
             f"ttl={lock.config.ttl_seconds}s"
         )
     else:
+        workers = _detect_worker_count()
+        if workers > 1 and not env_bool("EASY_ALLOW_DUPLICATE_SCHEDULER"):
+            # 多 worker/多副本 + 未开分布式锁 = 同一 cron 被 N 个实例各执行一次：
+            # 重复扣费、重复写会话/消息。默认拒绝注册调度任务（fail-closed），
+            # 单实例仍可正常工作；确需关闭锁请显式设置 EASY_ALLOW_DUPLICATE_SCHEDULER=1。
+            logger.error(
+                "❌ 检测到多 worker/多副本（%s）但 distributed_lock.enabled=false："
+                "为避免定时任务重复执行，本次不注册任何定时任务。"
+                "请开启 distributed_lock，或显式设置 EASY_ALLOW_DUPLICATE_SCHEDULER=1。",
+                workers,
+            )
+            return
         logger.info(
             "🔒 分布式锁未启用（单实例部署无需开启；多 pod 部署请设置 distributed_lock.enabled）"
         )
@@ -311,7 +326,6 @@ async def _execute_task(task_id: str):
         "timestamp": started_at,
     }
     db.add_message(session_id, user_msg)
-    db.add_message_row(session_id, user_msg)
 
     logger.info(f"[{task_id[-5:]}] 定时任务开始执行 | run_id={run_id[-5:]} | session={session_id[-5:]} | prompt={task.task_prompt[:80]}")
     log_task_event(
@@ -368,7 +382,6 @@ async def _execute_task(task_id: str):
                 "timestamp": datetime.now().isoformat(),
             }
             db.add_message(session_id, assistant_msg)
-            db.add_message_row(session_id, assistant_msg)
 
             finished_at = datetime.now().isoformat()
             db.update_scheduled_task_run(

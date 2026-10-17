@@ -66,7 +66,7 @@ async def test_detached_event_stream_yields_and_publishes_to_hub():
     hub = _session_stream_hubs.get("sess1")
     assert hub is not None
     assert hub.done is True
-    assert hub.history == chunks
+    assert list(hub.history) == chunks  # history 已改为 deque（O(1) 淘汰）
 
 
 async def test_replay_is_complete_when_history_exceeds_queue_slack():

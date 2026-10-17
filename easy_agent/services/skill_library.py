@@ -27,7 +27,7 @@ from ..config import Config
 logger = logging.getLogger("easy-agent")
 
 #: 技能定义文件（按优先级）
-SKILL_FILES = ("SKILL.md", "README.md")
+SKILL_FILES = ("SKILL.md",)
 
 #: 停用技能目录名（位于用户 workspace 下，与 skills/ 同级）
 DISABLED_DIR_NAME = "skills-disabled"
@@ -50,7 +50,7 @@ def user_disabled_dir(username: str) -> Path:
 
 
 def is_skill_dir(path: Path) -> bool:
-    """目录内存在 SKILL.md 或 README.md 才算技能目录。"""
+    """目录内存在 SKILL.md 才算技能目录。"""
     return path.is_dir() and any((path / name).exists() for name in SKILL_FILES)
 
 

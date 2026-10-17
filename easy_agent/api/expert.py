@@ -24,12 +24,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from ..db import Database, get_database
+from ..db import get_database
+from ..db.repositories.expert_repository import ExpertRepository
 from ..db.expert_store import (
     STATUS_ACTIVE,
     STATUS_BUILDING,
     STATUS_FAILED,
-    ExpertStore,
 )
 from ..middleware import get_current_username
 from ..model import create_model
@@ -43,6 +43,7 @@ from ..services import (
 from ..services import public_expert_service, skill_library
 from ..services import expert_guardrail, expert_relevance
 from ..services import session_uploads as file_context
+from ..services.sse import SSEEvent
 from ..services.streaming import build_assistant_message_dict, format_sse
 from ..services.expert_service import (
     build_expert_ids,
@@ -60,6 +61,24 @@ from .chat import _detached_event_stream, create_new_session, generate_session_t
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["Expert"])
+
+
+def get_expert_repository(
+    db: Annotated[object, Depends(get_database)],
+) -> ExpertRepository:
+    """FastAPI 依赖：把进程级 ``Database`` 包装成专家域 repository。
+
+    ``get_database`` 只出现在本 provider 内；路由函数只声明
+    ``Depends(get_expert_repository)``。
+    """
+    return ExpertRepository(db)
+
+
+def _as_expert_repository(value: object) -> ExpertRepository:
+    """兼容直接调用路由函数并传入 ``Database`` 的既有测试。"""
+    if isinstance(value, ExpertRepository):
+        return value
+    return ExpertRepository(value)
 
 
 # ── 请求模型 ──────────────────────────────────────────────────────────
@@ -127,14 +146,14 @@ class ExpertRunRequest(BaseModel):
 # ── 辅助 ──────────────────────────────────────────────────────────────
 
 
-def _current_user_id(db: Database, username: str) -> str:
+def _current_user_id(repo: ExpertRepository, username: str) -> str:
     """取当前用户的 ``user_id``（专家表的归属键）。
 
     用户记录缺失时回退为用户名，保证「归属校验」在同一口径下自洽，
     不会因为一个查不到的用户而让整个接口 500。
     """
     try:
-        user = db.get_user_by_username(username)
+        user = repo.get_user_by_username(username)
         if user and getattr(user, "user_id", ""):
             return user.user_id
     except Exception as exc:  # noqa: BLE001
@@ -192,7 +211,7 @@ def _tag_options(config) -> list[dict]:
 
 
 def _ensure_name_available(
-    store: ExpertStore,
+    store: ExpertRepository,
     user_id: str,
     name_cn: str,
     *,
@@ -223,7 +242,7 @@ def _ensure_name_available(
 
 async def _generate_and_store(
     *,
-    db: Database,
+    repo: ExpertRepository,
     username: str,
     expert_agent_id: str,
     name_cn: str,
@@ -241,7 +260,7 @@ async def _generate_and_store(
     失败时把 ``agent_status`` 置为 ``failed``（前端可重试），并抛出可读错误。
     """
     config = _get_config()
-    store = ExpertStore(db)
+    store = repo
     tag_options = _tag_options(config)
     try:
         llm = create_model(config, model_name, session_id)
@@ -334,7 +353,7 @@ def _with_guardrail(prompt_text: str) -> str:
 
 
 def _load_expert_prompt(
-    db: Database, username: str, expert_agent_id: str, sid: str
+    repo: ExpertRepository, username: str, expert_agent_id: str, sid: str
 ) -> tuple[str, str, str]:
     """解析一个专家 ID 对应的提示词（「我的专家」优先，「公共专家」兜底）。
 
@@ -357,8 +376,8 @@ def _load_expert_prompt(
         return "", "", ""
 
     # ── 1. 我的专家（数据库归属校验） ──────────────────────────────────
-    user_id = _current_user_id(db, username)
-    record = ExpertStore(db).get_owned(expert_agent_id, user_id)
+    user_id = _current_user_id(repo, username)
+    record = repo.get_owned(expert_agent_id, user_id)
     if record is not None:
         if record.get("agent_status") != STATUS_ACTIVE:
             raise HTTPException(
@@ -401,7 +420,7 @@ def _load_expert_prompt(
 
 
 def _expert_meta_for_message(
-    db: Database, username: str, expert_id: str
+    repo: ExpertRepository, username: str, expert_id: str
 ) -> Optional[dict]:
     """取「随消息落库」的专家元信息（``{"id": ..., "name": ...}``）。
 
@@ -417,7 +436,7 @@ def _expert_meta_for_message(
 
     name_cn = ""
     try:
-        record = ExpertStore(db).get_owned(expert_id, _current_user_id(db, username))
+        record = repo.get_owned(expert_id, _current_user_id(repo, username))
         if record:
             name_cn = str(record.get("export_name_cn") or "").strip()
     except Exception as exc:  # noqa: BLE001
@@ -449,7 +468,7 @@ def _as_str_list(value) -> list[str]:
     return [str(item).strip() for item in value if str(item).strip()]
 
 
-def _expert_profile(db: Database, username: str, expert_id: str) -> dict:
+def _expert_profile(repo: ExpertRepository, username: str, expert_id: str) -> dict:
     """取专家画像（中文名 / 功能描述 / 技能标签 / 场景 / 能力清单 / 分类名）。
 
     「我的专家」（数据库）优先、「公共专家」（目录）兜底，与 `_load_expert_prompt`
@@ -461,7 +480,7 @@ def _expert_profile(db: Database, username: str, expert_id: str) -> dict:
     """
     profile: dict = {}
     try:
-        record = ExpertStore(db).get_owned(expert_id, _current_user_id(db, username))
+        record = repo.get_owned(expert_id, _current_user_id(repo, username))
         if record:
             profile = {
                 "name_cn": str(record.get("export_name_cn") or "").strip(),
@@ -545,7 +564,7 @@ def _session_logger_for(session_id: str, username: str) -> SessionLogger:
 
 
 def _persist_user_turn(
-    db: Database,
+    repo: ExpertRepository,
     session_id: str,
     username: str,
     request: ChatRequest,
@@ -558,7 +577,7 @@ def _persist_user_turn(
     `_expert_meta_for_message`）：刷新/历史加载后 assistant 消息仍能显示专家头像+
     名称，同一会话不同轮次各自对应自己那一轮的专家。
     """
-    expert_meta = _expert_meta_for_message(db, username, expert_id)
+    expert_meta = _expert_meta_for_message(repo, username, expert_id)
     user_message = {
         "role": "user",
         "content": request.message,
@@ -571,20 +590,19 @@ def _persist_user_turn(
     # 结构化技能目录名：气泡按它渲染技能标签，不再需要从消息文本里反扒 `/目录名`
     if turn_skill_dirs:
         user_message["skills"] = turn_skill_dirs
-    db.add_message(session_id, user_message)
-    db.add_message_row(session_id, user_message)
+    repo.add_message(session_id, user_message)
     return user_message
 
 
 def _recent_context(
-    db: Database, session_id: str, max_messages: int = 4, max_chars: int = 300
+    repo: ExpertRepository, session_id: str, max_messages: int = 4, max_chars: int = 300
 ) -> str:
     """取最近几轮对话用于消解指代（「继续」「上面第三点」这类追问）。
 
     只喂**很短**的尾部片段：预检的成本要压住，判据仍是专家画像 + 本轮正文。
     """
     try:
-        session = db.get_session(session_id)
+        session = repo.get_session(session_id)
     except Exception as exc:  # noqa: BLE001
         logger.warning("预检上下文读取失败（忽略）| session=%s | %s", session_id, exc)
         return ""
@@ -602,7 +620,7 @@ def _recent_context(
 
 
 async def _relevance_gate(
-    db: Database,
+    repo: ExpertRepository,
     session_id: str,
     username: str,
     expert_id: str,
@@ -633,7 +651,7 @@ async def _relevance_gate(
     if not check_enabled:
         return None
 
-    profile = _expert_profile(db, username, expert_id)
+    profile = _expert_profile(repo, username, expert_id)
     expert_name = profile.get("name_cn", "")
 
     # ── 1. 高危红线：不依赖模型、不受 strict 口径影响 ────────────────────
@@ -682,7 +700,7 @@ async def _relevance_gate(
         llm,
         basis,
         message,
-        context=_recent_context(db, session_id),
+        context=_recent_context(repo, session_id),
         disable_thinking=_precheck_disable_thinking(),
         attachments=attachments,
     )
@@ -709,7 +727,7 @@ async def _relevance_gate(
     )
 
 
-async def _refusal_event_stream(session_id: str, db: Database, answer: str):
+async def _refusal_event_stream(session_id: str, repo: ExpertRepository, answer: str):
     """短路拒答的极简 SSE 流：start → content → content_end → done。
 
     事件形状与 ``services/streaming.py`` 完全一致，前端复用同一套解析逻辑；
@@ -724,24 +742,24 @@ async def _refusal_event_stream(session_id: str, db: Database, answer: str):
             thinking="",
             thinking_duration=None,
             tool_call_records=[],
-            blocks=[{"type": "content", "order": 0, "content": answer, "step": 0}],
+            blocks=[{"type": SSEEvent.CONTENT, "order": 0, "content": answer, "step": 0}],
             input_tokens=0,
             output_tokens=0,
             context_tokens=0,
             elapsed_time=time.time() - started,
             step_count=0,
         )
-        db.update_last_assistant_message(session_id, message)
-        db.update_last_assistant_message_row(session_id, message)
+        repo.update_last_assistant_message(session_id, message)
+        repo.update_last_assistant_message_row(session_id, message)
     except Exception as exc:  # noqa: BLE001 —— 落库失败不阻断拒答推送
         logger.warning(f"[{sid}] 拒答消息持久化失败: {exc}")
 
-    yield format_sse({"type": "start", "session_id": session_id})
-    yield format_sse({"type": "content", "content": answer, "step": 0})
-    yield format_sse({"type": "content_end", "content": ""})
+    yield format_sse({"type": SSEEvent.START, "session_id": session_id})
+    yield format_sse({"type": SSEEvent.CONTENT, "content": answer, "step": 0})
+    yield format_sse({"type": SSEEvent.CONTENT_END, "content": ""})
     yield format_sse(
         {
-            "type": "done",
+            "type": SSEEvent.DONE,
             "session_id": session_id,
             "elapsed_time": round(time.time() - started, 2),
             "usage": {
@@ -763,9 +781,10 @@ async def _refusal_event_stream(session_id: str, db: Database, answer: str):
 @router.post("/agent/add", summary="创建专家 Agent")
 async def add_expert(
     request: ExpertAddRequest,
-    db: Annotated[Database, Depends(get_database)],
+    db: Annotated[ExpertRepository, Depends(get_expert_repository)],
     username: Annotated[str, Depends(get_current_username)],
 ):
+    repo = _as_expert_repository(db)
     if (request.type or "agent").lower() != "agent":
         raise HTTPException(status_code=400, detail="type 仅支持 agent（本期不含技能模块）")
     try:
@@ -773,9 +792,9 @@ async def add_expert(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    user_id = _current_user_id(db, username)
+    user_id = _current_user_id(repo, username)
     name_cn = request.name_cn.strip()
-    store = ExpertStore(db)
+    store = repo
 
     # 中文名唯一：同一用户下不允许出现同名专家（含已软删除的记录）
     _ensure_name_available(store, user_id, name_cn)
@@ -802,7 +821,7 @@ async def add_expert(
     )
 
     record = await _generate_and_store(
-        db=db,
+        repo=repo,
         username=username,
         expert_agent_id=expert_agent_id,
         name_cn=name_cn,
@@ -818,11 +837,12 @@ async def add_expert(
 @router.post("/agent/update", summary="修改专家 Agent")
 async def update_expert(
     request: ExpertUpdateRequest,
-    db: Annotated[Database, Depends(get_database)],
+    db: Annotated[ExpertRepository, Depends(get_expert_repository)],
     username: Annotated[str, Depends(get_current_username)],
 ):
-    user_id = _current_user_id(db, username)
-    store = ExpertStore(db)
+    repo = _as_expert_repository(db)
+    user_id = _current_user_id(repo, username)
+    store = repo
     record = store.get_owned(request.export_agent_id, user_id)
     if record is None:
         raise HTTPException(status_code=404, detail="专家不存在")
@@ -846,7 +866,7 @@ async def update_expert(
     # ★ 新版本目录 v{n+1}，不覆盖 v{n}：防止运行中的旧会话读到半成品配置
     new_version = int(record.get("export_version") or 1) + 1
     await _generate_and_store(
-        db=db,
+        repo=repo,
         username=username,
         expert_agent_id=request.export_agent_id,
         name_cn=name_cn,
@@ -870,7 +890,7 @@ async def update_expert(
 
 @router.get("/agent/list", summary="获取专家 Agent 列表")
 def list_experts(
-    db: Annotated[Database, Depends(get_database)],
+    db: Annotated[ExpertRepository, Depends(get_expert_repository)],
     username: Annotated[str, Depends(get_current_username)],
     keyword: str = Query("", description="按中英文名模糊搜索"),
     status: str = Query("", description="按状态过滤：active/failed/disabled"),
@@ -886,9 +906,10 @@ def list_experts(
     （前端「+」面板表现为偶发数秒的「加载中…」）。改成 ``def`` 后 FastAPI 自动
     放到线程池执行，互不拖累。
     """
+    repo = _as_expert_repository(db)
     t0 = time.perf_counter()
-    user_id = _current_user_id(db, username)
-    store = ExpertStore(db)
+    user_id = _current_user_id(repo, username)
+    store = repo
     total, items = store.list_by_user(
         user_id,
         keyword=keyword or "",
@@ -960,11 +981,12 @@ def list_public_experts():
 @router.post("/agent/del", summary="删除专家 Agent")
 async def delete_expert(
     request: ExpertDelRequest,
-    db: Annotated[Database, Depends(get_database)],
+    db: Annotated[ExpertRepository, Depends(get_expert_repository)],
     username: Annotated[str, Depends(get_current_username)],
 ):
-    user_id = _current_user_id(db, username)
-    store = ExpertStore(db)
+    repo = _as_expert_repository(db)
+    user_id = _current_user_id(repo, username)
+    store = repo
     record = store.get_owned(request.export_agent_id, user_id)
     if record is None:
         raise HTTPException(status_code=404, detail="专家不存在")
@@ -997,11 +1019,12 @@ async def delete_expert(
 )
 async def stream_export_run(
     request: ExpertRunRequest,
-    db: Annotated[Database, Depends(get_database)],
+    db: Annotated[ExpertRepository, Depends(get_expert_repository)],
     http_request: Request,
     username: Annotated[str, Depends(get_current_username)],
 ):
     # 正文可以为空：只挂技能 / 只上传文件时本来就没有正文（与 chat.py 一致）
+    repo = _as_expert_repository(db)
     if (
         not (request.message or "").strip()
         and not request.files
@@ -1038,14 +1061,14 @@ async def stream_export_run(
     if session_id is None:
         session_id = str(uuid.uuid4())
         workspace_name = create_new_session(
-            db, session_id, username, request.message, request.files, turn_fallback_name
+            repo, session_id, username, request.message, request.files, turn_fallback_name
         )
     else:
-        session = db.get_session(session_id)
+        session = repo.get_session(session_id)
         if not session:
             session_id = str(uuid.uuid4())
             workspace_name = create_new_session(
-                db, session_id, username, request.message, request.files, turn_fallback_name
+                repo, session_id, username, request.message, request.files, turn_fallback_name
             )
         elif (session.username or "") != (username or ""):
             raise HTTPException(status_code=404, detail="会话不存在")
@@ -1056,7 +1079,12 @@ async def stream_export_run(
                     request.message, request.files, username, turn_fallback_name
                 )
                 session.updated_at = datetime.now().isoformat()
-                db.update_session(session)
+                repo.update_session_meta(
+                    session.session_id,
+                    session.title,
+                    session.updated_at,
+                    session.username,
+                )
 
     # ── 2. 专家校验与提示词加载 ────────────────────────────────────────
     # 我的专家（数据库）优先，公共专家（experts 目录）兜底；找不到 ID 时 404。
@@ -1065,7 +1093,7 @@ async def stream_export_run(
     expert_id = ""
     if request.expert_agent_id:
         expert_id, expert_prompt, _source = _load_expert_prompt(
-            db, username, request.expert_agent_id, sid
+            repo, username, request.expert_agent_id, sid
         )
         if not expert_prompt:
             # 读取失败（目录被清 / 文件缺失）：降级为通用 Agent，不阻断对话
@@ -1077,7 +1105,7 @@ async def stream_export_run(
     # 工具零可达。预检关闭/异常/超时一律放行（fail-open）。
     # 放在文件解析之前：拒答的消息不该为解析附件付出代价，也不该触发预览注入。
     gate = await _relevance_gate(
-        db,
+        repo,
         session_id,
         username,
         expert_id,
@@ -1088,7 +1116,7 @@ async def stream_export_run(
     )
     if gate is not None:
         classification, refusal = gate
-        _persist_user_turn(db, session_id, username, request, expert_id, turn_skill_dirs)
+        _persist_user_turn(repo, session_id, username, request, expert_id, turn_skill_dirs)
         _session_logger_for(session_id, username).log_user_message(
             message=request.message,
             files=request.files,
@@ -1100,7 +1128,10 @@ async def stream_export_run(
         )
         return StreamingResponse(
             _detached_event_stream(
-                _refusal_event_stream(session_id, db, refusal), session_id, sid
+                _refusal_event_stream(session_id, repo, refusal),
+                session_id,
+                sid,
+                renew_stream=repo.renew_stream,
             ),
             media_type="text/event-stream",
             headers={
@@ -1124,7 +1155,7 @@ async def stream_export_run(
     if request.files and not file_context.is_enabled():
         # 回退模式（config.file_context.enabled=false）：与 chat.py 一致，保持改造前
         # 行为——首轮把解析全文放进 system prompt，非首轮拼进用户消息。
-        _existing = db.get_session(session_id)
+        _existing = repo.get_session(session_id)
         is_new_session = (not _existing) or (len(_existing.messages) == 0)
 
         for file_info in request.files:
@@ -1154,7 +1185,7 @@ async def stream_export_run(
         # 注入 system prompt（见 services/session_uploads.py / agent.py），这里只注入
         # 本轮上传文件的开头预览，减少"传完立刻提问"的一次工具往返。
         preview = file_context.build_turn_preview(
-            session_id, username, request.files, db
+            session_id, username, request.files, repo.database
         )
         if preview:
             parsed_content = preview + "\n\n" + parsed_content
@@ -1175,7 +1206,7 @@ async def stream_export_run(
     )
 
     # ── 4. 落用户消息（与 chat.py 一致） ───────────────────────────────
-    _persist_user_turn(db, session_id, username, request, expert_id, turn_skill_dirs)
+    _persist_user_turn(repo, session_id, username, request, expert_id, turn_skill_dirs)
 
     session_logger = _session_logger_for(session_id, username)
     session_logger.log_user_message(
@@ -1215,7 +1246,7 @@ async def stream_export_run(
         _detached_event_stream(
             chat_stream_generator(
                 request=chat_request,
-                db=db,
+                db=repo.database,
                 agent=agent,
                 session_id=session_id,
                 message_id=message_id,
@@ -1226,6 +1257,7 @@ async def stream_export_run(
             ),
             session_id,
             sid,
+            renew_stream=repo.renew_stream,
         ),
         media_type="text/event-stream",
         headers={

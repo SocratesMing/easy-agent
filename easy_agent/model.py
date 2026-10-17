@@ -202,6 +202,29 @@ def resolve_llm_config(config: Config, model_name: str | None):
 _PROCESS_SESSION_ID = f"easy-agent-{os.getpid()}"
 
 
+def resolve_context_length(
+    config: "Config | None", model_name: str | None = None
+) -> int:
+    """取「本次会话实际使用模型」的上下文窗口（``context_length``）。
+
+    用户可在输入框切换模型，而各 provider 的 ``context_length`` 是分别配置的，
+    因此上下文压缩阈值与前端上下文占用率都必须以**当前模型**的值为准，
+    不能只认 ``config.llm``（那只是启动时 ``model:`` 指向的 provider）。
+
+    优先级：``config.models[model_name].context_length`` → ``config.llm``
+    → 兜底 ``1_000_000``。解析失败不抛异常（调用方多为展示/日志路径）。
+    """
+    fallback = 1_000_000
+    if config is None:
+        return fallback
+    try:
+        resolved = resolve_llm_config(config, model_name)
+        value = int(getattr(resolved, "context_length", 0) or 0)
+        return value or fallback
+    except Exception:  # noqa: BLE001
+        return fallback
+
+
 def build_request_headers(
     llm_config: LLMConfig, session_id: str | None = None
 ) -> dict[str, str] | None:

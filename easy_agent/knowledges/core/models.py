@@ -611,3 +611,7 @@ __all__ = [
     "UploadBatchAccepted",
     "UploadItemAccepted",
 ]
+
+
+class KnowledgeAskCancelResponse(ContractModel):
+    status: str

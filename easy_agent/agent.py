@@ -12,336 +12,57 @@ No need to declare these tools manually.
 import json
 import logging
 import platform
-import re
 import shutil
-import sys
-import threading
 import time
 from pathlib import Path
 
 from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend, LocalShellBackend
-from deepagents.backends.protocol import ExecuteResponse
-from deepagents.middleware.filesystem import (
-    EXECUTE_TOOL_DESCRIPTION,
-    FilesystemOperation,
-    FilesystemPermission,
-)
-from langchain.agents.middleware import InterruptOnConfig, ToolCallRequest
+from deepagents.middleware.filesystem import FilesystemOperation, FilesystemPermission
+from langchain.agents.middleware import InterruptOnConfig
 from langchain_core.messages import AIMessageChunk, ToolMessage
-from langgraph.checkpoint.memory import MemorySaver
 
+from .backends.shell import _PathTranslatingShell
+from .checkpoints import get_session_checkpointer, release_session_checkpointer
 from .config import Config
+from .fs_safety import _check_external_dir_safety
+from .hitl import (
+    DEFAULT_INTERRUPT_TOOLS,
+    EXECUTE_HITL_TOOL_DESCRIPTION,
+    HITL_SYSTEM_NOTE,
+    _is_destructive_command,
+    _is_knowledge_materialize,
+    execute_description_installed,
+    install_execute_tool_description,
+    looks_like_mutating_tool,
+)
+from .stores import get_agent_store
+from .agent_graph_cache import (
+    SessionContext,
+    build_graph_key,
+    config_fingerprint,
+    contextualize_tools,
+    get_agent_graph_cache,
+    graph_cache_enabled,
+    model_fingerprint,
+    summarization_fingerprint,
+)
+from .subagents import DEFAULT_SUBAGENTS
+from .summarization import configured_summarization
 from .logger import AgentLogger
-from .model import create_model, extract_reasoning
-from .landlock import landlock_usable
-from .sandbox import bwrap_usable, run_landlocked, run_sandboxed
+from .model import create_model, extract_reasoning, resolve_context_length
+from .prompt_guard import assemble_system_prompt
 from .tools.web_search import WEB_SEARCH_SYSTEM_PROMPT
 from .utils.prompt_probe import describe_prompt, prompt_fingerprint
 
 
 logger = logging.getLogger(__name__)
-_IS_WINDOWS = sys.platform == "win32"
-
-
-# ---------------------------------------------------------------------------
-# Human-in-the-loop: 检测 execute 工具中的文件删除命令
-# ---------------------------------------------------------------------------
-_DESTRUCTIVE_CMD_PATTERNS = [
-    r"\brm\b",
-    r"\brmdir\b",
-    r"\bunlink\b",
-    r"\bshred\b",
-    r"\bfind\s+.*\s-delete\b",
-    r"\bdel\b",
-    r"\berase\b",
-    r"\brd\b",
-    r"\bRemove-Item\b",
-]
-
-# 目录删除命令模式：rmdir、rm -r/-R/-d、find -delete、shred -r，
-# 以及 Windows 的 rd /s、del /s 和 PowerShell Remove-Item -Recurse。
-_DIR_DELETION_PATTERNS = [
-    r"\brmdir\b",
-    r"\brm\b\s+(-\w*[rRd])",
-    r"\bfind\s+.*\s-delete\b",
-    r"\bshred\b\s+(-\w*[rR])",
-    r"\brd\b(?:\s+-\w*s)?",
-    r"\bdel\b(?:\s+[^&|;]*)\s/-s\b",
-    r"\bRemove-Item\b[^;|&]*-Recurse\b",
-]
-
-
-def _is_directory_deletion(command: str) -> bool:
-    """检查命令是否试图删除目录（而非仅删除文件）。"""
-    if not command:
-        return False
-    return any(re.search(pat, command) for pat in _DIR_DELETION_PATTERNS)
-
-
-def _is_destructive_command(request: ToolCallRequest) -> bool:
-    """检查 execute 工具调用是否包含文件删除命令。
-
-    目录删除命令（rmdir、rm -r 等）不触发 HITL 审批，
-    而是由 _PathTranslatingShell.execute() 直接拒绝。
-    仅文件删除命令（rm、unlink、shred）触发 HITL 审批。
-    """
-    tool_call = request.tool_call if hasattr(request, "tool_call") else {}
-    command = (tool_call.get("args", {}) if isinstance(tool_call, dict) else {}).get("command", "")
-    if not command:
-        return False
-    if not any(re.search(pat, command) for pat in _DESTRUCTIVE_CMD_PATTERNS):
-        return False
-    # 目录删除由 execute() 直接拒绝，不触发 HITL
-    if _is_directory_deletion(command):
-        return False
-    return True
-
-
-# ---------------------------------------------------------------------------
-# 外部目录挂载安全校验：防止 external_dirs 把工作区根（含所有用户会话）或
-# 其他用户子树挂载为虚拟路径，导致智能体越权访问其他用户的会话数据。
-# ---------------------------------------------------------------------------
-
-def _is_within(child: Path, ancestor: Path) -> bool:
-    """*child* 等于或位于 *ancestor* 之内（两者均应已 ``resolve()``）。"""
-    try:
-        child.relative_to(ancestor)
-        return True
-    except ValueError:
-        return False
-
-
-def _check_external_dir_safety(
-    real_path: Path, workspace_root: Path, safe_username: str
-) -> tuple[bool, str]:
-    """检查外部目录挂载是否会越权暴露其他用户的会话数据。
-
-    返回 ``(是否安全, 不安全时的原因)``。以下情形视为不安全，必须拒绝挂载：
-
-    - 外部目录是工作区根目录本身或其祖先 -> 暴露全部用户；
-    - 外部目录位于工作区根目录下、但不在当前用户子树内 -> 暴露其他用户。
-
-    使用 ``resolve()`` 跟随符号链接，软链接到工作区根的情形同样会被拦截。
-    """
-    try:
-        ws_root = workspace_root.resolve()
-        user_root = (ws_root / safe_username).resolve()
-        real = real_path.resolve()
-    except Exception:
-        # 无法解析时不阻断：后续 mkdir/挂载会自然失败并报错。
-        return True, ""
-    if _is_within(ws_root, real):
-        return False, (
-            f"目标路径 {real} 是工作区根目录 {ws_root} 本身或其祖先，"
-            "挂载后将暴露所有用户的会话目录"
-        )
-    if _is_within(real, ws_root) and not _is_within(real, user_root):
-        return False, (
-            f"目标路径 {real} 位于工作区根目录 {ws_root} 下但不在当前用户"
-            f"({safe_username})的子树内，挂载后将暴露其他用户数据"
-        )
-    return True, ""
 
 
 # 长期记忆（跨会话 AGENTS.md）在虚拟文件系统中的挂载点：
 # _build_backend 把 memories/{username}/ 挂成 /memories/ 路由，
 # create_deep_agent(memory=[...]) 再经该虚拟路径加载（MemoryMiddleware 读 backend）。
 LONG_TERM_MEMORY_VIRTUAL_PATH = "/memories/AGENTS.md"
-
-# ── HITL checkpointer 复用 ────────────────────────────────────────────────
-# HITL 的中断态保存在 checkpointer 中，而 Agent 会在 rename_workspace、
-# 记忆更新（remove_session_agent）后被重建。若每次重建都 new 一个 MemorySaver，
-# 中断态随之丢失，resume 将找不到 checkpoint。故按 session 复用同一实例。
-#
-# 限制：MemorySaver 只存在于进程内、重启即失效（langgraph 的 sqlite / postgres
-# checkpointer 当前未安装）。FIFO 上限用于避免会话长期累积导致内存无界增长。
-_CHECKPOINTERS: dict[str, MemorySaver] = {}
-_CHECKPOINTER_MAX = 200
-_CHECKPOINTER_LOCK = threading.Lock()
-
-
-def get_session_checkpointer(session_id: str) -> MemorySaver:
-    """按 session 复用 HITL checkpointer（Agent 重建后中断态仍可恢复）。"""
-    with _CHECKPOINTER_LOCK:
-        checkpointer = _CHECKPOINTERS.get(session_id)
-        if checkpointer is None:
-            if len(_CHECKPOINTERS) >= _CHECKPOINTER_MAX:
-                # FIFO 淘汰最旧的会话（其 HITL 中断态一并释放）
-                _CHECKPOINTERS.pop(next(iter(_CHECKPOINTERS)), None)
-            checkpointer = MemorySaver()
-            _CHECKPOINTERS[session_id] = checkpointer
-        return checkpointer
-
-
-def release_session_checkpointer(session_id: str) -> None:
-    """会话删除时释放其 checkpointer（未调用时由 FIFO 上限兜底）。"""
-    with _CHECKPOINTER_LOCK:
-        _CHECKPOINTERS.pop(session_id, None)
-
-
-_summarization_factory_installed = False
-
-
-def _match_provider_by_model(config: "Config", model) -> object | None:
-    """按模型实例反查它在 ``config.models`` 中对应的 provider 配置。
-
-    匹配依据（依次尝试）：``model.model_name`` / ``model.model`` /
-    ``model.model_kwargs["model"]``。找不到时返回 None，调用方回退到
-    ``config.llm``（启动时的激活模型）的阈值。
-
-    用途：摘要阈值必须跟随「本次实际使用的模型」——用户可在输入框切换模型
-    （每轮 ``create_model(config, model_name)``），而各 provider 的
-    ``context_length`` 是分别配置的，可能相差很大。
-    """
-    candidates: list[str] = []
-    for attr in ("model_name", "model"):
-        value = getattr(model, attr, None)
-        if isinstance(value, str) and value:
-            candidates.append(value)
-    model_kwargs = getattr(model, "model_kwargs", None)
-    if isinstance(model_kwargs, dict):
-        value = model_kwargs.get("model")
-        if isinstance(value, str) and value:
-            candidates.append(value)
-    if not candidates:
-        return None
-    for provider in (getattr(config, "models", None) or {}).values():
-        if getattr(provider, "model", "") and provider.model in candidates:
-            return provider
-    return None
-
-
-def resolve_context_length(
-    config: "Config | None", model_name: str | None = None
-) -> int:
-    """取「本次会话实际使用模型」的上下文窗口（``context_length``）。
-
-    用户可在输入框切换模型，而各 provider 的 ``context_length`` 是分别配置的，
-    因此上下文压缩阈值与前端上下文占用率都必须以**当前模型**的值为准，
-    不能只认 ``config.llm``（那只是启动时 ``model:`` 指向的 provider）。
-
-    优先级：``config.models[model_name].context_length`` → ``config.llm``
-    → 兜底 ``1_000_000``。解析失败不抛异常（调用方多为展示/日志路径）。
-    """
-    fallback = 1_000_000
-    if config is None:
-        return fallback
-    try:
-        from .model import resolve_llm_config
-
-        resolved = resolve_llm_config(config, model_name)
-        value = int(getattr(resolved, "context_length", 0) or 0)
-        return value or fallback
-    except Exception:  # noqa: BLE001
-        return fallback
-
-
-def install_config_summarization(config: "Config") -> None:
-    """让官方 SummarizationMiddleware 使用 config 阈值。
-
-    ``create_deep_agent`` 会无条件注入 ``create_summarization_middleware(model, backend)``
-    （模型感知默认值），且不接受 profile 自定义、再传入一个会触发
-    ``AssertionError: Please remove duplicate middleware instances``。因此一次性替换
-    ``deepagents.graph`` 中的工厂引用，使其返回用 config 阈值参数化的官方
-    ``SummarizationMiddleware`` 实例--复用官方实现，不自行重写摘要逻辑。
-
-    阈值口径：**全部以配置文件 ``config.llm.context_length`` 为基准**，按
-    ``config.summarization.compression_threshold / compression_target`` 的**比例**
-    折算成绝对 token 数（不依赖 ``model.profile``，因为项目自定义的
-    ``ReasoningChatOpenAI.profile`` 为 None，fraction 形式会静默失效）。
-
-    同时必须显式配置 ``truncate_args_settings``：官方默认是 ``("messages", 20)``，
-    即消息数一到 20 条就把 keep 窗口之外的 ``AIMessage.tool_calls.args`` 砍成
-    「前 20 字符 + ...(argument truncated)」，会把 ``write_file`` / ``execute``
-    这类大参数清空，导致下一轮从 DB 重建上下文时明显缩水（实测 34.3k -> 30.6k
-    tokens）。这里改为与摘要同一比例触发。
-
-    上下文压缩统一交给该官方中间件：在每次模型调用前按 token 阈值自动摘要旧消息，
-    从而取代 streaming.py 中自实现的 compress_context/build_context_messages。
-    """
-    global _summarization_factory_installed
-    if _summarization_factory_installed:
-        return
-    import deepagents.graph as _graph
-    from deepagents.middleware.summarization import SummarizationMiddleware
-
-    max_tokens = int(getattr(config.llm, "context_length", 0) or 1_000_000)
-    thr = float(getattr(config.summarization, "compression_threshold", 0.0) or 0.8)
-    tgt = float(getattr(config.summarization, "compression_target", 0.0) or 0.1)
-    trigger_tokens = max(1, int(max_tokens * thr))
-    keep_tokens = max(1, int(max_tokens * tgt))
-    truncate_max_length = int(
-        getattr(config.summarization, "truncate_arg_max_length", 0) or 2000
-    )
-
-    _logged_models: set[str] = set()
-    # 生成摘要时纳入的历史 token 上限比例（官方默认是固定 4000，对 1M 窗口偏小）
-    _trim_ratio = 0.02
-
-    def _factory(model, backend, **_kwargs):
-        # 【全部动态】middleware 的每个 token 类参数都从「本次实际使用的模型」的
-        # context_length 派生，没有任何写死的绝对 token 值：
-        #   trigger / keep               → 窗口 × compression_threshold / compression_target
-        #   truncate_args trigger / keep → 与摘要同一阈值
-        #   trim_tokens_to_summarize     → 窗口 × _trim_ratio（不低于官方默认 4000）
-        # 不能用 ("fraction", x)：本项目 ReasoningChatOpenAI.profile 为 None，
-        # fraction 形式会静默失效（见本函数文档）。
-        # 模型切换时 agent_manager 会驱逐旧 Agent 重建
-        # （get_or_create_agent_for_session 的「模型切换」分支），
-        # 因此每建一次 Agent 就会按新窗口重算一次。
-        provider = _match_provider_by_model(config, model)
-        model_max = 0
-        if provider is not None:
-            model_max = int(getattr(provider, "context_length", 0) or 0)
-        if model_max <= 0:
-            # 反查失败（自定义模型实例等）：按实例模型名再解析一次；
-            # 仍失败则由 resolve_context_length 兜底到激活模型 / 1M。
-            model_name = getattr(model, "model_name", None) or getattr(model, "model", None)
-            model_max = resolve_context_length(config, model_name)
-        use_trigger = max(1, int(model_max * thr))
-        use_keep = max(1, int(model_max * tgt))
-        use_trim = max(4000, int(model_max * _trim_ratio))
-        # 每个 provider **首次**被使用时打印一行实际生效的阈值。
-        # 之前只在「窗口与启动基准不同」时才打，导致切到窗口相同的 provider
-        # （如 dev.yaml 里 deepseek 与 glm 都是 128000）完全没有日志，
-        # 看起来像"阈值没跟随当前模型"。同一 provider 后续调用不再重复打印。
-        _name = getattr(provider, "provider", "") or "未知"
-        if _name not in _logged_models:
-            _logged_models.add(_name)
-            logger.info(
-                f"📐 摘要阈值生效基准（全部由 context_length 派生）| {_name}"
-                f"({getattr(provider, 'model', '') or getattr(model, 'model_name', '')}) "
-                f"窗口={model_max} | trigger={use_trigger} keep={use_keep} "
-                f"trim_to_summarize={use_trim} | "
-                f"(context_length={model_max} threshold={thr} target={tgt})"
-            )
-        return SummarizationMiddleware(
-            model=model,
-            backend=backend,
-            trigger=("tokens", use_trigger),
-            keep=("tokens", use_keep),
-            trim_tokens_to_summarize=use_trim,
-            # 与摘要同一比例：只有上下文逼近阈值时才裁剪旧消息里的工具参数
-            truncate_args_settings={
-                "trigger": ("tokens", use_trigger),
-                "keep": ("tokens", use_keep),
-                "max_length": truncate_max_length,
-                "truncation_text": "...(argument truncated)",
-            },
-        )
-
-    _graph.create_summarization_middleware = _factory
-    _summarization_factory_installed = True
-    logger.info(
-        f"SummarizationMiddleware 已接入 config 阈值 | 启动基准（激活模型 "
-        f"{getattr(config.llm, 'model', '')}）：context_length={max_tokens} "
-        f"threshold={thr} target={tgt} | "
-        f"摘要 trigger=tokens:{trigger_tokens} keep=tokens:{keep_tokens} | "
-        f"参数截断 trigger=tokens:{trigger_tokens} keep=tokens:{keep_tokens} "
-        f"max_length={truncate_max_length} | "
-        f"运行时按「当前实际使用的模型」的 context_length 重算（见 📐 日志）"
-    )
 
 
 def _deepagents_version() -> str:
@@ -355,27 +76,8 @@ def _deepagents_version() -> str:
 
 
 def framework_patch_status() -> dict[str, bool]:
-    """自检对 deepagents 内部的两处适配是否仍然生效。
-
-    这两处适配都依赖框架**私有符号**（``deepagents.graph`` 的模块级工厂、
-    ``FilesystemMiddleware._create_execute_tool``），属于「框架未提供官方扩展点」时的
-    必要绕行。deepagents 升级后符号若改名/改签名，打补丁会失败并降级，
-    本函数把这种降级变得可见，而不是静默失效。
-    """
-    status = {"summarization_factory": _summarization_factory_installed}
-    try:
-        from deepagents.middleware.filesystem import FilesystemMiddleware
-
-        status["execute_tool"] = (
-            getattr(
-                FilesystemMiddleware, "_original_create_execute_tool", None
-            )
-            is not None
-        )
-    except Exception:  # noqa: BLE001
-        status["read_file_tool"] = False
-        status["execute_tool"] = False
-    return status
+    """自检 execute 描述是否已通过公开 ``custom_tool_descriptions`` 注入。"""
+    return {"execute_tool": execute_description_installed()}
 
 
 _patch_status_logged = False
@@ -397,222 +99,172 @@ def log_framework_patch_status(sid: str = "startup") -> None:
     failed = [k for k, v in status.items() if not v]
     logger.error(
         f"[{sid}] ❌ deepagents 适配失效: {failed} | {detail} | 降级后果——"
-        f"summarization_factory=摘要阈值不再按 config 生效、"
-        f"execute_tool=execute 描述缺少 HITL 说明。"
+        f"execute_tool=execute 描述未注入公开 custom_tool_descriptions。"
         f"当前 deepagents {_deepagents_version()}，请对照其源码修正 agent.py 中的适配代码。"
     )
 
 
-class _PathTranslatingShell(LocalShellBackend):
-    """LocalShellBackend 包装：execute 命令中自动将虚拟路径翻译为实际路径。
+def build_subagent_specs(
+    session_id: str = "", result_log_truncate: int = 500
+) -> list[dict]:
+    """构造传给 create_deep_agent 的 subagent specs。
 
-    模型可能混用虚拟路径（/skills/、/workspace/xxx/）和实际路径，
-    此类在命令执行前统一翻译，无需模型在提示词中区分。
+    官方语义：自定义 subagent **不继承**主 agent 的 skills，且 middleware 栈
+    也不会自动带上用户的 LoggingMiddleware。这里显式补上：
+    - skills=["/user-skills/"]：office-writer / knowledge-researcher 能读技能文档；
+    - middleware=[LoggingMiddleware(...)]：子代理内工具异常不会直接中断 task。
 
-    同时对 execute 返回结果做反向翻译（实际路径→虚拟路径），
-    避免命令输出（如 pwd、ls、错误堆栈）向模型暴露宿主机绝对路径，
-    否则模型会从输出中"学到"绝对路径并在后续命令中直接使用。
+    D2：``session_id`` 不再写进 spec（否则同一张编译图会被会话绑定、无法复用）。
+    LoggingMiddleware 只做工具异常兜底，日志前缀使用通用 ``agent``；保留参数
+    仅为兼容既有调用方。
     """
+    from .services.logging_middleware import LoggingMiddleware
 
-    def __init__(self, path_mappings: dict[str, str], *args, sandbox_enabled: bool = True, **kwargs):
-        """初始化路径翻译 Shell 后端。
-
-        预编译虚拟路径→实际路径的替换规则，按路径长度降序排列，
-        确保最长前缀优先匹配，避免短前缀误替换长路径中的子串。
-
-        Args:
-            path_mappings: 虚拟路径前缀到实际路径的映射字典，
-                如 {'/workspace/': '/abs/path/to/session/'}。
-            *args: 传递给 LocalShellBackend 的位置参数。
-            **kwargs: 传递给 LocalShellBackend 的关键字参数。
-        """
-        super().__init__(*args, **kwargs)
-        self._is_windows = _IS_WINDOWS
-        # 正向规则：虚拟路径 → 实际路径（用于翻译输入命令）
-        # 去掉结尾斜杠，使 mkdir/cd 等不带斜杠的路径也能匹配；
-        # 用 lookahead 确保路径后是边界字符（斜杠/空格/引号/结尾等），
-        # 避免 /workspace/szm/sess 误匹配 /workspace/szm/sessionXYZ
-        self._rules = [
-            (
-                re.compile(rf'(^|[\s"\'&|;(=])({re.escape(v.rstrip("/"))})(?=/|$|[\s"\'&|;),=])'),
-                real.rstrip("/\\"),
-            )
-            for v, real in sorted(path_mappings.items(), key=lambda x: -len(x[0]))
+    specs: list[dict] = []
+    for base in DEFAULT_SUBAGENTS:
+        item = dict(base)
+        item.setdefault("skills", ["/user-skills/"])
+        item["middleware"] = [
+            LoggingMiddleware(result_log_truncate=result_log_truncate)
         ]
-        # 反向规则：实际路径 → 虚拟路径（用于翻译输出结果）
-        # 去掉结尾斜杠，使 pwd 等不带斜杠的输出也能匹配；
-        # 按实际路径长度降序排列，避免短路径误替换长路径中的子串
-        self._reverse_rules = [
-            (real.rstrip('/\\'), v.rstrip('/'))
-            for v, real in sorted(path_mappings.items(), key=lambda x: -len(x[1]))
-        ]
-        # 沙箱：限制 shell 命令只能访问工作区及授权目录，禁止访问宿主机其他路径
-        self._sandbox_enabled = sandbox_enabled
-        self._allowed_rw_dirs = self._compute_allowed_dirs(path_mappings)
-        self._use_bwrap = sandbox_enabled and bwrap_usable()
-        self._use_landlock = (
-            sandbox_enabled and not self._use_bwrap and landlock_usable()
-        )
-        # bwrap 把每个真实目录绑定到其「虚拟路径」挂载点，而非真实宿主机路径
-        # （后者通常位于 /home/<user>/... 下）。这样 /home、/root 在沙箱内完全
-        # 不可见，模型直接使用虚拟路径，因此 bwrap 模式下关闭路径翻译。
-        # Landlock 无法重映射路径，仍使用 virtual->real 翻译与真实 cwd。
-        if self._use_bwrap:
-            self._bind_pairs = [
-                (real.rstrip("/"), virtual.rstrip("/"))
-                for virtual, real in path_mappings.items()
-            ]
-            self._virtual_cwd = next(
-                iter(path_mappings.keys()), str(self.cwd)
-            ).rstrip("/")
-            self._rules = []
-            self._reverse_rules = []
-        else:
-            self._bind_pairs = None
-            self._virtual_cwd = None
-        if sandbox_enabled:
-            if self._use_bwrap:
-                mode = "bwrap 沙箱隔离"
-            elif self._use_landlock:
-                mode = "Landlock 隔离（bwrap 不可用，已降级为非特权文件系统隔离）"
-            else:
-                mode = "fail-closed（bwrap 与 Landlock 均不可用，shell 命令将被拒绝）"
-            logger.info(f"[{self._sandbox_id}] shell 沙箱已启用: {mode}")
+        specs.append(item)
+    return specs
 
-    def execute(self, command: str, *, timeout: int | None = None) -> "ExecuteResponse":
-        """执行 shell 命令，执行前翻译虚拟路径，执行后反向翻译输出。
 
-        执行前将命令中的虚拟路径前缀替换为实际路径；
-        执行后将输出中的实际路径替换回虚拟路径，避免暴露宿主机路径。
-        目录删除命令（rmdir、rm -r 等）将被直接拒绝。
+def _shared_graph_checkpointer():
+    """返回可跨会话共享的 checkpointer；legacy 按 session 的 saver 返回 None。
 
-        Args:
-            command: 原始 shell 命令字符串，可能包含虚拟路径。
-            timeout: 命令执行超时时间（秒），None 表示不限制。
+    D2 只复用「官方全局 saver」：``AsyncPostgresSaver`` / ``AsyncSqliteSaver``
+    由进程共享，thread_id 已含 session 维度。MySQL 无官方 saver 时 checkpoints.py
+    会按 session 创建 ``PersistentMemorySaver``，该对象不能塞进共享图，此时
+    由调用方显式降级为按会话建图。
+    """
+    from .checkpoints import postgres_checkpointer_active, sqlite_checkpointer_active
 
-        Returns:
-            ExecuteResponse: 命令执行结果，输出中的实际路径已翻译为虚拟路径。
-        """
-        translated = command
-        for pat, real in self._rules:
-            translated = pat.sub(lambda m: m.group(1) + real, translated)
-        if self._is_windows:
-            for _pattern, real in self._rules:
-                prefix = real.rstrip("/\\")
-                translated = translated.replace(f"{prefix}/", f"{prefix}\\")
-        if translated != command:
-            logger.debug(
-                "execute path translation: %s → %s", command[:80], translated[:80]
+    if not (postgres_checkpointer_active() or sqlite_checkpointer_active()):
+        return None
+    return get_session_checkpointer("__graph_cache__")
+
+
+def _build_backend_for_context(
+    config: Config,
+    context: SessionContext,
+    skills_paths: list[str],
+    *,
+    safe_external: dict[str, str] | None = None,
+    sid: str = "",
+) -> CompositeBackend:
+    """按运行期 ``SessionContext`` 构建 CompositeBackend（D2 共享图使用）。
+
+    与旧 ``EasyAgent._build_backend`` 的路由/权限语义逐项一致，唯一区别是
+    workspace / user-skills / memories 路径来自 context，而不是编译时的
+    ``EasyAgent`` 实例。backend callable 每次请求都会调用它，因此同一张图可
+    服务多个 session。
+    """
+    workspace_virtual_path = context.workspace_virtual_path or "/workspace"
+    workspace_dir = Path(context.workspace_dir)
+    user_skills_dir = Path(context.user_skills_dir)
+    long_term_memory_file = Path(context.long_term_memory_file)
+    shell_env = dict(getattr(context, "shell_env", {}) or {})
+    sid = sid or getattr(context, "sid", "") or "graph"
+
+    if safe_external is None:
+        external_dirs = config.agent.external_dirs or {}
+        workspace_root = Path(config.agent.workspace_dir)
+        safe_external = {}
+        for vpath, real_path in external_dirs.items():
+            real = Path(real_path)
+            ok, reason = _check_external_dir_safety(
+                real, workspace_root, context.safe_username
             )
-        # 拦截目录删除命令：项目根目录和 workspace 下的文件夹不可删除
-        if _is_directory_deletion(translated):
-            logger.warning(
-                f"[execute] 拒绝目录删除命令: {translated[:120]}"
-            )
-            return ExecuteResponse(
-                output="Error: 不允许删除目录/文件夹。项目根目录和 workspace 下的文件夹受保护，"
-                       "无法通过 rmdir、rm -r 等命令删除。如需删除文件，请使用 rm（不带 -r/-R/-d 参数）。",
-                exit_code=1,
-                truncated=False,
-            )
-        result = self._run_sandboxed(translated, timeout=timeout)
-        # 反向翻译输出：实际路径 → 虚拟路径
-        if self._reverse_rules and result.output:
-            output = result.output
-            for real, v in self._reverse_rules:
-                if self._is_windows:
-                    candidates = (
-                        real,
-                        real.replace("/", "\\"),
-                        real.replace("\\", "/"),
-                    )
-                    for candidate in candidates:
-                        output = re.sub(
-                            re.escape(candidate),
-                            v.rstrip("/"),
-                            output,
-                            flags=re.IGNORECASE,
-                        )
-                elif real in output:
-                    output = output.replace(real, v)
-            if output != result.output:
-                result = ExecuteResponse(
-                    output=output,
-                    exit_code=result.exit_code,
-                    truncated=result.truncated,
+            if not ok:
+                logger.warning(
+                    f"[{sid}] 🚫 拒绝挂载外部目录 {vpath} -> {real_path}：{reason}。"
+                    f"该挂载已跳过，以防止越权访问其他用户的会话数据。"
                 )
-        return result
+                continue
+            vp = vpath if vpath.endswith("/") else vpath + "/"
+            safe_external[vp] = str(real.absolute())
 
-    def _compute_allowed_dirs(self, path_mappings: dict[str, str]) -> list[str]:
-        """计算沙箱内可读写的实际目录：工作区 + 技能 + 外部目录。
+    workspace_backend = LocalShellBackend(
+        root_dir=str(workspace_dir.absolute()),
+        virtual_mode=True,
+        env=shell_env,
+    )
+    routes = {f"{workspace_virtual_path}/": workspace_backend}
 
-        这些目录会以读写方式挂载进 bwrap 沙箱，其余宿主机路径均不可见。
-        """
-        dirs: set[str] = set()
-        try:
-            dirs.add(str(Path(self.cwd).resolve()))
-        except Exception:
-            dirs.add(str(self.cwd))
-        for real in path_mappings.values():
-            try:
-                dirs.add(str(Path(real).resolve()))
-            except Exception:
-                dirs.add(str(Path(real)))
-        return sorted(dirs, key=len, reverse=True)
+    # 长期记忆（跨会话 AGENTS.md）挂载为 /memories/ 路由，供
+    # create_deep_agent(memory=[LONG_TERM_MEMORY_VIRTUAL_PATH]) 经虚拟路径读取。
+    # D2 记忆源固定（文件不存在时 MemoryMiddleware 自动跳过），因此路由总是挂载，
+    # 避免「首轮无记忆 / 二轮有记忆」改变编译图结构。
+    try:
+        long_term_memory_file.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        logger.warning(f"[{sid}] 创建长期记忆目录失败: {e}")
+    routes["/memories/"] = LocalShellBackend(
+        root_dir=str(long_term_memory_file.parent.absolute()),
+        virtual_mode=True,
+        env=shell_env,
+    )
 
-    def _run_sandboxed(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
-        """在沙箱中执行命令；沙箱关闭时直接在宿主机执行。
-
-        - bwrap 可用：命令在 bubblewrap 容器内执行，仅能访问工作区/技能/外部
-          目录（读写）与系统命令库/Python 环境（只读）。
-        - bwrap 不可用但 Landlock 可用：用 Landlock（非特权文件系统隔离）将命令
-          限制在工作区/技能/外部目录与系统只读目录，其余宿主机路径不可见。
-        - 二者均不可用：fail-closed，拒绝执行（避免越权访问其他用户数据）。
-        - 沙箱关闭：回退到原始的宿主机直接执行（不推荐，仅用于排查）。
-        """
-        if not self._sandbox_enabled:
-            return super().execute(command, timeout=timeout)
-        if self._use_bwrap:
-            return run_sandboxed(
-                command,
-                binds=self._bind_pairs,
-                cwd=self._virtual_cwd,
-                env=self._env,
-                timeout=timeout if timeout is not None else self._default_timeout,
-                max_output_bytes=self._max_output_bytes,
-            )
-        if self._use_landlock:
-            return run_landlocked(
-                command,
-                allowed_rw_dirs=self._allowed_rw_dirs,
-                cwd=str(self.cwd),
-                env=self._env,
-                timeout=timeout if timeout is not None else self._default_timeout,
-                max_output_bytes=self._max_output_bytes,
-            )
-        # bwrap 与 Landlock 均不可用：fail-closed，拒绝执行（避免越权访问其他用户数据）
-        logger.warning(
-            f"[{self._sandbox_id}] 拒绝执行 shell 命令（无可用沙箱隔离）: {command[:120]}"
+    # 技能库路由总是挂载（即使当前一个技能都没有）：否则模型没有可写路径来创建
+    # 第一个技能。目录不存在时先建出来，保证 route 与 path_mappings 保持一致。
+    try:
+        user_skills_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        logger.warning(f"[{sid}] 创建用户技能目录失败: {e}")
+    if skills_paths or user_skills_dir.exists():
+        routes["/user-skills/"] = LocalShellBackend(
+            root_dir=str(user_skills_dir.absolute()),
+            virtual_mode=True,
+            env=shell_env,
         )
-        unsupported_message = (
-            "Error: Windows 当前未提供 bwrap/Landlock 等效沙箱，已拒绝执行 shell 命令。\n"
-            "如仅在可信单用户环境运行，可在配置中设置 agent.sandbox_enabled=false。"
-            if self._is_windows
-            else (
-                "Error: 当前环境不支持 bwrap 与 Landlock，无法安全执行 shell 命令，已拒绝执行。\n"
-                "请在容器启动时添加 --security-opt seccomp=unconfined --security-opt apparmor=unconfined "
-                "--security-opt systempaths=unconfined 以启用 bwrap 沙箱。"
-            )
+
+    # 挂载外部目录（skill 需要访问的宿主机目录）为虚拟路径路由。
+    # 仅挂载通过安全校验的目录（safe_external），防止把工作区根或其他用户
+    # 子树挂载出来导致越权访问其他用户的会话数据。
+    for vp, real_abs in (safe_external or {}).items():
+        real = Path(real_abs)
+        real.mkdir(parents=True, exist_ok=True)
+        routes[vp] = LocalShellBackend(
+            root_dir=str(real.absolute()),
+            virtual_mode=True,
+            env=shell_env,
         )
-        return ExecuteResponse(
-            output=unsupported_message,
-            exit_code=127,
-            truncated=False,
-        )
+
+    logger.info(
+        f"[{sid}] 🗺️ CompositeBackend routes:\n"
+        + "\n".join(f"    {vp:40s} → {b.cwd}" for vp, b in sorted(routes.items()))
+    )
+
+    ws_real = workspace_dir.absolute()
+    ws_real.mkdir(parents=True, exist_ok=True)
+    ws_str = str(ws_real)
+
+    path_mappings = {f"{workspace_virtual_path}/": ws_str + "/"}
+    if "/user-skills/" in routes:
+        path_mappings["/user-skills/"] = str(user_skills_dir.absolute()) + "/"
+    for vp, real_abs in (safe_external or {}).items():
+        path_mappings[vp] = real_abs + "/"
+
+    return CompositeBackend(
+        default=_PathTranslatingShell(
+            path_mappings=path_mappings,
+            root_dir=ws_str,
+            virtual_mode=True,
+            inherit_env=True,
+            timeout=120,
+            sandbox_enabled=config.agent.sandbox_enabled,
+        ),
+        routes=routes,
+    )
 
 
 class EasyAgent:
     """EasyAgent wraps DeepAgents with per-user/per-session workspace isolation.
+
+    EXECUTE_HITL_TOOL_DESCRIPTION is the public execute-tool copy used by the
+    FilesystemMiddleware patch below.
 
     Args:
         config: Application configuration.
@@ -625,6 +277,8 @@ class EasyAgent:
         workspace_name: Custom workspace directory name (e.g. '20260501_143022_a1b2c').
             If provided, used instead of session_id as the directory name.
     """
+
+    EXECUTE_HITL_TOOL_DESCRIPTION = EXECUTE_HITL_TOOL_DESCRIPTION
 
     def __init__(
         self,
@@ -678,6 +332,8 @@ class EasyAgent:
         # 环境为空 dict，这里只追加用户名，不继承宿主环境以免泄露密钥等变量）
         self.shell_env = {"EASY_USERNAME": self.safe_username}
         self.model_name = model_name or config.active_model
+        # D2：workspace_name 进运行期 context（知识库/工具按它解析会话目录）
+        self.workspace_name = ""
 
         if workspace_dir:
             self.workspace_dir = Path(workspace_dir)
@@ -708,6 +364,17 @@ class EasyAgent:
 
         # 用户技能目录: workspace/{username}/skills/（用户级，非 session 级）
         self.user_skills_dir = Path(config.agent.workspace_dir) / self.safe_username / "skills"
+        # D2：技能目录是否存在于「建图时」会影响 permissions 指纹；先建出来，
+        # 避免首个请求调用 backend factory 后才创建，导致同一用户第二次建图键变化。
+        try:
+            self.user_skills_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:  # noqa: BLE001
+            logger.warning(f"[{self.sid}] 创建用户技能目录失败: {exc}")
+        # 目录名即会话工作区的真实名字（rename_workspace 会更新它）
+        self.workspace_name = dir_name
+
+        # D2：会话差异集中到运行期 context；编译图缓存键不包含这些字段。
+        self.session_context = self._make_session_context()
 
         user_info = (
             f"## 当前用户\n"
@@ -717,17 +384,17 @@ class EasyAgent:
             + f"{self._get_os_info()}\n"
         )
 
-        prompt_parts = [
-            part
-            for part in (
-                system_prompt.strip(),
-                user_info.strip(),
-                WEB_SEARCH_SYSTEM_PROMPT.strip() if self.enable_web_search else "",
-                system_prompt_extra.strip(),
-            )
-            if part
-        ]
-        self.system_prompt = "\n\n".join(prompt_parts) + "\n"
+        # 组装顺序由 prompt_guard 统一保证：
+        # 基础规则 → 运行时上下文 → 联网附加 → 从属补充内容 → HITL 说明（最后）。
+        self.system_prompt = assemble_system_prompt(
+            base_prompt=system_prompt,
+            user_info=user_info,
+            web_search_prompt=WEB_SEARCH_SYSTEM_PROMPT
+            if self.enable_web_search
+            else "",
+            extra=system_prompt_extra,
+            hitl_note=HITL_SYSTEM_NOTE if self.enable_hitl else "",
+        )
 
         # ── 系统提示词可观测日志（专家 Agent 提示词链路校验，可观测点 ③） ──
         # 记录终稿的「总字符数 + 指纹 + 各分段字符数」，用于验证：
@@ -753,6 +420,7 @@ class EasyAgent:
 
         self.max_steps = config.agent.max_steps
         self.logger = AgentLogger()
+        self.agent_graph_key: str | None = None
         self.agent = self._create_agent()
 
         logger.info(
@@ -792,6 +460,8 @@ class EasyAgent:
         # 记忆文件基于 workspace_dir 推导，重命名后必须同步更新，
         # 否则 update_memory_after_session 会写回旧目录（且 mkdir 会重建旧目录）。
         self.memory_file = self.workspace_dir / "memory.md"
+        self.workspace_name = new_workspace.name
+        self.session_context = self._make_session_context()
 
         self.system_prompt = self.system_prompt.replace(
             old_path, str(new_workspace.absolute())
@@ -860,45 +530,181 @@ class EasyAgent:
             )
         return os_info
 
-    def _create_agent(self):
-        """Create the DeepAgents agent with workspace + skills backends.
+    def _make_session_context(self) -> SessionContext:
+        """把当前 EasyAgent 的会话差异冻结成运行期 context（不进缓存键）。"""
+        return SessionContext(
+            session_id=self.session_id or "",
+            username=self.username,
+            safe_username=self.safe_username,
+            workspace_dir=str(self.workspace_dir.absolute()),
+            workspace_virtual_path=self.workspace_virtual_path,
+            user_skills_dir=str(self.user_skills_dir.absolute()),
+            memory_file=str(self.memory_file.absolute()),
+            long_term_memory_file=str(self.long_term_memory_file.absolute()),
+            organization_id=self.organization_id or "",
+            shell_env=dict(self.shell_env),
+            workspace_name=self.workspace_name,
+        )
 
-        DeepAgents automatically provides built-in tools (ls, read_file,
-        write_file, edit_file, glob, grep, execute, task, write_todos).
-        We only need to configure the backend for file/shell access and
-        optionally load skills.
+    def _uploads_manifest_enabled(self) -> bool:
+        cfg = getattr(self.config, "file_context", None)
+        return cfg is not None and bool(getattr(cfg, "enabled", True))
+
+    def _memory_sources(self) -> list[str]:
+        """固定的记忆源列表（文件不存在时 MemoryMiddleware 自动跳过）。
+
+        D2 之前 memory 列表按「文件当前是否存在」变化，导致同一会话首轮/二轮
+        编译出不同图。改为固定列表后，运行期按需加载，既减少重复编译，也让
+        记忆在写入后下一轮立即可见。
+        """
+        sources = [
+            f"{self.workspace_virtual_path}/memory.md",
+            LONG_TERM_MEMORY_VIRTUAL_PATH,
+        ]
+        if self._uploads_manifest_enabled():
+            from .services.session_uploads import MANIFEST_FILENAME, UPLOADS_DIR_NAME
+
+            sources.append(
+                f"{self.workspace_virtual_path}/{UPLOADS_DIR_NAME}/{MANIFEST_FILENAME}"
+            )
+        return sources
+
+    def _build_interrupt_config(self):
+        """构造 HITL interrupt_on 配置（D2 拆出，便于键计算与复用）。"""
+        if not self.enable_hitl:
+            return None
+        interrupt_on_config: dict[str, bool | InterruptOnConfig] = {
+            "execute": InterruptOnConfig(
+                allowed_decisions=["approve", "reject"],
+                when=_is_destructive_command,
+            ),
+        }
+        for tool_name in DEFAULT_INTERRUPT_TOOLS:
+            interrupt_on_config.setdefault(
+                tool_name,
+                InterruptOnConfig(allowed_decisions=["approve", "reject"]),
+            )
+        interrupt_on_config.setdefault(
+            "access_knowledge_original",
+            InterruptOnConfig(
+                allowed_decisions=["approve", "reject"],
+                when=_is_knowledge_materialize,
+            ),
+        )
+        for extra in self.mcp_tools:
+            name = getattr(extra, "name", "") or ""
+            if looks_like_mutating_tool(name):
+                interrupt_on_config.setdefault(
+                    name,
+                    InterruptOnConfig(allowed_decisions=["approve", "reject"]),
+                )
+        return interrupt_on_config
+
+    def _graph_cache_block_reason(
+        self, llm_cfg, shared_checkpointer
+    ) -> str:
+        """返回不可复用原因（"" = 可以复用）。"""
+        if not graph_cache_enabled():
+            return "EASY_AGENT_GRAPH_CACHE=0（显式关闭）"
+        bound = [
+            key
+            for key, value in (getattr(llm_cfg, "headers", {}) or {}).items()
+            if "{session_id}" in str(value)
+        ]
+        if bound:
+            return f"模型请求头绑定 session_id: {bound}"
+        if shared_checkpointer is None:
+            return (
+                "checkpointer 为按 session 创建的 legacy saver"
+                "（非官方全局 Postgres/SQLite saver），无法跨会话共享"
+            )
+        return ""
+
+    def _make_backend_factory(self, skills_paths: list[str], fallback_context=None):
+        """backend callable：用 ToolRuntime.context 解析本次会话的目录。
+
+        ``fallback_context`` 只在「本 EasyAgent 未进入共享缓存」时传入，用于
+        兼容绕过 orchestrator、直接 ``agent.agent.astream(...)`` 的旧调用；
+        共享图路径必须显式传 context，避免把图重新绑到某个 session。
+        """
+        config = self.config
+        expected_user = self.safe_username
+        # 同一个 session 的 Memory/Skills middleware 与每次文件工具调用都会解析
+        # backend；按 context 缓存实例，避免每个工具调用都重建 CompositeBackend
+        # 与 shell 沙箱检测。会话之间仍是独立实例（不会串 workspace）。
+        backend_cache: dict[tuple[str, ...], CompositeBackend] = {}
+
+        def _factory(runtime):
+            ctx = getattr(runtime, "context", None)
+            if ctx is None or not hasattr(ctx, "workspace_dir"):
+                if fallback_context is not None:
+                    ctx = fallback_context
+                else:
+                    raise RuntimeError(
+                        "D2 共享编译图缺少运行期 SessionContext：请使用 "
+                        "astream(..., context=agent.session_context)"
+                    )
+            ctx_user = str(getattr(ctx, "safe_username", "") or "")
+            if expected_user and ctx_user != expected_user:
+                raise RuntimeError(
+                    "D2 共享编译图的 SessionContext 用户与建图用户不一致："
+                    f"expected={expected_user!r} got={ctx_user!r}"
+                )
+            key = (
+                str(getattr(ctx, "session_id", "") or ""),
+                str(getattr(ctx, "workspace_dir", "") or ""),
+                str(getattr(ctx, "user_skills_dir", "") or ""),
+                str(getattr(ctx, "long_term_memory_file", "") or ""),
+                str(getattr(ctx, "safe_username", "") or ""),
+            )
+            backend = backend_cache.get(key)
+            if backend is None:
+                if len(backend_cache) >= 16:
+                    backend_cache.pop(next(iter(backend_cache)))
+                backend = _build_backend_for_context(config, ctx, skills_paths)
+                backend_cache[key] = backend
+            return backend
+
+        return _factory
+
+    def _create_agent(self):
+        """Create the DeepAgents agent, reusing a process-wide compiled graph when safe.
+
+        D2：编译期输入（模型 / 工具集 / 系统提示词 / middleware / HITL /
+        subagent specs / skills / permissions / memory 源）用哈希做键；会话差异
+        （workspace、session_id、thread_id）通过 ``context=SessionContext`` 传入
+        运行期。无法安全共享时（模型头绑定 session、legacy checkpointer）显式
+        降级为按会话建图。
         """
         from .model import resolve_llm_config
 
-        # 带上会话标识：配置里若声明了 ``{session_id}`` 请求头占位符（如 OpenCode Go
-        # 要求的 x-opencode-session），会替换成本会话 id，保证同一会话稳定、
-        # 不同会话可区分（网关用于路由与 prompt 缓存）。
-        model = create_model(
-            self.config, model_name=self.model_name, session_id=self.session_id
-        )
-        self.model = model
-
-        # 解析实际使用的模型配置（而非 config.llm 默认配置）用于日志
         actual_llm_cfg = resolve_llm_config(self.config, self.model_name)
         logger.info(
             f"[{self.sid}] 🤖 当前使用模型 | "
             f"model_key: {self.model_name} | "
             f"context_length: {actual_llm_cfg.context_length}"
         )
-
         logger.info(f"[{self.sid}] 📋 系统提示词 | 预览(前100字符): {self.system_prompt[:100]}")
 
         skills_paths = self._resolve_skills_paths()
         safe_external = self._safe_external_dirs()
-        backend = self._build_backend(skills_paths, safe_external)
+        permissions = self._build_permissions(skills_paths, safe_external)
         self._log_user_skills()
         middleware = self._build_middleware()
-        tools = list(self.mcp_tools) if self.mcp_tools else None
-        permissions = self._build_permissions(skills_paths, safe_external)
+        interrupt_on_config = self._build_interrupt_config()
+        memory_list = self._memory_sources()
+        raw_tools = list(self.mcp_tools) if self.mcp_tools else []
+        subagents = build_subagent_specs(
+            result_log_truncate=getattr(self.config.tools, "result_log_truncate", 500)
+        )
 
-        self._override_execute_description(middleware)
-        # 适配体检（全进程只打印一次）：三处适配依赖 deepagents 私有符号，
-        # 升级后可能静默失效，这里让降级显式可见。
+        store = None
+        try:
+            store = get_agent_store()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"[{self.sid}] LangGraph Store 不可用，跨线程记忆仅走文件: {exc}")
+
+        install_execute_tool_description()
         log_framework_patch_status(self.sid)
 
         logger.info(
@@ -909,7 +715,7 @@ class EasyAgent:
             f"max_steps: {self.max_steps} | "
             f"workspace: {self.workspace_dir.absolute()} | "
             f"skills: {skills_paths or []} | "
-            f"mcp_tools: {len(tools) if tools else 0} | "
+            f"mcp_tools: {len(raw_tools)} | "
             f"middleware: {[type(m).__name__ for m in middleware]} | "
             f"memory_file: {self.memory_file} | "
             f"summarization: {self.config.summarization.enabled} | "
@@ -917,118 +723,101 @@ class EasyAgent:
         )
 
         memory_path = f"{self.workspace_virtual_path}/memory.md"
-
-        # 仅当记忆文件已存在时才传给 DeepAgents 加载
-        # 第一次对话时记忆文件不存在，不加载记忆；对话完成后生成记忆文件
-        # 第二次对话时 Agent 缓存已被清除，重建 Agent 时会加载新生成的记忆
-        memory_list = [memory_path] if self.memory_file.exists() else []
-        if self.long_term_memory_file.exists():
-            memory_list.append(LONG_TERM_MEMORY_VIRTUAL_PATH)
-
-        # 上传文件清单（本会话）：作为记忆注入，模型每轮都能看到用户传过哪些文件、
-        # 正文在哪，并按需用 grep/read_file 检索工作区 uploads/ 下的解析正文。
-        # 正文本身不注入（否则多轮累积会撑爆上下文）；清单随上传刷新，上传接口
-        # 会驱逐本会话的缓存 Agent，保证下一轮重建时读到最新清单。
-        file_ctx_cfg = getattr(self.config, "file_context", None)
-        has_uploads_manifest = False
-        if file_ctx_cfg is not None and getattr(file_ctx_cfg, "enabled", True):
-            from .services.session_uploads import MANIFEST_FILENAME, UPLOADS_DIR_NAME
-
-            manifest_path = (
-                self.workspace_dir / UPLOADS_DIR_NAME / MANIFEST_FILENAME
-            )
-            if manifest_path.exists():
-                memory_list.append(
-                    f"{self.workspace_virtual_path}/{UPLOADS_DIR_NAME}/{MANIFEST_FILENAME}"
-                )
-                has_uploads_manifest = True
-
         logger.info(
             f"[{self.sid}] 🧠 记忆文件 | "
-            f"会话: {memory_path} ({'有' if self.memory_file.exists() else '无'}) | "
-            f"长期: {LONG_TERM_MEMORY_VIRTUAL_PATH} "
-            f"({'有' if self.long_term_memory_file.exists() else '无'}) | "
-            f"上传清单: {'有' if has_uploads_manifest else '无'} | "
+            f"会话: {memory_path}（存在则运行期加载） | "
+            f"长期: {LONG_TERM_MEMORY_VIRTUAL_PATH}（存在则运行期加载） | "
+            f"上传清单: {'启用' if self._uploads_manifest_enabled() else '关闭'} | "
             f"实际路径: {self.memory_file} / {self.long_term_memory_file} | "
-            f"已加载: {'是' if memory_list else '否（首轮对话，记忆尚未生成）'}"
+            f"记忆源: {memory_list}"
         )
 
-        interrupt_on_config: dict[str, bool | InterruptOnConfig] | None = None
-        if self.enable_hitl:
-            interrupt_on_config = {
-                "execute": InterruptOnConfig(
-                    allowed_decisions=["approve", "reject"],
-                    when=_is_destructive_command,
-                ),
-            }
+        shared_checkpointer = _shared_graph_checkpointer()
+        block_reason = self._graph_cache_block_reason(actual_llm_cfg, shared_checkpointer)
 
-        return create_deep_agent(
-            name="easy-agent",
-            model=model,
-            system_prompt=self.system_prompt,
-            backend=backend,
-            skills=skills_paths or None,
-            middleware=middleware,
-            tools=tools,
-            memory=memory_list or None,
-            permissions=permissions or None,
-            checkpointer=get_session_checkpointer(self.session_id or "default"),
-           interrupt_on=interrupt_on_config,
-       )
-
-    # execute 工具 HITL 重点标注：该工具在宿主机直接执行命令（无沙箱），
-    # 文件删除类命令会触发人工审批中断，需在模型侧工具描述中明确告知模型。
-    EXECUTE_HITL_TOOL_DESCRIPTION: str = (
-        "⚠️⚠️⚠️ 人工审批工具 (HUMAN-IN-THE-LOOP / HITL) ⚠️⚠️⚠️\n\n"
-        "本工具在【宿主机】上直接执行 Shell 命令，没有沙箱隔离，危险性较高。\n"
-        "当命令属于「文件删除」类（如 rm / unlink / shred 删除文件）时，工具调用会触发【人工审批中断】：\n"
-        "  • 调用会立即暂停，等待用户在对话界面上「批准 / 拒绝」；\n"
-        "  • 在你收到用户的审批结果之前，命令【尚未真正执行】，不要假设它已成功，也不要提前执行依赖其结果的后续步骤；\n"
-        "  • 若用户「拒绝」，请根据拒绝原因调整方案，不要原样重复发起被拒绝的删除命令；\n"
-        "  • 目录删除（rm -r / rmdir 等）会被直接拒绝，不会进入审批流程。\n"
-        "普通命令（查看文件、列出目录、编译、运行测试、安装依赖等）通常无需审批即可直接执行。\n\n"
-        "—— 以下为工具的常规使用说明 ——\n\n"
-        + EXECUTE_TOOL_DESCRIPTION
-    )
-
-    def _override_execute_description(self, middleware):
-        """覆盖 execute 工具描述，在模型侧重点标注 HITL（人工审批）行为。
-
-        文件删除类命令（rm/unlink/shred 删除文件）会触发人工审批中断；
-        通过重写 FilesystemMiddleware._create_execute_tool，在工具创建时
-        注入 'execute' 的自定义描述，让模型明确知道该工具可能需要用户批准。
-        主智能体与子智能体共用 FilesystemMiddleware._create_execute_tool，
-        因此一处重写即可覆盖两者。
-        """
-        try:
-            from deepagents.middleware.filesystem import FilesystemMiddleware
-
-            if not hasattr(FilesystemMiddleware, "_original_create_execute_tool"):
-                FilesystemMiddleware._original_create_execute_tool = (
-                    FilesystemMiddleware._create_execute_tool
+        def _build(checkpointer, model, *, fallback_context: bool = False):
+            # 共享图不带任何会话 fallback；降级路径才把当前会话作为兜底。
+            backend_factory = self._make_backend_factory(
+                skills_paths,
+                fallback_context=self.session_context if fallback_context else None,
+            )
+            graph_tools = contextualize_tools(raw_tools)
+            with configured_summarization(self.config):
+                return create_deep_agent(
+                    name="easy-agent",
+                    model=model,
+                    system_prompt=self.system_prompt,
+                    backend=backend_factory,
+                    skills=skills_paths or None,
+                    middleware=middleware,
+                    tools=graph_tools or None,
+                    memory=memory_list or None,
+                    permissions=permissions or None,
+                    checkpointer=checkpointer,
+                    interrupt_on=interrupt_on_config,
+                    store=store,
+                    subagents=subagents,
+                    context_schema=SessionContext,
                 )
 
-            original = FilesystemMiddleware._original_create_execute_tool
-
-            def patched_create_execute_tool(self_inner):
-                if not hasattr(self_inner, "_custom_tool_descriptions") or \
-                        self_inner._custom_tool_descriptions is None:
-                    self_inner._custom_tool_descriptions = {}
-                self_inner._custom_tool_descriptions = {
-                    **self_inner._custom_tool_descriptions,
-                    "execute": self.EXECUTE_HITL_TOOL_DESCRIPTION,
-                }
-                return original(self_inner)
-
-            FilesystemMiddleware._create_execute_tool = patched_create_execute_tool
-            logger.info(f"[{self.sid}] 🔧 execute 已标注 HITL 人工审批说明")
-        except Exception as e:
-            logger.error(
-                f"[{self.sid}] ❌ execute 工具描述适配失败"
-                f"（模型侧将缺少 HITL 审批说明）: {type(e).__name__}: {e} | "
-                f"通常是 deepagents 升级导致 FilesystemMiddleware._create_execute_tool "
-                f"改名或改签名，请对照 deepagents {_deepagents_version()} 源码修正本适配。"
+        if block_reason:
+            get_agent_graph_cache().record_disabled()
+            logger.info(f"[{self.sid}] D2 graph-cache 未启用 | {block_reason}")
+            model = create_model(
+                self.config, model_name=self.model_name, session_id=self.session_id
             )
+            self.model = model
+            self.agent_graph_key = None
+            return _build(
+                get_session_checkpointer(self.session_id or "default"),
+                model,
+                fallback_context=True,
+            )
+
+        key = build_graph_key(
+            model=model_fingerprint(actual_llm_cfg),
+            tools=raw_tools,
+            system_prompt=self.system_prompt,
+            middleware=middleware,
+            hitl={
+                "enabled": bool(interrupt_on_config),
+                "tools": sorted((interrupt_on_config or {}).keys()),
+            },
+            subagents=subagents,
+            skills=skills_paths,
+            permissions=permissions,
+            memory=memory_list,
+            summarization=summarization_fingerprint(self.config),
+            config=config_fingerprint(self.config),
+            checkpointer_id=f"{type(shared_checkpointer).__name__}:{id(shared_checkpointer)}",
+            store_id=f"{type(store).__name__}:{id(store)}",
+        )
+
+        cache = get_agent_graph_cache()
+        entry = cache.get(key.digest)
+        if entry is not None:
+            self.model = entry.model
+            self.agent_graph_key = key.digest
+            return entry.graph
+
+        logger.info(
+            f"[{self.sid}] D2 graph-cache 未命中，编译新图 | "
+            f"key={key.digest[:12]} | {key.label}"
+        )
+        model = create_model(
+            self.config, model_name=self.model_name, session_id=self.session_id
+        )
+        self.model = model
+        graph = _build(shared_checkpointer, model)
+        cache.put(
+            key.digest,
+            graph,
+            model=model,
+            username=self.safe_username,
+            label=key.label,
+        )
+        self.agent_graph_key = key.digest
+        return graph
 
     def _safe_external_dirs(self) -> dict[str, str]:
         """返回通过安全校验的外部目录映射 {虚拟路径(带/): 实际绝对路径}。
@@ -1055,100 +844,44 @@ class EasyAgent:
             result[vp] = str(real.absolute())
         return result
 
-    def _build_backend(self, skills_paths: list[str], safe_external: dict[str, str]):
-        """构建 CompositeBackend 实例，配置多路由文件系统后端。
+    def _build_backend(self, skills_paths: list[str], safe_external=None):
+        """构建 CompositeBackend（兼容旧调用；实际逻辑按 context 解析）。
 
-        创建工作区、用户技能和外部目录多组 LocalShellBackend 路由，
-        以 CompositeBackend 组合返回。default 后端使用 _PathTranslatingShell
-        提供命令执行和虚拟路径翻译能力。
-
-        Args:
-            skills_paths: 已解析的技能虚拟路径列表，用于判断是否需要
-                挂载用户技能后端路由。
-
-        Returns:
-            CompositeBackend: 组合后端实例，包含所有路由和路径映射。
+        旧测试/旧调用会用 ``EasyAgent.__new__`` 只设置少量属性，再直接调用本方法；
+        此时没有 ``session_context``，按现有属性构造一个等价 context，保持兼容。
         """
-        # 注入给脚本的环境变量（仅当前用户名）；getattr 兜底以兼容
-        # 绕过 __init__ 直接调用本方法的场景
-        shell_env = getattr(self, "shell_env", {})
-
-        # 记忆文件现已放在会话工作区目录下，不再需要单独的 memories 路由
-        workspace_backend = LocalShellBackend(
-            root_dir=str(self.workspace_dir.absolute()),
-            virtual_mode=True,
-            env=shell_env,
-        )
-
-        routes = {
-            f"{self.workspace_virtual_path}/": workspace_backend,
-        }
-
-        # 长期记忆（跨会话 AGENTS.md）挂载为 /memories/ 路由，供
-        # create_deep_agent(memory=[LONG_TERM_MEMORY_VIRTUAL_PATH]) 经虚拟路径读取。
-        # 会话记忆在工作区内（/workspace/memory.md），无需单独路由。
-        # getattr 兜底：兼容绕过 __init__ 直接调用本方法的场景（如测试）。
-        _ltm_file = getattr(self, "long_term_memory_file", None)
-        if _ltm_file is not None and _ltm_file.parent.exists():
-            routes["/memories/"] = LocalShellBackend(
-                root_dir=str(_ltm_file.parent.absolute()),
-                virtual_mode=True,
-                env=shell_env,
+        context = getattr(self, "session_context", None)
+        if context is None:
+            workspace_dir = Path(getattr(self, "workspace_dir", Path(".")))
+            safe_username = getattr(self, "safe_username", "default")
+            config_agent = getattr(getattr(self, "config", None), "agent", None)
+            memories_dir = Path(
+                getattr(config_agent, "memories_dir", "./memories") or "./memories"
             )
-
-        # 技能库路由总是挂载（即使当前一个技能都没有）：否则模型没有可写路径来创建
-        # 第一个技能。目录不存在时先建出来，保证 route 与 path_mappings 保持一致。
-        try:
-            self.user_skills_dir.mkdir(parents=True, exist_ok=True)
-        except OSError as e:
-            logger.warning(f"[{self.sid}] 创建用户技能目录失败: {e}")
-        if self.user_skills_dir.exists():
-            user_skills_backend = LocalShellBackend(
-                root_dir=str(self.user_skills_dir.absolute()),
-                virtual_mode=True,
-                env=shell_env,
+            user_skills_dir = Path(
+                getattr(self, "user_skills_dir", workspace_dir / "skills")
             )
-            routes["/user-skills/"] = user_skills_backend
-
-        # 挂载外部目录（skill 需要访问的宿主机目录）为虚拟路径路由。
-        # 仅挂载通过安全校验的目录（safe_external），防止把工作区根或其他用户
-        # 子树挂载出来导致越权访问其他用户的会话数据。
-        for vp, real_abs in safe_external.items():
-            real = Path(real_abs)
-            real.mkdir(parents=True, exist_ok=True)
-            routes[vp] = LocalShellBackend(
-                root_dir=str(real.absolute()),
-                virtual_mode=True,
-                env=shell_env,
+            context = SessionContext(
+                session_id=getattr(self, "session_id", "") or "",
+                username=getattr(self, "username", safe_username),
+                safe_username=safe_username,
+                workspace_dir=str(workspace_dir.absolute()),
+                workspace_virtual_path=getattr(self, "workspace_virtual_path", "/workspace"),
+                user_skills_dir=str(user_skills_dir.absolute()),
+                memory_file=str((workspace_dir / "memory.md").absolute()),
+                long_term_memory_file=str(
+                    (memories_dir / safe_username / "AGENTS.md").absolute()
+                ),
+                organization_id=getattr(self, "organization_id", "") or "",
+                shell_env=dict(getattr(self, "shell_env", {}) or {}),
+                workspace_name=getattr(self, "workspace_name", "") or "",
             )
-
-        logger.info(
-            f"[{self.sid}] 🗺️ CompositeBackend routes:\n"
-            + "\n".join(f"    {vp:40s} → {b.cwd}" for vp, b in sorted(routes.items()))
-        )
-
-        ws_real = self.workspace_dir.absolute()
-        ws_real.mkdir(parents=True, exist_ok=True)
-        ws_str = str(ws_real)
-
-        path_mappings = {
-            f"{self.workspace_virtual_path}/": ws_str + "/",
-        }
-        if self.user_skills_dir.exists():
-            path_mappings["/user-skills/"] = str(self.user_skills_dir.absolute()) + "/"
-        for vp, real_abs in safe_external.items():
-            path_mappings[vp] = real_abs + "/"
-
-        return CompositeBackend(
-            default=_PathTranslatingShell(
-                path_mappings=path_mappings,
-                root_dir=ws_str,
-                virtual_mode=True,
-                inherit_env=True,
-                timeout=120,
-                sandbox_enabled=self.config.agent.sandbox_enabled,
-            ),
-            routes=routes,
+        return _build_backend_for_context(
+            self.config,
+            context,
+            skills_paths,
+            safe_external=safe_external,
+            sid=self.sid,
         )
 
     def _build_middleware(self) -> list:
@@ -1165,14 +898,38 @@ class EasyAgent:
        # with model-aware defaults (trigger=0.85, keep=0.10).
        # No need to add it here - duplicate middleware causes AssertionError.
         from .services.logging_middleware import LoggingMiddleware
-        return [
+
+        middleware = [
+            # D2：middleware 进共享编译图，不能再绑定 session_id（否则同图跨会话
+            # 复用会把日志前缀写成首个会话的）。工具异常兜底本身与会话无关。
             LoggingMiddleware(
-                session_id=self.session_id or "",
                 result_log_truncate=getattr(
                     self.config.tools, "result_log_truncate", 500
                 ),
             )
         ]
+        try:
+            from langchain.agents.middleware import (
+                ModelCallLimitMiddleware,
+                ToolCallLimitMiddleware,
+            )
+
+            run_limit = max(1, int(self.max_steps or 50))
+            middleware.extend(
+                [
+                    # 超限时显式报错，避免「模型步数用尽但前端以为正常结束」；
+                    # 错误会经 streaming 的异常分支转成 SSE error。
+                    ModelCallLimitMiddleware(
+                        run_limit=run_limit, exit_behavior="error"
+                    ),
+                    ToolCallLimitMiddleware(
+                        run_limit=run_limit * 4, exit_behavior="error"
+                    ),
+                ]
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("未加载 call-limit 中间件: %s", exc)
+        return middleware
 
     def _build_permissions(self, skills_paths: list[str] | None = None, safe_external: dict[str, str] | None = None) -> list[FilesystemPermission]:
         """根据配置构建文件系统权限规则。
@@ -1334,7 +1091,7 @@ class EasyAgent:
         for skill_dir in sorted(self.user_skills_dir.iterdir()):
             if not skill_dir.is_dir():
                 continue
-            if (skill_dir / "SKILL.md").exists() or (skill_dir / "README.md").exists():
+            if (skill_dir / "SKILL.md").exists():
                 names.append(skill_dir.name)
         return names
 
@@ -1369,7 +1126,7 @@ class EasyAgent:
 
         仅取第一行描述，超长截断到 60 字符。
         """
-        for md_name in ("SKILL.md", "README.md"):
+        for md_name in ("SKILL.md",):
             md_path = skill_dir / md_name
             if not md_path.exists():
                 continue
@@ -1424,6 +1181,7 @@ class EasyAgent:
             async for event in self.agent.astream(
                 {"messages": [{"role": "user", "content": user_input}]},
                 stream_mode="messages",
+                context=self.session_context,
             ):
                 chunk, _metadata = event
 

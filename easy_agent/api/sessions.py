@@ -1,5 +1,6 @@
 """Session management routes"""
 
+import asyncio
 import logging
 import os
 import shutil
@@ -11,9 +12,13 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 
 from ..agent import release_session_checkpointer
-from ..db import Database, get_database
+from ..db import get_database
+from ..db.session_repository import SessionRepository
 from ..models.db import SessionModel
 from ..models.api import (
+    SessionPinUpdateResponse,
+    SessionTitleUpdateResponse,
+    SessionUploadResponse,
     AddMessageRequest,
     AddMessageResponse,
     CreateSessionRequest,
@@ -26,11 +31,15 @@ from ..models.api import (
     UpdateTitleRequest,
 )
 from ..middleware import get_current_username
-from ..utils import get_owned_session
 from ..utils.reasoning_safety import redact_messages_reasoning
 from ..config import Config
 from ..services import clear_session_connectors, get_agent_config, remove_session_agent
-from ..services.session_uploads import append_manifest, store_parsed_content
+from ..services.session_uploads import (
+    UploadTooLargeError,
+    append_manifest,
+    save_upload_streaming,
+    store_parsed_content,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -135,12 +144,38 @@ router = APIRouter(
 )
 
 
+def get_session_repository(
+    db: Annotated[object, Depends(get_database)],
+) -> SessionRepository:
+    """FastAPI 依赖：把进程级 ``Database`` 包装成 sessions 域 repository。
+
+    ``get_database`` 只出现在本 provider 内；路由函数只声明
+    ``Depends(get_session_repository)``，因此 API 层不 import ``Database`` 类型。
+    现有 ``tests/conftest.py`` 对 ``get_database`` 的 override 仍然生效。
+    """
+    return SessionRepository(db)
+
+
+def _as_session_repository(value: object) -> SessionRepository:
+    """兼容直接调用路由函数的旧测试（传入 ``db=<Database>``）。
+
+    FastAPI 注入时 ``value`` 已经是 :class:`SessionRepository`；部分既有测试
+    （``tests/integration/test_session_ownership.py``）仍直接以 Database 调用
+    处理函数，这里做一次窄包装，避免为迁移测试而改动测试文件。
+    """
+    if isinstance(value, SessionRepository):
+        return value
+    return SessionRepository(value)
+
+
 @router.post("", summary="创建新会话", response_model=CreateSessionResponse)
 async def create_session(
     request: CreateSessionRequest,
-    db: Annotated[Database, Depends(get_database)],
+    db: Annotated[SessionRepository, Depends(get_session_repository)],
     username: Annotated[str, Depends(get_current_username)],
 ):
+    repo = _as_session_repository(db)
+
     session_id = str(uuid.uuid4())
     now = datetime.now().isoformat()
     workspace_name = generate_workspace_name(session_id)
@@ -157,8 +192,8 @@ async def create_session(
         workspace_name=workspace_name,
     )
 
-    db.create_session(session_data)
-    db.update_session_workspace_name(session_id, workspace_name)
+    repo.create_session(session_data)
+    repo.update_session_workspace_name(session_id, workspace_name)
 
     logger.info(
         f"创建会话 | ID: {session_id} | 标题: {title} | 工作区: {workspace_name}"
@@ -175,12 +210,14 @@ async def create_session(
 
 @router.get("", summary="获取会话列表", response_model=list[SessionInfo])
 async def list_sessions(
-    db: Annotated[Database, Depends(get_database)],
+    db: Annotated[SessionRepository, Depends(get_session_repository)],
     username: Annotated[str, Depends(get_current_username)],
     limit: int = Query(default=50, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
 ):
-    sessions = db.list_sessions(limit=limit, offset=offset, username=username)
+    repo = _as_session_repository(db)
+
+    sessions = repo.list_sessions(limit=limit, offset=offset, username=username)
 
     return [
         SessionInfo(
@@ -197,20 +234,24 @@ async def list_sessions(
 
 @router.get("/count", summary="获取会话总数", response_model=SessionCountResponse)
 async def count_sessions(
-    db: Annotated[Database, Depends(get_database)],
+    db: Annotated[SessionRepository, Depends(get_session_repository)],
     username: Annotated[str, Depends(get_current_username)],
 ):
-    total = db.count_sessions(username=username)
+    repo = _as_session_repository(db)
+
+    total = repo.count_sessions(username=username)
     return SessionCountResponse(total_sessions=total)
 
 
 @router.get("/{session_id}", summary="获取会话详情", response_model=SessionDetail)
 async def get_session(
     session_id: str,
-    db: Annotated[Database, Depends(get_database)],
+    db: Annotated[SessionRepository, Depends(get_session_repository)],
     username: Annotated[str, Depends(get_current_username)],
 ):
-    session = get_owned_session(db, session_id, username)
+    repo = _as_session_repository(db)
+
+    session = repo.get_owned_session(session_id, username)
 
     usage = compute_session_usage(session.messages or [])
     context_length = get_context_length()
@@ -227,32 +268,36 @@ async def get_session(
     )
 
 
-@router.put("/{session_id}/title", summary="更新会话标题")
+@router.put("/{session_id}/title", summary="更新会话标题", response_model=SessionTitleUpdateResponse)
 async def update_title(
     session_id: str,
     request: UpdateTitleRequest,
-    db: Annotated[Database, Depends(get_database)],
+    db: Annotated[SessionRepository, Depends(get_session_repository)],
     username: Annotated[str, Depends(get_current_username)],
 ):
-    session = get_owned_session(db, session_id, username)
+    repo = _as_session_repository(db)
+
+    session = repo.get_owned_session(session_id, username)
 
     title = request.title or "未命名会话"
-    db.update_session_title(session_id, title)
+    repo.update_session_title(session_id, title)
 
     logger.info(f"更新会话标题 | ID: {session_id} | 新标题: {title}")
 
     return {"status": "updated", "session_id": session_id, "title": title}
 
 
-@router.put("/{session_id}/pin", summary="切换会话置顶")
+@router.put("/{session_id}/pin", summary="切换会话置顶", response_model=SessionPinUpdateResponse)
 async def toggle_pin(
     session_id: str,
-    db: Annotated[Database, Depends(get_database)],
+    db: Annotated[SessionRepository, Depends(get_session_repository)],
     username: Annotated[str, Depends(get_current_username)],
 ):
-    session = get_owned_session(db, session_id, username)
+    repo = _as_session_repository(db)
 
-    new_val = db.toggle_session_pin(session_id)
+    session = repo.get_owned_session(session_id, username)
+
+    new_val = repo.toggle_session_pin(session_id)
     action = "置顶" if new_val else "取消置顶"
     logger.info(f"会话{action} | ID: {session_id}")
 
@@ -264,12 +309,14 @@ async def toggle_pin(
 )
 async def delete_session(
     session_id: str,
-    db: Annotated[Database, Depends(get_database)],
+    db: Annotated[SessionRepository, Depends(get_session_repository)],
     username: Annotated[str, Depends(get_current_username)],
 ):
-    session = get_owned_session(db, session_id, username)
+    repo = _as_session_repository(db)
 
-    session_files = db.get_session_files(session_id)
+    session = repo.get_owned_session(session_id, username)
+
+    session_files = repo.get_session_files(session_id)
     for f in session_files:
         file_path = Path(f["file_path"])
         if file_path.exists():
@@ -328,7 +375,7 @@ async def delete_session(
             f"workspace_name={session.workspace_name} | user_dir={user_workspace_dir}"
         )
 
-    db.delete_session(session_id)
+    repo.delete_session(session_id)
 
     logger.info(f"删除会话 | ID: {session_id}")
 
@@ -342,10 +389,12 @@ async def delete_session(
 )
 async def get_chat_history(
     session_id: str,
-    db: Annotated[Database, Depends(get_database)],
+    db: Annotated[SessionRepository, Depends(get_session_repository)],
     username: Annotated[str, Depends(get_current_username)],
 ):
-    session = get_owned_session(db, session_id, username)
+    repo = _as_session_repository(db)
+
+    session = repo.get_owned_session(session_id, username)
 
     usage = compute_session_usage(session.messages or [])
     context_length = get_context_length()
@@ -367,17 +416,19 @@ async def get_chat_history(
 async def add_message(
     session_id: str,
     request: AddMessageRequest,
-    db: Annotated[Database, Depends(get_database)],
+    db: Annotated[SessionRepository, Depends(get_session_repository)],
     username: Annotated[str, Depends(get_current_username)],
 ):
-    session = get_owned_session(db, session_id, username)
+    repo = _as_session_repository(db)
+
+    session = repo.get_owned_session(session_id, username)
 
     message = {
         "role": request.role,
         "content": request.content,
         "timestamp": datetime.now().isoformat(),
     }
-    db.add_message(session_id, message)
+    repo.add_message(session_id, message)
 
     return AddMessageResponse(
         session_id=session_id,
@@ -385,14 +436,16 @@ async def add_message(
     )
 
 
-@router.post("/{session_id}/upload", summary="上传文件到会话")
+@router.post("/{session_id}/upload", summary="上传文件到会话", response_model=SessionUploadResponse)
 async def upload_session_file(
     session_id: str,
-    db: Annotated[Database, Depends(get_database)],
+    db: Annotated[SessionRepository, Depends(get_session_repository)],
     username: Annotated[str, Depends(get_current_username)],
     file: UploadFile = File(...),
 ):
-    session = get_owned_session(db, session_id, username)
+    repo = _as_session_repository(db)
+
+    session = repo.get_owned_session(session_id, username)
 
     Config.sanitize_username(username)
     upload_dir = Config.get_user_workspace_dir(username) / "uploadfiles"
@@ -403,43 +456,44 @@ async def upload_session_file(
     saved_name = f"{file_id}_{safe_filename}"
     file_path = upload_dir / saved_name
 
-    content = await file.read()
-
-    # 单文件大小兜底（权威校验）：前端选文件时已按 upload_limits 拦截，这里防止
-    # 直接调接口绕过。超限直接拒绝且不落盘（上传总大小/数量属于"单次对话"的组合
-    # 约束，上传接口是单文件无状态请求，前端负责）。
+    # 流式落盘 + 单文件上限（权威校验）：前端已按 upload_limits 拦截，这里防止
+    # 直接调接口绕过；分块读取避免把整个请求体读进内存。
     max_file_size_mb = _get_max_file_size_mb()
-    if max_file_size_mb and len(content) > max_file_size_mb * 1024 * 1024:
-        actual_mb = round(len(content) / 1024 / 1024, 2)
+    max_bytes = (
+        max_file_size_mb * 1024 * 1024 if max_file_size_mb else None
+    )
+    try:
+        size = await save_upload_streaming(file, file_path, max_bytes=max_bytes)
+    except UploadTooLargeError as exc:
+        actual_mb = round(exc.size / 1024 / 1024, 2)
+        limit_mb = exc.limit // (1024 * 1024)
         logger.warning(
             f"文件上传被拒（超过单文件上限）| 文件名: {safe_filename} | "
-            f"大小: {actual_mb}MB | 上限: {max_file_size_mb}MB | 用户: {username}"
+            f"大小: {actual_mb}MB | 上限: {limit_mb}MB | 用户: {username}"
         )
         raise HTTPException(
             status_code=413,
             detail={
                 "code": "UPLOAD_FILE_TOO_LARGE",
-                "message": f"单个文件不能超过 {max_file_size_mb}MB，当前 {actual_mb}MB",
-                "limit_mb": max_file_size_mb,
+                "message": f"单个文件不能超过 {limit_mb}MB，当前 {actual_mb}MB",
+                "limit_mb": limit_mb,
                 "actual_mb": actual_mb,
             },
-        )
-
-    file_path.write_bytes(content)
+        ) from exc
 
     ext = os.path.splitext(safe_filename)[1].lstrip(".") or "unknown"
 
-    db.add_session_file(
+    repo.add_session_file(
         session_id=session_id,
         filename=safe_filename,
         file_path=str(file_path),
         file_type=ext,
-        size=len(content),
+        size=size,
         username=username,
     )
 
     logger.info(
-        f"文件上传成功 | 会话: {session_id} | 文件名: {safe_filename} | 大小: {len(content)} bytes | 用户: {username}"
+        f"文件上传成功 | 会话: {session_id} | 文件名: {safe_filename} | 大小: {size} bytes | 用户: {username}"
     )
 
     # 解析落盘 + 上传清单（记忆）：解析正文写入会话工作区 uploads/{文件名}.txt，
@@ -448,18 +502,21 @@ async def upload_session_file(
     # 并按需用 grep/read_file 检索。file_context.enabled=false 时整体跳过（回退旧行为）。
     parsed_entry = None
     try:
-        parsed_entry = store_parsed_content(
+        parsed_entry = await asyncio.to_thread(
+            store_parsed_content,
             session_id=session_id,
             username=username,
             file_path=str(file_path),
             filename=safe_filename,
-            size=len(content),
+            size=size,
             file_type=ext,
-            db=db,
+            db=repo.database,
             source_name=saved_name,
         )
         if parsed_entry:
-            append_manifest(session_id, username, [parsed_entry], db=db)
+            await asyncio.to_thread(
+                append_manifest, session_id, username, [parsed_entry], repo.database
+            )
     except Exception as e:
         # 解析/清单失败不能影响上传本身：文件已落盘、记录已入库，用户仍可继续对话
         logger.warning(f"上传文件解析落盘失败（不影响上传）| {safe_filename} | {e}")
@@ -477,7 +534,7 @@ async def upload_session_file(
         "filename": safe_filename,
         "file_path": str(file_path),
         "file_type": ext,
-        "size": len(content),
+        "size": size,
         "uploaded_at": datetime.now().isoformat(),
         "parsed": bool(parsed_entry),
         "parsed_path": parsed_entry.get("stored_path") if parsed_entry else None,

@@ -1,13 +1,15 @@
 """用户管理路由"""
 
 import logging
+import os
 from datetime import datetime, timedelta
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from ..config import Config, DEFAULT_APP_WELCOME_TITLE
-from ..db import Database, get_database
+from ..db import get_database
+from ..db.repositories.user_repository import UserRepository
 from ..knowledges.core.repository import KnowledgeRepository
 from ..middleware import get_current_username
 from ..middleware.auth import (
@@ -16,6 +18,9 @@ from ..middleware.auth import (
     touch_user_activity,
 )
 from ..models.api import (
+    AuthConfigResponse,
+    MessageResponse,
+    StatusResponse,
     UserProfile,
     UserListResponse,
     UserAccount,
@@ -37,7 +42,26 @@ router = APIRouter(
     tags=["Authentication"],
 )
 
-DEFAULT_RESET_PASSWORD = "123456"
+
+def get_user_repository(
+    db: Annotated[object, Depends(get_database)],
+) -> UserRepository:
+    """FastAPI 依赖：把进程级 ``Database`` 包装成 users 域 repository。
+
+    ``get_database`` 只出现在本 provider 内；路由函数只声明
+    ``Depends(get_user_repository)``，因此 API 层不 import ``Database`` 类型。
+    """
+    return UserRepository(db)
+
+
+def _as_user_repository(value: object) -> UserRepository:
+    """兼容直接调用路由函数并传入 ``Database`` 的既有测试。"""
+    if isinstance(value, UserRepository):
+        return value
+    return UserRepository(value)
+
+
+DEFAULT_RESET_PASSWORD = os.environ.get("EASY_DEFAULT_RESET_PASSWORD", "123456")
 
 # 登录时间缓存：username -> 登录成功时刻（本地时间）。用于登出时打印上次登录缓存时间；
 # 进程重启后丢失，此时回退到 JWT 的 iat 字段。
@@ -78,14 +102,9 @@ def _get_context_length() -> int:
 
 
 def get_client_ip(request: Request) -> str:
-    forwarded = request.headers.get("X-Forwarded-For")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
-    real_ip = request.headers.get("X-Real-IP")
-    if real_ip:
-        return real_ip.strip()
-    client_host = request.client.host if request.client else "unknown"
-    return client_host
+    from ..utils.client_ip import get_client_ip as _ip
+
+    return _ip(request)
 
 
 @router.post(
@@ -96,19 +115,20 @@ def get_client_ip(request: Request) -> str:
 async def register(
     request: RegisterRequest,
     http_request: Request,
-    db: Annotated[Database, Depends(get_database)],
+    db: Annotated[UserRepository, Depends(get_user_repository)],
 ):
+    repo = _as_user_repository(db)
     cfg = get_agent_config()
     policy = getattr(cfg.get("config"), "personnel", None) if cfg else None
     if not getattr(policy, "self_registration_enabled", False):
         raise HTTPException(status_code=403, detail="当前环境已关闭自助注册，请联系管理员创建账号")
     # 工号全局唯一：先显式校验以便返回精确提示（register_user 内部还有一层兜底）
     employee_id = request.employee_id.strip()
-    if db.get_user_by_employee_id(employee_id):
+    if repo.get_user_by_employee_id(employee_id):
         raise HTTPException(status_code=400, detail="工号已存在")
 
     # 注册不再绑定 IP（单点登录：登录不限制 IP，但同账号新登录会踢掉旧登录）
-    user = db.register_user(
+    user = repo.register_user(
         username=request.username,
         password=request.password,
         employee_id=employee_id,
@@ -118,7 +138,7 @@ async def register(
         raise HTTPException(status_code=400, detail="用户名已存在")
 
     # 注册即登录：递增 token 版本号并签发带 v 的 token
-    new_version = db.increment_user_token_version(user.username, require_active=True)
+    new_version = repo.increment_user_token_version(user.username, require_active=True)
     if new_version <= 0:
         raise HTTPException(status_code=403, detail="账号已停用，请联系管理员")
     access_token = create_access_token(
@@ -130,7 +150,7 @@ async def register(
     # 注册即登录，同样缓存登录时间与活跃 IP
     _login_time_cache[user.username] = datetime.now()
     _active_login_ip[user.username] = get_client_ip(http_request)
-    touch_user_activity(db, user.username)
+    touch_user_activity(repo.database, user.username)
 
     try:
         user_workspace = Config.get_user_workspace_dir(user.username)
@@ -167,14 +187,15 @@ async def register(
 async def login(
     request: LoginRequest,
     http_request: Request,
-    db: Annotated[Database, Depends(get_database)],
+    db: Annotated[UserRepository, Depends(get_user_repository)],
 ):
     # 登录标识支持「用户名或工号」：工号全局唯一，无需额外消歧
-    user = db.get_user_by_account(request.username)
+    repo = _as_user_repository(db)
+    user = repo.get_user_by_account(request.username)
     if not user:
         raise HTTPException(status_code=401, detail="用户名或密码错误")
 
-    user = db.verify_user_password(request.username, request.password)
+    user = repo.verify_user_password(request.username, request.password)
     if not user:
         raise HTTPException(status_code=401, detail="用户名或密码错误")
     if user.account_status == "disabled":
@@ -184,7 +205,7 @@ async def login(
 
     # 单点登录：递增 token 版本号，使该用户此前在其他设备/IP 的登录立即失效
     prev_ip = _active_login_ip.get(user.username)
-    new_version = db.increment_user_token_version(user.username, require_active=True)
+    new_version = repo.increment_user_token_version(user.username, require_active=True)
     if new_version <= 0:
         raise HTTPException(status_code=403, detail="账号已停用，请联系管理员")
     access_token = create_access_token(
@@ -196,7 +217,7 @@ async def login(
     # 缓存登录时间（供登出接口打印）与当前活跃 IP（供下次登录判断异地踢人）
     _login_time_cache[user.username] = datetime.now()
     _active_login_ip[user.username] = client_ip
-    touch_user_activity(db, user.username)
+    touch_user_activity(repo.database, user.username)
 
     context_length = _get_context_length()
 
@@ -224,7 +245,7 @@ async def login(
 async def login_passwordless(
     request: PasswordlessLoginRequest,
     http_request: Request,
-    db: Annotated[Database, Depends(get_database)],
+    db: Annotated[UserRepository, Depends(get_user_repository)],
 ):
     """免密登录：用户名已存在则直接登录（忽略 user_id）；不存在则自动注册后登录。
 
@@ -232,6 +253,7 @@ async def login_passwordless(
     传入的 user_id 已被其他用户占用时返回 400。供外部系统通过 URL
     携带用户名与用户ID 直登使用。
     """
+    repo = _as_user_repository(db)
     cfg = get_agent_config()
     policy = getattr(cfg.get("config"), "personnel", None) if cfg else None
     if not getattr(policy, "passwordless_login_enabled", False):
@@ -240,7 +262,7 @@ async def login_passwordless(
     if request.username == "admin":
         raise HTTPException(status_code=403, detail="admin 用户不支持免密登录")
 
-    user, created = db.get_or_create_passwordless_user(
+    user, created = repo.get_or_create_passwordless_user(
         username=request.username,
         user_id=request.user_id,
     )
@@ -253,7 +275,7 @@ async def login_passwordless(
     prev_ip = _active_login_ip.get(user.username)
 
     # 与密码登录一致：递增 token 版本号实现单点登录，签发新 token
-    new_version = db.increment_user_token_version(user.username, require_active=True)
+    new_version = repo.increment_user_token_version(user.username, require_active=True)
     if new_version <= 0:
         raise HTTPException(status_code=403, detail="账号已停用，请联系管理员")
     access_token = create_access_token(
@@ -264,7 +286,7 @@ async def login_passwordless(
 
     _login_time_cache[user.username] = datetime.now()
     _active_login_ip[user.username] = client_ip
-    touch_user_activity(db, user.username)
+    touch_user_activity(repo.database, user.username)
 
     if created:
         # 与注册接口一致：为免密新用户创建 workspace 目录
@@ -300,23 +322,24 @@ async def login_passwordless(
     )
 
 
-@router.post("/logout", summary="用户登出")
+@router.post("/logout", summary="用户登出", response_model=StatusResponse)
 async def logout(
     username: Annotated[str, Depends(get_current_username)],
     http_request: Request,
-    db: Annotated[Database, Depends(get_database)],
+    db: Annotated[UserRepository, Depends(get_user_repository)],
 ):
     """记录用户登出信息（用户名、首次登录时间、最后缓存更新时间、在线时长）。
 
     前端手动登出与空闲超时自动登出均会调用。登录时间优先取登录缓存，缓存未命中
     （如后端重启后未重新登录）时回退到 JWT 的 iat（签发时间）。
     """
+    repo = _as_user_repository(db)
     now = datetime.now()
     cached_login = _login_time_cache.pop(username, None)
-    last_activity_timestamp = get_user_activity_time(db, username)
+    last_activity_timestamp = get_user_activity_time(repo.database, username)
     _active_login_ip.pop(username, None)
-    clear_user_activity(db, username)
-    db.increment_user_token_version(username)
+    clear_user_activity(repo.database, username)
+    repo.increment_user_token_version(username)
     login_time_str = "未知"
     duration_str = "未知"
     if cached_login is not None:
@@ -349,10 +372,11 @@ async def logout(
     summary="获取用户资料",
 )
 async def get_profile(
-    db: Annotated[Database, Depends(get_database)],
+    db: Annotated[UserRepository, Depends(get_user_repository)],
     username: Annotated[str, Depends(get_current_username)],
 ):
-    user = db.get_user_by_username(username)
+    repo = _as_user_repository(db)
+    user = repo.get_user_by_username(username)
     if not user:
         raise HTTPException(status_code=404, detail="用户不存在")
 
@@ -375,10 +399,11 @@ async def get_profile(
 )
 async def update_profile(
     request: UpdateUserProfileRequest,
-    db: Annotated[Database, Depends(get_database)],
+    db: Annotated[UserRepository, Depends(get_user_repository)],
     username: Annotated[str, Depends(get_current_username)],
 ):
-    user = db.get_user_by_username(username)
+    repo = _as_user_repository(db)
+    user = repo.get_user_by_username(username)
     if not user:
         raise HTTPException(status_code=404, detail="用户不存在")
 
@@ -387,7 +412,7 @@ async def update_profile(
         user.email = request.email
 
     user.updated_at = datetime.now().isoformat()
-    db.update_user(user)
+    repo.update_user(user)
 
     logger.info(f"[用户] 更新资料 | 用户名: {user.username} | 仅邮箱可更新")
 
@@ -406,30 +431,32 @@ async def update_profile(
 @router.post(
     "/reset-password",
     summary="重置密码",
+    response_model=MessageResponse,
 )
 async def reset_password(
     request: ResetPasswordRequest,
     username: Annotated[str, Depends(get_current_username)],
-    db: Annotated[Database, Depends(get_database)],
+    db: Annotated[UserRepository, Depends(get_user_repository)],
 ):
+    repo = _as_user_repository(db)
     if username != "admin":
         raise HTTPException(status_code=403, detail="仅管理员可以重置密码")
 
     if request.username == "admin":
         raise HTTPException(status_code=400, detail="admin 用户不支持默认密码重置，请使用正常修改密码流程")
-    user = db.get_user_by_username(request.username)
+    user = repo.get_user_by_username(request.username)
     if not user:
         raise HTTPException(status_code=404, detail="用户不存在")
 
     # 登录不再绑定 IP，密码重置也不再校验 IP（鉴权由单点登录 token 保证）
     new_hash = hash_password(request.new_password)
-    success = db.update_user_password(request.username, new_hash)
+    success = repo.update_user_password(request.username, new_hash)
 
     if not success:
         raise HTTPException(status_code=500, detail="密码更新失败")
 
     # 密码重置后递增 token 版本号，使该用户所有已登录设备被迫重新登录
-    db.increment_user_token_version(request.username)
+    repo.increment_user_token_version(request.username)
 
     logger.info(f"[用户] 密码重置成功 | 用户名: {request.username}")
 
@@ -442,14 +469,15 @@ async def reset_password(
     summary="管理员获取用户列表",
 )
 async def list_users(
-    db: Annotated[Database, Depends(get_database)],
+    db: Annotated[UserRepository, Depends(get_user_repository)],
     username: Annotated[str, Depends(get_current_username)],
 ):
+    repo = _as_user_repository(db)
     if username != "admin":
         raise HTTPException(status_code=403, detail="仅管理员可以查看用户列表")
 
-    total = db.count_users()
-    users = db.list_users(limit=total, offset=0) if total else []
+    total = repo.count_users()
+    users = repo.list_users(limit=total, offset=0) if total else []
     return UserListResponse(
         total=total,
         users=[
@@ -467,28 +495,30 @@ async def list_users(
 @router.post(
     "/admin/users/{username}/reset-password",
     summary="管理员重置用户默认密码",
+    response_model=MessageResponse,
 )
 async def admin_reset_password(
     username: str,
     admin_username: Annotated[str, Depends(get_current_username)],
-    db: Annotated[Database, Depends(get_database)],
+    db: Annotated[UserRepository, Depends(get_user_repository)],
 ):
-    operator = db.get_user_by_username(admin_username)
+    repo = _as_user_repository(db)
+    operator = repo.get_user_by_username(admin_username)
     if admin_username != "admin" and (
-        not operator or not KnowledgeRepository(db).is_team_space_manager(operator.user_id)
+        not operator or not KnowledgeRepository(repo.database).is_team_space_manager(operator.user_id)
     ):
         raise HTTPException(status_code=403, detail="仅 admin 或公共空间管理员可以重置密码")
     if username == "admin":
         raise HTTPException(status_code=400, detail="管理员密码不能重置为默认密码")
 
-    user = db.get_user_by_username(username)
+    user = repo.get_user_by_username(username)
     if not user:
         raise HTTPException(status_code=404, detail="用户不存在")
 
-    if not db.update_user_password(username, hash_password(DEFAULT_RESET_PASSWORD)):
+    if not repo.update_user_password(username, hash_password(DEFAULT_RESET_PASSWORD)):
         raise HTTPException(status_code=500, detail="密码更新失败")
 
-    db.increment_user_token_version(username)
+    repo.increment_user_token_version(username)
     logger.info(f"[用户] 重置默认密码 | 操作人: {admin_username} | 用户名: {username}")
 
     return {
@@ -500,6 +530,7 @@ async def admin_reset_password(
 @router.get(
     "/config",
     summary="获取当前模型配置信息",
+    response_model=AuthConfigResponse,
 )
 async def get_auth_config(
     username: Annotated[str, Depends(get_current_username)],
@@ -512,7 +543,10 @@ async def get_auth_config(
     app_welcome_title = DEFAULT_APP_WELCOME_TITLE
     if _cfg and _cfg.get("config"):
         context_length = _cfg["config"].llm.context_length
-        preset_questions = _cfg["config"].preset_questions or []
+        preset_questions = [
+            item.model_dump() if hasattr(item, "model_dump") else item
+            for item in (_cfg["config"].preset_questions or [])
+        ]
         win = bool(_cfg.get("win"))
         agent_env = _cfg.get("agent_env", "") or ""
         idle_logout_minutes = _cfg["config"].agent.idle_logout_minutes

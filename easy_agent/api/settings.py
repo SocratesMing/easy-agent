@@ -12,6 +12,15 @@ from pydantic import BaseModel
 
 from ..config import Config
 from ..middleware import get_current_username
+from ..models.api import (
+    ContentResponse,
+    MemoryContentResponse,
+    MemoryUpdateResponse,
+    ModelsResponse,
+    SkillsResponse,
+    UploadLimitsResponse,
+    WebSearchStatusResponse,
+)
 from ..skills import discover_skills
 from ..services import get_agent_config
 from ..services.prompt_loader import load_system_prompt
@@ -25,7 +34,7 @@ router = APIRouter(prefix="/agent/settings", tags=["Settings"])
 # ── 记忆 ──────────────────────────────────────────────────────────────
 
 
-@router.get("/memory", summary="获取当前用户的记忆文件内容")
+@router.get("/memory", summary="获取当前用户的记忆文件内容", response_model=MemoryContentResponse)
 async def get_memory(username: Annotated[str, Depends(get_current_username)]):
     safe_name = Config.sanitize_username(username)
     _cfg = get_agent_config()
@@ -49,7 +58,7 @@ class UpdateMemoryRequest(BaseModel):
 MEMORY_MAX_CHARS = 2000
 
 
-@router.put("/memory", summary="更新当前用户的记忆文件内容")
+@router.put("/memory", summary="更新当前用户的记忆文件内容", response_model=MemoryUpdateResponse)
 async def update_memory(
     request: UpdateMemoryRequest,
     username: Annotated[str, Depends(get_current_username)],
@@ -102,7 +111,7 @@ def _truncate_memory(content: str, max_chars: int) -> str:
 # ── 系统提示词 ────────────────────────────────────────────────────────
 
 
-@router.get("/system-prompt", summary="获取系统提示词（只读）")
+@router.get("/system-prompt", summary="获取系统提示词（只读）", response_model=ContentResponse)
 async def get_system_prompt(
     username: Annotated[str, Depends(get_current_username)],
 ):
@@ -119,7 +128,7 @@ async def get_system_prompt(
 # ── Skills ────────────────────────────────────────────────────────────
 
 
-@router.get("/skills", summary="获取所有可用的 Skills 列表")
+@router.get("/skills", summary="获取所有可用的 Skills 列表", response_model=SkillsResponse)
 async def get_skills(
     username: Annotated[str, Depends(get_current_username)],
 ):
@@ -152,7 +161,7 @@ async def get_skills(
 # ── 模型列表 ──────────────────────────────────────────────────────────
 
 
-@router.get("/models", summary="获取所有可选模型列表（公共接口，无需登录）")
+@router.get("/models", summary="获取所有可选模型列表（公共接口，无需登录）", response_model=ModelsResponse)
 async def get_models():
     """返回 config.models 中的模型列表及当前激活模型。
 
@@ -192,7 +201,7 @@ async def get_models():
 # ── 联网搜索 ──────────────────────────────────────────────────────────
 
 
-@router.get("/web-search", summary="获取联网搜索配置状态（公共接口，无需登录）")
+@router.get("/web-search", summary="获取联网搜索配置状态（公共接口，无需登录）", response_model=WebSearchStatusResponse)
 async def get_web_search_status():
     """返回联网搜索是否可用，供前端决定输入框地球按钮是否可点击。
 
@@ -232,7 +241,7 @@ async def get_web_search_status():
 # ── 上传限额 ──────────────────────────────────────────────────────────
 
 
-@router.get("/upload-limits", summary="获取上传限额（公共接口，无需登录）")
+@router.get("/upload-limits", summary="获取上传限额（公共接口，无需登录）", response_model=UploadLimitsResponse)
 async def get_upload_limits():
     """返回对话附件上传限额，供前端在选文件时即时拦截并展示已用额度。
 

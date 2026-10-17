@@ -1,5 +1,6 @@
 import { API_BASE_URL } from '../config.js'
 import { getAuthHeaders, authFetch } from './auth.js'
+import { readSSE } from './sse.js'
 
 export async function createSession(title, username = null) {
   const body = { title }
@@ -98,41 +99,7 @@ export async function attachStream(sessionId, onChunk, signal) {
     throw new Error(error.detail || '挂载流式输出失败')
   }
 
-  const reader = response.body.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ''
-
-  try {
-    while (true) {
-      if (abortSignal?.aborted) {
-        controller.abort()
-        return
-      }
-
-      const { done, value } = await reader.read()
-      if (done) break
-
-      buffer += decoder.decode(value, { stream: true })
-      const lines = buffer.split('\n')
-      buffer = lines.pop() || ''
-
-      for (const line of lines) {
-        if (line.startsWith('data: ')) {
-          try {
-            const data = JSON.parse(line.slice(6))
-            onChunk(data)
-          } catch (e) {
-            console.error('解析 SSE 数据失败:', e)
-          }
-        }
-      }
-    }
-  } catch (e) {
-    if (e.name === 'AbortError') {
-      return
-    }
-    throw e
-  }
+  await readSSE(response, onChunk, { signal: abortSignal })
 }
 
 export async function sendMessage(sessionId, message, onChunk, signal, enableDeepThink = true, files = [], model = null, enableWebSearch = false, skills = [], pendingExpertId = '') {
@@ -171,44 +138,16 @@ export async function sendMessage(sessionId, message, onChunk, signal, enableDee
     throw new Error(error.detail || '发送消息失败')
   }
 
-  const reader = response.body.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ''
-
-  try {
-    while (true) {
-      if (abortSignal?.aborted) {
-        controller.abort()
-        return
+  await readSSE(
+    response,
+    (data) => {
+      if (data.type === 'done') {
+        console.log('[SSE] Received done event:', JSON.stringify(data).substring(0, 500))
       }
-
-      const { done, value } = await reader.read()
-      if (done) break
-
-      buffer += decoder.decode(value, { stream: true })
-      const lines = buffer.split('\n')
-      buffer = lines.pop() || ''
-
-      for (const line of lines) {
-        if (line.startsWith('data: ')) {
-          try {
-            const data = JSON.parse(line.slice(6))
-            if (data.type === 'done') {
-              console.log('[SSE] Received done event:', JSON.stringify(data).substring(0, 500))
-            }
-            onChunk(data)
-          } catch (e) {
-            console.error('解析 SSE 数据失败:', e)
-          }
-        }
-      }
-    }
-  } catch (e) {
-    if (e.name === 'AbortError') {
-      return
-    }
-    throw e
-  }
+      onChunk(data)
+    },
+    { signal: abortSignal }
+  )
 }
 
 export async function resumeStream(sessionId, threadId, decisions, onChunk, signal, messageId) {
@@ -234,41 +173,7 @@ export async function resumeStream(sessionId, threadId, decisions, onChunk, sign
     throw new Error(error.detail || '恢复执行失败')
   }
 
-  const reader = response.body.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ''
-
-  try {
-    while (true) {
-      if (abortSignal?.aborted) {
-        controller.abort()
-        return
-      }
-
-      const { done, value } = await reader.read()
-      if (done) break
-
-      buffer += decoder.decode(value, { stream: true })
-      const lines = buffer.split('\n')
-      buffer = lines.pop() || ''
-
-      for (const line of lines) {
-        if (line.startsWith('data: ')) {
-          try {
-            const data = JSON.parse(line.slice(6))
-            onChunk(data)
-          } catch (e) {
-            console.error('解析 SSE 数据失败:', e)
-          }
-        }
-      }
-    }
-  } catch (e) {
-    if (e.name === 'AbortError') {
-      return
-    }
-    throw e
-  }
+  await readSSE(response, onChunk, { signal: abortSignal })
 }
 
 function generateMessageId() {

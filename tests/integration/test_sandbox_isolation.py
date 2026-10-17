@@ -12,6 +12,8 @@ import pytest
 from types import SimpleNamespace
 
 import easy_agent.agent as agent_mod
+import easy_agent.backends.shell as sandbox_shell_mod
+import easy_agent.hitl as hitl_mod
 import easy_agent.landlock as landlock_mod
 import easy_agent.sandbox as sandbox_mod
 from deepagents.backends import LocalShellBackend
@@ -24,8 +26,10 @@ def _make_shell(tmp_path, monkeypatch, *, bwrap=False, landlock=True):
 
     userA 的工作区为 allowed；userB 的工作区为同级「其他用户」目录（不应可访问）。
     """
-    monkeypatch.setattr(agent_mod, "bwrap_usable", lambda: bwrap)
-    monkeypatch.setattr(agent_mod, "landlock_usable", lambda: landlock)
+    # 沙箱实现已从 easy_agent.agent 迁到 easy_agent.backends.shell，
+    # 这里 patch 真实调用点，避免 patch 落空导致测试“假通过”。
+    monkeypatch.setattr(sandbox_shell_mod, "bwrap_usable", lambda: bwrap)
+    monkeypatch.setattr(sandbox_shell_mod, "landlock_usable", lambda: landlock)
 
     workspace_root = tmp_path / "workspace"
     user_a = workspace_root / "userA" / "session" / "s1"
@@ -118,8 +122,8 @@ def test_windows_virtual_paths_translate_between_posix_and_windows(tmp_path, mon
 
 
 def test_windows_without_sandbox_support_fails_closed(tmp_path, monkeypatch):
-    monkeypatch.setattr(agent_mod, "bwrap_usable", lambda: False)
-    monkeypatch.setattr(agent_mod, "landlock_usable", lambda: False)
+    monkeypatch.setattr(sandbox_shell_mod, "bwrap_usable", lambda: False)
+    monkeypatch.setattr(sandbox_shell_mod, "landlock_usable", lambda: False)
     shell = _PathTranslatingShell(
         path_mappings={"/workspace/": str(tmp_path) + "/"},
         root_dir=tmp_path,
@@ -143,9 +147,9 @@ def test_windows_deletion_commands_are_recognized():
         tool_call={"args": {"command": "rd /s /q /workspace/dir"}}
     )
 
-    assert agent_mod._is_destructive_command(file_deletion) is True
-    assert agent_mod._is_directory_deletion("rd /s /q C:\\dir") is True
-    assert agent_mod._is_directory_deletion(
+    assert hitl_mod._is_destructive_command(file_deletion) is True
+    assert hitl_mod._is_directory_deletion("rd /s /q C:\\dir") is True
+    assert hitl_mod._is_directory_deletion(
         "powershell Remove-Item -Recurse -Force C:\\dir"
     ) is True
 
@@ -163,7 +167,8 @@ def test_windows_os_info_documents_cmd_shell(monkeypatch):
 
 from pathlib import Path
 
-from easy_agent.agent import _check_external_dir_safety, _is_within, EasyAgent
+from easy_agent.agent import EasyAgent
+from easy_agent.fs_safety import _check_external_dir_safety, _is_within
 
 
 def test_is_within():

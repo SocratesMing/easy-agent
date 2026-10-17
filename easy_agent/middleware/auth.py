@@ -7,7 +7,11 @@ from typing import Annotated, Optional
 from fastapi import Depends, HTTPException, Request
 
 from ..db import Database, get_database
-from ..services import get_agent_config
+from ..runtime_config import get_runtime_agent_config
+
+# 兼容旧调用/测试：它们会 monkeypatch `auth_middleware.get_agent_config`。
+# 实现仍是 runtime_config（不再反向依赖 services）。
+get_agent_config = get_runtime_agent_config
 from ..utils.auth import decode_access_token
 
 logger = logging.getLogger(__name__)

@@ -119,3 +119,57 @@ def test_compute_session_usage_sums_reasoning_tokens():
             "input_tokens": 1, "output_tokens": 1, "total_tokens": 2}},
     ])
     assert legacy["reasoning_tokens"] == 0
+
+
+# --- C1：API 层依赖 SessionRepository，而不是 Database 门面 -----------------
+
+
+def test_api_sessions_module_has_no_database_facade_import():
+    """静态回归：路由文件不再 import Database / 直接调用 db.* 业务方法。"""
+    import inspect
+
+    import easy_agent.api.sessions as sessions_api
+
+    source = inspect.getsource(sessions_api)
+    assert "from ..db import Database" not in source
+    assert "Annotated[Database" not in source
+    # 路由依赖必须是 repository provider（10 个路由）。
+    assert source.count("Annotated[SessionRepository, Depends(get_session_repository)]") == 10
+    assert "Depends(get_database)" in source  # 只在 provider 内部出现
+
+
+def test_api_routes_use_overridden_session_repository(client, db):
+    """黑盒回归：把依赖覆盖成 repository 后，路由正常且确实走 repository。"""
+    from easy_agent.api.sessions import get_session_repository
+    from easy_agent.app import app
+    from easy_agent.db.session_repository import SessionRepository
+
+    class _SpyRepository(SessionRepository):
+        def __init__(self, database):
+            super().__init__(database)
+            self.calls = []
+
+        def create_session(self, session_data):
+            self.calls.append("create_session")
+            return super().create_session(session_data)
+
+        def get_owned_session(self, session_id, username):
+            self.calls.append("get_owned_session")
+            return super().get_owned_session(session_id, username)
+
+        def list_sessions(self, *args, **kwargs):
+            self.calls.append("list_sessions")
+            return super().list_sessions(*args, **kwargs)
+
+    spy = _SpyRepository(db)
+    app.dependency_overrides[get_session_repository] = lambda: spy
+    try:
+        sid = _create_session(client)
+        assert client.get(f"/agent/sessions/{sid}").status_code == 200
+        assert client.get("/agent/sessions").status_code == 200
+    finally:
+        app.dependency_overrides.pop(get_session_repository, None)
+
+    assert "create_session" in spy.calls
+    assert "get_owned_session" in spy.calls
+    assert "list_sessions" in spy.calls

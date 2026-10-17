@@ -1,5 +1,12 @@
 # Easy Agent
 
+> ⚠️ **2026-10-17 审计更新**：本文部分章节（前端技术栈、目录结构、模块清单）
+> 可能滞后。准确的模块地图/数据流/命令以 `docs/architecture-current.md` 为准。
+> 关键事实：后端当前托管 `frontend-vue2/`（Vue 2.7 + Element UI）构建产物，
+> 同时维护 `frontend/`（Vue 3.5 + Vite）第二基线；运行时技能 7 个；已有
+> Dockerfile / docker-compose / k8s / `.github/workflows/ci.yml`。
+
+
 > 基于 [LangChain DeepAgents](https://docs.langchain.com/oss/python/deepagents) 框架的 AI Agent Web 应用。
 > 支持多会话、文件预览与生成、网页终端、技能中心、定时任务、向量知识库与 HITL 人工审批。
 
@@ -18,7 +25,7 @@ Easy Agent 是一个开箱即用的 AI Agent 平台，让大模型能够：
 - 由模型自行识别用户意图并创建定时任务
 - 通过网页终端（Web Terminal）进行交互式操作
 
-前后端一体化部署：后端 FastAPI 提供 REST + SSE 流式接口，前端 Vue 2.7 单页应用（Element UI + Vue CLI）。
+前后端一体化部署：后端 FastAPI 提供 REST + SSE 流式接口。当前后端托管 `frontend-vue2/`（Vue 2.7 + Element UI + Vue CLI）构建产物，同时维护 `frontend/`（Vue 3.5 + Vite）第二基线。
 
 ---
 
@@ -30,7 +37,7 @@ Easy Agent 是一个开箱即用的 AI Agent 平台，让大模型能够：
 | 多会话管理 | 会话隔离、上下文压缩、会话耗时/迭代统计 |
 | 文件工具 | 上传/下载/预览/生成（docx、pdf、pptx、xlsx、图片、代码） |
 | 网页终端 | 基于 xterm.js 的 Web Shell，含路径翻译与命令拦截 |
-| 专家 · 技能 · 连接器 | 三 Tab：专家（预留）/ 公共与个人技能管理（自定义 SKILL.md）/ 连接器（MCP 服务卡片、mcp.json 原文编辑） |
+| 专家 · 技能 · 连接器 | 三 Tab：专家（创建/管理/导出运行）/ 公共与个人技能管理（自定义 SKILL.md）/ 连接器（MCP 服务卡片、mcp.json 原文编辑） |
 | 定时任务 | LLM 自动识别调度意图，APScheduler 执行，可视化执行记录 |
 | HITL 审批 | 文件删除前必须用户确认，目录删除直接拒绝 |
 | 路径翻译 | 虚拟路径 ↔ 宿主机实际路径，保护主机目录结构 |
@@ -87,7 +94,7 @@ easy-agent/
 │   │   └── system_prompt.md      # Agent 系统提示词
 │   └── utils/task_logger.py      # 定时任务审计日志
 │
-├── frontend/                     # 前端（Vue 2.7 + Element UI + Vue CLI）
+├── frontend-vue2/                # 当前托管基线（Vue 2.7 + Element UI + Vue CLI；另有 frontend/ 第二基线 Vue 3.5 + Vite）
 │   ├── package.json
 │   ├── vue.config.js
 │   ├── index.html
@@ -393,7 +400,7 @@ Agent 会自动解析调度意图并调用 `create_scheduled_task` 工具，参�
 ### 6. 专家 · 技能 · 连接器（原技能中心）
 - 入口：左侧导航栏「专家 · 技能 · 连接器」；面板**首行即三个 Tab**（上方不放标题栏等任何内容），关闭按钮在 Tab 行最右侧
 - 三个 Tab：
-  - **专家**：预留（当前为空态）
+  - **专家**：创建/编辑/导出运行专家 Agent（`/agent/expert/*` 与专家工作台）
   - **技能**：顶部工具条（搜索 / 已安装(n) 筛选 / 添加技能）+ 分类 chips（全部 + 5 类）+ 技能卡片（图标 / 名称 / 描述 / 「N 个文件 · 大小 · 更新时间」真实指标）。
     - 卡片右上角：未安装显示 `+`（一键加入「我的技能」），已安装显示**启用开关**
     - 点卡片进**详情页**：大图标 / 名称 / 版本 / 描述（可展开）/ 去试试 / 移除技能 + 「概述」= SKILL.md 正文 + 「更多」= 版本/位置/文件数/大小/更新时间

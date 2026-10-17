@@ -8,6 +8,7 @@ import asyncio
 import json
 import logging
 import os
+from ..env import env_str
 import shutil
 from pathlib import Path
 from typing import Any
@@ -15,6 +16,8 @@ from typing import Any
 from langchain_mcp_adapters.client import MultiServerMCPClient
 
 from easy_agent.config import Config, _expand_env_recursive
+from . import mcp_sessions
+from .mcp_evidence import wrap_mcp_tools
 
 logger = logging.getLogger("easy-agent")
 
@@ -223,6 +226,22 @@ def filter_active_servers(
     return active
 
 
+_TRANSPORT_ALIASES = {
+    "streamable-http": "streamable_http",
+    "streamablehttp": "streamable_http",
+    "http": "streamable_http",
+    "sse": "sse",
+    "stdio": "stdio",
+    "websocket": "websocket",
+}
+
+
+def _normalize_transport(value: str) -> str:
+    """统一 transport 别名，避免 "streamable-http"/"http" 等写法被适配器拒绝。"""
+    lowered = value.strip().lower()
+    return _TRANSPORT_ALIASES.get(lowered, lowered)
+
+
 def normalize_servers_mapping(
     servers: dict[str, Any],
 ) -> dict[str, dict[str, Any]]:
@@ -243,15 +262,17 @@ def normalize_servers_mapping(
             result.update(normalize_servers_mapping(cfg))
             continue
         normalized = dict(cfg)
-        if "type" in normalized and "transport" not in normalized:
-            normalized["transport"] = normalized.pop("type")
-        elif "transport" not in normalized:
+        transport = normalized.pop("transport", None) or normalized.pop("type", None)
+        if transport is None:
             # 标准 Claude Desktop 格式不写 type：
-            # 有 command/args 的是 stdio 服务，只有 url 的按 sse 处理
+            # 有 command/args 的是 stdio 服务；URL-only 默认走现代 streamable_http
+            # （FW-10：旧默认 sse 会用到已废弃的 HTTP+SSE 传输；仍显式写 sse 的配置保持兼容）。
             if "command" in normalized:
-                normalized["transport"] = "stdio"
+                transport = "stdio"
             elif "url" in normalized:
-                normalized["transport"] = "sse"
+                transport = "streamable_http"
+        if transport is not None:
+            normalized["transport"] = _normalize_transport(str(transport))
         result[name] = normalized
     return result
 
@@ -264,20 +285,54 @@ def normalize_servers_mapping(
 # 按 server 分组缓存：既服务「注入全部启用连接器」，也服务「使用连接器[X]」只注入
 # 选中连接器（见 get_mcp_tools 的 server_names），两种取法复用同一份缓存、只补差量。
 _mcp_tools_cache: dict[str, tuple[float, dict[str, list]]] = {}
+_mcp_clients: dict[str, MultiServerMCPClient] = {}
+
+# deepagents 内建工具名：MCP 工具同名时 ToolNode 会 last-wins 静默覆盖，
+# 而 HITL 审批按工具名匹配 → 必须显式拒绝冲突，避免执行到错误实现。
+_BUILTIN_TOOL_NAMES = frozenset({
+    "write_todos", "ls", "read_file", "write_file", "edit_file",
+    "glob", "grep", "execute", "task",
+})
+
+
+def _client_for(servers: dict[str, dict[str, Any]]) -> MultiServerMCPClient:
+    key = json.dumps(servers, sort_keys=True, ensure_ascii=False, default=str)
+    client = _mcp_clients.get(key)
+    if client is None:
+        client = MultiServerMCPClient(servers)
+        _mcp_clients[key] = client
+        logger.info("复用 MCP 客户端已建立 | servers=%s", ",".join(servers))
+    return client
 
 
 async def _load_server_tools(
-    client: MultiServerMCPClient, server_names: list[str]
+    client: MultiServerMCPClient,
+    server_names: list[str],
+    connections: dict[str, dict[str, Any]],
+    scope: str = "",
 ) -> dict[str, list]:
     """并发加载若干 server 的工具。
 
-    单个 server 起不来只记 warning 并返回空列表，不拖累其他 server
-    （与连接器页的逐个探测状态一致）。
+    优先使用 D3 持久会话（``client.session`` + ``load_mcp_tools``）；不支持
+    session API 的客户端（旧适配器 / 测试替身）退回原有 stateless
+    ``client.get_tools``。单个 server 起不来只记 warning 并返回空列表，
+    不拖累其他 server（与连接器页的逐个探测状态一致）。
     """
+
+    persistent = mcp_sessions.supports_persistent_sessions(client)
 
     async def _load_one(name: str) -> tuple[str, list]:
         try:
-            return name, await client.get_tools(server_name=name)
+            if persistent:
+                tools = await mcp_sessions.load_server_tools(
+                    client,
+                    name,
+                    connections.get(name, {}),
+                    scope=scope,
+                )
+            else:
+                tools = await client.get_tools(server_name=name)
+            return name, tools
         except Exception as e:
             logger.warning(
                 f"Failed to load MCP tools from server {name}: {_unpack_error(e)}"
@@ -309,8 +364,12 @@ async def get_mcp_tools(
     Tools are cached per resolved config file path + mtime（按 server 分组），
     so editing the mcp.json and requesting tools again automatically picks up
     the change (dynamic reload). 各 server 独立加载、独立容错：某个连接器不可用时
-    其余连接器的工具照常可用。MultiServerMCPClient is stateless by default —
-    each tool invocation creates a fresh MCP session and cleans up afterwards.
+    其余连接器的工具照常可用。
+
+    D3：工具绑定到 ``mcp_sessions`` 管理的持久会话（同一 server 连续调用只握手
+    一次）。会话在 idle 过期 / ``invalidate_mcp_cache`` / 传输故障后按需重建；
+    工具对象本身缓存不变。适配器或测试替身没有 ``client.session`` 时自动退回
+    stateless 的 ``client.get_tools``。
     """
     config_path = _resolve_mcp_config_path(username)
     if not config_path:
@@ -323,6 +382,11 @@ async def get_mcp_tools(
         mtime = 0.0
 
     config = load_mcp_config(username)
+    cached = _mcp_tools_cache.get(path_key)
+    # 只有「同一文件 + 同一 mtime」的缓存可用；配置变化时先关闭旧会话，
+    # 避免旧连接一直占着 stdio 子进程 / HTTP 连接直到 idle 过期。
+    if cached and cached[0] != mtime:
+        mcp_sessions.close_mcp_scope_sync(path_key)
     if not config:
         _mcp_tools_cache[path_key] = (mtime, {})
         return []
@@ -341,13 +405,30 @@ async def get_mcp_tools(
         if not wanted:
             return []
 
-    cached = _mcp_tools_cache.get(path_key)
-    # 只有「同一文件 + 同一 mtime」的缓存可用；命中后按 server 补差量加载
     cached_servers = cached[1] if cached and cached[0] == mtime else {}
     missing = [name for name in wanted if name not in cached_servers]
+    if env_str("AGENT_ENV").lower() == "prod":
+        stdio_servers = [
+            name
+            for name, cfg in config.items()
+            if str(cfg.get("transport", "stdio")).lower() == "stdio"
+        ]
+        if stdio_servers:
+            logger.warning(
+                "生产环境仍使用 stdio MCP（每 Pod 拉起子进程，多副本会重复连接）: %s。"
+                "请改为 streamable-http / sse 并走集群内 Service。",
+                ", ".join(stdio_servers),
+            )
+
     if missing:
-        client = MultiServerMCPClient({name: config[name] for name in missing})
-        cached_servers = {**cached_servers, **await _load_server_tools(client, missing)}
+        missing_config = {name: config[name] for name in missing}
+        client = _client_for(missing_config)
+        cached_servers = {
+            **cached_servers,
+            **await _load_server_tools(
+                client, missing, missing_config, scope=path_key
+            ),
+        }
         total = sum(len(cached_servers.get(name, [])) for name in wanted)
         logger.info(
             f"MCP tools loaded ({path_key}, mtime={mtime}): servers={missing} | "
@@ -364,7 +445,28 @@ async def get_mcp_tools(
         )
 
     _mcp_tools_cache[path_key] = (mtime, cached_servers)
-    return [t for name in wanted for t in cached_servers.get(name, [])]
+    tools_by_server: dict[str, list] = {}
+    seen: set[str] = set()
+    for name in wanted:
+        server_tools: list = []
+        for tool in cached_servers.get(name, []):
+            tool_name = str(getattr(tool, "name", "") or "")
+            if tool_name in _BUILTIN_TOOL_NAMES:
+                logger.warning(
+                    "MCP 工具 %s 与内建工具同名，已跳过（避免静默覆盖内建工具/HITL 误判）",
+                    tool_name,
+                )
+                continue
+            if tool_name and tool_name in seen:
+                logger.warning("MCP 工具名重复，保留第一个: %s", tool_name)
+                continue
+            if tool_name:
+                seen.add(tool_name)
+            server_tools.append(tool)
+        tools_by_server[name] = server_tools
+    # 证据信封：返回前为每个 server 的工具附加来源/结果元数据（FW-14）。
+    # 缓存仍保存原始工具，避免包装器跨请求复用导致 server 归属错乱。
+    return wrap_mcp_tools(tools_by_server)
 
 
 def invalidate_mcp_cache(username: str | None = None) -> None:
@@ -376,11 +478,18 @@ def invalidate_mcp_cache(username: str | None = None) -> None:
     """
     if username is None:
         _mcp_tools_cache.clear()
+        _mcp_clients.clear()
+        mcp_sessions.close_mcp_sessions_sync()
         logger.info("MCP tools cache cleared (all entries)")
         return
 
+    # client 缓存按「配置 JSON 子集」为 key，无法按用户精确回收；整体清空以
+    # 防止配置反复修改导致对象无界泄漏（有 miss 时会自动重建）。
+    _mcp_clients.clear()
+
     user_path = Config.get_user_mcp_path(username)
     key = str(user_path)
+    scopes = [key]
     if key in _mcp_tools_cache:
         _mcp_tools_cache.pop(key, None)
         logger.info(f"MCP tools cache invalidated for user {username} ({key})")
@@ -388,9 +497,12 @@ def invalidate_mcp_cache(username: str | None = None) -> None:
     global_path = _find_mcp_config()
     if global_path:
         gkey = str(global_path)
+        scopes.append(gkey)
         if gkey in _mcp_tools_cache:
             _mcp_tools_cache.pop(gkey, None)
             logger.info(f"MCP tools cache invalidated for global ({gkey})")
+
+    mcp_sessions.close_mcp_scopes_sync(scopes)
 
 
 async def validate_mcp_servers(

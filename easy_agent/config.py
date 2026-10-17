@@ -5,6 +5,7 @@ Provides unified configuration loading and management functionality
 
 import logging
 import os
+from .env import env_str
 import re
 from pathlib import Path
 from typing import Any
@@ -504,7 +505,7 @@ class Config(BaseModel):
     ) -> Path:
         """Resolve the active YAML config without expanding config values."""
         if explicit_path is None:
-            explicit_path = os.environ.get("EASY_CONFIG")
+            explicit_path = env_str("EASY_CONFIG")
         if explicit_path:
             return Path(explicit_path)
 
@@ -516,7 +517,7 @@ class Config(BaseModel):
         if unified.exists():
             return unified
         # Preserve existing knowledge deployments without moving their config/data.
-        legacy = base_dir / f"config.{os.environ.get('AGENT_ENV', 'dev').lower()}.yaml"
+        legacy = base_dir / f"config.{env_str('AGENT_ENV', 'dev').lower()}.yaml"
         return legacy if legacy.exists() else unified
 
     @classmethod
@@ -929,8 +930,8 @@ class Config(BaseModel):
                 # 运行期配置结构为 {"config": Config, "win":..., "agent_env":...}，
                 # 真正的目录在 _cfg["config"].agent.workspace_dir（而非顶层 "agent" 字典）。
                 # 惰性导入避免与 agent_manager 形成循环依赖。
-                from easy_agent.services.agent_manager import get_agent_config
-                _cfg = get_agent_config()
+                from easy_agent.runtime_config import get_runtime_agent_config
+                _cfg = get_runtime_agent_config()
                 agent_cfg = _cfg.get("config") if _cfg else None
                 base = Path(agent_cfg.agent.workspace_dir)
             except Exception:
@@ -948,8 +949,8 @@ class Config(BaseModel):
             base = Path(config.agent.workspace_dir)
         else:
             try:
-                from easy_agent.services.agent_manager import get_agent_config
-                _cfg = get_agent_config()
+                from easy_agent.runtime_config import get_runtime_agent_config
+                _cfg = get_runtime_agent_config()
                 agent_cfg = _cfg.get("config") if _cfg else None
                 base = Path(agent_cfg.agent.workspace_dir)
             except Exception:
@@ -976,9 +977,9 @@ class Config(BaseModel):
             base = Path(config.agent.sessions_dir)
         else:
             try:
-                from easy_agent.services.agent_manager import get_agent_config
+                from easy_agent.runtime_config import get_runtime_agent_config
 
-                _cfg = get_agent_config()
+                _cfg = get_runtime_agent_config()
                 agent_cfg = _cfg.get("config") if _cfg else None
                 base = Path(agent_cfg.agent.sessions_dir)
             except Exception:
@@ -1005,9 +1006,9 @@ class Config(BaseModel):
             base = Path(config.agent.memories_dir)
         else:
             try:
-                from easy_agent.services.agent_manager import get_agent_config
+                from easy_agent.runtime_config import get_runtime_agent_config
 
-                _cfg = get_agent_config()
+                _cfg = get_runtime_agent_config()
                 agent_cfg = _cfg.get("config") if _cfg else None
                 base = Path(agent_cfg.agent.memories_dir)
             except Exception:
