@@ -986,6 +986,10 @@ const mirrorSegments = computed(() =>
 // 不插内联标签、只把技能记为已选，发送时随 skills 字段交给后端激活。
 const preselectedSkillDirs = ref(new Set())
 
+// 待修改专家 ID（专家面板「编辑」带入，不展示给用户）：发送时随请求的
+// pending_expert_id 字段上行，后端校验归属后绑定为 save_expert 的修改目标。
+const pendingExpertEditId = ref('')
+
 const selectedSkillDirs = computed(() => {
   const dirs = new Set(preselectedSkillDirs.value)
   for (const dir of skillDirsInText(message.value, tokenMap.value)) dirs.add(dir)
@@ -1325,6 +1329,11 @@ const DRAFT_KEY = 'easy_agent_input_draft'
 
 // 待选技能：由技能中心「创建技能」等入口写入，本组件挂载时恢复成技能标签
 const PENDING_SKILL_KEY = 'easy_agent_pending_skill'
+
+// 待修改专家：由专家面板「编辑」写入（{expert_agent_id, export_name_cn}）。
+// 专家 ID 不进消息正文（防篡改），挂载时消费为组件状态，发送时随请求的
+// pending_expert_id 字段上行；发送后清空。与后端 save_expert 的 edit_targets 绑定配套。
+const PENDING_EXPERT_EDIT_KEY = 'easy_agent_pending_expert_edit'
 
 // 光标所在行高亮（overlay 技术：textareal 本身无法按行上色）
 const caretLineTop = ref(null)   // 高亮条 top，null 表示隐藏
@@ -2328,6 +2337,9 @@ async function send() {
   // 正文发送前会把标签整段剥掉（否则气泡/标题/历史里会露出 `/技能名` 这类暗号）。
   // 连接器不随消息提交：本会话启用哪些连接器由「+」面板的连接器开关单独设置。
   const turnSkills = selectedSkillDirs.value
+  // 待修改专家 ID（专家面板「编辑」带入，不展示给用户）：随请求结构化字段上行，
+  // 后端校验归属后绑定为 save_expert 的修改目标
+  const expertEditId = pendingExpertEditId.value
   emit(
     'send',
     buildPayload(),
@@ -2335,13 +2347,15 @@ async function send() {
     null,
     true,
     webSearchEnabled.value,
-    turnSkills
+    turnSkills,
+    expertEditId
   )
 
   message.value = ''
   uploadedFiles.value = []
-  // 预选技能已随本条消息提交，清掉避免影响下一条
+  // 预选技能与待修改专家已随本条消息提交，清掉避免影响下一条
   preselectedSkillDirs.value = new Set()
+  pendingExpertEditId.value = ''
   dismissUploadNotice()
   closeSkillPicker()
   nextTick(() => autoResize())
@@ -2422,6 +2436,15 @@ onMounted(() => {
 
   // 恢复待选技能（技能中心「创建技能」等入口预置），读取后即清除
   restorePendingSkill()
+
+  // 消费待修改专家（专家面板「编辑」预置）：ID 存组件状态、不进正文，发送时上行
+  try {
+    const rawEdit = sessionStorage.getItem(PENDING_EXPERT_EDIT_KEY)
+    if (rawEdit) sessionStorage.removeItem(PENDING_EXPERT_EDIT_KEY)
+    const parsed = rawEdit ? JSON.parse(rawEdit) : null
+    if (parsed?.expert_agent_id) pendingExpertEditId.value = parsed.expert_agent_id
+  } catch (_) { /* 隐私模式等场景忽略 */ }
+
   syncMirror()
   document.addEventListener('click', closeTokenPopup)
   document.addEventListener('click', closeModelDropdown)

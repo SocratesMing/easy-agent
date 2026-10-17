@@ -644,6 +644,11 @@ const DRAFT_KEY = 'easy_agent_input_draft'
 // 待选技能：由技能中心「创建技能」等入口写入，本组件挂载时恢复成技能标签
 const PENDING_SKILL_KEY = 'easy_agent_pending_skill'
 
+// 待修改专家：由专家面板「编辑」写入（{expert_agent_id, export_name_cn}）。
+// 专家 ID 不进消息正文（防篡改），挂载时消费为组件状态，发送时随请求的
+// pending_expert_id 字段上行；发送后清空。与后端 save_expert 的 edit_targets 绑定配套。
+const PENDING_EXPERT_EDIT_KEY = 'easy_agent_pending_expert_edit'
+
 // 输入框最大高度：5 行（行高 1.6 × 15px = 24px）。文本再长就在框内滚动（右侧滚动条），
 // 输入框不再无限增高——与 CSS 的 max-height 保持一致，两处改要一起改。
 const TEXTAREA_MAX_ROWS = 5
@@ -795,6 +800,9 @@ export default {
       // 在草稿里用自然语言点名技能（"用「expert-creator」技能帮我创建：…"），
       // 这里只把技能记为已选，发送时随 skills 字段交给后端激活。
       preselectedSkillDirs: [],
+      // 待修改专家 ID（专家面板「编辑」带入，不展示给用户）：发送时随请求的
+      // pending_expert_id 字段上行，后端校验归属后绑定为 save_expert 的修改目标。
+      pendingExpertEditId: '',
     }
   },
   computed: {
@@ -1086,6 +1094,18 @@ export default {
 
     // 恢复待选技能（技能中心「创建技能」等入口预置），读取后即清除
     if (this.consumePendingSkill) this.restorePendingSkill()
+
+    // 消费待修改专家（专家面板「编辑」预置）：ID 存组件状态、不进正文，发送时
+    // 随请求的 pending_expert_id 字段上行（后端校验归属后绑定为修改目标）
+    try {
+      const rawEdit = sessionStorage.getItem(PENDING_EXPERT_EDIT_KEY)
+      if (rawEdit) sessionStorage.removeItem(PENDING_EXPERT_EDIT_KEY)
+      const parsed = rawEdit ? JSON.parse(rawEdit) : null
+      if (parsed && parsed.expert_agent_id) this.pendingExpertEditId = parsed.expert_agent_id
+    } catch (e) {
+      // 隐私模式等场景忽略
+    }
+
     this.syncMirror()
     // 「专家·技能·连接器」面板里改了开关 → 本面板同步（两个面板不在同一组件树分支，走事件广播）
     this.offConnectorsChanged = onConnectorsChanged(this.onConnectorsChanged)
@@ -2015,6 +2035,9 @@ export default {
       // 正文发送前会把标签整段剥掉（见 buildPayload）。连接器不随消息提交：本会话启用哪些连接器
       // 由「+」面板的开关单独设置。
       const turnSkills = this.selectedSkillDirs
+      // 待修改专家 ID（专家面板「编辑」带入，不展示给用户）：随请求结构化字段上行，
+      // 后端校验归属后绑定为 save_expert 的修改目标
+      const expertEditId = this.pendingExpertEditId
       this.$emit(
         'send',
         this.buildPayload(),
@@ -2022,14 +2045,16 @@ export default {
         null,
         true,
         this.webSearchEnabled,
-        turnSkills
+        turnSkills,
+        expertEditId
       )
 
       this.message = ''
       this.uploadedFiles = []
       this.selectedSkills = []
-      // 预选技能已随本条消息提交，清掉避免影响下一条
+      // 预选技能与待修改专家已随本条消息提交，清掉避免影响下一条
       this.preselectedSkillDirs = []
+      this.pendingExpertEditId = ''
       this.dismissUploadNotice()
       this.closeSkillPicker()
       this.$nextTick(() => this.autoResize())

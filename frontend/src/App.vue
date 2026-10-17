@@ -1720,7 +1720,7 @@ function createStreamChunkHandler(ctx) {
   return { onChunk: (data) => runInSession(ctx.streamSessionId, ctx, () => onChunk(data)) }
 }
 
-async function handleSendMessage(message, files = [], signal, enableDeepThink = true, enableWebSearch = false, skills = []) {
+async function handleSendMessage(message, files = [], signal, enableDeepThink = true, enableWebSearch = false, skills = [], expertEditId = '') {
   const userMsgId = `user-${Date.now()}`
   const preStreamUsage = { ...sessionUsage.value }
   // 记录本次请求开始前已累计的耗时和迭代次数，用于流式过程中实时累加
@@ -1875,7 +1875,10 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
         files,
         selectedModel.value,
         enableWebSearch,
-        skills
+        skills,
+        // 待修改专家 ID（专家面板「编辑」带入，不进消息正文）：后端校验归属后
+        // 绑定为 save_expert 的修改目标
+        expertEditId
       )
     }
 

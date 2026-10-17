@@ -323,6 +323,9 @@ const EDIT_LEAD = '用「expert-creator」技能帮我修改：'
 const DRAFT_KEY = 'easy_agent_input_draft'
 /** 待选技能键（与 ChatInput 的 PENDING_SKILL_KEY 一致） */
 const PENDING_SKILL_KEY = 'easy_agent_pending_skill'
+/** 待修改专家键（与 ChatInput 的 PENDING_EXPERT_EDIT_KEY 一致）：
+ *  专家 ID 走这里随请求结构化字段上行，**不进消息正文**（用户不可见、不可改） */
+const PENDING_EXPERT_EDIT_KEY = 'easy_agent_pending_expert_edit'
 /** 创建/修改专家所依赖的技能目录名 */
 const CREATE_EXPERT_SKILL_DIR = 'expert-creator'
 
@@ -733,9 +736,8 @@ export default {
     },
 
     /**
-     * 「编辑」：把该专家的现有参数 + 专家 ID 一起带入输入框，由 Agent 走修改流程。
-     *
-     * 带上 export_agent_id 是关键——Agent 只有拿到它才能调 save_expert(action="update")。
+     * 「编辑」：预填修改模板（不含专家 ID），并把 ID 写入 sessionStorage 供请求
+     * 结构化字段携带——专家 ID 不进消息正文（可被用户任意修改），由系统绑定到会话。
      */
     async handleEditExpert(item) {
       if (this.preparing || !item) return
@@ -743,20 +745,33 @@ export default {
       try {
         const skill = await this.ensureExpertCreatorSkill()
         this.writeExpertDraft(this.buildEditTemplate(item), skill)
+        // 待修改专家绑定：ID 不进消息正文，由 ChatInput 消费后随请求的
+        // pending_expert_id 字段上行（后端做归属校验，只接受本人创建的专家）
+        try {
+          sessionStorage.setItem(
+            PENDING_EXPERT_EDIT_KEY,
+            JSON.stringify({
+              expert_agent_id: item.export_agent_id || '',
+              export_name_cn: String(item.export_name_cn || '').trim(),
+            })
+          )
+        } catch (e) {
+          // 隐私模式等场景忽略
+        }
         this.$emit('edit-expert')
       } finally {
         this.preparing = false
       }
     },
 
-    /** 修改模板：把"要改什么"留给用户补，其余参数一次性给足 Agent */
+    /** 修改模板：把"要改什么"留给用户补，其余参数一次性给足 Agent。
+     *  注意：**不要把专家 ID 写进模板**——ID 由系统经 pending_expert_id 字段绑定。 */
     buildEditTemplate(item) {
       const name = String(item.export_name_cn || '').trim()
       const tags = this.skillTagsOf(item).join('、')
       const desc = String(item.export_description || '').trim() || '（暂无）'
       return (
         EDIT_LEAD + '\n' +
-        `【专家ID】${item.export_agent_id || ''}\n` +
         `【专家名称】${name}\n` +
         `【现有功能描述】${desc}\n` +
         `【现有技能标签】${tags || '（暂无）'}\n` +

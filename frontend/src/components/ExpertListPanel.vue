@@ -331,6 +331,9 @@ const EDIT_LEAD = '用「expert-creator」技能帮我修改：'
 const DRAFT_KEY = 'easy_agent_input_draft'
 /** 待选技能键（与 ChatInput 的 PENDING_SKILL_KEY 一致） */
 const PENDING_SKILL_KEY = 'easy_agent_pending_skill'
+/** 待修改专家键（与 ChatInput 的 PENDING_EXPERT_EDIT_KEY 一致）：
+ *  专家 ID 走这里随请求结构化字段上行，**不进消息正文**（用户不可见、不可改） */
+const PENDING_EXPERT_EDIT_KEY = 'easy_agent_pending_expert_edit'
 /** 创建/修改专家所依赖的技能目录名 */
 const CREATE_EXPERT_SKILL_DIR = 'expert-creator'
 /** 正在准备（安装技能 / 写草稿）时禁用入口，避免连点 */
@@ -414,9 +417,8 @@ async function handleCreateExpert() {
 }
 
 /**
- * 「编辑」：把该专家的现有参数 + 专家 ID 一起带入输入框，由 Agent 走修改流程。
- *
- * 带上 export_agent_id 是关键——Agent 只有拿到它才能调 save_expert(action="update")。
+ * 「编辑」：预填修改模板（不含专家 ID），并把 ID 写入 sessionStorage 供请求
+ * 结构化字段携带——专家 ID 不进消息正文（可被用户任意修改），由系统绑定到会话。
  */
 async function handleEditExpert(item) {
   if (preparing.value || !item) return
@@ -424,6 +426,17 @@ async function handleEditExpert(item) {
   try {
     const skill = await ensureExpertCreatorSkill()
     writeExpertDraft(buildEditTemplate(item), skill)
+    // 待修改专家绑定：ID 不进消息正文，由 ChatInput 消费后随请求的
+    // pending_expert_id 字段上行（后端做归属校验，只接受本人创建的专家）
+    try {
+      sessionStorage.setItem(
+        PENDING_EXPERT_EDIT_KEY,
+        JSON.stringify({
+          expert_agent_id: item.export_agent_id || '',
+          export_name_cn: String(item.export_name_cn || '').trim(),
+        })
+      )
+    } catch (_) { /* 隐私模式等场景忽略 */ }
     emit('edit-expert')
   } finally {
     preparing.value = false
@@ -435,9 +448,10 @@ function buildEditTemplate(item) {
   const name = String(item.export_name_cn || '').trim()
   const tags = skillTagsOf(item).join('、')
   const desc = String(item.export_description || '').trim() || '（暂无）'
+  // 注意：**不要把专家 ID 写进模板**——ID 由系统经 pending_expert_id 字段绑定到
+  // 会话（见 handleEditExpert），消息体里出现 ID 可被用户任意修改。
   return (
     EDIT_LEAD + '\n' +
-    `【专家ID】${item.export_agent_id || ''}\n` +
     `【专家名称】${name}\n` +
     `【现有功能描述】${desc}\n` +
     `【现有技能标签】${tags || '（暂无）'}\n` +

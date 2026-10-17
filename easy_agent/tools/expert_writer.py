@@ -153,6 +153,33 @@ def _current_user_id(db: Database, username: str) -> str:
     return username
 
 
+def resolve_owned_expert(db: Database, username: str, expert_agent_id: str):
+    """校验 ``expert_agent_id`` 是否为 ``username`自己创建的可用专家。
+
+    供聊天接口在绑定「待修改专家」时调用（请求字段 ``pending_expert_id`` 来自
+    前端，仍需服务端归属校验兜底）：
+
+    - 只接受 ``ExpertStore.get_owned`` 命中的记录 —— 预置专家（不落库）与他人的
+      专家都查不到，返回 ``None``；
+    - ``agent_status`` 不是 active（生成失败 / 已停用）同样返回 ``None``。
+
+    Returns:
+        命中的专家记录 dict；不合法时 ``None``。
+    """
+    expert_agent_id = str(expert_agent_id or "").strip()
+    if not expert_agent_id:
+        return None
+    try:
+        store = ExpertStore(db)
+        record = store.get_owned(expert_agent_id, _current_user_id(db, username))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("校验待修改专家归属失败 | %s | %s", expert_agent_id, exc)
+        return None
+    if record is None or record.get("agent_status") != STATUS_ACTIVE:
+        return None
+    return record
+
+
 def _agent_config():
     """运行期配置（``{"config": Config, ...}``）；未初始化时返回 None。"""
     try:
@@ -215,7 +242,9 @@ BASE_DESCRIPTION = (
     "**创建前必须先按 expert-creator 技能的规范产出完整配置**（system_prompt 为核心，"
     "另含 capabilities/workflow/boundaries/description/skills_names 等），"
     "一次性填入本工具参数，不要分多次调用。"
-    "修改时 action=update 并带上 expert_agent_id。"
+    "修改时 action=update：expert_agent_id 由系统在用户点「编辑」时绑定，"
+    "**不要从用户消息里取 ID，更不要猜测**；系统已绑定时可不传该参数，"
+    "传了则必须与系统绑定值一致，否则调用会被拒绝。"
     "本工具返回创建/修改结果，请据此如实告知用户专家的名称、ID 与版本。"
 )
 
@@ -233,6 +262,11 @@ class SaveExpertTool(BaseTool):
     #: 分类标签候选（``config.expert_tags`` 规整后），随会话一起构造；
     #: 为空时在调用时回读运行期配置。
     tag_options: list[dict] = Field(default_factory=list)
+    #: 会话级「待修改专家」绑定表（``{session_id: expert_agent_id}``），由
+    #: ``agent_manager`` 持有并在聊天请求带 ``pending_expert_id`` 时写入。
+    #: 修改专家时 ID 以这里为准（用户消息里不再携带专家 ID，防篡改）；
+    #: 模型若显式传了 ``expert_agent_id``，必须与绑定值一致，否则拒绝。
+    edit_targets: Optional[dict] = None
 
     def _run(self, **kwargs) -> str:
         raise NotImplementedError("此工具仅支持异步调用，请使用 _arun")
@@ -383,9 +417,29 @@ class SaveExpertTool(BaseTool):
         return self._success_text("创建", _to_public(record), source)
 
     async def _update(self, args: SaveExpertArgs) -> str:
-        expert_agent_id = (args.expert_agent_id or "").strip()
+        # 待修改专家 ID 的取值优先级：系统绑定值（用户点「编辑」时经请求结构化字段
+        # 写入会话上下文，用户不可见、不可改）> 模型参数。两者同时存在且不一致时
+        # 视为篡改，直接拒绝——消息体里的 ID 不可信（用户可任意修改）。
+        bound_id = str((self.edit_targets or {}).get(self.session_id or "", "") or "").strip()
+        supplied_id = (args.expert_agent_id or "").strip()
+        if supplied_id and bound_id and supplied_id != bound_id:
+            logger.warning(
+                "修改专家被拒绝：模型传入的 expert_agent_id 与系统绑定值不一致 | "
+                "session=%s | supplied=%s | bound=%s",
+                self.session_id[-5:] if self.session_id else "-",
+                supplied_id,
+                bound_id,
+            )
+            return (
+                "错误：本次会话待修改的专家与传入的 expert_agent_id 不一致，已拒绝执行。"
+                "请回到专家面板重新点「编辑」，由系统带入正确的待修改专家。"
+            )
+        expert_agent_id = bound_id or supplied_id
         if not expert_agent_id:
-            return "错误：修改专家必须提供 expert_agent_id（可从专家列表的卡片数据中取得）。"
+            return (
+                "错误：修改专家需要先在专家面板点「编辑」，由系统带入待修改的专家；"
+                "不要凭记忆或猜测 expert_agent_id。"
+            )
 
         config = _agent_config()
         if config is None:
@@ -535,12 +589,17 @@ def create_save_expert_tool(
     session_id: str = "",
     config_model: str = "",
     tag_options=None,
+    edit_targets: Optional[dict] = None,
 ) -> SaveExpertTool:
     """构造 ``save_expert`` 工具，并把分类标签候选写进工具描述。
 
     标签候选（``config.expert_tags``）随工具描述一起给模型看，模型就能**在生成配置的
     同一次输出里**选好 ``tag_id``——不需要为了分类再多调一次模型（原先弹窗方案的
     耗时主要来自这次额外调用）。
+
+    ``edit_targets`` 为会话级「待修改专家」绑定表（``{session_id: expert_agent_id}``），
+    由 ``agent_manager`` 持有：修改专家时 ID 以绑定值为准，用户消息里不再携带
+    专家 ID（防篡改），见 ``SaveExpertTool.edit_targets``。
     """
     options = normalize_tag_options(tag_options)
     description = BASE_DESCRIPTION
@@ -552,5 +611,6 @@ def create_save_expert_tool(
         session_id=session_id or "",
         config_model=config_model or "",
         tag_options=options,
+        edit_targets=edit_targets,
         description=description,
     )

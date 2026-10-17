@@ -27,6 +27,7 @@ from ..services import (
     get_session_expert,
     remove_session_agent,
     register_stream_task,
+    set_session_edit_target,
     unregister_stream_task,
     cancel_stream_task,
 )
@@ -466,6 +467,23 @@ async def chat_stream(
         skill_library.pending_skill_directives(turn_skill_dirs, request.message),
         request.message,
     )
+
+    # 「待修改专家」绑定：用户在专家面板点「编辑」后，前端把专家 ID 放进请求的
+    # 结构化字段（不进消息正文，用户不可见、不可改）。这里做归属校验——只接受
+    # 本人创建的可用专家，预置专家 / 他人的专家 / 不存在的 ID 一律忽略并告警。
+    # 绑定后由 save_expert 工具在修改时取用（见 tools/expert_writer.py）。
+    if request.pending_expert_id:
+        from ..tools.expert_writer import resolve_owned_expert
+
+        owned = resolve_owned_expert(db, username, request.pending_expert_id)
+        if owned is not None:
+            set_session_edit_target(session_id, request.pending_expert_id)
+        else:
+            logger.warning(
+                f"[{sid}] pending_expert_id 非本人可用专家，忽略绑定 | "
+                f"expert={request.pending_expert_id}"
+            )
+
     parsed_content = model_message
     knowledge_chat = await prepare_knowledge_chat(
         request=http_request,
@@ -576,6 +594,7 @@ async def chat_stream(
         session_id, username, workspace_name, model_name=request.model,
         system_prompt_extra=system_prompt_extra,
         enable_web_search=request.enable_web_search,
+        skill_dirs=turn_skill_dirs,
     )
 
     return StreamingResponse(

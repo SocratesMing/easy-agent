@@ -422,3 +422,152 @@ def test_db_fixture_is_isolated(tmp_path):
         {"type": "sqlite", "sqlite": {"path": str(tmp_path / "x.db")}}
     )
     assert ExpertStore(database).list_by_user("u")[0] == 0
+
+
+# ── 12. 待修改专家绑定（ID 不进消息体，防篡改） ─────────────────────────
+
+
+def test_update_uses_bound_expert_id_without_args(env):
+    """系统绑定的待修改专家：模型不传 expert_agent_id 也能改（ID 由系统注入）。"""
+    expert_id = _expert_id_from(_create(_make_tool(), name_cn="信用债投研专家"))
+
+    bound_tool = _make_tool(edit_targets={"s1": expert_id})
+    out = _call(bound_tool, action="update", name_cn="信用债投研专家V2", **FAKE_CONFIG)
+    assert "修改成功" in out
+
+    record = ExpertStore(env.db).get(expert_id)
+    assert record["export_name_cn"] == "信用债投研专家V2"
+    assert record["export_version"] == 2
+
+
+def test_update_rejects_id_mismatch_with_bound_target(env):
+    """模型传入的 ID 与系统绑定值不一致 → 拒绝（消息体里的 ID 不可信）。"""
+    first = _expert_id_from(_create(_make_tool(), name_cn="专家甲"))
+    second = _expert_id_from(_create(_make_tool(), name_cn="专家乙"))
+
+    tool = _make_tool(edit_targets={"s1": first})
+    out = _call(tool, action="update", expert_agent_id=second, **FAKE_CONFIG)
+    assert out.startswith("错误：")
+    assert "不一致" in out
+    # 双方都没有被改动
+    assert ExpertStore(env.db).get(first)["export_version"] == 1
+    assert ExpertStore(env.db).get(second)["export_version"] == 1
+
+
+def test_update_without_bound_or_supplied_id_rejected(env):
+    """既无系统绑定、模型也没传 ID：拒绝并引导用户去专家面板点「编辑」。"""
+    out = _call(_make_tool(), action="update", **FAKE_CONFIG)
+    assert out.startswith("错误：")
+    assert "编辑" in out
+
+
+def test_resolve_owned_expert_rejects_foreign_or_inactive(env):
+    """绑定前的归属校验：只接受本人创建的可用专家。"""
+    expert_id = _expert_id_from(_create(_make_tool()))
+    store = ExpertStore(env.db)
+
+    assert writer.resolve_owned_expert(env.db, "testuser", expert_id) is not None
+    # 不存在的 ID（预置专家不落库，同样查不到）
+    assert writer.resolve_owned_expert(env.db, "testuser", "expert_nope") is None
+    assert writer.resolve_owned_expert(env.db, "testuser", "") is None
+    # 已停用的专家不可作为修改目标
+    store.update_fields(expert_id, {"agent_status": "disabled"})
+    assert writer.resolve_owned_expert(env.db, "testuser", expert_id) is None
+
+
+def test_created_prompt_md_contains_boundary_section(env):
+    """落盘的提示词 md 程序化携带「职责边界」段（不依赖 LLM 按模板生成）。"""
+    out = _create(_make_tool())
+    expert_id = _expert_id_from(out)
+    text = _active_md_files("testuser", expert_id)[0].read_text(encoding="utf-8")
+
+    assert "## 职责边界" in text
+    assert "请提问我领域内的问题" in text
+    assert "不编造" in text
+
+
+# ── 13. save_expert 条件注入 + 绑定表（agent_manager） ──────────────────
+
+
+def _stub_deep_agent(monkeypatch, captured: list):
+    import easy_agent.agent as agent_mod
+
+    def _fake(**kwargs):
+        captured.append(kwargs)
+        return {"fake": True}
+
+    monkeypatch.setattr(agent_mod, "create_deep_agent", _fake)
+
+
+def _tool_names(kwargs) -> set:
+    return {getattr(t, "name", "") for t in (kwargs.get("tools") or [])}
+
+
+def test_agent_manager_save_expert_only_with_creator_skill(client, monkeypatch):
+    """save_expert 仅在 expert-creator 技能激活的会话注入，其他会话不带。"""
+    import easy_agent.services.agent_manager as am
+
+    if not am._agent_config or not am._agent_config.get("config"):
+        pytest.skip("全局 Agent 配置未初始化")
+
+    captured: list = []
+    _stub_deep_agent(monkeypatch, captured)
+
+    asyncio.run(
+        am.get_or_create_agent_for_session(
+            "sess-creator-on", username="testuser", enable_hitl=False,
+            skill_dirs=["expert-creator"],
+        )
+    )
+    asyncio.run(
+        am.get_or_create_agent_for_session(
+            "sess-creator-off", username="testuser", enable_hitl=False,
+            skill_dirs=["docx"],
+        )
+    )
+
+    assert "save_expert" in _tool_names(captured[0])
+    assert "save_expert" not in _tool_names(captured[1])
+
+
+def test_agent_manager_evicts_when_creator_flag_changes(client, monkeypatch):
+    """save_expert 需求变化（带 -> 不带）必须驱逐重建，否则工具集黏住。"""
+    import easy_agent.services.agent_manager as am
+
+    if not am._agent_config or not am._agent_config.get("config"):
+        pytest.skip("全局 Agent 配置未初始化")
+
+    captured: list = []
+    _stub_deep_agent(monkeypatch, captured)
+
+    sid = "sess-creator-flip"
+    asyncio.run(
+        am.get_or_create_agent_for_session(
+            sid, username="testuser", enable_hitl=False, skill_dirs=["expert-creator"]
+        )
+    )
+    asyncio.run(
+        am.get_or_create_agent_for_session(
+            sid, username="testuser", enable_hitl=False, skill_dirs=[]
+        )
+    )
+
+    assert len(captured) == 2
+    assert "save_expert" in _tool_names(captured[0])
+    assert "save_expert" not in _tool_names(captured[1])
+
+
+def test_session_edit_target_bind_override_and_clear(client):
+    """绑定表：新绑定覆盖旧绑定、随会话 Agent 清理一起清除。"""
+    import easy_agent.services.agent_manager as am
+
+    am.set_session_edit_target("sess-edit-bind", "expert_a_1")
+    am.set_session_edit_target("sess-edit-bind", "expert_b_2")
+    assert am.get_session_edit_target("sess-edit-bind") == "expert_b_2"
+
+    am.remove_session_agent("sess-edit-bind")
+    assert am.get_session_edit_target("sess-edit-bind") == ""
+
+    # 空值不写入
+    am.set_session_edit_target("sess-edit-bind2", "  ")
+    assert am.get_session_edit_target("sess-edit-bind2") == ""
