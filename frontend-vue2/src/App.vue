@@ -166,7 +166,6 @@ import WorkspacePanel from './components/WorkspacePanel.vue'
 import SettingsPanel from './components/SettingsPanel.vue'
 import AiSidebar from './components/AiSidebar.vue'
 import { createSession, listSessions, getChatHistory, deleteSession, sendMessage, resumeStream, renameSession, togglePinSession, getStreamStatus } from './api/chat.js'
-import { streamExportRun } from './api/expert.js'
 import { getUserProfile, deleteFile } from './api/files.js'
 import chatSessionMixin, { parseMCPResult } from './mixins/chatSession.js'
 import { chatStore } from './store/chatStore.js'
@@ -1597,31 +1596,28 @@ export default {
           }
         }
 
-        // 专家模式：选中专家时改走 /agent/stream_export_run，由后端加载该专家当前生效
-        // 版本的提示词动态构建 Agent（未选专家时行为不变，走通用 /agent/chat/stream）。
-        // 两套接口的 SSE 事件格式一致，onChunk 复用同一处理器。
+        // 专家与普通对话走同一个入口：选中专家时把 ID 作为结构化字段带上，后端据此
+        // 加载该专家当前生效版本的提示词，并在创建 Agent 前做职责范围预检（未选专家 =
+        // 通用 Agent，行为与改造前一致）。SSE 事件格式相同，onChunk 复用同一处理器。
         // 注意：本方法是 App.vue 内的同名实现（覆盖 chatSession mixin 的同名方法），
-        // 专家分支与 mixin 保持一致，改动时需同步两处。
-        if (this.selectedExpert && this.selectedExpert.export_agent_id) {
-          await streamExportRun(
-            {
-              message,
-              sessionId: this.currentSessionId,
-              expertAgentId: this.selectedExpert.export_agent_id,
-              model: this.selectedModel,
-              enableDeepThink,
-              enableWebSearch,
-              files,
-              skills,
-            },
-            onChunk,
-            abortSignal
-          )
-        } else {
+        // 专家参数与 mixin 保持一致，改动时需同步两处。
+        await sendMessage(
+          this.currentSessionId,
+          message,
+          onChunk,
+          abortSignal,
+          enableDeepThink,
+          files,
+          this.selectedModel,
+          enableWebSearch,
+          null,
+          skills,
           // 待修改专家 ID（专家面板「编辑」带入，不进消息正文）：后端校验归属后
           // 绑定为 save_expert 的修改目标
-          await sendMessage(this.currentSessionId, message, onChunk, abortSignal, enableDeepThink, files, this.selectedModel, enableWebSearch, null, skills, expertEditId)
-        }
+          expertEditId,
+          // 本轮使用的专家（输入框专家胶囊选中项）；空串 = 通用对话
+          (this.selectedExpert && this.selectedExpert.export_agent_id) || ''
+        )
 
         await this.refreshSessionFiles(null, 500)
       } catch (e) {

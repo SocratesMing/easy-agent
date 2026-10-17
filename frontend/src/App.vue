@@ -136,7 +136,6 @@ import { createSession, listSessions, getChatHistory, deleteSession, sendMessage
 import { uploadFile, deleteFile, getUserProfile, getSessionGeneratedFiles } from './api/files.js'
 import { logout as apiLogout, notifyLogout, getStoredToken, getStoredUsername, AUTH_EXPIRED_EVENT, authFetch, passwordlessLogin } from './api/auth.js'
 import { getModels as fetchModels } from './api/settings.js'
-import { streamExportRun } from './api/expert.js'
 
 const sessions = ref([])
 const currentSessionId = ref(null)
@@ -1855,42 +1854,25 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
       }
     }
 
-    // 专家模式：改走 /agent/stream_export_run，由后端按选中的专家动态构建 Agent
-    // （加载该专家当前生效版本的提示词，未选中的情况退化为通用 Agent）。
-    // SSE 事件格式与 /agent/chat/stream 完全一致，因此 onChunk 复用同一处理器。
-    // 未选专家时保持原有链路，行为不变。
-    if (selectedExpert.value && selectedExpert.value.export_agent_id) {
-      await streamExportRun(
-        {
-          message,
-          sessionId: currentSessionId.value,
-          expertAgentId: selectedExpert.value.export_agent_id,
-          model: selectedModel.value,
-          enableDeepThink,
-          enableWebSearch,
-          files,
-          // 已选技能：结构化字段（技能目录名），`/目录名` 由后端拼进模型输入
-          skills,
-        },
-        onChunk,
-        abortSignal
-      )
-    } else {
-      await sendMessage(
-        currentSessionId.value,
-        message,
-        onChunk,
-        abortSignal,
-        enableDeepThink,
-        files,
-        selectedModel.value,
-        enableWebSearch,
-        skills,
-        // 待修改专家 ID（专家面板「编辑」带入，不进消息正文）：后端校验归属后
-        // 绑定为 save_expert 的修改目标
-        expertEditId
-      )
-    }
+    // 专家与普通对话走同一个入口：选中专家时把 ID 作为结构化字段带上，后端据此
+    // 加载该专家当前生效版本的提示词，并在创建 Agent 前做职责范围预检（未选专家 =
+    // 通用 Agent，行为与改造前一致）。SSE 事件格式相同，onChunk 复用同一处理器。
+    await sendMessage(
+      currentSessionId.value,
+      message,
+      onChunk,
+      abortSignal,
+      enableDeepThink,
+      files,
+      selectedModel.value,
+      enableWebSearch,
+      skills,
+      // 待修改专家 ID（专家面板「编辑」带入，不进消息正文）：后端校验归属后
+      // 绑定为 save_expert 的修改目标
+      expertEditId,
+      // 本轮使用的专家（输入框专家胶囊选中项）；空串 = 通用对话
+      selectedExpert.value?.export_agent_id || ''
+    )
 
     await expandWorkspaceAfterSessionCompletion(streamSessionId)
   } catch (e) {

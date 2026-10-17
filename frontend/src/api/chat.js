@@ -135,7 +135,7 @@ export async function attachStream(sessionId, onChunk, signal) {
   }
 }
 
-export async function sendMessage(sessionId, message, onChunk, signal, enableDeepThink = true, files = [], model = null, enableWebSearch = false, skills = [], pendingExpertId = '') {
+export async function sendMessage(sessionId, message, onChunk, signal, enableDeepThink = true, files = [], model = null, enableWebSearch = false, skills = [], pendingExpertId = '', expertAgentId = '') {
   const controller = new AbortController()
   const abortSignal = signal || controller.signal
 
@@ -156,6 +156,10 @@ export async function sendMessage(sessionId, message, onChunk, signal, enableDee
   // 待修改专家 ID（专家面板「编辑」带入，不进消息正文）：后端校验归属（只接受
   // 本人创建的专家）后绑定为 save_expert 的修改目标
   if (pendingExpertId) payload.pending_expert_id = pendingExpertId
+  // 本轮使用的专家（输入框专家胶囊选中项）：后端加载该专家提示词，并在创建 Agent
+  // 之前做职责范围预检。不传 = 通用 Agent（与 pending_expert_id 语义不同：后者是
+  // 「要修改哪个专家」）。
+  if (expertAgentId) payload.expert_agent_id = expertAgentId
 
   const response = await authFetch(`${API_BASE_URL}/agent/chat/stream`, {
     method: 'POST',

@@ -14,7 +14,7 @@
   - 卡片：头像 / 名称 + 状态徽标 / 单行功能描述（export_description）/ 技能标签
     （export_skills_names，最多 3 个）/ 底部 版本·更新时间·分类
   - 点「召唤」/ 点示例问题 → emit('use', item, prompt?)，由 App.vue 挂载专家胶囊
-    （带 prompt 时回填输入框）并走 /agent/stream_export_run
+    （带 prompt 时回填输入框）并选中该专家（对话统一走 /agent/chat/stream）
   - 点卡片 → 专家详情弹窗（功能描述[逐条换行] / 技能标签 / 专家帮你做 / 版本与 ID）
 
   新建 / 编辑专家（与「添加技能」同一套跳转，见 SkillListPanel.handleCreateSkill）：
