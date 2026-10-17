@@ -3772,9 +3772,10 @@ html[data-theme="dark"] .plus-list-tag.custom {
   align-items: center;
   gap: 10px;
   width: 100%;
-  padding: 6px 8px;
+  /* 与技能面板 .plus-list-item 的行内边距保持一致 */
+  padding: 8px 10px;
   border: 1px solid transparent;
-  border-radius: 10px;
+  border-radius: 8px;
   background: transparent;
   cursor: pointer;
   text-align: left;
@@ -3795,12 +3796,13 @@ html[data-theme="dark"] .plus-list-tag.custom {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 26px;
-  height: 26px;
+  /* 尺寸/字号/字重与技能面板 .plus-list-icon（initial 变体）一致 */
+  width: 28px;
+  height: 28px;
   flex-shrink: 0;
   border-radius: 8px;
-  font-size: 12.5px;
-  font-weight: 800;
+  font-size: 12px;
+  font-weight: 700;
   background: var(--bg-tertiary);
   color: var(--text-secondary);
 }
@@ -3837,8 +3839,9 @@ html[data-theme="dark"] .plus-expert-avatar.av-c7 { background: #12556b; color: 
 .plus-expert-name {
   flex-shrink: 0;
   max-width: 52%;
+  /* 字体样式与技能面板 .plus-list-name 一致 */
   font-size: 13px;
-  font-weight: 500;
+  font-weight: 600;
   color: var(--text-primary);
   white-space: nowrap;
   overflow: hidden;
@@ -3848,7 +3851,8 @@ html[data-theme="dark"] .plus-expert-avatar.av-c7 { background: #12556b; color: 
 .plus-expert-desc {
   flex: 1;
   min-width: 0;
-  font-size: 11.5px;
+  /* 字体样式与技能面板 .plus-list-desc 一致 */
+  font-size: 12px;
   color: var(--text-secondary);
   white-space: nowrap;
   overflow: hidden;

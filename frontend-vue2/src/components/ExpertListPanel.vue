@@ -162,7 +162,7 @@
           @keydown.enter="openDetail(item)"
         >
           <div class="expert-card-inner">
-            <div class="expert-avatar" aria-hidden="true">{{ avatarChar(item) }}</div>
+            <div class="expert-avatar" :class="avatarColorClass(item)" aria-hidden="true">{{ avatarChar(item) }}</div>
             <div class="expert-card-body">
               <div class="expert-card-name-row">
                 <span class="expert-card-name" :title="item.export_name_cn">{{ item.export_name_cn }}</span>
@@ -233,7 +233,7 @@
         </button>
 
         <div class="detail-head">
-          <div class="detail-avatar" aria-hidden="true">{{ avatarChar(detailItem) }}</div>
+          <div class="detail-avatar" :class="avatarColorClass(detailItem)" aria-hidden="true">{{ avatarChar(detailItem) }}</div>
           <div class="detail-head-text">
             <div class="detail-name-row">
               <span class="detail-name" :title="detailItem.export_name_cn">{{ detailItem.export_name_cn }}</span>
@@ -467,6 +467,21 @@ export default {
     avatarChar(item) {
       const name = String((item && item.export_name_cn) || '').trim()
       return name ? name.slice(0, 1) : '?'
+    },
+
+    /**
+     * 专家头像配色（纯展示，不影响功能）：与技能面板 SkillIcon 的分类配色同源
+     * （琥珀/紫/粉/绿/靛/天蓝 6 色循环），按专家在网格中的序号取色。
+     *
+     * 相邻不同色：栅格常见列数为 3（窄屏 2 / 1）——左右相邻序号差 1、上下相邻
+     * 序号差列数（3/2/1），均不整除 6，因此左右与上下相邻的专家颜色必然不同，
+     * 且 6 色色相彼此相距较远，对比度足够形成视觉色差。
+     */
+    avatarColorClass(item) {
+      const idx = this.filteredExperts.findIndex(
+        (e) => e.export_agent_id === (item && item.export_agent_id)
+      )
+      return 'av-p' + (idx < 0 ? 0 : idx % 6)
     },
 
     /** 卡片描述：优先 export_description（大模型生成的功能描述），回退专家描述 */
@@ -1124,6 +1139,24 @@ export default {
   font-size: 16px;
   font-weight: 600;
 }
+
+/* 头像配色（av-p0..av-p5）：与技能面板 SkillIcon 的分类配色同源的 6 色循环，
+   按网格序号取色（见 avatarColorClass），保证相邻卡片颜色不同、对比度足够。
+   仅覆盖颜色，尺寸/圆角等仍走 .expert-avatar 基础样式。 */
+.expert-avatar.av-p0, .detail-avatar.av-p0 { background: color-mix(in srgb, #f59e0b 15%, #ffffff); color: #d97706; }
+.expert-avatar.av-p1, .detail-avatar.av-p1 { background: color-mix(in srgb, #8b5cf6 15%, #ffffff); color: #7c3aed; }
+.expert-avatar.av-p2, .detail-avatar.av-p2 { background: color-mix(in srgb, #ec4899 15%, #ffffff); color: #db2777; }
+.expert-avatar.av-p3, .detail-avatar.av-p3 { background: color-mix(in srgb, #10b981 15%, #ffffff); color: #059669; }
+.expert-avatar.av-p4, .detail-avatar.av-p4 { background: color-mix(in srgb, #6366f1 15%, #ffffff); color: #4f46e5; }
+.expert-avatar.av-p5, .detail-avatar.av-p5 { background: color-mix(in srgb, #0ea5e9 15%, #ffffff); color: #0284c7; }
+
+/* 深色主题：底色降低明度、字色提亮（口径与 SkillIcon 的深色变体一致） */
+html[data-theme="dark"] .expert-avatar.av-p0, html[data-theme="dark"] .detail-avatar.av-p0 { background: color-mix(in srgb, #f59e0b 24%, #26262c); color: #fbbf24; }
+html[data-theme="dark"] .expert-avatar.av-p1, html[data-theme="dark"] .detail-avatar.av-p1 { background: color-mix(in srgb, #8b5cf6 26%, #26262c); color: #c4b5fd; }
+html[data-theme="dark"] .expert-avatar.av-p2, html[data-theme="dark"] .detail-avatar.av-p2 { background: color-mix(in srgb, #ec4899 24%, #26262c); color: #f9a8d4; }
+html[data-theme="dark"] .expert-avatar.av-p3, html[data-theme="dark"] .detail-avatar.av-p3 { background: color-mix(in srgb, #10b981 24%, #26262c); color: #6ee7b7; }
+html[data-theme="dark"] .expert-avatar.av-p4, html[data-theme="dark"] .detail-avatar.av-p4 { background: color-mix(in srgb, #6366f1 26%, #26262c); color: #a5b4fc; }
+html[data-theme="dark"] .expert-avatar.av-p5, html[data-theme="dark"] .detail-avatar.av-p5 { background: color-mix(in srgb, #0ea5e9 26%, #26262c); color: #7dd3fc; }
 
 .expert-card-body {
   flex: 1;
