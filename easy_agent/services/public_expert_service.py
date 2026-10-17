@@ -326,6 +326,10 @@ def read_public_expert(expert_dir: Path) -> Optional[dict]:
         "export_prompt": "",
         "export_description": description,
         "export_skills_names": _as_str_list(cfg.get("skills_names")),
+        # 画像补充字段（相关性预检用）：公共专家的 config.yaml 里有场景与能力清单，
+        # 不下发到列表也不影响前端（未知字段被忽略），但能让预检看到"能产出报告"。
+        "export_scenario": str(cfg.get("scenario") or "").strip(),
+        "export_capabilities": _as_str_list(cfg.get("capabilities")),
         "export_features_prompt": _as_str_list(cfg.get("features_prompt")),
         "export_file_path": str(prompt_path),
         "agent_status": STATUS_ACTIVE,

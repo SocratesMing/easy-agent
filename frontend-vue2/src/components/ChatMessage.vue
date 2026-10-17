@@ -39,7 +39,7 @@
            这里用角色判断避免标识跑到用户气泡上。
            放在等待动画之前：加载中（正在响应）也显示在标识下方 -->
       <div v-if="message.role === 'assistant' && expertInfo" class="expert-badge">
-        <span class="expert-badge-avatar">{{ expertInfo.name.slice(0, 1) }}</span>
+        <span class="expert-badge-avatar" :class="expertAvatarClass(expertInfo)">{{ expertAvatarChar(expertInfo) }}</span>
         <span class="expert-badge-name">{{ expertInfo.name }}</span>
       </div>
 
@@ -238,6 +238,11 @@ import SkillIcon from './SkillIcon.vue'
 import ToolCallCard from './ToolCallCard.vue'
 import { pageContextLabel } from '../utils/pageContext.js'
 import { iconCategoryFor } from '../utils/skillCategories.js'
+// 专家头像取字 / 配色：与技能中心、+ 号下拉、输入框胶囊共用同一套规则（按 ID 稳定取档）
+import {
+  expertAvatarChar as buildExpertAvatarChar,
+  expertAvatarClass as buildExpertAvatarClass
+} from '../utils/expertAvatar.js'
 import { parseLeadingSkillTokens } from '../utils/skillTokens.js'
 import { ensureSkillDirectoryLoaded, skillDirectoryStore } from '../store/skillDirectoryStore.js'
 
@@ -668,6 +673,13 @@ export default {
     iconCategoryFor(categoryId) {
       return iconCategoryFor(categoryId)
     },
+    /** 暴露给模板：专家头像取字 / 配色（全局 8 色板，按 export_agent_id 稳定取档） */
+    expertAvatarChar(item) {
+      return buildExpertAvatarChar(item)
+    },
+    expertAvatarClass(item) {
+      return buildExpertAvatarClass(item)
+    },
     // 使用 block 的唯一标识来跟踪展开状态
     getBlockKey(block, index) {
       return block.id || `${block.type}-${block.step || 0}-${block.tool_name || ''}-${index}`
@@ -900,8 +912,9 @@ html[data-theme="dark"] .process-wrapper.process-expanded .process-header.is-stu
   background: var(--bg-tertiary, #f1f5f9);
 }
 /* 专家标识：回答面板左上角独立一行「头像 + 名称」（选中专家回答时出现）。
-   头像取专家名称首字的圆形字标，颜色与输入框专家胶囊（.expert-chip-avatar）一致：
-   统一用主题色 --accent-color，避免两处图标颜色不一致。 */
+   头像取专家名称首字的圆形字标，底色由全局 .ea-0 ~ .ea-7 按 export_agent_id
+   稳定取档（utils/expertAvatar.js），与技能中心专家 Tab、+ 号下拉、输入框胶囊
+   四处同色；此处只负责尺寸/排版，不写死底色。 */
 .expert-badge {
   display: inline-flex;
   align-items: center;
@@ -915,11 +928,9 @@ html[data-theme="dark"] .process-wrapper.process-expanded .process-header.is-stu
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  /* 底色/字色由全局 .ea-0 ~ .ea-7 提供（按专家 ID 稳定取档） */
   font-size: 12px;
   font-weight: 600;
-  color: #fff;
-  background: #0ea5e9;
-  background: var(--accent-color);
   flex-shrink: 0;
 }
 .expert-badge-name {

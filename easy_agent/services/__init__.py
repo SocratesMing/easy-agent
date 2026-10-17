@@ -11,6 +11,8 @@ from .agent_manager import (
     get_session_connectors,
     set_session_connectors,
     clear_session_connectors,
+    set_session_edit_target,
+    get_session_edit_target,
 )
 from .connectors import (
     parse_connector_directives,
@@ -40,6 +42,8 @@ __all__ = [
     "get_session_connectors",
     "set_session_connectors",
     "clear_session_connectors",
+    "set_session_edit_target",
+    "get_session_edit_target",
     "parse_message_connectors",
     "parse_connector_directives",
     "resolve_connector_servers",

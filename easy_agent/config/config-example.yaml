@@ -185,6 +185,26 @@ skill_write: ${SKILL_WRITE:-new-only}
 # operations 可选值：read、write。技能库的写权限请改用上面的 skill_write。
 denied_dirs: []
 
+# ===== Expert =====
+# 专家会话安全边界，两层（详见 services/expert_guardrail.py 与 expert_relevance.py）：
+#   ① 运行时边界块（软层）：加载专家提示词（预置与自建都一样）时，统一在其末尾追加
+#      一段「专家职责边界」——只答领域内问题、先拆解用户消息再答相关的、拒绝高危
+#      操作、回答标注来源。
+#   ② 输入侧相关性预检（硬闸）：每轮专家消息前用一次轻量 LLM 调用做三分类，
+#      与本专家职责无关的消息直接短路拒答——Agent 不创建，工具零可达。
+#      预检异常/超时一律放行（fail-open，可用性优先）。
+expert:
+  guardrail_enabled: true
+  # 是否要进行提示词的预检，True-进行预检；False-关闭预检
+  relevance_check_enabled: true
+  # 部分相关时的口径：true = 整条拒答；false（默认）= 放行，只答相关部分。
+  # 与领域无关的消息、以及删除/修改文件等高危操作不受此开关影响，始终会拦。
+  relevance_strict: false
+  # 预检那一次调用是否关闭思考模式。三分类只输出一行 JSON，思考纯属浪费：
+  # 实测输出 token 258~1007 -> 7，耗时 1.7~6.4s -> 0.5~0.6s。
+  # 网关不认这两个参数时会自动去掉重试，一般无需关闭。
+  relevance_disable_thinking: true
+
 # ===== Expert Tags =====
 # 专家 Agent 的分类标签候选：创建专家时整份列表会交给大模型，
 # 由它按专家功能挑一个最匹配的 tag_id 落库（tag_id 用于数据筛选，tag_name 用于展示）。

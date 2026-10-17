@@ -1458,7 +1458,7 @@ export default {
       // 事件按「所属会话」路由：后台会话写入其自身缓冲，不污染当前展示
       return { onChunk: (data) => this.runInSession(ctx.streamSessionId, ctx, () => onChunk(data)) }
     },
-    async handleSendMessage(message, files = [], signal, enableDeepThink = true, enableWebSearch = false, skills = []) {
+    async handleSendMessage(message, files = [], signal, enableDeepThink = true, enableWebSearch = false, skills = [], expertEditId = '') {
       const userMsgId = `user-${Date.now()}`
       const preStreamUsage = { ...this.sessionUsage }
       // 记录本次请求开始前已累计的耗时和迭代次数，用于流式过程中实时累加
@@ -1485,18 +1485,22 @@ export default {
       // 结构化技能目录名（与后端落库字段同形）：气泡按它渲染技能标签，不再依赖从
       // 消息文本里反扒 `/技能名`。没有选中技能时不写该字段——手打 `/技能名` 的正文
       // 仍按老规则从文本解析，行为和改造前一致。
-      if (skills.length > 0) userMessage.skills = [...skills]
+  if (skills.length > 0) userMessage.skills = [...skills]
 
-      this.messages.push(userMessage)
+  // 专家模式：本轮专家同时写到用户消息上（与后端落库字段同形），
+  // 这样 Chat.vue 的 userExpertFor 与 ChatMessage 都能直接取到，不依赖后端回灌。
+  const usedExpert = (this.selectedExpert && this.selectedExpert.export_agent_id)
+    ? { id: this.selectedExpert.export_agent_id, name: this.selectedExpert.export_name_cn || '专家' }
+    : null
+  if (usedExpert) userMessage.expert = usedExpert
 
-      // 立即创建 assistant 占位消息，显示等待动画
-      const assistantPlaceholderId = `assistant-${Date.now()}`
-      // 专家模式：随消息记住本次回答使用的专家，回答面板左上角展示「头像 + 名称」
-      // （发送瞬间即出现）。历史会话从后端加载的消息不含该字段，按无专家兜底。
-      const usedExpert = (this.selectedExpert && this.selectedExpert.export_agent_id)
-        ? { id: this.selectedExpert.export_agent_id, name: this.selectedExpert.export_name_cn || '专家' }
-        : null
-      const assistantPlaceholder = {
+  this.messages.push(userMessage)
+
+  // 立即创建 assistant 占位消息，显示等待动画
+  const assistantPlaceholderId = `assistant-${Date.now()}`
+  // 专家模式：随消息记住本次回答使用的专家，回答面板左上角展示「头像 + 名称」
+  // （发送瞬间即出现）。历史会话从后端加载的消息不含该字段，按无专家兜底。
+  const assistantPlaceholder = {
         id: assistantPlaceholderId,
         role: 'assistant',
         content: '',
@@ -1614,7 +1618,9 @@ export default {
             abortSignal
           )
         } else {
-          await sendMessage(this.currentSessionId, message, onChunk, abortSignal, enableDeepThink, files, this.selectedModel, enableWebSearch, null, skills)
+          // 待修改专家 ID（专家面板「编辑」带入，不进消息正文）：后端校验归属后
+          // 绑定为 save_expert 的修改目标
+          await sendMessage(this.currentSessionId, message, onChunk, abortSignal, enableDeepThink, files, this.selectedModel, enableWebSearch, null, skills, expertEditId)
         }
 
         await this.refreshSessionFiles(null, 500)
@@ -1658,7 +1664,8 @@ export default {
                 error: e.message || '发送消息失败，请检查网络连接',
                 loading: false,
                 created_at: new Date().toISOString(),
-                blocks: []
+                blocks: [],
+                expert: usedExpert
               })
             }
           }

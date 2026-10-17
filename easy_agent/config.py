@@ -415,6 +415,32 @@ class Config(BaseModel):
     preset_questions: list[PresetQuestionGroup] = Field(default_factory=list)
     expert_tags: list[ExpertTag] = Field(default_factory=list)
     """专家分类标签候选（创建专家时交给大模型做归类，见 ExpertTag）。"""
+    expert_guardrail_enabled: bool = True
+    """专家会话是否追加统一的「专家职责边界」块（领域限定 / 拒答无关问题 /
+    禁止高危操作 / 事实来源标注）。预置与自建专家都生效；关闭仅去掉这层提示词
+    约束，归属校验等硬防线不受影响。"""
+
+    expert_relevance_check_enabled: bool = True
+    """专家会话是否在创建 Agent 前做「相关性预检」（一次轻量 LLM 三分类）。
+
+    开启时与本专家职责无关的消息**短路拒答**，Agent 不创建、工具零可达；预检
+    异常/超时一律放行（fail-open）。见 services/expert_relevance.py。"""
+
+    expert_relevance_strict: bool = False
+    """「部分相关」消息的口径：true = 整条拒答；false（默认）= 放行，交给职责边界块
+    只回答其中相关的部分。
+
+    默认宽松是实测调过的：严格口径会把「分析文件里的金融数据出一份报告」「写 Python
+    爬利率数据再回答利率问题」这类正常需求整条拒掉。与领域无关的消息、以及删除/修改
+    文件等高危操作**不受本开关影响**，始终在预检层短路拒答。"""
+
+    expert_relevance_disable_thinking: bool = True
+    """预检的那一次 LLM 调用是否**关闭思考模式**。
+
+    三分类只需输出一行 JSON，思考纯属浪费：实测同一提示词下输出 token 从
+    258~1007 降到 7、耗时从 1.7~6.4 秒降到 0.5~0.6 秒。极少数网关不认
+    ``reasoning_effort`` / ``thinking`` 参数时会自动去掉它们重试，因此一般无需关闭；
+    只有在关思考反而更慢或不返回内容时才设为 false。"""
     app_welcome_title: str = DEFAULT_APP_WELCOME_TITLE
 
     @field_validator("expert_tags", mode="before")
@@ -550,6 +576,12 @@ class Config(BaseModel):
 
         file_context_config = cls._parse_file_context_config(data)
 
+        # 专家会话安全边界：优先读 expert 段（expert.relevance_strict 等），
+        # 同时兼容旧的扁平键（expert_guardrail_enabled），两种写法都能生效。
+        expert_section = data.get("expert")
+        if not isinstance(expert_section, dict):
+            expert_section = {}
+
         return cls(
             llm=llm_config,
             agent=agent_config,
@@ -565,6 +597,30 @@ class Config(BaseModel):
             active_model=active_model,
             preset_questions=data.get("preset_questions", []),
             expert_tags=data.get("expert_tags", []),
+            expert_guardrail_enabled=bool(
+                data.get(
+                    "expert_guardrail_enabled",
+                    expert_section.get("guardrail_enabled", True),
+                )
+            ),
+            expert_relevance_check_enabled=bool(
+                data.get(
+                    "expert_relevance_check_enabled",
+                    expert_section.get("relevance_check_enabled", True),
+                )
+            ),
+            expert_relevance_strict=bool(
+                data.get(
+                    "expert_relevance_strict",
+                    expert_section.get("relevance_strict", False),
+                )
+            ),
+            expert_relevance_disable_thinking=bool(
+                data.get(
+                    "expert_relevance_disable_thinking",
+                    expert_section.get("relevance_disable_thinking", True),
+                )
+            ),
             app_welcome_title=data.get(
                 "app_welcome_title", DEFAULT_APP_WELCOME_TITLE
             ),

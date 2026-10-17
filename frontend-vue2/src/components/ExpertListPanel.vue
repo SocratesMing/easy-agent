@@ -162,7 +162,7 @@
           @keydown.enter="openDetail(item)"
         >
           <div class="expert-card-inner">
-            <div class="expert-avatar" aria-hidden="true">{{ avatarChar(item) }}</div>
+            <div class="expert-avatar" :class="avatarColorClass(item)" aria-hidden="true">{{ avatarChar(item) }}</div>
             <div class="expert-card-body">
               <div class="expert-card-name-row">
                 <span class="expert-card-name" :title="item.export_name_cn">{{ item.export_name_cn }}</span>
@@ -233,7 +233,7 @@
         </button>
 
         <div class="detail-head">
-          <div class="detail-avatar" aria-hidden="true">{{ avatarChar(detailItem) }}</div>
+          <div class="detail-avatar" :class="avatarColorClass(detailItem)" aria-hidden="true">{{ avatarChar(detailItem) }}</div>
           <div class="detail-head-text">
             <div class="detail-name-row">
               <span class="detail-name" :title="detailItem.export_name_cn">{{ detailItem.export_name_cn }}</span>
@@ -301,6 +301,11 @@
 
 <script>
 import { deleteExpert, listExperts, listPublicExperts } from '../api/expert.js'
+// 别名导入：模板方法同名（Vue2 模板只能访问实例成员）
+import {
+  expertAvatarChar as buildExpertAvatarChar,
+  expertAvatarClass as buildExpertAvatarClass
+} from '../utils/expertAvatar.js'
 import { addSkillToUser, getUserSkills } from '../api/skills.js'
 
 /** 用户侧创建引导词模板（可后续迁移到提示词目录做成可配置） */
@@ -323,6 +328,9 @@ const EDIT_LEAD = '用「expert-creator」技能帮我修改：'
 const DRAFT_KEY = 'easy_agent_input_draft'
 /** 待选技能键（与 ChatInput 的 PENDING_SKILL_KEY 一致） */
 const PENDING_SKILL_KEY = 'easy_agent_pending_skill'
+/** 待修改专家键（与 ChatInput 的 PENDING_EXPERT_EDIT_KEY 一致）：
+ *  专家 ID 走这里随请求结构化字段上行，**不进消息正文**（用户不可见、不可改） */
+const PENDING_EXPERT_EDIT_KEY = 'easy_agent_pending_expert_edit'
 /** 创建/修改专家所依赖的技能目录名 */
 const CREATE_EXPERT_SKILL_DIR = 'expert-creator'
 
@@ -465,8 +473,19 @@ export default {
     },
 
     avatarChar(item) {
-      const name = String((item && item.export_name_cn) || '').trim()
-      return name ? name.slice(0, 1) : '?'
+      return buildExpertAvatarChar(item)
+    },
+
+    /**
+     * 专家头像配色（纯展示）：按 export_agent_id 稳定取档（全局 8 色板 .ea-0 ~ .ea-7）。
+     *
+     * 早期是按网格序号取色，好处是相邻卡片必然不同色，但同一个专家会随「公共/我的」
+     * 视图切换、搜索过滤、加载更多而变色，也无法与消息标识、下拉列表、输入框胶囊对齐。
+     * 现统一按身份取色：四处（技能中心卡片/详情、+ 号下拉、胶囊、回答面板标识）同色，
+     * 刷新/换设备都不变。见 utils/expertAvatar.js。
+     */
+    avatarColorClass(item) {
+      return buildExpertAvatarClass(item)
     },
 
     /** 卡片描述：优先 export_description（大模型生成的功能描述），回退专家描述 */
@@ -718,9 +737,8 @@ export default {
     },
 
     /**
-     * 「编辑」：把该专家的现有参数 + 专家 ID 一起带入输入框，由 Agent 走修改流程。
-     *
-     * 带上 export_agent_id 是关键——Agent 只有拿到它才能调 save_expert(action="update")。
+     * 「编辑」：预填修改模板（不含专家 ID），并把 ID 写入 sessionStorage 供请求
+     * 结构化字段携带——专家 ID 不进消息正文（可被用户任意修改），由系统绑定到会话。
      */
     async handleEditExpert(item) {
       if (this.preparing || !item) return
@@ -728,20 +746,33 @@ export default {
       try {
         const skill = await this.ensureExpertCreatorSkill()
         this.writeExpertDraft(this.buildEditTemplate(item), skill)
+        // 待修改专家绑定：ID 不进消息正文，由 ChatInput 消费后随请求的
+        // pending_expert_id 字段上行（后端做归属校验，只接受本人创建的专家）
+        try {
+          sessionStorage.setItem(
+            PENDING_EXPERT_EDIT_KEY,
+            JSON.stringify({
+              expert_agent_id: item.export_agent_id || '',
+              export_name_cn: String(item.export_name_cn || '').trim(),
+            })
+          )
+        } catch (e) {
+          // 隐私模式等场景忽略
+        }
         this.$emit('edit-expert')
       } finally {
         this.preparing = false
       }
     },
 
-    /** 修改模板：把"要改什么"留给用户补，其余参数一次性给足 Agent */
+    /** 修改模板：把"要改什么"留给用户补，其余参数一次性给足 Agent。
+     *  注意：**不要把专家 ID 写进模板**——ID 由系统经 pending_expert_id 字段绑定。 */
     buildEditTemplate(item) {
       const name = String(item.export_name_cn || '').trim()
       const tags = this.skillTagsOf(item).join('、')
       const desc = String(item.export_description || '').trim() || '（暂无）'
       return (
         EDIT_LEAD + '\n' +
-        `【专家ID】${item.export_agent_id || ''}\n` +
         `【专家名称】${name}\n` +
         `【现有功能描述】${desc}\n` +
         `【现有技能标签】${tags || '（暂无）'}\n` +
@@ -1119,11 +1150,15 @@ export default {
   height: 40px;
   flex-shrink: 0;
   border-radius: 11px;
-  background: var(--xcard-avatar-bg);
-  color: var(--xcard-avatar-text);
+  /* 底色/字色由全局 .ea-0 ~ .ea-7 提供（按 export_agent_id 稳定取档）；
+     此处不写死，避免与全局色板同权重竞争后按注入顺序覆盖配色。 */
   font-size: 16px;
   font-weight: 600;
 }
+
+/* 头像配色已收敛到全局 .ea-0 ~ .ea-7（style.css + utils/expertAvatar.js）：
+   按 export_agent_id 稳定取档，与 + 号下拉 / 胶囊 / 回答面板标识同色。
+   原先按网格序号取色的 av-p0..av-p5 已移除，避免两套色板并存。 */
 
 .expert-card-body {
   flex: 1;
@@ -1393,8 +1428,7 @@ export default {
   height: 52px;
   flex-shrink: 0;
   border-radius: 14px;
-  background: color-mix(in srgb, var(--accent-color) 16%, transparent);
-  color: var(--accent-color);
+  /* 底色/字色由全局 .ea-0 ~ .ea-7 提供，与卡片头像、消息标识同色 */
   font-size: 20px;
   font-weight: 700;
 }
