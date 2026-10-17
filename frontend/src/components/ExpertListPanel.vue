@@ -303,6 +303,7 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import { deleteExpert, listExperts, listPublicExperts } from '../api/expert.js'
+import { expertAvatarChar, expertAvatarClass } from '../utils/expertAvatar.js'
 import { addSkillToUser, getUserSkills } from '../api/skills.js'
 
 const props = defineProps({
@@ -556,23 +557,19 @@ function showToast(message, type = 'success') {
 }
 
 function avatarChar(item) {
-  const name = String(item.export_name_cn || '').trim()
-  return name ? name.slice(0, 1) : '?'
+  return expertAvatarChar(item)
 }
 
 /**
- * 专家头像配色（纯展示，不影响功能）：与技能面板 SkillIcon 的分类配色同源
- * （琥珀/紫/粉/绿/靛/天蓝 6 色循环），按专家在网格中的序号取色。
+ * 专家头像配色（纯展示）：按 export_agent_id 稳定取档（全局 8 色板 .ea-0 ~ .ea-7）。
  *
- * 相邻不同色：栅格常见列数为 3（窄屏 2 / 1）——左右相邻序号差 1、上下相邻
- * 序号差列数（3/2/1），均不整除 6，因此左右与上下相邻的专家颜色必然不同，
- * 且 6 色色相彼此相距较远，对比度足够形成视觉色差。
+ * 早期是按网格序号取色，好处是相邻卡片必然不同色，但同一个专家会随「公共/我的」
+ * 视图切换、搜索过滤、加载更多而变色，也无法与消息标识、下拉列表、输入框胶囊对齐。
+ * 现统一按身份取色：四处（技能中心卡片/详情、+ 号下拉、胶囊、回答面板标识）同色，
+ * 刷新/换设备都不变。见 utils/expertAvatar.js。
  */
 function avatarColorClass(item) {
-  const idx = filteredExperts.value.findIndex(
-    (e) => e.export_agent_id === item?.export_agent_id
-  )
-  return 'av-p' + (idx < 0 ? 0 : idx % 6)
+  return expertAvatarClass(item)
 }
 
 /** 卡片描述：优先 export_description（大模型生成的功能描述），回退专家描述 */
@@ -1097,29 +1094,15 @@ onMounted(refresh)
   height: 40px;
   flex-shrink: 0;
   border-radius: 11px;
-  background: var(--xcard-avatar-bg);
-  color: var(--xcard-avatar-text);
+  /* 底色/字色由全局 .ea-0 ~ .ea-7 提供（按 export_agent_id 稳定取档）；
+     此处不写死，避免 scoped 规则与全局色板同权重竞争后按注入顺序覆盖配色。 */
   font-size: 16px;
   font-weight: 600;
 }
 
-/* 头像配色（av-p0..av-p5）：与技能面板 SkillIcon 的分类配色同源的 6 色循环，
-   按网格序号取色（见 avatarColorClass），保证相邻卡片颜色不同、对比度足够。
-   仅覆盖颜色，尺寸/圆角等仍走 .expert-avatar 基础样式。 */
-.expert-avatar.av-p0, .detail-avatar.av-p0 { background: color-mix(in srgb, #f59e0b 15%, #ffffff); color: #d97706; }
-.expert-avatar.av-p1, .detail-avatar.av-p1 { background: color-mix(in srgb, #8b5cf6 15%, #ffffff); color: #7c3aed; }
-.expert-avatar.av-p2, .detail-avatar.av-p2 { background: color-mix(in srgb, #ec4899 15%, #ffffff); color: #db2777; }
-.expert-avatar.av-p3, .detail-avatar.av-p3 { background: color-mix(in srgb, #10b981 15%, #ffffff); color: #059669; }
-.expert-avatar.av-p4, .detail-avatar.av-p4 { background: color-mix(in srgb, #6366f1 15%, #ffffff); color: #4f46e5; }
-.expert-avatar.av-p5, .detail-avatar.av-p5 { background: color-mix(in srgb, #0ea5e9 15%, #ffffff); color: #0284c7; }
-
-/* 深色主题：底色降低明度、字色提亮（口径与 SkillIcon 的深色变体一致） */
-html[data-theme="dark"] .expert-avatar.av-p0, html[data-theme="dark"] .detail-avatar.av-p0 { background: color-mix(in srgb, #f59e0b 24%, #26262c); color: #fbbf24; }
-html[data-theme="dark"] .expert-avatar.av-p1, html[data-theme="dark"] .detail-avatar.av-p1 { background: color-mix(in srgb, #8b5cf6 26%, #26262c); color: #c4b5fd; }
-html[data-theme="dark"] .expert-avatar.av-p2, html[data-theme="dark"] .detail-avatar.av-p2 { background: color-mix(in srgb, #ec4899 24%, #26262c); color: #f9a8d4; }
-html[data-theme="dark"] .expert-avatar.av-p3, html[data-theme="dark"] .detail-avatar.av-p3 { background: color-mix(in srgb, #10b981 24%, #26262c); color: #6ee7b7; }
-html[data-theme="dark"] .expert-avatar.av-p4, html[data-theme="dark"] .detail-avatar.av-p4 { background: color-mix(in srgb, #6366f1 26%, #26262c); color: #a5b4fc; }
-html[data-theme="dark"] .expert-avatar.av-p5, html[data-theme="dark"] .detail-avatar.av-p5 { background: color-mix(in srgb, #0ea5e9 26%, #26262c); color: #7dd3fc; }
+/* 头像配色已收敛到全局 .ea-0 ~ .ea-7（style.css + utils/expertAvatar.js）：
+   按 export_agent_id 稳定取档，与 + 号下拉 / 胶囊 / 回答面板标识同色。
+   原先按网格序号取色的 av-p0..av-p5 已移除，避免两套色板并存。 */
 
 .expert-card-body {
   flex: 1;
@@ -1389,8 +1372,7 @@ html[data-theme="dark"] .expert-avatar.av-p5, html[data-theme="dark"] .detail-av
   height: 52px;
   flex-shrink: 0;
   border-radius: 14px;
-  background: color-mix(in srgb, var(--accent-color) 16%, transparent);
-  color: var(--accent-color);
+  /* 底色/字色由全局 .ea-0 ~ .ea-7 提供，与卡片头像、消息标识同色 */
   font-size: 20px;
   font-weight: 700;
 }

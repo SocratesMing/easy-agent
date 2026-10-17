@@ -1749,6 +1749,14 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
   // 从文本解析，行为和改造前一致。
   if (skills.length > 0) userMessage.skills = [...skills]
 
+  // 专家模式：先在本轮消息上记下使用的专家（回答面板左上角「头像 + 名称」的数据来源）。
+  // 内存态必须显式写：后端落库的用户消息要等刷新/历史加载才回灌，只依赖后端会出现
+  // 「选中专家发送后左上角空白、刷新一下才出现」。（与 frontend-vue2 同构）
+  const usedExpert = (selectedExpert.value && selectedExpert.value.export_agent_id)
+    ? { id: selectedExpert.value.export_agent_id, name: selectedExpert.value.export_name_cn || '专家' }
+    : null
+  if (usedExpert) userMessage.expert = usedExpert
+
   messages.value.push(userMessage)
 
   // 立即创建 assistant 占位消息，显示等待动画
@@ -1761,7 +1769,8 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
     thinking: '',
     tool_calls: [],
     blocks: [],
-    loading: true
+    loading: true,
+    expert: usedExpert
   }
   messages.value.push(assistantPlaceholder)
   streamingAssistantId.value = assistantPlaceholderId
@@ -1788,6 +1797,7 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
           messages.value.push({
             id: assistantMsgId, role: 'assistant', content: '',
             created_at: null, thinking: '', tool_calls: [], blocks: [], loading: true,
+            expert: usedExpert,
           })
         }
         streamingAssistantId.value = assistantMsgId
@@ -1915,7 +1925,8 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
             error: e.message || '发送消息失败，请检查网络连接',
             loading: false,
             created_at: new Date().toISOString(),
-            blocks: []
+            blocks: [],
+            expert: usedExpert
           })
         }
       }
