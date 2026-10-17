@@ -5,15 +5,15 @@
 - **我的专家**：用户在界面里创建，落库（``expert_agents`` 表）+ 版本目录
   （``workspace/{username}/experts/{id}/v{n}/``），可改可删；
 - **公共专家**：随代码/发行包预置，**只落目录、不落库**，只读（不可改、不可删），
-  全部放在一个公共目录下（默认项目根的 ``exports/``）。
+  全部放在一个公共目录下（默认项目根的 ``experts/``）。
 
 目录约定（两种布局都支持，逐个专家目录自适应）：
 
 1. **版本目录（预置专家的标准布局，与「我的专家」完全一致）**：
-   ``exports/{expert_id}/active``（内容为版本号）+ ``exports/{expert_id}/v{n}/``
+   ``experts/{expert_id}/active``（内容为版本号）+ ``experts/{expert_id}/v{n}/``
    下放 ``config.yaml`` / ``manifest.json`` / 提示词 ``md`` / ``README.md``；
 2. **平铺（兼容旧目录）**：
-   ``exports/{expert_id}/config.yaml`` + ``exports/{expert_id}/{name_en}.md``。
+   ``experts/{expert_id}/config.yaml`` + ``experts/{expert_id}/{name_en}.md``。
    缺 ``active`` 时取最大版本号。
 
 ``config.yaml`` 里识别的键与 ``expert_service.write_expert_version`` 写出的完全一致
@@ -38,9 +38,13 @@ import yaml
 
 logger = logging.getLogger(__name__)
 
-#: 公共专家目录的环境变量覆盖项（优先级：配置 > 环境变量 > 默认 ./exports）
+#: 公共专家目录的环境变量覆盖项（优先级：配置 > 环境变量 > 默认 <项目根>/experts）
 ENV_EXPERTS_DIR = "EASY_EXPERTS_DIR"
-DEFAULT_EXPERTS_DIR = "./exports"
+
+#: 默认目录的**名字**（锚定项目根解析，见 ``_project_root``）。
+DEFAULT_EXPERTS_DIRNAME = "experts"
+#: 兼容旧口径的默认值（相对进程 CWD）；仅在项目根下同名目录不存在时兜底使用。
+DEFAULT_EXPERTS_DIR = "./experts"
 
 #: 需要跳过的目录名（隐藏目录、模板目录）
 _SKIP_PREFIXES = (".", "_")
@@ -52,29 +56,108 @@ STATUS_ACTIVE = "active"
 # ── 根目录解析 ────────────────────────────────────────────────────────
 
 
-def public_experts_root() -> Path:
-    """公共专家根目录。
+def _project_root() -> Path:
+    """项目/发行包根目录（``easy_agent`` 包的上一级）。
 
-    解析优先级：``config.yaml`` 的 ``tools.experts_dir`` > 环境变量
-    ``EASY_EXPERTS_DIR`` > 默认 ``./exports``（相对进程工作目录，与
-    ``tools.skills_dir`` 的 ``./skills`` 同口径）。
-
-    ``tools.experts_dir`` 采用 ``getattr`` 读取：老配置里没有该键时自动降级，
-    不需要改动 ``config.py`` 也不会报错。
+    预置专家是随代码交付的内容资产，其默认位置必须锚定在**代码位置**上，
+    而不是进程工作目录（``uvicorn`` / ``systemd`` / IDE 启动时 CWD 各不相同，
+    用 ``./experts`` 会导致「明明装了预置专家却扫不到」）。
     """
-    configured = ""
+    return Path(__file__).resolve().parents[2]
+
+
+def _ensure_experts_root_config() -> str:
+    """读取 ``config.yaml`` 的 ``tools.experts_dir``（读不到返回空串）。"""
     try:
         # 延迟导入：避免 services 包初始化期的循环依赖
         from .agent_manager import get_agent_config
 
         cfg = get_agent_config()
         if cfg and cfg.get("config"):
-            configured = getattr(cfg["config"].tools, "experts_dir", "") or ""
+            return (getattr(cfg["config"].tools, "experts_dir", "") or "").strip()
     except Exception as exc:  # noqa: BLE001
         logger.debug("读取 tools.experts_dir 失败，改用环境变量/默认值: %s", exc)
+    return ""
 
-    raw = configured or os.environ.get(ENV_EXPERTS_DIR, "") or DEFAULT_EXPERTS_DIR
-    return Path(raw)
+
+def _resolve_relative(raw: str) -> Path:
+    """把（可能是相对路径的）目录值解析成绝对路径。
+
+    相对路径的解析顺序：**进程 CWD** → **项目根**。前者保持历史行为（本地
+    ``./experts`` 直接命中），后者保证「换启动目录也能找到」——这是本次改动的
+    核心诉求：用户改配置里的目录后，程序在任何启动方式下都能找到预置专家。
+    两处都不存在时返回 CWD 口径的路径，交由调用方记 warning（保持报错信息
+    指向用户真正写下的位置，而不是被静默改写成别处）。
+    """
+    path = Path(raw).expanduser()
+    if path.is_absolute():
+        return path
+
+    cwd_path = Path.cwd() / path
+    if cwd_path.is_dir():
+        return cwd_path
+
+    root_path = _project_root() / path
+    if root_path.is_dir():
+        logger.info(
+            "📂 公共专家目录按项目根解析 | 配置值: %s | 实际: %s（进程 CWD 下不存在）",
+            raw,
+            root_path,
+        )
+        return root_path
+    return cwd_path
+
+
+def public_experts_root_info() -> tuple[Path, str]:
+    """公共专家根目录 + 来源标记，来源取值 ``config`` / ``env`` / ``default``。
+
+    解析优先级：``config.yaml`` 的 ``tools.experts_dir`` > 环境变量
+    ``EASY_EXPERTS_DIR`` > 默认 ``<项目根>/experts``（再退 ``./experts``）。
+
+    ``tools.experts_dir`` 采用 ``getattr`` 读取：老配置里没有该键时自动降级，
+    不需要改动 ``config.py`` 也不会报错。
+    """
+    configured = _ensure_experts_root_config()
+    if configured:
+        return _resolve_relative(configured), "config"
+
+    env_raw = (os.environ.get(ENV_EXPERTS_DIR, "") or "").strip()
+    if env_raw:
+        return _resolve_relative(env_raw), "env"
+
+    anchored = _project_root() / DEFAULT_EXPERTS_DIRNAME
+    if anchored.is_dir():
+        return anchored, "default"
+    # 项目根下没有（非常规布局）：退回历史口径 ./experts（相对 CWD）
+    return Path(DEFAULT_EXPERTS_DIR), "default"
+
+
+def public_experts_root() -> Path:
+    """公共专家根目录。
+
+    **这是全模块唯一的目录解析入口**（``discover_public_experts`` /
+    ``find_public_expert`` 都经它取根目录），测试与部署侧替换目录时只需替换本函数。
+    """
+    return public_experts_root_info()[0]
+
+
+def public_experts_root_source() -> str:
+    """目录来源标记（``config`` / ``env`` / ``default``），仅用于日志。"""
+    return public_experts_root_info()[1]
+
+
+#: 来源标记 -> 用户可读的出处说明（写进日志，便于定位「扫不到」的原因）
+_SOURCE_LABELS = {
+    "config": "config.tools.experts_dir",
+    "env": f"环境变量 {ENV_EXPERTS_DIR}",
+    "default": f"默认值 <项目根>/{DEFAULT_EXPERTS_DIRNAME}",
+}
+
+
+def public_experts_root_hint() -> str:
+    """一行式说明：目录来自哪里、当前解析成什么（用于启动/告警日志）。"""
+    root, source = public_experts_root_info()
+    return f"{root.absolute()}（来源: {_SOURCE_LABELS.get(source, source)}）"
 
 
 # ── 单个专家目录的解析 ────────────────────────────────────────────────
@@ -259,9 +342,19 @@ def read_public_expert(expert_dir: Path) -> Optional[dict]:
 
 def discover_public_experts() -> list[dict]:
     """扫描公共专家目录，返回全部可识别的公共专家（按中文名排序）。"""
+    # 取根目录走 public_experts_root()（唯一缝口，便于测试/部署替换）
     root = public_experts_root()
+    source = public_experts_root_source()
     if not root.is_dir():
-        logger.info("公共专家目录不存在（跳过）| %s", root.absolute())
+        logger.warning(
+            "⚠️ 公共（预置）专家目录不存在，列表将为空 | 解析目录: %s | 来源: %s | "
+            "检查 config.yaml 的 tools.experts_dir（或环境变量 %s），"
+            "或把预置专家目录放到 <项目根>/%s",
+            root.absolute(),
+            _SOURCE_LABELS.get(source, source),
+            ENV_EXPERTS_DIR,
+            DEFAULT_EXPERTS_DIRNAME,
+        )
         return []
 
     items: list[dict] = []
@@ -284,7 +377,12 @@ def discover_public_experts() -> list[dict]:
         items.append(item)
 
     items.sort(key=lambda row: (row.get("export_name_cn") or "", row["export_agent_id"]))
-    logger.info("📂 公共专家目录 | 目录: %s | 数量: %s", root.absolute(), len(items))
+    logger.info(
+        "📂 公共专家目录 | 目录: %s | 来源: %s | 数量: %s",
+        root.absolute(),
+        _SOURCE_LABELS.get(source, source),
+        len(items),
+    )
     return items
 
 

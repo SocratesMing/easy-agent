@@ -1209,6 +1209,12 @@ export default {
 
       // 立即创建 assistant 占位消息，显示等待动画
       const assistantPlaceholderId = `assistant-${Date.now()}`
+      // 专家模式：随消息记住本次回答使用的专家（执行过程头部展示头像+名称）。
+      // 仅存在于本次会话的内存消息中；历史会话从后端加载的消息不含该字段，
+      // 展示时按无专家兜底（后端消息结构不含专家信息，持久化需另行加字段）。
+      const usedExpert = (this.selectedExpert && this.selectedExpert.export_agent_id)
+        ? { id: this.selectedExpert.export_agent_id, name: this.selectedExpert.export_name_cn || '专家' }
+        : null
       const assistantPlaceholder = {
         id: assistantPlaceholderId,
         role: 'assistant',
@@ -1217,7 +1223,8 @@ export default {
         thinking: '',
         tool_calls: [],
         blocks: [],
-        loading: true
+        loading: true,
+        expert: usedExpert
       }
       this.messages.push(assistantPlaceholder)
       this.streamingAssistantId = assistantPlaceholderId
@@ -1244,6 +1251,7 @@ export default {
               this.messages.push({
                 id: assistantMsgId, role: 'assistant', content: '',
                 created_at: null, thinking: '', tool_calls: [], blocks: [], loading: true,
+                expert: usedExpert,
               })
             }
             this.streamingAssistantId = assistantMsgId

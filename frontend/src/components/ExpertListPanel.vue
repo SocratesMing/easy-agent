@@ -17,6 +17,15 @@
     （带 prompt 时回填输入框）并走 /agent/stream_export_run
   - 点卡片 → 专家详情弹窗（功能描述[逐条换行] / 技能标签 / 专家帮你做 / 版本与 ID）
 
+  新建 / 编辑专家（与「添加技能」同一套跳转，见 SkillListPanel.handleCreateSkill）：
+  - 「新建专家」→ 确保 expert-creator 技能已安装 → 草稿写入 sessionStorage
+    （开头是「用「expert-creator」技能帮我创建：」，替代内联的 /expert-creator
+    标签；技能以 insert_token:false 预选，发送时随 skills 字段激活）→
+    `emit('create-expert')`，由 App 新开会话；ChatInput 挂载时恢复草稿与预选技能；
+  - 卡片「编辑」→ 同上，但预填的是**当前专家参数 + 专家 ID** 的修改模板 →
+    `emit('edit-expert')`，由 App 决定「当前窗口是新会话就带入、已有对话则新开会话」。
+  原先的创建/编辑弹窗已移除（后端 POST /agent/add、/agent/update 接口保留）。
+
   数据与后端接口（easy_agent/api/expert.py）：
   GET /agent/public-list（公共专家目录，字段与 /agent/list 一致，另带 scope="public"）
   GET /agent/list（keyword 服务端模糊搜索；已删除（软删除）的专家不在列表展示；
@@ -56,8 +65,17 @@
       </button>
 
       <!-- 新建专家：仅公共专家视图展示（我的专家视图按需求去掉该入口，
-           需要创建时经「返回公共专家」回到公共视图） -->
-      <button v-if="view === 'public'" class="action-btn-primary" :disabled="submitting" @click="openCreate">
+           需要创建时经「返回公共专家」回到公共视图）。
+
+           点它不再打开弹窗，而是：确保 expert-creator 技能已安装 → 把创建模板预填进
+           输入框 → 关闭面板回到对话页，由 Agent 在对话里完成创建（与「添加技能」一致）。 -->
+      <button
+        v-if="view === 'public'"
+        class="action-btn-primary"
+        :disabled="preparing"
+        title="在对话框里由 Agent 帮你创建专家"
+        @click="handleCreateExpert"
+      >
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
           <line x1="12" y1="5" x2="12" y2="19" />
           <line x1="5" y1="12" x2="19" y2="12" />
@@ -184,9 +202,15 @@
               <span class="footer-tag">{{ tagNameOf(item.tag_id) }}</span>
             </template>
             <span class="footer-actions">
-              <!-- 公共（预置）专家只读：不给编辑/删除入口（内容随发行包更新） -->
+              <!-- 公共（预置）专家只读：不给编辑/删除入口（内容随发行包更新）。
+                   「编辑」同样改为把当前专家参数带入输入框、由 Agent 在对话里改。 -->
               <template v-if="!isPublic(item)">
-                <button class="footer-btn" :disabled="item.agent_status === 'disabled'" @click.stop="openEdit(item)">编辑</button>
+                <button
+                  class="footer-btn"
+                  :disabled="item.agent_status === 'disabled' || preparing"
+                  title="在对话框里由 Agent 帮你修改该专家"
+                  @click.stop="handleEditExpert(item)"
+                >编辑</button>
                 <button class="footer-btn danger" :disabled="item.agent_status === 'disabled'" @click.stop="confirmDelete(item)">删除</button>
               </template>
             </span>
@@ -195,54 +219,8 @@
       </div>
     </div>
 
-    <!-- 创建 / 编辑 弹窗：仅右上角 × 或「取消」按钮可关闭（不做遮罩点击关闭，避免误触） -->
-    <div v-if="dialogVisible" class="modal-mask">
-      <div class="modal" role="dialog" aria-modal="true">
-        <div class="modal-header">
-          <h3>{{ editing ? '编辑专家' : '新建专家' }}</h3>
-          <button class="modal-close" aria-label="关闭" @click="closeDialog">
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
-              <line x1="18" y1="6" x2="6" y2="18" />
-              <line x1="6" y1="6" x2="18" y2="18" />
-            </svg>
-          </button>
-        </div>
-
-        <div class="modal-body">
-          <label class="field">
-            <span class="field-label">专家名称 <em>*</em></span>
-            <input v-model="form.nameCn" type="text" maxlength="50" placeholder="例如：量化策略专家" />
-          </label>
-
-          <label class="field">
-            <span class="field-label">专家描述 <em>*</em></span>
-            <textarea
-              v-model="form.prompt"
-              rows="8"
-              maxlength="4000"
-              :placeholder="promptPlaceholder"
-            ></textarea>
-            <span class="field-hint">
-              <button type="button" class="link-btn" @click="fillTemplate">插入模板</button>
-              <span>{{ form.prompt.length }} / 4000</span>
-            </span>
-          </label>
-
-          <p v-if="dialogError" class="error-text">{{ dialogError }}</p>
-          <p v-if="submitting" class="field-hint">
-            正在调用模型生成专家配置，请稍候（可能需要十几秒）...
-          </p>
-        </div>
-
-        <div class="modal-footer">
-          <button class="action-btn-outline" :disabled="submitting" @click="closeDialog">取消</button>
-          <button class="action-btn-primary modal-submit" :disabled="submitting" @click="submit">
-            <span v-if="submitting" class="btn-spinner-sm"></span>
-            {{ submitting ? '生成中…' : (editing ? '保存并生成新版本' : '创建') }}
-          </button>
-        </div>
-      </div>
-    </div>
+    <!-- 创建 / 编辑弹窗已移除：新建与编辑都改到对话框里由 Agent 完成（见 handleCreateExpert /
+         handleEditExpert）。后端 POST /agent/add、POST /agent/update 接口保留，供其它调用方使用。 -->
 
     <!-- 专家详情弹窗：点卡片打开；右上角 × 或点击遮罩（弹窗外的灰色区域）均可关闭。
          注意：新增/修改弹窗保持「仅 × 与取消可关」的防误触约定，不加遮罩点击。 -->
@@ -323,20 +301,15 @@
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
-import {
-  addExpert,
-  deleteExpert,
-  listExperts,
-  listPublicExperts,
-  updateExpert,
-} from '../api/expert.js'
+import { computed, onMounted, ref } from 'vue'
+import { deleteExpert, listExperts, listPublicExperts } from '../api/expert.js'
+import { addSkillToUser, getUserSkills } from '../api/skills.js'
 
 const props = defineProps({
-  /** 当前会话 ID（创建专家时溯源用） */
+  /** 当前会话 ID（保留：面板不再直接创建专家，创建走对话页的 Agent 流程） */
   sessionId: { type: String, default: '' },
 })
-const emit = defineEmits(['use'])
+const emit = defineEmits(['use', 'create-expert', 'edit-expert'])
 
 /** 用户侧创建引导词模板（可后续迁移到提示词目录做成可配置） */
 const CREATE_TEMPLATE =
@@ -344,6 +317,140 @@ const CREATE_TEMPLATE =
   '我的经验是：[请补充你的行业背景、相关经验]\n' +
   '典型使用场景：[请描述你希望在什么情况下使用它]\n' +
   '期望输出：[请描述你希望它产出什么形式的结果]'
+
+/** 草稿开头的一句自然语言点名（替代原先内联的 /expert-creator 标签） */
+const CREATE_LEAD = '用「expert-creator」技能帮我创建：'
+const EDIT_LEAD = '用「expert-creator」技能帮我修改：'
+
+// ── 对话内创建 / 修改专家（与「添加技能」同一套跳转机制）─────────────────
+// 面板只负责：确保 expert-creator 技能已安装 → 把模板写进 sessionStorage →
+// 上抛事件让 App 决定用当前窗口还是新开窗口。真正的创建由 ChatInput 挂载时
+// 恢复草稿并把技能记为「预选」（草稿开头那句话已点名技能，不再插 /标签），
+// 发送时随 skills 字段交给后端激活，再由 Agent 调 save_expert 完成。
+/** 输入框草稿键（与 ChatInput 的 DRAFT_KEY 一致） */
+const DRAFT_KEY = 'easy_agent_input_draft'
+/** 待选技能键（与 ChatInput 的 PENDING_SKILL_KEY 一致） */
+const PENDING_SKILL_KEY = 'easy_agent_pending_skill'
+/** 创建/修改专家所依赖的技能目录名 */
+const CREATE_EXPERT_SKILL_DIR = 'expert-creator'
+/** 正在准备（安装技能 / 写草稿）时禁用入口，避免连点 */
+const preparing = ref(false)
+
+/**
+ * 把提示词模板与技能标签写入 sessionStorage（ChatInput 挂载时恢复）。
+ *
+ * `skill` 为技能列表里的真实记录——待选标签的显示名取它的 `name`（而非目录名），
+ * 与 SkillListPanel.handleCreateSkill 的写法保持一致。
+ */
+/**
+ * 把提示词模板与技能标签写入 sessionStorage（ChatInput 挂载时恢复）。
+ *
+ * `skill` 为技能列表里的真实记录。`insert_token: false` 告诉 ChatInput
+ * **不要**往输入框插 `/expert-creator` 标签——草稿开头的
+ * 「用「expert-creator」技能帮我创建/修改专家：」已经点名了技能，ChatInput
+ * 只把该技能记为预选，发送时随 skills 字段交给后端激活。
+ */
+function writeExpertDraft(text, skill) {
+  try {
+    sessionStorage.setItem(DRAFT_KEY, text)
+    sessionStorage.setItem(
+      PENDING_SKILL_KEY,
+      JSON.stringify({
+        dir_name: CREATE_EXPERT_SKILL_DIR,
+        name: skill?.name || CREATE_EXPERT_SKILL_DIR,
+        icon: skill?.icon || '',
+        category_id: skill?.category_id || 'default',
+        insert_token: false,
+      })
+    )
+  } catch (_) { /* 隐私模式等场景忽略 */ }
+}
+
+/** 在「我的技能」里查 expert-creator；返回技能记录，未安装/接口异常返回 null */
+async function findExpertCreatorSkill() {
+  try {
+    const data = await getUserSkills()
+    return (data?.skills || []).find((s) => s.dir_name === CREATE_EXPERT_SKILL_DIR) || null
+  } catch (_) {
+    return null // 按「未安装」处理，安装失败也不阻断创建流程
+  }
+}
+
+/**
+ * 确保 expert-creator 技能已添加到「我的技能」，并返回该技能记录。
+ *
+ * 与「创建技能」一致：未安装时自动安装（不然 Agent 拿不到这套创建规范），
+ * 已安装则直接复用；409（已添加）忽略。返回的技能记录用于拼待选标签。
+ *
+ * 注：已添加但被**停用**的技能不在这里重新启用——停用态 Agent 确实不加载，
+ * 但重复安装会 409，故交由用户在技能 Tab 里恢复。
+ */
+async function ensureExpertCreatorSkill() {
+  let skill = await findExpertCreatorSkill()
+  if (skill) return skill
+  try {
+    await addSkillToUser(CREATE_EXPERT_SKILL_DIR)
+  } catch (e) {
+    if (!String(e?.message || '').includes('已添加')) {
+      showToast(e.message || '准备创建专家失败', 'error')
+    }
+  }
+  // 安装成功后再取一次，拿到真实显示名；取不到就让 name 回退成目录名
+  skill = await findExpertCreatorSkill()
+  return skill
+}
+
+/** 「新建专家」：预填创建模板 → 交回 App 跳到新对话 */
+async function handleCreateExpert() {
+  if (preparing.value) return
+  preparing.value = true
+  try {
+    const skill = await ensureExpertCreatorSkill()
+    writeExpertDraft(CREATE_LEAD + '\n' + CREATE_TEMPLATE.replace('{name}', 'XX'), skill)
+    emit('create-expert')
+  } finally {
+    preparing.value = false
+  }
+}
+
+/**
+ * 「编辑」：把该专家的现有参数 + 专家 ID 一起带入输入框，由 Agent 走修改流程。
+ *
+ * 带上 export_agent_id 是关键——Agent 只有拿到它才能调 save_expert(action="update")。
+ */
+async function handleEditExpert(item) {
+  if (preparing.value || !item) return
+  preparing.value = true
+  try {
+    const skill = await ensureExpertCreatorSkill()
+    writeExpertDraft(buildEditTemplate(item), skill)
+    emit('edit-expert')
+  } finally {
+    preparing.value = false
+  }
+}
+
+/** 修改模板：把"要改什么"留给用户补，其余参数一次性给足 Agent */
+function buildEditTemplate(item) {
+  const name = String(item.export_name_cn || '').trim()
+  const tags = skillTagsOf(item).join('、')
+  const desc = String(item.export_description || '').trim() || '（暂无）'
+  return (
+    EDIT_LEAD + '\n' +
+    `【专家ID】${item.export_agent_id || ''}\n` +
+    `【专家名称】${name}\n` +
+    `【现有功能描述】${desc}\n` +
+    `【现有技能标签】${tags || '（暂无）'}\n` +
+    `【原始需求】${clip(item.export_prompt, 800) || '（未记录）'}\n` +
+    '\n【我要修改的地方】请在这里补充要调整的内容（例如：更侧重城投债、输出必须标注数据来源）'
+  )
+}
+
+/** 长文本截断（原始需求可能很长，避免输入框被一次性灌满） */
+function clip(text, max) {
+  const value = String(text || '').trim()
+  return value.length > max ? `${value.slice(0, max)}…` : value
+}
 
 // 当前视图：public=公共专家（预置，默认）/ mine=我的专家（自己创建的，纯列表）
 const view = ref('public')
@@ -361,16 +468,9 @@ const keyword = ref('')
 /** 当前选中的分类 tag_id（'all' = 全部）；按 tag 过滤，不再按状态过滤（仅公共专家视图） */
 const tagFilter = ref('all')
 
-const dialogVisible = ref(false)
-const editing = ref(null)
-const submitting = ref(false)
-const dialogError = ref('')
-const form = reactive({ nameCn: '', prompt: '' })
 const toast = ref({ show: false, message: '', type: 'success' })
 /** 详情弹窗当前展示的专家（null = 关闭） */
 const detailItem = ref(null)
-
-const promptPlaceholder = computed(() => CREATE_TEMPLATE.replace('{name}', 'XX'))
 
 /** chips 数据源：后端下发的标签候选；缺失时回退为「从现有专家里聚合」 */
 const tagChips = computed(() => {
@@ -596,80 +696,6 @@ function switchView(next) {
 function clearKeyword() {
   keyword.value = ''
   refresh()
-}
-
-function openCreate() {
-  editing.value = null
-  dialogError.value = ''
-  form.nameCn = ''
-  form.prompt = promptPlaceholder.value
-  dialogVisible.value = true
-}
-
-function openEdit(item) {
-  editing.value = item
-  dialogError.value = ''
-  form.nameCn = item.export_name_cn || ''
-  form.prompt = item.export_prompt || ''
-  dialogVisible.value = true
-}
-
-function fillTemplate() {
-  const name = form.nameCn || 'XX'
-  form.prompt = CREATE_TEMPLATE.replace('{name}', name)
-}
-
-function closeDialog() {
-  if (submitting.value) return
-  dialogVisible.value = false
-}
-
-async function submit() {
-  if (!form.nameCn.trim()) {
-    dialogError.value = '请填写专家名称'
-    return
-  }
-  if (!form.prompt.trim()) {
-    dialogError.value = '请填写专家描述'
-    return
-  }
-  submitting.value = true
-  dialogError.value = ''
-  try {
-    if (editing.value) {
-      await updateExpert({
-        exportAgentId: editing.value.export_agent_id,
-        nameCn: form.nameCn.trim(),
-        prompt: form.prompt,
-      })
-      showToast(`已保存「${form.nameCn.trim()}」并生成新版本`)
-    } else {
-      await addExpert({
-        nameCn: form.nameCn.trim(),
-        prompt: form.prompt,
-        sessionId: props.sessionId || null,
-      })
-      showToast(`已创建「${form.nameCn.trim()}」`)
-    }
-    dialogVisible.value = false
-    await gotoMyExperts()
-  } catch (e) {
-    dialogError.value = e.message || '提交失败'
-  } finally {
-    submitting.value = false
-  }
-}
-
-/** 创建/编辑完成后定位到「我的专家」并刷新（新建的专家就归在这里） */
-async function gotoMyExperts() {
-  if (view.value !== 'mine') {
-    view.value = 'mine'
-    keyword.value = ''
-    tagFilter.value = 'all'
-    await refresh()
-    return
-  }
-  await refreshSilently('mine')
 }
 
 async function confirmDelete(item) {
@@ -1222,19 +1248,6 @@ onMounted(refresh)
   overflow: hidden;
 }
 
-.modal-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 14px 18px;
-  border-bottom: 1px solid var(--border-color);
-}
-
-.modal-header h3 {
-  margin: 0;
-  font-size: 15px;
-}
-
 .modal-close {
   display: inline-flex;
   align-items: center;
@@ -1256,90 +1269,6 @@ onMounted(refresh)
 .modal-close:hover {
   background: var(--bg-tertiary);
   color: var(--text-primary);
-}
-
-.modal-body {
-  padding: 16px 18px;
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-}
-
-.field {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.field-label {
-  font-size: 12px;
-  color: var(--text-secondary);
-}
-
-.field-label em {
-  color: #dc2626;
-  font-style: normal;
-}
-
-.field input,
-.field textarea {
-  width: 100%;
-  padding: 8px 10px;
-  border: 1px solid var(--border-color);
-  border-radius: 8px;
-  background: var(--bg-secondary);
-  color: var(--text-primary);
-  font-size: 13px;
-  font-family: inherit;
-  outline: none;
-  box-sizing: border-box;
-  resize: vertical;
-}
-
-.field input:focus,
-.field textarea:focus {
-  border-color: var(--accent-color);
-}
-
-.field-hint {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  font-size: 11px;
-  color: var(--text-secondary);
-}
-
-.field-hint p {
-  margin: 0;
-  width: 100%;
-}
-
-.link-btn {
-  border: none;
-  background: transparent;
-  color: var(--accent-color);
-  font-size: 11px;
-  cursor: pointer;
-  padding: 0;
-}
-
-.error-text {
-  margin: 0;
-  color: #dc2626;
-  font-size: 12px;
-}
-
-.modal-footer {
-  display: flex;
-  justify-content: flex-end;
-  gap: 10px;
-  padding: 12px 18px;
-  border-top: 1px solid var(--border-color);
-}
-
-.modal-submit {
-  margin-left: 0;
 }
 
 /* ── 卡片技能标签（export_skills_names）──
@@ -1610,15 +1539,6 @@ onMounted(refresh)
   animation: expert-spin 0.8s linear infinite;
 }
 
-.btn-spinner-sm {
-  width: 12px;
-  height: 12px;
-  border: 2px solid rgba(255, 255, 255, 0.4);
-  border-top-color: #fff;
-  border-radius: 50%;
-  animation: expert-spin 0.7s linear infinite;
-}
-
 @keyframes expert-spin {
   to {
     transform: rotate(360deg);
@@ -1626,8 +1546,7 @@ onMounted(refresh)
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .spinner,
-  .btn-spinner-sm {
+  .spinner {
     animation: none;
   }
 

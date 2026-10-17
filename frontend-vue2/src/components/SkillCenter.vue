@@ -61,6 +61,8 @@
           v-else-if="activeTab === 'experts'"
           :session-id="sessionId"
           @use="(expert, prompt) => $emit('use', expert, prompt)"
+          @create-expert="$emit('create-expert')"
+          @edit-expert="$emit('edit-expert')"
           @close="$emit('close')"
         />
         <div v-else-if="activeTab === 'experts'" class="center-empty">
@@ -127,9 +129,10 @@ export default {
       validator: (v) => ['experts', 'skills', 'connectors'].includes(v)
     }
   },
-  emits: ['close', 'use'],
-  // create-skill：技能列表「创建技能」入口，由外层接手跳转新会话预填指令
-  emits: ['close', 'create-skill'],
+  // create-skill：技能列表「创建技能」入口；create-expert / edit-expert：专家列表
+  // 「新建专家 / 编辑」入口 —— 均由外层（App）接手跳转会话并预填指令。
+  // 注意：此前这里重复声明了两次 emits（后者覆盖前者导致 use 丢失），合并为一份。
+  emits: ['close', 'use', 'create-skill', 'create-expert', 'edit-expert'],
   data() {
     return {
       tabs: [
