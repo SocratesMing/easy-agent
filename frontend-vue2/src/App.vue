@@ -172,6 +172,7 @@ import { chatStore } from './store/chatStore.js'
 import { buildPageContext } from './utils/pageContext.js'
 import { logout as apiLogout, notifyLogout, getStoredToken, getStoredUsername, AUTH_EXPIRED_EVENT, authFetch, passwordlessLogin } from './api/auth.js'
 import { getModels as fetchModels } from './api/settings.js'
+import { getExpertLastSession, setExpertLastSession } from './utils/expertSession.js'
 import { isRestorableUserProfile } from './utils/userProfile.js'
 
 // ── 应用级常量（原 src/config.js 已移除，直接定义在组件内）────────────
@@ -471,15 +472,52 @@ export default {
       this.skillCenterTab = tab
       this.showSkillCenter = true
     },
-    handleUseExpert(expert, prompt) {
+    /**
+     * 「专家 Tab -> 使用」（及任何来源的专家选中）：把专家挂到当前会话。
+     *
+     * 专家之间**不共享同一个会话**：会话记忆（memory.md）、历史消息、摘要与工作区
+     * 交付物都绑定在会话上，同一会话里换专家会让上一个专家留下的领域规则继续被注入
+     * （实测：先问利率债专家，再切 Java 专家问汇率，模型照着利率债的记忆"汇率拒答"
+     * 并照抄了历史里的专家名）。因此这里按「换专家 = 换会话」处理，但**不做成一味
+     * 新建**——先看该专家有没有聊过的会话，有就回去，这样对话记录与会话记忆都不丢。
+     *
+     * 三种情况：
+     * 1. 当前是空会话（用户刚手动新建）→ 尊重这个新窗口，就地使用，不合并到旧会话；
+     * 2. 当前会话已有消息 → 若该专家有历史会话就跳过去，没有就新建一个干净会话；
+     * 3. 该专家的「最近会话」正是当前会话 → 只切换专家，不做任何跳转。
+     *
+     * 与 frontend/src/App.vue 的同名函数同构，改动需同步两处。
+     */
+    async handleUseExpert(expert, prompt) {
       if (!expert || !expert.export_agent_id) return
-      this.selectedExpert = {
+      const picked = {
         export_agent_id: expert.export_agent_id,
         export_name_cn: expert.export_name_cn,
         export_version: expert.export_version,
       }
       this.expertPrompt = typeof prompt === 'string' ? prompt : ''
       this.showSkillCenter = false
+
+      const expertId = picked.export_agent_id
+      const isBlankSession = this.messages.length === 0
+      const lastSessionId = getExpertLastSession(expertId)
+      // localStorage 里的会话可能已被删除：必须以会话列表为准，否则会跳到空会话
+      const lastSessionAlive =
+        !!lastSessionId && this.sessions.some(s => s.session_id === lastSessionId)
+
+      if (!isBlankSession && lastSessionId !== this.currentSessionId) {
+        if (lastSessionAlive) {
+          // 回到该专家上次的会话（函数内部会把 selectedExpert 置空，返回后统一恢复）
+          await this.handleSelectSession(lastSessionId)
+        } else if (!lastSessionAlive) {
+          // 该专家还没有（有效的）会话：开一个干净窗口，避免继承上一个专家的上下文
+          await this.handleCreateSession()
+        }
+      }
+
+      // handleCreateSession（以及 Vue3 版的 handleSelectSession）会清空专家选择（那是
+      // 「切会话不沿用临时选择」的既有口径），这里显式恢复成本轮用户刚选中的专家。
+      this.selectedExpert = picked
     },
     // AI 侧边栏「在主页面打开」：主对话区切到该会话
     async handleOpenSessionInMain(sessionId) {
@@ -1139,6 +1177,11 @@ export default {
               this.loadSessions()
             }
             if (data.session_id) ctx.streamSessionId = data.session_id
+            // 记录「本专家 -> 该会话」：新会话的 ID 只有在 start 事件里才拿到，所以
+            // 关联写在这里而不是选专家的时候（那时会话可能还不存在）。
+            if (data.session_id && ctx.expertId) {
+              setExpertLastSession(ctx.expertId, data.session_id)
+            }
             // 标记该会话已有本页流处理器：切回时按缓存直接显示，避免再起 attach 重复渲染
             if (data.session_id && !ctx.attachMode) {
               this.$set(this.attachedStreamingSessions, data.session_id, 'displayed')
@@ -1518,6 +1561,9 @@ export default {
 
       const streamCtx = {
         isResume: false,
+        // 本轮使用的专家 ID（空串 = 通用对话）：start 事件拿到 session_id 后据此记录
+        // 「专家 -> 最近会话」映射，供下次切换回该专家时回到同一个会话。
+        expertId: usedExpert ? usedExpert.id : '',
         get assistantMsgId() { return assistantMsgId },
         set assistantMsgId(v) { assistantMsgId = v },
         get streamSessionId() { return streamSessionId },
