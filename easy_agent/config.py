@@ -126,8 +126,14 @@ class ToolsConfig(BaseModel):
     仅影响日志展示长度，不改变工具返回给模型的内容；读取方见
     ``agent.py`` / ``services/streaming.py`` 中的 LoggingMiddleware 与流式日志。
     """
-    experts_dir: str = "./exports"
-    """公共（预置）专家目录：只读扫描，见 services/public_expert_service.py。"""
+    experts_dir: str = "./experts"
+    """公共（预置）专家目录：只读扫描，见 services/public_expert_service.py。
+
+    可写绝对路径（推荐生产环境，如 ``/qts/experts``）或相对路径；相对路径按
+    「进程 CWD → 项目根」顺序解析，因此改这里的目录后无需调整启动方式。
+    留空时退化为 ``<项目根>/experts``。环境变量 ``EASY_EXPERTS_DIR`` 可在
+    配置缺失时兜底（优先级低于本项）。
+    """
 
 class SQLiteConfig(BaseModel):
     """SQLite configuration"""
@@ -350,6 +356,44 @@ class UploadLimitsConfig(BaseModel):
     """单次对话的附件总大小上限（MB）。"""
 
 
+class FileContextConfig(BaseModel):
+    """会话上传文件的解析落盘与记忆注入（config.yaml 的 ``file_context`` 段）。
+
+    解决的问题：改造前上传文件的解析全文只塞进"本轮带文件"的提示词，第二轮起
+    请求不再带文件，模型就看不到内容了（且首轮内容挂在内存中的 Agent 缓存上，
+    缓存一驱逐即丢失）。
+
+    机制（详见 ``services/session_uploads.py``）：
+    1. 上传即解析：解析文本落盘到会话工作区 ``uploads/{文件名}.txt``，一次解析、
+       全程复用；
+    2. 上传即记清单：文件名/大小/时间/解析状态写入 ``uploads/index.md``，该文件由
+       ``agent.py`` 作为**记忆文件**注入 system prompt，模型每轮都知道用户传过哪些
+       文件、正文在哪；
+    3. 正文不注入：模型按需用内置的 grep/read_file 工具在 ``uploads/`` 里检索，
+       避免每轮把全文塞进上下文撑爆窗口；
+    4. 本轮刚上传的文件额外注入开头预览（``preview_max_chars``），减少首问时的一次
+       工具往返。
+
+    ``enabled=False`` 时整体回退到改造前行为（上传不解析、清单不注入，聊天接口把
+    解析全文塞进提示词），作为应急回滚开关。
+    """
+
+    enabled: bool = True
+    """总开关：false 时回退旧的全量注入行为。"""
+
+    parse_max_file_size_mb: int = Field(default=20, gt=0)
+    """超过该大小的文件不做解析（仍记录清单条目），避免上传请求被解析阻塞。"""
+
+    max_stored_chars: int = Field(default=200000, gt=0)
+    """单个文件落盘的解析文本上限（字符）；超出截断并在清单中标注。"""
+
+    manifest_max_chars: int = Field(default=2000, gt=0)
+    """上传清单（``uploads/index.md``）字符上限；超出只保留最新的文件条目。"""
+
+    preview_max_chars: int = Field(default=2000, ge=0)
+    """本轮上传文件注入模型的开头预览字符数（多文件合计）；0 = 不注入预览。"""
+
+
 class Config(BaseModel):
     """Main configuration class"""
 
@@ -364,12 +408,39 @@ class Config(BaseModel):
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
     personnel: PersonnelConfig = Field(default_factory=PersonnelConfig)
     upload_limits: UploadLimitsConfig = Field(default_factory=UploadLimitsConfig)
+    file_context: FileContextConfig = Field(default_factory=FileContextConfig)
     """对话附件上传限额（upload_limits 段）；缺失该段时使用默认值 10/5/20。"""
     models: dict[str, ProviderConfig] = Field(default_factory=dict)
     active_model: str = "minimax"
     preset_questions: list[PresetQuestionGroup] = Field(default_factory=list)
     expert_tags: list[ExpertTag] = Field(default_factory=list)
     """专家分类标签候选（创建专家时交给大模型做归类，见 ExpertTag）。"""
+    expert_guardrail_enabled: bool = True
+    """专家会话是否追加统一的「专家职责边界」块（领域限定 / 拒答无关问题 /
+    禁止高危操作 / 事实来源标注）。预置与自建专家都生效；关闭仅去掉这层提示词
+    约束，归属校验等硬防线不受影响。"""
+
+    expert_relevance_check_enabled: bool = True
+    """专家会话是否在创建 Agent 前做「相关性预检」（一次轻量 LLM 三分类）。
+
+    开启时与本专家职责无关的消息**短路拒答**，Agent 不创建、工具零可达；预检
+    异常/超时一律放行（fail-open）。见 services/expert_relevance.py。"""
+
+    expert_relevance_strict: bool = False
+    """「部分相关」消息的口径：true = 整条拒答；false（默认）= 放行，交给职责边界块
+    只回答其中相关的部分。
+
+    默认宽松是实测调过的：严格口径会把「分析文件里的金融数据出一份报告」「写 Python
+    爬利率数据再回答利率问题」这类正常需求整条拒掉。与领域无关的消息、以及删除/修改
+    文件等高危操作**不受本开关影响**，始终在预检层短路拒答。"""
+
+    expert_relevance_disable_thinking: bool = True
+    """预检的那一次 LLM 调用是否**关闭思考模式**。
+
+    三分类只需输出一行 JSON，思考纯属浪费：实测同一提示词下输出 token 从
+    258~1007 降到 7、耗时从 1.7~6.4 秒降到 0.5~0.6 秒。极少数网关不认
+    ``reasoning_effort`` / ``thinking`` 参数时会自动去掉它们重试，因此一般无需关闭；
+    只有在关思考反而更慢或不返回内容时才设为 false。"""
     app_welcome_title: str = DEFAULT_APP_WELCOME_TITLE
 
     @field_validator("expert_tags", mode="before")
@@ -503,6 +574,14 @@ class Config(BaseModel):
 
         upload_limits_config = cls._parse_upload_limits_config(data)
 
+        file_context_config = cls._parse_file_context_config(data)
+
+        # 专家会话安全边界：优先读 expert 段（expert.relevance_strict 等），
+        # 同时兼容旧的扁平键（expert_guardrail_enabled），两种写法都能生效。
+        expert_section = data.get("expert")
+        if not isinstance(expert_section, dict):
+            expert_section = {}
+
         return cls(
             llm=llm_config,
             agent=agent_config,
@@ -513,10 +592,35 @@ class Config(BaseModel):
             database=db_config,
             personnel=PersonnelConfig(**data.get("personnel", {})),
             upload_limits=upload_limits_config,
+            file_context=file_context_config,
             models=models,
             active_model=active_model,
             preset_questions=data.get("preset_questions", []),
             expert_tags=data.get("expert_tags", []),
+            expert_guardrail_enabled=bool(
+                data.get(
+                    "expert_guardrail_enabled",
+                    expert_section.get("guardrail_enabled", True),
+                )
+            ),
+            expert_relevance_check_enabled=bool(
+                data.get(
+                    "expert_relevance_check_enabled",
+                    expert_section.get("relevance_check_enabled", True),
+                )
+            ),
+            expert_relevance_strict=bool(
+                data.get(
+                    "expert_relevance_strict",
+                    expert_section.get("relevance_strict", False),
+                )
+            ),
+            expert_relevance_disable_thinking=bool(
+                data.get(
+                    "expert_relevance_disable_thinking",
+                    expert_section.get("relevance_disable_thinking", True),
+                )
+            ),
             app_welcome_title=data.get(
                 "app_welcome_title", DEFAULT_APP_WELCOME_TITLE
             ),
@@ -596,7 +700,7 @@ class Config(BaseModel):
             skills_dir=tools_data.get("skills_dir", "./skills"),
             prompts_dir=tools_data.get("prompts_dir", "./prompts"),
             result_log_truncate=tools_data.get("result_log_truncate", 200),
-            experts_dir=tools_data.get("experts_dir", "./exports"),
+            experts_dir=tools_data.get("experts_dir", "./experts"),
         )
 
     @staticmethod
@@ -702,6 +806,23 @@ class Config(BaseModel):
                 limits.max_file_size_mb,
             )
         return limits
+
+    @staticmethod
+    def _parse_file_context_config(data: dict) -> FileContextConfig:
+        """解析 file_context 段（上传文件解析落盘 + 清单记忆）。
+
+        缺失该段时使用默认值，保证老配置文件可直接启动。
+        """
+        fc_data = data.get("file_context", {})
+        if not isinstance(fc_data, dict):
+            fc_data = {}
+        return FileContextConfig(
+            enabled=fc_data.get("enabled", True),
+            parse_max_file_size_mb=fc_data.get("parse_max_file_size_mb", 20),
+            max_stored_chars=fc_data.get("max_stored_chars", 200000),
+            manifest_max_chars=fc_data.get("manifest_max_chars", 2000),
+            preview_max_chars=fc_data.get("preview_max_chars", 2000),
+        )
 
     @staticmethod
     def _parse_summarization_config(data: dict) -> SummarizationConfig:

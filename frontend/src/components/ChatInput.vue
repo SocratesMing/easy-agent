@@ -29,10 +29,10 @@
             class="uploaded-file"
           >
             <div class="file-icon">
-              <FileIcon :filename="file.filename" :size="36" />
+              <FileIcon :filename="file.filename" :size="26" />
             </div>
             <div class="file-info">
-              <span class="file-name">{{ file.filename }}</span>
+              <span class="file-name" :title="file.filename">{{ file.filename }}</span>
               <div class="file-meta">
                 <span class="file-size">{{ formatSize(file.size) }}</span>
                 <div v-if="file.uploadStatus === 'uploading'" class="upload-progress">
@@ -273,7 +273,7 @@
                     <span v-if="myExpertsActive.length" class="plus-experts-section-count">{{ myExpertsActive.length }}</span>
                   </div>
                   <button
-                    v-for="(item, idx) in visibleMyExperts"
+                    v-for="item in visibleMyExperts"
                     :key="`mine:${item.export_agent_id}`"
                     type="button"
                     class="plus-expert-row"
@@ -281,7 +281,7 @@
                     :title="isExpertSelected(item) ? '再次点击取消召唤' : `召唤「${item.export_name_cn}」`"
                     @click="toggleExpert(item)"
                   >
-                    <span class="plus-expert-avatar" :class="'av-c' + (idx % 8)">{{ expertAvatar(item) }}</span>
+                    <span class="plus-expert-avatar" :class="expertAvatarClass(item)">{{ expertAvatarChar(item) }}</span>
                     <span class="plus-expert-main">
                       <span class="plus-expert-name">{{ item.export_name_cn }}</span>
                       <span class="plus-expert-desc">{{ expertDesc(item) }}</span>
@@ -301,7 +301,7 @@
                     class="plus-expert-more"
                     @click="loadMoreExperts"
                   >
-                    还有 {{ myExpertsActive.length - visibleMyExperts.length }} 位 · 滚动或点击加载
+                    还有 {{ myExpertsActive.length - visibleMyExperts.length }} 位 · 点击加载
                   </button>
 
                   <div class="plus-experts-divider"></div>
@@ -313,7 +313,7 @@
                     <span v-if="publicExperts.length" class="plus-experts-section-count">{{ publicExperts.length }}</span>
                   </div>
                   <button
-                    v-for="(item, idx) in visiblePublicExperts"
+                    v-for="item in visiblePublicExperts"
                     :key="`public:${item.export_agent_id}`"
                     type="button"
                     class="plus-expert-row"
@@ -321,7 +321,7 @@
                     :title="isExpertSelected(item) ? '再次点击取消召唤' : `召唤「${item.export_name_cn}」`"
                     @click="toggleExpert(item)"
                   >
-                    <span class="plus-expert-avatar" :class="'av-c' + (idx % 8)">{{ expertAvatar(item) }}</span>
+                    <span class="plus-expert-avatar" :class="expertAvatarClass(item)">{{ expertAvatarChar(item) }}</span>
                     <span class="plus-expert-main">
                       <span class="plus-expert-name">{{ item.export_name_cn }}</span>
                       <span class="plus-expert-desc">{{ expertDesc(item) }}</span>
@@ -335,7 +335,7 @@
                     class="plus-expert-more"
                     @click="loadMoreExperts"
                   >
-                    还有 {{ publicExperts.length - visiblePublicExperts.length }} 位 · 滚动或点击加载
+                    还有 {{ publicExperts.length - visiblePublicExperts.length }} 位 · 点击加载
                   </button>
                 </div>
                 <div class="skill-sub-footer">
@@ -522,7 +522,8 @@
             class="expert-chip"
             :title="`当前专家：${activeExpert.export_name_cn}（点击 × 退出专家模式）`"
           >
-            <span class="expert-chip-avatar">{{ expertAvatar(activeExpert) }}</span>
+            <!-- 头像颜色与专家 Tab / 下拉 / 回答面板标识同源（按专家 ID 稳定取色） -->
+            <span class="expert-chip-avatar" :class="expertAvatarClass(activeExpert)">{{ expertAvatarChar(activeExpert) }}</span>
             <span class="expert-chip-name">{{ activeExpert.export_name_cn }}</span>
             <button
               type="button"
@@ -702,6 +703,7 @@ import {
 import { getConnectors, toggleConnector } from '../api/connectors.js'
 import { emitConnectorsChanged, onConnectorsChanged } from '../utils/connectorSync.js'
 import { listExperts, listPublicExperts } from '../api/expert.js'
+import { expertAvatarChar, expertAvatarClass } from '../utils/expertAvatar.js'
 import FileIcon from './FileIcon.vue'
 import SkillIcon from './SkillIcon.vue'
 
@@ -989,8 +991,21 @@ const mirrorSegments = computed(() =>
     skillPickerOpen.value ? { suppressStart: slashStart.value } : null
   )
 )
-// 已选技能目录名（按出现顺序去重）：canSend 与发送时的 skills 字段
-const selectedSkillDirs = computed(() => skillDirsInText(message.value, tokenMap.value))
+// 已选技能目录名（按出现顺序去重）：canSend 与发送时的 skills 字段。
+// = 输入框内联标签 + 预选技能（preselectedSkillDirs，见 restorePendingSkill）：
+// 外部入口（如专家面板「新建/修改专家」）在草稿里用自然语言点名技能，
+// 不插内联标签、只把技能记为已选，发送时随 skills 字段交给后端激活。
+const preselectedSkillDirs = ref(new Set())
+
+// 待修改专家 ID（专家面板「编辑」带入，不展示给用户）：发送时随请求的
+// pending_expert_id 字段上行，后端校验归属后绑定为 save_expert 的修改目标。
+const pendingExpertEditId = ref('')
+
+const selectedSkillDirs = computed(() => {
+  const dirs = new Set(preselectedSkillDirs.value)
+  for (const dir of skillDirsInText(message.value, tokenMap.value)) dirs.add(dir)
+  return Array.from(dirs)
+})
 
 /**
  * 技能检索：优先按「目录名 / 技能名」匹配；仅当没有任何名称命中时，才回退到描述匹配。
@@ -1156,6 +1171,10 @@ function removeSkillToken(dirName) {
 /**
  * 恢复「待选技能」：技能中心「创建技能」等入口会把技能写进 sessionStorage，
  * 面板关闭后本组件重新挂载时读出来挂成技能标签（读后即清除，避免下次误挂）。
+ *
+ * `insert_token === false` 时**不插标签**：草稿正文已用自然语言点名技能
+ * （如专家面板的「用「expert-creator」技能帮我创建：…」），这里只把技能
+ * 记为预选，发送时随 skills 字段交给后端激活。
  */
 function restorePendingSkill() {
   let raw = null
@@ -1169,6 +1188,10 @@ function restorePendingSkill() {
     const skill = JSON.parse(raw)
     if (!skill?.dir_name) return
     rememberSkills([skill])
+    if (skill.insert_token === false) {
+      preselectedSkillDirs.value.add(skill.dir_name)
+      return
+    }
     const ta = textareaRef.value
     const base = ta?.value ?? message.value
     if (skillSegments(base, tokenMap.value).some((seg) => seg.dirName === skill.dir_name)) return
@@ -1317,6 +1340,11 @@ const DRAFT_KEY = 'easy_agent_input_draft'
 
 // 待选技能：由技能中心「创建技能」等入口写入，本组件挂载时恢复成技能标签
 const PENDING_SKILL_KEY = 'easy_agent_pending_skill'
+
+// 待修改专家：由专家面板「编辑」写入（{expert_agent_id, export_name_cn}）。
+// 专家 ID 不进消息正文（防篡改），挂载时消费为组件状态，发送时随请求的
+// pending_expert_id 字段上行；发送后清空。与后端 save_expert 的 edit_targets 绑定配套。
+const PENDING_EXPERT_EDIT_KEY = 'easy_agent_pending_expert_edit'
 
 // 光标所在行高亮（overlay 技术：textareal 本身无法按行上色）
 const caretLineTop = ref(null)   // 高亮条 top，null 表示隐藏
@@ -1600,11 +1628,7 @@ async function loadPlusList(category) {
 }
 
 // ========== 专家快捷面板：行渲染与选择 ==========
-/** 头像取专家名首字（与专家 Tab 的 avatarChar 一致） */
-function expertAvatar(item) {
-  const name = String(item?.export_name_cn || '').trim()
-  return name ? name.slice(0, 1) : '?'
-}
+// 头像取字与配色统一走 utils/expertAvatar.js（全局 8 色板 .ea-0 ~ .ea-7）
 
 /** 行右侧的浅灰小字描述：优先功能描述，回退专家描述 */
 function expertDesc(item) {
@@ -2321,6 +2345,9 @@ async function send() {
   // 正文发送前会把标签整段剥掉（否则气泡/标题/历史里会露出 `/技能名` 这类暗号）。
   // 连接器不随消息提交：本会话启用哪些连接器由「+」面板的连接器开关单独设置。
   const turnSkills = selectedSkillDirs.value
+  // 待修改专家 ID（专家面板「编辑」带入，不展示给用户）：随请求结构化字段上行，
+  // 后端校验归属后绑定为 save_expert 的修改目标
+  const expertEditId = pendingExpertEditId.value
   emit(
     'send',
     buildPayload(),
@@ -2328,11 +2355,15 @@ async function send() {
     null,
     true,
     webSearchEnabled.value,
-    turnSkills
+    turnSkills,
+    expertEditId
   )
 
   message.value = ''
   uploadedFiles.value = []
+  // 预选技能与待修改专家已随本条消息提交，清掉避免影响下一条
+  preselectedSkillDirs.value = new Set()
+  pendingExpertEditId.value = ''
   dismissUploadNotice()
   closeSkillPicker()
   nextTick(() => autoResize())
@@ -2421,6 +2452,15 @@ onMounted(() => {
 
   // 恢复待选技能（技能中心「创建技能」等入口预置），读取后即清除
   restorePendingSkill()
+
+  // 消费待修改专家（专家面板「编辑」预置）：ID 存组件状态、不进正文，发送时上行
+  try {
+    const rawEdit = sessionStorage.getItem(PENDING_EXPERT_EDIT_KEY)
+    if (rawEdit) sessionStorage.removeItem(PENDING_EXPERT_EDIT_KEY)
+    const parsed = rawEdit ? JSON.parse(rawEdit) : null
+    if (parsed?.expert_agent_id) pendingExpertEditId.value = parsed.expert_agent_id
+  } catch (_) { /* 隐私模式等场景忽略 */ }
+
   syncMirror()
   document.addEventListener('click', closeTokenPopup)
   document.addEventListener('click', closeModelDropdown)
@@ -2966,13 +3006,19 @@ html[data-theme="dark"] .connector-switch.on {
   position: relative;
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   background: var(--bg-secondary);
   border: 1px solid var(--border-color);
-  padding: 10px 14px;
+  /* 右侧 26px 预留给卡片内右上角的 × 按钮，防止文件名顶到 × 下面 */
+  padding: 6px 26px 6px 10px;
   border-radius: 12px;
-  max-width: 250px;
-  flex-shrink: 0;
+  /* 自适应等分：一行最多放 3 个（220px 起步、300px 封顶），宽度随容器伸缩 */
+  flex: 1 1 220px;
+  max-width: 300px;
+  min-width: 0;
+  box-sizing: border-box;
+  height: 48px;
+  overflow: hidden;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
   transition: all 0.2s ease;
 }
@@ -2983,8 +3029,8 @@ html[data-theme="dark"] .connector-switch.on {
 }
 
 .file-icon {
-  width: 40px;
-  height: 40px;
+  width: 30px;
+  height: 30px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -3000,7 +3046,8 @@ html[data-theme="dark"] .connector-switch.on {
 }
 
 .file-name {
-  font-size: 13px;
+  font-size: 12px;
+  line-height: 16px;
   font-weight: 500;
   color: var(--text-primary);
   white-space: nowrap;
@@ -3011,11 +3058,13 @@ html[data-theme="dark"] .connector-switch.on {
 .file-meta {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
+  min-height: 16px;
 }
 
 .file-size {
   font-size: 11px;
+  line-height: 16px;
   color: var(--text-secondary);
 }
 
@@ -3042,14 +3091,16 @@ html[data-theme="dark"] .connector-switch.on {
 
 .progress-text {
   font-size: 10px;
+  line-height: 16px;
   color: var(--text-secondary);
   min-width: 35px;
 }
 
 .upload-status {
   font-size: 10px;
+  line-height: 14px;
   font-weight: 500;
-  padding: 2px 6px;
+  padding: 1px 6px;
   border-radius: 8px;
 }
 
@@ -3066,14 +3117,14 @@ html[data-theme="dark"] .connector-switch.on {
 /* 失败卡片上的「重试」：仅可重试的失败（非单文件超限）才渲染 */
 .retry-file-btn {
   flex-shrink: 0;
-  padding: 1px 7px;
+  padding: 0 6px;
   border: 1px solid #fca5a5;
   border-radius: 8px;
   background: #ffffff;
   background: var(--bg-secondary);
   color: #b91c1c;
   font-size: 10px;
-  line-height: 16px;
+  line-height: 14px;
   cursor: pointer;
 }
 
@@ -3081,18 +3132,18 @@ html[data-theme="dark"] .connector-switch.on {
   background: #fee2e2;
 }
 
-/* × 常驻卡片右上角角标：上传前/上传中/上传完成/失败均可点击删除。
+/* × 常驻卡片内部右上角：上传前/上传中/上传完成/失败均可点击删除。
    兼容 Edge 114~155：仅用绝对定位 + 圆角 + 字面量回退，不用新特性。 */
 .remove-file-btn {
   position: absolute;
-  top: -7px;
-  right: -7px;
+  top: 5px;
+  right: 5px;
   z-index: 1;
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 18px;
-  height: 18px;
+  width: 16px;
+  height: 16px;
   padding: 0;
   background: #334155;
   border: 2px solid #ffffff;
@@ -3107,8 +3158,8 @@ html[data-theme="dark"] .connector-switch.on {
 }
 
 .remove-file-btn svg {
-  width: 10px;
-  height: 10px;
+  width: 9px;
+  height: 9px;
   color: #ffffff;
 }
 
@@ -3814,9 +3865,10 @@ html[data-theme="dark"] .plus-list-tag.custom {
   align-items: center;
   gap: 10px;
   width: 100%;
-  padding: 6px 8px;
+  /* 与技能面板 .plus-list-item 的行内边距保持一致 */
+  padding: 8px 10px;
   border: 1px solid transparent;
-  border-radius: 10px;
+  border-radius: 8px;
   background: transparent;
   cursor: pointer;
   text-align: left;
@@ -3837,36 +3889,20 @@ html[data-theme="dark"] .plus-list-tag.custom {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 26px;
-  height: 26px;
+  /* 尺寸/字号/字重与技能面板 .plus-list-icon（initial 变体）一致 */
+  width: 28px;
+  height: 28px;
   flex-shrink: 0;
   border-radius: 8px;
-  font-size: 12.5px;
-  font-weight: 800;
-  background: var(--bg-tertiary);
-  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 700;
+  /* 底色/字色由全局 .ea-0 ~ .ea-7 提供（按专家 ID 稳定取档）；此处不写死，
+     否则 scoped 规则会与全局色板同权重竞争、按注入顺序取胜而覆盖配色。 */
 }
 
-/* 头像调色板：按列表序号取色（av-c0..av-c7），相邻行色相跳变大、不会出现
-   同色相邻；列表超过 8 位时循环复用。底色取 200 级深色、字取 800 级深色，
-   与右侧常规字重的专家名称拉开层次。暗色主题单独配底/字色。 */
-.plus-expert-avatar.av-c0 { background: #b5d4f4; color: #0c447c; }
-.plus-expert-avatar.av-c1 { background: #fac775; color: #633806; }
-.plus-expert-avatar.av-c2 { background: #f4c0d1; color: #72243e; }
-.plus-expert-avatar.av-c3 { background: #c0dd97; color: #27500a; }
-.plus-expert-avatar.av-c4 { background: #cecbf6; color: #3c3489; }
-.plus-expert-avatar.av-c5 { background: #9fe1cb; color: #085041; }
-.plus-expert-avatar.av-c6 { background: #f7c1c1; color: #791f1f; }
-.plus-expert-avatar.av-c7 { background: #a8d8e8; color: #07495c; }
-
-html[data-theme="dark"] .plus-expert-avatar.av-c0 { background: #1f4a7a; color: #cbe2fa; }
-html[data-theme="dark"] .plus-expert-avatar.av-c1 { background: #6b4a12; color: #ffd68a; }
-html[data-theme="dark"] .plus-expert-avatar.av-c2 { background: #6b2a45; color: #f7c3d6; }
-html[data-theme="dark"] .plus-expert-avatar.av-c3 { background: #35590e; color: #d3eb9f; }
-html[data-theme="dark"] .plus-expert-avatar.av-c4 { background: #3a3390; color: #cfc9fa; }
-html[data-theme="dark"] .plus-expert-avatar.av-c5 { background: #0f5f4a; color: #9fe7cf; }
-html[data-theme="dark"] .plus-expert-avatar.av-c6 { background: #6b2222; color: #f5b8b8; }
-html[data-theme="dark"] .plus-expert-avatar.av-c7 { background: #12556b; color: #a3dbeb; }
+/* 头像配色已收敛到全局 .ea-0 ~ .ea-7（style.css + utils/expertAvatar.js）：
+   按 export_agent_id 稳定取档，技能中心 / 下拉 / 胶囊 / 消息标识四处同色。
+   这里不再保留按序号取色的 av-c0..av-c7，避免两套色板并存。 */
 
 .plus-expert-main {
   flex: 1;
@@ -3879,8 +3915,9 @@ html[data-theme="dark"] .plus-expert-avatar.av-c7 { background: #12556b; color: 
 .plus-expert-name {
   flex-shrink: 0;
   max-width: 52%;
+  /* 字体样式与技能面板 .plus-list-name 一致 */
   font-size: 13px;
-  font-weight: 500;
+  font-weight: 600;
   color: var(--text-primary);
   white-space: nowrap;
   overflow: hidden;
@@ -3890,7 +3927,8 @@ html[data-theme="dark"] .plus-expert-avatar.av-c7 { background: #12556b; color: 
 .plus-expert-desc {
   flex: 1;
   min-width: 0;
-  font-size: 11.5px;
+  /* 字体样式与技能面板 .plus-list-desc 一致 */
+  font-size: 12px;
   color: var(--text-secondary);
   white-space: nowrap;
   overflow: hidden;
@@ -4526,9 +4564,7 @@ html[data-theme="dark"] .plus-expert-avatar.av-c7 { background: #12556b; color: 
   width: 22px;
   height: 22px;
   border-radius: 50%;
-  background: #0ea5e9;
-  background: var(--accent-color);
-  color: #fff;
+  /* 底色/字色由全局 .ea-0 ~ .ea-7 按专家 ID 取档（见 style.css），此处只留尺寸 */
   font-size: 12px;
   font-weight: 600;
   line-height: 22px;

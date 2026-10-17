@@ -274,6 +274,29 @@ async def lifespan(app: FastAPI):
             agent_config = {"config": config}
             logger.info("✅ Agent 配置加载成功")
 
+            # 公共（预置）专家目录：把「解析到哪个目录、来源是谁」打出来，
+            # 出问题时能一眼看出是配置写错还是目录没挂上。
+            try:
+                from .services import public_expert_service
+
+                public_experts = public_expert_service.discover_public_experts()
+                if public_experts:
+                    logger.info(
+                        f"📂 公共专家目录: {public_expert_service.public_experts_root_hint()} | "
+                        f"数量: {len(public_experts)}"
+                    )
+                    for item in public_experts:
+                        logger.info(
+                            f"  - {item['export_name_cn']} ({item['export_agent_id']})"
+                        )
+                else:
+                    logger.warning(
+                        "⚠️ 未发现任何公共（预置）专家 | "
+                        f"解析目录: {public_expert_service.public_experts_root_hint()}"
+                    )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(f"⚠️ 公共专家目录扫描失败: {type(exc).__name__}: {exc}")
+
             # 让 deepagents 的 SummarizationMiddleware 使用 config 阈值（基准为
             # config.llm.context_length）。必须在任何 create_deep_agent 之前执行：
             # 官方默认的参数截断是 ("messages", 20)，消息一到 20 条就会把历史里

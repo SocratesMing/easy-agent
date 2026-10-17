@@ -58,6 +58,7 @@
       >
         <ChatMessage
           :message="msg"
+          :user-expert="userExpertFor(index)"
           @remove-file="(file) => handleRemoveFile(file, index)"
           @retry="handleRetry"
           @approve="handleApprove"
@@ -407,8 +408,24 @@ export default {
         })
       }
     },
-    handleSend(message, files, signal, enableDeepThink = true, enableWebSearch = false, skills = []) {
-      this.$emit('send-message', message, files, signal, enableDeepThink, enableWebSearch, skills)
+    handleSend(message, files, signal, enableDeepThink = true, enableWebSearch = false, skills = [], expertEditId = '') {
+      this.$emit('send-message', message, files, signal, enableDeepThink, enableWebSearch, skills, expertEditId)
+    },
+    /**
+     * 该条 assistant 消息对应哪一轮的专家（回答面板左上角的「头像 + 名称」）。
+     *
+     * 数据来源：后端把本轮专家写进了**用户消息**的 expert 字段（随消息落库），
+     * 因此这里从当前消息向前找最近的一条用户消息取它的 expert 即可 ——
+     * 刷新/历史加载后不丢，同一会话不同轮次选了不同专家也能各自对应。
+     * 内存中的占位消息自带 expert（ChatMessage 内优先用消息自身的），此处为兜底。
+     */
+    userExpertFor(index) {
+      for (let i = index - 1; i >= 0; i--) {
+        const msg = this.messages[i]
+        if (!msg) continue
+        if (msg.role === 'user') return msg.expert || null
+      }
+      return null
     },
     handleRemoveFile(file, messageIndex) {
       // 从事件参数中获取file，然后从messages中获取对应的message
@@ -442,10 +459,10 @@ export default {
       const composer = this.$refs.composerRef
       if (composer) composer.setMessage(question)
     },
-    onSend(message, files, signal, enableDeepThink, enableWebSearch, skills) {
+    onSend(message, files, signal, enableDeepThink, enableWebSearch, skills, expertEditId = '') {
       this.composerMode = 'bottom'
       this.isAtBottom = true
-      this.handleSend(message, files, signal, enableDeepThink, enableWebSearch, skills)
+      this.handleSend(message, files, signal, enableDeepThink, enableWebSearch, skills, expertEditId)
     },
     handleScroll() {
       const el = this.$refs.messagesRef

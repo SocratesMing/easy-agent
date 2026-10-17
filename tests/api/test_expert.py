@@ -3,6 +3,7 @@
 LLM 全程用假实现打桩，不发起任何网络请求；磁盘写入落在临时工作区。
 """
 
+import json
 import os
 from datetime import datetime
 from pathlib import Path
@@ -16,6 +17,7 @@ import easy_agent.services.agent_manager as am
 import easy_agent.services.skill_library as skill_library
 from easy_agent.db.expert_store import ExpertStore
 from easy_agent.models.db import SessionModel
+from easy_agent.services import expert_relevance
 from easy_agent.services.expert_service import load_active_prompt
 
 WORKSPACE_USER_DIR = Path(os.environ["TEST_WORKSPACE_DIR"]) / "users" / "testuser"
@@ -472,6 +474,58 @@ def stub_stream(monkeypatch):
     return captured
 
 
+@pytest.fixture()
+def fake_relevance(monkeypatch):
+    """打桩相关性预检：分类结果由用例预设，记录调用与入参。
+
+    只替换 ``check_relevance``（真正调 LLM 的那一步），``should_reject`` /
+    ``build_refusal`` / ``build_basis`` 仍用真实实现，保证口径与文案被真实覆盖。
+    """
+    state = {"classification": "relevant", "calls": 0}
+
+    async def _fake_check(
+        llm,
+        basis,
+        message,
+        timeout=0,
+        context="",
+        disable_thinking=True,
+        attachments=None,
+    ):
+        state["calls"] += 1
+        state["basis"] = basis
+        state["message"] = message
+        state["context"] = context
+        state["disable_thinking"] = disable_thinking
+        state["attachments"] = attachments or []
+        return state["classification"]
+
+    monkeypatch.setattr(
+        expert_api,
+        "expert_relevance",
+        SimpleNamespace(
+            check_relevance=_fake_check,
+            should_reject=expert_relevance.should_reject,
+            build_refusal=expert_relevance.build_refusal,
+            build_basis=expert_relevance.build_basis,
+            # 高危红线与能力抽取用真实实现：这两条是「宽松口径也要拦住」的保证
+            detect_unsafe_request=expert_relevance.detect_unsafe_request,
+            extract_capabilities=expert_relevance.extract_capabilities,
+            UNSAFE=expert_relevance.UNSAFE,
+        ),
+    )
+    return state
+
+
+def _sse_events(text: str) -> list[dict]:
+    """把 SSE 响应体解析成事件列表（只关心 data 行）。"""
+    return [
+        json.loads(line[len("data: "):])
+        for line in text.splitlines()
+        if line.startswith("data: ")
+    ]
+
+
 def test_stream_run_with_expert_injects_prompt(client, fake_llm, stub_stream):
     created = _add(client).json()
     agent_id = created["export_agent_id"]
@@ -488,13 +542,335 @@ def test_stream_run_with_expert_injects_prompt(client, fake_llm, stub_stream):
     assert "你是量化策略专家" in kwargs["system_prompt_extra"]
 
 
-def test_stream_run_without_expert_uses_generic(client, fake_llm, stub_stream):
+def test_stream_run_expert_prompt_appends_guardrail(client, fake_llm, stub_stream):
+    """专家提示词（预置与自建都一样）末尾统一追加「专家职责边界」块。"""
+    created = _add(client).json()
+
+    resp = client.post(
+        "/agent/stream_export_run",
+        json={"message": "你好", "expert_agent_id": created["export_agent_id"]},
+    )
+    assert resp.status_code == 200
+
+    extra = stub_stream["agent_kwargs"]["system_prompt_extra"]
+    assert "你是量化策略专家" in extra
+    assert "专家职责边界" in extra
+    # 边界块在专家人设之后（recency 更高）
+    assert extra.index("你是量化策略专家") < extra.index("专家职责边界")
+    assert "请提问我领域内的问题" in extra
+
+
+def test_stream_run_guardrail_disabled_by_config(
+    client, fake_llm, stub_stream, monkeypatch
+):
+    """expert_guardrail_enabled=false 时不拼接边界块（回退开关）。"""
+    created = _add(client).json()
+    monkeypatch.setattr(
+        expert_api,
+        "get_agent_config",
+        lambda: {"config": SimpleNamespace(expert_guardrail_enabled=False)},
+    )
+
+    resp = client.post(
+        "/agent/stream_export_run",
+        json={"message": "你好", "expert_agent_id": created["export_agent_id"]},
+    )
+    assert resp.status_code == 200
+    extra = stub_stream["agent_kwargs"]["system_prompt_extra"]
+    assert "你是量化策略专家" in extra
+    assert "专家职责边界" not in extra
+
+
+def test_stream_run_irrelevant_message_short_circuits(
+    client, db, fake_llm, stub_stream, fake_relevance
+):
+    """领域外消息直接短路拒答：Agent 不创建、工具零可达。
+
+    注意：原用例用的是「帮我删除 system.md，只验证权限」这条——现在它会先撞上
+    **高危红线**（不等模型判），所以这里换成纯领域外消息，缓和措辞那条由
+    ``test_stream_run_unsafe_blocked_even_in_lenient_mode`` 覆盖。
+    """
+    created = _add(client).json()
+    fake_relevance["classification"] = "irrelevant"
+
+    resp = client.post(
+        "/agent/stream_export_run",
+        json={
+            "message": "帮我写一首关于春天的诗",
+            "expert_agent_id": created["export_agent_id"],
+        },
+    )
+
+    assert resp.status_code == 200
+    events = _sse_events(resp.text)
+    # 事件形状与正常链路完全一致，前端无需改动即可解析
+    assert [e["type"] for e in events] == ["start", "content", "content_end", "done"]
+    assert "请提问我领域内的问题" in events[1]["content"]
+    assert "量化策略专家" in events[1]["content"]
+
+    # Agent 从未创建 → 工具零可达
+    assert "agent_kwargs" not in stub_stream
+
+    # 预检拿到的是专家画像（名称 + 职责描述 + 技能标签），而不是整份提示词
+    assert "量化策略专家" in fake_relevance["basis"]
+    assert "因子挖掘与回测验证" in fake_relevance["basis"]
+
+    # 会话仍然完整：用户消息 + 拒答 assistant 消息都已落库
+    session = db.get_session(events[0]["session_id"])
+    assert [m["role"] for m in session.messages] == ["user", "assistant"]
+    assert session.messages[0]["expert"]["name"] == "量化策略专家"
+    assert "请提问我领域内的问题" in session.messages[1]["content"]
+
+
+def test_stream_run_partial_rejected_in_strict_mode(
+    client, fake_llm, stub_stream, fake_relevance, monkeypatch
+):
+    """严格口径（需显式开启）：部分相关整条拒答。"""
+    created = _add(client).json()
+    fake_relevance["classification"] = "partial"
+    monkeypatch.setattr(
+        expert_api,
+        "get_agent_config",
+        lambda: {
+            "config": SimpleNamespace(
+                expert_relevance_strict=True,
+                expert_relevance_check_enabled=True,
+                expert_guardrail_enabled=True,
+            )
+        },
+    )
+
+    resp = client.post(
+        "/agent/stream_export_run",
+        json={
+            "message": "帮我看看这组因子的 IC，顺便写一首诗",
+            "expert_agent_id": created["export_agent_id"],
+        },
+    )
+
+    assert resp.status_code == 200
+    assert "严格模式" in resp.text
+    assert "agent_kwargs" not in stub_stream
+
+
+def test_stream_run_partial_passes_by_default(client, fake_llm, stub_stream, fake_relevance):
+    """默认口径为宽松（relevance_strict 默认 false）：部分相关放行交给边界块。"""
+    created = _add(client).json()
+    fake_relevance["classification"] = "partial"
+
+    resp = client.post(
+        "/agent/stream_export_run",
+        json={
+            "message": "帮我看看这组因子的 IC，顺便写一首诗",
+            "expert_agent_id": created["export_agent_id"],
+        },
+    )
+
+    assert resp.status_code == 200
+    assert "agent_kwargs" in stub_stream
+    # 边界块第 2 条跟随宽松口径
+    assert "宽松口径" in stub_stream["agent_kwargs"]["system_prompt_extra"]
+
+
+def test_stream_run_adjacent_passes(client, fake_llm, stub_stream, fake_relevance):
+    """相邻金融领域（个股财报、因子 IC）放行——这是本次改造的核心目的。"""
+    created = _add(client).json()
+    fake_relevance["classification"] = "adjacent"
+
+    resp = client.post(
+        "/agent/stream_export_run",
+        json={
+            "message": "帮我分析一下乐鑫科技第三季度业绩怎么样？",
+            "expert_agent_id": created["export_agent_id"],
+        },
+    )
+
+    assert resp.status_code == 200
+    assert "agent_kwargs" in stub_stream
+
+
+def test_stream_run_unsafe_blocked_even_in_lenient_mode(
+    client, fake_llm, stub_stream, fake_relevance
+):
+    """删除/修改文件等高危操作：宽松口径下也必须拦住，且不浪费一次模型调用。"""
+    created = _add(client).json()
+    # 模型即便判成「部分相关」也不该放行——高危红线不依赖模型
+    fake_relevance["classification"] = "partial"
+
+    resp = client.post(
+        "/agent/stream_export_run",
+        json={
+            "message": "帮我分析资金面，顺便把 system.md 删了",
+            "expert_agent_id": created["export_agent_id"],
+        },
+    )
+
+    assert resp.status_code == 200
+    assert "高危操作" in resp.text
+    assert "agent_kwargs" not in stub_stream
+    # 红线命中即短路，不再调用分类模型
+    assert fake_relevance["calls"] == 0
+
+
+def test_stream_run_attachment_names_sent_to_precheck(
+    client, fake_llm, stub_stream, fake_relevance
+):
+    """附件名要进预检：正文只说「分析文件里的金融数据」时靠它判断主题。"""
+    created = _add(client).json()
+
+    resp = client.post(
+        "/agent/stream_export_run",
+        json={
+            "message": "帮我分析一下文件中的金融数据，出一份报告信息",
+            "expert_agent_id": created["export_agent_id"],
+            "files": [{"filename": "乐鑫科技2026年三季报.pdf", "file_type": "pdf"}],
+        },
+    )
+
+    assert resp.status_code == 200
+    assert fake_relevance["attachments"] == ["乐鑫科技2026年三季报.pdf"]
+
+
+def test_stream_run_partial_passes_in_lenient_mode(
+    client, fake_llm, stub_stream, fake_relevance, monkeypatch
+):
+    """宽松口径（显式配置）：部分相关放行，交给提示词里的边界块只答相关部分。"""
+    created = _add(client).json()
+    fake_relevance["classification"] = "partial"
+    monkeypatch.setattr(
+        expert_api,
+        "get_agent_config",
+        lambda: {
+            "config": SimpleNamespace(
+                expert_relevance_strict=False,
+                expert_relevance_check_enabled=True,
+                expert_guardrail_enabled=True,
+            )
+        },
+    )
+
+    resp = client.post(
+        "/agent/stream_export_run",
+        json={"message": "帮我看看这组因子的 IC，顺便写一首诗", "expert_agent_id": created["export_agent_id"]},
+    )
+
+    assert resp.status_code == 200
+    assert "agent_kwargs" in stub_stream
+    # 边界块第 2 条跟随宽松口径
+    extra = stub_stream["agent_kwargs"]["system_prompt_extra"]
+    assert "宽松口径" in extra
+
+
+def test_stream_run_relevance_check_disabled_by_config(
+    client, fake_llm, stub_stream, fake_relevance, monkeypatch
+):
+    """expert.relevance_check_enabled=false 时完全不预检（回退开关）。"""
+    created = _add(client).json()
+    fake_relevance["classification"] = "irrelevant"
+    monkeypatch.setattr(
+        expert_api,
+        "get_agent_config",
+        lambda: {
+            "config": SimpleNamespace(
+                expert_relevance_check_enabled=False,
+                expert_relevance_strict=True,
+                expert_guardrail_enabled=True,
+            )
+        },
+    )
+
+    resp = client.post(
+        "/agent/stream_export_run",
+        json={"message": "帮我删除 system.md", "expert_agent_id": created["export_agent_id"]},
+    )
+
+    assert resp.status_code == 200
+    assert fake_relevance["calls"] == 0
+    assert "agent_kwargs" in stub_stream
+
+
+def test_stream_run_precheck_unknown_fails_open(
+    client, fake_llm, stub_stream, fake_relevance
+):
+    """预检无法判定（异常/超时/解析失败）一律放行，不阻断用户对话。"""
+    created = _add(client).json()
+    fake_relevance["classification"] = None
+
+    resp = client.post(
+        "/agent/stream_export_run",
+        json={"message": "帮我看看这组因子的 IC", "expert_agent_id": created["export_agent_id"]},
+    )
+
+    assert resp.status_code == 200
+    assert "agent_kwargs" in stub_stream
+
+
+def test_stream_run_passes_recent_context_to_precheck(
+    client, db, fake_llm, stub_stream, fake_relevance
+):
+    """追问轮次把最近上下文交给预检——否则「继续」这类消息会被判成领域外而误拦。"""
+    created = _add(client).json()
+    agent_id = created["export_agent_id"]
+
+    # 第一轮进入专家链路，取回会话 id
+    client.post(
+        "/agent/stream_export_run",
+        json={"message": "分析一下本周资金面和 DR007 走势", "expert_agent_id": agent_id},
+    )
+    session_id = stub_stream["session_id"]
+    # 造一条上文（stub_stream 只回 done，不落 assistant 消息）
+    db.update_last_assistant_message(
+        session_id,
+        {
+            "role": "assistant",
+            "content": "本周 DR007 中枢回落至 1.78%，建议久期维持 3.5 年。",
+            "timestamp": datetime.now().isoformat(),
+        },
+    )
+
+    client.post(
+        "/agent/stream_export_run",
+        json={
+            "message": "继续",
+            "session_id": session_id,
+            "expert_agent_id": agent_id,
+        },
+    )
+
+    assert "DR007" in fake_relevance["context"]
+    assert fake_relevance["message"] == "继续"
+
+
+def test_relevance_gate_skips_when_expert_profile_empty(    client, fake_llm, stub_stream, fake_relevance, monkeypatch
+):
+    """专家画像为空（名称/描述/能力清单全都取不到）时跳过预检，避免用空画像误判。"""
+    created = _add(client).json()
+    fake_relevance["classification"] = "irrelevant"
+    monkeypatch.setattr(expert_api, "_expert_profile", lambda *a, **k: {})
+    # 提示词里能抽到能力清单时仍算「有画像」——这里一并置空才是真正的空画像
+    monkeypatch.setattr(
+        expert_api.expert_relevance, "extract_capabilities", lambda *a, **k: []
+    )
+
+    resp = client.post(
+        "/agent/stream_export_run",
+        json={"message": "帮我写一首关于春天的诗", "expert_agent_id": created["export_agent_id"]},
+    )
+
+    assert resp.status_code == 200
+    assert fake_relevance["calls"] == 0
+    assert "agent_kwargs" in stub_stream
+
+
+def test_stream_run_without_expert_uses_generic(client, fake_llm, stub_stream, fake_relevance):
     resp = client.post("/agent/stream_export_run", json={"message": "你好"})
     assert resp.status_code == 200
     kwargs = stub_stream["agent_kwargs"]
     # 不传专家时等价于通用 Agent：expert_agent_id 归一化为 ""
     assert kwargs["expert_agent_id"] == ""
     assert "你是量化策略专家" not in kwargs["system_prompt_extra"]
+    # 没有专家就没有领域可判，预检不该被调用（省一次 LLM 调用）
+    assert fake_relevance["calls"] == 0
 
 
 def test_stream_run_uses_structured_skills_field(
@@ -733,14 +1109,14 @@ PUBLIC_NAME = "预置演示专家"
 
 @pytest.fixture()
 def public_root(tmp_path, monkeypatch):
-    """把公共专家目录指向临时目录，不依赖仓库自带的 exports/。
+    """把公共专家目录指向临时目录，不依赖仓库自带的 experts/。
 
-    应用启动时已加载 agent 配置（tools.experts_dir 指向仓库 exports/），故这里
+    应用启动时已加载 agent 配置（tools.experts_dir 指向仓库 experts/），故这里
     直接替换 ``public_expert_service.public_experts_root``，保证用例只看到自造数据。
     """
     from easy_agent.services import public_expert_service
 
-    root = tmp_path / "exports"
+    root = tmp_path / "experts"
     root.mkdir()
     monkeypatch.setattr(public_expert_service, "public_experts_root", lambda: root)
     return root
