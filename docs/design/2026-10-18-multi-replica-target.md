@@ -75,7 +75,16 @@ Ingress
   `EASY_MULTI_REPLICA_STRICT=0`；Phase 3 文件/迁移/K8s 后再评估开启。
 - 报告：`docs/audit/2026-10-18-phase2-report.md`。
 
-## 7. 非目标 / 风险
+## 7. Phase 3 后端状态（2026-10-18）
+
+- 迁移串行化：`schema_migration_lock`（MySQL GET_LOCK / SQLite flock）已接入
+  `init_tables()`；`scripts/migrate_db.py` 提供迁移/只校验入口；
+  `EASY_AUTO_MIGRATE=0` 时 Pod 启动只校验，结构不匹配 fail-fast。
+- K8s 清单/探针/HPA/PDB：按用户要求跳过。
+- 文件对象存储 / 外部 Sandbox：未做，仍待后续。
+- 报告：`docs/audit/2026-10-18-phase3-backend-report.md`。
+
+## 8. 非目标 / 风险
 
 - Phase 0–1 完成后仍不宣称多副本安全；SSE/run/文件外置未完成。
 - `EASY_MULTI_REPLICA_STRICT=1` 在 Phase 2/3 完成前会阻止 prod 多副本启动，这是有意的。

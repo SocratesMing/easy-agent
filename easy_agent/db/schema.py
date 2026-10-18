@@ -19,6 +19,8 @@ from .migrations import (
     record_baseline,
 )
 
+from .migration_lock import schema_migration_lock
+
 logger = logging.getLogger("easy_agent.db.schema")
 
 
@@ -523,6 +525,31 @@ def _create_distributed_lock_table(db, cursor):
 
 
 def init_tables(db):
+    """迁移入口：跨进程迁移锁内执行完整初始化/升级。"""
+    with schema_migration_lock(db):
+        return _init_tables_locked(db)
+
+
+def verify_schema_current(db) -> None:
+    """启动只校验模式（EASY_AUTO_MIGRATE=0）：结构不匹配直接失败。
+
+    K8s/多副本部署可先跑 `python scripts/migrate_db.py`（Job），Pod 启动只读
+    校验，避免每个 Pod 并发执行 DDL。
+    """
+    with db.get_connection() as conn:
+        cursor = conn.cursor()
+        current = _ensure_schema_meta_table(db, cursor)
+        conn.commit()
+        present = _schema_tables_present(db, cursor)
+    if current != SCHEMA_VERSION or not present:
+        raise RuntimeError(
+            "数据库结构不是最新（"
+            f"schema_version={current}，期望 {SCHEMA_VERSION}，"
+            f"关键表齐全={present}）。请先运行：python scripts/migrate_db.py"
+        )
+
+
+def _init_tables_locked(db):
     """幂等地初始化库表结构。
 
     启动性能：MySQL 场景下完整建表流程要 40+ 次网络往返（建表建索引 +

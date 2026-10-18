@@ -38,6 +38,7 @@ from .repositories import mcp_api_keys as mcp_api_keys_repo
 from .repositories import users as users_repo
 from . import schema
 from ..utils.auth import hash_password, verify_password
+from ..env import env_bool
 
 DATABASE_PATH = "./data/easy_agent.db"
 logger = logging.getLogger(__name__)
@@ -296,6 +297,9 @@ class Database:
 
     def init_tables(self, *args, **kwargs):
         return schema.init_tables(self, *args, **kwargs)
+
+    def verify_schema_current(self) -> None:
+        return schema.verify_schema_current(self)
 
     def _init_tables_full(self, *args, **kwargs):
         return schema._init_tables_full(self, *args, **kwargs)
@@ -774,7 +778,11 @@ _db_instance = None
 def init_database(db_config: dict = None) -> Database:
     global _db_instance
     db = Database(db_config)
-    db.init_tables()
+    if env_bool("EASY_AUTO_MIGRATE", True):
+        db.init_tables()
+    else:
+        # 多副本：迁移由一次性 Job/脚本完成，Pod 启动只校验，不并发 DDL。
+        db.verify_schema_current()
     db.get_or_create_default_user()
     _db_instance = db
     logger.info("✅ 数据库初始化完成")
