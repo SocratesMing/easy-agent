@@ -102,6 +102,6 @@ def test_build_interrupt_config_uninjected_tools_absent():
     from easy_agent.hitl import build_interrupt_config
 
     cfg = build_interrupt_config(["mcp_write_file"])
-    assert set(cfg) == {"execute", "mcp_write_file"}
+    assert set(cfg) == {"execute", "delete", "mcp_write_file"}
     assert "access_knowledge_original" not in cfg
     assert "save_expert" not in cfg

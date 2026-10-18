@@ -90,6 +90,7 @@ def test_builtin_tools_cover_deepagents_set():
         "glob",
         "grep",
         "execute",
+        "delete",
         "write_todos",
         "task",
     }
@@ -144,7 +145,7 @@ def test_spec_validation_rejects_invalid_entries():
 
 def test_default_interrupt_list_matches_hitl_module():
     assert DEFAULT_INTERRUPT_TOOLS == registry.default_interrupt_tool_names()
-    assert DEFAULT_INTERRUPT_TOOLS == ("save_expert", "create_scheduled_task")
+    assert DEFAULT_INTERRUPT_TOOLS == ("delete", "save_expert", "create_scheduled_task")
     for name in DEFAULT_INTERRUPT_TOOLS:
         spec = registry.require_tool_spec(name)
         assert spec.is_hitl
@@ -181,6 +182,7 @@ def test_hitl_specs_order_is_interrupt_config_order():
     """agent.py 按此顺序构造 interrupt_on（与改造前逐项一致）。"""
     assert [spec.name for spec in registry.hitl_tool_specs()] == [
         "execute",
+        "delete",
         "save_expert",
         "create_scheduled_task",
         "access_knowledge_original",

@@ -139,7 +139,9 @@ def test_same_model_tools_prompt_two_sessions_compile_once(
 
     kwargs = compile_spy[0]
     assert kwargs["context_schema"] is SessionContext
-    assert callable(kwargs["backend"]), "共享图必须用 backend callable 解析运行期 workspace"
+    from easy_agent.backends.context import ContextBackend
+
+    assert isinstance(kwargs["backend"], ContextBackend), "共享图必须用 context-aware backend 实例"
     assert kwargs["memory"] == [
         "/workspace/memory.md",
         "/memories/AGENTS.md",
@@ -195,7 +197,7 @@ def test_backend_factory_resolves_workspace_from_context(
     factory = agent._make_backend_factory([])
 
     ctx = _ctx(tmp_path, session_id="s-other", workspace_name="w-other")
-    backend = factory(SimpleNamespace(context=ctx))
+    backend = factory.resolve(ctx)
 
     assert Path(backend.default.cwd) == Path(ctx.workspace_dir).absolute()
     assert Path(backend.routes["/workspace/"].cwd) == Path(ctx.workspace_dir).absolute()
@@ -222,7 +224,7 @@ def test_backend_factory_rejects_other_user_context(
     other = _ctx(tmp_path, session_id="s-other", workspace_name="w-other")
     other = replace(other, username="u2", safe_username="u2")
     with pytest.raises(RuntimeError, match="用户"):
-        factory(SimpleNamespace(context=other))
+        factory.resolve(other)
 
 
 def test_shared_graph_without_context_refuses_to_pick_a_session(
@@ -231,7 +233,7 @@ def test_shared_graph_without_context_refuses_to_pick_a_session(
     agent = _make_agent(config, session_id="s1", workspace_name="w1")
     factory = agent._make_backend_factory([])
     with pytest.raises(RuntimeError, match="SessionContext"):
-        factory(SimpleNamespace(context=None))
+        factory.resolve(None)
 
 
 def test_context_bound_tool_is_rewritten_per_runtime(tmp_path):

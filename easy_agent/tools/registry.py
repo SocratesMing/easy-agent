@@ -300,7 +300,16 @@ TOOL_REGISTRY: tuple[ToolSpec, ...] = (
     ToolSpec(
         name="write_todos",
         source=SOURCE_BUILTIN,
-        description="任务规划清单（DeepAgents 内置）",
+        description="任务规划清单（DeepAgents 0.7 需显式 TodoListMiddleware）",
+    ),
+    ToolSpec(
+        name="delete",
+        source=SOURCE_BUILTIN,
+        description="删除文件（DeepAgents 0.7 新增；默认进 HITL）",
+        mutating=True,
+        is_hitl=True,
+        interrupt_decisions=("approve", "reject"),
+        hitl_order=5,
     ),
     ToolSpec(
         name="task",

@@ -53,7 +53,7 @@ Environment variables:
 
 ### Python Backend (`easy_agent/`)
 
-**Agent layer** (`agent.py`) — `EasyAgent` class wraps `deepagents.create_deep_agent()`. Built-in tools: `write_todos`, `ls`, `read_file`, `write_file`, `edit_file`, `glob`, `grep`, `execute`, `task` (subagent). Creates a `CompositeBackend` mapping `/workspace/` to the user/session-isolated directory (`workspace/{username}/{session_id}/`), `/user-skills/` to the user's skill library, and `/memories/` to per-user memory files (plus configured `external_dirs`). System prompt is dynamically augmented with OS-specific commands, workspace path, skills root, and shared dependency paths. Supports context compression via the summarization factory (configurable through `config.summarization`).
+**Agent layer** (`agent.py`) — `EasyAgent` class wraps `deepagents.create_deep_agent()`. Built-in tools: `write_todos`, `ls`, `read_file`, `write_file`, `edit_file`, `delete`, `glob`, `grep`, `execute`, `task` (subagent). Creates a `CompositeBackend` mapping `/workspace/` to the user/session-isolated directory (`workspace/{username}/{session_id}/`), `/user-skills/` to the user's skill library, and `/memories/` to per-user memory files (plus configured `external_dirs`). System prompt is dynamically augmented with OS-specific commands, workspace path, skills root, and shared dependency paths. Supports context compression via the summarization factory (configurable through `config.summarization`).
 
 **Config** (`config.py`) — Pydantic models: `LLMConfig`, `AgentConfig`, `ToolsConfig`, `DatabaseConfig`, `ProviderConfig`. Multi-provider support via `ProviderConfig` entries.
 

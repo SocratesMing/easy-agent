@@ -29,10 +29,10 @@ from easy_agent.hitl import (
 )
 
 # 已验证的兼容窗口：升级时先改这里，再跑全量测试与 PoC。
-VERIFIED_DEEPAGENTS_MIN = (0, 6, 8)
-VERIFIED_DEEPAGENTS_MAX_MAJOR_MINOR = (0, 6)
-VERIFIED_LANGCHAIN_MIN = (1, 3)
-VERIFIED_LANGCHAIN_MAX_MAJOR_MINOR = (1, 3)
+VERIFIED_DEEPAGENTS_MIN = (0, 7, 28)
+VERIFIED_DEEPAGENTS_MAX_MAJOR_MINOR = (0, 7)
+VERIFIED_LANGCHAIN_MIN = (1, 4, 6)
+VERIFIED_LANGCHAIN_MAX_MAJOR_MINOR = (1, 4)
 
 # profile 测试用的唯一模型名：避免与其他用例/真实配置互相污染全局注册表。
 _PROFILE_MODEL_ID = "fw04-contract-profile-model"

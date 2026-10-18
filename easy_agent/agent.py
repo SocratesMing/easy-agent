@@ -22,6 +22,7 @@ from deepagents.middleware.filesystem import FilesystemOperation, FilesystemPerm
 from langchain_core.messages import AIMessageChunk, ToolMessage
 
 from .backends.shell import _PathTranslatingShell
+from .backends.context import ContextBackend
 from .checkpoints import get_session_checkpointer, release_session_checkpointer
 from .config import Config
 from .fs_safety import _check_external_dir_safety
@@ -617,51 +618,22 @@ class EasyAgent:
         return ""
 
     def _make_backend_factory(self, skills_paths: list[str], fallback_context=None):
-        """backend callable：用 ToolRuntime.context 解析本次会话的目录。
+        """返回 DeepAgents 0.7 兼容的 BackendProtocol 实例。
 
-        ``fallback_context`` 只在「本 EasyAgent 未进入共享缓存」时传入，用于
-        兼容绕过 orchestrator、直接 ``agent.agent.astream(...)`` 的旧调用；
-        共享图路径必须显式传 context，避免把图重新绑到某个 session。
+        0.7 移除了 callable backend；这里用 ContextBackend 实例在运行期按
+        ToolRuntime.context 解析 SessionContext，再构建 CompositeBackend。
         """
         config = self.config
         expected_user = self.safe_username
-        # 同一个 session 的 Memory/Skills middleware 与每次文件工具调用都会解析
-        # backend；按 context 缓存实例，避免每个工具调用都重建 CompositeBackend
-        # 与 shell 沙箱检测。会话之间仍是独立实例（不会串 workspace）。
-        backend_cache: dict[tuple[str, ...], CompositeBackend] = {}
 
-        def _factory(runtime):
-            ctx = getattr(runtime, "context", None)
-            if ctx is None or not hasattr(ctx, "workspace_dir"):
-                if fallback_context is not None:
-                    ctx = fallback_context
-                else:
-                    raise RuntimeError(
-                        "D2 共享编译图缺少运行期 SessionContext：请使用 "
-                        "astream(..., context=agent.session_context)"
-                    )
-            ctx_user = str(getattr(ctx, "safe_username", "") or "")
-            if expected_user and ctx_user != expected_user:
-                raise RuntimeError(
-                    "D2 共享编译图的 SessionContext 用户与建图用户不一致："
-                    f"expected={expected_user!r} got={ctx_user!r}"
-                )
-            key = (
-                str(getattr(ctx, "session_id", "") or ""),
-                str(getattr(ctx, "workspace_dir", "") or ""),
-                str(getattr(ctx, "user_skills_dir", "") or ""),
-                str(getattr(ctx, "long_term_memory_file", "") or ""),
-                str(getattr(ctx, "safe_username", "") or ""),
-            )
-            backend = backend_cache.get(key)
-            if backend is None:
-                if len(backend_cache) >= 16:
-                    backend_cache.pop(next(iter(backend_cache)))
-                backend = _build_backend_for_context(config, ctx, skills_paths)
-                backend_cache[key] = backend
-            return backend
+        def _builder(ctx):
+            return _build_backend_for_context(config, ctx, skills_paths)
 
-        return _factory
+        return ContextBackend(
+            _builder,
+            expected_user=expected_user,
+            fallback_context=fallback_context,
+        )
 
     def _create_agent(self):
         """Create the DeepAgents agent, reusing a process-wide compiled graph when safe.
@@ -735,7 +707,7 @@ class EasyAgent:
 
         def _build(checkpointer, model, *, fallback_context: bool = False):
             # 共享图不带任何会话 fallback；降级路径才把当前会话作为兜底。
-            backend_factory = self._make_backend_factory(
+            backend = self._make_backend_factory(
                 skills_paths,
                 fallback_context=self.session_context if fallback_context else None,
             )
@@ -745,7 +717,7 @@ class EasyAgent:
                     name="easy-agent",
                     model=model,
                     system_prompt=self.system_prompt,
-                    backend=backend_factory,
+                    backend=backend,
                     skills=skills_paths or None,
                     middleware=middleware,
                     tools=graph_tools or None,
@@ -896,8 +868,11 @@ class EasyAgent:
        # with model-aware defaults (trigger=0.85, keep=0.10).
        # No need to add it here - duplicate middleware causes AssertionError.
         from .services.logging_middleware import LoggingMiddleware
+        from langchain.agents.middleware import TodoListMiddleware
 
         middleware = [
+            # 0.7 起 write_todos 需要显式 TodoListMiddleware（0.6.8 是默认内置）。
+            TodoListMiddleware(),
             # D2：middleware 进共享编译图，不能再绑定 session_id（否则同图跨会话
             # 复用会把日志前缀写成首个会话的）。工具异常兜底本身与会话无关。
             LoggingMiddleware(

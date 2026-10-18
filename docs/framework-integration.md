@@ -1,7 +1,10 @@
 # DeepAgents 框架适配点清单
 
 > 本仓库把 deepagents / langchain 固定在 **已验证窗口** 内：
-> `deepagents>=0.6.8,<0.7`、`langchain>=1.3,<1.4`。
+> `deepagents>=0.7.28,<0.8`、`langchain>=1.4.6,<1.5`。
+>
+> 0.7 适配：callable backend 已移除 → `ContextBackend` 实例；
+> `write_todos` 需显式 `TodoListMiddleware`；新增 `delete` 工具并纳入 HITL。
 > 升级前先让 `tests/test_framework_contract.py` 失败并逐项复核本清单。
 
 ## 适配点（3 处）
@@ -37,7 +40,7 @@
   `skills=["/user-skills/"]` 与异常兜底 `LoggingMiddleware`。
 - **FW-08 已落地**：call-limit 中间件 `exit_behavior="error"`；主/恢复流
   `stream_config["recursion_limit"] = max(2*max_steps, 50)`。
-- **FW-04 暂不迁移 HarnessProfile**：`deepagents.profiles` 在 0.6.8 标注 beta；
+- **FW-04 已迁移 HarnessProfile**：0.7 的 `HarnessProfile.tool_description_overrides` 为官方注入点；
   现有 monkeypatch + `tests/test_framework_contract.py` 已能在升级时显式失败，
   待 0.7 升级立项时再迁移，避免在 beta API 上引入新风险。
 

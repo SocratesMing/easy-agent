@@ -69,7 +69,7 @@ def test_build_interrupt_config_only_adds_injected_registry_tools():
     """知识库/专家工具未注入时不得再出现在 interrupt_on（静默无效项）。"""
     cfg = build_interrupt_config(["mysql_execute_sql"])
 
-    assert set(cfg) == {"execute", "mysql_execute_sql"}
+    assert set(cfg) == {"execute", "delete", "mysql_execute_sql"}
     assert "mysql_execute_sql" not in build_interrupt_config([])
     assert "save_expert" not in cfg
     assert "create_scheduled_task" not in cfg
@@ -90,6 +90,7 @@ def test_build_interrupt_config_includes_every_injected_hitl_tool():
 
     assert set(cfg) == {
         "execute",
+        "delete",
         "access_knowledge_original",
         "save_expert",
         "create_scheduled_task",
@@ -111,6 +112,7 @@ def test_build_interrupt_config_preserves_registry_hitl_order():
 
     assert list(cfg) == [
         "execute",
+        "delete",
         "save_expert",
         "create_scheduled_task",
         "access_knowledge_original",
@@ -120,7 +122,7 @@ def test_build_interrupt_config_preserves_registry_hitl_order():
 
 def test_build_interrupt_config_ignores_non_mutating_unknown_tools():
     cfg = build_interrupt_config(["weather_lookup", "read_file"])
-    assert set(cfg) == {"execute"}
+    assert set(cfg) == {"execute", "delete"}
 
 
 def test_build_interrupt_config_keeps_legacy_read_uploaded_file_heuristic():
@@ -160,13 +162,14 @@ def test_agent_interrupt_config_uses_injected_tool_objects():
     agent = _agent([_tool("save_expert"), _tool("mysql_execute_sql")])
     assert set(agent._build_interrupt_config()) == {
         "execute",
+        "delete",
         "save_expert",
         "mysql_execute_sql",
     }
 
 
 def test_agent_interrupt_config_empty_tool_set_only_execute():
-    assert set(_agent()._build_interrupt_config()) == {"execute"}
+    assert set(_agent()._build_interrupt_config()) == {"execute", "delete"}
 
 
 def test_agent_interrupt_config_respects_enable_hitl():
@@ -180,5 +183,5 @@ def test_agent_interrupt_config_changes_with_tool_set():
         ._build_interrupt_config()
     )
 
-    assert base == {"execute"}
-    assert with_creator == {"execute", "save_expert", "read_uploaded_file"}
+    assert base == {"execute", "delete"}
+    assert with_creator == {"execute", "delete", "save_expert", "read_uploaded_file"}
