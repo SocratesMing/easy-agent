@@ -1,17 +1,19 @@
 # Easy Agent
 
 > ℹ️ **2026-10-18 事实同步**：模块地图 / 数据流 / 命令以
-> `docs/architecture-current.md` 为准。关键事实：后端当前托管 `frontend-vue2/`
-> （Vue 2.7 + Element UI）构建产物，同时维护 `frontend/`（Vue 3.5 + Vite）
-> 第二基线；运行时技能 7 个；已有 Dockerfile / docker-compose / k8s /
-> `.github/workflows/ci.yml`。新增配置键请同步 `config-example.yaml` 并跑
+> [`docs/architecture-current.md`](docs/architecture-current.md) 为准；本次后端目录
+> 已按职责重组为 `agent/`、`bootstrap/`、`persistence/`、`sandboxing/`、`security/`
+> 等子包（见 [`docs/design/2026-10-18-backend-directory-reorg.md`](docs/design/2026-10-18-backend-directory-reorg.md)）。
+> 当前后端托管 `frontend-vue2/`（Vue 2.7 + Element UI），同时维护 `frontend/`
+> （Vue 3.5 + Vite）；运行时技能 7 个；DeepAgents 0.7 兼容；已有 Dockerfile /
+> docker-compose / k8s / CI。新增配置键请同步 `config-example.yaml` 并跑
 > `python scripts/quality/check_config_schema.py --check`。
 
 
 > 基于 [LangChain DeepAgents](https://docs.langchain.com/oss/python/deepagents) 框架的 AI Agent Web 应用。
 > 支持多会话、文件预览与生成、网页终端、技能中心、定时任务、向量知识库与 HITL 人工审批。
 
-![Python](https://img.shields.io/badge/python-3.11%2B-blue) ![Vue](https://img.shields.io/badge/vue-3.5-brightgreen) ![FastAPI](https://img.shields.io/badge/FastAPI-0.115-009688) ![License](https://img.shields.io/badge/license-MIT-green)
+![Python](https://img.shields.io/badge/python-3.11%2B-blue) ![Vue](https://img.shields.io/badge/vue-3.5-brightgreen) ![FastAPI](https://img.shields.io/badge/FastAPI-0.136-009688) ![License](https://img.shields.io/badge/license-MIT-green)
 
 ---
 
@@ -28,6 +30,8 @@ Easy Agent 是一个开箱即用的 AI Agent 平台，让大模型能够：
 
 前后端一体化部署：后端 FastAPI 提供 REST + SSE 流式接口。当前后端托管 `frontend-vue2/`（Vue 2.7 + Element UI + Vue CLI）构建产物，同时维护 `frontend/`（Vue 3.5 + Vite）第二基线。
 
+后端已针对**多副本容器部署**做了基础外置：SSE 事件持久化/跨 Pod 回放、run 租约与中断恢复、数据库迁移串行锁、可选 Postgres checkpointer/store、上传原始文件可落 LangGraph Store；`agent/` 负责运行时装配，`bootstrap/` 负责启动/配置，`persistence/` 负责持久化适配，职责边界清晰。
+
 ---
 
 ## 二、核心特性
@@ -42,6 +46,9 @@ Easy Agent 是一个开箱即用的 AI Agent 平台，让大模型能够：
 | 定时任务 | LLM 自动识别调度意图，APScheduler 执行，可视化执行记录 |
 | HITL 审批 | 文件删除前必须用户确认，目录删除直接拒绝 |
 | 路径翻译 | 虚拟路径 ↔ 宿主机实际路径，保护主机目录结构 |
+| 多副本基础 | `stream_events` 跨 Pod 回放、`agent_runs` 租约/中断恢复、迁移锁、可选 Postgres checkpointer/store |
+| 对象存储（上传） | `EASY_UPLOAD_BACKEND=store`：上传原始文件落 LangGraph Store，按需 materialize；本地模式仍为默认 |
+| 远端 Sandbox | `EASY_SANDBOX=langsmith`（实验性）：execute 走官方 `LangSmithSandbox`，文件工具仍本地 |
 | 审计日志 | 定时任务全生命周期事件，记录到 `workspace/{user}/cron/` |
 
 ---
@@ -52,89 +59,43 @@ Easy Agent 是一个开箱即用的 AI Agent 平台，让大模型能够：
 easy-agent/
 ├── main.py                       # 启动入口（uvicorn）
 ├── pyproject.toml                # Python 依赖与项目元数据
-├── uv.lock                       # uv 锁定的依赖版本
-├── Dockerfile                    # 多阶段构建（前端 + 后端）
-├── docker/entrypoint.sh          # 容器入口（按 AGENT_ENV 选配置）
+├── uv.lock                       # uv 锁定依赖
+├── Dockerfile / docker/          # 多阶段构建 + 容器入口
+├── docker-compose.yml
+├── deploy/                       # k8s / mysql / ragflow 部署资产
 │
-├── easy_agent/                   # 后端核心
-│   ├── app.py                    # FastAPI 应用与 lifespan（启动调度器）
-│   ├── web_runner.py             # 进程启动器
-│   ├── agent.py                  # EasyAgent 封装（DeepAgents + HITL）
-│   ├── config.py                 # 配置加载（config.yaml）
-│   ├── model.py                  # LLM 工厂（多 provider）
-│   ├── logger.py
-│   │
-│   ├── api/                      # FastAPI 路由
-│   │   ├── auth.py               #     POST /agent/auth/{register,login}
-│   │   ├── chat.py               #     POST /agent/chat/stream  (SSE)
-│   │   ├── sessions.py           #     /agent/sessions/* (CRUD + 切换)
-│   │   ├── files.py              #     /agent/files/* (上传/下载/预览)
-│   │   ├── skill_center.py       #     /agent/skill-center/* (公共/用户技能)
-│   │   ├── scheduled_tasks.py    #     /agent/scheduled-tasks/* (定时任务)
-│   │   ├── terminal.py           #     /agent/terminal/* (Web Shell)
-│   │   ├── prompts.py            #     /agent/prompts/* (提示词管理)
-│   │   └── settings.py           #     /agent/settings/* (用户设置)
-│   │
-│   ├── services/                 # 业务服务层
-│   │   ├── agent_manager.py      #     会话级 Agent 缓存
-│   │   ├── scheduler.py          #     定时任务调度器（APScheduler）
-│   │   ├── streaming.py          #     SSE 流式输出 + 工具审批
-│   │   ├── mcp.py                #     MCP 工具加载（按用户配置动态加载）
-│   │   └── ...
-│   │
-│   ├── tools/
-│   │   ├── scheduled_task.py     # CreateScheduledTaskTool（供 LLM 调用）
-│   │   └── web_search.py         # WebSearchTool（联网搜索，输入框地球按钮开启）
-│   │
-│   ├── db/database.py            # 数据访问层（SQLite + MySQL）
-│   ├── models/                   # Pydantic / dataclass 模型
-│   ├── middleware/               # JWT 鉴权等
-│   ├── skills/                   # 包内技能回退副本（canonical 在仓库根 skills/）
-│   ├── knowledges/               # 知识库 v2（RAGFlow service/API/runtime）
-│   ├── personnel/                # 人员管理与 Excel 导入
-│   ├── checkpoints.py            # LangGraph checkpoint 后端选择/降级
-│   ├── sandbox.py / hitl.py      # 命令沙箱 / 人工审批规则
-│   ├── config/
-│   │   ├── config-example.yaml   # 配置模板（复制为 gitignored 的 config.yaml）
-│   │   └── prompts/              # system.md + fragments/ + memory_*.md
-│   └── utils/task_logger.py      # 定时任务审计日志
+├── easy_agent/                   # 后端
+│   ├── app.py                    # FastAPI 应用与 lifespan
+│   ├── knowledge_impl.py         # 知识域宿主桥接
+│   ├── agent/                    # Agent 运行时（core/backend/workspace/middleware/hitl/skills/model）
+│   ├── bootstrap/                # 配置/环境/初始化/日志/web_runner
+│   ├── persistence/              # checkpoints / LangGraph stores
+│   ├── sandboxing/               # bwrap/Landlock/fs_safety
+│   ├── security/                 # prompt guard
+│   ├── backends/                 # DeepAgents backend 适配（shell/context/langsmith）
+│   ├── api/                      # REST/SSE 路由 + deps.py
+│   ├── services/                 # 编排/流式/任务/连接器/记忆等
+│   ├── db/                       # SQLite/MySQL + schema + repositories
+│   ├── knowledges/               # 知识库 v2（RAGFlow）
+│   ├── tools/                    # Agent 工具
+│   ├── middleware/               # JWT/限流/指标
+│   ├── models/                   # API/DB Pydantic 模型
+│   ├── utils/                    # 通用工具
+│   ├── config/                   # config.yaml 模板 + prompts（资源目录）
+│   └── skills/                   # 包内技能回退副本
 │
-├── frontend-vue2/                # 当前托管基线（Vue 2.7 + Element UI + Vue CLI；另有 frontend/ 第二基线 Vue 3.5 + Vite）
-│   ├── package.json
-│   ├── vue.config.js
-│   ├── index.html
-│   └── src/
-│       ├── main.js
-│       ├── App.vue               # 主容器（侧边栏 + 工作区）
-│       ├── api/                  # 后端 API 客户端
-│       │   ├── auth.js
-│       │   ├── chat.js
-│       │   ├── files.js
-│       │   ├── skills.js
-│       │   ├── scheduledTasks.js
-│       │   └── settings.js
-│       └── components/
-│           ├── Welcome.vue
-│           ├── Chat.vue / ChatMessage.vue / ChatInput.vue
-│           ├── SessionList.vue
-│           ├── AssetsPanel.vue
-│           ├── SkillCenter.vue
-│           ├── ScheduledTasksPanel.vue
-│           ├── WorkspacePanel.vue
-│           ├── SettingsPanel.vue
-│           ├── FilePreview.vue / CodePreview.vue / *Preview.vue
-│           └── ...
-│
-├── data/                         # SQLite 数据库 & ChromaDB
-├── workspace/                    # 用户工作区（按用户/会话隔离）
-│   └── {username}/
-│       ├── {session_id}/         #     会话生成的文件
-│       └── cron/                 #     定时任务审计日志
-├── memories/                     # 长期记忆（按用户）
+├── frontend-vue2/                # 当前托管前端（Vue 2.7）
+├── frontend/                     # 第二前端基线（Vue 3.5 + Vite）
 ├── skills/                       # canonical 运行时技能（7 个）
-├── prompts/                      # 提示词模板（外部覆盖目录）
-├── logs/                         # 应用日志
-└── tests/                        # 单元测试（pytest + pytest-asyncio）
+├── experts/                      # 预置专家
+├── prompts/                      # 外部提示词资源
+├── scripts/                      # 按功能分组：quality/db/deps/release/docs/skills/dev
+├── tests/                        # pytest 单元/集成/契约测试
+├── docs/                         # 架构/审计/设计/SSE/API 文档
+├── data/                         # SQLite / 运行期数据
+├── workspace/                    # 用户工作区（可按用户/会话隔离）
+├── memories/                     # 长期记忆
+└── logs/                         # 日志
 ```
 
 ---
@@ -216,6 +177,30 @@ docker run -d \
 配置文件路径可用 `EASY_CONFIG=/path/to/xxx.yaml` 覆盖（`Config.resolve_config_path()`），
 终端会打印环境信息与加载的配置文件路径。
 YAML 中的 `api_key`、`password` 等值支持 `${ENV_VAR}` / `${ENV_VAR:-默认值}` 占位符，在加载配置时从 `os.environ` 解析；项目根 `.env` 会在配置解析前自动注入（见 `easy_agent/utils/env_loader.py`），未取到值的变量名会在启动日志里以 WARNING 列出。
+
+### 多副本 / 存储相关开关（可选）
+
+```bash
+# 生产/多副本建议：迁移 Job 先跑迁移，Pod 启动只校验
+python scripts/db/migrate_db.py
+EASY_AUTO_MIGRATE=0
+EASY_MIGRATION_LOCK_TIMEOUT=120
+
+# LangGraph checkpointer/store（多副本建议 Postgres；SQLite 仅单机）
+EASY_CHECKPOINT_POSTGRES_URI=postgresql://...
+EASY_STORE_BACKEND=postgres
+
+# 上传原始文件落数据库 LangGraph Store（local 默认，不改变现有行为）
+EASY_UPLOAD_BACKEND=store
+
+# 实验性：execute 走官方 LangSmith Sandbox（需 LANGSMITH_API_KEY）
+EASY_SANDBOX=langsmith
+
+# 严格多副本门禁：Phase 2/3 外置未完成前保持 0，否则启动会 fail-fast
+EASY_MULTI_REPLICA_STRICT=0
+```
+
+> `EASY_UPLOAD_BACKEND=store` 只覆盖 `/agent/files/upload` 的原始上传文件；workspace/生成文件仍是本地/RWX。
 两套前端都用 `scripts/run-vite.mjs` 按 `AGENT_ENV` 映射构建 mode（dev→development / test→test / prod→production）：`frontend-vue2/` 实际调用 Vue CLI（webpack），`frontend/` 实际调用 Vite；两者都会加载对应的 `.env.[mode]` 文件并输出配置横幅。
 
 ---
@@ -478,10 +463,21 @@ npm run dev
 - Python：遵循 PEP 8，使用 `ruff` 检查
 - Vue：Vue 2.7 Options API（禁用 `<script setup>`，由 `src/utils/vue2Compat.test.js` 守卫），scoped 样式
 
-### 测试
+### 测试与质量门禁
+
 ```bash
-uv run pytest
+uv run pytest                         # 全量：当前 1607 passed / 1 skipped
+uv run pytest tests/agent tests/api   # 指定目录
+uvx ruff check .                      # 静态检查
+python scripts/quality/import_graph.py --check-scc       # 模块 SCC=0
+python scripts/quality/check_double_write.py             # 双写冻结
+python scripts/quality/check_config_schema.py --check    # 配置键集合
+python scripts/quality/check_env_usage.py --check        # 裸 env 检查
+python scripts/quality/check_multi_replica.py            # 多副本能力门禁
+python scripts/skills/sync_skills.py --check             # 技能单一源
 ```
+
+测试目录：`tests/agent`、`tests/api`、`services`、`db`、`knowledges`、`integration`、`config`、`skills`、`utils`；SSE 契约在 `tests/services/test_sse_contract.py`。
 
 ### API 文档
 ```bash
@@ -489,6 +485,20 @@ python scripts/docs/generate_api_docs.py --check   # CI 冒烟检查：可收集
 python scripts/docs/generate_api_docs.py           # 生成 docs/API接口文档.xlsx
 ```
 `docs/API接口文档.xlsx` 是生成物，不要求每次代码变更都提交二进制更新。
+
+### 脚本目录
+
+`scripts/` 已按功能分组，根目录不再放散脚本（详见 `scripts/README.md`）：
+
+| 目录 | 用途 |
+| --- | --- |
+| `scripts/quality/` | import SCC、双写冻结、配置 schema/裸 env、多副本门禁 |
+| `scripts/db/` | `migrate_db`、SQLite→MySQL、MCP key |
+| `scripts/deps/` | 离线依赖下载、wheel 落盘 |
+| `scripts/release/` | 发布预检、变更导出 |
+| `scripts/docs/` | API 文档生成 |
+| `scripts/skills/` | 技能单一源同步 |
+| `scripts/dev/` | 本地开发 shell |
 
 ### 添加新工具
 1. 在 `easy_agent/tools/` 下继承 `langchain_core.tools.BaseTool`
@@ -524,28 +534,34 @@ A: 在 `easy_agent/agent/model.py` 中扩展 `create_model()`，并在 `config.y
 
 ---
 
-## 十二、多 pod 部署与分布式锁
+## 十二、多副本部署与状态外置
 
-服务部署在多个 pod（或 uvicorn `--workers > 1`）时，同一件事可能被多个实例各做一遍，
-最典型的是定时任务：每个实例都会注册同一批 cron。项目提供基于数据库的分布式锁
-（`easy_agent/utils/distributed_lock.py`，锁表 `distributed_locks`），由配置开关
-`distributed_lock.enabled` 控制，默认关闭（单实例部署不产生任何额外数据库访问）。
+服务部署在多个 Pod（或 uvicorn `--workers > 1`）时，需要把进程内状态外置；项目已提供的基础能力：
 
-```bash
-# 多副本部署：在 .env.{AGENT_ENV} 中开启
-DISTRIBUTED_LOCK_ENABLED=true
-```
+| 能力 | 实现 | 说明 |
+| --- | --- | --- |
+| SSE 事件跨 Pod 回放 | `stream_events` 表 + `StreamEventWriter` | `/agent/chat/stream/live` 按 `last_event_id` 从 DB 回放；不依赖本 Pod hub |
+| run 租约/中断恢复 | `agent_runs` 表 + `run_registry` | 流锁心跳续租；Pod 崩溃后启动把 stale running 标记 `interrupted` 并补 error 事件；**不自动重跑** |
+| 会话流互斥 | `session_runtime` DB 流锁 | 跨 Pod 原子抢占/续约/取消 |
+| 迁移串行化 | MySQL `GET_LOCK` / SQLite `flock` | `scripts/db/migrate_db.py`；`EASY_AUTO_MIGRATE=0` 时启动只校验 |
+| LangGraph checkpointer/store | 官方 Postgres（可选） | `EASY_CHECKPOINT_POSTGRES_URI` / `EASY_STORE_BACKEND=postgres`；SQLite 仅单机 |
+| 上传原始文件 | LangGraph StoreBackend（可选） | `EASY_UPLOAD_BACKEND=store`；只覆盖 `/agent/files/upload` |
+| 定时任务重复执行 | 数据库分布式锁 | `distributed_lock.enabled=true`；同 cron 单实例执行 |
 
-**已用锁保护**：定时任务的 cron 触发与手动触发（同一时刻只有一个实例执行）。
+仍需注意：
 
-**仍需留意的多实例场景**（详见 [docs/distributed-lock.md](docs/distributed-lock.md)）：
+- `workspace/`、生成文件、会话聊天 `uploadfiles/` 仍依赖本地/RWX；多 Pod 需共享存储或后续迁移到对象存储。
+- Agent 实例与部分流任务缓存是进程内状态；跨 Pod 请求会重建 Agent，但不会共享内存缓存。
+- Web Terminal 的 pty 绑定单个 Pod；多副本需要会话亲和或独立终端服务。
+- `EASY_SANDBOX=langsmith` 为实验性，未做 sandbox destroy/完整状态同步；默认 local bwrap/Landlock。
+- 严格门禁 `EASY_MULTI_REPLICA_STRICT=1` 在 Phase 2/3 全部外置完成前会 fail-fast；K8s 样例当前保持 `0`。
 
-- 暂停/删除任务只能中断「收到请求的那个实例」上的在途执行；
-- 会话 SSE 事件流、HITL 中断态、Agent 缓存都在进程内存里，跨实例不可见（需要会话粘性）；
-- 登录 IP/时间等提示性缓存按实例维护；
-- 共享 NAS 上同一文件的并发追加/覆盖（如任务审计日志）。
+### 分布式锁（定时任务）
 
-**无需额外处理**：建表/补列等启动动作幂等。
+每个实例都会注册同一批 cron，必须开启数据库分布式锁：在 `.env.{AGENT_ENV}` 设置
+`DISTRIBUTED_LOCK_ENABLED=true`（或 `config.yaml` 的 `distributed_lock.enabled`）。
+锁实现/表见 `easy_agent/utils/distributed_lock.py`、`distributed_locks`；被跳过的触发记录
+`operation=skip_locked` 审计日志。更多细节见 [docs/distributed-lock.md](docs/distributed-lock.md)。
 
 ---
 
