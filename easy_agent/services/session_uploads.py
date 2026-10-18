@@ -93,20 +93,32 @@ def _cfg_int(name: str, default: int) -> int:
 # ── 路径 ────────────────────────────────────────────────────────────────
 
 
+def _session_store(db=None):
+    """解析会话数据端口。
+
+    接受 ``Database``，也接受暴露 ``get_session`` / ``get_session_files`` 的
+    repository（``ChatRepository`` / ``ExpertRepository`` 等）；API 层因此可以
+    直接传 repository，不必再向下取 ``repo.database``。不传时回退进程级
+    ``get_database()``，既有直接调用点行为不变。
+    """
+    if db is not None:
+        return db
+    from ..db import get_database
+
+    return get_database()
+
+
 def get_session_workspace_dir(session_id: str, username: str, db=None) -> Path | None:
     """会话工作区目录，与 ``agent.py`` 的口径一致。
 
     ``workspace_name`` 为空时回退使用 ``session_id`` 作目录名（agent.py 同规则）。
+    ``db`` 是会话数据端口（``Database`` 或 repository），见 ``_session_store``。
     """
     if not session_id or not username:
         return None
     workspace_name = ""
     try:
-        database = db
-        if database is None:
-            from ..db import get_database
-
-            database = get_database()
+        database = _session_store(db)
         session = database.get_session(session_id)
         if session is not None:
             workspace_name = getattr(session, "workspace_name", "") or ""
@@ -472,11 +484,7 @@ def _find_source_path(
     `{file_id}_{原名}` 后缀模式扫描 uploadfiles 目录兜底。
     """
     try:
-        database = db
-        if database is None:
-            from ..db import get_database
-
-            database = get_database()
+        database = _session_store(db)
         for row in database.get_session_files(session_id) or []:
             if (row.get("filename") or "") == filename and row.get("file_path"):
                 p = Path(row["file_path"])

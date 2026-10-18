@@ -6,12 +6,9 @@
 
 from __future__ import annotations
 
-import json
-
-from ...services.streaming import (
-    chat_stream_generator as host_stream,
-    format_sse,
-)
+from ...services.sse import is_terminal_event
+from ...services.sse_emitter import SSEEmitter, sse_stream
+from .host_port import get_host_capabilities
 
 
 # ---------------------------------------------------------------------------
@@ -29,7 +26,8 @@ async def chat_stream_generator(*, context_prefix=None, initial_events=None,
     content = kwargs.get("parsed_content") or kwargs["request"].message
     if context_prefix:
         kwargs["parsed_content"] = f"{context_prefix}\n\n## 用户当前问题\n{content}"
-    stream = host_stream(**kwargs)
+    stream = get_host_capabilities().host_chat_stream_generator(**kwargs)
+    emitter = SSEEmitter(kwargs.get("session_id"))
 
     def persist_metadata():
         """把证据元数据合并进最后一条 assistant 消息并双写持久化。"""
@@ -46,15 +44,13 @@ async def chat_stream_generator(*, context_prefix=None, initial_events=None,
     try:
         first = True
         async for event in stream:
-            if assistant_metadata:
-                payload = json.loads(event.removeprefix("data: ").strip())
-                if payload.get("type") in {"done", "error", "approval_required"}:
-                    persist_metadata()
+            if assistant_metadata and is_terminal_event(event):
+                persist_metadata()
             yield event
             if first:
                 first = False
-                for initial in initial_events or []:
-                    yield format_sse(initial)
+                async for frame in sse_stream(initial_events or [], emitter=emitter):
+                    yield frame
     finally:
         await stream.aclose()
         persist_metadata()

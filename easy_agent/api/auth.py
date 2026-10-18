@@ -8,13 +8,13 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from ..config import Config, DEFAULT_APP_WELCOME_TITLE
-from ..db import get_database
 from ..db.repositories.user_repository import UserRepository
 from ..knowledges.core.repository import KnowledgeRepository
 from ..middleware import get_current_username
 from ..middleware.auth import (
     clear_user_activity,
     get_user_activity_time,
+    get_user_repository,
     touch_user_activity,
 )
 from ..models.api import (
@@ -41,17 +41,6 @@ router = APIRouter(
     prefix="/agent/auth",
     tags=["Authentication"],
 )
-
-
-def get_user_repository(
-    db: Annotated[object, Depends(get_database)],
-) -> UserRepository:
-    """FastAPI 依赖：把进程级 ``Database`` 包装成 users 域 repository。
-
-    ``get_database`` 只出现在本 provider 内；路由函数只声明
-    ``Depends(get_user_repository)``，因此 API 层不 import ``Database`` 类型。
-    """
-    return UserRepository(db)
 
 
 def _as_user_repository(value: object) -> UserRepository:
@@ -150,7 +139,7 @@ async def register(
     # 注册即登录，同样缓存登录时间与活跃 IP
     _login_time_cache[user.username] = datetime.now()
     _active_login_ip[user.username] = get_client_ip(http_request)
-    touch_user_activity(repo.database, user.username)
+    touch_user_activity(repo, user.username)
 
     try:
         user_workspace = Config.get_user_workspace_dir(user.username)
@@ -217,7 +206,7 @@ async def login(
     # 缓存登录时间（供登出接口打印）与当前活跃 IP（供下次登录判断异地踢人）
     _login_time_cache[user.username] = datetime.now()
     _active_login_ip[user.username] = client_ip
-    touch_user_activity(repo.database, user.username)
+    touch_user_activity(repo, user.username)
 
     context_length = _get_context_length()
 
@@ -286,7 +275,7 @@ async def login_passwordless(
 
     _login_time_cache[user.username] = datetime.now()
     _active_login_ip[user.username] = client_ip
-    touch_user_activity(repo.database, user.username)
+    touch_user_activity(repo, user.username)
 
     if created:
         # 与注册接口一致：为免密新用户创建 workspace 目录
@@ -336,9 +325,9 @@ async def logout(
     repo = _as_user_repository(db)
     now = datetime.now()
     cached_login = _login_time_cache.pop(username, None)
-    last_activity_timestamp = get_user_activity_time(repo.database, username)
+    last_activity_timestamp = get_user_activity_time(repo, username)
     _active_login_ip.pop(username, None)
-    clear_user_activity(repo.database, username)
+    clear_user_activity(repo, username)
     repo.increment_user_token_version(username)
     login_time_str = "未知"
     duration_str = "未知"

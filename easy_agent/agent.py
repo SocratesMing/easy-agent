@@ -19,7 +19,6 @@ from pathlib import Path
 from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend, LocalShellBackend
 from deepagents.middleware.filesystem import FilesystemOperation, FilesystemPermission
-from langchain.agents.middleware import InterruptOnConfig
 from langchain_core.messages import AIMessageChunk, ToolMessage
 
 from .backends.shell import _PathTranslatingShell
@@ -27,14 +26,12 @@ from .checkpoints import get_session_checkpointer, release_session_checkpointer
 from .config import Config
 from .fs_safety import _check_external_dir_safety
 from .hitl import (
-    DEFAULT_INTERRUPT_TOOLS,
     EXECUTE_HITL_TOOL_DESCRIPTION,
     HITL_SYSTEM_NOTE,
-    _is_destructive_command,
-    _is_knowledge_materialize,
+    HITL_WHEN_PREDICATES,
+    build_interrupt_config,
     execute_description_installed,
-    install_execute_tool_description,
-    looks_like_mutating_tool,
+    register_execute_description_profiles,
 )
 from .stores import get_agent_store
 from .agent_graph_cache import (
@@ -76,8 +73,18 @@ def _deepagents_version() -> str:
 
 
 def framework_patch_status() -> dict[str, bool]:
-    """自检 execute 描述是否已通过公开 ``custom_tool_descriptions`` 注入。"""
+    """自检 execute 描述是否已通过官方 ``HarnessProfile`` 注册。
+
+    FW-04 起不再 monkeypatch ``FilesystemMiddleware.__init__``；这里反映的是
+    ``hitl.register_execute_description_profiles`` 是否已在当前进程生效。
+    """
     return {"execute_tool": execute_description_installed()}
+
+
+#: 注册表 ``hitl_predicate`` 名称 → 实际 ``when`` 谓词。
+#: 谓词实现与绑定都在 ``hitl``（FW-12）；这里保留别名供既有自检/测试导入，
+#: 两边不一致时启动期日志会报错（测试也会失败）。
+_HITL_WHEN_PREDICATES = HITL_WHEN_PREDICATES
 
 
 _patch_status_logged = False
@@ -99,8 +106,9 @@ def log_framework_patch_status(sid: str = "startup") -> None:
     failed = [k for k, v in status.items() if not v]
     logger.error(
         f"[{sid}] ❌ deepagents 适配失效: {failed} | {detail} | 降级后果——"
-        f"execute_tool=execute 描述未注入公开 custom_tool_descriptions。"
-        f"当前 deepagents {_deepagents_version()}，请对照其源码修正 agent.py 中的适配代码。"
+        f"execute_tool=execute 描述未通过 HarnessProfile.tool_description_overrides "
+        f"注册（hitl.register_execute_description_profiles）。"
+        f"当前 deepagents {_deepagents_version()}，请对照其 profiles API 修正适配代码。"
     )
 
 
@@ -263,8 +271,8 @@ def _build_backend_for_context(
 class EasyAgent:
     """EasyAgent wraps DeepAgents with per-user/per-session workspace isolation.
 
-    EXECUTE_HITL_TOOL_DESCRIPTION is the public execute-tool copy used by the
-    FilesystemMiddleware patch below.
+    EXECUTE_HITL_TOOL_DESCRIPTION is the public execute-tool copy injected via
+    the official ``HarnessProfile.tool_description_overrides`` (FW-04).
 
     Args:
         config: Application configuration.
@@ -570,35 +578,23 @@ class EasyAgent:
         return sources
 
     def _build_interrupt_config(self):
-        """构造 HITL interrupt_on 配置（D2 拆出，便于键计算与复用）。"""
-        if not self.enable_hitl:
-            return None
-        interrupt_on_config: dict[str, bool | InterruptOnConfig] = {
-            "execute": InterruptOnConfig(
-                allowed_decisions=["approve", "reject"],
-                when=_is_destructive_command,
-            ),
-        }
-        for tool_name in DEFAULT_INTERRUPT_TOOLS:
-            interrupt_on_config.setdefault(
-                tool_name,
-                InterruptOnConfig(allowed_decisions=["approve", "reject"]),
-            )
-        interrupt_on_config.setdefault(
-            "access_knowledge_original",
-            InterruptOnConfig(
-                allowed_decisions=["approve", "reject"],
-                when=_is_knowledge_materialize,
-            ),
+        """构造 HITL interrupt_on 配置（FW-12：按实际注入工具动态构造）。
+
+        改造前无论工具是否注入，都会把 ``execute`` / ``save_expert`` /
+        ``create_scheduled_task`` / ``access_knowledge_original`` 以及 MCP 写工具
+        写进 ``interrupt_on``；未注入的名字会被 DeepAgents 静默忽略（T1-14）。
+        现在交给 :func:`easy_agent.hitl.build_interrupt_config` 过滤：注册表只提供
+        声明（决策 / 条件谓词 / 顺序），是否进入配置取决于本会话实际工具集。
+
+        ``self.mcp_tools`` 实际承载「MCP + 应用注入工具」全集（历史命名），
+        因此这里直接把它作为实际工具来源；``execute`` 等框架内置工具由
+        ``build_interrupt_config`` 内部补入。
+        """
+        return build_interrupt_config(
+            getattr(self, "mcp_tools", None) or [],
+            enable_hitl=bool(getattr(self, "enable_hitl", True)),
+            sid=getattr(self, "sid", ""),
         )
-        for extra in self.mcp_tools:
-            name = getattr(extra, "name", "") or ""
-            if looks_like_mutating_tool(name):
-                interrupt_on_config.setdefault(
-                    name,
-                    InterruptOnConfig(allowed_decisions=["approve", "reject"]),
-                )
-        return interrupt_on_config
 
     def _graph_cache_block_reason(
         self, llm_cfg, shared_checkpointer
@@ -704,7 +700,9 @@ class EasyAgent:
         except Exception as exc:  # noqa: BLE001
             logger.warning(f"[{self.sid}] LangGraph Store 不可用，跨线程记忆仅走文件: {exc}")
 
-        install_execute_tool_description()
+        # FW-04：启动期由 app.py 注册；这里兜底非 Web 入口（调度器/脚本/测试）
+        # 首次建图前也能拿到 execute 描述（注册幂等）。
+        register_execute_description_profiles(self.config)
         log_framework_patch_status(self.sid)
 
         logger.info(

@@ -67,7 +67,7 @@ from .ragflow import RagflowClient, RagflowError, RagflowNotFoundError
 from .core.repository import KnowledgeRepository
 
 if TYPE_CHECKING:  # 仅供类型注解（api 与 service 相互引用，运行时无循环导入）
-    from .api import KnowledgePrincipal
+    from .core.models import KnowledgePrincipal
 
 logger = logging.getLogger(__name__)
 

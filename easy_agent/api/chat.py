@@ -36,14 +36,18 @@ from ..services import (
 )
 from ..services import skill_library
 from ..services import session_uploads as file_context
-from ..services.sse import SSEEvent
-from ..services.streaming import format_sse
+from ..services.sse_emitter import SSEEmitter
 from ..services.session_runtime import SessionBusyError
 from ..utils import (
     parse_file_content,
     SessionLogger,
 )
 from .sessions import generate_workspace_name
+from ..knowledges.chat.host_port import (
+    register_host_capabilities,
+)
+from ..services.streaming import chat_stream_generator as _host_chat_stream_generator
+from ..services import get_agent_config as _get_agent_config
 
 logger = logging.getLogger(__name__)
 
@@ -298,12 +302,11 @@ async def _detached_event_stream(
     /cancel 仍生效：后台任务已 register_stream_task 注册，可被 task.cancel() 取消。
     刷新页面后，新客户端可通过 /stream/live 订阅同一中枢继续接收事件。
     """
+    emitter = SSEEmitter(session_id)
     # 兜底：同会话已有运行中的流时，返回独立错误流（绝不加入对方 hub，
     # 否则新订阅者会收到旧流的 EOF/事件）。端点层通常已返回 409。
     if is_session_streaming(session_id):
-        yield format_sse(
-            {"type": SSEEvent.ERROR, "content": "本会话正在生成回复，请等待完成或先取消当前生成"}
-        )
+        yield emitter.error("本会话正在生成回复，请等待完成或先取消当前生成")
         return
 
     hub = _session_stream_hubs.get(session_id)
@@ -356,9 +359,7 @@ async def _detached_event_stream(
             raise
         except Exception as e:
             logger.error(f"[{sid}] 后台流式任务异常: {type(e).__name__}: {e}")
-            hub.broadcast(
-                format_sse({"type": SSEEvent.ERROR, "content": f"处理失败: {e}"})
-            )
+            hub.broadcast(emitter.error(f"处理失败: {e}"))
         finally:
             if heartbeat is not None:
                 heartbeat.cancel()
@@ -426,16 +427,11 @@ async def chat_stream_live(
     repo = _as_chat_repository(db)
     repo.get_owned_session_meta(session_id, username)
     hub = _session_stream_hubs.get(session_id)
+    emitter = SSEEmitter(session_id)
 
     async def event_source():
         if hub is None:
-            yield format_sse(
-                {
-                    "type": SSEEvent.DONE,
-                    "session_id": session_id,
-                    "already_completed": True,
-                }
-            )
+            yield emitter.done(already_completed=True)
             return
         q = hub.subscribe()
         try:
@@ -641,7 +637,7 @@ async def chat_stream(
                 parsed_content = "\n\n".join(file_contents) + "\n\n" + model_message
     elif request.files:
         preview = file_context.build_turn_preview(
-            session_id, username, request.files, repo.database
+            session_id, username, request.files, repo
         )
         if preview:
             parsed_content = preview + "\n\n" + parsed_content
@@ -834,3 +830,13 @@ async def chat_resume(
             "X-Accel-Buffering": "no",
         },
     )
+
+
+# A1：知识域通过端口取宿主能力；api.chat 是应用启动必经路径，负责注册真实实现。
+register_host_capabilities(
+    chat_stream=chat_stream,
+    host_chat_stream_generator=_host_chat_stream_generator,
+    cancel_stream_task=cancel_stream_task,
+    remove_session_agent=remove_session_agent,
+    get_agent_config=_get_agent_config,
+)

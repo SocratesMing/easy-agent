@@ -21,7 +21,9 @@ from .memory_store import (
     SOURCE_IMPORT,
     SOURCE_LLM_LONG_TERM,
     SOURCE_LLM_SESSION,
+    atomic_write_text,
     content_digest,
+    memory_lock,
     structured_memory_enabled,
     sync_from_markdown,
     write_structured_memory,
@@ -114,20 +116,24 @@ def build_memory_update_prompt(
 
 
 def read_memory(memory_file: Path) -> str:
-    """读取记忆文件内容。"""
+    """读取记忆文件内容（共享锁下读取，避免读到双写中间态）。"""
     try:
-        if not memory_file.exists():
-            return ""
-        return memory_file.read_text(encoding="utf-8")
+        with memory_lock(memory_file, exclusive=False):
+            if not memory_file.exists():
+                return ""
+            return memory_file.read_text(encoding="utf-8")
     except Exception as e:
         logger.error(f"读取记忆文件失败 {memory_file}: {e}")
         return ""
 
 
 def _write_markdown_file(memory_file: Path, content: str) -> None:
-    """只写 Markdown 记忆文件（权威读取文件），不触碰结构化 sidecar。"""
-    memory_file.parent.mkdir(parents=True, exist_ok=True)
-    memory_file.write_text(content, encoding="utf-8")
+    """只写 Markdown 记忆文件（权威读取文件），不触碰结构化 sidecar。
+
+    使用与 JSONL 相同的原子写实现：临时文件 + ``os.replace``，读方不会看到
+    半截 Markdown；非原子 ``write_text`` 在并发读/进程崩溃时会留下截断文件。
+    """
+    atomic_write_text(memory_file, content)
 
 
 def write_memory(memory_file: Path, content: str) -> None:
@@ -136,8 +142,11 @@ def write_memory(memory_file: Path, content: str) -> None:
     兼容旧调用方：签名与语义不变；日志只记录长度与内容 hash，不再打印全文。
     """
     try:
-        _write_markdown_file(memory_file, content)
-        _import_legacy_markdown(memory_file, content, source=SOURCE_DIRECT_WRITE)
+        # Markdown 与 sidecar 共用同一把跨进程锁：读方不会看到「Markdown 已更新、
+        # sidecar 仍是旧内容」的中间态。
+        with memory_lock(memory_file):
+            _write_markdown_file(memory_file, content)
+            _import_legacy_markdown(memory_file, content, source=SOURCE_DIRECT_WRITE)
         logger.info(
             f"记忆文件已更新: {memory_file} | 长度: {len(content)} 字符 | "
             f"sha256: {content_digest(content)}"
@@ -375,23 +384,26 @@ def update_memory_after_session(
         if len(updated) > target_chars:
             updated = _hard_truncate(updated, target_chars)
 
-        result = _persist_structured_memory(
-            memory_file,
-            updated,
-            title=SESSION_MEMORY_TITLE,
-            source=SOURCE_LLM_SESSION,
-            max_chars=target_chars,
-            previous_markdown=current_memory,
-        )
-        if result is None:
-            # 解析失败 / 开关关闭：保持旧行为，Markdown 原文写入，不丢数据
-            write_memory(memory_file, updated)
-            final_content = updated
-            entry_count = 0
-        else:
-            _write_markdown_file(memory_file, result.markdown)
-            final_content = result.markdown
-            entry_count = result.entries
+        # sidecar 写入与 Markdown 覆盖必须在同一把锁内完成（可重入）：
+        # 否则并发写会看到 Markdown 与 sidecar 对应不同 revision / 内容的组合。
+        with memory_lock(memory_file):
+            result = _persist_structured_memory(
+                memory_file,
+                updated,
+                title=SESSION_MEMORY_TITLE,
+                source=SOURCE_LLM_SESSION,
+                max_chars=target_chars,
+                previous_markdown=current_memory,
+            )
+            if result is None:
+                # 解析失败 / 开关关闭：保持旧行为，Markdown 原文写入，不丢数据
+                write_memory(memory_file, updated)
+                final_content = updated
+                entry_count = 0
+            else:
+                _write_markdown_file(memory_file, result.markdown)
+                final_content = result.markdown
+                entry_count = result.entries
 
         elapsed = time.time() - start
         logger.info(
@@ -537,23 +549,25 @@ def update_long_term_memory_after_session(
         if len(updated) > target_chars:
             updated = _hard_truncate(updated, target_chars)
 
-        result = _persist_structured_memory(
-            memory_file,
-            updated,
-            title=LONG_TERM_MEMORY_TITLE,
-            source=SOURCE_LLM_LONG_TERM,
-            max_chars=target_chars,
-            previous_markdown=current_memory,
-        )
-        if result is None:
-            # 解析失败 / 开关关闭：保持旧行为，Markdown 原文写入，不丢数据
-            write_memory(memory_file, updated)
-            final_content = updated
-            entry_count = 0
-        else:
-            _write_markdown_file(memory_file, result.markdown)
-            final_content = result.markdown
-            entry_count = result.entries
+        # 同会话级记忆：sidecar 与 Markdown 在同一把跨进程锁内完成。
+        with memory_lock(memory_file):
+            result = _persist_structured_memory(
+                memory_file,
+                updated,
+                title=LONG_TERM_MEMORY_TITLE,
+                source=SOURCE_LLM_LONG_TERM,
+                max_chars=target_chars,
+                previous_markdown=current_memory,
+            )
+            if result is None:
+                # 解析失败 / 开关关闭：保持旧行为，Markdown 原文写入，不丢数据
+                write_memory(memory_file, updated)
+                final_content = updated
+                entry_count = 0
+            else:
+                _write_markdown_file(memory_file, result.markdown)
+                final_content = result.markdown
+                entry_count = result.entries
 
         elapsed = time.time() - start
         logger.info(

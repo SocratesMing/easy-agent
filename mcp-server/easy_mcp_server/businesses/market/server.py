@@ -3,6 +3,10 @@
 不做 SQL 注入面：不接收任意 SQL，所有数据库访问都是固定的参数化语句。
 用户身份由鉴权中间件解析 API Key 后注入，业务代码只通过
 :func:`easy_mcp_server.context.current_username` 获取。
+
+错误语义（FW-14）：数据源/查询失败一律抛 :class:`ToolError`（FastMCP 输出
+``isError=true``），对外只给稳定错误码 + 人类可读说明；异常原文只进服务端日志。
+空结果是合法成功（``isError=false``），不要用错误文案冒充结果。
 """
 
 from __future__ import annotations
@@ -13,6 +17,7 @@ from mcp.server.fastmcp import FastMCP
 
 from ...context import current_username
 from ...db import fetch_all
+from ...errors import tool_failure
 
 PRECIOUS_METAL_SYMBOLS = {
     "gold": "XAUUSD",
@@ -137,40 +142,74 @@ def build() -> FastMCP:
         stateless_http=True,
     )
 
-    @mcp.tool()
+    @mcp.tool(structured_output=True)
     def ask_market(question: str) -> dict[str, Any]:
         """Answer a natural-language market question with the latest data."""
         username = current_username()
         parsed = parse_market_question(question)
 
         if parsed["intent"] == "positions":
-            positions = _position_rows(username)
+            try:
+                positions = _position_rows(username)
+                answer = _format_positions(username, positions)
+            except Exception as exc:  # noqa: BLE001 - 统一转 MCP 错误语义
+                raise tool_failure(
+                    "market_positions_unavailable",
+                    "持仓数据暂时不可用，请稍后重试",
+                    exc,
+                    tool="ask_market",
+                ) from None
             return {
                 "category": "positions",
                 "positions": positions,
-                "answer": _format_positions(username, positions),
+                "answer": answer,
             }
 
-        quotes = _quote_rows(parsed["category"], parsed["symbols"])
-        if not quotes:
-            answer = "暂无匹配的行情数据。"
-        elif len(quotes) == 1:
-            answer = _format_quote(quotes[0])
-        else:
-            answer = "；".join(_format_quote(q) for q in quotes)
+        try:
+            quotes = _quote_rows(parsed["category"], parsed["symbols"])
+            if not quotes:
+                answer = "暂无匹配的行情数据。"
+            elif len(quotes) == 1:
+                answer = _format_quote(quotes[0])
+            else:
+                answer = "；".join(_format_quote(q) for q in quotes)
+        except Exception as exc:  # noqa: BLE001 - 统一转 MCP 错误语义
+            raise tool_failure(
+                "market_quotes_unavailable",
+                "行情数据暂时不可用，请稍后重试",
+                exc,
+                tool="ask_market",
+            ) from None
         return {"category": parsed["category"], "quotes": quotes, "answer": answer}
 
-    @mcp.tool()
+    @mcp.tool(structured_output=True)
     def get_latest_quotes(
         category: str | None = None, symbols: list[str] | None = None
     ) -> list[dict[str, Any]]:
         """Get the latest market quotes, optionally filtered by category/symbol."""
         current_username()
-        return _quote_rows(category, symbols)
+        try:
+            return _quote_rows(category, symbols)
+        except Exception as exc:  # noqa: BLE001 - 统一转 MCP 错误语义
+            raise tool_failure(
+                "market_quotes_unavailable",
+                "行情数据暂时不可用，请稍后重试",
+                exc,
+                tool="get_latest_quotes",
+            ) from None
 
-    @mcp.tool()
+    @mcp.tool(structured_output=True)
     def get_my_positions() -> list[dict[str, Any]]:
         """Get positions for the user identified by the API key."""
-        return _position_rows(current_username())
+        username = current_username()
+        try:
+            return _position_rows(username)
+        except Exception as exc:  # noqa: BLE001 - 统一转 MCP 错误语义
+            raise tool_failure(
+                "market_positions_unavailable",
+                "持仓数据暂时不可用，请稍后重试",
+                exc,
+                tool="get_my_positions",
+            ) from None
 
     return mcp

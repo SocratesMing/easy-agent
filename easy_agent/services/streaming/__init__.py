@@ -106,6 +106,7 @@ _LAZY_EXPORTS: dict[str, tuple[str, str]] = {
     "HitlInterruption": ("orchestrator", "HitlInterruption"),
     "build_resume_command": ("orchestrator", "build_resume_command"),
     "detect_hitl_interruption": ("orchestrator", "detect_hitl_interruption"),
+    "finalize_stream": ("orchestrator", "finalize_stream"),
     "pump_stream": ("orchestrator", "pump_stream"),
     "resolve_chat_context": ("orchestrator", "resolve_chat_context"),
     "resolve_resume_context": ("orchestrator", "resolve_resume_context"),

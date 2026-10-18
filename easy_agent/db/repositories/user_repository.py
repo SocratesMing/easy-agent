@@ -7,8 +7,11 @@
 
 - 本模块不写 SQL，所有方法委托 ``db/repositories/users.py`` 既有函数；
 - 不在模块导入期 import FastAPI / middleware，避免 db 层与 Web 层形成回边；
-- ``database`` property 仅用于尚未迁移的 middleware 活跃时间函数，API 层
-  不应对它调用任何 ``Database`` 业务方法。
+- 活跃时间（``touch_user_activity`` / ``get_user_activity_time`` /
+  ``clear_user_activity``）在本对象上提供同名委托，``middleware.auth`` 的
+  活跃时间与 SSO 校验直接接收本对象（或 ``Database``）；
+- ``database`` property 仅保留给跨域构造（``api/auth.py`` 的
+  ``KnowledgeRepository``），API 层不应对它调用任何 ``Database`` 业务方法。
 """
 
 from __future__ import annotations
@@ -30,7 +33,7 @@ class UserRepository:
 
     @property
     def database(self) -> "Database":
-        """底层 ``Database``，仅供 middleware 活跃时间包装函数使用。"""
+        """底层 ``Database``，仅供跨域 ``KnowledgeRepository`` 构造使用。"""
         return self._db
 
     # ── 查询 ──────────────────────────────────────────────────────────
@@ -55,6 +58,17 @@ class UserRepository:
 
     def count_users(self) -> int:
         return users_repo.count_users(self._db)
+
+    # ── 活跃时间（空闲登出 / SSO token 校验） ────────────────────────
+
+    def touch_user_activity(self, username: str, timestamp: float) -> bool:
+        return users_repo.touch_user_activity(self._db, username, timestamp)
+
+    def get_user_activity_time(self, username: str) -> Optional[float]:
+        return users_repo.get_user_activity_time(self._db, username)
+
+    def clear_user_activity(self, username: str) -> bool:
+        return users_repo.clear_user_activity(self._db, username)
 
     # ── 写入 ──────────────────────────────────────────────────────────
 

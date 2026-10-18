@@ -302,7 +302,39 @@ async def test_chat_stream_golden_event_order_and_persistence():
         "step_count": 3,
     }
     assert "blocks" not in done
+    assert set(done) == {"type", "session_id", "elapsed_time", "usage"}
+    assert "elapsed_time" not in done["usage"]
     assert done["elapsed_time"] >= 0
+
+    # C3b 字节级 golden：done 帧键序 type→session_id→elapsed_time→usage，
+    # chat 不带 blocks、usage 不含 elapsed_time（与迁移前字面量逐字节一致）。
+    assert list(done) == ["type", "session_id", "elapsed_time", "usage"]
+    assert list(done["usage"]) == [
+        "input_tokens",
+        "output_tokens",
+        "reasoning_tokens",
+        "context_length",
+        "auto_compress_tokens",
+        "context_tokens",
+        "step_count",
+    ]
+    assert frames[-1] == format_sse(
+        {
+            "type": "done",
+            "session_id": "s1",
+            "elapsed_time": done["elapsed_time"],
+            "usage": {
+                "input_tokens": 12,
+                "output_tokens": 7,
+                "reasoning_tokens": 3,
+                "context_length": None,
+                "auto_compress_tokens": 170000,
+                "context_tokens": 42,
+                "step_count": 3,
+            },
+        }
+    )
+    assert list(events[0]) == ["type", "session_id"]
 
     assert graph.astream_calls[0]["stream_mode"] == ["messages", "updates"]
     assert graph.astream_calls[0]["config"] == {"configurable": {"thread_id": "s1-m1"}}
@@ -448,6 +480,15 @@ async def test_chat_hitl_golden_approval_payload_and_partial_message():
             "file_paths": ["a.txt"],
         }
     ]
+    # C3b：approval_required 走 emitter 快捷方法，键序为契约。
+    assert list(approval) == ["type", "thread_id", "action_requests"]
+    assert frames[-1] == format_sse(
+        {
+            "type": "approval_required",
+            "thread_id": "s1-m1",
+            "action_requests": approval["action_requests"],
+        }
+    )
     assert "done" not in _types(events)
     assert len(db.persisted) == 1
     partial = db.persisted[0]
@@ -545,6 +586,40 @@ async def test_resume_stream_golden_decision_merge_and_authoritative_blocks():
     assert done["usage"]["step_count"] == 1
     assert done["usage"]["elapsed_time"] >= 0
     assert done["blocks"][-1]["type"] == "content"
+    assert set(done) == {"type", "session_id", "elapsed_time", "usage", "blocks"}
+    assert done["usage"]["elapsed_time"] == done["elapsed_time"]
+
+    # C3b 字节级 golden：resume done 的 blocks 必须排在 usage 之后、
+    # usage 含 elapsed_time；与迁移前字面量键序逐字节一致。
+    assert list(done) == ["type", "session_id", "elapsed_time", "usage", "blocks"]
+    assert list(done["usage"]) == [
+        "input_tokens",
+        "output_tokens",
+        "reasoning_tokens",
+        "context_length",
+        "auto_compress_tokens",
+        "context_tokens",
+        "elapsed_time",
+        "step_count",
+    ]
+    assert frames[-1] == format_sse(
+        {
+            "type": "done",
+            "session_id": "s1",
+            "elapsed_time": done["elapsed_time"],
+            "usage": {
+                "input_tokens": 12,
+                "output_tokens": 7,
+                "reasoning_tokens": 3,
+                "context_length": 1000000,
+                "auto_compress_tokens": 800000,
+                "context_tokens": 42,
+                "elapsed_time": done["usage"]["elapsed_time"],
+                "step_count": 1,
+            },
+            "blocks": done["blocks"],
+        }
+    )
     done_tool_block = next(
         block for block in done["blocks"] if block.get("tool_call_id") == "c1"
     )
@@ -560,3 +635,59 @@ async def test_resume_stream_golden_decision_merge_and_authoritative_blocks():
     )
     assert "pending_approval" not in final_tool_block
     assert final_tool_block["approval_status"] == "approved"
+
+
+async def test_resume_nested_hitl_golden_blocks_before_action_requests():
+    """resume 嵌套中断帧：blocks 必须保持在 action_requests 之前（既有契约）。
+
+    ``SSEEmitter.approval_required()`` 把 ``action_requests`` 排在 ``blocks`` 之前，
+    因此 resume 站点改用 ``emit()`` 显式排序；本用例锁死该顺序与逐字节序列化。
+    """
+    graph = FakeGraph(
+        [[{"type": "content", "content": " done"}]],
+        states=[
+            SimpleNamespace(next=None, tasks=[], values={"messages": []}),
+            _hitl_state(),
+        ],
+    )
+    db = FakeDB(_resume_messages())
+
+    frames = await _collect(
+        resume_stream_generator(
+            db,
+            _agent(graph),
+            "s1",
+            "s1-m1",
+            [{"type": "approve"}],
+            session_logger=FakeLogger(),
+            message_id="m1",
+        )
+    )
+    events = _events(frames)
+
+    assert _types(events) == [
+        "start",
+        "content",
+        "content_end",
+        "approval_required",
+    ]
+    approval = events[-1]
+    assert list(approval) == [
+        "type",
+        "thread_id",
+        "blocks",
+        "action_requests",
+    ]
+    assert approval["thread_id"] == "s1-m1"
+    assert approval["action_requests"][0]["tool_call_id"] == "call-rm"
+    assert any(
+        block.get("tool_call_id") == "c1" for block in approval["blocks"]
+    )
+    expected = {
+        "type": "approval_required",
+        "thread_id": "s1-m1",
+        "blocks": approval["blocks"],
+        "action_requests": approval["action_requests"],
+    }
+    assert frames[-1] == format_sse(expected)
+    assert "done" not in _types(events)

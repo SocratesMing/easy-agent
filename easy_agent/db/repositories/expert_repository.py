@@ -14,6 +14,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Optional
 
 from ...models.db import SessionModel
+from . import files as files_repo
 from . import sessions as sessions_repo
 from . import users as users_repo
 
@@ -30,7 +31,7 @@ class ExpertRepository:
 
     @property
     def database(self) -> "Database":
-        """底层 ``Database``，仅供 streaming / scheduler 等未迁移服务使用。"""
+        """底层 ``Database``，仅供流式引擎等未迁移服务使用。"""
         return self._db
 
     def _store(self):
@@ -100,6 +101,10 @@ class ExpertRepository:
 
     def get_session(self, session_id: str) -> Optional[SessionModel]:
         return sessions_repo.get_session(self._db, session_id)
+
+    def get_session_files(self, session_id: str) -> list[dict]:
+        """会话上传文件行（``session_uploads`` 解析/重解析的数据端口）。"""
+        return files_repo.get_session_files(self._db, session_id)
 
     def update_session_meta(
         self,

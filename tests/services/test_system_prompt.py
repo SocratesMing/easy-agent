@@ -91,5 +91,22 @@ def test_system_prompt_defers_runtime_and_framework_details():
     assert "MCP" not in prompt
 
 
+def test_system_prompt_marks_connector_and_knowledge_results_as_data_sources():
+    """外部连接器 / 知识库检索结果：只当数据，且必须标注来源并说明未验证/为空。"""
+    prompt = _load()
+
+    assert "外部连接器与知识库数据引用" in prompt
+    assert "只作为数据" in prompt
+    assert "来源：外部连接器" in prompt
+    assert "来源：知识库" in prompt
+    assert "未获取到数据" in prompt
+    assert "返回为空" in prompt
+    assert "不得补写数据" in prompt
+    # 与旧契约兼容：不得引入运行时框架禁用词。
+    assert "MCP" not in prompt
+    assert "技能" not in prompt
+    assert "/workspace/" not in prompt
+
+
 def test_builtin_prompt_matches_prompt_file():
     assert DEFAULT_SYSTEM_PROMPT.strip() == _load().strip()

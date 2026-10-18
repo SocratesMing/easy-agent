@@ -14,8 +14,9 @@
 - 注入顺序固定为 MCP 基底 → ``access_knowledge_original`` →
   ``create_scheduled_task`` → ``save_expert`` → ``read_uploaded_file`` →
   ``web_search``，条件与原 ``agent_manager`` 中的 ``if`` 一致；
-- 带 ``when`` 谓词的条件 HITL（``execute`` / ``access_knowledge_original``）仍由
-  ``agent.py`` 直接构造，本模块只记录元数据，不改变审批行为；
+- 带 ``when`` 谓词的条件 HITL（``execute`` / ``access_knowledge_original``）的
+  决策与谓词名同样登记在表内，``agent.py`` 按注册表元数据构造 ``interrupt_on``；
+  谓词名到函数的绑定留在 ``agent.py``，注册表保持无包内 import 的叶子模块；
 - MCP 工具由 ``services/mcp.py`` 运行时加载，本模块不静态枚举；未登记的名字
   一律视为 ``mcp``（见 :func:`resolve_tool_source`）。
 
@@ -70,6 +71,11 @@ class ToolSpec:
     is_hitl: bool = False
     interrupt_decisions: tuple[str, ...] = ()
     hitl_conditional: bool = False
+    #: ``when`` 谓词的注册名（如 ``is_destructive_command``）。仅条件 HITL 使用；
+    #: 由 ``agent.py`` 绑定到实际函数——注册表不 import 谓词实现（保持叶子模块）。
+    hitl_predicate: str = ""
+    #: HITL 触发条件的可读说明（文档/排查用，不参与判定）。
+    hitl_trigger_note: str = ""
     hitl_order: int = 100
     inject_order: int | None = None
     condition_note: str = ""
@@ -101,6 +107,14 @@ class ToolSpec:
             raise ValueError(f"非 HITL 工具 {self.name!r} 不应声明 interrupt_decisions")
         if self.hitl_conditional and not self.is_hitl:
             raise ValueError(f"hitl_conditional 仅对 HITL 工具有意义: {self.name!r}")
+        if self.hitl_conditional and not self.hitl_predicate:
+            raise ValueError(
+                f"条件 HITL 工具 {self.name!r} 必须声明 hitl_predicate（when 谓词名）"
+            )
+        if self.hitl_predicate and not self.hitl_conditional:
+            raise ValueError(
+                f"hitl_predicate 仅对条件 HITL 有效: {self.name!r}"
+            )
         if self.inject_order is not None and self.builder is None:
             raise ValueError(f"可注入工具 {self.name!r} 缺少 builder")
         if self.builder is not None and self.inject_order is None:
@@ -275,9 +289,13 @@ TOOL_REGISTRY: tuple[ToolSpec, ...] = (
         mutating=True,
         is_hitl=True,
         interrupt_decisions=("approve", "reject"),
-        # 删除类命令由 agent.py 的 when=_is_destructive_command 判定；
-        # 目录删除直接拒绝，不进入审批。条件谓词不在本模块。
+        # 删除类命令才进审批；目录删除直接拒绝，不进入审批。
         hitl_conditional=True,
+        hitl_predicate="is_destructive_command",
+        hitl_trigger_note=(
+            "command 命中文件删除类模式（rm/unlink/shred 等）；目录删除直接拒绝"
+        ),
+        hitl_order=0,
     ),
     ToolSpec(
         name="write_todos",
@@ -297,8 +315,11 @@ TOOL_REGISTRY: tuple[ToolSpec, ...] = (
         mutating=True,
         is_hitl=True,
         interrupt_decisions=("approve", "reject"),
-        # 仅 action=materialize 触发审批，由 agent.py 的 when=_is_knowledge_materialize 判定。
+        # 仅 action=materialize 触发审批（list/metadata 只读，无需审批）。
         hitl_conditional=True,
+        hitl_predicate="is_knowledge_materialize",
+        hitl_trigger_note="args.action == 'materialize'",
+        hitl_order=30,
         inject_order=10,
         condition_note="总是尝试；KnowledgeConfig.enabled 由 extend_agent_tools 内部判定",
         builder=_build_knowledge_tools,
@@ -332,7 +353,10 @@ TOOL_REGISTRY: tuple[ToolSpec, ...] = (
     ToolSpec(
         name="read_uploaded_file",
         source=SOURCE_FILE_CONTEXT,
-        description="按需读取/重解析用户上传文件正文（会回填 uploads/ 正文与清单）",
+        description=(
+            "按需读取/重解析用户上传文件正文（会回填 uploads/ 正文与清单）；"
+            "名字含 upload，历史 HITL 名字启发式会将其纳入审批（FW-12 保持等价）"
+        ),
         mutating=True,
         inject_order=40,
         condition_note="config.file_context.enabled（缺省开启）",
@@ -407,7 +431,11 @@ def builtin_tool_names() -> tuple[str, ...]:
 
 
 def hitl_tool_specs() -> tuple[ToolSpec, ...]:
-    """全部 HITL 工具（含条件 HITL），按 ``hitl_order`` 排序。"""
+    """全部 HITL 工具（含条件 HITL），按 ``hitl_order`` 排序。
+
+    该顺序即 ``agent.py`` 构造 ``interrupt_on`` 的顺序：``execute`` →
+    ``save_expert`` → ``create_scheduled_task`` → ``access_knowledge_original``。
+    """
     return tuple(
         sorted(
             (spec for spec in TOOL_REGISTRY if spec.is_hitl),
@@ -420,12 +448,23 @@ def default_interrupt_tool_names() -> tuple[str, ...]:
     """派生 ``hitl.DEFAULT_INTERRUPT_TOOLS``。
 
     只包含**无条件** HITL 工具；``execute`` / ``access_knowledge_original`` 带
-    ``when`` 谓词，由 ``agent.py`` 直接构造，不在此列表内。
+    ``when`` 谓词，由 ``agent.py`` 按注册表的 ``hitl_predicate`` 元数据构造，
+    不在此列表内。
     """
     return tuple(
         spec.name
         for spec in hitl_tool_specs()
         if not spec.hitl_conditional
+    )
+
+
+def hitl_predicate_names() -> tuple[str, ...]:
+    """条件 HITL 用到的全部 ``when`` 谓词注册名（去重，保持声明顺序）。
+
+    供 ``agent.py`` 绑定实际函数、测试校验「注册表声明的谓词都已绑定」。
+    """
+    return tuple(
+        dict.fromkeys(spec.hitl_predicate for spec in TOOL_REGISTRY if spec.hitl_predicate)
     )
 
 
@@ -527,6 +566,7 @@ __all__ = [
     "builtin_tool_names",
     "default_interrupt_tool_names",
     "get_tool_spec",
+    "hitl_predicate_names",
     "hitl_tool_specs",
     "is_hitl_tool",
     "is_mutating_tool",

@@ -88,6 +88,21 @@ MCP_ALLOWED_ORIGINS=https://mcp.example.com
 注意：`host:*` 模式只匹配**带端口**的 Host；https 默认端口的 Host 不带端口，
 两种写法都要列上。
 
+## 错误语义（FW-14）
+
+工具执行失败时抛 `mcp.server.fastmcp.exceptions.ToolError(...)`，MCP 客户端收到
+`isError=true`；错误文本形如 `<code>: <中文说明>`（FastMCP 会在前面加
+`Error executing tool <name>: `），不含异常类型、堆栈、SQL、DSN 或密钥。
+原始异常经脱敏后只写入服务端日志。
+
+| 错误码 | 含义 |
+| --- | --- |
+| `market_quotes_unavailable` | 行情查询失败 |
+| `market_positions_unavailable` | 持仓查询失败 |
+
+空结果（例如查无匹配行情）是合法成功，返回 `isError=false` 与空列表；
+不要用空结果掩盖失败，也不要把失败包装成正常文本。
+
 ## 表结构
 
 主应用 `easy_agent/db/database.py::init_tables` 负责建 `mcp_api_keys` 表；
@@ -96,5 +111,5 @@ MCP_ALLOWED_ORIGINS=https://mcp.example.com
 ## 测试
 
 ```bash
-uv run pytest          # 30+ 用例：挂载、鉴权、身份注入、用户隔离、传输安全
+uv run pytest          # 43 用例：挂载、鉴权、身份注入、用户隔离、错误语义/结构化输出、传输安全
 ```

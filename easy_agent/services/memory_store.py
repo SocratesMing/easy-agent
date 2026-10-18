@@ -27,16 +27,25 @@ import logging
 import os
 import re
 import tempfile
+import threading
+import weakref
 from collections.abc import Iterable, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+try:  # POSIX 跨进程文件锁；Windows 等平台没有 fcntl，走进程内降级
+    import fcntl as _fcntl
+except ImportError:  # pragma: no cover - 平台分支
+    _fcntl = None
+
 logger = logging.getLogger("easy_agent.memory.store")
 
 SCHEMA_VERSION = 1
 STORE_SUFFIX = ".jsonl"
+LOCK_SUFFIX = ".lock"
 ENV_FLAG = "EASY_STRUCTURED_MEMORY"
 
 MAX_KEY_CHARS = 80
@@ -116,6 +125,155 @@ def store_path_for(memory_file: str | Path) -> Path:
     if path.suffix == STORE_SUFFIX:
         return path
     return path.with_suffix(STORE_SUFFIX)
+
+
+# ---------------------------------------------------------------------------
+# 跨进程文件锁（fcntl.flock）
+# ---------------------------------------------------------------------------
+#
+# 锁文件由 JSONL sidecar 路径推导：``memory.md`` / ``memory.jsonl`` 共用
+# ``.memory.jsonl.lock``，因此 Markdown 与 sidecar 的读写可以落在同一把锁里。
+# 设计取舍：
+#
+# - **进程内可重入**：同一线程嵌套 ``memory_lock`` 只递增深度，不重复 flock，
+#   避免 ``write_structured_memory -> MemoryStore.save`` 这类嵌套自锁死；
+# - **进程间互斥**：POSIX 用阻塞式 ``fcntl.flock``；锁随 fd 关闭 / 进程退出释放；
+# - **Windows 降级**：没有 fcntl 时不阻塞写入，只保留进程内互斥并 warning 一次，
+#   多进程并发写同一文件的覆盖风险由调用方承担；
+# - **锁文件保留**：释放后不删除锁文件（删除会让第三个进程锁到新的 inode，
+#   破坏互斥），空锁文件几乎不占空间。
+
+_LOCK_WARNING_EMITTED = False
+_FLOCK_BROKEN = False
+# 弱引用注册表：只为「当前有人持有/等待」的路径保留 RLock，避免长跑服务
+# 随会话数增长而无界累积锁对象。
+_LOCK_REGISTRY: weakref.WeakValueDictionary[str, threading.RLock] = (
+    weakref.WeakValueDictionary()
+)
+_LOCK_REGISTRY_GUARD = threading.Lock()
+_LOCK_STATE = threading.local()
+
+
+def memory_lock_path(target: str | Path) -> Path:
+    """返回目标记忆文件对应的锁文件路径（Markdown / JSONL 共用）。"""
+    sidecar = store_path_for(target)
+    return sidecar.parent / f".{sidecar.name}{LOCK_SUFFIX}"
+
+
+def cross_process_lock_supported() -> bool:
+    """当前平台是否支持跨进程文件锁（Windows 为 False）。"""
+    return _fcntl is not None and not _FLOCK_BROKEN
+
+
+def _warn_lock_degraded(reason: str) -> None:
+    """跨进程锁不可用时只告警一次，避免刷日志 / 阻塞写入。"""
+    global _LOCK_WARNING_EMITTED
+    if _LOCK_WARNING_EMITTED:
+        return
+    _LOCK_WARNING_EMITTED = True
+    logger.warning(
+        "跨进程记忆文件锁不可用，降级为进程内串行 | 原因: %s | "
+        "影响: 多进程/多实例并发写同一记忆文件时仍可能后写覆盖",
+        reason,
+    )
+
+
+def _lock_for(key: str) -> threading.RLock:
+    with _LOCK_REGISTRY_GUARD:
+        lock = _LOCK_REGISTRY.get(key)
+        if lock is None:
+            lock = threading.RLock()
+            _LOCK_REGISTRY[key] = lock
+        return lock
+
+
+def _lock_depths() -> dict[str, int]:
+    depths = getattr(_LOCK_STATE, "depths", None)
+    if depths is None:
+        depths = {}
+        _LOCK_STATE.depths = depths
+    return depths
+
+
+def _acquire_flock(handle, *, exclusive: bool) -> bool:
+    """尝试取 flock；平台不支持或失败时降级并返回 False。"""
+    global _FLOCK_BROKEN
+    if _fcntl is None:
+        _warn_lock_degraded("当前平台无 fcntl 模块")
+        return False
+    if _FLOCK_BROKEN:
+        _warn_lock_degraded("fcntl.flock 不可用")
+        return False
+    operation = _fcntl.LOCK_EX if exclusive else _fcntl.LOCK_SH
+    try:
+        _fcntl.flock(handle.fileno(), operation)
+    except (OSError, AttributeError) as exc:
+        _FLOCK_BROKEN = True
+        _warn_lock_degraded(f"flock 失败: {exc}")
+        return False
+    return True
+
+
+def _release_flock(handle) -> None:
+    if _fcntl is None:
+        return
+    try:
+        _fcntl.flock(handle.fileno(), _fcntl.LOCK_UN)
+    except (OSError, AttributeError):
+        pass
+
+
+@contextmanager
+def memory_lock(target: str | Path, *, exclusive: bool = True):
+    """对一份记忆文件（Markdown + JSONL）加跨进程锁。
+
+    用法::
+
+        with memory_lock(memory_file):
+            store = MemoryStore(store_path_for(memory_file)).load()
+            ...
+            store.save()
+
+    同一线程可重入；不同线程 / 进程串行。Windows 无 fcntl 时降级为进程内
+    互斥并 warning，不抛异常，保证记忆写入在受限平台上仍可用。
+    """
+    lock_path = memory_lock_path(target)
+    key = os.path.abspath(str(lock_path))
+    depths = _lock_depths()
+
+    # 同一线程已持锁：只增加深度，不重复 flock。
+    if depths.get(key, 0) > 0:
+        depths[key] += 1
+        try:
+            yield lock_path
+        finally:
+            depths[key] -= 1
+            if depths[key] <= 0:
+                depths.pop(key, None)
+        return
+
+    thread_lock = _lock_for(key)
+    thread_lock.acquire()
+    handle = None
+    depths[key] = 1
+    try:
+        try:
+            lock_path.parent.mkdir(parents=True, exist_ok=True)
+            handle = open(lock_path, "a+b")
+        except OSError as exc:
+            _warn_lock_degraded(f"无法创建锁文件 {lock_path.name}: {exc}")
+        else:
+            _acquire_flock(handle, exclusive=exclusive)
+        yield lock_path
+    finally:
+        depths.pop(key, None)
+        if handle is not None:
+            _release_flock(handle)
+            try:
+                handle.close()
+            except OSError:
+                pass
+        thread_lock.release()
 
 
 # ---------------------------------------------------------------------------
@@ -569,6 +727,14 @@ def _atomic_write_text(path: Path, text: str) -> None:
     _fsync_directory(path.parent)
 
 
+def atomic_write_text(path: str | Path, text: str) -> None:
+    """原子写文本（临时文件 + ``os.replace``）。
+
+    供 Markdown 权威文件复用：与 sidecar 使用同一实现，读方永远看不到半截文件。
+    """
+    _atomic_write_text(Path(path), text)
+
+
 def _read_text(path: Path) -> str:
     try:
         return path.read_text(encoding="utf-8")
@@ -635,7 +801,12 @@ class MemoryStore:
         return self._entries.get(normalized)
 
     def load(self) -> MemoryStore:
-        """读取 JSONL；损坏行跳过并计数，缺失文件视为空存储。"""
+        """读取 JSONL；共享锁下读取，避免读到 Markdown/JSONL 双写的中间态。"""
+        with memory_lock(self.path, exclusive=False):
+            return self._load_locked()
+
+    def _load_locked(self) -> MemoryStore:
+        """``load`` 的实际实现（调用方需已持有锁）。"""
         self._entries.clear()
         self.revision = 0
         self.updated_at = ""
@@ -709,7 +880,15 @@ class MemoryStore:
         }
 
     def save(self) -> int:
-        """原子写 JSONL，revision + 1，返回新 revision。"""
+        """原子写 JSONL，revision + 1，返回新 revision。
+
+        写入在跨进程排他锁内完成；``write_structured_memory`` 等复合操作
+        在外层已持锁时通过可重入锁复用。
+        """
+        with memory_lock(self.path):
+            return self._save_locked()
+
+    def _save_locked(self) -> int:
         self.revision += 1
         self.updated_at = self._clock()
         records = [self._meta_record()]
@@ -834,6 +1013,38 @@ def write_structured_memory(
 ) -> StructuredWriteResult | None:
     """把 LLM 生成的 Markdown 落成结构化条目并渲染回 Markdown。
 
+    整个「读取 sidecar → 合并条目 → 渲染 → 写回」过程持有跨进程排他锁，
+    Markdown 与 JSONL 共用同一锁文件；返回 ``None`` 表示调用方应回退旧
+    Markdown 写入路径，保证不丢数据。
+    """
+    with memory_lock(memory_file):
+        return _write_structured_memory_locked(
+            memory_file,
+            markdown,
+            title=title,
+            source=source,
+            max_chars=max_chars,
+            previous_markdown=previous_markdown,
+            max_entries=max_entries,
+            max_value_chars=max_value_chars,
+            clock=clock,
+        )
+
+
+def _write_structured_memory_locked(
+    memory_file: str | Path,
+    markdown: str,
+    *,
+    title: str,
+    source: str,
+    max_chars: int,
+    previous_markdown: str | None = None,
+    max_entries: int = MAX_ENTRIES,
+    max_value_chars: int | None = None,
+    clock: Clock | None = None,
+) -> StructuredWriteResult | None:
+    """``write_structured_memory`` 的实际实现（调用方需已持有锁）。
+
     返回 ``None`` 表示解析不出任何条目（调用方应回退旧 Markdown 写入路径，
     保证不丢数据），或渲染后无内容可写。异常不在此吞掉，由调用方统一兜底。
     """
@@ -920,8 +1131,30 @@ def sync_from_markdown(
 ) -> bool:
     """旧 Markdown 首次导入 / 外部修改回灌 sidecar。
 
+    整段「读 Markdown → 比较 hash → 重建条目 → 写 sidecar」在排他锁内完成，
     幂等：Markdown 内容 hash 与 meta 一致时直接返回 ``False``，不 bump revision。
     """
+    with memory_lock(memory_file):
+        return _sync_from_markdown_locked(
+            memory_file,
+            markdown=markdown,
+            source=source,
+            title=title,
+            max_entries=max_entries,
+            clock=clock,
+        )
+
+
+def _sync_from_markdown_locked(
+    memory_file: str | Path,
+    *,
+    markdown: str | None = None,
+    source: str = SOURCE_IMPORT,
+    title: str | None = None,
+    max_entries: int = MAX_ENTRIES,
+    clock: Clock | None = None,
+) -> bool:
+    """``sync_from_markdown`` 的实际实现（调用方需已持有锁）。"""
     text = _read_text(Path(memory_file)) if markdown is None else markdown
     if not text or not text.strip():
         return False
@@ -957,6 +1190,7 @@ def sync_from_markdown(
 __all__ = [
     "DEFAULT_CATEGORY",
     "ENV_FLAG",
+    "LOCK_SUFFIX",
     "MAX_ENTRIES",
     "MAX_KEY_CHARS",
     "MAX_VALUE_CHARS",
@@ -970,12 +1204,16 @@ __all__ = [
     "MemoryStore",
     "MemoryValidationError",
     "StructuredWriteResult",
+    "atomic_write_text",
     "content_digest",
+    "cross_process_lock_supported",
     "detect_sensitive",
     "extract_title",
     "fit_entries_to_budget",
     "full_digest",
     "make_entry",
+    "memory_lock",
+    "memory_lock_path",
     "merge_entries",
     "normalize_key",
     "parse_markdown",

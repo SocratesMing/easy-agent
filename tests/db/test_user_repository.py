@@ -12,6 +12,22 @@ def _make_db(tmp_path) -> Database:
     return db
 
 
+def test_repository_delegates_activity_timestamps(tmp_path):
+    """活跃时间读写走 users repository 函数：SSO 校验与空闲登出的数据面。"""
+    db = _make_db(tmp_path)
+    repo = UserRepository(db)
+    db.register_user("alice", "secret123")
+
+    assert repo.get_user_activity_time("alice") is None
+    assert repo.touch_user_activity("alice", 1234.5) is True
+    assert repo.get_user_activity_time("alice") == 1234.5
+    assert repo.clear_user_activity("alice") is True
+    assert repo.get_user_activity_time("alice") is None
+    # 不存在的用户不会凭空写入活跃时间
+    assert repo.touch_user_activity("nobody", 1.0) is False
+    assert repo.clear_user_activity("nobody") is False
+
+
 def test_repository_delegates_registration_lookup_and_password_reset(tmp_path):
     db = _make_db(tmp_path)
     repo = UserRepository(db)

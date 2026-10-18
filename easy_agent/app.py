@@ -17,11 +17,13 @@ from .initialization import initialize_runtime
 runtime_initialization = initialize_runtime()
 
 import uvicorn
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from .middleware import get_current_username
+from .middleware.metrics import MetricsMiddleware
 from .middleware.rate_limit import RateLimitMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from langchain_core.messages import HumanMessage
@@ -328,6 +330,22 @@ async def lifespan(app: FastAPI):
             agent_config = {"config": config}
             logger.info("✅ Agent 配置加载成功")
 
+            # FW-04：execute 的 HITL 文案改由官方 HarnessProfile 注入（不再
+            # monkeypatch FilesystemMiddleware）。启动期为配置中的每个模型注册
+            # 一次；失败只报错，不阻断启动（首次建图前 agent.py 还会兜底重试）。
+            from .hitl import register_execute_description_profiles
+
+            profile_keys = register_execute_description_profiles(config)
+            if profile_keys:
+                logger.info(
+                    f"🧩 execute 描述 HarnessProfile 已注册 | keys={list(profile_keys)}"
+                )
+            else:
+                logger.error(
+                    "❌ execute 描述 HarnessProfile 注册失败，"
+                    "模型将看不到「删除类命令需人工审批」的提示"
+                )
+
             # 公共（预置）专家目录：把「解析到哪个目录、来源是谁」打出来，
             # 出问题时能一眼看出是配置写错还是目录没挂上。
             try:
@@ -460,6 +478,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.add_middleware(RateLimitMiddleware)
+app.add_middleware(MetricsMiddleware)
 
 
 def _get_client_ip(request: Request) -> str:
@@ -706,6 +725,21 @@ async def readiness():
     if payload.status != "ready":
         return JSONResponse(status_code=503, content=payload.model_dump())
     return payload
+
+
+@app.get("/agent/metrics", summary="运行指标（RED，仅管理员）")
+async def runtime_metrics(
+    username: str = Depends(get_current_username),
+):
+    """进程内 RED 指标 JSON 快照；仅 admin 可读。
+
+    指标是进程内聚合的，多 worker/多副本需逐实例抓取后由外部汇总。
+    """
+    if username != "admin":
+        raise HTTPException(status_code=403, detail="仅管理员可以查看运行指标")
+    from .services.metrics import snapshot_metrics
+
+    return JSONResponse(content=snapshot_metrics())
 
 
 @app.get("/agent/config", summary="获取Agent配置")

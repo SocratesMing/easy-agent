@@ -2,10 +2,11 @@
 """生成 easy-agent 后端全部接口的 Excel 接口文档。
 
 用法：
-    .venv/bin/python scripts/generate_api_docs.py
+    .venv/bin/python scripts/generate_api_docs.py            # 生成 xlsx
+    .venv/bin/python scripts/generate_api_docs.py --check    # CI 冒烟检查（不写文件）
 
 输出：
-    docs/API接口文档.xlsx
+    docs/API接口文档.xlsx（生成物，不要求每次提交二进制更新）
 
 文档包含三个 Sheet：
     1. 接口总览   —— 每个接口一行：模块/方法/路径/名称/描述/鉴权/请求体/参数/响应
@@ -15,6 +16,7 @@
 
 from __future__ import annotations
 
+import argparse
 import sys
 import inspect
 from pathlib import Path
@@ -44,18 +46,47 @@ EXCLUDE_PATHS = {
 }
 
 MODULE_LABELS = [
-    ("/api/auth", "认证"),
-    ("/api/chat", "聊天"),
-    ("/api/sessions", "会话"),
-    ("/api/files", "文件"),
-    ("/api/settings", "设置"),
-    ("/api/skill-center", "技能中心"),
-    ("/api/scheduled-tasks", "定时任务"),
-    ("/api/prompts", "提示词"),
-    ("/api/completion", "对话补全"),
-    ("/api/health", "健康检查"),
-    ("/api/config", "配置"),
+    ("/agent/auth", "认证"),
+    ("/agent/chat", "聊天"),
+    ("/agent/sessions", "会话"),
+    ("/agent/files", "文件"),
+    ("/agent/settings", "设置"),
+    ("/agent/skill-center", "技能中心"),
+    ("/agent/scheduled-tasks", "定时任务"),
+    ("/agent/prompts", "提示词"),
+    ("/agent/completion", "对话补全"),
+    ("/agent/connectors", "连接器"),
+    ("/agent/expert", "专家"),
+    # 专家路由（api/expert.py 直接挂在 /agent 下，未使用 /agent/expert 前缀）
+    ("/agent/add", "专家"),
+    ("/agent/update", "专家"),
+    ("/agent/list", "专家"),
+    ("/agent/public-list", "专家"),
+    ("/agent/del", "专家"),
+    ("/agent/stream_export_run", "专家"),
+    ("/agent/knowledge", "知识库"),
+    ("/agent/personnel", "人员"),
+    ("/agent/terminal", "终端"),
+    ("/agent/health", "健康检查"),
+    ("/agent/live", "健康检查"),
+    ("/agent/ready", "健康检查"),
+    ("/agent/config", "配置"),
+    # 兼容宿主/旧前端的 /api 前缀（后端 LegacyHostRoutes 之外，少量直挂路由）
+    ("/api/personnel", "人员(legacy)"),
+    ("/api/health", "健康检查(legacy)"),
+    ("/api/live", "健康检查(legacy)"),
+    ("/api/ready", "健康检查(legacy)"),
+    ("/api/config", "配置(legacy)"),
 ]
+
+# /api 旧前缀中允许保留的直挂路由（兼容旧前端/探针）。
+ALLOWED_LEGACY_PREFIXES = (
+    "/api/personnel",
+    "/api/health",
+    "/api/live",
+    "/api/ready",
+    "/api/config",
+)
 
 HEADER_FILL = PatternFill("solid", fgColor="1F4E79")
 HEADER_FONT = Font(color="FFFFFF", bold=True, size=11)
@@ -280,7 +311,58 @@ def style_sheet(ws, widths: list[int], n_rows: int, n_cols: int) -> None:
     ws.freeze_panes = "A2"
 
 
-def main() -> int:
+def check_endpoints() -> int:
+    """CI 冒烟检查：能收集接口、路由前缀已迁移、模块标签齐全。"""
+    endpoints = collect_endpoints()
+    if not endpoints:
+        print("[FAIL] 未收集到任何接口", file=sys.stderr)
+        return 1
+
+    legacy = [
+        e
+        for e in endpoints
+        if e["path"].startswith("/api/")
+        and not e["path"].startswith(ALLOWED_LEGACY_PREFIXES)
+    ]
+    if legacy:
+        print(
+            "[FAIL] 发现未登记的旧 /api 前缀路由（应统一为 /agent）: "
+            + ", ".join(f"{e['method']} {e['path']}" for e in legacy),
+            file=sys.stderr,
+        )
+        return 1
+
+    unlabeled = [e for e in endpoints if e["module"] == "其他"]
+    if unlabeled:
+        print(
+            "[FAIL] 存在未归类接口（请补 MODULE_LABELS）: "
+            + ", ".join(f"{e['method']} {e['path']}" for e in unlabeled),
+            file=sys.stderr,
+        )
+        return 1
+
+    print(f"[OK] API 文档生成冒烟检查通过：{len(endpoints)} 个接口")
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="只做冒烟检查，不写 xlsx（校验路由前缀/模块标签/可收集性）",
+    )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=OUTPUT,
+        help="xlsx 输出路径（默认 docs/API接口文档.xlsx）",
+    )
+    args = parser.parse_args(argv)
+
+    if args.check:
+        return check_endpoints()
+
     endpoints = collect_endpoints()
     wb = Workbook()
 
@@ -336,9 +418,9 @@ def main() -> int:
                         "是" if r["required"] else "否", r["desc"]])
     style_sheet(ws3, [6, 7, 40, 36, 22, 6, 45], row_idx, len(headers3))
 
-    OUTPUT.parent.mkdir(parents=True, exist_ok=True)
-    wb.save(OUTPUT)
-    print(f"已生成 {OUTPUT}（接口 {len(endpoints)} 个）")
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    wb.save(args.output)
+    print(f"已生成 {args.output}（接口 {len(endpoints)} 个）")
     return 0
 
 

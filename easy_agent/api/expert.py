@@ -44,7 +44,8 @@ from ..services import public_expert_service, skill_library
 from ..services import expert_guardrail, expert_relevance
 from ..services import session_uploads as file_context
 from ..services.sse import SSEEvent
-from ..services.streaming import build_assistant_message_dict, format_sse
+from ..services.sse_emitter import SSEEmitter
+from ..services.streaming import build_assistant_message_dict
 from ..services.expert_service import (
     build_expert_ids,
     generate_expert_config,
@@ -754,24 +755,21 @@ async def _refusal_event_stream(session_id: str, repo: ExpertRepository, answer:
     except Exception as exc:  # noqa: BLE001 —— 落库失败不阻断拒答推送
         logger.warning(f"[{sid}] 拒答消息持久化失败: {exc}")
 
-    yield format_sse({"type": SSEEvent.START, "session_id": session_id})
-    yield format_sse({"type": SSEEvent.CONTENT, "content": answer, "step": 0})
-    yield format_sse({"type": SSEEvent.CONTENT_END, "content": ""})
-    yield format_sse(
-        {
-            "type": SSEEvent.DONE,
-            "session_id": session_id,
-            "elapsed_time": round(time.time() - started, 2),
-            "usage": {
-                "input_tokens": 0,
-                "output_tokens": 0,
-                "reasoning_tokens": 0,
-                "context_length": None,
-                "auto_compress_tokens": None,
-                "context_tokens": 0,
-                "step_count": 0,
-            },
-        }
+    emitter = SSEEmitter(session_id)
+    yield emitter.start()
+    yield emitter.content(answer, step=0)
+    yield emitter.content_end()
+    yield emitter.done(
+        elapsed_time=round(time.time() - started, 2),
+        usage={
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "reasoning_tokens": 0,
+            "context_length": None,
+            "auto_compress_tokens": None,
+            "context_tokens": 0,
+            "step_count": 0,
+        },
     )
 
 
@@ -1185,7 +1183,7 @@ async def stream_export_run(
         # 注入 system prompt（见 services/session_uploads.py / agent.py），这里只注入
         # 本轮上传文件的开头预览，减少"传完立刻提问"的一次工具往返。
         preview = file_context.build_turn_preview(
-            session_id, username, request.files, repo.database
+            session_id, username, request.files, repo
         )
         if preview:
             parsed_content = preview + "\n\n" + parsed_content

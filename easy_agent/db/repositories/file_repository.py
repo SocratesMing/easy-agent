@@ -23,11 +23,6 @@ class FileRepository:
     def __init__(self, db: "Database"):
         self._db = db
 
-    @property
-    def database(self) -> "Database":
-        """底层 ``Database``，仅供 ``verify_token_sso`` 认证服务使用。"""
-        return self._db
-
     # ── 会话上传文件 ──────────────────────────────────────────────────
 
     def add_session_file(

@@ -13,6 +13,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Optional
 
 from ...models.db import SessionModel
+from . import files as files_repo
 from . import sessions as sessions_repo
 
 if TYPE_CHECKING:
@@ -27,7 +28,7 @@ class ChatRepository:
 
     @property
     def database(self) -> "Database":
-        """底层 ``Database``，仅供 chat/streaming/knowledge 服务使用。"""
+        """底层 ``Database``，仅供流式引擎与知识域等未迁移服务使用。"""
         return self._db
 
     # ── 会话 ──────────────────────────────────────────────────────────
@@ -44,6 +45,10 @@ class ChatRepository:
 
     def get_session(self, session_id: str) -> Optional[SessionModel]:
         return sessions_repo.get_session(self._db, session_id)
+
+    def get_session_files(self, session_id: str) -> list[dict]:
+        """会话上传文件行（``session_uploads`` 解析/重解析的数据端口）。"""
+        return files_repo.get_session_files(self._db, session_id)
 
     def get_owned_session_meta(self, session_id: str, username: str) -> dict:
         """返回会话归属元信息；不存在或跨用户统一 404。"""

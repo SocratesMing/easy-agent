@@ -120,6 +120,23 @@ def test_spec_validation_rejects_invalid_entries():
             is_hitl=True,
             interrupt_decisions=("maybe",),
         )
+    # 条件 HITL 必须声明谓词名；谓词名只能出现在条件 HITL 上。
+    with pytest.raises(ValueError):
+        ToolSpec(
+            name="x",
+            source=SOURCE_EXPERT,
+            is_hitl=True,
+            interrupt_decisions=("approve",),
+            hitl_conditional=True,
+        )
+    with pytest.raises(ValueError):
+        ToolSpec(
+            name="x",
+            source=SOURCE_EXPERT,
+            is_hitl=True,
+            interrupt_decisions=("approve",),
+            hitl_predicate="is_destructive_command",
+        )
 
 
 # ── HITL 名单 ────────────────────────────────────────────────────────────
@@ -139,6 +156,42 @@ def test_conditional_hitl_tools_are_not_in_default_list():
     conditional = {spec.name for spec in TOOL_REGISTRY if spec.hitl_conditional}
     assert conditional == {"execute", "access_knowledge_original"}
     assert not conditional & set(registry.default_interrupt_tool_names())
+
+
+def test_conditional_hitl_declares_predicate_metadata():
+    """D1 收尾：条件 HITL 的 when 谓词名/触发说明进注册表（行为不变）。"""
+    specs = {spec.name: spec for spec in TOOL_REGISTRY if spec.hitl_conditional}
+    assert specs["execute"].hitl_predicate == "is_destructive_command"
+    assert (
+        specs["access_knowledge_original"].hitl_predicate
+        == "is_knowledge_materialize"
+    )
+    assert specs["execute"].hitl_trigger_note
+    assert specs["access_knowledge_original"].hitl_trigger_note
+    assert set(registry.hitl_predicate_names()) == {
+        "is_destructive_command",
+        "is_knowledge_materialize",
+    }
+    for spec in TOOL_REGISTRY:
+        if spec.is_hitl and not spec.hitl_conditional:
+            assert spec.hitl_predicate == ""
+
+
+def test_hitl_specs_order_is_interrupt_config_order():
+    """agent.py 按此顺序构造 interrupt_on（与改造前逐项一致）。"""
+    assert [spec.name for spec in registry.hitl_tool_specs()] == [
+        "execute",
+        "save_expert",
+        "create_scheduled_task",
+        "access_knowledge_original",
+    ]
+
+
+def test_agent_binds_every_registered_hitl_predicate():
+    """注册表只记录谓词名，agent.py 必须绑定同名函数（防静默漂移）。"""
+    from easy_agent.agent import _HITL_WHEN_PREDICATES
+
+    assert set(_HITL_WHEN_PREDICATES) == set(registry.hitl_predicate_names())
 
 
 def test_name_heuristic_exemptions_match_registry():

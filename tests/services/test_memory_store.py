@@ -12,11 +12,13 @@
 import hashlib
 import json
 import logging
+import multiprocessing
+import time
 from pathlib import Path
 
 import pytest
 
-from easy_agent.services import memory_manager
+from easy_agent.services import memory_manager, memory_store
 from easy_agent.services.memory_store import (
     ENV_FLAG,
     MemoryEntry,
@@ -25,6 +27,8 @@ from easy_agent.services.memory_store import (
     content_digest,
     extract_title,
     make_entry,
+    memory_lock,
+    memory_lock_path,
     normalize_key,
     parse_markdown,
     render_markdown,
@@ -551,3 +555,159 @@ def test_update_memory_logs_metadata_not_full_content(tmp_path, caplog):
     assert "sha256" in messages
     assert "条目: 1" in messages
     assert content_digest(memory_file.read_text(encoding="utf-8")) in messages
+
+
+# ---------------------------------------------------------------------------
+# 跨进程文件锁 / 双写原子性
+# ---------------------------------------------------------------------------
+#
+# 说明：以下是本文件新增的专项测试。用 fork 拉起子进程做「读-改-写」，
+# 只有跨进程 flock 生效时 revision 才会严格等于累计写入次数；Windows 上
+# 没有 fork 时跳过（对应实现会降级为进程内锁并 warning）。
+
+FORK_AVAILABLE = "fork" in multiprocessing.get_all_start_methods()
+
+
+def _lock_writer_process(args):
+    """子进程：锁内 load -> upsert -> save，模拟并发记忆更新。"""
+    path_str, worker_id, iterations = args
+    path = Path(path_str)
+    for index in range(iterations):
+        with memory_lock(path):
+            store = MemoryStore(path).load()
+            store.upsert(
+                make_entry(
+                    f"并发条目{worker_id}-{index} 内容",
+                    category="并发",
+                    source="test",
+                )
+            )
+            store.save()
+
+
+def _dual_write_process(args):
+    """子进程：并发写 Markdown + sidecar，验证两者始终对应同一内容。"""
+    memory_file_str, worker_id, iterations = args
+    memory_file = Path(memory_file_str)
+    for index in range(iterations):
+        memory_manager.write_memory(
+            memory_file,
+            f"# 会话记忆\n\n## 并发\n- 并发写入{worker_id}-{index} 内容\n",
+        )
+
+
+def test_lock_path_is_shared_by_markdown_and_sidecar(tmp_path):
+    markdown = tmp_path / "memory.md"
+    sidecar = tmp_path / "memory.jsonl"
+
+    assert memory_lock_path(markdown) == memory_lock_path(sidecar)
+    assert memory_lock_path(markdown).name == ".memory.jsonl.lock"
+
+
+def test_memory_lock_is_reentrant_in_same_thread(tmp_path):
+    target = tmp_path / "memory.md"
+    with memory_lock(target):
+        with memory_lock(target):
+            with memory_lock(target, exclusive=False):
+                assert memory_lock_path(target).exists()
+
+
+def test_lock_degrades_with_single_warning_when_fcntl_missing(tmp_path, monkeypatch, caplog):
+    monkeypatch.setattr(memory_store, "_fcntl", None)
+    monkeypatch.setattr(memory_store, "_LOCK_WARNING_EMITTED", False)
+    monkeypatch.setattr(memory_store, "_FLOCK_BROKEN", False)
+
+    with caplog.at_level(logging.WARNING, logger="easy_agent.memory.store"):
+        with memory_lock(tmp_path / "memory.md"):
+            pass
+        with memory_lock(tmp_path / "memory.md"):
+            pass
+
+    degraded = [r.getMessage() for r in caplog.records if "降级" in r.getMessage()]
+    assert len(degraded) == 1
+    assert "进程内串行" in degraded[0]
+    assert not memory_store.cross_process_lock_supported()
+
+    # 降级后记忆读写仍可用（不因平台无 flock 而失败）。
+    store = MemoryStore(tmp_path / "memory.jsonl", title="会话记忆")
+    store.upsert(make_entry("降级平台仍可写入", category="并发", source="test"))
+    store.save()
+    assert [entry.value for entry in MemoryStore(tmp_path / "memory.jsonl").load().entries] == [
+        "降级平台仍可写入"
+    ]
+
+
+@pytest.mark.skipif(not FORK_AVAILABLE, reason="需要 fork 做多进程并发测试")
+def test_cross_process_lock_serializes_read_modify_write(tmp_path):
+    path = tmp_path / "memory.jsonl"
+    MemoryStore(path, title="会话记忆").save()
+
+    workers, iterations = 4, 5
+    context = multiprocessing.get_context("fork")
+    processes = [
+        context.Process(
+            target=_lock_writer_process, args=((str(path), worker_id, iterations),)
+        )
+        for worker_id in range(workers)
+    ]
+    for process in processes:
+        process.start()
+
+    # 写的同时持续读取：原子替换保证每行都能被 json 解析（不会读到半截文件）。
+    while any(process.is_alive() for process in processes):
+        if path.exists():
+            for line in path.read_text(encoding="utf-8").splitlines():
+                if line.strip():
+                    assert isinstance(json.loads(line), dict)
+        time.sleep(0.005)
+
+    for process in processes:
+        process.join(timeout=60)
+        assert process.exitcode == 0
+
+    store = MemoryStore(path).load()
+    # 每次 save 都在锁内基于最新 revision +1；丢锁时会出现重复 revision。
+    assert store.revision == workers * iterations + 1
+    assert len(store) == workers * iterations
+    assert len({entry.value for entry in store.entries}) == workers * iterations
+
+
+@pytest.mark.skipif(not FORK_AVAILABLE, reason="需要 fork 做多进程并发测试")
+def test_cross_process_dual_write_keeps_markdown_and_sidecar_consistent(tmp_path):
+    memory_file = tmp_path / "memory.md"
+    memory_manager.write_memory(memory_file, "# 会话记忆\n\n## 并发\n- 初始内容\n")
+
+    workers, iterations = 4, 4
+    context = multiprocessing.get_context("fork")
+    processes = [
+        context.Process(
+            target=_dual_write_process, args=((str(memory_file), worker_id, iterations),)
+        )
+        for worker_id in range(workers)
+    ]
+    for process in processes:
+        process.start()
+    for process in processes:
+        process.join(timeout=60)
+        assert process.exitcode == 0
+
+    markdown = memory_file.read_text(encoding="utf-8")
+    store = MemoryStore(store_path_for(memory_file)).load()
+    # 双写在同一把锁内完成：Markdown 与 sidecar 必须对应同一次写入。
+    assert store.markdown_sha256 == hashlib.sha256(markdown.encode("utf-8")).hexdigest()
+    assert {entry.key for entry in parse_markdown(markdown)} == {
+        entry.key for entry in store.entries
+    }
+    assert {entry.value for entry in parse_markdown(markdown)} == {
+        entry.value for entry in store.entries
+    }
+
+
+def test_structured_memory_switch_still_rolls_back_whole_feature(tmp_path, monkeypatch):
+    """回退开关：关闭结构化记忆时只写 Markdown，不产生 sidecar（保持旧行为）。"""
+    monkeypatch.setenv(ENV_FLAG, "0")
+    memory_file = tmp_path / "memory.md"
+    memory_manager.write_memory(memory_file, LEGACY_MD)
+
+    assert memory_file.read_text(encoding="utf-8") == LEGACY_MD
+    assert not store_path_for(memory_file).exists()

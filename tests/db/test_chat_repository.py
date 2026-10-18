@@ -52,6 +52,36 @@ def test_repository_delegates_session_and_message_writes(tmp_path):
     assert repo.get_session("missing") is None
 
 
+def test_repository_exposes_session_files_for_upload_ports(tmp_path):
+    db = _make_db(tmp_path)
+    repo = ChatRepository(db)
+    repo.create_session(_session())
+    db.add_session_file("sess-chat", "方案.pdf", "/tmp/方案.pdf", "pdf", 42, "alice")
+
+    rows = repo.get_session_files("sess-chat")
+    assert [row["filename"] for row in rows] == ["方案.pdf"]
+    assert repo.get_session_files("missing") == []
+
+
+def test_repository_satisfies_session_uploads_workspace_port(tmp_path, monkeypatch):
+    """session_uploads 直接吃 repository 端口（不再需要 repo.database）。"""
+    from easy_agent.services import session_uploads as su
+
+    db = _make_db(tmp_path)
+    repo = ChatRepository(db)
+    repo.create_session(_session())
+    repo.update_session_workspace_name("sess-chat", "ws-chat")
+    monkeypatch.setattr(
+        su.Config,
+        "get_user_workspace_dir",
+        staticmethod(lambda username: tmp_path / "users" / username),
+        raising=False,
+    )
+
+    workspace = su.get_session_workspace_dir("sess-chat", "alice", repo)
+    assert workspace == tmp_path / "users" / "alice" / "session" / "ws-chat"
+
+
 def test_repository_get_owned_session_meta_enforces_owner_and_404(tmp_path):
     db = _make_db(tmp_path)
     repo = ChatRepository(db)

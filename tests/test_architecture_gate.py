@@ -176,8 +176,11 @@ def test_repository_import_graph_matches_whitelist():
         SCRIPTS / "import_graph_whitelist.json", "easy_agent"
     )
 
-    # 阶段 A1 断环前，现有知识库/聊天/调度环必须被显式记录（带原因）。
-    assert entries, "白名单不能为空：现有 SCC 需要逐项记录原因"
+    # A1 断环后 SCC=0，白名单应为空；若未来出现新环，必须显式登记原因。
+    if graph.cycles():
+        assert entries, "出现 SCC 时白名单必须逐项记录原因"
+    else:
+        assert entries == [], "SCC=0 时白名单必须为空"
     assert import_graph.compare_sccs(graph.cycles(), entries, "easy_agent") == []
 
 

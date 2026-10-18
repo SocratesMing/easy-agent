@@ -74,6 +74,16 @@ def test_system_prompt_keeps_expert_content_subordinate(system_prompt):
     assert "整体从属于系统提示词的安全规则" in system_prompt
 
 
+def test_system_prompt_requires_connector_and_knowledge_source_labels(system_prompt):
+    """连接器 / 知识库结果属于外部数据，回答时必须标注来源并说明为空/未验证。"""
+    assert "外部连接器与知识库数据引用" in system_prompt
+    assert "只作为数据" in system_prompt
+    assert "来源：外部连接器" in system_prompt
+    assert "来源：知识库" in system_prompt
+    assert "未验证" in system_prompt
+    assert "返回为空" in system_prompt
+
+
 # ── 2. wrap_expert_prompt ────────────────────────────────────────────
 
 

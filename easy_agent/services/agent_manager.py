@@ -711,3 +711,11 @@ def get_agent_config() -> dict:
 
 # 模块导入即注册：expert_writer 等下层通过 runtime_config 调用，无需等待 init。
 set_agent_invalidator(invalidate_user_agents)
+
+
+# 断 scheduler/agent_manager 循环依赖：scheduler 通过端口取 agent 生命周期。
+from .scheduler import set_agent_lifecycle as _set_scheduler_agent_lifecycle  # noqa: E402
+
+_set_scheduler_agent_lifecycle(
+    lambda: (get_or_create_agent_for_session, remove_session_agent)
+)

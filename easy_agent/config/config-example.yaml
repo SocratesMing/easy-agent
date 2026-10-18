@@ -11,6 +11,11 @@
 # 应急指定其它配置文件：EASY_CONFIG=/path/to/xxx.yaml
 #
 # 可用变量清单见 .env.dev.example / .env.test.example / .env.prod.example。
+#
+# 配置校验：
+#   python scripts/check_config_schema.py --check   # 模板/本地配置键集合与 schema
+# 未知顶层/节键默认只 WARNING（旧配置可直接启动）；设置 EASY_CONFIG_STRICT=1
+# 后改为启动失败（部署自检推荐）。
 
 # ===== LLM Configuration =====
 # Select which model to use: deepseek | qwen | ark
@@ -26,6 +31,8 @@ models:
     # 默认走阿里百炼 MaaS OpenAI 兼容；也可改回 https://api.deepseek.com
     api_base: "${DEEPSEEK_API_BASE:-https://llm-tyyt06c5mq54ngq7.cn-beijing.maas.aliyuncs.com/compatible-mode/v1}"
     context_length: ${DEEPSEEK_CONTEXT_LENGTH:-131072}
+    # 可选：透传请求头；值支持 {session_id} 占位符（部分网关强制要求）
+    headers: {}
 
   qwen:
     provider: "qwen"
@@ -261,3 +268,42 @@ knowledge:
   # 留空由 RAGFlow 使用其默认 embedding 模型
   embedding:
     model: "${RAGFLOW_EMBEDDING_MODEL:-}"
+  # implementation: v2  # 已废弃：仅日志提示且只支持 v2，可安全删除
+  # 审计事件记录开关与 details 截断上限
+  audit:
+    enabled: true
+    max_details_bytes: 4096
+  # 上传 / 列表限额（与 knowledges.core.config.LimitsConfig 对齐）
+  limits:
+    max_file_size_mb: 100
+    max_request_size_mb: 110
+    max_files_per_request: 1
+    max_dataset_name_utf8_bytes: 127
+    max_filename_utf8_bytes: 127
+    allowed_extensions:
+      - pdf
+      - doc
+      - docx
+      - txt
+      - md
+      - xls
+      - xlsx
+      - csv
+      - ppt
+      - pptx
+    max_documents_per_query: 500
+  # 外部目录树同步（默认关闭；启用时按需取消注释）
+  # catalog_sync:
+  #   enabled: ${KNOWLEDGE_CATALOG_SYNC_ENABLED:-false}
+  #   sql_file: "${KNOWLEDGE_CATALOG_SYNC_SQL_FILE}"
+  #   database: "${KNOWLEDGE_CATALOG_SYNC_DATABASE:-ai_kb}"
+  #   owner_username: "admin"
+  #   space_type: "team"  # personal | team
+  #   department_id: ""
+  #   max_level: 5
+  #   mysql:
+  #     host: ""
+  #     port: 3306
+  #     user: ""
+  #     password: ""
+  #     charset: "utf8mb4"

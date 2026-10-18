@@ -6,11 +6,21 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
+
+
+@dataclass(frozen=True, slots=True)
+class KnowledgePrincipal:
+    """请求级身份：由 Bearer 令牌解析出的用户、用户名与部门。"""
+
+    user_id: str
+    username: str
+    department_id: str | None
 
 
 # ---------------------------------------------------------------------------

@@ -1,29 +1,5 @@
 {
   "schema_version": 1,
-  "description": "阶段 0.1 SCC 冻结（2026-10-18）：只允许当前已存在的知识库/聊天/调度环。白名单只减不增；断环后必须删除对应条目。新回边、环模块集合变化、或白名单过期都会让 CI 失败。",
-  "sccs": [
-    {
-      "id": "knowledge-chat-scheduler-core",
-      "reason": "知识库流式/聊天桥接（knowledges.chat.*）、api.chat、services.streaming、services.scheduler、tools.scheduled_task 相互 import，形成 16 模块强连通分量。阶段 A1 会把 knowledges.api → api.chat 的反向依赖下沉到 knowledges.chat，并把 scheduled_task 工具改为端口依赖（不 import 调度器实现）；断环后删除本项。模块集合要求精确匹配，防止环在内部继续扩张。",
-      "target_phase": "A1",
-      "modules": [
-        "easy_agent.api.chat",
-        "easy_agent.api.sessions",
-        "easy_agent.knowledge_impl",
-        "easy_agent.knowledges.api",
-        "easy_agent.knowledges.chat.agent_extension",
-        "easy_agent.knowledges.chat.chat_bridge",
-        "easy_agent.knowledges.chat.original_tool",
-        "easy_agent.knowledges.chat.streaming",
-        "easy_agent.knowledges.runtime.lifecycle",
-        "easy_agent.knowledges.runtime.worker",
-        "easy_agent.knowledges.service",
-        "easy_agent.services",
-        "easy_agent.services.agent_manager",
-        "easy_agent.services.scheduler",
-        "easy_agent.services.streaming",
-        "easy_agent.tools.scheduled_task"
-      ]
-    }
-  ]
+  "description": "阶段 0.1 SCC 冻结（2026-10-18）：A1 断环后 SCC=0，白名单为空；任何新环都会让 CI 失败。白名单只减不增。",
+  "sccs": []
 }

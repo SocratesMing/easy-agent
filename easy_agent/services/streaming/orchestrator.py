@@ -35,7 +35,8 @@ from ..hitl_state import (
     hanging_hitl_tool_count,
     normalize_resume_decisions,
 )
-from ..sse import SSEEvent, format_sse
+from ..sse import SSEEvent
+from ..sse_emitter import SSEEmitter
 from ..stream_messages import (
     _partial_message_dict,
     _tool_call_tuples,
@@ -286,6 +287,149 @@ async def build_resume_command(
     return resume_command
 
 
+async def finalize_stream(
+    *,
+    agent,
+    db,
+    session_id: str,
+    sid: str,
+    message_id: str,
+    proc,
+    start_time: float,
+    context_length,
+    auto_compress_tokens,
+    tool_call_records: list,
+    raw_user_msg: str,
+    message_content: str = "",
+    session_logger=None,
+    mode: str = "chat",
+    emitter: SSEEmitter | None = None,
+) -> AsyncGenerator[str, None]:
+    """收尾公共段：最终消息 + 收尾副作用 + ``done`` 事件（chat / resume 共用）。
+
+    chat / resume 在流结束后的差异全部收敛为参数：``mode="chat"`` 的 done 不带
+    ``blocks``、usage 不含 ``elapsed_time``，并额外写调试快照与会话日志；
+    ``mode="resume"`` 的 done 带权威 ``blocks``、usage 含 ``elapsed_time``。
+    resume 特有的 ``merge_tool_call_records`` / ``finalize_blocks`` 由调用方完成后
+    传入。本函数只产出最后一帧 ``done``，字段与顺序同拆分前逐字一致。
+    """
+    is_resume = mode == "resume"
+    emitter = emitter or SSEEmitter(session_id)
+    accumulated_response = proc.accumulated_response
+    accumulated_thinking = proc.accumulated_thinking
+    blocks = proc.blocks
+    current_step = proc.current_step
+    last_context_tokens = proc.last_context_tokens
+    elapsed_time = time.time() - start_time
+
+    # 统计（chat 的完成日志先于持久化，resume 的完成日志在副作用之后，沿用原文案）
+    thinking_time = None
+    if not is_resume:
+        thinking_time = thinking_duration(blocks)
+        tool_duration = (
+            sum(tc[5] for tc in tool_call_records) if tool_call_records else 0
+        )
+        logger.info(
+            f"[{sid}] ✅ 流式响应完成 | 总步骤: {current_step} | "
+            f"总耗时: {elapsed_time:.2f}s | 思考: {thinking_time}s | "
+            f"回复: 0s | 工具: {tool_duration:.2f}s | "
+            f"思考长度: {len(accumulated_thinking)} | "
+            f"回复长度: {len(accumulated_response)} 字符"
+        )
+
+    # 展示/持久化口径：**最近一次模型调用**的用量（不跨步累加）；
+    # 日志里的"本轮累计"仍用累加值，便于核对计费与排查。
+    last_usage = proc.last_usage
+    inp_tokens = last_usage["input_tokens"]
+    out_tokens = last_usage["output_tokens"]
+    rea_tokens = last_usage.get("reasoning_tokens", 0)
+    sum_tokens = inp_tokens + out_tokens
+
+    if not is_resume:
+        logger.info(
+            f"[{sid}] 📊 Token | 当前 step: ↑{inp_tokens} ↓{out_tokens}"
+            f"(思考{rea_tokens}) Σ{sum_tokens}"
+        )
+        if accumulated_thinking:
+            logger.info(f"[{sid}] 🤔 思考内容(前200字):\n{accumulated_thinking[:200]}")
+        if accumulated_response:
+            logger.info(f"[{sid}] 💬 回复内容(前200字):\n{accumulated_response[:200]}")
+
+    # 持久化最终消息
+    persist_final_message(
+        db,
+        session_id,
+        build_assistant_message_dict(
+            content=accumulated_response,
+            thinking=accumulated_thinking,
+            thinking_duration=thinking_time,
+            tool_call_records=tool_call_records,
+            blocks=blocks,
+            input_tokens=inp_tokens,
+            output_tokens=out_tokens,
+            reasoning_tokens=rea_tokens,
+            context_tokens=last_context_tokens,
+            elapsed_time=elapsed_time,
+            step_count=current_step,
+            result_limit=None,
+        ),
+    )
+
+    if not is_resume:
+        # 调试用 context 快照（默认关闭，EASY_WRITE_SESSION_CONTEXT=1 开启）
+        write_session_context_snapshot(
+            db=db,
+            session_id=session_id,
+            message_id=message_id,
+            message_content=message_content,
+            accumulated_response=accumulated_response,
+            accumulated_thinking=accumulated_thinking,
+            thinking_time=thinking_time,
+            tool_call_records=tool_call_records,
+            sid=sid,
+        )
+
+    # 收尾副作用顺序固定：workspace rename → 技能入库 → 记忆更新（chat / resume 一致）
+    maybe_rename_workspace(agent, db, session_id, tool_call_records, sid)
+    register_session_skills(agent, db, session_id, sid)
+    submit_memory_updates(
+        agent, session_id, db, raw_user_msg, accumulated_response, sid
+    )
+
+    if not is_resume and session_logger:
+        session_logger.log_assistant_response(
+            content=accumulated_response,
+            thinking=accumulated_thinking or None,
+            tool_calls=tool_call_records_to_dicts(tool_call_records, 1000) or None,
+        )
+
+    usage_payload = build_usage_payload(
+        last_usage=last_usage,
+        context_length=context_length,
+        auto_compress_tokens=auto_compress_tokens,
+        last_context_tokens=last_context_tokens,
+        step_count=current_step,
+        elapsed_time=elapsed_time if is_resume else None,
+    )
+    if is_resume:
+        logger.info(
+            f"[{sid}] ✅ 流式响应完成 | 总步骤: {current_step} | "
+            f"总耗时: {elapsed_time:.2f}s | tokens={sum_tokens} "
+            f"(in={inp_tokens}, out={out_tokens}, think={rea_tokens})"
+        )
+    # 键序契约（与迁移前字面量一致）：type → session_id → elapsed_time →
+    # usage；resume 的 blocks 必须排在 usage 之后（chat 不带 blocks）。
+    done_fields = {
+        "elapsed_time": round(elapsed_time, 2),
+        "usage": usage_payload,
+    }
+    if is_resume:
+        # 权威最终 blocks（含工具结果/耗时），前端据此替换内存 blocks，避免依赖
+        # tool_result 事件匹配（HITL 恢复流曾因匹配失败导致工具一直"执行中"）。
+        done_fields["blocks"] = proc._sse_blocks()
+    yield emitter.done(session_id=session_id, **done_fields)
+
+
 async def chat_stream_generator(
     request: ChatRequest,
     db: Database,
@@ -299,6 +443,7 @@ async def chat_stream_generator(
 ) -> AsyncGenerator[str, None]:
     start_time = time.time()
     sid = session_id[-5:] if session_id else "new"
+    emitter = SSEEmitter(session_id)
 
     message_content = parsed_content or request.message
     # 保存原始用户输入（记忆/工作区前缀注入前），供日志明确打印用户实际提问。
@@ -331,7 +476,7 @@ async def chat_stream_generator(
     result_log_truncate = 200
     try:
 
-        yield format_sse({"type": SSEEvent.START, "session_id": session_id})
+        yield emitter.start()
 
         # ── 配置 ─────────────────────────────────────────────────
         context_length, auto_compress_tokens, result_log_truncate = (
@@ -391,27 +536,21 @@ async def chat_stream_generator(
             session_logger=session_logger,
             context=getattr(agent, "session_context", None),
         ):
-            yield format_sse(ev)
+            yield emitter.frame(ev)
 
         # ── Post-streaming: 流结束 ──────────────────────────────────────
         logger.info(f"[{sid}] 📢 流式输出结束")
 
         # 确保 thinking 结束（流结束时若仍在思考）
         for _ev in proc._end_thinking():
-            yield format_sse(_ev)
+            yield emitter.frame(_ev)
 
-        # 同步本地状态别名（供后续 HITL/持久化/记忆逻辑使用）
+        # content_end 需要累计正文；其余状态由 finalize_stream 从 proc 读取
         accumulated_response = proc.accumulated_response
-        accumulated_thinking = proc.accumulated_thinking
-        blocks = proc.blocks
-        tool_call_records = _tool_call_tuples(proc.blocks)
-        current_step = proc.current_step
-        last_context_tokens = proc.last_context_tokens
-        is_in_thinking = proc.is_in_thinking
 
         # 发送 content_end
         if accumulated_response:
-            yield format_sse({"type": SSEEvent.CONTENT_END, "content": ""})
+            yield emitter.content_end()
 
         # ── HITL: 检测中断（文件删除审批） ────────────────────────────
         try:
@@ -431,119 +570,32 @@ async def chat_stream_generator(
                     f"[{sid}] 🔔 HITL 中断 | thread_id={thread_id} | "
                     f"{len(interruption.action_requests_payload)} 个操作待审批"
                 )
-                yield format_sse(
-                    {
-                        "type": SSEEvent.APPROVAL_REQUIRED,
-                        "thread_id": thread_id,
-                        "action_requests": interruption.action_requests_payload,
-                    }
+                yield emitter.approval_required(
+                    thread_id=thread_id,
+                    action_requests=interruption.action_requests_payload,
                 )
                 return
         except Exception as e:
             logger.warning(f"[{sid}] HITL 中断检测异常: {e}", exc_info=True)
 
-        elapsed_time = time.time() - start_time
-
-        # 统计
-        thinking_time = thinking_duration(blocks)
-        total_tool_duration = (
-            sum(tc[5] for tc in tool_call_records) if tool_call_records else 0
-        )
-
-        logger.info(
-            f"[{sid}] ✅ 流式响应完成 | 总步骤: {current_step} | "
-            f"总耗时: {elapsed_time:.2f}s | 思考: {thinking_time}s | "
-            f"回复: 0s | 工具: {total_tool_duration:.2f}s | "
-            f"思考长度: {len(accumulated_thinking)} | "
-            f"回复长度: {len(accumulated_response)} 字符"
-        )
-        # 展示/持久化口径：**最近一次模型调用**的用量（不跨步累加）；
-        # 日志里的"本轮累计"仍用累加值，便于核对计费与排查。
-        last_usage = proc.last_usage
-        inp_tokens = last_usage["input_tokens"]
-        out_tokens = last_usage["output_tokens"]
-        rea_tokens = last_usage.get("reasoning_tokens", 0)
-        sum_tokens = inp_tokens + out_tokens
-
-        logger.info(
-            f"[{sid}] 📊 Token | 当前 step: ↑{inp_tokens} ↓{out_tokens}"
-            f"(思考{rea_tokens}) Σ{sum_tokens}"
-        )
-        if accumulated_thinking:
-            logger.info(f"[{sid}] 🤔 思考内容(前200字):\n{accumulated_thinking[:200]}")
-        if accumulated_response:
-            logger.info(f"[{sid}] 💬 回复内容(前200字):\n{accumulated_response[:200]}")
-
-        # 持久化最终消息
-        assistant_message = build_assistant_message_dict(
-            content=accumulated_response,
-            thinking=accumulated_thinking,
-            thinking_duration=thinking_time,
-            tool_call_records=tool_call_records,
-            blocks=blocks,
-            input_tokens=inp_tokens,
-            output_tokens=out_tokens,
-            reasoning_tokens=rea_tokens,
-            context_tokens=last_context_tokens,
-            elapsed_time=elapsed_time,
-            step_count=current_step,
-            result_limit=None,
-        )
-        persist_final_message(db, session_id, assistant_message)
-
-        # 调试用 context 快照（默认关闭，EASY_WRITE_SESSION_CONTEXT=1 开启）
-        write_session_context_snapshot(
+        # ── 收尾：最终消息 + 副作用 + done（chat：无 blocks、usage 无 elapsed_time）──
+        async for frame in finalize_stream(
+            agent=agent,
             db=db,
             session_id=session_id,
-            message_id=message_id,
-            message_content=message_content,
-            accumulated_response=accumulated_response,
-            accumulated_thinking=accumulated_thinking,
-            thinking_time=thinking_time,
-            tool_call_records=tool_call_records,
             sid=sid,
-        )
-
-        # Workspace rename（主生成器与 HITL resume 生成器复用）
-        maybe_rename_workspace(agent, db, session_id, tool_call_records, sid)
-
-        # 技能入库：对话创建的技能落到技能库，工作区不留副本（须在 rename 之后，
-        # 此时工作区路径与生成文件记录都已定稿）
-        register_session_skills(agent, db, session_id, sid)
-
-        # 会话级 + 用户级记忆持久化（主生成器与 HITL resume 生成器一致，
-        # 确保首轮即使触发 HITL、在批准后任务真正完成时也会生成 memory.md 并在第二轮加载）
-        raw_user_msg = parsed_content or request.message
-        submit_memory_updates(
-            agent, session_id, db, raw_user_msg, accumulated_response, sid
-        )
-
-        # Session logger
-        if session_logger:
-            tool_calls_for_log = (
-                tool_call_records_to_dicts(tool_call_records, 1000) or None
-            )
-            session_logger.log_assistant_response(
-                content=accumulated_response,
-                thinking=accumulated_thinking or None,
-                tool_calls=tool_calls_for_log,
-            )
-
-        usage_payload = build_usage_payload(
-            last_usage=last_usage,
+            message_id=message_id,
+            proc=proc,
+            start_time=start_time,
             context_length=context_length,
             auto_compress_tokens=auto_compress_tokens,
-            last_context_tokens=last_context_tokens,
-            step_count=current_step,
-        )
-        yield format_sse(
-            {
-                "type": SSEEvent.DONE,
-                "session_id": session_id,
-                "elapsed_time": round(elapsed_time, 2),
-                "usage": usage_payload,
-            }
-        )
+            tool_call_records=_tool_call_tuples(proc.blocks),
+            raw_user_msg=parsed_content or request.message,
+            message_content=message_content,
+            session_logger=session_logger,
+            emitter=emitter,
+        ):
+            yield frame
 
     except asyncio.CancelledError:
         accumulated_response = proc.accumulated_response
@@ -573,7 +625,7 @@ async def chat_stream_generator(
             )
         except Exception as e:
             logger.warning(f"[{sid}] 取消时保存失败: {e}")
-        yield format_sse({"type": SSEEvent.ERROR, "content": "请求被取消"})
+        yield emitter.error("请求被取消")
     except Exception as e:
         logger.error(f"[{sid}] ❌ 聊天异常: {str(e)}", exc_info=True)
         accumulated_response = proc.accumulated_response
@@ -585,8 +637,8 @@ async def chat_stream_generator(
             if proc.blocks and proc.blocks[-1]["type"] == "thinking":
                 proc.blocks[-1]["duration"] = dur
             proc.is_in_thinking = False
-            yield format_sse(
-                {"type": SSEEvent.THINKING_END, "duration": dur, "step": current_step}
+            yield emitter.emit(
+                SSEEvent.THINKING_END, duration=dur, step=current_step
             )
         for blk in reversed(blocks):
             if blk.get("type") == "tool_call" and blk.get("duration") is None:
@@ -594,7 +646,7 @@ async def chat_stream_generator(
                 blk["result"] = f"执行中断: {str(e)[:result_log_truncate]}"
                 blk["duration"] = 0
                 break
-        yield format_sse({"type": SSEEvent.ERROR, "content": f"处理失败: {str(e)}"})
+        yield emitter.error(f"处理失败: {str(e)}")
 
 async def resume_stream_generator(
     db: Database,
@@ -613,8 +665,9 @@ async def resume_stream_generator(
     """
     start_time = time.time()
     sid = session_id[-5:] if session_id else "resume"
+    emitter = SSEEmitter(session_id)
 
-    yield format_sse({"type": SSEEvent.START, "session_id": session_id})
+    yield emitter.start()
 
     # 从 DB 加载部分 assistant 消息
     session = None
@@ -717,26 +770,24 @@ async def resume_stream_generator(
             session_logger=session_logger,
             context=getattr(agent, "session_context", None),
         ):
-            yield format_sse(ev)
+            yield emitter.frame(ev)
 
         # ── Post-streaming ─────────────────────────────────────────
         # 确保 thinking 结束（流结束时若仍在思考）
         for _ev in proc._end_thinking():
-            yield format_sse(_ev)
+            yield emitter.frame(_ev)
 
-        # 同步本地状态别名（供后续嵌套 HITL/持久化/记忆逻辑使用）
+        # 同步本地状态别名（供 content_end / 去重 / finalize_stream 使用）
         accumulated_response = proc.accumulated_response
-        accumulated_thinking = proc.accumulated_thinking
         blocks = proc.blocks
         tool_call_records = _tool_call_tuples(proc.blocks, with_approval=True)
         current_step = proc.current_step
-        last_context_tokens = proc.last_context_tokens
         logger.info(
             f"[{sid}] 📢 流式输出结束 | steps={current_step} | blocks={len(blocks)}"
         )
 
         if accumulated_response:
-            yield format_sse({"type": SSEEvent.CONTENT_END, "content": ""})
+            yield emitter.content_end()
 
         # ── HITL: 检测嵌套中断 ─────────────────────────────────────
         try:
@@ -752,13 +803,16 @@ async def resume_stream_generator(
                 db.update_last_assistant_message(
                     session_id, interruption.partial_message
                 )
-                yield format_sse({
-                    "type": SSEEvent.APPROVAL_REQUIRED,
-                    "thread_id": thread_id,
+                # 键序契约（与迁移前字面量一致）：type → thread_id → blocks →
+                # action_requests。快捷方法把 action_requests 放在 blocks 之前，
+                # 故此处必须用 emit() 显式排序，不得改用 approval_required()。
+                yield emitter.emit(
+                    SSEEvent.APPROVAL_REQUIRED,
+                    thread_id=thread_id,
                     # 嵌套中断时也下发当前 blocks，前端据此刷新已完成的工具结果
-                    "blocks": proc._sse_blocks(),
-                    "action_requests": interruption.action_requests_payload,
-                })
+                    blocks=proc._sse_blocks(),
+                    action_requests=interruption.action_requests_payload,
+                )
                 return
         except Exception as e:
             logger.warning(
@@ -770,8 +824,6 @@ async def resume_stream_generator(
                 db, session_id, decision_status_by_id, sid
             )
 
-        elapsed_time = time.time() - start_time
-
         # 恢复流重跑工具时会再次 append 同 tool_call_id 的记录（DB 加载的 + 重跑时新增的），
         # 按 tool_call_id 去重并合并审批状态：保留有结果的记录，继承非空 approval_status，
         # 避免最终消息出现重复工具卡、且审批标记（已批准）不被无状态的新记录冲掉。
@@ -782,62 +834,24 @@ async def resume_stream_generator(
         blocks = finalize_blocks(blocks, decision_status_by_id)
         proc.blocks = blocks  # 同步去重后的 blocks，确保 done 事件 _sse_blocks() 一致
 
-        # 展示/持久化口径：最近一次模型调用的用量（不跨步累加）
-        last_usage = proc.last_usage
-        inp_tokens = last_usage["input_tokens"]
-        out_tokens = last_usage["output_tokens"]
-        rea_tokens = last_usage.get("reasoning_tokens", 0)
-        sum_tokens = inp_tokens + out_tokens
-
-        usage_payload = build_usage_payload(
-            last_usage=last_usage,
+        # ── 收尾：最终消息 + 副作用 + done（resume：带权威 blocks、usage 含 elapsed_time）──
+        async for frame in finalize_stream(
+            agent=agent,
+            db=db,
+            session_id=session_id,
+            sid=sid,
+            message_id=message_id,
+            proc=proc,
+            start_time=start_time,
             context_length=context_length,
             auto_compress_tokens=auto_compress_tokens,
-            last_context_tokens=last_context_tokens,
-            step_count=current_step,
-            elapsed_time=elapsed_time,
-        )
-
-        assistant_message = build_assistant_message_dict(
-            content=accumulated_response,
-            thinking=accumulated_thinking,
-            thinking_duration=None,
             tool_call_records=tool_call_records,
-            blocks=blocks,
-            input_tokens=inp_tokens,
-            output_tokens=out_tokens,
-            reasoning_tokens=rea_tokens,
-            context_tokens=last_context_tokens,
-            elapsed_time=elapsed_time,
-            step_count=current_step,
-        )
-        persist_final_message(db, session_id, assistant_message)
-
-        # 记忆持久化：HITL 恢复流首轮因中断后，用户批准后任务真正完成时，
-        # 也须在工作区生成 memory.md（主生成器在 HITL 中断处提前 return，到不了记忆块；
-        # 此处复用与主生成器一致的公共函数，保证第二轮能加载第一轮总结）。
-        # 注意：仅在任务真正完成（非嵌套中断，嵌套中断已提前 return）时执行。
-        maybe_rename_workspace(agent, db, session_id, tool_call_records, sid)
-        register_session_skills(agent, db, session_id, sid)
-        submit_memory_updates(
-            agent, session_id, db, original_user_msg, accumulated_response, sid
-        )
-
-        logger.info(
-            f"[{sid}] ✅ 流式响应完成 | 总步骤: {current_step} | "
-            f"总耗时: {elapsed_time:.2f}s | tokens={sum_tokens} "
-            f"(in={inp_tokens}, out={out_tokens}, think={rea_tokens})"
-        )
-
-        yield format_sse({
-            "type": SSEEvent.DONE,
-            "session_id": session_id,
-            "elapsed_time": round(elapsed_time, 2),
-            "usage": usage_payload,
-            # 下发权威最终 blocks（含工具结果/耗时），前端据此替换内存 blocks，
-            # 避免依赖 tool_result 事件匹配（HITL 恢复流曾因匹配失败导致工具一直"执行中"）。
-            "blocks": proc._sse_blocks(),
-        })
+            raw_user_msg=original_user_msg,
+            session_logger=session_logger,
+            mode="resume",
+            emitter=emitter,
+        ):
+            yield frame
 
     except asyncio.CancelledError:
         logger.info(f"[{sid}] HITL 恢复被取消")
@@ -856,7 +870,7 @@ async def resume_stream_generator(
             with_approval=True,
             raise_on_error=True,
         )
-        yield format_sse({"type": SSEEvent.ERROR, "content": "请求被取消"})
+        yield emitter.error("请求被取消")
     except Exception as e:
         logger.error(f"[{sid}] HITL 恢复异常: {str(e)}", exc_info=True)
         # 持久化已生成的部分回复（与取消路径一致），避免流式过程中已完成的
@@ -869,4 +883,4 @@ async def resume_stream_generator(
             start_time=start_time,
             with_approval=True,
         )
-        yield format_sse({"type": SSEEvent.ERROR, "content": f"处理失败: {str(e)}"})
+        yield emitter.error(f"处理失败: {str(e)}")

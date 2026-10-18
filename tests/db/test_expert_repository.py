@@ -69,6 +69,16 @@ def test_repository_delegates_expert_crud_and_owner_scoping(tmp_path):
     assert repo.get_owned("expert-a", alice.user_id) is None
 
 
+def test_repository_exposes_session_files_for_upload_ports(tmp_path):
+    db = _make_db(tmp_path)
+    repo = ExpertRepository(db)
+    db.add_session_file("sess-expert", "报告.docx", "/tmp/报告.docx", "docx", 7, "alice")
+
+    rows = repo.get_session_files("sess-expert")
+    assert [row["filename"] for row in rows] == ["报告.docx"]
+    assert repo.get_session_files("missing") == []
+
+
 def test_repository_delegates_expert_session_and_message_writes(tmp_path):
     db = _make_db(tmp_path)
     repo = ExpertRepository(db)

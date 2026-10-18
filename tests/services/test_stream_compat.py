@@ -68,6 +68,7 @@ LEGACY_SYMBOLS = [
     "resolve_chat_context",
     "pump_stream",
     "HitlInterruption",
+    "finalize_stream",
 ]
 
 
@@ -102,6 +103,7 @@ def test_streaming_reexports_same_objects():
         streaming.resume_stream_generator
         is orchestrator.resume_stream_generator
     )
+    assert streaming.finalize_stream is orchestrator.finalize_stream
 
 
 def test_streaming_is_package_and_py_shim_remains():

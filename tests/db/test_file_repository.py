@@ -34,7 +34,6 @@ def test_repository_delegates_session_files_and_generated_files(tmp_path):
     db.create_session(_session())
     db.update_session_workspace_name("sess-files", "ws-files")
 
-    assert repo.database is db
     repo.add_session_file(
         session_id="sess-files",
         filename="report.pdf",

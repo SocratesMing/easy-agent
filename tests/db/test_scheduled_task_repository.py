@@ -4,7 +4,11 @@ from easy_agent.db.database import Database
 from easy_agent.db.repositories.scheduled_task_repository import (
     ScheduledTaskRepository,
 )
-from easy_agent.models.db import ScheduledTaskModel, ScheduledTaskRunModel
+from easy_agent.models.db import (
+    ScheduledTaskModel,
+    ScheduledTaskRunModel,
+    SessionModel,
+)
 
 
 def _make_db(tmp_path) -> Database:
@@ -30,7 +34,6 @@ def test_repository_delegates_task_crud_and_run_records(tmp_path):
     db = _make_db(tmp_path)
     repo = ScheduledTaskRepository(db)
 
-    assert repo.database is db
     db.create_scheduled_task(_task("task-1"))
     db.create_scheduled_task(_task("task-2", username="bob"))
 
@@ -62,6 +65,46 @@ def test_repository_delegates_task_crud_and_run_records(tmp_path):
     assert repo.delete_scheduled_task("task-1") is True
     assert repo.get_scheduled_task("task-1") is None
     assert repo.delete_scheduled_task("task-1") is False
+
+
+def test_repository_resolves_workspace_name_like_scheduler(tmp_path):
+    """工作目录名解析与 services.scheduler 的同名规则逐条等价（防漂移）。"""
+    from easy_agent.services.scheduler import get_task_workspace_name
+
+    db = _make_db(tmp_path)
+    repo = ScheduledTaskRepository(db)
+    now = "2026-10-18T00:00:00"
+    db.create_session(
+        SessionModel(
+            session_id="sess-ws",
+            title="会话",
+            messages=[],
+            created_at=now,
+            updated_at=now,
+            username="alice",
+            workspace_name="ws-session",
+        )
+    )
+    db.update_session_workspace_name("sess-ws", "ws-session")
+
+    task_explicit = _task("task-explicit")
+    task_explicit.workspace_name = "ws-explicit"
+
+    task_session = _task("task-session")
+    task_session.session_id = "sess-ws"
+
+    task_missing_session = _task("task-missing-session")
+    task_missing_session.session_id = "missing-session"
+
+    task_orphan = _task("task-orphan")
+
+    for task in (task_explicit, task_session, task_missing_session, task_orphan):
+        assert repo.get_workspace_name(task) == get_task_workspace_name(db, task)
+
+    assert repo.get_workspace_name(task_explicit) == "ws-explicit"
+    assert repo.get_workspace_name(task_session) == "ws-session"
+    assert repo.get_workspace_name(task_missing_session) == "scheduled_task-missing-session"
+    assert repo.get_workspace_name(task_orphan) == "scheduled_task-orphan"
 
 
 def test_repository_list_is_scoped_to_requested_username(tmp_path):

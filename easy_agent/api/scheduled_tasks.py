@@ -11,7 +11,9 @@ from ..db import get_database
 from ..db.repositories.scheduled_task_repository import (
     ScheduledTaskRepository,
 )
+from ..db.repositories.user_repository import UserRepository
 from ..middleware import get_current_username
+from ..middleware.auth import get_user_repository
 from ..models.api import (
     ScheduledTaskInfo,
     ScheduledTaskRunInfo,
@@ -22,7 +24,6 @@ from ..services import (
     unregister_scheduled_task,
     get_scheduler,
 )
-from ..services.scheduler import get_task_workspace_name
 from ..api.files import build_workspace_tree, resolve_workspace_file, serve_workspace_file
 from ..config import Config
 from ..utils.task_logger import log_task_event
@@ -216,7 +217,7 @@ def _resolve_task_workspace_dir(
         raise HTTPException(status_code=404, detail="任务不存在")
     if task.username != username:
         raise HTTPException(status_code=403, detail="无权访问此任务")
-    workspace_name = get_task_workspace_name(repo.database, task)
+    workspace_name = repo.get_workspace_name(task)
     workspace_dir = Config.get_user_workspace_dir(task.username)
     if workspace_name:
         workspace_dir = workspace_dir / "session" / workspace_name
@@ -232,7 +233,7 @@ async def get_task_workspace(
 ):
     """返回定时任务工作目录的文件树，便于查看任务产生的文件。
 
-    工作目录定位规则见 ``get_task_workspace_name``：若任务由会话生成则复用该会话目录，
+    工作目录定位规则见 ``ScheduledTaskRepository.get_workspace_name``：若任务由会话生成则复用该会话目录，
     否则使用任务独立目录 ``scheduled_{task_id}``。
     """
     repo = _as_scheduled_task_repository(db)
@@ -244,6 +245,7 @@ async def get_task_workspace(
 @router.get("/{task_id}/workspace/file", summary="预览/下载定时任务工作目录文件")
 async def get_task_workspace_file(
     request: Request,
+    user_repo: Annotated[UserRepository, Depends(get_user_repository)],
     task_id: str,
     file_path: str = "",
     download: bool = False,
@@ -265,11 +267,11 @@ async def get_task_workspace_file(
     if auth_header and auth_header.startswith("Bearer "):
         from ..middleware.auth import verify_token_sso
 
-        username = verify_token_sso(auth_header[7:], repo.database)
+        username = verify_token_sso(auth_header[7:], user_repo)
     if not username and token:
         from ..middleware.auth import verify_token_sso
 
-        username = verify_token_sso(token, repo.database)
+        username = verify_token_sso(token, user_repo)
     if not username:
         raise HTTPException(status_code=401, detail="登录已过期或未登录，请重新登录")
 

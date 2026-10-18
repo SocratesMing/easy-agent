@@ -5,7 +5,6 @@ Provides unified configuration loading and management functionality
 
 import logging
 import os
-from .env import env_str
 import re
 from pathlib import Path
 from typing import Any
@@ -13,9 +12,303 @@ from typing import Any
 import yaml
 from pydantic import BaseModel, Field, field_validator
 
+from .env import env_bool, env_str
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_APP_WELCOME_TITLE = "Easy Agent，让工作更简单"
+
+# 未知配置键的默认策略是「告警并忽略」，保证旧配置可直接启动；
+# 设置 EASY_CONFIG_STRICT=1 后改为 fail-fast（部署/CI 推荐）。
+CONFIG_STRICT_ENV_VAR = "EASY_CONFIG_STRICT"
+
+# 顶层键：来自 Config.from_yaml() 的扁平读取，以及兄弟模块直接消费的段
+# （knowledge 由 knowledges.core.config 读取；log/log_dir 为历史遗留键）。
+KNOWN_TOP_LEVEL_KEYS = frozenset(
+    {
+        "model",
+        "models",
+        "llm",  # 旧版单模型写法，仍兼容
+        "retry",
+        "max_steps",
+        "workspace_dir",
+        "memories_dir",
+        "sessions_dir",
+        "prompt_path",
+        "system_prompt_path",  # 旧键，兼容
+        "idle_logout_minutes",
+        "denied_dirs",
+        "skill_write",
+        "external_dirs",
+        "sandbox_enabled",
+        "summarization",
+        "tools",
+        "web_search",
+        "preset_questions",
+        "database",
+        "personnel",
+        "distributed_lock",
+        "upload_limits",
+        "file_context",
+        "expert",
+        "expert_tags",
+        "expert_guardrail_enabled",
+        "expert_relevance_check_enabled",
+        "expert_relevance_strict",
+        "expert_relevance_disable_thinking",
+        "app_welcome_title",
+        "knowledge",
+        "log",  # 历史遗留，Config 不再读取
+        "log_dir",  # 历史遗留，Config 不再读取
+    }
+)
+
+# 关键配置节及其允许的直接子键。点号表示嵌套节。
+KNOWN_SECTION_KEYS: dict[str, frozenset[str]] = {
+    "retry": frozenset({"enabled", "max_retries"}),
+    "tools": frozenset(
+        {"skills_dir", "prompts_dir", "result_log_truncate", "experts_dir"}
+    ),
+    "database": frozenset({"type", "sqlite", "mysql"}),
+    "database.sqlite": frozenset({"path"}),
+    "database.mysql": frozenset(
+        {
+            "host",
+            "port",
+            "user",
+            "password",
+            "database",
+            "charset",
+            "pool",
+            "connect_timeout",
+            "read_timeout",
+            "write_timeout",
+        }
+    ),
+    "database.mysql.pool": frozenset(
+        {"pool_size", "max_overflow", "pool_timeout", "pool_recycle"}
+    ),
+    "summarization": frozenset(
+        {"enabled", "compression_threshold", "compression_target"}
+    ),
+    "web_search": frozenset(
+        {
+            "enabled",
+            "provider",
+            "api_url",
+            "api_key",
+            "search_depth",
+            "topic",
+            "timeout_seconds",
+            "default_time_range",
+            "max_results",
+            "main_text_max_chars",
+        }
+    ),
+    "distributed_lock": frozenset(
+        {
+            "enabled",
+            "key_prefix",
+            "ttl_seconds",
+            "renew_interval_seconds",
+            "retry_interval_seconds",
+        }
+    ),
+    "personnel": frozenset(
+        {"self_registration_enabled", "passwordless_login_enabled"}
+    ),
+    "upload_limits": frozenset(
+        {"enabled", "max_file_size_mb", "max_files_per_message", "max_total_size_mb"}
+    ),
+    "file_context": frozenset(
+        {
+            "enabled",
+            "parse_max_file_size_mb",
+            "max_stored_chars",
+            "manifest_max_chars",
+            "preview_max_chars",
+        }
+    ),
+    "expert": frozenset(
+        {
+            "guardrail_enabled",
+            "relevance_check_enabled",
+            "relevance_strict",
+            "relevance_disable_thinking",
+        }
+    ),
+    "knowledge": frozenset(
+        {
+            "implementation",  # 已废弃，仅 knowledge_impl 日志提示（只支持 v2）
+            "enabled",
+            "base_url",
+            "api_key",
+            "shared_dataset_id",
+            "embedding",
+            "audit",
+            "limits",
+            "catalog_sync",
+        }
+    ),
+    "knowledge.embedding": frozenset({"model"}),
+    "knowledge.audit": frozenset({"enabled", "max_details_bytes"}),
+    "knowledge.limits": frozenset(
+        {
+            "max_file_size_mb",
+            "max_request_size_mb",
+            "max_files_per_request",
+            "max_dataset_name_utf8_bytes",
+            "max_filename_utf8_bytes",
+            "allowed_extensions",
+            "max_documents_per_query",
+        }
+    ),
+    "knowledge.catalog_sync": frozenset(
+        {
+            "enabled",
+            "sql_file",
+            "database",
+            "owner_username",
+            "space_type",
+            "department_id",
+            "max_level",
+            "mysql",
+        }
+    ),
+    "knowledge.catalog_sync.mysql": frozenset(
+        {"host", "port", "user", "password", "charset"}
+    ),
+    "llm": frozenset(
+        {
+            "provider",
+            "api_key",
+            "model",
+            "api_base",
+            "context_length",
+            "max_input_tokens",
+            "protocol",
+            "headers",
+        }
+    ),
+}
+
+# models.<provider> 下允许的键（provider 名本身是动态的）。
+KNOWN_PROVIDER_KEYS = frozenset(
+    {
+        "provider",
+        "api_key",
+        "model",
+        "api_base",
+        "context_length",
+        "max_input_tokens",  # 旧键，from_yaml 会映射为 context_length
+        "protocol",
+        "headers",
+    }
+)
+
+# 已废弃但仍兼容的键 -> 提示信息。不参与 unknown 判定，也不参与
+# config.yaml / config-example.yaml 的键集合漂移比较。
+DEPRECATED_CONFIG_KEYS: dict[str, str] = {
+    "llm": "llm 为旧版单模型写法，请改用 models + model；当前仍兼容读取",
+    "system_prompt_path": "system_prompt_path 已由 prompt_path 取代，当前仍兼容读取",
+    "log": "log 段不再由 Config 读取（日志由 initialization/log.py 管理）",
+    "log_dir": "log_dir 不再由 Config 读取（日志由 initialization/log.py 管理）",
+    "knowledge.implementation": (
+        "knowledge.implementation 已废弃：仅 knowledge_impl 读取后打日志，"
+        "且只支持 v2；可安全删除"
+    ),
+}
+
+
+def _get_section(data: dict, path: str) -> dict | None:
+    """按点号路径取一个 mapping 节；不存在或类型不符时返回 None。"""
+    current: Any = data
+    for part in path.split("."):
+        if not isinstance(current, dict):
+            return None
+        current = current.get(part)
+    return current if isinstance(current, dict) else None
+
+
+def find_unknown_config_keys(data: dict) -> list[str]:
+    """返回配置中不在已知 schema 内的键（点号路径，已排序）。
+
+    只检查顶层键与关键配置节（含嵌套节、models.<provider>）；列表/字典
+    动态内容（preset_questions、external_dirs、headers 等）不做键名枚举。
+    """
+    if not isinstance(data, dict):
+        return ["<root>"]
+
+    unknown: set[str] = set()
+    for key in data:
+        if key not in KNOWN_TOP_LEVEL_KEYS:
+            unknown.add(str(key))
+
+    for section_path, allowed in KNOWN_SECTION_KEYS.items():
+        section = _get_section(data, section_path)
+        if section is None:
+            continue
+        for key in section:
+            if key not in allowed:
+                unknown.add(f"{section_path}.{key}")
+
+    models = data.get("models")
+    if isinstance(models, dict):
+        for provider_name, provider_cfg in models.items():
+            if not isinstance(provider_cfg, dict):
+                continue
+            for key in provider_cfg:
+                if key not in KNOWN_PROVIDER_KEYS:
+                    unknown.add(f"models.{provider_name}.{key}")
+
+    return sorted(unknown)
+
+
+def find_deprecated_config_keys(data: dict) -> list[str]:
+    """返回实际出现（值为非 None）的已废弃键。"""
+    found: list[str] = []
+    for path in DEPRECATED_CONFIG_KEYS:
+        if "." in path:
+            parent_path, key = path.rsplit(".", 1)
+            section = _get_section(data, parent_path)
+            present = bool(section) and key in section
+        else:
+            present = isinstance(data, dict) and path in data
+        if present:
+            found.append(path)
+    return found
+
+
+def validate_config_keys(
+    data: dict,
+    *,
+    strict: bool | None = None,
+    source: str | None = None,
+) -> list[str]:
+    """检测未知/废弃配置键；返回未知键列表。
+
+    - 默认（strict=False）：未知键仅 WARNING，旧配置保持可启动；
+    - ``strict=True`` 或环境变量 ``EASY_CONFIG_STRICT=1``：未知键抛
+      ``ValueError``，用于部署自检 / CI；
+    - 废弃键始终只 WARNING（兼容旧配置，不阻断启动）。
+    """
+    unknown = find_unknown_config_keys(data)
+    if unknown:
+        where = f"（{source}）" if source else ""
+        message = (
+            f"配置包含未知键{where}: {', '.join(unknown)}；已忽略。"
+            f"如需启动失败请设置 {CONFIG_STRICT_ENV_VAR}=1"
+        )
+        if strict is None:
+            strict = env_bool(CONFIG_STRICT_ENV_VAR, False)
+        if strict:
+            raise ValueError(message)
+        logger.warning("⚠️ %s", message)
+
+    for path in find_deprecated_config_keys(data):
+        logger.warning("⚠️ 配置键 %s 已废弃：%s", path, DEPRECATED_CONFIG_KEYS[path])
+
+    return unknown
 
 # 联网搜索默认地址（config.yaml 未显式配置 api_url 时按 provider 取用）：
 #   tavily   —— Tavily Search API（https://docs.tavily.com）
@@ -541,6 +834,11 @@ class Config(BaseModel):
 
         if not data:
             raise ValueError("Configuration file is empty")
+        if not isinstance(data, dict):
+            raise ValueError("Configuration file must contain a YAML mapping")
+
+        # 未知键默认只告警（旧配置兼容）；EASY_CONFIG_STRICT=1 时 fail-fast。
+        validate_config_keys(data, source=str(config_path))
 
         # Expand ${ENV_VAR} / ${ENV_VAR:-default} placeholders (e.g. api_key, password).
         _ensure_project_env_loaded()

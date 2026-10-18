@@ -692,6 +692,22 @@ Batch 0/1（安全 P0/P1）本轮未选择执行；Web Terminal 暂不处理；�
 
 报告：`docs/audit/2026-10-18-c1-c2-b1-d-report.md`。
 
+### 10.1aq 2026-10-18 非安全剩余项批量（已完成）
+
+| 项 | 状态 | 结果 |
+| --- | --- | --- |
+| FW-04 HarnessProfile | ✅ | 官方 profile 替换 execute 描述 monkeypatch |
+| A1 SCC=0 | ✅ | 知识流式端口化；import 图 0 SCC，白名单清空 |
+| A3 技能单一源 | ✅ | 单向生成 + office 全量哈希 |
+| C2/C3 | ✅ | finalize_stream；24/24 SSE frame 经统一 emitter |
+| C1b 服务边界 | ✅ | 目标 API `repo.database` 19→7；剩余边界登记 |
+| E2/E3/E4 | ✅ | 配置校验、RED 指标、文档同步 |
+| FW-12/14 + 专项增强 | ✅ | 动态 HITL、MCP 错误语义、记忆锁/来源引用 |
+| FW-11 语义 query | ⚠ | 无 embedding/向量索引，记录后续 |
+| 全量回归 | ✅ | **1347 passed / 1 skipped / 0 failed / 0 error（256.4s）**；mcp-server 43 passed |
+
+报告：`docs/audit/2026-10-18-remaining-batch-report.md`。
+
 ### 10.2 后续计划（Increment 2+）
 
 > 上面 10.1 系列已完成的增量不再重复列出；以下只保留**尚未闭环**的项。

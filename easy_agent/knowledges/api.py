@@ -36,12 +36,13 @@ from starlette.responses import StreamingResponse
 
 from ..db import Database, get_database
 from ..model import create_model
-from ..models.api import ChatRequest
 from ..models.db import SessionModel
-from ..services import cancel_stream_task, get_agent_config, remove_session_agent
 from ..utils.auth import decode_access_token
+from .chat.host_port import get_host_capabilities
+from .chat.panel import require_host_capabilities, stream_panel_answer
 from .core.config import KnowledgeConfig
 from .core.models import (
+    KnowledgePrincipal,
     AskRequest,
     AskResponse,
     DocumentListResponse,
@@ -98,15 +99,6 @@ _CITATION_RE = re.compile(r"\[知识依据(\d+)\]")
 # ---------------------------------------------------------------------------
 # 请求级身份（fail-closed，无遗留请求头/默认用户回退）
 # ---------------------------------------------------------------------------
-@dataclass(frozen=True, slots=True)
-class KnowledgePrincipal:
-    """请求级身份：由 Bearer 令牌解析出的用户、用户名与部门。"""
-
-    user_id: str
-    username: str
-    department_id: str | None
-
-
 async def get_knowledge_principal(
     http_request: Request,
     db: Annotated[Database, Depends(get_database)],
@@ -976,7 +968,7 @@ async def _answer(
 ) -> tuple[str, list[str]]:
     """有证据时基于证据作答并校验引用；无证据时正常回答话题本身。"""
 
-    runtime = get_agent_config()
+    runtime = get_host_capabilities().get_agent_config()
     if not runtime or not runtime.get("config"):
         raise KnowledgeServiceError(
             "KNOWLEDGE_LLM_NOT_READY",
@@ -1110,19 +1102,14 @@ async def ask_with_easyagent_stream(
         principal=principal,
     )
 
-    # 局部导入避免 API 模块加载阶段产生循环依赖。
-    from ..api.chat import chat_stream
-
-    return await chat_stream(
-        ChatRequest(
-            message=payload.question,
-            session_id=session.session_id,
-            message_id=str(uuid.uuid4()),
-            enable_deep_think=True,
-        ),
-        db,
-        request,
-        principal.username,
+    # A1：流式调用下沉到 knowledges/chat/panel，经 host_port 端口取宿主实现，
+    # 本模块不再反向 import api.chat（见 docs/design/2026-10-18-a1-knowledge-streaming.md）。
+    return await stream_panel_answer(
+        session_id=session.session_id,
+        question=payload.question,
+        request=request,
+        db=db,
+        username=principal.username,
     )
 
 
@@ -1202,8 +1189,9 @@ async def cancel_easyagent_answer(
     await _call(service.get_base(base_id, principal))
     session = _current_panel_chat_session(db, principal, base_id)
     session_id = session.session_id if session else ""
-    cancelled = await cancel_stream_task(session_id)
-    remove_session_agent(session_id)
+    capabilities = get_host_capabilities()
+    cancelled = await capabilities.cancel_stream_task(session_id)
+    capabilities.remove_session_agent(session_id)
     return {"status": "cancelled" if cancelled else "idle"}
 
 

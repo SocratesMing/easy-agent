@@ -1,10 +1,11 @@
 # Easy Agent
 
-> ⚠️ **2026-10-17 审计更新**：本文部分章节（前端技术栈、目录结构、模块清单）
-> 可能滞后。准确的模块地图/数据流/命令以 `docs/architecture-current.md` 为准。
-> 关键事实：后端当前托管 `frontend-vue2/`（Vue 2.7 + Element UI）构建产物，
-> 同时维护 `frontend/`（Vue 3.5 + Vite）第二基线；运行时技能 7 个；已有
-> Dockerfile / docker-compose / k8s / `.github/workflows/ci.yml`。
+> ℹ️ **2026-10-18 事实同步**：模块地图 / 数据流 / 命令以
+> `docs/architecture-current.md` 为准。关键事实：后端当前托管 `frontend-vue2/`
+> （Vue 2.7 + Element UI）构建产物，同时维护 `frontend/`（Vue 3.5 + Vite）
+> 第二基线；运行时技能 7 个；已有 Dockerfile / docker-compose / k8s /
+> `.github/workflows/ci.yml`。新增配置键请同步 `config-example.yaml` 并跑
+> `python scripts/check_config_schema.py --check`。
 
 
 > 基于 [LangChain DeepAgents](https://docs.langchain.com/oss/python/deepagents) 框架的 AI Agent Web 应用。
@@ -88,10 +89,14 @@ easy-agent/
 │   ├── db/database.py            # 数据访问层（SQLite + MySQL）
 │   ├── models/                   # Pydantic / dataclass 模型
 │   ├── middleware/               # JWT 鉴权等
-│   ├── skills/                   # 公共技能目录
+│   ├── skills/                   # 包内技能回退副本（canonical 在仓库根 skills/）
+│   ├── knowledges/               # 知识库 v2（RAGFlow service/API/runtime）
+│   ├── personnel/                # 人员管理与 Excel 导入
+│   ├── checkpoints.py            # LangGraph checkpoint 后端选择/降级
+│   ├── sandbox.py / hitl.py      # 命令沙箱 / 人工审批规则
 │   ├── config/
-│   │   ├── config.yaml           # 运行时配置
-│   │   └── system_prompt.md      # Agent 系统提示词
+│   │   ├── config-example.yaml   # 配置模板（复制为 gitignored 的 config.yaml）
+│   │   └── prompts/              # system.md + fragments/ + memory_*.md
 │   └── utils/task_logger.py      # 定时任务审计日志
 │
 ├── frontend-vue2/                # 当前托管基线（Vue 2.7 + Element UI + Vue CLI；另有 frontend/ 第二基线 Vue 3.5 + Vite）
@@ -126,8 +131,8 @@ easy-agent/
 │       ├── {session_id}/         #     会话生成的文件
 │       └── cron/                 #     定时任务审计日志
 ├── memories/                     # 长期记忆（按用户）
-├── skills/                       # 自定义技能
-├── prompts/                      # 提示词模板
+├── skills/                       # canonical 运行时技能（7 个）
+├── prompts/                      # 提示词模板（外部覆盖目录）
 ├── logs/                         # 应用日志
 └── tests/                        # 单元测试（pytest + pytest-asyncio）
 ```
@@ -211,7 +216,7 @@ docker run -d \
 配置文件路径可用 `EASY_CONFIG=/path/to/xxx.yaml` 覆盖（`Config.resolve_config_path()`），
 终端会打印环境信息与加载的配置文件路径。
 YAML 中的 `api_key`、`password` 等值支持 `${ENV_VAR}` / `${ENV_VAR:-默认值}` 占位符，在加载配置时从 `os.environ` 解析；项目根 `.env` 会在配置解析前自动注入（见 `easy_agent/utils/env_loader.py`），未取到值的变量名会在启动日志里以 WARNING 列出。
-前端构建入口（`frontend/scripts/run-vite.mjs`，实际调用 Vue CLI）按 `AGENT_ENV` 映射为构建 mode（dev→development / test→test / prod→production），加载对应的 `.env.[mode]` 文件，并在终端输出配置横幅。
+两套前端都用 `scripts/run-vite.mjs` 按 `AGENT_ENV` 映射构建 mode（dev→development / test→test / prod→production）：`frontend-vue2/` 实际调用 Vue CLI（webpack），`frontend/` 实际调用 Vite；两者都会加载对应的 `.env.[mode]` 文件并输出配置横幅。
 
 ---
 
@@ -230,13 +235,13 @@ models:
     model: "deepseek-v4-flash"
     api_key: "sk-xxx"
     api_base: "https://api.deepseek.com"
-    max_input_tokens: 200000
+    context_length: 200000        # 旧键 max_input_tokens 仍兼容
 
 # Agent
 max_steps: 100
 workspace_dir: "./workspace"
 memories_dir: "./memories"
-system_prompt_path: "system_prompt.md"
+prompt_path: "prompts"          # 旧键 system_prompt_path 仍兼容
 
 # 上下文压缩
 summarization:
@@ -278,6 +283,11 @@ distributed_lock:
 external_dirs:
   "/strategy-workspace": "/host/path/to/workspace"
 ```
+
+配置校验：未知顶层/关键节键默认只 WARNING（旧配置可直接启动）；设置
+`EASY_CONFIG_STRICT=1` 后改为启动失败。`python scripts/check_config_schema.py --check`
+会校验 `config-example.yaml` 的 schema，并在本地存在 `config.yaml` 时检查
+「本地配置使用的键是否都已写入模板」。
 
 ---
 
@@ -453,9 +463,15 @@ uv run uvicorn easy_agent.app:app --host 0.0.0.0 --port 8000 --reload
 
 ### 前端开发模式（热更新）
 ```bash
+# Vue2 基线（后端当前托管）
 cd frontend-vue2
 npm run dev
 # 默认 http://localhost:5173，通过 webpack devServer 代理转发 /agent、/api 到后端（默认 :8080）
+
+# Vue3 基线（Vite）
+cd frontend
+npm run dev
+# 后端地址通过 VITE_API_BASE_URL 配置（见 .env.dev）
 ```
 
 ### 代码风格
@@ -467,14 +483,21 @@ npm run dev
 uv run pytest
 ```
 
+### API 文档
+```bash
+python scripts/generate_api_docs.py --check   # CI 冒烟检查：可收集、前缀/模块标签正确
+python scripts/generate_api_docs.py           # 生成 docs/API接口文档.xlsx
+```
+`docs/API接口文档.xlsx` 是生成物，不要求每次代码变更都提交二进制更新。
+
 ### 添加新工具
 1. 在 `easy_agent/tools/` 下继承 `langchain_core.tools.BaseTool`
 2. 在 `easy_agent/services/mcp.py` 注册或注入到 `mcp_tools` 列表
-3. 在 `easy_agent/config/system_prompt.md` 中描述工具用途
+3. 在 `easy_agent/config/prompts/system.md` 中描述工具用途
 
 ### 添加新 API 路由
-1. 在 `easy_agent/agent/` 下新建 router 文件
-2. 在 `easy_agent/agent/__init__.py` 中导出
+1. 在 `easy_agent/api/` 下新建 router 文件
+2. 在 `easy_agent/api/__init__.py` 中导出
 3. 在 `easy_agent/app.py` 中 `app.include_router(...)`
 
 ---

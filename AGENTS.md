@@ -1,33 +1,38 @@
 # Repository Guidelines
 
-> ⚠️ **2026-10-17 审计更新**：本文件部分内容已过时，模块地图/命令/事实以
-> `docs/architecture-current.md` 为准。已知过时点：
-> - 前端同时存在 `frontend-vue2/`（Vue 2.7 + Element UI，后端当前托管）与
->   `frontend/`（Vue 3.5 + Vite）两套基线，均在维护；
-> - 运行时技能为 7 个（不是 17 个）；agent 不挂载 `/skills/` 只读路由，用户技能在 `/user-skills/`；
-> - 已移除 `X-Username` 回退与“JWT secret 重启失效”（secret 持久化在 `data/.jwt_secret`）；
-> - 仓库已有 Dockerfile / docker-compose / k8s / `.github/workflows/ci.yml`；
-> - 新增模块：`knowledges/`、`personnel/`、`connectors`、`expert`、`checkpoints`、`sandbox`、
->   `hitl`、`backends/`、`runtime_config`、`sse` 等。
+> ℹ️ **2026-10-18 事实同步**：模块地图 / 数据流 / 命令以
+> `docs/architecture-current.md` 为准。本文件已同步的关键事实：
+> 双前端基线（`frontend-vue2/` Vue 2.7 当前托管、`frontend/` Vue 3.5 + Vite
+> 并行维护）；运行时技能 7 个；agent 不挂载 `/skills/` 只读路由，用户技能在
+> `/user-skills/`；`X-Username` 兼容回退已移除；JWT secret 在 dev/test
+> 持久化于 `data/.jwt_secret`（prod 必须显式设置 `EASY_JWT_SECRET`）；
+> 仓库已有 Dockerfile / docker-compose / k8s / `.github/workflows/ci.yml`。
 
 
-Contributor guide for **easy-agent**, an AI agent web app built on LangChain DeepAgents with a FastAPI backend and Vue 2.7 frontend.
+Contributor guide for **easy-agent**, an AI agent web app built on LangChain DeepAgents with a FastAPI backend and two Vue baselines (`frontend-vue2/` Vue 2.7, `frontend/` Vue 3.5 + Vite).
 
 ## Project Structure & Module Organization
 
 ```
 easy-agent/
 ├── easy_agent/          # Python backend (FastAPI)
-│   ├── api/             # Routers: chat, auth, files, sessions, terminal, scheduled_tasks
-│   ├── services/        # Business logic: streaming, scheduler, agent_manager, mcp
-│   ├── db/              # SQLite/MySQL database layer
+│   ├── api/             # Routers: chat/auth/sessions/files/terminal/scheduled_tasks/
+│   │                    #   settings/skill_center/connectors/expert/knowledge/personnel
+│   ├── services/        # streaming (SSE), scheduler, agent_manager, mcp, session_uploads, sse
+│   ├── db/              # SQLite/MySQL layer + schema_registry + session_messages
 │   ├── models/          # Pydantic API & DB models
-│   ├── middleware/      # JWT auth middleware
-│   ├── tools/           # Agent-callable tools
-│   ├── skills/          # SKILL.md-based skill bundles
-│   └── config/          # YAML configs + system_prompt.md
-├── frontend/            # Vue 2.7 + Element UI SPA（历史构建产物仍在，源码停更）
-├── frontend-vue2/       # 前端开发基线（2026-10-10 起开发与构建均在此；勿删勿精简；见 docs/merge-history-2026-09-17-vue26.md）
+│   ├── middleware/      # JWT auth + in-process rate limit
+│   ├── tools/           # Agent-callable tools (web_search/scheduled_task/...)
+│   ├── knowledges/      # Knowledge base v2 (RAGFlow)
+│   ├── personnel/       # Personnel admin / Excel import
+│   ├── checkpoints.py   # LangGraph checkpoint backends
+│   ├── sandbox.py       # Command sandbox (bwrap/Landlock/fail-closed)
+│   ├── hitl.py          # Human-in-the-loop destructive-command rules
+│   ├── runtime_config.py# Runtime config holder + agent invalidation
+│   └── config/          # YAML configs + prompts/
+├── frontend-vue2/       # 当前托管基线：Vue 2.7 + Element UI（构建产物 frontend-vue2/dist/）
+├── frontend/            # 第二基线：Vue 3.5 + Vite（并行维护）
+├── skills/              # canonical 运行时技能（7 个；easy_agent/skills/ 为包内回退副本）
 ├── tests/               # pytest tests (test_*.py) and manual demo scripts
 ├── main.py              # uvicorn entry point
 ├── pyproject.toml       # Project metadata & deps (managed by uv)
@@ -44,14 +49,16 @@ uv pip install -e ".[dev]"           # Editable install with dev deps (alternati
 easy-web --port 8000                 # Run backend (or: python main.py)
 pytest tests/ -v                     # Run the test suite
 pytest tests/integration/test_basic.py -v        # Run a single test file
-cd frontend-vue2 && npm run dev     # Frontend dev server (proxies to backend :8080)
-cd frontend-vue2 && npm run build   # Build SPA into frontend-vue2/dist/ (required before easy-web serves UI)
+cd frontend-vue2 && npm run dev     # Vue2 dev server :5173（/agent 代理到后端 :8080）
+cd frontend-vue2 && npm run build   # Build SPA into frontend-vue2/dist/（easy-web 托管所需）
+cd frontend && npm run dev          # Vue3 + Vite dev server
+cd frontend && npm run build        # Build the Vue3 baseline
 ./start.prod.sh                      # Production startup
 ```
 
 ## Coding Style & Naming Conventions
 
-- **Python**: requires 3.11+. Four-space indentation, `snake_case` for functions/variables, `PascalCase` for classes. No project-wide linter is configured-match surrounding files.
+- **Python**: requires 3.11+. Four-space indentation, `snake_case` for functions/variables, `PascalCase` for classes. Ruff runs in CI with fatal rules only (`E9/F63/F7/F82`); match surrounding style for everything else.
 - **Frontend**: Vue 2.7, primarily Options API. Vue 2.7 built-in Composition API functions (`ref`/`computed`/`watch`) are allowed; `<script setup>` and Vue 3-only syntax are forbidden (enforced by `src/utils/vue2Compat.test.js`). Components are `PascalCase.vue`; API modules in `frontend/src/api/` are camelCase `.js`.
 - **Config**: YAML files in `easy_agent/config/`; sensitive values use `${ENV_VAR}` placeholders resolved at load time.
 
@@ -72,5 +79,6 @@ cd frontend-vue2 && npm run build   # Build SPA into frontend-vue2/dist/ (requir
 - `config.yaml` is the **single** backend config file, and it is gitignored — copy `config-example.yaml` as a template.
 - Environment differences are injected through `${VAR:-default}` placeholders, whose values come from `.env.{AGENT_ENV}` (`.env.dev` / `.env.test` / `.env.prod`, falling back to `.env`). See `.env.*.example` for the full variable list.
 - Legacy per-environment files (`config.dev.yaml`, `config.prod.yaml`, `config.test.yaml`) are no longer read by the backend.
-- Set `EASY_JWT_SECRET` for stable tokens across restarts; otherwise a random secret is generated each start, invalidating all sessions on restart.
+- Unknown top-level/section keys only warn by default; set `EASY_CONFIG_STRICT=1` to fail fast. `python scripts/check_config_schema.py --check` verifies the template/local key set.
+- `EASY_JWT_SECRET` is optional in dev/test: the secret is persisted in `data/.jwt_secret` so restarts keep tokens valid. `AGENT_ENV=prod` requires an explicit `EASY_JWT_SECRET`.
 - Override the config path with the `EASY_CONFIG` environment variable.

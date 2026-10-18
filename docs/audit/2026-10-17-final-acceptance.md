@@ -128,3 +128,14 @@
 - 最终全量：**1234 passed / 1 skipped / 0 failed / 0 error（237.6s）**；架构门禁/ruff/lock 通过。
 - 报告：`docs/audit/2026-10-18-c1-c2-b1-d-report.md`。
 - 遗留：C1 settings/connectors 等 API、C2 orchestrator 收尾重复、B1 Store 数据迁移、D2 多 worker/0.7 backend 迁移；Batch 0/1 安全项未执行。
+
+
+---
+
+## 2026-10-18 第三批（非安全剩余项）
+
+- FW-04/A1/A3/C2/C3/C1b/E2/E3/E4/FW-12/FW-14/三条专项增强已完成；A1 将 import SCC 降到 0。
+- 最终全量：**1347 passed / 1 skipped / 0 failed / 0 error（256.4s）**；mcp-server 43 passed；架构门禁 0 SCC；ruff/lock 通过。
+- FW-11 SQL 语义检索记录为后续（无 embedding/向量索引；PostgresStore 路径可用）。
+- 报告：`docs/audit/2026-10-18-remaining-batch-report.md`。
+- 仍未做：B2 SSE 共享日志/多副本 Phase B/C、Batch 0/1 安全项；前端未改。

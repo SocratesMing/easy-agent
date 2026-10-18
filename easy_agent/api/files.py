@@ -13,6 +13,7 @@ from fastapi.responses import FileResponse
 
 from ..db import get_database
 from ..db.repositories.file_repository import FileRepository
+from ..db.repositories.user_repository import UserRepository
 from ..models.api import (
     DeleteFileResponse,
     FileInfo,
@@ -22,6 +23,7 @@ from ..models.api import (
     UploadFileResponse,
 )
 from ..middleware import get_current_username
+from ..middleware.auth import get_user_repository
 from ..utils import parse_file_content
 from ..config import Config
 from ..services.session_uploads import (
@@ -371,6 +373,7 @@ async def parse_file(
 @router.get("/preview", summary="预览工作区文件")
 async def preview_file(
     request: Request,
+    user_repo: Annotated[UserRepository, Depends(get_user_repository)],
     file_path: str = Query(..., description="文件在工作区中的相对路径"),
     session_id: Optional[str] = Query(default=None, description="会话ID"),
     token: Optional[str] = Query(default=None, description="认证token（iframe等无法设置Header时使用）"),
@@ -392,10 +395,12 @@ async def preview_file(
     auth_header = request.headers.get("Authorization")
     if auth_header and auth_header.startswith("Bearer "):
         from ..middleware.auth import verify_token_sso
-        username = verify_token_sso(auth_header[7:], repo.database)
+
+        username = verify_token_sso(auth_header[7:], user_repo)
     if not username and token:
         from ..middleware.auth import verify_token_sso
-        username = verify_token_sso(token, repo.database)
+
+        username = verify_token_sso(token, user_repo)
     if not username:
         default_user = repo.get_or_create_default_user()
         username = default_user.username

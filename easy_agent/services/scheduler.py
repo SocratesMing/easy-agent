@@ -25,6 +25,33 @@ from langchain_core.callbacks import BaseCallbackHandler
 
 logger = logging.getLogger("easy_agent.scheduler")
 
+_agent_lifecycle_provider = None
+
+
+def set_agent_lifecycle(provider) -> None:
+    """注册返回 (get_or_create_agent, remove_agent) 的 provider。
+
+    用 provider 而非直接函数对象，保证测试/运行时对 agent_manager 函数的替换生效；
+    scheduler 不在模块级 import agent_manager（断 SCC 环）。
+    """
+    global _agent_lifecycle_provider
+    _agent_lifecycle_provider = provider
+
+
+def _require_agent_lifecycle():
+    provider = _agent_lifecycle_provider
+    if provider is None:
+        # 兼容绕过 agent_manager 初始化的单测/独立调用：动态导入，不形成 AST 边。
+        import importlib
+
+        module = importlib.import_module("easy_agent.services.agent_manager")
+        provider = lambda: (  # noqa: E731
+            module.get_or_create_agent_for_session,
+            module.remove_session_agent,
+        )
+        set_agent_lifecycle(provider)
+    return provider()
+
 _scheduler_instance: AsyncIOScheduler | None = None
 
 # 正在执行的任务：task_id -> asyncio.Task，用于暂停/删除时中断在途运行
@@ -243,8 +270,9 @@ def reload_all_tasks():
 
 async def _execute_task(task_id: str):
     """定时任务执行核心逻辑：创建新 session → 调用 agent → 记录结果。"""
-    from .agent_manager import get_or_create_agent_for_session, remove_session_agent
     from langchain_core.messages import HumanMessage
+
+    get_or_create_agent_for_session, remove_session_agent = _require_agent_lifecycle()
 
     db = get_database()
     task = db.get_scheduled_task(task_id)

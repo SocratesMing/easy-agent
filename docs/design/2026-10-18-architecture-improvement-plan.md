@@ -337,3 +337,20 @@ easy_agent/services/streaming/
 | Batch 0/1 安全 | ❌ 未执行 | 用户未选 |
 
 详见 `docs/audit/2026-10-18-c1-c2-b1-d-report.md`。
+
+
+## 实施进展（2026-10-18 第三批：非安全剩余项）
+
+| 项 | 状态 | 说明 |
+| --- | --- | --- |
+| FW-04 execute 描述 | ✅ | 官方 `HarnessProfile.tool_description_overrides` 替代 monkeypatch |
+| A1 知识流式下沉 | ✅ | 端口化；import SCC=0，白名单空 |
+| A3 技能单一源 | ✅ | `sync_skills.py` 单向生成/全量哈希/CI check |
+| C2 finalize_stream | ✅ | chat/resume 收尾公共化 |
+| C3 SSE 并一 | ✅ | 24/24 frame 站点经 `SSEEmitter`；golden 字节等价 |
+| C1b 服务边界 | ✅ | 目标 API `repo.database` 19→7；剩余边界登记 |
+| E2/E3/E4 | ✅ | 配置校验/CI 门禁、RED 指标、文档事实同步 |
+| FW-12/FW-14 | ✅ | 动态 HITL 名单；mcp-server ToolError/isError/structuredContent |
+| 专项增强 | ✅ | 记忆跨进程锁/原子双写；外部数据来源引用规则 |
+| FW-11 `query` 语义 | ⚠ | SQL store 无 embedding/向量索引，记录为后续（PostgresStore 路径可用） |
+| B2/多副本 Phase B/C、Batch 0/1 | ❌ | 未做/未执行 |
