@@ -31,7 +31,7 @@
 - 时间统一 UTC ISO（`+00:00`，`timespec="seconds"`），保证跨 Pod 可比。
 
 `Database` 增加 `_create_agent_runs_table` 与 6 个纯委托，并同步
-`scripts/check_double_write.py` 的 `INFRA_DATABASE_METHODS` /
+`scripts/quality/check_double_write.py` 的 `INFRA_DATABASE_METHODS` /
 `FROZEN_DATABASE_METHODS` 白名单。
 
 ### 1.3 service
@@ -101,11 +101,11 @@ pytest tests/test_architecture_gate.py tests/api/test_c1_remaining_domains.py \
 uvx ruff check .
 # All checks passed!
 
-python scripts/import_graph.py --check-scc
+python scripts/quality/import_graph.py --check-scc
 # import graph: 223 modules, 514 internal edges, 0 SCC(s) / 0 modules
 # [check-scc] OK — 实际 SCC 与白名单完全一致
 
-python scripts/check_double_write.py
+python scripts/quality/check_double_write.py
 # [OK] sessions.py / database.py
 # Database: 152 methods, 115 pure delegations
 ```
@@ -170,7 +170,7 @@ python scripts/check_double_write.py
 
 - `easy_agent/db/schema.py`（schema v9 / `agent_runs` 建表与索引）
 - `easy_agent/db/database.py`（建表委托 + 6 个业务纯委托）
-- `scripts/check_double_write.py`（白名单）
+- `scripts/quality/check_double_write.py`（白名单）
 - `easy_agent/api/chat.py`（start_run / resume / `_detached_event_stream` 生命周期）
 - `easy_agent/app.py`（启动 stale 恢复）
 - `tests/api/test_c1_remaining_domains.py`（`repo.database` 保留边界 9 → 11，

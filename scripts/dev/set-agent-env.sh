@@ -5,9 +5,9 @@
 #   - 前端：npm run build / npm run serve 据此选择 .env.<mode> 与运行期配置
 #
 # 用法：
-#   source scripts/set-agent-env.sh            # 当前终端立即生效 + 持久化到 rc
-#   source scripts/set-agent-env.sh prod       # 指定其它环境（prod/test/dev）
-#   bash  scripts/set-agent-env.sh            # 仅持久化到 rc（不影响当前 shell）
+#   source scripts/dev/set-agent-env.sh            # 当前终端立即生效 + 持久化到 rc
+#   source scripts/dev/set-agent-env.sh prod       # 指定其它环境（prod/test/dev）
+#   bash  scripts/dev/set-agent-env.sh            # 仅持久化到 rc（不影响当前 shell）
 # ============================================================
 set -e
 
@@ -34,7 +34,7 @@ if grep -q '^export AGENT_ENV=' "$RC_FILE" 2>/dev/null; then
   sed -i "s|^export AGENT_ENV=.*|$LINE|" "$RC_FILE"
   echo "==> 已更新 $RC_FILE : $LINE"
 else
-  printf '\n# 由 scripts/set-agent-env.sh 写入（easy-agent 运行环境）\n%s\n' "$LINE" >> "$RC_FILE"
+  printf '\n# 由 scripts/dev/set-agent-env.sh 写入（easy-agent 运行环境）\n%s\n' "$LINE" >> "$RC_FILE"
   echo "==> 已写入 $RC_FILE : $LINE"
 fi
 

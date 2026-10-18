@@ -13,7 +13,7 @@
 本阶段实现：
 
 1. **跨进程/跨 Pod 迁移锁**，同一库同时只有一个 Pod 执行迁移；
-2. **一次性迁移入口** `scripts/migrate_db.py`（K8s Job/initContainer 等价物）；
+2. **一次性迁移入口** `scripts/db/migrate_db.py`（K8s Job/initContainer 等价物）；
 3. **启动只校验模式** `EASY_AUTO_MIGRATE=0`，结构不匹配 fail-fast 并提示跑迁移脚本；
 4. 保留单机/开发默认 `EASY_AUTO_MIGRATE=1`，行为不变。
 
@@ -33,8 +33,8 @@
 ### 2.2 一次性迁移脚本
 
 ```bash
-python scripts/migrate_db.py          # 持锁迁移
-python scripts/migrate_db.py --check  # 只校验 schema_version/关键表
+python scripts/db/migrate_db.py          # 持锁迁移
+python scripts/db/migrate_db.py --check  # 只校验 schema_version/关键表
 ```
 
 - 复用 `initialize_runtime()` + `init_database()`；
@@ -56,7 +56,7 @@ else:
 `EXPECTED_TABLES` 齐全；不匹配抛：
 
 ```
-RuntimeError: 数据库结构不是最新（...）。请先运行：python scripts/migrate_db.py
+RuntimeError: 数据库结构不是最新（...）。请先运行：python scripts/db/migrate_db.py
 ```
 
 ## 3. 配置

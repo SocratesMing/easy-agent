@@ -10,11 +10,11 @@
 | --- | --- | --- |
 | FW-04 execute 描述 | ✅ | 移除 `FilesystemMiddleware.__init__` monkeypatch，改用官方 `HarnessProfile(tool_description_overrides=...)` + `register_harness_profile`；旧函数保留 deprecated 兼容 |
 | A1 知识流式下沉 | ✅ | 新增 `knowledges/chat/host_port.py`/`panel.py` 端口；`knowledges.api` 不再反向 import `api.chat`；`api.chat` 注册宿主能力；**import SCC=0**，白名单清空 |
-| A3 技能单一源 | ✅ | `scripts/sync_skills.py` 单向生成 + `--check` 全量哈希；办公 12 文件哈希；测试守护 |
+| A3 技能单一源 | ✅ | `scripts/skills/sync_skills.py` 单向生成 + `--check` 全量哈希；办公 12 文件哈希；测试守护 |
 | C2 finalize_stream | ✅ | chat/resume 收尾抽 `finalize_stream`；orchestrator 行数下降；golden 测试 |
 | C3 SSE 并一 | ✅ | 全仓 24/24 frame 站点经 `SSEEmitter`；`format_sse` 唯一序列化；事件注册表 15 事件；golden 字节等价 |
 | C1b 服务层边界 | ✅ | 目标 API 的 `repo.database` 19→7；新增 `UserRepository` 活跃时间、`ScheduledTaskRepository.get_workspace_name`、`session_uploads` 端口；剩余边界登记 |
-| E2 配置校验 | ✅ | 新增 `scripts/check_config_schema.py`、`scripts/check_env_usage.py`；未知键 warning/`EASY_CONFIG_STRICT=1` fail-fast；config/example diff |
+| E2 配置校验 | ✅ | 新增 `scripts/quality/check_config_schema.py`、`scripts/quality/check_env_usage.py`；未知键 warning/`EASY_CONFIG_STRICT=1` fail-fast；config/example diff |
 | E3 RED 指标 | ✅ | `services/metrics.py` + ASGI 中间件 + `/agent/metrics`（admin）；HTTP 自动埋点；SSE/工具/HITL `record_*` API 已提供 |
 | E4 文档 | ✅ | AGENTS/CLAUDE/README 事实同步；配置校验说明；API 文档脚本检查 |
 | FW-12 动态 HITL | ✅ | `build_interrupt_config()` 只保留实际注入工具；execute 条件审批/MCP 写工具/未注入工具过滤；目录删除策略文档化 |

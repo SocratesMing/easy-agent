@@ -101,7 +101,7 @@ uvx ruff check .
 ```
 
 ```
-python scripts/import_graph.py --check-scc
+python scripts/quality/import_graph.py --check-scc
 # import graph: 226 modules, 525 internal edges, 0 SCC(s) / 0 modules
 # [check-scc] OK — 实际 SCC 与白名单完全一致
 ```

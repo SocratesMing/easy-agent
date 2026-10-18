@@ -2,8 +2,8 @@
 """生成 easy-agent 后端全部接口的 Excel 接口文档。
 
 用法：
-    .venv/bin/python scripts/generate_api_docs.py            # 生成 xlsx
-    .venv/bin/python scripts/generate_api_docs.py --check    # CI 冒烟检查（不写文件）
+    .venv/bin/python scripts/docs/generate_api_docs.py            # 生成 xlsx
+    .venv/bin/python scripts/docs/generate_api_docs.py --check    # CI 冒烟检查（不写文件）
 
 输出：
     docs/API接口文档.xlsx（生成物，不要求每次提交二进制更新）
@@ -27,7 +27,7 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from fastapi.responses import StreamingResponse
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from easy_agent.app import app  # noqa: E402
@@ -67,6 +67,7 @@ MODULE_LABELS = [
     ("/agent/knowledge", "知识库"),
     ("/agent/personnel", "人员"),
     ("/agent/terminal", "终端"),
+    ("/agent/metrics", "运行指标"),
     ("/agent/health", "健康检查"),
     ("/agent/live", "健康检查"),
     ("/agent/ready", "健康检查"),

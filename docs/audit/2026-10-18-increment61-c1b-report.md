@@ -86,8 +86,8 @@ services）与 `tools/session_file_reader` 直传 `Database`（工具层，禁�
 | 追加 `tests/api/test_c1_remaining_domains.py` 后同批 | **211 passed** |
 | `pytest tests/integration/test_auth_session_expiry.py tests/integration/test_multi_worker_auth.py -q` | **4 passed, 1 skipped**（middleware 端口对 `Database` 入参向后兼容） |
 | `uvx ruff check .` | **All checks passed!** |
-| `python3 scripts/import_graph.py --check-scc` | **OK**：217 modules / 494 internal edges / 0 SCC |
-| `python3 scripts/check_double_write.py` | **OK**：legacy blob 与 Database 业务方法均冻结（141 methods / 106 pure delegations） |
+| `python3 scripts/quality/import_graph.py --check-scc` | **OK**：217 modules / 494 internal edges / 0 SCC |
+| `python3 scripts/quality/check_double_write.py` | **OK**：legacy blob 与 Database 业务方法均冻结（141 methods / 106 pure delegations） |
 
 新增用例明细：
 

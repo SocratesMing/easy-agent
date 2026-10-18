@@ -140,7 +140,7 @@ warning 为既有的 Starlette/httpx `TestClient` 弃用提示，与 B1 无关�
 uvx ruff check .
 All checks passed!
 
-python3 scripts/import_graph.py --check-scc
+python3 scripts/quality/import_graph.py --check-scc
 import graph: 209 modules, 458 internal edges, 1 SCC(s) / 16 modules
 [check-scc] OK — 实际 SCC 与白名单完全一致
 ```

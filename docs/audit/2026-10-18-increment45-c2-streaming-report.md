@@ -101,7 +101,7 @@ docstring、显式 import、类型标注与兼容别名。编排器本体 864 �
 | `pytest tests/services/test_stream_projector.py tests/services/test_stream_persistence.py tests/services/test_stream_split_golden.py tests/services/test_stream_compat.py -q` | **23 passed**（新增 C2 用例全集） |
 | `pytest tests/services/test_stream_concurrency.py -q` | **2 passed**（补充回归） |
 | `uvx ruff check .` | **All checks passed!** |
-| `python3 scripts/import_graph.py --check-scc` | **OK**：211 modules / 474 edges / 1 SCC（16 modules，与白名单完全一致） |
+| `python3 scripts/quality/import_graph.py --check-scc` | **OK**：211 modules / 474 edges / 1 SCC（16 modules，与白名单完全一致） |
 
 ### golden 覆盖
 

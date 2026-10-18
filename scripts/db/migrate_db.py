@@ -3,8 +3,8 @@
 
 用于替代「每个 Pod 启动都跑 DDL」：
 
-    python scripts/migrate_db.py            # 执行迁移（内部持有跨进程迁移锁）
-    python scripts/migrate_db.py --check    # 只校验结构版本（不迁移）
+    python scripts/db/migrate_db.py            # 执行迁移（内部持有跨进程迁移锁）
+    python scripts/db/migrate_db.py --check    # 只校验结构版本（不迁移）
 
 K8s 中可作为 Job/initContainer 执行；Pod 设 `EASY_AUTO_MIGRATE=0` 后启动只
 校验，结构不匹配会 fail-fast 并提示本脚本。

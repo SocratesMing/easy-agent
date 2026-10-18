@@ -7,7 +7,7 @@
 - `schema.init_tables()` 包锁；新增 `schema.verify_schema_current()`。
 - `Database.verify_schema_current()` 纯委托；double-write 门禁更新（153 methods / 115 delegations）。
 - `init_database()` 支持 `EASY_AUTO_MIGRATE=0`：启动只校验，结构不匹配 fail-fast 并提示迁移脚本。
-- `scripts/migrate_db.py`：`--check` / 迁移；复用 runtime/config/init_database。
+- `scripts/db/migrate_db.py`：`--check` / 迁移；复用 runtime/config/init_database。
 - `.env.*.example` 补充 `EASY_AUTO_MIGRATE`、`EASY_MIGRATION_LOCK_TIMEOUT`。
 - 测试 `tests/db/test_migration_lock.py`（5 项）。
 - 设计文档 `docs/design/2026-10-18-phase3-migration-safety.md`。
@@ -27,4 +27,4 @@
 
 - K8s 清单/探针/HPA/PDB/滚动/安全上下文：按用户要求跳过。
 - Alembic；文件对象存储；外部 Sandbox；MySQL 实机迁移锁。
-- 生产建议：迁移 Job 先跑 `python scripts/migrate_db.py`，Pod 设 `EASY_AUTO_MIGRATE=0`。
+- 生产建议：迁移 Job 先跑 `python scripts/db/migrate_db.py`，Pod 设 `EASY_AUTO_MIGRATE=0`。

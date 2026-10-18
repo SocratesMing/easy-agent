@@ -140,6 +140,6 @@
 python -m pytest tests/services/test_sse_contract.py tests/api/test_chat.py \
   tests/api/test_expert.py tests/knowledges/test_chat_session.py -q
 uvx ruff check .
-python3 scripts/import_graph.py --check-scc
-python3 scripts/check_double_write.py
+python3 scripts/quality/import_graph.py --check-scc
+python3 scripts/quality/check_double_write.py
 ```

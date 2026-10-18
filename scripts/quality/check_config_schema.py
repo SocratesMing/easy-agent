@@ -9,8 +9,8 @@
 
 用法::
 
-    python scripts/check_config_schema.py            # 打印报告
-    python scripts/check_config_schema.py --check    # CI 门禁（有错误退出 1）
+    python scripts/quality/check_config_schema.py            # 打印报告
+    python scripts/quality/check_config_schema.py --check    # CI 门禁（有错误退出 1）
 
 说明：``config.yaml`` 被 gitignore，CI 中通常不存在，此时只校验模板；
 本地开发时额外做“本地配置 -> 模板”的漂移检查。新增配置键时请同步更新
@@ -26,7 +26,7 @@ from typing import Any
 
 import yaml
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from easy_agent.config import (  # noqa: E402

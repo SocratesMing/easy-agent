@@ -80,8 +80,8 @@ def _as_xxx_repository(value: object) -> XxxRepository:
 | 新增 repository + API 静态测试 | `uv run pytest tests/db/test_user_repository.py tests/db/test_file_repository.py tests/db/test_scheduled_task_repository.py tests/db/test_expert_repository.py tests/db/test_chat_repository.py tests/api/test_c1_remaining_domains.py -q` | **13 passed, 1 warning**（2.92s） |
 | 任务指定套件 | `uv run pytest tests/api/test_auth.py tests/api/test_files.py tests/api/test_scheduled_tasks.py tests/api/test_expert.py tests/api/test_chat.py tests/db -q` | **199 passed, 1 warning**（96.67s） |
 | 直接调用兼容 + hub（额外） | `uv run pytest tests/integration/test_session_ownership.py tests/api/test_stream_hub.py tests/services/test_stream_hub.py -q` | **19 passed, 1 warning**（2.60s） |
-| import SCC 门禁 | `python3 scripts/import_graph.py --check-scc` | **OK** — 211 modules / 473 edges / 1 SCC（16 modules），与白名单完全一致 |
-| 双写门禁 | `python3 scripts/check_double_write.py` | **OK** — sessions.py / database.py 均 OK；Database 141 methods / 106 pure delegations |
+| import SCC 门禁 | `python3 scripts/quality/import_graph.py --check-scc` | **OK** — 211 modules / 473 edges / 1 SCC（16 modules），与白名单完全一致 |
+| 双写门禁 | `python3 scripts/quality/check_double_write.py` | **OK** — sessions.py / database.py 均 OK；Database 141 methods / 106 pure delegations |
 | Lint | `uvx ruff check .` | **All checks passed!** |
 
 说明：唯一 warning 为既有 `StarletteDeprecationWarning`（httpx/TestClient），

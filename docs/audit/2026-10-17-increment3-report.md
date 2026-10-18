@@ -13,7 +13,7 @@
 | ARCH-12 死代码/死资源 | ✅ | 删除 `plan.md`、测试写出的 `easy_agent/prompts/unit_test_prompt.md`、3 个只剩 `__pycache__` 的空目录（`compat/`、`db/repositories/`、`services/stream/`）、未挂载的 `easy_agent/static/swagger-ui/`（1.8MB） | 全量测试通过；`tests/api/test_api_docs.py` 仍通过 |
 | ARCH-14 依赖收敛 | ✅ | 移除未使用的运行期依赖 `requests`、`mysql-mcp-server`（后者实际由 `uvx` 隔离拉起）；`uv lock` 重新生成（117→115 包），`uv lock --check` 通过 | lock check 通过；全量测试通过 |
 | ARCH-05 SSE 契约（第一步） | ✅ | 新增 `easy_agent/services/sse.py`：`SSE_EVENT_TYPES`（15 事件注册表）+ 唯一 `format_sse()` + `validate_event()`；`services/streaming.py` 改为 re-export（保持既有导入）；新增 `docs/sse-events.md`；新增契约测试（扫描 6 个生产端源码、文档与注册表一致性、格式断言） | `tests/services/test_sse_contract.py` 4 项通过 |
-| ARCH-06 技能单一源 | ✅ | 新增 `scripts/sync_skills.py`（canonical `skills/` → 包内 `easy_agent/skills/`，支持 `--check`）；测试从只校验 `base.py` 扩展为 **3 个格式全文件树 sha256 一致性** + `--check` 子进程校验 | `tests/skills/test_office_canonical.py` 4 项通过；`sync_skills.py --check` 通过 |
+| ARCH-06 技能单一源 | ✅ | 新增 `scripts/skills/sync_skills.py`（canonical `skills/` → 包内 `easy_agent/skills/`，支持 `--check`）；测试从只校验 `base.py` 扩展为 **3 个格式全文件树 sha256 一致性** + `--check` 子进程校验 | `tests/skills/test_office_canonical.py` 4 项通过；`sync_skills.py --check` 通过 |
 | PERF-15 legacy messages 读取 | ✅ | `Database.get_session()` 不再默认 `SELECT sessions.messages`（大字段）；仅当行表为空的历史会话才回退读取；新增 `update_session_meta()`，chat/expert 仅改标题时不再回写整列 JSON | DB/会话/专家/聊天相关 149 项测试通过 |
 | ARCH-11 测试体系（部分） | ✅ | 删除 `tests/conftest.py` 中已失效的 `collect_ignore`（隐藏用例）；确认 prompts 测试写入临时目录而非源码树（已有 conftest 隔离），删除历史残留文件 | 全量 collect 0 error；测试不再污染源码树 |
 

@@ -40,7 +40,7 @@ docker-compose -f deploy/mysql-local/docker-compose.yml exec mysql \
 迁移前请先停止 EasyAgent，避免迁移期间 SQLite 继续产生新数据。迁移脚本默认只做 dry-run，不会写入 MySQL：
 
 ```bash
-.venv/bin/python scripts/migrate_sqlite_to_mysql.py \
+.venv/bin/python scripts/db/migrate_sqlite_to_mysql.py \
   --sqlite ./data/easy_agent.db \
   --host 127.0.0.1 --port 3307 \
   --user easyagent --database agent \
@@ -50,7 +50,7 @@ docker-compose -f deploy/mysql-local/docker-compose.yml exec mysql \
 若已通过 `EASYAGENT_MYSQL_PASSWORD` 覆盖默认密码，迁移脚本会自动读取它。确认 dry-run 中的源文件、目标库和行数后，显式执行：
 
 ```bash
-.venv/bin/python scripts/migrate_sqlite_to_mysql.py \
+.venv/bin/python scripts/db/migrate_sqlite_to_mysql.py \
   --sqlite ./data/easy_agent.db \
   --host 127.0.0.1 --port 3307 \
   --user easyagent --database agent \

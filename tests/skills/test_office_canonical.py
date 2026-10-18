@@ -62,11 +62,11 @@ def test_packaged_skill_tree_matches_canonical(name):
     canon_files = {str(p.relative_to(canonical)): p for p in _files(canonical)}
     pkg_files = {str(p.relative_to(packaged)): p for p in _files(packaged)}
     assert canon_files.keys() == pkg_files.keys(), (
-        f"{name} 技能文件集合不一致；请运行 python scripts/sync_skills.py --write"
+        f"{name} 技能文件集合不一致；请运行 python scripts/skills/sync_skills.py --write"
     )
     for rel, src in canon_files.items():
         assert _sha256(src) == _sha256(pkg_files[rel]), (
-            f"{name}/{rel} 内容漂移；请运行 python scripts/sync_skills.py --write"
+            f"{name}/{rel} 内容漂移；请运行 python scripts/skills/sync_skills.py --write"
         )
 
 
@@ -99,7 +99,7 @@ def test_sync_script_check_mode_passes():
     import sys
 
     result = subprocess.run(
-        [sys.executable, str(ROOT / "scripts" / "sync_skills.py"), "--check"],
+        [sys.executable, str(ROOT / "scripts" / "skills" / "sync_skills.py"), "--check"],
         capture_output=True,
         text=True,
     )

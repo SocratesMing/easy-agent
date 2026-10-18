@@ -28,8 +28,8 @@ def _load_script(name: str):
     return module
 
 
-import_graph = _load_script("import_graph")
-double_write = _load_script("check_double_write")
+import_graph = _load_script("quality/import_graph")
+double_write = _load_script("quality/check_double_write")
 
 
 def _write(root: Path, relative: str, content: str) -> Path:
@@ -126,7 +126,7 @@ def test_whitelist_requires_reasons_and_unique_modules(tmp_path):
 
 def test_import_graph_cli_exit_codes_and_json(tmp_path):
     _make_cycle_package(tmp_path)
-    script = SCRIPTS / "import_graph.py"
+    script = SCRIPTS / "quality" / "import_graph.py"
     base = [
         sys.executable,
         str(script),
@@ -173,7 +173,7 @@ def test_import_graph_cli_exit_codes_and_json(tmp_path):
 def test_repository_import_graph_matches_whitelist():
     graph = import_graph.build_graph(REPO_ROOT, "easy_agent")
     entries = import_graph.load_whitelist(
-        SCRIPTS / "import_graph_whitelist.json", "easy_agent"
+        SCRIPTS / "quality" / "import_graph_whitelist.json", "easy_agent"
     )
 
     # A1 断环后 SCC=0，白名单应为空；若未来出现新环，必须显式登记原因。
@@ -306,7 +306,7 @@ def test_double_write_cli_fails_on_bad_sample(tmp_path):
     completed = subprocess.run(
         [
             sys.executable,
-            str(SCRIPTS / "check_double_write.py"),
+            str(SCRIPTS / "quality" / "check_double_write.py"),
             "--root",
             str(tmp_path),
         ],

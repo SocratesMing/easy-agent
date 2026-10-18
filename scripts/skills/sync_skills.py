@@ -10,12 +10,12 @@
 
 用法::
 
-    python scripts/sync_skills.py --check        # 默认动作：校验，漂移 exit 1
-    python scripts/sync_skills.py --write        # 单向生成包内副本（会删除包内多余文件）
-    python scripts/sync_skills.py --manifest     # 输出确定性 sha256 清单（JSON）
+    python scripts/skills/sync_skills.py --check        # 默认动作：校验，漂移 exit 1
+    python scripts/skills/sync_skills.py --write        # 单向生成包内副本（会删除包内多余文件）
+    python scripts/skills/sync_skills.py --manifest     # 输出确定性 sha256 清单（JSON）
 
     # 测试/特殊布局（脚本本身只依赖标准库）
-    python scripts/sync_skills.py --check --canonical /tmp/skills --packaged /tmp/pkg
+    python scripts/skills/sync_skills.py --check --canonical /tmp/skills --packaged /tmp/pkg
 
 退出码：0 一致；1 漂移或 canonical 自身不一致；2 用法/安全保护错误。
 """
@@ -30,7 +30,7 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CANONICAL = ROOT / "skills"
 DEFAULT_PACKAGED = ROOT / "easy_agent" / "skills"
 MANIFEST_VERSION = 1
@@ -223,7 +223,7 @@ def _print_report(report: Report, canonical_root: Path, packaged_root: Path) -> 
         "技能副本与 canonical 不一致"
         f"（canonical={canonical_root}, packaged={packaged_root}）"
     )
-    print("  修复：python scripts/sync_skills.py --write（只允许 canonical → 包内）")
+    print("  修复：python scripts/skills/sync_skills.py --write（只允许 canonical → 包内）")
     sections = (
         ("missing（canonical 有、副本缺）", report.missing),
         ("drift（内容不同）", report.drift),
@@ -364,9 +364,9 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "示例:\n"
-            "  python scripts/sync_skills.py --check\n"
-            "  python scripts/sync_skills.py --write\n"
-            "  python scripts/sync_skills.py --manifest\n"
+            "  python scripts/skills/sync_skills.py --check\n"
+            "  python scripts/skills/sync_skills.py --write\n"
+            "  python scripts/skills/sync_skills.py --manifest\n"
         ),
     )
     action = parser.add_mutually_exclusive_group()

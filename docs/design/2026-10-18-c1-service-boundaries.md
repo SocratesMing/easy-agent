@@ -32,7 +32,7 @@ bounded context（知识域）或流式引擎的边界，明确登记为「保�
    节流 30s、异常吞掉转日志）、HTTP 状态码、detail 文案、SSE 事件、落库内容
    完全不变；
 3. 不新增 SQL；repository 方法仍是薄委托；
-4. SCC 保持 0（`scripts/import_graph.py --check-scc`），双写冻结不变；
+4. SCC 保持 0（`scripts/quality/import_graph.py --check-scc`），双写冻结不变；
 5. 不跑全量测试，只跑任务约定子集 + 门禁。
 
 ## 3. 端口设计
@@ -155,7 +155,7 @@ repository）。`build_turn_preview` 的签名与返回值不变，`db=None` 的
    token 查询参数 + 活跃时间路径；
 5. 运行子集：`tests/api/test_auth.py test_files.py test_scheduled_tasks.py
    test_expert.py test_chat.py tests/db -q`；门禁：`uvx ruff check .`、
-   `scripts/import_graph.py --check-scc`、`scripts/check_double_write.py`。
+   `scripts/quality/import_graph.py --check-scc`、`scripts/quality/check_double_write.py`。
 
 ## 8. 风险与缓解
 

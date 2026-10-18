@@ -219,7 +219,7 @@
 | ARCH-13 | P2 | `CLAUDE.md`、`AGENTS.md`、`README.md`、`docs/API接口文档.xlsx` | 文档全面漂移：声称无 Docker/17 技能/`/skills/` 只读/Vue2.7 前端等，均与现状不符；API xlsx 68 行不含 connectors/skill-center/personnel/knowledge 等 | 修正模块地图与前端事实；API 文档纳入构建产物并 diff 校验；补“框架适配点清单” | S |
 | ARCH-14 | P2 | `pyproject.toml:19,33,22,49,34,43-44,80-81` | `httpx` 重复声明且范围冲突；`requests` 与 `httpx` 并存；`openpyxl` 重复；dev 依赖两套版本；核心框架无上界；`mysql-mcp-server` 作为运行时依赖但实际用 `uvx` 拉起 | 依赖去重/收敛；统一 dev 依赖；核心框架加兼容上界；剔除不必要的运行时依赖 | S |
 | ARCH-15 | P2 | `services/agent_manager.py:18-45`；`api/chat.py:177-306`；`deploy/k8s/agent-deployment.yaml:27,67-95`；`db/database.py`（无 tenant） | 多副本状态全在进程内；k8s replicas=2 未强制 MySQL、`data` 为 emptyDir、skills/experts 未挂载；DB 无 `tenant_id` | 设计文档先行：会话/流状态外置（Redis/DB+outbox）；SSE 走共享 pub/sub；k8s 增加 skills/experts PVC；多租户加 tenant_id + 行级隔离 | L |
-| ARCH-16 | P2 | `db/database.py`（启动期 `_ensure_column`/ALTER）；`scripts/migrate_sqlite_to_mysql.py` 811 行 | 启动期 DDL 自动迁移，无版本化 migration，不可审计/回滚；滚动发布并发 ALTER 风险 | 引入 Alembic 或等价；禁止启动期 DDL；迁移脚本纳入 CI | M |
+| ARCH-16 | P2 | `db/database.py`（启动期 `_ensure_column`/ALTER）；`scripts/db/migrate_sqlite_to_mysql.py` 811 行 | 启动期 DDL 自动迁移，无版本化 migration，不可审计/回滚；滚动发布并发 ALTER 风险 | 引入 Alembic 或等价；禁止启动期 DDL；迁移脚本纳入 CI | M |
 | ARCH-17 | P2 | `mcp/`（88K）、`mcp-server/`（71MB 含 `.venv`） | 两个 MCP 子项目与主仓混放，无 workspace 声明；`jmfx` 主代码 0 引用 | 拆独立仓库或 uv workspace；清理 `.venv`；加体积检查 | S–M |
 | ARCH-18 | P2 | `services/agent_manager.py:323-395`；`hitl.py:34`；`frontend-vue2/src/utils/toolPresentation.js:44-95` | 新增一个 Agent 工具需改 4–6 处（tools/、agent_manager 硬编码 append、hitl 名单、前端卡片映射、测试文档）；新增技能需同步 2 棵树 | 工具注册表化（schema/HITL 标记/前端元数据集中）；技能同步脚本；部署携带资源 | M |
 | ARCH-19 | P3 | 全后端 | `except Exception` 269 处、`# noqa` 111 处、`print(` 141 处（多测试/脚本）、`except-pass` 92 处；`pickle.loads` 1 处（checkpoints） | 统一 logger；收窄异常或重抛；ruff 规则分阶段治理 | S |
@@ -347,7 +347,7 @@ Batch 0/1（安全 P0/P1）本轮未选择执行；Web Terminal 暂不处理；�
 | ARCH-12 死代码清理 | ✅ | 删除计划文件/测试残留/3 个空目录/未挂载的 swagger-ui（1.8MB） |
 | ARCH-14 依赖收敛 | ✅ | 移除未使用 `requests`、`mysql-mcp-server`；`uv lock` 117→115 包，check 通过 |
 | ARCH-05 SSE 契约 | ✅（第一步） | 新增 `services/sse.py` 事件注册表 + 唯一 `format_sse`；`docs/sse-events.md`；契约测试扫描 6 个生产端并与文档同步 |
-| ARCH-06 技能单一源 | ✅（第一步） | `scripts/sync_skills.py --check` + 3 格式全文件树 sha256 测试；包内副本保留为 pip 回退 |
+| ARCH-06 技能单一源 | ✅（第一步） | `scripts/skills/sync_skills.py --check` + 3 格式全文件树 sha256 测试；包内副本保留为 pip 回退 |
 | PERF-15 legacy JSON 读取 | ✅ | `get_session` 不再默认 SELECT 大字段；标题更新走 `update_session_meta` |
 | ARCH-11 测试体系 | ✅（部分） | 移除失效 `collect_ignore`；确认测试不再写源码树 |
 | 全量回归 | ✅ | **933 passed / 1 skipped / 0 failed / 0 error（236.9s）** |

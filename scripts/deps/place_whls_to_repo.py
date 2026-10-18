@@ -12,7 +12,7 @@
 用法：
   1. 修改下方 WHEELS_DIR 为你的 whl 所在目录（可含子目录）。
   2. 直接运行：
-       python scripts/place_whls_to_repo.py
+       python scripts/deps/place_whls_to_repo.py
   结果写到 <WHEELS_DIR>/_repo_layout/ 下，并生成 index.json 清单。
 """
 from __future__ import annotations

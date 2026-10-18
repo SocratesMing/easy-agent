@@ -78,7 +78,7 @@ D1 的目标是**后端工具元数据的单一来源**：工具的名字、来�
 
 ### 2.3 Import 图约束：注册表是叶子模块
 
-`scripts/import_graph.py --check-scc` 使用 AST 统计**函数内 import**，
+`scripts/quality/import_graph.py --check-scc` 使用 AST 统计**函数内 import**，
 且白名单要求 SCC 模块集合**精确匹配**。`knowledge_impl` / `tools.scheduled_task`
 已位于既有的 knowledge→scheduler→agent_manager SCC（白名单项
 `knowledge-chat-scheduler-core`）：只要 `tools/registry.py` 出现包内 import 边，

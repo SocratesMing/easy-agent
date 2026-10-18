@@ -10,10 +10,10 @@
 
 用法::
 
-    python scripts/check_env_usage.py --check    # CI 门禁
-    python scripts/check_env_usage.py --update   # 开发者新增白名单后刷新基线
+    python scripts/quality/check_env_usage.py --check    # CI 门禁
+    python scripts/quality/check_env_usage.py --update   # 开发者新增白名单后刷新基线
 
-白名单文件：``scripts/bare_getenv_whitelist.json``。新增白名单必须写清原因；
+白名单文件：``scripts/quality/bare_getenv_whitelist.json``。新增白名单必须写清原因；
 能迁移到 ``easy_agent.env`` 的不要再加白名单。
 """
 
@@ -26,7 +26,7 @@ import sys
 from collections import Counter
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 PACKAGE_DIR = PROJECT_ROOT / "easy_agent"
 BASELINE_PATH = Path(__file__).with_name("bare_getenv_whitelist.json")
 

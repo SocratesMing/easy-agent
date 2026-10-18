@@ -19,13 +19,13 @@
 
 用法示例：
   # Linux x86_64 的前端依赖
-  python scripts/download_frontend_deps.py --platform linux --arch x86
+  python scripts/deps/download_frontend_deps.py --platform linux --arch x86
 
   # Windows arm64
-  python scripts/download_frontend_deps.py --platform win --arch arm64
+  python scripts/deps/download_frontend_deps.py --platform win --arch arm64
 
   # 直接指定 npm os/cpu（高级用法）
-  python scripts/download_frontend_deps.py --os darwin --cpu arm64
+  python scripts/deps/download_frontend_deps.py --os darwin --cpu arm64
 """
 
 from __future__ import annotations
@@ -39,7 +39,7 @@ from pathlib import Path
 
 
 def repo_root() -> Path:
-    return Path(__file__).resolve().parent.parent
+    return Path(__file__).resolve().parents[2]
 
 
 def normalize_platform(p: str) -> str:

@@ -71,7 +71,7 @@ session 只编译一次；`EasyAgent` 仍按 session 创建（会话编排/日�
 | `pytest tests/agent tests/services/test_agent_manager_cache.py tests/services/test_agent_manager_graph_cache.py tests/services/test_agent_manager_tools.py tests/services/test_stream_*.py tests/services/test_streaming_context.py tests/api/test_chat.py -q` | **139 passed**（18.85s） |
 | 追加 HITL / 记忆 / checkpoint / MCP / 技能 / 文件上下文等回归 | **300 passed**（34.11s） |
 | `uvx ruff check .` | **All checks passed** |
-| `python3 scripts/import_graph.py --check-scc` | **OK**：212 modules / 477 internal edges / 1 SCC(16)，与白名单完全一致 |
+| `python3 scripts/quality/import_graph.py --check-scc` | **OK**：212 modules / 477 internal edges / 1 SCC(16)，与白名单完全一致 |
 
 关键用例：
 

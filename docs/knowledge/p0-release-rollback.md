@@ -2,7 +2,7 @@
 
 1. 从同一 Git tag 构建 Web 和 Worker；禁止在目标机修改代码。
 2. 发布包只含运行代码、前端 `dist`、编号 SQL Migration 和生产配置模板；排除 `data/`、`tests/`、`test-results/`、dev YAML 和本地研报。
-3. 密码、Token 和证书由环境变量/行内 Secret 注入。运行 `python scripts/release_preflight.py <staging-package>`。
+3. 密码、Token 和证书由环境变量/行内 Secret 注入。运行 `python scripts/release/release_preflight.py <staging-package>`。
 4. 先执行并验证 MySQL+NAS 备份，再用显式 Migration 命令升级（确认值必须与配置中的数据库名完全一致）：
 
    ```bash

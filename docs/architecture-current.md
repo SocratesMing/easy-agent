@@ -52,7 +52,7 @@
 
 ### 技能
 - canonical：仓库根 `skills/`（7 个运行时技能：docx/pptx/xlsx/pdf/mcp-builder/skill-creator/expert-creator）。
-- 包内 `easy_agent/skills/` 为 pip 安装回退副本；`scripts/sync_skills.py` 同步，`--check` 可在 CI 校验。
+- 包内 `easy_agent/skills/` 为 pip 安装回退副本；`scripts/skills/sync_skills.py` 同步，`--check` 可在 CI 校验。
 - 用户技能：`workspace/{username}/skills/` → 虚拟路径 `/user-skills/`。
 
 ### 数据库
@@ -68,13 +68,29 @@
 - 两者都**不是** `npm run dev` 自动代理到 8080 的旧 CLI 结构（已改为 Vite 脚本）；构建命令见各自 `package.json`。
 - 无路由/状态库（Vue2 侧）：视图由 `App.vue` 布尔开关切换；**SSE 解析已统一**为各基线的 `src/api/sse.js`（唯一 `readSSE`），chat/expert/knowledge 只注册回调（审计项 ARCH-05 第一步完成）。
 
+## 4.1 脚本目录
+
+`scripts/` 按功能分组，根目录不再放散脚本：
+
+| 目录 | 内容 |
+| --- | --- |
+| `scripts/quality/` | import SCC、双写冻结、配置 schema/裸 env、多副本门禁 |
+| `scripts/db/` | `migrate_db`、SQLite→MySQL、MCP key |
+| `scripts/deps/` | 离线后端/前端依赖下载、wheel 落盘 |
+| `scripts/release/` | 发布预检、变更导出 |
+| `scripts/docs/` | API 文档生成 |
+| `scripts/skills/` | 技能单一源同步 |
+| `scripts/dev/` | 本地开发 shell |
+
+详见 `scripts/README.md`；`tests/test_scripts_layout.py` 守卫结构。
+
 ## 5. 命令与质量门禁
 
 ```bash
 uv sync                                  # 安装依赖（dependency-groups dev / extra docs）
 uv run pytest tests/ -q                  # 全量测试（当前基线：933+ passed）
 uvx ruff check .                         # 致命规则（E9/F63/F7/F82）
-python scripts/sync_skills.py --check    # 技能副本一致性
+python scripts/skills/sync_skills.py --check    # 技能副本一致性
 cd frontend-vue2 && npm ci && npm run build
 cd frontend && npm ci && npm run build
 ```

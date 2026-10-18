@@ -78,11 +78,11 @@ $ .venv/bin/python -m pytest tests/services/test_sse_contract.py \
 $ uvx ruff check .
 All checks passed!
 
-$ python3 scripts/import_graph.py --check-scc
+$ python3 scripts/quality/import_graph.py --check-scc
 import graph: 217 modules, 488 internal edges, 0 SCC(s) / 0 modules
 [check-scc] OK — 实际 SCC 与白名单完全一致
 
-$ python3 scripts/check_double_write.py
+$ python3 scripts/quality/check_double_write.py
 [OK] easy_agent/db/repositories/sessions.py
 [OK] easy_agent/db/database.py
 [double-write] OK — legacy sessions.messages 写入与 Database 业务方法均已冻结

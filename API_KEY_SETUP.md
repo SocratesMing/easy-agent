@@ -18,7 +18,7 @@ security add-generic-password \
 
 ```bash
 cd /Users/brain/Desktop/金市Agent-知识工程设计/Agent开发/easy-agent
-./scripts/start.dev.keychain.sh
+./scripts/dev/start.dev.keychain.sh
 ```
 
 脚本会从 Keychain 读取密钥并只注入到当前后端进程的环境变量中，不会打印密钥。

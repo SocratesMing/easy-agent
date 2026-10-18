@@ -11,9 +11,9 @@ ships inside the package; never edit it by hand.
   `docx|pptx|xlsx/scripts/office/`.
 - Edit here, then generate/verify the mirror from the repo root:
 
-      python scripts/sync_skills.py --check     # CI gate: drift -> exit 1
-      python scripts/sync_skills.py --write     # canonical -> packaged (one-way)
-      python scripts/sync_skills.py --manifest  # deterministic sha256 manifest
+      python scripts/skills/sync_skills.py --check     # CI gate: drift -> exit 1
+      python scripts/skills/sync_skills.py --write     # canonical -> packaged (one-way)
+      python scripts/skills/sync_skills.py --manifest  # deterministic sha256 manifest
 
 - Never sync backwards. If the packaged copy has content worth keeping, move it
   into this tree first, then run `--write`.

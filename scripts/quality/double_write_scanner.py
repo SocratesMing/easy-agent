@@ -1,32 +1,8 @@
-#!/usr/bin/env python3
-"""Phase 0.2 double-write freeze for easy-agent.
+"""AST/SQL scanners and repository checks for the double-write gate.
 
-The Architecture Improvement Plan (2026-10-18, phase 0) freezes two legacy
-write paths so new code cannot add more of them while phase A/B/C remove the
-existing ones:
-
-1. ``easy_agent/db/repositories/sessions.py`` must not write conversation
-   bodies into the legacy ``sessions.messages`` JSON column.  Row storage in
-   ``session_messages`` is the single authoritative message path (A2).
-   - ``INSERT/REPLACE INTO sessions`` may keep the column only with a *fixed
-     empty* value (``'[]'`` / ``''`` / an empty list literal), because the
-     current schema declares ``messages`` NOT NULL.  Any dynamic value
-     (``session.messages``, ``json.dumps(...messages...)`` ...) fails.
-   - ``UPDATE sessions SET messages=...`` is treated the same way: only a
-     fixed empty value is tolerated; dynamic writes fail.
-   - ``SELECT messages`` / ``json.loads`` legacy reads are explicitly allowed.
-2. ``easy_agent/db/database.py`` must not grow new business-domain methods.
-   ``Database`` is reduced to connection/transaction/migration plumbing plus
-   *pure delegations* to ``db/repositories/*`` and ``db/schema.py`` (C1).
-   The method list below is a frozen allowlist: add a new method and the gate
-   fails until the allowlist is deliberately updated in review.
-
-Usage::
-
-    python scripts/check_double_write.py            # human readable
-    python scripts/check_double_write.py --json     # machine readable
-
-Exit codes: 0 = clean, 1 = violations, 2 = the checker itself could not run.
+CLI lives in :mod:`scripts.quality.check_double_write`; allowlists live in
+:mod:`scripts.quality.double_write_allowlists`. Keeping this module importable
+lets tests exercise the scanners without spawning a subprocess.
 """
 
 from __future__ import annotations
@@ -39,190 +15,18 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-DEFAULT_ROOT = Path(__file__).resolve().parents[1]
+# Allowlists live in a small constant-only module so changes are easy to review.
+_ROOT_FOR_IMPORTS = Path(__file__).resolve().parents[2]
+if str(_ROOT_FOR_IMPORTS) not in sys.path:
+    sys.path.insert(0, str(_ROOT_FOR_IMPORTS))
+from scripts.quality.double_write_allowlists import (  # noqa: E402
+    FROZEN_DATABASE_METHODS,
+    INFRA_DATABASE_METHODS,
+)
+
+DEFAULT_ROOT = Path(__file__).resolve().parents[2]
 SESSIONS_REL = "easy_agent/db/repositories/sessions.py"
 DATABASE_REL = "easy_agent/db/database.py"
-
-# --- Database freeze allowlist ------------------------------------------------
-# Infrastructure: connection, transaction, DDL/migration plumbing and the
-# process health probe.  These may contain direct SQL.
-INFRA_DATABASE_METHODS = {
-    "__init__",
-    "_init_mysql_pool",
-    "_get_sqlite_connection",
-    "_get_mysql_connection",
-    "_get_connection",
-    "close",
-    "get_connection",
-    "_execute",
-    "_create_index",
-    "_create_sessions_table",
-    "_create_tool_call_records_table",
-    "_create_thinking_records_table",
-    "_create_session_messages_table",
-    "_create_files_tables",
-    "_create_users_table",
-    "_create_misc_tables",
-    "_create_scheduled_task_tables",
-    "_create_session_runtime_table",
-    "_create_langgraph_store_table",
-    "_create_agent_checkpoint_table",
-    "_create_distributed_lock_table",
-    "_create_stream_events_table",
-    "_create_agent_runs_table",
-    "_create_expert_tables",
-    "_create_unique_index",
-    "init_tables",
-    "verify_schema_current",
-    "_init_tables_full",
-    "_ensure_schema_meta_table",
-    "_store_schema_version",
-    "_schema_tables_present",
-    "_repair_missing_message_rows",
-    "_find_mismatched_sessions",
-    "_ensure_column",
-    "_table_columns",
-    "_column_type",
-    "_ensure_unique_index",
-    "ping",
-}
-
-# Frozen set of every method that exists on Database at the time phase 0 lands
-# (ARCH-03 phase 2 extracted the SQL into db/repositories/*).  Non-infrastructure
-# entries must stay pure delegations; see _is_pure_delegation.
-FROZEN_DATABASE_METHODS = {
-    "__init__",
-    "_init_mysql_pool",
-    "_get_sqlite_connection",
-    "_get_mysql_connection",
-    "_get_connection",
-    "close",
-    "get_connection",
-    "_execute",
-    "_create_index",
-    "_create_sessions_table",
-    "_create_tool_call_records_table",
-    "_create_thinking_records_table",
-    "_create_session_messages_table",
-    "_create_files_tables",
-    "_create_users_table",
-    "_create_misc_tables",
-    "_create_scheduled_task_tables",
-    "_create_session_runtime_table",
-    "_create_langgraph_store_table",
-    "_create_agent_checkpoint_table",
-    "_create_distributed_lock_table",
-    "_create_stream_events_table",
-    "_create_agent_runs_table",
-    "init_tables",
-    "verify_schema_current",
-    "_init_tables_full",
-    "_create_expert_tables",
-    "_ensure_schema_meta_table",
-    "_store_schema_version",
-    "_schema_tables_present",
-    "_repair_missing_message_rows",
-    "_find_mismatched_sessions",
-    "_ensure_column",
-    "_table_columns",
-    "_column_type",
-    "_ensure_unique_index",
-    "_create_unique_index",
-    "create_session",
-    "get_session_owner",
-    "_get_legacy_session_messages",
-    "update_session_meta",
-    "get_session",
-    "list_sessions",
-    "update_session",
-    "delete_session",
-    "update_session_workspace_name",
-    "update_session_todos",
-    "update_generated_file_paths",
-    "add_message",
-    "_sanitize_message_for_storage",
-    "update_last_assistant_message",
-    "_sanitize_blocks",
-    "_sanitize_tool_calls",
-    "_sanitize_extra_data",
-    "add_message_row",
-    "update_last_assistant_message_row",
-    "get_messages_from_rows",
-    "get_messages",
-    "count_sessions",
-    "update_session_title",
-    "toggle_session_pin",
-    "_try_repair_json",
-    "record_tool_call",
-    "get_tool_calls",
-    "record_thinking",
-    "get_thinkings",
-    "create_user",
-    "get_user_by_username",
-    "get_user_by_id",
-    "get_user_by_employee_id",
-    "get_user_by_account",
-    "update_user",
-    "bind_user_ip",
-    "get_user_bound_ip",
-    "increment_user_token_version",
-    "get_user_token_version",
-    "touch_user_activity",
-    "get_user_activity_time",
-    "clear_user_activity",
-    "register_user",
-    "verify_user_password",
-    "get_or_create_passwordless_user",
-    "update_user_password",
-    "delete_user",
-    "get_or_create_default_user",
-    "list_users",
-    "count_users",
-    "_row_to_user",
-    "issue_mcp_api_key",
-    "revoke_mcp_api_key",
-    "get_mcp_api_keys",
-    "add_session_file",
-    "get_session_files",
-    "delete_file",
-    "add_generated_file",
-    "get_generated_files",
-    "delete_generated_file",
-    "get_generated_filenames",
-    "create_scheduled_task",
-    "get_scheduled_task",
-    "list_scheduled_tasks",
-    "list_all_enabled_scheduled_tasks",
-    "delete_scheduled_task",
-    "update_scheduled_task_status",
-    "update_scheduled_task_run_times",
-    "update_scheduled_task_workspace",
-    "add_scheduled_task_run",
-    "update_scheduled_task_run",
-    "list_scheduled_task_runs",
-    "ping",
-    "load_agent_checkpoint",
-    "save_agent_checkpoint",
-    "delete_agent_checkpoint",
-    "store_get",
-    "store_put",
-    "store_delete",
-    "store_search",
-    "store_list_namespaces",
-    "get_session_runtime",
-    "try_acquire_session_stream",
-    "renew_session_stream",
-    "upsert_session_runtime",
-    "append_stream_event",
-    "list_stream_events",
-    "delete_stream_events_before",
-    "start_run",
-    "renew_run",
-    "finish_run",
-    "get_run",
-    "list_stale_running",
-    "mark_interrupted",
-}
 
 # --- SQL/AST helpers ----------------------------------------------------------
 
@@ -894,81 +698,3 @@ def check_repository(root: str | Path = DEFAULT_ROOT) -> CheckResult:
     return result
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
-        description="Freeze legacy double-write paths (sessions.messages / Database facade).",
-    )
-    parser.add_argument(
-        "--root",
-        type=Path,
-        default=DEFAULT_ROOT,
-        help="repository root (default: repository root)",
-    )
-    parser.add_argument(
-        "--json",
-        action="store_true",
-        help="print a machine readable result",
-    )
-    args = parser.parse_args(argv)
-
-    try:
-        result = check_repository(args.root)
-    except OSError as exc:
-        print(f"[double-write] ERROR: {exc}", file=sys.stderr)
-        return 2
-
-    if args.json:
-        print(
-            json.dumps(
-                {
-                    "ok": result.ok,
-                    "files": result.files,
-                    "stats": result.stats,
-                    "violations": [
-                        {
-                            "path": violation.path,
-                            "line": violation.line,
-                            "code": violation.code,
-                            "function": violation.function,
-                            "message": violation.message,
-                        }
-                        for violation in result.violations
-                    ],
-                },
-                ensure_ascii=False,
-                indent=2,
-            )
-        )
-    else:
-        for relative in result.files:
-            file_violations = [
-                violation
-                for violation in result.violations
-                if violation.path == relative
-            ]
-            status = "FAIL" if file_violations else "OK"
-            print(f"[{status}] {relative}")
-            for violation in file_violations:
-                print(f"  {violation.format()}")
-        if result.ok:
-            print(
-                "[double-write] OK — legacy sessions.messages 写入与 Database 业务方法均已冻结"
-            )
-            if result.stats:
-                print(
-                    "  Database: {database_methods} methods, {database_delegations} pure delegations".format(
-                        database_methods=result.stats.get("database_methods", 0),
-                        database_delegations=result.stats.get("database_delegations", 0),
-                    )
-                )
-        else:
-            print(
-                f"[double-write] FAIL — {len(result.violations)} violation(s); "
-                "见上列文件:行号"
-            )
-
-    return 0 if result.ok else 1
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

@@ -30,8 +30,8 @@
 
 ### Phase 0 · 门禁（1 天，低风险）
 
-- 新增 `scripts/import_graph.py`（复用 T4 的 AST 分析）输出 SCC/扇入扇出。
-- CI 增加：`python scripts/import_graph.py --check-scc 0`（允许白名单 + 注释原因）。
+- 新增 `scripts/quality/import_graph.py`（复用 T4 的 AST 分析）输出 SCC/扇入扇出。
+- CI 增加：`python scripts/quality/import_graph.py --check-scc 0`（允许白名单 + 注释原因）。
 - 新增 `[tool.ruff]` 与最小规则集（F/E9，后续 BLE/print 分阶段）。
 
 ### Phase 1 · 砍 4 条回边（3–5 天，风险中）

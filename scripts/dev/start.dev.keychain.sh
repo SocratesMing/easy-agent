@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SERVICE_NAME="${EASY_AGENT_KEYCHAIN_SERVICE:-easy-agent-deepseek-api-key}"
 JWT_SERVICE="${EASY_AGENT_JWT_KEYCHAIN_SERVICE:-easy-agent-jwt-secret}"
 ACCOUNT_NAME="${EASY_AGENT_KEYCHAIN_ACCOUNT:-$USER}"

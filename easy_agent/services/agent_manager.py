@@ -148,7 +148,7 @@ def _tool_factories() -> dict[str, Callable[..., Any]]:
 
     为什么放在这里而不是 ``tools/registry.py``：``knowledge_impl`` 与
     ``tools.scheduled_task`` 已位于既有的 knowledge→scheduler→agent_manager
-    SCC（``scripts/import_graph_whitelist.json`` 的 knowledge-chat-scheduler-core）
+    SCC（``scripts/quality/import_graph_whitelist.json`` 的 knowledge-chat-scheduler-core）
     中，注册表一旦出现包内 import 边就会把 registry/hitl/agent 一并并进该 SCC。
     工具工厂留在装配处后，注册表保持「无包内 import 边的叶子模块」，
     import 图与白名单保持完全一致（见设计文档 §2.3 / §4）。

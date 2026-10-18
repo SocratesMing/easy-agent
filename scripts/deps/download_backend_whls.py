@@ -7,7 +7,7 @@
 失败项统一记录到 FAILURES_TXT 指定的 txt 文件。
 
 用法：
-  python scripts/download_backend_whls.py
+  python scripts/deps/download_backend_whls.py
 
 所有参数在下方「配置区」修改，无需命令行传参。复用同级 download_backend_deps.py
 的工具函数（uv.lock 解析、pip 平台标签、按制品库层级归档），输出与其 --lock 模式

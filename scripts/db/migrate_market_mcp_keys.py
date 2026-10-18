@@ -3,7 +3,7 @@
 背景：MCP API Key 从"子项目自管"改为"主应用统一签发"（统一表 mcp_api_keys，
 含 business 列）。旧 key 哈希仍然有效——哈希算法未变（sha256），只需搬行。
 
-用法：python scripts/migrate_market_mcp_keys.py [--drop-old]
+用法：python scripts/db/migrate_market_mcp_keys.py [--drop-old]
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ import argparse
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from easy_agent.db import get_database  # noqa: E402
 

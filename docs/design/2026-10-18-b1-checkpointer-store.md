@@ -179,4 +179,4 @@ stringData:
 - 逃生门开启：启动成功且日志 warning；
 - PG URI 存在：Store 使用官方 `AsyncPostgresStore`，`setup()` 成功；
 - 无 PG URI：Store 保持 `SqlStore`，现有测试全绿；
-- `uvx ruff check .` 与 `scripts/import_graph.py --check-scc` 通过。
+- `uvx ruff check .` 与 `scripts/quality/import_graph.py --check-scc` 通过。

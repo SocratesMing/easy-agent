@@ -250,7 +250,7 @@ tests/api/test_metrics.py            鉴权、中间件路径、排除规则、�
 .venv/bin/python -m pytest \
   tests/services/test_metrics.py tests/api/test_metrics.py tests/integration/test_health.py -q
 uvx ruff check .
-python3 scripts/import_graph.py --check-scc
+python3 scripts/quality/import_graph.py --check-scc
 ```
 
 - 目标测试：`26 passed`（含 health 6 项）；

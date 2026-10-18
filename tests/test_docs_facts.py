@@ -74,7 +74,7 @@ def test_config_example_documents_knowledge_runtime_keys():
 
 
 def test_api_docs_generator_has_agent_prefix_and_check_mode():
-    text = _read("scripts/generate_api_docs.py")
+    text = _read("scripts/docs/generate_api_docs.py")
 
     assert '("/agent/chat", "聊天")' in text
     assert '"--check"' in text
@@ -82,5 +82,5 @@ def test_api_docs_generator_has_agent_prefix_and_check_mode():
 
 
 def test_config_schema_check_script_exists():
-    assert (PROJECT_ROOT / "scripts" / "check_config_schema.py").is_file()
-    assert (PROJECT_ROOT / "scripts" / "check_env_usage.py").is_file()
+    assert (PROJECT_ROOT / "scripts" / "quality" / "check_config_schema.py").is_file()
+    assert (PROJECT_ROOT / "scripts" / "quality" / "check_env_usage.py").is_file()

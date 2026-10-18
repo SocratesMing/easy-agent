@@ -121,8 +121,8 @@ pytest tests/services/test_upload_streaming.py tests/test_upload_limits.py -q
 | 检查 | 结果 |
 | --- | --- |
 | `uvx ruff check .` | `All checks passed!` |
-| `python3 scripts/import_graph.py --check-scc` | `226 modules, 525 internal edges, 0 SCC(s)` / OK |
-| `python3 scripts/check_double_write.py` | `OK — legacy sessions.messages 写入与 Database 业务方法均已冻结`（Database 153 methods / 115 pure delegations） |
+| `python3 scripts/quality/import_graph.py --check-scc` | `226 modules, 525 internal edges, 0 SCC(s)` / OK |
+| `python3 scripts/quality/check_double_write.py` | `OK — legacy sessions.messages 写入与 Database 业务方法均已冻结`（Database 153 methods / 115 pure delegations） |
 
 ### 2.3 未做的验证
 

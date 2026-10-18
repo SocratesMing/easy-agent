@@ -28,7 +28,7 @@
 | `pytest tests/agent/test_tool_registry.py tests/services/test_agent_manager_tools.py -q` | **20 passed**（注册表/注入顺序未回归） |
 | `pytest tests/agent/test_graph_cache.py tests/test_framework_contract.py tests/services/test_web_search_injection.py tests/test_file_context.py -q` | **50 passed**（D2 缓存键、`create_deep_agent` 参数、工具注入无回归） |
 | `uvx ruff check .` | **All checks passed** |
-| `python3 scripts/import_graph.py --check-scc` | **OK**：`217 modules, 488 internal edges, 0 SCC(s) / 0 modules`，与白名单完全一致 |
+| `python3 scripts/quality/import_graph.py --check-scc` | **OK**：`217 modules, 488 internal edges, 0 SCC(s) / 0 modules`，与白名单完全一致 |
 
 ### 2.2 语义对照
 

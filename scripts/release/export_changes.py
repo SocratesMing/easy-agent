@@ -7,7 +7,7 @@
   - 重命名(R)旧名：从 HEAD 取出旧名内容
 
 用法：
-  python scripts/export_changes.py
+  python scripts/release/export_changes.py
 
 输出：
   scripts/changed_files/        # 保持原层级的变更文件副本

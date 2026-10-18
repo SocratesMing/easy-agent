@@ -24,7 +24,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 CANONICAL = ROOT / "skills"
 PACKAGED = ROOT / "easy_agent" / "skills"
-SYNC_SCRIPT = ROOT / "scripts" / "sync_skills.py"
+SYNC_SCRIPT = ROOT / "scripts" / "skills" / "sync_skills.py"
 EXPECTED_SKILLS = (
     "docx",
     "expert-creator",
@@ -96,7 +96,7 @@ def test_packaged_tree_is_byte_identical_to_canonical():
     )
     assert not mismatched, (
         f"以下文件与 canonical 漂移：{mismatched[:5]}；"
-        "运行 python scripts/sync_skills.py --write"
+        "运行 python scripts/skills/sync_skills.py --write"
     )
     assert canonical.digest == packaged.digest
 

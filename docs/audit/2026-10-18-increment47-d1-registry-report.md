@@ -58,7 +58,7 @@
 
 ### 3.3 Import 图约束（实现取舍）
 
-`scripts/import_graph.py` 的 AST 扫描把函数内 import 也计入 SCC，且白名单要求模块集合精确匹配：
+`scripts/quality/import_graph.py` 的 AST 扫描把函数内 import 也计入 SCC，且白名单要求模块集合精确匹配：
 `registry` 一旦 import `knowledge_impl`/`scheduled_task`，就会被并入既有
 knowledge→scheduler→agent_manager SCC（16→20）；反过来删掉 `agent_manager` 原有 import 边，
 SCC 会缩到 9。两种方向都失败。
@@ -72,7 +72,7 @@ SCC 会缩到 9。两种方向都失败。
 | --- | --- |
 | `pytest tests/agent tests/services/test_agent_manager_cache.py tests/services/test_agent_manager_tools.py tests/services/test_hitl_destructive.py -q` | **28 passed**（0.10s） |
 | 追加 `tests/services/test_hitl_state.py tests/services/test_hitl_resume.py -q` | **8 passed** |
-| `python3 scripts/import_graph.py --check-scc` | OK —— `211 modules / 1 SCC(16)`，SCC 模块集合与白名单完全一致（边数随其他批次并行改动浮动） |
+| `python3 scripts/quality/import_graph.py --check-scc` | OK —— `211 modules / 1 SCC(16)`，SCC 模块集合与白名单完全一致（边数随其他批次并行改动浮动） |
 | `uvx ruff check .` | All checks passed |
 
 等价性由测试逐项锁定：

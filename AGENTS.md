@@ -34,6 +34,7 @@ easy-agent/
 ├── frontend/            # 第二基线：Vue 3.5 + Vite（并行维护）
 ├── skills/              # canonical 运行时技能（7 个；easy_agent/skills/ 为包内回退副本）
 ├── tests/               # pytest tests (test_*.py) and manual demo scripts
+├── scripts/             # 按功能分组：quality/db/deps/release/docs/skills/dev（见 scripts/README.md）
 ├── main.py              # uvicorn entry point
 ├── pyproject.toml       # Project metadata & deps (managed by uv)
 └── Dockerfile           # Multi-stage build
@@ -79,6 +80,6 @@ cd frontend && npm run build        # Build the Vue3 baseline
 - `config.yaml` is the **single** backend config file, and it is gitignored — copy `config-example.yaml` as a template.
 - Environment differences are injected through `${VAR:-default}` placeholders, whose values come from `.env.{AGENT_ENV}` (`.env.dev` / `.env.test` / `.env.prod`, falling back to `.env`). See `.env.*.example` for the full variable list.
 - Legacy per-environment files (`config.dev.yaml`, `config.prod.yaml`, `config.test.yaml`) are no longer read by the backend.
-- Unknown top-level/section keys only warn by default; set `EASY_CONFIG_STRICT=1` to fail fast. `python scripts/check_config_schema.py --check` verifies the template/local key set.
+- Unknown top-level/section keys only warn by default; set `EASY_CONFIG_STRICT=1` to fail fast. `python scripts/quality/check_config_schema.py --check` verifies the template/local key set.
 - `EASY_JWT_SECRET` is optional in dev/test: the secret is persisted in `data/.jwt_secret` so restarts keep tokens valid. `AGENT_ENV=prod` requires an explicit `EASY_JWT_SECRET`.
 - Override the config path with the `EASY_CONFIG` environment variable.

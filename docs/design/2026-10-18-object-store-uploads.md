@@ -157,7 +157,7 @@ local 模式的返回结构、状态码、文件名口径完全不变。
 | 编码膨胀 | base64 → +33% | 二进制文件在库里比原始字节大约 1/3 |
 | 内存 | `StoreBackend.upload_files()` 需要整个文件 `bytes` | 上传时会临时占用「文件大小 × ~2.2」（bytes + base64 str + JSON） |
 | 单文件上限 | 沿用既有 `upload_limits.max_file_size_mb`（未改） | **store 模式建议 ≤ 20MB**；更大的文件请改用 S3 方案 |
-| 表增长 | 每个上传一行 | 备份/迁移（`scripts/migrate_sqlite_to_mysql.py`）会带上这些行 |
+| 表增长 | 每个上传一行 | 备份/迁移（`scripts/db/migrate_sqlite_to_mysql.py`）会带上这些行 |
 | 并发 | 无锁 | 同一 URI 并发 materialize 可能重复下载；原子写保证结果一致 |
 
 ## 9. 配置与门禁
@@ -183,8 +183,8 @@ EASY_UPLOAD_BACKEND=local       # local | store（上传原始文件；store=Lan
 | `tests/services/test_session_uploads_store.py` | 7 | `_find_source_path` / `store_parsed_content` / `ensure_parsed_text` 的 materialize、本地路径短路、Store 故障与跨用户透传 |
 | `tests/services/test_session_uploads.py` | 9 | 本地路径行为回归（解析落盘、清单裁剪、按需重解析、预览） |
 
-门禁：`uvx ruff check .` 通过、`python3 scripts/import_graph.py --check-scc` 0 SCC、
-`python3 scripts/check_double_write.py` 通过（未新增 `Database` 业务方法，新增的
+门禁：`uvx ruff check .` 通过、`python3 scripts/quality/import_graph.py --check-scc` 0 SCC、
+`python3 scripts/quality/check_double_write.py` 通过（未新增 `Database` 业务方法，新增的
 `get_file_record` 在 `db/repositories/*`）。
 
 ## 11. 已知未覆盖 / 后续

@@ -96,7 +96,7 @@ All checks passed!
 ```
 
 ```text
-$ python3 scripts/import_graph.py --check-scc
+$ python3 scripts/quality/import_graph.py --check-scc
 import graph: 217 modules, 488 internal edges, 0 SCC(s) / 0 modules
 [check-scc] OK — 实际 SCC 与白名单完全一致
 ```

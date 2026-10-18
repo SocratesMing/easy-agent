@@ -30,7 +30,7 @@
   事件（见 §3 轮次语义）。
 
 `Database` 增加三个纯委托：`append_stream_event` / `list_stream_events` /
-`delete_stream_events_before`，并同步更新 `scripts/check_double_write.py` 的
+`delete_stream_events_before`，并同步更新 `scripts/quality/check_double_write.py` 的
 `INFRA_DATABASE_METHODS` / `FROZEN_DATABASE_METHODS` 白名单。
 
 ### 1.3 写入器
@@ -89,11 +89,11 @@ pytest tests/api/test_chat.py tests/services/test_stream_*.py \
 uvx ruff check .
 # All checks passed!
 
-python scripts/import_graph.py --check-scc
+python scripts/quality/import_graph.py --check-scc
 # 221 modules, 506 internal edges, 0 SCC(s) / 0 modules
 # [check-scc] OK — 实际 SCC 与白名单完全一致
 
-python scripts/check_double_write.py
+python scripts/quality/check_double_write.py
 # [OK] sessions.py / database.py
 # Database: 145 methods, 110 pure delegations
 ```
@@ -162,4 +162,4 @@ WSL/Windows 挂载下的既有环境噪声，本次未改动/未提交这些文�
 - `easy_agent/api/chat.py`（hub 持久化、DB-first `/stream/live`、DB status）
 - `easy_agent/api/expert.py`（仅传 `db=repo.database`，两处）
 - `easy_agent/app.py`（shutdown flush）
-- `scripts/check_double_write.py`（白名单）
+- `scripts/quality/check_double_write.py`（白名单）

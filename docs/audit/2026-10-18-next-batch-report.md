@@ -6,12 +6,12 @@
 
 | 交付 | 内容 |
 | --- | --- |
-| `scripts/import_graph.py` | stdlib AST + Tarjan；`--check-scc` 与 `scripts/import_graph_whitelist.json` 精确比对；新环/白名单过期/空白名单有环 exit 1 |
-| `scripts/check_double_write.py` | 冻结 `sessions.messages` 动态写入（仅允许固定空值）与 `Database` 业务方法（141 methods / 106 pure delegations） |
+| `scripts/quality/import_graph.py` | stdlib AST + Tarjan；`--check-scc` 与 `scripts/quality/import_graph_whitelist.json` 精确比对；新环/白名单过期/空白名单有环 exit 1 |
+| `scripts/quality/check_double_write.py` | 冻结 `sessions.messages` 动态写入（仅允许固定空值）与 `Database` 业务方法（141 methods / 106 pure delegations） |
 | `.github/workflows/ci.yml` | 新增 `architecture-gate` job |
 | `tests/test_architecture_gate.py` | 10 项自测 |
 
-**验证**：`python3 scripts/import_graph.py --check-scc` → 200 modules / 417 edges / 1 SCC(16) 与白名单一致；`python3 scripts/check_double_write.py` → OK。
+**验证**：`python3 scripts/quality/import_graph.py --check-scc` → 200 modules / 417 edges / 1 SCC(16) 与白名单一致；`python3 scripts/quality/check_double_write.py` → OK。
 
 ## 2. A2：会话消息单一写路径
 
@@ -51,8 +51,8 @@
 | 检查 | 结果 |
 | --- | --- |
 | 全量 `pytest tests/` | **1119 passed, 1 skipped, 0 failed, 0 error（243.7s）** |
-| `scripts/import_graph.py --check-scc` | OK（200 modules / 417 edges / 1 SCC(16)） |
-| `scripts/check_double_write.py` | OK |
+| `scripts/quality/import_graph.py --check-scc` | OK（200 modules / 417 edges / 1 SCC(16)） |
+| `scripts/quality/check_double_write.py` | OK |
 | `uvx ruff check .` | All checks passed |
 | `uv lock --check` | 通过 |
 

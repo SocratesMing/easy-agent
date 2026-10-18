@@ -5,7 +5,7 @@
 > （Vue 2.7 + Element UI）构建产物，同时维护 `frontend/`（Vue 3.5 + Vite）
 > 第二基线；运行时技能 7 个；已有 Dockerfile / docker-compose / k8s /
 > `.github/workflows/ci.yml`。新增配置键请同步 `config-example.yaml` 并跑
-> `python scripts/check_config_schema.py --check`。
+> `python scripts/quality/check_config_schema.py --check`。
 
 
 > 基于 [LangChain DeepAgents](https://docs.langchain.com/oss/python/deepagents) 框架的 AI Agent Web 应用。
@@ -285,7 +285,7 @@ external_dirs:
 ```
 
 配置校验：未知顶层/关键节键默认只 WARNING（旧配置可直接启动）；设置
-`EASY_CONFIG_STRICT=1` 后改为启动失败。`python scripts/check_config_schema.py --check`
+`EASY_CONFIG_STRICT=1` 后改为启动失败。`python scripts/quality/check_config_schema.py --check`
 会校验 `config-example.yaml` 的 schema，并在本地存在 `config.yaml` 时检查
 「本地配置使用的键是否都已写入模板」。
 
@@ -429,7 +429,7 @@ Agent 会自动解析调度意图并调用 `create_scheduled_task` 工具，参�
   - 连接器页的「已安装」判断只读用户自己的 `workspace/{username}/mcp.json`，不受这份公共配置影响
 - 格式规范（顶层 `connectors` 数组，字段非法/重复/缺 name 或缺 config 的条目会被跳过并记 warning，页面始终可用）
 - API Key 已不在设置页签发（表 `mcp_api_keys` 仅由 mcp-server 只读校验），
-  历史 key 迁移见 `scripts/migrate_market_mcp_keys.py`
+  历史 key 迁移见 `scripts/db/migrate_market_mcp_keys.py`
 
 ---
 
@@ -485,8 +485,8 @@ uv run pytest
 
 ### API 文档
 ```bash
-python scripts/generate_api_docs.py --check   # CI 冒烟检查：可收集、前缀/模块标签正确
-python scripts/generate_api_docs.py           # 生成 docs/API接口文档.xlsx
+python scripts/docs/generate_api_docs.py --check   # CI 冒烟检查：可收集、前缀/模块标签正确
+python scripts/docs/generate_api_docs.py           # 生成 docs/API接口文档.xlsx
 ```
 `docs/API接口文档.xlsx` 是生成物，不要求每次代码变更都提交二进制更新。
 

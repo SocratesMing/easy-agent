@@ -76,10 +76,10 @@ rows after restart with empty string = 1
 | --- | --- | --- |
 | 相关测试 | `uv run pytest tests/db tests/api/test_sessions.py tests/api/test_chat.py -q` | **96 passed, 1 warning**（42.43s） |
 | Lint | `uvx ruff check .` | **All checks passed** |
-| 阶段 0 双写门禁 | `uv run python scripts/check_double_write.py` | **OK**（sessions.py / database.py 均 OK；Database 141 methods / 106 pure delegations） |
+| 阶段 0 双写门禁 | `uv run python scripts/quality/check_double_write.py` | **OK**（sessions.py / database.py 均 OK；Database 141 methods / 106 pure delegations） |
 | 门禁自测 | `uv run pytest tests/test_architecture_gate.py -q -k 'sessions_checker or database_checker or double_write'` | **5 passed, 5 deselected** |
 
-说明：阶段 0 门禁 `scripts/check_double_write.py` 在本次任务执行期间由并行任务落地。其规则明确允许
+说明：阶段 0 门禁 `scripts/quality/check_double_write.py` 在本次任务执行期间由并行任务落地。其规则明确允许
 `INSERT/UPDATE sessions.messages` 使用**固定空值**（`'[]'` / `''` / 空列表），禁止动态值；本实现以空串通过，
 且 `json.dumps(session_data.messages)` 已从 `sessions.py` 移除。
 

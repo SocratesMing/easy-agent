@@ -59,7 +59,7 @@ C1 的目标是让 API 层只依赖领域 repository、停止直接使用 `Datab
 ### 2.2 为什么不直接搬 SQL
 
 `db/repositories/*` 已经是 SQL 归属地（ARCH-03 Phase 2），且阶段 0 双写门禁
-（`scripts/check_double_write.py`）只冻结 `repositories/sessions.py` 的写入方式。
+（`scripts/quality/check_double_write.py`）只冻结 `repositories/sessions.py` 的写入方式。
 把 SQL 再复制进 `SessionRepository` 会制造第二处实现，反而扩大双写面。
 因此本批采用「对象 + 委托」而不是「重写 SQL」。
 
@@ -137,7 +137,7 @@ repository 不做任何新的异常包装或权限判断，`HTTPException(404, "
      `Depends(get_session_repository)`；
    - 用 `_SpyRepository` 覆盖 `get_session_repository`，断言创建/详情/列表
      确实经过 repository 方法，路由行为不变。
-3. **门禁**：`scripts/check_double_write.py`、`scripts/import_graph.py
+3. **门禁**：`scripts/quality/check_double_write.py`、`scripts/quality/import_graph.py
    --check-scc`、`uvx ruff check .`。
 4. **全量测试**：不在本子任务执行，由 Lead 统一跑（见报告）。
 

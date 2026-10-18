@@ -21,7 +21,7 @@
   回答数据类问题必须标注来源，并说明为空 / 未验证；同步
   `prompt_loader.DEFAULT_SYSTEM_PROMPT`，保持内置兜底与文件逐字一致。
 - 目标测试 **59 passed**；`uvx ruff check .` **All checks passed**；
-  `python3 scripts/import_graph.py --check-scc` **0 SCC / 217 modules / 488 edges**（模块计数随并行 wave 改动变化，门禁结论为 0 SCC）。
+  `python3 scripts/quality/import_graph.py --check-scc` **0 SCC / 217 modules / 488 edges**（模块计数随并行 wave 改动变化，门禁结论为 0 SCC）。
 
 ## 2. 交付物
 
@@ -75,7 +75,7 @@ $ .venv/bin/python -m pytest \
 $ uvx ruff check .
 All checks passed!
 
-$ python3 scripts/import_graph.py --check-scc
+$ python3 scripts/quality/import_graph.py --check-scc
 import graph: 217 modules, 488 internal edges, 0 SCC(s) / 0 modules
 [check-scc] OK — 实际 SCC 与白名单完全一致
 ```

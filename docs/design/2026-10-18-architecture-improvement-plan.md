@@ -68,7 +68,7 @@ flowchart TB
 
 | 任务 | 做什么 | 验收 |
 | --- | --- | --- |
-| 0.1 import 图 | 把 `_analysis/t4_import_graph*.py` 收成 `scripts/import_graph.py`；CI `--check-scc`，白名单仅现有环并注释原因 | 新回边失败；白名单只减不增 |
+| 0.1 import 图 | 把 `_analysis/t4_import_graph*.py` 收成 `scripts/quality/import_graph.py`；CI `--check-scc`，白名单仅现有环并注释原因 | 新回边失败；白名单只减不增 |
 | 0.2 双写冻结 | CI 禁止在 `Database` 新增业务方法；禁止新增 `sessions.messages` 写入点 | PR diff 门禁 |
 | 0.3 最小 lint | `[tool.ruff]` F/E9；`pytest --collect-only` 无 error | 与现有 `tests/` 绿并存 |
 
@@ -99,7 +99,7 @@ flowchart TB
 ### A3 技能单一安装源
 
 - 运行时只认根 `skills/`（或只认包内，二选一，推荐根目录为 canonical，安装期 copy 进包）。
-- `scripts/sync_skills.py` 从「对账」改为「单向生成 + CI 哈希」；office 12 文件全量哈希，不只 `base.py`。
+- `scripts/skills/sync_skills.py` 从「对账」改为「单向生成 + CI 哈希」；office 12 文件全量哈希，不只 `base.py`。
 - 不在本阶段删除 `.agents/skills`（开发技能，非运行时）。
 
 验收：改一个 office 脚本只需改 canonical 一处；CI 发现第二棵树漂移即失败。
@@ -314,7 +314,7 @@ easy_agent/services/streaming/
 
 | 阶段 | 状态 | 说明 |
 | --- | --- | --- |
-| 0 门禁 | ✅ | `scripts/import_graph.py` + CI SCC 白名单；`scripts/check_double_write.py`；`architecture-gate` job |
+| 0 门禁 | ✅ | `scripts/quality/import_graph.py` + CI SCC 白名单；`scripts/quality/check_double_write.py`；`architecture-gate` job |
 | A2 会话消息单写 | ✅ | `create_session` 不再写 JSON（空串占位）；legacy 只读回退保留；双写门禁通过 |
 | B3 第一批 | ⏳ | 429 JSON、真实 IP、prod JWT fail-fast、多副本告警已做；共享计数未做 |
 | C1 第一批 | ⏳ | sessions 域 `SessionRepository` + API 去门面；其他 API 域未迁移 |

@@ -95,8 +95,8 @@
 | 直接调用兼容（额外） | `uv run pytest tests/integration/test_session_ownership.py -q` | **12 passed, 1 warning**（2.44s） |
 | 架构/契约（额外） | `uv run pytest tests/test_architecture_gate.py tests/api/test_openapi_contract.py tests/api/test_error_contract.py -q` | **14 passed, 1 warning**（3.12s） |
 | 上传限额（额外） | `uv run pytest tests/test_upload_limits.py -q` | **8 passed, 1 warning**（3.44s） |
-| import SCC 门禁 | `python3 scripts/import_graph.py --check-scc` | **OK** — 200 modules / 417 edges / 1 SCC（16 modules），与白名单完全一致 |
-| 双写门禁 | `python3 scripts/check_double_write.py` | **OK** — sessions.py / database.py 均 OK；Database 141 methods / 106 pure delegations |
+| import SCC 门禁 | `python3 scripts/quality/import_graph.py --check-scc` | **OK** — 200 modules / 417 edges / 1 SCC（16 modules），与白名单完全一致 |
+| 双写门禁 | `python3 scripts/quality/check_double_write.py` | **OK** — sessions.py / database.py 均 OK；Database 141 methods / 106 pure delegations |
 | Lint | `uvx ruff check .` | **All checks passed!** |
 
 说明：唯一 warning 为既有 `StarletteDeprecationWarning`（httpx/TestClient），

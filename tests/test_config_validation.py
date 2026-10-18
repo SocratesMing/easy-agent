@@ -15,9 +15,9 @@ from easy_agent.config import (
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
+sys.path.insert(0, str(PROJECT_ROOT))
 
-import check_config_schema  # noqa: E402
+from scripts.quality import check_config_schema  # noqa: E402
 
 
 def _write_config(path: Path, extra: str = "") -> Path:

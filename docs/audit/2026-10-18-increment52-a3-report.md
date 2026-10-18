@@ -9,7 +9,7 @@
 
 ## 1. 结论
 
-- `scripts/sync_skills.py` 从“仅 3 格式对账”升级为“7 技能全量单向生成 + 确定性
+- `scripts/skills/sync_skills.py` 从“仅 3 格式对账”升级为“7 技能全量单向生成 + 确定性
   校验”：新增显式 `--write`、`--manifest`，默认动作改为只读 `--check`。
 - 覆盖全部 7 个运行时技能、**215 个受管文件**（另有两份非受管 `CANONICAL.md`），
   office 三格式共享的 **12 个脚本全量 hash**，不再只查 `base.py`。
@@ -24,7 +24,7 @@
 
 | 文件 | 变更 |
 | --- | --- |
-| `scripts/sync_skills.py` | 重写：全量 manifest、`--check`/`--write`/`--manifest`、office 门、孤儿清理、安全保护、`--json` |
+| `scripts/skills/sync_skills.py` | 重写：全量 manifest、`--check`/`--write`/`--manifest`、office 门、孤儿清理、安全保护、`--json` |
 | `tests/skills/test_skills_single_source.py` | 新增 10 项：全量镜像、单文件漂移/修复、单向清理、空源保护、manifest 确定性、office 漂移不被掩盖 |
 | `tests/skills/test_office_canonical.py` | 保留整树镜像；新增 12 脚本集合冻结 + 跨格式全量 hash |
 | `easy_agent/skills/**` | 从 canonical 重新生成（1 个文件更新，16 个 `__pycache__` 清理） |
@@ -49,14 +49,14 @@
 
 ## 4. 执行记录
 
-1. 同步前 `python3 scripts/sync_skills.py --check` → exit 1：
+1. 同步前 `python3 scripts/skills/sync_skills.py --check` → exit 1：
 
    ```text
    drift（内容不同）: 1
      - skill-creator/SKILL.md
    ```
 
-2. `python3 scripts/sync_skills.py --write`：
+2. `python3 scripts/skills/sync_skills.py --write`：
 
    ```text
    canonical: 7 skills / 215 files / digest 8f14dbef8394dd02…
@@ -88,8 +88,8 @@
 | --- | --- |
 | `uv run pytest tests/skills tests/test_framework_contract.py -q` | **28 passed**, 1 warning（Starlette/httpx 弃用告警），2.96s |
 | `uvx ruff check .` | **All checks passed!** |
-| `python3 scripts/import_graph.py --check-scc` | **OK**：212 modules / 479 edges / 1 SCC（16 modules），与白名单完全一致 |
-| `python3 scripts/sync_skills.py --check` | exit 0，7 skills / 215 files |
+| `python3 scripts/quality/import_graph.py --check-scc` | **OK**：212 modules / 479 edges / 1 SCC（16 modules），与白名单完全一致 |
+| `python3 scripts/skills/sync_skills.py --check` | exit 0，7 skills / 215 files |
 
 新增测试要点：
 

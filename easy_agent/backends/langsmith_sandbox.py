@@ -31,6 +31,7 @@ from typing import Any, Callable, Iterable
 from deepagents.backends.protocol import ExecuteResponse
 
 from .shell import _PathTranslatingShell
+from ..env import env_str
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +50,7 @@ def sandbox_mode() -> str:
     未知取值直接抛 ValueError（fail-closed），避免拼写错误时静默退回本地
     执行而让调用方误以为命令跑在远端 sandbox 里。
     """
-    raw = (os.getenv("EASY_SANDBOX") or "").strip().lower()
+    raw = (env_str("EASY_SANDBOX") or "").strip().lower()
     if raw in ("", "local"):
         return "local"
     if raw == "langsmith":
@@ -61,7 +62,7 @@ def sandbox_mode() -> str:
 
 
 def _sync_max_mb_from_env() -> float:
-    raw = (os.getenv("EASY_SANDBOX_SYNC_MAX_MB") or "").strip()
+    raw = (env_str("EASY_SANDBOX_SYNC_MAX_MB") or "").strip()
     if not raw:
         return DEFAULT_SYNC_MAX_MB
     try:
@@ -153,7 +154,7 @@ def create_langsmith_backend(
         RuntimeError: 缺少 LangSmith 凭据、SDK 不可用或创建 sandbox 失败。
     """
     resolved_root = _normalize_remote_root(
-        remote_root or os.getenv("EASY_SANDBOX_REMOTE_ROOT") or DEFAULT_REMOTE_ROOT
+        remote_root or env_str("EASY_SANDBOX_REMOTE_ROOT") or DEFAULT_REMOTE_ROOT
     )
     resolved_max_mb = (
         float(max_sync_mb) if max_sync_mb is not None else _sync_max_mb_from_env()
@@ -172,7 +173,7 @@ def create_langsmith_backend(
             raise RuntimeError("sandbox_factory 返回了 None，无法启用远端 execute")
     else:
         api_key = (
-            os.getenv("LANGSMITH_API_KEY") or os.getenv("LANGCHAIN_API_KEY") or ""
+            env_str("LANGSMITH_API_KEY") or env_str("LANGCHAIN_API_KEY") or ""
         ).strip()
         if not api_key:
             raise RuntimeError(
@@ -198,7 +199,7 @@ def create_langsmith_backend(
         raw_snapshot = (
             snapshot_name
             if snapshot_name is not None
-            else os.getenv("EASY_LANGSMITH_SNAPSHOT")
+            else env_str("EASY_LANGSMITH_SNAPSHOT")
         )
         resolved_snapshot = str(raw_snapshot or "").strip() or None
         try:

@@ -160,8 +160,8 @@ def _as_xxx_repository(value: object) -> XxxRepository:
 3. 既有 API 测试全部保留并运行：
    `tests/api/test_auth.py test_files.py test_scheduled_tasks.py test_expert.py
    test_chat.py tests/db -q`。
-4. 门禁：`python3 scripts/import_graph.py --check-scc`、
-   `python3 scripts/check_double_write.py`、`uvx ruff check .`。
+4. 门禁：`python3 scripts/quality/import_graph.py --check-scc`、
+   `python3 scripts/quality/check_double_write.py`、`uvx ruff check .`。
 5. 不跑全量测试（按任务约定），报告中注明。
 
 ## 7. 风险与缓解

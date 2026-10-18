@@ -28,7 +28,7 @@
 用法示例：
   # 升级并下载（uv.lock 全量，Windows x86 / cp312）
   uv lock --upgrade
-  python scripts/download_backend_deps.py --lock uv.lock --platform win --arch x86 --python-version 3.12
+  python scripts/deps/download_backend_deps.py --lock uv.lock --platform win --arch x86 --python-version 3.12
 """
 
 from __future__ import annotations
@@ -47,7 +47,7 @@ from packaging.utils import canonicalize_name, parse_wheel_filename
 
 
 def repo_root() -> Path:
-    return Path(__file__).resolve().parent.parent
+    return Path(__file__).resolve().parents[2]
 
 
 def _load_toml(path: Path) -> dict:

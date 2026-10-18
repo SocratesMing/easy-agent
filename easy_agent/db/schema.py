@@ -533,7 +533,7 @@ def init_tables(db):
 def verify_schema_current(db) -> None:
     """启动只校验模式（EASY_AUTO_MIGRATE=0）：结构不匹配直接失败。
 
-    K8s/多副本部署可先跑 `python scripts/migrate_db.py`（Job），Pod 启动只读
+    K8s/多副本部署可先跑 `python scripts/db/migrate_db.py`（Job），Pod 启动只读
     校验，避免每个 Pod 并发执行 DDL。
     """
     with db.get_connection() as conn:
@@ -545,7 +545,7 @@ def verify_schema_current(db) -> None:
         raise RuntimeError(
             "数据库结构不是最新（"
             f"schema_version={current}，期望 {SCHEMA_VERSION}，"
-            f"关键表齐全={present}）。请先运行：python scripts/migrate_db.py"
+            f"关键表齐全={present}）。请先运行：python scripts/db/migrate_db.py"
         )
 
 

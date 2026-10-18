@@ -13,7 +13,7 @@
 # 可用变量清单见 .env.dev.example / .env.test.example / .env.prod.example。
 #
 # 配置校验：
-#   python scripts/check_config_schema.py --check   # 模板/本地配置键集合与 schema
+#   python scripts/quality/check_config_schema.py --check   # 模板/本地配置键集合与 schema
 # 未知顶层/节键默认只 WARNING（旧配置可直接启动）；设置 EASY_CONFIG_STRICT=1
 # 后改为启动失败（部署自检推荐）。
 

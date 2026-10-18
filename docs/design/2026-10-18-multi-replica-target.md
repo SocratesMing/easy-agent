@@ -54,7 +54,7 @@ Ingress
 
 - 当前基线提交、工作区干净；
 - 本 ADR 合并；
-- 特性开关 + 严格门禁 + 脚本 `scripts/check_multi_replica.py` + 测试；
+- 特性开关 + 严格门禁 + 脚本 `scripts/quality/check_multi_replica.py` + 测试；
 - K8s 样例显式 `EASY_MULTI_REPLICA_STRICT=0` 并注明“Phase 2/3 后改 1”；
 - 全量测试通过。
 
@@ -78,7 +78,7 @@ Ingress
 ## 7. Phase 3 后端状态（2026-10-18）
 
 - 迁移串行化：`schema_migration_lock`（MySQL GET_LOCK / SQLite flock）已接入
-  `init_tables()`；`scripts/migrate_db.py` 提供迁移/只校验入口；
+  `init_tables()`；`scripts/db/migrate_db.py` 提供迁移/只校验入口；
   `EASY_AUTO_MIGRATE=0` 时 Pod 启动只校验，结构不匹配 fail-fast。
 - K8s 清单/探针/HPA/PDB：按用户要求跳过。
 - 文件对象存储 / 外部 Sandbox：未做，仍待后续。

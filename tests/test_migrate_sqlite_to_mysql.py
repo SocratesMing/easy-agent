@@ -2,7 +2,7 @@ import sqlite3
 
 import pytest
 
-from scripts import migrate_sqlite_to_mysql as migration
+from scripts.db import migrate_sqlite_to_mysql as migration
 
 
 class _ApplyConnection:

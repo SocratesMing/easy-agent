@@ -29,8 +29,8 @@
 | --- | --- |
 | `tests/middleware` + `tests/db` | 88 passed |
 | 全量 `pytest tests/` | **1119 passed, 1 skipped, 0 failed, 0 error（243.7s）** |
-| `scripts/import_graph.py --check-scc` | OK（200 modules / 417 edges / 1 SCC(16)） |
-| `scripts/check_double_write.py` | OK |
+| `scripts/quality/import_graph.py --check-scc` | OK（200 modules / 417 edges / 1 SCC(16)） |
+| `scripts/quality/check_double_write.py` | OK |
 | `uvx ruff check .` | All checks passed |
 
 ## 4. 未做/风险

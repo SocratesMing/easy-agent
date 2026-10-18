@@ -31,13 +31,13 @@ jobs:
           python-version: "3.12"
       # 阶段 0.1：import 图 SCC 白名单；新回边/环模块集合变化/白名单过期即失败。
       - name: Import graph SCC (whitelist = existing cycles only)
-        run: python scripts/import_graph.py --check-scc
+        run: python scripts/quality/import_graph.py --check-scc
       # A3 技能单一安装源：根 skills/ 为 canonical，包内副本必须逐字节一致。
       - name: Skills single source (canonical → packaged)
-        run: python scripts/sync_skills.py --check
+        run: python scripts/skills/sync_skills.py --check
       # 阶段 0.2：冻结 sessions.messages 双写与 Database 新业务方法。
       - name: Double-write freeze (sessions.messages / Database facade)
-        run: python scripts/check_double_write.py
+        run: python scripts/quality/check_double_write.py
 
   backend-tests:
     name: Backend tests (pytest)
@@ -51,12 +51,12 @@ jobs:
         run: uv sync --frozen --group dev --extra docs
       - name: Config schema + bare getenv gates
         run: |
-          uv run python scripts/check_config_schema.py --check
-          uv run python scripts/check_env_usage.py --check
+          uv run python scripts/quality/check_config_schema.py --check
+          uv run python scripts/quality/check_env_usage.py --check
       - name: Multi-replica capability gate (Phase 0)
-        run: uv run python scripts/check_multi_replica.py
+        run: uv run python scripts/quality/check_multi_replica.py
       - name: API docs generator smoke check
-        run: uv run python scripts/generate_api_docs.py --check
+        run: uv run python scripts/docs/generate_api_docs.py --check
       - name: Collection gate (must be 0 errors)
         run: uv run pytest --collect-only -q
       - name: Run tests

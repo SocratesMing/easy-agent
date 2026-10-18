@@ -11,7 +11,7 @@ ROOT = Path(__file__).parents[1]
 @pytest.mark.parametrize(
     "script_path",
     [
-        "scripts/start.dev.keychain.sh",
+        "scripts/dev/start.dev.keychain.sh",
     ],
 )
 def test_dev_keychain_launcher_persists_and_exports_jwt_secret(script_path: str):

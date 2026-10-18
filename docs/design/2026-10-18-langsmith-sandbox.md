@@ -223,7 +223,7 @@ pytest tests/agent/test_langsmith_sandbox.py \
 uvx ruff check .
 # All checks passed!
 
-python scripts/import_graph.py --check-scc
+python scripts/quality/import_graph.py --check-scc
 # import graph: 226 modules, 525 internal edges, 0 SCC(s)
 # [check-scc] OK
 ```

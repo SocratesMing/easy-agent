@@ -11,9 +11,9 @@
 
 | 文件 | 类型 | 作用 |
 | --- | --- | --- |
-| `scripts/import_graph.py` | 新增 | 纯 stdlib（`ast`）扫描 `easy_agent` 内部 import，Tarjan 计算 SCC；`--check-scc` 强制白名单，`--json` / `--json-out` 输出模块、边、SCC |
-| `scripts/import_graph_whitelist.json` | 新增 | 只允许当前 1 个 SCC（16 模块），逐项写明原因与目标阶段；空白名单等价于“SCC 必须为 0” |
-| `scripts/check_double_write.py` | 新增 | `sessions.py` 的 `sessions.messages` 动态写入检查 + `Database` 方法冻结（显式名单 + 纯委托校验）；输出 `文件:行号`，违规 exit 1 |
+| `scripts/quality/import_graph.py` | 新增 | 纯 stdlib（`ast`）扫描 `easy_agent` 内部 import，Tarjan 计算 SCC；`--check-scc` 强制白名单，`--json` / `--json-out` 输出模块、边、SCC |
+| `scripts/quality/import_graph_whitelist.json` | 新增 | 只允许当前 1 个 SCC（16 模块），逐项写明原因与目标阶段；空白名单等价于“SCC 必须为 0” |
+| `scripts/quality/check_double_write.py` | 新增 | `sessions.py` 的 `sessions.messages` 动态写入检查 + `Database` 方法冻结（显式名单 + 纯委托校验）；输出 `文件:行号`，违规 exit 1 |
 | `.github/workflows/ci.yml` | 修改 | 新增 `architecture-gate` job，依次运行两个门禁脚本（Python 3.12，无第三方依赖） |
 | `tests/test_architecture_gate.py` | 新增 | 10 个用例：import 解析/SCC/白名单/CLI，双写坏样本/好样本/真实仓库 |
 | `docs/audit/2026-10-18-increment39-phase0-gate-report.md` | 新增 | 本报告 |
@@ -37,7 +37,7 @@
 ### 2.2 当前结果
 
 ```text
-$ python3 scripts/import_graph.py --check-scc
+$ python3 scripts/quality/import_graph.py --check-scc
 import graph: 199 modules, 412 internal edges, 1 SCC(s) / 16 modules
   SCC-1 [16]: api.chat, api.sessions, knowledge_impl, knowledges.api,
              knowledges.chat.agent_extension, knowledges.chat.chat_bridge,
@@ -52,7 +52,7 @@ import graph: 199 modules, 412 internal edges, 1 SCC(s) / 16 modules
 
 ### 2.3 白名单内容
 
-`scripts/import_graph_whitelist.json` 当前只有一项：
+`scripts/quality/import_graph_whitelist.json` 当前只有一项：
 
 | 字段 | 内容 |
 | --- | --- |
@@ -85,7 +85,7 @@ import graph: 199 modules, 412 internal edges, 1 SCC(s) / 16 modules
 ### 3.3 当前结果（A2 已落地）
 
 ```text
-$ python3 scripts/check_double_write.py
+$ python3 scripts/quality/check_double_write.py
 [OK] easy_agent/db/repositories/sessions.py
 [OK] easy_agent/db/database.py
 [double-write] OK — legacy sessions.messages 写入与 Database 业务方法均已冻结
@@ -108,9 +108,9 @@ $ python3 scripts/check_double_write.py
         with:
           python-version: "3.12"
       - name: Import graph SCC (whitelist = existing cycles only)
-        run: python scripts/import_graph.py --check-scc
+        run: python scripts/quality/import_graph.py --check-scc
       - name: Double-write freeze (sessions.messages / Database facade)
-        run: python scripts/check_double_write.py
+        run: python scripts/quality/check_double_write.py
 ```
 
 两个脚本只依赖标准库，不需要 `uv sync`，因此该 job 不增加依赖安装时间；任一脚本非 0 退出即失败。
@@ -121,9 +121,9 @@ $ python3 scripts/check_double_write.py
 | --- | --- | --- |
 | 新增门禁用例 | `.venv/bin/python -m pytest tests/test_architecture_gate.py -q -p no:cacheprovider` | **10 passed**（1 个既有 Starlette 弃用 warning） |
 | Ruff | `uvx ruff check .` | **All checks passed!** |
-| SCC 门禁 | `python3 scripts/import_graph.py --check-scc` | exit 0，1 SCC / 16 模块与白名单一致 |
-| 双写门禁 | `python3 scripts/check_double_write.py` | exit 0，两个文件 OK |
-| JSON 排查 | `python3 scripts/import_graph.py --json` | 输出 199 模块 / 412 边 / 1 SCC（含每个模块邻接表与边行号） |
+| SCC 门禁 | `python3 scripts/quality/import_graph.py --check-scc` | exit 0，1 SCC / 16 模块与白名单一致 |
+| 双写门禁 | `python3 scripts/quality/check_double_write.py` | exit 0，两个文件 OK |
+| JSON 排查 | `python3 scripts/quality/import_graph.py --json` | 输出 199 模块 / 412 边 / 1 SCC（含每个模块邻接表与边行号） |
 
 > 本机 WSL 只有 `python3`；CI 的 `architecture-gate` job 使用 `actions/setup-python` 提供的 `python`，两者跑的是同一份 stdlib 脚本。
 
@@ -149,5 +149,5 @@ $ python3 scripts/check_double_write.py
 ## 7. 回滚
 
 - 删除 `.github/workflows/ci.yml` 中的 `architecture-gate` job，或
-- 删除 `scripts/import_graph.py`、`scripts/import_graph_whitelist.json`、`scripts/check_double_write.py`、`tests/test_architecture_gate.py`。
+- 删除 `scripts/quality/import_graph.py`、`scripts/quality/import_graph_whitelist.json`、`scripts/quality/check_double_write.py`、`tests/test_architecture_gate.py`。
 - 脚本均为只读检查，不影响运行时；回滚不需要改业务源码。

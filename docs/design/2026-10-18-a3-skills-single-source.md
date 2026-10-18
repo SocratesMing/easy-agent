@@ -9,7 +9,7 @@
 
 ## 1. 问题与目标
 
-改造前 `scripts/sync_skills.py`：
+改造前 `scripts/skills/sync_skills.py`：
 
 - 只覆盖 `docx` / `pptx` / `xlsx` 三个格式，`pdf`、`mcp-builder`、`skill-creator`、
   `expert-creator` 四个技能完全不在同步范围；
@@ -117,7 +117,7 @@ CI（`.github/workflows/ci.yml` 的 `architecture-gate`）新增一步，只调�
 
 ```yaml
 - name: Skills single source (canonical → packaged)
-  run: python scripts/sync_skills.py --check
+  run: python scripts/skills/sync_skills.py --check
 ```
 
 ## 6. 落地记录
