@@ -428,6 +428,13 @@ async def lifespan(app: FastAPI):
                     "LangGraph Store 启动失败，保持业务库 SqlStore: "
                     f"{type(exc).__name__}: {exc}"
                 )
+
+            # 对象存储 A：EASY_UPLOAD_BACKEND=store 时上传原始文件必须落 LangGraph
+            # Store，这里做启动期 fail-closed 自检（local 模式为空操作）。宁可启动
+            # 失败，也不要跑起来后每次上传都 503。
+            from .services.upload_storage import preflight_upload_store
+
+            preflight_upload_store()
         else:
             logger.warning("⚠️ 配置未加载，Agent 未初始化，聊天等功能将不可用")
 

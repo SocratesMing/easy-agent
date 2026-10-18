@@ -30,6 +30,11 @@ from pathlib import Path
 
 from ..config import Config
 from ..utils.file_parser import parse_file_content
+from .upload_storage import (
+    UploadStorageError,
+    is_store_uri,
+    materialize_upload,
+)
 
 logger = logging.getLogger("easy_agent.session_uploads")
 
@@ -338,8 +343,14 @@ def store_parsed_content(
         )
     else:
         body = ""
+        # 对象存储模式（EASY_UPLOAD_BACKEND=store）：原始文件不在本地盘上，
+        # 先 materialize 到本地缓存再解析。Store 故障直接抛出（不静默降级成
+        # "解析失败"），由调用方记录明确原因。
+        source_path = str(file_path)
+        if is_store_uri(source_path):
+            source_path = str(materialize_upload(source_path, username))
         try:
-            body = parse_file_content(str(file_path)) or ""
+            body = parse_file_content(source_path) or ""
         except Exception as e:
             logger.warning(f"解析上传文件失败: {filename} | {e}")
             body = ""
@@ -482,14 +493,25 @@ def _find_source_path(
 
     优先用 DB 的 session_files 记录（上传时已落库 file_path），找不到再按
     `{file_id}_{原名}` 后缀模式扫描 uploadfiles 目录兜底。
+
+    对象存储模式（``EASY_UPLOAD_BACKEND=store``）下 DB 里存的是
+    ``store://uploads/{user}/{name}`` URI：此时 materialize 到本地缓存后返回本地
+    路径；materialize 失败会把 ``UploadStorageError`` 原样抛出（不误报成"找不到
+    源文件"，也不静默吞掉存储故障）。
     """
     try:
         database = _session_store(db)
         for row in database.get_session_files(session_id) or []:
             if (row.get("filename") or "") == filename and row.get("file_path"):
-                p = Path(row["file_path"])
+                stored = str(row["file_path"])
+                if is_store_uri(stored):
+                    # URI 自带归属校验：跨用户/非法 URI 会在 materialize 内被拒绝。
+                    return Path(materialize_upload(stored, username))
+                p = Path(stored)
                 if p.exists():
                     return p
+    except UploadStorageError:
+        raise
     except Exception as e:
         logger.warning(f"从 DB 查找上传源文件失败: {filename} | {e}")
 

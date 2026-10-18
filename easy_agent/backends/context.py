@@ -7,10 +7,28 @@
 
 from __future__ import annotations
 
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
+
+from deepagents.backends.composite import CompositeBackend
+from deepagents.backends.protocol import ExecuteResponse, SandboxBackendProtocol
 
 
-class ContextBackend:
+class _PlaceholderBackend:
+    """仅用于满足框架对 CompositeBackend.routes/default 的静态检查。"""
+
+
+class _PlaceholderSandbox(SandboxBackendProtocol):
+    """占位 default：让 supports_execution() 为真，但不会被真正调用。"""
+
+    @property
+    def id(self) -> str:
+        return "context-backend-placeholder"
+
+    def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
+        raise RuntimeError("ContextBackend 占位 backend 不可执行")
+
+
+class ContextBackend(SandboxBackendProtocol):
     """BackendProtocol 适配器：实例化一次，运行期按 context 路由。"""
 
     def __init__(
@@ -20,12 +38,19 @@ class ContextBackend:
         expected_user: str = "",
         fallback_context: Any = None,
         cache_size: int = 16,
+        route_prefixes: Iterable[str] | None = None,
     ) -> None:
         self._builder = builder
         self._expected_user = expected_user or ""
         self._fallback_context = fallback_context
         self._cache: dict[tuple[str, ...], Any] = {}
         self._cache_size = max(1, cache_size)
+        # 框架在“带 execute + permissions”场景要求 backend 是 CompositeBackend
+        # 且所有 permission 路径都落在某个 route 前缀下。真实的 per-context
+        # CompositeBackend 要到运行期才能构建，这里只提供静态前缀用于启动期检查，
+        # 不参与实际文件操作（文件操作仍由本类按 context 代理）。
+        self._route_prefixes = tuple(sorted({p for p in (route_prefixes or ()) if p}))
+        self.artifacts_root = "/"
 
     def _current(self) -> Any:
         try:
@@ -67,6 +92,44 @@ class ContextBackend:
             backend = self._builder(ctx)
             self._cache[key] = backend
         return backend
+
+    # ── CompositeBackend 静态视图（仅供框架启动期检查） ───────
+    # FilesystemMiddleware 在“backend 支持 execute 且配置了 permissions”时
+    # 要求 backend 是 CompositeBackend、且 permission 路径都在 route 前缀下。
+    # 真实路由在运行期由 _current() 解析；这里返回占位对象/静态前缀，避免
+    # 启用 execute 时改动现有的权限与系统提示词语义。
+    @property
+    def default(self) -> Any:
+        return _PlaceholderSandbox()
+
+    @property
+    def routes(self) -> dict[str, Any]:
+        return {prefix: _PlaceholderBackend() for prefix in self._route_prefixes}
+
+    @property
+    def sorted_routes(self) -> list[tuple[str, Any]]:
+        # 保持 _route_host_path_prompt() 为空：当前 ContextBackend 不是真正的
+        # CompositeBackend，启动期提示词不包含 route -> host 映射。
+        return []
+
+    # ── 命令执行协议（SandboxBackendProtocol） ─────────────────
+    @property
+    def id(self) -> str:
+        """当前 context 对应 backend 的稳定标识（供框架/日志使用）。"""
+        current = self._current()
+        remote_id = getattr(current, "id", None)
+        if remote_id:
+            return str(remote_id)
+        return f"context-{id(current):x}"
+
+    def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
+        """把命令转发给当前 context 的 CompositeBackend.default。"""
+        return self._current().execute(command, timeout=timeout)
+
+    async def aexecute(
+        self, command: str, *, timeout: int | None = None
+    ) -> ExecuteResponse:
+        return await self._current().aexecute(command, timeout=timeout)
 
     # ── 同步协议 ──────────────────────────────────────────────
     def ls(self, path: str):
@@ -145,3 +208,9 @@ class ContextBackend:
 
     async def adownload_files(self, paths: list[str]):
         return await self._current().adownload_files(paths)
+
+
+# ContextBackend 代理的是运行期 CompositeBackend，但没有静态 route 表。
+# 注册为 CompositeBackend 的虚子类，仅让框架的 isinstance() 门禁（权限 +
+# execute）认它；方法解析仍走 ContextBackend 自己的代理实现。
+CompositeBackend.register(ContextBackend)

@@ -52,6 +52,26 @@ def get_session_files(db, session_id: str) -> list[dict]:
     return [dict(row) for row in rows]
 
 
+def get_file_record(db, file_id: int, username: str | None = None) -> dict | None:
+    """按 id 读取单条会话文件记录（删除前取 ``file_path`` 用）。
+
+    对象存储模式下 ``file_path`` 可能是 ``store://`` URI，删除 DB 行之后还需要
+    凭它清理 Store 对象，因此先读后删。
+    """
+    with db.get_connection() as conn:
+        cursor = conn.cursor()
+        if username:
+            db._execute(
+                cursor,
+                "SELECT * FROM session_files WHERE id=? AND username=?",
+                (file_id, username),
+            )
+        else:
+            db._execute(cursor, "SELECT * FROM session_files WHERE id=?", (file_id,))
+        row = cursor.fetchone()
+    return dict(row) if row else None
+
+
 def delete_file(db, file_id: int, username: str | None = None) -> bool:
     with db.get_connection() as conn:
         cursor = conn.cursor()

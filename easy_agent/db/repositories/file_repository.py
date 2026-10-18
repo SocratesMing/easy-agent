@@ -47,6 +47,9 @@ class FileRepository:
     def get_session_files(self, session_id: str) -> list[dict]:
         return files_repo.get_session_files(self._db, session_id)
 
+    def get_file_record(self, file_id: int, username: str | None = None) -> dict | None:
+        return files_repo.get_file_record(self._db, file_id, username)
+
     def delete_file(self, file_id: int, username: str | None = None) -> bool:
         return files_repo.delete_file(self._db, file_id, username)
 

@@ -30,6 +30,17 @@ from ..services.session_uploads import (
     UploadTooLargeError,
     save_upload_streaming,
 )
+from ..services.upload_storage import (
+    UploadStorageError,
+    UploadStoreAccessDenied,
+    UploadStoreNotFound,
+    UploadStoreUnavailable,
+    delete_stored_upload,
+    is_store_uri,
+    materialize_upload,
+    save_upload_to_store,
+    store_mode_enabled,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +75,37 @@ def _as_file_repository(value: object) -> FileRepository:
     if isinstance(value, FileRepository):
         return value
     return FileRepository(value)
+
+
+def _remove_file_quietly(path: Path) -> None:
+    """删除本地临时文件；失败只告警（不能掩盖真正的上传结果）。"""
+    try:
+        Path(path).unlink(missing_ok=True)
+    except OSError as exc:
+        logger.warning(f"删除上传临时文件失败: {path} | {exc}")
+
+
+def _store_http_error(exc: Exception) -> HTTPException:
+    """对象存储异常 → HTTP 错误。
+
+    存储不可用/读写失败一律 503：绝不"降级写本地"或返回成功但没存上。
+    """
+    if isinstance(exc, UploadStoreAccessDenied):
+        return HTTPException(
+            status_code=403,
+            detail={"code": "UPLOAD_STORE_ACCESS_DENIED", "message": str(exc)},
+        )
+    if isinstance(exc, UploadStoreNotFound):
+        return HTTPException(status_code=404, detail="文件不存在")
+    if isinstance(exc, UploadStoreUnavailable):
+        return HTTPException(
+            status_code=503,
+            detail={"code": "UPLOAD_STORE_UNAVAILABLE", "message": str(exc)},
+        )
+    return HTTPException(
+        status_code=500,
+        detail={"code": "UPLOAD_STORE_ERROR", "message": str(exc)},
+    )
 
 
 _MIME_MAP = {
@@ -236,7 +278,32 @@ async def list_files(
         return FileListResponse(files=file_list, total=len(file_list))
 
     upload_files = []
-    if upload_dir.exists():
+    if store_mode_enabled():
+        # store 模式：本地 uploads 已不保留副本，资产页从 LangGraph Store 列举。
+        from ..services.upload_storage import (
+            UploadStorageError,
+            list_stored_uploads,
+        )
+
+        try:
+            stored = list_stored_uploads(username)
+        except UploadStorageError as exc:
+            raise _store_http_error(exc) from exc
+        for item in stored:
+            name = item["saved_name"]
+            ext = Path(name).suffix.lstrip(".").lower()
+            if ext in HIDDEN_EXTENSIONS:
+                continue
+            upload_files.append(
+                FileInfo(
+                    filename=name,
+                    file_path=item["file_path"],
+                    file_type=ext or "unknown",
+                    size=int(item["size"]),
+                    uploaded_at=str(item["created_at"]),
+                )
+            )
+    elif upload_dir.exists():
         for item in upload_dir.rglob("*"):
             if item.is_file():
                 ext = item.suffix.lstrip(".").lower()
@@ -286,6 +353,15 @@ async def upload_file(
     saved_name = f"{file_id}_{safe_filename}"
     file_path = upload_dir / saved_name
 
+    # 归属校验前置：被拒绝的上传不应留下本地文件或 Store 对象（孤儿副本）。
+    if session_id:
+        repo.get_owned_session_meta(session_id, username)
+
+    try:
+        store_mode = store_mode_enabled()
+    except UploadStorageError as exc:
+        raise _store_http_error(exc) from exc
+
     try:
         size = await save_upload_streaming(file, file_path)
     except UploadTooLargeError as exc:
@@ -301,13 +377,27 @@ async def upload_file(
 
     ext = os.path.splitext(safe_filename)[1].lstrip(".") or "unknown"
 
+    # 落库口径：local = 本地绝对路径（行为不变）；store = store:// URI。
+    stored_path = str(file_path)
+    if store_mode:
+        try:
+            stored_path = await asyncio.to_thread(
+                save_upload_to_store, file_path, username, saved_name
+            )
+        except UploadStorageError as exc:
+            _remove_file_quietly(file_path)
+            logger.error(
+                f"上传文件写入对象存储失败（本次上传已回滚）| {safe_filename} | {exc}"
+            )
+            raise _store_http_error(exc) from exc
+        # 本地文件只用于接收流式上传；Store 已是权威副本，删除避免同一份文件存两处。
+        _remove_file_quietly(file_path)
+
     if session_id:
-        # 校验会话归属，防止向他人会话关联文件
-        repo.get_owned_session_meta(session_id, username)
         repo.add_session_file(
             session_id=session_id,
             filename=safe_filename,
-            file_path=str(file_path),
+            file_path=stored_path,
             file_type=ext,
             size=size,
             username=username,
@@ -315,11 +405,12 @@ async def upload_file(
 
     logger.info(
         f"文件上传成功 | 文件名: {safe_filename} | 大小: {size} bytes | 用户: {username}"
+        f" | 存储: {'store' if store_mode else 'local'}"
     )
 
     return {
         "filename": safe_filename,
-        "file_path": str(file_path),
+        "file_path": stored_path,
         "file_type": ext,
         "size": size,
         "uploaded_at": datetime.now().isoformat(),
@@ -331,6 +422,18 @@ async def download_file(
     file_path: str,
     username: Annotated[str, Depends(get_current_username)],
 ):
+    if is_store_uri(file_path):
+        # 对象存储模式：materialize 到本地缓存后响应（跨用户由 URI 校验拒绝）。
+        try:
+            cached = await asyncio.to_thread(materialize_upload, file_path, username)
+        except UploadStorageError as exc:
+            raise _store_http_error(exc) from exc
+        return FileResponse(
+            path=str(cached),
+            filename=cached.name,
+            media_type="application/octet-stream",
+        )
+
     upload_dir, workspace_dir = get_user_dirs(username)
 
     full_path = upload_dir / file_path
@@ -354,9 +457,21 @@ async def delete_file(
     username: Annotated[str, Depends(get_current_username)],
 ):
     repo = _as_file_repository(db)
+    # 先取记录：DB 行删除后还要凭 file_path 判断是否需要清理 Store 对象。
+    record = repo.get_file_record(file_id, username=username)
     success = repo.delete_file(file_id, username=username)
     if not success:
         raise HTTPException(status_code=404, detail="文件不存在")
+
+    stored_path = (record or {}).get("file_path") or ""
+    if is_store_uri(stored_path):
+        try:
+            await asyncio.to_thread(delete_stored_upload, stored_path, username)
+        except Exception as exc:  # noqa: BLE001 - 清理失败不能回滚已完成的 DB 删除
+            logger.warning(
+                "删除对象存储文件失败（DB 记录已删除，对象可能残留）"
+                f" | {stored_path} | {exc}"
+            )
 
     return {"status": "deleted", "file_id": file_id}
 
@@ -366,7 +481,16 @@ async def parse_file(
     username: Annotated[str, Depends(get_current_username)],
     file_path: str = Query(..., description="文件路径"),
 ):
-    content = await asyncio.to_thread(parse_file_content, file_path)
+    local_path = file_path
+    if is_store_uri(file_path):
+        # 对象存储里的原始文件不在本地：先 materialize 再解析。
+        try:
+            local_path = str(
+                await asyncio.to_thread(materialize_upload, file_path, username)
+            )
+        except UploadStorageError as exc:
+            raise _store_http_error(exc) from exc
+    content = await asyncio.to_thread(parse_file_content, local_path)
     return {"file_path": file_path, "content": content}
 
 
@@ -415,13 +539,23 @@ async def preview_file(
         else:
             workspace_dir = workspace_dir / "session" / session_id
 
-    full_path = workspace_dir / file_path
+    store_backed = is_store_uri(file_path)
+    if store_backed:
+        # 上传原始文件的预览：materialize 后按上传文件响应，不经过工作区解析。
+        try:
+            full_path = await asyncio.to_thread(
+                materialize_upload, file_path, username
+            )
+        except UploadStorageError as exc:
+            raise _store_http_error(exc) from exc
+    else:
+        full_path = workspace_dir / file_path
 
-    if not full_path.exists():
-        raise HTTPException(status_code=404, detail="文件不存在")
+        if not full_path.exists():
+            raise HTTPException(status_code=404, detail="文件不存在")
 
-    if not full_path.is_file():
-        raise HTTPException(status_code=400, detail="路径不是文件")
+        if not full_path.is_file():
+            raise HTTPException(status_code=400, detail="路径不是文件")
 
     # 目标格式转换（如 PPT/XLS/DOC → PDF）
     if target and target.lower() == "pdf":
@@ -438,6 +572,17 @@ async def preview_file(
             filename=full_path.stem + ".pdf",
             media_type="application/pdf",
             content_disposition_type="inline",
+        )
+
+    if store_backed:
+        media_type = _MIME_MAP.get(
+            full_path.suffix.lower(), "application/octet-stream"
+        )
+        return FileResponse(
+            path=str(full_path),
+            filename=full_path.name,
+            media_type="application/octet-stream" if download else media_type,
+            content_disposition_type="attachment" if download else "inline",
         )
 
     return serve_workspace_file(workspace_dir, file_path, download=bool(download))

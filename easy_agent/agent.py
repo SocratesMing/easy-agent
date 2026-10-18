@@ -23,6 +23,7 @@ from langchain_core.messages import AIMessageChunk, ToolMessage
 
 from .backends.shell import _PathTranslatingShell
 from .backends.context import ContextBackend
+from .backends.langsmith_sandbox import create_langsmith_backend, sandbox_mode
 from .checkpoints import get_session_checkpointer, release_session_checkpointer
 from .config import Config
 from .fs_safety import _check_external_dir_safety
@@ -256,17 +257,28 @@ def _build_backend_for_context(
     for vp, real_abs in (safe_external or {}).items():
         path_mappings[vp] = real_abs + "/"
 
-    return CompositeBackend(
-        default=_PathTranslatingShell(
+    if sandbox_mode() == "langsmith":
+        # opt-in：仅 execute 走远端 LangSmith Sandbox；文件工具仍走上面的本地路由。
+        # 该 backend 由 ContextBackend 按 context 缓存，不会每次工具调用新建。
+        default_backend = create_langsmith_backend(
+            workspace_dir=ws_real,
+            path_mappings=path_mappings,
+            workspace_virtual_path=workspace_virtual_path,
+            timeout=120,
+            env=shell_env,
+            sid=sid,
+        )
+    else:
+        default_backend = _PathTranslatingShell(
             path_mappings=path_mappings,
             root_dir=ws_str,
             virtual_mode=True,
             inherit_env=True,
             timeout=120,
             sandbox_enabled=config.agent.sandbox_enabled,
-        ),
-        routes=routes,
-    )
+        )
+
+    return CompositeBackend(default=default_backend, routes=routes)
 
 
 class EasyAgent:
@@ -629,10 +641,22 @@ class EasyAgent:
         def _builder(ctx):
             return _build_backend_for_context(config, ctx, skills_paths)
 
+        # 供 FilesystemMiddleware 启动期权限门禁检查：所有 permission 路径必须
+        # 落在某个 route 前缀下。真实路由仍由 _builder 在运行期按 context 构建。
+        prefixes = {
+            f"{str(self.workspace_virtual_path).rstrip('/')}/",
+            "/memories/",
+            "/user-skills/",
+        }
+        for virtual_path in (config.agent.external_dirs or {}):
+            value = str(virtual_path)
+            prefixes.add(value if value.endswith("/") else value + "/")
+
         return ContextBackend(
             _builder,
             expected_user=expected_user,
             fallback_context=fallback_context,
+            route_prefixes=sorted(prefixes),
         )
 
     def _create_agent(self):

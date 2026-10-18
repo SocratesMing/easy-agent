@@ -84,7 +84,17 @@ Ingress
 - 文件对象存储 / 外部 Sandbox：未做，仍待后续。
 - 报告：`docs/audit/2026-10-18-phase3-backend-report.md`。
 
-## 8. 非目标 / 风险
+## 8. 对象存储 / Sandbox 状态（2026-10-18）
+
+- 对象存储：**数据库 LangGraph StoreBackend** 已接入 `POST /agent/files/upload`
+  的原始文件（`EASY_UPLOAD_BACKEND=store`）；workspace/生成文件/聊天上传未迁移。
+- Sandbox：官方 **LangSmithSandbox** 可选远端 execute（`EASY_SANDBOX=langsmith`），
+  默认 local 不变；实验性，未做 destroy/完整同步。
+- 全量测试 1471 passed；严格多副本门禁仍因 workspace/file/sandbox/run 未完全外置
+  而保持失败，K8s `EASY_MULTI_REPLICA_STRICT=0`。
+- 报告：`docs/audit/2026-10-18-object-sandbox-report.md`。
+
+## 9. 非目标 / 风险
 
 - Phase 0–1 完成后仍不宣称多副本安全；SSE/run/文件外置未完成。
 - `EASY_MULTI_REPLICA_STRICT=1` 在 Phase 2/3 完成前会阻止 prod 多副本启动，这是有意的。
