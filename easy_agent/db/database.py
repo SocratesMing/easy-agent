@@ -27,6 +27,8 @@ except ImportError:
 
 from ..models.db import SessionModel, UserModel, ScheduledTaskModel, ScheduledTaskRunModel
 from .repositories import session_runtime as session_runtime_repo
+from .repositories import stream_events as stream_events_repo
+from .repositories import agent_runs as agent_runs_repo
 from .repositories import agent_state as agent_state_repo
 from .repositories import scheduled_tasks as scheduled_tasks_repo
 from .repositories import session_records as session_records_repo
@@ -276,6 +278,12 @@ class Database:
 
     def _create_session_runtime_table(self, *args, **kwargs):
         return schema._create_session_runtime_table(self, *args, **kwargs)
+
+    def _create_stream_events_table(self, *args, **kwargs):
+        return schema._create_stream_events_table(self, *args, **kwargs)
+
+    def _create_agent_runs_table(self, *args, **kwargs):
+        return schema._create_agent_runs_table(self, *args, **kwargs)
 
     def _create_langgraph_store_table(self, *args, **kwargs):
         return schema._create_langgraph_store_table(self, *args, **kwargs)
@@ -705,6 +713,59 @@ class Database:
             cancel_requested=cancel_requested,
             clear_connectors=clear_connectors,
         )
+
+    # 多副本 Phase 2A: SSE 事件持久化已抽到 db/repositories/stream_events.py
+    def append_stream_event(self, session_id: str, payload: str) -> int:
+        return stream_events_repo.append_stream_event(self, session_id, payload)
+
+    def list_stream_events(
+        self, session_id: str, after_id: int = 0, limit: int = 500
+    ) -> list[dict]:
+        return stream_events_repo.list_stream_events(
+            self, session_id, after_id=after_id, limit=limit
+        )
+
+    def delete_stream_events_before(self, cutoff_iso: str) -> int:
+        return stream_events_repo.delete_stream_events_before(self, cutoff_iso)
+
+    # 多副本 Phase 2B: run 租约已抽到 db/repositories/agent_runs.py
+    def start_run(
+        self,
+        run_id: str,
+        session_id: str,
+        username: str,
+        message_id: str,
+        request_json: str,
+        owner: str,
+        lease_until: str,
+    ) -> bool:
+        return agent_runs_repo.start_run(
+            self,
+            run_id,
+            session_id,
+            username,
+            message_id,
+            request_json,
+            owner,
+            lease_until,
+        )
+
+    def renew_run(self, run_id: str, owner: str, lease_until: str) -> bool:
+        return agent_runs_repo.renew_run(self, run_id, owner, lease_until)
+
+    def finish_run(self, run_id: str, status: str, error: str = "") -> bool:
+        return agent_runs_repo.finish_run(self, run_id, status, error)
+
+    def get_run(self, run_id: str) -> dict | None:
+        return agent_runs_repo.get_run(self, run_id)
+
+    def list_stale_running(
+        self, now_iso: str, limit: int = 500
+    ) -> list[dict]:
+        return agent_runs_repo.list_stale_running(self, now_iso, limit)
+
+    def mark_interrupted(self, run_id: str, error: str) -> bool:
+        return agent_runs_repo.mark_interrupted(self, run_id, error)
 
 
 _db_instance = None

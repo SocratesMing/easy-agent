@@ -74,6 +74,31 @@ def release_stream(db, session_id: str) -> None:
         )
 
 
+def is_stream_active(db, session_id: str, *, now: datetime | None = None) -> bool:
+    """DB 视角的流活跃判断：``stream_owner`` 非空且 ``stream_until`` 未过期。
+
+    多副本下这是唯一正确的判断依据——进程内 hub/任务表只代表当前 Pod。
+    过期未释放的锁（Pod 崩溃等）会在 TTL 到点后自动变为不活跃。
+    """
+    row = db.get_session_runtime(session_id)
+    if not row:
+        return False
+    owner = str(row.get("stream_owner") or "")
+    until = str(row.get("stream_until") or "")
+    if not owner or not until:
+        return False
+    try:
+        until_dt = datetime.fromisoformat(until)
+    except (TypeError, ValueError):
+        return False
+    if until_dt.tzinfo is None:
+        until_dt = until_dt.replace(tzinfo=UTC)
+    current = now or utc_now()
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=UTC)
+    return until_dt > current
+
+
 def request_cancel(db, session_id: str) -> None:
     db.upsert_session_runtime(session_id, cancel_requested=1)
 

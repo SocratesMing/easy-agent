@@ -34,14 +34,17 @@ DOMAINS = {
     "chat.py": ("get_chat_repository", "ChatRepository", 4),
 }
 
-# C1b 之后每个 API 文件仍保留的 `repo.database` 调用点数；每一条都在
-# docs/audit/2026-10-18-increment61-c1b-report.md「仍保留边界」有登记。
+# C1b 之后每个 API 文件仍保留的 `repo.database` 调用点数；C1b 的每一条都在
+# docs/audit/2026-10-18-increment61-c1b-report.md「仍保留边界」有登记，
+# Phase 2B 新增的 run 登记 ×2 见 docs/audit/2026-10-18-increment63-phase2b-report.md。
 RETAINED_DATABASE_BOUNDARIES = {
     "auth.py": 1,  # KnowledgeRepository（知识域独立 bounded context）
     "files.py": 0,
     "scheduled_tasks.py": 0,
-    "expert.py": 1,  # chat_stream_generator（流式引擎边界）
-    "chat.py": 5,  # 知识域鉴权/编排 ×2 + 专家绑定 ×1 + 流式引擎 ×2
+    "expert.py": 3,  # 流式引擎 + Phase 2 stream_events 写入/回放边界
+    # 知识域鉴权/编排 ×2 + 专家绑定 ×1 + 流式引擎 ×2 + 事件回放/状态 ×4
+    # + Phase 2B run 登记 ×2（chat_stream / chat_resume 的 start_run）
+    "chat.py": 11,
 }
 
 

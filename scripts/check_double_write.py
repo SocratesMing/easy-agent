@@ -68,6 +68,8 @@ INFRA_DATABASE_METHODS = {
     "_create_langgraph_store_table",
     "_create_agent_checkpoint_table",
     "_create_distributed_lock_table",
+    "_create_stream_events_table",
+    "_create_agent_runs_table",
     "_create_expert_tables",
     "_create_unique_index",
     "init_tables",
@@ -109,6 +111,8 @@ FROZEN_DATABASE_METHODS = {
     "_create_langgraph_store_table",
     "_create_agent_checkpoint_table",
     "_create_distributed_lock_table",
+    "_create_stream_events_table",
+    "_create_agent_runs_table",
     "init_tables",
     "_init_tables_full",
     "_create_expert_tables",
@@ -207,6 +211,15 @@ FROZEN_DATABASE_METHODS = {
     "try_acquire_session_stream",
     "renew_session_stream",
     "upsert_session_runtime",
+    "append_stream_event",
+    "list_stream_events",
+    "delete_stream_events_before",
+    "start_run",
+    "renew_run",
+    "finish_run",
+    "get_run",
+    "list_stale_running",
+    "mark_interrupted",
 }
 
 # --- SQL/AST helpers ----------------------------------------------------------

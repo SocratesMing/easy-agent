@@ -18,7 +18,7 @@ from .utils.deployment import detect_worker_count
 FEATURE_ENV = "EASY_MULTI_REPLICA_STRICT"
 
 _DEFAULTS = {
-    "stream_backend": "local",
+    "stream_backend": "db",  # Phase 2A：DB stream_events 已实现
     "run_queue": "none",
     "file_backend": "local",
     "sandbox": "local",
@@ -26,7 +26,7 @@ _DEFAULTS = {
 
 # Phase 2/3 完成后在此登记真正支持多副本的取值；Phase 0/1 故意保持为空。
 _IMPLEMENTED_MULTI_REPLICA = {
-    "stream_backend": set(),
+    "stream_backend": {"db"},
     "run_queue": set(),
     "file_backend": set(),
     "sandbox": set(),

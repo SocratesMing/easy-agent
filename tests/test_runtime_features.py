@@ -15,7 +15,7 @@ def test_default_features_are_local_and_not_strict(monkeypatch):
     ):
         monkeypatch.delenv(key, raising=False)
     f = rf.load_runtime_features()
-    assert f.stream_backend == "local"
+    assert f.stream_backend == "db"
     assert f.run_queue == "none"
     assert f.file_backend == "local"
     assert f.sandbox == "local"
@@ -32,7 +32,7 @@ def test_strict_prod_multi_replica_blocks_unimplemented(monkeypatch):
     f = rf.load_runtime_features()
     errors = rf.multi_replica_errors(agent_env="prod", workers=3, features=f)
     assert errors
-    assert any("EASY_STREAM_BACKEND" in e for e in errors)
+    assert not any("EASY_STREAM_BACKEND" in e for e in errors)
     assert any("EASY_RUN_QUEUE" in e for e in errors)
     assert any("EASY_FILE_BACKEND" in e for e in errors)
     assert any("EASY_SANDBOX" in e for e in errors)

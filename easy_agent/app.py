@@ -48,7 +48,12 @@ from .knowledge_impl import knowledge_router
 from .personnel import router as personnel_router
 from .model import create_model
 from .models.api import HealthResponse
-from .services import drain_stream_tasks, get_agent_config, init_agent_config
+from .services import (
+    drain_stream_tasks,
+    flush_all_stream_events,
+    get_agent_config,
+    init_agent_config,
+)
 from .services import init_scheduler, shutdown_scheduler, reload_all_tasks
 from .services.prompt_loader import (
     configure_prompts_dir,
@@ -267,6 +272,22 @@ async def lifespan(app: FastAPI):
 
     _init_database_and_state(app, config)
 
+    # Phase 2B：DB 初始化完成、开始接流量前，恢复 Pod 崩溃/驱逐遗留的 stale run。
+    # 只把 running 标记为 interrupted 并补一条 error 事件，避免前端一直“执行中”；
+    # 不自动重新执行（执行器属于 Phase 2C）。任何异常只告警，不阻断启动。
+    try:
+        from .services.run_registry import recover_stale_runs
+
+        recovered = await asyncio.to_thread(recover_stale_runs, db_instance)
+        if recovered:
+            logger.warning(
+                f"♻️ 已恢复 {recovered} 个 stale run（标记 interrupted，未自动重跑）"
+            )
+        else:
+            logger.info("♻️ 无 stale run 需要恢复")
+    except Exception as exc:  # noqa: BLE001 - 恢复失败不阻断启动
+        logger.warning(f"⚠️ stale run 恢复失败（忽略）: {exc}")
+
     # 部署形态 fail-fast：生产多 worker/副本 + SQLite = 运行期随机丢消息/锁表，
     # 这里在启动期直接拒绝（用户决策：生产强制 MySQL）。
     from .utils.deployment import (
@@ -437,6 +458,12 @@ async def lifespan(app: FastAPI):
     yield
 
     await drain_stream_tasks()
+    try:
+        # 流式任务已结束：把各会话写入器队列里剩余的事件 flush 到 stream_events，
+        # 避免 shutdown 丢掉尾部 done/error（跨 Pod 重连仍能回放完整序列）。
+        await flush_all_stream_events()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"flush SSE 事件写入器失败: {exc}")
     try:
         from .services.mcp_sessions import aclose_mcp_sessions
 

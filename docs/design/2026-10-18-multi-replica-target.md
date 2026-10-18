@@ -38,7 +38,7 @@ Ingress
 
 | 变量 | 默认 | 取值 | 说明 |
 | --- | --- | --- | --- |
-| `EASY_STREAM_BACKEND` | `local` | `local`/`db`/`redis` | Phase 2 才支持 db/redis |
+| `EASY_STREAM_BACKEND` | `db` | `local`/`db`/`redis` | Phase 2A 已实现 DB stream_events；redis 未做 |
 | `EASY_RUN_QUEUE` | `none` | `none`/`db`/`redis` | Phase 2 |
 | `EASY_FILE_BACKEND` | `local` | `local`/`s3`/`store` | Phase 1/3 |
 | `EASY_SANDBOX` | `local` | `local`/`external` | Phase 1 评估 |
@@ -58,7 +58,7 @@ Ingress
 - K8s 样例显式 `EASY_MULTI_REPLICA_STRICT=0` 并注明“Phase 2/3 后改 1”；
 - 全量测试通过。
 
-## 5. Phase 1 范围（下一步）
+## 5. Phase 1 范围（已完成，见 phase1 报告）
 
 1. 升级 `deepagents` 到 0.7.x，`langchain` 到 1.4.x；补 `TodoListMiddleware`（0.7 `write_todos` opt-in）、`delete` 工具 HITL。
 2. 移除 callable backend；实现 `BackendProtocol` 实例（运行期 `get_runtime()` 解析 `SessionContext`），保持 D2 图复用。
@@ -66,7 +66,16 @@ Ingress
 4. 文件存储抽象与 Sandbox spike；不做破坏性切换。
 5. 全量回归 + 框架契约测试 + K8s 2 副本基线启动。
 
-## 6. 非目标 / 风险
+## 6. Phase 2 状态（2026-10-18）
+
+- 2A：`stream_events` 持久化 + 跨 Pod `/stream/live`/`status` 已完成（schema v8）。
+- 2B：`agent_runs` 租约/启动 stale 恢复已完成（schema v9），只标记 interrupted + error，
+  **自动重新执行 stale run 属 Phase 2C，未做**。
+- 严格门禁仍失败（run_queue=none、file/sandbox=local），K8s 保持
+  `EASY_MULTI_REPLICA_STRICT=0`；Phase 3 文件/迁移/K8s 后再评估开启。
+- 报告：`docs/audit/2026-10-18-phase2-report.md`。
+
+## 7. 非目标 / 风险
 
 - Phase 0–1 完成后仍不宣称多副本安全；SSE/run/文件外置未完成。
 - `EASY_MULTI_REPLICA_STRICT=1` 在 Phase 2/3 完成前会阻止 prod 多副本启动，这是有意的。

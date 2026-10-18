@@ -26,7 +26,7 @@ logger = logging.getLogger("easy_agent.db.schema")
 # 否则已经升级过的库会一直命中「结构已是最新」的快速启动路径，变更不会生效。
 # 见 init_tables()：版本一致时跳过整轮建表 + 补列 + 建索引探测（MySQL 上这一步
 # 过去要 40+ 次网络往返，多副本部署时每个 pod 启动都要跑一遍，是启动慢的主因）。
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 9
 # utf8mb4 复合主键必须 ≤ 3072 字节：(512 + 191) * 4 = 2812。
 LANGGRAPH_STORE_NS_LEN = 512
 LANGGRAPH_STORE_KEY_LEN = 191
@@ -61,6 +61,8 @@ EXPECTED_TABLES = (
     "expert_agents",
     "schema_migrations",
     "rate_limit_counters",
+    "stream_events",
+    "agent_runs",
 )
 
 
@@ -406,6 +408,64 @@ def _create_session_runtime_table(db, cursor):
         )
     """)
 
+def _create_stream_events_table(db, cursor):
+    """跨 Pod SSE 事件回放表（多副本 Phase 2A）。
+
+    ``event_id`` 用自增主键提供库级全局顺序：多副本并发 append 时，回放端按
+    ``event_id`` 升序分页（``after_id``）即可还原事件顺序。``payload`` 保存完整
+    SSE frame（``data: {...}\n\n``），回放逐字节透传——不解析、不改写事件字段，
+    因此 15 个事件的 wire 契约保持不变。
+    """
+    payload_type = "TEXT" if db.db_type == "sqlite" else "LONGTEXT"
+    if db.db_type == "sqlite":
+        event_id_def = "INTEGER PRIMARY KEY AUTOINCREMENT"
+    else:
+        event_id_def = "BIGINT PRIMARY KEY AUTO_INCREMENT"
+    cursor.execute(f"""
+        CREATE TABLE IF NOT EXISTS stream_events (
+            event_id {event_id_def},
+            session_id VARCHAR(255) NOT NULL,
+            payload {payload_type} NOT NULL,
+            created_at VARCHAR(50) NOT NULL
+        )
+    """)
+    _create_index(
+        db, cursor, "idx_stream_events_session", "stream_events", "session_id, event_id"
+    )
+
+def _create_agent_runs_table(db, cursor):
+    """一次聊天/恢复 run 的持久化租约表（多副本 Phase 2B）。
+
+    ``run_id`` 由 ``session_id + message_id`` 生成，主键保证幂等；
+    ``lease_owner`` / ``lease_until`` 记录「哪个 Pod 正在跑、租约何时到期」。
+    Pod 崩溃/驱逐后租约过期，启动时由 ``recover_stale_runs`` 把
+    ``status='running'`` 的陈旧行标记为 ``interrupted``（不做自动重新执行）。
+    时间统一 ``VARCHAR(50)`` 存 ISO 字符串，与 sessions/stream_events 约定一致。
+    """
+    request_type = "TEXT" if db.db_type == "sqlite" else "LONGTEXT"
+    cursor.execute(f"""
+        CREATE TABLE IF NOT EXISTS agent_runs (
+            run_id VARCHAR(255) PRIMARY KEY,
+            session_id VARCHAR(255) NOT NULL,
+            username VARCHAR(255) NOT NULL DEFAULT '',
+            message_id VARCHAR(255) DEFAULT '',
+            status VARCHAR(32) NOT NULL,
+            request_json {request_type},
+            lease_owner VARCHAR(255) DEFAULT '',
+            lease_until VARCHAR(50) DEFAULT '',
+            error TEXT,
+            created_at VARCHAR(50) NOT NULL,
+            updated_at VARCHAR(50) NOT NULL
+        )
+    """)
+    _create_index(
+        db, cursor, "idx_agent_runs_session", "agent_runs", "session_id, created_at"
+    )
+    _create_index(
+        db, cursor, "idx_agent_runs_status", "agent_runs", "status, lease_until"
+    )
+
+
 def _create_langgraph_store_table(db, cursor):
     # InnoDB 索引上限 3072 字节。utf8mb4 下 VARCHAR(1024)+VARCHAR(255)
     # 的复合主键是 5116 字节，MySQL 报 1071。
@@ -531,6 +591,8 @@ def _init_tables_full(db, cursor):
     _create_distributed_lock_table(db, cursor)
     _create_schema_migrations_table(db, cursor)
     _create_session_runtime_table(db, cursor)
+    _create_stream_events_table(db, cursor)
+    _create_agent_runs_table(db, cursor)
     _create_agent_checkpoint_table(db, cursor)
     _create_langgraph_store_table(db, cursor)
     _create_expert_tables(db, cursor)

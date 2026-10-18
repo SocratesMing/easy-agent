@@ -1130,6 +1130,7 @@ async def stream_export_run(
                 session_id,
                 sid,
                 renew_stream=repo.renew_stream,
+                db=repo.database,
             ),
             media_type="text/event-stream",
             headers={
@@ -1256,6 +1257,7 @@ async def stream_export_run(
             session_id,
             sid,
             renew_stream=repo.renew_stream,
+            db=repo.database,
         ),
         media_type="text/event-stream",
         headers={

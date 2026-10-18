@@ -22,6 +22,7 @@ from .connectors import (
     resolve_connector_servers,
 )
 from .streaming import chat_stream_generator, resume_stream_generator
+from .stream_events import StreamEventWriter, flush_all_stream_events
 from .scheduler import (
     init_scheduler,
     get_scheduler,
@@ -53,6 +54,8 @@ __all__ = [
     "resolve_connector_servers",
     "chat_stream_generator",
     "resume_stream_generator",
+    "StreamEventWriter",
+    "flush_all_stream_events",
     "init_scheduler",
     "get_scheduler",
     "shutdown_scheduler",
