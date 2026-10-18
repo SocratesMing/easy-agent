@@ -55,35 +55,30 @@ def schema_migration_lock(db, timeout: int | None = None):
 @contextlib.contextmanager
 def _mysql_lock(db, timeout: int):
     acquired = False
-    conn = None
-    try:
-        conn = db.get_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT GET_LOCK(%s, %s)", (LOCK_NAME, timeout))
-        row = cursor.fetchone()
-        value = row[0] if not isinstance(row, dict) else next(iter(row.values()))
-        acquired = str(value) == "1"
-        if not acquired:
-            raise RuntimeError(
-                f"等待数据库迁移锁超时（{timeout}s）：另一个实例正在迁移，"
-                "请检查是否有卡住的 migrate 进程"
-            )
-        logger.info("已获取 MySQL 迁移锁 | name=%s | timeout=%ss", LOCK_NAME, timeout)
-        yield
-    finally:
-        if conn is not None:
-            try:
-                if acquired:
-                    cursor = conn.cursor()
-                    cursor.execute("SELECT RELEASE_LOCK(%s)", (LOCK_NAME,))
-                    cursor.fetchone()
-            except Exception as exc:  # noqa: BLE001 - 释放失败由连接关闭兜底
-                logger.warning("释放 MySQL 迁移锁失败（连接关闭会兜底）: %s", exc)
-            finally:
+    # Database.get_connection() 是 contextmanager（MySQL 下自动 commit/rollback，
+    # 并把连接归还连接池）。这里必须 with 进入，不能把生成器当连接用。
+    with db.get_connection() as conn:
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT GET_LOCK(%s, %s)", (LOCK_NAME, timeout))
+            row = cursor.fetchone()
+            value = row[0] if not isinstance(row, dict) else next(iter(row.values()))
+            acquired = str(value) == "1"
+            if not acquired:
+                raise RuntimeError(
+                    f"等待数据库迁移锁超时（{timeout}s）：另一个实例正在迁移，"
+                    "请检查是否有卡住的 migrate 进程"
+                )
+            logger.info("已获取 MySQL 迁移锁 | name=%s | timeout=%ss", LOCK_NAME, timeout)
+            yield
+        finally:
+            if acquired:
                 try:
-                    conn.close()
-                except Exception:  # noqa: BLE001
-                    pass
+                    release_cursor = conn.cursor()
+                    release_cursor.execute("SELECT RELEASE_LOCK(%s)", (LOCK_NAME,))
+                    release_cursor.fetchone()
+                except Exception as exc:  # noqa: BLE001 - 连接归还/关闭会兜底
+                    logger.warning("释放 MySQL 迁移锁失败（连接关闭会兜底）: %s", exc)
 
 
 @contextlib.contextmanager
