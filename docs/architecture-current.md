@@ -7,7 +7,7 @@
 
 - `main.py` / `easy-web`（`easy_agent/web_runner.py`）→ `easy_agent.app:app`（FastAPI）。
 - `app.py` lifespan：初始化环境/日志/配置 → 启动知识库 → DB → 提示词/技能发现 → Agent 配置 → 移植专家目录扫描 → 可选 Postgres checkpointer → 调度器（多 worker 保护）。
-- 配置：`easy_agent/config/config.yaml`（gitignored，单文件）；模板 `config-example.yaml`；环境变量来自 `.env.{AGENT_ENV}`；`EASY_CONFIG` 可覆盖路径。
+- 配置：`easy_agent/config/config.yaml`（gitignored，单文件）；模板 `config-example.yaml`；环境变量来自 `.env.{AGENT_ENV}`；`EASY_CONFIG` 可覆盖路径。`config.py` 只保留 `Config`（加载/解析/路径 helpers）；Pydantic 配置模型在 `config_models.py`，键校验与 `${VAR}` 展开在 `config_validation.py`，均由 `config.py` re-export（批次 1A）。
 - 运行期配置持有者：`easy_agent/runtime_config.py`（基础层只读，避免 config → services 循环）。
 
 ## 2. 后端模块地图（`easy_agent/`）
@@ -23,6 +23,7 @@
 | `summarization.py` | 建图期替换官方摘要工厂 + 缺失降级护栏 |
 | `subagents.py` / `skills.py` | 子代理定义；技能发现（根 `skills/` 为 canonical，包内副本回退） |
 | `runtime_config.py` | 运行期配置 + Agent 失效回调注册（架构解耦用） |
+| `config.py` / `config_models.py` / `config_validation.py` | 配置加载（`Config.from_yaml`、`_parse_*`、路径 helpers）；Pydantic 配置模型；未知/废弃键校验与 `${VAR}` 展开；`config.py` re-export 原有公开名字与兼容私有名 |
 | `api/` | chat / auth / sessions / files / expert / connectors / scheduled_tasks / settings / skill_center / completion / prompts / terminal（POSIX，HITL 无关） |
 | `services/` | streaming（SSE 编排）、agent_manager（会话 Agent 缓存/流锁）、scheduler、mcp（连接器工具）、session_uploads、skill_library、expert/public_expert、memory_manager、session_runtime、sse（事件注册表） |
 | `db/` | `database.py`（连接/迁移/核心表）、`session_messages.py`、`expert_store.py`、`schema_registry.py` |

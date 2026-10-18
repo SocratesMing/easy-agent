@@ -3,7 +3,6 @@
 import asyncio
 import json
 import logging
-from collections import deque
 import re
 import uuid
 from datetime import datetime
@@ -14,7 +13,7 @@ from fastapi.responses import StreamingResponse
 
 from ..db import get_database
 from ..db.repositories.chat_repository import ChatRepository
-from ..db.repositories.stream_events import clear_stream_events, list_stream_events
+from ..db.repositories.stream_events import clear_stream_events
 from ..models.db import SessionModel
 from ..models.api import ChatRequest, ResumeRequest
 from ..middleware import get_current_username
@@ -39,10 +38,29 @@ from ..services import (
 from ..services import skill_library
 from ..services import session_uploads as file_context
 from ..services.sse_emitter import SSEEmitter
-from ..services.session_runtime import SessionBusyError, is_stream_active
-from ..services.sse import is_terminal_event
-from ..services.stream_events import StreamEventWriter
+from ..services.session_runtime import SessionBusyError
 from ..services.run_registry import finish_run, new_run_id, renew_run, start_run
+from ..services.stream_hub import (  # noqa: F401 - 兼容旧导入路径
+    _HUB_HISTORY_MAX_CHARS,
+    _STREAM_HUB_TTL_SECONDS,
+    _SUBSCRIBER_QUEUE_SLACK,
+    _StreamHub,
+    _session_stream_hubs,
+    _stream_hub_for,
+    get_stream_hub,
+    pop_stream_hub,
+    session_stream_hubs,
+    stream_hub_for,
+)
+from .chat_live import (  # noqa: F401 - 兼容旧导入路径
+    _LIVE_IDLE_ROUNDS,
+    _LIVE_PAGE_LIMIT,
+    _LIVE_POLL_SECONDS,
+    _frame_is_terminal,
+    chat_stream_live,
+    chat_stream_status,
+    router as chat_live_router,
+)
 from ..utils import (
     parse_file_content,
     SessionLogger,
@@ -206,131 +224,8 @@ def create_new_session(
 
 _detached_bg_tasks: "set[asyncio.Task]" = set()
 
-# 会话级流式事件中枢：客户端刷新/重连后可通过 /stream/live 重新订阅，
-# 先回放本流已产生的全部事件，再持续接收后续事件（页面刷新不中断流式展示）。
-_session_stream_hubs: "dict[str, _StreamHub]" = {}
-_STREAM_HUB_TTL_SECONDS = 120.0
-# 单会话流式事件历史的字符上限：长思考/长回复时避免 hub 无限占内存
-# （历史仍保留足够尾部供重连回放，超出后丢弃最早事件）。
-_HUB_HISTORY_MAX_CHARS = 4_000_000
 # 流锁续约间隔：默认 TTL 30 分钟，5 分钟续一次，避免长任务被其它副本误判过期。
 _STREAM_HEARTBEAT_SECONDS = 300.0
-# 订阅者队列的余量：回放必须完整（历史上限 10000 条，见 broadcast），
-# 队列容量按「当前历史长度 + 余量」分配，用于容纳回放期间新产生的事件。
-_SUBSCRIBER_QUEUE_SLACK = 1000
-
-# /stream/live 的 DB-first 回放节奏：无新事件时 150ms 轮询一次；
-# 流已结束（stream_owner 失效）后再等 2 轮（约 300ms）才收尾，给批量写入器
-# 留出「最后一批事件尚未落库」的窗口，避免重连客户端丢掉 done/error。
-_LIVE_POLL_SECONDS = 0.15
-_LIVE_IDLE_ROUNDS = 2
-_LIVE_PAGE_LIMIT = 500
-
-
-def _frame_is_terminal(frame: str) -> bool:
-    """容错版 is_terminal_event：非法 frame 一律当普通事件。"""
-    try:
-        return is_terminal_event(frame)
-    except Exception:  # noqa: BLE001 - 脏数据不应中断回放
-        return False
-
-
-class _StreamHub:
-    """一个会话当前流式任务的事件广播器。
-
-    后台任务把每个 SSE 分片广播给所有订阅者（原始客户端 + 刷新后重连的客户端），
-    并保留完整事件历史供新订阅者回放。任务结束后保留 TTL 秒，让迟到重连的
-    客户端仍能拿到 done/error 收尾事件。
-    """
-
-    def __init__(self, session_id: str, db=None):
-        self.session_id = session_id
-        # 每个流一个 DB 写入器（懒启动后台任务）：同 Pod 低延迟仍走内存广播，
-        # 跨 Pod 正确性由 stream_events 表提供。
-        self.writer = StreamEventWriter(session_id, db=db)
-        self.history: deque[str] = deque()
-        self._history_chars = 0
-        self.done = False
-        self._subscribers: list[asyncio.Queue] = []
-        self._cleanup_handle: asyncio.TimerHandle | None = None
-
-    def subscribe(self) -> asyncio.Queue:
-        # 容量必须容纳「整段历史回放 + 运行中新增事件」。早期实现固定
-        # maxsize=1000 且满即 break，历史超过 1000 条时会把中间事件静默丢掉——
-        # 表现为长流程（多轮工具 + 大量 thinking 增量）刷新页面后，重连的回放里
-        # 只剩早期思考、tool_call 卡片消失（工具事件正好落在被丢弃的区间）。
-        q: asyncio.Queue = asyncio.Queue(
-            maxsize=len(self.history) + _SUBSCRIBER_QUEUE_SLACK
-        )
-        for item in self.history:
-            q.put_nowait(item)
-        if self.done:
-            q.put_nowait(None)
-        else:
-            self._subscribers.append(q)
-        return q
-
-    def unsubscribe(self, q: asyncio.Queue) -> None:
-        try:
-            self._subscribers.remove(q)
-        except ValueError:
-            pass
-
-    def broadcast(self, item: str | None) -> None:
-        if item is not None:
-            self.history.append(item)
-            self._history_chars += len(item)
-            # deque.popleft O(1)；list.pop(0) 在大历史下是 O(n)，会造成 O(n²) 卡顿。
-            while len(self.history) > 10000:
-                self._history_chars -= len(self.history.popleft())
-            while self._history_chars > _HUB_HISTORY_MAX_CHARS and self.history:
-                self._history_chars -= len(self.history.popleft())
-        for q in list(self._subscribers):
-            try:
-                q.put_nowait(item)
-            except asyncio.QueueFull:
-                # 慢消费者：直接断开，避免阻塞后台流式任务；但必须先投一个 EOF，
-                # 否则订阅方的 SSE 生成器会永远 await 在一张不再有人写入的队列上
-                # （连接挂起、前端"执行中"状态无法收尾）。
-                self.unsubscribe(q)
-                try:
-                    q.get_nowait()  # 腾出一格
-                    q.put_nowait(None)
-                except (asyncio.QueueEmpty, asyncio.QueueFull):
-                    pass
-        if item is not None:
-            # 持久化在内存广播之后：写库变慢/失败不影响本 Pod 的实时推送。
-            try:
-                self.writer.append(item)
-            except Exception as exc:  # noqa: BLE001 - 绝不打断 SSE 主链路
-                logger.error(
-                    f"[{self.session_id[-5:]}] SSE 事件持久化入队失败: "
-                    f"{type(exc).__name__}: {exc}"
-                )
-
-    def close(self) -> None:
-        if self.done:
-            return
-        self.done = True
-        self.broadcast(None)
-        # 把 sentinel 入队，后台写入器 flush 完 done/error 后自行退出；
-        # request_close 不阻塞事件循环。
-        try:
-            self.writer.request_close()
-        except Exception as exc:  # noqa: BLE001
-            logger.error(
-                f"[{self.session_id[-5:]}] SSE 事件写入器关闭失败: "
-                f"{type(exc).__name__}: {exc}"
-            )
-        self._subscribers.clear()
-        self._cleanup_handle = asyncio.get_running_loop().call_later(
-            _STREAM_HUB_TTL_SECONDS,
-            lambda: (
-                _session_stream_hubs.pop(self.session_id, None)
-                if _session_stream_hubs.get(self.session_id) is self
-                else None
-            ),
-        )
 
 
 async def _detached_event_stream(
@@ -485,153 +380,6 @@ async def _detached_event_stream(
         state["disconnected"] = True
         hub.unsubscribe(queue)
         logger.info(f"[{sid}] 客户端断开连接，后台流式任务继续执行（不取消）")
-
-
-def _stream_hub_for(session_id: str) -> _StreamHub | None:
-    hub = _session_stream_hubs.get(session_id)
-    return hub if hub is not None and not hub.done else None
-
-
-@router.get(
-    "/stream/status",
-    summary="查询会话是否正在流式输出",
-    description="刷新页面后用于判断是否需要重新挂载到进行中的流式任务。",
-)
-async def chat_stream_status(
-    session_id: str,
-    db: Annotated[ChatRepository, Depends(get_chat_repository)],
-    username: Annotated[str, Depends(get_current_username)],
-):
-    # 校验会话归属（不存在的会话同样 404，避免泄露会话是否存在）
-    repo = _as_chat_repository(db)
-    repo.get_owned_session_meta(session_id, username)
-    # 以 DB 的 session_runtime.stream_owner/stream_until 为准：请求落到任一 Pod
-    # 都能得到一致答案（本 Pod 的 hub 只代表本进程状态，不能用于跨 Pod 判断）。
-    try:
-        active = await asyncio.to_thread(
-            is_stream_active, repo.database, session_id
-        )
-    except Exception as exc:  # noqa: BLE001 - 状态查询失败按“未活跃”处理
-        logger.error(f"[{session_id[-5:]}] 查询流状态失败: {exc}")
-        active = False
-    return {"session_id": session_id, "active": active}
-
-
-@router.get(
-    "/stream/live",
-    summary="挂载到进行中的流式输出",
-    description=(
-        "按 stream_events 表顺序回放当前流式任务已产生的事件"
-        "（thinking/tool_call/content 等），然后持续轮询后续事件直到 done/error。"
-        "若任务已结束，回放完整历史后立即结束；不依赖本 Pod 的进程内 hub。"
-    ),
-)
-async def chat_stream_live(
-    session_id: str,
-    db: Annotated[ChatRepository, Depends(get_chat_repository)],
-    username: Annotated[str, Depends(get_current_username)],
-    last_event_id: int = 0,
-):
-    # 校验会话归属
-    repo = _as_chat_repository(db)
-    repo.get_owned_session_meta(session_id, username)
-    database = repo.database
-    emitter = SSEEmitter(session_id)
-
-    async def _fetch(after_id: int) -> list[dict]:
-        return await asyncio.to_thread(
-            list_stream_events,
-            database,
-            session_id,
-            after_id,
-            _LIVE_PAGE_LIMIT,
-        )
-
-    async def event_source():
-        # DB-first：cursor 即 stream_events.event_id，任一 Pod 都能从任意位置续播。
-        # last_event_id 由客户端可选传入（当前前端不传，默认从头回放）。
-        try:
-            cursor = max(0, int(last_event_id or 0))
-        except (TypeError, ValueError):
-            cursor = 0
-        idle_rounds = 0
-
-        while True:
-            try:
-                rows = await _fetch(cursor)
-            except Exception as exc:  # noqa: BLE001 - 回放查询失败不直接断流
-                logger.error(f"[{session_id[-5:]}] 回放 stream_events 失败: {exc}")
-                rows = []
-
-            if rows:
-                idle_rounds = 0
-                for row in rows:
-                    frame = str(row.get("payload") or "")
-                    try:
-                        event_id = int(row.get("event_id") or 0)
-                    except (TypeError, ValueError):
-                        event_id = 0
-                    if event_id > cursor:
-                        cursor = event_id
-                    if not frame:
-                        continue
-                    yield frame
-                    if _frame_is_terminal(frame):
-                        return
-                # 可能还有下一页，立即继续拉取（不 sleep）。
-                continue
-
-            try:
-                active = await asyncio.to_thread(
-                    is_stream_active, database, session_id
-                )
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(f"[{session_id[-5:]}] 查询流活跃状态失败: {exc}")
-                active = False
-
-            if active:
-                idle_rounds = 0
-            else:
-                idle_rounds += 1
-            # 先等一轮再判断是否收尾：流结束后仍给写入器留出 2 个轮询周期
-            # （约 300ms）把最后一批事件落库。
-            await asyncio.sleep(_LIVE_POLL_SECONDS)
-            if idle_rounds >= _LIVE_IDLE_ROUNDS:
-                break
-
-        # 收尾前再查一次：覆盖「writer 最后一批刚写入、owner 已释放」的窗口，
-        # 避免跨 Pod 重连时丢掉 done/error。
-        try:
-            rows = await _fetch(cursor)
-        except Exception as exc:  # noqa: BLE001
-            logger.error(f"[{session_id[-5:]}] 收尾回放 stream_events 失败: {exc}")
-            rows = []
-        for row in rows:
-            frame = str(row.get("payload") or "")
-            if not frame:
-                continue
-            try:
-                event_id = int(row.get("event_id") or 0)
-            except (TypeError, ValueError):
-                event_id = 0
-            if event_id > cursor:
-                cursor = event_id
-            yield frame
-            if _frame_is_terminal(frame):
-                return
-        # 流已结束但事件表里没有终态（写入器异常/进程崩溃）：补 done 关闭连接，
-        # 避免前端一直停在“执行中”。
-        yield emitter.done(already_completed=True)
-
-    return StreamingResponse(
-        event_source(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
-    )
 
 
 @router.post(
@@ -1046,6 +794,14 @@ async def chat_resume(
             "X-Accel-Buffering": "no",
         },
     )
+
+
+# chat_live.router 自带 /agent/chat 前缀；本模块 router 也带同一前缀。
+# FastAPI 的 include_router 会再次叠加父前缀（/agent/chat/agent/chat/...），
+# 因此先挂到无前缀 router 上再并入，公开 URL 仍为 /agent/chat/stream/*。
+_chat_live_mount = APIRouter()
+_chat_live_mount.include_router(chat_live_router)
+router.routes.extend(_chat_live_mount.routes)
 
 
 # A1：知识域通过端口取宿主能力；api.chat 是应用启动必经路径，负责注册真实实现。

@@ -1,691 +1,63 @@
 """Configuration management module
 
-Provides unified configuration loading and management functionality
+Provides unified configuration loading and management functionality.
+
+2026-10-18 批次 1A：Pydantic 模型拆分到 ``config_models.py``，配置键校验与
+``${VAR}`` 展开拆分到 ``config_validation.py``；本模块只保留 ``Config``
+（加载 / 解析 / 路径 helpers），并 re-export 原有公开名字与兼容私有名，
+保证 ``from easy_agent.config import ...`` 的既有导入路径与行为不变。
 """
 
 import logging
 import os
-import re
 from pathlib import Path
-from typing import Any
 
 import yaml
 from pydantic import BaseModel, Field, field_validator
 
-from .env import env_bool, env_str
+from .config_models import (
+    DEFAULT_APP_WELCOME_TITLE,
+    DEFAULT_WEB_SEARCH_API_URLS,
+    AgentConfig,
+    DatabaseConfig,
+    DistributedLockConfig,
+    ExpertTag,
+    FileContextConfig,
+    LLMConfig,
+    MCPToolConfig,
+    MySQLConfig,
+    MySQLPoolConfig,
+    PersonnelConfig,
+    PresetQuestionGroup,
+    ProviderConfig,
+    RetryConfig,
+    SQLiteConfig,
+    SummarizationConfig,
+    ToolsConfig,
+    UploadLimitsConfig,
+    WebSearchConfig,
+)
+from .config_validation import (
+    CONFIG_STRICT_ENV_VAR,
+    DEPRECATED_CONFIG_KEYS,
+    KNOWN_PROVIDER_KEYS,
+    KNOWN_SECTION_KEYS,
+    KNOWN_TOP_LEVEL_KEYS,
+    _ENV_VAR_RE,
+    _ensure_project_env_loaded,
+    _expand_env,
+    _expand_env_recursive,
+    _get_section,
+    _set_unresolved_env_vars,
+    _unresolved_env_vars,
+    find_deprecated_config_keys,
+    find_unknown_config_keys,
+    get_missing_env_vars,
+    validate_config_keys,
+)
+from .env import env_str
 
 logger = logging.getLogger(__name__)
-
-DEFAULT_APP_WELCOME_TITLE = "Easy Agent，让工作更简单"
-
-# 未知配置键的默认策略是「告警并忽略」，保证旧配置可直接启动；
-# 设置 EASY_CONFIG_STRICT=1 后改为 fail-fast（部署/CI 推荐）。
-CONFIG_STRICT_ENV_VAR = "EASY_CONFIG_STRICT"
-
-# 顶层键：来自 Config.from_yaml() 的扁平读取，以及兄弟模块直接消费的段
-# （knowledge 由 knowledges.core.config 读取；log/log_dir 为历史遗留键）。
-KNOWN_TOP_LEVEL_KEYS = frozenset(
-    {
-        "model",
-        "models",
-        "llm",  # 旧版单模型写法，仍兼容
-        "retry",
-        "max_steps",
-        "workspace_dir",
-        "memories_dir",
-        "sessions_dir",
-        "prompt_path",
-        "system_prompt_path",  # 旧键，兼容
-        "idle_logout_minutes",
-        "denied_dirs",
-        "skill_write",
-        "external_dirs",
-        "sandbox_enabled",
-        "summarization",
-        "tools",
-        "web_search",
-        "preset_questions",
-        "database",
-        "personnel",
-        "distributed_lock",
-        "upload_limits",
-        "file_context",
-        "expert",
-        "expert_tags",
-        "expert_guardrail_enabled",
-        "expert_relevance_check_enabled",
-        "expert_relevance_strict",
-        "expert_relevance_disable_thinking",
-        "app_welcome_title",
-        "knowledge",
-        "log",  # 历史遗留，Config 不再读取
-        "log_dir",  # 历史遗留，Config 不再读取
-    }
-)
-
-# 关键配置节及其允许的直接子键。点号表示嵌套节。
-KNOWN_SECTION_KEYS: dict[str, frozenset[str]] = {
-    "retry": frozenset({"enabled", "max_retries"}),
-    "tools": frozenset(
-        {"skills_dir", "prompts_dir", "result_log_truncate", "experts_dir"}
-    ),
-    "database": frozenset({"type", "sqlite", "mysql"}),
-    "database.sqlite": frozenset({"path"}),
-    "database.mysql": frozenset(
-        {
-            "host",
-            "port",
-            "user",
-            "password",
-            "database",
-            "charset",
-            "pool",
-            "connect_timeout",
-            "read_timeout",
-            "write_timeout",
-        }
-    ),
-    "database.mysql.pool": frozenset(
-        {"pool_size", "max_overflow", "pool_timeout", "pool_recycle"}
-    ),
-    "summarization": frozenset(
-        {"enabled", "compression_threshold", "compression_target"}
-    ),
-    "web_search": frozenset(
-        {
-            "enabled",
-            "provider",
-            "api_url",
-            "api_key",
-            "search_depth",
-            "topic",
-            "timeout_seconds",
-            "default_time_range",
-            "max_results",
-            "main_text_max_chars",
-        }
-    ),
-    "distributed_lock": frozenset(
-        {
-            "enabled",
-            "key_prefix",
-            "ttl_seconds",
-            "renew_interval_seconds",
-            "retry_interval_seconds",
-        }
-    ),
-    "personnel": frozenset(
-        {"self_registration_enabled", "passwordless_login_enabled"}
-    ),
-    "upload_limits": frozenset(
-        {"enabled", "max_file_size_mb", "max_files_per_message", "max_total_size_mb"}
-    ),
-    "file_context": frozenset(
-        {
-            "enabled",
-            "parse_max_file_size_mb",
-            "max_stored_chars",
-            "manifest_max_chars",
-            "preview_max_chars",
-        }
-    ),
-    "expert": frozenset(
-        {
-            "guardrail_enabled",
-            "relevance_check_enabled",
-            "relevance_strict",
-            "relevance_disable_thinking",
-        }
-    ),
-    "knowledge": frozenset(
-        {
-            "implementation",  # 已废弃，仅 knowledge_impl 日志提示（只支持 v2）
-            "enabled",
-            "base_url",
-            "api_key",
-            "shared_dataset_id",
-            "embedding",
-            "audit",
-            "limits",
-            "catalog_sync",
-        }
-    ),
-    "knowledge.embedding": frozenset({"model"}),
-    "knowledge.audit": frozenset({"enabled", "max_details_bytes"}),
-    "knowledge.limits": frozenset(
-        {
-            "max_file_size_mb",
-            "max_request_size_mb",
-            "max_files_per_request",
-            "max_dataset_name_utf8_bytes",
-            "max_filename_utf8_bytes",
-            "allowed_extensions",
-            "max_documents_per_query",
-        }
-    ),
-    "knowledge.catalog_sync": frozenset(
-        {
-            "enabled",
-            "sql_file",
-            "database",
-            "owner_username",
-            "space_type",
-            "department_id",
-            "max_level",
-            "mysql",
-        }
-    ),
-    "knowledge.catalog_sync.mysql": frozenset(
-        {"host", "port", "user", "password", "charset"}
-    ),
-    "llm": frozenset(
-        {
-            "provider",
-            "api_key",
-            "model",
-            "api_base",
-            "context_length",
-            "max_input_tokens",
-            "protocol",
-            "headers",
-        }
-    ),
-}
-
-# models.<provider> 下允许的键（provider 名本身是动态的）。
-KNOWN_PROVIDER_KEYS = frozenset(
-    {
-        "provider",
-        "api_key",
-        "model",
-        "api_base",
-        "context_length",
-        "max_input_tokens",  # 旧键，from_yaml 会映射为 context_length
-        "protocol",
-        "headers",
-    }
-)
-
-# 已废弃但仍兼容的键 -> 提示信息。不参与 unknown 判定，也不参与
-# config.yaml / config-example.yaml 的键集合漂移比较。
-DEPRECATED_CONFIG_KEYS: dict[str, str] = {
-    "llm": "llm 为旧版单模型写法，请改用 models + model；当前仍兼容读取",
-    "system_prompt_path": "system_prompt_path 已由 prompt_path 取代，当前仍兼容读取",
-    "log": "log 段不再由 Config 读取（日志由 initialization/log.py 管理）",
-    "log_dir": "log_dir 不再由 Config 读取（日志由 initialization/log.py 管理）",
-    "knowledge.implementation": (
-        "knowledge.implementation 已废弃：仅 knowledge_impl 读取后打日志，"
-        "且只支持 v2；可安全删除"
-    ),
-}
-
-
-def _get_section(data: dict, path: str) -> dict | None:
-    """按点号路径取一个 mapping 节；不存在或类型不符时返回 None。"""
-    current: Any = data
-    for part in path.split("."):
-        if not isinstance(current, dict):
-            return None
-        current = current.get(part)
-    return current if isinstance(current, dict) else None
-
-
-def find_unknown_config_keys(data: dict) -> list[str]:
-    """返回配置中不在已知 schema 内的键（点号路径，已排序）。
-
-    只检查顶层键与关键配置节（含嵌套节、models.<provider>）；列表/字典
-    动态内容（preset_questions、external_dirs、headers 等）不做键名枚举。
-    """
-    if not isinstance(data, dict):
-        return ["<root>"]
-
-    unknown: set[str] = set()
-    for key in data:
-        if key not in KNOWN_TOP_LEVEL_KEYS:
-            unknown.add(str(key))
-
-    for section_path, allowed in KNOWN_SECTION_KEYS.items():
-        section = _get_section(data, section_path)
-        if section is None:
-            continue
-        for key in section:
-            if key not in allowed:
-                unknown.add(f"{section_path}.{key}")
-
-    models = data.get("models")
-    if isinstance(models, dict):
-        for provider_name, provider_cfg in models.items():
-            if not isinstance(provider_cfg, dict):
-                continue
-            for key in provider_cfg:
-                if key not in KNOWN_PROVIDER_KEYS:
-                    unknown.add(f"models.{provider_name}.{key}")
-
-    return sorted(unknown)
-
-
-def find_deprecated_config_keys(data: dict) -> list[str]:
-    """返回实际出现（值为非 None）的已废弃键。"""
-    found: list[str] = []
-    for path in DEPRECATED_CONFIG_KEYS:
-        if "." in path:
-            parent_path, key = path.rsplit(".", 1)
-            section = _get_section(data, parent_path)
-            present = bool(section) and key in section
-        else:
-            present = isinstance(data, dict) and path in data
-        if present:
-            found.append(path)
-    return found
-
-
-def validate_config_keys(
-    data: dict,
-    *,
-    strict: bool | None = None,
-    source: str | None = None,
-) -> list[str]:
-    """检测未知/废弃配置键；返回未知键列表。
-
-    - 默认（strict=False）：未知键仅 WARNING，旧配置保持可启动；
-    - ``strict=True`` 或环境变量 ``EASY_CONFIG_STRICT=1``：未知键抛
-      ``ValueError``，用于部署自检 / CI；
-    - 废弃键始终只 WARNING（兼容旧配置，不阻断启动）。
-    """
-    unknown = find_unknown_config_keys(data)
-    if unknown:
-        where = f"（{source}）" if source else ""
-        message = (
-            f"配置包含未知键{where}: {', '.join(unknown)}；已忽略。"
-            f"如需启动失败请设置 {CONFIG_STRICT_ENV_VAR}=1"
-        )
-        if strict is None:
-            strict = env_bool(CONFIG_STRICT_ENV_VAR, False)
-        if strict:
-            raise ValueError(message)
-        logger.warning("⚠️ %s", message)
-
-    for path in find_deprecated_config_keys(data):
-        logger.warning("⚠️ 配置键 %s 已废弃：%s", path, DEPRECATED_CONFIG_KEYS[path])
-
-    return unknown
-
-# 联网搜索默认地址（config.yaml 未显式配置 api_url 时按 provider 取用）：
-#   tavily   —— Tavily Search API（https://docs.tavily.com）
-#   internal —— 内网 WebSearch 接口文档中的测试环境地址，生产地址需自行覆盖
-DEFAULT_WEB_SEARCH_API_URLS = {
-    "tavily": "https://api.tavily.com/search",
-    "internal": "http://28.221.28.7:10089/api/v1/webSearch",
-}
-
-# Matches ${VAR} and ${VAR:-default} placeholders inside string values.
-_ENV_VAR_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
-
-# 最近一次配置解析中未取到值的占位符变量名（供启动日志提示，避免静默变空串）
-_unresolved_env_vars: list[str] = []
-
-
-def get_missing_env_vars() -> list[str]:
-    """返回最近一次 ``Config.from_yaml`` 中未取到值的 ``${VAR}`` 变量名。"""
-    return list(_unresolved_env_vars)
-
-
-def _ensure_project_env_loaded() -> None:
-    """解析配置前兜底加载项目根 .env（幂等）。
-
-    ``${VAR}`` 的值来自 ``os.environ``；直接 ``python main.py`` 或 IDE 启动时，
-    shell 里 export 的变量常常传不进进程，这里保证无论入口如何都能取到 .env 的值。
-    """
-    try:
-        from .utils.env_loader import load_project_env
-    except Exception as e:  # pragma: no cover - 兜底，不影响配置解析
-        logger.debug(f"跳过项目根 .env 加载: {e}")
-        return
-    try:
-        load_project_env()
-    except Exception as e:
-        logger.warning(f"⚠️ 加载项目根 .env 失败（忽略）: {e}")
-
-
-def _expand_env(value: str, missing: set[str]) -> str:
-    """Resolve ${VAR} / ${VAR:-default} placeholders in a single string."""
-
-    def _replace(match: "re.Match[str]") -> str:
-        name = match.group(1)
-        default = match.group(2)
-        env_value = os.environ.get(name)
-        if env_value:
-            return env_value
-        if default is not None:
-            return default
-        missing.add(name)
-        return ""
-
-    return _ENV_VAR_RE.sub(_replace, value)
-
-
-def _expand_env_recursive(obj: Any, missing: set[str] | None = None) -> Any:
-    """Recursively expand env-var placeholders inside parsed YAML data."""
-    if missing is None:
-        missing = set()
-    if isinstance(obj, str):
-        return _expand_env(obj, missing)
-    if isinstance(obj, dict):
-        return {k: _expand_env_recursive(v, missing) for k, v in obj.items()}
-    if isinstance(obj, list):
-        return [_expand_env_recursive(item, missing) for item in obj]
-    return obj
-
-
-class RetryConfig(BaseModel):
-    enabled: bool = True
-    max_retries: int = 3
-
-
-class ProviderConfig(BaseModel):
-    """Individual provider/model configuration"""
-
-    provider: str = ""
-    api_key: str = ""
-    model: str = ""
-    api_base: str = ""
-    # 未显式配置时的默认上下文窗口（1M）；实际值以各 provider 段配置为准。
-    context_length: int = 1_000_000
-    protocol: str = "openai"  # "openai" or "anthropic"
-    # 额外的请求头（透传给 LLM 客户端）。值里可用 ``{session_id}`` 占位符，
-    # 调用时会替换为当前会话标识——部分网关（如 OpenCode Go）强制要求稳定的
-    # 会话标识（x-opencode-session）与自定义 User-Agent，缺失会直接 400。
-    headers: dict[str, str] = Field(default_factory=dict)
-
-
-class LLMConfig(BaseModel):
-    """LLM configuration - resolved from the active model selection"""
-
-    api_key: str
-    api_base: str | None = None
-    model: str = "claude-sonnet-4-6"
-    provider: str = "minimax"
-    context_length: int = 1_000_000  # Model context window size
-    protocol: str = "openai"  # "openai" or "anthropic"
-    headers: dict[str, str] = Field(default_factory=dict)
-    retry: RetryConfig = Field(default_factory=RetryConfig)
-
-
-class ToolsConfig(BaseModel):
-    skills_dir: str = "./skills"
-    prompts_dir: str = "./prompts"
-    result_log_truncate: int = 200
-    """工具结果写入日志时的截断字符数（默认 200）。
-
-    仅影响日志展示长度，不改变工具返回给模型的内容；读取方见
-    ``agent.py`` / ``services/streaming.py`` 中的 LoggingMiddleware 与流式日志。
-    """
-    experts_dir: str = "./experts"
-    """公共（预置）专家目录：只读扫描，见 services/public_expert_service.py。
-
-    可写绝对路径（推荐生产环境，如 ``/qts/experts``）或相对路径；相对路径按
-    「进程 CWD → 项目根」顺序解析，因此改这里的目录后无需调整启动方式。
-    留空时退化为 ``<项目根>/experts``。环境变量 ``EASY_EXPERTS_DIR`` 可在
-    配置缺失时兜底（优先级低于本项）。
-    """
-
-class SQLiteConfig(BaseModel):
-    """SQLite configuration"""
-
-    path: str = "./data/easy_agent.db"
-
-
-class MySQLPoolConfig(BaseModel):
-    """MySQL connection pool configuration"""
-
-    pool_size: int = 5
-    max_overflow: int = 10
-    pool_timeout: int = 30
-    pool_recycle: int = 3600
-
-
-class MySQLConfig(BaseModel):
-    """MySQL configuration"""
-
-    host: str = "127.0.0.1"
-    port: int = 3306
-    user: str = "root"
-    password: str = ""
-    database: str = "easy_agent"
-    charset: str = "utf8mb4"
-    pool: MySQLPoolConfig = Field(default_factory=MySQLPoolConfig)
-    connect_timeout: int = 10
-    read_timeout: int = 30
-    write_timeout: int = 30
-
-
-class DatabaseConfig(BaseModel):
-    """Database configuration - supports SQLite and MySQL"""
-
-    type: str = "sqlite"
-    sqlite: SQLiteConfig = Field(default_factory=SQLiteConfig)
-    mysql: MySQLConfig = Field(default_factory=MySQLConfig)
-
-
-class AgentConfig(BaseModel):
-    """Agent configuration"""
-
-    max_steps: int = 50
-    workspace_dir: str = "./workspace"
-    memories_dir: str = "./memories"
-    sessions_dir: str = "./sessions"
-    prompt_path: str = "prompts"
-    """提示词目录（相对配置目录），内含 system.md、fragments/ 与 memory_*.md。
-
-    目录不存在时依次回落：包内 ``easy_agent/config/prompts`` → 内置默认提示词。
-    也可用环境变量 EASY_PROMPTS_DIR 指向外部目录覆盖。
-    """
-    idle_logout_minutes: int = 0
-    """登录态空闲超时（分钟）：后端以最近一次接口调用为起点滑动续期，
-    前端超过该时长无操作时自动退出到登录页。0 表示永不过期（默认，后台不启用登录超时机制）。"""
-    denied_dirs: list[str | dict[str, Any]] = Field(default_factory=list)
-    """禁止智能体读写的虚拟路径目录列表。
-
-    支持两种格式（可混用）：
-    - 字符串：``"/user-skills"`` → 默认禁止 read+write
-    - 字典：``{path: "/user-skills", operations: ["write"]}`` → 只禁止指定操作
-
-    operations 可选值：``read``、``write``，默认两者都禁止。
-    通过 FilesystemPermission(mode="deny") 传入 create_deep_agent。
-
-    注意：``/user-skills`` 的 write 权限由 ``skill_write`` 接管（默认 new-only 会
-    忽略这里的 write 禁令并改用更细的规则），需要整体禁写时请设 skill_write=deny。
-    """
-
-    skill_write: str = "new-only"
-    """技能库（虚拟路径 /user-skills/）的写权限策略：
-
-    - ``new-only``（默认）：允许创建新技能目录并写入文件，禁止改动/删除已有技能，
-      点开头的路径（隐藏文件/目录）一律禁写；
-    - ``deny``：整个技能库禁止写入（旧行为）；
-    - ``allow``：不做额外限制。
-
-    通过 FilesystemPermission 传入 create_deep_agent，规则生成见
-    easy_agent.agent.EasyAgent._build_permissions。
-    """
-
-    external_dirs: dict[str, str] = Field(default_factory=dict)
-    """外部目录映射：虚拟路径前缀 → 宿主机实际路径。
-
-    将 skill 需要访问的宿主机目录挂载为虚拟路径路由，使文件工具
-    (ls/read_file/write_file 等) 能通过虚拟路径访问。
-    例: {"/strategy-workspace/": "/home/sututu/code/finance-skills/fast_backtest/workspace"}
-    """
-    sandbox_enabled: bool = True
-    """Shell 命令沙箱：Linux 优先使用 bwrap，无法使用 bwrap 时降级 Landlock。
-
-    沙箱仅允许读写工作区、技能和外部目录，并只读访问系统命令库与当前 Python
-    环境。Windows 暂无等效沙箱，默认拒绝 execute；仅在可信单用户环境才可设为
-    False 直接执行宿主机命令。
-    """
-
-
-class MCPToolConfig(BaseModel):
-    """Configuration for a single MCP server"""
-
-    name: str
-    transport: str = "stdio"  # stdio | sse | http
-    command: str = ""
-    args: list[str] = Field(default_factory=list)
-    env: dict[str, str] = Field(default_factory=dict)
-    url: str = ""
-    headers: dict[str, str] = Field(default_factory=dict)
-
-
-class SummarizationConfig(BaseModel):
-    """Conversation summarization/compression configuration"""
-
-    enabled: bool = True
-    compression_threshold: float = (
-        0.8  # Trigger compression at this fraction of context window
-    )
-    compression_target: float = (
-        0.1  # Keep this fraction of context window after compression
-    )
-
-
-class WebSearchConfig(BaseModel):
-    """联网搜索配置（输入框地球按钮）。
-
-    与 models 段一致，各字段支持 config.yaml 中的 ``${VAR:-默认值}`` 占位符，
-    实际取值来自 ``.env.{AGENT_ENV}``（复用同一套配置加载逻辑）。
-    api_key 为空视为未配置：前端联网搜索按钮置灰、后端不注入 search 工具。
-    """
-
-    enabled: bool = True
-    provider: str = "tavily"
-    api_url: str = ""
-    """留空时按 provider 取 DEFAULT_WEB_SEARCH_API_URLS 中的默认地址。"""
-    api_key: str = ""
-    search_depth: str = "basic"
-    """仅 tavily：basic / advanced / fast / ultra-fast。"""
-    topic: str = "general"
-    """仅 tavily：general / news / finance；带时间范围的检索会自动改用 news。"""
-    timeout_seconds: float = 30.0
-    default_time_range: str = "NoLimit"
-    max_results: int = 10
-    main_text_max_chars: int = 500
-    """单条结果的摘要展示上限（Tavily content / 内网 summary、mainText 回填均适用；
-    0 表示不返回正文节选与摘要截断）。"""
-
-
-class PresetQuestionGroup(BaseModel):
-    """预设问题分组，可在配置文件中按分类组织。"""
-
-    category: str = "预设问题"
-    icon: str = ""
-    questions: list[str] = Field(default_factory=list)
-
-
-class ExpertTag(BaseModel):
-    """专家 Agent 的分类标签（配置文件 ``expert_tags``）。
-
-    用于专家创建时的自动归类：把候选列表交给大模型，让它为每个专家挑一个
-    最匹配的 ``tag_id``；前端「专家」Tab 的筛选 chips 用 ``tag_name`` 渲染、
-    按 ``tag_id`` 过滤。
-    """
-
-    tag_id: str = ""
-    tag_name: str = ""
-
-
-class DistributedLockConfig(BaseModel):
-    """多实例（多 pod / 多 worker）部署下的分布式锁配置。
-
-    锁表建在数据库里（MySQL 场景依赖 InnoDB 行锁保证互斥），用于避免同一任务
-    被多个实例重复处理，典型场景是定时任务：每个 pod 都会注册同一批 cron，
-    到点后只有抢到锁的实例真正执行。
-
-    默认关闭：单实例部署保持引入分布式锁之前的行为，且不产生任何额外查询。
-    """
-
-    enabled: bool = False
-    key_prefix: str = "easy_agent"
-    """锁 key 前缀：多套系统共用同一个库时避免键冲突。"""
-    ttl_seconds: float = 300.0
-    """锁的存活时间（秒）：持有者崩溃后，其它实例最多等待该时长即可接管。"""
-    renew_interval_seconds: float = 100.0
-    """长任务的续约间隔（秒），实际取 min(本值, ttl/3)，须小于 ttl_seconds。"""
-    retry_interval_seconds: float = 1.0
-    """``acquire(wait_seconds>0)`` 等待抢锁时的轮询间隔（秒）。"""
-
-
-class PersonnelConfig(BaseModel):
-    """Personnel provisioning and account-source policy."""
-
-    # Fail closed unless a controlled deployment explicitly opts into the
-    # legacy public registration flow.
-    self_registration_enabled: bool = False
-    """自助注册开关：默认关闭，登录页不显示注册入口。"""
-
-    passwordless_login_enabled: bool = False
-    """门户免密登录开关：默认关闭；启用后外部系统可通过用户名+用户ID 直登。"""
-
-
-class UploadLimitsConfig(BaseModel):
-    """对话附件上传限额（config.yaml 的 ``upload_limits`` 段）。
-
-    约束对象是**单个会话单次对话**的附件（输入框里待发送的文件列表），发送消息后
-    输入框清空、额度自动重置；不是"会话历史累计"。
-
-    单位统一为 MB（1MB = 1024*1024 字节），与前端 formatSize 一致。
-    校验点：前端选择文件时即时拦截（体验），后端 upload 接口对单文件兜底（权威）。
-
-    注意：若把 ``max_total_size_mb`` 调到大于 nginx 的 ``client_max_body_size``
-    （见 docker/nginx-frontend.conf，现为 100m），会被 nginx 以 413 提前拦截。
-    """
-
-    enabled: bool = True
-    """总开关：false 时前后端都不做限额校验（应急开关）。"""
-    max_file_size_mb: int = Field(default=10, gt=0)
-    """单个文件大小上限（MB）。"""
-    max_files_per_message: int = Field(default=5, gt=0)
-    """单次对话的附件数量上限（输入框内附件总数）。"""
-    max_total_size_mb: int = Field(default=20, gt=0)
-    """单次对话的附件总大小上限（MB）。"""
-
-
-class FileContextConfig(BaseModel):
-    """会话上传文件的解析落盘与记忆注入（config.yaml 的 ``file_context`` 段）。
-
-    解决的问题：改造前上传文件的解析全文只塞进"本轮带文件"的提示词，第二轮起
-    请求不再带文件，模型就看不到内容了（且首轮内容挂在内存中的 Agent 缓存上，
-    缓存一驱逐即丢失）。
-
-    机制（详见 ``services/session_uploads.py``）：
-    1. 上传即解析：解析文本落盘到会话工作区 ``uploads/{文件名}.txt``，一次解析、
-       全程复用；
-    2. 上传即记清单：文件名/大小/时间/解析状态写入 ``uploads/index.md``，该文件由
-       ``agent.py`` 作为**记忆文件**注入 system prompt，模型每轮都知道用户传过哪些
-       文件、正文在哪；
-    3. 正文不注入：模型按需用内置的 grep/read_file 工具在 ``uploads/`` 里检索，
-       避免每轮把全文塞进上下文撑爆窗口；
-    4. 本轮刚上传的文件额外注入开头预览（``preview_max_chars``），减少首问时的一次
-       工具往返。
-
-    ``enabled=False`` 时整体回退到改造前行为（上传不解析、清单不注入，聊天接口把
-    解析全文塞进提示词），作为应急回滚开关。
-    """
-
-    enabled: bool = True
-    """总开关：false 时回退旧的全量注入行为。"""
-
-    parse_max_file_size_mb: int = Field(default=20, gt=0)
-    """超过该大小的文件不做解析（仍记录清单条目），避免上传请求被解析阻塞。"""
-
-    max_stored_chars: int = Field(default=200000, gt=0)
-    """单个文件落盘的解析文本上限（字符）；超出截断并在清单中标注。"""
-
-    manifest_max_chars: int = Field(default=2000, gt=0)
-    """上传清单（``uploads/index.md``）字符上限；超出只保留最新的文件条目。"""
-
-    preview_max_chars: int = Field(default=2000, ge=0)
-    """本轮上传文件注入模型的开头预览字符数（多文件合计）；0 = 不注入预览。"""
 
 
 class Config(BaseModel):
@@ -821,8 +193,7 @@ class Config(BaseModel):
         ``os.environ``（项目根 .env 会在解析前自动注入），用于不入库的敏感配置。
         未取到值且无默认值的变量按空串处理，变量名记录在 ``get_missing_env_vars()``。
         """
-        global _unresolved_env_vars
-        _unresolved_env_vars = []
+        _set_unresolved_env_vars()
 
         config_path = Path(config_path)
 
@@ -848,7 +219,7 @@ class Config(BaseModel):
         for model in [data.get("llm", {}), *data.get("models", {}).values()]:
             if isinstance(model, dict) and "context_length" not in model and "max_input_tokens" in model:
                 model["context_length"] = model["max_input_tokens"]
-        _unresolved_env_vars = sorted(missing)
+        _set_unresolved_env_vars(sorted(missing))
 
         # Parse active model selection
         active_model = data.get("model", "minimax")

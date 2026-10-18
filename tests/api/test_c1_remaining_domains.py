@@ -31,7 +31,7 @@ DOMAINS = {
         7,
     ),
     "expert.py": ("get_expert_repository", "ExpertRepository", 5),
-    "chat.py": ("get_chat_repository", "ChatRepository", 4),
+    "chat.py": ("get_chat_repository", "ChatRepository", 2),
 }
 
 # C1b 之后每个 API 文件仍保留的 `repo.database` 调用点数；C1b 的每一条都在
@@ -44,7 +44,8 @@ RETAINED_DATABASE_BOUNDARIES = {
     "expert.py": 3,  # 流式引擎 + Phase 2 stream_events 写入/回放边界
     # 知识域鉴权/编排 ×2 + 专家绑定 ×1 + 流式引擎 ×2 + 事件回放/状态 ×4
     # + Phase 2B run 登记 ×2（chat_stream / chat_resume 的 start_run）
-    "chat.py": 11,
+    "chat.py": 9,
+    "chat_live.py": 2,
 }
 
 

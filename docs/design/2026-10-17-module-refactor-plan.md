@@ -97,6 +97,25 @@ AST import 图实测：环内模块 **25 → 18 → 16**；SCC **2 → 1**（`db
 剩余：`knowledges.api → api.chat`、`db.database ↔ knowledges.core.schema`、
 `tools.scheduled_task → services.scheduler`（分别对应本文件 Phase 1/4）。
 
+### 批次 1A（2026-10-18）：`config.py` 按职责拆分
+
+`config.py`（1331 行）拆为三个单向依赖模块，`from easy_agent.config import ...`
+的导入路径与配置加载/校验/展开行为不变：
+
+- `config_models.py`（332 行）：18 个 Pydantic 配置模型 +
+  `DEFAULT_APP_WELCOME_TITLE` / `DEFAULT_WEB_SEARCH_API_URLS`；只依赖 pydantic，
+  不 import `config.py`。
+- `config_validation.py`（376 行）：`KNOWN_*` / `DEPRECATED_CONFIG_KEYS`、未知/
+  废弃键校验、`${VAR}` / `${VAR:-default}` 展开、`get_missing_env_vars`；
+  不 import `config.py`，校验日志仍使用 `easy_agent.config` 分类。
+- `config.py`（702 行）：只保留 `Config`（`load` / `from_yaml` / `_parse_*` /
+  路径 helpers）与 re-export（模型、常量、校验函数及 `_expand_env_recursive`
+  等兼容私有名）；`Config.from_yaml` 仅把 `_unresolved_env_vars` 的两次赋值
+  改为原地更新 helper，其余逻辑逐字不变。
+- 回归：`tests/test_config_modules.py` 覆盖模型默认值、校验函数、
+  `Config.from_yaml` 最小配置与 re-export 同一对象；AST 对比确认模型/校验/
+  `Config` 方法均为纯移动。
+
 
 ## Phase 2 进展（2026-10-17）
 
@@ -130,3 +149,16 @@ AST import 图实测：环内模块 **25 → 18 → 16**；SCC **2 → 1**（`db
   HITL approval 分支、`streaming` 重导出同一实现。
 - 验证：目标测试 57 passed；全量 `pytest tests/` 通过（997 passed / 1 skipped）；
   `uvx ruff check .` 通过。
+
+
+## 批次 1（2026-10-18）：长文件职责分离
+
+- `config.py` 1331 → 702；新增 `config_models.py`（模型）、`config_validation.py`
+  （键校验/env 展开），旧导入路径 re-export。
+- `knowledges/service.py` 2668 → 2402；新增 `core/original_store.py` 与
+  `core/permissions.py`（纯存储/纯权限）。
+- `api/chat.py` 1058 → 814；新增 `services/stream_hub.py` 与 `api/chat_live.py`。
+- 全量 1519 passed / 1 skipped；SCC=0；double-write OK。
+- 报告：`docs/audit/2026-10-18-backend-refactor-batch1-report.md`。
+- 下一批：`knowledges/service.py` 业务编排、`ragflow/client.py`、`api/expert.py`、
+  `agent.py`、`memory_store.py`；`chat_live` provider 抽共享 dependency。

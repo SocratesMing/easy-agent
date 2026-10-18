@@ -11,16 +11,14 @@ SOFT_DELETE_RETENTION_DAYS 后由清理 worker（KnowledgePurgeWorker）
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import io
 import logging
 import re
 import time
-import uuid
 from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, BinaryIO, Callable
 
 from starlette.concurrency import run_in_threadpool
@@ -62,9 +60,28 @@ from .core.models import (
     TeamSpaceDepartmentSummary,
     TeamSpaceManagementCapability,
 )
-from .core.operations_repository import KnowledgeOperationsRepository 
-from .ragflow import RagflowClient, RagflowError, RagflowNotFoundError
+from .core.operations_repository import KnowledgeOperationsRepository
+
+# 原文存储与权限判定已拆分到 core 子模块；此处 re-export 保持既有导入路径。
+from .core.original_store import (  # noqa: F401 — re-export 兼容旧导入路径
+    DEFAULT_ORIGINALS_ROOT,
+    LocalOriginalStore,
+    OriginalReadHandle,
+    OriginalStorageError,
+)
+from .core.permissions import (  # noqa: F401 — re-export 含下划线符号
+    _MAINTAINER_ACTIONS,
+    _MANAGER_ACTIONS,
+    _ROLE_RANK,
+    _VIEWER_ACTIONS,
+    _as_role,
+    _base_access_restricted,
+    _matching_permission_roles,
+    allowed_actions,
+    effective_role,
+)
 from .core.repository import KnowledgeRepository
+from .ragflow import RagflowClient, RagflowError, RagflowNotFoundError
 
 if TYPE_CHECKING:  # 仅供类型注解（api 与 service 相互引用，运行时无循环导入）
     from .core.models import KnowledgePrincipal
@@ -77,8 +94,6 @@ PARSE_TIMEOUT_SECONDS = 1800.0
 SOFT_DELETE_RETENTION_DAYS = 30
 # 证据最低得分阈值：低于该分的 chunk 不进证据列表，作为本地兜底过滤
 MINIMUM_EVIDENCE_SCORE = 0.4
-# 本地原文根目录（运行期目录，gitignored）
-DEFAULT_ORIGINALS_ROOT = Path("data") / "knowledge_originals"
 
 # 数据集创建与解析策略固定参数（扁平配置不承载，代码内固定）
 DATASET_PERMISSION = "me"
@@ -122,208 +137,6 @@ def reset_shared_dataset_cache() -> None:
     global _shared_dataset_id
     _shared_dataset_id = None
 
-_ROLE_RANK = {
-    KnowledgeBaseRole.VIEWER: 1,
-    KnowledgeBaseRole.MAINTAINER: 2,
-    KnowledgeBaseRole.MANAGER: 3,
-}
-
-_VIEWER_ACTIONS = frozenset(
-    {
-        AllowedAction.VIEW,
-        AllowedAction.ASK,
-        AllowedAction.DOWNLOAD,
-        AllowedAction.SELECT_FOR_SESSION,
-    }
-)
-_MAINTAINER_ACTIONS = _VIEWER_ACTIONS | frozenset(
-    {
-        AllowedAction.CREATE_FOLDER,
-        AllowedAction.EDIT_FOLDER,
-        AllowedAction.DELETE_FOLDER,
-        AllowedAction.UPLOAD,
-        AllowedAction.MOVE_DOCUMENT,
-        AllowedAction.DELETE_DOCUMENT,
-        AllowedAction.RETRY_DOCUMENT,
-    }
-)
-_MANAGER_ACTIONS = _MAINTAINER_ACTIONS | frozenset(
-    {
-        AllowedAction.EDIT_BASE,
-        AllowedAction.MANAGE_PERMISSIONS,
-        AllowedAction.DELETE_BASE,
-    }
-)
-
-
-# ---------------------------------------------------------------------------
-# 本地原文存储
-# ---------------------------------------------------------------------------
-class OriginalStorageError(RuntimeError):
-    """原文存储异常：携带错误码与可重试标记。"""
-
-    def __init__(self, code: str, message: str, *, retryable: bool = True):
-        super().__init__(message)
-        self.code = code
-        self.message = message
-        self.retryable = retryable
-
-
-class OriginalReadHandle:
-    """本地原文只读句柄：支持分段读取与二进制打开。"""
-
-    def __init__(self, path: Path, size_bytes: int, *, chunk_size: int = 1024 * 1024):
-        self.path = path
-        self.size_bytes = size_bytes
-        self._chunk_size = chunk_size
-
-    def open_binary(self) -> BinaryIO:
-        return self.path.open("rb")
-
-    def iter_bytes(self, start: int = 0, end: int | None = None) -> Iterator[bytes]:
-        """按 [start, end] 闭区间分段读取文件字节。"""
-
-        remaining_end = self.size_bytes - 1 if end is None else min(end, self.size_bytes - 1)
-        if start < 0 or remaining_end < start:
-            return
-        with self.path.open("rb") as source:
-            source.seek(start)
-            position = start
-            while position <= remaining_end:
-                chunk = source.read(min(self._chunk_size, remaining_end - position + 1))
-                if not chunk:
-                    break
-                position += len(chunk)
-                yield chunk
-
-
-class LocalOriginalStore:
-    """本地磁盘原文存储：原子写入与路径穿越防护。"""
-
-    provider = "filesystem"
-    _SAFE_ID = re.compile(r"^[A-Za-z0-9-]{1,255}$")
-    _SAFE_EXTENSION = re.compile(r"^[A-Za-z0-9]{1,16}$")
-
-    def __init__(self, root: str | Path = DEFAULT_ORIGINALS_ROOT):
-        self.root = Path(root).expanduser().resolve()
-        self.root.mkdir(parents=True, exist_ok=True)
-
-    @classmethod
-    def _safe_id(cls, value: str, label: str) -> str:
-        if not cls._SAFE_ID.fullmatch(value):
-            raise OriginalStorageError(
-                "ORIGINAL_STORAGE_INVALID_KEY", f"invalid {label}", retryable=False
-            )
-        return value
-
-    def build_key(self, base_id: str, document_id: str, filename: str) -> str:
-        """构造原文存储键：v1/{库 ID 前两位}/{库 ID}/{文档 ID}/original.{后缀}。"""
-
-        base_id = self._safe_id(base_id, "base id")
-        document_id = self._safe_id(document_id, "document id")
-        suffix = Path(filename).suffix.lower().lstrip(".")
-        extension = suffix if self._SAFE_EXTENSION.fullmatch(suffix) else "bin"
-        return str(PurePosixPath("v1", base_id[:2], base_id, document_id, f"original.{extension}"))
-
-    def _path(self, storage_key: str) -> Path:
-        """校验存储键并解析为根目录内安全路径（防穿越与符号链接）。"""
-
-        pure = PurePosixPath(storage_key)
-        if pure.is_absolute() or not pure.parts or any(part in {"", ".", ".."} for part in pure.parts):
-            raise OriginalStorageError(
-                "ORIGINAL_STORAGE_INVALID_KEY", "invalid storage key", retryable=False
-            )
-        candidate = (self.root / Path(*pure.parts)).resolve(strict=False)
-        try:
-            candidate.relative_to(self.root)
-        except ValueError as exc:
-            raise OriginalStorageError(
-                "ORIGINAL_STORAGE_INVALID_KEY", "storage key escapes root", retryable=False
-            ) from exc
-        if candidate.is_symlink() or any(
-            (self.root / Path(*pure.parts[: index + 1])).is_symlink()
-            for index in range(len(pure.parts) - 1)
-        ):
-            raise OriginalStorageError(
-                "ORIGINAL_STORAGE_UNSAFE_PATH", "symbolic links are not allowed", retryable=False
-            )
-        return candidate
-
-    def put_atomic(self, storage_key: str, source: BinaryIO, expected_size: int) -> tuple[int, str]:
-        """原子写入原文并返回 (字节数, sha256)。"""
-        target = self._path(storage_key)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.part")
-        digest = hashlib.sha256()
-        size = 0
-        try:
-            with temporary.open("xb") as output:
-                while True:
-                    chunk = source.read(1024 * 1024)
-                    if not chunk:
-                        break
-                    output.write(chunk)
-                    digest.update(chunk)
-                    size += len(chunk)
-                output.flush()
-            if size != expected_size:
-                raise OriginalStorageError(
-                    "ORIGINAL_STORAGE_SIZE_MISMATCH",
-                    "stored original size does not match upload",
-                    retryable=False,
-                )
-            if target.exists():
-                # 同一文档重复上传：内容一致则幂等成功，否则拒绝覆盖
-                existing = self.open(storage_key)
-                existing_digest = hashlib.sha256()
-                for chunk in existing.iter_bytes():
-                    existing_digest.update(chunk)
-                if existing.size_bytes != size or existing_digest.hexdigest() != digest.hexdigest():
-                    raise OriginalStorageError(
-                        "ORIGINAL_STORAGE_CONFLICT",
-                        "original object already exists",
-                        retryable=False,
-                    )
-                temporary.unlink(missing_ok=True)
-            else:
-                temporary.replace(target)
-            return size, digest.hexdigest()
-        except OriginalStorageError:
-            temporary.unlink(missing_ok=True)
-            raise
-        except OSError as exc:
-            temporary.unlink(missing_ok=True)
-            raise OriginalStorageError(
-                "ORIGINAL_STORAGE_WRITE_FAILED", "原文存储写入失败", retryable=True
-            ) from exc
-
-    def open(self, storage_key: str) -> OriginalReadHandle:
-        """打开原文只读句柄；文件缺失或路径异常时抛存储异常。"""
-
-        path = self._path(storage_key)
-        try:
-            stat = path.stat()
-        except OSError as exc:
-            raise OriginalStorageError(
-                "ORIGINAL_STORAGE_NOT_AVAILABLE", "原文暂不可用", retryable=True
-            ) from exc
-        if not path.is_file() or path.is_symlink():
-            raise OriginalStorageError(
-                "ORIGINAL_STORAGE_UNSAFE_PATH", "原文存储路径无效", retryable=False
-            )
-        return OriginalReadHandle(path, stat.st_size)
-
-    def health(self) -> bool:
-        """探测根目录可写性：写入并删除一个探测文件。"""
-
-        try:
-            probe = self.root / f".health-{uuid.uuid4().hex}"
-            probe.write_bytes(b"ok")
-            probe.unlink()
-            return True
-        except OSError:
-            return False
-
 
 # ---------------------------------------------------------------------------
 # 领域辅助
@@ -339,85 +152,6 @@ class KnowledgeDocumentBinary:
 
     def iter_bytes(self, start: int = 0, end: int | None = None) -> Iterator[bytes]:
         return self.iterator_factory(start, end)
-
-
-def _as_role(value: object) -> KnowledgeBaseRole | None:
-    try:
-        return KnowledgeBaseRole(str(value))
-    except ValueError:
-        return None
-
-
-def _matching_permission_roles(
-    principal: KnowledgePrincipal,
-    permissions: Iterable[Mapping[str, object]],
-) -> list[KnowledgeBaseRole]:
-    """筛出与当前用户（本人或所在部门）匹配的授权角色。"""
-
-    roles: list[KnowledgeBaseRole] = []
-    for permission in permissions:
-        subject_type = str(permission.get("subject_type", ""))
-        subject_id = str(permission.get("subject_id", ""))
-        matches_user = subject_type == "user" and subject_id == principal.user_id
-        matches_department = (
-            subject_type == "department"
-            and bool(principal.department_id)
-            and subject_id == principal.department_id
-        )
-        if matches_user or matches_department:
-            role = _as_role(permission.get("role"))
-            if role is not None:
-                roles.append(role)
-    return roles
-
-
-def _base_access_restricted(base: Mapping[str, object]) -> bool:
-    """知识库是否处于勾选名单（仅勾选人员可见）模式。"""
-
-    try:
-        return bool(int(base.get("access_restricted") or 0))
-    except (TypeError, ValueError):
-        return False
-
-
-def effective_role(
-    base: Mapping[str, object],
-    principal: KnowledgePrincipal,
-    permissions: Iterable[Mapping[str, object]],
-    *,
-    team_viewer: bool = False,
-) -> KnowledgeBaseRole | None:
-    """计算用户在单个知识库上的最强角色。
-
-    公共（team）空间默认对本部门账号只读可见（team_viewer），
-    跨部门访问须通过单库权限行或 owner 身份获得。
-    """
-    if str(base.get("owner_user_id", "")) == principal.user_id:
-        return KnowledgeBaseRole.MANAGER
-    visibility = KnowledgeBaseVisibility(str(base["space_type"]))
-    if visibility == KnowledgeBaseVisibility.PERSONAL:
-        return None
-    candidates: list[KnowledgeBaseRole] = []
-    if visibility == KnowledgeBaseVisibility.TEAM and team_viewer:
-        candidates.append(KnowledgeBaseRole.VIEWER)
-    candidates.extend(_matching_permission_roles(principal, permissions))
-    if not candidates:
-        return None
-    return max(candidates, key=_ROLE_RANK.__getitem__)
-
-
-def allowed_actions(role: KnowledgeBaseRole | None) -> list[AllowedAction]:
-    """按角色映射允许的操作清单（排序后返回）。"""
-
-    if role == KnowledgeBaseRole.MANAGER:
-        actions = _MANAGER_ACTIONS
-    elif role == KnowledgeBaseRole.MAINTAINER:
-        actions = _MAINTAINER_ACTIONS
-    elif role == KnowledgeBaseRole.VIEWER:
-        actions = _VIEWER_ACTIONS
-    else:
-        actions = frozenset()
-    return sorted(actions, key=lambda item: item.value)
 
 
 class KnowledgeServiceError(RuntimeError):
