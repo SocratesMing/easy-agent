@@ -11,7 +11,6 @@ from typing import Annotated, Optional
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse
 
-from ..db import get_database
 from ..db.repositories.file_repository import FileRepository
 from ..db.repositories.user_repository import UserRepository
 from ..models.api import (
@@ -24,6 +23,10 @@ from ..models.api import (
 )
 from ..middleware import get_current_username
 from ..middleware.auth import get_user_repository
+from .deps import (  # noqa: F401 - 旧模块级名字 re-export
+    as_file_repository as _as_file_repository,
+    get_file_repository,
+)
 from ..utils import parse_file_content
 from ..config import Config
 from ..services.session_uploads import (
@@ -59,22 +62,7 @@ router = APIRouter(
 )
 
 
-def get_file_repository(
-    db: Annotated[object, Depends(get_database)],
-) -> FileRepository:
-    """FastAPI 依赖：把进程级 ``Database`` 包装成 files 域 repository。
-
-    ``get_database`` 只出现在本 provider 内；路由函数只声明
-    ``Depends(get_file_repository)``。
-    """
-    return FileRepository(db)
-
-
-def _as_file_repository(value: object) -> FileRepository:
-    """兼容直接调用路由函数并传入 ``Database`` 的既有测试。"""
-    if isinstance(value, FileRepository):
-        return value
-    return FileRepository(value)
+# 批次 4：repository provider 统一在 ``api.deps``；旧名字在此 re-export。
 
 
 def _remove_file_quietly(path: Path) -> None:

@@ -176,3 +176,15 @@ AST import 图实测：环内模块 **25 → 18 → 16**；SCC **2 → 1**（`db
   路由 / OpenAPI 契约）。
 - 全量 1582 passed / 1 skipped（含并行批次 memory_store 的 51 个新增用例与本批 12 个）；SCC=0；ruff 通过。
 - 报告：`docs/audit/2026-10-18-backend-refactor-batch2b-report.md`。
+
+
+## 批次 3/4（2026-10-18）：agent 装配与 API 依赖
+
+- `agent.py` 1264 → 753；新增 `agent_backend.py` 145、`agent_workspace.py` 365、
+  `agent_middleware.py` 66；`EasyAgent(AgentWorkspaceMixin)`，旧导入兼容。
+- `api/deps.py` 统一 5 个 repository provider + `as_*`；chat_live 去重；
+  API 层 `Depends(get_database)` 收口到 deps；C1 门禁同步。
+- 全量 1607 passed / 1 skipped；0 SCC；报告
+  `docs/audit/2026-10-18-backend-refactor-batch34-report.md`。
+- 余下：`knowledges/service.py` 2402、`ragflow/client.py` 1470、`api/chat.py` 814、
+  `memory_manager.py` 582、`skill_center.py` 782。

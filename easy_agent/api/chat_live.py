@@ -14,9 +14,12 @@ from typing import Annotated
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 
-from ..db import get_database
 from ..db.repositories.chat_repository import ChatRepository
 from ..db.repositories.stream_events import list_stream_events
+from .deps import (
+    as_chat_repository as _as_chat_repository,
+    get_chat_repository,
+)
 from ..middleware import get_current_username
 from ..services.session_runtime import is_stream_active
 from ..services.sse import is_terminal_event
@@ -34,22 +37,7 @@ _LIVE_IDLE_ROUNDS = 2
 _LIVE_PAGE_LIMIT = 500
 
 
-def get_chat_repository(
-    db: Annotated[object, Depends(get_database)],
-) -> ChatRepository:
-    """FastAPI 依赖：把进程级 ``Database`` 包装成 chat 域 repository。
-
-    与 ``api.chat.get_chat_repository`` 行为一致；本模块不反向 import
-    ``api.chat``，因此保留一份同形 provider。
-    """
-    return ChatRepository(db)
-
-
-def _as_chat_repository(value: object) -> ChatRepository:
-    """兼容直接调用路由函数并传入 ``Database`` 的既有测试。"""
-    if isinstance(value, ChatRepository):
-        return value
-    return ChatRepository(value)
+# 批次 4：provider 统一从 ``api.deps`` 导入，本模块不再复制一份同形实现。
 
 
 def _frame_is_terminal(frame: str) -> bool:

@@ -20,7 +20,7 @@ from deepagents.middleware.filesystem import (
     supports_execution,
 )
 
-from easy_agent import agent as agent_mod
+from easy_agent import agent_backend as agent_backend_mod
 from easy_agent.agent import _build_backend_for_context
 from easy_agent.agent_graph_cache import SessionContext
 from easy_agent.backends.context import ContextBackend
@@ -372,7 +372,9 @@ def test_langsmith_mode_uses_remote_default_and_keeps_routes(
         captured.update(kwargs)
         return sentinel
 
-    monkeypatch.setattr(agent_mod, "create_langsmith_backend", fake_create)
+    monkeypatch.setattr(
+        agent_backend_mod, "create_langsmith_backend", fake_create
+    )
     config = Config.load()
     config.agent.workspace_dir = str(tmp_path / "workspace")
     config.agent.memories_dir = str(tmp_path / "memories")

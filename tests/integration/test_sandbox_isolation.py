@@ -11,7 +11,7 @@
 import pytest
 from types import SimpleNamespace
 
-import easy_agent.agent as agent_mod
+import easy_agent.agent_workspace as agent_workspace_mod
 import easy_agent.backends.shell as sandbox_shell_mod
 import easy_agent.hitl as hitl_mod
 import easy_agent.landlock as landlock_mod
@@ -114,7 +114,7 @@ def test_windows_virtual_paths_translate_between_posix_and_windows(tmp_path, mon
             truncated=False,
         )
 
-    monkeypatch.setattr(agent_mod.LocalShellBackend, "execute", fake_execute)
+    monkeypatch.setattr(LocalShellBackend, "execute", fake_execute)
     result = shell.execute("type /workspace/result.txt")
 
     assert captured["command"] == f"type {real_workspace}\\result.txt"
@@ -155,7 +155,9 @@ def test_windows_deletion_commands_are_recognized():
 
 
 def test_windows_os_info_documents_cmd_shell(monkeypatch):
-    monkeypatch.setattr(agent_mod.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(
+        agent_workspace_mod.platform, "system", lambda: "Windows"
+    )
     agent = EasyAgent.__new__(EasyAgent)
 
     os_info = agent._get_os_info()

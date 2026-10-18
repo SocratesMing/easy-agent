@@ -11,7 +11,6 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
-from ..db import get_database
 from ..db.repositories.chat_repository import ChatRepository
 from ..db.repositories.stream_events import clear_stream_events
 from ..models.db import SessionModel
@@ -52,6 +51,10 @@ from ..services.stream_hub import (  # noqa: F401 - 兼容旧导入路径
     session_stream_hubs,
     stream_hub_for,
 )
+from .deps import (  # noqa: F401 - 旧模块级名字 re-export
+    as_chat_repository as _as_chat_repository,
+    get_chat_repository,
+)
 from .chat_live import (  # noqa: F401 - 兼容旧导入路径
     _LIVE_IDLE_ROUNDS,
     _LIVE_PAGE_LIMIT,
@@ -80,22 +83,8 @@ router = APIRouter(
 )
 
 
-def get_chat_repository(
-    db: Annotated[object, Depends(get_database)],
-) -> ChatRepository:
-    """FastAPI 依赖：把进程级 ``Database`` 包装成 chat 域 repository。
-
-    ``get_database`` 只出现在本 provider 内；路由函数只声明
-    ``Depends(get_chat_repository)``。
-    """
-    return ChatRepository(db)
-
-
-def _as_chat_repository(value: object) -> ChatRepository:
-    """兼容直接调用路由函数并传入 ``Database`` 的既有测试。"""
-    if isinstance(value, ChatRepository):
-        return value
-    return ChatRepository(value)
+# 批次 4：repository provider 统一在 ``api.deps``；``get_chat_repository`` /
+# ``_as_chat_repository`` 由上方导入在模块级 re-export，旧导入路径不变。
 
 # 会话标题最长字数：太短列表里只剩「测试下」这种断句，太长又会撑破侧边栏，
 # 具体显示宽度由前端省略号控制，这里保留足够信息量即可。

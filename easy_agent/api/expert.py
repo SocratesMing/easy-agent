@@ -27,7 +27,6 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from ..db import get_database
 from ..db.repositories.expert_repository import ExpertRepository
 from ..db.expert_store import (
     STATUS_BUILDING,
@@ -49,6 +48,10 @@ from ..services.expert_service import (
 from ..utils import parse_file_content
 from ..utils.prompt_probe import describe_prompt
 from .chat import _detached_event_stream, create_new_session, generate_session_title
+from .deps import (  # noqa: F401 - 旧模块级名字 re-export
+    as_expert_repository as _as_expert_repository,
+    get_expert_repository,
+)
 from .expert_helpers import (
     _as_str_list,
     _current_user_id,
@@ -103,22 +106,7 @@ __all__ = [
 ]
 
 
-def get_expert_repository(
-    db: Annotated[object, Depends(get_database)],
-) -> ExpertRepository:
-    """FastAPI 依赖：把进程级 ``Database`` 包装成专家域 repository。
-
-    ``get_database`` 只出现在本 provider 内；路由函数只声明
-    ``Depends(get_expert_repository)``。
-    """
-    return ExpertRepository(db)
-
-
-def _as_expert_repository(value: object) -> ExpertRepository:
-    """兼容直接调用路由函数并传入 ``Database`` 的既有测试。"""
-    if isinstance(value, ExpertRepository):
-        return value
-    return ExpertRepository(value)
+# 批次 4：repository provider 统一在 ``api.deps``；旧名字在此 re-export。
 
 
 # ── 请求模型 ──────────────────────────────────────────────────────────

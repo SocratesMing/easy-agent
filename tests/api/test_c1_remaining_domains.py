@@ -5,15 +5,21 @@ test_auth/test_files/test_scheduled_tasks/test_expert/test_chat 中）。
 
 C1b 起 `get_user_repository` provider 收敛到 `middleware.auth`：auth / files /
 scheduled_tasks 三个 API 模块共用同一 provider，活跃时间与 SSO token 校验不再
-向下取 `repo.database`。本文件把「已消除的边界」和「登记保留的边界」都写成断言，
+向下取 `repo.database`。
+
+批次 4 起 repository provider 统一到 `api.deps`：API 文件不再声明
+`Depends(get_database)`（统一后为 0），只从 `api.deps` 导入 provider 并在模块级
+re-export 旧名字。本文件把「已消除的边界」和「登记保留的边界」都写成断言，
 防止悄悄回退。
 """
 
 from __future__ import annotations
 
 import ast
+import importlib
 from pathlib import Path
 
+from easy_agent.api import deps
 from easy_agent.api.auth import get_user_repository
 from easy_agent.app import app
 from easy_agent.db.repositories.user_repository import UserRepository
@@ -32,6 +38,8 @@ DOMAINS = {
     ),
     "expert.py": ("get_expert_repository", "ExpertRepository", 5),
     "chat.py": ("get_chat_repository", "ChatRepository", 2),
+    "chat_live.py": ("get_chat_repository", "ChatRepository", 2),
+    "sessions.py": ("get_session_repository", "SessionRepository", 10),
 }
 
 # C1b 之后每个 API 文件仍保留的 `repo.database` 调用点数；C1b 的每一条都在
@@ -46,6 +54,7 @@ RETAINED_DATABASE_BOUNDARIES = {
     # + Phase 2B run 登记 ×2（chat_stream / chat_resume 的 start_run）
     "chat.py": 9,
     "chat_live.py": 2,
+    "sessions.py": 2,  # 会话上传清单 / session_uploads 构造边界
 }
 
 
@@ -54,7 +63,8 @@ def test_remaining_domain_files_have_no_database_facade_usage():
         source = (API_DIR / filename).read_text(encoding="utf-8")
         assert "from ..db import Database" not in source, filename
         assert "Annotated[Database" not in source, filename
-        assert source.count("Depends(get_database)") == 1, filename
+        # 批次 4：provider 统一到 api.deps 后，API 文件不再声明数据库依赖。
+        assert source.count("Depends(get_database)") == 0, filename
 
         tree = ast.parse(source)
         direct_db_calls = [
@@ -70,21 +80,32 @@ def test_remaining_domain_files_have_no_database_facade_usage():
 def test_user_repository_provider_is_shared_from_middleware():
     """auth.py 不再自带 provider：与 files/scheduled 共用 middleware 的实现。"""
     source = (API_DIR / "auth.py").read_text(encoding="utf-8")
+    auth_module = importlib.import_module("easy_agent.api.auth")
 
     assert get_user_repository is middleware_user_provider
+    assert get_user_repository is deps.get_user_repository
     assert "from ..middleware.auth import (" in source
     assert "get_user_repository," in source
     assert "from ..middleware import get_current_username" in source
     assert "Depends(get_database)" not in source
     assert "Annotated[Database" not in source
+    assert "def _as_user_repository(" not in source
+    assert auth_module._as_user_repository is deps.as_user_repository
     annotation = "db: Annotated[UserRepository, Depends(get_user_repository)]"
     assert source.count(annotation) == 9, source.count(annotation)
 
 
 def test_remaining_domain_routes_use_repository_provider():
     for filename, (provider, repo_name, expected_routes) in DOMAINS.items():
+        module_name = Path(filename).stem
+        module = importlib.import_module(f"easy_agent.api.{module_name}")
         source = (API_DIR / filename).read_text(encoding="utf-8")
-        assert f"def {provider}(" in source, filename
+
+        # 批次 4：provider 只在 api.deps 定义，API 模块只 re-export。
+        assert f"def {provider}(" not in source, filename
+        assert getattr(module, provider) is getattr(deps, provider), filename
+        assert "from .deps import" in source, filename
+
         annotation = f"db: Annotated[{repo_name}, Depends({provider})]"
         assert source.count(annotation) == expected_routes, filename
 

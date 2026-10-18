@@ -12,8 +12,11 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 
 from ..agent import release_session_checkpointer
-from ..db import get_database
 from ..db.session_repository import SessionRepository
+from .deps import (  # noqa: F401 - 旧模块级名字 re-export
+    as_session_repository as _as_session_repository,
+    get_session_repository,
+)
 from ..models.db import SessionModel
 from ..models.api import (
     SessionPinUpdateResponse,
@@ -144,28 +147,7 @@ router = APIRouter(
 )
 
 
-def get_session_repository(
-    db: Annotated[object, Depends(get_database)],
-) -> SessionRepository:
-    """FastAPI 依赖：把进程级 ``Database`` 包装成 sessions 域 repository。
-
-    ``get_database`` 只出现在本 provider 内；路由函数只声明
-    ``Depends(get_session_repository)``，因此 API 层不 import ``Database`` 类型。
-    现有 ``tests/conftest.py`` 对 ``get_database`` 的 override 仍然生效。
-    """
-    return SessionRepository(db)
-
-
-def _as_session_repository(value: object) -> SessionRepository:
-    """兼容直接调用路由函数的旧测试（传入 ``db=<Database>``）。
-
-    FastAPI 注入时 ``value`` 已经是 :class:`SessionRepository`；部分既有测试
-    （``tests/integration/test_session_ownership.py``）仍直接以 Database 调用
-    处理函数，这里做一次窄包装，避免为迁移测试而改动测试文件。
-    """
-    if isinstance(value, SessionRepository):
-        return value
-    return SessionRepository(value)
+# 批次 4：repository provider 统一在 ``api.deps``；旧名字在此 re-export。
 
 
 @router.post("", summary="创建新会话", response_model=CreateSessionResponse)

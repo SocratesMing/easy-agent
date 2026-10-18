@@ -17,6 +17,7 @@ from ..middleware.auth import (
     get_user_repository,
     touch_user_activity,
 )
+from .deps import as_user_repository as _as_user_repository
 from ..models.api import (
     AuthConfigResponse,
     MessageResponse,
@@ -43,12 +44,7 @@ router = APIRouter(
 )
 
 
-def _as_user_repository(value: object) -> UserRepository:
-    """兼容直接调用路由函数并传入 ``Database`` 的既有测试。"""
-    if isinstance(value, UserRepository):
-        return value
-    return UserRepository(value)
-
+# 批次 4：``_as_user_repository`` 的兼容包装在 ``api.deps``；此处 re-export。
 
 DEFAULT_RESET_PASSWORD = os.environ.get("EASY_DEFAULT_RESET_PASSWORD", "123456")
 

@@ -7,13 +7,16 @@ from typing import Annotated, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 
-from ..db import get_database
 from ..db.repositories.scheduled_task_repository import (
     ScheduledTaskRepository,
 )
 from ..db.repositories.user_repository import UserRepository
 from ..middleware import get_current_username
 from ..middleware.auth import get_user_repository
+from .deps import (  # noqa: F401 - 旧模块级名字 re-export
+    as_scheduled_task_repository as _as_scheduled_task_repository,
+    get_scheduled_task_repository,
+)
 from ..models.api import (
     ScheduledTaskInfo,
     ScheduledTaskRunInfo,
@@ -36,22 +39,7 @@ router = APIRouter(
 )
 
 
-def get_scheduled_task_repository(
-    db: Annotated[object, Depends(get_database)],
-) -> ScheduledTaskRepository:
-    """FastAPI 依赖：把进程级 ``Database`` 包装成定时任务域 repository。
-
-    ``get_database`` 只出现在本 provider 内；路由函数只声明
-    ``Depends(get_scheduled_task_repository)``。
-    """
-    return ScheduledTaskRepository(db)
-
-
-def _as_scheduled_task_repository(value: object) -> ScheduledTaskRepository:
-    """兼容直接调用路由函数并传入 ``Database`` 的既有测试。"""
-    if isinstance(value, ScheduledTaskRepository):
-        return value
-    return ScheduledTaskRepository(value)
+# 批次 4：repository provider 统一在 ``api.deps``；旧名字在此 re-export。
 
 
 def _task_to_info(task) -> dict:
