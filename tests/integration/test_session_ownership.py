@@ -153,7 +153,7 @@ async def test_list_files_denies_cross_user(two_user_sessions):
 async def test_get_workspace_tree_denies_cross_user(two_user_sessions, monkeypatch):
     from easy_agent.api import files as files_mod
     from easy_agent.api.files import get_workspace_tree
-    from easy_agent.config import Config
+    from easy_agent.bootstrap.config import Config
 
     tmp_base = two_user_sessions  # just for naming
     # 重定向工作区目录到临时目录，避免触碰真实文件系统

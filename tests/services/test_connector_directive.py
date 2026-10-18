@@ -14,7 +14,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from easy_agent.config import Config
+from easy_agent.bootstrap.config import Config
 from easy_agent.services import agent_manager as am
 from easy_agent.services import connectors, mcp
 

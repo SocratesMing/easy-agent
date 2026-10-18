@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from easy_agent.api import auth as auth_mod
-from easy_agent.config import Config
+from easy_agent.bootstrap.config import Config
 from easy_agent.middleware import auth as auth_middleware
 
 

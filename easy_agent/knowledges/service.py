@@ -23,13 +23,13 @@ from typing import TYPE_CHECKING, Any, BinaryIO, Callable
 
 from starlette.concurrency import run_in_threadpool
 
-from .core.config import (
+from easy_agent.knowledges.core.config import (
     KnowledgeConfig,
     UPSTREAM_DOCUMENT_STATUS_MAPPING,
     UploadSecurityConfig,
 )
-from .core.file_validation import UploadValidationError, validate_upload
-from .core.models import (
+from easy_agent.knowledges.core.file_validation import UploadValidationError, validate_upload
+from easy_agent.knowledges.core.models import (
     AllowedAction,
     DocumentListResponse,
     DocumentStatus,
@@ -60,16 +60,16 @@ from .core.models import (
     TeamSpaceDepartmentSummary,
     TeamSpaceManagementCapability,
 )
-from .core.operations_repository import KnowledgeOperationsRepository
+from easy_agent.knowledges.core.operations_repository import KnowledgeOperationsRepository
 
 # 原文存储与权限判定已拆分到 core 子模块；此处 re-export 保持既有导入路径。
-from .core.original_store import (  # noqa: F401 — re-export 兼容旧导入路径
+from easy_agent.knowledges.core.original_store import (  # noqa: F401 — re-export 兼容旧导入路径
     DEFAULT_ORIGINALS_ROOT,
     LocalOriginalStore,
     OriginalReadHandle,
     OriginalStorageError,
 )
-from .core.permissions import (  # noqa: F401 — re-export 含下划线符号
+from easy_agent.knowledges.core.permissions import (  # noqa: F401 — re-export 含下划线符号
     _MAINTAINER_ACTIONS,
     _MANAGER_ACTIONS,
     _ROLE_RANK,
@@ -80,11 +80,11 @@ from .core.permissions import (  # noqa: F401 — re-export 含下划线符号
     allowed_actions,
     effective_role,
 )
-from .core.repository import KnowledgeRepository
-from .ragflow import RagflowClient, RagflowError, RagflowNotFoundError
+from easy_agent.knowledges.core.repository import KnowledgeRepository
+from easy_agent.knowledges.ragflow import RagflowClient, RagflowError, RagflowNotFoundError
 
 if TYPE_CHECKING:  # 仅供类型注解（api 与 service 相互引用，运行时无循环导入）
-    from .core.models import KnowledgePrincipal
+    from easy_agent.knowledges.core.models import KnowledgePrincipal
 
 logger = logging.getLogger(__name__)
 

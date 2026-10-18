@@ -22,7 +22,7 @@ from types import SimpleNamespace
 from deepagents import HarnessProfile, create_deep_agent, register_harness_profile
 from langchain_openai import ChatOpenAI
 
-from easy_agent.hitl import (
+from easy_agent.agent.hitl import (
     EXECUTE_HITL_TOOL_DESCRIPTION,
     install_execute_tool_description,
     register_execute_description_profiles,

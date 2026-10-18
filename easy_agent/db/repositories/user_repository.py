@@ -18,11 +18,11 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Optional
 
-from ...models.db import UserModel
-from . import users as users_repo
+from easy_agent.models.db import UserModel
+from easy_agent.db.repositories import users as users_repo
 
 if TYPE_CHECKING:
-    from ..database import Database
+    from easy_agent.db.database import Database
 
 
 class UserRepository:

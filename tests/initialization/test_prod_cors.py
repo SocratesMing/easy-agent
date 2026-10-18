@@ -1,6 +1,6 @@
 import pytest
 
-from easy_agent.initialization.environment import load_environment
+from easy_agent.bootstrap.initialization.environment import load_environment
 from easy_agent.utils import env_loader
 
 

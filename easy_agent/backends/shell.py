@@ -10,9 +10,9 @@ from pathlib import Path
 from deepagents.backends import LocalShellBackend
 from deepagents.backends.protocol import ExecuteResponse
 
-from ..hitl import _is_directory_deletion
-from ..landlock import landlock_usable
-from ..sandbox import bwrap_usable, run_landlocked, run_sandboxed
+from easy_agent.agent.hitl import _is_directory_deletion
+from easy_agent.sandboxing.landlock import landlock_usable
+from easy_agent.sandboxing.sandbox import bwrap_usable, run_landlocked, run_sandboxed
 
 logger = logging.getLogger(__name__)
 _IS_WINDOWS = sys.platform == "win32"

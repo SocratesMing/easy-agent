@@ -10,7 +10,7 @@
 ``Database`` 保留同名方法作为委托，调用方无需一次性迁移。
 """
 
-from . import (  # noqa: F401
+from easy_agent.db.repositories import (  # noqa: F401
     agent_state,
     chat_repository,
     expert_repository,

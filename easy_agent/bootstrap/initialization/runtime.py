@@ -4,9 +4,9 @@ from dataclasses import dataclass
 import logging
 from pathlib import Path
 
-from ..config import AgentConfig, Config, get_missing_env_vars
-from .environment import EnvironmentInitialization, load_environment
-from .log import setup_logging
+from easy_agent.bootstrap.config import AgentConfig, Config, get_missing_env_vars
+from easy_agent.bootstrap.initialization.environment import EnvironmentInitialization, load_environment
+from easy_agent.bootstrap.initialization.log import setup_logging
 
 logger = logging.getLogger(__name__)
 

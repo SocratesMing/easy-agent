@@ -19,7 +19,7 @@ def test_load_environment_returns_isolated_environment_state(tmp_path, monkeypat
     monkeypatch.setenv("EASY_CORS_ALLOW_ORIGINS", "https://api.example.com, https://app.example.com")
     monkeypatch.delenv("EASY_INITIALIZATION_TEST", raising=False)
 
-    from easy_agent.initialization import load_environment
+    from easy_agent.bootstrap.initialization import load_environment
 
     environment = load_environment()
 
@@ -34,8 +34,8 @@ def test_load_environment_returns_isolated_environment_state(tmp_path, monkeypat
 
 
 def test_setup_logging_creates_three_service_log_files(tmp_path, monkeypatch):
-    from easy_agent.initialization import log as logging_config
-    from easy_agent.initialization import setup_logging
+    from easy_agent.bootstrap.initialization import log as logging_config
+    from easy_agent.bootstrap.initialization import setup_logging
     from uvicorn.config import LOGGING_CONFIG
 
     root_logger = logging.getLogger()
@@ -111,8 +111,8 @@ def test_setup_logging_creates_three_service_log_files(tmp_path, monkeypatch):
 
 
 def test_setup_logging_uses_compiled_rotation_matcher(tmp_path, monkeypatch):
-    from easy_agent.initialization import setup_logging
-    from easy_agent.initialization import log as logging_config
+    from easy_agent.bootstrap.initialization import setup_logging
+    from easy_agent.bootstrap.initialization import log as logging_config
 
     root_logger = logging.getLogger()
     saved_handlers = root_logger.handlers[:]
@@ -155,8 +155,8 @@ def test_setup_logging_uses_compiled_rotation_matcher(tmp_path, monkeypatch):
 
 
 def test_setup_logging_rotates_when_log_exceeds_size_limit(tmp_path, monkeypatch):
-    from easy_agent.initialization import setup_logging
-    from easy_agent.initialization import log as logging_config
+    from easy_agent.bootstrap.initialization import setup_logging
+    from easy_agent.bootstrap.initialization import log as logging_config
 
     assert logging_config.LOG_MAX_BYTES == 50 * 1024 * 1024
 
@@ -197,7 +197,7 @@ def test_setup_logging_rotates_when_log_exceeds_size_limit(tmp_path, monkeypatch
 def test_initialize_runtime_sets_up_logging_before_environment_and_config(monkeypatch, tmp_path):
     from types import SimpleNamespace
 
-    from easy_agent.initialization import runtime as runtime_module
+    from easy_agent.bootstrap.initialization import runtime as runtime_module
 
     calls = []
     config_path = tmp_path / "config.yaml"
@@ -241,8 +241,8 @@ def test_initialize_runtime_sets_up_logging_before_environment_and_config(monkey
 
 
 def test_web_runner_disables_uvicorn_default_logging(monkeypatch):
-    import easy_agent.initialization as initialization
-    import easy_agent.web_runner as web_runner
+    import easy_agent.bootstrap.initialization as initialization
+    import easy_agent.bootstrap.web_runner as web_runner
 
     monkeypatch.setattr(initialization, "initialize_runtime", lambda: None)
     captured_kwargs = {}

@@ -7,18 +7,18 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from ..config import Config, DEFAULT_APP_WELCOME_TITLE
-from ..db.repositories.user_repository import UserRepository
-from ..knowledges.core.repository import KnowledgeRepository
-from ..middleware import get_current_username
-from ..middleware.auth import (
+from easy_agent.bootstrap.config import Config, DEFAULT_APP_WELCOME_TITLE
+from easy_agent.db.repositories.user_repository import UserRepository
+from easy_agent.knowledges.core.repository import KnowledgeRepository
+from easy_agent.middleware import get_current_username
+from easy_agent.middleware.auth import (
     clear_user_activity,
     get_user_activity_time,
     get_user_repository,
     touch_user_activity,
 )
-from .deps import as_user_repository as _as_user_repository
-from ..models.api import (
+from easy_agent.api.deps import as_user_repository as _as_user_repository
+from easy_agent.models.api import (
     AuthConfigResponse,
     MessageResponse,
     StatusResponse,
@@ -32,9 +32,9 @@ from ..models.api import (
     ResetPasswordRequest,
     AuthResponse,
 )
-from ..services import get_agent_config
-from ..utils import create_access_token, hash_password
-from ..utils.auth import decode_access_token
+from easy_agent.services import get_agent_config
+from easy_agent.utils import create_access_token, hash_password
+from easy_agent.utils.auth import decode_access_token
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +63,7 @@ def _get_token_lifetime() -> timedelta:
     配置为 0 时由 _token_never_expires() 签发无过期 token；
     其余情况保持默认 30 分钟有效期，接口调用会滑动续期后端登录缓存。
     """
-    from ..utils.auth import ACCESS_TOKEN_EXPIRE_MINUTES
+    from easy_agent.utils.auth import ACCESS_TOKEN_EXPIRE_MINUTES
 
     return timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
 
@@ -87,7 +87,7 @@ def _get_context_length() -> int:
 
 
 def get_client_ip(request: Request) -> str:
-    from ..utils.client_ip import get_client_ip as _ip
+    from easy_agent.utils.client_ip import get_client_ip as _ip
 
     return _ip(request)
 

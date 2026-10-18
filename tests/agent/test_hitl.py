@@ -3,7 +3,7 @@
 from types import SimpleNamespace
 
 from easy_agent.agent import EasyAgent
-from easy_agent.hitl import (
+from easy_agent.agent.hitl import (
     EXECUTE_HITL_TOOL_DESCRIPTION,
     HITL_WHEN_PREDICATES,
     _is_destructive_command,
@@ -38,7 +38,7 @@ def test_destructive_rm_detected():
 
 
 def test_register_execute_description_profiles_is_idempotent():
-    from easy_agent.hitl import (
+    from easy_agent.agent.hitl import (
         execute_description_installed,
         execute_description_profile_keys,
         register_execute_description_profiles,

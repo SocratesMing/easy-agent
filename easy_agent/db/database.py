@@ -25,25 +25,25 @@ try:
 except ImportError:
     PooledDB = None
 
-from ..models.db import SessionModel, UserModel, ScheduledTaskModel, ScheduledTaskRunModel
-from .repositories import session_runtime as session_runtime_repo
-from .repositories import stream_events as stream_events_repo
-from .repositories import agent_runs as agent_runs_repo
-from .repositories import agent_state as agent_state_repo
-from .repositories import scheduled_tasks as scheduled_tasks_repo
-from .repositories import session_records as session_records_repo
-from .repositories import sessions as sessions_repo
-from .repositories import files as files_repo
-from .repositories import mcp_api_keys as mcp_api_keys_repo
-from .repositories import users as users_repo
-from . import schema
-from ..utils.auth import hash_password, verify_password
-from ..env import env_bool
+from easy_agent.models.db import SessionModel, UserModel, ScheduledTaskModel, ScheduledTaskRunModel
+from easy_agent.db.repositories import session_runtime as session_runtime_repo
+from easy_agent.db.repositories import stream_events as stream_events_repo
+from easy_agent.db.repositories import agent_runs as agent_runs_repo
+from easy_agent.db.repositories import agent_state as agent_state_repo
+from easy_agent.db.repositories import scheduled_tasks as scheduled_tasks_repo
+from easy_agent.db.repositories import session_records as session_records_repo
+from easy_agent.db.repositories import sessions as sessions_repo
+from easy_agent.db.repositories import files as files_repo
+from easy_agent.db.repositories import mcp_api_keys as mcp_api_keys_repo
+from easy_agent.db.repositories import users as users_repo
+from easy_agent.db import schema
+from easy_agent.utils.auth import hash_password, verify_password
+from easy_agent.bootstrap.env import env_bool
 
 DATABASE_PATH = "./data/easy_agent.db"
 logger = logging.getLogger(__name__)
 
-from .schema import (
+from easy_agent.db.schema import (
     EXPECTED_TABLES,
     LANGGRAPH_STORE_KEY_LEN,
     LANGGRAPH_STORE_NS_LEN,

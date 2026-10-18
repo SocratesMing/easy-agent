@@ -8,7 +8,7 @@ from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime
 from typing import Any
 
-from ...db.database import Database
+from easy_agent.db.database import Database
 
 logger = logging.getLogger(__name__)
 

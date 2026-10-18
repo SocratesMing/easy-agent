@@ -15,7 +15,7 @@ from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import AIMessageChunk
 from langchain_openai import ChatOpenAI
 
-from .config import Config, LLMConfig, RetryConfig
+from easy_agent.bootstrap.config import Config, LLMConfig, RetryConfig
 
 logger = logging.getLogger(__name__)
 

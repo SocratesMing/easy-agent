@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from easy_agent.prompt_guard import (
+from easy_agent.security.prompt_guard import (
     EXPERT_PROMPT_BEGIN,
     EXPERT_PROMPT_END,
     EXPERT_PROMPT_MARKER,
@@ -21,7 +21,7 @@ from easy_agent.prompt_guard import (
     wrap_expert_prompt,
 )
 from easy_agent.services.prompt_loader import clear_cache, load_system_prompt
-from easy_agent.subagents import DEFAULT_SUBAGENTS, SAFE_SUBAGENT_RULES
+from easy_agent.agent.subagents import DEFAULT_SUBAGENTS, SAFE_SUBAGENT_RULES
 
 CONFIG_DIR = Path(__file__).resolve().parents[1] / "easy_agent" / "config"
 

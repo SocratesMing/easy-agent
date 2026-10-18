@@ -18,7 +18,7 @@ from pydantic import BaseModel
 
 from langchain_mcp_adapters.client import MultiServerMCPClient
 
-from ..models.api import (
+from easy_agent.models.api import (
     ConnectorConfigUpdateResponse,
     ConnectorToolInfo,
     ConnectorToolsResponse,
@@ -34,17 +34,17 @@ from ..models.api import (
     ConnectorUninstallResponse,
 )
 
-from ..config import Config
-from ..middleware import get_current_username
-from ..services import (
+from easy_agent.bootstrap.config import Config
+from easy_agent.middleware import get_current_username
+from easy_agent.services import (
     get_agent_config,
     get_session_connectors,
     invalidate_user_agents,
     resolve_connector_servers,
     set_session_connectors,
 )
-from ..services.connectors import catalog_connectors, find_catalog_entry
-from ..services.mcp import (
+from easy_agent.services.connectors import catalog_connectors, find_catalog_entry
+from easy_agent.services.mcp import (
     _unpack_error,
     invalidate_mcp_cache,
     load_mcp_config,

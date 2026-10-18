@@ -2,7 +2,7 @@
 
 import pytest
 
-from easy_agent import stores
+from easy_agent.persistence import stores
 
 PG_URI = "postgresql://user:password@db:5432/agent"
 

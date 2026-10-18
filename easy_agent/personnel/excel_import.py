@@ -8,7 +8,7 @@ from zipfile import BadZipFile, ZipFile
 
 from openpyxl import load_workbook
 
-from .models import PersonnelCreateRequest
+from easy_agent.personnel.models import PersonnelCreateRequest
 
 # 旧版列式模板：一行一个人员，部门为单级编号/名称。
 LEGACY_EXCEL_COLUMNS = {

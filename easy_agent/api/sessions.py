@@ -11,14 +11,14 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 
-from ..agent import release_session_checkpointer
-from ..db.session_repository import SessionRepository
-from .deps import (  # noqa: F401 - 旧模块级名字 re-export
+from easy_agent.agent import release_session_checkpointer
+from easy_agent.db.session_repository import SessionRepository
+from easy_agent.api.deps import (  # noqa: F401 - 旧模块级名字 re-export
     as_session_repository as _as_session_repository,
     get_session_repository,
 )
-from ..models.db import SessionModel
-from ..models.api import (
+from easy_agent.models.db import SessionModel
+from easy_agent.models.api import (
     SessionPinUpdateResponse,
     SessionTitleUpdateResponse,
     SessionUploadResponse,
@@ -33,11 +33,11 @@ from ..models.api import (
     SessionInfo,
     UpdateTitleRequest,
 )
-from ..middleware import get_current_username
-from ..utils.reasoning_safety import redact_messages_reasoning
-from ..config import Config
-from ..services import clear_session_connectors, get_agent_config, remove_session_agent
-from ..services.session_uploads import (
+from easy_agent.middleware import get_current_username
+from easy_agent.utils.reasoning_safety import redact_messages_reasoning
+from easy_agent.bootstrap.config import Config
+from easy_agent.services import clear_session_connectors, get_agent_config, remove_session_agent
+from easy_agent.services.session_uploads import (
     UploadTooLargeError,
     append_manifest,
     save_upload_streaming,

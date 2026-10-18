@@ -18,11 +18,11 @@ import logging
 import uuid
 from datetime import UTC, datetime, timedelta
 
-from ..db.repositories import agent_runs as agent_runs_repo
-from ..db.repositories.stream_events import append_stream_event
-from ..env import env_int
-from .session_runtime import instance_owner, is_stream_active
-from .sse_emitter import SSEEmitter
+from easy_agent.db.repositories import agent_runs as agent_runs_repo
+from easy_agent.db.repositories.stream_events import append_stream_event
+from easy_agent.bootstrap.env import env_int
+from easy_agent.services.session_runtime import instance_owner, is_stream_active
+from easy_agent.services.sse_emitter import SSEEmitter
 
 logger = logging.getLogger("easy_agent.run_registry")
 

@@ -22,10 +22,10 @@ def run_web():
     parser.add_argument("--workers", type=int, default=1, help="工作进程数")
     args = parser.parse_args()
 
-    project_root = Path(__file__).parent.parent
+    project_root = Path(__file__).resolve().parents[2]
     os.chdir(project_root)
 
-    from easy_agent.initialization import initialize_runtime
+    from easy_agent.bootstrap.initialization import initialize_runtime
 
     initialize_runtime()
 

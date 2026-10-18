@@ -2,9 +2,9 @@
 
 from dataclasses import dataclass
 import os
-from ..env import env_str
+from easy_agent.bootstrap.env import env_str
 
-from ..utils.env_loader import get_loaded_env_info, load_project_env
+from easy_agent.utils.env_loader import get_loaded_env_info, load_project_env
 
 
 @dataclass(frozen=True)

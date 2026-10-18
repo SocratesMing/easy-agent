@@ -9,11 +9,11 @@ import os
 import re
 from typing import Any
 
-from .env import env_bool
+from easy_agent.bootstrap.env import env_bool
 
-# 日志分类沿用 "easy_agent.config"：启动日志与 caplog 过滤按该名称订阅，
+# 日志分类沿用 "easy_agent.bootstrap.config"：启动日志与 caplog 过滤按该名称订阅，
 # 拆分模块不改变告警归属（见 tests/test_config_validation.py）。
-logger = logging.getLogger("easy_agent.config")
+logger = logging.getLogger("easy_agent.bootstrap.config")
 
 # 未知配置键的默认策略是「告警并忽略」，保证旧配置可直接启动；
 # 设置 EASY_CONFIG_STRICT=1 后改为 fail-fast（部署/CI 推荐）。
@@ -326,7 +326,7 @@ def _ensure_project_env_loaded() -> None:
     shell 里 export 的变量常常传不进进程，这里保证无论入口如何都能取到 .env 的值。
     """
     try:
-        from .utils.env_loader import load_project_env
+        from easy_agent.utils.env_loader import load_project_env
     except Exception as e:  # pragma: no cover - 兜底，不影响配置解析
         logger.debug(f"跳过项目根 .env 加载: {e}")
         return

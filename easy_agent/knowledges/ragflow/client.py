@@ -29,7 +29,7 @@ from urllib.parse import quote
 
 import httpx
 
-from .errors import (
+from easy_agent.knowledges.ragflow.errors import (
     RagflowAuthenticationError,
     RagflowContractError,
     RagflowError,

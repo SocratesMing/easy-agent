@@ -20,9 +20,9 @@ from deepagents.middleware.filesystem import (
     supports_execution,
 )
 
-from easy_agent import agent_backend as agent_backend_mod
+from easy_agent.agent import backend as agent_backend_mod
 from easy_agent.agent import _build_backend_for_context
-from easy_agent.agent_graph_cache import SessionContext
+from easy_agent.agent.graph_cache import SessionContext
 from easy_agent.backends.context import ContextBackend
 from easy_agent.backends.langsmith_sandbox import (
     LangSmithExecuteShell,
@@ -30,7 +30,7 @@ from easy_agent.backends.langsmith_sandbox import (
     sandbox_mode,
 )
 from easy_agent.backends.shell import PathTranslatingShell
-from easy_agent.config import Config
+from easy_agent.bootstrap.config import Config
 
 
 class FakeSandbox:

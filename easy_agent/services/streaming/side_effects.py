@@ -110,7 +110,7 @@ def register_session_skills(agent, db, session_id, sid) -> list[dict]:
         return []
 
     try:
-        from .. import agent_manager, skill_categories, skill_library
+        from easy_agent.services import agent_manager, skill_categories, skill_library
 
         # 以技能中心的目录为准（而非 Agent 实例字段），保证"入库了就能在技能中心看到"
         skills_root = skill_library.user_skills_dir(username)
@@ -220,11 +220,11 @@ def submit_memory_updates(
     # 1) 会话级记忆：workspace/{username}/{workspace_name}/memory.md
     if agent and agent.memory_file:
         try:
-            from ..memory_manager import update_memory_after_session
+            from easy_agent.services.memory_manager import update_memory_after_session
 
             session_llm = getattr(agent, "model", None)
             if session_llm is None:
-                from ..agent_manager import _llm_instance
+                from easy_agent.services.agent_manager import _llm_instance
 
                 session_llm = _llm_instance
 
@@ -243,7 +243,7 @@ def submit_memory_updates(
                         )
                         # 记忆更新后使 Agent 缓存失效，下次发消息时重建 Agent 以加载新记忆
                         try:
-                            from ..agent_manager import remove_session_agent
+                            from easy_agent.services.agent_manager import remove_session_agent
 
                             remove_session_agent(session_id)
                             logger.info(
@@ -263,11 +263,11 @@ def submit_memory_updates(
     # 2) 用户级长期记忆：memories/{username}/AGENTS.md
     if agent and getattr(agent, "long_term_memory_file", None):
         try:
-            from ..memory_manager import update_long_term_memory_after_session
+            from easy_agent.services.memory_manager import update_long_term_memory_after_session
 
             session_llm = getattr(agent, "model", None)
             if session_llm is None:
-                from ..agent_manager import _llm_instance
+                from easy_agent.services.agent_manager import _llm_instance
 
                 session_llm = _llm_instance
 

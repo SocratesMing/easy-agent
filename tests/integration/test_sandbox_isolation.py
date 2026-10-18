@@ -11,11 +11,11 @@
 import pytest
 from types import SimpleNamespace
 
-import easy_agent.agent_workspace as agent_workspace_mod
+import easy_agent.agent.workspace as agent_workspace_mod
 import easy_agent.backends.shell as sandbox_shell_mod
-import easy_agent.hitl as hitl_mod
-import easy_agent.landlock as landlock_mod
-import easy_agent.sandbox as sandbox_mod
+import easy_agent.agent.hitl as hitl_mod
+import easy_agent.sandboxing.landlock as landlock_mod
+import easy_agent.sandboxing.sandbox as sandbox_mod
 from deepagents.backends import LocalShellBackend
 from easy_agent.agent import _PathTranslatingShell
 from deepagents.backends.protocol import ExecuteResponse
@@ -170,7 +170,7 @@ def test_windows_os_info_documents_cmd_shell(monkeypatch):
 from pathlib import Path
 
 from easy_agent.agent import EasyAgent
-from easy_agent.fs_safety import _check_external_dir_safety, _is_within
+from easy_agent.sandboxing.fs_safety import _check_external_dir_safety, _is_within
 
 
 def test_is_within():

@@ -10,7 +10,7 @@ directories without needing elevated privileges.
 This module is deliberately self-contained (no ``easy_agent`` imports) so it
 can also be executed as a standalone helper::
 
-    python -m easy_agent.landlock sh -c '<command>'
+    python -m easy_agent.sandboxing.landlock sh -c '<command>'
 
 reading ``EASY_LANDLOCK_RW`` / ``EASY_LANDLOCK_RO`` (colon-separated real
 directories) from the environment, applying the restriction, then ``exec``'ing

@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from easy_agent.config import (
+from easy_agent.bootstrap.config import (
     Config,
     find_deprecated_config_keys,
     find_unknown_config_keys,
@@ -38,7 +38,7 @@ models:
 def test_unknown_top_level_key_warns_and_still_loads(tmp_path, caplog):
     config_path = _write_config(tmp_path / "config.yaml", "unknown_key: 1\n")
 
-    with caplog.at_level("WARNING", logger="easy_agent.config"):
+    with caplog.at_level("WARNING", logger="easy_agent.bootstrap.config"):
         config = Config.from_yaml(config_path)
 
     assert config.llm.api_key == "sk-test"
@@ -83,7 +83,7 @@ def test_legacy_and_deprecated_keys_do_not_fail(tmp_path, caplog):
         "  enabled: false\n",
     )
 
-    with caplog.at_level("WARNING", logger="easy_agent.config"):
+    with caplog.at_level("WARNING", logger="easy_agent.bootstrap.config"):
         config = Config.from_yaml(config_path)
 
     data = yaml.safe_load(config_path.read_text(encoding="utf-8"))

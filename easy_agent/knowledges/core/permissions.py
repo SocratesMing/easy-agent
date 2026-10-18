@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 
-from .models import (
+from easy_agent.knowledges.core.models import (
     AllowedAction,
     KnowledgeBaseRole,
     KnowledgeBaseVisibility,

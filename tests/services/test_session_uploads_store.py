@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 from langgraph.store.memory import InMemoryStore
 
-from easy_agent.config import Config
+from easy_agent.bootstrap.config import Config
 from easy_agent.services import session_uploads as su
 from easy_agent.services import upload_storage as us
 

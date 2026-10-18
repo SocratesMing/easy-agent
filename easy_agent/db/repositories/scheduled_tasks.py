@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from ...models.db import ScheduledTaskModel, ScheduledTaskRunModel
+from easy_agent.models.db import ScheduledTaskModel, ScheduledTaskRunModel
 
 
 def create_scheduled_task(db, task: ScheduledTaskModel) -> ScheduledTaskModel:

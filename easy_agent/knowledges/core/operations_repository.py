@@ -8,7 +8,7 @@ from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any
 
-from ...db import Database
+from easy_agent.db import Database
 
 
 _SENSITIVE_MARKERS = (

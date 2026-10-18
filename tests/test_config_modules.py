@@ -1,9 +1,9 @@
 """配置模块拆分回归（批次 1A）：config_models / config_validation / re-export。
 
 覆盖：
-- Pydantic 模型与默认值可直接从 ``easy_agent.config_models`` 导入；
-- 配置键校验 / ``${VAR}`` 展开来自 ``easy_agent.config_validation``；
-- ``easy_agent.config`` 的 re-export 是同一对象（既有导入路径兼容）；
+- Pydantic 模型与默认值可直接从 ``easy_agent.bootstrap.config_models`` 导入；
+- 配置键校验 / ``${VAR}`` 展开来自 ``easy_agent.bootstrap.config_validation``；
+- ``easy_agent.bootstrap.config`` 的 re-export 是同一对象（既有导入路径兼容）；
 - ``Config.from_yaml`` 最小配置仍可加载，未解析占位符记录不丢。
 """
 
@@ -13,9 +13,9 @@ from pathlib import Path
 
 import pytest
 
-import easy_agent.config as config_module
-import easy_agent.config_models as config_models
-import easy_agent.config_validation as config_validation
+import easy_agent.bootstrap.config as config_module
+import easy_agent.bootstrap.config_models as config_models
+import easy_agent.bootstrap.config_validation as config_validation
 
 
 def _write_minimal_config(tmp_path: Path, extra: str = "") -> Path:
@@ -246,7 +246,7 @@ class TestConfigFromYaml:
     def test_unknown_key_warns_but_loads(self, tmp_path, caplog):
         path = _write_minimal_config(tmp_path, "unknown_key: 1\n")
 
-        with caplog.at_level("WARNING", logger="easy_agent.config"):
+        with caplog.at_level("WARNING", logger="easy_agent.bootstrap.config"):
             config = config_module.Config.from_yaml(path)
 
         assert config.llm.api_key == "sk-test"

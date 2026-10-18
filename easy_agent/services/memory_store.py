@@ -34,7 +34,7 @@ from pathlib import Path
 from typing import Any
 
 # 以下导入同时是兼容 re-export：对象身份与子模块一致（纯移动，不改行为）。
-from .memory_entries import (
+from easy_agent.services.memory_entries import (
     DEFAULT_CATEGORY,
     DEFAULT_SOURCE,
     ENV_FLAG,
@@ -67,7 +67,7 @@ from .memory_entries import (
     truncate_text,
     validate_entry,
 )
-from .memory_locks import (
+from easy_agent.services.memory_locks import (
     LOCK_SUFFIX,
     STORE_SUFFIX,
     _atomic_write_text,

@@ -15,7 +15,7 @@ from collections.abc import Iterable
 from datetime import UTC, datetime
 from typing import Any
 
-from .env import env_str
+from easy_agent.bootstrap.env import env_str
 from langgraph.store.base import (
     BaseStore,
     GetOp,
@@ -317,7 +317,7 @@ def get_agent_store(db=None) -> BaseStore:
     if _store is not None:
         return _store
     if db is None:
-        from .db import get_database
+        from easy_agent.db import get_database
 
         db = get_database()
     _store = SqlStore(db)

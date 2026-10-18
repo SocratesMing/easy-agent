@@ -7,7 +7,7 @@ from fastapi import HTTPException
 
 from easy_agent.api import auth as auth_mod
 from easy_agent.app import app
-from easy_agent.config import Config
+from easy_agent.bootstrap.config import Config
 from easy_agent.models.api import LoginRequest, ResetPasswordRequest
 
 

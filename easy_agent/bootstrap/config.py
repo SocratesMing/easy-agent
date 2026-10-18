@@ -5,7 +5,7 @@ Provides unified configuration loading and management functionality.
 2026-10-18 批次 1A：Pydantic 模型拆分到 ``config_models.py``，配置键校验与
 ``${VAR}`` 展开拆分到 ``config_validation.py``；本模块只保留 ``Config``
 （加载 / 解析 / 路径 helpers），并 re-export 原有公开名字与兼容私有名，
-保证 ``from easy_agent.config import ...`` 的既有导入路径与行为不变。
+保证 ``from easy_agent.bootstrap.config import ...`` 的既有导入路径与行为不变。
 """
 
 import logging
@@ -15,7 +15,7 @@ from pathlib import Path
 import yaml
 from pydantic import BaseModel, Field, field_validator
 
-from .config_models import (
+from easy_agent.bootstrap.config_models import (
     DEFAULT_APP_WELCOME_TITLE,
     DEFAULT_WEB_SEARCH_API_URLS,
     AgentConfig,
@@ -37,7 +37,7 @@ from .config_models import (
     UploadLimitsConfig,
     WebSearchConfig,
 )
-from .config_validation import (
+from easy_agent.bootstrap.config_validation import (
     CONFIG_STRICT_ENV_VAR,
     DEPRECATED_CONFIG_KEYS,
     KNOWN_PROVIDER_KEYS,
@@ -55,7 +55,7 @@ from .config_validation import (
     get_missing_env_vars,
     validate_config_keys,
 )
-from .env import env_str
+from easy_agent.bootstrap.env import env_str
 
 logger = logging.getLogger(__name__)
 
@@ -553,7 +553,8 @@ class Config(BaseModel):
 
     @staticmethod
     def get_package_dir() -> Path:
-        return Path(__file__).parent
+        # bootstrap/config.py -> easy_agent/  (YAML/prompts live in easy_agent/config/)
+        return Path(__file__).resolve().parents[1]
 
     @classmethod
     def find_config_file(cls, filename: str) -> Path | None:
@@ -599,7 +600,7 @@ class Config(BaseModel):
                 # 运行期配置结构为 {"config": Config, "win":..., "agent_env":...}，
                 # 真正的目录在 _cfg["config"].agent.workspace_dir（而非顶层 "agent" 字典）。
                 # 惰性导入避免与 agent_manager 形成循环依赖。
-                from easy_agent.runtime_config import get_runtime_agent_config
+                from easy_agent.bootstrap.runtime_config import get_runtime_agent_config
                 _cfg = get_runtime_agent_config()
                 agent_cfg = _cfg.get("config") if _cfg else None
                 base = Path(agent_cfg.agent.workspace_dir)
@@ -618,7 +619,7 @@ class Config(BaseModel):
             base = Path(config.agent.workspace_dir)
         else:
             try:
-                from easy_agent.runtime_config import get_runtime_agent_config
+                from easy_agent.bootstrap.runtime_config import get_runtime_agent_config
                 _cfg = get_runtime_agent_config()
                 agent_cfg = _cfg.get("config") if _cfg else None
                 base = Path(agent_cfg.agent.workspace_dir)
@@ -646,7 +647,7 @@ class Config(BaseModel):
             base = Path(config.agent.sessions_dir)
         else:
             try:
-                from easy_agent.runtime_config import get_runtime_agent_config
+                from easy_agent.bootstrap.runtime_config import get_runtime_agent_config
 
                 _cfg = get_runtime_agent_config()
                 agent_cfg = _cfg.get("config") if _cfg else None
@@ -675,7 +676,7 @@ class Config(BaseModel):
             base = Path(config.agent.memories_dir)
         else:
             try:
-                from easy_agent.runtime_config import get_runtime_agent_config
+                from easy_agent.bootstrap.runtime_config import get_runtime_agent_config
 
                 _cfg = get_runtime_agent_config()
                 agent_cfg = _cfg.get("config") if _cfg else None

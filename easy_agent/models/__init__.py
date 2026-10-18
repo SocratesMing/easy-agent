@@ -1,4 +1,4 @@
-from .api import (
+from easy_agent.models.api import (
     AgentConfig,
     CreateSessionRequest,
     CreateSessionResponse,
@@ -25,7 +25,7 @@ from .api import (
     FileInfo,
     FileListResponse,
 )
-from .db import SessionModel, UserModel
+from easy_agent.models.db import SessionModel, UserModel
 
 __all__ = [
     "AgentConfig",

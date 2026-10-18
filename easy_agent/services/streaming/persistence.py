@@ -14,8 +14,8 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from ...env import env_bool
-from ..stream_messages import _partial_message_dict, tool_call_records_to_dicts
+from easy_agent.bootstrap.env import env_bool
+from easy_agent.services.stream_messages import _partial_message_dict, tool_call_records_to_dicts
 
 logger = logging.getLogger("easy_agent.chat_service")
 

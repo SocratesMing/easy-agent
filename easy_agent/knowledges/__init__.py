@@ -7,13 +7,13 @@ observability / catalog_sync；客户端 ragflow（Ragflow v0.26.3 标准 HTTP
 API）；服务与接口层 service / api；脚本 scripts。
 """
 
-from .api import router
+from easy_agent.knowledges.api import router
 
 # 导入即向 db.schema_registry 注册 knowledge 建表函数（见 db/schema_registry.py）。
-from .core import schema as _schema  # noqa: F401,E402
-from .runtime.lifecycle import shutdown_knowledge, startup_knowledge
-from .runtime.observability import audit_metadata, metrics, resolve_request_id, should_audit
-from .core.operations_repository import KnowledgeOperationsRepository
+from easy_agent.knowledges.core import schema as _schema  # noqa: F401,E402
+from easy_agent.knowledges.runtime.lifecycle import shutdown_knowledge, startup_knowledge
+from easy_agent.knowledges.runtime.observability import audit_metadata, metrics, resolve_request_id, should_audit
+from easy_agent.knowledges.core.operations_repository import KnowledgeOperationsRepository
 
 __all__ = [
     "KnowledgeOperationsRepository",

@@ -7,29 +7,29 @@ from typing import Annotated, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 
-from ..db.repositories.scheduled_task_repository import (
+from easy_agent.db.repositories.scheduled_task_repository import (
     ScheduledTaskRepository,
 )
-from ..db.repositories.user_repository import UserRepository
-from ..middleware import get_current_username
-from ..middleware.auth import get_user_repository
-from .deps import (  # noqa: F401 - 旧模块级名字 re-export
+from easy_agent.db.repositories.user_repository import UserRepository
+from easy_agent.middleware import get_current_username
+from easy_agent.middleware.auth import get_user_repository
+from easy_agent.api.deps import (  # noqa: F401 - 旧模块级名字 re-export
     as_scheduled_task_repository as _as_scheduled_task_repository,
     get_scheduled_task_repository,
 )
-from ..models.api import (
+from easy_agent.models.api import (
     ScheduledTaskInfo,
     ScheduledTaskRunInfo,
     DeleteScheduledTaskResponse,
 )
-from ..services import (
+from easy_agent.services import (
     register_scheduled_task,
     unregister_scheduled_task,
     get_scheduler,
 )
-from ..api.files import build_workspace_tree, resolve_workspace_file, serve_workspace_file
-from ..config import Config
-from ..utils.task_logger import log_task_event
+from easy_agent.api.files import build_workspace_tree, resolve_workspace_file, serve_workspace_file
+from easy_agent.bootstrap.config import Config
+from easy_agent.utils.task_logger import log_task_event
 
 logger = logging.getLogger(__name__)
 
@@ -176,7 +176,7 @@ async def run_scheduled_task_now(
     if task.username != username:
         raise HTTPException(status_code=403, detail="无权操作此任务")
     try:
-        from ..services.scheduler import _execute_task
+        from easy_agent.services.scheduler import _execute_task
         scheduler = get_scheduler()
         scheduler.add_job(
             _execute_task,
@@ -253,11 +253,11 @@ async def get_task_workspace_file(
     username = None
     auth_header = request.headers.get("Authorization")
     if auth_header and auth_header.startswith("Bearer "):
-        from ..middleware.auth import verify_token_sso
+        from easy_agent.middleware.auth import verify_token_sso
 
         username = verify_token_sso(auth_header[7:], user_repo)
     if not username and token:
-        from ..middleware.auth import verify_token_sso
+        from easy_agent.middleware.auth import verify_token_sso
 
         username = verify_token_sso(token, user_repo)
     if not username:
@@ -274,7 +274,7 @@ async def get_task_workspace_file(
     # 目标格式转换（PPT/XLS/DOC → PDF），与普通会话文件预览一致
     if target and target.lower() == "pdf":
         try:
-            from ..services.document_convert import convert_to_pdf
+            from easy_agent.services.document_convert import convert_to_pdf
 
             pdf_path = convert_to_pdf(full_path, target="pdf")
         except ValueError as e:

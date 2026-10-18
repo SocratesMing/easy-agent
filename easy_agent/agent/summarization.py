@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 def summarization_settings(config, model) -> dict:
     """把 config 比例折成官方 ``SummarizationMiddleware`` 的 token 参数。"""
-    from .model import resolve_context_length
+    from easy_agent.agent.model import resolve_context_length
 
     thr = float(getattr(config.summarization, "compression_threshold", 0.0) or 0.8)
     tgt = float(getattr(config.summarization, "compression_target", 0.0) or 0.1)

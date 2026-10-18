@@ -24,7 +24,7 @@ from typing import Any
 
 from langgraph.checkpoint.memory import MemorySaver
 
-from .env import env_bool, env_str
+from easy_agent.bootstrap.env import env_bool, env_str
 
 logger = logging.getLogger(__name__)
 
@@ -97,7 +97,7 @@ def resolve_sqlite_path(path: str) -> Path:
 def detect_business_db_type() -> str | None:
     """返回已加载业务库的类型（sqlite/mysql）；不触发建库，避免启动副作用。"""
     try:
-        from .db import database as _database_module
+        from easy_agent.db import database as _database_module
     except Exception:  # noqa: BLE001 - 数据库模块不可用时按未知处理
         return None
     db = getattr(_database_module, "_db_instance", None)
@@ -248,7 +248,7 @@ def _resolve_worker_count(workers: int | None) -> int:
     if workers is not None:
         return int(workers)
     # 延迟导入：utils 包会拉起较重依赖，checkpoints 可能先于 app 初始化被导入。
-    from .utils.deployment import detect_worker_count
+    from easy_agent.utils.deployment import detect_worker_count
 
     return detect_worker_count()
 
@@ -619,7 +619,7 @@ def get_session_checkpointer(session_id: str, db=None):
                 _CHECKPOINTERS.pop(next(iter(_CHECKPOINTERS)), None)
             if db is None:
                 try:
-                    from .db import get_database
+                    from easy_agent.db import get_database
 
                     db = get_database()
                 except Exception:  # noqa: BLE001
@@ -633,7 +633,7 @@ def release_session_checkpointer(session_id: str) -> None:
     with _CHECKPOINTER_LOCK:
         _CHECKPOINTERS.pop(session_id, None)
     try:
-        from .db import get_database
+        from easy_agent.db import get_database
 
         get_database().delete_agent_checkpoint(session_id)
     except Exception:  # noqa: BLE001

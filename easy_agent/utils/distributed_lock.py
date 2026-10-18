@@ -34,8 +34,8 @@ import uuid
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 
-from ..config import Config, DistributedLockConfig
-from ..db import get_database
+from easy_agent.bootstrap.config import Config, DistributedLockConfig
+from easy_agent.db import get_database
 
 logger = logging.getLogger("easy_agent.distributed_lock")
 

@@ -21,13 +21,13 @@ from typing import AsyncGenerator
 
 from langgraph.types import Command
 
-from ...agent import EasyAgent
-from ...db import Database
-from ...model import resolve_context_length
-from ...models.api import ChatRequest
-from ...utils.session_logger import SessionLogger
-from ..agent_manager import get_agent_config
-from ..hitl_state import (
+from easy_agent.agent import EasyAgent
+from easy_agent.db import Database
+from easy_agent.agent.model import resolve_context_length
+from easy_agent.models.api import ChatRequest
+from easy_agent.utils.session_logger import SessionLogger
+from easy_agent.services.agent_manager import get_agent_config
+from easy_agent.services.hitl_state import (
     _extract_hitl_request,
     _hitl_action_names,
     _hitl_interrupt_items,
@@ -35,17 +35,17 @@ from ..hitl_state import (
     hanging_hitl_tool_count,
     normalize_resume_decisions,
 )
-from ..sse import SSEEvent
-from ..sse_emitter import SSEEmitter
-from ..stream_messages import (
+from easy_agent.services.sse import SSEEvent
+from easy_agent.services.sse_emitter import SSEEmitter
+from easy_agent.services.stream_messages import (
     _partial_message_dict,
     _tool_call_tuples,
     build_assistant_message_dict,
     build_context_messages,
     tool_call_records_to_dicts,
 )
-from ..stream_processor import StreamProcessor
-from .persistence import (
+from easy_agent.services.stream_processor import StreamProcessor
+from easy_agent.services.streaming.persistence import (
     IncrementalPersister,
     persist_approval_decisions,
     persist_final_message,
@@ -55,7 +55,7 @@ from .persistence import (
     persist_tool_result_event,
     write_session_context_snapshot,
 )
-from .projector import (
+from easy_agent.services.streaming.projector import (
     apply_decision_status_to_blocks,
     apply_decision_status_to_records,
     build_usage_payload,
@@ -69,7 +69,7 @@ from .projector import (
     pending_tool_call_ids_for_approval,
     thinking_duration,
 )
-from .side_effects import (
+from easy_agent.services.streaming.side_effects import (
     maybe_rename_workspace,
     register_session_skills,
     submit_memory_updates,

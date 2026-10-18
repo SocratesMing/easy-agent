@@ -20,7 +20,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterable, AsyncIterator, Iterable, Mapping
 from typing import Any
 
-from .sse import SSEEvent, format_sse, validate_event
+from easy_agent.services.sse import SSEEvent, format_sse, validate_event
 
 
 class SSEEmitter:

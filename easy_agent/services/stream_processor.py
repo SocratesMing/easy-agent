@@ -25,8 +25,8 @@ logger = logging.getLogger(__name__)
 from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
 from langchain_core.utils.json import parse_partial_json
 
-from ..model import extract_reasoning
-from .sse import SSEEvent
+from easy_agent.agent.model import extract_reasoning
+from easy_agent.services.sse import SSEEvent
 
 
 # 需要「参数流式渲染」的工具：这些工具的 arguments 体量很大（write_file 的

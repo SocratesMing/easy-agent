@@ -36,7 +36,7 @@ def save_user_fields(db, cursor, user):
 
 
 # 注册到 db.user_fields_registry：解除 db → personnel 静态依赖。
-from ..db.user_fields_registry import register_user_fields  # noqa: E402
+from easy_agent.db.user_fields_registry import register_user_fields  # noqa: E402
 
 register_user_fields(
     save=save_user_fields, read=read_user_fields, ensure=ensure_user_fields

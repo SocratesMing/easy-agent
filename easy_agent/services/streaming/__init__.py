@@ -32,14 +32,14 @@ from typing import AsyncGenerator
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.types import Command
 
-from ...agent import EasyAgent
-from ...db import Database
-from ...env import env_bool
-from ...model import resolve_context_length
-from ...models.api import ChatRequest
-from ...utils.session_logger import SessionLogger
-from ..agent_manager import get_agent_config
-from ..hitl_state import (
+from easy_agent.agent import EasyAgent
+from easy_agent.db import Database
+from easy_agent.bootstrap.env import env_bool
+from easy_agent.agent.model import resolve_context_length
+from easy_agent.models.api import ChatRequest
+from easy_agent.utils.session_logger import SessionLogger
+from easy_agent.services.agent_manager import get_agent_config
+from easy_agent.services.hitl_state import (
     _extract_hitl_request,
     _hitl_action_names,
     _hitl_interrupt_items,
@@ -47,8 +47,8 @@ from ..hitl_state import (
     hanging_hitl_tool_count,
     normalize_resume_decisions,
 )
-from ..sse import SSE_EVENT_TYPES, SSEEvent, format_sse
-from ..stream_messages import (
+from easy_agent.services.sse import SSE_EVENT_TYPES, SSEEvent, format_sse
+from easy_agent.services.stream_messages import (
     _assistant_content_message,
     _historical_tool_records,
     _partial_message_dict,
@@ -57,8 +57,8 @@ from ..stream_messages import (
     build_context_messages,
     tool_call_records_to_dicts,
 )
-from ..stream_processor import StreamProcessor
-from .persistence import (
+from easy_agent.services.stream_processor import StreamProcessor
+from easy_agent.services.streaming.persistence import (
     IncrementalPersister,
     _handle_tool_result_event,
     _persist_incremental,
@@ -72,7 +72,7 @@ from .persistence import (
     persist_tool_result_event,
     write_session_context_snapshot,
 )
-from .projector import (
+from easy_agent.services.streaming.projector import (
     ResumeSnapshot,
     _MODEL_CONTEXT_LIMITS,
     apply_decision_status_to_blocks,

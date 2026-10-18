@@ -3,25 +3,25 @@
 import asyncio
 import logging
 import os
-from ..env import env_str
+from easy_agent.bootstrap.env import env_str
 import platform
 from collections import OrderedDict
 from typing import Any, Callable
 
-from ..agent import EasyAgent
-from ..agent_graph_cache import clear_agent_graph_cache, get_agent_graph_cache
-from ..config import Config
-from ..db import get_database
-from ..runtime_config import (
+from easy_agent.agent import EasyAgent
+from easy_agent.agent.graph_cache import clear_agent_graph_cache, get_agent_graph_cache
+from easy_agent.bootstrap.config import Config
+from easy_agent.db import get_database
+from easy_agent.bootstrap.runtime_config import (
     get_runtime_agent_config,
     set_agent_invalidator,
     set_runtime_agent_config,
 )
-from ..model import create_model
-from ..tools.registry import ToolBuildContext, build_session_tools
-from ..tools.web_search import create_web_search_tool
-from ..utils.prompt_probe import describe_prompt, prompt_fingerprint
-from .mcp import get_mcp_tools as load_mcp_tools_for_user
+from easy_agent.agent.model import create_model
+from easy_agent.tools.registry import ToolBuildContext, build_session_tools
+from easy_agent.tools.web_search import create_web_search_tool
+from easy_agent.utils.prompt_probe import describe_prompt, prompt_fingerprint
+from easy_agent.services.mcp import get_mcp_tools as load_mcp_tools_for_user
 
 logger = logging.getLogger("easy-agent.chat_service")
 
@@ -157,20 +157,20 @@ def _tool_factories() -> dict[str, Callable[..., Any]]:
     其余三个工厂在对应工具真正被构造时才 import——这样单个工具模块加载失败
     只会让该工具被跳过（注册表逐条目告警），不会拖垮整次 Agent 创建。
     """
-    from ..knowledge_impl import extend_agent_tools
+    from easy_agent.knowledge_impl import extend_agent_tools
 
     def _scheduled_task(**kwargs: Any) -> Any:
-        from ..tools.scheduled_task import CreateScheduledTaskTool
+        from easy_agent.tools.scheduled_task import CreateScheduledTaskTool
 
         return CreateScheduledTaskTool(**kwargs)
 
     def _save_expert(**kwargs: Any) -> Any:
-        from ..tools.expert_writer import create_save_expert_tool
+        from easy_agent.tools.expert_writer import create_save_expert_tool
 
         return create_save_expert_tool(**kwargs)
 
     def _read_uploaded_file(**kwargs: Any) -> Any:
-        from ..tools.session_file_reader import ReadUploadedFileTool
+        from easy_agent.tools.session_file_reader import ReadUploadedFileTool
 
         return ReadUploadedFileTool(**kwargs)
 
@@ -249,7 +249,7 @@ async def _get_or_create_agent_unlocked(
     recorded_connectors = _session_connectors.get(session_id)
     if recorded_connectors is None:
         try:
-            from .session_runtime import load_connectors
+            from easy_agent.services.session_runtime import load_connectors
 
             recorded_connectors = load_connectors(get_database(), session_id)
             if recorded_connectors is not None:
@@ -506,7 +506,7 @@ def set_session_edit_target(session_id: str, expert_agent_id: str) -> None:
         )
     _session_edit_targets[session_id] = expert_agent_id
     try:
-        from .session_runtime import save_edit_target
+        from easy_agent.services.session_runtime import save_edit_target
 
         save_edit_target(get_database(), session_id, expert_agent_id)
     except Exception as exc:  # noqa: BLE001
@@ -551,7 +551,7 @@ def set_session_connectors(session_id: str, connector_servers: list[str]) -> int
     )
     _session_connectors[session_id] = normalized
     try:
-        from .session_runtime import save_connectors
+        from easy_agent.services.session_runtime import save_connectors
 
         save_connectors(get_database(), session_id, list(normalized))
     except Exception as exc:  # noqa: BLE001
@@ -580,7 +580,7 @@ def register_stream_task(session_id: str, task: asyncio.Task[None]) -> None:
     若该会话已存在未完成的流式任务（通常不应发生），先取消旧的，
     避免多个 astream 协程并发写同一会话。
     """
-    from .session_runtime import SessionBusyError, acquire_stream
+    from easy_agent.services.session_runtime import SessionBusyError, acquire_stream
 
     try:
         acquire_stream(get_database(), session_id)
@@ -618,7 +618,7 @@ def unregister_stream_task(
     elif _session_stream_tasks.get(session_id) is task:
         _session_stream_tasks.pop(session_id, None)
     try:
-        from .session_runtime import release_stream
+        from easy_agent.services.session_runtime import release_stream
 
         release_stream(get_database(), session_id)
     except Exception as exc:  # noqa: BLE001
@@ -636,7 +636,7 @@ async def cancel_stream_task(session_id: str) -> bool:
     import time as _time
 
     try:
-        from .session_runtime import request_cancel
+        from easy_agent.services.session_runtime import request_cancel
 
         request_cancel(get_database(), session_id)
     except Exception as exc:  # noqa: BLE001
@@ -714,7 +714,7 @@ set_agent_invalidator(invalidate_user_agents)
 
 
 # 断 scheduler/agent_manager 循环依赖：scheduler 通过端口取 agent 生命周期。
-from .scheduler import set_agent_lifecycle as _set_scheduler_agent_lifecycle  # noqa: E402
+from easy_agent.services.scheduler import set_agent_lifecycle as _set_scheduler_agent_lifecycle  # noqa: E402
 
 _set_scheduler_agent_lifecycle(
     lambda: (get_or_create_agent_for_session, remove_session_agent)

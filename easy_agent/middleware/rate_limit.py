@@ -30,8 +30,8 @@ from fastapi import Request
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from ..env import env_str
-from ..utils.deployment import detect_worker_count
+from easy_agent.bootstrap.env import env_str
+from easy_agent.utils.deployment import detect_worker_count
 
 logger = logging.getLogger(__name__)
 
@@ -109,7 +109,7 @@ class DBRateLimitCounter:
     def _db(self):
         if self._db_provider is not None:
             return self._db_provider()
-        from ..db import get_database
+        from easy_agent.db import get_database
 
         return get_database()
 
@@ -231,7 +231,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         path = request.url.path
         # 延迟 import：utils 包会导入 auth（bcrypt/jose），放在模块顶层会拖慢
         # app 启动早期 import，也更容易形成 middleware <-> utils 的环。
-        from ..utils.client_ip import get_client_ip
+        from easy_agent.utils.client_ip import get_client_ip
 
         client = get_client_ip(request)
         for prefix, limit, window in self.rules:

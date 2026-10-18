@@ -17,7 +17,7 @@ import re
 from datetime import datetime
 from typing import Any, Optional
 
-from .database import Database
+from easy_agent.db.database import Database
 
 logger = logging.getLogger(__name__)
 

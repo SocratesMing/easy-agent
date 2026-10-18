@@ -12,12 +12,12 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Optional
 
-from ...models.db import SessionModel
-from . import files as files_repo
-from . import sessions as sessions_repo
+from easy_agent.models.db import SessionModel
+from easy_agent.db.repositories import files as files_repo
+from easy_agent.db.repositories import sessions as sessions_repo
 
 if TYPE_CHECKING:
-    from ..database import Database
+    from easy_agent.db.database import Database
 
 
 class ChatRepository:
@@ -52,7 +52,7 @@ class ChatRepository:
 
     def get_owned_session_meta(self, session_id: str, username: str) -> dict:
         """返回会话归属元信息；不存在或跨用户统一 404。"""
-        from ...utils.session import get_owned_session_meta
+        from easy_agent.utils.session import get_owned_session_meta
 
         return get_owned_session_meta(self._db, session_id, username)
 
@@ -76,7 +76,7 @@ class ChatRepository:
     # ── 流锁续约（供 _detached_event_stream 心跳） ────────────────────
 
     def renew_stream(self, session_id: str) -> bool:
-        from ...services.session_runtime import renew_stream
+        from easy_agent.services.session_runtime import renew_stream
 
         return renew_stream(self._db, session_id)
 

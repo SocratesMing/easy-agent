@@ -2,7 +2,7 @@
 
 import pytest
 
-from easy_agent import checkpoints as ck
+from easy_agent.persistence import checkpoints as ck
 
 
 @pytest.mark.asyncio

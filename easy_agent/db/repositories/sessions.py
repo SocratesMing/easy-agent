@@ -11,7 +11,7 @@ import logging
 from datetime import datetime
 from typing import Optional
 
-from ...models.db import SessionModel
+from easy_agent.models.db import SessionModel
 
 logger = logging.getLogger("easy_agent.db.sessions")
 
@@ -566,7 +566,7 @@ def _sanitize_extra_data(db, message: dict) -> str | None:
     return result
 
 def add_message_row(db, session_id: str, message: dict):
-    from ..session_messages import add_message_row as _add_row
+    from easy_agent.db.session_messages import add_message_row as _add_row
 
     _add_row(db, session_id, message)
 
@@ -700,7 +700,7 @@ def try_repair_json(raw: str) -> dict | None:
     return None
 
 def get_messages_from_rows(db, session_id: str) -> list[dict]:
-    from ..session_messages import get_messages_from_rows as _from_rows
+    from easy_agent.db.session_messages import get_messages_from_rows as _from_rows
 
     return _from_rows(db, session_id)
 

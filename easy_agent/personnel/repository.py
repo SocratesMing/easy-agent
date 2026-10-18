@@ -8,9 +8,9 @@ from datetime import datetime
 
 import pymysql
 
-from ..db import Database
-from ..utils.auth import hash_password
-from .models import PersonnelCreateRequest, PersonnelUpdateRequest
+from easy_agent.db import Database
+from easy_agent.utils.auth import hash_password
+from easy_agent.personnel.models import PersonnelCreateRequest, PersonnelUpdateRequest
 
 DEFAULT_PASSWORD = "123456"
 

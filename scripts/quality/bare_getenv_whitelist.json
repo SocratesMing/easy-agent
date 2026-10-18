@@ -1,5 +1,5 @@
 {
-  "_comment": "E2 裸 os.getenv 基线：每条记录文件 + 源码行 + 次数。新增条目必须写清原因；优先迁移到 easy_agent.env。",
+  "_comment": "E2 裸 os.getenv 基线：每条记录文件 + 源码行 + 次数。新增条目必须写清原因；优先迁移到 easy_agent.bootstrap.env。",
   "allowed": {
     "easy_agent/agent_graph_cache.py": {
       "raw = os.getenv(_ENABLED_ENV, \"\").strip().lower()": 1,

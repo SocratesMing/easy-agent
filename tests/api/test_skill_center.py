@@ -270,7 +270,7 @@ def _plant_cached_agent(session_id: str):
     """往进程内 Agent 缓存放一个假实例，用于断言接口是否把它清掉。"""
     from types import SimpleNamespace
 
-    from easy_agent.config import Config
+    from easy_agent.bootstrap.config import Config
     from easy_agent.services import agent_manager
 
     agent = SimpleNamespace(safe_username=Config.sanitize_username("testuser"))

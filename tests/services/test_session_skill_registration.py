@@ -7,7 +7,7 @@
 import pytest
 
 from easy_agent.agent import EasyAgent
-from easy_agent.config import Config
+from easy_agent.bootstrap.config import Config
 from easy_agent.services import skill_categories, skill_library
 from easy_agent.services.streaming import _register_session_skills
 

@@ -84,7 +84,7 @@ def test_load_user_mcp_config_never_falls_back_to_global(tmp_path, monkeypatch):
     连接器页的 installed 判断依赖这个语义：config/mcp.json 同时是全局 mcp.json，
     回退会让公共目录里的条目全被误判成「已安装」。
     """
-    from easy_agent.config import Config
+    from easy_agent.bootstrap.config import Config
 
     global_file = tmp_path / "global-mcp.json"
     global_file.write_text(
@@ -111,7 +111,7 @@ def test_load_user_mcp_config_never_falls_back_to_global(tmp_path, monkeypatch):
 
 def test_load_user_mcp_config_survives_broken_json(tmp_path, monkeypatch):
     """用户 mcp.json 损坏时降级为空映射，不抛异常。"""
-    from easy_agent.config import Config
+    from easy_agent.bootstrap.config import Config
 
     user_path = tmp_path / "mcp.json"
     user_path.write_text("{broken", encoding="utf-8")

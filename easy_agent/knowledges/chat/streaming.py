@@ -6,9 +6,9 @@
 
 from __future__ import annotations
 
-from ...services.sse import is_terminal_event
-from ...services.sse_emitter import SSEEmitter, sse_stream
-from .host_port import get_host_capabilities
+from easy_agent.services.sse import is_terminal_event
+from easy_agent.services.sse_emitter import SSEEmitter, sse_stream
+from easy_agent.knowledges.chat.host_port import get_host_capabilities
 
 
 # ---------------------------------------------------------------------------

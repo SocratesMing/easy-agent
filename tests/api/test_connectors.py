@@ -7,7 +7,7 @@ import pytest
 
 import easy_agent.api.connectors as connectors_api
 import easy_agent.services.connectors as connectors_service
-from easy_agent.config import Config
+from easy_agent.bootstrap.config import Config
 from easy_agent.api.connectors import router as connectors_router
 
 DEMO_CONNECTOR = {

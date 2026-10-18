@@ -99,7 +99,7 @@ AST import 图实测：环内模块 **25 → 18 → 16**；SCC **2 → 1**（`db
 
 ### 批次 1A（2026-10-18）：`config.py` 按职责拆分
 
-`config.py`（1331 行）拆为三个单向依赖模块，`from easy_agent.config import ...`
+`config.py`（1331 行）拆为三个单向依赖模块，`from easy_agent.bootstrap.config import ...`
 的导入路径与配置加载/校验/展开行为不变：
 
 - `config_models.py`（332 行）：18 个 Pydantic 配置模型 +
@@ -107,7 +107,7 @@ AST import 图实测：环内模块 **25 → 18 → 16**；SCC **2 → 1**（`db
   不 import `config.py`。
 - `config_validation.py`（376 行）：`KNOWN_*` / `DEPRECATED_CONFIG_KEYS`、未知/
   废弃键校验、`${VAR}` / `${VAR:-default}` 展开、`get_missing_env_vars`；
-  不 import `config.py`，校验日志仍使用 `easy_agent.config` 分类。
+  不 import `config.py`，校验日志仍使用 `easy_agent.bootstrap.config` 分类。
 - `config.py`（702 行）：只保留 `Config`（`load` / `from_yaml` / `_parse_*` /
   路径 helpers）与 re-export（模型、常量、校验函数及 `_expand_env_recursive`
   等兼容私有名）；`Config.from_yaml` 仅把 `_unresolved_env_vars` 的两次赋值

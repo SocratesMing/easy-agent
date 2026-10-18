@@ -1,5 +1,5 @@
 from easy_agent.db.database import Database
-from easy_agent.stores import SqlStore
+from easy_agent.persistence.stores import SqlStore
 
 
 def test_sql_store_roundtrip(tmp_path):

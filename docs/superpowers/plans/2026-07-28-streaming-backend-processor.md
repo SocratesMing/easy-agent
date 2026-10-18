@@ -323,7 +323,7 @@ Expected: PASS（含 id 不匹配用例）
 - Modify: `easy_agent/services/stream_processor.py`（`_handle_messages` + thinking 生命周期）
 - Modify: `tests/test_stream_processor.py`
 
-说明：迁移 `streaming.py` 现有 thinking/content 处理（chat 流 900-1000、resume 流 1900-1960）为 `_handle_messages`。关键：用 `easy_agent.model.extract_reasoning` 提取 reasoning；thinking 切换时发 `thinking_start`、逐 token 发 `thinking`、切换出时发 `thinking_end`（带 duration）；正文逐 token 发 `content`；维护 thinking block 与 content block。**不改语义，仅迁移为方法。**
+说明：迁移 `streaming.py` 现有 thinking/content 处理（chat 流 900-1000、resume 流 1900-1960）为 `_handle_messages`。关键：用 `easy_agent.agent.model.extract_reasoning` 提取 reasoning；thinking 切换时发 `thinking_start`、逐 token 发 `thinking`、切换出时发 `thinking_end`（带 duration）；正文逐 token 发 `content`；维护 thinking block 与 content block。**不改语义，仅迁移为方法。**
 
 - [ ] **Step 1: 写失败测试（合成 AIMessageChunk）**
 

@@ -1,12 +1,12 @@
 """Preserve administrator bootstrap policy across host database upgrades."""
 
 import os
-from ..env import env_str
+from easy_agent.bootstrap.env import env_str
 import uuid
 from datetime import datetime
 
-from ..models.db import UserModel
-from ..utils.auth import hash_password, verify_password
+from easy_agent.models.db import UserModel
+from easy_agent.utils.auth import hash_password, verify_password
 
 
 def bootstrap_password():
@@ -31,6 +31,6 @@ def ensure_default_admin(db):
 
 
 # 注册默认管理员策略：db 层通过注册表调用，避免静态 import personnel。
-from ..db.user_fields_registry import register_default_admin  # noqa: E402
+from easy_agent.db.user_fields_registry import register_default_admin  # noqa: E402
 
 register_default_admin(ensure_default_admin)

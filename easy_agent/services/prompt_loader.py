@@ -22,7 +22,7 @@ prompts/
 from __future__ import annotations
 
 import os
-from ..env import env_str
+from easy_agent.bootstrap.env import env_str
 from collections.abc import Iterable
 from pathlib import Path
 from string import Template

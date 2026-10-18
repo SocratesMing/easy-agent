@@ -16,30 +16,30 @@ from typing import Optional
 
 from fastapi import HTTPException
 
-from ..db.expert_store import (
+from easy_agent.db.expert_store import (
     STATUS_ACTIVE,
     STATUS_FAILED,
 )
-from ..db.repositories.expert_repository import ExpertRepository
-from ..model import create_model
-from ..models.api import ChatRequest
-from ..services import (
+from easy_agent.db.repositories.expert_repository import ExpertRepository
+from easy_agent.agent.model import create_model
+from easy_agent.models.api import ChatRequest
+from easy_agent.services import (
     expert_guardrail,
     expert_relevance,
     get_agent_config,
     public_expert_service,
 )
-from ..services.expert_service import (
+from easy_agent.services.expert_service import (
     generate_expert_config,
     load_active_prompt,
     slugify,
     write_expert_version,
 )
-from ..services.sse import SSEEvent
-from ..services.sse_emitter import SSEEmitter
-from ..services.streaming import build_assistant_message_dict
-from ..utils import SessionLogger
-from ..utils.prompt_probe import describe_prompt
+from easy_agent.services.sse import SSEEvent
+from easy_agent.services.sse_emitter import SSEEmitter
+from easy_agent.services.streaming import build_assistant_message_dict
+from easy_agent.utils import SessionLogger
+from easy_agent.utils.prompt_probe import describe_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -434,7 +434,7 @@ def _precheck_llm():
     函数内 import 是必须的：``_llm_instance`` 在 lifespan 里才被赋值，模块顶层
     ``from ... import _llm_instance`` 会固定成初始化前的 None。
     """
-    from ..services.agent_manager import _llm_instance
+    from easy_agent.services.agent_manager import _llm_instance
 
     return _llm_instance
 

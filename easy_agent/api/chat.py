@@ -11,19 +11,19 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
-from ..db.repositories.chat_repository import ChatRepository
-from ..db.repositories.stream_events import clear_stream_events
-from ..models.db import SessionModel
-from ..models.api import ChatRequest, ResumeRequest
-from ..middleware import get_current_username
-from ..knowledge_impl import (
+from easy_agent.db.repositories.chat_repository import ChatRepository
+from easy_agent.db.repositories.stream_events import clear_stream_events
+from easy_agent.models.db import SessionModel
+from easy_agent.models.api import ChatRequest, ResumeRequest
+from easy_agent.middleware import get_current_username
+from easy_agent.knowledge_impl import (
     authorize_scoped_chat,
     chat_stream_generator,
     empty_knowledge_context,
     is_knowledge_panel_title,
     prepare_knowledge_chat,
 )
-from ..services import (
+from easy_agent.services import (
     resume_stream_generator,
     get_or_create_agent_for_session,
     get_session_expert,
@@ -34,12 +34,12 @@ from ..services import (
     unregister_stream_task,
     cancel_stream_task,
 )
-from ..services import skill_library
-from ..services import session_uploads as file_context
-from ..services.sse_emitter import SSEEmitter
-from ..services.session_runtime import SessionBusyError
-from ..services.run_registry import finish_run, new_run_id, renew_run, start_run
-from ..services.stream_hub import (  # noqa: F401 - 兼容旧导入路径
+from easy_agent.services import skill_library
+from easy_agent.services import session_uploads as file_context
+from easy_agent.services.sse_emitter import SSEEmitter
+from easy_agent.services.session_runtime import SessionBusyError
+from easy_agent.services.run_registry import finish_run, new_run_id, renew_run, start_run
+from easy_agent.services.stream_hub import (  # noqa: F401 - 兼容旧导入路径
     _HUB_HISTORY_MAX_CHARS,
     _STREAM_HUB_TTL_SECONDS,
     _SUBSCRIBER_QUEUE_SLACK,
@@ -51,11 +51,11 @@ from ..services.stream_hub import (  # noqa: F401 - 兼容旧导入路径
     session_stream_hubs,
     stream_hub_for,
 )
-from .deps import (  # noqa: F401 - 旧模块级名字 re-export
+from easy_agent.api.deps import (  # noqa: F401 - 旧模块级名字 re-export
     as_chat_repository as _as_chat_repository,
     get_chat_repository,
 )
-from .chat_live import (  # noqa: F401 - 兼容旧导入路径
+from easy_agent.api.chat_live import (  # noqa: F401 - 兼容旧导入路径
     _LIVE_IDLE_ROUNDS,
     _LIVE_PAGE_LIMIT,
     _LIVE_POLL_SECONDS,
@@ -64,16 +64,16 @@ from .chat_live import (  # noqa: F401 - 兼容旧导入路径
     chat_stream_status,
     router as chat_live_router,
 )
-from ..utils import (
+from easy_agent.utils import (
     parse_file_content,
     SessionLogger,
 )
-from .sessions import generate_workspace_name
-from ..knowledges.chat.host_port import (
+from easy_agent.api.sessions import generate_workspace_name
+from easy_agent.knowledges.chat.host_port import (
     register_host_capabilities,
 )
-from ..services.streaming import chat_stream_generator as _host_chat_stream_generator
-from ..services import get_agent_config as _get_agent_config
+from easy_agent.services.streaming import chat_stream_generator as _host_chat_stream_generator
+from easy_agent.services import get_agent_config as _get_agent_config
 
 logger = logging.getLogger(__name__)
 
@@ -486,7 +486,7 @@ async def chat_stream(
     # 本人创建的可用专家，预置专家 / 他人的专家 / 不存在的 ID 一律忽略并告警。
     # 绑定后由 save_expert 工具在修改时取用（见 tools/expert_writer.py）。
     if request.pending_expert_id:
-        from ..tools.expert_writer import resolve_owned_expert
+        from easy_agent.tools.expert_writer import resolve_owned_expert
 
         owned = resolve_owned_expert(repo.database, username, request.pending_expert_id)
         if owned is not None:

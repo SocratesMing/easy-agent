@@ -8,7 +8,7 @@ import time
 
 import pytest
 
-from easy_agent.config import DistributedLockConfig
+from easy_agent.bootstrap.config import DistributedLockConfig
 from easy_agent.db import Database, init_database
 from easy_agent.utils.distributed_lock import DistributedLock, utc_now_iso
 

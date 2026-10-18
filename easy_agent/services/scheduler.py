@@ -9,18 +9,18 @@ and records the result.
 import asyncio
 import logging
 import os
-from ..env import env_bool
+from easy_agent.bootstrap.env import env_bool
 import uuid
 from datetime import datetime
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
-from ..db import get_database
-from ..models.db import ScheduledTaskModel, ScheduledTaskRunModel, SessionModel
-from ..utils.deployment import detect_worker_count as _detect_worker_count
-from ..utils.distributed_lock import get_distributed_lock
-from ..utils.task_logger import log_task_event
+from easy_agent.db import get_database
+from easy_agent.models.db import ScheduledTaskModel, ScheduledTaskRunModel, SessionModel
+from easy_agent.utils.deployment import detect_worker_count as _detect_worker_count
+from easy_agent.utils.distributed_lock import get_distributed_lock
+from easy_agent.utils.task_logger import log_task_event
 from langchain_core.callbacks import BaseCallbackHandler
 
 logger = logging.getLogger("easy_agent.scheduler")

@@ -7,7 +7,7 @@ knowledge.implementation 键仅作日志提示（仅支持 v2）。
 
 import logging
 import os
-from .env import env_str
+from easy_agent.bootstrap.env import env_str
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -33,28 +33,28 @@ def resolve_knowledge_impl() -> str:
 
 KNOWLEDGE_IMPL = resolve_knowledge_impl()
 
-from .knowledges.api import router as knowledge_router  # noqa: E402
-from .knowledges.runtime.catalog_sync import (  # noqa: E402
+from easy_agent.knowledges.api import router as knowledge_router  # noqa: E402
+from easy_agent.knowledges.runtime.catalog_sync import (  # noqa: E402
     run_catalog_sync,
     shutdown_catalog_sync,
     startup_catalog_sync,
 )
-from .knowledges.runtime.lifecycle import shutdown_knowledge, startup_knowledge  # noqa: E402
-from .knowledges.runtime.observability import (  # noqa: E402
+from easy_agent.knowledges.runtime.lifecycle import shutdown_knowledge, startup_knowledge  # noqa: E402
+from easy_agent.knowledges.runtime.observability import (  # noqa: E402
     audit_metadata,
     metrics,
     resolve_request_id,
     should_audit,
 )
-from .knowledges.core.operations_repository import KnowledgeOperationsRepository  # noqa: E402
-from .knowledges.chat.chat_bridge import (  # noqa: E402
+from easy_agent.knowledges.core.operations_repository import KnowledgeOperationsRepository  # noqa: E402
+from easy_agent.knowledges.chat.chat_bridge import (  # noqa: E402
     authorize_scoped_chat,
     empty_knowledge_context,
     is_knowledge_panel_title,
     prepare_knowledge_chat,
 )
-from .knowledges.chat.streaming import chat_stream_generator  # noqa: E402
-from .knowledges.chat.agent_extension import extend_agent_tools  # noqa: E402
+from easy_agent.knowledges.chat.streaming import chat_stream_generator  # noqa: E402
+from easy_agent.knowledges.chat.agent_extension import extend_agent_tools  # noqa: E402
 
 
 class LegacyHostRoutes:

@@ -10,9 +10,9 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from ..config import Config
-from ..middleware import get_current_username
-from ..models.api import (
+from easy_agent.bootstrap.config import Config
+from easy_agent.middleware import get_current_username
+from easy_agent.models.api import (
     ContentResponse,
     MemoryContentResponse,
     MemoryUpdateResponse,
@@ -21,10 +21,10 @@ from ..models.api import (
     UploadLimitsResponse,
     WebSearchStatusResponse,
 )
-from ..skills import discover_skills
-from ..services import get_agent_config
-from ..services.prompt_loader import load_system_prompt
-from ..tools.web_search import TIME_RANGE_VALUES, is_web_search_available, resolve_provider
+from easy_agent.agent.skills import discover_skills
+from easy_agent.services import get_agent_config
+from easy_agent.services.prompt_loader import load_system_prompt
+from easy_agent.tools.web_search import TIME_RANGE_VALUES, is_web_search_available, resolve_provider
 
 logger = logging.getLogger(__name__)
 

@@ -21,7 +21,7 @@ import threading
 import time
 from pathlib import Path
 
-from ..env import env_int
+from easy_agent.bootstrap.env import env_int
 
 logger = logging.getLogger("easy_agent.db.migration_lock")
 

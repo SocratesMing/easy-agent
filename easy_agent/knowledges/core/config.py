@@ -25,7 +25,7 @@ from typing import Any
 import yaml
 from pydantic import BaseModel, Field, SecretStr, ValidationError, model_validator
 
-from ...config import Config
+from easy_agent.bootstrap.config import Config
 
 logger = logging.getLogger(__name__)
 

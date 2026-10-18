@@ -20,9 +20,9 @@ from langchain_core.tools import BaseTool
 from langgraph.checkpoint.memory import MemorySaver
 from pydantic import BaseModel
 
-from easy_agent import agent as agent_mod
+import easy_agent.agent.core as agent_mod
 from easy_agent.agent import EasyAgent
-from easy_agent.agent_graph_cache import (
+from easy_agent.agent.graph_cache import (
     GraphCache,
     SessionContext,
     contextualize_tools,
@@ -30,7 +30,7 @@ from easy_agent.agent_graph_cache import (
     reset_agent_graph_cache,
     tool_fingerprint,
 )
-from easy_agent.config import Config
+from easy_agent.bootstrap.config import Config
 
 
 @pytest.fixture(autouse=True)

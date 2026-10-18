@@ -2,7 +2,7 @@
 
 本模块只依赖 pydantic，**不 import config.py**；YAML 加载/解析仍由
 ``config.py`` 的 ``Config`` 负责，并由其 re-export 本模块全部模型，保证
-``from easy_agent.config import LLMConfig`` 等既有导入路径不变。
+``from easy_agent.bootstrap.config import LLMConfig`` 等既有导入路径不变。
 """
 
 from typing import Any

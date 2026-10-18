@@ -25,11 +25,12 @@ easy-agent/
 │   ├── tools/           # Agent-callable tools (web_search/scheduled_task/...)
 │   ├── knowledges/      # Knowledge base v2 (RAGFlow)
 │   ├── personnel/       # Personnel admin / Excel import
-│   ├── checkpoints.py   # LangGraph checkpoint backends
-│   ├── sandbox.py       # Command sandbox (bwrap/Landlock/fail-closed)
-│   ├── hitl.py          # Human-in-the-loop destructive-command rules
-│   ├── runtime_config.py# Runtime config holder + agent invalidation
-│   └── config/          # YAML configs + prompts/
+│   ├── agent/            # EasyAgent 装配：core/backend/workspace/middleware/hitl/skills/model
+│   ├── bootstrap/        # 配置/环境/初始化/日志/web_runner
+│   ├── persistence/      # checkpoints / LangGraph stores
+│   ├── sandboxing/       # bwrap/Landlock/fs_safety
+│   ├── security/         # prompt guard
+│   └── config/           # YAML configs + prompts/
 ├── frontend-vue2/       # 当前托管基线：Vue 2.7 + Element UI（构建产物 frontend-vue2/dist/）
 ├── frontend/            # 第二基线：Vue 3.5 + Vite（并行维护）
 ├── skills/              # canonical 运行时技能（7 个；easy_agent/skills/ 为包内回退副本）

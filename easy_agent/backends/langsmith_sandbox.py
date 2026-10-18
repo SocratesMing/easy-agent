@@ -30,8 +30,8 @@ from typing import Any, Callable, Iterable
 
 from deepagents.backends.protocol import ExecuteResponse
 
-from .shell import _PathTranslatingShell
-from ..env import env_str
+from easy_agent.backends.shell import _PathTranslatingShell
+from easy_agent.bootstrap.env import env_str
 
 logger = logging.getLogger(__name__)
 

@@ -11,7 +11,7 @@
 
 | 计划项 | 状态 | 主要改动 | 验证 |
 | --- | --- | --- | --- |
-| ARCH-01 测试可收集性 + 沙箱测试漂移 | ✅ | `tests/integration/test_sandbox_isolation.py` 改为从 `easy_agent.fs_safety`/`easy_agent.backends.shell`/`easy_agent.hitl` 导入与 patch（原 import 已失效）；`test_auth_session_expiry.py` 因针对已移除的 `_user_activity_cache`，改为**带原因的模块级 skip**（待按新 DB 契约重写，审计项 ARCH-11） | `pytest --collect-only`：**926 collected，0 error**（原 900 collected + 1 error）；沙箱 15 项全通过 |
+| ARCH-01 测试可收集性 + 沙箱测试漂移 | ✅ | `tests/integration/test_sandbox_isolation.py` 改为从 `easy_agent.sandboxing.fs_safety`/`easy_agent.backends.shell`/`easy_agent.agent.hitl` 导入与 patch（原 import 已失效）；`test_auth_session_expiry.py` 因针对已移除的 `_user_activity_cache`，改为**带原因的模块级 skip**（待按新 DB 契约重写，审计项 ARCH-11） | `pytest --collect-only`：**926 collected，0 error**（原 900 collected + 1 error）；沙箱 15 项全通过 |
 | PERF-01 thinking O(n²) | ✅ | `stream_processor.py`：`full_content` 由「每 chunk 全量」改为「首包/1.5s/增长 8K 字符快照」；同时用 `_thinking_step_content` 增量拼接替代每 chunk 对全量字符串切片；`api/chat.py` 的 `_StreamHub.history` 增加 4M 字符上限，并改用 `deque` O(1) 淘汰 | 单测 60 项通过；新增 hub 上限测试 2 项；SSE 体积由 O(n²) 降为 O(n)（设计口径） |
 | PERF-04 流式落库写放大 | ✅ | 删除 7 处重复 `update_last_assistant_message_row`（`update_last_assistant_message` 内部已转调）；增量落库由「每 500 字符」改为「≥500 字符且（≥2s 或 ≥20K 字符）」双阈值 | `streaming.py` 编译通过；全量套件回归 |
 | PERF-07 SQLite 单机性能 | ✅ | `db/database.py`：`journal_mode=WAL` + `synchronous=NORMAL` + `busy_timeout=30000` + `timeout=30`（WAL 不支持时降级告警，不阻断启动） | 全量测试通过；审计报告中“未开 WAL”项关闭 |

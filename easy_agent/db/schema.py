@@ -12,14 +12,14 @@ import re
 import time
 from datetime import datetime
 
-from .migrations import (
+from easy_agent.db.migrations import (
     BASELINE_VERSION,
     apply_pending_migrations,
     ensure_migrations_table,
     record_baseline,
 )
 
-from .migration_lock import schema_migration_lock
+from easy_agent.db.migration_lock import schema_migration_lock
 
 logger = logging.getLogger("easy_agent.db.schema")
 
@@ -309,7 +309,7 @@ def _create_users_table(db, cursor):
     # 空闲超时：最近一次接口调用时间（Unix 时间戳）。持久化到共享数据库，
     # 保证 uvicorn 多 worker（--workers > 1）下各进程读到一致的登录活跃状态。
     _ensure_column(db, cursor, "users", "last_activity_at", "REAL")
-    from .user_fields_registry import ensure_user_fields
+    from easy_agent.db.user_fields_registry import ensure_user_fields
 
     ensure_user_fields(db, cursor)
 
@@ -670,7 +670,7 @@ def _create_expert_tables(db, cursor):
     # 依赖方向 db -> schema_registry <- knowledges，避免 db 反向 import 领域模块。
     # 注意：knowledge 表结构变更仍需 bump SCHEMA_VERSION（见
     # tests/db/test_knowledge_schema_init.py）。
-    from .schema_registry import run_schema_initializers
+    from easy_agent.db.schema_registry import run_schema_initializers
 
     run_schema_initializers(db, cursor)
 

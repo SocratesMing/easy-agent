@@ -8,9 +8,9 @@ from types import SimpleNamespace
 import pytest
 from langgraph.checkpoint.memory import MemorySaver
 
-from easy_agent import agent as agent_mod
-from easy_agent.agent_graph_cache import get_agent_graph_cache, reset_agent_graph_cache
-from easy_agent.config import Config
+import easy_agent.agent.core as agent_mod
+from easy_agent.agent.graph_cache import get_agent_graph_cache, reset_agent_graph_cache
+from easy_agent.bootstrap.config import Config
 from easy_agent.services import agent_manager as am
 
 

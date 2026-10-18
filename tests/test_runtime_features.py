@@ -2,7 +2,7 @@
 
 import pytest
 
-from easy_agent import runtime_features as rf
+from easy_agent.bootstrap import runtime_features as rf
 
 
 def test_default_features_are_local_and_not_strict(monkeypatch):

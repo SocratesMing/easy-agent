@@ -17,13 +17,13 @@ from typing import Any, Literal
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, ConfigDict, Field
 
-from ...db import get_database
-from ..api import KnowledgePrincipal
-from ..core.config import KnowledgeConfig
-from ..core.models import AllowedAction
-from ..core.operations_repository import KnowledgeOperationsRepository
-from ..core.repository import KnowledgeRepository
-from ..service import (
+from easy_agent.db import get_database
+from easy_agent.knowledges.api import KnowledgePrincipal
+from easy_agent.knowledges.core.config import KnowledgeConfig
+from easy_agent.knowledges.core.models import AllowedAction
+from easy_agent.knowledges.core.operations_repository import KnowledgeOperationsRepository
+from easy_agent.knowledges.core.repository import KnowledgeRepository
+from easy_agent.knowledges.service import (
     LocalOriginalStore,
     OriginalStorageError,
     allowed_actions,

@@ -3,7 +3,7 @@
 
 检查两件事：
 
-1. ``config-example.yaml`` 只使用 ``easy_agent.config`` 中登记的键（未知键报错）；
+1. ``config-example.yaml`` 只使用 ``easy_agent.bootstrap.config`` 中登记的键（未知键报错）；
 2. 若本地存在 ``config.yaml``，其使用到的键必须都能在模板中找到
    （模板是“键集合”的唯一文档来源；旧/废弃键除外）。
 
@@ -29,7 +29,7 @@ import yaml
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from easy_agent.config import (  # noqa: E402
+from easy_agent.bootstrap.config import (  # noqa: E402
     DEPRECATED_CONFIG_KEYS,
     KNOWN_SECTION_KEYS,
     find_unknown_config_keys,

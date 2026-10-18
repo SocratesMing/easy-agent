@@ -20,7 +20,7 @@ import logging
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, Field
 
-from ..services.session_uploads import ensure_parsed_text
+from easy_agent.services.session_uploads import ensure_parsed_text
 
 logger = logging.getLogger("easy_agent.tools.session_file_reader")
 
@@ -67,7 +67,7 @@ class ReadUploadedFileTool(BaseTool):
         if not filename.strip():
             return "错误：filename 不能为空。请传入 uploads/index.md 清单中的文件名（含扩展名）。"
 
-        from ..db import get_database
+        from easy_agent.db import get_database
 
         db = get_database()
         try:

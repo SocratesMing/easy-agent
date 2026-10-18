@@ -520,7 +520,7 @@ A: 查看日志中 `Scheduler started` 是否出现。`apscheduler` 必须随服
 A: 每个实例都会注册同一批 cron，需要开启分布式锁：在 `.env.{AGENT_ENV}` 中设置 `DISTRIBUTED_LOCK_ENABLED=true`（或直接改 `config.yaml` 的 `distributed_lock.enabled`）。开启后同一时刻只有一个实例真正执行，任务被跳过的触发会记录 `operation=skip_locked` 的审计日志。多实例下的其它注意事项见 [docs/distributed-lock.md](docs/distributed-lock.md)。
 
 **Q: 如何添加自定义模型 provider？**
-A: 在 `easy_agent/model.py` 中扩展 `create_model()`，并在 `config.yaml` 的 `models.<name>` 中添加新条目。
+A: 在 `easy_agent/agent/model.py` 中扩展 `create_model()`，并在 `config.yaml` 的 `models.<name>` 中添加新条目。
 
 ---
 

@@ -28,9 +28,9 @@ import re
 from datetime import datetime
 from pathlib import Path
 
-from ..config import Config
-from ..utils.file_parser import parse_file_content
-from .upload_storage import (
+from easy_agent.bootstrap.config import Config
+from easy_agent.utils.file_parser import parse_file_content
+from easy_agent.services.upload_storage import (
     UploadStorageError,
     is_store_uri,
     materialize_upload,
@@ -67,7 +67,7 @@ MANIFEST_HEADER = """# 用户上传的文件（本会话）
 def _file_context_config():
     """取运行期 file_context 配置；不可用时返回 None（调用方按默认值处理）。"""
     try:
-        from ..runtime_config import get_runtime_agent_config
+        from easy_agent.bootstrap.runtime_config import get_runtime_agent_config
 
         cfg = get_runtime_agent_config()
         if cfg and cfg.get("config"):
@@ -108,7 +108,7 @@ def _session_store(db=None):
     """
     if db is not None:
         return db
-    from ..db import get_database
+    from easy_agent.db import get_database
 
     return get_database()
 
@@ -233,7 +233,7 @@ class UploadTooLargeError(Exception):
 def get_max_file_size_bytes() -> int | None:
     """读取配置中的单文件上传大小上限（字节）；None = 不限制。"""
     try:
-        from ..runtime_config import get_runtime_agent_config
+        from easy_agent.bootstrap.runtime_config import get_runtime_agent_config
 
         cfg = get_runtime_agent_config()
         if cfg and cfg.get("config"):

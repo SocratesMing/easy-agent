@@ -10,8 +10,8 @@ from __future__ import annotations
 import json
 import sys
 
-from easy_agent.env import env_str
-from easy_agent.runtime_features import load_runtime_features, multi_replica_errors
+from easy_agent.bootstrap.env import env_str
+from easy_agent.bootstrap.runtime_features import load_runtime_features, multi_replica_errors
 from easy_agent.utils.deployment import detect_worker_count
 
 

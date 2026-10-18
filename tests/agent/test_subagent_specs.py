@@ -1,7 +1,7 @@
 """Subagent specs 回归测试（FW-07）：显式 skills + 异常兜底 middleware。"""
 
 from easy_agent.agent import build_subagent_specs
-from easy_agent.subagents import DEFAULT_SUBAGENTS
+from easy_agent.agent.subagents import DEFAULT_SUBAGENTS
 
 
 def test_subagents_get_explicit_skills_and_middleware():

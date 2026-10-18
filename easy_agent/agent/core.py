@@ -18,11 +18,11 @@ from pathlib import Path
 from deepagents import create_deep_agent
 from langchain_core.messages import AIMessageChunk, ToolMessage
 
-from .backends.shell import _PathTranslatingShell  # noqa: F401  旧导入路径兼容（测试/外部直接 import）
-from .backends.context import ContextBackend
-from .checkpoints import get_session_checkpointer, release_session_checkpointer
-from .config import Config
-from .hitl import (
+from easy_agent.backends.shell import _PathTranslatingShell  # noqa: F401  旧导入路径兼容（测试/外部直接 import）
+from easy_agent.backends.context import ContextBackend
+from easy_agent.persistence.checkpoints import get_session_checkpointer, release_session_checkpointer
+from easy_agent.bootstrap.config import Config
+from easy_agent.agent.hitl import (
     EXECUTE_HITL_TOOL_DESCRIPTION,
     HITL_SYSTEM_NOTE,
     HITL_WHEN_PREDICATES,
@@ -30,8 +30,8 @@ from .hitl import (
     execute_description_installed,
     register_execute_description_profiles,
 )
-from .stores import get_agent_store
-from .agent_graph_cache import (
+from easy_agent.persistence.stores import get_agent_store
+from easy_agent.agent.graph_cache import (
     SessionContext,
     build_graph_key,
     config_fingerprint,
@@ -41,19 +41,19 @@ from .agent_graph_cache import (
     model_fingerprint,
     summarization_fingerprint,
 )
-from .agent_backend import _build_backend_for_context
-from .agent_middleware import build_agent_middleware
-from .agent_workspace import (
+from easy_agent.agent.backend import _build_backend_for_context
+from easy_agent.agent.middleware import build_agent_middleware
+from easy_agent.agent.workspace import (
     LONG_TERM_MEMORY_VIRTUAL_PATH,
     AgentWorkspaceMixin,
 )
-from .subagents import DEFAULT_SUBAGENTS
-from .summarization import configured_summarization
-from .logger import AgentLogger
-from .model import create_model, extract_reasoning, resolve_context_length
-from .prompt_guard import assemble_system_prompt
-from .tools.web_search import WEB_SEARCH_SYSTEM_PROMPT
-from .utils.prompt_probe import describe_prompt, prompt_fingerprint
+from easy_agent.agent.subagents import DEFAULT_SUBAGENTS
+from easy_agent.agent.summarization import configured_summarization
+from easy_agent.bootstrap.logger import AgentLogger
+from easy_agent.agent.model import create_model, extract_reasoning, resolve_context_length
+from easy_agent.security.prompt_guard import assemble_system_prompt
+from easy_agent.tools.web_search import WEB_SEARCH_SYSTEM_PROMPT
+from easy_agent.utils.prompt_probe import describe_prompt, prompt_fingerprint
 
 
 logger = logging.getLogger(__name__)
@@ -123,7 +123,7 @@ def build_subagent_specs(
     LoggingMiddleware 只做工具异常兜底，日志前缀使用通用 ``agent``；保留参数
     仅为兼容既有调用方。
     """
-    from .services.logging_middleware import LoggingMiddleware
+    from easy_agent.services.logging_middleware import LoggingMiddleware
 
     specs: list[dict] = []
     for base in DEFAULT_SUBAGENTS:
@@ -144,7 +144,7 @@ def _shared_graph_checkpointer():
     会按 session 创建 ``PersistentMemorySaver``，该对象不能塞进共享图，此时
     由调用方显式降级为按会话建图。
     """
-    from .checkpoints import postgres_checkpointer_active, sqlite_checkpointer_active
+    from easy_agent.persistence.checkpoints import postgres_checkpointer_active, sqlite_checkpointer_active
 
     if not (postgres_checkpointer_active() or sqlite_checkpointer_active()):
         return None
@@ -385,7 +385,7 @@ class EasyAgent(AgentWorkspaceMixin):
         改造前无论工具是否注入，都会把 ``execute`` / ``save_expert`` /
         ``create_scheduled_task`` / ``access_knowledge_original`` 以及 MCP 写工具
         写进 ``interrupt_on``；未注入的名字会被 DeepAgents 静默忽略（T1-14）。
-        现在交给 :func:`easy_agent.hitl.build_interrupt_config` 过滤：注册表只提供
+        现在交给 :func:`easy_agent.agent.hitl.build_interrupt_config` 过滤：注册表只提供
         声明（决策 / 条件谓词 / 顺序），是否进入配置取决于本会话实际工具集。
 
         ``self.mcp_tools`` 实际承载「MCP + 应用注入工具」全集（历史命名），
@@ -457,7 +457,7 @@ class EasyAgent(AgentWorkspaceMixin):
         运行期。无法安全共享时（模型头绑定 session、legacy checkpointer）显式
         降级为按会话建图。
         """
-        from .model import resolve_llm_config
+        from easy_agent.agent.model import resolve_llm_config
 
         actual_llm_cfg = resolve_llm_config(self.config, self.model_name)
         logger.info(
@@ -643,7 +643,7 @@ class EasyAgent(AgentWorkspaceMixin):
         )
 
     def _build_middleware(self) -> list:
-        """构建自定义中间件列表（实现见 :func:`easy_agent.agent_middleware.build_agent_middleware`）。"""
+        """构建自定义中间件列表（实现见 :func:`easy_agent.agent.middleware.build_agent_middleware`）。"""
         return build_agent_middleware(self.config, self.max_steps)
 
     async def run(self, user_input: str) -> str:
@@ -728,7 +728,7 @@ class EasyAgent(AgentWorkspaceMixin):
                                     pass
 
                 elif isinstance(chunk, ToolMessage):
-                    from .services.mcp import _parse_mcp_content
+                    from easy_agent.services.mcp import _parse_mcp_content
 
                     tool_name = getattr(chunk, "name", "") or ""
                     result = _parse_mcp_content(chunk.content) if chunk.content else ""

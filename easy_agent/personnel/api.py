@@ -12,18 +12,18 @@ from fastapi.responses import StreamingResponse
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill
 
-from ..db import Database, get_database
-from ..middleware import get_current_username
-from ..knowledges.core.repository import KnowledgeRepository
-from .excel_import import PersonnelExcelError, parse_personnel_excel
-from .models import (
+from easy_agent.db import Database, get_database
+from easy_agent.middleware import get_current_username
+from easy_agent.knowledges.core.repository import KnowledgeRepository
+from easy_agent.personnel.excel_import import PersonnelExcelError, parse_personnel_excel
+from easy_agent.personnel.models import (
     PersonnelCreateRequest,
     PersonnelImportResponse,
     PersonnelListResponse,
     PersonnelRecord,
     PersonnelUpdateRequest,
 )
-from .repository import (
+from easy_agent.personnel.repository import (
     PersonnelConflictError,
     PersonnelNotFoundError,
     create_personnel,
@@ -32,7 +32,7 @@ from .repository import (
     list_personnel,
     update_personnel,
 )
-from ..knowledge_impl import KnowledgeOperationsRepository
+from easy_agent.knowledge_impl import KnowledgeOperationsRepository
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/personnel", tags=["Personnel"])
@@ -41,7 +41,7 @@ router = APIRouter(prefix="/api/personnel", tags=["Personnel"])
 @router.get("/login-policy")
 def login_policy():
     """Public UI capability flags; no users, credentials or infrastructure data."""
-    from ..services import get_agent_config
+    from easy_agent.services import get_agent_config
     state = get_agent_config()
     policy = getattr(state.get("config"), "personnel", None) if state else None
     return {"self_registration_enabled": bool(getattr(policy, "self_registration_enabled", False))}

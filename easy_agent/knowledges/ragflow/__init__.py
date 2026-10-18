@@ -4,8 +4,8 @@
 base_url 与 api_key 由服务层从配置注入。
 """
 
-from .client import RagflowBinary, RagflowClient
-from .errors import (
+from easy_agent.knowledges.ragflow.client import RagflowBinary, RagflowClient
+from easy_agent.knowledges.ragflow.errors import (
     RagflowAuthenticationError,
     RagflowContractError,
     RagflowError,

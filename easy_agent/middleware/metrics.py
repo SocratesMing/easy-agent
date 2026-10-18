@@ -15,7 +15,7 @@ import logging
 import time
 from typing import Any, Callable
 
-from ..services.metrics import record_http_request
+from easy_agent.services.metrics import record_http_request
 
 logger = logging.getLogger(__name__)
 

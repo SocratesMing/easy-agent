@@ -84,9 +84,9 @@ def test_user_repository_provider_is_shared_from_middleware():
 
     assert get_user_repository is middleware_user_provider
     assert get_user_repository is deps.get_user_repository
-    assert "from ..middleware.auth import (" in source
+    assert "from easy_agent.middleware.auth import (" in source
     assert "get_user_repository," in source
-    assert "from ..middleware import get_current_username" in source
+    assert "from easy_agent.middleware import get_current_username" in source
     assert "Depends(get_database)" not in source
     assert "Annotated[Database" not in source
     assert "def _as_user_repository(" not in source
@@ -104,7 +104,7 @@ def test_remaining_domain_routes_use_repository_provider():
         # 批次 4：provider 只在 api.deps 定义，API 模块只 re-export。
         assert f"def {provider}(" not in source, filename
         assert getattr(module, provider) is getattr(deps, provider), filename
-        assert "from .deps import" in source, filename
+        assert "from easy_agent.api.deps import" in source, filename
 
         annotation = f"db: Annotated[{repo_name}, Depends({provider})]"
         assert source.count(annotation) == expected_routes, filename

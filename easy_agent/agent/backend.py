@@ -10,11 +10,11 @@ from pathlib import Path
 
 from deepagents.backends import CompositeBackend, LocalShellBackend
 
-from .agent_graph_cache import SessionContext
-from .backends.langsmith_sandbox import create_langsmith_backend, sandbox_mode
-from .backends.shell import _PathTranslatingShell
-from .config import Config
-from .fs_safety import _check_external_dir_safety
+from easy_agent.agent.graph_cache import SessionContext
+from easy_agent.backends.langsmith_sandbox import create_langsmith_backend, sandbox_mode
+from easy_agent.backends.shell import _PathTranslatingShell
+from easy_agent.bootstrap.config import Config
+from easy_agent.sandboxing.fs_safety import _check_external_dir_safety
 
 # 纯移动：沿用拆分前的 logger 名称，保持日志路由/过滤行为不变。
 logger = logging.getLogger("easy_agent.agent")

@@ -13,9 +13,9 @@ from langchain_core.tools import BaseTool
 from apscheduler.triggers.cron import CronTrigger
 from pydantic import BaseModel, Field
 
-from ..db import get_database
-from ..models.db import ScheduledTaskModel
-from ..utils.task_logger import log_task_event
+from easy_agent.db import get_database
+from easy_agent.models.db import ScheduledTaskModel
+from easy_agent.utils.task_logger import log_task_event
 
 logger = logging.getLogger("easy_agent.tools.scheduled_task")
 
@@ -65,7 +65,7 @@ class CreateScheduledTaskTool(BaseTool):
 
         # 注册到 scheduler
         try:
-            from ..services.scheduler import get_scheduler, register_scheduled_task
+            from easy_agent.services.scheduler import get_scheduler, register_scheduled_task
             get_scheduler()  # 确保已初始化
         except RuntimeError as e:
             return f"错误：调度器未初始化：{e}"

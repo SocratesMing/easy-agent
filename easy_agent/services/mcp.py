@@ -8,16 +8,16 @@ import asyncio
 import json
 import logging
 import os
-from ..env import env_str
+from easy_agent.bootstrap.env import env_str
 import shutil
 from pathlib import Path
 from typing import Any
 
 from langchain_mcp_adapters.client import MultiServerMCPClient
 
-from easy_agent.config import Config, _expand_env_recursive
-from . import mcp_sessions
-from .mcp_evidence import wrap_mcp_tools
+from easy_agent.bootstrap.config import Config, _expand_env_recursive
+from easy_agent.services import mcp_sessions
+from easy_agent.services.mcp_evidence import wrap_mcp_tools
 
 logger = logging.getLogger("easy-agent")
 

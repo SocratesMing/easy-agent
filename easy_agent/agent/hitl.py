@@ -21,7 +21,7 @@ from collections.abc import Callable, Iterable, Mapping
 from deepagents.middleware.filesystem import EXECUTE_TOOL_DESCRIPTION
 from langchain.agents.middleware import InterruptOnConfig, ToolCallRequest
 
-from .tools.registry import (
+from easy_agent.tools.registry import (
     ToolSpec,
     builtin_tool_names,
     default_interrupt_tool_names,

@@ -318,7 +318,7 @@ def run_landlocked(
     from pathlib import Path as _Path
 
     try:
-        import easy_agent.landlock as _ll
+        import easy_agent.sandboxing.landlock as _ll
     except Exception as exc:  # noqa: BLE001
         return ExecuteResponse(
             output=f"Error: Landlock 模块不可用，已拒绝执行命令: {exc}",

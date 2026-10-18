@@ -15,7 +15,7 @@ from deepagents.middleware.filesystem import (
     FilesystemPermission,
 )
 
-from .fs_safety import _check_external_dir_safety
+from easy_agent.sandboxing.fs_safety import _check_external_dir_safety
 
 # 纯移动：沿用拆分前的 logger 名称，保持日志路由/过滤行为不变。
 logger = logging.getLogger("easy_agent.agent")
@@ -103,7 +103,7 @@ class AgentWorkspaceMixin:
             LONG_TERM_MEMORY_VIRTUAL_PATH,
         ]
         if self._uploads_manifest_enabled():
-            from .services.session_uploads import MANIFEST_FILENAME, UPLOADS_DIR_NAME
+            from easy_agent.services.session_uploads import MANIFEST_FILENAME, UPLOADS_DIR_NAME
 
             sources.append(
                 f"{self.workspace_virtual_path}/{UPLOADS_DIR_NAME}/{MANIFEST_FILENAME}"

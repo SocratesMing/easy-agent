@@ -33,15 +33,15 @@ from typing import Any, Literal, Optional
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, Field
 
-from ..db import Database, get_database
-from ..db.expert_store import (
+from easy_agent.db import Database, get_database
+from easy_agent.db.expert_store import (
     STATUS_ACTIVE,
     STATUS_BUILDING,
     STATUS_FAILED,
     ExpertStore,
     normalize_name_cn,
 )
-from ..services.expert_service import (
+from easy_agent.services.expert_service import (
     MAX_DESCRIPTION_LEN,
     build_expert_ids,
     generate_expert_config,
@@ -183,7 +183,7 @@ def resolve_owned_expert(db: Database, username: str, expert_agent_id: str):
 def _agent_config():
     """运行期配置（``{"config": Config, ...}``）；未初始化时返回 None。"""
     try:
-        from ..runtime_config import get_runtime_agent_config
+        from easy_agent.bootstrap.runtime_config import get_runtime_agent_config
 
         cfg = get_runtime_agent_config()
         if cfg and cfg.get("config"):
@@ -319,7 +319,7 @@ class SaveExpertTool(BaseTool):
             ) or pick_tag_id(structured.get("tag_id", ""), tags)
             return structured, "structured"
 
-        from ..model import create_model
+        from easy_agent.agent.model import create_model
 
         llm = create_model(config, self.config_model or None, self.session_id or None)
         generated = await generate_expert_config(
@@ -499,7 +499,7 @@ class SaveExpertTool(BaseTool):
 
         # 该用户所有缓存 Agent 失效，下次请求用新版本提示词重建
         try:
-            from ..runtime_config import invalidate_user_agents
+            from easy_agent.bootstrap.runtime_config import invalidate_user_agents
 
             invalidate_user_agents(self.username)
         except Exception as exc:  # noqa: BLE001

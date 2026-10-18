@@ -20,8 +20,8 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from ..db.repositories.stream_events import append_stream_event
-from .sse import is_terminal_event
+from easy_agent.db.repositories.stream_events import append_stream_event
+from easy_agent.services.sse import is_terminal_event
 
 logger = logging.getLogger(__name__)
 
@@ -265,7 +265,7 @@ class StreamEventWriter:
         db = self._db
         if db is None:
             # 延迟解析进程级 Database；不主动 init，避免测试/工具导入时产生副作用。
-            from ..db import database as database_module
+            from easy_agent.db import database as database_module
 
             db = database_module._db_instance
         self._resolved_db = db

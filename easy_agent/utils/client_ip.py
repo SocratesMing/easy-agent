@@ -7,7 +7,7 @@ Ingress / kube-proxy 场景下 ``X-Forwarded-For`` 可被客户端伪造。
 from __future__ import annotations
 
 import os
-from ..env import env_bool
+from easy_agent.bootstrap.env import env_bool
 
 from fastapi import Request
 

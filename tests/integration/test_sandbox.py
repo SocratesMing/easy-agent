@@ -1,4 +1,4 @@
-"""Tests for the shell-command sandbox (``easy_agent.sandbox``).
+"""Tests for the shell-command sandbox (``easy_agent.sandboxing.sandbox``).
 
 Covers:
 * the best-effort path allowlist used when bwrap is unavailable, and
@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from easy_agent.sandbox import (
+from easy_agent.sandboxing.sandbox import (
     _path_allowed,
     _venv_prefix,
     bwrap_usable,

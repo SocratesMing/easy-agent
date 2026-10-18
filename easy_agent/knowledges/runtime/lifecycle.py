@@ -13,10 +13,10 @@ from pathlib import Path
 from fastapi import FastAPI
 from starlette.concurrency import run_in_threadpool
 
-from ..core.config import KnowledgeConfig, KnowledgeConfigError
-from ..ragflow import RagflowClient
-from ..service import LocalOriginalStore
-from .worker import KnowledgeParsePollWorker, KnowledgePurgeWorker
+from easy_agent.knowledges.core.config import KnowledgeConfig, KnowledgeConfigError
+from easy_agent.knowledges.ragflow import RagflowClient
+from easy_agent.knowledges.service import LocalOriginalStore
+from easy_agent.knowledges.runtime.worker import KnowledgeParsePollWorker, KnowledgePurgeWorker
 
 logger = logging.getLogger(__name__)
 

@@ -39,7 +39,7 @@ def resolve_public_mcp_path() -> Path | None:
     ``~/.easy-agent/config`` → 包内 ``config``），与 config.yaml / 全局 mcp.json
     的解析保持一致，保证源码运行与安装运行都能命中。
     """
-    from ..config import Config
+    from easy_agent.bootstrap.config import Config
 
     return Config.find_config_file(PUBLIC_MCP_FILENAME)
 
@@ -154,8 +154,8 @@ def catalog_connectors(username: str, config: Any = None) -> dict[str, Any]:
           "path": "<用户 mcp.json 绝对路径>",
         }
     """
-    from ..config import Config
-    from .mcp import load_user_mcp_config
+    from easy_agent.bootstrap.config import Config
+    from easy_agent.services.mcp import load_user_mcp_config
 
     entries = load_catalog()
     # 只看用户自己的 mcp.json（不回退全局）：全局那份现在是公共连接器目录，
@@ -260,7 +260,7 @@ def resolve_connector_servers(
     """
     if not names:
         return [], []
-    from .mcp import load_user_mcp_config
+    from easy_agent.services.mcp import load_user_mcp_config
 
     user_servers = load_user_mcp_config(username, config) or {}
     # 目录展示名 -> id：同名多条时全部保留（调用方按名字已无法区分）

@@ -11,12 +11,12 @@ from dataclasses import dataclass
 
 from fastapi import HTTPException, Request
 
-from ...db import Database
-from ...services.sse import SSEEvent
-from ..api import get_knowledge_principal
-from ..core.config import KnowledgeConfig
-from ..core.repository import KnowledgeRepository
-from ..service import KnowledgeService, KnowledgeServiceError
+from easy_agent.db import Database
+from easy_agent.services.sse import SSEEvent
+from easy_agent.knowledges.api import get_knowledge_principal
+from easy_agent.knowledges.core.config import KnowledgeConfig
+from easy_agent.knowledges.core.repository import KnowledgeRepository
+from easy_agent.knowledges.service import KnowledgeService, KnowledgeServiceError
 
 
 _KNOWLEDGE_CHAT_TITLE_PREFIX = "[知识库问答]"

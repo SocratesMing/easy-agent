@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """裸 ``os.getenv`` / ``os.environ.get`` 新增检测（E2）。
 
-统一读取入口是 ``easy_agent.env``（env_str / env_bool / env_int / env_list）。
+统一读取入口是 ``easy_agent.bootstrap.env``（env_str / env_bool / env_int / env_list）。
 历史代码里仍有一批裸读，直接改语义风险大，因此用基线冻结：
 
 * 基线内、计数不变的裸读 -> 通过；
@@ -14,7 +14,7 @@
     python scripts/quality/check_env_usage.py --update   # 开发者新增白名单后刷新基线
 
 白名单文件：``scripts/quality/bare_getenv_whitelist.json``。新增白名单必须写清原因；
-能迁移到 ``easy_agent.env`` 的不要再加白名单。
+能迁移到 ``easy_agent.bootstrap.env`` 的不要再加白名单。
 """
 
 from __future__ import annotations
@@ -94,7 +94,7 @@ def write_baseline(current: dict[str, dict[str, int]]) -> None:
     payload = {
         "_comment": (
             "E2 裸 os.getenv 基线：每条记录文件 + 源码行 + 次数。"
-            "新增条目必须写清原因；优先迁移到 easy_agent.env。"
+            "新增条目必须写清原因；优先迁移到 easy_agent.bootstrap.env。"
         ),
         "allowed": current,
     }
@@ -124,7 +124,7 @@ def main(argv: list[str] | None = None) -> int:
     if errors:
         print(
             f"[FAIL] 检测到 {len(errors)} 处新增裸 os.getenv；"
-            "请改用 easy_agent.env（env_str/env_bool/env_int/env_list），"
+            "请改用 easy_agent.bootstrap.env（env_str/env_bool/env_int/env_list），"
             "确有必要再执行 --update 并说明原因。",
             file=sys.stderr,
         )

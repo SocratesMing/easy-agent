@@ -2,7 +2,7 @@
 
 import logging
 
-from easy_agent.initialization.log import _TimeSizeRotatingFileHandler
+from easy_agent.bootstrap.initialization.log import _TimeSizeRotatingFileHandler
 
 
 def test_size_rotation_still_works_and_tracks_bytes(tmp_path):

@@ -27,10 +27,10 @@ try:
 except ImportError:  # pragma: no cover - 环境缺依赖时由运行期报错兜底
     pymysql = None  # type: ignore[assignment]
 
-from ...db.database import Database
-from ..core.config import CatalogSyncConfig, KnowledgeConfig
-from ..core.models import KnowledgeBaseStatus
-from ..core.repository import KnowledgeRepository
+from easy_agent.db.database import Database
+from easy_agent.knowledges.core.config import CatalogSyncConfig, KnowledgeConfig
+from easy_agent.knowledges.core.models import KnowledgeBaseStatus
+from easy_agent.knowledges.core.repository import KnowledgeRepository
 
 logger = logging.getLogger(__name__)
 

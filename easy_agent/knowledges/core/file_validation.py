@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import BinaryIO
 from zipfile import BadZipFile, ZipFile
 
-from .config import UploadSecurityConfig
+from easy_agent.knowledges.core.config import UploadSecurityConfig
 
 logger = logging.getLogger(__name__)
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from easy_agent.agent_graph_cache import SessionContext
+from easy_agent.agent.graph_cache import SessionContext
 from easy_agent.services.streaming.orchestrator import pump_stream
 
 

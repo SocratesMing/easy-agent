@@ -5,7 +5,7 @@ import os
 
 from fastapi import APIRouter, Body, Query
 
-from ..config import Config
+from easy_agent.bootstrap.config import Config
 
 logger = logging.getLogger("easy_agent.prompts")
 

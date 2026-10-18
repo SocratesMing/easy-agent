@@ -74,7 +74,7 @@ from easy_agent.db import get_database, init_database  # noqa: E402
 from easy_agent.middleware import get_current_username  # noqa: E402
 import easy_agent.db as _db_mod  # noqa: E402
 import easy_agent.db.database as _db_impl  # noqa: E402
-import easy_agent.config as _config_mod  # noqa: E402
+import easy_agent.bootstrap.config as _config_mod  # noqa: E402
 import easy_agent.api.files as _files_mod  # noqa: E402
 
 
@@ -153,7 +153,7 @@ def client(db, monkeypatch):
 
     import easy_agent.agent as _agent_mod
     import easy_agent.app as _app_mod
-    import easy_agent.model as _model_mod
+    import easy_agent.agent.model as _model_mod
     import easy_agent.services.agent_manager as _am_mod
     import easy_agent.services.streaming as _stream_mod
 

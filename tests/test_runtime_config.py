@@ -2,8 +2,8 @@
 
 from types import SimpleNamespace
 
-from easy_agent import runtime_config
-from easy_agent.config import Config
+from easy_agent.bootstrap import runtime_config
+from easy_agent.bootstrap.config import Config
 
 
 def _cfg(tmp_path):
@@ -40,7 +40,7 @@ def test_explicit_config_still_wins(tmp_path):
 
 
 def test_agent_invalidator_registry():
-    from easy_agent import runtime_config
+    from easy_agent.bootstrap import runtime_config
 
     calls = []
     runtime_config.set_agent_invalidator(lambda username: calls.append(username) or 7)

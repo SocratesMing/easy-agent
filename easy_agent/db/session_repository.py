@@ -17,12 +17,12 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from ..models.db import SessionModel
-from .repositories import files as files_repo
-from .repositories import sessions as sessions_repo
+from easy_agent.models.db import SessionModel
+from easy_agent.db.repositories import files as files_repo
+from easy_agent.db.repositories import sessions as sessions_repo
 
 if TYPE_CHECKING:
-    from .database import Database
+    from easy_agent.db.database import Database
 
 
 class SessionRepository:
@@ -84,7 +84,7 @@ class SessionRepository:
         委托 ``utils.session.get_owned_session``，保持与现有 API 完全一致的
         错误语义（404 + "会话不存在"，不泄露会话是否存在）。
         """
-        from ..utils.session import get_owned_session as _get_owned_session
+        from easy_agent.utils.session import get_owned_session as _get_owned_session
 
         return _get_owned_session(self._db, session_id, username)
 

@@ -32,7 +32,7 @@ dependencies = [
 ]
 
 [project.scripts]
-easy-web = "easy_agent.web_runner:run_web"
+easy-web = "easy_agent.bootstrap.web_runner:run_web"
 # NOTE: 历史上的 easy-knowledge-worker 指向不存在的 easy_agent.knowledge.worker，
 # 已移除；知识库 worker 由应用 lifespan（knowledges.runtime.lifecycle）托管。
 

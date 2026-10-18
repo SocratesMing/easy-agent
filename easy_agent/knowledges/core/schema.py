@@ -13,12 +13,12 @@ import re
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:  # 仅类型注解使用，避免 db.database <-> schema 的模块级循环
-    from ...db.database import Database
+    from easy_agent.db.database import Database
 
 logger = logging.getLogger(__name__)
 
 # 注册到 Database.init_tables()（schema 注册制，避免 db <-> knowledges 循环）。
-from ...db.schema_registry import register_schema_initializer  # noqa: E402
+from easy_agent.db.schema_registry import register_schema_initializer  # noqa: E402
 
 # 目录树同步要求同一知识库内不同父节点下允许同名子文件夹
 # （如 2026-09-12/中金公司 与 2026-09-13/中金公司），唯一约束需为

@@ -11,9 +11,9 @@ from typing import Annotated, Optional
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse
 
-from ..db.repositories.file_repository import FileRepository
-from ..db.repositories.user_repository import UserRepository
-from ..models.api import (
+from easy_agent.db.repositories.file_repository import FileRepository
+from easy_agent.db.repositories.user_repository import UserRepository
+from easy_agent.models.api import (
     DeleteFileResponse,
     FileInfo,
     FileListResponse,
@@ -21,19 +21,19 @@ from ..models.api import (
     SessionGeneratedFileInfo,
     UploadFileResponse,
 )
-from ..middleware import get_current_username
-from ..middleware.auth import get_user_repository
-from .deps import (  # noqa: F401 - 旧模块级名字 re-export
+from easy_agent.middleware import get_current_username
+from easy_agent.middleware.auth import get_user_repository
+from easy_agent.api.deps import (  # noqa: F401 - 旧模块级名字 re-export
     as_file_repository as _as_file_repository,
     get_file_repository,
 )
-from ..utils import parse_file_content
-from ..config import Config
-from ..services.session_uploads import (
+from easy_agent.utils import parse_file_content
+from easy_agent.bootstrap.config import Config
+from easy_agent.services.session_uploads import (
     UploadTooLargeError,
     save_upload_streaming,
 )
-from ..services.upload_storage import (
+from easy_agent.services.upload_storage import (
     UploadStorageError,
     UploadStoreAccessDenied,
     UploadStoreNotFound,
@@ -268,7 +268,7 @@ async def list_files(
     upload_files = []
     if store_mode_enabled():
         # store 模式：本地 uploads 已不保留副本，资产页从 LangGraph Store 列举。
-        from ..services.upload_storage import (
+        from easy_agent.services.upload_storage import (
             UploadStorageError,
             list_stored_uploads,
         )
@@ -506,11 +506,11 @@ async def preview_file(
     username = None
     auth_header = request.headers.get("Authorization")
     if auth_header and auth_header.startswith("Bearer "):
-        from ..middleware.auth import verify_token_sso
+        from easy_agent.middleware.auth import verify_token_sso
 
         username = verify_token_sso(auth_header[7:], user_repo)
     if not username and token:
-        from ..middleware.auth import verify_token_sso
+        from easy_agent.middleware.auth import verify_token_sso
 
         username = verify_token_sso(token, user_repo)
     if not username:
@@ -548,7 +548,7 @@ async def preview_file(
     # 目标格式转换（如 PPT/XLS/DOC → PDF）
     if target and target.lower() == "pdf":
         try:
-            from ..services.document_convert import convert_to_pdf
+            from easy_agent.services.document_convert import convert_to_pdf
             pdf_path = await asyncio.to_thread(convert_to_pdf, full_path, "pdf")
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))

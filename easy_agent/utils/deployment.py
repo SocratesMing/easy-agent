@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import os
-from ..env import env_int
+from easy_agent.bootstrap.env import env_int
 
 
 def detect_worker_count() -> int:

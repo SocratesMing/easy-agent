@@ -547,10 +547,17 @@ def check_sessions_source(source: str, path: str = "<sessions>") -> list[Violati
 def _database_repo_aliases(tree: ast.AST) -> set[str]:
     aliases: set[str] = set()
     for node in ast.walk(tree):
-        if not isinstance(node, ast.ImportFrom) or node.level < 1:
+        if not isinstance(node, ast.ImportFrom):
             continue
         module = node.module or ""
-        if module == "" or module.split(".")[-1] == "repositories":
+        # 兼容相对导入（from .repositories import x）与重构后的绝对导入
+        # （from easy_agent.db.repositories import x）。
+        is_repositories = (
+            module == ""
+            or module.split(".")[-1] == "repositories"
+            or module.startswith("easy_agent.db.repositories")
+        )
+        if is_repositories:
             aliases.update(alias.asname or alias.name for alias in node.names)
     return aliases
 

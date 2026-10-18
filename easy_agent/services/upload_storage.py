@@ -40,9 +40,9 @@ from pathlib import Path
 
 from deepagents.backends import StoreBackend
 
-from ..config import Config
-from ..env import env_str
-from ..stores import get_agent_store
+from easy_agent.bootstrap.config import Config
+from easy_agent.bootstrap.env import env_str
+from easy_agent.persistence.stores import get_agent_store
 
 logger = logging.getLogger("easy_agent.upload_storage")
 

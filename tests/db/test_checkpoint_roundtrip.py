@@ -1,5 +1,5 @@
-from easy_agent import checkpoints
-from easy_agent.checkpoints import PersistentMemorySaver, get_session_checkpointer
+from easy_agent.persistence import checkpoints
+from easy_agent.persistence.checkpoints import PersistentMemorySaver, get_session_checkpointer
 from easy_agent.db.database import Database
 
 

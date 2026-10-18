@@ -9,12 +9,12 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from ...models.db import ScheduledTaskModel, ScheduledTaskRunModel
-from . import scheduled_tasks as scheduled_tasks_repo
-from . import sessions as sessions_repo
+from easy_agent.models.db import ScheduledTaskModel, ScheduledTaskRunModel
+from easy_agent.db.repositories import scheduled_tasks as scheduled_tasks_repo
+from easy_agent.db.repositories import sessions as sessions_repo
 
 if TYPE_CHECKING:
-    from ..database import Database
+    from easy_agent.db.database import Database
 
 
 class ScheduledTaskRepository:

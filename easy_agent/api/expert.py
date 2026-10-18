@@ -27,32 +27,32 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from ..db.repositories.expert_repository import ExpertRepository
-from ..db.expert_store import (
+from easy_agent.db.repositories.expert_repository import ExpertRepository
+from easy_agent.db.expert_store import (
     STATUS_BUILDING,
 )
-from ..middleware import get_current_username
-from ..models.api import ChatRequest
-from ..services import (
+from easy_agent.middleware import get_current_username
+from easy_agent.models.api import ChatRequest
+from easy_agent.services import (
     chat_stream_generator,
     get_or_create_agent_for_session,
     invalidate_user_agents,
 )
-from ..services import public_expert_service, skill_library
-from ..services import session_uploads as file_context
-from ..services.expert_service import (
+from easy_agent.services import public_expert_service, skill_library
+from easy_agent.services import session_uploads as file_context
+from easy_agent.services.expert_service import (
     build_expert_ids,
     remove_expert_dir,
     validate_create_params,
 )
-from ..utils import parse_file_content
-from ..utils.prompt_probe import describe_prompt
-from .chat import _detached_event_stream, create_new_session, generate_session_title
-from .deps import (  # noqa: F401 - 旧模块级名字 re-export
+from easy_agent.utils import parse_file_content
+from easy_agent.utils.prompt_probe import describe_prompt
+from easy_agent.api.chat import _detached_event_stream, create_new_session, generate_session_title
+from easy_agent.api.deps import (  # noqa: F401 - 旧模块级名字 re-export
     as_expert_repository as _as_expert_repository,
     get_expert_repository,
 )
-from .expert_helpers import (
+from easy_agent.api.expert_helpers import (
     _as_str_list,
     _current_user_id,
     _ensure_name_available,

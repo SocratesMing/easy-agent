@@ -1,6 +1,6 @@
 """PersistentMemorySaver 持久化裁剪测试（PERF-03）。"""
 
-from easy_agent.checkpoints import (
+from easy_agent.persistence.checkpoints import (
     _PERSIST_MAX_CHECKPOINTS_PER_THREAD,
     _PERSIST_MAX_THREADS,
     PersistentMemorySaver,

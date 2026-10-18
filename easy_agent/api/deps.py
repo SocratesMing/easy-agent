@@ -19,14 +19,14 @@ from typing import Annotated
 
 from fastapi import Depends
 
-from ..db import get_database
-from ..db.repositories.chat_repository import ChatRepository
-from ..db.repositories.expert_repository import ExpertRepository
-from ..db.repositories.file_repository import FileRepository
-from ..db.repositories.scheduled_task_repository import ScheduledTaskRepository
-from ..db.repositories.user_repository import UserRepository
-from ..db.session_repository import SessionRepository
-from ..middleware.auth import get_user_repository
+from easy_agent.db import get_database
+from easy_agent.db.repositories.chat_repository import ChatRepository
+from easy_agent.db.repositories.expert_repository import ExpertRepository
+from easy_agent.db.repositories.file_repository import FileRepository
+from easy_agent.db.repositories.scheduled_task_repository import ScheduledTaskRepository
+from easy_agent.db.repositories.user_repository import UserRepository
+from easy_agent.db.session_repository import SessionRepository
+from easy_agent.middleware.auth import get_user_repository
 
 __all__ = [
     "as_chat_repository",

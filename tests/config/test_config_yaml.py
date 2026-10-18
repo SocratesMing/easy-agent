@@ -1,4 +1,4 @@
-from easy_agent.config import Config, get_missing_env_vars
+from easy_agent.bootstrap.config import Config, get_missing_env_vars
 
 
 def test_config_from_yaml_expands_environment_placeholders(tmp_path, monkeypatch):

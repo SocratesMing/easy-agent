@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from easy_agent.hitl import DEFAULT_INTERRUPT_TOOLS, looks_like_mutating_tool
+from easy_agent.agent.hitl import DEFAULT_INTERRUPT_TOOLS, looks_like_mutating_tool
 from easy_agent.tools import registry
 from easy_agent.tools.expert_writer import create_save_expert_tool
 from easy_agent.tools.registry import (

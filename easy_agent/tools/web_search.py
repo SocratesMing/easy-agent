@@ -35,7 +35,7 @@ import httpx
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, Field
 
-from ..config import DEFAULT_WEB_SEARCH_API_URLS
+from easy_agent.bootstrap.config import DEFAULT_WEB_SEARCH_API_URLS
 
 logger = logging.getLogger("easy_agent.tools.web_search")
 

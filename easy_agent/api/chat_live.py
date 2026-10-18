@@ -14,16 +14,16 @@ from typing import Annotated
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 
-from ..db.repositories.chat_repository import ChatRepository
-from ..db.repositories.stream_events import list_stream_events
-from .deps import (
+from easy_agent.db.repositories.chat_repository import ChatRepository
+from easy_agent.db.repositories.stream_events import list_stream_events
+from easy_agent.api.deps import (
     as_chat_repository as _as_chat_repository,
     get_chat_repository,
 )
-from ..middleware import get_current_username
-from ..services.session_runtime import is_stream_active
-from ..services.sse import is_terminal_event
-from ..services.sse_emitter import SSEEmitter
+from easy_agent.middleware import get_current_username
+from easy_agent.services.session_runtime import is_stream_active
+from easy_agent.services.sse import is_terminal_event
+from easy_agent.services.sse_emitter import SSEEmitter
 
 logger = logging.getLogger(__name__)
 

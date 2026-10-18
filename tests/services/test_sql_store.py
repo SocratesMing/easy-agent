@@ -1,7 +1,7 @@
 """SqlStore filter/分页语义测试（FW-11）。"""
 
 from easy_agent.db.database import Database
-from easy_agent.stores import SqlStore
+from easy_agent.persistence.stores import SqlStore
 
 
 def _store(tmp_path) -> SqlStore:

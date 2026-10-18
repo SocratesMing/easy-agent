@@ -33,7 +33,7 @@
 创建 `tests/test_model.py`：
 
 ```python
-"""Characterization tests for easy_agent.model.
+"""Characterization tests for easy_agent.agent.model.
 
 Pin current behavior of model creation, reasoning extraction and image
 stripping so the Phase 1 structural refactor can be verified to preserve
@@ -51,7 +51,7 @@ from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import HumanMessage
 from langchain_openai import ChatOpenAI
 
-from easy_agent.config import (
+from easy_agent.bootstrap.config import (
     AgentConfig,
     Config,
     LLMConfig,
@@ -59,7 +59,7 @@ from easy_agent.config import (
     RetryConfig,
     ToolsConfig,
 )
-from easy_agent.model import (
+from easy_agent.agent.model import (
     ReasoningChatOpenAI,
     create_model,
     extract_reasoning,
@@ -206,7 +206,7 @@ git commit -m "test(model): add characterization tests for model creation flow"
 ```python
 class TestAnthropicConstants:
     def test_constants_exist_and_match_previous_values(self):
-        from easy_agent.model import (
+        from easy_agent.agent.model import (
             ANTHROPIC_MAX_TOKENS,
             ANTHROPIC_THINKING_BUDGET_TOKENS,
         )
@@ -283,7 +283,7 @@ git commit -m "refactor(model): extract anthropic thinking/max_tokens to named c
 ```python
 class TestResolveLlmConfig:
     def test_resolves_named_model(self):
-        from easy_agent.model import resolve_llm_config
+        from easy_agent.agent.model import resolve_llm_config
         config = _make_config(protocol="anthropic", supports_vision=True)
         cfg = resolve_llm_config(config, "m")
         assert cfg.provider == "p"
@@ -293,12 +293,12 @@ class TestResolveLlmConfig:
         assert cfg.supports_vision is True
 
     def test_none_falls_back_to_active(self):
-        from easy_agent.model import resolve_llm_config
+        from easy_agent.agent.model import resolve_llm_config
         config = _make_config(protocol="openai")
         assert resolve_llm_config(config, None) is config.llm
 
     def test_unknown_model_falls_back_to_active(self):
-        from easy_agent.model import resolve_llm_config
+        from easy_agent.agent.model import resolve_llm_config
         config = _make_config(protocol="openai")
         assert resolve_llm_config(config, "nope") is config.llm
 ```
@@ -358,7 +358,7 @@ Run: `pytest tests/test_model.py -v`
 Expected: PASS
 
 补充导入烟雾测试（确保 agent.py 仍可导入）：
-Run: `python -c "from easy_agent.agent import EasyAgent; from easy_agent.model import resolve_llm_config; print('ok')"`
+Run: `python -c "from easy_agent.agent import EasyAgent; from easy_agent.agent.model import resolve_llm_config; print('ok')"`
 Expected: 输出 `ok`
 
 - [ ] **Step 6: Commit**
@@ -434,7 +434,7 @@ class ReasoningChatOpenAI(ChatOpenAI):
 Run: `pytest tests/test_model.py -v`
 Expected: PASS（行为未变）
 
-Run: `python -c "from easy_agent.model import ReasoningChatOpenAI; print('ok')"`
+Run: `python -c "from easy_agent.agent.model import ReasoningChatOpenAI; print('ok')"`
 Expected: 输出 `ok`
 
 - [ ] **Step 3: Commit**
@@ -500,7 +500,7 @@ Expected: 全部 PASS
 
 - [ ] **Step 2: 导入与签名回归烟雾测试**
 
-Run: `python -c "from easy_agent.model import create_model, resolve_llm_config, ReasoningChatOpenAI, ANTHROPIC_THINKING_BUDGET_TOKENS, ANTHROPIC_MAX_TOKENS; from easy_agent.agent import EasyAgent; print('ok')"`
+Run: `python -c "from easy_agent.agent.model import create_model, resolve_llm_config, ReasoningChatOpenAI, ANTHROPIC_THINKING_BUDGET_TOKENS, ANTHROPIC_MAX_TOKENS; from easy_agent.agent import EasyAgent; print('ok')"`
 Expected: 输出 `ok`（确认公开符号可导入、agent.py 仍可导入）
 
 - [ ] **Step 3: 残留私有引用检查**

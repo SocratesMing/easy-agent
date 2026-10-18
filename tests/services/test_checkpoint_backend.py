@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from easy_agent import checkpoints as ck
+from easy_agent.persistence import checkpoints as ck
 
 DEFAULT = ck.DEFAULT_SQLITE_PATH
 PG_URI = "postgresql://user:password@db:5432/agent"

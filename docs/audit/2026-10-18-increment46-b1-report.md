@@ -145,7 +145,7 @@ import graph: 209 modules, 458 internal edges, 1 SCC(s) / 16 modules
 [check-scc] OK — 实际 SCC 与白名单完全一致
 ```
 
-说明：B1 新增的 `easy_agent.checkpoints` / `easy_agent.stores` 不在 SCC 中；`app.py` 对二者的 import 位于 lifespan 函数内，`checkpoints.py` 对 `utils.deployment` 的 import 为函数内延迟导入，不会新增环。复核期间工作区其他并行改动一度让 `knowledge-chat-scheduler-core` 环变化，最终已收敛并通过白名单校验。
+说明：B1 新增的 `easy_agent.persistence.checkpoints` / `easy_agent.persistence.stores` 不在 SCC 中；`app.py` 对二者的 import 位于 lifespan 函数内，`checkpoints.py` 对 `utils.deployment` 的 import 为函数内延迟导入，不会新增环。复核期间工作区其他并行改动一度让 `knowledge-chat-scheduler-core` 环变化，最终已收敛并通过白名单校验。
 
 ## 7. 风险
 

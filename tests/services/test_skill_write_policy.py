@@ -8,7 +8,7 @@ deepagents 的 ``_check_fs_permission`` 完成（按列表顺序取第一条命�
 import pytest
 
 from easy_agent.agent import EasyAgent
-from easy_agent.config import Config
+from easy_agent.bootstrap.config import Config
 
 # 框架私有函数：权限匹配语义（deny/allow、glob 方言）由它决定，这里直接锁定行为
 _fs = pytest.importorskip("deepagents.middleware.filesystem")

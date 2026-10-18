@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from easy_agent.config import Config, UploadLimitsConfig
+from easy_agent.bootstrap.config import Config, UploadLimitsConfig
 
 MB = 1024 * 1024
 

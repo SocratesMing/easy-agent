@@ -3,7 +3,7 @@
 import asyncio
 import logging
 import os
-from .env import env_bool
+from easy_agent.bootstrap.env import env_bool
 import platform
 import sys
 import time
@@ -12,7 +12,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 
-from .initialization import initialize_runtime
+from easy_agent.bootstrap.initialization import initialize_runtime
 
 runtime_initialization = initialize_runtime()
 
@@ -22,16 +22,16 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from .middleware import get_current_username
-from .middleware.metrics import MetricsMiddleware
-from .middleware.rate_limit import RateLimitMiddleware
+from easy_agent.middleware import get_current_username
+from easy_agent.middleware.metrics import MetricsMiddleware
+from easy_agent.middleware.rate_limit import RateLimitMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from langchain_core.messages import HumanMessage
 from starlette.concurrency import run_in_threadpool
 
-from .config import AgentConfig
-from .db import init_database
-from .knowledge_impl import (
+from easy_agent.bootstrap.config import AgentConfig
+from easy_agent.db import init_database
+from easy_agent.knowledge_impl import (
     KNOWLEDGE_IMPL,
     LegacyHostRoutes,
     KnowledgeOperationsRepository,
@@ -44,24 +44,24 @@ from .knowledge_impl import (
     startup_catalog_sync,
     startup_knowledge,
 )
-from .knowledge_impl import knowledge_router
-from .personnel import router as personnel_router
-from .model import create_model
-from .models.api import HealthResponse
-from .services import (
+from easy_agent.knowledge_impl import knowledge_router
+from easy_agent.personnel import router as personnel_router
+from easy_agent.agent.model import create_model
+from easy_agent.models.api import HealthResponse
+from easy_agent.services import (
     drain_stream_tasks,
     flush_all_stream_events,
     get_agent_config,
     init_agent_config,
 )
-from .services import init_scheduler, shutdown_scheduler, reload_all_tasks
-from .services.prompt_loader import (
+from easy_agent.services import init_scheduler, shutdown_scheduler, reload_all_tasks
+from easy_agent.services.prompt_loader import (
     configure_prompts_dir,
     get_prompts_dir,
     load_system_prompt,
 )
-from .skills import find_skills_root, discover_skills, validate_skills
-from .api import (
+from easy_agent.agent.skills import find_skills_root, discover_skills, validate_skills
+from easy_agent.api import (
     chat_router,
     sessions_router,
     files_router,
@@ -78,7 +78,7 @@ from .api import (
 # Web Terminal 依赖 pty（POSIX 专用），Windows 不支持，故不加载该模块
 terminal_router = None
 if platform.system() != "Windows":
-    from .api import terminal_router
+    from easy_agent.api import terminal_router
 
 logger = logging.getLogger(__name__)
 
@@ -205,13 +205,13 @@ async def lifespan(app: FastAPI):
 
     # B3：生产环境 JWT 密钥 fail-fast。必须在启动期（而非模块 import 期）校验，
     # 避免 pytest / 工具脚本仅 import 就失败；dev/test 保留 data/.jwt_secret 回退。
-    from .utils.auth import validate_production_jwt_secret
+    from easy_agent.utils.auth import validate_production_jwt_secret
 
     validate_production_jwt_secret(env=agent_env)
 
     # Phase 0：严格多副本门禁。默认关闭；Phase 2/3 完成前开启会明确失败，
     # 避免在 SSE/run/file/sandbox 尚未外置时误宣称多副本安全。
-    from .runtime_features import check_multi_replica_startup
+    from easy_agent.bootstrap.runtime_features import check_multi_replica_startup
 
     check_multi_replica_startup(agent_env)
 
@@ -276,7 +276,7 @@ async def lifespan(app: FastAPI):
     # 只把 running 标记为 interrupted 并补一条 error 事件，避免前端一直“执行中”；
     # 不自动重新执行（执行器属于 Phase 2C）。任何异常只告警，不阻断启动。
     try:
-        from .services.run_registry import recover_stale_runs
+        from easy_agent.services.run_registry import recover_stale_runs
 
         recovered = await asyncio.to_thread(recover_stale_runs, db_instance)
         if recovered:
@@ -290,7 +290,7 @@ async def lifespan(app: FastAPI):
 
     # 部署形态 fail-fast：生产多 worker/副本 + SQLite = 运行期随机丢消息/锁表，
     # 这里在启动期直接拒绝（用户决策：生产强制 MySQL）。
-    from .utils.deployment import (
+    from easy_agent.utils.deployment import (
         deployment_errors,
         deployment_warnings,
     )
@@ -360,7 +360,7 @@ async def lifespan(app: FastAPI):
             # FW-04：execute 的 HITL 文案改由官方 HarnessProfile 注入（不再
             # monkeypatch FilesystemMiddleware）。启动期为配置中的每个模型注册
             # 一次；失败只报错，不阻断启动（首次建图前 agent.py 还会兜底重试）。
-            from .hitl import register_execute_description_profiles
+            from easy_agent.agent.hitl import register_execute_description_profiles
 
             profile_keys = register_execute_description_profiles(config)
             if profile_keys:
@@ -376,7 +376,7 @@ async def lifespan(app: FastAPI):
             # 公共（预置）专家目录：把「解析到哪个目录、来源是谁」打出来，
             # 出问题时能一眼看出是配置写错还是目录没挂上。
             try:
-                from .services import public_expert_service
+                from easy_agent.services import public_expert_service
 
                 public_experts = public_expert_service.discover_public_experts()
                 if public_experts:
@@ -399,7 +399,7 @@ async def lifespan(app: FastAPI):
             # FW-09：默认官方 checkpointer（auto：postgres → sqlite → legacy）。
             # B1：prod 多副本必须 Postgres；非 Postgres 在启动期 fail-fast（可用
             # EASY_ALLOW_LEGACY_CHECKPOINTER=1 显式豁免），配置错误不再被静默吞掉。
-            from .checkpoints import (
+            from easy_agent.persistence.checkpoints import (
                 CheckpointDeploymentError,
                 start_checkpoint_backend,
             )
@@ -419,7 +419,7 @@ async def lifespan(app: FastAPI):
             # auto 在 EASY_STORE_POSTGRES_URI（缺省复用 EASY_CHECKPOINT_POSTGRES_URI）
             # 存在且官方包可用时启用 PostgresStore，否则保持 SqlStore。
             try:
-                from .stores import start_store_backend
+                from easy_agent.persistence.stores import start_store_backend
 
                 store_backend = await start_store_backend()
                 logger.info(f"✅ LangGraph Store 后端: {store_backend}")
@@ -432,7 +432,7 @@ async def lifespan(app: FastAPI):
             # 对象存储 A：EASY_UPLOAD_BACKEND=store 时上传原始文件必须落 LangGraph
             # Store，这里做启动期 fail-closed 自检（local 模式为空操作）。宁可启动
             # 失败，也不要跑起来后每次上传都 503。
-            from .services.upload_storage import preflight_upload_store
+            from easy_agent.services.upload_storage import preflight_upload_store
 
             preflight_upload_store()
         else:
@@ -472,19 +472,19 @@ async def lifespan(app: FastAPI):
     except Exception as exc:  # noqa: BLE001
         logger.warning(f"flush SSE 事件写入器失败: {exc}")
     try:
-        from .services.mcp_sessions import aclose_mcp_sessions
+        from easy_agent.services.mcp_sessions import aclose_mcp_sessions
 
         await aclose_mcp_sessions()
     except Exception as exc:  # noqa: BLE001
         logger.warning(f"关闭 MCP 持久 session 失败: {exc}")
     try:
-        from .stores import shutdown_store
+        from easy_agent.persistence.stores import shutdown_store
 
         await shutdown_store()
     except Exception as exc:  # noqa: BLE001
         logger.warning(f"关闭 LangGraph Store 失败: {exc}")
     try:
-        from .checkpoints import shutdown_checkpointers
+        from easy_agent.persistence.checkpoints import shutdown_checkpointers
 
         await shutdown_checkpointers()
     except Exception as exc:  # noqa: BLE001
@@ -522,7 +522,7 @@ app.add_middleware(MetricsMiddleware)
 
 
 def _get_client_ip(request: Request) -> str:
-    from .utils.client_ip import get_client_ip as _ip
+    from easy_agent.utils.client_ip import get_client_ip as _ip
 
     return _ip(request)
 
@@ -729,7 +729,7 @@ async def health_check():
 
 
 async def _readiness_payload() -> HealthResponse:
-    from .services.health import ping_database, workspace_writable
+    from easy_agent.services.health import ping_database, workspace_writable
 
     db_ok, db_detail = ping_database(db_instance)
     workspace_dir = "./workspace"
@@ -777,7 +777,7 @@ async def runtime_metrics(
     """
     if username != "admin":
         raise HTTPException(status_code=403, detail="仅管理员可以查看运行指标")
-    from .services.metrics import snapshot_metrics
+    from easy_agent.services.metrics import snapshot_metrics
 
     return JSONResponse(content=snapshot_metrics())
 

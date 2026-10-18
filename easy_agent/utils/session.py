@@ -18,8 +18,8 @@ from typing import TYPE_CHECKING
 from fastapi import HTTPException
 
 if TYPE_CHECKING:
-    from ..db import Database
-    from ..models.db import SessionModel
+    from easy_agent.db import Database
+    from easy_agent.models.db import SessionModel
 
 
 def get_owned_session_meta(

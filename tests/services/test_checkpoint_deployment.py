@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from easy_agent import checkpoints as ck
+from easy_agent.persistence import checkpoints as ck
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 PG_URI = "postgresql://user:password@db:5432/agent"

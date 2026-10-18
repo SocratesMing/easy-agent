@@ -14,11 +14,12 @@ import pytest
 from deepagents.backends import CompositeBackend
 
 import easy_agent.agent as agent_mod
-import easy_agent.agent_backend as backend_mod
-import easy_agent.agent_middleware as middleware_mod
-import easy_agent.agent_workspace as workspace_mod
+import easy_agent.agent.core as core_mod
+import easy_agent.agent.backend as backend_mod
+import easy_agent.agent.middleware as middleware_mod
+import easy_agent.agent.workspace as workspace_mod
 from easy_agent.agent import EasyAgent
-from easy_agent.config import Config
+from easy_agent.bootstrap.config import Config
 
 MOVED_METHODS = (
     "_load_memory_file",
@@ -98,16 +99,16 @@ def test_middleware_builder_is_reexported_same_object():
 def test_moved_symbols_are_defined_in_new_modules():
     assert (
         backend_mod._build_backend_for_context.__module__
-        == "easy_agent.agent_backend"
+        == "easy_agent.agent.backend"
     )
     assert (
         middleware_mod.build_agent_middleware.__module__
-        == "easy_agent.agent_middleware"
+        == "easy_agent.agent.middleware"
     )
     for name in MOVED_METHODS:
         assert (
             getattr(workspace_mod.AgentWorkspaceMixin, name).__module__
-            == "easy_agent.agent_workspace"
+            == "easy_agent.agent.workspace"
         ), name
 
 
@@ -166,7 +167,7 @@ def test_easyagent_build_middleware_delegates(monkeypatch, lightweight_agent):
         captured["max_steps"] = max_steps
         return ["stub-middleware"]
 
-    monkeypatch.setattr(agent_mod, "build_agent_middleware", fake_builder)
+    monkeypatch.setattr(core_mod, "build_agent_middleware", fake_builder)
 
     assert lightweight_agent._build_middleware() == ["stub-middleware"]
     assert captured["config"] is lightweight_agent.config

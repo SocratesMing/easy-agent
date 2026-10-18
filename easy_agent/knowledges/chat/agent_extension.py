@@ -5,9 +5,9 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from ...config import Config
-from ..core.config import KnowledgeConfig
-from .original_tool import create_knowledge_original_tool
+from easy_agent.bootstrap.config import Config
+from easy_agent.knowledges.core.config import KnowledgeConfig
+from easy_agent.knowledges.chat.original_tool import create_knowledge_original_tool
 
 logger = logging.getLogger("easy-agent.chat_service")
 

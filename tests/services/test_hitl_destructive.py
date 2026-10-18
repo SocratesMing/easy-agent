@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 
-from easy_agent.hitl import (
+from easy_agent.agent.hitl import (
     EXECUTE_HITL_TOOL_DESCRIPTION,
     _is_destructive_command,
     _is_directory_deletion,
@@ -38,7 +38,7 @@ def test_mutating_mcp_and_knowledge_materialize():
 
 
 def test_profile_keys_follow_langchain_provider_not_gateway_name():
-    from easy_agent.hitl import _configured_model_profile_keys
+    from easy_agent.agent.hitl import _configured_model_profile_keys
 
     config = SimpleNamespace(
         models={
@@ -61,7 +61,7 @@ def test_profile_keys_follow_langchain_provider_not_gateway_name():
 
 
 def test_profile_key_handles_colon_identifier_and_missing_fields():
-    from easy_agent.hitl import _model_profile_key
+    from easy_agent.agent.hitl import _model_profile_key
 
     assert (
         _model_profile_key(SimpleNamespace(protocol="openai", model="vendor:model-x"))
@@ -76,7 +76,7 @@ def test_profile_key_handles_colon_identifier_and_missing_fields():
 
 
 def test_profile_keys_without_config_fall_back_to_provider_keys():
-    from easy_agent.hitl import _configured_model_profile_keys
+    from easy_agent.agent.hitl import _configured_model_profile_keys
 
     # 仅兼容旧的无参调用；正常路径总是传入 Config。
     assert _configured_model_profile_keys(None) == ("openai", "anthropic")
@@ -84,7 +84,7 @@ def test_profile_keys_without_config_fall_back_to_provider_keys():
 
 # ── FW-12：动态名单下的目录删除策略（直接拒绝，不进入审批） ──────────────
 def test_build_interrupt_config_keeps_execute_conditional_for_directory_deletion():
-    from easy_agent.hitl import build_interrupt_config
+    from easy_agent.agent.hitl import build_interrupt_config
 
     cfg = build_interrupt_config([])
     when = cfg["execute"]["when"]
@@ -99,7 +99,7 @@ def test_build_interrupt_config_keeps_execute_conditional_for_directory_deletion
 
 
 def test_build_interrupt_config_uninjected_tools_absent():
-    from easy_agent.hitl import build_interrupt_config
+    from easy_agent.agent.hitl import build_interrupt_config
 
     cfg = build_interrupt_config(["mcp_write_file"])
     assert set(cfg) == {"execute", "delete", "mcp_write_file"}

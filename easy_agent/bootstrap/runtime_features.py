@@ -12,8 +12,8 @@ from __future__ import annotations
 from dataclasses import dataclass, asdict
 from typing import Mapping
 
-from .env import env_bool, env_str
-from .utils.deployment import detect_worker_count
+from easy_agent.bootstrap.env import env_bool, env_str
+from easy_agent.utils.deployment import detect_worker_count
 
 FEATURE_ENV = "EASY_MULTI_REPLICA_STRICT"
 

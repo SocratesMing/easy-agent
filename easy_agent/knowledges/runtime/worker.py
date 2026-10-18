@@ -12,11 +12,11 @@ import asyncio
 import logging
 from typing import Any, Callable
 
-from ...db import Database
-from ..core.config import KnowledgeConfig
-from ..ragflow import RagflowClient
-from ..core.repository import KnowledgeRepository
-from ..service import KnowledgeService, LocalOriginalStore
+from easy_agent.db import Database
+from easy_agent.knowledges.core.config import KnowledgeConfig
+from easy_agent.knowledges.ragflow import RagflowClient
+from easy_agent.knowledges.core.repository import KnowledgeRepository
+from easy_agent.knowledges.service import KnowledgeService, LocalOriginalStore
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +48,7 @@ class KnowledgeParsePollWorker:
         # 多副本 leader 选举：同一轮只允许一个副本真正调用 Ragflow。
         # 未启用分布式锁时 LockHandle.acquired 恒 True（单实例行为不变）。
         if lock_provider is None:
-            from ...utils.distributed_lock import get_distributed_lock
+            from easy_agent.utils.distributed_lock import get_distributed_lock
 
             lock_provider = get_distributed_lock
         self._lock_provider = lock_provider

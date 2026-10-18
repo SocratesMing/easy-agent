@@ -27,7 +27,7 @@ from __future__ import annotations
 import logging
 from typing import Final
 
-from ..utils.prompt_probe import describe_prompt
+from easy_agent.utils.prompt_probe import describe_prompt
 
 logger = logging.getLogger(__name__)
 

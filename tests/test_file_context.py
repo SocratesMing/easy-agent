@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from easy_agent.config import Config, FileContextConfig
+from easy_agent.bootstrap.config import Config, FileContextConfig
 from easy_agent.services import session_uploads as su
 
 _MINIMAL_CONFIG = """
@@ -454,7 +454,7 @@ def test_agent_manager_injects_read_tool(client, db, monkeypatch):
     """file_context 启用时，会话 Agent 应注入 read_uploaded_file 工具。"""
     import asyncio
 
-    import easy_agent.agent as agent_mod
+    import easy_agent.agent.core as agent_mod
     import easy_agent.services.agent_manager as am
 
     if not am._agent_config or not am._agent_config.get("config"):
@@ -492,7 +492,7 @@ def test_agent_loads_manifest_as_memory(client, db, monkeypatch):
     """
     import os
 
-    import easy_agent.agent as agent_mod
+    import easy_agent.agent.core as agent_mod
     import easy_agent.services.agent_manager as am
 
     if not am._agent_config or not am._agent_config.get("config"):

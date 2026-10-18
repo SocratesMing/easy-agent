@@ -28,7 +28,7 @@ def build_agent_middleware(config, max_steps) -> list:
     # SummarizationMiddleware is automatically added by create_deep_agent
     # with model-aware defaults (trigger=0.85, keep=0.10).
     # No need to add it here - duplicate middleware causes AssertionError.
-    from .services.logging_middleware import LoggingMiddleware
+    from easy_agent.services.logging_middleware import LoggingMiddleware
     from langchain.agents.middleware import TodoListMiddleware
 
     middleware = [

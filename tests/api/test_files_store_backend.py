@@ -212,7 +212,7 @@ def test_real_sql_store_backend_roundtrip(client, monkeypatch, tmp_path):
     value TEXT/LONGTEXT），仅用 InMemoryStore 覆盖不到「JSON 序列化 + base64 +
     namespace 分隔符」这条真实路径。
     """
-    from easy_agent import stores
+    from easy_agent.persistence import stores
 
     monkeypatch.setattr(us, "BASE_CACHE_DIR", tmp_path / "uploads_cache")
     monkeypatch.setenv(us.ENV_UPLOAD_BACKEND, us.BACKEND_STORE)

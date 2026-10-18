@@ -34,14 +34,14 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from starlette.concurrency import run_in_threadpool
 from starlette.responses import StreamingResponse
 
-from ..db import Database, get_database
-from ..model import create_model
-from ..models.db import SessionModel
-from ..utils.auth import decode_access_token
-from .chat.host_port import get_host_capabilities
-from .chat.panel import require_host_capabilities, stream_panel_answer
-from .core.config import KnowledgeConfig
-from .core.models import (
+from easy_agent.db import Database, get_database
+from easy_agent.agent.model import create_model
+from easy_agent.models.db import SessionModel
+from easy_agent.utils.auth import decode_access_token
+from easy_agent.knowledges.chat.host_port import get_host_capabilities
+from easy_agent.knowledges.chat.panel import require_host_capabilities, stream_panel_answer
+from easy_agent.knowledges.core.config import KnowledgeConfig
+from easy_agent.knowledges.core.models import (
     KnowledgePrincipal,
     AskRequest,
     AskResponse,
@@ -77,10 +77,10 @@ from .core.models import (
     TeamSpaceManagerUpdateRequest,
     TeamSpaceManagerUpdateResponse,
 )
-from .core.operations_repository import KnowledgeOperationsRepository
-from .ragflow import RagflowError
-from .core.repository import KnowledgeRepository
-from .service import KnowledgeDocumentBinary, KnowledgeService, KnowledgeServiceError
+from easy_agent.knowledges.core.operations_repository import KnowledgeOperationsRepository
+from easy_agent.knowledges.ragflow import RagflowError
+from easy_agent.knowledges.core.repository import KnowledgeRepository
+from easy_agent.knowledges.service import KnowledgeDocumentBinary, KnowledgeService, KnowledgeServiceError
 
 
 logger = logging.getLogger("easy_agent.knowledge.upload")

@@ -31,8 +31,8 @@ from typing import Any, Optional
 
 import yaml
 
-from ..config import Config
-from .prompt_loader import get_prompts_dir
+from easy_agent.bootstrap.config import Config
+from easy_agent.services.prompt_loader import get_prompts_dir
 
 logger = logging.getLogger(__name__)
 

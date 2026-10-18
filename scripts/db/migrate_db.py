@@ -17,7 +17,7 @@ import os
 import sys
 
 from easy_agent.db import init_database
-from easy_agent.initialization import initialize_runtime
+from easy_agent.bootstrap.initialization import initialize_runtime
 
 
 def main() -> int:

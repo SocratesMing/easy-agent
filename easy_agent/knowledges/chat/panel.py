@@ -25,9 +25,9 @@ from typing import Any
 
 from fastapi import HTTPException, Request, status
 
-from ...db import Database
-from ...models.api import ChatRequest
-from .host_port import HostCapabilities, get_host_capabilities
+from easy_agent.db import Database
+from easy_agent.models.api import ChatRequest
+from easy_agent.knowledges.chat.host_port import HostCapabilities, get_host_capabilities
 
 
 def require_host_capabilities() -> HostCapabilities:

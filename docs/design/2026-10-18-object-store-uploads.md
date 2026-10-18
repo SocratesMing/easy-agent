@@ -5,7 +5,7 @@
 | 日期 | 2026-10-18 |
 | 范围 | **仅后端**；仅「上传原始文件」（`data/uploads` 对应能力） |
 | 开关 | `EASY_UPLOAD_BACKEND=local \| store`（默认 `local`） |
-| 存储 | 官方 `deepagents.backends.StoreBackend` + `easy_agent.stores.get_agent_store()`（`AsyncPostgresStore` 或业务库 `SqlStore`） |
+| 存储 | 官方 `deepagents.backends.StoreBackend` + `easy_agent.persistence.stores.get_agent_store()`（`AsyncPostgresStore` 或业务库 `SqlStore`） |
 | 不涉及 | S3/MinIO/boto3、`EASY_FILE_BACKEND` 语义、workspace/生成文件、前端 |
 
 ## 1. 背景与目标

@@ -1,6 +1,6 @@
 """技能 frontmatter 启动期校验测试（FW-06）。"""
 
-from easy_agent.skills import parse_skill_frontmatter, validate_skills
+from easy_agent.agent.skills import parse_skill_frontmatter, validate_skills
 
 
 def _write_skill(root, name, text):

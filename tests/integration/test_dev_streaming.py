@@ -20,8 +20,8 @@ from pathlib import Path
 project_root = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(project_root))
 
-from easy_agent.config import Config
-from easy_agent.model import create_model
+from easy_agent.bootstrap.config import Config
+from easy_agent.agent.model import create_model
 import easy_agent.agent  # noqa: F401  触发 read_file 全量读取 monkey patch
 from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend, FilesystemBackend, StateBackend

@@ -31,7 +31,7 @@ Agent 的策略不同：公共专家的内容随发行包提供，缺文件属�
 
 import logging
 import os
-from ..env import env_str
+from easy_agent.bootstrap.env import env_str
 from pathlib import Path
 from typing import Any, Optional
 
@@ -71,7 +71,7 @@ def _ensure_experts_root_config() -> str:
     """读取 ``config.yaml`` 的 ``tools.experts_dir``（读不到返回空串）。"""
     try:
         # 延迟导入：避免 services 包初始化期的循环依赖
-        from .agent_manager import get_agent_config
+        from easy_agent.services.agent_manager import get_agent_config
 
         cfg = get_agent_config()
         if cfg and cfg.get("config"):

@@ -53,17 +53,17 @@ Environment variables:
 
 ### Python Backend (`easy_agent/`)
 
-**Agent layer** (`agent.py`) — `EasyAgent` class wraps `deepagents.create_deep_agent()`. Built-in tools: `write_todos`, `ls`, `read_file`, `write_file`, `edit_file`, `delete`, `glob`, `grep`, `execute`, `task` (subagent). Creates a `CompositeBackend` mapping `/workspace/` to the user/session-isolated directory (`workspace/{username}/{session_id}/`), `/user-skills/` to the user's skill library, and `/memories/` to per-user memory files (plus configured `external_dirs`). System prompt is dynamically augmented with OS-specific commands, workspace path, skills root, and shared dependency paths. Supports context compression via the summarization factory (configurable through `config.summarization`).
+**Agent layer** (`agent/core.py`) — `EasyAgent` class wraps `deepagents.create_deep_agent()`. Built-in tools: `write_todos`, `ls`, `read_file`, `write_file`, `edit_file`, `delete`, `glob`, `grep`, `execute`, `task` (subagent). Creates a `CompositeBackend` mapping `/workspace/` to the user/session-isolated directory (`workspace/{username}/{session_id}/`), `/user-skills/` to the user's skill library, and `/memories/` to per-user memory files (plus configured `external_dirs`). System prompt is dynamically augmented with OS-specific commands, workspace path, skills root, and shared dependency paths. Supports context compression via the summarization factory (configurable through `config.summarization`).
 
-**Config** (`config.py`) — Pydantic models: `LLMConfig`, `AgentConfig`, `ToolsConfig`, `DatabaseConfig`, `ProviderConfig`. Multi-provider support via `ProviderConfig` entries.
+**Config** (`bootstrap/config.py`) — `Config` 门面；Pydantic 模型在 `bootstrap/config_models.py`，校验/env 展开在 `bootstrap/config_validation.py`。
 
-**LLM factory** (`model.py`) — Supports `anthropic` (ChatAnthropic), `openai` (ChatOpenAI), `deepseek` (langchain-deepseek), `minimax` (OpenAI-compatible with 120s timeout). All use LangChain wrappers.
+**LLM factory** (`agent/model.py`) — Supports `anthropic` (ChatAnthropic), `openai` (ChatOpenAI), `deepseek` (langchain-deepseek), `minimax` (OpenAI-compatible with 120s timeout). All use LangChain wrappers.
 
-**Skills** (`skills.py`) — Discovers skills by scanning for directories containing `SKILL.md` or `README.md`. Canonical runtime skills live in the repo-root `skills/` (7: docx/pptx/xlsx/pdf/mcp-builder/skill-creator/expert-creator); `easy_agent/skills/` is the packaged fallback copy. User skills are mounted at `/user-skills/`.
+**Skills** (`agent/skills.py`) — Discovers skills by scanning for directories containing `SKILL.md` or `README.md`. Canonical runtime skills live in the repo-root `skills/` (7: docx/pptx/xlsx/pdf/mcp-builder/skill-creator/expert-creator); `easy_agent/skills/` is the packaged fallback copy. User skills are mounted at `/user-skills/`.
 
 **Web app** (`app.py`) — FastAPI app with lifespan that initializes config, database, knowledge base, prompt/skills discovery, checkpointers, and the scheduler (with multi-worker protection). Serves the Vue 2 SPA from `frontend-vue2/dist/` with fallback to `index.html`; `frontend/` is the parallel Vue 3 + Vite baseline. CORS is enabled (all origins by default; tighten via `EASY_CORS_ALLOW_ORIGINS`). Registers routers from `easy_agent/api/` and installs `LegacyHostRoutes` for old `/api/<prefix>` callers.
 
-**Web runner** (`web_runner.py`) — Entry point for `easy-web` CLI command. Does `os.chdir(project_root)` and sets `EASY_CONFIG` env var before starting uvicorn.
+**Web runner** (`bootstrap/web_runner.py`) — Entry point for `easy-web` CLI command. Does `os.chdir(project_root)` and sets `EASY_CONFIG` env var before starting uvicorn.
 
 ### API Routes (`easy_agent/api/`, prefix `/agent`)
 

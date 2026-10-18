@@ -1,4 +1,4 @@
-from .agent_manager import (
+from easy_agent.services.agent_manager import (
     init_agent_config,
     get_or_create_agent_for_session,
     remove_session_agent,
@@ -16,14 +16,14 @@ from .agent_manager import (
     set_session_edit_target,
     get_session_edit_target,
 )
-from .connectors import (
+from easy_agent.services.connectors import (
     parse_connector_directives,
     parse_message_connectors,
     resolve_connector_servers,
 )
-from .streaming import chat_stream_generator, resume_stream_generator
-from .stream_events import StreamEventWriter, flush_all_stream_events
-from .scheduler import (
+from easy_agent.services.streaming import chat_stream_generator, resume_stream_generator
+from easy_agent.services.stream_events import StreamEventWriter, flush_all_stream_events
+from easy_agent.services.scheduler import (
     init_scheduler,
     get_scheduler,
     shutdown_scheduler,

@@ -13,14 +13,14 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Optional
 
-from ...models.db import SessionModel
-from . import files as files_repo
-from . import sessions as sessions_repo
-from . import users as users_repo
+from easy_agent.models.db import SessionModel
+from easy_agent.db.repositories import files as files_repo
+from easy_agent.db.repositories import sessions as sessions_repo
+from easy_agent.db.repositories import users as users_repo
 
 if TYPE_CHECKING:
-    from ...models.db import UserModel
-    from ..database import Database
+    from easy_agent.models.db import UserModel
+    from easy_agent.db.database import Database
 
 
 class ExpertRepository:
@@ -36,7 +36,7 @@ class ExpertRepository:
 
     def _store(self):
         """延迟构造 ``ExpertStore``（避免 db 层导入期环）。"""
-        from ..expert_store import ExpertStore
+        from easy_agent.db.expert_store import ExpertStore
 
         return ExpertStore(self._db)
 
@@ -133,7 +133,7 @@ class ExpertRepository:
     # ── 流锁续约（供 _detached_event_stream 心跳） ────────────────────
 
     def renew_stream(self, session_id: str) -> bool:
-        from ...services.session_runtime import renew_stream
+        from easy_agent.services.session_runtime import renew_stream
 
         return renew_stream(self._db, session_id)
 

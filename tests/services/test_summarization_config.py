@@ -14,8 +14,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 import deepagents.graph as _graph
 from deepagents.middleware.summarization import SummarizationMiddleware
 
-from easy_agent.config import Config
-from easy_agent.summarization import configured_summarization, summarization_settings
+from easy_agent.bootstrap.config import Config
+from easy_agent.agent.summarization import configured_summarization, summarization_settings
 
 
 def _expected_thresholds(cfg) -> tuple[tuple, tuple]:

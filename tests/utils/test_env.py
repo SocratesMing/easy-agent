@@ -1,6 +1,6 @@
 """统一环境变量读取 helper 测试（ARCH-09）。"""
 
-from easy_agent.env import env_bool, env_int, env_list, env_str
+from easy_agent.bootstrap.env import env_bool, env_int, env_list, env_str
 
 
 def test_env_str(monkeypatch):

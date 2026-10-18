@@ -26,7 +26,7 @@ def _resolve_session_log_dir(username: str = "", log_date: Optional[str] = None)
     ``logs/sessions`` 保持兼容。
     """
     try:
-        from easy_agent.config import Config
+        from easy_agent.bootstrap.config import Config
 
         base = Config.get_user_sessions_dir(username)
         if log_date:
@@ -117,7 +117,7 @@ class SessionLogger:
     def _resolve_workspace(username: str) -> str:
         """推导用户工作目录：{workspace_dir}/{username}/"""
         try:
-            from easy_agent.config import Config
+            from easy_agent.bootstrap.config import Config
 
             return str(Config.get_user_workspace_dir(username))
         except Exception:
@@ -127,7 +127,7 @@ class SessionLogger:
     def _resolve_system_prompt() -> str:
         """从运行期 agent 配置中读取 system_prompt"""
         try:
-            from easy_agent.runtime_config import get_runtime_agent_config
+            from easy_agent.bootstrap.runtime_config import get_runtime_agent_config
 
             _cfg = get_runtime_agent_config()
             if _cfg:
@@ -140,7 +140,7 @@ class SessionLogger:
     def _resolve_memories_dir(username: str) -> str:
         """推导用户长期记忆目录：{memories_dir}/{username}/"""
         try:
-            from easy_agent.config import Config
+            from easy_agent.bootstrap.config import Config
 
             return str(Config.get_user_memories_dir(username))
         except Exception:

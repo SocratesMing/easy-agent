@@ -25,7 +25,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from easy_agent.config import Config
+from easy_agent.bootstrap.config import Config
 from easy_agent.db.expert_store import STATUS_ACTIVE, STATUS_FAILED, ExpertStore
 from easy_agent.db import init_database
 from easy_agent.services.expert_service import get_expert_dir
@@ -69,7 +69,7 @@ def env(db, monkeypatch, tmp_path):
         lambda: SimpleNamespace(expert_tags=TAG_OPTIONS, active_model="mock-model"),
     )
     # 兜底生成路径里的 create_model 也要打桩（不会真的用到，但避免误连网）
-    import easy_agent.model as model_mod
+    import easy_agent.agent.model as model_mod
 
     monkeypatch.setattr(model_mod, "create_model", lambda *a, **k: object())
     return SimpleNamespace(db=db, tmp=tmp_path)
@@ -261,7 +261,7 @@ def test_update_writes_next_version_and_keeps_previous(env, monkeypatch):
     expert_id = _expert_id_from(out)
 
     invalidated = {"n": 0}
-    from easy_agent import runtime_config
+    from easy_agent.bootstrap import runtime_config
 
     monkeypatch.setattr(
         runtime_config,
@@ -364,7 +364,7 @@ def test_result_text_hides_server_paths(env):
 
 def test_agent_manager_injects_save_expert(client, monkeypatch):
     """会话 Agent 应注入 save_expert，且工具描述携带配置里的分类标签候选。"""
-    import easy_agent.agent as agent_mod
+    import easy_agent.agent.core as agent_mod
     import easy_agent.services.agent_manager as am
 
     if not am._agent_config or not am._agent_config.get("config"):
@@ -492,7 +492,7 @@ def test_created_prompt_md_contains_boundary_section(env):
 
 
 def _stub_deep_agent(monkeypatch, captured: list):
-    import easy_agent.agent as agent_mod
+    import easy_agent.agent.core as agent_mod
 
     def _fake(**kwargs):
         captured.append(kwargs)
