@@ -204,6 +204,12 @@ async def lifespan(app: FastAPI):
 
     validate_production_jwt_secret(env=agent_env)
 
+    # Phase 0：严格多副本门禁。默认关闭；Phase 2/3 完成前开启会明确失败，
+    # 避免在 SSE/run/file/sandbox 尚未外置时误宣称多副本安全。
+    from .runtime_features import check_multi_replica_startup
+
+    check_multi_replica_startup(agent_env)
+
     config_path = runtime_initialization.config_path
     config = runtime_initialization.config
     config_error = runtime_initialization.config_error

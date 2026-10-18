@@ -20,6 +20,8 @@ data:
   EASY_STORE_BACKEND: "auto"
   # Explicitly off by default: non-Postgres checkpointer is rejected on prod.
   EASY_ALLOW_LEGACY_CHECKPOINTER: "0"
+  # Phase 0：SSE/run/file/sandbox 尚未外置，保持 0；Phase 2/3 完成后再改 1。
+  EASY_MULTI_REPLICA_STRICT: "0"
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim

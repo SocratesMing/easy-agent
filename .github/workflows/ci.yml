@@ -53,6 +53,8 @@ jobs:
         run: |
           uv run python scripts/check_config_schema.py --check
           uv run python scripts/check_env_usage.py --check
+      - name: Multi-replica capability gate (Phase 0)
+        run: uv run python scripts/check_multi_replica.py
       - name: API docs generator smoke check
         run: uv run python scripts/generate_api_docs.py --check
       - name: Collection gate (must be 0 errors)
