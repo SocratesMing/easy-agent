@@ -13,6 +13,7 @@ import pytest
 
 import easy_agent.api.chat as chat_api
 import easy_agent.api.expert as expert_api
+import easy_agent.api.expert_helpers as expert_helpers
 import easy_agent.services.agent_manager as am
 import easy_agent.services.skill_library as skill_library
 from easy_agent.db.expert_store import ExpertStore
@@ -45,14 +46,14 @@ def fake_llm(monkeypatch):
     state = {"generate_calls": 0}
 
     monkeypatch.setattr(
-        expert_api, "create_model", lambda *a, **k: SimpleNamespace(name="fake-llm")
+        expert_helpers, "create_model", lambda *a, **k: SimpleNamespace(name="fake-llm")
     )
 
     async def _fake_generate(llm, name_cn, user_prompt, max_retries=1, **kwargs):
         state["generate_calls"] += 1
         return dict(FAKE_CONFIG)
 
-    monkeypatch.setattr(expert_api, "generate_expert_config", _fake_generate)
+    monkeypatch.setattr(expert_helpers, "generate_expert_config", _fake_generate)
     return state
 
 
@@ -96,7 +97,7 @@ def test_list_exposes_configured_tags(client, monkeypatch):
             SimpleNamespace(tag_id="bond_research", tag_name="债券投研"),
         ]
     )
-    monkeypatch.setattr(expert_api, "get_agent_config", lambda: {"config": cfg})
+    monkeypatch.setattr(expert_helpers, "get_agent_config", lambda: {"config": cfg})
 
     body = client.get("/agent/list").json()
     assert body["tags"] == [
@@ -190,12 +191,12 @@ def test_add_expert_wrong_type_400(client, fake_llm):
 
 def test_add_expert_llm_failure_marks_failed(client, monkeypatch):
     """LLM 生成失败时记录置为 failed，前端可重试，且不返回 500 之外的脏数据。"""
-    monkeypatch.setattr(expert_api, "create_model", lambda *a, **k: object())
+    monkeypatch.setattr(expert_helpers, "create_model", lambda *a, **k: object())
 
     async def _boom(llm, name_cn, user_prompt, max_retries=1, **kwargs):
         raise ValueError("模型返回不是 JSON")
 
-    monkeypatch.setattr(expert_api, "generate_expert_config", _boom)
+    monkeypatch.setattr(expert_helpers, "generate_expert_config", _boom)
 
     resp = _add(client, name="失败专家", prompt="描述")
     assert resp.status_code == 500
@@ -209,13 +210,13 @@ def test_add_expert_llm_failure_marks_failed(client, monkeypatch):
 def test_add_expert_ignores_manual_tag_param(client, monkeypatch):
     """tag_id 不再接收前端传参：即使请求体里带了也会被忽略，只认大模型归类结果。"""
     monkeypatch.setattr(
-        expert_api, "create_model", lambda *a, **k: SimpleNamespace(name="fake-llm")
+        expert_helpers, "create_model", lambda *a, **k: SimpleNamespace(name="fake-llm")
     )
 
     async def _fake_generate(llm, name_cn, user_prompt, max_retries=1, **kwargs):
         return {**FAKE_CONFIG, "tag_id": ""}
 
-    monkeypatch.setattr(expert_api, "generate_expert_config", _fake_generate)
+    monkeypatch.setattr(expert_helpers, "generate_expert_config", _fake_generate)
 
     resp = client.post(
         "/agent/add",
@@ -501,7 +502,7 @@ def fake_relevance(monkeypatch):
         return state["classification"]
 
     monkeypatch.setattr(
-        expert_api,
+        expert_helpers,
         "expert_relevance",
         SimpleNamespace(
             check_relevance=_fake_check,
@@ -566,7 +567,7 @@ def test_stream_run_guardrail_disabled_by_config(
     """expert_guardrail_enabled=false 时不拼接边界块（回退开关）。"""
     created = _add(client).json()
     monkeypatch.setattr(
-        expert_api,
+        expert_helpers,
         "get_agent_config",
         lambda: {"config": SimpleNamespace(expert_guardrail_enabled=False)},
     )
@@ -629,7 +630,7 @@ def test_stream_run_partial_rejected_in_strict_mode(
     created = _add(client).json()
     fake_relevance["classification"] = "partial"
     monkeypatch.setattr(
-        expert_api,
+        expert_helpers,
         "get_agent_config",
         lambda: {
             "config": SimpleNamespace(
@@ -738,7 +739,7 @@ def test_stream_run_partial_passes_in_lenient_mode(
     created = _add(client).json()
     fake_relevance["classification"] = "partial"
     monkeypatch.setattr(
-        expert_api,
+        expert_helpers,
         "get_agent_config",
         lambda: {
             "config": SimpleNamespace(
@@ -768,7 +769,7 @@ def test_stream_run_relevance_check_disabled_by_config(
     created = _add(client).json()
     fake_relevance["classification"] = "irrelevant"
     monkeypatch.setattr(
-        expert_api,
+        expert_helpers,
         "get_agent_config",
         lambda: {
             "config": SimpleNamespace(
@@ -846,10 +847,10 @@ def test_relevance_gate_skips_when_expert_profile_empty(    client, fake_llm, st
     """专家画像为空（名称/描述/能力清单全都取不到）时跳过预检，避免用空画像误判。"""
     created = _add(client).json()
     fake_relevance["classification"] = "irrelevant"
-    monkeypatch.setattr(expert_api, "_expert_profile", lambda *a, **k: {})
+    monkeypatch.setattr(expert_helpers, "_expert_profile", lambda *a, **k: {})
     # 提示词里能抽到能力清单时仍算「有画像」——这里一并置空才是真正的空画像
     monkeypatch.setattr(
-        expert_api.expert_relevance, "extract_capabilities", lambda *a, **k: []
+        expert_helpers.expert_relevance, "extract_capabilities", lambda *a, **k: []
     )
 
     resp = client.post(

@@ -162,3 +162,17 @@ AST import 图实测：环内模块 **25 → 18 → 16**；SCC **2 → 1**（`db
 - 报告：`docs/audit/2026-10-18-backend-refactor-batch1-report.md`。
 - 下一批：`knowledges/service.py` 业务编排、`ragflow/client.py`、`api/expert.py`、
   `agent.py`、`memory_store.py`；`chat_live` provider 抽共享 dependency。
+
+### 批次 2B（2026-10-18）：`api/expert.py` 辅助逻辑分离
+
+- `api/expert.py` 1268 → 678：只保留 4 个请求模型、`get_expert_repository` /
+  `_as_expert_repository` 与 6 条路由（add/update/list/public-list/del/stream_export_run）。
+- 新增 `api/expert_helpers.py`（673 行）：20 个非路由辅助符号纯移动（用户/记录转换、
+  配置读取、生成落库、提示词加载 + 护栏、消息落库、相关性预检、短路拒答流）；
+  不 import `api.expert`，依赖方向单向。
+- 旧内部名字经 `__all__` re-export（`is` 同一对象）；URL / 方法 / 响应 / SSE 契约不变。
+- 测试适配：`tests/api/test_expert.py` 的 monkeypatch 目标改到实现模块（实现已移动）；
+  新增 `tests/api/test_expert_helpers.py`（12 用例：re-export 身份、依赖方向、纯函数样本、
+  路由 / OpenAPI 契约）。
+- 全量 1582 passed / 1 skipped（含并行批次 memory_store 的 51 个新增用例与本批 12 个）；SCC=0；ruff 通过。
+- 报告：`docs/audit/2026-10-18-backend-refactor-batch2b-report.md`。

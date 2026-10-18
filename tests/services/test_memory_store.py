@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from easy_agent.services import memory_manager, memory_store
+from easy_agent.services import memory_locks, memory_manager
 from easy_agent.services.memory_store import (
     ENV_FLAG,
     MemoryEntry,
@@ -613,9 +613,9 @@ def test_memory_lock_is_reentrant_in_same_thread(tmp_path):
 
 
 def test_lock_degrades_with_single_warning_when_fcntl_missing(tmp_path, monkeypatch, caplog):
-    monkeypatch.setattr(memory_store, "_fcntl", None)
-    monkeypatch.setattr(memory_store, "_LOCK_WARNING_EMITTED", False)
-    monkeypatch.setattr(memory_store, "_FLOCK_BROKEN", False)
+    monkeypatch.setattr(memory_locks, "_fcntl", None)
+    monkeypatch.setattr(memory_locks, "_LOCK_WARNING_EMITTED", False)
+    monkeypatch.setattr(memory_locks, "_FLOCK_BROKEN", False)
 
     with caplog.at_level(logging.WARNING, logger="easy_agent.memory.store"):
         with memory_lock(tmp_path / "memory.md"):
@@ -626,7 +626,7 @@ def test_lock_degrades_with_single_warning_when_fcntl_missing(tmp_path, monkeypa
     degraded = [r.getMessage() for r in caplog.records if "降级" in r.getMessage()]
     assert len(degraded) == 1
     assert "进程内串行" in degraded[0]
-    assert not memory_store.cross_process_lock_supported()
+    assert not memory_locks.cross_process_lock_supported()
 
     # 降级后记忆读写仍可用（不因平台无 flock 而失败）。
     store = MemoryStore(tmp_path / "memory.jsonl", title="会话记忆")
