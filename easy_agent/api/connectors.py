@@ -45,6 +45,7 @@ from easy_agent.services import (
 )
 from easy_agent.services.connectors import catalog_connectors, find_catalog_entry
 from easy_agent.services.mcp import (
+    _stdio_precheck,
     _unpack_error,
     invalidate_mcp_cache,
     load_mcp_config,
@@ -175,6 +176,10 @@ async def _validate_one(name: str, cfg: dict[str, Any], username: str) -> dict[s
     if violation:
         return {"name": name, "status": "error", "tools_count": 0, "error": violation}
     server_cfg = {k: v for k, v in cfg.items() if k != "enabled"}
+    # stdio 启动前先查命令 / 工作目录是否存在，给出比进程报错更直白的提示
+    precheck = _stdio_precheck(server_cfg)
+    if precheck:
+        return {"name": name, "status": "error", "tools_count": 0, "error": precheck}
     try:
         client = MultiServerMCPClient({name: server_cfg})
         tools = await client.get_tools()

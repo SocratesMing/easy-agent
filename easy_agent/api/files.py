@@ -202,6 +202,13 @@ def _resolve_download_file(upload_dir: Path, workspace_dir: Path, file_path: str
         except HTTPException as exc:
             if exc.status_code != 404:
                 raise
+    # 上传接口返回的落库路径相对服务进程目录（如 ``data/uploads/<user>/x``），不是相对上传目录；
+    # 同样只认落在本用户目录内的真实文件。
+    stored = Path(file_path).resolve()
+    for base in (upload_dir, workspace_dir):
+        root = base.resolve()
+        if root in stored.parents and stored.is_file():
+            return stored
     raise HTTPException(status_code=404, detail="文件不存在")
 
 

@@ -180,12 +180,12 @@ def _web_search_enabled(ctx: ToolBuildContext) -> bool:
 
 # ── 工具工厂（由装配根注入，注册表保持包内无 import 边） ─────────────────
 #
-# 这里不 ``import`` 任何 tools/knowledge 模块：``knowledge_impl`` 与
-# ``tools.scheduled_task`` 已在既有的 knowledge→scheduler→agent_manager SCC
-# （白名单项 knowledge-chat-scheduler-core）里，注册表一旦出现包内 import 边，
-# AST 依赖门禁就会把 registry/hitl/agent 并进该 SCC，与白名单精确匹配冲突。
-# 因此工具工厂由 ``agent_manager._tool_factories()`` 在装配处提供，
-# 注册表只按名字取用（运行期依赖仍在装配根，见设计文档 §2.3 / §4）。
+# 这里不 ``import`` 任何 tools/knowledge 模块，工具工厂由
+# ``agent_manager._tool_factories()`` 经 ``ToolBuildContext.factories`` 注入，
+# 测试可以直接换成假工厂。最初这样做是为了不并进当年的
+# knowledge-chat-scheduler-core SCC；该环已在 A1 拆掉，2026-10-19 核对过：
+# 工厂所在模块都没有回到本模块的 import 路径，把工厂直接登记进 ToolSpec
+# 不会形成环（可作为后续简化，届时测试改为替换 builder）。
 
 
 def _get_factory(ctx: ToolBuildContext, name: str) -> Callable[..., Any]:

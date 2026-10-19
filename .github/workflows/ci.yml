@@ -9,13 +9,15 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# Action 主版本基于 Node 24 运行时（Node 20 运行时已弃用）；setup-uv 不发布浮动主版本标签，钉到具体版本。
+# runner 固定 ubuntu-24.04，避免 ubuntu-latest 迁移到新系统时悄悄改变沙箱（bwrap）等行为。
 jobs:
   backend-fatal-lint:
     name: Backend fatal lint (ruff)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v3
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0
         with:
           enable-cache: true
       - name: Ruff (fatal errors only; style debt is tracked in docs/audit)
@@ -23,10 +25,10 @@ jobs:
 
   architecture-gate:
     name: Architecture gate (import SCC + double-write freeze)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       # 阶段 0.1：import 图 SCC 白名单；新回边/环模块集合变化/白名单过期即失败。
@@ -41,10 +43,10 @@ jobs:
 
   backend-tests:
     name: Backend tests (pytest)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v3
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0
         with:
           enable-cache: true
       - name: Install dependencies
@@ -64,15 +66,15 @@ jobs:
 
   frontend-vue2:
     name: Frontend Vue2 build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: frontend-vue2
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
-          node-version: "20"
+          node-version: "24"
           cache: npm
           cache-dependency-path: frontend-vue2/package-lock.json
       - run: npm ci
@@ -81,15 +83,15 @@ jobs:
 
   frontend-vue3:
     name: Frontend Vue3 build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: frontend
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
-          node-version: "20"
+          node-version: "24"
           cache: npm
           cache-dependency-path: frontend/package-lock.json
       - run: npm ci

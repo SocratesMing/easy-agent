@@ -134,3 +134,26 @@ def test_session_generated_files(client):
     assert resp.status_code == 200
     assert isinstance(resp.json(), list)
     assert any(f["filename"] == "result.txt" for f in resp.json())
+
+
+def test_download_accepts_the_stored_upload_path(tmp_path, monkeypatch):
+    """上传接口返回的落库路径相对服务进程目录（生产配置下上传目录是相对路径），也要能下载。"""
+    from easy_agent.api.files import _resolve_download_file
+
+    monkeypatch.chdir(tmp_path)
+    upload_dir, workspace_dir = Path("data/uploads/alice"), Path("workspace/alice")
+    (tmp_path / upload_dir).mkdir(parents=True)
+    (tmp_path / workspace_dir).mkdir(parents=True)
+    (tmp_path / upload_dir / "abc_report.txt").write_text("mine", encoding="utf-8")
+    (tmp_path / "data/uploads/bob").mkdir(parents=True)
+    (tmp_path / "data/uploads/bob/secret.txt").write_text("bob", encoding="utf-8")
+
+    found = _resolve_download_file(upload_dir, workspace_dir, "data/uploads/alice/abc_report.txt")
+    assert found.read_text(encoding="utf-8") == "mine"
+
+    import pytest
+    from fastapi import HTTPException
+
+    with pytest.raises(HTTPException) as other_user:
+        _resolve_download_file(upload_dir, workspace_dir, "data/uploads/bob/secret.txt")
+    assert other_user.value.status_code == 404

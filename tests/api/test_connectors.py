@@ -743,3 +743,16 @@ def test_shipped_sqlite_field_is_scoped_to_the_workspace():
     field = next(f for f in entry["fields"] if f["key"] == "env.DB_PATH")
     assert field["path"] == "workspace"
     assert "easy_agent.db" not in json.dumps(entry, ensure_ascii=False)
+
+
+async def test_validate_reports_a_missing_stdio_command_without_spawning(monkeypatch):
+    """stdio 启动前先查命令是否存在（原 validate_mcp_servers 的预检，迁到实际在用的校验路径）。"""
+    spawned = []
+    monkeypatch.setattr(connectors_api, "MultiServerMCPClient", lambda servers: spawned.append(servers))
+
+    status = await connectors_api._validate_one(
+        "tool", {"transport": "stdio", "command": "definitely-missing-cmd-xyz"}, "admin"
+    )
+    assert status["status"] == "error"
+    assert "definitely-missing-cmd-xyz" in status["error"]
+    assert spawned == []

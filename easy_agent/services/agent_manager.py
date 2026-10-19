@@ -147,11 +147,10 @@ def _evict_agent_cache(keep_session_id: str) -> None:
 def _tool_factories() -> dict[str, Callable[..., Any]]:
     """工具工厂表：由装配根提供，注册表只按名字取用。
 
-    为什么放在这里而不是 ``tools/registry.py``：注册表要保持「无包内 import 边的
-    叶子模块」。``knowledge_impl`` / ``tools.scheduled_task`` 依赖 scheduler 与
-    agent_manager，注册表一旦 import 它们就会重新引入 import 环（当年的
-    knowledge-chat-scheduler-core SCC 已在 A1 拆掉，当前 import 图 0 SCC、
-    白名单为空，由 ``scripts/quality/import_graph.py --check-scc`` 守住）。
+    为什么放在这里而不是 ``tools/registry.py``：注册表保持「无包内 import 边的叶子
+    模块」，工厂经 ``ToolBuildContext.factories`` 注入，测试可直接换成假工厂。最初
+    是为了避开当年的 knowledge-chat-scheduler-core SCC；该环已在 A1 拆掉，2026-10-19
+    核对过工厂模块都不会 import 回注册表，搬进 ``ToolSpec`` 不会形成环（后续可简化）。
 
     加载时机与改造前一致：知识库扩展每次装配都会 import（与改造前相同），
     其余三个工厂在对应工具真正被构造时才 import——这样单个工具模块加载失败
