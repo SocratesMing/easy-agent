@@ -204,6 +204,10 @@ expert:
   # 实测输出 token 258~1007 -> 7，耗时 1.7~6.4s -> 0.5~0.6s。
   # 网关不认这两个参数时会自动去掉重试，一般无需关闭。
   relevance_disable_thinking: true
+  # 用公共专家时，是否自动给该用户补装专家声明依赖的技能（config.yaml 的
+  # required_skills，如因子研究专家 -> factor-creator）。
+  # 已停用（skills-disabled/）的技能不装回；安装失败只告警、不阻断对话。
+  auto_install_required_skills: true
 
 # ===== Expert Tags =====
 # 专家 Agent 的分类标签候选：创建专家时整份列表会交给大模型，

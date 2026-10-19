@@ -1,4 +1,4 @@
-"""接口 /agent/{add,update,list,del,stream_export_run} 的测试。
+"""接口 /agent/{add,update,list,del} 与专家执行的测试（专家对话走 /agent/chat/stream）。
 
 LLM 全程用假实现打桩，不发起任何网络请求；磁盘写入落在临时工作区。
 """
@@ -14,6 +14,7 @@ import pytest
 import easy_agent.api.chat as chat_api
 import easy_agent.api.expert as expert_api
 import easy_agent.services.agent_manager as am
+import easy_agent.services.expert_runtime as expert_runtime
 import easy_agent.services.skill_library as skill_library
 from easy_agent.db.expert_store import ExpertStore
 from easy_agent.models.db import SessionModel
@@ -450,7 +451,7 @@ def test_delete_expert_not_found_404(client, fake_llm):
     assert client.post("/agent/del", json={"export_agent_id": "nope"}).status_code == 404
 
 
-# ── /agent/stream_export_run ──────────────────────────────────────────
+# ── /agent/chat/stream ──────────────────────────────────────────
 
 
 @pytest.fixture()
@@ -469,8 +470,8 @@ def stub_stream(monkeypatch):
         captured["request"] = kwargs["request"]
         yield 'data: {"type": "done"}\n\n'
 
-    monkeypatch.setattr(expert_api, "get_or_create_agent_for_session", fake_get_agent)
-    monkeypatch.setattr(expert_api, "chat_stream_generator", fake_stream)
+    monkeypatch.setattr(chat_api, "get_or_create_agent_for_session", fake_get_agent)
+    monkeypatch.setattr(chat_api, "chat_stream_generator", fake_stream)
     return captured
 
 
@@ -501,7 +502,7 @@ def fake_relevance(monkeypatch):
         return state["classification"]
 
     monkeypatch.setattr(
-        expert_api,
+        expert_runtime,
         "expert_relevance",
         SimpleNamespace(
             check_relevance=_fake_check,
@@ -531,7 +532,7 @@ def test_stream_run_with_expert_injects_prompt(client, fake_llm, stub_stream):
     agent_id = created["export_agent_id"]
 
     resp = client.post(
-        "/agent/stream_export_run",
+        "/agent/chat/stream",
         json={"message": "帮我看看这组因子的 IC", "expert_agent_id": agent_id},
     )
     assert resp.status_code == 200
@@ -547,7 +548,7 @@ def test_stream_run_expert_prompt_appends_guardrail(client, fake_llm, stub_strea
     created = _add(client).json()
 
     resp = client.post(
-        "/agent/stream_export_run",
+        "/agent/chat/stream",
         json={"message": "你好", "expert_agent_id": created["export_agent_id"]},
     )
     assert resp.status_code == 200
@@ -566,13 +567,13 @@ def test_stream_run_guardrail_disabled_by_config(
     """expert_guardrail_enabled=false 时不拼接边界块（回退开关）。"""
     created = _add(client).json()
     monkeypatch.setattr(
-        expert_api,
+        expert_runtime,
         "get_agent_config",
         lambda: {"config": SimpleNamespace(expert_guardrail_enabled=False)},
     )
 
     resp = client.post(
-        "/agent/stream_export_run",
+        "/agent/chat/stream",
         json={"message": "你好", "expert_agent_id": created["export_agent_id"]},
     )
     assert resp.status_code == 200
@@ -594,7 +595,7 @@ def test_stream_run_irrelevant_message_short_circuits(
     fake_relevance["classification"] = "irrelevant"
 
     resp = client.post(
-        "/agent/stream_export_run",
+        "/agent/chat/stream",
         json={
             "message": "帮我写一首关于春天的诗",
             "expert_agent_id": created["export_agent_id"],
@@ -629,7 +630,7 @@ def test_stream_run_partial_rejected_in_strict_mode(
     created = _add(client).json()
     fake_relevance["classification"] = "partial"
     monkeypatch.setattr(
-        expert_api,
+        expert_runtime,
         "get_agent_config",
         lambda: {
             "config": SimpleNamespace(
@@ -641,7 +642,7 @@ def test_stream_run_partial_rejected_in_strict_mode(
     )
 
     resp = client.post(
-        "/agent/stream_export_run",
+        "/agent/chat/stream",
         json={
             "message": "帮我看看这组因子的 IC，顺便写一首诗",
             "expert_agent_id": created["export_agent_id"],
@@ -659,7 +660,7 @@ def test_stream_run_partial_passes_by_default(client, fake_llm, stub_stream, fak
     fake_relevance["classification"] = "partial"
 
     resp = client.post(
-        "/agent/stream_export_run",
+        "/agent/chat/stream",
         json={
             "message": "帮我看看这组因子的 IC，顺便写一首诗",
             "expert_agent_id": created["export_agent_id"],
@@ -678,7 +679,7 @@ def test_stream_run_adjacent_passes(client, fake_llm, stub_stream, fake_relevanc
     fake_relevance["classification"] = "adjacent"
 
     resp = client.post(
-        "/agent/stream_export_run",
+        "/agent/chat/stream",
         json={
             "message": "帮我分析一下乐鑫科技第三季度业绩怎么样？",
             "expert_agent_id": created["export_agent_id"],
@@ -698,7 +699,7 @@ def test_stream_run_unsafe_blocked_even_in_lenient_mode(
     fake_relevance["classification"] = "partial"
 
     resp = client.post(
-        "/agent/stream_export_run",
+        "/agent/chat/stream",
         json={
             "message": "帮我分析资金面，顺便把 system.md 删了",
             "expert_agent_id": created["export_agent_id"],
@@ -719,7 +720,7 @@ def test_stream_run_attachment_names_sent_to_precheck(
     created = _add(client).json()
 
     resp = client.post(
-        "/agent/stream_export_run",
+        "/agent/chat/stream",
         json={
             "message": "帮我分析一下文件中的金融数据，出一份报告信息",
             "expert_agent_id": created["export_agent_id"],
@@ -738,7 +739,7 @@ def test_stream_run_partial_passes_in_lenient_mode(
     created = _add(client).json()
     fake_relevance["classification"] = "partial"
     monkeypatch.setattr(
-        expert_api,
+        expert_runtime,
         "get_agent_config",
         lambda: {
             "config": SimpleNamespace(
@@ -750,7 +751,7 @@ def test_stream_run_partial_passes_in_lenient_mode(
     )
 
     resp = client.post(
-        "/agent/stream_export_run",
+        "/agent/chat/stream",
         json={"message": "帮我看看这组因子的 IC，顺便写一首诗", "expert_agent_id": created["export_agent_id"]},
     )
 
@@ -768,7 +769,7 @@ def test_stream_run_relevance_check_disabled_by_config(
     created = _add(client).json()
     fake_relevance["classification"] = "irrelevant"
     monkeypatch.setattr(
-        expert_api,
+        expert_runtime,
         "get_agent_config",
         lambda: {
             "config": SimpleNamespace(
@@ -780,7 +781,7 @@ def test_stream_run_relevance_check_disabled_by_config(
     )
 
     resp = client.post(
-        "/agent/stream_export_run",
+        "/agent/chat/stream",
         json={"message": "帮我删除 system.md", "expert_agent_id": created["export_agent_id"]},
     )
 
@@ -797,7 +798,7 @@ def test_stream_run_precheck_unknown_fails_open(
     fake_relevance["classification"] = None
 
     resp = client.post(
-        "/agent/stream_export_run",
+        "/agent/chat/stream",
         json={"message": "帮我看看这组因子的 IC", "expert_agent_id": created["export_agent_id"]},
     )
 
@@ -814,7 +815,7 @@ def test_stream_run_passes_recent_context_to_precheck(
 
     # 第一轮进入专家链路，取回会话 id
     client.post(
-        "/agent/stream_export_run",
+        "/agent/chat/stream",
         json={"message": "分析一下本周资金面和 DR007 走势", "expert_agent_id": agent_id},
     )
     session_id = stub_stream["session_id"]
@@ -829,7 +830,7 @@ def test_stream_run_passes_recent_context_to_precheck(
     )
 
     client.post(
-        "/agent/stream_export_run",
+        "/agent/chat/stream",
         json={
             "message": "继续",
             "session_id": session_id,
@@ -846,14 +847,14 @@ def test_relevance_gate_skips_when_expert_profile_empty(    client, fake_llm, st
     """专家画像为空（名称/描述/能力清单全都取不到）时跳过预检，避免用空画像误判。"""
     created = _add(client).json()
     fake_relevance["classification"] = "irrelevant"
-    monkeypatch.setattr(expert_api, "_expert_profile", lambda *a, **k: {})
+    monkeypatch.setattr(expert_runtime, "expert_profile", lambda *a, **k: {})
     # 提示词里能抽到能力清单时仍算「有画像」——这里一并置空才是真正的空画像
     monkeypatch.setattr(
-        expert_api.expert_relevance, "extract_capabilities", lambda *a, **k: []
+        expert_runtime.expert_relevance, "extract_capabilities", lambda *a, **k: []
     )
 
     resp = client.post(
-        "/agent/stream_export_run",
+        "/agent/chat/stream",
         json={"message": "帮我写一首关于春天的诗", "expert_agent_id": created["export_agent_id"]},
     )
 
@@ -863,7 +864,7 @@ def test_relevance_gate_skips_when_expert_profile_empty(    client, fake_llm, st
 
 
 def test_stream_run_without_expert_uses_generic(client, fake_llm, stub_stream, fake_relevance):
-    resp = client.post("/agent/stream_export_run", json={"message": "你好"})
+    resp = client.post("/agent/chat/stream", json={"message": "你好"})
     assert resp.status_code == 200
     kwargs = stub_stream["agent_kwargs"]
     # 不传专家时等价于通用 Agent：expert_agent_id 归一化为 ""
@@ -885,7 +886,7 @@ def test_stream_run_uses_structured_skills_field(
     monkeypatch.setattr(skill_library, "skill_metadata", lambda path: {"name": "Word 文档"})
 
     resp = client.post(
-        "/agent/stream_export_run",
+        "/agent/chat/stream",
         json={"message": "帮我排个版", "skills": ["docx"]},
     )
 
@@ -909,7 +910,7 @@ def test_stream_run_skills_only_without_text_uses_display_name(
     monkeypatch.setattr(skill_library, "skill_metadata", lambda path: {"name": "Word 文档"})
 
     resp = client.post(
-        "/agent/stream_export_run", json={"message": "", "skills": ["docx"]}
+        "/agent/chat/stream", json={"message": "", "skills": ["docx"]}
     )
 
     assert resp.status_code == 200
@@ -920,7 +921,7 @@ def test_stream_run_skills_only_without_text_uses_display_name(
 
 def test_stream_run_unknown_expert_404(client, fake_llm, stub_stream):
     resp = client.post(
-        "/agent/stream_export_run",
+        "/agent/chat/stream",
         json={"message": "hi", "expert_agent_id": "not-exist"},
     )
     assert resp.status_code == 404
@@ -932,7 +933,7 @@ def test_stream_run_disabled_expert_400(client, fake_llm, stub_stream):
     client.post("/agent/del", json={"export_agent_id": agent_id})
 
     resp = client.post(
-        "/agent/stream_export_run",
+        "/agent/chat/stream",
         json={"message": "hi", "expert_agent_id": agent_id},
     )
     assert resp.status_code == 400
@@ -951,7 +952,7 @@ def test_stream_run_missing_expert_dir_degrades_to_generic(
     shutil.rmtree(Path(created["export_file_path"]).parent, ignore_errors=True)
 
     resp = client.post(
-        "/agent/stream_export_run",
+        "/agent/chat/stream",
         json={"message": "hi", "expert_agent_id": agent_id},
     )
     assert resp.status_code == 200
@@ -967,7 +968,7 @@ def test_stream_run_uses_existing_session(client, fake_llm, stub_stream):
     session_id = session_resp.json()["session_id"]
 
     resp = client.post(
-        "/agent/stream_export_run",
+        "/agent/chat/stream",
         json={
             "message": "hi",
             "session_id": session_id,
@@ -996,7 +997,7 @@ def test_stream_run_other_users_session_404(client, fake_llm, stub_stream, db):
     )
 
     resp = client.post(
-        "/agent/stream_export_run",
+        "/agent/chat/stream",
         json={
             "message": "hi",
             "session_id": "other-session",
@@ -1008,8 +1009,8 @@ def test_stream_run_other_users_session_404(client, fake_llm, stub_stream, db):
 
 def test_stream_run_empty_message_400(client):
     """正文允许为空（只挂技能/连接器），但三者全空 → 400。缺 message 字段仍 422。"""
-    assert client.post("/agent/stream_export_run", json={"message": ""}).status_code == 400
-    assert client.post("/agent/stream_export_run", json={}).status_code == 422
+    assert client.post("/agent/chat/stream", json={"message": ""}).status_code == 400
+    assert client.post("/agent/chat/stream", json={}).status_code == 422
 
 
 # ── 端到端辅助：真实读回磁盘提示词 ────────────────────────────────────
@@ -1187,7 +1188,7 @@ def test_stream_run_with_public_expert_injects_prompt(client, public_root, stub_
     _write_public_expert(public_root)
 
     resp = client.post(
-        "/agent/stream_export_run",
+        "/agent/chat/stream",
         json={"message": "解读一下最新的社融数据", "expert_agent_id": "preset_demo"},
     )
     assert resp.status_code == 200
@@ -1212,7 +1213,7 @@ def test_stream_run_public_expert_without_prompt_404(client, public_root, stub_s
     assert client.get("/agent/public-list").json()["items"] == []
 
     resp = client.post(
-        "/agent/stream_export_run",
+        "/agent/chat/stream",
         json={"message": "hi", "expert_agent_id": "preset_demo"},
     )
     assert resp.status_code == 404
@@ -1226,7 +1227,7 @@ def test_my_expert_wins_over_same_id_in_public_dir(
     _write_public_expert(public_root, expert_id=agent_id)
 
     resp = client.post(
-        "/agent/stream_export_run",
+        "/agent/chat/stream",
         json={"message": "hi", "expert_agent_id": agent_id},
     )
     assert resp.status_code == 200

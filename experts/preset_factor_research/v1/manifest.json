@@ -1,0 +1,10 @@
+{
+  "expert_agent_id": "preset_factor_research",
+  "name_cn": "因子研究专家",
+  "name_en": "factor-research-expert",
+  "version": 1,
+  "prompt_file": "factor-research-expert.md",
+  "generated_at": "2026-10-19T15:35:00",
+  "model": "preset",
+  "raw_llm_output": null
+}
