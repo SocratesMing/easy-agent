@@ -1402,7 +1402,7 @@ function createStreamChunkHandler(ctx) {
   }
 
   function onChunk(data) {
-    const { type: eventType, content, duration, step, tool_name, tool_call_id: toolCallId, arguments: args, result, success, title } = data
+    const { type: eventType, content, duration, step, tool_name, tool_call_id: toolCallId, arguments: args, result, success, title, source } = data
     const sid = ctx.streamSessionId
 
     if (eventType === 'start') {
@@ -1587,7 +1587,7 @@ function createStreamChunkHandler(ctx) {
         if (existingBlockIdx !== -1) {
           const prev = messages.value[idx].blocks[existingBlockIdx]
           // 参数分片阶段的临时块：用权威参数覆盖，补齐 id/step，并清掉 streaming 标记。
-          messages.value[idx].blocks[existingBlockIdx] = { ...prev, id: toolCallId || prev.id, tool_call_id: toolCallId || prev.tool_call_id, arguments: args || prev.arguments || {}, step: step || prev.step || 0, streaming: false }
+          messages.value[idx].blocks[existingBlockIdx] = { ...prev, id: toolCallId || prev.id, tool_call_id: toolCallId || prev.tool_call_id, arguments: args || prev.arguments || {}, step: step || prev.step || 0, streaming: false, source: source || prev.source }
           if (!ctx.isResume) {
             const tracked = currentToolCalls.find(tc => tc.tool_call_id === callId)
             if (tracked) {
@@ -1602,7 +1602,7 @@ function createStreamChunkHandler(ctx) {
         } else {
           currentBlock = null
           if (!ctx.isResume) currentToolCalls.push({ tool_call_id: callId, tool_name: tool_name || '', arguments: args || {}, result: '', success: true })
-          addBlock('tool_call', { id: callId, tool_name: tool_name || '', arguments: args || {}, result: '', success: true, step: step || 0 })
+          addBlock('tool_call', { id: callId, tool_name: tool_name || '', arguments: args || {}, result: '', success: true, step: step || 0, source: source || null })
         }
       }
     } else if (eventType === 'tool_result') {
@@ -1624,7 +1624,7 @@ function createStreamChunkHandler(ctx) {
           blockIdx = messages.value[idx].blocks.findIndex(b => b.type === 'tool_call' && b.streaming && b.tool_name === tool_name)
         }
         if (blockIdx !== -1) {
-          const blk = { ...messages.value[idx].blocks[blockIdx], arguments: args || messages.value[idx].blocks[blockIdx].arguments, result: parseMCPResult(result || ''), success: success !== false, duration: toolDuration, streaming: false }
+          const blk = { ...messages.value[idx].blocks[blockIdx], arguments: args || messages.value[idx].blocks[blockIdx].arguments, result: parseMCPResult(result || ''), success: success !== false, duration: toolDuration, streaming: false, source: source || messages.value[idx].blocks[blockIdx].source }
           if (ctx.isResume) blk.loading = false
           messages.value[idx].blocks[blockIdx] = blk
           touchBlocks()

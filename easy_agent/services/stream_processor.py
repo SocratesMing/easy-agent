@@ -107,7 +107,8 @@ class StreamProcessor:
                  result_log_truncate: int = 5000,
                  last_context_tokens: int = 0,
                  accumulated_response: str = "",
-                 accumulated_thinking: str | None = None):
+                 accumulated_thinking: str | None = None,
+                 mcp_sources: dict[str, dict] | None = None):
         self.sid = sid
         self.current_step = current_step
         self.blocks = blocks if blocks is not None else []
@@ -130,6 +131,9 @@ class StreamProcessor:
             else self._thinking_text()
         )
         self.accumulated_response = accumulated_response
+        # MCP 工具名 → 连接器来源（{server, display_name, tool}）。由 agent_manager
+        # 从工具元数据汇总后传入；用于给 tool_call / tool_result 标注数据来源。
+        self.mcp_sources = mcp_sources or {}
         self.tool_call_start_times: dict[str, float] = {}
         # 注意：**不做跨步累加**（历史实现里的 total_usage 已移除）。
         # 前端每次渲染的是「当前 step / 最近一次模型调用」的用量 —— agent 多步会
@@ -226,6 +230,17 @@ class StreamProcessor:
         )
         return [{"type": "thinking_end", "duration": dur, "step": self.current_step}]
 
+    def _tool_source(self, tool_name: str) -> dict | None:
+        """返回 MCP 工具的数据来源；非 MCP 工具返回 None。"""
+        src = self.mcp_sources.get(tool_name)
+        if not src:
+            return None
+        return {
+            "server": src.get("server", ""),
+            "display_name": src.get("display_name") or src.get("server", ""),
+            "tool": src.get("tool") or tool_name,
+        }
+
     def _on_ai_message(self, m: AIMessage) -> list[dict]:
         events = []
         # Each model turn = one step (unless thinking already advanced it).
@@ -253,15 +268,22 @@ class StreamProcessor:
             args = tc.get("args", {}) or {}
             self._step_tool_count += 1
             self.tool_call_start_times[tid] = time.time()
-            self.blocks.append({
+            source = self._tool_source(name)
+            block = {
                 "type": "tool_call", "tool_name": name, "tool_call_id": tid,
                 "arguments": args, "result": "", "success": True,
                 "duration": None, "step": self.current_step,
                 "order": len(self.blocks),
-            })
-            events.append({"type": "tool_call", "tool_name": name,
-                           "tool_call_id": tid, "arguments": args,
-                           "step": self.current_step})
+            }
+            if source:
+                block["source"] = source
+            self.blocks.append(block)
+            ev = {"type": "tool_call", "tool_name": name,
+                  "tool_call_id": tid, "arguments": args,
+                  "step": self.current_step}
+            if source:
+                ev["source"] = source
+            events.append(ev)
             events.extend(self._maybe_todo_from_args(name, tid, args))
         # 本 turn 的参数流式分片已被完整 tool_calls 取代：清空累积状态，
         # 供下一个 turn（tool_call_chunks 的 index 从 0 重新开始）重新累积。
@@ -296,6 +318,9 @@ class StreamProcessor:
         ev = {"type": "tool_result", "tool_name": name, "tool_call_id": tid,
               "arguments": args, "result": result, "success": not is_error,
               "duration": duration, "step": self.current_step}
+        source = self._tool_source(name)
+        if source:
+            ev["source"] = source
         events.append(ev)
         events.extend(self._maybe_todo_from_result(name, tid, result))
         mark = "✅" if not is_error else "❌"
@@ -614,6 +639,8 @@ class StreamProcessor:
                 item["result"] = str(b.get("result", ""))[:3000]
                 item["success"] = b.get("success", True)
                 item["duration"] = b.get("duration")
+                if b.get("source"):
+                    item["source"] = b["source"]
                 if b.get("approval_status"):
                     item["approval_status"] = b["approval_status"]
             elif bt == "content":

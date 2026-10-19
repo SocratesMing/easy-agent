@@ -67,6 +67,10 @@
       <pre v-else-if="card.card === 'terminal' || card.card === 'read'" class="tcc-code">{{ card.body || '(无内容)' }}</pre>
 
       <template v-else>
+        <div v-if="card.source" class="tcc-section">
+          <div class="tcc-label">数据来源</div>
+          <div class="tcc-source">{{ card.source.display_name || card.source.server }} · {{ card.source.tool }}<template v-if="card.source.called_at"> · {{ card.source.called_at }}</template></div>
+        </div>
         <div v-if="card.args && Object.keys(card.args).length" class="tcc-section">
           <div class="tcc-label">参数</div>
           <pre class="tcc-code">{{ prettyArgs }}</pre>
@@ -93,11 +97,13 @@ const props = defineProps({
   pendingApproval: { type: Boolean, default: false },
   filePaths: { type: Array, default: () => [] },
   streaming: { type: Boolean, default: false },
+  // MCP 连接器来源：{server, display_name, tool, called_at}
+  source: { type: Object, default: null },
 })
 
 defineEmits(['approve', 'reject'])
 
-const card = computed(() => toolCard(props.toolName, props.args, props.result, props.success))
+const card = computed(() => toolCard(props.toolName, props.args, props.result, props.success, props.source))
 // 头部按类型区分：命令(terminal)/列表(ls,glob)/搜索(grep)/读取/编辑/工具
 const kindKey = computed(() => {
   if (card.value.shape === 'paths') return 'list'
@@ -217,6 +223,7 @@ const prettyArgs = computed(() => {
 .tcc-code-empty { list-style: none; margin-left: -18px; color: var(--text-secondary, #64748b); }
 .tcc-section + .tcc-section { margin-top: 8px; }
 .tcc-label { font-size: 12px; color: var(--text-secondary, #64748b); margin-bottom: 4px; }
+.tcc-source { font-size: 12px; color: var(--text-secondary, #64748b); line-height: 1.6; word-break: break-all; }
 .tcc-streaming-hint { margin-bottom: 4px; font-size: 12px; color: var(--text-secondary, #64748b); }
 .tcc-approval-prompt { font-size: 13px; color: #b45309; margin-bottom: 6px; }
 .tcc-approval-files { margin: 0 0 8px; padding-left: 18px; font-size: 12px; color: var(--text-secondary, #64748b); }
