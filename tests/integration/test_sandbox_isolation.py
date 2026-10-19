@@ -290,7 +290,7 @@ def test_build_backend_uses_local_shell_for_each_directory(tmp_path):
 
     agent = EasyAgent.__new__(EasyAgent)
     agent.config = SimpleNamespace(
-        agent=SimpleNamespace(sandbox_enabled=False)
+        agent=SimpleNamespace(sandbox_enabled=False, workspace_dir=str(ws_root))
     )
     agent.workspace_virtual_path = "/workspace"
     agent.workspace_dir = workspace
@@ -302,7 +302,8 @@ def test_build_backend_uses_local_shell_for_each_directory(tmp_path):
         {"/external/": str(external_dir)},
     )
 
-    assert isinstance(backend.default, LocalShellBackend)
+    # DA-04：default 是框架产物目录 + 转发 execute 的会话 shell
+    assert isinstance(backend.default.shell, LocalShellBackend)
     assert all(
         type(route_backend) is LocalShellBackend
         for route_backend in backend.routes.values()

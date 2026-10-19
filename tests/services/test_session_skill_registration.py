@@ -25,7 +25,7 @@ def users_root(monkeypatch, tmp_path):
     """
     root = tmp_path / "workspace"
     monkeypatch.setattr(
-        Config, "get_user_workspace_dir", staticmethod(lambda username: root / username)
+        Config, "get_user_workspace_dir", staticmethod(lambda username, config=None: root / username)
     )
     return root
 

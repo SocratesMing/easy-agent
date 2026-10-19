@@ -100,7 +100,7 @@ def client(db, monkeypatch):
         _config_mod.Config,
         "get_user_workspace_dir",
         staticmethod(
-            lambda username: Path(os.environ["TEST_WORKSPACE_DIR"])
+            lambda username, config=None: Path(os.environ["TEST_WORKSPACE_DIR"])
             / "users"
             / username
         ),

@@ -17,7 +17,7 @@ def users_root(monkeypatch, tmp_path):
     """把用户工作区重定向到临时目录，避免污染仓库。"""
     root = tmp_path / "workspace" / "users"
     monkeypatch.setattr(
-        Config, "get_user_workspace_dir", staticmethod(lambda username: root / username)
+        Config, "get_user_workspace_dir", staticmethod(lambda username, config=None: root / username)
     )
     return root
 

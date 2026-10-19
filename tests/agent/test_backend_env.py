@@ -91,8 +91,9 @@ def test_default_backend_env_has_no_host_secrets(tmp_path, monkeypatch, sandbox_
 
     backend = _backend(tmp_path, sandbox_enabled=sandbox_enabled)
 
-    assert SECRET not in backend.default._env.values()
-    assert backend.default._env.get("PATH")
+    shell = backend.default.shell  # default 把 execute 转给会话 shell（DA-04）
+    assert SECRET not in shell._env.values()
+    assert shell._env.get("PATH")
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX env 命令")

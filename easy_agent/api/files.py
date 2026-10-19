@@ -157,7 +157,8 @@ def build_workspace_tree(workspace_dir: Path, path: str = "") -> list:
     if not target_dir.is_dir():
         raise HTTPException(status_code=400, detail="路径不是目录")
 
-    _HIDDEN_DIRS = {"node_modules", ".venv", ".deps", "__pycache__"}
+    # .agent：各会话的框架产物（大工具结果 / 对话历史，DA-04），不给用户看
+    _HIDDEN_DIRS = {"node_modules", ".venv", ".deps", "__pycache__", ".agent"}
     items = []
     try:
         for entry in sorted(

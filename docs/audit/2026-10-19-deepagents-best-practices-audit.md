@@ -5,7 +5,7 @@
 > 文档来源：LangChain 官方文档（经 Docs MCP `https://docs.langchain.com/mcp` 拉取全文，2026-10-19）+ `langchain-ai/langchain-skills` 中的 deep-agents-core / memory / orchestration 技能 + deepagents 0.7.28 源码。
 > 与既有报告的关系：`docs/audit/2026-10-17-easy-agent-audit.md` 已覆盖的条目不重复展开，只复核状态；本报告新增条目编号为 **DA-xx**，严重度沿用 P0–P3。
 > 测试基线：`pytest tests/` → **1607 passed, 1 skipped, 2 warnings**（266s）。
-> **修复进度**：Batch B（DA-01 / DA-02 / DA-08 / DA-10 / DA-16）与修复中发现的 DA-18 已于 2026-10-19 完成，见 §9；Batch A 已修 SEC-01 / SEC-02 / SEC-04 / SEC-05，SEC-03（免密登录）按产品决定保留，见 §10。C1（DA-06 / DA-09 第一步 / DA-11 / DA-12 / DA-17、sqlite 连接器 `DB_PATH`）已完成，见 §11。
+> **修复进度**：Batch B（DA-01 / DA-02 / DA-08 / DA-10 / DA-16）与修复中发现的 DA-18 已于 2026-10-19 完成，见 §9；Batch A 已修 SEC-01 / SEC-02 / SEC-04 / SEC-05，SEC-03（免密登录）按产品决定保留，见 §10。C1（DA-06 / DA-09 第一步 / DA-11 / DA-12 / DA-17、sqlite 连接器 `DB_PATH`）已完成，见 §11；C2（DA-04 / DA-05）已完成，见 §12。
 
 ---
 
@@ -263,7 +263,7 @@
 | A · 安全止血 | SEC-01 / 02 / 04 / 05；SEC-03（免密登录）按产品决定保留 | ✅ 已完成（§10） |
 | B · 框架对齐·正确性 | DA-01 / 02 / 08 / 10 / 16，及修复中发现的 DA-18 | ✅ 已完成（§9） |
 | C1 · 快速项 | DA-06 模型 `profile` + 官方摘要中间件覆盖；DA-12 官方 `ToolErrorMiddleware`；DA-11 子代理工具收窄；DA-09 第一步 MCP annotations 决定审批；DA-17 过时注释与文档；sqlite 连接器 `DB_PATH` 限定个人工作区 | ✅ 已完成（§11） |
-| C2 · Backend 重构 | DA-04 默认路由改隐藏目录（修已复现的 deny 别名绕过，框架产物不再出现在用户工作区）；DA-05 改用真实 `CompositeBackend` | 约 2 天 |
+| C2 · Backend 重构 | DA-04 默认路由改隐藏目录（修已复现的 deny 别名绕过，框架产物不再出现在用户工作区）；DA-05 改用真实 `CompositeBackend` | ✅ 已完成（§12） |
 | C3 · 沙箱加固 | DA-07 技能目录只读挂载、默认断网或白名单代理、CPU / 内存 / 进程数限额 | 约 1–2 天，需先定网络策略 |
 | D · 演进 | DA-03 thread = 会话（超过摘要阈值后每轮都会重新摘要整段历史）；DA-13 技能多源 / 只读 / pinned；子代理进度事件流；DA-09 迁移 `langchain.mcp`（beta）；DA-14 LangSmith 沙箱生命周期；`services/` 拆领域子包 | 1–2 周，需设计文档 |
 | 穿插项 | CI 缺 `sqlite-saver` extra（暂不处理）；SEC-03 签名免密（需门户配合）；DA-15 前端审批交互；`tests/api/test_files_store_backend.py` 依赖执行顺序 | 待定 |
@@ -343,3 +343,16 @@
 | DA-09（第一步） | `agent/hitl.py:mcp_annotation_decision()`：`destructiveHint=True` 或 `readOnlyHint=False` → 审批，`readOnlyHint=True` → 免审批，无显式标注回退名字启发式。annotations 是服务端自我声明，连接哪个 MCP 服务由用户 / 管理员决定 | `tests/agent/test_hitl.py`（DA-09 段） |
 | DA-17 | `core.py` / `graph_cache.py` / `hitl.py` / `agent_manager.py` 注释更新到 0.7 现状；`docs/framework-integration.md` 适配点 3 → 2 处，模块路径更新到重组后的位置 | `tests/test_docs_facts.py::test_framework_integration_doc_points_to_existing_code` |
 | sqlite `DB_PATH` | 公共目录字段声明 `"path": "workspace"`，默认值不再指向业务库；写入时相对路径换算到个人工作区；普通用户的路径 `resolve()` 后必须在个人工作区内（`..` 与符号链接都逃不出去），admin 不受限 | `tests/services/test_mcp_policy.py`（工作区路径段）、`tests/api/test_connectors.py`（sqlite 段） |
+
+## 12. 修复记录（2026-10-19，C2）
+
+| 条目 | 改动 | 回归测试（改造前失败） |
+| --- | --- | --- |
+| DA-04 | 会话 composite 的 default 改为 `backends/artifacts.py:AgentArtifactsBackend`：文件根是工作区之外的会话隐藏目录 `workspace/{user}/.agent/{session_id}/`（`agent/backend.py:agent_artifacts_dir()`），只允许写框架产物前缀 `artifacts_root="/.agent"`，写到别处返回「请写到 /workspace/ 下」；`execute` 原样转给会话 shell（工作目录、路径翻译、沙箱、LangSmith 同步都不变）。删除会话时一并删除隐藏目录，用户级工作区树隐藏 `.agent` | `tests/agent/test_backend_routing.py`（DA-04 段）、`tests/api/test_sessions.py::test_delete_session_removes_its_artifacts_dir`、`tests/test_framework_contract.py::test_framework_artifact_paths_follow_artifacts_root` |
+| DA-05 | `backends/context.py` 改为两层真实 `CompositeBackend`：`SessionCompositeBackend` 的 default / routes / sorted_routes 按运行期 context 解析成本会话的 composite，路由沿用框架实现，框架的 symlink 感知权限校验能递归进来；顶层 `ContextBackend` 的 default 是会话 composite，`routes` 只登记前缀（满足「带 execute 时权限路径须落在 route 下」），`sorted_routes` 置空（完整路径交给会话层，也不生成 route→宿主机路径提示）。去掉 `CompositeBackend.register` 冒充子类与占位 default / routes | `tests/agent/test_backend_routing.py`（DA-05 段） |
+
+为什么顶层仍要把 `sorted_routes` 置空、而不是直接把真实路由交给框架：框架会据此在系统提示词里写「执行命令时把虚拟路径换成宿主机路径」。本项目的沙箱按虚拟路径挂载目录（bwrap 里宿主机路径不存在），而且刻意不向模型暴露宿主机路径，这段提示既不可用也不该出现。会话层用的是真实路由，权限校验不受影响。
+
+改造前后对照（同一脚本分别跑在 C1 提交与当前代码上）：`/secret/a.txt` 读到 `TOP-SECRET` → 文件不存在；框架产物 `large_tool_results/call_abc` 写进会话工作区 → 不在工作区；`/workspace/innocent/a.txt`（`innocent` → `secret` 的 symlink）权限放行 → `permission denied … (resolves to /workspace/secret/a.txt)`。§8.1 的 `exp_route_alias.py` 重跑结果同样已变为「not found / 工作区内无产物」。
+
+行为变化：模型若把文件写到 `/report.md` 这类不在任何挂载目录下的路径，改造前会落进工作区（碰巧可见），现在会收到「请写到 /workspace/ 下」的错误后改写。

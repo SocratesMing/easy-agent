@@ -203,7 +203,10 @@ def test_backend_factory_resolves_workspace_from_context(
     ctx = _ctx(tmp_path, session_id="s-other", workspace_name="w-other")
     backend = factory.resolve(ctx)
 
-    assert Path(backend.default.cwd) == Path(ctx.workspace_dir).absolute()
+    # DA-04：default 只放框架产物（工作区之外的隐藏目录），命令仍在会话工作区里执行
+    agent_dir = Path(config.agent.workspace_dir) / "u1" / ".agent" / "s-other"
+    assert Path(backend.default.cwd) == agent_dir.resolve()
+    assert Path(backend.default.shell.cwd) == Path(ctx.workspace_dir).resolve()
     assert Path(backend.routes["/workspace/"].cwd) == Path(ctx.workspace_dir).absolute()
     assert Path(backend.routes["/user-skills/"].cwd) == Path(
         ctx.user_skills_dir

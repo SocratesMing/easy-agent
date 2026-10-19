@@ -12,6 +12,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 
 from easy_agent.agent import release_session_checkpointer
+from easy_agent.agent.backend import agent_artifacts_dir
 from easy_agent.db.session_repository import SessionRepository
 from easy_agent.api.deps import (  # noqa: F401 - 旧模块级名字 re-export
     as_session_repository as _as_session_repository,
@@ -356,6 +357,15 @@ async def delete_session(
             f"未删除任何工作区目录 | session_id={session_id} | "
             f"workspace_name={session.workspace_name} | user_dir={user_workspace_dir}"
         )
+
+    # 框架产物（大工具结果 / 对话历史）放在工作区之外的隐藏目录（DA-04），随会话一起删
+    artifacts_dir = agent_artifacts_dir(username, session_id)
+    if artifacts_dir.exists():
+        try:
+            shutil.rmtree(artifacts_dir)
+            logger.info(f"删除会话产物目录 | 路径: {artifacts_dir}")
+        except Exception as e:
+            logger.warning(f"删除会话产物目录失败: {artifacts_dir} | {e}")
 
     repo.delete_session(session_id)
 

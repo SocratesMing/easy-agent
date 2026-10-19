@@ -186,3 +186,15 @@ def test_summarization_override_uses_public_middleware_name():
 
     middleware = SummarizationMiddleware(GenericFakeChatModel(messages=iter([])), backend=StateBackend())
     assert middleware.name == "SummarizationMiddleware"
+
+
+def test_framework_artifact_paths_follow_artifacts_root():
+    """DA-04：会话 default 只允许写 ``artifacts_root`` 前缀，框架产物路径必须由它派生。"""
+    from deepagents.backends import StateBackend
+    from deepagents.backends.composite import CompositeBackend
+    from deepagents.middleware.filesystem import FilesystemMiddleware
+
+    backend = CompositeBackend(default=StateBackend(), routes={}, artifacts_root="/.agent")
+    middleware = FilesystemMiddleware(backend=backend)
+    assert middleware._large_tool_results_prefix == "/.agent/large_tool_results"
+    assert middleware._conversation_history_prefix == "/.agent/conversation_history"

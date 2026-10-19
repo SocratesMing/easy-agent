@@ -83,6 +83,19 @@ def test_delete_session(client):
     assert client.get(f"/agent/sessions/{sid}").status_code == 404
 
 
+def test_delete_session_removes_its_artifacts_dir(client):
+    """DA-04：框架产物在工作区之外的隐藏目录里，删除会话时要一并删除。"""
+    from easy_agent.agent.backend import agent_artifacts_dir
+
+    sid = _create_session(client)
+    artifacts = agent_artifacts_dir("testuser", sid)
+    (artifacts / ".agent" / "large_tool_results").mkdir(parents=True)
+    (artifacts / ".agent" / "large_tool_results" / "call_1").write_text("x", encoding="utf-8")
+
+    assert client.delete(f"/agent/sessions/{sid}").status_code == 200
+    assert not artifacts.exists()
+
+
 def test_upload_session_file(client):
     sid = _create_session(client)
     files = {"file": ("hello.txt", b"hello world", "text/plain")}

@@ -1,16 +1,18 @@
 """运行期 CompositeBackend 装配（D2 共享图使用）。
 
-从 ``easy_agent.agent`` 拆出的顶层函数：按运行期 ``SessionContext`` 构建
-workspace / user-skills / memories / external_dirs 路由与默认 shell backend。
-本次仅移动代码（函数体逐字未改），``easy_agent.agent`` 继续 re-export。
+按运行期 ``SessionContext`` 构建本会话的 workspace / user-skills / memories /
+external_dirs 路由，以及 default：框架产物的隐藏目录 + 转发 execute 的会话 shell（DA-04，
+见 ``backends/artifacts.py``）。``easy_agent.agent`` 继续 re-export。
 """
 
 import logging
+import re
 from pathlib import Path
 
 from deepagents.backends import CompositeBackend, LocalShellBackend
 
 from easy_agent.agent.graph_cache import SessionContext
+from easy_agent.backends.artifacts import AGENT_ARTIFACTS_ROOT, AgentArtifactsBackend
 from easy_agent.backends.langsmith_sandbox import create_langsmith_backend, sandbox_mode
 from easy_agent.backends.shell import _PathTranslatingShell
 from easy_agent.bootstrap.config import Config
@@ -19,6 +21,18 @@ from easy_agent.sandboxing.sandbox import host_safe_env
 
 # 纯移动：沿用拆分前的 logger 名称，保持日志路由/过滤行为不变。
 logger = logging.getLogger("easy_agent.agent")
+
+_UNSAFE_DIR_CHARS = re.compile(r"[^A-Za-z0-9_-]")
+
+
+def agent_artifacts_dir(username: str, session_id: str, config: Config | None = None) -> Path:
+    """会话的框架产物目录：``{workspace_dir}/{user}/.agent/{session_id}/``（DA-04）。
+
+    在会话工作区之外：工作区文件面板、``/workspace/`` 路由、execute 沙箱都看不到它；
+    按 session_id 而不是 workspace_name 命名，会话改名后不变；删除会话时一并删除。
+    """
+    key = _UNSAFE_DIR_CHARS.sub("_", str(session_id or "")) or "default"
+    return Config.get_user_workspace_dir(username, config) / ".agent" / key
 
 
 def _build_backend_for_context(
@@ -125,7 +139,7 @@ def _build_backend_for_context(
     if sandbox_mode() == "langsmith":
         # opt-in：仅 execute 走远端 LangSmith Sandbox；文件工具仍走上面的本地路由。
         # 该 backend 由 ContextBackend 按 context 缓存，不会每次工具调用新建。
-        default_backend = create_langsmith_backend(
+        shell = create_langsmith_backend(
             workspace_dir=ws_real,
             path_mappings=path_mappings,
             workspace_virtual_path=workspace_virtual_path,
@@ -134,7 +148,7 @@ def _build_backend_for_context(
             sid=sid,
         )
     else:
-        default_backend = _PathTranslatingShell(
+        shell = _PathTranslatingShell(
             path_mappings=path_mappings,
             root_dir=ws_str,
             virtual_mode=True,
@@ -146,4 +160,21 @@ def _build_backend_for_context(
             sandbox_enabled=config.agent.sandbox_enabled,
         )
 
-    return CompositeBackend(default=default_backend, routes=routes)
+    # DA-04：没命中路由的路径（含框架产物 /.agent/...）落在会话隐藏目录，不再是工作区的别名；
+    # execute 仍由上面的 shell 在会话工作区里跑。
+    artifacts_dir = agent_artifacts_dir(
+        getattr(context, "username", "") or getattr(context, "safe_username", ""),
+        getattr(context, "session_id", "") or getattr(context, "workspace_name", ""),
+        config,
+    )
+    artifacts_dir.mkdir(parents=True, exist_ok=True)
+    default_backend = AgentArtifactsBackend(
+        artifacts_dir,
+        shell,
+        artifacts_root=AGENT_ARTIFACTS_ROOT,
+        workspace_virtual_path=workspace_virtual_path,
+    )
+
+    return CompositeBackend(
+        default=default_backend, routes=routes, artifacts_root=AGENT_ARTIFACTS_ROOT
+    )

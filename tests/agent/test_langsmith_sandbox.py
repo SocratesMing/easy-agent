@@ -352,8 +352,9 @@ def test_local_mode_agent_backend_stays_local(tmp_path, monkeypatch):
     backend = _build_backend_for_context(config, context, [])
 
     assert isinstance(backend, CompositeBackend)
-    assert isinstance(backend.default, PathTranslatingShell)
-    assert not isinstance(backend.default, LangSmithExecuteShell)
+    # DA-04：default 是框架产物目录，execute 转给会话 shell
+    assert isinstance(backend.default.shell, PathTranslatingShell)
+    assert not isinstance(backend.default.shell, LangSmithExecuteShell)
     assert set(backend.routes) == {
         "/workspace/",
         "/memories/",
@@ -382,7 +383,7 @@ def test_langsmith_mode_uses_remote_default_and_keeps_routes(
 
     backend = _build_backend_for_context(config, context, [])
 
-    assert backend.default is sentinel
+    assert backend.default.shell is sentinel
     assert set(backend.routes) == {
         "/workspace/",
         "/memories/",

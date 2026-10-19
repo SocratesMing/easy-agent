@@ -46,7 +46,7 @@
 事件契约：`docs/sse-events.md`（15 个事件，契约测试 `tests/services/test_sse_contract.py`）。
 
 ### Agent 工具与沙箱
-- 文件工具走 CompositeBackend 路由（`/workspace/`、`/user-skills/`、`/memories/`、外部目录）。
+- 文件工具走 CompositeBackend 路由（`/workspace/`、`/user-skills/`、`/memories/`、外部目录）；没命中路由的路径与框架产物（`/.agent/...`：大工具结果、对话历史）落在工作区之外的会话隐藏目录 `workspace/{user}/.agent/{session_id}/`，删除会话时一并删除（DA-04）。共享编译图用两层真实 `CompositeBackend`（`backends/context.py`）按运行期 `SessionContext` 路由（DA-05）。
 - `execute` 默认经 bwrap；不可用降级 Landlock；都不可用 fail-closed（127）。
 - HITL：删除类命令/专家保存/定时任务/知识原文 materialize 等触发审批。
 - 子代理（office-writer / knowledge-researcher）显式 `skills=["/user-skills/"]` + 异常兜底 middleware。
