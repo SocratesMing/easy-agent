@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from langchain_mcp_adapters.client import MultiServerMCPClient
 
@@ -195,9 +195,14 @@ class ConnectorInstallRequest(ConnectorIdRequest):
 
     validate=false 时跳过安装后的连接测试（前端「保存」按钮语义），
     默认 true（「运行」按钮语义：保存并立即验证连接）。
+
+    注意：字段名不能直接叫 ``validate``——pydantic 2 的 ``BaseModel.validate``
+    仍以弃用属性形式存在，同名字段会在导入时触发
+    ``UserWarning: Field name "validate" ... shadows an attribute``。
+    这里用别名保持对外的 JSON 字段名不变。
     """
     values: dict[str, str] = {}
-    validate: bool = True
+    validate_conn: bool = Field(default=True, alias="validate")
 
 
 @router.post("/install", summary="安装内置连接器到用户 mcp.json")
@@ -259,7 +264,7 @@ async def install_connector(
         "agents_invalidated": evicted,
         "server_status": (
             await _validate_servers([request.id], username)
-            if request.validate
+            if request.validate_conn
             else []
         ),
     }
