@@ -1,4 +1,4 @@
-"""阶段 0 架构门禁测试：import 图 SCC + 双写冻结。
+"""阶段 0 架构门禁测试：import 图 SCC + 双写冻结 + 裸 os.getenv 基线。
 
 所有用例都用 ``tmp_path`` 注入坏/好样本，不依赖网络、真实数据库或
 ``tests/conftest.py`` 里的 app fixture。
@@ -30,6 +30,7 @@ def _load_script(name: str):
 
 import_graph = _load_script("quality/import_graph")
 double_write = _load_script("quality/check_double_write")
+env_usage = _load_script("quality/check_env_usage")
 
 
 def _write(root: Path, relative: str, content: str) -> Path:
@@ -325,3 +326,24 @@ def test_repository_double_write_gate_is_green():
     assert result.ok, "\n".join(violation.format() for violation in result.violations)
     assert result.stats.get("database_methods", 0) >= 100
     assert result.stats.get("database_delegations", 0) >= 100
+
+
+# --- bare os.getenv baseline -------------------------------------------------
+
+
+def test_env_usage_moved_module_is_new_until_baseline_refreshed():
+    """基线按文件路径记账：模块搬家后，同一行在新路径算新增、旧路径算可删除。"""
+    line = 'raw = os.environ.get("X")'
+    errors, stale = env_usage.compare(
+        {"easy_agent/pkg/mod.py": {line: 1}}, {"easy_agent/mod.py": {line: 1}}
+    )
+    assert errors == [f"easy_agent/pkg/mod.py: 新增裸 os.getenv/os.environ.get -> {line!r}"]
+    assert stale == [f"easy_agent/mod.py: 基线条目可删除 -> {line!r}"]
+
+
+def test_repository_env_usage_gate_is_green():
+    """与 CI 的 ``check_env_usage.py --check`` 同口径；搬模块后要 ``--update`` 刷新基线。"""
+    errors, _stale = env_usage.compare(
+        env_usage.current_baseline(), env_usage.load_baseline()
+    )
+    assert errors == [], "\n".join(errors)

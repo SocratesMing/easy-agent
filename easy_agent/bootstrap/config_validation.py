@@ -5,11 +5,10 @@
 """
 
 import logging
-import os
 import re
 from typing import Any
 
-from easy_agent.bootstrap.env import env_bool
+from easy_agent.bootstrap.env import env_bool, env_str
 
 # 日志分类沿用 "easy_agent.bootstrap.config"：启动日志与 caplog 过滤按该名称订阅，
 # 拆分模块不改变告警归属（见 tests/test_config_validation.py）。
@@ -342,7 +341,7 @@ def _expand_env(value: str, missing: set[str]) -> str:
     def _replace(match: "re.Match[str]") -> str:
         name = match.group(1)
         default = match.group(2)
-        env_value = os.environ.get(name)
+        env_value = env_str(name, strip=False)  # 密钥等值原样替换，不 strip
         if env_value:
             return env_value
         if default is not None:

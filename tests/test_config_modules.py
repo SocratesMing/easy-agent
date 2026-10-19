@@ -214,6 +214,25 @@ class TestEnvExpansion:
             == "fallback"
         )
 
+    def test_value_is_not_stripped(self, monkeypatch):
+        """密钥等占位符的值原样替换，不做 strip。"""
+        monkeypatch.setenv("SPLIT_TEST_PADDED", "  padded secret  ")
+        assert (
+            config_validation._expand_env("${SPLIT_TEST_PADDED}", set())
+            == "  padded secret  "
+        )
+
+    def test_empty_value_counts_as_unset(self, monkeypatch):
+        """设成空串与未设置同义：有默认值用默认值，否则记为未解析。"""
+        monkeypatch.setenv("SPLIT_TEST_EMPTY", "")
+        missing: set[str] = set()
+        assert (
+            config_validation._expand_env("${SPLIT_TEST_EMPTY:-fallback}", missing)
+            == "fallback"
+        )
+        assert config_validation._expand_env("${SPLIT_TEST_EMPTY}", missing) == ""
+        assert missing == {"SPLIT_TEST_EMPTY"}
+
 
 class TestConfigFromYaml:
     def test_minimal_config_loads(self, tmp_path):

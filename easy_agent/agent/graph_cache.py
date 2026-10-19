@@ -37,7 +37,6 @@ import copy
 import hashlib
 import json
 import logging
-import os
 import threading
 import time
 from collections import OrderedDict
@@ -47,6 +46,8 @@ from typing import Any
 
 from langchain.tools import ToolRuntime
 from langchain_core.tools import BaseTool, StructuredTool
+
+from easy_agent.bootstrap.env import env_str
 
 logger = logging.getLogger("easy-agent.graph_cache")
 
@@ -95,12 +96,13 @@ class SessionContext:
 
 def graph_cache_enabled() -> bool:
     """总开关（排障/回滚）：``EASY_AGENT_GRAPH_CACHE=0`` 关闭 D2 复用。"""
-    raw = os.getenv(_ENABLED_ENV, "").strip().lower()
+    # 不用 env_bool：它不认 ``disabled``，且把未知值当默认值，语义不同。
+    raw = env_str(_ENABLED_ENV).lower()
     return raw not in ("0", "false", "no", "off", "disabled")
 
 
 def _max_entries() -> int:
-    raw = os.getenv(_MAX_ENTRIES_ENV, "").strip()
+    raw = env_str(_MAX_ENTRIES_ENV)  # 不用 env_int：要保留非法值告警与下限 1
     if not raw:
         return _DEFAULT_MAX_ENTRIES
     try:

@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -23,10 +24,13 @@ from pydantic import BaseModel
 import easy_agent.agent.core as agent_mod
 from easy_agent.agent import EasyAgent
 from easy_agent.agent.graph_cache import (
+    _DEFAULT_MAX_ENTRIES,
     GraphCache,
     SessionContext,
+    _max_entries,
     contextualize_tools,
     get_agent_graph_cache,
+    graph_cache_enabled,
     reset_agent_graph_cache,
     tool_fingerprint,
 )
@@ -293,3 +297,47 @@ def test_env_kill_switch_disables_cache(monkeypatch, config, shared_saver, compi
     assert len(compile_spy) == 2
     assert first.agent_graph_key is None
     assert second.agent_graph_key is None
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        (None, True),
+        ("1", True),
+        ("yes", True),
+        ("unexpected", True),
+        ("0", False),
+        (" OFF ", False),
+        ("false", False),
+        ("disabled", False),
+    ],
+)
+def test_env_kill_switch_values(monkeypatch, raw, expected):
+    """只有显式的关闭值（含 ``disabled``，大小写/空白不敏感）才关闭；未设置或其它值都开启。"""
+    if raw is None:
+        monkeypatch.delenv("EASY_AGENT_GRAPH_CACHE", raising=False)
+    else:
+        monkeypatch.setenv("EASY_AGENT_GRAPH_CACHE", raw)
+    assert graph_cache_enabled() is expected
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        (None, _DEFAULT_MAX_ENTRIES),
+        ("", _DEFAULT_MAX_ENTRIES),
+        (" 8 ", 8),
+        ("0", 1),
+        ("-5", 1),
+        ("abc", _DEFAULT_MAX_ENTRIES),
+    ],
+)
+def test_cache_size_env_values(monkeypatch, caplog, raw, expected):
+    """容量：未设置/空用默认；非整数用默认并告警；小于 1 收敛到 1。"""
+    if raw is None:
+        monkeypatch.delenv("EASY_AGENT_GRAPH_CACHE_SIZE", raising=False)
+    else:
+        monkeypatch.setenv("EASY_AGENT_GRAPH_CACHE_SIZE", raw)
+    with caplog.at_level(logging.WARNING, logger="easy-agent.graph_cache"):
+        assert _max_entries() == expected
+    assert ("不是整数" in caplog.text) is (raw == "abc")
