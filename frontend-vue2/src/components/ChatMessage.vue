@@ -103,14 +103,27 @@
                 :pending-approval="!!block.pending_approval"
                 :file-paths="block.file_paths || []"
                 :streaming="!!block.streaming"
-                @approve="$emit('approve')"
-                @reject="$emit('reject')"
+                @approve="$emit('approve', approvalTarget(block))"
+                @reject="$emit('reject', approvalTarget(block))"
               />
 
               <!-- 中间穿插的正文（其后仍有思考/工具）放进处理过程内部按原序展示 -->
               <div v-if="block.type === 'content'" :key="'p'+block.origIndex" class="message-text process-inline-content" v-html="renderMarkdown(block.content)"></div>
             </template>
           </div>
+        </div>
+        <!-- 子代理内部触发的审批：主消息里没有对应工具卡片，单独列出（每项只回答自己的中断） -->
+        <div v-if="pendingPanelActions.length > 0" class="pending-approval-panel">
+          <ToolCallCard
+            v-for="(ar, i) in pendingPanelActions"
+            :key="'hitl-' + (ar.interrupt_id || 'legacy') + '-' + i"
+            :tool-name="ar.tool_name"
+            :args="ar.arguments"
+            :pending-approval="true"
+            :file-paths="ar.file_paths || []"
+            @approve="$emit('approve', { interruptId: ar.interrupt_id || null })"
+            @reject="$emit('reject', { interruptId: ar.interrupt_id || null })"
+          />
         </div>
         <template v-for="(block, idx) in finalContentBlocks">
           <!-- 用户消息：技能标签与正文放在同一个气泡内横向排列（标签在左、正文在右），
@@ -236,6 +249,7 @@ import FileIcon from './FileIcon.vue'
 import KnowledgeEvidence from '../features/knowledge/KnowledgeEvidence.vue'
 import SkillIcon from './SkillIcon.vue'
 import ToolCallCard from './ToolCallCard.vue'
+import { approvalTargetForBlock, unmatchedApprovalRequests } from '../utils/hitlApproval.js'
 import { pageContextLabel } from '../utils/pageContext.js'
 import { iconCategoryFor } from '../utils/skillCategories.js'
 // 专家头像取字 / 配色：与技能中心、+ 号下拉、输入框胶囊共用同一套规则（按 ID 稳定取档）
@@ -607,6 +621,10 @@ export default {
     hasPendingApproval() {
       return this.processBlocks.some(b => b.type === 'tool_call' && b.approval_status === 'pending')
     },
+    // 没有对应工具卡片的待审批操作（子代理内部触发），在消息级面板里单独给出按钮。
+    pendingPanelActions() {
+      return this.message.role === 'assistant' ? unmatchedApprovalRequests(this.message) : []
+    },
     // 执行过程中是否包含中间穿插正文（思考/工具之间的 content）
     hasProcessInlineContent() {
       return this.processBlocks.some((b) => b.type === 'content')
@@ -697,6 +715,10 @@ export default {
       const key = this.getBlockKey(block, index)
       // Vue 2 中对响应式对象新增属性不会触发更新，整体替换对象以保证响应性
       this.expandedThinking = { ...this.expandedThinking, [key]: !this.expandedThinking[key] }
+    },
+    // 工具卡片上的审批按钮回答它所属的中断（DA-02）
+    approvalTarget(block) {
+      return approvalTargetForBlock(this.message, block)
     },
     isToolRunning(block) {
       // Tool is still running if: no duration AND the message is still loading
@@ -846,6 +868,14 @@ export default {
 </script>
 
 <style scoped>
+/* 子代理内部触发的待审批操作：没有对应工具卡片，单独排在执行过程之后 */
+.pending-approval-panel {
+  width: 100%;
+  margin: 0 0 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
 /* 处理过程折叠容器：包裹一轮会话中的所有思考 + 工具调用，正文展示在其后 */
 .process-wrapper {
   /* message-content 为 align-items: flex-start（子项不拉伸），需显式撑满，

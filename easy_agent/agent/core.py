@@ -42,7 +42,7 @@ from easy_agent.agent.graph_cache import (
     summarization_fingerprint,
 )
 from easy_agent.agent.backend import _build_backend_for_context
-from easy_agent.agent.middleware import build_agent_middleware
+from easy_agent.agent.middleware import build_agent_middleware, build_call_limit_middleware
 from easy_agent.agent.workspace import (
     LONG_TERM_MEMORY_VIRTUAL_PATH,
     AgentWorkspaceMixin,
@@ -50,7 +50,12 @@ from easy_agent.agent.workspace import (
 from easy_agent.agent.subagents import DEFAULT_SUBAGENTS
 from easy_agent.agent.summarization import configured_summarization
 from easy_agent.bootstrap.logger import AgentLogger
-from easy_agent.agent.model import create_model, extract_reasoning, resolve_context_length
+from easy_agent.agent.model import (
+    create_model,
+    extract_reasoning,
+    is_internal_model_call,
+    resolve_context_length,
+)
 from easy_agent.security.prompt_guard import assemble_system_prompt
 from easy_agent.tools.web_search import WEB_SEARCH_SYSTEM_PROMPT
 from easy_agent.utils.prompt_probe import describe_prompt, prompt_fingerprint
@@ -110,27 +115,39 @@ def log_framework_patch_status(sid: str = "startup") -> None:
 
 
 def build_subagent_specs(
-    session_id: str = "", result_log_truncate: int = 500
+    session_id: str = "",
+    result_log_truncate: int = 500,
+    *,
+    max_steps: int | None = None,
 ) -> list[dict]:
     """构造传给 create_deep_agent 的 subagent specs。
 
     官方语义：自定义 subagent **不继承**主 agent 的 skills，且 middleware 栈
-    也不会自动带上用户的 LoggingMiddleware。这里显式补上：
-    - skills=["/user-skills/"]：office-writer / knowledge-researcher 能读技能文档；
-    - middleware=[LoggingMiddleware(...)]：子代理内工具异常不会直接中断 task。
+    也不会自动带上主代理的 middleware。这里显式补上：
+    - skills=["/user-skills/"]：子代理能读技能文档；
+    - LoggingMiddleware：子代理内工具异常不会直接中断 task；
+    - 模型/工具调用上限（DA-10）：子代理图各自绑定 ``recursion_limit=9999``，
+      主流程的递归上限与 call-limit 都管不到它们，只能在子代理自己的栈里限制。
+
+    框架自动补的 ``general-purpose`` 子代理只继承「替换默认槽位」的同名中间件，
+    拿不到上述 call-limit，因此按官方做法显式提供同名 spec 覆盖它（描述与提示词
+    沿用 deepagents 的 ``GENERAL_PURPOSE_SUBAGENT``，工具/审批/权限照常继承主代理）。
 
     D2：``session_id`` 不再写进 spec（否则同一张编译图会被会话绑定、无法复用）。
     LoggingMiddleware 只做工具异常兜底，日志前缀使用通用 ``agent``；保留参数
     仅为兼容既有调用方。
     """
+    from deepagents.middleware.subagents import GENERAL_PURPOSE_SUBAGENT
+
     from easy_agent.services.logging_middleware import LoggingMiddleware
 
     specs: list[dict] = []
-    for base in DEFAULT_SUBAGENTS:
+    for base in (GENERAL_PURPOSE_SUBAGENT, *DEFAULT_SUBAGENTS):
         item = dict(base)
         item.setdefault("skills", ["/user-skills/"])
         item["middleware"] = [
-            LoggingMiddleware(result_log_truncate=result_log_truncate)
+            LoggingMiddleware(result_log_truncate=result_log_truncate),
+            *build_call_limit_middleware(max_steps, exit_behavior="end"),
         ]
         specs.append(item)
     return specs
@@ -476,7 +493,8 @@ class EasyAgent(AgentWorkspaceMixin):
         memory_list = self._memory_sources()
         raw_tools = list(self.mcp_tools) if self.mcp_tools else []
         subagents = build_subagent_specs(
-            result_log_truncate=getattr(self.config.tools, "result_log_truncate", 500)
+            result_log_truncate=getattr(self.config.tools, "result_log_truncate", 500),
+            max_steps=getattr(self, "max_steps", None),
         )
 
         store = None
@@ -669,7 +687,9 @@ class EasyAgent(AgentWorkspaceMixin):
                 stream_mode="messages",
                 context=self.session_context,
             ):
-                chunk, _metadata = event
+                chunk, metadata = event
+                if is_internal_model_call(metadata):
+                    continue  # 摘要等中间件内部调用的 token 不是回复
 
                 if isinstance(chunk, AIMessageChunk):
                     rc = (

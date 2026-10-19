@@ -436,11 +436,12 @@ export default {
       // 向上传递重试事件
       this.$emit('retry', content)
     },
-    handleApprove() {
-      this.$emit('approve')
+    // payload: { interruptId }——回答哪一个待审批中断（DA-02），原样上抛
+    handleApprove(payload) {
+      this.$emit('approve', payload)
     },
-    handleReject() {
-      this.$emit('reject')
+    handleReject(payload) {
+      this.$emit('reject', payload)
     },
     handleStop() {
       this.$emit('stop')

@@ -7,7 +7,7 @@
     "dev": "node scripts/run-vite.mjs dev",
     "build": "node scripts/run-vite.mjs build && bash scripts/generate-runtime-config.sh",
     "preview": "vite preview",
-    "test:unit": "node --test src/api/*.test.js",
+    "test:unit": "node --test src/api/*.test.js src/utils/*.test.js",
     "serve": "bash scripts/generate-runtime-config.sh && node scripts/print-serve-env.mjs && npx --yes serve -s dist/"
   },
   "dependencies": {

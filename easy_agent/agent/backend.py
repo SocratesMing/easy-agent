@@ -15,6 +15,7 @@ from easy_agent.backends.langsmith_sandbox import create_langsmith_backend, sand
 from easy_agent.backends.shell import _PathTranslatingShell
 from easy_agent.bootstrap.config import Config
 from easy_agent.sandboxing.fs_safety import _check_external_dir_safety
+from easy_agent.sandboxing.sandbox import host_safe_env
 
 # 纯移动：沿用拆分前的 logger 名称，保持日志路由/过滤行为不变。
 logger = logging.getLogger("easy_agent.agent")
@@ -137,7 +138,10 @@ def _build_backend_for_context(
             path_mappings=path_mappings,
             root_dir=ws_str,
             virtual_mode=True,
-            inherit_env=True,
+            # 只交白名单变量：sandbox_enabled=false 时命令直接用这份 env 运行，
+            # 继承整个宿主环境会把 .env 里的密钥暴露给 agent 的命令（DA-16）。
+            inherit_env=False,
+            env=host_safe_env(),
             timeout=120,
             sandbox_enabled=config.agent.sandbox_enabled,
         )

@@ -40,6 +40,14 @@
   `skills=["/user-skills/"]` 与异常兜底 `LoggingMiddleware`。
 - **FW-08 已落地**：call-limit 中间件 `exit_behavior="error"`；主/恢复流
   `stream_config["recursion_limit"] = max(2*max_steps, 50)`。
+  - **2026-10-19 修正（DA-10）**：实际只有恢复流设了上限，且 `2*max_steps` 太小——当前装配
+    一次 model→tools 循环要走 8 个 super-step，约 6 轮就会 `GraphRecursionError`。现统一由
+    `easy_agent/agent/run_config.py:build_run_config()` 构造（聊天流 / 恢复流 / 定时任务），
+    上限按编译图里 `model`、`tools` 与 `before_model`/`after_model` 钩子节点数计算，保证
+    大于跑满 `max_steps` 所需步数。定时任务同时补上了漏传的 `context=SessionContext`。
+  - 子代理图各自绑定 `recursion_limit=9999`，主流程的上限管不到它们：每个子代理 spec
+    （含显式覆盖的 `general-purpose`）都带 `ModelCallLimitMiddleware` /
+    `ToolCallLimitMiddleware`（`exit_behavior="end"`，超限以消息交回主代理）。
 - **FW-04 已迁移 HarnessProfile**：0.7 的 `HarnessProfile.tool_description_overrides` 为官方注入点；
   现有 monkeypatch + `tests/test_framework_contract.py` 已能在升级时显式失败，
   待 0.7 升级立项时再迁移，避免在 beta API 上引入新风险。

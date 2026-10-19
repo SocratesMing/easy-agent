@@ -91,14 +91,27 @@
                 :pending-approval="!!block.pending_approval"
                 :file-paths="block.file_paths || []"
                 :streaming="!!block.streaming"
-                @approve="$emit('approve')"
-                @reject="$emit('reject')"
+                @approve="$emit('approve', approvalTargetForBlock(message, block))"
+                @reject="$emit('reject', approvalTargetForBlock(message, block))"
               />
 
               <!-- 中间穿插的正文（其后仍有思考/工具）放进处理过程内部按原序展示 -->
               <div v-if="block.type === 'content'" class="message-text process-inline-content" v-html="renderMarkdown(block.content)"></div>
             </template>
           </div>
+        </div>
+        <!-- 子代理内部触发的审批：主消息里没有对应工具卡片，单独列出（每项只回答自己的中断） -->
+        <div v-if="pendingPanelActions.length > 0" class="pending-approval-panel">
+          <ToolCallCard
+            v-for="(ar, i) in pendingPanelActions"
+            :key="'hitl-' + (ar.interrupt_id || 'legacy') + '-' + i"
+            :tool-name="ar.tool_name"
+            :args="ar.arguments"
+            :pending-approval="true"
+            :file-paths="ar.file_paths || []"
+            @approve="$emit('approve', { interruptId: ar.interrupt_id || null })"
+            @reject="$emit('reject', { interruptId: ar.interrupt_id || null })"
+          />
         </div>
         <template v-for="(block, idx) in finalContentBlocks" :key="'c'+block.origIndex">
           <!-- 用户消息：技能标签与正文放在同一个气泡内横向排列（标签在左、正文在右），
@@ -213,6 +226,7 @@ import { marked } from 'marked'
 import { setupMarkedExtensions, normalizeMathDelimiters } from '../markdownSetup.js'
 import FileIcon from './FileIcon.vue'
 import ToolCallCard from './ToolCallCard.vue'
+import { approvalTargetForBlock, unmatchedApprovalRequests } from '../utils/hitlApproval.js'
 import SkillIcon from './SkillIcon.vue'
 import { iconCategoryFor } from '../utils/skillCategories.js'
 // 专家头像取字 / 配色：与技能中心、+ 号下拉、输入框胶囊共用同一套规则（按 ID 稳定取档）
@@ -509,6 +523,11 @@ const hasPendingApproval = computed(() =>
 watch(() => hasPendingApproval.value, (pending) => {
   if (pending) processExpanded.value = true
 })
+
+// 没有对应工具卡片的待审批操作（子代理内部触发），在消息级面板里单独给出按钮（DA-02）。
+const pendingPanelActions = computed(() =>
+  props.message.role === 'assistant' ? unmatchedApprovalRequests(props.message) : []
+)
 
 function toggleProcess() {
   processToggledByUser.value = true
@@ -835,6 +854,14 @@ window.copyCode = async function(btn) {
 </script>
 
 <style scoped>
+/* 子代理内部触发的待审批操作：没有对应工具卡片，单独排在执行过程之后 */
+.pending-approval-panel {
+  width: 100%;
+  margin: 0 0 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
 /* 处理过程折叠容器：包裹一轮会话中的所有思考 + 工具调用，正文展示在其后 */
 .process-wrapper {
   /* message-content 为 align-items: flex-start（子项不拉伸），需显式撑满，

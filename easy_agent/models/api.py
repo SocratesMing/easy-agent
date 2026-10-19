@@ -105,7 +105,13 @@ class ResumeRequest(BaseModel):
     session_id: str = Field(..., description="会话ID")
     thread_id: str = Field(..., description="HITL 线程ID（与中断时一致）")
     decisions: List[dict[str, Any]] = Field(
-        ..., description="审批决策列表，每个元素 {type: approve|reject, message?: str}"
+        ...,
+        description=(
+            "审批决策列表，每个元素 {type: approve|reject, message?: str, "
+            "interrupt_id?: str, action_index?: int}。带 interrupt_id 时只回答该中断"
+            "（取自 approval_required.action_requests[].interrupt_id），其余中断保持挂起；"
+            "不带时只回答第一个中断。与待审批中断对不上时返回 400"
+        ),
     )
     message_id: Optional[str] = Field(
         default=None,

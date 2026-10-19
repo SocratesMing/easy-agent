@@ -221,8 +221,8 @@
               @remove-file="handleRemoveFile"
               @stop="handleStop"
               @retry="handleRetry"
-              @approve="handleToolApproval('approve')"
-              @reject="handleToolApproval('reject')"
+              @approve="handleToolApproval('approve', $event)"
+              @reject="handleToolApproval('reject', $event)"
               @open-panel="openManagePanel"
               @open-knowledge="openManagePanel('knowledge')"
             >

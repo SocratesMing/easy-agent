@@ -56,6 +56,32 @@ def extract_reasoning(additional_kwargs) -> str:
     return found[1] if found else ""
 
 
+try:  # LangChain 公开的「中间件内部模型调用」标记（摘要 / 工具筛选 / 工具模拟等）
+    from langchain.agents.middleware.internal_call_transformer import (
+        INTERNAL_CALL_METADATA_KEY as _INTERNAL_CALL_KEY,
+    )
+except ImportError:  # pragma: no cover - 旧版 langchain 没有该模块
+    _INTERNAL_CALL_KEY = "lc_internal_call"
+
+# 未携带 _INTERNAL_CALL_KEY 的旧版本仍会标 lc_source，作为兜底识别。
+_INTERNAL_LC_SOURCES = frozenset({"summarization", "tool_selection", "tool_emulation"})
+
+
+def is_internal_model_call(metadata) -> bool:
+    """``stream_mode="messages"`` 的 chunk 是否来自中间件内部的模型调用。
+
+    deepagents 的摘要中间件等会在 agent 运行中另起一次模型调用，其 token 同样从
+    ``messages`` 流冒出来（官方文档 Context engineering › Summarization 要求按
+    ``metadata["lc_source"] == "summarization"`` 过滤）。v3 事件流会自动剔除，
+    旧 ``astream`` 不会，消费方必须自己跳过，否则摘要会被当成回复正文。
+    """
+    if not isinstance(metadata, dict):
+        return False
+    if metadata.get(_INTERNAL_CALL_KEY):
+        return True
+    return metadata.get("lc_source") in _INTERNAL_LC_SOURCES
+
+
 # 非文本内容块：图片 / 文件 / 音视频等。纯文本模型（如 DeepSeek）收到这些块
 # 会直接 400 invalid_request_error。
 MEDIA_BLOCK_TYPES = frozenset({

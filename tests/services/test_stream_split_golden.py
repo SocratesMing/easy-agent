@@ -337,7 +337,12 @@ async def test_chat_stream_golden_event_order_and_persistence():
     assert list(events[0]) == ["type", "session_id"]
 
     assert graph.astream_calls[0]["stream_mode"] == ["messages", "updates"]
-    assert graph.astream_calls[0]["config"] == {"configurable": {"thread_id": "s1-m1"}}
+    # DA-10：聊天流与恢复流同一套 config，必须带 recursion_limit 兜底
+    # （FakeGraph 读不到节点 → 每轮按 10 步估算；max_steps=5 → 10 * 6 + 25）。
+    assert graph.astream_calls[0]["config"] == {
+        "configurable": {"thread_id": "s1-m1"},
+        "recursion_limit": 85,
+    }
 
     assert db.todos == [[{"content": "x"}]]
     assert db.recorded_thinking == [
@@ -478,6 +483,9 @@ async def test_chat_hitl_golden_approval_payload_and_partial_message():
             "description": "删除文件",
             "allowed_decisions": ["approve", "reject"],
             "file_paths": ["a.txt"],
+            # DA-02：追加字段（向后兼容），前端据此按中断作答
+            "interrupt_id": "int-1",
+            "action_index": 0,
         }
     ]
     # C3b：approval_required 走 emitter 快捷方法，键序为契约。

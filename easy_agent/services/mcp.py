@@ -18,6 +18,7 @@ from langchain_mcp_adapters.client import MultiServerMCPClient
 from easy_agent.bootstrap.config import Config, _expand_env_recursive
 from easy_agent.services import mcp_sessions
 from easy_agent.services.mcp_evidence import wrap_mcp_tools
+from easy_agent.tools.registry import builtin_tool_names
 
 logger = logging.getLogger("easy-agent")
 
@@ -287,12 +288,10 @@ def normalize_servers_mapping(
 _mcp_tools_cache: dict[str, tuple[float, dict[str, list]]] = {}
 _mcp_clients: dict[str, MultiServerMCPClient] = {}
 
-# deepagents 内建工具名：MCP 工具同名时 ToolNode 会 last-wins 静默覆盖，
-# 而 HITL 审批按工具名匹配 → 必须显式拒绝冲突，避免执行到错误实现。
-_BUILTIN_TOOL_NAMES = frozenset({
-    "write_todos", "ls", "read_file", "write_file", "edit_file",
-    "glob", "grep", "execute", "task",
-})
+# deepagents 内建工具名：MCP 工具同名时会静默覆盖内建实现（实测一个叫 delete 的
+# MCP 工具会顶掉 0.7 新增的内建 delete），而 HITL 审批按工具名匹配 → 必须显式拒绝冲突。
+# 名单以工具注册表为唯一事实来源，框架新增内建工具时只需登记注册表（DA-08）。
+_BUILTIN_TOOL_NAMES = frozenset(builtin_tool_names())
 
 
 def _client_for(servers: dict[str, dict[str, Any]]) -> MultiServerMCPClient:

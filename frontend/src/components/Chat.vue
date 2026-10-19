@@ -379,12 +379,13 @@ function handleRetry(content) {
   emit('retry', content)
 }
 
-function handleApprove() {
-  emit('approve')
+// payload: { interruptId }——回答哪一个待审批中断（DA-02），原样上抛
+function handleApprove(payload) {
+  emit('approve', payload)
 }
 
-function handleReject() {
-  emit('reject')
+function handleReject(payload) {
+  emit('reject', payload)
 }
 
 function handleStop() {

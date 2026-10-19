@@ -125,20 +125,29 @@ def mark_hitl_pending(
     action_requests_payload = build_action_requests_payload(
         action_requests, pending_tc_ids, config_map
     )
+    _apply_pending_marks(partial_msg, action_requests_payload, pending_tc_ids, thread_id)
+    return action_requests_payload
+
+
+def _apply_pending_marks(
+    partial_msg: dict, payload: list[dict], pending_tc_ids, thread_id: str
+) -> None:
+    """在 tool_calls / blocks 上标「待审批」，并把完整审批载荷挂到消息上（供历史恢复）。"""
+    pending_ids = {tid for tid in pending_tc_ids if tid}
     _pending_file_paths = {
         ar["tool_call_id"]: ar.get("file_paths", [])
-        for ar in action_requests_payload
+        for ar in payload
         if ar.get("tool_call_id")
     }
     for tc in partial_msg.get("tool_calls") or []:
-        if tc.get("tool_call_id") in pending_tc_ids:
+        if tc.get("tool_call_id") in pending_ids:
             tc["approval_status"] = "pending"
             if tc.get("tool_call_id") in _pending_file_paths:
                 tc["file_paths"] = _pending_file_paths[tc["tool_call_id"]]
     for b in partial_msg.get("blocks") or []:
         if (
             b.get("type") == "tool_call"
-            and b.get("tool_call_id") in pending_tc_ids
+            and b.get("tool_call_id") in pending_ids
         ):
             b["approval_status"] = "pending"
             b["pending_approval"] = True
@@ -146,9 +155,71 @@ def mark_hitl_pending(
                 b["file_paths"] = _pending_file_paths[b["tool_call_id"]]
     partial_msg["pending_approval"] = {
         "thread_id": thread_id,
-        "action_requests": action_requests_payload,
+        "action_requests": payload,
     }
-    return action_requests_payload
+
+
+def match_action_tool_call_ids(
+    state_messages: list, action_requests: list, used: set[str] | None = None
+) -> list[str]:
+    """按「工具名 + 参数」把审批操作对到主代理最后一轮的 tool_call_id，对不上为 ""。
+
+    HumanInTheLoopMiddleware 的 action_requests 直接取自 AIMessage.tool_calls，参数
+    原样一致。只按工具名对齐会出错：``when`` 谓词放行的同名调用（如普通 ``ls`` 的
+    execute）也会被算进去，按下标错位到别的调用上；子代理内部触发的审批在主代理
+    消息里根本没有对应调用，必须返回 ""，交给前端的独立审批面板展示。
+    """
+    used = set() if used is None else used
+    last = next(
+        (
+            msg
+            for msg in reversed(state_messages or [])
+            if isinstance(msg, AIMessage) and getattr(msg, "tool_calls", None)
+        ),
+        None,
+    )
+    ids: list[str] = []
+    for action in action_requests:
+        found = ""
+        for tc in (last.tool_calls if last is not None else []):
+            tid = tc.get("id") or ""
+            if (
+                tid
+                and tid not in used
+                and tc.get("name") == action.get("name")
+                and (tc.get("args") or {}) == (action.get("args") or {})
+            ):
+                found = tid
+                used.add(tid)
+                break
+        ids.append(found)
+    return ids
+
+
+def mark_hitl_pending_interrupts(
+    partial_msg: dict, interrupts: list, state_messages: list, thread_id: str
+) -> list[dict]:
+    """多中断版 ``mark_hitl_pending``：下发并持久化**全部**待审批中断（DA-02）。
+
+    每条操作额外带 ``interrupt_id`` 与 ``action_index``（在所属中断里的下标），前端
+    据此按中断作答；改造前只取第一个中断，其余中断对用户不可见却会被一并批准。
+    """
+    used: set[str] = set()
+    payload: list[dict] = []
+    for interrupt in interrupts:
+        config_map = {
+            cfg.get("action_name"): cfg for cfg in (interrupt.review_configs or [])
+        }
+        tc_ids = match_action_tool_call_ids(state_messages, interrupt.action_requests, used)
+        entries = build_action_requests_payload(interrupt.action_requests, tc_ids, config_map)
+        for index, entry in enumerate(entries):
+            entry["interrupt_id"] = interrupt.interrupt_id
+            entry["action_index"] = index
+        payload.extend(entries)
+    _apply_pending_marks(
+        partial_msg, payload, [entry["tool_call_id"] for entry in payload], thread_id
+    )
+    return payload
 
 
 def pending_tool_call_ids_for_approval(
@@ -180,6 +251,8 @@ class ResumeSnapshot:
     tool_call_records: list = field(default_factory=list)
     current_step: int = 0
     pending_tool_call_ids: list[str] = field(default_factory=list)
+    #: 持久化的 approval_required 载荷（含 interrupt_id / action_index / tool_call_id）
+    pending_action_requests: list[dict] = field(default_factory=list)
 
 
 def load_resume_snapshot(messages: list[dict] | None) -> ResumeSnapshot:
@@ -225,6 +298,11 @@ def load_resume_snapshot(messages: list[dict] | None) -> ResumeSnapshot:
                 if tid and tid not in seen_pending:
                     seen_pending.add(tid)
                     snapshot.pending_tool_call_ids.append(tid)
+        pending = msg.get("pending_approval")
+        if isinstance(pending, dict):
+            snapshot.pending_action_requests = [
+                ar for ar in (pending.get("action_requests") or []) if isinstance(ar, dict)
+            ]
         break
     return snapshot
 
@@ -249,6 +327,31 @@ def decision_status_map(pending_tool_call_ids: list, decisions: list) -> dict[st
             decision_item.get("type") if isinstance(decision_item, dict) else None
         )
         status_by_id[tc_id] = "approved" if decision_type == "approve" else "rejected"
+    return status_by_id
+
+
+def decision_status_by_interrupt(
+    answered: dict, pending_action_requests: list[dict]
+) -> dict[str, str]:
+    """按 ``(interrupt_id, action_index)`` 把实际作答映射回 ``{tool_call_id: approved|rejected}``。
+
+    只覆盖本次作答的中断；仍挂起的中断不改状态。改造前落库的记录没有 interrupt_id，
+    返回空 dict，调用方退回 :func:`decision_status_map` 的旧口径。
+    """
+    tool_call_by_slot = {
+        (ar.get("interrupt_id"), ar.get("action_index")): ar.get("tool_call_id")
+        for ar in pending_action_requests or []
+        if ar.get("tool_call_id")
+    }
+    status_by_id: dict[str, str] = {}
+    for interrupt_id, decisions in (answered or {}).items():
+        for index, decision in enumerate(decisions or []):
+            tool_call_id = tool_call_by_slot.get((interrupt_id, index))
+            if tool_call_id:
+                decision_type = decision.get("type") if isinstance(decision, dict) else None
+                status_by_id[tool_call_id] = (
+                    "approved" if decision_type == "approve" else "rejected"
+                )
     return status_by_id
 
 

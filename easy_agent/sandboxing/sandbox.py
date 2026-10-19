@@ -84,6 +84,48 @@ _BWRAP_MASKED_ETC_FILES: tuple[str, ...] = (
 _VENV_MOUNT = "/venv"
 
 
+# host_safe_env() 额外保留的临时目录变量（沙箱分支由 bwrap/Landlock 自行设置）。
+# 代理 / 镜像 / 证书类变量（HTTP(S)_PROXY、NO_PROXY、PIP_INDEX_URL、NPM_CONFIG_REGISTRY、
+# SSL_CERT_FILE 等）有意不放行，关闭沙箱时也一样（2026-10-19 决定）：代理 URL 可能带凭据；
+# 需要时由部署方显式配置，不从宿主环境继承。
+_HOST_SHELL_ENV_EXTRA: frozenset[str] = frozenset({"TMPDIR", "TMP", "TEMP"})
+
+# Windows 下 cmd.exe / Python 子进程正常运行所需的系统变量（均不含密钥）。
+# Windows 没有 bwrap/Landlock，只能以 sandbox_enabled=false 运行，必须保住这些。
+_WINDOWS_SHELL_ENV: frozenset[str] = frozenset({
+    "SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "COMSPEC", "PATHEXT",
+    "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "APPDATA", "LOCALAPPDATA",
+    "PROGRAMDATA", "PROGRAMFILES", "PROGRAMFILES(X86)", "PROGRAMW6432",
+    "COMMONPROGRAMFILES", "COMMONPROGRAMFILES(X86)", "ALLUSERSPROFILE",
+    "PUBLIC", "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE", "OS",
+})
+
+
+def host_safe_env(environ: dict[str, str] | None = None) -> dict[str, str]:
+    """宿主环境中可以交给 agent shell 的变量（白名单，保留宿主自己的 PATH/HOME）。
+
+    给 ``LocalShellBackend(inherit_env=False, env=host_safe_env())`` 用：未启用沙箱
+    （``agent.sandbox_enabled=false``）时命令直接以 ``self._env`` 运行，若继承整个
+    ``os.environ``，``.env`` 里的 LLM API Key、``EASY_JWT_SECRET``、数据库口令都会
+    对 agent 执行的命令可见（DA-16）。启用沙箱时 ``_sanitize_env`` 再按同一白名单
+    过滤，结果与改造前一致。
+    """
+    source = os.environ if environ is None else environ
+    keep = _SANITIZED_ENV_KEEP | _HOST_SHELL_ENV_EXTRA
+    if sys.platform == "win32":
+        keep = keep | _WINDOWS_SHELL_ENV
+        return {
+            key: value
+            for key, value in source.items()
+            if key.upper() in keep or key.upper().startswith("LC_")
+        }
+    return {
+        key: value
+        for key, value in source.items()
+        if key in keep or key.startswith("LC_")
+    }
+
+
 def _sanitize_env(
     env: dict[str, str] | None, *, home: str, path: str
 ) -> dict[str, str]:

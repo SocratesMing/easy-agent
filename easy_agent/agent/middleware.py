@@ -42,25 +42,29 @@ def build_agent_middleware(config, max_steps) -> list:
             ),
         )
     ]
+    # 超限时显式报错，避免「模型步数用尽但前端以为正常结束」；
+    # 错误会经 streaming 的异常分支转成 SSE error。
+    middleware.extend(build_call_limit_middleware(max_steps, exit_behavior="error"))
+    return middleware
+
+
+def build_call_limit_middleware(max_steps, *, exit_behavior: str) -> list:
+    """模型 / 工具调用上限：模型 ``max_steps`` 次、工具 ``4 * max_steps`` 次（每次 run）。
+
+    主代理用 ``exit_behavior="error"``；子代理用 ``"end"``——超限时子代理以一条
+    「已达调用上限」的消息收尾，``task`` 工具把它作为结果交回主代理，而不是让异常
+    打断整轮对话（DA-10）。每次调用都返回新实例，各代理栈互不共享。
+    """
     try:
         from langchain.agents.middleware import (
             ModelCallLimitMiddleware,
             ToolCallLimitMiddleware,
         )
-
-        run_limit = max(1, int(max_steps or 50))
-        middleware.extend(
-            [
-                # 超限时显式报错，避免「模型步数用尽但前端以为正常结束」；
-                # 错误会经 streaming 的异常分支转成 SSE error。
-                ModelCallLimitMiddleware(
-                    run_limit=run_limit, exit_behavior="error"
-                ),
-                ToolCallLimitMiddleware(
-                    run_limit=run_limit * 4, exit_behavior="error"
-                ),
-            ]
-        )
     except Exception as exc:  # noqa: BLE001
         logger.warning("未加载 call-limit 中间件: %s", exc)
-    return middleware
+        return []
+    run_limit = max(1, int(max_steps or 50))
+    return [
+        ModelCallLimitMiddleware(run_limit=run_limit, exit_behavior=exit_behavior),
+        ToolCallLimitMiddleware(run_limit=run_limit * 4, exit_behavior=exit_behavior),
+    ]

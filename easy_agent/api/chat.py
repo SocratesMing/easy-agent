@@ -36,8 +36,10 @@ from easy_agent.services import (
 )
 from easy_agent.services import skill_library
 from easy_agent.services import session_uploads as file_context
+from easy_agent.services.hitl_state import HitlDecisionError
 from easy_agent.services.sse_emitter import SSEEmitter
 from easy_agent.services.session_runtime import SessionBusyError
+from easy_agent.services.streaming import validate_resume_decisions
 from easy_agent.services.run_registry import finish_run, new_run_id, renew_run, start_run
 from easy_agent.services.stream_hub import (  # noqa: F401 - 兼容旧导入路径
     _HUB_HISTORY_MAX_CHARS,
@@ -738,6 +740,14 @@ async def chat_resume(
         workspace_name,
         expert_agent_id=get_session_expert(session_id),
     )
+
+    # DA-02：决策必须能对上当前待审批中断（interrupt_id / 数量 / 允许的决策）。
+    # 批处理 HITL 会先把恢复值存进 checkpoint 再校验，非法决策会让线程卡死，必须提前拒绝。
+    try:
+        await validate_resume_decisions(agent, thread_id, request.decisions)
+    except HitlDecisionError as exc:
+        logger.warning(f"[{sid}] 拒绝无效的审批决策 | thread={thread_id} | {exc}")
+        raise HTTPException(status_code=400, detail=f"审批决策无效：{exc}") from exc
 
     # Phase 2B：恢复 run 同样是独立 run（message_id 为空则 uuid），request_json
     # 只保存 decisions/session_id/thread_id 元数据，便于审计恢复来源。

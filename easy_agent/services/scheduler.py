@@ -377,9 +377,14 @@ async def _execute_task(task_id: str):
             raise _TaskAborted(f"任务已被暂停/删除: {task_id}")
         thread_id = f"sched-{task_id}-{run_id}"
         handler = _PauseAwareCallback(task_id)
+        from easy_agent.agent.run_config import build_run_config, run_context_kwargs
+
+        # 与聊天流同一套调用参数：共享编译图必须带 SessionContext，否则 backend 在
+        # before_agent 读记忆时就抛「缺少运行期 SessionContext」，任务直接失败。
         result = await agent.agent.ainvoke(
             {"messages": [HumanMessage(content=task.task_prompt)]},
-            config={"configurable": {"thread_id": thread_id}, "callbacks": [handler]},
+            config=build_run_config(agent, thread_id, callbacks=[handler]),
+            **run_context_kwargs(agent),
         )
         messages = result.get("messages", []) if isinstance(result, dict) else []
         final_content = ""

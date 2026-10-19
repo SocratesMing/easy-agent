@@ -4,6 +4,7 @@ import { deleteFile, getSessionGeneratedFiles } from '../api/files.js'
 import { authFetch } from '../api/auth.js'
 import { streamExportRun } from '../api/expert.js'
 import { chatBus, chatStore } from '../store/chatStore.js'
+import { applyApprovalRequests, buildResumeDecisions, markApprovalDecision, unmatchedApprovalRequests } from '../utils/hitlApproval.js'
 
 // MCP 工具结果解析：模块级函数，供正常流(handleSendMessage)与 HITL 恢复流(handleToolApproval)共用。
 // 注意：不要把它定义在某个函数内部，否则另一处引用会抛 ReferenceError，
@@ -335,28 +336,8 @@ export default {
               if (Array.isArray(data.blocks) && data.blocks.length > 0) {
                 this.messages[idx].blocks = data.blocks.map(b => ({ ...b }))
               }
-              for (const ar of data.action_requests) {
-                let blk = this.messages[idx].blocks.find(
-                  b => b.type === 'tool_call' && (b.tool_call_id === ar.tool_call_id || b.id === ar.tool_call_id)
-                )
-                if (!blk && ar.tool_name) {
-                  for (let i = this.messages[idx].blocks.length - 1; i >= 0; i--) {
-                    const b = this.messages[idx].blocks[i]
-                    if (b.type === 'tool_call' && b.tool_name === ar.tool_name) { blk = b; break }
-                  }
-                }
-                if (blk) {
-                  blk.pending_approval = true
-                  blk.approval_status = 'pending'
-                  if (ar.tool_call_id) {
-                    blk.tool_call_id = ar.tool_call_id
-                    blk.id = ar.tool_call_id
-                  }
-                  if (ar.file_paths && ar.file_paths.length > 0) {
-                    blk.file_paths = ar.file_paths
-                  }
-                }
-              }
+              // 挂不上工具卡片的（子代理内部审批）由 ChatMessage 的独立审批面板展示
+              applyApprovalRequests(this.messages[idx].blocks, data.action_requests)
               setReactive(this.messages, idx, { ...this.messages[idx], blocks: [...this.messages[idx].blocks] })
             }
           }
@@ -603,7 +584,9 @@ export default {
             }
             return b
           })
-          const hasPending = blocks.some(b => b.type === 'tool_call' && b.approval_status === 'pending')
+          // 子代理内部的审批没有对应工具卡片，靠消息级独立面板展示，也算待审批
+          const hasPending = blocks.some(b => b.type === 'tool_call' && b.approval_status === 'pending') ||
+            unmatchedApprovalRequests({ ...msg, blocks }).length > 0
           setReactive(this.messages, i, { ...msg, id: backendMsgId, blocks })
           if (hasPending) {
             this.pendingApproval = { threadId, assistantMsgId: backendMsgId }
@@ -1267,29 +1250,8 @@ export default {
             const idx = this.messages.findIndex(m => m.id === assistantMsgId)
             if (idx !== -1) {
               this.messages[idx].pending_approval = { thread_id: data.thread_id, action_requests: data.action_requests }
-              for (const ar of data.action_requests) {
-                let blk = this.messages[idx].blocks.find(
-                  b => b.type === 'tool_call' && (b.tool_call_id === ar.tool_call_id || b.id === ar.tool_call_id)
-                )
-                if (!blk && ar.tool_name) {
-                  for (let i = this.messages[idx].blocks.length - 1; i >= 0; i--) {
-                    const b = this.messages[idx].blocks[i]
-                    if (b.type === 'tool_call' && b.tool_name === ar.tool_name) { blk = b; break }
-                  }
-                }
-                if (!blk) {
-                  for (let i = this.messages[idx].blocks.length - 1; i >= 0; i--) {
-                    const b = this.messages[idx].blocks[i]
-                    if (b.type === 'tool_call' && !b.result && b.duration == null) { blk = b; break }
-                  }
-                }
-                if (blk) {
-                  blk.pending_approval = true
-                  blk.approval_status = 'pending'
-                  if (ar.tool_call_id) { blk.tool_call_id = ar.tool_call_id; blk.id = ar.tool_call_id }
-                  if (ar.file_paths && ar.file_paths.length > 0) blk.file_paths = ar.file_paths
-                }
-              }
+              // 挂不上工具卡片的（子代理内部审批）由 ChatMessage 的独立审批面板展示
+              applyApprovalRequests(this.messages[idx].blocks, data.action_requests)
               setReactive(this.messages, idx, { ...this.messages[idx], blocks: [...this.messages[idx].blocks] })
             }
           }
@@ -1434,31 +1396,30 @@ export default {
         }
       }
     },
-    // HITL: 用户审批文件删除操作后恢复执行
-    async handleToolApproval(decision) {
+    // HITL: 用户审批后恢复执行。target.interruptId = 用户点的那个中断（DA-02）：
+    // 只回答它，其余中断保持挂起，恢复流结束时后端会再次下发 approval_required。
+    async handleToolApproval(decision, target) {
       if (!this.pendingApproval) return
 
       const currentApproval = this.pendingApproval
       const { threadId, assistantMsgId } = currentApproval
       const sessionId = this.currentSessionId
 
-      const decisions = decision === 'approve'
-        ? [{ type: 'approve' }]
-        : [{ type: 'reject', message: '用户拒绝了此操作，请勿重试此删除命令。' }]
+      const msgIdx = assistantMsgId ? this.messages.findIndex(m => m.id === assistantMsgId) : -1
+      const pending = msgIdx !== -1 ? this.messages[msgIdx].pending_approval : null
+      const actionRequests = (pending && pending.action_requests) || []
+      const { decisions, interruptId } = buildResumeDecisions(actionRequests, decision, {
+        interruptId: target && target.interruptId,
+      })
 
-      // 清除 tool_call block 的 pending_approval 状态
-      if (assistantMsgId) {
-        const idx = this.messages.findIndex(m => m.id === assistantMsgId)
-        if (idx !== -1) {
-          for (const blk of this.messages[idx].blocks) {
-            if (blk.pending_approval) {
-              blk.pending_approval = false
-              // 记录用户审批决策，供前端显示「已批准 / 已拒绝」持久标记
-              blk.approval_status = decision === 'approve' ? 'approved' : 'rejected'
-            }
-          }
-          setReactive(this.messages, idx, { ...this.messages[idx], blocks: [...this.messages[idx].blocks] })
-        }
+      // 清掉待审批按钮（恢复流期间不允许再点），只给本次作答的中断记上「已批准 / 已拒绝」
+      if (msgIdx !== -1) {
+        markApprovalDecision(this.messages[msgIdx].blocks, decision, actionRequests, interruptId)
+        setReactive(this.messages, msgIdx, {
+          ...this.messages[msgIdx],
+          pending_approval: null,
+          blocks: [...this.messages[msgIdx].blocks],
+        })
       }
       // 本次决策已落地，重算标识（若恢复流中再遇嵌套审批会立即重新亮起）
       this.recomputePendingApprovalFlag(sessionId)
@@ -1494,32 +1455,8 @@ export default {
                   b.duration = 0
                 }
               }
-              for (const ar of data.action_requests) {
-                let blk = this.messages[idx].blocks.find(
-                  b => b.type === 'tool_call' && (b.tool_call_id === ar.tool_call_id || b.id === ar.tool_call_id)
-                )
-                // 兜底：按 tool_name 匹配最后一个同名工具块
-                if (!blk && ar.tool_name) {
-                  for (let i = this.messages[idx].blocks.length - 1; i >= 0; i--) {
-                    const b = this.messages[idx].blocks[i]
-                    if (b.type === 'tool_call' && b.tool_name === ar.tool_name) {
-                      blk = b
-                      break
-                    }
-                  }
-                }
-                if (blk) {
-                  blk.pending_approval = true
-                  blk.approval_status = 'pending'
-                  if (ar.tool_call_id) {
-                    blk.tool_call_id = ar.tool_call_id
-                    blk.id = ar.tool_call_id
-                  }
-                  if (ar.file_paths && ar.file_paths.length > 0) {
-                    blk.file_paths = ar.file_paths
-                  }
-                }
-              }
+              // 挂不上工具卡片的（子代理内部审批）由 ChatMessage 的独立审批面板展示
+              applyApprovalRequests(this.messages[idx].blocks, data.action_requests)
               setReactive(this.messages, idx, { ...this.messages[idx], blocks: [...this.messages[idx].blocks] })
             }
           }

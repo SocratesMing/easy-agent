@@ -24,16 +24,16 @@ from langgraph.types import Command
 from easy_agent.agent import EasyAgent
 from easy_agent.db import Database
 from easy_agent.agent.model import resolve_context_length
+from easy_agent.agent.run_config import build_run_config
 from easy_agent.models.api import ChatRequest
 from easy_agent.utils.session_logger import SessionLogger
 from easy_agent.services.agent_manager import get_agent_config
 from easy_agent.services.hitl_state import (
-    _extract_hitl_request,
-    _hitl_action_names,
-    _hitl_interrupt_items,
-    _hitl_review_config_map,
-    hanging_hitl_tool_count,
+    HitlDecisionError,
+    ResumePlan,
     normalize_resume_decisions,
+    pending_hitl_interrupts,
+    plan_resume,
 )
 from easy_agent.services.sse import SSEEvent
 from easy_agent.services.sse_emitter import SSEEmitter
@@ -59,14 +59,14 @@ from easy_agent.services.streaming.projector import (
     apply_decision_status_to_blocks,
     apply_decision_status_to_records,
     build_usage_payload,
+    decision_status_by_interrupt,
     decision_status_map,
     finalize_blocks,
     get_model_context_limit,
     last_user_message,
     load_resume_snapshot,
-    mark_hitl_pending,
+    mark_hitl_pending_interrupts,
     merge_tool_call_records,
-    pending_tool_call_ids_for_approval,
     thinking_duration,
 )
 from easy_agent.services.streaming.side_effects import (
@@ -211,80 +211,79 @@ async def detect_hitl_interruption(
     thread_id: str,
     with_approval: bool = False,
 ) -> HitlInterruption | None:
-    """检测图状态里的 HITL 中断并投影为审批载荷 + 部分消息。"""
+    """检测图状态里的 HITL 中断并投影为审批载荷 + 部分消息。
+
+    并行子代理会同时挂起多个中断：全部下发（每条操作带 interrupt_id），而不是只取第一个。
+    """
     graph_state = await agent.agent.aget_state(stream_config)
     if not (graph_state.next and graph_state.tasks):
         return None
-    hitl_request = _extract_hitl_request(graph_state)
-    if not hitl_request:
+    interrupts = pending_hitl_interrupts(graph_state)
+    if not interrupts:
         return None
-    action_requests = hitl_request.get("action_requests", [])
-    config_map = _hitl_review_config_map(hitl_request)
     state_msgs = graph_state.values.get("messages", [])
-    approval_tool_names = _hitl_action_names(hitl_request)
-    pending_tc_ids = pending_tool_call_ids_for_approval(
-        state_msgs, approval_tool_names
-    )
     partial_msg = _partial_message_dict(
         proc, elapsed_time, with_approval=with_approval
     )
-    payload = mark_hitl_pending(
-        partial_msg, pending_tc_ids, action_requests, config_map, thread_id
+    payload = mark_hitl_pending_interrupts(
+        partial_msg, interrupts, state_msgs, thread_id
     )
     return HitlInterruption(
         action_requests_payload=payload, partial_message=partial_msg
     )
 
 
+async def plan_resume_for_agent(
+    *, agent, stream_config, decisions: list[dict], sid: str = ""
+) -> ResumePlan:
+    """读取当前待审批中断并规划恢复值；决策与中断对不上时抛 ``HitlDecisionError``。
+
+    读不到图状态（替身 / checkpointer 异常）时退回改造前的直传，不阻断恢复。
+    """
+    try:
+        state = await agent.agent.aget_state(stream_config)
+        interrupts = pending_hitl_interrupts(state)
+    except Exception as e:  # noqa: BLE001 - 读状态失败不应吞掉用户的审批
+        logger.warning(
+            f"[{sid}] HITL 恢复: 读取 pending interrupts 失败（回退直传 decisions）: {e}"
+        )
+        return ResumePlan(
+            resume={"decisions": [dict(d) for d in decisions or [] if isinstance(d, dict)]},
+            legacy=True,
+        )
+    plan = plan_resume(interrupts, decisions)
+    if len(interrupts) > 1:
+        logger.info(
+            f"[{sid}] HITL 恢复: {len(interrupts)} 个待审批中断，本次作答 "
+            f"{len(plan.answered)} 个（{'旧前端无 interrupt_id，只答第一个' if plan.legacy else '按 interrupt_id'}）"
+        )
+    return plan
+
+
+async def validate_resume_decisions(agent, thread_id: str, decisions: list[dict]) -> None:
+    """恢复接口的前置校验：决策非法时抛 ``HitlDecisionError``（接口转成 400）。
+
+    批处理 HITL 先存恢复值再校验，非法决策会让线程永远卡在「数量不匹配」；提前拒绝
+    才能让用户改正后重试。拿不到图（测试替身等）时跳过，由恢复流自身兜底。
+    """
+    graph = getattr(agent, "agent", None)
+    if graph is None or not hasattr(graph, "aget_state"):
+        return
+    await plan_resume_for_agent(
+        agent=agent,
+        stream_config=build_run_config(agent, thread_id),
+        decisions=decisions,
+    )
+
+
 async def build_resume_command(
     *, agent, stream_config, decisions: list[dict], sid: str
 ) -> Command:
-    """构造 resume 载荷；多 pending interrupt 时按 interrupt_id 映射恢复。"""
-    resume_command = None
-    try:
-        state = await agent.agent.aget_state(stream_config)
-        interrupt_items = _hitl_interrupt_items(state)
-        if len(interrupt_items) == 1:
-            _interrupt_id, value = interrupt_items[0]
-            hanging_tool_count = len(value.get("action_requests") or [])
-            effective_decisions = normalize_resume_decisions(
-                decisions, hanging_tool_count=hanging_tool_count
-            )
-            resume_payload = {"decisions": effective_decisions}
-            resume_command = Command(resume=resume_payload)
-        elif len(interrupt_items) > 1 and all(
-            interrupt_id for interrupt_id, _ in interrupt_items
-        ):
-            logger.info(
-                f"[{sid}] HITL 恢复: 检测到 {len(interrupt_items)} 个 pending interrupt，"
-                "按 interrupt_id 与各自挂起工具数映射恢复"
-            )
-            resume_command = Command(
-                resume={
-                    interrupt_id: {
-                        "decisions": normalize_resume_decisions(
-                            decisions,
-                            hanging_tool_count=len(
-                                value.get("action_requests") or []
-                            ),
-                        )
-                    }
-                    for interrupt_id, value in interrupt_items
-                }
-            )
-        else:
-            hanging_tool_count = hanging_hitl_tool_count(state)
-            effective_decisions = normalize_resume_decisions(
-                decisions, hanging_tool_count=hanging_tool_count
-            )
-            resume_command = Command(resume={"decisions": effective_decisions})
-    except Exception as e:
-        logger.warning(
-            f"[{sid}] HITL 恢复: 检查 pending interrupts 失败（回退默认 resume）: {e}"
-        )
-    if resume_command is None:
-        resume_command = Command(resume={"decisions": decisions})
-    return resume_command
+    """构造 resume 载荷（兼容入口）：按 interrupt_id 映射，见 :func:`plan_resume`。"""
+    plan = await plan_resume_for_agent(
+        agent=agent, stream_config=stream_config, decisions=decisions, sid=sid
+    )
+    return Command(resume=plan.resume)
 
 
 async def finalize_stream(
@@ -521,7 +520,7 @@ async def chat_stream_generator(
 
         # HITL: per-message thread_id for checkpointer state isolation
         thread_id = f"{session_id}-{message_id}"
-        stream_config = {"configurable": {"thread_id": thread_id}}
+        stream_config = build_run_config(agent, thread_id)
 
         async for ev in pump_stream(
             agent=agent,
@@ -694,16 +693,37 @@ async def resume_stream_generator(
     except Exception:
         pass
 
+    # 与主生成器同一套 config（含按编译图节点数计算的 recursion_limit 兜底）。
+    stream_config = build_run_config(agent, thread_id)
+
+    # 按 interrupt_id 规划恢复值（DA-02）；接口已前置校验，这里只处理并发竞态。
+    try:
+        plan = await plan_resume_for_agent(
+            agent=agent, stream_config=stream_config, decisions=decisions, sid=sid
+        )
+    except HitlDecisionError as e:
+        logger.warning(f"[{sid}] HITL 恢复: 审批决策无效: {e}")
+        yield emitter.error(f"审批决策无效：{e}")
+        return
+
     # 将审批决策立即应用到内存中的 blocks / tool_call_records：
     # 1) 前端历史渲染优先读 blocks，只写 tool_calls 不够；
     # 2) 恢复流结束后会用内存数据整条覆盖持久化（build_assistant_message_dict），
     #    若只 patch 数据库（_persist_approval_decisions），最终写回会把状态冲回 "pending"。
-    pending_decisions = normalize_resume_decisions(
-        decisions, hanging_tool_count=len(pending_tool_call_ids)
+    # 只标记本次作答的中断；改造前落库的记录没有 interrupt_id，退回按 pending 块顺序的旧口径。
+    decision_status_by_id = decision_status_by_interrupt(
+        plan.answered, snapshot.pending_action_requests
     )
-    decision_status_by_id = decision_status_map(
-        pending_tool_call_ids, pending_decisions
+    snapshot_has_interrupt_ids = any(
+        ar.get("interrupt_id") for ar in snapshot.pending_action_requests
     )
+    if not decision_status_by_id and not snapshot_has_interrupt_ids:
+        pending_decisions = normalize_resume_decisions(
+            decisions, hanging_tool_count=len(pending_tool_call_ids)
+        )
+        decision_status_by_id = decision_status_map(
+            pending_tool_call_ids, pending_decisions
+        )
     apply_decision_status_to_records(tool_call_records, decision_status_by_id)
     apply_decision_status_to_blocks(blocks, decision_status_by_id)
 
@@ -720,13 +740,6 @@ async def resume_stream_generator(
         )
         logger.info(f"[{sid}] 👤 用户审批操作: {decision_desc}")
 
-    # 与主生成器一致：recursion_limit 收敛到 2*max_steps，避免子代理/工具循环
-    # 绕过 max_steps 预算（框架默认 9999）。
-    _max_steps = int(getattr(agent, "max_steps", 50) or 50)
-    stream_config = {
-        "configurable": {"thread_id": thread_id},
-        "recursion_limit": max(2 * _max_steps, 50),
-    }
     context_length, auto_compress_tokens = resolve_resume_context(agent)
 
     # ── StreamProcessor（用 DB 载入的初始状态初始化）──────────────────
@@ -742,12 +755,9 @@ async def resume_stream_generator(
         start_time=start_time,
     )
 
-    # 构造 resume 载荷：当图中存在多个 pending interrupt（如并行工具调用/子代理各自触发 HITL）时，
-    # LangGraph 要求以 {interrupt_id: value} 映射形式恢复，否则抛
-    # "When there are multiple pending interrupts, you must specify the interrupt id when resuming."
-    resume_command = await build_resume_command(
-        agent=agent, stream_config=stream_config, decisions=decisions, sid=sid
-    )
+    # 多个 pending interrupt（并行子代理各自触发 HITL）时 LangGraph 要求
+    # {interrupt_id: value} 映射；未作答的中断保持挂起，流结束后再次下发审批。
+    resume_command = Command(resume=plan.resume)
 
     persister = IncrementalPersister(
         db=db,

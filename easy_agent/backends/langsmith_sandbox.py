@@ -32,6 +32,7 @@ from deepagents.backends.protocol import ExecuteResponse
 
 from easy_agent.backends.shell import _PathTranslatingShell
 from easy_agent.bootstrap.env import env_str
+from easy_agent.sandboxing.sandbox import host_safe_env
 
 logger = logging.getLogger(__name__)
 
@@ -295,9 +296,10 @@ class LangSmithExecuteShell(_PathTranslatingShell):
             path_mappings=path_mappings,
             root_dir=str(self._workspace_root),
             virtual_mode=True,
-            inherit_env=True,
+            # 本地 env 不用于执行（命令都发往远端），但也不在对象上留一份宿主密钥。
+            inherit_env=False,
+            env={**host_safe_env(), **(env or {})},
             timeout=timeout,
-            env=env,
             sandbox_enabled=False,
         )
 

@@ -17,9 +17,24 @@
 | `todo_list` | 待办更新 | `todos`、`step` | chat |
 | `token_usage` | 用量更新 | `input_tokens` / `output_tokens` / `reasoning_tokens` / `context_tokens` | chat |
 | `knowledge_evidence` | 知识库引用 | `items` / `session_id` | knowledge |
-| `approval_required` | HITL 中断 | `thread_id`、`action_requests`、`review_configs` | chat |
+| `approval_required` | HITL 中断 | `thread_id`、`action_requests`（全部待审批中断的操作，见下文）；恢复流另带 `blocks` | chat |
 | `done` | 正常结束 | `session_id`、`message_id`、`finish_reason` | 全部 |
 | `error` | 失败/取消 | `content` | 全部 |
+
+## HITL 审批：`approval_required` 与 `/agent/chat/resume`（DA-02，2026-10-19）
+
+并行的 `task` 子代理各自触发审批时，图里会同时挂着多个中断。`action_requests` 下发**全部**
+中断的操作，每项字段：
+
+- `tool_call_id`：对应主消息里的工具调用；子代理内部的操作没有对应调用，为空串（前端在消息级审批面板展示）
+- `tool_name` / `arguments` / `description` / `allowed_decisions` / `file_paths`
+- `interrupt_id`：所属中断（2026-10-19 新增，追加字段）
+- `action_index`：在所属中断里的下标（同上）
+
+恢复请求的 `decisions` 每项可带 `interrupt_id`（与 `action_index`）：只回答这些中断，其余保持
+挂起，恢复流结束后会再次下发 `approval_required`。不带 `interrupt_id`（旧前端 / 改造前的记录）
+时只回答第一个中断。决策与待审批中断对不上（未知 ID、数量或类型不符）时接口返回 400——批处理
+HITL 会先保存恢复值再校验，非法决策会让线程卡死，所以必须在恢复前拒绝。
 
 ## 约束
 

@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
 from langchain_core.utils.json import parse_partial_json
 
-from easy_agent.agent.model import extract_reasoning
+from easy_agent.agent.model import extract_reasoning, is_internal_model_call
 from easy_agent.services.sse import SSEEvent
 
 
@@ -171,6 +171,8 @@ class StreamProcessor:
         # 仅在 messages 模式解析大参数工具（见 STREAM_ARG_TOOLS）时使用，
         # 每个 model turn 结束（updates 的完整 AIMessage 到达）时清空。
         self._arg_stream: dict = {}
+        # 已跳过的中间件内部模型调用来源（如 summarization），每种只记一次日志。
+        self._internal_sources_skipped: set[str] = set()
 
     def _thinking_text(self) -> str:
         blk = next((b for b in self.blocks if b.get("type") == "thinking"), None)
@@ -324,9 +326,19 @@ class StreamProcessor:
         return events
 
     def _handle_messages(self, data) -> list[dict]:
-        chunk, _metadata = data
+        chunk, metadata = data
         events = []
         if not isinstance(chunk, AIMessageChunk):
+            return events
+        # 摘要等中间件内部模型调用的 token 不是回复：不推前端、不进正文/思考累计。
+        if is_internal_model_call(metadata):
+            source = str(metadata.get("lc_source") or "internal")
+            if source not in self._internal_sources_skipped:
+                self._internal_sources_skipped.add(source)
+                logger.info(
+                    "[%s] 跳过中间件内部模型调用的流式输出 | lc_source=%s",
+                    self.sid, source,
+                )
             return events
         rc = extract_reasoning(getattr(chunk, "additional_kwargs", {}))
         content = chunk.content or ""
