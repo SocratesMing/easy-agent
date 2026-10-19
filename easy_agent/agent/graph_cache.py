@@ -7,9 +7,9 @@
    HITL 配置、subagent specs、skills/permissions、memory 源、摘要阈值、
    checkpointer/store 身份。``session_id`` / workspace / thread_id 一律不进键。
 2. **会话差异走运行期 ``SessionContext``**：``create_deep_agent`` 用
-   ``backend`` callable + ``context_schema=SessionContext`` 建图；每次
-   ``astream(..., context=agent.session_context)`` 时，backend 与工具才解析
-   当前会话的工作区、用户技能、记忆文件。
+   ``ContextBackend`` 实例 + ``context_schema=SessionContext`` 建图；每次
+   ``astream(..., context=agent.session_context)`` 时，backend（经
+   ``get_runtime().context``）与工具才解析当前会话的工作区、用户技能、记忆文件。
 3. **工具会话绑定在调用时注入**：``create_scheduled_task`` /
    ``save_expert`` / ``read_uploaded_file`` / ``access_knowledge_original``
    / ``web_search`` 的实例带有 username/session_id/workspace_dir/user_id。
@@ -21,14 +21,13 @@
    ``EasyAgent._create_agent`` 不写缓存、按会话建图，并在日志中给出原因
    （见 docs/design/2026-10-18-d2-graph-reuse.md）。
 
-官方依据（deepagents 0.6.8）
-----------------------------
+官方依据（deepagents 0.7）
+--------------------------
 
-* ``create_deep_agent(..., backend=BackendProtocol | Callable[[ToolRuntime],
-  BackendProtocol], context_schema=..., checkpointer=..., store=...)``；
-* ``CompiledStateGraph.astream(..., context=...)``；
-* ``FilesystemMiddleware`` / ``MemoryMiddleware`` / ``SkillsMiddleware`` 均在
-  runtime 解析 backend factory，因此 backend callable 会随 context 变化。
+* ``create_deep_agent(..., backend=BackendProtocol, context_schema=...,
+  checkpointer=..., store=...)``——0.7 移除了 callable backend，改由 backend
+  实例在运行期自行读取上下文（本项目的 ``backends/context.py:ContextBackend``）；
+* ``CompiledStateGraph.astream(..., context=...)``。
 """
 
 from __future__ import annotations
@@ -222,6 +221,8 @@ def subagents_fingerprint(
                 "middleware": [
                     type(m).__name__ for m in (spec.get("middleware") or [])
                 ],
+                "use_tools": list(spec.get("use_tools") or []),
+                "requires_tools": list(spec.get("requires_tools") or []),
             }
         )
     return result

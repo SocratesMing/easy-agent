@@ -73,7 +73,7 @@ _MUTATING_TOOL_RE = re.compile(
 HITL_SYSTEM_NOTE = (
     "敏感工具会触发人工审批后再执行：沙箱内的文件删除类 execute、"
     "save_expert、create_scheduled_task、access_knowledge_original 的 materialize，"
-    "以及名称含 write/delete/update/insert 等写操作的 MCP 工具。"
+    "以及服务端声明为写操作、或名称含 write/delete/update/insert 等写操作的 MCP 工具。"
     "execute 走 bwrap/Landlock，二者都不可用时 fail-closed，不会落到宿主机。"
 )
 
@@ -94,7 +94,7 @@ EXECUTE_HITL_TOOL_DESCRIPTION: str = (
 
 # ── FW-04：execute 描述通过官方 HarnessProfile 注入 ──────────────────────
 #
-# DeepAgents 0.6.8 的公开 beta API：
+# DeepAgents 0.7 的公开 beta API（0.6.8 起已有）：
 #   HarnessProfile(tool_description_overrides={"execute": ...})
 #   register_harness_profile("provider:model", profile)
 # ``create_deep_agent`` 在模型已构建（本项目总是传模型实例）时，按
@@ -126,6 +126,32 @@ def looks_like_mutating_tool(name: str) -> bool:
     if not name or name in _NAME_HEURISTIC_EXEMPT:
         return False
     return bool(_MUTATING_TOOL_RE.search(name))
+
+
+def mcp_annotation_decision(tool: object) -> bool | None:
+    """按 MCP 服务端声明的 ToolAnnotations 判定是否审批（DA-09 第一步）。
+
+    ``langchain-mcp-adapters`` 把 annotations 平铺进 ``tool.metadata``（证据包装会保留）。
+    只认**显式**取值（未声明的字段是 ``None``，不套用规范里的默认值，否则每个工具都要审批）：
+
+    - ``destructiveHint=True`` → 审批（宁可多问）；
+    - ``readOnlyHint=True`` → 免审批；
+    - ``readOnlyHint=False`` → 会改动外部状态 → 审批；
+    - 都没有 → ``None``，由调用方回退名字启发式。
+
+    注意：annotations 是服务端的自我声明；连接哪个 MCP 服务由用户 / 管理员决定。
+    """
+    metadata = getattr(tool, "metadata", None)
+    if not isinstance(metadata, Mapping):
+        return None
+    if metadata.get("destructiveHint") is True:
+        return True
+    read_only = metadata.get("readOnlyHint")
+    if read_only is True:
+        return False
+    if read_only is False:
+        return True
+    return None
 
 
 def _is_knowledge_materialize(request: ToolCallRequest) -> bool:
@@ -325,7 +351,8 @@ def build_interrupt_config(
     3. 条件 HITL（``execute`` / ``access_knowledge_original``）沿用注册表的
        ``hitl_predicate`` 绑定 ``when``；谓词缺失时退化为无条件审批
        （宁可多问，不可漏问）；
-    4. 其余**实际注入**的非内置工具按名字启发式判定（MCP 写工具），
+    4. 其余**实际注入**的非内置工具：先看 MCP annotations
+       （:func:`mcp_annotation_decision`），没有可用标注再按名字启发式判定，
        未登记名字一律视为 MCP（与 ``resolve_tool_source`` 口径一致）；
     5. 未知/未注入工具不进入配置。
 
@@ -344,7 +371,9 @@ def build_interrupt_config(
     if not enable_hitl:
         return None
 
-    ordered_names = [name for name in map(_tool_name, tool_names or ()) if name]
+    tools = list(tool_names or ())
+    ordered_names = [name for name in map(_tool_name, tools) if name]
+    tool_objects = {_tool_name(tool): tool for tool in tools if not isinstance(tool, str)}
     builtin_names = set(builtin_tool_names())
     available = set(ordered_names) | builtin_names
     predicate_map = HITL_WHEN_PREDICATES if predicates is None else predicates
@@ -380,10 +409,24 @@ def build_interrupt_config(
     # EasyAgent.mcp_tools 里。read_uploaded_file 名字含 upload，历史上会被该
     # 启发式加入审批；FW-12 保持这一现状（行为等价），是否改为 is_hitl 由后续
     # 产品决策处理（见设计文档「未覆盖工具」）。
+    # DA-09：MCP 工具优先看服务端声明的 annotations，没有可用标注才回退名字启发式。
     for name in ordered_names:
         if name in builtin_names or name in config:
             continue
-        if looks_like_mutating_tool(name):
+        by_name = looks_like_mutating_tool(name)
+        decision = None
+        if name not in _NAME_HEURISTIC_EXEMPT:
+            decision = mcp_annotation_decision(tool_objects.get(name))
+        if decision is None:
+            decision = by_name
+        elif decision != by_name:
+            logger.info(
+                "[%s] 工具 %s 按 MCP annotations %s（名字启发式结论相反）",
+                sid or "-",
+                name,
+                "需要审批" if decision else "免审批",
+            )
+        if decision:
             config.setdefault(
                 name,
                 InterruptOnConfig(allowed_decisions=["approve", "reject"]),

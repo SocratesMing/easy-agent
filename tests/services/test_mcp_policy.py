@@ -18,6 +18,7 @@ from easy_agent.services.mcp_policy import (
     ensure_servers_allowed,
     filter_server_names,
     is_stdio,
+    normalize_workspace_paths,
     stdio_violation,
 )
 
@@ -38,6 +39,17 @@ CATALOG = [
         "name": "Web",
         "config": {"transport": "streamable_http", "url": "https://example.test/mcp"},
         "fields": [],
+    },
+    {
+        "id": "sqlite",
+        "name": "SQLite",
+        "config": {
+            "type": "stdio",
+            "command": "uvx",
+            "args": ["db-mcp-server"],
+            "env": {"DB_TYPE": "sqlite", "DB_PATH": ""},
+        },
+        "fields": [{"key": "env.DB_PATH", "path": "workspace"}],
     },
 ]
 
@@ -162,3 +174,55 @@ def test_global_mcp_json_is_still_env_expanded(tmp_path, monkeypatch):
         Config, "get_user_mcp_path", classmethod(lambda cls, u, c=None: tmp_path / "none" / "mcp.json")
     )
     assert mcp_service.load_mcp_config("alice")["g"]["url"] == "https://x.test/admin-token"
+
+
+# ── 工作区路径字段：sqlite 连接器的 DB_PATH 只能指向用户自己的工作区 ────────
+
+
+@pytest.fixture()
+def workspaces(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        Config, "get_user_workspace_dir", classmethod(lambda cls, u, c=None: tmp_path / "ws" / u)
+    )
+    (tmp_path / "ws" / "alice").mkdir(parents=True)
+    return tmp_path
+
+
+def _sqlite(db_path):
+    return {
+        "transport": "stdio",
+        "command": "uvx",
+        "args": ["db-mcp-server"],
+        "env": {"DB_TYPE": "sqlite", "DB_PATH": db_path},
+    }
+
+
+def test_sqlite_path_inside_own_workspace_is_allowed(workspaces):
+    db = workspaces / "ws" / "alice" / "data" / "sales.db"
+    assert stdio_violation(_sqlite(str(db)), "alice") == ""
+
+
+def test_sqlite_path_outside_own_workspace_is_rejected(workspaces):
+    app_db = workspaces / "data" / "easy_agent.db"  # 应用自己的业务库
+    escape = workspaces / "ws" / "alice" / ".." / "bob" / "x.db"
+    link = workspaces / "ws" / "alice" / "link.db"
+    link.symlink_to(app_db)
+    for db in (app_db, escape, link):
+        assert "工作区" in stdio_violation(_sqlite(str(db)), "alice"), db
+
+
+def test_relative_path_is_moved_into_the_workspace_on_write(workspaces):
+    prepared = normalize_workspace_paths({"db": _sqlite("data/sales.db")}, "alice")
+    expected = (workspaces / "ws" / "alice").resolve() / "data" / "sales.db"
+    assert prepared["db"]["env"]["DB_PATH"] == str(expected)
+    assert stdio_violation(prepared["db"], "alice") == ""
+    # 没换算过的相对路径会被 stdio 进程按服务进程目录解析，必须拒绝
+    assert stdio_violation(_sqlite("data/sales.db"), "alice")
+    # 相对路径也不能借 .. 逃出去
+    escaped = normalize_workspace_paths({"db": _sqlite("../bob/x.db")}, "alice")
+    assert stdio_violation(escaped["db"], "alice")
+
+
+def test_admin_sqlite_path_is_not_restricted(workspaces):
+    assert stdio_violation(_sqlite("/srv/data/easy_agent.db"), "admin") == ""
+    assert normalize_workspace_paths({"db": _sqlite("rel.db")}, "admin")["db"]["env"]["DB_PATH"] == "rel.db"

@@ -178,10 +178,11 @@ def test_install_execute_tool_description_no_longer_monkeypatches():
     assert not hasattr(FilesystemMiddleware, "_easy_execute_description_installed")
 
 
-def test_summarization_patch_target_still_exists():
-    import deepagents.graph as graph
+def test_summarization_override_uses_public_middleware_name():
+    """DA-06：摘要阈值靠官方类按 ``.name`` 原位替换默认项，名字变了就会变成重复中间件。"""
+    from deepagents.backends import StateBackend
+    from deepagents.middleware.summarization import SummarizationMiddleware
+    from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 
-    assert hasattr(graph, "create_summarization_middleware"), (
-        "deepagents.graph.create_summarization_middleware 已改名/移除，"
-        "summarization.configured_summarization 需要重新适配"
-    )
+    middleware = SummarizationMiddleware(GenericFakeChatModel(messages=iter([])), backend=StateBackend())
+    assert middleware.name == "SummarizationMiddleware"

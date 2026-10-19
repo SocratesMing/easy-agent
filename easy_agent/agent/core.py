@@ -1,12 +1,12 @@
-"""Core Agent implementation using DeepAgents framework
+"""Core Agent implementation using DeepAgents framework (deepagents 0.7).
 
-DeepAgents provides built-in tools automatically:
-- write_todos: task planning
-- ls, read_file, write_file, edit_file, glob, grep: filesystem operations
-- execute: shell command execution
+``create_deep_agent`` adds these tools automatically:
+- ls, read_file, write_file, edit_file, glob, grep, delete: filesystem operations
+- execute: shell command execution (sandbox backends)
 - task: subagent spawning
 
-No need to declare these tools manually.
+``write_todos`` is no longer built in since 0.7: ``agent/middleware.py`` adds
+``TodoListMiddleware`` explicitly.
 """
 
 import json
@@ -47,8 +47,8 @@ from easy_agent.agent.workspace import (
     LONG_TERM_MEMORY_VIRTUAL_PATH,
     AgentWorkspaceMixin,
 )
-from easy_agent.agent.subagents import DEFAULT_SUBAGENTS
-from easy_agent.agent.summarization import configured_summarization
+from easy_agent.agent.subagents import DEFAULT_SUBAGENTS, resolve_subagent_tools
+from easy_agent.agent.summarization import build_summarization_middleware
 from easy_agent.bootstrap.logger import AgentLogger
 from easy_agent.agent.model import (
     create_model,
@@ -125,7 +125,7 @@ def build_subagent_specs(
     官方语义：自定义 subagent **不继承**主 agent 的 skills，且 middleware 栈
     也不会自动带上主代理的 middleware。这里显式补上：
     - skills=["/user-skills/"]：子代理能读技能文档；
-    - LoggingMiddleware：子代理内工具异常不会直接中断 task；
+    - ToolErrorMiddleware（DA-12）：子代理内可恢复的工具错误回灌给子代理，不中断 task；
     - 模型/工具调用上限（DA-10）：子代理图各自绑定 ``recursion_limit=9999``，
       主流程的递归上限与 call-limit 都管不到它们，只能在子代理自己的栈里限制。
 
@@ -133,20 +133,19 @@ def build_subagent_specs(
     拿不到上述 call-limit，因此按官方做法显式提供同名 spec 覆盖它（描述与提示词
     沿用 deepagents 的 ``GENERAL_PURPOSE_SUBAGENT``，工具/审批/权限照常继承主代理）。
 
-    D2：``session_id`` 不再写进 spec（否则同一张编译图会被会话绑定、无法复用）。
-    LoggingMiddleware 只做工具异常兜底，日志前缀使用通用 ``agent``；保留参数
-    仅为兼容既有调用方。
+    D2：``session_id`` 不再写进 spec（否则同一张编译图会被会话绑定、无法复用）；
+    保留该参数仅为兼容既有调用方。``result_log_truncate`` 用于工具错误日志截断。
     """
     from deepagents.middleware.subagents import GENERAL_PURPOSE_SUBAGENT
 
-    from easy_agent.services.logging_middleware import LoggingMiddleware
+    from easy_agent.agent.tool_errors import build_tool_error_middleware
 
     specs: list[dict] = []
     for base in (GENERAL_PURPOSE_SUBAGENT, *DEFAULT_SUBAGENTS):
         item = dict(base)
         item.setdefault("skills", ["/user-skills/"])
         item["middleware"] = [
-            LoggingMiddleware(result_log_truncate=result_log_truncate),
+            build_tool_error_middleware(log_truncate=result_log_truncate),
             *build_call_limit_middleware(max_steps, exit_behavior="end"),
         ]
         specs.append(item)
@@ -543,23 +542,31 @@ class EasyAgent(AgentWorkspaceMixin):
                 fallback_context=self.session_context if fallback_context else None,
             )
             graph_tools = contextualize_tools(raw_tools)
-            with configured_summarization(self.config):
-                return create_deep_agent(
-                    name="easy-agent",
-                    model=model,
-                    system_prompt=self.system_prompt,
-                    backend=backend,
-                    skills=skills_paths or None,
-                    middleware=middleware,
-                    tools=graph_tools or None,
-                    memory=memory_list or None,
-                    permissions=permissions or None,
-                    checkpointer=checkpointer,
-                    interrupt_on=interrupt_on_config,
-                    store=store,
-                    subagents=subagents,
-                    context_schema=SessionContext,
-                )
+
+            # DA-06：同名实例原位替换框架默认的摘要中间件（主代理与每个子代理各一份）。
+            def summarization():
+                return build_summarization_middleware(self.config, model, backend)
+
+            return create_deep_agent(
+                name="easy-agent",
+                model=model,
+                system_prompt=self.system_prompt,
+                backend=backend,
+                skills=skills_paths or None,
+                middleware=[*middleware, summarization()],
+                tools=graph_tools or None,
+                memory=memory_list or None,
+                permissions=permissions or None,
+                checkpointer=checkpointer,
+                interrupt_on=interrupt_on_config,
+                store=store,
+                # DA-11：子代理工具按名字解析成本图的工具实例（缺工具的子代理不声明）
+                subagents=[
+                    {**spec, "middleware": [*spec.get("middleware", []), summarization()]}
+                    for spec in resolve_subagent_tools(subagents, graph_tools)
+                ],
+                context_schema=SessionContext,
+            )
 
         if block_reason:
             get_agent_graph_cache().record_disabled()

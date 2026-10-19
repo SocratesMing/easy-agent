@@ -309,17 +309,40 @@ def create_model(
     )
 
     if protocol == "openai":
-        return _create_openai_compatible(
+        model = _create_openai_compatible(
             llm_config, default_headers=build_request_headers(llm_config, session_id)
         )
     elif protocol == "anthropic":
-        return _create_anthropic_compatible(
+        model = _create_anthropic_compatible(
             llm_config, default_headers=build_request_headers(llm_config, session_id)
         )
     else:
         raise ValueError(
             f"Unsupported protocol: {protocol}. Use 'openai' or 'anthropic'."
         )
+    return apply_context_profile(model, llm_config.context_length)
+
+
+#: ``config_models`` 声明的 context_length 缺省值：没配置时不覆盖 LangChain 内置 profile。
+_UNSET_CONTEXT_LENGTH = LLMConfig.model_fields["context_length"].default
+
+
+def apply_context_profile(model, context_length: int | None):
+    """把配置的上下文窗口写进 ``model.profile["max_input_tokens"]``（DA-06）。
+
+    deepagents 按 profile 计算默认摘要阈值；OpenAI 兼容网关上的模型没有内置
+    profile，框架会退回 170k tokens 的固定阈值。只覆盖 ``max_input_tokens``，其余
+    能力字段（图片输入、结构化输出等）保留；未配置 context_length 时不动内置值，
+    避免用占位的缺省值盖掉准确的窗口大小。
+    """
+    value = int(context_length or 0)
+    if value <= 0 or value == _UNSET_CONTEXT_LENGTH:
+        return model
+    try:
+        model.profile = {**(getattr(model, "profile", None) or {}), "max_input_tokens": value}
+    except Exception as exc:  # noqa: BLE001 - 不支持赋值的模型类不阻断建模
+        logger.warning(f"设置模型 profile.max_input_tokens 失败（保留原值）: {exc}")
+    return model
 
 
 class ReasoningChatOpenAI(ChatOpenAI):

@@ -3,7 +3,8 @@
 基准是配置里当前模型的 context_length：
 - 摘要 trigger/keep 按 compression_threshold / compression_target 折算；
 - 工具参数截断同样按该比例折算（官方默认是 ("messages", 20)）。
-建图期间临时替换官方工厂，退出后还原。
+DA-06 起不再替换框架私有工厂：直接构造官方 ``SummarizationMiddleware``，由
+``create_deep_agent`` 按同名原位替换默认项（见 tests/agent/test_summarization_override.py）。
 """
 
 import sys
@@ -11,11 +12,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-import deepagents.graph as _graph
 from deepagents.middleware.summarization import SummarizationMiddleware
 
 from easy_agent.bootstrap.config import Config
-from easy_agent.agent.summarization import configured_summarization, summarization_settings
+from easy_agent.agent.summarization import build_summarization_middleware, summarization_settings
 
 
 def _expected_thresholds(cfg) -> tuple[tuple, tuple]:
@@ -39,22 +39,24 @@ def test_summarization_settings_use_config_token_thresholds():
     assert truncate["max_length"] > 0
 
 
-def test_configured_summarization_restores_factory(monkeypatch):
-    """建图上下文内使用官方 SummarizationMiddleware，退出后工厂还原。"""
+def test_build_summarization_middleware_is_the_official_class(monkeypatch):
+    """构造官方中间件（名字与框架默认项一致才能原位替换），参数取自 config 阈值。"""
     cfg = Config.from_yaml(Config.resolve_config_path())
     exp_trigger, exp_keep = _expected_thresholds(cfg)
     captured: dict = {}
-    original = _graph.create_summarization_middleware
+    original_init = SummarizationMiddleware.__init__
 
-    def _fake_init(self, *args, **kwargs):  # noqa: ARG001
+    def _recording_init(self, *args, **kwargs):
         captured.update(kwargs)
+        original_init(self, *args, **kwargs)
 
-    monkeypatch.setattr(SummarizationMiddleware, "__init__", _fake_init)
+    monkeypatch.setattr(SummarizationMiddleware, "__init__", _recording_init)
+    from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+    from deepagents.backends import StateBackend
 
-    with configured_summarization(cfg):
-        assert _graph.create_summarization_middleware is not original
-        _graph.create_summarization_middleware(object(), object())
+    middleware = build_summarization_middleware(cfg, GenericFakeChatModel(messages=iter([])), StateBackend())
 
-    assert _graph.create_summarization_middleware is original
+    assert isinstance(middleware, SummarizationMiddleware)
+    assert middleware.name == "SummarizationMiddleware"
     assert captured["trigger"] == exp_trigger
     assert captured["keep"] == exp_keep

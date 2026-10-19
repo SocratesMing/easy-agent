@@ -84,3 +84,19 @@ def test_api_docs_generator_has_agent_prefix_and_check_mode():
 def test_config_schema_check_script_exists():
     assert (PROJECT_ROOT / "scripts" / "quality" / "check_config_schema.py").is_file()
     assert (PROJECT_ROOT / "scripts" / "quality" / "check_env_usage.py").is_file()
+
+
+def test_framework_integration_doc_points_to_existing_code():
+    """DA-17：框架适配清单引用的模块与符号必须存在（模块搬家后旧路径会悄悄失效）。"""
+    import re
+
+    text = _read("docs/framework-integration.md")
+    paths = set(re.findall(r"easy_agent/[A-Za-z0-9_/]+\.py", text))
+    assert paths
+    assert sorted(p for p in paths if not (PROJECT_ROOT / p).is_file()) == []
+
+    # 适配表「位置」列：`模块路径` `函数或类名`
+    rows = re.findall(r"`(easy_agent/[A-Za-z0-9_/]+\.py)` `([A-Za-z_][A-Za-z0-9_]*)`", text)
+    assert rows
+    for path, symbol in rows:
+        assert re.search(rf"^(?:async )?(?:def|class) {symbol}\b", _read(path), re.M), (path, symbol)

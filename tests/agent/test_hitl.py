@@ -185,3 +185,46 @@ def test_agent_interrupt_config_changes_with_tool_set():
 
     assert base == {"execute", "delete"}
     assert with_creator == {"execute", "delete", "save_expert", "read_uploaded_file"}
+
+
+# ── DA-09：MCP annotations 决定是否审批，名字启发式只做兜底 ──────────────
+
+
+def _mcp_tool(name: str, **hints):
+    """模拟 langchain-mcp-adapters 的工具：annotations 平铺在 metadata 里。"""
+    from langchain_core.tools import StructuredTool
+
+    annotations = {"title": None, "readOnlyHint": None, "destructiveHint": None,
+                   "idempotentHint": None, "openWorldHint": None, **hints}
+    return StructuredTool.from_function(
+        func=lambda: "ok", name=name, description=f"{name} tool", metadata=annotations
+    )
+
+
+def test_read_only_annotation_skips_approval_despite_mutating_name():
+    cfg = build_interrupt_config([_mcp_tool("update_cache_stats", readOnlyHint=True)])
+    assert "update_cache_stats" not in cfg
+
+
+def test_write_annotations_require_approval_despite_innocent_name():
+    cfg = build_interrupt_config(
+        [
+            _mcp_tool("run_query", readOnlyHint=False),
+            _mcp_tool("cleanup", destructiveHint=True),
+            _mcp_tool("sync", readOnlyHint=True, destructiveHint=True),  # 自相矛盾时宁可多问
+        ]
+    )
+    assert {"run_query", "cleanup", "sync"} <= set(cfg)
+
+
+def test_unannotated_tools_fall_back_to_the_name_heuristic():
+    cfg = build_interrupt_config([_mcp_tool("update_record"), _mcp_tool("list_records")])
+    assert "update_record" in cfg
+    assert "list_records" not in cfg
+
+
+def test_annotations_survive_the_mcp_evidence_wrapper():
+    from easy_agent.services.mcp_evidence import wrap_mcp_tool
+
+    wrapped = wrap_mcp_tool(_mcp_tool("delete_note", readOnlyHint=True), server="notes")
+    assert "delete_note" not in build_interrupt_config([wrapped])

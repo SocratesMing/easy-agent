@@ -709,3 +709,37 @@ def test_admin_can_save_custom_stdio(client, demo_catalog):
         assert json.loads(admin_path.read_text(encoding="utf-8"))["servers"]["ops"]["command"] == "bash"
     finally:
         admin_path.unlink(missing_ok=True)
+
+
+
+# ── sqlite 连接器的 DB_PATH 只能指向个人工作区（随包目录 + 真实安装接口）────
+
+
+def _install_sqlite(client, db_path):
+    return client.post(
+        "/agent/connectors/install",
+        json={"id": "sqlite", "values": {"env.DB_PATH": db_path}, "validate": False},
+    )
+
+
+def test_sqlite_install_rejects_the_app_database(client):
+    resp = _install_sqlite(client, "/qts/data/easy_agent.db")
+    assert resp.status_code == 403
+    assert "工作区" in resp.json()["detail"]
+    assert not _user_mcp_path().exists()
+
+
+def test_sqlite_install_stores_relative_path_inside_workspace(client):
+    resp = _install_sqlite(client, "data/sales.db")
+    assert resp.status_code == 200
+
+    saved = json.loads(_user_mcp_path().read_text(encoding="utf-8"))["servers"]["sqlite"]
+    expected = Config.get_user_workspace_dir("testuser").resolve() / "data" / "sales.db"
+    assert saved["env"]["DB_PATH"] == str(expected)
+
+
+def test_shipped_sqlite_field_is_scoped_to_the_workspace():
+    entry = next(e for e in connectors_service.load_catalog() if e["id"] == "sqlite")
+    field = next(f for f in entry["fields"] if f["key"] == "env.DB_PATH")
+    assert field["path"] == "workspace"
+    assert "easy_agent.db" not in json.dumps(entry, ensure_ascii=False)

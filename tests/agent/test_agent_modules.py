@@ -153,7 +153,7 @@ def test_build_agent_middleware_type_and_order():
     middleware = middleware_mod.build_agent_middleware(config, 7)
     assert [type(item).__name__ for item in middleware] == [
         "TodoListMiddleware",
-        "LoggingMiddleware",
+        "ToolErrorMiddleware",
         "ModelCallLimitMiddleware",
         "ToolCallLimitMiddleware",
     ]

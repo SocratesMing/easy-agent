@@ -62,7 +62,7 @@ class ToolsConfig(BaseModel):
     """工具结果写入日志时的截断字符数（默认 200）。
 
     仅影响日志展示长度，不改变工具返回给模型的内容；读取方见
-    ``agent.py`` / ``services/streaming.py`` 中的 LoggingMiddleware 与流式日志。
+    工具错误日志（``agent/tool_errors.py``）与流式日志。
     """
     experts_dir: str = "./experts"
     """公共（预置）专家目录：只读扫描，见 services/public_expert_service.py。

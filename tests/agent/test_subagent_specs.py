@@ -58,3 +58,39 @@ def test_specs_do_not_mutate_defaults():
     build_subagent_specs("sess-2")
     assert [dict(s) for s in DEFAULT_SUBAGENTS] == before
     assert dict(GENERAL_PURPOSE_SUBAGENT) == gp_before
+
+
+# ── DA-11：子代理只拿需要的工具 ───────────────────────────────────────
+
+
+def _named_tools(*names):
+    from langchain_core.tools import StructuredTool
+
+    return [
+        StructuredTool.from_function(func=lambda: "ok", name=name, description=f"{name} tool")
+        for name in names
+    ]
+
+
+def test_subagent_tools_are_narrowed_to_what_they_need():
+    from easy_agent.agent.subagents import resolve_subagent_tools
+
+    available = _named_tools(
+        "web_search", "create_scheduled_task", "read_uploaded_file", "access_knowledge_original"
+    )
+    specs = {s["name"]: s for s in resolve_subagent_tools(build_subagent_specs(), available)}
+
+    assert [t.name for t in specs["office-writer"]["tools"]] == ["read_uploaded_file"]
+    assert [t.name for t in specs["knowledge-researcher"]["tools"]] == ["access_knowledge_original"]
+    assert "tools" not in specs["general-purpose"]  # 官方语义：继承主代理工具
+    for spec in specs.values():
+        assert "use_tools" not in spec and "requires_tools" not in spec
+
+
+def test_knowledge_researcher_is_dropped_without_its_tool():
+    from easy_agent.agent.subagents import resolve_subagent_tools
+
+    specs = {s["name"]: s for s in resolve_subagent_tools(build_subagent_specs(), _named_tools("web_search"))}
+
+    assert "knowledge-researcher" not in specs
+    assert specs["office-writer"]["tools"] == []

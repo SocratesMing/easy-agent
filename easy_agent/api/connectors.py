@@ -53,6 +53,7 @@ from easy_agent.services.mcp import (
 from easy_agent.services.mcp_policy import (
     McpPolicyError,
     ensure_servers_allowed,
+    normalize_workspace_paths,
     stdio_violation,
 )
 
@@ -133,13 +134,18 @@ def _extract_servers(user_config: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return normalize_servers_mapping(user_config)
 
 
-def _ensure_allowed(servers: dict[str, Any], username: str) -> None:
-    """写入前的执行策略校验（SEC-04）：普通用户的自定义 stdio 连接器返回 403。"""
+def _prepare_servers(servers: dict[str, Any], username: str) -> dict[str, Any]:
+    """写入前的执行策略（SEC-04）：工作区路径字段换算成绝对路径，再校验。
+
+    普通用户的自定义 stdio 连接器、或文件路径不在个人工作区内时返回 403。
+    """
+    prepared = normalize_workspace_paths(servers, username)
     try:
-        ensure_servers_allowed(servers, username)
+        ensure_servers_allowed(prepared, username)
     except McpPolicyError as exc:
         logger.warning(f"拒绝 MCP 配置 | 用户: {username} | {exc}")
         raise HTTPException(status_code=403, detail=str(exc)) from exc
+    return prepared
 
 
 async def _validate_servers(
@@ -274,7 +280,7 @@ async def install_connector(
         if str(request.values.get(f["key"], "")).strip():
             _set_config_field(server_cfg, f["key"], request.values[f["key"]].strip())
     server_cfg.setdefault("enabled", True)
-    _ensure_allowed({request.id: server_cfg}, username)
+    server_cfg = _prepare_servers({request.id: server_cfg}, username)[request.id]
 
     raw = _read_user_mcp_raw(username, config)
     existing: dict[str, Any] = raw.get("servers", {})
@@ -595,7 +601,7 @@ async def update_connector_config(
         _set_config_field(cfg, key_path, value)
         applied[key_path] = value
     if applied:
-        _ensure_allowed({request.id: cfg}, username)
+        existing[request.id] = _prepare_servers({request.id: cfg}, username)[request.id]
         raw["servers"] = existing
         _write_user_mcp_raw(username, config, raw)
         invalidate_mcp_cache(username)
@@ -664,8 +670,7 @@ async def save_mcp_raw(
     if not isinstance(parsed, dict):
         raise HTTPException(status_code=400, detail="mcp.json 顶层必须是 JSON 对象")
 
-    servers = _extract_servers(parsed)
-    _ensure_allowed(servers, username)
+    servers = _prepare_servers(_extract_servers(parsed), username)
     config = _runtime_config()
     user_mcp_path = _write_user_mcp_raw(username, config, {"servers": servers})
     invalidate_mcp_cache(username)
@@ -719,7 +724,7 @@ async def add_mcp_server(
             detail=f"MCP 服务已存在: {', '.join(duplicates)}（请先删除或改名）",
         )
 
-    _ensure_allowed(new_servers, username)
+    new_servers = _prepare_servers(new_servers, username)
     existing.update(new_servers)
     raw["servers"] = existing
     user_mcp_path = _write_user_mcp_raw(username, config, raw)

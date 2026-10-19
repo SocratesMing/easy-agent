@@ -1,8 +1,9 @@
 """Agent 自定义中间件装配。
 
 从 ``EasyAgent._build_middleware`` 抽出的纯函数：只依赖 ``config`` 与
-``max_steps``，不读 ``self``。中间件顺序与拆分前一致：
-TodoList → Logging → ModelCallLimit → ToolCallLimit。
+``max_steps``，不读 ``self``。顺序：TodoList → ToolError → ModelCallLimit → ToolCallLimit。
+摘要中间件不在这里：它要绑定建图时的 model / backend，由 ``EasyAgent._create_agent``
+按同名原位替换框架默认项（DA-06，见 ``agent/summarization.py``）。
 """
 
 import logging
@@ -14,10 +15,6 @@ logger = logging.getLogger("easy_agent.agent")
 def build_agent_middleware(config, max_steps) -> list:
     """构建自定义中间件列表。
 
-    SummarizationMiddleware 由 create_deep_agent 自动添加（使用模型感知的
-    默认值 trigger=0.85, keep=0.10），此处无需重复添加，
-    否则会导致 AssertionError。
-
     Args:
         config: 应用配置对象（读取 ``tools.result_log_truncate``）。
         max_steps: Agent 最大步数，用于推导 Model/Tool 调用上限。
@@ -25,22 +22,18 @@ def build_agent_middleware(config, max_steps) -> list:
     Returns:
         按固定顺序排列的中间件列表。
     """
-    # SummarizationMiddleware is automatically added by create_deep_agent
-    # with model-aware defaults (trigger=0.85, keep=0.10).
-    # No need to add it here - duplicate middleware causes AssertionError.
-    from easy_agent.services.logging_middleware import LoggingMiddleware
     from langchain.agents.middleware import TodoListMiddleware
+
+    from easy_agent.agent.tool_errors import build_tool_error_middleware
 
     middleware = [
         # 0.7 起 write_todos 需要显式 TodoListMiddleware（0.6.8 是默认内置）。
         TodoListMiddleware(),
-        # D2：middleware 进共享编译图，不能再绑定 session_id（否则同图跨会话
-        # 复用会把日志前缀写成首个会话的）。工具异常兜底本身与会话无关。
-        LoggingMiddleware(
-            result_log_truncate=getattr(
-                config.tools, "result_log_truncate", 500
-            ),
-        )
+        # DA-12：官方 ToolErrorMiddleware，只把可恢复的工具错误回灌模型。
+        # D2：middleware 进共享编译图，不绑定 session_id。
+        build_tool_error_middleware(
+            log_truncate=getattr(config.tools, "result_log_truncate", 500)
+        ),
     ]
     # 超限时显式报错，避免「模型步数用尽但前端以为正常结束」；
     # 错误会经 streaming 的异常分支转成 SSE error。

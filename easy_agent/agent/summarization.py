@@ -1,17 +1,19 @@
-"""Config-driven SummarizationMiddleware.
+"""Config-driven SummarizationMiddleware（DA-06）。
 
-deepagents 0.6.8 在 ``create_deep_agent`` 内部调用
-``create_summarization_middleware(model, backend)``，没有公开参数覆盖阈值。
-这里只在这一次建图期间把该工厂指到官方 ``SummarizationMiddleware`` 构造器，
-建完立刻还原，不再在进程启动时长期改写模块全局。
+deepagents 0.7 起，``middleware=`` 里 ``.name`` 与内置默认项相同的实例会**原位替换**
+该默认项（官方 changelog "Override a default middleware instance"），声明式子代理 spec
+的 ``middleware`` 同理。因此主代理与每个子代理 spec 各放一份按配置阈值构造的官方
+``SummarizationMiddleware``，不再在建图期间替换框架私有的
+``deepagents.graph.create_summarization_middleware``（模块全局替换还有线程安全隐患）。
 """
 
 from __future__ import annotations
 
 import logging
-from contextlib import contextmanager
 
 logger = logging.getLogger(__name__)
+
+_logged_models: set[str] = set()
 
 
 def summarization_settings(config, model) -> dict:
@@ -41,42 +43,15 @@ def summarization_settings(config, model) -> dict:
     }
 
 
-@contextmanager
-def configured_summarization(config):
-    """让本次 ``create_deep_agent`` 使用 config 阈值的官方摘要中间件。
-
-    注意：``deepagents.graph.create_summarization_middleware`` 不是公开导出 API。
-    升级若移除该工厂，这里显式告警并降级为框架默认阈值，而不是让建图失败。
-    """
-    import deepagents.graph as graph
+def build_summarization_middleware(config, model, backend):
+    """按 config 阈值构造官方摘要中间件；每个代理（主代理 / 各子代理）各用一份。"""
     from deepagents.middleware.summarization import SummarizationMiddleware
 
-    if not hasattr(graph, "create_summarization_middleware"):
-        logger.error(
-            "deepagents.graph.create_summarization_middleware 不存在：摘要阈值"
-            "配置降级为框架默认值，请升级 easy_agent/summarization.py 适配"
+    settings = summarization_settings(config, model)
+    label = str(getattr(model, "model_name", None) or getattr(model, "model", None) or "model")
+    if label not in _logged_models:
+        _logged_models.add(label)
+        logger.info(
+            "摘要阈值 | %s | trigger=%s keep=%s", label, settings["trigger"], settings["keep"]
         )
-        yield
-        return
-
-    original = graph.create_summarization_middleware
-    logged: set[str] = set()
-
-    def factory(model, backend, **_kwargs):
-        settings = summarization_settings(config, model)
-        label = getattr(model, "model_name", None) or getattr(model, "model", None) or "model"
-        if label not in logged:
-            logged.add(str(label))
-            logger.info(
-                "摘要阈值 | %s | trigger=%s keep=%s",
-                label,
-                settings["trigger"],
-                settings["keep"],
-            )
-        return SummarizationMiddleware(model, backend=backend, **settings)
-
-    graph.create_summarization_middleware = factory
-    try:
-        yield
-    finally:
-        graph.create_summarization_middleware = original
+    return SummarizationMiddleware(model, backend=backend, **settings)

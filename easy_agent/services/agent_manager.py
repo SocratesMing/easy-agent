@@ -147,12 +147,11 @@ def _evict_agent_cache(keep_session_id: str) -> None:
 def _tool_factories() -> dict[str, Callable[..., Any]]:
     """工具工厂表：由装配根提供，注册表只按名字取用。
 
-    为什么放在这里而不是 ``tools/registry.py``：``knowledge_impl`` 与
-    ``tools.scheduled_task`` 已位于既有的 knowledge→scheduler→agent_manager
-    SCC（``scripts/quality/import_graph_whitelist.json`` 的 knowledge-chat-scheduler-core）
-    中，注册表一旦出现包内 import 边就会把 registry/hitl/agent 一并并进该 SCC。
-    工具工厂留在装配处后，注册表保持「无包内 import 边的叶子模块」，
-    import 图与白名单保持完全一致（见设计文档 §2.3 / §4）。
+    为什么放在这里而不是 ``tools/registry.py``：注册表要保持「无包内 import 边的
+    叶子模块」。``knowledge_impl`` / ``tools.scheduled_task`` 依赖 scheduler 与
+    agent_manager，注册表一旦 import 它们就会重新引入 import 环（当年的
+    knowledge-chat-scheduler-core SCC 已在 A1 拆掉，当前 import 图 0 SCC、
+    白名单为空，由 ``scripts/quality/import_graph.py --check-scc`` 守住）。
 
     加载时机与改造前一致：知识库扩展每次装配都会 import（与改造前相同），
     其余三个工厂在对应工具真正被构造时才 import——这样单个工具模块加载失败

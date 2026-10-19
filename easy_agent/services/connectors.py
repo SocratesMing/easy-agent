@@ -125,6 +125,8 @@ def _normalize_fields(raw: Any) -> list[dict[str, Any]]:
             "label": str(item.get("label") or key),
             "placeholder": str(item.get("placeholder") or ""),
             "required": bool(item.get("required", True)),
+            # "workspace"：值是文件路径，普通用户只能指向自己的工作区（见 mcp_policy）
+            "path": str(item.get("path") or "").strip(),
         })
     return fields
 

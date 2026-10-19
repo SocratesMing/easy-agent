@@ -7,13 +7,18 @@
 > `write_todos` 需显式 `TodoListMiddleware`；新增 `delete` 工具并纳入 HITL。
 > 升级前先让 `tests/test_framework_contract.py` 失败并逐项复核本清单。
 
-## 适配点（3 处）
+## 适配点（2 处）
 
 | # | 位置 | 依赖的上游实现 | 失效后果 | 升级时需要做什么 |
 | --- | --- | --- | --- | --- |
-| 1 | `easy_agent/hitl.py` `install_execute_tool_description` | `FilesystemMiddleware.__init__(custom_tool_descriptions=...)` | execute 工具描述不再注入 HITL 说明；若 kwarg 被移除，建图期 TypeError | 改用官方 `HarnessProfile(tool_description_overrides=...)` |
-| 2 | `easy_agent/summarization.py` `configured_summarization` | `deepagents.graph.create_summarization_middleware` 模块级工厂 | 摘要阈值静默回落到框架默认（0.85/0.10）或建图期 AttributeError | 检查工厂是否改名/搬移；优先改用官方公开参数（若已提供） |
-| 3 | `easy_agent/checkpoints.py` `PersistentMemorySaver`（仅 MySQL 回退使用） | `MemorySaver.storage/writes/blobs` 私有属性 + pickle | 重启后 HITL 审批恢复失败（静默）；数据格式变化 | FW-09 起默认已走官方 saver；升级时复核私有属性/pickle 格式，并推动 MySQL 用户迁移到 PG/SQLite |
+| 1 | `easy_agent/agent/hitl.py` `register_execute_description_profiles` | `HarnessProfile(tool_description_overrides=...)` + `register_harness_profile`（profiles beta API） | execute 工具描述不再注入 HITL 说明 | 对照 profiles API 的变化修正注册逻辑 |
+| 2 | `easy_agent/persistence/checkpoints.py` `PersistentMemorySaver`（仅 MySQL 回退使用） | `MemorySaver.storage/writes/blobs` 私有属性 + pickle | 重启后 HITL 审批恢复失败（静默）；数据格式变化 | FW-09 起默认已走官方 saver；升级时复核私有属性/pickle 格式，并推动 MySQL 用户迁移到 PG/SQLite |
+
+> 2026-10-19 起不再是适配点：摘要阈值（原第 2 项，建图期替换私有工厂
+> `deepagents.graph.create_summarization_middleware`）改为官方「同名实例原位替换」
+> （DA-06，`easy_agent/agent/summarization.py`，契约见
+> `tests/test_framework_contract.py::test_summarization_override_uses_public_middleware_name`）；
+> execute 描述（原第 1 项替换 `FilesystemMiddleware.__init__`）FW-04 起已走 HarnessProfile。
 
 ## 升级流程
 
@@ -29,6 +34,7 @@
 - FW-03（MCP 工具名冲突）
 - FW-04/FW-05（私有 API 适配）
 - FW-09（checkpointer 后端选择，默认官方 saver）
+- DA-06（摘要阈值改用官方同名替换）、DA-12（工具异常改用官方 `ToolErrorMiddleware`）
 
 
 ## 2026-10-17 更新
@@ -36,8 +42,14 @@
 - **FW-05 护栏已落地**：`summarization.configured_summarization` 在
   `deepagents.graph.create_summarization_middleware` 缺失时显式 `logger.error`
   并降级为框架默认阈值（不再 AttributeError）。
+  - **2026-10-19（DA-06）**：`configured_summarization` 已删除。主代理与每个子代理 spec 的
+    `middleware` 里各放一份按配置阈值构造的官方 `SummarizationMiddleware`，由框架按同名原位
+    替换默认项；模型 `profile["max_input_tokens"]` 取配置的 `context_length`（未配置时保留内置值）。
 - **FW-07 已落地**：`agent.build_subagent_specs()` 为每个 subagent 显式声明
   `skills=["/user-skills/"]` 与异常兜底 `LoggingMiddleware`。
+  - **2026-10-19**：异常兜底换成官方 `ToolErrorMiddleware`，只回灌可恢复错误并脱敏
+    （DA-12，`easy_agent/agent/tool_errors.py`）；子代理只带声明的工具（DA-11，
+    `easy_agent/agent/subagents.py:resolve_subagent_tools`）。
 - **FW-08 已落地**：call-limit 中间件 `exit_behavior="error"`；主/恢复流
   `stream_config["recursion_limit"] = max(2*max_steps, 50)`。
   - **2026-10-19 修正（DA-10）**：实际只有恢复流设了上限，且 `2*max_steps` 太小——当前装配
@@ -48,9 +60,9 @@
   - 子代理图各自绑定 `recursion_limit=9999`，主流程的上限管不到它们：每个子代理 spec
     （含显式覆盖的 `general-purpose`）都带 `ModelCallLimitMiddleware` /
     `ToolCallLimitMiddleware`（`exit_behavior="end"`，超限以消息交回主代理）。
-- **FW-04 已迁移 HarnessProfile**：0.7 的 `HarnessProfile.tool_description_overrides` 为官方注入点；
-  现有 monkeypatch + `tests/test_framework_contract.py` 已能在升级时显式失败，
-  待 0.7 升级立项时再迁移，避免在 beta API 上引入新风险。
+- **FW-04 已迁移 HarnessProfile**：execute 描述经 `register_harness_profile` 注册
+  `HarnessProfile(tool_description_overrides=...)`，不再 monkeypatch `FilesystemMiddleware`
+  （`tests/test_framework_contract.py` 钉住）；profiles 仍是 beta API，升级时按上表第 1 项复核。
 
 - **FW-10 已落地**：`services/mcp.py:normalize_servers_mapping()` 中 URL-only 配置
   默认 transport 由旧 `sse` 改为 `streamable_http`；`streamable-http` / `http` 别名

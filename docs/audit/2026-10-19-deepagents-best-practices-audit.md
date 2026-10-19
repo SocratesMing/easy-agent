@@ -5,7 +5,7 @@
 > 文档来源：LangChain 官方文档（经 Docs MCP `https://docs.langchain.com/mcp` 拉取全文，2026-10-19）+ `langchain-ai/langchain-skills` 中的 deep-agents-core / memory / orchestration 技能 + deepagents 0.7.28 源码。
 > 与既有报告的关系：`docs/audit/2026-10-17-easy-agent-audit.md` 已覆盖的条目不重复展开，只复核状态；本报告新增条目编号为 **DA-xx**，严重度沿用 P0–P3。
 > 测试基线：`pytest tests/` → **1607 passed, 1 skipped, 2 warnings**（266s）。
-> **修复进度**：Batch B（DA-01 / DA-02 / DA-08 / DA-10 / DA-16）与修复中发现的 DA-18 已于 2026-10-19 完成，见 §9；Batch A 已修 SEC-01 / SEC-02 / SEC-04 / SEC-05，SEC-03（免密登录）按产品决定保留，见 §10。
+> **修复进度**：Batch B（DA-01 / DA-02 / DA-08 / DA-10 / DA-16）与修复中发现的 DA-18 已于 2026-10-19 完成，见 §9；Batch A 已修 SEC-01 / SEC-02 / SEC-04 / SEC-05，SEC-03（免密登录）按产品决定保留，见 §10。C1（DA-06 / DA-09 第一步 / DA-11 / DA-12 / DA-17、sqlite 连接器 `DB_PATH`）已完成，见 §11。
 
 ---
 
@@ -256,8 +256,19 @@
 
 ## 7. 改进路线图
 
-| 批次 | 内容 | 规模 |
+（2026-10-19 晚更新：按实际进度重排，C 批拆成 C1–C3。）
+
+| 批次 | 内容 | 状态 / 规模 |
 | --- | --- | --- |
+| A · 安全止血 | SEC-01 / 02 / 04 / 05；SEC-03（免密登录）按产品决定保留 | ✅ 已完成（§10） |
+| B · 框架对齐·正确性 | DA-01 / 02 / 08 / 10 / 16，及修复中发现的 DA-18 | ✅ 已完成（§9） |
+| C1 · 快速项 | DA-06 模型 `profile` + 官方摘要中间件覆盖；DA-12 官方 `ToolErrorMiddleware`；DA-11 子代理工具收窄；DA-09 第一步 MCP annotations 决定审批；DA-17 过时注释与文档；sqlite 连接器 `DB_PATH` 限定个人工作区 | ✅ 已完成（§11） |
+| C2 · Backend 重构 | DA-04 默认路由改隐藏目录（修已复现的 deny 别名绕过，框架产物不再出现在用户工作区）；DA-05 改用真实 `CompositeBackend` | 约 2 天 |
+| C3 · 沙箱加固 | DA-07 技能目录只读挂载、默认断网或白名单代理、CPU / 内存 / 进程数限额 | 约 1–2 天，需先定网络策略 |
+| D · 演进 | DA-03 thread = 会话（超过摘要阈值后每轮都会重新摘要整段历史）；DA-13 技能多源 / 只读 / pinned；子代理进度事件流；DA-09 迁移 `langchain.mcp`（beta）；DA-14 LangSmith 沙箱生命周期；`services/` 拆领域子包 | 1–2 周，需设计文档 |
+| 穿插项 | CI 缺 `sqlite-saver` extra（暂不处理）；SEC-03 签名免密（需门户配合）；DA-15 前端审批交互；`tests/api/test_files_store_backend.py` 依赖执行顺序 | 待定 |
+
+--- | --- | --- |
 | A · 安全止血（先做） | SEC-01 下线/鉴权 Web 终端；SEC-02 SPA 回退路径校验；SEC-03 默认关闭免密；SEC-04 用户侧禁止 stdio、取消用户配置的 `${VAR}` 展开；SEC-05 下载接口复用 `resolve_workspace_file` | 1–2 天 |
 | B · 框架对齐·正确性（小改动高收益） | DA-01 过滤 `lc_source`；DA-02 多中断按 ID 映射 + 前端逐项决策；DA-08 冲突表改用注册表；DA-10 主流程 `recursion_limit` + 子代理 call-limit；DA-16 关闭 `inherit_env` | 1–2 天 |
 | C · 框架对齐·结构 | DA-06 模型 `profile` + 官方中间件覆盖，删除 monkeypatch；DA-04/DA-05 Backend 重构（真实 Composite、隐藏 artifacts 目录）；DA-07 沙箱只读技能挂载/断网/限额；DA-09 MCP annotations 驱动 HITL；DA-11/12 | 3–5 天 |
@@ -320,4 +331,15 @@
 遗留观察（本批未处理）：
 
 - **CI 后端测试仍红**：`langgraph-checkpoint-sqlite` 在可选 extra `sqlite-saver` 里，CI（`uv sync --group dev --extra docs`）与 Dockerfile（`--extra docs`）都不安装，导致 5 个官方 SQLite checkpointer 用例失败；Docker 部署也会静默回退自研 checkpointer。此前 CI 卡在 env-usage 门禁，没跑到测试这一步。2026-10-19 决定暂不处理。
-- **内置 `sqlite` 连接器的 `env.DB_PATH`**：该字段允许普通用户填写任意路径，stdio 进程在宿主机上运行，可指向应用自身的 SQLite 业务库等文件；如需收紧，可把该字段限制在用户工作区内。
+- **内置 `sqlite` 连接器的 `env.DB_PATH`**：该字段允许普通用户填写任意路径，stdio 进程在宿主机上运行，可指向应用自身的 SQLite 业务库等文件（默认值就是业务库）。→ C1 已修，见 §11。
+
+## 11. 修复记录（2026-10-19，C1）
+
+| 条目 | 改动 | 回归测试（改造前失败） |
+| --- | --- | --- |
+| DA-06 | `agent/model.py:apply_context_profile()` 把配置的 `context_length` 写进 `profile["max_input_tokens"]`（只在显式配置时覆盖，其余能力字段保留）；`agent/summarization.py:build_summarization_middleware()` 构造官方 `SummarizationMiddleware`，主代理与每个子代理 spec 各放一份、由框架同名原位替换；删除 `configured_summarization`（建图期替换私有工厂）。摘要阈值与改造前一致 | `tests/agent/test_summarization_override.py`、`tests/agent/test_model_profile.py`、`tests/services/test_summarization_config.py`、`tests/test_framework_contract.py` |
+| DA-12 | 新增 `agent/tool_errors.py`：官方 `ToolErrorMiddleware` + 可恢复白名单（`ToolException`、`ValueError`、`TimeoutError`、`OSError`、`httpx.HTTPError`、`McpError` 及只由它们组成的 `ExceptionGroup`），回灌文本隐去宿主机路径并截断；删除 `services/logging_middleware.py`。**行为变化**：`TypeError` / `KeyError` 等程序错误不再回灌模型，本轮中断并记录完整堆栈 | `tests/agent/test_tool_errors.py` |
+| DA-11 | `agent/subagents.py`：`use_tools` / `requires_tools` + `resolve_subagent_tools()`，建图时解析成本图的工具实例；office-writer 只带 `read_uploaded_file`，knowledge-researcher 只带 `access_knowledge_original` 且仅在注入时声明；general-purpose 按官方语义继承 | `tests/agent/test_subagent_tools.py`、`tests/agent/test_subagent_specs.py` |
+| DA-09（第一步） | `agent/hitl.py:mcp_annotation_decision()`：`destructiveHint=True` 或 `readOnlyHint=False` → 审批，`readOnlyHint=True` → 免审批，无显式标注回退名字启发式。annotations 是服务端自我声明，连接哪个 MCP 服务由用户 / 管理员决定 | `tests/agent/test_hitl.py`（DA-09 段） |
+| DA-17 | `core.py` / `graph_cache.py` / `hitl.py` / `agent_manager.py` 注释更新到 0.7 现状；`docs/framework-integration.md` 适配点 3 → 2 处，模块路径更新到重组后的位置 | `tests/test_docs_facts.py::test_framework_integration_doc_points_to_existing_code` |
+| sqlite `DB_PATH` | 公共目录字段声明 `"path": "workspace"`，默认值不再指向业务库；写入时相对路径换算到个人工作区；普通用户的路径 `resolve()` 后必须在个人工作区内（`..` 与符号链接都逃不出去），admin 不受限 | `tests/services/test_mcp_policy.py`（工作区路径段）、`tests/api/test_connectors.py`（sqlite 段） |
