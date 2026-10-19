@@ -135,6 +135,7 @@
         @update:selectedModel="$emit('update:selectedModel', $event)"
         @stop="handleStop"
         @create-session="handleCreateSession"
+        @knowledge-scope-change="$emit('knowledge-scope-change', $event)"
         @open-panel="$emit('open-panel', $event)"
         @open-knowledge="$emit('open-knowledge', $event)"
         @clear-expert="$emit('clear-expert')"
@@ -432,9 +433,9 @@ export default {
       const message = this.messages[messageIndex]
       this.$emit('remove-file', message, messageIndex, file)
     },
-    handleRetry(content) {
-      // 向上传递重试事件
-      this.$emit('retry', content)
+    handleRetry(content, skills) {
+      // 向上传递重试事件（content=正文，skills=本轮技能目录名）
+      this.$emit('retry', content, skills)
     },
     handleApprove() {
       this.$emit('approve')
@@ -447,6 +448,11 @@ export default {
     },
     handleCreateSession() {
       this.$emit('create-session')
+    },
+    // 宿主新建会话后调用：把无会话期间暂存的知识范围落库到新会话（透传给输入框）
+    flushKnowledgeScopeSave(baseIds) {
+      const composer = this.$refs.composerRef
+      return composer ? composer.flushKnowledgeScopeSave(baseIds) : Promise.resolve()
     },
     // ========== 预置问题：点击填入 ==========
     // 一张卡片一条问题，问题内容直接展示在卡片上；点击（或聚焦后回车）只把该问题的

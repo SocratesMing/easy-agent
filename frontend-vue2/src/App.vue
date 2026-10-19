@@ -65,8 +65,6 @@
         :initial-tab="skillCenterTab"
         @close="showSkillCenter = false"
         @create-skill="handleSkillCreate"
-        @create-expert="handleExpertCreate"
-        @edit-expert="handleExpertEdit"
         @use="handleUseExpert"
       />
 
@@ -91,6 +89,7 @@
 
       <Chat
         v-else-if="!showUserManagementPanel && !showAssets && !showSkillCenter && !showScheduledTasks"
+        ref="chatRef"
         :messages="messages"
         :sessionLoading="sessionLoading"
         :currentSessionId="currentSessionId"
@@ -115,6 +114,7 @@
         @toggle-workspace="isWorkspaceCollapsed = false"
         @send-message="handleSendMessage"
         @create-session="ensureCurrentSession"
+        @knowledge-scope-change="handleKnowledgeScopeChange"
         @remove-file="handleRemoveFile"
         @stop="handleStop"
         @retry="handleRetry"
@@ -166,11 +166,12 @@ import WorkspacePanel from './components/WorkspacePanel.vue'
 import SettingsPanel from './components/SettingsPanel.vue'
 import AiSidebar from './components/AiSidebar.vue'
 import { createSession, listSessions, getChatHistory, deleteSession, sendMessage, resumeStream, renameSession, togglePinSession, getStreamStatus } from './api/chat.js'
-import { streamExportRun } from './api/expert.js'
 import { getUserProfile, deleteFile } from './api/files.js'
 import chatSessionMixin, { parseMCPResult } from './mixins/chatSession.js'
 import { chatStore } from './store/chatStore.js'
 import { buildPageContext } from './utils/pageContext.js'
+import { parseLeadingSkillTokens } from './utils/skillTokens.js'
+import { ensureSkillDirectoryLoaded, skillDirectoryStore } from './store/skillDirectoryStore.js'
 import { logout as apiLogout, notifyLogout, getStoredToken, getStoredUsername, AUTH_EXPIRED_EVENT, authFetch, passwordlessLogin } from './api/auth.js'
 import { getModels as fetchModels } from './api/settings.js'
 import { isRestorableUserProfile } from './utils/userProfile.js'
@@ -791,6 +792,14 @@ export default {
           }
           this.sessions = [session, ...this.sessions]
         }
+        // 新建会话时把无会话期间暂存的知识范围落库（先于首条消息发送，后端才能读到）。
+        // $nextTick 等 sessionId prop 传导到输入框的知识库选择器后再落库
+        if (this.pendingKnowledgeScope && this.pendingKnowledgeScope.length) {
+          const pendingScope = this.pendingKnowledgeScope
+          this.pendingKnowledgeScope = null
+          await this.$nextTick()
+          if (this.$refs.chatRef) await this.$refs.chatRef.flushKnowledgeScopeSave(pendingScope)
+        }
       }
       return this.currentSessionId
     },
@@ -799,39 +808,6 @@ export default {
      * 这里新建会话并关闭技能中心，ChatInput 随之重新挂载、自动恢复技能标签与提示词。
      */
     async handleSkillCreate() {
-      await this.handleCreateSession()
-    },
-
-    /**
-     * 专家面板「新建专家」：与「创建技能」完全一致 —— 预填草稿已由面板写入
-     * sessionStorage，这里新开一个对话窗口即可（ChatInput 挂载时自动恢复草稿 + 技能标签）。
-     */
-    async handleExpertCreate() {
-      await this.handleCreateSession()
-    },
-
-    /**
-     * 专家面板卡片「编辑」：预填草稿已由面板写入 sessionStorage。
-     *
-     * 窗口选择规则（按需求）：
-     * - 当前窗口就是**新会话**（无任何聊天记录）→ 直接把内容带入当前窗口，不新开；
-     * - 当前窗口**已有聊天记录** → 新开一个会话窗口，避免把修改指令混进既有上下文。
-     *
-     * 两种情况都只需「关闭面板」：Chat 重新挂载后，ChatInput 会恢复草稿与技能标签。
-     */
-    async handleExpertEdit() {
-      const isEmptySession = !this.currentSessionId || this.messages.length === 0
-      if (isEmptySession) {
-        // 关掉所有会顶替 Chat 的面板（Chat 是 v-else-if，面板一关即重新挂载，
-        // ChatInput 随之恢复草稿 + 技能标签）。知识库面板本就不会与专家面板同时开，
-        // 这里一并复位，保证与 handleCreateSession 的「关面板」集合一致。
-        this.showKnowledge = false
-        this.showAssets = false
-        this.showSkillCenter = false
-        this.showScheduledTasks = false
-        this.showSettingsPanel = false
-        return
-      }
       await this.handleCreateSession()
     },
 
@@ -846,6 +822,8 @@ export default {
       this.showSettingsPanel = false
       // 新建会话回到干净状态：专家需在新会话里重新选择，避免误把旧专家的设定带进来
       this.selectedExpert = null
+      // 回到新对话页：无会话期间暂存的知识范围作废（重新勾选才有）
+      this.pendingKnowledgeScope = null
       this.currentSessionId = null
       this.loadedSessionId = null
       this.messages = []
@@ -866,6 +844,8 @@ export default {
       this.showAssets = false
       this.showSkillCenter = false
       this.showScheduledTasks = false
+      // 切换会话：无会话期间暂存的知识范围作废，目标会话以自己的服务端范围为准
+      this.pendingKnowledgeScope = null
       this.currentSessionId = sessionId
       // 切换后按当前会话是否正在流式输出决定输入框状态：
       // 历史会话通常不是当前流式会话，应显示发送按钮而非停止按钮
@@ -1459,7 +1439,12 @@ export default {
       // 事件按「所属会话」路由：后台会话写入其自身缓冲，不污染当前展示
       return { onChunk: (data) => this.runInSession(ctx.streamSessionId, ctx, () => onChunk(data)) }
     },
-    async handleSendMessage(message, files = [], signal, enableDeepThink = true, enableWebSearch = false, skills = [], expertEditId = '') {
+    async handleSendMessage(message, files = [], signal, enableDeepThink = true, enableWebSearch = false, skills = []) {
+      // 无会话且已暂存知识范围：先建会话并落库知识范围（ensureCurrentSession 内完成）再发送，
+      // 确保后端处理首条消息时能从会话上读到知识范围
+      if (!this.currentSessionId && this.pendingKnowledgeScope && this.pendingKnowledgeScope.length) {
+        await this.ensureCurrentSession()
+      }
       const userMsgId = `user-${Date.now()}`
       const preStreamUsage = { ...this.sessionUsage }
       // 记录本次请求开始前已累计的耗时和迭代次数，用于流式过程中实时累加
@@ -1486,22 +1471,13 @@ export default {
       // 结构化技能目录名（与后端落库字段同形）：气泡按它渲染技能标签，不再依赖从
       // 消息文本里反扒 `/技能名`。没有选中技能时不写该字段——手打 `/技能名` 的正文
       // 仍按老规则从文本解析，行为和改造前一致。
-  if (skills.length > 0) userMessage.skills = [...skills]
+      if (skills.length > 0) userMessage.skills = [...skills]
 
-  // 专家模式：本轮专家同时写到用户消息上（与后端落库字段同形），
-  // 这样 Chat.vue 的 userExpertFor 与 ChatMessage 都能直接取到，不依赖后端回灌。
-  const usedExpert = (this.selectedExpert && this.selectedExpert.export_agent_id)
-    ? { id: this.selectedExpert.export_agent_id, name: this.selectedExpert.export_name_cn || '专家' }
-    : null
-  if (usedExpert) userMessage.expert = usedExpert
+      this.messages.push(userMessage)
 
-  this.messages.push(userMessage)
-
-  // 立即创建 assistant 占位消息，显示等待动画
-  const assistantPlaceholderId = `assistant-${Date.now()}`
-  // 专家模式：随消息记住本次回答使用的专家，回答面板左上角展示「头像 + 名称」
-  // （发送瞬间即出现）。历史会话从后端加载的消息不含该字段，按无专家兜底。
-  const assistantPlaceholder = {
+      // 立即创建 assistant 占位消息，显示等待动画
+      const assistantPlaceholderId = `assistant-${Date.now()}`
+      const assistantPlaceholder = {
         id: assistantPlaceholderId,
         role: 'assistant',
         content: '',
@@ -1509,8 +1485,7 @@ export default {
         thinking: '',
         tool_calls: [],
         blocks: [],
-        loading: true,
-        expert: usedExpert
+        loading: true
       }
       this.messages.push(assistantPlaceholder)
       this.streamingAssistantId = assistantPlaceholderId
@@ -1537,7 +1512,6 @@ export default {
               this.messages.push({
                 id: assistantMsgId, role: 'assistant', content: '',
                 created_at: null, thinking: '', tool_calls: [], blocks: [], loading: true,
-                expert: usedExpert,
               })
             }
             this.streamingAssistantId = assistantMsgId
@@ -1598,31 +1572,7 @@ export default {
           }
         }
 
-        // 专家模式：选中专家时改走 /agent/stream_export_run，由后端加载该专家当前生效
-        // 版本的提示词动态构建 Agent（未选专家时行为不变，走通用 /agent/chat/stream）。
-        // 两套接口的 SSE 事件格式一致，onChunk 复用同一处理器。
-        // 注意：本方法是 App.vue 内的同名实现（覆盖 chatSession mixin 的同名方法），
-        // 专家分支与 mixin 保持一致，改动时需同步两处。
-        if (this.selectedExpert && this.selectedExpert.export_agent_id) {
-          await streamExportRun(
-            {
-              message,
-              sessionId: this.currentSessionId,
-              expertAgentId: this.selectedExpert.export_agent_id,
-              model: this.selectedModel,
-              enableDeepThink,
-              enableWebSearch,
-              files,
-              skills,
-            },
-            onChunk,
-            abortSignal
-          )
-        } else {
-          // 待修改专家 ID（专家面板「编辑」带入，不进消息正文）：后端校验归属后
-          // 绑定为 save_expert 的修改目标
-          await sendMessage(this.currentSessionId, message, onChunk, abortSignal, enableDeepThink, files, this.selectedModel, enableWebSearch, null, skills, expertEditId)
-        }
+        await sendMessage(this.currentSessionId, message, onChunk, abortSignal, enableDeepThink, files, this.selectedModel, enableWebSearch, null, skills)
 
         await this.refreshSessionFiles(null, 500)
       } catch (e) {
@@ -1665,8 +1615,7 @@ export default {
                 error: e.message || '发送消息失败，请检查网络连接',
                 loading: false,
                 created_at: new Date().toISOString(),
-                blocks: [],
-                expert: usedExpert
+                blocks: []
               })
             }
           }
@@ -1806,6 +1755,7 @@ export default {
         },
       })
 
+      let resumeFailed = false
       try {
         const controller = new AbortController()
         this.currentAbortController = controller
@@ -1825,18 +1775,31 @@ export default {
       } catch (e) {
         if (e.name === 'AbortError') return
         console.error('恢复执行失败:', e)
+        resumeFailed = true
         const idx = this.messages.findIndex(m => m.id === assistantMsgId)
         if (idx !== -1) {
+          // 回滚乐观更新：请求根本没送达/未被受理时，本轮被批准的工具尚未在后端
+          // 执行（duration==null），恢复「待审批」让审批按钮可重试；否则徽章会停在
+          // 「已批准」而库里仍是 pending，刷新页面后状态回跳，看起来像"审批了却还在询问"
+          const rolledStatus = decision === 'approve' ? 'approved' : 'rejected'
+          for (const blk of this.messages[idx].blocks) {
+            if (blk.approval_status === rolledStatus && blk.duration == null) {
+              blk.approval_status = 'pending'
+              blk.pending_approval = true
+            }
+          }
           this.messages[idx].loading = false
-          this.messages[idx].error = e.message || '恢复执行失败'
-          setReactive(this.messages, idx, { ...this.messages[idx] })
+          this.messages[idx].error = `审批请求未生效：${e.message || '恢复执行失败'}，请重试`
+          setReactive(this.messages, idx, { ...this.messages[idx], blocks: [...this.messages[idx].blocks] })
         }
       } finally {
         // 如果 resumeStream 期间收到了新的 approval_required（onChunk 重新设置了
         // pendingApproval），则不清除，保持 isStreaming=true 等待用户审批
         const hasNewApproval = this.pendingApproval && this.pendingApproval !== currentApproval
         if (!hasNewApproval) {
-          this.pendingApproval = null
+          // 失败时保留审批上下文，让回滚出的「待审批」按钮可以再次点击重试；
+          // 否则 pendingApproval 被清空后 handleToolApproval 直接 return，按钮永久失效
+          this.pendingApproval = resumeFailed ? currentApproval : null
           this.currentAbortController = null
           this.streamingAssistantId = null
           const sid = sessionId
@@ -1846,14 +1809,18 @@ export default {
           }
           this.unmarkStreaming(sid)
           this.saveCurrentSessionState()
-          // 审批恢复流结束：以服务端历史为准回填，保证完整渲染
-          await this.syncSessionFromServer(sid)
+          // 审批恢复流结束：以服务端历史为准回填，保证完整渲染。
+          // 失败时跳过：服务端未变更（请求未送达），本地已回滚并保留了错误提示，
+          // 回填会把错误提示清掉
+          if (!resumeFailed) {
+            await this.syncSessionFromServer(sid)
+          }
           this.recomputePendingApprovalFlag(sid)
           await this.loadSessions()
         }
       }
     },
-    handleRetry(content) {
+    async handleRetry(content, skills = []) {
       // 直接重新发送消息内容，不经过输入框
       console.log('[handleRetry] content type:', typeof content, 'value:', content)
 
@@ -1870,8 +1837,17 @@ export default {
           return
         }
 
-        // 直接调用发送
-        this.handleSendMessage(content.trim())
+        // 重发带上本轮技能：优先用结构化 message.skills（后端落库正文是用户原话，
+        // 技能只存在 skills 字段）；老数据 content 带发送时拼接的 `/目录名` 前缀，
+        // 由前缀解析兜底（解析按已知目录名保守匹配，不误伤路径），两者合并去重
+        const trimmed = content.trim()
+        await ensureSkillDirectoryLoaded()
+        const parsed = parseLeadingSkillTokens(trimmed, skillDirectoryStore.names)
+        const turnSkills = [...new Set([
+          ...(Array.isArray(skills) ? skills.filter(Boolean) : []),
+          ...parsed.dirNames,
+        ])]
+        this.handleSendMessage(parsed.body.trim(), [], null, true, false, turnSkills)
       }
     },
     handleStop() {

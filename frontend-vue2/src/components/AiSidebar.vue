@@ -218,6 +218,7 @@
               @update:selectedModel="selectedModel = $event"
               @send-message="handleSendMessage"
               @create-session="ensureCurrentSession"
+              @knowledge-scope-change="handleKnowledgeScopeChange"
               @remove-file="handleRemoveFile"
               @stop="handleStop"
               @retry="handleRetry"

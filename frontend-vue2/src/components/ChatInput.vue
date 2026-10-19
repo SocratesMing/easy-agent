@@ -397,7 +397,7 @@
             :show-manage="showManageEntry"
             @mouseenter.native="cancelPlusClose"
             @mouseleave.native="schedulePlusClose"
-            @create-session="$emit('create-session')"
+            @change="$emit('knowledge-scope-change', $event)"
             @manage="openKnowledgeManage"
           />
           <input
@@ -624,6 +624,7 @@ import {
   buildSegments,
   buildTokenMap,
   insertSkillToken,
+  matchTokenAt,
   migrateLegacySkillTokens,
   reconcileTokenDeletion,
   removeTokenSegments,
@@ -1885,6 +1886,15 @@ export default {
       }
       return this._pendingSessionPromise
     },
+    /**
+     * 宿主新建会话后调用：把无会话期间暂存的知识范围落库到新会话（透传给知识库选择器）。
+     * 调用前须确保 sessionId 已传导至选择器（宿主在 $nextTick 后调用）。
+     */
+    flushKnowledgeScopeSave(baseIds) {
+      return this.$refs.knowledgeScope
+        ? this.$refs.knowledgeScope.applyPendingScope(baseIds)
+        : Promise.resolve()
+    },
     /** 单个文件的上传流程（各文件并行执行，互不阻塞） */
     async uploadOneFile(fileItem) {
       const file = fileItem.file
@@ -2247,15 +2257,24 @@ export default {
       else if (bottom > list.scrollTop + list.clientHeight) list.scrollTop = bottom - list.clientHeight
     },
 
-    /** 判定光标前是否为「/查询词」（/ 位于开头或空白之后），决定展开或收起面板 */
+    /** 判定光标前是否为「/查询词」（/ 位于开头、空白或已选标签之后），决定展开或收起面板 */
     updateSkillPicker() {
       const ta = this.$refs.textareaRef
       if (!ta) return
       const caret = ta.selectionStart === null || ta.selectionStart === undefined
         ? ta.value.length
         : ta.selectionStart
-      const slash = parseSlashQuery(ta.value, caret)
+      const slash = parseSlashQuery(ta.value, caret, this.tokenMap)
       if (!slash) {
+        this.closeSkillPicker()
+        return
+      }
+
+      // 查询词起点是一个完整技能标签、且光标已在标签内容之后（如 `/docx帮我排版`）：
+      // 用户打完标签直接贴内容，不是在检索——关掉面板让标签正常渲染（面板开着的
+      // 半截查询词抑制态会把标签当普通文字显示，看起来技能「失效」）
+      const leading = matchTokenAt(ta.value, slash.start, this.tokenMap)
+      if (leading && leading.end < caret) {
         this.closeSkillPicker()
         return
       }
@@ -2288,7 +2307,7 @@ export default {
         ? ta.selectionStart
         : base.length
       // 以当前光标为准重算一次 /查询词 的范围，避免用户中途改动文本后误删内容
-      const slash = parseSlashQuery(base, caret)
+      const slash = parseSlashQuery(base, caret, this.tokenMap)
       const start = slash ? slash.start : caret
       const cleared = base.slice(0, start) + base.slice(caret)
 

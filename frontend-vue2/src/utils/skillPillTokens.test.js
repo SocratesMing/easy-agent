@@ -5,6 +5,7 @@ import {
   buildSegments,
   buildTokenMap,
   insertSkillToken,
+  matchTokenAt,
   migrateLegacySkillTokens,
   reconcileTokenDeletion,
   removeTokenSegments,
@@ -38,6 +39,7 @@ test('文本可原样还原（不丢字、不粘字）', () => {
     '／PPT 生成　／Word 文档处理　一起做',
     '／PPT 生成／Word 文档处理　一起做',       // 紧邻（无尾随空格的旧形式）也要能还原
     '／docx 这是未知目录名，应当保持普通文字',
+    '/unknown-dir 半角斜线的未知目录名按普通文字处理',
     '路径 /usr/bin/env 不是技能',
     '／Word 文档处理第二行\n换行也正常',
   ]
@@ -92,6 +94,47 @@ test('同显示名的技能双方都回退目录名', () => {
   assert.equal(tokens.has('／同名技能　'), false)
   assert.equal(tokens.get('／one　').dir_name, 'one')
   assert.equal(tokens.get('／two　').dir_name, 'two')
+})
+
+test('目录名 token 一并收录：手打 ／目录名 也是合法标签', () => {
+  const tokens = map()
+  assert.equal(tokens.get('／docx　').dir_name, 'docx')
+  assert.equal(tokens.get('／pptx-generator　').dir_name, 'pptx-generator')
+
+  // 后面不加尾随空格直接贴内容：标签照常渲染、发送时剥离并单独提取目录名
+  const segs = buildSegments('／docx帮我排版', tokens)
+  assert.deepEqual(segs.map((s) => s.type), ['skill', 'text'])
+  assert.equal(segs[0].dirName, 'docx')
+  assert.equal(text(segs), '／docx帮我排版')
+  assert.equal(skillDirsInText('／docx帮我排版', tokens).join(','), 'docx')
+  assert.equal(stripSkillTokens('／docx帮我排版', tokens), '帮我排版')
+
+  // 带尾随全角空格（现行标准形式）同样命中
+  assert.equal(skillDirsInText('／docx　帮我排版', tokens).join(','), 'docx')
+  // 半截目录名不命中
+  assert.equal(skillDirsInText('／doc 帮我排版', tokens).length, 0)
+})
+
+test('目录名 token 撞别的技能显示名时显示名优先，双方都不丢失', () => {
+  // 技能 a 的目录名 token 恰好等于技能 b 的显示名 token
+  const tokens = buildTokenMap([
+    { dir_name: 'docx', name: '表格处理' },
+    { dir_name: 'other', name: 'docx' },
+  ])
+  assert.equal(tokens.get('／表格处理　').dir_name, 'docx')
+  assert.equal(tokens.get('／docx　').dir_name, 'other')
+  // a 的目录名 token 被显示名占用后不补录，但 a 仍有显示名 token
+  assert.equal(tokens.get('／表格处理　').name, '表格处理')
+})
+
+test('matchTokenAt：完整标签命中并给出结束下标', () => {
+  const tokens = map()
+  assert.deepEqual(matchTokenAt('／docx帮我排版', 0, tokens), { token: '／docx', end: '／docx'.length })
+  assert.deepEqual(matchTokenAt('／Word 文档处理帮我排版', 0, tokens), { token: '／Word 文档处理', end: '／Word 文档处理'.length })
+  assert.equal(matchTokenAt('／doc 帮我排版', 0, tokens), null)
+  assert.equal(matchTokenAt('看 ／docx', 2, tokens).token, '／docx')
+  assert.equal(matchTokenAt('docx', 0, tokens), null)
+  assert.equal(matchTokenAt('／docx', 9, tokens), null)
 })
 
 test('suppressStart 让正在检索的半截查询词保持普通文字', () => {
@@ -203,8 +246,11 @@ test('旧版草稿迁移：半角 /、全角无尾空格、现行形式统一改
   assert.equal(migrateLegacySkillTokens(T_WORD + '中间', tokens), T_WORD + '中间')
   // 混排：只改旧的那段
   assert.equal(migrateLegacySkillTokens('/Word 文档处理 中间 ／PPT 生成 后面', tokens), T_WORD + '中间 ' + T_PPT + '后面')
-  // 普通文字里的 /xxx 不是旧标签，保持原样
-  assert.equal(migrateLegacySkillTokens('路径 /usr/bin/env 与 /docx', tokens), '路径 /usr/bin/env 与 /docx')
+  // 普通文字里的 /xxx 不是标签，保持原样；/docx 是目录名 token，会被归一化成现行形式
+  assert.equal(
+    migrateLegacySkillTokens('路径 /usr/bin/env 与 /docx', tokens),
+    '路径 /usr/bin/env 与 ' + T_WORD,
+  )
   // 空文本 / 空映射 → 原样返回
   assert.equal(migrateLegacySkillTokens('', tokens), '')
   assert.equal(migrateLegacySkillTokens('/Word 文档处理', new Map()), '/Word 文档处理')

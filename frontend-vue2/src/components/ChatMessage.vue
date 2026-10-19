@@ -831,9 +831,11 @@ export default {
       }
     },
     retryMessage() {
-      // 触发重试事件，传递消息内容（确保是纯字符串）
+      // 触发重试事件，传递消息内容（确保是纯字符串）与本轮技能目录名
+      // （后端把技能落在结构化 message.skills，正文是用户原话，重发必须把技能带上）
       const content = String(this.message.content || '')
-      this.$emit('retry', content)
+      const skills = Array.isArray(this.message.skills) ? [...this.message.skills] : []
+      this.$emit('retry', content, skills)
     },
     removeFile(index) {
       if (this.message.files && this.message.files[index]) {

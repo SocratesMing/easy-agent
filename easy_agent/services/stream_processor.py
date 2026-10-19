@@ -643,6 +643,12 @@ class StreamProcessor:
                     item["source"] = b["source"]
                 if b.get("approval_status"):
                     item["approval_status"] = b["approval_status"]
+                # 审批标记与文件列表一并下发：嵌套审批/done 时前端用本列表整条替换
+                # blocks，缺这两项会导致已批准卡片的文件列表丢失、pending 卡片状态回跳
+                if b.get("pending_approval"):
+                    item["pending_approval"] = True
+                if b.get("file_paths"):
+                    item["file_paths"] = b["file_paths"]
             elif bt == "content":
                 _c = (b.get("content", "") or "")
                 # 过滤空/纯空白的 content block，避免 done 事件下发空正文
