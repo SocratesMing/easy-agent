@@ -29,7 +29,7 @@ function parsePathList(text) {
     .filter(Boolean)
 }
 
-export function toolCard(toolName, args, result, success = true) {
+export function toolCard(toolName, args, result, success = true, source = null) {
   const a = args && typeof args === 'object' ? args : {}
   const r = typeof result === 'string'
     ? result
@@ -102,11 +102,17 @@ export function toolCard(toolName, args, result, success = true) {
         error: success === false, raw: r,
       }
     }
-    default:
+    default: {
+      // MCP 连接器工具：头部 meta 优先显示连接器名，正文上方单独展示数据来源。
+      const meta = source
+        ? `${source.display_name || source.server || ''} · ${short(JSON.stringify(a || {}), 36)}`
+        : short(JSON.stringify(a || {}), 56)
       return {
         card: 'generic', kind: 'other', title: toolName || 'tool',
-        meta: short(JSON.stringify(a || {}), 56),
+        meta,
         error: success === false, args: a, body: r,
+        source: source || null,
       }
+    }
   }
 }

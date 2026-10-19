@@ -168,6 +168,7 @@ import WorkspacePanel from './components/WorkspacePanel.vue'
 import SettingsPanel from './components/SettingsPanel.vue'
 import AiSidebar from './components/AiSidebar.vue'
 import { createSession, listSessions, getChatHistory, deleteSession, sendMessage, resumeStream, renameSession, togglePinSession, getStreamStatus } from './api/chat.js'
+import { streamExportRun } from './api/expert.js'
 import { getUserProfile, deleteFile } from './api/files.js'
 import chatSessionMixin, { parseMCPResult } from './mixins/chatSession.js'
 import { chatStore } from './store/chatStore.js'
@@ -851,6 +852,39 @@ export default {
       await this.handleCreateSession()
     },
 
+    /**
+     * 专家面板「新建专家」：与「创建技能」完全一致 —— 预填草稿已由面板写入
+     * sessionStorage，这里新开一个对话窗口即可（ChatInput 挂载时自动恢复草稿 + 技能标签）。
+     */
+    async handleExpertCreate() {
+      await this.handleCreateSession()
+    },
+
+    /**
+     * 专家面板卡片「编辑」：预填草稿已由面板写入 sessionStorage。
+     *
+     * 窗口选择规则（按需求）：
+     * - 当前窗口就是**新会话**（无任何聊天记录）→ 直接把内容带入当前窗口，不新开；
+     * - 当前窗口**已有聊天记录** → 新开一个会话窗口，避免把修改指令混进既有上下文。
+     *
+     * 两种情况都只需「关闭面板」：Chat 重新挂载后，ChatInput 会恢复草稿与技能标签。
+     */
+    async handleExpertEdit() {
+      const isEmptySession = !this.currentSessionId || this.messages.length === 0
+      if (isEmptySession) {
+        // 关掉所有会顶替 Chat 的面板（Chat 是 v-else-if，面板一关即重新挂载，
+        // ChatInput 随之恢复草稿 + 技能标签）。知识库面板本就不会与专家面板同时开，
+        // 这里一并复位，保证与 handleCreateSession 的「关面板」集合一致。
+        this.showKnowledge = false
+        this.showAssets = false
+        this.showSkillCenter = false
+        this.showScheduledTasks = false
+        this.showSettingsPanel = false
+        return
+      }
+      await this.handleCreateSession()
+    },
+
     async handleCreateSession() {
       this.showKnowledge = false
       this.showUserManagementPanel = false
@@ -1147,7 +1181,7 @@ export default {
       }
 
       const onChunk = (data) => {
-        const { type: eventType, content, duration, step, tool_name: toolName, tool_call_id: toolCallId, arguments: args, result, success, title } = data
+        const { type: eventType, content, duration, step, tool_name: toolName, tool_call_id: toolCallId, arguments: args, result, success, title, source } = data
 
         if (eventType === 'start') {
           if (!ctx.isResume) {
@@ -1351,6 +1385,7 @@ export default {
                 arguments: args || prev.arguments || {},
                 step: step || prev.step || 0,
                 streaming: false,
+                source: source || prev.source,
               }
               setReactive(this.messages[idx].blocks, existingBlockIdx, merged)
               currentBlock = merged
@@ -1371,7 +1406,7 @@ export default {
             } else {
               currentBlock = null
               if (!ctx.isResume) currentToolCalls.push({ tool_call_id: callId, tool_name: toolName || '', arguments: args || {}, result: '', success: true })
-              addBlock('tool_call', { id: callId, tool_name: toolName || '', arguments: args || {}, result: '', success: true, step: step || 0 })
+              addBlock('tool_call', { id: callId, tool_name: toolName || '', arguments: args || {}, result: '', success: true, step: step || 0, source: source || null })
             }
           }
         } else if (eventType === 'tool_result') {
@@ -1395,7 +1430,7 @@ export default {
               blockIdx = this.messages[idx].blocks.findIndex(b => b.type === 'tool_call' && b.streaming && b.tool_name === toolName)
             }
             if (blockIdx !== -1) {
-              const blk = { ...this.messages[idx].blocks[blockIdx], arguments: args || this.messages[idx].blocks[blockIdx].arguments, result: parseMCPResult(result || ''), success: success !== false, duration: toolDuration, streaming: false }
+              const blk = { ...this.messages[idx].blocks[blockIdx], arguments: args || this.messages[idx].blocks[blockIdx].arguments, result: parseMCPResult(result || ''), success: success !== false, duration: toolDuration, streaming: false, source: source || this.messages[idx].blocks[blockIdx].source }
               if (ctx.isResume) blk.loading = false
               setReactive(this.messages[idx].blocks, blockIdx, blk)
               touchBlocks()
@@ -1515,7 +1550,7 @@ export default {
       // 结构化技能目录名（与后端落库字段同形）：气泡按它渲染技能标签，不再依赖从
       // 消息文本里反扒 `/技能名`。没有选中技能时不写该字段——手打 `/技能名` 的正文
       // 仍按老规则从文本解析，行为和改造前一致。
-      if (skills.length > 0) userMessage.skills = [...skills]
+  if (skills.length > 0) userMessage.skills = [...skills]
 
   // 专家模式：本轮专家同时写到用户消息上（与后端落库字段同形），
   // 这样 Chat.vue 的 userExpertFor 与 ChatMessage 都能直接取到，不依赖后端回灌。

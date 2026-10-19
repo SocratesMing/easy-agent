@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 # 否则已经升级过的库会一直命中「结构已是最新」的快速启动路径，变更不会生效。
 # 见 init_tables()：版本一致时跳过整轮建表 + 补列 + 建索引探测（MySQL 上这一步
 # 过去要 40+ 次网络往返，多副本部署时每个 pod 启动都要跑一遍，是启动慢的主因）。
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 SCHEMA_VERSION_TABLE = "schema_meta"
 SCHEMA_VERSION_KEY = "schema_version"
 
@@ -62,6 +62,27 @@ EXPECTED_TABLES = (
     "knowledge_operations",
     "knowledge_audit_events",
     "expert_agents",
+)
+
+# users 表关键列：表名齐全但缺这些列时，视为老结构强制回退完整迁移。
+# 背景：历史上出现过「加列漏 bump SCHEMA_VERSION」——部署环境老库版本号已与代码
+# 一致，快速路径只校验表名不校验列，导致新列永远补不上（人员/权限管理 500）。
+# 这层探测是漏 bump 时的最后防线：即使版本号忘了 +1，缺列也能触发完整迁移自愈。
+_USERS_CRITICAL_COLUMNS = frozenset(
+    {
+        "employee_id",
+        "display_name",
+        "department_id",
+        "department_name",
+        "division_name",
+        "team_name",
+        "position",
+        "mobile",
+        "account_status",
+        "personnel_source",
+        "token_version",
+        "last_activity_at",
+    }
 )
 
 
@@ -144,15 +165,37 @@ class Database:
                 connect_timeout=connect_timeout,
             )
             cursor = conn.cursor()
+            # 库已存在时不要再发 CREATE DATABASE：建库是 DDL，需要 schema 级元数据锁；
+            # 库内存在未提交事务、或其它实例正在执行建表/改列时，它会一直等到
+            # lock_wait_timeout 后报 1205（Lock wait timeout exceeded），表现为
+            # 「启动时 MySQL 连接失败」。先查 information_schema 判断存在性，只有
+            # 真的缺库时才执行建库；同时把会话锁等待压到 10s，避免启动被长时间挂住。
+            try:
+                cursor.execute("SET SESSION lock_wait_timeout = 10")
+            except Exception:
+                pass  # MySQL 5.6 及以下无该变量，忽略即可
             cursor.execute(
-                f"CREATE DATABASE IF NOT EXISTS `{db_name}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
+                "SELECT SCHEMA_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME=%s",
+                (db_name,),
             )
+            if cursor.fetchone() is not None:
+                logger.info(f"MySQL数据库 '{db_name}' 已存在，跳过建库 DDL")
+            else:
+                cursor.execute(
+                    f"CREATE DATABASE IF NOT EXISTS `{db_name}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
+                )
+                logger.info(f"MySQL数据库 '{db_name}' 已创建")
             cursor.close()
             conn.close()
-            logger.info(f"MySQL数据库 '{db_name}' 已就绪")
         except Exception as e:
             err = str(e)
-            if "using password: NO" in err:
+            if "1205" in err or "Lock wait timeout" in err:
+                hint = (
+                    "（库通常已存在，服务可继续启动；若反复出现，请排查长事务与并发建表："
+                    "SELECT * FROM information_schema.INNODB_TRX; SHOW PROCESSLIST; "
+                    "SELECT * FROM performance_schema.metadata_locks）"
+                )
+            elif "using password: NO" in err:
                 hint = "（未发送密码：请检查 database.mysql.password 是否为空）"
             elif "using password: YES" in err:
                 hint = "（密码错误，或该用户未对来源 host 授权，如 root@'172.17.0.1'）"
@@ -764,7 +807,20 @@ class Database:
         except Exception as e:  # noqa: BLE001
             logger.warning(f"读取表清单失败，回退到完整初始化: {e}")
             return False
-        return all(t in names for t in EXPECTED_TABLES)
+        if not all(t in names for t in EXPECTED_TABLES):
+            return False
+        # 关键列自愈：表名齐全但 users 缺关键列（加列漏 bump 的老库）→ 回退完整迁移。
+        # 仅在启动快速路径执行一次真实探测（_column_cache 此时为空），无额外开销。
+        try:
+            user_cols = self._table_columns(cursor, "users")
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"users 列探测失败，回退完整初始化: {e}")
+            return False
+        missing = _USERS_CRITICAL_COLUMNS - user_cols
+        if missing:
+            logger.warning(f"users 表缺关键列 {sorted(missing)}，回退完整迁移补列")
+            return False
+        return True
 
     def _repair_missing_message_rows(self, cursor):
         """修复 session_messages 表中缺失或被覆盖的消息行（从 sessions 表 JSON 重建）。
