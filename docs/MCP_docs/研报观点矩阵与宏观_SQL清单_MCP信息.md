@@ -29,11 +29,28 @@
 | JSON null | JSON 里的 `null` 被 `JSON_UNQUOTE` 解出来是**字符串 `'null'`**（不是 SQL NULL）→ 所有可空字段统一套 `NULLIF(..., 'null')` |
 | 性能 | 展开前先把子数组放进带 `LIMIT 1`（单周）或 `DISTINCT`（跨周）的派生表，**这是强制物化**：整份 JSON 只解析一次。不要当冗余优化删掉 |
 | 写入方式 | 研报分析流程按周写入，一周一行，重复跑同一周为覆盖更新 |
+| 输出列名 | **全部避开保留字/连接器黑名单**：JSON 里的 `direction`/`period`/`prior`/`actual`/`unit` 在 SQL 输出里分别叫 `dir`/`data_period`/`prev_value`/`actual_value`/`unit_name`（JSON 键名本身不变），对照表见 §0.0 |
 | 查询权限 | 下列 SQL 全是 SELECT，只读账号即可 |
 
 ---
 
-## 零、共享块（整套 SQL 里唯一重复的代码）
+## 零、先看这几个共享块（整套 SQL 里唯一重复的代码）
+
+### 0.0 输出列名 ↔ JSON 键名对照
+
+目标环境的连接器对 `prior` 这类词敏感（会报 1064），所以**SQL 输出列名一律避开**，JSON 里的键名保持原样：
+
+| SQL 输出列名 | 对应 JSON 键 | 说明 |
+|---|---|---|
+| `dir` | `opinions[].direction` | 方向：看涨 / 看跌 / 中性 |
+| `data_period` | `items[].period` | 数据期 |
+| `prev_value` | `items[].prior` | 上期值（**不叫 prior**） |
+| `actual_value` | `items[].actual` | 实际值 |
+| `unit_name` | `items[].unit` | 单位 |
+
+其余列名（`week` / `institution` / `category` / `asset` / `indicator` / `consensus` / `forecasts` / `price` / `price_date` / `report` / `passage_head`）与 JSON 键同名。
+
+---
 
 整套查询只有 4 处「展开 JSON 数组」的代码。抽出来放在这里，
 下面各条 SQL 用 `{{SEQ}}` / `{{V}}` / `{{M}}` / `{{B}}` 引用它们——
@@ -60,7 +77,7 @@
 SELECT v.week, v.institution,
        JSON_UNQUOTE(JSON_EXTRACT(v.ops_json, CONCAT('$[',so.i,'].category')))  AS category,
        JSON_UNQUOTE(JSON_EXTRACT(v.ops_json, CONCAT('$[',so.i,'].asset')))     AS asset,
-       JSON_UNQUOTE(JSON_EXTRACT(v.ops_json, CONCAT('$[',so.i,'].direction'))) AS direction,
+       JSON_UNQUOTE(JSON_EXTRACT(v.ops_json, CONCAT('$[',so.i,'].direction'))) AS dir,
        NULLIF(JSON_UNQUOTE(JSON_EXTRACT(v.ops_json, CONCAT('$[',so.i,'].price'))), 'null')      AS price,
        NULLIF(JSON_UNQUOTE(JSON_EXTRACT(v.ops_json, CONCAT('$[',so.i,'].price_date'))), 'null') AS price_date
 FROM (
@@ -74,7 +91,7 @@ WHERE so.i < JSON_LENGTH(v.ops_json)
   AND JSON_UNQUOTE(JSON_EXTRACT(v.ops_json, CONCAT('$[',so.i,'].category'))) NOT IN ('宏观指标','宏观')
 ```
 
-**参数**：`week`（示例 `20260928-20261004`）。**返回**：`week` / `institution` / `category` / `asset` / `direction` / `price`（可空）/ `price_date`（可空）。
+**参数**：`week`（示例 `20260928-20261004`）。**返回**：`week` / `institution` / `category` / `asset` / `dir` / `price`（可空）/ `price_date`（可空）。
 
 ### 0.3 宏观指标展开块 `{{M}}`（一行一个指标）
 
@@ -83,29 +100,29 @@ SELECT m.week,
        JSON_UNQUOTE(JSON_EXTRACT(m.items_json, CONCAT('$[',si.i,'].indicator')))    AS indicator,
        JSON_UNQUOTE(JSON_EXTRACT(m.items_json, CONCAT('$[',si.i,'].category')))     AS category,
        NULLIF(JSON_UNQUOTE(JSON_EXTRACT(m.items_json, CONCAT('$[',si.i,'].release_date'))), 'null') AS release_date,
-       NULLIF(JSON_UNQUOTE(JSON_EXTRACT(m.items_json, CONCAT('$[',si.i,'].period'))), 'null')       AS period,
-       NULLIF(JSON_UNQUOTE(JSON_EXTRACT(m.items_json, CONCAT('$[',si.i,'].prior'))), 'null')        AS prior,
+       NULLIF(JSON_UNQUOTE(JSON_EXTRACT(m.items_json, CONCAT('$[',si.i,'].period'))), 'null')       AS data_period,
+       NULLIF(JSON_UNQUOTE(JSON_EXTRACT(m.items_json, CONCAT('$[',si.i,'].prior'))), 'null')        AS prev_value,
        NULLIF(JSON_UNQUOTE(JSON_EXTRACT(m.items_json, CONCAT('$[',si.i,'].consensus'))), 'null')    AS consensus,
-       NULLIF(JSON_UNQUOTE(JSON_EXTRACT(m.items_json, CONCAT('$[',si.i,'].actual'))), 'null')       AS actual,
-       NULLIF(JSON_UNQUOTE(JSON_EXTRACT(m.items_json, CONCAT('$[',si.i,'].unit'))), 'null')         AS unit,
+       NULLIF(JSON_UNQUOTE(JSON_EXTRACT(m.items_json, CONCAT('$[',si.i,'].actual'))), 'null')       AS actual_value,
+       NULLIF(JSON_UNQUOTE(JSON_EXTRACT(m.items_json, CONCAT('$[',si.i,'].unit'))), 'null')         AS unit_name,
        JSON_EXTRACT(m.items_json, CONCAT('$[',si.i,'].forecasts'))                  AS forecasts
 FROM (SELECT week, JSON_EXTRACT(macro_json,'$.items') AS items_json FROM weekly_macro_data WHERE week = '20260928-20261004' LIMIT 1) m, {{SEQ}} si
 WHERE si.i < JSON_LENGTH(m.items_json)
 ```
 
-**参数**：`week`。**返回**：`week` / `indicator` / `category` / `release_date` / `period` / `prior` / `consensus` / `actual` / `unit` / `forecasts`（机构值 JSON 对象）。
+**参数**：`week`。**返回**：`week` / `indicator` / `category` / `release_date` / `data_period` / `prev_value` / `consensus` / `actual_value` / `unit_name` / `forecasts`（机构值 JSON 对象）。
 
 ### 0.4 宏观机构值展开块 `{{B}}`（一行一个机构预测）
 
 ```sql
-SELECT b.week, b.indicator, b.consensus, b.actual, b.inst,
+SELECT b.week, b.indicator, b.consensus, b.actual_value, b.inst,
        NULLIF(JSON_UNQUOTE(JSON_EXTRACT(b.forecasts, CONCAT('$."', b.inst, '"'))), 'null') AS val,
        JSON_TYPE(JSON_EXTRACT(b.forecasts, CONCAT('$."', b.inst, '"')))                    AS jtype
 FROM (
   SELECT m.week,
          JSON_UNQUOTE(JSON_EXTRACT(m.items_json, CONCAT('$[',si.i,'].indicator'))) AS indicator,
          NULLIF(JSON_UNQUOTE(JSON_EXTRACT(m.items_json, CONCAT('$[',si.i,'].consensus'))), 'null') AS consensus,
-         NULLIF(JSON_UNQUOTE(JSON_EXTRACT(m.items_json, CONCAT('$[',si.i,'].actual'))), 'null')    AS actual,
+         NULLIF(JSON_UNQUOTE(JSON_EXTRACT(m.items_json, CONCAT('$[',si.i,'].actual'))), 'null')    AS actual_value,
          JSON_EXTRACT(m.items_json, CONCAT('$[',si.i,'].forecasts'))               AS forecasts,
          JSON_UNQUOTE(JSON_EXTRACT(JSON_KEYS(JSON_EXTRACT(m.items_json, CONCAT('$[',si.i,'].forecasts'))),
                                    CONCAT('$[',sk.i,']')))                         AS inst
@@ -115,7 +132,7 @@ FROM (
 ) b
 ```
 
-**参数**：`week`。**返回**：`week` / `indicator` / `consensus` / `actual` / `inst`（机构）/ `val`（该机构预测值，可能是数值也可能是文字）/ `jtype`（该值的 JSON 类型）。
+**参数**：`week`。**返回**：`week` / `indicator` / `consensus` / `actual_value` / `inst`（机构）/ `val`（该机构预测值，可能是数值也可能是文字）/ `jtype`（该值的 JSON 类型）。
 
 ### 0.5 跨周用哪个版本
 
@@ -242,15 +259,15 @@ GROUP BY x.week;
 **参数**：`week`
 
 ```sql
-SELECT x.institution, x.direction, COUNT(*) AS n
+SELECT x.institution, x.dir, COUNT(*) AS n
 FROM (
 {{V}}
 ) x
-GROUP BY x.institution, x.direction
-ORDER BY x.institution, x.direction;
+GROUP BY x.institution, x.dir
+ORDER BY x.institution, x.dir;
 ```
 
-**返回**：`institution`、`direction`、`n`
+**返回**：`institution`、`dir`、`n`
 
 ### 1.5 某周 资产 × 方向分布（看共识 / 分歧）
 
@@ -260,30 +277,32 @@ ORDER BY x.institution, x.direction;
 
 ```sql
 SELECT x.asset,
-       SUM(x.direction = '看涨') AS bull,
-       SUM(x.direction = '看跌') AS bear,
-       SUM(x.direction = '中性') AS neutral
+       SUM(x.dir = '看涨') AS bull,
+       SUM(x.dir = '看跌') AS bear,
+       SUM(x.dir = '中性') AS neutral
 FROM (
 {{V}}
 ) x
 GROUP BY x.asset
-ORDER BY (bull + bear) DESC, x.asset;
+ORDER BY SUM(x.dir = '看涨') + SUM(x.dir = '看跌') DESC, x.asset;
 ```
 
 **返回**：`asset`、`bull`（看涨家数）、`bear`（看跌家数）、`neutral`（中性家数）
 
 > `bull` 与 `bear` 同时 > 0 即「有分歧」；某机构的**内部分歧**另有 `opinions[].note` 字段标注。
+> ⚠️ 排序写的是完整聚合表达式（`SUM(...) + SUM(...)`）而不是 `ORDER BY (bull + bear)`：
+> **MySQL 5.7 的 ORDER BY 只认裸别名（`ORDER BY bull`），不认别名参与运算**，照抄即可。
 
 ### 1.6 观点原文出处（可追溯到研报标题 + 段落）
 
 **参数**：`week`、`asset`（示例 `美元指数(DXY)`）
 
 ```sql
-SELECT y.asset, y.direction, y.report, LEFT(y.passage, 120) AS passage_head
+SELECT y.asset, y.dir, y.report, LEFT(y.passage, 120) AS passage_head
 FROM (
   SELECT JSON_UNQUOTE(JSON_EXTRACT(v.ops_json, CONCAT('$[',so.i,'].category')))  AS category,
          JSON_UNQUOTE(JSON_EXTRACT(v.ops_json, CONCAT('$[',so.i,'].asset')))     AS asset,
-         JSON_UNQUOTE(JSON_EXTRACT(v.ops_json, CONCAT('$[',so.i,'].direction'))) AS direction,
+         JSON_UNQUOTE(JSON_EXTRACT(v.ops_json, CONCAT('$[',so.i,'].direction'))) AS dir,
          JSON_UNQUOTE(JSON_EXTRACT(JSON_EXTRACT(v.ops_json, CONCAT('$[',so.i,'].sources')), CONCAT('$[',s.i,'].report')))  AS report,
          JSON_UNQUOTE(JSON_EXTRACT(JSON_EXTRACT(v.ops_json, CONCAT('$[',so.i,'].sources')), CONCAT('$[',s.i,'].passage'))) AS passage
   FROM (
@@ -298,7 +317,7 @@ WHERE y.category NOT IN ('宏观指标','宏观')
   AND y.asset = '美元指数(DXY)';
 ```
 
-**返回**：`asset`、`direction`、`report`、`passage_head`（原文前 120 字；`sources` 里还有 `rationale` 判定理由、`date`）
+**返回**：`asset`、`dir`、`report`、`passage_head`（原文前 120 字；`sources` 里还有 `rationale` 判定理由、`date`）
 
 > 这条比别的多一层（`views → opinions → sources`），所以自带展开代码。
 > 一条观点有 N 个 `sources` 就展开成 N 行（**展开行数 ≠ 观点数**）；返回给模型时建议只取首条 + 计数。
@@ -311,7 +330,7 @@ WHERE y.category NOT IN ('宏观指标','宏观')
 **参数**：`asset`（示例 `美元指数(DXY)`）；用**跨周版** `{{V_ALLWK}}`（见 §0.5）
 
 ```sql
-SELECT DISTINCT x.week, x.direction, x.price, x.price_date
+SELECT DISTINCT x.week, x.dir, x.price, x.price_date
 FROM (
 {{V_ALLWK}}
 ) x
@@ -319,7 +338,7 @@ WHERE x.asset = '美元指数(DXY)'
 ORDER BY x.week DESC;
 ```
 
-**返回**：`week`、`direction`、`price`、`price_date`
+**返回**：`week`、`dir`、`price`、`price_date`
 
 ### 1.8 周度综述正文
 
@@ -407,7 +426,7 @@ ORDER BY b.indicator, b.inst;
 **业务**：某个指标（共识 / 实际）的历史对比。用**跨周版** `{{M_ALLWK}}`（见 §0.5）。
 
 ```sql
-SELECT x.week, x.period, x.consensus, x.actual
+SELECT x.week, x.data_period, x.consensus, x.actual_value
 FROM (
 {{M_ALLWK}}
 ) x
@@ -424,14 +443,14 @@ ORDER BY x.week;
 ```sql
 SELECT x.indicator,
        COALESCE(JSON_LENGTH(x.forecasts), 0) AS filled,
-       x.consensus, x.actual
+       x.consensus, x.actual_value
 FROM (
 {{M}}
 ) x
 ORDER BY filled DESC, x.indicator;
 ```
 
-**返回**：`indicator`、`filled`（填报机构数）、`consensus`、`actual`
+**返回**：`indicator`、`filled`（填报机构数）、`consensus`、`actual_value`
 
 ### 2.6 数值行：机构算术平均（⚠️ 只算数值）
 
@@ -442,16 +461,16 @@ ORDER BY filled DESC, x.indicator;
 ```sql
 SELECT x.indicator,
        ROUND(AVG(CAST(x.val AS DECIMAL(14,4))), 2) AS bank_avg_num,
-       COUNT(*) AS n_num, x.consensus, x.actual
+       COUNT(*) AS n_num, x.consensus, x.actual_value
 FROM (
 {{B}}
 ) x
 WHERE x.jtype IN ('INTEGER','DOUBLE')
-GROUP BY x.indicator, x.consensus, x.actual
+GROUP BY x.indicator, x.consensus, x.actual_value
 ORDER BY n_num DESC, x.indicator;
 ```
 
-**返回**：`indicator`、`bank_avg_num`、`n_num`（参与平均的家数）、`consensus`、`actual`
+**返回**：`indicator`、`bank_avg_num`、`n_num`（参与平均的家数）、`consensus`、`actual_value`
 
 > `jtype IN ('INTEGER','DOUBLE')` 是**必需**条件：机构值里混有文字（见 2.7），不过滤会把文字当数字算，
 > `CAST` 后得到 0 或直接报错。判类型用 `JSON_TYPE()`（比正则干净，也对应后端 `is_text_row` 的判据）。
@@ -506,7 +525,7 @@ ORDER BY n DESC;
 
 ---
 
-## 四、口径与常见问题
+## 四、口径与常见坑
 
 | # | 坑 | 说明 · 正确做法 |
 |---|---|---|
@@ -524,4 +543,6 @@ ORDER BY n DESC;
 | 12 | 跨表 JOIN 报 `Illegal mix of collations (1267)` | 两表 `week` 列排序规则可能不一致 → `ON m.week = w.week COLLATE utf8mb4_unicode_ci`（或与部署环境一致的排序规则） |
 | 13 | 宏观数据有历史兼容字段 | `weekly_analyzer_data.data_json.macro_forecasts` 是旧的兼容字段，**取宏观一律用 `weekly_macro_data`** |
 | 14 | JSON 路径里的引号不要加反斜杠 | 写 `CONCAT('$."', 机构名, '"')`：单引号串里的双引号无需转义；加反斜杠在 `NO_BACKSLASH_ESCAPES` 模式下会失效 |
-| 15 | `ONLY_FULL_GROUP_BY`（5.7 默认开启） | 本文档的聚合查询都把非聚合列写进了 `GROUP BY`，照抄即可 |
+| 15 | **`prior` 等词会撞连接器/保留字黑名单** | 输出列名已统一避开（`prev_value`/`data_period`/`actual_value`/`unit_name`/`dir`），JSON 键名不变；自己加新列时也别用 `prior`、`order`、`group`、`key`、`desc` 这类词 |
+| 16 | **`ORDER BY` 里别拿 SELECT 别名做运算** | `ORDER BY (bull + bear)` 在 5.7 上不认（只认裸别名 `ORDER BY bull`），要写完整聚合表达式；本文档 1.5 已按此写法 |
+| 17 | `ONLY_FULL_GROUP_BY`（5.7 默认开启） | 本文档的聚合查询都把非聚合列写进了 `GROUP BY`，照抄即可 |

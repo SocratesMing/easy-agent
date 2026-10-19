@@ -5,6 +5,13 @@
 - 观点矩阵 = ``weekly_analyzer_data``（一周一行，``week`` 为唯一键）
 - 美国宏观资产研判 = ``weekly_macro_data``（一周一行，``week`` 为唯一键）
 - 两表**互不关联**，跨表 JOIN 要注意排序规则（可能报 1267）
+- **SQL 输出列名避开保留字**：``direction`` / ``period`` / ``prior`` / ``actual`` /
+  ``unit`` 在输出里分别叫 ``dir`` / ``data_period`` / ``prev_value`` /
+  ``actual_value`` / ``unit_name``（**JSON 键名本身不变**）。目标环境的连接器对
+  ``prior`` 这类词敏感会报 1064，自己加新列时也别用 ``prior`` / ``order`` /
+  ``group`` / ``key`` / ``desc`` 这类词
+- **``ORDER BY`` 里别拿 SELECT 别名做运算**：MySQL 5.7 只认裸别名
+  （``ORDER BY bull``），``ORDER BY (bull + bear)`` 会报 1064，要写完整聚合表达式
 
 本模块的三条硬约束：
 
@@ -122,7 +129,7 @@ VIEWS_EXPAND = (
     "SELECT v.week, v.institution, "
     "JSON_UNQUOTE(JSON_EXTRACT(v.ops_json, CONCAT('$[', so.i, '].category')))  AS category, "
     "JSON_UNQUOTE(JSON_EXTRACT(v.ops_json, CONCAT('$[', so.i, '].asset')))     AS asset, "
-    "JSON_UNQUOTE(JSON_EXTRACT(v.ops_json, CONCAT('$[', so.i, '].direction'))) AS direction, "
+    "JSON_UNQUOTE(JSON_EXTRACT(v.ops_json, CONCAT('$[', so.i, '].direction'))) AS dir, "
     "NULLIF(JSON_UNQUOTE(JSON_EXTRACT(v.ops_json, CONCAT('$[', so.i, '].price'))), 'null')      AS price, "
     "NULLIF(JSON_UNQUOTE(JSON_EXTRACT(v.ops_json, CONCAT('$[', so.i, '].price_date'))), 'null') AS price_date "
     "FROM ("
@@ -146,11 +153,11 @@ MACRO_ITEMS_EXPAND = (
     "JSON_UNQUOTE(JSON_EXTRACT(m.items_json, CONCAT('$[', si.i, '].indicator')))    AS indicator, "
     "JSON_UNQUOTE(JSON_EXTRACT(m.items_json, CONCAT('$[', si.i, '].category')))     AS category, "
     "NULLIF(JSON_UNQUOTE(JSON_EXTRACT(m.items_json, CONCAT('$[', si.i, '].release_date'))), 'null') AS release_date, "
-    "NULLIF(JSON_UNQUOTE(JSON_EXTRACT(m.items_json, CONCAT('$[', si.i, '].period'))), 'null')       AS period, "
-    "NULLIF(JSON_UNQUOTE(JSON_EXTRACT(m.items_json, CONCAT('$[', si.i, '].prior'))), 'null')        AS prior, "
+    "NULLIF(JSON_UNQUOTE(JSON_EXTRACT(m.items_json, CONCAT('$[', si.i, '].period'))), 'null')       AS data_period, "
+    "NULLIF(JSON_UNQUOTE(JSON_EXTRACT(m.items_json, CONCAT('$[', si.i, '].prior'))), 'null')        AS prev_value, "
     "NULLIF(JSON_UNQUOTE(JSON_EXTRACT(m.items_json, CONCAT('$[', si.i, '].consensus'))), 'null')    AS consensus, "
-    "NULLIF(JSON_UNQUOTE(JSON_EXTRACT(m.items_json, CONCAT('$[', si.i, '].actual'))), 'null')       AS actual, "
-    "NULLIF(JSON_UNQUOTE(JSON_EXTRACT(m.items_json, CONCAT('$[', si.i, '].unit'))), 'null')         AS unit, "
+    "NULLIF(JSON_UNQUOTE(JSON_EXTRACT(m.items_json, CONCAT('$[', si.i, '].actual'))), 'null')       AS actual_value, "
+    "NULLIF(JSON_UNQUOTE(JSON_EXTRACT(m.items_json, CONCAT('$[', si.i, '].unit'))), 'null')         AS unit_name, "
     "JSON_EXTRACT(m.items_json, CONCAT('$[', si.i, '].forecasts'))                  AS forecasts "
     f"FROM (SELECT week, JSON_EXTRACT(macro_json, '$.items') AS items_json "
     f"      FROM {table_ref('macro')} WHERE week = %s LIMIT 1) m, {_seq()} si "
@@ -171,14 +178,14 @@ MACRO_ITEMS_EXPAND_ALL_WEEKS = MACRO_ITEMS_EXPAND.replace(
 
 #: {{B}}：一行一个机构预测。参数：week（一个 %s）
 MACRO_BANK_EXPAND = (
-    "SELECT b.week, b.indicator, b.consensus, b.actual, b.inst, "
+    "SELECT b.week, b.indicator, b.consensus, b.actual_value, b.inst, "
     "NULLIF(JSON_UNQUOTE(JSON_EXTRACT(b.forecasts, CONCAT('$.\"', b.inst, '\"'))), 'null') AS val, "
     "JSON_TYPE(JSON_EXTRACT(b.forecasts, CONCAT('$.\"', b.inst, '\"')))                    AS jtype "
     "FROM ("
     "  SELECT m.week, "
     "         JSON_UNQUOTE(JSON_EXTRACT(m.items_json, CONCAT('$[', si.i, '].indicator'))) AS indicator, "
     "         NULLIF(JSON_UNQUOTE(JSON_EXTRACT(m.items_json, CONCAT('$[', si.i, '].consensus'))), 'null') AS consensus, "
-    "         NULLIF(JSON_UNQUOTE(JSON_EXTRACT(m.items_json, CONCAT('$[', si.i, '].actual'))), 'null')    AS actual, "
+    "         NULLIF(JSON_UNQUOTE(JSON_EXTRACT(m.items_json, CONCAT('$[', si.i, '].actual'))), 'null')    AS actual_value, "
     "         JSON_EXTRACT(m.items_json, CONCAT('$[', si.i, '].forecasts'))               AS forecasts, "
     "         JSON_UNQUOTE(JSON_EXTRACT(JSON_KEYS(JSON_EXTRACT(m.items_json, CONCAT('$[', si.i, '].forecasts'))), "
     "                                   CONCAT('$[', sk.i, ']')))                         AS inst "
@@ -230,7 +237,7 @@ def opinion_details_sql(
         params.append(str(category).strip())
     where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
     return (
-        "SELECT x.week, x.institution, x.category, x.asset, x.direction, "
+        "SELECT x.week, x.institution, x.category, x.asset, x.dir, "
         f"x.price, x.price_date FROM ({VIEWS_EXPAND}) x {where} "
         f"ORDER BY x.institution, x.asset LIMIT {row_limit(limit)}",
         tuple(params),
@@ -248,10 +255,10 @@ def opinion_direction_counts_sql(
         params.append(str(institution).strip())
     where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
     return (
-        "SELECT x.institution, x.direction, COUNT(*) AS n "
+        "SELECT x.institution, x.dir, COUNT(*) AS n "
         f"FROM ({VIEWS_EXPAND}) x {where} "
-        "GROUP BY x.institution, x.direction "
-        f"ORDER BY x.institution, x.direction LIMIT {row_limit(limit)}",
+        "GROUP BY x.institution, x.dir "
+        f"ORDER BY x.institution, x.dir LIMIT {row_limit(limit)}",
         tuple(params),
     )
 
@@ -259,10 +266,13 @@ def opinion_direction_counts_sql(
 def asset_consensus_sql(week: str, limit: int | None = None) -> tuple[str, tuple[Any, ...]]:
     """1.5 某周 资产 × 方向分布（看共识 / 分歧，已排除宏观类）。"""
     return (
-        "SELECT x.asset, SUM(x.direction = '看涨') AS bull, "
-        "SUM(x.direction = '看跌') AS bear, SUM(x.direction = '中性') AS neutral "
+        "SELECT x.asset, SUM(x.dir = '看涨') AS bull, "
+        "SUM(x.dir = '看跌') AS bear, SUM(x.dir = '中性') AS neutral "
         f"FROM ({VIEWS_EXPAND}) x GROUP BY x.asset "
-        f"ORDER BY (bull + bear) DESC, x.asset LIMIT {row_limit(limit)}",
+        # ⚠️ ORDER BY 必须写完整聚合表达式：MySQL 5.7 只认裸别名（ORDER BY bull），
+        # 不认别名参与运算（ORDER BY (bull + bear) 会报 1064）
+        f"ORDER BY SUM(x.dir = '看涨') + SUM(x.dir = '看跌') DESC, x.asset "
+        f"LIMIT {row_limit(limit)}",
         (_week_param(week),),
     )
 
@@ -279,12 +289,12 @@ def opinion_sources_sql(
     if not name:
         raise ValueError("asset 必填")
     return (
-        "SELECT y.asset, y.direction, y.report, LEFT(y.passage, 120) AS passage_head "
+        "SELECT y.asset, y.dir, y.report, LEFT(y.passage, 120) AS passage_head "
         "FROM ("
         "  SELECT "
         "  JSON_UNQUOTE(JSON_EXTRACT(v.ops_json, CONCAT('$[', so.i, '].category')))  AS category, "
         "  JSON_UNQUOTE(JSON_EXTRACT(v.ops_json, CONCAT('$[', so.i, '].asset')))     AS asset, "
-        "  JSON_UNQUOTE(JSON_EXTRACT(v.ops_json, CONCAT('$[', so.i, '].direction'))) AS direction, "
+        "  JSON_UNQUOTE(JSON_EXTRACT(v.ops_json, CONCAT('$[', so.i, '].direction'))) AS dir, "
         "  JSON_UNQUOTE(JSON_EXTRACT(JSON_EXTRACT(v.ops_json, CONCAT('$[', so.i, '].sources')), "
         "                             CONCAT('$[', s.i, '].report')))  AS report, "
         "  JSON_UNQUOTE(JSON_EXTRACT(JSON_EXTRACT(v.ops_json, CONCAT('$[', so.i, '].sources')), "
@@ -313,7 +323,7 @@ def asset_opinion_trend_sql(
     if not name:
         raise ValueError("asset 必填")
     return (
-        "SELECT DISTINCT x.week, x.direction, x.price, x.price_date "
+        "SELECT DISTINCT x.week, x.dir, x.price, x.price_date "
         f"FROM ({VIEWS_EXPAND_ALL_WEEKS}) x "
         "WHERE x.asset = %s ORDER BY x.week DESC "
         f"LIMIT {row_limit(limit)}",
@@ -366,7 +376,7 @@ def macro_indicator_trend_sql(
     if not name:
         raise ValueError("indicator 必填")
     return (
-        "SELECT x.week, x.period, x.consensus, x.actual "
+        "SELECT x.week, x.data_period, x.consensus, x.actual_value "
         f"FROM ({MACRO_ITEMS_EXPAND_ALL_WEEKS}) x "
         "WHERE x.indicator = %s ORDER BY x.week "
         f"LIMIT {row_limit(limit)}",
@@ -378,7 +388,7 @@ def macro_coverage_sql(week: str, limit: int | None = None) -> tuple[str, tuple[
     """2.5 某周每个指标的机构覆盖数。"""
     return (
         "SELECT x.indicator, COALESCE(JSON_LENGTH(x.forecasts), 0) AS filled, "
-        "x.consensus, x.actual "
+        "x.consensus, x.actual_value "
         f"FROM ({MACRO_ITEMS_EXPAND}) x "
         f"ORDER BY filled DESC, x.indicator LIMIT {row_limit(limit)}",
         (_week_param(week),),
@@ -395,10 +405,10 @@ def macro_numeric_average_sql(
     """
     return (
         "SELECT x.indicator, ROUND(AVG(CAST(x.val AS DECIMAL(14,4))), 2) AS bank_avg_num, "
-        "COUNT(*) AS n_num, x.consensus, x.actual "
+        "COUNT(*) AS n_num, x.consensus, x.actual_value "
         f"FROM ({MACRO_BANK_EXPAND}) x "
         "WHERE x.jtype IN ('INTEGER', 'DOUBLE') "
-        "GROUP BY x.indicator, x.consensus, x.actual "
+        "GROUP BY x.indicator, x.consensus, x.actual_value "
         f"ORDER BY n_num DESC, x.indicator LIMIT {row_limit(limit)}",
         (_week_param(week),),
     )
@@ -454,6 +464,20 @@ def schema_help() -> dict[str, Any]:
             "JSON 里的 null 经 JSON_UNQUOTE 解出来是字符串 'null'（不是 SQL NULL），"
             "可空字段统一套 NULLIF(..., 'null')"
         ),
+        "column_aliases": {
+            "dir": "opinions[].direction",
+            "data_period": "items[].period",
+            "prev_value": "items[].prior",
+            "actual_value": "items[].actual",
+            "unit_name": "items[].unit",
+        },
+        "column_alias_reason": (
+            "目标环境连接器对 prior 这类词敏感（会报 1064），SQL 输出列名统一避开；"
+            "JSON 键名本身不变。其余列名（week / institution / category / asset / "
+            "indicator / consensus / forecasts / price / price_date / report / "
+            "passage_head）与 JSON 键同名。自己加新列也别用 prior / order / group / "
+            "key / desc 这类词"
+        ),
         "seq_limit": SEQ_LIMIT,
         "not_available": (
             "取宏观一律用 weekly_macro_data；weekly_analyzer_data.data_json 里的 "
@@ -461,6 +485,10 @@ def schema_help() -> dict[str, Any]:
         ),
         "pitfalls": [
             "MySQL 5.7 没有 JSON_TABLE，数组展开用序号表 seq + CONCAT 拼下标",
+            "输出列名避开保留字：dir / data_period / prev_value / actual_value / "
+            "unit_name，JSON 键名不变；新列也别用 prior / order / group / key / desc",
+            "ORDER BY 里别拿 SELECT 别名做运算：5.7 只认裸别名，资产共识的排序写的"
+            "是完整聚合表达式 SUM(...) + SUM(...)",
             "JSON null 解出来是字符串 'null'，可空字段必须 NULLIF(..., 'null')",
             "派生表上的 LIMIT 1 / DISTINCT 是强制物化开关，删掉会让跨周查询慢两个数量级",
             "序号表上限 40 是硬上限，超长数组不报错只少行，需定期跑文档 §0.6 自检",
