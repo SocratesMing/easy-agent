@@ -99,6 +99,7 @@
   3. checkpointer 每条消息新增线程，需额外清理；工具结果以 DB 中的（可能截断的）版本回灌。
 - **优点（保留理由）**：DB 是消息权威、易于编辑/删除/重新生成；技能每轮自动重载。
 - **建议**：中期改为 `thread_id = session_id`（分支/重试用 `session_id:branch`），只输入新 `HumanMessage`，checkpointer 为 agent 状态权威、DB 行表作为 UI 投影；若短期保留现状，至少修 DA-01，并把滚动摘要持久化到 DB 复用，避免每轮重摘要。
+- **设计文档（2026-10-19 已评审，按推荐方案实施）**：`docs/design/2026-10-19-da03-session-thread.md`。实测还发现：只换 thread 而不做适配，记忆（含上传清单）与技能会停留在会话第一轮；越过阈值后，模型可见的近期历史每轮都被压回 `keep`。
 
 ### DA-04 · P2 · 默认路由与 `/workspace/` 指向同一目录：deny 规则可被别名绕过，框架内部产物写进用户工作区【已复现】
 
@@ -265,7 +266,7 @@
 | C1 · 快速项 | DA-06 模型 `profile` + 官方摘要中间件覆盖；DA-12 官方 `ToolErrorMiddleware`；DA-11 子代理工具收窄；DA-09 第一步 MCP annotations 决定审批；DA-17 过时注释与文档；sqlite 连接器 `DB_PATH` 限定个人工作区 | ✅ 已完成（§11） |
 | C2 · Backend 重构 | DA-04 默认路由改隐藏目录（修已复现的 deny 别名绕过，框架产物不再出现在用户工作区）；DA-05 改用真实 `CompositeBackend` | ✅ 已完成（§12） |
 | C3 · 沙箱加固 | DA-07 网络开关（默认联网，可配置断网）、技能目录只读挂载、execute 超时上限；CPU / 内存 / 进程数限额暂缓（原因见 §13） | ✅ 已完成（§13） |
-| D · 演进 | DA-03 thread = 会话（超过摘要阈值后每轮都会重新摘要整段历史）；DA-13 技能多源 / 只读 / pinned；子代理进度事件流；DA-09 迁移 `langchain.mcp`（beta）；DA-14 LangSmith 沙箱生命周期；`services/` 拆领域子包 | 1–2 周，需设计文档 |
+| D · 演进 | DA-03 thread = 会话（超过摘要阈值后每轮都会重新摘要整段历史；设计文档已评审：`docs/design/2026-10-19-da03-session-thread.md`，按 P0–P2 分阶段实施）；DA-13 技能多源 / 只读 / pinned；子代理进度事件流；DA-09 迁移 `langchain.mcp`（beta）；DA-14 LangSmith 沙箱生命周期；`services/` 拆领域子包 | 1–2 周，需设计文档 |
 | 穿插项 | CI 缺 `sqlite-saver` extra（暂不处理）；SEC-03 签名免密（需门户配合）；DA-15 前端审批交互；工具工厂并入 `ToolSpec`（已核对不会形成 import 环，需同步改测试注入方式）；MySQL 连接器可达内网任意主机（2026-10-19 决定保持现状） | 待定 |
 
 --- | --- | --- |
@@ -288,6 +289,7 @@
 | `exp_hitl_fanout.py` | DA-02 | UI 只显示 `['delete']`，resume 却是 `{'A': approve, 'B': approve}` |
 | `exp_route_alias.py` | DA-04 | `/secret/a.txt permission=allowed read -> 'TOP-SECRET'` |
 | `exp_delete_collision2.py` | DA-08 | `TOOL RESULT: delete | CUSTOM delete ran …` |
+| `exp_session_thread.py` | DA-03 | 每消息 thread：越过阈值后每轮 1 次摘要；会话 thread 不做适配：`memory V2 seen False`；加刷新后两者兼得 |
 
 ### 8.2 主要参考
 
