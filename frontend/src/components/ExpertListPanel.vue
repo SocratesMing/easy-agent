@@ -543,7 +543,7 @@ const emptyText = computed(() => {
   if (tagFilter.value !== 'all') {
     return `「${tagNameOf(tagFilter.value)}」分类下暂无专家`
   }
-  return '公共专家目录为空，可在 exports/ 目录下新增预置专家'
+  return '公共专家目录为空，可在 experts/ 目录下新增预置专家'
 })
 
 /** 公共（预置）专家：只读（无编辑/删除入口） */

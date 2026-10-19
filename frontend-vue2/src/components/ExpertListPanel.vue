@@ -438,7 +438,7 @@ export default {
       if (this.tagFilter !== 'all') {
         return `「${this.tagNameOf(this.tagFilter)}」分类下暂无专家`
       }
-      return '公共专家目录为空，可在 exports/ 目录下新增预置专家'
+      return '公共专家目录为空，可在 experts/ 目录下新增预置专家'
     },
   },
 
