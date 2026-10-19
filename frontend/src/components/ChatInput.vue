@@ -1,41 +1,73 @@
 <template>
   <div class="chat-input-container">
     <div class="input-box" ref="inputBoxRef">
-      <div v-if="uploadedFiles.length > 0" class="uploaded-files">
-        <div 
-          v-for="(file, index) in uploadedFiles" 
-          :key="index" 
-          class="uploaded-file"
+      <!-- 上传限额汇总提示（整批拒绝 / 文件被跳过时出现，2.6s 自动消失） -->
+      <div v-if="uploadNotice" class="upload-notice" role="status" aria-live="polite">
+        <span class="upload-notice-text">{{ uploadNotice }}</span>
+        <button
+          type="button"
+          class="upload-notice-close"
+          aria-label="关闭提示"
+          @click="dismissUploadNotice"
         >
-          <div class="file-icon">
-            <FileIcon :filename="file.filename" :size="36" />
-          </div>
-          <div class="file-info">
-            <span class="file-name">{{ file.filename }}</span>
-            <div class="file-meta">
-              <span class="file-size">{{ formatSize(file.size) }}</span>
-              <div v-if="file.uploadStatus === 'uploading'" class="upload-progress">
-                <div class="progress-bar">
-                  <div class="progress-fill" :style="{ width: file.uploadProgress + '%' }"></div>
-                </div>
-                <span class="progress-text">{{ file.uploadProgress }}%</span>
-              </div>
-              <span v-else-if="file.uploadStatus === 'completed'" class="upload-status completed">上传完成</span>
-              <span v-else-if="file.uploadStatus === 'error'" class="upload-status error">上传失败</span>
-            </div>
-          </div>
-          <button
-            type="button"
-            @click="removeFile(index)"
-            class="remove-file-btn"
-            :aria-label="`删除文件 ${file.filename}`"
-            title="删除文件"
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
+            <line x1="18" y1="6" x2="6" y2="18" />
+            <line x1="6" y1="6" x2="18" y2="18" />
+          </svg>
+        </button>
+      </div>
+
+      <div v-if="uploadedFiles.length > 0" class="uploaded-files">
+        <!-- 已用额度（大小 + 数量）常驻展示；失败文件不占额度，括号内单独说明 -->
+        <div v-if="limitsText" class="uploaded-meta">
+          <span class="uploaded-limits" :class="{ full: limitsFull }">{{ limitsText }}</span>
+        </div>
+        <div class="uploaded-files-list">
+          <div
+            v-for="(file, index) in uploadedFiles"
+            :key="index"
+            class="uploaded-file"
           >
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <line x1="18" y1="6" x2="6" y2="18"></line>
-              <line x1="6" y1="6" x2="18" y2="18"></line>
-            </svg>
-          </button>
+            <div class="file-icon">
+              <FileIcon :filename="file.filename" :size="26" />
+            </div>
+            <div class="file-info">
+              <span class="file-name" :title="file.filename">{{ file.filename }}</span>
+              <div class="file-meta">
+                <span class="file-size">{{ formatSize(file.size) }}</span>
+                <div v-if="file.uploadStatus === 'uploading'" class="upload-progress">
+                  <div class="progress-bar">
+                    <div class="progress-fill" :style="{ width: file.uploadProgress + '%' }"></div>
+                  </div>
+                  <span class="progress-text">{{ file.uploadProgress }}%</span>
+                </div>
+                <span v-else-if="file.uploadStatus === 'completed'" class="upload-status completed">上传完成</span>
+                <template v-else-if="file.uploadStatus === 'error'">
+                  <span class="upload-status error" :title="file.errorMessage || '上传失败'">上传失败</span>
+                  <button
+                    v-if="file.retryable"
+                    type="button"
+                    class="retry-file-btn"
+                    :aria-label="`重新上传 ${file.filename}`"
+                    title="重新上传"
+                    @click="retryUpload(index)"
+                  >重试</button>
+                </template>
+              </div>
+            </div>
+            <button
+              type="button"
+              @click="removeFile(index)"
+              class="remove-file-btn"
+              :aria-label="`删除文件 ${file.filename}`"
+              title="删除文件"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <line x1="18" y1="6" x2="6" y2="18"></line>
+                <line x1="6" y1="6" x2="18" y2="18"></line>
+              </svg>
+            </button>
+          </div>
         </div>
       </div>
       
@@ -239,7 +271,7 @@
                     <span v-if="myExpertsActive.length" class="plus-experts-section-count">{{ myExpertsActive.length }}</span>
                   </div>
                   <button
-                    v-for="(item, idx) in visibleMyExperts"
+                    v-for="item in visibleMyExperts"
                     :key="`mine:${item.export_agent_id}`"
                     type="button"
                     class="plus-expert-row"
@@ -247,7 +279,7 @@
                     :title="isExpertSelected(item) ? '再次点击取消召唤' : `召唤「${item.export_name_cn}」`"
                     @click="toggleExpert(item)"
                   >
-                    <span class="plus-expert-avatar" :class="'av-c' + (idx % 8)">{{ expertAvatar(item) }}</span>
+                    <span class="plus-expert-avatar" :class="expertAvatarClass(item)">{{ expertAvatarChar(item) }}</span>
                     <span class="plus-expert-main">
                       <span class="plus-expert-name">{{ item.export_name_cn }}</span>
                       <span class="plus-expert-desc">{{ expertDesc(item) }}</span>
@@ -267,7 +299,7 @@
                     class="plus-expert-more"
                     @click="loadMoreExperts"
                   >
-                    还有 {{ myExpertsActive.length - visibleMyExperts.length }} 位 · 滚动或点击加载
+                    还有 {{ myExpertsActive.length - visibleMyExperts.length }} 位 · 点击加载
                   </button>
 
                   <div class="plus-experts-divider"></div>
@@ -279,7 +311,7 @@
                     <span v-if="publicExperts.length" class="plus-experts-section-count">{{ publicExperts.length }}</span>
                   </div>
                   <button
-                    v-for="(item, idx) in visiblePublicExperts"
+                    v-for="item in visiblePublicExperts"
                     :key="`public:${item.export_agent_id}`"
                     type="button"
                     class="plus-expert-row"
@@ -287,7 +319,7 @@
                     :title="isExpertSelected(item) ? '再次点击取消召唤' : `召唤「${item.export_name_cn}」`"
                     @click="toggleExpert(item)"
                   >
-                    <span class="plus-expert-avatar" :class="'av-c' + (idx % 8)">{{ expertAvatar(item) }}</span>
+                    <span class="plus-expert-avatar" :class="expertAvatarClass(item)">{{ expertAvatarChar(item) }}</span>
                     <span class="plus-expert-main">
                       <span class="plus-expert-name">{{ item.export_name_cn }}</span>
                       <span class="plus-expert-desc">{{ expertDesc(item) }}</span>
@@ -301,7 +333,7 @@
                     class="plus-expert-more"
                     @click="loadMoreExperts"
                   >
-                    还有 {{ publicExperts.length - visiblePublicExperts.length }} 位 · 滚动或点击加载
+                    还有 {{ publicExperts.length - visiblePublicExperts.length }} 位 · 点击加载
                   </button>
                 </div>
                 <div class="skill-sub-footer">
@@ -488,7 +520,8 @@
             class="expert-chip"
             :title="`当前专家：${activeExpert.export_name_cn}（点击 × 退出专家模式）`"
           >
-            <span class="expert-chip-avatar">{{ expertAvatar(activeExpert) }}</span>
+            <!-- 头像颜色与专家 Tab / 下拉 / 回答面板标识同源（按专家 ID 稳定取色） -->
+            <span class="expert-chip-avatar" :class="expertAvatarClass(activeExpert)">{{ expertAvatarChar(activeExpert) }}</span>
             <span class="expert-chip-name">{{ activeExpert.export_name_cn }}</span>
             <button
               type="button"
@@ -642,7 +675,7 @@
 <script setup>
 import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
 import { uploadFile, deleteFile } from '../api/files.js'
-import { getWebSearchStatus } from '../api/settings.js'
+import { getWebSearchStatus, getUploadLimits } from '../api/settings.js'
 import { getUserSkills, importSkill } from '../api/skills.js'
 import { iconCategoryFor } from '../utils/skillCategories.js'
 import { buildMessageText, parseSlashQuery } from '../utils/skillSlash.js'
@@ -663,6 +696,7 @@ import {
 import { getConnectors, toggleConnector } from '../api/connectors.js'
 import { emitConnectorsChanged, onConnectorsChanged } from '../utils/connectorSync.js'
 import { listExperts, listPublicExperts } from '../api/expert.js'
+import { expertAvatarChar, expertAvatarClass } from '../utils/expertAvatar.js'
 import FileIcon from './FileIcon.vue'
 import SkillIcon from './SkillIcon.vue'
 
@@ -731,6 +765,126 @@ const uploadedFiles = ref([])
 
 // 并行上传时共享的「等待会话创建」Promise（避免重复触发 createSession）
 let pendingSessionPromise = null
+
+// ── 上传限额（后端 config.yaml 的 upload_limits 段，经 /agent/settings/upload-limits 下发）──
+// 约束「单个会话、单次对话」的附件：即输入框待发送列表，发送后清空即重置额度。
+// 拉取失败时保留这里的默认值（10MB / 5 个 / 20MB），绝不因接口异常而放行。
+const DEFAULT_UPLOAD_LIMITS = { enabled: true, maxFileSizeMb: 10, maxFiles: 5, maxTotalMb: 20 }
+const uploadLimits = ref({ ...DEFAULT_UPLOAD_LIMITS })
+// 汇总提示条（单条文案，2.6s 自动消失）
+const uploadNotice = ref('')
+let uploadNoticeTimer = null
+
+function mbToBytes(mb) {
+  return (Number(mb) || 0) * 1024 * 1024
+}
+
+// 计额口径：上传失败的文件不占额度（上传中/已上传都占）
+const chargedFiles = computed(() => uploadedFiles.value.filter(f => f.uploadStatus !== 'error'))
+const usedCount = computed(() => chargedFiles.value.length)
+const usedBytes = computed(() => chargedFiles.value.reduce((sum, f) => sum + (f.size || 0), 0))
+const failedCount = computed(() => uploadedFiles.value.filter(f => f.uploadStatus === 'error').length)
+const remainBytes = computed(() => Math.max(mbToBytes(uploadLimits.value.maxTotalMb) - usedBytes.value, 0))
+const limitsText = computed(() => {
+  const L = uploadLimits.value
+  if (!L.enabled) return ''
+  const failedTip = failedCount.value > 0 ? `（${failedCount.value} 个失败未计入）` : ''
+  return `已用 ${formatSize(usedBytes.value)} / ${L.maxTotalMb}MB · ${usedCount.value} / ${L.maxFiles} 个${failedTip}`
+})
+const limitsFull = computed(() => {
+  const L = uploadLimits.value
+  return L.enabled && usedCount.value >= L.maxFiles
+})
+
+function showUploadNotice(text) {
+  if (!text) return
+  uploadNotice.value = text
+  if (uploadNoticeTimer) clearTimeout(uploadNoticeTimer)
+  uploadNoticeTimer = setTimeout(() => {
+    uploadNotice.value = ''
+  }, 2600)
+}
+
+function dismissUploadNotice() {
+  if (uploadNoticeTimer) clearTimeout(uploadNoticeTimer)
+  uploadNotice.value = ''
+}
+
+async function loadUploadLimits() {
+  try {
+    const data = await getUploadLimits()
+    const toPositive = (v, fallback) => (Number(v) > 0 ? Number(v) : fallback)
+    uploadLimits.value = {
+      enabled: data.enabled !== false,
+      maxFileSizeMb: toPositive(data.max_file_size_mb, DEFAULT_UPLOAD_LIMITS.maxFileSizeMb),
+      maxFiles: toPositive(data.max_files_per_message, DEFAULT_UPLOAD_LIMITS.maxFiles),
+      maxTotalMb: toPositive(data.max_total_size_mb, DEFAULT_UPLOAD_LIMITS.maxTotalMb),
+    }
+  } catch (e) {
+    console.error('获取上传限额失败，使用默认限额（10MB / 5 个 / 20MB）:', e)
+  }
+}
+
+/**
+ * 选出本批可以上传的文件（入列前校验，避免"传了一半才发现超限"）。
+ *
+ * 规则：
+ * - enabled=false 时不限；
+ * - 数量不满足（已有非失败数 + 本批数 > 上限）→ **整批拒绝**，让用户重新选择；
+ * - 逐个文件检查单文件大小与总大小 → **只跳过超限的那一个**，其余照常上传；
+ * - 失败文件不占额度，因此删除/失败都会立即释放名额与空间。
+ */
+function pickAcceptable(files) {
+  const L = uploadLimits.value
+  if (!L.enabled) return { accepted: [...files], rejected: [], batchRejected: false }
+
+  let count = usedCount.value
+  let total = usedBytes.value
+  const accepted = []
+  const rejected = []
+
+  if (count + files.length > L.maxFiles) {
+    return {
+      accepted: [],
+      rejected: files.map(f => ({ file: f, reason: 'count' })),
+      batchRejected: true,
+      message: `最多只能上传 ${L.maxFiles} 个文件（已用 ${count} 个），请重新选择`,
+    }
+  }
+
+  for (const file of files) {
+    if (file.size > mbToBytes(L.maxFileSizeMb)) {
+      rejected.push({ file, reason: 'file_size' })
+      continue
+    }
+    if (total + file.size > mbToBytes(L.maxTotalMb)) {
+      rejected.push({ file, reason: 'total' })
+      continue
+    }
+    accepted.push(file)
+    count += 1
+    total += file.size
+  }
+  return { accepted, rejected, batchRejected: false }
+}
+
+/** 把被拒文件拼成一条汇总提示 */
+function buildRejectNotice(result, acceptedCount) {
+  const L = uploadLimits.value
+  const parts = result.rejected.map(({ file, reason }) => {
+    if (reason === 'file_size') {
+      return `${file.name}（超过单文件上限 ${L.maxFileSizeMb}MB）`
+    }
+    if (reason === 'total') {
+      return `${file.name}（超出剩余空间 ${formatSize(remainBytes.value)}，总上限 ${L.maxTotalMb}MB）`
+    }
+    return file.name
+  })
+  const head = acceptedCount > 0
+    ? `已添加 ${acceptedCount} 个文件，忽略 ${result.rejected.length} 个：`
+    : `无法上传，已忽略 ${result.rejected.length} 个文件：`
+  return head + parts.join('；')
+}
 
 // 外部预填问题（专家详情弹窗的示例提示词）：写入输入框并聚焦，随后通知父组件清空。
 // immediate: 必须开启 —— 详情弹窗在 SkillCenter 面板里，点示例问题会关闭面板并让
@@ -828,8 +982,21 @@ const mirrorSegments = computed(() =>
     skillPickerOpen.value ? { suppressStart: slashStart.value } : null
   )
 )
-// 已选技能目录名（按出现顺序去重）：canSend 与发送时的 skills 字段
-const selectedSkillDirs = computed(() => skillDirsInText(message.value, tokenMap.value))
+// 已选技能目录名（按出现顺序去重）：canSend 与发送时的 skills 字段。
+// = 输入框内联标签 + 预选技能（preselectedSkillDirs，见 restorePendingSkill）：
+// 外部入口（如专家面板「新建/修改专家」）在草稿里用自然语言点名技能，
+// 不插内联标签、只把技能记为已选，发送时随 skills 字段交给后端激活。
+const preselectedSkillDirs = ref(new Set())
+
+// 待修改专家 ID（专家面板「编辑」带入，不展示给用户）：发送时随请求的
+// pending_expert_id 字段上行，后端校验归属后绑定为 save_expert 的修改目标。
+const pendingExpertEditId = ref('')
+
+const selectedSkillDirs = computed(() => {
+  const dirs = new Set(preselectedSkillDirs.value)
+  for (const dir of skillDirsInText(message.value, tokenMap.value)) dirs.add(dir)
+  return Array.from(dirs)
+})
 
 /**
  * 技能检索：优先按「目录名 / 技能名」匹配；仅当没有任何名称命中时，才回退到描述匹配。
@@ -995,6 +1162,10 @@ function removeSkillToken(dirName) {
 /**
  * 恢复「待选技能」：技能中心「创建技能」等入口会把技能写进 sessionStorage，
  * 面板关闭后本组件重新挂载时读出来挂成技能标签（读后即清除，避免下次误挂）。
+ *
+ * `insert_token === false` 时**不插标签**：草稿正文已用自然语言点名技能
+ * （如专家面板的「用「expert-creator」技能帮我创建：…」），这里只把技能
+ * 记为预选，发送时随 skills 字段交给后端激活。
  */
 function restorePendingSkill() {
   let raw = null
@@ -1008,6 +1179,10 @@ function restorePendingSkill() {
     const skill = JSON.parse(raw)
     if (!skill?.dir_name) return
     rememberSkills([skill])
+    if (skill.insert_token === false) {
+      preselectedSkillDirs.value.add(skill.dir_name)
+      return
+    }
     const ta = textareaRef.value
     const base = ta?.value ?? message.value
     if (skillSegments(base, tokenMap.value).some((seg) => seg.dirName === skill.dir_name)) return
@@ -1156,6 +1331,11 @@ const DRAFT_KEY = 'easy_agent_input_draft'
 
 // 待选技能：由技能中心「创建技能」等入口写入，本组件挂载时恢复成技能标签
 const PENDING_SKILL_KEY = 'easy_agent_pending_skill'
+
+// 待修改专家：由专家面板「编辑」写入（{expert_agent_id, export_name_cn}）。
+// 专家 ID 不进消息正文（防篡改），挂载时消费为组件状态，发送时随请求的
+// pending_expert_id 字段上行；发送后清空。与后端 save_expert 的 edit_targets 绑定配套。
+const PENDING_EXPERT_EDIT_KEY = 'easy_agent_pending_expert_edit'
 
 // 光标所在行高亮（overlay 技术：textareal 本身无法按行上色）
 const caretLineTop = ref(null)   // 高亮条 top，null 表示隐藏
@@ -1439,11 +1619,7 @@ async function loadPlusList(category) {
 }
 
 // ========== 专家快捷面板：行渲染与选择 ==========
-/** 头像取专家名首字（与专家 Tab 的 avatarChar 一致） */
-function expertAvatar(item) {
-  const name = String(item?.export_name_cn || '').trim()
-  return name ? name.slice(0, 1) : '?'
-}
+// 头像取字与配色统一走 utils/expertAvatar.js（全局 8 色板 .ea-0 ~ .ea-7）
 
 /** 行右侧的浅灰小字描述：优先功能描述，回退专家描述 */
 function expertDesc(item) {
@@ -2000,7 +2176,12 @@ async function uploadOneFile(fileItem) {
     // 找到对应的文件项并更新状态
     const index = uploadedFiles.value.findIndex(f => f.file === file)
     if (index !== -1) {
+      const reason = error?.message || '上传失败'
+      // 超过单文件大小限制的失败不给「重试」（重试也没用），其余可重试
+      const isSizeLimit = error?.code === 'UPLOAD_FILE_TOO_LARGE' || /不能超过\s*\d+(\.\d+)?\s*MB/.test(reason)
       uploadedFiles.value[index].uploadStatus = 'error'
+      uploadedFiles.value[index].errorMessage = reason
+      uploadedFiles.value[index].retryable = !isSizeLimit
       // 强制触发更新
       uploadedFiles.value = [...uploadedFiles.value]
     }
@@ -2008,11 +2189,59 @@ async function uploadOneFile(fileItem) {
   }
 }
 
+/** 重新上传一个失败的文件（复用同一个 File 对象，无需用户重新选择） */
+function retryUpload(index) {
+  const item = uploadedFiles.value[index]
+  if (!item || item.uploadStatus !== 'error' || !item.retryable) return
+
+  // 失败文件不占额度，所以重试等价于「新增一个文件」，同样受限额约束：
+  // 已满名额 / 超出剩余空间 / 超过单文件上限 时不允许重新上传
+  const L = uploadLimits.value
+  if (L.enabled) {
+    if (usedCount.value + 1 > L.maxFiles) {
+      showUploadNotice(`最多只能上传 ${L.maxFiles} 个文件（已用 ${usedCount.value} 个），无法重新上传 ${item.filename}`)
+      return
+    }
+    if (item.size > mbToBytes(L.maxFileSizeMb)) {
+      showUploadNotice(`${item.filename} 超过单文件上限 ${L.maxFileSizeMb}MB，无法重新上传`)
+      return
+    }
+    if (usedBytes.value + item.size > mbToBytes(L.maxTotalMb)) {
+      showUploadNotice(`${item.filename} 超出剩余空间 ${formatSize(remainBytes.value)}，无法重新上传`)
+      return
+    }
+  }
+
+  item.uploadStatus = 'uploading'
+  item.uploadProgress = 0
+  item.errorMessage = ''
+  item.retryable = false
+  item.cancelled = false
+  uploadedFiles.value = [...uploadedFiles.value]
+  uploadOneFile(item)
+}
+
 async function handleFileSelect(event) {
   const files = Array.from(event.target.files)
+  // 先清空 input，避免同一文件二次选择不触发 change
+  event.target.value = ''
+  if (files.length === 0) return
+
+  // 入列前校验：通过的文件才入列、才上传
+  const result = pickAcceptable(files)
+
+  if (result.batchRejected) {
+    // 数量不满足：整批拒绝，让用户重新选择
+    showUploadNotice(result.message)
+    return
+  }
+  if (result.rejected.length > 0) {
+    // 单文件超限 / 超出剩余空间：只跳过这些文件，其余照常上传
+    showUploadNotice(buildRejectNotice(result, result.accepted.length))
+  }
 
   // 并行上传：每个文件独立开始、独立进度，互不排队
-  for (const file of files) {
+  for (const file of result.accepted) {
     // 创建文件项
     const fileItem = {
       file: file,
@@ -2021,7 +2250,9 @@ async function handleFileSelect(event) {
       uploadStatus: 'uploading',
       uploadProgress: 0,
       cancelled: false,
-      xhrHolder: null
+      xhrHolder: null,
+      errorMessage: '',
+      retryable: false
     }
 
     // 添加到数组
@@ -2032,8 +2263,6 @@ async function handleFileSelect(event) {
 
     uploadOneFile(fileItem)
   }
-
-  event.target.value = ''
 }
 
 async function removeFile(index) {
@@ -2078,14 +2307,22 @@ async function send() {
     return
   }
   
-  const filesToSend = uploadedFiles.value.map(f => ({
-    id: f.id,
-    filename: f.filename,
-    size: f.size,
-    file: f.file,
-    file_path: f.filePath || null,
-    type: f.file?.type || f.fileType || ''
-  }))
+  // 只发送上传成功的文件：失败文件（无 id/file_path）不随消息发出、不在气泡中展示
+  const failedFiles = uploadedFiles.value.filter(f => f.uploadStatus === 'error')
+  if (failedFiles.length > 0) {
+    console.warn(`[发送消息] ${failedFiles.length} 个文件上传失败，已从本次发送中剔除:`,
+      failedFiles.map(f => f.filename).join(', '))
+  }
+  const filesToSend = uploadedFiles.value
+    .filter(f => f.uploadStatus === 'completed')
+    .map(f => ({
+      id: f.id,
+      filename: f.filename,
+      size: f.size,
+      file: f.file,
+      file_path: f.filePath || null,
+      type: f.file?.type || f.fileType || ''
+    }))
 
   // 详细日志：记录发送操作、文件上传
   const ts = new Date().toISOString()
@@ -2098,6 +2335,9 @@ async function send() {
   // 正文发送前会把标签整段剥掉（否则气泡/标题/历史里会露出 `/技能名` 这类暗号）。
   // 连接器不随消息提交：本会话启用哪些连接器由「+」面板的连接器开关单独设置。
   const turnSkills = selectedSkillDirs.value
+  // 待修改专家 ID（专家面板「编辑」带入，不展示给用户）：随请求结构化字段上行，
+  // 后端校验归属后绑定为 save_expert 的修改目标
+  const expertEditId = pendingExpertEditId.value
   emit(
     'send',
     buildPayload(),
@@ -2105,11 +2345,16 @@ async function send() {
     null,
     true,
     webSearchEnabled.value,
-    turnSkills
+    turnSkills,
+    expertEditId
   )
 
   message.value = ''
   uploadedFiles.value = []
+  // 预选技能与待修改专家已随本条消息提交，清掉避免影响下一条
+  preselectedSkillDirs.value = new Set()
+  pendingExpertEditId.value = ''
+  dismissUploadNotice()
   closeSkillPicker()
   nextTick(() => autoResize())
 }
@@ -2189,6 +2434,15 @@ onMounted(() => {
 
   // 恢复待选技能（技能中心「创建技能」等入口预置），读取后即清除
   restorePendingSkill()
+
+  // 消费待修改专家（专家面板「编辑」预置）：ID 存组件状态、不进正文，发送时上行
+  try {
+    const rawEdit = sessionStorage.getItem(PENDING_EXPERT_EDIT_KEY)
+    if (rawEdit) sessionStorage.removeItem(PENDING_EXPERT_EDIT_KEY)
+    const parsed = rawEdit ? JSON.parse(rawEdit) : null
+    if (parsed?.expert_agent_id) pendingExpertEditId.value = parsed.expert_agent_id
+  } catch (_) { /* 隐私模式等场景忽略 */ }
+
   syncMirror()
   document.addEventListener('click', closeTokenPopup)
   document.addEventListener('click', closeModelDropdown)
@@ -2198,6 +2452,7 @@ onMounted(() => {
   loadWebSearchStatus()
   // 「专家·技能·连接器」面板里改了开关 → 本面板同步（两个面板不在同一组件树分支，走事件广播）
   offConnectorsChanged = onConnectorsChanged(onConnectorsChangedHandler)
+  loadUploadLimits()
 })
 
 onUnmounted(() => {
@@ -2210,6 +2465,7 @@ onUnmounted(() => {
   if (connectorNoticeTimer) clearTimeout(connectorNoticeTimer)
   cancelPlusClose()
   stopLiveDuration()
+  if (uploadNoticeTimer) clearTimeout(uploadNoticeTimer)
 })
 
 // 供父组件把预置问题完整文本填进输入框（卡片上最多显示 3 行，长问题展示不全）
@@ -2259,10 +2515,9 @@ defineExpose({ setMessage, getMessage, triggerSend })
   box-shadow: 0 2px 12px rgba(14, 165, 233, 0.15);
 }
 
+/* ── 文件列表容器：额度行在上、文件卡片换行排布（原来是直接 flex-wrap 卡片） ── */
 .uploaded-files {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
+  display: block;
   padding: 12px 16px;
   background: var(--bg-secondary);
   border-bottom: 1px solid var(--border-color);
@@ -2599,17 +2854,99 @@ html[data-theme="dark"] .connector-switch.on {
   }
 }
 
+/* ── 上传限额提示条 / 额度行 / 重试按钮 ──
+   兼容 IE 与旧 Edge：只用了 flex + 圆角，颜色写成「字面量在前、var() 在后」；
+   不使用 color-mix、不使用 flex gap。── */
+.upload-notice {
+  display: flex;
+  align-items: center;
+  margin: 10px 16px 0;
+  padding: 7px 8px 7px 10px;
+  border: 1px solid #fcd34d;
+  border: 1px solid var(--warning-border, #fcd34d);
+  border-radius: 8px;
+  background: #fffbeb;
+  background: var(--warning-bg, #fffbeb);
+}
+
+.upload-notice-text {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #92400e;
+  color: var(--warning-text, #92400e);
+  word-break: break-all;
+}
+
+.upload-notice-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  margin-left: 8px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: #92400e;
+  color: var(--warning-text, #92400e);
+  cursor: pointer;
+  opacity: 0.75;
+}
+
+.upload-notice-close:hover {
+  opacity: 1;
+}
+
+.upload-notice-close svg {
+  width: 10px;
+  height: 10px;
+}
+
+.uploaded-meta {
+  width: 100%;
+  margin-bottom: 8px;
+  display: flex;
+  align-items: center;
+}
+
+.uploaded-limits {
+  font-size: 11.5px;
+  color: var(--text-secondary);
+}
+
+.uploaded-limits.full {
+  color: #b45309;
+  color: var(--warning-text, #b45309);
+}
+
+.uploaded-files-list {
+  width: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
 .uploaded-file {
   position: relative;
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   background: var(--bg-secondary);
   border: 1px solid var(--border-color);
-  padding: 10px 14px;
+  /* 右侧 26px 预留给卡片内右上角的 × 按钮，防止文件名顶到 × 下面 */
+  padding: 6px 26px 6px 10px;
   border-radius: 12px;
-  max-width: 250px;
-  flex-shrink: 0;
+  /* 自适应等分：一行最多放 3 个（220px 起步、300px 封顶），宽度随容器伸缩 */
+  flex: 1 1 220px;
+  max-width: 300px;
+  min-width: 0;
+  box-sizing: border-box;
+  height: 48px;
+  overflow: hidden;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
   transition: all 0.2s ease;
 }
@@ -2620,8 +2957,8 @@ html[data-theme="dark"] .connector-switch.on {
 }
 
 .file-icon {
-  width: 40px;
-  height: 40px;
+  width: 30px;
+  height: 30px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -2637,7 +2974,8 @@ html[data-theme="dark"] .connector-switch.on {
 }
 
 .file-name {
-  font-size: 13px;
+  font-size: 12px;
+  line-height: 16px;
   font-weight: 500;
   color: var(--text-primary);
   white-space: nowrap;
@@ -2648,11 +2986,13 @@ html[data-theme="dark"] .connector-switch.on {
 .file-meta {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
+  min-height: 16px;
 }
 
 .file-size {
   font-size: 11px;
+  line-height: 16px;
   color: var(--text-secondary);
 }
 
@@ -2679,14 +3019,16 @@ html[data-theme="dark"] .connector-switch.on {
 
 .progress-text {
   font-size: 10px;
+  line-height: 16px;
   color: var(--text-secondary);
   min-width: 35px;
 }
 
 .upload-status {
   font-size: 10px;
+  line-height: 14px;
   font-weight: 500;
-  padding: 2px 6px;
+  padding: 1px 6px;
   border-radius: 8px;
 }
 
@@ -2700,18 +3042,36 @@ html[data-theme="dark"] .connector-switch.on {
   background: #fee2e2;
 }
 
-/* × 常驻卡片右上角角标：上传前/上传中/上传完成/失败均可点击删除。
+/* 失败卡片上的「重试」：仅可重试的失败（非单文件超限）才渲染 */
+.retry-file-btn {
+  flex-shrink: 0;
+  padding: 0 6px;
+  border: 1px solid #fca5a5;
+  border-radius: 8px;
+  background: #ffffff;
+  background: var(--bg-secondary);
+  color: #b91c1c;
+  font-size: 10px;
+  line-height: 14px;
+  cursor: pointer;
+}
+
+.retry-file-btn:hover {
+  background: #fee2e2;
+}
+
+/* × 常驻卡片内部右上角：上传前/上传中/上传完成/失败均可点击删除。
    兼容 Edge 114~155：仅用绝对定位 + 圆角 + 字面量回退，不用新特性。 */
 .remove-file-btn {
   position: absolute;
-  top: -7px;
-  right: -7px;
+  top: 5px;
+  right: 5px;
   z-index: 1;
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 18px;
-  height: 18px;
+  width: 16px;
+  height: 16px;
   padding: 0;
   background: #334155;
   border: 2px solid #ffffff;
@@ -2726,8 +3086,8 @@ html[data-theme="dark"] .connector-switch.on {
 }
 
 .remove-file-btn svg {
-  width: 10px;
-  height: 10px;
+  width: 9px;
+  height: 9px;
   color: #ffffff;
 }
 
@@ -3433,9 +3793,10 @@ html[data-theme="dark"] .plus-list-tag.custom {
   align-items: center;
   gap: 10px;
   width: 100%;
-  padding: 6px 8px;
+  /* 与技能面板 .plus-list-item 的行内边距保持一致 */
+  padding: 8px 10px;
   border: 1px solid transparent;
-  border-radius: 10px;
+  border-radius: 8px;
   background: transparent;
   cursor: pointer;
   text-align: left;
@@ -3456,36 +3817,20 @@ html[data-theme="dark"] .plus-list-tag.custom {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 26px;
-  height: 26px;
+  /* 尺寸/字号/字重与技能面板 .plus-list-icon（initial 变体）一致 */
+  width: 28px;
+  height: 28px;
   flex-shrink: 0;
   border-radius: 8px;
-  font-size: 12.5px;
-  font-weight: 800;
-  background: var(--bg-tertiary);
-  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 700;
+  /* 底色/字色由全局 .ea-0 ~ .ea-7 提供（按专家 ID 稳定取档）；此处不写死，
+     否则 scoped 规则会与全局色板同权重竞争、按注入顺序取胜而覆盖配色。 */
 }
 
-/* 头像调色板：按列表序号取色（av-c0..av-c7），相邻行色相跳变大、不会出现
-   同色相邻；列表超过 8 位时循环复用。底色取 200 级深色、字取 800 级深色，
-   与右侧常规字重的专家名称拉开层次。暗色主题单独配底/字色。 */
-.plus-expert-avatar.av-c0 { background: #b5d4f4; color: #0c447c; }
-.plus-expert-avatar.av-c1 { background: #fac775; color: #633806; }
-.plus-expert-avatar.av-c2 { background: #f4c0d1; color: #72243e; }
-.plus-expert-avatar.av-c3 { background: #c0dd97; color: #27500a; }
-.plus-expert-avatar.av-c4 { background: #cecbf6; color: #3c3489; }
-.plus-expert-avatar.av-c5 { background: #9fe1cb; color: #085041; }
-.plus-expert-avatar.av-c6 { background: #f7c1c1; color: #791f1f; }
-.plus-expert-avatar.av-c7 { background: #a8d8e8; color: #07495c; }
-
-html[data-theme="dark"] .plus-expert-avatar.av-c0 { background: #1f4a7a; color: #cbe2fa; }
-html[data-theme="dark"] .plus-expert-avatar.av-c1 { background: #6b4a12; color: #ffd68a; }
-html[data-theme="dark"] .plus-expert-avatar.av-c2 { background: #6b2a45; color: #f7c3d6; }
-html[data-theme="dark"] .plus-expert-avatar.av-c3 { background: #35590e; color: #d3eb9f; }
-html[data-theme="dark"] .plus-expert-avatar.av-c4 { background: #3a3390; color: #cfc9fa; }
-html[data-theme="dark"] .plus-expert-avatar.av-c5 { background: #0f5f4a; color: #9fe7cf; }
-html[data-theme="dark"] .plus-expert-avatar.av-c6 { background: #6b2222; color: #f5b8b8; }
-html[data-theme="dark"] .plus-expert-avatar.av-c7 { background: #12556b; color: #a3dbeb; }
+/* 头像配色已收敛到全局 .ea-0 ~ .ea-7（style.css + utils/expertAvatar.js）：
+   按 export_agent_id 稳定取档，技能中心 / 下拉 / 胶囊 / 消息标识四处同色。
+   这里不再保留按序号取色的 av-c0..av-c7，避免两套色板并存。 */
 
 .plus-expert-main {
   flex: 1;
@@ -3498,8 +3843,9 @@ html[data-theme="dark"] .plus-expert-avatar.av-c7 { background: #12556b; color: 
 .plus-expert-name {
   flex-shrink: 0;
   max-width: 52%;
+  /* 字体样式与技能面板 .plus-list-name 一致 */
   font-size: 13px;
-  font-weight: 500;
+  font-weight: 600;
   color: var(--text-primary);
   white-space: nowrap;
   overflow: hidden;
@@ -3509,7 +3855,8 @@ html[data-theme="dark"] .plus-expert-avatar.av-c7 { background: #12556b; color: 
 .plus-expert-desc {
   flex: 1;
   min-width: 0;
-  font-size: 11.5px;
+  /* 字体样式与技能面板 .plus-list-desc 一致 */
+  font-size: 12px;
   color: var(--text-secondary);
   white-space: nowrap;
   overflow: hidden;
@@ -4145,9 +4492,7 @@ html[data-theme="dark"] .plus-expert-avatar.av-c7 { background: #12556b; color: 
   width: 22px;
   height: 22px;
   border-radius: 50%;
-  background: #0ea5e9;
-  background: var(--accent-color);
-  color: #fff;
+  /* 底色/字色由全局 .ea-0 ~ .ea-7 按专家 ID 取档（见 style.css），此处只留尺寸 */
   font-size: 12px;
   font-weight: 600;
   line-height: 22px;

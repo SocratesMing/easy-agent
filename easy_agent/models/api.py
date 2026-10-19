@@ -90,6 +90,15 @@ class ChatRequest(BaseModel):
             "为空或未传时回退解析消息文本开头的 `/目录名`（兼容旧前端/手打指令）"
         ),
     )
+    pending_expert_id: Optional[str] = Field(
+        default=None,
+        max_length=64,
+        description=(
+            "会话级「待修改专家」ID：用户在专家面板点「编辑」后由前端随**首条消息**"
+            "以结构化字段上行（不进消息正文，用户不可见）。服务端做归属校验（只接受"
+            "本人创建的可用专家）后绑定为 save_expert 的修改目标；不传/非法则忽略"
+        ),
+    )
 
 
 class ResumeRequest(BaseModel):

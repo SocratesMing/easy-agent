@@ -33,8 +33,19 @@ export async function uploadFile(sessionId, file, onProgress, xhrHolder) {
         }
       } else {
         try {
-          const error = JSON.parse(xhr.responseText)
-          reject(new Error(error.detail || '文件上传失败'))
+          const payload = JSON.parse(xhr.responseText)
+          const detail = payload.detail
+          // 限额类错误：后端 detail 是结构化对象（code/message/limit_mb/actual_mb），
+          // 归一成带 code 的 Error，便于卡片展示原因并决定是否给「重试」
+          if (detail && typeof detail === 'object' && detail.message) {
+            const err = new Error(detail.message)
+            err.code = detail.code || ''
+            err.limitMb = detail.limit_mb
+            err.actualMb = detail.actual_mb
+            reject(err)
+            return
+          }
+          reject(new Error(typeof detail === 'string' && detail ? detail : '文件上传失败'))
         } catch {
           reject(new Error('文件上传失败'))
         }

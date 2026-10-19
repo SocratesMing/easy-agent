@@ -30,6 +30,7 @@ from ..utils import get_owned_session
 from ..utils.reasoning_safety import redact_messages_reasoning
 from ..config import Config
 from ..services import clear_session_connectors, get_agent_config, remove_session_agent
+from ..services.session_uploads import append_manifest, store_parsed_content
 
 logger = logging.getLogger(__name__)
 
@@ -106,6 +107,26 @@ def get_context_length() -> int | None:
         return cfg.llm.context_length if cfg and cfg.llm else None
     except Exception:
         return None
+
+
+def _get_max_file_size_mb() -> int | None:
+    """读取配置中的单文件上传大小上限（MB）。
+
+    返回 None 表示不做限制（``upload_limits.enabled=false`` 或读取配置失败）；
+    读取失败按"不拦"处理，避免配置异常时把上传功能整体打死。
+    与 get_context_length 一致：优先复用启动时初始化的全局配置，兜底读盘。
+    """
+    try:
+        cfg = get_agent_config()
+        if cfg and cfg.get("config"):
+            limits = getattr(cfg["config"], "upload_limits", None)
+            if limits is None:
+                return None
+            return int(limits.max_file_size_mb) if limits.enabled else None
+    except Exception as e:
+        logger.warning(f"读取上传限额配置失败（本次不做单文件大小限制）: {e}")
+        return None
+    return None
 
 
 router = APIRouter(
@@ -383,6 +404,27 @@ async def upload_session_file(
     file_path = upload_dir / saved_name
 
     content = await file.read()
+
+    # 单文件大小兜底（权威校验）：前端选文件时已按 upload_limits 拦截，这里防止
+    # 直接调接口绕过。超限直接拒绝且不落盘（上传总大小/数量属于"单次对话"的组合
+    # 约束，上传接口是单文件无状态请求，前端负责）。
+    max_file_size_mb = _get_max_file_size_mb()
+    if max_file_size_mb and len(content) > max_file_size_mb * 1024 * 1024:
+        actual_mb = round(len(content) / 1024 / 1024, 2)
+        logger.warning(
+            f"文件上传被拒（超过单文件上限）| 文件名: {safe_filename} | "
+            f"大小: {actual_mb}MB | 上限: {max_file_size_mb}MB | 用户: {username}"
+        )
+        raise HTTPException(
+            status_code=413,
+            detail={
+                "code": "UPLOAD_FILE_TOO_LARGE",
+                "message": f"单个文件不能超过 {max_file_size_mb}MB，当前 {actual_mb}MB",
+                "limit_mb": max_file_size_mb,
+                "actual_mb": actual_mb,
+            },
+        )
+
     file_path.write_bytes(content)
 
     ext = os.path.splitext(safe_filename)[1].lstrip(".") or "unknown"
@@ -400,6 +442,36 @@ async def upload_session_file(
         f"文件上传成功 | 会话: {session_id} | 文件名: {safe_filename} | 大小: {len(content)} bytes | 用户: {username}"
     )
 
+    # 解析落盘 + 上传清单（记忆）：解析正文写入会话工作区 uploads/{文件名}.txt，
+    # 文件清单写入 uploads/index.md —— 后者由 agent.py 作为记忆文件注入 system
+    # prompt，因此后续每一轮（不必再上传）模型都知道本会话传过哪些文件、正文在哪，
+    # 并按需用 grep/read_file 检索。file_context.enabled=false 时整体跳过（回退旧行为）。
+    parsed_entry = None
+    try:
+        parsed_entry = store_parsed_content(
+            session_id=session_id,
+            username=username,
+            file_path=str(file_path),
+            filename=safe_filename,
+            size=len(content),
+            file_type=ext,
+            db=db,
+            source_name=saved_name,
+        )
+        if parsed_entry:
+            append_manifest(session_id, username, [parsed_entry], db=db)
+    except Exception as e:
+        # 解析/清单失败不能影响上传本身：文件已落盘、记录已入库，用户仍可继续对话
+        logger.warning(f"上传文件解析落盘失败（不影响上传）| {safe_filename} | {e}")
+
+    # 上传后驱逐本会话缓存 Agent：记忆文件只在创建 Agent 时加载，不驱逐的话
+    # 本轮新上传的清单要等到 Agent 因其他原因重建时才生效（下一轮就看不到新文件）。
+    if parsed_entry:
+        try:
+            remove_session_agent(session_id)
+        except Exception as e:
+            logger.warning(f"上传后驱逐缓存 Agent 失败: {e}")
+
     return {
         "id": file_id,
         "filename": safe_filename,
@@ -407,4 +479,7 @@ async def upload_session_file(
         "file_type": ext,
         "size": len(content),
         "uploaded_at": datetime.now().isoformat(),
+        "parsed": bool(parsed_entry),
+        "parsed_path": parsed_entry.get("stored_path") if parsed_entry else None,
+        "parse_status": parsed_entry.get("status") if parsed_entry else None,
     }
