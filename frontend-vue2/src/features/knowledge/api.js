@@ -13,7 +13,7 @@ async function authFetch(url, options = {}) {
 }
 
 // SDK 的 baseURL 在 configureRequest() 后才确定，不能在模块加载时固化
-const root = () => streamUrl('/api/knowledge/v1')
+const root = () => streamUrl('/agent/knowledge/v1')
 
 export async function cancelMessage(sessionId) {
   const response = await authFetch(streamUrl(`/agent/chat/cancel?session_id=${encodeURIComponent(sessionId)}`), { method: 'POST' })
@@ -230,7 +230,7 @@ export function createKnowledgeChatRound(baseId) {
 
 export async function askKnowledgeBaseStream(baseId, payload, onChunk, signal) {
   const response = await handleStreamResponse(
-    await fetch(streamUrl(`/api/knowledge/v1/bases/${encodeURIComponent(baseId)}/ask/stream`), {
+    await fetch(streamUrl(`/agent/knowledge/v1/bases/${encodeURIComponent(baseId)}/ask/stream`), {
       method: 'POST',
       headers: streamHeaders(),
       body: JSON.stringify(payload),
