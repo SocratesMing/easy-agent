@@ -11,7 +11,10 @@ from ..db import get_database
 from ..model import create_model
 from ..tools.web_search import create_web_search_tool
 from ..utils.prompt_probe import describe_prompt, prompt_fingerprint
-from .mcp import get_mcp_tools as load_mcp_tools_for_user
+from .mcp import (
+    collect_mcp_tool_sources,
+    get_mcp_tools as load_mcp_tools_for_user,
+)
 
 logger = logging.getLogger("easy-agent.chat_service")
 
@@ -344,6 +347,14 @@ async def get_or_create_agent_for_session(
         enable_web_search=web_search_enabled,
         system_prompt_extra=system_prompt_extra,
    )
+    # 工具名 → MCP 连接器来源：流式层据此给 tool_call / tool_result 标注数据来源，
+    # 与工具返回内容里的「【数据来源】」双重保证来源可追溯。
+    try:
+        agent.mcp_tool_sources = collect_mcp_tool_sources(mcp_tools)
+    except Exception as e:
+        logger.warning(f"[{session_id[-5:]}] 收集 MCP 来源映射失败: {e}")
+        agent.mcp_tool_sources = {}
+
     _session_agents[session_id] = agent
     _session_expert[session_id] = expert_key
     _session_creator[session_id] = bool(creator_requested)

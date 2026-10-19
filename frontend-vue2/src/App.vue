@@ -1143,7 +1143,7 @@ export default {
       }
 
       const onChunk = (data) => {
-        const { type: eventType, content, duration, step, tool_name: toolName, tool_call_id: toolCallId, arguments: args, result, success, title } = data
+        const { type: eventType, content, duration, step, tool_name: toolName, tool_call_id: toolCallId, arguments: args, result, success, title, source } = data
 
         if (eventType === 'start') {
           if (!ctx.isResume) {
@@ -1342,6 +1342,7 @@ export default {
                 arguments: args || prev.arguments || {},
                 step: step || prev.step || 0,
                 streaming: false,
+                source: source || prev.source,
               }
               setReactive(this.messages[idx].blocks, existingBlockIdx, merged)
               currentBlock = merged
@@ -1362,7 +1363,7 @@ export default {
             } else {
               currentBlock = null
               if (!ctx.isResume) currentToolCalls.push({ tool_call_id: callId, tool_name: toolName || '', arguments: args || {}, result: '', success: true })
-              addBlock('tool_call', { id: callId, tool_name: toolName || '', arguments: args || {}, result: '', success: true, step: step || 0 })
+              addBlock('tool_call', { id: callId, tool_name: toolName || '', arguments: args || {}, result: '', success: true, step: step || 0, source: source || null })
             }
           }
         } else if (eventType === 'tool_result') {
@@ -1386,7 +1387,7 @@ export default {
               blockIdx = this.messages[idx].blocks.findIndex(b => b.type === 'tool_call' && b.streaming && b.tool_name === toolName)
             }
             if (blockIdx !== -1) {
-              const blk = { ...this.messages[idx].blocks[blockIdx], arguments: args || this.messages[idx].blocks[blockIdx].arguments, result: parseMCPResult(result || ''), success: success !== false, duration: toolDuration, streaming: false }
+              const blk = { ...this.messages[idx].blocks[blockIdx], arguments: args || this.messages[idx].blocks[blockIdx].arguments, result: parseMCPResult(result || ''), success: success !== false, duration: toolDuration, streaming: false, source: source || this.messages[idx].blocks[blockIdx].source }
               if (ctx.isResume) blk.loading = false
               setReactive(this.messages[idx].blocks, blockIdx, blk)
               touchBlocks()

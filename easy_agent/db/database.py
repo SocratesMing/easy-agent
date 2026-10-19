@@ -144,15 +144,37 @@ class Database:
                 connect_timeout=connect_timeout,
             )
             cursor = conn.cursor()
+            # 库已存在时不要再发 CREATE DATABASE：建库是 DDL，需要 schema 级元数据锁；
+            # 库内存在未提交事务、或其它实例正在执行建表/改列时，它会一直等到
+            # lock_wait_timeout 后报 1205（Lock wait timeout exceeded），表现为
+            # 「启动时 MySQL 连接失败」。先查 information_schema 判断存在性，只有
+            # 真的缺库时才执行建库；同时把会话锁等待压到 10s，避免启动被长时间挂住。
+            try:
+                cursor.execute("SET SESSION lock_wait_timeout = 10")
+            except Exception:
+                pass  # MySQL 5.6 及以下无该变量，忽略即可
             cursor.execute(
-                f"CREATE DATABASE IF NOT EXISTS `{db_name}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
+                "SELECT SCHEMA_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME=%s",
+                (db_name,),
             )
+            if cursor.fetchone() is not None:
+                logger.info(f"MySQL数据库 '{db_name}' 已存在，跳过建库 DDL")
+            else:
+                cursor.execute(
+                    f"CREATE DATABASE IF NOT EXISTS `{db_name}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
+                )
+                logger.info(f"MySQL数据库 '{db_name}' 已创建")
             cursor.close()
             conn.close()
-            logger.info(f"MySQL数据库 '{db_name}' 已就绪")
         except Exception as e:
             err = str(e)
-            if "using password: NO" in err:
+            if "1205" in err or "Lock wait timeout" in err:
+                hint = (
+                    "（库通常已存在，服务可继续启动；若反复出现，请排查长事务与并发建表："
+                    "SELECT * FROM information_schema.INNODB_TRX; SHOW PROCESSLIST; "
+                    "SELECT * FROM performance_schema.metadata_locks）"
+                )
+            elif "using password: NO" in err:
                 hint = "（未发送密码：请检查 database.mysql.password 是否为空）"
             elif "using password: YES" in err:
                 hint = "（密码错误，或该用户未对来源 host 授权，如 root@'172.17.0.1'）"

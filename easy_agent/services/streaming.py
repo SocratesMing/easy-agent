@@ -896,6 +896,7 @@ async def chat_stream_generator(
             context_length=context_length,
             auto_compress_tokens=auto_compress_tokens,
             start_time=start_time,
+            mcp_sources=getattr(agent, "mcp_tool_sources", None),
         )
 
         def _persist():
@@ -1374,6 +1375,7 @@ async def resume_stream_generator(
         accumulated_response=accumulated_response,
         accumulated_thinking=accumulated_thinking,
         start_time=start_time,
+        mcp_sources=getattr(agent, "mcp_tool_sources", None),
     )
 
     def _persist():
