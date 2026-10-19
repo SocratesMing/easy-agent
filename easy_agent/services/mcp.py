@@ -326,21 +326,50 @@ def _decorate_mcp_result(result: Any, source: dict[str, str]) -> Any:
         return f"{prefix}\n{result}{suffix}"
     if isinstance(result, list):
         decorated = [dict(item) if isinstance(item, dict) else item for item in result]
-        added = False
-        last_text_idx = None
-        for idx, item in enumerate(decorated):
-            if isinstance(item, dict) and item.get("type") == "text":
-                last_text_idx = idx
-                if not added:
-                    item["text"] = f"{prefix}\n{item.get('text', '')}"
-                    added = True
-        if last_text_idx is not None:
-            last = decorated[last_text_idx]
-            last["text"] = f"{last.get('text', '')}{suffix}"
-        elif not added:
+        # 文本块既可能是 {"type": "text", "text": ...}，也可能是纯 str
+        # （langchain-mcp-adapters 的 content block 两种都可能出现）
+        text_idx = [
+            idx
+            for idx, item in enumerate(decorated)
+            if isinstance(item, str)
+            or (isinstance(item, dict) and item.get("type") == "text")
+        ]
+        if not text_idx:
             decorated.insert(0, {"type": "text", "text": f"{prefix}{suffix}"})
+            return decorated
+        first, last = text_idx[0], text_idx[-1]
+        for idx in text_idx:
+            item = decorated[idx]
+            is_str = isinstance(item, str)
+            text = item if is_str else str(item.get("text", ""))
+            if idx == first:
+                text = f"{prefix}\n{text}"
+            if idx == last:
+                text = f"{text}{suffix}"
+            decorated[idx] = text if is_str else {**item, "text": text}
         return decorated
     return f"{prefix}\n{result}{suffix}"
+
+
+def _decorate_tool_output(
+    result: Any, response_format: str, source: dict[str, str]
+) -> Any:
+    """装饰工具返回值，同时保留 StructuredTool 的输出协议。
+
+    langchain-mcp-adapters 生成的 MCP 工具是
+    ``StructuredTool(response_format="content_and_artifact")``，coroutine 必须返回
+    ``(content, artifact)`` 二元组；这里只装饰 content，artifact 原样透传。
+    否则 BaseTool._format_output 会因返回值不是二元组而抛
+    「Tool must return a tuple of (content, artifact)」，整次工具调用失败。
+    """
+    if (
+        response_format == "content_and_artifact"
+        and isinstance(result, tuple)
+        and len(result) == 2
+    ):
+        content, artifact = result
+        return _decorate_mcp_result(content, source), artifact
+    return _decorate_mcp_result(result, source)
 
 
 def _prepare_mcp_tool(tool: Any, server: str, display_name: str) -> dict[str, str]:
@@ -368,11 +397,15 @@ def _prepare_mcp_tool(tool: Any, server: str, display_name: str) -> dict[str, st
     def _source() -> dict[str, str]:
         return _build_source(server, display_name or server, tool_name)
 
+    # MCP 工具是 content_and_artifact 协议（返回 (content, artifact) 二元组），
+    # 包装时必须保留，否则工具调用会在 _format_output 阶段报错。
+    response_format = str(getattr(tool, "response_format", "content") or "content")
+
     coroutine = getattr(tool, "coroutine", None)
     if coroutine is not None:
         async def _wrapped_coroutine(*args, **kwargs):
             result = await coroutine(*args, **kwargs)
-            return _decorate_mcp_result(result, _source())
+            return _decorate_tool_output(result, response_format, _source())
 
         try:
             tool.coroutine = _wrapped_coroutine
@@ -383,7 +416,7 @@ def _prepare_mcp_tool(tool: Any, server: str, display_name: str) -> dict[str, st
         func = getattr(tool, "func", None)
         if func is not None:
             def _wrapped_func(*args, **kwargs):
-                return _decorate_mcp_result(func(*args, **kwargs), _source())
+                return _decorate_tool_output(func(*args, **kwargs), response_format, _source())
 
             try:
                 tool.func = _wrapped_func
