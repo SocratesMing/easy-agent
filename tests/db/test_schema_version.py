@@ -152,3 +152,33 @@ def test_expected_tables_match_created_schema(sqlite_path):
         cur.execute("SELECT name FROM sqlite_master WHERE type='table'")
         names = {r[0] for r in cur.fetchall()}
     assert set(EXPECTED_TABLES).issubset(names)
+
+
+def test_missing_critical_column_forces_full_init(sqlite_path):
+    """加列漏 bump 场景：版本号已是最新但 users 缺关键列（部署环境老库），
+    快速路径必须判定为「结构过时」并回退完整迁移，重新启动后自动补列。"""
+    db, _ = _init_with_count(sqlite_path)
+    with db.get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("ALTER TABLE users DROP COLUMN account_status")
+        conn.commit()
+
+    # 模拟重启：新进程（列缓存为空），版本号与代码一致但缺列 → 判定结构过时
+    db2 = Database({"type": "sqlite", "sqlite": {"path": str(sqlite_path)}})
+    with db2.get_connection() as conn:
+        assert db2._schema_tables_present(conn.cursor()) is False
+
+    # 再跑一次启动迁移：自动补回缺失列（漏 bump 也能自愈）
+    db3, _ = _init_with_count(sqlite_path)
+    with db3.get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("PRAGMA table_info(users)")
+        cols = {r[1] for r in cur.fetchall()}
+    assert dbmod._USERS_CRITICAL_COLUMNS <= cols
+
+
+def test_fast_path_still_fast_with_column_probe(sqlite_path):
+    """加列探测不应拖慢快速路径：第二次启动仍只需少量探测 SQL。"""
+    _init_with_count(sqlite_path)
+    _, second = _init_with_count(sqlite_path)
+    assert second <= 10

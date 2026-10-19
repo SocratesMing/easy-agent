@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 # 否则已经升级过的库会一直命中「结构已是最新」的快速启动路径，变更不会生效。
 # 见 init_tables()：版本一致时跳过整轮建表 + 补列 + 建索引探测（MySQL 上这一步
 # 过去要 40+ 次网络往返，多副本部署时每个 pod 启动都要跑一遍，是启动慢的主因）。
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 SCHEMA_VERSION_TABLE = "schema_meta"
 SCHEMA_VERSION_KEY = "schema_version"
 
@@ -62,6 +62,27 @@ EXPECTED_TABLES = (
     "knowledge_operations",
     "knowledge_audit_events",
     "expert_agents",
+)
+
+# users 表关键列：表名齐全但缺这些列时，视为老结构强制回退完整迁移。
+# 背景：历史上出现过「加列漏 bump SCHEMA_VERSION」——部署环境老库版本号已与代码
+# 一致，快速路径只校验表名不校验列，导致新列永远补不上（人员/权限管理 500）。
+# 这层探测是漏 bump 时的最后防线：即使版本号忘了 +1，缺列也能触发完整迁移自愈。
+_USERS_CRITICAL_COLUMNS = frozenset(
+    {
+        "employee_id",
+        "display_name",
+        "department_id",
+        "department_name",
+        "division_name",
+        "team_name",
+        "position",
+        "mobile",
+        "account_status",
+        "personnel_source",
+        "token_version",
+        "last_activity_at",
+    }
 )
 
 
@@ -786,7 +807,20 @@ class Database:
         except Exception as e:  # noqa: BLE001
             logger.warning(f"读取表清单失败，回退到完整初始化: {e}")
             return False
-        return all(t in names for t in EXPECTED_TABLES)
+        if not all(t in names for t in EXPECTED_TABLES):
+            return False
+        # 关键列自愈：表名齐全但 users 缺关键列（加列漏 bump 的老库）→ 回退完整迁移。
+        # 仅在启动快速路径执行一次真实探测（_column_cache 此时为空），无额外开销。
+        try:
+            user_cols = self._table_columns(cursor, "users")
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"users 列探测失败，回退完整初始化: {e}")
+            return False
+        missing = _USERS_CRITICAL_COLUMNS - user_cols
+        if missing:
+            logger.warning(f"users 表缺关键列 {sorted(missing)}，回退完整迁移补列")
+            return False
+        return True
 
     def _repair_missing_message_rows(self, cursor):
         """修复 session_messages 表中缺失或被覆盖的消息行（从 sessions 表 JSON 重建）。
