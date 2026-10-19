@@ -2,10 +2,10 @@ import Vue from 'vue'
 import { createSession, listSessions, getChatHistory, deleteSession, sendMessage, resumeStream, renameSession, togglePinSession, attachStream } from '../api/chat.js'
 import { deleteFile, getSessionGeneratedFiles } from '../api/files.js'
 import { authFetch } from '../api/auth.js'
-import { streamExportRun } from '../api/expert.js'
 import { chatBus, chatStore } from '../store/chatStore.js'
 import { parseLeadingSkillTokens } from '../utils/skillTokens.js'
 import { ensureSkillDirectoryLoaded, skillDirectoryStore } from '../store/skillDirectoryStore.js'
+import { setExpertLastSession } from '../utils/expertSession.js'
 
 // MCP 工具结果解析：模块级函数，供正常流(handleSendMessage)与 HITL 恢复流(handleToolApproval)共用。
 // 注意：不要把它定义在某个函数内部，否则另一处引用会抛 ReferenceError，
@@ -944,6 +944,10 @@ export default {
               this.loadSessions()
             }
             if (data.session_id) ctx.streamSessionId = data.session_id
+            // 记录「本专家 -> 该会话」：新会话 ID 只有在 start 事件里才拿到。
+            if (data.session_id && ctx.expertId) {
+              setExpertLastSession(ctx.expertId, data.session_id)
+            }
             // 标记该会话已有本页流处理器：切回时按缓存直接显示，避免再起 attach 重复渲染
             if (data.session_id && !ctx.attachMode) {
               this.$set(this.attachedStreamingSessions, data.session_id, 'displayed')
@@ -1261,6 +1265,9 @@ export default {
 
       const streamCtx = {
         isResume: false,
+        // 本轮使用的专家 ID（空串 = 通用对话）：start 事件拿到 session_id 后据此记录
+        // 「专家 -> 最近会话」映射（与 App.vue 的同名实现保持一致）。
+        expertId: usedExpert ? usedExpert.id : '',
         get assistantMsgId() { return assistantMsgId },
         set assistantMsgId(v) { assistantMsgId = v },
         get streamSessionId() { return streamSessionId },
@@ -1339,40 +1346,22 @@ export default {
           }
         }
 
-        // 专家模式：改走 /agent/stream_export_run，由后端按选中的专家动态构建 Agent
-        // （加载该专家当前生效版本的提示词，未选专家时退化为通用 Agent）。
-        // SSE 事件格式与 /agent/chat/stream 完全一致，onChunk 复用同一处理器。
-        if (this.selectedExpert && this.selectedExpert.export_agent_id) {
-          await streamExportRun(
-            {
-              message,
-              sessionId: this.currentSessionId,
-              expertAgentId: this.selectedExpert.export_agent_id,
-              model: this.selectedModel,
-              enableDeepThink,
-              enableWebSearch,
-              files,
-              // 已选技能：结构化字段（技能目录名），`/目录名` 由后端拼进模型输入。
-              // 连接器不随消息提交：本会话启用哪些连接器由 /agent/connectors/session 设置。
-              skills,
-            },
-            onChunk,
-            abortSignal
-          )
-        } else {
-          await sendMessage(
-            this.currentSessionId,
-            message,
-            onChunk,
-            abortSignal,
-            enableDeepThink,
-            files,
-            this.selectedModel,
-            enableWebSearch,
-            pageContext,
-            skills
-          )
-        }
+        // 专家与普通对话走同一个入口：选中专家时把 ID 作为结构化字段带上，后端据此
+        // 加载提示词并在创建 Agent 前做职责范围预检（未选专家 = 通用 Agent）。
+        await sendMessage(
+          this.currentSessionId,
+          message,
+          onChunk,
+          abortSignal,
+          enableDeepThink,
+          files,
+          this.selectedModel,
+          enableWebSearch,
+          pageContext,
+          skills,
+          '',  // pendingExpertId：编辑专家的绑定由 App.vue 的同名方法处理
+          (this.selectedExpert && this.selectedExpert.export_agent_id) || ''
+        )
 
         await this.refreshSessionFiles(null, 500)
       } catch (e) {

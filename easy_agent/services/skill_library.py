@@ -18,6 +18,7 @@ import logging
 import os
 import re
 import shutil
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -240,6 +241,81 @@ def remove_user_skill(username: str, dir_name: str) -> Path:
     shutil.rmtree(str(found["path"]))
     logger.info(f"技能移除 | 用户: {username} | 技能: {dir_name}")
     return found["path"]
+
+
+# ── 公共技能安装（技能中心「添加」/ 专家依赖自动补装）────────────────────────
+
+
+def public_skills_dir() -> Path | None:
+    """公共技能目录（``tools.skills_dir``）；未配置时返回 ``None``。
+
+    解析口径与技能中心（``api/skill_center._public_skills_root``）**保持一致**：
+    相对路径按进程 CWD 解析。刻意不在本函数里另做一套「先 CWD 再项目根」的回退，
+    否则会出现「技能中心装不上、自动补装却装上了」的状态不一致。已知的相对路径
+    隐患（systemd/Docker 下 CWD 不等于项目根）统一在两者之间后续一起修。
+    """
+    from .agent_manager import get_agent_config  # 延迟导入，避免模块级循环依赖
+
+    cfg = get_agent_config()
+    skills_root = cfg["config"].tools.skills_dir if cfg else "./skills"
+    if not skills_root:
+        return None
+    return Path(skills_root)
+
+
+def install_public_skill_to_user(
+    username: str,
+    dir_name: str,
+    *,
+    overwrite: bool = False,
+) -> dict[str, Any]:
+    """把公共技能目录完整复制到用户技能库，返回 ``{dir_name, path}``。
+
+    「安装」到用户侧 = 复制到 ``workspace/{username}/skills/{dir_name}/``，
+    Agent 通过 ``/user-skills/`` 路由扫描（见 ``EasyAgent._resolve_skills_paths``）。
+
+    复制走「临时目录 + ``os.replace``」：中途失败不会留下半份技能，并发重复调用
+    也只会有一份生效。目标已存在时抛 ``FileExistsError``（``overwrite=True`` 例外），
+    停用目录里的同名技能同样视为「用户已有」，不做覆盖。
+
+    Raises:
+        FileNotFoundError: 公共技能目录未配置，或源目录不是合法技能目录。
+        FileExistsError: 用户技能库（启用或停用）里已有同名技能且未允许覆盖。
+    """
+    root = public_skills_dir()
+    if root is None:
+        raise FileNotFoundError("公共技能目录未配置（tools.skills_dir）")
+
+    source = root / dir_name
+    if not is_skill_dir(source):
+        raise FileNotFoundError(str(source))
+
+    target_root = user_skills_dir(username)
+    target = target_root / dir_name
+    disabled = user_disabled_dir(username) / dir_name
+
+    if not overwrite:
+        if target.exists():
+            raise FileExistsError(f"skills/{dir_name}")
+        if is_skill_dir(disabled):
+            raise FileExistsError(f"{DISABLED_DIR_NAME}/{dir_name}")
+
+    target_root.mkdir(parents=True, exist_ok=True)
+    temp = target_root / f".tmp_{dir_name}_{uuid.uuid4().hex[:8]}"
+    try:
+        shutil.copytree(str(source), str(temp))
+        if overwrite and target.exists():
+            shutil.rmtree(str(target), ignore_errors=True)
+        os.replace(str(temp), str(target))
+    finally:
+        if temp.exists():
+            shutil.rmtree(str(temp), ignore_errors=True)
+
+    logger.info(
+        f"公共技能安装到用户目录 | 用户: {username} | 技能: {dir_name} | "
+        f"源: {source.absolute()} | 目标: {target.absolute()}"
+    )
+    return {"dir_name": dir_name, "path": target}
 
 
 # ── 登记（对话创建 / 工作区收编）───────────────────────────────────────────

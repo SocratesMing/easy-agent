@@ -7,17 +7,13 @@
  *   GET  /agent/list               我的专家列表
  *   GET  /agent/public-list        公共（预置）专家列表（只读目录 exports/）
  *   POST /agent/del                删除专家（默认软删）
- *   POST /agent/stream_export_run  选中专家执行（SSE）
  *
- * 与 api/chat.js 保持同一套请求约定（API_BASE_URL + authFetch），
- * SSE 事件格式与 /agent/chat/stream 完全一致。
+ * 专家对话不再有独立接口：选中专家后前端统一调 /agent/chat/stream 并带上
+ * `expert_agent_id`（见 api/chat.js 的 sendMessage），提示词加载与相关性预检
+ * 都在通用入口完成，SSE 事件格式与普通聊天完全一致。
  */
 import { API_BASE_URL } from '../config.js'
 import { authFetch } from './auth.js'
-
-function generateMessageId() {
-  return `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
-}
 
 async function _errorOf(response, fallback) {
   const data = await response.json().catch(() => ({}))
@@ -102,70 +98,4 @@ export async function deleteExpert(exportAgentId, hard = false) {
   })
   if (!response.ok) throw await _errorOf(response, '删除专家失败')
   return await response.json()
-}
-
-/**
- * 选中专家执行（SSE 流式）
- *
- * @param {Object} payload { message, sessionId, expertAgentId, model, enableDeepThink, enableWebSearch, files }
- * @param {Function} onChunk 每个 SSE 事件回调（与聊天完全相同的结构）
- * @param {AbortSignal} [signal] 用于取消
- */
-export async function streamExportRun(payload, onChunk, signal) {
-  const controller = new AbortController()
-  const abortSignal = signal || controller.signal
-
-  const body = {
-    message: payload.message,
-    session_id: payload.sessionId || null,
-    message_id: payload.messageId || generateMessageId(),
-    expert_agent_id: payload.expertAgentId || null,
-    enable_deep_think: !!payload.enableDeepThink,
-    enable_web_search: !!payload.enableWebSearch,
-    files: payload.files || null,
-    // 已选技能走结构化字段（技能目录名），`/目录名` 由后端拼进模型输入。
-    // 连接器不走这里：本会话启用哪些连接器由 /agent/connectors/session 单独设置。
-    skills: payload.skills && payload.skills.length ? payload.skills : null,
-  }
-  if (payload.model) body.model = payload.model
-
-  const response = await authFetch(`${API_BASE_URL}/agent/stream_export_run`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-    signal: abortSignal,
-  })
-  if (!response.ok) throw await _errorOf(response, '专家执行失败')
-
-  const reader = response.body.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ''
-
-  try {
-    while (true) {
-      if (abortSignal?.aborted) {
-        controller.abort()
-        return
-      }
-      const { done, value } = await reader.read()
-      if (done) break
-
-      buffer += decoder.decode(value, { stream: true })
-      const lines = buffer.split('\n')
-      buffer = lines.pop() || ''
-
-      for (const line of lines) {
-        if (line.startsWith('data: ')) {
-          try {
-            onChunk(JSON.parse(line.slice(6)))
-          } catch (e) {
-            console.error('解析 SSE 数据失败:', e)
-          }
-        }
-      }
-    }
-  } catch (e) {
-    if (e.name === 'AbortError') return
-    throw e
-  }
 }

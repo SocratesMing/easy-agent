@@ -99,6 +99,15 @@ class ChatRequest(BaseModel):
             "本人创建的可用专家）后绑定为 save_expert 的修改目标；不传/非法则忽略"
         ),
     )
+    expert_agent_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "本轮使用的专家 Agent ID（输入框专家胶囊选中项）：不传/空 = 通用 Agent。"
+            "非空时后端加载该专家当前生效版本的提示词追加到系统提示词末尾，并在创建"
+            "Agent 前做职责范围内的相关性预检（与 pending_expert_id 语义不同：后者是"
+            "「要修改哪个专家」，本字段是「本轮由谁回答」）"
+        ),
+    )
 
 
 class ResumeRequest(BaseModel):
