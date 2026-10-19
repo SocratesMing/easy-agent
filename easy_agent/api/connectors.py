@@ -50,6 +50,11 @@ from easy_agent.services.mcp import (
     load_mcp_config,
     normalize_servers_mapping,
 )
+from easy_agent.services.mcp_policy import (
+    McpPolicyError,
+    ensure_servers_allowed,
+    stdio_violation,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -128,6 +133,15 @@ def _extract_servers(user_config: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return normalize_servers_mapping(user_config)
 
 
+def _ensure_allowed(servers: dict[str, Any], username: str) -> None:
+    """写入前的执行策略校验（SEC-04）：普通用户的自定义 stdio 连接器返回 403。"""
+    try:
+        ensure_servers_allowed(servers, username)
+    except McpPolicyError as exc:
+        logger.warning(f"拒绝 MCP 配置 | 用户: {username} | {exc}")
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
 async def _validate_servers(
     names: list[str], username: str
 ) -> list[dict[str, Any]]:
@@ -139,15 +153,21 @@ async def _validate_servers(
         return []
 
     tasks = [
-        _validate_one(name, all_config[name])
+        _validate_one(name, all_config[name], username)
         for name in names
         if all_config.get(name)
     ]
     return list(await asyncio.gather(*tasks))
 
 
-async def _validate_one(name: str, cfg: dict[str, Any]) -> dict[str, Any]:
-    """连接单个 server 校验状态，异常不抛出。剥离 enabled 标记（非 MCP 配置字段）。"""
+async def _validate_one(name: str, cfg: dict[str, Any], username: str) -> dict[str, Any]:
+    """连接单个 server 校验状态，异常不抛出。剥离 enabled 标记（非 MCP 配置字段）。
+
+    不允许运行的 stdio 连接器（SEC-04）直接返回错误，不拉起进程。
+    """
+    violation = stdio_violation(cfg, username)
+    if violation:
+        return {"name": name, "status": "error", "tools_count": 0, "error": violation}
     server_cfg = {k: v for k, v in cfg.items() if k != "enabled"}
     try:
         client = MultiServerMCPClient({name: server_cfg})
@@ -173,7 +193,7 @@ async def get_connectors_status(
     raw = _read_user_mcp_raw(username, config)
     servers = raw.get("servers") or {}
     tasks = [
-        _validate_one(name, cfg)
+        _validate_one(name, cfg, username)
         for name, cfg in servers.items()
         if isinstance(cfg, dict)
     ]
@@ -254,6 +274,7 @@ async def install_connector(
         if str(request.values.get(f["key"], "")).strip():
             _set_config_field(server_cfg, f["key"], request.values[f["key"]].strip())
     server_cfg.setdefault("enabled", True)
+    _ensure_allowed({request.id: server_cfg}, username)
 
     raw = _read_user_mcp_raw(username, config)
     existing: dict[str, Any] = raw.get("servers", {})
@@ -508,6 +529,10 @@ async def list_connector_tools(
     if not isinstance(cfg, dict):
         raise HTTPException(status_code=404, detail=f"连接器不存在: {name}")
 
+    violation = stdio_violation(cfg, username)
+    if violation:
+        return {"name": name, "tools": [], "error": violation}
+
     server_cfg = {k: v for k, v in cfg.items() if k != "enabled"}
     try:
         client = MultiServerMCPClient({name: server_cfg})
@@ -570,6 +595,7 @@ async def update_connector_config(
         _set_config_field(cfg, key_path, value)
         applied[key_path] = value
     if applied:
+        _ensure_allowed({request.id: cfg}, username)
         raw["servers"] = existing
         _write_user_mcp_raw(username, config, raw)
         invalidate_mcp_cache(username)
@@ -639,6 +665,7 @@ async def save_mcp_raw(
         raise HTTPException(status_code=400, detail="mcp.json 顶层必须是 JSON 对象")
 
     servers = _extract_servers(parsed)
+    _ensure_allowed(servers, username)
     config = _runtime_config()
     user_mcp_path = _write_user_mcp_raw(username, config, {"servers": servers})
     invalidate_mcp_cache(username)
@@ -692,6 +719,7 @@ async def add_mcp_server(
             detail=f"MCP 服务已存在: {', '.join(duplicates)}（请先删除或改名）",
         )
 
+    _ensure_allowed(new_servers, username)
     existing.update(new_servers)
     raw["servers"] = existing
     user_mcp_path = _write_user_mcp_raw(username, config, raw)

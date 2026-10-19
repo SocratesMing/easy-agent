@@ -39,6 +39,33 @@ def test_download_file(client):
     assert resp.content == b"hello content"
 
 
+def test_download_by_listed_relative_path(client):
+    """前端「资产」面板用列表接口返回的相对路径下载。"""
+    up = _upload(client)
+    listed = client.get("/agent/files/list").json()
+    item = next(f for f in listed["files"] if f["filename"] == Path(up["file_path"]).name)
+    resp = client.get(f"/agent/files/download/{item['file_path']}")
+    assert resp.status_code == 200
+    assert resp.content == b"hello content"
+
+
+def test_download_rejects_paths_outside_user_dirs(client, tmp_path):
+    """SEC-05：绝对路径或 ``..`` 不能逃出本用户的上传目录 / 工作区。"""
+    host_secret = tmp_path / "host-secret.txt"
+    host_secret.write_text("sec05-host-secret", encoding="utf-8")
+    other_user = Path(os.environ["TEST_UPLOADS_DIR"]) / "sec05_other" / "other-secret.txt"
+    other_user.parent.mkdir(parents=True, exist_ok=True)
+    other_user.write_text("sec05-other-user-secret", encoding="utf-8")
+    try:
+        for path in (str(host_secret), "%2e%2e/sec05_other/other-secret.txt"):
+            resp = client.get(f"/agent/files/download/{path}")
+            assert resp.status_code == 400, path
+            assert b"sec05" not in resp.content
+    finally:
+        other_user.unlink()
+        other_user.parent.rmdir()
+
+
 def test_delete_missing_file_404(client):
     resp = client.delete("/agent/files/999999")
     assert resp.status_code == 404

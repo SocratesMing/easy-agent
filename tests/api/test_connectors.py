@@ -23,6 +23,10 @@ DEMO_CONNECTOR = {
 }
 
 
+#: 自定义连接器用 HTTP 类：普通用户不能添加自定义 stdio（SEC-04，见 test_mcp_policy.py）
+HTTP_URL = "http://127.0.0.1:9/mcp"
+
+
 @pytest.fixture(autouse=True)
 def _clean_user_mcp():
     """每个用例前清掉用户 mcp.json，避免用例之间互相污染。"""
@@ -167,13 +171,13 @@ def test_connectors_list_marks_installed_and_collects_custom(client, demo_catalo
 
     add = client.post(
         "/agent/connectors/mcp",
-        json={"config": {"name": "custom-one", "transport": "stdio", "command": "echo"}},
+        json={"config": {"name": "custom-one", "transport": "streamable_http", "url": HTTP_URL}},
     )
     assert add.status_code == 200
 
     data = client.get("/agent/connectors").json()
     assert [c["name"] for c in data["custom"]] == ["custom-one"]
-    assert data["custom"][0]["config"]["transport"] == "stdio"
+    assert data["custom"][0]["config"]["transport"] == "streamable_http"
 
 
 # ── 安装 / 卸载 ───────────────────────────────────────────────────────
@@ -254,7 +258,7 @@ def test_mcp_raw_save_rejects_invalid_json(client):
 
 
 def test_add_mcp_config_rejects_duplicate_and_bad_format(client, demo_catalog):
-    body = {"config": {"name": "dup-server", "transport": "stdio", "command": "echo"}}
+    body = {"config": {"name": "dup-server", "transport": "streamable_http", "url": HTTP_URL}}
     assert client.post("/agent/connectors/mcp", json=body).status_code == 200
 
     resp = client.post("/agent/connectors/mcp", json=body)
@@ -268,7 +272,7 @@ def test_add_mcp_config_rejects_duplicate_and_bad_format(client, demo_catalog):
 def test_delete_mcp_server(client, demo_catalog):
     client.post(
         "/agent/connectors/mcp",
-        json={"config": {"name": "to-delete", "transport": "stdio", "command": "echo"}},
+        json={"config": {"name": "to-delete", "transport": "streamable_http", "url": HTTP_URL}},
     )
     assert client.delete("/agent/connectors/mcp/to-delete").status_code == 200
     assert client.delete("/agent/connectors/mcp/to-delete").status_code == 404
@@ -650,3 +654,58 @@ def test_session_switches_map_display_name_and_ignore_unknown(client, auth_catal
         assert am.get_session_connectors(sid) == ("auth-connector",)
     finally:
         am.clear_session_connectors(sid)
+
+
+# ── SEC-04：普通用户的自定义 stdio 连接器 ─────────────────────────────
+
+EVIL_STDIO = {"command": "bash", "args": ["-c", "id > /tmp/sec04-pwned"]}
+
+
+def test_regular_user_cannot_save_custom_stdio(client, demo_catalog):
+    raw = client.put(
+        "/agent/connectors/mcp/raw",
+        json={"content": json.dumps({"servers": {"evil": EVIL_STDIO}})},
+    )
+    assert raw.status_code == 403
+    assert "evil" in raw.json()["detail"]
+
+    add = client.post("/agent/connectors/mcp", json={"config": {"name": "evil", **EVIL_STDIO}})
+    assert add.status_code == 403
+    assert not _user_mcp_path().exists()
+
+
+def test_existing_custom_stdio_is_never_spawned(client, demo_catalog, monkeypatch):
+    """策略上线前写入的违规配置：状态校验 / 工具列表只报错，不拉起进程。"""
+    spawned = []
+    monkeypatch.setattr(
+        connectors_api, "MultiServerMCPClient", lambda servers: spawned.append(servers)
+    )
+    path = _user_mcp_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"servers": {"evil": EVIL_STDIO}}), encoding="utf-8")
+
+    statuses = client.get("/agent/connectors/status").json()["statuses"]
+    assert [(s["name"], s["status"]) for s in statuses] == [("evil", "error")]
+    assert "stdio" in statuses[0]["error"]
+
+    tools = client.get("/agent/connectors/tools", params={"name": "evil"}).json()
+    assert tools["tools"] == []
+    assert "stdio" in tools["error"]
+    assert spawned == []
+
+
+def test_admin_can_save_custom_stdio(client, demo_catalog):
+    from easy_agent.app import app
+    from easy_agent.middleware import get_current_username
+
+    app.dependency_overrides[get_current_username] = lambda: "admin"
+    admin_path = Config.get_user_mcp_path("admin")
+    try:
+        resp = client.put(
+            "/agent/connectors/mcp/raw",
+            json={"content": json.dumps({"servers": {"ops": EVIL_STDIO}})},
+        )
+        assert resp.status_code == 200
+        assert json.loads(admin_path.read_text(encoding="utf-8"))["servers"]["ops"]["command"] == "bash"
+    finally:
+        admin_path.unlink(missing_ok=True)

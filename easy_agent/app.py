@@ -818,6 +818,14 @@ async def serve_frontend():
     return FileResponse(os.path.join(frontend_dist, "index.html"))
 
 
+def _is_within_dir(root: str, path: str) -> bool:
+    """``path`` 是否在 ``root`` 目录内（两者都应是 realpath）；跨盘符视为不在。"""
+    try:
+        return os.path.commonpath([root, path]) == root
+    except ValueError:
+        return False
+
+
 @app.get("/{full_path:path}", response_class=FileResponse)
 async def serve_static(full_path: str):
     # /agent/* 是接口命名空间，未匹配到任何路由时必须返回 JSON 404。
@@ -827,8 +835,13 @@ async def serve_static(full_path: str):
     if full_path == "agent" or full_path.startswith("agent/"):
         return JSONResponse({"detail": "Not Found"}, status_code=404)
 
-    static_file = os.path.join(frontend_dist, full_path)
-    if os.path.exists(static_file) and os.path.isfile(static_file):
+    # SEC-02：先解析再校验必须落在构建目录内。os.path.join 遇到绝对路径会丢掉
+    # 前缀（``GET //etc/passwd``），``%2e%2e/`` 也能逃出目录。
+    dist_root = os.path.realpath(frontend_dist)
+    static_file = os.path.realpath(os.path.join(dist_root, full_path))
+    if not _is_within_dir(dist_root, static_file):
+        return JSONResponse({"detail": "Not Found"}, status_code=404)
+    if os.path.isfile(static_file):
         # 静态产物文件名固定（/js/app.js）：no-cache 禁止启发式强缓存，
         # 强制走协商缓存（ETag/Last-Modified 变了即拉新），新版本部署后普通刷新即可生效。
         return FileResponse(static_file, headers={"Cache-Control": "no-cache"})

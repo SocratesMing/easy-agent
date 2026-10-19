@@ -189,6 +189,21 @@ def resolve_workspace_file(workspace_dir: Path, file_path: str) -> Path:
     return full_path
 
 
+def _resolve_download_file(upload_dir: Path, workspace_dir: Path, file_path: str) -> Path:
+    """下载只在本用户的上传目录、工作区内解析（依次查找，SEC-05）。
+
+    ``upload_dir / "/etc/passwd"`` 会丢掉前缀，``../bob/...`` 能读别的用户的文件；
+    每个目录都按 :func:`resolve_workspace_file` 校验：越界 400，都不存在 404。
+    """
+    for base in (upload_dir, workspace_dir):
+        try:
+            return resolve_workspace_file(base, file_path)
+        except HTTPException as exc:
+            if exc.status_code != 404:
+                raise
+    raise HTTPException(status_code=404, detail="文件不存在")
+
+
 def serve_workspace_file(
     workspace_dir: Path, file_path: str, download: bool = False
 ) -> FileResponse:
@@ -423,13 +438,7 @@ async def download_file(
         )
 
     upload_dir, workspace_dir = get_user_dirs(username)
-
-    full_path = upload_dir / file_path
-    if not full_path.exists():
-        full_path = workspace_dir / file_path
-
-    if not full_path.exists():
-        raise HTTPException(status_code=404, detail="文件不存在")
+    full_path = _resolve_download_file(upload_dir, workspace_dir, file_path)
 
     return FileResponse(
         path=str(full_path),

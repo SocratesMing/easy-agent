@@ -5,7 +5,7 @@
 > 文档来源：LangChain 官方文档（经 Docs MCP `https://docs.langchain.com/mcp` 拉取全文，2026-10-19）+ `langchain-ai/langchain-skills` 中的 deep-agents-core / memory / orchestration 技能 + deepagents 0.7.28 源码。
 > 与既有报告的关系：`docs/audit/2026-10-17-easy-agent-audit.md` 已覆盖的条目不重复展开，只复核状态；本报告新增条目编号为 **DA-xx**，严重度沿用 P0–P3。
 > 测试基线：`pytest tests/` → **1607 passed, 1 skipped, 2 warnings**（266s）。
-> **修复进度**：Batch B（DA-01 / DA-02 / DA-08 / DA-10 / DA-16）与修复中发现的 DA-18 已于 2026-10-19 完成，见 §9。
+> **修复进度**：Batch B（DA-01 / DA-02 / DA-08 / DA-10 / DA-16）与修复中发现的 DA-18 已于 2026-10-19 完成，见 §9；Batch A 已修 SEC-01 / SEC-02 / SEC-04 / SEC-05，SEC-03（免密登录）按产品决定保留，见 §10。
 
 ---
 
@@ -49,11 +49,11 @@
 
 | ID | 状态 | 位置（当前代码） | 说明 |
 | --- | --- | --- | --- |
-| SEC-01 P0 | 未修 | `easy_agent/api/terminal.py:231-239`；`easy_agent/app.py:78-81` | `/agent/terminal/ws` 无鉴权（docstring 写明"无需认证"），`os.environ.copy()` + fork bash，POSIX 下总是挂载 |
-| SEC-02 P0 | 未修 | `easy_agent/app.py:821-844` | SPA 兜底 `os.path.join(frontend_dist, full_path)` 无 resolve 前缀校验 |
-| SEC-03 P0 | 未修（受开关控制） | `easy_agent/api/auth.py:226-250` | 免密登录仅凭用户名签发 token |
-| SEC-04 P0 | 未修 | `easy_agent/api/connectors.py:618-713`；`easy_agent/services/mcp.py:166` | 任意登录用户可提交 `stdio` 连接器 → 校验时立即在**宿主机、沙箱外**拉起进程；用户 `mcp.json` 还会做 `${VAR}` 展开（可把 `EASY_JWT_SECRET`/API Key 拼进 URL 外带） |
-| SEC-05 P1 | 未修 | `easy_agent/api/files.py:408-438` | `download_file` 直接 `upload_dir / file_path`，无 resolve/前缀校验 |
+| SEC-01 P0 | 已修（§10） | `easy_agent/api/terminal.py:231-239`；`easy_agent/app.py:78-81` | `/agent/terminal/ws` 无鉴权（docstring 写明"无需认证"），`os.environ.copy()` + fork bash，POSIX 下总是挂载 |
+| SEC-02 P0 | 已修（§10） | `easy_agent/app.py:821-844` | SPA 兜底 `os.path.join(frontend_dist, full_path)` 无 resolve 前缀校验 |
+| SEC-03 P0 | 保留（产品决定，受开关控制，§10） | `easy_agent/api/auth.py:226-250` | 免密登录仅凭用户名签发 token |
+| SEC-04 P0 | 已修（§10） | `easy_agent/api/connectors.py:618-713`；`easy_agent/services/mcp.py:166` | 任意登录用户可提交 `stdio` 连接器 → 校验时立即在**宿主机、沙箱外**拉起进程；用户 `mcp.json` 还会做 `${VAR}` 展开（可把 `EASY_JWT_SECRET`/API Key 拼进 URL 外带） |
+| SEC-05 P1 | 已修（§10） | `easy_agent/api/files.py:408-438` | `download_file` 直接 `upload_dir / file_path`，无 resolve/前缀校验 |
 
 > 官方依据：Sandboxes 文档 "Never put secrets inside a sandbox"、"Keep secrets in tools outside the sandbox"；Going to production "FilesystemBackend and LocalShellBackend access the host directly. Don't use them in deployed agents"。SEC-04 等价于给每个用户一个沙箱外 shell。
 
@@ -304,3 +304,20 @@
 修复后重跑 §8.1 复现脚本：`exp_summarization_processor.py` → `accumulated_response = 'FINAL-ANSWER'`；`exp_hitl_fanout.py` → 单个批准只回答中断 A（`{'A': {'decisions': [{'type': 'approve'}]}}`，B 保持挂起并再次下发），两个决策对 1 个操作则在恢复前被拒绝（接口 400）。
 
 既有问题（非本批引入，已修复）：CI 的 `scripts/quality/check_env_usage.py --check` 在本批改动之前就失败——基线 `bare_getenv_whitelist.json` 仍记录模块迁移（c08206b）前的旧路径，8 处「新增」其实都是搬家。处理：`agent/graph_cache.py` 两处与 `bootstrap/config_validation.py` 一处改用 `env_str`（语义不变，由新增参数化用例钉住）；`bootstrap/env.py`（统一读取入口本身）与 `sandboxing/landlock.py`（沙箱子进程入口，按设计不 import `easy_agent`，按 `os.pathsep` 切分）保留在基线，并按新路径刷新（26 → 23 处）。另在 `tests/test_architecture_gate.py` 增加 `test_repository_env_usage_gate_is_green`：该门禁此前只在 CI 跑，本地 pytest 发现不了搬家导致的基线失效。
+
+## 10. 修复记录（2026-10-19，Batch A）
+
+| 条目 | 处理 | 回归测试（改造前失败） |
+| --- | --- | --- |
+| SEC-01 | Web 终端默认关闭，`EASY_WEB_TERMINAL_ENABLED=1` 才提供 `/terminal` 与 `/agent/terminal/ws`；连接后首帧必须是 `{"type": "auth", "token": "<JWT>"}`，按 `verify_token_sso` 校验（单点登录 / 停用 / 空闲过期）且只放行 admin，失败以 4401 / 4403 关闭，鉴权通过前不创建 pty。页面复用主界面登录态（同源 localStorage），开发环境可用 `#token=`。README 与 `docs/requirements-agent.md` 同步（原 README 所写的 exec/history 接口、路径翻译、命令拦截均不存在） | `tests/api/test_terminal.py` |
+| SEC-02 | SPA 兜底先 `realpath` 再校验必须落在 `frontend_dist` 内，越界 404。实际影响比原记录更大：`os.path.join` 遇绝对路径会丢掉前缀，`GET //etc/passwd` 即可读宿主机任意文件 | `tests/api/test_spa_fallback.py` |
+| SEC-05 | `download_file` 经 `resolve_workspace_file` 依次在本用户上传目录、工作区内解析，越界 400。同样存在绝对路径丢前缀：任意登录用户可下载宿主机文件 | `tests/api/test_files.py::test_download_rejects_paths_outside_user_dirs` |
+| SEC-04 | 新增 `services/mcp_policy.py`：普通用户的 stdio 连接器必须与公共目录某个 stdio 条目一致（只允许改条目声明的 `fields`），自定义 stdio（任意 command / 多余 args / 未声明的 env / cwd）一律拒绝，admin 不受限。写入（安装 / 改字段 / 原文保存 / 粘贴添加）返回 403；状态校验、工具列表、Agent 加载对已存在的违规项只报错或跳过，不拉起进程。用户 `mcp.json` 不再做 `${VAR}` 展开（改造前连接器页会把展开后的值直接返回给用户），只有管理员维护的全局文件展开。注：内置目录的 `mysql` / `sqlite` 都是 stdio，若一刀切禁止 stdio 会让普通用户用不了内置连接器，故按目录一致性放行 | `tests/services/test_mcp_policy.py`、`tests/api/test_connectors.py`（SEC-04 段） |
+| SEC-03 | **保留**：免密登录是要预留的产品特性（Vue2 嵌入 SDK 的登录方式，2026-10-19 决定），本批不改；默认已关闭（`personnel.passwordless_login_enabled=false`），风险说明见 §3 | — |
+
+下载接口的合法用法不受影响：资产面板用列表接口返回的相对路径下载，上传接口返回的路径也落在本用户上传目录内（`test_download_by_listed_relative_path`）。
+
+遗留观察（本批未处理）：
+
+- **CI 后端测试仍红**：`langgraph-checkpoint-sqlite` 在可选 extra `sqlite-saver` 里，CI（`uv sync --group dev --extra docs`）与 Dockerfile（`--extra docs`）都不安装，导致 5 个官方 SQLite checkpointer 用例失败；Docker 部署也会静默回退自研 checkpointer。此前 CI 卡在 env-usage 门禁，没跑到测试这一步。2026-10-19 决定暂不处理。
+- **内置 `sqlite` 连接器的 `env.DB_PATH`**：该字段允许普通用户填写任意路径，stdio 进程在宿主机上运行，可指向应用自身的 SQLite 业务库等文件；如需收紧，可把该字段限制在用户工作区内。

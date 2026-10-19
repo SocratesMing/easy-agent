@@ -133,8 +133,13 @@ def load_mcp_config(username: str | None = None) -> dict[str, dict[str, Any]]:
         )
         return {}
 
-    # Agent 工具加载：过滤停用（enabled: false）的 server
-    return _load_servers_from_file(config_path, active_only=True)
+    # Agent 工具加载：过滤停用（enabled: false）的 server。
+    # 用户自己的 mcp.json 不做 ${VAR} 展开（SEC-04）：否则用户写 ${EASY_JWT_SECRET}
+    # 就能把服务端密钥拼进 URL / 请求头带出去；只有管理员维护的全局文件展开。
+    user_file = bool(username) and config_path == Config.get_user_mcp_path(username)
+    return _load_servers_from_file(
+        config_path, active_only=True, expand_env=not user_file
+    )
 
 
 def load_user_mcp_config(
@@ -154,17 +159,21 @@ def load_user_mcp_config(
     if not user_path.exists():
         return {}
     logger.info(f"MCP config source: user file only ({user_path})")
-    return _load_servers_from_file(user_path)
+    return _load_servers_from_file(user_path, expand_env=False)
 
 
 def _load_servers_from_file(
-    config_path: Path, active_only: bool = False
+    config_path: Path, active_only: bool = False, *, expand_env: bool = True
 ) -> dict[str, dict[str, Any]]:
-    """解析单个 mcp.json，返回归一化后的 servers 映射；任何异常都降级为空映射。"""
+    """解析单个 mcp.json，返回归一化后的 servers 映射；任何异常都降级为空映射。
+
+    ``expand_env`` 只对管理员维护的全局文件开启；用户文件原样读取（SEC-04）。
+    """
     try:
         with open(config_path, encoding="utf-8") as f:
             data = json.load(f)
-        data = _expand_env_recursive(data)
+        if expand_env:
+            data = _expand_env_recursive(data)
 
         servers = data.get("servers")
         if servers is None:

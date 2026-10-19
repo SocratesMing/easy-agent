@@ -22,6 +22,7 @@ from easy_agent.tools.registry import ToolBuildContext, build_session_tools
 from easy_agent.tools.web_search import create_web_search_tool
 from easy_agent.utils.prompt_probe import describe_prompt, prompt_fingerprint
 from easy_agent.services.mcp import get_mcp_tools as load_mcp_tools_for_user
+from easy_agent.services.mcp_policy import filter_server_names
 
 logger = logging.getLogger("easy-agent.chat_service")
 
@@ -370,8 +371,9 @@ async def _get_or_create_agent_unlocked(
     if user_mcp_path.exists():
         logger.info(f"[{session_id[-5:]}] 加载用户专属 MCP | {user_mcp_path}")
         try:
+            # SEC-04：不为普通用户的自定义 stdio 连接器拉起进程
             mcp_tools = await load_mcp_tools_for_user(
-                username, server_names=only_connectors
+                username, server_names=filter_server_names(username, only_connectors)
             )
         except Exception as e:
             logger.warning(

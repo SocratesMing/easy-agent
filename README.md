@@ -26,7 +26,7 @@ Easy Agent 是一个开箱即用的 AI Agent 平台，让大模型能够：
 - 维护长期记忆（跨会话的用户偏好）
 - 在危险操作（文件删除、目录删除）前暂停并请求人类确认（HITL）
 - 由模型自行识别用户意图并创建定时任务
-- 通过网页终端（Web Terminal）进行交互式操作
+- 管理员可通过网页终端（Web Terminal，默认关闭）直接操作宿主机 shell
 
 前后端一体化部署：后端 FastAPI 提供 REST + SSE 流式接口。当前后端托管 `frontend-vue2/`（Vue 2.7 + Element UI + Vue CLI）构建产物，同时维护 `frontend/`（Vue 3.5 + Vite）第二基线。
 
@@ -41,7 +41,7 @@ Easy Agent 是一个开箱即用的 AI Agent 平台，让大模型能够：
 | 多模型支持 | DeepSeek、Anthropic、OpenAI、火山方舟等，可热切换 |
 | 多会话管理 | 会话隔离、上下文压缩、会话耗时/迭代统计 |
 | 文件工具 | 上传/下载/预览/生成（docx、pdf、pptx、xlsx、图片、代码） |
-| 网页终端 | 基于 xterm.js 的 Web Shell，含路径翻译与命令拦截 |
+| 网页终端 | 基于 xterm.js 的宿主机 Shell：默认关闭，`EASY_WEB_TERMINAL_ENABLED=1` 开启，仅 admin 可用 |
 | 专家 · 技能 · 连接器 | 三 Tab：专家（创建/管理/导出运行）/ 公共与个人技能管理（自定义 SKILL.md）/ 连接器（MCP 服务卡片、mcp.json 原文编辑） |
 | 定时任务 | LLM 自动识别调度意图，APScheduler 执行，可视化执行记录 |
 | HITL 审批 | 文件删除前必须用户确认，目录删除直接拒绝 |
@@ -196,6 +196,9 @@ EASY_UPLOAD_BACKEND=store
 # 实验性：execute 走官方 LangSmith Sandbox（需 LANGSMITH_API_KEY）
 EASY_SANDBOX=langsmith
 
+# 网页终端（宿主机真实 shell，不经沙箱）：默认关闭，开启后仅 admin 可用
+EASY_WEB_TERMINAL_ENABLED=1
+
 # 严格多副本门禁：Phase 2/3 外置未完成前保持 0，否则启动会 fail-fast
 EASY_MULTI_REPLICA_STRICT=0
 ```
@@ -340,11 +343,11 @@ external_dirs:
 | POST | `/agent/vector-store/search` | 检索 |
 | GET  | `/agent/vector-store/collections` | 集合列表 |
 
-### 网页终端
+### 网页终端（默认关闭：`EASY_WEB_TERMINAL_ENABLED=1`）
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| POST | `/agent/terminal/exec` | 执行命令（含路径翻译与拦截） |
-| GET  | `/agent/terminal/history` | 命令历史 |
+| GET  | `/terminal` | 终端页面（xterm.js）；未开启时 404 |
+| WS   | `/agent/terminal/ws` | 首帧 `{"type": "auth", "token": "<JWT>"}`，仅 admin；鉴权失败以 4401 / 4403 关闭 |
 
 ### 其他
 `/agent/prompts/*`、`/agent/settings/*`（含 `GET /agent/settings/web-search`：联网搜索可用性）
@@ -387,10 +390,9 @@ Agent 会自动解析调度意图并调用 `create_scheduled_task` 工具，参�
 执行记录审计日志保存在：`workspace/{username}/cron/{task_id}.log`（JSONL 格式）。
 
 ### 5. 网页终端
-- 在对话中需要执行复杂命令时，可直接通过 Web Terminal 交互
-- 终端支持虚拟路径（用户视角）→ 宿主机实际路径的透明翻译
-- 危险命令（`rm` 删除文件）会触发审批弹窗，必须用户确认
-- 目录删除命令（`rmdir` / `rm -r` / `rm -rf`）会被直接拒绝
+- 宿主机上的真实 shell（以服务进程用户运行，不经沙箱、不做路径翻译或命令拦截），因此默认关闭
+- 设置 `EASY_WEB_TERMINAL_ENABLED=1` 后访问 `/terminal`；只有 admin 能连接，页面复用主界面的登录态
+- 前后端不同源的开发环境可用 `/terminal#token=<JWT>` 传入 token（fragment 不会发到服务器）
 
 ### 6. 专家 · 技能 · 连接器（原技能中心）
 - 入口：左侧导航栏「专家 · 技能 · 连接器」；面板**首行即三个 Tab**（上方不放标题栏等任何内容），关闭按钮在 Tab 行最右侧
@@ -409,7 +411,8 @@ Agent 会自动解析调度意图并调用 `create_scheduled_task` 工具，参�
 - 连接器 Tab 工具条有「已安装(n)」筛选：点开只显示已安装的 MCP（内置目录中已添加的 + 用户自定义的）
 - 连接器 Tab 右上角「自定义连接器」进入 **MCP 服务管理**：直接编辑 `workspace/{username}/mcp.json` 原文（带行号的 JSON 编辑器，保存后即时生效）；添加自定义 MCP 也在这里改 JSON 完成，管理页不再单独提供「+ 添加 MCP」按钮（`POST /agent/connectors/mcp` 接口保留，支持 `servers` / `mcpServers` / 对象 / 单条四种格式）
 - 后端接口：`/agent/connectors`（目录 + 自定义项）、`/agent/connectors/install|uninstall`、`/agent/connectors/mcp*`（增删改原文）
-- 公共 MCP 配置：`easy_agent/config/mcp.json`（与 `config.yaml` 同目录，查找顺序 `./easy_agent/config` → `~/.easy-agent/config` → 包内 `config`，由 `Config.find_config_file` 解析），每条 `{id,name,description,icon,config}`（`id` 即写入用户 mcp.json 的 server 名）；改这个文件不用重启后端（每次请求现读），随包预置 5 条示例：`market-data`（自建 market MCP）/ `filesystem` / `fetch` / `git` / `everything`
+- 安全限制（SEC-04）：stdio 连接器会在服务器上、沙箱外直接执行命令，因此普通用户不能添加自定义 stdio 连接器，只能使用公共目录里的 stdio 连接器，且只能修改其声明的字段（admin 不受限）；违规配置保存时返回 403，已存在的违规项不会被加载或校验。用户 `mcp.json` 不做 `${VAR}` 展开（只有管理员维护的全局文件展开），避免把服务端密钥带出
+- 公共 MCP 配置：`easy_agent/config/mcp.json`（与 `config.yaml` 同目录，查找顺序 `./easy_agent/config` → `~/.easy-agent/config` → 包内 `config`，由 `Config.find_config_file` 解析），每条 `{id,name,description,icon,config}`（`id` 即写入用户 mcp.json 的 server 名）；改这个文件不用重启后端（每次请求现读），当前预置 `mysql` / `sqlite` 两条（均为 stdio）
   - ⚠️ 该文件位于 config 目录，同时会被当作「全局 mcp.json」用于 Agent 加载。它没有 `servers` 字段，因此不会给任何用户自动加载 MCP；**不要往里面加 `servers`**（会让所有未自建 mcp.json 的用户自动加载这些服务）
   - 连接器页的「已安装」判断只读用户自己的 `workspace/{username}/mcp.json`，不受这份公共配置影响
 - 格式规范（顶层 `connectors` 数组，字段非法/重复/缺 name 或缺 config 的条目会被跳过并记 warning，页面始终可用）
