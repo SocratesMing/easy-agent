@@ -50,6 +50,8 @@
         @close="showSkillCenter = false"
         @use="handleUseExpert"
         @create-skill="handleSkillCreate"
+        @create-expert="handleExpertCreate"
+        @edit-expert="handleExpertEdit"
       />
 
       <ScheduledTasksPanel v-if="showScheduledTasks" @close="showScheduledTasks = false" />
@@ -88,7 +90,6 @@
         @update:selectedModel="selectedModel = $event"
         @toggle-workspace="isWorkspaceCollapsed = false"
         @sendMessage="handleSendMessage"
-        @presetSend="handlePresetSend"
         @createSession="ensureCurrentSession"
         @removeFile="handleRemoveFile"
         @stop="handleStop"
@@ -1055,6 +1056,36 @@ async function handleSkillCreate() {
   await handleCreateSession()
 }
 
+/**
+ * 专家面板「新建专家」：与「创建技能」完全一致 —— 预填草稿已由面板写入
+ * sessionStorage，这里新开一个对话窗口即可（ChatInput 挂载时自动恢复草稿 + 技能标签）。
+ */
+async function handleExpertCreate() {
+  await handleCreateSession()
+}
+
+/**
+ * 专家面板卡片「编辑」：预填草稿已由面板写入 sessionStorage。
+ *
+ * 窗口选择规则（按需求）：
+ * - 当前窗口就是**新会话**（无任何聊天记录）→ 直接把内容带入当前窗口，不新开；
+ * - 当前窗口**已有聊天记录** → 新开一个会话窗口，避免把修改指令混进既有上下文。
+ *
+ * 两种情况都只需「关闭面板」：Chat 因 v-else-if 会重新挂载，
+ * ChatInput 随之恢复草稿与技能标签。
+ */
+async function handleExpertEdit() {
+  const isEmptySession = !currentSessionId.value || messages.value.length === 0
+  if (isEmptySession) {
+    showAssets.value = false
+    showSkillCenter.value = false
+    showScheduledTasks.value = false
+    showSettingsPanel.value = false
+    return
+  }
+  await handleCreateSession()
+}
+
 async function handleCreateSession() {
   saveCurrentSessionState()
 
@@ -1073,14 +1104,6 @@ async function handleCreateSession() {
   sessionDuration.value = 0
   iterationCount.value = 0
   refreshSessionFiles(null)
-}
-
-// 预置问题发送：点击首页预置问题卡片后，该问题作为「新对话的第一条消息」发出。
-// 无论当前是否已选中会话（如刷新后恢复的空会话），都先按「新建对话」把状态
-// 切回全新首页，再走正常发送；当前无会话时后端会在 start 事件里返回新会话 id。
-async function handlePresetSend(message, files, signal, enableDeepThink, enableWebSearch, skills) {
-  await handleCreateSession()
-  handleSendMessage(message, files, signal, enableDeepThink, enableWebSearch, skills)
 }
 
 async function handleSelectSession(sessionId) {
@@ -1379,7 +1402,7 @@ function createStreamChunkHandler(ctx) {
   }
 
   function onChunk(data) {
-    const { type: eventType, content, duration, step, tool_name, tool_call_id: toolCallId, arguments: args, result, success, title } = data
+    const { type: eventType, content, duration, step, tool_name, tool_call_id: toolCallId, arguments: args, result, success, title, source } = data
     const sid = ctx.streamSessionId
 
     if (eventType === 'start') {
@@ -1564,7 +1587,7 @@ function createStreamChunkHandler(ctx) {
         if (existingBlockIdx !== -1) {
           const prev = messages.value[idx].blocks[existingBlockIdx]
           // 参数分片阶段的临时块：用权威参数覆盖，补齐 id/step，并清掉 streaming 标记。
-          messages.value[idx].blocks[existingBlockIdx] = { ...prev, id: toolCallId || prev.id, tool_call_id: toolCallId || prev.tool_call_id, arguments: args || prev.arguments || {}, step: step || prev.step || 0, streaming: false }
+          messages.value[idx].blocks[existingBlockIdx] = { ...prev, id: toolCallId || prev.id, tool_call_id: toolCallId || prev.tool_call_id, arguments: args || prev.arguments || {}, step: step || prev.step || 0, streaming: false, source: source || prev.source }
           if (!ctx.isResume) {
             const tracked = currentToolCalls.find(tc => tc.tool_call_id === callId)
             if (tracked) {
@@ -1579,7 +1602,7 @@ function createStreamChunkHandler(ctx) {
         } else {
           currentBlock = null
           if (!ctx.isResume) currentToolCalls.push({ tool_call_id: callId, tool_name: tool_name || '', arguments: args || {}, result: '', success: true })
-          addBlock('tool_call', { id: callId, tool_name: tool_name || '', arguments: args || {}, result: '', success: true, step: step || 0 })
+          addBlock('tool_call', { id: callId, tool_name: tool_name || '', arguments: args || {}, result: '', success: true, step: step || 0, source: source || null })
         }
       }
     } else if (eventType === 'tool_result') {
@@ -1601,7 +1624,7 @@ function createStreamChunkHandler(ctx) {
           blockIdx = messages.value[idx].blocks.findIndex(b => b.type === 'tool_call' && b.streaming && b.tool_name === tool_name)
         }
         if (blockIdx !== -1) {
-          const blk = { ...messages.value[idx].blocks[blockIdx], arguments: args || messages.value[idx].blocks[blockIdx].arguments, result: parseMCPResult(result || ''), success: success !== false, duration: toolDuration, streaming: false }
+          const blk = { ...messages.value[idx].blocks[blockIdx], arguments: args || messages.value[idx].blocks[blockIdx].arguments, result: parseMCPResult(result || ''), success: success !== false, duration: toolDuration, streaming: false, source: source || messages.value[idx].blocks[blockIdx].source }
           if (ctx.isResume) blk.loading = false
           messages.value[idx].blocks[blockIdx] = blk
           touchBlocks()
@@ -1688,7 +1711,7 @@ function createStreamChunkHandler(ctx) {
   return { onChunk: (data) => runInSession(ctx.streamSessionId, ctx, () => onChunk(data)) }
 }
 
-async function handleSendMessage(message, files = [], signal, enableDeepThink = true, enableWebSearch = false, skills = []) {
+async function handleSendMessage(message, files = [], signal, enableDeepThink = true, enableWebSearch = false, skills = [], expertEditId = '') {
   const userMsgId = `user-${Date.now()}`
   const preStreamUsage = { ...sessionUsage.value }
   // 记录本次请求开始前已累计的耗时和迭代次数，用于流式过程中实时累加
@@ -1717,6 +1740,14 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
   // 从文本解析，行为和改造前一致。
   if (skills.length > 0) userMessage.skills = [...skills]
 
+  // 专家模式：先在本轮消息上记下使用的专家（回答面板左上角「头像 + 名称」的数据来源）。
+  // 内存态必须显式写：后端落库的用户消息要等刷新/历史加载才回灌，只依赖后端会出现
+  // 「选中专家发送后左上角空白、刷新一下才出现」。（与 frontend-vue2 同构）
+  const usedExpert = (selectedExpert.value && selectedExpert.value.export_agent_id)
+    ? { id: selectedExpert.value.export_agent_id, name: selectedExpert.value.export_name_cn || '专家' }
+    : null
+  if (usedExpert) userMessage.expert = usedExpert
+
   messages.value.push(userMessage)
 
   // 立即创建 assistant 占位消息，显示等待动画
@@ -1729,7 +1760,8 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
     thinking: '',
     tool_calls: [],
     blocks: [],
-    loading: true
+    loading: true,
+    expert: usedExpert
   }
   messages.value.push(assistantPlaceholder)
   streamingAssistantId.value = assistantPlaceholderId
@@ -1756,6 +1788,7 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
           messages.value.push({
             id: assistantMsgId, role: 'assistant', content: '',
             created_at: null, thinking: '', tool_calls: [], blocks: [], loading: true,
+            expert: usedExpert,
           })
         }
         streamingAssistantId.value = assistantMsgId
@@ -1843,7 +1876,10 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
         files,
         selectedModel.value,
         enableWebSearch,
-        skills
+        skills,
+        // 待修改专家 ID（专家面板「编辑」带入，不进消息正文）：后端校验归属后
+        // 绑定为 save_expert 的修改目标
+        expertEditId
       )
     }
 
@@ -1880,7 +1916,8 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
             error: e.message || '发送消息失败，请检查网络连接',
             loading: false,
             created_at: new Date().toISOString(),
-            blocks: []
+            blocks: [],
+            expert: usedExpert
           })
         }
       }

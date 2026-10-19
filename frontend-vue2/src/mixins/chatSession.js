@@ -4,6 +4,8 @@ import { deleteFile, getSessionGeneratedFiles } from '../api/files.js'
 import { authFetch } from '../api/auth.js'
 import { streamExportRun } from '../api/expert.js'
 import { chatBus, chatStore } from '../store/chatStore.js'
+import { parseLeadingSkillTokens } from '../utils/skillTokens.js'
+import { ensureSkillDirectoryLoaded, skillDirectoryStore } from '../store/skillDirectoryStore.js'
 
 // MCP 工具结果解析：模块级函数，供正常流(handleSendMessage)与 HITL 恢复流(handleToolApproval)共用。
 // 注意：不要把它定义在某个函数内部，否则另一处引用会抛 ReferenceError，
@@ -82,6 +84,9 @@ export default {
       // 当前会话累计迭代次数（step 数），每次 AI 回复完成后累加
       iterationCount: 0,
       currentTodos: [],
+      // 无会话时勾选的知识范围暂存（选知识库不再立即建会话）：
+      // 等发消息/上传文件真正建立会话时（ensureCurrentSession）才落库
+      pendingKnowledgeScope: null,
       // 本实例已建立实时挂载的会话及模式（避免重复挂载/重复回放）：
       // { [sessionId]: 'displayed' | 'background' }
       attachedStreamingSessions: {},
@@ -642,12 +647,26 @@ export default {
           }
           this.sessions = [session, ...this.sessions]
         }
+        // 新建会话时把无会话期间暂存的知识范围落库（先于首条消息发送，后端才能读到）。
+        // $nextTick 等 sessionId prop 传导到输入框的知识库选择器后再落库
+        if (this.pendingKnowledgeScope && this.pendingKnowledgeScope.length) {
+          const pendingScope = this.pendingKnowledgeScope
+          this.pendingKnowledgeScope = null
+          await this.$nextTick()
+          if (this.$refs.chatRef) await this.$refs.chatRef.flushKnowledgeScopeSave(pendingScope)
+        }
       }
       return this.currentSessionId
+    },
+    // 知识范围变化：无会话时仅暂存（发消息建会话时落库）；有会话时选择器已直接落库
+    handleKnowledgeScopeChange(baseIds) {
+      this.pendingKnowledgeScope = this.currentSessionId ? null : [...(baseIds || [])]
     },
     async handleCreateSession() {
       this.saveCurrentSessionState()
       this.beforeSessionChange('create')
+      // 回到新对话页：无会话期间暂存的知识范围作废（重新勾选才有）
+      this.pendingKnowledgeScope = null
       this.currentSessionId = null
       this.loadedSessionId = null
       this.messages = []
@@ -663,6 +682,8 @@ export default {
       // 保存当前会话状态
       this.saveCurrentSessionState()
       this.beforeSessionChange('select')
+      // 切换会话：无会话期间暂存的知识范围作废，目标会话以自己的服务端范围为准
+      this.pendingKnowledgeScope = null
       this.currentSessionId = sessionId
       // 切换后按当前会话是否正在流式输出决定输入框状态：
       // 历史会话通常不是当前流式会话，应显示发送按钮而非停止按钮
@@ -913,7 +934,7 @@ export default {
       }
 
       const onChunk = (data) => {
-        const { type: eventType, content, duration, step, tool_name: toolName, tool_call_id: toolCallId, arguments: args, result, success, title } = data
+        const { type: eventType, content, duration, step, tool_name: toolName, tool_call_id: toolCallId, arguments: args, result, success, title, source } = data
 
         if (eventType === 'start') {
           if (!ctx.isResume) {
@@ -1072,12 +1093,13 @@ export default {
             const existingBlockIdx = this.messages[idx].blocks.findIndex(b => b.type === 'tool_call' && (b.id === callId || b.tool_call_id === callId))
             if (existingBlockIdx !== -1) {
               this.messages[idx].blocks[existingBlockIdx].arguments = args || {}
+              if (source) this.messages[idx].blocks[existingBlockIdx].source = source
               currentBlock = this.messages[idx].blocks[existingBlockIdx]
               touchBlocks()
             } else {
               currentBlock = null
               if (!ctx.isResume) currentToolCalls.push({ tool_call_id: callId, tool_name: toolName || '', arguments: args || {}, result: '', success: true })
-              addBlock('tool_call', { id: callId, tool_name: toolName || '', arguments: args || {}, result: '', success: true, step: step || 0 })
+              addBlock('tool_call', { id: callId, tool_name: toolName || '', arguments: args || {}, result: '', success: true, step: step || 0, source: source || null })
             }
           }
         } else if (eventType === 'tool_result') {
@@ -1096,7 +1118,7 @@ export default {
           if (idx !== -1) {
             const blockIdx = this.messages[idx].blocks.findIndex(b => b.type === 'tool_call' && (b.id === callId || b.tool_call_id === callId))
             if (blockIdx !== -1) {
-              const blk = { ...this.messages[idx].blocks[blockIdx], arguments: args || this.messages[idx].blocks[blockIdx].arguments, result: parseMCPResult(result || ''), success: success !== false, duration: toolDuration }
+              const blk = { ...this.messages[idx].blocks[blockIdx], arguments: args || this.messages[idx].blocks[blockIdx].arguments, result: parseMCPResult(result || ''), success: success !== false, duration: toolDuration, source: source || this.messages[idx].blocks[blockIdx].source }
               if (ctx.isResume) blk.loading = false
               setReactive(this.messages[idx].blocks, blockIdx, blk)
               touchBlocks()
@@ -1180,6 +1202,11 @@ export default {
       return { onChunk: (data) => this.runInSession(ctx.streamSessionId, ctx, () => onChunk(data)) }
     },
     async handleSendMessage(message, files = [], signal, enableDeepThink = true, enableWebSearch = false, skills = []) {
+      // 无会话且已暂存知识范围：先建会话并落库知识范围（ensureCurrentSession 内完成）再发送，
+      // 确保后端处理首条消息时能从会话上读到知识范围
+      if (!this.currentSessionId && this.pendingKnowledgeScope && this.pendingKnowledgeScope.length) {
+        await this.ensureCurrentSession()
+      }
       const userMsgId = `user-${Date.now()}`
       const preStreamUsage = { ...this.sessionUsage }
       // 记录本次请求开始前已累计的耗时和迭代次数，用于流式过程中实时累加
@@ -1212,6 +1239,12 @@ export default {
 
       // 立即创建 assistant 占位消息，显示等待动画
       const assistantPlaceholderId = `assistant-${Date.now()}`
+      // 专家模式：随消息记住本次回答使用的专家（执行过程头部展示头像+名称）。
+      // 仅存在于本次会话的内存消息中；历史会话从后端加载的消息不含该字段，
+      // 展示时按无专家兜底（后端消息结构不含专家信息，持久化需另行加字段）。
+      const usedExpert = (this.selectedExpert && this.selectedExpert.export_agent_id)
+        ? { id: this.selectedExpert.export_agent_id, name: this.selectedExpert.export_name_cn || '专家' }
+        : null
       const assistantPlaceholder = {
         id: assistantPlaceholderId,
         role: 'assistant',
@@ -1220,7 +1253,8 @@ export default {
         thinking: '',
         tool_calls: [],
         blocks: [],
-        loading: true
+        loading: true,
+        expert: usedExpert
       }
       this.messages.push(assistantPlaceholder)
       this.streamingAssistantId = assistantPlaceholderId
@@ -1247,6 +1281,7 @@ export default {
               this.messages.push({
                 id: assistantMsgId, role: 'assistant', content: '',
                 created_at: null, thinking: '', tool_calls: [], blocks: [], loading: true,
+                expert: usedExpert,
               })
             }
             this.streamingAssistantId = assistantMsgId
@@ -1521,6 +1556,7 @@ export default {
         },
       })
 
+      let resumeFailed = false
       try {
         const controller = new AbortController()
         this.currentAbortController = controller
@@ -1540,18 +1576,31 @@ export default {
       } catch (e) {
         if (e.name === 'AbortError') return
         console.error('恢复执行失败:', e)
+        resumeFailed = true
         const idx = this.messages.findIndex(m => m.id === assistantMsgId)
         if (idx !== -1) {
+          // 回滚乐观更新：请求根本没送达/未被受理时，本轮被批准的工具尚未在后端
+          // 执行（duration==null），恢复「待审批」让审批按钮可重试；否则徽章会停在
+          // 「已批准」而库里仍是 pending，刷新页面后状态回跳，看起来像"审批了却还在询问"
+          const rolledStatus = decision === 'approve' ? 'approved' : 'rejected'
+          for (const blk of this.messages[idx].blocks) {
+            if (blk.approval_status === rolledStatus && blk.duration == null) {
+              blk.approval_status = 'pending'
+              blk.pending_approval = true
+            }
+          }
           this.messages[idx].loading = false
-          this.messages[idx].error = e.message || '恢复执行失败'
-          setReactive(this.messages, idx, { ...this.messages[idx] })
+          this.messages[idx].error = `审批请求未生效：${e.message || '恢复执行失败'}，请重试`
+          setReactive(this.messages, idx, { ...this.messages[idx], blocks: [...this.messages[idx].blocks] })
         }
       } finally {
         // 如果 resumeStream 期间收到了新的 approval_required（onChunk 重新设置了
         // pendingApproval），则不清除，保持 isStreaming=true 等待用户审批
         const hasNewApproval = this.pendingApproval && this.pendingApproval !== currentApproval
         if (!hasNewApproval) {
-          this.pendingApproval = null
+          // 失败时保留审批上下文，让回滚出的「待审批」按钮可以再次点击重试；
+          // 否则 pendingApproval 被清空后 handleToolApproval 直接 return，按钮永久失效
+          this.pendingApproval = resumeFailed ? currentApproval : null
           this.currentAbortController = null
           this.streamingAssistantId = null
           const sid = sessionId
@@ -1561,14 +1610,18 @@ export default {
           }
           this.unmarkStreaming(sid)
           this.saveCurrentSessionState()
-          // 审批恢复流结束：以服务端历史为准回填，保证完整渲染
-          await this.syncSessionFromServer(sid)
+          // 审批恢复流结束：以服务端历史为准回填，保证完整渲染。
+          // 失败时跳过：服务端未变更（请求未送达），本地已回滚并保留了错误提示，
+          // 回填会把错误提示清掉
+          if (!resumeFailed) {
+            await this.syncSessionFromServer(sid)
+          }
           this.recomputePendingApprovalFlag(sid)
           await this.loadSessions()
         }
       }
     },
-    handleRetry(content) {
+    async handleRetry(content, skills = []) {
       // 直接重新发送消息内容，不经过输入框
       console.log('[handleRetry] content type:', typeof content, 'value:', content)
 
@@ -1585,8 +1638,17 @@ export default {
           return
         }
 
-        // 直接调用发送
-        this.handleSendMessage(content.trim())
+        // 重发带上本轮技能：优先用结构化 message.skills（后端落库正文是用户原话，
+        // 技能只存在 skills 字段）；老数据 content 带发送时拼接的 `/目录名` 前缀，
+        // 由前缀解析兜底（解析按已知目录名保守匹配，不误伤路径），两者合并去重
+        const trimmed = content.trim()
+        await ensureSkillDirectoryLoaded()
+        const parsed = parseLeadingSkillTokens(trimmed, skillDirectoryStore.names)
+        const turnSkills = [...new Set([
+          ...(Array.isArray(skills) ? skills.filter(Boolean) : []),
+          ...parsed.dirNames,
+        ])]
+        this.handleSendMessage(parsed.body.trim(), [], null, true, false, turnSkills)
       }
     },
     handleStop() {

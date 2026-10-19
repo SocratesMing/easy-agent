@@ -58,6 +58,7 @@
       >
         <ChatMessage
           :message="msg"
+          :user-expert="userExpertFor(index)"
           @remove-file="(file) => handleRemoveFile(file, index)"
           @retry="handleRetry"
           @approve="handleApprove"
@@ -134,6 +135,7 @@
         @update:selectedModel="$emit('update:selectedModel', $event)"
         @stop="handleStop"
         @create-session="handleCreateSession"
+        @knowledge-scope-change="$emit('knowledge-scope-change', $event)"
         @open-panel="$emit('open-panel', $event)"
         @open-knowledge="$emit('open-knowledge', $event)"
         @clear-expert="$emit('clear-expert')"
@@ -407,17 +409,33 @@ export default {
         })
       }
     },
-    handleSend(message, files, signal, enableDeepThink = true, enableWebSearch = false, skills = []) {
-      this.$emit('send-message', message, files, signal, enableDeepThink, enableWebSearch, skills)
+    handleSend(message, files, signal, enableDeepThink = true, enableWebSearch = false, skills = [], expertEditId = '') {
+      this.$emit('send-message', message, files, signal, enableDeepThink, enableWebSearch, skills, expertEditId)
+    },
+    /**
+     * 该条 assistant 消息对应哪一轮的专家（回答面板左上角的「头像 + 名称」）。
+     *
+     * 数据来源：后端把本轮专家写进了**用户消息**的 expert 字段（随消息落库），
+     * 因此这里从当前消息向前找最近的一条用户消息取它的 expert 即可 ——
+     * 刷新/历史加载后不丢，同一会话不同轮次选了不同专家也能各自对应。
+     * 内存中的占位消息自带 expert（ChatMessage 内优先用消息自身的），此处为兜底。
+     */
+    userExpertFor(index) {
+      for (let i = index - 1; i >= 0; i--) {
+        const msg = this.messages[i]
+        if (!msg) continue
+        if (msg.role === 'user') return msg.expert || null
+      }
+      return null
     },
     handleRemoveFile(file, messageIndex) {
       // 从事件参数中获取file，然后从messages中获取对应的message
       const message = this.messages[messageIndex]
       this.$emit('remove-file', message, messageIndex, file)
     },
-    handleRetry(content) {
-      // 向上传递重试事件
-      this.$emit('retry', content)
+    handleRetry(content, skills) {
+      // 向上传递重试事件（content=正文，skills=本轮技能目录名）
+      this.$emit('retry', content, skills)
     },
     handleApprove() {
       this.$emit('approve')
@@ -431,6 +449,11 @@ export default {
     handleCreateSession() {
       this.$emit('create-session')
     },
+    // 宿主新建会话后调用：把无会话期间暂存的知识范围落库到新会话（透传给输入框）
+    flushKnowledgeScopeSave(baseIds) {
+      const composer = this.$refs.composerRef
+      return composer ? composer.flushKnowledgeScopeSave(baseIds) : Promise.resolve()
+    },
     // ========== 预置问题：点击填入 ==========
     // 一张卡片一条问题，问题内容直接展示在卡片上；点击（或聚焦后回车）只把该问题的
     // 完整文本填进输入框并把焦点交给它（卡片上最多显示 3 行，长问题展示不全）：
@@ -442,10 +465,10 @@ export default {
       const composer = this.$refs.composerRef
       if (composer) composer.setMessage(question)
     },
-    onSend(message, files, signal, enableDeepThink, enableWebSearch, skills) {
+    onSend(message, files, signal, enableDeepThink, enableWebSearch, skills, expertEditId = '') {
       this.composerMode = 'bottom'
       this.isAtBottom = true
-      this.handleSend(message, files, signal, enableDeepThink, enableWebSearch, skills)
+      this.handleSend(message, files, signal, enableDeepThink, enableWebSearch, skills, expertEditId)
     },
     handleScroll() {
       const el = this.$refs.messagesRef
