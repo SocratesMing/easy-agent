@@ -167,6 +167,13 @@ class AgentConfig(BaseModel):
     环境。Windows 暂无等效沙箱，默认拒绝 execute；仅在可信单用户环境才可设为
     False 直接执行宿主机命令。
     """
+    sandbox_network: str = "host"
+    """沙箱内命令的网络（DA-07）：``host``（默认，可联网）或 ``none``（bwrap 断网，只剩回环）。
+
+    Landlock 降级模式受内核限制无法断网，设为 ``none`` 时只记告警；LangSmith 远端沙箱不受影响。
+    """
+    execute_max_timeout: int = 600
+    """模型调用 execute 时能指定的最长超时（秒）；超过的按该值执行（DA-07）。"""
 
 
 class MCPToolConfig(BaseModel):

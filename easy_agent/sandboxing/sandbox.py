@@ -219,6 +219,8 @@ def run_sandboxed(
     env: dict[str, str] | None,
     timeout: int,
     max_output_bytes: int,
+    network: str = "host",
+    ro_binds: list[tuple[str, str]] | None = None,
 ) -> ExecuteResponse:
     """Run *command* inside a bwrap sandbox and return an :class:`ExecuteResponse`.
 
@@ -230,11 +232,16 @@ def run_sandboxed(
     so no path translation is needed.
 
     *cwd* is the virtual working directory used inside the sandbox (via ``cd``).
+
+    *network* ``"none"`` keeps the network namespace unshared (loopback only);
+    ``"host"`` shares the host network. *ro_binds* are ``(real, target)`` pairs
+    mounted read-only **after** the read-write binds, so they override sub-paths
+    of a writable mount (e.g. existing skills inside the writable skills root).
     """
-    argv: list[str] = [
-        "bwrap", "--unshare-all", "--share-net",
-        "--die-with-parent", "--new-session",
-    ]
+    argv: list[str] = ["bwrap", "--unshare-all"]
+    if network != "none":
+        argv.append("--share-net")
+    argv += ["--die-with-parent", "--new-session"]
     # read-only system dirs (commands + shared libraries)
     for d in _SANDBOX_RO_DIRS:
         argv += ["--ro-bind-try", d, d]
@@ -275,6 +282,9 @@ def run_sandboxed(
     # read-write: workspace, skills, external dirs bound at their VIRTUAL paths
     for real, target in binds:
         argv += ["--bind", real, target]
+    # read-only overlays on top of the writable mounts (protected skills, DA-07)
+    for real, target in ro_binds or []:
+        argv += ["--ro-bind-try", real, target]
     # HOME/TMPDIR -> tmpfs; PATH -> venv bin + system dirs. The subprocess env
     # is sanitized separately so no server secrets reach the sandboxed command.
     sandbox_path = _sandbox_path(venv)
@@ -342,6 +352,7 @@ def run_landlocked(
     env: dict[str, str] | None,
     timeout: int,
     max_output_bytes: int,
+    extra_ro_dirs: list[str] | None = None,
 ) -> ExecuteResponse:
     """Run *command* confined by Linux Landlock (unprivileged FS isolation).
 
@@ -381,6 +392,8 @@ def run_landlocked(
     ro_dirs = list(_SANDBOX_RO_DIRS)
     if "/dev" not in ro_dirs:
         ro_dirs.append("/dev")
+    # Landlock 规则只能叠加授权：要只读的目录必须不在 allowed_rw_dirs 里（调用方负责剔除）
+    ro_dirs.extend(d for d in (extra_ro_dirs or []) if d and d not in ro_dirs)
     # NOTE: the venv is intentionally NOT added to ro_dirs. Its real host path
     # (typically /home/<user>/.../.venv) would expose /home; the confined
     # command uses the system Python instead. Landlock cannot remap paths, so

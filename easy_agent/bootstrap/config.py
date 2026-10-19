@@ -360,6 +360,8 @@ class Config(BaseModel):
             skill_write=data.get("skill_write") or "new-only",
             external_dirs=data.get("external_dirs", {}),
             sandbox_enabled=data.get("sandbox_enabled", True),
+            sandbox_network=str(data.get("sandbox_network") or "host"),
+            execute_max_timeout=data.get("execute_max_timeout", 600),
         )
 
     @staticmethod

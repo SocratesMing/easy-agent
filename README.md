@@ -231,6 +231,12 @@ workspace_dir: "./workspace"
 memories_dir: "./memories"
 prompt_path: "prompts"          # 旧键 system_prompt_path 仍兼容
 
+# execute 沙箱（Linux：bwrap，不可用时降级 Landlock）
+sandbox_enabled: true
+sandbox_network: host           # host（默认，可联网）| none（bwrap 断网；Landlock 降级模式无法断网）
+execute_max_timeout: 600        # 模型给 execute 指定的超时上限（秒）
+skill_write: new-only           # 已有技能在沙箱里也只读挂载；deny = 整个技能库只读
+
 # 上下文压缩
 summarization:
   enabled: true

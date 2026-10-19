@@ -64,6 +64,8 @@ prompt_path: "prompts"  # 提示词目录（相对配置目录）：system.md + 
 idle_logout_minutes: ${IDLE_LOGOUT_MINUTES:-0}   # 前端空闲自动登出（分钟）：用户超过该时长无界面操作或后端交互则退出到登录页；0 表示永不过期（默认，后台不启用登录超时机制）
 app_welcome_title: "今天，你要研究什么"  # 首页欢迎语
 sandbox_enabled: ${SANDBOX_ENABLED:-true}    # Linux 使用 bwrap/Landlock；Windows 无等效沙箱时拒绝 execute。仅在可信单用户环境设为 false
+sandbox_network: ${SANDBOX_NETWORK:-host}    # 沙箱内命令的网络：host（默认，可联网）/ none（bwrap 断网；Landlock 降级模式无法断网，只记告警）
+execute_max_timeout: ${EXECUTE_MAX_TIMEOUT:-600}  # 模型调用 execute 时可指定的最长超时（秒），超过按此值执行
 
 # 外部目录映射：虚拟路径前缀 → 宿主机实际路径
 # 将 skill 需要访问的宿主机目录挂载为虚拟路径路由，使文件工具能通过虚拟路径访问

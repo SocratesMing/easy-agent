@@ -25,6 +25,37 @@ logger = logging.getLogger("easy_agent.agent")
 _UNSAFE_DIR_CHARS = re.compile(r"[^A-Za-z0-9_-]")
 
 
+def _sandbox_network(config: Config) -> str:
+    """``agent.sandbox_network``：``host``（默认）/ ``none``；无法识别的值按 host 并告警。"""
+    value = str(getattr(config.agent, "sandbox_network", "host") or "host").strip().lower()
+    if value not in ("host", "none"):
+        logger.warning(f"agent.sandbox_network={value!r} 无法识别，按 host 处理（可选 host / none）")
+        return "host"
+    return value
+
+
+def _protected_skill_mounts(
+    skills_dir: Path, policy: str, virtual_root: str = "/user-skills"
+) -> tuple[list[tuple[str, str]], list[str]]:
+    """``agent.skill_write`` 在 execute 沙箱里的落实（DA-07）。
+
+    改造前技能目录在沙箱里整体可写，``new-only`` / ``deny`` 只约束文件工具，命令照样能改写
+    已有技能。返回 ``(bwrap 只读覆盖, Landlock 只读目录)``：
+
+    - ``new-only``：已有的每个顶层条目（技能目录、隐藏文件）只读覆盖在可写的技能根上，
+      仍可在根下新建技能；Landlock 无法在可写目录里再收紧，整个技能根改为只读；
+    - ``deny``：整个技能根只读；
+    - ``allow``：不限制。
+    """
+    if policy == "allow" or not skills_dir.is_dir():
+        return [], []
+    root = str(skills_dir.absolute())
+    if policy == "deny":
+        return [(root, virtual_root)], [root]
+    entries = sorted(skills_dir.iterdir(), key=lambda entry: entry.name)
+    return [(str(entry.absolute()), f"{virtual_root}/{entry.name}") for entry in entries], [root]
+
+
 def agent_artifacts_dir(username: str, session_id: str, config: Config | None = None) -> Path:
     """会话的框架产物目录：``{workspace_dir}/{user}/.agent/{session_id}/``（DA-04）。
 
@@ -148,6 +179,11 @@ def _build_backend_for_context(
             sid=sid,
         )
     else:
+        readonly_binds: list[tuple[str, str]] = []
+        readonly_dirs: list[str] = []
+        if "/user-skills/" in routes:
+            policy = str(getattr(config.agent, "skill_write", "new-only") or "new-only").lower()
+            readonly_binds, readonly_dirs = _protected_skill_mounts(user_skills_dir, policy)
         shell = _PathTranslatingShell(
             path_mappings=path_mappings,
             root_dir=ws_str,
@@ -158,6 +194,9 @@ def _build_backend_for_context(
             env=host_safe_env(),
             timeout=120,
             sandbox_enabled=config.agent.sandbox_enabled,
+            sandbox_network=_sandbox_network(config),
+            readonly_binds=readonly_binds,
+            readonly_dirs=readonly_dirs,
         )
 
     # DA-04：没命中路由的路径（含框架产物 /.agent/...）落在会话隐藏目录，不再是工作区的别名；
@@ -173,6 +212,7 @@ def _build_backend_for_context(
         shell,
         artifacts_root=AGENT_ARTIFACTS_ROOT,
         workspace_virtual_path=workspace_virtual_path,
+        max_timeout=getattr(config.agent, "execute_max_timeout", 600),
     )
 
     return CompositeBackend(

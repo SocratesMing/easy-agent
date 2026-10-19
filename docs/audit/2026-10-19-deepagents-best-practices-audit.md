@@ -5,7 +5,7 @@
 > 文档来源：LangChain 官方文档（经 Docs MCP `https://docs.langchain.com/mcp` 拉取全文，2026-10-19）+ `langchain-ai/langchain-skills` 中的 deep-agents-core / memory / orchestration 技能 + deepagents 0.7.28 源码。
 > 与既有报告的关系：`docs/audit/2026-10-17-easy-agent-audit.md` 已覆盖的条目不重复展开，只复核状态；本报告新增条目编号为 **DA-xx**，严重度沿用 P0–P3。
 > 测试基线：`pytest tests/` → **1607 passed, 1 skipped, 2 warnings**（266s）。
-> **修复进度**：Batch B（DA-01 / DA-02 / DA-08 / DA-10 / DA-16）与修复中发现的 DA-18 已于 2026-10-19 完成，见 §9；Batch A 已修 SEC-01 / SEC-02 / SEC-04 / SEC-05，SEC-03（免密登录）按产品决定保留，见 §10。C1（DA-06 / DA-09 第一步 / DA-11 / DA-12 / DA-17、sqlite 连接器 `DB_PATH`）已完成，见 §11；C2（DA-04 / DA-05）已完成，见 §12。
+> **修复进度**：Batch B（DA-01 / DA-02 / DA-08 / DA-10 / DA-16）与修复中发现的 DA-18 已于 2026-10-19 完成，见 §9；Batch A 已修 SEC-01 / SEC-02 / SEC-04 / SEC-05，SEC-03（免密登录）按产品决定保留，见 §10。C1（DA-06 / DA-09 第一步 / DA-11 / DA-12 / DA-17、sqlite 连接器 `DB_PATH`）已完成，见 §11；C2（DA-04 / DA-05）已完成，见 §12；C3（DA-07）与一批清理项已完成，见 §13。
 
 ---
 
@@ -264,9 +264,9 @@
 | B · 框架对齐·正确性 | DA-01 / 02 / 08 / 10 / 16，及修复中发现的 DA-18 | ✅ 已完成（§9） |
 | C1 · 快速项 | DA-06 模型 `profile` + 官方摘要中间件覆盖；DA-12 官方 `ToolErrorMiddleware`；DA-11 子代理工具收窄；DA-09 第一步 MCP annotations 决定审批；DA-17 过时注释与文档；sqlite 连接器 `DB_PATH` 限定个人工作区 | ✅ 已完成（§11） |
 | C2 · Backend 重构 | DA-04 默认路由改隐藏目录（修已复现的 deny 别名绕过，框架产物不再出现在用户工作区）；DA-05 改用真实 `CompositeBackend` | ✅ 已完成（§12） |
-| C3 · 沙箱加固 | DA-07 技能目录只读挂载、默认断网或白名单代理、CPU / 内存 / 进程数限额 | 约 1–2 天，需先定网络策略 |
+| C3 · 沙箱加固 | DA-07 网络开关（默认联网，可配置断网）、技能目录只读挂载、execute 超时上限；CPU / 内存 / 进程数限额暂缓（原因见 §13） | ✅ 已完成（§13） |
 | D · 演进 | DA-03 thread = 会话（超过摘要阈值后每轮都会重新摘要整段历史）；DA-13 技能多源 / 只读 / pinned；子代理进度事件流；DA-09 迁移 `langchain.mcp`（beta）；DA-14 LangSmith 沙箱生命周期；`services/` 拆领域子包 | 1–2 周，需设计文档 |
-| 穿插项 | CI 缺 `sqlite-saver` extra（暂不处理）；SEC-03 签名免密（需门户配合）；DA-15 前端审批交互；`tests/api/test_files_store_backend.py` 依赖执行顺序 | 待定 |
+| 穿插项 | CI 缺 `sqlite-saver` extra（暂不处理）；SEC-03 签名免密（需门户配合）；DA-15 前端审批交互；工具工厂并入 `ToolSpec`（已核对不会形成 import 环，需同步改测试注入方式）；MySQL 连接器可达内网任意主机（2026-10-19 决定保持现状） | 待定 |
 
 --- | --- | --- |
 | A · 安全止血（先做） | SEC-01 下线/鉴权 Web 终端；SEC-02 SPA 回退路径校验；SEC-03 默认关闭免密；SEC-04 用户侧禁止 stdio、取消用户配置的 `${VAR}` 展开；SEC-05 下载接口复用 `resolve_workspace_file` | 1–2 天 |
@@ -356,3 +356,20 @@
 改造前后对照（同一脚本分别跑在 C1 提交与当前代码上）：`/secret/a.txt` 读到 `TOP-SECRET` → 文件不存在；框架产物 `large_tool_results/call_abc` 写进会话工作区 → 不在工作区；`/workspace/innocent/a.txt`（`innocent` → `secret` 的 symlink）权限放行 → `permission denied … (resolves to /workspace/secret/a.txt)`。§8.1 的 `exp_route_alias.py` 重跑结果同样已变为「not found / 工作区内无产物」。
 
 行为变化：模型若把文件写到 `/report.md` 这类不在任何挂载目录下的路径，改造前会落进工作区（碰巧可见），现在会收到「请写到 /workspace/ 下」的错误后改写。
+
+## 13. 修复记录（2026-10-19，C3 与清理项）
+
+| 条目 | 改动 | 回归测试 |
+| --- | --- | --- |
+| DA-07 网络 | 新配置 `agent.sandbox_network`：`host`（默认，与改造前一致）/ `none`（bwrap 不再 `--share-net`，只剩回环）。Landlock 降级模式受内核限制（ABI v1 只管文件系统）无法断网，设为 `none` 时记一次告警。按 2026-10-19 决定默认联网 | `tests/integration/test_sandbox_hardening.py`（含真实 bwrap 下 `/proc/net/dev` 只剩 `lo`） |
+| DA-07 技能目录 | `agent.skill_write` 落实到 execute 沙箱（改造前只约束文件工具）：`new-only` 时已有的每个顶层条目以只读覆盖在可写的技能根上，仍可新建技能；`deny` 整个技能根只读；Landlock 无法在可写目录里再收紧，`new-only` / `deny` 都把技能根整体改为只读 | 同上（真实 bwrap / Landlock 端到端：改已有技能失败、新建技能成功、deny / allow 各一例） |
+| DA-07 超时 | 新配置 `agent.execute_max_timeout`（默认 600 秒）：模型给 execute 指定的超时超过上限时按上限执行，在会话 default（`AgentArtifactsBackend.execute`，所有 shell 的统一入口）里收口 | `tests/integration/test_sandbox_hardening.py::test_model_requested_timeout_is_capped` |
+| 死代码 | 删除 `services/mcp.py:validate_mcp_servers`（无调用方，且会绕过 SEC-04 策略直接拉起进程）；其中的 stdio 预检（命令 / 工作目录不存在时给直白提示）移到连接器接口实际在用的 `_validate_one` | `tests/api/test_connectors.py::test_validate_reports_a_missing_stdio_command_without_spawning` |
+| 下载路径 | 上传接口返回的落库路径相对服务进程目录（生产配置下上传目录是相对路径），下载接口改为也能解析这种路径，仍只认本用户目录内的真实文件 | `tests/api/test_files.py::test_download_accepts_the_stored_upload_path` |
+| CI 维护 | `actions/checkout`、`actions/setup-python`、`actions/setup-node` 升到 v7，`astral-sh/setup-uv` 钉到 v10.2.0（不发布浮动主版本标签），都基于 Node 24 运行时；前端构建 Node 20（已 EOL）→ 24（本地构建已验证）；runner 固定 `ubuntu-24.04` | — |
+
+暂缓：CPU / 内存 / 进程数限额。`RLIMIT_AS` 会让 Node（V8 预留大块虚拟内存）直接起不来；`RLIMIT_NPROC` 按宿主机 UID 计数，服务进程自身的线程也算在内；cgroup 限额要求 systemd / cgroup v2 委派，常见容器部署没有。需要时建议在部署层（容器 / Pod 资源限制）兜底。
+
+更正：§7 早先列出的「`tests/api/test_files_store_backend.py` 依赖执行顺序」是误判——当时本地 `.venv` 被切换分支后的依赖覆盖成 deepagents 0.6.8（没有 `StoreBackend.delete`），在与 `uv.lock` 一致的环境里该文件单独运行全部通过。
+
+决定：MySQL 连接器由服务器去连用户填写的主机，可达服务器能访问的内网数据库；2026-10-19 决定保持现状，风险在此记录。

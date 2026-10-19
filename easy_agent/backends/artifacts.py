@@ -44,11 +44,13 @@ class AgentArtifactsBackend(FilesystemBackend, SandboxBackendProtocol):
         *,
         artifacts_root: str = AGENT_ARTIFACTS_ROOT,
         workspace_virtual_path: str = "/workspace",
+        max_timeout: int | None = None,
     ) -> None:
         super().__init__(root_dir=root_dir, virtual_mode=True)
         self._shell = shell
         self._writable_prefix = artifacts_root.rstrip("/") + "/"
         self._workspace = workspace_virtual_path.rstrip("/") or "/workspace"
+        self._max_timeout = int(max_timeout) if max_timeout and int(max_timeout) > 0 else None
 
     @property
     def shell(self) -> Any:
@@ -68,11 +70,17 @@ class AgentArtifactsBackend(FilesystemBackend, SandboxBackendProtocol):
     def id(self) -> str:
         return str(getattr(self._shell, "id", "") or f"agent-artifacts-{id(self):x}")
 
+    def _capped(self, timeout: int | None) -> int | None:
+        """模型指定的超时不超过 ``execute_max_timeout``（DA-07）；未指定时用 shell 默认值。"""
+        if timeout is not None and self._max_timeout and timeout > self._max_timeout:
+            return self._max_timeout
+        return timeout
+
     def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
-        return self._shell.execute(command, timeout=timeout)
+        return self._shell.execute(command, timeout=self._capped(timeout))
 
     async def aexecute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
-        return await self._shell.aexecute(command, timeout=timeout)
+        return await self._shell.aexecute(command, timeout=self._capped(timeout))
 
     # ── 写入只允许框架产物前缀（异步版本默认经 to_thread 调到这里） ──
     def write(self, file_path: str, content: str) -> WriteResult:

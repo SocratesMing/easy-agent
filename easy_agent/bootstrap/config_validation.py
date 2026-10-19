@@ -37,6 +37,8 @@ KNOWN_TOP_LEVEL_KEYS = frozenset(
         "skill_write",
         "external_dirs",
         "sandbox_enabled",
+        "sandbox_network",
+        "execute_max_timeout",
         "summarization",
         "tools",
         "web_search",
