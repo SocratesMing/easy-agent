@@ -21,6 +21,16 @@
         </div>
       </div>
       
+      <!-- 专家标识：选中专家回答时，在回答面板左上角展示「头像 + 名称」（发送瞬间即出现，
+           常驻到消息结束）；未选专家时无此元素，沿用通用样式。
+           仅 assistant 消息渲染：用户消息落库后也带 expert 字段（标识的数据来源），
+           这里用角色判断避免标识跑到用户气泡上。
+           放在等待动画之前：加载中（正在响应）也显示在标识下方 -->
+      <div v-if="message.role === 'assistant' && expertInfo" class="expert-badge">
+        <span class="expert-badge-avatar" :class="expertAvatarClass(expertInfo)">{{ expertAvatarChar(expertInfo) }}</span>
+        <span class="expert-badge-name">{{ expertInfo.name }}</span>
+      </div>
+
       <!-- 等待响应动画：assistant 消息正在加载且无任何内容 -->
       <div v-if="message.role === 'assistant' && message.loading && !hasAnyContent" class="waiting-animation">
         <div class="waiting-dots">
@@ -205,6 +215,8 @@ import FileIcon from './FileIcon.vue'
 import ToolCallCard from './ToolCallCard.vue'
 import SkillIcon from './SkillIcon.vue'
 import { iconCategoryFor } from '../utils/skillCategories.js'
+// 专家头像取字 / 配色：与技能中心、+ 号下拉、输入框胶囊共用同一套规则（按 ID 稳定取档）
+import { expertAvatarChar, expertAvatarClass } from '../utils/expertAvatar.js'
 import { parseLeadingSkillTokens } from '../utils/skillTokens.js'
 import { ensureSkillDirectoryLoaded, skillDirectoryStore } from '../store/skillDirectoryStore.js'
 
@@ -215,6 +227,13 @@ const props = defineProps({
   message: {
     type: Object,
     required: true
+  },
+  /** 本轮（该 assistant 消息前面最近一条用户消息）携带的专家信息 { id, name }。
+      由 Chat.vue 计算后传入，用于刷新/历史加载后的专家标识（内存占位消息则用
+      消息自身的 message.expert）。未选专家时为 null，不渲染标识。 */
+  userExpert: {
+    type: Object,
+    default: null
   }
 })
 
@@ -254,6 +273,18 @@ onMounted(async () => {
 watch(() => props.message.id, () => {
   expandedThinking.value = {}
   expandedTool.value = {}
+})
+
+// 本次回答使用的专家：优先用消息自身的 expert（发送时由 handleSendMessage 写在
+// assistant 占位消息上，发送瞬间即显示）；回答完成/刷新后消息由服务端历史回填，
+// 该字段不存在，回退到「本轮用户消息携带的专家」（Chat.vue 传入的 userExpert，随
+// 消息落库，因此刷新后仍在）。两者都没有（未选专家 / 改版前的旧历史）返回 null，
+// 走通用样式。
+const expertInfo = computed(() => {
+  const own = props.message && props.message.expert
+  if (own && own.name) return own
+  const fromUser = props.userExpert
+  return fromUser && fromUser.name ? fromUser : null
 })
 
 // 判断 assistant 消息是否有任何可见内容
@@ -868,6 +899,40 @@ html[data-theme="dark"] .process-wrapper.process-expanded .process-header.is-stu
 }
 .process-header:hover {
   background: var(--bg-tertiary, #f1f5f9);
+}
+/* 专家标识：回答面板左上角独立一行「头像 + 名称」（选中专家回答时出现）。
+   头像取专家名称首字的圆形字标，底色由全局 .ea-0 ~ .ea-7 按 export_agent_id
+   稳定取档（utils/expertAvatar.js），与技能中心专家 Tab、+ 号下拉、输入框胶囊
+   四处同色；此处只负责尺寸/排版，不写死底色。 */
+.expert-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin: 2px 0 8px;
+}
+.expert-badge-avatar {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  /* 底色/字色由全局 .ea-0 ~ .ea-7 提供（按专家 ID 稳定取档） */
+  font-size: 12px;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+.expert-badge-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary, #1e293b);
+  white-space: nowrap;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+html[data-theme="dark"] .expert-badge-name {
+  color: var(--text-primary, #e2e8f0);
 }
 .process-icon {
   width: 16px;

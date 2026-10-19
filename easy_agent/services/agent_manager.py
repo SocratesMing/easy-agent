@@ -28,6 +28,17 @@ _session_expert: dict[str, str] = {}
 # 写入路径（set_session_connectors）会同步驱逐该会话的缓存 Agent，否则旧工具集会黏住。
 _session_connectors: dict[str, tuple[str, ...]] = {}
 _session_stream_tasks: dict[str, asyncio.Task[None]] = {}
+
+# 会话级「待修改专家」绑定表（``{session_id: expert_agent_id}``）：用户在专家面板点
+# 「编辑」后由聊天请求的结构化字段 ``pending_expert_id`` 写入（归属校验在接口层做）。
+# 修改专家时 save_expert 工具以这里的值为准——**用户消息里不再携带专家 ID**，
+# 防止消息体被任意篡改。新绑定覆盖旧绑定，保留至会话结束（remove_session_agent 清除）。
+_session_edit_targets: dict[str, str] = {}
+
+# 会话创建 Agent 时是否注入了 save_expert（由本轮 skill_dirs 是否含 expert-creator
+# 决定）。与 _session_agents 同生共死：请求 wants 与缓存值不一致时驱逐重建，
+# 否则「点编辑后工具不在 / 不点了工具还在」。
+_session_creator: dict[str, bool] = {}
 _agent_config: dict = None
 _llm_instance = None
 
@@ -83,6 +94,7 @@ async def get_or_create_agent_for_session(
     enable_web_search: bool | None = None,
     system_prompt_extra: str = "",
     expert_agent_id: str | None = None,
+    skill_dirs: list[str] | None = None,
 ) -> EasyAgent:
     """获取（或创建）会话 Agent。
 
@@ -99,6 +111,12 @@ async def get_or_create_agent_for_session(
     连接器不再随每轮消息提交：本函数只读 ``_session_connectors`` 里该会话已记录的
     启用集合（写入与「驱逐缓存 Agent」由 ``set_session_connectors`` 负责，见
     ``api/connectors.py`` 的 ``/agent/connectors/session``）。
+
+    ``skill_dirs`` 为本轮激活的技能目录名（chat / 专家流解析自请求的 skills 字段），
+    决定是否注入 ``save_expert``（仅 expert-creator 技能激活时注入——防止让某个领域
+    专家顺手创建/修改别的专家）。传 ``None``（HITL 恢复等不带本轮技能的场景）表示
+    「跟随缓存」：不因该项差异驱逐，复用已有 Agent。创建新 Agent 时按
+    ``expert-creator 是否在 skill_dirs 中`` 注入。
     """
     global _session_agents, _session_expert, _session_connectors, _agent_config
 
@@ -128,8 +146,13 @@ async def get_or_create_agent_for_session(
             f"[{session_id[-5:]}] 已请求联网搜索，但 web_search 未配置 api_url/api_key，本轮按未开启处理"
         )
 
-    # 模型切换 / 联网搜索开关变化 / 专家变更：缓存的 Agent 不匹配，驱逐后重建
+    # 模型切换 / 联网搜索开关变化 / 专家变更 / save_expert 需求变化：
+    # 缓存的 Agent 不匹配，驱逐后重建
     cached = _session_agents.get(session_id)
+    # save_expert 只在 expert-creator 技能激活的会话注入（skill_dirs=None = 跟随缓存）
+    creator_requested = (
+        "expert-creator" in (skill_dirs or []) if skill_dirs is not None else None
+    )
     if cached is not None:
         cached_web_search = bool(getattr(cached, "enable_web_search", False))
         # enable_web_search=None（如 HITL 恢复）：不比较开关，直接复用缓存 Agent
@@ -141,10 +164,17 @@ async def get_or_create_agent_for_session(
         # 连接器变更的驱逐不在这里：会话级开关（set_session_connectors）写入时
         # 就已直接驱逐过该会话的缓存 Agent。
         expert_changed = expert_key != _session_expert.get(session_id, "")
+        # save_expert 需求变化（None = 跟随缓存，不驱逐）：否则「点了编辑但工具不在」
+        # 或「没点编辑工具还挂着」。
+        creator_changed = (
+            creator_requested is not None
+            and creator_requested != _session_creator.get(session_id, False)
+        )
         if (
             effective_model != getattr(cached, "model_name", None)
             or not search_matches
             or expert_changed
+            or creator_changed
         ):
             logger.info(
                 f"[{session_id[-5:]}] Agent 参数变化 | "
@@ -152,6 +182,8 @@ async def get_or_create_agent_for_session(
                 f"web_search: {cached_web_search} -> {web_search_enabled} | "
                 f"expert: {_session_expert.get(session_id, '') or '(通用)'} -> "
                 f"{expert_key or '(通用)'} | "
+                f"save_expert: {_session_creator.get(session_id, False)} -> "
+                f"{creator_requested if creator_requested is not None else '(跟随缓存)'} | "
                 f"connectors: {only_connectors if only_connectors is not None else '(全部)'} | "
                 f"驱逐旧 Agent 重建 | "
                 f"{describe_prompt('本轮 extra', system_prompt_extra)} | "
@@ -258,6 +290,42 @@ async def get_or_create_agent_for_session(
         except Exception as e:
             logger.warning(f"[{session_id[-5:]}] 注入定时任务工具失败: {e}")
 
+    # 专家写入工具（对话内「新建/修改专家」）：由 expert-creator 技能引导 Agent 产出
+    # 结构化配置后落库 + 落版本目录，替代原先只能在弹窗里慢慢等的方式。
+    # 仅在该技能激活的会话注入（creator_requested 为 None 只可能出现在 skill_dirs
+    # 未传的旧调用路径，此时保持注入以免破坏既有行为）；edit_targets 绑定表由
+    # 本模块持有，修改专家时 ID 以绑定值为准（用户消息不再携带专家 ID）。
+    if creator_requested is None or creator_requested:
+        try:
+            from ..tools.expert_writer import create_save_expert_tool
+
+            tools.append(
+                create_save_expert_tool(
+                    username=username,
+                    session_id=session_id or "",
+                    config_model=model_name or "",
+                    tag_options=getattr(config, "expert_tags", None),
+                    edit_targets=_session_edit_targets,
+                )
+            )
+            logger.info(f"[{session_id[-5:]}] 🧑‍🔬 已注入 save_expert 工具")
+        except Exception as e:
+            logger.warning(f"[{session_id[-5:]}] 注入 save_expert 工具失败: {e}")
+
+    # 上传文件按需读取/重解析工具（file_context 启用时注入）：清单标"解析失败/未解析"
+    # 或模型需要原始内容时，由服务端到 uploadfiles/ 重新解析源文件并回填正文。
+    # 原始文件在工作区之外，模型的 grep/read_file 读不到，必须靠这个工具。
+    try:
+        _fc = getattr(config, "file_context", None)
+        if _fc is not None and getattr(_fc, "enabled", True):
+            from ..tools.session_file_reader import ReadUploadedFileTool
+            tools.append(
+                ReadUploadedFileTool(username=username, session_id=session_id or "")
+            )
+            logger.info(f"[{session_id[-5:]}] 📎 已注入 read_uploaded_file 工具")
+    except Exception as e:
+        logger.warning(f"[{session_id[-5:]}] 注入 read_uploaded_file 工具失败: {e}")
+
     if web_search_tool is not None:
         tools.append(web_search_tool)
         logger.info(f"[{session_id[-5:]}] 🌐 联网搜索已开启（注入 web_search 工具）")
@@ -278,6 +346,7 @@ async def get_or_create_agent_for_session(
    )
     _session_agents[session_id] = agent
     _session_expert[session_id] = expert_key
+    _session_creator[session_id] = bool(creator_requested)
     logger.info(
         f"[{session_id[-5:]}] Agent 实例创建成功 | workspace: {agent.workspace_dir} | "
         f"model: {agent.model_name} | mcp_tools: {len(tools)} | "
@@ -320,12 +389,39 @@ def remove_session_agent(session_id: str):
     # 专家记录一并清除：否则下次请求会因 expert_key 与残留值相同而误判「未变更」，
     # 跳过本应发生的重建。清除后「未变更」的判定自动退化为「与 ""（通用）相同」。
     _session_expert.pop(session_id, None)
+    # save_expert 注入标记与缓存 Agent 同生共死，一并清除（默认 False = 未注入）。
+    _session_creator.pop(session_id, None)
+    # 待修改专家绑定随会话 Agent 一起失效：绑定语义是「本会话内点编辑带来的」，
+    # 会话 Agent 没了绑定也没意义；下一次点编辑会重新写入。
+    _session_edit_targets.pop(session_id, None)
     # 连接器记录**不在这里清除**：它是用户在「+ → 连接器」面板里显式设置的会话级开关，
     # 而本函数还会被「记忆更新 / 取消生成 / 定时任务结束」等场景调用，清掉会让用户
     # 每次记忆更新后开关悄悄复位。会话真正终结（删除会话）由 clear_session_connectors 负责。
     if session_id in _session_agents:
         del _session_agents[session_id]
         logger.info(f"[{session_id[-5:]}] Agent 缓存已清除")
+
+
+def set_session_edit_target(session_id: str, expert_agent_id: str) -> None:
+    """绑定 / 覆盖会话级「待修改专家」（归属校验由接口层完成后再调用）。
+
+    新绑定覆盖旧绑定（同一会话连续编辑多个专家时取最后一次）；保留至会话结束，
+    中间的普通聊天轮次不会清除——用户可能隔几轮才提交修改内容。
+    """
+    session_id = session_id or ""
+    expert_agent_id = str(expert_agent_id or "").strip()
+    if not session_id or not expert_agent_id:
+        return
+    if _session_edit_targets.get(session_id) != expert_agent_id:
+        logger.info(
+            f"[{session_id[-5:]}] ✏️ 已绑定待修改专家 | expert={expert_agent_id}"
+        )
+    _session_edit_targets[session_id] = expert_agent_id
+
+
+def get_session_edit_target(session_id: str) -> str:
+    """返回会话当前绑定的「待修改专家」ID（"" 表示未绑定）。供测试与排查使用。"""
+    return _session_edit_targets.get(session_id or "", "")
 
 
 def get_session_expert(session_id: str) -> str:

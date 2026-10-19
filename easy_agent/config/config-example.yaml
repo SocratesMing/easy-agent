@@ -75,7 +75,7 @@ tools:
   result_log_truncate: 200  # 工具结果在日志中的截断字符数（默认 200）
   skills_dir: "${SKILLS_DIR:-./skills}"   # Skills directory path
   prompts_dir: "${PROMPTS_DIR:-/qts/prompts}" # Prompts directory path (for forex, etc.)
-  experts_dir: "${EXPERTS_DIR:-./exports}"   # 公共（预置）专家目录：只读扫描，见 services/public_expert_service.py
+  experts_dir: "${EXPERTS_DIR:-./experts}"   # 公共（预置）专家目录：只读扫描，见 services/public_expert_service.py
 
 # ===== Web Search Configuration =====
 # 联网搜索（输入框地球按钮）：api_url / api_key 与 models 段一样支持 ${VAR} 占位符，
@@ -185,6 +185,26 @@ skill_write: ${SKILL_WRITE:-new-only}
 # operations 可选值：read、write。技能库的写权限请改用上面的 skill_write。
 denied_dirs: []
 
+# ===== Expert =====
+# 专家会话安全边界，两层（详见 services/expert_guardrail.py 与 expert_relevance.py）：
+#   ① 运行时边界块（软层）：加载专家提示词（预置与自建都一样）时，统一在其末尾追加
+#      一段「专家职责边界」——只答领域内问题、先拆解用户消息再答相关的、拒绝高危
+#      操作、回答标注来源。
+#   ② 输入侧相关性预检（硬闸）：每轮专家消息前用一次轻量 LLM 调用做三分类，
+#      与本专家职责无关的消息直接短路拒答——Agent 不创建，工具零可达。
+#      预检异常/超时一律放行（fail-open，可用性优先）。
+expert:
+  guardrail_enabled: true
+  # 是否要进行提示词的预检，True-进行预检；False-关闭预检
+  relevance_check_enabled: true
+  # 部分相关时的口径：true = 整条拒答；false（默认）= 放行，只答相关部分。
+  # 与领域无关的消息、以及删除/修改文件等高危操作不受此开关影响，始终会拦。
+  relevance_strict: false
+  # 预检那一次调用是否关闭思考模式。三分类只输出一行 JSON，思考纯属浪费：
+  # 实测输出 token 258~1007 -> 7，耗时 1.7~6.4s -> 0.5~0.6s。
+  # 网关不认这两个参数时会自动去掉重试，一般无需关闭。
+  relevance_disable_thinking: true
+
 # ===== Expert Tags =====
 # 专家 Agent 的分类标签候选：创建专家时整份列表会交给大模型，
 # 由它按专家功能挑一个最匹配的 tag_id 落库（tag_id 用于数据筛选，tag_name 用于展示）。
@@ -216,6 +236,17 @@ upload_limits:
   max_file_size_mb: ${UPLOAD_MAX_FILE_SIZE_MB:-10}   # 单个文件大小上限
   max_files_per_message: ${UPLOAD_MAX_FILES:-5}      # 单次对话附件数量上限
   max_total_size_mb: ${UPLOAD_MAX_TOTAL_SIZE_MB:-20} # 单次对话附件总大小上限
+
+# ===== 上传文件解析与记忆（file_context）=====
+# 上传即解析：正文落盘到会话工作区 uploads/{文件名}.txt；文件清单 uploads/index.md
+# 作为会话记忆注入系统提示词，模型每轮都知道传过哪些文件并按需检索（grep/read_file），
+# 因此不会再出现"第二轮起看不到上一轮上传文件内容"的问题。
+file_context:
+  enabled: ${FILE_CONTEXT_ENABLED:-true}                     # false = 回退旧的全量注入（应急开关）
+  parse_max_file_size_mb: ${FILE_PARSE_MAX_MB:-20}           # 超过该大小的文件不做解析（仍记清单）
+  max_stored_chars: ${FILE_MAX_STORED_CHARS:-200000}         # 单文件落盘解析文本上限（字符）
+  manifest_max_chars: ${FILE_MANIFEST_MAX_CHARS:-2000}       # 上传清单上限，超出丢最旧条目
+  preview_max_chars: ${FILE_PREVIEW_MAX_CHARS:-2000}         # 本轮上传文件注入的开头预览（0 = 不注入）
 
 # ===== Knowledge / RAGFlow =====
 # 启用时需配置 RAGFLOW_BASE_URL + RAGFLOW_API_KEY（见 .env.*.example）

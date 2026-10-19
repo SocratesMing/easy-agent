@@ -925,11 +925,30 @@ class EasyAgent:
         if self.long_term_memory_file.exists():
             memory_list.append(LONG_TERM_MEMORY_VIRTUAL_PATH)
 
+        # 上传文件清单（本会话）：作为记忆注入，模型每轮都能看到用户传过哪些文件、
+        # 正文在哪，并按需用 grep/read_file 检索工作区 uploads/ 下的解析正文。
+        # 正文本身不注入（否则多轮累积会撑爆上下文）；清单随上传刷新，上传接口
+        # 会驱逐本会话的缓存 Agent，保证下一轮重建时读到最新清单。
+        file_ctx_cfg = getattr(self.config, "file_context", None)
+        has_uploads_manifest = False
+        if file_ctx_cfg is not None and getattr(file_ctx_cfg, "enabled", True):
+            from .services.session_uploads import MANIFEST_FILENAME, UPLOADS_DIR_NAME
+
+            manifest_path = (
+                self.workspace_dir / UPLOADS_DIR_NAME / MANIFEST_FILENAME
+            )
+            if manifest_path.exists():
+                memory_list.append(
+                    f"{self.workspace_virtual_path}/{UPLOADS_DIR_NAME}/{MANIFEST_FILENAME}"
+                )
+                has_uploads_manifest = True
+
         logger.info(
             f"[{self.sid}] 🧠 记忆文件 | "
             f"会话: {memory_path} ({'有' if self.memory_file.exists() else '无'}) | "
             f"长期: {LONG_TERM_MEMORY_VIRTUAL_PATH} "
             f"({'有' if self.long_term_memory_file.exists() else '无'}) | "
+            f"上传清单: {'有' if has_uploads_manifest else '无'} | "
             f"实际路径: {self.memory_file} / {self.long_term_memory_file} | "
             f"已加载: {'是' if memory_list else '否（首轮对话，记忆尚未生成）'}"
         )

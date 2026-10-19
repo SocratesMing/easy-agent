@@ -65,6 +65,8 @@
         :initial-tab="skillCenterTab"
         @close="showSkillCenter = false"
         @create-skill="handleSkillCreate"
+        @create-expert="handleExpertCreate"
+        @edit-expert="handleExpertEdit"
         @use="handleUseExpert"
       />
 
@@ -164,6 +166,7 @@ import WorkspacePanel from './components/WorkspacePanel.vue'
 import SettingsPanel from './components/SettingsPanel.vue'
 import AiSidebar from './components/AiSidebar.vue'
 import { createSession, listSessions, getChatHistory, deleteSession, sendMessage, resumeStream, renameSession, togglePinSession, getStreamStatus } from './api/chat.js'
+import { streamExportRun } from './api/expert.js'
 import { getUserProfile, deleteFile } from './api/files.js'
 import chatSessionMixin, { parseMCPResult } from './mixins/chatSession.js'
 import { chatStore } from './store/chatStore.js'
@@ -799,6 +802,39 @@ export default {
       await this.handleCreateSession()
     },
 
+    /**
+     * 专家面板「新建专家」：与「创建技能」完全一致 —— 预填草稿已由面板写入
+     * sessionStorage，这里新开一个对话窗口即可（ChatInput 挂载时自动恢复草稿 + 技能标签）。
+     */
+    async handleExpertCreate() {
+      await this.handleCreateSession()
+    },
+
+    /**
+     * 专家面板卡片「编辑」：预填草稿已由面板写入 sessionStorage。
+     *
+     * 窗口选择规则（按需求）：
+     * - 当前窗口就是**新会话**（无任何聊天记录）→ 直接把内容带入当前窗口，不新开；
+     * - 当前窗口**已有聊天记录** → 新开一个会话窗口，避免把修改指令混进既有上下文。
+     *
+     * 两种情况都只需「关闭面板」：Chat 重新挂载后，ChatInput 会恢复草稿与技能标签。
+     */
+    async handleExpertEdit() {
+      const isEmptySession = !this.currentSessionId || this.messages.length === 0
+      if (isEmptySession) {
+        // 关掉所有会顶替 Chat 的面板（Chat 是 v-else-if，面板一关即重新挂载，
+        // ChatInput 随之恢复草稿 + 技能标签）。知识库面板本就不会与专家面板同时开，
+        // 这里一并复位，保证与 handleCreateSession 的「关面板」集合一致。
+        this.showKnowledge = false
+        this.showAssets = false
+        this.showSkillCenter = false
+        this.showScheduledTasks = false
+        this.showSettingsPanel = false
+        return
+      }
+      await this.handleCreateSession()
+    },
+
     async handleCreateSession() {
       this.showKnowledge = false
       this.showUserManagementPanel = false
@@ -1422,7 +1458,7 @@ export default {
       // 事件按「所属会话」路由：后台会话写入其自身缓冲，不污染当前展示
       return { onChunk: (data) => this.runInSession(ctx.streamSessionId, ctx, () => onChunk(data)) }
     },
-    async handleSendMessage(message, files = [], signal, enableDeepThink = true, enableWebSearch = false, skills = []) {
+    async handleSendMessage(message, files = [], signal, enableDeepThink = true, enableWebSearch = false, skills = [], expertEditId = '') {
       const userMsgId = `user-${Date.now()}`
       const preStreamUsage = { ...this.sessionUsage }
       // 记录本次请求开始前已累计的耗时和迭代次数，用于流式过程中实时累加
@@ -1449,13 +1485,22 @@ export default {
       // 结构化技能目录名（与后端落库字段同形）：气泡按它渲染技能标签，不再依赖从
       // 消息文本里反扒 `/技能名`。没有选中技能时不写该字段——手打 `/技能名` 的正文
       // 仍按老规则从文本解析，行为和改造前一致。
-      if (skills.length > 0) userMessage.skills = [...skills]
+  if (skills.length > 0) userMessage.skills = [...skills]
 
-      this.messages.push(userMessage)
+  // 专家模式：本轮专家同时写到用户消息上（与后端落库字段同形），
+  // 这样 Chat.vue 的 userExpertFor 与 ChatMessage 都能直接取到，不依赖后端回灌。
+  const usedExpert = (this.selectedExpert && this.selectedExpert.export_agent_id)
+    ? { id: this.selectedExpert.export_agent_id, name: this.selectedExpert.export_name_cn || '专家' }
+    : null
+  if (usedExpert) userMessage.expert = usedExpert
 
-      // 立即创建 assistant 占位消息，显示等待动画
-      const assistantPlaceholderId = `assistant-${Date.now()}`
-      const assistantPlaceholder = {
+  this.messages.push(userMessage)
+
+  // 立即创建 assistant 占位消息，显示等待动画
+  const assistantPlaceholderId = `assistant-${Date.now()}`
+  // 专家模式：随消息记住本次回答使用的专家，回答面板左上角展示「头像 + 名称」
+  // （发送瞬间即出现）。历史会话从后端加载的消息不含该字段，按无专家兜底。
+  const assistantPlaceholder = {
         id: assistantPlaceholderId,
         role: 'assistant',
         content: '',
@@ -1463,7 +1508,8 @@ export default {
         thinking: '',
         tool_calls: [],
         blocks: [],
-        loading: true
+        loading: true,
+        expert: usedExpert
       }
       this.messages.push(assistantPlaceholder)
       this.streamingAssistantId = assistantPlaceholderId
@@ -1490,6 +1536,7 @@ export default {
               this.messages.push({
                 id: assistantMsgId, role: 'assistant', content: '',
                 created_at: null, thinking: '', tool_calls: [], blocks: [], loading: true,
+                expert: usedExpert,
               })
             }
             this.streamingAssistantId = assistantMsgId
@@ -1550,7 +1597,31 @@ export default {
           }
         }
 
-        await sendMessage(this.currentSessionId, message, onChunk, abortSignal, enableDeepThink, files, this.selectedModel, enableWebSearch, null, skills)
+        // 专家模式：选中专家时改走 /agent/stream_export_run，由后端加载该专家当前生效
+        // 版本的提示词动态构建 Agent（未选专家时行为不变，走通用 /agent/chat/stream）。
+        // 两套接口的 SSE 事件格式一致，onChunk 复用同一处理器。
+        // 注意：本方法是 App.vue 内的同名实现（覆盖 chatSession mixin 的同名方法），
+        // 专家分支与 mixin 保持一致，改动时需同步两处。
+        if (this.selectedExpert && this.selectedExpert.export_agent_id) {
+          await streamExportRun(
+            {
+              message,
+              sessionId: this.currentSessionId,
+              expertAgentId: this.selectedExpert.export_agent_id,
+              model: this.selectedModel,
+              enableDeepThink,
+              enableWebSearch,
+              files,
+              skills,
+            },
+            onChunk,
+            abortSignal
+          )
+        } else {
+          // 待修改专家 ID（专家面板「编辑」带入，不进消息正文）：后端校验归属后
+          // 绑定为 save_expert 的修改目标
+          await sendMessage(this.currentSessionId, message, onChunk, abortSignal, enableDeepThink, files, this.selectedModel, enableWebSearch, null, skills, expertEditId)
+        }
 
         await this.refreshSessionFiles(null, 500)
       } catch (e) {
@@ -1593,7 +1664,8 @@ export default {
                 error: e.message || '发送消息失败，请检查网络连接',
                 loading: false,
                 created_at: new Date().toISOString(),
-                blocks: []
+                blocks: [],
+                expert: usedExpert
               })
             }
           }

@@ -135,7 +135,7 @@ export async function attachStream(sessionId, onChunk, signal) {
   }
 }
 
-export async function sendMessage(sessionId, message, onChunk, signal, enableDeepThink = true, files = [], model = null, enableWebSearch = false, skills = []) {
+export async function sendMessage(sessionId, message, onChunk, signal, enableDeepThink = true, files = [], model = null, enableWebSearch = false, skills = [], pendingExpertId = '') {
   const controller = new AbortController()
   const abortSignal = signal || controller.signal
 
@@ -153,6 +153,9 @@ export async function sendMessage(sessionId, message, onChunk, signal, enableDee
   // 已选技能以结构化字段提交（技能目录名），`/目录名` 由后端拼进模型输入（不进落库文本）。
   // 连接器不随消息提交：本会话启用哪些连接器由 /agent/connectors/session 单独设置。
   if (skills && skills.length) payload.skills = skills
+  // 待修改专家 ID（专家面板「编辑」带入，不进消息正文）：后端校验归属（只接受
+  // 本人创建的专家）后绑定为 save_expert 的修改目标
+  if (pendingExpertId) payload.pending_expert_id = pendingExpertId
 
   const response = await authFetch(`${API_BASE_URL}/agent/chat/stream`, {
     method: 'POST',
