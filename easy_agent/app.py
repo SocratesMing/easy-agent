@@ -410,7 +410,7 @@ async def log_requests(request: Request, call_next):
     request.state.request_id = request_id
     path = request.url.path
     if (
-        path in ("/", "/health", "/api/health", "/agent/health")
+        path in ("/", "/health", "/agent/health")
         or path.startswith(_ACCESS_SKIP_PREFIXES)
         or path.endswith(_ACCESS_SKIP_SUFFIXES)
     ):
@@ -556,17 +556,6 @@ async def get_config():
             "model": _cfg["config"].llm.model,
         }
     return {"status": "not initialized"}
-
-
-
-@app.get("/api/health", summary="健康检查", response_model=HealthResponse)
-async def api_health_check():
-    return await health_check()
-
-
-@app.get("/api/config", summary="获取Agent配置")
-async def api_get_config():
-    return await get_config()
 
 
 @app.get("/", response_class=FileResponse)

@@ -71,6 +71,8 @@ class LegacyHostRoutes:
         "terminal",
         "knowledge",
         "personnel",
+        "health",
+        "config",
     )
 
     def __init__(self, app):
