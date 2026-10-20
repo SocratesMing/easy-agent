@@ -75,7 +75,7 @@
                   </svg>
                 </div>
                 <div v-if="isExpandedThinking(block.origIndex)" class="thinking-content">
-                  <div class="thinking-text" v-html="renderMarkdown(block.content)"></div>
+                  <MarkdownBody class="thinking-text" :content="block.content" />
                 </div>
               </div>
 
@@ -96,7 +96,7 @@
               />
 
               <!-- 中间穿插的正文（其后仍有思考/工具）放进处理过程内部按原序展示 -->
-              <div v-if="block.type === 'content'" class="message-text process-inline-content" v-html="renderMarkdown(block.content)"></div>
+              <MarkdownBody v-if="block.type === 'content'" class="message-text process-inline-content" :content="block.content" />
             </template>
           </div>
         </div>
@@ -131,9 +131,9 @@
                 <span class="message-skill-chip-name">{{ skill.name || skill.dir_name }}</span>
               </span>
             </span>
-            <div v-if="block.content" class="user-bubble-body" v-html="renderMarkdown(block.content)"></div>
+            <MarkdownBody v-if="block.content" class="user-bubble-body" :content="block.content" />
           </div>
-          <div v-else-if="block.type === 'content'" class="message-text" v-html="renderMarkdown(block.content)"></div>
+          <MarkdownBody v-else-if="block.type === 'content'" class="message-text" :content="block.content" />
         </template>
       </template>
 
@@ -156,7 +156,7 @@
             </svg>
           </div>
           <div v-if="showThinking" class="thinking-content">
-            <div class="thinking-text" v-html="renderMarkdown(message.thinking)"></div>
+            <MarkdownBody class="thinking-text" :content="message.thinking" />
           </div>
         </div>
 
@@ -172,7 +172,7 @@
           />
         </div>
 
-        <div v-if="message.content" class="message-text" v-html="renderMarkdown(message.content)"></div>
+        <MarkdownBody v-if="message.content" class="message-text" :content="message.content" />
 
         <!-- 错误提示 -->
         <div v-if="message.error" class="message-error">
@@ -221,7 +221,8 @@
 
 <script setup>
 import { ref, computed, onMounted, watch, nextTick, onBeforeUnmount } from 'vue'
-import { ensureHighlighter, renderMarkdown } from '../features/chat/composables/useMarkdownRenderer.js'
+import { ensureHighlighter } from '../features/chat/composables/useMarkdownRenderer.js'
+import MarkdownBody from '../features/chat/components/MarkdownBody.vue'
 import FileIcon from './FileIcon.vue'
 import ToolCallCard from './ToolCallCard.vue'
 import { approvalTargetForBlock, unmatchedApprovalRequests } from '../utils/hitlApproval.js'

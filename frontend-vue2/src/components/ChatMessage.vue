@@ -87,7 +87,7 @@
                   </svg>
                 </div>
                 <div v-if="isExpandedThinking(block.origIndex)" class="thinking-content">
-                  <div class="thinking-text" v-html="renderMarkdown(block.content)"></div>
+                  <MarkdownBody class="thinking-text" :content="block.content" :cite-map="citeNumberMap" />
                 </div>
               </div>
 
@@ -108,7 +108,7 @@
               />
 
               <!-- 中间穿插的正文（其后仍有思考/工具）放进处理过程内部按原序展示 -->
-              <div v-if="block.type === 'content'" :key="'p'+block.origIndex" class="message-text process-inline-content" v-html="renderMarkdown(block.content)"></div>
+              <MarkdownBody v-if="block.type === 'content'" :key="'p'+block.origIndex" class="message-text process-inline-content" :content="block.content" :cite-map="citeNumberMap" />
             </template>
           </div>
         </div>
@@ -144,9 +144,9 @@
                 <span class="message-skill-chip-name">{{ skill.name || skill.dir_name }}</span>
               </span>
             </span>
-            <div v-if="block.content" class="user-bubble-body" v-html="renderMarkdown(block.content)"></div>
+            <MarkdownBody v-if="block.content" class="user-bubble-body" :content="block.content" :cite-map="citeNumberMap" />
           </div>
-          <div v-else-if="block.type === 'content'" :key="'c'+block.origIndex" class="message-text" v-html="renderMarkdown(block.content)"></div>
+          <MarkdownBody v-else-if="block.type === 'content'" :key="'c'+block.origIndex" class="message-text" :content="block.content" :cite-map="citeNumberMap" />
         </template>
       </template>
 
@@ -169,7 +169,7 @@
             </svg>
           </div>
           <div v-if="showThinking" class="thinking-content">
-            <div class="thinking-text" v-html="renderMarkdown(message.thinking)"></div>
+            <MarkdownBody class="thinking-text" :content="message.thinking" :cite-map="citeNumberMap" />
           </div>
         </div>
 
@@ -185,7 +185,7 @@
           />
         </div>
 
-        <div v-if="displayContent" class="message-text" v-html="renderMarkdown(displayContent)"></div>
+        <MarkdownBody v-if="displayContent" class="message-text" :content="displayContent" :cite-map="citeNumberMap" />
 
         <!-- 错误提示 -->
         <div v-if="message.error" class="message-error">
@@ -238,12 +238,10 @@
 import 'highlight.js/styles/github-dark.css'
 import {
   setupMarkedExtensions,
-  createMarkdownRenderer,
-  renderMarkdown as renderMarkdownHtml,
   installCodeCopyHandler,
   copyTextToClipboard,
-  escapeHtml,
 } from '../markdownSetup.js'
+import MarkdownBody from '../features/chat/components/MarkdownBody.vue'
 import FileIcon from './FileIcon.vue'
 import KnowledgeEvidence from '../features/knowledge/KnowledgeEvidence.vue'
 import SkillIcon from './SkillIcon.vue'
@@ -276,27 +274,15 @@ function isProcessType(b) {
 // 点击后由 handleContentClick 委托处理，展开证据面板并滚动到对应依据卡片。
 // citeMap：原始依据编号 → 展示编号（面板仅展示被引用依据并按引用顺序重新编号，
 // 正文锚点同步改写，保证正文标记与面板卡片编号一致）。
-function linkKnowledgeCitations(content, citeMap) {
-  if (typeof content !== 'string') return content
-  const map = citeMap || {}
-  return content.replace(
-    /\[知识(?:库)?依据\s*(\d+)\]/g,
-    (match, num) => {
-      const display = map[num] || Number(num)
-      return `<a class="ke-cite" data-cite="${display}">[知识依据${display}]</a>`
-    }
-  )
-}
 
 // 统一的 markdown 渲染器（代码块结构、外链处理由 markdownSetup 提供），
 // 代码高亮使用上面的 highlight.js 实现
-const renderer = createMarkdownRenderer({ highlight: highlightCode })
 
 // 代码块复制按钮的全局处理函数（幂等），FilePreview 也复用同一实现
 installCodeCopyHandler()
 
 export default {
-  components: { FileIcon, ToolCallCard, KnowledgeEvidence, SkillIcon },
+  components: { FileIcon, ToolCallCard, KnowledgeEvidence, SkillIcon, MarkdownBody },
   props: {
     message: {
       type: Object,
@@ -701,10 +687,6 @@ export default {
       // 卡住时 header 钉在可视区顶部、wrapper 顶边随滚动上移，二者顶边差增大；
       // 正常流中 header 紧贴 wrapper 顶边（差≈边框 1px）。比较二者不依赖具体吸附点。
       this.isStuck = header.getBoundingClientRect().top - wrapper.getBoundingClientRect().top > 2
-    },
-    renderMarkdown(content) {
-      if (!content) return ''
-      return renderMarkdownHtml(linkKnowledgeCitations(content, this.citeNumberMap), renderer)
     },
     // 事件委托：点击正文里的 [知识依据N] 锚点 → 展开证据面板并定位到第 N 条依据
     handleContentClick(event) {
