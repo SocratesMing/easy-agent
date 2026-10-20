@@ -1,5 +1,5 @@
 # Easy MCP Server 独立部署
-# 远程目录：/mnt/data/easyagent/mcp-server
+# 远程目录：/mnt/data/mcp-server
 # 用法（在部署目录）:
 #   docker compose --env-file .env up -d --build
 #

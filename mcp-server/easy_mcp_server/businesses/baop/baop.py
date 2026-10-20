@@ -38,7 +38,8 @@
   python baop_mcp_server.py --transport sse --port 8766
   python baop_mcp_server.py --selftest                       # 不依赖 mcp 包自检
 
-连接配置已写死在 :data:`CFG`（直连部署库，不读取 BAOP_* 环境变量）。
+连接配置见 :func:`cfg`，读 ``BAOP_HOST`` / ``BAOP_PORT`` / ``BAOP_USER`` /
+``BAOP_PASSWORD`` / ``BAOP_DB``（来自 mcp-server/.env）。
 """
 
 from __future__ import annotations
@@ -54,17 +55,26 @@ import time
 from datetime import date, datetime
 from decimal import Decimal
 
+from ...env import load_env
+
 # --------------------------------------------------------------------------
 # 配置
 # --------------------------------------------------------------------------
-CFG = {
-    # 部署专属连接配置：直连 baop 只读库，不依赖 BAOP_* 环境变量（写死）
-    "host": "28.221.254.13",
-    "port": 80,
-    "user": "fmmsuser",
-    "password": "Fmms@1234!",
-    "db": "mysql",
-}
+def cfg() -> dict:
+    """连接配置。**函数式读取**，改环境变量后下次查询即生效（无需重启）。"""
+    load_env()
+    port_raw = os.environ.get("BAOP_PORT", "3306").strip() or "3306"
+    try:
+        port = int(port_raw)
+    except ValueError:
+        port = 3306
+    return {
+        "host": os.environ.get("BAOP_HOST", "127.0.0.1").strip() or "127.0.0.1",
+        "port": port,
+        "user": os.environ.get("BAOP_USER", "baop_ro").strip() or "baop_ro",
+        "password": os.environ.get("BAOP_PASSWORD", ""),
+        "db": os.environ.get("BAOP_DB", "baop").strip() or "baop",
+    }
 
 T_INCOME = "fpp_fin_mkt_bizline_income_sum_t1"   # T3，单位万元
 T_CAPITAL = "fpp_core_cap_rsrv_t1"                # T1，单位万元
@@ -288,9 +298,10 @@ RATE_BASIS_COLS = {
 # --------------------------------------------------------------------------
 def _connect():
     import pymysql
+    c = cfg()
     return pymysql.connect(
-        host=CFG["host"], port=CFG["port"], user=CFG["user"],
-        password=CFG["password"], database=CFG["db"],
+        host=c["host"], port=c["port"], user=c["user"],
+        password=c["password"], database=c["db"],
         charset="utf8mb4", autocommit=True,
         read_timeout=8, connect_timeout=5,
         cursorclass=pymysql.cursors.DictCursor,

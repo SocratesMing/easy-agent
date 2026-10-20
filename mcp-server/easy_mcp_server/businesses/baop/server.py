@@ -6,8 +6,8 @@
 option、返回信封、期次解析、码值标准化与全部业务逻辑；本文件只做 MCP 工具
 注册（async 薄包装 + 统一异常兜底）。
 
-数据源是独立的 baop 库，连接配置见 :func:`baop.CFG`（已写死部署连接，不依赖
-环境变量）。
+数据源是独立的 baop 库，连接配置见 :func:`baop.cfg`（读 mcp-server/.env 的
+``BAOP_*``）。
 
 并发：MCP SDK 对同步工具函数是直接调用、不丢线程池，而 pymysql 是阻塞调用，
 因此工具都是 ``async def`` + ``anyio.to_thread.run_sync``。
