@@ -107,41 +107,15 @@
           </div>
 
             <div v-if="subpanelCategory" class="plus-subpanel" :style="plusSubpanelStyle" @click.stop @mouseenter="cancelPlusClose" @mouseleave="schedulePlusClose">
-              <div class="plus-subpanel-head">
-                <span class="plus-subpanel-title">{{ plusListTitle }}</span>
-                <span class="plus-menu-count">{{ plusListCount }}</span>
-                <!-- 连接器面板：搜索按钮（展开后按名称/描述过滤列表） -->
-                <button
-                  v-if="isConnectorPanel"
-                  type="button"
-                  class="plus-subpanel-search-btn"
-                  :class="{ active: showConnectorSearch }"
-                  :aria-label="showConnectorSearch ? '收起搜索' : '搜索连接器'"
-                  :aria-expanded="showConnectorSearch ? 'true' : 'false'"
-                  @click="toggleConnectorSearch"
-                >
-                  <svg v-if="!showConnectorSearch" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <circle cx="11" cy="11" r="8"></circle>
-                    <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
-                  </svg>
-                  <svg v-else xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
-                    <line x1="18" y1="6" x2="6" y2="18" />
-                    <line x1="6" y1="6" x2="18" y2="18" />
-                  </svg>
-                </button>
-              </div>
-              <div v-if="isConnectorPanel && showConnectorSearch" class="plus-sub-search">
-                <svg class="plus-sub-search-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <circle cx="11" cy="11" r="8"></circle>
-                  <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
-                </svg>
-                <input
-                  v-model="connectorKeyword"
-                  type="text"
-                  placeholder="搜索连接器"
-                  class="plus-sub-search-input"
-                />
-              </div>
+              <PlusSubpanelHeader
+                :title="plusListTitle"
+                :count="plusListCount"
+                :is-connector="isConnectorPanel"
+                :show-search="showConnectorSearch"
+                :keyword="connectorKeyword"
+                @toggle-search="toggleConnectorSearch"
+                @update:keyword="connectorKeyword = $event"
+              />
 
               <!-- 专家：上下两区（我的专家 / 公共专家），点击行 = 召唤（再点 = 取消召唤） -->
               <ExpertSubpanelList
@@ -427,6 +401,7 @@ import {
   expertAvatarClass as buildExpertAvatarClass
 } from '../../../utils/expertAvatar.js'
 import ExpertSubpanelList from './ExpertSubpanelList.vue'
+import PlusSubpanelHeader from './PlusSubpanelHeader.vue'
 import PlusList from './PlusList.vue'
 import PlusMenu from './PlusMenu.vue'
 import ModelPicker from './ModelPicker.vue'
@@ -457,7 +432,7 @@ const TEXTAREA_LINE_HEIGHT = 24
 const TEXTAREA_MAX_HEIGHT = TEXTAREA_MAX_ROWS * TEXTAREA_LINE_HEIGHT
 
 export default {
-  components: { FileIcon, SkillIcon, KnowledgeScopeSelector, UploadTray, ModelPicker, PlusMenu, ExpertSubpanelList, PlusList },
+  components: { FileIcon, SkillIcon, KnowledgeScopeSelector, UploadTray, ModelPicker, PlusMenu, ExpertSubpanelList, PlusList, PlusSubpanelHeader },
   props: {
     disabled: {
       type: Boolean,
@@ -2422,62 +2397,13 @@ html[data-theme="dark"] .connector-switch.on {
 }
 
 /* 面板头部右侧的搜索按钮（连接器面板） */
-.plus-subpanel-search-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  width: 22px;
-  height: 22px;
-  margin-left: auto;
-  padding: 0;
-  border: none;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--text-secondary);
-  cursor: pointer;
-}
 
 .plus-subpanel-search-btn:hover,
-.plus-subpanel-search-btn.active {
-  background: var(--bg-tertiary);
-  color: var(--text-primary);
-}
 
-.plus-subpanel-search-btn svg {
-  width: 14px;
-  height: 14px;
-}
 
 /* 连接器面板内的搜索输入框（按钮展开，按名称/描述过滤） */
-.plus-sub-search {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin: 0 8px 6px;
-  padding: 5px 8px;
-  border: 1px solid var(--border-color);
-  border-radius: 8px;
-  background: var(--bg-primary, transparent);
-}
 
-.plus-sub-search-icon {
-  width: 13px;
-  height: 13px;
-  flex-shrink: 0;
-  color: var(--text-secondary);
-}
 
-.plus-sub-search-input {
-  flex: 1;
-  min-width: 0;
-  border: none;
-  outline: none;
-  background: transparent;
-  color: var(--text-primary);
-  font-size: 12.5px;
-  line-height: 1.3;
-}
 
 /* ── 技能选择面板（fixed 定位，脱离 .input-box 的 overflow: hidden） ── */
 .skill-picker {
@@ -3388,18 +3314,6 @@ html[data-theme="dark"] .plus-list-tag.custom {
   box-shadow: 0 12px 36px rgba(0, 0, 0, 0.14);
   padding: 12px;
   z-index: 9999;
-}
-.plus-subpanel-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 2px 4px 8px;
-}
-.plus-subpanel-title {
-  flex: 1;
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--text-primary, #1e293b);
 }
 .plus-subpanel-list {
   max-height: 300px;
