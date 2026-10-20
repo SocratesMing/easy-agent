@@ -33,3 +33,22 @@ test('AiSidebar.vue only calls Chat methods that exist', async () => {
   assert.ok(called.has('focusComposer'))
   for (const name of called) assert.ok(defined.has(name), `Chat.vue 缺少方法 ${name}()`)
 })
+
+test('every <Chat> host wires expert selection', async () => {
+  const hosts = await Promise.all([
+    readFile(path.resolve(componentsDir, '../App.vue'), 'utf8'),
+    read('AiSidebar.vue'),
+  ])
+  for (const source of hosts) {
+    const chatTag = source.match(/<Chat\b[\s\S]*?>/)[0]
+    for (const binding of [':activeExpert=', '@select-expert=', '@clear-expert=']) {
+      assert.ok(chatTag.includes(binding), `<Chat> 缺少 ${binding}`)
+    }
+  }
+})
+
+test('pre-created sessions are marked as the displayed session', async () => {
+  const mixin = await readFile(path.resolve(componentsDir, '../mixins/chatSession.js'), 'utf8')
+  const body = mixin.match(/async ensureCurrentSession\([\s\S]*?\n {4}\},/)[0]
+  assert.match(body, /this\.loadedSessionId = newSession\.session_id/)
+})

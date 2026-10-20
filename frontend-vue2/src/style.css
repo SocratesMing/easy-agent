@@ -193,16 +193,16 @@ select {
    技能中心专家 Tab、+ 号下拉、输入框专家胶囊、回答面板标识四处共用，同一专家处处同色。
    注意：组件里的头像基础样式（.expert-badge-avatar / .plus-expert-avatar / .expert-avatar
    等）**不再声明 background/color** —— scoped 规则会带上 [data-v-x]，与 :root .ea-N 同权重，
-   谁后注入谁生效，必然打架。这里加 :root 只是防住将来新增的单类样式。
+   谁后注入谁生效，必然打架。这里加 :root 只是防住将来新增的单类样式；:host 供 SDK（Shadow DOM 内无 :root）匹配。
    浅底 + 深字，深浅主题各一套；改档数时需同步 EXPERT_PALETTE_SIZE。 */
-:root .ea-0 { background: #d0e5fb; color: #0a5299; }
-:root .ea-1 { background: #fbe7c5; color: #905c09; }
-:root .ea-2 { background: #f9d7e2; color: #960d3b; }
-:root .ea-3 { background: #e3f3ce; color: #4a6f15; }
-:root .ea-4 { background: #d9d7f9; color: #19109e; }
-:root .ea-5 { background: #d3f3e8; color: #176e51; }
-:root .ea-6 { background: #fad6d6; color: #990a0a; }
-:root .ea-7 { background: #d1ecf5; color: #14617b; }
+:root .ea-0, :host .ea-0 { background: #d0e5fb; color: #0a5299; }
+:root .ea-1, :host .ea-1 { background: #fbe7c5; color: #905c09; }
+:root .ea-2, :host .ea-2 { background: #f9d7e2; color: #960d3b; }
+:root .ea-3, :host .ea-3 { background: #e3f3ce; color: #4a6f15; }
+:root .ea-4, :host .ea-4 { background: #d9d7f9; color: #19109e; }
+:root .ea-5, :host .ea-5 { background: #d3f3e8; color: #176e51; }
+:root .ea-6, :host .ea-6 { background: #fad6d6; color: #990a0a; }
+:root .ea-7, :host .ea-7 { background: #d1ecf5; color: #14617b; }
 
 html[data-theme="dark"] .ea-0 { background: #2b66a1; color: #d9ebfd; }
 html[data-theme="dark"] .ea-1 { background: #8f6219; color: #fdf3e2; }
