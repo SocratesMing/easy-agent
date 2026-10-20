@@ -106,9 +106,12 @@ import {
 import hljs from 'highlight.js'
 import 'highlight.js/styles/github-dark.css'
 import { overlayClickCloses, markOverlayPress } from '../../utils/overlayClick.js'
-import DocxPreview from './DocxPreview.vue'
-import ExcelPreview from './ExcelPreview.vue'
-import * as XLSX from 'xlsx'
+// 预览库按需加载：docx/excel/xlsx 合计数 MB，只有真正打开对应文件时才拉取
+let xlsxPromise = null
+function loadXlsx() {
+  if (!xlsxPromise) xlsxPromise = import('xlsx')
+  return xlsxPromise
+}
 import { getStoredToken } from '../../api/auth.js'
 import { requestBlob, requestArrayBuffer, requestText } from '../../utils/request.js'
 
@@ -164,7 +167,11 @@ const mdRenderer = createMarkdownRenderer({ highlight: highlightWithHljs })
 installCodeCopyHandler()
 
 export default {
-  components: { DocxPreview, ExcelPreview },
+  components: {
+    // 按需加载：docx-preview / exceljs 只在打开对应类型文件时才进内存
+    DocxPreview: () => import('./DocxPreview.vue'),
+    ExcelPreview: () => import('./ExcelPreview.vue'),
+  },
   props: {
     filename: {
       type: String,
@@ -479,7 +486,7 @@ export default {
       if (seq !== this._loadSeq) return
       this.loading = false
     },
-    handleExcelError(e) {
+    async handleExcelError(e) {
       console.error('Excel error:', e)
       if (!this.excelRetried && this.excelArrayBuffer) {
         // 复杂 xlsx 可能包含 drawing，先做一次清理重试。
@@ -487,6 +494,7 @@ export default {
         // 清理后的工作簿仍保留边框、合并单元格和多 sheet。
         // 与“无图片时正常显示”体验一致。
         try {
+          const XLSX = await loadXlsx()
           const wb = XLSX.read(this.excelArrayBuffer, { type: 'array', cellStyles: true })
           const cleaned = XLSX.write(wb, { type: 'array', bookType: 'xlsx' })
           this.excelRetried = true
