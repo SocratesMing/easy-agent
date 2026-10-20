@@ -70,6 +70,41 @@
         </svg>
       </button>
 
+      <!-- 预置问题卡片：仅在首页（居中模式）展示，位置在欢迎语与输入框之间。
+           一张卡片一条预置问题，问题内容直接展示在卡片里，不堆叠、不悬浮切换；
+           配置了多条时依次排列（最多 MAX_PRESET_CARDS 张）。
+           点击卡片把该问题填进输入框（不直接发送），用户可改完自己发。 -->
+      <div
+        class="preset-area"
+        v-if="composerMode === 'center' && displayedPresetCards.length"
+      >
+        <div class="preset-cards" :class="'count-' + displayedPresetCards.length">
+          <div
+            class="preset-deck"
+            v-for="(card, ci) in displayedPresetCards"
+            :key="ci"
+            :class="'accent-' + (ci % 3)"
+            role="button"
+            tabindex="0"
+            :title="card.question"
+            @click="onPresetCardClick(ci)"
+            @keydown.enter.prevent="onPresetCardClick(ci)"
+          >
+            <div class="preset-deck-head">
+              <span class="preset-deck-title">
+                <span v-if="card.icon" class="preset-deck-title-icon">{{ card.icon }}</span>
+                {{ card.category }}
+              </span>
+            </div>
+            <div class="preset-deck-stage">
+              <div class="preset-card">
+                <span class="preset-card-text">{{ card.question }}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <ChatInput
         ref="composerRef"
         class="composer"
@@ -93,69 +128,6 @@
         @selectExpert="(expert) => emit('selectExpert', expert)"
         @prefillApplied="emit('expertPromptApplied')"
       />
-
-      <!-- 分类预置问题：仅在首页（居中模式）展示。每个分类一张卡片（分类名即卡片头部，
-           不再单独放标签栏），最多展示三张；卡片内多个预置问题堆叠，
-           鼠标滚轮（或左右方向键）在卡片上滑动即可来回切换子问题。 -->
-      <div
-        class="preset-area"
-        v-if="composerMode === 'center' && displayedPresetGroups.length"
-      >
-        <div
-          class="preset-cards"
-          :class="'count-' + displayedPresetGroups.length"
-          @mouseleave="onPresetLeave"
-        >
-          <div
-            class="preset-deck"
-            v-for="(group, gi) in displayedPresetGroups"
-            :key="gi"
-            :class="'accent-' + (gi % 3)"
-            role="group"
-            tabindex="0"
-            :aria-label="group.category + ' 预置问题'"
-            @mouseenter="onPresetEnter(gi)"
-            @wheel="onPresetWheel($event, gi)"
-            @keydown.left.prevent="stepPreset(gi, -1)"
-            @keydown.right.prevent="stepPreset(gi, 1)"
-            @keydown.enter.prevent="onPresetCardClick(gi)"
-          >
-            <div class="preset-deck-head">
-              <span class="preset-deck-title">
-                <span v-if="group.icon" class="preset-deck-title-icon">{{ group.icon }}</span>
-                {{ group.category }}
-              </span>
-              <span class="preset-deck-count">
-                {{ group.questions.length }} 条<template v-if="group.questions.length > 1"> · 滚动切换</template>
-              </span>
-            </div>
-            <div class="preset-deck-stage">
-              <div
-                v-for="(q, i) in group.questions"
-                :key="i"
-                class="preset-card"
-                :class="presetCardClass(gi, i)"
-                :style="presetCardStyle(gi, i)"
-                :aria-hidden="i !== presetIndex(gi)"
-                @click="onPresetCardClick(gi)"
-              >
-                <span class="preset-card-text">{{ q }}</span>
-              </div>
-            </div>
-            <div class="preset-deck-dots" v-if="group.questions.length > 1">
-              <button
-                v-for="(q, i) in group.questions"
-                :key="i"
-                type="button"
-                class="preset-dot"
-                :class="{ active: i === presetIndex(gi) }"
-                :aria-label="'第 ' + (i + 1) + ' 条预置问题'"
-                @click="setPresetQuestion(gi, i)"
-              ></button>
-            </div>
-          </div>
-        </div>
-      </div>
     </div>
     </div>
   </div>
@@ -261,81 +233,27 @@ watch([() => props.messages, () => props.messages.length, () => props.sessionLoa
   composerMode.value = (newMessages.length === 0 && !loading) ? 'center' : 'bottom'
 }, { immediate: true })
 
-// 预置问题：每个分类 = 一张卡片（分类名直接做卡片头部），卡片内多个预置问题
-// 堆叠呈现。最多展示 3 张卡片；每张卡片各自记住当前显示到第几个子问题。
-const MAX_PRESET_CARDS = 3
+// 预置问题卡片最多展示几张（一张卡片一条问题，多配的部分按顺序截断）
+const MAX_PRESET_CARDS = 6
 
-// 只取前三个分类（后端可能传入更多，这里按需求截断）
-const displayedPresetGroups = computed(() => (props.presetQuestions || []).slice(0, MAX_PRESET_CARDS))
-
-// 每张卡片当前展示的子问题下标（按卡片序号索引）
-const presetQuestionIndexes = ref([])
-
-// 读取某张卡片当前子问题下标；数据变化导致越界时收敛到有效范围
-function presetIndex(groupIndex) {
-  const group = displayedPresetGroups.value[groupIndex]
-  const count = group?.questions?.length || 0
-  if (!count) return 0
-  const cur = presetQuestionIndexes.value[groupIndex] || 0
-  return Math.min(cur, count - 1)
-}
-
-function setPresetQuestion(groupIndex, questionIndex) {
-  const group = displayedPresetGroups.value[groupIndex]
-  const count = group?.questions?.length || 0
-  if (!count) return
-  const next = presetQuestionIndexes.value.slice()
-  next[groupIndex] = Math.max(0, Math.min(questionIndex, count - 1))
-  presetQuestionIndexes.value = next
-  // 悬浮期间用滚轮/圆点切换子问题时，输入框预览实时跟随（仅预览态允许）
-  if (hoveredDeck.value === groupIndex && canPresetPreview()) fillPresetPreview(groupIndex)
-}
-
-// 前后切换子问题；到端点后不再循环（停在端点，避免长列表滚动时跳回开头）
-function stepPreset(groupIndex, delta) {
-  setPresetQuestion(groupIndex, presetIndex(groupIndex) + delta)
-}
-
-// 鼠标滚轮在卡片上滑动切换子问题。仅在还有其它子问题时拦截滚动，
-// 否则交还页面正常滚动，避免单条预置问题把整页滚动锁死。
-function onPresetWheel(event, groupIndex) {
-  const group = displayedPresetGroups.value[groupIndex]
-  const count = group?.questions?.length || 0
-  if (count <= 1) return
-  const delta = event.deltaY !== 0 ? event.deltaY : event.deltaX
-  if (!delta) return
-  const current = presetIndex(groupIndex)
-  const atStart = current <= 0
-  const atEnd = current >= count - 1
-  if ((delta < 0 && atStart) || (delta > 0 && atEnd)) return
-  event.preventDefault()
-  stepPreset(groupIndex, delta > 0 ? 1 : -1)
-}
-
-// 堆叠效果：当前卡在最前，其余卡依次露出一点，形成一摞
-function presetCardClass(groupIndex, questionIndex) {
-  const current = presetIndex(groupIndex)
-  if (questionIndex === current) return 'is-front'
-  return questionIndex < current ? 'is-before' : 'is-after'
-}
-
-function presetCardStyle(groupIndex, questionIndex) {
-  // 只渲染当前问题；切换交给圆点/滚轮，配合 CSS 的 opacity 过渡淡入淡出
-  return questionIndex === presetIndex(groupIndex)
-    ? { zIndex: 30 }
-    : { zIndex: 10, opacity: '0', pointerEvents: 'none' }
-}
-
-// 配置重新拉取后分类/子问题数量可能变化，收敛下标避免越界导致卡片空白
-watch(displayedPresetGroups, (groups) => {
-  const next = []
-  groups.forEach((group, i) => {
-    const count = group?.questions?.length || 0
-    const cur = presetQuestionIndexes.value[i] || 0
-    next[i] = count ? Math.min(cur, count - 1) : 0
-  })
-  presetQuestionIndexes.value = next
-}, { immediate: true })
+// 预置问题卡片：一张卡片一条问题（后端按分类配置，同分类下配了多条就依次展开成多张卡），
+// 依次排列且最多 MAX_PRESET_CARDS 张；空问题跳过，不占卡片位
+const displayedPresetCards = computed(() => {
+  const cards = []
+  for (const group of (props.presetQuestions || [])) {
+    const questions = group && group.questions ? group.questions : []
+    for (const question of questions) {
+      if (cards.length >= MAX_PRESET_CARDS) return cards
+      if (question == null || !String(question).trim()) continue
+      cards.push({
+        category: (group && group.category) || '预设问题',
+        icon: (group && group.icon) || '',
+        question: String(question)
+      })
+    }
+  }
+  return cards
+})
 // 顶部信息行：会话时间（居中）+ 操作区（任务规划、展开工作区，贴右）。
 // 三者中任意一个需要展示时，这一行才占位 —— 首页（无会话）保持干净，
 // 否则会破坏 .chat-content.is-center 的垂直居中。
@@ -350,7 +268,7 @@ const topbarFloating = computed(
   () => !showSessionTime.value && props.todos.length === 0 && showWorkspaceBtn.value
 )
 
-const emit = defineEmits(['sendMessage', 'presetSend', 'stop', 'removeFile', 'createSession', 'approve', 'reject', 'update:selectedModel', 'toggleWorkspace', 'clearExpert', 'selectExpert', 'expertPromptApplied', 'openPanel'])
+const emit = defineEmits(['sendMessage', 'stop', 'removeFile', 'createSession', 'approve', 'reject', 'update:selectedModel', 'toggleWorkspace', 'clearExpert', 'selectExpert', 'expertPromptApplied', 'openPanel'])
 const messagesRef = ref(null)
 
 function formatSessionTime(isoStr) {
@@ -477,93 +395,15 @@ function handleCreateSession() {
   emit('createSession')
 }
 
-// ========== 预置问题：悬浮预览 ==========
-// 仅当输入框为空（或当前内容正是上一轮的预览填充且未被修改）时，悬浮才把
-// 完整文本填进输入框；输入框已有用户输入内容时不填充、不覆盖。
-// 移出时若用户未修改预览文本则恢复悬浮前内容（原为空 → 清空）；
-// 用户在预览基础上编辑过则保留其内容并解除预览态。
-const hoveredDeck = ref(null)
-const composerSnapshot = ref('')
-const lastPreview = ref('')
-// 输入框当前内容是否为「预览填充态」（填充过且未被用户修改）
-const previewActive = ref(false)
-
-function fillPresetPreview(groupIndex) {
-  const group = displayedPresetGroups.value[groupIndex]
-  const question = group?.questions?.[presetIndex(groupIndex)]
+// ========== 预置问题：点击填入 ==========
+// 一张卡片一条问题，问题内容直接展示在卡片上；点击（或聚焦后回车）只把该问题的
+// 完整文本填进输入框并把焦点交给它（卡片上最多显示 3 行，长问题展示不全）：
+// 发不发、要不要先改一改，由用户自己决定，不自动发送。
+function onPresetCardClick(cardIndex) {
+  const card = displayedPresetCards.value[cardIndex]
+  const question = card ? card.question : null
   if (question == null) return
-  lastPreview.value = question
   composerRef.value?.setMessage(question)
-  previewActive.value = true
-}
-
-// 是否允许悬浮填充：输入框为空，或内容仍是预览态且未被用户修改
-function canPresetPreview() {
-  const current = composerRef.value?.getMessage() ?? ''
-  if (!current.trim()) return true
-  return previewActive.value && current === lastPreview.value
-}
-
-function onPresetEnter(groupIndex) {
-  if (!canPresetPreview()) {
-    // 输入框已有用户内容：不覆盖，仅记录悬浮位置（滚轮/圆点切换仍可用）
-    hoveredDeck.value = groupIndex
-    return
-  }
-  if (hoveredDeck.value === null) {
-    composerSnapshot.value = composerRef.value?.getMessage() ?? ''
-  }
-  hoveredDeck.value = groupIndex
-  fillPresetPreview(groupIndex)
-}
-
-function onPresetLeave() {
-  if (hoveredDeck.value === null) return
-  hoveredDeck.value = null
-  const current = composerRef.value?.getMessage() ?? ''
-  const previewed = lastPreview.value
-  lastPreview.value = ''
-  if (previewActive.value) {
-    if (current === previewed) {
-      // 用户未修改预览：恢复悬浮前内容（原为空 → 清空）
-      composerRef.value?.setMessage(composerSnapshot.value)
-    }
-    // 用户编辑过预览文本：内容归用户保留，解除预览态
-    previewActive.value = false
-  }
-}
-
-// 离开首页（开始对话）时复位悬浮状态
-watch(composerMode, (mode) => {
-  if (mode !== 'center') {
-    hoveredDeck.value = null
-    lastPreview.value = ''
-    previewActive.value = false
-  }
-})
-
-// ========== 预置问题：点击发送 ==========
-// 点击卡片把该问题作为「新对话的第一条消息」发出：先复用悬浮预览的填入逻辑
-// 把完整文本写进输入框，再触发输入框自身的发送（走上传等待、canSend 校验、
-// 清空草稿等与手动发送完全一致的链路），不复制一份发送实现。
-// presetSendPending 标记本次 send 来自预置问题卡片，onSend 里据此改走
-// presetSend 事件，由 App 侧先落到全新会话再发送。
-const presetSendPending = ref(false)
-
-function onPresetCardClick(groupIndex) {
-  const group = displayedPresetGroups.value[groupIndex]
-  const question = group?.questions?.[presetIndex(groupIndex)]
-  if (question == null) return
-  // 点击即发送，悬浮预览状态不再需要（移出时的草稿恢复逻辑会干扰发送）
-  hoveredDeck.value = null
-  lastPreview.value = ''
-  presetSendPending.value = true
-  composerRef.value?.setMessage(question)
-  composerRef.value?.triggerSend()
-  // triggerSend 因 disabled/canSend 未真正发出时，复位标记避免影响后续手动发送
-  if (composerRef.value?.getMessage() === question) {
-    presetSendPending.value = false
-  }
 }
 
 const composerRef = ref(null)
@@ -571,11 +411,6 @@ const composerRef = ref(null)
 function onSend(message, files, signal, enableDeepThink, enableWebSearch, skills, expertEditId = '') {
   composerMode.value = 'bottom'
   isAtBottom.value = true
-  if (presetSendPending.value) {
-    presetSendPending.value = false
-    emit('presetSend', message, files, signal, enableDeepThink, enableWebSearch, skills)
-    return
-  }
   handleSend(message, files, signal, enableDeepThink, enableWebSearch, skills, expertEditId)
 }
 
@@ -893,11 +728,13 @@ watch(() => props.scrollTrigger, () => {
   50% { opacity: 0.45; }
 }
 
-/* 预置问题卡片区：与输入框同宽（80% / 最大 900px），一行最多三张、每张卡自带分类头部 */
+/* 预置问题卡片区：夹在欢迎语与输入框之间，与输入框同宽（80% / 最大 900px），
+   一行最多三张、每张卡自带分类头部；上间距由 .chat-messages 的 24px 间距伪元素给出，
+   下间距用 8px 补足到与上侧相当的 24px（输入框自己还有 16px 上内边距）。 */
 .preset-area {
   /* 与 .chat-input-container 相同的左右内边距与滚动条预留，
      使 80% 宽的卡片区与输入框左右边缘严格对齐 */
-  padding: 0 24px;
+  padding: 0 24px 8px;
   width: 100%;
   overflow-y: auto;
   scrollbar-gutter: stable;
@@ -906,12 +743,13 @@ watch(() => props.scrollTrigger, () => {
 .preset-cards {
   display: grid;
   gap: 14px;
-  margin: 20px auto 0;
+  margin: 0 auto;
   width: 80%;
   max-width: 900px;
 }
 
-/* 卡片数量决定列数：1/2/3 张时列数自适应，宽度始终与输入框对齐 */
+/* 卡片数量决定列数：1/2/3 张时列数自适应，4 张及以上固定三列、多余换行排列，
+   宽度始终与输入框对齐 */
 .preset-cards.count-1 {
   grid-template-columns: minmax(0, 1fr);
 }
@@ -920,19 +758,28 @@ watch(() => props.scrollTrigger, () => {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
-.preset-cards.count-3 {
+.preset-cards.count-3,
+.preset-cards.count-4,
+.preset-cards.count-5,
+.preset-cards.count-6 {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 @media (max-width: 1024px) {
-  .preset-cards.count-3 {
+  .preset-cards.count-3,
+  .preset-cards.count-4,
+  .preset-cards.count-5,
+  .preset-cards.count-6 {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
 @media (max-width: 680px) {
   .preset-cards.count-2,
-  .preset-cards.count-3 {
+  .preset-cards.count-3,
+  .preset-cards.count-4,
+  .preset-cards.count-5,
+  .preset-cards.count-6 {
     grid-template-columns: minmax(0, 1fr);
   }
 }
@@ -950,6 +797,7 @@ watch(() => props.scrollTrigger, () => {
   background: var(--bg-secondary, #ffffff);
   box-shadow: 0 1px 2px rgba(15, 23, 42, 0.028);
   outline: none;
+  cursor: pointer;
   transition: transform 0.2s ease, box-shadow 0.2s ease;
 }
 
@@ -1016,15 +864,7 @@ watch(() => props.scrollTrigger, () => {
   color: var(--text-primary, #1e293b);
 }
 
-.preset-deck-count {
-  margin-left: auto;
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--text-secondary, #64748b);
-  flex-shrink: 0;
-}
-
-/* 卡片堆叠区：高度固定，子问题卡在内部绝对定位叠放 */
+/* 问题区：高度固定，问题长短不一也保证卡片大小一致 */
 .preset-deck-stage {
   position: relative;
   z-index: 1;
@@ -1032,28 +872,22 @@ watch(() => props.scrollTrigger, () => {
   height: 132px;
 }
 
-/* 子问题卡：无边框、背景与分类卡融为一体，同一时刻只显示当前问题 */
+/* 问题内容：无边框、背景与分类卡融为一体 */
 .preset-card {
-  position: absolute;
-  inset: 0;
   display: flex;
   flex-direction: column;
-  justify-content: space-between;
-  gap: 10px;
   width: 100%;
+  height: 100%;
   padding: 12px 14px;
   background: transparent;
   border: none;
   border-radius: 12px;
   text-align: left;
-  cursor: pointer;
-  transform-origin: center bottom;
-  transition: transform 0.3s cubic-bezier(0.22, 1, 0.36, 1),
-    opacity 0.3s ease, background-color 0.2s ease, box-shadow 0.2s ease;
+  transition: background-color 0.2s ease;
 }
 
-/* 悬停时垫一层主题色浅底，作为「可点击」暗示 */
-.preset-card.is-front:hover {
+/* 悬停时垫一层主题色浅底，作为「可点击」暗示（点击区域是整张卡片） */
+.preset-deck:hover .preset-card {
   background: color-mix(in srgb, var(--preset-accent) 5%, transparent);
 }
 
@@ -1070,39 +904,7 @@ watch(() => props.scrollTrigger, () => {
   word-break: break-word;
 }
 
-.preset-deck-dots {
-  position: relative;
-  z-index: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  margin-top: 10px;
-}
-
-.preset-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  border: none;
-  padding: 0;
-  background: color-mix(in srgb, var(--preset-accent) 18%, var(--border-color, #e2e8f0));
-  cursor: pointer;
-  transition: all 0.2s ease;
-}
-
-.preset-dot:focus-visible {
-  outline: 2px solid var(--preset-accent, #0ea5e9);
-  outline-offset: 2px;
-}
-
-.preset-dot.active {
-  width: 16px;
-  border-radius: 3px;
-  background: var(--preset-accent, #0ea5e9);
-}
-
-html[data-theme="dark"] .preset-card.is-front:hover {
+html[data-theme="dark"] .preset-deck:hover .preset-card {
   background: color-mix(in srgb, var(--preset-accent) 10%, transparent);
 }
 
