@@ -395,6 +395,8 @@ async function attachToStreamingSession(sessionId, opts = {}) {
     get assistantMsgId() { return attachId },
     set assistantMsgId(v) {},
     streamSessionId: sessionId,
+    runInSession,
+    state: buildStreamState(),
     preStreamUsage: { ...sessionUsage.value },
     preStreamIterationCount: iterationCount.value,
     preStreamDuration: sessionDuration.value,
@@ -584,6 +586,20 @@ function ensureSessionState(sid) {
   }
   sessionStates.value = { ...sessionStates.value, [sid]: st }
   return st
+}
+
+// 流式处理器需要的页面级 refs：抽成模块后通过 ctx.state 注入
+function buildStreamState() {
+  return {
+    sessionUsage,
+    sessionDuration,
+    iterationCount,
+    sessionStates,
+    currentSessionId,
+    currentTodos,
+    loadedSessionId,
+    markStreaming,
+  }
 }
 
 function runInSession(sid, ctx, fn) {
@@ -1351,6 +1367,8 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
       }
     },
   }
+  streamCtx.runInSession = runInSession
+  streamCtx.state = buildStreamState()
   const { onChunk } = createStreamChunkHandler(messages, streamCtx)
 
   try {
@@ -1517,6 +1535,8 @@ async function handleToolApproval(decision, target) {
     isResume: true,
     assistantMsgId,
     streamSessionId: sessionId,
+    runInSession,
+    state: buildStreamState(),
     initialBlockOrder: (() => {
       const i = messages.value.findIndex(m => m.id === assistantMsgId)
       return i !== -1 ? messages.value[i].blocks.length : 0

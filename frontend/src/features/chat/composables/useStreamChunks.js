@@ -12,6 +12,17 @@
  */
 
 export function createStreamChunkHandler(messages, ctx) {
+  // 页面级 refs 由调用方通过 ctx.state 注入（抽成模块后不再处于 App.vue 作用域）
+  const {
+    sessionUsage,
+    sessionDuration,
+    iterationCount,
+    sessionStates,
+    currentSessionId,
+    currentTodos,
+    loadedSessionId,
+    markStreaming,
+  } = ctx.state || {}
   let currentBlock = null
   let currentThinking = ''
   let currentContent = ''
@@ -450,5 +461,14 @@ export function createStreamChunkHandler(messages, ctx) {
   }
 
   // 事件按「所属会话」路由：后台会话写入其自身缓冲，不污染当前展示
-  return { onChunk: (data) => runInSession(ctx.streamSessionId, ctx, () => onChunk(data)) }
+  return {
+    onChunk: (data) => {
+      const dispatch = () => onChunk(data)
+      // runInSession 由调用方（App.vue）注入：它依赖页面级 refs（sessionStates 等），
+      // 抽成模块后不能再直接引用，否则运行期报 runInSession is not defined。
+      return typeof ctx.runInSession === 'function'
+        ? ctx.runInSession(ctx.streamSessionId, ctx, dispatch)
+        : dispatch()
+    },
+  }
 }
