@@ -15,7 +15,7 @@ import { readdir, readFile, writeFile, mkdir } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const sourceRoot = path.join(repoRoot, 'frontend-shared')
 const targets = [
   path.join(repoRoot, 'frontend-vue2/src/shared'),
