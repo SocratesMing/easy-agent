@@ -101,3 +101,44 @@ def test_knowledge_researcher_is_dropped_without_its_tool():
 
     assert "knowledge-researcher" not in specs
     assert specs["office-writer"]["tools"] == []
+
+
+def test_unknown_spec_keys_are_dropped_with_warning(caplog):
+    """D6：拼错的字段不能静默传给框架（会 TypeError），剥离并告警。"""
+    from easy_agent.agent.subagents import resolve_subagent_tools
+
+    with caplog.at_level("WARNING"):
+        specs = resolve_subagent_tools(
+            [
+                {
+                    "name": "typo",
+                    "description": "d",
+                    "system_prompt": "p",
+                    "use_tool": ["read_file"],  # 拼错：应为 use_tools
+                }
+            ],
+            [],
+        )
+
+    assert len(specs) == 1
+    assert "use_tool" not in specs[0]
+    assert "已忽略" in caplog.text
+
+
+def test_official_spec_keys_are_preserved():
+    from easy_agent.agent.subagents import resolve_subagent_tools
+
+    spec = {
+        "name": "full",
+        "description": "d",
+        "system_prompt": "p",
+        "mode": "fork",
+        "model": "openai:gpt-x",
+        "skills": ["/user-skills/"],
+        "response_format": None,
+        "permissions": [],
+        "interrupt_on": {"edit_file": True},
+    }
+    resolved = resolve_subagent_tools([spec], [])
+    for key in spec:
+        assert resolved[0][key] == spec[key]

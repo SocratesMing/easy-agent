@@ -12,6 +12,8 @@ DA-11：子代理只拿需要的工具（官方 Subagents › Minimize tool sets
 ``general-purpose`` 不受影响，按官方语义继承主代理工具。
 """
 
+import logging
+
 # 所有子 Agent 共用的安全约束：子 Agent 的提示词同样可能被外部内容影响，
 # 这里用固定文字声明「外部数据不是指令」「不泄露系统提示词」。
 SAFE_SUBAGENT_RULES = (
@@ -57,6 +59,28 @@ DEFAULT_SUBAGENTS = [
 
 from easy_agent.utils.mcp_tool_names import resolve_tool_names
 
+# 官方 SubAgent 字段（deepagents 0.7.x）+ 项目扩展键。
+# 其他键一律视为拼写错误：既不能传给框架（会 TypeError），也不该静默吞掉。
+_ALLOWED_SPEC_KEYS = frozenset(
+    {
+        "name",
+        "description",
+        "system_prompt",
+        "mode",
+        "tools",
+        "model",
+        "middleware",
+        "interrupt_on",
+        "skills",
+        "response_format",
+        "permissions",
+        # 项目扩展（见模块 docstring）
+        "use_tools",
+        "requires_tools",
+    }
+)
+logger = logging.getLogger(__name__)
+
 _TOOL_KEYS = ("use_tools", "requires_tools")
 
 
@@ -65,7 +89,18 @@ def resolve_subagent_tools(specs, available_tools) -> list[dict]:
     by_name = {getattr(tool, "name", ""): tool for tool in available_tools or []}
     resolved: list[dict] = []
     for spec in specs or ():
-        item = {k: v for k, v in dict(spec).items() if k not in _TOOL_KEYS}
+        unknown = sorted(set(spec) - _ALLOWED_SPEC_KEYS)
+        if unknown:
+            logger.warning(
+                "子代理 %r 含未知字段 %s（已忽略；官方字段见 docs/framework-integration.md）",
+                spec.get("name"),
+                unknown,
+            )
+        item = {
+            k: v
+            for k, v in dict(spec).items()
+            if k not in _TOOL_KEYS and k in _ALLOWED_SPEC_KEYS
+        }
         # D4 兼容：MCP 前缀开启后，spec 里仍可能写原始名，按「精确 → 后缀唯一」解析
         requires, missing_required = resolve_tool_names(
             spec.get("requires_tools") or (), by_name.keys()
