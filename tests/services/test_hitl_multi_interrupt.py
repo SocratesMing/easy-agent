@@ -64,7 +64,10 @@ def test_tagged_decisions_follow_action_index_order():
             {"type": "approve", "interrupt_id": "A", "action_index": 0},
         ],
     )
-    assert plan.resume["A"]["decisions"] == [{"type": "approve"}, {"type": "reject"}]
+    approve, reject = plan.resume["A"]["decisions"]
+    assert approve == {"type": "approve"}
+    # 没带说明的拒绝由后端按工具补一句（DA-15）
+    assert reject["type"] == "reject" and "执行这条命令" in reject["message"]
 
 
 def test_legacy_decision_never_reaches_interrupts_the_old_ui_did_not_show():

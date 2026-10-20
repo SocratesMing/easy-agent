@@ -63,6 +63,11 @@ test('decisions answer only the clicked interrupt', () => {
   assert.deepEqual(decisions, [{ type: 'approve', interrupt_id: 'B', action_index: 0 }])
 })
 
+test('reject without a message leaves the wording to the backend', () => {
+  const { decisions } = buildResumeDecisions(subagentActions, 'reject', { interruptId: 'B' })
+  assert.deepEqual(decisions, [{ type: 'reject', interrupt_id: 'B', action_index: 0 }])
+})
+
 test('a batch inside one interrupt gets one decision per action in order', () => {
   const actions = [
     { tool_call_id: 'c2', interrupt_id: 'A', action_index: 1 },

@@ -165,13 +165,13 @@ import Welcome from './components/Welcome.vue'
 import WorkspacePanel from './components/WorkspacePanel.vue'
 import SettingsPanel from './components/SettingsPanel.vue'
 import AiSidebar from './components/AiSidebar.vue'
-import { createSession, listSessions, getChatHistory, deleteSession, sendMessage, resumeStream, renameSession, togglePinSession, getStreamStatus } from './api/chat.js'
+import { createSession, listSessions, getChatHistory, deleteSession, sendMessage, renameSession, togglePinSession, getStreamStatus } from './api/chat.js'
 import { streamExportRun } from './api/expert.js'
 import { getUserProfile, deleteFile } from './api/files.js'
 import chatSessionMixin, { parseMCPResult } from './mixins/chatSession.js'
 import { chatStore } from './store/chatStore.js'
 import { buildPageContext } from './utils/pageContext.js'
-import { applyApprovalRequests, buildResumeDecisions, markApprovalDecision } from './utils/hitlApproval.js'
+import { applyApprovalRequests } from './utils/hitlApproval.js'
 import { logout as apiLogout, notifyLogout, getStoredToken, getStoredUsername, AUTH_EXPIRED_EVENT, authFetch, passwordlessLogin } from './api/auth.js'
 import { getModels as fetchModels } from './api/settings.js'
 import { isRestorableUserProfile } from './utils/userProfile.js'
@@ -1689,120 +1689,6 @@ export default {
           // 挂载流结束回填后重算"待审批"标识（审批已被处理/失效则熄灭，仍 pending 则保持）
           this.recomputePendingApprovalFlag(sid)
 
-          await this.loadSessions()
-        }
-      }
-    },
-    // HITL: 用户审批后恢复执行。target.interruptId = 用户点的那个中断（DA-02）：
-    // 只回答它，其余中断保持挂起，恢复流结束时后端会再次下发 approval_required。
-    async handleToolApproval(decision, target) {
-      if (!this.pendingApproval) return
-
-      const currentApproval = this.pendingApproval
-      const { threadId, assistantMsgId } = currentApproval
-      const sessionId = this.currentSessionId
-
-      const msgIdx = assistantMsgId ? this.messages.findIndex(m => m.id === assistantMsgId) : -1
-      const pending = msgIdx !== -1 ? this.messages[msgIdx].pending_approval : null
-      const actionRequests = (pending && pending.action_requests) || []
-      const { decisions, interruptId } = buildResumeDecisions(actionRequests, decision, {
-        interruptId: target && target.interruptId,
-      })
-
-      // 清掉待审批按钮（恢复流期间不允许再点），只给本次作答的中断记上「已批准 / 已拒绝」
-      if (msgIdx !== -1) {
-        markApprovalDecision(this.messages[msgIdx].blocks, decision, actionRequests, interruptId)
-        setReactive(this.messages, msgIdx, {
-          ...this.messages[msgIdx],
-          pending_approval: null,
-          blocks: [...this.messages[msgIdx].blocks],
-        })
-      }
-      // 本次决策已落地，重算"待审批"标识（若恢复流中再遇嵌套审批会立即重新亮起）
-      this.recomputePendingApprovalFlag(sessionId)
-
-      const { onChunk } = this.createStreamChunkHandler({
-        isResume: true,
-        assistantMsgId,
-        streamSessionId: sessionId,
-        initialBlockOrder: (() => {
-          const i = this.messages.findIndex(m => m.id === assistantMsgId)
-          return i !== -1 ? this.messages[i].blocks.length : 0
-        })(),
-        onApprovalRequired: (data) => {
-          // 嵌套审批
-          this.pendingApproval = {
-            threadId: data.thread_id,
-            assistantMsgId,
-          }
-          // 决策后标识可能已被重算熄灭，嵌套审批到达时重新亮起
-          this.syncPendingApprovalFlag(sessionId, true)
-          if (assistantMsgId && data.action_requests) {
-            const idx = this.messages.findIndex(m => m.id === assistantMsgId)
-            if (idx !== -1) {
-              this.messages[idx].pending_approval = { thread_id: data.thread_id, action_requests: data.action_requests }
-              // 用后端权威 blocks 刷新（含本轮已完成工具的结果）
-              if (Array.isArray(data.blocks) && data.blocks.length > 0) {
-                this.messages[idx].blocks = data.blocks.map(b => ({ ...b }))
-              }
-              // 防御：嵌套审批时本轮思考已完成，把残留无 duration 的思考块置 0，
-              // 避免 block.duration==null && loading=true 误显示"正在思考"
-              for (const b of this.messages[idx].blocks) {
-                if (b.type === 'thinking' && (b.duration == null)) {
-                  b.duration = 0
-                }
-              }
-              // 挂不上工具卡片的（子代理内部审批）由 ChatMessage 的独立审批面板展示
-              applyApprovalRequests(this.messages[idx].blocks, data.action_requests)
-              setReactive(this.messages, idx, { ...this.messages[idx], blocks: [...this.messages[idx].blocks] })
-            }
-          }
-        },
-      })
-
-      try {
-        const controller = new AbortController()
-        this.currentAbortController = controller
-        this.markStreaming(sessionId)
-        this.streamingAssistantId = assistantMsgId
-
-        // 恢复期间保持 loading=true，使思考 spinner 与工具"执行中"状态与正常流一致
-        const _resumeIdx = this.messages.findIndex(m => m.id === assistantMsgId)
-        if (_resumeIdx !== -1) {
-          setReactive(this.messages, _resumeIdx, { ...this.messages[_resumeIdx], loading: true })
-        }
-        // 注意：人工介入（批准/拒绝）不再作为用户侧消息展示，
-        // 直接在模型侧的 execute 工具上进行了 HITL 标注。
-        await resumeStream(sessionId, threadId, decisions, onChunk, controller.signal, assistantMsgId)
-
-        await this.loadSessions()
-      } catch (e) {
-        if (e.name === 'AbortError') return
-        console.error('恢复执行失败:', e)
-        const idx = this.messages.findIndex(m => m.id === assistantMsgId)
-        if (idx !== -1) {
-          this.messages[idx].loading = false
-          this.messages[idx].error = e.message || '恢复执行失败'
-          setReactive(this.messages, idx, { ...this.messages[idx] })
-        }
-      } finally {
-        // 如果 resumeStream 期间收到了新的 approval_required（onChunk 重新设置了
-        // pendingApproval），则不清除，保持 isStreaming=true 等待用户审批
-        const hasNewApproval = this.pendingApproval && this.pendingApproval !== currentApproval
-        if (!hasNewApproval) {
-          this.pendingApproval = null
-          this.currentAbortController = null
-          this.streamingAssistantId = null
-          const sid = sessionId
-          if (sid && this.sessionStates[sid]) {
-            this.sessionStates[sid].isStreaming = false
-            this.sessionStates[sid].abortController = null
-          }
-          this.unmarkStreaming(sid)
-          this.saveCurrentSessionState()
-          // 审批恢复流结束：以服务端历史为准回填，保证完整渲染
-          await this.syncSessionFromServer(sid)
-          this.recomputePendingApprovalFlag(sid)
           await this.loadSessions()
         }
       }

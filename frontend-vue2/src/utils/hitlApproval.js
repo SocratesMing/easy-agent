@@ -8,8 +8,6 @@
  * 旧载荷（没有 interrupt_id，改造前落库的待审批记录）沿用「一次决策作用于整批」的旧行为。
  */
 
-export const DEFAULT_REJECT_MESSAGE = '用户拒绝了此操作，请勿重试此删除命令。'
-
 function isToolBlock (b) {
   return !!b && b.type === 'tool_call'
 }
@@ -105,9 +103,10 @@ export function approvalTargetForBlock (message, block) {
  * 旧载荷：单个决策（后端把它作用于整批），与改造前一致。
  */
 export function buildResumeDecisions (actionRequests, decision, opts = {}) {
+  // 拒绝说明由后端按工具生成（DA-15）；调用方明确给了说明才带上
   const base = decision === 'approve'
     ? { type: 'approve' }
-    : { type: 'reject', message: opts.rejectMessage || DEFAULT_REJECT_MESSAGE }
+    : (opts.rejectMessage ? { type: 'reject', message: opts.rejectMessage } : { type: 'reject' })
   const actions = (actionRequests || []).filter(Boolean)
   if (!hasInterruptIds(actions)) return { decisions: [base], interruptId: null }
   const interruptId = opts.interruptId || actions.find(ar => ar.interrupt_id).interrupt_id

@@ -137,6 +137,40 @@ def _clean_decision(decision: dict) -> dict:
     return {k: v for k, v in decision.items() if k not in _ROUTING_KEYS}
 
 
+#: 旧前端写死的拒绝说明，只适合删除场景；收到它或没带说明时按工具生成（DA-15）。
+_LEGACY_REJECT_MESSAGE = "用户拒绝了此操作，请勿重试此删除命令。"
+
+
+def reject_message(action: dict) -> str:
+    """按工具生成回给模型的拒绝说明：说清拒绝了什么，并要求不要换个方式重试。"""
+    name = str(action.get("name") or "")
+    args = action.get("args") or {}
+    if name == "delete":
+        target = args.get("file_path") or args.get("path") or ""
+        what = f"删除 {target}" if target else "这次删除"
+    elif name == "execute":
+        command = str(args.get("command") or "")[:200]
+        what = f"执行命令 `{command}`" if command else "执行这条命令"
+    elif name == "create_scheduled_task":
+        what = "创建这个定时任务"
+    elif name == "save_expert":
+        what = "保存这个专家"
+    elif name == "access_knowledge_original":
+        what = "导出知识库原文"
+    else:
+        what = f"调用 {name}" if name else "这个操作"
+    return f"用户拒绝了{what}。不要重试，也不要换别的方式达成同样的效果；如有需要，向用户说明情况或询问下一步。"
+
+
+def _with_reject_message(action: dict, decision: dict) -> dict:
+    if decision.get("type") != "reject":
+        return decision
+    message = str(decision.get("message") or "").strip()
+    if message and message != _LEGACY_REJECT_MESSAGE:
+        return decision
+    return {**decision, "message": reject_message(action)}
+
+
 def _expand_for_interrupt(interrupt: HitlInterrupt, decisions: list[dict]) -> list[dict]:
     """把决策对齐到该中断的操作数：单个决策作用于整批（与旧 UI 语义一致），否则须一一对应。"""
     count = len(interrupt.action_requests)
@@ -159,7 +193,10 @@ def _expand_for_interrupt(interrupt: HitlInterrupt, decisions: list[dict]) -> li
             raise HitlDecisionError(
                 f"工具 {action.get('name')} 不允许决策 {decision_type!r}（允许: {list(allowed)}）"
             )
-    return decisions
+    return [
+        _with_reject_message(action, decision)
+        for action, decision in zip(interrupt.action_requests, decisions)
+    ]
 
 
 def plan_resume(interrupts: list[HitlInterrupt], decisions: list[dict]) -> ResumePlan:
