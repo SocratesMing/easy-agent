@@ -1,6 +1,6 @@
 # D4 方案：MCP 工具按 server 命名 + 兼容层
 
-> 状态：待评审（未实施）。
+> 状态：S1/S2 已实现，开关 `EASY_MCP_TOOL_PREFIX` 默认 **off**（行为与旧版一致），待灰度开启。
 > 背景与证据见 [DeepAgents 规范一致性审计 §5 D4](2026-10-20-deepagents-conformance-audit.md)。
 > 目标：多 server 场景下工具名可区分、冲突不再静默丢弃，同时不破坏既有会话、技能与审批。
 
@@ -84,3 +84,17 @@
 ## 7. 工作量
 
 约 1.5 天：S1 0.5 天（命名 + 开关 + 单测），S2 0.5 天（两处匹配 + HITL 原名字段），集成测试与灰度验证 0.5 天。前端展示可延后。
+
+## 8. 实施记录（2026-10-20）
+
+| 项 | 落地位置 |
+| --- | --- |
+| 命名 / 截断 / 哈希 / 开关 | `easy_agent/utils/mcp_tool_names.py` |
+| 载入时改名（开关控制） | `services/mcp.py` 工具收集循环 |
+| 原名记录 | `rename_tool()` 写入 `metadata["mcp_original_name"]` 与 `mcp_server`（pydantic `model_copy`，不改原对象） |
+| 技能门控兼容 | `agent/core.py` 用 `resolve_tool_names` 把声明名解析为实际名，歧义/缺失记 warning |
+| 子代理白名单兼容 | `agent/subagents.py::resolve_subagent_tools` |
+| HITL 启发式 | `agent/hitl.py::_mcp_original_name`，按原名判断 |
+| 测试 | `tests/utils/test_mcp_tool_names.py`（9 条）+ `tests/agent`、`tests/services` 全绿 |
+
+未做：前端工具列表展示 `server / tool`（可选）、灰度验证（需真实 MCP server）。

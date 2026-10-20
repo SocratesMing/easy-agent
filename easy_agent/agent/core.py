@@ -54,6 +54,7 @@ from deepagents.middleware.skills import SkillsMiddleware
 from easy_agent.tools.registry import skill_gated_tool_names
 from easy_agent.agent import builtin_skills
 from easy_agent.agent.skills import declared_include_tools
+from easy_agent.utils.mcp_tool_names import resolve_tool_names
 from easy_agent.agent.builtin_skills import BUILTIN_VIRTUAL_ROOT
 from easy_agent.bootstrap.logger import AgentLogger
 from easy_agent.agent.model import (
@@ -579,8 +580,17 @@ class EasyAgent(AgentWorkspaceMixin):
             gated_names = set(skill_gated_tool_names()) | declared_include_tools(
                 [self.builtin_skills_dir, self.user_skills_dir]
             )
-            gated_tools = [t for t in graph_tools if getattr(t, "name", "") in gated_names]
-            graph_tools = [t for t in graph_tools if getattr(t, "name", "") not in gated_names]
+            # D4：开启 MCP 前缀后，技能里写的仍是原始工具名，这里按后缀唯一匹配解析
+            gated_resolved, gated_unresolved = resolve_tool_names(
+                gated_names, [getattr(t, "name", "") for t in graph_tools]
+            )
+            for missing in gated_unresolved:
+                logger.warning(
+                    "[%s] 技能声明的工具 %s 未注入或存在歧义，门控已跳过", self.sid, missing
+                )
+            gated_actual = set(gated_resolved.values())
+            gated_tools = [t for t in graph_tools if getattr(t, "name", "") in gated_actual]
+            graph_tools = [t for t in graph_tools if getattr(t, "name", "") not in gated_actual]
             if gated_tools and skills_paths:
                 main_middleware.append(
                     SkillsMiddleware(backend=backend, sources=skills_paths, tools=gated_tools)

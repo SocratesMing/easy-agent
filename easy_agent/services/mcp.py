@@ -19,6 +19,7 @@ from easy_agent.bootstrap.config import Config, _expand_env_recursive
 from easy_agent.services import mcp_sessions
 from easy_agent.services.mcp_evidence import wrap_mcp_tools
 from easy_agent.tools.registry import builtin_tool_names
+from easy_agent.utils.mcp_tool_names import prefix_enabled, rename_tool
 
 logger = logging.getLogger("easy-agent")
 
@@ -455,9 +456,13 @@ async def get_mcp_tools(
     _mcp_tools_cache[path_key] = (mtime, cached_servers)
     tools_by_server: dict[str, list] = {}
     seen: set[str] = set()
+    use_prefix = prefix_enabled()
     for name in wanted:
         server_tools: list = []
         for tool in cached_servers.get(name, []):
+            if use_prefix:
+                # D4：加 server 前缀，避免多 server 同名工具互相覆盖；原名进 metadata 供 HITL/审计使用
+                tool = rename_tool(tool, name)
             tool_name = str(getattr(tool, "name", "") or "")
             if tool_name in _BUILTIN_TOOL_NAMES:
                 logger.warning(

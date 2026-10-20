@@ -121,6 +121,16 @@ def _is_directory_deletion(command: str) -> bool:
     return any(re.search(pat, command) for pat in _DIR_DELETION_PATTERNS)
 
 
+def _mcp_original_name(tool: object) -> str:
+    """MCP 工具（可能被加了 server 前缀）的原始名；非 MCP 工具返回空串。"""
+    metadata = getattr(tool, "metadata", None)
+    if isinstance(metadata, Mapping):
+        raw = metadata.get("mcp_original_name")
+        if isinstance(raw, str):
+            return raw
+    return ""
+
+
 def looks_like_mutating_tool(name: str) -> bool:
     """Heuristic for MCP / extra tools that should pause for HITL."""
     if not name or name in _NAME_HEURISTIC_EXEMPT:
@@ -413,7 +423,10 @@ def build_interrupt_config(
     for name in ordered_names:
         if name in builtin_names or name in config:
             continue
-        by_name = looks_like_mutating_tool(name)
+        # D4：MCP 工具可能带 server 前缀，启发式按原始名判断，避免前缀干扰
+        tool_obj = tool_objects.get(name)
+        heuristic_name = _mcp_original_name(tool_obj) or name
+        by_name = looks_like_mutating_tool(heuristic_name)
         decision = None
         if name not in _NAME_HEURISTIC_EXEMPT:
             decision = mcp_annotation_decision(tool_objects.get(name))

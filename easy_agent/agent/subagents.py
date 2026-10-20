@@ -55,6 +55,8 @@ DEFAULT_SUBAGENTS = [
     },
 ]
 
+from easy_agent.utils.mcp_tool_names import resolve_tool_names
+
 _TOOL_KEYS = ("use_tools", "requires_tools")
 
 
@@ -62,12 +64,17 @@ def resolve_subagent_tools(specs, available_tools) -> list[dict]:
     """把 ``use_tools`` / ``requires_tools`` 解析成主代理已注入的工具实例（DA-11）。"""
     by_name = {getattr(tool, "name", ""): tool for tool in available_tools or []}
     resolved: list[dict] = []
-    for spec in specs or []:
+    for spec in specs or ():
         item = {k: v for k, v in dict(spec).items() if k not in _TOOL_KEYS}
-        if any(name not in by_name for name in spec.get("requires_tools") or ()):
+        # D4 兼容：MCP 前缀开启后，spec 里仍可能写原始名，按「精确 → 后缀唯一」解析
+        requires, missing_required = resolve_tool_names(
+            spec.get("requires_tools") or (), by_name.keys()
+        )
+        if missing_required:
             continue
         if "use_tools" in spec:
-            item["tools"] = [by_name[name] for name in spec["use_tools"] if name in by_name]
+            wanted, _ = resolve_tool_names(spec["use_tools"] or (), by_name.keys())
+            item["tools"] = [by_name[actual] for actual in wanted.values()]
         resolved.append(item)
     return resolved
 
