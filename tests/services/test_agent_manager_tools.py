@@ -205,3 +205,32 @@ def test_every_injectable_spec_has_a_factory():
     }
     injectable = {spec.name for spec in registry.ordered_injectable_specs()}
     assert set(factories) <= injectable
+
+
+async def test_session_connectors_are_loaded_off_the_event_loop(monkeypatch):
+    """建 Agent 时从 DB 读会话连接器：放进线程，不占事件循环。"""
+    import threading
+
+    from easy_agent.services import session_runtime
+
+    monkeypatch.setattr(am, "create_web_search_tool", lambda *a, **k: None)
+    monkeypatch.setattr(am, "get_database", lambda: object())
+    loop_thread = threading.get_ident()
+    off_loop: list[bool] = []
+
+    def fake_load(db, session_id):
+        off_loop.append(threading.get_ident() != loop_thread)
+        return ("srv_a",)
+
+    monkeypatch.setattr(session_runtime, "load_connectors", fake_load)
+
+    await am._get_or_create_agent_unlocked(
+        "session-conn",
+        username="u",
+        workspace_name="ws",
+        enable_hitl=False,
+        enable_web_search=False,
+    )
+
+    assert off_loop == [True]
+    assert am._session_connectors["session-conn"] == ("srv_a",)

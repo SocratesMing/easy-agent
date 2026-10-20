@@ -28,11 +28,14 @@ from easy_agent.services import (
     get_or_create_agent_for_session,
     get_session_expert,
     remove_session_agent,
-    register_stream_task,
-    set_session_edit_target,
     is_session_streaming,
-    unregister_stream_task,
     cancel_stream_task,
+)
+# 流锁、待修改专家要写库：用异步版本，写库放进线程，不占事件循环
+from easy_agent.services.agent_manager import (
+    aregister_stream_task,
+    aset_session_edit_target,
+    aunregister_stream_task,
 )
 from easy_agent.services import skill_library
 from easy_agent.services import session_uploads as file_context
@@ -272,7 +275,7 @@ async def _detached_event_stream(
         run_status = "failed"
         run_error = ""
         try:
-            register_stream_task(session_id, bg)
+            await aregister_stream_task(session_id, bg)
             registered = True
             if db is not None:
                 # 拿到跨副本流锁后再清旧轮次事件：避免把另一个 Pod 正在写的流删掉。
@@ -363,7 +366,7 @@ async def _detached_event_stream(
                 # 先关闭 hub（把终态交给持久化写入器），再释放 DB 流锁：
                 # /stream/live 在别的 Pod 上看到 owner 失效时，终态事件已经入队。
                 hub.close()
-                unregister_stream_task(session_id, bg)
+                await aunregister_stream_task(session_id, bg)
 
     bg_task = asyncio.create_task(_drive())
     _detached_bg_tasks.add(bg_task)
@@ -500,7 +503,7 @@ async def chat_stream(
 
         owned = resolve_owned_expert(repo.database, username, request.pending_expert_id)
         if owned is not None:
-            set_session_edit_target(session_id, request.pending_expert_id)
+            await aset_session_edit_target(session_id, request.pending_expert_id)
         else:
             logger.warning(
                 f"[{sid}] pending_expert_id 非本人可用专家，忽略绑定 | "

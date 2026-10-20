@@ -74,7 +74,7 @@ def _run_to_info(run) -> dict:
 
 
 @router.get("", summary="列出当前用户的定时任务")
-async def list_scheduled_tasks(
+def list_scheduled_tasks(
     db: Annotated[ScheduledTaskRepository, Depends(get_scheduled_task_repository)],
     username: Annotated[str, Depends(get_current_username)],
 ):
@@ -84,7 +84,7 @@ async def list_scheduled_tasks(
 
 
 @router.get("/{task_id}/runs", summary="列出定时任务执行记录")
-async def list_task_runs(
+def list_task_runs(
     task_id: str,
     db: Annotated[ScheduledTaskRepository, Depends(get_scheduled_task_repository)],
     username: Annotated[str, Depends(get_current_username)],
@@ -213,7 +213,7 @@ def _resolve_task_workspace_dir(
 
 
 @router.get("/{task_id}/workspace", summary="获取定时任务工作目录文件树")
-async def get_task_workspace(
+def get_task_workspace(
     task_id: str,
     db: Annotated[ScheduledTaskRepository, Depends(get_scheduled_task_repository)],
     username: Annotated[str, Depends(get_current_username)],
@@ -231,7 +231,7 @@ async def get_task_workspace(
 
 
 @router.get("/{task_id}/workspace/file", summary="预览/下载定时任务工作目录文件")
-async def get_task_workspace_file(
+def get_task_workspace_file(
     request: Request,
     user_repo: Annotated[UserRepository, Depends(get_user_repository)],
     task_id: str,

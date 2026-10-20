@@ -41,8 +41,8 @@ from easy_agent.services import (
     get_session_connectors,
     invalidate_user_agents,
     resolve_connector_servers,
-    set_session_connectors,
 )
+from easy_agent.services.agent_manager import aset_session_connectors
 from easy_agent.services.connectors import catalog_connectors, find_catalog_entry
 from easy_agent.services.mcp import (
     _stdio_precheck,
@@ -506,7 +506,7 @@ async def set_session_connector_switches(
     servers, unknown = resolve_connector_servers(
         request.connectors, username, _runtime_config()
     )
-    evicted = set_session_connectors(request.session_id, servers)
+    evicted = await aset_session_connectors(request.session_id, servers)
     if unknown:
         logger.warning(
             f"会话连接器开关存在未识别项（未安装 / 已停用 / 名称不符），已忽略: {unknown}"

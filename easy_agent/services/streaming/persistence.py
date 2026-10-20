@@ -64,14 +64,22 @@ class IncrementalPersister:
         self.last_persisted_len = 0
         self.last_persist_ts = time.time()
 
-    def maybe_persist(self, proc) -> bool:
-        """按双阈值判断是否需要增量落库；写入返回 True。"""
+    def due(self, proc) -> bool:
+        """是否到了增量落库的时候（双阈值，无副作用）。
+
+        编排器先在事件循环上用它判断，确实要写时才把 :meth:`maybe_persist` 放进线程，
+        避免每个正文 chunk 都切一次线程。
+        """
         growth = len(proc.accumulated_response) - self.last_persisted_len
         if growth < 500:
             return False
-        if growth < self.max_chars and (
-            time.time() - self.last_persist_ts < self.min_interval
-        ):
+        return growth >= self.max_chars or (
+            time.time() - self.last_persist_ts >= self.min_interval
+        )
+
+    def maybe_persist(self, proc) -> bool:
+        """按双阈值判断是否需要增量落库；写入返回 True。"""
+        if not self.due(proc):
             return False
         self.last_persisted_len = len(proc.accumulated_response)
         self.last_persist_ts = time.time()

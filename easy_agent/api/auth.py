@@ -97,7 +97,7 @@ def get_client_ip(request: Request) -> str:
     response_model=AuthResponse,
     summary="注册新用户",
 )
-async def register(
+def register(
     request: RegisterRequest,
     http_request: Request,
     db: Annotated[UserRepository, Depends(get_user_repository)],
@@ -169,7 +169,7 @@ async def register(
     response_model=AuthResponse,
     summary="用户登录",
 )
-async def login(
+def login(
     request: LoginRequest,
     http_request: Request,
     db: Annotated[UserRepository, Depends(get_user_repository)],
@@ -227,7 +227,7 @@ async def login(
     response_model=AuthResponse,
     summary="免密登录（用户名 + 用户ID，用户不存在时自动注册并登录）",
 )
-async def login_passwordless(
+def login_passwordless(
     request: PasswordlessLoginRequest,
     http_request: Request,
     db: Annotated[UserRepository, Depends(get_user_repository)],
@@ -308,7 +308,7 @@ async def login_passwordless(
 
 
 @router.post("/logout", summary="用户登出", response_model=StatusResponse)
-async def logout(
+def logout(
     username: Annotated[str, Depends(get_current_username)],
     http_request: Request,
     db: Annotated[UserRepository, Depends(get_user_repository)],
@@ -356,7 +356,7 @@ async def logout(
     response_model=UserProfile,
     summary="获取用户资料",
 )
-async def get_profile(
+def get_profile(
     db: Annotated[UserRepository, Depends(get_user_repository)],
     username: Annotated[str, Depends(get_current_username)],
 ):
@@ -382,7 +382,7 @@ async def get_profile(
     response_model=UserProfile,
     summary="更新用户资料",
 )
-async def update_profile(
+def update_profile(
     request: UpdateUserProfileRequest,
     db: Annotated[UserRepository, Depends(get_user_repository)],
     username: Annotated[str, Depends(get_current_username)],
@@ -418,7 +418,7 @@ async def update_profile(
     summary="重置密码",
     response_model=MessageResponse,
 )
-async def reset_password(
+def reset_password(
     request: ResetPasswordRequest,
     username: Annotated[str, Depends(get_current_username)],
     db: Annotated[UserRepository, Depends(get_user_repository)],
@@ -453,7 +453,7 @@ async def reset_password(
     response_model=UserListResponse,
     summary="管理员获取用户列表",
 )
-async def list_users(
+def list_users(
     db: Annotated[UserRepository, Depends(get_user_repository)],
     username: Annotated[str, Depends(get_current_username)],
 ):
@@ -482,7 +482,7 @@ async def list_users(
     summary="管理员重置用户默认密码",
     response_model=MessageResponse,
 )
-async def admin_reset_password(
+def admin_reset_password(
     username: str,
     admin_username: Annotated[str, Depends(get_current_username)],
     db: Annotated[UserRepository, Depends(get_user_repository)],

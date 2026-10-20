@@ -19,6 +19,11 @@ from easy_agent.models.db import SessionModel
 from easy_agent.services.run_registry import new_run_id, start_run
 
 
+async def _async_noop(*args, **kwargs):
+    """替换写流锁的异步函数（aregister / aunregister_stream_task）。"""
+    return None
+
+
 @pytest.fixture(autouse=True)
 def _clean_hubs():
     chat_api._session_stream_hubs.clear()
@@ -112,12 +117,12 @@ async def test_cancelled_stream_marks_run_cancelled(db, monkeypatch):
     assert start_run(db, run_id, sid, message_id="msg-cancel") is True
 
     bg_tasks: dict[str, asyncio.Task] = {}
-    monkeypatch.setattr(
-        chat_api,
-        "register_stream_task",
-        lambda session_id, task: bg_tasks.__setitem__(session_id, task),
-    )
-    monkeypatch.setattr(chat_api, "unregister_stream_task", lambda *args: None)
+
+    async def _capture(session_id, task):
+        bg_tasks[session_id] = task
+
+    monkeypatch.setattr(chat_api, "aregister_stream_task", _capture)
+    monkeypatch.setattr(chat_api, "aunregister_stream_task", _async_noop)
 
     started = asyncio.Event()
 

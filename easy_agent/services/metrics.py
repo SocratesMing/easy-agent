@@ -2,7 +2,8 @@
 
 E3 设计目标：在**不引入 Prometheus 客户端**、不改业务链路的前提下，为
 HTTP / SSE / 工具调用 / HITL 提供进程内计数与延迟分位，供 ``/agent/metrics``
-以 JSON 暴露。
+以 JSON 暴露。事件循环延迟（``event_loop``）衡量循环被同步代码占住的时长：
+定时器本该每 ``LOOP_LAG_INTERVAL_SECONDS`` 醒一次，实际多等的时间就是延迟。
 
 约定：
 
@@ -19,6 +20,7 @@ HTTP / SSE / 工具调用 / HITL 提供进程内计数与延迟分位，供 ``/a
 
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 import threading
@@ -37,6 +39,8 @@ QPS_WINDOW_SECONDS = 60.0
 OTHER_ROUTE = "(other)"
 #: SSE 默认路由标签。
 DEFAULT_SSE_ROUTE = "/agent/chat/stream"
+#: 事件循环延迟的采样间隔（秒）。
+LOOP_LAG_INTERVAL_SECONDS = 0.25
 
 _UUID_RE = re.compile(
     r"/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
@@ -159,6 +163,9 @@ class RedMetrics:
         self._hitl_outcomes: dict[str, int] = {}
         self._hitl_series = _TimedSeries(self._max_samples)
 
+        self._loop_lag = _TimedSeries(self._max_samples)
+        self._loop_lag_last = 0.0
+
         now = time.monotonic()
         self._started_monotonic = now
         self._started_at = datetime.now(timezone.utc)
@@ -189,6 +196,9 @@ class RedMetrics:
             self._hitl_total = 0
             self._hitl_outcomes.clear()
             self._hitl_series = _TimedSeries(self._max_samples)
+
+            self._loop_lag = _TimedSeries(self._max_samples)
+            self._loop_lag_last = 0.0
 
             self._started_monotonic = time.monotonic()
             self._started_at = datetime.now(timezone.utc)
@@ -467,6 +477,22 @@ class RedMetrics:
             "wait_ms": self._hitl_series.summary_ms(),
         }
 
+    # -- event loop ----------------------------------------------------------
+
+    def record_loop_lag(self, seconds: float) -> None:
+        """记录一次事件循环延迟采样（定时器实际醒来比预期晚的秒数）。"""
+        value = max(0.0, float(seconds))
+        with self._lock:
+            self._loop_lag.observe(value)
+            self._loop_lag_last = value
+
+    def _loop_snapshot(self) -> dict[str, Any]:
+        return {
+            "interval_ms": round(LOOP_LAG_INTERVAL_SECONDS * 1000.0, 3),
+            "last_ms": round(self._loop_lag_last * 1000.0, 3),
+            "lag_ms": self._loop_lag.summary_ms(),
+        }
+
     # -- snapshot ------------------------------------------------------------
 
     def snapshot(self) -> dict[str, Any]:
@@ -486,6 +512,7 @@ class RedMetrics:
                 "sse": self._sse_snapshot(),
                 "tools": self._tool_snapshot(),
                 "hitl": self._hitl_snapshot(),
+                "event_loop": self._loop_snapshot(),
             }
 
 
@@ -537,6 +564,45 @@ def record_hitl_wait_end(duration_seconds: float, outcome: str = "approved") -> 
     metrics.record_hitl_wait_end(duration_seconds, outcome)
 
 
+def record_loop_lag(seconds: float) -> None:
+    metrics.record_loop_lag(seconds)
+
+
+async def monitor_event_loop_lag(
+    interval: float = LOOP_LAG_INTERVAL_SECONDS,
+    recorder: Any = None,
+) -> None:
+    """一直运行：每隔 ``interval`` 秒醒一次，把多等的时间记成事件循环延迟。"""
+    loop = asyncio.get_running_loop()
+    record = recorder or record_loop_lag
+    while True:
+        started = loop.time()
+        await asyncio.sleep(interval)
+        record(max(0.0, loop.time() - started - interval))
+
+
+#: 每个事件循环一个监测任务（键是 ``id(loop)``：uvloop 的循环不支持弱引用）。
+_lag_monitors: dict[int, asyncio.Task[None]] = {}
+
+
+def ensure_loop_lag_monitor() -> None:
+    """在当前事件循环上启动延迟监测；同一个循环只启动一次。没有运行中的循环时不做事。
+
+    由 ``middleware/metrics.py`` 在应用启动（lifespan）和每个请求进来时调用。
+    """
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    with metrics._lock:
+        for key in [k for k, task in _lag_monitors.items() if task.done()]:
+            del _lag_monitors[key]
+        if id(loop) not in _lag_monitors:
+            _lag_monitors[id(loop)] = loop.create_task(
+                monitor_event_loop_lag(), name="event-loop-lag-monitor"
+            )
+
+
 def snapshot_metrics() -> dict[str, Any]:
     """返回模块级单例的指标快照。"""
     return metrics.snapshot()
@@ -549,16 +615,20 @@ def reset_metrics() -> None:
 
 __all__ = [
     "DEFAULT_SSE_ROUTE",
+    "LOOP_LAG_INTERVAL_SECONDS",
     "MAX_ROUTE_SERIES",
     "MAX_SAMPLES",
     "OTHER_ROUTE",
     "QPS_WINDOW_SECONDS",
     "RedMetrics",
     "metrics",
+    "ensure_loop_lag_monitor",
+    "monitor_event_loop_lag",
     "normalize_path",
     "record_hitl_wait_end",
     "record_hitl_wait_start",
     "record_http_request",
+    "record_loop_lag",
     "record_sse_end",
     "record_sse_start",
     "record_tool_call",

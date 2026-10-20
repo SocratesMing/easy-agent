@@ -12,6 +12,11 @@ from easy_agent.db.repositories.stream_events import (
 )
 from easy_agent.models.db import SessionModel
 
+
+async def _async_noop(*args, **kwargs):
+    """替换写流锁的异步函数（aregister / aunregister_stream_task）。"""
+    return None
+
 SESSION_ID = "sess-cross-pod"
 
 
@@ -105,8 +110,8 @@ async def test_new_stream_replaces_previous_turn_events(db, monkeypatch):
     """新流开始时清掉上一轮事件：默认 last_event_id=0 不会先回放到旧的 done。"""
     append_stream_event(db, SESSION_ID, _frame("done", session_id=SESSION_ID))
 
-    monkeypatch.setattr(chat_module, "register_stream_task", lambda *args: None)
-    monkeypatch.setattr(chat_module, "unregister_stream_task", lambda *args: None)
+    monkeypatch.setattr(chat_module, "aregister_stream_task", _async_noop)
+    monkeypatch.setattr(chat_module, "aunregister_stream_task", _async_noop)
 
     frames = [
         _frame("start", session_id=SESSION_ID),

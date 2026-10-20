@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import time
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
 from easy_agent.services.metrics import (
+    LOOP_LAG_INTERVAL_SECONDS,
     OTHER_ROUTE,
     RedMetrics,
+    ensure_loop_lag_monitor,
+    monitor_event_loop_lag,
     normalize_path,
     record_hitl_wait_end,
     record_hitl_wait_start,
@@ -252,3 +257,71 @@ def test_concurrent_mixed_metrics_are_thread_safe():
     assert data["tools"]["total"] == expected
     assert data["hitl"]["total"] == expected
     assert data["hitl"]["waiting"] == 0
+
+
+# ── 事件循环延迟 ──────────────────────────────────────────────────────
+
+
+def test_loop_lag_is_part_of_the_snapshot():
+    m = RedMetrics()
+    m.record_loop_lag(0.05)
+    m.record_loop_lag(0.01)
+
+    data = m.snapshot()["event_loop"]
+    assert data["interval_ms"] == LOOP_LAG_INTERVAL_SECONDS * 1000
+    assert data["last_ms"] == 10.0
+    assert data["lag_ms"]["count"] == 2 and data["lag_ms"]["max"] == 50.0
+
+    m.reset()
+    assert m.snapshot()["event_loop"]["lag_ms"]["count"] == 0
+
+
+async def test_monitor_records_how_long_the_loop_was_blocked():
+    samples: list[float] = []
+    monitor = asyncio.create_task(monitor_event_loop_lag(0.02, samples.append))
+    await asyncio.sleep(0.05)
+    time.sleep(0.2)  # 同步阻塞事件循环
+    await asyncio.sleep(0.05)
+    monitor.cancel()
+
+    assert max(samples) >= 0.15
+
+
+async def test_monitor_is_started_once_per_loop():
+    import easy_agent.services.metrics as metrics_mod
+
+    loop = asyncio.get_running_loop()
+    ensure_loop_lag_monitor()
+    first = metrics_mod._lag_monitors[id(loop)]
+    ensure_loop_lag_monitor()
+
+    assert metrics_mod._lag_monitors[id(loop)] is first
+    first.cancel()
+
+
+def test_monitor_needs_a_running_loop():
+    import easy_agent.services.metrics as metrics_mod
+
+    before = dict(metrics_mod._lag_monitors)
+    ensure_loop_lag_monitor()
+    assert metrics_mod._lag_monitors == before
+
+
+async def test_metrics_middleware_starts_the_monitor_at_lifespan():
+    """监测任务由 HTTP 指标中间件在应用启动（lifespan）时拉起，无需改动应用装配代码。"""
+    import easy_agent.services.metrics as metrics_mod
+    from easy_agent.middleware.metrics import MetricsMiddleware
+
+    seen: list[str] = []
+
+    async def app(scope, receive, send):
+        seen.append(scope["type"])
+
+    loop = asyncio.get_running_loop()
+    metrics_mod._lag_monitors.pop(id(loop), None)
+    await MetricsMiddleware(app)({"type": "lifespan"}, None, None)
+
+    task = metrics_mod._lag_monitors.get(id(loop))
+    assert task is not None and not task.done()
+    assert seen == ["lifespan"]
+    task.cancel()

@@ -27,6 +27,7 @@ from easy_agent.agent.model import resolve_context_length
 from easy_agent.agent.run_config import build_run_config
 from easy_agent.agent.turn_context import turn_input
 from easy_agent.models.api import ChatRequest
+from easy_agent.utils.blocking import run_blocking
 from easy_agent.utils.session_logger import SessionLogger
 from easy_agent.services.agent_manager import get_agent_config
 from easy_agent.services.hitl_state import (
@@ -183,7 +184,8 @@ async def pump_stream(
         for ev in proc.handle(mode, data):
             ev_type = ev.get("type")
             if ev_type == "tool_result":
-                persist_tool_result_event(
+                await run_blocking(
+                    persist_tool_result_event,
                     ev,
                     db=db,
                     session_id=session_id,
@@ -193,7 +195,8 @@ async def pump_stream(
                     sid=sid,
                 )
             elif ev_type == "thinking_end":
-                persist_thinking_event(
+                await run_blocking(
+                    persist_thinking_event,
                     ev,
                     proc=proc,
                     db=db,
@@ -202,9 +205,10 @@ async def pump_stream(
                     sid=sid,
                 )
             elif ev_type == "todo_list":
-                persist_todos(db, session_id, ev["todos"], sid)
+                await run_blocking(persist_todos, db, session_id, ev["todos"], sid)
             elif ev_type == "content":
-                persister.maybe_persist(proc)
+                if persister.due(proc):
+                    await run_blocking(persister.maybe_persist, proc)
             yield ev
 
 
@@ -361,7 +365,8 @@ async def finalize_stream(
             logger.info(f"[{sid}] 💬 回复内容(前200字):\n{accumulated_response[:200]}")
 
     # 持久化最终消息
-    persist_final_message(
+    await run_blocking(
+        persist_final_message,
         db,
         session_id,
         build_assistant_message_dict(
@@ -509,7 +514,7 @@ async def chat_stream_generator(
         # session.messages 末尾是本次刚写入 DB 的当前用户消息（chat.py 在调用
         # 本生成器前已 add_message），需排除以免与下方 message_content 重复注入。
         # 超长时由官方 SummarizationMiddleware 在模型调用前按 token 阈值自动摘要。
-        session = db.get_session(session_id)
+        session = await run_blocking(db.get_session, session_id)
         total_msgs = len(session.messages) if session and session.messages else 0
         history_messages = session.messages[:-1] if total_msgs else []
         provider = agent.config.llm.provider.lower() if agent and agent.config else ""
@@ -588,8 +593,10 @@ async def chat_stream_generator(
             )
             if interruption:
                 # 保存部分 assistant 消息（复用取消路径模式）
-                db.update_last_assistant_message(
-                    session_id, interruption.partial_message
+                await run_blocking(
+                    db.update_last_assistant_message,
+                    session_id,
+                    interruption.partial_message,
                 )
                 logger.info(
                     f"[{sid}] 🔔 HITL 中断 | thread_id={thread_id} | 审批句柄={handle} | "
@@ -637,7 +644,8 @@ async def chat_stream_generator(
             f"思考中={is_in_thinking}"
         )
         try:
-            persist_partial(
+            await run_blocking(
+                persist_partial,
                 proc,
                 db=db,
                 session_id=session_id,
@@ -702,7 +710,7 @@ async def resume_stream_generator(
     # 从 DB 加载部分 assistant 消息
     session = None
     try:
-        session = db.get_session(session_id)
+        session = await run_blocking(db.get_session, session_id)
         snapshot = load_resume_snapshot(session.messages if session else [])
     except Exception as e:
         logger.warning(f"[{sid}] HITL 恢复: 加载部分消息失败: {e}")
@@ -841,8 +849,10 @@ async def resume_stream_generator(
                 with_approval=True,
             )
             if interruption:
-                db.update_last_assistant_message(
-                    session_id, interruption.partial_message
+                await run_blocking(
+                    db.update_last_assistant_message,
+                    session_id,
+                    interruption.partial_message,
                 )
                 # 键序契约（与迁移前字面量一致）：type → thread_id → blocks →
                 # action_requests。快捷方法把 action_requests 放在 blocks 之前，
@@ -861,8 +871,8 @@ async def resume_stream_generator(
             )
         finally:
             # 无论正常结束、嵌套中断还是异常，均把审批决策写回，保证切换会话后仍可见
-            persist_approval_decisions(
-                db, session_id, decision_status_by_id, sid
+            await run_blocking(
+                persist_approval_decisions, db, session_id, decision_status_by_id, sid
             )
 
         # 恢复流重跑工具时会再次 append 同 tool_call_id 的记录（DB 加载的 + 重跑时新增的），
@@ -902,7 +912,8 @@ async def resume_stream_generator(
         tool_call_records = _tool_call_tuples(proc.blocks, with_approval=True)
         last_context_tokens = proc.last_context_tokens
         current_step = proc.current_step
-        persist_partial(
+        await run_blocking(
+            persist_partial,
             proc,
             db=db,
             session_id=session_id,
@@ -916,7 +927,8 @@ async def resume_stream_generator(
         logger.error(f"[{sid}] HITL 恢复异常: {str(e)}", exc_info=True)
         # 持久化已生成的部分回复（与取消路径一致），避免流式过程中已完成的
         # 思考/工具/正文在异常后丢失，导致历史会话中 HITL 之后的记录整体消失。
-        persist_partial(
+        await run_blocking(
+            persist_partial,
             proc,
             db=db,
             session_id=session_id,

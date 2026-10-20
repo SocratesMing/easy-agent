@@ -7,6 +7,9 @@ SSE 进程内的独立活跃数/时长由 ``record_sse_*`` 另外提供。
 
 排除项：存活/就绪探针、指标端点自身、OpenAPI 文档、SPA 入口、静态资源，
 以及 CORS ``OPTIONS`` 预检（不是业务请求）。
+
+事件循环延迟监测也从这里启动：应用启动（lifespan）和每个请求进来时确保当前循环上
+有一个监测任务，不必改动应用装配代码。
 """
 
 from __future__ import annotations
@@ -15,7 +18,7 @@ import logging
 import time
 from typing import Any, Callable
 
-from easy_agent.services.metrics import record_http_request
+from easy_agent.services.metrics import ensure_loop_lag_monitor, record_http_request
 
 logger = logging.getLogger(__name__)
 
@@ -102,6 +105,11 @@ class MetricsMiddleware:
         self._recorder = recorder or record_http_request
 
     async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
+        if scope.get("type") in ("http", "lifespan"):
+            try:
+                ensure_loop_lag_monitor()
+            except Exception:  # 指标失败不得影响请求
+                logger.warning("启动事件循环延迟监测失败", exc_info=True)
         if scope.get("type") != "http" or not should_record_request(
             scope.get("path", ""), scope.get("method", "GET")
         ):

@@ -21,6 +21,7 @@ from easy_agent.agent.model import create_model
 from easy_agent.tools.registry import ToolBuildContext, build_session_tools
 from easy_agent.tools.web_search import create_web_search_tool
 from easy_agent.utils.prompt_probe import describe_prompt, prompt_fingerprint
+from easy_agent.utils.blocking import run_blocking
 from easy_agent.services.mcp import get_mcp_tools as load_mcp_tools_for_user
 from easy_agent.services.mcp_policy import filter_server_names
 
@@ -240,7 +241,7 @@ async def _get_or_create_agent_unlocked(
         try:
             from easy_agent.services.session_runtime import load_connectors
 
-            recorded_connectors = load_connectors(get_database(), session_id)
+            recorded_connectors = await run_blocking(load_connectors, get_database(), session_id)
             if recorded_connectors is not None:
                 _session_connectors[session_id] = recorded_connectors
         except Exception:
@@ -469,15 +470,32 @@ def set_session_edit_target(session_id: str, expert_agent_id: str) -> None:
     新绑定覆盖旧绑定（同一会话连续编辑多个专家时取最后一次）；保留至会话结束，
     中间的普通聊天轮次不会清除——用户可能隔几轮才提交修改内容。
     """
-    session_id = session_id or ""
+    expert_agent_id = _bind_edit_target(session_id, expert_agent_id)
+    if expert_agent_id:
+        _save_edit_target(session_id, expert_agent_id)
+
+
+async def aset_session_edit_target(session_id: str, expert_agent_id: str) -> None:
+    """:func:`set_session_edit_target` 的异步版本：落库放进线程，不占事件循环。"""
+    expert_agent_id = _bind_edit_target(session_id, expert_agent_id)
+    if expert_agent_id:
+        await run_blocking(_save_edit_target, session_id, expert_agent_id)
+
+
+def _bind_edit_target(session_id: str, expert_agent_id: str) -> str:
+    """写进程内绑定表；返回规范化后的专家 ID，无效输入返回空串（不绑定）。"""
     expert_agent_id = str(expert_agent_id or "").strip()
     if not session_id or not expert_agent_id:
-        return
+        return ""
     if _session_edit_targets.get(session_id) != expert_agent_id:
         logger.info(
             f"[{session_id[-5:]}] ✏️ 已绑定待修改专家 | expert={expert_agent_id}"
         )
     _session_edit_targets[session_id] = expert_agent_id
+    return expert_agent_id
+
+
+def _save_edit_target(session_id: str, expert_agent_id: str) -> None:
     try:
         from easy_agent.services.session_runtime import save_edit_target
 
@@ -516,19 +534,34 @@ def set_session_connectors(session_id: str, connector_servers: list[str]) -> int
     集合变了必须驱逐该会话的缓存 Agent，否则旧工具集会黏住（下次请求会按新集合重建）。
     返回被驱逐的 Agent 数，供接口回执与日志。
     """
-    global _session_agents, _session_connectors
     if not session_id:
         return 0
+    normalized, evicted = _apply_session_connectors(session_id, connector_servers)
+    _save_connectors(session_id, normalized)
+    return evicted
+
+
+async def aset_session_connectors(session_id: str, connector_servers: list[str]) -> int:
+    """:func:`set_session_connectors` 的异步版本。
+
+    先在事件循环上更新集合并驱逐缓存 Agent，落库放进线程：落库期间同一会话的新请求
+    看到的已经是驱逐后的状态，不会再拿到旧工具集。
+    """
+    if not session_id:
+        return 0
+    normalized, evicted = _apply_session_connectors(session_id, connector_servers)
+    await run_blocking(_save_connectors, session_id, normalized)
+    return evicted
+
+
+def _apply_session_connectors(
+    session_id: str, connector_servers: list[str]
+) -> tuple[tuple[str, ...], int]:
+    """更新进程内的连接器集合并驱逐该会话的缓存 Agent；返回（规范化集合，驱逐数）。"""
     normalized = tuple(
         dict.fromkeys(str(n).strip() for n in connector_servers if str(n).strip())
     )
     _session_connectors[session_id] = normalized
-    try:
-        from easy_agent.services.session_runtime import save_connectors
-
-        save_connectors(get_database(), session_id, list(normalized))
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(f"[{session_id[-5:]}] 会话连接器落库失败: {exc}")
     evicted = 0
     if session_id in _session_agents:
         _session_agents.pop(session_id, None)
@@ -537,7 +570,16 @@ def set_session_connectors(session_id: str, connector_servers: list[str]) -> int
         f"[{session_id[-5:]}] 🔌 会话连接器开关已更新 | "
         f"{list(normalized) if normalized else '(全部关闭)'} | 驱逐 Agent: {evicted} 个"
     )
-    return evicted
+    return normalized, evicted
+
+
+def _save_connectors(session_id: str, normalized: tuple[str, ...]) -> None:
+    try:
+        from easy_agent.services.session_runtime import save_connectors
+
+        save_connectors(get_database(), session_id, list(normalized))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"[{session_id[-5:]}] 会话连接器落库失败: {exc}")
 
 
 def clear_session_connectors(session_id: str) -> None:
@@ -553,6 +595,18 @@ def register_stream_task(session_id: str, task: asyncio.Task[None]) -> None:
     若该会话已存在未完成的流式任务（通常不应发生），先取消旧的，
     避免多个 astream 协程并发写同一会话。
     """
+    _acquire_stream_lock(session_id)
+    _remember_stream_task(session_id, task)
+
+
+async def aregister_stream_task(session_id: str, task: asyncio.Task[None]) -> None:
+    """:func:`register_stream_task` 的异步版本：获取跨实例流锁的写库放进线程。"""
+    await run_blocking(_acquire_stream_lock, session_id)
+    _remember_stream_task(session_id, task)
+
+
+def _acquire_stream_lock(session_id: str) -> None:
+    """获取 DB 流锁；会话已被占用时抛 ``SessionBusyError``，其它错误只记日志。"""
     from easy_agent.services.session_runtime import SessionBusyError, acquire_stream
 
     try:
@@ -561,6 +615,11 @@ def register_stream_task(session_id: str, task: asyncio.Task[None]) -> None:
         raise
     except Exception as exc:  # noqa: BLE001
         logger.warning(f"[{session_id[-5:]}] 会话流锁获取失败: {exc}")
+
+
+def _remember_stream_task(session_id: str, task: asyncio.Task[None]) -> None:
+    from easy_agent.services.session_runtime import SessionBusyError
+
     old = _session_stream_tasks.get(session_id)
     if old and not old.done() and old is not task:
         # 旧实现直接 old.cancel()：旧任务的 hub.close() 会把 EOF 发给新订阅者，
@@ -586,10 +645,26 @@ def unregister_stream_task(
     若用户随后对同一会话发起新流，新任务会先 register；旧任务结束时的 finally
     若无条件 pop 会误删新任务的注册，导致 /cancel 失效。
     """
+    _forget_stream_task(session_id, task)
+    _release_stream_lock(session_id)
+
+
+async def aunregister_stream_task(
+    session_id: str, task: asyncio.Task[None] | None = None
+) -> None:
+    """:func:`unregister_stream_task` 的异步版本：释放跨实例流锁的写库放进线程。"""
+    _forget_stream_task(session_id, task)
+    await run_blocking(_release_stream_lock, session_id)
+
+
+def _forget_stream_task(session_id: str, task: asyncio.Task[None] | None) -> None:
     if task is None:
         _session_stream_tasks.pop(session_id, None)
     elif _session_stream_tasks.get(session_id) is task:
         _session_stream_tasks.pop(session_id, None)
+
+
+def _release_stream_lock(session_id: str) -> None:
     try:
         from easy_agent.services.session_runtime import release_stream
 
@@ -611,7 +686,7 @@ async def cancel_stream_task(session_id: str) -> bool:
     try:
         from easy_agent.services.session_runtime import request_cancel
 
-        request_cancel(get_database(), session_id)
+        await run_blocking(request_cancel, get_database(), session_id)
     except Exception as exc:  # noqa: BLE001
         logger.warning(f"[{session_id[-5:]}] 写入跨实例取消标记失败: {exc}")
 
