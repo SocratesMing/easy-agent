@@ -231,7 +231,7 @@ import { iconCategoryFor } from '../../../utils/skillCategories.js'
 // 专家头像取字 / 配色：与技能中心、+ 号下拉、输入框胶囊共用同一套规则（按 ID 稳定取档）
 import { expertAvatarChar, expertAvatarClass } from '../../../utils/expertAvatar.js'
 import { parseLeadingSkillTokens } from '../../../utils/skillTokens.js'
-import { ensureSkillDirectoryLoaded, skillDirectoryStore } from '../../../store/skillDirectoryStore.js'
+import { ensureSkillDirectoryLoaded, skillDirectoryStore } from '../../skills/store/skillDirectoryStore.js'
 
 const props = defineProps({
   message: {

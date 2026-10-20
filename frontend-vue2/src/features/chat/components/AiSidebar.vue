@@ -309,7 +309,7 @@
 import Chat from './Chat.vue'
 import chatSessionMixin from '../mixins/chatSession.js'
 import { chatStore } from '../store/chatStore.js'
-import { ensureSkillDirectoryLoaded, skillFreeTitle } from '../../../store/skillDirectoryStore.js'
+import { ensureSkillDirectoryLoaded, skillFreeTitle } from '../../skills/store/skillDirectoryStore.js'
 import { formatPageContext, setExternalPageContext } from '../../../utils/pageContext.js'
 import { formatRelativeTime } from '../../../utils/relativeTime.js'
 import { eventTarget } from '../../../utils/domEvent.js'

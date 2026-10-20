@@ -255,8 +255,8 @@ import {
   expertAvatarClass as buildExpertAvatarClass
 } from '../../../utils/expertAvatar.js'
 import { parseLeadingSkillTokens } from '../../../utils/skillTokens.js'
-import { highlightCode } from '../../../services/markdown/highlight.js'
-import { ensureSkillDirectoryLoaded, skillDirectoryStore } from '../../../store/skillDirectoryStore.js'
+import { highlightCode } from '../../../shared/markdown/highlight.js'
+import { ensureSkillDirectoryLoaded, skillDirectoryStore } from '../../skills/store/skillDirectoryStore.js'
 
 // 注册 KaTeX 数学公式 + emoji 短代码扩展（幂等，仅执行一次）
 setupMarkedExtensions()

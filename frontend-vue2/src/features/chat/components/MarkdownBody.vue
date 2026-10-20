@@ -4,8 +4,8 @@
 </template>
 
 <script>
-import { linkKnowledgeCitations } from '../../../services/markdown/citations.js'
-import { renderMarkdown } from '../../../services/markdown/render.js'
+import { linkKnowledgeCitations } from '../../../shared/markdown/citations.js'
+import { renderMarkdown } from '../../../shared/markdown/render.js'
 
 export default {
   name: 'MarkdownBody',
