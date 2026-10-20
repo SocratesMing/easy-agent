@@ -235,7 +235,6 @@
 </template>
 
 <script>
-import hljs from 'highlight.js'
 import 'highlight.js/styles/github-dark.css'
 import {
   setupMarkedExtensions,
@@ -258,25 +257,12 @@ import {
   expertAvatarClass as buildExpertAvatarClass
 } from '../utils/expertAvatar.js'
 import { parseLeadingSkillTokens } from '../utils/skillTokens.js'
+import { highlightCode } from '../services/markdown/highlight.js'
 import { ensureSkillDirectoryLoaded, skillDirectoryStore } from '../store/skillDirectoryStore.js'
 
 // 注册 KaTeX 数学公式 + emoji 短代码扩展（幂等，仅执行一次）
 setupMarkedExtensions()
 
-const langAliases = {
-  'js': 'javascript',
-  'ts': 'typescript',
-  'py': 'python',
-  'rb': 'ruby',
-  'sh': 'bash',
-  'yml': 'yaml',
-  'md': 'markdown',
-  'c++': 'cpp',
-  'c#': 'csharp',
-  'cs': 'csharp',
-  // highlight.js 没有 vue 语法，按 FilePreview 的做法回退到 xml
-  'vue': 'xml',
-}
 
 // 处理过程类型：思考 + 工具调用（排除已在侧边栏显示的 write_todos）
 function isProcessType(b) {
@@ -300,51 +286,6 @@ function linkKnowledgeCitations(content, citeMap) {
       return `<a class="ke-cite" data-cite="${display}">[知识依据${display}]</a>`
     }
   )
-}
-
-// 代码高亮：highlight.js（同步 API，没有异步初始化，因此不再需要就绪标记来触发重渲染）。
-// 语言别名与配色（github-dark）与 FilePreview 保持一致，两处代码块样式统一。
-const highlightCache = new Map()
-const HIGHLIGHT_CACHE_MAX = 200
-const HIGHLIGHT_CACHE_CODE_MAX = 20000
-
-function fallbackPre(code) {
-  return `<pre class="hljs" style="background: #0d1117; padding: 12px 16px; border-radius: 8px; overflow-x: auto; border: 1px solid #21262d;"><code style="color: #c9d1d9; font-family: 'Fira Code', Consolas, monospace; font-size: 13px;">${escapeHtml(code)}</code></pre>`
-}
-
-function highlightCode(code, lang) {
-  const normalizedLang = lang ? String(lang).toLowerCase() : ''
-  const mappedLang = langAliases[normalizedLang] || normalizedLang
-  // 未识别/未注册的语言交给 highlightAuto 自动识别，避免对未知语言抛错
-  const validLang = mappedLang && hljs.getLanguage(mappedLang) ? mappedLang : ''
-
-  const cacheKey = validLang + '\u0000' + code
-  const cacheable = code.length <= HIGHLIGHT_CACHE_CODE_MAX
-  if (cacheable) {
-    const cached = highlightCache.get(cacheKey)
-    if (cached) return cached
-  }
-
-  try {
-    let inner = ''
-    if (validLang) {
-      inner = hljs.highlight(code, { language: validLang }).value
-    }
-    if (!inner) inner = hljs.highlightAuto(code).value
-    const langClass = validLang ? ` class="language-${escapeHtml(validLang)}"` : ''
-    const html = `<pre class="hljs"><code${langClass}>${inner}</code></pre>`
-    if (cacheable) {
-      if (highlightCache.size >= HIGHLIGHT_CACHE_MAX) {
-        // 简易淘汰：清掉最早写入的一项
-        highlightCache.delete(highlightCache.keys().next().value)
-      }
-      highlightCache.set(cacheKey, html)
-    }
-    return html
-  } catch (e) {
-    console.error('代码高亮失败:', e, 'lang:', validLang)
-    return fallbackPre(code)
-  }
 }
 
 // 统一的 markdown 渲染器（代码块结构、外链处理由 markdownSetup 提供），
