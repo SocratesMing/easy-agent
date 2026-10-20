@@ -419,8 +419,8 @@ async def chat_stream(
 
     # 本轮技能：优先用请求体的结构化字段 skills（输入框技能胶囊选中项，技能目录名），
     # 同时兼容消息文本开头的 `/目录名` 指令（旧前端 / 手打指令），合并去重后校验归属
-    # （目录必须真实存在于该用户技能库，含已停用）。命中的指令**只拼进模型输入**
-    # （parsed_content），落库正文、气泡与会话标题用的都是用户原话。
+    # （目录必须真实存在于该用户技能库，含已停用）。命中且已启用的技能在本轮 pin 进
+    # 对话（DA-13，见下文 pinned_skills）；落库正文、气泡与会话标题用的都是用户原话。
     turn_skills, unknown_skills = skill_library.resolve_turn_skills(
         request.skills, request.message, username
     )
@@ -483,12 +483,13 @@ async def chat_stream(
             detail="本会话正在生成回复，请等待完成或先取消当前生成",
         )
 
-    # 模型输入 = 技能指令前缀 + 用户正文（技能指令不进落库文本，见上文解析处）；
-    # 旧前端消息文本里已有的 `/目录名` 保持原样，不重复拼。
-    model_message = skill_library.inject_skill_directives(
-        skill_library.pending_skill_directives(turn_skill_dirs, request.message),
-        request.message,
-    )
+    # DA-13：选中的技能 pin 进本轮（框架在第一次模型调用前把技能全文加进对话），
+    # 不再在模型输入前拼 `/目录名`；用户手打在正文开头的 `/目录名` 原样保留，同样会 pin。
+    model_message = request.message
+    pinned_skills = skill_library.pinned_skill_names(turn_skills)
+    not_pinned = [item["dir_name"] for item in turn_skills if not item["enabled"]]
+    if not_pinned:
+        logger.info(f"[{sid}] 🧩 已停用的技能不 pin | {not_pinned}")
 
     # 「待修改专家」绑定：用户在专家面板点「编辑」后，前端把专家 ID 放进请求的
     # 结构化字段（不进消息正文，用户不可见、不可改）。这里做归属校验——只接受
@@ -559,7 +560,7 @@ async def chat_stream(
                 file_contents = [
                     f"[文件: {fn}]\n{c}" for fn, c in file_context_parts
                 ]
-                # 技能指令跟在正文前（与改造前前端拼接的顺序一致），文件块仍在最前
+                # 文件块在最前，正文在后
                 parsed_content = "\n\n".join(file_contents) + "\n\n" + model_message
     elif request.files:
         preview = file_context.build_turn_preview(
@@ -647,6 +648,7 @@ async def chat_stream(
                 http_request=http_request,
                 parsed_content=parsed_content,
                 session_logger=session_logger,
+                pinned_skills=pinned_skills,
                 context_prefix=knowledge_chat.context,
                 initial_events=knowledge_chat.initial_events,
                 assistant_metadata=knowledge_chat.assistant_metadata,

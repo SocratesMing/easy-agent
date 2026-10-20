@@ -149,7 +149,7 @@ def _stored_user_message(db, captured):
 
 
 def test_stream_uses_structured_skills_field(client, db, monkeypatch):
-    """请求体 skills 字段（新前端）：`/目录名` 只进模型输入，落库正文与标题都是用户原话。"""
+    """请求体 skills 字段（新前端）：选中的技能 pin 进本轮（DA-13），模型输入、落库正文与标题都是用户原话。"""
     _patch_skills(monkeypatch)
     captured = _patch_stream(monkeypatch)
 
@@ -158,7 +158,8 @@ def test_stream_uses_structured_skills_field(client, db, monkeypatch):
     )
 
     assert resp.status_code == 200
-    assert captured["stream_kwargs"]["parsed_content"] == "/docx 帮我排个版"
+    assert captured["stream_kwargs"]["parsed_content"] == "帮我排个版"
+    assert captured["stream_kwargs"]["pinned_skills"] == ["Word 文档"]
     session, user_message = _stored_user_message(db, captured)
     assert user_message["content"] == "帮我排个版"
     assert user_message["skills"] == ["docx"]
@@ -185,7 +186,8 @@ def test_stream_skills_only_without_text_uses_display_name(client, db, monkeypat
     resp = client.post("/agent/chat/stream", json={"message": "", "skills": ["docx"]})
 
     assert resp.status_code == 200
-    assert captured["stream_kwargs"]["parsed_content"] == "/docx"
+    assert captured["stream_kwargs"]["parsed_content"] == ""
+    assert captured["stream_kwargs"]["pinned_skills"] == ["Word 文档"]
     session, user_message = _stored_user_message(db, captured)
     assert user_message["content"] == ""
     assert user_message["skills"] == ["docx"]
@@ -202,7 +204,8 @@ def test_stream_merges_skills_field_and_text_directive(client, db, monkeypatch):
     )
 
     assert resp.status_code == 200
-    assert captured["stream_kwargs"]["parsed_content"] == "/docx /pdf 帮我看看"
+    assert captured["stream_kwargs"]["parsed_content"] == "/pdf 帮我看看"
+    assert captured["stream_kwargs"]["pinned_skills"] == ["Word 文档", "PDF 文档"]
     _session, user_message = _stored_user_message(db, captured)
     assert user_message["skills"] == ["docx", "pdf"]
 
@@ -216,6 +219,7 @@ def test_stream_legacy_skill_prefix_still_works(client, db, monkeypatch):
 
     assert resp.status_code == 200
     assert captured["stream_kwargs"]["parsed_content"] == "/docx 帮我排个版"
+    assert captured["stream_kwargs"]["pinned_skills"] == ["Word 文档"]
     session, user_message = _stored_user_message(db, captured)
     assert user_message["content"] == "/docx 帮我排个版"
     assert user_message["skills"] == ["docx"]
@@ -223,7 +227,7 @@ def test_stream_legacy_skill_prefix_still_works(client, db, monkeypatch):
 
 
 def test_stream_skills_field_unknown_dir_ignored(client, db, monkeypatch):
-    """字段里不属于该用户的目录名：只记日志，不拼指令、不落 skills 字段。"""
+    """字段里不属于该用户的目录名：只记日志，不 pin、不落 skills 字段。"""
     _patch_skills(monkeypatch)
     captured = _patch_stream(monkeypatch)
 
@@ -233,8 +237,26 @@ def test_stream_skills_field_unknown_dir_ignored(client, db, monkeypatch):
 
     assert resp.status_code == 200
     assert captured["stream_kwargs"]["parsed_content"] == "你好"
+    assert captured["stream_kwargs"]["pinned_skills"] == []
     _session, user_message = _stored_user_message(db, captured)
     assert "skills" not in user_message
+
+
+def test_stream_disabled_skill_is_not_pinned(client, db, monkeypatch):
+    """已停用的技能不在技能源里，pin 不到：只记日志，落库仍记下用户选了它。"""
+    from easy_agent.services import skill_library
+
+    _patch_skills(monkeypatch)
+    disabled = [{**_SKILL_DIRS[0], "enabled": False}, _SKILL_DIRS[1]]
+    monkeypatch.setattr(skill_library, "list_user_skill_dirs", lambda username: list(disabled))
+    captured = _patch_stream(monkeypatch)
+
+    resp = client.post("/agent/chat/stream", json={"message": "看看", "skills": ["docx", "pdf"]})
+
+    assert resp.status_code == 200
+    assert captured["stream_kwargs"]["pinned_skills"] == ["PDF 文档"]
+    _session, user_message = _stored_user_message(db, captured)
+    assert user_message["skills"] == ["docx", "pdf"]
 
 
 def test_stream_path_like_text_not_treated_as_skill(client, db, monkeypatch):

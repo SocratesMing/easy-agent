@@ -1,7 +1,7 @@
 # DA-13 技能：公共技能只读共享、选中即加载、按需暴露工具
 
 - 日期：2026-10-20
-- 状态：已评审（2026-10-20，§12 均按推荐方案）；S1 实现中
+- 状态：已评审（2026-10-20，§12 均按推荐方案）；S1（pinned skills）已实现，见 §13；§6.3 随 S2 实施
 - 范围：技能挂载与技能中心接口、本轮技能的加载方式、`save_expert` 的暴露方式、公共技能文档篇幅；前端技能中心的交互不变
 - 相关：审计 DA-13（`docs/audit/2026-10-19-deepagents-best-practices-audit.md` §4）、C3 沙箱只读挂载（DA-07）、DA-03（技能每轮重载已在 P0 完成）
 - 版本：deepagents 0.7.28（多源 ≥0.7、skill tools ≥0.7.22、pinned skills ≥0.7.23）
@@ -81,6 +81,8 @@
 
 ### 6.3 `save_expert` 由 expert-creator 技能带出
 
+> 实施顺序调整（S1 实施时发现）：已添加 expert-creator 的用户手里是复制出来的旧副本，没有 `include_tools`。如果现在就去掉 `creator_requested`，这些用户会失去 `save_expert`。所以本节与 S2 一起实施：公共技能改从 canonical 目录只读读取后，所有人看到的都是带 `include_tools` 的新版本。
+
 - `skills/expert-creator/SKILL.md` 的 frontmatter 增加 `metadata.include_tools: save_expert`。
 - `save_expert` 始终作为工具交给 agent，标记 `extras={"defer_loading": True}`：模型读到或 pin 了 expert-creator 才会出现，否则调用会被当作未知工具。
 - 删除 `creator_requested` 相关逻辑：`agent_manager._session_creator`、注册表的 `_save_expert_enabled`，以及因此触发的 agent 重建。
@@ -125,8 +127,8 @@
 
 | 阶段 | 内容 |
 | --- | --- |
-| S1 | pinned skills 与 skill tools（6.2、6.3）：改动集中在编排器和工具注入，不动存储 |
-| S2 | 公共技能只读共享与迁移（6.1、7）：动技能中心存储，需要迁移 |
+| S1（✅ 2026-10-20） | pinned skills（6.2）：改动集中在编排器和接口层，不动存储 |
+| S2 | 公共技能只读共享与迁移（6.1、7），以及 `save_expert` 由技能带出（6.3）：动技能中心存储，需要迁移 |
 | S3 | `SKILL.md` 精简（6.4）：只改文档内容，可随时做 |
 
 ## 11. 风险
@@ -146,3 +148,13 @@
 3. 专家会话仍不提供 `save_expert`，维持现状。
 4. 选中技能改用 `pinned_skills`；会话 thread 下技能全文留在历史里，可以接受。
 5. 按 S1 → S2 → S3 实施。
+
+## 13. S1 实施记录（2026-10-20）
+
+| 改动 | 位置 | 回归测试 |
+| --- | --- | --- |
+| 本轮选中且已启用的技能按 frontmatter `name` 放进运行输入的 `pinned_skills`；请求体 `skills` 字段不再拼 `/目录名` 指令；正文开头手打的 `/目录名` 原样保留，同样会 pin；已停用的只记日志 | `services/skill_library.py::pinned_skill_names`、`api/chat.py`、`api/expert.py`、`services/streaming/orchestrator.py`、`agent/turn_context.py::turn_input` | `tests/api/test_chat.py` 的技能用例（含 `test_stream_disabled_skill_is_not_pinned`） |
+| 删除不再使用的 `inject_skill_directives` / `pending_skill_directives` | `services/skill_library.py` | — |
+| 真实 `create_deep_agent`：pin 的技能全文在第一次模型调用前进入对话（`lc_source = pinned_skill`），整轮只调用一次模型，没有先 `read_file`；经编排器跑一轮，技能全文既不出现在 SSE 事件里，也不写进助手回复 | — | `tests/services/test_pinned_skills.py` |
+
+验证：项目 `.venv` 全量 1799 passed，1 skipped，1 failed。失败的是 `tests/test_scripts_layout.py::test_scripts_root_has_no_loose_scripts`，原因是 `7073a05`（前端重构）把 `sync-frontend-shared.mjs` 放在了 `scripts/` 根目录，与本次改动无关。ruff、import graph、double-write、multi-replica、API 文档门禁均通过。

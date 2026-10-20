@@ -45,17 +45,28 @@ class TurnContextSummarizationState(SummarizationState):
     turn_context: Annotated[NotRequired[TurnContext | None], OmitFromOutput]
 
 
-def turn_input(messages: list, *, message_id: str, rendered: str) -> dict[str, Any]:
-    """一轮对话的图输入：消息链、本轮渲染内容、技能重载标记。
+def turn_input(
+    messages: list,
+    *,
+    message_id: str,
+    rendered: str,
+    pinned_skills: list[str] | None = None,
+) -> dict[str, Any]:
+    """一轮对话的图输入：消息链、本轮渲染内容、技能重载标记、本轮 pin 的技能。
 
     ``skills_metadata: None`` 是官方的技能重载方式（deepagents skills 文档 "Reload skills"）：
     同一 thread 的后续运行也会重新扫描技能目录，本会话新建的技能下一轮即可见。
+    ``pinned_skills``（DA-13）是输入框选中的技能名：框架在下一次模型调用前把这些技能的
+    ``SKILL.md`` 作为消息加进对话，用完自动清空。
     """
-    return {
+    payload = {
         "messages": messages,
         TURN_CONTEXT_KEY: {"message_id": message_id, "content": rendered},
         "skills_metadata": None,
     }
+    if pinned_skills:
+        payload["pinned_skills"] = list(pinned_skills)
+    return payload
 
 
 def _is_reasoning_block(block: Any) -> bool:

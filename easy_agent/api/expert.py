@@ -433,7 +433,7 @@ async def stream_export_run(
     sid = session_id[-5:] if session_id else "new"
 
     # 本轮技能（与 chat.py 一致）：优先用请求体 skills 字段（技能目录名），兼容消息文本
-    # 开头的 `/目录名` 指令；命中的指令只拼进模型输入，落库正文保持用户原话。
+    # 开头的 `/目录名` 指令；命中且已启用的技能在本轮 pin 进对话，落库正文保持用户原话。
     turn_skills, unknown_skills = skill_library.resolve_turn_skills(
         request.skills, request.message, username
     )
@@ -541,12 +541,13 @@ async def stream_export_run(
         )
 
     # ── 3. 文件解析 + 系统提示词附加内容 ───────────────────────────────
-    # 模型输入 = 技能指令前缀 + 用户正文；落库正文保持用户原话（见请求开头的技能解析）。
-    # 旧前端消息文本里已有的 `/目录名` 保持原样，不重复拼。
-    model_message = skill_library.inject_skill_directives(
-        skill_library.pending_skill_directives(turn_skill_dirs, request.message),
-        request.message,
-    )
+    # DA-13：选中的技能 pin 进本轮（框架在第一次模型调用前把技能全文加进对话），
+    # 不再在模型输入前拼 `/目录名`；用户手打在正文开头的 `/目录名` 原样保留，同样会 pin。
+    model_message = request.message
+    pinned_skills = skill_library.pinned_skill_names(turn_skills)
+    not_pinned = [item["dir_name"] for item in turn_skills if not item["enabled"]]
+    if not_pinned:
+        logger.info(f"[{sid}] 🧩 已停用的技能不 pin | {not_pinned}")
     parsed_content = model_message
 
     extra_parts: list[str] = []
@@ -577,7 +578,7 @@ async def stream_export_run(
                 )
             else:
                 file_contents = [f"[文件: {fn}]\n{c}" for fn, c in file_context_parts]
-                # 技能指令跟在正文前（与改造前前端拼接的顺序一致），文件块仍在最前
+                # 文件块在最前，正文在后
                 parsed_content = "\n\n".join(file_contents) + "\n\n" + model_message
     elif request.files:
         # 新机制（默认）：解析正文与文件清单已在上传时落到会话工作区，清单作为记忆
@@ -655,6 +656,7 @@ async def stream_export_run(
                 http_request=http_request,
                 parsed_content=parsed_content,
                 session_logger=session_logger,
+                pinned_skills=pinned_skills,
             ),
             session_id,
             sid,

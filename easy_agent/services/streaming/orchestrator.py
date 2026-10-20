@@ -445,6 +445,7 @@ async def chat_stream_generator(
     http_request=None,
     parsed_content: str = None,
     session_logger=None,
+    pinned_skills: list[str] | None = None,
 ) -> AsyncGenerator[str, None]:
     start_time = time.time()
     sid = session_id[-5:] if session_id else "new"
@@ -545,7 +546,10 @@ async def chat_stream_generator(
         async for ev in pump_stream(
             agent=agent,
             stream_input=turn_input(
-                context_messages, message_id=message_id, rendered=message_content
+                context_messages,
+                message_id=message_id,
+                rendered=message_content,
+                pinned_skills=pinned_skills,
             ),
             stream_config=stream_config,
             proc=proc,

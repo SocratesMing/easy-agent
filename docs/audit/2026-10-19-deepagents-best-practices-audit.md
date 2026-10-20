@@ -268,7 +268,7 @@
 | C1 · 快速项 | DA-06 模型 `profile` + 官方摘要中间件覆盖；DA-12 官方 `ToolErrorMiddleware`；DA-11 子代理工具收窄；DA-09 第一步 MCP annotations 决定审批；DA-17 过时注释与文档；sqlite 连接器 `DB_PATH` 限定个人工作区 | ✅ 已完成（§11） |
 | C2 · Backend 重构 | DA-04 默认路由改隐藏目录（修已复现的 deny 别名绕过，框架产物不再出现在用户工作区）；DA-05 改用真实 `CompositeBackend` | ✅ 已完成（§12） |
 | C3 · 沙箱加固 | DA-07 网络开关（默认联网，可配置断网）、技能目录只读挂载、execute 超时上限；CPU / 内存 / 进程数限额暂缓（原因见 §13） | ✅ 已完成（§13） |
-| D · 演进 | DA-03 thread = 会话（超过摘要阈值后每轮都会重新摘要整段历史；设计文档已评审：`docs/design/2026-10-19-da03-session-thread.md`，按 P0–P2 分阶段实施，P0 / P1 已完成见 §14、§15）；DA-13 技能多源 / 只读 / pinned（设计文档已评审：`docs/design/2026-10-20-da13-skills-sources.md`，按 S1–S3 实施）；子代理进度事件流；DA-09 迁移 `langchain.mcp`（beta）；DA-14 LangSmith 沙箱生命周期；`services/` 拆领域子包 | 1–2 周，需设计文档 |
+| D · 演进 | DA-03 thread = 会话（超过摘要阈值后每轮都会重新摘要整段历史；设计文档已评审：`docs/design/2026-10-19-da03-session-thread.md`，按 P0–P2 分阶段实施，P0 / P1 已完成见 §14、§15）；DA-13 技能多源 / 只读 / pinned（设计文档已评审：`docs/design/2026-10-20-da13-skills-sources.md`，按 S1–S3 实施，S1 已完成）；子代理进度事件流；DA-09 迁移 `langchain.mcp`（beta）；DA-14 LangSmith 沙箱生命周期；`services/` 拆领域子包 | 1–2 周，需设计文档 |
 | 穿插项 | CI 缺 `sqlite-saver` extra（暂不处理）；SEC-03 签名免密（需门户配合）；DA-15 前端审批交互（按工具的拒绝说明与去重已完成，逐动作决策与 `edit` 待定）；~~工具工厂并入 `ToolSpec`~~（2026-10-20 评估后保持现状，见 §17）；MySQL 连接器可达内网任意主机（2026-10-19 决定保持现状） | 待定 |
 
 --- | --- | --- |
@@ -421,5 +421,6 @@ thread 仍是每条消息一个，模型看到的内容不变；本批为切换�
 | DA-15 拒绝说明 | 后端按工具生成拒绝说明（`hitl_state.reject_message`）：拒绝决策没带说明，或带的是旧前端写死的「请勿重试此删除命令」时，按删除 / 命令 / 定时任务 / 专家 / 知识原文分别说明；两套前端不再发这句写死的文案 | `tests/services/test_hitl_reject_message.py`、两套前端的 `hitlApproval.test.js` |
 | DA-15 去重 | Vue2 `App.vue` 里与 `chatSession` mixin 逐行相同的 `handleToolApproval`（112 行）删除，主面板与 AI 侧边栏共用 mixin 的实现 | Vue2 单测与构建 |
 | 工具工厂并入 `ToolSpec` | 评估后保持现状：注册表是无包内依赖的叶子模块，工厂由装配根（`agent_manager._tool_factories`）注入，是有意的依赖注入；搬进 `ToolSpec` 只少一层间接，代价是注册表要依赖全部工具实现、测试改成替换 builder，收益不足 | — |
+| DA-13 S1 | 选中的技能改用 `pinned_skills` 加载：第一次模型调用前技能全文已在对话里，不必先 `read_file`；不再拼 `/目录名` 指令（手打的照常生效）。`save_expert` 由技能带出（§6.3）改随 S2 实施，因为用户手里的 expert-creator 是没有 `include_tools` 的旧副本 | `tests/services/test_pinned_skills.py`、`tests/api/test_chat.py` |
 | DA-13 | 写出设计文档（2026-10-20 已评审）：公共技能只读共享并按用户启停、选中技能改用 `pinned_skills`、`save_expert` 由 expert-creator 技能的 `include_tools` 带出、拆分超长 `SKILL.md` | — |
 | 文档 | `CLAUDE.md` 删掉已不存在的 `shared_deps` / `.deps` 共享依赖描述（该机制已在 2026-06-09 `f8eafa3b` 删除，旧审计 T4-16 曾指出） | `tests/test_docs_facts.py` |

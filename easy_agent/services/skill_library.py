@@ -428,30 +428,16 @@ def resolve_turn_skills(
     return resolve_skill_dirs(names, username)
 
 
-def pending_skill_directives(dir_names: list[str], message: str) -> list[str]:
-    """挑出「需要新拼进模型输入」的技能目录名（消息文本开头尚未出现的那些）。
+def pinned_skill_names(turn_skills: list[dict[str, Any]]) -> list[str]:
+    """本轮要 pin 的技能名（DA-13）：只取已启用的，名字用 SKILL.md frontmatter 的 ``name``。
 
-    新前端的消息文本是用户原话 → 返回全部目录名；旧前端 / 手打 ``/目录名`` 时，文本里
-    已有的那份保持原样、原位置，这里不再重复拼，避免模型输入里出现两份同样的指令。
+    SkillsMiddleware 按 frontmatter ``name`` 精确匹配运行输入里的 ``pinned_skills``，在下一次
+    模型调用前把技能全文作为一条消息加进对话，模型不必再自己 ``read_file``。停用的技能不在
+    技能源里，pin 不到，调用方只记日志。
     """
-    in_text = set(parse_skill_directives(message))
-    pending: list[str] = []
-    for name in dir_names:
-        if not name or name in in_text or name in pending:
-            continue
-        pending.append(name)
-    return pending
-
-
-def inject_skill_directives(dir_names: list[str], text: str) -> str:
-    """把技能指令前缀拼到文本开头，得到「给模型看的那一份」输入。
-
-    技能指令只进模型输入（``parsed_content``）；落库正文、气泡与会话标题用的都是用户
-    原话。没有需要新拼的目录名时原样返回 ``text``（不 Trim、不改写），保证旧前端的
-    行为与改造前逐字一致。
-    """
-    prefix = " ".join(f"/{name}" for name in dir_names if name)
-    if not prefix:
-        return text
-    body = (text or "").strip()
-    return f"{prefix} {body}".strip()
+    names: list[str] = []
+    for item in turn_skills:
+        name = item.get("name")
+        if item.get("enabled") and name and name not in names:
+            names.append(name)
+    return names
