@@ -81,7 +81,7 @@ DA-13 S2 已由另一路开发提交：`c24d5ba feat(skills): share public skill
 复核结论：
 
 - **D1 已闭环**：双源顺序（builtin → user，后者覆盖）、只读三层（backend 拒写 / `FilesystemPermission` deny / 沙箱只读挂载）、按用户启用集合过滤、固定源不随技能数变化、旧副本迁移（哈希一致删除、改过的保留为用户技能）均落地；`tests/agent/test_builtin_skills*.py` 覆盖。
-- **D2 部分闭环**：`expert-creator` 的 `metadata.include_tools: save_expert` + `SkillsMiddleware(tools=...)` 已跑通；但门控集合来自注册表硬编码 `skill_gated`（当前仅 `save_expert` 一个），并未从任意技能的 frontmatter 解析，且子代理未挂带 `tools` 的 `SkillsMiddleware`。
+- **D2 已闭环**：`c24d5ba` 先跑通 `expert-creator` 的 `metadata.include_tools: save_expert` + `SkillsMiddleware(tools=...)`；`e27dae0` 补齐通用性——门控集合改为「注册表 `skill_gated` ∪ 全部技能 frontmatter 声明的 `include_tools`」（`agent/skills.py:declared_include_tools`，YAML 列表形式按官方语义忽略并告警），子代理用到的门控工具从 `tools` 摘出后各挂一份 `SkillsMiddleware(tools=...)`，并把门控集合纳入编译图指纹。
 - **D3 及以后未动**：frontmatter 校验、MCP 命名与冲突、会话池风险、`mode="interrupt"`、HITL `edit`、`SKILL.md` 精简。
 
 ## 6. 已符合官方的部分（避免误改）
