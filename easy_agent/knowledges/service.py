@@ -2026,9 +2026,18 @@ class KnowledgeService:
                     self.original_store.open, str(original["storage_key"])
                 )
             except OriginalStorageError as exc:
-                raise KnowledgeServiceError(
-                    exc.code, exc.message, status_code=503, retryable=exc.retryable
-                ) from exc
+                # 本地文件缺失（可重试错误，如容器重建/目录清理丢文件）且存在远端副本时，
+                # 回退 RAGFlow 下载兜底；其余错误照旧抛出
+                if not exc.retryable or not document.get("remote_document_id"):
+                    raise KnowledgeServiceError(
+                        exc.code, exc.message, status_code=503, retryable=exc.retryable
+                    ) from exc
+                logger.warning(
+                    "本地原文缺失，回退远端下载兜底: document_id=%s code=%s",
+                    document_id,
+                    exc.code,
+                )
+                return await self._download_remote_document(document, base)
             await self._repo(
                 self.repository.create_original_access_audit,
                 user_id=principal.user_id,
@@ -2049,6 +2058,12 @@ class KnowledgeService:
             raise KnowledgeServiceError(
                 "KNOWLEDGE_DOCUMENT_NOT_AVAILABLE", "文档原文件暂不可用", status_code=409
             )
+        return await self._download_remote_document(document, base)
+
+    async def _download_remote_document(
+        self, document: Mapping[str, Any], base: Mapping[str, Any]
+    ) -> tuple[dict[str, Any], KnowledgeDocumentBinary]:
+        """从 Ragflow 下载远端副本（本地缺失回退与无本地原文场景共用）。"""
         try:
             binary = await self.ragflow.download_document(
                 dataset_id=await self._dataset_id_for(base),
