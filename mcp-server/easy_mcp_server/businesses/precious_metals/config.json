@@ -1,0 +1,7 @@
+{
+  "_说明": "换环境需要改的只有 report_base_url 和 export_url 两项。timeout 单位为秒（单次 HTTP 请求的等待上限）。render 控制页面抓取方式：auto=先直接抓、抓不到结构再用本机 Edge/Chrome 无头渲染；off=只用 HTTP；force=总是渲染。export_url 是报表「导出」接口的地址模板，配了就先解析导出文件、失败才回退解析页面；留空字符串表示关闭这条路。模板里可用 {base} {report_id} {report_dt} 三个占位符。改完重启 MCP 服务生效。本文件优先级高于 mcp.json 里的 env。",
+  "report_base_url": "http://29.241.91.84:9080",
+  "timeout": 60,
+  "render": "auto",
+  "export_url": "http://29.241.91.84:9080/ereport/export?_reportId={report_id}&report_dt={report_dt}"
+}
