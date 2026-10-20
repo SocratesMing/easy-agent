@@ -156,14 +156,15 @@ import Vue from 'vue'
 import SessionList from './features/chat/components/SessionList.vue'
 import Chat from './features/chat/components/Chat.vue'
 import AssetsPanel from './features/chat/components/AssetsPanel.vue'
-import SkillCenter from './features/skills/components/SkillCenter.vue'
-import ScheduledTasksPanel from './features/tasks/components/ScheduledTasksPanel.vue'
-import UserManagementPanel from './features/personnel/PersonnelManagement.vue'
-import KnowledgeWorkbench from './features/knowledge/KnowledgeWorkbench.vue'
+// 面板级懒加载：首屏不解析这些重型面板，首次打开时再拉对应 chunk
+const SkillCenter = () => import('./features/skills/components/SkillCenter.vue')
+const ScheduledTasksPanel = () => import('./features/tasks/components/ScheduledTasksPanel.vue')
+const UserManagementPanel = () => import('./features/personnel/PersonnelManagement.vue')
+const KnowledgeWorkbench = () => import('./features/knowledge/KnowledgeWorkbench.vue')
 import SidebarResizeHandle from './features/knowledge/SidebarResizeHandle.vue'
 import Welcome from './features/chat/components/Welcome.vue'
 import WorkspacePanel from './features/workspace/components/WorkspacePanel.vue'
-import SettingsPanel from './features/settings/components/SettingsPanel.vue'
+const SettingsPanel = () => import('./features/settings/components/SettingsPanel.vue')
 import AiSidebar from './features/chat/components/AiSidebar.vue'
 import { createSession, listSessions, getChatHistory, deleteSession, sendMessage, renameSession, togglePinSession, getStreamStatus } from './api/chat.js'
 import { streamExportRun } from './api/expert.js'
