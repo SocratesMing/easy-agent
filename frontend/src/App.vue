@@ -121,16 +121,17 @@
 
 <script setup>
 import { API_BASE_URL, APP_WELCOME_TITLE, appRuntime } from './config.js'
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, watch, defineAsyncComponent } from 'vue'
 import SessionList from './features/chat/components/SessionList.vue'
 import Chat from './features/chat/components/Chat.vue'
 import AssetsPanel from './features/chat/components/AssetsPanel.vue'
-import SkillCenter from './features/skills/components/SkillCenter.vue'
-import ScheduledTasksPanel from './features/tasks/components/ScheduledTasksPanel.vue'
-import UserManagementPanel from './features/personnel/components/UserManagementPanel.vue'
+// 面板级懒加载：首屏不解析这些重型面板
+const SkillCenter = defineAsyncComponent(() => import('./features/skills/components/SkillCenter.vue'))
+const ScheduledTasksPanel = defineAsyncComponent(() => import('./features/tasks/components/ScheduledTasksPanel.vue'))
+const UserManagementPanel = defineAsyncComponent(() => import('./features/personnel/components/UserManagementPanel.vue'))
 import Welcome from './features/chat/components/Welcome.vue'
 import WorkspacePanel from './features/workspace/components/WorkspacePanel.vue'
-import SettingsPanel from './features/settings/components/SettingsPanel.vue'
+const SettingsPanel = defineAsyncComponent(() => import('./features/settings/components/SettingsPanel.vue'))
 import { createSession, listSessions, getChatHistory, deleteSession, sendMessage, resumeStream, renameSession, togglePinSession, getStreamStatus, attachStream } from './api/chat.js'
 import { applyApprovalRequests, buildResumeDecisions, markApprovalDecision, unmatchedApprovalRequests } from './utils/hitlApproval.js'
 import { createStreamChunkHandler } from './features/chat/composables/useStreamChunks.js'
