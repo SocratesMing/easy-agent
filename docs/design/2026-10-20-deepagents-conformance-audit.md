@@ -75,15 +75,14 @@ easy_agent/
 | D10 | P2 | 未使用 `FilesystemPermission` 之外的官方缓存/可观测扩展（`cache=` 为节点级缓存，与图缓存不是同一层） | `agent/core.py` 未传 `cache`；`agent/graph_cache.py` 自研 | 非合规问题，属可选优化 | 评估 LangGraph `cache=` 对模型节点是否适用，避免与自研图缓存混淆 |
 | D11 | 观察 | MCP 鉴权完全来自 `mcp.json` 的静态 headers/env（用户级），无 OAuth/per-user token | `services/mcp.py:136-176`；`services/connectors.py:106` | 单机/内网形态可接受；多租户部署需 per-user 凭据 | 多租户前补 per-user 凭据注入与不落盘策略 |
 
-## 5.1 实施状态（2026-10-20 14:10 核对）
+## 5.1 实施状态（2026-10-20 15:2x 复核）
 
-另一路开发正在**同一工作区**实施 DA-13 S2（对应本清单 D1 + D2），截至 14:10 尚未提交：
+DA-13 S2 已由另一路开发提交：`c24d5ba feat(skills): share public skills read-only and expose save_expert through its skill`（40 文件，+1630/−201，含 2 个新测试文件）。
+复核结论：
 
-- 新增：`easy_agent/agent/builtin_skills.py`、`easy_agent/backends/builtin_skills.py`、`scripts/skills/migrate_builtin_skills.py`
-- 修改：`agent/{workspace,core,backend,graph_cache,subagents}.py`、`services/{skill_library,agent_manager}.py`、`api/{chat,expert,skill_center}.py`、`tools/registry.py`、`skills/expert-creator/SKILL.md` 及 12 个测试文件（合计 27 改 3 增）
-- 已见痕迹：`skills=["/skills/builtin/","/user-skills/"]`、`SkillsMiddleware` + `skill_gated_tool_names`、`builtin-skills.json` 迁移脚本
-
-因此：**D1/D2 视为实施中，D3-D9 仍待处理**。在该批改动提交前不要编辑上述文件，也不要执行 `git add -A`（会把他人的半成品打包进提交）。另有 `origin/feat/mcp` 分支在 14:00 提交了 `us_cpi` 月份归一化修复，与本次审计无直接冲突，但改 `services/mcp*` 前需先确认该分支是否合并。
+- **D1 已闭环**：双源顺序（builtin → user，后者覆盖）、只读三层（backend 拒写 / `FilesystemPermission` deny / 沙箱只读挂载）、按用户启用集合过滤、固定源不随技能数变化、旧副本迁移（哈希一致删除、改过的保留为用户技能）均落地；`tests/agent/test_builtin_skills*.py` 覆盖。
+- **D2 部分闭环**：`expert-creator` 的 `metadata.include_tools: save_expert` + `SkillsMiddleware(tools=...)` 已跑通；但门控集合来自注册表硬编码 `skill_gated`（当前仅 `save_expert` 一个），并未从任意技能的 frontmatter 解析，且子代理未挂带 `tools` 的 `SkillsMiddleware`。
+- **D3 及以后未动**：frontmatter 校验、MCP 命名与冲突、会话池风险、`mode="interrupt"`、HITL `edit`、`SKILL.md` 精简。
 
 ## 6. 已符合官方的部分（避免误改）
 
