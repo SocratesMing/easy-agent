@@ -175,11 +175,11 @@
 </template>
 
 <script>
-import FileTreeNode from './FileTreeNode.vue'
-import FilePreview from './FilePreview.vue'
-import { getWorkspaceTree } from '../api/files'
-import { getStoredToken } from '../api/auth.js'
-import { setPageContextExtra } from '../utils/pageContext.js'
+import FileTreeNode from '../../../shared/preview/FileTreeNode.vue'
+import FilePreview from '../../../shared/preview/FilePreview.vue'
+import { getWorkspaceTree } from '../../../api/files'
+import { getStoredToken } from '../../../api/auth.js'
+import { setPageContextExtra } from '../../../utils/pageContext.js'
 
 // 文件树固定在第一个 tab；宽度/动画常量集中在此
 const TREE_TAB = '__tree__'

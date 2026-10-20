@@ -51,7 +51,7 @@
 </template>
 
 <script>
-import FileIcon from '../../../components/FileIcon.vue'
+import FileIcon from '../../../shared/components/FileIcon.vue'
 import { formatSize } from '../../../utils/format.js'
 
 export default {

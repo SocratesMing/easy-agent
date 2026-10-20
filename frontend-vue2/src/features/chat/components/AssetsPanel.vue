@@ -133,9 +133,9 @@
 <script>
 import { Message } from 'element-ui'
 import request from '../../../utils/request.js'
-import FileIcon from '../../../components/FileIcon.vue'
-import ConfirmDialog from '../../../components/ConfirmDialog.vue'
-import FilePreview from '../../../components/FilePreview.vue'
+import FileIcon from '../../../shared/components/FileIcon.vue'
+import ConfirmDialog from '../../../shared/components/ConfirmDialog.vue'
+import FilePreview from '../../../shared/preview/FilePreview.vue'
 import { setPageContextExtra } from '../../../utils/pageContext.js'
 
 const categoryIcons = {

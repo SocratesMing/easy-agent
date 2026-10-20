@@ -149,7 +149,7 @@
 <script>
 import ChatMessage from './ChatMessage.vue'
 import ChatInput from './ChatInput.vue'
-import TodoListPanel from '../../../components/TodoListPanel.vue'
+import TodoListPanel from './TodoListPanel.vue'
 // 首页欢迎语：直接定义在前端（原 src/config.js 已移除）
 const APP_WELCOME_TITLE = 'Easy Agent，让工作化繁为简'
 // 预置问题卡片最多展示几张（一张卡片一条问题，多配的部分按顺序截断）

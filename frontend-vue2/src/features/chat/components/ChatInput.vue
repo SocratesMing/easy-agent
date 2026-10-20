@@ -579,8 +579,8 @@ import {
 } from '../../../utils/expertAvatar.js'
 import ModelPicker from './ModelPicker.vue'
 import UploadTray from './UploadTray.vue'
-import FileIcon from '../../../components/FileIcon.vue'
-import SkillIcon from '../../../components/SkillIcon.vue'
+import FileIcon from '../../../shared/components/FileIcon.vue'
+import SkillIcon from '../../../shared/components/SkillIcon.vue'
 import KnowledgeScopeSelector from '../../knowledge/KnowledgeScopeSelector.vue'
 
 // 镜像层为画出技能芯片的外扩留白，把裁剪盒向外扩了这么多 px（见 .input-mirror 的 padding/margin）：

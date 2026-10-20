@@ -4,7 +4,7 @@
 
 <script>
 import { renderAsync } from 'docx-preview'
-import { requestArrayBuffer } from '../utils/request.js'
+import { requestArrayBuffer } from '../../utils/request.js'
 export default {
   props: {
     fileUrl: {

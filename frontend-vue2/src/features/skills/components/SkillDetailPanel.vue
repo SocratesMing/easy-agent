@@ -136,8 +136,8 @@
 <script>
 import { getSkillDetail, enableSkill, disableSkill, addSkillToUser, removeSkillFromUser } from '../../../api/skills.js'
 import { DEFAULT_CATEGORY, iconCategoryFor } from '../../../utils/skillCategories.js'
-import SkillIcon from '../../../components/SkillIcon.vue'
-import ToggleSwitch from '../../../components/ToggleSwitch.vue'
+import SkillIcon from '../../../shared/components/SkillIcon.vue'
+import ToggleSwitch from '../../../shared/components/ToggleSwitch.vue'
 
 export default {
   components: { SkillIcon, ToggleSwitch },

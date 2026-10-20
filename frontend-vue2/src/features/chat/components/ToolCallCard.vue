@@ -81,7 +81,7 @@
 </template>
 
 <script>
-import { toolCard } from '../utils/toolPresentation.js'
+import { toolCard } from '../../../utils/toolPresentation.js'
 
 export default {
   name: 'ToolCallCard',

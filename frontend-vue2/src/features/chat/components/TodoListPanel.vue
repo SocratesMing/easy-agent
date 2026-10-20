@@ -69,7 +69,7 @@
 </template>
 
 <script>
-import { eventTarget } from '../utils/domEvent.js'
+import { eventTarget } from '../../../utils/domEvent.js'
 
 export default {
   props: {

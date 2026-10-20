@@ -77,8 +77,8 @@
 </template>
 
 <script>
-import { login, register } from '../api/auth.js'
-import { getLoginPolicy } from '../features/personnel/api.js'
+import { login, register } from '../../../api/auth.js'
+import { getLoginPolicy } from '../../personnel/api.js'
 
 // 应用名称：直接定义在前端（原 src/config.js 已移除）
 const APP_TITLE = 'Easy Agent'

@@ -317,7 +317,7 @@
 </template>
 
 <script>
-import ToggleSwitch from '../../../components/ToggleSwitch.vue'
+import ToggleSwitch from '../../../shared/components/ToggleSwitch.vue'
 import {
   getConnectors,
   installConnector,

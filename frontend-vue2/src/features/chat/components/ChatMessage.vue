@@ -242,10 +242,10 @@ import {
   copyTextToClipboard,
 } from '../../../markdownSetup.js'
 import MarkdownBody from './MarkdownBody.vue'
-import FileIcon from '../../../components/FileIcon.vue'
+import FileIcon from '../../../shared/components/FileIcon.vue'
 import KnowledgeEvidence from '../../knowledge/KnowledgeEvidence.vue'
-import SkillIcon from '../../../components/SkillIcon.vue'
-import ToolCallCard from '../../../components/ToolCallCard.vue'
+import SkillIcon from '../../../shared/components/SkillIcon.vue'
+import ToolCallCard from './ToolCallCard.vue'
 import { approvalTargetForBlock, unmatchedApprovalRequests } from '../../../utils/hitlApproval.js'
 import { pageContextLabel } from '../../../utils/pageContext.js'
 import { iconCategoryFor } from '../../../utils/skillCategories.js'

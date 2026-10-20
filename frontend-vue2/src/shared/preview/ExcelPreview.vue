@@ -32,7 +32,7 @@
 
 <script>
 import ExcelJS from 'exceljs'
-import { requestArrayBuffer } from '../utils/request.js'
+import { requestArrayBuffer } from '../../utils/request.js'
 export default {
   props: {
     fileUrl: {

@@ -102,15 +102,15 @@ import {
   renderMarkdown,
   installCodeCopyHandler,
   escapeHtml,
-} from '../markdownSetup.js'
+} from '../../markdownSetup.js'
 import hljs from 'highlight.js'
 import 'highlight.js/styles/github-dark.css'
-import { overlayClickCloses, markOverlayPress } from '../utils/overlayClick.js'
+import { overlayClickCloses, markOverlayPress } from '../../utils/overlayClick.js'
 import DocxPreview from './DocxPreview.vue'
 import ExcelPreview from './ExcelPreview.vue'
 import * as XLSX from 'xlsx'
-import { getStoredToken } from '../api/auth.js'
-import { requestBlob, requestArrayBuffer, requestText } from '../utils/request.js'
+import { getStoredToken } from '../../api/auth.js'
+import { requestBlob, requestArrayBuffer, requestText } from '../../utils/request.js'
 
 // 注册 KaTeX 数学公式 + emoji 短代码扩展（幂等，仅执行一次）
 setupMarkedExtensions()
