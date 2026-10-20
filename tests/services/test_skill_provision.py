@@ -31,10 +31,14 @@ def users_root(monkeypatch, tmp_path):
 
 @pytest.fixture()
 def public_root(monkeypatch, tmp_path):
-    """把公共技能目录重定向到临时目录。"""
+    """把公共技能目录重定向到临时目录。
+
+    生产上候选目录有多个（CWD 下的 ./skills、项目根下的 ./skills），这里只给一个，
+    顺带锁定「候选函数是唯一解析入口」这件事。
+    """
     root = tmp_path / "public-skills"
     root.mkdir()
-    monkeypatch.setattr(skill_library, "public_skills_dir", lambda: root)
+    monkeypatch.setattr(skill_library, "public_skills_dir_candidates", lambda: [root])
     return root
 
 
@@ -264,8 +268,11 @@ async def test_agent_creation_provisions_skill_and_evicts_cache(manager, monkeyp
     calls = []
     monkeypatch.setattr(
         manager,
-        "ensure_expert_skills",
-        lambda username, expert_id: (calls.append((username, expert_id)) or [SKILL_NAME]),
+        "provision_expert_skills",
+        lambda username, expert_id: (
+            calls.append((username, expert_id))
+            or {"installed": [SKILL_NAME], "skipped": [], "required": [SKILL_NAME]}
+        ),
     )
 
     old = _FakeAgent(username="provuser", model_name="deepseek")
@@ -287,7 +294,11 @@ async def test_agent_creation_provisions_skill_and_evicts_cache(manager, monkeyp
 
 async def test_provision_runs_before_cache_lookup(manager, monkeypatch):
     """已缓存的通用 Agent 不因「无需补装」被驱逐（补装返回空 = 不动缓存）。"""
-    monkeypatch.setattr(manager, "ensure_expert_skills", lambda username, expert_id: [])
+    monkeypatch.setattr(
+        manager,
+        "provision_expert_skills",
+        lambda username, expert_id: {"installed": [], "skipped": [], "required": []},
+    )
 
     a1 = await manager.get_or_create_agent_for_session(
         "sess-noprov", "provuser", "ws-name", model_name="deepseek", enable_web_search=False
@@ -297,4 +308,161 @@ async def test_provision_runs_before_cache_lookup(manager, monkeypatch):
     )
 
     assert a1 is a2
+
+
+async def test_missing_skill_is_injected_into_prompt(manager, monkeypatch):
+    """技能包缺失（source_missing）→ 必须把「技能未就绪」写进系统提示词末尾。
+
+    线上就是这么翻车的：后端只记了一条 warning，用户只看到模型说
+    「/user-skills/ 扫描不到 factor-creator」，无从定位是技能包没放。
+    """
+    monkeypatch.setattr(
+        manager,
+        "provision_expert_skills",
+        lambda username, expert_id: {
+            "required": [SKILL_NAME],
+            "installed": [],
+            "missing": [SKILL_NAME],
+            "skipped": [
+                {"skill": SKILL_NAME, "reason": "source_missing", "detail": "已查找: /qts/skills"}
+            ],
+            "public_dirs": ["/qts/skills"],
+        },
+    )
+
+    agent = await manager.get_or_create_agent_for_session(
+        "sess-missing", "provuser", "ws-name", model_name="deepseek",
+        enable_web_search=False, expert_agent_id=EXPERT_ID,
+        system_prompt_extra="你是因子研究专家。",
+    )
+
+    extra = agent.kwargs["system_prompt_extra"]
+    assert "你是因子研究专家。" in extra, "原专家提示词必须保留"
+    assert "运行时环境提示" in extra
+    assert SKILL_NAME in extra and "不可用" in extra
+    assert "不要虚构技能产物" in extra
+
+
+async def test_healthy_skill_does_not_pollute_prompt(manager, monkeypatch):
+    """技能正常（已装/本次装好）时不注入任何运行时提示，避免污染专家提示词。"""
+    monkeypatch.setattr(
+        manager,
+        "provision_expert_skills",
+        lambda username, expert_id: {
+            "required": [SKILL_NAME],
+            "installed": [],
+            "missing": [],
+            "skipped": [{"skill": SKILL_NAME, "reason": "existing", "detail": ""}],
+        },
+    )
+
+    agent = await manager.get_or_create_agent_for_session(
+        "sess-ok", "provuser", "ws-name", model_name="deepseek",
+        enable_web_search=False, expert_agent_id=EXPERT_ID,
+        system_prompt_extra="你是因子研究专家。",
+    )
+
+    assert agent.kwargs["system_prompt_extra"] == "你是因子研究专家。"
+
+
+# ── 报告结构与诊断信息 ────────────────────────────────────────────────
+
+
+def test_report_explains_missing_source(users_root, public_root, monkeypatch):
+    """公共目录没有该技能 → 报告给出 source_missing + 找过的路径（现场可直接照着放包）。"""
+    _stub_expert(monkeypatch)
+
+    report = skill_provision.provision_expert_skills(USERNAME, EXPERT_ID)
+
+    assert report["installed"] == []
+    assert report["missing"] == [SKILL_NAME]
+    assert report["skipped"][0]["reason"] == "source_missing"
+    assert str(public_root) in report["public_dirs"]
+    assert public_root.name in report["skipped"][0]["detail"]
+
+
+def test_runtime_notice_reason_text(users_root, public_root, monkeypatch):
+    """三种阻断原因的提示文案各不相同（缺包 / 装失败 / 用户停用）。"""
+    for reason, keyword in (
+        ("source_missing", "未找到该技能包"),
+        ("install_failed", "安装到用户技能库失败"),
+        ("disabled", "用户已停用该技能"),
+    ):
+        notice = skill_provision.build_skill_runtime_notice(
+            {"skipped": [{"skill": SKILL_NAME, "reason": reason}]}
+        )
+        assert keyword in notice, reason
+        assert SKILL_NAME in notice
+
+
+def test_warns_when_skill_package_content_mismatches(users_root, public_root, monkeypatch):
+    """目录叫 factor-creator、SKILL.md 却声明别的技能 → 必须报警（实测踩过）。"""
+    # 公共目录里同时存在 expert-creator（真正被误拷的那个技能）
+    other = public_root / "expert-creator"
+    other.mkdir()
+    (other / "SKILL.md").write_text(
+        "---\nname: expert-creator\ndescription: 创建专家\n---\n", encoding="utf-8"
+    )
+    # factor-creator 目录里装的是 expert-creator 的内容
+    wrong = _make_public_skill(public_root)
+    (wrong / "SKILL.md").write_text(
+        "---\nname: expert-creator\ndescription: 创建专家\n---\n", encoding="utf-8"
+    )
+    _stub_expert(monkeypatch)
+
+    report = skill_provision.provision_expert_skills(USERNAME, EXPERT_ID)
+
+    assert report["installed"] == [SKILL_NAME], "仍应装上（不阻断），但要报警"
+    assert report["warnings"] and "expert-creator" in report["warnings"][0]
+    notice = skill_provision.build_skill_runtime_notice(report)
+    assert "请先与用户确认技能内容是否正确" in notice
+
+
+# ── 公共技能目录的多候选解析（CWD≠项目根 时也能找到）────────────────────
+
+
+def test_public_skills_dir_falls_back_to_project_root(monkeypatch, tmp_path):
+    """配置写相对路径 ./skills：CWD 下没有、项目根下有 → 必须命中项目根。"""
+    project_root = tmp_path / "release"
+    (project_root / "skills" / "factor-creator").mkdir(parents=True)
+    (project_root / "skills" / "factor-creator" / "SKILL.md").write_text(
+        SKILL_BODY, encoding="utf-8"
+    )
+    elsewhere = tmp_path / "run-dir"
+    elsewhere.mkdir()
+
+    from pathlib import Path as _P
+
+    import easy_agent.services.agent_manager as am
+
+    monkeypatch.setattr(am, "_agent_config", {"config": type("C", (), {"tools": type("T", (), {"skills_dir": "./skills"})()})()})
+    monkeypatch.setattr(skill_library, "_project_root", lambda: project_root)
+    monkeypatch.setattr(_P, "cwd", staticmethod(lambda: elsewhere))
+
+    resolved = skill_library.public_skills_dir()
+    assert resolved == project_root / "skills"
+    assert skill_library.public_skill_source(SKILL_NAME) == project_root / "skills" / SKILL_NAME
+
+
+# ── 诊断接口：现场自查「技能为什么没装上」 ────────────────────────────
+
+
+def test_required_skills_endpoint_reports_status(client):
+    """GET /agent/expert/required-skills 返回依赖声明与安装状态（排查入口）。"""
+    resp = client.get(
+        "/agent/expert/required-skills", params={"expert_id": EXPERT_ID}
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["required"] == [SKILL_NAME]
+    assert "installed" in data and "skipped" in data and "public_dirs" in data
+
+
+def test_required_skills_endpoint_404_for_unknown_expert(client):
+    resp = client.get(
+        "/agent/expert/required-skills", params={"expert_id": "no_such_expert"}
+    )
+    assert resp.status_code == 404
+
+
 
