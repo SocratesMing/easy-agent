@@ -25,7 +25,8 @@
 - **tool**：服务端返回的原始名，只做非法字符替换（保留 `_ -`），总长截断到 64（OpenAI 工具名上限），截断时同样加哈希后缀，保证稳定且不撞车。
 - **来源元数据**：证据信封继续记 `server`，并新增 `original_name`；UI 展示 `server / tool`，不展示拼接名。
 - 重名规则（前缀后）：
-  1. 与内建工具同名 → 仍然丢弃并**报错级**告警（理论上不该发生）；
+  1. 与内建工具同名 → **不再冲突**（前缀后名字不同）；HITL 仍按原名 `delete` 走变异判定，
+     与「MCP 的 delete 覆盖内建 delete」是两件事，后者已由重名检查拦住；
   2. 跨 server 同名 → 不再冲突（前缀已区分）；
   3. 同一 server 内重复 → 保留第一个 + warning（服务端自身问题）。
 
@@ -97,4 +98,7 @@
 | HITL 启发式 | `agent/hitl.py::_mcp_original_name`，按原名判断 |
 | 测试 | `tests/utils/test_mcp_tool_names.py`（9 条）+ `tests/agent`、`tests/services` 全绿 |
 
-未做：前端工具列表展示 `server / tool`（可选）、灰度验证（需真实 MCP server）。
+未做：前端工具列表展示 `server / tool`（可选）、真实 MCP server 灰度（当前用 fake client 覆盖了行为）。
+
+端到端测试：`tests/services/test_mcp_tool_prefix.py`（3 条）验证开关关闭时保持旧去重、
+打开时两个 server 的同名工具同时存在、`metadata` 记录 `mcp_original_name` / `mcp_server`。
