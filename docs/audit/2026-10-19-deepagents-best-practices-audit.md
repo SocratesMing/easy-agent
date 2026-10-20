@@ -268,7 +268,7 @@
 | C1 · 快速项 | DA-06 模型 `profile` + 官方摘要中间件覆盖；DA-12 官方 `ToolErrorMiddleware`；DA-11 子代理工具收窄；DA-09 第一步 MCP annotations 决定审批；DA-17 过时注释与文档；sqlite 连接器 `DB_PATH` 限定个人工作区 | ✅ 已完成（§11） |
 | C2 · Backend 重构 | DA-04 默认路由改隐藏目录（修已复现的 deny 别名绕过，框架产物不再出现在用户工作区）；DA-05 改用真实 `CompositeBackend` | ✅ 已完成（§12） |
 | C3 · 沙箱加固 | DA-07 网络开关（默认联网，可配置断网）、技能目录只读挂载、execute 超时上限；CPU / 内存 / 进程数限额暂缓（原因见 §13） | ✅ 已完成（§13） |
-| D · 演进 | DA-03 thread = 会话（超过摘要阈值后每轮都会重新摘要整段历史；设计文档已评审：`docs/archive/design/2026-10-19-da03-session-thread.md`，按 P0–P2 分阶段实施，P0 / P1 已完成见 §14、§15）；DA-13 技能多源 / 只读 / pinned（设计文档已评审：`docs/design/2026-10-20-da13-skills-sources.md`，按 S1–S3 实施，S1、S2 已完成见 §17、§18，S3 已由 `0cfa312` 完成见 §19）；子代理进度事件流；DA-09 迁移 `langchain.mcp`（beta）；DA-14 LangSmith 沙箱生命周期；`services/` 拆领域子包 | 1–2 周，需设计文档 |
+| D · 演进 | DA-03 thread = 会话（超过摘要阈值后每轮都会重新摘要整段历史；设计文档已评审：`docs/archive/design/2026-10-19-da03-session-thread.md`，按 P0–P2 分阶段实施，P0 / P1 已完成见 §14、§15）；DA-13 技能多源 / 只读 / pinned（设计文档已评审：`docs/design/2026-10-20-da13-skills-sources.md`，按 S1–S3 实施，S1、S2 已完成见 §17、§18，S3 已由 `0cfa312` 完成见 §19）；子代理进度事件流；DA-09 迁移 `langchain.mcp`（beta）；DA-14 LangSmith 沙箱生命周期；`services/` 拆领域子包（设计文档已评审：`docs/design/2026-10-20-services-subpackages-and-layering.md`，含 `__init__` 瘦身与分层方向门禁，按阶段 0–4 实施，尚未开始） | 1–2 周，需设计文档 |
 | 穿插项 | CI 缺 `sqlite-saver` extra（暂不处理）；SEC-03 签名免密（需门户配合）；DA-15 前端审批交互（按工具的拒绝说明与去重已完成；`edit` 已随规范一致性审计 D8 上线（`17842a7`），逐动作决策待定，见 §19）；~~工具工厂并入 `ToolSpec`~~（2026-10-20 评估后保持现状，见 §17）；MySQL 连接器可达内网任意主机（2026-10-19 决定保持现状） | 待定 |
 
 --- | --- | --- |

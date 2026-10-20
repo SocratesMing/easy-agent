@@ -24,6 +24,7 @@
 - [2026-10-20-da13-skills-sources.md](design/2026-10-20-da13-skills-sources.md) — 技能多来源
 - [2026-10-20-deepagents-conformance-audit.md](design/2026-10-20-deepagents-conformance-audit.md) — DeepAgents 0.7.28 规范一致性与改造清单
 - [2026-10-20-d4-mcp-tool-naming.md](design/2026-10-20-d4-mcp-tool-naming.md) — MCP 工具按 server 命名的方案与兼容层
+- [2026-10-20-services-subpackages-and-layering.md](design/2026-10-20-services-subpackages-and-layering.md) — services 拆领域子包、`__init__` 瘦身与分层方向门禁（已评审，待实施）
 
 ## 审计结论（长期保留）
 
