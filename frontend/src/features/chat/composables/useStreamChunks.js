@@ -21,7 +21,13 @@ export function createStreamChunkHandler(messages, ctx) {
     currentSessionId,
     currentTodos,
     loadedSessionId,
+    attachedStreamingSessions,
+    sessions,
+    pendingApproval,
+    error,
     markStreaming,
+    loadSessions,
+    parseMCPResult,
   } = ctx.state || {}
   let currentBlock = null
   let currentThinking = ''

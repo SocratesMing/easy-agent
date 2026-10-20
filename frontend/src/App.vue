@@ -598,7 +598,13 @@ function buildStreamState() {
     currentSessionId,
     currentTodos,
     loadedSessionId,
+    attachedStreamingSessions,
+    sessions,
+    pendingApproval,
+    error,
     markStreaming,
+    loadSessions,
+    parseMCPResult,
   }
 }
 
