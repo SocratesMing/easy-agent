@@ -1,10 +1,19 @@
 """Skill discovery utilities"""
 
 import logging
+import re
 from collections.abc import Iterable
 from typing import Any
 
 from pathlib import Path
+
+
+# 官方 Agent Skills 规范里的硬限制（deepagents 0.7.22+ 文档「Skills › Limitations」）
+MAX_SKILL_MD_BYTES = 10 * 1024 * 1024
+MAX_DESCRIPTION_CHARS = 1024
+MAX_COMPATIBILITY_CHARS = 500
+MAX_SKILL_NAME_CHARS = 64
+_SKILL_NAME_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 
 
 def find_skills_root(skills_dir: str | None = None) -> str | None:
@@ -83,6 +92,16 @@ def discover_skills(skills_dir: str | None = None) -> list[dict]:
 
             skill_md = skill_dir / "SKILL.md"
             if skill_md.exists():
+                try:
+                    size = skill_md.stat().st_size
+                except OSError:
+                    continue
+                # 官方发现阶段会跳过 >10MB 的 SKILL.md；这里提前过滤，避免它出现在清单里却加载不到
+                if size > MAX_SKILL_MD_BYTES:
+                    logger.warning(
+                        "技能 %s 的 SKILL.md 超过 10MB（%s 字节），已跳过", skill_name, size
+                    )
+                    continue
                 seen_names.add(skill_name)
                 skills.append(
                     {
@@ -163,6 +182,40 @@ def declared_include_tools(skill_dirs: Iterable[str | Path] | None = None) -> fr
     return frozenset(names)
 
 
+def _validate_skill_meta(dir_name: str, meta: dict[str, Any]) -> list[str]:
+    """按官方 Agent Skills 规范校验单个技能的 frontmatter（name/description/上限）。"""
+    errors: list[str] = []
+    name = str(meta.get("name") or "").strip()
+    if not name:
+        errors.append("frontmatter.name 为空")
+    else:
+        if name != dir_name:
+            errors.append(f"frontmatter.name（{name}）必须与目录名（{dir_name}）一致")
+        if len(name) > MAX_SKILL_NAME_CHARS:
+            errors.append(f"frontmatter.name 超过 {MAX_SKILL_NAME_CHARS} 字符")
+        if not _SKILL_NAME_RE.match(name):
+            errors.append("frontmatter.name 只能包含小写字母、数字与单个连字符（不能有空格/下划线/大写）")
+
+    description = str(meta.get("description") or "").strip()
+    if not description:
+        errors.append("frontmatter.description 为空")
+    elif len(description) > MAX_DESCRIPTION_CHARS:
+        errors.append(f"frontmatter.description 超过 {MAX_DESCRIPTION_CHARS} 字符")
+
+    compatibility = meta.get("compatibility")
+    if compatibility is not None and len(str(compatibility)) > MAX_COMPATIBILITY_CHARS:
+        errors.append(f"frontmatter.compatibility 超过 {MAX_COMPATIBILITY_CHARS} 字符")
+
+    extra = meta.get("metadata")
+    if isinstance(extra, dict):
+        raw = extra.get("include_tools")
+        if raw is not None and not isinstance(raw, str):
+            errors.append(
+                "metadata.include_tools 必须是空格分隔字符串（YAML 列表形式框架不会匹配）"
+            )
+    return errors
+
+
 def validate_skills(skills_dir: str | None = None) -> list[dict]:
     """校验每个 SKILL.md 的 frontmatter（name/description 必填）。
 
@@ -181,9 +234,6 @@ def validate_skills(skills_dir: str | None = None) -> list[dict]:
         if error:
             errors.append(error)
         elif meta is not None:
-            if not str(meta.get("name") or "").strip():
-                errors.append("frontmatter.name 为空")
-            if not str(meta.get("description") or "").strip():
-                errors.append("frontmatter.description 为空")
+            errors.extend(_validate_skill_meta(skill["name"], meta))
         results.append({"name": skill["name"], "path": str(path), "errors": errors})
     return results
