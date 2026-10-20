@@ -76,7 +76,7 @@ def test_entries_have_required_fields_and_unique_names():
         assert isinstance(spec.description, str)
         if spec.is_hitl:
             assert spec.interrupt_decisions
-            assert set(spec.interrupt_decisions) <= {"approve", "reject"}
+            assert set(spec.interrupt_decisions) <= {"approve", "edit", "reject"}
         else:
             assert spec.interrupt_decisions == ()
 
@@ -149,7 +149,7 @@ def test_default_interrupt_list_matches_hitl_module():
     for name in DEFAULT_INTERRUPT_TOOLS:
         spec = registry.require_tool_spec(name)
         assert spec.is_hitl
-        assert spec.interrupt_decisions == ("approve", "reject")
+        assert spec.interrupt_decisions == ("approve", "edit", "reject")
         assert not spec.hitl_conditional
 
 

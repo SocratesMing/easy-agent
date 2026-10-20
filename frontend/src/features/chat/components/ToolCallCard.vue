@@ -41,8 +41,22 @@
         <ul v-if="filePaths && filePaths.length" class="tcc-approval-files">
           <li v-for="(fp, i) in filePaths" :key="i">{{ fp }}</li>
         </ul>
-        <div class="tcc-approval-actions">
+        <template v-if="editing">
+          <textarea
+            v-model="draft"
+            class="tcc-edit-input"
+            spellcheck="false"
+            aria-label="编辑参数（JSON）"
+          />
+          <div v-if="editError" class="tcc-edit-error">{{ editError }}</div>
+          <div class="tcc-approval-actions">
+            <button type="button" class="tcc-btn approve" @click="submitEdit">保存并执行</button>
+            <button type="button" class="tcc-btn" @click="cancelEdit">取消</button>
+          </div>
+        </template>
+        <div v-else class="tcc-approval-actions">
           <button type="button" class="tcc-btn approve" @click="$emit('approve')">批准</button>
+          <button type="button" class="tcc-btn" @click="startEdit">编辑参数</button>
           <button type="button" class="tcc-btn reject" @click="$emit('reject')">拒绝</button>
         </div>
       </div>
@@ -95,7 +109,7 @@ const props = defineProps({
   streaming: { type: Boolean, default: false },
 })
 
-defineEmits(['approve', 'reject'])
+const emit = defineEmits(['approve', 'reject', 'edit'])
 
 const card = computed(() => toolCard(props.toolName, props.args, props.result, props.success))
 // 头部按类型区分：命令(terminal)/列表(ls,glob)/搜索(grep)/读取/编辑/工具
@@ -113,6 +127,35 @@ const kindLabel = computed(() => ({
 // 参数流式写入期间自动展开，让用户实时看到正在生成的文件内容；
 // 一旦收到完整参数（streaming 转为 false）即释放自动展开，尊重用户手动折叠。
 const expanded = ref(props.pendingApproval)
+const editing = ref(false)
+const draft = ref('')
+const editError = ref('')
+
+function startEdit() {
+  editing.value = true
+  expanded.value = true
+  editError.value = ''
+  draft.value = JSON.stringify(props.args || {}, null, 2)
+}
+function cancelEdit() {
+  editing.value = false
+  editError.value = ''
+}
+function submitEdit() {
+  let parsed
+  try {
+    parsed = JSON.parse(draft.value)
+  } catch (e) {
+    editError.value = `JSON 解析失败：${e.message}`
+    return
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    editError.value = '参数必须是 JSON 对象'
+    return
+  }
+  editing.value = false
+  emit('edit', parsed)
+}
 let _streamOpened = false
 watch(() => props.streaming, (v) => {
   if (v && !expanded.value) {
@@ -221,6 +264,8 @@ const prettyArgs = computed(() => {
 .tcc-approval-prompt { font-size: 13px; color: #b45309; margin-bottom: 6px; }
 .tcc-approval-files { margin: 0 0 8px; padding-left: 18px; font-size: 12px; color: var(--text-secondary, #64748b); }
 .tcc-approval-actions { display: flex; gap: 8px; }
+.tcc-edit-input { width: 100%; min-height: 120px; box-sizing: border-box; margin-bottom: 8px; padding: 8px 10px; border: 1px solid var(--border-color, #d1d5db); border-radius: 6px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace; font-size: 12px; line-height: 1.5; resize: vertical; }
+.tcc-edit-error { margin-bottom: 6px; font-size: 12px; color: #dc2626; }
 .tcc-btn { padding: 4px 14px; border-radius: 6px; font-size: 13px; cursor: pointer; border: 1px solid transparent; }
 .tcc-btn.approve { background: #16a34a; color: #fff; }
 .tcc-btn.reject { background: #fff; color: #dc2626; border-color: #fca5a5; }

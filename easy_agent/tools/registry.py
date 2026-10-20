@@ -53,7 +53,7 @@ KNOWN_SOURCES = frozenset(
 )
 
 #: ``interrupt_on`` 允许的决策（与 ``agent.py`` 现有配置一致）。
-ALLOWED_INTERRUPT_DECISIONS = ("approve", "reject")
+ALLOWED_INTERRUPT_DECISIONS = ("approve", "edit", "reject")
 
 
 @dataclass(frozen=True)
@@ -293,7 +293,7 @@ TOOL_REGISTRY: tuple[ToolSpec, ...] = (
         description="沙箱内执行 Shell 命令（DeepAgents 内置）",
         mutating=True,
         is_hitl=True,
-        interrupt_decisions=("approve", "reject"),
+        interrupt_decisions=("approve", "edit", "reject"),
         # 删除类命令才进审批；目录删除直接拒绝，不进入审批。
         hitl_conditional=True,
         hitl_predicate="is_destructive_command",
@@ -313,7 +313,7 @@ TOOL_REGISTRY: tuple[ToolSpec, ...] = (
         description="删除文件（DeepAgents 0.7 新增；默认进 HITL）",
         mutating=True,
         is_hitl=True,
-        interrupt_decisions=("approve", "reject"),
+        interrupt_decisions=("approve", "edit", "reject"),
         hitl_order=5,
     ),
     ToolSpec(
@@ -328,7 +328,7 @@ TOOL_REGISTRY: tuple[ToolSpec, ...] = (
         description="按权限访问知识库原文（list/metadata/materialize）",
         mutating=True,
         is_hitl=True,
-        interrupt_decisions=("approve", "reject"),
+        interrupt_decisions=("approve", "edit", "reject"),
         # 仅 action=materialize 触发审批（list/metadata 只读，无需审批）。
         hitl_conditional=True,
         hitl_predicate="is_knowledge_materialize",
@@ -344,7 +344,7 @@ TOOL_REGISTRY: tuple[ToolSpec, ...] = (
         description="创建 cron 定时任务",
         mutating=True,
         is_hitl=True,
-        interrupt_decisions=("approve", "reject"),
+        interrupt_decisions=("approve", "edit", "reject"),
         hitl_order=20,
         inject_order=20,
         condition_note="enable_hitl=True",
@@ -357,7 +357,7 @@ TOOL_REGISTRY: tuple[ToolSpec, ...] = (
         description="在对话内新建/修改专家配置",
         mutating=True,
         is_hitl=True,
-        interrupt_decisions=("approve", "reject"),
+        interrupt_decisions=("approve", "edit", "reject"),
         hitl_order=10,
         inject_order=30,
         condition_note="非专家会话；由 expert-creator 技能的 include_tools 带出（skill_gated）",

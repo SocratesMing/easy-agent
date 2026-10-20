@@ -87,7 +87,8 @@ DA-13 S2 已由另一路开发提交：`c24d5ba feat(skills): share public skill
 - **D4 已实现 S1/S2（`e16f9e1`）**：`{server}__{tool}` 命名 + `EASY_MCP_TOOL_PREFIX` 灰度开关（默认 off，行为不变）；技能 `include_tools`、子代理 `use_tools` 支持「精确 → 后缀唯一」兼容解析；HITL 启发式改用 `mcp_original_name`。方案见 [2026-10-20-d4-mcp-tool-naming.md](2026-10-20-d4-mcp-tool-naming.md)；端到端行为由 `tests/services/test_mcp_tool_prefix.py` 覆盖。
 - **D6 已闭环（`9923c68`）**：子代理 spec 允许键收敛为「官方 SubAgent 字段 + 项目扩展 `use_tools`/`requires_tools`」，拼写错误的键会告警并丢弃，不再静默传给框架。
 - **D7 已闭环（2026-10-20）**：新增 `agent.interrupt_sensitive_writes`（默认在 `config.yaml` 开启），对 `/memories/**` 与 `/user-skills/**` 的写入使用 `FilesystemPermission(mode="interrupt")`；规则排在所有 deny 之后，保证「已有技能不可改」「公共技能只读」仍然直接拒绝。需要 checkpointer；`write_file` 类中断在前端审批面板的实际展示尚未真机验证。
-- **剩余**：D5（MCP 会话池，风险登记，等官方连接池 API）、D8（HITL `edit`，产品决策）；D4 的灰度开启与前端展示需要真实 MCP server 环境。
+- **D8 已闭环（2026-10-20）**：审批允许 `edit`——后端白名单/工具声明/heuristic 分支/SSE 投影默认值全部支持 `approve/edit/reject`；两端工具卡新增「编辑参数」（JSON 文本域），决策按 `action_index` 只改被点的那一条、同批其余按批准处理。前端审批 UI 的实际交互仍需连模型实测。
+- **剩余**：D5（MCP 会话池，风险登记，等官方连接池 API）；D4 的灰度开启与前端展示需要真实 MCP server 环境。
 
 ## 6. 已符合官方的部分（避免误改）
 

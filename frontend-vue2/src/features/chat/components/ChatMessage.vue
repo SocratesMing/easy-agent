@@ -105,6 +105,7 @@
                 :streaming="!!block.streaming"
                 @approve="$emit('approve', approvalTarget(block))"
                 @reject="$emit('reject', approvalTarget(block))"
+                @edit="$emit('edit', Object.assign(approvalTarget(block), { editedArgs: $event }))"
               />
 
               <!-- 中间穿插的正文（其后仍有思考/工具）放进处理过程内部按原序展示 -->
@@ -123,6 +124,7 @@
             :file-paths="ar.file_paths || []"
             @approve="$emit('approve', { interruptId: ar.interrupt_id || null })"
             @reject="$emit('reject', { interruptId: ar.interrupt_id || null })"
+            @edit="$emit('edit', { interruptId: ar.interrupt_id || null, actionIndex: ar.action_index != null ? ar.action_index : 0, actionName: ar.name || ar.tool_name || '', editedArgs: $event })"
           />
         </div>
         <template v-for="(block, idx) in finalContentBlocks">

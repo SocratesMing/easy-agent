@@ -442,6 +442,6 @@ def build_interrupt_config(
         if decision:
             config.setdefault(
                 name,
-                InterruptOnConfig(allowed_decisions=["approve", "reject"]),
+                InterruptOnConfig(allowed_decisions=["approve", "edit", "reject"]),
             )
     return config

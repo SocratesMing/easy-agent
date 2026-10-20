@@ -1009,6 +1009,11 @@ export default {
       const actionRequests = (pending && pending.action_requests) || []
       const { decisions, interruptId } = buildResumeDecisions(actionRequests, decision, {
         interruptId: target && target.interruptId,
+        // 编辑参数：只改被点的那一条（action_index 由载荷带下来）
+        targetActionIndex: target && target.actionIndex,
+        editedAction: target && target.editedArgs
+          ? { name: target.actionName || '', args: target.editedArgs }
+          : null,
       })
 
       // 清掉待审批按钮（恢复流期间不允许再点），只给本次作答的中断记上「已批准 / 已拒绝」

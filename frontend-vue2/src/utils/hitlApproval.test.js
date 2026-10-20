@@ -44,7 +44,7 @@ test('main-agent approvals attach to their own card by tool_call_id', () => {
   assert.equal(blocks[0].pending_approval, undefined)
   const message = { blocks, pending_approval: { action_requests: actions } }
   assert.deepEqual(unmatchedApprovalRequests(message), [])
-  assert.deepEqual(approvalTargetForBlock(message, blocks[1]), { interruptId: 'A' })
+  assert.deepEqual(approvalTargetForBlock(message, blocks[1]), { interruptId: 'A', actionIndex: 0, actionName: 'execute' })
 })
 
 test('legacy payloads keep the name fallback but skip already-finished cards', () => {
@@ -110,4 +110,30 @@ test('marking a decision clears all buttons but only stamps the answered interru
     [false, 'approved'],
     [false, 'pending'],
   ])
+})
+
+test('buildResumeDecisions: edit 只改目标那条，其余按批准', () => {
+  const actions = [
+    { name: 'a', action_index: 0, interrupt_id: 'i1', tool_call_id: 't0' },
+    { name: 'b', action_index: 1, interrupt_id: 'i1', tool_call_id: 't1' }
+  ]
+  const { decisions } = buildResumeDecisions(actions, 'edit', {
+    interruptId: 'i1',
+    targetActionIndex: 1,
+    editedAction: { name: 'b', args: { x: 2 } }
+  })
+  assert.deepEqual(decisions[0], { type: 'approve', interrupt_id: 'i1', action_index: 0 })
+  assert.deepEqual(decisions[1], {
+    type: 'edit',
+    edited_action: { name: 'b', args: { x: 2 } },
+    interrupt_id: 'i1',
+    action_index: 1
+  })
+})
+
+test('buildResumeDecisions: 旧载荷（无 interrupt_id）编辑单条', () => {
+  const { decisions } = buildResumeDecisions([{ name: 'a' }], 'edit', {
+    editedAction: { name: 'a', args: { y: 1 } }
+  })
+  assert.deepEqual(decisions, [{ type: 'edit', edited_action: { name: 'a', args: { y: 1 } } }])
 })

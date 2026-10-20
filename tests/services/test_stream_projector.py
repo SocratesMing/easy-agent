@@ -59,7 +59,7 @@ def test_mark_hitl_pending_marks_only_matching_tool_calls():
         partial,
         ["c1"],
         action_requests,
-        {"execute": {"allowed_decisions": ["approve", "reject"]}},
+        {"execute": {"allowed_decisions": ["approve", "edit", "reject"]}},
         "s1-m1",
     )
 
@@ -69,7 +69,7 @@ def test_mark_hitl_pending_marks_only_matching_tool_calls():
             "tool_name": "execute",
             "arguments": {"command": "rm -rf a.txt"},
             "description": "删除文件",
-            "allowed_decisions": ["approve", "reject"],
+            "allowed_decisions": ["approve", "edit", "reject"],
             "file_paths": ["a.txt"],
         }
     ]
@@ -92,7 +92,7 @@ def test_mark_hitl_pending_defaults_allowed_decisions():
     )
 
     assert payload[0]["tool_call_id"] == ""
-    assert payload[0]["allowed_decisions"] == ["approve", "reject"]
+    assert payload[0]["allowed_decisions"] == ["approve", "edit", "reject"]
 
 
 def test_load_resume_snapshot_reads_last_assistant_and_pending_ids():

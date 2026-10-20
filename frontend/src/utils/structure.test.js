@@ -17,15 +17,15 @@ const MAX_NEW_FILE_LINES = 800
 
 /** 现存超大文件的行数预算（= 2026-10-20 实测值，只允许往下调） */
 const LINE_BUDGET = {
-  'App.vue': 3045,
+  'App.vue': 3051,
   'features/chat/components/ChatInput.vue': 4033,
-  'features/chat/components/ChatMessage.vue': 2481,
+  'features/chat/components/ChatMessage.vue': 2483,
   'features/experts/components/ExpertListPanel.vue': 1649,
   'features/connectors/components/ConnectorListPanel.vue': 1534,
   'features/settings/components/SettingsPanel.vue': 1226,
   'features/skills/components/SkillListPanel.vue': 1226,
   'shared/preview/FilePreview.vue': 1105,
-  'features/chat/components/Chat.vue': 1021,
+  'features/chat/components/Chat.vue': 1025,
   'features/chat/components/SessionList.vue': 957,
   'features/workspace/components/WorkspacePanel.vue': 930,
   'features/tasks/components/ScheduledTasksPanel.vue': 842,

@@ -120,6 +120,7 @@
         @retry="handleRetry"
         @approve="handleToolApproval('approve', $event)"
         @reject="handleToolApproval('reject', $event)"
+        @edit="handleToolApproval('edit', $event)"
         @open-panel="openSkillCenterPanel"
         @open-knowledge="openKnowledgeWorkbench"
         @select-expert="handleUseExpert"

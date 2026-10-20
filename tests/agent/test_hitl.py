@@ -75,8 +75,8 @@ def test_build_interrupt_config_only_adds_injected_registry_tools():
     assert "create_scheduled_task" not in cfg
     assert "access_knowledge_original" not in cfg
     assert cfg["execute"]["when"] is _is_destructive_command
-    assert cfg["execute"]["allowed_decisions"] == ["approve", "reject"]
-    assert cfg["mysql_execute_sql"] == {"allowed_decisions": ["approve", "reject"]}
+    assert cfg["execute"]["allowed_decisions"] == ["approve", "edit", "reject"]
+    assert cfg["mysql_execute_sql"] == {"allowed_decisions": ["approve", "edit", "reject"]}
 
 
 def test_build_interrupt_config_includes_every_injected_hitl_tool():
@@ -96,8 +96,8 @@ def test_build_interrupt_config_includes_every_injected_hitl_tool():
         "create_scheduled_task",
     }
     assert cfg["access_knowledge_original"]["when"] is _is_knowledge_materialize
-    assert cfg["save_expert"]["allowed_decisions"] == ["approve", "reject"]
-    assert cfg["create_scheduled_task"]["allowed_decisions"] == ["approve", "reject"]
+    assert cfg["save_expert"]["allowed_decisions"] == ["approve", "edit", "reject"]
+    assert cfg["create_scheduled_task"]["allowed_decisions"] == ["approve", "edit", "reject"]
 
 
 def test_build_interrupt_config_preserves_registry_hitl_order():
@@ -128,7 +128,7 @@ def test_build_interrupt_config_ignores_non_mutating_unknown_tools():
 def test_build_interrupt_config_keeps_legacy_read_uploaded_file_heuristic():
     """行为等价：read_uploaded_file 名字含 upload，改造前已被启发式纳入审批。"""
     cfg = build_interrupt_config(["read_uploaded_file"])
-    assert cfg["read_uploaded_file"]["allowed_decisions"] == ["approve", "reject"]
+    assert cfg["read_uploaded_file"]["allowed_decisions"] == ["approve", "edit", "reject"]
 
 
 def test_build_interrupt_config_disabled_returns_none():

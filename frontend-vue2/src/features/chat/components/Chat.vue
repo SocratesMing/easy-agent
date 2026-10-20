@@ -63,6 +63,7 @@
           @retry="handleRetry"
           @approve="handleApprove"
           @reject="handleReject"
+          @edit="handleEdit"
         />
       </div>
       </div>
@@ -442,6 +443,9 @@ export default {
     },
     handleReject(payload) {
       this.$emit('reject', payload)
+    },
+    handleEdit(payload) {
+      this.$emit('edit', payload)
     },
     handleStop() {
       this.$emit('stop')

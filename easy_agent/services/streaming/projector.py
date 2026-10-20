@@ -95,7 +95,7 @@ def build_action_requests_payload(
             "arguments": ar.get("args", {}),
             "description": ar.get("description", ""),
             "allowed_decisions": config_map.get(ar.get("name", ""), {}).get(
-                "allowed_decisions", ["approve", "reject"]
+                "allowed_decisions", ["approve", "edit", "reject"]
             ),
             "file_paths": extract_file_paths_from_command(
                 ar.get("args", {}).get("command", "")

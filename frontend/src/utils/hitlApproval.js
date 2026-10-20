@@ -91,10 +91,14 @@ export function unmatchedApprovalRequests (message) {
 
 /** 工具卡片上的按钮回答哪个中断：卡片自身记录的，否则按 tool_call_id 到载荷里查。 */
 export function approvalTargetForBlock (message, block) {
-  if (block && block.hitl_interrupt_id) return { interruptId: block.hitl_interrupt_id }
   const id = block && (block.tool_call_id || block.id)
   const ar = id ? pendingActions(message).find(a => a.tool_call_id === id) : null
-  return { interruptId: (ar && ar.interrupt_id) || null }
+  return {
+    interruptId: (block && block.hitl_interrupt_id) || (ar && ar.interrupt_id) || null,
+    // 编辑参数需要知道改的是同批里的哪一条（action_index 由后端下发）
+    actionIndex: ar && ar.action_index != null ? ar.action_index : null,
+    actionName: (ar && (ar.name || ar.tool_name)) || (block && block.tool_name) || ''
+  }
 }
 
 /**
@@ -107,16 +111,36 @@ export function buildResumeDecisions (actionRequests, decision, opts = {}) {
   const base = decision === 'approve'
     ? { type: 'approve' }
     : (opts.rejectMessage ? { type: 'reject', message: opts.rejectMessage } : { type: 'reject' })
+  // 「改完参数继续执行」：只改被点的那一条，同批其余操作按批准处理
+  const edited = decision === 'edit' ? (opts.editedAction || null) : null
+  const editIndex = decision === 'edit' && opts.targetActionIndex != null
+    ? Number(opts.targetActionIndex)
+    : -1
+  const actionDecision = (ar) => {
+    const idx = ar && ar.action_index != null ? Number(ar.action_index) : 0
+    if (edited && idx === editIndex) {
+      return {
+        type: 'edit',
+        edited_action: {
+          name: edited.name || (ar && (ar.name || ar.tool_name)) || '',
+          args: edited.args || {},
+        },
+      }
+    }
+    return decision === 'edit' ? { type: 'approve' } : base
+  }
   const actions = (actionRequests || []).filter(Boolean)
-  if (!hasInterruptIds(actions)) return { decisions: [base], interruptId: null }
+  if (!hasInterruptIds(actions)) {
+    return { decisions: [edited ? { type: 'edit', edited_action: edited } : base], interruptId: null }
+  }
   const interruptId = opts.interruptId || actions.find(ar => ar.interrupt_id).interrupt_id
   const batch = actions
     .filter(ar => ar.interrupt_id === interruptId)
     .sort((a, b) => (a.action_index || 0) - (b.action_index || 0))
   const decisions = batch.length
-    ? batch.map(ar => ({ ...base, interrupt_id: interruptId, action_index: ar.action_index || 0 }))
+    ? batch.map(ar => ({ ...actionDecision(ar), interrupt_id: interruptId, action_index: ar.action_index || 0 }))
     // 中断已不在当前载荷里：仍按 ID 发送，由后端判定（过期则 400），绝不改投别的中断
-    : [{ ...base, interrupt_id: interruptId }]
+    : [{ ...(edited ? { type: 'edit', edited_action: edited } : base), interrupt_id: interruptId }]
   return { decisions, interruptId }
 }
 
@@ -125,7 +149,7 @@ export function buildResumeDecisions (actionRequests, decision, opts = {}) {
  * 只给本次作答的中断记上「已批准 / 已拒绝」，其余仍为 pending，等后端再次下发审批。
  */
 export function markApprovalDecision (blocks, decision, actionRequests, interruptId) {
-  const status = decision === 'approve' ? 'approved' : 'rejected'
+  const status = decision === 'approve' ? 'approved' : (decision === 'edit' ? 'edited' : 'rejected')
   const targetIds = interruptId
     ? new Set((actionRequests || [])
       .filter(ar => ar && ar.interrupt_id === interruptId && ar.tool_call_id)

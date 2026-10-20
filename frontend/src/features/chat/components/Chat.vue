@@ -55,6 +55,7 @@
           @removeFile="(file) => handleRemoveFile(file, index)"
           @retry="handleRetry"
           @approve="handleApprove"
+          @edit="handleEdit"
           @reject="handleReject"
         />
       </div>
@@ -268,7 +269,7 @@ const topbarFloating = computed(
   () => !showSessionTime.value && props.todos.length === 0 && showWorkspaceBtn.value
 )
 
-const emit = defineEmits(['sendMessage', 'stop', 'removeFile', 'createSession', 'approve', 'reject', 'update:selectedModel', 'toggleWorkspace', 'clearExpert', 'selectExpert', 'expertPromptApplied', 'openPanel'])
+const emit = defineEmits(['sendMessage', 'stop', 'removeFile', 'createSession', 'approve', 'reject', 'edit', 'update:selectedModel', 'toggleWorkspace', 'clearExpert', 'selectExpert', 'expertPromptApplied', 'openPanel'])
 const messagesRef = ref(null)
 
 function formatSessionTime(isoStr) {
@@ -380,6 +381,9 @@ function handleRetry(content) {
 }
 
 // payload: { interruptId }——回答哪一个待审批中断（DA-02），原样上抛
+function handleEdit(payload) {
+  emit('edit', payload)
+}
 function handleApprove(payload) {
   emit('approve', payload)
 }

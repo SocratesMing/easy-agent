@@ -41,8 +41,22 @@
         <ul v-if="filePaths && filePaths.length" class="tcc-approval-files">
           <li v-for="(fp, i) in filePaths" :key="i">{{ fp }}</li>
         </ul>
-        <div class="tcc-approval-actions">
+        <template v-if="editing">
+          <textarea
+            v-model="draft"
+            class="tcc-edit-input"
+            spellcheck="false"
+            aria-label="编辑参数（JSON）"
+          />
+          <div v-if="editError" class="tcc-edit-error">{{ editError }}</div>
+          <div class="tcc-approval-actions">
+            <button type="button" class="tcc-btn approve" @click="submitEdit">保存并执行</button>
+            <button type="button" class="tcc-btn" @click="cancelEdit">取消</button>
+          </div>
+        </template>
+        <div v-else class="tcc-approval-actions">
           <button type="button" class="tcc-btn approve" @click="$emit('approve')">批准</button>
+          <button type="button" class="tcc-btn" @click="startEdit">编辑参数</button>
           <button type="button" class="tcc-btn reject" @click="$emit('reject')">拒绝</button>
         </div>
       </div>
@@ -95,9 +109,9 @@ export default {
     filePaths: { type: Array, default: () => [] },
     streaming: { type: Boolean, default: false },
   },
-  emits: ['approve', 'reject'],
+  emits: ['approve', 'reject', 'edit'],
   data() {
-    return { expanded: this.pendingApproval }
+    return { expanded: this.pendingApproval, editing: false, draft: '', editError: '' }
   },
   created() {
     // 自动展开是否由本轮流式写入触发，用于在 streaming 结束后收回自动展开
@@ -152,6 +166,31 @@ export default {
     },
   },
   methods: {
+    startEdit() {
+      this.expanded = true
+      this.editing = true
+      this.editError = ''
+      this.draft = JSON.stringify(this.args || {}, null, 2)
+    },
+    cancelEdit() {
+      this.editing = false
+      this.editError = ''
+    },
+    submitEdit() {
+      let parsed
+      try {
+        parsed = JSON.parse(this.draft)
+      } catch (e) {
+        this.editError = `JSON 解析失败：${e.message}`
+        return
+      }
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        this.editError = '参数必须是 JSON 对象'
+        return
+      }
+      this.editing = false
+      this.$emit('edit', parsed)
+    },
     // diff 前缀：写入(全 add)不需要前缀，让文字与命令/读取从同一缩进起点开始；
     // 编辑(有 del/add)保留 +/- 前缀，表达「这一行来自哪个方向」。
     diffPrefix(line) {
@@ -236,6 +275,8 @@ export default {
 .tcc-approval-prompt { font-size: 13px; color: #b45309; margin-bottom: 6px; }
 .tcc-approval-files { margin: 0 0 8px; padding-left: 18px; font-size: 12px; color: var(--text-secondary, #64748b); }
 .tcc-approval-actions { display: flex; gap: 8px; }
+.tcc-edit-input { width: 100%; min-height: 120px; box-sizing: border-box; margin-bottom: 8px; padding: 8px 10px; border: 1px solid var(--border-color, #d1d5db); border-radius: 6px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace; font-size: 12px; line-height: 1.5; resize: vertical; }
+.tcc-edit-error { margin-bottom: 6px; font-size: 12px; color: #dc2626; }
 .tcc-btn { padding: 4px 14px; border-radius: 6px; font-size: 13px; cursor: pointer; border: 1px solid transparent; }
 .tcc-btn.approve { background: #16a34a; color: #fff; }
 .tcc-btn.reject { background: #fff; color: #dc2626; border-color: #fca5a5; }
