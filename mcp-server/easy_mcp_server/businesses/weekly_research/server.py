@@ -1,4 +1,4 @@
-"""研报观点矩阵与周度宏观预测 MCP 工具
+"""研报观点矩阵与美国宏观资产研判 MCP 工具
 
 挂载路径：``/mcp/weekly_research/``
 
@@ -24,12 +24,21 @@ from . import weekly_research
 logger = logging.getLogger("easy-mcp-server")
 
 INSTRUCTIONS = (
-    "Weekly research opinions and institution macro forecasts. Call "
+    "Weekly research opinions and US macro asset research. Call "
     "describe_weekly_research_schema before querying. Weeks are labelled YYYYMMDD-YYYYMMDD. "
-    "The opinions table stores one row per week with a JSON payload; the tools expand it into "
-    "one row per opinion (institution / category / asset / direction). Use the "
-    "get_weekly_macro_* tools for the macro forecast table. Category values include 境内利率 / "
-    "境外利率 / 外汇 / 全球股指 / 大宗 / 宏观指标."
+    "The opinion matrix (weekly_analyzer_data) covers ASSET categories only: 境内利率 / 境外利率 / "
+    "外汇 / 全球股指 / 大宗. Opinions whose category is 宏观指标 (or the legacy 宏观) are "
+    "excluded from every opinion tool, so opinion counts here are smaller than the raw "
+    "JSON total - they are still stored, just not returned by this module. Macro data "
+    "lives ONLY in the separate table weekly_macro_data (use the get_weekly_macro_* "
+    "tools); the macro_forecasts field inside weekly_analyzer_data is a legacy compatibility "
+    "field and must not be read. Nullable JSON fields arrive as the string 'null' and "
+    "are normalised to null here. Institution forecast values may be text (e.g. 12月 / "
+    "10月 / 不动): numeric averages only count JSON numbers, and text rows must use the "
+    "mode tool - never strip the characters and average them. One opinion can have "
+    "several sources, so the source query returns more rows than there are opinions. "
+    "price is only a price anchor at analysis time and cannot be used to derive a "
+    "period return. SQL runs on MySQL 5.7 - no JSON_TABLE is used."
 )
 
 
@@ -123,18 +132,6 @@ def build() -> FastMCP:
         return await _domain_query(
             "weekly_research", "get_weekly_opinions", username,
             lambda: weekly_research.opinion_details_sql(week, institution, category, limit),
-            lambda rows: {"week": week, "count": len(rows), "opinions": rows},
-        )
-
-    @mcp.tool()
-    async def get_weekly_macro_opinions(
-        week: str, institution: str | None = None, limit: int = 500
-    ) -> dict[str, Any]:
-        """只看观点矩阵中 category 为宏观指标/宏观的机构方向观点。"""
-        username = current_username()
-        return await _domain_query(
-            "weekly_research", "get_weekly_macro_opinions", username,
-            lambda: weekly_research.macro_opinions_sql(week, institution, limit),
             lambda rows: {"week": week, "count": len(rows), "opinions": rows},
         )
 

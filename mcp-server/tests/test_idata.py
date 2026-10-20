@@ -378,7 +378,8 @@ def test_policy_defaults_to_idata_tables_only(monkeypatch):
 def test_weekly_tables_match_business_schema():
     """表名钉住。
 
-    业务方给的 SQL 清单里写成 `weekly_data`，实际库里是 `weekly_analyzer_data`；
+    表名以新版 SQL 清单（2026-10 二次修订）为准：`weekly_analyzer_data`。
+    中间那一版曾改成 `weekly_data`，业务方随后又改回真实表名。
     这类错误只会在运行时才报 "Table ... doesn't exist"，用测试提前挡一道。
     """
     assert weekly_research.TABLES == {

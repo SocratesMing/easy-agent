@@ -1,4 +1,34 @@
-"""研报观点矩阵与周度宏观预测领域层。"""
+"""研报观点矩阵与美国宏观资产研判领域层（两张表，JSON 数组展开，只读）。
+
+口径照 ``docs/MCP_docs/研报观点矩阵与宏观_SQL清单_MCP信息.md``：
+
+- 观点矩阵 = ``weekly_analyzer_data``（一周一行，``week`` 为唯一键）
+- 美国宏观资产研判 = ``weekly_macro_data``（一周一行，``week`` 为唯一键）
+- 两表**互不关联**，跨表 JOIN 要注意排序规则（可能报 1267）
+- **SQL 输出列名避开保留字**：``direction`` / ``period`` / ``prior`` / ``actual`` /
+  ``unit`` 在输出里分别叫 ``dir`` / ``data_period`` / ``prev_value`` /
+  ``actual_value`` / ``unit_name``（**JSON 键名本身不变**）。目标环境的连接器对
+  ``prior`` 这类词敏感会报 1064，自己加新列时也别用 ``prior`` / ``order`` /
+  ``group`` / ``key`` / ``desc`` 这类词
+- **``ORDER BY`` 里别拿 SELECT 别名做运算**：MySQL 5.7 只认裸别名
+  （``ORDER BY bull``），``ORDER BY (bull + bear)`` 会报 1064，要写完整聚合表达式
+
+本模块的三条硬约束：
+
+1. **只用 MySQL 5.7 已有的语法**：不写 ``JSON_TABLE``（8.0 才有，5.7 上直接 1064
+   语法报错）、不写递归 CTE、窗口函数、``LATERAL``。数组展开统一用
+   **序号表 seq + ``CONCAT`` 拼下标**（见 :data:`SEQ_LIMIT` 与各 ``_*_block`` 常量）。
+2. **JSON 里的 ``null`` 取出来是字符串 ``'null'``**（``JSON_UNQUOTE`` 不解成 SQL
+   NULL），所以可空字段统一套 ``NULLIF(..., 'null')``。
+3. **观点矩阵只含资产类观点**：``category`` 为 ``宏观指标``（历史还有 ``宏观``）的
+   一律排除——宏观类观点仍在库里，只是本模块不返回。
+
+派生表上的 ``LIMIT 1``（单周）/ ``DISTINCT``（跨周）是**强制物化**开关：
+先把子数组抽进派生表，整份 JSON 才只解析一次，删掉会让跨周查询慢两个数量级。
+
+序号表上限 40 是硬上限：数组比 40 长时**不报错、只静默少行**，数据有新增周后要跑
+一次文档 §0.6 的自检。
+"""
 
 from __future__ import annotations
 
@@ -14,7 +44,15 @@ TABLES: dict[str, str] = {
     "opinions": "weekly_analyzer_data",
     "macro": "weekly_macro_data",
 }
+
 DEFAULT_ROW_LIMIT = 500
+
+#: 序号表上限（0–39）。数组更长时不会报错、只会少行，需同步调大
+SEQ_LIMIT = 40
+
+#: 观点矩阵要排除的宏观类 category（历史数据里还有旧的「宏观」）
+MACRO_CATEGORIES: tuple[str, ...] = ("宏观指标", "宏观")
+
 _WEEK_RE = re.compile(r"^(\d{8})-(\d{8})$")
 
 
@@ -48,7 +86,7 @@ def validate_week(value: str) -> str:
             f"{match.group(2)[:4]}-{match.group(2)[4:6]}-{match.group(2)[6:]}"
         )
     except ValueError:
-        raise ValueError(f"week 包含无效日期（收到 {value!r}）") from None
+        raise ValueError("week 包含无效日期（收到 {value!r}）") from None
     if start > end:
         raise ValueError("week 起始日期不能晚于结束日期")
     return text
@@ -58,57 +96,128 @@ def _week_param(week: str) -> str:
     return validate_week(week)
 
 
-def list_opinion_weeks_sql(limit: int | None = None) -> tuple[str, tuple[Any, ...]]:
-    sql = (
-        f"SELECT `week` FROM {table_ref('opinions')} WHERE `week` <> 'test' "
-        f"ORDER BY `week` DESC LIMIT {row_limit(limit)}"
+# ── 共享块（对应文档 §零）──────────────────────────────────────────────
+
+
+def _seq() -> str:
+    """序号表片段：0..SEQ_LIMIT-1 的下标。派生表片段，用时自带括号。"""
+    digits = " UNION ".join(f"SELECT {i} i" for i in range(10))
+    return (
+        f"(SELECT a.i + b.i*10 AS i FROM ({digits}) a, ({digits}) b "
+        f"WHERE a.i + b.i*10 < {SEQ_LIMIT})"
     )
-    return sql, ()
+
+
+def _views_single() -> str:
+    """单周 views 派生表（``LIMIT 1`` 强制物化，``week`` 走 %s）。"""
+    return (
+        f"(SELECT week, JSON_EXTRACT(data_json, '$.views') AS views_json "
+        f"FROM {table_ref('opinions')} WHERE week = %s LIMIT 1)"
+    )
+
+
+def _views_all() -> str:
+    """跨周 views 派生表（``DISTINCT`` 强制物化，无 week 参数）。"""
+    return (
+        f"(SELECT DISTINCT week, JSON_EXTRACT(data_json, '$.views') AS views_json "
+        f"FROM {table_ref('opinions')})"
+    )
+
+
+#: {{V}}：一行一个观点，已排除宏观类。参数：week（一个 %s）
+VIEWS_EXPAND = (
+    "SELECT v.week, v.institution, "
+    "JSON_UNQUOTE(JSON_EXTRACT(v.ops_json, CONCAT('$[', so.i, '].category')))  AS category, "
+    "JSON_UNQUOTE(JSON_EXTRACT(v.ops_json, CONCAT('$[', so.i, '].asset')))     AS asset, "
+    "JSON_UNQUOTE(JSON_EXTRACT(v.ops_json, CONCAT('$[', so.i, '].direction'))) AS dir, "
+    "NULLIF(JSON_UNQUOTE(JSON_EXTRACT(v.ops_json, CONCAT('$[', so.i, '].price'))), 'null')      AS price, "
+    "NULLIF(JSON_UNQUOTE(JSON_EXTRACT(v.ops_json, CONCAT('$[', so.i, '].price_date'))), 'null') AS price_date "
+    "FROM ("
+    "  SELECT w.week, "
+    "         JSON_UNQUOTE(JSON_EXTRACT(w.views_json, CONCAT('$[', sv.i, '].institution'))) AS institution, "
+    "         JSON_EXTRACT(w.views_json, CONCAT('$[', sv.i, '].opinions'))                  AS ops_json "
+    f"  FROM {_views_single()} w, {_seq()} sv "
+    "  WHERE sv.i < JSON_LENGTH(w.views_json) "
+    ") v, " + _seq() + " so "
+    "WHERE so.i < JSON_LENGTH(v.ops_json) "
+    "  AND JSON_UNQUOTE(JSON_EXTRACT(v.ops_json, CONCAT('$[', so.i, '].category'))) "
+    "      NOT IN ('宏观指标', '宏观')"
+)
+
+#: {{V_ALLWK}}：跨周版观点展开（无 week 参数，不能再按 week 过滤）
+VIEWS_EXPAND_ALL_WEEKS = VIEWS_EXPAND.replace(_views_single(), _views_all(), 1)
+
+#: {{M}}：一行一个宏观指标。参数：week（一个 %s）
+MACRO_ITEMS_EXPAND = (
+    "SELECT m.week, "
+    "JSON_UNQUOTE(JSON_EXTRACT(m.items_json, CONCAT('$[', si.i, '].indicator')))    AS indicator, "
+    "JSON_UNQUOTE(JSON_EXTRACT(m.items_json, CONCAT('$[', si.i, '].category')))     AS category, "
+    "NULLIF(JSON_UNQUOTE(JSON_EXTRACT(m.items_json, CONCAT('$[', si.i, '].release_date'))), 'null') AS release_date, "
+    "NULLIF(JSON_UNQUOTE(JSON_EXTRACT(m.items_json, CONCAT('$[', si.i, '].period'))), 'null')       AS data_period, "
+    "NULLIF(JSON_UNQUOTE(JSON_EXTRACT(m.items_json, CONCAT('$[', si.i, '].prior'))), 'null')        AS prev_value, "
+    "NULLIF(JSON_UNQUOTE(JSON_EXTRACT(m.items_json, CONCAT('$[', si.i, '].consensus'))), 'null')    AS consensus, "
+    "NULLIF(JSON_UNQUOTE(JSON_EXTRACT(m.items_json, CONCAT('$[', si.i, '].actual'))), 'null')       AS actual_value, "
+    "NULLIF(JSON_UNQUOTE(JSON_EXTRACT(m.items_json, CONCAT('$[', si.i, '].unit'))), 'null')         AS unit_name, "
+    "JSON_EXTRACT(m.items_json, CONCAT('$[', si.i, '].forecasts'))                  AS forecasts "
+    f"FROM (SELECT week, JSON_EXTRACT(macro_json, '$.items') AS items_json "
+    f"      FROM {table_ref('macro')} WHERE week = %s LIMIT 1) m, {_seq()} si "
+    "WHERE si.i < JSON_LENGTH(m.items_json)"
+)
+
+#: {{M_ALLWK}}：跨周版宏观指标展开（无 week 参数）
+_MACRO_ITEMS_ALL = (
+    f"(SELECT DISTINCT week, JSON_EXTRACT(macro_json, '$.items') AS items_json "
+    f"FROM {table_ref('macro')})"
+)
+MACRO_ITEMS_EXPAND_ALL_WEEKS = MACRO_ITEMS_EXPAND.replace(
+    f"(SELECT week, JSON_EXTRACT(macro_json, '$.items') AS items_json "
+    f"      FROM {table_ref('macro')} WHERE week = %s LIMIT 1)",
+    _MACRO_ITEMS_ALL,
+    1,
+)
+
+#: {{B}}：一行一个机构预测。参数：week（一个 %s）
+MACRO_BANK_EXPAND = (
+    "SELECT b.week, b.indicator, b.consensus, b.actual_value, b.inst, "
+    "NULLIF(JSON_UNQUOTE(JSON_EXTRACT(b.forecasts, CONCAT('$.\"', b.inst, '\"'))), 'null') AS val, "
+    "JSON_TYPE(JSON_EXTRACT(b.forecasts, CONCAT('$.\"', b.inst, '\"')))                    AS jtype "
+    "FROM ("
+    "  SELECT m.week, "
+    "         JSON_UNQUOTE(JSON_EXTRACT(m.items_json, CONCAT('$[', si.i, '].indicator'))) AS indicator, "
+    "         NULLIF(JSON_UNQUOTE(JSON_EXTRACT(m.items_json, CONCAT('$[', si.i, '].consensus'))), 'null') AS consensus, "
+    "         NULLIF(JSON_UNQUOTE(JSON_EXTRACT(m.items_json, CONCAT('$[', si.i, '].actual'))), 'null')    AS actual_value, "
+    "         JSON_EXTRACT(m.items_json, CONCAT('$[', si.i, '].forecasts'))               AS forecasts, "
+    "         JSON_UNQUOTE(JSON_EXTRACT(JSON_KEYS(JSON_EXTRACT(m.items_json, CONCAT('$[', si.i, '].forecasts'))), "
+    "                                   CONCAT('$[', sk.i, ']')))                         AS inst "
+    f"  FROM (SELECT week, JSON_EXTRACT(macro_json, '$.items') AS items_json "
+    f"        FROM {table_ref('macro')} WHERE week = %s LIMIT 1) m, "
+    f"{_seq()} si, {_seq()} sk "
+    "  WHERE si.i < JSON_LENGTH(m.items_json) "
+    "    AND sk.i < COALESCE(JSON_LENGTH(JSON_EXTRACT(m.items_json, "
+    "                           CONCAT('$[', si.i, '].forecasts'))), 0) "
+    ") b"
+)
+
+
+# ── 观点矩阵 ────────────────────────────────────────────────────────────
+
+
+def list_opinion_weeks_sql(limit: int | None = None) -> tuple[str, tuple[Any, ...]]:
+    """1.1 全部周（倒序）。"""
+    return (
+        f"SELECT `week` FROM {table_ref('opinions')} WHERE `week` <> 'test' "
+        f"ORDER BY `week` DESC LIMIT {row_limit(limit)}",
+        (),
+    )
 
 
 def opinion_summary_sql(week: str) -> tuple[str, tuple[Any, ...]]:
-    sql = (
-        "SELECT w.`week`, JSON_LENGTH(JSON_EXTRACT(w.`data_json`, '$.views')) AS institutions, "
-        "(SELECT SUM(JSON_LENGTH(JSON_EXTRACT(o.opinions, '$'))) "
-        " FROM JSON_TABLE(JSON_EXTRACT(w.`data_json`, '$.views'), '$[*]' "
-        "      COLUMNS(opinions JSON PATH '$.opinions')) o) AS opinions "
-        f"FROM {table_ref('opinions')} w WHERE w.`week` = %s LIMIT 1"
+    """1.2 某周机构数 / 观点数（⚠️ 不含宏观类）。"""
+    return (
+        "SELECT x.week, COUNT(DISTINCT x.institution) AS institutions, "
+        f"COUNT(*) AS opinions FROM ({VIEWS_EXPAND}) x GROUP BY x.week",
+        (_week_param(week),),
     )
-    return sql, (_week_param(week),)
-
-
-def _opinion_detail_query(
-    select: str,
-    week: str,
-    institution: str | None = None,
-    category: str | None = None,
-    macro_only: bool = False,
-    order_by: str = "jt.institution, op.asset",
-    limit: int | None = None,
-) -> tuple[str, tuple[Any, ...]]:
-    conditions = ["w.`week` = %s"]
-    params: list[Any] = [_week_param(week)]
-    if institution and str(institution).strip():
-        conditions.append("jt.institution = %s")
-        params.append(str(institution).strip())
-    if category and str(category).strip():
-        conditions.append("op.category = %s")
-        params.append(str(category).strip())
-    if macro_only:
-        conditions.append("op.category IN ('宏观指标', '宏观')")
-    sql = (
-        f"SELECT {select} FROM {table_ref('opinions')} w, "
-        "JSON_TABLE(JSON_EXTRACT(w.`data_json`, '$.views'), '$[*]' COLUMNS("
-        "institution VARCHAR(64) PATH '$.institution', "
-        "opinions JSON PATH '$.opinions')) jt, "
-        "JSON_TABLE(jt.opinions, '$[*]' COLUMNS("
-        "category VARCHAR(32) PATH '$.category', "
-        "asset VARCHAR(128) PATH '$.asset', "
-        "direction VARCHAR(16) PATH '$.direction')) op "
-        f"WHERE {' AND '.join(conditions)} ORDER BY {order_by} "
-        f"LIMIT {row_limit(limit)}"
-    )
-    return sql, tuple(params)
 
 
 def opinion_details_sql(
@@ -117,223 +226,209 @@ def opinion_details_sql(
     category: str | None = None,
     limit: int | None = None,
 ) -> tuple[str, tuple[Any, ...]]:
-    return _opinion_detail_query(
-        "w.`week`, jt.institution, op.category, op.asset, op.direction",
-        week,
-        institution=institution,
-        category=category,
-        limit=limit,
-    )
-
-
-def macro_opinions_sql(
-    week: str, institution: str | None = None, limit: int | None = None
-) -> tuple[str, tuple[Any, ...]]:
-    return _opinion_detail_query(
-        "w.`week`, jt.institution, op.asset, op.direction",
-        week,
-        institution=institution,
-        macro_only=True,
-        limit=limit,
+    """1.3 展开成一行一个观点（已排除宏观类）。"""
+    conditions: list[str] = []
+    params: list[Any] = [_week_param(week)]
+    if institution and str(institution).strip():
+        conditions.append("x.institution = %s")
+        params.append(str(institution).strip())
+    if category and str(category).strip():
+        conditions.append("x.category = %s")
+        params.append(str(category).strip())
+    where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+    return (
+        "SELECT x.week, x.institution, x.category, x.asset, x.dir, "
+        f"x.price, x.price_date FROM ({VIEWS_EXPAND}) x {where} "
+        f"ORDER BY x.institution, x.asset LIMIT {row_limit(limit)}",
+        tuple(params),
     )
 
 
 def opinion_direction_counts_sql(
     week: str, institution: str | None = None, limit: int | None = None
 ) -> tuple[str, tuple[Any, ...]]:
-    conditions = ["w.`week` = %s"]
+    """1.4 某周 机构 × 方向 计数（已排除宏观类）。"""
+    conditions: list[str] = []
     params: list[Any] = [_week_param(week)]
     if institution and str(institution).strip():
-        conditions.append("jt.institution = %s")
+        conditions.append("x.institution = %s")
         params.append(str(institution).strip())
-    sql = (
-        "SELECT jt.institution, op.direction, COUNT(*) AS n "
-        f"FROM {table_ref('opinions')} w, "
-        "JSON_TABLE(JSON_EXTRACT(w.`data_json`, '$.views'), '$[*]' COLUMNS("
-        "institution VARCHAR(64) PATH '$.institution', "
-        "opinions JSON PATH '$.opinions')) jt, "
-        "JSON_TABLE(jt.opinions, '$[*]' COLUMNS(direction VARCHAR(16) PATH '$.direction')) op "
-        f"WHERE {' AND '.join(conditions)} "
-        f"GROUP BY jt.institution, op.direction ORDER BY jt.institution, op.direction "
-        f"LIMIT {row_limit(limit)}"
+    where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+    return (
+        "SELECT x.institution, x.dir, COUNT(*) AS n "
+        f"FROM ({VIEWS_EXPAND}) x {where} "
+        "GROUP BY x.institution, x.dir "
+        f"ORDER BY x.institution, x.dir LIMIT {row_limit(limit)}",
+        tuple(params),
     )
-    return sql, tuple(params)
 
 
 def asset_consensus_sql(week: str, limit: int | None = None) -> tuple[str, tuple[Any, ...]]:
-    sql = (
-        "SELECT op.asset, SUM(op.direction='看涨') AS bull, "
-        "SUM(op.direction='看跌') AS bear, SUM(op.direction='中性') AS neutral "
-        f"FROM {table_ref('opinions')} w, "
-        "JSON_TABLE(JSON_EXTRACT(w.`data_json`, '$.views'), '$[*]' "
-        "COLUMNS(opinions JSON PATH '$.opinions')) jt, "
-        "JSON_TABLE(jt.opinions, '$[*]' COLUMNS("
-        "asset VARCHAR(128) PATH '$.asset', direction VARCHAR(16) PATH '$.direction')) op "
-        "WHERE w.`week` = %s GROUP BY op.asset ORDER BY (bull + bear) DESC "
-        f"LIMIT {row_limit(limit)}"
+    """1.5 某周 资产 × 方向分布（看共识 / 分歧，已排除宏观类）。"""
+    return (
+        "SELECT x.asset, SUM(x.dir = '看涨') AS bull, "
+        "SUM(x.dir = '看跌') AS bear, SUM(x.dir = '中性') AS neutral "
+        f"FROM ({VIEWS_EXPAND}) x GROUP BY x.asset "
+        # ⚠️ ORDER BY 必须写完整聚合表达式：MySQL 5.7 只认裸别名（ORDER BY bull），
+        # 不认别名参与运算（ORDER BY (bull + bear) 会报 1064）
+        f"ORDER BY SUM(x.dir = '看涨') + SUM(x.dir = '看跌') DESC, x.asset "
+        f"LIMIT {row_limit(limit)}",
+        (_week_param(week),),
     )
-    return sql, (_week_param(week),)
 
 
 def opinion_sources_sql(
     week: str, asset: str, limit: int | None = None
 ) -> tuple[str, tuple[Any, ...]]:
+    """1.6 观点原文出处（views → opinions → sources 三层展开）。
+
+    ``sources`` 是一对多：一条观点有 N 个出处就展开成 N 行，
+    **展开行数 ≠ 观点数**。
+    """
     name = str(asset or "").strip()
     if not name:
         raise ValueError("asset 必填")
-    sql = (
-        "SELECT jt.institution, op.asset, op.direction, s.report, s.source_date, "
-        "s.passage, s.rationale "
-        f"FROM {table_ref('opinions')} w, "
-        "JSON_TABLE(JSON_EXTRACT(w.`data_json`, '$.views'), '$[*]' COLUMNS("
-        "institution VARCHAR(64) PATH '$.institution', opinions JSON PATH '$.opinions')) jt, "
-        "JSON_TABLE(jt.opinions, '$[*]' COLUMNS("
-        "asset VARCHAR(128) PATH '$.asset', direction VARCHAR(16) PATH '$.direction', "
-        "sources JSON PATH '$.sources')) op, "
-        "JSON_TABLE(op.sources, '$[*]' COLUMNS("
-        "report VARCHAR(256) PATH '$.report', source_date VARCHAR(24) PATH '$.date', "
-        "passage VARCHAR(2048) PATH '$.passage', rationale VARCHAR(1024) PATH '$.rationale')) s "
-        "WHERE w.`week` = %s AND op.asset = %s "
-        "ORDER BY jt.institution, s.source_date DESC "
-        f"LIMIT {row_limit(limit)}"
+    return (
+        "SELECT y.asset, y.dir, y.report, LEFT(y.passage, 120) AS passage_head "
+        "FROM ("
+        "  SELECT "
+        "  JSON_UNQUOTE(JSON_EXTRACT(v.ops_json, CONCAT('$[', so.i, '].category')))  AS category, "
+        "  JSON_UNQUOTE(JSON_EXTRACT(v.ops_json, CONCAT('$[', so.i, '].asset')))     AS asset, "
+        "  JSON_UNQUOTE(JSON_EXTRACT(v.ops_json, CONCAT('$[', so.i, '].direction'))) AS dir, "
+        "  JSON_UNQUOTE(JSON_EXTRACT(JSON_EXTRACT(v.ops_json, CONCAT('$[', so.i, '].sources')), "
+        "                             CONCAT('$[', s.i, '].report')))  AS report, "
+        "  JSON_UNQUOTE(JSON_EXTRACT(JSON_EXTRACT(v.ops_json, CONCAT('$[', so.i, '].sources')), "
+        "                             CONCAT('$[', s.i, '].passage'))) AS passage "
+        "  FROM ("
+        "    SELECT w.week, JSON_EXTRACT(w.views_json, CONCAT('$[', sv.i, '].opinions')) AS ops_json "
+        f"    FROM {_views_single()} w, {_seq()} sv "
+        "    WHERE sv.i < JSON_LENGTH(w.views_json) "
+        "  ) v, " + _seq() + " so, " + _seq() + " s "
+        "  WHERE so.i < JSON_LENGTH(v.ops_json) "
+        "    AND s.i < COALESCE(JSON_LENGTH(JSON_EXTRACT(v.ops_json, "
+        "                           CONCAT('$[', so.i, '].sources'))), 0) "
+        ") y "
+        "WHERE y.category NOT IN ('宏观指标', '宏观') AND y.asset = %s "
+        "ORDER BY y.report "
+        f"LIMIT {row_limit(limit)}",
+        (_week_param(week), name),
     )
-    return sql, (_week_param(week), name)
 
 
 def asset_opinion_trend_sql(
     asset: str, limit: int | None = None
 ) -> tuple[str, tuple[Any, ...]]:
+    """1.7 某资产跨周方向 + 价格锚点（跨周版展开）。"""
     name = str(asset or "").strip()
     if not name:
         raise ValueError("asset 必填")
-    sql = (
-        "SELECT DISTINCT w.`week`, op.direction, op.price, op.price_date "
-        f"FROM {table_ref('opinions')} w, "
-        "JSON_TABLE(JSON_EXTRACT(w.`data_json`, '$.views'), '$[*]' "
-        "COLUMNS(opinions JSON PATH '$.opinions')) jt, "
-        "JSON_TABLE(jt.opinions, '$[*]' COLUMNS("
-        "asset VARCHAR(128) PATH '$.asset', direction VARCHAR(16) PATH '$.direction', "
-        "price VARCHAR(32) PATH '$.price', price_date VARCHAR(24) PATH '$.price_date')) op "
-        "WHERE op.asset = %s AND w.`week` <> 'test' "
-        f"ORDER BY w.`week` DESC LIMIT {row_limit(limit)}"
+    return (
+        "SELECT DISTINCT x.week, x.dir, x.price, x.price_date "
+        f"FROM ({VIEWS_EXPAND_ALL_WEEKS}) x "
+        "WHERE x.asset = %s ORDER BY x.week DESC "
+        f"LIMIT {row_limit(limit)}",
+        (name,),
     )
-    return sql, (name,)
 
 
 def market_overview_sql(week: str) -> tuple[str, tuple[Any, ...]]:
-    sql = (
+    """1.8 周度综述正文。"""
+    return (
         f"SELECT `week`, `market_overview` FROM {table_ref('opinions')} "
-        "WHERE `week` = %s LIMIT 1"
+        "WHERE `week` = %s LIMIT 1",
+        (_week_param(week),),
     )
-    return sql, (_week_param(week),)
+
+
+# ── 美国宏观资产研判 ────────────────────────────────────────────────────
 
 
 def list_macro_weeks_sql(limit: int | None = None) -> tuple[str, tuple[Any, ...]]:
-    sql = (
+    """2.1 有宏观数据的周（倒序）。"""
+    return (
         f"SELECT `week`, `as_of`, `indicator_count` FROM {table_ref('macro')} "
-        f"ORDER BY `week` DESC LIMIT {row_limit(limit)}"
+        f"ORDER BY `week` DESC LIMIT {row_limit(limit)}",
+        (),
     )
-    return sql, ()
 
 
 def macro_indicators_sql(week: str, limit: int | None = None) -> tuple[str, tuple[Any, ...]]:
-    sql = (
-        "SELECT m.`week`, jt.indicator, jt.category, jt.release_date, jt.period, "
-        "jt.prior, jt.consensus, jt.actual, jt.unit "
-        f"FROM {table_ref('macro')} m, "
-        "JSON_TABLE(m.`macro_json`, '$.items[*]' COLUMNS("
-        "indicator VARCHAR(128) PATH '$.indicator', category VARCHAR(32) PATH '$.category', "
-        "release_date VARCHAR(32) PATH '$.release_date', period VARCHAR(16) PATH '$.period', "
-        "prior VARCHAR(32) PATH '$.prior', consensus VARCHAR(32) PATH '$.consensus', "
-        "actual VARCHAR(32) PATH '$.actual', unit VARCHAR(16) PATH '$.unit')) jt "
-        f"WHERE m.`week` = %s ORDER BY jt.indicator LIMIT {row_limit(limit)}"
+    """2.2 展开成一行一个指标。"""
+    return (
+        f"{MACRO_ITEMS_EXPAND} ORDER BY indicator LIMIT {row_limit(limit)}",
+        (_week_param(week),),
     )
-    return sql, (_week_param(week),)
 
 
 def macro_forecasts_sql(week: str, limit: int | None = None) -> tuple[str, tuple[Any, ...]]:
-    sql = (
-        "SELECT m.`week`, jt.indicator, kj.inst AS institution, "
-        "JSON_UNQUOTE(JSON_EXTRACT(jt.forecasts_json, CONCAT('$.\"', kj.inst, '\"'))) AS val "
-        f"FROM {table_ref('macro')} m, "
-        "JSON_TABLE(m.`macro_json`, '$.items[*]' COLUMNS("
-        "indicator VARCHAR(128) PATH '$.indicator', forecasts_json JSON PATH '$.forecasts')) jt, "
-        "JSON_TABLE(JSON_KEYS(jt.forecasts_json), '$[*]' COLUMNS(inst VARCHAR(128) PATH '$')) kj "
-        f"WHERE m.`week` = %s ORDER BY jt.indicator, kj.inst LIMIT {row_limit(limit)}"
+    """2.3 展开成一行一个机构预测（机构 × 指标）。"""
+    return (
+        f"{MACRO_BANK_EXPAND} ORDER BY b.indicator, b.inst LIMIT {row_limit(limit)}",
+        (_week_param(week),),
     )
-    return sql, (_week_param(week),)
 
 
 def macro_indicator_trend_sql(
     indicator: str, limit: int | None = None
 ) -> tuple[str, tuple[Any, ...]]:
+    """2.4 某指标跨周走势（跨周版展开）。"""
     name = str(indicator or "").strip()
     if not name:
         raise ValueError("indicator 必填")
-    sql = (
-        "SELECT m.`week`, jt.period, jt.consensus, jt.actual "
-        f"FROM {table_ref('macro')} m, "
-        "JSON_TABLE(m.`macro_json`, '$.items[*]' COLUMNS("
-        "indicator VARCHAR(128) PATH '$.indicator', period VARCHAR(16) PATH '$.period', "
-        "consensus VARCHAR(32) PATH '$.consensus', actual VARCHAR(32) PATH '$.actual')) jt "
-        "WHERE jt.indicator = %s "
-        f"ORDER BY m.`week` ASC LIMIT {row_limit(limit)}"
+    return (
+        "SELECT x.week, x.data_period, x.consensus, x.actual_value "
+        f"FROM ({MACRO_ITEMS_EXPAND_ALL_WEEKS}) x "
+        "WHERE x.indicator = %s ORDER BY x.week "
+        f"LIMIT {row_limit(limit)}",
+        (name,),
     )
-    return sql, (name,)
 
 
 def macro_coverage_sql(week: str, limit: int | None = None) -> tuple[str, tuple[Any, ...]]:
-    sql = (
-        "SELECT jt.indicator, COALESCE(JSON_LENGTH(jt.forecasts_json), 0) AS filled, "
-        "jt.consensus, jt.actual "
-        f"FROM {table_ref('macro')} m, "
-        "JSON_TABLE(m.`macro_json`, '$.items[*]' COLUMNS("
-        "indicator VARCHAR(128) PATH '$.indicator', consensus VARCHAR(32) PATH '$.consensus', "
-        "actual VARCHAR(32) PATH '$.actual', forecasts_json JSON PATH '$.forecasts')) jt "
-        f"WHERE m.`week` = %s ORDER BY filled DESC, jt.indicator LIMIT {row_limit(limit)}"
+    """2.5 某周每个指标的机构覆盖数。"""
+    return (
+        "SELECT x.indicator, COALESCE(JSON_LENGTH(x.forecasts), 0) AS filled, "
+        "x.consensus, x.actual_value "
+        f"FROM ({MACRO_ITEMS_EXPAND}) x "
+        f"ORDER BY filled DESC, x.indicator LIMIT {row_limit(limit)}",
+        (_week_param(week),),
     )
-    return sql, (_week_param(week),)
 
 
 def macro_numeric_average_sql(
     week: str, limit: int | None = None
 ) -> tuple[str, tuple[Any, ...]]:
-    sql = (
-        "SELECT jt.indicator, ROUND(AVG(CAST(JSON_UNQUOTE(JSON_EXTRACT("
-        "jt.forecasts_json, CONCAT('$.\"', kj.inst, '\"'))) AS DECIMAL(14,4))), 2) AS bank_avg_num, "
-        "COUNT(*) AS n_num, jt.consensus, jt.actual "
-        f"FROM {table_ref('macro')} m, "
-        "JSON_TABLE(m.`macro_json`, '$.items[*]' COLUMNS("
-        "indicator VARCHAR(128) PATH '$.indicator', consensus VARCHAR(32) PATH '$.consensus', "
-        "actual VARCHAR(32) PATH '$.actual', forecasts_json JSON PATH '$.forecasts')) jt, "
-        "JSON_TABLE(JSON_KEYS(jt.forecasts_json), '$[*]' COLUMNS(inst VARCHAR(128) PATH '$')) kj "
-        "WHERE m.`week` = %s AND JSON_TYPE(JSON_EXTRACT(jt.forecasts_json, "
-        "CONCAT('$.\"', kj.inst, '\"'))) IN ('INTEGER', 'DOUBLE') "
-        "GROUP BY jt.indicator, jt.consensus, jt.actual ORDER BY n_num DESC, jt.indicator "
-        f"LIMIT {row_limit(limit)}"
+    """2.6 数值行：机构算术平均（⚠️ 只算 JSON INTEGER/DOUBLE）。
+
+    ``jtype IN ('INTEGER','DOUBLE')`` 是必需条件：机构值里混有文字，
+    不过滤会把文字当数字算，``CAST`` 后得到 0 或直接报错。
+    """
+    return (
+        "SELECT x.indicator, ROUND(AVG(CAST(x.val AS DECIMAL(14,4))), 2) AS bank_avg_num, "
+        "COUNT(*) AS n_num, x.consensus, x.actual_value "
+        f"FROM ({MACRO_BANK_EXPAND}) x "
+        "WHERE x.jtype IN ('INTEGER', 'DOUBLE') "
+        "GROUP BY x.indicator, x.consensus, x.actual_value "
+        f"ORDER BY n_num DESC, x.indicator LIMIT {row_limit(limit)}",
+        (_week_param(week),),
     )
-    return sql, (_week_param(week),)
 
 
 def macro_text_mode_sql(
     week: str, indicator: str, limit: int | None = None
 ) -> tuple[str, tuple[Any, ...]]:
+    """2.7 文字行：机构口径取众数（如「12月」/「10月」/「不动」）。"""
     name = str(indicator or "").strip()
     if not name:
         raise ValueError("indicator 必填")
-    sql = (
-        "SELECT jt.indicator, JSON_UNQUOTE(JSON_EXTRACT(jt.forecasts_json, "
-        "CONCAT('$.\"', kj.inst, '\"'))) AS val, COUNT(*) AS n "
-        f"FROM {table_ref('macro')} m, "
-        "JSON_TABLE(m.`macro_json`, '$.items[*]' COLUMNS("
-        "indicator VARCHAR(128) PATH '$.indicator', forecasts_json JSON PATH '$.forecasts')) jt, "
-        "JSON_TABLE(JSON_KEYS(jt.forecasts_json), '$[*]' COLUMNS(inst VARCHAR(128) PATH '$')) kj "
-        "WHERE m.`week` = %s AND jt.indicator = %s AND JSON_TYPE(JSON_EXTRACT("
-        "jt.forecasts_json, CONCAT('$.\"', kj.inst, '\"'))) = 'STRING' "
-        "GROUP BY jt.indicator, val ORDER BY n DESC, val "
-        f"LIMIT {row_limit(limit)}"
+    return (
+        "SELECT x.indicator, x.val, COUNT(*) AS n "
+        f"FROM ({MACRO_BANK_EXPAND}) x "
+        "WHERE x.indicator = %s AND x.jtype = 'STRING' "
+        "GROUP BY x.indicator, x.val ORDER BY n DESC, x.val "
+        f"LIMIT {row_limit(limit)}",
+        (_week_param(week), name),
     )
-    return sql, (_week_param(week), name)
 
 
 def default_allowed_tables() -> tuple[str, ...]:
@@ -342,17 +437,69 @@ def default_allowed_tables() -> tuple[str, ...]:
 
 def schema_help() -> dict[str, Any]:
     return {
+        "model_name": "研报观点矩阵与美国宏观资产研判",
         "tables": {key: table_ref(key) for key in TABLES},
         "week_format": "YYYYMMDD-YYYYMMDD",
+        "modules": {
+            "opinions": "观点矩阵（weekly_analyzer_data，只含资产类观点）",
+            "macro": "美国宏观资产研判（weekly_macro_data）",
+        },
+        "sql_dialect": (
+            "只用 MySQL 5.7 已有语法：JSON_EXTRACT / JSON_UNQUOTE / JSON_KEYS / "
+            "JSON_LENGTH / JSON_TYPE / NULLIF / 派生表；"
+            "不用 JSON_TABLE、递归 CTE、窗口函数、LATERAL"
+        ),
+        "opinion_scope": (
+            "观点矩阵只含资产类观点：category 为 境内利率/境外利率/外汇/全球股指/大宗；"
+            "宏观指标（历史还有 宏观）一律排除——宏观类观点仍在库里，只是本模块不返回"
+        ),
         "opinion_directions": ["看涨", "看跌", "中性"],
-        "opinion_categories": ["境内利率", "境外利率", "外汇", "全球股指", "大宗", "宏观指标"],
-        "macro_values": "prior/consensus/actual 与机构预测可能是数值或文字，按字符串保留原始显示口径",
-        "units": "宏观单位由每条 macro_json.items[].unit 提供",
+        "opinion_categories": ["境内利率", "境外利率", "外汇", "全球股指", "大宗"],
+        "macro_values": (
+            "prior/consensus/actual 与机构预测可能是数值或文字，按字符串保留原始口径；"
+            "要比较大小先 CAST(... AS DECIMAL(14,4))"
+        ),
+        "units": "宏观单位由每条 items[].unit 提供（% / 千人 / 次 / bp / 时点）",
+        "json_null": (
+            "JSON 里的 null 经 JSON_UNQUOTE 解出来是字符串 'null'（不是 SQL NULL），"
+            "可空字段统一套 NULLIF(..., 'null')"
+        ),
+        "column_aliases": {
+            "dir": "opinions[].direction",
+            "data_period": "items[].period",
+            "prev_value": "items[].prior",
+            "actual_value": "items[].actual",
+            "unit_name": "items[].unit",
+        },
+        "column_alias_reason": (
+            "目标环境连接器对 prior 这类词敏感（会报 1064），SQL 输出列名统一避开；"
+            "JSON 键名本身不变。其余列名（week / institution / category / asset / "
+            "indicator / consensus / forecasts / price / price_date / report / "
+            "passage_head）与 JSON 键同名。自己加新列也别用 prior / order / group / "
+            "key / desc 这类词"
+        ),
+        "seq_limit": SEQ_LIMIT,
+        "not_available": (
+            "取宏观一律用 weekly_macro_data；weekly_analyzer_data.data_json 里的 "
+            "macro_forecasts 是历史兼容字段，不读它"
+        ),
         "pitfalls": [
-            "观点 JSON 中的宏观指标观点与 weekly_macro_data 的数值预测是两个独立场景",
-            "同一观点可以有多个 sources，出处查询会展开为多行",
-            "资产 price 是观点生成时的价格锚点，不能据此计算期间涨跌幅",
-            "机构预测可能包含文字值；数值均值只统计 JSON INTEGER/DOUBLE，文字口径单独取众数",
+            "MySQL 5.7 没有 JSON_TABLE，数组展开用序号表 seq + CONCAT 拼下标",
+            "输出列名避开保留字：dir / data_period / prev_value / actual_value / "
+            "unit_name，JSON 键名不变；新列也别用 prior / order / group / key / desc",
+            "ORDER BY 里别拿 SELECT 别名做运算：5.7 只认裸别名，资产共识的排序写的"
+            "是完整聚合表达式 SUM(...) + SUM(...)",
+            "JSON null 解出来是字符串 'null'，可空字段必须 NULLIF(..., 'null')",
+            "派生表上的 LIMIT 1 / DISTINCT 是强制物化开关，删掉会让跨周查询慢两个数量级",
+            "序号表上限 40 是硬上限，超长数组不报错只少行，需定期跑文档 §0.6 自检",
+            "观点矩阵不含宏观类观点（category IN ('宏观指标','宏观') 一律排除）",
+            "sources 是一对多，展开行数 ≠ 观点数；返回时只取首条 + 计数",
+            "price 只是价格锚点，不可与 direction 推导涨跌幅",
+            "两个模块的 category 含义不同：观点里是资产分类，宏观里是指标分类",
+            "宏观周数少于观点周数，不要假设每周都有宏观；没有就返回 0 行",
+            "机构预测可能含文字值；数值均值只统计 JSON INTEGER/DOUBLE，文字口径单独取众数",
+            "最早几周 data_json 顶层是数组（没有 views 键），第一章查询在这些周返回 0 行",
+            "跨表 JOIN 可能报 Illegal mix of collations (1267)，需显式 COLLATE",
         ],
         "visible_tables": list(default_allowed_tables()),
     }

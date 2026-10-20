@@ -17,16 +17,20 @@
   不存在的组名返回空并在 warnings 说明，不改名、不补造
 - 数值 ``NULL`` 保留 null，真实 ``0`` 保留 0
 - 官方历史**独立于报告**，不接受 ``report_id``
+- **月份一律归一成月首 ``date``**（:func:`normalize_month`）再比较与绑定：
+  数据库月份列是月首 DATE，只认外部 ``YYYY-MM`` 的早期实现会在场景 4/5/6/7
+  抛格式错误（文档 §三「2026-10-20 修复」）
 
 本模块不做训练、不生成预测、不重算中位数、不生成新策略，也不提供任何写入 SQL。
 """
 
 from __future__ import annotations
 
+import calendar
 import json
 import os
 import re
-from datetime import date
+from datetime import date, datetime
 from typing import Any
 
 from ...env import load_env
@@ -220,15 +224,14 @@ def validate_scope(value: str | None) -> str:
 
 
 def to_month_date(value: str | None, name: str = "month") -> date | None:
-    """外部月参数（``YYYY-MM``）→ **月首 date 对象**，用于 SQL 绑定。
+    """外部月参数 → **月首 date 对象**，用于 SQL 绑定；留空返回 None。
 
     文档 §4.1：外部只接受真实日历的 ``YYYY-MM``，进入查询前转成 ``date(YYYY, MM, 1)``；
-    不拿 ``YYYY-MM`` 去和库里的 DATE 列比字符串。
+    不拿 ``YYYY-MM`` 去和库里的 DATE 列比字符串。完整实现见 :func:`normalize_month`。
     """
-    text = validate_month(value, name)
-    if not text:
+    if value is None or str(value).strip() == "":
         return None
-    return date(int(text[:4]), int(text[5:7]), 1)
+    return normalize_month(value, name)
 
 
 def parse_bool(value: Any, name: str = "flag") -> bool:
@@ -286,39 +289,106 @@ def bounded_limit(
     return max(1, min(requested, maximum))
 
 
-def month_start(month: str) -> str:
-    """``YYYY-MM`` → 该月首日 ``YYYY-MM-01``。"""
-    resolved = validate_month(month, "month")
-    if not resolved:
-        raise ValueError("month 不能为空")
-    return f"{resolved}-01"
+# ── 月份 / 日期归一化（文档 §三「2026-10-20 修复」）─────────────────────
+#
+# 背景：数据库月份列实际是**月首 DATE**（如 ``2026-09-01``），驱动可能返回 date 对象
+# 或 ``YYYY-MM-01`` 文本。早期实现只认外部 ``YYYY-MM``，于是：
+#   - 场景 4 用报告月份生成默认日首/月末时抛 ValueError；
+#   - 场景 5/6 把 ``market_month`` / ``strategy_month`` 原值当 ``YYYY-MM`` 校验而报错；
+#   - 裸 ``YYYY-MM`` 直接绑给 DATE 列还会报 Incorrect date value；
+#   - 场景 7 对 ``MAX(observation_month)`` 返回值做月平移同样抛错。
+# 统一收口到下面四个函数：**无论来源都先归一成 date 对象，再作为绑定参数**。
 
 
-def month_end(month: str) -> str:
-    """``YYYY-MM`` → 该月末日。"""
-    resolved = validate_month(month, "month")
-    if not resolved:
-        raise ValueError("month 不能为空")
-    year, mon = (int(part) for part in resolved.split("-"))
-    if mon == 12:
-        last_year, last_mon = year + 1, 1
+def normalize_month(value: Any, name: str = "month") -> date:
+    """月份归一化 → **月首 date 对象**（不接受 None，调用方先判空）。
+
+    接受外部 ``YYYY-MM`` / ``YYYY-MM-01``、数据库月首 ``date`` / ``datetime``：
+
+    - ``2026-09`` 与 ``2026-09-01`` 都归一到 ``date(2026, 9, 1)``，与
+      ``forecast_month = 2026-09-01`` 精确匹配；
+    - ``2026-09-15`` 虽是合法自然日，但**不是约定的月份存储日期** → 参数错误，
+      **不静默改成 9 月 1 日**；
+    - ``2026-13`` / ``2026-02-30`` 等非法值同样报错。
+    """
+    if isinstance(value, datetime):
+        resolved = value.date()
+    elif isinstance(value, date):
+        resolved = value
+    elif isinstance(value, str):
+        text = value.strip()
+        if re.fullmatch(r"\d{4}-\d{2}", text):
+            resolved = date.fromisoformat(text + "-01")
+        elif re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
+            resolved = date.fromisoformat(text)
+        else:
+            raise ValueError(
+                f"{name} 必须是 YYYY-MM 或 YYYY-MM-01（收到 {value!r}）"
+            )
     else:
-        last_year, last_mon = year, mon + 1
-    # 下月首日减一天
-    import datetime as _dt
+        raise ValueError(
+            f"{name} 类型不支持（收到 {type(value).__name__}）"
+        )
+    if resolved.day != 1:
+        raise ValueError(
+            f"{name} 必须是月首日期（YYYY-MM 或 YYYY-MM-01）；"
+            f"{resolved.isoformat()} 不是约定的月份存储日期"
+        )
+    return resolved
 
-    last_day = (_dt.date(last_year, last_mon, 1) - _dt.timedelta(days=1)).day
-    return f"{resolved}-{last_day:02d}"
+
+def normalize_day(value: Any, name: str = "date") -> date:
+    """逐日展示日期 → 精确 date，**保留日精度**，不截成月首。"""
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if isinstance(value, str):
+        text = value.strip()
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
+            return date.fromisoformat(text)
+    raise ValueError(f"{name} 必须是 YYYY-MM-DD（收到 {value!r}）")
 
 
-def shift_months(month: str, delta: int) -> str:
-    """按自然月平移（用于开始月份未给时向前回溯）。"""
-    resolved = validate_month(month, "month")
-    if not resolved:
-        raise ValueError("month 不能为空")
-    year, mon = (int(part) for part in resolved.split("-"))
-    total = year * 12 + (mon - 1) + delta
-    return f"{total // 12:04d}-{total % 12 + 1:02d}"
+def month_bounds(value: Any, name: str = "month") -> tuple[date, date]:
+    """月份 → ``(首日, 末日)``。用 calendar 算，不用 ``11*30`` 天。"""
+    first = normalize_month(value, name)
+    last = date(
+        first.year, first.month, calendar.monthrange(first.year, first.month)[1]
+    )
+    return first, last
+
+
+def record_month(value: Any) -> date | None:
+    """JSON 记录里的月份（通常是 ``YYYY-MM-DD`` 文本或 date）→ 月首 date。
+
+    与 :func:`normalize_month` 的区别：**解不出不抛错**，返回 None 让调用方
+    跳过该条 —— JSON 里混进脏数据不该让整次查询失败。用于把 JSON 记录月份
+    与归一后的目标月份比较，避免 ``YYYY-MM`` 对 ``YYYY-MM-DD`` 的字符串误比对。
+    """
+    if value is None:
+        return None
+    try:
+        return normalize_month(value)
+    except (ValueError, TypeError):
+        return None
+
+
+def record_day(value: Any) -> date | None:
+    """JSON 记录里的逐日日期 → date；解不出返回 None（不抛错）。"""
+    if value is None:
+        return None
+    try:
+        return normalize_day(value)
+    except (ValueError, TypeError):
+        return None
+
+
+def shift_month_date(value: Any, delta: int, name: str = "month") -> date:
+    """按自然月平移 date（保持月首），用于「向前 N 个月」这类窗口。"""
+    first = normalize_month(value, name)
+    total = first.year * 12 + (first.month - 1) + delta
+    return date(total // 12, total % 12 + 1, 1)
 
 
 # ── 文本列解析 ──────────────────────────────────────────────────────────
@@ -454,8 +524,17 @@ def schema_help() -> dict[str, Any]:
                 "只有参数非法 / 报告不存在 / 数据库故障 / 存储 JSON 损坏才返回失败"
             ),
             "date_params": (
-                "外部月参数只接受真实日历的 YYYY-MM，进入查询前转成月首 date；"
-                "外部日参数严格 YYYY-MM-DD"
+                "月份参数（forecast_month / start_month / end_month）接受 YYYY-MM 或 "
+                "YYYY-MM-01，以及数据库返回的月首 date/datetime，统一 normalize_month 成"
+                "月首 date 再作为绑定参数；2026-09-15 这类合法但非月首的日期要报参数错误，"
+                "不静默改成月首。逐日参数（start_date / end_date / observation_date）走 "
+                "normalize_day，保留日精度"
+            ),
+            "month_normalization": (
+                "2026-10-20 修复：数据库月份列是月首 DATE，早期实现只认外部 YYYY-MM，导致"
+                "场景 4 生成默认日首/月末、场景 5/6 取报告 market_month/strategy_month、"
+                "场景 7 对 MAX(observation_month) 做月平移时抛格式错误。现在无论来源"
+                "（外部输入 / 数据库 DATE / JSON 记录）都先归一月首 date 再比较与绑定"
             ),
         },
         "official_history_meta": {
@@ -486,6 +565,10 @@ def schema_help() -> dict[str, Any]:
             "event_sources 同一天在不同组重复保存，不能按组累计事件次数",
             "model_generated_at 是模型生成时间，不是策略撰写时间",
             "市场比较时同比对同比、SA 环比对 SA 环比，不能把 nsa_mom 当 sa_mom",
+            "月份一律 normalize_month 成月首 date 再比较/绑定：别拿 YYYY-MM 字符串"
+            "直接比 DATE 列，也别拿 date 对象喂只认 YYYY-MM 的校验器",
+            "2026-09-15 是合法自然日但不是月份存储日期，应报参数错误，不静默改成 9 月 1 日",
+            "JSON 记录里的 forecast_month 通常是 YYYY-MM-DD，与目标月份比较前要归一",
             "limit 按返回**记录条数**解释，不按月份数解释",
             "官方历史默认结束月取 nsa_index/sa_mom 至少一个非 NULL 的最新月，"
             "不拿旧月值冒充",
@@ -530,7 +613,7 @@ def reports_sql(
     if report_id is not None:
         conditions.append("report_id = %s")
         params.append(report_id)
-    month = validate_month(forecast_month, "forecast_month")
+    month = to_month_date(forecast_month, "forecast_month")
     if month:
         conditions.append("forecast_month = %s")
         params.append(month)
@@ -584,7 +667,7 @@ def market_sql(
         conditions.append("report_id = %s")
         params.append(report_id)
 
-    month = validate_month(effective_month, "forecast_month")
+    month = to_month_date(effective_month, "forecast_month")
     if month:
         conditions.append("forecast_month = %s")
         params.append(month)
@@ -620,7 +703,7 @@ def strategy_sql(
     else:
         conditions.append("a.report_id = %s")
         params.append(report_id)
-    month = validate_month(effective_month, "forecast_month")
+    month = to_month_date(effective_month, "forecast_month")
     if month:
         conditions.append("a.forecast_month = %s")
         params.append(month)

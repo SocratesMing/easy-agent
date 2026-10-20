@@ -63,6 +63,10 @@ INSTRUCTIONS = (
     "be summed across groups. The market median is taken as provided by the source file "
     "and is never recomputed. model_generated_at is when the model ran, not when the "
     "strategy was written. limit means number of RECORDS returned, not number of months. "
+    "Month parameters accept YYYY-MM or YYYY-MM-01 and are normalised to the first day of "
+    "the month before being bound to the DATE column; a valid day that is not a month "
+    "start (2026-09-15) is a parameter error, never silently rewritten. Months coming back "
+    "from the database are DATE values and go through the same normalisation. "
     "Nulls stay null and a real zero stays zero. For official history, the default end "
     "month is the latest month where nsa_index or sa_mom is non-null; the meta carries "
     "data_source='local_database' and freshness_status='unverified', so never claim the "
@@ -140,7 +144,10 @@ def build() -> FastMCP:
 
         async def run() -> dict[str, Any]:
             resolved_id = us_cpi.validate_report_id(report_id)
-            wanted = us_cpi.validate_month(forecast_month, "forecast_month")
+            try:
+                wanted = us_cpi.to_month_date(forecast_month, "forecast_month")
+            except ValueError as e:
+                return us_cpi.fail(str(e), us_cpi.ERROR_INVALID_MONTH)
             rows = await _query(*us_cpi.reports_sql(resolved_id, forecast_month, limit))
             if resolved_id is not None and not rows:
                 return us_cpi.fail(
@@ -179,7 +186,7 @@ def build() -> FastMCP:
             meta: dict[str, Any] = {
                 "applied_filters": {
                     "report_id": resolved_id,
-                    "forecast_month": wanted,
+                    "forecast_month": wanted.isoformat() if wanted else None,
                 },
             }
             if not data:
@@ -218,6 +225,7 @@ def build() -> FastMCP:
             try:
                 chosen_scope = us_cpi.validate_scope(scope)
                 wanted_month = us_cpi.validate_month(forecast_month, "forecast_month")
+                target = us_cpi.to_month_date(forecast_month, "forecast_month")
             except ValueError as e:
                 return us_cpi.fail(str(e), us_cpi.ERROR_INVALID_PARAMETER)
 
@@ -241,17 +249,14 @@ def build() -> FastMCP:
                     for it in items
                     if str(it.get("record_type") or "").strip().lower() == chosen_scope
                 ]
-            if wanted_month:
+            if target is None and chosen_scope == us_cpi.RECORD_MAIN:
+                # main 且未给月份：用报告自身的模型预测月（先归一，库里是月首 DATE）
+                target = us_cpi.record_month(report.get("forecast_month"))
+            if target is not None:
                 items = [
                     it
                     for it in items
-                    if str(it.get("forecast_month") or "") == wanted_month
-                ]
-            elif chosen_scope == us_cpi.RECORD_MAIN:
-                # main 且未给月份：用报告自身的模型预测月
-                month = str(report.get("forecast_month") or "")
-                items = [
-                    it for it in items if str(it.get("forecast_month") or "") == month
+                    if us_cpi.record_month(it.get("forecast_month")) == target
                 ]
 
             wanted_group = str(group or "").strip()
@@ -330,7 +335,8 @@ def build() -> FastMCP:
                     "没有 status='ready' 的报告", us_cpi.ERROR_REPORT_NOT_FOUND
                 )
             resolved_id = report.get("report_id")
-            month = str(report.get("forecast_month") or "")
+            # 报告月份先归一到月首 date，再与 JSON 记录比较（库里是月首 DATE）
+            target = us_cpi.record_month(report.get("forecast_month"))
 
             rows = await _query(*us_cpi.prediction_arrays_sql(resolved_id))
             if not rows:
@@ -338,7 +344,11 @@ def build() -> FastMCP:
                     "该报告没有可读取的预测数组", us_cpi.ERROR_REPORT_NOT_FOUND
                 )
             items = us_cpi.parse_json_text(rows[0].get("leaves_json"))
-            items = [it for it in items if str(it.get("forecast_month") or "") == month]
+            items = [
+                it
+                for it in items
+                if us_cpi.record_month(it.get("forecast_month")) == target
+            ]
 
             wanted_group = str(group or "").strip()
             wanted_item = str(item or "").strip()
@@ -375,6 +385,7 @@ def build() -> FastMCP:
                 "applied_filters": {
                     "group": wanted_group or None,
                     "item": wanted_item or None,
+                    "forecast_month": target.isoformat() if target else None,
                 },
                 "warnings": warnings,
             }
@@ -421,14 +432,28 @@ def build() -> FastMCP:
                     "没有 status='ready' 的报告", us_cpi.ERROR_REPORT_NOT_FOUND
                 )
             resolved_id = report.get("report_id")
-            month = str(report.get("forecast_month") or "")
+            # 报告月份归一到月首 date，再用 month_bounds 取该月首日与末日
+            # （早期实现直接 str() 后喂给只认 YYYY-MM 的 month_start/month_end，会抛错）
+            target = us_cpi.record_month(report.get("forecast_month"))
+            try:
+                first, last = (
+                    us_cpi.month_bounds(target)
+                    if target is not None
+                    else (None, None)
+                )
+                start = (
+                    us_cpi.normalize_day(start_date, "start_date")
+                    if start_date not in (None, "")
+                    else first
+                )
+                end = (
+                    us_cpi.normalize_day(end_date, "end_date")
+                    if end_date not in (None, "")
+                    else last
+                )
+            except ValueError as e:
+                return us_cpi.fail(str(e), us_cpi.ERROR_INVALID_DATE)
 
-            start = us_cpi.validate_date(start_date, "start_date") or (
-                us_cpi.month_start(month) if month else None
-            )
-            end = us_cpi.validate_date(end_date, "end_date") or (
-                us_cpi.month_end(month) if month else None
-            )
             if start and end and start > end:
                 return us_cpi.fail(
                     f"start_date 不能晚于 end_date（{start} > {end}）",
@@ -441,7 +466,11 @@ def build() -> FastMCP:
                     "该报告没有可读取的预测数组", us_cpi.ERROR_REPORT_NOT_FOUND
                 )
             items = us_cpi.parse_json_text(rows[0].get("daily_json"))
-            items = [it for it in items if str(it.get("target_month") or "") == month]
+            items = [
+                it
+                for it in items
+                if us_cpi.record_month(it.get("target_month")) == target
+            ]
 
             wanted_group = str(group or "").strip()
             if wanted_group:
@@ -450,14 +479,20 @@ def build() -> FastMCP:
                     for it in items
                     if str(it.get("group_name") or "").strip() == wanted_group
                 ]
+
+            # 逐日日期归一成 date 后按闭区间筛（脏日期跳过，不让整次查询失败）
+            dated: list[tuple[dict[str, Any], Any]] = []
+            for it in items:
+                observed = us_cpi.record_day(it.get("observation_date"))
+                if observed is None:
+                    continue
+                dated.append((it, observed))
             if start:
-                items = [
-                    it for it in items if str(it.get("observation_date") or "") >= start
-                ]
+                dated = [(it, od) for it, od in dated if od >= start]
             if end:
-                items = [
-                    it for it in items if str(it.get("observation_date") or "") <= end
-                ]
+                dated = [(it, od) for it, od in dated if od <= end]
+            items = [it for it, _ in dated]
+
             if not want_future:
                 items = [
                     it
@@ -477,9 +512,10 @@ def build() -> FastMCP:
                 **_report_meta(report),
                 "applied_filters": {
                     "group": wanted_group or None,
-                    "start_date": start,
-                    "end_date": end,
+                    "start_date": start.isoformat() if start else None,
+                    "end_date": end.isoformat() if end else None,
                     "include_future": want_future,
+                    "target_month": target.isoformat() if target else None,
                 },
                 "warnings": warnings,
             }
@@ -526,9 +562,17 @@ def build() -> FastMCP:
                     "没有 status='ready' 的报告", us_cpi.ERROR_REPORT_NOT_FOUND
                 )
             resolved_id = report.get("report_id")
-            effective = us_cpi.validate_month(forecast_month, "forecast_month") or (
-                str(report.get("market_month") or "") or None
-            )
+            # 外部显式月份优先，否则取报告的 market_month；两者都归一成月首 date
+            # （早期实现把 DB 返回的 date / YYYY-MM-01 原值当 YYYY-MM 校验，会抛错）
+            try:
+                raw_month = (
+                    forecast_month
+                    if forecast_month not in (None, "")
+                    else report.get("market_month")
+                )
+                effective = us_cpi.normalize_month(raw_month, "forecast_month")
+            except ValueError as e:
+                return us_cpi.fail(str(e), us_cpi.ERROR_INVALID_MONTH)
 
             rows = await _query(
                 *us_cpi.market_sql(resolved_id, effective, want_median, institution)
@@ -538,7 +582,7 @@ def build() -> FastMCP:
             # 同报告的组级预测里取 main + 该月的「总体」「核心」
             model_values: dict[str, dict[str, float | None]] = {}
             array_rows = await _query(*us_cpi.prediction_arrays_sql(resolved_id))
-            if array_rows and effective:
+            if array_rows:
                 groups = us_cpi.parse_json_text(array_rows[0].get("groups_json"))
                 for entry in groups:
                     if (
@@ -546,7 +590,7 @@ def build() -> FastMCP:
                         != us_cpi.RECORD_MAIN
                     ):
                         continue
-                    if str(entry.get("forecast_month") or "") != effective:
+                    if us_cpi.record_month(entry.get("forecast_month")) != effective:
                         continue
                     name = str(entry.get("group_name") or "").strip()
                     if name in us_cpi.MODEL_COMPARE_GROUPS:
@@ -608,7 +652,7 @@ def build() -> FastMCP:
             meta = {
                 **_report_meta(report),
                 "applied_filters": {
-                    "effective_month": effective,
+                    "effective_month": effective.isoformat(),
                     "median_only": want_median,
                     "institution": str(institution or "").strip() or None,
                 },
@@ -646,9 +690,16 @@ def build() -> FastMCP:
                 return us_cpi.fail(
                     "没有 status='ready' 的报告", us_cpi.ERROR_REPORT_NOT_FOUND
                 )
-            effective = us_cpi.validate_month(forecast_month, "forecast_month") or (
-                str(report.get("strategy_month") or "") or None
-            )
+            # 外部显式月份优先，否则取报告的 strategy_month；两者都归一成月首 date
+            try:
+                raw_month = (
+                    forecast_month
+                    if forecast_month not in (None, "")
+                    else report.get("strategy_month")
+                )
+                effective = us_cpi.normalize_month(raw_month, "forecast_month")
+            except ValueError as e:
+                return us_cpi.fail(str(e), us_cpi.ERROR_INVALID_MONTH)
             rows = await _query(
                 *us_cpi.strategy_sql(report.get("report_id"), effective)
             )
@@ -673,7 +724,7 @@ def build() -> FastMCP:
             ]
             meta = {
                 **_report_meta(report),
-                "applied_filters": {"effective_month": effective},
+                "applied_filters": {"effective_month": effective.isoformat()},
                 "warnings": [] if data else ["该月份没有已存策略建议原文"],
             }
             return us_cpi.ok(data, meta)
@@ -709,27 +760,39 @@ def build() -> FastMCP:
         username = current_username()
 
         async def run() -> dict[str, Any]:
-            start = us_cpi.validate_month(start_month, "start_month")
-            end = us_cpi.validate_month(end_month, "end_month")
-            latest_observation: str | None = None
+            try:
+                start = us_cpi.to_month_date(start_month, "start_month")
+                end = us_cpi.to_month_date(end_month, "end_month")
+            except ValueError as e:
+                return us_cpi.fail(str(e), us_cpi.ERROR_INVALID_MONTH)
+            latest_observation: Any = None
 
-            if not end:
+            if end is None:
                 latest_rows = await _query(
                     *us_cpi.official_latest_month_sql(indicator)
                 )
-                latest_observation = (
-                    str(latest_rows[0]["latest_month"])
+                raw_latest = (
+                    latest_rows[0].get("latest_month")
                     if latest_rows and latest_rows[0].get("latest_month")
                     else None
                 )
-                end = latest_observation
+                if raw_latest is not None:
+                    # MAX() 返回的是 DATE 列值（date 对象或 YYYY-MM-01 文本），
+                    # 早期实现 str() 后喂给只认 YYYY-MM 的 shift_months，会抛错
+                    try:
+                        end = us_cpi.normalize_month(raw_latest, "end_month")
+                        latest_observation = end
+                    except ValueError as e:
+                        return us_cpi.fail(str(e), us_cpi.ERROR_INVALID_MONTH)
             if start and end and start > end:
                 return us_cpi.fail(
                     f"start_month 不能晚于 end_month（{start} > {end}）",
                     us_cpi.ERROR_INVALID_MONTH,
                 )
-            if not start and end:
-                start = us_cpi.shift_months(end, -(us_cpi.OFFICIAL_DEFAULT_MONTHS - 1))
+            if start is None and end is not None:
+                start = us_cpi.shift_month_date(
+                    end, -(us_cpi.OFFICIAL_DEFAULT_MONTHS - 1)
+                )
 
             size = us_cpi.bounded_limit(
                 limit, us_cpi.DEFAULT_OFFICIAL_LIMIT, us_cpi.MAX_OFFICIAL_LIMIT
@@ -743,15 +806,17 @@ def build() -> FastMCP:
             meta = {
                 "applied_filters": {
                     "indicator": str(indicator or "").strip() or None,
-                    "start_month": start,
-                    "end_month": end,
+                    "start_month": start.isoformat() if start else None,
+                    "end_month": end.isoformat() if end else None,
                     "limit": size,
                 },
                 "warnings": warnings,
                 "truncated": truncated,
                 "data_source": "local_database",
-                "effective_end_month": end,
-                "latest_observation_month": latest_observation,
+                "effective_end_month": end.isoformat() if end else None,
+                "latest_observation_month": (
+                    latest_observation.isoformat() if latest_observation else None
+                ),
                 "freshness_status": "unverified",
             }
             return us_cpi.ok(data, meta)
