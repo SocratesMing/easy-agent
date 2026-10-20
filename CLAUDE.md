@@ -116,7 +116,7 @@ Two maintained baselines:
 
 ### Skills (`skills/`)
 
-7 runtime skills: office document manipulation (`docx`, `pptx`, `xlsx` with Python scripts + shared `node_modules`), PDF forms (`pdf`), MCP integration (`mcp-builder`), skill creation (`skill-creator`), and expert creation (`expert-creator`). Canonical copies live in the repo-root `skills/`; `easy_agent/skills/` is the packaged fallback. User skills live at `workspace/{username}/skills/` and are exposed as `/user-skills/` (not `/skills/`). Shared npm dependencies are installed once under `easy_agent/shared_deps/node_modules/` and symlinked into per-user/session workspaces.
+7 runtime skills: office document manipulation (`docx`, `pptx`, `xlsx` with Python scripts + shared `node_modules`), PDF forms (`pdf`), MCP integration (`mcp-builder`), skill creation (`skill-creator`), and expert creation (`expert-creator`). Canonical copies live in the repo-root `skills/`; `easy_agent/skills/` is the packaged fallback. User skills live at `workspace/{username}/skills/` and are exposed as `/user-skills/` (not `/skills/`). Skill directories carry no dependencies: their scripts use packages installed in the runtime environment (e.g. `npm install -g docx`).
 
 ### Gotchas
 
@@ -130,5 +130,4 @@ Two maintained baselines:
 - **`web_runner.py` does `os.chdir(project_root)`** — important for relative path resolution
 - **`frontend-vue2/dist/` not committed** — must `npm run build` (in `frontend-vue2/`) before `easy-web` can serve the UI
 - **CI/Docker exist** — `.github/workflows/ci.yml` runs ruff + pytest + both frontend builds; Dockerfile/docker-compose/k8s manifests are in the repo
-- **Per-user dependency isolation** — each user gets `workspace/{username}/.deps/` with shared `node_modules` and Python `.venv`, symlinked into session workspaces
 - **Per-user memory files** — stored at `memories/{username}/AGENTS.md`, read/written by the agent for long-term context

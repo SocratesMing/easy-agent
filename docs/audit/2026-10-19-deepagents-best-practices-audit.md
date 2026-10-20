@@ -5,7 +5,7 @@
 > 文档来源：LangChain 官方文档（经 Docs MCP `https://docs.langchain.com/mcp` 拉取全文，2026-10-19）+ `langchain-ai/langchain-skills` 中的 deep-agents-core / memory / orchestration 技能 + deepagents 0.7.28 源码。
 > 与既有报告的关系：`docs/audit/2026-10-17-easy-agent-audit.md` 已覆盖的条目不重复展开，只复核状态；本报告新增条目编号为 **DA-xx**，严重度沿用 P0–P3。
 > 测试基线：`pytest tests/` → **1607 passed, 1 skipped, 2 warnings**（266s）。
-> **修复进度**：Batch B（DA-01 / DA-02 / DA-08 / DA-10 / DA-16）与修复中发现的 DA-18 已于 2026-10-19 完成，见 §9；Batch A 已修 SEC-01 / SEC-02 / SEC-04 / SEC-05，SEC-03（免密登录）按产品决定保留，见 §10。C1（DA-06 / DA-09 第一步 / DA-11 / DA-12 / DA-17、sqlite 连接器 `DB_PATH`）已完成，见 §11；C2（DA-04 / DA-05）已完成，见 §12；C3（DA-07）与一批清理项已完成，见 §13。DA-03 设计已评审，P0（铺底，行为中性）与 P1（会话 thread，开关默认关）已于 2026-10-20 完成，见 §14、§15；P2 的存量清理脚本与基准已完成，见 §16。
+> **修复进度**：Batch B（DA-01 / DA-02 / DA-08 / DA-10 / DA-16）与修复中发现的 DA-18 已于 2026-10-19 完成，见 §9；Batch A 已修 SEC-01 / SEC-02 / SEC-04 / SEC-05，SEC-03（免密登录）按产品决定保留，见 §10。C1（DA-06 / DA-09 第一步 / DA-11 / DA-12 / DA-17、sqlite 连接器 `DB_PATH`）已完成，见 §11；C2（DA-04 / DA-05）已完成，见 §12；C3（DA-07）与一批清理项已完成，见 §13。DA-03 设计已评审，P0（铺底，行为中性）与 P1（会话 thread，开关默认关）已于 2026-10-20 完成，见 §14、§15；P2 的存量清理脚本与基准已完成，见 §16。其余后续项见 §17。
 
 ---
 
@@ -174,6 +174,7 @@
 
 - **现状**：公共技能经 `shutil.copytree` 复制到用户目录（`easy_agent/api/skill_center.py:521`，即旧 FW-06 未处理）；`skills` 只有 `/user-skills/` 一个源（`easy_agent/agent/workspace.py:354-365`）；new-only 写保护靠逐个技能生成 deny 规则；`save_expert` 是否注入靠自研 `creator_requested` 逻辑；`skills/docx/SKILL.md` 正文 586 行（官方建议 <500 行 / <5000 tokens）。
 - **官方规范**：Skills › Compose multiple sources（后者覆盖前者）、Read-only skills（路由 + deny write）、Reload skills（`skills_metadata=None`，≥0.7.16）、Pin skills（`pinned_skills`，≥0.7.23）、Add tools to skills（`metadata.include_tools` + `SkillsMiddleware(tools=...)`，≥0.7.22）。
+- **设计文档（2026-10-20 已评审，按推荐方案实施）**：`docs/design/2026-10-20-da13-skills-sources.md`。
 - **建议**：`skills=["/skills/builtin/", "/user-skills/"]`，`/skills/builtin/` 只读挂载 canonical 目录（需要"按用户启停"时用一个过滤 `ls` 的视图 backend），deny write；前端"使用技能 X"改为 `pinned_skills`；`expert-creator` 的 SKILL.md 声明 `include_tools: save_expert`，由框架在读取技能后才暴露该工具。
 
 ### DA-14 · P3 · LangSmith 混合沙箱：生命周期、同步范围与成本
@@ -186,6 +187,7 @@
 
 - **现状**：一次点击只回传一个决策，后端复制给批次内全部动作；拒绝文案写死为删除场景；无 `edit`（`frontend-vue2/src/mixins/chatSession.js:1437-1447`，`App.vue:1724` 有一份重复实现）。
 - **建议**：逐动作批准/拒绝；按工具定制拒绝说明；对 `create_scheduled_task`/`save_expert` 开放 `edit`（官方 decision 类型）；合并 `App.vue` 与 mixin 的重复逻辑。
+- **进展（2026-10-20）**：按工具定制拒绝说明、合并重复逻辑已完成（§17）；逐动作决策与 `edit` 涉及交互设计，待定。
 
 ### DA-16 · P3 · `sandbox_enabled=false` 时 execute 继承完整宿主环境变量
 
@@ -266,8 +268,8 @@
 | C1 · 快速项 | DA-06 模型 `profile` + 官方摘要中间件覆盖；DA-12 官方 `ToolErrorMiddleware`；DA-11 子代理工具收窄；DA-09 第一步 MCP annotations 决定审批；DA-17 过时注释与文档；sqlite 连接器 `DB_PATH` 限定个人工作区 | ✅ 已完成（§11） |
 | C2 · Backend 重构 | DA-04 默认路由改隐藏目录（修已复现的 deny 别名绕过，框架产物不再出现在用户工作区）；DA-05 改用真实 `CompositeBackend` | ✅ 已完成（§12） |
 | C3 · 沙箱加固 | DA-07 网络开关（默认联网，可配置断网）、技能目录只读挂载、execute 超时上限；CPU / 内存 / 进程数限额暂缓（原因见 §13） | ✅ 已完成（§13） |
-| D · 演进 | DA-03 thread = 会话（超过摘要阈值后每轮都会重新摘要整段历史；设计文档已评审：`docs/design/2026-10-19-da03-session-thread.md`，按 P0–P2 分阶段实施，P0 / P1 已完成见 §14、§15）；DA-13 技能多源 / 只读 / pinned；子代理进度事件流；DA-09 迁移 `langchain.mcp`（beta）；DA-14 LangSmith 沙箱生命周期；`services/` 拆领域子包 | 1–2 周，需设计文档 |
-| 穿插项 | CI 缺 `sqlite-saver` extra（暂不处理）；SEC-03 签名免密（需门户配合）；DA-15 前端审批交互；工具工厂并入 `ToolSpec`（已核对不会形成 import 环，需同步改测试注入方式）；MySQL 连接器可达内网任意主机（2026-10-19 决定保持现状） | 待定 |
+| D · 演进 | DA-03 thread = 会话（超过摘要阈值后每轮都会重新摘要整段历史；设计文档已评审：`docs/design/2026-10-19-da03-session-thread.md`，按 P0–P2 分阶段实施，P0 / P1 已完成见 §14、§15）；DA-13 技能多源 / 只读 / pinned（设计文档已评审：`docs/design/2026-10-20-da13-skills-sources.md`，按 S1–S3 实施）；子代理进度事件流；DA-09 迁移 `langchain.mcp`（beta）；DA-14 LangSmith 沙箱生命周期；`services/` 拆领域子包 | 1–2 周，需设计文档 |
+| 穿插项 | CI 缺 `sqlite-saver` extra（暂不处理）；SEC-03 签名免密（需门户配合）；DA-15 前端审批交互（按工具的拒绝说明与去重已完成，逐动作决策与 `edit` 待定）；~~工具工厂并入 `ToolSpec`~~（2026-10-20 评估后保持现状，见 §17）；MySQL 连接器可达内网任意主机（2026-10-19 决定保持现状） | 待定 |
 
 --- | --- | --- |
 | A · 安全止血（先做） | SEC-01 下线/鉴权 Web 终端；SEC-02 SPA 回退路径校验；SEC-03 默认关闭免密；SEC-04 用户侧禁止 stdio、取消用户配置的 `${VAR}` 展开；SEC-05 下载接口复用 `resolve_workspace_file` | 1–2 天 |
@@ -410,3 +412,14 @@ thread 仍是每条消息一个，模型看到的内容不变；本批为切换�
 - 基准 `exp_session_thread_benchmark.py`（结果见设计文档 §15.1）：会话 thread 把摘要调用从每轮一次降到偶尔一次，模型可见的近期上下文约为原来的 3.5 倍，checkpoint 库约为原来的 1/7。
 - 本地 `.env.dev` 的业务库是 MySQL 且没配 checkpoint 路径，跑的是 legacy 快照；要试运行会话 thread 需设置 `EASY_CHECKPOINT_SQLITE_PATH` 与 `SESSION_THREAD=true`。
 - 剩余：真实模型试运行、生产执行清理脚本、观察一个版本后删除审批兼容路径并把默认值改为开启。
+
+## 17. 修复记录（2026-10-20，遗留项推进）
+
+| 条目 | 改动 | 回归测试 |
+| --- | --- | --- |
+| 记忆更新后驱逐 Agent | 删除 `streaming/side_effects.py` 里记忆写入后的 `remove_session_agent`：记忆每次运行都由 `SessionMemoryMiddleware` 重新加载，不需要重建。原来的驱逐有两个副作用：下一轮重新加载 MCP 工具、重建 Agent；顺带清掉会话的「待修改专家」绑定。后者是 bug：前端只在第一次发送时带上待修改专家，用户点「编辑」后模型先追问、下一轮再保存时，`save_expert` 会报找不到修改目标 | `tests/services/test_memory_update_keeps_agent.py`（改造前的代码上会失败） |
+| DA-15 拒绝说明 | 后端按工具生成拒绝说明（`hitl_state.reject_message`）：拒绝决策没带说明，或带的是旧前端写死的「请勿重试此删除命令」时，按删除 / 命令 / 定时任务 / 专家 / 知识原文分别说明；两套前端不再发这句写死的文案 | `tests/services/test_hitl_reject_message.py`、两套前端的 `hitlApproval.test.js` |
+| DA-15 去重 | Vue2 `App.vue` 里与 `chatSession` mixin 逐行相同的 `handleToolApproval`（112 行）删除，主面板与 AI 侧边栏共用 mixin 的实现 | Vue2 单测与构建 |
+| 工具工厂并入 `ToolSpec` | 评估后保持现状：注册表是无包内依赖的叶子模块，工厂由装配根（`agent_manager._tool_factories`）注入，是有意的依赖注入；搬进 `ToolSpec` 只少一层间接，代价是注册表要依赖全部工具实现、测试改成替换 builder，收益不足 | — |
+| DA-13 | 写出设计文档（2026-10-20 已评审）：公共技能只读共享并按用户启停、选中技能改用 `pinned_skills`、`save_expert` 由 expert-creator 技能的 `include_tools` 带出、拆分超长 `SKILL.md` | — |
+| 文档 | `CLAUDE.md` 删掉已不存在的 `shared_deps` / `.deps` 共享依赖描述（该机制已在 2026-06-09 `f8eafa3b` 删除，旧审计 T4-16 曾指出） | `tests/test_docs_facts.py` |
