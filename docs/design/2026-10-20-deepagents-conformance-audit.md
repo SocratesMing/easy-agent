@@ -83,7 +83,8 @@ DA-13 S2 已由另一路开发提交：`c24d5ba feat(skills): share public skill
 - **D1 已闭环**：双源顺序（builtin → user，后者覆盖）、只读三层（backend 拒写 / `FilesystemPermission` deny / 沙箱只读挂载）、按用户启用集合过滤、固定源不随技能数变化、旧副本迁移（哈希一致删除、改过的保留为用户技能）均落地；`tests/agent/test_builtin_skills*.py` 覆盖。
 - **D2 已闭环**：`c24d5ba` 先跑通 `expert-creator` 的 `metadata.include_tools: save_expert` + `SkillsMiddleware(tools=...)`；`e27dae0` 补齐通用性——门控集合改为「注册表 `skill_gated` ∪ 全部技能 frontmatter 声明的 `include_tools`」（`agent/skills.py:declared_include_tools`，YAML 列表形式按官方语义忽略并告警），子代理用到的门控工具从 `tools` 摘出后各挂一份 `SkillsMiddleware(tools=...)`，并把门控集合纳入编译图指纹。
 - **D3 已闭环（`68bfe4e`）**：`validate_skills` 按官方硬约束校验（name 等于目录名 / ≤64 / 小写字母数字连字符、description ≤1024、compatibility ≤500、`include_tools` 必须字符串），发现阶段跳过 >10MB 的 `SKILL.md`。注意：校验目前是**报告制**，不阻断加载；本机体检发现 1 个存量违规：`workspace/szm/skills/strategy_fx`（下划线，建议改成 `strategy-fx` 并同步目录名）。
-- **D4 及以后未动**：MCP 命名与冲突、会话池风险、`mode="interrupt"`、HITL `edit`、`SKILL.md` 精简。
+- **D9 已闭环（`0cfa312`）**：按官方渐进式披露拆分——docx `SKILL.md` 590 → 175 行（版式 → `references/docx-js-layout.md`，OOXML → `references/ooxml-xml.md`），skill-creator 485 → 208 行（评测 → `references/evaluating-skills.md`，盲测/描述优化 → `references/advanced-evaluation.md`）；包内副本由 `sync_skills.py --write` 生成且 `--check` 一致。
+- **D4 及以后未动**：MCP 命名与冲突、会话池风险、`mode="interrupt"`、HITL `edit`。
 
 ## 6. 已符合官方的部分（避免误改）
 
