@@ -1103,7 +1103,7 @@ async def ask_with_easyagent_stream(
     )
 
     # A1：流式调用下沉到 knowledges/chat/panel，经 host_port 端口取宿主实现，
-    # 本模块不再反向 import api.chat（见 docs/design/2026-10-18-a1-knowledge-streaming.md）。
+    # 本模块不再反向 import api.chat（见 docs/archive/design/2026-10-18-a1-knowledge-streaming.md）。
     return await stream_panel_answer(
         session_id=session.session_id,
         question=payload.question,

@@ -93,9 +93,9 @@
 ## 6. 证据索引
 
 - 审计主报告：`docs/audit/2026-10-17-easy-agent-audit.md`（10.1 系列至 Increment 37）
-- 增量报告：`docs/audit/2026-10-17-increment1-report.md` … `increment37-report.md`
-- 证据：`docs/audit/evidence/T1-framework-conformance.md`、`T2-performance-concurrency.md`、`T3-security-multiuser-sandbox.md`、`T4-architecture.md`、`T5-runtime-evidence.md`
-- 设计：`docs/design/2026-10-17-module-refactor-plan.md`、`sse-event-contract.md`、`multi-instance-state.md`、`skills-multi-source.md`
+- 增量报告：`docs/archive/audit-reports/2026-10-17-increment1-report.md` … `increment37-report.md`
+- 证据：`docs/archive/audit-evidence/T1-framework-conformance.md`、`T2-performance-concurrency.md`、`T3-security-multiuser-sandbox.md`、`T4-architecture.md`、`T5-runtime-evidence.md`
+- 设计：`docs/archive/design/2026-10-17-module-refactor-plan.md`、`sse-event-contract.md`、`multi-instance-state.md`、`skills-multi-source.md`
 - 架构事实：`docs/architecture-current.md`、`docs/framework-integration.md`、`docs/sse-events.md`
 
 
@@ -105,19 +105,19 @@
 
 | 专项 | 报告 | 结果 |
 | --- | --- | --- |
-| 提示词安全 | `docs/design/2026-10-18-prompt-security.md` | 指令层级/外部数据不可信/提示词保密/专家从属；`tests/test_prompt_security.py` 12 项 |
-| MCP 证据链 | `docs/design/2026-10-18-mcp-evidence.md` | 结果信封/来源/错误/截断；`tests/services/test_mcp_evidence.py` 18 项 |
-| 记忆结构化 | `docs/design/2026-10-18-structured-memory.md` | JSONL sidecar + 校验/脱敏/版本；`tests/services/test_memory_store.py` 26 项 |
-| FW-09 官方 saver 默认化 | `docs/audit/2026-10-17-increment38-fw09-report.md` | auto/postgres/sqlite/legacy；MySQL 回退自研；23 项测试 |
+| 提示词安全 | `docs/archive/design/2026-10-18-prompt-security.md` | 指令层级/外部数据不可信/提示词保密/专家从属；`tests/test_prompt_security.py` 12 项 |
+| MCP 证据链 | `docs/archive/design/2026-10-18-mcp-evidence.md` | 结果信封/来源/错误/截断；`tests/services/test_mcp_evidence.py` 18 项 |
+| 记忆结构化 | `docs/archive/design/2026-10-18-structured-memory.md` | JSONL sidecar + 校验/脱敏/版本；`tests/services/test_memory_store.py` 26 项 |
+| FW-09 官方 saver 默认化 | `docs/archive/audit-reports/2026-10-17-increment38-fw09-report.md` | auto/postgres/sqlite/legacy；MySQL 回退自研；23 项测试 |
 
-汇总：`docs/audit/2026-10-18-three-specialties-report.md`；最终全量 **1077 passed / 1 skipped / 0 failed / 0 error（241.9s）**；`ruff`、`uv lock --check` 通过。未 commit。
+汇总：`docs/archive/audit-reports/2026-10-18-three-specialties-report.md`；最终全量 **1077 passed / 1 skipped / 0 failed / 0 error（241.9s）**；`ruff`、`uv lock --check` 通过。未 commit。
 
 
 ## 2026-10-18 下一批（阶段 0 / A2 / B3 / C1）
 
 - 阶段 0 门禁、A2 会话消息单写、B3 共享限流（DB）、C1 sessions 域去门面已完成/部分完成。
 - 全量：**1119 passed / 1 skipped / 0 failed / 0 error（243.7s）**。
-- 报告：`docs/audit/2026-10-18-next-batch-report.md`、`docs/audit/2026-10-18-increment43-b3-shared-counter-report.md`。
+- 报告：`docs/archive/audit-reports/2026-10-18-next-batch-report.md`、`docs/archive/audit-reports/2026-10-18-increment43-b3-shared-counter-report.md`。
 
 
 ---
@@ -126,7 +126,7 @@
 
 - C1 剩余 API 去 Database 门面、C2 streaming 拆分、B1 生产 checkpointer/Store、D1 工具注册表、D3 MCP session 复用、D2 编译图复用已完成（仅后端，未改前端）。
 - 最终全量：**1234 passed / 1 skipped / 0 failed / 0 error（237.6s）**；架构门禁/ruff/lock 通过。
-- 报告：`docs/audit/2026-10-18-c1-c2-b1-d-report.md`。
+- 报告：`docs/archive/audit-reports/2026-10-18-c1-c2-b1-d-report.md`。
 - 遗留：C1 settings/connectors 等 API、C2 orchestrator 收尾重复、B1 Store 数据迁移、D2 多 worker/0.7 backend 迁移；Batch 0/1 安全项未执行。
 
 
@@ -137,5 +137,5 @@
 - FW-04/A1/A3/C2/C3/C1b/E2/E3/E4/FW-12/FW-14/三条专项增强已完成；A1 将 import SCC 降到 0。
 - 最终全量：**1347 passed / 1 skipped / 0 failed / 0 error（256.4s）**；mcp-server 43 passed；架构门禁 0 SCC；ruff/lock 通过。
 - FW-11 SQL 语义检索记录为后续（无 embedding/向量索引；PostgresStore 路径可用）。
-- 报告：`docs/audit/2026-10-18-remaining-batch-report.md`。
+- 报告：`docs/archive/audit-reports/2026-10-18-remaining-batch-report.md`。
 - 仍未做：B2 SSE 共享日志/多副本 Phase B/C、Batch 0/1 安全项；前端未改。

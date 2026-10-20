@@ -3,7 +3,7 @@
 > ℹ️ **2026-10-18 事实同步**：模块地图 / 数据流 / 命令以
 > [`docs/architecture-current.md`](docs/architecture-current.md) 为准；本次后端目录
 > 已按职责重组为 `agent/`、`bootstrap/`、`persistence/`、`sandboxing/`、`security/`
-> 等子包（见 [`docs/design/2026-10-18-backend-directory-reorg.md`](docs/design/2026-10-18-backend-directory-reorg.md)）。
+> 等子包（见 [`docs/archive/design/2026-10-18-backend-directory-reorg.md`](docs/archive/design/2026-10-18-backend-directory-reorg.md)）。
 > 当前后端托管 `frontend-vue2/`（Vue 2.7 + Element UI），同时维护 `frontend/`
 > （Vue 3.5 + Vite）；运行时技能 7 个；DeepAgents 0.7 兼容；已有 Dockerfile /
 > docker-compose / k8s / CI。新增配置键请同步 `config-example.yaml` 并跑

@@ -1,6 +1,6 @@
 """结构化用户记忆存储（JSONL sidecar）。
 
-设计目标（详见 ``docs/design/2026-10-18-structured-memory.md``）：
+设计目标（详见 ``docs/archive/design/2026-10-18-structured-memory.md``）：
 
 - **Markdown 仍是权威读取文件**：``memory.md`` / ``AGENTS.md`` 的读取方（agent
   提示词、旧代码、用户直接编辑）完全不变；

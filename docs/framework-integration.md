@@ -81,7 +81,7 @@
   4. `EASY_CHECKPOINT_BACKEND=legacy` → 强制自研快照。
   官方 saver 打开失败会按 postgres → sqlite → legacy 逐级降级，不阻断启动；
   `shutdown_checkpointers()` 负责关闭 saver 并清空自研缓存（测试隔离亦依赖）。
-  见 `docs/audit/2026-10-17-increment38-fw09-report.md`。
+  见 `docs/archive/audit-reports/2026-10-17-increment38-fw09-report.md`。
 
 - **FW-11 部分落地**：`stores.SqlStore._search` 支持 BaseStore 常用 filter 操作符
   （`$eq/$ne/$gt/$gte/$lt/$lte/$in/$nin`），并改为“先过滤、后分页”的有界扫描；

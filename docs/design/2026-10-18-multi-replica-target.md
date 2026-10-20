@@ -73,7 +73,7 @@ Ingress
   **自动重新执行 stale run 属 Phase 2C，未做**。
 - 严格门禁仍失败（run_queue=none、file/sandbox=local），K8s 保持
   `EASY_MULTI_REPLICA_STRICT=0`；Phase 3 文件/迁移/K8s 后再评估开启。
-- 报告：`docs/audit/2026-10-18-phase2-report.md`。
+- 报告：`docs/archive/audit-reports/2026-10-18-phase2-report.md`。
 
 ## 7. Phase 3 后端状态（2026-10-18）
 
@@ -82,7 +82,7 @@ Ingress
   `EASY_AUTO_MIGRATE=0` 时 Pod 启动只校验，结构不匹配 fail-fast。
 - K8s 清单/探针/HPA/PDB：按用户要求跳过。
 - 文件对象存储 / 外部 Sandbox：未做，仍待后续。
-- 报告：`docs/audit/2026-10-18-phase3-backend-report.md`。
+- 报告：`docs/archive/audit-reports/2026-10-18-phase3-backend-report.md`。
 
 ## 8. 对象存储 / Sandbox 状态（2026-10-18）
 
@@ -92,7 +92,7 @@ Ingress
   默认 local 不变；实验性，未做 destroy/完整同步。
 - 全量测试 1471 passed；严格多副本门禁仍因 workspace/file/sandbox/run 未完全外置
   而保持失败，K8s `EASY_MULTI_REPLICA_STRICT=0`。
-- 报告：`docs/audit/2026-10-18-object-sandbox-report.md`。
+- 报告：`docs/archive/audit-reports/2026-10-18-object-sandbox-report.md`。
 
 ## 9. 非目标 / 风险
 

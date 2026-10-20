@@ -7,7 +7,7 @@
 | 审计方式 | 只读审计；5 个并行专项审计 + Lead 交叉验证 + 真实服务/隔离环境运行取证 |
 | 审计范围 | `easy_agent/`（177 个 Python 模块 / 5.1 万行）、`frontend-vue2/`、`frontend/`、`mcp/`、`mcp-server/`、`tests/`、`docs/`、构建与部署文件 |
 | 运行环境 | Python 3.11.15、deepagents 0.6.8、langchain 1.3.4、langgraph 1.2.4、langchain-mcp-adapters 0.2.2、FastAPI 0.136.3、Pydantic 2.13.4 |
-| 证据归档 | `docs/audit/evidence/T1~T5-*.md`（5 份专项报告，含逐条 file:line、代码片段、PoC/实测数据、复现脚本） |
+| 证据归档 | `docs/archive/audit-evidence/T1~T5-*.md`（5 份专项报告，含逐条 file:line、代码片段、PoC/实测数据、复现脚本） |
 | 声明 | 审计过程未修改任何业务代码/配置；PoC 均在隔离目录（`/tmp/t3test`、`/tmp/ea-audit`）或临时端口完成，未触碰业务数据 |
 
 ---
@@ -292,11 +292,11 @@ ARCH-02（打包/部署修复）、ARCH-03/04（砍回边、拆 Database/streami
 
 | 报告 | 内容 | 条数 |
 | --- | --- | --- |
-| `docs/audit/evidence/T1-framework-conformance.md` | DeepAgents 官方文档对照、安装包源码核对、框架适配/版本漂移、skills/MCP 规范 | 17 |
-| `docs/audit/evidence/T2-performance-concurrency.md` | 性能基准、并发复现、缓存/DB/日志/checkpoint 写放大 | 18 |
-| `docs/audit/evidence/T3-security-multiuser-sandbox.md` | 安全 PoC 33 项、多用户隔离、沙箱实测、部署暴露 | 27 |
-| `docs/audit/evidence/T4-architecture.md` | import 图/规模统计/重复代码/单例/部署/文档漂移 | 25 |
-| `docs/audit/evidence/T5-runtime-evidence.md` | 904 测试基线、139 路由鉴权矩阵、真实 uvicorn 穿越/终端/限流/沙箱/并发/冷启动实测 | 运行证据 |
+| `docs/archive/audit-evidence/T1-framework-conformance.md` | DeepAgents 官方文档对照、安装包源码核对、框架适配/版本漂移、skills/MCP 规范 | 17 |
+| `docs/archive/audit-evidence/T2-performance-concurrency.md` | 性能基准、并发复现、缓存/DB/日志/checkpoint 写放大 | 18 |
+| `docs/archive/audit-evidence/T3-security-multiuser-sandbox.md` | 安全 PoC 33 项、多用户隔离、沙箱实测、部署暴露 | 27 |
+| `docs/archive/audit-evidence/T4-architecture.md` | import 图/规模统计/重复代码/单例/部署/文档漂移 | 25 |
+| `docs/archive/audit-evidence/T5-runtime-evidence.md` | 904 测试基线、139 路由鉴权矩阵、真实 uvicorn 穿越/终端/限流/沙箱/并发/冷启动实测 | 运行证据 |
 
 原始工作稿与复现脚本：`_analysis/`（`T*.md`、`t*_*.py/sh`）；运行证据 JSON：`/tmp/ea-audit/`（临时目录，重启后可能丢失）。
 
@@ -308,7 +308,7 @@ ARCH-02（打包/部署修复）、ARCH-03/04（砍回边、拆 Database/streami
 用户确认执行范围：**Batch 2（性能与并发）、Batch 3（框架规范治理）、Batch 4（架构与工程化）**；
 Batch 0/1（安全 P0/P1）本轮未选择执行；Web Terminal 暂不处理；前端双基线同时维护；生产 MySQL + 单机 SQLite WAL。
 
-### 10.1 Increment 1（已完成，详见 `docs/audit/2026-10-17-increment1-report.md`）
+### 10.1 Increment 1（已完成，详见 `docs/archive/audit-reports/2026-10-17-increment1-report.md`）
 
 | 项 | 状态 | 结果 |
 | --- | --- | --- |
@@ -326,7 +326,7 @@ Batch 0/1（安全 P0/P1）本轮未选择执行；Web Terminal 暂不处理；�
 
 > 说明：`test_auth_session_expiry.py` 因针对已移除的 `_user_activity_cache` 编写，本轮以**带原因的模块级 skip** 处理（避免隐藏用例式 collect_ignore），待按新 DB 持久化契约重写（ARCH-11）。
 
-### 10.1b Increment 2（已完成，报告：`docs/audit/2026-10-17-increment2-report.md`）
+### 10.1b Increment 2（已完成，报告：`docs/archive/audit-reports/2026-10-17-increment2-report.md`）
 
 | 项 | 状态 | 结果 |
 | --- | --- | --- |
@@ -340,7 +340,7 @@ Batch 0/1（安全 P0/P1）本轮未选择执行；Web Terminal 暂不处理；�
 | 架构设计文档 | ✅ | 新增 `docs/design/`：模块重构、SSE 事件契约、多实例状态外置、技能多源（ARCH-03/04/05/15、FW-06 设计先行） |
 | ARCH-10 CI/门禁 | ✅ | 新增 `.github/workflows/ci.yml`（ruff 致命规则 + pytest collect/test + 双前端 build）与 `[tool.ruff]` 配置；本地 `uvx ruff check .` 通过 |
 
-### 10.1c Increment 3（已完成，报告：`docs/audit/2026-10-17-increment3-report.md`）
+### 10.1c Increment 3（已完成，报告：`docs/archive/audit-reports/2026-10-17-increment3-report.md`）
 
 | 项 | 状态 | 结果 |
 | --- | --- | --- |
@@ -353,7 +353,7 @@ Batch 0/1（安全 P0/P1）本轮未选择执行；Web Terminal 暂不处理；�
 | 全量回归 | ✅ | **933 passed / 1 skipped / 0 failed / 0 error（236.9s）** |
 | PERF-16/17 | ✅ | 记忆更新独立有界线程池；日志 handler 用 `stream.tell()` 增量计数（不再每条 flush+fstat） |
 
-### 10.1d Increment 4（已完成，报告：`docs/audit/2026-10-17-increment4-report.md`）
+### 10.1d Increment 4（已完成，报告：`docs/archive/audit-reports/2026-10-17-increment4-report.md`）
 
 | 项 | 状态 | 结果 |
 | --- | --- | --- |
@@ -362,7 +362,7 @@ Batch 0/1（安全 P0/P1）本轮未选择执行；Web Terminal 暂不处理；�
 | 新增测试 | ✅ | runtime_config 3 项（目录解析/显式 config/invalidator 注册表）；expert_writer 契约更新 |
 | 全量回归 | ✅ | **936 passed / 1 skipped / 0 failed / 0 error（239.5s）** |
 
-### 10.1e Increment 5（已完成，报告：`docs/audit/2026-10-17-increment5-report.md`）
+### 10.1e Increment 5（已完成，报告：`docs/archive/audit-reports/2026-10-17-increment5-report.md`）
 
 | 项 | 状态 | 结果 |
 | --- | --- | --- |
@@ -371,7 +371,7 @@ Batch 0/1（安全 P0/P1）本轮未选择执行；Web Terminal 暂不处理；�
 | ARCH-13/09 文档治理 | ✅ | 新增 `docs/architecture-current.md`；CLAUDE.md/AGENTS.md 过时声明；requirements SSE 事件清单补齐 |
 | 全量回归 | ✅ | **936 passed / 1 skipped / 0 failed / 0 error（237.9s）** |
 
-### 10.1f Increment 6（已完成，报告：`docs/audit/2026-10-17-increment6-report.md`）
+### 10.1f Increment 6（已完成，报告：`docs/archive/audit-reports/2026-10-17-increment6-report.md`）
 
 | 项 | 状态 | 结果 |
 | --- | --- | --- |
@@ -381,7 +381,7 @@ Batch 0/1（安全 P0/P1）本轮未选择执行；Web Terminal 暂不处理；�
 | 构建脚本修复 | ✅ | `frontend` 构建后运行期配置脚本改用 bash + LF，消除 `set: Illegal option` / CRLF 报错 |
 | 文档同步 | ✅ | `architecture-current.md`、SSE 设计文档、requirements 事件清单同步 |
 
-### 10.1g Increment 7（已完成，报告：`docs/audit/2026-10-17-increment7-report.md`）
+### 10.1g Increment 7（已完成，报告：`docs/archive/audit-reports/2026-10-17-increment7-report.md`）
 
 | 项 | 状态 | 结果 |
 | --- | --- | --- |
@@ -390,7 +390,7 @@ Batch 0/1（安全 P0/P1）本轮未选择执行；Web Terminal 暂不处理；�
 | 测试 | ✅ | 新增流锁 5 项、部署 5 项；调度测试复用统一检测 |
 | 全量回归 | ✅ | **946 passed / 1 skipped / 0 failed / 0 error（241.7s）** |
 
-### 10.1h Increment 8（已完成，报告：`docs/audit/2026-10-17-increment8-report.md`）
+### 10.1h Increment 8（已完成，报告：`docs/archive/audit-reports/2026-10-17-increment8-report.md`）
 
 | 项 | 状态 | 结果 |
 | --- | --- | --- |
@@ -398,7 +398,7 @@ Batch 0/1（安全 P0/P1）本轮未选择执行；Web Terminal 暂不处理；�
 | PERF-09/11/15 回归测试 | ✅ | 新增缓存 LRU/side dict 4 项、轻量归属 + legacy 回退 2 项、续约 2 项 |
 | 全量回归 | ✅ | **954 passed / 1 skipped / 0 failed / 0 error（236.8s）** |
 
-### 10.1i Increment 9（已完成，报告：`docs/audit/2026-10-17-increment9-report.md`）
+### 10.1i Increment 9（已完成，报告：`docs/archive/audit-reports/2026-10-17-increment9-report.md`）
 
 | 项 | 状态 | 结果 |
 | --- | --- | --- |
@@ -406,7 +406,7 @@ Batch 0/1（安全 P0/P1）本轮未选择执行；Web Terminal 暂不处理；�
 | ARCH-13 README 治理 | ✅ | 顶部审计声明 + 指向 `docs/architecture-current.md`；纠正前端/技能/Docker/CI 事实 |
 | 全量回归 | ✅ | **954 passed / 1 skipped / 0 failed / 0 error（236.5s）** |
 
-### 10.1j Increment 10（已完成，报告：`docs/audit/2026-10-17-increment10-report.md`）
+### 10.1j Increment 10（已完成，报告：`docs/archive/audit-reports/2026-10-17-increment10-report.md`）
 
 | 项 | 状态 | 结果 |
 | --- | --- | --- |
@@ -414,7 +414,7 @@ Batch 0/1（安全 P0/P1）本轮未选择执行；Web Terminal 暂不处理；�
 | schema 注册时序修复 | ✅ | `knowledges/__init__.py` 导入即注册；修复只跑 `test_chat.py` 时 `no such table: session_knowledge_scopes` |
 | 全量回归 | ✅ | **955 passed / 1 skipped / 0 failed / 0 error（245.5s）** |
 
-### 10.1k Increment 11（已完成，报告：`docs/audit/2026-10-17-increment11-report.md`）
+### 10.1k Increment 11（已完成，报告：`docs/archive/audit-reports/2026-10-17-increment11-report.md`）
 
 | 项 | 状态 | 结果 |
 | --- | --- | --- |
@@ -422,7 +422,7 @@ Batch 0/1（安全 P0/P1）本轮未选择执行；Web Terminal 暂不处理；�
 | 兼容性 | ✅ | 既有调用方零迁移；81 项相关测试通过 |
 | 全量回归 | ✅ | **955 passed / 1 skipped / 0 failed / 0 error（238.5s）** |
 
-### 10.1l Increment 12（已完成，报告：`docs/audit/2026-10-17-increment12-report.md`）
+### 10.1l Increment 12（已完成，报告：`docs/archive/audit-reports/2026-10-17-increment12-report.md`）
 
 | 项 | 状态 | 结果 |
 | --- | --- | --- |
@@ -430,7 +430,7 @@ Batch 0/1（安全 P0/P1）本轮未选择执行；Web Terminal 暂不处理；�
 | 兼容性 | ✅ | 61 项相关测试通过；调用方零迁移 |
 | 全量回归 | ✅ | **955 passed / 1 skipped / 0 failed / 0 error（239.3s）** |
 
-### 10.1m Increment 13（已完成，报告：`docs/audit/2026-10-17-increment13-report.md`）
+### 10.1m Increment 13（已完成，报告：`docs/archive/audit-reports/2026-10-17-increment13-report.md`）
 
 | 项 | 状态 | 结果 |
 | --- | --- | --- |
@@ -438,7 +438,7 @@ Batch 0/1（安全 P0/P1）本轮未选择执行；Web Terminal 暂不处理；�
 | 验证 | ✅ | 定时任务 API/DB/调度 67 项测试通过；调用方零迁移 |
 | 全量回归 | ✅ | **955 passed / 1 skipped / 0 failed / 0 error（239.8s）** |
 
-### 10.1n Increment 14（已完成，报告：`docs/audit/2026-10-17-increment14-report.md`）
+### 10.1n Increment 14（已完成，报告：`docs/archive/audit-reports/2026-10-17-increment14-report.md`）
 
 | 项 | 状态 | 结果 |
 | --- | --- | --- |
@@ -446,7 +446,7 @@ Batch 0/1（安全 P0/P1）本轮未选择执行；Web Terminal 暂不处理；�
 | 验证 | ✅ | 106 项相关测试通过；调用方零迁移 |
 | 全量回归 | ✅ | **955 passed / 1 skipped / 0 failed / 0 error（236.9s）** |
 
-### 10.1o Increment 15（已完成，报告：`docs/audit/2026-10-17-increment15-report.md`）
+### 10.1o Increment 15（已完成，报告：`docs/archive/audit-reports/2026-10-17-increment15-report.md`）
 
 | 项 | 状态 | 结果 |
 | --- | --- | --- |
@@ -454,7 +454,7 @@ Batch 0/1（安全 P0/P1）本轮未选择执行；Web Terminal 暂不处理；�
 | 兼容性 | ✅ | `_row_to_user` 静态包装保留；102 项 auth/personnel/多 worker 测试通过 |
 | 全量回归 | ✅ | **955 passed / 1 skipped / 0 failed / 0 error（235.8s）** |
 
-### 10.1p Increment 16（已完成，报告：`docs/audit/2026-10-17-increment16-report.md`）
+### 10.1p Increment 16（已完成，报告：`docs/archive/audit-reports/2026-10-17-increment16-report.md`）
 
 | 项 | 状态 | 结果 |
 | --- | --- | --- |
@@ -462,7 +462,7 @@ Batch 0/1（安全 P0/P1）本轮未选择执行；Web Terminal 暂不处理；�
 | 验证 | ✅ | 文件 API/DB/会话 77 项测试通过；调用方零迁移 |
 | 全量回归 | ✅ | **955 passed / 1 skipped / 0 failed / 0 error（241.0s）** |
 
-### 10.1q Increment 17（已完成，报告：`docs/audit/2026-10-17-increment17-report.md`）
+### 10.1q Increment 17（已完成，报告：`docs/archive/audit-reports/2026-10-17-increment17-report.md`）
 
 | 项 | 状态 | 结果 |
 | --- | --- | --- |
@@ -470,7 +470,7 @@ Batch 0/1（安全 P0/P1）本轮未选择执行；Web Terminal 暂不处理；�
 | 验证 | ✅ | DB/会话/聊天 85 项测试通过；调用方零迁移 |
 | 全量回归 | ✅ | **955 passed / 1 skipped / 0 failed / 0 error（240.7s）** |
 
-### 10.1r Increment 18（已完成，报告：`docs/audit/2026-10-17-increment18-report.md`）
+### 10.1r Increment 18（已完成，报告：`docs/archive/audit-reports/2026-10-17-increment18-report.md`）
 
 | 项 | 状态 | 结果 |
 | --- | --- | --- |
@@ -478,7 +478,7 @@ Batch 0/1（安全 P0/P1）本轮未选择执行；Web Terminal 暂不处理；�
 | 验证 | ✅ | `tests/db` 59 项（schema 快速路径/自愈/知识库建表）通过 |
 | 全量回归 | ✅ | **955 passed / 1 skipped / 0 failed / 0 error（242.2s）** |
 
-### 10.1s Increment 19（已完成，报告：`docs/audit/2026-10-17-increment19-report.md`）
+### 10.1s Increment 19（已完成，报告：`docs/archive/audit-reports/2026-10-17-increment19-report.md`）
 
 | 项 | 状态 | 结果 |
 | --- | --- | --- |
@@ -486,7 +486,7 @@ Batch 0/1（安全 P0/P1）本轮未选择执行；Web Terminal 暂不处理；�
 | 验证 | ✅ | 108 项相关测试 + 新增 registry 3 项通过 |
 | 全量回归 | ✅ | **958 passed / 1 skipped / 0 failed / 0 error（244.8s）** |
 
-### 10.1t Increment 20（已完成，报告：`docs/audit/2026-10-17-increment20-report.md`）
+### 10.1t Increment 20（已完成，报告：`docs/archive/audit-reports/2026-10-17-increment20-report.md`）
 
 | 项 | 状态 | 结果 |
 | --- | --- | --- |
@@ -494,7 +494,7 @@ Batch 0/1（安全 P0/P1）本轮未选择执行；Web Terminal 暂不处理；�
 | 测试 | ✅ | 新增 env helper 3 项；相关 18 项通过 |
 | 全量回归 | ✅ | **961 passed / 1 skipped / 0 failed / 0 error（240.4s）** |
 
-### 10.1u Increment 21（已完成，报告：`docs/audit/2026-10-17-increment21-report.md`）
+### 10.1u Increment 21（已完成，报告：`docs/archive/audit-reports/2026-10-17-increment21-report.md`）
 
 | 项 | 状态 | 结果 |
 | --- | --- | --- |
@@ -502,7 +502,7 @@ Batch 0/1（安全 P0/P1）本轮未选择执行；Web Terminal 暂不处理；�
 | 测试 | ✅ | 新增迁移测试 2 项；`tests/db` 64 passed |
 | 全量回归 | ✅ | **963 passed / 1 skipped / 0 failed / 0 error（241.4s）** |
 
-### 10.1v Increment 22（已完成，报告：`docs/audit/2026-10-17-increment22-report.md`）
+### 10.1v Increment 22（已完成，报告：`docs/archive/audit-reports/2026-10-17-increment22-report.md`）
 
 | 项 | 状态 | 结果 |
 | --- | --- | --- |
@@ -510,7 +510,7 @@ Batch 0/1（安全 P0/P1）本轮未选择执行；Web Terminal 暂不处理；�
 | 测试 | ✅ | 新增 leader 测试 2 项；`tests/knowledges` 81 passed |
 | 全量回归 | ✅ | **965 passed / 1 skipped / 0 failed / 0 error（239.4s）** |
 
-### 10.1w Increment 23（已完成，报告：`docs/audit/2026-10-17-increment23-report.md`）
+### 10.1w Increment 23（已完成，报告：`docs/archive/audit-reports/2026-10-17-increment23-report.md`）
 
 | 项 | 状态 | 结果 |
 | --- | --- | --- |
@@ -518,7 +518,7 @@ Batch 0/1（安全 P0/P1）本轮未选择执行；Web Terminal 暂不处理；�
 | 测试 | ✅ | 新增 transport 测试 5 项；相关 44 passed |
 | 全量回归 | ✅ | **970 passed / 1 skipped / 0 failed / 0 error（243.8s）** |
 
-### 10.1x Increment 24（已完成，报告：`docs/audit/2026-10-17-increment24-report.md`）
+### 10.1x Increment 24（已完成，报告：`docs/archive/audit-reports/2026-10-17-increment24-report.md`）
 
 | 项 | 状态 | 结果 |
 | --- | --- | --- |
@@ -526,7 +526,7 @@ Batch 0/1（安全 P0/P1）本轮未选择执行；Web Terminal 暂不处理；�
 | 全量回归 | ✅ | **973 passed / 1 skipped / 0 failed / 0 error（238.1s）** |
 | 未实施 | ⏳ | 官方 skills 多源与启用偏好过滤（产品行为变更，待确认） |
 
-### 10.1y Increment 25（已完成，报告：`docs/audit/2026-10-17-increment25-report.md`）
+### 10.1y Increment 25（已完成，报告：`docs/archive/audit-reports/2026-10-17-increment25-report.md`）
 
 | 项 | 状态 | 结果 |
 | --- | --- | --- |
@@ -535,7 +535,7 @@ Batch 0/1（安全 P0/P1）本轮未选择执行；Web Terminal 暂不处理；�
 | 测试 | ✅ | 新增 error contract 2 项；相关 28+30 通过 |
 | 全量回归 | ✅ | **975 passed / 1 skipped / 0 failed / 0 error（236.1s）** |
 
-### 10.1z Increment 26（已完成，报告：`docs/audit/2026-10-17-increment26-report.md`）
+### 10.1z Increment 26（已完成，报告：`docs/archive/audit-reports/2026-10-17-increment26-report.md`）
 
 | 项 | 状态 | 结果 |
 | --- | --- | --- |
@@ -543,7 +543,7 @@ Batch 0/1（安全 P0/P1）本轮未选择执行；Web Terminal 暂不处理；�
 | 测试 | ✅ | 新增 saver 接线测试；全量 976 passed |
 | 全量回归 | ✅ | **976 passed / 1 skipped / 0 failed / 0 error（239.0s）** |
 
-### 10.1aa Increment 27（已完成，报告：`docs/audit/2026-10-17-increment27-report.md`）
+### 10.1aa Increment 27（已完成，报告：`docs/archive/audit-reports/2026-10-17-increment27-report.md`）
 
 | 项 | 状态 | 结果 |
 | --- | --- | --- |
@@ -551,7 +551,7 @@ Batch 0/1（安全 P0/P1）本轮未选择执行；Web Terminal 暂不处理；�
 | 全量回归 | ✅ | **979 passed / 1 skipped / 0 failed / 0 error（244.4s）** |
 | 未实施 | ⏳ | 语义检索 `query`、wildcard namespace 匹配（无消费者） |
 
-### 10.1ac Increment 28（已完成，报告：`docs/audit/2026-10-17-increment28-report.md`）
+### 10.1ac Increment 28（已完成，报告：`docs/archive/audit-reports/2026-10-17-increment28-report.md`）
 
 | 项 | 状态 | 结果 |
 | --- | --- | --- |
@@ -577,7 +577,7 @@ Batch 0/1（安全 P0/P1）本轮未选择执行；Web Terminal 暂不处理；�
 
 **结论**：这些发现大多已在审计计划中（FW/ARCH 编号），但**并非都已执行**：本轮已完成的只是其中可安全落地、无需产品/部署决策的部分；上述 ❌/⏳ 项属于 L 级或需用户确认的架构/安全项，仍留在后续规划。
 
-### 10.1ad Increment 29（已完成，报告：`docs/audit/2026-10-17-increment29-report.md`）
+### 10.1ad Increment 29（已完成，报告：`docs/archive/audit-reports/2026-10-17-increment29-report.md`）
 
 | 项 | 状态 | 结果 |
 | --- | --- | --- |
@@ -585,7 +585,7 @@ Batch 0/1（安全 P0/P1）本轮未选择执行；Web Terminal 暂不处理；�
 | 全量回归 | ✅ | **983 passed / 1 skipped / 0 failed / 0 error（240.3s）** |
 | 用户决策 | ⏸ | 多副本 Phase B、streaming 深度拆分、HITL 策略调整暂缓 |
 
-### 10.1ae Increment 30（已完成，报告：`docs/audit/2026-10-17-increment30-report.md`）
+### 10.1ae Increment 30（已完成，报告：`docs/archive/audit-reports/2026-10-17-increment30-report.md`）
 
 | 项 | 状态 | 结果 |
 | --- | --- | --- |
@@ -594,7 +594,7 @@ Batch 0/1（安全 P0/P1）本轮未选择执行；Web Terminal 暂不处理；�
 | 全量回归 | ✅ | **984 passed / 1 skipped / 0 failed / 0 error（242.2s）** |
 | 暂缓项 | ⏸ | 多副本 Phase B、streaming 深度拆分、HITL 策略（按用户指示） |
 
-### 10.1af Increment 31（已完成，报告：`docs/audit/2026-10-17-increment31-report.md`）
+### 10.1af Increment 31（已完成，报告：`docs/archive/audit-reports/2026-10-17-increment31-report.md`）
 
 | 项 | 状态 | 结果 |
 | --- | --- | --- |
@@ -602,7 +602,7 @@ Batch 0/1（安全 P0/P1）本轮未选择执行；Web Terminal 暂不处理；�
 | 全量回归 | ✅ | **984 passed / 1 skipped / 0 failed / 0 error（245.8s）** |
 | 暂缓 | ⏸ | 多副本 Phase B、streaming 深度拆分、HITL 策略（用户指示） |
 
-### 10.1ag Increment 32（已完成，报告：`docs/audit/2026-10-17-increment32-report.md`）
+### 10.1ag Increment 32（已完成，报告：`docs/archive/audit-reports/2026-10-17-increment32-report.md`）
 
 | 项 | 状态 | 结果 |
 | --- | --- | --- |
@@ -610,7 +610,7 @@ Batch 0/1（安全 P0/P1）本轮未选择执行；Web Terminal 暂不处理；�
 | 回归 | ✅ | `tests/api/test_files.py` 8 passed；全量 984 passed |
 | 暂缓 | ⏸ | 多副本 Phase B、streaming 深度拆分、HITL 策略（用户指示） |
 
-### 10.1ah Increment 33（已完成，报告：`docs/audit/2026-10-17-increment33-report.md`）
+### 10.1ah Increment 33（已完成，报告：`docs/archive/audit-reports/2026-10-17-increment33-report.md`）
 
 | 项 | 状态 | 结果 |
 | --- | --- | --- |
@@ -618,7 +618,7 @@ Batch 0/1（安全 P0/P1）本轮未选择执行；Web Terminal 暂不处理；�
 | 回归 | ✅ | 全量 **984 passed / 1 skipped / 0 failed / 0 error（242.6s）** |
 | 未做 | ⏳ | API xlsx 自动生成、AGENTS/CLAUDE 正文完整重写 |
 
-### 10.1ai Increment 34（已完成，报告：`docs/audit/2026-10-17-increment34-report.md`）
+### 10.1ai Increment 34（已完成，报告：`docs/archive/audit-reports/2026-10-17-increment34-report.md`）
 
 | 项 | 状态 | 结果 |
 | --- | --- | --- |
@@ -626,7 +626,7 @@ Batch 0/1（安全 P0/P1）本轮未选择执行；Web Terminal 暂不处理；�
 | 全量回归 | ✅ | **984 passed / 1 skipped / 0 failed / 0 error（239.9s）** |
 | 暂缓 | ⏸ | 多副本 Phase B、streaming 深度拆分、HITL 策略（用户指示） |
 
-### 10.1aj Increment 35（已完成，报告：`docs/audit/2026-10-17-increment35-report.md`）
+### 10.1aj Increment 35（已完成，报告：`docs/archive/audit-reports/2026-10-17-increment35-report.md`）
 
 | 项 | 状态 | 结果 |
 | --- | --- | --- |
@@ -634,7 +634,7 @@ Batch 0/1（安全 P0/P1）本轮未选择执行；Web Terminal 暂不处理；�
 | 回归 | ✅ | connectors 30 passed；全量 **984 passed / 1 skipped / 0 failed（237.7s）** |
 | 暂缓 | ⏸ | 多副本 Phase B、streaming 深度拆分、HITL 策略（用户指示） |
 
-### 10.1ak Increment 36（已完成，报告：`docs/audit/2026-10-17-increment36-report.md`）
+### 10.1ak Increment 36（已完成，报告：`docs/archive/audit-reports/2026-10-17-increment36-report.md`）
 
 | 项 | 状态 | 结果 |
 | --- | --- | --- |
@@ -642,7 +642,7 @@ Batch 0/1（安全 P0/P1）本轮未选择执行；Web Terminal 暂不处理；�
 | 全量回归 | ✅ | **985 passed / 1 skipped / 0 failed / 0 error（241.0s）** |
 | 暂缓 | ⏸ | 多副本 Phase B、streaming 深度拆分、HITL 策略（用户指示） |
 
-### 10.1al Increment 37（已完成，报告：`docs/audit/2026-10-17-increment37-report.md`）
+### 10.1al Increment 37（已完成，报告：`docs/archive/audit-reports/2026-10-17-increment37-report.md`）
 
 | 项 | 状态 | 结果 |
 | --- | --- | --- |
@@ -666,7 +666,7 @@ Batch 0/1（安全 P0/P1）本轮未选择执行；Web Terminal 暂不处理；�
 | FW-09 官方 saver 默认化 | ✅ | `EASY_CHECKPOINT_BACKEND` auto/postgres/sqlite/legacy；23 项测试 |
 | 全量回归 | ✅ | **1077 passed / 1 skipped / 0 failed / 0 error（241.9s）** |
 
-报告：`docs/audit/2026-10-18-three-specialties-report.md`。
+报告：`docs/archive/audit-reports/2026-10-18-three-specialties-report.md`。
 
 ### 10.1ao 2026-10-18 下一批改造（已完成）
 
@@ -678,7 +678,7 @@ Batch 0/1（安全 P0/P1）本轮未选择执行；Web Terminal 暂不处理；�
 | C1 sessions 域去门面 | ⏳ | `SessionRepository` + 10 路由迁移；其他域未做 |
 | 全量回归 | ✅ | **1119 passed / 1 skipped / 0 failed / 0 error（243.7s）** |
 
-报告：`docs/audit/2026-10-18-next-batch-report.md`、`docs/audit/2026-10-18-increment43-b3-shared-counter-report.md`。
+报告：`docs/archive/audit-reports/2026-10-18-next-batch-report.md`、`docs/archive/audit-reports/2026-10-18-increment43-b3-shared-counter-report.md`。
 
 ### 10.1ap 2026-10-18 C1/C2/B1/D 批量改造（已完成）
 
@@ -690,7 +690,7 @@ Batch 0/1（安全 P0/P1）本轮未选择执行；Web Terminal 暂不处理；�
 | D1/D3/D2 | ✅ | 工具注册表；MCP 持久 session；编译图复用（进程内，opencode/legacy 降级） |
 | 全量回归 | ✅ | **1234 passed / 1 skipped / 0 failed / 0 error（237.6s）** |
 
-报告：`docs/audit/2026-10-18-c1-c2-b1-d-report.md`。
+报告：`docs/archive/audit-reports/2026-10-18-c1-c2-b1-d-report.md`。
 
 ### 10.1aq 2026-10-18 非安全剩余项批量（已完成）
 
@@ -706,7 +706,7 @@ Batch 0/1（安全 P0/P1）本轮未选择执行；Web Terminal 暂不处理；�
 | FW-11 语义 query | ⚠ | 无 embedding/向量索引，记录后续 |
 | 全量回归 | ✅ | **1347 passed / 1 skipped / 0 failed / 0 error（256.4s）**；mcp-server 43 passed |
 
-报告：`docs/audit/2026-10-18-remaining-batch-report.md`。
+报告：`docs/archive/audit-reports/2026-10-18-remaining-batch-report.md`。
 
 ### 10.2 后续计划（Increment 2+）
 

@@ -15,7 +15,7 @@
 （更内层），单独的中间件改写请求时，摘要已经按原话计完 token。注入大段内容（回退模式的
 文件全文、知识片段）时，请求会超过阈值却不触发摘要。
 
-见 docs/design/2026-10-19-da03-session-thread.md §6.2。
+见 docs/archive/design/2026-10-19-da03-session-thread.md §6.2。
 """
 
 from __future__ import annotations

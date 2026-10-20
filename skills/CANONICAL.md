@@ -21,6 +21,6 @@ ships inside the package; never edit it by hand.
   three formats must share the same 12 office scripts (enforced by
   `tests/skills/test_office_canonical.py`).
 - Inconsistencies make CI fail (`sync_skills.py --check`); see
-  `docs/design/2026-10-18-a3-skills-single-source.md`.
+  `docs/archive/design/2026-10-18-a3-skills-single-source.md`.
 - `.agents/skills/` is a separate tree of development-only agent skills. It is
   not runtime content and is not managed by this sync.

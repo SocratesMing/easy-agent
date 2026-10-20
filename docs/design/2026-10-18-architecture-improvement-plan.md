@@ -4,7 +4,7 @@
 | --- | --- |
 | 状态 | 设计草案（待评审后实施） |
 | 日期 | 2026-10-18 |
-| 依据 | 当前工作区对照盘点终态；`docs/design/2026-10-17-module-refactor-plan.md`（ARCH-03/04）；`docs/design/2026-10-17-multi-instance-state.md`（Phase B/C/D 未做）；`docs/design/2026-10-17-sse-event-contract.md`；`docs/audit/evidence/T4-architecture.md` |
+| 依据 | 当前工作区对照盘点终态；`docs/archive/design/2026-10-17-module-refactor-plan.md`（ARCH-03/04）；`docs/archive/design/2026-10-17-multi-instance-state.md`（Phase B/C/D 未做）；`docs/archive/design/2026-10-17-sse-event-contract.md`；`docs/archive/audit-evidence/T4-architecture.md` |
 | 约束 | 不改变对外 HTTP/SSE 契约（可加字段、不可改既有字段语义）；每阶段可独立发布、可回滚；新行为必须有测试；不编辑既有盘点 plan 文件 |
 
 ## 0. 问题与原则
@@ -320,7 +320,7 @@ easy_agent/services/streaming/
 | C1 第一批 | ⏳ | sessions 域 `SessionRepository` + API 去门面；其他 API 域未迁移 |
 | A1/A3/B1/B2/C2/C3/D/E/F | ❌ 未做 | 其中多副本 B/C、streaming 深度拆分、HITL 策略按用户指示暂缓 |
 
-详见 `docs/audit/2026-10-18-next-batch-report.md`。
+详见 `docs/archive/audit-reports/2026-10-18-next-batch-report.md`。
 
 
 ## 实施进展（2026-10-18 第二批）
@@ -336,7 +336,7 @@ easy_agent/services/streaming/
 | A1/A3/B2/C3/E/F | ❌ 未做 | 仍按计划待实施；多副本 Phase B/C 的大部分未做 |
 | Batch 0/1 安全 | ❌ 未执行 | 用户未选 |
 
-详见 `docs/audit/2026-10-18-c1-c2-b1-d-report.md`。
+详见 `docs/archive/audit-reports/2026-10-18-c1-c2-b1-d-report.md`。
 
 
 ## 实施进展（2026-10-18 第三批：非安全剩余项）

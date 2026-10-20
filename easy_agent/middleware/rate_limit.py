@@ -9,7 +9,7 @@
 - 单机 / 单 worker：阈值精确；
 - 多 worker / 多副本：每个进程独立计数，实际放行量约为配置阈值的 N 倍；
   真正的全局限流需要共享实现（Redis / DB），见
-  ``docs/design/2026-10-18-b3-rate-limit-jwt.md``。
+  ``docs/archive/design/2026-10-18-b3-rate-limit-jwt.md``。
 
 检测到多 worker/副本且计数器非共享时，初始化会打印明确 warning（不阻断）。
 限流键使用 ``utils.client_ip.get_client_ip(request)``（仅当 ``EASY_TRUST_PROXY=1``
@@ -220,7 +220,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                 "检测到 %s 个 worker/副本，但限流计数为进程内内存实现（非共享）："
                 "各实例独立计数，实际放行量约为配置阈值的 %s 倍；"
                 "多副本部署请提供共享计数器（Redis/DB），或在 Ingress/API Gateway "
-                "统一限流。参考 docs/design/2026-10-18-b3-rate-limit-jwt.md",
+                "统一限流。参考 docs/archive/design/2026-10-18-b3-rate-limit-jwt.md",
                 workers,
                 workers,
             )

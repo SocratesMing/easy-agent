@@ -177,7 +177,7 @@ class AgentConfig(BaseModel):
     session_thread: bool = False
     """一个会话一个 LangGraph thread（DA-03 P1）：``thread_id = session_id``，每轮只输入本轮消息，
     历史与摘要状态由 checkpointer 保存。默认关闭（每条消息一个 thread、每轮从 DB 重建历史）。
-    见 ``docs/design/2026-10-19-da03-session-thread.md``。
+    见 ``docs/archive/design/2026-10-19-da03-session-thread.md``。
     """
 
 

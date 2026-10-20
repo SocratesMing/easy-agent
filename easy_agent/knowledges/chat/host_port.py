@@ -17,7 +17,7 @@
 SCC。未注册时 fail-closed（``RuntimeError``，端点转 503），不会在 import 阶段
 制造新的反向依赖。
 
-设计文档：``docs/design/2026-10-18-a1-knowledge-streaming.md``。
+设计文档：``docs/archive/design/2026-10-18-a1-knowledge-streaming.md``。
 """
 
 from __future__ import annotations

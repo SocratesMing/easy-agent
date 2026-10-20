@@ -13,7 +13,7 @@
   ``store://uploads/{safe_username}/{saved_name}``；读取时按需 materialize 到
   本地缓存 ``data/uploads_cache/{safe_username}/{saved_name}``。
 
-**未覆盖**（仍是本地文件系统，见 ``docs/design/2026-10-18-object-store-uploads.md``）：
+**未覆盖**（仍是本地文件系统，见 ``docs/archive/design/2026-10-18-object-store-uploads.md``）：
 workspace / 生成文件 / 会话聊天上传 ``uploadfiles/``。
 
 设计要点

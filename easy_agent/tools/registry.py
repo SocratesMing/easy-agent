@@ -20,7 +20,7 @@
 - MCP 工具由 ``services/mcp.py`` 运行时加载，本模块不静态枚举；未登记的名字
   一律视为 ``mcp``（见 :func:`resolve_tool_source`）。
 
-设计文档：``docs/design/2026-10-18-d1-tool-registry.md``。
+设计文档：``docs/archive/design/2026-10-18-d1-tool-registry.md``。
 """
 
 from __future__ import annotations

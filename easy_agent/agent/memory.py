@@ -8,7 +8,7 @@ deepagents 的 ``MemoryMiddleware`` 在 ``before_agent`` 里只要 state 已有
 - 上传清单 ``/workspace/uploads/index.md``：随上传变化。
 
 每消息一个 thread 时每轮都是新 thread，自然每轮重读；改成会话级 thread 后就会停在第一轮
-（``docs/audit/evidence-2026-10-19-deepagents/exp_session_thread.py`` 实测）。
+（``docs/archive/audit-evidence-deepagents/exp_session_thread.py`` 实测）。
 ``memory_contents`` 是私有状态，不能经运行输入重置，所以这里重写加载钩子：每次运行都忽略
 已缓存的内容重新读取，其余逻辑（注入 system prompt、prompt cache 断点）原样继承。
 

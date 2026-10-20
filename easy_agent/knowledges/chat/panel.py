@@ -15,7 +15,7 @@
 - 路径/SSE 不变：返回值仍是宿主 ``api.chat.chat_stream`` 产出的
   ``StreamingResponse``，知识证据事件由宿主生成器原样输出。
 
-设计文档：``docs/design/2026-10-18-a1-knowledge-streaming.md``。
+设计文档：``docs/archive/design/2026-10-18-a1-knowledge-streaming.md``。
 """
 
 from __future__ import annotations
