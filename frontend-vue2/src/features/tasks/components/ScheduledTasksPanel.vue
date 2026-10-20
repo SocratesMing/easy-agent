@@ -193,11 +193,11 @@ import {
   toggleScheduledTask,
   runScheduledTaskNow,
   getScheduledTaskWorkspace,
-} from '../api/scheduledTasks.js'
-import ConfirmDialog from './ConfirmDialog.vue'
-import FileTreeNode from './FileTreeNode.vue'
-import FilePreview from './FilePreview.vue'
-import { getStoredToken } from '../api/auth.js'
+} from '../../../api/scheduledTasks.js'
+import ConfirmDialog from '../../../components/ConfirmDialog.vue'
+import FileTreeNode from '../../../components/FileTreeNode.vue'
+import FilePreview from '../../../components/FilePreview.vue'
+import { getStoredToken } from '../../../api/auth.js'
 export default {
   components: { ConfirmDialog, FilePreview, FileTreeNode },
   data() {

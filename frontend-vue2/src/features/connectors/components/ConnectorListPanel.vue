@@ -317,7 +317,7 @@
 </template>
 
 <script>
-import ToggleSwitch from './ToggleSwitch.vue'
+import ToggleSwitch from '../../../components/ToggleSwitch.vue'
 import {
   getConnectors,
   installConnector,
@@ -326,9 +326,9 @@ import {
   getConnectorTools,
   updateConnectorConfig,
   getConnectorsStatus,
-} from '../api/connectors.js'
-import { overlayClickCloses, markOverlayPress } from '../utils/overlayClick.js'
-import { emitConnectorsChanged, onConnectorsChanged } from '../utils/connectorSync.js'
+} from '../../../api/connectors.js'
+import { overlayClickCloses, markOverlayPress } from '../../../utils/overlayClick.js'
+import { emitConnectorsChanged, onConnectorsChanged } from '../../../utils/connectorSync.js'
 
 // 连接器图标与主题色：目录 icon 名 → 语义 SVG（lucide 风格描边）；按 id 稳定分配主题色
 const CONNECTOR_ICON_PATHS = {

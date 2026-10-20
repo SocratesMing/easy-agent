@@ -228,11 +228,11 @@ import {
   disableSkill,
   importSkill,
   getSkillCategories,
-} from '../api/skills.js'
-import { DEFAULT_CATEGORY, iconCategoryFor } from '../utils/skillCategories.js'
-import SkillIcon from './SkillIcon.vue'
+} from '../../../api/skills.js'
+import { DEFAULT_CATEGORY, iconCategoryFor } from '../../../utils/skillCategories.js'
+import SkillIcon from '../../../components/SkillIcon.vue'
 import SkillDetailPanel from './SkillDetailPanel.vue'
-import ToggleSwitch from './ToggleSwitch.vue'
+import ToggleSwitch from '../../../components/ToggleSwitch.vue'
 
 // 创建技能：跳转到新会话，并把 skill-creator 技能与提示词预填进输入框。
 // 预填内容通过 sessionStorage 传递：技能中心关闭后 ChatInput 会重新挂载并读取。

@@ -93,9 +93,9 @@
 
 <script>
 import SkillListPanel from './SkillListPanel.vue'
-import ExpertListPanel from './ExpertListPanel.vue'
-import ConnectorListPanel from './ConnectorListPanel.vue'
-import { setPageContextExtra } from '../utils/pageContext.js'
+import ExpertListPanel from '../../experts/components/ExpertListPanel.vue'
+import ConnectorListPanel from '../../connectors/components/ConnectorListPanel.vue'
+import { setPageContextExtra } from '../../../utils/pageContext.js'
 
 
 const T = 'xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="15" height="15" aria-hidden="true"'
@@ -113,7 +113,7 @@ export default {
     ExpertListPanel,
     ConnectorListPanel,
     // Monaco 体积较大，编辑器面板懒加载：只在进入「MCP 服务管理」时才拉取
-    McpConfigEditorPanel: () => import('./McpConfigEditorPanel.vue'),
+    McpConfigEditorPanel: () => import('../../connectors/components/McpConfigEditorPanel.vue'),
   },
   props: {
     // sessionId 仅透传给专家面板（创建专家时溯源用）；

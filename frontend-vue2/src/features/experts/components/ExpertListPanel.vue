@@ -300,13 +300,13 @@
 </template>
 
 <script>
-import { deleteExpert, listExperts, listPublicExperts } from '../api/expert.js'
+import { deleteExpert, listExperts, listPublicExperts } from '../../../api/expert.js'
 // 别名导入：模板方法同名（Vue2 模板只能访问实例成员）
 import {
   expertAvatarChar as buildExpertAvatarChar,
   expertAvatarClass as buildExpertAvatarClass
-} from '../utils/expertAvatar.js'
-import { addSkillToUser, getUserSkills } from '../api/skills.js'
+} from '../../../utils/expertAvatar.js'
+import { addSkillToUser, getUserSkills } from '../../../api/skills.js'
 
 /** 用户侧创建引导词模板（可后续迁移到提示词目录做成可配置） */
 const CREATE_TEMPLATE =

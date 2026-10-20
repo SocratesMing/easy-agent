@@ -49,7 +49,7 @@
 
 <script>
 import * as monaco from 'monaco-editor'
-import { getMcpRaw, saveMcpRaw } from '../api/connectors.js'
+import { getMcpRaw, saveMcpRaw } from '../../../api/connectors.js'
 
 // webpack 5 不会自动注入 Monaco 的 worker 工厂，JSON 语言服务初始化时会抛
 // "You must define a function MonacoEnvironment.getWorkerUrl or MonacoEnvironment.getWorker"。

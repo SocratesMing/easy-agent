@@ -49,7 +49,7 @@
 
 <script>
 import { MessageBox } from 'element-ui'
-import { listUsers, resetUserPassword } from '../api/auth.js'
+import { listUsers, resetUserPassword } from '../../../api/auth.js'
 export default {
   data() {
     return {
