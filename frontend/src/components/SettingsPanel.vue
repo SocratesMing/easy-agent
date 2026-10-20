@@ -119,44 +119,22 @@ import {
   updateMemory,
   getSystemPrompt,
 } from '../api/settings.js'
-import { marked } from 'marked'
-import { setupMarkedExtensions, normalizeMathDelimiters, escapeHtml } from '../markdownSetup.js'
+import {
+  setupMarkedExtensions,
+  createMarkdownRenderer,
+  renderMarkdown,
+  escapeHtml,
+} from '../markdownSetup.js'
 
 setupMarkedExtensions()
 
-const renderer = new marked.Renderer()
-
-renderer.code = function(token) {
-  const code = typeof token === 'object' ? (token.text || token.raw || '') : String(token || '')
-  const lang = typeof token === 'object' ? (token.lang || '') : String(arguments[1] || '')
-  const langLabel = lang || 'text'
-  return `<div class="code-block-wrapper">
-    <div class="code-header">
-      <span class="code-lang">${escapeHtml(langLabel)}</span>
-      <button class="code-copy-btn" onclick="copyCode(this)">
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
-          <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
-        </svg>
-        <span>复制</span>
-      </button>
-    </div>
-    <pre><code>${escapeHtml(code)}</code></pre>
-  </div>`
-}
+// 设置页的提示词预览不需要语法高亮，但要保留代码块的转义与复制按钮
+const renderer = createMarkdownRenderer({
+  highlight: (code) => `<pre><code>${escapeHtml(code)}</code></pre>`,
+})
 
 function settingsRenderMarkdown(content) {
-  if (!content) return ''
-  try {
-    return marked.parse(normalizeMathDelimiters(content), {
-      renderer,
-      breaks: true,
-      gfm: true,
-    })
-  } catch (e) {
-    console.error('Markdown 渲染失败:', e)
-    return content
-  }
+  return renderMarkdown(content, renderer)
 }
 
 const emit = defineEmits(['close'])

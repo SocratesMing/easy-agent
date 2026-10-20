@@ -3,8 +3,9 @@
   "private": true,
   "version": "0.0.0",
   "scripts": {
-    "dev": "node scripts/run-vite.mjs dev",
-    "build": "node scripts/run-vite.mjs build",
+    "dev": "node ../scripts/sync-frontend-shared.mjs && node scripts/run-vite.mjs dev",
+    "build": "node ../scripts/sync-frontend-shared.mjs && node scripts/run-vite.mjs build",
+    "sync:shared": "node ../scripts/sync-frontend-shared.mjs",
     "preview": "vue-cli-service preview",
     "test:unit": "node --test src/api/*.test.js src/utils/*.test.js src/directives/*.test.js src/features/knowledge/utils/*.test.js src/features/personnel/*.test.js",
     "lint:vue2": "node scripts/check-vue2-syntax.mjs",

@@ -114,13 +114,18 @@
 import { API_BASE_URL } from '../config.js'
 import { overlayClickCloses, markOverlayPress } from '../utils/overlayClick.js'
 import { ref, computed, watch } from 'vue'
-import { marked } from 'marked'
-import { setupMarkedExtensions, normalizeMathDelimiters } from '../markdownSetup.js'
+import {
+  setupMarkedExtensions,
+  createMarkdownRenderer,
+  renderMarkdown,
+  installCodeCopyHandler,
+} from '../markdownSetup.js'
 import hljs from 'highlight.js'
 import 'highlight.js/styles/github.css'
 
 // 注册 KaTeX 数学公式 + emoji 短代码扩展（幂等，仅执行一次）
 setupMarkedExtensions()
+installCodeCopyHandler()
 import VueOfficeDocx from '@vue-office/docx/lib/v3/vue-office-docx.mjs'
 import VueOfficeExcel from '@vue-office/excel/lib/v3/vue-office-excel.mjs'
 import '@vue-office/docx/lib/v3/index.css'
@@ -128,18 +133,20 @@ import '@vue-office/excel/lib/v3/index.css'
 import * as XLSX from 'xlsx'
 import { getStoredToken } from '../api/auth.js'
 
-marked.setOptions({
-  breaks: true,
-  gfm: true,
-  headerIds: false,
-  highlight: function(code, lang) {
+// 与 ChatMessage 共用同一套代码块结构；hljs 只负责高亮片段，外层 <pre> 由这里补齐
+const markdownRenderer = createMarkdownRenderer({
+  highlight(code, lang) {
+    let html = ''
     if (lang && hljs.getLanguage(lang)) {
       try {
-        return hljs.highlight(code, { language: lang }).value
-      } catch (__) {}
+        html = hljs.highlight(code, { language: lang }).value
+      } catch (__) {
+        html = ''
+      }
     }
-    return hljs.highlightAuto(code).value
-  }
+    if (!html) html = hljs.highlightAuto(code).value
+    return `<pre><code class="hljs">${html}</code></pre>`
+  },
 })
 
 const props = defineProps({
@@ -333,10 +340,7 @@ function handleDownload() {
   document.body.removeChild(link)
 }
 
-const renderedMarkdown = computed(() => {
-  if (!textContent.value) return ''
-  return marked.parse(normalizeMathDelimiters(textContent.value))
-})
+const renderedMarkdown = computed(() => renderMarkdown(textContent.value, markdownRenderer))
 
 const isText = computed(() => {
   const ext = getExt(props.filename)

@@ -222,8 +222,12 @@
 <script setup>
 import { ref, computed, onMounted, shallowRef, watch, nextTick, onBeforeUnmount } from 'vue'
 import { createHighlighter } from 'shiki'
-import { marked } from 'marked'
-import { setupMarkedExtensions, normalizeMathDelimiters } from '../markdownSetup.js'
+import {
+  setupMarkedExtensions,
+  createMarkdownRenderer,
+  escapeHtml,
+  renderMarkdown as renderMarkdownHtml,
+} from '../markdownSetup.js'
 import FileIcon from './FileIcon.vue'
 import ToolCallCard from './ToolCallCard.vue'
 import { approvalTargetForBlock, unmatchedApprovalRequests } from '../utils/hitlApproval.js'
@@ -655,56 +659,11 @@ function highlightCode(code, lang) {
   }
 }
 
-function escapeHtml(text) {
-  return text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#039;')
-}
-
-const renderer = new marked.Renderer()
-
-renderer.code = function(token) {
-  let code = ''
-  let language = ''
-  
-  if (typeof token === 'object') {
-    code = token.text || token.raw || ''
-    language = token.lang || ''
-  } else {
-    code = arguments[0] || ''
-    language = arguments[1] || ''
-  }
-  
-  const langLabel = language || 'text'
-  const highlightedCode = highlightCode(code, language)
-  
-  return `<div class="code-block-wrapper">
-    <div class="code-header">
-      <span class="code-lang">${langLabel}</span>
-      <button class="code-copy-btn" onclick="copyCode(this)">
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
-          <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
-        </svg>
-        <span>复制</span>
-      </button>
-    </div>
-    ${highlightedCode}
-  </div>`
-}
+// 代码块结构 / 外链 / 来源卡片统一由 shared/markdown 提供，这里只注入高亮实现
+const renderer = createMarkdownRenderer({ highlight: highlightCode })
 
 function renderMarkdown(content) {
-  if (!content) return ''
-  try {
-    const normalized = normalizeMathDelimiters(content)
-    return marked.parse(normalized, { renderer, breaks: true, gfm: true })
-  } catch (e) {
-    console.error('Markdown 渲染失败:', e)
-    return escapeHtml(content)
-  }
+  return renderMarkdownHtml(content, renderer)
 }
 
 function formatJson(obj) {
