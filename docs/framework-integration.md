@@ -6,6 +6,10 @@
 > 0.7 适配：callable backend 已移除 → `ContextBackend` 实例；
 > `write_todos` 需显式 `TodoListMiddleware`；新增 `delete` 工具并纳入 HITL。
 > 升级前先让 `tests/test_framework_contract.py` 失败并逐项复核本清单。
+>
+> 2026-10-20 补充：DeepAgents 0.7.28 规范一致性审计见
+> [`docs/design/2026-10-20-deepagents-conformance-audit.md`](design/2026-10-20-deepagents-conformance-audit.md)
+> （skills 多源 / include_tools / MCP 命名与会话 / 子代理私有字段）。
 
 ## 适配点（5 处）
 

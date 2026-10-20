@@ -22,6 +22,7 @@
 - [2026-10-18-architecture-improvement-plan.md](design/2026-10-18-architecture-improvement-plan.md) — 后端改造总纲
 - [2026-10-18-multi-replica-target.md](design/2026-10-18-multi-replica-target.md) — 多副本目标态
 - [2026-10-20-da13-skills-sources.md](design/2026-10-20-da13-skills-sources.md) — 技能多来源
+- [2026-10-20-deepagents-conformance-audit.md](design/2026-10-20-deepagents-conformance-audit.md) — DeepAgents 0.7.28 规范一致性与改造清单
 
 ## 审计结论（长期保留）
 
