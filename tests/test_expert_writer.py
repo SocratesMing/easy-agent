@@ -363,7 +363,11 @@ def test_result_text_hides_server_paths(env):
 
 
 def test_agent_manager_injects_save_expert(client, monkeypatch):
-    """会话 Agent 应注入 save_expert，且工具描述携带配置里的分类标签候选。"""
+    """会话 Agent 应注入 save_expert，且工具描述携带配置里的分类标签候选。
+
+    DA-13：save_expert 由 expert-creator 技能带出，交给 SkillsMiddleware(tools=...)，
+    不在 agent 的工具列表里。
+    """
     import easy_agent.agent.core as agent_mod
     import easy_agent.services.agent_manager as am
 
@@ -379,6 +383,8 @@ def test_agent_manager_injects_save_expert(client, monkeypatch):
         "create_deep_agent",
         lambda **kwargs: (captured.update(kwargs), {"fake": True})[1],
     )
+    recorded: list = []
+    _stub_skills_middleware(monkeypatch, recorded)
 
     asyncio.run(
         am.get_or_create_agent_for_session(
@@ -386,7 +392,8 @@ def test_agent_manager_injects_save_expert(client, monkeypatch):
         )
     )
 
-    tools = {getattr(t, "name", ""): t for t in (captured.get("tools") or [])}
+    assert "save_expert" not in {getattr(t, "name", "") for t in (captured.get("tools") or [])}
+    tools = {getattr(t, "name", ""): t for t in recorded[-1]["tools"]}
     assert "save_expert" in tools
     assert "credit_research: 信用研究" in tools["save_expert"].description
     assert tools["save_expert"].tag_options == TAG_OPTIONS
@@ -488,7 +495,7 @@ def test_created_prompt_md_contains_boundary_section(env):
     assert "不编造" in text
 
 
-# ── 13. save_expert 条件注入 + 绑定表（agent_manager） ──────────────────
+# ── 13. save_expert 由技能带出 + 绑定表（agent_manager） ──────────────────
 
 
 def _stub_deep_agent(monkeypatch, captured: list):
@@ -505,35 +512,57 @@ def _tool_names(kwargs) -> set:
     return {getattr(t, "name", "") for t in (kwargs.get("tools") or [])}
 
 
-def test_agent_manager_save_expert_only_with_creator_skill(client, monkeypatch):
-    """save_expert 仅在 expert-creator 技能激活的会话注入，其他会话不带。"""
+def _stub_skills_middleware(monkeypatch, recorded: list):
+    """记录建图时交给 SkillsMiddleware 的参数（create_deep_agent 已打桩，返回值随意）。"""
+    import easy_agent.agent.core as agent_mod
+
+    def _record(**kwargs):
+        recorded.append(kwargs)
+        return SimpleNamespace(name="SkillsMiddleware")
+
+    monkeypatch.setattr(agent_mod, "SkillsMiddleware", _record)
+
+
+def test_agent_manager_save_expert_is_carried_by_expert_creator_skill(client, monkeypatch):
+    """DA-13：save_expert 不进 agent 工具列表，交给 SkillsMiddleware（expert-creator 的
+    include_tools 带出）；专家会话不提供。"""
     import easy_agent.services.agent_manager as am
+    from easy_agent.agent.graph_cache import clear_agent_graph_cache
 
     if not am._agent_config or not am._agent_config.get("config"):
         pytest.skip("全局 Agent 配置未初始化")
 
+    clear_agent_graph_cache()
     captured: list = []
+    recorded: list = []
     _stub_deep_agent(monkeypatch, captured)
+    _stub_skills_middleware(monkeypatch, recorded)
 
     asyncio.run(
         am.get_or_create_agent_for_session(
-            "sess-creator-on", username="testuser", enable_hitl=False,
-            skill_dirs=["expert-creator"],
+            "sess-gated-general", username="testuser", enable_hitl=False
         )
     )
+    assert "save_expert" not in _tool_names(captured[-1])
+    assert [getattr(t, "name", "") for t in recorded[-1]["tools"]] == ["save_expert"]
+    assert recorded[-1]["sources"][-1] == "/user-skills/"
+
+    built = len(recorded)
     asyncio.run(
         am.get_or_create_agent_for_session(
-            "sess-creator-off", username="testuser", enable_hitl=False,
-            skill_dirs=["docx"],
+            "sess-gated-expert",
+            username="testuser",
+            enable_hitl=False,
+            expert_agent_id="expert_x_1",
         )
     )
+    assert "save_expert" not in _tool_names(captured[-1])
+    # 专家会话没有可带出的工具：不替换框架默认的 SkillsMiddleware
+    assert len(recorded) == built
 
-    assert "save_expert" in _tool_names(captured[0])
-    assert "save_expert" not in _tool_names(captured[1])
 
-
-def test_agent_manager_evicts_when_creator_flag_changes(client, monkeypatch):
-    """save_expert 需求变化（带 -> 不带）必须驱逐重建，否则工具集黏住。"""
+def test_agent_manager_reuses_agent_across_turns(client, monkeypatch):
+    """选中 / 不选 expert-creator 不再影响 Agent：同一会话连续两轮复用同一个实例。"""
     import easy_agent.services.agent_manager as am
 
     if not am._agent_config or not am._agent_config.get("config"):
@@ -543,20 +572,15 @@ def test_agent_manager_evicts_when_creator_flag_changes(client, monkeypatch):
     _stub_deep_agent(monkeypatch, captured)
 
     sid = "sess-creator-flip"
-    asyncio.run(
-        am.get_or_create_agent_for_session(
-            sid, username="testuser", enable_hitl=False, skill_dirs=["expert-creator"]
-        )
+    first = asyncio.run(
+        am.get_or_create_agent_for_session(sid, username="testuser", enable_hitl=False)
     )
-    asyncio.run(
-        am.get_or_create_agent_for_session(
-            sid, username="testuser", enable_hitl=False, skill_dirs=[]
-        )
+    second = asyncio.run(
+        am.get_or_create_agent_for_session(sid, username="testuser", enable_hitl=False)
     )
 
-    assert len(captured) == 2
-    assert "save_expert" in _tool_names(captured[0])
-    assert "save_expert" not in _tool_names(captured[1])
+    assert second is first
+    assert len(captured) <= 1
 
 
 def test_session_edit_target_bind_override_and_clear(client):

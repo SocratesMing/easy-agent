@@ -18,7 +18,7 @@ python scripts/skills/sync_skills.py --check
 | `deps/` | 离线依赖下载/落盘 | `download_backend_deps.py`、`download_backend_whls.py`、`download_frontend_deps.py`、`place_whls_to_repo.py` |
 | `release/` | 发布前检查 / 变更导出 | `release_preflight.py`、`export_changes.py` |
 | `docs/` | 文档生成 | `generate_api_docs.py` |
-| `skills/` | 技能单一源同步 | `sync_skills.py` |
+| `skills/` | 技能单一源同步 / 公共技能迁移 | `sync_skills.py`、`migrate_builtin_skills.py`（把 S2 之前复制进用户目录、与公共版本一致的技能副本迁到公共技能清单，默认只预览） |
 | `dev/` | 本地开发辅助 | `set-agent-env.sh`、`start.dev.keychain.sh`、`memory_guard.sh` |
 
 > `quality/` 内的白名单 JSON 与检查脚本同目录，脚本用 `Path(__file__).with_name(...)`

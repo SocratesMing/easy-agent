@@ -79,6 +79,9 @@ class ToolSpec:
     hitl_order: int = 100
     inject_order: int | None = None
     condition_note: str = ""
+    #: 由技能带出（DA-13）：不进 agent 的工具列表，交给 SkillsMiddleware(tools=...)，模型读到或
+    #: pin 了在 ``metadata.include_tools`` 里声明它的技能之后才出现
+    skill_gated: bool = False
     builder: Callable[["ToolBuildContext"], Any] | None = field(
         default=None, repr=False, compare=False
     )
@@ -143,7 +146,8 @@ class ToolBuildContext:
     workspace_name: str = ""
     enable_hitl: bool = True
     model_name: str = ""
-    creator_requested: bool | None = None
+    #: 专家会话（挂了专家）：不提供 save_expert，避免领域专家被借来创建 / 修改别的专家
+    expert_session: bool = False
     web_search_tool: Any = None
     edit_targets: Mapping[str, str] | None = None
     # 工具工厂（按工具名索引），由装配根 ``agent_manager._tool_factories()`` 提供。
@@ -165,8 +169,9 @@ def _scheduled_task_enabled(ctx: ToolBuildContext) -> bool:
 
 
 def _save_expert_enabled(ctx: ToolBuildContext) -> bool:
-    # None = 未传 skill_dirs / HITL 恢复，跟随缓存，保持注入（改造前行为）。
-    return ctx.creator_requested is None or bool(ctx.creator_requested)
+    # DA-13：非专家会话都注入，但它是 skill_gated 工具，模型读到 / pin 了 expert-creator 才出现；
+    # 改造前按「本轮是否选中 expert-creator」决定注不注入，切换时要重建 Agent。
+    return not ctx.expert_session
 
 
 def _file_context_enabled(ctx: ToolBuildContext) -> bool:
@@ -355,9 +360,10 @@ TOOL_REGISTRY: tuple[ToolSpec, ...] = (
         interrupt_decisions=("approve", "reject"),
         hitl_order=10,
         inject_order=30,
-        condition_note="skill_dirs 含 expert-creator（None=跟随缓存，保持注入）",
+        condition_note="非专家会话；由 expert-creator 技能的 include_tools 带出（skill_gated）",
         condition=_save_expert_enabled,
         builder=_build_save_expert_tool,
+        skill_gated=True,
     ),
     ToolSpec(
         name="read_uploaded_file",
@@ -499,6 +505,11 @@ def name_heuristic_exempt_tools() -> frozenset[str]:
         for spec in TOOL_REGISTRY
         if spec.is_hitl or (spec.is_builtin and not spec.mutating)
     )
+
+
+def skill_gated_tool_names() -> frozenset[str]:
+    """由技能带出的工具名（DA-13）：建图时交给 SkillsMiddleware(tools=...)，不进 agent 工具列表。"""
+    return frozenset(spec.name for spec in TOOL_REGISTRY if spec.skill_gated)
 
 
 def resolve_tool_source(name: str) -> str:

@@ -48,15 +48,18 @@
 图输入（DA-03）：默认每条消息一个 thread（`{session_id}-{message_id}`），历史每轮从 DB 重建；`agent.session_thread: true` 时在官方 saver 上一个会话一个 thread（`thread_id = session_id`），每轮只输入本轮消息，thread 为空时从 DB 水合、DB 多出的轮次补进输入（`services/session_thread.py`），审批句柄仍是 `{session_id}-{message_id}`。本轮 `HumanMessage` 只存用户原话（`id` = message_id，DB 用户行同时记 `turn_id`），工作区前缀、知识库 / 页面上下文、上传预览等本轮注入随 `turn_context` 传入，由主代理摘要中间件在计 token 前渲染进本次请求，不写回历史（`agent/turn_context.py`）；记忆每次运行都重新加载（`agent/memory.py`）。会话级 thread 方案见 `docs/archive/design/2026-10-19-da03-session-thread.md`。
 
 ### Agent 工具与沙箱
-- 文件工具走 CompositeBackend 路由（`/workspace/`、`/user-skills/`、`/memories/`、外部目录）；没命中路由的路径与框架产物（`/.agent/...`：大工具结果、对话历史）落在工作区之外的会话隐藏目录 `workspace/{user}/.agent/{session_id}/`，删除会话时一并删除（DA-04）。共享编译图用两层真实 `CompositeBackend`（`backends/context.py`）按运行期 `SessionContext` 路由（DA-05）。
+- 文件工具走 CompositeBackend 路由（`/workspace/`、`/user-skills/`、`/skills/builtin/`（只读）、`/memories/`、外部目录）；没命中路由的路径与框架产物（`/.agent/...`：大工具结果、对话历史）落在工作区之外的会话隐藏目录 `workspace/{user}/.agent/{session_id}/`，删除会话时一并删除（DA-04）。共享编译图用两层真实 `CompositeBackend`（`backends/context.py`）按运行期 `SessionContext` 路由（DA-05）。
 - `execute` 默认经 bwrap；不可用降级 Landlock；都不可用 fail-closed（127）。
 - HITL：删除类命令/专家保存/定时任务/知识原文 materialize 等触发审批。
-- 子代理（office-writer / knowledge-researcher）显式 `skills=["/user-skills/"]` + 异常兜底 middleware。
+- 子代理（office-writer / knowledge-researcher）显式声明与主代理相同的技能源（`/skills/builtin/`、`/user-skills/`）+ 异常兜底 middleware。
 
 ### 技能
 - canonical：仓库根 `skills/`（7 个运行时技能：docx/pptx/xlsx/pdf/mcp-builder/skill-creator/expert-creator）。
 - 包内 `easy_agent/skills/` 为 pip 安装回退副本；`scripts/skills/sync_skills.py` 同步，`--check` 可在 CI 校验。
 - 用户技能：`workspace/{username}/skills/` → 虚拟路径 `/user-skills/`。
+- 公共技能只读共享（DA-13 S2）：技能中心「添加」只在 `workspace/{username}/builtin-skills.json` 里记一条（`agent/builtin_skills.py`），不再复制；agent 经 `/skills/builtin/` 直接读 canonical 目录，只看得到该用户已添加且启用的（视图 backend `backends/builtin_skills.py`），写入一律拒绝（backend 与 deny write 规则两层）；execute 沙箱 bwrap 只读挂载已启用的那几个，Landlock 把整个 canonical 目录设为只读。
+- 技能源固定为 `["/skills/builtin/", "/user-skills/"]`，同名时用户技能覆盖公共技能（fork 即复制到用户技能后修改）。S2 之前复制进用户目录、与公共版本一致的副本在第一次访问时删除并记入清单，改过的保留为用户技能；`scripts/skills/migrate_builtin_skills.py` 可一次性预览 / 执行全部用户的迁移。
+- 输入框选中的技能经 `pinned_skills` 加载（DA-13 S1）。`save_expert` 由 expert-creator 的 `metadata.include_tools` 带出：建图时交给替换默认项的 `SkillsMiddleware(tools=...)`，模型读到或 pin 了该技能才绑定，专家会话不提供。
 
 ### 数据库
 - SQLite（单机开发，启用 WAL/busy_timeout/synchronous=NORMAL）或 MySQL（多副本生产，代码禁止静默降级）。

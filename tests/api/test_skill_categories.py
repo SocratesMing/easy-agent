@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from easy_agent.agent import builtin_skills
 from easy_agent.services import skill_categories, skill_library
 
 SKILLS_ROOT = Path(os.environ["TEST_SKILLS_DIR"])
@@ -18,15 +19,17 @@ BASE = "/agent/skill-center"
 @pytest.fixture(autouse=True)
 def _clean_state(client):
     """用例前后清空用户技能目录与类别文件，避免相互污染。"""
-    store = skill_categories.store_path("testuser")
+    stores = [skill_categories.store_path("testuser"), builtin_skills.store_path("testuser")]
     roots = [skill_library.user_skills_dir("testuser"), skill_library.user_disabled_dir("testuser")]
     for root in roots:
         shutil.rmtree(root, ignore_errors=True)
-    store.unlink(missing_ok=True)
+    for store in stores:
+        store.unlink(missing_ok=True)
     yield
     for root in roots:
         shutil.rmtree(root, ignore_errors=True)
-    store.unlink(missing_ok=True)
+    for store in stores:
+        store.unlink(missing_ok=True)
 
 
 def _make_skill(name: str, content: str = "# Fake Skill\n") -> Path:
@@ -265,8 +268,9 @@ def test_category_does_not_change_after_creation(client):
     rows = client.get(f"{BASE}/user-skills").json()["skills"]
     assert next(r for r in rows if r["dir_name"] == name)["category_id"] == "data"
 
-    # 把已入库的技能改成完全不同的领域：分类仍是创建时定下的「数据分析」
-    (skill_library.user_skills_dir("testuser") / name / "SKILL.md").write_text(
+    # 把技能改成完全不同的领域：分类仍是创建时定下的「数据分析」
+    # （DA-13 S2：公共技能不再复制进用户目录，内容就在公共技能目录里）
+    (SKILLS_ROOT / name / "SKILL.md").write_text(
         "---\nname: 品牌海报设计\ndescription: 生成海报与配色方案\n---\n",
         encoding="utf-8",
     )

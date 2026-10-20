@@ -12,7 +12,9 @@ from pathlib import Path
 from deepagents.backends import CompositeBackend, LocalShellBackend
 
 from easy_agent.agent.graph_cache import SessionContext
+from easy_agent.agent.builtin_skills import BUILTIN_VIRTUAL_ROOT
 from easy_agent.backends.artifacts import AGENT_ARTIFACTS_ROOT, AgentArtifactsBackend
+from easy_agent.backends.builtin_skills import BuiltinSkillsBackend
 from easy_agent.backends.langsmith_sandbox import create_langsmith_backend, sandbox_mode
 from easy_agent.backends.shell import _PathTranslatingShell
 from easy_agent.bootstrap.config import Config
@@ -140,6 +142,14 @@ def _build_backend_for_context(
             env=shell_env,
         )
 
+    # 公共技能（DA-13 S2）：canonical 目录只读挂载，只看得到本会话用户已添加且启用的
+    builtin_dir = str(getattr(context, "builtin_skills_dir", "") or "")
+    builtin_enabled = tuple(getattr(context, "builtin_skills", ()) or ())
+    if builtin_dir:
+        routes[f"{BUILTIN_VIRTUAL_ROOT}/"] = BuiltinSkillsBackend(
+            builtin_dir, builtin_enabled, virtual_root=BUILTIN_VIRTUAL_ROOT
+        )
+
     # 挂载外部目录（skill 需要访问的宿主机目录）为虚拟路径路由。
     # 仅挂载通过安全校验的目录（safe_external），防止把工作区根或其他用户
     # 子树挂载出来导致越权访问其他用户的会话数据。
@@ -181,9 +191,19 @@ def _build_backend_for_context(
     else:
         readonly_binds: list[tuple[str, str]] = []
         readonly_dirs: list[str] = []
+        readonly_mappings: dict[str, str] = {}
         if "/user-skills/" in routes:
             policy = str(getattr(config.agent, "skill_write", "new-only") or "new-only").lower()
             readonly_binds, readonly_dirs = _protected_skill_mounts(user_skills_dir, policy)
+        if builtin_dir:
+            # 公共技能在沙箱里只读：bwrap 只挂已启用的那几个；Landlock 无法按子目录放行，
+            # 整个公共技能目录只读可见；路径翻译（Landlock / 无沙箱时）走 readonly_mappings
+            readonly_binds = [
+                *readonly_binds,
+                *((str(Path(builtin_dir) / name), f"{BUILTIN_VIRTUAL_ROOT}/{name}") for name in builtin_enabled),
+            ]
+            readonly_dirs = [*readonly_dirs, builtin_dir]
+            readonly_mappings[f"{BUILTIN_VIRTUAL_ROOT}/"] = builtin_dir.rstrip("/") + "/"
         shell = _PathTranslatingShell(
             path_mappings=path_mappings,
             root_dir=ws_str,
@@ -197,6 +217,7 @@ def _build_backend_for_context(
             sandbox_network=_sandbox_network(config),
             readonly_binds=readonly_binds,
             readonly_dirs=readonly_dirs,
+            readonly_mappings=readonly_mappings,
         )
 
     # DA-04：没命中路由的路径（含框架产物 /.agent/...）落在会话隐藏目录，不再是工作区的别名；

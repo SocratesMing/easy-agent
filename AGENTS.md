@@ -3,8 +3,8 @@
 > ℹ️ **2026-10-18 事实同步**：模块地图 / 数据流 / 命令以
 > `docs/architecture-current.md` 为准。本文件已同步的关键事实：
 > 双前端基线（`frontend-vue2/` Vue 2.7 当前托管、`frontend/` Vue 3.5 + Vite
-> 并行维护）；运行时技能 7 个；agent 不挂载 `/skills/` 只读路由，用户技能在
-> `/user-skills/`；`X-Username` 兼容回退已移除；JWT secret 在 dev/test
+> 并行维护）；运行时技能 7 个；公共技能经只读路由 `/skills/builtin/` 共享（按用户
+> 添加 / 启停，不再复制，DA-13 S2），用户技能在 `/user-skills/`；`X-Username` 兼容回退已移除；JWT secret 在 dev/test
 > 持久化于 `data/.jwt_secret`（prod 必须显式设置 `EASY_JWT_SECRET`）；
 > 仓库已有 Dockerfile / docker-compose / k8s / `.github/workflows/ci.yml`。
 

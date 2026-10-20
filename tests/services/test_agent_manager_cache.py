@@ -14,7 +14,6 @@ def _restore_state():
     saved = (
         am._session_agents,
         am._session_expert,
-        am._session_creator,
         am._session_connectors,
         am._session_edit_targets,
         am._session_create_locks,
@@ -24,7 +23,6 @@ def _restore_state():
     (
         am._session_agents,
         am._session_expert,
-        am._session_creator,
         am._session_connectors,
         am._session_edit_targets,
         am._session_create_locks,
@@ -38,7 +36,6 @@ def _seed(count: int):
         for i in range(count)
     )
     am._session_expert = {f"s{i}": "" for i in range(count)}
-    am._session_creator = {f"s{i}": False for i in range(count)}
     am._session_connectors = {f"s{i}": None for i in range(count)}
     am._session_edit_targets = {f"s{i}": "" for i in range(count)}
     am._session_create_locks = {f"s{i}": asyncio.Lock() for i in range(count)}
@@ -51,7 +48,6 @@ def test_evict_keeps_cap_and_cleans_side_dicts():
     victim = "s0"
     assert victim not in am._session_agents
     assert victim not in am._session_expert
-    assert victim not in am._session_creator
     assert victim not in am._session_connectors
     assert victim not in am._session_edit_targets
     assert victim not in am._session_create_locks

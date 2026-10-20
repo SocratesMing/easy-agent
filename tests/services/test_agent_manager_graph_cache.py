@@ -19,14 +19,12 @@ def _restore_state(monkeypatch):
     saved = (
         OrderedDict(am._session_agents),
         dict(am._session_expert),
-        dict(am._session_creator),
         dict(am._session_connectors),
         dict(am._session_edit_targets),
         dict(am._session_create_locks),
     )
     am._session_agents = OrderedDict()
     am._session_expert = {}
-    am._session_creator = {}
     am._session_connectors = {}
     am._session_edit_targets = {}
     am._session_create_locks = {}
@@ -36,7 +34,6 @@ def _restore_state(monkeypatch):
     (
         am._session_agents,
         am._session_expert,
-        am._session_creator,
         am._session_connectors,
         am._session_edit_targets,
         am._session_create_locks,

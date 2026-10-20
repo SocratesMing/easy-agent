@@ -621,7 +621,6 @@ async def chat_stream(
         session_id, username, workspace_name, model_name=request.model,
         system_prompt_extra=system_prompt_extra,
         enable_web_search=request.enable_web_search,
-        skill_dirs=turn_skill_dirs,
     )
 
     # Phase 2B：把本轮 run 持久化（owner + lease）。登记失败只记日志，

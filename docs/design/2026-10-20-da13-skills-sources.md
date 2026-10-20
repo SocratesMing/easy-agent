@@ -1,7 +1,7 @@
 # DA-13 技能：公共技能只读共享、选中即加载、按需暴露工具
 
 - 日期：2026-10-20
-- 状态：已评审（2026-10-20，§12 均按推荐方案）；S1（pinned skills）已实现，见 §13；§6.3 随 S2 实施
+- 状态：已评审（2026-10-20，§12 均按推荐方案）；S1（pinned skills）已实现，见 §13；S2（公共技能只读共享与迁移、§6.3 `save_expert` 由技能带出）已实现，见 §14；剩 S3
 - 范围：技能挂载与技能中心接口、本轮技能的加载方式、`save_expert` 的暴露方式、公共技能文档篇幅；前端技能中心的交互不变
 - 相关：审计 DA-13（`docs/audit/2026-10-19-deepagents-best-practices-audit.md` §4）、C3 沙箱只读挂载（DA-07）、DA-03（技能每轮重载已在 P0 完成）
 - 版本：deepagents 0.7.28（多源 ≥0.7、skill tools ≥0.7.22、pinned skills ≥0.7.23）
@@ -84,7 +84,8 @@
 > 实施顺序调整（S1 实施时发现）：已添加 expert-creator 的用户手里是复制出来的旧副本，没有 `include_tools`。如果现在就去掉 `creator_requested`，这些用户会失去 `save_expert`。所以本节与 S2 一起实施：公共技能改从 canonical 目录只读读取后，所有人看到的都是带 `include_tools` 的新版本。
 
 - `skills/expert-creator/SKILL.md` 的 frontmatter 增加 `metadata.include_tools: save_expert`。
-- `save_expert` 始终作为工具交给 agent，标记 `extras={"defer_loading": True}`：模型读到或 pin 了 expert-creator 才会出现，否则调用会被当作未知工具。
+- `save_expert` 不进 agent 的工具列表，交给同名替换框架默认项的 `SkillsMiddleware(tools=[save_expert])`：模型读到或 pin 了 expert-creator 之后的那次模型调用才绑定它，之前调用会被当作未知工具。
+  > 实施调整（S2）：评审稿这里写的是作为普通工具交给 agent 并标记 `extras={"defer_loading": True}`。实测在 OpenAI 兼容接口（DeepSeek 等）下该标记不起作用，工具每次都照常绑定，见 §14.2 第 1 条。
 - 删除 `creator_requested` 相关逻辑：`agent_manager._session_creator`、注册表的 `_save_expert_enabled`，以及因此触发的 agent 重建。
 - 专家会话（`expert_agent_id` 不为空）保留现在的限制：不提供 `save_expert`，避免领域专家被借来创建或修改别的专家（§12 第 3 条）。
 
@@ -128,7 +129,7 @@
 | 阶段 | 内容 |
 | --- | --- |
 | S1（✅ 2026-10-20） | pinned skills（6.2）：改动集中在编排器和接口层，不动存储 |
-| S2 | 公共技能只读共享与迁移（6.1、7），以及 `save_expert` 由技能带出（6.3）：动技能中心存储，需要迁移 |
+| S2（✅ 2026-10-20） | 公共技能只读共享与迁移（6.1、7），以及 `save_expert` 由技能带出（6.3）：动技能中心存储，需要迁移 |
 | S3 | `SKILL.md` 精简（6.4）：只改文档内容，可随时做 |
 
 ## 11. 风险
@@ -158,3 +159,39 @@
 | 真实 `create_deep_agent`：pin 的技能全文在第一次模型调用前进入对话（`lc_source = pinned_skill`），整轮只调用一次模型，没有先 `read_file`；经编排器跑一轮，技能全文既不出现在 SSE 事件里，也不写进助手回复 | — | `tests/services/test_pinned_skills.py` |
 
 验证：项目 `.venv` 全量 1799 passed，1 skipped，1 failed。失败的是 `tests/test_scripts_layout.py::test_scripts_root_has_no_loose_scripts`，原因是 `7073a05`（前端重构）把 `sync-frontend-shared.mjs` 放在了 `scripts/` 根目录，与本次改动无关。ruff、import graph、double-write、multi-replica、API 文档门禁均通过。
+
+## 14. S2 实施记录（2026-10-20）
+
+### 14.1 改动
+
+| 改动 | 位置 | 回归测试 |
+| --- | --- | --- |
+| 按用户的公共技能清单 `workspace/{user}/builtin-skills.json`：添加 / 启停 / 移除只改清单；目录名必须是单个路径段；canonical 目录里已下线的技能不再列出 | `agent/builtin_skills.py`（新） | `tests/agent/test_builtin_skills.py` |
+| 只读视图 `/skills/builtin/`：`ls` / `read_file` / `grep` / `glob` / 下载只看得到已启用的公共技能，其余当作不存在，报错与真不存在的文件一致；写、改、删、上传一律拒绝，报错里是模型看到的完整路径 | `backends/builtin_skills.py`（新）、`agent/backend.py` | 同上 |
+| 技能源固定为 `["/skills/builtin/", "/user-skills/"]`，同名时用户技能覆盖；`/skills/builtin/**` deny write；`SessionContext` 增加 `builtin_skills_dir` / `builtin_skills`，`ContextBackend` 的缓存键随之变化；子代理声明与主代理相同的技能源 | `agent/workspace.py`、`agent/graph_cache.py`、`backends/context.py`、`agent/core.py`、`agent/subagents.py` | `tests/agent/test_builtin_skills_agent.py`、`tests/agent/test_subagent_specs.py` |
+| execute 沙箱：bwrap 逐个只读挂载已启用的公共技能；Landlock 把整个 canonical 目录设为只读。命令里的 `/skills/builtin/` 经新增的 `readonly_mappings` 翻译成真实路径（不进可写挂载与可写目录），输出再翻译回来 | `agent/backend.py`、`backends/shell.py` | `tests/integration/test_sandbox_builtin_skills.py`（真实 bwrap / Landlock） |
+| 技能库与技能中心：列表合并用户技能与已添加的公共技能（行带 `source`），同名时用户技能优先；「添加」只记清单（409 文案不变，前端照旧识别「已添加」）；公共技能的启停、移除只改清单，canonical 目录不动；下载支持公共技能 | `services/skill_library.py`、`api/skill_center.py` | `tests/api/test_skill_center.py`、`tests/api/test_skill_categories.py` |
+| 旧副本迁移（§7）：第一次访问技能库或建 agent 时执行一次；与 canonical 内容完全一致（忽略隐藏文件与 `__pycache__`）的副本删除并记入清单，沿用启停状态；改过的保留为用户技能；分类按目录名记录，不受影响 | `agent/builtin_skills.py`、`scripts/skills/migrate_builtin_skills.py`（新，默认预览） | `tests/agent/test_builtin_skills.py`、`tests/api/test_skill_center.py::test_first_listing_migrates_copies_made_before_s2` |
+| `save_expert` 由 expert-creator 带出（§6.3）：注册表 `ToolSpec.skill_gated`；建图时把这类工具从 agent 工具列表拿出来，交给同名替换默认项的 `SkillsMiddleware(tools=...)`；删除 `creator_requested` / `_session_creator` 及随之的 agent 重建，`get_or_create_agent_for_session` 去掉 `skill_dirs` 参数；专家会话不注入 | `tools/registry.py`、`agent/core.py`、`services/agent_manager.py`、`api/chat.py`、`api/expert.py`、`skills/expert-creator/SKILL.md` | `tests/agent/test_builtin_skills_agent.py`、`tests/test_expert_writer.py`、`tests/services/test_agent_manager_tools.py`、`tests/agent/test_tool_registry.py` |
+| 技能中心接口统一校验目录名：`remove-skill`、`enable-skill`、`disable-skill`、`add-skill`、`assign-category`、`skill-detail`、`download-skill` 拒绝不是单个路径段的名字（400） | `api/skill_center.py`、`services/skill_library.py` | `tests/api/test_skill_center.py::test_skill_endpoints_reject_path_traversal` |
+
+### 14.2 实施中的发现与调整
+
+1. **`defer_loading` 换成 `SkillsMiddleware(tools=...)`**：在 OpenAI 兼容接口（DeepSeek 等）下，`extras={"defer_loading": True}` 不起作用，工具每次都照常绑定，模型不读技能也能直接调用。改为交给 `SkillsMiddleware(tools=...)`：这些工具不注册到工具节点，读到技能之前调用会被当作未知工具（`status=error`，不执行）；读到或 pin 了之后的那次模型调用才绑定；开着审批时照常先审批。已登记为框架适配点（`docs/framework-integration.md` 第 6 项）。
+2. **既有的路径穿越（改造前就有）**：`remove-skill` 等接口直接拼「用户技能目录 / dir_name」。用户技能目录存在时（真实环境里总是存在），`dir_name="../../别的用户/skills/x"` 能删掉别的用户的技能；在去掉校验的代码上复现过：返回 200，目标目录被删。S2 的清单名字还会拼进沙箱只读挂载的源路径，所以一并修复：接口层统一返回 400，技能库与清单层把这类名字当作不存在。
+3. **清单路径跟随调用方的配置**：清单函数默认按运行期配置解析用户目录。`EasyAgent` 与迁移脚本持有自己的配置，起初没有传入，测试里清单落到了仓库的 `./workspace/`（运行期配置未初始化时的回退目录；只写了空清单，没有删除任何副本，已清理）。现在各函数都接受 `config`，`EasyAgent` 与脚本显式传入，有回归测试。
+4. **Landlock 下没添加的公共技能可读**：Landlock 不能按子目录放行，只能把整个 canonical 目录设为只读，所以 execute 能读到用户没添加的公共技能；文件工具和 bwrap 下都看不到。公共技能本来在技能中心对所有用户可见，按 §11 第 1 条可以接受，测试里写明了这一点。
+5. **专家会话**：改造前在专家会话里选中 expert-creator 也会注入 `save_expert`；现在专家会话一律不提供（§12 第 3 条），读了技能也带不出来。
+6. **任何声明了 `include_tools: save_expert` 的技能都能带出它**，包括用户自建或导入的技能。`save_expert` 只在非专家会话里出现、调用前要审批、只能写本用户的专家，风险与用户直接要求创建专家相同。
+7. **fork 的启停要连同名公共技能一起变**：用户技能与已添加的同名公共技能在技能库里只显示一行（用户技能）。如果停用只把 fork 移到停用目录，清单里的公共技能仍启用，agent 反而读到公共版本。现在启停用户技能时，清单里同名的公共技能条目设成同样的状态；移除只删 fork，公共技能留在清单里（`tests/api/test_skill_center.py::test_user_fork_shadows_the_builtin_skill`）。
+
+### 14.3 迁移
+
+- 惰性迁移：第一次访问技能库（技能中心、聊天解析本轮技能）或第一次建 agent 时，对该用户执行一次，结果记在清单的 `migrated` 字段。
+- 一次性脚本：`python scripts/skills/migrate_builtin_skills.py`（默认预览，`--apply` 执行，`--user` 只处理指定用户；与 `easy-web` 一样先切到项目根，相对路径按项目根解析）。本地开发配置（工作区 `/qts/workspace`）的预览结果：7 个用户共 8 个副本与公共版本一致、可删除，没有改过的副本；尚未执行 `--apply`。
+
+### 14.4 验证
+
+- 项目 `.venv` 全量：1845 passed，1 skipped，1 failed。失败的仍是 `tests/test_scripts_layout.py::test_scripts_root_has_no_loose_scripts`（`7073a05` 放在 `scripts/` 根目录的 `sync-frontend-shared.mjs`，与本次改动无关）。真实模型集成用例 `tests/integration/test_v3_streaming.py::test_tool_calls` 未参与：它经 opencode 中转调用真实模型，此前返回 400（thinking 模式要求回传 `reasoning_content`），与本次改动无关。
+- 真实沙箱：本机 bwrap、Landlock 均可用，`tests/integration/test_sandbox_builtin_skills.py` 两种模式都实际执行。
+- 门禁：ruff、import graph（0 SCC）、`sync_skills --check`、double-write、multi-replica、API 文档、config schema、env usage 均通过。

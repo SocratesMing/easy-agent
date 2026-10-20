@@ -16,6 +16,7 @@ from deepagents.middleware.filesystem import (
 )
 
 from easy_agent.sandboxing.fs_safety import _check_external_dir_safety
+from easy_agent.agent.builtin_skills import BUILTIN_VIRTUAL_ROOT
 
 # 纯移动：沿用拆分前的 logger 名称，保持日志路由/过滤行为不变。
 logger = logging.getLogger("easy_agent.agent")
@@ -173,10 +174,23 @@ class AgentWorkspaceMixin:
         ]
         if skills_mounted:
             existing_prefixes.append("/user-skills/")
+        builtin_mounted = bool(getattr(self, "builtin_skills_dir", None))
+        if builtin_mounted:
+            existing_prefixes.append(f"{BUILTIN_VIRTUAL_ROOT}/")
         for vp in (safe_external or {}):
             existing_prefixes.append(vp)
 
         permissions: list[FilesystemPermission] = []
+
+        # 公共技能只读（DA-13 S2）：backend 本身拒绝写入，这里再声明一遍，让框架在工具层就拦下
+        if builtin_mounted:
+            permissions.append(
+                FilesystemPermission(
+                    operations=["write"],
+                    paths=[f"{BUILTIN_VIRTUAL_ROOT}/**", f"{BUILTIN_VIRTUAL_ROOT}/.**"],
+                    mode="deny",
+                )
+            )
 
         # 技能库写权限规则排在最先：框架按列表顺序取第一条命中，细规则必须先于通用规则
         if skills_mounted and policy != "allow":
@@ -352,14 +366,14 @@ class AgentWorkspaceMixin:
         return ""
 
     def _resolve_skills_paths(self) -> list[str]:
-        """返回用户技能的父级目录虚拟路径。
+        """技能源（DA-13 S2）：只读的公共技能 + 用户技能库，固定挂载，同名时后者覆盖前者。
 
-        SkillsMiddleware 会自动扫描父级目录下所有含 SKILL.md 的子目录，
-        因此只需传入 /user-skills/ 即可，无需逐个列出每个技能路径。
-        仅当用户技能目录存在且有技能时才返回。
+        SkillsMiddleware 扫描每个源下含 SKILL.md 的子目录。两个源固定不变（不再随「用户有没有
+        技能」变化），加第一个技能不必重建编译图；用户技能目录在建 agent 时就已建好，
+        避免框架每轮记「源目录不存在」的加载错误。
         """
-        if not self.user_skills_dir.exists():
-            return []
-        if not self._discover_user_skill_names():
-            return []
-        return ["/user-skills/"]
+        paths = []
+        if getattr(self, "builtin_skills_dir", None):
+            paths.append(f"{BUILTIN_VIRTUAL_ROOT}/")
+        paths.append("/user-skills/")
+        return paths

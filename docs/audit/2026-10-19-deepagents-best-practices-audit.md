@@ -268,7 +268,7 @@
 | C1 · 快速项 | DA-06 模型 `profile` + 官方摘要中间件覆盖；DA-12 官方 `ToolErrorMiddleware`；DA-11 子代理工具收窄；DA-09 第一步 MCP annotations 决定审批；DA-17 过时注释与文档；sqlite 连接器 `DB_PATH` 限定个人工作区 | ✅ 已完成（§11） |
 | C2 · Backend 重构 | DA-04 默认路由改隐藏目录（修已复现的 deny 别名绕过，框架产物不再出现在用户工作区）；DA-05 改用真实 `CompositeBackend` | ✅ 已完成（§12） |
 | C3 · 沙箱加固 | DA-07 网络开关（默认联网，可配置断网）、技能目录只读挂载、execute 超时上限；CPU / 内存 / 进程数限额暂缓（原因见 §13） | ✅ 已完成（§13） |
-| D · 演进 | DA-03 thread = 会话（超过摘要阈值后每轮都会重新摘要整段历史；设计文档已评审：`docs/archive/design/2026-10-19-da03-session-thread.md`，按 P0–P2 分阶段实施，P0 / P1 已完成见 §14、§15）；DA-13 技能多源 / 只读 / pinned（设计文档已评审：`docs/design/2026-10-20-da13-skills-sources.md`，按 S1–S3 实施，S1 已完成）；子代理进度事件流；DA-09 迁移 `langchain.mcp`（beta）；DA-14 LangSmith 沙箱生命周期；`services/` 拆领域子包 | 1–2 周，需设计文档 |
+| D · 演进 | DA-03 thread = 会话（超过摘要阈值后每轮都会重新摘要整段历史；设计文档已评审：`docs/archive/design/2026-10-19-da03-session-thread.md`，按 P0–P2 分阶段实施，P0 / P1 已完成见 §14、§15）；DA-13 技能多源 / 只读 / pinned（设计文档已评审：`docs/design/2026-10-20-da13-skills-sources.md`，按 S1–S3 实施，S1、S2 已完成见 §17、§18，剩 S3 拆分超长 `SKILL.md`）；子代理进度事件流；DA-09 迁移 `langchain.mcp`（beta）；DA-14 LangSmith 沙箱生命周期；`services/` 拆领域子包 | 1–2 周，需设计文档 |
 | 穿插项 | CI 缺 `sqlite-saver` extra（暂不处理）；SEC-03 签名免密（需门户配合）；DA-15 前端审批交互（按工具的拒绝说明与去重已完成，逐动作决策与 `edit` 待定）；~~工具工厂并入 `ToolSpec`~~（2026-10-20 评估后保持现状，见 §17）；MySQL 连接器可达内网任意主机（2026-10-19 决定保持现状） | 待定 |
 
 --- | --- | --- |
@@ -424,3 +424,14 @@ thread 仍是每条消息一个，模型看到的内容不变；本批为切换�
 | DA-13 S1 | 选中的技能改用 `pinned_skills` 加载：第一次模型调用前技能全文已在对话里，不必先 `read_file`；不再拼 `/目录名` 指令（手打的照常生效）。`save_expert` 由技能带出（§6.3）改随 S2 实施，因为用户手里的 expert-creator 是没有 `include_tools` 的旧副本 | `tests/services/test_pinned_skills.py`、`tests/api/test_chat.py` |
 | DA-13 | 写出设计文档（2026-10-20 已评审）：公共技能只读共享并按用户启停、选中技能改用 `pinned_skills`、`save_expert` 由 expert-creator 技能的 `include_tools` 带出、拆分超长 `SKILL.md` | — |
 | 文档 | `CLAUDE.md` 删掉已不存在的 `shared_deps` / `.deps` 共享依赖描述（该机制已在 2026-06-09 `f8eafa3b` 删除，旧审计 T4-16 曾指出） | `tests/test_docs_facts.py` |
+
+## 18. 修复记录（2026-10-20，DA-13 S2）
+
+| 条目 | 改动 | 回归测试 |
+| --- | --- | --- |
+| 公共技能只读共享 | 技能中心「添加」不再复制，只在 `workspace/{user}/builtin-skills.json` 记一条；agent 经 `/skills/builtin/` 直接读 canonical 目录，只看得到已添加且启用的（视图 backend），写入一律拒绝（backend + deny write）；技能源固定为 `["/skills/builtin/", "/user-skills/"]`，同名时用户技能覆盖；execute 沙箱 bwrap 只挂已启用的，Landlock 整个目录只读 | `tests/agent/test_builtin_skills.py`、`tests/agent/test_builtin_skills_agent.py`、`tests/integration/test_sandbox_builtin_skills.py` |
+| 旧副本迁移 | 与公共版本一致的副本在第一次访问时删除并记入清单，改过的保留为用户技能；`scripts/skills/migrate_builtin_skills.py` 一次性预览 / 执行 | `tests/agent/test_builtin_skills.py`、`tests/api/test_skill_center.py` |
+| `save_expert` 由技能带出 | expert-creator 声明 `metadata.include_tools: save_expert`；`save_expert` 交给替换默认项的 `SkillsMiddleware(tools=...)`，读到或 pin 了技能才绑定；删除 `creator_requested` 及随之的 agent 重建。设计稿里的 `defer_loading` 在 OpenAI 兼容接口下不隐藏工具，没有采用 | `tests/agent/test_builtin_skills_agent.py`、`tests/test_expert_writer.py` |
+| 技能中心路径穿越（改造前就有） | `remove-skill` 等接口直接拼「用户技能目录 / dir_name」，`../../别的用户/skills/x` 能删掉别的用户的技能；现在七个接口统一校验目录名（400） | `tests/api/test_skill_center.py::test_skill_endpoints_reject_path_traversal` |
+
+细节与实施中的调整见设计文档 §14。

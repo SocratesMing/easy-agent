@@ -127,7 +127,9 @@ def test_mixin_helpers_callable_on_easyagent(lightweight_agent: EasyAgent):
     agent = lightweight_agent
     assert agent._get_os_info().startswith("## OS: ")
     assert agent._discover_user_skill_names() == []
-    assert agent._resolve_skills_paths() == []
+    # DA-13 S2：技能源固定挂载（配置了公共技能目录时在前），不再随「有没有技能」变化
+    builtin = ["/skills/builtin/"] if agent.builtin_skills_dir else []
+    assert agent._resolve_skills_paths() == [*builtin, "/user-skills/"]
     assert agent._safe_external_dirs() == {}
     assert agent._skill_write_policy() == "new-only"
     assert isinstance(agent._build_permissions([], {}), list)

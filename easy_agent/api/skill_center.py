@@ -17,6 +17,7 @@ from easy_agent.bootstrap.config import Config
 from easy_agent.db import Database, get_database
 from easy_agent.middleware import get_current_username
 from easy_agent.agent.skills import discover_skills
+from easy_agent.agent import builtin_skills
 from easy_agent.services import (
     get_agent_config,
     invalidate_user_agents,
@@ -99,6 +100,12 @@ def _public_skills_root() -> Path | None:
     if not skills_root:
         return None
     return Path(skills_root)
+
+
+def _require_dir_name(dir_name: str) -> None:
+    """技能目录名必须是单个路径段，防止 ``../其他用户/skills/x`` 穿越到别处读写。"""
+    if not builtin_skills.is_safe_dir_name(dir_name):
+        raise HTTPException(status_code=400, detail="无效的技能目录名")
 
 
 # ── 公共技能 ──────────────────────────────────────────────────────────
@@ -184,6 +191,7 @@ async def list_user_skills(
             "version": metadata.get("version", ""),
             "path": str(skill_dir),
             "enabled": item["enabled"],
+            "source": item.get("source", "user"),
             "category_id": category_id,
             "category_name": category_names.get(category_id, skill_categories.DEFAULT_CATEGORY_NAME),
             "stats": skill_library.skill_stats(skill_dir),
@@ -322,6 +330,7 @@ async def assign_category(
 
     ``category_id`` 传空字符串即取消手动归类，恢复按内容自动判断。
     """
+    _require_dir_name(request.dir_name)
     root = _public_skills_root()
     is_user_skill = skill_library.find_user_skill(username, request.dir_name) is not None
     is_public_skill = root is not None and skill_library.is_skill_dir(
@@ -381,6 +390,7 @@ async def get_skill_detail(
     """
     if scope not in ("public", "user"):
         raise HTTPException(status_code=400, detail="scope 只能是 public 或 user")
+    _require_dir_name(dir_name)
 
     installed = {
         item["dir_name"]: item["enabled"]
@@ -436,6 +446,7 @@ class ToggleSkillRequest(BaseModel):
 
 def _toggle_user_skill(username: str, dir_name: str, enable: bool) -> dict:
     """启用/停用用户技能，并让缓存中的 Agent 失效（下次对话即按新状态加载）。"""
+    _require_dir_name(dir_name)
     try:
         result = skill_library.set_skill_enabled(username, dir_name, enable)
     except FileNotFoundError:
@@ -480,76 +491,45 @@ class AddSkillRequest(BaseModel):
     dir_name: str  # 公共技能的目录名（如 "pdf", "xlsx"）
 
 
-@router.post("/add-skill", summary="添加公共技能到用户目录")
+@router.post("/add-skill", summary="添加公共技能到我的技能库")
 async def add_skill_to_user(
     request: AddSkillRequest,
     username: Annotated[str, Depends(get_current_username)],
 ):
-    """将公共技能文件夹完整复制到用户 workspace/{username}/skills/ 目录下"""
-    _cfg = get_agent_config()
-    skills_root = _cfg["config"].tools.skills_dir if _cfg else "./skills"
+    """把公共技能加进用户的技能库（DA-13 S2：只在清单里记一条，不复制文件）。
 
-    if not skills_root:
+    agent 经只读路由 ``/skills/builtin/`` 直接读公共技能目录，公共技能升级后所有用户
+    立即用上新版本；用户要改就复制到自己的技能里（同名覆盖公共技能）。
+    """
+    _require_dir_name(request.dir_name)
+    root = builtin_skills.builtin_root()
+    if root is None:
         raise HTTPException(status_code=400, detail="系统未配置公共技能目录")
-
-    # 查找源技能目录
-    source_dir = Path(skills_root) / request.dir_name
-    if not source_dir.exists() or not source_dir.is_dir():
+    if not skill_library.is_skill_dir(root / request.dir_name):
         raise HTTPException(status_code=404, detail=f"公共技能 '{request.dir_name}' 不存在")
-
-    # 检查是否为合法的技能目录
-    if not (source_dir / "SKILL.md").exists() and not (source_dir / "README.md").exists():
-        raise HTTPException(status_code=400, detail=f"'{request.dir_name}' 不是有效的技能目录")
-
-    # 目标目录
-    user_skills_dir = _get_user_skills_dir(username)
-    target_dir = user_skills_dir / request.dir_name
-
-    # 如果已存在，先删除
-    if target_dir.exists():
+    if skill_library.find_user_skill(username, request.dir_name):
         raise HTTPException(status_code=409, detail=f"技能 '{request.dir_name}' 已添加，请勿重复操作")
 
     try:
-        # 确保用户技能目录存在
-        user_skills_dir.mkdir(parents=True, exist_ok=True)
-
-        # 原子复制：先复制到临时目录，再重命名
-        temp_dir = user_skills_dir / f".tmp_{request.dir_name}"
-        if temp_dir.exists():
-            shutil.rmtree(str(temp_dir))
-
-        shutil.copytree(str(source_dir), str(temp_dir))
-        temp_dir.rename(target_dir)
-
-        # 已缓存的 Agent 持有旧技能列表（技能在 Agent 构造时固化），必须失效重建，
-        # 否则新添加的技能要等 Agent 因其它原因重建或进程重启才生效
-        invalidate_user_agents(username)
-
-        # 技能创建时按内容自动归类（用户之后可在技能中心手动调整）
-        category_id = skill_categories.auto_assign_skill_dir(
-            username, request.dir_name, target_dir
-        )
-
-        abs_target = target_dir.resolve()
-        logger.info(
-            f"技能添加成功 | 用户: {username} | 技能: {request.dir_name} | "
-            f"目标绝对路径: {abs_target} | 类别: {category_id}"
-        )
-        return {
-            "status": "ok",
-            "category_id": category_id,
-            "message": f"技能 '{request.dir_name}' 添加成功",
-        }
-
+        item = builtin_skills.add(username, request.dir_name, root)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail=f"公共技能 '{request.dir_name}' 不存在")
+    except FileExistsError:
+        raise HTTPException(status_code=409, detail=f"技能 '{request.dir_name}' 已添加，请勿重复操作")
     except PermissionError as e:
-        raise HTTPException(status_code=403, detail=f"权限不足，无法复制技能文件: {e}")
-    except Exception as e:
-        # 清理临时目录
-        temp_dir = user_skills_dir / f".tmp_{request.dir_name}"
-        if temp_dir.exists():
-            shutil.rmtree(str(temp_dir), ignore_errors=True)
-        logger.error(f"技能添加失败 | 用户: {username} | 技能: {request.dir_name} | 错误: {e}")
-        raise HTTPException(status_code=500, detail=f"添加技能失败: {e}")
+        raise HTTPException(status_code=403, detail=f"权限不足，无法写入技能清单: {e}")
+
+    # 已缓存的 Agent 持有旧的公共技能集合（运行期 SessionContext），必须失效重建
+    invalidate_user_agents(username)
+
+    # 技能添加时按内容自动归类（用户之后可在技能中心手动调整）
+    category_id = skill_categories.auto_assign_skill_dir(username, request.dir_name, item["path"])
+    logger.info(f"技能添加成功 | 用户: {username} | 技能: {request.dir_name} | 类别: {category_id}")
+    return {
+        "status": "ok",
+        "category_id": category_id,
+        "message": f"技能 '{request.dir_name}' 添加成功",
+    }
 
 
 # ── 移除技能 ──────────────────────────────────────────────────────────
@@ -565,6 +545,7 @@ async def remove_skill_from_user(
     username: Annotated[str, Depends(get_current_username)],
 ):
     """彻底删除用户技能：启用目录与停用目录里的同名技能都会被移除。"""
+    _require_dir_name(request.dir_name)
     if not skill_library.find_user_skill(username, request.dir_name):
         raise HTTPException(status_code=404, detail=f"技能 '{request.dir_name}' 不存在")
 
@@ -747,15 +728,14 @@ async def download_skill_zip(
     dir_name: str,
     username: Annotated[str, Depends(get_current_username)],
 ):
-    """将用户 workspace/{username}/skills/{dir_name} 打包为 zip 下载。"""
-    # 校验目录名合法（防路径穿越）
-    if not dir_name or ".." in Path(dir_name).parts or "/" in dir_name or "\\" in dir_name:
-        raise HTTPException(status_code=400, detail="无效的技能目录名")
+    """把技能库里的技能（用户技能或已添加的公共技能）打包为 zip 下载。"""
+    _require_dir_name(dir_name)
 
-    user_skills_dir = _get_user_skills_dir(username)
-    skill_dir = user_skills_dir / dir_name
-    if not skill_dir.exists() or not skill_dir.is_dir():
+    # 技能库里的技能：用户技能或已添加的公共技能（DA-13 S2 起后者不在用户目录里）
+    found = skill_library.find_user_skill(username, dir_name)
+    if not found:
         raise HTTPException(status_code=404, detail=f"技能 '{dir_name}' 不存在")
+    skill_dir = found["path"]
 
     # 校验是有效技能
     if not (skill_dir / "SKILL.md").exists() and not (skill_dir / "README.md").exists():

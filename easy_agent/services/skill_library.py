@@ -6,10 +6,13 @@
     workspace/{username}/skills-disabled/   ← 停用技能存放处（Agent 不扫，不加载）
 
 「停用」= 把技能目录从 ``skills/`` 原子重命名到 ``skills-disabled/``，因此停用后
-deepagents 侧（``_resolve_skills_paths`` 只认 ``skills/``）自然不再加载它；重新启用
+deepagents 侧（技能源 ``/user-skills/`` 只挂 ``skills/``）自然不再加载它；重新启用
 即移回。这样不需要给 deepagents 传额外的过滤参数，也不改动技能内容本身。
 
-本模块只做文件系统层面的事，不依赖 Agent 运行期配置。
+公共技能（DA-13 S2）不在这两个目录里：「添加」只是在 ``builtin-skills.json`` 里记一条，
+agent 经只读路由 ``/skills/builtin/`` 读 canonical 目录（``agent/builtin_skills.py``）。
+本模块的列表 / 查找 / 启停 / 移除统一覆盖两种来源，条目带 ``source``（``user`` / ``builtin``）；
+用户技能与公共技能同名时以用户技能为准（相当于 fork）。
 """
 
 from __future__ import annotations
@@ -23,14 +26,16 @@ from pathlib import Path
 from typing import Any
 
 from easy_agent.bootstrap.config import Config
+from easy_agent.agent import builtin_skills
+from easy_agent.agent.builtin_skills import USER_DISABLED_DIR_NAME, USER_SKILLS_DIR_NAME
 
 logger = logging.getLogger("easy-agent")
 
 #: 技能定义文件（按优先级）
 SKILL_FILES = ("SKILL.md",)
 
-#: 停用技能目录名（位于用户 workspace 下，与 skills/ 同级）
-DISABLED_DIR_NAME = "skills-disabled"
+#: 停用技能目录名（位于用户 workspace 下，与 skills/ 同级；唯一来源见 agent/builtin_skills.py）
+DISABLED_DIR_NAME = USER_DISABLED_DIR_NAME
 
 #: 统计时的文件数上限，防御性上限（技能目录正常只有几个文件）
 MAX_STAT_FILES = 5000
@@ -41,7 +46,7 @@ MAX_STAT_FILES = 5000
 
 def user_skills_dir(username: str) -> Path:
     """Agent 实际加载的用户技能目录。"""
-    return Config.get_user_workspace_dir(username) / "skills"
+    return Config.get_user_workspace_dir(username) / USER_SKILLS_DIR_NAME
 
 
 def user_disabled_dir(username: str) -> Path:
@@ -176,8 +181,8 @@ def skill_stats(skill_dir: Path) -> dict[str, Any]:
 # ── 启用 / 停用 ───────────────────────────────────────────────────────
 
 
-def list_user_skill_dirs(username: str) -> list[dict[str, Any]]:
-    """列出用户技能（含停用），每项 {dir_name, path, enabled}。"""
+def _owned_skill_dirs(username: str) -> list[dict[str, Any]]:
+    """用户自己目录里的技能（含停用）。"""
     items: list[dict[str, Any]] = []
     for enabled, root in (
         (True, user_skills_dir(username)),
@@ -188,28 +193,66 @@ def list_user_skill_dirs(username: str) -> list[dict[str, Any]]:
                 "dir_name": skill_dir.name,
                 "path": skill_dir,
                 "enabled": enabled,
+                "source": "user",
             })
     return items
 
 
+def list_user_skill_dirs(username: str) -> list[dict[str, Any]]:
+    """列出用户技能库（含停用），每项 ``{dir_name, path, enabled, source}``。
+
+    包含用户自己的技能与已添加的公共技能；同名时只列用户技能（覆盖公共技能）。
+    """
+    # 先迁移 S2 之前复制出来的副本，再列目录：否则第一次列出的仍是刚被删掉的副本
+    builtin_skills.ensure_migrated(username)
+    owned = _owned_skill_dirs(username)
+    taken = {item["dir_name"] for item in owned}
+    added = [item for item in builtin_skills.list_added(username) if item["dir_name"] not in taken]
+    return owned + added
+
+
 def find_user_skill(username: str, dir_name: str) -> dict[str, Any] | None:
-    """按目录名找用户技能（启用与停用都找），返回 None 表示不存在。"""
+    """按目录名找技能库里的技能（用户技能优先，其次已添加的公共技能），不存在返回 None。
+
+    ``dir_name`` 不是单个路径段（如 ``../其他用户/skills/x``）一律当作不存在。
+    """
+    if not builtin_skills.is_safe_dir_name(dir_name):
+        return None
+    builtin_skills.ensure_migrated(username)
     for root, enabled in (
         (user_skills_dir(username), True),
         (user_disabled_dir(username), False),
     ):
         candidate = root / dir_name
         if is_skill_dir(candidate):
-            return {"dir_name": dir_name, "path": candidate, "enabled": enabled}
-    return None
+            return {"dir_name": dir_name, "path": candidate, "enabled": enabled, "source": "user"}
+    return next(
+        (item for item in builtin_skills.list_added(username) if item["dir_name"] == dir_name),
+        None,
+    )
 
 
 def set_skill_enabled(username: str, dir_name: str, enable: bool) -> dict[str, Any]:
-    """启用/停用用户技能（原子重命名），返回操作后的 {dir_name, enabled, path}。
+    """启用/停用技能，返回操作后的 {dir_name, enabled, path}。
 
-    已处于目标状态时直接返回成功（幂等），目录不存在抛 FileNotFoundError，
+    用户技能在 ``skills/`` 与 ``skills-disabled/`` 之间原子重命名；公共技能只改清单。
+    已处于目标状态时直接返回成功（幂等），不存在抛 FileNotFoundError，
     目标处已有同名技能抛 FileExistsError。
     """
+    if not builtin_skills.is_safe_dir_name(dir_name):
+        raise FileNotFoundError(dir_name)
+    found = find_user_skill(username, dir_name)
+    if found is not None and found["source"] == "builtin":
+        return builtin_skills.set_enabled(username, dir_name, enable)
+    result = _move_user_skill(username, dir_name, enable)
+    # 用户技能与已添加的同名公共技能（fork）在技能库里只显示一行：启停一起变，
+    # 否则停用 fork 后 agent 会读到同名的公共技能
+    if dir_name in builtin_skills.load_store(username)["skills"]:
+        builtin_skills.set_enabled(username, dir_name, enable)
+    return result
+
+
+def _move_user_skill(username: str, dir_name: str, enable: bool) -> dict[str, Any]:
     source_root = user_disabled_dir(username) if enable else user_skills_dir(username)
     target_root = user_skills_dir(username) if enable else user_disabled_dir(username)
     source = source_root / dir_name
@@ -233,10 +276,13 @@ def set_skill_enabled(username: str, dir_name: str, enable: bool) -> dict[str, A
 
 
 def remove_user_skill(username: str, dir_name: str) -> Path:
-    """彻底删除用户技能（启用或停用目录里的都删），返回被删路径。"""
+    """移除技能：用户技能彻底删除目录；公共技能只从清单移除（canonical 目录绝不删）。"""
     found = find_user_skill(username, dir_name)
     if not found:
         raise FileNotFoundError(dir_name)
+    if found["source"] == "builtin":
+        builtin_skills.remove(username, dir_name)
+        return found["path"]
     shutil.rmtree(str(found["path"]))
     logger.info(f"技能移除 | 用户: {username} | 技能: {dir_name}")
     return found["path"]

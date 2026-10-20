@@ -30,6 +30,7 @@ EXPECTED_ENTRYPOINTS = {
     "deps/download_backend_deps.py",
     "docs/generate_api_docs.py",
     "skills/sync_skills.py",
+    "skills/migrate_builtin_skills.py",
     "release/release_preflight.py",
 }
 

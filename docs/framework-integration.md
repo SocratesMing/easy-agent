@@ -11,7 +11,7 @@
 > [`docs/design/2026-10-20-deepagents-conformance-audit.md`](design/2026-10-20-deepagents-conformance-audit.md)
 > （skills 多源 / include_tools / MCP 命名与会话 / 子代理私有字段）。
 
-## 适配点（5 处）
+## 适配点（6 处）
 
 | # | 位置 | 依赖的上游实现 | 失效后果 | 升级时需要做什么 |
 | --- | --- | --- | --- | --- |
@@ -20,6 +20,7 @@
 | 3 | `easy_agent/backends/context.py` `ContextBackend`（两层 `CompositeBackend`，DA-05） | `CompositeBackend` 的 `default` / `routes` / `sorted_routes` / `artifacts_root` 语义：权限 `_resolve_real_path` 递归进会话 composite、带 execute 时权限路径须落在 `routes` 前缀下、route→宿主机路径提示读 `sorted_routes` | symlink 权限校验失效、建图期 NotImplementedError，或模型收到「改用宿主机路径」的错误提示 | 跑 `tests/agent/test_backend_routing.py` 与 `tests/agent/test_langsmith_sandbox.py`；复核上述字段名与读取方式 |
 | 4 | `easy_agent/agent/memory.py` `SessionMemoryMiddleware`（DA-03） | `MemoryMiddleware.before_agent` / `abefore_agent` 在 state 已有 `memory_contents` 时跳过加载；同名实例原位替换默认项 | 改成会话级 thread 后，记忆（会话 `memory.md`、长期 `AGENTS.md`、上传清单）停在会话第一轮 | 跑 `tests/agent/test_session_memory.py`；其中对照组若失败，说明上游已改成每次运行都重读，可去掉覆盖 |
 | 5 | `easy_agent/agent/turn_context.py` `TurnAwareSummarizationMiddleware`（DA-03） | 继承官方 `SummarizationMiddleware`（私有类 `_DeepAgentsSummarizationMiddleware` 的公开别名）：子类的 `name` 默认回落为类名，须覆盖成 `"SummarizationMiddleware"`；状态 schema 继承 `SummarizationState`；新增的自定义中间件排在摘要之后 | 默认摘要不被替换（出现两份摘要），或本轮渲染内容不计入摘要的 token | 跑 `tests/agent/test_turn_context.py` 与 `tests/agent/test_session_memory.py::test_main_agent_stack_uses_session_memory_and_turn_aware_summarization` |
+| 6 | `easy_agent/agent/core.py` 建图处的 `SkillsMiddleware(tools=...)`（DA-13 S2） | 同名实例原位替换默认 `SkillsMiddleware`（`_apply_custom_middleware` 按 `.name` 匹配）；skill tools（≥0.7.22）：交给 `tools=` 的工具不注册到工具节点，模型 `read_file` 成功读到或 pin 了在 `metadata.include_tools` 里声明它的 `SKILL.md` 之后，才在那次模型调用里绑定（OpenAI 兼容接口由 `_bind_disclosures` 追加进工具列表）。`extras={"defer_loading": True}` 在 OpenAI 兼容接口下不隐藏工具，不能替代 | `save_expert` 不读 expert-creator 也能直接调用，或读了也不出现；替换失效时建图报重复中间件 | 跑 `tests/agent/test_builtin_skills_agent.py` 与 `tests/test_expert_writer.py::test_agent_manager_save_expert_is_carried_by_expert_creator_skill` |
 
 > 2026-10-19 起不再是适配点：摘要阈值（原第 2 项，建图期替换私有工厂
 > `deepagents.graph.create_summarization_middleware`）改为官方「同名实例原位替换」
@@ -42,6 +43,7 @@
 - FW-04/FW-05（私有 API 适配）
 - FW-09（checkpointer 后端选择，默认官方 saver）
 - DA-06（摘要阈值改用官方同名替换）、DA-12（工具异常改用官方 `ToolErrorMiddleware`）
+- DA-13（技能多源 / 只读 / pinned / skill tools，`save_expert` 由技能带出）
 
 
 ## 2026-10-17 更新

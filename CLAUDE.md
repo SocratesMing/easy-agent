@@ -3,8 +3,8 @@
 > ℹ️ **2026-10-18 事实同步**：模块地图 / 数据流 / 命令以
 > `docs/architecture-current.md` 为准。本文件已同步的关键事实：
 > 双前端基线（`frontend-vue2/` Vue 2.7 当前托管、`frontend/` Vue 3.5 + Vite
-> 并行维护）；运行时技能 7 个；agent 不挂载 `/skills/` 只读路由，用户技能在
-> `/user-skills/`；`X-Username` 兼容回退已移除；JWT secret 在 dev/test
+> 并行维护）；运行时技能 7 个；公共技能经只读路由 `/skills/builtin/` 共享（按用户
+> 添加 / 启停，不再复制，DA-13 S2），用户技能在 `/user-skills/`；`X-Username` 兼容回退已移除；JWT secret 在 dev/test
 > 持久化于 `data/.jwt_secret`（prod 必须显式设置 `EASY_JWT_SECRET`）；
 > 仓库已有 Dockerfile / docker-compose / k8s / `.github/workflows/ci.yml`。
 
@@ -53,13 +53,13 @@ Environment variables:
 
 ### Python Backend (`easy_agent/`)
 
-**Agent layer** (`agent/core.py`) — `EasyAgent` class wraps `deepagents.create_deep_agent()`. Built-in tools: `write_todos`, `ls`, `read_file`, `write_file`, `edit_file`, `delete`, `glob`, `grep`, `execute`, `task` (subagent). Creates a `CompositeBackend` mapping `/workspace/` to the user/session-isolated directory (`workspace/{username}/{session_id}/`), `/user-skills/` to the user's skill library, and `/memories/` to per-user memory files (plus configured `external_dirs`); unmatched paths and framework artifacts (`/.agent/...`) go to a hidden per-session dir `workspace/{username}/.agent/{session_id}/` outside the workspace. The shared graph gets a two-level real `CompositeBackend` (`backends/context.py`) that resolves the session at run time. System prompt is dynamically augmented with OS-specific commands, workspace path, skills root, and shared dependency paths. Context compression uses the official `SummarizationMiddleware`, with thresholds from `config.summarization` (`agent/summarization.py`); the main agent's instance (`TurnAwareSummarizationMiddleware`, `agent/turn_context.py`) first renders the per-turn `turn_context` into the request, and memory sources reload on every run (`SessionMemoryMiddleware`, `agent/memory.py`).
+**Agent layer** (`agent/core.py`) — `EasyAgent` class wraps `deepagents.create_deep_agent()`. Built-in tools: `write_todos`, `ls`, `read_file`, `write_file`, `edit_file`, `delete`, `glob`, `grep`, `execute`, `task` (subagent). Creates a `CompositeBackend` mapping `/workspace/` to the user/session-isolated directory (`workspace/{username}/{session_id}/`), `/user-skills/` to the user's skill library, `/skills/builtin/` to the canonical public skills (read-only view showing only the skills this user added and enabled), and `/memories/` to per-user memory files (plus configured `external_dirs`); unmatched paths and framework artifacts (`/.agent/...`) go to a hidden per-session dir `workspace/{username}/.agent/{session_id}/` outside the workspace. The shared graph gets a two-level real `CompositeBackend` (`backends/context.py`) that resolves the session at run time. System prompt is dynamically augmented with OS-specific commands, workspace path, skills root, and shared dependency paths. Context compression uses the official `SummarizationMiddleware`, with thresholds from `config.summarization` (`agent/summarization.py`); the main agent's instance (`TurnAwareSummarizationMiddleware`, `agent/turn_context.py`) first renders the per-turn `turn_context` into the request, and memory sources reload on every run (`SessionMemoryMiddleware`, `agent/memory.py`).
 
 **Config** (`bootstrap/config.py`) — `Config` 门面；Pydantic 模型在 `bootstrap/config_models.py`，校验/env 展开在 `bootstrap/config_validation.py`。
 
 **LLM factory** (`agent/model.py`) — Supports `anthropic` (ChatAnthropic), `openai` (ChatOpenAI), `deepseek` (langchain-deepseek), `minimax` (OpenAI-compatible with 120s timeout). All use LangChain wrappers.
 
-**Skills** (`agent/skills.py`) — Discovers skills by scanning for directories containing `SKILL.md` or `README.md`. Canonical runtime skills live in the repo-root `skills/` (7: docx/pptx/xlsx/pdf/mcp-builder/skill-creator/expert-creator); `easy_agent/skills/` is the packaged fallback copy. User skills are mounted at `/user-skills/`.
+**Skills** (`agent/skills.py`) — Discovers skills by scanning for directories containing `SKILL.md` or `README.md`. Canonical runtime skills live in the repo-root `skills/` (7: docx/pptx/xlsx/pdf/mcp-builder/skill-creator/expert-creator); `easy_agent/skills/` is the packaged fallback copy. Skill sources are fixed to `["/skills/builtin/", "/user-skills/"]` (a user skill overrides a public one with the same name); the per-user list of added public skills is `workspace/{username}/builtin-skills.json` (`agent/builtin_skills.py`), the read-only view is `backends/builtin_skills.py`.
 
 **Web app** (`app.py`) — FastAPI app with lifespan that initializes config, database, knowledge base, prompt/skills discovery, checkpointers, and the scheduler (with multi-worker protection). Serves the Vue 2 SPA from `frontend-vue2/dist/` with fallback to `index.html`; `frontend/` is the parallel Vue 3 + Vite baseline. CORS is enabled (all origins by default; tighten via `EASY_CORS_ALLOW_ORIGINS`). Registers routers from `easy_agent/api/` and installs `LegacyHostRoutes` for old `/api/<prefix>` callers.
 
@@ -116,7 +116,7 @@ Two maintained baselines:
 
 ### Skills (`skills/`)
 
-7 runtime skills: office document manipulation (`docx`, `pptx`, `xlsx` with Python scripts + shared `node_modules`), PDF forms (`pdf`), MCP integration (`mcp-builder`), skill creation (`skill-creator`), and expert creation (`expert-creator`). Canonical copies live in the repo-root `skills/`; `easy_agent/skills/` is the packaged fallback. User skills live at `workspace/{username}/skills/` and are exposed as `/user-skills/` (not `/skills/`). Skill directories carry no dependencies: their scripts use packages installed in the runtime environment (e.g. `npm install -g docx`).
+7 runtime skills: office document manipulation (`docx`, `pptx`, `xlsx` with Python scripts + shared `node_modules`), PDF forms (`pdf`), MCP integration (`mcp-builder`), skill creation (`skill-creator`), and expert creation (`expert-creator`). Canonical copies live in the repo-root `skills/`; `easy_agent/skills/` is the packaged fallback. Adding a public skill no longer copies it: it is recorded in `builtin-skills.json` and read from the canonical dir at `/skills/builtin/` (writes are rejected; in the execute sandbox bwrap binds only the enabled skills, Landlock makes the whole canonical dir read-only). User skills live at `workspace/{username}/skills/` and are exposed as `/user-skills/`. Copies made before DA-13 S2 that match the canonical skill are migrated on first access (`scripts/skills/migrate_builtin_skills.py` previews / applies it for all users); modified copies stay as user skills. Skill directories carry no dependencies: their scripts use packages installed in the runtime environment (e.g. `npm install -g docx`).
 
 ### Gotchas
 
@@ -126,6 +126,7 @@ Two maintained baselines:
 - **Context compression** via `SummarizationMiddleware` — configurable threshold/target in config, triggers on token count
 - **Agent cache is in-memory only** — server restarts lose all cached agents
 - **Session threads are opt-in** — `session_thread: true` runs one LangGraph thread per session (`thread_id = session_id`, only the new message is input; empty threads hydrate from the DB) on official savers only; the legacy MySQL snapshot saver keeps per-message threads. The approval handle sent to the frontend stays `{session_id}-{message_id}` (`services/session_thread.py`)
+- **`save_expert` is skill-gated** — it is not in the agent's tool list; `agent/core.py` hands it to a `SkillsMiddleware(tools=...)` that replaces the default one, so it is bound only after the model reads or pins `expert-creator` (whose frontmatter declares `metadata.include_tools: save_expert`). Expert sessions never get it. `extras={"defer_loading": True}` would not hide it on OpenAI-compatible models (see `docs/design/2026-10-20-da13-skills-sources.md`)
 - **Per-turn context goes through `turn_context`** — the workspace prefix, knowledge/page context and upload preview are rendered into the model request only (skills selected in the input box are loaded via `pinned_skills`, not text directives); the turn's `HumanMessage` holds the raw user text (id = message_id, also stored as `turn_id` on the DB row). Don't concatenate per-turn context into message content (see `docs/archive/design/2026-10-19-da03-session-thread.md`)
 - **`web_runner.py` does `os.chdir(project_root)`** — important for relative path resolution
 - **`frontend-vue2/dist/` not committed** — must `npm run build` (in `frontend-vue2/`) before `easy-web` can serve the UI

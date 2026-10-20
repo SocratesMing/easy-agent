@@ -1,6 +1,8 @@
 ---
 name: expert-creator
 description: 在对话中创建或修改「专家 Agent」。当用户要求新建专家、创建某领域的专家/顾问/研究员角色、把某种经验沉淀成专家、或修改 / 调整已有专家的定位与风格时使用。产出结构化配置后调用 save_expert 工具落库并写入版本目录。触发词：新建专家、创建专家、做一个专家、专家Agent、修改专家、调整专家、expert-creator。
+metadata:
+  include_tools: save_expert
 ---
 
 # 专家创建器（Expert Creator）

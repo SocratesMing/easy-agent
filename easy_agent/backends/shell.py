@@ -25,6 +25,10 @@ class PathTranslatingShell(LocalShellBackend):
     ``sandbox_network`` / ``readonly_binds`` / ``readonly_dirs``（DA-07）：沙箱网络
     （``host`` / ``none``），以及要只读挂载的路径——bwrap 用 ``(实际路径, 虚拟路径)``
     覆盖在可写挂载之上；Landlock 不能在可写目录里再收紧，``readonly_dirs`` 整体改为只读。
+
+    ``readonly_mappings``（DA-13 S2）：只参与命令里的路径翻译（Landlock / 无沙箱时），
+    不会变成 bwrap 的可写挂载，也不进 Landlock 的可写目录；bwrap 下的只读挂载由调用方
+    放进 ``readonly_binds``。用于公共技能这类只读共享目录。
     """
 
     def __init__(
@@ -35,6 +39,7 @@ class PathTranslatingShell(LocalShellBackend):
         sandbox_network: str = "host",
         readonly_binds: list[tuple[str, str]] | None = None,
         readonly_dirs: list[str] | None = None,
+        readonly_mappings: dict[str, str] | None = None,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
@@ -43,6 +48,7 @@ class PathTranslatingShell(LocalShellBackend):
         self._readonly_dirs = [str(Path(d).resolve()) for d in readonly_dirs or []]
         self._sandbox_id = getattr(self, "_sandbox_id", "sandbox")
         self._is_windows = _IS_WINDOWS
+        translations = {**(readonly_mappings or {}), **path_mappings}
         self._rules = [
             (
                 re.compile(
@@ -50,11 +56,11 @@ class PathTranslatingShell(LocalShellBackend):
                 ),
                 real.rstrip("/\\"),
             )
-            for v, real in sorted(path_mappings.items(), key=lambda x: -len(x[0]))
+            for v, real in sorted(translations.items(), key=lambda x: -len(x[0]))
         ]
         self._reverse_rules = [
             (real.rstrip("/\\"), v.rstrip("/"))
-            for v, real in sorted(path_mappings.items(), key=lambda x: -len(x[1]))
+            for v, real in sorted(translations.items(), key=lambda x: -len(x[1]))
         ]
         self._sandbox_enabled = sandbox_enabled
         self._allowed_rw_dirs = self._compute_allowed_dirs(path_mappings)

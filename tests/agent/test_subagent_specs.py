@@ -22,6 +22,13 @@ def test_subagents_get_explicit_skills_and_middleware():
         assert spec["middleware"], "子代理需要异常兜底/日志 middleware"
 
 
+def test_subagents_share_the_main_agent_skill_sources():
+    """DA-13 S2：公共技能挪到 /skills/builtin/ 后，office-writer 等子代理也要读得到。"""
+    sources = ["/skills/builtin/", "/user-skills/"]
+    for spec in build_subagent_specs("sess-1", skills_paths=sources):
+        assert spec["skills"] == sources, spec["name"]
+
+
 def test_general_purpose_override_keeps_upstream_prompt_and_inherits_tools():
     gp = next(s for s in build_subagent_specs() if s["name"] == "general-purpose")
     assert gp["description"] == GENERAL_PURPOSE_SUBAGENT["description"]

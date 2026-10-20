@@ -629,9 +629,6 @@ async def stream_export_run(
         system_prompt_extra=system_prompt_extra,
         enable_web_search=request.enable_web_search,
         expert_agent_id=expert_id,
-        # save_expert 仅在 expert-creator 技能激活时注入（防止领域专家被借用来
-        # 创建/修改其他专家）
-        skill_dirs=turn_skill_dirs,
     )
 
     chat_request = ChatRequest(

@@ -138,7 +138,7 @@ def test_skill_dir_created_when_user_has_no_skill(monkeypatch, tmp_path):
         session_id="sess-first-skill",
         workspace_dir=tmp_path / "ws",
     )
-    assert agent._resolve_skills_paths() == []  # 还没有技能可加载
+    assert agent._resolve_skills_paths()[-1] == "/user-skills/"  # DA-13 S2：没有技能也固定挂载
 
     backend = agent._build_backend([], agent._safe_external_dirs())
     assert "/user-skills/" in backend.routes

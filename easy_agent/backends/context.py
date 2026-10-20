@@ -100,6 +100,9 @@ class SessionCompositeBackend(CompositeBackend, SandboxBackendProtocol):
             str(getattr(ctx, "user_skills_dir", "") or ""),
             str(getattr(ctx, "long_term_memory_file", "") or ""),
             ctx_user,
+            # DA-13 S2：公共技能的启用集合变了（启停后重建 agent）要换一份 backend
+            str(getattr(ctx, "builtin_skills_dir", "") or ""),
+            ",".join(getattr(ctx, "builtin_skills", ()) or ()),
         )
         backend = self._cache.get(key)
         if backend is None:

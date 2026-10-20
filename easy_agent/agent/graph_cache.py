@@ -87,6 +87,10 @@ class SessionContext:
     organization_id: str = ""
     shell_env: Mapping[str, str] = field(default_factory=dict)
     workspace_name: str = ""
+    #: canonical 公共技能目录（DA-13 S2，只读挂到 ``/skills/builtin/``）；空串 = 未配置
+    builtin_skills_dir: str = ""
+    #: 本会话用户已添加且启用的公共技能（目录名）
+    builtin_skills: tuple[str, ...] = ()
 
     @property
     def sid(self) -> str:

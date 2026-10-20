@@ -50,6 +50,10 @@ from easy_agent.agent.workspace import (
 from easy_agent.agent.subagents import DEFAULT_SUBAGENTS, resolve_subagent_tools
 from easy_agent.agent.summarization import build_summarization_middleware
 from easy_agent.agent.memory import SessionMemoryMiddleware
+from deepagents.middleware.skills import SkillsMiddleware
+from easy_agent.tools.registry import skill_gated_tool_names
+from easy_agent.agent import builtin_skills
+from easy_agent.agent.builtin_skills import BUILTIN_VIRTUAL_ROOT
 from easy_agent.bootstrap.logger import AgentLogger
 from easy_agent.agent.model import (
     create_model,
@@ -120,12 +124,14 @@ def build_subagent_specs(
     result_log_truncate: int = 500,
     *,
     max_steps: int | None = None,
+    skills_paths: list[str] | None = None,
 ) -> list[dict]:
     """构造传给 create_deep_agent 的 subagent specs。
 
     官方语义：自定义 subagent **不继承**主 agent 的 skills，且 middleware 栈
     也不会自动带上主代理的 middleware。这里显式补上：
-    - skills=["/user-skills/"]：子代理能读技能文档；
+    - skills：与主代理相同的技能源（DA-13 S2 起为 ``/skills/builtin/`` + ``/user-skills/``），
+      子代理能读技能文档；缺省时只有 ``/user-skills/``；
     - ToolErrorMiddleware（DA-12）：子代理内可恢复的工具错误回灌给子代理，不中断 task；
     - 模型/工具调用上限（DA-10）：子代理图各自绑定 ``recursion_limit=9999``，
       主流程的递归上限与 call-limit 都管不到它们，只能在子代理自己的栈里限制。
@@ -144,7 +150,7 @@ def build_subagent_specs(
     specs: list[dict] = []
     for base in (GENERAL_PURPOSE_SUBAGENT, *DEFAULT_SUBAGENTS):
         item = dict(base)
-        item.setdefault("skills", ["/user-skills/"])
+        item.setdefault("skills", list(skills_paths or ["/user-skills/"]))
         item["middleware"] = [
             build_tool_error_middleware(log_truncate=result_log_truncate),
             *build_call_limit_middleware(max_steps, exit_behavior="end"),
@@ -278,6 +284,14 @@ class EasyAgent(AgentWorkspaceMixin):
             self.user_skills_dir.mkdir(parents=True, exist_ok=True)
         except OSError as exc:  # noqa: BLE001
             logger.warning(f"[{self.sid}] 创建用户技能目录失败: {exc}")
+        # DA-13 S2：公共技能只读共享（/skills/builtin/），只挂用户已添加且启用的那些。
+        # 启用集合只进运行期 SessionContext（不进编译图键）；启停后 invalidate_user_agents 重建。
+        self.builtin_skills_dir = builtin_skills.builtin_root(config)
+        self.builtin_skills = (
+            builtin_skills.enabled_names(self.username, self.builtin_skills_dir, config)
+            if self.builtin_skills_dir
+            else ()
+        )
         # 目录名即会话工作区的真实名字（rename_workspace 会更新它）
         self.workspace_name = dir_name
 
@@ -394,6 +408,8 @@ class EasyAgent(AgentWorkspaceMixin):
             organization_id=self.organization_id or "",
             shell_env=dict(self.shell_env),
             workspace_name=self.workspace_name,
+            builtin_skills_dir=str(self.builtin_skills_dir or ""),
+            builtin_skills=tuple(self.builtin_skills),
         )
 
     def _build_interrupt_config(self):
@@ -454,6 +470,8 @@ class EasyAgent(AgentWorkspaceMixin):
             "/memories/",
             "/user-skills/",
         }
+        if getattr(self, "builtin_skills_dir", None):
+            prefixes.add(f"{BUILTIN_VIRTUAL_ROOT}/")
         for virtual_path in (config.agent.external_dirs or {}):
             value = str(virtual_path)
             prefixes.add(value if value.endswith("/") else value + "/")
@@ -495,6 +513,7 @@ class EasyAgent(AgentWorkspaceMixin):
         subagents = build_subagent_specs(
             result_log_truncate=getattr(self.config.tools, "result_log_truncate", 500),
             max_steps=getattr(self, "max_steps", None),
+            skills_paths=skills_paths,
         )
 
         store = None
@@ -552,6 +571,15 @@ class EasyAgent(AgentWorkspaceMixin):
                 )
 
             main_middleware = [*middleware, summarization(render_turn=True)]
+            # DA-13：由技能带出的工具（save_expert）不进 agent 工具列表，交给同名替换默认项的
+            # SkillsMiddleware，模型读到 / pin 了在 include_tools 里声明它的技能后才出现
+            gated_names = skill_gated_tool_names()
+            gated_tools = [t for t in graph_tools if getattr(t, "name", "") in gated_names]
+            graph_tools = [t for t in graph_tools if getattr(t, "name", "") not in gated_names]
+            if gated_tools and skills_paths:
+                main_middleware.append(
+                    SkillsMiddleware(backend=backend, sources=skills_paths, tools=gated_tools)
+                )
             if memory_list:
                 main_middleware.append(
                     SessionMemoryMiddleware(
@@ -670,6 +698,8 @@ class EasyAgent(AgentWorkspaceMixin):
                 organization_id=getattr(self, "organization_id", "") or "",
                 shell_env=dict(getattr(self, "shell_env", {}) or {}),
                 workspace_name=getattr(self, "workspace_name", "") or "",
+                builtin_skills_dir=str(getattr(self, "builtin_skills_dir", "") or ""),
+                builtin_skills=tuple(getattr(self, "builtin_skills", ()) or ()),
             )
         return _build_backend_for_context(
             self.config,

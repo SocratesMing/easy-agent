@@ -45,7 +45,7 @@ def _ctx(**overrides) -> ToolBuildContext:
         "workspace_name": "ws",
         "enable_hitl": True,
         "model_name": "m",
-        "creator_requested": None,
+        "expert_session": False,
         "web_search_tool": None,
         "edit_targets": {},
         "factories": _factories(),
@@ -239,10 +239,10 @@ def test_injection_conditions_follow_legacy_if_statements():
     assert scheduled(_ctx(enable_hitl=True)) is True
     assert scheduled(_ctx(enable_hitl=False)) is False
 
+    # DA-13：非专家会话都注入（由 expert-creator 技能带出，见 skill_gated），专家会话不提供
     save_expert = specs["save_expert"].condition
-    assert save_expert(_ctx(creator_requested=None)) is True
-    assert save_expert(_ctx(creator_requested=True)) is True
-    assert save_expert(_ctx(creator_requested=False)) is False
+    assert save_expert(_ctx()) is True
+    assert save_expert(_ctx(expert_session=True)) is False
 
     read_uploaded = specs["read_uploaded_file"].condition
     assert read_uploaded(_ctx()) is True
@@ -300,7 +300,7 @@ def test_real_builders_produce_expected_tool_names():
 def test_optional_tools_absent_when_conditions_are_off():
     ctx = _ctx(
         enable_hitl=False,
-        creator_requested=False,
+        expert_session=True,
         config=SimpleNamespace(file_context=SimpleNamespace(enabled=False)),
         factories={
             **_factories(),
@@ -330,3 +330,11 @@ def test_source_resolution_and_queries():
 
     assert list(registry.iter_tool_specs()) == list(TOOL_REGISTRY)
     assert registry.tool_names() == tuple(spec.name for spec in TOOL_REGISTRY)
+
+
+def test_skill_gated_tools_are_only_save_expert():
+    # DA-13 S2：skill_gated 工具不进 agent 工具列表，交给 SkillsMiddleware(tools=...)，
+    # 由在 metadata.include_tools 里声明它的技能带出
+    assert registry.skill_gated_tool_names() == frozenset({"save_expert"})
+    gated = [spec for spec in TOOL_REGISTRY if spec.skill_gated]
+    assert all(spec.source == "expert" for spec in gated)
