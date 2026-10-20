@@ -85,7 +85,8 @@ DA-13 S2 已由另一路开发提交：`c24d5ba feat(skills): share public skill
 - **D3 已闭环（`68bfe4e`）**：`validate_skills` 按官方硬约束校验（name 等于目录名 / ≤64 / 小写字母数字连字符、description ≤1024、compatibility ≤500、`include_tools` 必须字符串），发现阶段跳过 >10MB 的 `SKILL.md`。注意：校验目前是**报告制**，不阻断加载；本机体检发现 1 个存量违规：`workspace/szm/skills/strategy_fx`（下划线，建议改成 `strategy-fx` 并同步目录名）。
 - **D9 已闭环（`0cfa312`）**：按官方渐进式披露拆分——docx `SKILL.md` 590 → 175 行（版式 → `references/docx-js-layout.md`，OOXML → `references/ooxml-xml.md`），skill-creator 485 → 208 行（评测 → `references/evaluating-skills.md`，盲测/描述优化 → `references/advanced-evaluation.md`）；包内副本由 `sync_skills.py --write` 生成且 `--check` 一致。
 - **D4 已实现 S1/S2（`e16f9e1`）**：`{server}__{tool}` 命名 + `EASY_MCP_TOOL_PREFIX` 灰度开关（默认 off，行为不变）；技能 `include_tools`、子代理 `use_tools` 支持「精确 → 后缀唯一」兼容解析；HITL 启发式改用 `mcp_original_name`。方案见 [2026-10-20-d4-mcp-tool-naming.md](2026-10-20-d4-mcp-tool-naming.md)。
-- **D5 及以后未动**：MCP 会话池风险（已登记）、`mode="interrupt"`、HITL `edit`；D6（子代理私有键）已收敛到 `resolve_subagent_tools`，仅剩文档说明。
+- **D6 已闭环（`9923c68`）**：子代理 spec 允许键收敛为「官方 SubAgent 字段 + 项目扩展 `use_tools`/`requires_tools`」，拼写错误的键会告警并丢弃，不再静默传给框架。
+- **剩余**：D5（MCP 会话池，风险登记，等官方连接池 API）、D7（`mode="interrupt"`）、D8（HITL `edit`）——后两项是产品决策；D4 的灰度开启与前端展示需要真实 MCP server 环境。
 
 ## 6. 已符合官方的部分（避免误改）
 
