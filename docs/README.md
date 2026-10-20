@@ -23,6 +23,7 @@
 - [2026-10-18-multi-replica-target.md](design/2026-10-18-multi-replica-target.md) — 多副本目标态
 - [2026-10-20-da13-skills-sources.md](design/2026-10-20-da13-skills-sources.md) — 技能多来源
 - [2026-10-20-deepagents-conformance-audit.md](design/2026-10-20-deepagents-conformance-audit.md) — DeepAgents 0.7.28 规范一致性与改造清单
+- [2026-10-20-d4-mcp-tool-naming.md](design/2026-10-20-d4-mcp-tool-naming.md) — MCP 工具按 server 命名的方案与兼容层
 
 ## 审计结论（长期保留）
 
