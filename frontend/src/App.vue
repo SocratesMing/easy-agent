@@ -125,7 +125,6 @@ import { ref, computed, onMounted, watch, defineAsyncComponent } from 'vue'
 import SessionList from './features/chat/components/SessionList.vue'
 import Chat from './features/chat/components/Chat.vue'
 import AssetsPanel from './features/chat/components/AssetsPanel.vue'
-// 面板级懒加载：首屏不解析这些重型面板
 const SkillCenter = defineAsyncComponent(() => import('./features/skills/components/SkillCenter.vue'))
 const ScheduledTasksPanel = defineAsyncComponent(() => import('./features/tasks/components/ScheduledTasksPanel.vue'))
 const UserManagementPanel = defineAsyncComponent(() => import('./features/personnel/components/UserManagementPanel.vue'))
