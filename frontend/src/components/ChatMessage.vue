@@ -220,14 +220,8 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, shallowRef, watch, nextTick, onBeforeUnmount } from 'vue'
-import { createHighlighter } from 'shiki'
-import {
-  setupMarkedExtensions,
-  createMarkdownRenderer,
-  escapeHtml,
-  renderMarkdown as renderMarkdownHtml,
-} from '../markdownSetup.js'
+import { ref, computed, onMounted, watch, nextTick, onBeforeUnmount } from 'vue'
+import { ensureHighlighter, renderMarkdown } from '../features/chat/composables/useMarkdownRenderer.js'
 import FileIcon from './FileIcon.vue'
 import ToolCallCard from './ToolCallCard.vue'
 import { approvalTargetForBlock, unmatchedApprovalRequests } from '../utils/hitlApproval.js'
@@ -237,9 +231,6 @@ import { iconCategoryFor } from '../utils/skillCategories.js'
 import { expertAvatarChar, expertAvatarClass } from '../utils/expertAvatar.js'
 import { parseLeadingSkillTokens } from '../utils/skillTokens.js'
 import { ensureSkillDirectoryLoaded, skillDirectoryStore } from '../store/skillDirectoryStore.js'
-
-// 注册 KaTeX 数学公式 + emoji 短代码扩展（幂等，仅执行一次）
-setupMarkedExtensions()
 
 const props = defineProps({
   message: {
@@ -260,32 +251,12 @@ const emit = defineEmits(['removeFile', 'viewGeneratedFiles', 'retry', 'approve'
 const showThinking = ref(false)
 const expandedThinking = ref({})
 const expandedTool = ref({})
-const highlighter = shallowRef(null)
 
-const langAliases = {
-  'js': 'javascript',
-  'ts': 'typescript',
-  'py': 'python',
-  'rb': 'ruby',
-  'sh': 'bash',
-  'yml': 'yaml',
-  'md': 'markdown',
-  'c++': 'cpp',
-  'c#': 'csharp',
-  'cs': 'csharp',
-}
-
-onMounted(async () => {
+onMounted(() => {
   // 技能标签 / 老数据前缀解析都要按目录名反查技能（名称、图标、分类）
   ensureSkillDirectoryLoaded()
-  try {
-    highlighter.value = await createHighlighter({
-      themes: ['github-light'],
-      langs: ['javascript', 'typescript', 'python', 'java', 'cpp', 'c', 'go', 'rust', 'html', 'css', 'json', 'yaml', 'markdown', 'bash', 'shell', 'sql', 'xml', 'vue', 'jsx', 'tsx', 'text']
-    })
-  } catch (e) {
-    console.error('Shiki 初始化失败:', e)
-  }
+  // shiki 是模块级单例，多个消息组件共享一次初始化
+  ensureHighlighter()
 })
 
 watch(() => props.message.id, () => {
@@ -636,35 +607,6 @@ function isExpandedToolCall(index) {
   return expandedTool.value[key] === true
 }
 
-function highlightCode(code, lang) {
-  if (!highlighter.value) {
-    return `<pre style="background: #f6f8fa; padding: 12px; border-radius: 8px; overflow-x: auto; border: 1px solid #e1e4e8;"><code style="color: #24292e; font-family: 'Fira Code', Consolas, monospace; font-size: 13px;">${escapeHtml(code)}</code></pre>`
-  }
-  
-  const normalizedLang = lang ? lang.toLowerCase() : 'text'
-  const mappedLang = langAliases[normalizedLang] || normalizedLang
-  
-  const loadedLangs = highlighter.value.getLoadedLanguages()
-  const validLang = loadedLangs.includes(mappedLang) ? mappedLang : 'text'
-  
-  try {
-    const html = highlighter.value.codeToHtml(code, {
-      lang: validLang,
-      theme: 'github-light'
-    })
-    return html
-  } catch (e) {
-    console.error('Shiki 高亮失败:', e, 'lang:', validLang)
-    return `<pre style="background: #f6f8fa; padding: 12px; border-radius: 8px; overflow-x: auto; border: 1px solid #e1e4e8;"><code style="color: #24292e; font-family: 'Fira Code', Consolas, monospace; font-size: 13px;">${escapeHtml(code)}</code></pre>`
-  }
-}
-
-// 代码块结构 / 外链 / 来源卡片统一由 shared/markdown 提供，这里只注入高亮实现
-const renderer = createMarkdownRenderer({ highlight: highlightCode })
-
-function renderMarkdown(content) {
-  return renderMarkdownHtml(content, renderer)
-}
 
 function formatJson(obj) {
   try {

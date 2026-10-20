@@ -19,7 +19,7 @@ const MAX_NEW_FILE_LINES = 800
 const LINE_BUDGET = {
   'App.vue': 3019,
   'components/ChatInput.vue': 4669,
-  'components/ChatMessage.vue': 2579,
+  'components/ChatMessage.vue': 2480,
   'components/ExpertListPanel.vue': 1649,
   'components/ConnectorListPanel.vue': 1534,
   'components/SettingsPanel.vue': 1226,
