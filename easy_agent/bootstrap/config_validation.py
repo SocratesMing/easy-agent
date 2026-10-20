@@ -34,6 +34,7 @@ KNOWN_TOP_LEVEL_KEYS = frozenset(
         "system_prompt_path",  # 旧键，兼容
         "idle_logout_minutes",
         "denied_dirs",
+        "interrupt_sensitive_writes",
         "skill_write",
         "external_dirs",
         "sandbox_enabled",

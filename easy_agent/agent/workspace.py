@@ -237,9 +237,28 @@ class AgentWorkspaceMixin:
                 )
             )
 
+        # D7：敏感路径写入走人工审批。放在所有 deny 之后，保证「已有技能不可改」
+        # 等硬禁令仍然优先命中；只有真正落到这里的写入才需要批准。
+        if getattr(self.config.agent, "interrupt_sensitive_writes", False):
+            # /memories/ 路由总是挂载（backend.py），/user-skills/ 只在技能目录存在时挂载
+            interrupt_paths: list[str] = ["/memories/**"]
+            if skills_mounted:
+                interrupt_paths.append("/user-skills/**")
+            if interrupt_paths:
+                permissions.append(
+                    FilesystemPermission(
+                        operations=["write"],
+                        paths=interrupt_paths,
+                        mode="interrupt",
+                    )
+                )
+                logger.info(
+                    f"[{self.sid}] 🔏 敏感路径写入需审批 | {interrupt_paths}（需 checkpointer）"
+                )
+
         logger.info(
             f"[{self.sid}] 🔒 文件系统权限 | "
-            f"已配置 {len(permissions)} 条 deny 规则: {denied}"
+            f"已配置 {len(permissions)} 条规则（deny 优先）: {denied}"
         )
         return permissions
 

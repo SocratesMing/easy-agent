@@ -193,6 +193,10 @@ skill_write: ${SKILL_WRITE:-new-only}
 #   - 字符串："/strategy-workspace"                        → 默认禁止 read+write
 #   - 字典：  {path: "/strategy-workspace", operations: ["write"]} → 只禁止指定操作
 # operations 可选值：read、write。技能库的写权限请改用上面的 skill_write。
+# 敏感路径写入是否走人工审批（D7）：/memories/**（长期记忆）与 /user-skills/**（技能）。
+# 需要 checkpointer；打开后模型的写入会暂停等待批准，适合防「记忆投毒 / 持久化提示注入」。
+# 只想审计不想打断时设为 false。
+interrupt_sensitive_writes: true
 denied_dirs: []
 
 # ===== Expert =====

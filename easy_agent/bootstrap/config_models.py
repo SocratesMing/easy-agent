@@ -128,6 +128,9 @@ class AgentConfig(BaseModel):
     """登录态空闲超时（分钟）：后端以最近一次接口调用为起点滑动续期，
     前端超过该时长无操作时自动退出到登录页。0 表示永不过期（默认，后台不启用登录超时机制）。"""
     denied_dirs: list[str | dict[str, Any]] = Field(default_factory=list)
+    # 对「能跨会话影响后续行为」的写入走人工审批（D7）：/memories/** 与 /user-skills/**
+    # 需要 checkpointer；默认关闭，打开后由 FilesystemPermission(mode="interrupt") 生效
+    interrupt_sensitive_writes: bool = False
     """禁止智能体读写的虚拟路径目录列表。
 
     支持两种格式（可混用）：

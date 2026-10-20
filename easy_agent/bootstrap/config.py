@@ -357,6 +357,7 @@ class Config(BaseModel):
             or "prompts",
             idle_logout_minutes=data.get("idle_logout_minutes", 0),
             denied_dirs=data.get("denied_dirs", []),
+            interrupt_sensitive_writes=bool(data.get("interrupt_sensitive_writes", False)),
             skill_write=data.get("skill_write") or "new-only",
             external_dirs=data.get("external_dirs", {}),
             sandbox_enabled=data.get("sandbox_enabled", True),
