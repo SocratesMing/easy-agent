@@ -45,3 +45,42 @@ def test_absolute_path_cannot_escape_dist(client, dist):
     resp = client.get(f"http://testserver/{dist / 'secret.txt'}")
     assert resp.status_code == 404
     assert SECRET not in resp.text
+
+
+def _write_large_asset(dist, name: str = "big.js") -> None:
+    """构造超过 1KB 的产物：小于阈值的文件不压缩（压缩反而更大）。"""
+    target = dist / "dist" / "js" / name
+    target.write_text("console.log('gzip');\n" * 200, encoding="utf-8")
+
+
+def test_static_assets_gzip_when_accepted(client, dist):
+    _write_large_asset(dist)
+    resp = client.get("/js/big.js", headers={"Accept-Encoding": "gzip"})
+    assert resp.status_code == 200
+    assert resp.headers.get("content-encoding") == "gzip"
+    assert "accept-encoding" in (resp.headers.get("vary") or "").lower()
+    assert "console.log" in resp.text
+
+
+def test_static_assets_not_gzipped_without_accept_encoding(client, dist):
+    _write_large_asset(dist)
+    resp = client.get("/js/big.js", headers={"Accept-Encoding": "identity"})
+    assert resp.status_code == 200
+    assert resp.headers.get("content-encoding") is None
+
+
+def test_gzip_static_supports_etag_revalidation(client, dist):
+    _write_large_asset(dist)
+    first = client.get("/js/big.js", headers={"Accept-Encoding": "gzip"})
+    etag = first.headers.get("etag")
+    assert etag
+    again = client.get(
+        "/js/big.js", headers={"Accept-Encoding": "gzip", "If-None-Match": etag}
+    )
+    assert again.status_code == 304
+
+
+def test_api_responses_are_not_gzipped(client, dist):
+    """SSE/接口不能走静态压缩：全局 gzip 会把 text/event-stream 攒包。"""
+    resp = client.get("/agent/health", headers={"Accept-Encoding": "gzip"})
+    assert resp.headers.get("content-encoding") is None

@@ -1,7 +1,9 @@
 """FastAPI application entry point"""
 
 import asyncio
+import gzip
 import logging
+import mimetypes
 import os
 from easy_agent.bootstrap.env import env_bool
 import platform
@@ -25,7 +27,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from easy_agent.middleware import get_current_username
 from easy_agent.middleware.metrics import MetricsMiddleware
 from easy_agent.middleware.rate_limit import RateLimitMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from langchain_core.messages import HumanMessage
 from starlette.concurrency import run_in_threadpool
 
@@ -826,8 +828,44 @@ def _is_within_dir(root: str, path: str) -> bool:
         return False
 
 
+# ── 静态资源 gzip ────────────────────────────────────────────────────
+# 构建产物 27MB（monaco 单 chunk 12MB），后端直接托管 dist 时若不压缩，
+# 首屏要拉几十 MB。这里按扩展名在路由内压缩，而不是挂全局 GZipMiddleware：
+# 全局中间件会把 text/event-stream 攒包，SSE 会变成「一次性到达」
+# （2026-10-15 在 webpack-dev-server 上踩过同样的坑）。
+_STATIC_GZIP_EXTS = {".js", ".mjs", ".css", ".svg", ".json", ".woff", ".woff2", ".ttf"}
+_STATIC_GZIP_MIN_BYTES = 1024
+_STATIC_GZIP_CACHE_MAX = 64
+_static_gzip_cache: dict[str, tuple[int, bytes]] = {}
+
+
+def _accepts_gzip(request: Request) -> bool:
+    encoding = (request.headers.get("accept-encoding") or "").lower()
+    return "gzip" in encoding or "*" in encoding
+
+
+def _gzip_static_file(path: str) -> bytes | None:
+    """读取并压缩静态文件；按 (路径, mtime) 缓存，避免每次请求重复压缩。"""
+    try:
+        stat = os.stat(path)
+    except OSError:
+        return None
+    cached = _static_gzip_cache.get(path)
+    if cached and cached[0] == stat.st_mtime_ns:
+        return cached[1]
+    with open(path, "rb") as f:
+        raw = f.read()
+    if len(raw) < _STATIC_GZIP_MIN_BYTES:
+        return None
+    body = gzip.compress(raw, compresslevel=6)
+    if len(_static_gzip_cache) >= _STATIC_GZIP_CACHE_MAX:
+        _static_gzip_cache.clear()
+    _static_gzip_cache[path] = (stat.st_mtime_ns, body)
+    return body
+
+
 @app.get("/{full_path:path}", response_class=FileResponse)
-async def serve_static(full_path: str):
+async def serve_static(full_path: str, request: Request):
     # /agent/* 是接口命名空间，未匹配到任何路由时必须返回 JSON 404。
     # 否则会落到下面的 SPA 兜底、以 200 + text/html 返回 index.html，
     # 前端 response.json() 报 "Unexpected token '<'"，把「接口不存在
@@ -844,6 +882,29 @@ async def serve_static(full_path: str):
     if os.path.isfile(static_file):
         # 静态产物文件名固定（/js/app.js）：no-cache 禁止启发式强缓存，
         # 强制走协商缓存（ETag/Last-Modified 变了即拉新），新版本部署后普通刷新即可生效。
+        if (
+            os.path.splitext(static_file)[1].lower() in _STATIC_GZIP_EXTS
+            and _accepts_gzip(request)
+        ):
+            compressed = await run_in_threadpool(_gzip_static_file, static_file)
+            if compressed is not None:
+                etag = f'W/"{os.stat(static_file).st_mtime_ns}-{len(compressed)}"'
+                if request.headers.get("if-none-match") == etag:
+                    return Response(
+                        status_code=304,
+                        headers={"ETag": etag, "Vary": "Accept-Encoding", "Cache-Control": "no-cache"},
+                    )
+                media_type = mimetypes.guess_type(static_file)[0] or "application/octet-stream"
+                return Response(
+                    content=compressed,
+                    media_type=media_type,
+                    headers={
+                        "Content-Encoding": "gzip",
+                        "Vary": "Accept-Encoding",
+                        "Cache-Control": "no-cache",
+                        "ETag": etag,
+                    },
+                )
         return FileResponse(static_file, headers={"Cache-Control": "no-cache"})
 
     index_html = os.path.join(frontend_dist, "index.html")
