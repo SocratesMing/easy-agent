@@ -307,12 +307,12 @@
 
 <script>
 import Chat from './Chat.vue'
-import chatSessionMixin from '../features/chat/mixins/chatSession.js'
-import { chatStore } from '../features/chat/store/chatStore.js'
-import { ensureSkillDirectoryLoaded, skillFreeTitle } from '../store/skillDirectoryStore.js'
-import { formatPageContext, setExternalPageContext } from '../utils/pageContext.js'
-import { formatRelativeTime } from '../utils/relativeTime.js'
-import { eventTarget } from '../utils/domEvent.js'
+import chatSessionMixin from '../mixins/chatSession.js'
+import { chatStore } from '../store/chatStore.js'
+import { ensureSkillDirectoryLoaded, skillFreeTitle } from '../../../store/skillDirectoryStore.js'
+import { formatPageContext, setExternalPageContext } from '../../../utils/pageContext.js'
+import { formatRelativeTime } from '../../../utils/relativeTime.js'
+import { eventTarget } from '../../../utils/domEvent.js'
 
 const PREFS_KEY = 'easy_agent_ai_sidebar_prefs'
 const PAGE_SESSIONS_KEY = 'easy_agent_ai_page_sessions'

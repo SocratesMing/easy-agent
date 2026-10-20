@@ -548,11 +548,11 @@
 </template>
 
 <script>
-import { uploadFile, deleteFile } from '../api/files.js'
-import { getWebSearchStatus, getUploadLimits } from '../api/settings.js'
-import { getUserSkills } from '../api/skills.js'
-import { iconCategoryFor } from '../utils/skillCategories.js'
-import { buildMessageText, parseSlashQuery } from '../utils/skillSlash.js'
+import { uploadFile, deleteFile } from '../../../api/files.js'
+import { getWebSearchStatus, getUploadLimits } from '../../../api/settings.js'
+import { getUserSkills } from '../../../api/skills.js'
+import { iconCategoryFor } from '../../../utils/skillCategories.js'
+import { buildMessageText, parseSlashQuery } from '../../../utils/skillSlash.js'
 // 内联技能标签：标签文字 = textarea 文本里的子串，选中/删除/发送前的剥离都走这套纯逻辑
 import {
   buildSegments,
@@ -567,21 +567,21 @@ import {
   tokenAfterCaret,
   tokenBeforeCaret,
   tokenForSkill,
-} from '../utils/skillPillTokens.js'
-import { getConnectors, toggleConnector } from '../api/connectors.js'
-import { emitConnectorsChanged, onConnectorsChanged } from '../utils/connectorSync.js'
-import { eventTarget } from '../utils/domEvent.js'
-import { listExperts, listPublicExperts } from '../api/expert.js'
+} from '../../../utils/skillPillTokens.js'
+import { getConnectors, toggleConnector } from '../../../api/connectors.js'
+import { emitConnectorsChanged, onConnectorsChanged } from '../../../utils/connectorSync.js'
+import { eventTarget } from '../../../utils/domEvent.js'
+import { listExperts, listPublicExperts } from '../../../api/expert.js'
 // 别名导入：模板要用同名方法（Vue2 模板只能访问实例成员），避免与方法名混淆
 import {
   expertAvatarChar as buildExpertAvatarChar,
   expertAvatarClass as buildExpertAvatarClass
-} from '../utils/expertAvatar.js'
-import ModelPicker from '../features/chat/components/ModelPicker.vue'
-import UploadTray from '../features/chat/components/UploadTray.vue'
-import FileIcon from './FileIcon.vue'
-import SkillIcon from './SkillIcon.vue'
-import KnowledgeScopeSelector from '../features/knowledge/KnowledgeScopeSelector.vue'
+} from '../../../utils/expertAvatar.js'
+import ModelPicker from './ModelPicker.vue'
+import UploadTray from './UploadTray.vue'
+import FileIcon from '../../../components/FileIcon.vue'
+import SkillIcon from '../../../components/SkillIcon.vue'
+import KnowledgeScopeSelector from '../../knowledge/KnowledgeScopeSelector.vue'
 
 // 镜像层为画出技能芯片的外扩留白，把裁剪盒向外扩了这么多 px（见 .input-mirror 的 padding/margin）：
 // 补滚动条占位时要一起加上，否则镜像内容比 textarea 窄、换行位置对不上。

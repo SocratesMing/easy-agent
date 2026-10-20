@@ -240,23 +240,23 @@ import {
   setupMarkedExtensions,
   installCodeCopyHandler,
   copyTextToClipboard,
-} from '../markdownSetup.js'
-import MarkdownBody from '../features/chat/components/MarkdownBody.vue'
-import FileIcon from './FileIcon.vue'
-import KnowledgeEvidence from '../features/knowledge/KnowledgeEvidence.vue'
-import SkillIcon from './SkillIcon.vue'
-import ToolCallCard from './ToolCallCard.vue'
-import { approvalTargetForBlock, unmatchedApprovalRequests } from '../utils/hitlApproval.js'
-import { pageContextLabel } from '../utils/pageContext.js'
-import { iconCategoryFor } from '../utils/skillCategories.js'
+} from '../../../markdownSetup.js'
+import MarkdownBody from './MarkdownBody.vue'
+import FileIcon from '../../../components/FileIcon.vue'
+import KnowledgeEvidence from '../../knowledge/KnowledgeEvidence.vue'
+import SkillIcon from '../../../components/SkillIcon.vue'
+import ToolCallCard from '../../../components/ToolCallCard.vue'
+import { approvalTargetForBlock, unmatchedApprovalRequests } from '../../../utils/hitlApproval.js'
+import { pageContextLabel } from '../../../utils/pageContext.js'
+import { iconCategoryFor } from '../../../utils/skillCategories.js'
 // 专家头像取字 / 配色：与技能中心、+ 号下拉、输入框胶囊共用同一套规则（按 ID 稳定取档）
 import {
   expertAvatarChar as buildExpertAvatarChar,
   expertAvatarClass as buildExpertAvatarClass
-} from '../utils/expertAvatar.js'
-import { parseLeadingSkillTokens } from '../utils/skillTokens.js'
-import { highlightCode } from '../services/markdown/highlight.js'
-import { ensureSkillDirectoryLoaded, skillDirectoryStore } from '../store/skillDirectoryStore.js'
+} from '../../../utils/expertAvatar.js'
+import { parseLeadingSkillTokens } from '../../../utils/skillTokens.js'
+import { highlightCode } from '../../../services/markdown/highlight.js'
+import { ensureSkillDirectoryLoaded, skillDirectoryStore } from '../../../store/skillDirectoryStore.js'
 
 // 注册 KaTeX 数学公式 + emoji 短代码扩展（幂等，仅执行一次）
 setupMarkedExtensions()

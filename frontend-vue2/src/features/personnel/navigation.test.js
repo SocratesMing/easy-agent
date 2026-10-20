@@ -6,7 +6,7 @@ import path from 'node:path'
 const frontendRoot = path.resolve(import.meta.dirname, '../../..')
 
 test('admin personnel and permission entry lives in the knowledge top bar', async () => {
-  const sessionList = await readFile(path.join(frontendRoot, 'src/components/SessionList.vue'), 'utf8')
+  const sessionList = await readFile(path.join(frontendRoot, 'src/features/chat/components/SessionList.vue'), 'utf8')
   const workbench = await readFile(path.join(frontendRoot, 'src/features/knowledge/KnowledgeWorkbench.vue'), 'utf8')
   const app = await readFile(path.join(frontendRoot, 'src/App.vue'), 'utf8')
 

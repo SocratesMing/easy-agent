@@ -10,7 +10,7 @@
  */
 import Vue from 'vue'
 import '../style.css'
-import AiSidebar from '../components/AiSidebar.vue'
+import AiSidebar from '../features/chat/components/AiSidebar.vue'
 import tipDirective from '../directives/tip.js'
 import { chatStore } from '../features/chat/store/chatStore.js'
 import request, { configureRequest, storeAuth, clearAuth, getStoredToken } from '../utils/request.js'

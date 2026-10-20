@@ -3,7 +3,7 @@ import test from 'node:test'
 import { readFile } from 'node:fs/promises'
 import path from 'node:path'
 
-const componentsDir = path.resolve(import.meta.dirname, '../components')
+const componentsDir = path.resolve(import.meta.dirname, '../features/chat/components')
 
 const read = (name) => readFile(path.join(componentsDir, name), 'utf8')
 

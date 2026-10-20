@@ -200,8 +200,8 @@
 </template>
 
 <script>
-import { ensureSkillDirectoryLoaded, skillFreeTitle } from '../store/skillDirectoryStore.js'
-import { formatRelativeTime } from '../utils/relativeTime.js'
+import { ensureSkillDirectoryLoaded, skillFreeTitle } from '../../../store/skillDirectoryStore.js'
+import { formatRelativeTime } from '../../../utils/relativeTime.js'
 
 // 应用名称：直接定义在前端（原 src/config.js 已移除）
 const APP_TITLE = 'Easy Agent'

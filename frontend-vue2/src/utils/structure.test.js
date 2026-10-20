@@ -27,17 +27,17 @@ const MAX_NEW_FILE_LINES = 800
  */
 const LINE_BUDGET = {
   'App.vue': 3134,
-  'components/ChatInput.vue': 4022,
-  'components/ChatMessage.vue': 2649,
-  'components/AiSidebar.vue': 1724,
+  'features/chat/components/ChatInput.vue': 4022,
+  'features/chat/components/ChatMessage.vue': 2649,
+  'features/chat/components/AiSidebar.vue': 1724,
   'features/experts/components/ExpertListPanel.vue': 1705,
   'features/chat/mixins/chatSession.js': 1200,
   'features/connectors/components/ConnectorListPanel.vue': 1491,
   'features/skills/components/SkillListPanel.vue': 1237,
   'components/FilePreview.vue': 1130,
   'components/SettingsPanel.vue': 1128,
-  'components/Chat.vue': 1118,
-  'components/SessionList.vue': 1028,
+  'features/chat/components/Chat.vue': 1118,
+  'features/chat/components/SessionList.vue': 1028,
   'features/tasks/components/ScheduledTasksPanel.vue': 967,
   'components/WorkspacePanel.vue': 908,
   'features/knowledge/KnowledgeWorkbench.vue': 1911,
@@ -46,7 +46,7 @@ const LINE_BUDGET = {
 
 /** 组件里已经存在的 api 直连（存量，只允许删） */
 const API_IMPORT_ALLOWLIST = new Set([
-  'components/ChatInput.vue',
+  'features/chat/components/ChatInput.vue',
   'features/connectors/components/ConnectorListPanel.vue',
   'features/experts/components/ExpertListPanel.vue',
   'components/FilePreview.vue',

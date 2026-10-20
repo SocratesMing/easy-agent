@@ -132,11 +132,11 @@
 
 <script>
 import { Message } from 'element-ui'
-import request from '../utils/request.js'
-import FileIcon from './FileIcon.vue'
-import ConfirmDialog from './ConfirmDialog.vue'
-import FilePreview from './FilePreview.vue'
-import { setPageContextExtra } from '../utils/pageContext.js'
+import request from '../../../utils/request.js'
+import FileIcon from '../../../components/FileIcon.vue'
+import ConfirmDialog from '../../../components/ConfirmDialog.vue'
+import FilePreview from '../../../components/FilePreview.vue'
+import { setPageContextExtra } from '../../../utils/pageContext.js'
 
 const categoryIcons = {
   '全部': '📁',

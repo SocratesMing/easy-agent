@@ -545,7 +545,7 @@ import {
 import DocxPreview from '../../components/DocxPreview.vue'
 import ExcelPreview from '../../components/ExcelPreview.vue'
 import FileIcon from '../../components/FileIcon.vue'
-import ChatMessage from '../../components/ChatMessage.vue'
+import ChatMessage from '../chat/components/ChatMessage.vue'
 import { attachStream, getChatHistory, sendMessage } from '../../api/chat.js'
 import { cancelMessage } from './api.js'
 import { processingElapsedText } from './utils/presentation.js'
