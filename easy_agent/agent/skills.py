@@ -1,6 +1,7 @@
 """Skill discovery utilities"""
 
 import logging
+from collections.abc import Iterable
 from typing import Any
 
 from pathlib import Path
@@ -114,6 +115,52 @@ def parse_skill_frontmatter(text: str) -> tuple[dict[str, Any] | None, str | Non
     if not isinstance(meta, dict):
         return None, "frontmatter 不是键值映射"
     return meta, None
+
+
+
+def declared_include_tools(skill_dirs: Iterable[str | Path] | None = None) -> frozenset[str]:
+    """收集技能 frontmatter 里 ``metadata.include_tools`` 声明的工具名（DA-13）。
+
+    官方约定是**空格分隔的字符串**（``include_tools: save_expert fetch_url``）；
+    YAML 列表形式框架不会匹配，这里同样忽略并告警，避免"写了却不生效"。
+
+    只扫描 ``<dir>/<skill>/SKILL.md`` 一层：与 SkillsMiddleware 的发现规则一致，
+    不递归、不读 references/ 与 scripts/。
+
+    Args:
+        skill_dirs: 技能源目录（真实路径），通常为 canonical 公共技能目录 + 用户技能目录。
+
+    Returns:
+        工具名集合；目录不存在或 frontmatter 解析失败时跳过。
+    """
+    names: set[str] = set()
+    for root in skill_dirs or ():
+        base = Path(root)
+        if not base.is_dir():
+            continue
+        for entry in base.iterdir():
+            skill_md = entry / "SKILL.md"
+            if not entry.is_dir() or not skill_md.is_file():
+                continue
+            try:
+                text = skill_md.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+            meta, error = parse_skill_frontmatter(text)
+            if error or not isinstance(meta, dict):
+                continue
+            extra = meta.get("metadata")
+            raw = extra.get("include_tools") if isinstance(extra, dict) else None
+            if raw is None:
+                continue
+            if not isinstance(raw, str):
+                logger.warning(
+                    "技能 %s 的 metadata.include_tools 不是字符串（YAML 列表不会被框架匹配），已忽略",
+                    entry.name,
+                )
+                continue
+            names.update(raw.split())
+    return frozenset(names)
 
 
 def validate_skills(skills_dir: str | None = None) -> list[dict]:

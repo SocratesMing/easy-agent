@@ -47,12 +47,13 @@ from easy_agent.agent.workspace import (
     LONG_TERM_MEMORY_VIRTUAL_PATH,
     AgentWorkspaceMixin,
 )
-from easy_agent.agent.subagents import DEFAULT_SUBAGENTS, resolve_subagent_tools
+from easy_agent.agent.subagents import DEFAULT_SUBAGENTS, apply_skill_gated_tools, resolve_subagent_tools
 from easy_agent.agent.summarization import build_summarization_middleware
 from easy_agent.agent.memory import SessionMemoryMiddleware
 from deepagents.middleware.skills import SkillsMiddleware
 from easy_agent.tools.registry import skill_gated_tool_names
 from easy_agent.agent import builtin_skills
+from easy_agent.agent.skills import declared_include_tools
 from easy_agent.agent.builtin_skills import BUILTIN_VIRTUAL_ROOT
 from easy_agent.bootstrap.logger import AgentLogger
 from easy_agent.agent.model import (
@@ -573,7 +574,11 @@ class EasyAgent(AgentWorkspaceMixin):
             main_middleware = [*middleware, summarization(render_turn=True)]
             # DA-13：由技能带出的工具（save_expert）不进 agent 工具列表，交给同名替换默认项的
             # SkillsMiddleware，模型读到 / pin 了在 include_tools 里声明它的技能后才出现
-            gated_names = skill_gated_tool_names()
+            # DA-13：注册表里标记为 skill_gated 的工具 + 任意 SKILL.md 通过
+            # metadata.include_tools 声明的工具（官方约定为空格分隔字符串）
+            gated_names = set(skill_gated_tool_names()) | declared_include_tools(
+                [self.builtin_skills_dir, self.user_skills_dir]
+            )
             gated_tools = [t for t in graph_tools if getattr(t, "name", "") in gated_names]
             graph_tools = [t for t in graph_tools if getattr(t, "name", "") not in gated_names]
             if gated_tools and skills_paths:
@@ -601,9 +606,15 @@ class EasyAgent(AgentWorkspaceMixin):
                 interrupt_on=interrupt_on_config,
                 store=store,
                 # DA-11：子代理工具按名字解析成本图的工具实例（缺工具的子代理不声明）
+                # DA-13：子代理用到 include_tools 工具时，摘出来挂到它自己的 SkillsMiddleware
                 subagents=[
                     {**spec, "middleware": [*spec.get("middleware", []), summarization()]}
-                    for spec in resolve_subagent_tools(subagents, graph_tools)
+                    for spec in apply_skill_gated_tools(
+                        resolve_subagent_tools(subagents, [*graph_tools, *gated_tools]),
+                        gated_tools,
+                        skills_paths,
+                        backend,
+                    )
                 ],
                 context_schema=SessionContext,
             )
@@ -622,6 +633,10 @@ class EasyAgent(AgentWorkspaceMixin):
                 fallback_context=True,
             )
 
+        # 门控工具集合参与编译图指纹：技能 frontmatter 的 include_tools 变了要重编译
+        gated_names = set(skill_gated_tool_names()) | declared_include_tools(
+            [self.builtin_skills_dir, self.user_skills_dir]
+        )
         key = build_graph_key(
             model=model_fingerprint(actual_llm_cfg),
             tools=raw_tools,
@@ -633,6 +648,7 @@ class EasyAgent(AgentWorkspaceMixin):
             },
             subagents=subagents,
             skills=skills_paths,
+            skill_tools=sorted(gated_names),
             permissions=permissions,
             memory=memory_list,
             summarization=summarization_fingerprint(self.config),

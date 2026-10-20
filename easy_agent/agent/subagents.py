@@ -70,3 +70,34 @@ def resolve_subagent_tools(specs, available_tools) -> list[dict]:
             item["tools"] = [by_name[name] for name in spec["use_tools"] if name in by_name]
         resolved.append(item)
     return resolved
+
+
+def apply_skill_gated_tools(specs, gated_tools, skills_paths, backend) -> list[dict]:
+    """把子代理用到、但属于「技能门控」的工具摘出来，交给子代理自己的 SkillsMiddleware。
+
+    官方语义：``metadata.include_tools`` 里的工具在模型读到（或 pin 了）声明它的技能之前
+    不可见；而自定义子代理**不继承**主代理的 ``middleware``，所以每个子代理要各挂一份。
+    未声明这些工具的子代理不受影响（不会因为门控而多出工具）。
+    """
+    from deepagents.middleware.skills import SkillsMiddleware
+
+    gated = {getattr(tool, "name", ""): tool for tool in gated_tools or ()}
+    result: list[dict] = []
+    for spec in specs or ():
+        item = dict(spec)
+        if "tools" not in item:
+            result.append(item)
+            continue
+        picked = [tool for tool in item["tools"] if getattr(tool, "name", "") in gated]
+        if not picked or not skills_paths:
+            result.append(item)
+            continue
+        item["tools"] = [tool for tool in item["tools"] if getattr(tool, "name", "") not in gated]
+        item["middleware"] = [
+            *item.get("middleware", []),
+            SkillsMiddleware(
+                backend=backend, sources=list(skills_paths), tools=picked
+            ),
+        ]
+        result.append(item)
+    return result
