@@ -1,7 +1,7 @@
 # DA-03 会话级 thread 设计（一个会话一个 thread）
 
 - 日期：2026-10-19
-- 状态：已评审（2026-10-19，§11 均按推荐方案）；P0、P1 已实现（2026-10-20，见 §13、§14），开关默认关闭，P2（默认开启）未开始
+- 状态：已评审（2026-10-19，§11 均按推荐方案）；P0、P1 已实现（2026-10-20，见 §13、§14），开关默认关闭；P2 进行中（清理脚本与基准已完成，见 §15）
 - 范围：后端聊天 / 恢复链路、agent 装配（记忆、技能刷新与本轮上下文注入）、checkpointer 生命周期；前端与 SSE 契约不变
 - 相关：审计 DA-03（`docs/audit/2026-10-19-deepagents-best-practices-audit.md` §4）、DA-01（已修）、B1 checkpointer 契约（`docs/design/2026-10-18-b1-checkpointer-store.md`）、D2 共享编译图
 - 证据：`docs/audit/evidence-2026-10-19-deepagents/exp_session_thread.py`（真实 `create_deep_agent` + 假模型 + `InMemorySaver`，不联网）
@@ -263,10 +263,11 @@ threads in checkpointer: 1 | conversation_history files: 1
   - 兼容期内顺带删除该会话旧的 `{session_id}-{message_id}` 线程，message_id 取自该会话的 `agent_runs`（尽力而为，遗漏的由清理脚本兜底）；
   - 再调用 legacy 的 `release_session_checkpointer`，并删除隐藏 artifacts 目录（C2 已实现）。
 - **定时任务**：一次运行结束后，用 agent 编译图自己的 checkpointer 删除 `sched-{task_id}-{run_id}`（官方 saver 与 legacy 快照都适用）。定时任务关闭了 HITL（`enable_hitl=False`），没有需要恢复的状态。
-- **存量旧线程**：一次性脚本 `scripts/maintenance/prune_message_threads.py`：
-  - 用 saver 公开的 `alist(None)` 遍历全部 checkpoint 的 thread_id（一次性全量扫描可以接受，且不依赖 `agent_runs` 的保留期）；
-  - 按格式筛出 `{uuid}-{message_id}` 与过期的 `sched-*`，逐个 `adelete_thread`；
-  - 默认只预览，`--apply` 才删除；只删不再有待审批中断的线程。
+- **存量旧线程**：一次性脚本 `scripts/db/prune_checkpoint_threads.py`（P2 已实现；仓库约定脚本按功能分组，放在 `scripts/db/`）：
+  - 用 saver 公开的 `alist(None)` 遍历全部 checkpoint，取每个 thread 根命名空间的最新一个（一次性全量扫描可以接受，且不依赖 `agent_runs` 的保留期）；
+  - 按格式分类：会话 thread（`thread_id` 就是会话 uuid）与无法识别的 thread 保留；`{uuid}-{message_id}` 与 `sched-*` 是清理对象；
+  - 最新 checkpoint 早于 `--min-age-hours`（默认 24）才删，避免删到正在运行的 thread；挂着待审批中断的每消息 thread 保留，审批兼容期结束后用 `--include-pending` 再删；
+  - 默认只预览，`--apply` 才删除；legacy 快照下直接提示不需要清理。
 
 ### 6.8 多副本、并发与 checkpointer
 
@@ -331,7 +332,7 @@ DB 记录用户看到的内容，thread 记录模型看到的内容，二者按�
 | --- | --- | --- |
 | P0 · 铺底（✅ 2026-10-20） | `SessionMemoryMiddleware`、`TurnAwareSummarizationMiddleware`、注入改走 `turn_context`、DB 用户行记录 `turn_id`、删除会话与定时任务清理 thread。每消息 thread 下也成立：记忆和技能本来就每轮重载，注入效果不变 | 无（行为中性） |
 | P1 · 切换（✅ 2026-10-20） | 会话 thread、水合与补齐、审批句柄映射与兼容期、新消息作废审批、半截回复回灌、本轮起点 checkpoint 记录；修复 legacy saver 的裁剪 | `agent.session_thread`（默认关），dev / test 先开 |
-| P2 · 默认开启 | 默认 `true`；运行存量旧线程清理脚本；观察一个版本后删除兼容期旧 thread 恢复代码 | 默认开 |
+| P2 · 默认开启（进行中） | ✅ 存量旧线程清理脚本、✅ 基准（§15）；⬜ dev / test 用真实模型试运行；⬜ 观察一个版本后删除兼容期旧 thread 恢复代码；⬜ 默认改为 `true` | 默认开 |
 
 回滚：把 `agent.session_thread` 设为 `false`，立即回到每消息 thread。DB 投影始终完整，不丢消息；损失的只有 todos 与滚动摘要，这本来就是现状行为。
 
@@ -413,3 +414,36 @@ P2 之前要做的事：
 - 在 dev / test 打开开关试运行，观察摘要频率、首 token 延迟、checkpoint 库大小；
 - 存量旧线程清理脚本（§6.7）；
 - 观察一个版本后删除兼容期旧 thread 的恢复路径，再把默认值改成 `true`。
+
+## 15. P2 进展（2026-10-20）
+
+### 15.1 基准
+
+`docs/audit/evidence-2026-10-19-deepagents/exp_session_thread_benchmark.py` 用项目自己的编排器、主代理的 `TurnAwareSummarizationMiddleware` 和官方 `AsyncSqliteSaver` 跑 60 轮。参数：按项目的摘要比例缩到 32k 窗口（trigger 25.6k、keep 3.2k、trim 4000），每轮约 1.1k token。
+
+| 指标 | 每消息 thread（现状） | 会话 thread |
+| --- | --- | --- |
+| 摘要调用（两种模式都在第 23 轮首次触发） | 37 次（之后每轮一次） | 2 次 |
+| 首次摘要后主模型平均输入 | 3,592 token（被压在 keep 附近） | 12,438 token |
+| checkpoint 库 | 16,960 KB | 2,520 KB |
+| thread 数 | 60 | 1 |
+| `/conversation_history/` | 37 个文件，5,588 KB | 1 个文件，158 KB |
+
+与 §3.2 的估算一致：摘要调用从每轮一次降到偶尔一次（真实环境里每次都在主模型调用之前同步执行）。模型看得到的近期上下文约是现在的 3.5 倍。checkpoint 与历史文件从随轮数平方增长变为线性增长。
+
+### 15.2 存量清理脚本
+
+`scripts/db/prune_checkpoint_threads.py`（规则见 §6.7），测试 `tests/db/test_prune_checkpoint_threads.py`：待审批的判断用真实 LangGraph 中断产生的 pending writes。在一个临时 SQLite checkpoint 库上按预览、`--apply`、复查走了一遍，结果符合预期。
+
+### 15.3 本地开发环境
+
+本地 `.env.dev`（不在版本库里）配置的业务库是 MySQL，又没有配置 checkpoint 路径，所以本地跑的是 legacy 快照 saver：P1 修复的消息丢失问题正好影响本地环境，而且打开开关也会回退到每消息 thread（会记一次告警）。要在本地试运行会话 thread，需要同时设置：
+
+- `EASY_CHECKPOINT_SQLITE_PATH=data/checkpoints.db`（单机；多副本用 `EASY_CHECKPOINT_POSTGRES_URI`）
+- `SESSION_THREAD=true`（`config-example.yaml` 里 `session_thread: ${SESSION_THREAD:-false}`）
+
+### 15.4 剩余事项
+
+1. dev / test 用真实模型试运行，重点看：越过摘要阈值后首 token 延迟、摘要频率、审批与取消路径、切换专家 / 模型。
+2. 生产环境运行 `prune_checkpoint_threads.py`：先预览，确认后加 `--apply`。
+3. 观察一个版本后删除兼容期旧 thread 的恢复路径，用 `--include-pending` 清掉剩下的旧 thread，再把 `session_thread` 默认值改为 `true`。

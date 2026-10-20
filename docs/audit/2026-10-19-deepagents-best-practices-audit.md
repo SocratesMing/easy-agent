@@ -5,7 +5,7 @@
 > 文档来源：LangChain 官方文档（经 Docs MCP `https://docs.langchain.com/mcp` 拉取全文，2026-10-19）+ `langchain-ai/langchain-skills` 中的 deep-agents-core / memory / orchestration 技能 + deepagents 0.7.28 源码。
 > 与既有报告的关系：`docs/audit/2026-10-17-easy-agent-audit.md` 已覆盖的条目不重复展开，只复核状态；本报告新增条目编号为 **DA-xx**，严重度沿用 P0–P3。
 > 测试基线：`pytest tests/` → **1607 passed, 1 skipped, 2 warnings**（266s）。
-> **修复进度**：Batch B（DA-01 / DA-02 / DA-08 / DA-10 / DA-16）与修复中发现的 DA-18 已于 2026-10-19 完成，见 §9；Batch A 已修 SEC-01 / SEC-02 / SEC-04 / SEC-05，SEC-03（免密登录）按产品决定保留，见 §10。C1（DA-06 / DA-09 第一步 / DA-11 / DA-12 / DA-17、sqlite 连接器 `DB_PATH`）已完成，见 §11；C2（DA-04 / DA-05）已完成，见 §12；C3（DA-07）与一批清理项已完成，见 §13。DA-03 设计已评审，P0（铺底，行为中性）与 P1（会话 thread，开关默认关）已于 2026-10-20 完成，见 §14、§15。
+> **修复进度**：Batch B（DA-01 / DA-02 / DA-08 / DA-10 / DA-16）与修复中发现的 DA-18 已于 2026-10-19 完成，见 §9；Batch A 已修 SEC-01 / SEC-02 / SEC-04 / SEC-05，SEC-03（免密登录）按产品决定保留，见 §10。C1（DA-06 / DA-09 第一步 / DA-11 / DA-12 / DA-17、sqlite 连接器 `DB_PATH`）已完成，见 §11；C2（DA-04 / DA-05）已完成，见 §12；C3（DA-07）与一批清理项已完成，见 §13。DA-03 设计已评审，P0（铺底，行为中性）与 P1（会话 thread，开关默认关）已于 2026-10-20 完成，见 §14、§15；P2 的存量清理脚本与基准已完成，见 §16。
 
 ---
 
@@ -290,6 +290,7 @@
 | `exp_route_alias.py` | DA-04 | `/secret/a.txt permission=allowed read -> 'TOP-SECRET'` |
 | `exp_delete_collision2.py` | DA-08 | `TOOL RESULT: delete | CUSTOM delete ran …` |
 | `exp_session_thread.py` | DA-03 | 每消息 thread：越过阈值后每轮 1 次摘要；会话 thread 不做适配：`memory V2 seen False`；加刷新后两者兼得 |
+| `exp_session_thread_benchmark.py` | DA-03 | 60 轮：摘要 37 次 → 2 次；首次摘要后平均输入 3,592 → 12,438 token；checkpoint 库 16,960 KB → 2,520 KB |
 
 ### 8.2 主要参考
 
@@ -402,3 +403,10 @@ thread 仍是每条消息一个，模型看到的内容不变；本批为切换�
 | 定时任务用 agent 编译图自己的 checkpointer 删除本次运行的 thread（legacy 快照也适用） | `tests/agent/test_run_limits.py::test_scheduled_task_deletes_its_thread_after_the_run` |
 
 更正：设计评审稿里两处说法不成立，已在设计文档 §6.8 改正。一是"`messages` 每个 super-step 都写一份完整列表"：`DeltaChannel` 只存增量，会话 thread 的 checkpoint 总量线性增长，每消息 thread 是平方。二是"legacy saver 逻辑不用改"。
+
+## 16. 进展记录（2026-10-20，DA-03 P2）
+
+- 存量清理脚本 `scripts/db/prune_checkpoint_threads.py`：清理官方 saver 里的每消息 thread 与定时任务 thread，默认只预览；会话 thread、近期仍有写入的、挂着待审批的 thread 保留。测试见 `tests/db/test_prune_checkpoint_threads.py`。
+- 基准 `exp_session_thread_benchmark.py`（结果见设计文档 §15.1）：会话 thread 把摘要调用从每轮一次降到偶尔一次，模型可见的近期上下文约为原来的 3.5 倍，checkpoint 库约为原来的 1/7。
+- 本地 `.env.dev` 的业务库是 MySQL 且没配 checkpoint 路径，跑的是 legacy 快照；要试运行会话 thread 需设置 `EASY_CHECKPOINT_SQLITE_PATH` 与 `SESSION_THREAD=true`。
+- 剩余：真实模型试运行、生产执行清理脚本、观察一个版本后删除审批兼容路径并把默认值改为开启。

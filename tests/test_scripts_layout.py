@@ -26,6 +26,7 @@ EXPECTED_ENTRYPOINTS = {
     "db/migrate_db.py",
     "db/migrate_sqlite_to_mysql.py",
     "db/mysql_target.py",
+    "db/prune_checkpoint_threads.py",
     "deps/download_backend_deps.py",
     "docs/generate_api_docs.py",
     "skills/sync_skills.py",
