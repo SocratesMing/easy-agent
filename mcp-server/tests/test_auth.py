@@ -7,6 +7,7 @@ from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
 
 import easy_mcp_server.keys as keys_module
+from easy_mcp_server.auth import ANONYMOUS_USER
 from easy_mcp_server.keys import create_mysql_verifier, hash_api_key
 
 from support import FakeKeyStore, build_hello
@@ -20,20 +21,22 @@ async def _call(server: str, tool: str, args: dict, api_key: str | None):
             return await session.call_tool(tool, args)
 
 
-async def test_missing_api_key_is_rejected(server):
-    with pytest.raises(Exception):
-        await _call(server, "echo", {"text": "x"}, None)
+async def test_missing_api_key_falls_back_to_anonymous(server):
+    result = await _call(server, "whoami", {}, None)
+    assert ANONYMOUS_USER in result.content[0].text
 
 
-async def test_invalid_api_key_is_rejected(server):
-    with pytest.raises(Exception):
-        await _call(server, "echo", {"text": "x"}, "key-nope")
+async def test_invalid_api_key_falls_back_to_anonymous(server):
+    result = await _call(server, "whoami", {}, "key-nope")
+    assert ANONYMOUS_USER in result.content[0].text
 
 
-async def test_revoked_key_is_rejected(server, key_store):
+async def test_revoked_key_falls_back_to_anonymous(server, key_store):
     key_store.revoke("hello", "key-bob")
-    with pytest.raises(Exception):
-        await _call(server, "echo", {"text": "x"}, "key-bob")
+    result = await _call(server, "whoami", {}, "key-bob")
+    payload = result.content[0].text
+    assert ANONYMOUS_USER in payload
+    assert "bob" not in payload
 
 
 async def test_tool_sees_username_from_api_key(server):
@@ -49,17 +52,12 @@ async def test_different_keys_resolve_different_users(server):
 
 
 async def test_key_is_bound_to_business(server, key_store):
-    """同一用户的 key 不能跨业务使用（每用户每业务一把）。"""
-    import httpx
-
+    """其它业务的 key 不会解析出该用户身份（每用户每业务一把），只按匿名放行。"""
     key_store.issue("second", "key-for-second", "alice")
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            f"{server}/mcp/hello/",
-            json={"jsonrpc": "2.0", "id": 1, "method": "ping"},
-            headers={"Authorization": "Bearer key-for-second"},
-        )
-    assert resp.status_code == 401
+    result = await _call(server, "whoami", {}, "key-for-second")
+    payload = result.content[0].text
+    assert ANONYMOUS_USER in payload
+    assert "alice" not in payload
 
 
 # ── MySQL 校验器（mock 数据库） ─────────────────────────────────────────

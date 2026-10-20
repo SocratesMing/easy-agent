@@ -102,15 +102,15 @@ async def test_manifest_is_public_and_machine_readable(server):
     assert urls["hello"].endswith("/mcp/hello/")
 
 
-async def test_unknown_business_returns_401(server):
-    """未知业务先过鉴权（key 对其无效 → 401），刻意不返回 404 以避免暴露业务存在性。"""
+async def test_unknown_business_returns_404(server):
+    """跳过 Token 校验后，未知业务不再被 401 挡在前面，直接落到路由层 404。"""
     async with httpx.AsyncClient() as client:
         resp = await client.post(
             f"{server}/mcp/does-not-exist/",
             json={"jsonrpc": "2.0", "id": 1, "method": "ping"},
             headers={"Authorization": "Bearer key-alice"},
         )
-    assert resp.status_code == 401
+    assert resp.status_code == 404
 
 
 async def test_unexpected_host_header_is_rejected(server):

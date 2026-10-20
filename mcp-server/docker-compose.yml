@@ -1,0 +1,39 @@
+# Easy MCP Server 独立部署
+# 远程目录：/mnt/data/easyagent/mcp-server
+# 用法（在部署目录）:
+#   docker compose --env-file .env up -d --build
+#
+# 对外端口：22337 → 容器内 8174
+# MySQL 与主应用共用（.env 中 MYSQL_* 必须与 easy-agent 一致）
+
+services:
+  mcp-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: easy-mcp-server:dev
+    container_name: easy-mcp-server
+    restart: unless-stopped
+    ports:
+      - "22337:8174"
+    env_file:
+      - .env
+    environment:
+      MCP_PORT: "8174"
+    volumes:
+      # 可选：改配置后重启容器即可，无需重建镜像
+      - ./.env:/app/.env:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8174/health')",
+        ]
+      interval: 30s
+      timeout: 10s
+      start_period: 20s
+      retries: 5

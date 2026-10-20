@@ -1,10 +1,13 @@
-"""Bearer API-key authentication for mounted MCP apps.
+"""Bearer API-key identity resolution for mounted MCP apps.
 
-The middleware protects everything under ``/mcp/<business>/`` and leaves every
-other path (notably ``/health``) open. Verification is delegated to an
+The middleware covers everything under ``/mcp/<business>/`` and leaves every
+other path (notably ``/health``) untouched. Verification is delegated to an
 injectable verifier so tests can run without a database:
 
     verifier(business, api_key) -> username | None
+
+Token 校验已跳过：缺少或无效的 Key 不再返回 401，请求以 ``ANONYMOUS_USER``
+身份放行；携带有效 Key 时仍解析为对应用户（行级业务如 strategyqa 依赖它）。
 """
 
 from __future__ import annotations
@@ -16,7 +19,6 @@ from typing import Awaitable, Callable, Optional, Union
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
-from starlette.responses import JSONResponse
 from starlette.types import ASGIApp
 
 from . import context
@@ -26,6 +28,8 @@ logger = logging.getLogger("easy-mcp-server")
 MCP_PREFIX = "/mcp/"
 _BUSINESS_RE = re.compile(r"^/mcp/([^/]+)")
 
+ANONYMOUS_USER = "anonymous"
+
 # (business, api_key) -> username, or None when the key is not usable
 ApiKeyVerifier = Callable[[str, str], Union[Optional[str], Awaitable[Optional[str]]]]
 
@@ -34,16 +38,6 @@ def extract_business(path: str) -> str | None:
     """Return the business name encoded in an MCP request path."""
     match = _BUSINESS_RE.match(path)
     return match.group(1) if match else None
-
-
-def _unauthorized(detail: str) -> JSONResponse:
-    # 不区分"key 不存在"与"业务不匹配"，避免被探测
-    logger.warning(f"MCP 鉴权失败: {detail}")
-    return JSONResponse(
-        status_code=401,
-        content={"error": "invalid_api_key"},
-        headers={"WWW-Authenticate": "Bearer"},
-    )
 
 
 class BearerApiKeyMiddleware(BaseHTTPMiddleware):
@@ -59,17 +53,14 @@ class BearerApiKeyMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         header = request.headers.get("authorization", "")
-        if not header.lower().startswith("bearer "):
-            return _unauthorized("缺少 Authorization 头")
-        api_key = header[7:].strip()
-        if not api_key:
-            return _unauthorized("API Key 为空")
+        api_key = header[7:].strip() if header.lower().startswith("bearer ") else ""
 
-        username = self._verifier(business, api_key)
-        if inspect.isawaitable(username):
-            username = await username
-        if not username:
-            return _unauthorized("API Key 无效")
+        username = None
+        if api_key:
+            username = self._verifier(business, api_key)
+            if inspect.isawaitable(username):
+                username = await username
+        username = username or ANONYMOUS_USER
 
         context.set_identity(username, business)
         try:

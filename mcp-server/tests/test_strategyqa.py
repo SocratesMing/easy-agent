@@ -359,13 +359,8 @@ async def test_describe_table_exposes_schema_not_rows(strategy_env):
     assert "爱丽丝的策略" not in text  # 不含任何业务数据
 
 
-async def test_invalid_api_key_is_rejected(strategy_env):
-    import httpx
-
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            f"{strategy_env.base}/mcp/strategyqa/",
-            json={"jsonrpc": "2.0", "id": 1, "method": "ping"},
-            headers={"Authorization": "Bearer wrong-key"},
-        )
-    assert resp.status_code == 401
+async def test_invalid_api_key_sees_no_one_elses_strategies(strategy_env):
+    """无效 key 按匿名身份放行，AUTHOR 过滤仍生效：看不到任何真实用户的策略。"""
+    result = await _call_tool(strategy_env.base, "wrong-key", "list_strategies")
+    text = result.content[0].text
+    assert "爱丽丝的策略" not in text
