@@ -486,20 +486,17 @@ async def add_skill_to_user(
     username: Annotated[str, Depends(get_current_username)],
 ):
     """将公共技能文件夹完整复制到用户 workspace/{username}/skills/ 目录下"""
-    _cfg = get_agent_config()
-    skills_root = _cfg["config"].tools.skills_dir if _cfg else "./skills"
-
-    if not skills_root:
-        raise HTTPException(status_code=400, detail="系统未配置公共技能目录")
-
-    # 查找源技能目录
-    source_dir = Path(skills_root) / request.dir_name
-    if not source_dir.exists() or not source_dir.is_dir():
-        raise HTTPException(status_code=404, detail=f"公共技能 '{request.dir_name}' 不存在")
-
-    # 检查是否为合法的技能目录
-    if not (source_dir / "SKILL.md").exists() and not (source_dir / "README.md").exists():
-        raise HTTPException(status_code=400, detail=f"'{request.dir_name}' 不是有效的技能目录")
+    # 公共技能可能有多个候选位置（CWD 下的 ./skills、项目根下的 ./skills），
+    # 统一由 skill_library 判定，避免「换启动目录就找不到技能」。
+    source_dir = skill_library.public_skill_source(request.dir_name)
+    if source_dir is None:
+        searched = "；".join(
+            str(item) for item in skill_library.public_skills_dir_candidates()
+        ) or "（未配置 tools.skills_dir）"
+        raise HTTPException(
+            status_code=404,
+            detail=f"公共技能 '{request.dir_name}' 不存在。已查找: {searched}",
+        )
 
     try:
         # 原子复制（与「专家依赖技能自动补装」共用同一份实现，见 skill_library）
