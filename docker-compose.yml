@@ -45,11 +45,14 @@ services:
       - ./.env.dev:/app/.env.dev:ro
       # 宿主机改提示词后重启 backend 即生效
       - ./easy_agent/config/prompts:/app/easy_agent/config/prompts
-      - easy_agent_data:/app/data
-      - easy_agent_workspace:/app/workspace
-      - easy_agent_memories:/app/memories
-      - easy_agent_sessions:/app/sessions
-      - easy_agent_logs:/app/logs
+      # 公共（预置）专家目录：宿主机新增/修改专家后重启 backend 即生效
+      - ./exports:/app/exports
+      # 运行时数据：相对本 compose 文件目录的宿主机路径（不再用 named volume）
+      - ./data:/app/data
+      - ./workspace:/app/workspace
+      - ./memories:/app/memories
+      - ./sessions:/app/sessions
+      - ./logs:/app/logs
     networks:
       - easyagent-net
     extra_hosts:
@@ -80,13 +83,6 @@ services:
       - backend
     networks:
       - easyagent-net
-
-volumes:
-  easy_agent_data:
-  easy_agent_workspace:
-  easy_agent_memories:
-  easy_agent_sessions:
-  easy_agent_logs:
 
 networks:
   easyagent-net:
