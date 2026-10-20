@@ -48,7 +48,10 @@
 </template>
 
 <script>
-import * as monaco from 'monaco-editor'
+// 只引入编辑器内核 + JSON 语言：整包 monaco-editor 会带上全部语言（约 12MB），
+// 而这里只编辑 mcp.json。worker 仍由下面 MonacoEnvironment 里的 new Worker 提供。
+import * as monaco from 'monaco-editor/esm/vs/editor/editor.api'
+import 'monaco-editor/esm/vs/language/json/monaco.contribution'
 import { getMcpRaw, saveMcpRaw } from '../../../api/connectors.js'
 
 // webpack 5 不会自动注入 Monaco 的 worker 工厂，JSON 语言服务初始化时会抛
