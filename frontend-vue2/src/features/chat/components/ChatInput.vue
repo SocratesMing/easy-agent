@@ -144,82 +144,20 @@
               </div>
 
               <!-- 专家：上下两区（我的专家 / 公共专家），点击行 = 召唤（再点 = 取消召唤） -->
-              <div
+              <ExpertSubpanelList
                 v-if="!plusListLoading && !plusListError && subpanelCategory === 'experts'"
-                class="plus-subpanel-list plus-experts"
+                :loading="plusListLoading"
+                :error="plusListError"
+                :my-experts="myExpertsActive"
+                :visible-my-experts="visibleMyExperts"
+                :public-experts="publicExperts"
+                :visible-public-experts="visiblePublicExperts"
+                :active-expert-id="activeExpert && activeExpert.export_agent_id"
+                @toggle="toggleExpert"
+                @more="loadMoreExperts"
+                @create="handleMenuPanel('experts')"
                 @scroll="onExpertsScroll"
-              >
-                <!-- 上区：我的专家（仅展示「可用」状态的专家，与专家 Tab 的召唤约束一致） -->
-                <div class="plus-experts-section">
-                  <span class="plus-experts-section-label">我的专家</span>
-                  <span v-if="myExpertsActive.length" class="plus-experts-section-count">{{ myExpertsActive.length }}</span>
-                </div>
-                <button
-                  v-for="item in visibleMyExperts"
-                  :key="`mine:${item.export_agent_id}`"
-                  type="button"
-                  class="plus-expert-row"
-                  :class="{ selected: isExpertSelected(item) }"
-                  :title="isExpertSelected(item) ? '再次点击取消召唤' : `召唤「${item.export_name_cn}」`"
-                  @click="toggleExpert(item)"
-                >
-                  <span class="plus-expert-avatar" :class="expertAvatarClass(item)">{{ expertAvatarChar(item) }}</span>
-                  <span class="plus-expert-main">
-                    <span class="plus-expert-name">{{ item.export_name_cn }}</span>
-                    <span class="plus-expert-desc">{{ expertDesc(item) }}</span>
-                  </span>
-                  <span v-if="isExpertSelected(item)" class="plus-expert-state">已选</span>
-                </button>
-                <div v-if="!myExpertsActive.length" class="plus-expert-empty">
-                  <span class="plus-expert-empty-text">您还没有创建自己的专家</span>
-                  <button type="button" class="plus-expert-create" @click="handleMenuPanel('experts')">
-                    「去创建」
-                  </button>
-                </div>
-                <!-- 兜底：内容未超出容器高度时不会产生滚动条，用可点击的「还有 N 位」保证可达 -->
-                <button
-                  v-if="myExpertsActive.length > visibleMyExperts.length"
-                  type="button"
-                  class="plus-expert-more"
-                  @click="loadMoreExperts"
-                >
-                  还有 {{ myExpertsActive.length - visibleMyExperts.length }} 位 · 点击加载
-                </button>
-
-                <div class="plus-experts-divider"></div>
-
-                <!-- 下区：公共（预置）专家 -->
-                <div class="plus-experts-section">
-                  <span class="plus-experts-section-label">公共专家</span>
-                  <span class="plus-experts-badge">预置</span>
-                  <span v-if="publicExperts.length" class="plus-experts-section-count">{{ publicExperts.length }}</span>
-                </div>
-                <button
-                  v-for="item in visiblePublicExperts"
-                  :key="`public:${item.export_agent_id}`"
-                  type="button"
-                  class="plus-expert-row"
-                  :class="{ selected: isExpertSelected(item) }"
-                  :title="isExpertSelected(item) ? '再次点击取消召唤' : `召唤「${item.export_name_cn}」`"
-                  @click="toggleExpert(item)"
-                >
-                  <span class="plus-expert-avatar" :class="expertAvatarClass(item)">{{ expertAvatarChar(item) }}</span>
-                  <span class="plus-expert-main">
-                    <span class="plus-expert-name">{{ item.export_name_cn }}</span>
-                    <span class="plus-expert-desc">{{ expertDesc(item) }}</span>
-                  </span>
-                  <span v-if="isExpertSelected(item)" class="plus-expert-state">已选</span>
-                </button>
-                <div v-if="!publicExperts.length" class="plus-list-hint">公共专家目录为空</div>
-                <button
-                  v-if="publicExperts.length > visiblePublicExperts.length"
-                  type="button"
-                  class="plus-expert-more"
-                  @click="loadMoreExperts"
-                >
-                  还有 {{ publicExperts.length - visiblePublicExperts.length }} 位 · 点击加载
-                </button>
-              </div>
+              />
 
               <!-- 技能 / 连接器：沿用通用条目列表 -->
               <div v-else class="plus-subpanel-list">
@@ -531,6 +469,7 @@ import {
   expertAvatarChar as buildExpertAvatarChar,
   expertAvatarClass as buildExpertAvatarClass
 } from '../../../utils/expertAvatar.js'
+import ExpertSubpanelList from './ExpertSubpanelList.vue'
 import PlusMenu from './PlusMenu.vue'
 import ModelPicker from './ModelPicker.vue'
 import UploadTray from './UploadTray.vue'
@@ -560,7 +499,7 @@ const TEXTAREA_LINE_HEIGHT = 24
 const TEXTAREA_MAX_HEIGHT = TEXTAREA_MAX_ROWS * TEXTAREA_LINE_HEIGHT
 
 export default {
-  components: { FileIcon, SkillIcon, KnowledgeScopeSelector, UploadTray, ModelPicker, PlusMenu },
+  components: { FileIcon, SkillIcon, KnowledgeScopeSelector, UploadTray, ModelPicker, PlusMenu, ExpertSubpanelList },
   props: {
     disabled: {
       type: Boolean,
@@ -3706,148 +3645,11 @@ html[data-theme="dark"] .plus-list-tag.custom {
 .plus-subpanel-list.plus-experts {
   max-height: 320px;
 }
-.plus-experts-section {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 6px 6px;
-}
-.plus-experts-section-label {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--text-secondary, #64748b);
-}
-.plus-experts-section-count {
-  font-size: 11px;
-  color: var(--text-secondary, #64748b);
-  font-variant-numeric: tabular-nums;
-}
-.plus-experts-badge {
-  padding: 1px 6px;
-  border-radius: 5px;
-  font-size: 10.5px;
-  background: var(--bg-tertiary, #f1f5f9);
-  color: var(--text-secondary, #64748b);
-}
-.plus-experts-divider {
-  height: 1px;
-  margin: 8px 4px;
-  background: var(--border-color, #e2e8f0);
-}
-.plus-expert-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  width: 100%;
-  /* 与技能面板 .plus-list-item 的行内边距保持一致 */
-  padding: 8px 10px;
-  border: 1px solid transparent;
-  border-radius: 8px;
-  background: transparent;
-  cursor: pointer;
-  text-align: left;
-  transition: background 0.15s ease, border-color 0.15s ease;
-}
-.plus-expert-row:hover {
-  background: var(--bg-tertiary, #f1f5f9);
-}
 /* 已召唤：整行高亮（再点一次取消） */
-.plus-expert-row.selected {
-  background: color-mix(in srgb, var(--accent-color) 14%, transparent);
-  border-color: color-mix(in srgb, var(--accent-color) 45%, transparent);
-}
-.plus-expert-avatar {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  /* 尺寸/字号/字重与技能面板 .plus-list-icon（initial 变体）一致 */
-  width: 28px;
-  height: 28px;
-  flex-shrink: 0;
-  border-radius: 8px;
-  font-size: 12px;
-  font-weight: 700;
-  /* 底色/字色由全局 .ea-0 ~ .ea-7 提供（按专家 ID 稳定取档）；此处不写死，
-     否则会与全局色板同权重竞争、按注入顺序取胜而覆盖配色。 */
-}
 
 /* 头像配色已收敛到全局 .ea-0 ~ .ea-7（style.css + utils/expertAvatar.js）：
    按 export_agent_id 稳定取档，技能中心 / 下拉 / 胶囊 / 消息标识四处同色。
    这里不再保留按序号取色的 av-c0..av-c7，避免两套色板并存。 */
-.plus-expert-main {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-}
-.plus-expert-name {
-  flex-shrink: 0;
-  max-width: 52%;
-  /* 字体样式与技能面板 .plus-list-name 一致 */
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text-primary, #1e293b);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.plus-expert-desc {
-  flex: 1;
-  min-width: 0;
-  /* 字体样式与技能面板 .plus-list-desc 一致 */
-  font-size: 12px;
-  color: var(--text-secondary, #64748b);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.plus-expert-state {
-  flex-shrink: 0;
-  padding: 1px 6px;
-  border-radius: 5px;
-  font-size: 11px;
-  font-weight: 500;
-  background: var(--accent-color, #0ea5e9);
-  color: #fff;
-}
-.plus-expert-empty {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  padding: 10px 8px;
-  font-size: 12.5px;
-  color: var(--text-secondary, #64748b);
-}
 /* 默认与提示文字同色，悬停才变强调色（不做成显眼的链接） */
-.plus-expert-create {
-  padding: 0;
-  border: none;
-  background: transparent;
-  font-size: 12.5px;
-  color: var(--text-secondary, #64748b);
-  cursor: pointer;
-}
-.plus-expert-create:hover {
-  color: var(--accent-color, #0ea5e9);
-  text-decoration: underline;
-}
 /* 「还有 N 位」兜底行（内容未超高、无滚动条时的可达入口） */
-.plus-expert-more {
-  width: 100%;
-  margin-top: 2px;
-  padding: 5px 8px;
-  border: none;
-  border-radius: 8px;
-  background: transparent;
-  font-size: 11.5px;
-  color: var(--text-secondary, #64748b);
-  text-align: center;
-  cursor: pointer;
-}
-.plus-expert-more:hover {
-  background: var(--bg-tertiary, #f1f5f9);
-  color: var(--accent-color, #0ea5e9);
-}
 </style>
