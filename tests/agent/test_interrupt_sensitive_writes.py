@@ -68,3 +68,63 @@ def test_skills_not_mounted_only_protects_memories(tmp_path: Path):
     interrupt = _interrupt_rules(rules)
     assert len(interrupt) == 1
     assert interrupt[0].paths == ["/memories/**"]
+
+
+# ── 框架级验证：真实建图后写入是否真的暂停 ──────────────────────────
+
+import tempfile
+
+from deepagents import FilesystemPermission, create_deep_agent
+from deepagents.backends.filesystem import FilesystemBackend
+from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+from langchain_core.messages import AIMessage, HumanMessage
+from langgraph.checkpoint.memory import MemorySaver
+
+
+class _ScriptedModel(GenericFakeChatModel):
+    """按脚本产出一次 write_file 工具调用；GenericFakeChatModel 不支持 bind_tools。"""
+
+    def bind_tools(self, tools, **kwargs):
+        return self
+
+
+def _interrupt_for(path: str):
+    model = _ScriptedModel(
+        messages=iter(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {"name": "write_file", "args": {"file_path": path, "content": "x"}, "id": "c1"}
+                    ],
+                ),
+                AIMessage(content="done"),
+            ]
+        )
+    )
+    agent = create_deep_agent(
+        model=model,
+        system_prompt="x",
+        backend=FilesystemBackend(root_dir=tempfile.mkdtemp(), virtual_mode=True),
+        permissions=[
+            FilesystemPermission(operations=["write"], paths=["/memories/**"], mode="interrupt")
+        ],
+        checkpointer=MemorySaver(),
+    )
+    result = agent.invoke(
+        {"messages": [HumanMessage(content="write")]},
+        config={"configurable": {"thread_id": "t-interrupt"}},
+    )
+    return result.get("__interrupt__")
+
+
+def test_write_to_memories_really_pauses():
+    interrupt = _interrupt_for("/memories/AGENTS.md")
+    assert interrupt, "写入 /memories 应当触发人工审批"
+    actions = interrupt[0].value["action_requests"]
+    assert actions[0]["name"] == "write_file"
+    assert actions[0]["args"]["file_path"] == "/memories/AGENTS.md"
+
+
+def test_write_to_workspace_is_not_interrupted():
+    assert not _interrupt_for("/workspace/notes.md"), "普通工作区写入不应打断"
