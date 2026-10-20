@@ -17,7 +17,7 @@ const MAX_NEW_FILE_LINES = 800
 
 /** 现存超大文件的行数预算（= 2026-10-20 实测值，只允许往下调） */
 const LINE_BUDGET = {
-  'App.vue': 3459,
+  'App.vue': 3019,
   'components/ChatInput.vue': 4669,
   'components/ChatMessage.vue': 2579,
   'components/ExpertListPanel.vue': 1649,
