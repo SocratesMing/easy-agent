@@ -120,7 +120,7 @@ import {
   renderMarkdown,
   installCodeCopyHandler,
 } from '../../markdownSetup.js'
-import hljs from 'highlight.js'
+import hljs from '../markdown/hljs.js'
 import 'highlight.js/styles/github.css'
 
 // 注册 KaTeX 数学公式 + emoji 短代码扩展（幂等，仅执行一次）
