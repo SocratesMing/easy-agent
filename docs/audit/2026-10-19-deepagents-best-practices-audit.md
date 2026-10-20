@@ -268,8 +268,8 @@
 | C1 · 快速项 | DA-06 模型 `profile` + 官方摘要中间件覆盖；DA-12 官方 `ToolErrorMiddleware`；DA-11 子代理工具收窄；DA-09 第一步 MCP annotations 决定审批；DA-17 过时注释与文档；sqlite 连接器 `DB_PATH` 限定个人工作区 | ✅ 已完成（§11） |
 | C2 · Backend 重构 | DA-04 默认路由改隐藏目录（修已复现的 deny 别名绕过，框架产物不再出现在用户工作区）；DA-05 改用真实 `CompositeBackend` | ✅ 已完成（§12） |
 | C3 · 沙箱加固 | DA-07 网络开关（默认联网，可配置断网）、技能目录只读挂载、execute 超时上限；CPU / 内存 / 进程数限额暂缓（原因见 §13） | ✅ 已完成（§13） |
-| D · 演进 | DA-03 thread = 会话（超过摘要阈值后每轮都会重新摘要整段历史；设计文档已评审：`docs/archive/design/2026-10-19-da03-session-thread.md`，按 P0–P2 分阶段实施，P0 / P1 已完成见 §14、§15）；DA-13 技能多源 / 只读 / pinned（设计文档已评审：`docs/design/2026-10-20-da13-skills-sources.md`，按 S1–S3 实施，S1、S2 已完成见 §17、§18，剩 S3 拆分超长 `SKILL.md`）；子代理进度事件流；DA-09 迁移 `langchain.mcp`（beta）；DA-14 LangSmith 沙箱生命周期；`services/` 拆领域子包 | 1–2 周，需设计文档 |
-| 穿插项 | CI 缺 `sqlite-saver` extra（暂不处理）；SEC-03 签名免密（需门户配合）；DA-15 前端审批交互（按工具的拒绝说明与去重已完成，逐动作决策与 `edit` 待定）；~~工具工厂并入 `ToolSpec`~~（2026-10-20 评估后保持现状，见 §17）；MySQL 连接器可达内网任意主机（2026-10-19 决定保持现状） | 待定 |
+| D · 演进 | DA-03 thread = 会话（超过摘要阈值后每轮都会重新摘要整段历史；设计文档已评审：`docs/archive/design/2026-10-19-da03-session-thread.md`，按 P0–P2 分阶段实施，P0 / P1 已完成见 §14、§15）；DA-13 技能多源 / 只读 / pinned（设计文档已评审：`docs/design/2026-10-20-da13-skills-sources.md`，按 S1–S3 实施，S1、S2 已完成见 §17、§18，S3 已由 `0cfa312` 完成见 §19）；子代理进度事件流；DA-09 迁移 `langchain.mcp`（beta）；DA-14 LangSmith 沙箱生命周期；`services/` 拆领域子包 | 1–2 周，需设计文档 |
+| 穿插项 | CI 缺 `sqlite-saver` extra（暂不处理）；SEC-03 签名免密（需门户配合）；DA-15 前端审批交互（按工具的拒绝说明与去重已完成；`edit` 已随规范一致性审计 D8 上线（`17842a7`），逐动作决策待定，见 §19）；~~工具工厂并入 `ToolSpec`~~（2026-10-20 评估后保持现状，见 §17）；MySQL 连接器可达内网任意主机（2026-10-19 决定保持现状） | 待定 |
 
 --- | --- | --- |
 | A · 安全止血（先做） | SEC-01 下线/鉴权 Web 终端；SEC-02 SPA 回退路径校验；SEC-03 默认关闭免密；SEC-04 用户侧禁止 stdio、取消用户配置的 `${VAR}` 展开；SEC-05 下载接口复用 `resolve_workspace_file` | 1–2 天 |
@@ -435,3 +435,22 @@ thread 仍是每条消息一个，模型看到的内容不变；本批为切换�
 | 技能中心路径穿越（改造前就有） | `remove-skill` 等接口直接拼「用户技能目录 / dir_name」，`../../别的用户/skills/x` 能删掉别的用户的技能；现在七个接口统一校验目录名（400） | `tests/api/test_skill_center.py::test_skill_endpoints_reject_path_traversal` |
 
 细节与实施中的调整见设计文档 §14。
+
+## 19. 进展记录（2026-10-20 晚，规范一致性审计 D 项）
+
+DA-13 S2 提交后，另一路开发按 `docs/design/2026-10-20-deepagents-conformance-audit.md`（0.7.28 规范一致性审计）实施了 D2–D9。复核结论详见该文档 §5.2，摘要如下：
+
+| 条目 | 提交 | 与本报告的关系 | 复核 |
+| --- | --- | --- | --- |
+| D2 `include_tools` 通用化 | `e27dae0` | DA-13 后续 | ❌ 没配公共技能目录时建图 `TypeError`（回归）；用户没添加的公共技能声明的工具会被藏起来 |
+| D3 frontmatter 校验 | `68bfe4e` | — | ✅ 校验逻辑达标；技能中心展示与 CI 校验未做 |
+| D4 MCP 工具前缀 | `e16f9e1` | DA-09 相关 | ❌ 开关打开后技能带不出带前缀的工具；开关读取绕开 `bootstrap.env`（开关默认关，当前无影响） |
+| D6 子代理 spec 字段 | `9923c68` | DA-11 后续 | ✅ |
+| D7 敏感路径写入审批 | `cd1d8a1` | — | ❌ 定时任务（`enable_hitl=False`）写记忆 / 技能会中断，调度器记为成功并删除 thread，写入丢失；模板与本机配置默认开启 |
+| D8 审批 `edit` | `17842a7` | DA-15 | ⚠️ 编辑一条会自动批准同批其余操作；后端不校验 `edited_action.name`；Vue3 两个文件整体从 CRLF 转成 LF。删除类不给 `edit` 的收紧正在进行（未提交） |
+| D9 精简 `SKILL.md` | `0cfa312` | DA-13 S3 | ✅ |
+| 脚本移动 | `3bd8a7e` | — | ✅ `scripts/sync-frontend-shared.mjs` 移入 `scripts/dev/`，`tests/test_scripts_layout.py` 恢复通过 |
+
+其中三处 ❌ 已修复：D2 建图 `TypeError`、D4 开启前缀后技能带不出工具、D7 定时任务丢失写入。每处都有回归测试，见规范一致性审计 §5.2 末尾；D2 扫描范围与 D8 的问题仍未处理。
+
+另有进行中的 `reasoning_content` 回传修复（工作区未提交），针对 DA-13 设计文档 §14.4 记录的真实模型用例 400（thinking 模式要求回传 `reasoning_content`）。D5（MCP 会话池）按原计划只做风险登记。

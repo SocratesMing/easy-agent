@@ -53,7 +53,7 @@ from easy_agent.agent.memory import SessionMemoryMiddleware
 from deepagents.middleware.skills import SkillsMiddleware
 from easy_agent.tools.registry import skill_gated_tool_names
 from easy_agent.agent import builtin_skills
-from easy_agent.agent.skills import declared_include_tools
+from easy_agent.agent.skills import declared_include_tools, skill_tool_resolver
 from easy_agent.utils.mcp_tool_names import resolve_tool_names
 from easy_agent.agent.builtin_skills import BUILTIN_VIRTUAL_ROOT
 from easy_agent.bootstrap.logger import AgentLogger
@@ -593,7 +593,12 @@ class EasyAgent(AgentWorkspaceMixin):
             graph_tools = [t for t in graph_tools if getattr(t, "name", "") not in gated_actual]
             if gated_tools and skills_paths:
                 main_middleware.append(
-                    SkillsMiddleware(backend=backend, sources=skills_paths, tools=gated_tools)
+                    # 传 resolver 而不是列表：开启 MCP 前缀后技能里写的是原名（D4）
+                    SkillsMiddleware(
+                        backend=backend,
+                        sources=skills_paths,
+                        tools=skill_tool_resolver(gated_tools),
+                    )
                 )
             if memory_list:
                 main_middleware.append(

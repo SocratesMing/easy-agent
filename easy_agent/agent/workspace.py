@@ -239,7 +239,12 @@ class AgentWorkspaceMixin:
 
         # D7：敏感路径写入走人工审批。放在所有 deny 之后，保证「已有技能不可改」
         # 等硬禁令仍然优先命中；只有真正落到这里的写入才需要批准。
-        if getattr(self.config.agent, "interrupt_sensitive_writes", False):
+        # 关闭了 HITL 的运行（定时任务）没人审批：中断只会让写入丢失（调度器把这次运行
+        # 记为结束、随后删掉 thread），所以这类运行不生成 interrupt 规则，行为与 D7 之前一致。
+        sensitive = getattr(self.config.agent, "interrupt_sensitive_writes", False)
+        if sensitive and not getattr(self, "enable_hitl", True):
+            logger.info(f"[{self.sid}] 🔏 HITL 已关闭，敏感路径写入不走审批（无人可批）")
+        elif sensitive:
             # /memories/ 路由总是挂载（backend.py），/user-skills/ 只在技能目录存在时挂载
             interrupt_paths: list[str] = ["/memories/**"]
             if skills_mounted:

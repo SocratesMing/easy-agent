@@ -393,7 +393,8 @@ def test_agent_manager_injects_save_expert(client, monkeypatch):
     )
 
     assert "save_expert" not in {getattr(t, "name", "") for t in (captured.get("tools") or [])}
-    tools = {getattr(t, "name", ""): t for t in recorded[-1]["tools"]}
+    # tools 是 resolver（D4：兼容 MCP 前缀），按技能里写的名字取工具
+    tools = {t.name: t for t in recorded[-1]["tools"]("save_expert", None)}
     assert "save_expert" in tools
     assert "credit_research: 信用研究" in tools["save_expert"].description
     assert tools["save_expert"].tag_options == TAG_OPTIONS
@@ -544,7 +545,7 @@ def test_agent_manager_save_expert_is_carried_by_expert_creator_skill(client, mo
         )
     )
     assert "save_expert" not in _tool_names(captured[-1])
-    assert [getattr(t, "name", "") for t in recorded[-1]["tools"]] == ["save_expert"]
+    assert [t.name for t in recorded[-1]["tools"]("save_expert", None)] == ["save_expert"]
     assert recorded[-1]["sources"][-1] == "/user-skills/"
 
     built = len(recorded)

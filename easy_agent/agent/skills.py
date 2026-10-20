@@ -2,10 +2,12 @@
 
 import logging
 import re
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from typing import Any
 
 from pathlib import Path
+
+from easy_agent.utils.mcp_tool_names import resolve_tool_names
 
 
 # 官方 Agent Skills 规范里的硬限制（deepagents 0.7.22+ 文档「Skills › Limitations」）
@@ -137,7 +139,7 @@ def parse_skill_frontmatter(text: str) -> tuple[dict[str, Any] | None, str | Non
 
 
 
-def declared_include_tools(skill_dirs: Iterable[str | Path] | None = None) -> frozenset[str]:
+def declared_include_tools(skill_dirs: Iterable[str | Path | None] | None = None) -> frozenset[str]:
     """收集技能 frontmatter 里 ``metadata.include_tools`` 声明的工具名（DA-13）。
 
     官方约定是**空格分隔的字符串**（``include_tools: save_expert fetch_url``）；
@@ -148,12 +150,15 @@ def declared_include_tools(skill_dirs: Iterable[str | Path] | None = None) -> fr
 
     Args:
         skill_dirs: 技能源目录（真实路径），通常为 canonical 公共技能目录 + 用户技能目录。
+            没配公共技能目录时调用方传进来的是 ``None``，跳过即可。
 
     Returns:
-        工具名集合；目录不存在或 frontmatter 解析失败时跳过。
+        工具名集合；目录未配置、不存在或 frontmatter 解析失败时跳过。
     """
     names: set[str] = set()
     for root in skill_dirs or ():
+        if not root:
+            continue
         base = Path(root)
         if not base.is_dir():
             continue
@@ -180,6 +185,24 @@ def declared_include_tools(skill_dirs: Iterable[str | Path] | None = None) -> fr
                 continue
             names.update(raw.split())
     return frozenset(names)
+
+
+def skill_tool_resolver(tools: Iterable[Any]) -> Callable[[str, Any], list[Any]]:
+    """``SkillsMiddleware(tools=...)`` 的解析器：技能里写的工具名按「精确 → 后缀唯一」找到实际工具（D4）。
+
+    传工具列表时，框架按工具的真实名精确匹配 ``include_tools`` 里的名字。开启 MCP 前缀后，
+    工具真实名是 ``{server}__{tool}``，技能里写的仍是原名：精确匹配不到，工具已经从 agent
+    的工具列表里摘出来，读了技能也带不出，等于消失。框架允许 resolver 把一个声明名映射成
+    名字不同的工具，带出与执行都按 resolver 的结果走，这里用与门控选择相同的
+    ``resolve_tool_names`` 规则（歧义时不带出）。
+    """
+    by_name = {getattr(tool, "name", ""): tool for tool in tools}
+
+    def resolve(name: str, runtime: Any) -> list[Any]:
+        actual = resolve_tool_names([name], by_name)[0].get(name)
+        return [by_name[actual]] if actual else []
+
+    return resolve
 
 
 def _validate_skill_meta(dir_name: str, meta: dict[str, Any]) -> list[str]:

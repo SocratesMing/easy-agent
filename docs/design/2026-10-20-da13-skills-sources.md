@@ -1,7 +1,7 @@
 # DA-13 技能：公共技能只读共享、选中即加载、按需暴露工具
 
 - 日期：2026-10-20
-- 状态：已评审（2026-10-20，§12 均按推荐方案）；S1（pinned skills）已实现，见 §13；S2（公共技能只读共享与迁移、§6.3 `save_expert` 由技能带出）已实现，见 §14；剩 S3
+- 状态：已评审（2026-10-20，§12 均按推荐方案）；S1（pinned skills）已实现，见 §13；S2（公共技能只读共享与迁移、§6.3 `save_expert` 由技能带出）已实现，见 §14；S3 由规范一致性审计 D9 的 `0cfa312` 完成；S2 之后的变更与复核见 §15
 - 范围：技能挂载与技能中心接口、本轮技能的加载方式、`save_expert` 的暴露方式、公共技能文档篇幅；前端技能中心的交互不变
 - 相关：审计 DA-13（`docs/audit/2026-10-19-deepagents-best-practices-audit.md` §4）、C3 沙箱只读挂载（DA-07）、DA-03（技能每轮重载已在 P0 完成）
 - 版本：deepagents 0.7.28（多源 ≥0.7、skill tools ≥0.7.22、pinned skills ≥0.7.23）
@@ -130,7 +130,7 @@
 | --- | --- |
 | S1（✅ 2026-10-20） | pinned skills（6.2）：改动集中在编排器和接口层，不动存储 |
 | S2（✅ 2026-10-20） | 公共技能只读共享与迁移（6.1、7），以及 `save_expert` 由技能带出（6.3）：动技能中心存储，需要迁移 |
-| S3 | `SKILL.md` 精简（6.4）：只改文档内容，可随时做 |
+| S3（✅ 2026-10-20，`0cfa312`） | `SKILL.md` 精简（6.4）：只改文档内容，可随时做 |
 
 ## 11. 风险
 
@@ -195,3 +195,21 @@
 - 项目 `.venv` 全量：1845 passed，1 skipped，1 failed。失败的仍是 `tests/test_scripts_layout.py::test_scripts_root_has_no_loose_scripts`（`7073a05` 放在 `scripts/` 根目录的 `sync-frontend-shared.mjs`，与本次改动无关）。真实模型集成用例 `tests/integration/test_v3_streaming.py::test_tool_calls` 未参与：它经 opencode 中转调用真实模型，此前返回 400（thinking 模式要求回传 `reasoning_content`），与本次改动无关。
 - 真实沙箱：本机 bwrap、Landlock 均可用，`tests/integration/test_sandbox_builtin_skills.py` 两种模式都实际执行。
 - 门禁：ruff、import graph（0 SCC）、`sync_skills --check`、double-write、multi-replica、API 文档、config schema、env usage 均通过。
+
+## 15. S2 之后的变更与复核（2026-10-20）
+
+S2 提交（`c24d5ba`）之后，另一路开发按规范一致性审计（`docs/design/2026-10-20-deepagents-conformance-audit.md`）继续改了技能相关代码。复核结论详见该文档 §5.2，与本方案有关的部分如下。
+
+| 提交 | 内容 | 复核 |
+| --- | --- | --- |
+| `0cfa312`（审计 D9） | 即本方案 S3：docx 的 `SKILL.md` 从 590 行减到 175 行，版式细节移到 `references/docx-js-layout.md`，OOXML 移到 `references/ooxml-xml.md`；skill-creator 从 485 行减到 208 行，评测移到 `references/evaluating-skills.md`，盲测与描述优化移到 `references/advanced-evaluation.md`；包内副本已同步 | ✅ 引用文件齐全，`sync_skills --check` 一致 |
+| `e27dae0`（审计 D2） | 门控集合从「注册表 `skill_gated`」扩展为「注册表 ∪ 所有技能 frontmatter 声明的 `include_tools`」；子代理用到的门控工具各挂一份 `SkillsMiddleware(tools=...)`；门控集合进编译图指纹 | ❌ 两个问题：没配公共技能目录时建图 `TypeError`（`builtin_skills_dir` 为 `None` 未过滤，所有对话失败）；扫描范围包含用户没添加的公共技能，它们声明的工具会被藏起来且读不到 |
+| `e16f9e1`（审计 D4） | MCP 工具名 `{server}__{tool}`（开关 `EASY_MCP_TOOL_PREFIX`，默认关）；门控按「后缀唯一」解析技能里写的原名 | ❌ 开关打开后，交给 `SkillsMiddleware` 的工具按真实名精确匹配，技能里写的原名匹配不到：工具被摘掉、读了技能也带不出 |
+
+三处问题现有测试都没覆盖到：`tests/agent/test_builtin_skills_agent.py` 只建了带公共技能目录的场景，门控也只测了注册表里的 `save_expert`。
+
+修复（2026-10-20 晚）：
+
+- 建图 `TypeError`：`declared_include_tools` 跳过未配置的目录。回归测试 `test_builtin_skills_agent.py::test_agent_builds_without_a_public_skills_dir`：`skills_dir` 为空或路径不存在时，技能源只剩 `/user-skills/`，能正常跑完一轮。
+- 前缀下带不出工具：新增 `agent/skills.py::skill_tool_resolver`，主代理和子代理的 `SkillsMiddleware(tools=...)` 改传 resolver，技能里写的名字按「精确 → 后缀唯一」找到实际工具。不开前缀时行为不变：`save_expert` 走精确匹配。回归测试 `test_builtin_skills_agent.py::test_skill_brings_out_a_prefixed_mcp_tool_by_its_original_name`。
+- 仍未处理：门控扫描范围包含用户没添加的公共技能。目前仓库里声明 `include_tools` 的公共技能只有 expert-creator，它带出的 `save_expert` 本来就在注册表里门控，所以暂无实际影响。

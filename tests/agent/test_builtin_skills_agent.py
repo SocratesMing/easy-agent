@@ -242,3 +242,54 @@ async def test_sessions_without_save_expert_need_no_skill_tool_wiring(build):
     await _run(agent, _turn())
     assert all("save_expert" not in names for names in model.bound)
     assert "专家创建器" in _text(model.seen[1])  # 读到的 SKILL.md 正文
+
+
+# ── S2 之后的回归（docs/design/2026-10-20-da13-skills-sources.md §15） ──────────
+
+
+@pytest.mark.parametrize("skills_dir", ["", "/nonexistent/public-skills"])
+async def test_agent_builds_without_a_public_skills_dir(setup, build, skills_dir):
+    """没配公共技能目录时只有用户技能一个源；e27dae0 起这里曾抛 TypeError，所有对话失败。"""
+    setup.tools.skills_dir = skills_dir
+    agent, model = build([AIMessage(content="ok")])
+
+    assert agent.builtin_skills_dir is None
+    assert agent._resolve_skills_paths() == ["/user-skills/"]
+    state = await _run(agent, _turn())
+    assert state.values["messages"][-1].content == "ok"
+    assert "USER-FORK-DOCX-DESC" in _text(model.seen[0])
+
+
+async def test_skill_brings_out_a_prefixed_mcp_tool_by_its_original_name(tmp_path, build):
+    """D4：开启 MCP 前缀后工具名是 srv__fetch_data，技能里写的是原名 fetch_data。
+
+    改造前门控把工具摘出了工具列表，但 SkillsMiddleware 按真实名精确匹配，读了技能也带不出。
+    """
+    calls: list[str] = []
+
+    @tool("srv__fetch_data")
+    def fetch(query: str) -> str:
+        """Fetch data from the srv MCP server."""
+        calls.append(query)
+        return "data"
+
+    fetch.metadata = {"mcp_original_name": "fetch_data", "mcp_server": "srv"}
+    skills = tmp_path / "workspace" / "u1" / "skills"
+    (skills / "fetcher").mkdir(parents=True)
+    (skills / "fetcher" / "SKILL.md").write_text(
+        "---\nname: fetcher\ndescription: fetch data\nmetadata:\n  include_tools: fetch_data\n---\nuse it\n",
+        encoding="utf-8",
+    )
+    agent, model = build(
+        [
+            _call("read_file", {"file_path": "/user-skills/fetcher/SKILL.md"}, "r1"),
+            _call("srv__fetch_data", {"query": "cpi"}, "c1"),
+            AIMessage(content="done"),
+        ],
+        tools=(fetch,),
+    )
+    await _run(agent, _turn())
+
+    assert "srv__fetch_data" not in model.bound[0]
+    assert "srv__fetch_data" in model.bound[1]
+    assert calls == ["cpi"]

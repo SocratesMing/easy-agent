@@ -123,6 +123,8 @@ def apply_skill_gated_tools(specs, gated_tools, skills_paths, backend) -> list[d
     """
     from deepagents.middleware.skills import SkillsMiddleware
 
+    from easy_agent.agent.skills import skill_tool_resolver
+
     gated = {getattr(tool, "name", ""): tool for tool in gated_tools or ()}
     result: list[dict] = []
     for spec in specs or ():
@@ -138,7 +140,10 @@ def apply_skill_gated_tools(specs, gated_tools, skills_paths, backend) -> list[d
         item["middleware"] = [
             *item.get("middleware", []),
             SkillsMiddleware(
-                backend=backend, sources=list(skills_paths), tools=picked
+                backend=backend,
+                sources=list(skills_paths),
+                # 技能里写的可能是 MCP 原名（D4），按「精确 → 后缀唯一」解析
+                tools=skill_tool_resolver(picked),
             ),
         ]
         result.append(item)

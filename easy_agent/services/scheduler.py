@@ -12,6 +12,7 @@ import os
 from easy_agent.bootstrap.env import env_bool
 import uuid
 from datetime import datetime
+from typing import Any
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -268,6 +269,29 @@ def reload_all_tasks():
     logger.info(f"从 DB 重载 {count}/{len(tasks)} 个定时任务")
 
 
+#: LangGraph 在运行结果里放待处理中断的键（公开常量 ``langgraph.constants.INTERRUPT`` 已弃用）
+_INTERRUPT_KEY = "__interrupt__"
+
+
+def _raise_if_waiting_for_approval(result: Any) -> None:
+    """运行停在人工审批处就算失败：定时任务没人审批（``enable_hitl=False``）。
+
+    不能按成功记录：结束后 thread 会被删掉，等待审批的操作（例如写记忆）就此丢失，
+    却显示为执行成功。
+    """
+    interrupts = result.get(_INTERRUPT_KEY) if isinstance(result, dict) else None
+    if not interrupts:
+        return
+    names = []
+    for item in interrupts:
+        value = getattr(item, "value", None)
+        requests = value.get("action_requests") if isinstance(value, dict) else None
+        names.extend(str(action.get("name")) for action in requests or () if isinstance(action, dict))
+    raise RuntimeError(
+        f"运行停在了人工审批处（{', '.join(names) or '未知操作'}）：定时任务没有人工审批，本次未完成"
+    )
+
+
 async def _execute_task(task_id: str):
     """定时任务执行核心逻辑：创建新 session → 调用 agent → 记录结果。"""
     from langchain_core.messages import HumanMessage
@@ -387,6 +411,7 @@ async def _execute_task(task_id: str):
             config=build_run_config(agent, thread_id, callbacks=[handler]),
             **run_context_kwargs(agent),
         )
+        _raise_if_waiting_for_approval(result)
         messages = result.get("messages", []) if isinstance(result, dict) else []
         final_content = ""
         for msg in reversed(messages):
