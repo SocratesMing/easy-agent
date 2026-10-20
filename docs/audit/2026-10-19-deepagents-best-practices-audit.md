@@ -5,7 +5,7 @@
 > 文档来源：LangChain 官方文档（经 Docs MCP `https://docs.langchain.com/mcp` 拉取全文，2026-10-19）+ `langchain-ai/langchain-skills` 中的 deep-agents-core / memory / orchestration 技能 + deepagents 0.7.28 源码。
 > 与既有报告的关系：`docs/audit/2026-10-17-easy-agent-audit.md` 已覆盖的条目不重复展开，只复核状态；本报告新增条目编号为 **DA-xx**，严重度沿用 P0–P3。
 > 测试基线：`pytest tests/` → **1607 passed, 1 skipped, 2 warnings**（266s）。
-> **修复进度**：Batch B（DA-01 / DA-02 / DA-08 / DA-10 / DA-16）与修复中发现的 DA-18 已于 2026-10-19 完成，见 §9；Batch A 已修 SEC-01 / SEC-02 / SEC-04 / SEC-05，SEC-03（免密登录）按产品决定保留，见 §10。C1（DA-06 / DA-09 第一步 / DA-11 / DA-12 / DA-17、sqlite 连接器 `DB_PATH`）已完成，见 §11；C2（DA-04 / DA-05）已完成，见 §12；C3（DA-07）与一批清理项已完成，见 §13。DA-03 设计已评审，P0（铺底，行为中性）已于 2026-10-20 完成，见 §14。
+> **修复进度**：Batch B（DA-01 / DA-02 / DA-08 / DA-10 / DA-16）与修复中发现的 DA-18 已于 2026-10-19 完成，见 §9；Batch A 已修 SEC-01 / SEC-02 / SEC-04 / SEC-05，SEC-03（免密登录）按产品决定保留，见 §10。C1（DA-06 / DA-09 第一步 / DA-11 / DA-12 / DA-17、sqlite 连接器 `DB_PATH`）已完成，见 §11；C2（DA-04 / DA-05）已完成，见 §12；C3（DA-07）与一批清理项已完成，见 §13。DA-03 设计已评审，P0（铺底，行为中性）与 P1（会话 thread，开关默认关）已于 2026-10-20 完成，见 §14、§15。
 
 ---
 
@@ -266,7 +266,7 @@
 | C1 · 快速项 | DA-06 模型 `profile` + 官方摘要中间件覆盖；DA-12 官方 `ToolErrorMiddleware`；DA-11 子代理工具收窄；DA-09 第一步 MCP annotations 决定审批；DA-17 过时注释与文档；sqlite 连接器 `DB_PATH` 限定个人工作区 | ✅ 已完成（§11） |
 | C2 · Backend 重构 | DA-04 默认路由改隐藏目录（修已复现的 deny 别名绕过，框架产物不再出现在用户工作区）；DA-05 改用真实 `CompositeBackend` | ✅ 已完成（§12） |
 | C3 · 沙箱加固 | DA-07 网络开关（默认联网，可配置断网）、技能目录只读挂载、execute 超时上限；CPU / 内存 / 进程数限额暂缓（原因见 §13） | ✅ 已完成（§13） |
-| D · 演进 | DA-03 thread = 会话（超过摘要阈值后每轮都会重新摘要整段历史；设计文档已评审：`docs/design/2026-10-19-da03-session-thread.md`，按 P0–P2 分阶段实施，P0 已完成见 §14）；DA-13 技能多源 / 只读 / pinned；子代理进度事件流；DA-09 迁移 `langchain.mcp`（beta）；DA-14 LangSmith 沙箱生命周期；`services/` 拆领域子包 | 1–2 周，需设计文档 |
+| D · 演进 | DA-03 thread = 会话（超过摘要阈值后每轮都会重新摘要整段历史；设计文档已评审：`docs/design/2026-10-19-da03-session-thread.md`，按 P0–P2 分阶段实施，P0 / P1 已完成见 §14、§15）；DA-13 技能多源 / 只读 / pinned；子代理进度事件流；DA-09 迁移 `langchain.mcp`（beta）；DA-14 LangSmith 沙箱生命周期；`services/` 拆领域子包 | 1–2 周，需设计文档 |
 | 穿插项 | CI 缺 `sqlite-saver` extra（暂不处理）；SEC-03 签名免密（需门户配合）；DA-15 前端审批交互；工具工厂并入 `ToolSpec`（已核对不会形成 import 环，需同步改测试注入方式）；MySQL 连接器可达内网任意主机（2026-10-19 决定保持现状） | 待定 |
 
 --- | --- | --- |
@@ -388,3 +388,17 @@ thread 仍是每条消息一个，模型看到的内容不变；本批为切换�
 | 删除会话时删除官方 saver 里该会话的 thread（含每条消息一个的旧 thread）；定时任务每次运行结束后删除自己的 thread。改造前官方 saver 的 thread 只增不减 | `tests/services/test_thread_cleanup.py`、`tests/api/test_sessions.py::test_delete_session_deletes_its_checkpoint_threads`、`tests/agent/test_run_limits.py::test_scheduled_task_deletes_its_thread_after_the_run` |
 
 框架适配点新增两处（`SessionMemoryMiddleware`、`TurnAwareSummarizationMiddleware`），已登记在 `docs/framework-integration.md`。
+
+## 15. 修复记录（2026-10-20，DA-03 P1）
+
+新增开关 `agent.session_thread`，默认关闭。打开后，在官方 saver 上一个会话一个 thread，详细记录见设计文档 §14。
+
+| 改动 | 回归测试 |
+| --- | --- |
+| `thread_id = session_id`，每轮只输入本轮消息；thread 为空时从 DB 水合；DB 里排在 thread 最后一轮之后的轮次补进输入；补回取消时用户已看到的半截回复 | `tests/services/test_session_thread.py` |
+| 审批句柄仍是 `{session_id}-{message_id}`，恢复接口映射到会话 thread，失效返回 409；兼容期支持升级前挂起的审批；新消息把遗留的待审批标为 `rejected` | 同上，加 `tests/api/test_session_thread_api.py` |
+| 本轮起点 checkpoint 记到本轮用户消息（`turn_checkpoint_id`），留给将来的编辑 / 重新生成 | `tests/api/test_session_thread_api.py` |
+| **修复（P1 发现，影响现状）**：legacy `PersistentMemorySaver` 原先按 thread 只留 2 个 checkpoint，而 deepagents 0.7 的 `messages` 是 `DeltaChannel`（只存增量），运行刚结束 messages 就重建成空列表，MySQL 回退部署下 HITL 恢复时模型看不到对话。现在只按 thread 数裁剪；legacy saver 下也不启用会话 thread | `tests/db/test_checkpoint_pruning.py`（改造前的代码上会失败） |
+| 定时任务用 agent 编译图自己的 checkpointer 删除本次运行的 thread（legacy 快照也适用） | `tests/agent/test_run_limits.py::test_scheduled_task_deletes_its_thread_after_the_run` |
+
+更正：设计评审稿里两处说法不成立，已在设计文档 §6.8 改正。一是"`messages` 每个 super-step 都写一份完整列表"：`DeltaChannel` 只存增量，会话 thread 的 checkpoint 总量线性增长，每消息 thread 是平方。二是"legacy saver 逻辑不用改"。

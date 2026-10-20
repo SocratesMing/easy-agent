@@ -362,6 +362,7 @@ class Config(BaseModel):
             sandbox_enabled=data.get("sandbox_enabled", True),
             sandbox_network=str(data.get("sandbox_network") or "host"),
             execute_max_timeout=data.get("execute_max_timeout", 600),
+            session_thread=data.get("session_thread", False),
         )
 
     @staticmethod

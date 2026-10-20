@@ -472,11 +472,11 @@ async def _execute_task(task_id: str):
         if agent is not None:
             remove_session_agent(session_id)
         # 每次运行一个独立 thread，且关闭了 HITL，运行结束后没有需要恢复的状态；
-        # 官方 saver 不会自动清理，这里删掉（DA-03）
-        if thread_id:
-            from easy_agent.persistence.checkpoints import adelete_threads
+        # checkpointer 不会自动清理，这里删掉（DA-03）
+        if agent is not None and thread_id:
+            from easy_agent.persistence.checkpoints import adelete_agent_thread
 
-            await adelete_threads([thread_id])
+            await adelete_agent_thread(agent, thread_id)
         # 更新 last_run_at 和 next_run_at
         scheduler = get_scheduler()
         job = scheduler.get_job(task_id)

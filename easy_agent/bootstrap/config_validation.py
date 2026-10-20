@@ -39,6 +39,7 @@ KNOWN_TOP_LEVEL_KEYS = frozenset(
         "sandbox_enabled",
         "sandbox_network",
         "execute_max_timeout",
+        "session_thread",
         "summarization",
         "tools",
         "web_search",

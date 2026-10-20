@@ -66,6 +66,7 @@ app_welcome_title: "今天，你要研究什么"  # 首页欢迎语
 sandbox_enabled: ${SANDBOX_ENABLED:-true}    # Linux 使用 bwrap/Landlock；Windows 无等效沙箱时拒绝 execute。仅在可信单用户环境设为 false
 sandbox_network: ${SANDBOX_NETWORK:-host}    # 沙箱内命令的网络：host（默认，可联网）/ none（bwrap 断网；Landlock 降级模式无法断网，只记告警）
 execute_max_timeout: ${EXECUTE_MAX_TIMEOUT:-600}  # 模型调用 execute 时可指定的最长超时（秒），超过按此值执行
+session_thread: ${SESSION_THREAD:-false}  # 一个会话一个 thread（DA-03）：历史与摘要状态由 checkpointer 保存，每轮只输入新消息；false = 每条消息一个 thread、每轮从 DB 重建历史
 
 # 外部目录映射：虚拟路径前缀 → 宿主机实际路径
 # 将 skill 需要访问的宿主机目录挂载为虚拟路径路由，使文件工具能通过虚拟路径访问

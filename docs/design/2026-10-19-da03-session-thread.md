@@ -1,7 +1,7 @@
 # DA-03 会话级 thread 设计（一个会话一个 thread）
 
 - 日期：2026-10-19
-- 状态：已评审（2026-10-19，§11 均按推荐方案）；P0 已实现（2026-10-20，见 §13），P1 未开始
+- 状态：已评审（2026-10-19，§11 均按推荐方案）；P0、P1 已实现（2026-10-20，见 §13、§14），开关默认关闭，P2（默认开启）未开始
 - 范围：后端聊天 / 恢复链路、agent 装配（记忆、技能刷新与本轮上下文注入）、checkpointer 生命周期；前端与 SSE 契约不变
 - 相关：审计 DA-03（`docs/audit/2026-10-19-deepagents-best-practices-audit.md` §4）、DA-01（已修）、B1 checkpointer 契约（`docs/design/2026-10-18-b1-checkpointer-store.md`）、D2 共享编译图
 - 证据：`docs/audit/evidence-2026-10-19-deepagents/exp_session_thread.py`（真实 `create_deep_agent` + 假模型 + `InMemorySaver`，不联网）
@@ -117,6 +117,7 @@ threads in checkpointer: 1 | conversation_history files: 1
 | prompt cache | 摘要每轮重新生成、文本每轮不同，system prompt 之后的前缀每轮全部失效 | 两次摘要之间前缀稳定，可命中 |
 | `/.agent/conversation_history/` | 每轮新写一个文件，内容是整段被裁掉的历史，磁盘占用 O(轮数²) | 一个文件，每次摘要追加，O(轮数) |
 | checkpointer 线程数 | 每条消息一个，官方 saver 从不删除 | 每个会话一个，会话删除时删除 |
+| checkpoint 存储 | 每轮把全量历史作为输入写一次，总量随轮数平方增长 | `messages` 是 `DeltaChannel`，每轮只写新消息，总量线性增长 |
 
 两种模式下，摘要模型都只看到被裁历史的最后 `trim` token。更早的内容靠 history 文件找回：摘要消息里写了文件路径，模型需要时可以读。所以**摘要质量本身不是本方案的收益**；收益在调用次数、可见上下文、缓存和存储四项。
 
@@ -222,8 +223,8 @@ threads in checkpointer: 1 | conversation_history files: 1
   - 句柄里的 message_id 必须等于会话 thread 当前 `turn_context.message_id`；
   - 会话 thread 上必须真的有待审批中断。
 
-  三条都满足，才在 `thread_id = session_id` 上执行 `Command(resume=…)`；任一不满足返回 409"审批已失效"。
-- **兼容期**：升级前就挂起的审批，其句柄对应的旧 thread `{session_id}-{message_id}` 若仍有待审批中断，就按旧逻辑在旧 thread 上恢复。兼容期结束后删除这段代码（§9）。
+  后两条都满足，才在 `thread_id = session_id` 上执行 `Command(resume=…)`；对不上时再看兼容期，仍对不上返回 409"审批已失效"。
+- **兼容期**：升级前就挂起的审批，其句柄对应的旧 thread `{session_id}-{message_id}` 若仍有待审批中断，且 DB 最后一条仍是这条待审批消息（`pending_approval.thread_id` 等于句柄，即之后没有新消息），就按旧逻辑在旧 thread 上恢复。兼容期结束后删除这段代码（§9）。句柄格式不对（不以 `{session_id}-` 开头）仍返回 400。
 - **新消息作废审批**：实验第 3 段证明，在有待审批中断的 thread 上直接输入新消息：
   - 中断被丢弃；
   - `PatchToolCallsMiddleware` 给悬空的工具调用补一条 error ToolMessage（"did not complete … cancelled or interrupted"）；
@@ -235,12 +236,12 @@ threads in checkpointer: 1 | conversation_history files: 1
 ### 6.5 取消、失败与重试
 
 - **工具执行中取消**（实验第 4 段）：checkpoint 停在 `next=('tools',)`，最后一条是带 tool_calls 的 AIMessage。下一轮由 `PatchToolCallsMiddleware` 补齐，运行正常。
-- **模型流式输出中取消，或模型报错**：未完成的模型节点不写入 state，但 DB 已经有半截正文。现状下一轮会把半截正文回灌给模型。为保持一致：
-  - 取消或出错路径在 DB 助手消息的 `extra_data` 上标记 `thread_synced=false`；
-  - 下一轮输入变成 `[AIMessage(半截正文 + "（已中断）"), HumanMessage(…)]`；
-  - 注入后清除标记。
+- **模型流式输出中取消，或模型报错**：未完成的模型节点不写入 state，但 DB 已经有半截正文。现状下一轮会把半截正文回灌给模型。为保持一致（P1 实现，不需要额外标记）：
+  - 下一轮开始时，比较 DB 里 thread 最后一轮的助手正文与 thread 里该轮 AIMessage 的正文；
+  - DB 正文以 thread 正文开头且更长时，多出的部分作为 `AIMessage(多出的部分 + "（回复被中断）")` 放在本轮输入最前面；
+  - 对不上（例如正文里带 `<think>`）就不补，宁可少补也不重复。补过之后 thread 的最后一轮变成本轮，不会重复补。
 
-  错误文本本身不回灌。
+  错误文本只写进 SSE，不在 DB 正文里，所以不会回灌。
 - **重试按钮**：会把原文作为新消息重新发送（`frontend-vue2/src/App.vue:1810`），等同于在同一 thread 上开新一轮，与现状一致。
 
 ### 6.6 冷启动水合与偏离检测
@@ -251,7 +252,8 @@ threads in checkpointer: 1 | conversation_history files: 1
   - 开关从关切到开。
 - **偏离检测**：
   - DB 用户行的 `extra_data` 记录 `turn_id`，**不论开关状态都记录**（P0 起）。否则开关关闭期间跑过的轮次没有 `turn_id`，就无法发现 thread 漏了这些轮次。
-  - 每轮开始时，比较 DB 上一条用户行的 `turn_id` 与 thread 里最后一条用户消息的 id。不一致说明 thread 漏了轮次，处理方式是 `adelete_thread(session_id)` 后重新水合。
+  - 每轮开始时，在 DB 里找 thread 最后一轮（thread 里最后一条能对上 `turn_id` 的用户消息）。DB 里排在它之后的轮次（开关关闭期间的对话、定时任务写入、专家预检拒答）thread 里没有：P1 实现时改为**重建后补进本轮输入**，而不是删 thread 重来，这样摘要状态和 todos 不会丢。
+  - 只有 thread 的最后一轮在 DB 里找不到时（DB 被改过），才 `adelete_thread(session_id)` 后重新水合。
   - P0 之前写入的旧行没有 `turn_id`，跳过比较；这类会话的 thread 必然为空，会先走水合。
 
 ### 6.7 thread 生命周期与清理
@@ -260,7 +262,7 @@ threads in checkpointer: 1 | conversation_history files: 1
   - 先 `await saver.adelete_thread(session_id)`（官方 saver 的公开 API）；
   - 兼容期内顺带删除该会话旧的 `{session_id}-{message_id}` 线程，message_id 取自该会话的 `agent_runs`（尽力而为，遗漏的由清理脚本兜底）；
   - 再调用 legacy 的 `release_session_checkpointer`，并删除隐藏 artifacts 目录（C2 已实现）。
-- **定时任务**：一次运行结束后 `adelete_thread(f"sched-{task_id}-{run_id}")`。定时任务关闭了 HITL（`enable_hitl=False`），没有需要恢复的状态。
+- **定时任务**：一次运行结束后，用 agent 编译图自己的 checkpointer 删除 `sched-{task_id}-{run_id}`（官方 saver 与 legacy 快照都适用）。定时任务关闭了 HITL（`enable_hitl=False`），没有需要恢复的状态。
 - **存量旧线程**：一次性脚本 `scripts/maintenance/prune_message_threads.py`：
   - 用 saver 公开的 `alist(None)` 遍历全部 checkpoint 的 thread_id（一次性全量扫描可以接受，且不依赖 `agent_runs` 的保留期）；
   - 按格式筛出 `{uuid}-{message_id}` 与过期的 `sched-*`，逐个 `adelete_thread`；
@@ -270,10 +272,10 @@ threads in checkpointer: 1 | conversation_history files: 1
 
 - **并发**：同一会话同时只有一条流，靠进程内 `is_session_streaming` 加 DB 租约 `acquire_stream` 双重互斥，所以会话 thread 不会被两次运行同时写入。
 - **Postgres saver**：thread 状态在副本之间共享，任何副本都能续跑。agent 缓存仍在进程内，但 thread 状态不依赖它。
-- **legacy `PersistentMemorySaver`**（MySQL 且无 PG）：
-  - 一个会话只有一个 thread，按 namespace 只保留最近 2 个 checkpoint（`checkpoints.py:37-38`），逻辑不用改；
-  - 快照随会话变长而变大，与现状同阶：现状每个 thread 的输入也是全量历史。
-- **checkpoint 体积**：`messages` 通道每个 super-step 都写一份完整列表，两种模式同阶。deepagents 的摘要只记截断点，不删 state 里的原始消息，所以 thread 保留完整原始历史。降低写放大可另行评估 `durability="exit"`（§11 第 5 条）。
+- **legacy `PersistentMemorySaver`**（业务库为 MySQL 且没配 PG / SQLite checkpoint）（P1 实现时更正）：
+  - 评审稿说"按 namespace 只保留最近 2 个 checkpoint，逻辑不用改"——不成立。deepagents 0.7 的 `messages` 是 `DeltaChannel`，checkpoint 只存增量，读状态要沿父链回溯到最近的快照再重放；按 thread 内条数裁剪后，运行刚结束 messages 就重建成空列表。这在每消息 thread 下同样存在：legacy 模式下 HITL 恢复时模型看不到对话。P1 已修：只按 thread 数裁剪，thread 内的 checkpoint 全部保留（`tests/db/test_checkpoint_pruning.py`）；
+  - 这个 saver 每次写入都把整个快照 pickle 进业务库，会话 thread 越长越慢，所以**即使开关打开，legacy saver 下仍按每条消息一个 thread**（启动后首次遇到时记一次告警）。要用会话 thread，请配置 `EASY_CHECKPOINT_POSTGRES_URI` 或 `EASY_CHECKPOINT_SQLITE_PATH`（业务库为 MySQL 时也可以用本地 SQLite checkpoint，仅限单机）。
+- **checkpoint 体积**（P1 实现时更正）：评审稿说"`messages` 每个 super-step 都写一份完整列表，两种模式同阶"——不成立。`DeltaChannel` 只存每步新增的消息，每 50 次更新存一次快照。每消息 thread 每轮把全量历史作为输入写一次，总量随轮数平方增长；会话 thread 每轮只写新消息，总量线性增长。这也是会话 thread 的收益之一。deepagents 的摘要只记截断点，不删 state 里的原始消息，所以 thread 保留完整原始历史。降低写放大可另行评估 `durability="exit"`（§11 第 5 条）。
 
 ### 6.9 UI 投影与模型视图的差异（接受的偏离）
 
@@ -328,7 +330,7 @@ DB 记录用户看到的内容，thread 记录模型看到的内容，二者按�
 | 阶段 | 内容 | 开关 |
 | --- | --- | --- |
 | P0 · 铺底（✅ 2026-10-20） | `SessionMemoryMiddleware`、`TurnAwareSummarizationMiddleware`、注入改走 `turn_context`、DB 用户行记录 `turn_id`、删除会话与定时任务清理 thread。每消息 thread 下也成立：记忆和技能本来就每轮重载，注入效果不变 | 无（行为中性） |
-| P1 · 切换 | 会话 thread、水合与偏离检测、审批句柄映射与兼容期、新消息作废审批、半截回复回灌 | `agent.session_thread`，dev / test 先开 |
+| P1 · 切换（✅ 2026-10-20） | 会话 thread、水合与补齐、审批句柄映射与兼容期、新消息作废审批、半截回复回灌、本轮起点 checkpoint 记录；修复 legacy saver 的裁剪 | `agent.session_thread`（默认关），dev / test 先开 |
 | P2 · 默认开启 | 默认 `true`；运行存量旧线程清理脚本；观察一个版本后删除兼容期旧 thread 恢复代码 | 默认开 |
 
 回滚：把 `agent.session_thread` 设为 `false`，立即回到每消息 thread。DB 投影始终完整，不丢消息；损失的只有 todos 与滚动摘要，这本来就是现状行为。
@@ -344,7 +346,7 @@ DB 记录用户看到的内容，thread 记录模型看到的内容，二者按�
 | 依赖框架行为：新输入丢弃待审批中断并由 `PatchToolCallsMiddleware` 补齐 | 框架升级后行为可能变化 | 集成测试 4 锁定；升级 deepagents / langgraph 时必跑 |
 | `SessionMemoryMiddleware` 重写了公开类的 `before_agent` | 上游改动 MemoryMiddleware 的加载逻辑后可能失效 | 只重写一个钩子，其余继承；集成测试 2 锁定 |
 | 升级时有挂起的审批 | 无法恢复 | 兼容期旧 thread 恢复路径 |
-| thread 体积与写放大 | 长会话 checkpoint 变大 | 与现状同阶；`durability` 另行评估 |
+| thread 体积与写放大 | 长会话 checkpoint 变大 | `DeltaChannel` 只存增量，会话 thread 的总量随轮数线性增长（每消息 thread 是平方）；legacy 快照 saver 下不启用会话 thread；`durability` 另行评估 |
 | UI 与模型视图不一致 | 排障困难 | §6.9 列明差异，可选调试接口 |
 
 ## 11. 评审决策（2026-10-19，均按推荐方案）
@@ -387,3 +389,27 @@ thread 仍是每条消息一个，模型看到的内容与改造前一致；以�
 
 - 定时任务会往它的会话里写用户行，这些行没有 `turn_id`。P1 的偏离检测要把"thread 之后出现的、没有 `turn_id` 的用户行"也算作偏离。
 - 只有 P1 切到会话 thread 之后，`SessionMemoryMiddleware` 才会产生行为差异；`remove_session_agent` 在记忆更新后的驱逐届时可以移除。
+
+## 14. P1 实施记录（2026-10-20）
+
+开关 `agent.session_thread`（默认 `false`）。打开后，在官方 saver（Postgres / SQLite）上一个会话一个 thread；关闭时与 P0 完全一致。
+
+| 改动 | 位置 | 回归测试 |
+| --- | --- | --- |
+| 配置开关 | `bootstrap/config_models.py`、`bootstrap/config.py`、`config_validation.py`、`config-example.yaml`、README | `scripts/quality/check_config_schema.py --check` |
+| 轮次规划 `plan_turn`：会话 thread、为空时水合、补齐 DB 多出的轮次、补回半截回复、thread 与 DB 对不上时删除重水合；legacy 快照 saver 下回退每消息 thread | `services/session_thread.py`、`services/streaming/orchestrator.py` | `tests/services/test_session_thread.py`（真实 `create_deep_agent` + `InMemorySaver`） |
+| 审批句柄：事件与 DB 仍写 `{session_id}-{message_id}`；恢复接口经 `resolve_resume_thread` 映射到会话 thread，兼容期支持升级前挂在旧 thread 上的审批，失效返回 409 | `services/session_thread.py`、`api/chat.py`、`resume_stream_generator(handle=...)` | `tests/services/test_session_thread.py::test_approval_*`、`test_pending_approval_from_before_the_upgrade_still_resumes`、`tests/api/test_session_thread_api.py::test_resume_with_a_handle_for_an_older_turn_returns_409` |
+| 新消息作废上一轮遗留的待审批（DB 标为 `rejected`），普通聊天与专家链路；只在真正走会话 thread 时（开关打开且在用官方 saver）才作废 | `api/chat.py`、`api/expert_helpers.py`、`db/repositories/chat_repository.py`、`session_thread_in_use` | `tests/api/test_session_thread_api.py::test_new_message_marks_the_left_over_approval_rejected`、`test_legacy_snapshot_saver_does_not_abandon_approvals`、`tests/services/test_session_thread.py::test_new_message_makes_the_old_approval_stale` |
+| 本轮起点 checkpoint 记到本轮用户消息（`turn_checkpoint_id`） | `db/repositories/sessions.py::annotate_user_turn`、`services/session_thread.py::record_turn_checkpoint` | `tests/api/test_session_thread_api.py::test_annotate_user_turn_*`、端到端用例 |
+| legacy `PersistentMemorySaver` 只按 thread 数裁剪（修 DeltaChannel 下消息丢失），删除 thread 后立即落盘 | `persistence/checkpoints.py` | `tests/db/test_checkpoint_pruning.py`（改造前的代码上会失败：运行刚结束 messages 就为空） |
+| 定时任务改用 agent 编译图自己的 checkpointer 删除本次运行的 thread | `persistence/checkpoints.py::adelete_agent_thread`、`services/scheduler.py` | `tests/agent/test_run_limits.py::test_scheduled_task_deletes_its_thread_after_the_run`（断言删除前 thread 存在、删除后不存在） |
+
+端到端：`tests/api/test_session_thread_api.py::test_two_turns_share_one_checkpoint_thread`。它用真实 EasyAgent 加官方 SQLite saver（缺 `sqlite-saver` extra 时跳过）跑两轮，验证 checkpoint 库里只有会话 thread，用户消息不重复，第二轮记录了起点 checkpoint。
+
+验证：项目 `.venv`（关键依赖版本与锁文件一致）全量 1789 passed，1 skipped；ruff、import graph、技能副本、double-write、multi-replica、API 文档、配置 schema 门禁均通过。
+
+P2 之前要做的事：
+
+- 在 dev / test 打开开关试运行，观察摘要频率、首 token 延迟、checkpoint 库大小；
+- 存量旧线程清理脚本（§6.7）；
+- 观察一个版本后删除兼容期旧 thread 的恢复路径，再把默认值改成 `true`。

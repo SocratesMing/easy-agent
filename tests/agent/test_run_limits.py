@@ -194,17 +194,23 @@ async def test_scheduled_task_runs_on_shared_graph(real_agent, db, monkeypatch):
 
 
 async def test_scheduled_task_deletes_its_thread_after_the_run(real_agent, db, monkeypatch):
-    """DA-03：每次运行一个独立 thread 且关闭了 HITL，运行结束后删除，官方 saver 不会自动清理。"""
+    """DA-03：每次运行一个独立 thread 且关闭了 HITL，运行结束后删除，checkpointer 不会自动清理。"""
     import easy_agent.persistence.checkpoints as checkpoints
 
     deleted = []
+    real_delete = checkpoints.adelete_agent_thread
 
-    async def fake_adelete(thread_ids):
-        deleted.extend(thread_ids)
-        return len(deleted)
+    async def recording(agent, thread_id):
+        config = {"configurable": {"thread_id": thread_id}}
+        existed = bool([c async for c in agent.agent.checkpointer.alist(config)])
+        deleted.append((thread_id, existed))
+        return await real_delete(agent, thread_id)
 
-    monkeypatch.setattr(checkpoints, "adelete_threads", fake_adelete)
+    monkeypatch.setattr(checkpoints, "adelete_agent_thread", recording)
 
     runs = await _run_daily_report_task(real_agent, db, monkeypatch)
 
-    assert deleted == [f"sched-task-da10-{runs[0].run_id}"]
+    thread_id = f"sched-task-da10-{runs[0].run_id}"
+    assert deleted == [(thread_id, True)]
+    saver = agent_mod._shared_graph_checkpointer()
+    assert not [c async for c in saver.alist({"configurable": {"thread_id": thread_id}})]

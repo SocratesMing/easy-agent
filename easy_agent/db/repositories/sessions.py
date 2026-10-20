@@ -570,6 +570,40 @@ def add_message_row(db, session_id: str, message: dict):
 
     _add_row(db, session_id, message)
 
+def annotate_user_turn(db, session_id: str, turn_id: str, fields: dict) -> bool:
+    """把 ``fields`` 合并进本轮用户消息行的 extra_data，按 ``turn_id`` 定位（DA-03）。
+
+    本轮用户消息刚写入，正常就是最后一条用户行，所以只看最近几条。
+    """
+    if not turn_id or not fields:
+        return False
+    with db.get_connection() as conn:
+        cursor = conn.cursor()
+        db._execute(
+            cursor,
+            "SELECT id, extra_data FROM session_messages WHERE session_id=? AND role=? "
+            "ORDER BY id DESC LIMIT 5",
+            (session_id, "user"),
+        )
+        for row in cursor.fetchall():
+            row_id = row["id"] if isinstance(row, dict) else row[0]
+            raw = row["extra_data"] if isinstance(row, dict) else row[1]
+            try:
+                extra = json.loads(raw) if raw else {}
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(extra, dict) or extra.get("turn_id") != turn_id:
+                continue
+            extra.update(fields)
+            db._execute(
+                cursor,
+                "UPDATE session_messages SET extra_data=? WHERE id=?",
+                (json.dumps(extra, ensure_ascii=False), row_id),
+            )
+            return True
+    return False
+
+
 def update_last_assistant_message_row(db, session_id: str, message: dict):
     role = "assistant"
     content = message.get("content", "")

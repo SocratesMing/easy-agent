@@ -76,6 +76,13 @@ from easy_agent.knowledges.chat.host_port import (
 )
 from easy_agent.services.streaming import chat_stream_generator as _host_chat_stream_generator
 from easy_agent.services import get_agent_config as _get_agent_config
+from easy_agent.services.session_thread import (
+    StaleApprovalError,
+    abandon_pending_approval,
+    handle_turn_id,
+    resolve_resume_thread,
+    session_thread_in_use,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -590,6 +597,9 @@ async def chat_stream(
     # 结构化技能目录名：气泡按它渲染技能标签，不再需要从消息文本里反扒 `/目录名`
     if turn_skill_dirs:
         user_message["skills"] = turn_skill_dirs
+    # DA-03：会话 thread 下新输入会丢弃上一轮挂起的中断，DB 里的待审批同步标为拒绝
+    if session_thread_in_use(_get_agent_config()):
+        abandon_pending_approval(repo, session_id)
     repo.add_message(session_id, user_message)
 
     session_logger = SessionLogger(
@@ -686,6 +696,15 @@ async def cancel_chat(
     return {"status": "cancelled", "session_id": session_id}
 
 
+def _last_session_message(repo, session_id: str) -> dict | None:
+    """会话最后一条消息（审批兼容期核对旧句柄用）；只在会话 thread 模式下才需要读。"""
+    if not session_thread_in_use(_get_agent_config()):
+        return None
+    session = repo.get_session(session_id)
+    messages = getattr(session, "messages", None) or []
+    return messages[-1] if messages else None
+
+
 @router.post(
     "/resume",
     summary="恢复 HITL 审批",
@@ -718,11 +737,10 @@ async def chat_resume(
             detail="本会话正在生成回复，请等待完成或先取消当前生成",
         )
 
-    # thread_id 由后端固定生成 ``f"{session_id}-{message_id}"``；绝不信任前端
+    # 审批句柄由后端固定生成 ``f"{session_id}-{message_id}"``；绝不信任前端
     # 传入的任意 thread_id：官方 Postgres checkpointer 是全局共享的，否则可读取/
     # 续跑他人会话的 checkpoint（跨用户隔离绕过）。
-    expected_thread_prefix = f"{session_id}-"
-    if not thread_id or not thread_id.startswith(expected_thread_prefix):
+    if handle_turn_id(session_id, thread_id) is None:
         logger.warning(
             f"[{sid}] 拒绝非法的 HITL thread_id | session={session_id} | thread={thread_id}"
         )
@@ -743,10 +761,23 @@ async def chat_resume(
         expert_agent_id=get_session_expert(session_id),
     )
 
+    # DA-03：句柄映射到真正要恢复的 thread（会话 thread 模式下是 session_id）；
+    # 会话已有新消息或审批已处理时句柄失效，返回 409。
+    try:
+        resume_thread = await resolve_resume_thread(
+            agent,
+            session_id=session_id,
+            handle=thread_id,
+            last_message=_last_session_message(repo, session_id),
+        )
+    except StaleApprovalError as exc:
+        logger.warning(f"[{sid}] 拒绝已失效的审批 | thread={thread_id} | {exc}")
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
     # DA-02：决策必须能对上当前待审批中断（interrupt_id / 数量 / 允许的决策）。
     # 批处理 HITL 会先把恢复值存进 checkpoint 再校验，非法决策会让线程卡死，必须提前拒绝。
     try:
-        await validate_resume_decisions(agent, thread_id, request.decisions)
+        await validate_resume_decisions(agent, resume_thread, request.decisions)
     except HitlDecisionError as exc:
         logger.warning(f"[{sid}] 拒绝无效的审批决策 | thread={thread_id} | {exc}")
         raise HTTPException(status_code=400, detail=f"审批决策无效：{exc}") from exc
@@ -777,10 +808,11 @@ async def chat_resume(
                 db=repo.database,
                 agent=agent,
                 session_id=session_id,
-                thread_id=thread_id,
+                thread_id=resume_thread,
                 decisions=request.decisions,
                 username=username,
                 message_id=request.message_id,
+                handle=thread_id,
             ),
             session_id,
             sid,

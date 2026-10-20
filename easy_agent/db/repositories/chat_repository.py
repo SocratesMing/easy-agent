@@ -73,6 +73,10 @@ class ChatRepository:
         """追加一条消息（A2：只写 ``session_messages`` 行表）。"""
         sessions_repo.add_message(self._db, session_id, message)
 
+    def update_last_assistant_message(self, session_id: str, message: dict) -> None:
+        """整条覆盖最后一条 assistant 消息（作废上一轮遗留的待审批时用，DA-03）。"""
+        sessions_repo.update_last_assistant_message(self._db, session_id, message)
+
     # ── 流锁续约（供 _detached_event_stream 心跳） ────────────────────
 
     def renew_stream(self, session_id: str) -> bool:

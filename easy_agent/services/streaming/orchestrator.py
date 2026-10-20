@@ -42,11 +42,15 @@ from easy_agent.services.stream_messages import (
     _partial_message_dict,
     _tool_call_tuples,
     build_assistant_message_dict,
-    build_context_messages,
     tool_call_records_to_dicts,
     turn_message_text,
 )
 from easy_agent.services.stream_processor import StreamProcessor
+from easy_agent.services.session_thread import (
+    approval_handle,
+    plan_turn,
+    record_turn_checkpoint,
+)
 from easy_agent.services.streaming.persistence import (
     IncrementalPersister,
     persist_approval_decisions,
@@ -503,31 +507,39 @@ async def chat_stream_generator(
         # ── 构建上下文消息 ─────────────────────────────────────────────
         # session.messages 末尾是本次刚写入 DB 的当前用户消息（chat.py 在调用
         # 本生成器前已 add_message），需排除以免与下方 message_content 重复注入。
-        # 完整历史直接注入；超长时由官方 SummarizationMiddleware 在模型调用前
-        # 按 token 阈值自动摘要，无需在此自行截断或压缩。
+        # 超长时由官方 SummarizationMiddleware 在模型调用前按 token 阈值自动摘要。
         session = db.get_session(session_id)
         total_msgs = len(session.messages) if session and session.messages else 0
         history_messages = session.messages[:-1] if total_msgs else []
         provider = agent.config.llm.provider.lower() if agent and agent.config else ""
         # DA-03：thread 里的本轮消息只存用户原话（与 DB 一致）；工作区前缀、知识库 /
         # 页面上下文、上传预览等本轮注入（message_content）走 turn_context，只进本轮
-        # 模型请求，见 agent/turn_context.py。
-        context_messages = build_context_messages(
-            history_messages,
-            turn_message_text(request.message, request.files, request.skills),
+        # 模型请求，见 agent/turn_context.py。开关 agent.session_thread 打开时一个会话
+        # 一个 thread，只输入本轮消息（及需要补齐的内容），见 services/session_thread.py。
+        plan = await plan_turn(
+            agent,
+            session_id=session_id,
+            turn_id=message_id,
+            history=history_messages,
+            raw=turn_message_text(request.message, request.files, request.skills),
             provider=provider,
-            current_message_id=message_id,
         )
+        context_messages = plan.messages
         logger.info(
-            f"[{sid}] 📚 上下文消息构建 | DB 消息数: {total_msgs} | "
-            f"历史注入: {len(context_messages) - 1} | 压缩: 官方 SummarizationMiddleware"
+            f"[{sid}] 📚 上下文消息构建 | DB 消息数: {total_msgs} | thread: {plan.mode} | "
+            f"输入消息: {len(context_messages)} | 补齐 DB 行: {plan.caught_up_rows} | "
+            f"补回半截回复: {plan.restored_tail} | 压缩: 官方 SummarizationMiddleware"
         )
+        if plan.checkpoint_id:
+            record_turn_checkpoint(db, session_id, message_id, plan.checkpoint_id, sid)
 
         # ── 启动流式输出 (stream_mode=['messages', 'updates']) ─────────
         logger.info(f"[{sid}] 🚀 使用 stream_mode=['messages', 'updates'] 流式接口")
 
-        # HITL: per-message thread_id for checkpointer state isolation
-        thread_id = f"{session_id}-{message_id}"
+        # 审批句柄始终是 {session_id}-{message_id}（前端据此还原 message_id）；
+        # 每消息模式下它就是 thread_id，会话 thread 模式下 thread_id = session_id。
+        thread_id = plan.thread_id
+        handle = approval_handle(session_id, message_id)
         stream_config = build_run_config(agent, thread_id)
 
         async for ev in pump_stream(
@@ -568,7 +580,7 @@ async def chat_stream_generator(
                 stream_config=stream_config,
                 proc=proc,
                 elapsed_time=time.time() - start_time,
-                thread_id=thread_id,
+                thread_id=handle,
             )
             if interruption:
                 # 保存部分 assistant 消息（复用取消路径模式）
@@ -576,11 +588,11 @@ async def chat_stream_generator(
                     session_id, interruption.partial_message
                 )
                 logger.info(
-                    f"[{sid}] 🔔 HITL 中断 | thread_id={thread_id} | "
+                    f"[{sid}] 🔔 HITL 中断 | thread_id={thread_id} | 审批句柄={handle} | "
                     f"{len(interruption.action_requests_payload)} 个操作待审批"
                 )
                 yield emitter.approval_required(
-                    thread_id=thread_id,
+                    thread_id=handle,
                     action_requests=interruption.action_requests_payload,
                 )
                 return
@@ -666,12 +678,17 @@ async def resume_stream_generator(
     username: str = "",
     session_logger: SessionLogger = None,
     message_id: str = "",
+    handle: str | None = None,
 ) -> AsyncGenerator[str, None]:
     """HITL 恢复流：用户审批后继续执行 Agent。
 
     从 DB 加载中断前的部分 assistant 消息，初始化状态，
     调用 agent.astream(Command(resume=...)) 继续执行。
+
+    ``thread_id`` 是真正恢复的 thread；``handle`` 是给前端的审批句柄（DA-03：会话 thread
+    模式下两者不同），缺省时与 ``thread_id`` 相同。
     """
+    handle = handle or thread_id
     start_time = time.time()
     sid = session_id[-5:] if session_id else "resume"
     emitter = SSEEmitter(session_id)
@@ -816,7 +833,7 @@ async def resume_stream_generator(
                 stream_config=stream_config,
                 proc=proc,
                 elapsed_time=time.time() - start_time,
-                thread_id=thread_id,
+                thread_id=handle,
                 with_approval=True,
             )
             if interruption:
@@ -828,7 +845,7 @@ async def resume_stream_generator(
                 # 故此处必须用 emit() 显式排序，不得改用 approval_required()。
                 yield emitter.emit(
                     SSEEvent.APPROVAL_REQUIRED,
-                    thread_id=thread_id,
+                    thread_id=handle,
                     # 嵌套中断时也下发当前 blocks，前端据此刷新已完成的工具结果
                     blocks=proc._sse_blocks(),
                     action_requests=interruption.action_requests_payload,

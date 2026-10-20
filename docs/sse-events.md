@@ -36,6 +36,12 @@
 时只回答第一个中断。决策与待审批中断对不上（未知 ID、数量或类型不符）时接口返回 400——批处理
 HITL 会先保存恢复值再校验，非法决策会让线程卡死，所以必须在恢复前拒绝。
 
+`thread_id` 是**审批句柄**，格式固定为 `{session_id}-{message_id}`（前端据此还原 message_id，
+恢复请求原样回传）。DA-03 起开启 `agent.session_thread` 时，图实际跑在 `thread_id = session_id`
+的会话 thread 上，由服务端把句柄映射过去；句柄对不上会话当前这一轮（会话已有新消息、审批已处理）
+时 `/agent/chat/resume` 返回 409。会话里发新消息即放弃上一轮未处理的审批，DB 里对应的工具调用
+标为 `rejected`。
+
 ## 约束
 
 1. 新增事件：先改 `SSE_EVENT_TYPES` → 更新本文件 → 改生产端 → 改前端 handler → 契约测试。

@@ -32,9 +32,13 @@ _CHECKPOINTERS: dict[str, "PersistentMemorySaver"] = {}
 _CHECKPOINTER_MAX = 200
 # 持久化裁剪：MemorySaver 会按 thread 保留全部 checkpoint。thread_id 形如
 # "{session_id}-{message_id}"，每轮新增一个 thread 且永不裁剪 → 每轮全量 pickle
-# 写库、blob 大小 O(轮数²)。这里只保留最近若干 thread / 每 thread 最近几个
-# checkpoint：HITL 只会恢复最新未完成 thread，历史 thread 不再需要。
-_PERSIST_MAX_CHECKPOINTS_PER_THREAD = 2
+# 写库、blob 大小 O(轮数²)。这里只保留最近若干 thread：HITL 只会恢复最新未完成
+# thread，历史 thread 不再需要。
+#
+# thread 内部的 checkpoint 一个都不能删：deepagents 0.7 的 messages 是 DeltaChannel，
+# checkpoint 里只存增量，读状态时要沿父链回溯到最近的快照再重放各祖先的写入。
+# 早先按 thread 只留最近 2 个 checkpoint，运行刚结束 messages 就重建成空列表，
+# HITL 恢复时模型看不到对话（DA-03 P1 发现）。
 _PERSIST_MAX_THREADS = 3
 _CHECKPOINTER_LOCK = threading.Lock()
 _postgres_cm = None
@@ -335,74 +339,36 @@ class PersistentMemorySaver(MemorySaver):
         return value
 
     def _prune_for_persistence(self) -> None:
-        """裁剪内存态 checkpoint，避免全量 pickle 无限增长。
+        """裁剪内存态 checkpoint，避免全量 pickle 无限增长：只保留最近 M 个 thread。
 
-        - 每个 thread/namespace 只保留最近 N 个 checkpoint（按 checkpoint_id 排序，
-          LangGraph 使用时间有序的 UUID6）；
-        - 只保留最近 M 个 thread；
-        - 同步清理 writes/blobs 中不再被引用的条目。
-
-        裁剪只影响持久化快照，不影响当前运行中的图（最新 checkpoint 一定保留）。
+        按 thread 的最新 checkpoint id 排序（LangGraph 使用时间有序的 UUID6），同步清理
+        writes/blobs 中属于被删 thread 的条目。thread 内的 checkpoint 全部保留（见模块顶部
+        ``_PERSIST_MAX_THREADS`` 的说明）。
         """
         try:
-            # 1) 每个 thread 每个 ns 只留最新 N 个
-            for thread_id, ns_map in list(self.storage.items()):
-                if not isinstance(ns_map, dict):
-                    continue
-                for ns, ckpts in list(ns_map.items()):
-                    if not isinstance(ckpts, dict):
-                        continue
-                    if len(ckpts) > _PERSIST_MAX_CHECKPOINTS_PER_THREAD:
-                        ordered = sorted(ckpts)
-                        drop = set(ordered[: -_PERSIST_MAX_CHECKPOINTS_PER_THREAD])
-                        for cid in drop:
-                            ckpts.pop(cid, None)
-                        for key in [
-                            k for k in list(self.writes)
-                            if k[0] == thread_id and k[1] == ns and k[2] in drop
-                        ]:
-                            self.writes.pop(key, None)
-                        # 只保留仍被存活 checkpoint 引用的 blob（按 channel/version）
-                        referenced: set[tuple[str, Any]] = set()
-                        for entry in ckpts.values():
-                            try:
-                                cp = self.serde.loads_typed(entry[0])
-                            except Exception:  # noqa: BLE001 - 兼容测试里的假数据
-                                continue
-                            for ch, ver in (cp.get("channel_versions") or {}).items():
-                                referenced.add((ch, ver))
-                        if referenced:
-                            for key in list(self.blobs):
-                                if (
-                                    key[0] == thread_id
-                                    and key[1] == ns
-                                    and (key[2], key[3]) not in referenced
-                                ):
-                                    self.blobs.pop(key, None)
-            # 2) thread 数量上限（按最新 checkpoint id 排序，保留最近的）
-            if len(self.storage) > _PERSIST_MAX_THREADS:
-                def _latest(thread_id: str) -> str:
-                    ids = [
-                        cid
-                        for ns_map in self.storage.get(thread_id, {}).values()
-                        if isinstance(ns_map, dict)
-                        for cid in ns_map
-                        if isinstance(cid, str)
-                    ]
-                    return max(ids) if ids else ""
+            if len(self.storage) <= _PERSIST_MAX_THREADS:
+                return
 
-                keep = set(
-                    sorted(self.storage, key=_latest)[-_PERSIST_MAX_THREADS:]
-                )
-                for thread_id in list(self.storage):
-                    if thread_id not in keep:
-                        self.storage.pop(thread_id, None)
-                for key in list(self.writes):
-                    if key[0] not in keep:
-                        self.writes.pop(key, None)
-                for key in list(self.blobs):
-                    if key[0] not in keep:
-                        self.blobs.pop(key, None)
+            def _latest(thread_id: str) -> str:
+                ids = [
+                    cid
+                    for ns_map in self.storage.get(thread_id, {}).values()
+                    if isinstance(ns_map, dict)
+                    for cid in ns_map
+                    if isinstance(cid, str)
+                ]
+                return max(ids) if ids else ""
+
+            keep = set(sorted(self.storage, key=_latest)[-_PERSIST_MAX_THREADS:])
+            for thread_id in list(self.storage):
+                if thread_id not in keep:
+                    self.storage.pop(thread_id, None)
+            for key in list(self.writes):
+                if key[0] not in keep:
+                    self.writes.pop(key, None)
+            for key in list(self.blobs):
+                if key[0] not in keep:
+                    self.blobs.pop(key, None)
         except Exception as exc:  # noqa: BLE001 - 裁剪失败不能阻断持久化
             logger.warning("checkpoint 裁剪失败（忽略，继续全量持久化）: %s", exc)
 
@@ -438,6 +404,14 @@ class PersistentMemorySaver(MemorySaver):
         result = await super().aput_writes(*args, **kwargs)
         self._flush()
         return result
+
+    def delete_thread(self, thread_id: str) -> None:
+        super().delete_thread(thread_id)
+        self._flush()
+
+    async def adelete_thread(self, thread_id: str) -> None:
+        await super().adelete_thread(thread_id)
+        self._flush()
 
 
 def postgres_checkpointer_active() -> bool:
@@ -658,6 +632,22 @@ async def adelete_threads(thread_ids) -> int:
         except Exception as exc:  # noqa: BLE001
             logger.warning("删除 checkpoint thread 失败 | thread=%s | %s", thread_id, exc)
     return deleted
+
+
+async def adelete_agent_thread(agent, thread_id: str) -> bool:
+    """用 agent 编译图自己的 checkpointer 删除一个 thread（官方 saver 与 legacy 快照都适用）。
+
+    失败只记日志，返回是否删除成功。
+    """
+    checkpointer = getattr(getattr(agent, "agent", None), "checkpointer", None)
+    if checkpointer is None or not thread_id:
+        return False
+    try:
+        await checkpointer.adelete_thread(thread_id)
+        return True
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("删除 checkpoint thread 失败 | thread=%s | %s", thread_id, exc)
+        return False
 
 
 async def delete_session_threads(session_id: str, message_ids=()) -> int:

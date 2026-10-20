@@ -35,6 +35,7 @@ from easy_agent.services.expert_service import (
     slugify,
     write_expert_version,
 )
+from easy_agent.services.session_thread import abandon_pending_approval, session_thread_in_use
 from easy_agent.services.sse import SSEEvent
 from easy_agent.services.sse_emitter import SSEEmitter
 from easy_agent.services.streaming import build_assistant_message_dict
@@ -496,6 +497,9 @@ def _persist_user_turn(
     # 结构化技能目录名：气泡按它渲染技能标签，不再需要从消息文本里反扒 `/目录名`
     if turn_skill_dirs:
         user_message["skills"] = turn_skill_dirs
+    # DA-03：会话 thread 下新输入会丢弃上一轮挂起的中断，DB 里的待审批同步标为拒绝
+    if session_thread_in_use(get_agent_config()):
+        abandon_pending_approval(repo, session_id)
     repo.add_message(session_id, user_message)
     return user_message
 
