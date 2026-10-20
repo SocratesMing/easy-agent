@@ -7,13 +7,15 @@
 > `write_todos` 需显式 `TodoListMiddleware`；新增 `delete` 工具并纳入 HITL。
 > 升级前先让 `tests/test_framework_contract.py` 失败并逐项复核本清单。
 
-## 适配点（3 处）
+## 适配点（5 处）
 
 | # | 位置 | 依赖的上游实现 | 失效后果 | 升级时需要做什么 |
 | --- | --- | --- | --- | --- |
 | 1 | `easy_agent/agent/hitl.py` `register_execute_description_profiles` | `HarnessProfile(tool_description_overrides=...)` + `register_harness_profile`（profiles beta API） | execute 工具描述不再注入 HITL 说明 | 对照 profiles API 的变化修正注册逻辑 |
 | 2 | `easy_agent/persistence/checkpoints.py` `PersistentMemorySaver`（仅 MySQL 回退使用） | `MemorySaver.storage/writes/blobs` 私有属性 + pickle | 重启后 HITL 审批恢复失败（静默）；数据格式变化 | FW-09 起默认已走官方 saver；升级时复核私有属性/pickle 格式，并推动 MySQL 用户迁移到 PG/SQLite |
 | 3 | `easy_agent/backends/context.py` `ContextBackend`（两层 `CompositeBackend`，DA-05） | `CompositeBackend` 的 `default` / `routes` / `sorted_routes` / `artifacts_root` 语义：权限 `_resolve_real_path` 递归进会话 composite、带 execute 时权限路径须落在 `routes` 前缀下、route→宿主机路径提示读 `sorted_routes` | symlink 权限校验失效、建图期 NotImplementedError，或模型收到「改用宿主机路径」的错误提示 | 跑 `tests/agent/test_backend_routing.py` 与 `tests/agent/test_langsmith_sandbox.py`；复核上述字段名与读取方式 |
+| 4 | `easy_agent/agent/memory.py` `SessionMemoryMiddleware`（DA-03） | `MemoryMiddleware.before_agent` / `abefore_agent` 在 state 已有 `memory_contents` 时跳过加载；同名实例原位替换默认项 | 改成会话级 thread 后，记忆（会话 `memory.md`、长期 `AGENTS.md`、上传清单）停在会话第一轮 | 跑 `tests/agent/test_session_memory.py`；其中对照组若失败，说明上游已改成每次运行都重读，可去掉覆盖 |
+| 5 | `easy_agent/agent/turn_context.py` `TurnAwareSummarizationMiddleware`（DA-03） | 继承官方 `SummarizationMiddleware`（私有类 `_DeepAgentsSummarizationMiddleware` 的公开别名）：子类的 `name` 默认回落为类名，须覆盖成 `"SummarizationMiddleware"`；状态 schema 继承 `SummarizationState`；新增的自定义中间件排在摘要之后 | 默认摘要不被替换（出现两份摘要），或本轮渲染内容不计入摘要的 token | 跑 `tests/agent/test_turn_context.py` 与 `tests/agent/test_session_memory.py::test_main_agent_stack_uses_session_memory_and_turn_aware_summarization` |
 
 > 2026-10-19 起不再是适配点：摘要阈值（原第 2 项，建图期替换私有工厂
 > `deepagents.graph.create_summarization_middleware`）改为官方「同名实例原位替换」

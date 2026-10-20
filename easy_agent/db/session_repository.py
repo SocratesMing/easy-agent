@@ -18,6 +18,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from easy_agent.models.db import SessionModel
+from easy_agent.db.repositories import agent_runs as agent_runs_repo
 from easy_agent.db.repositories import files as files_repo
 from easy_agent.db.repositories import sessions as sessions_repo
 
@@ -100,6 +101,10 @@ class SessionRepository:
     def toggle_session_pin(self, session_id: str) -> int:
         """切换置顶并返回新的 pinned 值（0/1）。"""
         return sessions_repo.toggle_session_pin(self._db, session_id)
+
+    def list_run_message_ids(self, session_id: str) -> list[str]:
+        """该会话所有 run 的 message_id，用于删除每条消息一个的旧 checkpoint thread。"""
+        return agent_runs_repo.list_session_message_ids(self._db, session_id)
 
     def delete_session(self, session_id: str) -> bool:
         """删除会话及其 session_messages 行；返回是否删除了会话行。"""

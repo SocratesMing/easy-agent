@@ -11,8 +11,8 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 
-from easy_agent.agent import release_session_checkpointer
 from easy_agent.agent.backend import agent_artifacts_dir
+from easy_agent.persistence.checkpoints import delete_session_threads
 from easy_agent.db.session_repository import SessionRepository
 from easy_agent.api.deps import (  # noqa: F401 - 旧模块级名字 re-export
     as_session_repository as _as_session_repository,
@@ -321,11 +321,17 @@ async def delete_session(
     except Exception as e:
         logger.warning(f"清除会话连接器开关失败: {e}")
 
-    # 释放该会话的 HITL checkpointer（未调用时由 agent.py 的 FIFO 上限兜底）
+    # 删除该会话的 checkpoint：官方 saver 里的会话 thread 与每条消息一个的旧 thread
+    # （message_id 取自 agent_runs），以及 legacy 快照（DA-03）
     try:
-        release_session_checkpointer(session_id)
+        message_ids = repo.list_run_message_ids(session_id)
     except Exception as e:
-        logger.warning(f"释放会话 checkpointer 失败: {e}")
+        logger.warning(f"读取会话 run 记录失败，只删除会话 thread: {e}")
+        message_ids = []
+    try:
+        await delete_session_threads(session_id, message_ids)
+    except Exception as e:
+        logger.warning(f"删除会话 checkpoint 失败: {e}")
 
     user_workspace_dir = Config.get_user_workspace_dir(username)
     # 候选工作区目录名：workspace_name（首轮/重命名后）与 session_id（旧会话回退）

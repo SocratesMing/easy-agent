@@ -96,6 +96,49 @@ def test_delete_session_removes_its_artifacts_dir(client):
     assert not artifacts.exists()
 
 
+def test_delete_session_deletes_its_checkpoint_threads(client, db, monkeypatch):
+    """DA-03：删除会话时一并删除 checkpoint thread（会话 thread 与每条消息一个的旧 thread）。
+
+    官方 saver 全局共享，改造前删除会话只清 legacy 快照，旧 thread 永远留在库里。
+    """
+    import easy_agent.api.sessions as sessions_api
+    from easy_agent.db.repositories.agent_runs import start_run
+
+    sid = _create_session(client)
+    for mid in ("m1", "m2"):
+        start_run(db, f"{sid}:{mid}", sid, "testuser", mid, "{}", "pod", "2099-01-01T00:00:00+00:00")
+    calls = []
+
+    async def fake_delete(session_id, message_ids=()):
+        calls.append((session_id, sorted(message_ids)))
+
+    monkeypatch.setattr(sessions_api, "delete_session_threads", fake_delete)
+
+    assert client.delete(f"/agent/sessions/{sid}").status_code == 200
+    assert calls == [(sid, ["m1", "m2"])]
+
+
+def test_delete_session_still_releases_checkpoints_when_run_lookup_fails(client, monkeypatch):
+    """读取 run 记录失败时，仍要删除会话 thread、释放 legacy 快照（改造前释放一定会执行）。"""
+    import easy_agent.api.sessions as sessions_api
+    from easy_agent.db.session_repository import SessionRepository
+
+    def broken(self, session_id):
+        raise RuntimeError("db down")
+
+    calls = []
+
+    async def fake_delete(session_id, message_ids=()):
+        calls.append((session_id, list(message_ids)))
+
+    monkeypatch.setattr(SessionRepository, "list_run_message_ids", broken)
+    monkeypatch.setattr(sessions_api, "delete_session_threads", fake_delete)
+
+    sid = _create_session(client)
+    assert client.delete(f"/agent/sessions/{sid}").status_code == 200
+    assert calls == [(sid, [])]
+
+
 def test_upload_session_file(client):
     sid = _create_session(client)
     files = {"file": ("hello.txt", b"hello world", "text/plain")}

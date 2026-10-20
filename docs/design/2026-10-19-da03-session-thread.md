@@ -1,7 +1,7 @@
 # DA-03 会话级 thread 设计（一个会话一个 thread）
 
 - 日期：2026-10-19
-- 状态：已评审（2026-10-19，§11 均按推荐方案）；P0 实现中
+- 状态：已评审（2026-10-19，§11 均按推荐方案）；P0 已实现（2026-10-20，见 §13），P1 未开始
 - 范围：后端聊天 / 恢复链路、agent 装配（记忆、技能刷新与本轮上下文注入）、checkpointer 生命周期；前端与 SSE 契约不变
 - 相关：审计 DA-03（`docs/audit/2026-10-19-deepagents-best-practices-audit.md` §4）、DA-01（已修）、B1 checkpointer 契约（`docs/design/2026-10-18-b1-checkpointer-store.md`）、D2 共享编译图
 - 证据：`docs/audit/evidence-2026-10-19-deepagents/exp_session_thread.py`（真实 `create_deep_agent` + 假模型 + `InMemorySaver`，不联网）
@@ -180,7 +180,7 @@ threads in checkpointer: 1 | conversation_history files: 1
   - `rendered`：现状下真正发给模型的完整文本，即 §2.2 的各项注入加原话。
 - 子代理不受影响：每次 `task` 调用都从全新状态起步，其 checkpoint 落在父 thread 的子命名空间里。
 
-### 6.2 本轮上下文：`turn_context` 通道 + `TurnContextMiddleware`
+### 6.2 本轮上下文：`turn_context` 通道 + 主代理摘要中间件渲染
 
 目标：模型在本轮的每一次调用里看到 `rendered`，thread 的 `messages` 里只存 `raw`。
 
@@ -192,14 +192,15 @@ threads in checkpointer: 1 | conversation_history files: 1
 
   - 出现在 input schema 里，由 orchestrator 每轮传入；
   - 是 LastValue 通道，HITL 中断后仍留在 checkpoint 里，**恢复的那次运行也能拿到**；下一轮会被覆盖。
-- `wrap_model_call` / `awrap_model_call` 只改本次请求（`request.override(messages=…)`），不写回 state：
+- 渲染只改本次请求（`request.override(messages=…)`），不写回 state：
   1. 把 id 等于 `turn_context.message_id` 的用户消息内容替换为 `content`；
   2. 对本轮用户消息之前的 `AIMessage`，剥离推理内容：列表 content 里的 `thinking` / `redacted_thinking` / `reasoning` 块，以及 `additional_kwargs["reasoning_content"]`。这与现状"历史思考不回灌"一致（`stream_messages.py:81`），也避免切换 provider 时把 Anthropic 的 thinking 签名块发给 OpenAI 兼容通道。本轮内的推理原样保留：Anthropic 在工具循环里需要它。
 - 实验第 5、6 段用的就是这个状态通道写法：
   - 模型看到 `'[KNOWLEDGE CONTEXT]\nquestion with context'`，thread 里存的是 `'question with context'`；
   - 下一轮传 `turn_context: None`，模型看到的那条历史是原话；
   - 审批后恢复执行，恢复的那次模型调用仍看到渲染内容。
-- 知识库包装器（`knowledges/chat/streaming.py`）改为产出 `rendered`，不再改写 `parsed_content`；orchestrator 的工作区前缀也并入 `rendered`。
+- **渲染放在主代理的摘要中间件里**（P0 实现时的细化）：`TurnAwareSummarizationMiddleware` 继承官方 `SummarizationMiddleware`，`name` 仍为 `"SummarizationMiddleware"`（原位替换默认项），在 `wrap_model_call` / `awrap_model_call` 里先渲染、再交给父类计 token 和摘要；`turn_context` 字段也声明在它的状态 schema 上。不做成单独的中间件，是因为 deepagents 把新增的自定义中间件排在摘要之后（更内层）：单独中间件改写请求时摘要已经按原话计完 token，回退模式的文件全文、知识片段等大段注入会让请求超过阈值却不触发摘要。`tests/agent/test_turn_context.py::test_summarization_counts_the_rendered_turn` 里的对照组复现了这一点。子代理用普通的官方摘要中间件。
+- 知识库包装器（`knowledges/chat/streaming.py`）不用改：它写入的 `parsed_content` 就是渲染内容。orchestrator 把工作区前缀加上 `parsed_content` 作为 `rendered`，原话取 `request.message`。
 
 ### 6.3 记忆与技能每轮刷新
 
@@ -292,9 +293,8 @@ DB 记录用户看到的内容，thread 记录模型看到的内容，二者按�
 | --- | --- |
 | `services/streaming/orchestrator.py` | thread_id 改为会话；本轮输入（原话 / `turn_context` / `skills_metadata`）；水合与偏离检测；半截回复回灌；审批句柄生成 |
 | `api/chat.py` | 拆分 `raw` 与 `rendered`；`chat_resume` 的句柄映射、校验与兼容期旧 thread；新消息作废上一轮 pending 标记 |
-| `knowledges/chat/streaming.py` | 知识上下文改为产出 `rendered`，不再拼进 `parsed_content` |
-| `agent/turn_context.py`（新） | `TurnContextState`、`TurnContextMiddleware`（本轮内容替换与历史推理剥离） |
-| `agent/memory.py`（新）/ `agent/core.py` | `SessionMemoryMiddleware`；`_build` 的 `middleware` 加入上面两个中间件 |
+| `agent/turn_context.py`（新） | `turn_input`、`render_turn_messages`、`TurnAwareSummarizationMiddleware`（本轮内容替换与历史推理剥离，主代理摘要前执行） |
+| `agent/memory.py`（新）/ `agent/core.py` / `agent/summarization.py` | `SessionMemoryMiddleware`；`_build` 给主代理用 `render_turn=True` 的摘要中间件并加入会话记忆中间件 |
 | `persistence/checkpoints.py` | `delete_session_thread()`（官方 saver `adelete_thread` 与 legacy 清理） |
 | `api/sessions.py`、`services/scheduler.py` | 删除会话 / 定时任务结束时清理 thread |
 | `bootstrap/config_models.py` 等 | `agent.session_thread: bool`，同步 `config_validation` 已知键、`config-example.yaml`、README |
@@ -327,7 +327,7 @@ DB 记录用户看到的内容，thread 记录模型看到的内容，二者按�
 
 | 阶段 | 内容 | 开关 |
 | --- | --- | --- |
-| P0 · 铺底 | `SessionMemoryMiddleware`、`TurnContextMiddleware`、注入改走 `turn_context`、DB 用户行记录 `turn_id`、删除会话与定时任务清理 thread。每消息 thread 下也成立：记忆和技能本来就每轮重载，注入效果不变 | 无（行为中性） |
+| P0 · 铺底（✅ 2026-10-20） | `SessionMemoryMiddleware`、`TurnAwareSummarizationMiddleware`、注入改走 `turn_context`、DB 用户行记录 `turn_id`、删除会话与定时任务清理 thread。每消息 thread 下也成立：记忆和技能本来就每轮重载，注入效果不变 | 无（行为中性） |
 | P1 · 切换 | 会话 thread、水合与偏离检测、审批句柄映射与兼容期、新消息作废审批、半截回复回灌 | `agent.session_thread`，dev / test 先开 |
 | P2 · 默认开启 | 默认 `true`；运行存量旧线程清理脚本；观察一个版本后删除兼容期旧 thread 恢复代码 | 默认开 |
 
@@ -363,3 +363,27 @@ DB 记录用户看到的内容，thread 记录模型看到的内容，二者按�
 - 审批、取消、重试、切换专家、切换模型的行为与现状一致（§6.4 / §6.5 列出的差异除外）。
 - 删除会话后 checkpointer 中不再有该会话的 thread。
 - 开关关闭时，现有测试全部通过、行为不变。
+
+## 13. P0 实施记录（2026-10-20）
+
+thread 仍是每条消息一个，模型看到的内容与改造前一致；以下改动为 P1 铺路：
+
+| 改动 | 位置 | 回归测试 |
+| --- | --- | --- |
+| 记忆每次运行都重新加载（覆盖框架"每个 thread 只读一次"） | `easy_agent/agent/memory.py` `SessionMemoryMiddleware` | `tests/agent/test_session_memory.py`（含框架默认行为的对照组：上游改成每次重读时它会失败，届时可去掉覆盖） |
+| 主代理摘要前渲染本轮上下文、剥离历史推理 | `easy_agent/agent/turn_context.py`、`agent/summarization.py`（`render_turn=True`）、`agent/core.py` | `tests/agent/test_turn_context.py`：模型看到渲染内容、thread 只存原话；审批恢复后仍渲染；摘要按渲染后的内容计 token（含单独中间件的对照组） |
+| 图输入改为 原话 `HumanMessage(id=message_id)` + `turn_context` + `skills_metadata: None`；只传文件 / 只选技能时用占位文本 | `services/streaming/orchestrator.py`、`services/stream_messages.py`（`turn_message_text`、`current_message_id`） | `tests/services/test_stream_split_golden.py::test_chat_stream_input_*` |
+| 用户消息落库带 `turn_id`（普通聊天与专家链路） | `api/chat.py`、`api/expert_helpers.py`、`api/expert.py` | `tests/api/test_chat.py::test_stream_records_turn_id_on_the_user_message`、`tests/api/test_expert_helpers.py::test_persist_user_turn_records_turn_id` |
+| 删除会话时删除官方 saver 里的会话 thread 与 `{session_id}-{message_id}` 旧 thread（message_id 取自 `agent_runs`），再清 legacy 快照 | `persistence/checkpoints.py`（`adelete_threads`、`delete_session_threads`）、`db/repositories/agent_runs.py`、`db/session_repository.py`、`api/sessions.py` | `tests/services/test_thread_cleanup.py`（含真实 `AsyncSqliteSaver`，缺 extra 时跳过）、`tests/api/test_sessions.py::test_delete_session_*` |
+| 定时任务运行结束后删除 `sched-{task}-{run}` thread | `services/scheduler.py` | `tests/agent/test_run_limits.py::test_scheduled_task_deletes_its_thread_after_the_run` |
+
+验证：
+
+- 行为测试在改造前的代码上会失败：编排器输入、占位文本、`turn_id` 三项已在 HEAD 的 worktree 上确认；其余新增测试依赖新增的模块或接口，在改造前的代码上无法运行。
+- 锁定版本环境全量：1762 passed，1 skipped（5 个官方 SQLite saver 用例因缺 `sqlite-saver` extra 未计入，已决定暂不处理）；装有该 extra 的项目 `.venv`（关键依赖版本与锁文件一致）里全量 1769 passed，1 skipped。
+- ruff、import graph（0 SCC）、技能副本、double-write、multi-replica、API 文档门禁均通过。
+
+为 P1 留下的事项：
+
+- 定时任务会往它的会话里写用户行，这些行没有 `turn_id`。P1 的偏离检测要把"thread 之后出现的、没有 `turn_id` 的用户行"也算作偏离。
+- 只有 P1 切到会话 thread 之后，`SessionMemoryMiddleware` 才会产生行为差异；`remove_session_agent` 在记忆更新后的驱逐届时可以移除。

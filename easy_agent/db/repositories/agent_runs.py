@@ -136,6 +136,24 @@ def get_run(db, run_id: str) -> dict | None:
     return _row_to_dict(row)
 
 
+def list_session_message_ids(db, session_id: str) -> list[str]:
+    """该会话所有 run 的 message_id（去重、去空），用于清理每条消息一个的旧 thread（DA-03）。"""
+    with db.get_connection() as conn:
+        cursor = conn.cursor()
+        db._execute(
+            cursor,
+            "SELECT DISTINCT message_id FROM agent_runs WHERE session_id=?",
+            (session_id,),
+        )
+        rows = cursor.fetchall()
+    ids = []
+    for row in rows:
+        value = row["message_id"] if isinstance(row, dict) else row[0]
+        if value:
+            ids.append(str(value))
+    return ids
+
+
 def list_stale_running(db, now_iso: str, limit: int = DEFAULT_STALE_LIMIT) -> list[dict]:
     """返回租约已过期的 ``running`` run（``lease_until < now_iso``）。"""
     if limit <= 0:

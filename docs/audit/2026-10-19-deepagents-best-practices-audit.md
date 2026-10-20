@@ -5,7 +5,7 @@
 > 文档来源：LangChain 官方文档（经 Docs MCP `https://docs.langchain.com/mcp` 拉取全文，2026-10-19）+ `langchain-ai/langchain-skills` 中的 deep-agents-core / memory / orchestration 技能 + deepagents 0.7.28 源码。
 > 与既有报告的关系：`docs/audit/2026-10-17-easy-agent-audit.md` 已覆盖的条目不重复展开，只复核状态；本报告新增条目编号为 **DA-xx**，严重度沿用 P0–P3。
 > 测试基线：`pytest tests/` → **1607 passed, 1 skipped, 2 warnings**（266s）。
-> **修复进度**：Batch B（DA-01 / DA-02 / DA-08 / DA-10 / DA-16）与修复中发现的 DA-18 已于 2026-10-19 完成，见 §9；Batch A 已修 SEC-01 / SEC-02 / SEC-04 / SEC-05，SEC-03（免密登录）按产品决定保留，见 §10。C1（DA-06 / DA-09 第一步 / DA-11 / DA-12 / DA-17、sqlite 连接器 `DB_PATH`）已完成，见 §11；C2（DA-04 / DA-05）已完成，见 §12；C3（DA-07）与一批清理项已完成，见 §13。
+> **修复进度**：Batch B（DA-01 / DA-02 / DA-08 / DA-10 / DA-16）与修复中发现的 DA-18 已于 2026-10-19 完成，见 §9；Batch A 已修 SEC-01 / SEC-02 / SEC-04 / SEC-05，SEC-03（免密登录）按产品决定保留，见 §10。C1（DA-06 / DA-09 第一步 / DA-11 / DA-12 / DA-17、sqlite 连接器 `DB_PATH`）已完成，见 §11；C2（DA-04 / DA-05）已完成，见 §12；C3（DA-07）与一批清理项已完成，见 §13。DA-03 设计已评审，P0（铺底，行为中性）已于 2026-10-20 完成，见 §14。
 
 ---
 
@@ -266,7 +266,7 @@
 | C1 · 快速项 | DA-06 模型 `profile` + 官方摘要中间件覆盖；DA-12 官方 `ToolErrorMiddleware`；DA-11 子代理工具收窄；DA-09 第一步 MCP annotations 决定审批；DA-17 过时注释与文档；sqlite 连接器 `DB_PATH` 限定个人工作区 | ✅ 已完成（§11） |
 | C2 · Backend 重构 | DA-04 默认路由改隐藏目录（修已复现的 deny 别名绕过，框架产物不再出现在用户工作区）；DA-05 改用真实 `CompositeBackend` | ✅ 已完成（§12） |
 | C3 · 沙箱加固 | DA-07 网络开关（默认联网，可配置断网）、技能目录只读挂载、execute 超时上限；CPU / 内存 / 进程数限额暂缓（原因见 §13） | ✅ 已完成（§13） |
-| D · 演进 | DA-03 thread = 会话（超过摘要阈值后每轮都会重新摘要整段历史；设计文档已评审：`docs/design/2026-10-19-da03-session-thread.md`，按 P0–P2 分阶段实施）；DA-13 技能多源 / 只读 / pinned；子代理进度事件流；DA-09 迁移 `langchain.mcp`（beta）；DA-14 LangSmith 沙箱生命周期；`services/` 拆领域子包 | 1–2 周，需设计文档 |
+| D · 演进 | DA-03 thread = 会话（超过摘要阈值后每轮都会重新摘要整段历史；设计文档已评审：`docs/design/2026-10-19-da03-session-thread.md`，按 P0–P2 分阶段实施，P0 已完成见 §14）；DA-13 技能多源 / 只读 / pinned；子代理进度事件流；DA-09 迁移 `langchain.mcp`（beta）；DA-14 LangSmith 沙箱生命周期；`services/` 拆领域子包 | 1–2 周，需设计文档 |
 | 穿插项 | CI 缺 `sqlite-saver` extra（暂不处理）；SEC-03 签名免密（需门户配合）；DA-15 前端审批交互；工具工厂并入 `ToolSpec`（已核对不会形成 import 环，需同步改测试注入方式）；MySQL 连接器可达内网任意主机（2026-10-19 决定保持现状） | 待定 |
 
 --- | --- | --- |
@@ -375,3 +375,16 @@
 更正：§7 早先列出的「`tests/api/test_files_store_backend.py` 依赖执行顺序」是误判——当时本地 `.venv` 被切换分支后的依赖覆盖成 deepagents 0.6.8（没有 `StoreBackend.delete`），在与 `uv.lock` 一致的环境里该文件单独运行全部通过。
 
 决定：MySQL 连接器由服务器去连用户填写的主机，可达服务器能访问的内网数据库；2026-10-19 决定保持现状，风险在此记录。
+
+## 14. 修复记录（2026-10-20，DA-03 P0）
+
+thread 仍是每条消息一个，模型看到的内容不变；本批为切换到会话级 thread（P1）铺路。详细记录见设计文档 §13。
+
+| 改动 | 回归测试 |
+| --- | --- |
+| 记忆每次运行都重新加载：`agent/memory.py` `SessionMemoryMiddleware` 同名替换框架默认项（框架每个 thread 只读一次记忆） | `tests/agent/test_session_memory.py` |
+| 本轮注入（工作区前缀、知识库 / 页面上下文、上传预览、技能指令）不再拼进本轮 `HumanMessage`，改随 `turn_context` 传入；主代理的摘要中间件 `TurnAwareSummarizationMiddleware` 在计 token 之前渲染，并剥离历史推理 | `tests/agent/test_turn_context.py`、`tests/services/test_stream_split_golden.py::test_chat_stream_input_*` |
+| 用户消息落库带 `turn_id`（= message_id） | `tests/api/test_chat.py::test_stream_records_turn_id_on_the_user_message`、`tests/api/test_expert_helpers.py::test_persist_user_turn_records_turn_id` |
+| 删除会话时删除官方 saver 里该会话的 thread（含每条消息一个的旧 thread）；定时任务每次运行结束后删除自己的 thread。改造前官方 saver 的 thread 只增不减 | `tests/services/test_thread_cleanup.py`、`tests/api/test_sessions.py::test_delete_session_deletes_its_checkpoint_threads`、`tests/agent/test_run_limits.py::test_scheduled_task_deletes_its_thread_after_the_run` |
+
+框架适配点新增两处（`SessionMemoryMiddleware`、`TurnAwareSummarizationMiddleware`），已登记在 `docs/framework-integration.md`。

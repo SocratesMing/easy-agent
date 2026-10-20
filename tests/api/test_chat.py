@@ -165,6 +165,18 @@ def test_stream_uses_structured_skills_field(client, db, monkeypatch):
     assert session.title == "帮我排个版"
 
 
+def test_stream_records_turn_id_on_the_user_message(client, db, monkeypatch):
+    """DA-03：用户消息落库时带上本轮 id（= message_id），与 thread 里本轮消息的 id 一致。"""
+    captured = _patch_stream(monkeypatch)
+
+    resp = client.post("/agent/chat/stream", json={"message": "你好", "message_id": "m-42"})
+
+    assert resp.status_code == 200
+    assert captured["stream_kwargs"]["message_id"] == "m-42"
+    _, user_message = _stored_user_message(db, captured)
+    assert user_message["turn_id"] == "m-42"
+
+
 def test_stream_skills_only_without_text_uses_display_name(client, db, monkeypatch):
     """只挂技能、没写正文：正文为空也放行，标题用技能展示名兜底。"""
     _patch_skills(monkeypatch)

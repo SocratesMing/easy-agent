@@ -638,3 +638,35 @@ def release_session_checkpointer(session_id: str) -> None:
         get_database().delete_agent_checkpoint(session_id)
     except Exception:  # noqa: BLE001
         pass
+
+
+async def adelete_threads(thread_ids) -> int:
+    """从官方 saver（Postgres / SQLite）删除这些 thread，返回成功删除的个数。
+
+    官方 saver 全局共享，删除会话不会顺带删掉它的 thread，只能按 thread_id 显式删除
+    （公开 API ``adelete_thread``）。legacy 快照按会话存放，由
+    :func:`release_session_checkpointer` 整体清理，这里不处理。单个失败只记日志。
+    """
+    saver = _postgres_saver or _sqlite_saver
+    if saver is None:
+        return 0
+    deleted = 0
+    for thread_id in dict.fromkeys(t for t in thread_ids if t):
+        try:
+            await saver.adelete_thread(thread_id)
+            deleted += 1
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("删除 checkpoint thread 失败 | thread=%s | %s", thread_id, exc)
+    return deleted
+
+
+async def delete_session_threads(session_id: str, message_ids=()) -> int:
+    """删除会话的全部 thread：会话 thread、每条消息一个的旧 thread，以及 legacy 快照（DA-03）。
+
+    ``message_ids`` 来自该会话的 ``agent_runs``；旧 thread 名为 ``{session_id}-{message_id}``。
+    """
+    deleted = await adelete_threads(
+        [session_id, *(f"{session_id}-{mid}" for mid in message_ids if mid)]
+    )
+    release_session_checkpointer(session_id)
+    return deleted

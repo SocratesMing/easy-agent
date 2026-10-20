@@ -512,7 +512,9 @@ async def stream_export_run(
     )
     if gate is not None:
         classification, refusal = gate
-        _persist_user_turn(repo, session_id, username, request, expert_id, turn_skill_dirs)
+        _persist_user_turn(
+            repo, session_id, username, request, expert_id, turn_skill_dirs, turn_id=message_id
+        )
         _session_logger_for(session_id, username).log_user_message(
             message=request.message,
             files=request.files,
@@ -603,7 +605,9 @@ async def stream_export_run(
     )
 
     # ── 4. 落用户消息（与 chat.py 一致） ───────────────────────────────
-    _persist_user_turn(repo, session_id, username, request, expert_id, turn_skill_dirs)
+    _persist_user_turn(
+        repo, session_id, username, request, expert_id, turn_skill_dirs, turn_id=message_id
+    )
 
     session_logger = _session_logger_for(session_id, username)
     session_logger.log_user_message(

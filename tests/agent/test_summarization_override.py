@@ -24,8 +24,8 @@ def test_every_agent_uses_the_configured_summarization(build_easy_agent, compile
     built = []
     real = agent_mod.build_summarization_middleware
 
-    def recording(config, model, backend):
-        instance = real(config, model, backend)
+    def recording(config, model, backend, **kwargs):
+        instance = real(config, model, backend, **kwargs)
         built.append(instance)
         return instance
 

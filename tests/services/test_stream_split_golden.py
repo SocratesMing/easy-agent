@@ -699,3 +699,46 @@ async def test_resume_nested_hitl_golden_blocks_before_action_requests():
     }
     assert frames[-1] == format_sse(expected)
     assert "done" not in _types(events)
+
+
+async def test_chat_stream_input_keeps_raw_message_and_renders_turn_context():
+    """DA-03：本轮消息只存用户原话（id = message_id），本轮注入随 turn_context 传入。
+
+    改造前工作区前缀、页面 / 知识库上下文都直接拼进本轮 HumanMessage；会话级 thread
+    下它们会永久留在历史里。
+    """
+    graph = FakeGraph([[{"type": "content", "content": "ok"}]])
+    history = [{"role": "user", "content": "q0"}, {"role": "assistant", "content": "a0"}]
+    db = FakeDB(messages=[*history, {"role": "user", "content": "hi"}])
+
+    await _collect(
+        chat_stream_generator(
+            ChatRequest(message="hi"),
+            db,
+            _agent(graph),
+            "s1",
+            "m1",
+            "tester",
+            parsed_content="<page_context>p</page_context>\n\nhi",
+        )
+    )
+
+    payload = graph.astream_calls[0]["payload"]
+    assert [m.content for m in payload["messages"]] == ["q0", "a0", "hi"]
+    assert payload["messages"][-1].id == "m1"
+    assert payload["turn_context"] == {
+        "message_id": "m1",
+        "content": "[workspace: /workspace/ | shell: cd /workspace]\n<page_context>p</page_context>\n\nhi",
+    }
+    assert payload["skills_metadata"] is None
+
+
+async def test_chat_stream_input_uses_placeholder_for_files_only_turn():
+    """只传文件、没写正文时，thread 里存一条占位，而不是空的用户消息。"""
+    graph = FakeGraph([[{"type": "content", "content": "ok"}]])
+    db = FakeDB(messages=[{"role": "user", "content": ""}])
+    request = ChatRequest(message="", files=[{"filename": "a.pdf", "file_path": "/x/a.pdf"}])
+
+    await _collect(chat_stream_generator(request, db, _agent(graph), "s1", "m1", "tester"))
+
+    assert graph.astream_calls[0]["payload"]["messages"][-1].content == "[上传文件: a.pdf]"

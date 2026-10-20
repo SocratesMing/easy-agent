@@ -471,6 +471,8 @@ def _persist_user_turn(
     request: ChatRequest,
     expert_id: str,
     turn_skill_dirs: list[str],
+    *,
+    turn_id: str = "",
 ) -> dict:
     """落本轮用户消息（正常链路与短路拒答链路共用，保证两种情况下会话都完整）。
 
@@ -484,6 +486,9 @@ def _persist_user_turn(
         "content": request.message,
         "timestamp": datetime.now().isoformat(),
     }
+    if turn_id:
+        # DA-03：本轮 id（= message_id），与 thread 里本轮 HumanMessage 的 id 一致
+        user_message["turn_id"] = turn_id
     if expert_meta:
         user_message["expert"] = expert_meta
     if request.files:

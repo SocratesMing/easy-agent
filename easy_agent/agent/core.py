@@ -49,6 +49,7 @@ from easy_agent.agent.workspace import (
 )
 from easy_agent.agent.subagents import DEFAULT_SUBAGENTS, resolve_subagent_tools
 from easy_agent.agent.summarization import build_summarization_middleware
+from easy_agent.agent.memory import SessionMemoryMiddleware
 from easy_agent.bootstrap.logger import AgentLogger
 from easy_agent.agent.model import (
     create_model,
@@ -544,8 +545,19 @@ class EasyAgent(AgentWorkspaceMixin):
             graph_tools = contextualize_tools(raw_tools)
 
             # DA-06：同名实例原位替换框架默认的摘要中间件（主代理与每个子代理各一份）。
-            def summarization():
-                return build_summarization_middleware(self.config, model, backend)
+            # DA-03：主代理的摘要先渲染本轮上下文再计 token；记忆每次运行都重新加载。
+            def summarization(*, render_turn: bool = False):
+                return build_summarization_middleware(
+                    self.config, model, backend, render_turn=render_turn
+                )
+
+            main_middleware = [*middleware, summarization(render_turn=True)]
+            if memory_list:
+                main_middleware.append(
+                    SessionMemoryMiddleware(
+                        backend=backend, sources=memory_list, add_cache_control=True
+                    )
+                )
 
             return create_deep_agent(
                 name="easy-agent",
@@ -553,7 +565,7 @@ class EasyAgent(AgentWorkspaceMixin):
                 system_prompt=self.system_prompt,
                 backend=backend,
                 skills=skills_paths or None,
-                middleware=[*middleware, summarization()],
+                middleware=main_middleware,
                 tools=graph_tools or None,
                 memory=memory_list or None,
                 permissions=permissions or None,

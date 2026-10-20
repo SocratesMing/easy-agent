@@ -97,8 +97,25 @@ def _assistant_content_message(message: dict, provider: str) -> AIMessage:
     return AIMessage(content=str(message.get("content") or ""))
 
 
+def turn_message_text(message: str, files: list | None = None, skills: list | None = None) -> str:
+    """本轮存进 thread 的用户原话；只传文件 / 只选技能时给一个简短占位，避免空的用户消息。"""
+    if (message or "").strip():
+        return message
+    parts = []
+    names = [str(f.get("filename")) for f in files or [] if isinstance(f, dict) and f.get("filename")]
+    if names:
+        parts.append(f"[上传文件: {', '.join(names)}]")
+    if skills:
+        parts.append(f"[使用技能: {', '.join(str(s) for s in skills)}]")
+    return " ".join(parts) or (message or "")
+
+
 def build_context_messages(
-    history_messages: list[dict], current_message: str, provider: str = ""
+    history_messages: list[dict],
+    current_message: str,
+    provider: str = "",
+    *,
+    current_message_id: str | None = None,
 ) -> list:
     """将持久化会话历史重建为完整的 LangChain 消息链。
 
@@ -108,6 +125,9 @@ def build_context_messages(
 
     注意：历史 **thinking 不回灌上下文**（详见 ``_assistant_content_message``），
     思考仅用于前端展示与持久化。
+
+    ``current_message_id`` 作为本轮 ``HumanMessage`` 的 id，供 ``turn_context`` 定位本轮消息
+    （见 ``agent/turn_context.py``）。
     """
     context_messages: list = []
     provider = (provider or "").lower()
@@ -163,7 +183,7 @@ def build_context_messages(
         if str(message.get("content") or "").strip() or message.get("thinking"):
             context_messages.append(_assistant_content_message(message, provider))
 
-    context_messages.append(HumanMessage(content=current_message))
+    context_messages.append(HumanMessage(content=current_message, id=current_message_id))
     return context_messages
 
 

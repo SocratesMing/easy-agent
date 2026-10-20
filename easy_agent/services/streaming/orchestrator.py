@@ -25,6 +25,7 @@ from easy_agent.agent import EasyAgent
 from easy_agent.db import Database
 from easy_agent.agent.model import resolve_context_length
 from easy_agent.agent.run_config import build_run_config
+from easy_agent.agent.turn_context import turn_input
 from easy_agent.models.api import ChatRequest
 from easy_agent.utils.session_logger import SessionLogger
 from easy_agent.services.agent_manager import get_agent_config
@@ -43,6 +44,7 @@ from easy_agent.services.stream_messages import (
     build_assistant_message_dict,
     build_context_messages,
     tool_call_records_to_dicts,
+    turn_message_text,
 )
 from easy_agent.services.stream_processor import StreamProcessor
 from easy_agent.services.streaming.persistence import (
@@ -507,8 +509,14 @@ async def chat_stream_generator(
         total_msgs = len(session.messages) if session and session.messages else 0
         history_messages = session.messages[:-1] if total_msgs else []
         provider = agent.config.llm.provider.lower() if agent and agent.config else ""
+        # DA-03：thread 里的本轮消息只存用户原话（与 DB 一致）；工作区前缀、知识库 /
+        # 页面上下文、上传预览等本轮注入（message_content）走 turn_context，只进本轮
+        # 模型请求，见 agent/turn_context.py。
         context_messages = build_context_messages(
-            history_messages, message_content, provider=provider
+            history_messages,
+            turn_message_text(request.message, request.files, request.skills),
+            provider=provider,
+            current_message_id=message_id,
         )
         logger.info(
             f"[{sid}] 📚 上下文消息构建 | DB 消息数: {total_msgs} | "
@@ -524,7 +532,9 @@ async def chat_stream_generator(
 
         async for ev in pump_stream(
             agent=agent,
-            stream_input={"messages": context_messages},
+            stream_input=turn_input(
+                context_messages, message_id=message_id, rendered=message_content
+            ),
             stream_config=stream_config,
             proc=proc,
             persister=persister,

@@ -147,8 +147,8 @@ async def test_general_purpose_subagent_is_bounded_by_its_own_call_limit():
     assert result["messages"][-1].content == "main done"
 
 
-async def test_scheduled_task_runs_on_shared_graph(real_agent, db, monkeypatch):
-    """定时任务改造前不传 context：共享编译图在 before_agent 读记忆时即抛错。"""
+async def _run_daily_report_task(real_agent, db, monkeypatch):
+    """用真实共享编译图跑一次定时任务 ``task-da10``。"""
     import easy_agent.services.agent_manager as agent_manager
     import easy_agent.services.scheduler as sched
     from easy_agent.bootstrap.config import DistributedLockConfig
@@ -184,6 +184,27 @@ async def test_scheduled_task_runs_on_shared_graph(real_agent, db, monkeypatch):
     )
 
     await sched._execute_task("task-da10")
+    return db.list_scheduled_task_runs("task-da10")
 
-    runs = db.list_scheduled_task_runs("task-da10")
+
+async def test_scheduled_task_runs_on_shared_graph(real_agent, db, monkeypatch):
+    """定时任务改造前不传 context：共享编译图在 before_agent 读记忆时即抛错。"""
+    runs = await _run_daily_report_task(real_agent, db, monkeypatch)
     assert [run.status for run in runs] == ["succeeded"]
+
+
+async def test_scheduled_task_deletes_its_thread_after_the_run(real_agent, db, monkeypatch):
+    """DA-03：每次运行一个独立 thread 且关闭了 HITL，运行结束后删除，官方 saver 不会自动清理。"""
+    import easy_agent.persistence.checkpoints as checkpoints
+
+    deleted = []
+
+    async def fake_adelete(thread_ids):
+        deleted.extend(thread_ids)
+        return len(deleted)
+
+    monkeypatch.setattr(checkpoints, "adelete_threads", fake_adelete)
+
+    runs = await _run_daily_report_task(real_agent, db, monkeypatch)
+
+    assert deleted == [f"sched-task-da10-{runs[0].run_id}"]

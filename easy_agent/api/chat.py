@@ -580,6 +580,8 @@ async def chat_stream(
         "role": "user",
         "content": request.message,
         "timestamp": datetime.now().isoformat(),
+        # DA-03：本轮 id（= message_id），与 thread 里本轮 HumanMessage 的 id 一致
+        "turn_id": message_id,
     }
     if request.files:
         user_message["files"] = request.files

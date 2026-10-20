@@ -45,6 +45,8 @@
 
 事件契约：`docs/sse-events.md`（15 个事件，契约测试 `tests/services/test_sse_contract.py`）。
 
+图输入（DA-03 P0）：thread 仍是每条消息一个（`{session_id}-{message_id}`），历史每轮从 DB 重建；本轮 `HumanMessage` 只存用户原话（`id` = message_id，DB 用户行同时记 `turn_id`），工作区前缀、知识库 / 页面上下文、上传预览等本轮注入随 `turn_context` 传入，由主代理摘要中间件在计 token 前渲染进本次请求，不写回历史（`agent/turn_context.py`）；记忆每次运行都重新加载（`agent/memory.py`）。会话级 thread 方案见 `docs/design/2026-10-19-da03-session-thread.md`。
+
 ### Agent 工具与沙箱
 - 文件工具走 CompositeBackend 路由（`/workspace/`、`/user-skills/`、`/memories/`、外部目录）；没命中路由的路径与框架产物（`/.agent/...`：大工具结果、对话历史）落在工作区之外的会话隐藏目录 `workspace/{user}/.agent/{session_id}/`，删除会话时一并删除（DA-04）。共享编译图用两层真实 `CompositeBackend`（`backends/context.py`）按运行期 `SessionContext` 路由（DA-05）。
 - `execute` 默认经 bwrap；不可用降级 Landlock；都不可用 fail-closed（127）。
@@ -60,7 +62,7 @@
 - SQLite（单机开发，启用 WAL/busy_timeout/synchronous=NORMAL）或 MySQL（多副本生产，代码禁止静默降级）。
 - 会话消息行表 `session_messages`；`sessions.messages` 为 legacy 大字段（仅历史会话回退读取）。
 - 领域 schema 通过 `db/schema_registry.py` 注册，`Database.init_tables()` 统一执行。
-- LangGraph checkpointer：默认 `PersistentMemorySaver`（按 thread 裁剪，最多 3 thread × 2 checkpoint）；生产可配 `EASY_CHECKPOINT_POSTGRES_URI`。
+- LangGraph checkpointer：`EASY_CHECKPOINT_BACKEND=auto` 时有 `EASY_CHECKPOINT_POSTGRES_URI` 用官方 `AsyncPostgresSaver`，业务库为 SQLite 时用官方 `AsyncSqliteSaver`（`data/checkpoints.db`），业务库为 MySQL 且无 PG 时回退 `PersistentMemorySaver`（按 thread 裁剪，最多 3 thread × 2 checkpoint）；删除会话时一并删除它在官方 saver 里的 thread，定时任务每次运行结束后删除自己的 thread（DA-03 P0）。
 
 ## 4. 前端
 

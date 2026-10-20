@@ -43,9 +43,15 @@ def summarization_settings(config, model) -> dict:
     }
 
 
-def build_summarization_middleware(config, model, backend):
-    """按 config 阈值构造官方摘要中间件；每个代理（主代理 / 各子代理）各用一份。"""
+def build_summarization_middleware(config, model, backend, *, render_turn: bool = False):
+    """按 config 阈值构造官方摘要中间件；每个代理（主代理 / 各子代理）各用一份。
+
+    ``render_turn=True``（只给主代理）：先把本轮用户消息换成 ``turn_context`` 里的渲染
+    内容再计 token / 摘要，见 ``agent/turn_context.py``（DA-03）。
+    """
     from deepagents.middleware.summarization import SummarizationMiddleware
+
+    from easy_agent.agent.turn_context import TurnAwareSummarizationMiddleware
 
     settings = summarization_settings(config, model)
     label = str(getattr(model, "model_name", None) or getattr(model, "model", None) or "model")
@@ -54,4 +60,5 @@ def build_summarization_middleware(config, model, backend):
         logger.info(
             "摘要阈值 | %s | trigger=%s keep=%s", label, settings["trigger"], settings["keep"]
         )
-    return SummarizationMiddleware(model, backend=backend, **settings)
+    cls = TurnAwareSummarizationMiddleware if render_turn else SummarizationMiddleware
+    return cls(model, backend=backend, **settings)

@@ -367,6 +367,7 @@ async def _execute_task(task_id: str):
     )
 
     agent = None
+    thread_id = None
     try:
         agent = await get_or_create_agent_for_session(
             session_id, task.username, workspace_name, enable_hitl=False
@@ -470,6 +471,12 @@ async def _execute_task(task_id: str):
         stopping_tasks.discard(task_id)
         if agent is not None:
             remove_session_agent(session_id)
+        # 每次运行一个独立 thread，且关闭了 HITL，运行结束后没有需要恢复的状态；
+        # 官方 saver 不会自动清理，这里删掉（DA-03）
+        if thread_id:
+            from easy_agent.persistence.checkpoints import adelete_threads
+
+            await adelete_threads([thread_id])
         # 更新 last_run_at 和 next_run_at
         scheduler = get_scheduler()
         job = scheduler.get_job(task_id)

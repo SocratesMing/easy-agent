@@ -271,6 +271,17 @@ def test_persist_user_turn_keeps_expert_files_and_skill_dirs():
     assert message["expert"] == {"id": "expert_1", "name": "债券投研专家"}
     assert message["files"] == [{"filename": "资金面.pdf"}]
     assert message["skills"] == ["docx"]
+    assert "turn_id" not in message
+
+
+def test_persist_user_turn_records_turn_id():
+    """DA-03：专家链路的用户消息同样带上本轮 id。"""
+    repo = _ExpertRepo({"export_name_cn": "债券投研专家"})
+    request = SimpleNamespace(message="看看这周资金面", files=None)
+    message = expert_helpers._persist_user_turn(
+        repo, "sess_1", "u1", request, "expert_1", [], turn_id="m-42"
+    )
+    assert message["turn_id"] == "m-42"
 
 
 # ── 路由契约 ──────────────────────────────────────────────────────────
