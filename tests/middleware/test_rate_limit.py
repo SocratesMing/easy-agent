@@ -1,5 +1,6 @@
 """限流中间件契约测试：真实客户端 IP、429 JSON、可插拔计数、多副本告警。"""
 
+import asyncio
 import logging
 
 from fastapi import FastAPI
@@ -115,6 +116,40 @@ def test_custom_shared_counter_is_used(monkeypatch):
 
     assert client.get("/limited").status_code == 200
     assert counter.calls == [("/limited:203.0.113.10", 1, 30.0)]
+
+
+class _LoopRecordingCounter:
+    def __init__(self, is_shared, allowed=True):
+        self.is_shared = is_shared
+        self.allowed = allowed
+        self.on_loop: list[bool] = []
+
+    def allow(self, key, limit, window_seconds):
+        try:
+            asyncio.get_running_loop()
+            self.on_loop.append(True)
+        except RuntimeError:  # 线程池里的线程没有运行中的事件循环
+            self.on_loop.append(False)
+        return self.allowed
+
+
+def test_shared_counter_runs_off_the_event_loop(monkeypatch):
+    """共享计数器要访问外部存储（DB / Redis）：allow 放进线程，不占事件循环。
+
+    进程内计数器只改内存，留在事件循环上。
+    """
+    shared = _LoopRecordingCounter(is_shared=True)
+    assert _build_client(monkeypatch, [("/limited", 1, 30.0)], counter=shared).get("/limited").status_code == 200
+    assert shared.on_loop == [False]
+
+    full = _LoopRecordingCounter(is_shared=True, allowed=False)
+    response = _build_client(monkeypatch, [("/limited", 1, 30.0)], counter=full).get("/limited")
+    assert response.status_code == 429
+    assert full.on_loop == [False]
+
+    local = _LoopRecordingCounter(is_shared=False)
+    assert _build_client(monkeypatch, [("/limited", 1, 30.0)], counter=local).get("/limited").status_code == 200
+    assert local.on_loop == [True]
 
 
 def test_multiworker_warns_once_for_process_local_counter(monkeypatch, caplog):

@@ -22,6 +22,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from collections import defaultdict, deque
 from typing import Protocol, runtime_checkable
@@ -55,7 +56,8 @@ class RateLimitCounter(Protocol):
     """限流计数器接口。
 
     自定义实现（如 Redis / DB）只需提供 ``allow``，并把 ``is_shared`` 设为
-    ``True``，中间件就不会再打印「进程内计数」的多副本告警。
+    ``True``，中间件就不会再打印「进程内计数」的多副本告警。``is_shared`` 为 True
+    时中间件在线程里调用 ``allow``（共享计数要访问外部存储，会阻塞），实现需要线程安全。
     """
 
     is_shared: bool
@@ -72,17 +74,20 @@ class InMemorySlidingWindowCounter:
 
     def __init__(self) -> None:
         self._hits: dict[str, deque[float]] = defaultdict(deque)
+        # DBRateLimitCounter 降级时会在线程里调用：检查与记录必须一起完成
+        self._lock = threading.Lock()
 
     def allow(self, key: str, limit: int, window_seconds: float) -> bool:
-        now = time.monotonic()
-        bucket = self._hits[key]
-        cutoff = now - window_seconds
-        while bucket and bucket[0] < cutoff:
-            bucket.popleft()
-        if len(bucket) >= limit:
-            return False
-        bucket.append(now)
-        return True
+        with self._lock:
+            now = time.monotonic()
+            bucket = self._hits[key]
+            cutoff = now - window_seconds
+            while bucket and bucket[0] < cutoff:
+                bucket.popleft()
+            if len(bucket) >= limit:
+                return False
+            bucket.append(now)
+            return True
 
 
 # 兼容旧名字：已有测试 / 调用方可能仍在 import SlidingWindowLimiter。
@@ -237,7 +242,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         for prefix, limit, window in self.rules:
             if path == prefix or path.startswith(prefix + "/"):
                 key = f"{prefix}:{client}"
-                if not self.counter.allow(key, limit, window):
+                if not await self._allow(key, limit, window):
                     return JSONResponse(
                         status_code=429,
                         content={
@@ -247,3 +252,15 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                     )
                 break
         return await call_next(request)
+
+    async def _allow(self, key: str, limit: int, window: float) -> bool:
+        """共享计数器要访问外部存储（DB / Redis），放进线程执行，不占事件循环。
+
+        进程内计数器只改内存，留在事件循环上。
+        """
+        if not getattr(self.counter, "is_shared", False):
+            return self.counter.allow(key, limit, window)
+        # 延迟 import，原因同 dispatch 里的 get_client_ip
+        from easy_agent.utils.blocking import run_blocking
+
+        return await run_blocking(self.counter.allow, key, limit, window)

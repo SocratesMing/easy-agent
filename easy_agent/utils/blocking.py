@@ -21,9 +21,10 @@ async def run_blocking(func: Callable[..., T], /, *args: Any, **kwargs: Any) -> 
     try:
         return await asyncio.shield(future)
     except asyncio.CancelledError:
-        if not future.done():
+        # 等的时候可能再被取消（例如连点两次停止）：每次都套 shield，直到线程里的调用结束
+        while not future.done():
             try:
-                await future
+                await asyncio.shield(future)
             except BaseException:  # noqa: BLE001 - 只为等它结束；取消优先于这次调用的结果
                 pass
         raise

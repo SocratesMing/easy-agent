@@ -13,6 +13,8 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 
+from easy_agent.utils.blocking import run_blocking
+
 logger = logging.getLogger("easy_agent.chat_service")
 
 # 记忆更新会同步调用 LLM（每次 1~2 次），不能占用默认 executor（默认线程池
@@ -22,12 +24,15 @@ _MEMORY_UPDATE_EXECUTOR = ThreadPoolExecutor(
 )
 
 
-def maybe_rename_workspace(agent, db, session_id, tool_call_records, sid):
+async def maybe_rename_workspace(agent, db, session_id, tool_call_records, sid):
     """首轮对话完成后（含文件写入时）将工作区从 session_id 重命名为时间戳目录。
 
     主生成器在遇到 HITL 中断时会提前 return，跳过此步；
     HITL 批准后的 resume 生成器需补做，否则带文件操作的 HITL 会话工作区
     始终停留在 session_id 命名，且不会触发记忆生成所需的目录。
+
+    改目录、重建 Agent 在事件循环上做；两次写库放进同一次线程调用：
+    中途被取消（用户点停止）也会两条都写完，库里不会只改了一半。
     """
     try:
         if tool_call_records and agent and not agent._workspace_renamed:
@@ -43,13 +48,24 @@ def maybe_rename_workspace(agent, db, session_id, tool_call_records, sid):
                 agent.rename_workspace(new_ws_name)
                 agent._workspace_renamed = True
                 new_ws_path = str(agent.workspace_dir.absolute())
-                db.update_generated_file_paths(session_id, old_ws_path, new_ws_path)
-                db.update_session_workspace_name(session_id, new_ws_name)
+                await run_blocking(
+                    _save_workspace_rename,
+                    db,
+                    session_id,
+                    old_ws_path,
+                    new_ws_path,
+                    new_ws_name,
+                )
                 logger.info(
                     f"[{sid}] Workspace renamed: {old_ws_path} -> {new_ws_path}"
                 )
     except Exception as e:
         logger.warning(f"[{sid}] Workspace rename failed: {e}")
+
+
+def _save_workspace_rename(db, session_id, old_ws_path, new_ws_path, new_ws_name):
+    db.update_generated_file_paths(session_id, old_ws_path, new_ws_path)
+    db.update_session_workspace_name(session_id, new_ws_name)
 
 
 def resolve_recorded_path(agent, raw_path: str, skills_root: Path) -> Path:
@@ -90,7 +106,7 @@ def drop_generated_records(
     return removed
 
 
-def register_session_skills(agent, db, session_id, sid) -> list[dict]:
+async def register_session_skills(agent, db, session_id, sid) -> list[dict]:
     """会话结束后把本次创建的技能收进技能库，工作区不留副本。
 
     依据本次会话的 ``generated_files``（每次 write_file 都有记录）判断模型把技能写
@@ -102,6 +118,9 @@ def register_session_skills(agent, db, session_id, sid) -> list[dict]:
 
     入库后调用 ``invalidate_user_agents`` 让下一条消息（同一会话）就能加载新技能。
     整个过程失败只记日志，不影响会话收尾。
+
+    读、删生成文件记录放进线程；移动目录、写归类（JSON 文件没加锁，和技能中心路由一样
+    只在事件循环上改）、驱逐 Agent 缓存仍在事件循环上。
     """
     if agent is None or db is None:
         return []
@@ -109,15 +128,16 @@ def register_session_skills(agent, db, session_id, sid) -> list[dict]:
     if not username:
         return []
 
+    registered: list[dict] = []
     try:
-        from easy_agent.services import agent_manager, skill_categories, skill_library
+        from easy_agent.services import skill_categories, skill_library
 
         # 以技能中心的目录为准（而非 Agent 实例字段），保证"入库了就能在技能中心看到"
         skills_root = skill_library.user_skills_dir(username)
-        registered: list[dict] = []
         seen: set[str] = set()
 
-        for row in db.get_generated_files(session_id) or []:
+        rows = await run_blocking(db.get_generated_files, session_id)
+        for row in rows or []:
             real = resolve_recorded_path(agent, row.get("file_path", ""), skills_root)
             # 只以 SKILL.md 识别技能目录（其余文件随目录一起迁移）
             if real.name != "SKILL.md":
@@ -139,16 +159,15 @@ def register_session_skills(agent, db, session_id, sid) -> list[dict]:
                     continue
                 seen.add(skill_dir.name)
                 auto_assign_skill_category(username, skill_dir, sid, skill_categories)
-                dropped = drop_generated_records(
-                    agent, db, session_id, skill_dir, skills_root
-                )
-                registered.append(
-                    {
-                        "dir_name": skill_dir.name,
-                        "source": "direct",
-                        "path": skill_dir,
-                        "dropped_records": dropped,
-                    }
+                item = {
+                    "dir_name": skill_dir.name,
+                    "source": "direct",
+                    "path": skill_dir,
+                    "dropped_records": 0,
+                }
+                registered.append(item)
+                item["dropped_records"] = await run_blocking(
+                    drop_generated_records, agent, db, session_id, skill_dir, skills_root
                 )
                 continue
 
@@ -164,33 +183,44 @@ def register_session_skills(agent, db, session_id, sid) -> list[dict]:
             auto_assign_skill_category(
                 username, result["path"], sid, skill_categories
             )
-            dropped = drop_generated_records(
-                agent, db, session_id, skill_dir, skills_root
-            )
-            registered.append(
-                {
-                    "dir_name": result["dir_name"],
-                    "source": "workspace",
-                    "path": result["path"],
-                    "renamed": result["renamed"],
-                    "warnings": result["warnings"],
-                    "dropped_records": dropped,
-                }
+            item = {
+                "dir_name": result["dir_name"],
+                "source": "workspace",
+                "path": result["path"],
+                "renamed": result["renamed"],
+                "warnings": result["warnings"],
+                "dropped_records": 0,
+            }
+            registered.append(item)
+            item["dropped_records"] = await run_blocking(
+                drop_generated_records, agent, db, session_id, skill_dir, skills_root
             )
 
-        if registered:
-            # 技能清单在 Agent 构造时固化：入库后必须驱逐缓存，下一条消息才能加载
-            agent_manager.invalidate_user_agents(username)
-            logger.info(
-                f"[{sid}] ✅ 技能已入库 | "
-                + " | ".join(
-                    f"{item['dir_name']}（来源: {item['source']}）" for item in registered
-                )
-            )
         return registered
     except Exception as e:  # noqa: BLE001
         logger.warning(f"[{sid}] 技能入库流程异常: {e}")
         return []
+    finally:
+        # 技能入库后先记进 registered 再去删记录：删记录时被取消（用户点停止）或
+        # 中途出错，已入库的技能也要在这里生效
+        if registered:
+            _reload_user_agents(username, registered, sid)
+
+
+def _reload_user_agents(username: str, registered: list[dict], sid: str) -> None:
+    """技能清单在 Agent 构造时固化：入库后必须驱逐缓存，下一条消息才能加载。"""
+    try:
+        from easy_agent.services import agent_manager
+
+        agent_manager.invalidate_user_agents(username)
+        logger.info(
+            f"[{sid}] ✅ 技能已入库 | "
+            + " | ".join(
+                f"{item['dir_name']}（来源: {item['source']}）" for item in registered
+            )
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[{sid}] 技能入库后驱逐 Agent 缓存失败: {e}")
 
 
 def auto_assign_skill_category(

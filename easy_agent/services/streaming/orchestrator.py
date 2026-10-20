@@ -400,8 +400,8 @@ async def finalize_stream(
         )
 
     # 收尾副作用顺序固定：workspace rename → 技能入库 → 记忆更新（chat / resume 一致）
-    maybe_rename_workspace(agent, db, session_id, tool_call_records, sid)
-    register_session_skills(agent, db, session_id, sid)
+    await maybe_rename_workspace(agent, db, session_id, tool_call_records, sid)
+    await register_session_skills(agent, db, session_id, sid)
     submit_memory_updates(
         agent, session_id, db, raw_user_msg, accumulated_response, sid
     )

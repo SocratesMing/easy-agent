@@ -69,14 +69,20 @@ def _spy(monkeypatch):
 
         return _fn
 
+    def _record_async(name):
+        async def _fn(*args, **kwargs):
+            calls.append((name, args, kwargs))
+
+        return _fn
+
     for name in (
         "persist_final_message",
         "write_session_context_snapshot",
-        "maybe_rename_workspace",
-        "register_session_skills",
         "submit_memory_updates",
     ):
         monkeypatch.setattr(orchestrator, name, _record(name))
+    for name in ("maybe_rename_workspace", "register_session_skills"):
+        monkeypatch.setattr(orchestrator, name, _record_async(name))
     return calls, SimpleNamespace(name="agent"), SimpleNamespace(name="db")
 
 

@@ -53,3 +53,32 @@ async def test_cancel_waits_for_the_running_call_before_raising():
         await task
 
     assert order == ["write done", "cancel observed"]
+
+
+async def test_repeated_cancel_still_waits_for_the_running_call():
+    """连点两次停止会取消两次：第二次取消也不能让调用方提前离开。"""
+    order: list[str] = []
+    started = threading.Event()
+
+    def slow_write():
+        started.set()
+        time.sleep(0.3)
+        order.append("write done")
+
+    async def caller():
+        try:
+            await run_blocking(slow_write)
+        except asyncio.CancelledError:
+            order.append("cancel observed")
+            raise
+
+    task = asyncio.create_task(caller())
+    while not started.is_set():
+        await asyncio.sleep(0.01)
+    task.cancel()
+    await asyncio.sleep(0.05)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert order == ["write done", "cancel observed"]
