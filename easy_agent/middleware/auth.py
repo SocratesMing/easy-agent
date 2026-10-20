@@ -142,10 +142,16 @@ def get_user_repository(
     return UserRepository(db)
 
 
-async def get_current_username(
+def get_current_username(
     http_request: Request,
     db: Annotated[Database, Depends(get_database)],
 ) -> str:
+    """校验 Bearer token 并返回用户名（每个需要登录的接口都经过这里）。
+
+    刻意写成同步函数：FastAPI 会把同步依赖放进线程池执行。这里每个请求都要查库（用户状态、
+    单点登录的 ``token_version``、空闲登出的最近活动时间），写成 ``async def`` 会在事件循环上
+    同步查库，业务库是 MySQL 时每次往返都会卡住所有并发的 SSE 流。
+    """
     auth_header = http_request.headers.get("Authorization")
 
     if auth_header and auth_header.startswith("Bearer "):

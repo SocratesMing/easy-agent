@@ -67,8 +67,7 @@ def clear_user_activity_cache():
     auth_middleware._user_activity_cache.clear()
 
 
-@pytest.mark.asyncio
-async def test_recent_api_call_renews_expired_token_session(monkeypatch):
+def test_recent_api_call_renews_expired_token_session(monkeypatch):
     monkeypatch.setattr(
         auth_middleware, "get_agent_config", lambda: _config(1)
     )
@@ -76,7 +75,7 @@ async def test_recent_api_call_renews_expired_token_session(monkeypatch):
     auth_middleware._user_activity_cache["alice"] = auth_middleware.time.time() - 30
     token = _expired_token()
 
-    username = await auth_middleware.get_current_username(
+    username = auth_middleware.get_current_username(
         _Request(token), _Database()
     )
 
@@ -84,8 +83,7 @@ async def test_recent_api_call_renews_expired_token_session(monkeypatch):
     assert auth_middleware._user_activity_cache["alice"] > auth_middleware.time.time() - 2
 
 
-@pytest.mark.asyncio
-async def test_expired_token_fails_after_idle_timeout(monkeypatch):
+def test_expired_token_fails_after_idle_timeout(monkeypatch):
     monkeypatch.setattr(
         auth_middleware, "get_agent_config", lambda: _config(1)
     )
@@ -94,13 +92,12 @@ async def test_expired_token_fails_after_idle_timeout(monkeypatch):
     token = _expired_token()
 
     with pytest.raises(HTTPException) as exc_info:
-        await auth_middleware.get_current_username(_Request(token), _Database())
+        auth_middleware.get_current_username(_Request(token), _Database())
 
     assert exc_info.value.status_code == 401
 
 
-@pytest.mark.asyncio
-async def test_unexpired_token_fails_after_idle_timeout(monkeypatch):
+def test_unexpired_token_fails_after_idle_timeout(monkeypatch):
     monkeypatch.setattr(
         auth_middleware, "get_agent_config", lambda: _config(1)
     )
@@ -109,17 +106,16 @@ async def test_unexpired_token_fails_after_idle_timeout(monkeypatch):
     token = _active_token()
 
     with pytest.raises(HTTPException) as exc_info:
-        await auth_middleware.get_current_username(_Request(token), _Database())
+        auth_middleware.get_current_username(_Request(token), _Database())
 
     assert exc_info.value.status_code == 401
 
 
-@pytest.mark.asyncio
-async def test_recent_signed_token_restores_idle_cache_after_process_restart(monkeypatch):
+def test_recent_signed_token_restores_idle_cache_after_process_restart(monkeypatch):
     monkeypatch.setattr(auth_middleware, "get_agent_config", lambda: _config(1))
     auth_middleware._user_activity_cache.clear()
 
-    username = await auth_middleware.get_current_username(
+    username = auth_middleware.get_current_username(
         _Request(_active_token()), _Database()
     )
 
@@ -148,13 +144,12 @@ def test_verify_token_sso_rejects_after_idle_timeout(monkeypatch):
     assert auth_middleware.verify_token_sso(token, _Database()) is None
 
 
-@pytest.mark.asyncio
-async def test_main_auth_rejects_disabled_user_even_with_current_token(monkeypatch):
+def test_main_auth_rejects_disabled_user_even_with_current_token(monkeypatch):
     monkeypatch.setattr(auth_middleware, "get_agent_config", lambda: _config(0))
     disabled = SimpleNamespace(token_version=1, account_status="disabled")
 
     with pytest.raises(HTTPException) as exc_info:
-        await auth_middleware.get_current_username(
+        auth_middleware.get_current_username(
             _Request(_active_token()), _Database(disabled)
         )
 
@@ -170,15 +165,14 @@ def test_query_token_auth_rejects_disabled_user(monkeypatch):
     ) is None
 
 
-@pytest.mark.asyncio
-async def test_zero_idle_timeout_allows_expired_token_without_cache(monkeypatch):
+def test_zero_idle_timeout_allows_expired_token_without_cache(monkeypatch):
     monkeypatch.setattr(
         auth_middleware, "get_agent_config", lambda: _config(0)
     )
     auth_middleware._user_activity_cache.clear()
     token = _expired_token()
 
-    username = await auth_middleware.get_current_username(
+    username = auth_middleware.get_current_username(
         _Request(token), _Database()
     )
 
@@ -199,8 +193,7 @@ def test_zero_idle_timeout_issues_non_expiring_token(monkeypatch):
     assert "exp" not in decode_access_token(token)
 
 
-@pytest.mark.asyncio
-async def test_logout_invalidates_never_expiring_token():
+def test_logout_invalidates_never_expiring_token():
     class _LogoutDatabase:
         token_version = 1
 
@@ -216,15 +209,14 @@ async def test_logout_invalidates_never_expiring_token():
     auth_api._login_time_cache["alice"] = auth_api.datetime.now()
     auth_middleware._user_activity_cache["alice"] = auth_middleware.time.time()
 
-    await auth_api.logout("alice", _Request(token), database)
+    auth_api.logout("alice", _Request(token), database)
 
     assert database.token_version == 2
     assert "alice" not in auth_api._login_time_cache
     assert "alice" not in auth_middleware._user_activity_cache
 
 
-@pytest.mark.asyncio
-async def test_logout_logs_first_login_and_last_activity(caplog):
+def test_logout_logs_first_login_and_last_activity(caplog):
     class _LogoutDatabase:
         def increment_user_token_version(self, username, *, require_active=False):
             return 2
@@ -238,7 +230,7 @@ async def test_logout_logs_first_login_and_last_activity(caplog):
     auth_middleware._user_activity_cache["alice"] = last_activity.timestamp()
     caplog.set_level(logging.INFO, logger="easy_agent.api.auth")
 
-    await auth_api.logout("alice", _Request(token), _LogoutDatabase())
+    auth_api.logout("alice", _Request(token), _LogoutDatabase())
 
     assert "[用户] 登出" in caplog.text
     assert "第一次登录时间: 2026-08-20 15:13:21" in caplog.text

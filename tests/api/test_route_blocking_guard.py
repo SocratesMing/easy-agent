@@ -6,6 +6,8 @@
 - 已经改成 ``def`` 的纯数据库路由不再改回 ``async def``；
 - 不再新增「从不 await、却直接查库」的 ``async def`` 路由，除非写进白名单并说明原因。
   白名单只减不增：条目不再命中（已改成 def 或已有 await）时也会失败，提醒删掉它。
+
+依赖同理：鉴权依赖 ``get_current_username`` 每个需要登录的请求都要查库，必须保持同步函数。
 """
 
 from __future__ import annotations
@@ -93,3 +95,10 @@ def test_no_new_async_routes_that_block_on_the_database():
     )
     stale = sorted(set(ALLOWED) - found)
     assert not stale, f"白名单条目已不再命中，请删掉：{stale}"
+
+
+def test_auth_dependency_runs_in_the_threadpool():
+    """改造前它是 async def：每个登录后的请求都在事件循环上同步查 2～3 次库。"""
+    from easy_agent.middleware.auth import get_current_username
+
+    assert not inspect.iscoroutinefunction(get_current_username)
