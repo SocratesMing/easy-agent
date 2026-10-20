@@ -365,34 +365,13 @@
           />
 
 
-        <div class="model-dropdown-wrapper" ref="modelDropdownRef">
-            <button
-              class="model-btn"
-              :class="{ disabled: isStreaming || disabled }"
-              :disabled="isStreaming || disabled"
-              @click="toggleModelDropdown"
-              v-tip="'切换模型'"
-            >
-              <span class="model-btn-label">{{ currentModelLabel }}</span>
-              <svg class="model-btn-arrow" :class="{ open: showModelDropdown }" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <polyline points="6 9 12 15 18 9"></polyline>
-              </svg>
-            </button>
-              <div v-if="showModelDropdown" class="model-dropdown-menu" :style="dropdownStyle" @click.stop>
-                <div
-                  v-for="m in models"
-                  :key="m.name"
-                  class="model-dropdown-item"
-                  :class="{ active: m.name === localSelectedModel }"
-                  @click="selectModel(m.name)"
-                >
-                  <span class="model-item-name">{{ m.model || m.name }}</span>
-                  <svg v-if="m.name === localSelectedModel" class="model-item-check" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-                    <polyline points="20 6 9 17 4 12"></polyline>
-                  </svg>
-                </div>
-              </div>
-          </div>
+          <ModelPicker
+            :models="models"
+            :selected-model="selectedModel"
+            :is-streaming="isStreaming"
+            :disabled="disabled"
+            @update:selectedModel="$emit('update:selectedModel', $event)"
+          />
 
           <button
             class="action-btn web-search-btn"
@@ -598,6 +577,7 @@ import {
   expertAvatarChar as buildExpertAvatarChar,
   expertAvatarClass as buildExpertAvatarClass
 } from '../utils/expertAvatar.js'
+import ModelPicker from '../features/chat/components/ModelPicker.vue'
 import UploadTray from '../features/chat/components/UploadTray.vue'
 import FileIcon from './FileIcon.vue'
 import SkillIcon from './SkillIcon.vue'
@@ -625,7 +605,7 @@ const TEXTAREA_LINE_HEIGHT = 24
 const TEXTAREA_MAX_HEIGHT = TEXTAREA_MAX_ROWS * TEXTAREA_LINE_HEIGHT
 
 export default {
-  components: { FileIcon, SkillIcon, KnowledgeScopeSelector, UploadTray },
+  components: { FileIcon, SkillIcon, KnowledgeScopeSelector, UploadTray, ModelPicker },
   props: {
     disabled: {
       type: Boolean,
@@ -713,8 +693,6 @@ export default {
       // 光标所在行高亮（overlay 技术：textareal 本身无法按行上色）
       caretLineTop: null, // 高亮条 top，null 表示隐藏
       lineHeight: 24, // 行高（px）
-      // 自定义下拉菜单
-      showModelDropdown: false,
       showPlusMenu: false,
       subpanelCategory: null,
       plusSubpanelStyle: {},
@@ -730,7 +708,6 @@ export default {
       // 两个区块默认各展示 3 位，列表滚动到底部再加载 3 位，避免面板超高
       plusExpertsLimit: 3,
       plusMenuStyle: {},
-      dropdownStyle: {},
       showTokenPopup: false,
       // ========== 会话耗时 ==========
       liveDuration: 0,
@@ -880,20 +857,6 @@ export default {
       return this.subpanelCategory === 'skills'
     },
     // 模型选择：本地双向绑定，变化时同步父组件
-    localSelectedModel: {
-      get() {
-        return this.selectedModel
-      },
-      set(val) {
-        this.$emit('update:selectedModel', val)
-      }
-    },
-    currentModelLabel() {
-      const m = this.models.find(m => m.name === this.selectedModel)
-      // 显示模型名（deepseek-v4-flash / deepseek-v4-pro），
-      // 而不是 provider 配置段名（deepseek / ark）
-      return m ? (m.model || m.name) : '选择模型'
-    },
     /** 标签文本 → 技能 的映射（`/显示名` 反解回技能目录名） */
     tokenMap() {
       return buildTokenMap(this.knownSkills)
@@ -1091,7 +1054,6 @@ export default {
     this.loadUploadLimits()
 
     document.addEventListener('click', this.closeTokenPopup)
-    document.addEventListener('click', this.closeModelDropdown)
     document.addEventListener('click', this.closeSkillPickerOnClick)
     window.addEventListener('resize', this.handleViewportChange)
     document.addEventListener('click', this.closePlusMenu)
@@ -1102,7 +1064,6 @@ export default {
   },
   beforeDestroy() {
     document.removeEventListener('click', this.closeTokenPopup)
-    document.removeEventListener('click', this.closeModelDropdown)
     document.removeEventListener('click', this.closeSkillPickerOnClick)
     window.removeEventListener('resize', this.handleViewportChange)
     document.removeEventListener('click', this.closePlusMenu)
@@ -1167,38 +1128,6 @@ export default {
     },
     hideCaretLine() {
       this.caretLineTop = null
-    },
-    toggleModelDropdown() {
-      if (this.isStreaming || this.disabled) return
-      if (this.showModelDropdown) {
-        this.showModelDropdown = false
-        return
-      }
-      // 计算下拉菜单位置
-      const anchor = this.$refs.modelDropdownRef
-      if (anchor) {
-        const rect = anchor.getBoundingClientRect()
-        this.dropdownStyle = {
-          position: 'fixed',
-          bottom: `${window.innerHeight - rect.top + 6}px`,
-          left: `${rect.left}px`,
-          minWidth: `${Math.max(rect.width, 200)}px`,
-        }
-      }
-      this.showModelDropdown = true
-    },
-    selectModel(name) {
-      this.$emit('update:selectedModel', name)
-      this.showModelDropdown = false
-      console.log(
-        `[${new Date().toISOString()}] [模型选择] 切换为: ${name}`
-      )
-    },
-    closeModelDropdown(event) {
-      const anchor = this.$refs.modelDropdownRef
-      if (this.showModelDropdown && anchor && !anchor.contains(eventTarget(event))) {
-        this.showModelDropdown = false
-      }
     },
     togglePlusMenu() {
       if (this.isStreaming || this.disabled) return
@@ -3118,69 +3047,17 @@ html[data-theme="dark"] .context-ring-wrapper {
   gap: 12px;
 }
 
-.model-dropdown-wrapper {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-}
-
-.model-btn {
-  display: inline-flex;
-  flex-direction: row;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  padding: 6px 12px;
-  height: 36px;
-  min-height: 36px;
-  border: 1px solid var(--border-color);
-  background: var(--bg-secondary);
-  border-radius: 10px;
-  cursor: pointer;
-  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
-  white-space: nowrap;
-}
-
-.model-btn:hover:not(.disabled) {
-  border-color: rgba(14, 165, 233, 0.4);
-  background: color-mix(in srgb, var(--accent-color) 10%, transparent);
-  transform: translateY(-1px);
-}
-
-.model-btn.disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.model-btn-label {
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--text-secondary);
-  transition: color 0.25s ease;
-  max-width: 140px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
 
 
-.model-btn:hover:not(.disabled) .model-btn-label {
-  color: #0ea5e9;
-}
 
 
-.model-btn-arrow {
-  width: 12px;
-  height: 12px;
-  color: var(--text-secondary);
-  transition: transform 0.2s ease;
-}
 
-.model-btn-arrow.open {
-  transform: rotate(180deg);
-}
+
+
+
+
 
 /* 键盘可达性：工具按钮共用一致的焦点环 */
-.model-btn:focus-visible,
 .plus-btn:focus-visible,
 .web-search-btn:focus-visible,
 .send-btn:focus-visible {
@@ -3188,34 +3065,9 @@ html[data-theme="dark"] .context-ring-wrapper {
   outline-offset: 2px;
 }
 
-.model-dropdown-menu {
-  background: var(--bg-secondary);
-  border: 1px solid var(--border-color);
-  border-radius: 12px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
-  padding: 6px;
-  z-index: 9999;
-  max-height: 320px;
-  overflow-y: auto;
-}
 
-.model-dropdown-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 10px 12px;
-  border-radius: 8px;
-  cursor: pointer;
-  transition: background 0.15s ease;
-}
 
-.model-dropdown-item:hover {
-  background: var(--bg-tertiary);
-}
 
-.model-dropdown-item.active {
-  background: color-mix(in srgb, var(--accent-color) 12%, transparent);
-}
 
 /* ========== 「+」添加菜单 ========== */
 .plus-menu {
@@ -3519,23 +3371,7 @@ html[data-theme="dark"] .plus-list-tag.custom {
   color: #c4b5fd;
 }
 
-.model-item-name {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text-primary);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  flex: 1;
-  min-width: 0;
-}
 
-.model-item-check {
-  width: 16px;
-  height: 16px;
-  color: #0ea5e9;
-  flex-shrink: 0;
-}
 
 .right-actions {
   display: flex;
