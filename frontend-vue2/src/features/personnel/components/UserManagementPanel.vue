@@ -48,7 +48,7 @@
 </template>
 
 <script>
-import { MessageBox } from 'element-ui'
+import MessageBox from 'element-ui/lib/message-box'
 import { listUsers, resetUserPassword } from '../../../api/auth.js'
 export default {
   data() {

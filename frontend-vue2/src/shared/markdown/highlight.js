@@ -9,7 +9,7 @@
  * 直接输出纯文本，等 content_end 再走这里（见 ChatMessage 的既有策略）。
  */
 
-import hljs from 'highlight.js'
+import hljs from './hljs.js'
 import { escapeHtml } from '../../markdownSetup.js'
 
 const langAliases = {

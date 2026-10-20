@@ -114,7 +114,7 @@
 </template>
 
 <script>
-import { MessageBox } from 'element-ui'
+import MessageBox from 'element-ui/lib/message-box'
 import {
   getMemory,
   updateMemory,

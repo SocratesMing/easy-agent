@@ -103,7 +103,7 @@ import {
   installCodeCopyHandler,
   escapeHtml,
 } from '../../markdownSetup.js'
-import hljs from 'highlight.js'
+import hljs from '../markdown/hljs.js'
 import 'highlight.js/styles/github-dark.css'
 import { overlayClickCloses, markOverlayPress } from '../../utils/overlayClick.js'
 // 预览库按需加载：docx/excel/xlsx 合计数 MB，只有真正打开对应文件时才拉取
