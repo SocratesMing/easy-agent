@@ -437,6 +437,26 @@ def list_public_experts():
     }
 
 
+@router.get("/agent/expert/required-skills", summary="查看专家依赖技能的安装状态（排查用）")
+def expert_required_skills_status(
+    username: Annotated[str, Depends(get_current_username)],
+    expert_id: str = Query(..., description="公共专家 ID，如 preset_factor_research"),
+):
+    """返回该专家声明的依赖技能、解析到的公共技能目录、是否已装到当前用户。
+
+    现场排查「选了这个专家，但模型说扫不到技能」时先看这里：
+    ``skipped[].reason`` 会直接给出原因——``source_missing`` 表示**服务端公共技能
+    目录里没有这个技能包**（需要运维放包），``disabled`` 表示用户自己停用了。
+    只读，不会触发安装以外的副作用（缺技能时仍会尝试装一次，装成功即返回 installed）。
+    """
+    from ..services.skill_provision import provision_expert_skills
+
+    report = provision_expert_skills(username, expert_id)
+    if not report.get("required"):
+        raise HTTPException(status_code=404, detail=f"公共专家 '{expert_id}' 不存在或未声明依赖技能")
+    return report
+
+
 @router.post("/agent/del", summary="删除专家 Agent")
 async def delete_expert(
     request: ExpertDelRequest,
