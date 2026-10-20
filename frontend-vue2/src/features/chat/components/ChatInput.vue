@@ -160,63 +160,20 @@
               />
 
               <!-- 技能 / 连接器：沿用通用条目列表 -->
-              <div v-else class="plus-subpanel-list">
-                <div v-if="plusListLoading" class="plus-list-hint">加载中…</div>
-                <div v-else-if="plusListError" class="plus-list-hint error">{{ plusListError }}</div>
-                <div v-else-if="plusList.length === 0" class="plus-list-hint">{{ plusListEmptyText }}</div>
-                <div v-else-if="isConnectorPanel && filteredPlusList.length === 0" class="plus-list-hint">未找到匹配的连接器</div>
-                <!-- 技能行可点选（挂成输入框令牌，可连续挂多个）；
-                     连接器行不可点选，行尾是启用开关（改的是连接器自身的状态，
-                     与「专家·技能·连接器」面板双向同步，启用/停用都能点） -->
-                <div
-                  v-else
-                  v-for="item in panelRows"
-                  :key="item.key"
-                  class="plus-list-item"
-                  :class="{
-                    selectable: isPlusRowSelectable,
-                    selected: isPlusRowSelected(item),
-                    'is-disabled': isPlusRowDisabled(item),
-                    'connector-row': isConnectorPanel,
-                  }"
-                  :role="isPlusRowSelectable ? 'button' : null"
-                  :tabindex="isPlusRowSelectable && !isPlusRowDisabled(item) ? 0 : null"
-                  :title="plusRowTitle(item)"
-                  @click="onPlusListItemClick(item)"
-                  @keydown.enter.prevent="onPlusListItemClick(item)"
-                >
-                  <span class="plus-list-icon" :class="{ initial: !item.icon }">{{ item.icon || item.initial }}</span>
-                  <span class="plus-list-body">
-                    <span class="plus-list-name-row">
-                      <span class="plus-list-name">{{ item.name }}</span>
-                      <span v-if="item.tag" class="plus-list-tag" :class="item.tagType">{{ item.tag }}</span>
-                    </span>
-                    <span class="plus-list-desc">{{ item.desc }}</span>
-                  </span>
-                  <!-- 连接器行：启用开关（与「专家·技能·连接器」同一份状态）；技能行：已选标记 -->
-                  <button
-                    v-if="isConnectorPanel"
-                    type="button"
-                    role="switch"
-                    class="connector-switch"
-                    :class="{
-                      on: isConnectorOn(item),
-                      'is-off': isConnectorSwitchDisabled(item),
-                      'is-busy': isConnectorBusy(item),
-                    }"
-                    :disabled="isConnectorSwitchDisabled(item)"
-                    :aria-checked="isConnectorOn(item) ? 'true' : 'false'"
-                    :aria-busy="isConnectorBusy(item) ? 'true' : 'false'"
-                    :aria-label="connectorSwitchLabel(item)"
-                    :title="connectorSwitchTitle(item)"
-                    @click.stop="toggleConnectorSwitch(item)"
-                  >
-                    <span v-if="isConnectorBusy(item)" class="connector-switch-spinner"></span>
-                    <span class="connector-switch-knob"></span>
-                  </button>
-                  <span v-else-if="isPlusRowSelected(item)" class="plus-list-state">已选</span>
-                </div>
-              </div>
+              <PlusList
+                v-else
+                :loading="plusListLoading"
+                :error="plusListError"
+                :empty-text="plusListEmptyText"
+                :no-match="isConnectorPanel && filteredPlusList.length === 0"
+                :rows="panelRows"
+                :is-connector="isConnectorPanel"
+                :selectable="isSkillListRow"
+                :selected-keys="selectedSkillDirs"
+                :toggling-key="connectorToggling"
+                @select="onPlusListItemClick"
+                @toggle-connector="toggleConnectorSwitch"
+              />
               <!-- 操作反馈：刚改过的连接器开关提示一句，并说明已同步到「专家·技能·连接器」 -->
               <div
                 v-if="isConnectorPanel && connectorNotice"
@@ -470,6 +427,7 @@ import {
   expertAvatarClass as buildExpertAvatarClass
 } from '../../../utils/expertAvatar.js'
 import ExpertSubpanelList from './ExpertSubpanelList.vue'
+import PlusList from './PlusList.vue'
 import PlusMenu from './PlusMenu.vue'
 import ModelPicker from './ModelPicker.vue'
 import UploadTray from './UploadTray.vue'
@@ -499,7 +457,7 @@ const TEXTAREA_LINE_HEIGHT = 24
 const TEXTAREA_MAX_HEIGHT = TEXTAREA_MAX_ROWS * TEXTAREA_LINE_HEIGHT
 
 export default {
-  components: { FileIcon, SkillIcon, KnowledgeScopeSelector, UploadTray, ModelPicker, PlusMenu, ExpertSubpanelList },
+  components: { FileIcon, SkillIcon, KnowledgeScopeSelector, UploadTray, ModelPicker, PlusMenu, ExpertSubpanelList, PlusList },
   props: {
     disabled: {
       type: Boolean,
@@ -2409,72 +2367,16 @@ export default {
    刚好给出同样的结果，两套主题观感一致。 */
 
 /* ── 连接器面板：行内「会话级开关」（只影响本次会话的 Agent 工具集，不写 mcp.json） ── */
-.plus-list-item.connector-row {
-  cursor: default;
-}
 
-.connector-switch {
-  position: relative;
-  flex-shrink: 0;
-  width: 34px;
-  height: 18px;
-  margin-left: 8px;
-  padding: 0;
-  border: 1px solid var(--border-color);
-  border-radius: 999px;
-  background: var(--bg-tertiary);
-  cursor: pointer;
-  transition: background 0.15s ease, border-color 0.15s ease;
-}
 
-.connector-switch .connector-switch-knob {
-  position: absolute;
-  top: 1px;
-  left: 1px;
-  width: 14px;
-  height: 14px;
-  border-radius: 50%;
-  background: #ffffff;
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.25);
-  transition: transform 0.15s ease;
-}
 
-.connector-switch.on {
-  background: var(--accent-color);
-  border-color: var(--accent-color);
-}
 
-.connector-switch.on .connector-switch-knob {
-  transform: translateX(16px);
-}
 
-.connector-switch:focus-visible {
-  outline: 2px solid var(--accent-color);
-  outline-offset: 2px;
-}
 
 /* 提交中：明确禁止态（正常状态下开关任何一端都能点） */
-.connector-switch:disabled {
-  cursor: not-allowed;
-}
 
-.connector-switch.is-off:disabled {
-  opacity: 0.55;
-}
 
 /* 正在提交：开关中心转圈 */
-.connector-switch-spinner {
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  width: 10px;
-  height: 10px;
-  margin: -5px 0 0 -5px;
-  border: 1.5px solid var(--text-secondary);
-  border-top-color: transparent;
-  border-radius: 50%;
-  animation: connector-switch-spin 0.6s linear infinite;
-}
 
 @keyframes connector-switch-spin {
   to {
@@ -2482,9 +2384,6 @@ export default {
   }
 }
 
-.connector-switch.is-busy .connector-switch-knob {
-  opacity: 0.35;
-}
 
 /* 连接器面板内的操作反馈条（改完开关提示一句） */
 .plus-subpanel-notice {
@@ -2991,137 +2890,27 @@ html[data-theme="dark"] .plus-menu-item:hover {
 
 
 
-.plus-list-item {
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  padding: 8px 10px;
-  border-radius: 8px;
-  transition: background 0.15s ease;
-}
 
-.plus-list-item:hover {
-  background: var(--bg-tertiary);
-}
 
 /* 可点选行（技能 / 连接器）：加手型 + 已选态整行高亮（再点一次取消） */
-.plus-list-item.selectable {
-  cursor: pointer;
-}
 
-.plus-list-item.selected {
-  background: color-mix(in srgb, var(--accent-color) 14%, transparent);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-color) 45%, transparent);
-}
 
 /* 停用技能行不可点：Agent 只加载已启用的技能，挂上去也不会生效 */
-.plus-list-item.is-disabled {
-  cursor: not-allowed;
-  opacity: 0.55;
-}
 
-.plus-list-item.is-disabled:hover {
-  background: transparent;
-}
 
 /* 行尾「已选」标：技能 / 连接器共用，与专家行的召唤态样式一致 */
-.plus-list-state {
-  flex-shrink: 0;
-  align-self: center;
-  padding: 1px 6px;
-  border-radius: 5px;
-  font-size: 11px;
-  font-weight: 500;
-  background: var(--accent-color);
-  color: #fff;
-}
 
-.plus-list-icon {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  flex-shrink: 0;
-  border-radius: 8px;
-  font-size: 14px;
-  background: color-mix(in srgb, var(--accent-color) 12%, var(--bg-tertiary));
-}
 
-.plus-list-icon.initial {
-  font-size: 12px;
-  font-weight: 700;
-  color: var(--accent-color);
-}
 
-.plus-list-body {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
 
-.plus-list-name-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-}
 
-.plus-list-name {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text-primary);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
 
-.plus-list-tag {
-  flex-shrink: 0;
-  padding: 1px 6px;
-  border-radius: 5px;
-  font-size: 11px;
-}
 
-.plus-list-tag.on {
-  background: #dcfce7;
-  color: #16a34a;
-}
 
-.plus-list-tag.off {
-  background: var(--bg-tertiary);
-  color: var(--text-secondary);
-}
 
-.plus-list-tag.custom {
-  background: #ede9fe;
-  color: #7c3aed;
-}
 
-.plus-list-desc {
-  font-size: 12px;
-  line-height: 1.5;
-  color: var(--text-secondary);
-  display: -webkit-box;
-  -webkit-line-clamp: 1;
-  line-clamp: 1;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-  overflow-wrap: anywhere;
-}
 
-.plus-list-hint {
-  padding: 16px 10px;
-  font-size: 13px;
-  color: var(--text-secondary);
-  text-align: center;
-}
 
-.plus-list-hint.error {
-  color: #dc2626;
-}
 
 
 
