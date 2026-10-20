@@ -221,17 +221,17 @@
 
 <script setup>
 import { ref, computed, onMounted, watch, nextTick, onBeforeUnmount } from 'vue'
-import { ensureHighlighter } from '../features/chat/composables/useMarkdownRenderer.js'
-import MarkdownBody from '../features/chat/components/MarkdownBody.vue'
-import FileIcon from './FileIcon.vue'
+import { ensureHighlighter } from '../composables/useMarkdownRenderer.js'
+import MarkdownBody from './MarkdownBody.vue'
+import FileIcon from '../../../shared/components/FileIcon.vue'
 import ToolCallCard from './ToolCallCard.vue'
-import { approvalTargetForBlock, unmatchedApprovalRequests } from '../utils/hitlApproval.js'
-import SkillIcon from './SkillIcon.vue'
-import { iconCategoryFor } from '../utils/skillCategories.js'
+import { approvalTargetForBlock, unmatchedApprovalRequests } from '../../../utils/hitlApproval.js'
+import SkillIcon from '../../../shared/components/SkillIcon.vue'
+import { iconCategoryFor } from '../../../utils/skillCategories.js'
 // 专家头像取字 / 配色：与技能中心、+ 号下拉、输入框胶囊共用同一套规则（按 ID 稳定取档）
-import { expertAvatarChar, expertAvatarClass } from '../utils/expertAvatar.js'
-import { parseLeadingSkillTokens } from '../utils/skillTokens.js'
-import { ensureSkillDirectoryLoaded, skillDirectoryStore } from '../store/skillDirectoryStore.js'
+import { expertAvatarChar, expertAvatarClass } from '../../../utils/expertAvatar.js'
+import { parseLeadingSkillTokens } from '../../../utils/skillTokens.js'
+import { ensureSkillDirectoryLoaded, skillDirectoryStore } from '../../../store/skillDirectoryStore.js'
 
 const props = defineProps({
   message: {

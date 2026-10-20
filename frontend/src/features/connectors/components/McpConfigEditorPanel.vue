@@ -50,7 +50,7 @@
 <script setup>
 import { ref, onMounted, onBeforeUnmount, nextTick, shallowRef } from 'vue'
 import * as monaco from 'monaco-editor'
-import { getMcpRaw, saveMcpRaw } from '../api/connectors.js'
+import { getMcpRaw, saveMcpRaw } from '../../../api/connectors.js'
 
 const emit = defineEmits(['back'])
 

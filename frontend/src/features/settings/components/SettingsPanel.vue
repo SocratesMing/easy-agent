@@ -118,13 +118,13 @@ import {
   getMemory,
   updateMemory,
   getSystemPrompt,
-} from '../api/settings.js'
+} from '../../../api/settings.js'
 import {
   setupMarkedExtensions,
   createMarkdownRenderer,
   renderMarkdown,
   escapeHtml,
-} from '../markdownSetup.js'
+} from '../../../markdownSetup.js'
 
 setupMarkedExtensions()
 

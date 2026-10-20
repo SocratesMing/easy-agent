@@ -132,12 +132,12 @@
 </template>
 
 <script setup>
-import { API_BASE_URL } from '../config.js'
+import { API_BASE_URL } from '../../../config.js'
 import { ref, computed, onMounted, watch, onActivated } from 'vue'
-import { getAllFiles, deleteFile } from '../api/files.js'
-import FileIcon from './FileIcon.vue'
-import ConfirmDialog from './ConfirmDialog.vue'
-import FilePreview from './FilePreview.vue'
+import { getAllFiles, deleteFile } from '../../../api/files.js'
+import FileIcon from '../../../shared/components/FileIcon.vue'
+import ConfirmDialog from '../../../shared/components/ConfirmDialog.vue'
+import FilePreview from '../../../shared/preview/FilePreview.vue'
 
 const props = defineProps({
   visible: {
@@ -237,7 +237,7 @@ const currentFiles = computed(() => {
 async function refreshAssets() {
   loading.value = true
   try {
-    const { getAuthHeaders } = await import('../api/auth.js')
+    const { getAuthHeaders } = await import('../../../api/auth.js')
     const response = await fetch(`${API_BASE_URL}/agent/files/list`, {
       headers: {
         ...getAuthHeaders()
@@ -258,7 +258,7 @@ async function handleUpload(event) {
 
   uploading.value = true
 
-  const { getAuthHeaders } = await import('../api/auth.js')
+  const { getAuthHeaders } = await import('../../../api/auth.js')
 
   for (const file of files) {
     try {
@@ -324,7 +324,7 @@ async function handleDelete(file) {
   }
 
   try {
-    const { getAuthHeaders } = await import('../api/auth.js')
+    const { getAuthHeaders } = await import('../../../api/auth.js')
     const response = await fetch(`${API_BASE_URL}/agent/files/users/files/${encodeURIComponent(file.id)}`, {
       method: 'DELETE',
       headers: {

@@ -111,15 +111,15 @@
 </template>
 
 <script setup>
-import { API_BASE_URL } from '../config.js'
-import { overlayClickCloses, markOverlayPress } from '../utils/overlayClick.js'
+import { API_BASE_URL } from '../../config.js'
+import { overlayClickCloses, markOverlayPress } from '../../utils/overlayClick.js'
 import { ref, computed, watch } from 'vue'
 import {
   setupMarkedExtensions,
   createMarkdownRenderer,
   renderMarkdown,
   installCodeCopyHandler,
-} from '../markdownSetup.js'
+} from '../../markdownSetup.js'
 import hljs from 'highlight.js'
 import 'highlight.js/styles/github.css'
 
@@ -131,7 +131,7 @@ import VueOfficeExcel from '@vue-office/excel/lib/v3/vue-office-excel.mjs'
 import '@vue-office/docx/lib/v3/index.css'
 import '@vue-office/excel/lib/v3/index.css'
 import * as XLSX from 'xlsx'
-import { getStoredToken } from '../api/auth.js'
+import { getStoredToken } from '../../api/auth.js'
 
 // 与 ChatMessage 共用同一套代码块结构；hljs 只负责高亮片段，外层 <pre> 由这里补齐
 const markdownRenderer = createMarkdownRenderer({

@@ -170,9 +170,9 @@ import {
   deleteScheduledTask,
   toggleScheduledTask,
   runScheduledTaskNow,
-} from '../api/scheduledTasks.js'
-import ConfirmDialog from './ConfirmDialog.vue'
-import WorkspacePanel from './WorkspacePanel.vue'
+} from '../../../api/scheduledTasks.js'
+import ConfirmDialog from '../../../shared/components/ConfirmDialog.vue'
+import WorkspacePanel from '../../workspace/components/WorkspacePanel.vue'
 
 defineEmits(['close'])
 

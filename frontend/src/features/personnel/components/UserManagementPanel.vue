@@ -49,7 +49,7 @@
 
 <script setup>
 import { ref, onMounted } from 'vue'
-import { listUsers, resetUserPassword } from '../api/auth.js'
+import { listUsers, resetUserPassword } from '../../../api/auth.js'
 
 const users = ref([])
 const total = ref(0)

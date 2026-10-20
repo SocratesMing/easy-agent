@@ -198,8 +198,8 @@
 
 <script setup>
 import { ref, nextTick, onMounted, computed } from 'vue'
-import { APP_TITLE } from '../config.js'
-import { ensureSkillDirectoryLoaded, skillFreeTitle } from '../store/skillDirectoryStore.js'
+import { APP_TITLE } from '../../../config.js'
+import { ensureSkillDirectoryLoaded, skillFreeTitle } from '../../../store/skillDirectoryStore.js'
 
 const emit = defineEmits(['createSession', 'selectSession', 'deleteSession', 'renameSession', 'toggleSidebar', 'showAssets', 'showSkillCenter', 'showScheduledTasks', 'showSettings', 'showUserManagement', 'logout', 'togglePin'])
 

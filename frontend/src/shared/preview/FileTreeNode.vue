@@ -44,9 +44,9 @@
 
 <script setup>
 import { ref, watch } from 'vue'
-import FileIcon from './FileIcon.vue'
-import { getWorkspaceTree } from '../api/files'
-import { getScheduledTaskWorkspace } from '../api/scheduledTasks'
+import FileIcon from '../components/FileIcon.vue'
+import { getWorkspaceTree } from '../../api/files'
+import { getScheduledTaskWorkspace } from '../../api/scheduledTasks'
 
 const props = defineProps({
   item: {

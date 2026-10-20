@@ -135,10 +135,10 @@
 
 <script setup>
 import { ref, computed, watch, onMounted } from 'vue'
-import { getSkillDetail, enableSkill, disableSkill, addSkillToUser, removeSkillFromUser } from '../api/skills.js'
-import { DEFAULT_CATEGORY, iconCategoryFor } from '../utils/skillCategories.js'
-import SkillIcon from './SkillIcon.vue'
-import ToggleSwitch from './ToggleSwitch.vue'
+import { getSkillDetail, enableSkill, disableSkill, addSkillToUser, removeSkillFromUser } from '../../../api/skills.js'
+import { DEFAULT_CATEGORY, iconCategoryFor } from '../../../utils/skillCategories.js'
+import SkillIcon from '../../../shared/components/SkillIcon.vue'
+import ToggleSwitch from '../../../shared/components/ToggleSwitch.vue'
 
 const props = defineProps({
   dirName: { type: String, required: true },

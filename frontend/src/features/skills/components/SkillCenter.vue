@@ -94,11 +94,11 @@
 <script setup>
 import { ref, nextTick, watch, defineAsyncComponent } from 'vue'
 import SkillListPanel from './SkillListPanel.vue'
-import ExpertListPanel from './ExpertListPanel.vue'
-import ConnectorListPanel from './ConnectorListPanel.vue'
+import ExpertListPanel from '../../experts/components/ExpertListPanel.vue'
+import ConnectorListPanel from '../../connectors/components/ConnectorListPanel.vue'
 
 // Monaco 体积较大，编辑器面板懒加载：只在进入「MCP 服务管理」时才拉取
-const McpConfigEditorPanel = defineAsyncComponent(() => import('./McpConfigEditorPanel.vue'))
+const McpConfigEditorPanel = defineAsyncComponent(() => import('../../connectors/components/McpConfigEditorPanel.vue'))
 
 // sessionId 仅透传给专家面板（创建专家时溯源用）；initialTab 允许外部
 // 入口直接打开并定位到指定 Tab，默认选中专家 Tab。

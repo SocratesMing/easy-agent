@@ -138,7 +138,7 @@ import { ref, watch, nextTick, computed, onMounted, onUnmounted } from 'vue'
 import ChatMessage from './ChatMessage.vue'
 import ChatInput from './ChatInput.vue'
 import TodoListPanel from './TodoListPanel.vue'
-import { APP_WELCOME_TITLE } from '../config.js'
+import { APP_WELCOME_TITLE } from '../../../config.js'
 // 首页布局模式：center=空会话时输入框居中，bottom=对话中输入框贴底
 const composerMode = ref('center')
 

@@ -302,9 +302,9 @@
 
 <script setup>
 import { computed, onMounted, ref } from 'vue'
-import { deleteExpert, listExperts, listPublicExperts } from '../api/expert.js'
-import { expertAvatarChar, expertAvatarClass } from '../utils/expertAvatar.js'
-import { addSkillToUser, getUserSkills } from '../api/skills.js'
+import { deleteExpert, listExperts, listPublicExperts } from '../../../api/expert.js'
+import { expertAvatarChar, expertAvatarClass } from '../../../utils/expertAvatar.js'
+import { addSkillToUser, getUserSkills } from '../../../api/skills.js'
 
 const props = defineProps({
   /** 当前会话 ID（保留：面板不再直接创建专家，创建走对话页的 Agent 流程） */

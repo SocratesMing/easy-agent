@@ -604,15 +604,15 @@
 
 <script setup>
 import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
-import { uploadFile, deleteFile } from '../api/files.js'
-import { getWebSearchStatus, getUploadLimits } from '../api/settings.js'
-import { getUserSkills, importSkill } from '../api/skills.js'
-import { iconCategoryFor } from '../utils/skillCategories.js'
+import { uploadFile, deleteFile } from '../../../api/files.js'
+import { getWebSearchStatus, getUploadLimits } from '../../../api/settings.js'
+import { getUserSkills, importSkill } from '../../../api/skills.js'
+import { iconCategoryFor } from '../../../utils/skillCategories.js'
 
 // 镜像层为画出技能芯片的外扩留白，把裁剪盒向外扩了这么多 px（见 .input-mirror 的 padding/margin）：
 // 补滚动条占位时要一起加上，否则镜像内容比 textarea 窄、换行位置对不上。
 const MIRROR_BLEED = 6
-import { buildMessageText, parseSlashQuery } from '../utils/skillSlash.js'
+import { buildMessageText, parseSlashQuery } from '../../../utils/skillSlash.js'
 // 内联技能标签：标签文字 = textarea 文本里的子串，选中/删除/发送前的剥离都走这套纯逻辑
 import {
   buildSegments,
@@ -627,16 +627,16 @@ import {
   tokenAfterCaret,
   tokenBeforeCaret,
   tokenForSkill,
-} from '../utils/skillPillTokens.js'
-import { getConnectors, toggleConnector } from '../api/connectors.js'
-import { emitConnectorsChanged, onConnectorsChanged } from '../utils/connectorSync.js'
-import { listExperts, listPublicExperts } from '../api/expert.js'
-import { expertAvatarChar, expertAvatarClass } from '../utils/expertAvatar.js'
-import { formatSize } from '../utils/format.js'
-import UploadTray from '../features/chat/components/UploadTray.vue'
-import ModelPicker from '../features/chat/components/ModelPicker.vue'
-import FileIcon from './FileIcon.vue'
-import SkillIcon from './SkillIcon.vue'
+} from '../../../utils/skillPillTokens.js'
+import { getConnectors, toggleConnector } from '../../../api/connectors.js'
+import { emitConnectorsChanged, onConnectorsChanged } from '../../../utils/connectorSync.js'
+import { listExperts, listPublicExperts } from '../../../api/expert.js'
+import { expertAvatarChar, expertAvatarClass } from '../../../utils/expertAvatar.js'
+import { formatSize } from '../../../utils/format.js'
+import UploadTray from './UploadTray.vue'
+import ModelPicker from './ModelPicker.vue'
+import FileIcon from '../../../shared/components/FileIcon.vue'
+import SkillIcon from '../../../shared/components/SkillIcon.vue'
 
 // 输入框最大高度：5 行（行高 1.6 × 15px = 24px）。文本再长就在框内滚动（右侧滚动条），
 // 输入框不再无限增高——与 CSS 的 max-height 保持一致，两处改要一起改。

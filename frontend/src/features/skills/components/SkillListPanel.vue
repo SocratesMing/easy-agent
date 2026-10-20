@@ -229,11 +229,11 @@ import {
   disableSkill,
   importSkill,
   getSkillCategories,
-} from '../api/skills.js'
-import { DEFAULT_CATEGORY, iconCategoryFor } from '../utils/skillCategories.js'
-import SkillIcon from './SkillIcon.vue'
+} from '../../../api/skills.js'
+import { DEFAULT_CATEGORY, iconCategoryFor } from '../../../utils/skillCategories.js'
+import SkillIcon from '../../../shared/components/SkillIcon.vue'
 import SkillDetailPanel from './SkillDetailPanel.vue'
-import ToggleSwitch from './ToggleSwitch.vue'
+import ToggleSwitch from '../../../shared/components/ToggleSwitch.vue'
 
 const emit = defineEmits(['close', 'create-skill'])
 

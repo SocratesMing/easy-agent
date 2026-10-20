@@ -78,8 +78,8 @@
 
 <script setup>
 import { ref, onMounted, nextTick } from 'vue'
-import { login, register } from '../api/auth.js'
-import { APP_TITLE } from '../config.js'
+import { login, register } from '../../../api/auth.js'
+import { APP_TITLE } from '../../../config.js'
 
 const emit = defineEmits(['completed'])
 

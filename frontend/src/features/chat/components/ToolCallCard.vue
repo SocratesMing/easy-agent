@@ -82,7 +82,7 @@
 
 <script setup>
 import { ref, computed, watch } from 'vue'
-import { toolCard } from '../utils/toolPresentation.js'
+import { toolCard } from '../../../utils/toolPresentation.js'
 
 const props = defineProps({
   toolName: { type: String, default: '' },

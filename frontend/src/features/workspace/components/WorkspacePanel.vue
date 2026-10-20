@@ -177,7 +177,7 @@
 </template>
 
 <script setup>
-import { API_BASE_URL } from '../config.js'
+import { API_BASE_URL } from '../../../config.js'
 import {
   ref,
   computed,
@@ -186,11 +186,11 @@ import {
   onMounted,
   onBeforeUnmount,
 } from 'vue'
-import FileTreeNode from './FileTreeNode.vue'
-import FilePreview from './FilePreview.vue'
-import { getWorkspaceTree } from '../api/files'
-import { getScheduledTaskWorkspace } from '../api/scheduledTasks'
-import { getStoredToken } from '../api/auth.js'
+import FileTreeNode from '../../../shared/preview/FileTreeNode.vue'
+import FilePreview from '../../../shared/preview/FilePreview.vue'
+import { getWorkspaceTree } from '../../../api/files'
+import { getScheduledTaskWorkspace } from '../../../api/scheduledTasks'
+import { getStoredToken } from '../../../api/auth.js'
 
 const props = defineProps({
   username: { type: String, default: '' },

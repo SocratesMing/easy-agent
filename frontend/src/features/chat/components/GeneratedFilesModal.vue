@@ -58,10 +58,10 @@
 
 <script setup>
 import { ref, watch } from 'vue'
-import FileIcon from './FileIcon.vue'
-import { API_BASE_URL } from '../config.js'
-import { overlayClickCloses, markOverlayPress } from '../utils/overlayClick.js'
-import { authFetch } from '../api/auth.js'
+import FileIcon from '../../../shared/components/FileIcon.vue'
+import { API_BASE_URL } from '../../../config.js'
+import { overlayClickCloses, markOverlayPress } from '../../../utils/overlayClick.js'
+import { authFetch } from '../../../api/auth.js'
 
 const props = defineProps({
   visible: {

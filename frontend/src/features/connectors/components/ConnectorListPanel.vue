@@ -324,7 +324,7 @@
 
 <script setup>
 import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
-import ToggleSwitch from './ToggleSwitch.vue'
+import ToggleSwitch from '../../../shared/components/ToggleSwitch.vue'
 import {
   getConnectors,
   installConnector,
@@ -333,9 +333,9 @@ import {
   getConnectorTools,
   updateConnectorConfig,
   getConnectorsStatus,
-} from '../api/connectors.js'
-import { overlayClickCloses, markOverlayPress } from '../utils/overlayClick.js'
-import { emitConnectorsChanged, onConnectorsChanged } from '../utils/connectorSync.js'
+} from '../../../api/connectors.js'
+import { overlayClickCloses, markOverlayPress } from '../../../utils/overlayClick.js'
+import { emitConnectorsChanged, onConnectorsChanged } from '../../../utils/connectorSync.js'
 
 defineEmits(['manage'])
 
