@@ -1,11 +1,11 @@
-import { setReactive } from '../utils/reactiveSet.js'
-import { createSession, listSessions, getChatHistory, deleteSession, sendMessage, resumeStream, renameSession, togglePinSession, attachStream } from '../api/chat.js'
-import { deleteFile, getSessionGeneratedFiles } from '../api/files.js'
-import { authFetch } from '../api/auth.js'
-import { streamExportRun } from '../api/expert.js'
+import { setReactive } from '../../../utils/reactiveSet.js'
+import { createSession, listSessions, getChatHistory, deleteSession, sendMessage, resumeStream, renameSession, togglePinSession, attachStream } from '../../../api/chat.js'
+import { deleteFile, getSessionGeneratedFiles } from '../../../api/files.js'
+import { authFetch } from '../../../api/auth.js'
+import { streamExportRun } from '../../../api/expert.js'
 import { chatBus, chatStore } from '../store/chatStore.js'
-import { createStreamChunkHandler as createChunkHandler } from '../services/streaming/chunkHandler.js'
-import { applyApprovalRequests, buildResumeDecisions, markApprovalDecision, unmatchedApprovalRequests } from '../utils/hitlApproval.js'
+import { createStreamChunkHandler as createChunkHandler } from '../services/chunkHandler.js'
+import { applyApprovalRequests, buildResumeDecisions, markApprovalDecision, unmatchedApprovalRequests } from '../../../utils/hitlApproval.js'
 
 // MCP 工具结果解析：模块级函数，供正常流(handleSendMessage)与 HITL 恢复流(handleToolApproval)共用。
 // 注意：不要把它定义在某个函数内部，否则另一处引用会抛 ReferenceError，
@@ -754,7 +754,7 @@ export default {
         this.error = '置顶操作失败'
       }
     },
-    // 实现见 services/streaming/chunkHandler.js（2026-10-20 抽出，行为不变）
+    // 实现见 features/chat/services/chunkHandler.js（2026-10-20 抽出，行为不变）
     createStreamChunkHandler(ctx) {
       return createChunkHandler(this, ctx)
     },

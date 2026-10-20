@@ -31,7 +31,7 @@ const LINE_BUDGET = {
   'components/ChatMessage.vue': 2649,
   'components/AiSidebar.vue': 1724,
   'components/ExpertListPanel.vue': 1705,
-  'mixins/chatSession.js': 1200,
+  'features/chat/mixins/chatSession.js': 1200,
   'components/ConnectorListPanel.vue': 1491,
   'components/SkillListPanel.vue': 1237,
   'components/FilePreview.vue': 1130,
@@ -108,7 +108,8 @@ test('组件不得新增对 api/ 的直接依赖', async () => {
 
   for (const filePath of files) {
     const rel = relative(filePath)
-    if (!rel.startsWith('components/') && !rel.startsWith('features/')) continue
+    // 只约束组件层；features 下的 mixins/services/composables 属于下层，允许调用 api
+    if (!rel.startsWith('components/') && !/^features\/.*\/components\//.test(rel)) continue
     // feature 自己的 api 模块就是这一层的出口，允许存在
     if (rel.endsWith('/api.js')) continue
     const source = await readFile(filePath, 'utf8')

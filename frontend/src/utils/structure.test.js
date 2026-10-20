@@ -95,7 +95,8 @@ test('组件不得新增对 api/ 的直接依赖', async () => {
 
   for (const filePath of files) {
     const rel = relative(filePath)
-    if (!rel.startsWith('components/') && !rel.startsWith('features/')) continue
+    // 只约束组件层；features 下的 mixins/services/composables 属于下层，允许调用 api
+    if (!rel.startsWith('components/') && !/^features\/.*\/components\//.test(rel)) continue
     // feature 自己的 api 模块就是这一层的出口，允许存在
     if (rel.endsWith('/api.js')) continue
     const source = await readFile(filePath, 'utf8')

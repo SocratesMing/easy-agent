@@ -7,8 +7,8 @@
  * @param {object} vm 宿主组件（mixin 所在实例），提供 messages/sessions/sessionUsage 等
  * @param {object} ctx 本次流上下文（assistantMsgId、streamSessionId、回调等）
  */
-import { chatBus } from '../../store/chatStore.js'
-import { setReactive } from '../../utils/reactiveSet.js'
+import { chatBus } from '../store/chatStore.js'
+import { setReactive } from '../../../utils/reactiveSet.js'
 
 export function createStreamChunkHandler(vm, ctx) {
   let currentBlock = null
