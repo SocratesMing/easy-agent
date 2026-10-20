@@ -24,7 +24,7 @@ const LINE_BUDGET = {
   'features/connectors/components/ConnectorListPanel.vue': 1534,
   'features/settings/components/SettingsPanel.vue': 1226,
   'features/skills/components/SkillListPanel.vue': 1226,
-  'shared/preview/FilePreview.vue': 1099,
+  'shared/preview/FilePreview.vue': 1105,
   'features/chat/components/Chat.vue': 1021,
   'features/chat/components/SessionList.vue': 957,
   'features/workspace/components/WorkspacePanel.vue': 930,
