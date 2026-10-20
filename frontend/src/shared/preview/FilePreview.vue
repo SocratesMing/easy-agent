@@ -113,7 +113,7 @@
 <script setup>
 import { API_BASE_URL } from '../../config.js'
 import { overlayClickCloses, markOverlayPress } from '../../utils/overlayClick.js'
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, defineAsyncComponent } from 'vue'
 import {
   setupMarkedExtensions,
   createMarkdownRenderer,
@@ -126,11 +126,15 @@ import 'highlight.js/styles/github.css'
 // 注册 KaTeX 数学公式 + emoji 短代码扩展（幂等，仅执行一次）
 setupMarkedExtensions()
 installCodeCopyHandler()
-import VueOfficeDocx from '@vue-office/docx/lib/v3/vue-office-docx.mjs'
-import VueOfficeExcel from '@vue-office/excel/lib/v3/vue-office-excel.mjs'
-import '@vue-office/docx/lib/v3/index.css'
+// 预览库按需加载：只有打开对应类型文件时才拉取
+const VueOfficeDocx = defineAsyncComponent(() => import('@vue-office/docx/lib/v3/vue-office-docx.mjs'))
+const VueOfficeExcel = defineAsyncComponent(() => import('@vue-office/excel/lib/v3/vue-office-excel.mjs'))
+let xlsxPromise = null
+function loadXlsx() {
+  if (!xlsxPromise) xlsxPromise = import('xlsx')
+  return xlsxPromise
+}import '@vue-office/docx/lib/v3/index.css'
 import '@vue-office/excel/lib/v3/index.css'
-import * as XLSX from 'xlsx'
 import { getStoredToken } from '../../api/auth.js'
 
 // 与 ChatMessage 共用同一套代码块结构；hljs 只负责高亮片段，外层 <pre> 由这里补齐
@@ -497,8 +501,9 @@ function onExcelRendered() {
 
 // @vue-office/excel 解析含批注/drawing 的 xlsx 时会抛 anchors 错误，
 // 这里用 SheetJS 将各 sheet 渲染为 HTML 表格作为兜底。
-function buildExcelTables(ab) {
+async function buildExcelTables(ab) {
   try {
+    const XLSX = await loadXlsx()
     const wb = XLSX.read(ab, { type: 'array' })
     excelSheets.value = wb.SheetNames.map((name) => ({
       name,
@@ -511,7 +516,7 @@ function buildExcelTables(ab) {
   }
 }
 
-function handleExcelError(e) {
+async function handleExcelError(e) {
   console.error('Excel error:', e)
   if (!excelRetried.value && excelArrayBuffer.value) {
     // @vue-office/excel 解析含图片/drawing 的 xlsx 会抛 anchors 错误。
@@ -519,6 +524,7 @@ function handleExcelError(e) {
     // 再交回 @vue-office/excel 渲染：保留边框、合并单元格、多 sheet（仅不含图片），
     // 与“无图片时正常显示”体验一致。
     try {
+      const XLSX = await loadXlsx()
       const wb = XLSX.read(excelArrayBuffer.value, { type: 'array', cellStyles: true })
       const cleaned = XLSX.write(wb, { type: 'array', bookType: 'xlsx' })
       excelRetried.value = true
