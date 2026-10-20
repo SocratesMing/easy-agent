@@ -75,9 +75,86 @@ function buildSourceCardHtml(title, url) {
   )
 }
 
-/** 清掉 URL 尾部被一并捕获的中文标点/收尾括号 */
-function trimUrlTail(url) {
-  return url.replace(/[。，、,.\)\]!?！？…；:：]+$/, '')
+// 裸 URL 的字符集：只认 ASCII 里合法的 URL 字符，不用 \S+。
+// 模型的中文回复常把 URL 紧贴在中文/全角标点里（「…/a.html。这是下一句」），
+// \S+ 会把后面整句中文一起吞进 href，正文内容随之从界面上消失。
+const URL_BODY = "https?:\\/\\/[A-Za-z0-9\\-._~:\\/?#\\[\\]@!$&'()*+,;=%]+"
+const URL_RE_G = new RegExp(URL_BODY, 'g')
+
+// URL 行尾的收尾标点：不属于链接本身，原样留在卡片/链接之后
+const TRAIL_PUNCT = "[。，、；：！？…,.;:!?'\"）】》」』]*"
+const TITLE_URL_RE = new RegExp(
+  '^(.+?)\\s*[:：，,]?\\s*(' + URL_BODY + ')\\s*(' + TRAIL_PUNCT + ')\\s*$'
+)
+const URL_ONLY_RE = new RegExp('^(' + URL_BODY + ')\\s*(' + TRAIL_PUNCT + ')\\s*$')
+const MD_LINK_LINE_RE = new RegExp(
+  '^\\[([^\\]\\n]+)\\]\\((https?:\\/\\/[^\\s)]+)\\)\\s*(' + TRAIL_PUNCT + ')\\s*$'
+)
+
+/**
+ * 拆分 URL 与其后紧跟的收尾标点。
+ * 成对的右括号属于 URL 本身（如维基百科 Foo_(bar)），不成对的算收尾。
+ */
+function splitUrlTail(rawUrl) {
+  let url = String(rawUrl || '')
+  let tail = ''
+  // * 与 ~ 既是 URL 允许字符，也是 markdown 强调/删除线定界符（**url**、~~url~~）
+  const m = url.match(/[。，、；：！？…,.;:!?'"）】》」』*~]+$/)
+  if (m) {
+    tail = m[0]
+    url = url.slice(0, -tail.length)
+  }
+  while (url.endsWith(')')) {
+    const open = (url.match(/\(/g) || []).length
+    const close = (url.match(/\)/g) || []).length
+    if (close <= open) break
+    tail = ')' + tail
+    url = url.slice(0, -1)
+  }
+  return { url, tail }
+}
+
+/** 流式输出中未闭合的 markdown 链接/方括号，不当作来源行改写 */
+function hasUnclosedMarkdown(line) {
+  if (line.indexOf('](') !== -1) return true
+  const opens = (line.match(/\[/g) || []).length
+  const closes = (line.match(/\]/g) || []).length
+  return opens > closes
+}
+
+/**
+ * 行内裸 URL 规整：把紧邻中文/全角标点的裸 URL 收口成 <url> 自动链接。
+ * 否则 marked 的 GFM 自动链接会把 URL 后面的中文一起算进链接，
+ * 例如「https://a.com/x。这是下一句」会生成带 %E3%80%82 的坏 href。
+ * 已存在于 markdown 链接/HTML 标签/行内代码里的 URL 不动。
+ */
+function normalizeInlineUrls(line) {
+  if (!line || line.indexOf('http') === -1) return line
+  // 来源卡片是已经生成好的 HTML（标题可能就是 URL），不能再包一层链接
+  if (line.indexOf('msg-source-card') !== -1) return line
+  const held = []
+  const hold = (chunk) => {
+    held.push(chunk)
+    return '\u0000' + (held.length - 1) + '\u0000'
+  }
+  // 保护已有 markdown 链接/图片、HTML 标签（来源卡片就是 HTML）与 <url> 自动链接
+  const s = line
+    .replace(/!?\[[^\]\n]*\]\([^)\s]*\)/g, hold)
+    .replace(/<[^>]*>/g, hold)
+
+  const converted = s
+    .split(/(`[^`\n]*`)/)
+    .map((part, i) => {
+      if (i % 2 === 1) return part // 行内代码原样保留
+      return part.replace(URL_RE_G, (raw, offset, whole) => {
+        // 流式输出中尚未闭合的 markdown 链接目标，别再套一层
+        if (/\]\($/.test(whole.slice(0, offset))) return raw
+        const { url, tail } = splitUrlTail(raw)
+        return url ? '<' + url + '>' + tail : raw
+      })
+    })
+    .join('')
+  return converted.replace(/\u0000(\d+)\u0000/g, (_, i) => held[+i])
 }
 
 // 单行改写：命中来源链接模式则生成卡片 HTML（保留列表/标题前缀），否则原样返回
@@ -88,23 +165,30 @@ function beautifySourceLine(raw) {
   if (!line) return raw
 
   // 1. markdown 链接独立成行：[标题](url)
-  let m = line.match(/^\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)$/)
-  if (m) return prefix + buildSourceCardHtml(m[1].trim(), m[2])
+  let m = line.match(MD_LINK_LINE_RE)
+  if (m) {
+    return prefix + buildSourceCardHtml(m[1].trim(), m[2]) + (m[3] || '')
+  }
 
   // 2. 标题 + 裸链接：「东方财富收评：url」「凤凰财经/中国证券报 url」
-  m = line.match(/^(.+?)\s*[:：，,]?\s*(https?:\/\/\S+)\s*$/)
+  m = line.match(TITLE_URL_RE)
   if (m) {
+    // 流式期间未闭合的 markdown 链接不当作来源行，避免卡片标题里露出 [ ] 字面量
+    if (hasUnclosedMarkdown(m[1])) return raw
     let title = m[1].trim().replace(/[*_~`]+/g, '').replace(/[（(]+$/, '').trim()
     // 结论句里顺带提到链接（标题里还有其他 URL）时不算来源行，保持普通渲染
     if (!title || /https?:\/\//i.test(title) || title.length > 60) return raw
-    return prefix + buildSourceCardHtml(title, trimUrlTail(m[2]))
+    const { url, tail } = splitUrlTail(m[2])
+    if (!url) return raw
+    return prefix + buildSourceCardHtml(title, url) + (m[3] || '') + tail
   }
 
   // 3. 纯链接行：没有可展示的标题，用域名替代
-  m = line.match(/^(https?:\/\/\S+)\s*$/)
+  m = line.match(URL_ONLY_RE)
   if (m) {
-    const url = trimUrlTail(m[1])
-    return prefix + buildSourceCardHtml(getSourceCardDomain(url), url)
+    const { url, tail } = splitUrlTail(m[1])
+    if (!url) return raw
+    return prefix + buildSourceCardHtml(getSourceCardDomain(url), url) + (m[2] || '') + tail
   }
 
   return raw
@@ -112,7 +196,7 @@ function beautifySourceLine(raw) {
 
 /** 判断该行是不是来源卡片（无列表前缀的独立卡片行才参与横向合并） */
 function isCardLine(line) {
-  return /^<a class="msg-source-card"[^]*<\/a>$/.test(line)
+  return /^<a class="msg-source-card"[^]*<\/a>[。，、；：！？…,.;:!?'"）】》」』]*$/.test(line)
 }
 
 /** 连续卡片行包进 flex 容器：横向排列、装不下自动换行 */
@@ -140,7 +224,10 @@ export function beautifySourceLinks(content) {
       out += parts[i]
       continue
     }
-    const lines = parts[i].split('\n').map(beautifySourceLine)
+    const lines = parts[i]
+      .split('\n')
+      .map(beautifySourceLine)
+      .map(normalizeInlineUrls)
     const grouped = []
     let pendingCards = null
     for (const line of lines) {

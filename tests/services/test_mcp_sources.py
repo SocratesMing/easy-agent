@@ -10,6 +10,8 @@
 from types import SimpleNamespace
 
 from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.tools import StructuredTool
+from pydantic import BaseModel
 
 from easy_agent.services import mcp
 from easy_agent.services.stream_processor import StreamProcessor
@@ -153,3 +155,43 @@ def test_stream_processor_non_mcp_tool_has_no_source():
     events = proc.handle("updates", {"model": {"messages": [ai]}})
     call_ev = next(e for e in events if e["type"] == "tool_call")
     assert "source" not in call_ev
+
+
+# ── 4. 真实 StructuredTool 输出协议 ────────────────────────────────────
+
+
+class _QueryArgs(BaseModel):
+    sql: str = "select 1"
+
+
+async def test_wrapped_mcp_tool_keeps_content_and_artifact_protocol():
+    """包装后仍返回 (content, artifact)，否则 BaseTool 会报「must return a tuple」。"""
+
+    async def _call(sql: str = "select 1"):
+        return [{"type": "text", "text": "id=1"}], {"rows": [{"id": 1}]}
+
+    tool = StructuredTool(
+        name="query_orders",
+        description="查询订单",
+        args_schema=_QueryArgs,
+        coroutine=_call,
+        response_format="content_and_artifact",
+    )
+    mcp._prepare_mcp_tool(tool, "mysql", "MySQL 数据库")
+
+    # 1) 包装后的 coroutine 仍返回 (content, artifact) 二元组
+    content, artifact = await tool.coroutine(sql="select 1")
+    assert artifact == {"rows": [{"id": 1}]}
+    assert isinstance(content, list)
+    assert content[0]["text"].startswith("【数据来源】")
+    assert content[0]["text"].endswith("【原始数据结束】")
+
+    # 2) 经框架 ainvoke 不再因「must return a two-tuple」而抛 ValueError
+    assert await tool.ainvoke({"sql": "select 1"}) is not None
+
+
+def test_decorate_list_with_plain_string_blocks():
+    """adapters 的 content block 也可能是纯字符串，同样要注入首尾标记。"""
+    out = mcp._decorate_mcp_result(["第一段", "第二段"], SOURCE)
+    assert out[0].startswith("【数据来源】")
+    assert out[-1].endswith("【原始数据结束】")
