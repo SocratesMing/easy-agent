@@ -214,8 +214,10 @@ def submit_memory_updates(
     注意：
     - update_memory_after_session 内部会同步调用 LLM（阻塞式 HTTP），必须放到线程池，
       否则会阻塞事件循环数秒~十几秒。
-    - 会话级记忆写入成功后会调用 remove_session_agent 使 Agent 缓存失效，
-      下次发消息时重建 Agent 以加载新记忆（保证第二轮能读到第一轮总结）。
+    - 写入后不需要重建 Agent：记忆每次运行都由 ``SessionMemoryMiddleware`` 重新加载
+      （``agent/memory.py``），下一轮自然读到。改造前这里会调用 ``remove_session_agent``，
+      既让下一轮重新加载 MCP 工具、重建 Agent，又顺带清掉会话的「待修改专家」绑定，
+      导致「点编辑 → 模型先追问 → 下一轮再保存」时 save_expert 找不到修改目标。
     """
     # 1) 会话级记忆：workspace/{username}/{workspace_name}/memory.md
     if agent and agent.memory_file:
@@ -241,16 +243,6 @@ def submit_memory_updates(
                             f"[{sid}] 🧠 会话记忆已更新 | 文件: {agent.memory_file} | "
                             f"上限 2000 字符"
                         )
-                        # 记忆更新后使 Agent 缓存失效，下次发消息时重建 Agent 以加载新记忆
-                        try:
-                            from easy_agent.services.agent_manager import remove_session_agent
-
-                            remove_session_agent(session_id)
-                            logger.info(
-                                f"[{sid}] 记忆更新后 Agent 缓存已失效，下次消息将重新加载记忆"
-                            )
-                        except Exception as e:
-                            logger.warning(f"[{sid}] 使 Agent 缓存失效失败: {e}")
                 except Exception as e:
                     logger.warning(f"[{sid}] 会话记忆更新失败: {e}")
 
