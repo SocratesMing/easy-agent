@@ -119,23 +119,36 @@ def discover_skills(skills_dir: str | None = None) -> list[dict]:
 logger = logging.getLogger(__name__)
 
 
+# 与 deepagents SkillsMiddleware 识别 frontmatter 的规则一致：文件以 --- 行开头，到下一个独占
+# 一行的 --- 为止。技能库展示、启动校验都按这条规则解析，才和框架实际加载到的技能对得上。
+_FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
+
+
 def parse_skill_frontmatter(text: str) -> tuple[dict[str, Any] | None, str | None]:
-    """解析 SKILL.md 的 YAML frontmatter；返回 (meta, error)。"""
+    """解析 SKILL.md 的 YAML frontmatter；返回 (meta, error)。
+
+    解析失败（缺失、未闭合、不是合法 YAML、不是键值映射）时框架也会跳过这个技能。
+    """
     if not text.startswith("---"):
         return None, "缺少 frontmatter（文件需以 --- 开头）"
-    parts = text.split("---", 2)
-    if len(parts) < 3:
-        return None, "frontmatter 未闭合（缺少结束 ---）"
-    raw = parts[1]
+    match = _FRONTMATTER_RE.match(text)
+    if not match:
+        return None, "frontmatter 未闭合（缺少独占一行的结束 ---）"
     try:
         import yaml
 
-        meta = yaml.safe_load(raw)
+        meta = yaml.safe_load(match.group(1))
     except Exception as exc:  # noqa: BLE001
         return None, f"frontmatter YAML 解析失败: {exc}"
     if not isinstance(meta, dict):
         return None, "frontmatter 不是键值映射"
     return meta, None
+
+
+def skill_body(text: str) -> str:
+    """SKILL.md 去掉 frontmatter 之后的正文；没有完整的 frontmatter 时原样返回。"""
+    match = _FRONTMATTER_RE.match(text)
+    return text[match.end():] if match else text
 
 
 

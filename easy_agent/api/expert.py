@@ -6,9 +6,10 @@
   非本人资源一律返回 **404**（不泄露存在性），与 ``chat.py`` 现有做法一致；
 - **落库与目录**：``db/expert_store.py``（单表 CRUD）+ ``services/expert_service.py``
   （LLM 生成与版本目录），本文件只做编排与参数校验；
-- **执行**：``/agent/stream_export_run`` 是薄适配层，内部复用 ``chat.py`` 现成的
-  ``create_new_session`` / ``_detached_event_stream`` 与 ``chat_stream_generator``，
-  SSE 事件格式与 ``/agent/chat/stream`` 完全一致，前端可复用同一套解析逻辑；
+- **执行**：``/agent/stream_export_run`` 是薄适配层，本轮准备步骤（技能解析、取会话、
+  上传文件上下文）与 ``_detached_event_stream`` 复用 ``chat.py``，生成器复用
+  ``chat_stream_generator``，SSE 事件格式与 ``/agent/chat/stream`` 完全一致，前端可复用
+  同一套解析逻辑；
 - **专家提示词走 ``system_prompt_extra``**：本方案不改 ``agent.py``，专家人设通过
   现成通道追加到系统提示词末尾（recency 最高，实际效果上主导通用人设）。
 
@@ -20,11 +21,9 @@ FastAPI 路由与 repository provider，旧内部名字经 ``__all__`` re-export
 import logging
 import time
 import uuid
-from datetime import datetime
 from typing import Annotated, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from easy_agent.db.repositories.expert_repository import ExpertRepository
@@ -38,16 +37,21 @@ from easy_agent.services import (
     get_or_create_agent_for_session,
     invalidate_user_agents,
 )
-from easy_agent.services import public_expert_service, skill_library
-from easy_agent.services import session_uploads as file_context
+from easy_agent.services import public_expert_service
 from easy_agent.services.expert_service import (
     build_expert_ids,
     remove_expert_dir,
     validate_create_params,
 )
-from easy_agent.utils import parse_file_content
 from easy_agent.utils.prompt_probe import describe_prompt
-from easy_agent.api.chat import _detached_event_stream, create_new_session, generate_session_title
+from easy_agent.api.chat import (
+    _detached_event_stream,
+    build_turn_uploads,
+    open_turn_session,
+    require_turn_content,
+    resolve_request_skills,
+)
+from easy_agent.api.sse_response import sse_response
 from easy_agent.api.deps import (  # noqa: F401 - 旧模块级名字 re-export
     as_expert_repository as _as_expert_repository,
     get_expert_repository,
@@ -419,68 +423,23 @@ async def stream_export_run(
     http_request: Request,
     username: Annotated[str, Depends(get_current_username)],
 ):
-    # 正文可以为空：只挂技能 / 只上传文件时本来就没有正文（与 chat.py 一致）
     repo = _as_expert_repository(db)
-    if (
-        not (request.message or "").strip()
-        and not request.files
-        and not request.skills
-    ):
-        raise HTTPException(status_code=400, detail="消息内容不能为空")
+    require_turn_content(request.message, request.files, request.skills)
 
     session_id = request.session_id
     message_id = request.message_id or str(uuid.uuid4())
     sid = session_id[-5:] if session_id else "new"
-
-    # 本轮技能（与 chat.py 一致）：优先用请求体 skills 字段（技能目录名），兼容消息文本
-    # 开头的 `/目录名` 指令；命中且已启用的技能在本轮 pin 进对话，落库正文保持用户原话。
-    turn_skills, unknown_skills = skill_library.resolve_turn_skills(
-        request.skills, request.message, username
-    )
-    turn_skill_dirs = [item["dir_name"] for item in turn_skills]
-    if turn_skill_dirs or unknown_skills:
-        logger.info(
-            f"[{sid}] 🧩 技能指令 | 命中: {turn_skill_dirs or '无'} | "
-            f"未识别: {unknown_skills or '无'}"
-        )
-    if turn_skills:
-        turn_fallback_name = turn_skills[0]["name"]
-    else:
-        turn_fallback_name = ""
+    turn = resolve_request_skills(request.skills, request.message, username, sid)
 
     logger.info(
         f"[{sid}] 专家执行请求 | expert: {request.expert_agent_id or '(通用)'} | "
         f"message: {request.message[:50]}{'...' if len(request.message) > 50 else ''}"
     )
 
-    # ── 1. 会话处理：与 /agent/chat/stream 保持一致 ────────────────────
-    if session_id is None:
-        session_id = str(uuid.uuid4())
-        workspace_name = create_new_session(
-            repo, session_id, username, request.message, request.files, turn_fallback_name
-        )
-    else:
-        session = repo.get_session(session_id)
-        if not session:
-            session_id = str(uuid.uuid4())
-            workspace_name = create_new_session(
-                repo, session_id, username, request.message, request.files, turn_fallback_name
-            )
-        elif (session.username or "") != (username or ""):
-            raise HTTPException(status_code=404, detail="会话不存在")
-        else:
-            workspace_name = session.workspace_name or ""
-            if len(session.messages) == 0:
-                session.title = generate_session_title(
-                    request.message, request.files, username, turn_fallback_name
-                )
-                session.updated_at = datetime.now().isoformat()
-                repo.update_session_meta(
-                    session.session_id,
-                    session.title,
-                    session.updated_at,
-                    session.username,
-                )
+    # ── 1. 会话处理：与 /agent/chat/stream 共用 ────────────────────────
+    session_id, workspace_name = open_turn_session(
+        repo, session_id, username, request.message, request.files, turn.fallback_name
+    )
 
     # ── 2. 专家校验与提示词加载 ────────────────────────────────────────
     # 我的专家（数据库）优先，公共专家（experts 目录）兜底；找不到 ID 时 404。
@@ -513,7 +472,7 @@ async def stream_export_run(
     if gate is not None:
         classification, refusal = gate
         _persist_user_turn(
-            repo, session_id, username, request, expert_id, turn_skill_dirs, turn_id=message_id
+            repo, session_id, username, request, expert_id, turn.dirs, turn_id=message_id
         )
         _session_logger_for(session_id, username).log_user_message(
             message=request.message,
@@ -524,76 +483,24 @@ async def stream_export_run(
             f"[{sid}] 🚫 相关性预检短路拒答 | expert={expert_id} | "
             f"判定={classification} | Agent 未创建 | 拒答长度={len(refusal)}"
         )
-        return StreamingResponse(
+        return sse_response(
             _detached_event_stream(
                 _refusal_event_stream(session_id, repo, refusal),
                 session_id,
                 sid,
                 renew_stream=repo.renew_stream,
                 db=repo.database,
-            ),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                "X-Accel-Buffering": "no",
-            },
+            )
         )
 
-    # ── 3. 文件解析 + 系统提示词附加内容 ───────────────────────────────
-    # DA-13：选中的技能 pin 进本轮（框架在第一次模型调用前把技能全文加进对话），
-    # 不再在模型输入前拼 `/目录名`；用户手打在正文开头的 `/目录名` 原样保留，同样会 pin。
-    model_message = request.message
-    pinned_skills = skill_library.pinned_skill_names(turn_skills)
-    not_pinned = [item["dir_name"] for item in turn_skills if not item["enabled"]]
-    if not_pinned:
-        logger.info(f"[{sid}] 🧩 已停用的技能不 pin | {not_pinned}")
-    parsed_content = model_message
-
-    extra_parts: list[str] = []
-    file_context_parts: list[tuple[str, str]] = []
-    if request.files and not file_context.is_enabled():
-        # 回退模式（config.file_context.enabled=false）：与 chat.py 一致，保持改造前
-        # 行为——首轮把解析全文放进 system prompt，非首轮拼进用户消息。
-        _existing = repo.get_session(session_id)
-        is_new_session = (not _existing) or (len(_existing.messages) == 0)
-
-        for file_info in request.files:
-            file_path = file_info.get("file_path", "")
-            if not file_path:
-                continue
-            filename = file_info.get("filename", "")
-            content = parse_file_content(file_path)
-            if content:
-                file_context_parts.append((filename, content))
-            else:
-                logger.warning(f"[{sid}] 文件解析为空: {filename}")
-
-        if file_context_parts:
-            if is_new_session:
-                sections = [f"### 文件: {fn}\n{c}" for fn, c in file_context_parts]
-                extra_parts.append(
-                    "## 用户上传的文件内容（已为你解析，请基于这些内容回应用户）\n\n"
-                    + "\n\n".join(sections)
-                )
-            else:
-                file_contents = [f"[文件: {fn}]\n{c}" for fn, c in file_context_parts]
-                # 文件块在最前，正文在后
-                parsed_content = "\n\n".join(file_contents) + "\n\n" + model_message
-    elif request.files:
-        # 新机制（默认）：解析正文与文件清单已在上传时落到会话工作区，清单作为记忆
-        # 注入 system prompt（见 services/session_uploads.py / agent.py），这里只注入
-        # 本轮上传文件的开头预览，减少"传完立刻提问"的一次工具往返。
-        preview = file_context.build_turn_preview(
-            session_id, username, request.files, repo
-        )
-        if preview:
-            parsed_content = preview + "\n\n" + parsed_content
-            logger.info(f"[{sid}] 📎 已注入本轮上传文件开头预览 | {len(preview)} 字符")
+    # ── 3. 上传文件 + 系统提示词附加内容（与 chat.py 共用） ────────────
+    uploads = build_turn_uploads(repo, session_id, username, request.files, request.message)
+    parsed_content = uploads.model_input
 
     # 专家提示词排在最后：agent.py 的拼接顺序为
     # [system_prompt, user_info, web_search_prompt, system_prompt_extra]，
     # 放在 extra 末尾即 recency 最高，专家人设可主导通用人设。
+    extra_parts = list(uploads.prompt_parts)
     if expert_prompt:
         extra_parts.append(expert_prompt)
     system_prompt_extra = "\n\n".join(extra_parts)
@@ -602,12 +509,12 @@ async def stream_export_run(
     # 这里能看到专家提示词 + 文件内容拼接后的最终 extra（未挂专家时为空）。
     logger.info(
         f"[{sid}] 🧩 动态附加内容已组装 | expert={expert_id or '(通用)'} | "
-        f"文件块={len(file_context_parts)} | {describe_prompt('extra', system_prompt_extra)}"
+        f"文件块={uploads.parsed_files} | {describe_prompt('extra', system_prompt_extra)}"
     )
 
     # ── 4. 落用户消息（与 chat.py 一致） ───────────────────────────────
     _persist_user_turn(
-        repo, session_id, username, request, expert_id, turn_skill_dirs, turn_id=message_id
+        repo, session_id, username, request, expert_id, turn.dirs, turn_id=message_id
     )
 
     session_logger = _session_logger_for(session_id, username)
@@ -641,7 +548,7 @@ async def stream_export_run(
         model=request.model,
     )
 
-    return StreamingResponse(
+    return sse_response(
         _detached_event_stream(
             chat_stream_generator(
                 request=chat_request,
@@ -653,17 +560,11 @@ async def stream_export_run(
                 http_request=http_request,
                 parsed_content=parsed_content,
                 session_logger=session_logger,
-                pinned_skills=pinned_skills,
+                pinned_skills=turn.pinned,
             ),
             session_id,
             sid,
             renew_stream=repo.renew_stream,
             db=repo.database,
-        ),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
+        )
     )

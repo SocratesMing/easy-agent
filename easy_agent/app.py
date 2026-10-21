@@ -49,6 +49,7 @@ from easy_agent.knowledge_impl import knowledge_router
 from easy_agent.knowledges.personnel import router as personnel_router
 from easy_agent.agent.model import create_model
 from easy_agent.models.api import HealthResponse
+from easy_agent.utils.paths import PROJECT_ROOT
 from easy_agent.services import (
     drain_stream_tasks,
     flush_all_stream_events,
@@ -84,11 +85,7 @@ if platform.system() != "Windows":
 logger = logging.getLogger(__name__)
 
 # 前端静态目录：2026-10-10 起以 frontend-vue2/（开发基线）的构建产物为准
-frontend_dist = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "frontend-vue2",
-    "dist",
-)
+frontend_dist = str(PROJECT_ROOT / "frontend-vue2" / "dist")
 
 agent_config = None
 db_instance = None
@@ -196,10 +193,9 @@ def _shutdown_app(app) -> None:
 async def lifespan(app: FastAPI):
     global agent_config, db_instance
 
-    project_root = Path(__file__).parent.parent
-    if str(project_root) not in sys.path:
-        sys.path.insert(0, str(project_root))
-    os.chdir(project_root)
+    if str(PROJECT_ROOT) not in sys.path:
+        sys.path.insert(0, str(PROJECT_ROOT))
+    os.chdir(PROJECT_ROOT)
 
     environment = runtime_initialization.environment
     agent_env = environment.agent_env
@@ -223,7 +219,7 @@ async def lifespan(app: FastAPI):
 
     logger.info("=" * 60)
     logger.info("Easy Agent Web Service 初始化中...")
-    logger.info(f"项目目录: {project_root}")
+    logger.info(f"项目目录: {PROJECT_ROOT}")
     logger.info(f"操作系统: {platform.system()} {platform.release()}")
     logger.info(f"启动时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     logger.info("=" * 60)

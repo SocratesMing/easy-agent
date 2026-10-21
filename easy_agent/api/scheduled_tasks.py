@@ -5,7 +5,6 @@ from datetime import datetime
 from typing import Annotated, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import FileResponse
 
 from easy_agent.db.repositories.scheduled_task_repository import (
     ScheduledTaskRepository,
@@ -25,7 +24,12 @@ from easy_agent.services import (
     unregister_scheduled_task,
     get_scheduler,
 )
-from easy_agent.api.files import build_workspace_tree, resolve_workspace_file, serve_workspace_file
+from easy_agent.api.files import (
+    build_workspace_tree,
+    resolve_workspace_file,
+    serve_pdf_preview,
+    serve_workspace_file,
+)
 from easy_agent.bootstrap.config import Config
 from easy_agent.utils.task_logger import log_task_event
 
@@ -269,22 +273,8 @@ def get_task_workspace_file(
     if not full_path.is_file():
         raise HTTPException(status_code=404, detail="文件不存在")
 
-    # 目标格式转换（PPT/XLS/DOC → PDF），与普通会话文件预览一致
+    # 目标格式转换（PPT/XLS/DOC → PDF），与普通会话文件预览一致；同步路由本身就在线程池里
     if target and target.lower() == "pdf":
-        try:
-            from easy_agent.services.document_convert import convert_to_pdf
-
-            pdf_path = convert_to_pdf(full_path, target="pdf")
-        except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e))
-        except Exception as e:
-            logger.error(f"文档转换失败 | {file_path} | {e}")
-            raise HTTPException(status_code=500, detail=f"文档转换失败: {e}")
-        return FileResponse(
-            path=str(pdf_path),
-            filename=full_path.stem + ".pdf",
-            media_type="application/pdf",
-            content_disposition_type="inline",
-        )
+        return serve_pdf_preview(full_path, file_path)
 
     return serve_workspace_file(workspace_dir, file_path, download=download)

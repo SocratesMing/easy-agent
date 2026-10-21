@@ -26,6 +26,7 @@ from typing import Any
 from langgraph.checkpoint.memory import MemorySaver
 
 from easy_agent.bootstrap.env import env_bool, env_int, env_str
+from easy_agent.utils.paths import PROJECT_ROOT
 
 logger = logging.getLogger(__name__)
 
@@ -68,11 +69,8 @@ _AGENT_ENV = "AGENT_ENV"
 POD_PLACEHOLDER = "{pod}"
 DEFAULT_GC_INTERVAL = 600
 
-# 相对路径按项目根解析，避免依赖进程 cwd（web_runner 会 chdir，测试注入绝对路径）。
-# 项目根是 easy_agent/persistence/ 往上两级：本文件挪进 persistence/ 后，原来的
-# parent.parent 只到 easy_agent/，data/checkpoints.db 会落到不挂卷的 easy_agent/data/。
+# 相对路径按项目根解析，避免依赖进程 cwd（web_runner 会 chdir，测试注入绝对路径）
 DEFAULT_SQLITE_PATH = "data/checkpoints.db"
-_PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _UNSET: Any = object()
 
 
@@ -108,7 +106,7 @@ def resolve_sqlite_path(path: str) -> Path:
     candidate = Path(path).expanduser()
     if candidate.is_absolute():
         return candidate
-    return _PROJECT_ROOT / candidate
+    return PROJECT_ROOT / candidate
 
 
 def _pod_instance_name() -> str:

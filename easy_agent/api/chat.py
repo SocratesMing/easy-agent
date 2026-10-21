@@ -5,12 +5,13 @@ import json
 import logging
 import re
 import uuid
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import StreamingResponse
 
+from easy_agent.api.sse_response import sse_response
 from easy_agent.db.repositories.chat_repository import ChatRepository
 from easy_agent.db.repositories.stream_events import clear_stream_events
 from easy_agent.models.db import SessionModel
@@ -223,6 +224,157 @@ def create_new_session(
     return workspace_name
 
 
+# ── 本轮请求的准备步骤：/agent/chat/stream 与专家执行 /agent/stream_export_run 共用 ──
+
+
+def require_turn_content(message: str | None, files: list | None, skills: list | None) -> None:
+    """正文、上传文件和技能三者全空时拒绝请求，与前端 canSend 的判定一致。
+
+    正文本身可以为空：只挂技能、只上传文件时本来就没有正文。
+    """
+    if not (message or "").strip() and not files and not skills:
+        raise HTTPException(status_code=400, detail="消息内容不能为空")
+
+
+@dataclass(frozen=True)
+class TurnSkills:
+    """本轮技能。"""
+
+    dirs: list[str]  # 命中的技能目录名：落库到用户消息的 skills 字段，气泡据此渲染技能标签
+    pinned: list[str]  # 本轮 pin 进对话的技能名（DA-13），只含已启用的
+    fallback_name: str  # 只挂技能、没写正文时的会话标题兜底：首个技能的展示名
+
+
+def resolve_request_skills(
+    skills: list[str] | None, message: str, username: str, sid: str
+) -> TurnSkills:
+    """解析本轮技能：请求体 skills 字段优先，兼容消息开头的 `/目录名` 指令。
+
+    skills 字段是输入框技能胶囊的选中项（技能目录名），`/目录名` 是旧前端或用户手打的
+    写法。两者合并去重后校验归属：目录必须真实存在于该用户的技能库（含已停用）。命中且
+    已启用的技能在本轮 pin 进对话，框架在第一次模型调用前把技能全文加进对话，不再在
+    模型输入前拼 `/目录名`；手打在正文开头的 `/目录名` 原样保留，同样会 pin。落库正文、
+    气泡和会话标题用的都是用户原话。
+    """
+    items, unknown = skill_library.resolve_turn_skills(skills, message, username)
+    dirs = [item["dir_name"] for item in items]
+    if dirs or unknown:
+        logger.info(
+            f"[{sid}] 🧩 技能指令 | 命中: {dirs or '无'} | 未识别: {unknown or '无'}"
+        )
+    not_pinned = [item["dir_name"] for item in items if not item["enabled"]]
+    if not_pinned:
+        logger.info(f"[{sid}] 🧩 已停用的技能不 pin | {not_pinned}")
+    return TurnSkills(
+        dirs=dirs,
+        pinned=skill_library.pinned_skill_names(items),
+        fallback_name=items[0]["name"] if items else "",
+    )
+
+
+def open_turn_session(
+    repo: ChatRepository,
+    session_id: str | None,
+    username: str,
+    message: str,
+    files: list | None,
+    fallback_name: str = "",
+) -> tuple[str, str]:
+    """取本轮会话，返回 (session_id, workspace_name)。
+
+    没传 session_id、或库里没有这个会话时新建一个；会话属于其他用户时返回 404，不泄露
+    会话是否存在。已有会话还没有消息时按本轮消息重新生成标题；知识库面板会话的标题是
+    面板标识，不改。
+    """
+    if session_id is not None:
+        session = repo.get_session(session_id)
+        if session:
+            if (session.username or "") != (username or ""):
+                raise HTTPException(status_code=404, detail="会话不存在")
+            if len(session.messages) == 0 and not is_knowledge_panel_title(session.title):
+                session.title = generate_session_title(message, files, username, fallback_name)
+                session.updated_at = datetime.now().isoformat()
+                repo.update_session_meta(
+                    session.session_id,
+                    session.title,
+                    session.updated_at,
+                    session.username,
+                )
+            return session_id, session.workspace_name or ""
+    session_id = str(uuid.uuid4())
+    workspace_name = create_new_session(repo, session_id, username, message, files, fallback_name)
+    return session_id, workspace_name
+
+
+@dataclass(frozen=True)
+class TurnUploads:
+    """本轮上传文件给模型的上下文。"""
+
+    model_input: str  # 交给模型的本轮输入：用户原话，前面可能加上传文件的开头预览或全文
+    prompt_parts: list[str]  # 追加到系统提示词的段落：回退模式下首轮的文件全文
+    parsed_files: int  # 回退模式下解析出正文的文件数
+
+
+def build_turn_uploads(
+    repo: ChatRepository,
+    session_id: str,
+    username: str,
+    files: list | None,
+    message: str,
+) -> TurnUploads:
+    """把本轮上传的文件转成模型上下文。
+
+    默认机制（config.file_context.enabled=true）：解析正文在上传时已落到会话工作区
+    uploads/，文件清单 uploads/index.md 作为记忆文件注入系统提示词，之后每一轮模型都
+    知道本会话传过哪些文件、正文在哪，按需用内置 grep / read_file 检索，不必每轮把全文
+    塞进上下文。这里只在模型输入前补一小段本轮上传文件的开头预览，让「传完立刻提问」
+    少一次工具往返。
+
+    回退模式（enabled=false）保持改造前的行为：首轮把解析全文放进系统提示词，之后的
+    轮次把全文拼在用户消息前面（「第二轮起看不到文件内容」的老问题就出在这里）。
+    """
+    sid = session_id[-5:]
+    if not files:
+        return TurnUploads(message, [], 0)
+    if file_context.is_enabled():
+        preview = file_context.build_turn_preview(session_id, username, files, repo)
+        if not preview:
+            return TurnUploads(message, [], 0)
+        logger.info(f"[{sid}] 📎 已注入本轮上传文件开头预览 | {len(preview)} 字符")
+        return TurnUploads(preview + "\n\n" + message, [], 0)
+
+    # 依次解析上传文件内容（支持 docx/excel/pdf/txt/md 等）
+    parsed: list[tuple[str, str]] = []
+    for file_info in files:
+        file_path = file_info.get("file_path", "")
+        if not file_path:
+            continue
+        filename = file_info.get("filename", "")
+        content = parse_file_content(file_path)
+        if content:
+            parsed.append((filename, content))
+            logger.info(
+                f"[{sid}] 📎 文件已解析（回退模式）| {filename} | 内容长度: {len(content)} 字符"
+            )
+        else:
+            logger.warning(f"[{sid}] 文件解析为空: {filename}")
+    if not parsed:
+        return TurnUploads(message, [], 0)
+
+    # 新建会话（首条消息）的文件全文进系统提示词，之后的轮次拼在用户消息前面
+    existing = repo.get_session(session_id)
+    if not existing or len(existing.messages) == 0:
+        sections = [f"### 文件: {fn}\n{c}" for fn, c in parsed]
+        prompt = (
+            "## 用户上传的文件内容（已为你解析，请基于这些内容回应用户）\n\n"
+            + "\n\n".join(sections)
+        )
+        return TurnUploads(message, [prompt], len(parsed))
+    # 文件块在最前，正文在后
+    blocks = [f"[文件: {fn}]\n{c}" for fn, c in parsed]
+    return TurnUploads("\n\n".join(blocks) + "\n\n" + message, [], len(parsed))
+
+
 _detached_bg_tasks: "set[asyncio.Task]" = set()
 
 # 流锁续约间隔：默认 TTL 30 分钟，5 分钟续一次，避免长任务被其它副本误判过期。
@@ -394,20 +546,11 @@ async def chat_stream(
     http_request: Request,
     username: Annotated[str, Depends(get_current_username)],
 ):
-
-    # 正文可以为空：只挂技能 / 只上传文件时本来就没有正文，
-    # 三者全空才视为无效请求（与前端 canSend 的判定一致）。
     repo = _as_chat_repository(db)
-    if (
-        not (request.message or "").strip()
-        and not request.files
-        and not request.skills
-    ):
-        raise HTTPException(status_code=400, detail="消息内容不能为空")
+    require_turn_content(request.message, request.files, request.skills)
 
     session_id = request.session_id
     message_id = request.message_id or str(uuid.uuid4())
-    is_knowledge_panel_session = False
 
     # 知识库会话必须独立执行 fail-closed 鉴权。即使宿主 EasyAgent 在测试、代理层或
     # 行内环境中替换了通用聊天身份依赖，也不能让 X-Username 等兼容头绕过知识权限。
@@ -419,25 +562,7 @@ async def chat_stream(
     )
 
     sid = session_id[-5:] if session_id else "new"
-
-    # 本轮技能：优先用请求体的结构化字段 skills（输入框技能胶囊选中项，技能目录名），
-    # 同时兼容消息文本开头的 `/目录名` 指令（旧前端 / 手打指令），合并去重后校验归属
-    # （目录必须真实存在于该用户技能库，含已停用）。命中且已启用的技能在本轮 pin 进
-    # 对话（DA-13，见下文 pinned_skills）；落库正文、气泡与会话标题用的都是用户原话。
-    turn_skills, unknown_skills = skill_library.resolve_turn_skills(
-        request.skills, request.message, username
-    )
-    turn_skill_dirs = [item["dir_name"] for item in turn_skills]
-    if turn_skill_dirs or unknown_skills:
-        logger.info(
-            f"[{sid}] 🧩 技能指令 | 命中: {turn_skill_dirs or '无'} | "
-            f"未识别: {unknown_skills or '无'}"
-        )
-    # 只挂技能、没写正文时的标题兜底（取技能展示名）
-    if turn_skills:
-        turn_fallback_name = turn_skills[0]["name"]
-    else:
-        turn_fallback_name = ""
+    turn = resolve_request_skills(request.skills, request.message, username, sid)
 
     logger.info(
         f"[{sid}] 聊天请求 | message: {request.message[:50]}{'...' if len(request.message) > 50 else ''} | "
@@ -445,38 +570,9 @@ async def chat_stream(
         f"web_search: {request.enable_web_search} | model: {request.model or '(active)'}"
     )
 
-    if session_id is None:
-        session_id = str(uuid.uuid4())
-        workspace_name = create_new_session(
-            repo, session_id, username, request.message, request.files, turn_fallback_name
-        )
-    else:
-        session = repo.get_session(session_id)
-        if not session:
-            session_id = str(uuid.uuid4())
-            workspace_name = create_new_session(
-                repo, session_id, username, request.message, request.files, turn_fallback_name
-            )
-        elif (session.username or "") != (username or ""):
-            # 会话属于其他用户 -> 拒绝访问，不泄露会话是否存在
-            raise HTTPException(status_code=404, detail="会话不存在")
-        else:
-            workspace_name = session.workspace_name or ""
-            is_knowledge_panel_session = is_knowledge_panel_title(session.title)
-            if (
-                len(session.messages) == 0
-                and not is_knowledge_panel_session
-            ):
-                session.title = generate_session_title(
-                    request.message, request.files, username, turn_fallback_name
-                )
-                session.updated_at = datetime.now().isoformat()
-                repo.update_session_meta(
-                    session.session_id,
-                    session.title,
-                    session.updated_at,
-                    session.username,
-                )
+    session_id, workspace_name = open_turn_session(
+        repo, session_id, username, request.message, request.files, turn.fallback_name
+    )
 
     # 并发互斥：同一会话同一时刻只允许一条流式生成。否则两条流会共享 agent、
     # last-assistant 行与 hub，互相覆盖/EOF（实测新流 0 条内容即结束）。
@@ -485,14 +581,6 @@ async def chat_stream(
             status_code=409,
             detail="本会话正在生成回复，请等待完成或先取消当前生成",
         )
-
-    # DA-13：选中的技能 pin 进本轮（框架在第一次模型调用前把技能全文加进对话），
-    # 不再在模型输入前拼 `/目录名`；用户手打在正文开头的 `/目录名` 原样保留，同样会 pin。
-    model_message = request.message
-    pinned_skills = skill_library.pinned_skill_names(turn_skills)
-    not_pinned = [item["dir_name"] for item in turn_skills if not item["enabled"]]
-    if not_pinned:
-        logger.info(f"[{sid}] 🧩 已停用的技能不 pin | {not_pinned}")
 
     # 「待修改专家」绑定：用户在专家面板点「编辑」后，前端把专家 ID 放进请求的
     # 结构化字段（不进消息正文，用户不可见、不可改）。这里做归属校验——只接受
@@ -510,72 +598,15 @@ async def chat_stream(
                 f"expert={request.pending_expert_id}"
             )
 
-    parsed_content = model_message
     knowledge_chat = await prepare_knowledge_chat(
         request=http_request,
         db=repo.database,
         session_id=session_id,
         question=request.message,
     )
-    # ── 上传文件内容 ─────────────────────────────────────────────────
-    # 新机制（config.file_context.enabled=true，默认）：
-    #   解析正文在**上传时**已落盘到会话工作区 uploads/，文件清单 uploads/index.md
-    #   由 agent.py 作为记忆文件注入 system prompt —— 后续每一轮（不必再上传）模型
-    #   都知道本会话传过哪些文件、正文在哪，并按需用内置 grep/read_file 检索，
-    #   不必每轮把全文塞进上下文。这里只补一小段"本轮上传文件的开头预览"，
-    #   让"传完立刻提问"少一次工具往返。
-    # 回退（enabled=false）：保持改造前行为——首轮把解析全文放进 system prompt，
-    #   非首轮把全文拼进用户消息（"第二轮起看不到文件内容"的旧问题即源于此）。
-    system_prompt_parts = []
-    if request.files and not file_context.is_enabled():
-        # 判断是否为新建会话（首次消息）：新建会话的上传文件内容注入系统提示词，
-        # 非首次会话则拼接到用户消息（保持原有行为）。
-        _existing = repo.get_session(session_id)
-        is_new_session = (not _existing) or (len(_existing.messages) == 0)
-
-        # 依次解析上传文件内容（支持 docx/excel/pdf/txt/md 等）
-        file_context_parts = []
-        for file_info in request.files:
-            file_path = file_info.get("file_path", "")
-            if not file_path:
-                continue
-            filename = file_info.get("filename", "")
-            content = parse_file_content(file_path)
-            if content:
-                file_context_parts.append((filename, content))
-                logger.info(
-                    f"[{session_id[-5:]}] 📎 文件已解析（回退模式）| {filename} | "
-                    f"内容长度: {len(content)} 字符"
-                )
-            else:
-                logger.warning(f"[{session_id[-5:]}] 文件解析为空: {filename}")
-
-        if file_context_parts:
-            if is_new_session:
-                sections = [
-                    f"### 文件: {fn}\n{c}" for fn, c in file_context_parts
-                ]
-                system_prompt_parts.append(
-                    "## 用户上传的文件内容（已为你解析，请基于这些内容回应用户）\n\n"
-                    + "\n\n".join(sections)
-                )
-            else:
-                file_contents = [
-                    f"[文件: {fn}]\n{c}" for fn, c in file_context_parts
-                ]
-                # 文件块在最前，正文在后
-                parsed_content = "\n\n".join(file_contents) + "\n\n" + model_message
-    elif request.files:
-        preview = file_context.build_turn_preview(
-            session_id, username, request.files, repo
-        )
-        if preview:
-            parsed_content = preview + "\n\n" + parsed_content
-            logger.info(
-                f"[{session_id[-5:]}] 📎 已注入本轮上传文件开头预览 | {len(preview)} 字符"
-            )
-
-    system_prompt_extra = "\n\n".join(system_prompt_parts)
+    uploads = build_turn_uploads(repo, session_id, username, request.files, request.message)
+    parsed_content = uploads.model_input
+    system_prompt_extra = "\n\n".join(uploads.prompt_parts)
 
     page_context = (request.page_context or "").strip()
     if page_context:
@@ -599,8 +630,8 @@ async def chat_stream(
     if page_context:
         user_message["page_context"] = page_context
     # 结构化技能目录名：气泡按它渲染技能标签，不再需要从消息文本里反扒 `/目录名`
-    if turn_skill_dirs:
-        user_message["skills"] = turn_skill_dirs
+    if turn.dirs:
+        user_message["skills"] = turn.dirs
     # DA-03：会话 thread 下新输入会丢弃上一轮挂起的中断，DB 里的待审批同步标为拒绝
     if session_thread_in_use(_get_agent_config()):
         abandon_pending_approval(repo, session_id)
@@ -638,7 +669,7 @@ async def chat_stream(
         request_json=request.model_dump_json(),
     )
 
-    return StreamingResponse(
+    return sse_response(
         _detached_event_stream(
             chat_stream_generator(
                 request=request,
@@ -650,7 +681,7 @@ async def chat_stream(
                 http_request=http_request,
                 parsed_content=parsed_content,
                 session_logger=session_logger,
-                pinned_skills=pinned_skills,
+                pinned_skills=turn.pinned,
                 context_prefix=knowledge_chat.context,
                 initial_events=knowledge_chat.initial_events,
                 assistant_metadata=knowledge_chat.assistant_metadata,
@@ -660,13 +691,7 @@ async def chat_stream(
             renew_stream=repo.renew_stream,
             db=repo.database,
             run_id=run_id,
-        ),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
+        )
     )
 
 
@@ -817,7 +842,7 @@ async def chat_resume(
         ),
     )
 
-    return StreamingResponse(
+    return sse_response(
         _detached_event_stream(
             resume_stream_generator(
                 db=repo.database,
@@ -834,13 +859,7 @@ async def chat_resume(
             renew_stream=repo.renew_stream,
             db=repo.database,
             run_id=run_id,
-        ),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
+        )
     )
 
 

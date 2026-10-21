@@ -27,6 +27,8 @@ from typing import Any
 from langchain.agents.middleware import ToolErrorMiddleware
 from langchain_core.tools import ToolException
 
+from easy_agent.utils.paths import PROJECT_ROOT
+
 logger = logging.getLogger(__name__)
 
 _MAX_DETAIL = 500
@@ -59,7 +61,7 @@ _RECOVERABLE = _recoverable_types()
 _REDACTIONS = tuple(
     (prefix, placeholder)
     for prefix, placeholder in (
-        (str(Path(__file__).resolve().parents[2]), "<app>"),
+        (str(PROJECT_ROOT), "<app>"),
         (str(Path.home()), "~"),
     )
     if len(prefix) > 1

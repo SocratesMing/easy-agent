@@ -36,12 +36,16 @@ from typing import Any, Optional
 
 import yaml
 
+from easy_agent.utils.paths import PROJECT_ROOT
+
 logger = logging.getLogger(__name__)
 
 #: 公共专家目录的环境变量覆盖项（优先级：配置 > 环境变量 > 默认 <项目根>/experts）
 ENV_EXPERTS_DIR = "EASY_EXPERTS_DIR"
 
-#: 默认目录的**名字**（锚定项目根解析，见 ``_project_root``）。
+#: 默认目录的**名字**，锚定在项目根（``PROJECT_ROOT``）下解析：预置专家是随代码交付的
+#: 内容资产，默认位置必须跟着代码走，而不是进程工作目录（``uvicorn`` / ``systemd`` /
+#: IDE 启动时 CWD 各不相同，用 ``./experts`` 会导致「明明装了预置专家却扫不到」）。
 DEFAULT_EXPERTS_DIRNAME = "experts"
 #: 兼容旧口径的默认值（相对进程 CWD）；仅在项目根下同名目录不存在时兜底使用。
 DEFAULT_EXPERTS_DIR = "./experts"
@@ -54,16 +58,6 @@ STATUS_ACTIVE = "active"
 
 
 # ── 根目录解析 ────────────────────────────────────────────────────────
-
-
-def _project_root() -> Path:
-    """项目/发行包根目录（``easy_agent`` 包的上一级）。
-
-    预置专家是随代码交付的内容资产，其默认位置必须锚定在**代码位置**上，
-    而不是进程工作目录（``uvicorn`` / ``systemd`` / IDE 启动时 CWD 各不相同，
-    用 ``./experts`` 会导致「明明装了预置专家却扫不到」）。
-    """
-    return Path(__file__).resolve().parents[2]
 
 
 def _ensure_experts_root_config() -> str:
@@ -97,7 +91,7 @@ def _resolve_relative(raw: str) -> Path:
     if cwd_path.is_dir():
         return cwd_path
 
-    root_path = _project_root() / path
+    root_path = PROJECT_ROOT / path
     if root_path.is_dir():
         logger.info(
             "📂 公共专家目录按项目根解析 | 配置值: %s | 实际: %s（进程 CWD 下不存在）",
@@ -125,7 +119,7 @@ def public_experts_root_info() -> tuple[Path, str]:
     if env_raw:
         return _resolve_relative(env_raw), "env"
 
-    anchored = _project_root() / DEFAULT_EXPERTS_DIRNAME
+    anchored = PROJECT_ROOT / DEFAULT_EXPERTS_DIRNAME
     if anchored.is_dir():
         return anchored, "default"
     # 项目根下没有（非常规布局）：退回历史口径 ./experts（相对 CWD）

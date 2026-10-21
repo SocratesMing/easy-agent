@@ -241,6 +241,29 @@ def serve_workspace_file(
     )
 
 
+def serve_pdf_preview(full_path: Path, file_path: str) -> FileResponse:
+    """把 Office 文档（PPT/XLS/DOC 等）转成 PDF 后内联返回，供前端内置查看器预览。
+
+    转换会启动 LibreOffice 子进程并等它结束，是阻塞调用：async 路由要放进线程里调用。
+    不支持的文件类型返回 400，转换失败返回 500。
+    """
+    try:
+        from easy_agent.services.document_convert import convert_to_pdf
+
+        pdf_path = convert_to_pdf(full_path, "pdf")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"文档转换失败 | {file_path} | {e}")
+        raise HTTPException(status_code=500, detail=f"文档转换失败: {e}")
+    return FileResponse(
+        path=str(pdf_path),
+        filename=full_path.stem + ".pdf",
+        media_type="application/pdf",
+        content_disposition_type="inline",
+    )
+
+
 @router.get("/session/{session_id}", summary="获取会话生成的文件列表", response_model=list[SessionGeneratedFileInfo])
 async def get_session_generated_files(
     session_id: str,
@@ -571,20 +594,7 @@ async def preview_file(
 
     # 目标格式转换（如 PPT/XLS/DOC → PDF）
     if target and target.lower() == "pdf":
-        try:
-            from easy_agent.services.document_convert import convert_to_pdf
-            pdf_path = await asyncio.to_thread(convert_to_pdf, full_path, "pdf")
-        except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e))
-        except Exception as e:
-            logger.error(f"文档转换失败 | {file_path} | {e}")
-            raise HTTPException(status_code=500, detail=f"文档转换失败: {e}")
-        return FileResponse(
-            path=str(pdf_path),
-            filename=full_path.stem + ".pdf",
-            media_type="application/pdf",
-            content_disposition_type="inline",
-        )
+        return await asyncio.to_thread(serve_pdf_preview, full_path, file_path)
 
     if store_backed:
         media_type = _MIME_MAP.get(

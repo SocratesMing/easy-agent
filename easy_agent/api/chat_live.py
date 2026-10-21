@@ -12,10 +12,10 @@ import logging
 from typing import Annotated
 
 from fastapi import APIRouter, Depends
-from fastapi.responses import StreamingResponse
 
 from easy_agent.db.repositories.chat_repository import ChatRepository
 from easy_agent.db.repositories.stream_events import list_stream_events
+from easy_agent.api.sse_response import sse_response
 from easy_agent.api.deps import (
     as_chat_repository as _as_chat_repository,
     get_chat_repository,
@@ -179,12 +179,4 @@ async def chat_stream_live(
         # 避免前端一直停在“执行中”。
         yield emitter.done(already_completed=True)
 
-    return StreamingResponse(
-        event_source(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
-    )
+    return sse_response(event_source())
