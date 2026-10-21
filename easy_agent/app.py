@@ -398,9 +398,9 @@ async def lifespan(app: FastAPI):
             except Exception as exc:  # noqa: BLE001
                 logger.warning(f"⚠️ 公共专家目录扫描失败: {type(exc).__name__}: {exc}")
 
-            # FW-09：默认官方 checkpointer（auto：postgres → sqlite → legacy）。
-            # B1：prod 多副本必须 Postgres；非 Postgres 在启动期 fail-fast（可用
-            # EASY_ALLOW_LEGACY_CHECKPOINTER=1 显式豁免），配置错误不再被静默吞掉。
+            # FW-09：默认官方 checkpointer（auto：sqlite → legacy）。两种后端都不能跨副本
+            # 共享，prod 多副本在启动期 fail-fast（可用 EASY_ALLOW_LEGACY_CHECKPOINTER=1
+            # 显式豁免），配置错误不再被静默吞掉。
             from easy_agent.persistence.checkpoints import (
                 CheckpointDeploymentError,
                 start_checkpoint_backend,
@@ -417,19 +417,11 @@ async def lifespan(app: FastAPI):
                     f"{type(exc).__name__}: {exc}"
                 )
 
-            # B1：LangGraph Store（官方 AsyncPostgresStore / 业务库 SqlStore）。
-            # auto 在 EASY_STORE_POSTGRES_URI（缺省复用 EASY_CHECKPOINT_POSTGRES_URI）
-            # 存在且官方包可用时启用 PostgresStore，否则保持 SqlStore。
-            try:
-                from easy_agent.persistence.stores import start_store_backend
+            # LangGraph Store 是业务库 SqlStore，首次使用时绑定业务库；先丢掉同一进程里
+            # 之前缓存的实例（测试会在一个进程里换着业务库多次启动应用）
+            from easy_agent.persistence.stores import reset_store
 
-                store_backend = await start_store_backend()
-                logger.info(f"✅ LangGraph Store 后端: {store_backend}")
-            except Exception as exc:  # noqa: BLE001
-                logger.error(
-                    "LangGraph Store 启动失败，保持业务库 SqlStore: "
-                    f"{type(exc).__name__}: {exc}"
-                )
+            reset_store()
 
             # 对象存储 A：EASY_UPLOAD_BACKEND=store 时上传原始文件必须落 LangGraph
             # Store，这里做启动期 fail-closed 自检（local 模式为空操作）。宁可启动
@@ -479,12 +471,9 @@ async def lifespan(app: FastAPI):
         await aclose_mcp_sessions()
     except Exception as exc:  # noqa: BLE001
         logger.warning(f"关闭 MCP 持久 session 失败: {exc}")
-    try:
-        from easy_agent.persistence.stores import shutdown_store
+    from easy_agent.persistence.stores import reset_store
 
-        await shutdown_store()
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(f"关闭 LangGraph Store 失败: {exc}")
+    reset_store()
     try:
         from easy_agent.persistence.checkpoints import shutdown_checkpointers
 

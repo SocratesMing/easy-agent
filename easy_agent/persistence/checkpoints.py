@@ -1,15 +1,13 @@
-"""Durable HITL checkpointer shared across workers / pods.
+"""Durable HITL checkpointer：官方 AsyncSqliteSaver 或自研业务库快照。
 
-FW-09：默认使用 LangGraph 官方 saver（``AsyncPostgresSaver`` / ``AsyncSqliteSaver``），
-由 ``EASY_CHECKPOINT_BACKEND=auto|postgres|sqlite|legacy`` 控制，选择规则集中在
-``resolve_checkpoint_backend()``：Postgres URI 优先；业务库为 SQLite 时默认用官方
-SQLite saver（``data/checkpoints.db``）；业务库为 MySQL 时官方没有 saver，回退到
-自研 ``PersistentMemorySaver``（把 MemorySaver 状态 pickle 进业务库，多副本 HITL
-恢复时按 session_id 回放）。
+FW-09：由 ``EASY_CHECKPOINT_BACKEND=auto|sqlite|legacy`` 控制，选择规则集中在
+``resolve_checkpoint_backend()``：配置了 ``EASY_CHECKPOINT_SQLITE_PATH`` 或业务库为
+SQLite 时用官方 SQLite saver（默认 ``data/checkpoints.db``）；业务库为 MySQL 且没配
+SQLite 路径时，回退到自研 ``PersistentMemorySaver``（把 MemorySaver 状态 pickle 进业务库）。
 
-B1：``AGENT_ENV=prod`` 且检测到多 worker/副本时，checkpointer 必须是 Postgres
-（``AsyncPostgresSaver``），否则启动期 fail-fast；只有显式设置
-``EASY_ALLOW_LEGACY_CHECKPOINTER=1``（默认关闭）才允许降级。
+生产只有 MySQL、按单 pod 部署，Postgres checkpointer 已移除。两种后端都不能在副本之间
+共享：``AGENT_ENV=prod`` 且检测到多 worker/副本时启动期 fail-fast；只有显式设置
+``EASY_ALLOW_LEGACY_CHECKPOINTER=1``（默认关闭）才放行，此时 HITL 跨副本恢复不保证一致。
 """
 
 from __future__ import annotations
@@ -41,24 +39,20 @@ _CHECKPOINTER_MAX = 200
 # HITL 恢复时模型看不到对话（DA-03 P1 发现）。
 _PERSIST_MAX_THREADS = 3
 _CHECKPOINTER_LOCK = threading.Lock()
-_postgres_cm = None
-_postgres_saver = None
 _sqlite_cm = None
 _sqlite_saver = None
 
 
-# ── FW-09：checkpointer 后端选择（auto/postgres/sqlite/legacy） ──────────────
-# auto（默认）：Postgres URI → 官方 AsyncPostgresSaver；否则业务库为 SQLite →
-# 官方 AsyncSqliteSaver（data/checkpoints.db）；业务库为 MySQL（官方无 saver）→
-# 回退自研 PersistentMemorySaver。EASY_CHECKPOINT_BACKEND 可强制指定后端。
+# ── FW-09：checkpointer 后端选择（auto/sqlite/legacy） ──────────────────────
+# auto（默认）：配了 SQLite 路径或业务库为 SQLite → 官方 AsyncSqliteSaver；
+# 业务库为 MySQL（官方无 saver）→ 回退自研 PersistentMemorySaver。
+# EASY_CHECKPOINT_BACKEND 可强制指定后端。
 BACKEND_AUTO = "auto"
-BACKEND_POSTGRES = "postgres"
 BACKEND_SQLITE = "sqlite"
 BACKEND_LEGACY = "legacy"
-BACKEND_CHOICES = (BACKEND_AUTO, BACKEND_POSTGRES, BACKEND_SQLITE, BACKEND_LEGACY)
+BACKEND_CHOICES = (BACKEND_AUTO, BACKEND_SQLITE, BACKEND_LEGACY)
 
 _BACKEND_ENV = "EASY_CHECKPOINT_BACKEND"
-_POSTGRES_URI_ENV = "EASY_CHECKPOINT_POSTGRES_URI"
 _SQLITE_PATH_ENV = "EASY_CHECKPOINT_SQLITE_PATH"
 _ALLOW_LEGACY_ENV = "EASY_ALLOW_LEGACY_CHECKPOINTER"
 _AGENT_ENV = "AGENT_ENV"
@@ -72,7 +66,7 @@ _UNSET: Any = object()
 
 
 class CheckpointDeploymentError(RuntimeError):
-    """生产多副本却无法使用 Postgres checkpointer（启动期 fail-fast）。"""
+    """生产多副本部署，而 checkpointer 不能跨副本共享（启动期 fail-fast）。"""
 
 
 @dataclass(frozen=True)
@@ -81,13 +75,12 @@ class CheckpointSelection:
 
     kind: str
     reason: str
-    postgres_uri: str = ""
     sqlite_path: str = ""
     warning: str = ""
 
     @property
     def is_official(self) -> bool:
-        return self.kind in (BACKEND_POSTGRES, BACKEND_SQLITE)
+        return self.kind == BACKEND_SQLITE
 
 
 def resolve_sqlite_path(path: str) -> Path:
@@ -114,14 +107,13 @@ def detect_business_db_type() -> str | None:
 def resolve_checkpoint_backend(
     *,
     backend: str | None = None,
-    postgres_uri: str | None = None,
     sqlite_path: str | None = None,
     db_type: Any = _UNSET,
 ) -> CheckpointSelection:
     """解析 checkpointer 后端（不打开连接）。
 
     所有入参都可显式注入：``None`` 表示读环境变量；``db_type`` 保持 ``_UNSET``
-    时读取已加载的业务库实例。单测依赖这一点，无需真实 Postgres/MySQL。
+    时读取已加载的业务库实例。单测依赖这一点，无需真实 MySQL。
     """
     raw_backend = (env_str(_BACKEND_ENV) if backend is None else str(backend)).strip().lower()
     warnings: list[str] = []
@@ -130,13 +122,10 @@ def resolve_checkpoint_backend(
     elif raw_backend not in BACKEND_CHOICES:
         warnings.append(
             f"未知的 {_BACKEND_ENV}={raw_backend!r}"
-            "（可选 auto/postgres/sqlite/legacy），按 auto 处理"
+            "（可选 auto/sqlite/legacy），按 auto 处理"
         )
         raw_backend = BACKEND_AUTO
 
-    pg_uri = (
-        env_str(_POSTGRES_URI_ENV) if postgres_uri is None else str(postgres_uri)
-    ).strip()
     sqlite = (
         env_str(_SQLITE_PATH_ENV) if sqlite_path is None else str(sqlite_path)
     ).strip()
@@ -149,7 +138,6 @@ def resolve_checkpoint_backend(
         kind: str,
         reason: str,
         *,
-        pg: str = "",
         sqlite_value: str = "",
         extra: str = "",
     ) -> CheckpointSelection:
@@ -159,32 +147,12 @@ def resolve_checkpoint_backend(
         return CheckpointSelection(
             kind=kind,
             reason=reason,
-            postgres_uri=pg,
             sqlite_path=sqlite_value,
             warning="；".join(messages),
         )
 
     if raw_backend == BACKEND_LEGACY:
         return result(BACKEND_LEGACY, "EASY_CHECKPOINT_BACKEND=legacy：显式使用自研业务库快照")
-
-    if raw_backend == BACKEND_POSTGRES:
-        if pg_uri:
-            return result(
-                BACKEND_POSTGRES,
-                "EASY_CHECKPOINT_BACKEND=postgres：使用官方 AsyncPostgresSaver",
-                pg=pg_uri,
-            )
-        warnings.append(
-            "EASY_CHECKPOINT_BACKEND=postgres 但未配置 EASY_CHECKPOINT_POSTGRES_URI，"
-            "按 auto 规则回退"
-        )
-
-    if pg_uri:
-        return result(
-            BACKEND_POSTGRES,
-            "检测到 EASY_CHECKPOINT_POSTGRES_URI：使用官方 AsyncPostgresSaver",
-            pg=pg_uri,
-        )
 
     local_only_hint = (
         "业务库为 MySQL，checkpoint 将落在本地 SQLite 文件，"
@@ -216,12 +184,11 @@ def resolve_checkpoint_backend(
     if business_db == "mysql":
         return result(
             BACKEND_LEGACY,
-            "业务库为 MySQL 且无 PostgreSQL URI：回退自研业务库快照",
+            "业务库为 MySQL 且未配置 SQLite 路径：回退自研业务库快照",
             extra=(
                 "官方 LangGraph 没有 MySQL checkpointer，HITL 回退到自研 "
                 "PersistentMemorySaver 快照：功能可用，但每轮全量 pickle 写业务库、"
-                "非官方实现，高并发/长会话性能较差；生产建议配置 "
-                "EASY_CHECKPOINT_POSTGRES_URI（多副本）或 EASY_CHECKPOINT_SQLITE_PATH（单机）"
+                "非官方实现，高并发/长会话性能较差；建议配置 EASY_CHECKPOINT_SQLITE_PATH"
             ),
         )
     return result(
@@ -229,16 +196,13 @@ def resolve_checkpoint_backend(
         "未识别业务库类型且未配置 checkpoint 路径：回退自研业务库快照",
         extra=(
             "未能确定业务库类型（数据库可能尚未初始化），且未配置 "
-            "EASY_CHECKPOINT_POSTGRES_URI / EASY_CHECKPOINT_SQLITE_PATH，"
-            "HITL 使用自研 MemorySaver 业务库快照"
+            "EASY_CHECKPOINT_SQLITE_PATH，HITL 使用自研 MemorySaver 业务库快照"
         ),
     )
 
 
 def active_checkpoint_backend() -> str:
     """当前进程实际生效的 checkpointer 后端。"""
-    if _postgres_saver is not None:
-        return BACKEND_POSTGRES
     if _sqlite_saver is not None:
         return BACKEND_SQLITE
     return BACKEND_LEGACY
@@ -266,13 +230,11 @@ def validate_checkpoint_deployment(
     workers: int | None = None,
     allow_legacy: bool | None = None,
 ) -> None:
-    """生产多副本必须 Postgres；否则抛 ``CheckpointDeploymentError``。
+    """生产多副本时抛 ``CheckpointDeploymentError``：两种后端都不能跨副本共享。
 
     dev/test 或单 worker 不受影响；``allow_legacy`` 显式注入用于单测，
     默认读取 ``EASY_ALLOW_LEGACY_CHECKPOINTER``（1/true/yes/on，默认关闭）。
     """
-    if kind == BACKEND_POSTGRES:
-        return
     if _resolve_agent_env(agent_env) != "prod":
         return
     count = _resolve_worker_count(workers)
@@ -285,16 +247,16 @@ def validate_checkpoint_deployment(
     )
     if allowed:
         logger.warning(
-            "生产环境多副本（%s）仍使用非 Postgres checkpointer=%s：已通过 %s 显式豁免，HITL 跨副本恢复不保证一致",
+            "生产环境多副本（%s）使用 checkpointer=%s：已通过 %s 显式豁免，HITL 跨副本恢复不保证一致",
             count,
             kind,
             _ALLOW_LEGACY_ENV,
         )
         return
     raise CheckpointDeploymentError(
-        f"生产环境检测到 {count} 个 worker/副本，但 HITL checkpointer 后端为 {kind!r}；"
-        "多副本必须配置 EASY_CHECKPOINT_POSTGRES_URI 使用官方 AsyncPostgresSaver。"
-        f"若确认只做单机调试，请显式设置 {_ALLOW_LEGACY_ENV}=1（默认关闭）。"
+        f"生产环境检测到 {count} 个 worker/副本，但 HITL checkpointer（{kind!r}）不能跨副本共享；"
+        "请按单 pod、单 worker 部署（EASY_REPLICA_COUNT / WEB_CONCURRENCY / UVICORN_WORKERS 为 1）。"
+        f"若接受审批跨副本恢复不一致，可显式设置 {_ALLOW_LEGACY_ENV}=1（默认关闭）。"
     )
 
 
@@ -416,37 +378,6 @@ class PersistentMemorySaver(MemorySaver):
         self._flush()
 
 
-def postgres_checkpointer_active() -> bool:
-    return _postgres_saver is not None
-
-
-async def open_postgres_checkpointer(conn_string: str):
-    """打开官方 AsyncPostgresSaver，并 setup() 建 checkpoint 表。
-
-    连接在进程生命周期内保持。``thread_id`` 区分会话，不再按 session 各持一份 MemorySaver。
-    """
-    global _postgres_cm, _postgres_saver
-    if _postgres_saver is not None:
-        return _postgres_saver
-    from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
-
-    _postgres_cm = AsyncPostgresSaver.from_conn_string(conn_string)
-    _postgres_saver = await _postgres_cm.__aenter__()
-    await _postgres_saver.setup()
-    logger.info("HITL checkpointer: AsyncPostgresSaver")
-    return _postgres_saver
-
-
-async def close_postgres_checkpointer() -> None:
-    global _postgres_cm, _postgres_saver
-    cm = _postgres_cm
-    _postgres_cm = None
-    _postgres_saver = None
-    if cm is None:
-        return
-    await cm.__aexit__(None, None, None)
-
-
 def sqlite_checkpointer_active() -> bool:
     return _sqlite_saver is not None
 
@@ -488,53 +419,29 @@ async def close_sqlite_checkpointer() -> None:
 
 async def shutdown_checkpointers() -> None:
     """关闭官方 saver 并清空自研缓存（应用 shutdown 与测试隔离都依赖它）。"""
-    await close_postgres_checkpointer()
     await close_sqlite_checkpointer()
     _clear_legacy_checkpointers()
 
 
 def _describe_target(selection: CheckpointSelection) -> str:
-    if selection.kind == BACKEND_POSTGRES:
-        return "PostgreSQL（URI 不外显）"
     if selection.kind == BACKEND_SQLITE:
         return selection.sqlite_path
     return "业务库 agent_checkpoints 表"
 
 
 async def _open_with_fallback(selection: CheckpointSelection) -> str:
-    """按 postgres → sqlite → legacy 顺序打开，返回实际生效的后端名。"""
-    candidates: list[CheckpointSelection] = [selection]
-    if selection.kind == BACKEND_POSTGRES:
-        fallback = resolve_checkpoint_backend(
-            backend=BACKEND_AUTO, postgres_uri="", db_type=_UNSET
-        )
-        if fallback.kind != BACKEND_POSTGRES:
-            candidates.append(fallback)
-    candidates.append(
-        CheckpointSelection(BACKEND_LEGACY, "官方 saver 不可用，回退自研业务库快照")
-    )
-
-    for candidate in candidates:
-        if candidate.kind == BACKEND_LEGACY:
-            logger.warning("HITL checkpointer: PersistentMemorySaver（业务库快照）")
-            return BACKEND_LEGACY
+    """打开官方 SQLite saver，失败时回退自研业务库快照；返回实际生效的后端名。"""
+    if selection.kind == BACKEND_SQLITE:
         try:
-            if candidate.kind == BACKEND_POSTGRES:
-                await open_postgres_checkpointer(candidate.postgres_uri)
-            else:
-                await open_sqlite_checkpointer(candidate.sqlite_path)
+            await open_sqlite_checkpointer(selection.sqlite_path)
+            return BACKEND_SQLITE
         except Exception as exc:  # noqa: BLE001 - 降级不能阻断启动
             logger.error(
-                "官方 %s checkpointer 启用失败，尝试降级 | %s: %s",
-                candidate.kind,
+                "官方 sqlite checkpointer 启用失败，回退自研业务库快照 | %s: %s",
                 type(exc).__name__,
                 exc,
             )
-            continue
-        return candidate.kind
-    logger.warning(
-        "HITL checkpointer: 无官方 saver 可用，PersistentMemorySaver（业务库快照）"
-    )
+    logger.warning("HITL checkpointer: PersistentMemorySaver（业务库快照）")
     return BACKEND_LEGACY
 
 
@@ -547,9 +454,8 @@ async def start_checkpoint_backend(
 ) -> str:
     """按解析结果打开 checkpointer，返回实际生效的后端名。
 
-    ``selection`` 为空时读取环境变量解析。官方 saver 打不开时默认只降级；
-    但 prod 多副本必须 Postgres：选择非 Postgres 或降级后非 Postgres 都会
-    fail-fast（``CheckpointDeploymentError``），除非显式设置
+    ``selection`` 为空时读取环境变量解析。官方 saver 打不开时降级为自研快照；
+    prod 多副本在打开之前就 fail-fast（``CheckpointDeploymentError``），除非显式设置
     ``EASY_ALLOW_LEGACY_CHECKPOINTER=1``。
     """
     if selection is None:
@@ -563,33 +469,18 @@ async def start_checkpoint_backend(
         _describe_target(selection),
         selection.reason,
     )
-    # 先校验选择，避免在 prod 多副本下白连一次错误的后端。
+    # 先校验部署形态：两种后端都不能跨副本共享，结果与选中哪一种无关
     validate_checkpoint_deployment(
         selection.kind,
         agent_env=agent_env,
         workers=workers,
         allow_legacy=allow_legacy,
     )
-    opened = await _open_with_fallback(selection)
-    if opened != selection.kind:
-        # Postgres 打不开而降级时同样必须 fail-fast：否则多副本会静默各写各的。
-        try:
-            validate_checkpoint_deployment(
-                opened,
-                agent_env=agent_env,
-                workers=workers,
-                allow_legacy=allow_legacy,
-            )
-        except CheckpointDeploymentError:
-            await shutdown_checkpointers()
-            raise
-    return opened
+    return await _open_with_fallback(selection)
 
 
 def get_session_checkpointer(session_id: str, db=None):
-    """官方 saver（Postgres/SQLite）激活时全局共享；否则按 session 回放 MemorySaver。"""
-    if _postgres_saver is not None:
-        return _postgres_saver
+    """官方 SQLite saver 激活时全局共享；否则按 session 回放 MemorySaver。"""
     if _sqlite_saver is not None:
         return _sqlite_saver
     with _CHECKPOINTER_LOCK:
@@ -621,13 +512,13 @@ def release_session_checkpointer(session_id: str) -> None:
 
 
 async def adelete_threads(thread_ids) -> int:
-    """从官方 saver（Postgres / SQLite）删除这些 thread，返回成功删除的个数。
+    """从官方 SQLite saver 删除这些 thread，返回成功删除的个数。
 
     官方 saver 全局共享，删除会话不会顺带删掉它的 thread，只能按 thread_id 显式删除
     （公开 API ``adelete_thread``）。legacy 快照按会话存放，由
     :func:`release_session_checkpointer` 整体清理，这里不处理。单个失败只记日志。
     """
-    saver = _postgres_saver or _sqlite_saver
+    saver = _sqlite_saver
     if saver is None:
         return 0
     deleted = 0

@@ -47,18 +47,13 @@ def session_thread_enabled(config) -> bool:
 
 
 def session_thread_in_use(config) -> bool:
-    """接口层（还没拿到 agent 时）的判断：开关打开，且在用官方 saver（Postgres / SQLite）。
+    """接口层（还没拿到 agent 时）的判断：开关打开，且在用官方 SQLite saver。
 
     与 :func:`session_thread_active` 口径一致：legacy 快照 saver 下仍是每条消息一个 thread。
     """
-    from easy_agent.persistence.checkpoints import (
-        postgres_checkpointer_active,
-        sqlite_checkpointer_active,
-    )
+    from easy_agent.persistence.checkpoints import sqlite_checkpointer_active
 
-    return session_thread_enabled(config) and (
-        postgres_checkpointer_active() or sqlite_checkpointer_active()
-    )
+    return session_thread_enabled(config) and sqlite_checkpointer_active()
 
 
 _legacy_warned = False
@@ -67,9 +62,9 @@ _legacy_warned = False
 def session_thread_active(agent) -> bool:
     """本轮是否走会话 thread：开关打开，且 checkpointer 不是 legacy 快照 saver。
 
-    legacy ``PersistentMemorySaver``（业务库为 MySQL 且没配 PG / SQLite checkpoint 时的回退）
+    legacy ``PersistentMemorySaver``（业务库为 MySQL 且没配 SQLite checkpoint 时的回退）
     每次写入都把整个快照 pickle 进业务库，会话 thread 越长越慢，因此仍按每条消息一个 thread。
-    要用会话 thread，请配置 ``EASY_CHECKPOINT_POSTGRES_URI`` 或 ``EASY_CHECKPOINT_SQLITE_PATH``。
+    要用会话 thread，请配置 ``EASY_CHECKPOINT_SQLITE_PATH``。
     """
     global _legacy_warned
     if not session_thread_enabled(getattr(agent, "config", None)):
@@ -80,8 +75,7 @@ def session_thread_active(agent) -> bool:
             _legacy_warned = True
             logger.warning(
                 "agent.session_thread 已打开，但当前是 legacy checkpoint 快照（MySQL 回退），"
-                "仍按每条消息一个 thread；配置 EASY_CHECKPOINT_POSTGRES_URI 或 "
-                "EASY_CHECKPOINT_SQLITE_PATH 后生效"
+                "仍按每条消息一个 thread；配置 EASY_CHECKPOINT_SQLITE_PATH 后生效"
             )
         return False
     return True

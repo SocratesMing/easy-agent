@@ -89,7 +89,6 @@ def test_legacy_snapshot_saver_does_not_abandon_approvals(client, db, monkeypatc
     db.add_message(sid, pending)
     monkeypatch.setattr(chat_api, "_get_agent_config", lambda: _ON)
     monkeypatch.setattr(checkpoints, "sqlite_checkpointer_active", lambda: False)
-    monkeypatch.setattr(checkpoints, "postgres_checkpointer_active", lambda: False)
 
     async def fake_get_agent(session_id, username, workspace_name, **kwargs):
         return SimpleNamespace(workspace_dir=None, workspace_virtual_path="/workspace")

@@ -742,7 +742,7 @@ async def chat_resume(
         )
 
     # 审批句柄由后端固定生成 ``f"{session_id}-{message_id}"``；绝不信任前端
-    # 传入的任意 thread_id：官方 Postgres checkpointer 是全局共享的，否则可读取/
+    # 传入的任意 thread_id：官方 SQLite checkpointer 是全局共享的，否则可读取/
     # 续跑他人会话的 checkpoint（跨用户隔离绕过）。
     if handle_turn_id(session_id, thread_id) is None:
         logger.warning(

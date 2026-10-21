@@ -6,7 +6,7 @@
 ## 1. 运行时入口
 
 - `main.py` / `easy-web`（`easy_agent/bootstrap/web_runner.py`）→ `easy_agent.app:app`（FastAPI）。
-- `app.py` lifespan：初始化环境/日志/配置 → 启动知识库 → DB → 提示词/技能发现 → Agent 配置 → 移植专家目录扫描 → 可选 Postgres checkpointer → 调度器（多 worker 保护）。
+- `app.py` lifespan：初始化环境/日志/配置 → 启动知识库 → DB → 提示词/技能发现 → Agent 配置 → 移植专家目录扫描 → HITL checkpointer（官方 SQLite saver / 业务库快照）→ 调度器（多 worker 保护）。
 - 配置：`easy_agent/config/config.yaml`（gitignored，单文件）；模板 `config-example.yaml`；环境变量来自 `.env.{AGENT_ENV}`；`EASY_CONFIG` 可覆盖路径。`config.py` 只保留 `Config`（加载/解析/路径 helpers）；Pydantic 配置模型在 `config_models.py`，键校验与 `${VAR}` 展开在 `config_validation.py`，均由 `config.py` re-export（批次 1A）。
 - 运行期配置持有者：`easy_agent/bootstrap/runtime_config.py`（基础层只读，避免 config → services 循环）。
 
@@ -18,7 +18,7 @@
 | `backends/shell.py` | `LocalShellBackend` + 虚拟路径翻译 + bwrap/Landlock/fail-closed 策略 |
 | `sandboxing/sandbox.py` / `landlock.py` / `fs_safety.py` | 命令沙箱、Landlock 降级、外部目录挂载安全校验 |
 | `agent/hitl.py` | 破坏性命令识别、execute 工具描述、HITL 默认工具 |
-| `persistence/checkpoints.py` | 自研 `PersistentMemorySaver`（裁剪后写业务库）与官方 Postgres saver |
+| `persistence/checkpoints.py` | 官方 `AsyncSqliteSaver` 与自研 `PersistentMemorySaver`（裁剪后写业务库） |
 | `persistence/stores.py` | 自研 LangGraph `BaseStore`（SQLite/MySQL） |
 | `agent/summarization.py` | 建图期替换官方摘要工厂 + 缺失降级护栏 |
 | `agent/subagents.py` / `agent/skills.py` | 子代理定义；技能发现（根 `skills/` 为 canonical，包内副本回退） |
@@ -64,7 +64,7 @@
 - SQLite（单机开发，启用 WAL/busy_timeout/synchronous=NORMAL）或 MySQL（多副本生产，代码禁止静默降级）。
 - 会话消息行表 `session_messages`；`sessions.messages` 为 legacy 大字段（仅历史会话回退读取）。
 - 领域 schema 通过 `db/schema_registry.py` 注册，`Database.init_tables()` 统一执行。
-- LangGraph checkpointer：`EASY_CHECKPOINT_BACKEND=auto` 时有 `EASY_CHECKPOINT_POSTGRES_URI` 用官方 `AsyncPostgresSaver`，业务库为 SQLite 时用官方 `AsyncSqliteSaver`（`data/checkpoints.db`），业务库为 MySQL 且无 PG 时回退 `PersistentMemorySaver`（只按 thread 数裁剪，最多 3 个 thread；thread 内 checkpoint 全部保留，`messages` 是增量存储）；删除会话时一并删除它在官方 saver 里的 thread，定时任务每次运行结束后删除自己的 thread（DA-03 P0）。
+- LangGraph checkpointer：`EASY_CHECKPOINT_BACKEND=auto` 时配了 `EASY_CHECKPOINT_SQLITE_PATH` 或业务库为 SQLite 就用官方 `AsyncSqliteSaver`（默认 `data/checkpoints.db`，相对路径按仓库根解析，`synchronous=NORMAL`），业务库为 MySQL 且没配 SQLite 路径时回退 `PersistentMemorySaver`（只按 thread 数裁剪，最多 3 个 thread；thread 内 checkpoint 全部保留，`messages` 是增量存储）；删除会话时一并删除它在官方 saver 里的 thread，定时任务每次运行结束后删除自己的 thread（DA-03 P0）。Postgres checkpointer / Store 已移除（2026-10-21，生产只有 MySQL）：两种 checkpointer 都不能跨副本共享，生产多副本启动时 fail-fast；LangGraph Store 固定为业务库 `SqlStore`。
 
 ## 4. 前端
 

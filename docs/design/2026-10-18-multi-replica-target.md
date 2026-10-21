@@ -6,6 +6,7 @@
 | 日期 | 2026-10-18 |
 | 目标 | 自托管 Kubernetes 多副本 Web；Pod 无状态；状态外置 |
 | 约束 | 不改前端；HTTP/SSE 契约保持；Batch 0/1 安全项另行批准 |
+| 更新 | 2026-10-21：生产只有 MySQL，Postgres checkpointer / Store 已移除，按单 pod 部署（HITL checkpoint 用官方 SQLite saver，Store 用业务库 `SqlStore`）。下文以 PostgreSQL 为前提的目标暂缓；要做多副本，得先有能跨副本共享的 checkpointer |
 
 ## 1. 目标拓扑
 

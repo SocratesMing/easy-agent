@@ -17,8 +17,8 @@ def test_checkpoint_roundtrip(tmp_path):
     assert cached is not None
 
 
-def test_postgres_saver_is_shared(monkeypatch):
+def test_official_saver_is_shared(monkeypatch):
     sentinel = object()
-    monkeypatch.setattr(checkpoints, "_postgres_saver", sentinel)
+    monkeypatch.setattr(checkpoints, "_sqlite_saver", sentinel)
     assert get_session_checkpointer("sess-a") is sentinel
     assert get_session_checkpointer("sess-b") is sentinel

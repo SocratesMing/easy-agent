@@ -43,7 +43,6 @@ os.environ["TEST_SYSTEM_PROMPT"] = str(TEST_ROOT / "system_prompt.md")
 # 再覆盖成独立文件，保证测试之间不共享 HITL 中断态。
 os.environ["EASY_CHECKPOINT_BACKEND"] = "auto"
 os.environ["EASY_CHECKPOINT_SQLITE_PATH"] = str(_TMP / "checkpoints" / "shared.db")
-os.environ.pop("EASY_CHECKPOINT_POSTGRES_URI", None)
 (_TMP / "checkpoints").mkdir(parents=True, exist_ok=True)
 
 for _d in ("workspace", "memories", "logs", "sessions", "skills", "prompts", "uploads"):
@@ -93,7 +92,6 @@ def client(db, monkeypatch):
         "EASY_CHECKPOINT_SQLITE_PATH",
         str(_TMP / "checkpoints" / f"test_{uuid.uuid4().hex}.db"),
     )
-    monkeypatch.delenv("EASY_CHECKPOINT_POSTGRES_URI", raising=False)
 
     # 将工作区相关路径重定向到临时目录
     monkeypatch.setattr(
