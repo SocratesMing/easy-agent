@@ -20,7 +20,7 @@ from pydantic import Field
 
 from easy_agent.agent.turn_context import turn_input
 from easy_agent.models.api import ChatRequest
-from easy_agent.services.streaming import chat_stream_generator
+from easy_agent.services.streaming.orchestrator import chat_stream_generator
 
 SKILL_BODY = "STEP-BY-STEP DOCX INSTRUCTIONS"
 

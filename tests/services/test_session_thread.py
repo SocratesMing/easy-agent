@@ -32,7 +32,10 @@ from easy_agent.services.session_thread import (
     resolve_resume_thread,
     session_thread_enabled,
 )
-from easy_agent.services.streaming import chat_stream_generator, resume_stream_generator
+from easy_agent.services.streaming.orchestrator import (
+    chat_stream_generator,
+    resume_stream_generator,
+)
 
 
 class Recorder(BaseChatModel):

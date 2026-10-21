@@ -5,9 +5,6 @@
 
 - SSE 事件名、顺序与关键字段；
 - 增量落库 / 最终消息 / HITL 部分消息 / 审批决策的调用与载荷。
-
-测试同时兼容拆分前后的实现：拆分前 ``easy_agent.services.streaming`` 是模块，
-拆分后是包，编排器位于 ``streaming.orchestrator``。
 """
 
 import json
@@ -20,21 +17,11 @@ from langchain_core.messages import AIMessage
 from easy_agent.models.api import ChatRequest
 from easy_agent.persistence.checkpoints import checkpoint_instance
 from easy_agent.services.sse import format_sse
-from easy_agent.services.streaming import (
+from easy_agent.services.streaming import orchestrator
+from easy_agent.services.streaming.orchestrator import (
     chat_stream_generator,
     resume_stream_generator,
 )
-
-
-def _impl():
-    """返回当前实现里持有 ``chat_stream_generator`` 的模块。"""
-    import easy_agent.services.streaming as streaming
-
-    try:
-        from easy_agent.services.streaming import orchestrator
-    except ImportError:  # 拆分前的单体模块
-        return streaming
-    return orchestrator
 
 
 def _events(frames):
@@ -224,7 +211,7 @@ def _agent(graph):
 def _patch_impl(monkeypatch):
     FakeProc.end_thinking = []
     FakeProc.instances = []
-    target = _impl()
+    target = orchestrator
     monkeypatch.setattr(target, "StreamProcessor", FakeProc)
     monkeypatch.setattr(target, "get_agent_config", lambda: None)
     return target

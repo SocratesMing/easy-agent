@@ -23,7 +23,7 @@
 | `agent/summarization.py` | 建图期替换官方摘要工厂 + 缺失降级护栏 |
 | `agent/subagents.py` / `agent/skills.py` | 子代理定义；技能发现（根 `skills/` 为 canonical，包内副本回退） |
 | `bootstrap/runtime_config.py` | 运行期配置 + Agent 失效回调注册（架构解耦用） |
-| `bootstrap/config.py` / `config_models.py` / `config_validation.py` | 配置加载（`Config.from_yaml`、`_parse_*`、路径 helpers）；Pydantic 配置模型；未知/废弃键校验与 `${VAR}` 展开；`config.py` re-export 原有公开名字与兼容私有名 |
+| `bootstrap/config.py` / `config_models.py` / `config_validation.py` | 配置加载（`Config.from_yaml` 把各段交给模型校验，只处理 YAML 写法与模型对不上的地方）与路径 helpers；Pydantic 配置模型（字段名与默认值的唯一来源）；未知/废弃键校验（已知键由模型字段生成）与 `${VAR}` 展开；`config.py` re-export 原有公开名字与兼容私有名 |
 | `api/` | chat / auth / sessions / files / expert / connectors / scheduled_tasks / settings / skill_center / completion / prompts / terminal（POSIX，HITL 无关） |
 | `services/` | streaming（SSE 编排）、agent_manager（会话 Agent 缓存/流锁）、scheduler、mcp（连接器工具）、session_uploads、skill_library、expert/public_expert、memory_manager、session_runtime、sse（事件注册表） |
 | `db/` | `database.py`（连接/迁移/核心表）、`session_messages.py`、`expert_store.py`、`schema_registry.py` |
@@ -38,7 +38,7 @@
 ### 聊天流式（SSE）
 `POST /agent/chat/stream` → 会话归属校验/创建 → `db.add_message`（行表）→
 `agent_manager.get_or_create_agent_for_session`（按 user/session/model/expert/connectors 缓存，`OrderedDict` LRU）→
-`services/streaming.chat_stream_generator` → DeepAgents `astream(stream_mode=["messages","updates"])` →
+`services/streaming/orchestrator.chat_stream_generator` → DeepAgents `astream(stream_mode=["messages","updates"])` →
 `StreamProcessor` 产生事件 → `format_sse`（`services/sse.py`）→ `_StreamHub` 广播/回放（单会话并发返回 409）→
 最终写入 `session_messages`；可选 HITL 中断 `approval_required`，`/chat/resume` 恢复。
 
@@ -105,6 +105,6 @@ CI：`.github/workflows/ci.yml`（后端 ruff + pytest collect/test + 双前端 
 ## 6. 已知架构债（详见审计报告）
 
 - 剩余 1 个 16 模块强连通分量（`api.chat ↔ knowledges.* ↔ services`），按 `docs/archive/design/2026-10-17-module-refactor-plan.md` 分阶段处理。
-- `Database` 仍较大（待 Phase 2 拆 repository）；`streaming.py` 巨型生成器待 Phase 3 拆。
+- `Database` 仍较大（待 Phase 2 拆 repository）。
 - 多副本状态仍在进程内（agent 缓存/SSE hub/调度）；设计见 `docs/archive/design/2026-10-17-multi-instance-state.md`。
 - 安全：审计报告中的 4 个 P0 / 8 个 P1 尚未修复（Batch 0/1 未执行）。

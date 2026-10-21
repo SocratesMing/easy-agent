@@ -26,7 +26,10 @@ from easy_agent.services.connectors import (
     parse_message_connectors,
     resolve_connector_servers,
 )
-from easy_agent.services.streaming import chat_stream_generator, resume_stream_generator
+from easy_agent.services.streaming.orchestrator import (
+    chat_stream_generator,
+    resume_stream_generator,
+)
 from easy_agent.services.stream_events import StreamEventWriter, flush_all_stream_events
 from easy_agent.services.scheduler import (
     init_scheduler,

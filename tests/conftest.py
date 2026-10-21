@@ -152,13 +152,11 @@ def client(db, monkeypatch):
     import easy_agent.app as _app_mod
     import easy_agent.agent.model as _model_mod
     import easy_agent.services.agent_manager as _am_mod
-    import easy_agent.services.streaming as _stream_mod
 
     for _m in (
         _model_mod,
         _app_mod,
         _am_mod,
-        _stream_mod,
         _agent_mod,
     ):
         if hasattr(_m, "create_model"):

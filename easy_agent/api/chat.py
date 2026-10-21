@@ -42,7 +42,7 @@ from easy_agent.services import session_uploads as file_context
 from easy_agent.services.hitl_state import HitlDecisionError
 from easy_agent.services.sse_emitter import SSEEmitter
 from easy_agent.services.session_runtime import SessionBusyError
-from easy_agent.services.streaming import validate_resume_decisions
+from easy_agent.services.streaming.orchestrator import validate_resume_decisions
 from easy_agent.services.run_registry import finish_run, new_run_id, renew_run, start_run
 from easy_agent.services.stream_hub import (  # noqa: F401 - 兼容旧导入路径
     _HUB_HISTORY_MAX_CHARS,
@@ -77,7 +77,9 @@ from easy_agent.api.sessions import generate_workspace_name
 from easy_agent.knowledges.chat.host_port import (
     register_host_capabilities,
 )
-from easy_agent.services.streaming import chat_stream_generator as _host_chat_stream_generator
+from easy_agent.services.streaming.orchestrator import (
+    chat_stream_generator as _host_chat_stream_generator,
+)
 from easy_agent.services import get_agent_config as _get_agent_config
 from easy_agent.services.session_thread import (
     StaleApprovalError,
@@ -381,6 +383,128 @@ _detached_bg_tasks: "set[asyncio.Task]" = set()
 _STREAM_HEARTBEAT_SECONDS = 300.0
 
 
+async def _record_run_end(db, run_id: str, status: str, error: str, sid: str) -> None:
+    """落 run 终态（Phase 2B）；写库失败只告警，不改变本轮流的结束方式。"""
+    try:
+        await asyncio.to_thread(finish_run, db, run_id, status, error)
+    except Exception as exc:  # noqa: BLE001 - 收尾失败不改变错误流
+        logger.warning(f"[{sid}] 写入 run 终态失败（忽略）: {exc}")
+
+
+async def _renew_run_lease(db, run_id: str, sid: str) -> None:
+    """续约 run 租约：失败只告警（可能已被启动恢复标记 interrupted），不打断正在执行的流。"""
+    try:
+        renewed = await asyncio.to_thread(renew_run, db, run_id)
+        if not renewed:
+            logger.warning(
+                f"[{sid}] run 租约续约失败"
+                f"（可能已被恢复标记 interrupted）: {run_id}"
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"[{sid}] run 租约续约异常（忽略本次）: {exc}")
+
+
+async def _renew_stream_lock(renew_stream, session_id: str, sid: str) -> bool:
+    """续约跨副本流锁；返回 False 表示锁已被其它实例接管，应停止续约。"""
+    try:
+        renewed = await asyncio.to_thread(renew_stream, session_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"[{sid}] 流锁续约异常（忽略本次）: {exc}")
+        return True
+    if not renewed:
+        logger.warning(f"[{sid}] 流锁续约失败（可能已被其它实例接管），停止续约")
+    return bool(renewed)
+
+
+async def _stream_heartbeat(session_id: str, sid: str, renew_stream, db, run_id) -> None:
+    """每隔 ``_STREAM_HEARTBEAT_SECONDS`` 续约一次：run 租约与流锁同频。"""
+    while True:
+        await asyncio.sleep(_STREAM_HEARTBEAT_SECONDS)
+        if run_id is not None and db is not None:
+            await _renew_run_lease(db, run_id, sid)
+        if renew_stream is not None and not await _renew_stream_lock(
+            renew_stream, session_id, sid
+        ):
+            return
+
+
+async def _stop_heartbeat(heartbeat: "asyncio.Task | None") -> None:
+    if heartbeat is None:
+        return
+    heartbeat.cancel()
+    try:
+        await heartbeat
+    except (asyncio.CancelledError, Exception):  # noqa: BLE001
+        pass
+
+
+async def _clear_previous_events(db, session_id: str, sid: str) -> None:
+    # 拿到跨副本流锁后再清旧轮次事件：避免把另一个 Pod 正在写的流删掉。
+    try:
+        await asyncio.to_thread(clear_stream_events, db, session_id)
+    except Exception as exc:  # noqa: BLE001 - 清理失败不影响本轮流
+        logger.warning(f"[{sid}] 清理旧 stream_events 失败: {exc}")
+
+
+async def _drive_stream(
+    gen, hub, queue: asyncio.Queue, emitter: SSEEmitter,
+    session_id: str, sid: str, renew_stream, db, run_id,
+) -> None:
+    """后台任务：推进生成器，把每个 SSE 分片广播给 hub 的全部订阅者（原始客户端队列也是其一）。
+
+    run 终态默认 failed（任何未预期退出都不能留下 running 假象），只有生成器正常耗尽才改为
+    completed；CancelledError（/cancel）标记 cancelled。
+    """
+    bg = asyncio.current_task()
+    registered = False
+    heartbeat = None
+    run_status = "failed"
+    run_error = ""
+    try:
+        await aregister_stream_task(session_id, bg)
+        registered = True
+        if db is not None:
+            await _clear_previous_events(db, session_id, sid)
+        if renew_stream is not None or (run_id is not None and db is not None):
+            heartbeat = asyncio.create_task(
+                _stream_heartbeat(session_id, sid, renew_stream, db, run_id)
+            )
+        async for chunk in gen:
+            hub.broadcast(chunk)
+        run_status = "completed"
+    except SessionBusyError as e:
+        # 进程内兜底：不向共享 hub 广播（会污染正在运行的流），只结束本请求队列。
+        logger.warning(f"[{sid}] 会话已被占用，拒绝并发流: {e}")
+        run_error = f"SessionBusyError: {e}"
+        try:
+            queue.put_nowait(None)
+        except asyncio.QueueFull:
+            pass
+    except asyncio.CancelledError:
+        logger.info(f"[{sid}] 后台流式任务被取消（/cancel）")
+        run_status = "cancelled"
+        raise
+    except Exception as e:
+        logger.error(f"[{sid}] 后台流式任务异常: {type(e).__name__}: {e}")
+        run_status = "failed"
+        run_error = f"{type(e).__name__}: {e}"
+        hub.broadcast(emitter.error(f"处理失败: {e}"))
+    finally:
+        await _stop_heartbeat(heartbeat)
+        if run_id is not None and db is not None:
+            # 先落 run 终态再关闭 hub：即使随后进程崩溃，恢复扫描也不会把它
+            # 当成“仍在运行”（最坏情况是重复写一次 error，前端幂等展示）。
+            try:
+                await _record_run_end(db, run_id, run_status, run_error, sid)
+            except asyncio.CancelledError:
+                logger.warning(f"[{sid}] 写入 run 终态被取消（忽略）: {run_id}")
+        if registered:
+            # 先关闭 hub（把终态交给持久化写入器），再释放 DB 流锁：
+            # /stream/live 在别的 Pod 上看到 owner 失效时，终态事件已经入队。
+            hub.close()
+            await aunregister_stream_task(session_id, bg)
+
+
 async def _detached_event_stream(
     gen, session_id: str, sid: str, renew_stream=None, db=None, run_id=None
 ):
@@ -391,7 +515,7 @@ async def _detached_event_stream(
     /cancel 仍生效：后台任务已 register_stream_task 注册，可被 task.cancel() 取消。
     刷新页面后，新客户端可通过 /stream/live 订阅同一中枢继续接收事件。
 
-    ``run_id``（Phase 2B）：传入时在 _drive 内与流锁心跳同频续约 run 租约，
+    ``run_id``（Phase 2B）：传入时后台任务与流锁心跳同频续约 run 租约，
     并在正常结束/取消/异常时落 ``completed`` / ``cancelled`` / ``failed`` 终态；
     不传（专家拒答流等非 run 生命周期）行为与改造前一致。
     """
@@ -399,15 +523,10 @@ async def _detached_event_stream(
     # 兜底：同会话已有运行中的流时，返回独立错误流（绝不加入对方 hub，
     # 否则新订阅者会收到旧流的 EOF/事件）。端点层通常已返回 409。
     if is_session_streaming(session_id):
-        # 端点已登记 run；这条竞态路径不进入 _drive，需在这里落 failed 终态，
+        # 端点已登记 run；这条竞态路径不进入后台任务，需在这里落 failed 终态，
         # 否则只能等租约过期由启动恢复标记 interrupted。
         if run_id is not None and db is not None:
-            try:
-                await asyncio.to_thread(
-                    finish_run, db, run_id, "failed", "会话已被占用"
-                )
-            except Exception as exc:  # noqa: BLE001 - 收尾失败不改变错误流
-                logger.warning(f"[{sid}] 写入 run 终态失败（忽略）: {exc}")
+            await _record_run_end(db, run_id, "failed", "会话已被占用", sid)
         yield emitter.error("本会话正在生成回复，请等待完成或先取消当前生成")
         return
 
@@ -416,111 +535,10 @@ async def _detached_event_stream(
         hub = _StreamHub(session_id, db=db)
         _session_stream_hubs[session_id] = hub
     queue: asyncio.Queue = hub.subscribe()
-    state = {"disconnected": False}
 
-    async def _drive():
-        bg = asyncio.current_task()
-        registered = False
-        heartbeat = None
-        # run 终态：默认 failed（任何未预期退出都不能留下 running 假象），
-        # 只有生成器正常耗尽才改为 completed；CancelledError 标记 cancelled。
-        run_status = "failed"
-        run_error = ""
-        try:
-            await aregister_stream_task(session_id, bg)
-            registered = True
-            if db is not None:
-                # 拿到跨副本流锁后再清旧轮次事件：避免把另一个 Pod 正在写的流删掉。
-                try:
-                    await asyncio.to_thread(clear_stream_events, db, session_id)
-                except Exception as exc:  # noqa: BLE001 - 清理失败不影响本轮流
-                    logger.warning(f"[{sid}] 清理旧 stream_events 失败: {exc}")
-
-            async def _heartbeat():
-                while True:
-                    await asyncio.sleep(_STREAM_HEARTBEAT_SECONDS)
-                    # run 租约与流锁同频续约：run 续约失败只告警（可能已被启动
-                    # 恢复标记 interrupted），不打断正在执行的流。
-                    if run_id is not None and db is not None:
-                        try:
-                            renewed_run = await asyncio.to_thread(
-                                renew_run, db, run_id
-                            )
-                            if not renewed_run:
-                                logger.warning(
-                                    f"[{sid}] run 租约续约失败"
-                                    f"（可能已被恢复标记 interrupted）: {run_id}"
-                                )
-                        except Exception as exc:  # noqa: BLE001
-                            logger.warning(
-                                f"[{sid}] run 租约续约异常（忽略本次）: {exc}"
-                            )
-                    if renew_stream is None:
-                        continue
-                    try:
-                        renewed = await asyncio.to_thread(
-                            renew_stream, session_id
-                        )
-                        if not renewed:
-                            logger.warning(
-                                f"[{sid}] 流锁续约失败（可能已被其它实例接管），停止续约"
-                            )
-                            return
-                    except Exception as exc:  # noqa: BLE001
-                        logger.warning(f"[{sid}] 流锁续约异常（忽略本次）: {exc}")
-
-            heartbeat = (
-                asyncio.create_task(_heartbeat())
-                if renew_stream is not None
-                or (run_id is not None and db is not None)
-                else None
-            )
-            async for chunk in gen:
-                # 广播给所有订阅者（原始客户端队列也是订阅者之一）
-                hub.broadcast(chunk)
-            run_status = "completed"
-        except SessionBusyError as e:
-            # 进程内兜底：不向共享 hub 广播（会污染正在运行的流），只结束本请求队列。
-            logger.warning(f"[{sid}] 会话已被占用，拒绝并发流: {e}")
-            run_error = f"SessionBusyError: {e}"
-            try:
-                queue.put_nowait(None)
-            except asyncio.QueueFull:
-                pass
-        except asyncio.CancelledError:
-            logger.info(f"[{sid}] 后台流式任务被取消（/cancel）")
-            run_status = "cancelled"
-            raise
-        except Exception as e:
-            logger.error(f"[{sid}] 后台流式任务异常: {type(e).__name__}: {e}")
-            run_status = "failed"
-            run_error = f"{type(e).__name__}: {e}"
-            hub.broadcast(emitter.error(f"处理失败: {e}"))
-        finally:
-            if heartbeat is not None:
-                heartbeat.cancel()
-                try:
-                    await heartbeat
-                except (asyncio.CancelledError, Exception):  # noqa: BLE001
-                    pass
-            if run_id is not None and db is not None:
-                # 先落 run 终态再关闭 hub：即使随后进程崩溃，恢复扫描也不会把它
-                # 当成“仍在运行”（最坏情况是重复写一次 error，前端幂等展示）。
-                try:
-                    await asyncio.to_thread(
-                        finish_run, db, run_id, run_status, run_error
-                    )
-                except asyncio.CancelledError:
-                    logger.warning(f"[{sid}] 写入 run 终态被取消（忽略）: {run_id}")
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning(f"[{sid}] 写入 run 终态失败（忽略）: {exc}")
-            if registered:
-                # 先关闭 hub（把终态交给持久化写入器），再释放 DB 流锁：
-                # /stream/live 在别的 Pod 上看到 owner 失效时，终态事件已经入队。
-                hub.close()
-                await aunregister_stream_task(session_id, bg)
-
-    bg_task = asyncio.create_task(_drive())
+    bg_task = asyncio.create_task(
+        _drive_stream(gen, hub, queue, emitter, session_id, sid, renew_stream, db, run_id)
+    )
     _detached_bg_tasks.add(bg_task)
     bg_task.add_done_callback(_detached_bg_tasks.discard)
     try:
@@ -530,7 +548,6 @@ async def _detached_event_stream(
                 break
             yield item
     except asyncio.CancelledError:
-        state["disconnected"] = True
         hub.unsubscribe(queue)
         logger.info(f"[{sid}] 客户端断开连接，后台流式任务继续执行（不取消）")
 

@@ -189,34 +189,8 @@ def _shutdown_app(app) -> None:
 
     logger.info("[关闭] 👋 服务已关闭")
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    global agent_config, db_instance
 
-    if str(PROJECT_ROOT) not in sys.path:
-        sys.path.insert(0, str(PROJECT_ROOT))
-    os.chdir(PROJECT_ROOT)
-
-    environment = runtime_initialization.environment
-    agent_env = environment.agent_env
-
-    # B3：生产环境 JWT 密钥 fail-fast。必须在启动期（而非模块 import 期）校验，
-    # 避免 pytest / 工具脚本仅 import 就失败；dev/test 保留 data/.jwt_secret 回退。
-    from easy_agent.utils.auth import validate_production_jwt_secret
-
-    validate_production_jwt_secret(env=agent_env)
-
-    # Phase 0：严格多副本门禁。默认关闭；Phase 2/3 完成前开启会明确失败，
-    # 避免在 SSE/run/file/sandbox 尚未外置时误宣称多副本安全。
-    from easy_agent.bootstrap.runtime_features import check_multi_replica_startup
-
-    check_multi_replica_startup(agent_env)
-
-    config_path = runtime_initialization.config_path
-    config = runtime_initialization.config
-    config_error = runtime_initialization.config_error
-    log_files = runtime_initialization.log_files
-
+def _log_startup_banner(agent_env: str, config_path) -> None:
     logger.info("=" * 60)
     logger.info("Easy Agent Web Service 初始化中...")
     logger.info(f"项目目录: {PROJECT_ROOT}")
@@ -230,6 +204,9 @@ async def lifespan(app: FastAPI):
     logger.info(f"配置文件: {config_path}")
     logger.info("=" * 60)
 
+
+def _report_config(config, config_path, config_error, log_files) -> None:
+    """记录配置加载结果；加载成功时创建配置里所有缺失的目录。"""
     if config_error:
         logger.error(
             f"❌ 配置文件加载失败，服务将以降级模式启动（聊天等功能不可用）: {config_error}"
@@ -238,40 +215,36 @@ async def lifespan(app: FastAPI):
             f"   请检查 {config_path} 是否存在，且其中的 ${{ENV_VAR}} 占位符都能在"
             "项目根 .env（或运行环境）中取到值；active model 也必须配置 api_key。"
         )
-
-    if config:
-        logger.info(f"✅ 配置文件加载成功: {config_path}")
-
-        # 启动时创建配置文件中所有缺失的目录（workspace/memories/logs/sessions/
-        # skills/prompts/sqlite 父目录/external_dirs 宿主机路径等）
-        created_dirs = config.ensure_directories()
-        if created_dirs:
-            logger.info(f"📁 已创建 {len(created_dirs)} 个配置目录: {created_dirs}")
-        else:
-            logger.info("📁 配置目录均已存在，无需创建")
-
-        logger.info(
-            f"日志初始化完成 | 目录: {Path(log_files.get('proc', '')).parent} | "
-            f"运行日志: {log_files.get('proc')} | 错误日志: {log_files.get('err')} | "
-            f"通信日志: {log_files.get('comm')}"
-        )
-        logger.info(f"LLM Provider: {config.llm.provider}")
-        logger.info(f"LLM Model: {config.llm.model}")
-        logger.info(f"LLM Protocol: {config.llm.protocol}")
-        logger.info(f"Database Type: {config.database.type}")
-    else:
+    if not config:
         logger.warning("⚠️ 配置未加载，后续将使用内置默认值（部分功能可能不可用）")
+        return
 
-    await startup_knowledge(app, config_path)
+    logger.info(f"✅ 配置文件加载成功: {config_path}")
+    # 启动时创建配置文件中所有缺失的目录（workspace/memories/logs/sessions/
+    # skills/prompts/sqlite 父目录/external_dirs 宿主机路径等）
+    created_dirs = config.ensure_directories()
+    if created_dirs:
+        logger.info(f"📁 已创建 {len(created_dirs)} 个配置目录: {created_dirs}")
+    else:
+        logger.info("📁 配置目录均已存在，无需创建")
 
-    if config:
-        await _check_llm_connection(config, agent_env=agent_env)
+    logger.info(
+        f"日志初始化完成 | 目录: {Path(log_files.get('proc', '')).parent} | "
+        f"运行日志: {log_files.get('proc')} | 错误日志: {log_files.get('err')} | "
+        f"通信日志: {log_files.get('comm')}"
+    )
+    logger.info(f"LLM Provider: {config.llm.provider}")
+    logger.info(f"LLM Model: {config.llm.model}")
+    logger.info(f"LLM Protocol: {config.llm.protocol}")
+    logger.info(f"Database Type: {config.database.type}")
 
-    _init_database_and_state(app, config)
 
-    # Phase 2B：DB 初始化完成、开始接流量前，恢复 Pod 崩溃/驱逐遗留的 stale run。
-    # 只把 running 标记为 interrupted 并补一条 error 事件，避免前端一直“执行中”；
-    # 不自动重新执行（执行器属于 Phase 2C）。任何异常只告警，不阻断启动。
+async def _recover_stale_runs() -> None:
+    """Phase 2B：DB 初始化完成、开始接流量前，恢复 Pod 崩溃/驱逐遗留的 stale run。
+
+    只把 running 标记为 interrupted 并补一条 error 事件，避免前端一直“执行中”；
+    不自动重新执行（执行器属于 Phase 2C）。任何异常只告警，不阻断启动。
+    """
     try:
         from easy_agent.services.run_registry import recover_stale_runs
 
@@ -285,177 +258,121 @@ async def lifespan(app: FastAPI):
     except Exception as exc:  # noqa: BLE001 - 恢复失败不阻断启动
         logger.warning(f"⚠️ stale run 恢复失败（忽略）: {exc}")
 
-    # 部署形态 fail-fast：生产多 worker/副本 + SQLite = 运行期随机丢消息/锁表，
-    # 这里在启动期直接拒绝（用户决策：生产强制 MySQL）。
+
+def _check_deployment(agent_env: str) -> None:
+    """部署形态 fail-fast：生产多 worker/副本 + SQLite = 运行期随机丢消息/锁表，
+    这里在启动期直接拒绝（用户决策：生产强制 MySQL）。"""
     from easy_agent.utils.deployment import (
         deployment_errors,
         deployment_warnings,
     )
 
-    _workers = None
-    _db_type = getattr(db_instance, "db_type", "unknown")
-    for _msg in deployment_warnings(
-        db_type=_db_type,
-        agent_env=agent_env,
-        workers=_workers,
-    ):
-        logger.warning("⚠️ 部署配置 | %s", _msg)
-    _errors = deployment_errors(
-        db_type=_db_type,
-        agent_env=agent_env,
-        workers=_workers,
+    db_type = getattr(db_instance, "db_type", "unknown")
+    for msg in deployment_warnings(db_type=db_type, agent_env=agent_env, workers=None):
+        logger.warning("⚠️ 部署配置 | %s", msg)
+    errors = deployment_errors(db_type=db_type, agent_env=agent_env, workers=None)
+    if errors:
+        for msg in errors:
+            logger.error("❌ 部署配置错误 | %s", msg)
+        raise RuntimeError("; ".join(errors))
+
+
+def _discover_skills_root(config) -> str:
+    """查找技能根目录并列出发现的技能，返回根目录（没有时返回空串）。
+
+    FW-06：启动期校验 frontmatter，坏技能只告警不阻断启动。
+    """
+    skills_dir_config = (
+        config.tools.skills_dir if hasattr(config.tools, "skills_dir") else None
     )
-    if _errors:
-        for _msg in _errors:
-            logger.error("❌ 部署配置错误 | %s", _msg)
-        raise RuntimeError("; ".join(_errors))
+    skills_root = find_skills_root(skills_dir_config)
+    if not skills_root:
+        logger.info("ℹ️ 未发现任何 skills")
+        return ""
 
-    # 外部目录树同步（ai_kb → 知识库板块）：由 knowledge.catalog_sync.enabled
-    # 开关控制，后台执行，失败仅记日志不阻断启动
-    await startup_catalog_sync(app)
+    skills = discover_skills(skills_root)
+    logger.info(f"📂 Skills 目录 (配置: {skills_dir_config}): {skills_root}")
+    logger.info(f"📁 发现 {len(skills)} 个 skills:")
+    for skill in skills:
+        logger.info(f"  - {skill['name']}: {skill['path']}")
+    for issue in validate_skills(skills_root):
+        if issue["errors"]:
+            logger.warning(
+                "技能 frontmatter 校验失败 | %s | %s",
+                issue["name"],
+                "; ".join(issue["errors"]),
+            )
+    return skills_root
 
-    system_prompt = _prepare_system_prompt(config, config_path)
 
-    if config:
-        skills_dir_config = (
-            config.tools.skills_dir if hasattr(config.tools, "skills_dir") else None
+def _register_execute_profiles(config) -> None:
+    """FW-04：execute 的 HITL 文案改由官方 HarnessProfile 注入（不再 monkeypatch
+    FilesystemMiddleware）。启动期为配置中的每个模型注册一次；失败只报错，不阻断启动
+    （首次建图前 agent.py 还会兜底重试）。"""
+    from easy_agent.agent.hitl import register_execute_description_profiles
+
+    profile_keys = register_execute_description_profiles(config)
+    if profile_keys:
+        logger.info(f"🧩 execute 描述 HarnessProfile 已注册 | keys={list(profile_keys)}")
+    else:
+        logger.error(
+            "❌ execute 描述 HarnessProfile 注册失败，"
+            "模型将看不到「删除类命令需人工审批」的提示"
         )
-        skills_root = find_skills_root(skills_dir_config)
 
-        if skills_root:
-            skills = discover_skills(skills_root)
-            logger.info(f"📂 Skills 目录 (配置: {skills_dir_config}): {skills_root}")
-            logger.info(f"📁 发现 {len(skills)} 个 skills:")
-            for skill in skills:
-                logger.info(f"  - {skill['name']}: {skill['path']}")
-            # FW-06：启动期校验 frontmatter，坏技能只告警不阻断启动
-            skill_issues = [s for s in validate_skills(skills_root) if s["errors"]]
-            for issue in skill_issues:
-                logger.warning(
-                    "技能 frontmatter 校验失败 | %s | %s",
-                    issue["name"],
-                    "; ".join(issue["errors"]),
-                )
-        else:
-            skills_root = ""
-            logger.info("ℹ️ 未发现任何 skills")
 
-        # MCP 不在启动时全局加载，改为按用户配置动态加载（见 agent_manager）
-        logger.info("ℹ️ MCP 将按用户配置动态加载（不在启动时预加载）")
-
-        if config:
-            init_agent_config(
-                config=config,
-                system_prompt=system_prompt,
-                skills_root=skills_root,
-                agent_env=agent_env if agent_env in ("dev", "test", "prod") else "",
-            )
-            agent_config = {"config": config}
-            logger.info("✅ Agent 配置加载成功")
-
-            # FW-04：execute 的 HITL 文案改由官方 HarnessProfile 注入（不再
-            # monkeypatch FilesystemMiddleware）。启动期为配置中的每个模型注册
-            # 一次；失败只报错，不阻断启动（首次建图前 agent.py 还会兜底重试）。
-            from easy_agent.agent.hitl import register_execute_description_profiles
-
-            profile_keys = register_execute_description_profiles(config)
-            if profile_keys:
-                logger.info(
-                    f"🧩 execute 描述 HarnessProfile 已注册 | keys={list(profile_keys)}"
-                )
-            else:
-                logger.error(
-                    "❌ execute 描述 HarnessProfile 注册失败，"
-                    "模型将看不到「删除类命令需人工审批」的提示"
-                )
-
-            # 公共（预置）专家目录：把「解析到哪个目录、来源是谁」打出来，
-            # 出问题时能一眼看出是配置写错还是目录没挂上。
-            try:
-                from easy_agent.services import public_expert_service
-
-                public_experts = public_expert_service.discover_public_experts()
-                if public_experts:
-                    logger.info(
-                        f"📂 公共专家目录: {public_expert_service.public_experts_root_hint()} | "
-                        f"数量: {len(public_experts)}"
-                    )
-                    for item in public_experts:
-                        logger.info(
-                            f"  - {item['export_name_cn']} ({item['export_agent_id']})"
-                        )
-                else:
-                    logger.warning(
-                        "⚠️ 未发现任何公共（预置）专家 | "
-                        f"解析目录: {public_expert_service.public_experts_root_hint()}"
-                    )
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(f"⚠️ 公共专家目录扫描失败: {type(exc).__name__}: {exc}")
-
-            # FW-09：默认官方 checkpointer（auto：sqlite → legacy）。两种后端都不能跨副本
-            # 共享，prod 多副本在启动期 fail-fast（可用 EASY_ALLOW_LEGACY_CHECKPOINTER=1
-            # 显式豁免），配置错误不再被静默吞掉。
-            from easy_agent.persistence.checkpoints import (
-                CheckpointDeploymentError,
-                start_checkpoint_backend,
-                start_checkpoint_gc,
-            )
-
-            try:
-                checkpoint_backend = await start_checkpoint_backend(agent_env=agent_env)
-                logger.info(f"✅ HITL checkpointer 后端: {checkpoint_backend}")
-            except CheckpointDeploymentError:
-                raise
-            except Exception as exc:  # noqa: BLE001
-                logger.error(
-                    "HITL checkpointer 启动失败，回退业务库 MemorySaver 快照: "
-                    f"{type(exc).__name__}: {exc}"
-                )
-            # 删除会话时只有处理请求的进程能当场删 checkpoint；多副本下别的 pod 文件里的残留
-            # 由各自的后台对账补删（官方 SQLite saver 激活时才启动，shutdown_checkpointers 负责停）
-            start_checkpoint_gc()
-
-            # LangGraph Store 是业务库 SqlStore，首次使用时绑定业务库；先丢掉同一进程里
-            # 之前缓存的实例（测试会在一个进程里换着业务库多次启动应用）
-            from easy_agent.persistence.stores import reset_store
-
-            reset_store()
-
-            # 对象存储 A：EASY_UPLOAD_BACKEND=store 时上传原始文件必须落 LangGraph
-            # Store，这里做启动期 fail-closed 自检（local 模式为空操作）。宁可启动
-            # 失败，也不要跑起来后每次上传都 503。
-            from easy_agent.services.upload_storage import preflight_upload_store
-
-            preflight_upload_store()
-        else:
-            logger.warning("⚠️ 配置未加载，Agent 未初始化，聊天等功能将不可用")
-
-        _start_scheduler()
-    else:
-        logger.warning("⚠️ Agent 配置未加载")
-
-    # 仅当活动 YAML 含 knowledge: 段时才启动知识库：
-    # KnowledgeConfig.from_yaml 以「是否含 knowledge 键」判定应用配置，缺段时会
-    # 把整份应用配置按 strict extra=forbid 校验而报错 → 启动失败。缺段则记日志跳过。
-    knowledge_started = False
+def _log_public_experts() -> None:
+    """公共（预置）专家目录：把「解析到哪个目录、来源是谁」打出来，
+    出问题时能一眼看出是配置写错还是目录没挂上。"""
     try:
-        import yaml
+        from easy_agent.services import public_expert_service
 
-        _raw = yaml.safe_load(Path(config_path).read_text(encoding="utf-8")) or {}
-        knowledge_started = isinstance(_raw, dict) and "knowledge" in _raw
-    except Exception as exc:
-        logger.warning(f"检测 knowledge 配置失败，按未启用处理: {exc}")
-    if knowledge_started:
-        logger.info(f"📚 知识库实现: {KNOWLEDGE_IMPL}")
-        await startup_knowledge(app, config_path)
-    else:
-        logger.info("ℹ️ 未配置 knowledge 段，跳过知识库启动")
+        public_experts = public_expert_service.discover_public_experts()
+        if public_experts:
+            logger.info(
+                f"📂 公共专家目录: {public_expert_service.public_experts_root_hint()} | "
+                f"数量: {len(public_experts)}"
+            )
+            for item in public_experts:
+                logger.info(f"  - {item['export_name_cn']} ({item['export_agent_id']})")
+        else:
+            logger.warning(
+                "⚠️ 未发现任何公共（预置）专家 | "
+                f"解析目录: {public_expert_service.public_experts_root_hint()}"
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"⚠️ 公共专家目录扫描失败: {type(exc).__name__}: {exc}")
 
-    logger.info("=" * 60)
-    logger.info("🚀 Easy Agent Web Service 启动完成")
-    logger.info("=" * 60)
-    yield
 
+async def _start_checkpointing(agent_env: str) -> None:
+    """FW-09：默认官方 checkpointer（auto：sqlite → legacy）。
+
+    两种后端都不能跨副本共享，prod 多副本在启动期 fail-fast（可用
+    EASY_ALLOW_LEGACY_CHECKPOINTER=1 显式豁免），配置错误不再被静默吞掉。
+    """
+    from easy_agent.persistence.checkpoints import (
+        CheckpointDeploymentError,
+        start_checkpoint_backend,
+        start_checkpoint_gc,
+    )
+
+    try:
+        checkpoint_backend = await start_checkpoint_backend(agent_env=agent_env)
+        logger.info(f"✅ HITL checkpointer 后端: {checkpoint_backend}")
+    except CheckpointDeploymentError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.error(
+            "HITL checkpointer 启动失败，回退业务库 MemorySaver 快照: "
+            f"{type(exc).__name__}: {exc}"
+        )
+    # 删除会话时只有处理请求的进程能当场删 checkpoint；多副本下别的 pod 文件里的残留
+    # 由各自的后台对账补删（官方 SQLite saver 激活时才启动，shutdown_checkpointers 负责停）
+    start_checkpoint_gc()
+
+
+async def _shutdown_services(app) -> None:
+    """关闭顺序：等流式任务结束 → 刷出事件 → 关 MCP、Store、checkpointer、知识库 → 调度器与数据库。"""
     await drain_stream_tasks()
     try:
         # 流式任务已结束：把各会话写入器队列里剩余的事件 flush 到 stream_events，
@@ -478,10 +395,103 @@ async def lifespan(app: FastAPI):
         await shutdown_checkpointers()
     except Exception as exc:  # noqa: BLE001
         logger.warning(f"关闭 checkpointer 失败: {exc}")
-    if knowledge_started:
-        await shutdown_knowledge(app)
+    # 没启动过 worker / 客户端时是空操作
+    await shutdown_knowledge(app)
     await shutdown_catalog_sync(app)
     _shutdown_app(app)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global agent_config
+
+    if str(PROJECT_ROOT) not in sys.path:
+        sys.path.insert(0, str(PROJECT_ROOT))
+    os.chdir(PROJECT_ROOT)
+
+    agent_env = runtime_initialization.environment.agent_env
+
+    # B3：生产环境 JWT 密钥 fail-fast。必须在启动期（而非模块 import 期）校验，
+    # 避免 pytest / 工具脚本仅 import 就失败；dev/test 保留 data/.jwt_secret 回退。
+    from easy_agent.utils.auth import validate_production_jwt_secret
+
+    validate_production_jwt_secret(env=agent_env)
+
+    # Phase 0：严格多副本门禁。默认关闭；Phase 2/3 完成前开启会明确失败，
+    # 避免在 SSE/run/file/sandbox 尚未外置时误宣称多副本安全。
+    from easy_agent.bootstrap.runtime_features import check_multi_replica_startup
+
+    check_multi_replica_startup(agent_env)
+
+    # 两道 fail-fast 之后才读配置
+    config_path = runtime_initialization.config_path
+    config = runtime_initialization.config
+    _log_startup_banner(agent_env, config_path)
+    _report_config(
+        config,
+        config_path,
+        runtime_initialization.config_error,
+        runtime_initialization.log_files,
+    )
+
+    # 知识库：配置里没有 knowledge 段时按默认配置（未启用）加载，不起 worker
+    await startup_knowledge(app, config_path)
+    logger.info(f"📚 知识库实现: {KNOWLEDGE_IMPL}")
+
+    if config:
+        await _check_llm_connection(config, agent_env=agent_env)
+
+    _init_database_and_state(app, config)
+    await _recover_stale_runs()
+    _check_deployment(agent_env)
+
+    # 外部目录树同步（ai_kb → 知识库板块）：由 knowledge.catalog_sync.enabled
+    # 开关控制，后台执行，失败仅记日志不阻断启动
+    await startup_catalog_sync(app)
+
+    system_prompt = _prepare_system_prompt(config, config_path)
+
+    if config:
+        skills_root = _discover_skills_root(config)
+        # MCP 不在启动时全局加载，改为按用户配置动态加载（见 agent_manager）
+        logger.info("ℹ️ MCP 将按用户配置动态加载（不在启动时预加载）")
+
+        init_agent_config(
+            config=config,
+            system_prompt=system_prompt,
+            skills_root=skills_root,
+            agent_env=agent_env if agent_env in ("dev", "test", "prod") else "",
+        )
+        agent_config = {"config": config}
+        logger.info("✅ Agent 配置加载成功")
+
+        _register_execute_profiles(config)
+        _log_public_experts()
+        await _start_checkpointing(agent_env)
+
+        # LangGraph Store 是业务库 SqlStore，首次使用时绑定业务库；先丢掉同一进程里
+        # 之前缓存的实例（测试会在一个进程里换着业务库多次启动应用）
+        from easy_agent.persistence.stores import reset_store
+
+        reset_store()
+
+        # 对象存储 A：EASY_UPLOAD_BACKEND=store 时上传原始文件必须落 LangGraph
+        # Store，这里做启动期 fail-closed 自检（local 模式为空操作）。宁可启动
+        # 失败，也不要跑起来后每次上传都 503。
+        from easy_agent.services.upload_storage import preflight_upload_store
+
+        preflight_upload_store()
+
+        _start_scheduler()
+    else:
+        logger.warning("⚠️ Agent 配置未加载")
+
+    logger.info("=" * 60)
+    logger.info("🚀 Easy Agent Web Service 启动完成")
+    logger.info("=" * 60)
+    yield
+
+    await _shutdown_services(app)
 
 
 app = FastAPI(

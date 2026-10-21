@@ -15,7 +15,6 @@ from types import SimpleNamespace
 
 import pytest
 
-import easy_agent.services.streaming as streaming
 from easy_agent.services.streaming import orchestrator
 
 
@@ -193,6 +192,3 @@ async def test_finalize_resume_done_with_authoritative_blocks_and_elapsed_usage(
     # 记忆更新使用恢复流捕获的原始用户消息
     assert calls[3][1][3] == "original question"
 
-
-def test_finalize_stream_reexported_from_package_facade():
-    assert streaming.finalize_stream is orchestrator.finalize_stream

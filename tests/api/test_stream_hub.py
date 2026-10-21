@@ -8,7 +8,7 @@
 import pytest
 
 from easy_agent.api.chat import _StreamHub, _detached_event_stream, _session_stream_hubs
-from easy_agent.services.streaming import format_sse
+from easy_agent.services.sse import format_sse
 
 
 def _sse(obj) -> str:

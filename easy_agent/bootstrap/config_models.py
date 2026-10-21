@@ -1,13 +1,14 @@
 """Pydantic 配置模型（2026-10-18 批次 1A 从 config.py 拆出）。
 
-本模块只依赖 pydantic，**不 import config.py**；YAML 加载/解析仍由
-``config.py`` 的 ``Config`` 负责，并由其 re-export 本模块全部模型，保证
-``from easy_agent.bootstrap.config import LLMConfig`` 等既有导入路径不变。
+配置字段名与默认值的唯一来源：``Config.from_yaml`` 把 YAML 各段直接交给这里的模型校验，
+已知键列表（``config_validation``）也由模型字段生成。本模块只依赖 pydantic，**不 import
+config.py**；``config.py`` re-export 本模块全部模型，``from easy_agent.bootstrap.config
+import LLMConfig`` 等既有导入路径不变。
 """
 
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 # 应用默认欢迎标题（Config.app_welcome_title 的兜底值）。
 DEFAULT_APP_WELCOME_TITLE = "Easy Agent，让工作更简单"
@@ -19,6 +20,14 @@ DEFAULT_WEB_SEARCH_API_URLS = {
     "tavily": "https://api.tavily.com/search",
     "internal": "http://28.221.28.7:10089/api/v1/webSearch",
 }
+
+
+def blank_as_false(value: Any) -> Any:
+    """布尔开关写成 null 或空串（例如 ``${VAR:-}`` 展开为空）时按 false 处理。
+
+    其余取值交给 Pydantic 解析：字符串 ``"false"`` / ``"0"`` / ``"no"`` 是 false。
+    """
+    return False if value is None or value == "" else value
 
 
 class RetryConfig(BaseModel):
@@ -41,6 +50,11 @@ class ProviderConfig(BaseModel):
     # 会话标识（x-opencode-session）与自定义 User-Agent，缺失会直接 400。
     headers: dict[str, str] = Field(default_factory=dict)
 
+    @field_validator("headers", mode="before")
+    @classmethod
+    def _headers_default_empty(cls, value):
+        return dict(value or {})
+
 
 class LLMConfig(BaseModel):
     """LLM configuration - resolved from the active model selection"""
@@ -53,6 +67,12 @@ class LLMConfig(BaseModel):
     protocol: str = "openai"  # "openai" or "anthropic"
     headers: dict[str, str] = Field(default_factory=dict)
     retry: RetryConfig = Field(default_factory=RetryConfig)
+
+    @field_validator("api_base", "model", "context_length", "protocol", mode="before")
+    @classmethod
+    def _empty_means_default(cls, value, info):
+        """当前模型段里留空（空串 / 0 / null）的字段按默认值处理。"""
+        return value or cls.model_fields[info.field_name].default
 
 
 class ToolsConfig(BaseModel):
@@ -84,7 +104,6 @@ class MySQLPoolConfig(BaseModel):
 
     pool_size: int = 5
     max_overflow: int = 10
-    pool_timeout: int = 30
     pool_recycle: int = 3600
 
 
@@ -183,6 +202,22 @@ class AgentConfig(BaseModel):
     显式设为 ``false`` 可退回每条消息一个 thread、每轮从 DB 重建历史的兼容模式。
     见 ``docs/archive/design/2026-10-19-da03-session-thread.md``。
     """
+
+    @field_validator("prompt_path", "skill_write", mode="before")
+    @classmethod
+    def _empty_means_default(cls, value, info):
+        """null、空串等空值按默认值处理，和 YAML 里不写这个键一样。"""
+        return value or cls.model_fields[info.field_name].default
+
+    @field_validator("sandbox_network", mode="before")
+    @classmethod
+    def _sandbox_network_text(cls, value):
+        return str(value or cls.model_fields["sandbox_network"].default)
+
+    @field_validator("interrupt_sensitive_writes", mode="before")
+    @classmethod
+    def _blank_switch_is_off(cls, value):
+        return blank_as_false(value)
 
 
 class MCPToolConfig(BaseModel):

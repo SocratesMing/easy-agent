@@ -483,6 +483,64 @@ def _sanitize_tool_calls(db, tool_calls: list) -> list:
         for tc in tool_calls[:1000]
     ]
 
+#: extra_data 序列化后的长度上限（字符）
+_MAX_EXTRA_DATA_CHARS = 5_000_000
+#: 超限后的第一步：各类块的长字段截到这个长度
+_TRIM_LIMITS = {"tool_call": ("result", 200), "thinking": ("content", 200), "content": ("content", 500)}
+#: 仍然超限时的兜底：长字段只留开头这么多字并加省略号
+_STRIP_LIMITS = {"tool_call": ("result", 100), "thinking": ("content", 100), "content": ("content", 200)}
+
+
+def _trim_long_fields(extra: dict) -> bool:
+    """把块、工具调用结果和 thinking 的长字段截到固定长度，返回是否截断过。"""
+    trimmed = False
+    blocks = extra.get("blocks")
+    if isinstance(blocks, list):
+        for block in blocks:
+            rule = _TRIM_LIMITS.get(block.get("type"))
+            if rule is None:
+                continue
+            field, limit = rule
+            value = str(block.get(field, ""))
+            if len(value) > limit:
+                block[field] = value[:limit]
+                trimmed = True
+    tool_calls = extra.get("tool_calls")
+    if isinstance(tool_calls, list):
+        for tc in tool_calls:
+            value = str(tc.get("result", ""))
+            if len(value) > 200:
+                tc["result"] = value[:200]
+                trimmed = True
+    if "thinking" in extra and len(str(extra["thinking"])) > 200:
+        extra["thinking"] = str(extra["thinking"])[:200]
+        trimmed = True
+    return trimmed
+
+
+def _head(value, limit: int) -> str:
+    return str(value)[:limit] + "..." if value else ""
+
+
+def _strip_to_metadata(extra: dict) -> None:
+    """最终兜底：清空参数、长字段只留开头，保留 blocks / tool_calls 的结构
+    （tool_name、success、duration 等元信息）。"""
+    blocks = extra.get("blocks")
+    if isinstance(blocks, list):
+        for block in blocks:
+            if block.get("type") == "tool_call":
+                block["arguments"] = {}
+            rule = _STRIP_LIMITS.get(block.get("type"))
+            if rule is not None:
+                field, limit = rule
+                block[field] = _head(block.get(field), limit)
+    tool_calls = extra.get("tool_calls")
+    if isinstance(tool_calls, list):
+        for tc in tool_calls:
+            tc["arguments"] = {}
+            tc["result"] = _head(tc.get("result"), 100)
+
+
 def _sanitize_extra_data(db, message: dict) -> str | None:
     extra_keys = {
         k: v
@@ -492,99 +550,24 @@ def _sanitize_extra_data(db, message: dict) -> str | None:
     if not extra_keys:
         return None
 
-    if "blocks" in extra_keys:
-        blocks = extra_keys["blocks"]
-        if isinstance(blocks, list):
-            extra_keys["blocks"] = _sanitize_blocks(db, blocks)
+    if isinstance(extra_keys.get("blocks"), list):
+        extra_keys["blocks"] = _sanitize_blocks(db, extra_keys["blocks"])
+    if isinstance(extra_keys.get("tool_calls"), list):
+        extra_keys["tool_calls"] = _sanitize_tool_calls(db, extra_keys["tool_calls"])
 
-    if "tool_calls" in extra_keys:
-        tool_calls = extra_keys["tool_calls"]
-        if isinstance(tool_calls, list):
-            extra_keys["tool_calls"] = _sanitize_tool_calls(db, tool_calls)
-
-    # thinking 不截断：完整思考用于下一轮上下文；超大时由下方 max_len 渐进裁剪兜底
-
+    # thinking 不截断：完整思考用于下一轮上下文；超大时由下方的裁剪兜底
     result = json.dumps(extra_keys, ensure_ascii=False)
-    max_len = 5_000_000
-    if len(result) <= max_len:
+    if len(result) <= _MAX_EXTRA_DATA_CHARS:
         return result
 
-    # 渐进式修剪：逐步缩小 result 内容，而不是直接删除 blocks/tool_calls
-    for trim_round in range(10):
-        trimmed = False
-        if "blocks" in extra_keys and isinstance(extra_keys["blocks"], list):
-            for b in extra_keys["blocks"]:
-                if (
-                    b.get("type") == "tool_call"
-                    and len(str(b.get("result", ""))) > 200
-                ):
-                    b["result"] = str(b.get("result", ""))[:200]
-                    trimmed = True
-                elif (
-                    b.get("type") == "thinking"
-                    and len(str(b.get("content", ""))) > 200
-                ):
-                    b["content"] = str(b.get("content", ""))[:200]
-                    trimmed = True
-                elif (
-                    b.get("type") == "content"
-                    and len(str(b.get("content", ""))) > 500
-                ):
-                    b["content"] = str(b.get("content", ""))[:500]
-                    trimmed = True
-        if "tool_calls" in extra_keys and isinstance(
-            extra_keys["tool_calls"], list
-        ):
-            for tc in extra_keys["tool_calls"]:
-                if len(str(tc.get("result", ""))) > 200:
-                    tc["result"] = str(tc.get("result", ""))[:200]
-                    trimmed = True
-        if "thinking" in extra_keys and len(str(extra_keys["thinking"])) > 200:
-            extra_keys["thinking"] = str(extra_keys["thinking"])[:200]
-            trimmed = True
-
-        if not trimmed:
-            break
+    # 先截断长字段（不直接删除 blocks / tool_calls）；截断一次后不会再有可截的内容
+    if _trim_long_fields(extra_keys):
         result = json.dumps(extra_keys, ensure_ascii=False)
-        if len(result) <= max_len:
+        if len(result) <= _MAX_EXTRA_DATA_CHARS:
             return result
 
-    # 最终兜底：如果仍然超限，移除 arguments 和 result 中较长的内容，
-    # 但保留 blocks 和 tool_calls 的结构（tool_name, success, duration 等元信息）
-    if len(result) > max_len:
-        if "blocks" in extra_keys and isinstance(extra_keys["blocks"], list):
-            for b in extra_keys["blocks"]:
-                if b.get("type") == "tool_call":
-                    b["arguments"] = {}
-                    b["result"] = (
-                        (str(b.get("result", ""))[:100] + "...")
-                        if b.get("result")
-                        else ""
-                    )
-                elif b.get("type") == "thinking":
-                    b["content"] = (
-                        (str(b.get("content", ""))[:100] + "...")
-                        if b.get("content")
-                        else ""
-                    )
-                elif b.get("type") == "content":
-                    b["content"] = (
-                        (str(b.get("content", ""))[:200] + "...")
-                        if b.get("content")
-                        else ""
-                    )
-        if "tool_calls" in extra_keys and isinstance(
-            extra_keys["tool_calls"], list
-        ):
-            for tc in extra_keys["tool_calls"]:
-                tc["arguments"] = {}
-                tc["result"] = (
-                    (str(tc.get("result", ""))[:100] + "...")
-                    if tc.get("result")
-                    else ""
-                )
-        result = json.dumps(extra_keys, ensure_ascii=False)
-    return result
+    _strip_to_metadata(extra_keys)
+    return json.dumps(extra_keys, ensure_ascii=False)
 
 def add_message_row(db, session_id: str, message: dict):
     from easy_agent.db.session_messages import add_message_row as _add_row

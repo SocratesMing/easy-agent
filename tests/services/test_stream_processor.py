@@ -515,7 +515,7 @@ def test_usage_reasoning_defaults_to_zero_when_absent():
 
 def test_build_assistant_message_dict_carries_reasoning_tokens():
     """持久化的消息 usage 必须带上 reasoning_tokens，供历史会话回放展示。"""
-    from easy_agent.services.streaming import build_assistant_message_dict
+    from easy_agent.services.stream_messages import build_assistant_message_dict
 
     msg = build_assistant_message_dict(
         content="c", thinking="t", thinking_duration=1.0,

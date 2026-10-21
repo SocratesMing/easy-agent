@@ -2,7 +2,7 @@
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
-from easy_agent.services.streaming import build_context_messages
+from easy_agent.services.stream_messages import build_context_messages
 
 
 def test_build_context_messages_restores_tool_calls_and_results():

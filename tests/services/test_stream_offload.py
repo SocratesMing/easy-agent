@@ -16,7 +16,8 @@ from types import SimpleNamespace
 import pytest
 
 from easy_agent.models.api import ChatRequest
-from tests.services.test_stream_split_golden import FakeDB, FakeGraph, FakeLogger, FakeProc, _agent, _impl
+from easy_agent.services.streaming import orchestrator
+from tests.services.test_stream_split_golden import FakeDB, FakeGraph, FakeLogger, FakeProc, _agent
 
 _DB_METHODS = (
     "get_session",
@@ -67,13 +68,13 @@ for _name in _DB_METHODS:
 def _fake_processor(monkeypatch):
     FakeProc.end_thinking = []
     FakeProc.instances = []
-    target = _impl()
+    target = orchestrator
     monkeypatch.setattr(target, "StreamProcessor", FakeProc)
     monkeypatch.setattr(target, "get_agent_config", lambda: None)
 
 
 def _generator(db, graph):
-    from easy_agent.services.streaming import chat_stream_generator
+    from easy_agent.services.streaming.orchestrator import chat_stream_generator
 
     return chat_stream_generator(
         ChatRequest(message="hi"), db, _agent(graph), "s1", "m1", "tester", session_logger=FakeLogger()
@@ -158,7 +159,7 @@ _WRITE = {"path": "a.md", "content": "x"}
 async def test_stream_end_side_effects_query_off_the_event_loop(tmp_path, monkeypatch):
     """收尾的工作区改名（两次写库）和技能入库扫描（读生成文件记录）也在线程里查库。"""
     from easy_agent.services import skill_library
-    from easy_agent.services.streaming import chat_stream_generator
+    from easy_agent.services.streaming.orchestrator import chat_stream_generator
 
     monkeypatch.setattr(skill_library, "user_skills_dir", lambda username: tmp_path / "skills")
     workspace = tmp_path / "s1"

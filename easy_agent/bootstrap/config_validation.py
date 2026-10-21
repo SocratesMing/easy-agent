@@ -1,13 +1,32 @@
 """配置键校验与环境变量占位符展开（2026-10-18 批次 1A 从 config.py 拆出）。
 
 本模块**不 import config.py**：``Config.from_yaml`` 调用这里的校验与展开
-逻辑，``config.py`` 负责 re-export，保持既有导入路径与行为不变。
+逻辑，``config.py`` 负责 re-export，保持既有导入路径与行为不变。已知键里能和
+``config_models`` 的模型一一对应的部分直接由模型字段生成，不再手写第二份。
 """
 
 import logging
 import re
 from typing import Any
 
+from pydantic import BaseModel
+
+from easy_agent.bootstrap.config_models import (
+    AgentConfig,
+    DatabaseConfig,
+    DistributedLockConfig,
+    FileContextConfig,
+    MySQLConfig,
+    MySQLPoolConfig,
+    PersonnelConfig,
+    ProviderConfig,
+    RetryConfig,
+    SQLiteConfig,
+    SummarizationConfig,
+    ToolsConfig,
+    UploadLimitsConfig,
+    WebSearchConfig,
+)
 from easy_agent.bootstrap.env import env_bool, env_str
 
 # 日志分类沿用 "easy_agent.bootstrap.config"：启动日志与 caplog 过滤按该名称订阅，
@@ -18,29 +37,20 @@ logger = logging.getLogger("easy_agent.bootstrap.config")
 # 设置 EASY_CONFIG_STRICT=1 后改为 fail-fast（部署/CI 推荐）。
 CONFIG_STRICT_ENV_VAR = "EASY_CONFIG_STRICT"
 
-# 顶层键：来自 Config.from_yaml() 的扁平读取，以及兄弟模块直接消费的段
-# （knowledge 由 knowledges.core.config 读取；log/log_dir 为历史遗留键）。
-KNOWN_TOP_LEVEL_KEYS = frozenset(
+
+def _fields(model: type[BaseModel]) -> frozenset[str]:
+    return frozenset(model.model_fields)
+
+
+# 顶层键：AgentConfig 的字段（agent 配置写在顶层）、Config.from_yaml() 读取的各段，
+# 以及兄弟模块直接消费的段（knowledge 由 knowledges.core.config 读取；log/log_dir 为历史遗留键）。
+KNOWN_TOP_LEVEL_KEYS = _fields(AgentConfig) | frozenset(
     {
         "model",
         "models",
         "llm",  # 旧版单模型写法，仍兼容
         "retry",
-        "max_steps",
-        "workspace_dir",
-        "memories_dir",
-        "sessions_dir",
-        "prompt_path",
         "system_prompt_path",  # 旧键，兼容
-        "idle_logout_minutes",
-        "denied_dirs",
-        "interrupt_sensitive_writes",
-        "skill_write",
-        "external_dirs",
-        "sandbox_enabled",
-        "sandbox_network",
-        "execute_max_timeout",
-        "session_thread",
         "summarization",
         "tools",
         "web_search",
@@ -63,72 +73,25 @@ KNOWN_TOP_LEVEL_KEYS = frozenset(
     }
 )
 
+# models.<provider> 下允许的键（provider 名本身是动态的）；max_input_tokens 是旧键，
+# from_yaml 会映射为 context_length。
+KNOWN_PROVIDER_KEYS = _fields(ProviderConfig) | frozenset({"max_input_tokens"})
+
 # 关键配置节及其允许的直接子键。点号表示嵌套节。
 KNOWN_SECTION_KEYS: dict[str, frozenset[str]] = {
-    "retry": frozenset({"enabled", "max_retries"}),
-    "tools": frozenset(
-        {"skills_dir", "prompts_dir", "result_log_truncate", "experts_dir"}
-    ),
-    "database": frozenset({"type", "sqlite", "mysql"}),
-    "database.sqlite": frozenset({"path"}),
-    "database.mysql": frozenset(
-        {
-            "host",
-            "port",
-            "user",
-            "password",
-            "database",
-            "charset",
-            "pool",
-            "connect_timeout",
-            "read_timeout",
-            "write_timeout",
-        }
-    ),
-    "database.mysql.pool": frozenset(
-        {"pool_size", "max_overflow", "pool_recycle"}
-    ),
-    "summarization": frozenset(
-        {"enabled", "compression_threshold", "compression_target"}
-    ),
-    "web_search": frozenset(
-        {
-            "enabled",
-            "provider",
-            "api_url",
-            "api_key",
-            "search_depth",
-            "topic",
-            "timeout_seconds",
-            "default_time_range",
-            "max_results",
-            "main_text_max_chars",
-        }
-    ),
-    "distributed_lock": frozenset(
-        {
-            "enabled",
-            "key_prefix",
-            "ttl_seconds",
-            "renew_interval_seconds",
-            "retry_interval_seconds",
-        }
-    ),
-    "personnel": frozenset(
-        {"self_registration_enabled", "passwordless_login_enabled"}
-    ),
-    "upload_limits": frozenset(
-        {"enabled", "max_file_size_mb", "max_files_per_message", "max_total_size_mb"}
-    ),
-    "file_context": frozenset(
-        {
-            "enabled",
-            "parse_max_file_size_mb",
-            "max_stored_chars",
-            "manifest_max_chars",
-            "preview_max_chars",
-        }
-    ),
+    "retry": _fields(RetryConfig),
+    "tools": _fields(ToolsConfig),
+    "database": _fields(DatabaseConfig),
+    "database.sqlite": _fields(SQLiteConfig),
+    "database.mysql": _fields(MySQLConfig),
+    "database.mysql.pool": _fields(MySQLPoolConfig),
+    "summarization": _fields(SummarizationConfig),
+    "web_search": _fields(WebSearchConfig),
+    "distributed_lock": _fields(DistributedLockConfig),
+    "personnel": _fields(PersonnelConfig),
+    "upload_limits": _fields(UploadLimitsConfig),
+    "file_context": _fields(FileContextConfig),
+    # 以下各段与模型字段名不同（expert 段对应 Config.expert_*）或不归 Config 管（knowledge）
     "expert": frozenset(
         {
             "guardrail_enabled",
@@ -177,33 +140,9 @@ KNOWN_SECTION_KEYS: dict[str, frozenset[str]] = {
     "knowledge.catalog_sync.mysql": frozenset(
         {"host", "port", "user", "password", "charset"}
     ),
-    "llm": frozenset(
-        {
-            "provider",
-            "api_key",
-            "model",
-            "api_base",
-            "context_length",
-            "max_input_tokens",
-            "protocol",
-            "headers",
-        }
-    ),
+    # 旧版单模型写法，键与 models.<provider> 相同
+    "llm": KNOWN_PROVIDER_KEYS,
 }
-
-# models.<provider> 下允许的键（provider 名本身是动态的）。
-KNOWN_PROVIDER_KEYS = frozenset(
-    {
-        "provider",
-        "api_key",
-        "model",
-        "api_base",
-        "context_length",
-        "max_input_tokens",  # 旧键，from_yaml 会映射为 context_length
-        "protocol",
-        "headers",
-    }
-)
 
 # 已废弃但仍兼容的键 -> 提示信息。不参与 unknown 判定，也不参与
 # config.yaml / config-example.yaml 的键集合漂移比较。
