@@ -15,15 +15,15 @@ from openpyxl.styles import Font, PatternFill
 from easy_agent.db import Database, get_database
 from easy_agent.middleware import get_current_username
 from easy_agent.knowledges.core.repository import KnowledgeRepository
-from easy_agent.personnel.excel_import import PersonnelExcelError, parse_personnel_excel
-from easy_agent.personnel.models import (
+from easy_agent.knowledges.personnel.excel_import import PersonnelExcelError, parse_personnel_excel
+from easy_agent.knowledges.personnel.models import (
     PersonnelCreateRequest,
     PersonnelImportResponse,
     PersonnelListResponse,
     PersonnelRecord,
     PersonnelUpdateRequest,
 )
-from easy_agent.personnel.repository import (
+from easy_agent.knowledges.personnel.repository import (
     PersonnelConflictError,
     PersonnelNotFoundError,
     create_personnel,

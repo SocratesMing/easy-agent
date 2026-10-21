@@ -23,8 +23,7 @@ easy-agent/
 │   ├── models/          # Pydantic API & DB models
 │   ├── middleware/      # JWT auth + in-process rate limit
 │   ├── tools/           # Agent-callable tools (web_search/scheduled_task/...)
-│   ├── knowledges/      # Knowledge base v2 (RAGFlow)
-│   ├── personnel/       # Personnel admin / Excel import
+│   ├── knowledges/      # Knowledge base v2 (RAGFlow) + personnel/（人员管理 / Excel 导入）
 │   ├── agent/            # EasyAgent 装配：core/backend/workspace/middleware/hitl/skills/model
 │   ├── bootstrap/        # 配置/环境/初始化/日志/web_runner
 │   ├── persistence/      # checkpoints / LangGraph stores

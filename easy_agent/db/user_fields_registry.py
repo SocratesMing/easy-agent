@@ -1,8 +1,8 @@
 """Personnel 扩展字段/默认管理员的注册表（解除 db → personnel 反向依赖）。
 
 方向：personnel 领域在 import 时把实现注册进来；db 层只调用注册表。
-    personnel.user_fields  -> db.user_fields_registry <- db.schema / db.repositories.users（或反向？）
-实际依赖：personnel → registry；db.schema/repositories → registry（无环）。
+    knowledges.personnel.user_fields -> db.user_fields_registry <- db.schema / db.repositories.users
+实际依赖：knowledges.personnel → registry；db.schema/repositories → registry（无环）。
 """
 
 from __future__ import annotations
@@ -58,7 +58,7 @@ def get_or_create_default_admin(db):
     """创建/修复默认管理员；personnel 未注册时给出明确错误。"""
     if _default_admin is None:
         raise RuntimeError(
-            "默认管理员策略未注册：请先 import easy_agent.personnel（应用启动路径会自动完成）"
+            "默认管理员策略未注册：请先 import easy_agent.knowledges.personnel（应用启动路径会自动完成）"
         )
     return _default_admin(db)
 

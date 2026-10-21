@@ -1,6 +1,6 @@
 """知识库实现统一出口：从 knowledges（Ragflow 0.26.3 标准 API）导出全部符号。
 
-所有跨模块引用（app.py / api/chat.py / personnel/api.py / services/agent_manager.py）
+所有跨模块引用（app.py / api/chat.py / knowledges/personnel/api.py / services/agent_manager.py）
 一律从本模块导入，避免散落多处的直接包依赖。config.yaml 的
 knowledge.implementation 键仅作日志提示（仅支持 v2）。
 """

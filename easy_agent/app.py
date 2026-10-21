@@ -47,7 +47,7 @@ from easy_agent.knowledge_impl import (
     startup_knowledge,
 )
 from easy_agent.knowledge_impl import knowledge_router
-from easy_agent.personnel import router as personnel_router
+from easy_agent.knowledges.personnel import router as personnel_router
 from easy_agent.agent.model import create_model
 from easy_agent.models.api import HealthResponse
 from easy_agent.services import (

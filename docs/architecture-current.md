@@ -28,8 +28,7 @@
 | `services/` | streaming（SSE 编排）、agent_manager（会话 Agent 缓存/流锁）、scheduler、mcp（连接器工具）、session_uploads、skill_library、expert/public_expert、memory_manager、session_runtime、sse（事件注册表） |
 | `db/` | `database.py`（连接/迁移/核心表）、`session_messages.py`、`expert_store.py`、`schema_registry.py` |
 | `middleware/` | JWT 鉴权（`auth.py`）、进程内限流（`rate_limit.py`） |
-| `knowledges/` | 知识库 v2：service / api / ragflow client / runtime worker、catalog sync、observability |
-| `personnel/` | 人员管理、Excel 导入、用户扩展字段 |
+| `knowledges/` | 知识库 v2：service / api / ragflow client / runtime worker、catalog sync、observability；`personnel/` 子包负责知识库域的人员管理、Excel 导入、用户扩展字段 |
 | `bootstrap/initialization/` | 环境/日志/运行期初始化（config/log/environment/runtime） |
 | `tools/` | web_search、scheduled_task、expert_writer、session_file_reader |
 | `models/` | API / DB Pydantic 模型 |

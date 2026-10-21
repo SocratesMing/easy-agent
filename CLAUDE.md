@@ -72,7 +72,7 @@ Environment variables:
 - `auth.py` — Login/register and login-policy endpoints; single sign-on via `token_version`
 - `files.py` — File upload/download/preview/management
 - `expert.py` / `connectors.py` / `skill_center.py` — expert agents, MCP connectors, skill library
-- `settings.py` / `prompts.py` / `scheduled_tasks.py` / `knowledge.py` / `personnel.py` / `completion.py` — remaining routers
+- `settings.py` / `prompts.py` / `scheduled_tasks.py` / `knowledge.py` / `completion.py` — remaining routers（人员管理路由在 `knowledges/personnel/api.py`）
 
 ### Services (`easy_agent/services/`)
 
@@ -83,7 +83,7 @@ Environment variables:
 
 - `middleware/auth.py` — JWT (python-jose) + bcrypt. 30-minute token expiry, idle-logout support, and single sign-on: a new login increments `token_version`, invalidating older tokens. `get_current_username()` only accepts a valid `Authorization: Bearer` token (no `X-Username` fallback). Login does not bind to an IP.
 - `db/database.py` — SQLite (default) or MySQL (DBUtils pool); MySQL failures do **not** silently fall back to SQLite. Messages are stored in the `session_messages` row table; `sessions.messages` remains only as a legacy blob fallback for old sessions. Schema migrations run via `db/schema_registry.py` / `_ensure_column()`.
-- `knowledges/` — Knowledge base v2 (RAGFlow service/API/runtime worker). `personnel/` — personnel management and Excel import.
+- `knowledges/` — Knowledge base v2 (RAGFlow service/API/runtime worker). Its `personnel/` subpackage owns knowledge-scoped personnel management and Excel import (`/api/personnel`).
 - `utils/file_parser.py` — Extracts text from PDF, DOCX, XLSX, PPTX, images (OCR), CSV, code files. Auto-detects encoding.
 - `utils/session_logger.py` — Per-session logging utility.
 - `models/api.py` — Pydantic request/response models for API endpoints.

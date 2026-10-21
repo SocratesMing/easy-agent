@@ -8,7 +8,7 @@ from openpyxl import Workbook, load_workbook
 from easy_agent.app import app
 from easy_agent.middleware import get_current_username
 from easy_agent.models.db import UserModel
-from easy_agent.personnel import repository as personnel_repository
+from easy_agent.knowledges.personnel import repository as personnel_repository
 
 
 def _xlsx(headers, rows) -> bytes:
