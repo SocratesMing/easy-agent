@@ -91,6 +91,20 @@ def renew_session_stream(
         return cursor.rowcount > 0
 
 
+
+def release_session_stream(db, session_id: str, owner: str, now_iso: str) -> bool:
+    """条件释放会话流锁：只有锁仍归 ``owner`` 时才清空，返回是否释放了。"""
+    with db.get_connection() as conn:
+        cursor = conn.cursor()
+        db._execute(
+            cursor,
+            "UPDATE session_runtime SET stream_owner='', stream_until='', "
+            "cancel_requested=0, updated_at=? WHERE session_id=? AND stream_owner=?",
+            (now_iso, session_id, owner),
+        )
+        return cursor.rowcount > 0
+
+
 def upsert_session_runtime(
     db,
     session_id: str,

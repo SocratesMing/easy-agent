@@ -372,7 +372,11 @@ async def _start_checkpointing(agent_env: str) -> None:
 
 
 async def _shutdown_services(app) -> None:
-    """关闭顺序：等流式任务结束 → 刷出事件 → 关 MCP、Store、checkpointer、知识库 → 调度器与数据库。"""
+    """关闭顺序：停周期恢复 → 等流式任务结束 → 刷出事件 → 关 MCP、Store、checkpointer、知识库
+    → 调度器与数据库。"""
+    from easy_agent.services.run_registry import stop_run_recovery
+
+    await stop_run_recovery()
     await drain_stream_tasks()
     try:
         # 流式任务已结束：把各会话写入器队列里剩余的事件 flush 到 stream_events，
@@ -485,6 +489,12 @@ async def lifespan(app: FastAPI):
         _start_scheduler()
     else:
         logger.warning("⚠️ Agent 配置未加载")
+
+    # 新 pod 往往在旧 pod 的 run 租约过期前就起来了，启动时那一轮扫不到，之后定期再扫。
+    # 放在所有 fail-fast 检查之后：启动失败时不留下没人收尾的后台任务
+    from easy_agent.services.run_registry import start_run_recovery
+
+    start_run_recovery()
 
     logger.info("=" * 60)
     logger.info("🚀 Easy Agent Web Service 启动完成")

@@ -3,8 +3,9 @@
 把「一次聊天/恢复 run」持久化到共享库，回答三个问题：
 
 1. 哪个 run 正在哪个 Pod 上跑：``lease_owner`` + ``lease_until``；
-2. Pod 崩溃/驱逐后怎么收尾：租约过期 → 启动时 :func:`recover_stale_runs`
-   把陈旧 ``running`` 标记为 ``interrupted`` 并 append 一条 error 事件；
+2. Pod 崩溃/驱逐后怎么收尾：租约过期后，启动时以及之后每隔
+   ``EASY_RUN_RECOVERY_INTERVAL`` 秒由 :func:`recover_stale_runs` 把陈旧 ``running``
+   标记为 ``interrupted``、append 一条 error 事件，并释放这条 run 留下的会话流锁；
 3. 正常完成/失败/取消：由 ``_detached_event_stream`` 落终态。
 
 本模块所有方法都是**薄封装 + 异常只记日志**：run 登记是观测/恢复能力，
@@ -14,15 +15,18 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from datetime import UTC, datetime, timedelta
 
 from easy_agent.db.repositories import agent_runs as agent_runs_repo
+from easy_agent.db.repositories import session_runtime as session_runtime_repo
 from easy_agent.db.repositories.stream_events import append_stream_event
 from easy_agent.bootstrap.env import env_int
 from easy_agent.services.session_runtime import instance_owner, is_stream_active
 from easy_agent.services.sse_emitter import SSEEmitter
+from easy_agent.utils.blocking import run_blocking
 
 logger = logging.getLogger("easy_agent.run_registry")
 
@@ -39,6 +43,13 @@ MAX_ERROR_CHARS = 500
 
 # 单页扫描上限；恢复循环按页处理直到没有 stale 行为止。
 RECOVER_BATCH_LIMIT = 500
+
+# stale run 周期恢复的间隔（秒）。新 Pod 往往在旧 Pod 的 run 租约过期之前就起来了，
+# 启动时那一轮扫不到，之后靠它补上；不大于 0 时只在启动时扫一次。
+RUN_RECOVERY_INTERVAL_ENV = "EASY_RUN_RECOVERY_INTERVAL"
+DEFAULT_RUN_RECOVERY_INTERVAL = 60
+
+_recovery_task: asyncio.Task | None = None
 
 
 def _iso(dt: datetime) -> str:
@@ -137,7 +148,8 @@ def recover_stale_runs(db, now: datetime | None = None) -> int:
         now_iso = _iso(current)
     except Exception as exc:  # noqa: BLE001 - 时间参数异常按当前时间处理
         logger.warning(f"recover_stale_runs 时间参数异常，改用当前时间: {exc}")
-        now_iso = _iso(_utc_now())
+        current = _utc_now()
+        now_iso = _iso(current)
 
     recovered = 0
     while True:
@@ -167,14 +179,11 @@ def recover_stale_runs(db, now: datetime | None = None) -> int:
                 # 另一个 Pod 已先一步恢复（或 run 已自行落终态）：不写事件。
                 continue
             recovered += 1
+            owner = str(row.get("lease_owner") or "")
             if session_id:
-                # 若该会话已经被新的 run 接管（新流仍在跑），不要往新流的事件表里
-                # 追加旧 run 的 error——否则重连回放会把旧错误显示在新回复里。
-                try:
-                    active = is_stream_active(db, session_id)
-                except Exception:  # noqa: BLE001
-                    active = False
-                if active:
+                # 若该会话已经被新的流接管，不要往新流的事件表里追加旧 run 的
+                # error——否则重连回放会把旧错误显示在新回复里。
+                if _stream_taken_over(db, session_id, run_id, owner, current, now_iso):
                     logger.info(
                         f"stale run 所属会话已有新流，跳过恢复 error 事件 | "
                         f"run={run_id} | session={session_id}"
@@ -189,6 +198,9 @@ def recover_stale_runs(db, now: datetime | None = None) -> int:
                     logger.warning(
                         f"写入恢复 error 事件失败（忽略） | run={run_id} | {exc}"
                     )
+                # 崩溃的 Pod 来不及释放流锁。先写 error 再释放：重连的前端回放到 error
+                # 即结束；用户照提示重发时也不会被这把锁挡住（否则要等它的 TTL 过期）
+                _release_dead_stream_lock(db, session_id, owner, now_iso)
             logger.warning(
                 f"恢复 stale run | run={run_id} | session={session_id} | "
                 f"last_owner={row.get('lease_owner') or '(unknown)'}"
@@ -203,22 +215,99 @@ def recover_stale_runs(db, now: datetime | None = None) -> int:
 
     if recovered:
         logger.warning(
-            f"启动恢复完成：{recovered} 个 stale running run 已标记为 interrupted"
+            f"stale run 恢复完成：{recovered} 个 running run 已标记为 interrupted"
             "（未自动重新执行，需用户重发或从审批处继续）"
         )
     else:
-        logger.info("启动恢复：未发现 stale running run")
+        # 周期恢复每分钟一轮，没找到时不刷 INFO
+        logger.debug("未发现 stale running run")
     return recovered
 
 
+def _stream_taken_over(
+    db, session_id: str, run_id: str, owner: str, now: datetime, now_iso: str
+) -> bool:
+    """会话的流是否已被新的流接管：流锁仍有效，且锁换了实例、或同会话还有别的在跑的 run。
+
+    锁仍归这个 stale run 的实例、又没有别的在跑的 run，说明锁是崩溃的 Pod 留下的。
+    查询失败时按未接管处理（照常写 error 事件）。
+    """
+    try:
+        if not is_stream_active(db, session_id, now=now):
+            return False
+        lock = session_runtime_repo.get_session_runtime(db, session_id) or {}
+        if str(lock.get("stream_owner") or "") != owner:
+            return True
+        return agent_runs_repo.has_other_live_run(db, session_id, run_id, now_iso)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _release_dead_stream_lock(db, session_id: str, owner: str, now_iso: str) -> None:
+    """释放 stale run 的实例留下的会话流锁；锁已换了主人时不动。"""
+    if not owner:
+        return
+    try:
+        if session_runtime_repo.release_session_stream(db, session_id, owner, now_iso):
+            logger.info(f"释放 stale run 留下的流锁 | session={session_id} | owner={owner}")
+    except Exception as exc:  # noqa: BLE001 - 释放失败只是要等锁的 TTL 过期
+        logger.warning(f"释放 stale run 留下的流锁失败（忽略） | session={session_id} | {exc}")
+
+
+async def _run_recovery_loop(interval: float) -> None:
+    # 延迟导入：run_registry 在 db 层之上，避免导入期循环
+    from easy_agent.db import get_database
+
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            await run_blocking(recover_stale_runs, get_database())
+        except Exception as exc:  # noqa: BLE001 - 恢复失败不能拖垮应用，下一轮重试
+            logger.warning(f"stale run 周期恢复失败（下一轮重试）: {exc}")
+
+
+def start_run_recovery(*, interval: float | None = None) -> asyncio.Task | None:
+    """在启动时那一轮扫描之后，每隔 ``interval`` 秒再恢复一次 stale run。
+
+    间隔取 ``EASY_RUN_RECOVERY_INTERVAL``（秒，默认 60），不大于 0 时关闭。多个 Pod 同时
+    扫描没关系：``mark_interrupted`` 的条件更新保证每个 run 只被收尾一次。
+    """
+    global _recovery_task
+    if _recovery_task is not None and not _recovery_task.done():
+        return _recovery_task
+    seconds = (
+        env_int(RUN_RECOVERY_INTERVAL_ENV, DEFAULT_RUN_RECOVERY_INTERVAL)
+        if interval is None
+        else interval
+    )
+    if seconds <= 0:
+        logger.info(f"stale run 周期恢复已关闭（{RUN_RECOVERY_INTERVAL_ENV}={seconds}）")
+        return None
+    _recovery_task = asyncio.create_task(_run_recovery_loop(seconds), name="run-recovery")
+    return _recovery_task
+
+
+async def stop_run_recovery() -> None:
+    global _recovery_task
+    task, _recovery_task = _recovery_task, None
+    if task is None:
+        return
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+
+
 __all__ = [
+    "DEFAULT_RUN_RECOVERY_INTERVAL",
     "MAX_ERROR_CHARS",
     "RECOVER_BATCH_LIMIT",
     "RECOVER_ERROR_MESSAGE",
     "RUN_LEASE_SECONDS",
+    "RUN_RECOVERY_INTERVAL_ENV",
     "finish_run",
     "new_run_id",
     "recover_stale_runs",
     "renew_run",
     "start_run",
+    "start_run_recovery",
+    "stop_run_recovery",
 ]

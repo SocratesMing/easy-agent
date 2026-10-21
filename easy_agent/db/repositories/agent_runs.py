@@ -193,6 +193,20 @@ def mark_interrupted(db, run_id: str, error: str) -> bool:
         return cursor.rowcount > 0
 
 
+
+def has_other_live_run(db, session_id: str, run_id: str, now_iso: str) -> bool:
+    """同一会话里除 ``run_id`` 以外是否还有租约未过期的 ``running`` run（新流在跑）。"""
+    with db.get_connection() as conn:
+        cursor = conn.cursor()
+        db._execute(
+            cursor,
+            "SELECT run_id FROM agent_runs WHERE session_id=? AND run_id<>? "
+            "AND status=? AND lease_until>=? LIMIT 1",
+            (session_id, run_id, STATUS_RUNNING, now_iso or ""),
+        )
+        return cursor.fetchone() is not None
+
+
 __all__ = [
     "DEFAULT_STALE_LIMIT",
     "STATUS_CANCELLED",
@@ -202,6 +216,7 @@ __all__ = [
     "STATUS_RUNNING",
     "finish_run",
     "get_run",
+    "has_other_live_run",
     "list_stale_running",
     "mark_interrupted",
     "renew_run",

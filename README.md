@@ -553,7 +553,7 @@ A: 在 `easy_agent/agent/model.py` 中扩展 `create_model()`，并在 `config.y
 | 能力 | 实现 | 说明 |
 | --- | --- | --- |
 | SSE 事件跨 Pod 回放 | `stream_events` 表 + `StreamEventWriter` | `/agent/chat/stream/live` 按 `last_event_id` 从 DB 回放；不依赖本 Pod hub |
-| run 租约/中断恢复 | `agent_runs` 表 + `run_registry` | 流锁心跳续租；Pod 崩溃后启动把 stale running 标记 `interrupted` 并补 error 事件；**不自动重跑** |
+| run 租约/中断恢复 | `agent_runs` 表 + `run_registry` | 流锁心跳续租；Pod 崩溃后，启动时和之后每隔 `EASY_RUN_RECOVERY_INTERVAL` 秒（默认 60）把租约过期的 running 标记 `interrupted`、补 error 事件并释放它留下的会话流锁；**不自动重跑** |
 | 会话流互斥 | `session_runtime` DB 流锁 | 跨 Pod 原子抢占/续约/取消 |
 | 迁移串行化 | MySQL `GET_LOCK` / SQLite `flock` | `scripts/db/migrate_db.py`；`EASY_AUTO_MIGRATE=0` 时启动只校验 |
 | LangGraph checkpointer/store | 官方 SQLite saver / 业务库 SqlStore | `EASY_CHECKPOINT_SQLITE_PATH`；多副本时路径带 `{pod}`、`EASY_STICKY_SESSIONS=1`，审批落错 pod 返回 409，删除会话后各 pod 后台补删 |
