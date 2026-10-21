@@ -77,6 +77,20 @@ def test_workspace_tree(client):
     assert "items" in resp.json()
 
 
+def test_workspace_tree_hides_internal_files(tmp_path):
+    """记忆锁 ``.memory.jsonl.lock`` 等框架产物不列给前端（文件树看不到）。"""
+    from easy_agent.api.files import build_workspace_tree
+
+    ws = tmp_path / "alice"
+    ws.mkdir()
+    (ws / ".memory.jsonl.lock").write_text("", encoding="utf-8")
+    (ws / "AGENTS.jsonl.lock").write_text("", encoding="utf-8")
+    (ws / ".gitignore").write_text("x", encoding="utf-8")
+    (ws / "report.md").write_text("hi", encoding="utf-8")
+
+    assert [item["name"] for item in build_workspace_tree(ws)] == ["report.md"]
+
+
 def test_preview_workspace_file(client):
     # 预览接口已接入单点登录 token_version 与活跃会话校验，必须使用真实注册流程
     # 签发的 token；旧式仅含 sub 的手工 token 应当被拒绝。

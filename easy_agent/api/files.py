@@ -159,12 +159,19 @@ def build_workspace_tree(workspace_dir: Path, path: str = "") -> list:
 
     # .agent：各会话的框架产物（大工具结果 / 对话历史，DA-04），不给用户看
     _HIDDEN_DIRS = {"node_modules", ".venv", ".deps", "__pycache__", ".agent"}
+    # 框架内部文件不列给用户：点开头（如记忆锁 ``.memory.jsonl.lock``）与锁文件。
+    # 前者是运行时产物，后者是 ``memory_lock()`` 的跨进程锁，删不得也看不到才有意义。
+    _HIDDEN_SUFFIXES = (".lock",)
     items = []
     try:
         for entry in sorted(
             target_dir.iterdir(), key=lambda e: (not e.is_dir(), e.name.lower())
         ):
+            if entry.name.startswith("."):
+                continue
             if entry.is_dir() and entry.name in _HIDDEN_DIRS:
+                continue
+            if entry.is_file() and entry.name.endswith(_HIDDEN_SUFFIXES):
                 continue
             items.append(
                 {
