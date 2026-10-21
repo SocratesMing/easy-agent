@@ -213,7 +213,11 @@ class TestStartBackend:
 
 
 def test_relative_sqlite_path_resolves_under_project_root():
-    project_root = Path(ck.__file__).resolve().parent.parent
+    # 仓库根以本测试文件的位置为准，不能照抄被测模块的算法：checkpoints.py 挪进
+    # persistence/ 后少算了一级，默认路径落到 easy_agent/data/，旧断言照着同样的
+    # parent.parent 算，没能发现
+    project_root = Path(__file__).resolve().parents[2]
+    assert (project_root / "pyproject.toml").is_file()
     resolved = ck.resolve_sqlite_path(ck.DEFAULT_SQLITE_PATH)
     assert resolved.is_absolute()
     assert resolved == project_root / "data" / "checkpoints.db"
@@ -226,7 +230,7 @@ def test_app_lifespan_uses_official_sqlite_saver(client):
     import os
 
     configured_path = Path(os.environ["EASY_CHECKPOINT_SQLITE_PATH"])
-    project_root = Path(ck.__file__).resolve().parent.parent
+    project_root = Path(__file__).resolve().parents[2]
 
     assert ck.active_checkpoint_backend() == ck.BACKEND_SQLITE
     assert ck.sqlite_checkpointer_active() is True
