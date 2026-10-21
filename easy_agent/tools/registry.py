@@ -55,6 +55,10 @@ KNOWN_SOURCES = frozenset(
 #: ``interrupt_on`` 允许的决策（与 ``agent.py`` 现有配置一致）。
 ALLOWED_INTERRUPT_DECISIONS = ("approve", "edit", "reject")
 
+#: 删除类操作只给「批准 / 拒绝」：不给改参数，避免把 rm 的目标改成通配、
+#: 把删除路径改到审批之外的位置等方式绕过策略层（目录删除在 shell 层直接拒绝）。
+DESTRUCTIVE_INTERRUPT_DECISIONS = ("approve", "reject")
+
 
 @dataclass(frozen=True)
 class ToolSpec:
@@ -293,7 +297,8 @@ TOOL_REGISTRY: tuple[ToolSpec, ...] = (
         description="沙箱内执行 Shell 命令（DeepAgents 内置）",
         mutating=True,
         is_hitl=True,
-        interrupt_decisions=("approve", "edit", "reject"),
+        # 只有删除类命令才进审批，因此只给批准/拒绝：删除参数不可编辑。
+        interrupt_decisions=DESTRUCTIVE_INTERRUPT_DECISIONS,
         # 删除类命令才进审批；目录删除直接拒绝，不进入审批。
         hitl_conditional=True,
         hitl_predicate="is_destructive_command",
@@ -313,7 +318,7 @@ TOOL_REGISTRY: tuple[ToolSpec, ...] = (
         description="删除文件（DeepAgents 0.7 新增；默认进 HITL）",
         mutating=True,
         is_hitl=True,
-        interrupt_decisions=("approve", "edit", "reject"),
+        interrupt_decisions=DESTRUCTIVE_INTERRUPT_DECISIONS,
         hitl_order=5,
     ),
     ToolSpec(
@@ -571,6 +576,7 @@ def build_session_tools(
 
 __all__ = [
     "ALLOWED_INTERRUPT_DECISIONS",
+    "DESTRUCTIVE_INTERRUPT_DECISIONS",
     "KNOWN_SOURCES",
     "SOURCE_BUILTIN",
     "SOURCE_EXPERT",

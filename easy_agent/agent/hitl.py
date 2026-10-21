@@ -22,6 +22,8 @@ from deepagents.middleware.filesystem import EXECUTE_TOOL_DESCRIPTION
 from langchain.agents.middleware import InterruptOnConfig, ToolCallRequest
 
 from easy_agent.tools.registry import (
+    ALLOWED_INTERRUPT_DECISIONS,
+    DESTRUCTIVE_INTERRUPT_DECISIONS,
     ToolSpec,
     builtin_tool_names,
     default_interrupt_tool_names,
@@ -67,6 +69,13 @@ _NAME_HEURISTIC_EXEMPT = name_heuristic_exempt_tools()
 
 _MUTATING_TOOL_RE = re.compile(
     r"(write|delete|update|insert|drop|create|put|remove|save|upload|execute_sql)",
+    re.I,
+)
+
+#: 删除类工具名（MCP / 动态工具）：审批只给「批准 / 拒绝」，不提供编辑参数。
+#: ``rm`` 用词边界，避免 form/perform 这类词误命中。
+_DELETE_TOOL_RE = re.compile(
+    r"(delete|destroy|drop|erase|purge|remove|truncate|unlink)|\brm\b",
     re.I,
 )
 
@@ -162,6 +171,22 @@ def mcp_annotation_decision(tool: object) -> bool | None:
     if read_only is False:
         return True
     return None
+
+
+def mcp_interrupt_decisions(tool_name: str, tool: object | None = None) -> list[str]:
+    """MCP / 动态工具的决策集：删除类操作只给「批准 / 拒绝」。
+
+    破坏性取两处证据：服务端 ``destructiveHint=True``，或（去掉 server 前缀后的）
+    工具名命中删除类词根。任一成立即不提供编辑参数——改参数正是绕过删除策略的入口
+    （例如把 rm 目标改成通配、把路径改到别的目录）。
+    """
+    metadata = getattr(tool, "metadata", None)
+    destructive = (
+        isinstance(metadata, Mapping) and metadata.get("destructiveHint") is True
+    )
+    if destructive or _DELETE_TOOL_RE.search(tool_name or ""):
+        return list(DESTRUCTIVE_INTERRUPT_DECISIONS)
+    return list(ALLOWED_INTERRUPT_DECISIONS)
 
 
 def _is_knowledge_materialize(request: ToolCallRequest) -> bool:
@@ -442,6 +467,10 @@ def build_interrupt_config(
         if decision:
             config.setdefault(
                 name,
-                InterruptOnConfig(allowed_decisions=["approve", "edit", "reject"]),
+                InterruptOnConfig(
+                    allowed_decisions=mcp_interrupt_decisions(
+                        heuristic_name, tool_obj
+                    )
+                ),
             )
     return config

@@ -63,6 +63,8 @@ export function applyApprovalRequests (blocks, actionRequests) {
       blk.id = ar.tool_call_id
     }
     if (ar.file_paths && ar.file_paths.length > 0) blk.file_paths = ar.file_paths
+    // 后端下发的可选项：删除类只有 approve/reject，卡片据此隐藏「编辑参数」
+    if (Array.isArray(ar.allowed_decisions)) blk.allowed_decisions = ar.allowed_decisions
     if (ar.interrupt_id) blk.hitl_interrupt_id = ar.interrupt_id
   }
   return unmatched

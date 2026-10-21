@@ -149,8 +149,17 @@ def test_default_interrupt_list_matches_hitl_module():
     for name in DEFAULT_INTERRUPT_TOOLS:
         spec = registry.require_tool_spec(name)
         assert spec.is_hitl
-        assert spec.interrupt_decisions == ("approve", "edit", "reject")
         assert not spec.hitl_conditional
+    # 删除类工具不给「编辑参数」；其余写操作仍可改参数后继续执行
+    assert registry.require_tool_spec("delete").interrupt_decisions == (
+        registry.DESTRUCTIVE_INTERRUPT_DECISIONS
+    )
+    for name in ("save_expert", "create_scheduled_task"):
+        assert registry.require_tool_spec(name).interrupt_decisions == (
+            "approve",
+            "edit",
+            "reject",
+        )
 
 
 def test_conditional_hitl_tools_are_not_in_default_list():

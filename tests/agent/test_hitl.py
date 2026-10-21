@@ -75,7 +75,9 @@ def test_build_interrupt_config_only_adds_injected_registry_tools():
     assert "create_scheduled_task" not in cfg
     assert "access_knowledge_original" not in cfg
     assert cfg["execute"]["when"] is _is_destructive_command
-    assert cfg["execute"]["allowed_decisions"] == ["approve", "edit", "reject"]
+    # 删除类操作不给「编辑参数」，只留批准/拒绝
+    assert cfg["execute"]["allowed_decisions"] == ["approve", "reject"]
+    assert cfg["delete"]["allowed_decisions"] == ["approve", "reject"]
     assert cfg["mysql_execute_sql"] == {"allowed_decisions": ["approve", "edit", "reject"]}
 
 
@@ -221,6 +223,38 @@ def test_unannotated_tools_fall_back_to_the_name_heuristic():
     cfg = build_interrupt_config([_mcp_tool("update_record"), _mcp_tool("list_records")])
     assert "update_record" in cfg
     assert "list_records" not in cfg
+
+
+def test_delete_like_mcp_tools_have_no_edit_decision():
+    """删除类工具（名字命中或 destructiveHint）只给批准/拒绝，不给改参数。"""
+    cfg = build_interrupt_config(
+        [
+            _mcp_tool("delete_note"),
+            _mcp_tool("drop_table"),
+            _mcp_tool("cleanup", destructiveHint=True),
+            _mcp_tool("update_record"),
+        ]
+    )
+
+    assert cfg["delete_note"]["allowed_decisions"] == ["approve", "reject"]
+    assert cfg["drop_table"]["allowed_decisions"] == ["approve", "reject"]
+    assert cfg["cleanup"]["allowed_decisions"] == ["approve", "reject"]
+    # 非删除类写操作仍可改参数
+    assert cfg["update_record"]["allowed_decisions"] == ["approve", "edit", "reject"]
+
+
+def test_delete_decision_check_ignores_innocent_words():
+    """``\\brm\\b`` 带词边界，form / performance 这类词不应被判成删除工具。"""
+    cfg = build_interrupt_config(
+        [_mcp_tool("update_form"), _mcp_tool("update_performance")]
+    )
+
+    assert cfg["update_form"]["allowed_decisions"] == ["approve", "edit", "reject"]
+    assert cfg["update_performance"]["allowed_decisions"] == [
+        "approve",
+        "edit",
+        "reject",
+    ]
 
 
 def test_annotations_survive_the_mcp_evidence_wrapper():

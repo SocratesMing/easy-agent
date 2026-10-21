@@ -47,6 +47,22 @@ test('main-agent approvals attach to their own card by tool_call_id', () => {
   assert.deepEqual(approvalTargetForBlock(message, blocks[1]), { interruptId: 'A', actionIndex: 0, actionName: 'execute' })
 })
 
+test('delete approvals carry allowed_decisions so the card hides 编辑参数', () => {
+  const blocks = [{ type: 'tool_call', tool_name: 'delete', tool_call_id: 'c-rm', duration: null }]
+  const actions = [{
+    tool_call_id: 'c-rm', tool_name: 'delete', interrupt_id: 'A', action_index: 0,
+    allowed_decisions: ['approve', 'reject'],
+  }]
+  applyApprovalRequests(blocks, actions)
+  assert.deepEqual(blocks[0].allowed_decisions, ['approve', 'reject'])
+})
+
+test('payloads without allowed_decisions keep the legacy all-decisions behaviour', () => {
+  const blocks = [{ type: 'tool_call', tool_name: 'delete', tool_call_id: 'c-rm', duration: null }]
+  applyApprovalRequests(blocks, [{ tool_call_id: 'c-rm', tool_name: 'delete', interrupt_id: 'A' }])
+  assert.equal(blocks[0].allowed_decisions, undefined)
+})
+
 test('legacy payloads keep the name fallback but skip already-finished cards', () => {
   const blocks = [
     { type: 'tool_call', tool_name: 'delete', tool_call_id: 'old', duration: 0.2, result: 'deleted' },

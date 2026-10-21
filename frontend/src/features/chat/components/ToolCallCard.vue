@@ -56,7 +56,8 @@
         </template>
         <div v-else class="tcc-approval-actions">
           <button type="button" class="tcc-btn approve" @click="$emit('approve')">批准</button>
-          <button type="button" class="tcc-btn" @click="startEdit">编辑参数</button>
+          <!-- 删除类操作后端只下发 approve/reject，不提供改参数入口 -->
+          <button v-if="canEditDecision" type="button" class="tcc-btn" @click="startEdit">编辑参数</button>
           <button type="button" class="tcc-btn reject" @click="$emit('reject')">拒绝</button>
         </div>
       </div>
@@ -107,6 +108,8 @@ const props = defineProps({
   pendingApproval: { type: Boolean, default: false },
   filePaths: { type: Array, default: () => [] },
   streaming: { type: Boolean, default: false },
+  // 后端下发的可选项（approve/edit/reject）。空数组 = 旧载荷，按全部可选处理
+  allowedDecisions: { type: Array, default: () => [] },
 })
 
 const emit = defineEmits(['approve', 'reject', 'edit'])
@@ -183,6 +186,11 @@ const diffPrefix = (line) => {
   if (lines && lines.length > 0 && lines.every(l => l.type === 'add')) return ''
   return line.type === 'add' ? '+ ' : '- '
 }
+
+const canEditDecision = computed(() => {
+  if (!props.allowedDecisions.length) return true
+  return props.allowedDecisions.includes('edit')
+})
 
 const prettyArgs = computed(() => {
   try {

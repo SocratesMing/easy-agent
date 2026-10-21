@@ -56,7 +56,8 @@
         </template>
         <div v-else class="tcc-approval-actions">
           <button type="button" class="tcc-btn approve" @click="$emit('approve')">批准</button>
-          <button type="button" class="tcc-btn" @click="startEdit">编辑参数</button>
+          <!-- 删除类操作后端只下发 approve/reject，不提供改参数入口 -->
+          <button v-if="canEditDecision" type="button" class="tcc-btn" @click="startEdit">编辑参数</button>
           <button type="button" class="tcc-btn reject" @click="$emit('reject')">拒绝</button>
         </div>
       </div>
@@ -108,6 +109,8 @@ export default {
     pendingApproval: { type: Boolean, default: false },
     filePaths: { type: Array, default: () => [] },
     streaming: { type: Boolean, default: false },
+    // 后端下发的可选项（approve/edit/reject）。空数组 = 旧载荷，按全部可选处理
+    allowedDecisions: { type: Array, default: () => [] },
   },
   emits: ['approve', 'reject', 'edit'],
   data() {
@@ -163,6 +166,10 @@ export default {
       } catch (_) {
         return String(this.args)
       }
+    },
+    canEditDecision() {
+      if (!this.allowedDecisions.length) return true
+      return this.allowedDecisions.indexOf('edit') !== -1
     },
   },
   methods: {
