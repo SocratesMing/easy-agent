@@ -48,7 +48,7 @@ KNOWN_TOP_LEVEL_KEYS = _fields(AgentConfig) | frozenset(
     {
         "model",
         "models",
-        "llm",  # 旧版单模型写法，仍兼容
+        "llm",  # 旧版单模型写法，已不再读取，出现时只告警（见 DEPRECATED_CONFIG_KEYS）
         "retry",
         "system_prompt_path",  # 旧键，兼容
         "summarization",
@@ -140,14 +140,12 @@ KNOWN_SECTION_KEYS: dict[str, frozenset[str]] = {
     "knowledge.catalog_sync.mysql": frozenset(
         {"host", "port", "user", "password", "charset"}
     ),
-    # 旧版单模型写法，键与 models.<provider> 相同
-    "llm": KNOWN_PROVIDER_KEYS,
 }
 
 # 已废弃但仍兼容的键 -> 提示信息。不参与 unknown 判定，也不参与
 # config.yaml / config-example.yaml 的键集合漂移比较。
 DEPRECATED_CONFIG_KEYS: dict[str, str] = {
-    "llm": "llm 为旧版单模型写法，请改用 models + model；当前仍兼容读取",
+    "llm": "llm 为旧版单模型写法，已不再读取：当前模型由 models + model 决定，可删除该段",
     "system_prompt_path": "system_prompt_path 已由 prompt_path 取代，当前仍兼容读取",
     "log": "log 段不再由 Config 读取（日志由 initialization/log.py 管理）",
     "log_dir": "log_dir 不再由 Config 读取（日志由 initialization/log.py 管理）",

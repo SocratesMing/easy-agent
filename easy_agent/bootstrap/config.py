@@ -242,7 +242,7 @@ class Config(BaseModel):
         missing: set[str] = set()
         data = _expand_env_recursive(data, missing)
         # Read legacy model context limits without changing the stored YAML.
-        for model in [data.get("llm", {}), *data.get("models", {}).values()]:
+        for model in data.get("models", {}).values():
             if isinstance(model, dict) and "context_length" not in model and "max_input_tokens" in model:
                 model["context_length"] = model["max_input_tokens"]
         _set_unresolved_env_vars(sorted(missing))
@@ -283,6 +283,13 @@ class Config(BaseModel):
         """解析当前激活模型为 LLMConfig，并校验 api_key 非空。"""
         active_cfg = models.get(active_model, ProviderConfig())
         if not active_cfg.api_key:
+            if "llm" in data and active_model not in models:
+                # llm 段从来没被当成模型配置读过，「没有 api_key」会让人以为是密钥没配上
+                raise ValueError(
+                    f"models 里没有当前模型 '{active_model}'。旧版 llm: 单模型写法已不再读取，"
+                    "请把它移到 models.<名字> 下，并用 model: <名字> 选中"
+                    "（示例见 easy_agent/config/config-example.yaml）"
+                )
             raise ValueError(
                 f"Active model '{active_model}' has no api_key configured. "
                 f"Available models: {list(models.keys())}"
