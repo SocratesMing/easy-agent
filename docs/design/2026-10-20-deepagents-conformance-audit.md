@@ -2,7 +2,7 @@
 
 审计对象：`easy-agent` 当前后端（`easy_agent/`）。
 官方基准：Deep Agents **0.7.28**（本地已安装版本），文档取自 docs.langchain.com（抓取日期 2026-10-20；页面本身未标注更新时间）。
-关联方案：[2026-10-20-da13-skills-sources.md](2026-10-20-da13-skills-sources.md)（技能多来源，S1 已实施，S2/S3 待实施）。
+关联方案：[2026-10-20-da13-skills-sources.md](2026-10-20-da13-skills-sources.md)（技能多来源：S1、S2 已实施，`c24d5ba`；S3 即本清单 D9，`0cfa312`）。
 
 ## 1. 结论摘要
 
@@ -37,7 +37,7 @@ easy_agent/
 ├── backends/        # ContextBackend（运行期按 SessionContext 路由）+ LocalShellBackend(bwrap/Landlock)
 ├── tools/           # registry（内建工具登记/校验）+ session_file_reader / scheduled_task / expert_writer / web_search
 ├── persistence/     # checkpoints（Postgres/SQLite/legacy）+ stores
-├── db/ models/ middleware/ initialization/ security/ sandboxing/ personnel/ knowledges/
+├── db/ models/ middleware/ initialization/ security/ sandboxing/ knowledges/（含 personnel/ 人员管理）
 ```
 
 | 官方能力 | 项目落点 |
@@ -77,6 +77,8 @@ easy_agent/
 
 ## 5.1 实施状态（2026-10-20 15:2x 复核）
 
+> 17:50 复核（HEAD `17842a7`）：D2、D4、D7 的「已闭环 / 已实现」结论不成立，D8 有风险，详见 §5.2；其中 D2、D4、D7 的缺陷已在 `72014e0` 修复，见 §5.2 末尾。
+
 DA-13 S2 已由另一路开发提交：`c24d5ba feat(skills): share public skills read-only and expose save_expert through its skill`（40 文件，+1630/−201，含 2 个新测试文件）。
 复核结论：
 
@@ -88,7 +90,39 @@ DA-13 S2 已由另一路开发提交：`c24d5ba feat(skills): share public skill
 - **D6 已闭环（`9923c68`）**：子代理 spec 允许键收敛为「官方 SubAgent 字段 + 项目扩展 `use_tools`/`requires_tools`」，拼写错误的键会告警并丢弃，不再静默传给框架。
 - **D7 已闭环（2026-10-20）**：新增 `agent.interrupt_sensitive_writes`（默认在 `config.yaml` 开启），对 `/memories/**` 与 `/user-skills/**` 的写入使用 `FilesystemPermission(mode="interrupt")`；规则排在所有 deny 之后，保证「已有技能不可改」「公共技能只读」仍然直接拒绝。需要 checkpointer；`write_file` 类中断在前端审批面板的实际展示尚未真机验证。
 - **D8 已闭环（2026-10-20）**：审批允许 `edit`——后端白名单/工具声明/heuristic 分支/SSE 投影默认值全部支持 `approve/edit/reject`；两端工具卡新增「编辑参数」（JSON 文本域），决策按 `action_index` 只改被点的那一条、同批其余按批准处理。前端审批 UI 的实际交互仍需连模型实测。
+- **D8 补充（2026-10-20）**：删除类操作不提供 `edit`，只保留 `approve/reject`——`execute`（仅删除命令进审批）、`delete` 工具声明为 `DESTRUCTIVE_INTERRUPT_DECISIONS`；MCP/动态工具按 `destructiveHint` 或工具名命中删除词根（delete/remove/drop/truncate/unlink/erase/purge/destroy/`\brm\b`）同样降为两选。理由：改参数正是绕过删除策略的入口。前端卡片改由后端下发的 `allowed_decisions` 决定是否显示「编辑参数」（空则按旧行为全可选）。
 - **剩余**：D5（MCP 会话池，风险登记，等官方连接池 API）；D4 的灰度开启与前端展示需要真实 MCP server 环境。
+
+## 5.2 复核（2026-10-20 17:50，HEAD `17842a7`）
+
+复核方式：逐个阅读 `c24d5ba..17842a7` 的提交 diff；在 HEAD 的独立 worktree 上跑后端全量测试、门禁与两端前端单测和构建；用真实 `EasyAgent` / `create_deep_agent`（假模型）复现可疑路径。工作区里尚未提交的改动（D8 删除类收紧、`reasoning_content` 回传）不在本次结论内。
+
+| 项 | 结论 | 问题 | 复现 / 证据 | 建议 |
+| --- | --- | --- | --- | --- |
+| D2 `e27dae0` | ❌ 有回归 | 1. 没配公共技能目录时（`tools.skills_dir` 为空或路径不存在），`builtin_skills_dir` 为 `None`，`declared_include_tools([None, ...])` 抛 `TypeError`：**建 agent 直接失败，所有对话不可用**，而 `c24d5ba` 时这种配置可以正常运行。2. 门控集合扫描整个 canonical 目录：用户**没添加**的公共技能声明的工具也会被摘出工具列表，可这个技能对该用户不可见，工具永远出不来 | 真实 `EasyAgent`：`skills_dir=""` 或不存在的路径 → `TypeError`；未添加的公共技能声明 `include_tools: web_search` → 第一次模型调用就没有 `web_search` | 过滤 `None`；只扫描 `self.builtin_skills`（已添加且启用）与用户技能目录；补「没有公共技能目录也能建图」的测试 |
+| D4 `e16f9e1` | ❌ 开关打开后不达标 | 主代理按「后缀唯一」把技能里写的原名解析成带前缀的真实名，并把工具摘出来；但交给 `SkillsMiddleware(tools=...)` 的仍是默认解析器，按真实名精确匹配，技能里写的 `fetch_data` 匹配不到 `srv__fetch_data`：**工具被藏起来，读了技能也带不出**。D4 方案的验收条款「写原名仍能门控到唯一工具」只满足了一半。开关用 `env = os.environ; env.get(...)` 读取，绕开了统一入口 `bootstrap.env` 与 E2 门禁 | 开关打开，技能声明 `include_tools: fetch_data`，工具为 `srv__fetch_data`：读技能前后的两次模型调用都没绑定该工具 | 给主代理和子代理的 `SkillsMiddleware` 都传 resolver（声明名 → 实际名）；补端到端测试；开关改用 `env_bool` |
+| D7 `cd1d8a1` | ❌ 定时任务会丢写入 | interrupt 规则不看 `enable_hitl`。定时任务以 `enable_hitl=False` 运行，写 `/memories/**` 或 `/user-skills/**` 时仍会中断；调度器不检查 `__interrupt__`，把这次运行记为 succeeded，随后删除 thread，写入静默丢失。模板与本机 `config.yaml` 都已默认开启 | 真实 `EasyAgent`（`enable_hitl=False`，开启 D7）调用 `write_file('/memories/AGENTS.md')`：返回 `__interrupt__`，文件未写入，最后一条 AI 内容为空 | `enable_hitl=False` 时不生成 interrupt 规则；调度器遇到中断记为失败并写明原因；默认开启前确认产品取舍 |
+| D8 `17842a7` | ⚠️ 基本达标，有风险 | 1. 对同批中断里的一条点「编辑参数」，同批其余操作会被**自动批准**，用户可能没看过它们。2. 后端只校验决策类型，不校验 `edited_action.name` 是否等于原工具名：手工构造请求可以把一条可编辑的调用改成别的工具（例如 `delete`），绕开「删除类不可编辑」。3. `frontend/src` 的 `Chat.vue`、`ToolCallCard.vue` 被整体从 CRLF 转成 LF：实际改动 53 行，diff 2500+ 行 | `git diff -w --ignore-cr-at-eol 17842a7^ 17842a7`；前端 `buildResumeDecisions` 的 `actionDecision` | 同批多条时禁用编辑或要求逐条决策（即 DA-15 的逐动作决策）；后端拒绝改了工具名的 edit；恢复两个文件的 CRLF，或单独做一次换行规范化并加 `.gitattributes` |
+| D3 `68bfe4e` | ✅ 校验逻辑达标 | 改造点里的「技能中心展示错误」「CI 校验」两项未做；仓库 7 个技能当前零错误，但没有测试锁定 | `validate_skills('skills')` 无错误；只在启动日志里调用 | 加一条测试断言仓库技能零错误 |
+| D6 `9923c68` | ✅ 达标 | — | 允许字段与框架 `SubAgent` 的 11 个字段一致 | 可改为从 `SubAgent.__annotations__` 派生，避免升级后漂移 |
+| D9 `0cfa312` | ✅ 达标 | — | 引用的 `references/*.md` 都存在；`sync_skills --check` 一致 | — |
+| `3bd8a7e` 脚本移动 | ✅ 达标 | 脚本头部的用法注释仍写旧路径；`scripts/README.md` 的 `dev/` 行没有列出该脚本 | — | 顺手修 |
+
+验证（HEAD worktree）：后端全量 1879 passed，1 skipped，3 failed。3 个失败都是临时 worktree 的环境造成的：没有 `frontend-vue2/dist` 时 SPA 回退返回 404（主工作区里同一用例通过）；另两个是需要 API key 的真实模型用例 `test_v3_streaming::test_basic` / `test_state_snapshots`。`test_v3_streaming::test_tool_calls` 未参与。ruff、import graph、`sync_skills`、double-write、multi-replica、config schema、env usage 门禁通过；Vue2 单测 82/82、Vue3 24/24 通过，两端构建成功。上面三处回归现有测试都没覆盖到。
+
+进行中（工作区未提交，未纳入结论）：D8 补充（见 §5.1）；`reasoning_content` 回传：出站请求给带 `tool_calls` 的 assistant 消息补回思考内容，修 opencode 中转 thinking 模式的 400。提交后建议跑一次真实模型用例 `tests/integration/test_v3_streaming.py::test_tool_calls`。
+
+**修复（2026-10-20 晚，`72014e0`）**：上表三处 ❌ 已修，每处都有回归测试。这些测试在未修复的 HEAD 上会失败，加上修复后通过。
+
+| 项 | 修复 | 回归测试 |
+| --- | --- | --- |
+| D2 | `declared_include_tools` 跳过未配置的目录（`None` / 空串） | `tests/agent/test_builtin_skills_agent.py::test_agent_builds_without_a_public_skills_dir`（真实建图）、`tests/agent/test_skill_include_tools.py::test_unconfigured_public_skills_dir_is_skipped` |
+| D4 | 新增 `agent/skills.py::skill_tool_resolver`。主代理与子代理的 `SkillsMiddleware(tools=...)` 改为传 resolver：技能里写的名字按「精确 → 后缀唯一」找到实际工具，歧义时不带出。框架带出与执行都按 resolver 的结果走 | `tests/agent/test_builtin_skills_agent.py::test_skill_brings_out_a_prefixed_mcp_tool_by_its_original_name`（读技能前不绑定，读后绑定并能执行）；`tests/agent/test_skill_include_tools.py` 的 resolver 与子代理用例 |
+| D7 | `enable_hitl=False` 的运行不生成 interrupt 规则（与 D7 之前一致）；调度器发现运行停在审批处时记为失败，并写明在等哪个操作 | `tests/agent/test_interrupt_sensitive_writes.py`：`test_hitl_off_adds_no_interrupt_rules`、`test_scheduled_run_writes_memories_without_pausing`、`test_scheduled_run_paused_for_approval_is_recorded_as_failed` |
+
+验证：在只含「HEAD + 本次修复」的独立 worktree 上（不含工作区里其他会话未提交的改动），后端全量 1890 passed，1 skipped；需要 API key 的真实模型用例 `tests/integration/test_v3_streaming.py` 未参与。ruff、import graph、`sync_skills`、double-write、multi-replica、config schema、env usage、API 文档门禁均通过。
+
+仍未处理：D2 的扫描范围包含用户没添加的公共技能；D8 的三点；D3 的两项改造点；D4 开关的读取方式；脚本移动后的两处文档。
 
 ## 6. 已符合官方的部分（避免误改）
 
