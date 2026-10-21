@@ -48,7 +48,7 @@ app_welcome_title: "今天，你要研究什么"            # 首页欢迎语
 sandbox_enabled: ${SANDBOX_ENABLED:-true}         # 启用 bwrap/Landlock 沙箱；无沙箱平台拒绝 execute
 sandbox_network: ${SANDBOX_NETWORK:-host}         # 沙箱网络：host = 可联网 / none = 断网（Landlock 模式降级为告警）
 execute_max_timeout: ${EXECUTE_MAX_TIMEOUT:-600}  # execute 可指定的最长超时（秒）
-session_thread: ${SESSION_THREAD:-false}          # 一会话一 thread（需 checkpointer）；false = 每条消息重建历史
+session_thread: ${SESSION_THREAD:-true}           # 一会话一 thread（需 checkpointer）；false = 每条消息重建历史（兼容模式）
 
 # 外部目录映射：虚拟路径 → 宿主机路径（供技能访问）
 external_dirs:
@@ -56,7 +56,7 @@ external_dirs:
 
 # ===== 上下文压缩 =====
 summarization:
-  enabled: true                    # 仅进日志与图缓存键；false 不会关闭压缩
+  enabled: true                    # false = 关闭压缩与参数截断（阈值抬到不可达）
   compression_threshold: 0.8       # 上下文用量达到该比例时压缩
   compression_target: 0.1          # 压缩后保留的上下文比例
 

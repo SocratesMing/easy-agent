@@ -346,3 +346,12 @@ async def test_legacy_snapshot_saver_keeps_per_message_threads(tmp_path):
     assert (plan.thread_id, plan.mode) == ("s1-m1", "per-message")
     await _seed_thread(agent, "s1-m1")
     assert await resolve_resume_thread(agent, session_id="s1", handle="s1-m1", last_message=None) == "s1-m1"
+
+
+def test_session_thread_defaults_on():
+    """默认跟随 LangGraph 的 thread 语义；per-message 是显式兼容模式。"""
+    from easy_agent.bootstrap.config import Config
+    from easy_agent.bootstrap.config_models import AgentConfig
+
+    assert AgentConfig().session_thread is True
+    assert Config.from_yaml(Config.resolve_config_path()).agent.session_thread is True

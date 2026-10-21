@@ -177,9 +177,10 @@ class AgentConfig(BaseModel):
     """
     execute_max_timeout: int = 600
     """模型调用 execute 时能指定的最长超时（秒）；超过的按该值执行（DA-07）。"""
-    session_thread: bool = False
+    session_thread: bool = True
     """一个会话一个 LangGraph thread（DA-03 P1）：``thread_id = session_id``，每轮只输入本轮消息，
-    历史与摘要状态由 checkpointer 保存。默认关闭（每条消息一个 thread、每轮从 DB 重建历史）。
+    历史与摘要状态由 checkpointer 保存。默认开启，与 DeepAgents/LangGraph 的 thread 语义一致；
+    显式设为 ``false`` 可退回每条消息一个 thread、每轮从 DB 重建历史的兼容模式。
     见 ``docs/archive/design/2026-10-19-da03-session-thread.md``。
     """
 

@@ -1,7 +1,8 @@
 """会话级 thread（DA-03 P1）：一个会话一个 LangGraph thread。
 
-开关 ``agent.session_thread``（默认关）。关闭时与改造前一致：每条消息一个
-``{session_id}-{message_id}`` thread，每轮从 DB 重建完整历史。开启后：
+开关 ``agent.session_thread``（默认开，符合 LangGraph thread 语义）。关闭时退回
+改造前的兼容模式：每条消息一个 ``{session_id}-{message_id}`` thread，每轮从 DB
+重建完整历史。开启后：
 
 - ``thread_id = session_id``，历史、摘要状态、todos 由 checkpointer 保存，每轮只输入本轮消息；
   DB 的 ``session_messages`` 仍是 UI 的权威投影，写入逻辑不变。

@@ -60,3 +60,23 @@ def test_build_summarization_middleware_is_the_official_class(monkeypatch):
     assert middleware.name == "SummarizationMiddleware"
     assert captured["trigger"] == exp_trigger
     assert captured["keep"] == exp_keep
+
+
+def test_summarization_disabled_raises_thresholds_beyond_reach():
+    """enabled=false 时不能"不挂"——框架默认栈仍会挂一份；改为把阈值抬到不可达。"""
+    from types import SimpleNamespace
+
+    cfg = SimpleNamespace(
+        summarization=SimpleNamespace(
+            enabled=False,
+            compression_threshold=0.8,
+            compression_target=0.1,
+            truncate_arg_max_length=2000,
+        )
+    )
+    settings = summarization_settings(cfg, object())
+
+    assert settings["trigger"][0] == "tokens"
+    assert settings["trigger"][1] > 10**9
+    assert settings["keep"][1] > 10**9
+    assert settings["truncate_args_settings"]["trigger"][1] > 10**9

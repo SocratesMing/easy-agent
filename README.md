@@ -237,7 +237,7 @@ prompt_path: "prompts"          # 旧键 system_prompt_path 仍兼容
 sandbox_enabled: true
 sandbox_network: host           # host（默认，可联网）| none（bwrap 断网；Landlock 降级模式无法断网）
 execute_max_timeout: 600        # 模型给 execute 指定的超时上限（秒）
-session_thread: false           # true = 一个会话一个 thread（历史与摘要状态由 checkpointer 保存）
+session_thread: true            # 一个会话一个 thread（历史与摘要状态由 checkpointer 保存）；false = 每条消息重建历史
 skill_write: new-only           # 已有技能在沙箱里也只读挂载；deny = 整个技能库只读
 
 # 上下文压缩

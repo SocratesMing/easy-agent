@@ -193,3 +193,29 @@ def test_backend_builder_works_with_minimal_fake_context(tmp_path, monkeypatch):
         "/memories/",
         "/user-skills/",
     }
+
+
+def _middleware_names(monkeypatch, *, framework_has_todolist: bool) -> list[str]:
+    monkeypatch.setattr(
+        middleware_mod,
+        "framework_provides_todolist",
+        lambda: framework_has_todolist,
+    )
+    config = SimpleNamespace(tools=SimpleNamespace(result_log_truncate=500))
+    return [
+        type(m).__name__ for m in middleware_mod.build_agent_middleware(config, 10)
+    ]
+
+
+def test_todolist_skipped_when_framework_default_has_it(monkeypatch):
+    """官方默认栈已带 TodoListMiddleware 时不再重复添加（避免两份 write_todos）。"""
+    assert "TodoListMiddleware" not in _middleware_names(
+        monkeypatch, framework_has_todolist=True
+    )
+
+
+def test_todolist_added_when_framework_default_lacks_it(monkeypatch):
+    """deepagents 0.7.x 默认不含 write_todos，仍需显式补一份。"""
+    assert "TodoListMiddleware" in _middleware_names(
+        monkeypatch, framework_has_todolist=False
+    )
