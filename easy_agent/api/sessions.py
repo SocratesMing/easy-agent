@@ -35,7 +35,6 @@ from easy_agent.models.api import (
     UpdateTitleRequest,
 )
 from easy_agent.middleware import get_current_username
-from easy_agent.utils.reasoning_safety import redact_messages_reasoning
 from easy_agent.bootstrap.config import Config
 from easy_agent.services import clear_session_connectors, get_agent_config, remove_session_agent
 from easy_agent.services.session_uploads import (
@@ -244,7 +243,7 @@ async def get_session(
         title=session.title,
         created_at=session.created_at,
         updated_at=session.updated_at,
-        messages=redact_messages_reasoning(session.messages),
+        messages=session.messages,
         todos=session.todos,
         usage=usage,
         context_length=context_length,
@@ -400,7 +399,7 @@ async def get_chat_history(
     return GetChatHistoryResponse(
         session_id=session.session_id,
         title=session.title,
-        messages=redact_messages_reasoning(session.messages),
+        messages=session.messages,
         created_at=session.created_at,
         updated_at=session.updated_at,
         usage=usage,

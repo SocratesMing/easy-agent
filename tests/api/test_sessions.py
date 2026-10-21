@@ -76,6 +76,31 @@ def test_add_message_and_history(client):
     assert any(m["content"] == "你好" for m in msgs)
 
 
+def test_history_keeps_raw_thinking(client, db):
+    """历史读取保留原文思考：前端「思考过程」要显示真实内容，不能退化成固定摘要。"""
+    sid = _create_session(client)
+    thinking = "先核对用户给的表格字段，再决定是否调用工具补数据"
+    db.add_message(
+        sid,
+        {
+            "role": "assistant",
+            "content": "答案",
+            "thinking": thinking,
+            "thinking_duration": 1.2,
+            "blocks": [
+                {"type": "thinking", "order": 0, "content": thinking, "step": 0, "duration": 1.2}
+            ],
+        },
+    )
+
+    detail = client.get(f"/agent/sessions/{sid}").json()
+    assert detail["messages"][-1]["thinking"] == thinking
+    assert detail["messages"][-1]["blocks"][0]["content"] == thinking
+
+    hist = client.get(f"/agent/sessions/{sid}/history").json()
+    assert hist["messages"][-1]["thinking"] == thinking
+
+
 def test_delete_session(client):
     sid = _create_session(client)
     resp = client.delete(f"/agent/sessions/{sid}")
