@@ -30,7 +30,7 @@ Easy Agent 是一个开箱即用的 AI Agent 平台，让大模型能够：
 
 前后端一体化部署：后端 FastAPI 提供 REST + SSE 流式接口。当前后端托管 `frontend-vue2/`（Vue 2.7 + Element UI + Vue CLI）构建产物，同时维护 `frontend/`（Vue 3.5 + Vite）第二基线。
 
-后端已针对**多副本容器部署**做了基础外置：SSE 事件持久化/跨 Pod 回放、run 租约与中断恢复、数据库迁移串行锁、上传原始文件可落 LangGraph Store；HITL checkpoint 用官方 SQLite saver，只支持单 pod；`agent/` 负责运行时装配，`bootstrap/` 负责启动/配置，`persistence/` 负责持久化适配，职责边界清晰。
+后端已针对**多副本容器部署**做了基础外置：SSE 事件持久化/跨 Pod 回放、run 租约与中断恢复、数据库迁移串行锁、上传原始文件可落 LangGraph Store；HITL checkpoint 用官方 SQLite saver，多副本时每个 pod 一个文件、靠 Ingress 粘性会话；`agent/` 负责运行时装配，`bootstrap/` 负责启动/配置，`persistence/` 负责持久化适配，职责边界清晰。
 
 ---
 
@@ -46,7 +46,7 @@ Easy Agent 是一个开箱即用的 AI Agent 平台，让大模型能够：
 | 定时任务 | LLM 自动识别调度意图，APScheduler 执行，可视化执行记录 |
 | HITL 审批 | 文件删除前必须用户确认，目录删除直接拒绝 |
 | 路径翻译 | 虚拟路径 ↔ 宿主机实际路径，保护主机目录结构 |
-| 多副本基础 | `stream_events` 跨 Pod 回放、`agent_runs` 租约/中断恢复、迁移锁（HITL checkpoint 不能跨副本共享，生产按单 pod 部署） |
+| 多副本基础 | `stream_events` 跨 Pod 回放、`agent_runs` 租约/中断恢复、迁移锁、HITL checkpoint 每个 pod 一个 SQLite 文件 + Ingress 粘性会话 |
 | 对象存储（上传） | `EASY_UPLOAD_BACKEND=store`：上传原始文件落 LangGraph Store，按需 materialize；本地模式仍为默认 |
 | 远端 Sandbox | `EASY_SANDBOX=langsmith`（实验性）：execute 走官方 `LangSmithSandbox`，文件工具仍本地 |
 | 审计日志 | 定时任务全生命周期事件，记录到 `workspace/{user}/cron/` |
@@ -186,9 +186,11 @@ python scripts/db/migrate_db.py
 EASY_AUTO_MIGRATE=0
 EASY_MIGRATION_LOCK_TIMEOUT=120
 
-# HITL checkpointer：官方 SQLite saver，文件在仓库根 data/ 下（单 pod；不能放 NAS，多个 pod 不能共用）
+# HITL checkpointer：官方 SQLite saver，文件在仓库根 data/ 下（不能放 NAS）
+# 多副本时每个 pod 一个文件（{pod} 换成实例名），并在 Ingress 配好 cookie 粘性会话后打开 EASY_STICKY_SESSIONS
 # LangGraph Store 固定用业务库 SqlStore，无需配置
-EASY_CHECKPOINT_SQLITE_PATH=data/checkpoints.db
+EASY_CHECKPOINT_SQLITE_PATH=data/checkpoints/{pod}.db
+EASY_STICKY_SESSIONS=1
 
 # 上传原始文件落数据库 LangGraph Store（local 默认，不改变现有行为）
 EASY_UPLOAD_BACKEND=store
@@ -554,7 +556,7 @@ A: 在 `easy_agent/agent/model.py` 中扩展 `create_model()`，并在 `config.y
 | run 租约/中断恢复 | `agent_runs` 表 + `run_registry` | 流锁心跳续租；Pod 崩溃后启动把 stale running 标记 `interrupted` 并补 error 事件；**不自动重跑** |
 | 会话流互斥 | `session_runtime` DB 流锁 | 跨 Pod 原子抢占/续约/取消 |
 | 迁移串行化 | MySQL `GET_LOCK` / SQLite `flock` | `scripts/db/migrate_db.py`；`EASY_AUTO_MIGRATE=0` 时启动只校验 |
-| LangGraph checkpointer/store | 官方 SQLite saver / 业务库 SqlStore | `EASY_CHECKPOINT_SQLITE_PATH`；只支持单 pod，生产多副本启动时 fail-fast |
+| LangGraph checkpointer/store | 官方 SQLite saver / 业务库 SqlStore | `EASY_CHECKPOINT_SQLITE_PATH`；多副本时路径带 `{pod}`、`EASY_STICKY_SESSIONS=1`，审批落错 pod 返回 409，删除会话后各 pod 后台补删 |
 | 上传原始文件 | LangGraph StoreBackend（可选） | `EASY_UPLOAD_BACKEND=store`；只覆盖 `/agent/files/upload` |
 | 定时任务重复执行 | 数据库分布式锁 | `distributed_lock.enabled=true`；同 cron 单实例执行 |
 

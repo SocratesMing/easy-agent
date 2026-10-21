@@ -475,6 +475,7 @@ dependencies = [
     { name = "langchain-anthropic" },
     { name = "langchain-mcp-adapters" },
     { name = "langchain-openai" },
+    { name = "langgraph-checkpoint-sqlite" },
     { name = "openpyxl" },
     { name = "pydantic" },
     { name = "pymysql" },
@@ -501,9 +502,6 @@ docs = [
     { name = "striprtf" },
     { name = "xlrd" },
 ]
-sqlite-saver = [
-    { name = "langgraph-checkpoint-sqlite" },
-]
 
 [package.dev-dependencies]
 dev = [
@@ -523,7 +521,7 @@ requires-dist = [
     { name = "langchain-anthropic", specifier = ">=0.3.0" },
     { name = "langchain-mcp-adapters", specifier = ">=0.1.0" },
     { name = "langchain-openai", specifier = ">=0.3.0" },
-    { name = "langgraph-checkpoint-sqlite", marker = "extra == 'sqlite-saver'", specifier = ">=3.1.2" },
+    { name = "langgraph-checkpoint-sqlite", specifier = ">=3.1.2" },
     { name = "openpyxl", specifier = ">=3.0.0" },
     { name = "pdfminer-six", marker = "extra == 'docs'", specifier = ">=20231228" },
     { name = "pdfplumber", marker = "extra == 'docs'", specifier = ">=0.11.0" },
@@ -544,7 +542,7 @@ requires-dist = [
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.34.0" },
     { name = "xlrd", marker = "extra == 'docs'", specifier = ">=2.0.0" },
 ]
-provides-extras = ["dev", "docs", "sqlite-saver"]
+provides-extras = ["dev", "docs"]
 
 [package.metadata.requires-dev]
 dev = [

@@ -18,6 +18,7 @@ import pytest
 from langchain_core.messages import AIMessage
 
 from easy_agent.models.api import ChatRequest
+from easy_agent.persistence.checkpoints import checkpoint_instance
 from easy_agent.services.sse import format_sse
 from easy_agent.services.streaming import (
     chat_stream_generator,
@@ -508,6 +509,8 @@ async def test_chat_hitl_golden_approval_payload_and_partial_message():
     assert partial["pending_approval"] == {
         "thread_id": "s1-m1",
         "action_requests": approval["action_requests"],
+        # 审批所在的实例：多副本按 pod 隔离 checkpoint 时，恢复请求必须回到这里
+        "instance": checkpoint_instance(),
     }
 
 

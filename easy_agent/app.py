@@ -404,6 +404,7 @@ async def lifespan(app: FastAPI):
             from easy_agent.persistence.checkpoints import (
                 CheckpointDeploymentError,
                 start_checkpoint_backend,
+                start_checkpoint_gc,
             )
 
             try:
@@ -416,6 +417,9 @@ async def lifespan(app: FastAPI):
                     "HITL checkpointer 启动失败，回退业务库 MemorySaver 快照: "
                     f"{type(exc).__name__}: {exc}"
                 )
+            # 删除会话时只有处理请求的进程能当场删 checkpoint；多副本下别的 pod 文件里的残留
+            # 由各自的后台对账补删（官方 SQLite saver 激活时才启动，shutdown_checkpointers 负责停）
+            start_checkpoint_gc()
 
             # LangGraph Store 是业务库 SqlStore，首次使用时绑定业务库；先丢掉同一进程里
             # 之前缓存的实例（测试会在一个进程里换着业务库多次启动应用）

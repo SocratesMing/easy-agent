@@ -158,7 +158,7 @@ def _session_id_from(resp) -> str:
 
 
 def test_two_turns_share_one_checkpoint_thread(client, db, monkeypatch):
-    """端到端：真实 EasyAgent + 官方 SQLite saver（需 sqlite-saver extra）。"""
+    """端到端：真实 EasyAgent + 官方 SQLite saver。"""
     sqlite = pytest.importorskip("langgraph.checkpoint.sqlite")
     cfg = agent_manager.get_agent_config()["config"]
     monkeypatch.setattr(cfg.agent, "session_thread", True)
@@ -179,3 +179,31 @@ def test_two_turns_share_one_checkpoint_thread(client, db, monkeypatch):
     assert humans == ["第一问", "第二问"]  # 第二轮只输入新消息，历史没有重复
     user_rows = [m for m in db.get_session(sid).messages if m["role"] == "user"]
     assert user_rows[1]["turn_id"] == "m2" and user_rows[1]["turn_checkpoint_id"]
+
+
+def test_resume_on_another_pod_returns_409_before_building_the_agent(client, db, monkeypatch):
+    """checkpoint 按 pod 隔离时，审批落到别的 pod 直接 409，提示两个实例名，也不必再建 Agent。"""
+    import easy_agent.services.session_thread as session_thread
+
+    sid = _session(db, "sess-other-pod")
+    db.add_message(sid, {"role": "user", "content": "删掉 a.txt", "turn_id": "m1"})
+    db.add_message(
+        sid,
+        {"role": "assistant", "content": "", "pending_approval": {"thread_id": f"{sid}-m1", "instance": "pod-a"}},
+    )
+    monkeypatch.setattr(session_thread, "per_pod_checkpoints_active", lambda: True)
+    monkeypatch.setattr(session_thread, "checkpoint_instance", lambda: "pod-b")
+
+    async def must_not_build(*args, **kwargs):
+        raise AssertionError("落错 pod 时不应再建 Agent")
+
+    monkeypatch.setattr(chat_api, "get_or_create_agent_for_session", must_not_build)
+
+    resp = client.post(
+        "/agent/chat/resume",
+        json={"session_id": sid, "thread_id": f"{sid}-m1", "decisions": [{"type": "approve"}], "message_id": "m1"},
+    )
+
+    assert resp.status_code == 409
+    detail = resp.json()["detail"]
+    assert "pod-a" in detail and "pod-b" in detail

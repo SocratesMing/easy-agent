@@ -27,6 +27,8 @@ dependencies = [
     "schedule>=1.2.0",
     "apscheduler>=3.10.0,<4.0.0",
     "langchain-mcp-adapters>=0.1.0",
+    # 生产 HITL checkpointer（官方 AsyncSqliteSaver）；不能放在可选依赖里，否则镜像和 CI 都装不上
+    "langgraph-checkpoint-sqlite>=3.1.2",
 ]
 
 [project.scripts]
@@ -49,9 +51,6 @@ docs = [
     "Pillow>=10.0.0",
     "xlrd>=2.0.0",
     "striprtf>=0.0.30",
-]
-sqlite-saver = [
-    "langgraph-checkpoint-sqlite>=3.1.2",
 ]
 
 [build-system]

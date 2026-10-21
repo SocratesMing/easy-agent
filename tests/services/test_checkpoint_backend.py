@@ -78,6 +78,35 @@ class TestForced:
         assert "bogus" in selection.warning
 
 
+class TestPerPodPath:
+    def test_pod_placeholder_becomes_the_instance_name(self, monkeypatch):
+        monkeypatch.setenv("EASY_POD_NAME", "easy-agent-0")
+        selection = _resolve(sqlite_path="data/checkpoints/{pod}.db", db_type="mysql")
+        assert selection.kind == ck.BACKEND_SQLITE
+        assert selection.sqlite_path == "data/checkpoints/easy-agent-0.db"
+        assert selection.per_pod is True
+        assert selection.instance == "easy-agent-0"
+        assert selection.sqlite_template == "data/checkpoints/{pod}.db"
+        # 按 pod 隔离时多副本由启动校验把关，不再提示「仅适合单机」
+        assert "多副本" not in selection.warning
+
+    def test_forced_sqlite_backend_replaces_the_placeholder_too(self, monkeypatch):
+        monkeypatch.setenv("EASY_POD_NAME", "pod-1")
+        selection = _resolve(backend="sqlite", sqlite_path="/data/{pod}/ckpt.db", db_type="sqlite")
+        assert selection.sqlite_path == "/data/pod-1/ckpt.db"
+        assert selection.per_pod is True
+
+    def test_path_without_placeholder_is_shared(self):
+        selection = _resolve(sqlite_path="data/checkpoints.db", db_type="mysql")
+        assert selection.per_pod is False
+        assert selection.instance == ""
+
+    def test_unsafe_instance_name_fails_fast(self, monkeypatch):
+        monkeypatch.setenv("EASY_POD_NAME", "../escape")
+        with pytest.raises(ck.CheckpointDeploymentError, match="EASY_POD_NAME"):
+            _resolve(sqlite_path="data/checkpoints/{pod}.db", db_type="mysql")
+
+
 class TestEnvAndDetection:
     def test_reads_environment_when_args_omitted(self, monkeypatch):
         monkeypatch.setenv("EASY_CHECKPOINT_BACKEND", "legacy")

@@ -23,15 +23,12 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import re
 import sys
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
-_UUID = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
-_SESSION_THREAD = re.compile(rf"^{_UUID}$")
-_PER_MESSAGE_THREAD = re.compile(rf"^{_UUID}-.+$")
+from easy_agent.persistence.thread_ids import thread_kind
 
 #: LangGraph 记录中断的 pending write 通道（公开常量 ``langgraph.constants.INTERRUPT`` 已弃用）。
 _INTERRUPT_CHANNEL = "__interrupt__"
@@ -42,16 +39,6 @@ KIND_LABELS = {
     "scheduled": "定时任务 thread",
     "other": "无法识别的 thread",
 }
-
-
-def thread_kind(thread_id: str) -> str:
-    if _SESSION_THREAD.match(thread_id):
-        return "session"
-    if _PER_MESSAGE_THREAD.match(thread_id):
-        return "per-message"
-    if thread_id.startswith("sched-"):
-        return "scheduled"
-    return "other"
 
 
 @dataclass

@@ -261,6 +261,27 @@ def delete_session(db, session_id: str) -> bool:
         )
         return cursor.rowcount > 0
 
+def existing_session_ids(db, session_ids) -> set[str]:
+    """返回 ``session_ids`` 里仍然存在的会话 id（每 500 个一条 IN 查询；checkpoint 对账用）。"""
+    ids = [sid for sid in dict.fromkeys(session_ids) if sid]
+    found: set[str] = set()
+    for start in range(0, len(ids), 500):
+        chunk = ids[start : start + 500]
+        placeholders = ",".join("?" for _ in chunk)
+        with db.get_connection() as conn:
+            cursor = conn.cursor()
+            db._execute(
+                cursor,
+                f"SELECT session_id FROM sessions WHERE session_id IN ({placeholders})",
+                tuple(chunk),
+            )
+            rows = cursor.fetchall()
+        for row in rows:
+            row = dict(row) if not isinstance(row, dict) else row
+            found.add(row["session_id"])
+    return found
+
+
 def update_session_workspace_name(db, session_id: str, workspace_name: str):
     with db.get_connection() as conn:
         cursor = conn.cursor()

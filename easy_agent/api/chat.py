@@ -82,6 +82,7 @@ from easy_agent.services import get_agent_config as _get_agent_config
 from easy_agent.services.session_thread import (
     StaleApprovalError,
     abandon_pending_approval,
+    ensure_approval_on_this_instance,
     handle_turn_id,
     resolve_resume_thread,
     session_thread_in_use,
@@ -700,13 +701,17 @@ async def cancel_chat(
     return {"status": "cancelled", "session_id": session_id}
 
 
+def _session_last_message(repo, session_id: str) -> dict | None:
+    session = repo.get_session(session_id)
+    messages = getattr(session, "messages", None) or []
+    return messages[-1] if messages else None
+
+
 def _last_session_message(repo, session_id: str) -> dict | None:
     """会话最后一条消息（审批兼容期核对旧句柄用）；只在会话 thread 模式下才需要读。"""
     if not session_thread_in_use(_get_agent_config()):
         return None
-    session = repo.get_session(session_id)
-    messages = getattr(session, "messages", None) or []
-    return messages[-1] if messages else None
+    return _session_last_message(repo, session_id)
 
 
 @router.post(
@@ -749,6 +754,13 @@ async def chat_resume(
             f"[{sid}] 拒绝非法的 HITL thread_id | session={session_id} | thread={thread_id}"
         )
         raise HTTPException(status_code=400, detail="非法的 thread_id")
+
+    # 多副本按 pod 隔离 checkpoint：审批只能在记录它的那个 pod 上恢复，落错 pod 时不必再建 Agent
+    try:
+        ensure_approval_on_this_instance(lambda: _session_last_message(repo, session_id), thread_id)
+    except StaleApprovalError as exc:
+        logger.warning(f"[{sid}] 审批不在本实例 | thread={thread_id} | {exc}")
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     # 复用缓存的 Agent 实例（保留 checkpointer 中的 interrupt 状态）。
     # 必须带上该会话当前生效的专家 ID，否则「在专家会话里触发 HITL 审批 -> 恢复」

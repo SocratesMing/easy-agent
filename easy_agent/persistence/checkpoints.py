@@ -5,13 +5,16 @@ FW-09：由 ``EASY_CHECKPOINT_BACKEND=auto|sqlite|legacy`` 控制，选择规则
 SQLite 时用官方 SQLite saver（默认 ``data/checkpoints.db``）；业务库为 MySQL 且没配
 SQLite 路径时，回退到自研 ``PersistentMemorySaver``（把 MemorySaver 状态 pickle 进业务库）。
 
-生产只有 MySQL、按单 pod 部署，Postgres checkpointer 已移除。两种后端都不能在副本之间
-共享：``AGENT_ENV=prod`` 且检测到多 worker/副本时启动期 fail-fast；只有显式设置
-``EASY_ALLOW_LEGACY_CHECKPOINTER=1``（默认关闭）才放行，此时 HITL 跨副本恢复不保证一致。
+生产只有 MySQL，Postgres checkpointer 已移除。两种后端都不能在副本之间共享，多副本时每个 pod
+用自己的 SQLite 文件：路径里写 ``{pod}``（启动时替换成实例名），由 Ingress 粘性会话把同一用户的
+请求固定到同一个 pod（``EASY_STICKY_SESSIONS=1`` 确认已配好），删除会话时别的 pod 里的残留由后台
+对账补删。其余多副本组合在启动期 fail-fast；显式设置 ``EASY_ALLOW_LEGACY_CHECKPOINTER=1``（默认
+关闭）才放行，此时 HITL 跨副本恢复不保证一致。见 ``docs/design/2026-10-21-per-pod-sqlite-checkpoints.md``。
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import pickle
 import threading
@@ -22,7 +25,7 @@ from typing import Any
 
 from langgraph.checkpoint.memory import MemorySaver
 
-from easy_agent.bootstrap.env import env_bool, env_str
+from easy_agent.bootstrap.env import env_bool, env_int, env_str
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +44,9 @@ _PERSIST_MAX_THREADS = 3
 _CHECKPOINTER_LOCK = threading.Lock()
 _sqlite_cm = None
 _sqlite_saver = None
+# 打开官方 SQLite saver 时用的解析结果：按 pod 隔离（路径含 {pod}）时记下实例名
+_active_selection: "CheckpointSelection | None" = None
+_gc_task: asyncio.Task | None = None
 
 
 # ── FW-09：checkpointer 后端选择（auto/sqlite/legacy） ──────────────────────
@@ -55,7 +61,12 @@ BACKEND_CHOICES = (BACKEND_AUTO, BACKEND_SQLITE, BACKEND_LEGACY)
 _BACKEND_ENV = "EASY_CHECKPOINT_BACKEND"
 _SQLITE_PATH_ENV = "EASY_CHECKPOINT_SQLITE_PATH"
 _ALLOW_LEGACY_ENV = "EASY_ALLOW_LEGACY_CHECKPOINTER"
+_STICKY_ENV = "EASY_STICKY_SESSIONS"
+_GC_INTERVAL_ENV = "EASY_CHECKPOINT_GC_INTERVAL"
 _AGENT_ENV = "AGENT_ENV"
+#: SQLite 路径里的实例名占位符：多副本时每个 pod 一个文件
+POD_PLACEHOLDER = "{pod}"
+DEFAULT_GC_INTERVAL = 600
 
 # 相对路径按项目根解析，避免依赖进程 cwd（web_runner 会 chdir，测试注入绝对路径）。
 # 项目根是 easy_agent/persistence/ 往上两级：本文件挪进 persistence/ 后，原来的
@@ -66,17 +77,24 @@ _UNSET: Any = object()
 
 
 class CheckpointDeploymentError(RuntimeError):
-    """生产多副本部署，而 checkpointer 不能跨副本共享（启动期 fail-fast）。"""
+    """checkpointer 的部署配置不成立（启动期 fail-fast）。"""
 
 
 @dataclass(frozen=True)
 class CheckpointSelection:
-    """checkpointer 后端解析结果（纯数据，便于单测注入，不打开任何连接）。"""
+    """checkpointer 后端解析结果（纯数据，便于单测注入，不打开任何连接）。
+
+    ``per_pod`` 表示 SQLite 路径模板里有 ``{pod}``：``sqlite_path`` 是替换成 ``instance``
+    之后的实际路径，``sqlite_template`` 是原始模板。
+    """
 
     kind: str
     reason: str
     sqlite_path: str = ""
     warning: str = ""
+    per_pod: bool = False
+    instance: str = ""
+    sqlite_template: str = ""
 
     @property
     def is_official(self) -> bool:
@@ -91,6 +109,20 @@ def resolve_sqlite_path(path: str) -> Path:
     if candidate.is_absolute():
         return candidate
     return _PROJECT_ROOT / candidate
+
+
+def _pod_instance_name() -> str:
+    """拼进 SQLite 路径的实例名；不能安全地放进路径时启动失败。"""
+    # 延迟导入：utils 包会拉起较重依赖，checkpoints 可能先于 app 初始化被导入。
+    from easy_agent.utils.deployment import instance_name, is_valid_instance_name
+
+    name = instance_name()
+    if not is_valid_instance_name(name):
+        raise CheckpointDeploymentError(
+            f"实例名 {name!r} 不能用于 {_SQLITE_PATH_ENV} 里的 {POD_PLACEHOLDER}："
+            "只允许字母、数字、. _ -，不能以 . 开头，最长 253 个字符；请设置 EASY_POD_NAME"
+        )
+    return name
 
 
 def detect_business_db_type() -> str | None:
@@ -129,6 +161,12 @@ def resolve_checkpoint_backend(
     sqlite = (
         env_str(_SQLITE_PATH_ENV) if sqlite_path is None else str(sqlite_path)
     ).strip()
+    # 路径模板里的 {pod} 替换成本实例名：多副本时每个 pod 一个文件
+    pod_fields: dict[str, Any] = {}
+    if POD_PLACEHOLDER in sqlite:
+        instance = _pod_instance_name()
+        pod_fields = {"per_pod": True, "instance": instance, "sqlite_template": sqlite}
+        sqlite = sqlite.replace(POD_PLACEHOLDER, instance)
     if db_type is _UNSET:
         business_db = detect_business_db_type()
     else:
@@ -149,12 +187,14 @@ def resolve_checkpoint_backend(
             reason=reason,
             sqlite_path=sqlite_value,
             warning="；".join(messages),
+            **(pod_fields if sqlite_value and sqlite_value == sqlite else {}),
         )
 
     if raw_backend == BACKEND_LEGACY:
         return result(BACKEND_LEGACY, "EASY_CHECKPOINT_BACKEND=legacy：显式使用自研业务库快照")
 
-    local_only_hint = (
+    # 按 pod 隔离时多副本由启动校验把关，这条单机提示就不必了
+    local_only_hint = "" if pod_fields else (
         "业务库为 MySQL，checkpoint 将落在本地 SQLite 文件，"
         "多副本会各写各的（仅适合单机）"
     )
@@ -214,32 +254,47 @@ def _resolve_agent_env(agent_env: str | None) -> str:
     return str(agent_env).strip().lower()
 
 
-def _resolve_worker_count(workers: int | None) -> int:
-    if workers is not None:
-        return int(workers)
+def _resolve_replicas(replicas: int | None) -> int:
+    if replicas is not None:
+        return int(replicas)
     # 延迟导入：utils 包会拉起较重依赖，checkpoints 可能先于 app 初始化被导入。
-    from easy_agent.utils.deployment import detect_worker_count
+    from easy_agent.utils.deployment import detect_replica_count
 
-    return detect_worker_count()
+    return detect_replica_count()
+
+
+def _resolve_workers_per_pod(workers_per_pod: int | None) -> int:
+    if workers_per_pod is not None:
+        return int(workers_per_pod)
+    from easy_agent.utils.deployment import detect_workers_per_pod
+
+    return detect_workers_per_pod()
 
 
 def validate_checkpoint_deployment(
-    kind: str,
+    selection: CheckpointSelection,
     *,
     agent_env: str | None = None,
-    workers: int | None = None,
+    replicas: int | None = None,
+    workers_per_pod: int | None = None,
+    sticky: bool | None = None,
     allow_legacy: bool | None = None,
-) -> None:
-    """生产多副本时抛 ``CheckpointDeploymentError``：两种后端都不能跨副本共享。
+) -> bool:
+    """生产多副本的部署校验，不成立时抛 ``CheckpointDeploymentError``。
 
-    dev/test 或单 worker 不受影响；``allow_legacy`` 显式注入用于单测，
-    默认读取 ``EASY_ALLOW_LEGACY_CHECKPOINTER``（1/true/yes/on，默认关闭）。
+    只放行一种多副本组合：官方 SQLite saver、路径含 ``{pod}``（每个 pod 一个文件）、
+    ``EASY_STICKY_SESSIONS=1``（Ingress 已配粘性会话）、每个 pod 一个 worker。返回 True 表示
+    按这种组合放行：调用方打开 SQLite 失败时不能回退业务库快照。
+
+    dev/test、单 pod 单 worker 不受影响；``EASY_ALLOW_LEGACY_CHECKPOINTER=1`` 是逃生门（放行并
+    告警）。各入参 ``None`` 时读环境变量，显式传值用于单测。
     """
     if _resolve_agent_env(agent_env) != "prod":
-        return
-    count = _resolve_worker_count(workers)
-    if count <= 1:
-        return
+        return False
+    replicas = _resolve_replicas(replicas)
+    workers_per_pod = _resolve_workers_per_pod(workers_per_pod)
+    if replicas <= 1 and workers_per_pod <= 1:
+        return False
     allowed = (
         env_bool(_ALLOW_LEGACY_ENV, False)
         if allow_legacy is None
@@ -247,17 +302,46 @@ def validate_checkpoint_deployment(
     )
     if allowed:
         logger.warning(
-            "生产环境多副本（%s）使用 checkpointer=%s：已通过 %s 显式豁免，HITL 跨副本恢复不保证一致",
-            count,
-            kind,
+            "生产环境 %s 个副本、每个 pod %s 个 worker，checkpointer=%s：已通过 %s 显式豁免，"
+            "HITL 跨副本恢复不保证一致",
+            replicas,
+            workers_per_pod,
+            selection.kind,
             _ALLOW_LEGACY_ENV,
         )
-        return
-    raise CheckpointDeploymentError(
-        f"生产环境检测到 {count} 个 worker/副本，但 HITL checkpointer（{kind!r}）不能跨副本共享；"
-        "请按单 pod、单 worker 部署（EASY_REPLICA_COUNT / WEB_CONCURRENCY / UVICORN_WORKERS 为 1）。"
-        f"若接受审批跨副本恢复不一致，可显式设置 {_ALLOW_LEGACY_ENV}=1（默认关闭）。"
+        return False
+    if workers_per_pod > 1:
+        raise CheckpointDeploymentError(
+            f"生产环境每个 pod 跑了 {workers_per_pod} 个 worker：同一个 pod 的 worker 共用 checkpoint 文件，"
+            "审批还可能落到另一个 worker 上；请把 WEB_CONCURRENCY / UVICORN_WORKERS 设为 1，用多个 pod 扩容。"
+            f"若接受审批恢复不一致，可显式设置 {_ALLOW_LEGACY_ENV}=1（默认关闭）。"
+        )
+    if selection.kind != BACKEND_SQLITE:
+        raise CheckpointDeploymentError(
+            f"生产环境检测到 {replicas} 个副本，但 HITL checkpointer 是 {selection.kind!r}（业务库快照），"
+            "不能跨副本共享。多副本请用每个 pod 独立的官方 SQLite 文件：设置 "
+            f"{_SQLITE_PATH_ENV}=data/checkpoints/{POD_PLACEHOLDER}.db，在 Ingress 配好粘性会话后再设置 "
+            f"{_STICKY_ENV}=1。若接受审批跨副本恢复不一致，可显式设置 {_ALLOW_LEGACY_ENV}=1（默认关闭）。"
+        )
+    if not selection.per_pod:
+        raise CheckpointDeploymentError(
+            f"生产环境检测到 {replicas} 个副本，但 {_SQLITE_PATH_ENV} 里没有 {POD_PLACEHOLDER}："
+            "多个 pod 不能共用一个 SQLite 文件（WAL 不能跨主机，网络盘上的文件锁也不可靠）。"
+            f"请改成 data/checkpoints/{POD_PLACEHOLDER}.db 这类每个 pod 一个文件的路径。"
+        )
+    if not (env_bool(_STICKY_ENV, False) if sticky is None else bool(sticky)):
+        raise CheckpointDeploymentError(
+            f"生产环境检测到 {replicas} 个副本，checkpoint 按 pod 隔离，但没有确认粘性会话："
+            "审批只能在记录它的 pod 上恢复。请先在 Ingress 配好基于 cookie 的会话保持，"
+            f"再设置 {_STICKY_ENV}=1。"
+        )
+    logger.info(
+        "生产环境 %s 个副本：HITL checkpoint 按 pod 隔离（%s → %s），依赖 Ingress 粘性会话",
+        replicas,
+        selection.sqlite_template,
+        selection.sqlite_path,
     )
+    return True
 
 
 def _clear_legacy_checkpointers() -> None:
@@ -408,23 +492,48 @@ async def open_sqlite_checkpointer(path: str):
 
 
 async def close_sqlite_checkpointer() -> None:
-    global _sqlite_cm, _sqlite_saver
+    global _sqlite_cm, _sqlite_saver, _active_selection
     cm = _sqlite_cm
     _sqlite_cm = None
     _sqlite_saver = None
+    _active_selection = None
     if cm is None:
         return
     await cm.__aexit__(None, None, None)
 
 
 async def shutdown_checkpointers() -> None:
-    """关闭官方 saver 并清空自研缓存（应用 shutdown 与测试隔离都依赖它）。"""
+    """停掉对账任务、关闭官方 saver 并清空自研缓存（应用 shutdown 与测试隔离都依赖它）。"""
+    await stop_checkpoint_gc()
     await close_sqlite_checkpointer()
     _clear_legacy_checkpointers()
 
 
+def per_pod_checkpoints_active() -> bool:
+    """当前进程的官方 SQLite checkpoint 是否按 pod 隔离（路径里有 ``{pod}``）。"""
+    return (
+        _sqlite_saver is not None
+        and _active_selection is not None
+        and _active_selection.per_pod
+    )
+
+
+def checkpoint_instance() -> str:
+    """checkpoint 所在的实例名：按 pod 隔离时是替换进路径的名字，否则是本实例名。"""
+    if _active_selection is not None and _active_selection.instance:
+        return _active_selection.instance
+    from easy_agent.utils.deployment import instance_name
+
+    return instance_name()
+
+
 def _describe_target(selection: CheckpointSelection) -> str:
     if selection.kind == BACKEND_SQLITE:
+        if selection.per_pod:
+            return (
+                f"{selection.sqlite_path}（模板 {selection.sqlite_template}，"
+                f"实例 {selection.instance}）"
+            )
         return selection.sqlite_path
     return "业务库 agent_checkpoints 表"
 
@@ -449,15 +558,18 @@ async def start_checkpoint_backend(
     selection: CheckpointSelection | None = None,
     *,
     agent_env: str | None = None,
-    workers: int | None = None,
+    replicas: int | None = None,
+    workers_per_pod: int | None = None,
+    sticky: bool | None = None,
     allow_legacy: bool | None = None,
 ) -> str:
     """按解析结果打开 checkpointer，返回实际生效的后端名。
 
-    ``selection`` 为空时读取环境变量解析。官方 saver 打不开时降级为自研快照；
-    prod 多副本在打开之前就 fail-fast（``CheckpointDeploymentError``），除非显式设置
-    ``EASY_ALLOW_LEGACY_CHECKPOINTER=1``。
+    ``selection`` 为空时读取环境变量解析。部署形态在打开之前校验（见
+    :func:`validate_checkpoint_deployment`）。单 pod 时官方 saver 打不开会降级为自研快照；
+    按 pod 隔离的多副本模式下打不开直接失败（``CheckpointDeploymentError``），不回退。
     """
+    global _active_selection
     if selection is None:
         selection = resolve_checkpoint_backend()
     _clear_legacy_checkpointers()
@@ -469,14 +581,126 @@ async def start_checkpoint_backend(
         _describe_target(selection),
         selection.reason,
     )
-    # 先校验部署形态：两种后端都不能跨副本共享，结果与选中哪一种无关
-    validate_checkpoint_deployment(
-        selection.kind,
+    per_pod_cluster = validate_checkpoint_deployment(
+        selection,
         agent_env=agent_env,
-        workers=workers,
+        replicas=replicas,
+        workers_per_pod=workers_per_pod,
+        sticky=sticky,
         allow_legacy=allow_legacy,
     )
-    return await _open_with_fallback(selection)
+    if per_pod_cluster:
+        # 多副本只靠每个 pod 自己的 SQLite 文件：业务库快照既同步写库、又不能跨副本一致，不能回退
+        try:
+            await open_sqlite_checkpointer(selection.sqlite_path)
+        except Exception as exc:  # noqa: BLE001 - 统一转成部署错误，app 启动会因此失败
+            raise CheckpointDeploymentError(
+                f"多副本模式下官方 SQLite checkpointer 打不开（{selection.sqlite_path}），"
+                f"不回退业务库快照：{type(exc).__name__}: {exc}"
+            ) from exc
+        opened = BACKEND_SQLITE
+    else:
+        opened = await _open_with_fallback(selection)
+    _active_selection = selection if opened == BACKEND_SQLITE else None
+    return opened
+
+
+# ── 删除会话后的对账：补删本 pod 文件里「会话已不存在」的 thread ─────────────────
+async def _list_thread_ids(saver) -> list[str]:
+    """本进程 SQLite 文件里的全部 thread_id（直接查官方 saver 的 checkpoints 表，不遍历 checkpoint）。"""
+    async with saver.lock, saver.conn.execute(
+        "SELECT DISTINCT thread_id FROM checkpoints"
+    ) as cursor:
+        rows = await cursor.fetchall()
+    return [str(row[0]) for row in rows if row and row[0]]
+
+
+async def prune_deleted_session_threads(db=None) -> int:
+    """删掉本进程 SQLite 文件里「会话已不存在」的 thread，返回删除个数。
+
+    删除会话时只有处理请求的进程能当场删（:func:`delete_session_threads`）；多副本下其余 pod
+    文件里的残留由这里补删。只删能认出会话 id、且 ``sessions`` 表里已经没有该会话的 thread；
+    查库失败时整轮跳过。
+    """
+    saver = _sqlite_saver
+    if saver is None:
+        return 0
+    from easy_agent.persistence.thread_ids import session_id_of_thread
+
+    by_session: dict[str, list[str]] = {}
+    for thread_id in await _list_thread_ids(saver):
+        session_id = session_id_of_thread(thread_id)
+        if session_id:
+            by_session.setdefault(session_id, []).append(thread_id)
+    if not by_session:
+        return 0
+
+    from easy_agent.db.repositories import sessions as sessions_repo
+    from easy_agent.utils.blocking import run_blocking
+
+    if db is None:
+        from easy_agent.db import get_database
+
+        db = get_database()
+    try:
+        existing = await run_blocking(sessions_repo.existing_session_ids, db, list(by_session))
+    except Exception as exc:  # noqa: BLE001 - 查不到就不删，下一轮再来
+        logger.warning("checkpoint 对账：查询会话失败，本轮跳过 | %s", exc)
+        return 0
+
+    deleted = 0
+    for session_id, thread_ids in by_session.items():
+        if session_id in existing:
+            continue
+        for thread_id in thread_ids:
+            if _sqlite_saver is not saver:  # 中途关闭了 saver（应用 shutdown）
+                return deleted
+            try:
+                await saver.adelete_thread(thread_id)
+                deleted += 1
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("checkpoint 对账：删除 thread 失败 | thread=%s | %s", thread_id, exc)
+            # 每删一个让出一次事件循环：saver 的锁也是进行中的对话写 checkpoint 要用的
+            await asyncio.sleep(0)
+    if deleted:
+        logger.info("checkpoint 对账：删除 %s 个已删除会话的 thread", deleted)
+    return deleted
+
+
+async def _checkpoint_gc_loop(interval: int, db) -> None:
+    while True:
+        try:
+            await prune_deleted_session_threads(db)
+        except Exception as exc:  # noqa: BLE001 - 对账失败不能拖垮应用，下一轮重试
+            logger.warning("checkpoint 对账失败 | %s", exc)
+        await asyncio.sleep(interval)
+
+
+def start_checkpoint_gc(*, interval: int | None = None, db=None) -> asyncio.Task | None:
+    """启动后台对账任务（官方 SQLite saver 激活时才启动），启动时先跑一轮。
+
+    间隔取 ``EASY_CHECKPOINT_GC_INTERVAL``（秒，默认 600），不大于 0 时关闭。
+    """
+    global _gc_task
+    if _sqlite_saver is None:
+        return None
+    if _gc_task is not None and not _gc_task.done():
+        return _gc_task
+    seconds = env_int(_GC_INTERVAL_ENV, DEFAULT_GC_INTERVAL) if interval is None else int(interval)
+    if seconds <= 0:
+        logger.info("checkpoint 对账已关闭（%s=%s）", _GC_INTERVAL_ENV, seconds)
+        return None
+    _gc_task = asyncio.create_task(_checkpoint_gc_loop(seconds, db), name="checkpoint-gc")
+    return _gc_task
+
+
+async def stop_checkpoint_gc() -> None:
+    global _gc_task
+    task, _gc_task = _gc_task, None
+    if task is None:
+        return
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
 
 
 def get_session_checkpointer(session_id: str, db=None):

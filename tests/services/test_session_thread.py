@@ -16,6 +16,7 @@ from deepagents.backends import FilesystemBackend
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage
 from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
+from langgraph.checkpoint.base import empty_checkpoint
 from langgraph.checkpoint.memory import InMemorySaver
 from pydantic import Field
 
@@ -322,8 +323,15 @@ async def test_pending_approval_from_before_the_upgrade_still_resumes(tmp_path):
         await resolve_resume_thread(agent, session_id="s1", handle="s1-m0", last_message={"role": "user", "content": "x"})
 
 
+async def _seed_thread(agent, thread_id):
+    """恢复只针对已有 checkpoint 的 thread（空 thread 会被拒绝，见 tests/services/test_per_pod_approvals.py）。"""
+    config = {"configurable": {"thread_id": thread_id, "checkpoint_ns": ""}}
+    await agent.agent.checkpointer.aput(config, empty_checkpoint(), {}, {})
+
+
 async def test_flag_off_resume_uses_the_handle_as_thread(tmp_path):
     agent, _ = _agent(tmp_path, session_thread=False)
+    await _seed_thread(agent, "s1-m1")
     assert await resolve_resume_thread(agent, session_id="s1", handle="s1-m1", last_message=None) == "s1-m1"
 
 
@@ -336,4 +344,5 @@ async def test_legacy_snapshot_saver_keeps_per_message_threads(tmp_path):
 
     plan = await plan_turn(agent, session_id="s1", turn_id="m1", history=[], raw="q1")
     assert (plan.thread_id, plan.mode) == ("s1-m1", "per-message")
+    await _seed_thread(agent, "s1-m1")
     assert await resolve_resume_thread(agent, session_id="s1", handle="s1-m1", last_message=None) == "s1-m1"
