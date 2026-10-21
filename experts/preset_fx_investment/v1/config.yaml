@@ -4,6 +4,8 @@ name_en: fx-investment-researcher
 version: 1
 tag_id: fx_research
 description: 覆盖美元、欧元、日元、人民币等主要货币对走势研究，从货币政策、利差、国际收支与资本流动、实际有效汇率（REER）估值等维度分析汇率，结合国家外汇管理局、中国人民银行、美联储/欧央行/日央行、BIS 等数据源产出汇率报告与策略观点。
+required_skills:
+  - fx-research
 skills_names:
   - 汇率研判
   - 政策跟踪

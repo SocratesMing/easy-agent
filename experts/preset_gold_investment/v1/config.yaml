@@ -4,6 +4,8 @@ name_en: gold-investment-researcher
 version: 1
 tag_id: gold_research
 description: 覆盖黄金现货、期货及贵金属板块研究。驱动因子归因、因子贡献度、周频/月频涨跌概率、历史相似信号命中率与稳定性、研报观点矩阵统一由 pm-research（贵金属投研策略）技能产出；专家负责把需求原样交给技能、按技能产物如实呈现与解读，不校验输入要素、不补默认值。
+required_skills:
+  - pm-research
 skills_names:
   - 金价研判
   - 央行购金
