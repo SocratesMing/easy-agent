@@ -150,17 +150,22 @@ function updatePanelPosition() {
   if (!anchor) return
   const rect = anchor.getBoundingClientRect()
   const panelWidth = Math.min(380, window.innerWidth * 0.9)
-  const estimatedHeight = 420
-  const top = Math.max(8, Math.min(rect.top - 8, window.innerHeight - estimatedHeight - 8))
+  // 面板实际高度随列表变化（最高约 420px）：下方放得下时顶边对齐锚点，否则底边对齐锚点向上展开。
+  // 不能按最大高度整体上移——列表短时面板会悬在锚点上方，鼠标水平移入前就离开菜单而被关闭
+  const maxHeight = 420
+  const vertical = rect.top - 8 + maxHeight <= window.innerHeight - 8
+    ? { top: `${Math.max(8, rect.top - 8)}px` }
+    : { bottom: `${Math.max(8, window.innerHeight - rect.bottom - 8)}px` }
   const left = rect.right + 10 + panelWidth > window.innerWidth
     ? Math.max(8, rect.left - panelWidth - 10)
     : rect.right + 10
   panelStyle.value = {
     position: 'fixed',
-    top: `${top}px`,
     left: `${left}px`,
     width: '380px',
     maxWidth: '90vw',
+    maxHeight: `${window.innerHeight - 16}px`,
+    ...vertical,
   }
 }
 

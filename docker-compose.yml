@@ -45,8 +45,11 @@ services:
       - ./.env.dev:/app/.env.dev:ro
       # 宿主机改提示词后重启 backend 即生效
       - ./easy_agent/config/prompts:/app/easy_agent/config/prompts
+      # 公共 MCP 连接器目录：由服务器单独维护，每次请求现读，改后无需重启。
+      # 单文件挂载按 inode 绑定，用会替换文件的编辑器（如 vim 默认）保存后需重启 backend
+      - ./easy_agent/config/mcp.json:/app/easy_agent/config/mcp.json:ro
       # 公共（预置）专家目录：宿主机新增/修改专家后重启 backend 即生效
-      - ./exports:/app/exports
+      - ./experts:/app/experts
       # 运行时数据：相对本 compose 文件目录的宿主机路径（不再用 named volume）
       - ./data:/app/data
       - ./workspace:/app/workspace
