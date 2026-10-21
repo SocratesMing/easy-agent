@@ -12,7 +12,7 @@ import logging
 import os
 
 from langchain_anthropic import ChatAnthropic
-from langchain_core.messages import AIMessageChunk
+from langchain_core.messages import AIMessage, AIMessageChunk
 from langchain_openai import ChatOpenAI
 
 from easy_agent.bootstrap.config import Config, LLMConfig, RetryConfig
@@ -54,6 +54,43 @@ def extract_reasoning(additional_kwargs) -> str:
         return ""
     found = _extract_reasoning(additional_kwargs)
     return found[1] if found else ""
+
+
+def inject_reasoning_content(payload: dict, messages: list) -> None:
+    """把 assistant 工具调用消息的思考内容写回出站请求（thinking 模式要求回传）。
+
+    ``langchain_openai._convert_message_to_dict`` 只序列化
+    content/role/name/tool_calls，``additional_kwargs`` 里的 reasoning 会被丢弃。
+    而思考模式的上游（如 opencode 网关转发的 deepseek / glm）在「工具调用 →
+    工具结果」的续跑请求里会校验：带 ``tool_calls`` 的 assistant 消息必须带回
+    ``reasoning_content``，缺了直接 400
+    ``The reasoning_content in the thinking mode must be passed back to the API``。
+
+    只在消息确实带思考文本时注入：非思考模型不会多出未知字段，跨轮历史
+    （``build_context_messages`` 刻意不回灌思考）也不受影响。
+    """
+    payload_messages = payload.get("messages")
+    if not isinstance(payload_messages, list) or not payload_messages:
+        return
+    # 只处理 chat/completions 形状；Responses API 的输入项带 type 字段
+    if not all(isinstance(item, dict) and "role" in item for item in payload_messages):
+        return
+    if any("type" in item for item in payload_messages):
+        return
+    count = len(payload_messages)
+    pairs = (
+        zip(messages, payload_messages)
+        if len(messages) == count
+        else zip(messages[-count:], payload_messages)
+    )
+    for message, item in pairs:
+        if not isinstance(message, AIMessage):
+            continue
+        if not (message.tool_calls or message.invalid_tool_calls):
+            continue
+        reasoning = extract_reasoning(message.additional_kwargs)
+        if reasoning:
+            item["reasoning_content"] = reasoning
 
 
 try:  # LangChain 公开的「中间件内部模型调用」标记（摘要 / 工具筛选 / 工具模拟等）
@@ -346,7 +383,7 @@ def apply_context_profile(model, context_length: int | None):
 
 
 class ReasoningChatOpenAI(ChatOpenAI):
-    """ChatOpenAI 子类，承载两个独立职责（Phase 1 仅做结构分清，不改行为）：
+    """ChatOpenAI 子类，承载三个独立职责：
 
     职责 A - 多模态清理：在流式/非流式入口统一处理消息内容块
         （不再区分模型是否支持视觉）：
@@ -356,7 +393,10 @@ class ReasoningChatOpenAI(ChatOpenAI):
            避免 DeepSeek 等纯文本模型收到它们报 400 invalid_request_error。
     职责 B - reasoning 提取：把 OpenAI 兼容接口返回的思考内容
         (reasoning_content / reasoning / reason_content) 写入 additional_kwargs，
-        供前端展示。
+        供前端展示与出站回传。
+    职责 C - reasoning 回传：出站请求里给带 tool_calls 的 assistant 消息补回
+        ``reasoning_content``（langchain 自己不序列化它），否则思考模式的
+        上游在工具续跑时 400。
     """
 
     # ── 职责 A：多模态清理 ───────────────────────────────────────────
@@ -423,6 +463,33 @@ class ReasoningChatOpenAI(ChatOpenAI):
             msg.additional_kwargs["reasoning_content"] = (existing or "") + reasoning
 
         return gen
+
+    def _create_chat_result(self, response, generation_info=None):
+        """非流式响应也提取思考内容（调度任务等走 ``ainvoke`` 的链路）。"""
+        result = super()._create_chat_result(response, generation_info)
+        try:
+            response_dict = (
+                response if isinstance(response, dict) else response.model_dump()
+            )
+            choices = response_dict.get("choices") or []
+            for generation, choice in zip(result.generations, choices):
+                found = _extract_reasoning(choice.get("message") or {})
+                if found and isinstance(found[1], str):
+                    generation.message.additional_kwargs["reasoning_content"] = found[1]
+        except Exception as exc:  # noqa: BLE001 - 提取失败不影响正常返回
+            logger.debug(f"非流式响应提取 reasoning 失败: {exc}")
+        return result
+
+    # ── 职责 C：reasoning 回传 ────────────────────────────────────────
+    def _get_request_payload(self, input_, *, stop=None, **kwargs):
+        payload = super()._get_request_payload(input_, stop=stop, **kwargs)
+        try:
+            messages = self._convert_input(input_).to_messages()
+        except Exception as exc:  # noqa: BLE001 - 对齐失败就按原载荷发送
+            logger.debug(f"出站消息对齐失败，跳过 reasoning 回传: {exc}")
+            return payload
+        inject_reasoning_content(payload, messages)
+        return payload
 
 
 def _create_openai_compatible(

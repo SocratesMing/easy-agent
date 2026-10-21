@@ -82,10 +82,10 @@ def _assistant_content_message(message: dict, provider: str) -> AIMessage:
     """重建历史 assistant 消息：**只恢复正文，不回灌思考内容**。
 
     历史思考故意不注入上下文，原因有二：
-    1. OpenAI 兼容通道（deepseek / ark / glm / ...）的请求侧不会序列化
-       ``reasoning_content``——langchain_openai 的 ``_convert_message_to_dict``
-       只输出 content/role/name/tool_calls/function_call，即使写进
-       ``additional_kwargs`` 也会被丢弃，等于白写；
+    1. 上游只在「工具调用 → 工具结果」续跑时校验 ``reasoning_content``（缺了报
+       400），跨轮历史以用户消息或 assistant 正文收尾，不校验；回灌只会白占
+       token。当前轮工具循环里的思考由 :class:`ReasoningChatOpenAI` 在出站请求
+       时按消息回传（见 ``inject_reasoning_content``）；
     2. 若改用 ``<think>…</think>`` 文本回灌，历史思考会被当成正文重复占用
        token，还可能干扰模型对自身输出的理解，且思考里出现 ``</think>``
        字面量时会破坏标签配对。

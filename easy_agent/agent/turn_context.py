@@ -74,6 +74,11 @@ def _is_reasoning_block(block: Any) -> bool:
 
 
 def _strip_reasoning(message: AIMessage) -> AIMessage:
+    """剥离历史 AIMessage 的推理内容（只针对本轮之前的轮次）。
+
+    上游只在「工具调用 → 工具结果」续跑时要求 ``reasoning_content``，本轮工具
+    循环里的消息不在剥离范围内，故历史轮次剥掉不影响请求合法性。
+    """
     update: dict[str, Any] = {}
     if isinstance(message.content, list):
         kept = [block for block in message.content if not _is_reasoning_block(block)]
