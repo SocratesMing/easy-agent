@@ -49,7 +49,7 @@ RETAINED_DATABASE_BOUNDARIES = {
     "auth.py": 1,  # KnowledgeRepository（知识域独立 bounded context）
     "files.py": 0,
     "scheduled_tasks.py": 0,
-    "expert.py": 3,  # 流式引擎 + Phase 2 stream_events 写入/回放边界
+    "expert.py": 4,  # 流式引擎 + Phase 2 stream_events 写入/回放边界 + 专家执行的 run 登记
     # 知识域鉴权/编排 ×2 + 专家绑定 ×1 + 流式引擎 ×2 + 事件回放/状态 ×4
     # + Phase 2B run 登记 ×2（chat_stream / chat_resume 的 start_run）
     "chat.py": 9,

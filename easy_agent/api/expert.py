@@ -38,6 +38,7 @@ from easy_agent.services import (
     invalidate_user_agents,
 )
 from easy_agent.services import public_expert_service
+from easy_agent.services.run_registry import new_run_id, start_run
 from easy_agent.services.expert_service import (
     build_expert_ids,
     remove_expert_dir,
@@ -552,6 +553,19 @@ async def stream_export_run(
         model=request.model,
     )
 
+    # Phase 2B：本轮 run 持久化（owner + lease），与 /agent/chat/stream 一致，登记失败只记日志。
+    # request_json 存专家执行请求（带 expert_agent_id），与聊天的 run 区分开。上面的拒答流
+    # 不建 Agent、瞬间写完，不登记。
+    run_id = new_run_id(session_id, message_id)
+    start_run(
+        repo.database,
+        run_id,
+        session_id,
+        username=username or "",
+        message_id=message_id,
+        request_json=request.model_dump_json(),
+    )
+
     return sse_response(
         _detached_event_stream(
             chat_stream_generator(
@@ -570,5 +584,6 @@ async def stream_export_run(
             sid,
             renew_stream=repo.renew_stream,
             db=repo.database,
+            run_id=run_id,
         )
     )
