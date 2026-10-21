@@ -238,6 +238,20 @@ def require_turn_content(message: str | None, files: list | None, skills: list |
         raise HTTPException(status_code=400, detail="消息内容不能为空")
 
 
+def reject_concurrent_stream(session_id: str) -> None:
+    """同一会话已有流式生成在跑时返回 409。
+
+    两条流会共享 agent、last-assistant 行与 hub，互相覆盖 / EOF（实测新流 0 条内容即结束）。
+    要在用户消息落库之前调用：``_detached_event_stream`` 里也有同样的兜底，但走到那里时
+    用户消息已经落库，会话里会多出一条没有回复的消息。
+    """
+    if is_session_streaming(session_id):
+        raise HTTPException(
+            status_code=409,
+            detail="本会话正在生成回复，请等待完成或先取消当前生成",
+        )
+
+
 @dataclass(frozen=True)
 class TurnSkills:
     """本轮技能。"""
@@ -591,13 +605,8 @@ async def chat_stream(
         repo, session_id, username, request.message, request.files, turn.fallback_name
     )
 
-    # 并发互斥：同一会话同一时刻只允许一条流式生成。否则两条流会共享 agent、
-    # last-assistant 行与 hub，互相覆盖/EOF（实测新流 0 条内容即结束）。
-    if is_session_streaming(session_id):
-        raise HTTPException(
-            status_code=409,
-            detail="本会话正在生成回复，请等待完成或先取消当前生成",
-        )
+    # 并发互斥：同一会话同一时刻只允许一条流式生成
+    reject_concurrent_stream(session_id)
 
     # 「待修改专家」绑定：用户在专家面板点「编辑」后，前端把专家 ID 放进请求的
     # 结构化字段（不进消息正文，用户不可见、不可改）。这里做归属校验——只接受
@@ -781,11 +790,7 @@ async def chat_resume(
     workspace_name = session_meta["workspace_name"] or ""
 
     # 同一会话已有流在跑时拒绝 resume（它依赖进程内缓存与 checkpointer 状态）。
-    if is_session_streaming(session_id):
-        raise HTTPException(
-            status_code=409,
-            detail="本会话正在生成回复，请等待完成或先取消当前生成",
-        )
+    reject_concurrent_stream(session_id)
 
     # 审批句柄由后端固定生成 ``f"{session_id}-{message_id}"``；绝不信任前端
     # 传入的任意 thread_id：官方 SQLite checkpointer 是全局共享的，否则可读取/

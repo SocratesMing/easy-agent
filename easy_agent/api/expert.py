@@ -48,6 +48,7 @@ from easy_agent.api.chat import (
     _detached_event_stream,
     build_turn_uploads,
     open_turn_session,
+    reject_concurrent_stream,
     require_turn_content,
     resolve_request_skills,
 )
@@ -440,6 +441,9 @@ async def stream_export_run(
     session_id, workspace_name = open_turn_session(
         repo, session_id, username, request.message, request.files, turn.fallback_name
     )
+    # 同一会话已有流在跑时 409（与聊天入口一致）：放在相关性预检和用户消息落库之前，
+    # 拒答链路同样会落用户消息，忙碌时也不该为预检多调一次 LLM
+    reject_concurrent_stream(session_id)
 
     # ── 2. 专家校验与提示词加载 ────────────────────────────────────────
     # 我的专家（数据库）优先，公共专家（experts 目录）兜底；找不到 ID 时 404。
