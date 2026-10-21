@@ -57,7 +57,7 @@ def test_directory_mode_concatenates_fragments(tmp_path, monkeypatch):
 def test_config_dir_takes_priority(tmp_path, monkeypatch):
     """显式 config_dir 下的 prompts 优先于 EASY_PROMPTS_DIR。"""
     config_root = tmp_path / "config"
-    prompts = _make_prompts(config_root, main="FROM_CONFIG_DIR")
+    _make_prompts(config_root, main="FROM_CONFIG_DIR")
     other = tmp_path / "other"
     other.mkdir()
     (other / "system.md").write_text("FROM_ENV", encoding="utf-8")

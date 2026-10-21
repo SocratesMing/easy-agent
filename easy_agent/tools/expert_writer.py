@@ -39,7 +39,6 @@ from easy_agent.db.expert_store import (
     STATUS_BUILDING,
     STATUS_FAILED,
     ExpertStore,
-    normalize_name_cn,
 )
 from easy_agent.services.expert_service import (
     MAX_DESCRIPTION_LEN,

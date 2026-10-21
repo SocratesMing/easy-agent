@@ -14,7 +14,7 @@ _AUDITED_PREFIXES = ("/agent/knowledge/v1",)
 
 
 class KnowledgeMetrics:
-    """进程内 HTTP 计数与耗时聚合，供 /admin/metrics 输出 Prometheus 文本。"""
+    """进程内 HTTP 计数与耗时聚合（/admin/metrics 导出端点已移除，目前只聚合不导出）。"""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -42,43 +42,6 @@ class KnowledgeMetrics:
             "/{id}",
             path,
         )[:240]
-
-    def prometheus(self, task_counts: dict[str, int]) -> str:
-        """渲染 Prometheus 文本：HTTP 请求计数/耗时 counter 与任务状态 gauge。"""
-
-        lines = [
-            "# HELP easyagent_knowledge_http_requests_total Knowledge HTTP requests.",
-            "# TYPE easyagent_knowledge_http_requests_total counter",
-        ]
-        with self._lock:
-            for (method, route, status), count in sorted(self._requests.items()):
-                lines.append(
-                    "easyagent_knowledge_http_requests_total"
-                    f'{{method="{method}",route="{route}",status="{status}"}} {count}'
-                )
-            lines.extend(
-                [
-                    "# HELP easyagent_knowledge_http_duration_seconds_sum Total request duration.",
-                    "# TYPE easyagent_knowledge_http_duration_seconds_sum counter",
-                ]
-            )
-            for (method, route), (duration, count) in sorted(self._duration.items()):
-                labels = f'method="{method}",route="{route}"'
-                lines.append(
-                    f"easyagent_knowledge_http_duration_seconds_sum{{{labels}}} {duration:.6f}"
-                )
-                lines.append(
-                    f"easyagent_knowledge_http_duration_seconds_count{{{labels}}} {int(count)}"
-                )
-        lines.extend(
-            [
-                "# HELP easyagent_knowledge_tasks Knowledge task count by state.",
-                "# TYPE easyagent_knowledge_tasks gauge",
-            ]
-        )
-        for state, count in sorted(task_counts.items()):
-            lines.append(f'easyagent_knowledge_tasks{{status="{state}"}} {count}')
-        return "\n".join(lines) + "\n"
 
 
 metrics = KnowledgeMetrics()

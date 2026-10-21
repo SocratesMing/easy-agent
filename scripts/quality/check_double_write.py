@@ -42,8 +42,6 @@ if str(_ROOT_FOR_IMPORTS) not in sys.path:
 
 from scripts.quality.double_write_scanner import (  # noqa: E402
     DEFAULT_ROOT,
-    CheckResult,
-    Violation,
     check_database_file,
     check_repository,
     check_sessions_file,

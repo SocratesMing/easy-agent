@@ -49,7 +49,6 @@ from easy_agent.bootstrap.config_validation import (
     _expand_env_recursive,
     _get_section,
     _set_unresolved_env_vars,
-    _unresolved_env_vars,
     find_deprecated_config_keys,
     find_unknown_config_keys,
     get_missing_env_vars,
@@ -701,7 +700,3 @@ class Config(BaseModel):
         """
         safe_name = Config.sanitize_username(username)
         return Path("./data/uploads") / safe_name
-
-    @classmethod
-    def get_default_config_path(cls) -> Path:
-        return cls.resolve_config_path()

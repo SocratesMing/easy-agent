@@ -269,9 +269,3 @@ def get_distributed_lock() -> DistributedLock:
     if _lock_instance is None:
         _lock_instance = DistributedLock()
     return _lock_instance
-
-
-def reset_distributed_lock() -> None:
-    """重置单例（测试用）。"""
-    global _lock_instance
-    _lock_instance = None

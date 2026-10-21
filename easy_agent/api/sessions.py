@@ -259,7 +259,7 @@ async def update_title(
 ):
     repo = _as_session_repository(db)
 
-    session = repo.get_owned_session(session_id, username)
+    repo.get_owned_session(session_id, username)
 
     title = request.title or "未命名会话"
     repo.update_session_title(session_id, title)
@@ -277,7 +277,7 @@ async def toggle_pin(
 ):
     repo = _as_session_repository(db)
 
-    session = repo.get_owned_session(session_id, username)
+    repo.get_owned_session(session_id, username)
 
     new_val = repo.toggle_session_pin(session_id)
     action = "置顶" if new_val else "取消置顶"
@@ -442,7 +442,7 @@ async def upload_session_file(
 ):
     repo = _as_session_repository(db)
 
-    session = repo.get_owned_session(session_id, username)
+    repo.get_owned_session(session_id, username)
 
     Config.sanitize_username(username)
     upload_dir = Config.get_user_workspace_dir(username) / "uploadfiles"

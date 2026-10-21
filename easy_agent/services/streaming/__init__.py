@@ -60,7 +60,6 @@ from easy_agent.services.stream_messages import (
 from easy_agent.services.stream_processor import StreamProcessor
 from easy_agent.services.streaming.persistence import (
     IncrementalPersister,
-    _handle_tool_result_event,
     _persist_incremental,
     _persist_thinking_event,
     persist_approval_decisions,

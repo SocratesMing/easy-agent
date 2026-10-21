@@ -8,7 +8,6 @@ and records the result.
 
 import asyncio
 import logging
-import os
 from easy_agent.bootstrap.env import env_bool
 import uuid
 from datetime import datetime

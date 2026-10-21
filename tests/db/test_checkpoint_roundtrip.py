@@ -1,3 +1,5 @@
+"""checkpointer 测试：业务库快照 saver 写入后能重新加载；官方 SQLite saver 在会话间共享同一实例。"""
+
 from easy_agent.persistence import checkpoints
 from easy_agent.persistence.checkpoints import PersistentMemorySaver, get_session_checkpointer
 from easy_agent.db.database import Database

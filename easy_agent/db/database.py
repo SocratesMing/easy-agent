@@ -3,16 +3,12 @@
 Supports SQLite3 (local) and MySQL (remote) databases
 """
 
-import json
 import logging
 import os
 import re
 import sqlite3
 import threading
-import time
-import uuid
 from contextlib import contextmanager
-from datetime import datetime
 from typing import Optional
 
 try:
@@ -25,7 +21,7 @@ try:
 except ImportError:
     PooledDB = None
 
-from easy_agent.models.db import SessionModel, UserModel, ScheduledTaskModel, ScheduledTaskRunModel
+from easy_agent.models.db import ScheduledTaskModel, ScheduledTaskRunModel
 from easy_agent.db.repositories import session_runtime as session_runtime_repo
 from easy_agent.db.repositories import stream_events as stream_events_repo
 from easy_agent.db.repositories import agent_runs as agent_runs_repo
@@ -37,7 +33,6 @@ from easy_agent.db.repositories import files as files_repo
 from easy_agent.db.repositories import mcp_api_keys as mcp_api_keys_repo
 from easy_agent.db.repositories import users as users_repo
 from easy_agent.db import schema
-from easy_agent.utils.auth import hash_password, verify_password
 from easy_agent.bootstrap.env import env_bool
 
 DATABASE_PATH = "./data/easy_agent.db"
@@ -49,7 +44,6 @@ from easy_agent.db.schema import (
     LANGGRAPH_STORE_NS_LEN,
     SCHEMA_VERSION,
     SCHEMA_VERSION_KEY,
-    SCHEMA_VERSION_TABLE,
 )
 
 
@@ -512,74 +506,6 @@ class Database:
 
     def get_mcp_api_keys(self, *args, **kwargs):
         return mcp_api_keys_repo.get_mcp_api_keys(self, *args, **kwargs)
-
-    # ARCH-03 Phase 2: users SQL 已抽到 db/repositories/users.py
-    def create_user(self, *args, **kwargs):
-        return users_repo.create_user(self, *args, **kwargs)
-
-    def get_user_by_username(self, *args, **kwargs):
-        return users_repo.get_user_by_username(self, *args, **kwargs)
-
-    def get_user_by_id(self, *args, **kwargs):
-        return users_repo.get_user_by_id(self, *args, **kwargs)
-
-    def get_user_by_employee_id(self, *args, **kwargs):
-        return users_repo.get_user_by_employee_id(self, *args, **kwargs)
-
-    def get_user_by_account(self, *args, **kwargs):
-        return users_repo.get_user_by_account(self, *args, **kwargs)
-
-    def update_user(self, *args, **kwargs):
-        return users_repo.update_user(self, *args, **kwargs)
-
-    def bind_user_ip(self, *args, **kwargs):
-        return users_repo.bind_user_ip(self, *args, **kwargs)
-
-    def get_user_bound_ip(self, *args, **kwargs):
-        return users_repo.get_user_bound_ip(self, *args, **kwargs)
-
-    def increment_user_token_version(self, *args, **kwargs):
-        return users_repo.increment_user_token_version(self, *args, **kwargs)
-
-    def get_user_token_version(self, *args, **kwargs):
-        return users_repo.get_user_token_version(self, *args, **kwargs)
-
-    def touch_user_activity(self, *args, **kwargs):
-        return users_repo.touch_user_activity(self, *args, **kwargs)
-
-    def get_user_activity_time(self, *args, **kwargs):
-        return users_repo.get_user_activity_time(self, *args, **kwargs)
-
-    def clear_user_activity(self, *args, **kwargs):
-        return users_repo.clear_user_activity(self, *args, **kwargs)
-
-    def register_user(self, *args, **kwargs):
-        return users_repo.register_user(self, *args, **kwargs)
-
-    def verify_user_password(self, *args, **kwargs):
-        return users_repo.verify_user_password(self, *args, **kwargs)
-
-    def get_or_create_passwordless_user(self, *args, **kwargs):
-        return users_repo.get_or_create_passwordless_user(self, *args, **kwargs)
-
-    def update_user_password(self, *args, **kwargs):
-        return users_repo.update_user_password(self, *args, **kwargs)
-
-    def delete_user(self, *args, **kwargs):
-        return users_repo.delete_user(self, *args, **kwargs)
-
-    def get_or_create_default_user(self, *args, **kwargs):
-        return users_repo.get_or_create_default_user(self, *args, **kwargs)
-
-    def list_users(self, *args, **kwargs):
-        return users_repo.list_users(self, *args, **kwargs)
-
-    def count_users(self, *args, **kwargs):
-        return users_repo.count_users(self, *args, **kwargs)
-
-    @staticmethod
-    def _row_to_user(row):
-        return users_repo.row_to_user(row)
 
     # ARCH-03 Phase 2: 文件 SQL 已抽到 db/repositories/files.py
     def add_session_file(self, *args, **kwargs):

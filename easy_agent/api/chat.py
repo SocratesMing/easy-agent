@@ -19,7 +19,6 @@ from easy_agent.middleware import get_current_username
 from easy_agent.knowledge_impl import (
     authorize_scoped_chat,
     chat_stream_generator,
-    empty_knowledge_context,
     is_knowledge_panel_title,
     prepare_knowledge_chat,
 )

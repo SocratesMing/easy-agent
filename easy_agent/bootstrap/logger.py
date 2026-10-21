@@ -11,7 +11,7 @@ class AgentLogger:
 
     Responsible for recording the complete interaction process of each agent run, including:
     - LLM requests and responses
-    - Tool calls and results
+    - Tool calls in LLM responses
     """
 
     def __init__(self):
@@ -92,41 +92,6 @@ class AgentLogger:
 
         self._write_log("RESPONSE", log_content)
 
-    def log_tool_result(
-        self,
-        tool_name: str,
-        arguments: dict[str, Any],
-        result_success: bool,
-        result_content: str | None = None,
-        result_error: str | None = None,
-    ):
-        """Log tool execution result
-
-        Args:
-            tool_name: Tool name
-            arguments: Tool arguments
-            result_success: Whether successful
-            result_content: Result content (on success)
-            result_error: Error message (on failure)
-        """
-        self.log_index += 1
-
-        tool_result_data = {
-            "tool_name": tool_name,
-            "arguments": arguments,
-            "success": result_success,
-        }
-
-        if result_success:
-            tool_result_data["result"] = result_content
-        else:
-            tool_result_data["error"] = result_error
-
-        content = "Tool Execution:\n\n"
-        content += json.dumps(tool_result_data, indent=2, ensure_ascii=False)
-
-        self._write_log("TOOL_RESULT", content)
-
     def _write_log(self, log_type: str, content: str):
         if self.log_file is None:
             return
@@ -139,7 +104,3 @@ class AgentLogger:
                 f"[{timestamp}]|INFO|FMQT|-||-|-|MainThread|agent_logger:0| [{self.log_index}] {log_type}\n"
             )
             f.write(content + "\n")
-
-    def get_log_file_path(self) -> Path:
-        """Get current log file path"""
-        return self.log_file

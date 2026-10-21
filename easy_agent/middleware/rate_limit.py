@@ -90,10 +90,6 @@ class InMemorySlidingWindowCounter:
             return True
 
 
-# 兼容旧名字：已有测试 / 调用方可能仍在 import SlidingWindowLimiter。
-SlidingWindowLimiter = InMemorySlidingWindowCounter
-
-
 class DBRateLimitCounter:
     """多副本共享限流计数（业务库表 ``rate_limit_counters``，固定窗口）。
 
@@ -205,11 +201,6 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         )
         self._warned_multiworker = False
         self._warn_if_process_local_counter()
-
-    @property
-    def limiter(self) -> RateLimitCounter:
-        """兼容旧属性名（旧代码读取 ``middleware.limiter``）。"""
-        return self.counter
 
     def _warn_if_process_local_counter(self) -> None:
         """多副本 + 进程内计数时告警一次；不阻断启动。"""

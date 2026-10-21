@@ -13,7 +13,6 @@ LEGACY_SYMBOLS = [
     "_MODEL_CONTEXT_LIMITS",
     "_get_model_context_limit",
     "_persist_incremental",
-    "_handle_tool_result_event",
     "_persist_thinking_event",
     "_mark_hitl_pending",
     "_maybe_rename_workspace",

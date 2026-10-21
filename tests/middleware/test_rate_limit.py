@@ -11,7 +11,6 @@ from easy_agent.middleware import rate_limit as rate_limit_mod
 from easy_agent.middleware.rate_limit import (
     InMemorySlidingWindowCounter,
     RateLimitMiddleware,
-    SlidingWindowLimiter,
 )
 
 
@@ -43,7 +42,7 @@ def _build_client(
 
 
 def test_sliding_window_blocks_after_limit():
-    limiter = SlidingWindowLimiter()
+    limiter = InMemorySlidingWindowCounter()
     assert limiter.allow("k", 2, 60.0)
     assert limiter.allow("k", 2, 60.0)
     assert limiter.allow("k", 2, 60.0) is False

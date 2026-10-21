@@ -61,9 +61,3 @@ def get_or_create_default_admin(db):
             "默认管理员策略未注册：请先 import easy_agent.knowledges.personnel（应用启动路径会自动完成）"
         )
     return _default_admin(db)
-
-
-def reset_user_fields_registry() -> None:
-    """测试用：清空注册（验证 db 层不依赖 personnel 静态 import）。"""
-    global _save, _read, _ensure, _default_admin
-    _save = _read = _ensure = _default_admin = None

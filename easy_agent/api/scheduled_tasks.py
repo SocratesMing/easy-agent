@@ -18,8 +18,6 @@ from easy_agent.api.deps import (  # noqa: F401 - 旧模块级名字 re-export
     get_scheduled_task_repository,
 )
 from easy_agent.models.api import (
-    ScheduledTaskInfo,
-    ScheduledTaskRunInfo,
     DeleteScheduledTaskResponse,
 )
 from easy_agent.services import (

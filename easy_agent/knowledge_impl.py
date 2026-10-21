@@ -6,7 +6,6 @@ knowledge.implementation 键仅作日志提示（仅支持 v2）。
 """
 
 import logging
-import os
 from easy_agent.bootstrap.env import env_str
 from pathlib import Path
 

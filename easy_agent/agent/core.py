@@ -20,7 +20,7 @@ from langchain_core.messages import AIMessageChunk, ToolMessage
 
 from easy_agent.backends.shell import _PathTranslatingShell  # noqa: F401  旧导入路径兼容（测试/外部直接 import）
 from easy_agent.backends.context import ContextBackend
-from easy_agent.persistence.checkpoints import get_session_checkpointer, release_session_checkpointer
+from easy_agent.persistence.checkpoints import get_session_checkpointer
 from easy_agent.bootstrap.config import Config
 from easy_agent.agent.hitl import (
     EXECUTE_HITL_TOOL_DESCRIPTION,
@@ -61,7 +61,6 @@ from easy_agent.agent.model import (
     create_model,
     extract_reasoning,
     is_internal_model_call,
-    resolve_context_length,
 )
 from easy_agent.security.prompt_guard import assemble_system_prompt
 from easy_agent.tools.web_search import WEB_SEARCH_SYSTEM_PROMPT

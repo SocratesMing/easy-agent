@@ -48,7 +48,6 @@ def create_user(db, user_data: UserModel) -> UserModel:
 def row_to_user(row) -> UserModel:
     """users 表行 → UserModel。缺列时给默认值，兼容未迁移的旧库。"""
     row = dict(row) if not isinstance(row, dict) else row
-    from easy_agent.db.user_fields_registry import read_user_fields
 
     return UserModel(
         user_id=row["user_id"],

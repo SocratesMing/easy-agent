@@ -1,3 +1,5 @@
+"""HTTP 路由包：汇总各业务 router，供 app.py 统一注册。"""
+
 from easy_agent.api.chat import router as chat_router
 from easy_agent.api.sessions import router as sessions_router
 from easy_agent.api.files import router as files_router

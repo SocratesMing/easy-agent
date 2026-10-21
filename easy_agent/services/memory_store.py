@@ -267,19 +267,6 @@ class MemoryStore:
         self._trim_overflow()
         return stored
 
-    def upsert_many(self, entries: Iterable[MemoryEntry]) -> list[MemoryEntry]:
-        stored: list[MemoryEntry] = []
-        for entry in entries:
-            try:
-                stored.append(self.upsert(entry))
-            except (MemoryValidationError, TypeError, ValueError) as exc:
-                logger.warning(
-                    "跳过无效记忆条目 | 内容 hash: %s | %s",
-                    content_digest(str(getattr(entry, "value", ""))),
-                    exc,
-                )
-        return stored
-
     def replace_entries(
         self, entries: Iterable[MemoryEntry], *, title: str | None = None
     ) -> list[MemoryEntry]:

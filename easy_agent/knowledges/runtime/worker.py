@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, Callable
+from typing import Callable
 
 from easy_agent.db import Database
 from easy_agent.knowledges.core.config import KnowledgeConfig

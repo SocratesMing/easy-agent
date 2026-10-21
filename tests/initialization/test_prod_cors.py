@@ -1,3 +1,5 @@
+"""生产环境启动校验：AGENT_ENV=prod 时必须显式配置 EASY_CORS_ALLOW_ORIGINS。"""
+
 import pytest
 
 from easy_agent.bootstrap.initialization.environment import load_environment

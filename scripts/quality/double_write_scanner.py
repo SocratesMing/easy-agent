@@ -7,7 +7,6 @@ lets tests exercise the scanners without spawning a subprocess.
 
 from __future__ import annotations
 
-import argparse
 import ast
 import json
 import re
@@ -655,15 +654,6 @@ def check_database_source(
     return violations
 
 
-def _display(path: Path, root: Path | None) -> str:
-    if root is None:
-        return str(path)
-    try:
-        return str(path.resolve().relative_to(root.resolve()))
-    except ValueError:
-        return str(path)
-
-
 def check_sessions_file(path: str | Path, display_path: str | None = None) -> list[Violation]:
     path = Path(path)
     name = display_path or str(path)
@@ -703,5 +693,3 @@ def check_repository(root: str | Path = DEFAULT_ROOT) -> CheckResult:
         else:
             result.violations.extend(checker(path, relative))
     return result
-
-

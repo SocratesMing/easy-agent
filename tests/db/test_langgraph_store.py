@@ -1,3 +1,5 @@
+"""LangGraph store 测试：SqlStore 在业务库上的 put / get / search / delete 往返。"""
+
 from easy_agent.db.database import Database
 from easy_agent.persistence.stores import SqlStore
 

@@ -1,3 +1,8 @@
+"""业务服务包：会话 Agent 缓存、连接器、SSE 流式编排、流事件、记忆、MCP 与定时任务等。
+
+包级重导出路由层常用的入口函数。
+"""
+
 from easy_agent.services.agent_manager import (
     init_agent_config,
     get_or_create_agent_for_session,

@@ -2,7 +2,6 @@
 
 import asyncio
 import logging
-import os
 from easy_agent.bootstrap.env import env_str
 import platform
 from collections import OrderedDict

@@ -71,7 +71,6 @@ from fastapi.testclient import TestClient  # noqa: E402
 from easy_agent.app import app  # noqa: E402
 from easy_agent.db import get_database, init_database  # noqa: E402
 from easy_agent.middleware import get_current_username  # noqa: E402
-import easy_agent.db as _db_mod  # noqa: E402
 import easy_agent.db.database as _db_impl  # noqa: E402
 import easy_agent.bootstrap.config as _config_mod  # noqa: E402
 import easy_agent.api.files as _files_mod  # noqa: E402

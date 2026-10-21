@@ -1,3 +1,7 @@
+"""运行时初始化测试：环境加载结果、三个服务日志文件及按天 / 按大小轮转、
+initialize_runtime 先配日志再加载环境和配置、web_runner 关闭 uvicorn 默认日志配置。
+"""
+
 import logging
 import logging.config
 from logging.handlers import TimedRotatingFileHandler

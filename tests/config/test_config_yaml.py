@@ -1,3 +1,7 @@
+"""Config.from_yaml 测试：环境变量占位符展开与未解析提示、配置文件路径解析，以及
+web_search / distributed_lock / expert 标签 / 沙箱 / 工具结果日志截断等段落的解析与默认值。
+"""
+
 from easy_agent.bootstrap.config import Config, get_missing_env_vars
 
 

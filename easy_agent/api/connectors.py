@@ -20,7 +20,6 @@ from langchain_mcp_adapters.client import MultiServerMCPClient
 
 from easy_agent.models.api import (
     ConnectorConfigUpdateResponse,
-    ConnectorToolInfo,
     ConnectorToolsResponse,
     ConnectorToggleResponse,
     McpAddResponse,
@@ -354,21 +353,6 @@ async def uninstall_connector(
 #   数组段："args.1"（数字段索引进 list，用于 stdio 的位置参数）
 
 
-def _get_config_field(cfg: dict[str, Any], key_path: str) -> tuple[bool, Any]:
-    """读取 config 内字段路径的值，返回 (是否存在, 值)。"""
-    cur: Any = cfg
-    for seg in key_path.split("."):
-        if isinstance(cur, dict):
-            if seg not in cur:
-                return False, None
-            cur = cur[seg]
-        elif isinstance(cur, list) and seg.isdigit() and int(seg) < len(cur):
-            cur = cur[int(seg)]
-        else:
-            return False, None
-    return True, cur
-
-
 def _set_config_field(cfg: dict[str, Any], key_path: str, value: Any) -> None:
     """写入 config 内字段路径的值，沿途容器不存在时自动创建。
 
@@ -447,7 +431,7 @@ async def toggle_connector(
 
     cfg["enabled"] = request.enabled
     raw["servers"] = existing
-    user_mcp_path = _write_user_mcp_raw(username, config, raw)
+    _write_user_mcp_raw(username, config, raw)
     invalidate_mcp_cache(username)
     evicted = invalidate_user_agents(username)
     logger.info(

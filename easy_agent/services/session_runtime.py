@@ -103,11 +103,6 @@ def request_cancel(db, session_id: str) -> None:
     db.upsert_session_runtime(session_id, cancel_requested=1)
 
 
-def is_cancel_requested(db, session_id: str) -> bool:
-    row = db.get_session_runtime(session_id)
-    return bool(row and int(row.get("cancel_requested") or 0))
-
-
 def load_connectors(db, session_id: str) -> tuple[str, ...] | None:
     row = db.get_session_runtime(session_id)
     if not row or row.get("connectors") is None:
@@ -131,11 +126,6 @@ def save_connectors(db, session_id: str, connector_servers: list[str]) -> None:
 
 def clear_connectors(db, session_id: str) -> None:
     db.upsert_session_runtime(session_id, connectors=None, clear_connectors=True)
-
-
-def load_edit_target(db, session_id: str) -> str:
-    row = db.get_session_runtime(session_id)
-    return str(row.get("edit_target") or "") if row else ""
 
 
 def save_edit_target(db, session_id: str, expert_agent_id: str) -> None:

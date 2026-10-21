@@ -1,3 +1,5 @@
+"""日志轮转测试：轮转后缀只匹配按天、按大小、同秒序号三种形式，无关文件不会被当成旧日志清理。"""
+
 from easy_agent.bootstrap.initialization.log import _ROTATED_LOG_SUFFIX
 
 

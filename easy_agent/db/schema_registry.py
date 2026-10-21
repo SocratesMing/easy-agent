@@ -35,7 +35,3 @@ def run_schema_initializers(db, cursor) -> None:
                 getattr(fn, "__module__", "?"),
                 exc,
             )
-
-
-def registered_count() -> int:
-    return len(_SCHEMA_INITIALIZERS)

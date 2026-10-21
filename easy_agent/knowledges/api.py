@@ -12,7 +12,6 @@ import asyncio
 import logging
 import re
 import uuid
-from dataclasses import dataclass
 from datetime import datetime
 from typing import Annotated, Literal
 from urllib.parse import quote
@@ -39,7 +38,7 @@ from easy_agent.agent.model import create_model
 from easy_agent.models.db import SessionModel
 from easy_agent.utils.auth import decode_access_token
 from easy_agent.knowledges.chat.host_port import get_host_capabilities
-from easy_agent.knowledges.chat.panel import require_host_capabilities, stream_panel_answer
+from easy_agent.knowledges.chat.panel import stream_panel_answer
 from easy_agent.knowledges.core.config import KnowledgeConfig
 from easy_agent.knowledges.core.models import (
     KnowledgePrincipal,
@@ -66,7 +65,6 @@ from easy_agent.knowledges.core.models import (
     KnowledgeModuleStatus,
     KnowledgeStatusResponse,
     OperationListResponse,
-    OperationSummary,
     PermissionListResponse,
     PermissionReplaceRequest,
     PermissionDirectoryListResponse,
@@ -80,7 +78,7 @@ from easy_agent.knowledges.core.models import (
 from easy_agent.knowledges.core.operations_repository import KnowledgeOperationsRepository
 from easy_agent.knowledges.ragflow import RagflowError
 from easy_agent.knowledges.core.repository import KnowledgeRepository
-from easy_agent.knowledges.service import KnowledgeDocumentBinary, KnowledgeService, KnowledgeServiceError
+from easy_agent.knowledges.service import KnowledgeService, KnowledgeServiceError
 
 
 logger = logging.getLogger("easy_agent.knowledge.upload")

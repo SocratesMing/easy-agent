@@ -7,14 +7,12 @@ import shutil
 import uuid
 import zipfile
 from pathlib import Path
-from typing import Annotated, Optional
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, File, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from easy_agent.bootstrap.config import Config
-from easy_agent.db import Database, get_database
 from easy_agent.middleware import get_current_username
 from easy_agent.agent.skills import discover_skills
 from easy_agent.agent import builtin_skills

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import multiprocessing
-import time
 from pathlib import Path
 
 import pytest

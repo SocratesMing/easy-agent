@@ -197,11 +197,6 @@ def _persist_structured_memory(
         return None
 
 
-def needs_compression(content: str) -> bool:
-    """判断记忆内容是否需要压缩。"""
-    return len(content) > COMPRESS_THRESHOLD
-
-
 def compress_memory(content: str, llm, max_chars: int = MAX_MEMORY_CHARS) -> str:
     """调用 LLM 压缩记忆内容，确保不超过 max_chars 字符。
 

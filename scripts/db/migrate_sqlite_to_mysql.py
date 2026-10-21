@@ -26,17 +26,12 @@ if str(PROJECT_ROOT) not in sys.path:
 from easy_agent.db.database import Database  # noqa: E402
 
 from scripts.db.mysql_target import (  # noqa: E402
-    DEFAULT_DEV_PASSWORD,
-    ENV_PATTERN,
-    SAFE_DATABASE_NAME,
     ForeignKey,
     MigrationError,
     MySQLTarget,
     TableStats,
-    _expand_env,
     _quote_mysql,
     _quote_sqlite,
-    _read_mysql_yaml,
     _target_from_args,
 )
 

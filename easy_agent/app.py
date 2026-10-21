@@ -18,7 +18,6 @@ from easy_agent.bootstrap.initialization import initialize_runtime
 
 runtime_initialization = initialize_runtime()
 
-import uvicorn
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
@@ -345,7 +344,6 @@ async def lifespan(app: FastAPI):
             skills_root = ""
             logger.info("ℹ️ 未发现任何 skills")
 
-        mcp_tools = []
         # MCP 不在启动时全局加载，改为按用户配置动态加载（见 agent_manager）
         logger.info("ℹ️ MCP 将按用户配置动态加载（不在启动时预加载）")
 
@@ -908,14 +906,3 @@ async def serve_static(full_path: str, request: Request):
         )
 
     return JSONResponse({"error": "Not found"}, status_code=404)
-
-
-def run_server(host: str = "0.0.0.0", port: int = 8000):
-    uvicorn.run(
-        "easy_agent.app:app",
-        host=host,
-        port=port,
-        reload=False,
-        log_level="info",
-        log_config=None,
-    )
