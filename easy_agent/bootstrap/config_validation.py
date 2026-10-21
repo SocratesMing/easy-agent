@@ -86,7 +86,7 @@ KNOWN_SECTION_KEYS: dict[str, frozenset[str]] = {
         }
     ),
     "database.mysql.pool": frozenset(
-        {"pool_size", "max_overflow", "pool_timeout", "pool_recycle"}
+        {"pool_size", "max_overflow", "pool_recycle"}
     ),
     "summarization": frozenset(
         {"enabled", "compression_threshold", "compression_target"}
@@ -157,7 +157,6 @@ KNOWN_SECTION_KEYS: dict[str, frozenset[str]] = {
             "max_file_size_mb",
             "max_request_size_mb",
             "max_files_per_request",
-            "max_dataset_name_utf8_bytes",
             "max_filename_utf8_bytes",
             "allowed_extensions",
             "max_documents_per_query",
