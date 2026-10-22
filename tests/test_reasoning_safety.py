@@ -1,4 +1,8 @@
-"""推理内容对外脱敏：持久化层保留原文，历史读取出口统一替换为固定摘要。"""
+"""推理内容脱敏工具：仅用于诊断/日志等对外场景。
+
+历史会话接口（``/agent/sessions/{id}`` 与 ``/history``）已改为返回完整思考内容，
+与会话所有者的实时 SSE 体验一致；本文件验证脱敏函数本身仍然可用。
+"""
 
 from easy_agent.services.streaming import build_assistant_message_dict
 from easy_agent.utils.reasoning_safety import (

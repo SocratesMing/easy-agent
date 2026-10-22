@@ -93,6 +93,32 @@ def test_upload_session_file(client):
     assert data["size"] == len(b"hello world")
 
 
+def test_history_returns_full_reasoning(client, db):
+    """历史接口返回完整思考内容（与实时一致），不再替换为固定摘要。"""
+    sid = _create_session(client)
+    secret = "INTERNAL_REASONING_SENTINEL"
+    db.add_message_row(sid, {
+        "role": "assistant",
+        "content": "回答",
+        "thinking": secret,
+        "blocks": [
+            {"type": "thinking", "content": secret, "duration": 1.2, "step": 1},
+            {"type": "content", "content": "回答", "step": 1},
+        ],
+        "timestamp": "2026-10-21T10:00:00",
+    })
+
+    detail = client.get(f"/agent/sessions/{sid}").json()
+    hist = client.get(f"/agent/sessions/{sid}/history").json()
+    for payload in (detail, hist):
+        assistant = [m for m in payload["messages"] if m.get("role") == "assistant"]
+        assert assistant, payload
+        msg = assistant[-1]
+        assert msg["thinking"] == secret
+        assert any(b.get("content") == secret for b in msg.get("blocks") or [])
+        assert "正在分析并组织回答" not in str(payload)
+
+
 def test_compute_session_usage_sums_reasoning_tokens():
     """会话级聚合需带上思考 token（output 的子集，不并入 total 重复计数）。"""
     from easy_agent.api.sessions import compute_session_usage
