@@ -79,7 +79,7 @@ class ChatRequest(BaseModel):
     )
     page_context: Optional[str] = Field(
         default=None,
-        max_length=8000,
+        max_length=128000,
         description="AI 侧边栏附带的页面/功能上下文（用户唤起 AI 时所在页面的描述），仅提供给模型参考",
     )
     skills: Optional[List[str]] = Field(
