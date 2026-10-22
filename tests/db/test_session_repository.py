@@ -154,3 +154,45 @@ def test_repository_delete_session_removes_rows(tmp_path):
     assert repo.get_messages("sess-c1") == []
     # 再删一次返回 False（与既有 delete_session 语义一致）。
     assert repo.delete_session("sess-c1") is False
+
+
+def test_count_sessions_handles_mysql_dict_cursor_rows():
+    """D2 回归：MySQL DictCursor 返回 dict（如 {"n": N}），不能按 tuple 取 row[0]。"""
+    from easy_agent.db.repositories import sessions as sessions_repo
+
+    class _DictCursor:
+        def __init__(self, row):
+            self._row = row
+
+        def execute(self, *args, **kwargs):
+            return None
+
+        def fetchone(self):
+            return self._row
+
+    class _ConnectionCtx:
+        def __init__(self, cursor):
+            self._cursor = cursor
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def cursor(self):
+            return self._cursor
+
+    class _FakeDb:
+        def __init__(self, row):
+            self._cursor = _DictCursor(row)
+
+        def get_connection(self):
+            return _ConnectionCtx(self._cursor)
+
+        def _execute(self, cursor, sql, params):
+            cursor.execute(sql, params)
+
+    assert sessions_repo.count_sessions(_FakeDb({"n": 3}), username="alice") == 3
+    assert sessions_repo.count_sessions(_FakeDb({"n": 7})) == 7
+    assert sessions_repo.count_sessions(_FakeDb(None), username="alice") == 0

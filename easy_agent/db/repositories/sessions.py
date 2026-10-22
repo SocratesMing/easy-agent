@@ -752,17 +752,21 @@ def count_sessions(db, username: str = None) -> int:
         if username:
             db._execute(
                 cursor,
-                "SELECT COUNT(*) FROM sessions WHERE username=? AND title NOT LIKE ?",
+                "SELECT COUNT(*) AS n FROM sessions WHERE username=? AND title NOT LIKE ?",
                 (username, "[定时任务]%"),
             )
         else:
             db._execute(
                 cursor,
-                "SELECT COUNT(*) FROM sessions WHERE title NOT LIKE ?",
+                "SELECT COUNT(*) AS n FROM sessions WHERE title NOT LIKE ?",
                 ("[定时任务]%",),
             )
         row = cursor.fetchone()
-        return row[0] if row else 0
+        if not row:
+            return 0
+        # MySQL 连接使用 DictCursor（db/database.py），SQLite 返回 tuple：
+        # 两种游标都要兼容（回归 D2：MySQL 下 row[0] 会 KeyError: 0）。
+        return int(row["n"]) if isinstance(row, dict) else int(row[0])
 
 def update_session_title(db, session_id: str, title: str):
     with db.get_connection() as conn:

@@ -272,10 +272,13 @@ async def install_connector(
         if f.get("required", True) and not str(request.values.get(f["key"], "")).strip()
     ]
     if missing:
+        # 响应头按 latin-1 编码传输：中文 label 必须转义为 \uXXXX，否则 Starlette
+        # 构造响应时抛 UnicodeEncodeError，最终变成全局 500（回归 D1）。detail 仍在
+        # JSON body 中保留可读中文，前端无需依赖该响应头。
         raise HTTPException(
             status_code=400,
             detail=f"请先填写以下必填信息: { '、'.join(missing) }",
-            headers={"X-Missing-Fields": json.dumps(missing, ensure_ascii=False)},
+            headers={"X-Missing-Fields": json.dumps(missing, ensure_ascii=True)},
         )
 
     # 深拷贝目录配置并填充用户填写的字段值，标记默认启用
