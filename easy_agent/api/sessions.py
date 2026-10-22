@@ -27,7 +27,6 @@ from ..models.api import (
 )
 from ..middleware import get_current_username
 from ..utils import get_owned_session
-from ..utils.reasoning_safety import redact_messages_reasoning
 from ..config import Config
 from ..services import clear_session_connectors, get_agent_config, remove_session_agent
 from ..services.session_uploads import append_manifest, store_parsed_content
@@ -220,7 +219,9 @@ async def get_session(
         title=session.title,
         created_at=session.created_at,
         updated_at=session.updated_at,
-        messages=redact_messages_reasoning(session.messages),
+        # 历史消息返回完整思考内容：会话已由 get_owned_session 校验归属，
+        # 与实时 SSE 保持一致；推理脱敏仅用于诊断/日志等对外场景。
+        messages=session.messages,
         todos=session.todos,
         usage=usage,
         context_length=context_length,
@@ -353,7 +354,7 @@ async def get_chat_history(
     return GetChatHistoryResponse(
         session_id=session.session_id,
         title=session.title,
-        messages=redact_messages_reasoning(session.messages),
+        messages=session.messages,
         created_at=session.created_at,
         updated_at=session.updated_at,
         usage=usage,
