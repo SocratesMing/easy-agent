@@ -1,13 +1,24 @@
-"""贵金属业务 MCP 工具（precious_metals，HTTP 报表查询，只读）。
+"""贵金属经营分析 MCP 工具（precious_metals v2.0，HTTP 报表数据源，不连库）。
 
 挂载路径：``/mcp/precious_metals/``
 
-文件结构与其它业务包一致：领域层 :mod:`precious_metals` 放报表定义、维度字典、
-HTTP 抓取、HTML / 导出文件解析与全部业务逻辑；本文件只做 MCP 工具注册
+文件结构与其它业务包一致：领域层放报表解析与取数逻辑，本文件只做 MCP 工具注册
 （async 薄包装 + 统一异常兜底）。
 
+领域层是 v2.0「一张报表一个模块」的架构（源文件原样保留，未做任何修改）：
+
+    pm_core.py                 公共核心：配置、HTTP、HTML/XLSX/CSV 解析、
+                               合并单元格展开、双层表头重建、返回信封
+    reports/r8666_overview.py  整体情况表声明（维度/指标/关键词）
+    reports/r8670_detail.py    分产品明细声明
+    precious_metals.py         工具实现 + JSON-RPC 协议层
+
+领域层用的是顶层绝对导入（``import pm_core`` / ``import reports``），因此导入前把
+本包目录临时挂到 ``sys.path`` 首位、导入完成后立即摘掉——既不修改源文件，也不把
+包目录长期留在进程级模块搜索路径里。
+
 数据源是独立的贵金属报表服务，连接地址见同目录 ``config.json`` 的
-``report_base_url``（部署专属，不入库）。
+``report_base_url`` / ``export_url``（部署专属，不入库；优先级高于环境变量）。
 
 并发：MCP SDK 对同步工具函数是直接调用、不丢线程池，而 urllib 是阻塞调用，
 因此工具都是 ``async def`` + ``anyio.to_thread.run_sync``。
@@ -17,54 +28,33 @@ from __future__ import annotations
 
 import functools
 import logging
+import sys
+from pathlib import Path
 from typing import Any
 
 import anyio
 from mcp.server.fastmcp import FastMCP
 
-from . import precious_metals as pm
+# 领域层用顶层绝对导入（import pm_core / import reports），本包内自带这两个模块。
+# 临时把包目录放到 sys.path 首位，导入完成后立刻移除，避免污染进程路径。
+_PKG_DIR = str(Path(__file__).resolve().parent)
+_ADDED_TO_PATH = _PKG_DIR not in sys.path
+if _ADDED_TO_PATH:
+    sys.path.insert(0, _PKG_DIR)
+try:
+    from . import precious_metals as pm
+finally:
+    if _ADDED_TO_PATH:
+        try:
+            sys.path.remove(_PKG_DIR)
+        except ValueError:  # pragma: no cover - 理论上不会发生
+            pass
 
 logger = logging.getLogger("easy-mcp-server")
 
-INSTRUCTIONS = (
-    "precious_metals 用于查询贵金属业务的两张报表：分产品明细表与整体情况表（全业务合计）。\n"
-    "工具选择：\n"
-    "- 分产品/分组合明细 → precious_metals_query_detail\n"
-    "- 总量/占比/整体损益 → precious_metals_query_overview\n"
-    "- 某指标数值（可带维度过滤）→ precious_metals_query_metric\n"
-    "- 谁最高/谁最低/排序 → precious_metals_rank\n"
-    "- 与上月或另一日期比较 → precious_metals_compare\n"
-    "- 字段含义、含不含内部账、占比分母 → precious_metals_describe\n"
-    "- 某个维度有哪些取值（码值/枚举）→ precious_metals_describe，field 传维度名\n"
-    "维度规则：\n"
-    "- 投资组合：报表里是 4 位英文码值（如 FBHF / TGLD），没有中文名。只能按码值精确筛，"
-    "不能按「黄金租赁」这类中文描述筛；按业务含义筛请改用五级产品（level5）或产品分类（product）。\n"
-    "- 产品分类：固定 5 项 —— 贵金属即远期 / 贵金属掉期 / 贵金属期货延期 / 贵金属期权 / 其他。\n"
-    "- 五级产品：中文品种名（如 Au99.99现货实盘 / 黄金期货 / 贵金属租出-企业），可按中文筛。\n"
-    "硬性规则：\n"
-    "1) 日期：用户未明确给出日期时不要自己编，交给工具默认取前一日；返回中的 notice 与 report_dt "
-    "必须在回复里明确告知用户（例如：本次数据日期为前一日 2026-10-19）。\n"
-    "2) 数值一律以工具返回为准，计算优先用「数值_num」列；单位见 unit（万元人民币）。\n"
-    "3) 若工具说明某指标无明细口径，禁止用整体表合计值替代分项值，应如实告知用户。\n"
-    "4) shape=empty 表示该日期确实无数据，不要推测数值；shape=text 表示参数或取数异常。\n"
-    "5) 对用户只说报表名称（「贵金属业务（分产品明细）」「贵金属业务-整体情况」），"
-    "不要提报表编号 8670 / 8666 这类内部标识。\n"
-    "6) 取不到数据时如实说「当前 MCP 不支持该查询」或「报表中没有该组合的数据」，"
-    "不要用别的口径、别的日期的数值替代，也不要自行推算。\n"
-    "7) 返回里的 source=export 表示本次数据来自报表导出文件（服务端生成，比解析页面更可靠）；"
-    "source=page 表示解析页面得到。若 notes 出现「⚠ 已配置导出接口但本次未成功」，说明本次回退到了页面解析，"
-    "可提醒用户导出接口可能失效，或先调 precious_metals_probe 复查。"
-)
-
-
-def _err_env(title: str, summary: str) -> dict:
-    """异常兜底时返回与正常信封同构的最小错误信封。"""
-    return {
-        "shape": "text",
-        "title": title,
-        "summary": summary,
-        "result_state": "NOT_FOUND",
-    }
+# INSTRUCTIONS 由领域层按报表注册表动态生成（含报表名与取数硬性规则），直接复用，
+# 保证与 stdio 版口径完全一致。
+INSTRUCTIONS = pm.INSTRUCTIONS
 
 
 def _safe(fn):
@@ -72,7 +62,7 @@ def _safe(fn):
 
     必须用 ``functools.wraps`` 保留签名——MCP 靠 ``inspect.signature`` 生成工具
     JSON Schema，签名退化成 ``(*args, **kwargs)`` 会被宿主参数校验拒绝。
-    异常时返回与正常信封同构的错误信封，调用方无需分辨两种失败。
+    异常时返回与正常信封同构的 text 信封，调用方无需分辨两种失败。
     """
     @functools.wraps(fn)
     async def wrapper(*a, **kw):
@@ -80,13 +70,19 @@ def _safe(fn):
             return await anyio.to_thread.run_sync(functools.partial(fn, *a, **kw))
         except Exception as e:  # noqa: BLE001
             logger.warning(f"[precious_metals] {fn.__name__} 执行异常: {type(e).__name__}: {e}")
-            return _err_env("查询失败", f"工具执行异常：{type(e).__name__}: {e}")
+            return pm.C.envelope(
+                shape="text",
+                title="查询失败",
+                summary=f"工具执行异常：{type(e).__name__}: {e}",
+                unit="—",
+                notes=["该类失败通常是报表服务不可达或页面结构变化，可先调 precious_metals_probe 体检。"],
+            )
     return wrapper
 
 
 def build() -> FastMCP:
     mcp = FastMCP(
-        "贵金属业务数据查询",
+        "贵金属经营分析",
         instructions=INSTRUCTIONS,
         streamable_http_path="/",
         stateless_http=True,
@@ -95,52 +91,127 @@ def build() -> FastMCP:
     @mcp.tool()
     @_safe
     def precious_metals_list_reports() -> dict[str, Any]:
-        """列出贵金属业务两张报表（分产品明细表、整体情况表）及全部指标字段、维度取值与默认查询日期。不确定指标名时先调它。"""
+        """列出可查的贵金属报表，以及每张报表支持的维度、指标数量与口径简述。
+        不确定该查哪张表、或想知道有哪些维度时先调它。"""
         return pm.list_reports()
 
     @mcp.tool()
     @_safe
-    def precious_metals_query_detail(report_dt: str = "") -> dict[str, Any]:
-        """【贵金属业务（分产品明细）】按投资组合/产品分类/五级产品列示本金、损益、公允价值、交易笔数、持有期限等 22 项指标（含/不含内部账双口径）。用于分产品、分组合的明细问题。report_dt 不填则默认前一日，返回会给出 notice，必须转告用户实际查询日期。"""
-        return pm.query_report("8670", report_dt)
+    def precious_metals_query(
+        metric: str = "",
+        report: str = "",
+        report_dt: str = "",
+        top_n: int = 0,
+        order: str = "desc",
+        p8670_portfolio: str = "",
+        p8670_product: str = "",
+        p8670_level5: str = "",
+        p8666_section: str = "",
+        p8666_group: str = "",
+        p8666_dim: str = "",
+    ) -> dict[str, Any]:
+        """【主查询】按指标名（或整句问题）取数，返回「报表/板块或行/指标/数值/数值_num/单位」。
+        不传 report 时按问题内容自动路由到最匹配的报表；命中不明确会返回候选清单要求确认，不会乱猜。
+        支持维度过滤参数（见各参数说明）与自动识别：问「贵金属租出-企业的损益合计」可直接传 p8670_level5，
+        也可整句传给 metric 由工具识别。top_n>0 时按指标排序取前 N（排名场景）。
+        report_dt 不填默认前一日，返回里的 notice 必须转告用户。
+
+        Args:
+            metric: 指标名或含维度词的整句，如「损益合计（不含内部账）」「期末余额」「TGLD 的损益合计」。留空则返回该报表全量。
+            report: 报表名或编号，可留空由工具自动路由。
+            report_dt: 报表日期 YYYY-MM-DD；用户未明确指定时不要填。
+            top_n: 取前 N 名，0 或不填表示全部。
+            order: desc（默认，高到低）或 asc。
+            p8670_portfolio: 【贵金属业务（分产品明细）】投资组合，4 位英文码值，报表页面不提供中文名。只能按码值精确筛选；想按业务含义筛请改用 p8670_product 或 p8670_level5。
+            p8670_product: 【贵金属业务（分产品明细）】按交易形态划分的业务大类，固定 5 项，可中文精确匹配。取值：贵金属即远期、贵金属掉期、贵金属期货延期、贵金属期权、其他。
+            p8670_level5: 【贵金属业务（分产品明细）】全行统一产品字典，中文品种名，可按中文匹配。取值以页面数据为准（如 Au99.99现货实盘）。
+            p8666_section: 【贵金属业务-整体情况表】报表内的分区。取值：贵金属业务规模情况、贵金属业务损益情况。
+            p8666_group: 【贵金属业务-整体情况表】该行是按什么口径分组的。取值：按投资组合、按产品分类、合计。不同分组之间不可相加。
+            p8666_dim: 【贵金属业务-整体情况表】分组下的具体取值：某投资组合码值（4 位英文）、某产品分类（中文）、或「合计」。含量随 p8666_group 变化，跨分组不可相加。
+        """
+        return pm.query(
+            report=report,
+            metric=metric,
+            report_dt=report_dt,
+            top_n=top_n,
+            order=order,
+            base_url=None,
+            p8670_portfolio=p8670_portfolio,
+            p8670_product=p8670_product,
+            p8670_level5=p8670_level5,
+            p8666_section=p8666_section,
+            p8666_group=p8666_group,
+            p8666_dim=p8666_dim,
+        )
 
     @mcp.tool()
     @_safe
-    def precious_metals_query_overview(report_dt: str = "") -> dict[str, Any]:
-        """【贵金属业务-整体情况（全业务合计）】规模板块（期末余额、占比、当期发生额、交易笔数）与损益板块（营业净收入、非息收入、业务损益、公允价值变动、评价损益、其他损益、损益合计）。用于总量、占比、整体损益问题。report_dt 不填则默认前一日。"""
-        return pm.query_report("8666", report_dt)
+    def precious_metals_breakdown(
+        metric: str = "",
+        report: str = "",
+        report_dt: str = "",
+        top_n: int = 0,
+        order: str = "desc",
+        p8670_portfolio: str = "",
+        p8670_product: str = "",
+        p8670_level5: str = "",
+        p8666_section: str = "",
+        p8666_group: str = "",
+        p8666_dim: str = "",
+    ) -> dict[str, Any]:
+        """【拆解/排名】把某个指标按本表的行维度拆开（分组合 / 分产品 / 分板块），
+        并按数值排序，用于「哪个产品损益最高」「各投资组合分别多少」。已排除合计/小计行。
+
+        Args:
+            metric: 用于拆解的指标，如「损益合计（不含内部账）」「期末余额」。（必填）
+            report: 报表名或编号，可留空自动路由。
+            report_dt: 报表日期 YYYY-MM-DD；不填默认前一日。
+            top_n: 取前 N 名，0 表示全部。
+            order: desc（默认）或 asc。
+            p8670_portfolio: 【贵金属业务（分产品明细）】投资组合 4 位英文码值（报表无中文名），只能按码值精确筛选。
+            p8670_product: 【贵金属业务（分产品明细）】业务大类，5 项中文可精确匹配：贵金属即远期/贵金属掉期/贵金属期货延期/贵金属期权/其他。
+            p8670_level5: 【贵金属业务（分产品明细）】全行统一产品字典，中文品种名，可按中文匹配。
+            p8666_section: 【贵金属业务-整体情况表】分区：贵金属业务规模情况 / 贵金属业务损益情况。
+            p8666_group: 【贵金属业务-整体情况表】分组口径：按投资组合 / 按产品分类 / 合计（不同分组不可相加）。
+            p8666_dim: 【贵金属业务-整体情况表】分组下的具体取值，含量随分组变化，跨分组不可相加。
+        """
+        return pm.breakdown(
+            report=report,
+            metric=metric,
+            report_dt=report_dt,
+            top_n=top_n,
+            order=order,
+            base_url=None,
+            p8670_portfolio=p8670_portfolio,
+            p8670_product=p8670_product,
+            p8670_level5=p8670_level5,
+            p8666_section=p8666_section,
+            p8666_group=p8666_group,
+            p8666_dim=p8666_dim,
+        )
 
     @mcp.tool()
     @_safe
-    def precious_metals_query_metric(metric: str = "", report_dt: str = "", portfolio: str = "",
-                                      product: str = "", level5: str = "", section: str = "") -> dict[str, Any]:
-        """按指标名查具体数值，返回「报表/板块或行/指标/数值/数值_num/单位」。支持维度过滤与口语问法：问「贵金属租出-企业的损益合计」可传 level5，也可整句传给 metric 由工具自动识别维度。注意：投资组合是 4 位英文码值（如 FBHF），只能按码值筛；按业务含义筛请用 level5/product。某指标在明细层不存在时会明确说明，不会用整体表合计值冒充分项值。report_dt 不填默认前一日。"""
-        return pm.query_metric(metric, report_dt, portfolio, product, level5, section)
+    def precious_metals_describe(report: str = "", field: str = "") -> dict[str, Any]:
+        """查口径与取值：某张报表支持哪些维度、每个维度有哪些取值（码值/枚举/品种名）、
+        某字段的业务含义（如「含内部账和不含内部账有什么区别」）。不传参数返回全部报表总览。
+
+        Args:
+            report: 报表名或编号；可留空，只传 field 时自动在该维度所属报表里查。
+            field: 维度名或字段/口径关键词，如「投资组合」「产品分类」「含内部账」「损益合计」。
+        """
+        return pm.describe(report, field)
 
     @mcp.tool()
     @_safe
-    def precious_metals_rank(metric: str, top_n: int = 0, order: str = "desc",
-                             report_dt: str = "", portfolio: str = "", product: str = "") -> dict[str, Any]:
-        """按明细指标排序/排名（如「哪个产品损益最高」）。返回排名/投资组合/产品分类/五级产品/数值，已排除合计行。top_n=0 表示全部。仅支持分产品明细表的指标。"""
-        return pm.rank(metric, top_n, order, report_dt, portfolio, product)
+    def precious_metals_probe(report: str = "", report_dt: str = "") -> dict[str, Any]:
+        """页面结构体检：取不到数、或换到内网/报表改版后先调它。返回页面是否可抓、
+        判定抽取方式、表头层数与字段命中数、识别出的列名、导出接口是否可用。只做诊断，不返回业务数值。
 
-    @mcp.tool()
-    @_safe
-    def precious_metals_compare(metric: str, report_dt: str = "", report_dt_prev: str = "",
-                                portfolio: str = "", product: str = "", level5: str = "") -> dict[str, Any]:
-        """对比两个日期的同一指标（环比/同比），返回每行两期数值、差额、变动率。report_dt_prev 不填时默认取上一月同日。用于「和上个月比怎么样」「环比变化」。"""
-        return pm.compare(metric, report_dt, report_dt_prev, portfolio, product, level5)
-
-    @mcp.tool()
-    @_safe
-    def precious_metals_describe(field: str = "") -> dict[str, Any]:
-        """返回字段/口径的业务含义，如「含内部账和不含内部账有什么区别」「占比的分母是什么」。也用于查维度取值清单：field 传「投资组合」返回 35 个码值、传「产品分类」返回 5 项枚举、传「五级产品」返回 159 项完整品种字典。不传 field 则返回全部口径说明。"""
-        return pm.describe(field)
-
-    @mcp.tool()
-    @_safe
-    def precious_metals_probe(report_id: str = "8666", report_dt: str = "") -> dict[str, Any]:
-        """页面结构体检：取不到数、或换到内网/报表改版后先调它。返回页面体积、可见文字量、<table> 与 role=row 数量、判定的抽取方式（标准表格 / div 栅格 / 重复块 / 文本行 / 未识别）、是否需要无头浏览器渲染、页面上发现的导出链接，以及导出接口（export_url）是否可用。只做诊断，不返回业务数值。"""
-        return pm.probe(report_id, report_dt)
+        Args:
+            report: 报表名或编号；不填则体检第一张报表。
+            report_dt: 报表日期 YYYY-MM-DD；不填默认前一日。
+        """
+        return pm.probe(report, report_dt)
 
     return mcp
