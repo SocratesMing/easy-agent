@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 import easy_agent.api.chat as chat_api
-import easy_agent.api.expert as expert_api
+import easy_agent.services.expert_runtime as expert_runtime
 from easy_agent.services import agent_manager
 
 BUSY = "本会话正在生成回复，请等待完成或先取消当前生成"
@@ -35,17 +35,17 @@ def _no_agent(monkeypatch):
         raise AssertionError("会话正忙时不应创建 Agent")
 
     monkeypatch.setattr(chat_api, "get_or_create_agent_for_session", must_not_build)
-    monkeypatch.setattr(expert_api, "get_or_create_agent_for_session", must_not_build)
 
 
 def test_expert_run_on_a_busy_session_is_409(client, db, busy_session, monkeypatch):
     async def must_not_gate(*args, **kwargs):
         raise AssertionError("会话正忙时不应做相关性预检")
 
-    monkeypatch.setattr(expert_api, "_relevance_gate", must_not_gate)
+    monkeypatch.setattr(expert_runtime, "relevance_gate", must_not_gate)
 
     resp = client.post(
-        "/agent/stream_export_run", json={"message": "你好", "session_id": busy_session}
+        "/agent/chat/stream",
+        json={"message": "你好", "session_id": busy_session, "expert_agent_id": "preset_x"},
     )
 
     assert resp.status_code == 409

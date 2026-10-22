@@ -1,4 +1,4 @@
-"""专家 Agent API：创建 / 修改 / 列表 / 删除 / 选中执行。
+"""专家 Agent API：创建 / 修改 / 列表 / 删除。
 
 设计要点（见 ``docs/expert-agent-solution.md`` §5、§6）：
 
@@ -6,16 +6,17 @@
   非本人资源一律返回 **404**（不泄露存在性），与 ``chat.py`` 现有做法一致；
 - **落库与目录**：``db/expert_store.py``（单表 CRUD）+ ``services/expert_service.py``
   （LLM 生成与版本目录），本文件只做编排与参数校验；
-- **执行**：``/agent/stream_export_run`` 是薄适配层，本轮准备步骤（技能解析、取会话、
-  上传文件上下文）与 ``_detached_event_stream`` 复用 ``chat.py``，生成器复用
-  ``chat_stream_generator``，SSE 事件格式与 ``/agent/chat/stream`` 完全一致，前端可复用
-  同一套解析逻辑；
-- **专家提示词走 ``system_prompt_extra``**：本方案不改 ``agent.py``，专家人设通过
-  现成通道追加到系统提示词末尾（recency 最高，实际效果上主导通用人设）。
+- **执行走唯一入口 ``/agent/chat/stream``**：专家对话不再是独立接口。前端在聊天请求里
+  带上 ``expert_agent_id``，由 ``api/chat.py`` 的专家分支完成「加载提示词 → 补装依赖技能
+  → 职责范围预检 → 建 Agent」，与通用对话共用同一套 SSE 事件与会话/run 生命周期。
+  运行时逻辑在 ``services/expert_runtime.py``，本文件只保留 CRUD；
+- **专家提示词走 ``system_prompt_extra``**：不改 ``agent.py``，专家人设通过现成通道
+  追加到系统提示词末尾（recency 最高，实际效果上主导通用人设）。
 
-批次 2B 起非路由辅助逻辑（用户/记录转换、配置读取、生成落库、提示词加载与护栏、
-消息落库、相关性预检、短路拒答流）移到 ``api/expert_helpers.py``；本文件只保留
-FastAPI 路由与 repository provider，旧内部名字经 ``__all__`` re-export 继续可用。
+批次 2B 起非路由辅助逻辑（用户/记录转换、配置读取、生成落库）移到
+``api/expert_helpers.py``；2026-10 起对话运行时（提示词加载与护栏、消息落库、相关性
+预检、短路拒答流）下沉到 ``services/expert_runtime.py``。旧内部名字经 ``__all__``
+re-export 继续可用。
 """
 
 import logging
@@ -23,7 +24,7 @@ import time
 import uuid
 from typing import Annotated, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from easy_agent.db.repositories.expert_repository import ExpertRepository
@@ -31,29 +32,17 @@ from easy_agent.db.expert_store import (
     STATUS_BUILDING,
 )
 from easy_agent.middleware import get_current_username
-from easy_agent.models.api import ChatRequest
 from easy_agent.services import (
-    chat_stream_generator,
     get_or_create_agent_for_session,
     invalidate_user_agents,
 )
 from easy_agent.services import public_expert_service
-from easy_agent.services.run_registry import new_run_id, start_run
 from easy_agent.services.expert_service import (
     build_expert_ids,
     remove_expert_dir,
     validate_create_params,
 )
 from easy_agent.utils.prompt_probe import describe_prompt
-from easy_agent.api.chat import (
-    _detached_event_stream,
-    build_turn_uploads,
-    open_turn_session,
-    reject_concurrent_stream,
-    require_turn_content,
-    resolve_request_skills,
-)
-from easy_agent.api.sse_response import sse_response
 from easy_agent.api.deps import (  # noqa: F401 - 旧模块级名字 re-export
     as_expert_repository as _as_expert_repository,
     get_expert_repository,
@@ -150,31 +139,9 @@ class ExpertDelRequest(BaseModel):
     hard: bool = Field(default=False, description="True=物理删除（含目录）；False=软删除")
 
 
-class ExpertRunRequest(BaseModel):
-    """选中专家执行（SSE 流式），字段与 ``/agent/chat/stream`` 对齐。"""
-
-    message: str = Field(
-        ...,
-        description="用户消息内容（可为空：只挂技能、或只上传文件时没有正文）",
-        min_length=0,
-    )
-    session_id: Optional[str] = Field(default=None, description="会话ID；不传则新建会话")
-    message_id: Optional[str] = Field(default=None, description="消息ID")
-    expert_agent_id: Optional[str] = Field(
-        default=None, description="选中的专家 Agent ID；不传=通用 Agent"
-    )
-    model: Optional[str] = Field(default=None, description="模型名称")
-    enable_deep_think: bool = Field(default=False, description="是否启用深度思考")
-    enable_web_search: bool = Field(default=False, description="是否开启联网搜索")
-    files: Optional[List[dict]] = Field(default=None, description="上传的文件列表")
-    skills: Optional[List[str]] = Field(
-        default=None,
-        description=(
-            "本轮选中的技能目录名（输入框技能胶囊选中项），后端据此把 `/目录名` 指令拼进"
-            "**模型输入**并落库到用户消息的 skills 字段（气泡按它渲染技能标签）。"
-            "为空或未传时回退解析消息文本开头的 `/目录名`（兼容旧前端/手打指令）"
-        ),
-    )
+# 说明：原 ``ExpertRunRequest`` 与 ``POST /agent/stream_export_run`` 已删除。
+# 专家对话统一走 ``POST /agent/chat/stream``（带 ``expert_agent_id`` 字段），
+# 不再有第二个 SSE 入口——两个入口会让会话/run 注册、拒答链路各写一套，极易分叉。
 
 
 # ── 接口 ──────────────────────────────────────────────────────────────
@@ -380,6 +347,40 @@ def list_public_experts():
     }
 
 
+@router.get(
+    "/agent/expert/required-skills",
+    summary="查看专家依赖技能状态（排查用，只读）",
+)
+def expert_required_skills(
+    username: Annotated[str, Depends(get_current_username)],
+    expert_id: str = Query(..., description="公共专家 ID，如 preset_factor_research"),
+):
+    """返回该专家声明的依赖技能、解析到的公共技能目录、当前用户是否已可用。
+
+    现场排查「选了这个专家，但模型说扫不到技能」时先看这里：``items[].state``
+    直接给出原因——``source_missing`` 表示**服务端公共技能目录里没有这个技能包**
+    （需要运维放包），``source_unconfigured`` 表示 ``tools.skills_dir`` 没配好，
+    ``disabled`` 表示用户自己在技能中心停用了。
+
+    本接口**只读**：不会触发安装，也不会驱逐缓存（触发补装的是真正发消息那一刻）。
+    """
+    from easy_agent.services import skill_provision
+
+    report = skill_provision.required_skills_status(username, expert_id)
+    if not report["required"]:
+        raise HTTPException(
+            status_code=404, detail=f"公共专家 '{expert_id}' 不存在或未声明依赖技能"
+        )
+    logger.info(
+        "🔎 专家依赖技能状态查询 | 用户: %s | 专家: %s | 公共目录: %s | 状态: %s",
+        username,
+        expert_id,
+        report["skills_root"] or "(未配置)",
+        [(item["skill"], item["state"]) for item in report["items"]],
+    )
+    return report
+
+
 @router.post("/agent/del", summary="删除专家 Agent")
 async def delete_expert(
     request: ExpertDelRequest,
@@ -409,181 +410,3 @@ async def delete_expert(
         "hard": bool(request.hard),
         "removed": bool(removed),
     }
-
-
-@router.post(
-    "/agent/stream_export_run",
-    summary="选中专家 Agent 执行（SSE 流式）",
-    description=(
-        "选中专家后动态构建 Agent 来回答；不传 expert_agent_id 时退化为通用 Agent。"
-        "事件格式与 /agent/chat/stream 一致。"
-    ),
-)
-async def stream_export_run(
-    request: ExpertRunRequest,
-    db: Annotated[ExpertRepository, Depends(get_expert_repository)],
-    http_request: Request,
-    username: Annotated[str, Depends(get_current_username)],
-):
-    repo = _as_expert_repository(db)
-    require_turn_content(request.message, request.files, request.skills)
-
-    session_id = request.session_id
-    message_id = request.message_id or str(uuid.uuid4())
-    sid = session_id[-5:] if session_id else "new"
-    turn = resolve_request_skills(request.skills, request.message, username, sid)
-
-    logger.info(
-        f"[{sid}] 专家执行请求 | expert: {request.expert_agent_id or '(通用)'} | "
-        f"message: {request.message[:50]}{'...' if len(request.message) > 50 else ''}"
-    )
-
-    # ── 1. 会话处理：与 /agent/chat/stream 共用 ────────────────────────
-    session_id, workspace_name = open_turn_session(
-        repo, session_id, username, request.message, request.files, turn.fallback_name
-    )
-    # 同一会话已有流在跑时 409（与聊天入口一致）：放在相关性预检和用户消息落库之前，
-    # 拒答链路同样会落用户消息，忙碌时也不该为预检多调一次 LLM
-    reject_concurrent_stream(session_id)
-
-    # ── 2. 专家校验与提示词加载 ────────────────────────────────────────
-    # 我的专家（数据库）优先，公共专家（experts 目录）兜底；找不到 ID 时 404。
-    # 加载日志（含长度/指纹/开头）在 _load_expert_prompt 内统一打印（可观测点 ①）。
-    expert_prompt = ""
-    expert_id = ""
-    if request.expert_agent_id:
-        expert_id, expert_prompt, _source = _load_expert_prompt(
-            repo, username, request.expert_agent_id, sid
-        )
-        if not expert_prompt:
-            # 读取失败（目录被清 / 文件缺失）：降级为通用 Agent，不阻断对话
-            expert_id = ""
-
-    # ── 2.5 相关性预检（硬闸，Agent 不启动） ────────────────────────────
-    # 职责边界块只是提示词层面的软约束（模型可能不遵守）；这里先用一次轻量 LLM
-    # 调用判断本轮消息是否落在专家领域内：全不相关直接短路拒答——Agent 不创建、
-    # 工具零可达。预检关闭/异常/超时一律放行（fail-open）。
-    # 放在文件解析之前：拒答的消息不该为解析附件付出代价，也不该触发预览注入。
-    gate = await _relevance_gate(
-        repo,
-        session_id,
-        username,
-        expert_id,
-        request.message,
-        sid,
-        files=request.files,
-        prompt_text=expert_prompt,
-    )
-    if gate is not None:
-        classification, refusal = gate
-        _persist_user_turn(
-            repo, session_id, username, request, expert_id, turn.dirs, turn_id=message_id
-        )
-        _session_logger_for(session_id, username).log_user_message(
-            message=request.message,
-            files=request.files,
-            message_id=message_id,
-        )
-        logger.info(
-            f"[{sid}] 🚫 相关性预检短路拒答 | expert={expert_id} | "
-            f"判定={classification} | Agent 未创建 | 拒答长度={len(refusal)}"
-        )
-        return sse_response(
-            _detached_event_stream(
-                _refusal_event_stream(session_id, repo, refusal),
-                session_id,
-                sid,
-                renew_stream=repo.renew_stream,
-                db=repo.database,
-            )
-        )
-
-    # ── 3. 上传文件 + 系统提示词附加内容（与 chat.py 共用） ────────────
-    uploads = build_turn_uploads(repo, session_id, username, request.files, request.message)
-    parsed_content = uploads.model_input
-
-    # 专家提示词排在最后：agent.py 的拼接顺序为
-    # [system_prompt, user_info, web_search_prompt, system_prompt_extra]，
-    # 放在 extra 末尾即 recency 最高，专家人设可主导通用人设。
-    extra_parts = list(uploads.prompt_parts)
-    if expert_prompt:
-        extra_parts.append(expert_prompt)
-    system_prompt_extra = "\n\n".join(extra_parts)
-
-    # 可观测点 ②（前半）：交给 agent_manager 的动态附加内容已组装完成。
-    # 这里能看到专家提示词 + 文件内容拼接后的最终 extra（未挂专家时为空）。
-    logger.info(
-        f"[{sid}] 🧩 动态附加内容已组装 | expert={expert_id or '(通用)'} | "
-        f"文件块={uploads.parsed_files} | {describe_prompt('extra', system_prompt_extra)}"
-    )
-
-    # ── 4. 落用户消息（与 chat.py 一致） ───────────────────────────────
-    _persist_user_turn(
-        repo, session_id, username, request, expert_id, turn.dirs, turn_id=message_id
-    )
-
-    session_logger = _session_logger_for(session_id, username)
-    session_logger.log_user_message(
-        message=request.message,
-        files=request.files,
-        message_id=message_id,
-    )
-
-    # ── 5. 获取（必要时驱逐重建）会话 Agent ────────────────────────────
-    # 专家变更的驱逐判断在 get_or_create_agent_for_session() 内部统一处理，
-    # 这里只需把 expert_agent_id 传进去（不传时等价于通用 Agent，行为与改动前一致）。
-    # 连接器不随每轮提交：agent_manager 按会话读取输入框「+」面板开关写入的集合。
-    agent = await get_or_create_agent_for_session(
-        session_id,
-        username,
-        workspace_name,
-        model_name=request.model,
-        system_prompt_extra=system_prompt_extra,
-        enable_web_search=request.enable_web_search,
-        expert_agent_id=expert_id,
-    )
-
-    chat_request = ChatRequest(
-        message=request.message,
-        session_id=session_id,
-        message_id=message_id,
-        enable_deep_think=request.enable_deep_think,
-        enable_web_search=request.enable_web_search,
-        files=request.files,
-        model=request.model,
-    )
-
-    # Phase 2B：本轮 run 持久化（owner + lease），与 /agent/chat/stream 一致，登记失败只记日志。
-    # request_json 存专家执行请求（带 expert_agent_id），与聊天的 run 区分开。上面的拒答流
-    # 不建 Agent、瞬间写完，不登记。
-    run_id = new_run_id(session_id, message_id)
-    start_run(
-        repo.database,
-        run_id,
-        session_id,
-        username=username or "",
-        message_id=message_id,
-        request_json=request.model_dump_json(),
-    )
-
-    return sse_response(
-        _detached_event_stream(
-            chat_stream_generator(
-                request=chat_request,
-                db=repo.database,
-                agent=agent,
-                session_id=session_id,
-                message_id=message_id,
-                username=username,
-                http_request=http_request,
-                parsed_content=parsed_content,
-                session_logger=session_logger,
-                pinned_skills=turn.pinned,
-            ),
-            session_id,
-            sid,
-            renew_stream=repo.renew_stream,
-            db=repo.database,
-            run_id=run_id,
-        )
-    )

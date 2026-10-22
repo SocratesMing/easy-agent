@@ -19,6 +19,7 @@ from fastapi import HTTPException
 
 import easy_agent.api.expert as expert_api
 import easy_agent.api.expert_helpers as expert_helpers
+import easy_agent.services.expert_runtime as expert_runtime
 from easy_agent.app import app
 
 # 批次 2B 纯移动的符号清单（实现位于 helpers，expert 仅 re-export）
@@ -51,7 +52,7 @@ EXPECTED_ROUTES = {
     ("GET", "/agent/list"),
     ("GET", "/agent/public-list"),
     ("POST", "/agent/del"),
-    ("POST", "/agent/stream_export_run"),
+    ("GET", "/agent/expert/required-skills"),
 }
 
 
@@ -164,27 +165,29 @@ def test_tag_options_accepts_models_and_dicts_and_drops_empty():
 
 
 def test_expert_flags_defaults_on_missing_or_broken_config(monkeypatch):
-    monkeypatch.setattr(expert_helpers, "get_agent_config", lambda: {})
-    assert expert_helpers._expert_flags() == (True, True, False)
+    # 2026-10 迁移后 _expert_flags 落在 services.expert_runtime（expert_helpers 仅 re-export），
+    # 打桩必须指向真实定义处。
+    monkeypatch.setattr(expert_runtime, "get_agent_config", lambda: {})
+    assert expert_runtime._expert_flags() == (True, True, False)
 
     cfg = SimpleNamespace(
         expert_guardrail_enabled=False,
         expert_relevance_check_enabled=False,
         expert_relevance_strict=True,
     )
-    monkeypatch.setattr(expert_helpers, "get_agent_config", lambda: {"config": cfg})
-    assert expert_helpers._expert_flags() == (False, False, True)
+    monkeypatch.setattr(expert_runtime, "get_agent_config", lambda: {"config": cfg})
+    assert expert_runtime._expert_flags() == (False, False, True)
 
     def _boom():
         raise RuntimeError("配置未初始化")
 
-    monkeypatch.setattr(expert_helpers, "get_agent_config", _boom)
-    assert expert_helpers._expert_flags() == (True, True, False)
+    monkeypatch.setattr(expert_runtime, "get_agent_config", _boom)
+    assert expert_runtime._expert_flags() == (True, True, False)
 
 
 def test_with_guardrail_wires_config_flags(monkeypatch):
     monkeypatch.setattr(
-        expert_helpers,
+        expert_runtime,
         "get_agent_config",
         lambda: {
             "config": SimpleNamespace(
@@ -192,18 +195,18 @@ def test_with_guardrail_wires_config_flags(monkeypatch):
             )
         },
     )
-    guarded = expert_helpers._with_guardrail("你是债券投研专家")
+    guarded = expert_runtime._with_guardrail("你是债券投研专家")
     assert "你是债券投研专家" in guarded
     assert "专家职责边界" in guarded
     assert "宽松口径" in guarded
 
     monkeypatch.setattr(
-        expert_helpers,
+        expert_runtime,
         "get_agent_config",
         lambda: {"config": SimpleNamespace(expert_guardrail_enabled=False)},
     )
-    assert expert_helpers._with_guardrail("你是债券投研专家") == "你是债券投研专家"
-    assert expert_helpers._with_guardrail("") == ""
+    assert expert_runtime._with_guardrail("你是债券投研专家") == "你是债券投研专家"
+    assert expert_runtime._with_guardrail("") == ""
 
 
 class _NameStore:

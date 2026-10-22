@@ -13,6 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 
 from easy_agent.api.sse_response import sse_response
 from easy_agent.db.repositories.chat_repository import ChatRepository
+from easy_agent.db.repositories.expert_repository import ExpertRepository
 from easy_agent.db.repositories.stream_events import clear_stream_events
 from easy_agent.models.db import SessionModel
 from easy_agent.models.api import ChatRequest, ResumeRequest
@@ -31,6 +32,7 @@ from easy_agent.services import (
     is_session_streaming,
     cancel_stream_task,
 )
+from easy_agent.services import expert_runtime, skill_provision
 # 流锁、待修改专家要写库：用异步版本，写库放进线程，不占事件循环
 from easy_agent.services.agent_manager import (
     aregister_stream_task,
@@ -73,6 +75,7 @@ from easy_agent.utils import (
     parse_file_content,
     SessionLogger,
 )
+from easy_agent.utils.prompt_probe import describe_prompt
 from easy_agent.api.sessions import generate_workspace_name
 from easy_agent.knowledges.chat.host_port import (
     register_host_capabilities,
@@ -226,7 +229,7 @@ def create_new_session(
     return workspace_name
 
 
-# ── 本轮请求的准备步骤：/agent/chat/stream 与专家执行 /agent/stream_export_run 共用 ──
+# ── 本轮请求的准备步骤：通用对话与专家对话共用（专家对话走同一入口 + expert_agent_id）──
 
 
 def require_turn_content(message: str | None, files: list | None, skills: list | None) -> None:
@@ -598,7 +601,9 @@ async def chat_stream(
     logger.info(
         f"[{sid}] 聊天请求 | message: {request.message[:50]}{'...' if len(request.message) > 50 else ''} | "
         f"deep_think: {request.enable_deep_think} | "
-        f"web_search: {request.enable_web_search} | model: {request.model or '(active)'}"
+        f"web_search: {request.enable_web_search} | model: {request.model or '(active)'} | "
+        f"expert: {request.expert_agent_id or '(未选专家)'} | "
+        f"pending_expert: {request.pending_expert_id or '(无)'}"
     )
 
     session_id, workspace_name = open_turn_session(
@@ -607,6 +612,69 @@ async def chat_stream(
 
     # 并发互斥：同一会话同一时刻只允许一条流式生成
     reject_concurrent_stream(session_id)
+
+    # ── 专家分支：提示词加载 + 依赖技能补装 + 职责范围预检（硬闸）──────────
+    # 顺序不能动：预检必须早于文件解析与知识库检索——被拒答的消息不该为这些付成本，
+    # 更重要的是「Agent 未创建」时任何工具都不可达（提示词层面的边界块做不到这点）。
+    # 专家对话只有这一个入口（``/agent/chat/stream``），不再有独立的专家执行接口。
+    expert_repo = ExpertRepository(repo.database)
+    expert_id = ""
+    expert_prompt = ""
+    skill_notice = ""
+    if request.expert_agent_id:
+        # 我的专家（数据库）优先，公共专家（目录）兜底；读取失败降级为通用 Agent
+        expert_id, expert_prompt, _expert_source = expert_runtime.load_expert_prompt(
+            expert_repo, username, request.expert_agent_id, sid
+        )
+        if not expert_prompt:
+            expert_id = ""
+
+        # 依赖技能补装：只往用户清单里登记（DA-13 S2），不复制技能包本体。
+        # 缺包 / 未配置 / 用户停用都**不阻断对话**，转成一段运行时提示交给模型，
+        # 让模型如实说明「技能未就绪」，而不是虚构技能产物。
+        skill_report = skill_provision.provision_expert_skills(username, expert_id)
+        skill_notice = skill_provision.build_skill_runtime_notice(skill_report)
+
+    gate = await expert_runtime.relevance_gate(
+        expert_repo,
+        session_id,
+        username,
+        expert_id,
+        request.message,
+        sid,
+        files=request.files,
+        prompt_text=expert_prompt,
+    )
+    if gate is not None:
+        classification, refusal = gate
+        # 拒答也要落用户消息：否则会话列表里只剩一条 assistant 拒答，上下文断裂
+        expert_runtime.persist_user_turn(
+            expert_repo,
+            session_id,
+            username,
+            request,
+            expert_id,
+            turn.dirs,
+            turn_id=message_id,
+        )
+        expert_runtime.session_logger_for(session_id, username).log_user_message(
+            message=request.message,
+            files=request.files,
+            message_id=message_id,
+        )
+        logger.info(
+            f"[{sid}] 🚫 相关性预检短路拒答 | expert={expert_id} | "
+            f"判定={classification} | Agent 未创建 | 拒答长度={len(refusal)}"
+        )
+        return sse_response(
+            _detached_event_stream(
+                expert_runtime.refusal_event_stream(session_id, expert_repo, refusal),
+                session_id,
+                sid,
+                renew_stream=repo.renew_stream,
+                db=repo.database,
+            )
+        )
 
     # 「待修改专家」绑定：用户在专家面板点「编辑」后，前端把专家 ID 放进请求的
     # 结构化字段（不进消息正文，用户不可见、不可改）。这里做归属校验——只接受
@@ -632,7 +700,22 @@ async def chat_stream(
     )
     uploads = build_turn_uploads(repo, session_id, username, request.files, request.message)
     parsed_content = uploads.model_input
-    system_prompt_extra = "\n\n".join(uploads.prompt_parts)
+    # 专家提示词与技能提示排在最后：agent.py 的拼接顺序为
+    # [system_prompt, user_info, web_search_prompt, system_prompt_extra]，
+    # 放在 extra 末尾即 recency 最高，专家人设可主导通用人设。
+    extra_parts = list(uploads.prompt_parts)
+    if skill_notice:
+        # 依赖技能不可用时的运行时提示（让模型如实说明，而不是虚构技能产物）
+        extra_parts.append(skill_notice)
+    if expert_prompt:
+        extra_parts.append(expert_prompt)
+    system_prompt_extra = "\n\n".join(extra_parts)
+    if expert_prompt:
+        # 可观测点：交给 agent_manager 的最终附加内容（含文件块与专家提示词）
+        logger.info(
+            f"[{sid}] 🧩 动态附加内容已组装 | expert={expert_id} | "
+            f"文件块={uploads.parsed_files} | {describe_prompt('extra', system_prompt_extra)}"
+        )
 
     page_context = (request.page_context or "").strip()
     if page_context:
@@ -655,6 +738,11 @@ async def chat_stream(
         user_message["files"] = request.files
     if page_context:
         user_message["page_context"] = page_context
+    # 专家随用户消息落库：回答面板取其上一条用户消息的该字段展示头像 + 名称，
+    # 刷新 / 历史加载后不丢，同一会话不同轮次各对应自己那一轮的专家。
+    expert_meta = expert_runtime.expert_meta_for_message(expert_repo, username, expert_id)
+    if expert_meta:
+        user_message["expert"] = expert_meta
     # 结构化技能目录名：气泡按它渲染技能标签，不再需要从消息文本里反扒 `/目录名`
     if turn.dirs:
         user_message["skills"] = turn.dirs
@@ -677,10 +765,13 @@ async def chat_stream(
 
     # 连接器不再随每轮消息提交：本会话启用哪些连接器由输入框「+」面板的开关决定
     # （见 api/connectors.py 的 /agent/connectors/session），agent_manager 按会话读取。
+    # expert_agent_id 只用于「专家变更 -> 驱逐缓存 Agent」，提示词已在上面的
+    # system_prompt_extra 里拼好（专家切换立即生效，不串用上一轮的人设）。
     agent = await get_or_create_agent_for_session(
         session_id, username, workspace_name, model_name=request.model,
         system_prompt_extra=system_prompt_extra,
         enable_web_search=request.enable_web_search,
+        expert_agent_id=expert_id or None,
     )
 
     # Phase 2B：把本轮 run 持久化（owner + lease）。登记失败只记日志，

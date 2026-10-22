@@ -99,6 +99,15 @@ class ChatRequest(BaseModel):
             "本人创建的可用专家）后绑定为 save_expert 的修改目标；不传/非法则忽略"
         ),
     )
+    expert_agent_id: Optional[str] = Field(
+        default=None,
+        max_length=64,
+        description=(
+            "本轮使用的专家 ID（我的专家 ID 或公共专家目录名）；不传=通用 Agent。"
+            "专家对话只有一个入口：本字段随 /agent/chat/stream 上行，后端据此加载"
+            "专家提示词、补装依赖技能、做职责范围预检（命中即短路拒答，Agent 不创建）"
+        ),
+    )
 
 
 class ResumeRequest(BaseModel):

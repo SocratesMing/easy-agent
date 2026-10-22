@@ -63,7 +63,6 @@ MODULE_LABELS = [
     ("/agent/list", "专家"),
     ("/agent/public-list", "专家"),
     ("/agent/del", "专家"),
-    ("/agent/stream_export_run", "专家"),
     ("/agent/knowledge", "知识库"),
     ("/agent/personnel", "人员"),
     ("/agent/terminal", "终端"),
