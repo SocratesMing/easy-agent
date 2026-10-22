@@ -138,7 +138,7 @@ import { createStreamChunkHandler } from './features/chat/composables/useStreamC
 import { uploadFile, deleteFile, getUserProfile, getSessionGeneratedFiles } from './api/files.js'
 import { logout as apiLogout, notifyLogout, getStoredToken, getStoredUsername, AUTH_EXPIRED_EVENT, authFetch, passwordlessLogin } from './api/auth.js'
 import { getModels as fetchModels } from './api/settings.js'
-import { streamExportRun } from './api/expert.js'
+import { getExpertLastSession } from './shared/utils/expertSession.js'
 
 const sessions = ref([])
 const currentSessionId = ref(null)
@@ -806,13 +806,22 @@ function handleShowSkillCenter() {
 /**
  * 「专家 Tab -> 使用」（及任何来源的专家选中）：把专家挂到当前会话。
  *
- * 不强制新建会话：后端 thread_id = `{session_id}-{message_id}`，每条消息都是新线程，
- * 且 get_or_create_agent_for_session() 已按「专家是否变更」驱逐缓存，
- * 因此同一会话内切换专家能立即生效（详见 docs/expert-agent-solution.md）。
+ * 专家之间**不共享同一个会话**：会话记忆（memory.md）、历史消息、摘要与工作区
+ * 交付物都绑定在会话上，同一会话里换专家会让上一个专家留下的领域规则继续被注入
+ * （实测：先问利率债专家，再切 Java 专家问汇率，模型照着利率债的记忆"汇率拒答"
+ * 并照抄了历史里的专家名）。因此这里按「换专家 = 换会话」处理，但**不做成一味
+ * 新建**——先看该专家有没有聊过的会话，有就回去，这样对话记录与会话记忆都不丢。
+ *
+ * 三种情况：
+ * 1. 当前是空会话（用户刚手动新建）→ 尊重这个新窗口，就地使用，不合并到旧会话；
+ * 2. 当前会话已有消息 → 若该专家有历史会话就跳过去，没有就新建一个干净会话；
+ * 3. 该专家的「最近会话」正是当前会话 → 只切换专家，不做任何跳转。
+ *
+ * 与 frontend-vue2/src/App.vue 的同名函数同构，改动需同步两处。
  */
-function handleUseExpert(expert, prompt) {
+async function handleUseExpert(expert, prompt) {
   if (!expert || !expert.export_agent_id) return
-  selectedExpert.value = {
+  const picked = {
     export_agent_id: expert.export_agent_id,
     export_name_cn: expert.export_name_cn,
     export_version: expert.export_version,
@@ -820,6 +829,27 @@ function handleUseExpert(expert, prompt) {
   showSkillCenter.value = false
   // 详情弹窗点了示例问题：召唤专家的同时把问题回填到输入框（用户确认后发送）
   expertPrompt.value = typeof prompt === 'string' ? prompt : ''
+
+  const expertId = picked.export_agent_id
+  const isBlankSession = messages.value.length === 0
+  const lastSessionId = getExpertLastSession(expertId)
+  // localStorage 里的会话可能已被删除：必须以会话列表为准，否则会跳到空会话
+  const lastSessionAlive =
+    !!lastSessionId && sessions.value.some(s => s.session_id === lastSessionId)
+
+  if (!isBlankSession && lastSessionId !== currentSessionId.value) {
+    if (lastSessionAlive) {
+      // 回到该专家上次的会话（切会话会清空专家选择，返回后统一恢复）
+      await handleSelectSession(lastSessionId)
+    } else {
+      // 该专家还没有（有效的）会话：开一个干净窗口，避免继承上一个专家的上下文
+      await handleCreateSession()
+    }
+  }
+
+  // handleCreateSession / handleSelectSession 会清空专家选择（「切会话不沿用临时
+  // 选择」的既有口径），这里显式恢复成本轮用户刚选中的专家。
+  selectedExpert.value = picked
 }
 
 function handleShowScheduledTasks() {
@@ -1350,6 +1380,8 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
 
   const streamCtx = {
     isResume: false,
+    // 本轮使用的专家 ID：start 事件里据此写「专家 -> 会话」映射（换专家 = 换会话）
+    expertId: (selectedExpert.value && selectedExpert.value.export_agent_id) || '',
     get assistantMsgId() { return assistantMsgId },
     set assistantMsgId(v) { assistantMsgId = v },
     get streamSessionId() { return streamSessionId },
@@ -1406,42 +1438,26 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
       }
     }
 
-    // 专家模式：改走 /agent/stream_export_run，由后端按选中的专家动态构建 Agent
-    // （加载该专家当前生效版本的提示词，未选中的情况退化为通用 Agent）。
-    // SSE 事件格式与 /agent/chat/stream 完全一致，因此 onChunk 复用同一处理器。
-    // 未选专家时保持原有链路，行为不变。
-    if (selectedExpert.value && selectedExpert.value.export_agent_id) {
-      await streamExportRun(
-        {
-          message,
-          sessionId: currentSessionId.value,
-          expertAgentId: selectedExpert.value.export_agent_id,
-          model: selectedModel.value,
-          enableDeepThink,
-          enableWebSearch,
-          files,
-          // 已选技能：结构化字段（技能目录名），`/目录名` 由后端拼进模型输入
-          skills,
-        },
-        onChunk,
-        abortSignal
-      )
-    } else {
-      await sendMessage(
-        currentSessionId.value,
-        message,
-        onChunk,
-        abortSignal,
-        enableDeepThink,
-        files,
-        selectedModel.value,
-        enableWebSearch,
-        skills,
-        // 待修改专家 ID（专家面板「编辑」带入，不进消息正文）：后端校验归属后
-        // 绑定为 save_expert 的修改目标
-        expertEditId
-      )
-    }
+    // 专家对话与通用对话只有一个入口 /agent/chat/stream：选中专家时把
+    // expert_agent_id 一并上行，由后端加载该专家提示词、补装依赖技能、
+    // 做职责范围预检（命中即短路拒答，Agent 不创建）。
+    await sendMessage(
+      currentSessionId.value,
+      message,
+      onChunk,
+      abortSignal,
+      enableDeepThink,
+      files,
+      selectedModel.value,
+      enableWebSearch,
+      skills,
+      // 待修改专家 ID（专家面板「编辑」带入，不进消息正文）：后端校验归属后
+      // 绑定为 save_expert 的修改目标
+      expertEditId,
+      selectedExpert.value && selectedExpert.value.export_agent_id
+        ? selectedExpert.value.export_agent_id
+        : ''
+    )
 
     await expandWorkspaceAfterSessionCompletion(streamSessionId)
   } catch (e) {

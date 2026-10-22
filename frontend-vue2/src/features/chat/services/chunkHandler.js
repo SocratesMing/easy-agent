@@ -9,6 +9,7 @@
  */
 import { chatBus } from '../store/chatStore.js'
 import { setReactive } from '../../../utils/reactiveSet.js'
+import { setExpertLastSession } from '../../../shared/utils/expertSession.js'
 
 export function createStreamChunkHandler(vm, ctx) {
   let currentBlock = null
@@ -155,6 +156,11 @@ export function createStreamChunkHandler(vm, ctx) {
           vm.loadSessions()
         }
         if (data.session_id) ctx.streamSessionId = data.session_id
+        // 记录「本专家 -> 该会话」：新会话的 ID 只有在 start 事件里才拿到，所以关联写在
+        // 这里而不是选专家的时刻（那时会话可能还不存在）。切回同一专家时用它回到原会话。
+        if (data.session_id && ctx.expertId) {
+          setExpertLastSession(ctx.expertId, data.session_id)
+        }
         // 标记该会话已有本页流处理器：切回时按缓存直接显示，避免再起 attach 重复渲染
         if (data.session_id && !ctx.attachMode) {
           vm.$set(vm.attachedStreamingSessions, data.session_id, 'displayed')

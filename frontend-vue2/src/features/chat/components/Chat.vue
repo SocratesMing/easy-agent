@@ -233,7 +233,7 @@ export default {
     default: 'easy_agent_input_draft'
   },
   // 当前会话选中的专家 Agent（{export_agent_id, export_name_cn} 或 null）。
-  // 非空时输入框工具栏显示专家胶囊，且本会话消息走 /agent/stream_export_run。
+  // 非空时输入框工具栏显示专家胶囊，且本会话消息走 /agent/chat/stream（带 expert_agent_id）。
   activeExpert: {
     type: Object,
     default: null

@@ -11,6 +11,8 @@
  * - 每个流创建一个 handler 实例，实例内部闭包保存 currentBlock 等中间状态。
  */
 
+import { setExpertLastSession } from '../../../shared/utils/expertSession.js'
+
 export function createStreamChunkHandler(messages, ctx) {
   // 页面级 refs 由调用方通过 ctx.state 注入（抽成模块后不再处于 App.vue 作用域）
   const {
@@ -175,6 +177,11 @@ export function createStreamChunkHandler(messages, ctx) {
           loadSessions()
         }
         if (data.session_id) ctx.streamSessionId = data.session_id
+        // 记录「本专家 -> 该会话」：新会话的 ID 只有在 start 事件里才拿到，所以关联写在
+        // 这里而不是选专家的时刻（那时会话可能还不存在）。切回同一专家时用它回到原会话。
+        if (data.session_id && ctx.expertId) {
+          setExpertLastSession(ctx.expertId, data.session_id)
+        }
         // 标记该会话已有本页流处理器：切回时直接按缓存显示，避免再起一个 attach
         // 处理器（会重复渲染同一段流）——send 链路专有，attach 链路由自身管理。
         if (data.session_id && !ctx.attachMode) {

@@ -2,7 +2,6 @@ import { setReactive } from '../../../utils/reactiveSet.js'
 import { createSession, listSessions, getChatHistory, deleteSession, sendMessage, resumeStream, renameSession, togglePinSession, attachStream } from '../../../api/chat.js'
 import { deleteFile, getSessionGeneratedFiles } from '../../../api/files.js'
 import { authFetch } from '../../../api/auth.js'
-import { streamExportRun } from '../../../api/expert.js'
 import { chatBus, chatStore } from '../store/chatStore.js'
 import { createStreamChunkHandler as createChunkHandler } from '../services/chunkHandler.js'
 import { applyApprovalRequests, buildResumeDecisions, markApprovalDecision, unmatchedApprovalRequests } from '../../../utils/hitlApproval.js'
@@ -816,6 +815,8 @@ export default {
 
       const streamCtx = {
         isResume: false,
+        // 本轮使用的专家 ID：start 事件里据此写「专家 -> 会话」映射（换专家 = 换会话）
+        expertId: (this.selectedExpert && this.selectedExpert.export_agent_id) || '',
         get assistantMsgId() { return assistantMsgId },
         set assistantMsgId(v) { assistantMsgId = v },
         get streamSessionId() { return streamSessionId },
@@ -873,40 +874,25 @@ export default {
           }
         }
 
-        // 专家模式：改走 /agent/stream_export_run，由后端按选中的专家动态构建 Agent
-        // （加载该专家当前生效版本的提示词，未选专家时退化为通用 Agent）。
-        // SSE 事件格式与 /agent/chat/stream 完全一致，onChunk 复用同一处理器。
-        if (this.selectedExpert && this.selectedExpert.export_agent_id) {
-          await streamExportRun(
-            {
-              message,
-              sessionId: this.currentSessionId,
-              expertAgentId: this.selectedExpert.export_agent_id,
-              model: this.selectedModel,
-              enableDeepThink,
-              enableWebSearch,
-              files,
-              // 已选技能：结构化字段（技能目录名），`/目录名` 由后端拼进模型输入。
-              // 连接器不随消息提交：本会话启用哪些连接器由 /agent/connectors/session 设置。
-              skills,
-            },
-            onChunk,
-            abortSignal
-          )
-        } else {
-          await sendMessage(
-            this.currentSessionId,
-            message,
-            onChunk,
-            abortSignal,
-            enableDeepThink,
-            files,
-            this.selectedModel,
-            enableWebSearch,
-            pageContext,
-            skills
-          )
-        }
+        // 专家对话与通用对话只有一个入口 /agent/chat/stream：选中专家时把
+        // expert_agent_id 一并上行，由后端加载该专家提示词、补装依赖技能、
+        // 做职责范围预检（命中即短路拒答，Agent 不创建）。
+        await sendMessage(
+          this.currentSessionId,
+          message,
+          onChunk,
+          abortSignal,
+          enableDeepThink,
+          files,
+          this.selectedModel,
+          enableWebSearch,
+          pageContext,
+          skills,
+          '',
+          this.selectedExpert && this.selectedExpert.export_agent_id
+            ? this.selectedExpert.export_agent_id
+            : ''
+        )
 
         await this.refreshSessionFiles(null, 500)
       } catch (e) {
