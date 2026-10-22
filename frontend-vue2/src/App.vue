@@ -906,6 +906,11 @@ export default {
       this.showAssets = false
       this.showSkillCenter = false
       this.showScheduledTasks = false
+      // 切换会话时不沿用上一个会话的专家选择（选择是当前工作台的临时状态，
+      // 与 handleCreateSession、vue3 版 handleSelectSession 的口径一致）。
+      // 注意：handleUseExpert 会在调用本方法之后重新赋值 selectedExpert，
+      // 因此「召唤专家 → 切到其会话」的链路不受影响。
+      this.selectedExpert = null
       this.currentSessionId = sessionId
       // 切换后按当前会话是否正在流式输出决定输入框状态：
       // 历史会话通常不是当前流式会话，应显示发送按钮而非停止按钮

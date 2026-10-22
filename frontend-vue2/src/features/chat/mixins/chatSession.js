@@ -635,6 +635,10 @@ export default {
       // 保存当前会话状态
       this.saveCurrentSessionState()
       this.beforeSessionChange('select')
+      // 切换会话不沿用上一个会话的专家选择（选择是当前工作台的临时状态）。
+      // 主窗口不使用本方法（App.vue 同名方法优先），此处置空对 AiSidebar
+      // 这类没有专家芯片的宿主是无害的空操作。
+      this.selectedExpert = null
       this.currentSessionId = sessionId
       // 切换后按当前会话是否正在流式输出决定输入框状态：
       // 历史会话通常不是当前流式会话，应显示发送按钮而非停止按钮
