@@ -14,16 +14,15 @@ logger = logging.getLogger(__name__)
 
 _BASE_UPDATE_FIELDS = {
     "remote_dataset_id", "name", "description", "status",
-    "deleted_at", "deleted_by", "purge_after", "access_restricted",
+    "deleted_at", "deleted_by", "access_restricted",
 }
 _DOCUMENT_UPDATE_FIELDS = {
     "remote_document_id", "folder_id", "status", "progress", "error_code",
-    "error_message", "deleted_at", "deleted_by", "purge_after",
-    "previous_status", "document_version",
+    "error_message", "deleted_at", "deleted_by",
 }
 _OBJECT_UPDATE_FIELDS = {
     "storage_key", "status", "size_bytes", "sha256", "error_code",
-    "error_message", "stored_at", "quarantined_at", "deleted_at", "last_verified_at",
+    "error_message", "stored_at", "deleted_at",
 }
 _OPERATION_UPDATE_FIELDS = {
     "phase", "status", "current_count", "total_count", "progress",
@@ -180,7 +179,10 @@ class KnowledgeRepository:
             self.db._execute(
                 cursor,
                 f"""
-                SELECT DISTINCT b.* FROM knowledge_bases b
+                SELECT DISTINCT b.*,
+                       (SELECT COUNT(*) FROM knowledge_documents d
+                        WHERE d.base_id=b.id AND d.status!='deleted') AS document_count
+                FROM knowledge_bases b
                 LEFT JOIN knowledge_permissions p ON p.base_id=b.id
                 WHERE b.status!='deleted' AND (b.owner_user_id=?
                    OR (p.subject_type='user' AND p.subject_id=?)
@@ -203,12 +205,6 @@ class KnowledgeRepository:
     def update_base(self, base_id: str, **fields: object) -> dict[str, Any] | None:
         self._update_by_id("knowledge_bases", base_id, _BASE_UPDATE_FIELDS, fields)
         return self.get_base(base_id)
-
-    def delete_base(self, base_id: str) -> bool:
-        with self.db.get_connection() as conn:
-            cursor = conn.cursor()
-            self.db._execute(cursor, "DELETE FROM knowledge_bases WHERE id=?", (base_id,))
-            return cursor.rowcount > 0
 
     def count_documents(self, base_id: str) -> int:
         return self._count(
@@ -533,15 +529,12 @@ class KnowledgeRepository:
             (base_id, *values),
         )
 
-    def list_purgeable_documents(
-        self, now_iso: str, *, limit: int = 100
-    ) -> list[dict[str, Any]]:
-        """软删除保留期已到、仍持有远端副本的文档（含所属库已删除到期的）。
+    def list_purgeable_documents(self, *, limit: int = 100) -> list[dict[str, Any]]:
+        """仍持有远端副本的软删除文档（含所属库已删除的）。
 
-        两类命中：文档自身 status=deleted 且 purge_after 到期；所属库
-        status∈(deleted, deleting) 且库 purge_after 到期（删库时文档未逐个
-        软删除，按库的保留期统一清理远端副本）。purge_after 为 ISO 字符串，
-        同格式下字符串比较与时序一致。
+        两类命中：文档自身 status='deleted'；所属库 status∈(deleted, deleting)。
+        正常删除路径已同步删除远端副本，本方法供清理 worker 兜底同步失败与
+        历史遗留数据，不再按保留期等待。
         """
         sql = """
             SELECT d.id AS document_id, d.base_id, d.remote_document_id,
@@ -550,18 +543,14 @@ class KnowledgeRepository:
             JOIN knowledge_bases b ON b.id = d.base_id
             WHERE d.remote_document_id IS NOT NULL
               AND d.remote_document_id != ''
-              AND (
-                    (d.status = 'deleted'
-                     AND d.purge_after IS NOT NULL AND d.purge_after <= ?)
-                 OR (b.status IN ('deleted', 'deleting')
-                     AND b.purge_after IS NOT NULL AND b.purge_after <= ?)
-                  )
+              AND (d.status = 'deleted'
+                   OR b.status IN ('deleted', 'deleting'))
             ORDER BY d.updated_at
             LIMIT ?
         """
         with self.db.get_connection() as conn:
             cursor = conn.cursor()
-            self.db._execute(cursor, sql, (now_iso, now_iso, limit))
+            self.db._execute(cursor, sql, (limit,))
             return [dict(row) for row in cursor.fetchall()]
 
     def update_document(self, document_id: str, **fields: object) -> dict[str, Any] | None:
@@ -673,6 +662,23 @@ class KnowledgeRepository:
                 cursor,
                 "SELECT * FROM knowledge_permissions WHERE base_id=? ORDER BY subject_type, subject_id",
                 (base_id,),
+            )
+            return [dict(row) for row in cursor.fetchall()]
+
+    def list_permissions_for_bases(self, base_ids: Iterable[str]) -> list[dict[str, Any]]:
+        """批量查询多个知识库的授权行，避免列表页逐库查询。"""
+
+        ids = list(dict.fromkeys(base_ids))
+        if not ids:
+            return []
+        placeholders = ",".join("?" for _ in ids)
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            self.db._execute(
+                cursor,
+                f"SELECT * FROM knowledge_permissions WHERE base_id IN ({placeholders}) "
+                "ORDER BY base_id, subject_type, subject_id",
+                tuple(ids),
             )
             return [dict(row) for row in cursor.fetchall()]
 

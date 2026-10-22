@@ -15,7 +15,7 @@ from starlette.concurrency import run_in_threadpool
 
 from easy_agent.knowledges.core.config import KnowledgeConfig, KnowledgeConfigError
 from easy_agent.knowledges.ragflow import RagflowClient
-from easy_agent.knowledges.service import LocalOriginalStore
+from easy_agent.knowledges.core.original_store import LocalOriginalStore
 from easy_agent.knowledges.runtime.worker import KnowledgeParsePollWorker, KnowledgePurgeWorker
 
 logger = logging.getLogger(__name__)
@@ -62,7 +62,7 @@ async def startup_knowledge(app: FastAPI, config_path: str | Path) -> None:
     worker.start()
     app.state.knowledge_worker = worker
 
-    # 软删除保留期（30 天）到期后清理远端文档副本，防止共享数据集膨胀
+    # 删除时已同步清理远端副本；worker 兜底失败项与历史遗留，防止共享数据集膨胀
     purge_worker = KnowledgePurgeWorker(
         config=config,
         ragflow=app.state.ragflow_client,
@@ -70,7 +70,7 @@ async def startup_knowledge(app: FastAPI, config_path: str | Path) -> None:
     )
     purge_worker.start()
     app.state.knowledge_purge_worker = purge_worker
-    logger.info("知识库配置加载成功 | status=enabled")
+    logger.info("知识库配置加载成功✅️ | status=enabled")
 
 
 async def shutdown_knowledge(app: FastAPI) -> None:

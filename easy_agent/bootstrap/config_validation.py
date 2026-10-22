@@ -139,7 +139,6 @@ KNOWN_SECTION_KEYS: dict[str, frozenset[str]] = {
     ),
     "knowledge": frozenset(
         {
-            "implementation",  # 已废弃，仅 knowledge_impl 日志提示（只支持 v2）
             "enabled",
             "base_url",
             "api_key",
@@ -156,8 +155,6 @@ KNOWN_SECTION_KEYS: dict[str, frozenset[str]] = {
         {
             "max_file_size_mb",
             "max_request_size_mb",
-            "max_files_per_request",
-            "max_dataset_name_utf8_bytes",
             "max_filename_utf8_bytes",
             "allowed_extensions",
             "max_documents_per_query",
@@ -213,10 +210,6 @@ DEPRECATED_CONFIG_KEYS: dict[str, str] = {
     "system_prompt_path": "system_prompt_path 已由 prompt_path 取代，当前仍兼容读取",
     "log": "log 段不再由 Config 读取（日志由 initialization/log.py 管理）",
     "log_dir": "log_dir 不再由 Config 读取（日志由 initialization/log.py 管理）",
-    "knowledge.implementation": (
-        "knowledge.implementation 已废弃：仅 knowledge_impl 读取后打日志，"
-        "且只支持 v2；可安全删除"
-    ),
 }
 
 

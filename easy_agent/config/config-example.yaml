@@ -275,7 +275,6 @@ knowledge:
   # 留空由 RAGFlow 使用其默认 embedding 模型
   embedding:
     model: "${RAGFLOW_EMBEDDING_MODEL:-}"
-  # implementation: v2  # 已废弃：仅日志提示且只支持 v2，可安全删除
   # 审计事件记录开关与 details 截断上限
   audit:
     enabled: true
@@ -284,8 +283,6 @@ knowledge:
   limits:
     max_file_size_mb: 100
     max_request_size_mb: 110
-    max_files_per_request: 1
-    max_dataset_name_utf8_bytes: 127
     max_filename_utf8_bytes: 127
     allowed_extensions:
       - pdf

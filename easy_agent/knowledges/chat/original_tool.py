@@ -22,13 +22,9 @@ from easy_agent.knowledges.api import KnowledgePrincipal
 from easy_agent.knowledges.core.config import KnowledgeConfig
 from easy_agent.knowledges.core.models import AllowedAction
 from easy_agent.knowledges.core.operations_repository import KnowledgeOperationsRepository
+from easy_agent.knowledges.core.original_store import LocalOriginalStore, OriginalStorageError
+from easy_agent.knowledges.core.permissions import allowed_actions, effective_role
 from easy_agent.knowledges.core.repository import KnowledgeRepository
-from easy_agent.knowledges.service import (
-    LocalOriginalStore,
-    OriginalStorageError,
-    allowed_actions,
-    effective_role,
-)
 
 
 _SAFE_FILENAME = re.compile(r"[^A-Za-z0-9._\-\u4e00-\u9fff]+")

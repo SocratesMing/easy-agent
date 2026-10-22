@@ -125,8 +125,8 @@ def initialize_knowledge_schema(db: Database, cursor) -> None:
         db._ensure_column(cursor, "knowledge_documents", column, definition)
     db._create_index(cursor, "idx_knowledge_documents_base", "knowledge_documents", "base_id")
     db._create_index(cursor, "idx_knowledge_documents_folder", "knowledge_documents", "folder_id")
-    # 清理 worker 的全局扫描依赖 (status, purge_after) 复合索引，其最左前缀
-    # 已覆盖任何按 status 起查的路径，无需单列 status 索引。
+    # 兜底清理按 status 扫描软删除文档，复合索引最左前缀已覆盖该路径，
+    # 无需单列 status 索引；purge_after 为历史列，仅保留以兼容既有库。
     db._create_index(cursor, "idx_knowledge_documents_purge", "knowledge_documents", "status, purge_after")
 
     # ---- 原始文件对象 ----

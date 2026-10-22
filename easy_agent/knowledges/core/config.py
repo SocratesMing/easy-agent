@@ -61,8 +61,6 @@ class AuditConfig(BaseModel):
 class LimitsConfig(BaseModel):
     max_file_size_mb: int = Field(default=100, gt=0)
     max_request_size_mb: int = Field(default=110, gt=0)
-    max_files_per_request: int = Field(default=1, gt=0)
-    max_dataset_name_utf8_bytes: int = Field(default=127, gt=0)
     max_filename_utf8_bytes: int = Field(default=127, gt=0)
     allowed_extensions: list[str] = Field(
         default_factory=lambda: ["pdf", "doc", "docx", "txt", "md", "xls", "xlsx", "csv", "ppt", "pptx"]
@@ -124,7 +122,6 @@ class CatalogSyncConfig(BaseModel):
 class KnowledgeConfig(BaseModel):
     """校验后的知识库配置（应用启动时加载一次）。"""
 
-    implementation: str = "v2"  # 实现选择器（knowledge_impl.py）透传字段，不校验取值
     enabled: bool = False
     base_url: str = ""
     api_key: SecretStr = SecretStr("")  # Bearer 凭据（RAGFLOW_API_KEY）
@@ -180,7 +177,6 @@ class KnowledgeConfig(BaseModel):
         else:
             catalog_section["mysql"] = _as_mapping(catalog_section.get("mysql"))
         payload = {
-            "implementation": section.get("implementation", "v2"),
             "enabled": section.get("enabled", _env_bool("KNOWLEDGE_ENABLED", False)),
             "base_url": section.get("base_url") or os.environ.get("RAGFLOW_BASE_URL") or "",
             "api_key": section.get("api_key") or os.environ.get("RAGFLOW_API_KEY") or "",

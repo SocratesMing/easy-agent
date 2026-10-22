@@ -1723,7 +1723,7 @@ function processingElapsed(doc) {
 }
 function statusLabel(status) { return ({ pending: '待处理', processing: '解析中', cancel_requested: '取消中', ready: '已就绪', failed: '失败', cancelled: '已取消', paused: '已暂停', deleting: '删除中', unknown: '未知' })[status] || status }
 function operationStatusLabel(status) { return ({ accepted: '已受理', running: '进行中', succeeded: '成功', failed: '失败', partial_failed: '部分失败' })[status] || status }
-function operationLabel(type) { return ({ dataset_create: '创建知识库', dataset_delete: '删除知识库', document_upload: '上传文档', document_parse: '解析文档', document_delete: '删除文档' })[type] || type }
+function operationLabel(type) { return ({ dataset_create: '创建知识库', document_upload: '上传文档', document_parse: '解析文档' })[type] || type }
 
 function formatSize(size = 0) { if (size < 1024) return `${size} B`; if (size < 1048576) return `${(size / 1024).toFixed(1)} KB`; return `${(size / 1048576).toFixed(1)} MB` }
 function formatDate(value) { return value ? new Date(value).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '-' }

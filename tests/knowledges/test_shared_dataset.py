@@ -11,10 +11,10 @@ from easy_agent.knowledges.api import KnowledgePrincipal
 from easy_agent.knowledges.core.config import KnowledgeConfig
 from easy_agent.knowledges.core.models import KnowledgeBaseVisibility
 from easy_agent.knowledges.core.repository import KnowledgeRepository
+from easy_agent.knowledges.core.original_store import LocalOriginalStore
 from easy_agent.knowledges.service import (
     SHARED_DATASET_NAME,
     KnowledgeService,
-    LocalOriginalStore,
     reset_shared_dataset_cache,
 )
 

@@ -12,7 +12,6 @@ import asyncio
 import logging
 import re
 import uuid
-from dataclasses import dataclass
 from datetime import datetime
 from typing import Annotated, Literal
 from urllib.parse import quote
@@ -22,7 +21,6 @@ from fastapi import (
     Depends,
     File,
     Form,
-    Header,
     HTTPException,
     Query,
     Request,
@@ -39,7 +37,7 @@ from easy_agent.agent.model import create_model
 from easy_agent.models.db import SessionModel
 from easy_agent.utils.auth import decode_access_token
 from easy_agent.knowledges.chat.host_port import get_host_capabilities
-from easy_agent.knowledges.chat.panel import require_host_capabilities, stream_panel_answer
+from easy_agent.knowledges.chat.panel import stream_panel_answer
 from easy_agent.knowledges.core.config import KnowledgeConfig
 from easy_agent.knowledges.core.models import (
     KnowledgePrincipal,
@@ -66,7 +64,6 @@ from easy_agent.knowledges.core.models import (
     KnowledgeModuleStatus,
     KnowledgeStatusResponse,
     OperationListResponse,
-    OperationSummary,
     PermissionListResponse,
     PermissionReplaceRequest,
     PermissionDirectoryListResponse,
@@ -80,7 +77,7 @@ from easy_agent.knowledges.core.models import (
 from easy_agent.knowledges.core.operations_repository import KnowledgeOperationsRepository
 from easy_agent.knowledges.ragflow import RagflowError
 from easy_agent.knowledges.core.repository import KnowledgeRepository
-from easy_agent.knowledges.service import KnowledgeDocumentBinary, KnowledgeService, KnowledgeServiceError
+from easy_agent.knowledges.service import KnowledgeService, KnowledgeServiceError
 
 
 logger = logging.getLogger("easy_agent.knowledge.upload")
@@ -457,7 +454,7 @@ async def delete_base(
     service: Annotated[KnowledgeService, Depends(_service)],
     principal: Annotated[KnowledgePrincipal, Depends(get_knowledge_principal)],
 ) -> Response:
-    """软删除知识库，远端副本由清理 worker 延迟删除。"""
+    """删除知识库：立即同步删除 RAGFlow 中的文档，本地保留软删除记录。"""
 
     await _call(
         service.delete_base(
@@ -649,24 +646,12 @@ async def upload_document(
     request: Request,
     service: Annotated[KnowledgeService, Depends(_service)],
     principal: Annotated[KnowledgePrincipal, Depends(get_knowledge_principal)],
-    files: list[UploadFile] = File(..., alias="file"),
+    file: UploadFile = File(..., alias="file"),
     folder_id: str | None = Form(default=None),
     relative_path: Annotated[str | None, Form(max_length=1024)] = None,
-    idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
 ) -> DocumentUploadAccepted:
     """上传单个文档：先落盘原文再提交上游解析，返回 202 受理。"""
 
-    limit = service.config.limits.max_files_per_request
-    if len(files) != 1 or len(files) > limit:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail={
-                "code": "KNOWLEDGE_FILE_COUNT_LIMIT",
-                "message": f"每次请求只能上传 {limit} 个文件",
-                "retryable": False,
-            },
-        )
-    file = files[0]
     filename = file.filename or "<未命名>"
     try:
         size_bytes = await run_in_threadpool(_upload_size, file)
@@ -690,7 +675,6 @@ async def upload_document(
                 content=file.file,
                 principal=principal,
                 request_id=_request_id(request),
-                idempotency_key=idempotency_key,
                 relative_path=relative_path,
             )
         )
@@ -799,7 +783,7 @@ async def delete_document(
     service: Annotated[KnowledgeService, Depends(_service)],
     principal: Annotated[KnowledgePrincipal, Depends(get_knowledge_principal)],
 ) -> Response:
-    """软删除文档，本地保留记录与原文。"""
+    """删除文档：立即同步删除 RAGFlow 中的副本，本地保留软删除记录与原文。"""
 
     await _call(
         service.delete_document(
@@ -821,7 +805,6 @@ async def retry_document(
     request: Request,
     service: Annotated[KnowledgeService, Depends(_service)],
     principal: Annotated[KnowledgePrincipal, Depends(get_knowledge_principal)],
-    idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
 ) -> DocumentUploadAccepted:
     """重试失败的文档解析，返回 202 受理。"""
 
@@ -830,7 +813,6 @@ async def retry_document(
             document_id=document_id,
             principal=principal,
             request_id=_request_id(request),
-            idempotency_key=idempotency_key,
         )
     )
 

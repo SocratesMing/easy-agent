@@ -1,9 +1,8 @@
 """知识库核心业务服务。
 
 上传/删除全部同步内联；原文存储为本地磁盘存储（``LocalOriginalStore``）。
-删除为软删除：本地保留记录与原文，远端（Ragflow）副本暂存
-SOFT_DELETE_RETENTION_DAYS 后由清理 worker（KnowledgePurgeWorker）
-到期删除。
+删除为软删除：本地保留记录与原文，远端（Ragflow）副本在删除时立即同步
+删除；清理 worker（KnowledgePurgeWorker）仅兜底同步失败与历史遗留副本。
 
 检索走 Ragflow 标准检索接口（retrieve，POST /api/v1/retrieval）。
 """
@@ -17,7 +16,7 @@ import re
 import time
 from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, BinaryIO, Callable
 
@@ -61,20 +60,13 @@ from easy_agent.knowledges.core.models import (
     TeamSpaceManagementCapability,
 )
 from easy_agent.knowledges.core.operations_repository import KnowledgeOperationsRepository
-
-# 原文存储与权限判定已拆分到 core 子模块；此处 re-export 保持既有导入路径。
-from easy_agent.knowledges.core.original_store import (  # noqa: F401 — re-export 兼容旧导入路径
-    DEFAULT_ORIGINALS_ROOT,
+from easy_agent.knowledges.core.original_store import (
     LocalOriginalStore,
     OriginalReadHandle,
     OriginalStorageError,
 )
-from easy_agent.knowledges.core.permissions import (  # noqa: F401 — re-export 含下划线符号
-    _MAINTAINER_ACTIONS,
-    _MANAGER_ACTIONS,
+from easy_agent.knowledges.core.permissions import (
     _ROLE_RANK,
-    _VIEWER_ACTIONS,
-    _as_role,
     _base_access_restricted,
     _matching_permission_roles,
     allowed_actions,
@@ -90,8 +82,6 @@ logger = logging.getLogger(__name__)
 
 # 上游解析超过该时长仍未完成时标记失败
 PARSE_TIMEOUT_SECONDS = 1800.0
-# 软删除保留期（天）：远端副本暂存天数，到期由 KnowledgePurgeWorker 清理
-SOFT_DELETE_RETENTION_DAYS = 30
 # 证据最低得分阈值：低于该分的 chunk 不进证据列表，作为本地兜底过滤
 MINIMUM_EVIDENCE_SCORE = 0.4
 
@@ -174,6 +164,12 @@ class KnowledgeServiceError(RuntimeError):
 
 def _map_upstream_status(run: object) -> str:
     return UPSTREAM_DOCUMENT_STATUS_MAPPING.get(str(run or "")) or DocumentStatus.UNKNOWN.value
+
+
+def _split_folder_segments(path: str) -> list[str]:
+    """按 / 或 \\ 拆分相对路径段，过滤空白段。"""
+
+    return [part.strip() for part in re.split(r"[\\/]+", path) if part.strip()]
 
 
 # ---------------------------------------------------------------------------
@@ -401,11 +397,22 @@ class KnowledgeService:
     # ---------------- 摘要构造 ----------------
 
     async def _base_summary(
-        self, base: Mapping[str, Any], role: KnowledgeBaseRole
+        self,
+        base: Mapping[str, Any],
+        role: KnowledgeBaseRole,
+        *,
+        document_count: int | None = None,
     ) -> KnowledgeBaseSummary:
-        """组装知识库摘要：含文档数与当前角色可用操作。"""
+        """组装知识库摘要：含文档数与当前角色可用操作。
 
-        count = await self._repo(self.repository.count_documents, str(base["id"]))
+        document_count 由列表查询批量带出时传入，避免逐库 COUNT 查询。
+        """
+
+        count = (
+            document_count
+            if document_count is not None
+            else await self._repo(self.repository.count_documents, str(base["id"]))
+        )
         return KnowledgeBaseSummary(
             id=str(base["id"]),
             name=str(base["name"]),
@@ -446,7 +453,6 @@ class KnowledgeService:
             content_type=str(document["content_type"]),
             size_bytes=int(document["size_bytes"]),
             status=DocumentStatus(str(document["status"])),
-            index_status=DocumentStatus(str(document["status"])),
             original_status=str(document.get("original_status") or "unmanaged"),
             original_available=str(document.get("original_status") or "") == "available",
             original_sha256=(
@@ -478,7 +484,6 @@ class KnowledgeService:
             progress = None
         return OperationSummary(
             id=str(operation["id"]),
-            batch_operation_id=None,
             resource_type=str(operation.get("resource_type") or "") or None,
             resource_id=str(operation.get("resource_id") or "") or None,
             type=OperationType(str(operation["type"])),
@@ -519,17 +524,28 @@ class KnowledgeService:
             department_id=principal.department_id,
             include_all_team_spaces=has_team_management_grant,
         )
+        # 权限行一次批量取回，避免逐库查询（列表页 N+1）
+        permissions_by_base: dict[str, list[dict[str, Any]]] = {}
+        permission_rows = await self._repo(
+            self.repository.list_permissions_for_bases,
+            [str(base["id"]) for base in candidates],
+        )
+        for row in permission_rows:
+            permissions_by_base.setdefault(str(row["base_id"]), []).append(row)
         visible: list[tuple[dict[str, Any], KnowledgeBaseRole]] = []
         for base in candidates:
-            permissions = await self._repo(
-                self.repository.list_permissions, str(base["id"])
+            role = await self._effective_role(
+                base, principal, permissions_by_base.get(str(base["id"]), [])
             )
-            role = await self._effective_role(base, principal, permissions)
             if role is not None:
                 visible.append((base, role))
         start = (page - 1) * page_size
         items = [
-            await self._base_summary(base, role)
+            await self._base_summary(
+                base,
+                role,
+                document_count=int(base.get("document_count") or 0),
+            )
             for base, role in visible[start : start + page_size]
         ]
         return KnowledgeBaseListResponse(
@@ -687,11 +703,7 @@ class KnowledgeService:
         description: str | None,
         request_id: str,
     ) -> KnowledgeBaseSummary:
-        """更新知识库名称与描述。
-
-        上游数据集名称由 base_id 派生（不可变），update_dataset 契约亦
-        不含 description，故本操作仅更新本地投影。
-        """
+        """更新知识库名称与描述；知识库为纯本地投影，无需同步上游数据集。"""
         del request_id
         base, role = await self._authorized_base(
             base_id, principal, AllowedAction.EDIT_BASE
@@ -715,20 +727,65 @@ class KnowledgeService:
         principal: KnowledgePrincipal,
         request_id: str,
     ) -> None:
-        """软删除知识库：本地保留记录，其文档的远端副本暂存保留期后由
-        清理 worker 统一删除。"""
+        """删除知识库：先同步删除其全部远端（Ragflow）文档，再标记本地软删除。
+
+        远端删除失败时直接抛错、本地保持原状，用户重试即可（远端已删除的
+        文档按 404 幂等跳过）；本地记录与原文仍保留软删除标记（界面不可见）。
+        """
         del request_id
-        await self._authorized_base(base_id, principal, AllowedAction.DELETE_BASE)
-        deleted_at = datetime.now(UTC)
-        purge_after = deleted_at + timedelta(days=SOFT_DELETE_RETENTION_DAYS)
+        base, _role = await self._authorized_base(
+            base_id, principal, AllowedAction.DELETE_BASE
+        )
+        await self._delete_base_remote_documents(base)
         await self._repo(
             self.repository.update_base,
             base_id,
             status=KnowledgeBaseStatus.DELETED.value,
-            deleted_at=deleted_at.isoformat(),
+            deleted_at=datetime.now(UTC).isoformat(),
             deleted_by=principal.user_id,
-            purge_after=purge_after.isoformat(),
         )
+
+    async def _delete_base_remote_documents(self, base: Mapping[str, Any]) -> None:
+        """同步删除知识库下全部远端文档（分批调用，远端缺失视为已删除）。
+
+        先分页收集远端 ID 再统一删除：更新文档会刷新 updated_at，边查边改
+        会导致 offset 分页错位。删完后清空本地 remote_document_id 防死链。
+        """
+        base_id = str(base["id"])
+        pending: list[tuple[str, str]] = []
+        offset = 0
+        while True:
+            rows = await self._repo(
+                self.repository.list_documents, base_id, limit=200, offset=offset
+            )
+            if not rows:
+                break
+            for row in rows:
+                remote_id = str(row.get("remote_document_id") or "").strip()
+                if remote_id:
+                    pending.append((str(row["id"]), remote_id))
+            offset += len(rows)
+        if not pending:
+            return
+        # 仅在有远端文档时解析数据集，避免删除空库时触发共享数据集创建
+        dataset_id = await self._dataset_id_for(base)
+        for start in range(0, len(pending), 100):
+            chunk = pending[start : start + 100]
+            try:
+                await self.ragflow.delete_documents(
+                    dataset_id=dataset_id,
+                    document_ids=[remote_id for _, remote_id in chunk],
+                )
+            except RagflowNotFoundError:
+                pass  # 远端已不存在：视为已删除（幂等）
+            except RagflowError as exc:
+                raise self._upstream_error(exc) from exc
+            for document_id, _remote_id in chunk:
+                await self._repo(
+                    self.repository.update_document,
+                    document_id,
+                    remote_document_id=None,
+                )
 
     # ---------------- 文件夹 ----------------
 
@@ -857,11 +914,7 @@ class KnowledgeService:
         最后一段视为文件名，其余段自 folder_id（或库根）起逐级创建，保留上传
         时的目录层级。
         """
-        segments = [
-            part.strip()
-            for part in re.split(r"[\\/]+", relative_path)
-            if part.strip()
-        ]
+        segments = _split_folder_segments(relative_path)
         dirs = segments[:-1] if len(segments) > 1 else []
         return await self._ensure_folder_dirs(base_id, folder_id, dirs)
 
@@ -944,11 +997,7 @@ class KnowledgeService:
                 )
         ensured = 0
         for raw_path in paths:
-            segments = [
-                part.strip()
-                for part in re.split(r"[\\/]+", str(raw_path or ""))
-                if part.strip()
-            ]
+            segments = _split_folder_segments(str(raw_path or ""))
             if not segments:
                 continue
             await self._ensure_folder_dirs(base_id, folder_id, segments)
@@ -1428,6 +1477,123 @@ class KnowledgeService:
             page=PageInfo(page=page, page_size=page_size, total=total),
         )
 
+    async def _submit_to_ragflow(
+        self,
+        *,
+        base: Mapping[str, Any],
+        document: Mapping[str, Any],
+        dataset_id: str,
+        source: BinaryIO,
+        operation_id: str,
+        failure_message: str,
+        original_error_message: str,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """上传远端 → 配置解析器 → 触发解析 → 落 processing，返回最新投影行。
+
+        上传与重试共用该段流程；失败时统一标记文档/操作为失败并抛出映射后的
+        业务错误。调用方负责关闭 source。
+        """
+
+        try:
+            remote_documents = await self.ragflow.upload_documents(
+                dataset_id,
+                [(str(document["name"]), source, str(document["content_type"]))],
+            )
+            if not remote_documents or not remote_documents[0].get("id"):
+                raise KeyError("id")
+            remote_id = str(remote_documents[0]["id"])
+            document = await self._repo(
+                self.repository.update_document,
+                str(document["id"]),
+                remote_document_id=remote_id,
+                status=DocumentStatus.PENDING.value,
+            )
+            await self._repo(
+                self.repository.update_operation,
+                operation_id,
+                phase=OperationPhase.CONFIGURING.value,
+                progress=0.6,
+            )
+            # 个人库文档打个人标签（owner_user_id）后再触发解析入库
+            await self.ragflow.update_document(
+                dataset_id,
+                remote_id,
+                chunk_method=CHUNK_METHOD,
+                parser_config=PARSER_CONFIG,
+                meta_fields=self._personal_meta_fields(base),
+            )
+            try:
+                await self.ragflow.parse_documents(dataset_id, [remote_id])
+            except RagflowError as exc:
+                if not await self._parse_actually_running(base, remote_id):
+                    raise
+                logger.warning(
+                    "RAGFlow 触发解析误报(%s)，文档实际已开始解析，按成功处理",
+                    exc,
+                )
+            document = await self._repo(
+                self.repository.update_document,
+                str(document["id"]),
+                status=DocumentStatus.PROCESSING.value,
+                progress=0.0,
+            )
+            operation = await self._repo(
+                self.repository.update_operation,
+                operation_id,
+                phase=OperationPhase.PARSING.value,
+                progress=0.0,
+            )
+        except (RagflowError, KeyError, OriginalStorageError) as exc:
+            await self._fail_submit(
+                document_id=str(document["id"]),
+                operation_id=operation_id,
+                exc=exc,
+                failure_message=failure_message,
+                original_error_message=original_error_message,
+            )
+        return document, operation
+
+    async def _fail_submit(
+        self,
+        *,
+        document_id: str,
+        operation_id: str,
+        exc: BaseException,
+        failure_message: str,
+        original_error_message: str,
+    ) -> None:
+        """标记文档与操作为失败，并抛出映射后的业务错误（始终抛出）。"""
+
+        code = getattr(exc, "code", "RAGFLOW_CONTRACT_MISMATCH")
+        retryable = bool(getattr(exc, "retryable", False))
+        await self._repo(
+            self.repository.update_document,
+            document_id,
+            status=DocumentStatus.FAILED.value,
+            error_code=code,
+            error_message=failure_message,
+        )
+        await self._repo(
+            self.repository.update_operation,
+            operation_id,
+            phase=OperationPhase.FAILED.value,
+            status=OperationStatus.FAILED.value,
+            retryable=retryable,
+            error_code=code,
+            error_message=failure_message,
+        )
+        if isinstance(exc, RagflowError):
+            raise self._upstream_error(exc) from exc
+        if isinstance(exc, OriginalStorageError):
+            raise KnowledgeServiceError(
+                code, original_error_message, status_code=503, retryable=retryable
+            ) from exc
+        raise KnowledgeServiceError(
+            "KNOWLEDGE_UPSTREAM_ERROR",
+            "知识底座返回了无效文档数据",
+            status_code=502,
+        )
+
     async def upload_document(
         self,
         *,
@@ -1439,7 +1605,6 @@ class KnowledgeService:
         content: BinaryIO,
         principal: KnowledgePrincipal,
         request_id: str,
-        idempotency_key: str | None = None,
         relative_path: str | None = None,
     ) -> DocumentUploadAccepted:
         """上传文档：校验 → 本地落盘原文 → 上传 RAGFlow → 配置解析器 → 触发解析。
@@ -1447,7 +1612,6 @@ class KnowledgeService:
         relative_path 为浏览器文件夹上传的原始相对路径（webkitRelativePath），
         非空时按其目录段逐级 find-or-create 文件夹后落入叶子目录。
         """
-        del idempotency_key
         base, role = await self._authorized_base(
             base_id, principal, AllowedAction.UPLOAD
         )
@@ -1603,90 +1767,19 @@ class KnowledgeService:
             ) from exc
         # ---- 上传 RAGFlow 并触发解析 ----
         source = self.original_store.open(storage_key)
+        binary = source.open_binary()
         try:
-            dataset_id = await self._dataset_id_for(base)
-            remote_documents = await self.ragflow.upload_documents(
-                dataset_id,
-                [(safe_name, source.open_binary(), content_type or "application/octet-stream")],
+            document, operation = await self._submit_to_ragflow(
+                base=base,
+                document=document,
+                dataset_id=await self._dataset_id_for(base),
+                source=binary,
+                operation_id=str(operation["id"]),
+                failure_message="文档上传或解析启动失败",
+                original_error_message="原文读取失败",
             )
-            if not remote_documents or not remote_documents[0].get("id"):
-                raise KeyError("id")
-            remote_id = str(remote_documents[0]["id"])
-            document = await self._repo(
-                self.repository.update_document,
-                document["id"],
-                remote_document_id=remote_id,
-                status=DocumentStatus.PENDING.value,
-            )
-            await self._repo(
-                self.repository.update_operation,
-                operation["id"],
-                phase=OperationPhase.CONFIGURING.value,
-                progress=0.6,
-            )
-            # 个人库文档打个人标签（owner_user_id）后再触发解析入库
-            await self.ragflow.update_document(
-                dataset_id,
-                remote_id,
-                chunk_method=CHUNK_METHOD,
-                parser_config=PARSER_CONFIG,
-                meta_fields=self._personal_meta_fields(base),
-            )
-            try:
-                await self.ragflow.parse_documents(
-                    dataset_id, [remote_id]
-                )
-            except RagflowError as exc:
-                if not await self._parse_actually_running(base, remote_id):
-                    raise
-                logger.warning(
-                    "RAGFlow 触发解析误报(%s)，文档实际已开始解析，按成功处理",
-                    exc,
-                )
-            document = await self._repo(
-                self.repository.update_document,
-                document["id"],
-                status=DocumentStatus.PROCESSING.value,
-                progress=0.0,
-            )
-            operation = await self._repo(
-                self.repository.update_operation,
-                operation["id"],
-                phase=OperationPhase.PARSING.value,
-                progress=0.0,
-            )
-        except (RagflowError, KeyError, OriginalStorageError) as exc:
-            code = getattr(exc, "code", "RAGFLOW_CONTRACT_MISMATCH")
-            retryable = bool(getattr(exc, "retryable", False))
-            document = await self._repo(
-                self.repository.update_document,
-                document["id"],
-                status=DocumentStatus.FAILED.value,
-                error_code=code,
-                error_message="文档上传或解析启动失败",
-            )
-            operation = await self._repo(
-                self.repository.update_operation,
-                operation["id"],
-                phase=OperationPhase.FAILED.value,
-                status=OperationStatus.FAILED.value,
-                retryable=retryable,
-                error_code=code,
-                error_message="文档上传或解析启动失败",
-            )
-            if isinstance(exc, RagflowError):
-                raise self._upstream_error(exc) from exc
-            if isinstance(exc, OriginalStorageError):
-                raise KnowledgeServiceError(
-                    code, "原文读取失败", status_code=503, retryable=retryable
-                ) from exc
-            raise KnowledgeServiceError(
-                "KNOWLEDGE_UPSTREAM_ERROR",
-                "知识底座返回了无效文档数据",
-                status_code=502,
-            ) from exc
         finally:
-            source.open_binary().close()
+            binary.close()
         assert document is not None and operation is not None
         return DocumentUploadAccepted(
             document=self._document_summary(document, role, request_id),
@@ -1760,25 +1853,30 @@ class KnowledgeService:
                     self.original_store.open, str(original["storage_key"])
                 )
             except OriginalStorageError as exc:
-                raise KnowledgeServiceError(
-                    exc.code, exc.message, status_code=503, retryable=exc.retryable
-                ) from exc
-            await self._repo(
-                self.repository.create_original_access_audit,
-                user_id=principal.user_id,
-                session_id="",
-                agent_id="api",
-                document_id=document_id,
-                action="download",
-                result="opened",
-                request_id=request_id,
-            )
-            return document, KnowledgeDocumentBinary(
-                size_bytes=handle.size_bytes,
-                content_type=str(original.get("content_type") or document["content_type"]),
-                sha256=str(original.get("sha256")) if original.get("sha256") else None,
-                iterator_factory=handle.iter_bytes,
-            )
+                # 本地原文记录仍在但磁盘文件丢失/不可读：不再直接 503，
+                # 降级为上游（RAGFlow）副本下载，保证预览与下载可用。
+                logger.warning(
+                    "本地原文不可用，回退上游副本 | document_id=%s code=%s",
+                    document_id,
+                    exc.code,
+                )
+            else:
+                await self._repo(
+                    self.repository.create_original_access_audit,
+                    user_id=principal.user_id,
+                    session_id="",
+                    agent_id="api",
+                    document_id=document_id,
+                    action="download",
+                    result="opened",
+                    request_id=request_id,
+                )
+                return document, KnowledgeDocumentBinary(
+                    size_bytes=handle.size_bytes,
+                    content_type=str(original.get("content_type") or document["content_type"]),
+                    sha256=str(original.get("sha256")) if original.get("sha256") else None,
+                    iterator_factory=handle.iter_bytes,
+                )
         if not document.get("remote_document_id"):
             raise KnowledgeServiceError(
                 "KNOWLEDGE_DOCUMENT_NOT_AVAILABLE", "文档原文件暂不可用", status_code=409
@@ -1807,8 +1905,11 @@ class KnowledgeService:
         principal: KnowledgePrincipal,
         request_id: str,
     ) -> None:
-        """软删除文档：本地保留记录与原文，远端副本暂存保留期后由清理
-        worker 删除（purge_expired_documents）。"""
+        """删除文档：立即同步删除远端（Ragflow）副本，本地保留软删除记录与原文。
+
+        远端删除失败时直接抛错、本地保持原状，用户重试即可；远端已不存在
+        按 404 幂等处理。
+        """
         del request_id
         document = await self._repo(self.repository.get_document, document_id)
         if document is None:
@@ -1817,34 +1918,40 @@ class KnowledgeService:
             )
         if str(document.get("status")) == DocumentStatus.DELETED.value:
             return
-        await self._authorized_base(
+        base, _role = await self._authorized_base(
             str(document["base_id"]), principal, AllowedAction.DELETE_DOCUMENT
         )
-        deleted_at = datetime.now(UTC)
-        purge_after = deleted_at + timedelta(days=SOFT_DELETE_RETENTION_DAYS)
+        remote_id = str(document.get("remote_document_id") or "").strip()
+        if remote_id:
+            try:
+                await self.ragflow.delete_documents(
+                    dataset_id=await self._dataset_id_for(base),
+                    document_ids=[remote_id],
+                )
+            except RagflowNotFoundError:
+                pass  # 远端已不存在：视为已删除（幂等）
+            except RagflowError as exc:
+                raise self._upstream_error(exc) from exc
         await self._repo(
             self.repository.update_document,
             document_id,
             status=DocumentStatus.DELETED.value,
-            previous_status=str(document["status"]),
-            deleted_at=deleted_at.isoformat(),
+            deleted_at=datetime.now(UTC).isoformat(),
             deleted_by=principal.user_id,
-            purge_after=purge_after.isoformat(),
+            remote_document_id=None,
             progress=None,
         )
 
-    async def purge_expired_documents(self, *, limit: int = 100) -> int:
-        """清理软删除保留期（30 天）已到文档的远端副本，返回本次清理数。
+    async def purge_deleted_documents(self, *, limit: int = 100) -> int:
+        """兜底清理软删除文档的远端副本，返回本次清理数。
 
-        由后台清理 worker 周期调用；覆盖两类：文档自身软删除到期、所属
-        知识库软删除到期（删库时文档未逐个软删除）。远端删除成功（或远端
-        已不存在，幂等）后清空本地 remote_document_id 防止死链；本地软
-        删除记录与原文保留，误删仍可通过重新上传恢复。单文档失败不阻断
-        其余清理，留待下轮重试。
+        正常删除路径已同步删除远端副本；本方法由后台清理 worker 周期调用，
+        兜底同步删除失败与历史遗留（仍持有远端副本的软删除文档/已删除库）。
+        远端删除成功（或远端已不存在，幂等）后清空本地 remote_document_id；
+        本地软删除记录与原文保留。单文档失败不阻断其余清理，留待下轮重试。
         """
-        now_iso = datetime.now(UTC).isoformat()
         rows = await self._repo(
-            self.repository.list_purgeable_documents, now_iso, limit=limit
+            self.repository.list_purgeable_documents, limit=limit
         )
         if not rows:
             return 0
@@ -1875,7 +1982,7 @@ class KnowledgeService:
             )
             purged += 1
         if purged:
-            logger.info("软删除保留期到期清理完成 | 清理远端文档数=%s", purged)
+            logger.info("兜底清理软删除文档远端副本完成 | 清理远端文档数=%s", purged)
         return purged
 
     async def pause_document(
@@ -1978,10 +2085,8 @@ class KnowledgeService:
         document_id: str,
         principal: KnowledgePrincipal,
         request_id: str,
-        idempotency_key: str | None = None,
     ) -> DocumentUploadAccepted:
         """重试失败文档：删除上游旧副本后，用本地原文重新上传并解析。"""
-        del idempotency_key
         document = await self._repo(self.repository.get_document, document_id)
         if document is None:
             raise KnowledgeServiceError(
@@ -2050,77 +2155,24 @@ class KnowledgeService:
                 error_code=None,
                 error_message=None,
             )
-            remote_documents = await self.ragflow.upload_documents(
-                dataset_id,
-                [(str(document["name"]), source, str(document["content_type"]))],
-            )
-            if not remote_documents or not remote_documents[0].get("id"):
-                raise KeyError("id")
-            new_remote_id = str(remote_documents[0]["id"])
-            await self._repo(
-                self.repository.update_document,
-                document_id,
-                remote_document_id=new_remote_id,
-            )
-            # 重试上传同样需要保持个人标签
-            await self.ragflow.update_document(
-                dataset_id,
-                new_remote_id,
-                chunk_method=CHUNK_METHOD,
-                parser_config=PARSER_CONFIG,
-                meta_fields=self._personal_meta_fields(base),
-            )
-            try:
-                await self.ragflow.parse_documents(
-                    dataset_id, [new_remote_id]
-                )
-            except RagflowError as exc:
-                if not await self._parse_actually_running(base, new_remote_id):
-                    raise
-                logger.warning(
-                    "RAGFlow 触发解析误报(%s)，文档实际已开始解析，按成功处理",
-                    exc,
-                )
-            document = await self._repo(
-                self.repository.update_document,
-                document_id,
-                status=DocumentStatus.PROCESSING.value,
-                progress=0.0,
-            )
-            operation = await self._repo(
-                self.repository.update_operation,
-                operation["id"],
-                phase=OperationPhase.PARSING.value,
-                progress=0.0,
-            )
         except (RagflowError, KeyError, OriginalStorageError) as exc:
-            code = getattr(exc, "code", "RAGFLOW_CONTRACT_MISMATCH")
-            retryable = bool(getattr(exc, "retryable", False))
-            document = await self._repo(
-                self.repository.update_document,
-                document_id,
-                status=DocumentStatus.FAILED.value,
-                error_code=code,
-                error_message="文档重试失败",
+            await self._fail_submit(
+                document_id=document_id,
+                operation_id=str(operation["id"]),
+                exc=exc,
+                failure_message="文档重试失败",
+                original_error_message="文档原文件不可用",
             )
-            operation = await self._repo(
-                self.repository.update_operation,
-                operation["id"],
-                phase=OperationPhase.FAILED.value,
-                status=OperationStatus.FAILED.value,
-                retryable=retryable,
-                error_code=code,
-                error_message="文档重试失败",
+        try:
+            document, operation = await self._submit_to_ragflow(
+                base=base,
+                document=document,
+                dataset_id=dataset_id,
+                source=source,
+                operation_id=str(operation["id"]),
+                failure_message="文档重试失败",
+                original_error_message="文档原文件不可用",
             )
-            if isinstance(exc, RagflowError):
-                raise self._upstream_error(exc) from exc
-            if isinstance(exc, OriginalStorageError):
-                raise KnowledgeServiceError(
-                    code, "文档原文件不可用", status_code=503, retryable=retryable
-                ) from exc
-            raise KnowledgeServiceError(
-                "KNOWLEDGE_UPSTREAM_ERROR", "知识底座返回无效数据", status_code=502
-            ) from exc
         finally:
             if source is not None:
                 source.close()
@@ -2234,17 +2286,22 @@ class KnowledgeService:
         )
         if not scope.base_ids:
             return RetrieveResponse(evidence=[], request_id=request_id)
+        results = await asyncio.gather(
+            *(
+                self._retrieve_base_evidence(
+                    base_id=base_id,
+                    principal=principal,
+                    question=question,
+                    document_ids=None,
+                    top_n=top_n,
+                    request_id=request_id,
+                )
+                for base_id in scope.base_ids
+            )
+        )
         evidence: list[Evidence] = []
         warnings: list[str] = []
-        for base_id in scope.base_ids:
-            result = await self._retrieve_base_evidence(
-                base_id=base_id,
-                principal=principal,
-                question=question,
-                document_ids=None,
-                top_n=top_n,
-                request_id=request_id,
-            )
+        for result in results:
             evidence.extend(result.evidence)
             warnings.extend(result.warnings)
         evidence.sort(key=lambda item: item.score, reverse=True)
@@ -2393,10 +2450,5 @@ class KnowledgeService:
 __all__ = [
     "KnowledgeService",
     "KnowledgeServiceError",
-    "LocalOriginalStore",
-    "OriginalReadHandle",
-    "OriginalStorageError",
     "KnowledgeDocumentBinary",
-    "allowed_actions",
-    "effective_role",
 ]

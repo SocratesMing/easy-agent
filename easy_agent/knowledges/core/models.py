@@ -62,12 +62,8 @@ class DocumentStatus(str, Enum):
 
 class OperationType(str, Enum):
     DATASET_CREATE = "dataset_create"
-    DATASET_DELETE = "dataset_delete"
-    DATASET_RESTORE = "dataset_restore"
     DOCUMENT_UPLOAD = "document_upload"
     DOCUMENT_PARSE = "document_parse"
-    DOCUMENT_DELETE = "document_delete"
-    SOURCE_SYNC = "source_sync"
 
 
 class OperationPhase(str, Enum):
@@ -319,7 +315,6 @@ class DocumentSummary(ContractModel):
     content_type: str
     size_bytes: int = Field(ge=0)
     status: DocumentStatus
-    index_status: DocumentStatus | None = None
     original_status: Literal[
         "unmanaged", "staging", "available", "failed", "quarantined", "deleted"
     ] = "unmanaged"
@@ -343,7 +338,6 @@ class DocumentMoveRequest(ContractModel):
 
 class OperationSummary(ContractModel):
     id: str
-    batch_operation_id: str | None = None
     resource_type: str | None = None
     resource_id: str | None = None
     type: OperationType
@@ -354,7 +348,6 @@ class OperationSummary(ContractModel):
     progress: float | None = Field(default=None, ge=0, le=1)
     retryable: StrictBool = False
     error: KnowledgeErrorResponse | None = None
-    allowed_actions: list[AllowedAction] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
 
@@ -367,31 +360,9 @@ class OperationSummary(ContractModel):
         return value
 
 
-class UploadItemAccepted(ContractModel):
-    client_file_id: str
-    document_id: str | None = None
-    operation_id: str
-    status: OperationStatus = OperationStatus.ACCEPTED
-    error: KnowledgeErrorResponse | None = None
-
-
-class UploadBatchAccepted(ContractModel):
-    batch_operation_id: str
-    items: list[UploadItemAccepted]
-    poll_after_seconds: float = Field(default=2.0, gt=0)
-
-    @field_validator("items")
-    @classmethod
-    def batch_has_items(cls, value: list[UploadItemAccepted]) -> list[UploadItemAccepted]:
-        if not value:
-            raise ValueError("upload batch must contain at least one item")
-        return value
-
-
 class DocumentUploadAccepted(ContractModel):
     document: DocumentSummary
     operation: OperationSummary
-    poll_after_seconds: float = Field(default=3.0, gt=0)
 
 
 class OperationListResponse(ContractModel):
@@ -534,48 +505,10 @@ class KnowledgeCapabilitiesResponse(ContractModel):
     features: dict[str, bool] = {}
 
 
-# ---------------------------------------------------------------------------
-# 问答流式事件
-# ---------------------------------------------------------------------------
-class AskMetadataEvent(ContractModel):
-    event: Literal["metadata"] = "metadata"
-    request_id: str
-
-
-class AskAnswerDeltaEvent(ContractModel):
-    event: Literal["answer.delta"] = "answer.delta"
-    delta: str
-
-
-class AskEvidenceEvent(ContractModel):
-    event: Literal["evidence"] = "evidence"
-    evidence: list[Evidence]
-
-
-class AskWarningEvent(ContractModel):
-    event: Literal["warning"] = "warning"
-    warning: str
-
-
-class AskDoneEvent(ContractModel):
-    event: Literal["done"] = "done"
-
-
-class AskErrorEvent(ContractModel):
-    event: Literal["error"] = "error"
-    error: KnowledgeErrorResponse
-
-
 __all__ = [
     "AllowedAction",
-    "AskAnswerDeltaEvent",
-    "AskDoneEvent",
-    "AskErrorEvent",
-    "AskEvidenceEvent",
-    "AskMetadataEvent",
     "AskRequest",
     "AskResponse",
-    "AskWarningEvent",
     "ConversationTurn",
     "DocumentListResponse",
     "DocumentMoveRequest",
@@ -618,8 +551,6 @@ __all__ = [
     "TeamSpaceManagerSummary",
     "TeamSpaceManagerUpdateRequest",
     "TeamSpaceManagerUpdateResponse",
-    "UploadBatchAccepted",
-    "UploadItemAccepted",
 ]
 
 

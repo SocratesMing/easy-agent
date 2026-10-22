@@ -1,8 +1,8 @@
-"""软删除保留期到期清理（purge）单元测试。
+"""删除同步清理与兜底清理（purge）单元测试。
 
 不依赖真实 Ragflow：假客户端记录删除调用，临时 SQLite 主库。
-覆盖：到期判定、删库场景、共享/存量数据集路由、远端缺失幂等、
-瞬时失败留待重试、批量上限、worker 接线。
+覆盖：同步删除文档/知识库、远端缺失幂等、同步失败保持本地原状、
+兜底清理（不再等保留期）、共享/存量数据集路由、批量上限、worker 接线。
 """
 
 from datetime import UTC, datetime, timedelta
@@ -10,11 +10,13 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from easy_agent.knowledges.core.config import KnowledgeConfig
+from easy_agent.knowledges.core.models import KnowledgePrincipal
 from easy_agent.knowledges.core.repository import KnowledgeRepository
 from easy_agent.knowledges.ragflow import RagflowError, RagflowNotFoundError
 from easy_agent.knowledges.service import (
     SHARED_DATASET_NAME,
     KnowledgeService,
+    KnowledgeServiceError,
     reset_shared_dataset_cache,
 )
 from easy_agent.knowledges.runtime.worker import KnowledgePurgeWorker
@@ -110,8 +112,111 @@ def _remote_ref(db, document_id: str) -> str:
     return str(document["remote_document_id"] or "").strip()
 
 
+_PRINCIPAL = KnowledgePrincipal(user_id="u-1", username="u-1", department_id=None)
+
+
 # ---------------------------------------------------------------------------
-# 到期判定与基本清理
+# 同步删除：删文档 / 删知识库立即删除远端副本
+# ---------------------------------------------------------------------------
+async def test_delete_document_removes_remote_copy_immediately(db):
+    ragflow = _FakeRagflow(
+        existing_datasets=[{"id": "ds-shared-1", "name": SHARED_DATASET_NAME}]
+    )
+    service = _make_service(db, ragflow)
+    base = _create_base(db)
+    doc = _add_document(
+        db, base["id"], name="a.txt", status="ready", remote_document_id="remote-1"
+    )
+
+    await service.delete_document(
+        document_id=doc["id"], principal=_PRINCIPAL, request_id="r-1"
+    )
+
+    assert ragflow.delete_calls == [
+        {"dataset_id": "ds-shared-1", "document_ids": ["remote-1"]}
+    ]
+    row = KnowledgeRepository(db).get_document(doc["id"])
+    assert row["status"] == "deleted"
+    assert str(row["remote_document_id"] or "") == ""
+    assert row["purge_after"] is None
+
+
+async def test_delete_document_keeps_local_on_upstream_failure(db):
+    ragflow = _FakeRagflow(
+        existing_datasets=[{"id": "ds-shared-1", "name": SHARED_DATASET_NAME}],
+        delete_error=RagflowError("boom"),
+    )
+    service = _make_service(db, ragflow)
+    base = _create_base(db)
+    doc = _add_document(
+        db, base["id"], name="a.txt", status="ready", remote_document_id="remote-1"
+    )
+
+    with pytest.raises(KnowledgeServiceError):
+        await service.delete_document(
+            document_id=doc["id"], principal=_PRINCIPAL, request_id="r-1"
+        )
+
+    row = KnowledgeRepository(db).get_document(doc["id"])
+    assert row["status"] == "ready"
+    assert str(row["remote_document_id"] or "") == "remote-1"
+
+
+async def test_delete_document_tolerates_remote_already_missing(db):
+    ragflow = _FakeRagflow(
+        existing_datasets=[{"id": "ds-shared-1", "name": SHARED_DATASET_NAME}],
+        delete_error=RagflowNotFoundError("gone"),
+    )
+    service = _make_service(db, ragflow)
+    base = _create_base(db)
+    doc = _add_document(
+        db, base["id"], name="a.txt", status="ready", remote_document_id="remote-1"
+    )
+
+    await service.delete_document(
+        document_id=doc["id"], principal=_PRINCIPAL, request_id="r-1"
+    )
+
+    assert str(
+        KnowledgeRepository(db).get_document(doc["id"])["remote_document_id"] or ""
+    ) == ""
+
+
+async def test_delete_base_removes_all_remote_documents_immediately(db):
+    ragflow = _FakeRagflow(
+        existing_datasets=[{"id": "ds-shared-1", "name": SHARED_DATASET_NAME}]
+    )
+    service = _make_service(db, ragflow)
+    base = _create_base(db)
+    docs = [
+        _add_document(
+            db, base["id"], name=f"a{index}.txt", status="ready",
+            remote_document_id=f"remote-{index}",
+        )
+        for index in range(3)
+    ]
+    other = _create_base(db, remote_dataset_id="ds-own")
+    _add_document(
+        db, other["id"], name="b.txt", status="ready",
+        remote_document_id="remote-other",
+    )
+
+    await service.delete_base(
+        base_id=base["id"], principal=_PRINCIPAL, request_id="r-1"
+    )
+
+    deleted_ids = sorted(
+        document_id for call in ragflow.delete_calls for document_id in call["document_ids"]
+    )
+    assert deleted_ids == ["remote-0", "remote-1", "remote-2"]
+    assert all(_remote_ref(db, doc["id"]) == "" for doc in docs)
+    row = KnowledgeRepository(db).get_base(base["id"])
+    assert row["status"] == "deleted"
+    assert row["purge_after"] is None
+
+
+# ---------------------------------------------------------------------------
+# 兜底清理
 # ---------------------------------------------------------------------------
 async def test_purge_deletes_remote_copy_and_clears_local_ref(db):
     ragflow = _FakeRagflow(
@@ -124,7 +229,7 @@ async def test_purge_deletes_remote_copy_and_clears_local_ref(db):
         remote_document_id="remote-1", purge_after=_iso(-10),
     )
 
-    assert await service.purge_expired_documents() == 1
+    assert await service.purge_deleted_documents() == 1
     assert ragflow.delete_calls == [
         {"dataset_id": "ds-shared-1", "document_ids": ["remote-1"]}
     ]
@@ -133,7 +238,8 @@ async def test_purge_deletes_remote_copy_and_clears_local_ref(db):
     assert row["status"] == "deleted"  # 软删除记录保留（审计）
 
 
-async def test_purge_skips_documents_within_retention(db):
+async def test_purge_ignores_legacy_retention(db):
+    """历史遗留的 purge_after 未到期也立即清理，不再等 30 天保留期。"""
     ragflow = _FakeRagflow()
     service = _make_service(db, ragflow)
     base = _create_base(db)
@@ -142,9 +248,11 @@ async def test_purge_skips_documents_within_retention(db):
         remote_document_id="remote-1", purge_after=_iso(10),
     )
 
-    assert await service.purge_expired_documents() == 0
-    assert ragflow.delete_calls == []
-    assert _remote_ref(db, doc["id"]) == "remote-1"
+    assert await service.purge_deleted_documents() == 1
+    assert ragflow.delete_calls == [
+        {"dataset_id": "ds-shared-created", "document_ids": ["remote-1"]}
+    ]
+    assert _remote_ref(db, doc["id"]) == ""
 
 
 async def test_purge_skips_active_documents_in_active_base(db):
@@ -155,7 +263,7 @@ async def test_purge_skips_active_documents_in_active_base(db):
         db, base["id"], name="a.txt", status="ready", remote_document_id="remote-1"
     )
 
-    assert await service.purge_expired_documents() == 0
+    assert await service.purge_deleted_documents() == 0
     assert ragflow.delete_calls == []
 
 
@@ -173,7 +281,7 @@ async def test_purge_covers_documents_of_deleted_base(db):
         db, base["id"], name="a.txt", status="ready", remote_document_id="remote-1"
     )
 
-    assert await service.purge_expired_documents() == 1
+    assert await service.purge_deleted_documents() == 1
     assert ragflow.delete_calls == [
         {"dataset_id": "ds-shared-1", "document_ids": ["remote-1"]}
     ]
@@ -190,7 +298,7 @@ async def test_purge_uses_own_dataset_of_base(db):
         db, base["id"], name="a.txt", status="ready", remote_document_id="remote-1"
     )
 
-    assert await service.purge_expired_documents() == 1
+    assert await service.purge_deleted_documents() == 1
     assert ragflow.delete_calls == [
         {"dataset_id": "ds-own", "document_ids": ["remote-1"]}
     ]
@@ -210,7 +318,7 @@ async def test_purge_tolerates_remote_already_missing(db):
         remote_document_id="remote-1", purge_after=_iso(-10),
     )
 
-    assert await service.purge_expired_documents() == 1
+    assert await service.purge_deleted_documents() == 1
     assert _remote_ref(db, doc["id"]) == ""
 
 
@@ -224,7 +332,7 @@ async def test_purge_keeps_reference_on_transient_failure(db):
         remote_document_id="remote-1", purge_after=_iso(-10),
     )
 
-    assert await service.purge_expired_documents() == 0
+    assert await service.purge_deleted_documents() == 0
     assert _remote_ref(db, doc["id"]) == "remote-1"
 
 
@@ -242,7 +350,7 @@ async def test_purge_respects_batch_limit(db):
         )
         kept = doc
 
-    assert await service.purge_expired_documents(limit=2) == 2
+    assert await service.purge_deleted_documents(limit=2) == 2
     assert len(ragflow.delete_calls) == 2
     # 未清到的文档保留引用，下轮继续
     assert _remote_ref(db, kept["id"]) == "remote-2"
@@ -284,3 +392,4 @@ async def test_purge_worker_start_stop_roundtrip(db):
     assert worker.is_running
     await worker.stop()
     assert not worker.is_running
+

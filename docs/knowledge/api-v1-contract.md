@@ -43,7 +43,6 @@ differences. It must be disabled for in-bank deployment.
 | Bases | `GET /bases` | `KnowledgeBaseListResponse` |
 | Bases | `POST /bases` | `201 + KnowledgeBaseSummary` |
 | Bases | `GET/PATCH/DELETE /bases/{base_id}` | Base detail / `204` |
-| Bases | `POST /bases/{base_id}/restore` | Restored base detail |
 | Folders | `GET/POST /bases/{base_id}/folders` | Folder list/detail |
 | Folders | `PATCH/DELETE /folders/{folder_id}` | Folder detail / `204` |
 | Documents | `GET /bases/{base_id}/documents` | Cursor document page |
@@ -51,7 +50,6 @@ differences. It must be disabled for in-bank deployment.
 | Documents | `GET /documents/{document_id}/content` | Authorized byte stream |
 | Documents | `PATCH/DELETE /documents/{document_id}` | Move / `204` |
 | Documents | `POST /documents/{document_id}/retry` | `202 + DocumentUploadAccepted` |
-| Documents | `POST /documents/{document_id}/restore` | `202 + DocumentUploadAccepted` |
 | Operations | `GET /operations` | Cursor operation page |
 | Operations | `GET /operations/{operation_id}` | `OperationSummary` |
 | Permission | `GET/PUT /bases/{base_id}/permissions` | Permission set |
@@ -91,9 +89,10 @@ independent requests and monitors their operation IDs in the task center.
 
 The server reports `uploading`, `configuring`, and `parsing` as operation phases.
 Failed documents can be retried explicitly through `/documents/{id}/retry`.
-Upload, retry and delete side effects are persisted in MySQL and processed by
-the separate Worker. Documents and bases are soft-deleted first; their restore
-routes remain available until `purge_after`.
+Upload and retry side effects are persisted in MySQL and processed by the
+separate Worker. Documents and bases are soft-deleted locally while their
+RAGFlow copies are deleted synchronously; a background worker only retries
+leftovers from failed or historical deletions.
 
 ## Ask and chat streaming
 
