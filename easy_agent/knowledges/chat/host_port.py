@@ -9,7 +9,7 @@
   ``remove_session_agent`` / ``get_agent_config``。
 
 改造前这些能力靠 ``knowledges.api`` 反向 import 宿主模块取得，形成
-``knowledges.api → api.chat → knowledge_impl → knowledges.api`` 的强连通环。
+``knowledges.api → api.chat → knowledges.facade → knowledges.api`` 的强连通环。
 现在改为**端口 + 装配根注册**：宿主在 ``easy_agent/api/chat.py``（app 启动
 必经路径）把真实实现注册进来，知识域只按端口取用。
 

@@ -66,7 +66,6 @@ easy-agent/
 │
 ├── easy_agent/                   # 后端
 │   ├── app.py                    # FastAPI 应用与 lifespan
-│   ├── knowledge_impl.py         # 知识域宿主桥接
 │   ├── agent/                    # Agent 运行时（core/backend/workspace/middleware/hitl/skills/model）
 │   ├── bootstrap/                # 配置/环境/初始化/日志/web_runner
 │   ├── persistence/              # checkpoints / LangGraph stores
@@ -76,7 +75,7 @@ easy-agent/
 │   ├── api/                      # REST/SSE 路由 + deps.py
 │   ├── services/                 # 编排/流式/任务/连接器/记忆等
 │   ├── db/                       # SQLite/MySQL + schema + repositories
-│   ├── knowledges/               # 知识库 v2（RAGFlow）
+│   ├── knowledges/               # 知识库 v2（RAGFlow）；facade.py 为知识域宿主统一出口
 │   ├── tools/                    # Agent 工具
 │   ├── middleware/               # JWT/限流/指标
 │   ├── models/                   # API/DB Pydantic 模型

@@ -33,8 +33,7 @@ from starlette.concurrency import run_in_threadpool
 
 from easy_agent.bootstrap.config import AgentConfig
 from easy_agent.db import init_database
-from easy_agent.knowledge_impl import (
-    KNOWLEDGE_IMPL,
+from easy_agent.knowledges.facade import (
     LegacyHostRoutes,
     KnowledgeOperationsRepository,
     audit_metadata,
@@ -46,7 +45,7 @@ from easy_agent.knowledge_impl import (
     startup_catalog_sync,
     startup_knowledge,
 )
-from easy_agent.knowledge_impl import knowledge_router
+from easy_agent.knowledges.facade import knowledge_router
 from easy_agent.knowledges.personnel import router as personnel_router
 from easy_agent.agent.model import create_model
 from easy_agent.models.api import HealthResponse
@@ -456,7 +455,6 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         logger.warning(f"检测 knowledge 配置失败，按未启用处理: {exc}")
     if knowledge_started:
-        logger.info(f"📚 知识库实现: {KNOWLEDGE_IMPL}")
         await startup_knowledge(app, config_path)
     else:
         logger.info("ℹ️ 未配置 knowledge 段，跳过知识库启动")

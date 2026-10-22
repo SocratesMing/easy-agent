@@ -16,7 +16,7 @@ from easy_agent.db.repositories.stream_events import clear_stream_events
 from easy_agent.models.db import SessionModel
 from easy_agent.models.api import ChatRequest, ResumeRequest
 from easy_agent.middleware import get_current_username
-from easy_agent.knowledge_impl import (
+from easy_agent.knowledges.facade import (
     authorize_scoped_chat,
     chat_stream_generator,
     empty_knowledge_context,

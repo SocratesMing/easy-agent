@@ -103,7 +103,7 @@
 | L1 基础设施 | `db`、`persistence`、`sandboxing` | L0–L1 |
 | L2 运行时适配 | `backends`、`tools.registry` | L0–L2 |
 | L3 Agent | `agent` | L0–L3 |
-| L4 应用 | `services`、`tools`（`registry` 以外）、`knowledges`、`knowledge_impl` | L0–L4 |
+| L4 应用 | `services`、`tools`（`registry` 以外）、`knowledges`（含 `facade`） | L0–L4 |
 | L5 Web | `api`、`middleware` | L0–L5 |
 | L6 装配 | `app`、根包 `easy_agent` | 全部 |
 
