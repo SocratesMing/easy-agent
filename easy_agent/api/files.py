@@ -434,8 +434,9 @@ async def upload_file(
         # 本地文件只用于接收流式上传；Store 已是权威副本，删除避免同一份文件存两处。
         _remove_file_quietly(file_path)
 
+    file_id = None
     if session_id:
-        repo.add_session_file(
+        file_id = repo.add_session_file(
             session_id=session_id,
             filename=safe_filename,
             file_path=stored_path,
@@ -450,6 +451,7 @@ async def upload_file(
     )
 
     return {
+        "id": file_id,
         "filename": safe_filename,
         "file_path": stored_path,
         "file_type": ext,

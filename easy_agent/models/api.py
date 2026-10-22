@@ -425,6 +425,7 @@ class SessionGeneratedFileInfo(BaseModel):
 
 
 class UploadFileResponse(BaseModel):
+    id: Optional[int] = None
     filename: str
     file_path: str
     file_type: str

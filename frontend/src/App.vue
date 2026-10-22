@@ -585,6 +585,17 @@ function ensureSessionState(sid) {
       assistantMsgId: null,
     }
   }
+  // 历史缓存可能由部分更新（如只写 isStreaming/abortController）创建：缺字段时
+  // 后台流结束的 runInSession 会把全局 refs 置为 undefined（messages/sessionUsage），
+  // 收尾回调读 .length 或 token_usage 的 Object.assign 会抛 TypeError 并跳过清理
+  // （回归 UI-25 / applyUsage）。这里统一补齐默认值。
+  if (!Array.isArray(st.messages)) st.messages = []
+  if (!st.sessionUsage || typeof st.sessionUsage !== 'object') st.sessionUsage = { ...sessionUsage.value }
+  if (typeof st.sessionDuration !== 'number') st.sessionDuration = 0
+  if (typeof st.iterationCount !== 'number') st.iterationCount = 0
+  if (!Array.isArray(st.todos)) st.todos = []
+  if (st.streamingAssistantId === undefined) st.streamingAssistantId = null
+  if (st.assistantMsgId === undefined) st.assistantMsgId = null
   sessionStates.value = { ...sessionStates.value, [sid]: st }
   return st
 }
@@ -621,7 +632,7 @@ function runInSession(sid, ctx, fn) {
     streamingAssistantId: streamingAssistantId.value,
     assistantMsgId: ctx ? ctx.assistantMsgId : undefined,
   }
-  messages.value = st.messages
+  messages.value = st.messages || []
   sessionUsage.value = st.sessionUsage
   sessionDuration.value = st.sessionDuration
   iterationCount.value = st.iterationCount
@@ -980,7 +991,9 @@ async function loadUserProfile() {
 
   try {
     const profile = await getUserProfile()
-    if (!profile.username || profile.username === 'admin') {
+    // admin 同样要保留登录态：SessionList 的「用户管理」入口只对 admin 渲染，
+    // 若在这里把 admin 打回登录页，刷新/重开页面后用户管理将不可达（D4）。
+    if (!profile.username) {
       showWelcome.value = true
       return
     }

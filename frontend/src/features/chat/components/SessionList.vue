@@ -137,6 +137,17 @@
       </div>
     </div>
 
+    <div v-if="showDeleteConfirm" class="modal-overlay" @click="cancelDelete">
+      <div class="modal-content" @click.stop>
+        <h3>删除会话</h3>
+        <p class="delete-confirm-text">确定删除会话「{{ deleteTargetTitle }}」吗？删除后消息与该会话文件将无法恢复。</p>
+        <div class="modal-actions">
+          <button @click="cancelDelete" class="cancel-btn">取消</button>
+          <button @click="confirmDelete" class="confirm-btn danger">删除</button>
+        </div>
+      </div>
+    </div>
+
     <div class="user-profile" @click="toggleUserMenu">
       <div class="user-avatar">
         <span class="user-initials">{{ userInitials }}</span>
@@ -240,6 +251,11 @@ const newTitle = ref('')
 const renamingSession = ref(null)
 const renameInput = ref(null)
 const showUserMenu = ref(false)
+const showDeleteConfirm = ref(false)
+const deleteTarget = ref(null)
+
+// 删除会话前必须二次确认（D3）：误点删除会同时清空当前聊天视图且不可恢复。
+const deleteTargetTitle = computed(() => sessionTitle(deleteTarget.value))
 
 // 按时间分组会话：置顶 / 今天 / 最近一周 / 更早
 const groupedSessions = computed(() => {
@@ -361,7 +377,22 @@ function confirmRename() {
 
 function handleDelete(sessionId) {
   activeMenu.value = null
-  emit('deleteSession', sessionId)
+  const target = props.sessions.find(s => s.session_id === sessionId)
+  deleteTarget.value = target || { session_id: sessionId, title: '' }
+  showDeleteConfirm.value = true
+}
+
+function cancelDelete() {
+  showDeleteConfirm.value = false
+  deleteTarget.value = null
+}
+
+function confirmDelete() {
+  const target = deleteTarget.value
+  if (target && target.session_id) {
+    emit('deleteSession', target.session_id)
+  }
+  cancelDelete()
 }
 
 function handleTogglePin(sessionId) {
@@ -792,6 +823,22 @@ function handleLogout() {
 
 .confirm-btn:hover {
   background: #0284c7;
+}
+
+.confirm-btn.danger {
+  background: #ef4444;
+}
+
+.confirm-btn.danger:hover {
+  background: #dc2626;
+}
+
+.delete-confirm-text {
+  margin: 0 0 4px 0;
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+  word-break: break-word;
 }
 
 .user-profile {
