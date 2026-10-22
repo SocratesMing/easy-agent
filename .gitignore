@@ -82,6 +82,9 @@ offline_deps/
 # 本地分析脚本目录（临时排查产物，勿提交）
 /_analysis/
 
+# 本地 e2e 排查产物（复现脚本、截图、临时数据，勿提交）
+/e2e/
+
 # macOS
 .DS_Store
 
