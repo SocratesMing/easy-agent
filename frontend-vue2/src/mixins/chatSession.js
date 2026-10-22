@@ -269,6 +269,7 @@ export default {
           }
           this.messages = history.messages || []
           this.currentTodos = history.todos || []
+          this.syncExpertChipFromMessages()
           if (history.usage) {
             this.sessionUsage.input_tokens = history.usage.input_tokens || 0
             this.sessionUsage.output_tokens = history.usage.output_tokens || 0
@@ -453,9 +454,28 @@ export default {
         this.currentAbortController = state.abortController
         this.currentTodos = state.todos || []
         this.loadedSessionId = sessionId
+        this.syncExpertChipFromMessages()
         return true
       }
       return false
+    },
+    /** 按最后一轮对话恢复输入框右下角的专家芯片：
+        最后一条用户消息带 expert（{id,name}，随消息落库）则恢复召唤态，
+        没有则清空。messages 每次整体刷新（缓存恢复/历史加载/服务端回填）后调用，
+        保证芯片始终与「该会话最后一轮实际使用的专家」一致。 */
+    syncExpertChipFromMessages() {
+      const msgs = this.messages || []
+      for (let i = msgs.length - 1; i >= 0; i--) {
+        const msg = msgs[i]
+        if (!msg || msg.role !== 'user') continue
+        const ex = msg.expert
+        this.selectedExpert = ex && ex.id
+          ? { export_agent_id: ex.id, export_name_cn: ex.name || '' }
+          : null
+        return
+      }
+      // 空会话（含「选了专家但没发消息就切走」的新窗口）：不恢复任何专家
+      this.selectedExpert = null
     },
     // ── 会话级流式隔离 ──────────────────────────────────────────────────
     // 流事件只写入「所属会话」的数据，避免多会话并行流式（A 流式中新建/切换到 B）串台。
@@ -554,6 +574,7 @@ export default {
       if (this.currentSessionId === sessionId && this.loadedSessionId === sessionId) {
         this.messages = history.messages || []
         this.currentTodos = history.todos || []
+        this.syncExpertChipFromMessages()
         if (usage) {
           this.sessionUsage.input_tokens = usage.input_tokens || 0
           this.sessionUsage.output_tokens = usage.output_tokens || 0
@@ -684,6 +705,9 @@ export default {
       this.beforeSessionChange('select')
       // 切换会话：无会话期间暂存的知识范围作废，目标会话以自己的服务端范围为准
       this.pendingKnowledgeScope = null
+      // 切换会话不沿用上一个会话的专家选择（选择是当前工作台的临时状态）。
+      // 目标会话的专家由随后的 messages 刷新经 syncExpertChipFromMessages 恢复。
+      this.selectedExpert = null
       this.currentSessionId = sessionId
       // 切换后按当前会话是否正在流式输出决定输入框状态：
       // 历史会话通常不是当前流式会话，应显示发送按钮而非停止按钮
@@ -721,6 +745,7 @@ export default {
         if (this.currentSessionId !== sessionId) return
         this.messages = history.messages || []
         this.currentTodos = history.todos || []
+        this.syncExpertChipFromMessages()
         // 从服务器返回的 usage 数据恢复 token 用量、会话耗时和迭代次数
         if (history.usage) {
           this.sessionUsage.input_tokens = history.usage.input_tokens || 0
