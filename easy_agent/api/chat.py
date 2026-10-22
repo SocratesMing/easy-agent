@@ -464,10 +464,14 @@ async def chat_stream(
     else:
         turn_fallback_name = ""
 
+    # expert 必须打进这行日志：它是「有没有走专家」的唯一入口证据。少了它，现场只能从
+    # 「未注入专家提示词」「技能没装」现象反推，无法区分是前端没传 ID 还是后端解析失败。
     logger.info(
         f"[{sid}] 聊天请求 | message: {request.message[:50]}{'...' if len(request.message) > 50 else ''} | "
         f"deep_think: {request.enable_deep_think} | "
-        f"web_search: {request.enable_web_search} | model: {request.model or '(active)'}"
+        f"web_search: {request.enable_web_search} | model: {request.model or '(active)'} | "
+        f"expert: {request.expert_agent_id or '(未选专家)'} | "
+        f"pending_expert: {request.pending_expert_id or '(无)'}"
     )
 
     if session_id is None:
