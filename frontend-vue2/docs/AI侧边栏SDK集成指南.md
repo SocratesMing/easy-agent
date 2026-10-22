@@ -397,7 +397,7 @@ EasyAgentSidebar.init({
 
 - 默认 `key` 为 `location.pathname`，默认 `title` 为 `document.title`。
 - SPA 路由切换后调用 `sidebar.setPageContext(...)` 更新（见第 4 节各框架示例）。
-- `content` 建议控制在 4000 字以内（后端单条上下文上限 8000 字），只放与提问相关的关键数据，**不要放密码、身份证号等敏感信息**。
+- `content` 建议控制在 64000 字以内（后端单条上下文上限 128000 字），只放与提问相关的关键数据，**不要放密码、身份证号等敏感信息**。
 - 只想为某一次提问补充信息时，用 `sidebar.open({ context: '…' })`。
 
 ---
