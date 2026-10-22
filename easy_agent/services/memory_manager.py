@@ -10,6 +10,7 @@
 """
 
 import logging
+import re
 import time
 from pathlib import Path
 
@@ -319,6 +320,108 @@ def update_memory_after_session(
         return enforce_memory_limit(memory_file, llm)
 
 
+# ── 用户级长期记忆的「角色职责」过滤器 ───────────────────────────────────
+#
+# 用户级 AGENTS.md 会被注入**每一个**专家会话的系统提示词，而专家之间互不共享领域。
+# 实测事故：用户级记忆里沉淀了「只接利率债、不覆盖汇率/外汇」「超出范围一律拒答」，
+# 用户切到 Java 专家后模型照着这些规则拒答，还照抄了上一个专家的名字。
+# 提示词（config/prompts/long_term_memory.md）已明确禁止记入这类内容，这里再加一道
+# **确定性兜底**：写入前按子句剔除，不依赖模型每次都能遵守。
+#
+# 粒度是「子句」而非整行：一行里可能既有身份（「16 年利率债投研」）又有边界
+# （「不覆盖汇率」），整行丢掉会把用户背景一起删了。
+#
+# 注意**只用于用户级长期记忆**：会话级 memory.md 绑定单个专家（换专家 = 换会话），
+# 里面写领域规则是合理的，不做剔除。
+
+#: 命中即为「角色职责 / 领域边界 / 拒答规则」的特征词
+_ROLE_SCOPE_PATTERNS = (
+    re.compile(r"拒答|拒绝回答|不予回答"),
+    re.compile(r"越界"),
+    re.compile(r"只答|仅答|只接|仅接|只处理|仅处理|仅限"),
+    re.compile(r"不覆盖|不涉及|不接"),
+    re.compile(r"专业范围|职责范围|领域外|领域之外"),
+    re.compile(r"超出.{0,8}范围"),
+)
+#: 句末切分（保留标点，便于原样拼回）
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[。；;！!？?\n])")
+#: 子句切分（命中后再按逗号拆，尽量保住同一行里的身份信息）
+_CLAUSE_SPLIT_RE = re.compile(r"(?<=[，,])")
+#: Markdown 列表符号（`- ` / `* ` / `1. `），过滤后需要原样保留
+_BULLET_PREFIX_RE = re.compile(r"^\s*(?:[-*+]|\d+[.、)])\s*")
+
+
+def _has_role_scope(text: str) -> bool:
+    """文本里是否出现「角色职责 / 领域边界 / 拒答规则」的特征。"""
+    return any(p.search(text or "") for p in _ROLE_SCOPE_PATTERNS)
+
+
+def _has_meaningful_content(text: str) -> bool:
+    """记忆里是否还有「非标题」的实际条目（只剩小标题等同于空记忆）。"""
+    return any(
+        line.strip() and not line.strip().startswith("#")
+        for line in (text or "").splitlines()
+    )
+
+
+def strip_role_scope_clauses(text: str) -> tuple[str, list[str]]:
+    """剔除用户级长期记忆里「专家角色职责 / 领域边界 / 拒答规则」类内容。
+
+    与 ``long_term_memory.md`` 提示词里的「禁止记入」一节配套：提示词负责让模型
+    不要写，本函数负责在落盘前兜底——模型偶尔仍会把「只答某领域」当成用户偏好写进来，
+    而这份记忆会注入所有专家，一旦写进就会污染其它专家。
+
+    Args:
+        text: 待过滤的记忆全文（Markdown）。
+
+    Returns:
+        ``(cleaned_text, dropped)``。``dropped`` 是被删掉的原始子句列表，仅用于日志
+        （便于排查「某条记忆怎么没了」）；无命中时原样返回，不会改动排版。
+    """
+    dropped: list[str] = []
+    if not (text or "").strip():
+        return text or "", dropped
+
+    out_lines: list[str] = []
+    for line in text.splitlines():
+        if not _has_role_scope(line):
+            out_lines.append(line)
+            continue
+
+        prefix_match = _BULLET_PREFIX_RE.match(line)
+        prefix = prefix_match.group(0) if prefix_match else ""
+        body = line[len(prefix):]
+
+        kept_sentences: list[str] = []
+        for sentence in _SENTENCE_SPLIT_RE.split(body):
+            if not sentence.strip():
+                continue
+            if not _has_role_scope(sentence):
+                kept_sentences.append(sentence)
+                continue
+            # 整句命中 → 再按逗号拆，保住同一句里的身份/偏好信息
+            kept_parts: list[str] = []
+            for part in _CLAUSE_SPLIT_RE.split(sentence):
+                if not part.strip():
+                    continue
+                if _has_role_scope(part):
+                    dropped.append(part.strip())
+                else:
+                    kept_parts.append(part)
+            if kept_parts:
+                kept_sentences.append("".join(kept_parts))
+
+        kept_line = prefix + "".join(kept_sentences)
+        # 只剩列表符号说明整条都被删了，丢掉这一行；否则保留残句
+        if kept_line.strip() and kept_line.strip() not in ("-", "*", "+"):
+            out_lines.append(kept_line)
+
+    cleaned = re.sub(r"\n{3,}", "\n\n", "\n".join(out_lines)).strip()
+    # 结尾标点/分隔符可能残留（如「16 年利率债投研；」后整句被删），收一下尾
+    cleaned = re.sub(r"[；;、,，\s]+$", "", cleaned).strip()
+    return cleaned, dropped
+
+
 FALLBACK_LONG_TERM_MEMORY_PROMPT = """你是用户长期记忆管理助手。请根据本次对话更新用户长期记忆（AGENTS.md），只沉淀跨会话长期有效、能帮助下次会话快速理解用户的个人信息与背景。
 
 ## 记入（满足其一方可记入）
@@ -332,6 +435,22 @@ FALLBACK_LONG_TERM_MEMORY_PROMPT = """你是用户长期记忆管理助手。请
 
 一次性任务及其结果、临时状态、单会话内的中间结论、完整执行过程、寒暄内容、密钥 / token / 密码和其他隐私数据。
 判据：只在本次会话成立的信息一律不写。
+
+## 禁止记入（会注入到所有专家，写进来就会污染其他专家）
+
+这份记忆会进入**每一个**专家会话的系统提示词。专家之间互不共享领域，写错位置就会让
+A 专家的规矩去约束 B 专家（曾出现：用户切到 Java 专家后，模型照着这里的利率债规则拒答）。
+
+1. **某个专家角色的职责范围与领域边界**：例如“只接利率债、不覆盖汇率/外汇”“越界不答”
+   “代码委托仅限某领域，领域外不做”——这类规则属于专家自己的提示词，不属于用户画像。
+2. **拒答规则与话术**：例如“超出范围一律拒答”“请提问我领域内的问题”。
+3. 更新时如果发现已有内容里存在上述条目，**直接删除**，不要保留也不要改写沿用。
+
+区分口径：
+
+- ✅ 可以记：用户身份与背景（“16 年利率债投研”“资深 Java 架构师”）、跨角色都成立的工作偏好
+  （“偏好表格输出、结论先行、数据要标来源”）。
+- ❌ 不可以记：任何**限定“只能/不能回答什么”**的规则（“只答债券”“汇率拒答”“个股不做”）。
 
 ## 写法要求
 
@@ -435,6 +554,18 @@ def update_long_term_memory_after_session(
             logger.warning("LLM 返回空内容，长期记忆未更新")
             return enforce_memory_limit(memory_file, llm, max_chars=max_chars)
 
+        # 兜底剔除「角色职责 / 领域边界 / 拒答规则」：这份记忆会注入所有专家，
+        # 一旦写进就会被其它专家当成自己的规矩（详见 strip_role_scope_clauses）。
+        updated, dropped = strip_role_scope_clauses(updated)
+        if dropped:
+            logger.info(
+                f"🧹 用户长期记忆已剔除 {len(dropped)} 处「角色职责/拒答规则」"
+                f"（避免注入到其它专家）| 样例: {dropped[:3]}"
+            )
+        if not _has_meaningful_content(updated):
+            logger.warning("剔除角色职责后长期记忆已无实际条目，保留原文件不写入")
+            return False
+
         target_chars = max_chars
         compression_threshold = min(LONG_TERM_COMPRESS_THRESHOLD, target_chars)
 
@@ -444,6 +575,9 @@ def update_long_term_memory_after_session(
                 f"更新后长期记忆超过目标预算 ({len(updated)} > {target_chars} 字符)，触发压缩"
             )
             updated = compress_memory(updated, llm, max_chars=target_chars)
+            # 压缩是一次 LLM 改写，可能把刚剔掉的规则又写回来，再过滤一遍
+            updated, more_dropped = strip_role_scope_clauses(updated)
+            dropped.extend(more_dropped)
 
         # 最终硬保底
         if len(updated) > target_chars:

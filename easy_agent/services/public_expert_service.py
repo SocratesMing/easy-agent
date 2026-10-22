@@ -326,6 +326,10 @@ def read_public_expert(expert_dir: Path) -> Optional[dict]:
         "export_prompt": "",
         "export_description": description,
         "export_skills_names": _as_str_list(cfg.get("skills_names")),
+        # 依赖技能（公共技能目录名，如 ["factor-creator"]）：用户首次使用该专家时
+        # 由 services/skill_provision 自动补装到其技能库。不是展示标签，不要与
+        # skills_names 混用（后者是卡片上给人看的中文标签）。
+        "export_required_skills": _as_str_list(cfg.get("required_skills")),
         # 画像补充字段（相关性预检用）：公共专家的 config.yaml 里有场景与能力清单，
         # 不下发到列表也不影响前端（未知字段被忽略），但能让预检看到"能产出报告"。
         "export_scenario": str(cfg.get("scenario") or "").strip(),
@@ -410,6 +414,42 @@ def find_public_expert(expert_id: str) -> Optional[dict]:
         if item["export_agent_id"] == expert_id:
             return item
     return None
+
+
+def required_skills_of_public_expert(expert_id: str) -> list[str]:
+    """只读 ``config.yaml`` 取公共专家的依赖技能（``required_skills``）。
+
+    与 ``find_public_expert`` 的区别：**不读提示词正文**。本函数在每轮对话创建
+    Agent 前都会跑，读 2~3KB 的 md 纯属浪费（实测 5.0ms → 0.4ms）。
+
+    先按目录名直判（O(1)）；目录名与 config 里的 ``expert_agent_id`` 不一致时，
+    退化为扫描各目录的 ``config.yaml``（只读 yaml，仍不读提示词）。找不到返回空列表
+    ——「我的专家」的 ID 走的正是这条路径，必须足够便宜。
+    """
+    if not expert_id:
+        return []
+
+    root = public_experts_root()
+    direct = root / expert_id
+    if direct.is_dir():
+        content_dir, _ = _resolve_content_dir(direct)
+        cfg = _read_yaml(content_dir / "config.yaml") or _read_yaml(direct / "config.yaml")
+        return _as_str_list(cfg.get("required_skills"))
+
+    if not root.is_dir():
+        return []
+
+    for candidate in sorted(root.iterdir()):
+        if not candidate.is_dir() or candidate.name.startswith(_SKIP_PREFIXES):
+            continue
+        content_dir, _ = _resolve_content_dir(candidate)
+        cfg = _read_yaml(content_dir / "config.yaml") or _read_yaml(
+            candidate / "config.yaml"
+        )
+        declared = str(cfg.get("expert_agent_id") or candidate.name).strip()
+        if declared == expert_id:
+            return _as_str_list(cfg.get("required_skills"))
+    return []
 
 
 def load_public_prompt(expert_id: str) -> tuple[str, int, str]:

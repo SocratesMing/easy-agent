@@ -7,16 +7,12 @@
  *   GET  /agent/list               我的专家列表
  *   GET  /agent/public-list        公共（预置）专家列表
  *   POST /agent/del                删除专家（默认软删）
- *   POST /agent/stream_export_run  选中专家执行（SSE）
  *
- * 流式请求沿用 utils/request.js 的 streamUrl / streamHeaders /
- * handleStreamResponse，SSE 事件格式与 /agent/chat/stream 完全一致。
+ * 专家对话不再有独立接口：选中专家后前端统一调 /agent/chat/stream 并带上
+ * `expert_agent_id`（见 api/chat.js 的 sendMessage），提示词加载与相关性预检
+ * 都在通用入口完成，SSE 事件格式与普通聊天完全一致。
  */
-import request, {
-  handleStreamResponse,
-  streamHeaders,
-  streamUrl,
-} from '../utils/request.js'
+import request from '../utils/request.js'
 
 /** 创建专家（分类标签 tag_id 由大模型自动生成，无需前端传入） */
 export async function addExpert({ nameCn, prompt, sessionId = null, model = null }) {
@@ -107,68 +103,4 @@ export async function deleteExpert(exportAgentId, hard = false) {
     },
     '删除专家失败'
   )
-}
-
-/**
- * 选中专家执行（SSE 流式）
- *
- * @param {Object} payload { message, sessionId, expertAgentId, model, enableDeepThink, enableWebSearch, files, skills }
- * @param {Function} onChunk 每个 SSE 事件回调（与聊天完全相同的结构）
- * @param {AbortSignal} [signal] 用于取消
- */
-export async function streamExportRun(payload, onChunk, signal) {
-  const controller = new AbortController()
-  const abortSignal = signal || controller.signal
-
-  const response = await handleStreamResponse(
-    await fetch(streamUrl('/agent/stream_export_run'), {
-      method: 'POST',
-      headers: streamHeaders(),
-      body: JSON.stringify({
-        message: payload.message,
-        session_id: payload.sessionId || null,
-        message_id: payload.messageId || null,
-        expert_agent_id: payload.expertAgentId || null,
-        model: payload.model || null,
-        enable_deep_think: !!payload.enableDeepThink,
-        enable_web_search: !!payload.enableWebSearch,
-        files: payload.files || null,
-        // 已选技能走结构化字段（技能目录名），`/目录名` 由后端拼进模型输入。
-        // 连接器不走这里：本会话启用哪些连接器由 /agent/connectors/session 单独设置。
-        skills: payload.skills && payload.skills.length ? payload.skills : null,
-      }),
-      signal: abortSignal,
-    })
-  )
-
-  await readSseStream(response, onChunk, abortSignal)
-}
-
-/** 本地 SSE 解析（与 chat.js 的 readSseStream 行为一致，避免改动既有模块） */
-async function readSseStream(response, onChunk, abortSignal) {
-  const reader = response.body.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ''
-
-  try {
-    while (true) {
-      if (abortSignal && abortSignal.aborted) return
-      const { done, value } = await reader.read()
-      if (done) break
-      buffer += decoder.decode(value, { stream: true })
-      const lines = buffer.split('\n')
-      buffer = lines.pop() || ''
-      for (const line of lines) {
-        if (!line.startsWith('data: ')) continue
-        try {
-          onChunk(JSON.parse(line.slice(6)))
-        } catch (error) {
-          console.error('解析 SSE 数据失败:', error)
-        }
-      }
-    }
-  } catch (error) {
-    if (error.name === 'AbortError') return
-    throw error
-  }
 }

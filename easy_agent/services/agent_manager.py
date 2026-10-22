@@ -15,6 +15,7 @@ from .mcp import (
     collect_mcp_tool_sources,
     get_mcp_tools as load_mcp_tools_for_user,
 )
+from .skill_provision import build_skill_runtime_notice, provision_expert_skills
 
 logger = logging.getLogger("easy-agent.chat_service")
 
@@ -130,6 +131,30 @@ async def get_or_create_agent_for_session(
     effective_model = model_name or config.active_model
     # None 与 "" 等价：都表示「本次请求不挂专家（通用 Agent）」
     expert_key = expert_agent_id or ""
+
+    # 专家依赖技能自动补装（如因子研究专家 -> factor-creator）。
+    # 必须在缓存查找**之前**：技能要先落盘才能被本轮技能扫描发现，否则「缓存命中
+    # 的旧 Agent 里没有该技能」会一直掩盖这个缺口，直到重启或换专家。
+    # 失败不阻断（provision_expert_skills 内部已吞异常），但会把「技能不可用」写进
+    # 系统提示词，让模型对用户说清原因，而不是让用户看到一句「扫描不到技能」。
+    skill_report: dict = {}
+    try:
+        skill_report = await asyncio.to_thread(
+            provision_expert_skills, username, expert_agent_id
+        )
+    except Exception as exc:  # noqa: BLE001 - 兜底，绝不影响对话
+        logger.warning(
+            f"[{session_id[-5:]}] 专家依赖技能检查失败（忽略） | "
+            f"expert: {expert_key or '(通用)'} | {exc}"
+        )
+    if skill_report.get("installed"):
+        # 已缓存的 Agent 在构造时固化了技能清单，必须失效重建
+        invalidate_user_agents(username)
+    skill_notice = build_skill_runtime_notice(skill_report)
+    if skill_notice:
+        system_prompt_extra = (
+            f"{system_prompt_extra}\n\n{skill_notice}" if system_prompt_extra else skill_notice
+        )
 
     # 本会话启用的连接器（mcp.json server 名，由输入框「+」面板的会话级开关写入）。
     # key 不存在 = 尚未设置 → None = 注入全部启用连接器；空元组 = 全部关闭 → []。

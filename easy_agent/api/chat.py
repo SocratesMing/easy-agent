@@ -32,6 +32,7 @@ from ..services import (
     cancel_stream_task,
 )
 from ..services import skill_library
+from ..services import expert_runtime
 from ..services import session_uploads as file_context
 from ..services.streaming import format_sse
 from ..utils import parse_file_content, SessionLogger, get_owned_session
@@ -167,6 +168,42 @@ def create_new_session(
     db.create_session(session_data)
     db.update_session_workspace_name(session_id, workspace_name)
     return workspace_name
+
+
+def _persist_user_message(
+    db: Database,
+    session_id: str,
+    username: str,
+    request: ChatRequest,
+    turn_skill_dirs: list[str],
+    expert_id: str = "",
+) -> dict:
+    """落本轮用户消息（正常链路与相关性预检短路链路共用）。
+
+    字段口径沿用改造前：``role/content/timestamp`` + 可选 ``files`` /
+    ``page_context`` / ``skills``，本次新增可选的 ``expert``（本轮使用的专家元信息，
+    回答面板「头像 + 名称」的数据来源，刷新/历史加载后不丢）。未选专家时不写该字段，
+    普通会话的消息结构与改造前逐字一致。
+    """
+    user_message = {
+        "role": "user",
+        "content": request.message,
+        "timestamp": datetime.now().isoformat(),
+    }
+    if request.files:
+        user_message["files"] = request.files
+    page_context = (request.page_context or "").strip()
+    if page_context:
+        user_message["page_context"] = page_context
+    # 结构化技能目录名：气泡按它渲染技能标签，不再需要从消息文本里反扒 `/目录名`
+    if turn_skill_dirs:
+        user_message["skills"] = turn_skill_dirs
+    expert_meta = expert_runtime.expert_meta_for_message(db, username, expert_id)
+    if expert_meta:
+        user_message["expert"] = expert_meta
+    db.add_message(session_id, user_message)
+    db.add_message_row(session_id, user_message)
+    return user_message
 
 
 _detached_bg_tasks: "set[asyncio.Task]" = set()
@@ -427,10 +464,14 @@ async def chat_stream(
     else:
         turn_fallback_name = ""
 
+    # expert 必须打进这行日志：它是「有没有走专家」的唯一入口证据。少了它，现场只能从
+    # 「未注入专家提示词」「技能没装」现象反推，无法区分是前端没传 ID 还是后端解析失败。
     logger.info(
         f"[{sid}] 聊天请求 | message: {request.message[:50]}{'...' if len(request.message) > 50 else ''} | "
         f"deep_think: {request.enable_deep_think} | "
-        f"web_search: {request.enable_web_search} | model: {request.model or '(active)'}"
+        f"web_search: {request.enable_web_search} | model: {request.model or '(active)'} | "
+        f"expert: {request.expert_agent_id or '(未选专家)'} | "
+        f"pending_expert: {request.pending_expert_id or '(无)'}"
     )
 
     if session_id is None:
@@ -460,6 +501,59 @@ async def chat_stream(
                 )
                 session.updated_at = datetime.now().isoformat()
                 db.update_session(session)
+
+    # ── 专家：提示词加载 + 职责范围预检（硬闸） ────────────────────────
+    # 选中专家时（请求体 expert_agent_id 非空）：先加载该专家当前生效版本的提示词
+    # （我的专家优先、公共专家兜底），再在**创建 Agent 之前**判断本轮消息是否落在
+    # 专家职责范围内。顺序不能动：预检必须早于文件解析与知识库检索——被拒答的消息
+    # 不该为这些付成本，更重要的是「Agent 未创建」时任何工具都不可达。
+    expert_id = ""
+    expert_prompt = ""
+    if request.expert_agent_id:
+        expert_id, expert_prompt, _source = expert_runtime.load_expert_prompt(
+            db, username, request.expert_agent_id, sid
+        )
+        if not expert_prompt:
+            # 读取失败（目录被清 / 文件缺失）：降级为通用 Agent，不阻断对话
+            expert_id = ""
+
+    gate = await expert_runtime.relevance_gate(
+        db,
+        session_id,
+        username,
+        expert_id,
+        request.message,
+        sid,
+        files=request.files,
+        prompt_text=expert_prompt,
+    )
+    if gate is not None:
+        classification, refusal = gate
+        _persist_user_message(
+            db, session_id, username, request, turn_skill_dirs, expert_id
+        )
+        expert_runtime.session_logger_for(session_id, username).log_user_message(
+            message=request.message,
+            files=request.files,
+            message_id=message_id,
+        )
+        logger.info(
+            f"[{sid}] 🚫 相关性预检短路拒答 | expert={expert_id} | "
+            f"判定={classification} | Agent 未创建 | 拒答长度={len(refusal)}"
+        )
+        return StreamingResponse(
+            _detached_event_stream(
+                expert_runtime.refusal_event_stream(session_id, db, refusal),
+                session_id,
+                sid,
+            ),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
 
     # 模型输入 = 技能指令前缀 + 用户正文（技能指令不进落库文本，见上文解析处）；
     # 旧前端消息文本里已有的 `/目录名` 保持原样，不重复拼。
@@ -549,6 +643,11 @@ async def chat_stream(
                 f"[{session_id[-5:]}] 📎 已注入本轮上传文件开头预览 | {len(preview)} 字符"
             )
 
+    # 专家提示词排在最后：agent.py 的拼接顺序为
+    # [system_prompt, user_info, web_search_prompt, system_prompt_extra]，
+    # 放在 extra 末尾即 recency 最高，专家人设可主导通用人设。
+    if expert_prompt:
+        system_prompt_parts.append(expert_prompt)
     system_prompt_extra = "\n\n".join(system_prompt_parts)
 
     page_context = (request.page_context or "").strip()
@@ -561,20 +660,7 @@ async def chat_stream(
             + parsed_content
         )
 
-    user_message = {
-        "role": "user",
-        "content": request.message,
-        "timestamp": datetime.now().isoformat(),
-    }
-    if request.files:
-        user_message["files"] = request.files
-    if page_context:
-        user_message["page_context"] = page_context
-    # 结构化技能目录名：气泡按它渲染技能标签，不再需要从消息文本里反扒 `/目录名`
-    if turn_skill_dirs:
-        user_message["skills"] = turn_skill_dirs
-    db.add_message(session_id, user_message)
-    db.add_message_row(session_id, user_message)
+    _persist_user_message(db, session_id, username, request, turn_skill_dirs, expert_id)
 
     session_logger = SessionLogger(
         session_id=session_id,
@@ -590,10 +676,13 @@ async def chat_stream(
 
     # 连接器不再随每轮消息提交：本会话启用哪些连接器由输入框「+」面板的开关决定
     # （见 api/connectors.py 的 /agent/connectors/session），agent_manager 按会话读取。
+    # 专家同理：提示词已由调用方拼进 system_prompt_extra，这里只传 ID 用于
+    # 「专家变更 -> 驱逐缓存」——漏传会出现「换专家不生效 / 人设黏在普通聊天上」。
     agent = await get_or_create_agent_for_session(
         session_id, username, workspace_name, model_name=request.model,
         system_prompt_extra=system_prompt_extra,
         enable_web_search=request.enable_web_search,
+        expert_agent_id=expert_id,
         skill_dirs=turn_skill_dirs,
     )
 

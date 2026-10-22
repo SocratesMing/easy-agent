@@ -29,6 +29,8 @@ easy-agent 内访问 RAGFlow：`http://ragflow:9380`（见 `.env.dev` 的 `RAGFL
 ```bash
 cd /mnt/data/easyagent
 # 需已有 frontend-vue2/dist
+# 运行时目录（data/workspace/memories/sessions/logs）挂在本目录下，首次启动前可 mkdir -p
+mkdir -p data workspace memories sessions logs
 docker compose --env-file .env.dev up -d --build
 ```
 

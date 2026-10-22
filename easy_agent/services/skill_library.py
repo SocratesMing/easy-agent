@@ -18,6 +18,7 @@ import logging
 import os
 import re
 import shutil
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -240,6 +241,132 @@ def remove_user_skill(username: str, dir_name: str) -> Path:
     shutil.rmtree(str(found["path"]))
     logger.info(f"技能移除 | 用户: {username} | 技能: {dir_name}")
     return found["path"]
+
+
+# ── 公共技能安装（技能中心「添加」/ 专家依赖自动补装）────────────────────────
+
+
+def _project_root() -> Path:
+    """项目/发行包根目录（``easy_agent`` 包的上一级）。"""
+    return Path(__file__).resolve().parents[2]
+
+
+def public_skills_dir_candidates() -> list[Path]:
+    """公共技能目录的**可能位置**（按优先级），全部返回绝对值。
+
+    ``tools.skills_dir`` 默认是相对路径 ``./skills``，而相对路径的基准是**进程
+    CWD**——uvicorn / systemd / IDE 启动时 CWD 各不相同，此时 ``Path("./skills")``
+    会指到别处，表现为「公共技能明明在项目里，却提示不存在」。因此查找顺序为：
+
+    1. 配置值（绝对路径直接返回）；
+    2. ``<进程 CWD>/<配置值>``（保持历史行为，本地开发优先命中）；
+    3. ``<项目根>/<配置值>``（换启动目录也能找到，发行包内的技能都在这里）。
+
+    技能中心与「专家依赖技能自动补装」共用本函数，保证两边判断一致。
+    """
+    from .agent_manager import get_agent_config  # 延迟导入，避免模块级循环依赖
+
+    cfg = get_agent_config()
+    raw = cfg["config"].tools.skills_dir if cfg else "./skills"
+    raw = str(raw or "").strip()
+    if not raw:
+        return []
+
+    path = Path(raw).expanduser()
+    if path.is_absolute():
+        return [path]
+
+    candidates = [Path.cwd() / path, _project_root() / path]
+    # 去重且保序
+    unique: list[Path] = []
+    for item in candidates:
+        resolved = item.resolve() if item.exists() else item.absolute()
+        if resolved not in unique:
+            unique.append(resolved)
+    return unique
+
+
+def public_skills_dir() -> Path | None:
+    """公共技能目录：返回第一个**真实存在**的候选位置；都不存在时返回首选路径。
+
+    候选与顺序见 ``public_skills_dir_candidates``。返回不存在的位置而不是 ``None``
+    （只要配置了值），是为了让报错信息能指向用户真正写的那个路径。
+    """
+    candidates = public_skills_dir_candidates()
+    if not candidates:
+        return None
+    for candidate in candidates:
+        if candidate.is_dir():
+            return candidate
+    return candidates[0]
+
+
+def public_skill_source(dir_name: str) -> Path | None:
+    """在候选目录中查找公共技能目录（含 ``SKILL.md``/``README.md``）；找不到返回 ``None``。"""
+    for root in public_skills_dir_candidates():
+        candidate = root / dir_name
+        if is_skill_dir(candidate):
+            return candidate
+    return None
+
+
+def install_public_skill_to_user(
+    username: str,
+    dir_name: str,
+    *,
+    overwrite: bool = False,
+) -> dict[str, Any]:
+    """把公共技能目录完整复制到用户技能库，返回 ``{dir_name, path}``。
+
+    「安装」到用户侧 = 复制到 ``workspace/{username}/skills/{dir_name}/``，
+    Agent 通过 ``/user-skills/`` 路由扫描（见 ``EasyAgent._resolve_skills_paths``）。
+
+    复制走「临时目录 + ``os.replace``」：中途失败不会留下半份技能，并发重复调用
+    也只会有一份生效。目标已存在时抛 ``FileExistsError``（``overwrite=True`` 例外），
+    停用目录里的同名技能同样视为「用户已有」，不做覆盖。
+
+    Raises:
+        FileNotFoundError: 公共技能目录未配置，或所有候选目录里都没有该技能。
+            异常信息里带上「找过哪些路径」，便于现场直接把技能包放对位置。
+        FileExistsError: 用户技能库（启用或停用）里已有同名技能且未允许覆盖。
+    """
+    candidates = public_skills_dir_candidates()
+    if not candidates:
+        raise FileNotFoundError("公共技能目录未配置（tools.skills_dir）")
+
+    source = public_skill_source(dir_name)
+    if source is None:
+        searched = "；".join(str(item) for item in candidates)
+        raise FileNotFoundError(
+            f"公共技能 '{dir_name}' 不存在（需含 SKILL.md）。已查找: {searched}"
+        )
+
+    target_root = user_skills_dir(username)
+    target = target_root / dir_name
+    disabled = user_disabled_dir(username) / dir_name
+
+    if not overwrite:
+        if target.exists():
+            raise FileExistsError(f"skills/{dir_name}")
+        if is_skill_dir(disabled):
+            raise FileExistsError(f"{DISABLED_DIR_NAME}/{dir_name}")
+
+    target_root.mkdir(parents=True, exist_ok=True)
+    temp = target_root / f".tmp_{dir_name}_{uuid.uuid4().hex[:8]}"
+    try:
+        shutil.copytree(str(source), str(temp))
+        if overwrite and target.exists():
+            shutil.rmtree(str(target), ignore_errors=True)
+        os.replace(str(temp), str(target))
+    finally:
+        if temp.exists():
+            shutil.rmtree(str(temp), ignore_errors=True)
+
+    logger.info(
+        f"公共技能安装到用户目录 | 用户: {username} | 技能: {dir_name} | "
+        f"源: {source.absolute()} | 目标: {target.absolute()}"
+    )
+    return {"dir_name": dir_name, "path": target}
 
 
 # ── 登记（对话创建 / 工作区收编）───────────────────────────────────────────

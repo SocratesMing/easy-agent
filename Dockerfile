@@ -57,6 +57,8 @@ RUN uv export --frozen --no-dev --extra docs -o /tmp/requirements.txt \
 
 # Copy backend source
 COPY easy_agent/ ./easy_agent/
+# 公共（预置）专家：tools.experts_dir 默认 ./experts（相对 /app）
+COPY experts/ ./experts/
 
 # Editable 安装项目本体（脚本入口 easy-web / 包发现）
 RUN uv pip install --system --no-cache --no-deps -e .

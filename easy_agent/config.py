@@ -441,6 +441,19 @@ class Config(BaseModel):
     258~1007 降到 7、耗时从 1.7~6.4 秒降到 0.5~0.6 秒。极少数网关不认
     ``reasoning_effort`` / ``thinking`` 参数时会自动去掉它们重试，因此一般无需关闭；
     只有在关思考反而更慢或不返回内容时才设为 false。"""
+
+    expert_auto_install_required_skills: bool = True
+    """用公共专家时，是否自动为其补装 ``required_skills`` 声明的依赖技能。
+
+    典型场景：因子研究专家依赖 ``factor-creator``。用户第一次用该专家时，若其技能
+    库里没有该技能，就从公共技能目录（``tools.skills_dir``）自动复制过去，避免
+    「专家说要用技能，但技能根本没装」的静默降级。
+
+    - 已停用（``skills-disabled/``）的技能**不**装回：停用是用户主动意图；
+    - 安装失败只记 warning，不阻断对话，专家走提示词里的降级分支；
+    - 设为 false 即完全关闭（技能改由用户在技能中心自行安装）。
+    见 ``services/skill_provision.py``。"""
+
     app_welcome_title: str = DEFAULT_APP_WELCOME_TITLE
 
     @field_validator("expert_tags", mode="before")
@@ -619,6 +632,12 @@ class Config(BaseModel):
                 data.get(
                     "expert_relevance_disable_thinking",
                     expert_section.get("relevance_disable_thinking", True),
+                )
+            ),
+            expert_auto_install_required_skills=bool(
+                data.get(
+                    "expert_auto_install_required_skills",
+                    expert_section.get("auto_install_required_skills", True),
                 )
             ),
             app_welcome_title=data.get(
