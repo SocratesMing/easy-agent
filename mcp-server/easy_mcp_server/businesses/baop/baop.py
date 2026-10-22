@@ -1377,14 +1377,14 @@ def get_income_detail(core=None, biz_line=None, period=None):
             f"SELECT CORE AS k, SUM(NET_OPR_INCOM) AS a, SUM(NOT_INT_INCOM) AS b, "
             f"SUM(NET_INT) AS c, SUM(NET_OPR_INCOM_PLAN) AS p, "
             f"SUM(NET_OPR_INCOM_PLAN)-SUM(NET_OPR_INCOM) AS gp, "
-            f"SUM(NET_OPR_INCOM)/NULLIF(SUM(NET_OPR_INCOM_PLAN),0)*100 AS cr "
+            f"SUM(NET_OPR_INCOM)/NULLIF(SUM(NET_OPR_INCOM_PLAN),0)*100 AS crate "
             f"FROM `{t}` WHERE {w} GROUP BY CORE ORDER BY a DESC", args)
         cols = ["中心/业务线", "营业净收入累计（亿元）", "非息收入累计（亿元）", "息差累计（亿元）",
                 "经营计划（亿元）", "营业缺口（亿元）", "完成率"]
         tb = [[r["k"], _to_yi(r["a"], SRC_UNIT[T_INCOME]), _to_yi(r["b"], SRC_UNIT[T_INCOME]),
                _to_yi(r["c"], SRC_UNIT[T_INCOME]), _to_yi(r["p"], SRC_UNIT[T_INCOME]),
                _to_yi(r["gp"], SRC_UNIT[T_INCOME]),
-               f"{round(float(r['cr']), 2)}%" if r["cr"] is not None else "无数据"]
+               f"{round(float(r['crate']), 2)}%" if r["crate"] is not None else "无数据"]
               for r in rows]
         headline = ("「金融市场部」源数据即覆盖全部中心，已按全部门汇总，不含合计行。"
                     if dept_name else "本次未指定中心或业务线，已按中心级汇总返回")
@@ -1510,7 +1510,7 @@ def get_plan_completion(metric="net_opr_incom", by="core", core=None, period=Non
     _, rows = _query(
         f"SELECT `{group_col}` AS k, SUM(`{a_col}`) AS a, SUM(`{p_col}`) AS p, "
         f"SUM(`{p_col}`)-SUM(`{a_col}`) AS gap, "
-        f"SUM(`{a_col}`)/NULLIF(SUM(`{p_col}`),0)*100 AS cr, {tmw} AS tmw "
+        f"SUM(`{a_col}`)/NULLIF(SUM(`{p_col}`),0)*100 AS crate, {tmw} AS tmw "
         f"FROM `{t}` WHERE {' AND '.join(where)} GROUP BY `{group_col}`", args)
     if not rows:
         return _env("计划完成率", f"{_period_headline(per, t)} 下未匹配到记录。", "%",
@@ -1523,9 +1523,9 @@ def get_plan_completion(metric="net_opr_incom", by="core", core=None, period=Non
         tm = (round(float(r["tmw"]) / p, 2)
               if (tm_col and p and r["tmw"] is not None) else None)
         items.append({"k": r["k"], "a": a, "p": p, "gap": p - a,
-                      "cr": round(a / p * 100, 2) if p else None, "tm": tm})
+                      "crate": round(a / p * 100, 2) if p else None, "tm": tm})
     sign = -1 if str(order or "desc").lower() != "asc" else 1
-    items.sort(key=lambda x: (x["cr"] is None, sign * (x["cr"] or 0)))
+    items.sort(key=lambda x: (x["crate"] is None, sign * (x["crate"] or 0)))
 
     ta = sum(i["a"] for i in items)
     tp = sum(i["p"] for i in items)
@@ -1542,16 +1542,16 @@ def get_plan_completion(metric="net_opr_incom", by="core", core=None, period=Non
     if tm_col:
         cols.append("序时进度（源表加权）")
 
-    def _line(name, a, p, cr, tm):
+    def _line(name, a, p, crate, tm):
         row = [name, _to_yi(a, SRC_UNIT[T_INCOME]), _to_yi(p, SRC_UNIT[T_INCOME]), _to_yi(p - a, SRC_UNIT[T_INCOME]),
-               _pct(cr), _pct(cal),
-               (f"{round(cr - cal, 2)}pp" if (cr is not None and cal is not None) else "无数据")]
+               _pct(crate), _pct(cal),
+               (f"{round(crate - cal, 2)}pp" if (crate is not None and cal is not None) else "无数据")]
         if tm_col:
             row.append(_pct(tm))
         return row
 
     show = items[:top_n] if top_n and top_n > 0 else items
-    tb = [_line(i["k"], i["a"], i["p"], i["cr"], i["tm"]) for i in show]
+    tb = [_line(i["k"], i["a"], i["p"], i["crate"], i["tm"]) for i in show]
     if len(show) < len(items):
         tb.append(_line("合计（全量口径）", ta, tp, tcr, ttm))
     else:
@@ -1575,14 +1575,14 @@ def get_plan_completion(metric="net_opr_incom", by="core", core=None, period=Non
                    f"计划完成率 **{tcr:.2f}%**（Σ实际÷Σ计划加权），"
                    f"缺口 {_to_yi(tp - ta, SRC_UNIT[T_INCOME]):,.2f} 亿元{gap_txt}。"
                    f"共 {len(items)} 个{disp}。")
-        rated = [i for i in items if i["cr"] is not None]
+        rated = [i for i in items if i["crate"] is not None]
         if len(rated) > 1:
-            best = max(rated, key=lambda x: x["cr"])
-            worst = min(rated, key=lambda x: x["cr"])
-            summary += f"完成率最高「{best['k']}」（{best['cr']:.2f}%），最低「{worst['k']}」（{worst['cr']:.2f}%）。"
+            best = max(rated, key=lambda x: x["crate"])
+            worst = min(rated, key=lambda x: x["crate"])
+            summary += f"完成率最高「{best['k']}」（{best['crate']:.2f}%），最低「{worst['k']}」（{worst['crate']:.2f}%）。"
 
     chart = _opt_hbar(f"{label}计划完成率（{per}）", [i["k"] for i in show],
-                      [i["cr"] for i in show], "%", sign_color=False)
+                      [i["crate"] for i in show], "%", sign_color=False)
 
     notes = ["完成率为百分比，非金额，不做单位折算。",
              "完成率统一按加权口径计算：Σ实际累计 ÷ Σ计划（或分解目标），"
