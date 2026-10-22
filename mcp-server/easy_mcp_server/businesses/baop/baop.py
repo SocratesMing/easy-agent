@@ -7,11 +7,15 @@
 
 数据底座
   T3  fpp_fin_mkt_bizline_income_sum_t1  营业净收入/非息/息差                      单位：万元
-  T1  fpp_core_cap_rsrv_t1                资本公积变动                             单位：万元
-  T2  fpp_whl_liab_biz_situ_t1            负债规模                                 单位：万元
+  T1  fpp_core_cap_rsrv_t1                资本公积变动                             单位：亿元
+  T2  fpp_whl_liab_biz_situ_t1            负债规模                                 单位：元
 
-单位口径（**已锁定，勿再变更**，2026-10-14 业务方最终确认）
-  三张源表底层**统一为「万元」**。工具层一律折算为**亿元**（万元 ÷ 1e4）对外呈现。
+单位口径（**已锁定，勿再变更**，2026-10-21 业务方最终确认，取代 2026-10-14 的「统一万元」）
+  三张源表**单位各不相同**，必须逐表换算，禁止共用同一个系数：
+      T3  万元  → 亿元：÷ 1e4
+      T1  亿元  → 亿元：原值（÷ 1）
+      T2  元    → 亿元：÷ 1e8
+  工具层一律对外呈现**亿元**；底层数值不做任何改写，只在输出时折算。
   百分比列（占比 / 成本率 / 完成率 / 序时进度 / 增速）不参与折算。
 
 三条核心逻辑（本文件是它们的唯一实现处）
@@ -38,8 +42,8 @@
   python baop_mcp_server.py --transport sse --port 8766
   python baop_mcp_server.py --selftest                       # 不依赖 mcp 包自检
 
-连接配置见 :func:`cfg`，读 ``BAOP_HOST`` / ``BAOP_PORT`` / ``BAOP_USER`` /
-``BAOP_PASSWORD`` / ``BAOP_DB``（来自 mcp-server/.env）。
+环境变量（均有默认值）
+  BAOP_HOST / BAOP_PORT / BAOP_USER / BAOP_PASSWORD / BAOP_DB
 """
 
 from __future__ import annotations
@@ -55,30 +59,20 @@ import time
 from datetime import date, datetime
 from decimal import Decimal
 
-from ...env import load_env
-
 # --------------------------------------------------------------------------
 # 配置
 # --------------------------------------------------------------------------
-def cfg() -> dict:
-    """连接配置。**函数式读取**，改环境变量后下次查询即生效（无需重启）。"""
-    load_env()
-    port_raw = os.environ.get("BAOP_PORT", "3306").strip() or "3306"
-    try:
-        port = int(port_raw)
-    except ValueError:
-        port = 3306
-    return {
-        "host": os.environ.get("BAOP_HOST", "127.0.0.1").strip() or "127.0.0.1",
-        "port": port,
-        "user": os.environ.get("BAOP_USER", "baop_ro").strip() or "baop_ro",
-        "password": os.environ.get("BAOP_PASSWORD", ""),
-        "db": os.environ.get("BAOP_DB", "baop").strip() or "baop",
-    }
+CFG = {
+    "host": os.environ.get("BAOP_HOST", "127.0.0.1"),
+    "port": int(os.environ.get("BAOP_PORT", "3306")),
+    "user": os.environ.get("BAOP_USER", "baop_ro"),
+    "password": os.environ.get("BAOP_PASSWORD", "Baop_RO@2026"),
+    "db": os.environ.get("BAOP_DB", "baop"),
+}
 
 T_INCOME = "fpp_fin_mkt_bizline_income_sum_t1"   # T3，单位万元
-T_CAPITAL = "fpp_core_cap_rsrv_t1"                # T1，单位万元
-T_LIABILITY = "fpp_whl_liab_biz_situ_t1"          # T2，单位万元
+T_CAPITAL = "fpp_core_cap_rsrv_t1"                # T1，单位亿元
+T_LIABILITY = "fpp_whl_liab_biz_situ_t1"          # T2，单位元
 
 # 源表里表示「合计/小计」的维度码值。这些行本身是已汇总好的结果，
 # 一旦与明细行一起参与 SUM 就会翻倍（T1 的 CORE 实测存在「合计」码值）。
@@ -108,22 +102,59 @@ DEPARTMENT_MAP = {
     "金融市场部": "ALL",
 }
 
+# 部门同义词（2026-10-22 补）：用户口语里几乎不会说「金融市场部」全称，
+# 但会报制度里的正式名「资金业务部」、带机构名的「中信银行金融市场」、
+# 或干脆说「全部门 / 整个部门 / 全行」。这些一律按全部门口径。
+# 注意：这里**只放"确定等于整个部门"的说法**，不要放中心名——
+# 「资金管理中心」含「资金」二字，一旦把「资金」当同义词就会把单个中心吞成 ALL。
+DEPT_SYNONYMS = (
+    "金融市场部", "金融市场部门", "金融市场", "金融市场中心",
+    "分行金融市场部", "中信银行金融市场", "中信银行金融市场部", "中信金融市场",
+    "资金业务部", "资金业务中心",
+    "全部门", "整个部门", "全部部门", "各部门", "各中心合计", "全部中心",
+    "全行", "全行口径", "部门口径", "部门整体", "部门合计", "部门汇总",
+    "咱们部门", "我们部门", "本部门",
+)
+
 
 def _match_department(raw):
     """按部门名匹配组织映射。返回 (部门名, 中心集合) 或 (None, None)。
 
-    匹配规则：全等 / 输入包含部门名 / 部门名包含输入，
-    容忍「金融市场部」「金融市场部门」「金融市场」等写法；
-    中心名（如「资金管理中心」）不会被误匹配。
+    🚨 优先级（2026-10-22 修）：**先把中心名解析掉，再做部门匹配**。
+    原实现按「全等 / 输入包含部门名 / 部门名包含输入」三路匹配，
+    因为部门名「金融市场部」含「金融市场」这个子串，
+    「资金管理中心」被「金融市场」包含 → 误判成 ALL。
+    现在改为：
+      1) raw 能唯一解析到某个中心（含别名「资金/投管/做市…」）-> 返回 (None, None)，
+         交回给 _resolve 走中心口径，部门映射一概不参与；
+      2) 否则查同义词表（全等优先），命中 -> (金融市场部, ALL)；
+      3) 都没命中 -> (None, None)，由上层报 NOT_FOUND 并给候选。
+    匹配走全等/子串，但**不再拿中心名去撞部门名**。
     """
     if not raw:
         return None, None
-    s = str(raw).strip()
+    s = _normalize(raw)
     if not s:
         return None, None
-    for name, centers in DEPARTMENT_MAP.items():
-        if s == name or name in s or s in name:
-            return name, centers
+
+    # 1) 中心名优先：能落到具体中心就不当部门处理
+    #    ⚠️ _normalize 会剥掉「中心」后缀（_SUFFIXES 含「中心」），所以两边都归一化后比对，
+    #    这样「资金管理中心」「资金中心」「资金」三种写法都会先被认成中心而非部门。
+    cores = _dim_values("CORE")
+    if any(s == _normalize(v) for v in cores):
+        return None, None
+    for k in _ALIAS.get("CORE", {}):
+        if s == _normalize(k):
+            return None, None
+
+    # 2) 同义词：全等优先，其次子串（长词优先，避免「金融市场」抢先于「金融市场部门」）
+    for syn in sorted(DEPT_SYNONYMS, key=len, reverse=True):
+        if s == _normalize(syn):
+            return "金融市场部", DEPARTMENT_MAP["金融市场部"]
+    for syn in sorted(DEPT_SYNONYMS, key=len, reverse=True):
+        if _normalize(syn) in s:
+            return "金融市场部", DEPARTMENT_MAP["金融市场部"]
+
     return None, None
 
 
@@ -134,8 +165,29 @@ PALETTE = ["#C8102E", "#2E5BFF", "#F5A623", "#16A085", "#8E44AD",
            "#D35400", "#0F6E56", "#7F8C8D", "#185FA5", "#993556"]
 
 UNIT_YI = "亿元"
-UNIT_WAN = "万元"    # 三张源表底层统一单位（2026-10-14 业务方确认）
-UNIT_YUAN = "元"     # 兼容分支，当前无表使用
+UNIT_WAN = "万元"    # T3 源单位（2026-10-21；此前三表统一万元的口径已作废）
+UNIT_YUAN = "元"     # T2 源单位
+
+# --------------------------------------------------------------------------
+# 源单位映射（2026-10-21 业务方确认）：三张表**各不相同**，必须逐表取系数。
+#   调用处一律写 `_to_yi(x, SRC_UNIT[T_XXX])`，**禁止**再硬编码 UNIT_WAN，
+#   否则 T1 会被缩小 1 万倍、T2 会被缩小 1 万倍且没人看得出来。
+# --------------------------------------------------------------------------
+SRC_UNIT = {
+    T_INCOME: UNIT_WAN,      # 万元 → 亿元：÷ 1e4
+    T_CAPITAL: UNIT_YI,      # 亿元 → 亿元：原值
+    T_LIABILITY: UNIT_YUAN,  # 元   → 亿元：÷ 1e8
+}
+
+# 源单位 -> 折算到亿元所需的除数（对外可读，也用于文档）
+UNIT_DIVISOR = {UNIT_WAN: 1e4, UNIT_YI: 1.0, UNIT_YUAN: 1e8}
+
+# 源单位 -> 换算规则的口径说明（写进 notes，让上层能原样转述）
+UNIT_RULE_TEXT = {
+    UNIT_WAN: "源表单位为万元，÷10000 折算为亿元",
+    UNIT_YI: "源表单位已是亿元，原值直出",
+    UNIT_YUAN: "源表单位为元，÷1亿折算为亿元",
+}
 
 # --------------------------------------------------------------------------
 # 维度定义：维度名 -> (来源表, 列名, 中文标签)
@@ -283,8 +335,8 @@ T2_BASIS = {
 }
 
 # ⚠️ 量纲陷阱：basis 列并非全是金额。
-#   AVG_COST_RATE_VS_* 是「成本率差值」，单位为**百分点**，**绝不能** ÷1e4；
-#   其余 *_VS_* 为金额（万元），需 ÷1e4 折亿元。
+#   AVG_COST_RATE_VS_* 是「成本率差值」，单位为**百分点**，**绝不参与**单位折算；
+#   其余 *_VS_* 为金额，按其所属表的源单位折算（T1=亿元 / T2=元，见 SRC_UNIT）。
 # 列名后缀、数值处理都必须按此集合分流，否则 1.91 个百分点会被抹成 0.00。
 RATE_BASIS_COLS = {
     "AVG_COST_RATE_VS_YR_BGN",
@@ -298,10 +350,9 @@ RATE_BASIS_COLS = {
 # --------------------------------------------------------------------------
 def _connect():
     import pymysql
-    c = cfg()
     return pymysql.connect(
-        host=c["host"], port=c["port"], user=c["user"],
-        password=c["password"], database=c["db"],
+        host=CFG["host"], port=CFG["port"], user=CFG["user"],
+        password=CFG["password"], database=CFG["db"],
         charset="utf8mb4", autocommit=True,
         read_timeout=8, connect_timeout=5,
         cursorclass=pymysql.cursors.DictCursor,
@@ -349,21 +400,22 @@ def _scalar(sql, args=None):
 
 
 # --------------------------------------------------------------------------
-# 单位换算（三张源表底层统一为「万元」，2026-10-14 业务方确认）
+# 单位换算（三表源单位各不相同，2026-10-21 业务方确认：T3=万元 / T1=亿元 / T2=元）
 # --------------------------------------------------------------------------
-def _to_yi(v, src_unit=UNIT_WAN):
-    """折算为亿元（保留 2 位）。src_unit ∈ {万元, 元}
+def _to_yi(v, src_unit):
+    """折算为亿元（保留 2 位）。src_unit ∈ {万元, 亿元, 元}
 
-    三张表均为「万元」：万元 ÷ 1e4 = 亿元。「元」分支保留仅为兼容其他数据源。
+    万元 ÷ 1e4 → 亿元；亿元 ÷ 1 → 亿元；元 ÷ 1e8 → 亿元。
+    **src_unit 必须显式传入**（`SRC_UNIT[表]`），不提供默认值：
+    T1（亿元）或 T2（元）若漏传并按万元处理，结果会差 1 万倍且静默不报错，
+    这类错误在数字上完全看不出来，只能在源头堵死。
+    未知单位直接抛错，不做「原样返回」的兜底——兜底等于把错误藏起来。
     """
     if v is None:
         return None
-    f = float(v)
-    if src_unit == UNIT_WAN:
-        return round(f / 1e4, 2)
-    if src_unit == UNIT_YUAN:
-        return round(f / 1e8, 2)
-    return round(f, 2)
+    if src_unit not in UNIT_DIVISOR:
+        raise ValueError(f"未知源单位：{src_unit!r}，仅支持 {list(UNIT_DIVISOR)}")
+    return round(float(v) / UNIT_DIVISOR[src_unit], 2)
 
 
 def _fmt_num(v, unit="", nd=2):
@@ -914,16 +966,15 @@ def _empty_state(rows, key=None):
     return "OK"
 
 
-# 2026-10-14 三张源表底层单位统一为「万元」，两条口径说明合并（函数名保留以兼容调用处）
-_UNIT_NOTE_WAN = "单位口径：源表为万元，已统一折算为亿元展示（1 亿元 = 10000 万元）。"
+# 2026-10-21 三表源单位各不相同（T3=万元 / T1=亿元 / T2=元），口径说明按表生成。
+def _unit_note(table):
+    """按表生成单位口径说明，避免把某一张表的系数套到全部三表上。"""
+    u = SRC_UNIT.get(table, UNIT_WAN)
+    return f"单位口径：{UNIT_RULE_TEXT.get(u, '已在工具层折算为亿元')}，对外统一以亿元呈现。"
 
 
 def _unit_note_income():
-    return _UNIT_NOTE_WAN
-
-
-def _unit_note_cny():
-    return _UNIT_NOTE_WAN
+    return _unit_note(T_INCOME)
 
 
 def _period_headline(period, table=None):
@@ -1023,7 +1074,9 @@ def list_dimensions(dimension="all"):
                      "不是各行成本率的简单平均"])
     if dim in ("ALL", "META"):
         rows.append(["元数据", "数据表", f"{T_INCOME} / {T_CAPITAL} / {T_LIABILITY}"])
-        rows.append(["元数据", "单位口径", "三表底层已统一为「万元」；对外统一折算为亿元"])
+        rows.append(["元数据", "单位口径",
+                     f"三表源单位不同，逐表折算为亿元：{T_INCOME}=万元(÷1e4)、"
+                     f"{T_CAPITAL}=亿元(原值)、{T_LIABILITY}=元(÷1e8)"])
         rows.append(["元数据", "期次性质", "日频快照（每日一期）"])
         rows.append(["元数据", "双日期口径",
                      "T3（BIZ_DT）/ T2（DATA_PRDC_DT）：DATA_DT 恒取 MAX（最新快照），"
@@ -1083,18 +1136,18 @@ def get_income_overview(period=None, top_n=0):
     data = []
     raw = {"a": 0.0, "b": 0.0, "c": 0.0}
     for r in rows:
-        a = _to_yi(r["a"], UNIT_WAN)
-        b = _to_yi(r["b"], UNIT_WAN)
-        c = _to_yi(r["c"], UNIT_WAN)
+        a = _to_yi(r["a"], SRC_UNIT[T_INCOME])
+        b = _to_yi(r["b"], SRC_UNIT[T_INCOME])
+        c = _to_yi(r["c"], SRC_UNIT[T_INCOME])
         for k, src in (("a", "a"), ("b", "b"), ("c", "c")):
             raw[k] += float(r[src] or 0)
         data.append({"core": r["CORE"], "opr": a, "noti": b, "neti": c,
                      "share": round(b / a * 100, 2) if a else None})
 
     # 合计按「原始值先汇总、再折算」计算，避免逐行四舍五入后的累积偏差
-    total_opr = _to_yi(raw["a"], UNIT_WAN)
-    total_noti = _to_yi(raw["b"], UNIT_WAN)
-    total_neti = _to_yi(raw["c"], UNIT_WAN)
+    total_opr = _to_yi(raw["a"], SRC_UNIT[T_INCOME])
+    total_noti = _to_yi(raw["b"], SRC_UNIT[T_INCOME])
+    total_neti = _to_yi(raw["c"], SRC_UNIT[T_INCOME])
 
     show = data[:top_n] if top_n and top_n > 0 else data
     table = {"columns": ["中心", "营业净收入累计（亿元）", "非息收入累计（亿元）",
@@ -1197,7 +1250,7 @@ def rank_income(metric="net_opr_incom", by="core", period=None, top_n=10, order=
     unit = UNIT_YI if kind == "money" else "%"
     items = []
     for r in rows:
-        v = _to_yi(r["v"], UNIT_WAN) if kind == "money" else round(float(r["v"] or 0), 2)
+        v = _to_yi(r["v"], SRC_UNIT[T_INCOME]) if kind == "money" else round(float(r["v"] or 0), 2)
         items.append((r["k"], v))
 
     total_n = len(items)                      # ⚠️ 全量口径，绝不能用 top_n 当统计口径
@@ -1235,12 +1288,31 @@ def rank_income(metric="net_opr_incom", by="core", period=None, top_n=10, order=
         if negs:
             summary += f"⚠️ 其中 {len(negs)} 个为**负值**。"
 
+    # 🚨 部门口径必须把「合计」明确写进摘要（2026-10-22 修）。
+    # 问「金融市场部最新的营收是多少」时，本工具按 by='core' 返回的是**5 行明细**，
+    # 没有任何一行是合计 —— 上层看到 80.85/73.27/71.43/60.44/52.22 会直接抓第一行
+    # 当"部门营收"，把 338.21 报成 80.85。所以：命中部门时无条件给出合计值。
+    if dept_name:
+        if kind == "money":
+            tot = round(sum(v for _, v in items if v is not None), 2)
+            summary += (f"**全部门（{dept_name}）合计 {tot:,.2f} 亿元**——"
+                        f"即上列 {total_n} 个{disp}之和，不要把其中某一个{disp}的数当成部门口径。")
+            table["rows"] = table["rows"] + [[f"{dept_name}合计（{total_n}个{disp}之和）", tot]]
+        else:
+            # 比率口径：合计不能加总，必须按加权重算 —— 摘要里明确指路
+            summary += ("**部门口径的加权比率不能由上面各行相加得到**，"
+                        "请改用「计划完成率」工具（`get_plan_completion`）取全部门加权值。")
+
     notes = ([_unit_note_income()] if kind == "money"
              else ["完成率/序时进度为百分比，非金额，不做单位折算。",
                    "比率按加权口径重算（Σ实际÷Σ计划 / 目标加权），不是各行比率的简单平均。"]) + pnotes
-    if core_v:
-        notes.append(f"已限定中心「{core_v}」，排名只在该中心内的 {total_n} 个{disp}之间比较。")
     notes.append(f"统计口径基于全量 {total_n} 个{disp}，展示条数 {len(show)} 条，两者不同。")
+    if dept_name:
+        notes.append(f"已按部门口径（{dept_name}=全部中心）取数：表内 {total_n} 行是各{disp}明细，"
+                     + ("末行才是**部门合计**。" if kind == "money"
+                        else "部门加权比率不能相加，见汇总工具。"))
+    elif core_v:
+        notes.append(f"已限定中心「{core_v}」，排名只在该中心内的 {total_n} 个{disp}之间比较。")
     return _env(f"各{disp}{label}排名（{unit}）", summary, unit, table=table, chart=chart,
                 notes=notes, stat_date=per, shape="table+chart", period_resolved=per,
                 resolved=({"CORE": core_v} if core_v else {}))
@@ -1309,9 +1381,9 @@ def get_income_detail(core=None, biz_line=None, period=None):
             f"FROM `{t}` WHERE {w} GROUP BY CORE ORDER BY a DESC", args)
         cols = ["中心/业务线", "营业净收入累计（亿元）", "非息收入累计（亿元）", "息差累计（亿元）",
                 "经营计划（亿元）", "营业缺口（亿元）", "完成率"]
-        tb = [[r["k"], _to_yi(r["a"], UNIT_WAN), _to_yi(r["b"], UNIT_WAN),
-               _to_yi(r["c"], UNIT_WAN), _to_yi(r["p"], UNIT_WAN),
-               _to_yi(r["gp"], UNIT_WAN),
+        tb = [[r["k"], _to_yi(r["a"], SRC_UNIT[T_INCOME]), _to_yi(r["b"], SRC_UNIT[T_INCOME]),
+               _to_yi(r["c"], SRC_UNIT[T_INCOME]), _to_yi(r["p"], SRC_UNIT[T_INCOME]),
+               _to_yi(r["gp"], SRC_UNIT[T_INCOME]),
                f"{round(float(r['cr']), 2)}%" if r["cr"] is not None else "无数据"]
               for r in rows]
         headline = ("「金融市场部」源数据即覆盖全部中心，已按全部门汇总，不含合计行。"
@@ -1327,17 +1399,24 @@ def get_income_detail(core=None, biz_line=None, period=None):
         cols = ["中心", "业务线", "营业净收入累计（亿元）", "非息收入累计（亿元）", "息差累计（亿元）",
                 "经营计划（亿元）", "营业缺口（亿元）", "营业完成率",
                 "非息分解目标（亿元）", "非息缺口（亿元）", "非息完成率", "非息序时进度"]
-        tb = [[r["CORE"], r["BIZ_LINE_DESC"], _to_yi(r["NET_OPR_INCOM"], UNIT_WAN),
-               _to_yi(r["NOT_INT_INCOM"], UNIT_WAN), _to_yi(r["NET_INT"], UNIT_WAN),
-               _to_yi(r["NET_OPR_INCOM_PLAN"], UNIT_WAN), _to_yi(r["GP"], UNIT_WAN),
+        tb = [[r["CORE"], r["BIZ_LINE_DESC"], _to_yi(r["NET_OPR_INCOM"], SRC_UNIT[T_INCOME]),
+               _to_yi(r["NOT_INT_INCOM"], SRC_UNIT[T_INCOME]), _to_yi(r["NET_INT"], SRC_UNIT[T_INCOME]),
+               _to_yi(r["NET_OPR_INCOM_PLAN"], SRC_UNIT[T_INCOME]), _to_yi(r["GP"], SRC_UNIT[T_INCOME]),
                f"{round(float(r['NET_OPR_INCOM_COMP_RATE']), 2)}%"
                if r["NET_OPR_INCOM_COMP_RATE"] is not None else "无数据",
-               _to_yi(r["NOT_INT_INCOM_UNPKG_TGT"], UNIT_WAN), _to_yi(r["NGP"], UNIT_WAN),
+               _to_yi(r["NOT_INT_INCOM_UNPKG_TGT"], SRC_UNIT[T_INCOME]), _to_yi(r["NGP"], SRC_UNIT[T_INCOME]),
                f"{round(float(r['NOT_INT_INCOM_COMP_RATE']), 2)}%"
                if r["NOT_INT_INCOM_COMP_RATE"] is not None else "无数据",
                f"{round(float(r['NOT_INT_INCOM_TM_PROG']), 2)}%"
                if r["NOT_INT_INCOM_TM_PROG"] is not None else "无数据"]
               for r in rows]
+        # 只按业务线筛选时，唯一落地的中心维度被锁死，各行靠「中心」区分；
+        # 只按中心筛选时靠「业务线」区分。把被锁死的那一列表头标成「—」，
+        # 避免读者以为表里有第二个维度（2026-10-22 修）。
+        if biz_v and not core_v and not dept_name:
+            cols[1] = "业务线（已固定）"
+        elif core_v or dept_name:
+            cols[0] = "中心（已固定）"
         headline = ""
 
     if not rows:
@@ -1347,7 +1426,6 @@ def get_income_detail(core=None, biz_line=None, period=None):
     scope = "、".join(f"{k}={v}" for k, v in resolved.items()) or "全部中心"
     if dept_name:
         scope = dept_desc
-    total_opr = round(sum(r[2] for r in tb), 2)
     table = {"columns": cols, "rows": tb}
 
     # 全口径加权完成率：Σ实际 ÷ Σ计划（各中心计划规模不同，绝不能对各行完成率求平均）
@@ -1360,7 +1438,7 @@ def get_income_detail(core=None, biz_line=None, period=None):
         tot_a = sum(r["NET_OPR_INCOM"] or 0 for r in rows)
         tot_p = sum(r["NET_OPR_INCOM_PLAN"] or 0 for r in rows)
     overall_cr = round(tot_a / tot_p * 100, 2) if tot_p else None
-    total_opr = _to_yi(tot_a, UNIT_WAN)
+    total_opr = _to_yi(tot_a, SRC_UNIT[T_INCOME])
     cr_txt = (f"，全口径计划完成率 {overall_cr:.2f}%（Σ实际÷Σ计划加权，"
               f"非各行完成率平均）" if overall_cr is not None else "")
 
@@ -1465,7 +1543,7 @@ def get_plan_completion(metric="net_opr_incom", by="core", core=None, period=Non
         cols.append("序时进度（源表加权）")
 
     def _line(name, a, p, cr, tm):
-        row = [name, _to_yi(a, UNIT_WAN), _to_yi(p, UNIT_WAN), _to_yi(p - a, UNIT_WAN),
+        row = [name, _to_yi(a, SRC_UNIT[T_INCOME]), _to_yi(p, SRC_UNIT[T_INCOME]), _to_yi(p - a, SRC_UNIT[T_INCOME]),
                _pct(cr), _pct(cal),
                (f"{round(cr - cal, 2)}pp" if (cr is not None and cal is not None) else "无数据")]
         if tm_col:
@@ -1482,7 +1560,7 @@ def get_plan_completion(metric="net_opr_incom", by="core", core=None, period=Non
     diff = round(tcr - cal, 2) if (tcr is not None and cal is not None) else None
     if tcr is None:
         summary = (f"{_period_headline(per, t)}，范围【{scope}】：{label}的计划/分解目标缺失，"
-                   f"无法计算完成率（实际累计 {_to_yi(ta, UNIT_WAN):,.2f} 亿元）。")
+                   f"无法计算完成率（实际累计 {_to_yi(ta, SRC_UNIT[T_INCOME]):,.2f} 亿元）。")
     else:
         if diff is None:
             gap_txt = ""
@@ -1493,9 +1571,9 @@ def get_plan_completion(metric="net_opr_incom", by="core", core=None, period=Non
         else:
             gap_txt = f"，与日历进度 {cal}% 持平"
         summary = (f"{_period_headline(per, t)}，范围【{scope}】：{label}累计 "
-                   f"{_to_yi(ta, UNIT_WAN):,.2f} 亿元，计划/目标 {_to_yi(tp, UNIT_WAN):,.2f} 亿元，"
+                   f"{_to_yi(ta, SRC_UNIT[T_INCOME]):,.2f} 亿元，计划/目标 {_to_yi(tp, SRC_UNIT[T_INCOME]):,.2f} 亿元，"
                    f"计划完成率 **{tcr:.2f}%**（Σ实际÷Σ计划加权），"
-                   f"缺口 {_to_yi(tp - ta, UNIT_WAN):,.2f} 亿元{gap_txt}。"
+                   f"缺口 {_to_yi(tp - ta, SRC_UNIT[T_INCOME]):,.2f} 亿元{gap_txt}。"
                    f"共 {len(items)} 个{disp}。")
         rated = [i for i in items if i["cr"] is not None]
         if len(rated) > 1:
@@ -1591,7 +1669,7 @@ def get_income_matrix(metric="net_opr_incom", core=None, biz_line=None, period=N
     def _v(num, den):
         if kind == "rate":
             return round(num / den * 100, 2) if den else None
-        return _to_yi(num, UNIT_WAN)
+        return _to_yi(num, SRC_UNIT[T_INCOME])
 
     row_tot = {c: [sum(cells[(c, b)][0] for b in bizs if (c, b) in cells),
                    sum(cells[(c, b)][1] for b in bizs if (c, b) in cells)] for c in cores}
@@ -1607,14 +1685,33 @@ def get_income_matrix(metric="net_opr_incom", core=None, biz_line=None, period=N
     def _disp(x):
         return "无数据" if x is None else (_pct(x) if kind == "rate" else x)
 
-    cols = ["中心"] + bizs + ["合计"]
+    # 矩阵的列是 17 条业务线，逐个加「（亿元）」会把表头撑爆；
+    # 单位只在首列统一标注一次，避免读者把单元格数字误当元/万元。
+    unit_tag = "（亿元）" if kind == "money" else "（%）"
+    # 🚨 只筛选了单个中心时，主表**只有一行**，此时：
+    #   ① 末列「合计」与这一行逐格相同（整行本来就是该中心合计），必须去掉；
+    #   ② 底部「合计」行与主表唯一一行完全重复，也必须去掉。
+    #   否则同一行会出现 4 遍同样的数字，摘要还会写着
+    #   「最高单元格为「客户中心 × 结构性衍生品业务」，而客户中心合计 60.44」这种自指结论
+    #   （2026-10-22 实测 = 用户第 1 问「该中心」口径）。
+    single_core = len(cores) == 1
+    cols = [f"中心{unit_tag}"] + bizs + ([] if single_core else ["合计"])
+    _tot_idx = None
+    _col_tot_idx = None
+
     tb = []
     for c in cores:
         line = [c] + [_disp(_v(*cells[(c, b)]) if (c, b) in cells else None) for b in bizs]
-        line.append(_disp(_v(*row_tot[c])))
+        if not single_core:
+            line.append(_disp(_v(*row_tot[c])))
         tb.append(line)
-    tb.append(["合计"] + [_disp(_v(*col_tot[b])) for b in bizs] + [_disp(_v(*grand))])
+    if not single_core:
+        tb.append(["合计"] + [_disp(_v(*col_tot[b])) for b in bizs] + [_disp(_v(*grand))])
+        _tot_idx = len(tb) - 1
+        _col_tot_idx = len(cols) - 1
 
+    # 最佳单元格：既排除「合计行」，也排除每行末尾的「合计列」，
+    # 只在真正的「中心 × 业务线」格子之间比（2026-10-22 修）。
     best = None
     for (c, b), (num, den) in cells.items():
         v = _v(num, den)
@@ -1629,17 +1726,32 @@ def get_income_matrix(metric="net_opr_incom", core=None, biz_line=None, period=N
     if biz_v:
         scope.append(biz_v)
     scope_txt = "、".join(scope) if scope else "全部门（5 个中心 × 17 条业务线）"
+    gtxt = f"{_disp(_v(*grand))}{unit if kind == 'money' else ''}"
     summary = (f"{_period_headline(per, t)}，范围【{scope_txt}】：{label}交叉矩阵，"
-               f"{len(cores)} 个中心 × {len(bizs)} 条业务线，合计 {_disp(_v(*grand))}"
-               f"{unit if kind == 'money' else ''}。")
+               f"{len(cores)} 个中心 × {len(bizs)} 条业务线，合计 {gtxt}。")
     if best:
         summary += (f"最高单元格为「{best[1]} × {best[2]}」"
                     f"（{_disp(best[0])}{unit if kind == 'money' else ''}）。")
+    if single_core:
+        # 单中心时「合计」= 整行之和，摘要必须点明它等于哪几个口径的和，
+        # 否则上层容易把「中心合计」误读成「某条业务线的数」。
+        summary += (f"本次只筛了「{cores[0]}」一个中心，表内每一格都是该中心的单条业务线，"
+                    f"合计 {gtxt} 即该中心全部业务线之和。")
+        summary += ("⚠️ 但「营业净收入 ≠ 息差 + 非息收入」在该表是**已知数据问题**"
+                    "（生成测试数据时把息差当成独立随机数列），"
+                    "只有合计层面三者能对上，逐条业务线不可用「息差+非息」反推营业净收入。"
+                    if mk == "net_opr_incom" else "")
 
     notes = ([_unit_note_income()] if kind == "money"
              else ["完成率按加权口径重算（Σ实际÷Σ计划），非各行比率平均。"]) + pnotes
     notes.append("单元格为「中心 × 业务线」的累计值（年初至今），不是当期发生额。")
-    notes.append("「合计」行/列为加权汇总（比率口径为 Σ实际÷Σ计划），不是可见单元格之和。")
+    if single_core:
+        notes.append("只筛选了单个中心：主表只有 1 行，故省略「合计」列与底部「合计」行"
+                     "（否则同一批数字会重复出现 3 遍）。")
+    else:
+        notes.append("「合计」行/列为加权汇总（比率口径为 Σ实际÷Σ计划），不是可见单元格之和。")
+    notes.append("⚠️ 逐条业务线上「营业净收入 ≠ 息差 + 非息收入」，"
+                 "只允许引用列值，禁止自行加减反推。")
     return _env(f"{label}：中心 × 业务线矩阵", summary, unit,
                 table={"columns": cols, "rows": tb}, notes=notes, stat_date=per,
                 shape="table", period_resolved=per)
@@ -1712,7 +1824,7 @@ def get_income_flow(metric="net_opr_incom", by="core", core=None, period=None):
         prev_map = {r["k"]: float(r["a"] or 0) for r in prows}
 
     disp = "中心" if bk == "core" else "业务线"
-    cols = [disp, f"本期累计（{per}）", f"上期累计（{prev or '无'}）",
+    cols = [disp, f"本期累计（{per}，亿元）", f"上期累计（{prev or '无'}，亿元）",
             "期间发生额（亿元）", "当周（亿元）"]
     tb, tot_a, tot_prev, tot_w = [], 0.0, 0.0, 0.0
     for r in rows:
@@ -1724,14 +1836,14 @@ def get_income_flow(metric="net_opr_incom", by="core", core=None, period=None):
         tot_w += wk
         if pv is not None:
             tot_prev += pv
-        tb.append([k, _to_yi(a, UNIT_WAN),
-                   _to_yi(pv, UNIT_WAN) if pv is not None else "无数据",
-                   _to_yi(a - pv, UNIT_WAN) if pv is not None else "无数据",
-                   _to_yi(wk, UNIT_WAN)])
-    tb.append(["合计", _to_yi(tot_a, UNIT_WAN),
-               _to_yi(tot_prev, UNIT_WAN) if prev_map else "无数据",
-               _to_yi(tot_a - tot_prev, UNIT_WAN) if prev_map else "无数据",
-               _to_yi(tot_w, UNIT_WAN)])
+        tb.append([k, _to_yi(a, SRC_UNIT[T_INCOME]),
+                   _to_yi(pv, SRC_UNIT[T_INCOME]) if pv is not None else "无数据",
+                   _to_yi(a - pv, SRC_UNIT[T_INCOME]) if pv is not None else "无数据",
+                   _to_yi(wk, SRC_UNIT[T_INCOME])])
+    tb.append(["合计", _to_yi(tot_a, SRC_UNIT[T_INCOME]),
+               _to_yi(tot_prev, SRC_UNIT[T_INCOME]) if prev_map else "无数据",
+               _to_yi(tot_a - tot_prev, SRC_UNIT[T_INCOME]) if prev_map else "无数据",
+               _to_yi(tot_w, SRC_UNIT[T_INCOME])])
 
     # 期间发生额的时间跨度：业务日期不连续时（如 9/30 之后跳两周），必须点明天数，
     # 否则 17.24 亿元容易被读成「一个月挣的」（2026-10-19 补）。
@@ -1745,9 +1857,9 @@ def get_income_flow(metric="net_opr_incom", by="core", core=None, period=None):
 
     flow_total = tot_a - tot_prev if prev_map else None
     summary = (f"{_period_headline(per, t)}，范围【{'全部门' if not core_v else core_v}】："
-               f"{label}本期累计 {_to_yi(tot_a, UNIT_WAN):,.2f} 亿元，当周 {_to_yi(tot_w, UNIT_WAN):,.2f} 亿元"
-               + (f"；较上期（{prev}）累计 {_to_yi(tot_prev, UNIT_WAN):,.2f} 亿元，"
-                  f"期间发生额 {_to_yi(flow_total, UNIT_WAN):,.2f} 亿元{span_txt}"
+               f"{label}本期累计 {_to_yi(tot_a, SRC_UNIT[T_INCOME]):,.2f} 亿元，当周 {_to_yi(tot_w, SRC_UNIT[T_INCOME]):,.2f} 亿元"
+               + (f"；较上期（{prev}）累计 {_to_yi(tot_prev, SRC_UNIT[T_INCOME]):,.2f} 亿元，"
+                  f"期间发生额 {_to_yi(flow_total, SRC_UNIT[T_INCOME]):,.2f} 亿元{span_txt}"
                   if flow_total is not None else "；库中无上一期次，无法计算期间发生额")
                + f"。共 {len(rows)} 个{disp}。")
 
@@ -1849,10 +1961,10 @@ def get_capital_reserve(core=None, period=None, basis="none", growth=False, cur=
     cols += [glab for _, (_, glab) in gitems]
     tb = []
     for r in rows:
-        line = [r["CORE"], _to_yi(r["BAL_RMB"], UNIT_WAN), _to_yi(r["BAL_FOREGIN"], UNIT_WAN),
-                _to_yi(r["BAL_FOR_SELL"], UNIT_WAN)]
+        line = [r["CORE"], _to_yi(r["BAL_RMB"], SRC_UNIT[T_CAPITAL]), _to_yi(r["BAL_FOREGIN"], SRC_UNIT[T_CAPITAL]),
+                _to_yi(r["BAL_FOR_SELL"], SRC_UNIT[T_CAPITAL])]
         if bcol:
-            line.append(_to_yi(r.get("bv"), UNIT_WAN))
+            line.append(_to_yi(r.get("bv"), SRC_UNIT[T_CAPITAL]))
         for gk, _ in gitems:
             gv = r.get(gk)
             line.append(round(float(gv), 2) if gv is not None else "无数据")
@@ -1882,7 +1994,7 @@ def get_capital_reserve(core=None, period=None, basis="none", growth=False, cur=
                    f"共 {n_centers} 个中心。最高为「{top[0]}」（{top[1]:,.2f} 亿元人民币）。"
                    + (f" 对比口径：{blabel}。" if bcol else ""))
 
-    notes = [_unit_note_cny()] + pnotes
+    notes = [_unit_note(T_CAPITAL)] + pnotes
     if not only_total:
         notes.append("源表中 CORE=「合计」的行是自带小计，已排除在外，不参与任何汇总，避免翻倍。")
     elif total_source and total_source.startswith("按"):
@@ -2087,9 +2199,9 @@ def get_liability_overview(lib_cls="合计", cur="", period=None, basis="none",
         cols.append(f"{blabel}（百分点）" if basis_is_rate else f"{blabel}（亿元）")
 
     def _vals(bal, per_, avg, cost, bv):
-        line = [_to_yi(bal, UNIT_WAN),
+        line = [_to_yi(bal, SRC_UNIT[T_LIABILITY]),
                 f"{round(float(per_), 2)}%" if per_ is not None else "无数据",
-                _to_yi(avg, UNIT_WAN),
+                _to_yi(avg, SRC_UNIT[T_LIABILITY]),
                 round(float(cost), 2) if cost is not None else "无数据"]
         if bcol:
             if bv is None:
@@ -2097,7 +2209,7 @@ def get_liability_overview(lib_cls="合计", cur="", period=None, basis="none",
             elif basis_is_rate:
                 line.append(round(float(bv), 2))      # 百分点，原值直出，勿折算
             else:
-                line.append(_to_yi(bv, UNIT_WAN))
+                line.append(_to_yi(bv, SRC_UNIT[T_LIABILITY]))
         return line
 
     tb = []
@@ -2112,7 +2224,7 @@ def get_liability_overview(lib_cls="合计", cur="", period=None, basis="none",
                   + _vals(t_bal, t_per, t_avg, t_cost, t_bv))
 
     # 三态判定：真实为零 vs 无数据
-    vals = [_to_yi(i["bal"], UNIT_WAN) for i in items]
+    vals = [_to_yi(i["bal"], SRC_UNIT[T_LIABILITY]) for i in items]
     zero_names = [i["k"] if gk == "cur" else i["c2"] for i, v in zip(items, vals) if v == 0]
     state = "ZERO" if vals and all(v == 0 for v in vals) else "OK"
 
@@ -2124,7 +2236,10 @@ def get_liability_overview(lib_cls="合计", cur="", period=None, basis="none",
     items_chart = [(_label(i), v) for i, v in zip(items, vals) if v is not None]
     chart = _opt_pie(f"负债构成（{per}）", items_chart, UNIT_YI)
 
-    total_yi = _to_yi(t_bal, UNIT_WAN) if t_bal is not None else round(sum(v or 0 for v in vals), 2)
+    total_yi = _to_yi(t_bal, SRC_UNIT[T_LIABILITY]) if t_bal is not None else round(sum(v or 0 for v in vals), 2)
+    # 单条明细的「最大为」是自指（唯一那条就是它本身），本币司库/外币司库都只有一条汇总行，
+    # 写成「最大为「本币司库」（104.79 亿元）」毫无信息量（2026-10-22 修）。
+    _multi = len(items) > 1
     top_i = max(range(len(vals)), key=lambda x: (vals[x] is not None, vals[x]))
     top_name = _label(items[top_i])
     if lib_v == "合计" and gk != "cur":
@@ -2136,16 +2251,21 @@ def get_liability_overview(lib_cls="合计", cur="", period=None, basis="none",
                    + (f"「{lib_v}」" if lib_v != "合计" else "全部负债")
                    + f"按币种汇总，共 {len(items)} 个币种，合计 {total_yi:,.2f} 亿元，"
                    f"最大为「{top_name}」（{vals[top_i]:,.2f} 亿元）。")
-    else:
+    elif _multi:
         summary = (f"{_period_headline(per, t)}：「{lib_v}」余额 {total_yi:,.2f} 亿元"
                    + (f"（币种 {cur_v}）" if cur_v else "")
                    + f"，下辖 {len(items)} 条明细，最大为「{top_name}」"
                    f"（{vals[top_i]:,.2f} 亿元）。")
+    else:
+        # 只有一条汇总记录：不要说「最大」，直接说这就是该大类的全部余额
+        summary = (f"{_period_headline(per, t)}：「{lib_v}」余额 {total_yi:,.2f} 亿元"
+                   + (f"（币种 {cur_v}）" if cur_v else "")
+                   + "。源表对该大类只有这一条汇总记录（无产品级拆分）。")
     if t_cost is not None:
         summary += (f"整体成本率 {round(float(t_cost), 2)}%"
                     + ("（源表合计行）。" if cost_from_src else "（按日均余额加权估算）。"))
 
-    notes = [_unit_note_cny()] + pnotes
+    notes = [_unit_note(T_LIABILITY)] + pnotes
     if zero_names:
         notes.append(f"⚠️ 三态提示：【{'、'.join(zero_names)}】余额为 0，这是**真实业务事实**"
                      "（负债已全部退出），**不是**「无数据」。请勿表述为「无数据」或「减少 0 亿」。")
@@ -2261,14 +2381,14 @@ def get_liability_detail(lib_cls="合计", cur="", period=None, top_n=0, growth=
         return round(float(v), nd) if v is not None else "无数据"
 
     def _m(v):
-        return _to_yi(v, UNIT_WAN) if v is not None else "无数据"
+        return _to_yi(v, SRC_UNIT[T_LIABILITY]) if v is not None else "无数据"
 
     tb = []
     for r in show:
         line = [r["LIB_CLS"], r["THD_CTLG_CD"], r["PROD_NM"], _cur(r["CUR_CATE"]),
-                _to_yi(r["ACCT_BAL_CNY"], UNIT_WAN),
+                _to_yi(r["ACCT_BAL_CNY"], SRC_UNIT[T_LIABILITY]),
                 _pct(r["ACCT_BAL_CNY_PER"]),
-                _to_yi(r["YR_DAY_AVG_BAL_CNY"], UNIT_WAN),
+                _to_yi(r["YR_DAY_AVG_BAL_CNY"], SRC_UNIT[T_LIABILITY]),
                 round(float(r["AVG_COST_RATE"]), 4) if r["AVG_COST_RATE"] is not None else "无数据"]
         if growth:
             line += [_n(r["g_mth"]), _n(r["g_yr"]), _n(r["g_amth"]), _n(r["g_ayr"])]
@@ -2287,17 +2407,24 @@ def get_liability_detail(lib_cls="合计", cur="", period=None, top_n=0, growth=
     if cur_v:
         scope += f" / 币种 {_cur(cur_v)}"
     summary = (f"{_period_headline(per, t)}，范围【{scope}】：共 {len(keep)} 条产品明细"
-               f"（展示 {len(show)} 条），余额合计 {_to_yi(tot, UNIT_WAN):,.2f} 亿元。")
-    if top:
-        summary += f"最大为「{top['PROD_NM']}（{_cur(top['CUR_CATE'])}）」（{_to_yi(top['ACCT_BAL_CNY'], UNIT_WAN):,.2f} 亿元）。"
+               f"（展示 {len(show)} 条），余额合计 {_to_yi(tot, SRC_UNIT[T_LIABILITY]):,.2f} 亿元。")
+    # 「最大为…」只能在**真有多条明细**时给。
+    # 本币司库 / 外币司库源表只有一条 PROD_NM='合计' 的汇总行，此时唯一那条就是合计本身，
+    # 写成「最大为「合计（01（本币）」（104.79 亿元）」等于把合计复述一遍，纯噪音，
+    # 上层还可能误以为是"某产品"（2026-10-22 实测 = 用户第 5 问）。
+    if top and len(keep) > 1:
+        summary += f"最大为「{top['PROD_NM']}（{_cur(top['CUR_CATE'])}）」（{_to_yi(top['ACCT_BAL_CNY'], SRC_UNIT[T_LIABILITY]):,.2f} 亿元）。"
+    elif top and len(keep) == 1:
+        summary += ("该大类源表只有这一条汇总记录，上面这个合计即为其全部余额"
+                    "（无产品级拆分，不要写成「最大产品」）。")
     if growth and (up or down):
         summary += f"环比上升 {up} 条、下降 {down} 条。"
 
     chart = _opt_hbar(f"负债产品余额（{per}）", [f"{r['PROD_NM']}（{_cur(r['CUR_CATE'])}）" for r in show],
-                      [_to_yi(r["ACCT_BAL_CNY"], UNIT_WAN) for r in show], UNIT_YI,
+                      [_to_yi(r["ACCT_BAL_CNY"], SRC_UNIT[T_LIABILITY]) for r in show], UNIT_YI,
                       sign_color=False)
 
-    notes = [_unit_note_cny()] + pnotes
+    notes = [_unit_note(T_LIABILITY)] + pnotes
     notes.append("「产品编码」为源表三级目录码（THD_CTLG_CD），与业务类别一一对应。")
     notes.append("「其中：」类子项（如其中：结算性存款）不计入合计，避免重复计算。")
     if len(keep) < len(rows):
@@ -2369,7 +2496,7 @@ def rank_liability_products(lib_cls="同业负债", metric="acct_bal", period=No
             return _env(
                 "负债产品排名",
                 f"{_period_headline(per, t)}：「{lib_v}」在源表中只有一行汇总"
-                f"（余额 {_to_yi(bal, UNIT_WAN):,.2f} 亿元），**没有产品级明细**，无法排名。"
+                f"（余额 {_to_yi(bal, SRC_UNIT[T_LIABILITY]):,.2f} 亿元），**没有产品级明细**，无法排名。"
                 f"看规模与成本率请用 get_liability_overview_tool(lib_cls='{lib_v}')。",
                 UNIT_YI, notes=pnotes + _dual_date_note(t, per) + [
                     "该大类不是「无数据」，而是源表只提供汇总口径；"
@@ -2382,7 +2509,7 @@ def rank_liability_products(lib_cls="同业负债", metric="acct_bal", period=No
     unit = UNIT_YI if kind == "money" else "%"
     items = []
     for r in rows:
-        v = _to_yi(r["v"], UNIT_WAN) if kind == "money" else round(float(r["v"] or 0), 2)
+        v = _to_yi(r["v"], SRC_UNIT[T_LIABILITY]) if kind == "money" else round(float(r["v"] or 0), 2)
         items.append((f"{r['k']}（{r['c']}）", v))
 
     total_n = len(items)
@@ -2396,7 +2523,7 @@ def rank_liability_products(lib_cls="同业负债", metric="acct_bal", period=No
     summary = (f"{_period_headline(per, t)}：负债大类「{lib_v}」共 {total_n} 个业务类别有数据"
                f"{shown_txt}。{label}最高为「{items[0][0]}」（{_fmt_num(items[0][1], unit)}）。")
 
-    notes = ([_unit_note_cny()] if kind == "money"
+    notes = ([_unit_note(T_LIABILITY)] if kind == "money"
              else ["占比/成本率为百分比，不做单位折算。"]) + pnotes
     notes.append(f"统计口径基于全量 {total_n} 个业务类别，展示 {len(show)} 条，两者不同。")
     if cur_v:
@@ -2412,10 +2539,10 @@ def rank_liability_products(lib_cls="同业负债", metric="acct_bal", period=No
 # ==========================================================================
 _COMPARE = {
     # object -> (表, 分组列, 数值列, 源单位, 中文名, 额外过滤)
-    "income": (T_INCOME, "CORE", "NET_OPR_INCOM", UNIT_WAN, "各中心营业净收入", ""),
-    "liability": (T_LIABILITY, "LIB_CLS", "ACCT_BAL_CNY", UNIT_WAN, "各负债大类余额",
+    "income": (T_INCOME, "CORE", "NET_OPR_INCOM", SRC_UNIT[T_INCOME], "各中心营业净收入", ""),
+    "liability": (T_LIABILITY, "LIB_CLS", "ACCT_BAL_CNY", SRC_UNIT[T_LIABILITY], "各负债大类余额",
                   "PROD_NM='合计' AND LIB_CLS<>'合计'"),   # 只用汇总行，避免与明细重复计数
-    "capital": (T_CAPITAL, "CORE", "BAL_RMB", UNIT_WAN, "各中心人民币资本公积", ""),
+    "capital": (T_CAPITAL, "CORE", "BAL_RMB", SRC_UNIT[T_CAPITAL], "各中心人民币资本公积", ""),
 }
 
 
@@ -2502,7 +2629,9 @@ def compare_periods(object="income", keys=None, n_periods=3, period_to=None):
     # 展示顺序：按末期值降序
     keyset.sort(key=lambda k: (datas[k].get(periods[-1]) or -1e18), reverse=True)
 
-    table_out = {"columns": ["对象"] + periods,
+    # 期次列名带单位，否则一串纯日期列看不出单位是元、万元还是亿元；
+    # 17 条业务线那种宽表才用首列统一标注，这里列数少，直接逐列标。
+    table_out = {"columns": ["对象"] + [f"{p}（{UNIT_YI}）" for p in periods],
                  "rows": [[k] + [datas[k].get(p, "无数据") for p in periods] for k in keyset]}
     chart = _opt_line(f"{label}趋势（{UNIT_YI}）", periods,
                       [{"name": k, "data": [datas[k].get(p) for p in periods]} for k in keyset],
@@ -2517,7 +2646,7 @@ def compare_periods(object="income", keys=None, n_periods=3, period_to=None):
                f"变为 {tot_l:,.2f} 亿元（{direction} {abs(delta):,.2f} 亿元，"
                f"{round(delta / tot_f * 100, 2) if tot_f else 0}%），共 {len(keyset)} 个对象。")
 
-    notes = ["单位口径：源表为万元，已折算为亿元。"] + pnotes + degrade
+    notes = [_unit_note(table)] + pnotes + degrade
     notes.append("趋势为多期实测值连线，期次间隔以源数据为准。")
     return _env(f"{label}多期对比（{UNIT_YI}）", summary, UNIT_YI, table=table_out,
                 chart=chart, notes=notes, stat_date=per_to, shape="table+chart",
@@ -2529,6 +2658,23 @@ def compare_periods(object="income", keys=None, n_periods=3, period_to=None):
 # ==========================================================================
 def _json(obj):
     return json.dumps(obj, ensure_ascii=False, indent=2, default=str)
+
+
+def _safe(fn):
+    """统一异常兜底。必须用 functools.wraps 保留签名——MCP 靠 inspect.signature
+    生成工具 JSON Schema，签名退化成 (*args, **kwargs) 会被宿主参数校验拒绝。"""
+    @functools.wraps(fn)
+    def wrapper(*a, **kw):
+        try:
+            return _json(fn(*a, **kw))
+        except Exception as e:  # noqa: BLE001
+            return _json({"shape": "text", "title": "查询失败",
+                          "summary": f"工具执行异常：{type(e).__name__}: {e}",
+                          "unit": "—", "table": None, "chart": None, "notes": [],
+                          "result_state": "NOT_FOUND",
+                          "period_resolved": None, "resolved": {}, "candidates": {}})
+    return wrapper
+
 
 # 别名：与仓库其它业务包一致，工具层异常兜底用 baop.env 调用
 env = _env

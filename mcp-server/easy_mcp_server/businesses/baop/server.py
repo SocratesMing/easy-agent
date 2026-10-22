@@ -29,7 +29,7 @@ logger = logging.getLogger("easy-mcp-server")
 INSTRUCTIONS = (
     "金融市场部经营分析问答服务（baop 库，只读）。覆盖三块业务："
     "①营业净收入/非息/息差（T3，中心×业务线）；②资本公积变动（T1，按中心）；③负债规模（T2）。"
-    "三张源表底层单位均为「万元」，本服务统一折算并输出「亿元」，请勿自行换算。"
+    "三张源表单位不同（T3 万元、T1 亿元、T2 元），本服务已逐表折算并统一输出「亿元」，请勿自行换算。"
     "源数据为日频（每日一期）：未指定期次时自动取最新期次并在 summary 首句回显；"
     "所问日期无数据时会回落到最近可用期次并在 notes 中声明。"
     "维度参数可用口语（如「投资中心」「外币」），服务内部会做码值标准化并在 resolved 中回显映射。"
@@ -324,6 +324,5 @@ def build() -> FastMCP:
            不会给出「持平 0.00」的假趋势；此时改用对应的单期工具（overview / capital）。"""
         ks = [x.strip() for x in (keys or "").split(",") if x.strip()]
         return baop.compare_periods(object, ks or None, n_periods or 3, period_to or None)
-
 
     return mcp
