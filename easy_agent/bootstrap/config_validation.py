@@ -66,6 +66,7 @@ KNOWN_TOP_LEVEL_KEYS = _fields(AgentConfig) | frozenset(
         "expert_relevance_check_enabled",
         "expert_relevance_strict",
         "expert_relevance_disable_thinking",
+        "expert_auto_install_required_skills",
         "app_welcome_title",
         "knowledge",
         "log",  # 历史遗留，Config 不再读取
@@ -98,6 +99,7 @@ KNOWN_SECTION_KEYS: dict[str, frozenset[str]] = {
             "relevance_check_enabled",
             "relevance_strict",
             "relevance_disable_thinking",
+            "auto_install_required_skills",
         }
     ),
     "knowledge": frozenset(

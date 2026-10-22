@@ -68,6 +68,7 @@ _EXPERT_SECTION_KEYS = {
     "expert_relevance_check_enabled": "relevance_check_enabled",
     "expert_relevance_strict": "relevance_strict",
     "expert_relevance_disable_thinking": "relevance_disable_thinking",
+    "expert_auto_install_required_skills": "auto_install_required_skills",
 }
 
 
@@ -118,6 +119,14 @@ class Config(BaseModel):
     258~1007 降到 7、耗时从 1.7~6.4 秒降到 0.5~0.6 秒。极少数网关不认
     ``reasoning_effort`` / ``thinking`` 参数时会自动去掉它们重试，因此一般无需关闭；
     只有在关思考反而更慢或不返回内容时才设为 false。"""
+    expert_auto_install_required_skills: bool = True
+    """用公共（预置）专家时，是否自动为其 ``config.yaml`` 里 ``required_skills``
+    声明的依赖技能「添加」到用户公共技能清单（``builtin-skills.json``）。
+
+    注意本开关只做**登记**：公共技能包本体始终在 ``tools.skills_dir`` 下，不会复制
+    进用户目录（DA-13 S2）。技能包缺失时只提示、不阻断对话，见
+    ``services/skill_provision.py``。"""
+
     app_welcome_title: str = DEFAULT_APP_WELCOME_TITLE
 
     @field_validator("expert_tags", mode="before")

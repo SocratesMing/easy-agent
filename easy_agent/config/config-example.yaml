@@ -153,6 +153,7 @@ expert:
   relevance_check_enabled: true      # 每轮预检相关性，无关消息直接拒答
   relevance_strict: false            # true = 部分相关也整条拒答；false = 放行只答相关部分
   relevance_disable_thinking: true   # 预检调用关闭思考模式
+  auto_install_required_skills: true # 用预置专家时自动「添加」其 required_skills 声明的公共技能（不复制技能包）
 
 # ===== 专家分类标签（tag_id 落库，tag_name 展示）=====
 expert_tags:
@@ -168,6 +169,7 @@ expert_tags:
   - { tag_id: credit_research, tag_name: 信用研究 }
   - { tag_id: asset_allocation, tag_name: 资产配置 }
   - { tag_id: risk_management, tag_name: 风险管理 }
+  - { tag_id: business_analysis, tag_name: 经营分析 }
   - { tag_id: other, tag_name: 其他 }
 
 # ===== 附件上传限额（单个会话单次对话）=====
