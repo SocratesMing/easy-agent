@@ -99,12 +99,23 @@ def provision_expert_skills(username: str, expert_id: str | None) -> dict[str, A
         "user_skills_dir": "",
     }
     if not username or not expert_id:
+        # 没有专家 ID 就不补装。这里刻意只打 debug：每轮通用对话都会走到，
+        # 用 info 会把日志刷满。真正的排查点是 api/chat.py 那行「expert: xxx」。
+        logger.debug(
+            f"依赖技能补装跳过 | 无专家 ID | 用户: {username or '(空)'} | expert: {expert_id or '(空)'}"
+        )
         return report
 
     report["user_skills_dir"] = str(skill_library.user_skills_dir(username))
     required = required_skills_of(expert_id)
     report["required"] = list(required)
     if not required or not report["enabled"]:
+        # 「专家没声明 required_skills」和「开关关了」是两种完全不同的原因，但现象一样
+        # （技能不装）。命中率低，打 info 不刷屏，排查时能直接看到是哪一种。
+        logger.info(
+            f"依赖技能补装无动作 | expert={expert_id} | "
+            f"enabled={report['enabled']} | required={required or '(未声明)'}"
+        )
         return report
 
     for name in required:

@@ -220,6 +220,7 @@ expert_tags:
   - { tag_id: gold_research, tag_name: 黄金投研 }
   - { tag_id: alm_calc, tag_name: 资负测算 }
   - { tag_id: strategy_research, tag_name: 策略研究 }
+  - { tag_id: business_analysis, tag_name: 经营分析 }
   - { tag_id: factor_analysis, tag_name: 因子分析 }
   - { tag_id: equity_research, tag_name: 权益投研 }
   - { tag_id: industry_research, tag_name: 行业研究 }
