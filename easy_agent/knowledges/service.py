@@ -102,6 +102,17 @@ RETRIEVAL_SIMILARITY_THRESHOLD = 0.5
 # 向量权重 0.5：向量/关键词各占一半，提升语义相关性、降低表面用词匹配的干扰
 RETRIEVAL_VECTOR_SIMILARITY_WEIGHT = 0.5
 RETRIEVAL_TOP_K = 1024
+# 相邻 chunk 重叠：命中块前后各拼接相邻块 10% 的文本（仅扩展检索证据，不改存储）
+RETRIEVAL_NEIGHBOR_OVERLAP_RATIO = 0.1
+# 计数/名单/汇总类问题：命中块额外带出完整后续 chunk；普通比例分析题不触发
+AGGREGATION_QUESTION_RE = re.compile(r"(几个|多少|几家|几户|哪些|数量|合计|总计|总共|前十|排名)")
+RETRIEVAL_AGGREGATION_THRESHOLD = 0.4
+# 聚合证据在问答上下文中的最大字符数（普通证据仍为 2400）
+AGGREGATION_SNIPPET_LIMIT = 6000
+# 后续 chunk 遇到新章节标题时停止，避免把下一节内容当作名单补进来
+_SECTION_HEADING_RE = re.compile(
+    r"(?:^|\n)\s*(?:\d{1,2}(?:\.\d{1,2}){1,3}\s+[\u4e00-\u9fa5]|第[一二三四五六七八九十百]+[章节])"
+)
 # 上传安全校验参数（YAML 不再配置，代码内固定）
 _UPLOAD_SECURITY = UploadSecurityConfig()
 
@@ -2220,6 +2231,8 @@ class KnowledgeService:
             return RetrieveResponse(
                 evidence=[], warnings=["当前范围没有可检索的已解析文档"], request_id=request_id
             )
+        dataset_id = await self._dataset_id_for(base)
+        aggregation = bool(AGGREGATION_QUESTION_RE.search(question))
         try:
             # 个人库走共享数据集时，检索携带个人标签过滤条件
             # （与 document_ids 范围约束形成双重隔离；存量自有数据集库不打
@@ -2229,10 +2242,14 @@ class KnowledgeService:
                 retrieval_meta = self._personal_meta_fields(base)
             result = await self.ragflow.retrieve(
                 question=question,
-                dataset_ids=[await self._dataset_id_for(base)],
+                dataset_ids=[dataset_id],
                 document_ids=[str(item["remote_document_id"]) for item in documents],
-                page_size=top_n,
-                similarity_threshold=RETRIEVAL_SIMILARITY_THRESHOLD,
+                page_size=min(max(top_n * 2, 20), 50) if aggregation else top_n,
+                similarity_threshold=(
+                    RETRIEVAL_AGGREGATION_THRESHOLD
+                    if aggregation
+                    else RETRIEVAL_SIMILARITY_THRESHOLD
+                ),
                 vector_similarity_weight=RETRIEVAL_VECTOR_SIMILARITY_WEIGHT,
                 top_k=RETRIEVAL_TOP_K,
                 meta_fields=retrieval_meta,
@@ -2240,7 +2257,7 @@ class KnowledgeService:
         except RagflowError as exc:
             raise self._upstream_error(exc) from exc
         by_remote = {str(item["remote_document_id"]): item for item in documents}
-        evidence: list[Evidence] = []
+        candidates: list[dict[str, Any]] = []
         for chunk in result.get("chunks", []):
             if not isinstance(chunk, dict):
                 continue
@@ -2254,22 +2271,156 @@ class KnowledgeService:
                 continue
             raw_score = chunk.get("similarity", 0)
             score = max(0.0, float(raw_score)) if isinstance(raw_score, (int, float)) else 0.0
+            if score < MINIMUM_EVIDENCE_SCORE:
+                continue
             positions = chunk.get("positions")
-            evidence.append(
+            candidates.append(
+                {
+                    "document": local,
+                    "chunk_id": str(chunk.get("chunk_id") or chunk.get("id") or ""),
+                    "snippet": snippet,
+                    "score": score,
+                    "position": positions[0] if isinstance(positions, list) and positions else None,
+                }
+            )
+        await self._expand_neighbor_overlap(
+            dataset_id=dataset_id,
+            candidates=candidates,
+            aggregation=aggregation,
+        )
+        candidates.sort(key=lambda item: item["score"], reverse=True)
+        return RetrieveResponse(
+            evidence=[
                 Evidence(
-                    document_id=str(local["id"]),
-                    document_name=str(local["name"]),
-                    snippet=snippet,
-                    score=score,
-                    position=positions[0] if isinstance(positions, list) and positions else None,
+                    document_id=str(item["document"]["id"]),
+                    document_name=str(item["document"]["name"]),
+                    snippet=item["snippet"],
+                    score=item["score"],
+                    position=item["position"],
                     metadata={
                         "base_id": str(base["id"]),
                         "base_name": str(base["name"]),
+                        "aggregation": aggregation,
                     },
                 )
-            )
-        evidence = [item for item in evidence if item.score >= MINIMUM_EVIDENCE_SCORE]
-        return RetrieveResponse(evidence=evidence, request_id=request_id)
+                for item in candidates[:top_n]
+            ],
+            request_id=request_id,
+        )
+
+    async def _expand_neighbor_overlap(
+        self,
+        *,
+        dataset_id: str,
+        candidates: list[dict[str, Any]],
+        aggregation: bool = False,
+    ) -> None:
+        """为命中 chunk 补相邻块内容，模拟 chunk 搭接。
+
+        普通问题：命中块前后各拼接相邻块 10% 的文本；
+        计数/汇总类问题：额外拼接完整的下一个 chunk，避免跨页表格或名单被截断。
+        只扩展本次检索的证据文本，不修改 RAGFlow 存储；按文档拉取一次 chunk
+        顺序，拉取失败时保持原证据不变。
+        """
+
+        by_document: dict[str, list[dict[str, Any]]] = {}
+        for item in candidates:
+            remote_doc_id = str(item["document"]["remote_document_id"])
+            by_document.setdefault(remote_doc_id, []).append(item)
+        for remote_doc_id, items in by_document.items():
+            chunks: list[dict[str, Any]] = []
+            try:
+                # RAGFlow list_chunks 单页上限 100，按页拉全文档后再定位相邻块
+                page = 1
+                while page <= 10:
+                    payload = await self.ragflow.list_chunks(
+                        dataset_id, remote_doc_id, page=page, page_size=100
+                    )
+                    batch = payload.get("chunks") if isinstance(payload, dict) else None
+                    if not isinstance(batch, list) or not batch:
+                        break
+                    chunks.extend(chunk for chunk in batch if isinstance(chunk, dict))
+                    total = payload.get("total")
+                    if isinstance(total, int) and len(chunks) >= total:
+                        break
+                    if len(batch) < 100:
+                        break
+                    page += 1
+            except RagflowError as exc:
+                logger.warning(
+                    "检索相邻 chunk 拉取失败 doc=%s: %s", remote_doc_id, exc
+                )
+                continue
+            if not chunks:
+                continue
+            ordered = self._ordered_chunks(chunks)
+            index_by_id = {
+                self._chunk_id(chunk): index
+                for index, chunk in enumerate(ordered)
+                if self._chunk_id(chunk)
+            }
+            # 聚合模式只对得分最高的 2 条做整块扩展，其余仍按 10% 邻接，控制上下文
+            items = sorted(items, key=lambda item: item["score"], reverse=True)
+            expanded = 0
+            for item in items:
+                index = index_by_id.get(item["chunk_id"])
+                if index is None:
+                    continue
+                if aggregation and expanded < 2:
+                    expanded += 1
+                    # 跨页表格/名单可能连续占多个 chunk：最多再带 5 个，遇到下一节即停止
+                    for offset in range(1, 6):
+                        if index + offset >= len(ordered):
+                            break
+                        following = self._chunk_text(ordered[index + offset])
+                        if not following:
+                            continue
+                        if _SECTION_HEADING_RE.search(following[:80]):
+                            break
+                        if len(item["snippet"]) + len(following) > AGGREGATION_SNIPPET_LIMIT:
+                            break
+                        item["snippet"] = f'{item["snippet"]}\n{following}'
+                    continue
+                parts: list[str] = []
+                if index > 0:
+                    previous = self._chunk_text(ordered[index - 1])
+                    if previous:
+                        parts.append(previous[-self._overlap_chars(previous) :])
+                parts.append(item["snippet"])
+                if index + 1 < len(ordered):
+                    following = self._chunk_text(ordered[index + 1])
+                    if following:
+                        parts.append(following[: self._overlap_chars(following)])
+                item["snippet"] = "\n".join(parts)
+
+    @staticmethod
+    def _chunk_id(chunk: Mapping[str, Any]) -> str:
+        return str(chunk.get("chunk_id") or chunk.get("id") or "")
+
+    @staticmethod
+    def _chunk_text(chunk: Mapping[str, Any]) -> str:
+        return str(
+            chunk.get("content_with_weight") or chunk.get("content") or ""
+        ).strip()
+
+    @staticmethod
+    def _overlap_chars(text: str) -> int:
+        return max(1, int(len(text) * RETRIEVAL_NEIGHBOR_OVERLAP_RATIO))
+
+    @staticmethod
+    def _ordered_chunks(chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """优先按 chunk_order_int/order_int 排序，字段缺失时保留接口顺序。"""
+
+        key = next(
+            (
+                name
+                for name in ("chunk_order_int", "order_int")
+                if chunks
+                and all(isinstance(item.get(name), (int, float)) for item in chunks)
+            ),
+            None,
+        )
+        return sorted(chunks, key=lambda item: item[key]) if key else chunks
 
     async def retrieve_session_evidence(
         self,

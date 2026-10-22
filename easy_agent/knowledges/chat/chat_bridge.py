@@ -16,7 +16,11 @@ from easy_agent.services.sse import SSEEvent
 from easy_agent.knowledges.api import get_knowledge_principal
 from easy_agent.knowledges.core.config import KnowledgeConfig
 from easy_agent.knowledges.core.repository import KnowledgeRepository
-from easy_agent.knowledges.service import KnowledgeService, KnowledgeServiceError
+from easy_agent.knowledges.service import (
+    AGGREGATION_SNIPPET_LIMIT,
+    KnowledgeService,
+    KnowledgeServiceError,
+)
 
 
 _KNOWLEDGE_CHAT_TITLE_PREFIX = "[知识库问答]"
@@ -125,6 +129,8 @@ def _build_knowledge_context(
         "对话历史中先前回答出现过的 [知识依据N] 属于旧轮次编号，与本轮片段无关："
         "不得沿用、不得模仿，凡支撑内容来自对话记忆而非本轮片段的，一律不得标注知识依据。"
         "凡是本轮片段支撑的回答都应标注引用，尽量完整利用相关片段，不要遗漏可用依据。",
+        "涉及数量、合计、排名或占比的问题：先逐条列出依据中所有相关条目，再给出数量或合计，"
+        "不要只数已看到的条目，也不要臆断。",
         "依据不足时明确说明。",
     ])
     if not evidence:
@@ -137,7 +143,10 @@ def _build_knowledge_context(
         metadata = item.get("metadata") or {}
         base_name = str(metadata.get("base_name") or "知识库")[:120]
         document_name = str(item.get("document_name") or "文档")[:180]
-        snippet = str(item.get("snippet") or "")[:2400]
+        snippet_limit = (
+            AGGREGATION_SNIPPET_LIMIT if metadata.get("aggregation") else 2400
+        )
+        snippet = str(item.get("snippet") or "")[:snippet_limit]
         lines.append(
             f"[知识依据{index}] 知识库={base_name}; 文档={document_name}\n{snippet}"
         )
