@@ -344,6 +344,7 @@ async function attachToStreamingSession(sessionId, opts = {}) {
       }
       messages.value = history.messages || []
       currentTodos.value = history.todos || []
+      syncExpertChipFromMessages()
       if (history.usage) {
         sessionUsage.value.input_tokens = history.usage.input_tokens || 0
         sessionUsage.value.output_tokens = history.usage.output_tokens || 0
@@ -553,9 +554,29 @@ function restoreSessionState(sessionId) {
     currentAbortController.value = state.abortController
     currentTodos.value = state.todos || []
     loadedSessionId.value = sessionId
+    syncExpertChipFromMessages()
     return true
   }
   return false
+}
+
+/** 按最后一轮对话恢复输入框右下角的专家芯片：
+    最后一条用户消息带 expert（{id,name}，随消息落库）则恢复召唤态，
+    没有则清空。messages 每次整体刷新（缓存恢复/历史加载/服务端回填）后调用，
+    保证芯片始终与「该会话最后一轮实际使用的专家」一致。 */
+function syncExpertChipFromMessages() {
+  const msgs = messages.value || []
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    const msg = msgs[i]
+    if (!msg || msg.role !== 'user') continue
+    const ex = msg.expert
+    selectedExpert.value = ex && ex.id
+      ? { export_agent_id: ex.id, export_name_cn: ex.name || '' }
+      : null
+    return
+  }
+  // 空会话（含「选了专家但没发消息就切走」的新窗口）：不恢复任何专家
+  selectedExpert.value = null
 }
 
 // ── 会话级流式隔离 ──────────────────────────────────────────────────────
@@ -691,6 +712,8 @@ async function syncSessionFromServer(sessionId) {
   if (currentSessionId.value === sessionId && loadedSessionId.value === sessionId) {
     messages.value = history.messages || []
     currentTodos.value = history.todos || []
+    // 按最后一轮对话恢复专家芯片（最后一轮用了专家则召唤态，否则清空）
+    syncExpertChipFromMessages()
     if (usage) {
       sessionUsage.value.input_tokens = usage.input_tokens || 0
       sessionUsage.value.output_tokens = usage.output_tokens || 0
@@ -906,6 +929,7 @@ async function restoreInitialSession() {
         if (currentSessionId.value === initialSessionId) {
           messages.value = history.messages || []
           currentTodos.value = history.todos || []
+          syncExpertChipFromMessages()
           if (history.usage) {
             sessionUsage.value.input_tokens = history.usage.input_tokens || 0
             sessionUsage.value.output_tokens = history.usage.output_tokens || 0
@@ -1202,6 +1226,8 @@ async function handleSelectSession(sessionId) {
     if (currentSessionId.value !== sessionId) return
     messages.value = history.messages || []
     currentTodos.value = history.todos || []
+    // 按最后一轮对话恢复专家芯片（最后一轮用了专家则召唤态，否则清空）
+    syncExpertChipFromMessages()
     // 从服务器返回的 usage 数据恢复 token 用量、会话耗时和迭代次数
     if (history.usage) {
       sessionUsage.value.input_tokens = history.usage.input_tokens || 0

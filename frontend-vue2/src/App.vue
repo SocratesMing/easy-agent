@@ -948,6 +948,8 @@ export default {
         if (this.currentSessionId !== sessionId) return
         this.messages = history.messages || []
         this.currentTodos = history.todos || []
+        // 按最后一轮对话恢复专家芯片（最后一轮用了专家则召唤态，否则清空）
+        this.syncExpertChipFromMessages()
         // 从服务器返回的 usage 数据恢复 token 用量、会话耗时和迭代次数
         if (history.usage) {
           this.sessionUsage.input_tokens = history.usage.input_tokens || 0
