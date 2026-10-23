@@ -142,8 +142,8 @@ KNOWN_SECTION_KEYS: dict[str, frozenset[str]] = {
             "mysql",
         }
     ),
-    "knowledge.catalog_sync.mysql": frozenset(
-        {"host", "port", "user", "password", "charset"}
+    "knowledge.source_sync.mysql": frozenset(
+        {"host", "port", "user", "password", "database", "charset", "table"}
     ),
     "llm": frozenset(
         {

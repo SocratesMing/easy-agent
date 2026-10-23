@@ -1656,7 +1656,7 @@ async function submitQuestion(suggested = '') {
     // 问答会话刚入库（或复用）：通知外层立即刷新会话列表，避免"新对话/刷新页面才出现"。
     emit('chat-session-prepared')
     const onChunk = event => applyAgentEvent(event, baseId, generation)
-    await sendMessage(prepared.session_id, lastQuestion.value, onChunk, askController.signal, true, [], null, false, null, [], '', { knowledgeMetadataFilter: askMetadataFilter.value })
+    await sendMessage(prepared.session_id, lastQuestion.value, onChunk, askController.signal, true, [], null, false, null, [], '', '', { knowledgeMetadataFilter: askMetadataFilter.value })
     // 与新对话一样，SSE 连接意外结束时挂载到后台流并回放已有事件。
     if (!streamDone && generation === askGeneration && !askController.signal.aborted) {
       await attachStream(prepared.session_id, onChunk, askController.signal)
