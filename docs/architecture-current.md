@@ -94,7 +94,7 @@
 ```bash
 uv sync                                  # 安装依赖（dependency-groups dev / extra docs）
 uv run pytest tests/ -q                  # 全量测试（当前基线：933+ passed）
-uvx ruff check .                         # 致命规则（E9/F63/F7/F82）
+uvx ruff check .                         # 致命规则（E9/F63/F7/F82）+ 未使用的 import / 变量、重复定义（F401/F811/F841）
 python scripts/skills/sync_skills.py --check    # 技能副本一致性
 cd frontend-vue2 && npm ci && npm run build
 cd frontend && npm ci && npm run build

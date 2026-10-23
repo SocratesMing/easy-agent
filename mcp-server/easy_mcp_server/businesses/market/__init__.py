@@ -3,8 +3,6 @@
 挂载路径：/mcp/market/
 """
 
-from mcp.server.fastmcp import FastMCP
-
 from .server import build
 
 __all__ = ["build"]
