@@ -102,7 +102,7 @@ export async function attachStream(sessionId, onChunk, signal) {
   await readSSE(response, onChunk, { signal: abortSignal })
 }
 
-export async function sendMessage(sessionId, message, onChunk, signal, enableDeepThink = true, files = [], model = null, enableWebSearch = false, skills = [], pendingExpertId = '') {
+export async function sendMessage(sessionId, message, onChunk, signal, enableDeepThink = true, files = [], model = null, enableWebSearch = false, skills = [], pendingExpertId = '', extra = null) {
   const controller = new AbortController()
   const abortSignal = signal || controller.signal
 
@@ -123,6 +123,10 @@ export async function sendMessage(sessionId, message, onChunk, signal, enableDee
   // 待修改专家 ID（专家面板「编辑」带入，不进消息正文）：后端校验归属（只接受
   // 本人创建的专家）后绑定为 save_expert 的修改目标
   if (pendingExpertId) payload.pending_expert_id = pendingExpertId
+  // 知识库问答的元数据硬过滤（日期区间 / 标签 / 来源），由知识库工作台传入
+  if (extra && extra.knowledgeMetadataFilter) {
+    payload.knowledge_metadata_filter = extra.knowledgeMetadataFilter
+  }
 
   const response = await authFetch(`${API_BASE_URL}/agent/chat/stream`, {
     method: 'POST',
