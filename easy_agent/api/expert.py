@@ -362,6 +362,12 @@ def expert_required_skills(
     （需要运维放包），``source_unconfigured`` 表示 ``tools.skills_dir`` 没配好，
     ``disabled`` 表示用户自己在技能中心停用了。
 
+    声明值可以写目录名，也可以写 SKILL.md 的 ``name``（常见中文），两条通道等价：
+    ``items[].declared`` 是原声明，``resolved_dir`` 是解析到的 canonical 目录名，
+    ``matched_by`` 说明命中方式（``dir`` / ``dir_normalized`` / ``name`` /
+    ``name_normalized``）；解析失败时 ``candidates`` 给出近似技能（**仅供参考，
+    不会据此自动安装**）。
+
     本接口**只读**：不会触发安装，也不会驱逐缓存（触发补装的是真正发消息那一刻）。
     """
     from easy_agent.services import skill_provision

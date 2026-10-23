@@ -85,32 +85,62 @@ def _log_once(level: int, key: tuple[str, str, str, str], message: str) -> None:
 def _inspect_one(username: str, name: str) -> dict[str, Any]:
     """判断单个依赖技能当前的状态（只读，不写清单）。
 
+    声明值可以是**目录名**，也可以是 SKILL.md 的 ``name``（常见为中文）——统一经
+    ``skill_library.resolve_*_ref`` 解析出 canonical 目录名，后续一律用目录名操作，
+    不会产生第二套数据。
+
     Returns:
-        ``{"skill", "state", "detail", "path"}``；``state`` 取值
-        ``existing`` / ``disabled`` / ``installed_ready`` / ``source_missing`` /
-        ``source_unconfigured``。
+        ``{"skill", "declared", "resolved_dir", "matched_by", "state", "detail",
+        "path", "candidates"}``；``state`` 取值 ``existing`` / ``disabled`` /
+        ``installed_ready`` / ``source_missing`` / ``source_unconfigured``。
     """
-    found = skill_library.find_user_skill(username, name)
+    declared = name
+
+    def _pack(state: str, *, dir_name: str = "", matched_by: str = "", detail: str = "",
+              path: str = "", candidates: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+        return {
+            "skill": declared,
+            "declared": declared,
+            "resolved_dir": dir_name,
+            "matched_by": matched_by,
+            "state": state,
+            "detail": detail,
+            "path": path,
+            "candidates": candidates or [],
+        }
+
+    # 1) 用户技能库（含已添加的公共技能）：先精确目录名，再按 name 别名
+    found = skill_library.find_user_skill(username, declared)
     if found:
-        state = "existing" if found["enabled"] else "disabled"
-        return {"skill": name, "state": state, "detail": "", "path": str(found["path"])}
+        state = "existing" if found.get("enabled") else "disabled"
+        return _pack(
+            state,
+            dir_name=found["dir_name"],
+            matched_by=found.get("matched_by", "dir"),
+            path=str(found["path"]),
+        )
 
     root = builtin_skills.builtin_root()
     if root is None:
-        return {
-            "skill": name,
-            "state": "source_unconfigured",
-            "detail": "未配置 tools.skills_dir 或该目录不存在",
-            "path": "",
-        }
-    if not skill_library.is_skill_dir(root / name):
-        return {
-            "skill": name,
-            "state": "source_missing",
-            "detail": f"公共技能目录中不存在 {name}/SKILL.md",
-            "path": str(root / name),
-        }
-    return {"skill": name, "state": "installed_ready", "detail": "", "path": str(root / name)}
+        return _pack("source_unconfigured", detail="未配置 tools.skills_dir 或该目录不存在")
+
+    # 2) 公共技能目录：目录名 / 归一化 / name / name 归一化
+    hit = skill_library.resolve_skill_ref(declared, root)
+    if hit:
+        return _pack(
+            "installed_ready",
+            dir_name=hit["dir_name"],
+            matched_by=hit["matched_by"],
+            path=str(hit["path"]),
+        )
+
+    # 3) 都没命中：给出近似候选，方便运维判断是「声明写错」还是「技能包没放」
+    return _pack(
+        "source_missing",
+        detail=f"公共技能目录中既没有目录 {declared}/，也没有 name 为 {declared} 的技能",
+        path=str(root / declared),
+        candidates=skill_library.suggest_skill_refs(declared, root),
+    )
 
 
 def provision_expert_skills(username: str, expert_id: str | None) -> dict[str, Any]:
@@ -119,20 +149,28 @@ def provision_expert_skills(username: str, expert_id: str | None) -> dict[str, A
     Returns:
         ``{
             "expert_id": str, "enabled": bool,
-            "required": [技能目录名], "installed": [本次新添加],
-            "existing": [已可用], "skipped": [{"skill", "reason", "detail", "path"}],
-            "missing": [公共目录里找不到的技能],
+            "required": [声明值（目录名或 name）],
+            "resolved": [{"declared", "resolved_dir", "matched_by"}],
+            "installed": [本次新添加的目录名],
+            "existing": [已可用目录名], "skipped": [{"skill", "reason", "detail", "path",
+            "resolved_dir", "matched_by", "candidates"}],
+            "missing": [公共目录里解析不到的声明],
             "skills_root": str, "cache_invalidated": int,
         }``
 
     ``reason`` 取值：``existing``（已可用）/ ``disabled``（用户停用）/
     ``source_missing``（公共技能目录里没有，需运维放包）/ ``source_unconfigured``
     （未配置公共技能目录）/ ``install_failed``（写清单失败）。
+
+    ``required`` 里的声明值可以是目录名，也可以是 SKILL.md 的 ``name``（常见为中文）；
+    ``resolved`` 记录每条声明实际解析到的目录名与匹配方式，``installed``/``existing``
+    一律是 canonical 目录名（清单键），便于排查「声明写错」与「技能没放」的区别。
     """
     report: dict[str, Any] = {
         "expert_id": expert_id or "",
         "enabled": _auto_install_enabled(),
         "required": [],
+        "resolved": [],
         "installed": [],
         "existing": [],
         "skipped": [],
@@ -164,18 +202,27 @@ def provision_expert_skills(username: str, expert_id: str | None) -> dict[str, A
 
     for name in required:
         state = _inspect_one(username, name)
+        resolved_dir = state.get("resolved_dir") or ""
+        resolution = {
+            "declared": state.get("declared", name),
+            "resolved_dir": resolved_dir,
+            "matched_by": state.get("matched_by", ""),
+        }
         if state["state"] == "existing":
-            report["existing"].append(name)
+            report["existing"].append(resolved_dir or name)
+            report["resolved"].append(resolution)
             continue
         if state["state"] == "disabled":
             report["skipped"].append(
-                {"skill": name, "reason": "disabled", "detail": state["detail"], "path": state["path"]}
+                {"skill": name, "reason": "disabled", "detail": state["detail"], "path": state["path"],
+                 "resolved_dir": resolved_dir, "matched_by": state.get("matched_by", "")}
             )
+            report["resolved"].append(resolution)
             _log_once(
                 logging.INFO,
                 (username, expert_id, name, "disabled"),
                 f"⏸️ 专家依赖技能已被用户停用，不自动装回 | 用户: {username} | "
-                f"专家: {expert_id} | 技能: {name}",
+                f"专家: {expert_id} | 技能: {name} | 目录: {resolved_dir or '(未解析)'}",
             )
             continue
         if state["state"] in {"source_missing", "source_unconfigured"}:
@@ -186,39 +233,49 @@ def provision_expert_skills(username: str, expert_id: str | None) -> dict[str, A
                     "reason": state["state"],
                     "detail": state["detail"],
                     "path": state["path"],
+                    "resolved_dir": resolved_dir,
+                    "matched_by": state.get("matched_by", ""),
+                    "candidates": state.get("candidates") or [],
                 }
             )
+            report["resolved"].append(resolution)
             where = report["skills_root"] or "（未配置 tools.skills_dir）"
             _log_once(
                 logging.ERROR,
                 (username, expert_id, name, state["state"]),
                 f"❌ 专家依赖技能缺失，无法自动添加 | 用户: {username} | 专家: {expert_id} | "
                 f"技能: {name} | 请把该技能包放到公共技能目录（目录内需含 SKILL.md）: {where} | "
-                f"原因: {state['detail']}",
+                f"原因: {state['detail']} | 候选: {state.get('candidates') or '无'}",
             )
             continue
 
+        # 解析到 canonical 目录名后统一登记；声明写的是 name 时也不影响清单键
+        target_dir = resolved_dir or name
         try:
-            builtin_skills.add(username, name, root)
+            builtin_skills.add(username, target_dir, root)
         except FileExistsError:  # 并发兜底：另一路刚添加成功，等价于已可用
-            report["existing"].append(name)
+            report["existing"].append(target_dir)
+            report["resolved"].append(resolution)
             continue
         except Exception as exc:  # noqa: BLE001 - 添加失败不阻断对话
             report["skipped"].append(
-                {"skill": name, "reason": "install_failed", "detail": str(exc), "path": state["path"]}
+                {"skill": name, "reason": "install_failed", "detail": str(exc), "path": state["path"],
+                 "resolved_dir": resolved_dir, "matched_by": state.get("matched_by", "")}
             )
+            report["resolved"].append(resolution)
             _log_once(
                 logging.WARNING,
                 (username, expert_id, name, "install_failed"),
                 f"⚠️ 专家依赖技能添加失败（不阻断对话） | 用户: {username} | "
-                f"专家: {expert_id} | 技能: {name} | {exc}",
+                f"专家: {expert_id} | 技能: {name} | 目录: {target_dir} | {exc}",
             )
             continue
 
-        report["installed"].append(name)
+        report["installed"].append(target_dir)
+        report["resolved"].append(resolution)
         logger.info(
             f"🎁 自动添加专家依赖技能 | 用户: {username} | 专家: {expert_id} | "
-            f"技能: {name} | 公共目录: {root}"
+            f"技能: {name} | 目录: {target_dir} | 匹配方式: {resolution['matched_by']} | 公共目录: {root}"
         )
 
     if report["installed"]:
@@ -290,7 +347,13 @@ def build_skill_runtime_notice(report: dict[str, Any]) -> str:
     for item in blocked:
         skill = item.get("skill", "")
         reason = _REASON_TEXT.get(item.get("reason", ""), "不可用")
-        lines.append(f"- 依赖技能 `{skill}` 当前不可用（{reason}）。")
+        resolved = item.get("resolved_dir", "")
+        # 声明值与目录名不同时（如声明写的是中文 name），把目录名一并给出，
+        # 否则运维在技能中心按名字找不到该包
+        if resolved and resolved != skill:
+            lines.append(f"- 依赖技能 `{skill}`（目录 `{resolved}`）当前不可用（{reason}）。")
+        else:
+            lines.append(f"- 依赖技能 `{skill}` 当前不可用（{reason}）。")
     lines.append(
         "- 若本轮任务依赖上述技能：先如实告知用户「技能未就绪」并给出上面的原因与修复方式"
         "（把技能包放入服务端公共技能目录，或在技能中心启用），"

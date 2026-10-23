@@ -26,7 +26,7 @@ maxTurns: 50
 
 **执行顺序**：
 
-1. 在可用技能清单里找 `name` 为 `贵金属投资交易分析` 或 `金市营收情况` 的技能，记下 `SKILL.md` 路径；清单里没有时再试 `/user-skills/贵金属投资交易分析/SKILL.md`、`/user-skills/金市营收情况/SKILL.md`。
+1. **定位技能**：在「Available Skills」清单里找本专家依赖的技能 —— 目录名 `precious-metals-analysis`（展示名「贵金属投资交易分析」）与 `fpp-income-analysis`（展示名「金市营收情况」）。清单每条技能下方给出 `Read` 路径，**以该路径为准、不要自己拼路径**；清单里没有 → 停止执行并明确报缺（缺哪个技能、因此哪些结论无法给出），不要用内置知识替代。
 2. `read_file(path=<SKILL.md 路径>, limit=1000)` 读完，按其「问题类型 → 工具映射」选工具；指标名、维度取值、字段含义一律按技能要求现场 `describe` / `list_dimensions` 现查，不凭记忆。
 3. 用技能指定的原生工具取数：贵金属走 `precious_metals_list_reports` / `precious_metals_describe` / `precious_metals_query` / `precious_metals_breakdown` / `precious_metals_probe`；金市营收走技能文档里列出的 `get_income_*` / `rank_*` / `get_plan_completion` / `get_capital_reserve` / `get_liability_*` / `compare_periods` / `list_dimensions` 等工具。不自建 HTTP 客户端、不读凭证文件、不写 SQL 直连数据库。
 4. 按技能的报告骨架与呈现规则交付；产物有模板时以模板为准。
