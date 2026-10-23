@@ -24,7 +24,6 @@ dependencies = [
     "DBUtils>=3.0.0",
     "bcrypt>=4.1.0",
     "python-jose[cryptography]>=3.3.0",
-    "schedule>=1.2.0",
     "apscheduler>=3.10.0,<4.0.0",
     "langchain-mcp-adapters>=0.1.0",
     # 生产 HITL checkpointer（官方 AsyncSqliteSaver）；不能放在可选依赖里，否则镜像和 CI 都装不上
@@ -37,10 +36,6 @@ easy-web = "easy_agent.bootstrap.web_runner:run_web"
 # 已移除；知识库 worker 由应用 lifespan（knowledges.runtime.lifecycle）托管。
 
 [project.optional-dependencies]
-dev = [
-    "pytest>=9.0.2",
-    "pytest-asyncio>=1.3.0",
-]
 docs = [
     "python-docx>=1.0.0",
     "python-pptx>=1.0.0",
@@ -86,6 +81,7 @@ url = "https://pypi.tuna.tsinghua.edu.cn/simple"
 default = true
 
 [dependency-groups]
+# 开发依赖只在这里声明（依赖组不进 wheel 元数据）；安装：uv pip install -e . --group dev
 dev = [
     "pytest>=9.0.2",
     "pytest-asyncio>=1.3.0",

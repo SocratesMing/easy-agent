@@ -46,7 +46,7 @@ Runtime dirs (`workspace/`, `data/`, `logs/`, `memories/`) are generated at runt
 
 ```bash
 uv sync                              # Install/sync Python dependencies
-uv pip install -e ".[dev]"           # Editable install with dev deps (alternative)
+uv pip install -e . --group dev      # Editable install with dev deps (alternative)
 easy-web --port 8000                 # Run backend (or: python main.py)
 pytest tests/ -v                     # Run the test suite
 pytest tests/integration/test_basic.py -v        # Run a single test file
