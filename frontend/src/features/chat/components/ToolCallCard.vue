@@ -17,6 +17,9 @@
       <svg v-else-if="kindKey === 'edit'" class="tcc-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
       </svg>
+      <svg v-else-if="kindKey === 'chart'" class="tcc-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+        <line x1="6" y1="20" x2="6" y2="16"></line><line x1="12" y1="20" x2="12" y2="10"></line><line x1="18" y1="20" x2="18" y2="4"></line>
+      </svg>
       <svg v-else class="tcc-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path>
       </svg>
@@ -62,6 +65,11 @@
         </div>
       </div>
 
+      <!-- 图表卡片：仅展开时挂载，避免在 v-show 隐藏容器里以 0 宽初始化 ECharts -->
+      <template v-else-if="card.card === 'chart'">
+        <ChartArtifactView v-if="expanded" :artifact="card.artifact" />
+      </template>
+
       <template v-else-if="card.card === 'diff'">
         <div v-if="isRunning && streaming" class="tcc-streaming-hint">正在写入…</div>
         <pre class="tcc-code flush"><span
@@ -98,6 +106,7 @@
 <script setup>
 import { ref, computed, watch } from 'vue'
 import { toolCard } from '../../../utils/toolPresentation.js'
+import ChartArtifactView from './ChartArtifactView.vue'
 
 const props = defineProps({
   toolName: { type: String, default: '' },
@@ -125,11 +134,15 @@ const kindKey = computed(() => {
 const kindLabel = computed(() => ({
   // 写入/编辑的标题已含动作（「写入 xxx」/「编辑 xxx」），不再显示类型徽标，
   // 否则会渲染成「写入 写入 xxx」这类重复文案。
-  terminal: '命令', list: '列出', search: '搜索', read: '读取', edit: '', other: '工具',
+  terminal: '命令', list: '列出', search: '搜索', read: '读取', edit: '', chart: '图表', other: '工具',
 }[kindKey.value] ?? '工具'))
 // 参数流式写入期间自动展开，让用户实时看到正在生成的文件内容；
 // 一旦收到完整参数（streaming 转为 false）即释放自动展开，尊重用户手动折叠。
 const expanded = ref(props.pendingApproval)
+// MCP 数据类工具返回 chart 时自动展开，让图表直接出现在对话里
+watch(() => card.value, (value) => {
+  if (value && value.card === 'chart' && !props.pendingApproval) expanded.value = true
+}, { immediate: true })
 const editing = ref(false)
 const draft = ref('')
 const editError = ref('')
