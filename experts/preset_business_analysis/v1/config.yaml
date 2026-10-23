@@ -5,8 +5,8 @@ version: 1
 tag_id: business_analysis
 description: 覆盖金融市场部贵金属投资交易与金市营收两类经营数据问答。贵金属的名义本金、交易本金、损益、营业净收入按投资组合 / 产品分类 / 五级产品拆分；金市营收的营业净收入、非息、计划完成率、资本公积与负债规模按中心与业务线拆分。两类数据一律由对应技能取数，专家负责问题路由、口径校验与如实转达。
 required_skills:
-  - 贵金属投资交易分析
-  - 金市营收情况
+  - precious-metals-analysis
+  - fpp-income-analysis
 skills_names:
   - 贵金属经营
   - 金市营收

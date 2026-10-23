@@ -448,6 +448,13 @@ def expert_required_skills_status(
     ``skipped[].reason`` 会直接给出原因——``source_missing`` 表示**服务端公共技能
     目录里没有这个技能包**（需要运维放包），``disabled`` 表示用户自己停用了。
     只读，不会触发安装以外的副作用（缺技能时仍会尝试装一次，装成功即返回 installed）。
+
+    ``required`` 里是**声明值**（可能是目录名，也可能是 SKILL.md 的中文 name）；
+    ``resolved`` 逐条给出 ``declared`` / ``resolved_dir`` / ``matched_by``
+    （``dir`` / ``dir_normalized`` / ``name`` / ``name_normalized`` / ``alias``），
+    ``installed`` 与 ``skipped[].resolved_dir`` 一律是 canonical 目录名；
+    解析失败时 ``skipped[].candidates`` 给出名称相近的技能，便于区分「声明写错」
+    还是「技能包没放」。
     """
     from ..services.skill_provision import provision_expert_skills
 
