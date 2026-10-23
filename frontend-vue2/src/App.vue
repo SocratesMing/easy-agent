@@ -920,6 +920,11 @@ export default {
       this.showScheduledTasks = false
       // 切换会话：无会话期间暂存的知识范围作废，目标会话以自己的服务端范围为准
       this.pendingKnowledgeScope = null
+      // 切换会话不沿用上一个会话的专家选择（临时状态）；目标会话的专家由随后的
+      // messages 刷新经 syncExpertChipFromMessages 按最后一轮对话恢复。
+      // 注意：handleUseExpert 会在调用本方法之后重新赋值 selectedExpert，
+      // 因此「召唤专家 → 切到其会话」的链路不受影响。
+      this.selectedExpert = null
       this.currentSessionId = sessionId
       // 切换后按当前会话是否正在流式输出决定输入框状态：
       // 历史会话通常不是当前流式会话，应显示发送按钮而非停止按钮
@@ -957,6 +962,8 @@ export default {
         if (this.currentSessionId !== sessionId) return
         this.messages = history.messages || []
         this.currentTodos = history.todos || []
+        // 按最后一轮对话恢复专家芯片（最后一轮用了专家则召唤态，否则清空）
+        this.syncExpertChipFromMessages()
         // 从服务器返回的 usage 数据恢复 token 用量、会话耗时和迭代次数
         if (history.usage) {
           this.sessionUsage.input_tokens = history.usage.input_tokens || 0
