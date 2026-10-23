@@ -15,6 +15,7 @@ from easy_agent.knowledges.runtime.source_sync import (
     _iter_windows,
     build_source_query,
     build_upload_name,
+    date_folder_segments,
     fetch_source_rows,
     parse_publish_date,
     resolve_source_file,
@@ -60,6 +61,11 @@ def test_build_upload_name_truncates_long_title_by_utf8_bytes():
     assert stem.endswith("_123")
     # 知识库文件名上限 127 字节；这里留 120 字节预算，中文按字节裁剪
     assert len(name.encode("utf-8")) <= 120
+
+
+def test_date_folder_segments_use_chinese_units():
+    assert date_folder_segments("2026-10-23") == ["2026年", "10月", "23日"]
+    assert date_folder_segments("2026-01-05") == ["2026年", "1月", "5日"]
 
 
 def test_sanitize_title_strips_illegal_chars():
@@ -231,3 +237,56 @@ def test_source_record_lookup_and_sync_item_idempotent(db):
     )
     assert first["id"] == second["id"]
     assert repo.count_sync_items(source="source_sync") == {"queued": 1}
+
+
+def test_source_record_unique_allows_reupload_into_new_base(db):
+    """软删除行仍占同库幂等键，但不能阻止新库重新入库（旧库删库后重跑同步）。"""
+    repo = KnowledgeRepository(db)
+    old_base_id, docs = _create_base_and_documents(repo)
+    repo.update_document(
+        docs["101"], status="deleted", deleted_at="2026-10-23T00:00:00+00:00"
+    )
+
+    # 默认查询不出软删除行；同库内显式包含软删除时才能查到
+    assert repo.find_document_by_source_record("source_sync", "101") is None
+    found = repo.find_document_by_source_record(
+        "source_sync", "101", base_id=old_base_id, include_deleted=True
+    )
+    assert found is not None and str(found["id"]) == docs["101"]
+
+    new_base = repo.create_base(
+        name="报告库2",
+        description="test",
+        space_type="team",
+        owner_user_id="u-admin",
+        department_id=None,
+        embedding_model="",
+        status="active",
+    )
+    # 幂等键含水 base_id：同一业务记录可重新入库到新库
+    new_doc = repo.create_document(
+        base_id=str(new_base["id"]),
+        folder_id=None,
+        name="101.pdf",
+        content_type="application/pdf",
+        size_bytes=10,
+        created_by="u-admin",
+        status="pending",
+        source="source_sync",
+        source_record_id="101",
+        publish_date="2026-10-01",
+    )
+    assert str(new_doc["base_id"]) == str(new_base["id"])
+    assert (
+        repo.find_document_by_source_record(
+            "source_sync", "101", base_id=str(new_base["id"])
+        )
+        is not None
+    )
+    # 旧库的软删除行仍保留（溯源 + 同库跳过判定）
+    assert (
+        repo.find_document_by_source_record(
+            "source_sync", "101", base_id=old_base_id, include_deleted=True
+        )
+        is not None
+    )

@@ -168,7 +168,6 @@ KNOWN_SECTION_KEYS: dict[str, frozenset[str]] = {
             "file_root",
             "base_id",
             "base_name",
-            "space_type",
             "lookback_days",
             "start_date",
             "interval_minutes",

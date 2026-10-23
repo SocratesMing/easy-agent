@@ -117,9 +117,9 @@ class SourceSyncConfig(BaseModel):
     # 文件根目录（绝对路径）：配置后忽略 attacUrl 的目录部分，只取其文件名拼到该根目录；
     # 留空则要求 attacUrl 本身是绝对路径。
     file_root: str = ""
+    # 指定既有知识库 ID（可选）：同名库有多个时用来锁定具体目标；留空则按 base_name 查找
     base_id: str = ""
     base_name: str = "报告库"
-    space_type: str = "team"  # personal | team
     lookback_days: int = Field(default=7, ge=1, le=365)
     # 首次回填起始日期（YYYY-MM-DD）；为空时只处理 lookback 窗口
     start_date: str = ""
@@ -131,8 +131,6 @@ class SourceSyncConfig(BaseModel):
 
     @model_validator(mode="after")
     def _validate_sync(self) -> "SourceSyncConfig":
-        if self.space_type not in {"personal", "team"}:
-            raise ValueError("source_sync.space_type 仅支持 personal / team")
         if self.start_date:
             try:
                 datetime.strptime(self.start_date, "%Y-%m-%d")

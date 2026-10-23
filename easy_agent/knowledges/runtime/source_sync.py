@@ -36,6 +36,7 @@ from easy_agent.knowledges.core.models import (
     DocumentMetadata,
     DocumentStatus,
     KnowledgeBaseStatus,
+    KnowledgeBaseVisibility,
     KnowledgePrincipal,
 )
 from easy_agent.knowledges.core.original_store import LocalOriginalStore
@@ -209,6 +210,12 @@ def resolve_source_file(
     return path if path.is_absolute() else None
 
 
+def date_folder_segments(publish_date: str) -> list[str]:
+    """日期目录段：``2026-10-23`` → ``["2026年", "10月", "23日"]``。"""
+    year, month, day = publish_date.split("-")
+    return [f"{year}年", f"{int(month)}月", f"{int(day)}日"]
+
+
 def _iter_windows(
     start: datetime, end: datetime, days: int
 ) -> Iterable[tuple[datetime, datetime]]:
@@ -326,6 +333,11 @@ class SourceSyncEngine:
     # ---------------- 知识库与目录 ----------------
 
     async def resolve_base_id(self) -> str:
+        """确定入库目标库：``base_id`` 优先；为空时按 ``base_name`` 查找/新建。
+
+        名字在 ``knowledge_bases`` 内不唯一（同名多库时按名称会取最早创建的
+        那个），需要精确指定时填 ``base_id``；新建库固定为团队公共库。
+        """
         sync_config = self.sync_config
         if sync_config.base_id.strip():
             base = await run_in_threadpool(
@@ -346,7 +358,8 @@ class SourceSyncEngine:
             self.repository.create_base,
             name=sync_config.base_name,
             description="由文档 SQL 同步自动创建",
-            space_type=sync_config.space_type,
+            # 研报接入固定入公共库（team），不提供个人库配置
+            space_type=KnowledgeBaseVisibility.TEAM.value,
             owner_user_id=self.principal.user_id,
             department_id=self.principal.department_id,
             embedding_model=self.config.embedding.model,
@@ -360,7 +373,8 @@ class SourceSyncEngine:
         return str(created["id"])
 
     async def ensure_date_folder(self, base_id: str, publish_date: str) -> str | None:
-        year, month, day = publish_date.split("-")
+        """确保 ``YYYY年/M月/D日`` 三级目录存在，返回日目录 ID。"""
+        year, month, day = date_folder_segments(publish_date)
         await self.service.ensure_folders(
             base_id=base_id,
             folder_id=None,
@@ -405,7 +419,11 @@ class SourceSyncEngine:
 
         # 兜底：同一源记录已存在本地文档时不再新建，避免触发唯一约束冲突
         existing = await run_in_threadpool(
-            self.repository.find_document_by_source_record, self.source, record_id
+            self.repository.find_document_by_source_record,
+            self.source,
+            record_id,
+            base_id=base_id,
+            include_deleted=True,
         )
         if existing is not None:
             logger.info(
@@ -492,7 +510,11 @@ class SourceSyncEngine:
                 )
         except Exception as exc:  # noqa: BLE001 — 单条失败不阻断整批
             document = await run_in_threadpool(
-                self.repository.find_document_by_source_record, self.source, record_id
+                self.repository.find_document_by_source_record,
+                self.source,
+                record_id,
+                base_id=base_id,
+                include_deleted=True,
             )
             await run_in_threadpool(
                 self.repository.update_sync_item,
@@ -527,7 +549,7 @@ class SourceSyncEngine:
     # ---------------- 在途回收 ----------------
 
     async def refresh_inflight(
-        self, items: list[dict[str, Any]]
+        self, items: list[dict[str, Any]], *, base_id: str | None = None
     ) -> tuple[list[dict[str, Any]], dict[str, int]]:
         stats = {"ready": 0, "retried": 0, "failed": 0}
         remaining: list[dict[str, Any]] = []
@@ -542,8 +564,13 @@ class SourceSyncEngine:
                     self.repository.find_document_by_source_record,
                     self.source,
                     record_id,
+                    base_id=base_id,
+                    include_deleted=True,
                 )
             )
+            if document is not None and base_id and str(document.get("base_id")) != base_id:
+                # 台账指向旧库（已删除）的历史文档：按“未入库”处理，重新入当前库
+                document = None
             if document is None:
                 # 上传过程中进程中断且没有落库：重新排队
                 await run_in_threadpool(
@@ -552,6 +579,16 @@ class SourceSyncEngine:
                 stats["failed"] += 1
                 continue
             status = str(document.get("status") or "")
+            if status == DocumentStatus.DELETED.value:
+                # 文档在当前库内已被删除：尊重删除动作，不再重传
+                await run_in_threadpool(
+                    self.repository.update_sync_item,
+                    item_id,
+                    status="deleted",
+                    last_error="文档已被删除，不再重传",
+                )
+                stats["failed"] += 1
+                continue
             if status == DocumentStatus.READY.value:
                 await run_in_threadpool(
                     self.repository.update_sync_item,
@@ -654,7 +691,9 @@ class SourceSyncEngine:
                 limit=self.sync_config.max_inflight,
             )
             if inflight:
-                inflight, resumed_stats = await self.refresh_inflight(inflight)
+                inflight, resumed_stats = await self.refresh_inflight(
+                    inflight, base_id=base_id
+                )
                 for key, value in resumed_stats.items():
                     stats[key] += value
                 logger.info("研报 SQL 同步恢复在途文档 | count=%s", len(inflight))
@@ -678,7 +717,9 @@ class SourceSyncEngine:
                 ).strip()
                 # 在途达上限时先回收，保证重试与新上传都不突破并发上限
                 while len(inflight) >= self.sync_config.max_inflight:
-                    inflight, batch_stats = await self.refresh_inflight(inflight)
+                    inflight, batch_stats = await self.refresh_inflight(
+                        inflight, base_id=base_id
+                    )
                     for key, value in batch_stats.items():
                         stats[key] += value
                     if len(inflight) >= self.sync_config.max_inflight:
@@ -688,12 +729,23 @@ class SourceSyncEngine:
                         self.repository.find_document_by_source_record,
                         self.source,
                         record_id,
+                        base_id=base_id,
+                        include_deleted=True,
                     )
                     if record_id
                     else None
                 )
                 if document is not None:
                     status = str(document.get("status") or "")
+                    if status == DocumentStatus.DELETED.value:
+                        # 当前库内已被删除：尊重删除动作，不再重新上传
+                        logger.info(
+                            "文档同步跳过：文档已删除 | id=%s doc=%s",
+                            record_id,
+                            document["id"],
+                        )
+                        stats["existing"] += 1
+                        continue
                     remote_id = str(document.get("remote_document_id") or "")
                     if status == DocumentStatus.PENDING.value and not remote_id:
                         # 上传中断：转失败后走重试（复用本地原文，避免重复建记录）
@@ -791,7 +843,9 @@ class SourceSyncEngine:
                 break
 
         while inflight and not dry_run:
-            inflight, batch_stats = await self.refresh_inflight(inflight)
+            inflight, batch_stats = await self.refresh_inflight(
+                inflight, base_id=base_id
+            )
             for key, value in batch_stats.items():
                 stats[key] += value
             if inflight:

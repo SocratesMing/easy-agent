@@ -517,16 +517,34 @@ class KnowledgeRepository:
         return self.get_document(document_id)
 
     def find_document_by_source_record(
-        self, source: str, source_record_id: str
+        self,
+        source: str,
+        source_record_id: str,
+        *,
+        base_id: str | None = None,
+        include_deleted: bool = False,
     ) -> dict[str, Any] | None:
-        """按业务来源 + 源记录 ID 查本地文档（同步幂等判定）。"""
+        """按业务来源 + 源记录 ID 查本地文档（同步幂等判定）。
+
+        ``base_id`` 非空时只在该知识库内查找（同步目标库判定）：同一业务记录
+        在旧库（已删除）的历史行不应被当作“已入库”，否则新库永远补不回文档。
+        ``include_deleted`` 为真时一并返回软删除行，供调用方决定是跳过还是
+        重新入库（同库内软删除行仍占用幂等键）。
+        """
+        clauses = ["d.source=?", "d.source_record_id=?"]
+        parameters: list[object] = [source, source_record_id]
+        if base_id is not None:
+            clauses.append("d.base_id=?")
+            parameters.append(base_id)
+        if not include_deleted:
+            clauses.append("d.status!='deleted'")
         with self.db.get_connection() as conn:
             cursor = conn.cursor()
             self.db._execute(
                 cursor,
-                f"{_DOCUMENT_SELECT} WHERE d.source=? AND d.source_record_id=? "
-                "AND d.status!='deleted' LIMIT 1",
-                (source, source_record_id),
+                f"{_DOCUMENT_SELECT} WHERE {' AND '.join(clauses)} "
+                "ORDER BY d.created_at DESC LIMIT 1",
+                tuple(parameters),
             )
             return _row_dict(cursor.fetchone())
 
