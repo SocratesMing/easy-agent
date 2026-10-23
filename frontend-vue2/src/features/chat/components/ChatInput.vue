@@ -1068,6 +1068,12 @@ export default {
     },
     hoverPlusItem(category) {
       this.cancelPlusClose()
+      // 知识库与技能/专家一致：悬停即展开面板，无需点击
+      if (category === 'knowledge') {
+        this.subpanelCategory = null
+        if (this.$refs.knowledgeScope) this.$refs.knowledgeScope.openPopover(this.$el.querySelector('.plus-menu-item-knowledge'))
+        return
+      }
       // 切到其他菜单项时收起知识库面板，避免两个浮层叠着
       if (this.$refs.knowledgeScope) this.$refs.knowledgeScope.closePopover()
       if (category === 'experts' || category === 'skills' || category === 'connectors') {
@@ -1388,12 +1394,6 @@ export default {
     },
     // 加号菜单「知识库」：与技能子面板一致，点击保持主菜单常驻，面板贴菜单项右侧弹出
     openKnowledgeScope(event) {
-      this.cancelPlusClose()
-      this.subpanelCategory = null
-      if (this.$refs.knowledgeScope) this.$refs.knowledgeScope.openPopover(event && event.currentTarget)
-    },
-    // hover 到「知识库」菜单项即展开选择面板（并收起其他子面板），无需点击
-    enterKnowledgeItem(event) {
       this.cancelPlusClose()
       this.subpanelCategory = null
       if (this.$refs.knowledgeScope) this.$refs.knowledgeScope.openPopover(event && event.currentTarget)

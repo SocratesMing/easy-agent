@@ -277,6 +277,7 @@
         </div>
 
         <form class="ke-ask-form" @submit.prevent="submitQuestion()">
+          <KnowledgeAskFilter v-if="selectedBase" @change="askMetadataFilter = $event" />
           <div class="ke-composer" :class="{ disabled: !selectedBase }">
             <textarea v-model="question" :disabled="!selectedBase || asking" rows="3" placeholder="基于这个知识库提问…" @keydown.enter.exact.prevent="submitQuestion()"></textarea>
             <div><span><IconDatabase />仅检索当前知识库</span><button :disabled="!question.trim() || !selectedBase || asking" aria-label="发送问题"><IconArrowUp /></button></div>
@@ -546,6 +547,7 @@ import DocxPreview from '../../shared/preview/DocxPreview.vue'
 import ExcelPreview from '../../shared/preview/ExcelPreview.vue'
 import FileIcon from '../../shared/components/FileIcon.vue'
 import ChatMessage from '../chat/components/ChatMessage.vue'
+import KnowledgeAskFilter from './KnowledgeAskFilter.vue'
 import { attachStream, getChatHistory, sendMessage } from '../../api/chat.js'
 import { cancelMessage } from './api.js'
 import { processingElapsedText } from './utils/presentation.js'
@@ -751,6 +753,7 @@ function resizeKnowledgeWithKeyboard(kind, event) {
 }
 const question = ref('')
 const lastQuestion = ref('')
+const askMetadataFilter = ref(null) // 知识库问答元数据硬过滤（由 KnowledgeAskFilter 产出；null = 全范围）
 const agentMessage = ref(null)
 // 面板内已完成的历史问答：[{question, message}]，多轮问答均可回看（含各自的知识引用）
 const askHistory = ref([])
@@ -1653,13 +1656,7 @@ async function submitQuestion(suggested = '') {
     // 问答会话刚入库（或复用）：通知外层立即刷新会话列表，避免"新对话/刷新页面才出现"。
     emit('chat-session-prepared')
     const onChunk = event => applyAgentEvent(event, baseId, generation)
-    await sendMessage(
-      prepared.session_id,
-      lastQuestion.value,
-      onChunk,
-      askController.signal,
-      true,
-    )
+    await sendMessage(prepared.session_id, lastQuestion.value, onChunk, askController.signal, true, [], null, false, null, [], '', { knowledgeMetadataFilter: askMetadataFilter.value })
     // 与新对话一样，SSE 连接意外结束时挂载到后台流并回放已有事件。
     if (!streamDone && generation === askGeneration && !askController.signal.aborted) {
       await attachStream(prepared.session_id, onChunk, askController.signal)
@@ -1781,6 +1778,7 @@ onUnmounted(() => { stopQuestion('unmount'); finishKnowledgeResize(); stopPollin
       isPermCollapsed,
       knowledgeLayoutStyle,
       lastQuestion,
+      askMetadataFilter, KnowledgeAskFilter,
       libraryWidth,
       loadDocuments,
       loadingDocuments,
