@@ -6,10 +6,29 @@
 按同名原位替换框架默认项（DA-06，见 ``agent/summarization.py``）。
 """
 
+import inspect
 import logging
+from functools import lru_cache
 
 # 纯移动：沿用拆分前的 logger 名称，保持日志路由/过滤行为不变。
 logger = logging.getLogger("easy_agent.agent")
+
+
+@lru_cache(maxsize=1)
+def framework_provides_todolist() -> bool:
+    """官方默认栈是否已经带 ``TodoListMiddleware``。
+
+    deepagents 0.7.x 不再默认内置 ``write_todos``，需要显式添加；如果后续版本
+    重新放回默认栈，同一实例会被框架按 name 原位替换，看似无害，但两份
+    ``TodoListMiddleware`` 的 state/提示词语义可能随版本漂移。这里以默认栈源码
+    是否引用该中间件为准，源码不可读时保持 0.7 行为（继续添加）。
+    """
+    try:
+        import deepagents.graph as graph_module
+
+        return "TodoListMiddleware" in inspect.getsource(graph_module)
+    except Exception:  # noqa: BLE001 - 打包环境无源码时按 0.7 行为处理
+        return False
 
 
 def build_agent_middleware(config, max_steps) -> list:
@@ -26,15 +45,18 @@ def build_agent_middleware(config, max_steps) -> list:
 
     from easy_agent.agent.tool_errors import build_tool_error_middleware
 
-    middleware = [
-        # 0.7 起 write_todos 需要显式 TodoListMiddleware（0.6.8 是默认内置）。
-        TodoListMiddleware(),
+    middleware = []
+    # 0.7 起 write_todos 需要显式 TodoListMiddleware（0.6.8 是默认内置）；
+    # 官方默认栈若已提供则不再重复添加。
+    if not framework_provides_todolist():
+        middleware.append(TodoListMiddleware())
+    middleware.append(
         # DA-12：官方 ToolErrorMiddleware，只把可恢复的工具错误回灌模型。
         # D2：middleware 进共享编译图，不绑定 session_id。
         build_tool_error_middleware(
             log_truncate=getattr(config.tools, "result_log_truncate", 500)
-        ),
-    ]
+        )
+    )
     # 超限时显式报错，避免「模型步数用尽但前端以为正常结束」；
     # 错误会经 streaming 的异常分支转成 SSE error。
     middleware.extend(build_call_limit_middleware(max_steps, exit_behavior="error"))

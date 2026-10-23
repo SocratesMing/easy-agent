@@ -1,4 +1,4 @@
-"""会话收尾的技能入库（streaming._register_session_skills）。
+"""会话收尾的技能入库（streaming.side_effects.register_session_skills）。
 
 对话里创建的技能要么被直接写进技能库，要么落在工作区；收尾时统一入库并清理，
 保证「技能中心能看到」且「工作区不留副本」。判定依据是本次会话的 generated_files。
@@ -14,7 +14,7 @@ import pytest
 from easy_agent.agent import EasyAgent
 from easy_agent.bootstrap.config import Config
 from easy_agent.services import skill_categories, skill_library
-from easy_agent.services.streaming import _register_session_skills
+from easy_agent.services.streaming.side_effects import register_session_skills
 
 USERNAME = "szm"
 SESSION_ID = "sess-skill-register"
@@ -74,7 +74,7 @@ async def test_workspace_skill_is_registered_and_cleaned(agent, db):
     )
     _record(db, source / "SKILL.md")
 
-    registered = await _register_session_skills(agent, db, SESSION_ID, "test")
+    registered = await register_session_skills(agent, db, SESSION_ID, "test")
 
     assert [item["dir_name"] for item in registered] == ["pdf-report"]
     assert registered[0]["source"] == "workspace"
@@ -94,7 +94,7 @@ async def test_direct_library_write_is_categorized_only(agent, db):
     )
     _record(db, "/user-skills/pdf-report/SKILL.md")  # 虚拟路径记录
 
-    registered = await _register_session_skills(agent, db, SESSION_ID, "test")
+    registered = await register_session_skills(agent, db, SESSION_ID, "test")
 
     assert [item["dir_name"] for item in registered] == ["pdf-report"]
     assert registered[0]["source"] == "direct"
@@ -112,7 +112,7 @@ async def test_direct_write_with_ambiguous_content_keeps_default_category(agent,
     )
     _record(db, "/user-skills/my-first-skill/SKILL.md")
 
-    registered = await _register_session_skills(agent, db, SESSION_ID, "test")
+    registered = await register_session_skills(agent, db, SESSION_ID, "test")
 
     assert [item["dir_name"] for item in registered] == ["my-first-skill"]
     assert skill_dir.exists()
@@ -126,13 +126,13 @@ async def test_non_skill_writes_are_ignored(agent, db):
     (work / "run.py").write_text("print(1)", encoding="utf-8")
     _record(db, work / "run.py")
 
-    assert await _register_session_skills(agent, db, SESSION_ID, "test") == []
+    assert await register_session_skills(agent, db, SESSION_ID, "test") == []
     assert work.exists()
     assert len(db.get_generated_files(SESSION_ID)) == 1
 
 
 async def test_no_records_returns_empty(agent, db):
-    assert await _register_session_skills(agent, db, SESSION_ID, "test") == []
+    assert await register_session_skills(agent, db, SESSION_ID, "test") == []
 
 
 async def test_hidden_skill_dir_is_skipped(agent, db):
@@ -142,7 +142,7 @@ async def test_hidden_skill_dir_is_skipped(agent, db):
     (source / "SKILL.md").write_text("---\nname: draft\n---\n", encoding="utf-8")
     _record(db, source / "SKILL.md")
 
-    assert await _register_session_skills(agent, db, SESSION_ID, "test") == []
+    assert await register_session_skills(agent, db, SESSION_ID, "test") == []
     assert source.exists()
 
 
@@ -157,7 +157,7 @@ async def test_name_conflict_appends_suffix(agent, db):
     (source / "SKILL.md").write_text("---\nname: docx\n---\n", encoding="utf-8")
     _record(db, source / "SKILL.md")
 
-    registered = await _register_session_skills(agent, db, SESSION_ID, "test")
+    registered = await register_session_skills(agent, db, SESSION_ID, "test")
 
     assert [item["dir_name"] for item in registered] == ["docx-2"]
     assert (existing / "SKILL.md").is_file()
@@ -171,7 +171,7 @@ async def test_missing_skill_md_falls_back_to_original_location(agent, db):
     # 记录路径以 SKILL.md 结尾但文件其实不存在（模型只声明未写）
     _record(db, source / "SKILL.md")
 
-    assert await _register_session_skills(agent, db, SESSION_ID, "test") == []
+    assert await register_session_skills(agent, db, SESSION_ID, "test") == []
     assert source.exists()
 
 
@@ -205,7 +205,7 @@ async def test_records_are_read_and_dropped_off_the_event_loop(agent, db, monkey
     )
     _record(db, _workspace_skill(agent) / "SKILL.md")
 
-    registered = await _register_session_skills(agent, db, SESSION_ID, "test")
+    registered = await register_session_skills(agent, db, SESSION_ID, "test")
 
     assert [item["dir_name"] for item in registered] == ["pdf-report"]
     assert registered[0]["dropped_records"] == 1
@@ -230,7 +230,7 @@ async def test_cancel_while_dropping_records_still_reloads_agents(agent, db, mon
     monkeypatch.setattr(db, "delete_generated_file", slow_delete)
     _record(db, _workspace_skill(agent) / "SKILL.md")
 
-    task = asyncio.create_task(_register_session_skills(agent, db, SESSION_ID, "test"))
+    task = asyncio.create_task(register_session_skills(agent, db, SESSION_ID, "test"))
     while not started.is_set():
         await asyncio.sleep(0.01)
     task.cancel()

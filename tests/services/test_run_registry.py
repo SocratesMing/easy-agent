@@ -1,5 +1,6 @@
-"""多副本 Phase 2B：run_registry 租约、启动恢复与异常隔离。"""
+"""多副本 Phase 2B：run_registry 租约、启动恢复与周期恢复、异常隔离。"""
 
+import asyncio
 import json
 from datetime import UTC, datetime, timedelta
 
@@ -12,7 +13,8 @@ from easy_agent.services.run_registry import (
     renew_run,
     start_run,
 )
-from easy_agent.services.session_runtime import instance_owner
+from easy_agent.services import session_runtime
+from easy_agent.services.session_runtime import instance_owner, is_stream_active
 from easy_agent.db.repositories.agent_runs import (
     STATUS_COMPLETED,
     STATUS_INTERRUPTED,
@@ -228,3 +230,98 @@ def test_recover_truncates_and_keeps_other_runs_on_append_failure(db, monkeypatc
     assert recover_stale_runs(db, now=datetime.now(UTC)) == 2
     assert get_run(db, "run-a")["status"] == STATUS_INTERRUPTED
     assert get_run(db, "run-b")["status"] == STATUS_INTERRUPTED
+
+
+# ── 崩溃的 Pod 留下的流锁 ──────────────────────────────────────────────
+
+
+def _hold_stream_lock(db, session_id: str, owner: str, until: str) -> None:
+    db.upsert_session_runtime(session_id, stream_owner=owner, stream_until=until)
+
+
+def test_recover_releases_the_stream_lock_the_crashed_run_left(db, monkeypatch):
+    """锁还在 TTL 内、仍归崩溃 run 的实例：照样补 error 事件，并释放锁，会话可以立刻重发。"""
+    past = _iso(datetime.now(UTC) - timedelta(seconds=5))
+    future = _iso(datetime.now(UTC) + timedelta(minutes=20))
+    _seed_run(db, "run-crashed", "sess-crashed", lease_until=past, owner="pod-a:1")
+    _hold_stream_lock(db, "sess-crashed", "pod-a:1", future)
+
+    assert recover_stale_runs(db) == 1
+
+    assert get_run(db, "run-crashed")["status"] == STATUS_INTERRUPTED
+    frames = list_stream_events(db, "sess-crashed")
+    assert [_error_event(f["payload"]) for f in frames] == [
+        {"type": "error", "content": RECOVER_ERROR_MESSAGE}
+    ]
+    assert is_stream_active(db, "sess-crashed") is False
+    # 用户照提示重发：别的实例能拿到这个会话的流锁
+    monkeypatch.setattr(session_runtime, "instance_owner", lambda: "pod-b:2")
+    session_runtime.acquire_stream(db, "sess-crashed")
+
+
+def test_recover_leaves_a_lock_another_instance_took_over(db):
+    past = _iso(datetime.now(UTC) - timedelta(seconds=5))
+    future = _iso(datetime.now(UTC) + timedelta(minutes=20))
+    _seed_run(db, "run-old", "sess-taken", lease_until=past, owner="pod-a:1")
+    _hold_stream_lock(db, "sess-taken", "pod-b:2", future)
+
+    assert recover_stale_runs(db) == 1
+
+    assert get_run(db, "run-old")["status"] == STATUS_INTERRUPTED
+    assert list_stream_events(db, "sess-taken") == []
+    assert db.get_session_runtime("sess-taken")["stream_owner"] == "pod-b:2"
+
+
+def test_recover_leaves_a_newer_run_of_the_same_instance_alone(db):
+    """同一实例在这个会话上已开了新流（新的 run 租约有效）：锁是新流的，不写事件也不释放。"""
+    past = _iso(datetime.now(UTC) - timedelta(seconds=5))
+    future = _iso(datetime.now(UTC) + timedelta(minutes=20))
+    _seed_run(db, "run-old", "sess-newer", lease_until=past, owner="pod-a:1")
+    _seed_run(db, "run-new", "sess-newer", lease_until=future, owner="pod-a:1")
+    _hold_stream_lock(db, "sess-newer", "pod-a:1", future)
+
+    assert recover_stale_runs(db) == 1
+
+    assert get_run(db, "run-old")["status"] == STATUS_INTERRUPTED
+    assert get_run(db, "run-new")["status"] == STATUS_RUNNING
+    assert list_stream_events(db, "sess-newer") == []
+    assert db.get_session_runtime("sess-newer")["stream_owner"] == "pod-a:1"
+
+
+# ── 周期恢复 ────────────────────────────────────────────────────────────
+
+
+async def test_periodic_recovery_finishes_runs_whose_lease_expires_after_startup(db, monkeypatch):
+    """启动那一轮时租约还没过期的 run（新 Pod 起得比租约过期快），由周期任务收尾。"""
+    import easy_agent.db as db_package
+
+    monkeypatch.setattr(db_package, "get_database", lambda: db)
+    monkeypatch.setattr(run_registry, "_recovery_task", None)
+    soon = _iso(datetime.now(UTC) + timedelta(seconds=1))
+    _seed_run(db, "run-later", "sess-later", lease_until=soon)
+    assert recover_stale_runs(db) == 0
+
+    task = run_registry.start_run_recovery(interval=0.2)
+    try:
+        for _ in range(60):
+            await asyncio.sleep(0.1)
+            if get_run(db, "run-later")["status"] == STATUS_INTERRUPTED:
+                break
+        assert get_run(db, "run-later")["status"] == STATUS_INTERRUPTED
+        assert len(list_stream_events(db, "sess-later")) == 1
+    finally:
+        await run_registry.stop_run_recovery()
+    assert task.done()
+
+
+def test_periodic_recovery_is_off_when_the_interval_is_not_positive(monkeypatch):
+    monkeypatch.setattr(run_registry, "_recovery_task", None)
+    monkeypatch.setenv(run_registry.RUN_RECOVERY_INTERVAL_ENV, "0")
+
+    assert run_registry.start_run_recovery() is None
+
+
+def test_app_runs_periodic_recovery_while_serving(client):
+    task = run_registry._recovery_task
+    assert task is not None and not task.done()
+    assert task.get_name() == "run-recovery"

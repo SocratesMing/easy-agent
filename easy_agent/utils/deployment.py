@@ -5,8 +5,13 @@
 
 from __future__ import annotations
 
-import os
-from easy_agent.bootstrap.env import env_int
+import re
+import socket
+
+from easy_agent.bootstrap.env import env_int, env_str
+
+# 实例名会拼进文件路径（checkpoint 路径里的 ``{pod}``），只允许 k8s pod 名里出现的字符
+_INSTANCE_NAME = re.compile(r"^[A-Za-z0-9_-][A-Za-z0-9._-]{0,252}$")
 
 
 def detect_worker_count() -> int:
@@ -16,6 +21,34 @@ def detect_worker_count() -> int:
         if value > 1:
             return value
     return 1
+
+
+def detect_replica_count() -> int:
+    """副本（pod）数：``EASY_REPLICA_COUNT``，未设置时为 1。"""
+    return max(env_int("EASY_REPLICA_COUNT", 1), 1)
+
+
+def detect_workers_per_pod() -> int:
+    """单个 pod 里的 worker 进程数：``WEB_CONCURRENCY`` / ``UVICORN_WORKERS`` 取较大者，未设置时为 1。"""
+    return max(env_int("WEB_CONCURRENCY", 1), env_int("UVICORN_WORKERS", 1), 1)
+
+
+def instance_name() -> str:
+    """本实例（pod）的名字：依次取 ``EASY_POD_NAME``、``POD_NAME``、``HOSTNAME``，都没有时用主机名。
+
+    k8s 用 Downward API 注入 ``EASY_POD_NAME``（``metadata.name``）；不注入时容器 hostname
+    默认就是 pod 名。不做校验：拼进路径之前由 :func:`is_valid_instance_name` 把关。
+    """
+    for name in ("EASY_POD_NAME", "POD_NAME", "HOSTNAME"):
+        value = env_str(name)
+        if value:
+            return value
+    return socket.gethostname().strip()
+
+
+def is_valid_instance_name(name: str) -> bool:
+    """实例名能否安全地拼进路径：字母、数字、``.``、``_``、``-``，不以 ``.`` 开头，最长 253 个字符。"""
+    return bool(_INSTANCE_NAME.match(name or ""))
 
 
 def deployment_errors(

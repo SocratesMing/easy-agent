@@ -1,3 +1,7 @@
+"""SQLite → MySQL 迁移脚本测试：非空目标库跳过初始化、残缺的目标库直接拒绝、
+主键冲突按幂等跳过、非主键唯一冲突报错、空工号归一为 NULL。
+"""
+
 import sqlite3
 
 import pytest

@@ -3,9 +3,10 @@
 import argparse
 import os
 import platform
-from pathlib import Path
 
 import uvicorn
+
+from easy_agent.utils.paths import PROJECT_ROOT
 
 # 根据操作系统选择默认监听地址：
 #   Linux / macOS -> 0.0.0.0（允许外部访问，适合服务器/容器）
@@ -22,8 +23,7 @@ def run_web():
     parser.add_argument("--workers", type=int, default=1, help="工作进程数")
     args = parser.parse_args()
 
-    project_root = Path(__file__).resolve().parents[2]
-    os.chdir(project_root)
+    os.chdir(PROJECT_ROOT)
 
     from easy_agent.bootstrap.initialization import initialize_runtime
 

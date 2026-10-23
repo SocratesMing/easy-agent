@@ -1,3 +1,7 @@
+"""HITL 审批策略测试：破坏性命令与目录删除识别、写操作类工具判定、
+模型 profile 查找键（FW-04）和 execute 的中断条件（FW-12）。
+"""
+
 from types import SimpleNamespace
 
 from easy_agent.agent.hitl import (

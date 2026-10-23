@@ -23,7 +23,7 @@ def test_baseline_recorded_on_first_init(tmp_path):
 
 def test_pending_migration_applied_once(tmp_path, monkeypatch):
     path = tmp_path / "m2.db"
-    db = _db(path)
+    _db(path)
     applied = []
 
     def migration(db_, cursor):

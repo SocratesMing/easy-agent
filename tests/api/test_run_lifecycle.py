@@ -1,10 +1,12 @@
-"""多副本 Phase 2B：chat / resume 的 run 生命周期接入。
+"""多副本 Phase 2B：chat / resume / 专家执行的 run 生命周期接入。
 
 覆盖：
 - /agent/chat/stream 在返回流前创建 running run，正常结束落 completed；
 - 生成器异常 → failed（error 截断）且前端收到 error 帧；
 - /cancel（CancelledError）→ cancelled；
 - /agent/chat/resume 同样创建 run，request_json 记录 decisions；
+- 专家对话（/agent/chat/stream + expert_agent_id）的正常执行同样登记 run（删除会话时按它找每条消息一个的旧
+  thread），相关性预检拒答的短路流不登记；
 - run 登记失败不影响聊天主链路。
 """
 
@@ -15,7 +17,9 @@ from types import SimpleNamespace
 import pytest
 
 import easy_agent.api.chat as chat_api
+import easy_agent.services.expert_runtime as expert_runtime
 from easy_agent.models.db import SessionModel
+from easy_agent.db.repositories import agent_runs as agent_runs_repo
 from easy_agent.services.run_registry import new_run_id, start_run
 
 
@@ -223,3 +227,111 @@ def test_run_registry_failure_does_not_break_chat(client, db, monkeypatch):
 
     assert resp.status_code == 200
     assert db.get_run(new_run_id(sid, "msg-x")) is None
+
+
+# ── 专家对话（统一入口 /agent/chat/stream） ───────────────────────────
+
+
+def _patch_chat_stream(monkeypatch, fake_stream):
+    async def fake_agent(session_id, username, workspace_name, **kwargs):
+        return SimpleNamespace(workspace_dir=None, workspace_virtual_path="/workspace")
+
+    monkeypatch.setattr(chat_api, "get_or_create_agent_for_session", fake_agent)
+    monkeypatch.setattr(chat_api, "chat_stream_generator", fake_stream)
+
+
+def test_expert_run_creates_run_and_marks_completed(client, db, monkeypatch):
+    sid = "sess-expert-run"
+    _seed_session(db, sid)
+
+    async def fake_stream(**kwargs):
+        yield 'data: {"type": "done"}\n\n'
+
+    _patch_chat_stream(monkeypatch, fake_stream)
+
+    resp = client.post(
+        "/agent/chat/stream",
+        json={"message": "hi", "session_id": sid, "message_id": "msg-expert"},
+    )
+
+    assert resp.status_code == 200
+    run = db.get_run(new_run_id(sid, "msg-expert"))
+    assert run is not None
+    assert (run["status"], run["username"], run["message_id"]) == (
+        "completed",
+        "testuser",
+        "msg-expert",
+    )
+    payload = json.loads(run["request_json"])
+    assert payload["message"] == "hi"
+    assert "expert_agent_id" in payload
+    # 删除会话时按 run 的 message_id 找每条消息一个的旧 checkpoint thread
+    assert agent_runs_repo.list_session_message_ids(db, sid) == ["msg-expert"]
+
+
+def test_expert_run_exception_marks_failed(client, db, monkeypatch):
+    sid = "sess-expert-run-fail"
+    _seed_session(db, sid)
+
+    async def fake_stream(**kwargs):
+        yield 'data: {"type": "start"}\n\n'
+        raise RuntimeError("expert boom")
+
+    _patch_chat_stream(monkeypatch, fake_stream)
+
+    resp = client.post(
+        "/agent/chat/stream",
+        json={"message": "hi", "session_id": sid, "message_id": "msg-expert-fail"},
+    )
+
+    assert resp.status_code == 200
+    assert "expert boom" in resp.text
+    run = db.get_run(new_run_id(sid, "msg-expert-fail"))
+    assert run["status"] == "failed"
+    assert "RuntimeError: expert boom" in run["error"]
+
+
+def test_expert_refusal_does_not_create_a_run(client, db, monkeypatch):
+    """相关性预检拒答：不建 Agent、瞬间写完，不是 run 生命周期。"""
+    sid = "sess-expert-refusal"
+    _seed_session(db, sid)
+
+    async def must_not_stream(**kwargs):
+        raise AssertionError("拒答时不应进入 Agent 生成器")
+        yield  # pragma: no cover
+
+    _patch_chat_stream(monkeypatch, must_not_stream)
+
+    async def refuse(*args, **kwargs):
+        return "irrelevant", "这个问题不在本专家的职责范围内。"
+
+    monkeypatch.setattr(expert_runtime, "relevance_gate", refuse)
+
+    resp = client.post(
+        "/agent/chat/stream",
+        json={"message": "今天天气如何", "session_id": sid, "message_id": "msg-refused"},
+    )
+
+    assert resp.status_code == 200
+    assert "这个问题不在本专家的职责范围内" in resp.text
+    assert db.get_run(new_run_id(sid, "msg-refused")) is None
+
+
+def test_run_registry_failure_does_not_break_expert_run(client, db, monkeypatch):
+    sid = "sess-expert-registry-down"
+    _seed_session(db, sid)
+
+    async def fake_stream(**kwargs):
+        yield 'data: {"type": "done"}\n\n'
+
+    _patch_chat_stream(monkeypatch, fake_stream)
+    monkeypatch.setattr(chat_api, "start_run", lambda *args, **kwargs: False)
+
+    resp = client.post(
+        "/agent/chat/stream",
+        json={"message": "hi", "session_id": sid, "message_id": "msg-expert-x"},
+    )
+
+    assert resp.status_code == 200
+    assert '"type": "done"' in resp.text
+    assert db.get_run(new_run_id(sid, "msg-expert-x")) is None

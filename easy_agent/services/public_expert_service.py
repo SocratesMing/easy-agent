@@ -30,19 +30,22 @@ Agent 的策略不同：公共专家的内容随发行包提供，缺文件属�
 """
 
 import logging
-import os
 from easy_agent.bootstrap.env import env_str
 from pathlib import Path
 from typing import Any, Optional
 
 import yaml
 
+from easy_agent.utils.paths import PROJECT_ROOT
+
 logger = logging.getLogger(__name__)
 
 #: 公共专家目录的环境变量覆盖项（优先级：配置 > 环境变量 > 默认 <项目根>/experts）
 ENV_EXPERTS_DIR = "EASY_EXPERTS_DIR"
 
-#: 默认目录的**名字**（锚定项目根解析，见 ``_project_root``）。
+#: 默认目录的**名字**，锚定在项目根（``PROJECT_ROOT``）下解析：预置专家是随代码交付的
+#: 内容资产，默认位置必须跟着代码走，而不是进程工作目录（``uvicorn`` / ``systemd`` /
+#: IDE 启动时 CWD 各不相同，用 ``./experts`` 会导致「明明装了预置专家却扫不到」）。
 DEFAULT_EXPERTS_DIRNAME = "experts"
 #: 兼容旧口径的默认值（相对进程 CWD）；仅在项目根下同名目录不存在时兜底使用。
 DEFAULT_EXPERTS_DIR = "./experts"
@@ -55,16 +58,6 @@ STATUS_ACTIVE = "active"
 
 
 # ── 根目录解析 ────────────────────────────────────────────────────────
-
-
-def _project_root() -> Path:
-    """项目/发行包根目录（``easy_agent`` 包的上一级）。
-
-    预置专家是随代码交付的内容资产，其默认位置必须锚定在**代码位置**上，
-    而不是进程工作目录（``uvicorn`` / ``systemd`` / IDE 启动时 CWD 各不相同，
-    用 ``./experts`` 会导致「明明装了预置专家却扫不到」）。
-    """
-    return Path(__file__).resolve().parents[2]
 
 
 def _ensure_experts_root_config() -> str:
@@ -98,7 +91,7 @@ def _resolve_relative(raw: str) -> Path:
     if cwd_path.is_dir():
         return cwd_path
 
-    root_path = _project_root() / path
+    root_path = PROJECT_ROOT / path
     if root_path.is_dir():
         logger.info(
             "📂 公共专家目录按项目根解析 | 配置值: %s | 实际: %s（进程 CWD 下不存在）",
@@ -126,7 +119,7 @@ def public_experts_root_info() -> tuple[Path, str]:
     if env_raw:
         return _resolve_relative(env_raw), "env"
 
-    anchored = _project_root() / DEFAULT_EXPERTS_DIRNAME
+    anchored = PROJECT_ROOT / DEFAULT_EXPERTS_DIRNAME
     if anchored.is_dir():
         return anchored, "default"
     # 项目根下没有（非常规布局）：退回历史口径 ./experts（相对 CWD）
@@ -327,6 +320,9 @@ def read_public_expert(expert_dir: Path) -> Optional[dict]:
         "export_prompt": "",
         "export_description": description,
         "export_skills_names": _as_str_list(cfg.get("skills_names")),
+        # 依赖技能（技能目录名，不是展示名）：召唤该专家时由
+        # services/skill_provision.py 自动「添加」到用户公共技能清单。
+        "export_required_skills": _as_str_list(cfg.get("required_skills")),
         # 画像补充字段（相关性预检用）：公共专家的 config.yaml 里有场景与能力清单，
         # 不下发到列表也不影响前端（未知字段被忽略），但能让预检看到"能产出报告"。
         "export_scenario": str(cfg.get("scenario") or "").strip(),
@@ -411,6 +407,42 @@ def find_public_expert(expert_id: str) -> Optional[dict]:
         if item["export_agent_id"] == expert_id:
             return item
     return None
+
+
+def required_skills_of_public_expert(expert_id: str) -> list[str]:
+    """只读 ``config.yaml`` 取公共专家的依赖技能（``required_skills``）。
+
+    与 ``find_public_expert`` 的区别：**不读提示词正文**。本函数在每轮对话创建
+    Agent 前都会跑，读几 KB 的 md 纯属浪费。
+
+    先按目录名直判（O(1)）；目录名与 config 里的 ``expert_agent_id`` 不一致时，
+    退化为扫描各目录的 ``config.yaml``（只读 yaml，仍不读提示词）。找不到返回空列表
+    ——「我的专家」的 ID 走的正是这条路径，必须足够便宜。
+    """
+    if not expert_id:
+        return []
+
+    root = public_experts_root()
+    direct = root / expert_id
+    if direct.is_dir():
+        content_dir, _ = _resolve_content_dir(direct)
+        cfg = _read_yaml(content_dir / "config.yaml") or _read_yaml(direct / "config.yaml")
+        return _as_str_list(cfg.get("required_skills"))
+
+    if not root.is_dir():
+        return []
+
+    for candidate in sorted(root.iterdir()):
+        if not candidate.is_dir() or candidate.name.startswith(_SKIP_PREFIXES):
+            continue
+        content_dir, _ = _resolve_content_dir(candidate)
+        cfg = _read_yaml(content_dir / "config.yaml") or _read_yaml(
+            candidate / "config.yaml"
+        )
+        declared = str(cfg.get("expert_agent_id") or candidate.name).strip()
+        if declared == expert_id:
+            return _as_str_list(cfg.get("required_skills"))
+    return []
 
 
 def load_public_prompt(expert_id: str) -> tuple[str, int, str]:

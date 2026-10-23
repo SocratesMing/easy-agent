@@ -1,3 +1,5 @@
+"""跨副本会话运行态测试：流占用锁的互斥与释放、会话连接器的存取往返。"""
+
 from easy_agent.db.database import Database
 from easy_agent.services import session_runtime as runtime
 

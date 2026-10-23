@@ -2,7 +2,7 @@
 """清理官方 checkpoint saver 里不再需要的 thread（DA-03 P2）。
 
 改造前每条消息一个 ``{session_id}-{message_id}`` thread、每次定时任务一个
-``sched-{task_id}-{run_id}`` thread，官方 saver（Postgres / SQLite）从不删除。P0 起删除会话、
+``sched-{task_id}-{run_id}`` thread，官方 SQLite saver 从不删除。P0 起删除会话、
 定时任务结束时会删掉自己的 thread，本脚本清理此前留下的存量：
 
     python scripts/db/prune_checkpoint_threads.py                 # 预览，不删除
@@ -16,22 +16,19 @@
   才删，避免删到正在运行的 thread；
 - 每条消息一个的 thread 挂着待审批中断时保留（兼容期内还能恢复），``--include-pending`` 才删。
 
-legacy 快照（业务库为 MySQL 且没配 PG / SQLite checkpoint）按 thread 数裁剪，不需要本脚本。
+legacy 快照（业务库为 MySQL 且没配 SQLite checkpoint）按 thread 数裁剪，不需要本脚本。
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
-import re
 import sys
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
-_UUID = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
-_SESSION_THREAD = re.compile(rf"^{_UUID}$")
-_PER_MESSAGE_THREAD = re.compile(rf"^{_UUID}-.+$")
+from easy_agent.persistence.thread_ids import thread_kind
 
 #: LangGraph 记录中断的 pending write 通道（公开常量 ``langgraph.constants.INTERRUPT`` 已弃用）。
 _INTERRUPT_CHANNEL = "__interrupt__"
@@ -42,16 +39,6 @@ KIND_LABELS = {
     "scheduled": "定时任务 thread",
     "other": "无法识别的 thread",
 }
-
-
-def thread_kind(thread_id: str) -> str:
-    if _SESSION_THREAD.match(thread_id):
-        return "session"
-    if _PER_MESSAGE_THREAD.match(thread_id):
-        return "per-message"
-    if thread_id.startswith("sched-"):
-        return "scheduled"
-    return "other"
 
 
 @dataclass
@@ -148,10 +135,7 @@ def format_report(plan: PrunePlan) -> str:
 async def _run(selection, args) -> int:
     from easy_agent.persistence import checkpoints
 
-    if selection.kind == checkpoints.BACKEND_POSTGRES:
-        saver = await checkpoints.open_postgres_checkpointer(selection.postgres_uri)
-    else:
-        saver = await checkpoints.open_sqlite_checkpointer(selection.sqlite_path)
+    saver = await checkpoints.open_sqlite_checkpointer(selection.sqlite_path)
     try:
         threads = await collect_threads(saver)
         plan = plan_prune(

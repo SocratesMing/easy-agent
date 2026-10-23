@@ -88,7 +88,15 @@ export async function getAllFiles() {
 }
 
 export async function deleteFile(sessionId, file) {
-  const response = await authFetch(`${API_BASE_URL}/agent/sessions/${sessionId}/files/${file.id}`, {
+  // 后端只提供按文件记录 id 删除的接口（DELETE /agent/files/{id}）；
+  // 没有 id 的历史消息/未落库文件只做本地移除，避免请求落到 SPA catch-all 得到 405。
+  // 只有后端 session_files 的数字主键才可删；历史消息可能携带前端生成的字符串 id，
+  // 直接拼进 /agent/files/{id} 会被 FastAPI int 校验拒绝（422），这里统一跳过远端删除。
+  const fileId = Number(file && file.id)
+  if (!Number.isInteger(fileId) || fileId <= 0) {
+    return { status: 'skipped' }
+  }
+  const response = await authFetch(`${API_BASE_URL}/agent/files/${fileId}`, {
     method: 'DELETE',
   })
 

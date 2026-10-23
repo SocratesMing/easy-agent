@@ -50,8 +50,13 @@ export async function getAllFiles() {
 }
 
 export async function deleteFile(sessionId, file) {
+  // 只有后端 session_files 的数字主键才可删；字符串 id 会被 FastAPI int 校验拒绝（422）。
+  const fileId = Number(file && file.id)
+  if (!Number.isInteger(fileId) || fileId <= 0) {
+    return { status: 'skipped' }
+  }
   return request(
-    { url: `/agent/sessions/${sessionId}/files/${file.id}`, method: 'delete' },
+    { url: `/agent/files/${fileId}`, method: 'delete' },
     '删除文件失败'
   )
 }

@@ -1,3 +1,7 @@
+"""Database 用户方法测试：MySQL 字典游标计数、默认管理员必须注入强初始密码、
+生产环境轮换旧的已知管理员密码。
+"""
+
 from contextlib import contextmanager
 
 import pytest

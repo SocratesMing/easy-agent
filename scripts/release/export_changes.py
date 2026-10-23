@@ -17,7 +17,6 @@
 scripts/changed_files/easy_agent/api/auth.py。
 """
 
-import os
 import shutil
 import subprocess
 import sys

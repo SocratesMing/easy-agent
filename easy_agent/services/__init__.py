@@ -1,3 +1,8 @@
+"""业务服务包：会话 Agent 缓存、连接器、SSE 流式编排、流事件、记忆、MCP 与定时任务等。
+
+包级重导出路由层常用的入口函数。
+"""
+
 from easy_agent.services.agent_manager import (
     init_agent_config,
     get_or_create_agent_for_session,
@@ -21,7 +26,10 @@ from easy_agent.services.connectors import (
     parse_message_connectors,
     resolve_connector_servers,
 )
-from easy_agent.services.streaming import chat_stream_generator, resume_stream_generator
+from easy_agent.services.streaming.orchestrator import (
+    chat_stream_generator,
+    resume_stream_generator,
+)
 from easy_agent.services.stream_events import StreamEventWriter, flush_all_stream_events
 from easy_agent.services.scheduler import (
     init_scheduler,

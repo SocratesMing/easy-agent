@@ -1,3 +1,5 @@
+"""数据模型包：``api`` 是接口请求 / 响应的 Pydantic 模型，``db`` 是数据库行模型；包级重导出常用模型。"""
+
 from easy_agent.models.api import (
     AgentConfig,
     CreateSessionRequest,

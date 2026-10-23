@@ -34,7 +34,7 @@ from pathlib import Path
 from typing import Any
 
 # 以下导入同时是兼容 re-export：对象身份与子模块一致（纯移动，不改行为）。
-from easy_agent.services.memory_entries import (
+from easy_agent.services.memory_entries import (  # noqa: F401 - 兼容重导出（测试锁定）
     DEFAULT_CATEGORY,
     DEFAULT_SOURCE,
     ENV_FLAG,
@@ -265,19 +265,6 @@ class MemoryStore:
         stored = merge_entries(existing, valid) if existing is not None else valid
         self._entries[stored.key] = stored
         self._trim_overflow()
-        return stored
-
-    def upsert_many(self, entries: Iterable[MemoryEntry]) -> list[MemoryEntry]:
-        stored: list[MemoryEntry] = []
-        for entry in entries:
-            try:
-                stored.append(self.upsert(entry))
-            except (MemoryValidationError, TypeError, ValueError) as exc:
-                logger.warning(
-                    "跳过无效记忆条目 | 内容 hash: %s | %s",
-                    content_digest(str(getattr(entry, "value", ""))),
-                    exc,
-                )
         return stored
 
     def replace_entries(

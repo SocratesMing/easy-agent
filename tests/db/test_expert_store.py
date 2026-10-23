@@ -8,7 +8,6 @@
 - 软删除与物理删除
 """
 
-import pytest
 
 from easy_agent.db.database import EXPECTED_TABLES, SCHEMA_VERSION
 from easy_agent.db.expert_store import (

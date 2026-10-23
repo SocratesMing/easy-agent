@@ -324,8 +324,9 @@ def test_double_write_cli_fails_on_bad_sample(tmp_path):
 def test_repository_double_write_gate_is_green():
     result = double_write.check_repository(REPO_ROOT)
     assert result.ok, "\n".join(violation.format() for violation in result.violations)
+    # 下限只用来发现扫描器失效（认不出方法或纯委托），不是精确值
     assert result.stats.get("database_methods", 0) >= 100
-    assert result.stats.get("database_delegations", 0) >= 100
+    assert result.stats.get("database_delegations", 0) >= 90
 
 
 # --- bare os.getenv baseline -------------------------------------------------

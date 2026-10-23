@@ -4,7 +4,6 @@
 fail-closed（不注册任务），除非显式设置 EASY_ALLOW_DUPLICATE_SCHEDULER=1。
 """
 
-import sys
 import types
 
 import pytest

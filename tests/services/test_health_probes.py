@@ -1,3 +1,5 @@
+"""健康探针测试：数据库未初始化时报不可用；检查工作区目录可写。"""
+
 from easy_agent.services.health import ping_database, workspace_writable
 
 

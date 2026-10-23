@@ -211,7 +211,7 @@ def test_root_default_when_nothing_set(monkeypatch):
 
     root, source = P.public_experts_root_info()
     assert source == "default"
-    anchored = P._project_root() / P.DEFAULT_EXPERTS_DIRNAME
+    anchored = P.PROJECT_ROOT / P.DEFAULT_EXPERTS_DIRNAME
     if anchored.is_dir():
         assert root == anchored
     else:
@@ -229,7 +229,7 @@ def test_root_default_is_independent_of_cwd(tmp_path, monkeypatch):
     _flat_expert(fake_root / P.DEFAULT_EXPERTS_DIRNAME, "preset_cwd", name_en="cwd")
 
     monkeypatch.setattr(agent_manager, "get_agent_config", lambda: {})
-    monkeypatch.setattr(P, "_project_root", lambda: fake_root)
+    monkeypatch.setattr(P, "PROJECT_ROOT", fake_root)
     monkeypatch.delenv(P.ENV_EXPERTS_DIR, raising=False)
     monkeypatch.chdir(tmp_path)  # CWD 下没有 experts/
 
@@ -244,7 +244,7 @@ def test_root_relative_config_resolves_against_project_root(tmp_path, monkeypatc
     """配置里写相对目录时，CWD 下没有就按项目根找（部署换目录不必改启动方式）。"""
     fake_root = tmp_path / "proj"
     (fake_root / "my-experts").mkdir(parents=True)
-    monkeypatch.setattr(P, "_project_root", lambda: fake_root)
+    monkeypatch.setattr(P, "PROJECT_ROOT", fake_root)
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(
         agent_manager,

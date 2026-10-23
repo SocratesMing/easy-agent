@@ -28,6 +28,7 @@ from typing import Any
 from easy_agent.bootstrap.config import Config
 from easy_agent.agent import builtin_skills
 from easy_agent.agent.builtin_skills import USER_DISABLED_DIR_NAME, USER_SKILLS_DIR_NAME
+from easy_agent.agent.skills import parse_skill_frontmatter, skill_body
 
 logger = logging.getLogger("easy-agent")
 
@@ -74,23 +75,21 @@ def iter_skill_dirs(root: Path) -> list[Path]:
 
 
 def parse_frontmatter(text: str) -> dict[str, str]:
-    """解析 SKILL.md 顶部 YAML frontmatter 里的 name/description/icon/version。
+    """技能库展示用的 name / description / icon / version，取自 SKILL.md 的 frontmatter。
 
-    只认单行 `key: value`（现有技能文件都是这种极简形态），解析失败返回空字段。
+    与框架加载技能用同一套解析（``agent.skills.parse_skill_frontmatter``，YAML）：展示名
+    就是 pin 技能时框架按它匹配的名字。frontmatter 缺失或不是合法 YAML 时返回空字段，调用方
+    按目录名和正文降级展示（这种技能框架也不会加载）。
     """
-    meta: dict[str, str] = {}
-    match = re.match(r"^---\s*\n(.*?)\n---", text, re.DOTALL)
-    if not match:
-        return meta
-    for line in match.group(1).split("\n"):
-        if ":" not in line:
-            continue
-        key, _, value = line.partition(":")
-        key = key.strip()
-        value = value.strip().strip('"').strip("'")
-        if key in ("name", "description", "icon", "version") and value:
-            meta[key] = value
-    return meta
+    meta, _ = parse_skill_frontmatter(text)
+    fields: dict[str, str] = {}
+    for key in ("name", "description", "icon", "version"):
+        value = (meta or {}).get(key)
+        # 与框架一致按 str() 取值：YAML 会把 version: 1.10 读成数字 1.1
+        text_value = "" if value is None else str(value).strip()
+        if text_value:
+            fields[key] = text_value
+    return fields
 
 
 def read_skill_document(skill_dir: Path) -> tuple[str, str]:
@@ -113,9 +112,9 @@ def skill_metadata(skill_dir: Path) -> dict[str, Any]:
 
     description = front.get("description", "")
     if not description and content:
-        # 没有 frontmatter 描述时，取第一段有实际内容的正文：
+        # 没有 frontmatter 描述时，取 frontmatter 之后第一段有实际内容的正文：
         # 跳过标题/分隔线，并跳过纯符号行（如只有 ">" 的引用符号），避免卡片上出现 ">"
-        for line in content.split("\n"):
+        for line in skill_body(content).split("\n"):
             stripped = line.strip().lstrip(">").strip()
             if not stripped or stripped.startswith("#") or stripped.startswith("---"):
                 continue
@@ -357,6 +356,10 @@ def register_skill_source(
     # 目标名与源目录名不同（规范化或重名加后缀）时算重命名
     renamed = final_name != source.name
     warnings: list[str] = []
+    # 写了 frontmatter 但解析不了时，先给出具体原因，否则下面「缺少 name」的提示会让人摸不着头脑
+    _, front_error = parse_skill_frontmatter(content)
+    if front_error:
+        warnings.append(f"SKILL.md {front_error}")
     front = parse_frontmatter(content)
     if not front.get("name"):
         warnings.append("SKILL.md frontmatter 缺少 name（将按目录名展示）")

@@ -7,7 +7,6 @@
  *   GET  /agent/list               我的专家列表
  *   GET  /agent/public-list        公共（预置）专家列表
  *   POST /agent/del                删除专家（默认软删）
- *   POST /agent/stream_export_run  选中专家执行（SSE）
  *
  * 流式请求沿用 utils/request.js 的 streamUrl / streamHeaders /
  * handleStreamResponse，SSE 事件格式与 /agent/chat/stream 完全一致。
@@ -85,7 +84,7 @@ export async function listExperts({
 }
 
 /**
- * 公共（预置）专家列表：随项目内置的专家（`exports/` 目录），只读，
+ * 公共（预置）专家列表：随项目内置的专家（`experts/` 目录），只读，
  * 不区分用户。字段与 listExperts 的 items 一致（另带 `scope: 'public'`）。
  */
 export async function listPublicExperts() {
@@ -109,39 +108,3 @@ export async function deleteExpert(exportAgentId, hard = false) {
     '删除专家失败'
   )
 }
-
-/**
- * 选中专家执行（SSE 流式）
- *
- * @param {Object} payload { message, sessionId, expertAgentId, model, enableDeepThink, enableWebSearch, files, skills }
- * @param {Function} onChunk 每个 SSE 事件回调（与聊天完全相同的结构）
- * @param {AbortSignal} [signal] 用于取消
- */
-export async function streamExportRun(payload, onChunk, signal) {
-  const controller = new AbortController()
-  const abortSignal = signal || controller.signal
-
-  const response = await handleStreamResponse(
-    await fetch(streamUrl('/agent/stream_export_run'), {
-      method: 'POST',
-      headers: streamHeaders(),
-      body: JSON.stringify({
-        message: payload.message,
-        session_id: payload.sessionId || null,
-        message_id: payload.messageId || null,
-        expert_agent_id: payload.expertAgentId || null,
-        model: payload.model || null,
-        enable_deep_think: !!payload.enableDeepThink,
-        enable_web_search: !!payload.enableWebSearch,
-        files: payload.files || null,
-        // 已选技能走结构化字段（技能目录名），`/目录名` 由后端拼进模型输入。
-        // 连接器不走这里：本会话启用哪些连接器由 /agent/connectors/session 单独设置。
-        skills: payload.skills && payload.skills.length ? payload.skills : null,
-      }),
-      signal: abortSignal,
-    })
-  )
-
-  await readSSE(response, onChunk, { signal: abortSignal })
-}
-

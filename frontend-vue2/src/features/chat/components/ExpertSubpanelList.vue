@@ -1,9 +1,7 @@
 <template>
+  <!-- 显隐条件（!plusListLoading && !plusListError && subpanelCategory === 'experts'）
+       由父组件 ChatInput.vue 在 <ExpertSubpanelList> 标签上控制，本组件只渲染列表。 -->
   <div class="plus-subpanel-list plus-experts" @scroll="$emit('scroll', $event)">
-  v-if="!plusListLoading && !plusListError && subpanelCategory === 'experts'"
-  class="plus-subpanel-list plus-experts"
-  @scroll="$emit('scroll', $event)"
->
   <!-- 上区：我的专家（仅展示「可用」状态的专家，与专家 Tab 的召唤约束一致） -->
   <div class="plus-experts-section">
     <span class="plus-experts-section-label">我的专家</span>

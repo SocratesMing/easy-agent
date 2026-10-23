@@ -1,7 +1,6 @@
 """Environment initialization isolated from application components."""
 
 from dataclasses import dataclass
-import os
 from easy_agent.bootstrap.env import env_str
 
 from easy_agent.utils.env_loader import get_loaded_env_info, load_project_env

@@ -6,7 +6,7 @@
 ## 1. 运行时入口
 
 - `main.py` / `easy-web`（`easy_agent/bootstrap/web_runner.py`）→ `easy_agent.app:app`（FastAPI）。
-- `app.py` lifespan：初始化环境/日志/配置 → 启动知识库 → DB → 提示词/技能发现 → Agent 配置 → 移植专家目录扫描 → 可选 Postgres checkpointer → 调度器（多 worker 保护）。
+- `app.py` lifespan：初始化环境/日志/配置 → 启动知识库 → DB → 提示词/技能发现 → Agent 配置 → 移植专家目录扫描 → HITL checkpointer（官方 SQLite saver / 业务库快照）→ 调度器（多 worker 保护）。
 - 配置：`easy_agent/config/config.yaml`（gitignored，单文件）；模板 `config-example.yaml`；环境变量来自 `.env.{AGENT_ENV}`；`EASY_CONFIG` 可覆盖路径。`config.py` 只保留 `Config`（加载/解析/路径 helpers）；Pydantic 配置模型在 `config_models.py`，键校验与 `${VAR}` 展开在 `config_validation.py`，均由 `config.py` re-export（批次 1A）。
 - 运行期配置持有者：`easy_agent/bootstrap/runtime_config.py`（基础层只读，避免 config → services 循环）。
 
@@ -18,12 +18,12 @@
 | `backends/shell.py` | `LocalShellBackend` + 虚拟路径翻译 + bwrap/Landlock/fail-closed 策略 |
 | `sandboxing/sandbox.py` / `landlock.py` / `fs_safety.py` | 命令沙箱、Landlock 降级、外部目录挂载安全校验 |
 | `agent/hitl.py` | 破坏性命令识别、execute 工具描述、HITL 默认工具 |
-| `persistence/checkpoints.py` | 自研 `PersistentMemorySaver`（裁剪后写业务库）与官方 Postgres saver |
+| `persistence/checkpoints.py` | 官方 `AsyncSqliteSaver` 与自研 `PersistentMemorySaver`（裁剪后写业务库） |
 | `persistence/stores.py` | 自研 LangGraph `BaseStore`（SQLite/MySQL） |
 | `agent/summarization.py` | 建图期替换官方摘要工厂 + 缺失降级护栏 |
 | `agent/subagents.py` / `agent/skills.py` | 子代理定义；技能发现（根 `skills/` 为 canonical，包内副本回退） |
 | `bootstrap/runtime_config.py` | 运行期配置 + Agent 失效回调注册（架构解耦用） |
-| `bootstrap/config.py` / `config_models.py` / `config_validation.py` | 配置加载（`Config.from_yaml`、`_parse_*`、路径 helpers）；Pydantic 配置模型；未知/废弃键校验与 `${VAR}` 展开；`config.py` re-export 原有公开名字与兼容私有名 |
+| `bootstrap/config.py` / `config_models.py` / `config_validation.py` | 配置加载（`Config.from_yaml` 把各段交给模型校验，只处理 YAML 写法与模型对不上的地方）与路径 helpers；Pydantic 配置模型（字段名与默认值的唯一来源）；未知/废弃键校验（已知键由模型字段生成）与 `${VAR}` 展开；`config.py` re-export 原有公开名字与兼容私有名 |
 | `api/` | chat / auth / sessions / files / expert / connectors / scheduled_tasks / settings / skill_center / completion / prompts / terminal（POSIX，HITL 无关） |
 | `services/` | streaming（SSE 编排）、agent_manager（会话 Agent 缓存/流锁）、scheduler、mcp（连接器工具）、session_uploads、skill_library、expert/public_expert、memory_manager、session_runtime、sse（事件注册表） |
 | `db/` | `database.py`（连接/迁移/核心表）、`session_messages.py`、`expert_store.py`、`schema_registry.py` |
@@ -38,7 +38,7 @@
 ### 聊天流式（SSE）
 `POST /agent/chat/stream` → 会话归属校验/创建 → `db.add_message`（行表）→
 `agent_manager.get_or_create_agent_for_session`（按 user/session/model/expert/connectors 缓存，`OrderedDict` LRU）→
-`services/streaming.chat_stream_generator` → DeepAgents `astream(stream_mode=["messages","updates"])` →
+`services/streaming/orchestrator.chat_stream_generator` → DeepAgents `astream(stream_mode=["messages","updates"])` →
 `StreamProcessor` 产生事件 → `format_sse`（`services/sse.py`）→ `_StreamHub` 广播/回放（单会话并发返回 409）→
 最终写入 `session_messages`；可选 HITL 中断 `approval_required`，`/chat/resume` 恢复。
 
@@ -64,7 +64,7 @@
 - SQLite（单机开发，启用 WAL/busy_timeout/synchronous=NORMAL）或 MySQL（多副本生产，代码禁止静默降级）。
 - 会话消息行表 `session_messages`；`sessions.messages` 为 legacy 大字段（仅历史会话回退读取）。
 - 领域 schema 通过 `db/schema_registry.py` 注册，`Database.init_tables()` 统一执行。
-- LangGraph checkpointer：`EASY_CHECKPOINT_BACKEND=auto` 时有 `EASY_CHECKPOINT_POSTGRES_URI` 用官方 `AsyncPostgresSaver`，业务库为 SQLite 时用官方 `AsyncSqliteSaver`（`data/checkpoints.db`），业务库为 MySQL 且无 PG 时回退 `PersistentMemorySaver`（只按 thread 数裁剪，最多 3 个 thread；thread 内 checkpoint 全部保留，`messages` 是增量存储）；删除会话时一并删除它在官方 saver 里的 thread，定时任务每次运行结束后删除自己的 thread（DA-03 P0）。
+- LangGraph checkpointer：`EASY_CHECKPOINT_BACKEND=auto` 时配了 `EASY_CHECKPOINT_SQLITE_PATH` 或业务库为 SQLite 就用官方 `AsyncSqliteSaver`（默认 `data/checkpoints.db`，相对路径按仓库根解析，`synchronous=NORMAL`），业务库为 MySQL 且没配 SQLite 路径时回退 `PersistentMemorySaver`（只按 thread 数裁剪，最多 3 个 thread；thread 内 checkpoint 全部保留，`messages` 是增量存储）；删除会话时一并删除它在官方 saver 里的 thread，定时任务每次运行结束后删除自己的 thread（DA-03 P0）。Postgres checkpointer / Store 已移除（2026-10-21，生产只有 MySQL），LangGraph Store 固定为业务库 `SqlStore`。多副本时每个 pod 用自己的 SQLite 文件：`EASY_CHECKPOINT_SQLITE_PATH` 里的 `{pod}` 启动时换成实例名，`EASY_STICKY_SESSIONS=1` 确认 Ingress 已配 cookie 粘性会话，每个 pod 一个 worker；其余多副本组合启动时 fail-fast，这种模式下 SQLite 打不开也不回退业务库快照。审批记下所在实例（`pending_approval.instance`），恢复请求落到别的 pod、或本 pod 找不到这条审批的 checkpoint 时返回 409；删除会话后，其余 pod 由后台对账（`EASY_CHECKPOINT_GC_INTERVAL`，默认 600 秒）补删「会话已不存在」的 thread（`docs/design/2026-10-21-per-pod-sqlite-checkpoints.md`）。
 
 ## 4. 前端
 
@@ -94,7 +94,7 @@
 ```bash
 uv sync                                  # 安装依赖（dependency-groups dev / extra docs）
 uv run pytest tests/ -q                  # 全量测试（当前基线：933+ passed）
-uvx ruff check .                         # 致命规则（E9/F63/F7/F82）
+uvx ruff check .                         # 致命规则（E9/F63/F7/F82）+ 未使用的 import / 变量、重复定义（F401/F811/F841）
 python scripts/skills/sync_skills.py --check    # 技能副本一致性
 cd frontend-vue2 && npm ci && npm run build
 cd frontend && npm ci && npm run build
@@ -105,6 +105,6 @@ CI：`.github/workflows/ci.yml`（后端 ruff + pytest collect/test + 双前端 
 ## 6. 已知架构债（详见审计报告）
 
 - 剩余 1 个 16 模块强连通分量（`api.chat ↔ knowledges.* ↔ services`），按 `docs/archive/design/2026-10-17-module-refactor-plan.md` 分阶段处理。
-- `Database` 仍较大（待 Phase 2 拆 repository）；`streaming.py` 巨型生成器待 Phase 3 拆。
+- `Database` 仍较大（待 Phase 2 拆 repository）。
 - 多副本状态仍在进程内（agent 缓存/SSE hub/调度）；设计见 `docs/archive/design/2026-10-17-multi-instance-state.md`。
 - 安全：审计报告中的 4 个 P0 / 8 个 P1 尚未修复（Batch 0/1 未执行）。

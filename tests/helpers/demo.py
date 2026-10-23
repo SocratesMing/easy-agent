@@ -1,3 +1,8 @@
+"""手动演示脚本：通过 OpenAI 兼容接口调用 DeepSeek（需要 DEEPSEEK_API_KEY，会真实请求网络）。
+
+不是测试用例，pytest 不会收集。
+"""
+
 # from langchain_deepseek import ChatDeepSeek
 
 # llm = ChatDeepSeek(

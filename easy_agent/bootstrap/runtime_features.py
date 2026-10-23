@@ -77,11 +77,11 @@ def multi_replica_errors(
     if count <= 1:
         return []
 
-    errors: list[str] = []
-    if env_str("EASY_CHECKPOINT_BACKEND", "auto").strip().lower() not in {"postgres", "postgresql"} and not env_str("EASY_CHECKPOINT_POSTGRES_URI"):
-        errors.append("严格多副本要求 EASY_CHECKPOINT_BACKEND=postgres（或设置 EASY_CHECKPOINT_POSTGRES_URI）")
-    if env_str("EASY_STORE_BACKEND", "auto").strip().lower() not in {"postgres", "postgresql"} and not (env_str("EASY_STORE_POSTGRES_URI") or env_str("EASY_CHECKPOINT_POSTGRES_URI")):
-        errors.append("严格多副本要求 Store 使用 Postgres（EASY_STORE_BACKEND=postgres 或 PG URI）")
+    # Store 在业务库里（SqlStore），副本之间本来就共享；HITL checkpointer 只有 SQLite 文件和
+    # 业务库快照两种，都不能跨副本共享（Postgres checkpointer 已移除）。
+    errors: list[str] = [
+        "HITL checkpointer（SQLite 文件 / 业务库快照）不能跨副本共享，多副本需要先接入共享的 checkpointer"
+    ]
 
     for attr, label in (
         ("stream_backend", "EASY_STREAM_BACKEND"),

@@ -42,7 +42,7 @@ cd frontend && npm run build
 
 Copy `easy_agent/config/config-example.yaml` to `easy_agent/config/config.yaml` and configure your models. The active config is `EASY_CONFIG` if set, otherwise `easy_agent/config/config.yaml` (legacy `config.{AGENT_ENV}.yaml` is only a fallback when the unified file is missing). `Config.find_config_file()` (cwd → `~/.easy-agent/config` → package) is used for auxiliary files such as `mcp.json`, not for the main config.
 
-The YAML format uses a `models:` dict for multi-provider support and `model:` to select the active one. Top-level keys include `model`, `models`, `retry`, `max_steps`, `workspace_dir`, `memories_dir`, `sessions_dir`, `prompt_path` (legacy `system_prompt_path`), `app_welcome_title`. Nested sections: `tools`, `database`, `summarization`, `web_search`, `distributed_lock`, `personnel`, `upload_limits`, `file_context`, `expert`, `knowledge`. Parsed manually in `Config.from_yaml()`, not mapped from Pydantic models. Unknown keys only warn by default; set `EASY_CONFIG_STRICT=1` to fail fast, or run `python scripts/quality/check_config_schema.py --check`.
+The YAML format uses a `models:` dict for multi-provider support and `model:` to select the active one. Top-level keys include `model`, `models`, `retry`, `max_steps`, `workspace_dir`, `memories_dir`, `sessions_dir`, `prompt_path` (legacy `system_prompt_path`), `app_welcome_title`. Nested sections: `tools`, `database`, `summarization`, `web_search`, `distributed_lock`, `personnel`, `upload_limits`, `file_context`, `expert`, `knowledge`. `Config.from_yaml()` hands each section to the Pydantic models in `bootstrap/config_models.py`, the single source of field names and defaults (the known-key list behind the unknown-key warning is generated from them); it only adapts what the YAML shape adds: the active `model`, agent fields at the top level, the legacy `system_prompt_path`, and flat `expert_*` keys vs the `expert:` section. Unknown keys only warn by default; set `EASY_CONFIG_STRICT=1` to fail fast, or run `python scripts/quality/check_config_schema.py --check`.
 
 Environment variables:
 - `EASY_CONFIG` — override config file path (set by `web_runner.py` automatically)
@@ -76,7 +76,7 @@ Environment variables:
 
 ### Services (`easy_agent/services/`)
 
-- `streaming.py` — **Core SSE orchestrator** (`chat_stream_generator`). Processes DeepAgents `astream` output through `StreamProcessor` and emits typed events registered in `services/sse.py`; the full contract is `docs/sse-events.md` (15 events incl. `approval_required` / `knowledge_evidence`). Parses `<think>` tags and accumulates partial tool-call JSON.
+- `streaming/` — **Core SSE orchestrator** (`orchestrator.chat_stream_generator` / `resume_stream_generator`; `projector`, `persistence` and `side_effects` hold the pure projections, DB writes and post-stream work; the package `__init__` exports nothing). Processes DeepAgents `astream` output through `StreamProcessor` and emits typed events registered in `services/sse.py`; the full contract is `docs/sse-events.md` (15 events incl. `approval_required` / `knowledge_evidence`). Parses `<think>` tags and accumulates partial tool-call JSON.
 - `agent_manager.py` — In-memory session-level agent cache (`OrderedDict` LRU) plus per-session stream locks. Lost on server restart; multi-instance deployments need sticky sessions.
 
 ### Other Backend Modules
@@ -110,7 +110,7 @@ Two maintained baselines:
 
 1. User input → `api/chat.py:chat_stream()` → persists user message → gets/creates per-session `EasyAgent`
 2. EasyAgent invokes DeepAgents `astream` with `HumanMessage`
-3. `services/streaming.py:chat_stream_generator()` processes streaming chunks: parses `<think>` tags, accumulates tool call JSON, persists thinking/tool records to DB
+3. `services/streaming/orchestrator.py:chat_stream_generator()` processes streaming chunks: parses `<think>` tags, accumulates tool call JSON, persists thinking/tool records to DB
 4. SSE events sent to frontend, rendered as blocks within assistant messages
 5. Final response persisted to `session_messages` (row table; legacy `sessions.messages` blob only for old sessions)
 
@@ -125,7 +125,7 @@ Two maintained baselines:
 - **Messages are row-based** — `session_messages` is authoritative; `sessions.messages` is a legacy blob fallback
 - **Context compression** via `SummarizationMiddleware` — configurable threshold/target in config, triggers on token count
 - **Agent cache is in-memory only** — server restarts lose all cached agents
-- **Session threads are opt-in** — `session_thread: true` runs one LangGraph thread per session (`thread_id = session_id`, only the new message is input; empty threads hydrate from the DB) on official savers only; the legacy MySQL snapshot saver keeps per-message threads. The approval handle sent to the frontend stays `{session_id}-{message_id}` (`services/session_thread.py`)
+- **Session threads are on by default** — `session_thread: true` (default) runs one LangGraph thread per session (`thread_id = session_id`, only the new message is input; empty threads hydrate from the DB) on official savers only; `false` is the compatibility mode that rebuilds history per message. The legacy MySQL snapshot saver keeps per-message threads either way. The approval handle sent to the frontend stays `{session_id}-{message_id}` (`services/session_thread.py`)
 - **`save_expert` is skill-gated** — it is not in the agent's tool list; `agent/core.py` hands it to a `SkillsMiddleware(tools=...)` that replaces the default one, so it is bound only after the model reads or pins `expert-creator` (whose frontmatter declares `metadata.include_tools: save_expert`). Expert sessions never get it. `extras={"defer_loading": True}` would not hide it on OpenAI-compatible models (see `docs/design/2026-10-20-da13-skills-sources.md`)
 - **Per-turn context goes through `turn_context`** — the workspace prefix, knowledge/page context and upload preview are rendered into the model request only (skills selected in the input box are loaded via `pinned_skills`, not text directives); the turn's `HumanMessage` holds the raw user text (id = message_id, also stored as `turn_id` on the DB row). Don't concatenate per-turn context into message content (see `docs/archive/design/2026-10-19-da03-session-thread.md`)
 - **`web_runner.py` does `os.chdir(project_root)`** — important for relative path resolution

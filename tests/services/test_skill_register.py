@@ -121,6 +121,20 @@ def test_register_warns_when_frontmatter_incomplete(users_root, tmp_path):
     assert any("description" in w for w in result["warnings"])
 
 
+
+def test_register_reports_why_the_frontmatter_failed(users_root, tmp_path):
+    """写了 frontmatter 但不是合法 YAML：提示里给出解析错误，而不是只说缺 name。"""
+    src = _make_skill_dir(
+        tmp_path / "ws",
+        "colon-skill",
+        content="---\nname: demo\ndescription: Use when: 写周报\n---\n# Demo\n",
+    )
+
+    result = skill_library.register_skill_source(USERNAME, src)
+
+    assert any("YAML 解析失败" in w for w in result["warnings"])
+
+
 def test_explicit_dir_name_wins(users_root, tmp_path):
     src = _make_skill_dir(tmp_path / "ws", "draft-folder")
 

@@ -9,7 +9,6 @@
 用例完全离线：目录读取 / mcp.json / MCP 客户端 / EasyAgent 全部打桩。
 """
 
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest

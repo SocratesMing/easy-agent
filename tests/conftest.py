@@ -43,7 +43,6 @@ os.environ["TEST_SYSTEM_PROMPT"] = str(TEST_ROOT / "system_prompt.md")
 # 再覆盖成独立文件，保证测试之间不共享 HITL 中断态。
 os.environ["EASY_CHECKPOINT_BACKEND"] = "auto"
 os.environ["EASY_CHECKPOINT_SQLITE_PATH"] = str(_TMP / "checkpoints" / "shared.db")
-os.environ.pop("EASY_CHECKPOINT_POSTGRES_URI", None)
 (_TMP / "checkpoints").mkdir(parents=True, exist_ok=True)
 
 for _d in ("workspace", "memories", "logs", "sessions", "skills", "prompts", "uploads"):
@@ -72,7 +71,6 @@ from fastapi.testclient import TestClient  # noqa: E402
 from easy_agent.app import app  # noqa: E402
 from easy_agent.db import get_database, init_database  # noqa: E402
 from easy_agent.middleware import get_current_username  # noqa: E402
-import easy_agent.db as _db_mod  # noqa: E402
 import easy_agent.db.database as _db_impl  # noqa: E402
 import easy_agent.bootstrap.config as _config_mod  # noqa: E402
 import easy_agent.api.files as _files_mod  # noqa: E402
@@ -93,7 +91,6 @@ def client(db, monkeypatch):
         "EASY_CHECKPOINT_SQLITE_PATH",
         str(_TMP / "checkpoints" / f"test_{uuid.uuid4().hex}.db"),
     )
-    monkeypatch.delenv("EASY_CHECKPOINT_POSTGRES_URI", raising=False)
 
     # 将工作区相关路径重定向到临时目录
     monkeypatch.setattr(
@@ -155,13 +152,11 @@ def client(db, monkeypatch):
     import easy_agent.app as _app_mod
     import easy_agent.agent.model as _model_mod
     import easy_agent.services.agent_manager as _am_mod
-    import easy_agent.services.streaming as _stream_mod
 
     for _m in (
         _model_mod,
         _app_mod,
         _am_mod,
-        _stream_mod,
         _agent_mod,
     ):
         if hasattr(_m, "create_model"):

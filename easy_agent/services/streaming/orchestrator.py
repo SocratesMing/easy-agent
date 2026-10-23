@@ -23,6 +23,7 @@ from langgraph.types import Command
 
 from easy_agent.agent import EasyAgent
 from easy_agent.db import Database
+from easy_agent.persistence.checkpoints import checkpoint_instance
 from easy_agent.agent.model import resolve_context_length
 from easy_agent.agent.run_config import build_run_config
 from easy_agent.agent.turn_context import turn_input
@@ -238,6 +239,8 @@ async def detect_hitl_interruption(
     payload = mark_hitl_pending_interrupts(
         partial_msg, interrupts, state_msgs, thread_id
     )
+    # 记下审批所在的实例：多副本按 pod 隔离 checkpoint 时，恢复请求必须回到这里（api/chat.py 核对）
+    partial_msg["pending_approval"]["instance"] = checkpoint_instance()
     return HitlInterruption(
         action_requests_payload=payload, partial_message=partial_msg
     )
@@ -631,11 +634,9 @@ async def chat_stream_generator(
 
     except asyncio.CancelledError:
         accumulated_response = proc.accumulated_response
-        accumulated_thinking = proc.accumulated_thinking
         blocks = proc.blocks
         tool_call_records = _tool_call_tuples(proc.blocks)
         current_step = proc.current_step
-        last_context_tokens = proc.last_context_tokens
         is_in_thinking = proc.is_in_thinking
         logger.info(
             f"[{sid}] ❌ 请求被取消 | 当前 step={current_step} | "

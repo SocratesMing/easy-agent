@@ -1,21 +1,16 @@
-"""LangGraph Store 后端：官方 PostgresStore 或业务库 SqlStore。
+"""LangGraph Store：业务库 SqlStore。
 
-B1：``EASY_STORE_BACKEND=auto|postgres|sql``。auto 在存在 Postgres URI
-（``EASY_STORE_POSTGRES_URI``，缺省复用 ``EASY_CHECKPOINT_POSTGRES_URI``）且
-官方 ``langgraph.store.postgres`` 可用时使用 ``AsyncPostgresStore``；否则保持
-业务库 ``SqlStore``（MySQL/单机 SQLite），不改变既有行为。
+跨 thread 的长期数据（deepagents 的 ``store=``、上传文件的 store 模式）存进业务库
+（MySQL / 单机 SQLite）的键值表。生产只有 MySQL，官方 PostgresStore 已移除。
 """
 
 from __future__ import annotations
 
 import json
-import logging
-from dataclasses import dataclass
 from collections.abc import Iterable
 from datetime import UTC, datetime
 from typing import Any
 
-from easy_agent.bootstrap.env import env_str
 from langgraph.store.base import (
     BaseStore,
     GetOp,
@@ -28,134 +23,12 @@ from langgraph.store.base import (
     SearchOp,
 )
 
-logger = logging.getLogger(__name__)
-
 _NS_SEP = "\x1f"
 
 _store: BaseStore | None = None
-_pg_store_cm = None
 
 # 单次 search 最多扫描的行数（filter 只在内存执行，防止超大表无界扫描）
 _SEARCH_SCAN_LIMIT = 5000
-
-# ── B1：Store 后端选择（auto/postgres/sql） ─────────────────────────────
-BACKEND_AUTO = "auto"
-BACKEND_POSTGRES = "postgres"
-BACKEND_SQL = "sql"
-BACKEND_CHOICES = (BACKEND_AUTO, BACKEND_POSTGRES, BACKEND_SQL)
-
-_STORE_BACKEND_ENV = "EASY_STORE_BACKEND"
-_STORE_POSTGRES_URI_ENV = "EASY_STORE_POSTGRES_URI"
-_CHECKPOINT_POSTGRES_URI_ENV = "EASY_CHECKPOINT_POSTGRES_URI"
-
-
-@dataclass(frozen=True)
-class StoreSelection:
-    """Store 后端解析结果（纯数据，不建立任何连接）。"""
-
-    kind: str
-    reason: str
-    postgres_uri: str = ""
-    warning: str = ""
-
-    @property
-    def is_official(self) -> bool:
-        return self.kind == BACKEND_POSTGRES
-
-
-def official_postgres_store_available() -> bool:
-    """官方 PostgresStore 及其依赖是否可导入（不连接数据库）。"""
-    try:
-        from langgraph.store.postgres import AsyncPostgresStore  # noqa: F401
-    except Exception:  # noqa: BLE001 - 依赖缺失/版本不兼容一律视为不可用
-        return False
-    return True
-
-
-def resolve_store_backend(
-    *,
-    backend: str | None = None,
-    postgres_uri: str | None = None,
-    official_available: bool | None = None,
-) -> StoreSelection:
-    """解析 Store 后端（不打开连接）。
-
-    入参可显式注入：``None`` 表示读环境变量；``official_available`` 供单测
-    模拟官方包缺失。URI 留空时从 ``EASY_STORE_POSTGRES_URI`` 回退到
-    ``EASY_CHECKPOINT_POSTGRES_URI``，一次 Secret 即可同时覆盖 HITL 与 Store。
-    """
-    raw_backend = (
-        env_str(_STORE_BACKEND_ENV) if backend is None else str(backend)
-    ).strip().lower()
-    warnings: list[str] = []
-    if not raw_backend:
-        raw_backend = BACKEND_AUTO
-    elif raw_backend not in BACKEND_CHOICES:
-        warnings.append(
-            f"未知的 {_STORE_BACKEND_ENV}={raw_backend!r}"
-            "（可选 auto/postgres/sql），按 auto 处理"
-        )
-        raw_backend = BACKEND_AUTO
-
-    if postgres_uri is None:
-        uri = env_str(_STORE_POSTGRES_URI_ENV).strip() or env_str(
-            _CHECKPOINT_POSTGRES_URI_ENV
-        ).strip()
-    else:
-        uri = str(postgres_uri).strip()
-    available = (
-        official_postgres_store_available()
-        if official_available is None
-        else bool(official_available)
-    )
-
-    def result(kind: str, reason: str) -> StoreSelection:
-        return StoreSelection(
-            kind=kind,
-            reason=reason,
-            postgres_uri=uri if kind == BACKEND_POSTGRES else "",
-            warning="；".join(warnings),
-        )
-
-    if raw_backend == BACKEND_SQL:
-        return result(
-            BACKEND_SQL,
-            "EASY_STORE_BACKEND=sql：显式使用业务库 SqlStore",
-        )
-
-    if raw_backend == BACKEND_POSTGRES:
-        if not uri:
-            warnings.append(
-                "EASY_STORE_BACKEND=postgres 但未配置 EASY_STORE_POSTGRES_URI / "
-                "EASY_CHECKPOINT_POSTGRES_URI，按 auto 规则回退"
-            )
-        elif not available:
-            warnings.append(
-                "EASY_STORE_BACKEND=postgres 但官方 langgraph.store.postgres "
-                "不可用，回退业务库 SqlStore"
-            )
-        else:
-            return result(
-                BACKEND_POSTGRES,
-                "EASY_STORE_BACKEND=postgres：使用官方 AsyncPostgresStore",
-            )
-
-    if raw_backend == BACKEND_AUTO:
-        if uri and available:
-            return result(
-                BACKEND_POSTGRES,
-                "检测到 Postgres URI：使用官方 AsyncPostgresStore",
-            )
-        if uri and not available:
-            warnings.append(
-                "已配置 Postgres URI 但官方 langgraph.store.postgres 不可用，"
-                "回退业务库 SqlStore"
-            )
-
-    return result(
-        BACKEND_SQL,
-        "未启用官方 PostgresStore：保持业务库 SqlStore",
-    )
 
 
 def _ns_key(namespace: tuple[str, ...]) -> str:
@@ -312,7 +185,7 @@ class SqlStore(BaseStore):
 
 
 def get_agent_store(db=None) -> BaseStore:
-    """返回当前进程生效的 Store：官方 PostgresStore 或业务库 SqlStore。"""
+    """返回当前进程共用的业务库 SqlStore（首次调用时绑定业务库）。"""
     global _store
     if _store is not None:
         return _store
@@ -324,84 +197,7 @@ def get_agent_store(db=None) -> BaseStore:
     return _store
 
 
-async def open_postgres_store(conn_string: str):
-    """打开官方 AsyncPostgresStore 并 setup()（store / migrations 表）。
-
-    连接池在进程生命周期内保持，由 ``shutdown_store`` 关闭。
-    """
-    global _pg_store_cm, _store
-    if _store is not None and _pg_store_cm is not None:
-        return _store
-    from langgraph.store.postgres import AsyncPostgresStore
-
-    cm = AsyncPostgresStore.from_conn_string(conn_string)
-    store = await cm.__aenter__()
-    try:
-        await store.setup()
-    except Exception:
-        await cm.__aexit__(None, None, None)
-        raise
-    _pg_store_cm = cm
-    _store = store
-    logger.info("LangGraph Store: AsyncPostgresStore")
-    return store
-
-
-async def shutdown_store() -> None:
-    """关闭官方 PostgresStore 并清空缓存（应用 shutdown 与测试隔离依赖它）。"""
-    global _pg_store_cm, _store
-    cm = _pg_store_cm
-    _pg_store_cm = None
-    _store = None
-    if cm is not None:
-        await cm.__aexit__(None, None, None)
-
-
-async def start_store_backend(
-    selection: "StoreSelection | None" = None,
-    *,
-    opener=None,
-) -> str:
-    """按解析结果启用 Store，返回实际生效的后端（postgres/sql）。
-
-    ``opener`` 仅用于测试注入 fake：接收 conn_string，返回已 setup 的 store。
-    官方 PostgresStore 打不开时回退业务库 SqlStore，不阻断启动（Store 是可选能力）。
-    """
+def reset_store() -> None:
+    """丢掉缓存的 Store，下次 ``get_agent_store`` 重新绑定业务库（应用 shutdown 与测试隔离用）。"""
     global _store
-    if selection is None:
-        selection = resolve_store_backend()
-    await shutdown_store()
-    if selection.warning:
-        logger.warning("LangGraph Store 配置 | %s", selection.warning)
-    logger.info(
-        "LangGraph Store 选择 | backend=%s | 原因: %s",
-        selection.kind,
-        selection.reason,
-    )
-    if selection.kind != BACKEND_POSTGRES:
-        return BACKEND_SQL
-    if not selection.postgres_uri:
-        logger.warning("Postgres Store 选择缺少 URI，回退业务库 SqlStore")
-        return BACKEND_SQL
-    try:
-        if opener is None:
-            await open_postgres_store(selection.postgres_uri)
-        else:
-            _store = await opener(selection.postgres_uri)
-    except Exception as exc:  # noqa: BLE001 - 降级不能阻断启动
-        logger.error(
-            "官方 PostgresStore 启用失败，回退业务库 SqlStore | %s: %s",
-            type(exc).__name__,
-            exc,
-        )
-        await shutdown_store()
-        return BACKEND_SQL
-    logger.info("LangGraph Store: AsyncPostgresStore")
-    return BACKEND_POSTGRES
-
-
-def active_store_backend() -> str:
-    """当前进程实际生效的 Store 后端；未初始化时按默认的 SqlStore 处理。"""
-    if _store is None or isinstance(_store, SqlStore):
-        return BACKEND_SQL
-    return BACKEND_POSTGRES
+    _store = None

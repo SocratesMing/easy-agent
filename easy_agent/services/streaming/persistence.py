@@ -216,10 +216,6 @@ def persist_tool_result_event(
             logger.warning(f"[{sid}] 记录生成文件失败: {e}")
 
 
-# 兼容旧符号。
-_handle_tool_result_event = persist_tool_result_event
-
-
 def persist_todos(db, session_id: str, todos: list, sid: str) -> None:
     """持久化 Todo list（失败只记日志）。"""
     try:

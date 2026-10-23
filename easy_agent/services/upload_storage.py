@@ -8,8 +8,8 @@
 - ``local``（``EASY_UPLOAD_BACKEND=local``，默认）：行为与改造前完全一致，文件仍
   写 ``data/uploads/{safe_username}/{saved_name}``，DB/接口里记本地绝对路径。
 - ``store``（``EASY_UPLOAD_BACKEND=store``）：文件字节写入 LangGraph Store
-  （官方 ``deepagents.backends.StoreBackend`` + ``get_agent_store()``，即官方
-  ``AsyncPostgresStore`` 或业务库 ``SqlStore``），DB/接口里记
+  （官方 ``deepagents.backends.StoreBackend`` + ``get_agent_store()``，即业务库
+  ``SqlStore``），DB/接口里记
   ``store://uploads/{safe_username}/{saved_name}``；读取时按需 materialize 到
   本地缓存 ``data/uploads_cache/{safe_username}/{saved_name}``。
 

@@ -38,6 +38,7 @@ def add_session_file(
                 username,
             ),
         )
+        return getattr(cursor, "lastrowid", None)
 
 
 def get_session_files(db, session_id: str) -> list[dict]:

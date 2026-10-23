@@ -534,21 +534,6 @@ def _find_source_path(
     return None
 
 
-def _manifest_lines(session_id: str, username: str, db=None) -> list[str]:
-    manifest = get_manifest_path(session_id, username, db)
-    if manifest is None or not manifest.exists():
-        return []
-    try:
-        return [
-            raw
-            for raw in manifest.read_text(encoding="utf-8").splitlines()
-            if raw.startswith("- ")
-        ]
-    except Exception as e:
-        logger.warning(f"读取上传清单失败: {e}")
-        return []
-
-
 def _update_manifest_line(session_id: str, username: str, filename: str, new_line: str, db=None) -> None:
     """把清单中指定文件的条目行替换为新行（用于重解析后回填状态）。
 

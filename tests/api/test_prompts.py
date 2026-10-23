@@ -1,5 +1,4 @@
 """接口 /agent/prompts 的测试：读取、更新、查询业务提示词。"""
-import pytest
 
 
 def test_read_prompt_default(client):

@@ -756,3 +756,45 @@ async def test_validate_reports_a_missing_stdio_command_without_spawning(monkeyp
     assert status["status"] == "error"
     assert "definitely-missing-cmd-xyz" in status["error"]
     assert spawned == []
+
+
+# ── D1 回归：中文 label 的必填字段，X-Missing-Fields 响应头必须 latin-1 安全 ──
+
+CN_FIELD_CONNECTOR = {
+    "id": "cn-field-connector",
+    "name": "中文字段连接器",
+    "description": "回归 D1：中文 label 写入响应头会触发 latin-1 编码错误",
+    "icon": "cn",
+    "fields": [
+        {"key": "env.DB_PATH", "label": "数据库文件路径", "required": True},
+    ],
+    "config": {"transport": "stdio", "command": "echo", "args": []},
+}
+
+
+@pytest.fixture()
+def cn_field_catalog(monkeypatch):
+    async def _no_validate(names, username):
+        return []
+
+    monkeypatch.setattr(
+        connectors_service, "load_catalog", lambda path=None: [dict(CN_FIELD_CONNECTOR)]
+    )
+    monkeypatch.setattr(connectors_api, "_validate_servers", _no_validate)
+    return CN_FIELD_CONNECTOR
+
+
+def test_install_missing_required_fields_header_is_latin1_safe(client, cn_field_catalog):
+    """D1 回归：中文 label 经 X-Missing-Fields 头返回时不能触发 UnicodeEncodeError（500）。"""
+    resp = client.post(
+        "/agent/connectors/install",
+        json={"id": "cn-field-connector", "values": {}, "validate": False},
+    )
+    assert resp.status_code == 400, resp.text
+    assert "数据库文件路径" in resp.json()["detail"]
+
+    header = resp.headers.get("X-Missing-Fields")
+    assert header is not None
+    # HTTP 头按 latin-1 编码传输：值必须可 latin-1 编码，且客户端仍能解析回中文
+    header.encode("latin-1")
+    assert json.loads(header) == ["数据库文件路径"]

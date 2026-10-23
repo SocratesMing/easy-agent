@@ -4,7 +4,7 @@
 链路的三类宿主能力：
 
 - ``api.chat.chat_stream``：知识面板发问；
-- ``services.streaming.chat_stream_generator``：主聊天流的知识适配包装；
+- ``services.streaming.orchestrator.chat_stream_generator``：主聊天流的知识适配包装；
 - ``services`` 的取消/清理/配置读取：``cancel_stream_task`` /
   ``remove_session_agent`` / ``get_agent_config``。
 

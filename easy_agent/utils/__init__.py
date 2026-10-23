@@ -1,3 +1,8 @@
+"""通用工具包：密码与 JWT、文件解析、会话归属校验、会话 / 任务日志、部署校验与分布式锁等。
+
+包级重导出其中最常用的函数。
+"""
+
 from easy_agent.utils.auth import (
     hash_password,
     verify_password,

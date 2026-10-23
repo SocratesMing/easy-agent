@@ -1,6 +1,5 @@
 """会话接口测试：创建、列表、详情、改标题、置顶、消息、历史、删除、文件。"""
 
-import io
 
 from fastapi.testclient import TestClient
 

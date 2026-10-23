@@ -5,6 +5,9 @@ deepagents 0.7 起，``middleware=`` 里 ``.name`` 与内置默认项相同的�
 的 ``middleware`` 同理。因此主代理与每个子代理 spec 各放一份按配置阈值构造的官方
 ``SummarizationMiddleware``，不再在建图期间替换框架私有的
 ``deepagents.graph.create_summarization_middleware``（模块全局替换还有线程安全隐患）。
+
+``summarization.enabled=false`` 时不能"不传"——框架默认栈仍会挂一份；改为构造同名实例
+并把 trigger/keep 抬到不可达，等价关闭压缩与参数截断。
 """
 
 from __future__ import annotations
@@ -25,6 +28,21 @@ def summarization_settings(config, model) -> dict:
     truncate_max_length = int(
         getattr(config.summarization, "truncate_arg_max_length", 0) or 2000
     )
+    if not bool(getattr(config.summarization, "enabled", True)):
+        # 官方 create_deep_agent 的默认栈总会挂摘要中间件，无法靠"不传"关闭；
+        # 这里把阈值抬到不可达，等价关闭压缩与参数截断（同名替换默认项仍在）。
+        far = 1 << 40
+        return {
+            "trigger": ("tokens", far),
+            "keep": ("tokens", far),
+            "trim_tokens_to_summarize": far,
+            "truncate_args_settings": {
+                "trigger": ("tokens", far),
+                "keep": ("tokens", far),
+                "max_length": truncate_max_length,
+                "truncation_text": "...(argument truncated)",
+            },
+        }
     model_name = getattr(model, "model_name", None) or getattr(model, "model", None)
     model_max = resolve_context_length(config, model_name if isinstance(model_name, str) else None)
     trigger = max(1, int(model_max * thr))

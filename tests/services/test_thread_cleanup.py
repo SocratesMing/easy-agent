@@ -1,6 +1,6 @@
 """DA-03 P0：官方 checkpoint saver 里的 thread 随会话删除。
 
-官方 saver（Postgres / SQLite）全局共享，删除会话不会顺带删掉它的 thread。改造前只清
+官方 SQLite saver 全局共享，删除会话不会顺带删掉它的 thread。改造前只清
 legacy 快照，每条消息一个的 ``{session_id}-{message_id}`` thread 永远留在库里。
 """
 
@@ -35,7 +35,6 @@ async def test_delete_session_threads_removes_session_and_per_message_threads(mo
 
 
 async def test_adelete_threads_without_an_official_saver_is_a_no_op(monkeypatch):
-    monkeypatch.setattr(checkpoints, "_postgres_saver", None)
     monkeypatch.setattr(checkpoints, "_sqlite_saver", None)
     assert await checkpoints.adelete_threads(["s1"]) == 0
 

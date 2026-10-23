@@ -20,7 +20,6 @@ from langchain_mcp_adapters.client import MultiServerMCPClient
 
 from easy_agent.models.api import (
     ConnectorConfigUpdateResponse,
-    ConnectorToolInfo,
     ConnectorToolsResponse,
     ConnectorToggleResponse,
     McpAddResponse,
@@ -273,10 +272,13 @@ async def install_connector(
         if f.get("required", True) and not str(request.values.get(f["key"], "")).strip()
     ]
     if missing:
+        # 响应头按 latin-1 编码传输：中文 label 必须转义为 \uXXXX，否则 Starlette
+        # 构造响应时抛 UnicodeEncodeError，最终变成全局 500（回归 D1）。detail 仍在
+        # JSON body 中保留可读中文，前端无需依赖该响应头。
         raise HTTPException(
             status_code=400,
             detail=f"请先填写以下必填信息: { '、'.join(missing) }",
-            headers={"X-Missing-Fields": json.dumps(missing, ensure_ascii=False)},
+            headers={"X-Missing-Fields": json.dumps(missing, ensure_ascii=True)},
         )
 
     # 深拷贝目录配置并填充用户填写的字段值，标记默认启用
@@ -352,21 +354,6 @@ async def uninstall_connector(
 # key 是 config 内的路径，支持两种段：
 #   字典段："headers.Authorization" / "env.TCA_TOKEN"
 #   数组段："args.1"（数字段索引进 list，用于 stdio 的位置参数）
-
-
-def _get_config_field(cfg: dict[str, Any], key_path: str) -> tuple[bool, Any]:
-    """读取 config 内字段路径的值，返回 (是否存在, 值)。"""
-    cur: Any = cfg
-    for seg in key_path.split("."):
-        if isinstance(cur, dict):
-            if seg not in cur:
-                return False, None
-            cur = cur[seg]
-        elif isinstance(cur, list) and seg.isdigit() and int(seg) < len(cur):
-            cur = cur[int(seg)]
-        else:
-            return False, None
-    return True, cur
 
 
 def _set_config_field(cfg: dict[str, Any], key_path: str, value: Any) -> None:
@@ -447,7 +434,7 @@ async def toggle_connector(
 
     cfg["enabled"] = request.enabled
     raw["servers"] = existing
-    user_mcp_path = _write_user_mcp_raw(username, config, raw)
+    _write_user_mcp_raw(username, config, raw)
     invalidate_mcp_cache(username)
     evicted = invalidate_user_agents(username)
     logger.info(

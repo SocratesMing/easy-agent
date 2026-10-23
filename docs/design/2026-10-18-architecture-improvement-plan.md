@@ -6,6 +6,7 @@
 | 日期 | 2026-10-18 |
 | 依据 | 当前工作区对照盘点终态；`docs/archive/design/2026-10-17-module-refactor-plan.md`（ARCH-03/04）；`docs/archive/design/2026-10-17-multi-instance-state.md`（Phase B/C/D 未做）；`docs/archive/design/2026-10-17-sse-event-contract.md`；`docs/archive/audit-evidence/T4-architecture.md` |
 | 约束 | 不改变对外 HTTP/SSE 契约（可加字段、不可改既有字段语义）；每阶段可独立发布、可回滚；新行为必须有测试；不编辑既有盘点 plan 文件 |
+| 更新 | 2026-10-21：生产只有 MySQL，Postgres checkpointer / Store 已移除，按单 pod 部署（HITL checkpoint 用官方 SQLite saver，Store 用业务库 `SqlStore`）。下文以 PostgreSQL 为前提的目标暂缓；要做多副本，得先有能跨副本共享的 checkpointer；B1 里的 Postgres 部分不再适用 |
 
 ## 0. 问题与原则
 

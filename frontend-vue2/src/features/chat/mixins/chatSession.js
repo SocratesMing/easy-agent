@@ -2,7 +2,6 @@ import { setReactive } from '../../../utils/reactiveSet.js'
 import { createSession, listSessions, getChatHistory, deleteSession, sendMessage, resumeStream, renameSession, togglePinSession, attachStream } from '../../../api/chat.js'
 import { deleteFile, getSessionGeneratedFiles } from '../../../api/files.js'
 import { authFetch } from '../../../api/auth.js'
-import { streamExportRun } from '../../../api/expert.js'
 import { chatBus, chatStore } from '../store/chatStore.js'
 import { createStreamChunkHandler as createChunkHandler } from '../services/chunkHandler.js'
 import { applyApprovalRequests, buildResumeDecisions, markApprovalDecision, unmatchedApprovalRequests } from '../../../utils/hitlApproval.js'
@@ -258,6 +257,7 @@ export default {
           }
           this.messages = history.messages || []
           this.currentTodos = history.todos || []
+          this.syncExpertChipFromMessages()
           if (history.usage) {
             this.sessionUsage.input_tokens = history.usage.input_tokens || 0
             this.sessionUsage.output_tokens = history.usage.output_tokens || 0
@@ -422,9 +422,28 @@ export default {
         this.currentAbortController = state.abortController
         this.currentTodos = state.todos || []
         this.loadedSessionId = sessionId
+        this.syncExpertChipFromMessages()
         return true
       }
       return false
+    },
+    /** 按最后一轮对话恢复输入框右下角的专家芯片：
+        最后一条用户消息带 expert（{id,name}，随消息落库）则恢复召唤态，
+        没有则清空。messages 每次整体刷新（缓存恢复/历史加载/服务端回填）后调用，
+        保证芯片始终与「该会话最后一轮实际使用的专家」一致。 */
+    syncExpertChipFromMessages() {
+      const msgs = this.messages || []
+      for (let i = msgs.length - 1; i >= 0; i--) {
+        const msg = msgs[i]
+        if (!msg || msg.role !== 'user') continue
+        const ex = msg.expert
+        this.selectedExpert = ex && ex.id
+          ? { export_agent_id: ex.id, export_name_cn: ex.name || '' }
+          : null
+        return
+      }
+      // 空会话（含「选了专家但没发消息就切走」的新窗口）：不恢复任何专家
+      this.selectedExpert = null
     },
     // ── 会话级流式隔离 ──────────────────────────────────────────────────
     // 流事件只写入「所属会话」的数据，避免多会话并行流式（A 流式中新建/切换到 B）串台。
@@ -523,6 +542,7 @@ export default {
       if (this.currentSessionId === sessionId && this.loadedSessionId === sessionId) {
         this.messages = history.messages || []
         this.currentTodos = history.todos || []
+        this.syncExpertChipFromMessages()
         if (usage) {
           this.sessionUsage.input_tokens = usage.input_tokens || 0
           this.sessionUsage.output_tokens = usage.output_tokens || 0
@@ -636,6 +656,10 @@ export default {
       // 保存当前会话状态
       this.saveCurrentSessionState()
       this.beforeSessionChange('select')
+      // 切换会话不沿用上一个会话的专家选择（选择是当前工作台的临时状态）。
+      // 主窗口不使用本方法（App.vue 同名方法优先），此处置空对 AiSidebar
+      // 这类没有专家芯片的宿主是无害的空操作。
+      this.selectedExpert = null
       this.currentSessionId = sessionId
       // 切换后按当前会话是否正在流式输出决定输入框状态：
       // 历史会话通常不是当前流式会话，应显示发送按钮而非停止按钮
@@ -673,6 +697,7 @@ export default {
         if (this.currentSessionId !== sessionId) return
         this.messages = history.messages || []
         this.currentTodos = history.todos || []
+        this.syncExpertChipFromMessages()
         // 从服务器返回的 usage 数据恢复 token 用量、会话耗时和迭代次数
         if (history.usage) {
           this.sessionUsage.input_tokens = history.usage.input_tokens || 0
@@ -816,6 +841,8 @@ export default {
 
       const streamCtx = {
         isResume: false,
+        // 本轮使用的专家 ID：start 事件里据此写「专家 -> 会话」映射（换专家 = 换会话）
+        expertId: (this.selectedExpert && this.selectedExpert.export_agent_id) || '',
         get assistantMsgId() { return assistantMsgId },
         set assistantMsgId(v) { assistantMsgId = v },
         get streamSessionId() { return streamSessionId },
@@ -873,40 +900,25 @@ export default {
           }
         }
 
-        // 专家模式：改走 /agent/stream_export_run，由后端按选中的专家动态构建 Agent
-        // （加载该专家当前生效版本的提示词，未选专家时退化为通用 Agent）。
-        // SSE 事件格式与 /agent/chat/stream 完全一致，onChunk 复用同一处理器。
-        if (this.selectedExpert && this.selectedExpert.export_agent_id) {
-          await streamExportRun(
-            {
-              message,
-              sessionId: this.currentSessionId,
-              expertAgentId: this.selectedExpert.export_agent_id,
-              model: this.selectedModel,
-              enableDeepThink,
-              enableWebSearch,
-              files,
-              // 已选技能：结构化字段（技能目录名），`/目录名` 由后端拼进模型输入。
-              // 连接器不随消息提交：本会话启用哪些连接器由 /agent/connectors/session 设置。
-              skills,
-            },
-            onChunk,
-            abortSignal
-          )
-        } else {
-          await sendMessage(
-            this.currentSessionId,
-            message,
-            onChunk,
-            abortSignal,
-            enableDeepThink,
-            files,
-            this.selectedModel,
-            enableWebSearch,
-            pageContext,
-            skills
-          )
-        }
+        // 专家对话与通用对话只有一个入口 /agent/chat/stream：选中专家时把
+        // expert_agent_id 一并上行，由后端加载该专家提示词、补装依赖技能、
+        // 做职责范围预检（命中即短路拒答，Agent 不创建）。
+        await sendMessage(
+          this.currentSessionId,
+          message,
+          onChunk,
+          abortSignal,
+          enableDeepThink,
+          files,
+          this.selectedModel,
+          enableWebSearch,
+          pageContext,
+          skills,
+          '',
+          this.selectedExpert && this.selectedExpert.export_agent_id
+            ? this.selectedExpert.export_agent_id
+            : ''
+        )
 
         await this.refreshSessionFiles(null, 500)
       } catch (e) {

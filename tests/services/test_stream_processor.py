@@ -1,3 +1,7 @@
+"""StreamProcessor 测试：把 DeepAgents astream 输出转成 SSE 事件，包括工具调用与结果配对、
+思考块按 step 切分与去重、正文块顺序、token 用量统计和流式工具参数。
+"""
+
 import sys
 import time
 from pathlib import Path
@@ -89,7 +93,6 @@ from langchain_core.messages import AIMessageChunk
 def test_messages_reasoning_emits_thinking_events():
     p = StreamProcessor(sid="s1")
     c1 = AIMessageChunk(content="", additional_kwargs={"reasoning_content": "hello "})
-    c2 = AIMessageChunk(content="", additional_kwargs={"reasoning_content": "world"})
     e1 = p.handle("messages", (c1, {}))
     assert any(e["type"] == "thinking_start" for e in e1)
     assert any(e["type"] == "thinking" and e["content"] == "hello " for e in e1)
@@ -512,7 +515,7 @@ def test_usage_reasoning_defaults_to_zero_when_absent():
 
 def test_build_assistant_message_dict_carries_reasoning_tokens():
     """持久化的消息 usage 必须带上 reasoning_tokens，供历史会话回放展示。"""
-    from easy_agent.services.streaming import build_assistant_message_dict
+    from easy_agent.services.stream_messages import build_assistant_message_dict
 
     msg = build_assistant_message_dict(
         content="c", thinking="t", thinking_duration=1.0,

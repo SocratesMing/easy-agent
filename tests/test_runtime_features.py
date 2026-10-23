@@ -25,13 +25,11 @@ def test_default_features_are_local_and_not_strict(monkeypatch):
 
 def test_strict_prod_multi_replica_blocks_unimplemented(monkeypatch):
     monkeypatch.setenv("EASY_MULTI_REPLICA_STRICT", "1")
-    monkeypatch.setenv("EASY_CHECKPOINT_BACKEND", "postgres")
-    monkeypatch.setenv("EASY_CHECKPOINT_POSTGRES_URI", "postgresql://x")
-    monkeypatch.setenv("EASY_STORE_BACKEND", "postgres")
-    monkeypatch.setenv("EASY_CHECKPOINT_POSTGRES_URI", "postgresql://x")
     f = rf.load_runtime_features()
     errors = rf.multi_replica_errors(agent_env="prod", workers=3, features=f)
-    assert errors
+    # Postgres checkpointer 已移除：没有能跨副本共享的 checkpointer；Store 在业务库里，不算阻塞项
+    assert any("checkpointer" in e for e in errors)
+    assert not any("Store" in e for e in errors)
     assert not any("EASY_STREAM_BACKEND" in e for e in errors)
     assert any("EASY_RUN_QUEUE" in e for e in errors)
     assert any("EASY_FILE_BACKEND" in e for e in errors)

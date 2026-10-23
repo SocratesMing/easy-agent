@@ -5,12 +5,13 @@
  *   POST /agent/add                创建专家
  *   POST /agent/update             修改专家（新版本目录）
  *   GET  /agent/list               我的专家列表
- *   GET  /agent/public-list        公共（预置）专家列表（只读目录 exports/）
+ *   GET  /agent/public-list        公共（预置）专家列表（只读目录 experts/）
  *   POST /agent/del                删除专家（默认软删）
- *   POST /agent/stream_export_run  选中专家执行（SSE）
  *
- * 与 api/chat.js 保持同一套请求约定（API_BASE_URL + authFetch），
- * SSE 事件格式与 /agent/chat/stream 完全一致。
+ * 与 api/chat.js 保持同一套请求约定（API_BASE_URL + authFetch）。
+ *
+ * 说明：专家对话**没有**独立接口——选中的专家随 /agent/chat/stream 的
+ * `expert_agent_id` 字段上行（见 api/chat.js::sendMessage），因此本文件只有 CRUD。
  */
 import { API_BASE_URL } from '../config.js'
 import { authFetch } from './auth.js'
@@ -85,7 +86,7 @@ export async function listExperts({
 }
 
 /**
- * 公共（预置）专家列表：随项目内置的专家（`exports/` 目录），只读，
+ * 公共（预置）专家列表：随项目内置的专家（`experts/` 目录），只读，
  * 不区分用户。字段与 listExperts 的 items 一致（另带 `scope: 'public'`）。
  */
 export async function listPublicExperts() {
@@ -103,40 +104,4 @@ export async function deleteExpert(exportAgentId, hard = false) {
   })
   if (!response.ok) throw await _errorOf(response, '删除专家失败')
   return await response.json()
-}
-
-/**
- * 选中专家执行（SSE 流式）
- *
- * @param {Object} payload { message, sessionId, expertAgentId, model, enableDeepThink, enableWebSearch, files }
- * @param {Function} onChunk 每个 SSE 事件回调（与聊天完全相同的结构）
- * @param {AbortSignal} [signal] 用于取消
- */
-export async function streamExportRun(payload, onChunk, signal) {
-  const controller = new AbortController()
-  const abortSignal = signal || controller.signal
-
-  const body = {
-    message: payload.message,
-    session_id: payload.sessionId || null,
-    message_id: payload.messageId || generateMessageId(),
-    expert_agent_id: payload.expertAgentId || null,
-    enable_deep_think: !!payload.enableDeepThink,
-    enable_web_search: !!payload.enableWebSearch,
-    files: payload.files || null,
-    // 已选技能走结构化字段（技能目录名），`/目录名` 由后端拼进模型输入。
-    // 连接器不走这里：本会话启用哪些连接器由 /agent/connectors/session 单独设置。
-    skills: payload.skills && payload.skills.length ? payload.skills : null,
-  }
-  if (payload.model) body.model = payload.model
-
-  const response = await authFetch(`${API_BASE_URL}/agent/stream_export_run`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-    signal: abortSignal,
-  })
-  if (!response.ok) throw await _errorOf(response, '专家执行失败')
-
-  await readSSE(response, onChunk, { signal: abortSignal })
 }

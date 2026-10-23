@@ -153,6 +153,17 @@
       </div>
     </div>
 
+    <div v-if="showDeleteConfirm" class="modal-overlay" @click="cancelDelete">
+      <div class="modal-content" @click.stop>
+        <h3>删除会话</h3>
+        <p class="delete-confirm-text">确定删除会话「{{ deleteTargetTitle }}」吗？删除后消息与该会话文件将无法恢复。</p>
+        <div class="modal-actions">
+          <button @click="cancelDelete" class="cancel-btn">取消</button>
+          <button @click="confirmDelete" class="confirm-btn danger">删除</button>
+        </div>
+      </div>
+    </div>
+
     <div class="user-profile" @click="toggleUserMenu">
       <div class="user-avatar">
         <span class="user-initials">{{ userInitials }}</span>
@@ -249,6 +260,8 @@ export default {
       newTitle: '',
       renamingSession: null,
       showUserMenu: false,
+      showDeleteConfirm: false,
+      deleteTarget: null,
       // 折叠的分组（键为分组名）：默认只展示前 N 条，其余走「查看更多」
       expandedGroups: {},
       groupPreviewLimit: 5,
@@ -256,6 +269,10 @@ export default {
     }
   },
   computed: {
+    // 删除会话前的二次确认标题（D3）
+    deleteTargetTitle() {
+      return this.deleteTarget ? this.sessionTitle(this.deleteTarget) : ''
+    },
     // 按时间分组会话：置顶 / 今天 / 最近一周 / 更早
     groupedSessions() {
       const now = new Date()
@@ -383,7 +400,18 @@ export default {
     },
     handleDelete(sessionId) {
       this.activeMenu = null
-      this.$emit('delete-session', sessionId)
+      this.deleteTarget = this.sessions.find(s => s.session_id === sessionId) || { session_id: sessionId, title: '' }
+      this.showDeleteConfirm = true
+    },
+    cancelDelete() {
+      this.showDeleteConfirm = false
+      this.deleteTarget = null
+    },
+    confirmDelete() {
+      if (this.deleteTarget && this.deleteTarget.session_id) {
+        this.$emit('delete-session', this.deleteTarget.session_id)
+      }
+      this.cancelDelete()
     },
     handleTogglePin(sessionId) {
       this.activeMenu = null
@@ -863,6 +891,22 @@ html[data-theme="dark"] .approval-flag {
 
 .confirm-btn:hover {
   background: #0284c7;
+}
+
+.confirm-btn.danger {
+  background: #ef4444;
+}
+
+.confirm-btn.danger:hover {
+  background: #dc2626;
+}
+
+.delete-confirm-text {
+  margin: 0 0 4px 0;
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+  word-break: break-word;
 }
 
 .user-profile {

@@ -20,7 +20,7 @@ from langchain_core.messages import AIMessageChunk, ToolMessage
 
 from easy_agent.backends.shell import _PathTranslatingShell  # noqa: F401  旧导入路径兼容（测试/外部直接 import）
 from easy_agent.backends.context import ContextBackend
-from easy_agent.persistence.checkpoints import get_session_checkpointer, release_session_checkpointer
+from easy_agent.persistence.checkpoints import get_session_checkpointer
 from easy_agent.bootstrap.config import Config
 from easy_agent.agent.hitl import (
     EXECUTE_HITL_TOOL_DESCRIPTION,
@@ -61,7 +61,6 @@ from easy_agent.agent.model import (
     create_model,
     extract_reasoning,
     is_internal_model_call,
-    resolve_context_length,
 )
 from easy_agent.security.prompt_guard import assemble_system_prompt
 from easy_agent.tools.web_search import WEB_SEARCH_SYSTEM_PROMPT
@@ -164,14 +163,13 @@ def build_subagent_specs(
 def _shared_graph_checkpointer():
     """返回可跨会话共享的 checkpointer；legacy 按 session 的 saver 返回 None。
 
-    D2 只复用「官方全局 saver」：``AsyncPostgresSaver`` / ``AsyncSqliteSaver``
-    由进程共享，thread_id 已含 session 维度。MySQL 无官方 saver 时 checkpoints.py
-    会按 session 创建 ``PersistentMemorySaver``，该对象不能塞进共享图，此时
-    由调用方显式降级为按会话建图。
+    D2 只复用「官方全局 saver」：``AsyncSqliteSaver`` 由进程共享，thread_id 已含
+    session 维度。MySQL 无官方 saver 时 checkpoints.py 会按 session 创建
+    ``PersistentMemorySaver``，该对象不能塞进共享图，此时由调用方显式降级为按会话建图。
     """
-    from easy_agent.persistence.checkpoints import postgres_checkpointer_active, sqlite_checkpointer_active
+    from easy_agent.persistence.checkpoints import sqlite_checkpointer_active
 
-    if not (postgres_checkpointer_active() or sqlite_checkpointer_active()):
+    if not sqlite_checkpointer_active():
         return None
     return get_session_checkpointer("__graph_cache__")
 
@@ -449,7 +447,7 @@ class EasyAgent(AgentWorkspaceMixin):
         if shared_checkpointer is None:
             return (
                 "checkpointer 为按 session 创建的 legacy saver"
-                "（非官方全局 Postgres/SQLite saver），无法跨会话共享"
+                "（非官方全局 SQLite saver），无法跨会话共享"
             )
         return ""
 

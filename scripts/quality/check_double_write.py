@@ -40,10 +40,8 @@ _ROOT_FOR_IMPORTS = Path(__file__).resolve().parents[2]
 if str(_ROOT_FOR_IMPORTS) not in sys.path:
     sys.path.insert(0, str(_ROOT_FOR_IMPORTS))
 
-from scripts.quality.double_write_scanner import (  # noqa: E402
+from scripts.quality.double_write_scanner import (  # noqa: E402, F401 - check_* 供测试调用
     DEFAULT_ROOT,
-    CheckResult,
-    Violation,
     check_database_file,
     check_repository,
     check_sessions_file,

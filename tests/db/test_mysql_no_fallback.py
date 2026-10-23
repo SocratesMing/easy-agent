@@ -1,3 +1,5 @@
+"""业务库测试：MySQL 连接失败时直接报错，不静默降级到 SQLite。"""
+
 import pytest
 
 from easy_agent.db.database import Database

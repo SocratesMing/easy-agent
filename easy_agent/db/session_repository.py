@@ -124,8 +124,8 @@ class SessionRepository:
         file_type: str,
         size: int,
         username: str = "",
-    ) -> None:
-        files_repo.add_session_file(
+    ) -> int | None:
+        return files_repo.add_session_file(
             self._db,
             session_id,
             filename,

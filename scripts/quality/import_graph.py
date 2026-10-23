@@ -39,10 +39,8 @@ from scripts.quality.import_graph_core import (  # noqa: E402
     DEFAULT_PACKAGE,
     DEFAULT_ROOT,
     DEFAULT_WHITELIST,
-    ImportGraph,
     build_graph,
     compare_sccs,
-    find_cycles,
     graph_report,
     load_whitelist,
 )

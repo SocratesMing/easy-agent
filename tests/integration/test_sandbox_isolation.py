@@ -15,7 +15,6 @@ import easy_agent.agent.workspace as agent_workspace_mod
 import easy_agent.backends.shell as sandbox_shell_mod
 import easy_agent.agent.hitl as hitl_mod
 import easy_agent.sandboxing.landlock as landlock_mod
-import easy_agent.sandboxing.sandbox as sandbox_mod
 from deepagents.backends import LocalShellBackend
 from easy_agent.agent import _PathTranslatingShell
 from deepagents.backends.protocol import ExecuteResponse
@@ -142,9 +141,6 @@ def test_windows_without_sandbox_support_fails_closed(tmp_path, monkeypatch):
 def test_windows_deletion_commands_are_recognized():
     file_deletion = SimpleNamespace(
         tool_call={"args": {"command": "del /workspace/file.txt"}}
-    )
-    directory_deletion = SimpleNamespace(
-        tool_call={"args": {"command": "rd /s /q /workspace/dir"}}
     )
 
     assert hitl_mod._is_destructive_command(file_deletion) is True

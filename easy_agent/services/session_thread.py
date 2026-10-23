@@ -1,7 +1,8 @@
 """会话级 thread（DA-03 P1）：一个会话一个 LangGraph thread。
 
-开关 ``agent.session_thread``（默认关）。关闭时与改造前一致：每条消息一个
-``{session_id}-{message_id}`` thread，每轮从 DB 重建完整历史。开启后：
+开关 ``agent.session_thread``（默认开，符合 LangGraph thread 语义）。关闭时退回
+改造前的兼容模式：每条消息一个 ``{session_id}-{message_id}`` thread，每轮从 DB
+重建完整历史。开启后：
 
 - ``thread_id = session_id``，历史、摘要状态、todos 由 checkpointer 保存，每轮只输入本轮消息；
   DB 的 ``session_messages`` 仍是 UI 的权威投影，写入逻辑不变。
@@ -20,12 +21,17 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from langchain_core.messages import AIMessage
 
 from easy_agent.agent.run_config import build_run_config
-from easy_agent.persistence.checkpoints import PersistentMemorySaver
+from easy_agent.persistence.checkpoints import (
+    PersistentMemorySaver,
+    checkpoint_instance,
+    per_pod_checkpoints_active,
+)
 from easy_agent.services.hitl_state import pending_hitl_interrupts
 from easy_agent.services.stream_messages import build_context_messages
 
@@ -47,18 +53,13 @@ def session_thread_enabled(config) -> bool:
 
 
 def session_thread_in_use(config) -> bool:
-    """接口层（还没拿到 agent 时）的判断：开关打开，且在用官方 saver（Postgres / SQLite）。
+    """接口层（还没拿到 agent 时）的判断：开关打开，且在用官方 SQLite saver。
 
     与 :func:`session_thread_active` 口径一致：legacy 快照 saver 下仍是每条消息一个 thread。
     """
-    from easy_agent.persistence.checkpoints import (
-        postgres_checkpointer_active,
-        sqlite_checkpointer_active,
-    )
+    from easy_agent.persistence.checkpoints import sqlite_checkpointer_active
 
-    return session_thread_enabled(config) and (
-        postgres_checkpointer_active() or sqlite_checkpointer_active()
-    )
+    return session_thread_enabled(config) and sqlite_checkpointer_active()
 
 
 _legacy_warned = False
@@ -67,9 +68,9 @@ _legacy_warned = False
 def session_thread_active(agent) -> bool:
     """本轮是否走会话 thread：开关打开，且 checkpointer 不是 legacy 快照 saver。
 
-    legacy ``PersistentMemorySaver``（业务库为 MySQL 且没配 PG / SQLite checkpoint 时的回退）
+    legacy ``PersistentMemorySaver``（业务库为 MySQL 且没配 SQLite checkpoint 时的回退）
     每次写入都把整个快照 pickle 进业务库，会话 thread 越长越慢，因此仍按每条消息一个 thread。
-    要用会话 thread，请配置 ``EASY_CHECKPOINT_POSTGRES_URI`` 或 ``EASY_CHECKPOINT_SQLITE_PATH``。
+    要用会话 thread，请配置 ``EASY_CHECKPOINT_SQLITE_PATH``。
     """
     global _legacy_warned
     if not session_thread_enabled(getattr(agent, "config", None)):
@@ -80,8 +81,7 @@ def session_thread_active(agent) -> bool:
             _legacy_warned = True
             logger.warning(
                 "agent.session_thread 已打开，但当前是 legacy checkpoint 快照（MySQL 回退），"
-                "仍按每条消息一个 thread；配置 EASY_CHECKPOINT_POSTGRES_URI 或 "
-                "EASY_CHECKPOINT_SQLITE_PATH 后生效"
+                "仍按每条消息一个 thread；配置 EASY_CHECKPOINT_SQLITE_PATH 后生效"
             )
         return False
     return True
@@ -235,6 +235,7 @@ async def resolve_resume_thread(agent, *, session_id: str, handle: str, last_mes
     调用方已校验句柄属于该会话（:func:`handle_turn_id`）。
     """
     if not session_thread_active(agent):
+        await _ensure_thread_has_checkpoint(agent, handle)
         return handle
     turn_id = handle_turn_id(session_id, handle)
     graph = agent.agent
@@ -249,6 +250,44 @@ async def resolve_resume_thread(agent, *, session_id: str, handle: str, last_mes
         if pending_hitl_interrupts(legacy):
             return handle
     raise StaleApprovalError("审批已失效：会话已有新消息，或该审批已处理")
+
+
+async def _ensure_thread_has_checkpoint(agent, thread_id: str) -> None:
+    """thread 在本进程的 checkpointer 里一个 checkpoint 都没有时抛 :class:`StaleApprovalError`。
+
+    以前这种情况会把决策直传给框架，在空 thread 上执行一次恢复。多副本下请求落到没有这条审批的
+    pod、或 pod 重建后文件被清空，都会走到这里。读不到状态（测试替身、checkpointer 异常）时不拦。
+    """
+    graph = getattr(agent, "agent", None)
+    if graph is None or not hasattr(graph, "aget_state"):
+        return
+    try:
+        state = await graph.aget_state(build_run_config(agent, thread_id))
+    except Exception:  # noqa: BLE001 - 与 plan_resume_for_agent 一致：读状态失败交给恢复流处理
+        return
+    if getattr(state, "created_at", "") is None:
+        raise StaleApprovalError("找不到这条审批的状态（可能在另一个实例上，或已过期），请重新发送消息")
+
+
+def ensure_approval_on_this_instance(load_last_message: Callable[[], dict | None], handle: str) -> None:
+    """checkpoint 按 pod 隔离时，审批只能在记录它的实例上恢复，否则抛 :class:`StaleApprovalError`。
+
+    多副本靠 Ingress 粘性会话把同一用户固定到一个 pod；粘性失效（清了 cookie、换了设备）或原 pod
+    已重建时，本 pod 的文件里没有这条审批。``load_last_message`` 返回会话最后一条消息，只在按
+    pod 隔离时才调用（单 pod 不多读一次库）。升级前的旧消息没有 ``instance`` 字段，不检查。
+    """
+    if not per_pod_checkpoints_active():
+        return
+    pending = (load_last_message() or {}).get("pending_approval") or {}
+    owner = pending.get("instance")
+    if not owner or pending.get("thread_id") != handle:
+        return
+    current = checkpoint_instance()
+    if owner != current:
+        raise StaleApprovalError(
+            f"这条审批在实例 {owner} 上，当前请求到了实例 {current}"
+            f"（粘性会话失效，或 {owner} 已重启、下线），请重新发送消息"
+        )
 
 
 def abandon_pending_approval(repo, session_id: str) -> bool:

@@ -17,18 +17,6 @@ from easy_agent.services.stream_messages import (
 )
 
 
-def test_streaming_reexports_same_function_objects():
-    """既有 ``from ...streaming import X`` 导入路径必须保持指向同一实现。"""
-    from easy_agent.services import streaming
-
-    assert streaming.build_context_messages is build_context_messages
-    assert streaming.build_assistant_message_dict is build_assistant_message_dict
-    assert streaming.tool_call_records_to_dicts is tool_call_records_to_dicts
-    assert streaming._partial_message_dict is _partial_message_dict
-    assert streaming._historical_tool_records is _historical_tool_records
-    assert streaming._tool_call_tuples is _tool_call_tuples
-
-
 def test_tool_call_records_to_dicts_full_tuple_and_approval():
     records = [
         ("ls", "call-1", {"path": "/w"}, "ok", True, 0.1, 2, "approved"),

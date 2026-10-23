@@ -77,16 +77,16 @@
   默认 transport 由旧 `sse` 改为 `streamable_http`；`streamable-http` / `http` 别名
   统一归一化为 `streamable_http`，显式 `sse` 保持兼容（`tests/services/test_mcp_transport.py`）。
 
-- **FW-09 已落地（默认官方 saver）**：新增 `EASY_CHECKPOINT_BACKEND=auto|postgres|sqlite|legacy`
+- **FW-09 已落地（默认官方 saver）**：`EASY_CHECKPOINT_BACKEND=auto|sqlite|legacy`
   （默认 `auto`），选择规则集中在 `checkpoints.resolve_checkpoint_backend()`：
-  1. `EASY_CHECKPOINT_POSTGRES_URI` 存在 → 官方 `AsyncPostgresSaver`；
-  2. 否则业务库为 SQLite（或显式 `EASY_CHECKPOINT_SQLITE_PATH`）→ 官方
-     `AsyncSqliteSaver`，默认文件 `data/checkpoints.db`；
-  3. 业务库为 MySQL 且无 PG URI → 官方没有 MySQL saver，回退自研
+  1. 显式 `EASY_CHECKPOINT_SQLITE_PATH`，或业务库为 SQLite → 官方
+     `AsyncSqliteSaver`，默认文件 `data/checkpoints.db`（相对路径按仓库根解析）；
+  2. 业务库为 MySQL 且没配 SQLite 路径 → 官方没有 MySQL saver，回退自研
      `PersistentMemorySaver` 业务库快照并打 warning（功能可用，性能/官方性较差）；
-  4. `EASY_CHECKPOINT_BACKEND=legacy` → 强制自研快照。
-  官方 saver 打开失败会按 postgres → sqlite → legacy 逐级降级，不阻断启动；
+  3. `EASY_CHECKPOINT_BACKEND=legacy` → 强制自研快照。
+  官方 saver 打开失败降级为自研快照，不阻断启动；
   `shutdown_checkpointers()` 负责关闭 saver 并清空自研缓存（测试隔离亦依赖）。
+  Postgres saver 曾是第一优先级，2026-10-21 移除（生产只有 MySQL，按单 pod 部署）。
   见 `docs/archive/audit-reports/2026-10-17-increment38-fw09-report.md`。
 
 - **FW-11 部分落地**：`stores.SqlStore._search` 支持 BaseStore 常用 filter 操作符
