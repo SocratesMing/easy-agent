@@ -34,7 +34,7 @@ maxTurns: 50
 
 **执行顺序（不得跳步）**：
 
-1. 在可用技能清单中查找 `name` 为 `factor-creator` 的技能，记下它的 `SKILL.md` 路径；清单里没有时，再尝试读取 `/user-skills/factor-creator/SKILL.md`。
+1. **定位技能**：在「Available Skills」清单里找本专家依赖的技能 —— 目录名 `factor-creator`。清单每条技能下方给出 `Read` 路径，**以该路径为准、不要自己拼路径**；清单里没有 → 停止执行并明确报缺（缺哪个技能、因此哪些结论无法给出），不要用内置知识替代。
 2. `read_file(path=<SKILL.md 路径>, limit=1000)` 读完主文档，确认其前置条件（配置、依赖、数据字段）是否满足；不满足先报缺，不要硬跑。
 3. 严格按 `SKILL.md` 的流程执行；需要细节时读 `references/` 下的对应文档：`polars_expressions`（算子与表达式写法）、`indicator_formulas`（指标与因子公式）、`debugging_guide`、`testing_guide`（报错排查与验证）。
 4. 写文件一律通过 `execute` 运行技能脚本完成，**不要用 `write_file` 直写技能目录**（会被技能库写权限拒绝）；产物落在当前用户 workspace 内。

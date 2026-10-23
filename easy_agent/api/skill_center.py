@@ -477,7 +477,7 @@ async def disable_skill(
 
 
 class AddSkillRequest(BaseModel):
-    dir_name: str  # 公共技能的目录名（如 "pdf", "xlsx"）
+    dir_name: str  # 公共技能的目录名（如 "pdf", "xlsx"）；也接受 SKILL.md 的 name（常见中文）
 
 
 @router.post("/add-skill", summary="添加公共技能到用户目录")
@@ -485,51 +485,59 @@ async def add_skill_to_user(
     request: AddSkillRequest,
     username: Annotated[str, Depends(get_current_username)],
 ):
-    """将公共技能文件夹完整复制到用户 workspace/{username}/skills/ 目录下"""
+    """将公共技能文件夹完整复制到用户 workspace/{username}/skills/ 目录下
+
+    ``dir_name`` 既可以写**目录名**，也可以写 SKILL.md 的 ``name``（存量技能包常见
+    「目录英文 + name 中文」）。统一经 ``skill_library.resolve_public_skill_ref``
+    解析出 canonical 目录名后再复制，落盘目录名恒为目录名——这样同一个技能不会因为
+    用户点卡片时传的是中文名而出现两份副本。
+    """
     # 公共技能可能有多个候选位置（CWD 下的 ./skills、项目根下的 ./skills），
     # 统一由 skill_library 判定，避免「换启动目录就找不到技能」。
-    source_dir = skill_library.public_skill_source(request.dir_name)
-    if source_dir is None:
+    hit = skill_library.resolve_public_skill_ref(request.dir_name)
+    if hit is None:
         searched = "；".join(
             str(item) for item in skill_library.public_skills_dir_candidates()
         ) or "（未配置 tools.skills_dir）"
         raise HTTPException(
             status_code=404,
-            detail=f"公共技能 '{request.dir_name}' 不存在。已查找: {searched}",
+            detail=(
+                f"公共技能 '{request.dir_name}' 不存在"
+                f"（目录名与 SKILL.md 的 name 均未命中）。已查找: {searched}"
+            ),
         )
+    dir_name = hit["dir_name"]
 
     try:
         # 原子复制（与「专家依赖技能自动补装」共用同一份实现，见 skill_library）
-        target_dir = skill_library.install_public_skill_to_user(
-            username, request.dir_name
-        )["path"]
+        target_dir = skill_library.install_public_skill_to_user(username, dir_name)["path"]
 
         # 已缓存的 Agent 持有旧技能列表（技能在 Agent 构造时固化），必须失效重建，
         # 否则新添加的技能要等 Agent 因其它原因重建或进程重启才生效
         invalidate_user_agents(username)
 
         # 技能创建时按内容自动归类（用户之后可在技能中心手动调整）
-        category_id = skill_categories.auto_assign_skill_dir(
-            username, request.dir_name, target_dir
-        )
+        category_id = skill_categories.auto_assign_skill_dir(username, dir_name, target_dir)
 
         abs_target = target_dir.resolve()
         logger.info(
-            f"技能添加成功 | 用户: {username} | 技能: {request.dir_name} | "
+            f"技能添加成功 | 用户: {username} | 声明: {request.dir_name} | "
+            f"目录: {dir_name} | 匹配方式: {hit['matched_by']} | "
             f"目标绝对路径: {abs_target} | 类别: {category_id}"
         )
         return {
             "status": "ok",
             "category_id": category_id,
-            "message": f"技能 '{request.dir_name}' 添加成功",
+            "dir_name": dir_name,
+            "message": f"技能 '{dir_name}' 添加成功",
         }
 
     except FileExistsError:
-        raise HTTPException(status_code=409, detail=f"技能 '{request.dir_name}' 已添加，请勿重复操作")
+        raise HTTPException(status_code=409, detail=f"技能 '{dir_name}' 已添加，请勿重复操作")
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=f"权限不足，无法复制技能文件: {e}")
     except Exception as e:
-        logger.error(f"技能添加失败 | 用户: {username} | 技能: {request.dir_name} | 错误: {e}")
+        logger.error(f"技能添加失败 | 用户: {username} | 技能: {dir_name} | 错误: {e}")
         raise HTTPException(status_code=500, detail=f"添加技能失败: {e}")
 
 

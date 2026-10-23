@@ -42,11 +42,17 @@ def public_root(monkeypatch, tmp_path):
     return root
 
 
-def _make_public_skill(root, name=SKILL_NAME):
-    """造一个带子目录的公共技能（验证子文件一起复制）。"""
+def _make_public_skill(root, name=SKILL_NAME, display_name=None):
+    """造一个带子目录的公共技能（验证子文件一起复制）。
+
+    ``display_name`` 用于造「目录英文 + name 中文」的存量技能包。
+    """
     skill_dir = root / name
     (skill_dir / "scripts").mkdir(parents=True)
-    (skill_dir / "SKILL.md").write_text(SKILL_BODY, encoding="utf-8")
+    body = SKILL_BODY
+    if display_name is not None:
+        body = f"---\nname: {display_name}\ndescription: {display_name}\n---\n\n# {display_name}\n"
+    (skill_dir / "SKILL.md").write_text(body, encoding="utf-8")
     (skill_dir / "scripts" / "new_factor.py").write_text("print('ok')\n", encoding="utf-8")
     return skill_dir
 
@@ -416,6 +422,106 @@ def test_warns_when_skill_package_content_mismatches(users_root, public_root, mo
     assert report["warnings"] and "expert-creator" in report["warnings"][0]
     notice = skill_provision.build_skill_runtime_notice(report)
     assert "请先与用户确认技能内容是否正确" in notice
+
+
+# ── 技能别名：目录名主键 + SKILL.md name 兜底 ─────────────────────────
+
+
+def test_declared_by_display_name_installs_canonical_dir(users_root, public_root, monkeypatch):
+    """存量包「目录英文 + name 中文」：声明写中文名也能装上，落盘目录是目录名。"""
+    _make_public_skill(public_root, "fpp-income-analysis", "金市营收情况")
+    _make_public_skill(public_root, "precious-metals-analysis", "贵金属投资交易分析")
+    _stub_expert(monkeypatch, required=("金市营收情况", "贵金属投资交易分析"))
+
+    report = skill_provision.provision_expert_skills(USERNAME, EXPERT_ID)
+
+    # 装的是 canonical 目录名，不是声明里的中文名
+    assert report["installed"] == ["fpp-income-analysis", "precious-metals-analysis"]
+    assert _user_skill_path(name="fpp-income-analysis").is_dir()
+    assert _user_skill_path(name="precious-metals-analysis").is_dir()
+    assert not _user_skill_path(name="金市营收情况").exists(), "不能按展示名建目录"
+    # resolved 记录「声明 → 目录」的映射，供排查接口使用
+    assert report["resolved"] == [
+        {"declared": "金市营收情况", "resolved_dir": "fpp-income-analysis", "matched_by": "name"},
+        {
+            "declared": "贵金属投资交易分析",
+            "resolved_dir": "precious-metals-analysis",
+            "matched_by": "name",
+        },
+    ]
+
+
+def test_display_name_and_dir_name_both_declared_installs_once(
+    users_root, public_root, monkeypatch
+):
+    """同一技能用两种写法各声明一次：只装一次，第二次记 existing，不产生第二份副本。"""
+    _make_public_skill(public_root, "fpp-income-analysis", "金市营收情况")
+    _stub_expert(monkeypatch, required=("金市营收情况", "fpp-income-analysis"))
+
+    report = skill_provision.provision_expert_skills(USERNAME, EXPERT_ID)
+
+    assert report["installed"] == ["fpp-income-analysis"]
+    assert any(item["reason"] == "existing" for item in report["skipped"])
+    dirs = [p.name for p in skill_library.user_skills_dir(USERNAME).iterdir() if p.is_dir()]
+    assert dirs == ["fpp-income-analysis"]
+
+
+def test_normalized_dir_name_declaration_resolves(users_root, public_root, monkeypatch):
+    """归一化写法（大小写/下划线）也能命中：FPP_Income_Analysis → fpp-income-analysis。"""
+    _make_public_skill(public_root, "fpp-income-analysis", "金市营收情况")
+    _stub_expert(monkeypatch, required=("FPP_Income_Analysis",))
+
+    report = skill_provision.provision_expert_skills(USERNAME, EXPERT_ID)
+
+    assert report["installed"] == ["fpp-income-analysis"]
+    assert report["resolved"][0]["matched_by"] == "dir_normalized"
+
+
+def test_unresolvable_declaration_reports_candidates(users_root, public_root, monkeypatch):
+    """解析不到的声明：fail-soft，只给近似候选（仅提示，不自动装）。"""
+    _make_public_skill(public_root, "fpp-income-analysis", "金市营收情况")
+    _stub_expert(monkeypatch, required=("fpp_income_analysi",))  # 少了结尾的 s
+
+    report = skill_provision.provision_expert_skills(USERNAME, EXPERT_ID)
+
+    assert report["missing"] == ["fpp_income_analysi"]
+    skipped = report["skipped"][0]
+    assert skipped["reason"] == "source_missing"
+    assert skipped["candidates"][0]["dir_name"] == "fpp-income-analysis"
+    # 候选只用于诊断，绝不据此安装
+    assert not skill_library.user_skills_dir(USERNAME).exists()
+
+
+def test_inspect_one_exposes_resolution_fields(users_root, public_root, monkeypatch):
+    """只读探测：声明、解析到的目录、匹配方式、状态都能看到。"""
+    _make_public_skill(public_root, "fpp-income-analysis", "金市营收情况")
+
+    item = skill_provision._inspect_one(USERNAME, "金市营收情况")
+
+    assert item["declared"] == "金市营收情况"
+    assert item["resolved_dir"] == "fpp-income-analysis"
+    assert item["matched_by"] == "name"
+    assert item["state"] == "install_ready"
+    assert not skill_library.user_skills_dir(USERNAME).exists(), "探测不得写盘"
+
+
+def test_runtime_notice_mentions_resolved_dir(users_root, public_root, monkeypatch):
+    """声明是中文、实际目录是英文时，提示里两个都给，便于用户自查。"""
+    _make_public_skill(public_root, "fpp-income-analysis", "金市营收情况")
+    disabled = skill_library.user_disabled_dir(USERNAME) / "fpp-income-analysis"
+    disabled.mkdir(parents=True)
+    (disabled / "SKILL.md").write_text(
+        "---\nname: 金市营收情况\ndescription: 金市营收\n---\n", encoding="utf-8"
+    )
+    _stub_expert(monkeypatch, required=("金市营收情况",))
+
+    report = skill_provision.provision_expert_skills(USERNAME, EXPERT_ID)
+
+    assert report["installed"] == []
+    assert [item["reason"] for item in report["skipped"]] == ["disabled"]
+    notice = skill_provision.build_skill_runtime_notice(report)
+    assert "金市营收情况" in notice
+    assert "目录 `fpp-income-analysis`" in notice
 
 
 # ── 公共技能目录的多候选解析（CWD≠项目根 时也能找到）────────────────────
