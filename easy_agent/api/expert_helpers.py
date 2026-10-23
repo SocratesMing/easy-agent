@@ -13,10 +13,7 @@
 ``services.expert_runtime`` 原样转发，历史调用点（``_load_expert_prompt`` 等）不破。
 """
 
-import json
 import logging
-import time
-from datetime import datetime
 from typing import Optional
 
 from fastapi import HTTPException
@@ -27,12 +24,8 @@ from easy_agent.db.expert_store import (
 )
 from easy_agent.db.repositories.expert_repository import ExpertRepository
 from easy_agent.agent.model import create_model
-from easy_agent.models.api import ChatRequest
 from easy_agent.services import (
-    expert_guardrail,
-    expert_relevance,
     get_agent_config,
-    public_expert_service,
 )
 from easy_agent.services.expert_runtime import (  # noqa: F401 - re-export 历史名字
     _as_str_list,
@@ -53,16 +46,9 @@ from easy_agent.services.expert_runtime import (  # noqa: F401 - re-export 历�
 )
 from easy_agent.services.expert_service import (
     generate_expert_config,
-    load_active_prompt,
     slugify,
     write_expert_version,
 )
-from easy_agent.services.session_thread import abandon_pending_approval, session_thread_in_use
-from easy_agent.services.sse import SSEEvent
-from easy_agent.services.sse_emitter import SSEEmitter
-from easy_agent.services.stream_messages import build_assistant_message_dict
-from easy_agent.utils import SessionLogger
-from easy_agent.utils.prompt_probe import describe_prompt
 
 logger = logging.getLogger(__name__)
 
