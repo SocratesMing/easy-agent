@@ -296,18 +296,27 @@ knowledge:
       - ppt
       - pptx
     max_documents_per_query: 500
-  # 外部目录树同步（默认关闭；启用时按需取消注释）
-  # catalog_sync:
-  #   enabled: ${KNOWLEDGE_CATALOG_SYNC_ENABLED:-false}
-  #   sql_file: "${KNOWLEDGE_CATALOG_SYNC_SQL_FILE}"
-  #   database: "${KNOWLEDGE_CATALOG_SYNC_DATABASE:-ai_kb}"
-  #   owner_username: "admin"
-  #   space_type: "team"  # personal | team
-  #   department_id: ""
-  #   max_level: 5
-  #   mysql:
-  #     host: ""
-  #     port: 3306
-  #     user: ""
-  #     password: ""
-  #     charset: "utf8mb4"
+    # 解析绝对超时（秒）：0 = 不限制；计时从真正开始解析算起，不含上游排队
+    parse_timeout_seconds: ${KNOWLEDGE_PARSE_TIMEOUT_SECONDS:-0}
+  # 研报接入：文档 SQL 增量同步（enabled=true 即启用；mysql 连接/表名按需填写）
+  source_sync:
+    enabled: ${KNOWLEDGE_SOURCE_SYNC_ENABLED:-false}
+    owner_username: "admin"     # 入库归属用户（需已存在，以该用户身份上传并授权）
+    file_root: "${SOURCE_SYNC_FILE_ROOT:-}"  # 文件根目录（绝对路径）；留空则 attacUrl 必须是绝对路径
+    base_id: ""                # 指定既有知识库；为空则按 base_name 查找/创建
+    base_name: "报告库"
+    space_type: "team"         # personal | team
+    lookback_days: 7           # 按 publishDate 取最近 N 天
+    start_date: ""             # 首次回填起始日期 YYYY-MM-DD
+    interval_minutes: 60       # 0 = 仅启动执行一次
+    max_inflight: 10           # 同时在途（排队/解析中）文档上限
+    poll_interval_seconds: 15  # 轮询在途文档解析状态的间隔（秒）
+    max_attempts: 3            # 单篇文档上传/解析失败后的最大重试次数
+    mysql:
+      host: "${SOURCE_SYNC_MYSQL_HOST:-}"         # 研报 SQL 必填，不复用主库
+      port: ${SOURCE_SYNC_MYSQL_PORT:-3306}
+      user: "${SOURCE_SYNC_MYSQL_USER:-}"
+      password: "${SOURCE_SYNC_MYSQL_PASSWORD:-}"
+      database: "${SOURCE_SYNC_MYSQL_DATABASE:-}" # 研报 SQL 必填，不复用主库
+      charset: "${SOURCE_SYNC_MYSQL_CHARSET:-utf8mb4}"
+      table: "${SOURCE_SYNC_MYSQL_TABLE:-}"       # 留空用内置表 easy_agent_report 并自动建表

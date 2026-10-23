@@ -1029,6 +1029,7 @@ async def ask(
             document_ids=payload.document_ids,
             top_n=payload.top_n,
             request_id=request_id,
+            metadata_filter=payload.metadata_filter,
         )
     )
     answer, quality_warnings = await _call(_answer(payload.question, retrieved.evidence))

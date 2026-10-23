@@ -31,6 +31,8 @@ from easy_agent.knowledges.core.file_validation import UploadValidationError, va
 from easy_agent.knowledges.core.models import (
     AllowedAction,
     DocumentListResponse,
+    DocumentMetadata,
+    DocumentMetadataFilter,
     DocumentStatus,
     DocumentSummary,
     DocumentUploadAccepted,
@@ -80,8 +82,6 @@ if TYPE_CHECKING:  # 仅供类型注解（api 与 service 相互引用，运行�
 
 logger = logging.getLogger(__name__)
 
-# 上游解析超过该时长仍未完成时标记失败
-PARSE_TIMEOUT_SECONDS = 1800.0
 # 证据最低得分阈值：低于该分的 chunk 不进证据列表，作为本地兜底过滤
 MINIMUM_EVIDENCE_SCORE = 0.4
 
@@ -314,6 +314,29 @@ class KnowledgeService:
             return {"owner_user_id": str(base["owner_user_id"])}
         return None
 
+    @staticmethod
+    def _document_meta_fields(
+        base: Mapping[str, Any], document: Mapping[str, Any]
+    ) -> dict[str, Any] | None:
+        """文档级 meta_fields：个人库归属标签 + 业务元数据（RAGFlow 副本）。
+
+        业务元数据以本地 SQL 为权威；这里写入 RAGFlow 仅用于后台追溯与外部
+        系统直连时的可见性，不作为检索过滤器。
+        """
+        fields = dict(KnowledgeService._personal_meta_fields(base) or {})
+        for key in (
+            "source",
+            "source_record_id",
+            "report_title",
+            "report_tag",
+            "report_second_source",
+            "publish_date",
+        ):
+            value = document.get(key)
+            if value not in (None, ""):
+                fields[key] = str(value)
+        return fields or None
+
     async def _parse_actually_running(self, base: dict, remote_id: str) -> bool:
         """核查远端文档解析是否实际已启动。
 
@@ -474,6 +497,12 @@ class KnowledgeService:
             allowed_actions=allowed_actions(role),
             created_at=document["created_at"],
             updated_at=document["updated_at"],
+            source=document.get("source"),
+            source_record_id=document.get("source_record_id"),
+            report_title=document.get("report_title"),
+            report_tag=document.get("report_tag"),
+            report_second_source=document.get("report_second_source"),
+            publish_date=document.get("publish_date"),
         )
 
     @staticmethod
@@ -1337,25 +1366,38 @@ class KnowledgeService:
         progress = upstream_doc.get("progress")
         if not isinstance(progress, (int, float)) or not 0 <= progress <= 1:
             progress = None
-        # 状态与进度均无变化的文档直接跳过：稳态轮询时避免海量无效
-        # DB 查询/写入（每篇文档否则要 4 次串行 DB 往返，几百篇就是分钟级）
+        changed = (
+            str(local.get("status")) != status.value
+            or local.get("progress") != progress
+        )
+        now_iso = datetime.now(UTC).isoformat()
+        parse_started_at = local.get("parse_started_at")
+        if status == DocumentStatus.PROCESSING and not parse_started_at:
+            # 首次真正开始解析：超时从此处计时，不含上游排队时间
+            parse_started_at = now_iso
+        # 超时判定先于“无变化跳过”：进度停滞的文档也必须能被发现
+        timeout_seconds = float(self.config.limits.parse_timeout_seconds or 0)
+        is_sync_source = str(local.get("source") or "") == "source_sync"
         if (
-            str(local.get("status")) == status.value
-            and local.get("progress") == progress
+            not is_sync_source
+            and timeout_seconds > 0
+            and (
+                status == DocumentStatus.PROCESSING
+                or str(local.get("status")) == DocumentStatus.PROCESSING.value
+            )
         ):
-            return
-        latest_operation: Mapping[str, Any] | None = None
-        if status in {DocumentStatus.PENDING, DocumentStatus.PROCESSING}:
-            active_operation = await self._repo(
-                self.repository.get_active_document_operation,
-                str(local["id"]),
-            )
-            latest_operation = active_operation or await self._repo(
-                self.repository.get_latest_document_operation, str(local["id"])
-            )
-            started_at = (
-                latest_operation.get("created_at") if latest_operation else None
-            )
+            started_at = parse_started_at
+            if not started_at:
+                active_operation = await self._repo(
+                    self.repository.get_active_document_operation,
+                    str(local["id"]),
+                )
+                latest_operation = active_operation or await self._repo(
+                    self.repository.get_latest_document_operation, str(local["id"])
+                )
+                started_at = (
+                    latest_operation.get("created_at") if latest_operation else None
+                )
             try:
                 started = datetime.fromisoformat(str(started_at))
                 if started.tzinfo is None:
@@ -1369,9 +1411,9 @@ class KnowledgeService:
             )
             if was_timed_out:
                 return
-            if elapsed > PARSE_TIMEOUT_SECONDS:
+            if elapsed > timeout_seconds:
                 timeout_message = (
-                    f"解析超过 {int(PARSE_TIMEOUT_SECONDS)} 秒仍未完成，请拆分文件后重试"
+                    f"解析超过 {int(timeout_seconds)} 秒仍未完成，请拆分文件后重试"
                 )
                 await self._repo(
                     self.repository.update_document,
@@ -1392,7 +1434,12 @@ class KnowledgeService:
                     error_message=timeout_message,
                 )
                 return
+        # 状态与进度均无变化：跳过后续 DB 写入（稳态轮询省往返）
+        if not changed:
+            return
         values: dict[str, object] = {"status": status.value, "progress": progress}
+        if parse_started_at and parse_started_at != local.get("parse_started_at"):
+            values["parse_started_at"] = parse_started_at
         if status == DocumentStatus.FAILED:
             values.update(
                 {
@@ -1525,13 +1572,13 @@ class KnowledgeService:
                 phase=OperationPhase.CONFIGURING.value,
                 progress=0.6,
             )
-            # 个人库文档打个人标签（owner_user_id）后再触发解析入库
+            # 个人库打 owner_user_id 标签；业务文档同时写 metadata 副本
             await self.ragflow.update_document(
                 dataset_id,
                 remote_id,
                 chunk_method=CHUNK_METHOD,
                 parser_config=PARSER_CONFIG,
-                meta_fields=self._personal_meta_fields(base),
+                meta_fields=self._document_meta_fields(base, document),
             )
             try:
                 await self.ragflow.parse_documents(dataset_id, [remote_id])
@@ -1617,11 +1664,13 @@ class KnowledgeService:
         principal: KnowledgePrincipal,
         request_id: str,
         relative_path: str | None = None,
+        metadata: DocumentMetadata | None = None,
     ) -> DocumentUploadAccepted:
         """上传文档：校验 → 本地落盘原文 → 上传 RAGFlow → 配置解析器 → 触发解析。
 
         relative_path 为浏览器文件夹上传的原始相对路径（webkitRelativePath），
         非空时按其目录段逐级 find-or-create 文件夹后落入叶子目录。
+        metadata 为文档 SQL 同步附带的业务元数据（人工上传时为 None）。
         """
         base, role = await self._authorized_base(
             base_id, principal, AllowedAction.UPLOAD
@@ -1694,6 +1743,12 @@ class KnowledgeService:
             size_bytes=size_bytes,
             created_by=principal.user_id,
             status=DocumentStatus.PENDING.value,
+            source=metadata.source if metadata else None,
+            source_record_id=metadata.source_record_id if metadata else None,
+            report_title=metadata.report_title if metadata else None,
+            report_tag=metadata.report_tag if metadata else None,
+            report_second_source=metadata.report_second_source if metadata else None,
+            publish_date=metadata.publish_date if metadata else None,
         )
         operation = await self._repo(
             self.repository.create_operation,
@@ -2195,6 +2250,53 @@ class KnowledgeService:
 
     # ---------------- 检索与问答 ----------------
 
+    @staticmethod
+    def _metadata_filter_kwargs(
+        metadata_filter: DocumentMetadataFilter | None,
+    ) -> dict[str, Any]:
+        """把过滤器转成 repository._document_filters 的关键字参数。"""
+        if metadata_filter is None:
+            return {}
+        return {
+            "publish_date_from": metadata_filter.publish_date_from,
+            "publish_date_to": metadata_filter.publish_date_to,
+            "report_tags": metadata_filter.report_tags or None,
+            "report_second_sources": metadata_filter.report_second_sources or None,
+            "report_title_contains": metadata_filter.report_title_contains,
+        }
+
+    @staticmethod
+    def _matches_metadata_filter(
+        document: Mapping[str, Any], metadata_filter: DocumentMetadataFilter | None
+    ) -> bool:
+        """本地兜底校验：与 SQL 过滤保持同一语义（AND / 多值 OR）。"""
+        if metadata_filter is None:
+            return True
+        publish_date = str(document.get("publish_date") or "")
+        if metadata_filter.publish_date_from and (
+            not publish_date or publish_date < metadata_filter.publish_date_from
+        ):
+            return False
+        if metadata_filter.publish_date_to and (
+            not publish_date or publish_date > metadata_filter.publish_date_to
+        ):
+            return False
+        if metadata_filter.report_tags and str(
+            document.get("report_tag") or ""
+        ) not in set(metadata_filter.report_tags):
+            return False
+        if metadata_filter.report_second_sources and str(
+            document.get("report_second_source") or ""
+        ) not in set(metadata_filter.report_second_sources):
+            return False
+        if metadata_filter.report_title_contains:
+            haystack = str(
+                document.get("report_title") or document.get("name") or ""
+            ).lower()
+            if metadata_filter.report_title_contains.lower() not in haystack:
+                return False
+        return True
+
     async def _retrieve_base_evidence(
         self,
         *,
@@ -2204,9 +2306,15 @@ class KnowledgeService:
         document_ids: list[str] | None,
         top_n: int,
         request_id: str,
+        metadata_filter: DocumentMetadataFilter | None = None,
     ) -> RetrieveResponse:
-        """执行检索；无可检索文档时返回空证据与提示，不编造。"""
+        """执行检索；无可检索文档时返回空证据与提示，不编造。
+
+        metadata_filter 为硬过滤：先缩小本地文档集，再只把这些文档的
+        remote_document_id 交给 RAGFlow，保证区间外文档不会被召回。
+        """
         base, _ = await self._authorized_base(base_id, principal, AllowedAction.ASK)
+        filter_kwargs = self._metadata_filter_kwargs(metadata_filter)
         if document_ids is None:
             documents = await self._repo(
                 self.repository.list_documents,
@@ -2214,6 +2322,7 @@ class KnowledgeService:
                 status=DocumentStatus.READY.value,
                 limit=self.config.limits.max_documents_per_query,
                 offset=0,
+                **filter_kwargs,
             )
         else:
             documents = await self._repo(
@@ -2226,7 +2335,12 @@ class KnowledgeService:
             documents = [
                 item for item in documents if item["status"] == DocumentStatus.READY.value
             ]
-        documents = [item for item in documents if item.get("remote_document_id")]
+        documents = [
+            item
+            for item in documents
+            if item.get("remote_document_id")
+            and self._matches_metadata_filter(item, metadata_filter)
+        ]
         if not documents:
             return RetrieveResponse(
                 evidence=[], warnings=["当前范围没有可检索的已解析文档"], request_id=request_id
@@ -2263,6 +2377,9 @@ class KnowledgeService:
                 continue
             local = by_remote.get(str(chunk.get("document_id")))
             if local is None or local["status"] != DocumentStatus.READY.value:
+                continue
+            # 纵深防御：上游若意外返回范围外文档，这里再挡一次
+            if not self._matches_metadata_filter(local, metadata_filter):
                 continue
             snippet = str(
                 chunk.get("content_with_weight") or chunk.get("content") or ""
@@ -2301,6 +2418,13 @@ class KnowledgeService:
                         "base_id": str(base["id"]),
                         "base_name": str(base["name"]),
                         "aggregation": aggregation,
+                        "source_record_id": item["document"].get("source_record_id"),
+                        "report_title": item["document"].get("report_title"),
+                        "report_tag": item["document"].get("report_tag"),
+                        "report_second_source": item["document"].get(
+                            "report_second_source"
+                        ),
+                        "publish_date": item["document"].get("publish_date"),
                     },
                 )
                 for item in candidates[:top_n]
@@ -2430,6 +2554,7 @@ class KnowledgeService:
         question: str,
         top_n: int,
         request_id: str,
+        metadata_filter: DocumentMetadataFilter | None = None,
     ) -> RetrieveResponse:
         """在会话已选择且仍被授权的知识库范围内检索。"""
         scope = await self.get_session_scope(
@@ -2446,6 +2571,7 @@ class KnowledgeService:
                     document_ids=None,
                     top_n=top_n,
                     request_id=request_id,
+                    metadata_filter=metadata_filter,
                 )
                 for base_id in scope.base_ids
             )

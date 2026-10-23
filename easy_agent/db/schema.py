@@ -28,7 +28,7 @@ logger = logging.getLogger("easy_agent.db.schema")
 # 否则已经升级过的库会一直命中「结构已是最新」的快速启动路径，变更不会生效。
 # 见 init_tables()：版本一致时跳过整轮建表 + 补列 + 建索引探测（MySQL 上这一步
 # 过去要 40+ 次网络往返，多副本部署时每个 pod 启动都要跑一遍，是启动慢的主因）。
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 # utf8mb4 复合主键必须 ≤ 3072 字节：(512 + 191) * 4 = 2812。
 LANGGRAPH_STORE_NS_LEN = 512
 LANGGRAPH_STORE_KEY_LEN = 191
@@ -60,6 +60,7 @@ EXPECTED_TABLES = (
     "knowledge_document_objects",
     "knowledge_operations",
     "knowledge_audit_events",
+    "knowledge_source_sync_items",
     "expert_agents",
     "schema_migrations",
     "rate_limit_counters",

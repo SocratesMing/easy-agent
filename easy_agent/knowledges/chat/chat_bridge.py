@@ -10,11 +10,13 @@ import uuid
 from dataclasses import dataclass
 
 from fastapi import HTTPException, Request
+from pydantic import ValidationError
 
 from easy_agent.db import Database
 from easy_agent.services.sse import SSEEvent
 from easy_agent.knowledges.api import get_knowledge_principal
 from easy_agent.knowledges.core.config import KnowledgeConfig
+from easy_agent.knowledges.core.models import DocumentMetadataFilter
 from easy_agent.knowledges.core.repository import KnowledgeRepository
 from easy_agent.knowledges.service import (
     AGGREGATION_SNIPPET_LIMIT,
@@ -156,13 +158,34 @@ def _build_knowledge_context(
 
 
 async def prepare_knowledge_chat(
-    *, request: Request, db: Database, session_id: str, question: str
+    *,
+    request: Request,
+    db: Database,
+    session_id: str,
+    question: str,
+    metadata_filter: dict | None = None,
 ) -> KnowledgeChatContext:
     """解析并复验已保存的知识范围；普通会话保持向后兼容。"""
 
     repository = KnowledgeRepository(db)
     if not repository.has_session_scope(session_id=session_id):
         return KnowledgeChatContext(None, [], [])
+
+    filter_model: DocumentMetadataFilter | None = None
+    if metadata_filter:
+        try:
+            filter_model = DocumentMetadataFilter.model_validate(metadata_filter)
+        except ValidationError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "KNOWLEDGE_METADATA_FILTER_INVALID",
+                    "message": "知识库检索元数据过滤条件无效",
+                    "errors": exc.errors(
+                        include_url=False, include_context=False, include_input=False
+                    ),
+                },
+            ) from exc
 
     principal = await get_knowledge_principal(request, db)
     config = getattr(request.app.state, "knowledge_config", KnowledgeConfig())
@@ -183,6 +206,7 @@ async def prepare_knowledge_chat(
             question=question,
             top_n=8,
             request_id=str(uuid.uuid4()),
+            metadata_filter=filter_model,
         )
         document_catalog = await service.get_session_document_catalog(
             session_id=session_id,

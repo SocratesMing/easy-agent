@@ -40,10 +40,10 @@ from easy_agent.knowledges.facade import (
     metrics,
     resolve_request_id,
     should_audit,
-    shutdown_catalog_sync,
     shutdown_knowledge,
-    startup_catalog_sync,
+    shutdown_source_sync,
     startup_knowledge,
+    startup_source_sync,
 )
 from easy_agent.knowledges.facade import knowledge_router
 from easy_agent.knowledges.personnel import router as personnel_router
@@ -314,9 +314,8 @@ async def lifespan(app: FastAPI):
             logger.error("❌ 部署配置错误 | %s", _msg)
         raise RuntimeError("; ".join(_errors))
 
-    # 外部目录树同步（ai_kb → 知识库板块）：由 knowledge.catalog_sync.enabled
-    # 开关控制，后台执行，失败仅记日志不阻断启动
-    await startup_catalog_sync(app)
+    # 文档 SQL 增量同步（文档 sql → 知识库）：后台执行，失败不阻断启动
+    await startup_source_sync(app)
 
     system_prompt = _prepare_system_prompt(config, config_path)
 
@@ -491,7 +490,7 @@ async def lifespan(app: FastAPI):
         logger.warning(f"关闭 checkpointer 失败: {exc}")
     if knowledge_started:
         await shutdown_knowledge(app)
-    await shutdown_catalog_sync(app)
+    await shutdown_source_sync(app)
     _shutdown_app(app)
 
 

@@ -516,6 +516,7 @@ async def chat_stream(
         db=repo.database,
         session_id=session_id,
         question=request.message,
+        metadata_filter=request.knowledge_metadata_filter,
     )
     # ── 上传文件内容 ─────────────────────────────────────────────────
     # 新机制（config.file_context.enabled=true，默认）：

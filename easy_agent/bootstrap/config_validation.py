@@ -146,7 +146,7 @@ KNOWN_SECTION_KEYS: dict[str, frozenset[str]] = {
             "embedding",
             "audit",
             "limits",
-            "catalog_sync",
+            "source_sync",
         }
     ),
     "knowledge.embedding": frozenset({"model"}),
@@ -158,22 +158,28 @@ KNOWN_SECTION_KEYS: dict[str, frozenset[str]] = {
             "max_filename_utf8_bytes",
             "allowed_extensions",
             "max_documents_per_query",
+            "parse_timeout_seconds",
         }
     ),
-    "knowledge.catalog_sync": frozenset(
+    "knowledge.source_sync": frozenset(
         {
             "enabled",
-            "sql_file",
-            "database",
             "owner_username",
+            "file_root",
+            "base_id",
+            "base_name",
             "space_type",
-            "department_id",
-            "max_level",
+            "lookback_days",
+            "start_date",
+            "interval_minutes",
+            "max_inflight",
+            "poll_interval_seconds",
+            "max_attempts",
             "mysql",
         }
     ),
-    "knowledge.catalog_sync.mysql": frozenset(
-        {"host", "port", "user", "password", "charset"}
+    "knowledge.source_sync.mysql": frozenset(
+        {"host", "port", "user", "password", "database", "charset", "table"}
     ),
     "llm": frozenset(
         {

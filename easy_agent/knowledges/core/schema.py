@@ -42,6 +42,15 @@ _DOCUMENT_P0_COLUMNS = (
     ("purge_after", "VARCHAR(50) DEFAULT NULL"),
     ("previous_status", "VARCHAR(30) DEFAULT NULL"),
     ("document_version", "INTEGER NOT NULL DEFAULT 1"),
+    # 业务元数据（文档 SQL 批量同步写入；检索时作为硬过滤条件）
+    ("source", "VARCHAR(127) DEFAULT NULL"),
+    ("source_record_id", "VARCHAR(255) DEFAULT NULL"),
+    ("report_title", "VARCHAR(255) DEFAULT NULL"),
+    ("report_tag", "VARCHAR(127) DEFAULT NULL"),
+    ("report_second_source", "VARCHAR(127) DEFAULT NULL"),
+    ("publish_date", "VARCHAR(10) DEFAULT NULL"),
+    # 解析计时：区分“排队等待”与“真正开始解析”，供超时判定使用
+    ("parse_started_at", "VARCHAR(50) DEFAULT NULL"),
 )
 
 
@@ -125,9 +134,52 @@ def initialize_knowledge_schema(db: Database, cursor) -> None:
         db._ensure_column(cursor, "knowledge_documents", column, definition)
     db._create_index(cursor, "idx_knowledge_documents_base", "knowledge_documents", "base_id")
     db._create_index(cursor, "idx_knowledge_documents_folder", "knowledge_documents", "folder_id")
+    # 元数据检索：日期区间 / 来源 / 标签过滤
+    db._create_index(
+        cursor,
+        "idx_knowledge_documents_base_publish",
+        "knowledge_documents",
+        "base_id, publish_date",
+    )
+    db._create_index(
+        cursor,
+        "idx_knowledge_documents_base_source",
+        "knowledge_documents",
+        "base_id, report_second_source",
+    )
+    # 文档 SQL 同步幂等键：同一来源的同一业务记录只入库一次（NULL 不参与唯一约束）
+    db._create_unique_index(
+        cursor,
+        "uq_knowledge_documents_source_record",
+        "knowledge_documents",
+        "source, source_record_id",
+    )
     # 兜底清理按 status 扫描软删除文档，复合索引最左前缀已覆盖该路径，
     # 无需单列 status 索引；purge_after 为历史列，仅保留以兼容既有库。
     db._create_index(cursor, "idx_knowledge_documents_purge", "knowledge_documents", "status, purge_after")
+
+    # ---- 文档 SQL 同步台账（断点续传 / 失败重试 / 漏传核对） ----
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS knowledge_source_sync_items (
+            id VARCHAR(255) PRIMARY KEY,
+            source VARCHAR(127) NOT NULL,
+            source_record_id VARCHAR(255) NOT NULL,
+            document_id VARCHAR(255),
+            status VARCHAR(30) NOT NULL,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            last_error TEXT,
+            publish_date VARCHAR(10),
+            created_at VARCHAR(50) NOT NULL,
+            updated_at VARCHAR(50) NOT NULL,
+            UNIQUE(source, source_record_id)
+        )
+    """)
+    db._create_index(
+        cursor,
+        "idx_knowledge_source_sync_status",
+        "knowledge_source_sync_items",
+        "source, status",
+    )
 
     # ---- 原始文件对象 ----
     cursor.execute("""

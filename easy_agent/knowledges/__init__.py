@@ -3,7 +3,7 @@
 基础层 core：config / models / schema / repository / operations_repository /
 file_validation；聊天与 Agent 集成层 chat：chat_bridge / streaming /
 agent_extension / original_tool；运行时层 runtime：lifecycle / worker /
-observability / catalog_sync；客户端 ragflow（Ragflow v0.26.3 标准 HTTP
+observability / source_sync；客户端 ragflow（Ragflow v0.26.3 标准 HTTP
 API）；服务与接口层 service / api；脚本 scripts；人员子包 personnel
 （知识库域的人员管理 / Excel 导入 / 用户扩展字段，HTTP 前缀
 ``/api/personnel``）。

@@ -5,10 +5,10 @@
 """
 
 from easy_agent.knowledges.api import router as knowledge_router  # noqa: E402
-from easy_agent.knowledges.runtime.catalog_sync import (  # noqa: E402
-    run_catalog_sync,
-    shutdown_catalog_sync,
-    startup_catalog_sync,
+from easy_agent.knowledges.runtime.source_sync import (  # noqa: E402
+    run_source_sync,
+    shutdown_source_sync,
+    startup_source_sync,
 )
 from easy_agent.knowledges.runtime.lifecycle import shutdown_knowledge, startup_knowledge  # noqa: E402
 from easy_agent.knowledges.runtime.observability import (  # noqa: E402
@@ -76,10 +76,10 @@ __all__ = [
     "metrics",
     "prepare_knowledge_chat",
     "resolve_request_id",
-    "run_catalog_sync",
+    "run_source_sync",
     "should_audit",
-    "shutdown_catalog_sync",
     "shutdown_knowledge",
-    "startup_catalog_sync",
+    "shutdown_source_sync",
     "startup_knowledge",
+    "startup_source_sync",
 ]
