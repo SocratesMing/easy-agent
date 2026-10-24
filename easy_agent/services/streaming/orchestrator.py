@@ -385,6 +385,7 @@ async def finalize_stream(
             elapsed_time=elapsed_time,
             step_count=current_step,
             result_limit=None,
+            context_length=context_length,
         ),
     )
 

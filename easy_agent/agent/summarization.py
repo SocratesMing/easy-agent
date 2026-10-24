@@ -19,8 +19,15 @@ logger = logging.getLogger(__name__)
 _logged_models: set[str] = set()
 
 
-def summarization_settings(config, model) -> dict:
-    """把 config 比例折成官方 ``SummarizationMiddleware`` 的 token 参数。"""
+def summarization_settings(config, model_key: str | None = None) -> dict:
+    """把 config 比例折成官方 ``SummarizationMiddleware`` 的 token 参数。
+
+    窗口取 ``model_key`` 对应模型的 ``context_length``。``model_key`` 是 ``config.models``
+    的配置键（会话在输入框选的模型，即 ``EasyAgent.model_name``），与推给前端的
+    ``context_length`` / ``auto_compress_tokens`` 同一口径；不传时用当前默认模型。
+    不能拿 ``model.model_name`` 去查：那是 API 模型名（如 ``deepseek-v4.1-flash``），
+    与配置键（``deepseek``）对不上，会一律退回默认模型。
+    """
     from easy_agent.agent.model import resolve_context_length
 
     thr = float(getattr(config.summarization, "compression_threshold", 0.0) or 0.8)
@@ -43,8 +50,7 @@ def summarization_settings(config, model) -> dict:
                 "truncation_text": "...(argument truncated)",
             },
         }
-    model_name = getattr(model, "model_name", None) or getattr(model, "model", None)
-    model_max = resolve_context_length(config, model_name if isinstance(model_name, str) else None)
+    model_max = resolve_context_length(config, model_key)
     trigger = max(1, int(model_max * thr))
     keep = max(1, int(model_max * tgt))
     trim = max(4000, int(model_max * 0.02))
@@ -61,9 +67,12 @@ def summarization_settings(config, model) -> dict:
     }
 
 
-def build_summarization_middleware(config, model, backend, *, render_turn: bool = False):
+def build_summarization_middleware(
+    config, model, backend, *, model_key: str | None = None, render_turn: bool = False
+):
     """按 config 阈值构造官方摘要中间件；每个代理（主代理 / 各子代理）各用一份。
 
+    ``model_key``：会话所用模型的配置键，阈值按它的窗口计算（见 :func:`summarization_settings`）。
     ``render_turn=True``（只给主代理）：先把本轮用户消息换成 ``turn_context`` 里的渲染
     内容再计 token / 摘要，见 ``agent/turn_context.py``（DA-03）。
     """
@@ -71,8 +80,10 @@ def build_summarization_middleware(config, model, backend, *, render_turn: bool 
 
     from easy_agent.agent.turn_context import TurnAwareSummarizationMiddleware
 
-    settings = summarization_settings(config, model)
+    settings = summarization_settings(config, model_key)
     label = str(getattr(model, "model_name", None) or getattr(model, "model", None) or "model")
+    if model_key:
+        label = f"{model_key}/{label}"
     if label not in _logged_models:
         _logged_models.add(label)
         logger.info(

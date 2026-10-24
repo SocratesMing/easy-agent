@@ -38,3 +38,24 @@ def test_every_agent_uses_the_configured_summarization(build_easy_agent, compile
         summarizers = [m for m in call["middleware"] if m.name == "SummarizationMiddleware"]
         assert len(summarizers) == 1, call["name"]
         assert any(summarizers[0] is instance for instance in built), call["name"]
+
+
+def test_summarization_thresholds_use_the_session_model_key(build_easy_agent, compiled_agents, monkeypatch):
+    """主代理与子代理的阈值都按会话模型的配置键（EasyAgent.model_name）取窗口。
+
+    模型对象上的 ``model_name`` 是 API 模型名，与 ``config.models`` 的键对不上；
+    曾因此一律退回默认模型的窗口。
+    """
+    keys = []
+    real = agent_mod.build_summarization_middleware
+
+    def recording(config, model, backend, **kwargs):
+        keys.append(kwargs.get("model_key"))
+        return real(config, model, backend, **kwargs)
+
+    monkeypatch.setattr(agent_mod, "build_summarization_middleware", recording)
+    agent = build_easy_agent()
+
+    assert agent.model_name
+    assert len(keys) >= 2  # 主代理 + 至少一个子代理
+    assert set(keys) == {agent.model_name}
