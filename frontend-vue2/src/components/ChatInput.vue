@@ -195,41 +195,42 @@
             <!-- 「+」菜单二级浮动面板：主菜单常驻，子面板显示在触发项旁边。
                  专家 = 上下两区（我的专家 / 公共专家）；技能 / 连接器 = 用户条目列表。
                  悬停或点击触发，互斥显示。 -->
-            <div v-if="subpanelCategory" class="plus-subpanel" :style="plusSubpanelStyle" @click.stop @mouseenter="cancelPlusClose" @mouseleave="schedulePlusClose">
+            <div v-if="subpanelCategory" ref="plusSubpanel" class="plus-subpanel" :style="plusSubpanelStyle" @click.stop @mouseenter="onSubpanelEnter" @mouseleave="onSubpanelLeave" @focusin="onSubpanelFocusIn" @focusout="onSubpanelFocusOut">
               <div class="plus-subpanel-head">
                 <span class="plus-subpanel-title">{{ plusListTitle }}</span>
                 <span class="plus-menu-count">{{ plusListCount }}</span>
-                <!-- 连接器面板：搜索按钮（展开后按名称/描述过滤列表） -->
-                <button
-                  v-if="isConnectorPanel"
-                  type="button"
-                  class="plus-subpanel-search-btn"
-                  :class="{ active: showConnectorSearch }"
-                  :aria-label="showConnectorSearch ? '收起搜索' : '搜索连接器'"
-                  :aria-expanded="showConnectorSearch ? 'true' : 'false'"
-                  @click="toggleConnectorSearch"
-                >
-                  <svg v-if="!showConnectorSearch" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <circle cx="11" cy="11" r="8"></circle>
-                    <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
-                  </svg>
-                  <svg v-else xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
-                    <line x1="18" y1="6" x2="6" y2="18" />
-                    <line x1="6" y1="6" x2="18" y2="18" />
-                  </svg>
-                </button>
               </div>
-              <div v-if="isConnectorPanel && showConnectorSearch" class="plus-sub-search">
+              <!-- 搜索框常驻（专家 / 技能 / 连接器同一形态），输入即过滤 -->
+              <div
+                v-if="hasPanelItems && !plusListLoading && !plusListError"
+                class="plus-sub-search"
+              >
                 <svg class="plus-sub-search-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                   <circle cx="11" cy="11" r="8"></circle>
                   <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
                 </svg>
                 <input
-                  v-model="connectorKeyword"
+                  v-model="subpanelKeyword"
                   type="text"
-                  placeholder="搜索连接器"
+                  :placeholder="plusListSearchPlaceholder"
+                  :aria-label="plusListSearchPlaceholder"
                   class="plus-sub-search-input"
+                  spellcheck="false"
+                  autocomplete="off"
+                  @keydown.esc.stop.prevent="subpanelKeyword = ''"
                 />
+                <button
+                  v-if="subpanelKeyword"
+                  type="button"
+                  class="plus-sub-search-clear"
+                  aria-label="清空搜索"
+                  @click="subpanelKeyword = ''"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                    <line x1="18" y1="6" x2="6" y2="18" />
+                    <line x1="6" y1="6" x2="18" y2="18" />
+                  </svg>
+                </button>
               </div>
 
               <!-- 专家：上下两区（我的专家 / 公共专家），点击行 = 召唤（再点 = 取消召唤） -->
@@ -238,10 +239,11 @@
                 class="plus-subpanel-list plus-experts"
                 @scroll="onExpertsScroll"
               >
-                <!-- 上区：我的专家（仅展示「可用」状态的专家，与专家 Tab 的召唤约束一致） -->
-                <div class="plus-experts-section">
+                <!-- 上区：我的专家（仅展示「可用」状态的专家，与专家 Tab 的召唤约束一致）。
+                     有搜索词时清空的区连标题一起收起，避免「标题 + 空白」的空壳。 -->
+                <div v-if="!subpanelKeyword || filteredMyExperts.length" class="plus-experts-section">
                   <span class="plus-experts-section-label">我的专家</span>
-                  <span v-if="myExpertsActive.length" class="plus-experts-section-count">{{ myExpertsActive.length }}</span>
+                  <span v-if="filteredMyExperts.length" class="plus-experts-section-count">{{ filteredMyExperts.length }}</span>
                 </div>
                 <button
                   v-for="item in visibleMyExperts"
@@ -259,7 +261,7 @@
                   </span>
                   <span v-if="isExpertSelected(item)" class="plus-expert-state">已选</span>
                 </button>
-                <div v-if="!myExpertsActive.length" class="plus-expert-empty">
+                <div v-if="!subpanelKeyword && !filteredMyExperts.length" class="plus-expert-empty">
                   <span class="plus-expert-empty-text">您还没有创建自己的专家</span>
                   <button type="button" class="plus-expert-create" @click="handleMenuPanel('experts')">
                     「去创建」
@@ -267,21 +269,24 @@
                 </div>
                 <!-- 兜底：内容未超出容器高度时不会产生滚动条，用可点击的「还有 N 位」保证可达 -->
                 <button
-                  v-if="myExpertsActive.length > visibleMyExperts.length"
+                  v-if="filteredMyExperts.length > visibleMyExperts.length"
                   type="button"
                   class="plus-expert-more"
                   @click="loadMoreExperts"
                 >
-                  还有 {{ myExpertsActive.length - visibleMyExperts.length }} 位 · 点击加载
+                  还有 {{ filteredMyExperts.length - visibleMyExperts.length }} 位 · 点击加载
                 </button>
 
-                <div class="plus-experts-divider"></div>
+                <div
+                  v-if="(!subpanelKeyword || filteredMyExperts.length) && (!subpanelKeyword || filteredPublicExperts.length)"
+                  class="plus-experts-divider"
+                ></div>
 
                 <!-- 下区：公共（预置）专家 -->
-                <div class="plus-experts-section">
+                <div v-if="!subpanelKeyword || filteredPublicExperts.length" class="plus-experts-section">
                   <span class="plus-experts-section-label">公共专家</span>
                   <span class="plus-experts-badge">预置</span>
-                  <span v-if="publicExperts.length" class="plus-experts-section-count">{{ publicExperts.length }}</span>
+                  <span v-if="filteredPublicExperts.length" class="plus-experts-section-count">{{ filteredPublicExperts.length }}</span>
                 </div>
                 <button
                   v-for="item in visiblePublicExperts"
@@ -299,14 +304,21 @@
                   </span>
                   <span v-if="isExpertSelected(item)" class="plus-expert-state">已选</span>
                 </button>
-                <div v-if="!publicExperts.length" class="plus-list-hint">公共专家目录为空</div>
+                <div v-if="!subpanelKeyword && !filteredPublicExperts.length" class="plus-list-hint">公共专家目录为空</div>
+                <!-- 搜索无命中：两区都空时给一句统一提示 -->
+                <div
+                  v-if="subpanelKeyword && !filteredMyExperts.length && !filteredPublicExperts.length"
+                  class="plus-list-hint"
+                >
+                  未找到匹配的专家
+                </div>
                 <button
-                  v-if="publicExperts.length > visiblePublicExperts.length"
+                  v-if="filteredPublicExperts.length > visiblePublicExperts.length"
                   type="button"
                   class="plus-expert-more"
                   @click="loadMoreExperts"
                 >
-                  还有 {{ publicExperts.length - visiblePublicExperts.length }} 位 · 点击加载
+                  还有 {{ filteredPublicExperts.length - visiblePublicExperts.length }} 位 · 点击加载
                 </button>
               </div>
 
@@ -315,7 +327,7 @@
                 <div v-if="plusListLoading" class="plus-list-hint">加载中…</div>
                 <div v-else-if="plusListError" class="plus-list-hint error">{{ plusListError }}</div>
                 <div v-else-if="plusList.length === 0" class="plus-list-hint">{{ plusListEmptyText }}</div>
-                <div v-else-if="isConnectorPanel && filteredPlusList.length === 0" class="plus-list-hint">未找到匹配的连接器</div>
+                <div v-else-if="filteredPlusList.length === 0" class="plus-list-hint">{{ plusListNoMatchText }}</div>
                 <!-- 技能行可点选（挂成输入框令牌，可连续挂多个）；
                      连接器行不可点选，行尾是启用开关（改的是连接器自身的状态，
                      与「专家·技能·连接器」面板双向同步，启用/停用都能点） -->
@@ -338,10 +350,8 @@
                 >
                   <span class="plus-list-icon" :class="{ initial: !item.icon }">{{ item.icon || item.initial }}</span>
                   <span class="plus-list-body">
-                    <span class="plus-list-name-row">
-                      <span class="plus-list-name">{{ item.name }}</span>
-                      <span v-if="item.tag" class="plus-list-tag" :class="item.tagType">{{ item.tag }}</span>
-                    </span>
+                    <span class="plus-list-name">{{ item.name }}</span>
+                    <span v-if="item.tag" class="plus-list-tag" :class="item.tagType">{{ item.tag }}</span>
                     <span class="plus-list-desc">{{ item.desc }}</span>
                   </span>
                   <!-- 连接器行：启用开关（与「专家·技能·连接器」同一份状态）；技能行：已选标记 -->
@@ -763,6 +773,18 @@ export default {
       showPlusMenu: false,
       subpanelCategory: null,
       plusSubpanelStyle: {},
+      // 一级菜单（.plus-menu）的视口坐标（顶边 / 底边）。
+      // 子面板的底边活动范围就是 [plusMenuTop, plusMenuBottom]：打开时贴底边（左右两面板
+      // 底部齐平），内容变少时底边往上收，最多收到与顶边齐平（面板整个落到菜单上方）。
+      // 只在 openSubpanel 里写一次，之后 syncSubpanelBox 反复读。
+      plusMenuTop: 0,
+      plusMenuBottom: 0,
+      // 本次打开以来量到过的「最满」高度，作为顶边基准（见 syncSubpanelBox）。
+      subpanelRefHeight: 0,
+      // 关闭保护：鼠标是否停在面板上、焦点是否在面板内（搜索框）。
+      // 面板会随搜索结果变矮，鼠标可能被「抽走」到面板外 —— 聚焦期间一律不自动关闭。
+      subpanelHovered: false,
+      subpanelFocused: false,
       plusHoverTimer: null,
       plusListCategory: '',
       plusList: [],
@@ -773,7 +795,8 @@ export default {
       myExperts: [],
       publicExperts: [],
       // 两个区块默认各展示 3 位，列表滚动到底部再加载 3 位，避免面板超高
-      plusExpertsLimit: 3,
+      // 两个区块默认各展示 6 位（单行布局后一屏放得下 6 行）
+      plusExpertsLimit: 6,
       plusMenuStyle: {},
       dropdownStyle: {},
       showTokenPopup: false,
@@ -799,9 +822,8 @@ export default {
       connectorNotice: '',
       connectorNoticeType: 'success',
       connectorNoticeTimer: null,
-      // 连接器面板内的搜索：按钮展开输入框，按名称/描述过滤
-      showConnectorSearch: false,
-      connectorKeyword: '',
+      // 子面板搜索（专家 / 技能 / 连接器共用一份，切换分类时清空）
+      subpanelKeyword: '',
       skillPickerOpen: false,
       skillPickerIndex: 0,
       skillPickerLoading: false,
@@ -873,44 +895,77 @@ export default {
       const meta = { experts: '专家', skills: '我的技能', connectors: '我的连接器' }
       return meta[this.plusListCategory] || ''
     },
-    /** 标题右侧计数：专家面板 = 我的（可用）+ 公共；连接器面板 = 过滤后的条数；其余 = 列表条数 */
+    /** 标题右侧计数：专家 = 过滤后两区之和；技能 / 连接器 = 过滤后条数 */
     plusListCount() {
       if (this.plusListCategory === 'experts') {
-        return this.myExpertsActive.length + this.publicExperts.length
+        return this.filteredMyExperts.length + this.filteredPublicExperts.length
       }
-      if (this.isConnectorPanel) return this.filteredPlusList.length
-      return this.plusList.length
+      return this.filteredPlusList.length
+    },
+    /** 常驻搜索框的占位文案（按面板类型） */
+    plusListSearchPlaceholder() {
+      const meta = { experts: '搜索专家', skills: '搜索技能', connectors: '搜索连接器' }
+      return meta[this.plusListCategory] || '搜索'
+    },
+    /** 有搜索词但无命中时的提示（按面板类型） */
+    plusListNoMatchText() {
+      const meta = {
+        experts: '未找到匹配的专家',
+        skills: '未找到匹配的技能',
+        connectors: '未找到匹配的连接器',
+      }
+      return meta[this.plusListCategory] || '未找到匹配的内容'
+    },
+    /** 当前面板是否有数据：空列表不显示搜索框，免得对着空列表以为「搜不到」 */
+    hasPanelItems() {
+      if (this.plusListCategory === 'experts') {
+        return this.myExpertsActive.length + this.publicExperts.length > 0
+      }
+      return this.plusList.length > 0
     },
     /** 当前子面板是否为连接器列表 */
     isConnectorPanel() {
       return this.plusListCategory === 'connectors'
     },
-    /** 当前子面板实际渲染的行（连接器面板走搜索结果，其余走原列表） */
+    /** 当前子面板实际渲染的行（技能 / 连接器都走搜索结果） */
     panelRows() {
-      return this.isConnectorPanel ? this.filteredPlusList : this.plusList
+      return this.filteredPlusList
     },
-    /** 连接器面板的搜索结果：按名称/描述过滤（无关键字时返回全量） */
+    /**
+     * 技能 / 连接器的搜索结果。
+     * 名称（含技能目录名）优先命中；描述是一大段说明，几乎每个词都能命中，
+     * 因此只在名称完全没命中时才回退到描述（与输入框「/」检索同一取舍）。
+     */
     filteredPlusList() {
-      if (!this.isConnectorPanel) return this.plusList
-      const kw = this.connectorKeyword.trim().toLowerCase()
+      const kw = this.subpanelKeyword.trim().toLowerCase()
       if (!kw) return this.plusList
-      return this.plusList.filter((item) => {
+      const byName = this.plusList.filter((item) => {
         const name = String(item.name || '').toLowerCase()
-        const desc = String(item.desc || '').toLowerCase()
-        return name.includes(kw) || desc.includes(kw)
+        const dir = String(item.dir_name || '').toLowerCase()
+        return name.includes(kw) || dir.includes(kw)
       })
+      if (byName.length > 0) return byName
+      return this.plusList.filter((item) => String(item.desc || '').toLowerCase().includes(kw))
     },
     /** 我的专家：仅保留「可用」（active）状态，与专家 Tab 的召唤约束一致 */
     myExpertsActive() {
       return this.myExperts.filter((item) => item && item.agent_status === 'active')
     },
-    /** 上区当前可见条目（默认 3 条，滚动加载更多） */
-    visibleMyExperts() {
-      return this.myExpertsActive.slice(0, this.plusExpertsLimit)
+    filteredMyExperts() {
+      return this.filterExperts(this.myExpertsActive)
     },
-    /** 下区当前可见条目（默认 3 条，滚动加载更多） */
+    filteredPublicExperts() {
+      return this.filterExperts(this.publicExperts)
+    },
+    /** 上区当前可见条目：搜索时全量展示，否则按 plusExpertsLimit 分页 */
+    visibleMyExperts() {
+      if (this.subpanelKeyword.trim()) return this.filteredMyExperts
+      return this.filteredMyExperts.slice(0, this.plusExpertsLimit)
+    },
+    /** 下区当前可见条目：同上 */
     visiblePublicExperts() {
-      return this.publicExperts.slice(0, this.plusExpertsLimit)
+      if (this.subpanelKeyword.trim()) return this.filteredPublicExperts
+      return this.filteredPublicExperts.slice(0, this.plusExpertsLimit)
     },
     plusListEmptyText() {
       const meta = {
@@ -1036,6 +1091,11 @@ export default {
     },
   },
   watch: {
+    // 搜索词一变，列表条数就变，面板高度必须跟着重算（底边会随条数上下浮动，
+    // 所以变多/变少都要重算；是否关闭由 schedulePlusClose 的「聚焦保护」负责）。
+    subpanelKeyword() {
+      this.$nextTick(this.syncSubpanelBox)
+    },
     shouldCountLive(on) {
       if (on) this.startLiveDuration()
       else this.stopLiveDuration()
@@ -1056,8 +1116,7 @@ export default {
         this.uploadedFiles = []
         this.dismissUploadNotice()
       }
-      this.showConnectorSearch = false
-      this.connectorKeyword = ''
+      this.subpanelKeyword = ''
       // 技能标签是文本的一部分：切会话时把标签从草稿里剥掉（等价于旧的「令牌复位」）。
       // 本组件自己发起的建会话（上传文件）由上传链路标记，不算切换、保留标签，见 ensureSessionId。
       if (!this.selfCreatedSession) {
@@ -1307,39 +1366,128 @@ export default {
       // 每次打开都重新拉取（接口很轻，且公共专家目录是服务端实时扫描的）
       this.myExperts = []
       this.publicExperts = []
-      this.plusExpertsLimit = 3
+      this.plusExpertsLimit = 6
+      // 三个面板共用一份搜索词：切分类时一律清空，避免把上一个面板的关键字带过来
+      this.subpanelKeyword = ''
       if (category === 'connectors') {
-        // 搜索框每次打开都收起；开关状态随连接器目录一起拉取（loadPlusList）
-        this.showConnectorSearch = false
-        this.connectorKeyword = ''
+        // 开关状态随连接器目录一起拉取（loadPlusList）
         this.clearConnectorNotice()
       }
       this.loadPlusList(category)
     },
-    // 打开二级浮动面板（主菜单常驻）：定位到触发项右侧，底部超视口时上移
+    /**
+     * 打开二级浮动面板（主菜单常驻），并给首帧一个占位尺寸。
+     *
+     * 真正的尺寸与位置由 syncSubpanelBox 负责。这里只做四件事：
+     * 算左右锚点、记住一级菜单的 top/bottom、写一个预估值占位（同帧就会被 sync 覆盖，
+     * 基本不会上屏）、复位「悬停 / 聚焦」两个关闭保护标志与高度基准。
+     *
+     * 垂直方向的规则（2026-10-24 定稿）：
+     * 1. **打开时两个面板底部齐平** —— 子面板底边 = 一级菜单底边。
+     * 2. 内容（被搜索）变少时**顶边不动、底边随之上收**，最多收到与一级菜单**顶边**齐平，
+     *    此时面板整个落在菜单上方，左下角正好咬住菜单右上角。
+     * 详见 syncSubpanelBox。
+     *
+     * 为什么不用 `bottom: 固定值`：底边钉住时内容变矮会让顶边（含搜索框）往下移，
+     * 鼠标原地掉出面板 → mouseleave → 面板关闭。现在允许变矮，靠「搜索框聚焦期间
+     * 不自动关闭」兜住（见 schedulePlusClose）。
+     *
+     * 也不能退回「按假设高度 420px 判断上下翻转」的老办法：这里用真实高度算。
+     */
     openSubpanel(category, event) {
       // click 触发同面板已打开则翻转关闭；hover 触发保持
       if (this.subpanelCategory === category) return
       this.subpanelCategory = category
-      const rect = event.currentTarget.getBoundingClientRect()
-      // 面板高度随列表变化（最高约 420px）：下方放得下时顶边对齐触发项，否则底边对齐触发项向上展开，
-      // 两种情况面板都与触发项在垂直方向重叠，鼠标可水平移入
-      const maxHeight = 420
-      const left = rect.right + 6 + 380 > window.innerWidth ? Math.max(8, rect.left - 386) : rect.right + 6
-      const vertical = rect.top - 8 + maxHeight <= window.innerHeight - 8
-        ? { top: `${Math.max(8, rect.top - 8)}px` }
-        : { bottom: `${Math.max(8, window.innerHeight - rect.bottom - 8)}px` }
+      // 换面板时先清掉可能残留的关闭计时器（例如从搜索框失焦后立刻点了另一个菜单项）
+      this.cancelPlusClose()
+      this.subpanelFocused = false
+      this.subpanelHovered = false
+      this.subpanelRefHeight = 0
+      const anchor = event.currentTarget
+      const rect = anchor.getBoundingClientRect()
+      // 对齐基准是一级菜单容器（.plus-menu）：底边决定「齐平」，顶边是上收的极限
+      const menuEl = anchor.closest ? anchor.closest('.plus-menu') : null
+      const menuRect = menuEl ? menuEl.getBoundingClientRect() : null
+      this.plusMenuTop = menuRect ? menuRect.top : rect.top
+      this.plusMenuBottom = menuRect ? menuRect.bottom : rect.bottom
+      // 宽度与 CSS 同源，并受视口宽度约束（窄窗口下不许溢出）
+      const width = Math.min(480, window.innerWidth - 16)
+      const fitsRight = rect.right + 6 + width <= window.innerWidth - 8
+      const left = fitsRight
+        ? rect.right + 6
+        : Math.max(8, rect.left - 6 - width)
+      // 占位：真实高度未知（列表异步加载）。先按「底边贴菜单底边、上限 = 菜单竖向空间」摆一下，
+      // sync 随后用真实内容高度校正。height 必须给 auto —— 像素值会把面板撑住。
+      const provisionalMax = Math.max(
+        120,
+        Math.min(560, this.plusMenuBottom - Math.max(8, this.plusMenuTop))
+      )
       this.plusSubpanelStyle = {
         position: 'fixed',
         left: `${left}px`,
-        maxHeight: `${window.innerHeight - 16}px`,
-        ...vertical,
+        width: `${width}px`,
+        top: `${Math.max(8, this.plusMenuBottom - provisionalMax)}px`,
+        height: 'auto',
+        maxHeight: `${provisionalMax}px`,
       }
       this.openPlusList(category)
+      this.$nextTick(this.syncSubpanelBox)
+    },
+    /**
+     * 计算并应用子面板的位置与高度（打开时、首屏数据到位后、搜索词变化、加载更多时）。
+     *
+     * 规则：
+     * 1. **底边范围**：[一级菜单顶边, 一级菜单底边]。打开 / 内容多 → 贴菜单底边
+     *    （于是左右两个面板底部齐平）；内容变少 → 底边往上收，收满就贴菜单顶边。
+     * 2. **顶边基准固定**：`top = 菜单底边 - 本次打开以来最满的高度`。内容变少时 top
+     *    不动，浮动的只有底边，所以搜索过滤时看到的是「下边框往上走」，而不是整块乱跳。
+     * 3. **高度 = 内容自然高度**（允许变矮），封顶 = min(560, 菜单底边往上的空间)。
+     *    不搞「只增不减」，否则内容少了就是一个空白大面板。
+     * 4. 变矮会让鼠标「悬空」掉出面板，由 schedulePlusClose 的聚焦/悬停保护兜住。
+     */
+    syncSubpanelBox() {
+      const el = this.$refs.plusSubpanel
+      const dom = el && el.$el ? el.$el : el
+      if (!dom) return
+      const viewportH = window.innerHeight
+      // 拿不到基准时退化到视口下半部，保证仍能算出一个合理位置
+      const menuTop = this.plusMenuTop || Math.round(viewportH * 0.6)
+      const menuBottom = this.plusMenuBottom || menuTop + 40
+      // 可用空间 = 视口顶到菜单底边（底边最低就贴到这里）
+      const cap = Math.max(120, Math.min(560, menuBottom - 8))
+      // 量「内容自然高度」之前必须把上一轮写进去的 height / max-height 都放开，
+      // 否则量到的是被压扁的那份高度。
+      dom.style.height = 'auto'
+      dom.style.maxHeight = 'none'
+      const natural = dom.offsetHeight
+      // 拿不到高度（面板还没布局）就别动样式，否则会被压成 1px
+      if (!natural) return
+      const height = Math.min(natural, cap)
+      // 本次打开以来量到过的最大内容高度 = 顶边基准（只增不减）：
+      // 搜索过滤后顶边不许跟着往下滑，只能底边上收。
+      if (height > this.subpanelRefHeight) this.subpanelRefHeight = height
+      const refHeight = this.subpanelRefHeight || height
+      // 基准顶边：最满时底边正好贴菜单底边 → 打开时左右两面板底部齐平
+      let top = menuBottom - refHeight
+      // 上收极限：底边最多收到与「菜单顶边」齐平（判据用底边，不能用 top）
+      if (top + height < menuTop) top = menuTop - height
+      // 兜底：不许越过菜单底边、不许钻出视口顶
+      top = Math.max(8, Math.min(top, menuBottom - height))
+      // ★ 关键：不写死 height 像素，只给 max-height。面板高度交给内容决定，
+      // 搜索后条数变少 → 面板立刻变矮、下边框上收（2026-10-24）；
+      // 即使 offsetHeight 量偏，也只影响 top 与上限，不会把面板撑住。
+      dom.style.maxHeight = `${refHeight}px`
+      this.plusSubpanelStyle = {
+        ...this.plusSubpanelStyle,
+        top: `${top}px`,
+        height: 'auto',
+        maxHeight: `${refHeight}px`,
+      }
     },
     // ========== 悬停触发二级面板 ==========
     // 鼠标悬停主菜单项即切换对应面板，无需点击；点击仍保留（触屏/键盘回退）。
-    // 鼠标离开菜单区域超过 250ms 才整体关闭。
+    // 鼠标离开菜单区域超过 350ms 才整体关闭，且有两个「关闭保护」：
+    // 鼠标停在面板上、或焦点还在面板内（正在搜索框里打字）时都不关。
     cancelPlusClose() {
       if (this.plusHoverTimer) {
         clearTimeout(this.plusHoverTimer)
@@ -1348,12 +1496,42 @@ export default {
     },
     schedulePlusClose() {
       this.cancelPlusClose()
+      // 保护一：焦点在面板内（搜索框有光标）。面板会随搜索结果变矮，鼠标可能被
+      // 布局变化「抽」到面板外触发 mouseleave —— 此刻不能关，否则就是用户反馈的
+      // 「搜索一下就消失」。失焦后再判断（见 onSubpanelFocusOut）。
+      if (this.subpanelFocused) return
+      // 保护二：鼠标还在面板上
+      if (this.subpanelHovered) return
+      // 350ms：给「从菜单项斜移进子面板」留足时间（原先 250ms 在面板较远时不够用）。
+      // 真正的兜底是 .plus-subpanel::before 的热桥，这里只是余量。
       this.plusHoverTimer = setTimeout(() => {
         this.plusHoverTimer = null
+        this.subpanelHovered = false
+        this.subpanelFocused = false
         this.showPlusMenu = false
         this.subpanelCategory = null
         if (this.$refs.knowledgeScope) this.$refs.knowledgeScope.closePopover()
-      }, 250)
+      }, 350)
+    },
+    /** 进入面板：取消关闭计时（面板会变矮，鼠标可能中途「悬空」，靠这个标志兜住） */
+    onSubpanelEnter() {
+      this.subpanelHovered = true
+      this.cancelPlusClose()
+    },
+    onSubpanelLeave() {
+      this.subpanelHovered = false
+      this.schedulePlusClose()
+    },
+    /** 焦点进入面板（搜索框 / 行按钮）：锁定，不因鼠标移出而关闭 */
+    onSubpanelFocusIn() {
+      this.subpanelFocused = true
+      this.cancelPlusClose()
+    },
+    /** 焦点离开面板：只有在面板内部换焦点才算没走（focusout 早于新的 focusin） */
+    onSubpanelFocusOut(e) {
+      if (e && e.relatedTarget && e.currentTarget && e.currentTarget.contains(e.relatedTarget)) return
+      this.subpanelFocused = false
+      if (!this.subpanelHovered) this.schedulePlusClose()
     },
     hoverPlusItem(category) {
       this.cancelPlusClose()
@@ -1447,6 +1625,8 @@ export default {
         this.plusListError = (e && e.message) || '加载失败'
       } finally {
         this.plusListLoading = false
+        // 首屏数据到位后才是真实高度：重算一次（高度锁只增，所以这里只会把占位值矫正掉）
+        this.$nextTick(this.syncSubpanelBox)
       }
     },
     // ========== 「+」菜单通用条目行：技能挂令牌 / 连接器挂胶囊 ==========
@@ -1566,11 +1746,6 @@ export default {
       this.connectorNoticeTimer = null
       this.connectorNotice = ''
     },
-    /** 展开/收起面板内的搜索框（收起时清掉关键字，避免下次打开还停在过滤态） */
-    toggleConnectorSearch() {
-      this.showConnectorSearch = !this.showConnectorSearch
-      if (!this.showConnectorSearch) this.connectorKeyword = ''
-    },
     /** 按最新状态刷新某个连接器行的开关与 tag（tag 停用时统一显示「已停用」） */
     applyConnectorState(id, enabled) {
       if (!id) return
@@ -1664,10 +1839,31 @@ export default {
       if (!reachedBottom) return
       this.loadMoreExperts()
     },
+    /**
+     * 专家搜索过滤：名称 / 描述 / 依赖技能名。
+     * 带上技能名是因为用户常按「这个专家用了什么技能」来找，而描述里未必出现该词。
+     */
+    filterExperts(list) {
+      const kw = this.subpanelKeyword.trim().toLowerCase()
+      if (!kw) return list
+      return (list || []).filter((item) => {
+        if (!item) return false
+        const name = String(item.export_name_cn || '').toLowerCase()
+        const desc = String(item.export_description || '').toLowerCase()
+        const skills = Array.isArray(item.export_skills_names)
+          ? item.export_skills_names.join(' ').toLowerCase()
+          : String(item.export_skills_names || '').toLowerCase()
+        return name.includes(kw) || desc.includes(kw) || skills.includes(kw)
+      })
+    },
     /** 每区多放出 3 条（滚动到底 / 点「还有 N 位」都会走到这里） */
     loadMoreExperts() {
       const total = Math.max(this.myExpertsActive.length, this.publicExperts.length)
-      if (this.plusExpertsLimit < total) this.plusExpertsLimit += 3
+      if (this.plusExpertsLimit < total) {
+        this.plusExpertsLimit += 3
+        // 内容变多是唯一允许面板长高的场景（向上长），重算一次尺寸
+        this.$nextTick(this.syncSubpanelBox)
+      }
     },
     // 列表底部入口：跳到「专家·技能·连接器」面板做完整管理
     handleMenuPanel(tab) {
@@ -2772,49 +2968,26 @@ html[data-theme="dark"] .connector-switch.on {
   border-color: var(--accent-color);
 }
 
-/* 面板头部右侧的搜索按钮（连接器面板） */
-.plus-subpanel-search-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  width: 22px;
-  height: 22px;
-  margin-left: auto;
-  padding: 0;
-  border: none;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--text-secondary);
-  cursor: pointer;
-}
-
-.plus-subpanel-search-btn:hover,
-.plus-subpanel-search-btn.active {
-  background: var(--bg-tertiary);
-  color: var(--text-primary);
-}
-
-.plus-subpanel-search-btn svg {
-  width: 14px;
-  height: 14px;
-}
-
-/* 连接器面板内的搜索输入框（按钮展开，按名称/描述过滤） */
+/* 子面板常驻搜索框（专家 / 技能 / 连接器统一形态）：灰底胶囊、占满宽度 */
 .plus-sub-search {
   display: flex;
   align-items: center;
-  gap: 6px;
-  margin: 0 8px 6px;
-  padding: 5px 8px;
-  border: 1px solid var(--border-color);
-  border-radius: 8px;
-  background: var(--bg-primary, transparent);
+  gap: 8px;
+  margin: 0 4px 8px;
+  padding: 7px 10px;
+  border-radius: 10px;
+  background: var(--bg-tertiary, #f1f5f9);
+  border: 1px solid transparent;
+  transition: border-color 0.15s ease;
+}
+
+.plus-sub-search:focus-within {
+  border-color: color-mix(in srgb, var(--accent-color) 45%, transparent);
 }
 
 .plus-sub-search-icon {
-  width: 13px;
-  height: 13px;
+  width: 15px;
+  height: 15px;
   flex-shrink: 0;
   color: var(--text-secondary);
 }
@@ -2826,8 +2999,37 @@ html[data-theme="dark"] .connector-switch.on {
   outline: none;
   background: transparent;
   color: var(--text-primary);
-  font-size: 12.5px;
+  font-size: 13px;
+  font-family: inherit;
   line-height: 1.3;
+}
+
+.plus-sub-search-input::placeholder {
+  color: var(--text-secondary);
+}
+
+.plus-sub-search-clear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.plus-sub-search-clear:hover {
+  color: var(--text-primary);
+}
+
+.plus-sub-search-clear svg {
+  width: 12px;
+  height: 12px;
 }
 
 /* ── 技能选择面板（fixed 定位，脱离 .input-box 的 overflow: hidden） ── */
@@ -3582,7 +3784,8 @@ html[data-theme="dark"] .plus-menu-item:hover {
 
 .plus-list-item {
   display: flex;
-  align-items: flex-start;
+  /* 单行布局：图标与文字垂直居中（两行布局时是 flex-start） */
+  align-items: center;
   gap: 10px;
   padding: 8px 10px;
   border-radius: 8px;
@@ -3643,22 +3846,19 @@ html[data-theme="dark"] .plus-menu-item:hover {
   color: var(--accent-color);
 }
 
+/* 名称 / 标签 / 描述同排：与专家面板 .plus-expert-main 同一套对齐方式。
+   name 与 tag 不收缩（名字读全），desc 吃掉剩余宽度并省略号。 */
 .plus-list-body {
   flex: 1;
   min-width: 0;
   display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.plus-list-name-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
+  align-items: baseline;
+  gap: 8px;
 }
 
 .plus-list-name {
+  flex-shrink: 0;
+  max-width: 46%;
   font-size: 13px;
   font-weight: 600;
   color: var(--text-primary);
@@ -3669,6 +3869,8 @@ html[data-theme="dark"] .plus-menu-item:hover {
 
 .plus-list-tag {
   flex-shrink: 0;
+  /* baseline 对齐时小标签会偏上，单独拉回垂直居中 */
+  align-self: center;
   padding: 1px 6px;
   border-radius: 5px;
   font-size: 11px;
@@ -3690,15 +3892,15 @@ html[data-theme="dark"] .plus-menu-item:hover {
 }
 
 .plus-list-desc {
+  flex: 1;
+  min-width: 0;
   font-size: 12px;
   line-height: 1.5;
   color: var(--text-secondary);
-  display: -webkit-box;
-  -webkit-line-clamp: 1;
-  line-clamp: 1;
-  -webkit-box-orient: vertical;
+  /* 单行：line-clamp 在 row 布局下不生效，改用 nowrap + 省略号 */
+  white-space: nowrap;
   overflow: hidden;
-  overflow-wrap: anywhere;
+  text-overflow: ellipsis;
 }
 
 .plus-list-hint {
@@ -4213,7 +4415,8 @@ html[data-theme="dark"] .plus-list-tag.custom {
 <style>
 /* ========== 「+」菜单二级浮动面板（主菜单常驻） ========== */
 .plus-subpanel {
-  width: 380px;
+  /* 与 openSubpanel 里的 480 常量同源（单行布局需要更宽的面板） */
+  width: 480px;
   max-width: 90vw;
   display: flex;
   flex-direction: column;
@@ -4223,6 +4426,18 @@ html[data-theme="dark"] .plus-list-tag.custom {
   box-shadow: 0 12px 36px rgba(0, 0, 0, 0.14);
   padding: 12px;
   z-index: 9999;
+}
+/* 热桥：面板与一级菜单之间有 6px 水平间隙，鼠标横移时两边都不属于，会先触发
+   mouseleave 计时。向左延 7px（覆盖间隙 + 1px 重叠）把这段空白划给面板。
+   面板底边最低与一级菜单底边平齐（内容少了会往上收），所以再向下延 28px 把
+   「右上角接缝」也划进面板，从菜单项斜着往左上角挪时不会中途掉出去。 */
+.plus-subpanel::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: -28px;
+  left: -7px;
+  width: 7px;
 }
 .plus-subpanel-head {
   display: flex;
@@ -4237,12 +4452,29 @@ html[data-theme="dark"] .plus-list-tag.custom {
   color: var(--text-primary, #1e293b);
 }
 .plus-subpanel-list {
-  max-height: 300px;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: 2px;
   scrollbar-width: thin;
+  /* 高度策略：列表不自带上限，交给面板统一控制——面板 height 由
+     syncSubpanelBox 按「菜单底边往上」的可视空间算出（封顶 560），
+     列表 flex 撑满剩余空间，超了才滚动。原来卡 300px 只能露 5 行，太小。 */
+  flex: 1 1 auto;
+  min-height: 0;
+}
+/* 空态 / 无结果提示：面板高度被锁定时列表区可能很高，单条提示靠垂直居中显示，
+   看起来才像「有意的空状态」而不是「内容没加载出来」。 */
+.plus-subpanel-list > .plus-list-hint:only-child,
+.plus-subpanel-list > .skill-sub-hint:only-child {
+  margin: auto 0;
+}
+/* 头部（标题+计数+搜索）/ 底栏不参与压缩，只有列表可伸缩：
+   面板的 height 由 syncSubpanelBox 按视口内联给出，空间不够时必须先压列表。 */
+.plus-subpanel > .plus-subpanel-head,
+.plus-subpanel > .plus-sub-search,
+.plus-subpanel > .plus-subpanel-footer {
+  flex: 0 0 auto;
 }
 .plus-subpanel-footer {
   margin-top: 8px;
@@ -4256,6 +4488,8 @@ html[data-theme="dark"] .plus-list-tag.custom {
   border-radius: 8px;
   background: transparent;
   font-size: 13px;
+  /* <button> 不继承字体，显式声明与面板内其它文字同源 */
+  font-family: inherit;
   color: var(--text-secondary, #64748b);
   cursor: pointer;
   text-align: center;
@@ -4265,10 +4499,7 @@ html[data-theme="dark"] .plus-list-tag.custom {
 }
 
 /* ── 专家面板：上区「我的专家」+ 浅色分隔线 + 下区「公共专家」── */
-/* 容纳 3 + 3 行（约 320px）：超出则滚动，滚到底自动放出下一批 */
-.plus-subpanel-list.plus-experts {
-  max-height: 320px;
-}
+/* 高度与技能/连接器面板一致：不再单独限高，由 syncSubpanelBox 统一给面板算。 */
 .plus-experts-section {
   display: flex;
   align-items: center;
@@ -4302,6 +4533,9 @@ html[data-theme="dark"] .plus-list-tag.custom {
   align-items: center;
   gap: 10px;
   width: 100%;
+  /* 本行是 <button>，浏览器默认不继承 font-family（会退回 Arial / 宋体），
+     而连接器行是 <div> 会继承 —— 不写这一行两行文字字体就不一致。 */
+  font-family: inherit;
   /* 与技能面板 .plus-list-item 的行内边距保持一致 */
   padding: 8px 10px;
   border: 1px solid transparent;
