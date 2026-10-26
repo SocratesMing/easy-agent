@@ -37,7 +37,9 @@ from easy_agent.services.scheduler import (
     shutdown_scheduler,
     register_scheduled_task,
     unregister_scheduled_task,
+    reconcile_scheduled_tasks,
     reload_all_tasks,
+    start_scheduled_task_reconcile,
 )
 
 __all__ = [
@@ -70,4 +72,6 @@ __all__ = [
     "register_scheduled_task",
     "unregister_scheduled_task",
     "reload_all_tasks",
+    "reconcile_scheduled_tasks",
+    "start_scheduled_task_reconcile",
 ]

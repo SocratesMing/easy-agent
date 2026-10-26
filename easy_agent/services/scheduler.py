@@ -26,6 +26,8 @@ from langchain_core.callbacks import BaseCallbackHandler
 logger = logging.getLogger("easy_agent.scheduler")
 
 _agent_lifecycle_provider = None
+_reconcile_task: asyncio.Task | None = None
+RECONCILE_INTERVAL_SECONDS = 15.0
 
 
 def set_agent_lifecycle(provider) -> None:
@@ -145,11 +147,79 @@ def get_scheduler() -> AsyncIOScheduler:
 
 
 def shutdown_scheduler():
-    global _scheduler_instance
+    global _scheduler_instance, _reconcile_task
+    if _reconcile_task is not None and not _reconcile_task.done():
+        _reconcile_task.cancel()
+    _reconcile_task = None
     if _scheduler_instance is not None:
         _scheduler_instance.shutdown(wait=False)
         _scheduler_instance = None
         logger.info("AsyncIOScheduler 已关闭")
+
+
+def preview_next_run(schedule_cron: str) -> str:
+    """根据 cron 计算下一次触发时间，不向本进程调度器注册 job。"""
+    trigger = CronTrigger.from_crontab(schedule_cron, timezone="Asia/Shanghai")
+    nxt = trigger.get_next_fire_time(None, datetime.now(trigger.timezone))
+    return nxt.strftime("%Y-%m-%d %H:%M:%S") if nxt else ""
+
+
+def reconcile_scheduled_tasks() -> int:
+    """把本进程调度器对齐到数据库里启用的任务。
+
+    每个运行中的调度器都执行：新建任务不必落在「当时处理对话的那台机器」上才会触发。
+    执行本身仍由每任务分布式锁保证只跑一次。``manual-`` 前缀的手动触发 job 不参与对账。
+    调度器未初始化或未启动时直接返回。
+    """
+    if _scheduler_instance is None or not _scheduler_instance.running:
+        return 0
+    db = get_database()
+    tasks = db.list_all_enabled_scheduled_tasks()
+    wanted = {task.task_id: task for task in tasks}
+    existing = {
+        job.id
+        for job in _scheduler_instance.get_jobs()
+        if not str(job.id).startswith("manual-")
+    }
+    added = 0
+    for task_id, task in wanted.items():
+        if task_id in existing:
+            continue
+        next_run = register_scheduled_task(task)
+        if next_run:
+            db.update_scheduled_task_run_times(task_id, task.last_run_at or "", next_run)
+            added += 1
+    for job_id in existing - set(wanted):
+        unregister_scheduled_task(job_id)
+    if added or existing - set(wanted):
+        logger.info(
+            "定时任务对账 | 新增 %s | 移除 %s | 启用 %s",
+            added,
+            len(existing - set(wanted)),
+            len(wanted),
+        )
+    return added
+
+
+async def _reconcile_loop() -> None:
+    while True:
+        try:
+            reconcile_scheduled_tasks()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - 对账失败不拖垮调度器
+            logger.warning(f"定时任务对账失败: {exc}")
+        await asyncio.sleep(RECONCILE_INTERVAL_SECONDS)
+
+
+def start_scheduled_task_reconcile() -> None:
+    """启动周期对账。调度器已 start 之后调用。"""
+    global _reconcile_task
+    if _reconcile_task is not None and not _reconcile_task.done():
+        return
+    _reconcile_task = asyncio.get_running_loop().create_task(
+        _reconcile_loop(), name="scheduled-task-reconcile"
+    )
 
 
 def register_scheduled_task(task: ScheduledTaskModel) -> str | None:

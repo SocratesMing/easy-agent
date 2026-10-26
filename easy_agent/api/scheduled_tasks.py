@@ -20,9 +20,9 @@ from easy_agent.models.api import (
     DeleteScheduledTaskResponse,
 )
 from easy_agent.services import (
-    register_scheduled_task,
-    unregister_scheduled_task,
     get_scheduler,
+    reconcile_scheduled_tasks,
+    unregister_scheduled_task,
 )
 from easy_agent.api.files import (
     build_workspace_tree,
@@ -118,6 +118,10 @@ async def delete_scheduled_task(
     except Exception as e:
         logger.warning(f"移除 scheduler job 失败: {e}")
     repo.delete_scheduled_task(task_id)
+    try:
+        reconcile_scheduled_tasks()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"删除后对账失败: {exc}")
     logger.info(f"[{username}] 删除定时任务 | task_id={task_id}")
     log_task_event(
         username=username,
@@ -142,18 +146,15 @@ async def toggle_scheduled_task(
         raise HTTPException(status_code=403, detail="无权操作此任务")
     new_enabled = not bool(task.enabled)
     repo.update_scheduled_task_status(task_id, new_enabled)
-    if new_enabled:
-        try:
-            next_run = register_scheduled_task(task)
-            if next_run:
-                repo.update_scheduled_task_run_times(task_id, task.last_run_at, next_run)
-        except Exception as e:
-            logger.warning(f"注册 scheduler job 失败: {e}")
-    else:
+    if not new_enabled:
         try:
             unregister_scheduled_task(task_id, task=task)
         except Exception as e:
             logger.warning(f"移除 scheduler job 失败: {e}")
+    try:
+        reconcile_scheduled_tasks()
+    except Exception as e:
+        logger.warning(f"切换状态后对账失败: {e}")
     logger.info(f"[{username}] 切换定时任务状态 | task_id={task_id} | enabled={new_enabled}")
     log_task_event(
         username=username,
