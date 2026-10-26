@@ -75,7 +75,7 @@ def audit_metadata(path: str, method: str, status_code: int, duration: float) ->
         object_type, object_id = "knowledge_base", base_id
     if "documents" in parts and parts.index("documents") + 1 < len(parts):
         candidate = parts[parts.index("documents") + 1]
-        if candidate not in {"content", "retry", "restore"}:
+        if candidate not in {"content", "retry"}:
             object_type, object_id = "document", candidate
     action = f"{method.lower()}:{KnowledgeMetrics.normalized_route(path)}"
     return {

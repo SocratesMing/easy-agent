@@ -79,7 +79,6 @@ def test_legacy_and_deprecated_keys_do_not_fail(tmp_path, caplog):
         tmp_path / "config.yaml",
         "system_prompt_path: system.md\n"
         "knowledge:\n"
-        "  implementation: v2\n"
         "  enabled: false\n",
     )
 
@@ -88,7 +87,7 @@ def test_legacy_and_deprecated_keys_do_not_fail(tmp_path, caplog):
 
     data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     assert find_unknown_config_keys(data) == []
-    assert "knowledge.implementation" in find_deprecated_config_keys(data)
+    assert find_deprecated_config_keys(data) == ["system_prompt_path"]
     assert "已废弃" in caplog.text
     assert config.agent.prompt_path == "system.md"
 

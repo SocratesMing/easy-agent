@@ -38,7 +38,7 @@ from easy_agent.bootstrap.env import env_bool
 DATABASE_PATH = "./data/easy_agent.db"
 logger = logging.getLogger(__name__)
 
-from easy_agent.db.schema import (
+from easy_agent.db.schema import (  # noqa: F401 - 兼容重导出（tests/db 从这里取常量）
     EXPECTED_TABLES,
     LANGGRAPH_STORE_KEY_LEN,
     LANGGRAPH_STORE_NS_LEN,

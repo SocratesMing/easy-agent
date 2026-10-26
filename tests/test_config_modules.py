@@ -169,11 +169,8 @@ class TestValidationFunctions:
         ]
 
     def test_deprecated_keys_and_non_mapping_root(self):
-        data = {"llm": {"provider": "x"}, "knowledge": {"implementation": "v2"}}
-        assert config_validation.find_deprecated_config_keys(data) == [
-            "llm",
-            "knowledge.implementation",
-        ]
+        data = {"llm": {"provider": "x"}}
+        assert config_validation.find_deprecated_config_keys(data) == ["llm"]
         assert config_validation.find_unknown_config_keys(None) == ["<root>"]
 
     def test_validate_config_keys_warns_and_strict_raises(self, caplog):

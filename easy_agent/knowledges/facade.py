@@ -1,42 +1,14 @@
 """知识库实现统一出口：从 knowledges（Ragflow 0.26.3 标准 API）导出全部符号。
 
 所有跨模块引用（app.py / api/chat.py / knowledges/personnel/api.py / services/agent_manager.py）
-一律从本模块导入，避免散落多处的直接包依赖。config.yaml 的
-knowledge.implementation 键仅作日志提示（仅支持 v2）。
+一律从本模块导入，避免散落多处的直接包依赖。
 """
 
-import logging
-from easy_agent.bootstrap.env import env_str
-from pathlib import Path
-
-logger = logging.getLogger(__name__)
-
-
-def resolve_knowledge_impl() -> str:
-    """读取活动 YAML 的 knowledge.implementation；无效值告警后回退 v2。"""
-    config_path = env_str("EASY_CONFIG") or str(
-        Path(__file__).resolve().parent / "config" / "config.yaml"
-    )
-    try:
-        import yaml
-
-        raw = yaml.safe_load(Path(config_path).read_text(encoding="utf-8")) or {}
-        value = ((raw.get("knowledge") or {}).get("implementation") or "v2").strip()
-        if value != "v2":
-            logger.warning(f"knowledge.implementation={value!r} 不受支持，使用 v2")
-        return "v2"
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(f"读取 knowledge.implementation 失败，使用 v2: {exc}")
-        return "v2"
-
-
-KNOWLEDGE_IMPL = resolve_knowledge_impl()
-
 from easy_agent.knowledges.api import router as knowledge_router  # noqa: E402
-from easy_agent.knowledges.runtime.catalog_sync import (  # noqa: E402
-    run_catalog_sync,
-    shutdown_catalog_sync,
-    startup_catalog_sync,
+from easy_agent.knowledges.runtime.source_sync import (  # noqa: E402
+    run_source_sync,
+    shutdown_source_sync,
+    startup_source_sync,
 )
 from easy_agent.knowledges.runtime.lifecycle import shutdown_knowledge, startup_knowledge  # noqa: E402
 from easy_agent.knowledges.runtime.observability import (  # noqa: E402
@@ -92,7 +64,6 @@ class LegacyHostRoutes:
 
 
 __all__ = [
-    "KNOWLEDGE_IMPL",
     "LegacyHostRoutes",
     "KnowledgeOperationsRepository",
     "audit_metadata",
@@ -105,10 +76,10 @@ __all__ = [
     "metrics",
     "prepare_knowledge_chat",
     "resolve_request_id",
-    "run_catalog_sync",
+    "run_source_sync",
     "should_audit",
-    "shutdown_catalog_sync",
     "shutdown_knowledge",
-    "startup_catalog_sync",
+    "shutdown_source_sync",
     "startup_knowledge",
+    "startup_source_sync",
 ]

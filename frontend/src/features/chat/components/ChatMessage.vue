@@ -1,6 +1,6 @@
 <template>
   <div class="message" :class="[message.role]">
-    <div class="message-content">
+    <div class="message-content" @click="handleContentClick">
       <!-- 文件卡片 -->
       <div v-if="message.files && message.files.length > 0" class="files-container">
         <div 
@@ -75,7 +75,7 @@
                   </svg>
                 </div>
                 <div v-if="isExpandedThinking(block.origIndex)" class="thinking-content">
-                  <MarkdownBody class="thinking-text" :content="block.content" />
+                  <MarkdownBody class="thinking-text" :content="block.content" :cite-map="citeNumberMap" />
                 </div>
               </div>
 
@@ -98,7 +98,7 @@
               />
 
               <!-- 中间穿插的正文（其后仍有思考/工具）放进处理过程内部按原序展示 -->
-              <MarkdownBody v-if="block.type === 'content'" class="message-text process-inline-content" :content="block.content" />
+              <MarkdownBody v-if="block.type === 'content'" class="message-text process-inline-content" :content="block.content" :cite-map="citeNumberMap" />
             </template>
           </div>
         </div>
@@ -135,9 +135,9 @@
                 <span class="message-skill-chip-name">{{ skill.name || skill.dir_name }}</span>
               </span>
             </span>
-            <MarkdownBody v-if="block.content" class="user-bubble-body" :content="block.content" />
+            <MarkdownBody v-if="block.content" class="user-bubble-body" :content="block.content" :cite-map="citeNumberMap" />
           </div>
-          <MarkdownBody v-else-if="block.type === 'content'" class="message-text" :content="block.content" />
+          <MarkdownBody v-else-if="block.type === 'content'" class="message-text" :content="block.content" :cite-map="citeNumberMap" />
         </template>
       </template>
 
@@ -160,7 +160,7 @@
             </svg>
           </div>
           <div v-if="showThinking" class="thinking-content">
-            <MarkdownBody class="thinking-text" :content="message.thinking" />
+            <MarkdownBody class="thinking-text" :content="message.thinking" :cite-map="citeNumberMap" />
           </div>
         </div>
 
@@ -176,7 +176,7 @@
           />
         </div>
 
-        <MarkdownBody v-if="message.content" class="message-text" :content="message.content" />
+        <MarkdownBody v-if="message.content" class="message-text" :content="message.content" :cite-map="citeNumberMap" />
 
         <!-- 错误提示 -->
         <div v-if="message.error" class="message-error">
@@ -203,6 +203,14 @@
         </div>
       </template>
       
+      <KnowledgeEvidence
+        v-if="message.role === 'assistant'"
+        ref="knowledgeEvidence"
+        :evidence="message.knowledge_evidence || []"
+        :warnings="message.knowledge_warnings || []"
+        :content="citationSourceText"
+      />
+
       <!-- 用户消息显示复制和重试按钮 -->
       <div v-if="message.role === 'user' && displayContent" class="message-actions">
         <button class="action-btn retry-btn" @click="retryMessage" title="重新发送">
@@ -227,6 +235,7 @@
 import { ref, computed, onMounted, watch, nextTick, onBeforeUnmount } from 'vue'
 import { ensureHighlighter } from '../composables/useMarkdownRenderer.js'
 import MarkdownBody from './MarkdownBody.vue'
+import KnowledgeEvidence from '../../knowledge/KnowledgeEvidence.vue'
 import FileIcon from '../../../shared/components/FileIcon.vue'
 import ToolCallCard from './ToolCallCard.vue'
 import { approvalTargetForBlock, unmatchedApprovalRequests } from '../../../utils/hitlApproval.js'
@@ -322,6 +331,49 @@ const userSkillTokens = computed(() => userSkillSplit.value.skills)
 
 // 用户消息展示用正文：去掉老数据里开头的 /技能名 指令前缀（新数据本来就没有）
 const displayContent = computed(() => userSkillSplit.value.body)
+
+// 供证据面板解析实际引用的完整正文（兼容 content 直存与 blocks 分块两种消息形态）
+const citationSourceText = computed(() => {
+  const blocks = Array.isArray(props.message.blocks) ? props.message.blocks : []
+  const blockText = blocks
+    .filter(block => block && block.type === 'content')
+    .map(block => block.content || '')
+    .join('\n')
+  return `${props.message.content || ''}\n${blockText}`
+})
+
+// 引用编号重排映射：按正文出现顺序把原始依据编号映射为 1..N 连续编号，
+// 与 KnowledgeEvidence 的展示编号规则保持一致（仅重排有效引用编号）
+const citeNumberMap = computed(() => {
+  const evidenceCount = (props.message.knowledge_evidence || []).length
+  if (!evidenceCount) return {}
+  const pattern = /\[知识(?:库)?依据\s*(\d+)\]/g
+  const seen = []
+  let match
+  while ((match = pattern.exec(citationSourceText.value || '')) !== null) {
+    const value = Number(match[1])
+    if (value > 0 && value <= evidenceCount && seen.indexOf(value) === -1) {
+      seen.push(value)
+    }
+  }
+  const map = {}
+  seen.forEach((value, i) => { map[value] = i + 1 })
+  return map
+})
+
+// 正文里的 [知识依据N] 锚点：事件委托展开证据面板并定位到对应卡片
+const knowledgeEvidence = ref(null)
+function handleContentClick(event) {
+  const target = event.target
+  if (!target || typeof target.closest !== 'function') return
+  const link = target.closest('a.ke-cite')
+  if (!link) return
+  event.preventDefault()
+  const evidence = knowledgeEvidence.value
+  if (evidence && typeof evidence.jumpTo === 'function') {
+    evidence.jumpTo(Number(link.dataset.cite) || 0)
+  }
+}
 
 const sortedBlocks = computed(() => {
   // 从 blocks 字段构建（优先使用）
@@ -1874,6 +1926,19 @@ html[data-theme="dark"] .approval-badge.status-rejected {
   word-break: break-word;
   width: 100%;
   box-sizing: border-box;
+}
+
+/* 知识依据锚点：正文中的 [知识依据N] 可点击展开证据面板 */
+.message-text :deep(a.ke-cite) {
+  color: #2563eb;
+  text-decoration: underline;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.message-text :deep(a.ke-cite:hover) {
+  color: #1d4ed8;
+  background: #eff6ff;
 }
 
 /* GitHub 风格 emoji 短代码渲染后的 unicode 字符 */

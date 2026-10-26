@@ -104,7 +104,6 @@ KNOWN_SECTION_KEYS: dict[str, frozenset[str]] = {
     ),
     "knowledge": frozenset(
         {
-            "implementation",  # 已废弃，仅 knowledge_impl 日志提示（只支持 v2）
             "enabled",
             "base_url",
             "api_key",
@@ -112,7 +111,7 @@ KNOWN_SECTION_KEYS: dict[str, frozenset[str]] = {
             "embedding",
             "audit",
             "limits",
-            "catalog_sync",
+            "source_sync",
         }
     ),
     "knowledge.embedding": frozenset({"model"}),
@@ -121,28 +120,58 @@ KNOWN_SECTION_KEYS: dict[str, frozenset[str]] = {
         {
             "max_file_size_mb",
             "max_request_size_mb",
-            "max_files_per_request",
             "max_filename_utf8_bytes",
             "allowed_extensions",
             "max_documents_per_query",
+            "parse_timeout_seconds",
         }
     ),
-    "knowledge.catalog_sync": frozenset(
+    "knowledge.source_sync": frozenset(
         {
             "enabled",
-            "sql_file",
-            "database",
             "owner_username",
-            "space_type",
-            "department_id",
-            "max_level",
+            "file_root",
+            "base_id",
+            "base_name",
+            "lookback_days",
+            "start_date",
+            "interval_minutes",
+            "max_inflight",
+            "poll_interval_seconds",
+            "max_attempts",
             "mysql",
         }
     ),
-    "knowledge.catalog_sync.mysql": frozenset(
-        {"host", "port", "user", "password", "charset"}
+    "knowledge.source_sync.mysql": frozenset(
+        {"host", "port", "user", "password", "database", "charset", "table"}
+    ),
+    "llm": frozenset(
+        {
+            "provider",
+            "api_key",
+            "model",
+            "api_base",
+            "context_length",
+            "max_input_tokens",
+            "protocol",
+            "headers",
+        }
     ),
 }
+
+# models.<provider> 下允许的键（provider 名本身是动态的）。
+KNOWN_PROVIDER_KEYS = frozenset(
+    {
+        "provider",
+        "api_key",
+        "model",
+        "api_base",
+        "context_length",
+        "max_input_tokens",  # 旧键，from_yaml 会映射为 context_length
+        "protocol",
+        "headers",
+    }
+)
 
 # 已废弃但仍兼容的键 -> 提示信息。不参与 unknown 判定，也不参与
 # config.yaml / config-example.yaml 的键集合漂移比较。
@@ -151,10 +180,6 @@ DEPRECATED_CONFIG_KEYS: dict[str, str] = {
     "system_prompt_path": "system_prompt_path 已由 prompt_path 取代，当前仍兼容读取",
     "log": "log 段不再由 Config 读取（日志由 initialization/log.py 管理）",
     "log_dir": "log_dir 不再由 Config 读取（日志由 initialization/log.py 管理）",
-    "knowledge.implementation": (
-        "knowledge.implementation 已废弃：仅 knowledge_impl 读取后打日志，"
-        "且只支持 v2；可安全删除"
-    ),
 }
 
 

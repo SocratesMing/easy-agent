@@ -59,7 +59,7 @@ cd frontend && npm run build        # Build the Vue3 baseline
 
 ## Coding Style & Naming Conventions
 
-- **Python**: requires 3.11+. Four-space indentation, `snake_case` for functions/variables, `PascalCase` for classes. Ruff runs in CI with fatal rules only (`E9/F63/F7/F82`); match surrounding style for everything else.
+- **Python**: requires 3.11+. Four-space indentation, `snake_case` for functions/variables, `PascalCase` for classes. Ruff runs in CI with the fatal rules (`E9/F63/F7/F82`) plus unused imports, redefinitions and unused local variables (`F401/F811/F841`); mark an intentional re-export with `# noqa: F401 - <reason>` on the first line of the import. Match surrounding style for everything else.
 - **Frontend**: Vue 2.7, primarily Options API. Vue 2.7 built-in Composition API functions (`ref`/`computed`/`watch`) are allowed; `<script setup>` and Vue 3-only syntax are forbidden (enforced by `src/utils/vue2Compat.test.js`). Components are `PascalCase.vue`; API modules in `frontend/src/api/` are camelCase `.js`.
 - **Config**: YAML files in `easy_agent/config/`; sensitive values use `${ENV_VAR}` placeholders resolved at load time.
 

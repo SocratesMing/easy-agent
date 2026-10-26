@@ -113,8 +113,8 @@ EXPECTED_ROUTER_PATHS = {
 
 # 批次 4 前后 app.openapi()["paths"] 的基线数量。
 # 2026-10-22：/agent/stream_export_run 删除（专家对话并入 /agent/chat/stream），
-# /agent/expert/required-skills 新增，路径总数 121 -> 120。
-EXPECTED_OPENAPI_PATH_COUNT = 120
+# /agent/expert/required-skills 新增，一删一增，路径总数仍是 121。
+EXPECTED_OPENAPI_PATH_COUNT = 121
 
 
 def _module(name: str):

@@ -20,7 +20,7 @@ jobs:
       - uses: astral-sh/setup-uv@v10.2.0
         with:
           enable-cache: true
-      - name: Ruff (fatal errors only; style debt is tracked in docs/audit)
+      - name: Ruff (fatal errors + unused imports/variables/redefinitions; rules in pyproject.toml)
         run: uvx ruff check --output-format=github .
 
   architecture-gate:

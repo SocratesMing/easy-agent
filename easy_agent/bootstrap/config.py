@@ -15,7 +15,7 @@ from pathlib import Path
 import yaml
 from pydantic import BaseModel, Field, field_validator
 
-from easy_agent.bootstrap.config_models import (
+from easy_agent.bootstrap.config_models import (  # noqa: F401 - 兼容重导出（test_config_modules 锁定）
     DEFAULT_APP_WELCOME_TITLE,
     DEFAULT_WEB_SEARCH_API_URLS,
     AgentConfig,
@@ -38,7 +38,7 @@ from easy_agent.bootstrap.config_models import (
     WebSearchConfig,
     blank_as_false,
 )
-from easy_agent.bootstrap.config_validation import (
+from easy_agent.bootstrap.config_validation import (  # noqa: F401 - 兼容重导出（同上）
     CONFIG_STRICT_ENV_VAR,
     DEPRECATED_CONFIG_KEYS,
     KNOWN_PROVIDER_KEYS,

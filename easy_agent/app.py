@@ -32,20 +32,19 @@ from starlette.concurrency import run_in_threadpool
 
 from easy_agent.bootstrap.config import AgentConfig
 from easy_agent.db import init_database
-from easy_agent.knowledge_impl import (
-    KNOWLEDGE_IMPL,
+from easy_agent.knowledges.facade import (
     LegacyHostRoutes,
     KnowledgeOperationsRepository,
     audit_metadata,
     metrics,
     resolve_request_id,
     should_audit,
-    shutdown_catalog_sync,
     shutdown_knowledge,
-    startup_catalog_sync,
+    shutdown_source_sync,
     startup_knowledge,
+    startup_source_sync,
 )
-from easy_agent.knowledge_impl import knowledge_router
+from easy_agent.knowledges.facade import knowledge_router
 from easy_agent.knowledges.personnel import router as personnel_router
 from easy_agent.agent.model import create_model
 from easy_agent.models.api import HealthResponse
@@ -401,7 +400,7 @@ async def _shutdown_services(app) -> None:
         logger.warning(f"关闭 checkpointer 失败: {exc}")
     # 没启动过 worker / 客户端时是空操作
     await shutdown_knowledge(app)
-    await shutdown_catalog_sync(app)
+    await shutdown_source_sync(app)
     _shutdown_app(app)
 
 
@@ -440,7 +439,6 @@ async def lifespan(app: FastAPI):
 
     # 知识库：配置里没有 knowledge 段时按默认配置（未启用）加载，不起 worker
     await startup_knowledge(app, config_path)
-    logger.info(f"📚 知识库实现: {KNOWLEDGE_IMPL}")
 
     if config:
         await _check_llm_connection(config, agent_env=agent_env)
@@ -449,9 +447,8 @@ async def lifespan(app: FastAPI):
     await _recover_stale_runs()
     _check_deployment(agent_env)
 
-    # 外部目录树同步（ai_kb → 知识库板块）：由 knowledge.catalog_sync.enabled
-    # 开关控制，后台执行，失败仅记日志不阻断启动
-    await startup_catalog_sync(app)
+    # 文档 SQL 增量同步（文档 sql → 知识库）：后台执行，失败不阻断启动
+    await startup_source_sync(app)
 
     system_prompt = _prepare_system_prompt(config, config_path)
 

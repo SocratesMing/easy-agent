@@ -38,11 +38,11 @@ from easy_agent.knowledges.core.config import KnowledgeConfig  # noqa: E402
 from easy_agent.knowledges.core.models import DocumentStatus  # noqa: E402
 from easy_agent.knowledges.ragflow import RagflowClient, RagflowError  # noqa: E402
 from easy_agent.knowledges.core.repository import KnowledgeRepository  # noqa: E402
+from easy_agent.knowledges.core.original_store import LocalOriginalStore  # noqa: E402
 from easy_agent.knowledges.service import (  # noqa: E402
     CHUNK_METHOD,
     PARSER_CONFIG,
     KnowledgeService,
-    LocalOriginalStore,
 )
 from easy_agent.utils.env_loader import load_project_env  # noqa: E402
 

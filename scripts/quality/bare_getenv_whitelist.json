@@ -8,8 +8,6 @@
       "raw = os.environ.get(name)": 1
     },
     "easy_agent/knowledges/core/config.py": {
-      "\"sql_file\": os.environ.get(\"KNOWLEDGE_CATALOG_SYNC_SQL_FILE\") or \"\",": 1,
-      "\"database\": os.environ.get(\"KNOWLEDGE_CATALOG_SYNC_DATABASE\") or \"ai_kb\",": 1,
       "\"base_url\": section.get(\"base_url\") or os.environ.get(\"RAGFLOW_BASE_URL\") or \"\",": 1,
       "\"api_key\": section.get(\"api_key\") or os.environ.get(\"RAGFLOW_API_KEY\") or \"\",": 1,
       "or os.environ.get(\"RAGFLOW_SHARED_DATASET_ID\")": 1,

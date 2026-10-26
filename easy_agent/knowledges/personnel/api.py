@@ -32,7 +32,7 @@ from easy_agent.knowledges.personnel.repository import (
     list_personnel,
     update_personnel,
 )
-from easy_agent.knowledge_impl import KnowledgeOperationsRepository
+from easy_agent.knowledges.facade import KnowledgeOperationsRepository
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/personnel", tags=["Personnel"])

@@ -44,3 +44,28 @@ test('polling preserves only optimistic uploads for the current unfiltered folde
     server
   )
 })
+
+test('polling hides optimistic row once the same upload appears from server', () => {
+  const current = [{
+    id: 'upload-local-1',
+    optimistic: true,
+    base_id: 'base-1',
+    folder_id: 'folder-1',
+    name: 'report.pdf',
+    size_bytes: 123,
+  }]
+  const server = [{
+    id: 'server-1',
+    base_id: 'base-1',
+    folder_id: 'folder-1',
+    name: 'report.pdf',
+    size_bytes: 123,
+  }]
+
+  assert.deepEqual(
+    mergeServerDocumentsWithOptimistic(server, current, {
+      baseId: 'base-1', folderId: 'folder-1', preserve: true,
+    }).map(item => item.id),
+    ['server-1']
+  )
+})

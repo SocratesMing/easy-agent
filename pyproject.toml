@@ -98,9 +98,11 @@ dev = [
 target-version = "py311"
 line-length = 100
 respect-gitignore = true
-exclude = ["easy_agent/skills/**", "easy_agent/static/**", ".venv", "_analysis"]
+# docs/archive 下是当时的取证脚本，归档后不再修改
+exclude = ["easy_agent/skills/**", "easy_agent/static/**", ".venv", "_analysis", "docs/archive"]
 
 [tool.ruff.lint]
-# E9: 语法/IO 错误；F63/F7/F82: 无效比较、语法错误、未定义名。
-# 这些规则命中即代表运行期必坏，不会产生“风格债”噪音。
-select = ["E9", "F63", "F7", "F82"]
+# E9: 语法/IO 错误；F63/F7/F82: 无效比较、语法错误、未定义名——命中即代表运行期必坏。
+# F401/F811/F841: 未使用的 import、重复定义、未使用的局部变量，防止清理过的死代码长回来。
+# 有意保留的兼容重导出在 import 语句首行写 `# noqa: F401 - 原因`。
+select = ["E9", "F63", "F7", "F82", "F401", "F811", "F841"]

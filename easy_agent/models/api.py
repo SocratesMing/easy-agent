@@ -73,6 +73,13 @@ class ChatRequest(BaseModel):
         default=False, description="是否开启联网搜索（输入框地球按钮）"
     )
     files: Optional[List[dict]] = Field(default=None, description="上传的文件列表")
+    knowledge_metadata_filter: Optional[dict] = Field(
+        default=None,
+        description=(
+            "会话已绑定知识库时的元数据硬过滤（publish_date_from/to、report_tags、"
+            "report_second_sources、report_title_contains）；不传则全范围检索"
+        ),
+    )
     model: Optional[str] = Field(
         default=None,
         description="模型名称（config.models 的 key，如 deepseek/glm）。为空时使用 active model",

@@ -104,6 +104,16 @@
                     <polyline points="9 18 15 12 9 6"></polyline>
                   </svg>
                 </button>
+                <button type="button" class="plus-menu-item plus-menu-item-knowledge" @mouseenter="hoverPlusItem('knowledge', $event)" @click="openKnowledgeScope($event)">
+                  <svg class="plus-menu-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path>
+                    <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path>
+                  </svg>
+                  <span class="plus-menu-label">知识库</span>
+                  <svg class="plus-menu-arrow" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="9 18 15 12 9 6"></polyline>
+                  </svg>
+                </button>
                 <button type="button" class="plus-menu-item" @mouseenter="hoverPlusItem('experts', $event)" @click="openSubpanel('experts', $event)">
                   <svg class="plus-menu-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                     <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
@@ -137,6 +147,20 @@
                 </button>
               </div>
             </Teleport>
+
+            <!-- 知识库引用：加号菜单「知识库」悬停/点击展开，
+                 面板与技能子面板同款定位，锚到「知识库」菜单项右侧 -->
+            <KnowledgeScopeSelector
+              ref="knowledgeScope"
+              :session-id="sessionId || ''"
+              :disabled="disabled || isStreaming"
+              hide-trigger
+              anchor-selector=".plus-menu-item-knowledge"
+              @create-session="emit('createSession')"
+              @manage="openKnowledgeManage"
+              @mouseenter="cancelPlusClose"
+              @mouseleave="schedulePlusClose"
+            />
 
             <!-- 「+」菜单二级浮动面板：主菜单常驻，子面板显示在触发项旁边。
                  skills → 技能列表（搜索/本地导入/管理入口，点击插入技能令牌）；
@@ -648,6 +672,7 @@ import { formatSize } from '../../../utils/format.js'
 import SkillPicker from './SkillPicker.vue'
 import UploadTray from './UploadTray.vue'
 import ModelPicker from './ModelPicker.vue'
+import KnowledgeScopeSelector from '../../knowledge/KnowledgeScopeSelector.vue'
 import FileIcon from '../../../shared/components/FileIcon.vue'
 import SkillIcon from '../../../shared/components/SkillIcon.vue'
 
@@ -708,7 +733,7 @@ const props = defineProps({
   }
 })
 
-const emit = defineEmits(['send', 'stop', 'createSession', 'update:selectedModel', 'typing', 'clearExpert', 'selectExpert', 'prefillApplied', 'openPanel'])
+const emit = defineEmits(['send', 'stop', 'createSession', 'update:selectedModel', 'typing', 'clearExpert', 'selectExpert', 'prefillApplied', 'openPanel', 'openKnowledge'])
 
 const message = ref('')
 const textareaRef = ref(null)
@@ -1324,12 +1349,14 @@ const plusMenuRef = ref(null)
 // 菜单本身（Teleport 到 body）：默认展开连接器子面板时要用它找「连接器」菜单项定位
 const plusMenuListRef = ref(null)
 const plusMenuStyle = ref({})
+const knowledgeScope = ref(null)
 
 function togglePlusMenu() {
   if (props.isStreaming || props.disabled) return
   if (showPlusMenu.value) {
     showPlusMenu.value = false
     subpanelCategory.value = null
+    knowledgeScope.value?.closePopover()
     cancelPlusClose()
     return
   }
@@ -1358,8 +1385,13 @@ function openConnectorsSubpanelFromMenu() {
 }
 
 function closePlusMenu(event) {
-  if (showPlusMenu.value && plusMenuRef.value && !plusMenuRef.value.contains(event.target)) {
+  // 点击知识库面板内部不算「菜单外」（面板不在菜单 DOM 内，但属于同一浮层交互）
+  const scopeRoot = knowledgeScope.value?.$el
+  const inScope = scopeRoot && scopeRoot.contains(event.target)
+  if (showPlusMenu.value && plusMenuRef.value && !plusMenuRef.value.contains(event.target) && !inScope) {
     showPlusMenu.value = false
+    subpanelCategory.value = null
+    knowledgeScope.value?.closePopover()
   }
   // 技能面板内部点击已被 @click.stop 拦截，能到这里说明点在面板外
   if (subpanelCategory.value && plusMenuRef.value && !plusMenuRef.value.contains(event.target)) {
@@ -1369,7 +1401,24 @@ function closePlusMenu(event) {
 
 function handleMenuAddFile() {
   showPlusMenu.value = false
+  subpanelCategory.value = null
+  knowledgeScope.value?.closePopover()
   fileInputRef.value?.click()
+}
+
+// 加号菜单「知识库」：点击保持主菜单常驻，面板贴菜单项右侧弹出
+function openKnowledgeScope(event) {
+  cancelPlusClose()
+  subpanelCategory.value = null
+  knowledgeScope.value?.openPopover(event?.currentTarget)
+}
+
+// 知识库子面板底部入口：关闭菜单并打开知识库工作台
+function openKnowledgeManage() {
+  showPlusMenu.value = false
+  subpanelCategory.value = null
+  knowledgeScope.value?.closePopover()
+  emit('openKnowledge')
 }
 
 // ========== 「+」二级列表：展示当前用户自己的条目（不跳转页面） ==========
@@ -1517,6 +1566,7 @@ function schedulePlusClose() {
     subpanelFocused.value = false
     showPlusMenu.value = false
     subpanelCategory.value = null
+    knowledgeScope.value?.closePopover()
   }, 350)
 }
 
@@ -1546,6 +1596,15 @@ function onSubpanelFocusOut(e) {
 
 function hoverPlusItem(category, event) {
   cancelPlusClose()
+  // 知识库与技能/专家一致：悬停即展开面板，无需点击
+  if (category === 'knowledge') {
+    subpanelCategory.value = null
+    const anchor = plusMenuListRef.value?.querySelector('.plus-menu-item-knowledge') || event?.currentTarget
+    knowledgeScope.value?.openPopover(anchor)
+    return
+  }
+  // 切到其他菜单项时收起知识库面板，避免两个浮层叠着
+  knowledgeScope.value?.closePopover()
   if (category === 'file') {
     // 无子面板的项：收起子面板，主菜单保持
     subpanelCategory.value = null
@@ -1655,6 +1714,7 @@ function toggleExpert(item) {
   }
   showPlusMenu.value = false
   subpanelCategory.value = null
+  knowledgeScope.value?.closePopover()
   cancelPlusClose()
 }
 

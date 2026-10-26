@@ -151,7 +151,7 @@ def _tool_factories() -> dict[str, Callable[..., Any]]:
     其余三个工厂在对应工具真正被构造时才 import——这样单个工具模块加载失败
     只会让该工具被跳过（注册表逐条目告警），不会拖垮整次 Agent 创建。
     """
-    from easy_agent.knowledge_impl import extend_agent_tools
+    from easy_agent.knowledges.facade import extend_agent_tools
 
     def _scheduled_task(**kwargs: Any) -> Any:
         from easy_agent.tools.scheduled_task import CreateScheduledTaskTool

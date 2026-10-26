@@ -31,6 +31,7 @@
         <div v-if="item.metadata && item.metadata.base_name" class="knowledge-citation-base">
           {{ item.metadata.base_name }}
         </div>
+        <div v-if="metaLine(item)" class="knowledge-citation-meta">{{ metaLine(item) }}</div>
         <p>{{ item.snippet }}</p>
         <span class="knowledge-citation-score">相关度 {{ Number(item.score || 0).toFixed(3) }}</span>
       </article>
@@ -88,6 +89,15 @@ export default {
     },
   },
   methods: {
+    // 证据的业务元数据（发布日期 / 标签 / 来源），有则展示，便于核对检索范围
+    metaLine(item) {
+      const meta = (item && item.metadata) || {}
+      const parts = []
+      if (meta.publish_date) parts.push(`发布日期 ${meta.publish_date}`)
+      if (meta.report_tag) parts.push(`标签 ${meta.report_tag}`)
+      if (meta.report_second_source) parts.push(`来源 ${meta.report_second_source}`)
+      return parts.join(' · ')
+    },
     // 展开面板并滚动定位到第 number 条依据卡片（供正文锚点点击调用）
     jumpTo(number) {
       if (!number) return
@@ -122,5 +132,6 @@ export default {
 .knowledge-citation-title span { color: #2563eb; margin-right: 5px; }
 .knowledge-citation-badge { display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 999px; background: #2563eb; color: #fff; font-size: 10px; font-weight: 600; font-style: normal; vertical-align: 1px; }
 .knowledge-citation-base, .knowledge-citation-score { color: #64748b; font-size: 11px; }
+.knowledge-citation-meta { color: #475569; font-size: 11px; margin-top: 2px; }
 .knowledge-citation-card p { color: #334155; font-size: 12px; line-height: 1.55; margin: 6px 0; white-space: pre-wrap; max-height: 120px; overflow: auto; }
 </style>

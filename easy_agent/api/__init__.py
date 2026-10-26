@@ -16,7 +16,7 @@ from easy_agent.api.expert import router as expert_router
 
 # Web Terminal 依赖 pty（POSIX 专用），Windows 不支持，故不加载该模块
 if platform.system() != "Windows":
-    from easy_agent.api.terminal import router as terminal_router
+    from easy_agent.api.terminal import router as terminal_router  # noqa: F401 - 见下方 __all__
 
 __all__ = [
     "chat_router",

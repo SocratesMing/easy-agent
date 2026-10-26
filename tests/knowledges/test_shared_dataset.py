@@ -11,10 +11,11 @@ from easy_agent.knowledges.api import KnowledgePrincipal
 from easy_agent.knowledges.core.config import KnowledgeConfig
 from easy_agent.knowledges.core.models import KnowledgeBaseVisibility
 from easy_agent.knowledges.core.repository import KnowledgeRepository
+from easy_agent.knowledges.core.original_store import LocalOriginalStore
+from easy_agent.knowledges.ragflow import RagflowError
 from easy_agent.knowledges.service import (
     SHARED_DATASET_NAME,
     KnowledgeService,
-    LocalOriginalStore,
     reset_shared_dataset_cache,
 )
 
@@ -30,6 +31,10 @@ class _FakeRagflow:
         self.document_updates: list[dict] = []
         self.parsed: list[dict] = []
         self.retrieve_calls: list[dict] = []
+        self.retrieve_result: dict = {"chunks": []}
+        self.chunk_queries: list[dict] = []
+        # document_id -> chunk 列表（list_chunks 时返回，顺序即文档顺序）
+        self.chunks_by_document: dict[str, list[dict]] = {}
         self.document_queries: list[dict] = []
         # document_id -> 上游文档行（list_documents(document_id=...) 时返回）
         self.documents_by_id: dict[str, dict] = {}
@@ -69,7 +74,19 @@ class _FakeRagflow:
 
     async def retrieve(self, **kwargs):
         self.retrieve_calls.append(kwargs)
-        return {"chunks": []}
+        return self.retrieve_result
+
+    async def list_chunks(self, dataset_id, document_id, **kwargs):
+        page_size = int(kwargs.get("page_size") or 30)
+        if page_size > 100:
+            raise RagflowError("page_size must be less than or equal to 100")
+        page = int(kwargs.get("page") or 1)
+        self.chunk_queries.append(
+            {"dataset_id": dataset_id, "document_id": document_id, **kwargs}
+        )
+        chunks = list(self.chunks_by_document.get(document_id, []))
+        start = (page - 1) * page_size
+        return {"chunks": chunks[start : start + page_size], "total": len(chunks)}
 
     async def list_documents(self, dataset_id, **kwargs):
         self.document_queries.append({"dataset_id": dataset_id, **kwargs})
@@ -401,6 +418,212 @@ async def test_retrieve_base_with_own_dataset_without_filter(db, tmp_path):
     assert call["meta_fields"] is None
     # 未触发共享数据集查找
     assert ragflow.listed_datasets_calls == []
+
+
+async def test_retrieve_adds_ten_percent_neighbor_overlap(db, tmp_path):
+    ragflow = _FakeRagflow()
+    service = _make_service(db, ragflow, tmp_path)
+    base = _create_base_row(db, space_type="personal", owner_user_id="u-1")
+    _add_document(
+        db, str(base["id"]), name="a.txt", status="ready", remote_document_id="rd-1"
+    )
+    ragflow.chunks_by_document["rd-1"] = [
+        {"id": "c1", "content_with_weight": "A" * 100},
+        {"id": "c2", "content_with_weight": "B" * 100},
+        {"id": "c3", "content_with_weight": "C" * 100},
+    ]
+    ragflow.retrieve_result = {
+        "chunks": [
+            {
+                "document_id": "rd-1",
+                "chunk_id": "c2",
+                "content_with_weight": "命中内容",
+                "similarity": 0.9,
+            }
+        ]
+    }
+
+    result = await service._retrieve_base_evidence(
+        base_id=str(base["id"]),
+        principal=_principal(user_id="u-1"),
+        question="问题",
+        document_ids=None,
+        top_n=5,
+        request_id="req-neighbor",
+    )
+
+    # 命中块前后各拼接相邻块 10%（按字符数）
+    assert result.evidence[0].snippet == "A" * 10 + "\n命中内容\n" + "C" * 10
+    # 同一文档只拉取一次 chunk 列表
+    assert len(ragflow.chunk_queries) == 1
+
+
+async def test_retrieve_expansion_paginates_chunks_over_100(db, tmp_path):
+    ragflow = _FakeRagflow()
+    service = _make_service(db, ragflow, tmp_path)
+    base = _create_base_row(db, space_type="personal", owner_user_id="u-1")
+    _add_document(
+        db, str(base["id"]), name="a.txt", status="ready", remote_document_id="rd-1"
+    )
+    ragflow.chunks_by_document["rd-1"] = [
+        {"id": f"c{index}", "content_with_weight": f"内容{index}"}
+        for index in range(120)
+    ]
+    ragflow.retrieve_result = {
+        "chunks": [
+            {
+                "document_id": "rd-1",
+                "chunk_id": "c100",
+                "content_with_weight": "命中",
+                "similarity": 0.9,
+            }
+        ]
+    }
+
+    result = await service._retrieve_base_evidence(
+        base_id=str(base["id"]),
+        principal=_principal(user_id="u-1"),
+        question="问题",
+        document_ids=None,
+        top_n=5,
+        request_id="req-pagination",
+    )
+
+    # 跨页命中：必须翻到第 2 页才能取到 c101 的前 10%
+    assert result.evidence[0].snippet == "9\n命中\n内"
+    assert [query["page"] for query in ragflow.chunk_queries] == [1, 2]
+    assert all(query["page_size"] == 100 for query in ragflow.chunk_queries)
+
+
+async def test_retrieve_aggregation_question_appends_full_next_chunk(db, tmp_path):
+    ragflow = _FakeRagflow()
+    service = _make_service(db, ragflow, tmp_path)
+    base = _create_base_row(db, space_type="personal", owner_user_id="u-1")
+    _add_document(
+        db, str(base["id"]), name="a.txt", status="ready", remote_document_id="rd-1"
+    )
+    ragflow.chunks_by_document["rd-1"] = [
+        {"id": "c1", "content_with_weight": "A" * 100},
+        {"id": "c2", "content_with_weight": "命中内容"},
+        {"id": "c3", "content_with_weight": "C" * 200},
+    ]
+    ragflow.retrieve_result = {
+        "chunks": [
+            {
+                "document_id": "rd-1",
+                "chunk_id": "c2",
+                "content_with_weight": "命中内容",
+                "similarity": 0.9,
+            }
+        ]
+    }
+
+    result = await service._retrieve_base_evidence(
+        base_id=str(base["id"]),
+        principal=_principal(user_id="u-1"),
+        question="本行持有5%以上股份的股东有几个",
+        document_ids=None,
+        top_n=8,
+        request_id="req-aggregation",
+    )
+
+    # 计数类问题：完整带出下一个 chunk，避免跨页名单被截断
+    assert result.evidence[0].snippet == "命中内容\n" + "C" * 200
+    call = ragflow.retrieve_calls[0]
+    assert call["page_size"] >= 20
+    assert call["similarity_threshold"] == 0.4
+
+
+async def test_retrieve_percentage_question_does_not_trigger_aggregation(db, tmp_path):
+    ragflow = _FakeRagflow()
+    service = _make_service(db, ragflow, tmp_path)
+    base = _create_base_row(db, space_type="personal", owner_user_id="u-1")
+    _add_document(
+        db, str(base["id"]), name="a.txt", status="ready", remote_document_id="rd-1"
+    )
+
+    await service._retrieve_base_evidence(
+        base_id=str(base["id"]),
+        principal=_principal(user_id="u-1"),
+        question="资本充足率18.72%说明什么",
+        document_ids=None,
+        top_n=5,
+        request_id="req-percent",
+    )
+
+    call = ragflow.retrieve_calls[0]
+    # 仅含百分比的分析题不再走聚合模式（不降阈值、不扩候选）
+    assert call["similarity_threshold"] == 0.5
+    assert call["page_size"] == 5
+
+
+async def test_retrieve_aggregation_stops_at_next_section(db, tmp_path):
+    ragflow = _FakeRagflow()
+    service = _make_service(db, ragflow, tmp_path)
+    base = _create_base_row(db, space_type="personal", owner_user_id="u-1")
+    _add_document(
+        db, str(base["id"]), name="a.txt", status="ready", remote_document_id="rd-1"
+    )
+    ragflow.chunks_by_document["rd-1"] = [
+        {"id": "c1", "content_with_weight": "3.2.3 股东情况\n1、甲公司\n2、乙公司"},
+        {"id": "c2", "content_with_weight": "3、丙公司\n4、丁公司"},
+        {"id": "c3", "content_with_weight": "3.2.4 下一节内容\n不应带入"},
+        {"id": "c4", "content_with_weight": "更后面的内容"},
+    ]
+    ragflow.retrieve_result = {
+        "chunks": [
+            {
+                "document_id": "rd-1",
+                "chunk_id": "c1",
+                "content_with_weight": "3.2.3 股东情况\n1、甲公司\n2、乙公司",
+                "similarity": 0.9,
+            }
+        ]
+    }
+
+    result = await service._retrieve_base_evidence(
+        base_id=str(base["id"]),
+        principal=_principal(user_id="u-1"),
+        question="5%以上股东有几个",
+        document_ids=None,
+        top_n=5,
+        request_id="req-section",
+    )
+
+    snippet = result.evidence[0].snippet
+    assert "丙公司" in snippet and "丁公司" in snippet
+    assert "下一节内容" not in snippet
+
+
+async def test_retrieve_skips_neighbor_fetch_for_low_score(db, tmp_path):
+    ragflow = _FakeRagflow()
+    service = _make_service(db, ragflow, tmp_path)
+    base = _create_base_row(db, space_type="personal", owner_user_id="u-1")
+    _add_document(
+        db, str(base["id"]), name="a.txt", status="ready", remote_document_id="rd-1"
+    )
+    ragflow.retrieve_result = {
+        "chunks": [
+            {
+                "document_id": "rd-1",
+                "chunk_id": "c2",
+                "content_with_weight": "弱相关",
+                "similarity": 0.1,
+            }
+        ]
+    }
+
+    result = await service._retrieve_base_evidence(
+        base_id=str(base["id"]),
+        principal=_principal(user_id="u-1"),
+        question="问题",
+        document_ids=None,
+        top_n=5,
+        request_id="req-low-score",
+    )
+
+    assert result.evidence == []
+    assert ragflow.chunk_queries == []
 
 
 async def test_dataset_id_for_prefers_own_dataset(db, tmp_path):

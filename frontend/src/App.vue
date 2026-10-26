@@ -15,6 +15,7 @@
         :organizationId="userProfile.organization_id"
         :email="userProfile.email"
         :showAssets="showAssets"
+        :showKnowledge="showKnowledge"
         @createSession="handleCreateSession"
         @selectSession="handleSelectSession"
         @deleteSession="handleDeleteSession"
@@ -22,6 +23,7 @@
         @togglePin="handleTogglePin"
         @toggleSidebar="toggleSidebar"
         @showAssets="handleShowAssets"
+        @showKnowledge="handleShowKnowledge"
         @showSkillCenter="handleShowSkillCenter"
         @showScheduledTasks="handleShowScheduledTasks"
         @showSettings="showSettingsPanel = true"
@@ -65,7 +67,14 @@
         v-if="showUserManagementPanel"
         @close="showUserManagementPanel = false"
       />
-      
+
+      <KnowledgeWorkbench
+        v-if="showKnowledge"
+        @close="showKnowledge = false"
+        @manage-personnel="showUserManagementPanel = true"
+        @chat-session-prepared="loadSessions"
+      />
+
       <Chat
         v-else-if="!showAssets && !showSkillCenter && !showScheduledTasks"
         :messages="messages"
@@ -100,9 +109,10 @@
         @clearExpert="selectedExpert = null"
         @selectExpert="handleUseExpert"
         @openPanel="openSkillCenterPanel"
+        @openKnowledge="openKnowledgeWorkbench"
       />
 
-      <div v-if="currentSessionId && !showAssets && !showSkillCenter" class="workspace-area">
+      <div v-if="currentSessionId && !showKnowledge && !showAssets && !showSkillCenter" class="workspace-area">
         <WorkspacePanel
           :username="userProfile.username"
           :currentSessionId="currentSessionId"
@@ -128,6 +138,7 @@ import Chat from './features/chat/components/Chat.vue'
 import AssetsPanel from './features/chat/components/AssetsPanel.vue'
 const SkillCenter = defineAsyncComponent(() => import('./features/skills/components/SkillCenter.vue'))
 const ScheduledTasksPanel = defineAsyncComponent(() => import('./features/tasks/components/ScheduledTasksPanel.vue'))
+const KnowledgeWorkbench = defineAsyncComponent(() => import('./features/knowledge/KnowledgeWorkbench.vue'))
 const UserManagementPanel = defineAsyncComponent(() => import('./features/personnel/components/UserManagementPanel.vue'))
 import Welcome from './features/chat/components/Welcome.vue'
 import WorkspacePanel from './features/workspace/components/WorkspacePanel.vue'
@@ -784,6 +795,7 @@ watch(() => loadedSessionId.value, reconstructPendingApproval)
 const isSidebarCollapsed = ref(false)
 const isWorkspaceCollapsed = ref(true)
 const showAssets = ref(false)
+const showKnowledge = ref(false)
 const showSkillCenter = ref(false)
 const skillCenterTab = ref('experts')
 const selectedExpert = ref(null)
@@ -809,18 +821,41 @@ function toggleSidebar() {
 }
 
 function handleShowAssets() {
+  showKnowledge.value = false
   showAssets.value = !showAssets.value
   showSkillCenter.value = false
   showScheduledTasks.value = false
 }
 
 function openSkillCenterPanel(tab) {
+  if (tab === 'knowledge') return openKnowledgeWorkbench()
+  showKnowledge.value = false
   // 「+」菜单入口：打开面板并直接定位到专家/技能/连接器
   skillCenterTab.value = tab
   showSkillCenter.value = true
 }
 
+// 知识库工作台：与聊天区互斥，打开时收起其他管理面板
+function openKnowledgeWorkbench() {
+  showKnowledge.value = true
+  showAssets.value = false
+  showSkillCenter.value = false
+  showScheduledTasks.value = false
+  showSettingsPanel.value = false
+  showUserManagementPanel.value = false
+}
+
+function handleShowKnowledge() {
+  showKnowledge.value = !showKnowledge.value
+  showAssets.value = false
+  showSkillCenter.value = false
+  showScheduledTasks.value = false
+  showSettingsPanel.value = false
+  showUserManagementPanel.value = false
+}
+
 function handleShowSkillCenter() {
+  showKnowledge.value = false
   showSkillCenter.value = !showSkillCenter.value
   showAssets.value = false
   showScheduledTasks.value = false
@@ -876,6 +911,7 @@ async function handleUseExpert(expert, prompt) {
 }
 
 function handleShowScheduledTasks() {
+  showKnowledge.value = false
   showScheduledTasks.value = !showScheduledTasks.value
   showAssets.value = false
   showSkillCenter.value = false
@@ -1010,6 +1046,7 @@ async function handleLogout() {
     organization_id: '',
     email: ''
   }
+  showKnowledge.value = false
   showAssets.value = false
   showSkillCenter.value = false
   selectedExpert.value = null
@@ -1024,6 +1061,7 @@ async function handleUnregister() {
   loadedSessionId.value = null
   sessionStates.value = {}
   messages.value = []
+  showKnowledge.value = false
   userProfile.value = {
     username: '',
     organization_id: '',
@@ -1163,6 +1201,7 @@ async function handleExpertEdit() {
 async function handleCreateSession() {
   saveCurrentSessionState()
 
+  showKnowledge.value = false
   showAssets.value = false
   showSkillCenter.value = false
   selectedExpert.value = null
@@ -1184,6 +1223,7 @@ async function handleSelectSession(sessionId) {
   // 保存当前会话状态
   saveCurrentSessionState()
 
+  showKnowledge.value = false
   showAssets.value = false
   showSkillCenter.value = false
   // 切换会话时不沿用上一个会话的专家选择（选择是当前工作台的临时状态）

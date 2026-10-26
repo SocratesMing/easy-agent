@@ -21,8 +21,7 @@ re-export 继续可用。
 
 import logging
 import time
-import uuid
-from typing import Annotated, List, Optional
+from typing import Annotated, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -33,7 +32,6 @@ from easy_agent.db.expert_store import (
 )
 from easy_agent.middleware import get_current_username
 from easy_agent.services import (
-    get_or_create_agent_for_session,
     invalidate_user_agents,
 )
 from easy_agent.services import public_expert_service
@@ -42,7 +40,6 @@ from easy_agent.services.expert_service import (
     remove_expert_dir,
     validate_create_params,
 )
-from easy_agent.utils.prompt_probe import describe_prompt
 from easy_agent.api.deps import (  # noqa: F401 - 旧模块级名字 re-export
     as_expert_repository as _as_expert_repository,
     get_expert_repository,

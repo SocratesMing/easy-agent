@@ -9,7 +9,7 @@ fail-closed 路径报错并提示填写。
 ``base_url`` / ``api_key`` / ``shared_dataset_id``（指定既有共享数据集，
 空则按名称查找、没有时自动创建）/ ``embedding.model``（未配置时回退
 ``RAGFLOW_EMBEDDING_MODEL``，留空由 Ragflow 用其默认模型）/ ``audit`` /
-``limits`` / ``catalog_sync``（外部目录树同步，含 enabled 总开关）。
+``limits`` / ``source_sync``（研报接入：文档 SQL 增量同步，含 enabled 总开关）。
 解析策略、检索参数与上传安全开关为代码内固定值。
 """
 
@@ -19,6 +19,7 @@ import logging
 import os
 import re
 from collections.abc import Mapping
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +27,7 @@ import yaml
 from pydantic import BaseModel, Field, SecretStr, ValidationError, model_validator
 
 from easy_agent.bootstrap.config import Config
+from easy_agent.bootstrap.env import env_str
 
 logger = logging.getLogger(__name__)
 
@@ -61,13 +63,14 @@ class AuditConfig(BaseModel):
 class LimitsConfig(BaseModel):
     max_file_size_mb: int = Field(default=100, gt=0)
     max_request_size_mb: int = Field(default=110, gt=0)
-    max_files_per_request: int = Field(default=1, gt=0)
-    max_dataset_name_utf8_bytes: int = Field(default=127, gt=0)
     max_filename_utf8_bytes: int = Field(default=127, gt=0)
     allowed_extensions: list[str] = Field(
         default_factory=lambda: ["pdf", "doc", "docx", "txt", "md", "xls", "xlsx", "csv", "ppt", "pptx"]
     )
     max_documents_per_query: int = Field(default=500, gt=0)
+    # 解析绝对超时秒数；0 = 不限制（批量同步场景推荐）。
+    # 计时起点为 parse_started_at（首次进入 processing），不含排队时间。
+    parse_timeout_seconds: float = Field(default=1800.0, ge=0)
 
 
 class VirusScanConfig(BaseModel):
@@ -86,45 +89,59 @@ class UploadSecurityConfig(BaseModel):
     virus_scan: VirusScanConfig = Field(default_factory=VirusScanConfig)
 
 
-class CatalogSyncMySQLConfig(BaseModel):
-    """外部目录库（ai_kb）MySQL 连接覆盖；host 留空时复用主库连接参数。"""
+class SourceSyncMySQLConfig(BaseModel):
+    """研报 SQL 所在 MySQL 连接（host / database 必填，不做主库兜底）。
+
+    ``table`` 留空时使用内置默认表名并自动建表；配置后按配置的表名查询。
+    """
 
     host: str = ""
     port: int = Field(default=3306, gt=0)
     user: str = ""
     password: SecretStr = SecretStr("")
+    database: str = ""
     charset: str = "utf8mb4"
+    table: str = ""
 
 
-class CatalogSyncConfig(BaseModel):
-    """外部目录树同步配置（ai_kb SQL dump → 知识库板块）。
+class SourceSyncConfig(BaseModel):
+    """文档 SQL → 知识库批量同步配置。
 
-    enabled 为总开关：关闭时启动流程零副作用。sql_file 指向含
-    kb_catalog / kb_doc 表结构与数据的 MySQL dump 文件，同步前会将其
-    执行到 database 指定的 MySQL 库（不存在时自动创建），再按
-    kb_catalog 目录树（库→年→月→日→机构…）幂等地创建知识库与文件夹。
+    每次按 ``publishDate`` 取 [当前时刻-lookback_days, 当前时刻] 的记录，
+    与本地已入库的 source_record_id 做差集；上传按滑动窗口限流。
+    查询语句与列映射固定在代码内，表名通过 ``mysql.table`` 覆盖。
     """
 
     enabled: bool = False
-    sql_file: str = ""
-    database: str = "ai_kb"
     owner_username: str = "admin"
-    space_type: str = "team"  # personal | team
-    department_id: str = ""
-    max_level: int = Field(default=5, ge=1, le=10)
-    mysql: CatalogSyncMySQLConfig = Field(default_factory=CatalogSyncMySQLConfig)
+    # 文件根目录（绝对路径）：配置后忽略 attacUrl 的目录部分，只取其文件名拼到该根目录；
+    # 留空则要求 attacUrl 本身是绝对路径。
+    file_root: str = ""
+    # 指定既有知识库 ID（可选）：同名库有多个时用来锁定具体目标；留空则按 base_name 查找
+    base_id: str = ""
+    base_name: str = "报告库"
+    lookback_days: int = Field(default=7, ge=1, le=365)
+    # 首次回填起始日期（YYYY-MM-DD）；为空时只处理 lookback 窗口
+    start_date: str = ""
+    interval_minutes: int = Field(default=60, ge=0)
+    max_inflight: int = Field(default=10, ge=1, le=100)
+    poll_interval_seconds: float = Field(default=15.0, ge=1)
+    max_attempts: int = Field(default=3, ge=1, le=10)
+    mysql: SourceSyncMySQLConfig = Field(default_factory=SourceSyncMySQLConfig)
 
     @model_validator(mode="after")
-    def _space_type_allowed(self) -> "CatalogSyncConfig":
-        if self.space_type not in {"personal", "team"}:
-            raise ValueError("catalog_sync.space_type 仅支持 personal / team")
+    def _validate_sync(self) -> "SourceSyncConfig":
+        if self.start_date:
+            try:
+                datetime.strptime(self.start_date, "%Y-%m-%d")
+            except ValueError as exc:
+                raise ValueError("source_sync.start_date 必须为 YYYY-MM-DD") from exc
         return self
 
 
 class KnowledgeConfig(BaseModel):
     """校验后的知识库配置（应用启动时加载一次）。"""
 
-    implementation: str = "v2"  # 实现选择器（knowledge_impl.py）透传字段，不校验取值
     enabled: bool = False
     base_url: str = ""
     api_key: SecretStr = SecretStr("")  # Bearer 凭据（RAGFLOW_API_KEY）
@@ -134,7 +151,7 @@ class KnowledgeConfig(BaseModel):
     embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
     audit: AuditConfig = Field(default_factory=AuditConfig)
     limits: LimitsConfig = Field(default_factory=LimitsConfig)
-    catalog_sync: CatalogSyncConfig = Field(default_factory=CatalogSyncConfig)
+    source_sync: SourceSyncConfig = Field(default_factory=SourceSyncConfig)
 
     @model_validator(mode="after")
     def _endpoint_required_when_enabled(self) -> "KnowledgeConfig":
@@ -170,17 +187,18 @@ class KnowledgeConfig(BaseModel):
     def from_mapping(cls, section: Mapping[str, Any] | None) -> "KnowledgeConfig":
         """从已展开占位符的 knowledge 配置段构造；未识别的键直接忽略。"""
         section = dict(section or {})
-        catalog_section = _as_mapping(section.get("catalog_sync"))
-        if not catalog_section:
-            catalog_section = {
-                "enabled": _env_bool("KNOWLEDGE_CATALOG_SYNC_ENABLED", False),
-                "sql_file": os.environ.get("KNOWLEDGE_CATALOG_SYNC_SQL_FILE") or "",
-                "database": os.environ.get("KNOWLEDGE_CATALOG_SYNC_DATABASE") or "ai_kb",
+        source_section = _as_mapping(section.get("source_sync"))
+        if not source_section:
+            source_section = {
+                "enabled": _env_bool("KNOWLEDGE_SOURCE_SYNC_ENABLED", False),
             }
         else:
-            catalog_section["mysql"] = _as_mapping(catalog_section.get("mysql"))
+            source_section["mysql"] = _as_mapping(source_section.get("mysql"))
+        limits_section = _as_mapping(section.get("limits"))
+        timeout_env = env_str("KNOWLEDGE_PARSE_TIMEOUT_SECONDS")
+        if "parse_timeout_seconds" not in limits_section and timeout_env:
+            limits_section["parse_timeout_seconds"] = timeout_env
         payload = {
-            "implementation": section.get("implementation", "v2"),
             "enabled": section.get("enabled", _env_bool("KNOWLEDGE_ENABLED", False)),
             "base_url": section.get("base_url") or os.environ.get("RAGFLOW_BASE_URL") or "",
             "api_key": section.get("api_key") or os.environ.get("RAGFLOW_API_KEY") or "",
@@ -197,8 +215,8 @@ class KnowledgeConfig(BaseModel):
                 )
             },
             "audit": _as_mapping(section.get("audit")),
-            "limits": _as_mapping(section.get("limits")),
-            "catalog_sync": catalog_section,
+            "limits": limits_section,
+            "source_sync": source_section,
         }
         # fail-closed：模块启用时禁止残留未解析的 ${VAR} 占位符
         # （防止 "${RAGFLOW_API_KEY}" 字面量被当作真实密钥静默放行）

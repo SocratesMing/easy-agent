@@ -102,7 +102,7 @@ export async function attachStream(sessionId, onChunk, signal) {
   await readSSE(response, onChunk, { signal: abortSignal })
 }
 
-export async function sendMessage(sessionId, message, onChunk, signal, enableDeepThink = true, files = [], model = null, enableWebSearch = false, skills = [], pendingExpertId = '', expertAgentId = '') {
+export async function sendMessage(sessionId, message, onChunk, signal, enableDeepThink = true, files = [], model = null, enableWebSearch = false, skills = [], pendingExpertId = '', expertAgentId = '', extra = null) {
   const controller = new AbortController()
   const abortSignal = signal || controller.signal
 
@@ -126,6 +126,10 @@ export async function sendMessage(sessionId, message, onChunk, signal, enableDee
   // 本轮使用的专家（我的专家 ID / 公共专家目录名）：专家对话只有一个入口，
   // 后端据此加载提示词、补装依赖技能、做职责范围预检（命中即短路拒答）
   if (expertAgentId) payload.expert_agent_id = expertAgentId
+  // 知识库问答的元数据硬过滤（日期区间 / 标签 / 来源），由知识库工作台传入
+  if (extra && extra.knowledgeMetadataFilter) {
+    payload.knowledge_metadata_filter = extra.knowledgeMetadataFilter
+  }
 
   const response = await authFetch(`${API_BASE_URL}/agent/chat/stream`, {
     method: 'POST',

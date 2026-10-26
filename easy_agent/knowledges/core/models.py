@@ -11,7 +11,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator, model_validator
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,12 +62,8 @@ class DocumentStatus(str, Enum):
 
 class OperationType(str, Enum):
     DATASET_CREATE = "dataset_create"
-    DATASET_DELETE = "dataset_delete"
-    DATASET_RESTORE = "dataset_restore"
     DOCUMENT_UPLOAD = "document_upload"
     DOCUMENT_PARSE = "document_parse"
-    DOCUMENT_DELETE = "document_delete"
-    SOURCE_SYNC = "source_sync"
 
 
 class OperationPhase(str, Enum):
@@ -319,7 +315,6 @@ class DocumentSummary(ContractModel):
     content_type: str
     size_bytes: int = Field(ge=0)
     status: DocumentStatus
-    index_status: DocumentStatus | None = None
     original_status: Literal[
         "unmanaged", "staging", "available", "failed", "quarantined", "deleted"
     ] = "unmanaged"
@@ -330,6 +325,13 @@ class DocumentSummary(ContractModel):
     allowed_actions: list[AllowedAction] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
+    # 业务元数据（文档 SQL 同步写入）
+    source: str | None = None
+    source_record_id: str | None = None
+    report_title: str | None = None
+    report_tag: str | None = None
+    report_second_source: str | None = None
+    publish_date: str | None = None
 
 
 class DocumentListResponse(ContractModel):
@@ -343,7 +345,6 @@ class DocumentMoveRequest(ContractModel):
 
 class OperationSummary(ContractModel):
     id: str
-    batch_operation_id: str | None = None
     resource_type: str | None = None
     resource_id: str | None = None
     type: OperationType
@@ -354,7 +355,6 @@ class OperationSummary(ContractModel):
     progress: float | None = Field(default=None, ge=0, le=1)
     retryable: StrictBool = False
     error: KnowledgeErrorResponse | None = None
-    allowed_actions: list[AllowedAction] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
 
@@ -367,31 +367,9 @@ class OperationSummary(ContractModel):
         return value
 
 
-class UploadItemAccepted(ContractModel):
-    client_file_id: str
-    document_id: str | None = None
-    operation_id: str
-    status: OperationStatus = OperationStatus.ACCEPTED
-    error: KnowledgeErrorResponse | None = None
-
-
-class UploadBatchAccepted(ContractModel):
-    batch_operation_id: str
-    items: list[UploadItemAccepted]
-    poll_after_seconds: float = Field(default=2.0, gt=0)
-
-    @field_validator("items")
-    @classmethod
-    def batch_has_items(cls, value: list[UploadItemAccepted]) -> list[UploadItemAccepted]:
-        if not value:
-            raise ValueError("upload batch must contain at least one item")
-        return value
-
-
 class DocumentUploadAccepted(ContractModel):
     document: DocumentSummary
     operation: OperationSummary
-    poll_after_seconds: float = Field(default=3.0, gt=0)
 
 
 class OperationListResponse(ContractModel):
@@ -457,10 +435,68 @@ class Evidence(ContractModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class DocumentMetadata(ContractModel):
+    """文档 SQL 同步写入的业务元数据（全部来自源表）。"""
+
+    source: str = Field(default="source_sync", max_length=127)
+    source_record_id: str = Field(min_length=1, max_length=255)
+    report_title: str = Field(default="", max_length=255)
+    report_tag: str = Field(default="", max_length=127)
+    report_second_source: str = Field(default="", max_length=127)
+    publish_date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+
+
+class DocumentMetadataFilter(ContractModel):
+    """检索元数据过滤器：各字段之间 AND，同字段多值之间 OR。
+
+    publish_date 为闭区间；文档 publish_date 为空时不会命中任何日期条件。
+    """
+
+    publish_date_from: str | None = None
+    publish_date_to: str | None = None
+    report_tags: list[str] = Field(default_factory=list, max_length=20)
+    report_second_sources: list[str] = Field(default_factory=list, max_length=20)
+    report_title_contains: str | None = Field(default=None, max_length=100)
+
+    @field_validator("publish_date_from", "publish_date_to")
+    @classmethod
+    def _date_format(cls, value: str | None) -> str | None:
+        if value is None or not str(value).strip():
+            return None
+        try:
+            return datetime.strptime(str(value).strip(), "%Y-%m-%d").strftime("%Y-%m-%d")
+        except ValueError as exc:
+            raise ValueError("日期必须为 YYYY-MM-DD") from exc
+
+    @field_validator("report_tags", "report_second_sources")
+    @classmethod
+    def _clean_list(cls, value: list[str]) -> list[str]:
+        return list(dict.fromkeys(item.strip() for item in value if item and item.strip()))
+
+    @field_validator("report_title_contains")
+    @classmethod
+    def _strip_title(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip()
+        return cleaned or None
+
+    @model_validator(mode="after")
+    def _range_order(self) -> "DocumentMetadataFilter":
+        if (
+            self.publish_date_from
+            and self.publish_date_to
+            and self.publish_date_from > self.publish_date_to
+        ):
+            raise ValueError("publish_date_from 不能晚于 publish_date_to")
+        return self
+
+
 class RetrieveRequest(ContractModel):
     question: str = Field(min_length=1, max_length=4000)
     document_ids: list[str] | None = None
     top_n: int = Field(default=10, ge=1, le=100)
+    metadata_filter: DocumentMetadataFilter | None = None
 
     @field_validator("question")
     @classmethod
@@ -534,48 +570,10 @@ class KnowledgeCapabilitiesResponse(ContractModel):
     features: dict[str, bool] = {}
 
 
-# ---------------------------------------------------------------------------
-# 问答流式事件
-# ---------------------------------------------------------------------------
-class AskMetadataEvent(ContractModel):
-    event: Literal["metadata"] = "metadata"
-    request_id: str
-
-
-class AskAnswerDeltaEvent(ContractModel):
-    event: Literal["answer.delta"] = "answer.delta"
-    delta: str
-
-
-class AskEvidenceEvent(ContractModel):
-    event: Literal["evidence"] = "evidence"
-    evidence: list[Evidence]
-
-
-class AskWarningEvent(ContractModel):
-    event: Literal["warning"] = "warning"
-    warning: str
-
-
-class AskDoneEvent(ContractModel):
-    event: Literal["done"] = "done"
-
-
-class AskErrorEvent(ContractModel):
-    event: Literal["error"] = "error"
-    error: KnowledgeErrorResponse
-
-
 __all__ = [
     "AllowedAction",
-    "AskAnswerDeltaEvent",
-    "AskDoneEvent",
-    "AskErrorEvent",
-    "AskEvidenceEvent",
-    "AskMetadataEvent",
     "AskRequest",
     "AskResponse",
-    "AskWarningEvent",
     "ConversationTurn",
     "DocumentListResponse",
     "DocumentMoveRequest",
@@ -618,8 +616,6 @@ __all__ = [
     "TeamSpaceManagerSummary",
     "TeamSpaceManagerUpdateRequest",
     "TeamSpaceManagerUpdateResponse",
-    "UploadBatchAccepted",
-    "UploadItemAccepted",
 ]
 
 

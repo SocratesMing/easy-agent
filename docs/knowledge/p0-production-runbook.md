@@ -49,11 +49,11 @@ Web 仍可访问 MySQL/NAS 中的元数据与原文；新建解析任务持久�
 - `NAS_MISSING`/`NAS_SHA256_MISMATCH`：阻断删除和重建，从已验证备份恢复；
 - `STATUS_MISMATCH`：已知远端 ID 的状态由巡检回写，其他差异不自动删除。
 
-## 删除与恢复
+## 删除
 
-文档删除立即从列表、下载和检索中隐藏，并记录 `deleted_at/deleted_by/purge_after`。恢复期内可调用 `POST /documents/{id}/restore` 从 NAS 重建索引；过期后 Worker 销毁原文。
+文档删除立即从列表、下载和检索中隐藏，同步删除 RAGFlow 中的副本，并记录 `deleted_at/deleted_by`；后台清理 Worker 仅兜底重试同步失败与历史遗留副本。
 
-知识库删除同样先软删除并从所有列表和资源接口隐藏，恢复期内可调用 `POST /bases/{id}/restore`；只有超过恢复期后，Worker 才同步销毁 RAGFlow 数据集、NAS 原文和本地映射。
+知识库删除同样先同步删除其全部 RAGFlow 文档，再从所有列表和资源接口隐藏；本地软删除记录与原文保留。
 
 ## 备份恢复
 

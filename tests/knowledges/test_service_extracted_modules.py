@@ -1,9 +1,9 @@
-"""批次 1B 拆分回归：core.original_store / core.permissions 行为与 re-export 身份。
+"""批次 1B 拆分回归：core.original_store / core.permissions 行为测试。
 
 覆盖点：
 * 原文存储的原子写读、幂等重传、路径穿越/符号链接拒绝、health 探测；
 * owner / 部门 / 单库权限行的角色判定与 allowed_actions 排序；
-* ``service`` 对拆分符号的 re-export 身份一致（同一对象）。
+* core 模块不得反向依赖 service（分层约束）。
 """
 
 from __future__ import annotations
@@ -15,7 +15,6 @@ from pathlib import Path
 
 import pytest
 
-from easy_agent.knowledges import service as service_module
 from easy_agent.knowledges.core import original_store, permissions
 from easy_agent.knowledges.core.models import (
     AllowedAction,
@@ -255,33 +254,7 @@ class TestPermissions:
         assert len(_MANAGER_ACTIONS) == len(AllowedAction)
 
 
-class TestServiceReexports:
-    def test_store_symbols_are_same_objects(self) -> None:
-        assert service_module.LocalOriginalStore is LocalOriginalStore
-        assert service_module.OriginalReadHandle is OriginalReadHandle
-        assert service_module.OriginalStorageError is OriginalStorageError
-        assert service_module.DEFAULT_ORIGINALS_ROOT is DEFAULT_ORIGINALS_ROOT
-        assert service_module.LocalOriginalStore is original_store.LocalOriginalStore
-
-    def test_permission_symbols_are_same_objects(self) -> None:
-        assert service_module.effective_role is effective_role
-        assert service_module.effective_role is permissions.effective_role
-        assert service_module.allowed_actions is allowed_actions
-        assert service_module._matching_permission_roles is _matching_permission_roles
-        assert service_module._base_access_restricted is _base_access_restricted
-        assert service_module._as_role is _as_role
-        assert service_module._ROLE_RANK is _ROLE_RANK
-        assert service_module._VIEWER_ACTIONS is _VIEWER_ACTIONS
-        assert service_module._MAINTAINER_ACTIONS is _MAINTAINER_ACTIONS
-        assert service_module._MANAGER_ACTIONS is _MANAGER_ACTIONS
-
-    def test_service_all_keeps_public_store_names(self) -> None:
-        assert {
-            "LocalOriginalStore",
-            "OriginalReadHandle",
-            "OriginalStorageError",
-        } <= set(service_module.__all__)
-
+class TestCoreModulesLayering:
     def test_core_modules_do_not_import_service(self) -> None:
         for module in (original_store, permissions):
             source = inspect.getsource(module)

@@ -1,9 +1,9 @@
-"""后台 worker：解析状态轮询 + 软删除保留期清理。
+"""后台 worker：解析状态轮询 + 软删除远端副本兜底清理。
 
 上传与重试内联在 ``KnowledgeService.upload_document`` 中同步完成，
 解析轮询 worker 只负责把上游解析进度（pending/processing）拉回本地投影；
-清理 worker 负责在软删除保留期（30 天）到期后删除远端（Ragflow）文档副本，
-避免共享数据集无限膨胀。
+清理 worker 兜底清理同步删除失败或历史遗留的远端（Ragflow）文档副本，
+避免共享数据集膨胀。
 """
 
 from __future__ import annotations
@@ -16,7 +16,8 @@ from easy_agent.db import Database
 from easy_agent.knowledges.core.config import KnowledgeConfig
 from easy_agent.knowledges.ragflow import RagflowClient
 from easy_agent.knowledges.core.repository import KnowledgeRepository
-from easy_agent.knowledges.service import KnowledgeService, LocalOriginalStore
+from easy_agent.knowledges.core.original_store import LocalOriginalStore
+from easy_agent.knowledges.service import KnowledgeService
 
 logger = logging.getLogger(__name__)
 
@@ -173,10 +174,10 @@ class KnowledgeParsePollWorker:
 
 
 class KnowledgePurgeWorker:
-    """软删除保留期到期清理：周期删除远端（Ragflow）文档副本。
+    """软删除远端副本兜底清理：周期删除同步删除失败/历史遗留的 Ragflow 文档。
 
-    删除文档/知识库为软删除（本地保留记录与原文），远端副本暂存
-    SOFT_DELETE_RETENTION_DAYS（30 天）后由本 worker 清理，期间可恢复。
+    正常删除文档/知识库时已同步删除远端副本；本 worker 仅兜底重试失败项与
+    历史遗留数据，本地软删除记录与原文保留。
     """
 
     def __init__(
@@ -212,10 +213,10 @@ class KnowledgePurgeWorker:
         service = KnowledgeService(
             KnowledgeRepository(db), self.ragflow, self.config
         )
-        return await service.purge_expired_documents(limit=self.batch_limit)
+        return await service.purge_deleted_documents(limit=self.batch_limit)
 
     async def run_forever(self) -> None:
-        """清理主循环：每 purge_interval_seconds（默认 1 小时）清一轮到期远端文档。
+        """清理主循环：每 purge_interval_seconds（默认 1 小时）清一轮待兜底远端文档。
 
         单轮异常只记日志不退出；等待期间可被 stop 事件提前唤醒。
         """

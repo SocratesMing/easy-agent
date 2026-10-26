@@ -18,7 +18,7 @@ from easy_agent.db.repositories.stream_events import clear_stream_events
 from easy_agent.models.db import SessionModel
 from easy_agent.models.api import ChatRequest, ResumeRequest
 from easy_agent.middleware import get_current_username
-from easy_agent.knowledge_impl import (
+from easy_agent.knowledges.facade import (
     authorize_scoped_chat,
     chat_stream_generator,
     is_knowledge_panel_title,
@@ -697,6 +697,7 @@ async def chat_stream(
         db=repo.database,
         session_id=session_id,
         question=request.message,
+        metadata_filter=request.knowledge_metadata_filter,
     )
     uploads = build_turn_uploads(repo, session_id, username, request.files, request.message)
     parsed_content = uploads.model_input

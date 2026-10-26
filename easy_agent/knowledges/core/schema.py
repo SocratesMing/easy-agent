@@ -42,6 +42,15 @@ _DOCUMENT_P0_COLUMNS = (
     ("purge_after", "VARCHAR(50) DEFAULT NULL"),
     ("previous_status", "VARCHAR(30) DEFAULT NULL"),
     ("document_version", "INTEGER NOT NULL DEFAULT 1"),
+    # 业务元数据（文档 SQL 批量同步写入；检索时作为硬过滤条件）
+    ("source", "VARCHAR(127) DEFAULT NULL"),
+    ("source_record_id", "VARCHAR(255) DEFAULT NULL"),
+    ("report_title", "VARCHAR(255) DEFAULT NULL"),
+    ("report_tag", "VARCHAR(127) DEFAULT NULL"),
+    ("report_second_source", "VARCHAR(127) DEFAULT NULL"),
+    ("publish_date", "VARCHAR(10) DEFAULT NULL"),
+    # 解析计时：区分“排队等待”与“真正开始解析”，供超时判定使用
+    ("parse_started_at", "VARCHAR(50) DEFAULT NULL"),
 )
 
 
@@ -125,9 +134,54 @@ def initialize_knowledge_schema(db: Database, cursor) -> None:
         db._ensure_column(cursor, "knowledge_documents", column, definition)
     db._create_index(cursor, "idx_knowledge_documents_base", "knowledge_documents", "base_id")
     db._create_index(cursor, "idx_knowledge_documents_folder", "knowledge_documents", "folder_id")
-    # 清理 worker 的全局扫描依赖 (status, purge_after) 复合索引，其最左前缀
-    # 已覆盖任何按 status 起查的路径，无需单列 status 索引。
+    # 元数据检索：日期区间 / 来源 / 标签过滤
+    db._create_index(
+        cursor,
+        "idx_knowledge_documents_base_publish",
+        "knowledge_documents",
+        "base_id, publish_date",
+    )
+    db._create_index(
+        cursor,
+        "idx_knowledge_documents_base_source",
+        "knowledge_documents",
+        "base_id, report_second_source",
+    )
+    # 文档 SQL 同步幂等键：同一知识库内同一来源的同一业务记录只入库一次。
+    # 必须带 base_id：软删除行与旧库历史行不能阻止新库重新入库。
+    _migrate_source_record_unique_index(db, cursor)
+    db._create_unique_index(
+        cursor,
+        "uq_knowledge_documents_source_record",
+        "knowledge_documents",
+        "source, source_record_id, base_id",
+    )
+    # 兜底清理按 status 扫描软删除文档，复合索引最左前缀已覆盖该路径，
+    # 无需单列 status 索引；purge_after 为历史列，仅保留以兼容既有库。
     db._create_index(cursor, "idx_knowledge_documents_purge", "knowledge_documents", "status, purge_after")
+
+    # ---- 文档 SQL 同步台账（断点续传 / 失败重试 / 漏传核对） ----
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS knowledge_source_sync_items (
+            id VARCHAR(255) PRIMARY KEY,
+            source VARCHAR(127) NOT NULL,
+            source_record_id VARCHAR(255) NOT NULL,
+            document_id VARCHAR(255),
+            status VARCHAR(30) NOT NULL,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            last_error TEXT,
+            publish_date VARCHAR(10),
+            created_at VARCHAR(50) NOT NULL,
+            updated_at VARCHAR(50) NOT NULL,
+            UNIQUE(source, source_record_id)
+        )
+    """)
+    db._create_index(
+        cursor,
+        "idx_knowledge_source_sync_status",
+        "knowledge_source_sync_items",
+        "source, status",
+    )
 
     # ---- 原始文件对象 ----
     cursor.execute("""
@@ -401,6 +455,59 @@ def _migrate_folder_unique_sqlite(cursor) -> None:
     cursor.execute("DROP TABLE knowledge_folders")
     cursor.execute("ALTER TABLE knowledge_folders_migrate RENAME TO knowledge_folders")
     logger.info("knowledge_folders 唯一约束已迁移: (base_id, name) → (base_id, parent_id, name)")
+
+
+_SOURCE_RECORD_UNIQUE_NAME = "uq_knowledge_documents_source_record"
+_SOURCE_RECORD_UNIQUE_COLUMNS = ["source", "source_record_id", "base_id"]
+
+
+def _migrate_source_record_unique_index(db: Database, cursor) -> None:
+    """把文档同步幂等键 (source, source_record_id) 放宽为含 base_id 的三列。
+
+    只按来源 + 记录 ID 建唯一键时，软删除行与已删除知识库的历史行会永久占位：
+    删库/删文档后重跑同步会报 1062 Duplicate entry，业务记录再也无法入库。
+    加入 base_id 后同一记录可在新库重新入库，同库内仍保持唯一（同库软删除行
+    由同步逻辑视为已存在并跳过，不会重复上传）。幂等：已是三列时直接跳过。
+    """
+    try:
+        columns = _index_columns(db, cursor, "knowledge_documents", _SOURCE_RECORD_UNIQUE_NAME)
+        if columns is None or columns == _SOURCE_RECORD_UNIQUE_COLUMNS:
+            return
+        if db.db_type == "mysql":
+            cursor.execute(
+                f"ALTER TABLE knowledge_documents DROP INDEX `{_SOURCE_RECORD_UNIQUE_NAME}`"
+            )
+        else:
+            cursor.execute(f"DROP INDEX IF EXISTS {_SOURCE_RECORD_UNIQUE_NAME}")
+        logger.info(
+            "knowledge_documents 同步幂等键已迁移: (%s) → (%s)",
+            ", ".join(columns),
+            ", ".join(_SOURCE_RECORD_UNIQUE_COLUMNS),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"knowledge_documents 同步幂等键迁移检查失败: {exc}")
+
+
+def _index_columns(db: Database, cursor, table: str, index_name: str) -> list[str] | None:
+    """返回索引的列顺序；索引不存在时返回 None（兼容两套方言）。"""
+    if db.db_type == "mysql":
+        db._execute(cursor, f"SHOW INDEX FROM {table} WHERE Key_name=?", (index_name,))
+    else:
+        cursor.execute(f"PRAGMA index_info({index_name})")
+    rows = cursor.fetchall()
+    if not rows:
+        return None
+    if db.db_type == "mysql":
+        return [_row_value(row, "Column_name", 4) for row in rows]
+    return [_row_value(row, "name", 2) for row in rows]
+
+
+def _row_value(row, key: str, index: int) -> str:
+    """同时兼容 dict 游标（MySQL）与 sqlite3.Row/普通元组。"""
+    try:
+        return str(row[key])
+    except (KeyError, IndexError, TypeError):
+        return str(row[index])
 
 
 __all__ = ["initialize_knowledge_schema"]
