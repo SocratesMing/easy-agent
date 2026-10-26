@@ -931,6 +931,9 @@ async def chat_resume(
     # 批处理 HITL 会先把恢复值存进 checkpoint 再校验，非法决策会让线程卡死，必须提前拒绝。
     try:
         await validate_resume_decisions(agent, resume_thread, request.decisions)
+    except StaleApprovalError as exc:
+        logger.warning(f"[{sid}] 拒绝已失效的审批 | thread={thread_id} | {exc}")
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except HitlDecisionError as exc:
         logger.warning(f"[{sid}] 拒绝无效的审批决策 | thread={thread_id} | {exc}")
         raise HTTPException(status_code=400, detail=f"审批决策无效：{exc}") from exc

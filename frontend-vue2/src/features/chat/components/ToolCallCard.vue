@@ -36,7 +36,7 @@
     <div v-show="expanded" class="tcc-body">
       <div v-if="pendingApproval" class="tcc-approval">
         <div class="tcc-approval-prompt">
-          <span>此操作将删除文件，需要您的确认</span>
+          <span>{{ approvalPrompt }}</span>
         </div>
         <ul v-if="filePaths && filePaths.length" class="tcc-approval-files">
           <li v-for="(fp, i) in filePaths" :key="i">{{ fp }}</li>
@@ -121,6 +121,12 @@ export default {
     this._streamOpened = false
   },
   watch: {
+    // 待审批状态可能比卡片首帧晚到：流式先渲染工具卡片，之后才收到 approval_required。
+    // 此时 expanded 已固定为 false，需要在转为待审批时自动展开，让用户直接看到
+    // 参数与「批准 / 编辑 / 拒绝」按钮。仅展开不收起，审批结束后仍可查看结果。
+    pendingApproval(v) {
+      if (v) this.expanded = true
+    },
     // 参数流式写入期间自动展开，让用户实时看到正在生成的文件内容；
     // 一旦收到完整参数（streaming 转为 false）即释放自动展开，尊重用户手动折叠。
     streaming(v) {
@@ -170,6 +176,13 @@ export default {
     canEditDecision() {
       if (!this.allowedDecisions.length) return true
       return this.allowedDecisions.indexOf('edit') !== -1
+    },
+    // 审批提示：删除类操作会带 file_paths（rm 等命令解析出的目标），其余
+    // （SQL、MCP 写操作、知识库物化）用通用文案，避免误报「将删除文件」。
+    approvalPrompt() {
+      return this.filePaths && this.filePaths.length
+        ? '此操作将删除文件，需要您的确认'
+        : '此操作需要您的确认'
     },
   },
   methods: {
