@@ -3,39 +3,34 @@
     <div v-if="loading" class="plus-list-hint">加载中…</div>
     <div v-else-if="error" class="plus-list-hint error">{{ error }}</div>
     <div v-else-if="rows.length === 0" class="plus-list-hint">{{ emptyText }}</div>
-    <div v-else-if="noMatch" class="plus-list-hint">未找到匹配的连接器</div>
-  <div v-if="loading" class="plus-list-hint">加载中…</div>
-  <div v-else-if="error" class="plus-list-hint error">{{ error }}</div>
-  <div v-else-if="rows.length === 0" class="plus-list-hint">{{ emptyText }}</div>
-  <div v-else-if="noMatch" class="plus-list-hint">未找到匹配的连接器</div>
-  <!-- 技能行可点选（挂成输入框令牌，可连续挂多个）；
-       连接器行不可点选，行尾是启用开关（改的是连接器自身的状态，
-       与「专家·技能·连接器」面板双向同步，启用/停用都能点） -->
-  <div
-    v-else
-    v-for="item in rows"
-    :key="item.key"
-    class="plus-list-item"
-    :class="{
-      selectable: selectable,
-      selected: rowSelected(item),
-      'is-disabled': rowDisabled(item),
-      'connector-row': isConnector,
-    }"
-    :role="selectable ? 'button' : null"
-    :tabindex="selectable && !rowDisabled(item) ? 0 : null"
-    :title="rowTitle(item)"
-    @click="$emit('select', item)"
-    @keydown.enter.prevent="$emit('select', item)"
-  >
-    <span class="plus-list-icon" :class="{ initial: !item.icon }">{{ item.icon || item.initial }}</span>
-    <span class="plus-list-body">
-      <span class="plus-list-name-row">
+    <div v-else-if="noMatch" class="plus-list-hint">{{ noMatchText }}</div>
+    <!-- 技能行可点选（挂成输入框令牌，可连续挂多个）；
+         连接器行不可点选，行尾是启用开关（改的是连接器自身的状态，
+         与「专家·技能·连接器」面板双向同步，启用/停用都能点）。
+         名称 / 标签 / 描述同排（与专家面板一致）：名称与标签不收缩，描述占满剩余并省略。 -->
+    <div
+      v-else
+      v-for="item in rows"
+      :key="item.key"
+      class="plus-list-item"
+      :class="{
+        selectable: selectable,
+        selected: rowSelected(item),
+        'is-disabled': rowDisabled(item),
+        'connector-row': isConnector,
+      }"
+      :role="selectable ? 'button' : null"
+      :tabindex="selectable && !rowDisabled(item) ? 0 : null"
+      :title="rowTitle(item)"
+      @click="$emit('select', item)"
+      @keydown.enter.prevent="$emit('select', item)"
+    >
+      <span class="plus-list-icon" :class="{ initial: !item.icon }">{{ item.icon || item.initial }}</span>
+      <span class="plus-list-body">
         <span class="plus-list-name">{{ item.name }}</span>
         <span v-if="item.tag" class="plus-list-tag" :class="item.tagType">{{ item.tag }}</span>
+        <span class="plus-list-desc">{{ item.desc }}</span>
       </span>
-      <span class="plus-list-desc">{{ item.desc }}</span>
-    </span>
     <!-- 连接器行：启用开关（与「专家·技能·连接器」同一份状态）；技能行：已选标记 -->
     <button
       v-if="isConnector"
@@ -76,6 +71,8 @@ export default {
     error: { type: String, default: '' },
     emptyText: { type: String, default: '暂无内容' },
     noMatch: { type: Boolean, default: false },
+    /** 有搜索词但无命中时的提示（按面板类型由父组件传入） */
+    noMatchText: { type: String, default: '未找到匹配的内容' },
     rows: { type: Array, default: () => [] },
     isConnector: { type: Boolean, default: false },
     selectable: { type: Boolean, default: false },
@@ -91,8 +88,13 @@ export default {
       return this.selectable && !item.enabled
     },
     rowTitle(item) {
-      if (!this.selectable) return ''
-      return item.enabled ? `选择「${item.name}」` : '该技能已停用'
+      // 单行布局会截断描述，悬浮时把完整描述带出来（技能行的操作提示放最前，保持可读）
+      const desc = String(item.desc || '').trim()
+      const action = this.selectable
+        ? (item.enabled ? `选择「${item.name}」` : '该技能已停用')
+        : ''
+      if (!desc) return action
+      return action ? `${action}\n${desc}` : desc
     },
     connectorOn(item) {
       return !!item && item.enabled !== false
@@ -192,7 +194,8 @@ export default {
 
 .plus-list-item {
   display: flex;
-  align-items: flex-start;
+  /* 单行布局：图标与文字垂直居中（两行布局时是 flex-start） */
+  align-items: center;
   gap: 10px;
   padding: 8px 10px;
   border-radius: 8px;
@@ -250,22 +253,19 @@ export default {
   color: var(--accent-color);
 }
 
+/* 名称 / 标签 / 描述同排：与专家面板 .plus-expert-main 同一套对齐方式。
+   name 与 tag 不收缩（名字读全），desc 吃掉剩余宽度并省略号。 */
 .plus-list-body {
   flex: 1;
   min-width: 0;
   display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.plus-list-name-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
+  align-items: baseline;
+  gap: 8px;
 }
 
 .plus-list-name {
+  flex-shrink: 0;
+  max-width: 46%;
   font-size: 13px;
   font-weight: 600;
   color: var(--text-primary);
@@ -276,6 +276,8 @@ export default {
 
 .plus-list-tag {
   flex-shrink: 0;
+  /* baseline 对齐时小标签会偏上，单独拉回垂直居中 */
+  align-self: center;
   padding: 1px 6px;
   border-radius: 5px;
   font-size: 11px;
@@ -297,15 +299,15 @@ export default {
 }
 
 .plus-list-desc {
+  flex: 1;
+  min-width: 0;
   font-size: 12px;
   line-height: 1.5;
   color: var(--text-secondary);
-  display: -webkit-box;
-  -webkit-line-clamp: 1;
-  line-clamp: 1;
-  -webkit-box-orient: vertical;
+  /* 单行：line-clamp 在 row 布局下不生效，改用 nowrap + 省略号 */
+  white-space: nowrap;
   overflow: hidden;
-  overflow-wrap: anywhere;
+  text-overflow: ellipsis;
 }
 
 .plus-list-hint {

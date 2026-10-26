@@ -2,8 +2,9 @@
   <!-- 显隐条件（!plusListLoading && !plusListError && subpanelCategory === 'experts'）
        由父组件 ChatInput.vue 在 <ExpertSubpanelList> 标签上控制，本组件只渲染列表。 -->
   <div class="plus-subpanel-list plus-experts" @scroll="$emit('scroll', $event)">
-  <!-- 上区：我的专家（仅展示「可用」状态的专家，与专家 Tab 的召唤约束一致） -->
-  <div class="plus-experts-section">
+  <!-- 上区：我的专家（仅展示「可用」状态的专家，与专家 Tab 的召唤约束一致）。
+       有搜索词时清空的区连标题一起收起，避免出现「标题 + 空白」的空壳。 -->
+  <div v-if="showMineSection" class="plus-experts-section">
     <span class="plus-experts-section-label">我的专家</span>
     <span v-if="myExperts.length" class="plus-experts-section-count">{{ myExperts.length }}</span>
   </div>
@@ -23,7 +24,7 @@
     </span>
     <span v-if="item.export_agent_id === activeExpertId" class="plus-expert-state">已选</span>
   </button>
-  <div v-if="!myExperts.length" class="plus-expert-empty">
+  <div v-if="!keyword && !myExperts.length" class="plus-expert-empty">
     <span class="plus-expert-empty-text">您还没有创建自己的专家</span>
     <button type="button" class="plus-expert-create" @click="$emit('create')">
       「去创建」
@@ -39,10 +40,10 @@
     还有 {{ myExperts.length - visibleMyExperts.length }} 位 · 点击加载
   </button>
 
-  <div class="plus-experts-divider"></div>
+  <div v-if="showMineSection && showPublicSection" class="plus-experts-divider"></div>
 
   <!-- 下区：公共（预置）专家 -->
-  <div class="plus-experts-section">
+  <div v-if="showPublicSection" class="plus-experts-section">
     <span class="plus-experts-section-label">公共专家</span>
     <span class="plus-experts-badge">预置</span>
     <span v-if="publicExperts.length" class="plus-experts-section-count">{{ publicExperts.length }}</span>
@@ -63,7 +64,11 @@
     </span>
     <span v-if="item.export_agent_id === activeExpertId" class="plus-expert-state">已选</span>
   </button>
-  <div v-if="!publicExperts.length" class="plus-list-hint">公共专家目录为空</div>
+  <div v-if="!keyword && !publicExperts.length" class="plus-list-hint">公共专家目录为空</div>
+  <!-- 搜索无命中：两区都空时给一句统一提示（有 keyword 才出现，避免和上面的空态重复） -->
+  <div v-if="keyword && !myExperts.length && !publicExperts.length" class="plus-list-hint">
+    未找到匹配的专家
+  </div>
   <button
     v-if="publicExperts.length > visiblePublicExperts.length"
     type="button"
@@ -93,8 +98,18 @@ export default {
     publicExperts: { type: Array, default: () => [] },
     visiblePublicExperts: { type: Array, default: () => [] },
     activeExpertId: { type: String, default: '' },
+    /** 当前搜索词（非空时清空的区连标题一起收起） */
+    keyword: { type: String, default: '' },
   },
   emits: ['toggle', 'more', 'create', 'scroll'],
+  computed: {
+    showMineSection() {
+      return !this.keyword || this.myExperts.length > 0
+    },
+    showPublicSection() {
+      return !this.keyword || this.publicExperts.length > 0
+    },
+  },
   methods: {
     expertAvatarChar,
     expertAvatarClass,
@@ -149,6 +164,9 @@ export default {
   align-items: center;
   gap: 10px;
   width: 100%;
+  /* 本行是 <button>，浏览器默认不继承 font-family（会退回 Arial / 宋体），
+     而连接器行是 <div> 会继承 —— 不写这一行两行文字字体就不一致。 */
+  font-family: inherit;
   /* 与技能面板 .plus-list-item 的行内边距保持一致 */
   padding: 8px 10px;
   border: 1px solid transparent;
@@ -264,5 +282,21 @@ export default {
 .plus-expert-more:hover {
   background: var(--bg-tertiary, #f1f5f9);
   color: var(--accent-color, #0ea5e9);
+}
+
+/* 空态 / 无结果提示（「公共专家目录为空」「未找到匹配的专家」）。
+   本组件的空态用的是 .plus-list-hint，但完整规则原先只写在 PlusList.vue 的
+   <style scoped> 里 —— scoped 不跨组件，所以专家面板一直吃不到，表现为
+   浏览器默认样式：左对齐、深色、无内边距。规格与连接器面板（PlusList）完全一致，
+   改一处要两处同步。 */
+.plus-list-hint {
+  padding: 16px 10px;
+  font-size: 13px;
+  color: var(--text-secondary, #64748b);
+  text-align: center;
+}
+
+.plus-list-hint.error {
+  color: #dc2626;
 }
 </style>
