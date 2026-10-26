@@ -135,6 +135,7 @@ KNOWN_SECTION_KEYS: dict[str, frozenset[str]] = {
             "base_name",
             "lookback_days",
             "start_date",
+            "start_delay_minutes",
             "interval_minutes",
             "max_inflight",
             "poll_interval_seconds",

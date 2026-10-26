@@ -226,7 +226,8 @@ knowledge:
     base_name: "报告库"  # 按这个名字找知识库，找不到才新建（新建固定为团队公共库）；base_id 为空时生效
     lookback_days: 7           # 按 publishDate 取最近 N 天
     start_date: ""             # 首次回填起始日期 YYYY-MM-DD
-    interval_minutes: 60       # 0 = 仅启动执行一次
+    start_delay_minutes: 0     # 启动后延迟多少分钟执行第一次同步（0 = 启动即执行）
+    interval_minutes: 60       # 两次同步的间隔；0 = 只执行一次（在 start_delay_minutes 之后）
     max_inflight: 10           # 同时在途（排队/解析中）文档上限
     poll_interval_seconds: 15  # 轮询在途文档解析状态的间隔（秒）
     max_attempts: 3            # 单篇文档上传/解析失败后的最大重试次数

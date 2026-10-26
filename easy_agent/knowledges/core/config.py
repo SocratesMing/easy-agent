@@ -122,6 +122,8 @@ class SourceSyncConfig(BaseModel):
     lookback_days: int = Field(default=7, ge=1, le=365)
     # 首次回填起始日期（YYYY-MM-DD）；为空时只处理 lookback 窗口
     start_date: str = ""
+    # 启动后延迟多少分钟执行第一次同步（0 = 启动即执行）
+    start_delay_minutes: int = Field(default=0, ge=0, le=1440)
     interval_minutes: int = Field(default=60, ge=0)
     max_inflight: int = Field(default=10, ge=1, le=100)
     poll_interval_seconds: float = Field(default=15.0, ge=1)

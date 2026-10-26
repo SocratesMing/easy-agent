@@ -112,6 +112,13 @@ def test_source_table_defaults_to_builtin_and_auto_creates():
     assert "%(start)s" in query and "%(end)s" in query
 
 
+def test_source_sync_start_delay_validates_non_negative():
+    assert SourceSyncConfig().start_delay_minutes == 0
+    assert SourceSyncConfig(start_delay_minutes=5).start_delay_minutes == 5
+    with pytest.raises(ValidationError):
+        SourceSyncConfig(start_delay_minutes=-1)
+
+
 def test_source_table_can_be_overridden_and_validated():
     config = SourceSyncConfig(mysql={"table": "my_reports"})
     table, create = resolve_table_name(config)

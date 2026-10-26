@@ -952,7 +952,12 @@ async def startup_source_sync(app) -> None:
 
 
 async def _sync_loop(app) -> None:
+    sync_config = app.state.knowledge_config.source_sync
+    delay = int(getattr(sync_config, "start_delay_minutes", 0))
     try:
+        if delay > 0:
+            logger.info("研报 SQL 同步将在 %s 分钟后首次执行", delay)
+            await asyncio.sleep(delay * 60)
         while True:
             try:
                 await run_source_sync(app)
@@ -960,7 +965,7 @@ async def _sync_loop(app) -> None:
                 raise
             except Exception as exc:  # noqa: BLE001
                 logger.error("研报 SQL 同步失败: %s", exc)
-            interval = int(getattr(app.state.knowledge_config.source_sync, "interval_minutes", 0))
+            interval = int(getattr(sync_config, "interval_minutes", 0))
             if interval <= 0:
                 break
             await asyncio.sleep(interval * 60)
