@@ -17,7 +17,7 @@ from easy_agent.knowledges.runtime.source_sync import (
     date_folder_segments,
     fetch_source_rows,
     parse_publish_date,
-    resolve_source_file,
+    resolve_batchid_file,
     resolve_table_name,
     sanitize_title,
 )
@@ -108,6 +108,7 @@ def test_source_table_defaults_to_builtin_and_auto_creates():
     assert create is True
     query = build_source_query(table)
     assert "FROM `easy_agent_report`" in query
+    assert "batchid" in query and "attacUrl" not in query
     assert "%(start)s" in query and "%(end)s" in query
 
 
@@ -120,26 +121,23 @@ def test_source_table_can_be_overridden_and_validated():
         resolve_table_name(SourceSyncConfig(mysql={"table": "bad-name;"}))
 
 
-def test_resolve_source_file_requires_absolute_without_root(tmp_path):
-    config = SourceSyncConfig()
-    absolute = tmp_path / "a.pdf"
-    assert resolve_source_file(config, str(absolute)) == absolute
-    assert resolve_source_file(config, "relative/a.pdf") is None
-    assert resolve_source_file(config, "") is None
-
-
-def test_resolve_source_file_remaps_to_configured_root(tmp_path):
+def test_resolve_batchid_file_matches_disk_name(tmp_path):
     config = SourceSyncConfig(file_root=str(tmp_path))
-    # 数据库存的是别处的绝对路径：只取文件名落到配置根目录
-    assert resolve_source_file(config, str(tmp_path / "other" / "a.pdf")) == tmp_path / "a.pdf"
-    # 相对路径：保留相对目录
-    assert resolve_source_file(config, "sub/a.pdf") == tmp_path / "sub" / "a.pdf"
+    # batchid 自带扩展名：直接命中
+    (tmp_path / "batch-001.pdf").write_bytes(b"x")
+    assert resolve_batchid_file(config, "batch-001.pdf") == tmp_path / "batch-001.pdf"
+    # batchid 不带扩展名：补扩展名匹配
+    assert resolve_batchid_file(config, "batch-001") == tmp_path / "batch-001.pdf"
+    # batchid 唯一：匹配不到就是磁盘上没有，不用其它字段兜底
+    assert resolve_batchid_file(config, "batch-404") is None
+    assert resolve_batchid_file(config, "") is None
+    assert resolve_batchid_file(SourceSyncConfig(), "batch-001") is None
 
 
-def test_resolve_source_file_rejects_relative_root(tmp_path):
+def test_resolve_batchid_file_rejects_relative_root(tmp_path):
     config = SourceSyncConfig(file_root="relative/root")
     with pytest.raises(RuntimeError):
-        resolve_source_file(config, str(tmp_path / "a.pdf"))
+        resolve_batchid_file(config, "batch-001")
 
 
 def test_fetch_source_rows_requires_host_and_database():
@@ -273,9 +271,11 @@ def test_source_record_unique_allows_reupload_into_new_base(db):
         status="pending",
         source="source_sync",
         source_record_id="101",
+        batch_id="b-101",
         publish_date="2026-10-01",
     )
     assert str(new_doc["base_id"]) == str(new_base["id"])
+    assert new_doc["batch_id"] == "b-101"
     assert (
         repo.find_document_by_source_record(
             "source_sync", "101", base_id=str(new_base["id"])

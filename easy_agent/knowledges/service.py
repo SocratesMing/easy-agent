@@ -327,6 +327,7 @@ class KnowledgeService:
         for key in (
             "source",
             "source_record_id",
+            "batch_id",
             "report_title",
             "report_tag",
             "report_second_source",
@@ -499,6 +500,7 @@ class KnowledgeService:
             updated_at=document["updated_at"],
             source=document.get("source"),
             source_record_id=document.get("source_record_id"),
+            batch_id=document.get("batch_id"),
             report_title=document.get("report_title"),
             report_tag=document.get("report_tag"),
             report_second_source=document.get("report_second_source"),
@@ -1745,6 +1747,7 @@ class KnowledgeService:
             status=DocumentStatus.PENDING.value,
             source=metadata.source if metadata else None,
             source_record_id=metadata.source_record_id if metadata else None,
+            batch_id=metadata.batch_id if metadata else None,
             report_title=metadata.report_title if metadata else None,
             report_tag=metadata.report_tag if metadata else None,
             report_second_source=metadata.report_second_source if metadata else None,

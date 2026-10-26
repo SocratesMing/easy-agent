@@ -114,8 +114,7 @@ class SourceSyncConfig(BaseModel):
 
     enabled: bool = False
     owner_username: str = "admin"
-    # 文件根目录（绝对路径）：配置后忽略 attacUrl 的目录部分，只取其文件名拼到该根目录；
-    # 留空则要求 attacUrl 本身是绝对路径。
+    # 磁盘文件根目录（绝对路径，必填）：按文档 SQL 的 batchid 在该目录下匹配同名文件
     file_root: str = ""
     # 指定既有知识库 ID（可选）：同名库有多个时用来锁定具体目标；留空则按 base_name 查找
     base_id: str = ""

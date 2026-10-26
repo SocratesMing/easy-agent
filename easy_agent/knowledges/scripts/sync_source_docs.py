@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -28,7 +29,11 @@ from easy_agent.knowledges.core.original_store import LocalOriginalStore  # noqa
 from easy_agent.knowledges.ragflow import RagflowClient  # noqa: E402
 from easy_agent.knowledges.runtime.source_sync import run_source_sync  # noqa: E402
 from easy_agent.utils.env_loader import load_project_env  # noqa: E402
-
+from easy_agent.bootstrap.initialization import (  # noqa: E402
+    get_runtime_initialization,
+    initialize_runtime,
+)
+import easy_agent.knowledges.personnel  # noqa: E402,F401 - 注册默认管理员策略
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="文档 SQL → 知识库增量同步")
@@ -56,7 +61,9 @@ async def _run(args: argparse.Namespace) -> int:
         print("文档同步未启用（knowledge.source_sync.enabled=false），退出")
         return 2
 
-    db = init_database()
+    runtime = get_runtime_initialization()
+    db_config = runtime.config.database.model_dump() if runtime.config else None
+    db = init_database(db_config)
     ragflow = RagflowClient(config.base_url, config.api_key.get_secret_value())
     store = LocalOriginalStore()
     app = SimpleNamespace(
@@ -78,6 +85,8 @@ async def _run(args: argparse.Namespace) -> int:
 
 
 def main() -> int:
+    os.chdir(PROJECT_ROOT)
+    initialize_runtime()
     return asyncio.run(_run(_parse_args()))
 
 

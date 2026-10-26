@@ -20,7 +20,7 @@ _DOCUMENT_UPDATE_FIELDS = {
     "remote_document_id", "folder_id", "status", "progress", "error_code",
     "error_message", "deleted_at", "deleted_by",
     # 业务元数据与解析计时
-    "source", "source_record_id", "report_title", "report_tag",
+    "source", "source_record_id", "batch_id", "report_title", "report_tag",
     "report_second_source", "publish_date",
     "parse_started_at",
 }
@@ -486,6 +486,7 @@ class KnowledgeRepository:
         document_id: str | None = None,
         source: str | None = None,
         source_record_id: str | None = None,
+        batch_id: str | None = None,
         report_title: str | None = None,
         report_tag: str | None = None,
         report_second_source: str | None = None,
@@ -502,15 +503,15 @@ class KnowledgeRepository:
                     (id, remote_document_id, base_id, folder_id, name,
                      content_type, size_bytes, status, progress, error_code,
                      error_message, created_by, created_at, updated_at,
-                     source, source_record_id, report_title, report_tag,
+                     source, source_record_id, batch_id, report_title, report_tag,
                      report_second_source, publish_date)
                 VALUES (?, NULL, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?, ?,
-                        ?, ?, ?, ?, ?, ?)
+                        ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     document_id, base_id, folder_id, name, content_type,
                     size_bytes, status, created_by, timestamp, timestamp,
-                    source, source_record_id, report_title, report_tag,
+                    source, source_record_id, batch_id, report_title, report_tag,
                     report_second_source, publish_date,
                 ),
             )

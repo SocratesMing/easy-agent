@@ -328,6 +328,7 @@ class DocumentSummary(ContractModel):
     # 业务元数据（文档 SQL 同步写入）
     source: str | None = None
     source_record_id: str | None = None
+    batch_id: str | None = None
     report_title: str | None = None
     report_tag: str | None = None
     report_second_source: str | None = None
@@ -440,6 +441,7 @@ class DocumentMetadata(ContractModel):
 
     source: str = Field(default="source_sync", max_length=127)
     source_record_id: str = Field(min_length=1, max_length=255)
+    batch_id: str = Field(default="", max_length=255)
     report_title: str = Field(default="", max_length=255)
     report_tag: str = Field(default="", max_length=127)
     report_second_source: str = Field(default="", max_length=127)

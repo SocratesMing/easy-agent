@@ -221,7 +221,7 @@ knowledge:
   source_sync:
     enabled: ${KNOWLEDGE_SOURCE_SYNC_ENABLED:-false}
     owner_username: "admin"     # 入库归属用户（需已存在，以该用户身份上传并授权）
-    file_root: "${SOURCE_SYNC_FILE_ROOT:-}"  # 文件根目录（绝对路径）；留空则 attacUrl 必须是绝对路径
+    file_root: "${SOURCE_SYNC_FILE_ROOT:-}"  # 磁盘文件根目录（绝对路径，必填）：按文档 SQL 的 batchid 在此目录下匹配同名文件
     base_id: ""                # 精确指定入库的知识库 ID（同名库有多个时用它锁定）；留空则按 base_name 查找/新建
     base_name: "报告库"  # 按这个名字找知识库，找不到才新建（新建固定为团队公共库）；base_id 为空时生效
     lookback_days: 7           # 按 publishDate 取最近 N 天

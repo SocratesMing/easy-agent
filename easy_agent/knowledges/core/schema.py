@@ -45,6 +45,7 @@ _DOCUMENT_P0_COLUMNS = (
     # 业务元数据（文档 SQL 批量同步写入；检索时作为硬过滤条件）
     ("source", "VARCHAR(127) DEFAULT NULL"),
     ("source_record_id", "VARCHAR(255) DEFAULT NULL"),
+    ("batch_id", "VARCHAR(255) DEFAULT NULL"),
     ("report_title", "VARCHAR(255) DEFAULT NULL"),
     ("report_tag", "VARCHAR(127) DEFAULT NULL"),
     ("report_second_source", "VARCHAR(127) DEFAULT NULL"),

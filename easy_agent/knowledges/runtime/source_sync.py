@@ -2,7 +2,8 @@
 
 流程：
 1. 从外部 MySQL（文档 SQL）按 ``publishDate`` 取最近窗口内的记录；
-2. ``attacUrl``（磁盘绝对路径）定位文件，按 ``report_title_id.扩展名`` 生成上传名；
+2. 按 ``batchid``（与磁盘文件名相同）在 ``file_root`` 下匹配文件，
+   生成 ``report_title_id.扩展名`` 的上传名；
 3. 按 ``publish_date`` 在知识库内 find-or-create 年/月/日 三级目录；
 4. 调用 ``KnowledgeService.upload_document`` 入库，写入业务元数据；
 5. 用 ``knowledge_source_sync_items`` 台账 + ``knowledge_documents`` 幂等键做差集，
@@ -76,12 +77,14 @@ _TABLE_NAME_RE = re.compile(r"^[A-Za-z0-9_]{1,64}$")
 _SOURCE_COLUMNS = {
     "record_id": "id",
     "publish_date": "publishDate",
-    "file_path": "attacUrl",
+    "batch_id": "batchid",
     "report_title": "reportTile",
     "report_tag": "reportTag",
     "report_second_source": "reportSecondSource",
 }
-_SOURCE_SELECT = "id, publishDate, attacUrl, reportTile, reportTag, reportSecondSource"
+_SOURCE_SELECT = "id, publishDate, batchid, reportTile, reportTag, reportSecondSource"
+# 按 batchid 匹配文件名时尝试的扩展名（表里 batchid 与磁盘文件名相同）
+_FILE_EXTENSIONS = ("pdf", "doc", "docx", "txt", "md", "xls", "xlsx", "csv", "ppt", "pptx")
 
 _CREATE_DEFAULT_TABLE_SQL = f"""
 CREATE TABLE IF NOT EXISTS `{_DEFAULT_SOURCE_TABLE}` (
@@ -188,26 +191,33 @@ def build_upload_name(title: Any, record_id: str, file_path: str) -> str:
     return f"{stem}{extension}"
 
 
-def resolve_source_file(
-    sync_config: SourceSyncConfig, raw_path: Any
+def resolve_batchid_file(
+    sync_config: SourceSyncConfig, batch_id: Any
 ) -> Path | None:
-    """把 attacUrl 解析为磁盘路径。
+    """按文档 SQL 的 ``batchid`` 匹配 ``file_root`` 下的磁盘文件。
 
-    - 配置了 ``file_root``：忽略 attacUrl 的目录部分，只取文件名拼到 file_root；
-      若 attacUrl 本身是相对路径，则保留其相对目录。
-    - 未配置 ``file_root``：attacUrl 必须是绝对路径，否则返回 None。
+    文件名包含 batchid 即可（忽略大小写），兼容 ``xxx_{batchid}.pdf``
+    这类带前缀/后缀的命名；文件名完全等于 batchid 的优先命中。
     """
-    raw = str(raw_path or "").strip()
-    if not raw:
-        return None
-    path = Path(raw)
+    raw = str(batch_id or "").strip()
     root = sync_config.file_root.strip()
-    if root:
-        base = Path(root)
-        if not base.is_absolute():
-            raise RuntimeError("source_sync.file_root 必须是绝对路径")
-        return base / (path.name if path.is_absolute() else path)
-    return path if path.is_absolute() else None
+    if not raw or not root:
+        return None
+    base = Path(root)
+    if not base.is_absolute():
+        raise RuntimeError("source_sync.file_root 必须是绝对路径")
+
+    target = raw.casefold()
+    contains_hit: Path | None = None
+    for entry in base.iterdir():
+        if not entry.is_file():
+            continue
+        name = entry.name.casefold()
+        if name == target or Path(name).stem == target:
+            return entry
+        if contains_hit is None and target in name:
+            contains_hit = entry
+    return contains_hit
 
 
 def date_folder_segments(publish_date: str) -> list[str]:
@@ -408,7 +418,7 @@ class SourceSyncEngine:
         publish_date = parse_publish_date(
             _row_value(row, columns["publish_date"])
         )
-        file_path = str(_row_value(row, columns["file_path"]) or "").strip()
+        batch_id = str(_row_value(row, columns["batch_id"]) or "").strip()
         title = _row_value(row, columns["report_title"], "reportTitle")
         report_tag = str(
             _row_value(row, columns["report_tag"]) or ""
@@ -453,40 +463,36 @@ class SourceSyncEngine:
             )
             logger.warning("文档同步失败：publishDate 无法解析 | id=%s", record_id)
             return None
-        source_file = resolve_source_file(self.sync_config, file_path)
+        # 文件定位：只用文档 SQL 的 batchid 在 file_root 下匹配同名文件，
+        # batchid 唯一，匹配不到即磁盘没有该文件，不做其它字段兜底。
+        source_file = resolve_batchid_file(self.sync_config, batch_id)
         if source_file is None:
+            reason = (
+                "未配置 source_sync.file_root，无法按 batchid 匹配磁盘文件"
+                if not self.sync_config.file_root.strip()
+                else f"batchid 未匹配到磁盘文件: {batch_id or '-'}"
+            )
             await run_in_threadpool(
                 self.repository.update_sync_item,
                 item_id,
                 status="failed",
                 attempts=attempts + 1,
-                last_error="attacUrl 为空或不是绝对路径（且未配置 file_root）",
+                last_error=reason,
             )
             logger.warning(
-                "文档同步失败：attacUrl 非绝对路径且未配置 file_root | id=%s path=%s",
-                record_id,
-                file_path,
+                "文档同步失败：%s | id=%s batchid=%s", reason, record_id, batch_id
             )
-            return None
-        if not source_file.is_file():
-            await run_in_threadpool(
-                self.repository.update_sync_item,
-                item_id,
-                status="failed",
-                attempts=attempts + 1,
-                last_error=f"文件不存在: {file_path}",
-            )
-            logger.warning("文档同步失败：文件不存在 | id=%s path=%s", record_id, file_path)
             return None
 
         folder_id = await self.ensure_date_folder(base_id, publish_date)
-        upload_name = build_upload_name(title, record_id, file_path)
+        upload_name = build_upload_name(title, record_id, str(source_file))
         content_type = (
             mimetypes.guess_type(upload_name)[0] or "application/octet-stream"
         )
         metadata = DocumentMetadata(
             source=self.source,
             source_record_id=record_id,
+            batch_id=batch_id,
             report_title=sanitize_title(title),
             report_tag=report_tag,
             report_second_source=second_source,
@@ -524,7 +530,9 @@ class SourceSyncEngine:
                 attempts=attempts + 1,
                 last_error=str(exc)[:1000],
             )
-            logger.error("文档同步失败 | id=%s path=%s err=%s", record_id, file_path, exc)
+            logger.error(
+                "文档同步失败 | id=%s file=%s err=%s", record_id, source_file, exc
+            )
             return None
 
         document = accepted.document
@@ -534,6 +542,7 @@ class SourceSyncEngine:
             document_id=str(document.id),
             status="parsing",
             publish_date=publish_date,
+            last_error=None,
         )
         logger.info(
             "文档同步已提交解析 | id=%s name=%s date=%s doc=%s",
@@ -817,16 +826,16 @@ class SourceSyncEngine:
                 if dry_run:
                     stats["planned"] += 1
                     logger.info(
-                        "[dry-run] 待入库 | id=%s date=%s file=%s name=%s",
+                        "[dry-run] 待入库 | id=%s date=%s batchid=%s name=%s",
                         record_id,
                         parse_publish_date(
                             _row_value(row, _SOURCE_COLUMNS["publish_date"])
                         ),
-                        _row_value(row, _SOURCE_COLUMNS["file_path"]),
+                        _row_value(row, _SOURCE_COLUMNS["batch_id"]),
                         build_upload_name(
                             _row_value(row, _SOURCE_COLUMNS["report_title"]),
                             record_id,
-                            str(_row_value(row, _SOURCE_COLUMNS["file_path"]) or ""),
+                            str(_row_value(row, _SOURCE_COLUMNS["batch_id"]) or ""),
                         ),
                     )
                     continue
@@ -932,6 +941,11 @@ async def startup_source_sync(app) -> None:
             "研报 SQL 配置不完整：mysql.host 与 mysql.database 均为必填，跳过同步"
         )
         return
+    if not sync_config.file_root.strip():
+        logger.error(
+            "研报 SQL 配置不完整：source_sync.file_root 必填（按 batchid 匹配磁盘文件），跳过同步"
+        )
+        return
     task = asyncio.create_task(_sync_loop(app), name="source-doc-sync")
     app.state.source_sync_task = task
     logger.info("研报 SQL 同步任务已调度（后台执行）")
@@ -971,7 +985,7 @@ __all__ = [
     "build_upload_name",
     "fetch_source_rows",
     "parse_publish_date",
-    "resolve_source_file",
+    "resolve_batchid_file",
     "resolve_table_name",
     "run_source_sync",
     "sanitize_title",
