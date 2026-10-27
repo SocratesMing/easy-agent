@@ -3,7 +3,7 @@ import { parseMCPResult } from '../../../utils/mcpResult.js'
 import { createSession, listSessions, getChatHistory, deleteSession, sendMessage, resumeStream, renameSession, togglePinSession, attachStream } from '../../../api/chat.js'
 import { deleteFile, getSessionGeneratedFiles } from '../../../api/files.js'
 import { authFetch } from '../../../api/auth.js'
-import { chatBus, chatStore } from '../store/chatStore.js'
+import { chatBus, chatStore, syncPendingApprovalFlag as setPendingApprovalFlag } from '../store/chatStore.js'
 import { createStreamChunkHandler as createChunkHandler } from '../services/chunkHandler.js'
 import { applyApprovalRequests, buildResumeDecisions, markApprovalDecision, unmatchedApprovalRequests } from '../../../utils/hitlApproval.js'
 
@@ -185,11 +185,7 @@ export default {
     },
     // 待审批产生/消失时增删列表徽标标记（store 共享，主面板与侧边栏同时可见）
     syncPendingApprovalFlag(sessionId, hasPending) {
-      if (!sessionId) return
-      const list = this.pendingApprovalSessions
-      const has = list.includes(sessionId)
-      if (hasPending && !has) list.push(sessionId)
-      else if (!hasPending && has) list.splice(list.indexOf(sessionId), 1)
+      setPendingApprovalFlag(sessionId, hasPending)
     },
     // 以本地消息缓存（当前界面或会话级缓存）为准重算某会话的待审批状态。
     // 审批决策后、服务端历史回填后调用，保证徽标随状态流转及时消失。

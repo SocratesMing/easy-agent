@@ -78,7 +78,7 @@
               <span v-if="streamingSessionIds.includes(session.session_id)" class="streaming-badge" title="进行中">
                 <span class="streaming-dot"></span>
               </span>
-              <span v-if="pendingApprovalSessionIds.includes(session.session_id)" class="approval-flag" title="该会话存在待审批操作，需处理后才能继续">待审批</span>
+              <span v-if="session.pending_approval || pendingApprovalSessionIds.includes(session.session_id)" class="approval-flag" title="该会话存在待审批操作，需处理后才能继续">待审批</span>
             </div>
           </div>
           <!-- 最后活跃时间：常显，鼠标悬浮时让位给操作按钮 -->

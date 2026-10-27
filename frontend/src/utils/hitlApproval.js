@@ -55,9 +55,8 @@ export function applyApprovalRequests (blocks, actionRequests) {
       continue
     }
     taken.add(idx)
-    const blk = blocks[idx]
-    blk.pending_approval = true
-    blk.approval_status = 'pending'
+    // 换成新对象：调用方把 blocks 铺进新消息后，卡片立刻带上待审批字段。
+    const blk = { ...blocks[idx], pending_approval: true, approval_status: 'pending' }
     if (ar.tool_call_id) {
       blk.tool_call_id = ar.tool_call_id
       blk.id = ar.tool_call_id
@@ -66,6 +65,7 @@ export function applyApprovalRequests (blocks, actionRequests) {
     // 后端下发的可选项：删除类只有 approve/reject，卡片据此隐藏「编辑参数」
     if (Array.isArray(ar.allowed_decisions)) blk.allowed_decisions = ar.allowed_decisions
     if (ar.interrupt_id) blk.hitl_interrupt_id = ar.interrupt_id
+    blocks[idx] = blk
   }
   return unmatched
 }

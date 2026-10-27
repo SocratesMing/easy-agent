@@ -89,16 +89,8 @@
       <pre v-else-if="card.card === 'search'" class="tcc-code">{{ card.raw }}</pre>
       <pre v-else-if="card.card === 'terminal' || card.card === 'read'" class="tcc-code">{{ card.body || '(无内容)' }}</pre>
 
-      <template v-else>
-        <div v-if="card.args && Object.keys(card.args).length" class="tcc-section">
-          <div class="tcc-label">参数</div>
-          <pre class="tcc-code">{{ prettyArgs }}</pre>
-        </div>
-        <div v-if="card.body" class="tcc-section">
-          <div class="tcc-label">结果</div>
-          <pre class="tcc-code">{{ card.body }}</pre>
-        </div>
-      </template>
+      <!-- 参数已在标题的 meta 里，展开只看结果 -->
+      <pre v-else class="tcc-code">{{ card.body || '(无内容)' }}</pre>
     </div>
   </div>
 </template>
@@ -139,6 +131,14 @@ const kindLabel = computed(() => ({
 // 参数流式写入期间自动展开，让用户实时看到正在生成的文件内容；
 // 一旦收到完整参数（streaming 转为 false）即释放自动展开，尊重用户手动折叠。
 const expanded = ref(props.pendingApproval)
+let _streamOpened = false
+// 待审批可能比卡片首帧晚到。转为待审批时立刻展开，且不被流式结束收回。
+watch(() => props.pendingApproval, (v) => {
+  if (v) {
+    expanded.value = true
+    _streamOpened = false
+  }
+}, { immediate: true })
 // MCP 数据类工具返回 chart 时自动展开，让图表直接出现在对话里
 watch(() => card.value, (value) => {
   if (value && value.card === 'chart' && !props.pendingApproval) expanded.value = true
@@ -172,8 +172,12 @@ function submitEdit() {
   editing.value = false
   emit('edit', parsed)
 }
-let _streamOpened = false
 watch(() => props.streaming, (v) => {
+  if (props.pendingApproval) {
+    expanded.value = true
+    _streamOpened = false
+    return
+  }
   if (v && !expanded.value) {
     expanded.value = true
     _streamOpened = true
@@ -205,13 +209,6 @@ const canEditDecision = computed(() => {
   return props.allowedDecisions.includes('edit')
 })
 
-const prettyArgs = computed(() => {
-  try {
-    return JSON.stringify(props.args || {}, null, 2).slice(0, 1000)
-  } catch (_) {
-    return String(props.args)
-  }
-})
 </script>
 
 <style scoped>
@@ -251,7 +248,15 @@ const prettyArgs = computed(() => {
 }
 .tcc-title { font-weight: 500; color: var(--text-secondary, #64748b); flex-shrink: 0; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tcc-meta { color: var(--text-secondary, #64748b); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
-.tcc-status { flex-shrink: 0; font-size: 12px; color: var(--text-secondary, #64748b); }
+.tcc-status {
+  margin-left: auto;
+  flex-shrink: 0;
+  min-width: 4.5em;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+  color: var(--text-secondary, #64748b);
+}
 .tcc-status.err { color: #dc2626; }
 .tcc-mark { margin-right: 2px; }
 .tcc-arrow { width: 14px; height: 14px; flex-shrink: 0; color: var(--text-secondary, #94a3b8); transition: transform 0.15s ease; }
