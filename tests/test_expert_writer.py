@@ -60,7 +60,7 @@ def env(db, monkeypatch, tmp_path):
     monkeypatch.setattr(
         Config,
         "get_user_workspace_dir",
-        staticmethod(lambda username: tmp_path / "users" / username),
+        staticmethod(lambda username, config=None: tmp_path / "users" / username),
     )
     monkeypatch.setattr(writer, "get_database", lambda: db)
     monkeypatch.setattr(
@@ -598,3 +598,68 @@ def test_session_edit_target_bind_override_and_clear(client):
     # 空值不写入
     am.set_session_edit_target("sess-edit-bind2", "  ")
     assert am.get_session_edit_target("sess-edit-bind2") == ""
+
+
+# ── 12. 专家绑定技能包（export_required_skills）────────────────────────
+
+
+def _user_skill(env, name: str, *, description: str = "demo") -> None:
+    """在（已重定向的）用户技能库里造一个技能包。"""
+    root = env.tmp / "users" / "testuser" / "skills"
+    (root / name).mkdir(parents=True, exist_ok=True)
+    (root / name / "SKILL.md").write_text(
+        f"---\nname: {name}\ndescription: {description}\n---\nbody of {name}\n",
+        encoding="utf-8",
+    )
+
+
+def test_create_binds_selected_skills(env):
+    """创建专家时，输入框选中的技能包落进 export_required_skills；元技能不落库。"""
+    _user_skill(env, "g7-rates-research")
+    _user_skill(env, "docx")
+
+    out = _create(_make_tool(turn_skills={"s1": ["expert-creator", "g7-rates-research", "docx"]}))
+    assert "绑定技能包" in out
+    assert "g7-rates-research" in out
+    assert "expert-creator" not in out
+
+    record = ExpertStore(env.db).get(_expert_id_from(out))
+    assert record["export_required_skills"] == ["g7-rates-research", "docx"]
+
+
+def test_create_without_selection_binds_nothing(env):
+    """没选技能包 = 不绑定（对话时技能库全量可见）。"""
+    out = _create(_make_tool())
+    record = ExpertStore(env.db).get(_expert_id_from(out))
+
+    assert record["export_required_skills"] == []
+    assert "未绑定技能包" in out
+
+
+def test_update_replaces_skills_and_keeps_when_not_selected(env):
+    """修改专家：本轮选了就整份替换；没选则沿用原绑定。"""
+    _user_skill(env, "g7-rates-research")
+    _user_skill(env, "docx")
+
+    tool = _make_tool(turn_skills={"s1": ["g7-rates-research"]})
+    expert_id = _expert_id_from(_create(tool))
+    assert ExpertStore(env.db).get(expert_id)["export_required_skills"] == ["g7-rates-research"]
+
+    # 没选技能包的修改：保留原绑定（避免"只想改描述"把技能清空）
+    tool_no_skill = _make_tool()
+    _call(tool_no_skill, action="update", expert_agent_id=expert_id, **FAKE_CONFIG)
+    assert ExpertStore(env.db).get(expert_id)["export_required_skills"] == ["g7-rates-research"]
+
+    # 重新选择：整份替换
+    tool_new = _make_tool(turn_skills={"s1": ["docx"]})
+    _call(tool_new, action="update", expert_agent_id=expert_id, **FAKE_CONFIG)
+    assert ExpertStore(env.db).get(expert_id)["export_required_skills"] == ["docx"]
+
+
+def test_create_drops_missing_skill(env):
+    """选中的技能包已被删除 → 不写入专家绑定（记 WARNING）。"""
+    _user_skill(env, "docx")
+
+    out = _create(_make_tool(turn_skills={"s1": ["deleted-skill", "docx"]}))
+
+    assert ExpertStore(env.db).get(_expert_id_from(out))["export_required_skills"] == ["docx"]

@@ -178,6 +178,112 @@ def test_add_expert_missing_name_400(client, fake_llm):
     assert "名称" in resp.json()["detail"]
 
 
+# ── 技能包绑定（export_required_skills）────────────────────────────────
+
+
+@pytest.fixture()
+def fake_skills(monkeypatch):
+    """把技能解析打桩成两个"已存在"的技能包，避免依赖真实技能目录。"""
+    monkeypatch.setattr(
+        skill_library,
+        "find_user_skill",
+        lambda username, name: (
+            {"dir_name": name, "enabled": True}
+            if name in {"factor-creator", "docx"}
+            else None
+        ),
+    )
+    monkeypatch.setattr(skill_library, "resolve_skill_ref", lambda name: None)
+
+
+def test_add_expert_persists_selected_skills(client, fake_llm, fake_skills, db):
+    """创建专家时选定的技能包写进 export_required_skills，详情接口原样回读。"""
+    resp = client.post(
+        "/agent/add",
+        json={
+            "type": "agent",
+            "name_cn": "因子专家",
+            "prompt": "帮我创建因子专家",
+            "required_skills": ["factor-creator", "docx"],
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    agent_id = resp.json()["export_agent_id"]
+    assert resp.json()["export_required_skills"] == ["factor-creator", "docx"]
+
+    detail = client.get("/agent/list").json()
+    assert detail["items"][0]["export_required_skills"] == ["factor-creator", "docx"]
+
+
+def test_add_expert_without_skills_binds_nothing(client, fake_llm, fake_skills, db):
+    """一个都不选 = 不写绑定（对话时技能库全量可见）。"""
+    resp = _add(client, name="空绑定专家")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["export_required_skills"] == []
+
+
+def test_add_expert_drops_unknown_skills(client, fake_llm, fake_skills, db):
+    """不存在的技能包在保存时被剔除，只落真实存在的目录名。"""
+    resp = client.post(
+        "/agent/add",
+        json={
+            "type": "agent",
+            "name_cn": "含脏数据专家",
+            "prompt": "描述",
+            "required_skills": ["factor-creator", "已删除的技能"],
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["export_required_skills"] == ["factor-creator"]
+
+
+def test_update_expert_replaces_skills(client, fake_llm, fake_skills, db):
+    created = client.post(
+        "/agent/add",
+        json={
+            "type": "agent",
+            "name_cn": "换技能专家",
+            "prompt": "描述",
+            "required_skills": ["factor-creator"],
+        },
+    ).json()
+
+    resp = client.post(
+        "/agent/update",
+        json={"export_agent_id": created["export_agent_id"], "required_skills": ["docx"]},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["export_required_skills"] == ["docx"]
+
+
+def test_update_expert_keeps_skills_when_not_passed(client, fake_llm, fake_skills, db):
+    """只改描述、不传 required_skills → 沿用原绑定（不清空）。"""
+    created = client.post(
+        "/agent/add",
+        json={
+            "type": "agent",
+            "name_cn": "保留技能专家",
+            "prompt": "原描述",
+            "required_skills": ["factor-creator"],
+        },
+    ).json()
+
+    resp = client.post(
+        "/agent/update",
+        json={"export_agent_id": created["export_agent_id"], "prompt": "新描述"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["export_required_skills"] == ["factor-creator"]
+
+    # 显式传空数组 = 解绑 → 回到全量可见
+    cleared = client.post(
+        "/agent/update",
+        json={"export_agent_id": created["export_agent_id"], "required_skills": []},
+    )
+    assert cleared.status_code == 200, cleared.text
+    assert cleared.json()["export_required_skills"] == []
+
+
 def test_add_expert_missing_prompt_400(client, fake_llm):
     resp = client.post("/agent/add", json={"type": "agent", "name_cn": "专家", "prompt": ""})
     assert resp.status_code == 400

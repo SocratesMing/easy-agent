@@ -263,6 +263,18 @@
             <span v-for="tag in skillTagsOf(detailItem)" :key="tag" class="skill-tag">{{ tag }}</span>
           </div>
 
+          <!-- 绑定技能包（export_required_skills）：真实技能目录名，对话时只挂这些。
+               与上面的「技能标签」（展示用中文短标签）语义不同，故单独一段。 -->
+          <div v-if="requiredSkillsOf(detailItem).length" class="detail-section">
+            <h4 class="detail-section-title">
+              <span class="section-icon" aria-hidden="true">🔒</span> 绑定技能包
+            </h4>
+            <div class="detail-tags">
+              <span v-for="name in requiredSkillsOf(detailItem)" :key="name" class="skill-tag">{{ name }}</span>
+            </div>
+            <div class="more-row">该专家对话时只使用以上技能包（本轮另选的技能会一并加入）</div>
+          </div>
+
           <div v-if="featuresOf(detailItem).length" class="detail-section">
             <h4 class="detail-section-title">
               <span class="section-icon" aria-hidden="true">💡</span> 专家帮你做
@@ -354,19 +366,20 @@ const preparing = ref(false)
  * 「用「expert-creator」技能帮我创建/修改专家：」已经点名了技能，ChatInput
  * 只把该技能记为预选，发送时随 skills 字段交给后端激活。
  */
-function writeExpertDraft(text, skill) {
+function writeExpertDraft(text, skills) {
+  const list = (Array.isArray(skills) ? skills : [skills]).filter(Boolean)
   try {
     sessionStorage.setItem(DRAFT_KEY, text)
-    sessionStorage.setItem(
-      PENDING_SKILL_KEY,
-      JSON.stringify({
-        dir_name: CREATE_EXPERT_SKILL_DIR,
-        name: skill?.name || CREATE_EXPERT_SKILL_DIR,
+    const payload = {
+      skills: list.map((skill) => ({
+        dir_name: skill?.dir_name || skill?.name || CREATE_EXPERT_SKILL_DIR,
+        name: skill?.name || skill?.dir_name || CREATE_EXPERT_SKILL_DIR,
         icon: skill?.icon || '',
         category_id: skill?.category_id || 'default',
         insert_token: false,
-      })
-    )
+      })),
+    }
+    sessionStorage.setItem(PENDING_SKILL_KEY, JSON.stringify(payload))
   } catch (_) { /* 隐私模式等场景忽略 */ }
 }
 
@@ -410,7 +423,7 @@ async function handleCreateExpert() {
   preparing.value = true
   try {
     const skill = await ensureExpertCreatorSkill()
-    writeExpertDraft(CREATE_LEAD + '\n' + CREATE_TEMPLATE.replace('{name}', 'XX'), skill)
+    writeExpertDraft(CREATE_LEAD + '\n' + CREATE_TEMPLATE.replace('{name}', 'XX'), [skill])
     emit('create-expert')
   } finally {
     preparing.value = false
@@ -426,7 +439,11 @@ async function handleEditExpert(item) {
   preparing.value = true
   try {
     const skill = await ensureExpertCreatorSkill()
-    writeExpertDraft(buildEditTemplate(item), skill)
+    // 编辑时的技能包：expert-creator（造专家用，不落库）+ 该专家已绑定的技能包，
+    // 都以「已选胶囊」形式回填——用户可增删，发送时随 skills 字段交给后端，
+    // 保存时由 save_expert 写入 export_required_skills。
+    const bound = requiredSkillsOf(item).map((dir) => ({ dir_name: dir, name: dir }))
+    writeExpertDraft(buildEditTemplate(item), [skill, ...bound])
     // 待修改专家绑定：ID 不进消息正文，由 ChatInput 消费后随请求的
     // pending_expert_id 字段上行（后端做归属校验，只接受本人创建的专家）
     try {
@@ -448,6 +465,7 @@ async function handleEditExpert(item) {
 function buildEditTemplate(item) {
   const name = String(item.export_name_cn || '').trim()
   const tags = skillTagsOf(item).join('、')
+  const packages = requiredSkillsOf(item).join('、')
   const desc = String(item.export_description || '').trim() || '（暂无）'
   // 注意：**不要把专家 ID 写进模板**——ID 由系统经 pending_expert_id 字段绑定到
   // 会话（见 handleEditExpert），消息体里出现 ID 可被用户任意修改。
@@ -456,8 +474,10 @@ function buildEditTemplate(item) {
     `【专家名称】${name}\n` +
     `【现有功能描述】${desc}\n` +
     `【现有技能标签】${tags || '（暂无）'}\n` +
+    `【现有绑定技能包】${packages || '（未绑定 → 技能库全量可见）'}\n` +
     `【原始需求】${clip(item.export_prompt, 800) || '（未记录）'}\n` +
-    '\n【我要修改的地方】请在这里补充要调整的内容（例如：更侧重城投债、输出必须标注数据来源）'
+    '\n【我要修改的地方】请在这里补充要调整的内容（例如：更侧重城投债、输出必须标注数据来源）\n' +
+    '（如需调整技能包，直接在输入框上方的技能胶囊里增删即可）'
   )
 }
 
@@ -612,6 +632,20 @@ function skillTagsOf(item) {
       if (Array.isArray(parsed)) return parsed.map((t) => String(t).trim()).filter(Boolean)
     } catch (_) { /* 不是 JSON，按单值处理 */ }
     return raw.split(/[,，;；\s]+/).filter(Boolean)
+  }
+  return []
+}
+
+/** 绑定技能包：export_required_skills（真实技能目录名，对话时的技能作用域） */
+function requiredSkillsOf(item) {
+  const raw = item?.export_required_skills
+  if (Array.isArray(raw)) return raw.map((n) => String(n).trim()).filter(Boolean)
+  if (typeof raw === 'string' && raw.trim()) {
+    try {
+      const parsed = JSON.parse(raw)
+      if (Array.isArray(parsed)) return parsed.map((n) => String(n).trim()).filter(Boolean)
+    } catch (_) { /* 旧数据不是 JSON，按单值处理 */ }
+    return [raw.trim()]
   }
   return []
 }

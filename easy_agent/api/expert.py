@@ -116,6 +116,10 @@ class ExpertAddRequest(BaseModel):
     type: str = Field(default="agent", description="组装标识：agent=创建专家")
     session_id: Optional[str] = Field(default=None, description="创建该专家的会话（溯源用）")
     model: Optional[str] = Field(default=None, description="用于生成配置的模型（config.models 的 key）")
+    required_skills: Optional[list[str]] = Field(
+        default=None,
+        description="专家绑定的技能包目录名（用户在输入框选定的技能）；不传 = 不绑定（对话时技能库全量可见）",
+    )
 
 
 class ExpertUpdateRequest(BaseModel):
@@ -129,6 +133,10 @@ class ExpertUpdateRequest(BaseModel):
     prompt: Optional[str] = Field(default=None, description="专家描述（不传则沿用）")
     modify_type: str = Field(default="edit", description="修改类型标识：edit=编辑")
     model: Optional[str] = Field(default=None, description="用于生成配置的模型")
+    required_skills: Optional[list[str]] = Field(
+        default=None,
+        description="专家绑定的技能包目录名；不传 = 沿用原绑定（要清空传空数组）",
+    )
 
 
 class ExpertDelRequest(BaseModel):
@@ -167,6 +175,22 @@ async def add_expert(
 
     expert_agent_id, name_en = build_expert_ids(request.name_cn)
 
+    # 专家绑定的技能包（用户选择）：归一成 canonical 目录名后落库；不传 = 不绑定
+    from easy_agent.services import tool_scope
+
+    selected_skills: list[str] = []
+    if request.required_skills:
+        selected_skills, dropped = tool_scope.normalize_expert_skills(
+            username, request.required_skills, "add"
+        )
+        if dropped:
+            logger.warning(
+                "创建专家：%s 个技能包不存在，已忽略 | 用户=%s | %s",
+                len(dropped),
+                username,
+                dropped,
+            )
+
     # 先落 building 占位行：即使生成途中进程崩溃，也能查到一条记录供前端重试。
     # tag_id 不收前端传参，先置空，由大模型自动归类后回写。
     store.create(
@@ -179,6 +203,7 @@ async def add_expert(
             "export_prompt": request.prompt,
             "export_description": "",
             "export_skills_names": [],
+            "export_required_skills": selected_skills,
             "export_features_prompt": [],
             "export_file_path": "",
             "agent_status": STATUS_BUILDING,
@@ -244,6 +269,27 @@ async def update_expert(
     # 元数据（中文名/描述）随本次修改一起刷新；tag_id 不收前端传参，
     # 由 _generate_and_store 里的大模型自动归类结果覆盖。
     meta = {"export_name_cn": name_cn, "export_prompt": user_prompt}
+    if request.required_skills is not None:
+        from easy_agent.services import tool_scope
+
+        kept, dropped = tool_scope.normalize_expert_skills(
+            username, request.required_skills, "update"
+        )
+        if dropped:
+            logger.warning(
+                "修改专家：%s 个技能包不存在，已忽略 | 用户=%s | 专家=%s | %s",
+                len(dropped),
+                username,
+                request.export_agent_id,
+                dropped,
+            )
+        meta["export_required_skills"] = kept
+        logger.info(
+            "修改专家：技能包已更新 | 用户=%s | 专家=%s | %s",
+            username,
+            request.export_agent_id,
+            kept or "（清空 → 技能库全量可见）",
+        )
     store.update_fields(request.export_agent_id, meta)
 
     # 让该用户所有缓存 Agent 失效，下次请求用新版本的提示词重建

@@ -28,7 +28,7 @@ STATUS_FAILED = "failed"       # 生成失败，前端可重试
 STATUS_DISABLED = "disabled"   # 软删除
 
 # 落库时以 JSON 字符串存储的列表型字段
-_JSON_FIELDS = ("export_skills_names", "export_features_prompt")
+_JSON_FIELDS = ("export_skills_names", "export_required_skills", "export_features_prompt")
 
 # 允许被 update_fields 更新的列（白名单，避免 SQL 注入与误更新主键）
 _UPDATABLE_COLUMNS = frozenset({
@@ -39,6 +39,7 @@ _UPDATABLE_COLUMNS = frozenset({
     "export_prompt",
     "export_description",
     "export_skills_names",
+    "export_required_skills",
     "export_features_prompt",
     "export_file_path",
     "agent_status",
@@ -57,6 +58,7 @@ COLUMNS = (
     "export_prompt",
     "export_description",
     "export_skills_names",
+    "export_required_skills",
     "export_features_prompt",
     "export_file_path",
     "agent_status",

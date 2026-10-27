@@ -194,6 +194,11 @@ class EasyAgent(AgentWorkspaceMixin):
 
     EXECUTE_HITL_TOOL_DESCRIPTION = EXECUTE_HITL_TOOL_DESCRIPTION
 
+    #: 技能作用域（专家技能硬隔离）：``None`` = 全量可见（改造前行为）。
+    #: 类级默认值让「不走 __init__」的构造路径（测试里的 ``EasyAgent.__new__``、
+    #: 反序列化恢复）也能安全读到该字段，见 ``services/tool_scope.py``。
+    skill_whitelist: list[str] | None = None
+
     def __init__(
         self,
         config: Config,
@@ -209,6 +214,7 @@ class EasyAgent(AgentWorkspaceMixin):
        model_name: str | None = None,
         enable_web_search: bool = False,
         system_prompt_extra: str = "",
+        skill_whitelist: list[str] | None = None,
    ):
         """初始化 EasyAgent 实例，配置工作区隔离和运行时上下文。
 
@@ -230,10 +236,19 @@ class EasyAgent(AgentWorkspaceMixin):
             enable_web_search: 是否开启联网搜索。为 True 时在系统提示词中加入
                 联网搜索行为约束（web_search 工具本身由 agent_manager 注入，
                 仅在 web_search 配置了 api_key 时才为 True）。
+            skill_whitelist: 技能作用域（专家技能硬隔离）。``None``（默认）= 全量可见，
+                与改造前逐字一致；``[]`` = 显式无技能；非空 = 只有这些技能目录进技能
+                清单、且其内容可读（``backends/scoped_skills.py``）。
         """
         self.config = config
         self.username = username
         self.session_id = session_id
+        # 技能作用域：None = 全量；[] = 无技能；[names] = 白名单
+        self.skill_whitelist = (
+            None
+            if skill_whitelist is None
+            else [str(name).strip() for name in skill_whitelist if str(name).strip()]
+        )
         # 日志用的短前缀（取 sid 末 5 位），与 chat_service 等模块保持一致。
         self.sid = (session_id or "new")[-5:]
         self.skills_root = skills_root
@@ -410,6 +425,10 @@ class EasyAgent(AgentWorkspaceMixin):
             workspace_name=self.workspace_name,
             builtin_skills_dir=str(self.builtin_skills_dir or ""),
             builtin_skills=tuple(self.builtin_skills),
+            # 技能作用域随运行期 context 走：同一张编译图可以服务不同专家的不同白名单
+            skill_whitelist=(
+                None if self.skill_whitelist is None else tuple(self.skill_whitelist)
+            ),
         )
 
     def _build_interrupt_config(self):
@@ -734,6 +753,12 @@ class EasyAgent(AgentWorkspaceMixin):
                 workspace_name=getattr(self, "workspace_name", "") or "",
                 builtin_skills_dir=str(getattr(self, "builtin_skills_dir", "") or ""),
                 builtin_skills=tuple(getattr(self, "builtin_skills", ()) or ()),
+                # 兼容旧调用（EasyAgent.__new__ 构造）时同样带上作用域默认值
+                skill_whitelist=(
+                    None
+                    if getattr(self, "skill_whitelist", None) is None
+                    else tuple(getattr(self, "skill_whitelist", ()) or ())
+                ),
             )
         return _build_backend_for_context(
             self.config,

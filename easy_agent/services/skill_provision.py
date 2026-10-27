@@ -54,14 +54,46 @@ def _auto_install_enabled() -> bool:
     return bool(getattr(cfg.get("config"), "expert_auto_install_required_skills", True))
 
 
-def required_skills_of(expert_id: str | None) -> list[str]:
-    """读取公共专家声明的依赖技能目录名；非公共专家或无声明时返回空列表。
+def required_skills_of(expert_id: str | None, username: str = "") -> list[str]:
+    """读取专家绑定的技能包目录名。
 
-    只读 ``config.yaml``（不读提示词正文）：本函数在每轮创建 Agent 前都会跑，
+    两条来源（顺序固定）：
+
+    1. **自建专家**（落库）：``expert_agents.export_required_skills``——用户在创建 /
+       修改专家时于输入框选定的技能包（本次改造新增，见 ``api/chat.py`` 与
+       ``tools/expert_writer.py``）。给了 ``username`` 才查，避免每轮通用对话都读库；
+    2. **公共（预置）专家**（目录 + ``config.yaml``）：``required_skills``。
+
+    只读库字段与 YAML，不读提示词正文：本函数在每轮创建 Agent 前都会跑，
     不能带来可感知的延迟。
     """
     if not expert_id:
         return []
+
+    if username:
+        try:
+            from easy_agent.db import get_database
+            from easy_agent.db.expert_store import ExpertStore
+            from easy_agent.tools.expert_writer import resolve_owned_expert
+
+            record = resolve_owned_expert(get_database(), username, expert_id)
+            if record:
+                skills = [
+                    str(item).strip()
+                    for item in (record.get("export_required_skills") or [])
+                    if str(item).strip()
+                ]
+                logger.debug(
+                    f"专家绑定技能读取（自建）| 用户: {username} | 专家: {expert_id} | "
+                    f"技能包: {skills or '(未绑定)'}"
+                )
+                return skills
+        except Exception as exc:  # noqa: BLE001 - 读库失败退化为公共专家口径
+            logger.warning(
+                f"⚠️ 读取自建专家绑定技能失败，按公共专家口径处理 | 用户: {username} | "
+                f"专家: {expert_id} | {exc}"
+            )
+
     try:
         return public_expert_service.required_skills_of_public_expert(expert_id)
     except Exception as exc:  # noqa: BLE001 - 扫描失败不能影响对话
@@ -189,7 +221,7 @@ def provision_expert_skills(username: str, expert_id: str | None) -> dict[str, A
     root = builtin_skills.builtin_root()
     report["skills_root"] = str(root) if root else ""
 
-    required = required_skills_of(expert_id)
+    required = required_skills_of(expert_id, username)
     report["required"] = list(required)
     if not required or not report["enabled"]:
         # 「专家没声明 required_skills」和「开关关了」是两种完全不同的原因，但现象一样
@@ -302,7 +334,7 @@ def ensure_expert_skills(username: str, expert_id: str | None) -> list[str]:
 def required_skills_status(username: str, expert_id: str) -> dict[str, Any]:
     """只读地给出依赖技能的安装现状（排查接口用，不写清单、不驱逐缓存）。"""
     root = builtin_skills.builtin_root()
-    required = required_skills_of(expert_id)
+    required = required_skills_of(expert_id, username)
     items = [_inspect_one(username, name) for name in required]
     return {
         "expert_id": expert_id,

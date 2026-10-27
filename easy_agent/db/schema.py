@@ -27,7 +27,7 @@ logger = logging.getLogger("easy_agent.db.schema")
 # 否则已经升级过的库会一直命中「结构已是最新」的快速启动路径，变更不会生效。
 # 见 init_tables()：版本一致时跳过整轮建表 + 补列 + 建索引探测（MySQL 上这一步
 # 过去要 40+ 次网络往返，多副本部署时每个 pod 启动都要跑一遍，是启动慢的主因）。
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 # utf8mb4 复合主键必须 ≤ 3072 字节：(512 + 191) * 4 = 2812。
 LANGGRAPH_STORE_NS_LEN = 512
 LANGGRAPH_STORE_KEY_LEN = 191
@@ -631,6 +631,10 @@ def _create_expert_tables(db, cursor):
     - ``export_run_file_path`` 按需求「（删除）」不建；
     - ``export_skills_names``：专家技能标签（中文名数组，JSON 字符串），由大模型
       根据用户描述生成 2~3 个；前端卡片最多展示 3 个；
+    - ``export_required_skills``：专家**绑定的技能包目录名**（JSON 字符串数组），
+      创建 / 修改专家时由用户在输入框选定的技能包写入（``save_expert`` 落库）。
+      与 ``export_skills_names``（展示标签）完全不同：这里是真实技能目录名，
+      对话时按它做技能作用域硬隔离，见 ``services/tool_scope.py``；
     - ``export_description``：专家主要功能描述（大模型生成，≤300 字），
       用于卡片与详情页展示；
     - ``tag_id``：分类标签，由大模型在配置的 ``expert_tags`` 候选中选一个，
@@ -651,6 +655,7 @@ def _create_expert_tables(db, cursor):
             export_prompt TEXT,
             export_description TEXT,
             export_skills_names TEXT,
+            export_required_skills TEXT,
             export_features_prompt TEXT,
             export_file_path VARCHAR(1024) DEFAULT '',
             agent_status VARCHAR(32) NOT NULL DEFAULT 'active',
@@ -665,6 +670,8 @@ def _create_expert_tables(db, cursor):
     _create_index(db, 
         cursor, "idx_expert_agents_status", "expert_agents", "agent_status"
     )
+    # 存量库补列：专家绑定的技能包目录名（JSON 数组），SCHEMA_VERSION=11 起
+    _ensure_column(db, cursor, "expert_agents", "export_required_skills", "TEXT")
 
     # 领域 schema 由各模块在 import 时注册（db.schema_registry），这里统一执行；
     # 依赖方向 db -> schema_registry <- knowledges，避免 db 反向 import 领域模块。

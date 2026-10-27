@@ -66,6 +66,8 @@ def _to_public(record: dict) -> dict:
         "export_prompt": record.get("export_prompt", ""),
         "export_description": record.get("export_description", ""),
         "export_skills_names": record.get("export_skills_names", []),
+        # 专家绑定的技能包目录名（对话时按它做技能作用域硬隔离）
+        "export_required_skills": record.get("export_required_skills", []),
         "export_features_prompt": record.get("export_features_prompt", []),
         "export_file_path": record.get("export_file_path", ""),
         "agent_status": record.get("agent_status", ""),
