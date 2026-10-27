@@ -726,11 +726,11 @@ function clearKeyword() {
 
 async function confirmDelete(item) {
   const ok = window.confirm(
-    `确定删除专家「${item.export_name_cn}」吗？\n（默认软删除，历史版本目录会保留）`
+    `确定删除专家「${item.export_name_cn}」吗？`
   )
   if (!ok) return
   try {
-    await deleteExpert(item.export_agent_id, false)
+    await deleteExpert(item.export_agent_id, true)
     await refreshSilently('mine')
     showToast(`已删除「${item.export_name_cn}」`)
   } catch (e) {

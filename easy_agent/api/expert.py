@@ -78,7 +78,7 @@ class ExpertUpdateRequest(BaseModel):
 
 class ExpertDelRequest(BaseModel):
     export_agent_id: str = Field(..., description="专家 Agent ID")
-    hard: bool = Field(default=False, description="True=物理删除（含目录）；False=软删除")
+    hard: bool = Field(default=True, description="True=物理删除（含目录）；False=软删除")
 
 
 # ── 辅助 ──────────────────────────────────────────────────────────────
