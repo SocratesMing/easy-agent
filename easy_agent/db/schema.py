@@ -6,11 +6,10 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import time
-from datetime import datetime
 
+from easy_agent.db.legacy_messages import repair_missing_message_rows
 from easy_agent.db.migrations import (
     BASELINE_VERSION,
     apply_pending_migrations,
@@ -742,66 +741,13 @@ def _schema_tables_present(db, cursor) -> bool:
     return all(t in names for t in EXPECTED_TABLES)
 
 def _repair_missing_message_rows(db, cursor):
-    """修复 session_messages 表中缺失或被覆盖的消息行（从 sessions 表 JSON 重建）。
+    """启动数据自愈：只补不删，见 :mod:`easy_agent.db.legacy_messages`。
 
-    启动性能：先用一条聚合 SQL 找出「JSON 消息条数与 session_messages 行数
-    不一致」的会话，只对这些会话取回消息体并重建；一致时（绝大多数情况）
-    完全不加载任何消息内容。原实现会 SELECT 全表 messages 并逐会话 COUNT，
-    会话多、消息大时启动明显变慢。
+    原实现在 JSON 条数与行数不等时删掉整个会话的行再按 JSON 重建。A2 之后旧会话的 JSON
+    不再更新，继续对话的旧会话每次重启都会丢掉 A2 之后的消息。
     """
     try:
-        mismatched_ids = _find_mismatched_sessions(db, cursor)
-        if not mismatched_ids:
-            return
-
-        db._execute(
-            cursor, "SELECT session_id, messages FROM sessions"
-        )
-        sessions = cursor.fetchall()
-
-        repaired_sessions = 0
-        for s in sessions:
-            sid = s["session_id"] if isinstance(s, dict) else s[0]
-            if sid not in mismatched_ids:
-                continue
-            raw_msgs = s["messages"] if isinstance(s, dict) else s[1]
-            if not raw_msgs:
-                continue
-            json_messages = (
-                json.loads(raw_msgs) if isinstance(raw_msgs, str) else raw_msgs
-            )
-            # 空数组不能当权威：新会话若误写成 '[]'，行表里已有正文，按空 JSON 重建会删光消息。
-            if not isinstance(json_messages, list) or not json_messages:
-                logger.warning(
-                    "跳过消息修复：sessions.messages 为空数组，不删除 session_messages | session=%s",
-                    sid,
-                )
-                continue
-
-            # 行数不一致：删除旧行，从 JSON 重建
-            db._execute(
-                cursor,
-                "DELETE FROM session_messages WHERE session_id=?",
-                (sid,),
-            )
-            for msg in json_messages:
-                role = msg.get("role", "user")
-                content = msg.get("content", "")
-                extra_data = db._sanitize_extra_data(msg)
-                timestamp = msg.get("timestamp", datetime.now().isoformat())
-                db._execute(
-                    cursor,
-                    """
-                    INSERT INTO session_messages (session_id, role, content, extra_data, created_at)
-                    VALUES (?, ?, ?, ?, ?)
-                    """,
-                    (sid, role, content, extra_data, timestamp),
-                )
-            repaired_sessions += 1
-        if repaired_sessions > 0:
-            logger.info(
-                f"数据修复：重建了 {repaired_sessions} 个会话的 session_messages 行"
-            )
+        repair_missing_message_rows(db, cursor)
     except Exception as e:
         logger.warning(f"修复 session_messages 缺失行时出错: {e}")
 

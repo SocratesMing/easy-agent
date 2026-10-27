@@ -19,14 +19,13 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Callable
 
+from easy_agent.db.legacy_messages import clear_complete_legacy_blobs
+
 logger = logging.getLogger("easy_agent.db.migrations")
 
 MIGRATIONS_TABLE = "schema_migrations"
 # 引入迁移框架时数据库已处于的 schema 版本；第一次启用只记 baseline，不重放历史 DDL。
 BASELINE_VERSION = 5
-
-# 版本号必须严格递增；函数签名 (db, cursor) -> None。
-MIGRATIONS: list["Migration"] = []
 
 
 @dataclass(frozen=True)
@@ -34,6 +33,19 @@ class Migration:
     version: int
     description: str
     fn: Callable[[object, object], None]
+
+
+# 版本号必须严格递增（接着 baseline 往后编，与 SCHEMA_VERSION 各自独立）；
+# 函数签名 (db, cursor) -> None。
+MIGRATIONS: list[Migration] = [
+    # 启动修复（只补不删）跑完之后执行：行表已包含旧 JSON 全部消息的会话把 JSON 清空，
+    # 见 easy_agent/db/legacy_messages.py。
+    Migration(
+        version=6,
+        description="clear sessions.messages already covered by session_messages",
+        fn=clear_complete_legacy_blobs,
+    ),
+]
 
 
 def ensure_migrations_table(db, cursor) -> None:
