@@ -134,6 +134,9 @@ export function init(options = {}) {
     baseURL: options.baseURL || '',
     tokenKey: shareLogin ? MAIN_TOKEN_KEY : SDK_TOKEN_KEY,
     usernameKey: shareLogin ? MAIN_USERNAME_KEY : SDK_USERNAME_KEY,
+    // 401：换新 token 后由请求层把失败的请求重发一次，用户无感
+    refreshAuth: () => relogin(),
+    // 无法重发的场景（如上传）：续期后刷新会话列表
     onAuthExpired: () => { handleAuthExpired() },
   })
 
@@ -254,8 +257,9 @@ export function init(options = {}) {
     chatStore.username = profile.username
   }
 
-  async function handleAuthExpired() {
-    if (bootstrapping || destroyed) return
+  /** 重新获取 token：并发调用合并为一次，成功 resolve true；失败通知宿主 onAuthExpired */
+  function relogin() {
+    if (bootstrapping || destroyed) return Promise.resolve(false)
     if (reauthing) return reauthing
     const canRelogin = typeof auth.getToken === 'function' || !!auth.username
     reauthing = (async () => {
@@ -263,15 +267,20 @@ export function init(options = {}) {
         if (!canRelogin) throw new Error('登录已过期')
         await acquireToken({ forceLogin: true })
         await loadProfile()
-        if (sidebar()) await sidebar().loadSessions()
+        return true
       } catch (e) {
         if (typeof options.onAuthExpired === 'function') options.onAuthExpired(e)
         else console.warn('[EasyAgentSidebar] 登录已过期：', e && e.message)
+        return false
       } finally {
         reauthing = null
       }
     })()
     return reauthing
+  }
+
+  async function handleAuthExpired() {
+    if (await relogin() && sidebar()) await sidebar().loadSessions()
   }
 
   async function bootstrap() {

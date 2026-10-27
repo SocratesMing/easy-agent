@@ -1,17 +1,9 @@
 import { dispatchAuthExpired, getStoredToken } from '../../api/auth.js'
-import { handleStreamResponse, streamHeaders, streamUrl } from '../../utils/request.js'
+import { fetchWithAuth, handleStreamResponse, streamHeaders, streamUrl } from '../../utils/request.js'
 import { readSSE } from '../../api/sse.js'
 
 // Keep native Response semantics for binary previews, Range headers and error bodies.
-async function authFetch(url, options = {}) {
-  const token = getStoredToken()
-  const response = await fetch(url, {
-    ...options,
-    headers: { ...options.headers, ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-  })
-  if (response.status === 401) dispatchAuthExpired()
-  return response
-}
+const authFetch = fetchWithAuth
 
 // SDK 的 baseURL 在 configureRequest() 后才确定，不能在模块加载时固化
 const root = () => streamUrl('/api/knowledge/v1')
@@ -226,7 +218,7 @@ export function createKnowledgeChatRound(baseId) {
 
 export async function askKnowledgeBaseStream(baseId, payload, onChunk, signal) {
   const response = await handleStreamResponse(
-    await fetch(streamUrl(`/api/knowledge/v1/bases/${encodeURIComponent(baseId)}/ask/stream`), {
+    await fetchWithAuth(streamUrl(`/api/knowledge/v1/bases/${encodeURIComponent(baseId)}/ask/stream`), {
       method: 'POST',
       headers: streamHeaders(),
       body: JSON.stringify(payload),
