@@ -127,6 +127,7 @@
                 :public-experts="publicExperts"
                 :visible-public-experts="visiblePublicExperts"
                 :active-expert-id="activeExpert && activeExpert.export_agent_id"
+                :stacked="compact"
                 @toggle="toggleExpert"
                 @more="loadMoreExperts"
                 @create="handleMenuPanel('experts')"
@@ -214,7 +215,7 @@
                与专家 Tab 的「召唤」联动，点击 × 退出专家模式回到通用 Agent。
                兼容性：不使用 flex gap / color-mix（IE 与旧版 Edge 不支持）。 -->
           <div
-            v-if="activeExpert"
+            v-if="activeExpert && !compact"
             class="expert-chip"
             :title="`当前专家：${activeExpert.export_name_cn}（点击 × 退出专家模式）`"
           >
@@ -434,68 +435,28 @@ const TEXTAREA_MAX_HEIGHT = TEXTAREA_MAX_ROWS * TEXTAREA_LINE_HEIGHT
 export default {
   components: { FileIcon, SkillIcon, KnowledgeScopeSelector, UploadTray, ModelPicker, PlusMenu, ExpertSubpanelList, PlusList, PlusSubpanelHeader },
   props: {
-    disabled: {
-      type: Boolean,
-      default: false
-    },
-    sessionId: {
-      type: String,
-      default: null
-    },
-    isStreaming: {
-      type: Boolean,
-      default: false
-    },
-    sessionUsage: {
-      type: Object,
-      default: () => ({ input_tokens: 0, output_tokens: 0, reasoning_tokens: 0, context_length: null, auto_compress_tokens: null, context_tokens: 0 })
-    },
-    sessionDuration: {
-      type: Number,
-      default: 0
-    },
-    iterationCount: {
-      type: Number,
-      default: 0
-    },
-    models: {
-      type: Array,
-      default: () => []
-    },
-    selectedModel: {
-      type: String,
-      default: null
-    },
-    showFooter: {
-      type: Boolean,
-      default: false
-    },
-    draftKey: {
-      type: String,
-      default: DRAFT_KEY
-    },
+    disabled: { type: Boolean, default: false },
+    sessionId: { type: String, default: null },
+    isStreaming: { type: Boolean, default: false },
+    sessionUsage: { type: Object, default: () => ({ input_tokens: 0, output_tokens: 0, reasoning_tokens: 0, context_length: null, auto_compress_tokens: null, context_tokens: 0 }) },
+    sessionDuration: { type: Number, default: 0 },
+    iterationCount: { type: Number, default: 0 },
+    models: { type: Array, default: () => [] },
+    selectedModel: { type: String, default: null },
+    showFooter: { type: Boolean, default: false },
+    draftKey: { type: String, default: DRAFT_KEY },
     // 是否消费技能中心「创建技能」预置的待选技能（只应由主页面输入框消费）
-    consumePendingSkill: {
-      type: Boolean,
-      default: true
-    },
+    consumePendingSkill: { type: Boolean, default: true },
     // 当前会话选中的专家 Agent（{export_agent_id, export_name_cn} 或 null）。
     // 非空时输入框工具栏显示专家胶囊，且本会话消息走 /agent/chat/stream（带 expert_agent_id）。
-    activeExpert: {
-      type: Object,
-      default: null
-    },
+    activeExpert: { type: Object, default: null },
     // 外部预填的问题（如专家详情弹窗点「专家帮你做」示例）：非空时写入输入框，
     // 写入后立即 $emit('expert-prompt-applied') 通知父组件清空，避免重复触发。
-    expertPrompt: {
-      type: String,
-      default: ''
-    },
+    expertPrompt: { type: String, default: '' },
     // 「+」二级面板底部的「在管理面板中打开」入口（无可跳转的管理面板时隐藏）
-    showManageEntry: {
-      type: Boolean,
-      default: true
-    }
+    showManageEntry: { type: Boolean, default: true },
+    // 窄输入框（AI 侧边栏）：不放专家胶囊（会挤掉发送按钮，已选只在「+」→ 专家面板体现），专家行名称、描述分两行
+    compact: { type: Boolean, default: false }
   },
   data() {
     return {
@@ -1068,6 +1029,7 @@ export default {
     },
     hoverPlusItem(category) {
       this.cancelPlusClose()
+      if (category === 'knowledge') return this.enterKnowledgeItem({ currentTarget: this.$el.querySelector('.plus-menu-item-knowledge') })
       // 切到其他菜单项时收起知识库面板，避免两个浮层叠着
       if (this.$refs.knowledgeScope) this.$refs.knowledgeScope.closePopover()
       if (category === 'experts' || category === 'skills' || category === 'connectors') {
@@ -1363,6 +1325,7 @@ export default {
       } else {
         this.$emit('select-expert', item)
       }
+      if (this.compact) return
       this.showPlusMenu = false
       this.subpanelCategory = null
       this.cancelPlusClose()

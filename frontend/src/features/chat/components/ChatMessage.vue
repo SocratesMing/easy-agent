@@ -1,6 +1,7 @@
 <template>
   <div class="message" :class="[message.role]">
     <div class="message-content">
+      <PageContextChip v-if="message.role === 'user' && message.page_context" :text="message.page_context" />
       <!-- 文件卡片 -->
       <div v-if="message.files && message.files.length > 0" class="files-container">
         <div 
@@ -234,6 +235,7 @@ import SkillIcon from '../../../shared/components/SkillIcon.vue'
 import { iconCategoryFor } from '../../../utils/skillCategories.js'
 // 专家头像取字 / 配色：与技能中心、+ 号下拉、输入框胶囊共用同一套规则（按 ID 稳定取档）
 import { expertAvatarChar, expertAvatarClass } from '../../../utils/expertAvatar.js'
+import PageContextChip from './PageContextChip.vue'
 import { parseLeadingSkillTokens } from '../../../utils/skillTokens.js'
 import { ensureSkillDirectoryLoaded, skillDirectoryStore } from '../../skills/store/skillDirectoryStore.js'
 
@@ -582,8 +584,6 @@ function toggleThinking(index) {
   expandedThinking.value[key] = !expandedThinking.value[key]
 }
 
-
-
 function isToolRunning(block) {
   // Tool is still running if: no duration AND the message is still loading
   return block.duration == null && props.message.loading === true
@@ -611,7 +611,6 @@ function isExpandedToolCall(index) {
   const key = getBlockKey(block, index)
   return expandedTool.value[key] === true
 }
-
 
 function formatJson(obj) {
   try {
@@ -1161,20 +1160,6 @@ html[data-theme="dark"] .process-body .process-inline-content {
   border-radius: 6px;
   background: #F1F5F9;
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 .thinking-block {
   display: flex;

@@ -4,10 +4,6 @@
     <div v-else-if="error" class="plus-list-hint error">{{ error }}</div>
     <div v-else-if="rows.length === 0" class="plus-list-hint">{{ emptyText }}</div>
     <div v-else-if="noMatch" class="plus-list-hint">未找到匹配的连接器</div>
-  <div v-if="loading" class="plus-list-hint">加载中…</div>
-  <div v-else-if="error" class="plus-list-hint error">{{ error }}</div>
-  <div v-else-if="rows.length === 0" class="plus-list-hint">{{ emptyText }}</div>
-  <div v-else-if="noMatch" class="plus-list-hint">未找到匹配的连接器</div>
   <!-- 技能行可点选（挂成输入框令牌，可连续挂多个）；
        连接器行不可点选，行尾是启用开关（改的是连接器自身的状态，
        与「专家·技能·连接器」面板双向同步，启用/停用都能点） -->

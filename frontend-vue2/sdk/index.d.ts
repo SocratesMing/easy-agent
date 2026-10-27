@@ -7,7 +7,7 @@ export interface EasyAgentPageContext {
   description?: string
   /** 欢迎页的快捷提问（最多 4 条） */
   suggestions?: string[]
-  /** 页面业务数据（纯文本，建议 < 4000 字），随消息提供给 AI */
+  /** 页面业务数据（纯文本，后端上限 128000 字），随消息提供给 AI */
   content?: string
 }
 
