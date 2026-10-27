@@ -191,10 +191,15 @@ export function init(options = {}) {
           welcomeTitle: options.welcomeTitle || '有什么可以帮你？',
         },
         on: {
-          'open-change': (open) => {
-            if (open) refreshPageContext()
+          // 唤起 / 展开 / 新建会话 / 点上下文标签时：重算函数形式的 pageContext，
+          // 再交给宿主 refreshContext（宿主可在其中调用 setPageContext 推送最新内容）
+          'refresh-context': () => {
+            refreshPageContext()
+            if (typeof options.refreshContext === 'function') options.refreshContext()
+          },
+          'open-change': (open, source) => {
             const cb = open ? options.onOpen : options.onClose
-            if (typeof cb === 'function') cb()
+            if (typeof cb === 'function') cb(source)
           },
           'layout-change': applyDock,
           'open-in-main': (sessionId) => {
@@ -331,21 +336,14 @@ export function init(options = {}) {
     version,
     ready,
     /** 打开侧边栏：{ prompt?: 预填输入框, context?: 补充上下文文本, newSession?: 新建会话 } */
-    open: (opts) => whenReady(s => {
-      refreshPageContext()
-      s.openSidebar(opts || {})
-    }),
+    open: (opts) => whenReady(s => s.openSidebar(opts || {})),
     close: () => whenReady(s => s.close()),
-    toggle: () => whenReady(s => {
-      if (!s.open) refreshPageContext()
-      s.toggle()
-    }),
+    toggle: () => whenReady(s => s.toggle()),
     isOpen: () => !!(sidebar() && sidebar().open),
     /** 打开侧边栏并直接发送一条消息 */
-    send: (text) => whenReady(s => {
-      refreshPageContext()
-      return s.sendFromHost(text)
-    }),
+    send: (text) => whenReady(s => s.sendFromHost(text)),
+    /** 预填输入框（不打开侧边栏、不发送） */
+    setComposer: (text) => whenReady(s => s.setComposer(text)),
     /** 更新页面上下文（SPA 路由切换后调用）：对象 / 字符串 / 返回二者的函数 */
     setPageContext: (ctx) => {
       if (typeof ctx === 'function') options.pageContext = ctx

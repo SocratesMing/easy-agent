@@ -421,7 +421,8 @@ EasyAgentSidebar.init({
 | `assetsBaseURL` | `string` | 脚本所在目录 | 字体资源目录。通过打包器引入时如需数学公式字体，指向 `dist-sdk/` 的部署地址 |
 | `onReady` | `(sidebar) => void` | — | 登录成功、会话加载完成 |
 | `onError` | `(error) => void` | — | 初始化失败（如登录失败、后端不可达） |
-| `onOpen` / `onClose` | `() => void` | — | 侧边栏打开 / 关闭 |
+| `onOpen` / `onClose` | `(source) => void` / `() => void` | — | 侧边栏打开 / 关闭。`source` 为唤起来源：`launcher` 唤起按钮、`shortcut` 快捷键、`selection` 划词提问、`api` 实例方法 |
+| `refreshContext` | `() => void` | — | 唤起、展开、新建会话、点击上下文标签时调用（函数形式的 `pageContext` 会先自动重算）；宿主可在此调用 `setPageContext(...)` 推送最新页面内容 |
 | `onAuthExpired` | `(error) => void` | — | 登录过期且无法自动续期 |
 | `onOpenInMain` | `(sessionId) => void` | — | 自定义「在主站打开」的行为（配置后优先于 `mainAppUrl`） |
 | `onOpenPanel` | `(tab) => void` | — | 自定义「在管理面板中打开」的行为，`tab` 为 `experts` / `skills` / `connectors` / `knowledge`（配置后优先于 `mainAppUrl`）。未配置 `mainAppUrl` / `onOpenInMain` / `onOpenPanel` 时该入口隐藏 |
@@ -440,6 +441,7 @@ EasyAgentSidebar.init({
 | `toggle()` | 打开 / 关闭 |
 | `isOpen()` | 是否已打开 |
 | `send(text)` | 打开侧边栏并立即发送一条消息（正在生成时改为预填输入框） |
+| `setComposer(text)` | 预填输入框（不打开侧边栏、不发送） |
 | `setPageContext(ctx)` | 更新页面上下文 |
 | `setToken(token)` | 更新 token（宿主自行续期后调用） |
 | `logout()` | 清除 SDK 保存的登录态并销毁侧边栏 |
@@ -576,7 +578,7 @@ EasyAgentSidebar.init({
 `position: fixed; right: 0` 的元素不受 `body` 的 `margin-right` 影响，参照第 9.5 节自行处理。
 
 **Q：页面切换后侧边栏仍显示上一个页面的上下文？**
-SPA 路由切换不会触发页面刷新，需在路由变化时调用 `sidebar.setPageContext(...)`，或把 `pageContext` 配置为函数。
+SPA 路由切换不会触发页面刷新，需在路由变化时调用 `sidebar.setPageContext(...)`，或把 `pageContext` 配置为函数（唤起、展开、新建会话、点击上下文标签时都会重算），也可以配置 `refreshContext` 在这些时机主动推送。
 
 ---
 

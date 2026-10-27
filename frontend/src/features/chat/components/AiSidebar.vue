@@ -71,7 +71,7 @@
           <span class="ais-rail-mark" :class="{ 'is-busy': isStreaming }" :title="isStreaming ? '正在生成…' : 'AI 助手'">
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9L12 3z"></path></svg>
           </span>
-          <button type="button" class="ais-icon-btn" title="新建会话" @click="expand(); startNewChat()">
+          <button type="button" class="ais-icon-btn" title="新建会话" @click="expand(); startNewChat(false)">
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
           </button>
           <button type="button" class="ais-icon-btn" title="历史会话" @click="expand(); showHistory = true">
@@ -101,7 +101,7 @@
               <svg class="ais-title-arrow" :class="{ open: showHistory }" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>
             </button>
             <div class="ais-header-actions">
-              <button type="button" class="ais-icon-btn" title="新建会话" @click="startNewChat">
+              <button type="button" class="ais-icon-btn" title="新建会话" @click="startNewChat()">
                 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
               </button>
               <button
@@ -264,21 +264,22 @@
                 <div class="ais-context-bar">
                   <span
                     v-if="pageContext && includeContext"
-                    class="ais-chip"
+                    class="ais-chip is-clickable"
                     :class="{ 'is-sent': contextAlreadySent }"
                     :title="contextPreview"
+                    @click="attachPageContext"
                   >
                     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"></path><circle cx="12" cy="10" r="3"></circle></svg>
                     <span class="ais-chip-text">{{ pageContext.title }}</span>
                     <span v-if="contextAlreadySent" class="ais-chip-note">已提供</span>
-                    <button type="button" class="ais-chip-x" title="不附带页面上下文" @click="includeContext = false">×</button>
+                    <button type="button" class="ais-chip-x" title="不附带页面上下文" @click.stop="includeContext = false">×</button>
                   </span>
                   <button
                     v-else-if="pageContext"
                     type="button"
                     class="ais-chip is-ghost"
                     title="把当前页面信息提供给 AI"
-                    @click="includeContext = true"
+                    @click="attachPageContext"
                   >
                     + 附带页面上下文
                   </button>
@@ -326,7 +327,7 @@ export default {
   name: 'AiSidebar',
   components: { Chat },
   mixins: [chatSessionMixin, chatSendMixin, aiSidebarLayoutMixin],
-  emits: ['open-change', 'layout-change', 'open-in-main', 'open-panel'],
+  emits: ['open-change', 'refresh-context', 'layout-change', 'open-in-main', 'open-panel'],
   props: {
     // 当前页面上下文（App 根据所在页面生成），见 utils/pageContext.js
     pageContext: {
@@ -384,6 +385,7 @@ export default {
       renameText: '',
       confirmDeleteId: null,
       includeContext: true,
+      openSource: 'api',
       // 每个会话最近一次发送给模型的上下文：内容未变化时不重复附带
       sentContexts: {},
       quote: '',
@@ -513,7 +515,7 @@ export default {
       if (!prev || !next || next.key !== prev.key) this.includeContext = true
     },
     open(v) {
-      this.$emit('open-change', v)
+      this.$emit('open-change', v, v ? this.openSource : undefined)
     },
     dockWidth: {
       immediate: true,
@@ -605,17 +607,22 @@ export default {
     },
 
     // ── 打开 / 关闭 / 折叠 ────────────────────────────────────────────
+    /** opts.source：唤起来源 launcher / shortcut / selection / api，随 open-change 交给宿主 */
     openSidebar(opts = {}) {
       const wasOpen = this.open
+      this.openSource = opts.source || 'api'
+      // 宿主页面可能已变（SPA 的 pushState 不触发 popstate、同页数据也会更新）：每次唤起都请宿主重采
+      this.$emit('refresh-context')
       this.open = true
       this.collapsed = false
       this.unread = false
       this.hideSelectionAsk()
       if (opts.context) setExternalPageContext(opts.context)
       if (opts.newSession) {
-        this.startNewChat()
+        this.startNewChat(false)
       } else if (!wasOpen) {
-        this.preferPageSession()
+        // 等重采的 pageContext 经 props 下发后再按页面匹配会话
+        this.$nextTick(() => this.preferPageSession())
       }
       this.$nextTick(() => {
         // 面板隐藏期间（display: none）无法滚动，打开后补一次贴底
@@ -628,15 +635,16 @@ export default {
       this.open = false
       this.showHistory = false
     },
-    toggle() {
+    toggle(opts) {
       if (this.open) this.close()
-      else this.openSidebar()
+      else this.openSidebar(opts)
     },
     collapse() {
       this.collapsed = true
       this.showHistory = false
     },
     expand() {
+      this.$emit('refresh-context')
       this.collapsed = false
       this.unread = false
       this.$nextTick(() => {
@@ -648,7 +656,8 @@ export default {
       this.mode = this.mode === 'dock' ? 'float' : 'dock'
       this.savePrefs()
     },
-    startNewChat() {
+    startNewChat(refreshContext = true) {
+      if (refreshContext) this.$emit('refresh-context')
       if (!this.currentSessionId && this.messages.length === 0) {
         this.focusComposer()
         return
@@ -666,6 +675,8 @@ export default {
     async sendFromHost(text) {
       if (!text) return
       this.openSidebar()
+      // 等重采的 pageContext 经 props 下发，这条消息才带上最新页面内容
+      await this.$nextTick()
       if (this.isStreaming) {
         this.setComposer(text)
         return
@@ -689,6 +700,11 @@ export default {
     setComposer(text) {
       const chat = this.$refs.chatRef
       if (chat) chat.setComposerText(text)
+    },
+    // 点上下文标签：重新采集当前页面并附带（页面内容变了也能拿到最新的）
+    attachPageContext() {
+      this.includeContext = true
+      this.$emit('refresh-context')
     },
     sendQuick(text) {
       if (this.isStreaming) return

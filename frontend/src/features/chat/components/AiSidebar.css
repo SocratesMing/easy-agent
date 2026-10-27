@@ -702,6 +702,10 @@
   background: transparent;
 }
 
+.ais-chip.is-clickable {
+  cursor: pointer;
+}
+
 .ais-chip.is-quote {
   max-width: 100%;
 }
