@@ -1,6 +1,9 @@
 """知识库核心业务服务。
 
 上传/删除全部同步内联；原文存储为本地磁盘存储（``LocalOriginalStore``）。
+文档状态链：上传成功只落 ``pending``；解析轮询在观察到上游 RUNNING 后写入
+``processing``（并开始超时计时），上游终态或本地超时落 ``ready/failed``；
+暂停/恢复/重试都会清空旧计时后重新排队。
 删除为软删除：本地保留记录与原文，远端（Ragflow）副本在删除时立即同步
 删除；清理 worker（KnowledgePurgeWorker）仅兜底同步失败与历史遗留副本。
 
@@ -13,7 +16,6 @@ import asyncio
 import io
 import logging
 import re
-import time
 from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -56,6 +58,7 @@ from easy_agent.knowledges.core.models import (
     PermissionDirectoryUser,
     PermissionEntry,
     PermissionListResponse,
+    REFRESHABLE_DOCUMENT_STATUSES,
     RetrieveResponse,
     SessionKnowledgeScopeResponse,
     TeamSpaceDepartmentSummary,
@@ -115,6 +118,10 @@ _SECTION_HEADING_RE = re.compile(
 )
 # 上传安全校验参数（YAML 不再配置，代码内固定）
 _UPLOAD_SECURITY = UploadSecurityConfig()
+# 共享库解析状态刷新：并发拉取多篇文档，单篇慢请求只拖住自己，不阻塞同批其它文档。
+_REFRESH_DOCUMENT_CONCURRENCY = 5
+# 本地解析超时：绝对超时即失败终态；重试/恢复会清空计时重新开始。
+_PARSE_TIMEOUT_ERROR_CODE = "KNOWLEDGE_PARSE_TIMEOUT"
 
 # 共享数据集：所有走共享模式的个人/公共知识库共用同一个 Ragflow 数据集。
 # 个人库文档通过 meta_fields={"owner_user_id": ...} 打个人标签，检索时
@@ -205,9 +212,6 @@ class KnowledgeService:
         self.original_store = (
             original_store if original_store is not None else LocalOriginalStore()
         )
-        # refresh_base_documents 节流：避免页面反复加载触发全量上游刷新
-        self._last_refresh_at: dict[str, float] = {}
-        self._refresh_min_interval = 15.0
 
     async def _repo(self, method, *args, **kwargs):
         """将同步仓储调用放入线程池执行，避免阻塞事件循环。"""
@@ -1263,25 +1267,15 @@ class KnowledgeService:
 
     # ---------------- 文档 ----------------
 
-    async def refresh_base_documents(
-        self, base: Mapping[str, Any], *, request_id: str = ""
-    ) -> None:
-        """用上游文档状态刷新本地投影；供 list_documents 与后台轮询共用。
+    async def refresh_base_documents(self, base: Mapping[str, Any]) -> None:
+        """用上游文档状态刷新本地投影；仅后台解析轮询 worker 调用。
 
-        存量自有数据集库：全量列表刷新（原行为不变）。
-        共享数据集库（remote_dataset_id 为空）：仅对本库 pending/processing
-        的文档逐个查询——共享数据集文档量会超过 list_documents 的
-        page_size 上限（100），全量列表既低效又会漏同步；逐文档轮询在
-        稳态（全部 ready）时零 API 调用。
+        共享数据集（remote_dataset_id 为空）逐篇查询本库 pending/processing
+        文档；存量自有数据集走全量列表，但也只应用仍在 pending/processing 的
+        本地文档。终态文档不再轮询，稳态零上游调用。
         """
-        del request_id
+
         remote_dataset_id = str(base.get("remote_dataset_id") or "").strip()
-        # 节流：15 秒内同一知识库不重复刷新（worker 与页面加载共用）
-        now = time.monotonic()
-        last = self._last_refresh_at.get(str(base["id"]), 0.0)
-        if now - last < self._refresh_min_interval:
-            return
-        self._last_refresh_at[str(base["id"])] = now
         if not remote_dataset_id:
             await self._refresh_shared_base_documents(base)
             return
@@ -1310,12 +1304,16 @@ class KnowledgeService:
             if not isinstance(upstream_doc, dict):
                 continue
             local = by_remote.get(str(upstream_doc.get("id")))
-            if local is None:
+            if (
+                local is None
+                or str(local.get("status")) not in REFRESHABLE_DOCUMENT_STATUSES
+            ):
                 continue
             await self._apply_upstream_doc_status(local, upstream_doc)
 
     async def _refresh_shared_base_documents(self, base: Mapping[str, Any]) -> None:
-        """共享数据集库的状态刷新：逐个轮询本库解析中的文档。"""
+        """共享数据集库的状态刷新：逐篇轮询本库 pending/processing 文档。"""
+
         try:
             dataset_id = await self._dataset_id_for(base)
         except RagflowError as exc:
@@ -1323,38 +1321,40 @@ class KnowledgeService:
                 "共享数据集解析失败 base=%s: %s", base.get("id"), exc
             )
             return
-        limit = self.config.limits.max_documents_per_query
-        active_docs: list[dict[str, Any]] = []
-        for status_value in ("pending", "processing"):
-            active_docs.extend(
-                await self._repo(
-                    self.repository.list_documents,
-                    str(base["id"]),
-                    status=status_value,
-                    limit=limit,
-                    offset=0,
-                )
-            )
-        for local in active_docs:
+        active_docs = await self._repo(
+            self.repository.list_refreshable_documents,
+            str(base["id"]),
+            limit=self.config.limits.max_documents_per_query,
+        )
+        semaphore = asyncio.Semaphore(_REFRESH_DOCUMENT_CONCURRENCY)
+
+        async def refresh_one(local: Mapping[str, Any]) -> None:
             remote_id = str(local.get("remote_document_id") or "").strip()
             if not remote_id:
-                continue
-            try:
-                upstream = await self.ragflow.list_documents(
-                    dataset_id, document_id=remote_id
-                )
-            except RagflowError as exc:
-                logger.warning(
-                    "刷新共享库文档状态失败 base=%s doc=%s: %s",
-                    base.get("id"), local.get("id"), exc,
-                )
-                continue
-            docs = upstream.get("docs") if isinstance(upstream, dict) else None
-            if not isinstance(docs, list) or not docs:
-                continue
-            upstream_doc = docs[0]
-            if isinstance(upstream_doc, dict):
-                await self._apply_upstream_doc_status(local, upstream_doc)
+                return
+            async with semaphore:
+                try:
+                    upstream = await self.ragflow.list_documents(
+                        dataset_id, document_id=remote_id
+                    )
+                    docs = upstream.get("docs") if isinstance(upstream, dict) else None
+                    if not isinstance(docs, list) or not docs:
+                        return
+                    upstream_doc = docs[0]
+                    if isinstance(upstream_doc, dict):
+                        await self._apply_upstream_doc_status(local, upstream_doc)
+                except RagflowError as exc:
+                    logger.warning(
+                        "刷新共享库文档状态失败 base=%s doc=%s: %s",
+                        base.get("id"), local.get("id"), exc,
+                    )
+                except Exception as exc:  # noqa: BLE001 - 单篇失败不能拖累同批其它文档
+                    logger.warning(
+                        "刷新共享库文档状态异常 base=%s doc=%s: %s",
+                        base.get("id"), local.get("id"), exc,
+                    )
+
+        await asyncio.gather(*(refresh_one(local) for local in active_docs))
 
     async def _apply_upstream_doc_status(
         self, local: Mapping[str, Any], upstream_doc: Mapping[str, Any]
@@ -1368,51 +1368,35 @@ class KnowledgeService:
         progress = upstream_doc.get("progress")
         if not isinstance(progress, (int, float)) or not 0 <= progress <= 1:
             progress = None
-        changed = (
-            str(local.get("status")) != status.value
-            or local.get("progress") != progress
-        )
         now_iso = datetime.now(UTC).isoformat()
         parse_started_at = local.get("parse_started_at")
         if status == DocumentStatus.PROCESSING and not parse_started_at:
-            # 首次真正开始解析：超时从此处计时，不含上游排队时间
+            # 首次观察到上游真正开始解析：超时从此处计时，不含排队时间
             parse_started_at = now_iso
+        parse_started_changed = bool(
+            parse_started_at and parse_started_at != local.get("parse_started_at")
+        )
+        changed = (
+            str(local.get("status")) != status.value
+            or local.get("progress") != progress
+            or parse_started_changed
+        )
         # 超时判定先于“无变化跳过”：进度停滞的文档也必须能被发现
         timeout_seconds = float(self.config.limits.parse_timeout_seconds or 0)
         is_sync_source = str(local.get("source") or "") == "source_sync"
         if (
-            not is_sync_source
+            status == DocumentStatus.PROCESSING
+            and not is_sync_source
             and timeout_seconds > 0
-            and (
-                status == DocumentStatus.PROCESSING
-                or str(local.get("status")) == DocumentStatus.PROCESSING.value
-            )
+            and parse_started_at
         ):
-            started_at = parse_started_at
-            if not started_at:
-                active_operation = await self._repo(
-                    self.repository.get_active_document_operation,
-                    str(local["id"]),
-                )
-                latest_operation = active_operation or await self._repo(
-                    self.repository.get_latest_document_operation, str(local["id"])
-                )
-                started_at = (
-                    latest_operation.get("created_at") if latest_operation else None
-                )
             try:
-                started = datetime.fromisoformat(str(started_at))
+                started = datetime.fromisoformat(str(parse_started_at))
                 if started.tzinfo is None:
                     started = started.replace(tzinfo=UTC)
                 elapsed = (datetime.now(UTC) - started).total_seconds()
             except (TypeError, ValueError):
                 elapsed = 0.0
-            # 之前判定超时的文档保持失败，除非上游已给出终态
-            was_timed_out = (
-                str(local.get("error_code") or "") == "KNOWLEDGE_PARSE_TIMEOUT"
-            )
-            if was_timed_out:
-                return
             if elapsed > timeout_seconds:
                 timeout_message = (
                     f"解析超过 {int(timeout_seconds)} 秒仍未完成，请拆分文件后重试"
@@ -1422,7 +1406,7 @@ class KnowledgeService:
                     str(local["id"]),
                     status=DocumentStatus.FAILED.value,
                     progress=None,
-                    error_code="KNOWLEDGE_PARSE_TIMEOUT",
+                    error_code=_PARSE_TIMEOUT_ERROR_CODE,
                     error_message=timeout_message,
                 )
                 await self._repo(
@@ -1432,19 +1416,20 @@ class KnowledgeService:
                     status=OperationStatus.FAILED.value,
                     progress=None,
                     retryable=True,
-                    error_code="KNOWLEDGE_PARSE_TIMEOUT",
+                    error_code=_PARSE_TIMEOUT_ERROR_CODE,
                     error_message=timeout_message,
                 )
                 return
-        # 状态与进度均无变化：跳过后续 DB 写入（稳态轮询省往返）
+        # 状态、进度与解析计时均无变化：跳过后续 DB 写入（稳态轮询省往返）
         if not changed:
             return
         values: dict[str, object] = {"status": status.value, "progress": progress}
-        if parse_started_at and parse_started_at != local.get("parse_started_at"):
+        if parse_started_changed:
             values["parse_started_at"] = parse_started_at
         if status == DocumentStatus.FAILED:
             values.update(
                 {
+                    "progress": None,
                     "error_code": "KNOWLEDGE_PARSE_FAILED",
                     "error_message": str(
                         upstream_doc.get("progress_msg") or "文档解析失败"
@@ -1452,6 +1437,22 @@ class KnowledgeService:
                 }
             )
         elif status == DocumentStatus.READY:
+            values.update(
+                {
+                    "progress": 1.0,
+                    "error_code": None,
+                    "error_message": None,
+                }
+            )
+        elif status == DocumentStatus.CANCELLED:
+            values.update(
+                {
+                    "progress": None,
+                    "error_code": None,
+                    "error_message": None,
+                }
+            )
+        elif status in {DocumentStatus.PENDING, DocumentStatus.PROCESSING}:
             values.update({"error_code": None, "error_message": None})
         await self._repo(self.repository.update_document, local["id"], **values)
         operation_values: dict[str, object] = {"progress": progress}
@@ -1472,6 +1473,7 @@ class KnowledgeService:
                 {
                     "phase": OperationPhase.FAILED.value,
                     "status": OperationStatus.FAILED.value,
+                    "progress": None,
                     "retryable": True,
                     "error_code": "KNOWLEDGE_PARSE_FAILED",
                     "error_message": str(
@@ -1479,23 +1481,22 @@ class KnowledgeService:
                     ),
                 }
             )
-        updated_operation_count = await self._repo(
+        elif status == DocumentStatus.CANCELLED:
+            operation_values.update(
+                {
+                    "phase": OperationPhase.COMPLETED.value,
+                    "status": OperationStatus.CANCELLED.value,
+                    "progress": None,
+                    "retryable": True,
+                    "error_code": None,
+                    "error_message": None,
+                }
+            )
+        await self._repo(
             self.repository.update_active_document_operations,
             str(local["id"]),
             **operation_values,
         )
-        if (
-            status == DocumentStatus.READY
-            and not updated_operation_count
-            and latest_operation is not None
-            and str(latest_operation.get("error_code") or "")
-            == "KNOWLEDGE_PARSE_TIMEOUT"
-        ):
-            await self._repo(
-                self.repository.update_operation,
-                str(latest_operation["id"]),
-                **operation_values,
-            )
 
     async def list_documents(
         self,
@@ -1510,10 +1511,14 @@ class KnowledgeService:
         query: str | None,
         request_id: str,
     ) -> DocumentListResponse:
-        """分页列出知识库文档；返回前先刷新上游解析状态。"""
+        """分页列出知识库文档。
 
-        base, role = await self._authorized_base(base_id, principal)
-        await self.refresh_base_documents(base, request_id=request_id)
+        只读取本地投影，不等待上游全量刷新：解析状态由后台
+        ``KnowledgeParsePollWorker`` 按文档逐个拉取并即时落库。这样同一批
+        上传的文档不会因为某个慢任务而卡住整页状态更新。
+        """
+
+        _, role = await self._authorized_base(base_id, principal)
         rows = await self._repo(
             self.repository.list_documents,
             base_id,
@@ -1548,10 +1553,12 @@ class KnowledgeService:
         failure_message: str,
         original_error_message: str,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
-        """上传远端 → 配置解析器 → 触发解析 → 落 processing，返回最新投影行。
+        """上传远端 → 配置解析器 → 触发解析，返回 pending 投影行。
 
-        上传与重试共用该段流程；失败时统一标记文档/操作为失败并抛出映射后的
-        业务错误。调用方负责关闭 source。
+        本方法只把文档推进到 ``pending``（已提交上游、等待执行）；真正的
+        ``processing`` 由解析轮询在观察到上游 RUNNING 后写入。上传与重试共用
+        该流程；失败时统一标记文档/操作为失败并抛出映射后的业务错误。
+        调用方负责关闭 source。
         """
 
         try:
@@ -1567,12 +1574,15 @@ class KnowledgeService:
                 str(document["id"]),
                 remote_document_id=remote_id,
                 status=DocumentStatus.PENDING.value,
+                progress=None,
+                error_code=None,
+                error_message=None,
+                parse_started_at=None,
             )
             await self._repo(
                 self.repository.update_operation,
                 operation_id,
                 phase=OperationPhase.CONFIGURING.value,
-                progress=0.6,
             )
             # 个人库打 owner_user_id 标签；业务文档同时写 metadata 副本
             await self.ragflow.update_document(
@@ -1591,17 +1601,10 @@ class KnowledgeService:
                     "RAGFlow 触发解析误报(%s)，文档实际已开始解析，按成功处理",
                     exc,
                 )
-            document = await self._repo(
-                self.repository.update_document,
-                str(document["id"]),
-                status=DocumentStatus.PROCESSING.value,
-                progress=0.0,
-            )
             operation = await self._repo(
                 self.repository.update_operation,
                 operation_id,
                 phase=OperationPhase.PARSING.value,
-                progress=0.0,
             )
         except (RagflowError, KeyError, OriginalStorageError) as exc:
             await self._fail_submit(
@@ -1630,6 +1633,8 @@ class KnowledgeService:
             self.repository.update_document,
             document_id,
             status=DocumentStatus.FAILED.value,
+            progress=None,
+            parse_started_at=None,
             error_code=code,
             error_message=failure_message,
         )
@@ -1638,6 +1643,7 @@ class KnowledgeService:
             operation_id,
             phase=OperationPhase.FAILED.value,
             status=OperationStatus.FAILED.value,
+            progress=None,
             retryable=retryable,
             error_code=code,
             error_message=failure_message,
@@ -1763,13 +1769,6 @@ class KnowledgeService:
             created_by=principal.user_id,
             retryable=True,
         )
-        if self.original_store is None:
-            raise KnowledgeServiceError(
-                "ORIGINAL_STORAGE_NOT_READY",
-                "原文存储尚未就绪",
-                status_code=503,
-                retryable=True,
-            )
         storage_key = self.original_store.build_key(
             base_id, str(document["id"]), safe_name
         )
@@ -1802,7 +1801,6 @@ class KnowledgeService:
                 self.repository.update_operation,
                 operation["id"],
                 phase=OperationPhase.UPLOADING.value,
-                progress=0.35,
             )
         except OriginalStorageError as exc:
             await self._repo(
@@ -1816,6 +1814,8 @@ class KnowledgeService:
                 self.repository.update_document,
                 str(document["id"]),
                 status=DocumentStatus.FAILED.value,
+                progress=None,
+                parse_started_at=None,
                 error_code=exc.code,
                 error_message="原文存储失败，未提交知识底座",
             )
@@ -1824,6 +1824,7 @@ class KnowledgeService:
                 operation["id"],
                 phase=OperationPhase.FAILED.value,
                 status=OperationStatus.FAILED.value,
+                progress=None,
                 retryable=exc.retryable,
                 error_code=exc.code,
                 error_message="原文存储失败，未提交知识底座",
@@ -1912,11 +1913,7 @@ class KnowledgeService:
         original = await self._repo(
             self.repository.get_original_object, document_id
         )
-        if (
-            original is not None
-            and str(original.get("status")) == "available"
-            and self.original_store is not None
-        ):
+        if original is not None and str(original.get("status")) == "available":
             try:
                 handle: OriginalReadHandle = await self._repo(
                     self.original_store.open, str(original["storage_key"])
@@ -2099,6 +2096,7 @@ class KnowledgeService:
             document_id,
             status=DocumentStatus.PAUSED.value,
             progress=None,
+            parse_started_at=None,
         )
 
     async def resume_document(
@@ -2146,6 +2144,9 @@ class KnowledgeService:
             document_id,
             status=DocumentStatus.PENDING.value,
             progress=None,
+            parse_started_at=None,
+            error_code=None,
+            error_message=None,
         )
 
     async def retry_document(
@@ -2181,7 +2182,6 @@ class KnowledgeService:
         has_local_original = (
             original_record is not None
             and str(original_record.get("status")) == "available"
-            and self.original_store is not None
         )
         if not remote_id and not has_local_original:
             raise KnowledgeServiceError(
@@ -2221,6 +2221,8 @@ class KnowledgeService:
                 document_id,
                 remote_document_id=None,
                 status=DocumentStatus.PENDING.value,
+                progress=None,
+                parse_started_at=None,
                 error_code=None,
                 error_message=None,
             )

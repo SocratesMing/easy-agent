@@ -70,9 +70,7 @@ _MAX_TITLE_CHARS = 100
 # 同步来源标识：写入元数据 sql 的 source 字段，用于幂等与区分来源（固定值，不配置）
 SOURCE_SYNC_SOURCE = "source_sync"
 
-# 文档 SQL 表结构固定；表名可通过 source_sync.mysql.table 覆盖。
-# 未配置表名时使用默认表并自动建表（首次运行零配置可跑）。
-_DEFAULT_SOURCE_TABLE = "easy_agent_report"
+# 文档 SQL 表结构固定；表名必须通过 source_sync.mysql.table 配置。
 _TABLE_NAME_RE = re.compile(r"^[A-Za-z0-9_]{1,64}$")
 _SOURCE_COLUMNS = {
     "record_id": "id",
@@ -86,39 +84,19 @@ _SOURCE_SELECT = "id, publishDate, batchid, reportTile, reportTag, reportSecondS
 # 按 batchid 匹配文件名时尝试的扩展名（表里 batchid 与磁盘文件名相同）
 _FILE_EXTENSIONS = ("pdf", "doc", "docx", "txt", "md", "xls", "xlsx", "csv", "ppt", "pptx")
 
-_CREATE_DEFAULT_TABLE_SQL = f"""
-CREATE TABLE IF NOT EXISTS `{_DEFAULT_SOURCE_TABLE}` (
-    id BIGINT NOT NULL AUTO_INCREMENT,
-    reportCode VARCHAR(255),
-    batchid VARCHAR(255),
-    attacUrl TEXT,
-    reportAbstract MEDIUMTEXT,
-    reportFirstSource VARCHAR(255),
-    reportTile VARCHAR(255),
-    reportTag VARCHAR(127),
-    ViewPoints MEDIUMTEXT,
-    reportSecondSource VARCHAR(127),
-    reportContent MEDIUMTEXT,
-    publishDate DATETIME,
-    file_list_size INT,
-    zip_flag TINYINT DEFAULT 0,
-    create_time DATETIME,
-    PRIMARY KEY (id),
-    KEY idx_publish_date (publishDate)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-"""
 
-
-def resolve_table_name(sync_config: SourceSyncConfig) -> tuple[str, bool]:
-    """返回 (表名, 是否需要自动建表)；未配置时用默认表名并建表。"""
+def resolve_table_name(sync_config: SourceSyncConfig) -> str:
+    """返回文档 SQL 表名；未配置时直接报错。"""
     configured = sync_config.mysql.table.strip()
     if not configured:
-        return _DEFAULT_SOURCE_TABLE, True
+        raise RuntimeError(
+            "研报 SQL 表名未配置：请设置 knowledge.source_sync.mysql.table（COL_SQL_TABLE）"
+        )
     if not _TABLE_NAME_RE.fullmatch(configured):
         raise RuntimeError(
             f"source_sync.mysql.table 非法（仅允许字母/数字/下划线）: {configured!r}"
         )
-    return configured, False
+    return configured
 
 
 def build_source_query(table: str) -> str:
@@ -248,7 +226,9 @@ def _connect_source(sync_config: SourceSyncConfig) -> Any:
     host = mysql.host.strip()
     database = mysql.database.strip()
     if not host or not database:
-        raise RuntimeError("研报 SQL 配置不完整：mysql.host 与 mysql.database 均为必填")
+        raise RuntimeError(
+            "研报 SQL 配置不完整：mysql.host / mysql.database / mysql.table 均为必填"
+        )
 
     return pymysql.connect(
         host=host,
@@ -268,10 +248,10 @@ def fetch_source_rows(
 ) -> list[dict[str, Any]]:
     """执行固定查询，返回窗口内的源记录（同步阻塞，调用方放线程池）。
 
-    未配置表名时使用默认表并自动建表；配置表名时直接查询、不建表。
+    表名必须配置。
     连接/查询失败只记录「研报 SQL」错误日志并抛出，不做连接参数兜底。
     """
-    table, create_if_missing = resolve_table_name(sync_config)
+    table = resolve_table_name(sync_config)
     mysql = sync_config.mysql
     try:
         connection = _connect_source(sync_config)
@@ -293,8 +273,6 @@ def fetch_source_rows(
     )
     try:
         with connection.cursor() as cursor:
-            if create_if_missing:
-                cursor.execute(_CREATE_DEFAULT_TABLE_SQL)
             cursor.execute(
                 build_source_query(table),
                 {
@@ -936,9 +914,13 @@ async def startup_source_sync(app) -> None:
     sync_config = getattr(config, "source_sync", None) if config is not None else None
     if sync_config is None or not sync_config.enabled:
         return
-    if not sync_config.mysql.host.strip() or not sync_config.mysql.database.strip():
+    if (
+        not sync_config.mysql.host.strip()
+        or not sync_config.mysql.database.strip()
+        or not sync_config.mysql.table.strip()
+    ):
         logger.error(
-            "研报 SQL 配置不完整：mysql.host 与 mysql.database 均为必填，跳过同步"
+            "研报 SQL 配置不完整：mysql.host / mysql.database / mysql.table 均为必填，跳过同步"
         )
         return
     if not sync_config.file_root.strip():

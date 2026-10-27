@@ -557,8 +557,9 @@ import {
   teamSpaceOptionSuffix,
 } from './utils/teamSpace.js'
 import {
-  createOptimisticUploadDocument,
-  mergeServerDocumentsWithOptimistic,
+  applyOptimisticUploadProgress, createOptimisticUploadDocument,
+  markOptimisticUploadStarted, mergeServerDocumentsWithOptimistic,
+  optimisticUploadStatusText,
 } from './utils/uploadPresentation.js'
 import {
   createFolder, createKnowledgeBase, createKnowledgeChatRound, deleteDocument, deleteFolder,
@@ -647,7 +648,7 @@ const search = ref('')
 const statusFilter = ref('')
 // 状态筛选下拉：仅显示当前范围内文档实际存在的状态（非筛选态时从全量文档收集）
 const STATUS_META = [
-  ['pending', '待处理'], ['processing', '解析中'], ['cancel_requested', '取消中'],
+  ['pending', '排队中'], ['processing', '解析中'], ['cancel_requested', '取消中'],
   ['cancelled', '已取消'], ['paused', '已暂停'], ['ready', '已就绪'],
   ['failed', '失败'], ['deleting', '删除中'], ['unknown', '未知'],
 ]
@@ -1136,7 +1137,13 @@ async function uploadFiles(items) {
   })
   const uploadOne = async ({ file, relativePath, optimisticId }) => {
     try {
-      const result = await uploadDocument(uploadBaseId, file, { folderId: uploadFolderId, relativePath })
+      // 传输进度只更新当前文档的乐观行：同批其它文件仍显示各自进度/阶段。
+      markOptimisticUploadStarted(documents.value, optimisticId)
+      const result = await uploadDocument(uploadBaseId, file, {
+        folderId: uploadFolderId,
+        relativePath,
+        onProgress: value => applyOptimisticUploadProgress(documents.value, optimisticId, value),
+      })
       const optimisticIndex = documents.value.findIndex(doc => doc.id === optimisticId)
       if (optimisticIndex >= 0 && (result.document.folder_id || '') === (uploadFolderId || '')) documents.value.splice(optimisticIndex, 1, { ...result.document, optimistic: false })
       else if (optimisticIndex >= 0) {
@@ -1703,6 +1710,7 @@ function folderPath(folder) {
   return parts.join(' / ')
 }
 function documentStatusText(doc) {
+  if (doc.optimistic) return optimisticUploadStatusText(doc)
   if (doc.status !== 'processing') return statusLabel(doc.status)
   const progress = Number(doc.progress || 0)
   if (progress < 0.02) return '正在读取原文'
@@ -1712,7 +1720,7 @@ function documentStatusText(doc) {
 function processingElapsed(doc) {
   return processingElapsedText(doc, operations.value)
 }
-function statusLabel(status) { return ({ pending: '待处理', processing: '解析中', cancel_requested: '取消中', ready: '已就绪', failed: '失败', cancelled: '已取消', paused: '已暂停', deleting: '删除中', unknown: '未知' })[status] || status }
+function statusLabel(status) { return ({ pending: '排队中', processing: '解析中', cancel_requested: '取消中', ready: '已就绪', failed: '失败', cancelled: '已取消', paused: '已暂停', deleting: '删除中', unknown: '未知' })[status] || status }
 function operationStatusLabel(status) { return ({ accepted: '已受理', running: '进行中', succeeded: '成功', failed: '失败', partial_failed: '部分失败' })[status] || status }
 function operationLabel(type) { return ({ dataset_create: '创建知识库', document_upload: '上传文档', document_parse: '解析文档' })[type] || type }
 

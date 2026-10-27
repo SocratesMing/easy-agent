@@ -2,8 +2,11 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 
 import {
+  applyOptimisticUploadProgress,
   createOptimisticUploadDocument,
+  markOptimisticUploadStarted,
   mergeServerDocumentsWithOptimistic,
+  optimisticUploadStatusText,
 } from './uploadPresentation.js'
 
 test('shows a selected upload immediately in the target folder', () => {
@@ -20,8 +23,40 @@ test('shows a selected upload immediately in the target folder', () => {
 
   assert.equal(optimistic.id, 'upload-local-1')
   assert.equal(optimistic.status, 'pending')
+  assert.equal(optimistic.uploadState, 'queued')
   assert.equal(optimistic.optimistic, true)
   assert.deepEqual(optimistic.allowed_actions, [])
+})
+
+test('each optimistic upload reports its own transfer progress', () => {
+  const queued = { optimistic: true, uploadState: 'queued', progress: 0 }
+  const uploading = { optimistic: true, uploadState: 'uploading', progress: 0.42 }
+  const saving = { optimistic: true, uploadState: 'saving', progress: 1 }
+
+  assert.equal(optimisticUploadStatusText(queued), '等待上传')
+  assert.equal(optimisticUploadStatusText(uploading), '上传中 42%')
+  assert.equal(optimisticUploadStatusText(saving), '上传处理中')
+  // 服务端文档仍按解析状态展示，不复用上传进度文案
+  assert.equal(optimisticUploadStatusText({ status: 'processing', progress: 0.3 }), '')
+})
+
+test('upload progress helpers update only the target document row', () => {
+  const documents = [
+    { id: 'doc-a', optimistic: true, uploadState: 'queued', progress: 0 },
+    { id: 'doc-b', optimistic: true, uploadState: 'queued', progress: 0 },
+  ]
+
+  markOptimisticUploadStarted(documents, 'doc-a')
+  applyOptimisticUploadProgress(documents, 'doc-a', 37)
+
+  assert.equal(documents[0].uploadState, 'uploading')
+  assert.equal(documents[0].progress, 0.37)
+  // 同批其它文档保持自己的排队状态，不受这一篇进度影响
+  assert.equal(documents[1].uploadState, 'queued')
+  assert.equal(documents[1].progress, 0)
+
+  applyOptimisticUploadProgress(documents, 'doc-a', 100)
+  assert.equal(documents[0].uploadState, 'saving')
 })
 
 test('polling preserves only optimistic uploads for the current unfiltered folder', () => {

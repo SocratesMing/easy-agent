@@ -66,6 +66,28 @@ def test_stream_web_search_defaults_off(client):
     assert ChatRequest(message="hi").enable_web_search is False
 
 
+def test_stream_passes_knowledge_base_ids_to_prepare(client, monkeypatch):
+    """新对话首条消息携带的知识库范围需透传给 prepare_knowledge_chat。"""
+    from easy_agent.knowledges.chat.chat_bridge import KnowledgeChatContext
+
+    captured = {}
+
+    async def fake_prepare(**kwargs):
+        captured.update(kwargs)
+        return KnowledgeChatContext(None, [], [])
+
+    _capture_agent(monkeypatch)
+    monkeypatch.setattr(chat_api, "prepare_knowledge_chat", fake_prepare)
+
+    resp = client.post(
+        "/agent/chat/stream",
+        json={"message": "看看研报", "knowledge_base_ids": ["base-1", "base-2"]},
+    )
+
+    assert resp.status_code == 200
+    assert captured["knowledge_base_ids"] == ["base-1", "base-2"]
+
+
 def test_cancel_no_active_stream(client):
     # cancel 的 session_id 为查询参数
     resp = client.post("/agent/chat/cancel", params={"session_id": "no-such-session"})

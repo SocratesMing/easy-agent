@@ -232,10 +232,10 @@ knowledge:
     poll_interval_seconds: 15  # 轮询在途文档解析状态的间隔（秒）
     max_attempts: 3            # 单篇文档上传/解析失败后的最大重试次数
     mysql:
-      host: "${SOURCE_SYNC_MYSQL_HOST:-}"         # 研报 SQL 必填，不复用主库
-      port: ${SOURCE_SYNC_MYSQL_PORT:-3306}
-      user: "${SOURCE_SYNC_MYSQL_USER:-}"
-      password: "${SOURCE_SYNC_MYSQL_PASSWORD:-}"
-      database: "${SOURCE_SYNC_MYSQL_DATABASE:-}" # 研报 SQL 必填，不复用主库
-      charset: "${SOURCE_SYNC_MYSQL_CHARSET:-utf8mb4}"
-      table: "${SOURCE_SYNC_MYSQL_TABLE:-}"       # 留空用内置表 easy_agent_report 并自动建表
+      host: "${COL_SQL_HOST:-}"         # 研报 SQL 必填，不复用主库
+      port: ${COL_SQL_PORT:-3306}
+      user: "${COL_SQL_USER:-}"
+      password: "${COL_SQL_PASSWORD:-}"
+      database: "${COL_SQL_DB:-}" # 研报 SQL 必填，不复用主库
+      charset: "${COL_SQL_CHARSET:-utf8mb4}"
+      table: "${COL_SQL_TABLE:-}"       # 研报源表名（必填，源库已存在）

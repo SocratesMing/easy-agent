@@ -80,6 +80,14 @@ class ChatRequest(BaseModel):
             "report_second_sources、report_title_contains）；不传则全范围检索"
         ),
     )
+    knowledge_base_ids: Optional[List[str]] = Field(
+        default=None,
+        description=(
+            "本轮选定的知识库范围（新建会话首条消息由前端携带）：后端建会话后先写入"
+            " session_knowledge_scopes 再检索，避免「选知识库」时提前创建空会话。"
+            "已有会话改选知识库仍走 /sessions/{id}/knowledge-scope 接口；不传=不改变"
+        ),
+    )
     model: Optional[str] = Field(
         default=None,
         description="模型名称（config.models 的 key，如 deepseek/glm）。为空时使用 active model",

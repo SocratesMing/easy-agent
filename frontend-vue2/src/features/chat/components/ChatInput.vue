@@ -170,12 +170,13 @@
             ref="knowledgeScope"
             :session-id="sessionId || ''"
             :disabled="isStreaming || disabled"
+            :pending-base-ids="pendingKnowledgeBaseIds"
             hide-trigger
             anchor-selector=".plus-menu-item-knowledge"
             :show-manage="showManageEntry"
             @mouseenter.native="cancelPlusClose"
             @mouseleave.native="schedulePlusClose"
-            @create-session="$emit('create-session')"
+            @change="handleKnowledgeScopeChange"
             @manage="openKnowledgeManage"
           />
           <input
@@ -301,7 +302,7 @@
             @click="send" 
             class="action-btn send-btn"
             :class="{ active: canSend }"
-            :disabled="!canSend || disabled"
+            :disabled="!canSend || disabled || preparingFiles"
             v-tip="'发送（Enter）'"
           >
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -503,6 +504,11 @@ export default {
       // 镜像渲染层显示的文字（textarea 文字透明，用户看到的都是这一层，见 syncMirror）
       mirrorText: '',
       uploadedFiles: [],
+      // 新对话里勾选的知识库：只暂存在前端，首条消息发送时随请求提交，
+      // 避免“选知识库”阶段提前创建空会话（已有会话仍走 knowledge-scope 接口保存）。
+      pendingKnowledgeBaseIds: [],
+      // 发送前正在把“待发送”附件上传到刚创建/已有会话，防止重复点击发送
+      preparingFiles: false,
       // 联网搜索：available=false 时按钮置灰（后端未启用或未配置 api_key）
       webSearchEnabled: false,
       webSearchAvailable: false,
@@ -797,9 +803,17 @@ export default {
     // 注意 oldVal 为 null（新对话加文件时触发的建会话）不清，否则会清掉刚选的文件。
     sessionId(newVal, oldVal) {
       if (newVal === oldVal) return
+      // 会话已切换/已创建：下一次发送需要按新的 sessionId 重新判断
+      this._pendingSessionPromise = null
       if (oldVal && newVal !== oldVal) {
         this.uploadedFiles = []
         this.dismissUploadNotice()
+        // 切到其他会话/历史会话：新对话暂存的知识选择不再适用
+        this.pendingKnowledgeBaseIds = []
+      }
+      if (!newVal) {
+        // 回到新对话首页：知识选择从空开始
+        this.pendingKnowledgeBaseIds = []
       }
       this.showConnectorSearch = false
       this.connectorKeyword = ''
@@ -1405,6 +1419,11 @@ export default {
       if (this.$refs.knowledgeScope) this.$refs.knowledgeScope.closePopover()
       this.$emit('open-knowledge')
     },
+    // 知识库勾选变化：已有会话由选择器立即 PUT 落库；新对话只暂存，
+    // 等首条消息发送时随 /agent/chat/stream 提交，由后端建会话后落库。
+    handleKnowledgeScopeChange(baseIds) {
+      this.pendingKnowledgeBaseIds = this.sessionId ? [] : [...baseIds]
+    },
     // 供父组件把预置问题完整文本填进输入框（卡片上最多显示 3 行，长问题展示不全）
     setMessage(text) {
       this.message = text || ''
@@ -1560,40 +1579,49 @@ export default {
         }
       }
 
-      item.uploadStatus = 'uploading'
+      // 重试同样遵循“发送时才上传”：已有会话可立即重传；新对话回到待发送状态，
+      // 等用户点发送时再建会话并上传。
+      item.uploadStatus = this.sessionId ? 'uploading' : 'pending'
       item.uploadProgress = 0
       item.errorMessage = ''
       item.retryable = false
       item.cancelled = false
       this.uploadedFiles = [...this.uploadedFiles]
-      this.uploadOneFile(item)
+      if (this.sessionId) this.uploadOneFile(item)
     },
     /**
      * 确保会话存在并返回 sessionId（并行上传共享同一个创建 Promise，
      * 避免一次选择多个文件时重复触发 create-session）。
      *
-     * 本组件自己发起的建会话会让 sessionId 变化：watcher 据此只跳过「技能标签剥离」，
-     * 此刻仍是「用户输入阶段」（文件刚选、技能刚选），输入框里的标签要留着。
-     * 连接器开关也走这里：新建态下切换开关时先建会话，再按 session_id 提交给后端。
+     * 仅在“发送”阶段调用：新对话选附件时不再提前建会话，附件先以待上传状态
+     * 留在前端，用户点发送后才创建会话并上传。
      */
     ensureSessionId() {
       if (this.sessionId) return Promise.resolve(this.sessionId)
       if (!this._pendingSessionPromise) {
-        this._pendingSessionPromise = new Promise((resolve) => {
-          // 创建一个临时的监听器来等待会话创建完成
-          const unwatch = this.$watch(
+        this._pendingSessionPromise = new Promise((resolve, reject) => {
+          let unwatch = null
+          // 会话创建失败（接口异常等）时避免上传链路永久挂起
+          const timer = setTimeout(() => {
+            if (unwatch) unwatch()
+            reject(new Error('会话创建超时，请重试'))
+          }, 15000)
+          unwatch = this.$watch(
             () => this.sessionId,
             (newSessionId) => {
-              if (newSessionId) {
-                unwatch()
-                resolve(newSessionId)
-              }
+              if (!newSessionId) return
+              clearTimeout(timer)
+              unwatch()
+              resolve(newSessionId)
             }
           )
           // 触发会话创建（标记为「自己发起」，watcher 据此不剥离输入框里的技能标签）
           this.selfCreatedSession = true
           this.$emit('create-session')
-        }).then((sessionId) => sessionId)
+        }).catch((error) => {
+          this._pendingSessionPromise = null
+          throw error
+        })
       }
       return this._pendingSessionPromise
     },
@@ -1677,14 +1705,16 @@ export default {
         this.showUploadNotice(this.buildRejectNotice(result, result.accepted.length))
       }
 
-      // 并行上传：每个文件独立开始、独立进度，互不排队
+      // 新对话不立即上传：先以待发送状态留在前端，发送时创建会话再上传；
+      // 已有会话按原有体验立即上传。
+      const uploadNow = Boolean(this.sessionId)
       for (const file of result.accepted) {
         // 创建文件项
         const fileItem = {
           file: file,
           filename: file.name,
           size: file.size,
-          uploadStatus: 'uploading',
+          uploadStatus: uploadNow ? 'uploading' : 'pending',
           uploadProgress: 0,
           cancelled: false,
           abortController: null,
@@ -1698,7 +1728,7 @@ export default {
         // 强制触发初始渲染
         this.uploadedFiles = [...this.uploadedFiles]
 
-        this.uploadOneFile(fileItem)
+        if (uploadNow) this.uploadOneFile(fileItem)
       }
 
       event.target.value = ''
@@ -1732,69 +1762,102 @@ export default {
       // 强制触发更新
       this.uploadedFiles = [...this.uploadedFiles]
     },
-    async send() {
-      if (!this.canSend || this.disabled) return
-
-      // 等待所有文件上传完成
-      const uploadingFiles = this.uploadedFiles.filter(f => f.uploadStatus === 'uploading')
-      if (uploadingFiles.length > 0) {
-        // 显示上传中提示
-        console.log('文件正在上传中，请稍候...')
-        // 可以添加一个loading状态或提示信息
-        return
+    /** 发送前把“待发送”附件上传到会话（新对话此时才会创建会话） */
+    async preparePendingFiles() {
+      const pending = this.uploadedFiles.filter(f => f.uploadStatus === 'pending')
+      if (!pending.length) return
+      for (const item of pending) {
+        if (item.cancelled) continue
+        item.uploadStatus = 'uploading'
+        item.uploadProgress = 0
+        item.errorMessage = ''
+        item.retryable = false
       }
-
-      // 只发送上传成功的文件：失败文件（无 id/file_path）不随消息发出、不在气泡中展示
-      const failedFiles = this.uploadedFiles.filter(f => f.uploadStatus === 'error')
-      if (failedFiles.length > 0) {
-        console.warn(`[发送消息] ${failedFiles.length} 个文件上传失败，已从本次发送中剔除:`,
-          failedFiles.map(f => f.filename).join(', '))
-      }
-      const filesToSend = this.uploadedFiles
-        .filter(f => f.uploadStatus === 'completed')
-        .map(f => ({
-          id: f.id,
-          filename: f.filename,
-          size: f.size,
-          file: f.file,
-          file_path: f.filePath || null,
-          type: f.file?.type || f.fileType || ''
-        }))
-
-      // 详细日志：记录发送操作、文件上传
-      const ts = new Date().toISOString()
-      console.log(`[${ts}] [发送消息] 内容: "${this.message.substring(0, 100)}" | 文件数: ${filesToSend.length}`)
-      if (filesToSend.length > 0) {
-        console.log(`[${ts}] [文件上传] ${filesToSend.map(f => `${f.filename}(${f.size}B)`).join(', ')}`)
-      }
-
-      // 技能以技能目录名提交（后端负责把 `/目录名` 拼进模型输入）；输入框里的内联标签只是 UI，
-      // 正文发送前会把标签整段剥掉（见 buildPayload）。连接器不随消息提交：本会话启用哪些连接器
-      // 由「+」面板的开关单独设置。
-      const turnSkills = this.selectedSkillDirs
-      // 待修改专家 ID（专家面板「编辑」带入，不展示给用户）：随请求结构化字段上行，
-      // 后端校验归属后绑定为 save_expert 的修改目标
-      const expertEditId = this.pendingExpertEditId
-      this.$emit(
-        'send',
-        this.buildPayload(),
-        filesToSend,
-        null,
-        true,
-        this.webSearchEnabled,
-        turnSkills,
-        expertEditId
+      this.uploadedFiles = [...this.uploadedFiles]
+      await Promise.all(
+        pending.filter(item => !item.cancelled).map(item => this.uploadOneFile(item))
       )
+    },
+    async send() {
+      if (!this.canSend || this.disabled || this.preparingFiles) return
+      this.preparingFiles = true
+      try {
+        // 新对话的知识选择只存在本地：先取快照，再上传附件（上传会先创建会话）
+        const knowledgeBaseIds = this.sessionId ? [] : [...this.pendingKnowledgeBaseIds]
 
-      this.message = ''
-      this.uploadedFiles = []
-      this.selectedSkills = []
-      // 预选技能与待修改专家已随本条消息提交，清掉避免影响下一条
-      this.preselectedSkillDirs = []
-      this.pendingExpertEditId = ''
-      this.dismissUploadNotice()
-      this.closeSkillPicker()
-      this.$nextTick(() => this.autoResize())
+        // 新对话的附件此前未上传，发送时才落盘
+        await this.preparePendingFiles()
+
+        // 等待所有文件上传完成
+        const uploadingFiles = this.uploadedFiles.filter(f => f.uploadStatus === 'uploading')
+        if (uploadingFiles.length > 0) {
+          console.log('文件正在上传中，请稍候...')
+          return
+        }
+
+        // 只发送上传成功的文件：失败文件（无 id/file_path）不随消息发出、不在气泡中展示
+        const failedFiles = this.uploadedFiles.filter(f => f.uploadStatus === 'error')
+        if (failedFiles.length > 0) {
+          console.warn(`[发送消息] ${failedFiles.length} 个文件上传失败，已从本次发送中剔除:`,
+            failedFiles.map(f => f.filename).join(', '))
+        }
+        const filesToSend = this.uploadedFiles
+          .filter(f => f.uploadStatus === 'completed')
+          .map(f => ({
+            id: f.id,
+            filename: f.filename,
+            size: f.size,
+            file: f.file,
+            file_path: f.filePath || null,
+            type: f.file?.type || f.fileType || ''
+          }))
+
+        const payload = this.buildPayload()
+        if (!payload && !filesToSend.length && !this.selectedSkillDirs.length) {
+          // 附件全部失败且没有正文/技能：保留文件与错误提示，不发空请求
+          return
+        }
+
+        // 详细日志：记录发送操作、文件上传
+        const ts = new Date().toISOString()
+        console.log(`[${ts}] [发送消息] 内容: "${this.message.substring(0, 100)}" | 文件数: ${filesToSend.length}`)
+        if (filesToSend.length > 0) {
+          console.log(`[${ts}] [文件上传] ${filesToSend.map(f => `${f.filename}(${f.size}B)`).join(', ')}`)
+        }
+
+        // 技能以技能目录名提交（后端负责把 `/目录名` 拼进模型输入）；输入框里的内联标签只是 UI，
+        // 正文发送前会把标签整段剥掉（见 buildPayload）。连接器不随消息提交：本会话启用哪些连接器
+        // 由「+」面板的开关单独设置。
+        const turnSkills = this.selectedSkillDirs
+        // 待修改专家 ID（专家面板「编辑」带入，不展示给用户）：随请求结构化字段上行，
+        // 后端校验归属后绑定为 save_expert 的修改目标
+        const expertEditId = this.pendingExpertEditId
+        this.$emit(
+          'send',
+          payload,
+          filesToSend,
+          null,
+          true,
+          this.webSearchEnabled,
+          turnSkills,
+          expertEditId,
+          knowledgeBaseIds
+        )
+
+        this.message = ''
+        this.uploadedFiles = []
+        // 新对话选择已随消息提交；已有会话改选由选择器单独落库，这里清掉本地暂存
+        if (this.sessionId) this.pendingKnowledgeBaseIds = []
+        this.selectedSkills = []
+        // 预选技能与待修改专家已随本条消息提交，清掉避免影响下一条
+        this.preselectedSkillDirs = []
+        this.pendingExpertEditId = ''
+        this.dismissUploadNotice()
+        this.closeSkillPicker()
+        this.$nextTick(() => this.autoResize())
+      } finally {
+        this.preparingFiles = false
+      }
     },
 
     /**

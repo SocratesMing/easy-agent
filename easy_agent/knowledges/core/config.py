@@ -69,7 +69,8 @@ class LimitsConfig(BaseModel):
     )
     max_documents_per_query: int = Field(default=500, gt=0)
     # 解析绝对超时秒数；0 = 不限制（批量同步场景推荐）。
-    # 计时起点为 parse_started_at（首次进入 processing），不含排队时间。
+    # 计时起点为 parse_started_at（首次观察到上游 RUNNING），不含排队时间；
+    # 超时即失败终态，暂停/恢复/重试会清空旧计时重新开始。
     parse_timeout_seconds: float = Field(default=1800.0, ge=0)
 
 
@@ -90,9 +91,9 @@ class UploadSecurityConfig(BaseModel):
 
 
 class SourceSyncMySQLConfig(BaseModel):
-    """研报 SQL 所在 MySQL 连接（host / database 必填，不做主库兜底）。
+    """研报 SQL 所在 MySQL 连接（host / database / table 必填，不做主库兜底）。
 
-    ``table`` 留空时使用内置默认表名并自动建表；配置后按配置的表名查询。
+    ``table`` 必须是源库中已存在的表。
     """
 
     host: str = ""

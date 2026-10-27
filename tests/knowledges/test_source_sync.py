@@ -102,12 +102,16 @@ def test_metadata_filter_rejects_invalid_range():
         DocumentMetadataFilter(publish_date_from="2026/10/01")
 
 
-def test_source_table_defaults_to_builtin_and_auto_creates():
-    table, create = resolve_table_name(SourceSyncConfig())
-    assert table == "easy_agent_report"
-    assert create is True
-    query = build_source_query(table)
-    assert "FROM `easy_agent_report`" in query
+def test_source_table_required_and_validated():
+    # 未配置表名：直接报错
+    with pytest.raises(RuntimeError):
+        resolve_table_name(SourceSyncConfig())
+
+    config = SourceSyncConfig(mysql={"table": "my_reports"})
+    assert resolve_table_name(config) == "my_reports"
+
+    query = build_source_query("my_reports")
+    assert "FROM `my_reports`" in query
     assert "batchid" in query and "attacUrl" not in query
     assert "%(start)s" in query and "%(end)s" in query
 
@@ -119,10 +123,9 @@ def test_source_sync_start_delay_validates_non_negative():
         SourceSyncConfig(start_delay_minutes=-1)
 
 
-def test_source_table_can_be_overridden_and_validated():
+def test_source_table_name_validated():
     config = SourceSyncConfig(mysql={"table": "my_reports"})
-    table, create = resolve_table_name(config)
-    assert (table, create) == ("my_reports", False)
+    assert resolve_table_name(config) == "my_reports"
 
     with pytest.raises(RuntimeError):
         resolve_table_name(SourceSyncConfig(mysql={"table": "bad-name;"}))
@@ -147,10 +150,16 @@ def test_resolve_batchid_file_rejects_relative_root(tmp_path):
         resolve_batchid_file(config, "batch-001")
 
 
-def test_fetch_source_rows_requires_host_and_database():
+def test_fetch_source_rows_requires_connection_config():
     now = datetime.now(UTC)
-    with pytest.raises(RuntimeError, match="配置不完整"):
+    # 表名必填：留空直接报错
+    with pytest.raises(RuntimeError, match="表名未配置"):
         fetch_source_rows(SourceSyncConfig(), now, now)
+    # 配了表名但缺 host/database：报配置不完整
+    with pytest.raises(RuntimeError, match="配置不完整"):
+        fetch_source_rows(
+            SourceSyncConfig(mysql={"table": "my_reports"}), now, now
+        )
 
 
 # ---------------------------------------------------------------------------

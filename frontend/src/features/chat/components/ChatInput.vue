@@ -154,9 +154,10 @@
               ref="knowledgeScope"
               :session-id="sessionId || ''"
               :disabled="disabled || isStreaming"
+              :pending-base-ids="pendingKnowledgeBaseIds"
               hide-trigger
               anchor-selector=".plus-menu-item-knowledge"
-              @create-session="emit('createSession')"
+              @change="handleKnowledgeScopeChange"
               @manage="openKnowledgeManage"
               @mouseenter="cancelPlusClose"
               @mouseleave="schedulePlusClose"
@@ -508,7 +509,7 @@
             @click="send"
             class="action-btn send-btn"
             :class="{ active: canSend }"
-            :disabled="!canSend || disabled"
+            :disabled="!canSend || disabled || preparingFiles"
             v-tip="'发送（Enter）'"
           >
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -678,6 +679,11 @@ const emit = defineEmits(['send', 'stop', 'createSession', 'update:selectedModel
 const message = ref('')
 const textareaRef = ref(null)
 const uploadedFiles = ref([])
+// 新对话里勾选的知识库：只暂存在前端，首条消息发送时随请求提交，
+// 避免“选知识库”阶段提前创建空会话（已有会话仍走 knowledge-scope 接口保存）。
+const pendingKnowledgeBaseIds = ref([])
+// 发送前正在把“待发送”附件上传到刚创建/已有会话，防止重复点击发送
+const preparingFiles = ref(false)
 
 // 并行上传时共享的「等待会话创建」Promise（避免重复触发 createSession）
 let pendingSessionPromise = null
@@ -1361,6 +1367,12 @@ function openKnowledgeManage() {
   emit('openKnowledge')
 }
 
+// 知识库勾选变化：已有会话由选择器立即 PUT 落库；新对话只暂存，
+// 等首条消息发送时随 /agent/chat/stream 提交，由后端建会话后落库。
+function handleKnowledgeScopeChange(baseIds) {
+  pendingKnowledgeBaseIds.value = props.sessionId ? [] : [...baseIds]
+}
+
 // ========== 「+」二级列表：展示当前用户自己的条目（不跳转页面） ==========
 // 数据来源均为当前用户：
 //   技能   → GET /agent/skill-center/user-skills（workspace/{user}/skills，含已停用）
@@ -1866,6 +1878,8 @@ let selfCreatedSession = false
 
 watch(() => props.sessionId, (newVal, oldVal) => {
   if (newVal === oldVal) return
+  // 会话已切换/已创建：下一次发送需要按新的 sessionId 重新判断
+  pendingSessionPromise = null
   // 本组件自己发起的建会话（上传文件 / 切换连接器开关）仍属「输入阶段的连续操作」，
   // 不要收起正在用的「+」面板（否则点一下开关面板就消失，看不出刚做了什么）。
   const ownCreate = selfCreatedSession
@@ -1874,6 +1888,8 @@ watch(() => props.sessionId, (newVal, oldVal) => {
   // 技能标签是文本的一部分：切会话时把标签从草稿里剥掉（等价于旧的「令牌复位」），
   // 避免标签跟着草稿残留到历史会话的输入框里；本组件自己发起的建会话不算切换，保留标签。
   if (!ownCreate) message.value = stripSkillTokens(message.value, tokenMap.value)
+  // 切到其他会话/回到新对话：新对话暂存的知识选择不再适用
+  if (!newVal || (oldVal && newVal !== oldVal)) pendingKnowledgeBaseIds.value = []
   // 注：连接器开关不随会话走（它反映连接器自身的启用状态，与会话无关）
   connectorKeyword.value = ''
   showConnectorSearch.value = false
@@ -2009,28 +2025,35 @@ function formatTokens(n) {
  * 确保会话存在并返回 sessionId（并行上传共享同一个创建 Promise，
  * 避免一次选择多个文件时重复触发 createSession）。
  *
- * 本组件自己发起的建会话会让 sessionId 变化：watcher 据此不收起「+」面板、
- * 也不剥离输入框里的技能标签（此刻仍是「用户输入阶段」，文件刚选、技能刚选）。
- * 连接器开关也走这里：新建态下切换开关时先建会话，再按 session_id 提交给后端。
+ * 仅在“发送”阶段调用：新对话选附件时不再提前建会话，附件先以待上传状态
+ * 留在前端，用户点发送后才创建会话并上传。
  */
 function ensureSessionId() {
   if (props.sessionId) return Promise.resolve(props.sessionId)
   if (!pendingSessionPromise) {
-    pendingSessionPromise = new Promise((resolve) => {
-      // 创建一个临时的监听器来等待会话创建完成
-      const unwatch = watch(
+    pendingSessionPromise = new Promise((resolve, reject) => {
+      let unwatch = null
+      // 会话创建失败（接口异常等）时避免上传链路永久挂起
+      const timer = setTimeout(() => {
+        if (unwatch) unwatch()
+        reject(new Error('会话创建超时，请重试'))
+      }, 15000)
+      unwatch = watch(
         () => props.sessionId,
         (newSessionId) => {
-          if (newSessionId) {
-            unwatch()
-            resolve(newSessionId)
-          }
+          if (!newSessionId) return
+          clearTimeout(timer)
+          unwatch()
+          resolve(newSessionId)
         }
       )
       // 触发会话创建（标记为「自己发起」，watcher 据此不收起「+」面板）
       selfCreatedSession = true
       emit('createSession')
-    }).then((sessionId) => sessionId)
+    }).catch((error) => {
+      pendingSessionPromise = null
+      throw error
+    })
   }
   return pendingSessionPromise
 }
@@ -2118,13 +2141,15 @@ function retryUpload(index) {
     }
   }
 
-  item.uploadStatus = 'uploading'
+  // 重试同样遵循“发送时才上传”：已有会话可立即重传；新对话回到待发送状态，
+  // 等用户点发送时再建会话并上传。
+  item.uploadStatus = props.sessionId ? 'uploading' : 'pending'
   item.uploadProgress = 0
   item.errorMessage = ''
   item.retryable = false
   item.cancelled = false
   uploadedFiles.value = [...uploadedFiles.value]
-  uploadOneFile(item)
+  if (props.sessionId) uploadOneFile(item)
 }
 
 async function handleFileSelect(event) {
@@ -2147,13 +2172,16 @@ async function handleFileSelect(event) {
   }
 
   // 并行上传：每个文件独立开始、独立进度，互不排队
+  // 新对话不立即上传：先以待发送状态留在前端，发送时创建会话再上传；
+  // 已有会话按原有体验立即上传。
+  const uploadNow = Boolean(props.sessionId)
   for (const file of result.accepted) {
     // 创建文件项
     const fileItem = {
       file: file,
       filename: file.name,
       size: file.size,
-      uploadStatus: 'uploading',
+      uploadStatus: uploadNow ? 'uploading' : 'pending',
       uploadProgress: 0,
       cancelled: false,
       xhrHolder: null,
@@ -2167,7 +2195,7 @@ async function handleFileSelect(event) {
     // 强制触发初始渲染
     uploadedFiles.value = [...uploadedFiles.value]
 
-    uploadOneFile(fileItem)
+    if (uploadNow) uploadOneFile(fileItem)
   }
 }
 
@@ -2201,68 +2229,102 @@ async function removeFile(index) {
   uploadedFiles.value = [...uploadedFiles.value]
 }
 
-async function send() {
-  if (!canSend.value || props.disabled) return
-  
-  // 等待所有文件上传完成
-  const uploadingFiles = uploadedFiles.value.filter(f => f.uploadStatus === 'uploading')
-  if (uploadingFiles.length > 0) {
-    // 显示上传中提示
-    console.log('文件正在上传中，请稍候...')
-    // 可以添加一个loading状态或提示信息
-    return
+/** 发送前把“待发送”附件上传到会话（新对话此时才会创建会话） */
+async function preparePendingFiles() {
+  const pending = uploadedFiles.value.filter(f => f.uploadStatus === 'pending')
+  if (!pending.length) return
+  for (const item of pending) {
+    if (item.cancelled) continue
+    item.uploadStatus = 'uploading'
+    item.uploadProgress = 0
+    item.errorMessage = ''
+    item.retryable = false
   }
-  
-  // 只发送上传成功的文件：失败文件（无 id/file_path）不随消息发出、不在气泡中展示
-  const failedFiles = uploadedFiles.value.filter(f => f.uploadStatus === 'error')
-  if (failedFiles.length > 0) {
-    console.warn(`[发送消息] ${failedFiles.length} 个文件上传失败，已从本次发送中剔除:`,
-      failedFiles.map(f => f.filename).join(', '))
-  }
-  const filesToSend = uploadedFiles.value
-    .filter(f => f.uploadStatus === 'completed')
-    .map(f => ({
-      id: f.id,
-      filename: f.filename,
-      size: f.size,
-      file: f.file,
-      file_path: f.filePath || null,
-      type: f.file?.type || f.fileType || ''
-    }))
-
-  // 详细日志：记录发送操作、文件上传
-  const ts = new Date().toISOString()
-  console.log(`[${ts}] [发送消息] 内容: "${message.value.substring(0, 100)}" | 文件数: ${filesToSend.length}`)
-  if (filesToSend.length > 0) {
-    console.log(`[${ts}] [文件上传] ${filesToSend.map(f => `${f.filename}(${f.size}B)`).join(', ')}`)
-  }
-
-  // 已选技能以 skills（技能目录名）参数单独交给后端；输入框里的内联标签只是 UI，
-  // 正文发送前会把标签整段剥掉（否则气泡/标题/历史里会露出 `/技能名` 这类暗号）。
-  // 连接器不随消息提交：本会话启用哪些连接器由「+」面板的连接器开关单独设置。
-  const turnSkills = selectedSkillDirs.value
-  // 待修改专家 ID（专家面板「编辑」带入，不展示给用户）：随请求结构化字段上行，
-  // 后端校验归属后绑定为 save_expert 的修改目标
-  const expertEditId = pendingExpertEditId.value
-  emit(
-    'send',
-    buildPayload(),
-    filesToSend,
-    null,
-    true,
-    webSearchEnabled.value,
-    turnSkills,
-    expertEditId
+  uploadedFiles.value = [...uploadedFiles.value]
+  await Promise.all(
+    pending.filter(item => !item.cancelled).map(item => uploadOneFile(item))
   )
+}
 
-  message.value = ''
-  uploadedFiles.value = []
-  // 预选技能与待修改专家已随本条消息提交，清掉避免影响下一条
-  preselectedSkillDirs.value = new Set()
-  pendingExpertEditId.value = ''
-  dismissUploadNotice()
-  closeSkillPicker()
-  nextTick(() => autoResize())
+async function send() {
+  if (!canSend.value || props.disabled || preparingFiles.value) return
+  preparingFiles.value = true
+  try {
+    // 新对话的知识选择只存在本地：先取快照，再上传附件（上传会先创建会话）
+    const knowledgeBaseIds = props.sessionId ? [] : [...pendingKnowledgeBaseIds.value]
+
+    // 新对话的附件此前未上传，发送时才落盘
+    await preparePendingFiles()
+
+    // 等待所有文件上传完成
+    const uploadingFiles = uploadedFiles.value.filter(f => f.uploadStatus === 'uploading')
+    if (uploadingFiles.length > 0) {
+      console.log('文件正在上传中，请稍候...')
+      return
+    }
+
+    // 只发送上传成功的文件：失败文件（无 id/file_path）不随消息发出、不在气泡中展示
+    const failedFiles = uploadedFiles.value.filter(f => f.uploadStatus === 'error')
+    if (failedFiles.length > 0) {
+      console.warn(`[发送消息] ${failedFiles.length} 个文件上传失败，已从本次发送中剔除:`,
+        failedFiles.map(f => f.filename).join(', '))
+    }
+    const filesToSend = uploadedFiles.value
+      .filter(f => f.uploadStatus === 'completed')
+      .map(f => ({
+        id: f.id,
+        filename: f.filename,
+        size: f.size,
+        file: f.file,
+        file_path: f.filePath || null,
+        type: f.file?.type || f.fileType || ''
+      }))
+
+    const payload = buildPayload()
+    if (!payload && !filesToSend.length && !selectedSkillDirs.value.length) {
+      // 附件全部失败且没有正文/技能：保留文件与错误提示，不发空请求
+      return
+    }
+
+    // 详细日志：记录发送操作、文件上传
+    const ts = new Date().toISOString()
+    console.log(`[${ts}] [发送消息] 内容: "${message.value.substring(0, 100)}" | 文件数: ${filesToSend.length}`)
+    if (filesToSend.length > 0) {
+      console.log(`[${ts}] [文件上传] ${filesToSend.map(f => `${f.filename}(${f.size}B)`).join(', ')}`)
+    }
+
+    // 已选技能以 skills（技能目录名）参数单独交给后端；输入框里的内联标签只是 UI，
+    // 正文发送前会把标签整段剥掉（否则气泡/标题/历史里会露出 `/技能名` 这类暗号）。
+    // 连接器不随消息提交：本会话启用哪些连接器由「+」面板的连接器开关单独设置。
+    const turnSkills = selectedSkillDirs.value
+    // 待修改专家 ID（专家面板「编辑」带入，不展示给用户）：随请求结构化字段上行，
+    // 后端校验归属后绑定为 save_expert 的修改目标
+    const expertEditId = pendingExpertEditId.value
+    emit(
+      'send',
+      payload,
+      filesToSend,
+      null,
+      true,
+      webSearchEnabled.value,
+      turnSkills,
+      expertEditId,
+      knowledgeBaseIds
+    )
+
+    message.value = ''
+    uploadedFiles.value = []
+    // 新对话选择已随消息提交；已有会话改选由选择器单独落库，这里清掉本地暂存
+    if (props.sessionId) pendingKnowledgeBaseIds.value = []
+    // 预选技能与待修改专家已随本条消息提交，清掉避免影响下一条
+    preselectedSkillDirs.value = new Set()
+    pendingExpertEditId.value = ''
+    dismissUploadNotice()
+    closeSkillPicker()
+    nextTick(() => autoResize())
+  } finally {
+    preparingFiles.value = false
+  }
 }
 
 /**

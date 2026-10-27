@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from easy_agent.db.database import Database
+from easy_agent.knowledges.core.models import REFRESHABLE_DOCUMENT_STATUSES
 
 logger = logging.getLogger(__name__)
 
@@ -629,6 +630,42 @@ class KnowledgeRepository:
     ) -> list[dict[str, Any]]:
         return self._get_documents_by_column(base_id, "d.remote_document_id", remote_document_ids)
 
+    def list_refreshable_base_ids(self) -> list[str]:
+        """仍有待刷新解析状态文档的知识库 ID。
+
+        只统计已经有远端副本且处于 pending/processing 的文档；本地 pending
+        但尚未拿到远端 ID（上传中断）不属于可轮询范围。
+        """
+
+        placeholders = ", ".join("?" for _ in REFRESHABLE_DOCUMENT_STATUSES)
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            self.db._execute(
+                cursor,
+                "SELECT DISTINCT base_id FROM knowledge_documents "
+                "WHERE remote_document_id IS NOT NULL AND remote_document_id != '' "
+                f"AND status IN ({placeholders}) ORDER BY base_id",
+                REFRESHABLE_DOCUMENT_STATUSES,
+            )
+            return [
+                str(row["base_id"] if isinstance(row, dict) else row[0])
+                for row in cursor.fetchall()
+            ]
+
+    def list_refreshable_documents(
+        self, base_id: str, *, limit: int = 500
+    ) -> list[dict[str, Any]]:
+        """某知识库中需要向上游刷新状态的文档（已有远端副本的 pending/processing）。"""
+
+        placeholders = ", ".join("?" for _ in REFRESHABLE_DOCUMENT_STATUSES)
+        return self._select_documents_where(
+            "d.base_id=? AND d.remote_document_id IS NOT NULL "
+            "AND d.remote_document_id != '' "
+            f"AND d.status IN ({placeholders}) "
+            "ORDER BY d.updated_at DESC LIMIT ?",
+            (base_id, *REFRESHABLE_DOCUMENT_STATUSES, limit),
+        )
+
     def _get_documents_by_column(
         self, base_id: str, column: str, values: Iterable[str]
     ) -> list[dict[str, Any]]:
@@ -978,29 +1015,6 @@ class KnowledgeRepository:
         with self.db.get_connection() as conn:
             cursor = conn.cursor()
             self.db._execute(cursor, "SELECT * FROM knowledge_operations WHERE id=?", (operation_id,))
-            return _row_dict(cursor.fetchone())
-
-    def get_active_document_operation(self, document_id: str) -> dict[str, Any] | None:
-        """文档最新一条未完成的 upload/parse 操作。"""
-        return self._latest_document_operation(document_id, active_only=True)
-
-    def get_latest_document_operation(self, document_id: str) -> dict[str, Any] | None:
-        """文档最新一条操作（含已超时的历史操作）。"""
-        return self._latest_document_operation(document_id, active_only=False)
-
-    def _latest_document_operation(self, document_id: str, *, active_only: bool) -> dict[str, Any] | None:
-        status_sql = " AND status IN ('accepted', 'running')" if active_only else ""
-        with self.db.get_connection() as conn:
-            cursor = conn.cursor()
-            self.db._execute(
-                cursor,
-                f"""
-                SELECT * FROM knowledge_operations
-                WHERE resource_type='document' AND resource_id=?{status_sql}
-                ORDER BY created_at DESC LIMIT 1
-                """,
-                (document_id,),
-            )
             return _row_dict(cursor.fetchone())
 
     def update_operation(self, operation_id: str, **fields: object) -> dict[str, Any] | None:

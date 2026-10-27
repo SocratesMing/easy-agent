@@ -3,6 +3,7 @@
 不依赖真实 Ragflow：用假客户端记录调用，临时 SQLite 主库 + 临时原文目录。
 """
 
+import asyncio
 import io
 
 import pytest
@@ -687,3 +688,83 @@ async def test_refresh_base_with_own_dataset_keeps_full_list_behavior(db, tmp_pa
     assert len(ragflow.document_queries) == 1
     assert ragflow.document_queries[0].get("document_id") is None
     assert ragflow.document_queries[0].get("page") == 1
+
+
+async def test_list_documents_does_not_wait_for_slow_upstream_refresh(db, tmp_path):
+    """列表只读本地投影：单篇文档的上游刷新不能拖住整批文档的状态返回。"""
+
+    ragflow = _FakeRagflow()
+    service = _make_service(db, ragflow, tmp_path)
+    base = _create_base_row(db, space_type="personal", owner_user_id="u-1")
+    busy = _add_document(
+        db, str(base["id"]), name="busy.txt", status="processing",
+        remote_document_id="rd-busy",
+    )
+    # 上游已就绪，但只有后台 worker 主动刷新时才应写回本地
+    ragflow.documents_by_id["rd-busy"] = {
+        "id": "rd-busy", "run": "DONE", "progress": 1.0,
+    }
+
+    response = await service.list_documents(
+        base_id=str(base["id"]),
+        principal=_principal(),
+        page=1,
+        page_size=50,
+        folder_id=None,
+        direct_only=False,
+        status=None,
+        query=None,
+        request_id="req-list",
+    )
+
+    assert ragflow.document_queries == []
+    assert response.items[0].id == busy["id"]
+    assert response.items[0].status == "processing"
+
+
+async def test_refresh_shared_base_updates_fast_document_before_slow_one(db, tmp_path):
+    """单篇慢请求只拖住自己：同批其它文档的状态应先独立写回本地投影。"""
+
+    ragflow = _FakeRagflow()
+    service = _make_service(db, ragflow, tmp_path)
+    base = _create_base_row(db, space_type="personal", owner_user_id="u-1")
+    fast = _add_document(
+        db, str(base["id"]), name="fast.txt", status="processing",
+        remote_document_id="rd-fast",
+    )
+    slow = _add_document(
+        db, str(base["id"]), name="slow.txt", status="processing",
+        remote_document_id="rd-slow",
+    )
+    ragflow.documents_by_id["rd-fast"] = {
+        "id": "rd-fast", "run": "DONE", "progress": 1.0,
+    }
+    ragflow.documents_by_id["rd-slow"] = {
+        "id": "rd-slow", "run": "DONE", "progress": 1.0,
+    }
+    slow_started = asyncio.Event()
+    release_slow = asyncio.Event()
+    original_list_documents = ragflow.list_documents
+
+    async def list_documents(dataset_id, **kwargs):
+        if kwargs.get("document_id") == "rd-slow":
+            slow_started.set()
+            await release_slow.wait()
+        return await original_list_documents(dataset_id, **kwargs)
+
+    ragflow.list_documents = list_documents
+    refresh_task = asyncio.create_task(service.refresh_base_documents(base))
+    await asyncio.wait_for(slow_started.wait(), timeout=2)
+
+    repository = KnowledgeRepository(db)
+    for _ in range(100):
+        if repository.get_document(fast["id"])["status"] == "ready":
+            break
+        await asyncio.sleep(0.01)
+    # slow 文档仍被上游阻塞时，fast 文档已独立完成状态更新
+    assert repository.get_document(fast["id"])["status"] == "ready"
+    assert repository.get_document(slow["id"])["status"] == "processing"
+
+    release_slow.set()
+    await asyncio.wait_for(refresh_task, timeout=2)
+    assert repository.get_document(slow["id"])["status"] == "ready"

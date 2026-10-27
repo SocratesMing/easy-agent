@@ -60,6 +60,13 @@ class DocumentStatus(str, Enum):
     UNKNOWN = "unknown"
 
 
+# 仍需从上游刷新解析状态的文档状态：终态（ready/failed/cancelled 等）不再轮询。
+REFRESHABLE_DOCUMENT_STATUSES: tuple[str, ...] = (
+    DocumentStatus.PENDING.value,
+    DocumentStatus.PROCESSING.value,
+)
+
+
 class OperationType(str, Enum):
     DATASET_CREATE = "dataset_create"
     DOCUMENT_UPLOAD = "document_upload"
@@ -608,6 +615,7 @@ __all__ = [
     "PermissionReplaceRequest",
     "PermissionDirectoryListResponse",
     "PermissionDirectoryUser",
+    "REFRESHABLE_DOCUMENT_STATUSES",
     "RetrieveRequest",
     "RetrieveResponse",
     "SessionKnowledgeScopeRequest",

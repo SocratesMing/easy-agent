@@ -1386,7 +1386,7 @@ function parseMCPResult(rawResult) {
 }
 
 
-async function handleSendMessage(message, files = [], signal, enableDeepThink = true, enableWebSearch = false, skills = [], expertEditId = '') {
+async function handleSendMessage(message, files = [], signal, enableDeepThink = true, enableWebSearch = false, skills = [], expertEditId = '', knowledgeBaseIds = []) {
   const userMsgId = `user-${Date.now()}`
   const preStreamUsage = { ...sessionUsage.value }
   // 记录本次请求开始前已累计的耗时和迭代次数，用于流式过程中实时累加
@@ -1522,7 +1522,9 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
       expertEditId,
       selectedExpert.value && selectedExpert.value.export_agent_id
         ? selectedExpert.value.export_agent_id
-        : ''
+        : '',
+      // 新对话首条消息携带的知识库范围：后端建会话后先落 scope 再检索
+      knowledgeBaseIds && knowledgeBaseIds.length ? { knowledgeBaseIds } : null
     )
 
     await expandWorkspaceAfterSessionCompletion(streamSessionId)
