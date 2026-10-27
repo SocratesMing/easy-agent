@@ -1701,6 +1701,9 @@ async function handleToolApproval(decision, target) {
     if (idx !== -1) {
       messages.value[idx].loading = false
       messages.value[idx].error = e.message || '恢复执行失败'
+      if (e.status === 409) {
+        messages.value[idx].pending_approval = null
+      }
       messages.value[idx] = { ...messages.value[idx] }
     }
   } finally {

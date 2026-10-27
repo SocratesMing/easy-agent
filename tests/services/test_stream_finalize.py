@@ -85,7 +85,7 @@ def _spy(monkeypatch):
     return calls, SimpleNamespace(name="agent"), SimpleNamespace(name="db")
 
 
-async def _finalize(proc, *, agent, db, session_logger=None, **kwargs):
+async def _finalize(proc, *, agent, db, session_logger=None, context_length=None, **kwargs):
     return [
         frame
         async for frame in orchestrator.finalize_stream(
@@ -96,7 +96,7 @@ async def _finalize(proc, *, agent, db, session_logger=None, **kwargs):
             message_id="m1",
             proc=proc,
             start_time=time.time() - 1.0,
-            context_length=None,
+            context_length=context_length,
             auto_compress_tokens=170000,
             session_logger=session_logger,
             **kwargs,
@@ -192,3 +192,22 @@ async def test_finalize_resume_done_with_authoritative_blocks_and_elapsed_usage(
     # 记忆更新使用恢复流捕获的原始用户消息
     assert calls[3][1][3] == "original question"
 
+
+@pytest.mark.parametrize("mode", ["chat", "resume"])
+async def test_finalize_persists_the_model_window_with_the_message(monkeypatch, mode):
+    """落库的最终消息带上本轮模型的窗口：会话接口据此还原占用率的分母。"""
+    calls, agent, db = _spy(monkeypatch)
+    await _finalize(
+        _proc(),
+        agent=agent,
+        db=db,
+        context_length=131072,
+        tool_call_records=[],
+        raw_user_msg="q",
+        mode=mode,
+    )
+
+    assert calls[0][0] == "persist_final_message"
+    usage = calls[0][1][2]["usage"]
+    assert usage["context_length"] == 131072
+    assert usage["context_tokens"] == 42

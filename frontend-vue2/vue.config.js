@@ -1,5 +1,4 @@
 const { defineConfig } = require('@vue/cli-service')
-const CopyPlugin = require('copy-webpack-plugin')
 
 // ── 环境与后端地址（开发代理目标）──────────────────────────────────────────
 // 约定：前端所有请求一律使用相对路径（/agent/...），不拼后端域名。
@@ -20,7 +19,7 @@ const AGENT_ENV =
 const PROXY_TARGET =
   process.env.VUE_APP_PROXY_TARGET || PROXY_TARGETS[AGENT_ENV] || PROXY_TARGETS.dev
 
-// AI 侧边栏 SDK 构建（scripts/build-sdk.mjs 设置）：lib 模式，不含 PDF 预览，无需拷贝 pdf.js worker。
+// AI 侧边栏 SDK 构建（scripts/build-sdk.mjs 设置）：lib 模式。
 // SDK 需支持 Node 14 构建：unplugin-icons 23 为纯 ESM（Node 14 无法 require），改用等价的 CJS 实现
 const IS_SDK_BUILD = process.env.EASY_SDK_BUILD === '1'
 
@@ -81,21 +80,6 @@ module.exports = defineConfig({
   configureWebpack: {
     // SDK 体积：全量 highlight.js（190+ 语言）换成官方常用语言子集，压缩后少约 700 KB
     resolve: IS_SDK_BUILD ? { alias: { 'highlight.js$': 'highlight.js/lib/common' } } : {},
-    plugins: [
-      iconsPlugin(),
-      // pdf.js 的 worker 必须与 pdfjs-dist 的安装版本严格一致，版本不同会直接报
-      // "The API version does not match the Worker version"。Vue CLI(Webpack) 不支持
-      // Vite 的 `?url` 语法，因此改为构建期从 node_modules 拷贝到输出根目录，
-      // 免去手工同步（public/ 下的静态文件不会随依赖升级而更新）。
-      !IS_SDK_BUILD &&
-        new CopyPlugin({
-          patterns: [
-            {
-              from: require.resolve('pdfjs-dist/legacy/build/pdf.worker.min.mjs'),
-              to: 'pdf.worker.min.mjs',
-            },
-          ],
-        }),
-    ].filter(Boolean),
+    plugins: [iconsPlugin()],
   },
 })

@@ -27,7 +27,7 @@ pytest tests/ -v
 pytest tests/test_basic.py::TestConfig -v
 
 # Install package (dev mode)
-uv pip install -e ".[dev]"
+uv pip install -e . --group dev
 
 # Vue2 baseline (currently served by easy-web)
 cd frontend-vue2 && npm run dev      # dev server :5173, /agent proxies to :8080

@@ -770,6 +770,13 @@ def _repair_missing_message_rows(db, cursor):
             json_messages = (
                 json.loads(raw_msgs) if isinstance(raw_msgs, str) else raw_msgs
             )
+            # 空数组不能当权威：新会话若误写成 '[]'，行表里已有正文，按空 JSON 重建会删光消息。
+            if not isinstance(json_messages, list) or not json_messages:
+                logger.warning(
+                    "跳过消息修复：sessions.messages 为空数组，不删除 session_messages | session=%s",
+                    sid,
+                )
+                continue
 
             # 行数不一致：删除旧行，从 JSON 重建
             db._execute(

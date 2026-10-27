@@ -55,7 +55,12 @@ from easy_agent.services import (
     get_agent_config,
     init_agent_config,
 )
-from easy_agent.services import init_scheduler, shutdown_scheduler, reload_all_tasks
+from easy_agent.services import (
+    init_scheduler,
+    reload_all_tasks,
+    shutdown_scheduler,
+    start_scheduled_task_reconcile,
+)
 from easy_agent.services.prompt_loader import (
     configure_prompts_dir,
     get_prompts_dir,
@@ -170,6 +175,7 @@ def _start_scheduler() -> None:
         scheduler = init_scheduler()
         scheduler.start()
         reload_all_tasks()
+        start_scheduled_task_reconcile()
         logger.info("✅ 定时任务调度器已启动 (AsyncIOScheduler)")
     except Exception as e:
         logger.warning(f"⚠️ 定时任务调度器启动失败: {e}")

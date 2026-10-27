@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 
 from easy_agent.db.repositories.stream_events import append_stream_event
@@ -42,6 +43,15 @@ def _looks_terminal(payload: str) -> bool:
     try:
         return is_terminal_event(payload)
     except Exception:  # noqa: BLE001 - 非 JSON / 非法 frame：按普通事件处理
+        return False
+
+
+def _is_tool_call_delta(payload: str) -> bool:
+    """工具参数增量可以丢；正文和思考要留下来给其它 Pod 回放。"""
+    try:
+        body = payload[6:] if payload.startswith("data: ") else payload
+        return json.loads(body).get("type") == "tool_call_delta"
+    except Exception:  # noqa: BLE001
         return False
 
 
@@ -78,6 +88,13 @@ class StreamEventWriter:
         except asyncio.QueueFull:
             pass
 
+        if self._evict_tool_deltas():
+            try:
+                self._queue.put_nowait(payload)
+                return
+            except asyncio.QueueFull:
+                pass
+
         if _looks_terminal(payload):
             # 终态必须落库：挤掉最旧一条后重试；仍失败只告警（绝不阻塞）。
             try:
@@ -102,6 +119,27 @@ class StreamEventWriter:
                 f"[{self.session_id[-5:]}] stream_events 队列满，丢弃普通事件 "
                 f"(累计 {self._dropped} 条)"
             )
+
+    def _evict_tool_deltas(self) -> bool:
+        """腾出一格：优先丢掉已在队列里的 tool_call_delta，正文帧留着。"""
+        kept: list = []
+        evicted = False
+        while True:
+            try:
+                item = self._queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            if not evicted and isinstance(item, str) and _is_tool_call_delta(item):
+                evicted = True
+                self._dropped += 1
+                continue
+            kept.append(item)
+        for item in kept:
+            try:
+                self._queue.put_nowait(item)
+            except asyncio.QueueFull:
+                break
+        return evicted
 
     # ── 生命周期 ─────────────────────────────────────────────────────
 
