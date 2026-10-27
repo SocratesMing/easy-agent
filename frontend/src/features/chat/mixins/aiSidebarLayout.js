@@ -96,7 +96,7 @@ export default {
         this.launcherMoved = false
         return
       }
-      this.openSidebar()
+      this.openSidebar({ source: 'launcher' })
     },
     clampLauncher() {
       const max = window.innerHeight - 56
@@ -137,7 +137,7 @@ export default {
       const text = this.selectionAsk.text
       this.hideSelectionAsk()
       if (window.getSelection) window.getSelection().removeAllRanges()
-      this.openSidebar()
+      this.openSidebar({ source: 'selection' })
       this.quote = text
     },
 
@@ -147,7 +147,7 @@ export default {
       if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && (e.key === 'j' || e.key === 'J')) {
         e.preventDefault()
         if (this.open && this.collapsed) this.expand()
-        else this.toggle()
+        else this.toggle({ source: 'shortcut' })
       }
     },
     onWindowResize() {
