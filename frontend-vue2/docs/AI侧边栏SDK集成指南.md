@@ -351,6 +351,8 @@ EasyAgentSidebar.init({
 
 ### 5.4 token 过期与登出
 
+使用 `getToken` 或 `username` + `userId` 时，请求遇到 401（token 过期 / 被顶下线）会自动重新获取 token，并把失败的请求（含正在发送的消息）用新 token 重发一次，用户无感；并发的多个 401 只换取一次。重新获取失败才回调 `onAuthExpired`。`getToken` 每次被调用都应返回一个新的有效 token，不要返回缓存的旧 token。
+
 ```js
 const sidebar = EasyAgentSidebar.init({
   baseURL: 'https://agent.example.com',
@@ -423,7 +425,7 @@ EasyAgentSidebar.init({
 | `onError` | `(error) => void` | — | 初始化失败（如登录失败、后端不可达） |
 | `onOpen` / `onClose` | `(source) => void` / `() => void` | — | 侧边栏打开 / 关闭。`source` 为唤起来源：`launcher` 唤起按钮、`shortcut` 快捷键、`selection` 划词提问、`api` 实例方法 |
 | `refreshContext` | `() => void` | — | 唤起、展开、新建会话、点击上下文标签时调用（函数形式的 `pageContext` 会先自动重算）；宿主可在此调用 `setPageContext(...)` 推送最新页面内容 |
-| `onAuthExpired` | `(error) => void` | — | 登录过期且无法自动续期 |
+| `onAuthExpired` | `(error) => void` | — | 登录过期且无法自动续期（静态 token，或 `getToken` / 免密登录重新获取失败）；能续期时失败的请求会自动重发，不回调 |
 | `onOpenInMain` | `(sessionId) => void` | — | 自定义「在主站打开」的行为（配置后优先于 `mainAppUrl`） |
 | `onOpenPanel` | `(tab) => void` | — | 自定义「在管理面板中打开」的行为，`tab` 为 `experts` / `skills` / `connectors` / `knowledge`（配置后优先于 `mainAppUrl`）。未配置 `mainAppUrl` / `onOpenInMain` / `onOpenPanel` 时该入口隐藏 |
 | `onLayoutChange` | `({ dockWidth }) => void` | — | 固定模式占用宽度变化（关闭或悬浮时为 0） |

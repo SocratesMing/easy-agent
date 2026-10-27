@@ -20,13 +20,16 @@ export const USER_ACTIVITY_EVENT = 'user-activity'
  * AI 侧边栏 SDK 嵌入第三方页面时通过 configureRequest() 覆盖：
  *   - baseURL：后端地址（跨域直连），流式接口同样拼接该前缀；
  *   - tokenKey / usernameKey：登录态存储键，避免与宿主页面或主应用互相覆盖；
- *   - onAuthExpired：401 回调，替代 window 事件，避免触发宿主页面同名事件的监听。
+ *   - onAuthExpired：401 回调，替代 window 事件，避免触发宿主页面同名事件的监听；
+ *   - refreshAuth：401 时换新 token（成功 resolve true，失败自行通知宿主），
+ *     配置后失败的请求换到新 token 自动重发一次，用户无感。
  */
 const runtime = {
   baseURL: '',
   tokenKey: 'mini_agent_token',
   usernameKey: 'mini_agent_username',
   onAuthExpired: null,
+  refreshAuth: null,
 }
 
 /** 覆盖运行时配置（仅 SDK 使用） */
@@ -79,6 +82,33 @@ export function getAuthHeaders() {
   return token ? { Authorization: `Bearer ${token}` } : {}
 }
 
+/** 401 未能续期：清理登录态并派发失效事件 */
+function expireAuth(detail) {
+  // 打印原因，便于区分：空闲超时 / 被顶下线 / token 失效
+  console.warn('[auth] 401 未授权，判定登出 | 原因:', detail || '(无 detail)')
+  if (detail && /其他设备|被迫下线/.test(detail)) {
+    localStorage.setItem('auth_kicked', '1')
+  }
+  clearAuth()
+  dispatchAuthExpired()
+}
+
+/** 登录类接口本身 401 不续期，否则续期过程中的登录请求会等待自己 */
+function canRenew(url) {
+  return !!runtime.refreshAuth && !/\/agent\/auth\//.test(url || '')
+}
+
+/** 续期 token：并发 401 由 refreshAuth 合并为一次；token 已被别的请求换过则直接用新的 */
+async function renewToken(usedToken) {
+  const current = getStoredToken()
+  if (current && current !== usedToken) return true
+  try {
+    return !!(await runtime.refreshAuth())
+  } catch (_) {
+    return false
+  }
+}
+
 /**
  * axios 实例：统一超时、鉴权头与 401 处理
  *
@@ -94,6 +124,7 @@ requestInstance.interceptors.request.use((config) => {
   dispatchUserActivity()
   return {
     ...config,
+    _authToken: getStoredToken(),
     headers: {
       ...config.headers,
       ...getAuthHeaders(),
@@ -103,17 +134,16 @@ requestInstance.interceptors.request.use((config) => {
 
 requestInstance.interceptors.response.use(
   (response) => response,
-  (error) => {
+  async (error) => {
     const response = error.response
     if (response && response.status === 401) {
-      const detail = response.data && response.data.detail
-      // 打印原因，便于区分：空闲超时 / 被顶下线 / token 失效
-      console.warn('[auth] 401 未授权，判定登出 | 原因:', detail || '(无 detail)')
-      if (detail && /其他设备|被迫下线/.test(detail)) {
-        localStorage.setItem('auth_kicked', '1')
+      const config = error.config
+      if (config && !config._authRetried && canRenew(config.url)) {
+        config._authRetried = true
+        if (await renewToken(config._authToken)) return requestInstance(config)
+      } else {
+        expireAuth(response.data && response.data.detail)
       }
-      clearAuth()
-      dispatchAuthExpired()
       error.message = '登录已过期，请重新登录'
     }
     return Promise.reject(error)
@@ -253,22 +283,36 @@ export function streamHeaders(extraHeaders = {}) {
 }
 
 /**
- * 校验流式响应：401 时清理登录态并派发失效事件，非 2xx 时抛出后端错误
+ * 带鉴权头的原生 fetch（流式 / 需要原生 Response 的场景），401 处理与 axios 一致：
+ * 配置了 refreshAuth 时换新 token 重发一次，否则清理登录态并派发失效事件。
+ *
+ * @param {string} url 完整地址（流式接口用 streamUrl 拼接）
+ * @param {RequestInit} [init] fetch 参数，headers 会自动带上 Authorization
+ * @returns {Promise<Response>} 响应（仍可能是 401，由调用方按失败处理）
+ * @example
+ * const res = await fetchWithAuth(streamUrl('/agent/chat/stream'), { method: 'POST', headers: streamHeaders(), body })
+ */
+export async function fetchWithAuth(url, init = {}) {
+  const send = () => fetch(url, { ...init, headers: { ...init.headers, ...getAuthHeaders() } })
+  const usedToken = getStoredToken()
+  const response = await send()
+  if (response.status !== 401) return response
+  if (canRenew(url)) return (await renewToken(usedToken)) ? send() : response
+  const payload = await response.clone().json().catch(() => null)
+  expireAuth(payload && payload.detail)
+  return response
+}
+
+/**
+ * 校验流式响应：非 2xx 时抛出后端错误（401 的登录态处理已由 fetchWithAuth 完成）
  *
  * @param {Response} response fetch 响应对象
  * @returns {Promise<Response>} 正常响应
  * @example
- * const res = await handleStreamResponse(await fetch(streamUrl('/agent/chat/stream')))
+ * const res = await handleStreamResponse(await fetchWithAuth(streamUrl('/agent/chat/stream')))
  */
 export async function handleStreamResponse(response) {
   if (response.status === 401) {
-    const detail = await response.json().catch(() => '')
-    console.warn('[auth] 流式请求 401 未授权，判定登出 | 原因:', detail || '(无 detail)')
-    if (detail && /其他设备|被迫下线/.test(detail)) {
-      localStorage.setItem('auth_kicked', '1')
-    }
-    clearAuth()
-    dispatchAuthExpired()
     throw new Error('登录已过期，请重新登录')
   }
   if (!response.ok) {
