@@ -72,8 +72,13 @@ def _message_key(message) -> tuple:
     return (message.get("role") or "user", message.get("content") or "")
 
 
-def repair_missing_message_rows(db, cursor) -> int:
-    """JSON 条数多于行数的旧会话：行表是 JSON 的前缀时补上缺的尾部，返回补过的会话数。"""
+def repair_missing_message_rows(db, cursor, *, warn: bool = True) -> int:
+    """JSON 条数多于行数的旧会话：行表是 JSON 的前缀时补上缺的尾部，返回补过的会话数。
+
+    对不上的会话不会自己变好，每次启动都会再被跳过一次。``warn=False``（不是升级后的第一次
+    启动）时只记 debug，免得同一批会话每次重启都刷一遍 warning。
+    """
+    level = logging.WARNING if warn else logging.DEBUG
     repaired = 0
     for sid in _session_ids(db, cursor, ">"):
         messages = _legacy_messages(db, cursor, sid)
@@ -81,7 +86,8 @@ def repair_missing_message_rows(db, cursor) -> int:
         tail = messages[len(existing):]
         prefix_matches = [_message_key(m) for m in messages[: len(existing)]] == existing
         if not prefix_matches or not all(isinstance(m, dict) for m in tail):
-            logger.warning(
+            logger.log(
+                level,
                 "跳过消息修复：行表与 sessions.messages 对不上，两边都不改动 | "
                 "session=%s 行=%d JSON=%d",
                 sid,

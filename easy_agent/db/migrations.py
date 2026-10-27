@@ -40,13 +40,17 @@ class Migration:
     fn: Callable[[object, object], None]
 
 
+#: 迁移 6：清空已被行表覆盖的旧 JSON。还没执行过，说明这是升级后的第一次启动（schema.py 据此
+#: 决定对不上的旧会话打 warning 还是 debug）。
+CLEAR_LEGACY_BLOBS_VERSION = 6
+
 # 版本号必须严格递增（接着 baseline 往后编，与 SCHEMA_VERSION 各自独立）；
 # 函数签名 (db, cursor) -> None。
 MIGRATIONS: list[Migration] = [
     # 启动修复（只补不删）跑完之后执行：行表已包含旧 JSON 全部消息的会话把 JSON 清空，
     # 见 easy_agent/db/legacy_messages.py。
     Migration(
-        version=6,
+        version=CLEAR_LEGACY_BLOBS_VERSION,
         description="clear sessions.messages already covered by session_messages",
         fn=clear_complete_legacy_blobs,
     ),

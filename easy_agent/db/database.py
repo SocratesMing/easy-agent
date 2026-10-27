@@ -565,16 +565,7 @@ class Database:
             cursor.fetchone()
         return True
 
-    # ARCH-03 Phase 2: checkpoint/store SQL 已抽到 db/repositories/agent_state.py
-    def load_agent_checkpoint(self, session_id: str) -> bytes | None:
-        return agent_state_repo.load_agent_checkpoint(self, session_id)
-
-    def save_agent_checkpoint(self, session_id: str, payload: bytes) -> None:
-        return agent_state_repo.save_agent_checkpoint(self, session_id, payload)
-
-    def delete_agent_checkpoint(self, session_id: str) -> None:
-        return agent_state_repo.delete_agent_checkpoint(self, session_id)
-
+    # ARCH-03 Phase 2: store SQL 已抽到 db/repositories/agent_state.py（业务库不再存 checkpoint）
     def store_get(self, namespace: str, item_key: str) -> dict | None:
         return agent_state_repo.store_get(self, namespace, item_key)
 

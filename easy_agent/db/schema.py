@@ -12,7 +12,9 @@ import time
 from easy_agent.db.legacy_messages import repair_missing_message_rows
 from easy_agent.db.migrations import (
     BASELINE_VERSION,
+    CLEAR_LEGACY_BLOBS_VERSION,
     META_TABLE,
+    applied_versions,
     apply_pending_migrations,
     ensure_meta_table,
     ensure_migration_ledger,
@@ -28,8 +30,9 @@ logger = logging.getLogger("easy_agent.db.schema")
 # 否则已经升级过的库会一直命中「结构已是最新」的快速启动路径，变更不会生效。
 # 见 init_tables()：版本一致时跳过整轮建表 + 补列 + 建索引探测（MySQL 上这一步
 # 过去要 40+ 次网络往返，多副本部署时每个 pod 启动都要跑一遍，是启动慢的主因）。
-# 10 已被 knowledge_source_sync_items（b65aff4）占用：撞号的库会走快速路径、跳过这次的变更。
-SCHEMA_VERSION = 11
+# 10：knowledge_source_sync_items（b65aff4）；11：表精简（b7bfe69）；12：再退役 3 张空表。
+# 撞号的库会走快速路径、跳过新的变更，改之前先看远端有没有用过这个号。
+SCHEMA_VERSION = 12
 # utf8mb4 复合主键必须 ≤ 3072 字节：(512 + 191) * 4 = 2812。
 LANGGRAPH_STORE_NS_LEN = 512
 LANGGRAPH_STORE_KEY_LEN = 191
@@ -420,6 +423,7 @@ def _create_langgraph_store_table(db, cursor):
 
 # 曾经建过、当前路径不再读写的表。升级时删掉，避免继续占空间。
 # fmqt_bloom*：9091087c 删掉彭博业务后留在库里，代码早已不建不读。
+# uploaded_file / user_ip / tool_call_record：更早版本建的表，现在的代码里没有任何引用，现网是空表。
 _RETIRED_TABLES = (
     "fmqt_lock",
     "fmqt_bloom",
@@ -427,6 +431,9 @@ _RETIRED_TABLES = (
     "tool_call_records",
     "thinking_records",
     "agent_checkpoints",
+    "uploaded_file",
+    "user_ip",
+    "tool_call_record",
 )
 
 # 不再创建的索引 (表, 索引)：都是别的索引的前缀，或者没有查询用到。升级时删掉，省掉写入开销。
@@ -700,9 +707,13 @@ def _repair_missing_message_rows(db, cursor):
 
     原实现在 JSON 条数与行数不等时删掉整个会话的行再按 JSON 重建。A2 之后旧会话的 JSON
     不再更新，继续对话的旧会话每次重启都会丢掉 A2 之后的消息。
+
+    迁移 6 在第一次启动的末尾才执行：还没执行过，说明这是升级后的第一次启动，对不上的会话
+    打 warning 留给人工核对；之后每次启动只记 debug。
     """
     try:
-        repair_missing_message_rows(db, cursor)
+        first_start = CLEAR_LEGACY_BLOBS_VERSION not in applied_versions(db, cursor)
+        repair_missing_message_rows(db, cursor, warn=first_start)
     except Exception as e:
         logger.warning(f"修复 session_messages 缺失行时出错: {e}")
 

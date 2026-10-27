@@ -349,10 +349,10 @@ def _clear_legacy_checkpointers() -> None:
 
 
 class PersistentMemorySaver(MemorySaver):
-    """MemorySaver：传入带 ``load/save_agent_checkpoint`` 的 ``db`` 时，每次写入后把快照存进去。
+    """MemorySaver：传入带 ``load/save_agent_checkpoint`` 的存储对象时，每次写入后把快照存进去。
 
-    业务库已不再保存 checkpoint，:func:`get_session_checkpointer` 不再传业务库，legacy 回退
-    只用进程内状态（重启后审批状态不在）。写入后仍按 ``_PERSIST_MAX_THREADS`` 裁剪。
+    业务库已不再保存 checkpoint，:func:`get_session_checkpointer` 不传存储，legacy 回退只用进程内
+    状态（重启后审批状态不在）。写入后仍按 ``_PERSIST_MAX_THREADS`` 裁剪。
     """
 
     def __init__(self, session_id: str, db=None):
@@ -706,10 +706,10 @@ async def stop_checkpoint_gc() -> None:
     await asyncio.gather(task, return_exceptions=True)
 
 
-def get_session_checkpointer(session_id: str, db=None):
+def get_session_checkpointer(session_id: str):
     """官方 SQLite saver 激活时全局共享；否则按 session 给一个进程内 MemorySaver。
 
-    不再默认取业务库：业务库已不存 checkpoint，传进去只会让每次写入白做一遍全量 pickle。
+    不传业务库：业务库已不存 checkpoint，传进去只会让每次写入白做一遍全量 pickle。
     """
     if _sqlite_saver is not None:
         return _sqlite_saver
@@ -718,7 +718,7 @@ def get_session_checkpointer(session_id: str, db=None):
         if checkpointer is None:
             if len(_CHECKPOINTERS) >= _CHECKPOINTER_MAX:
                 _CHECKPOINTERS.pop(next(iter(_CHECKPOINTERS)), None)
-            checkpointer = PersistentMemorySaver(session_id, db=db)
+            checkpointer = PersistentMemorySaver(session_id)
             _CHECKPOINTERS[session_id] = checkpointer
         return checkpointer
 

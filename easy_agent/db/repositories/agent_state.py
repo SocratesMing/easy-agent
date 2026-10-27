@@ -1,27 +1,12 @@
 """LangGraph store 的持久化 repository（ARCH-03 Phase 2）。
 
-业务库不再保存 HITL checkpoint（官方 AsyncSqliteSaver 写 SQLite 文件）。
-``load/save/delete_agent_checkpoint`` 保留为空操作，避免显式 legacy 模式写已删除的表。
-连接/事务仍由传入的 db 对象提供。
+业务库不再保存 HITL checkpoint：官方 AsyncSqliteSaver 写 SQLite 文件，legacy 回退只在进程内
+（``persistence/checkpoints.py``）。连接/事务仍由传入的 db 对象提供。
 """
 
 from __future__ import annotations
 
 from datetime import datetime
-
-
-def load_agent_checkpoint(db, session_id: str) -> bytes | None:
-    """业务库不再存 checkpoint。保留签名，避免旧调用方在启动时抛错。"""
-    del db, session_id
-    return None
-
-
-def save_agent_checkpoint(db, session_id: str, payload: bytes) -> None:
-    del db, session_id, payload
-
-
-def delete_agent_checkpoint(db, session_id: str) -> None:
-    del db, session_id
 
 
 # ── langgraph_store ────────────────────────────────────────────────

@@ -59,6 +59,8 @@ DEFAULT_RUN_RECOVERY_INTERVAL = 60
 STREAM_EVENTS_RETENTION = timedelta(hours=24)
 # 每条 DELETE 最多删这么多行：积压很多时分批删，避免长事务。
 STREAM_EVENTS_PURGE_BATCH = 5000
+# 单轮最多删这么多批（10 万行）：积压很多时分几轮删完，每轮之间隔一个恢复间隔，不连续占着库。
+STREAM_EVENTS_PURGE_MAX_BATCHES = 20
 
 _recovery_task: asyncio.Task | None = None
 
@@ -266,19 +268,25 @@ def _release_dead_stream_lock(db, session_id: str, owner: str, now_iso: str) -> 
 
 
 def purge_stale_stream_events(
-    db, now: datetime | None = None, *, batch: int = STREAM_EVENTS_PURGE_BATCH
+    db,
+    now: datetime | None = None,
+    *,
+    batch: int = STREAM_EVENTS_PURGE_BATCH,
+    max_batches: int = STREAM_EVENTS_PURGE_MAX_BATCHES,
 ) -> int:
-    """分批删除保留期之前的 stream_events，返回删除条数。
+    """分批删除保留期之前的 stream_events，返回本轮删除条数。
 
-    时间口径与 ``append_stream_event`` 一致（本地时间的 ISO 字符串），按字符串比较。
+    一轮最多 ``max_batches`` 批，删不完的留给下一轮。时间口径与 ``append_stream_event``
+    一致（本地时间的 ISO 字符串），按字符串比较。
     """
     cutoff = ((now or datetime.now()) - STREAM_EVENTS_RETENTION).isoformat()
     total = 0
-    while True:
+    for _ in range(max_batches):
         deleted = delete_stream_events_before(db, cutoff, limit=batch)
         total += deleted
         if deleted < batch:
-            return total
+            break
+    return total
 
 
 async def _run_recovery_loop(interval: float) -> None:

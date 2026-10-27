@@ -337,6 +337,19 @@ def test_purge_removes_only_events_older_than_the_retention(db):
     assert len(list_stream_events(db, "sess-new")) == 1
 
 
+def test_purge_stops_after_the_round_limit(db):
+    """一轮最多删 max_batches 批，删不完的留给下一轮，不在一轮里连续删到底。"""
+    now = datetime(2026, 10, 27, 12, 0, 0)
+    expired = (now - run_registry.STREAM_EVENTS_RETENTION - timedelta(minutes=1)).isoformat()
+    for _ in range(5):
+        _seed_event(db, "sess-backlog", expired)
+
+    assert run_registry.purge_stale_stream_events(db, now, batch=2, max_batches=2) == 4
+    assert len(list_stream_events(db, "sess-backlog")) == 1
+    assert run_registry.purge_stale_stream_events(db, now, batch=2, max_batches=2) == 1
+    assert list_stream_events(db, "sess-backlog") == []
+
+
 async def test_periodic_recovery_also_purges_expired_stream_events(db, monkeypatch):
     import easy_agent.db as db_package
 

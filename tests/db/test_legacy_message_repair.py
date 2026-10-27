@@ -118,6 +118,25 @@ def test_diverged_sessions_are_left_untouched(tmp_path, monkeypatch, caplog):
     assert "对不上" in caplog.text
 
 
+def test_diverged_sessions_only_warn_on_the_first_start(tmp_path, monkeypatch, caplog):
+    """对不上的会话不会自己变好：升级后第一次启动打 warning，之后每次启动只记 debug。"""
+    caplog.set_level(logging.DEBUG, logger="easy_agent.db.legacy_messages")
+    path = tmp_path / "warn-once.db"
+    db = _old_db(path, monkeypatch)
+    _legacy_session(db, "s1", [*OLD, _msg("user", "第三条")], rows=[OLD[0], _msg("assistant", "改过的回答")])
+
+    def mismatch_levels():
+        return [r.levelno for r in caplog.records if "对不上" in r.getMessage()]
+
+    _make_db(path)
+    assert mismatch_levels() == [logging.WARNING]
+
+    for _ in range(2):
+        caplog.clear()
+        _make_db(path)
+        assert mismatch_levels() == [logging.DEBUG]
+
+
 def test_migration_clears_only_blobs_covered_by_rows(tmp_path, monkeypatch):
     path = tmp_path / "mixed.db"
     db = _old_db(path, monkeypatch)
