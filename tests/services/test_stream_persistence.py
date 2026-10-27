@@ -10,7 +10,6 @@ from easy_agent.services.streaming.persistence import (
     IncrementalPersister,
     persist_approval_decisions,
     persist_partial,
-    persist_thinking_event,
     persist_todos,
     persist_tool_result_event,
 )
@@ -125,43 +124,6 @@ def test_persist_partial_saves_and_can_raise(monkeypatch):
     persist_partial(proc, db=BrokenDB(), session_id="s1", sid="s1", start_time=0)
 
 
-def test_persist_thinking_event_records_trimmed_content():
-    db = FakeDB()
-    proc = _proc()
-    proc.blocks = [
-        {"type": "thinking", "step": 1, "content": "  why  "},
-        {"type": "thinking", "step": 2, "content": "later"},
-    ]
-
-    persist_thinking_event(
-        {"step": 1, "duration": 0.5},
-        proc=proc,
-        db=db,
-        session_id="s1",
-        message_id="m1",
-        sid="s1",
-    )
-    assert db.thinking == [
-        {
-            "session_id": "s1",
-            "message_id": "m1",
-            "step": 1,
-            "content": "why",
-            "duration": 0.5,
-        }
-    ]
-
-    persist_thinking_event(
-        {"step": 2, "duration": 0.1},
-        proc=proc,
-        db=db,
-        session_id="s1",
-        message_id="",
-        sid="s1",
-    )
-    assert len(db.thinking) == 1, "message_id 为空时不落库"
-
-
 def test_persist_tool_result_event_records_call_log_and_generated_file():
     db = FakeDB()
     logger = FakeLogger()
@@ -184,17 +146,7 @@ def test_persist_tool_result_event_records_call_log_and_generated_file():
         agent=agent,
         sid="s1",
     )
-    assert db.tool_calls[0] == {
-        "session_id": "s1",
-        "message_id": "m1",
-        "tool_name": "execute",
-        "tool_call_id": "c1",
-        "arguments": {"command": "ls"},
-        "result": "ok",
-        "success": True,
-        "duration": 0.2,
-        "step": 1,
-    }
+    assert db.tool_calls == []
     assert logger.tool_calls[0]["tool_call_id"] == "c1"
 
     persist_tool_result_event(

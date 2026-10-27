@@ -102,6 +102,12 @@ def repair_missing_message_rows(db, cursor) -> int:
                     msg.get("timestamp", datetime.now().isoformat()),
                 ),
             )
+        # 列表用的条数由写入路径维护；快速路径不会再整表回填，补进来的行要自己计上
+        db._execute(
+            cursor,
+            "UPDATE sessions SET message_count = message_count + ? WHERE session_id=?",
+            (len(tail), sid),
+        )
         repaired += 1
     if repaired:
         logger.info("数据修复：为 %d 个会话补回了 session_messages 缺失的行", repaired)

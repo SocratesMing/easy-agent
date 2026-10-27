@@ -314,6 +314,48 @@ async def test_periodic_recovery_finishes_runs_whose_lease_expires_after_startup
     assert task.done()
 
 
+def _seed_event(db, session_id: str, created_at: str) -> None:
+    with db.get_connection() as conn:
+        db._execute(
+            conn.cursor(),
+            "INSERT INTO stream_events (session_id, payload, created_at) VALUES (?, ?, ?)",
+            (session_id, "data: {}\n\n", created_at),
+        )
+
+
+def test_purge_removes_only_events_older_than_the_retention(db):
+    now = datetime(2026, 10, 27, 12, 0, 0)
+    expired = (now - run_registry.STREAM_EVENTS_RETENTION - timedelta(minutes=1)).isoformat()
+    recent = (now - timedelta(hours=1)).isoformat()
+    for _ in range(3):
+        _seed_event(db, "sess-old", expired)
+    _seed_event(db, "sess-new", recent)
+
+    # batch=2：3 条过期事件分两批删完，未过期的保留
+    assert run_registry.purge_stale_stream_events(db, now, batch=2) == 3
+    assert list_stream_events(db, "sess-old") == []
+    assert len(list_stream_events(db, "sess-new")) == 1
+
+
+async def test_periodic_recovery_also_purges_expired_stream_events(db, monkeypatch):
+    import easy_agent.db as db_package
+
+    monkeypatch.setattr(db_package, "get_database", lambda: db)
+    monkeypatch.setattr(run_registry, "_recovery_task", None)
+    expired = (datetime.now() - run_registry.STREAM_EVENTS_RETENTION - timedelta(hours=1)).isoformat()
+    _seed_event(db, "sess-stale", expired)
+
+    run_registry.start_run_recovery(interval=0.2)
+    try:
+        for _ in range(60):
+            await asyncio.sleep(0.1)
+            if not list_stream_events(db, "sess-stale"):
+                break
+        assert list_stream_events(db, "sess-stale") == []
+    finally:
+        await run_registry.stop_run_recovery()
+
+
 def test_periodic_recovery_is_off_when_the_interval_is_not_positive(monkeypatch):
     monkeypatch.setattr(run_registry, "_recovery_task", None)
     monkeypatch.setenv(run_registry.RUN_RECOVERY_INTERVAL_ENV, "0")

@@ -12,8 +12,10 @@ import time
 from easy_agent.db.legacy_messages import repair_missing_message_rows
 from easy_agent.db.migrations import (
     BASELINE_VERSION,
+    META_TABLE,
     apply_pending_migrations,
-    ensure_migrations_table,
+    ensure_meta_table,
+    ensure_migration_ledger,
     record_baseline,
 )
 
@@ -26,11 +28,13 @@ logger = logging.getLogger("easy_agent.db.schema")
 # 否则已经升级过的库会一直命中「结构已是最新」的快速启动路径，变更不会生效。
 # 见 init_tables()：版本一致时跳过整轮建表 + 补列 + 建索引探测（MySQL 上这一步
 # 过去要 40+ 次网络往返，多副本部署时每个 pod 启动都要跑一遍，是启动慢的主因）。
-SCHEMA_VERSION = 10
+# 10 已被 knowledge_source_sync_items（b65aff4）占用：撞号的库会走快速路径、跳过这次的变更。
+SCHEMA_VERSION = 11
 # utf8mb4 复合主键必须 ≤ 3072 字节：(512 + 191) * 4 = 2812。
 LANGGRAPH_STORE_NS_LEN = 512
 LANGGRAPH_STORE_KEY_LEN = 191
-SCHEMA_VERSION_TABLE = "schema_meta"
+# 结构版本号与迁移账本共用这张键值表（db/migrations.py）。
+SCHEMA_VERSION_TABLE = META_TABLE
 SCHEMA_VERSION_KEY = "schema_version"
 
 # 快速路径的兜底校验：这些表必须全部存在，缺任何一个都回退到完整初始化。
@@ -41,16 +45,12 @@ EXPECTED_TABLES = (
     "session_messages",
     "session_files",
     "generated_files",
-    "tool_call_records",
-    "thinking_records",
     "users",
     "mcp_api_keys",
-    "fmqt_lock",
     "scheduled_tasks",
     "scheduled_task_runs",
     "distributed_locks",
     "session_runtime",
-    "agent_checkpoints",
     "langgraph_store",
     "knowledge_bases",
     "knowledge_folders",
@@ -60,7 +60,6 @@ EXPECTED_TABLES = (
     "knowledge_audit_events",
     "knowledge_source_sync_items",
     "expert_agents",
-    "schema_migrations",
     "rate_limit_counters",
     "stream_events",
     "agent_runs",
@@ -91,12 +90,10 @@ def _create_sessions_table(db, cursor, messages_type):
             username VARCHAR(255) DEFAULT ''
         )
     """)
-    _create_index(db, cursor, "idx_updated_at", "sessions", "updated_at")
-    _ensure_column(db, 
+    _ensure_column(db,
         cursor, "sessions", "username", "VARCHAR(255) DEFAULT ''"
     )
-    _create_index(db, cursor, "idx_sessions_username", "sessions", "username")
-    _ensure_column(db, 
+    _ensure_column(db,
         cursor, "sessions", "workspace_name", "VARCHAR(255) DEFAULT ''"
     )
     _ensure_column(db, cursor, "sessions", "pinned", "INTEGER DEFAULT 0")
@@ -114,59 +111,15 @@ def _create_sessions_table(db, cursor, messages_type):
                 pass
 
     _ensure_column(db, cursor, "sessions", "todos", "TEXT DEFAULT NULL")
-
-def _create_tool_call_records_table(db, cursor, auto_inc):
-    cursor.execute(f"""
-        CREATE TABLE IF NOT EXISTS tool_call_records (
-            id INTEGER PRIMARY KEY {auto_inc},
-            session_id VARCHAR(255) NOT NULL,
-            message_id VARCHAR(255) NOT NULL,
-            tool_name TEXT NOT NULL,
-            tool_call_id VARCHAR(255) NOT NULL,
-            arguments TEXT NOT NULL,
-            result TEXT,
-            success INTEGER NOT NULL DEFAULT 1,
-            duration REAL,
-            step INTEGER NOT NULL DEFAULT 0,
-            created_at VARCHAR(50) NOT NULL,
-            FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
-        )
-    """)
-    _create_index(db, 
-        cursor, "idx_tool_call_session", "tool_call_records", "session_id"
+    # 列表不再对 session_messages 做逐行 COUNT；插入/删除消息时维护这一列。
+    _ensure_column(db, cursor, "sessions", "message_count", "INTEGER NOT NULL DEFAULT 0")
+    # 列表按 (username?) + pinned DESC, updated_at DESC 取前 N 条；按用户名计数也走第一个
+    # 的前缀，所以不再单建 username / updated_at 索引（见 _RETIRED_INDEXES）。
+    _create_index(
+        db, cursor, "idx_sessions_user_list", "sessions", "username, pinned, updated_at"
     )
-    _create_index(db, 
-        cursor,
-        "idx_tool_call_message",
-        "tool_call_records",
-        "session_id, message_id",
-    )
-    _ensure_column(db, cursor, "tool_call_records", "duration", "REAL")
-    _ensure_column(db, 
-        cursor, "tool_call_records", "step", "INTEGER NOT NULL DEFAULT 0"
-    )
-
-def _create_thinking_records_table(db, cursor, auto_inc):
-    cursor.execute(f"""
-        CREATE TABLE IF NOT EXISTS thinking_records (
-            id INTEGER PRIMARY KEY {auto_inc},
-            session_id VARCHAR(255) NOT NULL,
-            message_id VARCHAR(255) NOT NULL,
-            step INTEGER NOT NULL DEFAULT 0,
-            content TEXT NOT NULL,
-            duration REAL,
-            created_at VARCHAR(50) NOT NULL,
-            FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
-        )
-    """)
-    _create_index(db, 
-        cursor, "idx_thinking_session", "thinking_records", "session_id"
-    )
-    _create_index(db, 
-        cursor,
-        "idx_thinking_message",
-        "thinking_records",
-        "session_id, message_id",
+    _create_index(
+        db, cursor, "idx_sessions_pin_updated", "sessions", "pinned, updated_at"
     )
 
 def _create_session_messages_table(db, cursor, auto_inc):
@@ -183,14 +136,10 @@ def _create_session_messages_table(db, cursor, auto_inc):
             FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
         )
     """)
-    _create_index(db, 
+    # (session_id) 索引按 id 有序：取全部消息直接用它，按角色取最后一条倒着扫一两行即可，
+    # 不再单建 (session_id, role)。
+    _create_index(db,
         cursor, "idx_session_messages_session", "session_messages", "session_id"
-    )
-    _create_index(db, 
-        cursor,
-        "idx_session_messages_session_role",
-        "session_messages",
-        "session_id, role",
     )
 
     if db.db_type == "mysql":
@@ -243,16 +192,10 @@ def _create_files_tables(db, cursor, auto_inc):
             FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
         )
     """)
-    _create_index(db, 
+    _create_index(db,
         cursor, "idx_generated_files_session", "generated_files", "session_id"
     )
-    _create_index(db, 
-        cursor,
-        "idx_generated_files_message",
-        "generated_files",
-        "session_id, message_id",
-    )
-    _create_index(db, 
+    _create_index(db,
         cursor, "idx_session_files_session", "session_files", "session_id"
     )
     _create_index(db, 
@@ -325,17 +268,6 @@ def _create_misc_tables(db, cursor, auto_inc):
             updated_at VARCHAR(50) NOT NULL,
             revoked INTEGER NOT NULL DEFAULT 0,
             UNIQUE (username, business)
-        )
-    """)
-    _create_index(db, 
-        cursor, "idx_mcp_api_keys_user", "mcp_api_keys", "username"
-    )
-
-    cursor.execute(f"""
-        CREATE TABLE IF NOT EXISTS fmqt_lock (
-            id INTEGER PRIMARY KEY {auto_inc},
-            lock_key VARCHAR(255) NOT NULL UNIQUE,
-            created_at VARCHAR(50) NOT NULL
         )
     """)
 
@@ -433,6 +365,10 @@ def _create_stream_events_table(db, cursor):
     _create_index(
         db, cursor, "idx_stream_events_session", "stream_events", "session_id, event_id"
     )
+    # 按时间清理走 created_at，(session_id, event_id) 覆盖不了这个条件。
+    _create_index(
+        db, cursor, "idx_stream_events_created", "stream_events", "created_at"
+    )
 
 def _create_agent_runs_table(db, cursor):
     """一次聊天/恢复 run 的持久化租约表（多副本 Phase 2B）。
@@ -482,26 +418,58 @@ def _create_langgraph_store_table(db, cursor):
         )
     """)
 
-def _create_agent_checkpoint_table(db, cursor):
-    blob = "BLOB" if db.db_type == "sqlite" else "LONGBLOB"
-    cursor.execute(f"""
-        CREATE TABLE IF NOT EXISTS agent_checkpoints (
-            session_id VARCHAR(255) PRIMARY KEY,
-            payload {blob} NOT NULL,
-            updated_at VARCHAR(50) NOT NULL
-        )
-    """)
+# 曾经建过、当前路径不再读写的表。升级时删掉，避免继续占空间。
+# fmqt_bloom*：9091087c 删掉彭博业务后留在库里，代码早已不建不读。
+_RETIRED_TABLES = (
+    "fmqt_lock",
+    "fmqt_bloom",
+    "fmqt_bloom_analysis",
+    "tool_call_records",
+    "thinking_records",
+    "agent_checkpoints",
+)
 
-def _create_schema_migrations_table(db, cursor):
-    """版本化迁移账本（ARCH-16）。"""
-    cursor.execute(
-        f"""
-        CREATE TABLE IF NOT EXISTS schema_migrations (
-            version INTEGER PRIMARY KEY,
-            description VARCHAR(255) NOT NULL DEFAULT '',
-            applied_at VARCHAR(50) NOT NULL
-        )
+# 不再创建的索引 (表, 索引)：都是别的索引的前缀，或者没有查询用到。升级时删掉，省掉写入开销。
+_RETIRED_INDEXES = (
+    ("sessions", "idx_updated_at"),
+    ("sessions", "idx_sessions_username"),
+    ("session_messages", "idx_session_messages_session_role"),
+    ("generated_files", "idx_generated_files_message"),
+    ("mcp_api_keys", "idx_mcp_api_keys_user"),
+    ("expert_agents", "idx_expert_agents_status"),
+)
+
+
+def _drop_retired_tables(db, cursor) -> None:
+    for name in _RETIRED_TABLES:
+        try:
+            cursor.execute(f"DROP TABLE IF EXISTS {name}")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("删除废弃表 %s 失败（可忽略）: %s", name, exc)
+
+
+def _drop_retired_indexes(db, cursor) -> None:
+    """MySQL 没有 DROP INDEX IF EXISTS，逐个尝试；索引不存在（新库）即目标状态。"""
+    for table, index in _RETIRED_INDEXES:
+        try:
+            if db.db_type == "mysql":
+                cursor.execute(f"DROP INDEX `{index}` ON `{table}`")
+            else:
+                cursor.execute(f"DROP INDEX IF EXISTS `{index}`")
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _backfill_message_counts(db, cursor) -> None:
+    """用行表条数回填 sessions.message_count（升级当次；之后由写入路径维护）。"""
+    db._execute(
+        cursor,
         """
+        UPDATE sessions SET message_count = (
+            SELECT COUNT(*) FROM session_messages m
+            WHERE m.session_id = sessions.session_id
+        )
+        """,
     )
 
 
@@ -574,7 +542,7 @@ def _init_tables_locked(db):
             # 结构无需迁移时仍跑一次轻量数据自愈：只发 1 条聚合 SQL 比对
             # 条数，只有真的不一致的会话才会被重建。
             _repair_missing_message_rows(db, cursor)
-            ensure_migrations_table(db, cursor)
+            ensure_migration_ledger(db, cursor)
             record_baseline(db, cursor, BASELINE_VERSION)
             apply_pending_migrations(db, cursor)
             conn.commit()
@@ -585,7 +553,8 @@ def _init_tables_locked(db):
 
         # 修复 session_messages 表中缺失的消息行（仅在结构变更/首次启动时执行）
         _repair_missing_message_rows(db, cursor)
-        ensure_migrations_table(db, cursor)
+        _backfill_message_counts(db, cursor)
+        ensure_migration_ledger(db, cursor)
         record_baseline(db, cursor, BASELINE_VERSION)
         apply_pending_migrations(db, cursor)
         _store_schema_version(db, cursor)
@@ -605,9 +574,9 @@ def _init_tables_full(db, cursor):
     # SQLite 的 TEXT 无实际长度限制，保持不变。
     messages_type = "TEXT" if db.db_type == "sqlite" else "LONGTEXT"
 
+    _drop_retired_tables(db, cursor)
+    _drop_retired_indexes(db, cursor)
     _create_sessions_table(db, cursor, messages_type)
-    _create_tool_call_records_table(db, cursor, auto_inc)
-    _create_thinking_records_table(db, cursor, auto_inc)
     _create_session_messages_table(db, cursor, auto_inc)
     _create_files_tables(db, cursor, auto_inc)
     _create_users_table(db, cursor)
@@ -615,11 +584,9 @@ def _init_tables_full(db, cursor):
     _create_scheduled_task_tables(db, cursor)
     _create_rate_limit_table(db, cursor)
     _create_distributed_lock_table(db, cursor)
-    _create_schema_migrations_table(db, cursor)
     _create_session_runtime_table(db, cursor)
     _create_stream_events_table(db, cursor)
     _create_agent_runs_table(db, cursor)
-    _create_agent_checkpoint_table(db, cursor)
     _create_langgraph_store_table(db, cursor)
     _create_expert_tables(db, cursor)
 
@@ -658,11 +625,9 @@ def _create_expert_tables(db, cursor):
             update_timestamp VARCHAR(50) NOT NULL
         )
     """)
-    _create_index(db, 
+    # 查询都带 user_id；agent_status 只有几种取值且多用 <>，单建索引用不上。
+    _create_index(db,
         cursor, "idx_expert_agents_user", "expert_agents", "user_id"
-    )
-    _create_index(db, 
-        cursor, "idx_expert_agents_status", "expert_agents", "agent_status"
     )
 
     # 领域 schema 由各模块在 import 时注册（db.schema_registry），这里统一执行；
@@ -675,17 +640,7 @@ def _create_expert_tables(db, cursor):
 
 def _ensure_schema_meta_table(db, cursor) -> int:
     """建 schema_meta 表（若缺）并返回库中记录的结构版本号（无记录返回 0）。"""
-    if db.db_type == "sqlite":
-        cursor.execute(
-            f"CREATE TABLE IF NOT EXISTS {SCHEMA_VERSION_TABLE} "
-            "(meta_key TEXT PRIMARY KEY, meta_value TEXT NOT NULL)"
-        )
-    else:
-        cursor.execute(
-            f"CREATE TABLE IF NOT EXISTS {SCHEMA_VERSION_TABLE} "
-            "(meta_key VARCHAR(64) NOT NULL PRIMARY KEY, "
-            "meta_value VARCHAR(255) NOT NULL)"
-        )
+    ensure_meta_table(db, cursor)
     db._execute(
         cursor,
         f"SELECT meta_value FROM {SCHEMA_VERSION_TABLE} WHERE meta_key=?",

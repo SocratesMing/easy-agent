@@ -140,6 +140,30 @@ def test_migration_clears_only_blobs_covered_by_rows(tmp_path, monkeypatch):
     assert _contents(restarted, "diverged") == ["旧问题", "改过的回答"]
 
 
+def test_rows_filled_on_a_fast_path_restart_are_counted(tmp_path, monkeypatch):
+    """快速路径不会整表回填 message_count：修复补进来的行要自己计上，否则会话列表的条数偏少。"""
+    import easy_agent.knowledges.core.schema  # noqa: F401 - 注册知识库建表，重启才会走快速路径
+    from easy_agent.db import schema
+
+    path = tmp_path / "count.db"
+    db = _old_db(path, monkeypatch)
+    _legacy_session(db, "s1", [*OLD, _msg("user", "第三条")], rows=[])
+
+    full_inits = []
+    real_full = schema._init_tables_full
+    monkeypatch.setattr(
+        schema, "_init_tables_full", lambda *a, **k: (full_inits.append(1), real_full(*a, **k))[1]
+    )
+    restarted = _make_db(path)
+
+    assert full_inits == []  # 走的是快速路径
+    assert _contents(restarted, "s1") == ["旧问题", "旧回答", "第三条"]
+    with restarted.get_connection() as conn:
+        cur = conn.cursor()
+        restarted._execute(cur, "SELECT message_count FROM sessions WHERE session_id=?", ("s1",))
+        assert cur.fetchone()[0] == 3
+
+
 def test_migration_is_recorded_and_runs_once(tmp_path, monkeypatch):
     path = tmp_path / "once.db"
     _old_db(path, monkeypatch)

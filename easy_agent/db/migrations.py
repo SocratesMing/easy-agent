@@ -3,7 +3,8 @@
 背景：当前 `Database.init_tables()` 依赖「单版本号 + 幂等 DDL」快速路径，适合
 建表/补列，但缺少**可审计、可回滚的按版本迁移记录**。本模块提供最小迁移框架：
 
-- `schema_migrations` 表记录已应用版本（version PRIMARY KEY, description, applied_at）；
+- 已应用版本记在 `schema_meta`（键 `migration:<版本>`，值为应用时间与说明），与结构
+  版本号同表；旧库的 `schema_migrations` 表在下次启动时导入后删除；
 - 首次启用时写入 baseline（当前 SCHEMA_VERSION），避免把历史 DDL 重放一遍；
 - 后续破坏性/数据型变更以 `Migration(version, description, fn)` 追加到 `MIGRATIONS`，
   启动时按版本顺序只执行未应用的迁移，并在同一事务内记录。
@@ -23,7 +24,11 @@ from easy_agent.db.legacy_messages import clear_complete_legacy_blobs
 
 logger = logging.getLogger("easy_agent.db.migrations")
 
-MIGRATIONS_TABLE = "schema_migrations"
+#: 结构版本号（db/schema.py）与迁移账本共用的键值表。
+META_TABLE = "schema_meta"
+#: 旧的迁移账本表：导入 schema_meta 后删除。
+LEGACY_MIGRATIONS_TABLE = "schema_migrations"
+_KEY_PREFIX = "migration:"
 # 引入迁移框架时数据库已处于的 schema 版本；第一次启用只记 baseline，不重放历史 DDL。
 BASELINE_VERSION = 5
 
@@ -48,31 +53,77 @@ MIGRATIONS: list[Migration] = [
 ]
 
 
-def ensure_migrations_table(db, cursor) -> None:
-    cursor.execute(
-        f"""
-        CREATE TABLE IF NOT EXISTS {MIGRATIONS_TABLE} (
-            version INTEGER PRIMARY KEY,
-            description VARCHAR(255) NOT NULL DEFAULT '',
-            applied_at VARCHAR(50) NOT NULL
+def ensure_meta_table(db, cursor) -> None:
+    if db.db_type == "sqlite":
+        cursor.execute(
+            f"CREATE TABLE IF NOT EXISTS {META_TABLE} "
+            "(meta_key TEXT PRIMARY KEY, meta_value TEXT NOT NULL)"
         )
-        """
+    else:
+        cursor.execute(
+            f"CREATE TABLE IF NOT EXISTS {META_TABLE} "
+            "(meta_key VARCHAR(64) NOT NULL PRIMARY KEY, "
+            "meta_value VARCHAR(255) NOT NULL)"
+        )
+
+
+def table_exists(db, cursor, name: str) -> bool:
+    if db.db_type == "sqlite":
+        db._execute(cursor, "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,))
+    else:
+        db._execute(
+            cursor,
+            "SELECT 1 FROM information_schema.tables "
+            "WHERE table_schema = DATABASE() AND table_name = ?",
+            (name,),
+        )
+    return cursor.fetchone() is not None
+
+
+def ensure_migration_ledger(db, cursor) -> None:
+    """确保账本可用：旧库的 schema_migrations 表导入 schema_meta 后删除（只发生一次）。"""
+    ensure_meta_table(db, cursor)
+    if not table_exists(db, cursor, LEGACY_MIGRATIONS_TABLE):
+        return
+    db._execute(
+        cursor, f"SELECT version, description, applied_at FROM {LEGACY_MIGRATIONS_TABLE}"
     )
+    legacy = [
+        (r["version"], r["description"], r["applied_at"]) if isinstance(r, dict) else tuple(r)
+        for r in cursor.fetchall()
+    ]
+    done = set(applied_versions(db, cursor))
+    for version, description, applied_at in legacy:
+        if int(version) not in done:
+            _record(db, cursor, int(version), description or "", applied_at or "")
+    cursor.execute(f"DROP TABLE {LEGACY_MIGRATIONS_TABLE}")
+    logger.info("迁移账本已并入 %s | 导入 %d 条", META_TABLE, len(legacy))
 
 
 def applied_versions(db, cursor) -> list[int]:
-    ensure_migrations_table(db, cursor)
-    db._execute(cursor, f"SELECT version FROM {MIGRATIONS_TABLE} ORDER BY version")
-    rows = cursor.fetchall()
-    return [int(r["version"] if isinstance(r, dict) else r[0]) for r in rows]
+    db._execute(
+        cursor, f"SELECT meta_key FROM {META_TABLE} WHERE meta_key LIKE ?", (f"{_KEY_PREFIX}%",)
+    )
+    versions = []
+    for r in cursor.fetchall():
+        key = r["meta_key"] if isinstance(r, dict) else r[0]
+        try:
+            versions.append(int(key[len(_KEY_PREFIX):]))
+        except ValueError:
+            continue
+    return sorted(versions)
+
+
+def _record(db, cursor, version: int, description: str, applied_at: str) -> None:
+    db._execute(
+        cursor,
+        f"INSERT INTO {META_TABLE} (meta_key, meta_value) VALUES (?, ?)",
+        (f"{_KEY_PREFIX}{version}", f"{applied_at} {description}".strip()[:255]),
+    )
 
 
 def record_migration(db, cursor, version: int, description: str) -> None:
-    db._execute(
-        cursor,
-        f"INSERT INTO {MIGRATIONS_TABLE} (version, description, applied_at) VALUES (?, ?, ?)",
-        (version, description, datetime.now().isoformat()),
-    )
+    _record(db, cursor, int(version), description, datetime.now().isoformat())
 
 
 def record_baseline(db, cursor, baseline_version: int) -> bool:

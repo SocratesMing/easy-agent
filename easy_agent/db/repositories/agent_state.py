@@ -1,6 +1,7 @@
-"""HITL checkpoint 与 LangGraph store 的持久化 repository（ARCH-03 Phase 2）。
+"""LangGraph store 的持久化 repository（ARCH-03 Phase 2）。
 
-从 `Database` 抽出的第二块领域 SQL：agent_checkpoints + langgraph_store。
+业务库不再保存 HITL checkpoint（官方 AsyncSqliteSaver 写 SQLite 文件）。
+``load/save/delete_agent_checkpoint`` 保留为空操作，避免显式 legacy 模式写已删除的表。
 连接/事务仍由传入的 db 对象提供。
 """
 
@@ -9,54 +10,18 @@ from __future__ import annotations
 from datetime import datetime
 
 
-# ── agent_checkpoints ──────────────────────────────────────────────
 def load_agent_checkpoint(db, session_id: str) -> bytes | None:
-    with db.get_connection() as conn:
-        cursor = conn.cursor()
-        db._execute(
-            cursor,
-            "SELECT payload FROM agent_checkpoints WHERE session_id=?",
-            (session_id,),
-        )
-        row = cursor.fetchone()
-    if not row:
-        return None
-    payload = row["payload"] if isinstance(row, dict) else row[0]
-    return bytes(payload) if payload is not None else None
+    """业务库不再存 checkpoint。保留签名，避免旧调用方在启动时抛错。"""
+    del db, session_id
+    return None
 
 
 def save_agent_checkpoint(db, session_id: str, payload: bytes) -> None:
-    now = datetime.now().isoformat()
-    with db.get_connection() as conn:
-        cursor = conn.cursor()
-        if db.db_type == "mysql":
-            db._execute(
-                cursor,
-                """
-                INSERT INTO agent_checkpoints (session_id, payload, updated_at)
-                VALUES (?, ?, ?)
-                ON DUPLICATE KEY UPDATE payload=VALUES(payload), updated_at=VALUES(updated_at)
-                """,
-                (session_id, payload, now),
-            )
-        else:
-            db._execute(
-                cursor,
-                """
-                INSERT INTO agent_checkpoints (session_id, payload, updated_at)
-                VALUES (?, ?, ?)
-                ON CONFLICT(session_id) DO UPDATE SET payload=excluded.payload, updated_at=excluded.updated_at
-                """,
-                (session_id, payload, now),
-            )
+    del db, session_id, payload
 
 
 def delete_agent_checkpoint(db, session_id: str) -> None:
-    with db.get_connection() as conn:
-        cursor = conn.cursor()
-        db._execute(
-            cursor, "DELETE FROM agent_checkpoints WHERE session_id=?", (session_id,)
-        )
+    del db, session_id
 
 
 # ── langgraph_store ────────────────────────────────────────────────

@@ -1927,15 +1927,18 @@ class KnowledgeService:
                     exc.code,
                 )
             else:
+                # 原文访问一律留痕（不受 audit.enabled 控制，与并表前一致）。
                 await self._repo(
-                    self.repository.create_original_access_audit,
-                    user_id=principal.user_id,
-                    session_id="",
-                    agent_id="api",
-                    document_id=document_id,
-                    action="download",
-                    result="opened",
+                    self.operations_repository.record_audit,
                     request_id=request_id,
+                    actor_user_id=principal.user_id,
+                    actor_username=principal.username,
+                    action="knowledge.original.download",
+                    object_type="document",
+                    object_id=document_id,
+                    base_id=str(document.get("base_id") or "") or None,
+                    outcome="opened",
+                    details={"session_id": "", "agent_id": "api"},
                 )
                 return document, KnowledgeDocumentBinary(
                     size_bytes=handle.size_bytes,

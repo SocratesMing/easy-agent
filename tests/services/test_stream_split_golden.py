@@ -333,28 +333,9 @@ async def test_chat_stream_golden_event_order_and_persistence():
     }
 
     assert db.todos == [[{"content": "x"}]]
-    assert db.recorded_thinking == [
-        {
-            "session_id": "s1",
-            "message_id": "m1",
-            "step": 1,
-            "content": "why",
-            "duration": 0.5,
-        }
-    ]
-    assert db.recorded_tool_calls == [
-        {
-            "session_id": "s1",
-            "message_id": "m1",
-            "tool_name": "execute",
-            "tool_call_id": "c1",
-            "arguments": {"command": "ls"},
-            "result": "ok",
-            "success": True,
-            "duration": 0.2,
-            "step": 1,
-        }
-    ]
+    # 思考与工具调用只记在最终消息的 extra_data（下方 final 的断言），不再另写记录表
+    assert db.recorded_thinking == []
+    assert db.recorded_tool_calls == []
 
     final = db.persisted[-1]
     assert final["content"] == "hello world!"

@@ -1,7 +1,7 @@
 """按领域拆分的数据库 repository（ARCH-03 Phase 2 / C1）。
 
 - ``agent_state`` / ``files`` / ``mcp_api_keys`` / ``scheduled_tasks`` /
-  ``session_records`` / ``session_runtime`` / ``sessions`` / ``users``：
+  ``session_runtime`` / ``sessions`` / ``users``：
   领域 SQL 函数，连接/事务由传入的 ``Database`` 对象提供；
 - ``chat_repository`` / ``expert_repository`` / ``file_repository`` /
   ``scheduled_task_repository`` / ``user_repository``：C1 的域门面对象，
@@ -19,7 +19,6 @@ from easy_agent.db.repositories import (  # noqa: F401
     mcp_api_keys,
     scheduled_task_repository,
     scheduled_tasks,
-    session_records,
     session_runtime,
     sessions,
     user_repository,
@@ -35,7 +34,6 @@ __all__ = [
     "mcp_api_keys",
     "scheduled_task_repository",
     "scheduled_tasks",
-    "session_records",
     "session_runtime",
     "sessions",
     "user_repository",

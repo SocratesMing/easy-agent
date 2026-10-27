@@ -27,13 +27,12 @@ from easy_agent.db.repositories import stream_events as stream_events_repo
 from easy_agent.db.repositories import agent_runs as agent_runs_repo
 from easy_agent.db.repositories import agent_state as agent_state_repo
 from easy_agent.db.repositories import scheduled_tasks as scheduled_tasks_repo
-from easy_agent.db.repositories import session_records as session_records_repo
 from easy_agent.db.repositories import sessions as sessions_repo
 from easy_agent.db.repositories import files as files_repo
 from easy_agent.db.repositories import mcp_api_keys as mcp_api_keys_repo
 from easy_agent.db.repositories import users as users_repo
 from easy_agent.db import schema
-from easy_agent.bootstrap.env import env_bool
+from easy_agent.bootstrap.env import env_bool, env_str
 
 DATABASE_PATH = "./data/easy_agent.db"
 logger = logging.getLogger(__name__)
@@ -46,6 +45,15 @@ from easy_agent.db.schema import (  # noqa: F401 - 兼容重导出（tests/db �
     SCHEMA_VERSION_KEY,
 )
 
+
+
+def _mysql_sqlite_fallback_forbidden() -> bool:
+    """生产多副本连不上 MySQL 时不能改写本地 SQLite。单机开发允许降级启动。"""
+    if str(env_str("AGENT_ENV", "dev")).strip().lower() != "prod":
+        return False
+    from easy_agent.utils.deployment import detect_worker_count
+
+    return detect_worker_count() > 1
 
 
 def ensure_database_dir(db_path: str):
@@ -89,9 +97,19 @@ class Database:
                         f"数据库: {self._mysql_config.get('database')} | 用户: {self._mysql_config.get('user')}"
                     )
                 except Exception as e:
-                    raise RuntimeError(
-                        f"MySQL 连接失败，已禁止降级到 SQLite（多副本会各写各的库）: {e}"
-                    ) from e
+                    if _mysql_sqlite_fallback_forbidden():
+                        raise RuntimeError(
+                            "MySQL 连接失败，生产多副本禁止降级到 SQLite"
+                            f"（各副本会各写各的库）: {e}"
+                        ) from e
+                    sqlite_cfg = db_config.get("sqlite", {})
+                    self.db_path = sqlite_cfg.get("path", DATABASE_PATH)
+                    ensure_database_dir(self.db_path)
+                    logger.warning(
+                        "MySQL 连接失败，已降级到 SQLite | 路径: %s | 原因: %s",
+                        self.db_path,
+                        e,
+                    )
         else:
             self.db_path = DATABASE_PATH
             ensure_database_dir(self.db_path)
@@ -250,12 +268,6 @@ class Database:
     def _create_sessions_table(self, *args, **kwargs):
         return schema._create_sessions_table(self, *args, **kwargs)
 
-    def _create_tool_call_records_table(self, *args, **kwargs):
-        return schema._create_tool_call_records_table(self, *args, **kwargs)
-
-    def _create_thinking_records_table(self, *args, **kwargs):
-        return schema._create_thinking_records_table(self, *args, **kwargs)
-
     def _create_session_messages_table(self, *args, **kwargs):
         return schema._create_session_messages_table(self, *args, **kwargs)
 
@@ -282,9 +294,6 @@ class Database:
 
     def _create_langgraph_store_table(self, *args, **kwargs):
         return schema._create_langgraph_store_table(self, *args, **kwargs)
-
-    def _create_agent_checkpoint_table(self, *args, **kwargs):
-        return schema._create_agent_checkpoint_table(self, *args, **kwargs)
 
     def _create_distributed_lock_table(self, *args, **kwargs):
         return schema._create_distributed_lock_table(self, *args, **kwargs)
@@ -407,27 +416,6 @@ class Database:
     @staticmethod
     def _try_repair_json(raw: str) -> dict | None:
         return sessions_repo.try_repair_json(raw)
-
-    # ARCH-03 Phase 2: 工具/思考记录 SQL 已抽到 db/repositories/session_records.py
-    def record_tool_call(self, session_id: str, message_id: str, tool_name: str,
-                         tool_call_id: str, arguments: dict, result: str = None,
-                         success: bool = True, duration: float = None, step: int = 0):
-        return session_records_repo.record_tool_call(
-            self, session_id, message_id, tool_name, tool_call_id, arguments,
-            result, success, duration, step,
-        )
-
-    def get_tool_calls(self, session_id: str) -> list[dict]:
-        return session_records_repo.get_tool_calls(self, session_id)
-
-    def record_thinking(self, session_id: str, message_id: str, step: int,
-                        content: str, duration: float = None):
-        return session_records_repo.record_thinking(
-            self, session_id, message_id, step, content, duration
-        )
-
-    def get_thinkings(self, session_id: str) -> list[dict]:
-        return session_records_repo.get_thinkings(self, session_id)
 
     # ARCH-03 Phase 2: users SQL 已抽到 db/repositories/users.py
     def create_user(self, *args, **kwargs):
