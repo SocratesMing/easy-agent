@@ -19,6 +19,9 @@ import sys
 from easy_agent.db import init_database
 from easy_agent.bootstrap.initialization import initialize_runtime
 
+import easy_agent.knowledges.core.schema  # noqa: F401 - 注册知识库 schema 初始化器
+import easy_agent.knowledges.personnel  # noqa: F401 - 注册默认管理员策略
+
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Easy Agent database migrate/check")
