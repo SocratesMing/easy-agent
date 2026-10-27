@@ -20,15 +20,13 @@ const PROXY_TARGET =
   process.env.VUE_APP_PROXY_TARGET || PROXY_TARGETS[AGENT_ENV] || PROXY_TARGETS.dev
 
 // AI 侧边栏 SDK 构建（scripts/build-sdk.mjs 设置）：lib 模式。
-// SDK 需支持 Node 14 构建：unplugin-icons 23 为纯 ESM（Node 14 无法 require），改用等价的 CJS 实现
 const IS_SDK_BUILD = process.env.EASY_SDK_BUILD === '1'
 
+// Vue 2 基线（含 SDK）以 Node 14 构建：unplugin-icons 23 为纯 ESM（Node 14 无法 require），
+// `~icons/*` 统一走等价的 CJS 实现
 function iconsPlugin() {
-  if (IS_SDK_BUILD) {
-    const { IconifyRawPlugin } = require('./scripts/iconify-raw-webpack.cjs')
-    return new IconifyRawPlugin()
-  }
-  return require('unplugin-icons/webpack')({ compiler: 'raw', autoInstall: true })
+  const { IconifyRawPlugin } = require('./scripts/iconify-raw-webpack.cjs')
+  return new IconifyRawPlugin()
 }
 
 module.exports = defineConfig({
@@ -74,6 +72,25 @@ module.exports = defineConfig({
         target: PROXY_TARGET,
         changeOrigin: true,
       },
+    },
+    // AI 侧边栏 SDK 联调页：与部署环境（nginx /sdk/ → dist-sdk/）同路径，
+    // 开发时访问 http://localhost:5173/sdk/demo.html；需先 npm run build:sdk，
+    // 未构建时返回明确提示，而不是被 SPA 回退成首页
+    setupMiddlewares(middlewares) {
+      const express = require('express')
+      const sdkDir = require('path').resolve(__dirname, 'dist-sdk')
+      middlewares.unshift(
+        { name: 'easy-agent-sdk', path: '/sdk', middleware: express.static(sdkDir) },
+        {
+          name: 'easy-agent-sdk-missing',
+          path: '/sdk',
+          middleware: (req, res) => {
+            res.status(404).type('text/plain; charset=utf-8')
+              .send('AI 侧边栏 SDK 未构建或文件不存在：请在 frontend-vue2/ 下用 Node 14 执行 npm run build:sdk')
+          },
+        },
+      )
+      return middlewares
     },
   },
 

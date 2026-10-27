@@ -1,7 +1,7 @@
 <template>
   <!-- 显隐条件（!plusListLoading && !plusListError && subpanelCategory === 'experts'）
        由父组件 ChatInput.vue 在 <ExpertSubpanelList> 标签上控制，本组件只渲染列表。 -->
-  <div class="plus-subpanel-list plus-experts" @scroll="$emit('scroll', $event)">
+  <div class="plus-subpanel-list plus-experts" :class="{ stacked }" @scroll="$emit('scroll', $event)">
   <!-- 上区：我的专家（仅展示「可用」状态的专家，与专家 Tab 的召唤约束一致）。
        有搜索词时清空的区连标题一起收起，避免出现「标题 + 空白」的空壳。 -->
   <div v-if="showMineSection" class="plus-experts-section">
@@ -19,10 +19,13 @@
   >
     <span class="plus-expert-avatar" :class="expertAvatarClass(item)">{{ expertAvatarChar(item) }}</span>
     <span class="plus-expert-main">
-      <span class="plus-expert-name">{{ item.export_name_cn }}</span>
+      <span class="plus-expert-name-row">
+        <span class="plus-expert-name">{{ item.export_name_cn }}</span>
+        <span v-if="stacked && item.export_agent_id === activeExpertId" class="plus-expert-state">已选</span>
+      </span>
       <span class="plus-expert-desc">{{ expertDesc(item) }}</span>
     </span>
-    <span v-if="item.export_agent_id === activeExpertId" class="plus-expert-state">已选</span>
+    <span v-if="!stacked && item.export_agent_id === activeExpertId" class="plus-expert-state">已选</span>
   </button>
   <div v-if="!keyword && !myExperts.length" class="plus-expert-empty">
     <span class="plus-expert-empty-text">您还没有创建自己的专家</span>
@@ -59,10 +62,13 @@
   >
     <span class="plus-expert-avatar" :class="expertAvatarClass(item)">{{ expertAvatarChar(item) }}</span>
     <span class="plus-expert-main">
-      <span class="plus-expert-name">{{ item.export_name_cn }}</span>
+      <span class="plus-expert-name-row">
+        <span class="plus-expert-name">{{ item.export_name_cn }}</span>
+        <span v-if="stacked && item.export_agent_id === activeExpertId" class="plus-expert-state">已选</span>
+      </span>
       <span class="plus-expert-desc">{{ expertDesc(item) }}</span>
     </span>
-    <span v-if="item.export_agent_id === activeExpertId" class="plus-expert-state">已选</span>
+    <span v-if="!stacked && item.export_agent_id === activeExpertId" class="plus-expert-state">已选</span>
   </button>
   <div v-if="!keyword && !publicExperts.length" class="plus-list-hint">公共专家目录为空</div>
   <!-- 搜索无命中：两区都空时给一句统一提示（有 keyword 才出现，避免和上面的空态重复） -->
@@ -100,6 +106,8 @@ export default {
     activeExpertId: { type: String, default: '' },
     /** 当前搜索词（非空时清空的区连标题一起收起） */
     keyword: { type: String, default: '' },
+    // 名称（含「已选」）一行、描述一行，与知识库面板同款；窄容器（AI 侧边栏）使用
+    stacked: { type: Boolean, default: false },
   },
   emits: ['toggle', 'more', 'create', 'scroll'],
   computed: {
@@ -230,6 +238,36 @@ export default {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.plus-expert-name-row {
+  display: contents;
+}
+
+.stacked .plus-expert-row {
+  align-items: flex-start;
+}
+
+.stacked .plus-expert-main {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+}
+
+.stacked .plus-expert-name-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.stacked .plus-expert-name {
+  flex: 1;
+  max-width: none;
+}
+
+.stacked .plus-expert-desc {
+  line-height: 1.5;
 }
 
 .plus-expert-state {

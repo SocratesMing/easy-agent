@@ -216,6 +216,7 @@
               :models="models"
               :selectedModel="selectedModel"
               @update:selectedModel="selectedModel = $event"
+              :activeExpert="selectedExpert" @select-expert="handleUseExpert" @clear-expert="selectedExpert = null"
               @send-message="handleSendMessage"
               @create-session="ensureCurrentSession"
               @remove-file="handleRemoveFile"
@@ -323,7 +324,7 @@ const RAIL_WIDTH = 52
 // 小于该宽度的视口强制悬浮全宽显示
 const NARROW_VIEWPORT = 768
 const MAX_PAGE_SESSIONS = 20
-const QUOTE_MAX = 2000
+const QUOTE_MAX = 32000
 const DEFAULT_FEATURES = {
   launcher: true,
   selectionAsk: true,
@@ -353,38 +354,17 @@ export default {
   mixins: [chatSessionMixin],
   props: {
     // 当前页面上下文（App 根据所在页面生成），见 utils/pageContext.js
-    pageContext: {
-      type: Object,
-      default: null,
-    },
+    pageContext: { type: Object, default: null },
     // 嵌入第三方页面（SDK）：根节点 fixed 定位，固定模式由宿主据 layout-change 让出空间
-    embedded: {
-      type: Boolean,
-      default: false,
-    },
+    embedded: { type: Boolean, default: false },
     // 功能开关，未传的项取 DEFAULT_FEATURES
-    features: {
-      type: Object,
-      default: () => ({}),
-    },
+    features: { type: Object, default: () => ({}) },
     // 是否挂载 window.EasyAgentAI（SDK 由实例方法代替，避免多实例互相覆盖）
-    exposeGlobal: {
-      type: Boolean,
-      default: true,
-    },
+    exposeGlobal: { type: Boolean, default: true },
     // 用户未切换过模式时的初始模式：float | dock
-    defaultMode: {
-      type: String,
-      default: 'float',
-    },
-    launcherLabel: {
-      type: String,
-      default: '问 AI',
-    },
-    welcomeTitle: {
-      type: String,
-      default: '有什么可以帮你？',
-    },
+    defaultMode: { type: String, default: 'float' },
+    launcherLabel: { type: String, default: '问 AI' },
+    welcomeTitle: { type: String, default: '有什么可以帮你？' },
   },
   data() {
     const prefs = readJson(localStorage, PREFS_KEY, {})
@@ -400,6 +380,7 @@ export default {
       launcherDragging: false,
       launcherMoved: false,
       selectedModel: chatStore.activeModel,
+      selectedExpert: null, // 「+」菜单召唤的专家：发送时据此改走专家执行接口
       showHistory: false,
       historyQuery: '',
       renamingId: null,
@@ -594,8 +575,14 @@ export default {
   },
   methods: {
     // ── chatSessionMixin 钩子 ─────────────────────────────────────────
-    beforeSessionChange() {
+    beforeSessionChange(kind) {
       this.showHistory = false
+      if (kind === 'create') this.selectedExpert = null
+    },
+    handleUseExpert(expert) {
+      if (!expert || !expert.export_agent_id) return
+      const { export_agent_id, export_name_cn, export_version } = expert
+      this.selectedExpert = { export_agent_id, export_name_cn, export_version }
     },
     getPageContextForSend() {
       const quote = this.quote
