@@ -17,4 +17,8 @@ const res = spawnSync('vite', viteArgs, {
   stdio: 'inherit',
   shell: process.platform === 'win32',
 })
-process.exit(res.status ?? 0)
+if (res.error) {
+  console.error(`无法启动 vite（${res.error.message}），请先在 frontend/ 下用 Node 20 执行 npm install`)
+  process.exit(1)
+}
+process.exit(res.status ?? 1)

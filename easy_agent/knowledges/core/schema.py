@@ -2,7 +2,8 @@
 
 已存在的库通过 ``_ensure_column`` 就地补齐缺失列（软删除、版本等），
 可直接使用现有库而不迁移数据。不含 reconciliation / alert /
-runtime_heartbeat 及迁移账本表。废弃对象（knowledge_tasks 死表、
+runtime_heartbeat 及迁移账本表。废弃对象（knowledge_tasks、
+knowledge_team_space_viewers 死表，并入审计事件的原始文件访问审计表，
 无查询支撑的二级索引）由 ``_cleanup_legacy_schema`` 幂等清除。
 """
 
@@ -18,6 +19,7 @@ if TYPE_CHECKING:  # 仅类型注解使用，避免 db.database <-> schema 的�
 logger = logging.getLogger(__name__)
 
 # 注册到 Database.init_tables()（schema 注册制，避免 db <-> knowledges 循环）。
+from easy_agent.db.migrations import table_exists  # noqa: E402
 from easy_agent.db.schema_registry import register_schema_initializer  # noqa: E402
 
 # 目录树同步要求同一知识库内不同父节点下允许同名子文件夹
@@ -101,7 +103,7 @@ def initialize_knowledge_schema(db: Database, cursor) -> None:
     """)
     db._ensure_column(cursor, "knowledge_folders", "parent_id", "VARCHAR(255) DEFAULT NULL")
     _migrate_folder_unique_constraint(db, cursor)
-    db._create_index(cursor, "idx_knowledge_folders_base", "knowledge_folders", "base_id")
+    # 按 base_id 查走 UNIQUE(base_id, parent_id, name) 的前缀，不单建 base_id 索引。
     db._create_index(cursor, "idx_knowledge_folders_parent", "knowledge_folders", "parent_id")
 
     # ---- 文档 ----
@@ -132,9 +134,9 @@ def initialize_knowledge_schema(db: Database, cursor) -> None:
     """)
     for column, definition in _DOCUMENT_P0_COLUMNS:
         db._ensure_column(cursor, "knowledge_documents", column, definition)
-    db._create_index(cursor, "idx_knowledge_documents_base", "knowledge_documents", "base_id")
     db._create_index(cursor, "idx_knowledge_documents_folder", "knowledge_documents", "folder_id")
-    # 元数据检索：日期区间 / 来源 / 标签过滤
+    # 元数据检索：日期区间 / 来源 / 标签过滤。两个索引都以 base_id 开头，按库查询也走它们，
+    # 不再单建 base_id 索引。
     db._create_index(
         cursor,
         "idx_knowledge_documents_base_publish",
@@ -217,27 +219,6 @@ def initialize_knowledge_schema(db: Database, cursor) -> None:
         cursor, "knowledge_document_objects", "updated_at", "VARCHAR(50) DEFAULT NULL"
     )
 
-    # ---- 原始文件访问审计 ----
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS knowledge_original_access_audit (
-            id VARCHAR(255) PRIMARY KEY,
-            user_id VARCHAR(255) NOT NULL,
-            session_id VARCHAR(255) NOT NULL DEFAULT '',
-            agent_id VARCHAR(255) NOT NULL DEFAULT '',
-            document_id VARCHAR(255) NOT NULL,
-            action VARCHAR(40) NOT NULL,
-            result VARCHAR(40) NOT NULL,
-            request_id VARCHAR(255) NOT NULL DEFAULT '',
-            created_at VARCHAR(50) NOT NULL
-        )
-    """)
-    db._create_index(
-        cursor, "idx_knowledge_original_audit_document", "knowledge_original_access_audit", "document_id, created_at"
-    )
-    db._create_index(
-        cursor, "idx_knowledge_original_audit_user", "knowledge_original_access_audit", "user_id, created_at"
-    )
-
     # ---- 权限 ----
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS knowledge_permissions (
@@ -300,7 +281,7 @@ def initialize_knowledge_schema(db: Database, cursor) -> None:
     db._ensure_column(cursor, "session_knowledge_scopes", "sort_order", "INTEGER NOT NULL DEFAULT 0")
     db._create_index(cursor, "idx_session_knowledge_user", "session_knowledge_scopes", "user_id, session_id")
 
-    # ---- 审计事件 ----
+    # ---- 审计事件（含原始文件访问：action=knowledge.original.<动作>） ----
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS knowledge_audit_events (
             id VARCHAR(255) PRIMARY KEY,
@@ -323,18 +304,9 @@ def initialize_knowledge_schema(db: Database, cursor) -> None:
         cursor, "idx_knowledge_audit_object", "knowledge_audit_events", "object_type, object_id, created_at"
     )
 
-    # ---- 公共空间管理/查看白名单（仅按 PK user_id 查询，无需二级索引） ----
+    # ---- 公共空间管理白名单（仅按 PK user_id 查询，无需二级索引） ----
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS knowledge_team_space_managers (
-            user_id VARCHAR(255) PRIMARY KEY,
-            granted_by VARCHAR(255) NOT NULL,
-            granted_at VARCHAR(50) NOT NULL,
-            updated_at VARCHAR(50) NOT NULL,
-            FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
-        )
-    """)
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS knowledge_team_space_viewers (
             user_id VARCHAR(255) PRIMARY KEY,
             granted_by VARCHAR(255) NOT NULL,
             granted_at VARCHAR(50) NOT NULL,
@@ -350,23 +322,29 @@ def _cleanup_legacy_schema(db: Database, cursor) -> None:
     """幂等清除废弃的表与索引（仅限显式列出的对象，逐个容错跳过）。
 
     - knowledge_tasks：数据库任务队列设计已被进程内 worker 取代，全库无读写；
-    - 其余为无查询路径支撑的二级索引（建表初期预留，从未被使用）。
+    - knowledge_team_space_viewers：从来没有写入和读取（只有删除人员时的一句 DELETE）；
+    - knowledge_original_access_audit：并入 knowledge_audit_events，旧行先搬过去再删表；
+    - 其余为无查询路径支撑、或已是别的索引前缀的二级索引。
     """
 
     # 死表：SQLite / MySQL 均支持 DROP TABLE IF EXISTS
-    try:
-        cursor.execute("DROP TABLE IF EXISTS knowledge_tasks")
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(f"删除废弃表 knowledge_tasks 失败（可忽略）: {exc}")
+    for table in ("knowledge_tasks", "knowledge_team_space_viewers"):
+        try:
+            cursor.execute(f"DROP TABLE IF EXISTS {table}")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"删除废弃表 {table} 失败（可忽略）: {exc}")
+
+    _merge_original_access_audit(db, cursor)
 
     # 死索引：MySQL 无 DROP INDEX IF EXISTS，逐个尝试；SQLite 语法不含表名
     legacy_indexes = (
         ("knowledge_bases", "idx_knowledge_bases_department"),
         ("knowledge_documents", "idx_knowledge_documents_status"),
+        ("knowledge_documents", "idx_knowledge_documents_base"),
+        ("knowledge_folders", "idx_knowledge_folders_base"),
         ("knowledge_document_objects", "idx_knowledge_document_objects_document"),
         ("knowledge_document_objects", "idx_knowledge_document_objects_status"),
         ("knowledge_team_space_managers", "idx_knowledge_team_managers_granted_by"),
-        ("knowledge_team_space_viewers", "idx_knowledge_team_viewers_granted_by"),
     )
     for table, index in legacy_indexes:
         try:
@@ -377,6 +355,42 @@ def _cleanup_legacy_schema(db: Database, cursor) -> None:
         except Exception:  # noqa: BLE001
             # 索引不存在（新装库）即目标状态，静默跳过
             pass
+
+
+_ORIGINAL_AUDIT_TABLE = "knowledge_original_access_audit"
+
+
+def _merge_original_access_audit(db: Database, cursor) -> None:
+    """旧的原始文件访问审计并入 knowledge_audit_events，再删除旧表（每个库只发生一次）。
+
+    按同一 id 搬运，重复的跳过（中途失败重跑不会重复）。动作记为
+    ``knowledge.original.<action>``，会话 / agent 放进 details_json；用户名、所属知识库从
+    users / knowledge_documents 补，查不到时用户名为空、知识库为 NULL。
+    """
+    if not table_exists(db, cursor, _ORIGINAL_AUDIT_TABLE):
+        return
+    if db.db_type == "mysql":
+        insert = "INSERT IGNORE"
+        action = "CONCAT('knowledge.original.', a.action)"
+        details = "JSON_OBJECT('session_id', a.session_id, 'agent_id', a.agent_id)"
+    else:
+        insert = "INSERT OR IGNORE"
+        action = "'knowledge.original.' || a.action"
+        details = "json_object('session_id', a.session_id, 'agent_id', a.agent_id)"
+    cursor.execute(f"""
+        {insert} INTO knowledge_audit_events
+            (id, request_id, actor_user_id, actor_username, action, object_type,
+             object_id, base_id, outcome, reason_code, details_json, created_at)
+        SELECT a.id, SUBSTR(a.request_id, 1, 128), a.user_id, COALESCE(u.username, ''),
+               {action}, 'document', a.document_id, d.base_id, SUBSTR(a.result, 1, 20),
+               NULL, {details}, a.created_at
+        FROM {_ORIGINAL_AUDIT_TABLE} a
+        LEFT JOIN users u ON u.user_id = a.user_id
+        LEFT JOIN knowledge_documents d ON d.id = a.document_id
+    """)
+    moved = cursor.rowcount
+    cursor.execute(f"DROP TABLE {_ORIGINAL_AUDIT_TABLE}")
+    logger.info("原始文件访问审计已并入 knowledge_audit_events | 搬运 %s 条", moved)
 
 
 def _migrate_folder_unique_constraint(db: Database, cursor) -> None:

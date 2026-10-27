@@ -9,6 +9,7 @@
  */
 import { chatBus } from '../store/chatStore.js'
 import { setReactive } from '../../../utils/reactiveSet.js'
+import { parseMCPResult } from '../../../utils/mcpResult.js'
 import { setExpertLastSession } from '../../../shared/utils/expertSession.js'
 
 export function createStreamChunkHandler(vm, ctx) {

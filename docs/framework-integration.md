@@ -82,9 +82,9 @@
   1. 显式 `EASY_CHECKPOINT_SQLITE_PATH`，或业务库为 SQLite → 官方
      `AsyncSqliteSaver`，默认文件 `data/checkpoints.db`（相对路径按仓库根解析）；
   2. 业务库为 MySQL 且没配 SQLite 路径 → 官方没有 MySQL saver，回退自研
-     `PersistentMemorySaver` 业务库快照并打 warning（功能可用，性能/官方性较差）；
-  3. `EASY_CHECKPOINT_BACKEND=legacy` → 强制自研快照。
-  官方 saver 打开失败降级为自研快照，不阻断启动；
+     `PersistentMemorySaver` 并打 warning（进程内，不写业务库，重启后待审批状态丢失）；
+  3. `EASY_CHECKPOINT_BACKEND=legacy` → 强制用这个进程内 checkpointer。
+  官方 saver 打开失败降级为进程内 checkpointer，不阻断启动；
   `shutdown_checkpointers()` 负责关闭 saver 并清空自研缓存（测试隔离亦依赖）。
   Postgres saver 曾是第一优先级，2026-10-21 移除（生产只有 MySQL，按单 pod 部署）。
   见 `docs/archive/audit-reports/2026-10-17-increment38-fw09-report.md`。

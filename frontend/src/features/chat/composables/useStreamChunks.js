@@ -30,6 +30,7 @@ export function createStreamChunkHandler(messages, ctx) {
     markStreaming,
     loadSessions,
     parseMCPResult,
+    onStreamStarted,
   } = ctx.state || {}
   let currentBlock = null
   let currentThinking = ''
@@ -188,6 +189,7 @@ export function createStreamChunkHandler(messages, ctx) {
           attachedStreamingSessions.value[data.session_id] = 'displayed'
         }
         markStreaming(ctx.streamSessionId || currentSessionId.value)
+        if (data.session_id && onStreamStarted) onStreamStarted(data.session_id)
       }
     } else if (eventType === 'token_usage') {
       applyUsage(data, ctx.streamSessionId)

@@ -22,8 +22,6 @@ from tests.services.test_stream_split_golden import FakeDB, FakeGraph, FakeLogge
 _DB_METHODS = (
     "get_session",
     "update_last_assistant_message",
-    "record_tool_call",
-    "record_thinking",
     "update_session_todos",
     "add_generated_file",
     "get_generated_files",
@@ -103,7 +101,7 @@ async def test_chat_stream_writes_happen_off_the_event_loop():
 
     assert frames
     assert db.on_loop == []
-    for name in ("get_session", "record_thinking", "record_tool_call", "update_session_todos"):
+    for name in ("get_session", "update_session_todos"):
         assert name in db.completed, name
     # 增量落库 + 最终消息
     assert db.completed.count("update_last_assistant_message") >= 2
@@ -121,11 +119,12 @@ async def test_cancel_saves_the_partial_reply_after_the_inflight_write():
                     {"type": "tool_call", "tool_name": "execute", "tool_call_id": "c1", "arguments": {}, "step": 1},
                     {"type": "tool_result", "tool_name": "execute", "tool_call_id": "c1", "arguments": {},
                      "result": "ok", "success": True, "duration": 0.1, "step": 1},
+                    {"type": "todo_list", "todos": [{"content": "x"}], "step": 1},
                 ],
             )
             await asyncio.sleep(3600)
 
-    db = RecordingDB(threading.get_ident(), delays={"record_tool_call": 0.3})
+    db = RecordingDB(threading.get_ident(), delays={"update_session_todos": 0.3})
 
     async def consume():
         return [frame async for frame in _generator(db, StallingGraph([]))]
@@ -140,9 +139,9 @@ async def test_cancel_saves_the_partial_reply_after_the_inflight_write():
         pass
 
     assert db.on_loop == []
-    assert "record_tool_call" in db.completed
+    assert "update_session_todos" in db.completed
     assert "update_last_assistant_message" in db.completed
-    assert db.completed.index("record_tool_call") < db.completed.index("update_last_assistant_message")
+    assert db.completed.index("update_session_todos") < db.completed.index("update_last_assistant_message")
 
 
 class _RenamingAgent(SimpleNamespace):

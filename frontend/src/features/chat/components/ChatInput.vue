@@ -245,7 +245,7 @@
                 </div>
                 <div v-if="plusListLoading" class="skill-sub-hint">加载中…</div>
                 <div v-else-if="plusListError" class="skill-sub-hint error">{{ plusListError }}</div>
-                <div v-else class="skill-sub-list plus-experts" @scroll="onExpertsScroll">
+                <div v-else class="skill-sub-list plus-experts" :class="{ stacked: compact }" @scroll="onExpertsScroll">
                   <!-- 上区：我的专家（仅「可用」状态，与专家 Tab 的召唤约束一致）。
                        有搜索词时清空的区连标题一起收起，避免「标题 + 空白」的空壳。 -->
                   <div v-if="showMineSection" class="plus-experts-section">
@@ -263,10 +263,13 @@
                   >
                     <span class="plus-expert-avatar" :class="expertAvatarClass(item)">{{ expertAvatarChar(item) }}</span>
                     <span class="plus-expert-main">
-                      <span class="plus-expert-name">{{ item.export_name_cn }}</span>
+                      <span class="plus-expert-name-row">
+                        <span class="plus-expert-name">{{ item.export_name_cn }}</span>
+                        <span v-if="compact && isExpertSelected(item)" class="plus-expert-state">已选</span>
+                      </span>
                       <span class="plus-expert-desc">{{ expertDesc(item) }}</span>
                     </span>
-                    <span v-if="isExpertSelected(item)" class="plus-expert-state">已选</span>
+                    <span v-if="!compact && isExpertSelected(item)" class="plus-expert-state">已选</span>
                   </button>
                   <div v-if="!subpanelKeyword && !filteredMyExperts.length" class="plus-expert-empty">
                     <span class="plus-expert-empty-text">您还没有创建自己的专家</span>
@@ -303,10 +306,13 @@
                   >
                     <span class="plus-expert-avatar" :class="expertAvatarClass(item)">{{ expertAvatarChar(item) }}</span>
                     <span class="plus-expert-main">
-                      <span class="plus-expert-name">{{ item.export_name_cn }}</span>
+                      <span class="plus-expert-name-row">
+                        <span class="plus-expert-name">{{ item.export_name_cn }}</span>
+                        <span v-if="compact && isExpertSelected(item)" class="plus-expert-state">已选</span>
+                      </span>
                       <span class="plus-expert-desc">{{ expertDesc(item) }}</span>
                     </span>
-                    <span v-if="isExpertSelected(item)" class="plus-expert-state">已选</span>
+                    <span v-if="!compact && isExpertSelected(item)" class="plus-expert-state">已选</span>
                   </button>
                   <div v-if="!subpanelKeyword && !filteredPublicExperts.length" class="skill-sub-hint">公共专家目录为空</div>
                   <!-- 搜索无命中：两区都空时给一句统一提示 -->
@@ -325,7 +331,7 @@
                     还有 {{ filteredPublicExperts.length - visiblePublicExperts.length }} 位 · 点击加载
                   </button>
                 </div>
-                <div class="skill-sub-footer">
+                <div v-if="showManageEntry" class="skill-sub-footer">
                   <button type="button" class="skill-sub-footer-btn" @click="handleMenuPanel('experts')">
                     <span>在管理面板中打开 →</span>
                   </button>
@@ -429,7 +435,7 @@
                 >
                   {{ connectorNotice }}
                 </div>
-                <div class="skill-sub-footer">
+                <div v-if="showManageEntry" class="skill-sub-footer">
                   <button type="button" class="skill-sub-footer-btn" @click="handleMenuPanel(subpanelCategory)">
                     <span>在管理面板中打开 →</span>
                   </button>
@@ -482,7 +488,7 @@
                与专家 Tab 的「使用」联动，点击 × 退出专家模式回到通用 Agent。
                兼容性：不使用 flex gap / color-mix（IE 与旧版 Edge 不支持）。 -->
           <div
-            v-if="activeExpert"
+            v-if="activeExpert && !compact"
             class="expert-chip"
             :title="`当前专家：${activeExpert.export_name_cn}（点击 × 退出专家模式）`"
           >
@@ -730,7 +736,16 @@ const props = defineProps({
   prefillText: {
     type: String,
     default: ''
-  }
+  },
+  // 输入草稿的 sessionStorage key：主页面与 AI 侧边栏各存一份
+  draftKey: { type: String, default: 'easy_agent_input_draft' },
+  // 是否消费技能中心「创建技能」预置的待选技能（只应由主页面输入框消费）
+  consumePendingSkill: { type: Boolean, default: true },
+  // 「+」二级面板底部的「在管理面板中打开」入口
+  showManageEntry: { type: Boolean, default: true },
+  // 窄输入框（AI 侧边栏）：工具栏不放专家胶囊（会挤掉发送按钮，已选状态只在「+」→ 专家面板里体现），
+  // 专家行改为名称、描述分两行，选中后面板不收起
+  compact: { type: Boolean, default: false }
 })
 
 const emit = defineEmits(['send', 'stop', 'createSession', 'update:selectedModel', 'typing', 'clearExpert', 'selectExpert', 'prefillApplied', 'openPanel', 'openKnowledge'])
@@ -1309,9 +1324,6 @@ async function loadWebSearchStatus() {
   }
 }
 
-// 输入草稿持久化：页面刷新后恢复用户尚未发送的输入内容（“输入框的状态不变”）
-const DRAFT_KEY = 'easy_agent_input_draft'
-
 // 待选技能：由技能中心「创建技能」等入口写入，本组件挂载时恢复成技能标签
 const PENDING_SKILL_KEY = 'easy_agent_pending_skill'
 
@@ -1717,6 +1729,7 @@ function toggleExpert(item) {
   } else {
     emit('selectExpert', item)
   }
+  if (props.compact) return
   showPlusMenu.value = false
   subpanelCategory.value = null
   knowledgeScope.value?.closePopover()
@@ -2592,7 +2605,7 @@ function onInput(event) {
 
 watch(message, (val) => {
   try {
-    sessionStorage.setItem(DRAFT_KEY, val)
+    sessionStorage.setItem(props.draftKey, val)
   } catch (e) {
     // 隐私模式等场景下 sessionStorage 可能不可用，忽略即可
   }
@@ -2610,7 +2623,7 @@ watch(() => props.disabled, (val) => {
 onMounted(() => {
   // 恢复刷新前的输入草稿
   try {
-    const draft = sessionStorage.getItem(DRAFT_KEY)
+    const draft = sessionStorage.getItem(props.draftKey)
     if (draft) {
       message.value = draft
       nextTick(() => autoResize())
@@ -2631,7 +2644,7 @@ onMounted(() => {
     .catch(() => { /* 列表拉取失败时标签按普通文本显示，不影响输入 */ })
 
   // 恢复待选技能（技能中心「创建技能」等入口预置），读取后即清除
-  restorePendingSkill()
+  if (props.consumePendingSkill) restorePendingSkill()
 
   // 消费待修改专家（专家面板「编辑」预置）：ID 存组件状态、不进正文，发送时上行
   try {
@@ -2680,7 +2693,24 @@ function triggerSend() {
   send()
 }
 
-defineExpose({ setMessage, getMessage, triggerSend })
+// 供父组件调用：聚焦输入框并把光标移到末尾（如侧边栏打开时）
+function focusInput() {
+  nextTick(() => {
+    const ta = textareaRef.value
+    if (!ta || ta.disabled) return
+    ta.focus()
+    ta.setSelectionRange(ta.value.length, ta.value.length)
+  })
+}
+
+// 供父组件调用：替换输入内容（如侧边栏的快捷提问、划词提问）
+function setDraft(text) {
+  message.value = text || ''
+  nextTick(() => autoResize())
+  focusInput()
+}
+
+defineExpose({ setMessage, getMessage, triggerSend, focusInput, setDraft })
 </script>
 
 <style scoped>
@@ -3829,6 +3859,37 @@ html[data-theme="dark"] .plus-list-tag.custom {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* 名称行：默认不占盒（名称与描述同排）；AI 侧边栏（compact）下改为名称 +「已选」一行、描述一行 */
+.plus-expert-name-row {
+  display: contents;
+}
+
+.plus-experts.stacked .plus-expert-row {
+  align-items: flex-start;
+}
+
+.plus-experts.stacked .plus-expert-main {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+}
+
+.plus-experts.stacked .plus-expert-name-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.plus-experts.stacked .plus-expert-name {
+  flex: 1;
+  max-width: none;
+}
+
+.plus-experts.stacked .plus-expert-desc {
+  line-height: 1.5;
 }
 
 .plus-expert-state {

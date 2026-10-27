@@ -569,12 +569,6 @@ def test_delete_personnel_blocked_while_owning_bases_and_cleans_grants(client, d
             "VALUES (?, 'admin', ?, ?)",
             (user_id, now, now),
         )
-        db._execute(
-            cursor,
-            "INSERT INTO knowledge_team_space_viewers (user_id, granted_by, granted_at, updated_at) "
-            "VALUES (?, 'admin', ?, ?)",
-            (user_id, now, now),
-        )
 
     # 名下有未删除知识库 → 409，账号与授权保持原样
     blocked = client.delete(f"/api/personnel/users/{user_id}")
@@ -592,4 +586,3 @@ def test_delete_personnel_blocked_while_owning_bases_and_cleans_grants(client, d
     assert db.get_user_by_id(user_id) is None
     assert _count_rows(db, "SELECT COUNT(*) AS n FROM knowledge_permissions WHERE subject_id=?", (user_id,)) == 0
     assert _count_rows(db, "SELECT COUNT(*) AS n FROM knowledge_team_space_managers WHERE user_id=?", (user_id,)) == 0
-    assert _count_rows(db, "SELECT COUNT(*) AS n FROM knowledge_team_space_viewers WHERE user_id=?", (user_id,)) == 0

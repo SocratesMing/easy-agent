@@ -59,7 +59,6 @@ from easy_agent.services.streaming.persistence import (
     persist_approval_decisions,
     persist_final_message,
     persist_partial,
-    persist_thinking_event,
     persist_todos,
     persist_tool_result_event,
     write_session_context_snapshot,
@@ -194,16 +193,6 @@ async def pump_stream(
                     message_id=message_id,
                     session_logger=session_logger,
                     agent=agent,
-                    sid=sid,
-                )
-            elif ev_type == "thinking_end":
-                await run_blocking(
-                    persist_thinking_event,
-                    ev,
-                    proc=proc,
-                    db=db,
-                    session_id=session_id,
-                    message_id=message_id,
                     sid=sid,
                 )
             elif ev_type == "todo_list":

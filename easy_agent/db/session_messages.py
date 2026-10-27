@@ -27,7 +27,7 @@ def add_message_row(db, session_id: str, message: dict) -> None:
         )
         db._execute(
             cursor,
-            "UPDATE sessions SET updated_at=? WHERE session_id=?",
+            "UPDATE sessions SET updated_at=?, message_count=message_count+1 WHERE session_id=?",
             (datetime.now().isoformat(), session_id),
         )
 

@@ -118,39 +118,13 @@ def persist_partial(
         logger.warning(f"[{sid}] 保存部分回复失败: {e}")
 
 
-def persist_thinking_event(
-    ev, *, proc, db, session_id: str, message_id: str, sid: str
-) -> None:
-    """把指定 step 的思考内容落库（chat 与 resume 共用）。"""
-    step = ev.get("step", 0)
-    duration = ev.get("duration", 0)
-    for blk in reversed(proc.blocks):
-        if blk.get("type") == "thinking" and blk.get("step") == step:
-            content = (blk.get("content", "") or "").strip()
-            if content and message_id:
-                try:
-                    db.record_thinking(
-                        session_id=session_id,
-                        message_id=message_id,
-                        step=step,
-                        content=content[:10000],
-                        duration=duration,
-                    )
-                except Exception as e:
-                    logger.warning(f"[{sid}] 持久化思考记录失败: {e}")
-            break
-
-
-# 兼容旧符号。
-_persist_thinking_event = persist_thinking_event
-
-
 def persist_tool_result_event(
     ev, *, db, session_id, message_id, session_logger, agent, sid
 ) -> None:
-    """工具执行结果落库：工具调用记录 + 会话日志 + 生成文件登记。
+    """工具结果写会话日志，并登记生成文件。
 
-    chat 与 resume 共用（原为两份逐行相同的闭包）。
+    思考和工具参数已经在 assistant 消息的 extra_data 里，不再另写记录表。
+    chat 与 resume 共用。
     """
     tool_name = ev.get("tool_name", "")
     tool_call_id = ev.get("tool_call_id", "")
@@ -159,23 +133,6 @@ def persist_tool_result_event(
     success = ev.get("success", True)
     tool_duration = ev.get("duration", 0)
     step = ev.get("step", 0)
-    if message_id:
-        try:
-            db.record_tool_call(
-                session_id=session_id,
-                message_id=message_id,
-                tool_name=tool_name,
-                tool_call_id=tool_call_id,
-                arguments=tool_args if isinstance(tool_args, dict) else {},
-                result=str(result_content)[:5000]
-                if result_content is not None
-                else None,
-                success=success,
-                duration=tool_duration,
-                step=step,
-            )
-        except Exception as e:
-            logger.warning(f"[{sid}] 持久化工具调用记录失败: {e}")
     if session_logger:
         try:
             session_logger.log_tool_call(
@@ -313,7 +270,6 @@ __all__ = [
     "persist_final_message",
     "persist_incremental",
     "persist_partial",
-    "persist_thinking_event",
     "persist_todos",
     "persist_tool_result_event",
     "write_session_context_snapshot",

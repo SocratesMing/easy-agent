@@ -142,7 +142,7 @@ if (!problems.length) {
   process.exit(0)
 }
 const byKind = {}
-for (const p of problems) (byKind[p.kind] ||= []).push(p)
+for (const p of problems) (byKind[p.kind] = byKind[p.kind] || []).push(p)
 for (const [kind, list] of Object.entries(byKind)) {
   console.log(`\n### ${kind}（${list.length}）`)
   for (const p of list) console.log(`  - ${p.file}: ${p.msg}`)

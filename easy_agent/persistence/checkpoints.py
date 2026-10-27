@@ -2,8 +2,9 @@
 
 FW-09：由 ``EASY_CHECKPOINT_BACKEND=auto|sqlite|legacy`` 控制，选择规则集中在
 ``resolve_checkpoint_backend()``：配置了 ``EASY_CHECKPOINT_SQLITE_PATH`` 或业务库为
-SQLite 时用官方 SQLite saver（默认 ``data/checkpoints.db``）；业务库为 MySQL 且没配
-SQLite 路径时，回退到自研 ``PersistentMemorySaver``（把 MemorySaver 状态 pickle 进业务库）。
+SQLite 时用官方 SQLite saver（默认 ``data/checkpoints.db``）。业务库不再保存
+checkpoint。显式 ``legacy`` 或 MySQL 未配 SQLite 路径时，只用进程内
+``PersistentMemorySaver``，重启后审批状态不在。
 
 生产只有 MySQL，Postgres checkpointer 已移除。两种后端都不能在副本之间共享，多副本时每个 pod
 用自己的 SQLite 文件：路径里写 ``{pod}``（启动时替换成实例名），由 Ingress 粘性会话把同一用户的
@@ -348,7 +349,11 @@ def _clear_legacy_checkpointers() -> None:
 
 
 class PersistentMemorySaver(MemorySaver):
-    """MemorySaver that snapshots itself into ``agent_checkpoints`` after writes."""
+    """MemorySaver：传入带 ``load/save_agent_checkpoint`` 的存储对象时，每次写入后把快照存进去。
+
+    业务库已不再保存 checkpoint，:func:`get_session_checkpointer` 不传存储，legacy 回退只用进程内
+    状态（重启后审批状态不在）。写入后仍按 ``_PERSIST_MAX_THREADS`` 裁剪。
+    """
 
     def __init__(self, session_id: str, db=None):
         super().__init__()
@@ -533,7 +538,7 @@ def _describe_target(selection: CheckpointSelection) -> str:
                 f"实例 {selection.instance}）"
             )
         return selection.sqlite_path
-    return "业务库 agent_checkpoints 表"
+    return "进程内 MemorySaver（不写业务库）"
 
 
 async def _open_with_fallback(selection: CheckpointSelection) -> str:
@@ -701,8 +706,11 @@ async def stop_checkpoint_gc() -> None:
     await asyncio.gather(task, return_exceptions=True)
 
 
-def get_session_checkpointer(session_id: str, db=None):
-    """官方 SQLite saver 激活时全局共享；否则按 session 回放 MemorySaver。"""
+def get_session_checkpointer(session_id: str):
+    """官方 SQLite saver 激活时全局共享；否则按 session 给一个进程内 MemorySaver。
+
+    不传业务库：业务库已不存 checkpoint，传进去只会让每次写入白做一遍全量 pickle。
+    """
     if _sqlite_saver is not None:
         return _sqlite_saver
     with _CHECKPOINTER_LOCK:
@@ -710,14 +718,7 @@ def get_session_checkpointer(session_id: str, db=None):
         if checkpointer is None:
             if len(_CHECKPOINTERS) >= _CHECKPOINTER_MAX:
                 _CHECKPOINTERS.pop(next(iter(_CHECKPOINTERS)), None)
-            if db is None:
-                try:
-                    from easy_agent.db import get_database
-
-                    db = get_database()
-                except Exception:  # noqa: BLE001
-                    db = None
-            checkpointer = PersistentMemorySaver(session_id, db=db)
+            checkpointer = PersistentMemorySaver(session_id)
             _CHECKPOINTERS[session_id] = checkpointer
         return checkpointer
 
@@ -725,12 +726,6 @@ def get_session_checkpointer(session_id: str, db=None):
 def release_session_checkpointer(session_id: str) -> None:
     with _CHECKPOINTER_LOCK:
         _CHECKPOINTERS.pop(session_id, None)
-    try:
-        from easy_agent.db import get_database
-
-        get_database().delete_agent_checkpoint(session_id)
-    except Exception:  # noqa: BLE001
-        pass
 
 
 async def adelete_threads(thread_ids) -> int:
