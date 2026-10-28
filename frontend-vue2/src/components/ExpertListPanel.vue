@@ -2083,4 +2083,30 @@ html[data-theme="dark"] .expert-panel {
     grid-template-columns: minmax(0, 1fr);
   }
 }
+/* ── 旧浏览器兜底：color-mix() 需要 Chromium 111+ ─────────────────────
+   Edge 92 / Chrome ≤ 110 会把 `background: color-mix(...)` 整条丢弃，hover 时
+   底色退回透明、文字仍是 #fff，按钮看起来"变白消失"（新建专家 / 我的专家 / 召唤）。
+   这里用「基色 + 叠一层黑」复现 color-mix(基色 84%~86%, #000)：sRGB 下叠 α 黑
+   与 color-mix(基色 (1-α), #000) 完全等价，所以浅色/暗色主题都不用分别写死颜色。
+   新浏览器 @supports 判定为真，整块跳过，视觉零变化。 */
+@supports not (background: color-mix(in srgb, #000 10%, #fff)) {
+  /* 主色按钮（新建专家 / 我的专家）：复现 color-mix(主色 84%, #000) */
+  .action-btn-primary:hover:not(:disabled) {
+    background-color: var(--accent-color);
+    background-image: linear-gradient(rgba(0, 0, 0, 0.16), rgba(0, 0, 0, 0.16));
+  }
+
+  /* 召唤按钮：复现 color-mix(--xcard-primary-bg 86%, #000)；
+     该基色在暗色主题下接近白色，所以不能用主色兜底 */
+  .use-btn:hover:not(:disabled) {
+    background-color: var(--xcard-primary-bg);
+    background-image: linear-gradient(rgba(0, 0, 0, 0.14), rgba(0, 0, 0, 0.14));
+  }
+
+  /* 分类 chip 选中态同样用了 color-mix(主色 12%, transparent)，失效后底色全无 */
+  .chip.active {
+    background-color: var(--bg-tertiary);
+  }
+}
+
 </style>
