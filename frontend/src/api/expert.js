@@ -3,14 +3,18 @@
  *
  * 对应后端 easy_agent/api/expert.py：
  *   POST /agent/add                创建专家
- *   POST /agent/update             修改专家（新版本目录）
  *   GET  /agent/list               我的专家列表
  *   GET  /agent/public-list        公共（预置）专家列表（只读目录 exports/）
+ *   GET  /agent/expert-md          读取专家提示词 MD（只读预览）
+ *   GET  /agent/session-experts    某会话里创建的专家（工作区只读条目）
  *   POST /agent/del                删除专家（默认软删）
  *
  * 专家对话不再有独立接口：选中专家后前端统一调 /agent/chat/stream 并带上
  * `expert_agent_id`（见 api/chat.js 的 sendMessage），提示词加载与相关性预检
  * 都在通用入口完成，SSE 事件格式与普通聊天完全一致。
+ *
+ * 新建与修改专家都改在对话框里由 Agent（expert-creator 技能）完成，故这里只
+ * 保留浏览侧接口；后端的 POST /agent/update 仍存在，但当前无前端调用方。
  */
 import { API_BASE_URL } from '../config.js'
 import { authFetch } from './auth.js'
@@ -34,28 +38,6 @@ export async function addExpert({ nameCn, prompt, sessionId = null, model = null
     }),
   })
   if (!response.ok) throw await _errorOf(response, '创建专家失败')
-  return await response.json()
-}
-
-/** 修改专家 */
-export async function updateExpert({
-  exportAgentId,
-  nameCn = null,
-  prompt = null,
-  model = null,
-}) {
-  const response = await authFetch(`${API_BASE_URL}/agent/update`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      export_agent_id: exportAgentId,
-      name_cn: nameCn,
-      prompt,
-      modify_type: 'edit',
-      model,
-    }),
-  })
-  if (!response.ok) throw await _errorOf(response, '修改专家失败')
   return await response.json()
 }
 
@@ -86,6 +68,31 @@ export async function listExperts({
 export async function listPublicExperts() {
   const response = await authFetch(`${API_BASE_URL}/agent/public-list`)
   if (!response.ok) throw await _errorOf(response, '获取公共专家列表失败')
+  return await response.json()
+}
+
+/**
+ * 读取专家提示词 MD（只读）：详情弹窗与工作区预览共用。
+ * 返回 `{ expert_agent_id, scope, file_name, content, version }`。
+ */
+export async function getExpertMd(expertId) {
+  const params = new URLSearchParams({ expert_id: expertId })
+  const response = await authFetch(`${API_BASE_URL}/agent/expert-md?${params.toString()}`)
+  if (!response.ok) throw await _errorOf(response, '获取专家提示词失败')
+  return await response.json()
+}
+
+/**
+ * 某会话里创建的专家（工作区只读条目的数据源）。
+ * 返回 `{ items: [{ expert_agent_id, name_cn, name_en, version }] }`。
+ */
+export async function getSessionExperts(sessionId) {
+  if (!sessionId) return { items: [] }
+  const params = new URLSearchParams({ session_id: sessionId })
+  const response = await authFetch(
+    `${API_BASE_URL}/agent/session-experts?${params.toString()}`
+  )
+  if (!response.ok) throw await _errorOf(response, '获取会话内专家失败')
   return await response.json()
 }
 

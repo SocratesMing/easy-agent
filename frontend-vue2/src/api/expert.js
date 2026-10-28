@@ -3,14 +3,18 @@
  *
  * 对应后端 easy_agent/api/expert.py：
  *   POST /agent/add                创建专家
- *   POST /agent/update             修改专家（新版本目录）
  *   GET  /agent/list               我的专家列表
  *   GET  /agent/public-list        公共（预置）专家列表
+ *   GET  /agent/expert-md          读取专家提示词 MD（只读预览）
+ *   GET  /agent/session-experts    某会话里创建的专家（工作区只读条目）
  *   POST /agent/del                删除专家（默认软删）
  *
  * 专家对话不再有独立接口：选中专家后前端统一调 /agent/chat/stream 并带上
  * `expert_agent_id`（见 api/chat.js 的 sendMessage），提示词加载与相关性预检
  * 都在通用入口完成，SSE 事件格式与普通聊天完全一致。
+ *
+ * 新建与修改专家都改在对话框里由 Agent（expert-creator 技能）完成，故这里只
+ * 保留浏览侧接口；后端的 POST /agent/update 仍存在，但当前无前端调用方。
  */
 import request from '../utils/request.js'
 
@@ -29,29 +33,6 @@ export async function addExpert({ nameCn, prompt, sessionId = null, model = null
       },
     },
     '创建专家失败'
-  )
-}
-
-/** 修改专家 */
-export async function updateExpert({
-  exportAgentId,
-  nameCn = null,
-  prompt = null,
-  model = null,
-}) {
-  return request(
-    {
-      url: '/agent/update',
-      method: 'post',
-      data: {
-        export_agent_id: exportAgentId,
-        name_cn: nameCn,
-        prompt,
-        modify_type: 'edit',
-        model,
-      },
-    },
-    '修改专家失败'
   )
 }
 
@@ -90,6 +71,37 @@ export async function listPublicExperts() {
       method: 'get',
     },
     '获取公共专家列表失败'
+  )
+}
+
+/**
+ * 读取专家提示词 MD（只读）：详情弹窗与工作区预览共用。
+ * 返回 `{ expert_agent_id, scope, file_name, content, version }`。
+ */
+export async function getExpertMd(expertId) {
+  return request(
+    {
+      url: '/agent/expert-md',
+      method: 'get',
+      params: { expert_id: expertId },
+    },
+    '获取专家提示词失败'
+  )
+}
+
+/**
+ * 某会话里创建的专家（工作区只读条目的数据源）。
+ * 返回 `{ items: [{ expert_agent_id, name_cn, name_en, version }] }`。
+ */
+export async function getSessionExperts(sessionId) {
+  if (!sessionId) return { items: [] }
+  return request(
+    {
+      url: '/agent/session-experts',
+      method: 'get',
+      params: { session_id: sessionId },
+    },
+    '获取会话内专家失败'
   )
 }
 
