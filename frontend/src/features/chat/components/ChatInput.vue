@@ -1373,7 +1373,7 @@ function onModelChange(name) {
 const fileInputRef = ref(null)
 const showPlusMenu = ref(false)
 const plusMenuRef = ref(null)
-// 菜单本身（Teleport 到 body）：默认展开连接器子面板时要用它找「连接器」菜单项定位
+// 菜单本身（Teleport 到 body）：悬停「知识库」时要用它找菜单项定位
 const plusMenuListRef = ref(null)
 const plusMenuStyle = ref({})
 const knowledgeScope = ref(null)
@@ -1397,18 +1397,9 @@ function togglePlusMenu() {
       minWidth: '188px',
     }
   }
+  // 只弹出一级菜单：二级面板在悬停 / 点击对应菜单项时才展开
   subpanelCategory.value = null
   showPlusMenu.value = true
-  // 「+」= 展开连接器面板的触发器：菜单弹出后直接把连接器子面板展开在「连接器」
-  // 菜单项右侧（面板定位依赖该菜单项元素，要等 Teleport 渲染完成）。
-  nextTick(openConnectorsSubpanelFromMenu)
-}
-
-/** 「+」菜单打开时默认展开连接器子面板（定位参照菜单里的「连接器」项） */
-function openConnectorsSubpanelFromMenu() {
-  const anchor = plusMenuListRef.value?.querySelector('[data-category="connectors"]')
-  if (!anchor) return
-  openSubpanel('connectors', { currentTarget: anchor }, true)
 }
 
 function closePlusMenu(event) {

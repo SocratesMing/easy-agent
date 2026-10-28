@@ -987,17 +987,9 @@ export default {
           minWidth: '188px',
         }
       }
+      // 只弹出一级菜单：二级面板在悬停 / 点击对应菜单项时才展开
       this.subpanelCategory = null
       this.showPlusMenu = true
-      // 「+」= 展开连接器面板的触发器：菜单渲染完成后直接把连接器子面板展开在
-      // 「连接器」菜单项右侧（面板定位依赖该菜单项元素）。
-      this.$nextTick(() => this.openConnectorsSubpanelFromMenu())
-    },
-    /** 「+」菜单打开时默认展开连接器子面板（定位参照菜单里的「连接器」项） */
-    openConnectorsSubpanelFromMenu() {
-      const anchor = this.$el.querySelector('.plus-menu-item[data-category="connectors"]')
-      if (!anchor) return
-      this.openSubpanel('connectors', { currentTarget: anchor })
     },
     closePlusMenu(event) {
       const anchor = this.$refs.plusMenuRef
