@@ -94,6 +94,7 @@
             </button>
             <PlusMenu
               :open="showPlusMenu"
+              :knowledge-enabled="knowledgeEnabled"
               :menu-style="plusMenuStyle"
               @add-file="handleMenuAddFile"
               @knowledge="openKnowledgeScope"
@@ -374,7 +375,7 @@
 
 <script>
 import { uploadFile, deleteFile } from '../../../api/files.js'
-import { getWebSearchStatus, getUploadLimits } from '../../../api/settings.js'
+import { getKnowledgeStatus, getWebSearchStatus, getUploadLimits } from '../../../api/settings.js'
 import { getUserSkills } from '../../../api/skills.js'
 import { iconCategoryFor } from '../../../utils/skillCategories.js'
 import { buildMessageText, parseSlashQuery } from '../../../utils/skillSlash.js'
@@ -485,7 +486,7 @@ export default {
       uploadLimits: { enabled: true, maxFileSizeMb: 10, maxFiles: 5, maxTotalMb: 20 },
       // 上传限额汇总提示条文案（空串=不显示，2.6s 自动消失）
       uploadNotice: '',
-      // 联网搜索：available=false 时按钮置灰（后端未启用或未配置 api_key）
+      knowledgeEnabled: false,
       // 光标所在行高亮（overlay 技术：textareal 本身无法按行上色）
       caretLineTop: null, // 高亮条 top，null 表示隐藏
       lineHeight: 24, // 行高（px）
@@ -845,6 +846,9 @@ export default {
         this.webSearchReason = (status && status.reason) || ''
       })
       .catch(() => { this.webSearchAvailable = false; this.webSearchReason = 'unreachable' })
+    getKnowledgeStatus()
+      .then(status => { this.knowledgeEnabled = Boolean(status && status.enabled) })
+      .catch(() => { this.knowledgeEnabled = false })
     // 恢复刷新前的输入草稿
     try {
       const draft = sessionStorage.getItem(this.draftKey)

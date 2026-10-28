@@ -14,14 +14,10 @@ def _upload(client: TestClient, session_id=None):
     return resp.json()
 
 
-def test_upload_and_list(client):
+def test_upload(client):
     up = _upload(client)
     assert up["filename"] == "data.txt"
-
-    lst = client.get("/agent/files/list")
-    assert lst.status_code == 200
-    body = lst.json()
-    assert body["total"] >= 1
+    assert up["size"] == len(b"hello content")
 
 
 def test_parse_file(client):
@@ -35,16 +31,6 @@ def test_download_file(client):
     up = _upload(client)
     file_path = up["file_path"]
     resp = client.get(f"/agent/files/download/{file_path}")
-    assert resp.status_code == 200
-    assert resp.content == b"hello content"
-
-
-def test_download_by_listed_relative_path(client):
-    """前端「资产」面板用列表接口返回的相对路径下载。"""
-    up = _upload(client)
-    listed = client.get("/agent/files/list").json()
-    item = next(f for f in listed["files"] if f["filename"] == Path(up["file_path"]).name)
-    resp = client.get(f"/agent/files/download/{item['file_path']}")
     assert resp.status_code == 200
     assert resp.content == b"hello content"
 
@@ -124,10 +110,10 @@ def test_session_files_list(client):
     up = client.post(f"/agent/sessions/{sess}/upload", files=files)
     assert up.status_code == 200
 
-    # 上传的会话文件通过 /agent/files/list?session_id 查看（get_session_files）
-    resp = client.get("/agent/files/list", params={"session_id": sess})
-    assert resp.status_code == 200
-    assert resp.json()["total"] >= 1
+    from easy_agent.db import get_database
+
+    rows = get_database().get_session_files(sess)
+    assert rows and rows[0]["filename"] == "data.txt"
 
 
 def test_session_generated_files(client):

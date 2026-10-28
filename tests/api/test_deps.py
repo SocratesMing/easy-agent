@@ -73,7 +73,6 @@ EXPECTED_ROUTER_PATHS = {
     },
     "files": {
         "/agent/files/session/{session_id}",
-        "/agent/files/list",
         "/agent/files/upload",
         "/agent/files/download/{file_path:path}",
         "/agent/files/{file_id}",

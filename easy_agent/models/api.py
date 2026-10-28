@@ -290,19 +290,6 @@ class AuthResponse(BaseModel):
     context_length: int = Field(default=1_000_000, description="模型上下文窗口大小")
 
 
-class FileInfo(BaseModel):
-    filename: str = Field(..., description="文件名")
-    file_path: str = Field(..., description="文件路径")
-    file_type: str = Field(..., description="文件类型")
-    size: int = Field(..., description="文件大小")
-    uploaded_at: str = Field(..., description="上传时间")
-
-
-class FileListResponse(BaseModel):
-    files: List[FileInfo] = Field(default_factory=list, description="文件列表")
-    total: int = Field(..., description="文件总数")
-
-
 class ScheduledTaskInfo(BaseModel):
     task_id: str = Field(..., description="任务ID")
     username: str = Field(..., description="用户名")
@@ -387,6 +374,12 @@ class UploadLimitsResponse(BaseModel):
     max_file_size_mb: int
     max_files_per_message: int
     max_total_size_mb: int
+
+
+class KnowledgeStatusResponse(BaseModel):
+    """只暴露知识库是否启用，供侧边栏决定是否显示「知识库」菜单。"""
+
+    enabled: bool
 
 
 class StatusResponse(BaseModel):

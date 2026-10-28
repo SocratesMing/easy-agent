@@ -27,7 +27,7 @@
         :username="userProfile.username"
         :organizationId="userProfile.organization_id"
         :email="userProfile.email"
-        :showAssets="showAssets"
+        :knowledgeEnabled="knowledgeEnabled"
         :showKnowledge="showKnowledge"
         @show-knowledge="handleShowKnowledge"
         @create-session="handleCreateSession"
@@ -36,7 +36,6 @@
         @rename-session="handleRenameSession"
         @toggle-pin="handleTogglePin"
         @toggle-sidebar="toggleSidebar"
-        @show-assets="handleShowAssets"
         @show-skill-center="handleShowSkillCenter"
         @show-scheduled-tasks="handleShowScheduledTasks"
         @show-settings="showSettingsPanel = true"
@@ -57,8 +56,6 @@
         </svg>
       </button>
       
-      <AssetsPanel v-if="showAssets" :visible="showAssets" @close="showAssets = false" />
-
       <SkillCenter
         v-if="showSkillCenter"
         :session-id="currentSessionId || ''"
@@ -90,7 +87,7 @@
       />
 
       <Chat
-        v-else-if="!showUserManagementPanel && !showAssets && !showSkillCenter && !showScheduledTasks"
+        v-else-if="!showUserManagementPanel && !showSkillCenter && !showScheduledTasks"
         :messages="messages"
         :sessionLoading="sessionLoading"
         :currentSessionId="currentSessionId"
@@ -126,7 +123,7 @@
         @select-expert="handleSummonExpertInPlace"
       />
 
-      <div v-if="currentSessionId && !showKnowledge && !showUserManagementPanel && !showAssets && !showSkillCenter" class="workspace-area">
+      <div v-if="currentSessionId && !showKnowledge && !showUserManagementPanel && !showSkillCenter" class="workspace-area">
         <WorkspacePanel
           :username="userProfile.username"
           :currentSessionId="currentSessionId"
@@ -156,7 +153,6 @@
 import Vue from 'vue'
 import SessionList from './features/chat/components/SessionList.vue'
 import Chat from './features/chat/components/Chat.vue'
-import AssetsPanel from './features/chat/components/AssetsPanel.vue'
 // 面板级懒加载：首屏不解析这些重型面板，首次打开时再拉对应 chunk
 const SkillCenter = () => import('./features/skills/components/SkillCenter.vue')
 const ScheduledTasksPanel = () => import('./features/tasks/components/ScheduledTasksPanel.vue')
@@ -174,7 +170,7 @@ import { chatStore } from './features/chat/store/chatStore.js'
 import { buildPageContext } from './utils/pageContext.js'
 import { applyApprovalRequests } from './utils/hitlApproval.js'
 import { logout as apiLogout, notifyLogout, getStoredToken, getStoredUsername, AUTH_EXPIRED_EVENT, authFetch, passwordlessLogin } from './api/auth.js'
-import { getModels as fetchModels } from './api/settings.js'
+import { getKnowledgeStatus, getModels as fetchModels } from './api/settings.js'
 import { isRestorableUserProfile } from './utils/userProfile.js'
 
 // ── 应用级常量（原 src/config.js 已移除，直接定义在组件内）────────────
@@ -243,7 +239,6 @@ export default {
     AiSidebar,
     SidebarResizeHandle,
     KnowledgeWorkbench,
-    AssetsPanel,
     Chat,
     ScheduledTasksPanel,
     SessionList,
@@ -267,7 +262,7 @@ export default {
       presetQuestions: [],
       isSidebarCollapsed: false,
       isWorkspaceCollapsed: true,
-      showAssets: false,
+      knowledgeEnabled: false,
       showKnowledge: false,
       sidebarWidth: 280,
       showSkillCenter: false,
@@ -294,7 +289,6 @@ export default {
     // AI 侧边栏的页面上下文：描述用户唤起侧边栏时所在的页面/功能
     aiPageContext() {
       return buildPageContext({
-        showAssets: this.showAssets,
         showSkillCenter: this.showSkillCenter,
         showScheduledTasks: this.showScheduledTasks,
         showSettingsPanel: this.showSettingsPanel,
@@ -365,6 +359,7 @@ export default {
         if (!this.showWelcome && !this.authBlocked) {
           // 拉取可选模型列表（不阻塞会话加载）
           this.loadModels()
+          this.loadKnowledgeStatus()
           await this.loadSessions()
           await this.restoreInitialSession()
         }
@@ -384,6 +379,14 @@ export default {
         this.showWelcome = true
       } else {
         this.authBlocked = true
+      }
+    },
+    async loadKnowledgeStatus() {
+      try {
+        const data = await getKnowledgeStatus()
+        this.knowledgeEnabled = Boolean(data && data.enabled)
+      } catch (e) {
+        this.knowledgeEnabled = false
       }
     },
     async loadModels() {
@@ -462,12 +465,6 @@ export default {
     toggleSidebar() {
       this.isSidebarCollapsed = !this.isSidebarCollapsed
     },
-    handleShowAssets() {
-      this.showKnowledge = false
-      this.showAssets = !this.showAssets
-      this.showSkillCenter = false
-      this.showScheduledTasks = false
-    },
     openSkillCenterPanel(tab) {
       if (tab === 'knowledge') return this.openKnowledgeWorkbench()
       // 「+」菜单入口：打开面板并直接定位到专家/技能/连接器
@@ -526,13 +523,13 @@ export default {
     // AI 侧边栏「在主页面打开」：主对话区切到该会话
     async handleOpenSessionInMain(sessionId) {
       if (!sessionId) return
-      if (sessionId === this.currentSessionId && !this.showAssets && !this.showSkillCenter && !this.showScheduledTasks) return
+      if (sessionId === this.currentSessionId && !this.showSkillCenter && !this.showScheduledTasks) return
       await this.handleSelectSession(sessionId)
     },
     openKnowledgeWorkbench() {
+      if (!this.knowledgeEnabled) return
       // 「+」菜单知识库子面板入口：打开知识库工作台
       this.showKnowledge = true
-      this.showAssets = false
       this.showSkillCenter = false
       this.showScheduledTasks = false
       this.showSettingsPanel = false
@@ -541,18 +538,15 @@ export default {
     handleShowSkillCenter() {
       this.showKnowledge = false
       this.showSkillCenter = !this.showSkillCenter
-      this.showAssets = false
       this.showScheduledTasks = false
     },
     handleShowScheduledTasks() {
       this.showKnowledge = false
       this.showScheduledTasks = !this.showScheduledTasks
-      this.showAssets = false
       this.showSkillCenter = false
     },
     handleShowKnowledge() {
       this.showKnowledge = !this.showKnowledge
-      this.showAssets = false
       this.showSkillCenter = false
       this.showScheduledTasks = false
       this.showSettingsPanel = false
@@ -669,6 +663,7 @@ export default {
         console.warn('获取模型配置失败:', e)
       }
       this.loadModels()
+      this.loadKnowledgeStatus()
       await this.loadSessions()
       await this.restoreInitialSession()
     },
@@ -698,7 +693,6 @@ export default {
         organization_id: '',
         email: ''
       }
-      this.showAssets = false
       this.showSkillCenter = false
       this.selectedExpert = null
       this.hasBootstrapped = false
@@ -867,7 +861,6 @@ export default {
         // ChatInput 随之恢复草稿 + 技能标签）。知识库面板本就不会与专家面板同时开，
         // 这里一并复位，保证与 handleCreateSession 的「关面板」集合一致。
         this.showKnowledge = false
-        this.showAssets = false
         this.showSkillCenter = false
         this.showScheduledTasks = false
         this.showSettingsPanel = false
@@ -881,7 +874,6 @@ export default {
       this.showUserManagementPanel = false
       this.saveCurrentSessionState()
 
-      this.showAssets = false
       this.showSkillCenter = false
       this.showScheduledTasks = false
       this.showSettingsPanel = false
@@ -904,7 +896,6 @@ export default {
       // 保存当前会话状态
       this.saveCurrentSessionState()
 
-      this.showAssets = false
       this.showSkillCenter = false
       this.showScheduledTasks = false
       // 切换会话时不沿用上一个会话的专家选择（选择是当前工作台的临时状态，

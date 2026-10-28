@@ -32,11 +32,6 @@ const PAGES = {
     description: '用户正在主对话页与 AI 对话。',
     suggestions: ['总结主对话里的要点', '基于主对话的结论给出下一步建议', '帮我检查主对话里的回答是否有遗漏'],
   },
-  assets: {
-    title: '我的资产',
-    description: '用户正在「我的资产」页面，管理上传的文件和 AI 生成的文件（文档、表格、演示文稿等）。',
-    suggestions: ['我的资产里可以做哪些操作？', '如何把资产里的文件用于新的对话？', '帮我规划一下文件的分类整理方式'],
-  },
   'skill-center': {
     title: '技能中心',
     description: '用户正在「技能中心」页面，浏览、启用、停用或创建 Agent 技能（Skill）与连接器（MCP）。',
@@ -87,7 +82,6 @@ export function buildPageContext(state) {
   else if (state.showSettingsPanel) page = 'settings'
   else if (state.showSkillCenter) page = 'skill-center'
   else if (state.showScheduledTasks) page = 'scheduled-tasks'
-  else if (state.showAssets) page = 'assets'
 
   const meta = PAGES[page]
   const lines = [meta.description]

@@ -15,8 +15,6 @@ from easy_agent.db.repositories.file_repository import FileRepository
 from easy_agent.db.repositories.user_repository import UserRepository
 from easy_agent.models.api import (
     DeleteFileResponse,
-    FileInfo,
-    FileListResponse,
     ParseFileResponse,
     SessionGeneratedFileInfo,
     UploadFileResponse,
@@ -49,12 +47,6 @@ logger = logging.getLogger(__name__)
 
 BASE_UPLOAD_DIR = Path("./data/uploads")
 BASE_WORKSPACE_DIR = Path("./workspace")
-
-HIDDEN_EXTENSIONS = frozenset({
-    "py", "js", "ts", "vue", "html", "css", "json", "xml",
-    "java", "go", "rs", "c", "cpp", "h", "sh", "bat",
-    "log", "jsonl",
-})
 
 router = APIRouter(
     prefix="/agent/files",
@@ -289,94 +281,6 @@ async def get_session_generated_files(
         )
 
     return file_list
-
-
-@router.get("/list", summary="获取文件列表", response_model=FileListResponse)
-async def list_files(
-    db: Annotated[FileRepository, Depends(get_file_repository)],
-    username: Annotated[str, Depends(get_current_username)],
-    session_id: Optional[str] = Query(default=None),
-    file_type: Optional[str] = Query(default=None),
-):
-    repo = _as_file_repository(db)
-    upload_dir, _ = get_user_dirs(username)
-
-    if session_id:
-        # 校验会话归属，防止跨用户读取其他会话的文件列表
-        repo.get_owned_session_meta(session_id, username)
-        files = repo.get_session_files(session_id)
-        file_list = []
-        for f in files:
-            fi = FileInfo(
-                filename=f["filename"],
-                file_path=f["file_path"],
-                file_type=f["file_type"],
-                size=f["size"],
-                uploaded_at=f["uploaded_at"],
-            )
-            if not file_type or fi.file_type == file_type:
-                file_list.append(fi)
-        return FileListResponse(files=file_list, total=len(file_list))
-
-    upload_files = []
-    if store_mode_enabled():
-        # store 模式：本地 uploads 已不保留副本，资产页从 LangGraph Store 列举。
-        from easy_agent.services.upload_storage import (
-            UploadStorageError,
-            list_stored_uploads,
-        )
-
-        try:
-            stored = list_stored_uploads(username)
-        except UploadStorageError as exc:
-            raise _store_http_error(exc) from exc
-        for item in stored:
-            name = item["saved_name"]
-            ext = Path(name).suffix.lstrip(".").lower()
-            if ext in HIDDEN_EXTENSIONS:
-                continue
-            upload_files.append(
-                FileInfo(
-                    filename=name,
-                    file_path=item["file_path"],
-                    file_type=ext or "unknown",
-                    size=int(item["size"]),
-                    uploaded_at=str(item["created_at"]),
-                )
-            )
-    elif upload_dir.exists():
-        for item in upload_dir.rglob("*"):
-            if item.is_file():
-                ext = item.suffix.lstrip(".").lower()
-                if ext in HIDDEN_EXTENSIONS:
-                    continue
-                try:
-                    stat = item.stat()
-                    upload_files.append(
-                        FileInfo(
-                            filename=item.name,
-                            file_path=str(item.relative_to(upload_dir)),
-                            file_type=ext or "unknown",
-                            size=stat.st_size,
-                            uploaded_at=datetime.fromtimestamp(
-                                stat.st_mtime
-                            ).isoformat(),
-                        )
-                    )
-                except Exception as e:
-                    logger.warning(f"读取上传文件信息失败: {item} | {e}")
-
-    # 排除会话中生成的文件：生成文件物理上位于 workspace 目录，正常不会出现在 uploads，
-    # 此处以文件名为黑名单做双保险，确保资产页只展示用户上传的文件。
-    generated_names = repo.get_generated_filenames(username)
-    if generated_names:
-        upload_files = [f for f in upload_files if f.filename not in generated_names]
-
-    all_files = upload_files
-    if file_type:
-        all_files = [f for f in all_files if f.file_type == file_type]
-
-    return FileListResponse(files=all_files, total=len(all_files))
 
 
 @router.post("/upload", summary="上传文件", response_model=UploadFileResponse)

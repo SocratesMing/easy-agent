@@ -35,7 +35,6 @@ const LINE_BUDGET = {
 
 /** 组件里已经存在的 api 直连（存量，只允许删） */
 const API_IMPORT_ALLOWLIST = new Set([
-  'features/chat/components/AssetsPanel.vue',
   'features/chat/components/GeneratedFilesModal.vue',
   'features/chat/components/ChatInput.vue',
   'features/connectors/components/ConnectorListPanel.vue',

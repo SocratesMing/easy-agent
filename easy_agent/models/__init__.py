@@ -24,8 +24,6 @@ from easy_agent.models.api import (
     RegisterRequest,
     ResetPasswordRequest,
     AuthResponse,
-    FileInfo,
-    FileListResponse,
 )
 from easy_agent.models.db import SessionModel, UserModel
 
@@ -53,8 +51,6 @@ __all__ = [
     "RegisterRequest",
     "ResetPasswordRequest",
     "AuthResponse",
-    "FileInfo",
-    "FileListResponse",
     "SessionModel",
     "UserModel",
 ]

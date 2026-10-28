@@ -9,6 +9,7 @@ SETTINGS_PATHS = [
     "/agent/settings/models",
     "/agent/settings/web-search",
     "/agent/settings/upload-limits",
+    "/agent/settings/knowledge",
 ]
 
 
