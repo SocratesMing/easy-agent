@@ -272,3 +272,34 @@ def test_partial_message_dict_uses_processor_state_and_approval_flag():
     assert partial["usage"]["reasoning_tokens"] == 2
     assert partial["usage"]["elapsed_time"] == 1.23
     assert with_approval["tool_calls"][0]["approval_status"] == "pending"
+    # 替身处理器没有 context_length：不写这个键
+    assert "context_length" not in partial["usage"]
+
+
+def test_assistant_message_records_the_model_window():
+    """本轮所用模型的窗口随消息落库：会话不记录模型，会话接口靠它还原占用率的分母。"""
+    message = build_assistant_message_dict(
+        content="answer",
+        thinking="",
+        thinking_duration=None,
+        tool_call_records=[],
+        blocks=[],
+        input_tokens=900,
+        output_tokens=10,
+        context_tokens=900,
+        elapsed_time=1.0,
+        step_count=1,
+        context_length=131072,
+    )
+    assert message["usage"]["context_length"] == 131072
+
+    proc = SimpleNamespace(
+        accumulated_response="",
+        accumulated_thinking="",
+        blocks=[],
+        last_usage={"input_tokens": 5, "output_tokens": 1, "reasoning_tokens": 0},
+        last_context_tokens=5,
+        current_step=1,
+        context_length=200000,
+    )
+    assert _partial_message_dict(proc, 0.5)["usage"]["context_length"] == 200000

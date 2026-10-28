@@ -45,10 +45,14 @@ class SessionDetail(BaseModel):
         default_factory=list, description="任务计划列表"
     )
     usage: Optional[dict[str, Any]] = Field(
-        default=None, description="会话累计 token 用量"
+        default=None,
+        description=(
+            "token 用量：最近一次模型调用的输入/输出/思考 token 与上下文占用"
+            "（与流式 token_usage 同口径），elapsed_time / step_count 为会话累计"
+        ),
     )
     context_length: Optional[int] = Field(
-        default=None, description="模型上下文窗口大小"
+        default=None, description="最近一次调用所用模型的上下文窗口（旧消息退回当前默认模型）"
     )
 
 
@@ -94,7 +98,7 @@ class ChatRequest(BaseModel):
     )
     page_context: Optional[str] = Field(
         default=None,
-        max_length=8000,
+        max_length=128000,
         description="AI 侧边栏附带的页面/功能上下文（用户唤起 AI 时所在页面的描述），仅提供给模型参考",
     )
     skills: Optional[List[str]] = Field(
@@ -220,10 +224,14 @@ class GetChatHistoryResponse(BaseModel):
     created_at: str = Field(..., description="创建时间")
     updated_at: str = Field(..., description="更新时间")
     usage: Optional[dict[str, Any]] = Field(
-        default=None, description="会话累计 token 用量"
+        default=None,
+        description=(
+            "token 用量：最近一次模型调用的输入/输出/思考 token 与上下文占用"
+            "（与流式 token_usage 同口径），elapsed_time / step_count 为会话累计"
+        ),
     )
     context_length: Optional[int] = Field(
-        default=None, description="模型上下文窗口大小"
+        default=None, description="最近一次调用所用模型的上下文窗口（旧消息退回当前默认模型）"
     )
 
 

@@ -11,6 +11,7 @@
         :sessions="sessions"
         :currentSessionId="currentSessionId"
         :streamingSessionIds="streamingSessions"
+        :pendingApprovalSessionIds="pendingApprovalSessions"
         :username="userProfile.username"
         :organizationId="userProfile.organization_id"
         :email="userProfile.email"
@@ -122,6 +123,8 @@
         />
       </div>
 
+      <!-- AI 侧边栏：任意页面可唤起，与主页面共用会话列表 -->
+      <AiSidebar v-if="userProfile.username" :pageContext="aiPageContext" @open-in-main="handleOpenSessionInMain" @open-panel="openSkillCenterPanel" />
       <div v-if="error" class="error-toast">
         {{ error }}
         <button @click="error = null">×</button>
@@ -132,7 +135,7 @@
 
 <script setup>
 import { API_BASE_URL, APP_WELCOME_TITLE, appRuntime } from './config.js'
-import { ref, computed, onMounted, watch, defineAsyncComponent } from 'vue'
+import { ref, computed, onMounted, watch, toRef, defineAsyncComponent } from 'vue'
 import SessionList from './features/chat/components/SessionList.vue'
 import Chat from './features/chat/components/Chat.vue'
 import AssetsPanel from './features/chat/components/AssetsPanel.vue'
@@ -141,6 +144,9 @@ const ScheduledTasksPanel = defineAsyncComponent(() => import('./features/tasks/
 const KnowledgeWorkbench = defineAsyncComponent(() => import('./features/knowledge/KnowledgeWorkbench.vue'))
 const UserManagementPanel = defineAsyncComponent(() => import('./features/personnel/components/UserManagementPanel.vue'))
 import Welcome from './features/chat/components/Welcome.vue'
+import AiSidebar from './features/chat/components/AiSidebar.vue'
+import { chatBus, chatStore, syncPendingApprovalFlag } from './features/chat/store/chatStore.js'
+import { useAiSidebarBridge } from './features/chat/composables/useAiSidebarBridge.js'
 import WorkspacePanel from './features/workspace/components/WorkspacePanel.vue'
 const SettingsPanel = defineAsyncComponent(() => import('./features/settings/components/SettingsPanel.vue'))
 import { createSession, listSessions, getChatHistory, deleteSession, sendMessage, resumeStream, renameSession, togglePinSession, getStreamStatus, attachStream } from './api/chat.js'
@@ -151,7 +157,8 @@ import { logout as apiLogout, notifyLogout, getStoredToken, getStoredUsername, A
 import { getModels as fetchModels } from './api/settings.js'
 import { getExpertLastSession } from './shared/utils/expertSession.js'
 
-const sessions = ref([])
+// 会话列表与「进行中」集合放在 chatStore：AI 侧边栏与主页面共用同一份
+const sessions = toRef(chatStore, 'sessions')
 const currentSessionId = ref(null)
 const currentSessionHasFiles = ref(false)
 
@@ -257,9 +264,10 @@ async function expandWorkspaceAfterSessionCompletion(sessionId, delayMs = 500) {
 }
 const messages = ref([])
 // 多个会话可同时流式：记录所有正在流式输出的会话 id（会话列表逐个显示"进行中"徽标）
-const streamingSessions = ref([])
+const streamingSessions = toRef(chatStore, 'streamingSessions')
+const pendingApprovalSessions = toRef(chatStore, 'pendingApprovalSessions')
 // 最近开始流式的会话（页面刷新后据此重新挂载）
-const lastStreamingSession = ref(null)
+const lastStreamingSession = toRef(chatStore, 'lastStreamingSession')
 // 输入框状态：当前展示的会话正在流式时才显示停止按钮与 token 用量
 const isStreaming = computed(() => isSessionStreaming(currentSessionId.value))
 // 当前正在流式输出的 assistant 消息 id（组件级，供 handleStop 等跨函数使用；
@@ -415,6 +423,7 @@ async function attachToStreamingSession(sessionId, opts = {}) {
     preStreamDuration: sessionDuration.value,
     initialBlockOrder: 0,
     onApprovalRequired: (data) => {
+      syncPendingApprovalFlag(sessionId, true)
       if (!displayed) return
       pendingApproval.value = {
         threadId: data.thread_id,
@@ -649,6 +658,7 @@ function buildStreamState() {
     markStreaming,
     loadSessions,
     parseMCPResult,
+    onStreamStarted: (sid) => chatBus.emit('stream-started', { sessionId: sid, origin: 'main' }),
   }
 }
 
@@ -763,12 +773,16 @@ function reconstructPendingApproval() {
   // 流式进行中由 onApprovalRequired 管理审批状态，不重建以免覆盖
   if (isStreaming.value) return
   pendingApproval.value = null
-  if (!messages.value || messages.value.length === 0) return
   const sid = currentSessionId.value || ''
+  let found = false
+  if (!messages.value || messages.value.length === 0) {
+    if (sid) syncPendingApprovalFlag(sid, false)
+    return
+  }
   for (let i = messages.value.length - 1; i >= 0; i--) {
     const msg = messages.value[i]
     // 末尾出现用户消息说明已发起新一轮对话，旧的待审批不再阻塞，不重建
-    if (msg.role === 'user') return
+    if (msg.role === 'user') break
     if (msg.role === 'assistant' && msg.pending_approval && msg.pending_approval.thread_id) {
       const threadId = msg.pending_approval.thread_id
       const backendMsgId = sid && threadId.startsWith(sid + '-')
@@ -786,10 +800,12 @@ function reconstructPendingApproval() {
       messages.value[i] = { ...msg, id: backendMsgId, blocks }
       if (hasPending) {
         pendingApproval.value = { threadId, assistantMsgId: backendMsgId }
+        found = true
       }
       break
     }
   }
+  if (sid) syncPendingApprovalFlag(sid, found)
 }
 watch(() => loadedSessionId.value, reconstructPendingApproval)
 const isSidebarCollapsed = ref(false)
@@ -1306,19 +1322,9 @@ async function handleDeleteSession(sessionId) {
     // 清除会话缓存
     delete sessionStates.value[sessionId]
 
+    chatBus.emit('session-removed', { sessionId, origin: 'main' })
     if (currentSessionId.value === sessionId) {
-      // 先清空归属（避免把已删除会话的界面数据再存回缓存），再决定回退到哪个会话
-      currentSessionId.value = null
-      loadedSessionId.value = null
-      messages.value = []
-      const nextId = sessions.value[0]?.session_id || null
-      if (nextId) {
-        // 复用切会话逻辑：加载其历史（含 sessionLoading 骨架屏），而不是留一个空欢迎页
-        await handleSelectSession(nextId)
-      } else {
-        // 没有剩余会话：回到新建会话首页
-        await handleCreateSession()
-      }
+      await fallbackAfterSessionRemoved()
     } else if (loadedSessionId.value === sessionId) {
       loadedSessionId.value = null
     }
@@ -1330,6 +1336,12 @@ async function handleDeleteSession(sessionId) {
     error.value = '删除会话失败'
   }
 }
+
+const { aiPageContext, handleOpenSessionInMain, fallbackAfterSessionRemoved } = useAiSidebarBridge({
+  panels: { showAssets, showSkillCenter, showScheduledTasks, showSettingsPanel, showUserManagementPanel },
+  userProfile, sessions, currentSessionId, loadedSessionId, messages, sessionUsage, availableModels, selectedModel,
+  sessionStates, attachedStreamingSessions, attachToStreamingSession, handleSelectSession, handleCreateSession,
+})
 
 async function handleRenameSession(sessionId, newTitle) {
   try {
@@ -1384,7 +1396,6 @@ function parseMCPResult(rawResult) {
   }
   return rawResult
 }
-
 
 async function handleSendMessage(message, files = [], signal, enableDeepThink = true, enableWebSearch = false, skills = [], expertEditId = '', knowledgeBaseIds = []) {
   const userMsgId = `user-${Date.now()}`
@@ -1473,6 +1484,7 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
       }
     },
     onApprovalRequired: (data) => {
+      syncPendingApprovalFlag(streamSessionId || currentSessionId.value, true)
       pendingApproval.value = { threadId: data.thread_id, assistantMsgId }
       if (assistantMsgId && data.action_requests) {
         const idx = messages.value.findIndex(m => m.id === assistantMsgId)
@@ -1573,6 +1585,7 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
   } finally {
     // HITL: 若有审批待处理，保持 isStreaming=true（用户需先审批）
     if (!pendingApproval.value) {
+      syncPendingApprovalFlag(streamSessionId || currentSessionId.value, false)
       const sid = streamSessionId
       const isDisplayed = !sid || sid === loadedSessionId.value
       // 兜底：流已结束（列表"进行中"标记即将移除），若该会话的消息仍标记 loading
@@ -1638,6 +1651,10 @@ async function handleToolApproval(decision, target) {
       pending_approval: null,
       blocks: [...messages.value[msgIdx].blocks],
     }
+    const stillPending = messages.value[msgIdx].blocks.some(
+      b => b.type === 'tool_call' && b.approval_status === 'pending'
+    )
+    syncPendingApprovalFlag(sessionId, stillPending)
   }
 
   const { onChunk } = createStreamChunkHandler(messages, {
@@ -1652,6 +1669,7 @@ async function handleToolApproval(decision, target) {
     })(),
     onApprovalRequired: (data) => {
       // 嵌套审批
+      syncPendingApprovalFlag(sessionId, true)
       pendingApproval.value = {
         threadId: data.thread_id,
         assistantMsgId,
@@ -1703,6 +1721,9 @@ async function handleToolApproval(decision, target) {
     if (idx !== -1) {
       messages.value[idx].loading = false
       messages.value[idx].error = e.message || '恢复执行失败'
+      if (e.status === 409) {
+        messages.value[idx].pending_approval = null
+      }
       messages.value[idx] = { ...messages.value[idx] }
     }
   } finally {
@@ -1711,6 +1732,7 @@ async function handleToolApproval(decision, target) {
     const hasNewApproval = pendingApproval.value && pendingApproval.value !== currentApproval
     if (!hasNewApproval) {
       pendingApproval.value = null
+      syncPendingApprovalFlag(sessionId, false)
       currentAbortController.value = null
       streamingAssistantId.value = null
       const sid = sessionId
@@ -2821,8 +2843,6 @@ html[data-theme="dark"] .todo-item.in_progress {
 html[data-theme="dark"] .todo-content {
   color: var(--text-primary) !important;
 }
-
-
 
 html[data-theme="dark"] .todo-item.in_progress .todo-content {
   color: var(--text-primary) !important;

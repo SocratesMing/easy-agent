@@ -498,22 +498,30 @@ async def add_skill_to_user(
 
     agent 经只读路由 ``/skills/builtin/`` 直接读公共技能目录，公共技能升级后所有用户
     立即用上新版本；用户要改就复制到自己的技能里（同名覆盖公共技能）。
+
+    ``dir_name`` 接受**目录名**，也兼容按 SKILL.md 的 ``name``（常见中文）传参：
+    后者经别名解析成 canonical 目录名后再登记，清单键始终是目录名。
     """
     _require_dir_name(request.dir_name)
     root = builtin_skills.builtin_root()
     if root is None:
         raise HTTPException(status_code=400, detail="系统未配置公共技能目录")
-    if not skill_library.is_skill_dir(root / request.dir_name):
+    dir_name = request.dir_name
+    if not skill_library.is_skill_dir(root / dir_name):
+        hit = skill_library.resolve_skill_ref(dir_name, root)
+        if hit:
+            dir_name = hit["dir_name"]
+    if not skill_library.is_skill_dir(root / dir_name):
         raise HTTPException(status_code=404, detail=f"公共技能 '{request.dir_name}' 不存在")
-    if skill_library.find_user_skill(username, request.dir_name):
-        raise HTTPException(status_code=409, detail=f"技能 '{request.dir_name}' 已添加，请勿重复操作")
+    if skill_library.find_user_skill(username, dir_name):
+        raise HTTPException(status_code=409, detail=f"技能 '{dir_name}' 已添加，请勿重复操作")
 
     try:
-        item = builtin_skills.add(username, request.dir_name, root)
+        item = builtin_skills.add(username, dir_name, root)
     except FileNotFoundError:
-        raise HTTPException(status_code=404, detail=f"公共技能 '{request.dir_name}' 不存在")
+        raise HTTPException(status_code=404, detail=f"公共技能 '{dir_name}' 不存在")
     except FileExistsError:
-        raise HTTPException(status_code=409, detail=f"技能 '{request.dir_name}' 已添加，请勿重复操作")
+        raise HTTPException(status_code=409, detail=f"技能 '{dir_name}' 已添加，请勿重复操作")
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=f"权限不足，无法写入技能清单: {e}")
 
@@ -521,12 +529,13 @@ async def add_skill_to_user(
     invalidate_user_agents(username)
 
     # 技能添加时按内容自动归类（用户之后可在技能中心手动调整）
-    category_id = skill_categories.auto_assign_skill_dir(username, request.dir_name, item["path"])
-    logger.info(f"技能添加成功 | 用户: {username} | 技能: {request.dir_name} | 类别: {category_id}")
+    category_id = skill_categories.auto_assign_skill_dir(username, dir_name, item["path"])
+    logger.info(f"技能添加成功 | 用户: {username} | 技能: {dir_name} | 类别: {category_id}")
     return {
         "status": "ok",
+        "dir_name": dir_name,
         "category_id": category_id,
-        "message": f"技能 '{request.dir_name}' 添加成功",
+        "message": f"技能 '{dir_name}' 添加成功",
     }
 
 

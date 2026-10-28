@@ -1,11 +1,12 @@
 <template>
-  <div
-    class="skill-submenu"
-    :style="panelStyle"
-    @click.stop
-    @mouseenter="$emit('hover-in')"
-    @mouseleave="$emit('hover-out')"
-  >
+  <!-- 纯内容组件：外框（宽度/位置/高度/边框/热桥）由 ChatInput 的原生
+       .skill-submenu.plus-subpanel 负责，与专家 / 连接器面板同一条链路。
+       这样 syncSubpanelBox 量到的就是真实面板高度，搜索后能正常收缩。 -->
+  <div class="skill-sub-inner">
+                    <div class="plus-subpanel-head">
+                      <span class="plus-subpanel-title">{{ title }}</span>
+                      <span class="plus-menu-count">{{ count }}</span>
+                    </div>
                     <div class="skill-sub-search">
                       <svg class="skill-sub-search-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                         <circle cx="11" cy="11" r="8"></circle>
@@ -16,8 +17,24 @@
                     @input="$emit('update:search', $event.target.value)"
                         type="text"
                         placeholder="搜索技能"
+                        aria-label="搜索技能"
+                        spellcheck="false"
+                        autocomplete="off"
                         class="skill-sub-search-input"
+                        @keydown.esc.stop.prevent="$emit('update:search', '')"
                       />
+                      <button
+                        v-if="search"
+                        type="button"
+                        class="skill-sub-search-clear"
+                        aria-label="清空搜索"
+                        @click="$emit('update:search', '')"
+                      >
+                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                          <line x1="18" y1="6" x2="6" y2="18" />
+                          <line x1="6" y1="6" x2="18" y2="18" />
+                        </svg>
+                      </button>
                     </div>
                     <div class="skill-sub-list">
                       <div v-if="loading" class="skill-sub-hint">加载中…</div>
@@ -40,10 +57,8 @@
                           <template v-else>{{ item.initial }}</template>
                         </span>
                         <span class="skill-sub-body">
-                          <span class="skill-sub-name-row">
-                            <span class="skill-sub-name">{{ item.name }}</span>
-                            <span v-if="!item.enabled" class="skill-sub-off">已停用</span>
-                          </span>
+                          <span class="skill-sub-name">{{ item.name }}</span>
+                          <span v-if="!item.enabled" class="skill-sub-off">已停用</span>
                           <span class="skill-sub-desc">{{ item.desc }}</span>
                         </span>
                         <svg v-if="selectedDirs.includes(item.dir_name)" class="skill-sub-check" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
@@ -84,10 +99,12 @@ defineProps({
   loading: { type: Boolean, default: false },
   error: { type: String, default: '' },
   search: { type: String, default: '' },
-  panelStyle: { type: Object, default: () => ({}) },
+  // 标题行与专家 / 连接器面板保持一致（标题 + 计数），由父组件传入
+  title: { type: String, default: '我的技能' },
+  count: { type: Number, default: 0 },
 })
 
-defineEmits(['update:search', 'select', 'import', 'manage', 'hover-in', 'hover-out'])
+defineEmits(['update:search', 'select', 'import', 'manage'])
 </script>
 
 <style scoped>
@@ -106,25 +123,45 @@ defineEmits(['update:search', 'select', 'import', 'manage', 'hover-in', 'hover-o
   color: #dc2626;
 }
 
-.skill-submenu {
-  width: 400px;
-  max-width: 90vw;
-  max-height: 62vh;
+/* 内容容器：外框在 ChatInput 的 .plus-subpanel 上（flex column + 内联 height）。
+   这里用 flex:1 撑满外框内容区，auto 高度时又只占内容高度 —— 两种状态都成立。 */
+.skill-sub-inner {
   display: flex;
   flex-direction: column;
-  background: var(--bg-secondary);
-  border: 1px solid var(--border-color);
-  border-radius: 16px;
-  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.14);
-  padding: 12px;
-  z-index: 9999;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* 标题行：与专家 / 连接器面板同款（三段面板的头部、搜索框、行、底栏规格必须一致） */
+.plus-subpanel-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 4px 8px;
+  flex: 0 0 auto;
+}
+
+.plus-subpanel-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.plus-menu-count {
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
 }
 
 .skill-sub-search {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 9px 12px;
+  flex: 0 0 auto;
+  margin: 0 4px 8px;
+  padding: 7px 10px;
   border-radius: 10px;
   background: var(--bg-tertiary);
   border: 1px solid transparent;
@@ -136,24 +173,53 @@ defineEmits(['update:search', 'select', 'import', 'manage', 'hover-in', 'hover-o
 }
 
 .skill-sub-search-icon {
-  width: 16px;
-  height: 16px;
+  width: 15px;
+  height: 15px;
   flex-shrink: 0;
   color: var(--text-secondary);
 }
 
 .skill-sub-search-input {
   flex: 1;
+  min-width: 0;
   border: none;
   outline: none;
   background: transparent;
-  font-size: 14px;
+  font-size: 13px;
+  line-height: 1.3;
   font-family: inherit;
   color: var(--text-primary);
 }
 
+.skill-sub-search-clear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.skill-sub-search-clear:hover {
+  color: var(--text-primary);
+}
+
+.skill-sub-search-clear svg {
+  width: 12px;
+  height: 12px;
+}
+
 .skill-sub-list {
-  flex: 1;
+  flex: 1 1 auto;
+  /* 面板高度由父组件 syncSubpanelBox 内联给出（打开后只增不减），
+     列表必须能被压缩（min-height:0），否则会顶破面板边界。 */
+  min-height: 0;
   overflow-y: auto;
   margin-top: 8px;
   display: flex;
@@ -162,8 +228,14 @@ defineEmits(['update:search', 'select', 'import', 'manage', 'hover-in', 'hover-o
   scrollbar-width: thin;
 }
 
+/* 空态 / 无结果提示：搜索后条数变少、面板高度保持不变，单条提示靠垂直居中，
+   看起来才像「有意的空状态」而不是「内容没加载出来」。 */
+.skill-sub-list > .skill-sub-hint:only-child {
+  margin: auto 0;
+}
+
 .skill-sub-hint {
-  padding: 24px 10px;
+  padding: 16px 10px;
   font-size: 13px;
   color: var(--text-secondary);
   text-align: center;
@@ -177,26 +249,29 @@ defineEmits(['update:search', 'select', 'import', 'manage', 'hover-in', 'hover-o
   max-height: 320px;
 }
 
+/* 行规格以连接器行为准（.plus-list-item）：内边距 / 间距 / 圆角 / 字号三者完全一致 */
 .skill-sub-item {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
   width: 100%;
-  padding: 9px 10px;
+  padding: 8px 10px;
   border: none;
-  border-radius: 10px;
+  border-radius: 8px;
   background: transparent;
+  font-family: inherit;
   text-align: left;
   cursor: pointer;
   transition: background 0.15s;
 }
 
 .skill-sub-item:hover {
-  background: color-mix(in srgb, var(--text-primary) 6%, transparent);
+  background: var(--bg-tertiary);
 }
 
 .skill-sub-item.active {
-  background: color-mix(in srgb, var(--accent-color) 10%, transparent);
+  background: color-mix(in srgb, var(--accent-color) 14%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-color) 45%, transparent);
 }
 
 .skill-sub-item.disabled {
@@ -212,37 +287,33 @@ defineEmits(['update:search', 'select', 'import', 'manage', 'hover-in', 'hover-o
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 34px;
-  height: 34px;
+  width: 28px;
+  height: 28px;
   flex-shrink: 0;
-  border-radius: 10px;
-  font-size: 15px;
+  border-radius: 8px;
+  /* 与连接器行 .plus-list-icon（initial 变体）一致：12px / 700 */
+  font-size: 12px;
   font-weight: 700;
 }
 
 .skill-sub-icon-emoji {
-  font-size: 17px;
+  font-size: 14px;
   line-height: 1;
-  font-family: "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif;
 }
 
+/* 名称 / 标签 / 描述同排（与专家 / 连接器面板一致）：name 不收缩、desc 占满剩余并省略 */
 .skill-sub-body {
   flex: 1;
   min-width: 0;
   display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.skill-sub-name-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
+  align-items: baseline;
+  gap: 8px;
 }
 
 .skill-sub-name {
-  font-size: 15px;
+  flex-shrink: 0;
+  max-width: 46%;
+  font-size: 13px;
   font-weight: 600;
   color: var(--text-primary);
   white-space: nowrap;
@@ -252,6 +323,8 @@ defineEmits(['update:search', 'select', 'import', 'manage', 'hover-in', 'hover-o
 
 .skill-sub-off {
   flex-shrink: 0;
+  /* baseline 对齐时小标签会偏上，单独拉回垂直居中 */
+  align-self: center;
   padding: 1px 6px;
   border-radius: 5px;
   font-size: 11px;
@@ -260,8 +333,10 @@ defineEmits(['update:search', 'select', 'import', 'manage', 'hover-in', 'hover-o
 }
 
 .skill-sub-desc {
-  font-size: 13px;
-  line-height: 1.45;
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  line-height: 1.5;
   color: var(--text-secondary);
   white-space: nowrap;
   overflow: hidden;
@@ -281,29 +356,31 @@ defineEmits(['update:search', 'select', 'import', 'manage', 'hover-in', 'hover-o
   border-top: 1px solid var(--border-color);
   display: flex;
   flex-direction: column;
+  flex: 0 0 auto;
 }
 
 .skill-sub-footer-btn {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 9px 10px;
+  padding: 8px 10px;
   border: none;
-  border-radius: 10px;
+  border-radius: 8px;
   background: transparent;
-  font-size: 14px;
+  font-size: 13px;
+  font-family: inherit;
   color: var(--text-primary);
   cursor: pointer;
   transition: background 0.15s;
 }
 
 .skill-sub-footer-btn:hover {
-  background: color-mix(in srgb, var(--text-primary) 6%, transparent);
+  background: var(--bg-tertiary);
 }
 
 .skill-sub-footer-icon {
-  width: 17px;
-  height: 17px;
+  width: 15px;
+  height: 15px;
   flex-shrink: 0;
   color: var(--text-secondary);
 }

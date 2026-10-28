@@ -1,4 +1,5 @@
 import request, {
+  fetchWithAuth,
   handleStreamResponse,
   streamHeaders,
   streamUrl,
@@ -85,7 +86,7 @@ export async function attachStream(sessionId, onChunk, signal) {
   const controller = new AbortController()
   const abortSignal = signal || controller.signal
   const response = await handleStreamResponse(
-    await fetch(streamUrl(`/agent/chat/stream/live?session_id=${encodeURIComponent(sessionId)}`), {
+    await fetchWithAuth(streamUrl(`/agent/chat/stream/live?session_id=${encodeURIComponent(sessionId)}`), {
       signal: abortSignal,
       headers: streamHeaders(),
     })
@@ -128,7 +129,7 @@ export async function sendMessage(sessionId, message, onChunk, signal, enableDee
   }
 
   const response = await handleStreamResponse(
-    await fetch(streamUrl('/agent/chat/stream'), {
+    await fetchWithAuth(streamUrl('/agent/chat/stream'), {
       method: 'POST',
       headers: streamHeaders(),
       body: JSON.stringify(payload),
@@ -149,7 +150,7 @@ export async function resumeStream(
   const controller = new AbortController()
   const abortSignal = signal || controller.signal
   const response = await handleStreamResponse(
-    await fetch(streamUrl('/agent/chat/resume'), {
+    await fetchWithAuth(streamUrl('/agent/chat/resume'), {
       method: 'POST',
       headers: streamHeaders(),
       body: JSON.stringify({

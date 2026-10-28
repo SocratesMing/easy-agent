@@ -333,28 +333,9 @@ async def test_chat_stream_golden_event_order_and_persistence():
     }
 
     assert db.todos == [[{"content": "x"}]]
-    assert db.recorded_thinking == [
-        {
-            "session_id": "s1",
-            "message_id": "m1",
-            "step": 1,
-            "content": "why",
-            "duration": 0.5,
-        }
-    ]
-    assert db.recorded_tool_calls == [
-        {
-            "session_id": "s1",
-            "message_id": "m1",
-            "tool_name": "execute",
-            "tool_call_id": "c1",
-            "arguments": {"command": "ls"},
-            "result": "ok",
-            "success": True,
-            "duration": 0.2,
-            "step": 1,
-        }
-    ]
+    # 思考与工具调用只记在最终消息的 extra_data（下方 final 的断言），不再另写记录表
+    assert db.recorded_thinking == []
+    assert db.recorded_tool_calls == []
 
     final = db.persisted[-1]
     assert final["content"] == "hello world!"
@@ -543,7 +524,10 @@ def _resume_messages():
 async def test_resume_stream_golden_decision_merge_and_authoritative_blocks():
     graph = FakeGraph(
         [[{"type": "content", "content": " done"}]],
-        states=[SimpleNamespace(next=None, tasks=[], values={"messages": []})],
+        states=[
+            _hitl_state(),
+            SimpleNamespace(next=None, tasks=[], values={"messages": []}),
+        ],
     )
     db = FakeDB(_resume_messages())
 
@@ -635,6 +619,35 @@ async def test_resume_stream_golden_decision_merge_and_authoritative_blocks():
     assert final_tool_block["approval_status"] == "approved"
 
 
+async def test_resume_stale_approval_emits_error_instead_of_fake_run():
+    """checkpointer 里已没有待审批中断：恢复流下发 error，而不是带着 decisions 空跑。
+
+    改造前这里会直接 astream，前端表现为「点了批准但界面什么都没发生」。
+    """
+    graph = FakeGraph(
+        [[{"type": "content", "content": " done"}]],
+        states=[SimpleNamespace(next=None, tasks=[], values={"messages": []})],
+    )
+    db = FakeDB(_resume_messages())
+
+    frames = await _collect(
+        resume_stream_generator(
+            db,
+            _agent(graph),
+            "s1",
+            "s1-m1",
+            [{"type": "approve"}],
+            session_logger=FakeLogger(),
+            message_id="m1",
+        )
+    )
+    events = _events(frames)
+
+    assert _types(events) == ["start", "error"]
+    assert "重新发送消息" in events[-1]["content"]
+    assert graph.astream_calls == []
+
+
 async def test_resume_nested_hitl_golden_blocks_before_action_requests():
     """resume 嵌套中断帧：blocks 必须保持在 action_requests 之前（既有契约）。
 
@@ -644,7 +657,7 @@ async def test_resume_nested_hitl_golden_blocks_before_action_requests():
     graph = FakeGraph(
         [[{"type": "content", "content": " done"}]],
         states=[
-            SimpleNamespace(next=None, tasks=[], values={"messages": []}),
+            _hitl_state(),
             _hitl_state(),
         ],
     )

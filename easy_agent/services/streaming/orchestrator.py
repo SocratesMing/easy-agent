@@ -49,6 +49,7 @@ from easy_agent.services.stream_messages import (
 )
 from easy_agent.services.stream_processor import StreamProcessor
 from easy_agent.services.session_thread import (
+    StaleApprovalError,
     approval_handle,
     plan_turn,
     record_turn_checkpoint,
@@ -58,7 +59,6 @@ from easy_agent.services.streaming.persistence import (
     persist_approval_decisions,
     persist_final_message,
     persist_partial,
-    persist_thinking_event,
     persist_todos,
     persist_tool_result_event,
     write_session_context_snapshot,
@@ -195,16 +195,6 @@ async def pump_stream(
                     agent=agent,
                     sid=sid,
                 )
-            elif ev_type == "thinking_end":
-                await run_blocking(
-                    persist_thinking_event,
-                    ev,
-                    proc=proc,
-                    db=db,
-                    session_id=session_id,
-                    message_id=message_id,
-                    sid=sid,
-                )
             elif ev_type == "todo_list":
                 await run_blocking(persist_todos, db, session_id, ev["todos"], sid)
             elif ev_type == "content":
@@ -263,6 +253,10 @@ async def plan_resume_for_agent(
         return ResumePlan(
             resume={"decisions": [dict(d) for d in decisions or [] if isinstance(d, dict)]},
             legacy=True,
+        )
+    if not interrupts:
+        raise StaleApprovalError(
+            "找不到这条审批的状态（可能在另一个实例上，或已过期），请重新发送消息"
         )
     plan = plan_resume(interrupts, decisions)
     if len(interrupts) > 1:
@@ -385,6 +379,7 @@ async def finalize_stream(
             elapsed_time=elapsed_time,
             step_count=current_step,
             result_limit=None,
+            context_length=context_length,
         ),
     )
 
@@ -744,6 +739,10 @@ async def resume_stream_generator(
     except HitlDecisionError as e:
         logger.warning(f"[{sid}] HITL 恢复: 审批决策无效: {e}")
         yield emitter.error(f"审批决策无效：{e}")
+        return
+    except StaleApprovalError as e:
+        logger.warning(f"[{sid}] HITL 恢复: 审批已不在本实例: {e}")
+        yield emitter.error(str(e))
         return
 
     # 将审批决策立即应用到内存中的 blocks / tool_call_records：

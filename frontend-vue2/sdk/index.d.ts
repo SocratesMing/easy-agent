@@ -7,7 +7,7 @@ export interface EasyAgentPageContext {
   description?: string
   /** 欢迎页的快捷提问（最多 4 条） */
   suggestions?: string[]
-  /** 页面业务数据（纯文本，建议 < 4000 字），随消息提供给 AI */
+  /** 页面业务数据（纯文本，后端上限 128000 字），随消息提供给 AI */
   content?: string
 }
 
@@ -69,14 +69,20 @@ export interface EasyAgentSidebarOptions {
   assetsBaseURL?: string
   onReady?: (sidebar: EasyAgentSidebarInstance) => void
   onError?: (error: Error) => void
-  onOpen?: () => void
+  /** 侧边栏打开；source 为唤起来源 */
+  onOpen?: (source: EasyAgentOpenSource) => void
   onClose?: () => void
+  /** 唤起、展开、新建会话、点击上下文标签时调用：宿主可在此调用 setPageContext 推送最新页面内容 */
+  refreshContext?: () => void
   onAuthExpired?: (error: Error) => void
   onOpenInMain?: (sessionId: string) => void
   /** 自定义「在管理面板中打开」：默认新标签页打开 mainAppUrl?panel=<tab> */
   onOpenPanel?: (tab: 'experts' | 'skills' | 'connectors' | 'knowledge') => void
   onLayoutChange?: (layout: { dockWidth: number }) => void
 }
+
+/** launcher 唤起按钮 / shortcut 快捷键 / selection 划词提问 / api 实例方法 */
+export type EasyAgentOpenSource = 'launcher' | 'shortcut' | 'selection' | 'api'
 
 export interface EasyAgentOpenOptions {
   /** 预填到输入框的内容（不自动发送） */
@@ -97,6 +103,8 @@ export interface EasyAgentSidebarInstance {
   isOpen(): boolean
   /** 打开侧边栏并发送一条消息 */
   send(text: string): Promise<void>
+  /** 预填输入框（不打开侧边栏、不发送） */
+  setComposer(text: string): Promise<void>
   setPageContext(context: EasyAgentPageContextInput): void
   setToken(token: string): Promise<void>
   /** 清除 SDK 登录态并销毁 */

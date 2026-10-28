@@ -133,7 +133,7 @@ class ExpertUpdateRequest(BaseModel):
 
 class ExpertDelRequest(BaseModel):
     export_agent_id: str = Field(..., description="专家 Agent ID")
-    hard: bool = Field(default=False, description="True=物理删除（含目录）；False=软删除")
+    hard: bool = Field(default=True, description="True=物理删除（含目录）；False=软删除")
 
 
 # 说明：原 ``ExpertRunRequest`` 与 ``POST /agent/stream_export_run`` 已删除。
@@ -358,6 +358,12 @@ def expert_required_skills(
     直接给出原因——``source_missing`` 表示**服务端公共技能目录里没有这个技能包**
     （需要运维放包），``source_unconfigured`` 表示 ``tools.skills_dir`` 没配好，
     ``disabled`` 表示用户自己在技能中心停用了。
+
+    声明值可以写目录名，也可以写 SKILL.md 的 ``name``（常见中文），两条通道等价：
+    ``items[].declared`` 是原声明，``resolved_dir`` 是解析到的 canonical 目录名，
+    ``matched_by`` 说明命中方式（``dir`` / ``dir_normalized`` / ``name`` /
+    ``name_normalized``）；解析失败时 ``candidates`` 给出近似技能（**仅供参考，
+    不会据此自动安装**）。
 
     本接口**只读**：不会触发安装，也不会驱逐缓存（触发补装的是真正发消息那一刻）。
     """

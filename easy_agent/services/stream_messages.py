@@ -201,14 +201,30 @@ def build_assistant_message_dict(
     step_count: int,
     result_limit: int | None = None,
     reasoning_tokens: int = 0,
+    context_length: int | None = None,
 ) -> dict:
-    """构建用于持久化/返回的 assistant 消息字典（常规结束、HITL 中断、取消等场景共用）。"""
+    """构建用于持久化/返回的 assistant 消息字典（常规结束、HITL 中断、取消等场景共用）。
+
+    ``context_length`` 是本轮所用模型的上下文窗口：会话不记录所用模型（输入框可以逐轮
+    切换），会话接口靠它还原占用率的分母；未知时不写这个键。
+    """
     _raw_content = content or ""
     # 过滤空/纯空白的 content block，避免持久化与历史会话渲染空正文
     _clean_blocks = [
         b for b in (blocks or [])
         if not (b.get("type") == "content" and not (b.get("content", "") or "").strip())
     ]
+    usage = {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        # 思考 token（output_tokens 的子集，仅用于拆分展示）
+        "reasoning_tokens": reasoning_tokens or 0,
+        "context_tokens": context_tokens if context_tokens > 0 else input_tokens,
+        "elapsed_time": round(elapsed_time, 2),
+        "step_count": step_count,
+    }
+    if context_length:
+        usage["context_length"] = int(context_length)
     return {
         "role": "assistant",
         "content": _raw_content if _raw_content.strip() else "",
@@ -217,15 +233,7 @@ def build_assistant_message_dict(
         "thinking_duration": thinking_duration or None,
         "tool_calls": tool_call_records_to_dicts(tool_call_records, result_limit) or None,
         "blocks": _clean_blocks or None,
-        "usage": {
-            "input_tokens": input_tokens,
-            "output_tokens": output_tokens,
-            # 思考 token（output_tokens 的子集，仅用于拆分展示）
-            "reasoning_tokens": reasoning_tokens or 0,
-            "context_tokens": context_tokens if context_tokens > 0 else input_tokens,
-            "elapsed_time": round(elapsed_time, 2),
-            "step_count": step_count,
-        },
+        "usage": usage,
     }
 
 
@@ -243,4 +251,5 @@ def _partial_message_dict(proc, elapsed_time: float, *, with_approval: bool = Fa
         context_tokens=proc.last_context_tokens,
         elapsed_time=elapsed_time,
         step_count=proc.current_step,
+        context_length=getattr(proc, "context_length", None),
     )

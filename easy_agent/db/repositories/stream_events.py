@@ -80,17 +80,28 @@ def clear_stream_events(db, session_id: str) -> int:
     return int(deleted or 0)
 
 
-def delete_stream_events_before(db, cutoff_iso: str) -> int:
-    """删除 ``created_at`` 早于截止时间的旧事件，返回删除行数（清理预留）。"""
+def delete_stream_events_before(db, cutoff_iso: str, limit: int | None = None) -> int:
+    """删除 ``created_at`` 早于截止时间的旧事件，返回删除行数。
+
+    ``limit`` 限制单次删除条数，供分批清理（积压很多时避免一条语句开长事务）。SQLite 默认
+    不支持 ``DELETE ... LIMIT``，改用子查询。
+    """
     if not cutoff_iso:
         return 0
+    if not limit:
+        sql, params = "DELETE FROM stream_events WHERE created_at<?", (cutoff_iso,)
+    elif db.db_type == "mysql":
+        sql = "DELETE FROM stream_events WHERE created_at<? ORDER BY event_id LIMIT ?"
+        params = (cutoff_iso, int(limit))
+    else:
+        sql = (
+            "DELETE FROM stream_events WHERE event_id IN ("
+            "SELECT event_id FROM stream_events WHERE created_at<? ORDER BY event_id LIMIT ?)"
+        )
+        params = (cutoff_iso, int(limit))
     with db.get_connection() as conn:
         cursor = conn.cursor()
-        db._execute(
-            cursor,
-            "DELETE FROM stream_events WHERE created_at<?",
-            (cutoff_iso,),
-        )
+        db._execute(cursor, sql, params)
         deleted = cursor.rowcount
     return int(deleted or 0)
 

@@ -39,7 +39,7 @@
     <div v-show="expanded" class="tcc-body">
       <div v-if="pendingApproval" class="tcc-approval">
         <div class="tcc-approval-prompt">
-          <span>此操作将删除文件，需要您的确认</span>
+          <span>{{ approvalPrompt }}</span>
         </div>
         <ul v-if="filePaths && filePaths.length" class="tcc-approval-files">
           <li v-for="(fp, i) in filePaths" :key="i">{{ fp }}</li>
@@ -89,16 +89,8 @@
       <pre v-else-if="card.card === 'search'" class="tcc-code">{{ card.raw }}</pre>
       <pre v-else-if="card.card === 'terminal' || card.card === 'read'" class="tcc-code">{{ card.body || '(无内容)' }}</pre>
 
-      <template v-else>
-        <div v-if="card.args && Object.keys(card.args).length" class="tcc-section">
-          <div class="tcc-label">参数</div>
-          <pre class="tcc-code">{{ prettyArgs }}</pre>
-        </div>
-        <div v-if="card.body" class="tcc-section">
-          <div class="tcc-label">结果</div>
-          <pre class="tcc-code">{{ card.body }}</pre>
-        </div>
-      </template>
+      <!-- 参数已在标题的 meta 里，展开只看结果 -->
+      <pre v-else class="tcc-code">{{ card.body || '(无内容)' }}</pre>
     </div>
   </div>
 </template>
@@ -138,9 +130,27 @@ export default {
         if (card && card.card === 'chart' && !this.pendingApproval) this.expanded = true
       },
     },
+    // 待审批状态可能比卡片首帧晚到：流式先渲染工具卡片，之后才收到 approval_required。
+    // 此时 expanded 已固定为 false，需要在转为待审批时自动展开，让用户直接看到
+    // 参数与「批准 / 编辑 / 拒绝」按钮。仅展开不收起，审批结束后仍可查看结果。
+    pendingApproval: {
+      immediate: true,
+      handler(v) {
+        if (v) {
+          this.expanded = true
+          this._streamOpened = false
+        }
+      },
+    },
     // 参数流式写入期间自动展开，让用户实时看到正在生成的文件内容；
     // 一旦收到完整参数（streaming 转为 false）即释放自动展开，尊重用户手动折叠。
+    // 待审批优先级更高：同一拍里 streaming 结束不得把刚展开的审批卡片收回。
     streaming(v) {
+      if (this.pendingApproval) {
+        this.expanded = true
+        this._streamOpened = false
+        return
+      }
       if (v && !this.expanded) {
         this.expanded = true
         this._streamOpened = true
@@ -177,16 +187,16 @@ export default {
     runningLabel() {
       return this.streaming ? '写入中…' : '执行中…'
     },
-    prettyArgs() {
-      try {
-        return JSON.stringify(this.args || {}, null, 2).slice(0, 1000)
-      } catch (_) {
-        return String(this.args)
-      }
-    },
     canEditDecision() {
       if (!this.allowedDecisions.length) return true
       return this.allowedDecisions.indexOf('edit') !== -1
+    },
+    // 审批提示：删除类操作会带 file_paths（rm 等命令解析出的目标），其余
+    // （SQL、MCP 写操作、知识库物化）用通用文案，避免误报「将删除文件」。
+    approvalPrompt() {
+      return this.filePaths && this.filePaths.length
+        ? '此操作将删除文件，需要您的确认'
+        : '此操作需要您的确认'
     },
   },
   methods: {
@@ -264,7 +274,15 @@ export default {
 }
 .tcc-title { font-weight: 500; color: var(--text-secondary, #64748b); flex-shrink: 0; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tcc-meta { color: var(--text-secondary, #64748b); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
-.tcc-status { flex-shrink: 0; font-size: 12px; color: var(--text-secondary, #64748b); }
+.tcc-status {
+  margin-left: auto;
+  flex-shrink: 0;
+  min-width: 4.5em;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+  color: var(--text-secondary, #64748b);
+}
 .tcc-status.err { color: #dc2626; }
 .tcc-mark { margin-right: 2px; }
 .tcc-arrow { width: 14px; height: 14px; flex-shrink: 0; color: var(--text-secondary, #94a3b8); transition: transform 0.15s ease; }

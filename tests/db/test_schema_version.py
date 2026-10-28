@@ -156,6 +156,25 @@ def test_expected_tables_match_created_schema(sqlite_path):
         cur.execute("SELECT name FROM sqlite_master WHERE type='table'")
         names = {r[0] for r in cur.fetchall()}
     assert set(EXPECTED_TABLES).issubset(names)
+    assert names.isdisjoint(
+        {"fmqt_lock", "tool_call_records", "thinking_records", "agent_checkpoints"}
+    )
+
+
+def test_list_sessions_uses_maintained_message_count(sqlite_path):
+    from easy_agent.models.db import SessionModel
+
+    db = Database({"type": "sqlite", "sqlite": {"path": str(sqlite_path)}})
+    db.init_tables()
+    db.create_session(
+        SessionModel(session_id="s1", title="hello", username="u", created_at="t", updated_at="t")
+    )
+    db.add_message("s1", {"role": "user", "content": "hi"})
+    db.update_last_assistant_message("s1", {"role": "assistant", "content": "ok"})
+    db.update_last_assistant_message("s1", {"role": "assistant", "content": "ok-again"})
+
+    [session] = db.list_sessions(username="u")
+    assert len(session.messages) == 2
 
 
 def test_langgraph_store_mysql_primary_key_fits_utf8mb4():

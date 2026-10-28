@@ -670,7 +670,6 @@ export default {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  margin-left: auto;
   height: 38px;
   padding: 0 16px;
   border: 1px solid var(--accent-color);
@@ -723,8 +722,12 @@ export default {
 }
 
 /* ── 「添加技能」下拉菜单 ── */
+/* auto margin 必须放在包裹层上：按钮外面多包了 .add-skill-menu（宽度 = 按钮宽度），
+   把 margin-left:auto 写在按钮上只能在包裹层内部生效，推不动整个包裹层，
+   导致「添加技能」挤在「已安装」右侧、与专家/连接器面板的右对齐不一致。 */
 .add-skill-menu {
   position: relative;
+  margin-left: auto;
 }
 
 .add-skill-menu-list {
@@ -1164,7 +1167,8 @@ export default {
     max-width: none;
   }
 
-  .action-btn-primary {
+  .add-skill-menu {
+    /* 窄屏换行时不再强行靠右，跟随时序排布 */
     margin-left: 0;
   }
 }

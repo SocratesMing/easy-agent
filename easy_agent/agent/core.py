@@ -563,11 +563,16 @@ class EasyAgent(AgentWorkspaceMixin):
             )
             graph_tools = contextualize_tools(raw_tools)
 
-            # DA-06：同名实例原位替换框架默认的摘要中间件（主代理与每个子代理各一份）。
+            # DA-06：同名实例原位替换框架默认的摘要中间件（主代理与每个子代理各一份），
+            # 阈值按会话模型的配置键（self.model_name）取窗口，不按模型对象上的 API 模型名。
             # DA-03：主代理的摘要先渲染本轮上下文再计 token；记忆每次运行都重新加载。
             def summarization(*, render_turn: bool = False):
                 return build_summarization_middleware(
-                    self.config, model, backend, render_turn=render_turn
+                    self.config,
+                    model,
+                    backend,
+                    model_key=self.model_name,
+                    render_turn=render_turn,
                 )
 
             main_middleware = [*middleware, summarization(render_turn=True)]

@@ -4,6 +4,10 @@ Easy Agent AI 侧边栏 SDK。完整接入说明见构建后的 `README.md`（�
 
 ## 本地联调 Demo
 
+Vue 2 基线与 SDK 均以 **Node 14** 构建。开发服务器（`npm run dev`）会把 `dist-sdk/` 挂到 `/sdk/`，
+构建后可直接打开 `http://localhost:5173/sdk/demo.html?baseURL=http://localhost:5173&auth=passwordless&username=<用户>&userId=<工号>&auto=1`
+（`baseURL` 用开发服务器自身，`/agent` 由其代理到后端）。也可单独起静态服务：
+
 ```bash
 cd frontend-vue2
 npm run build:sdk

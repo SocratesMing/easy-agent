@@ -1,3 +1,5 @@
+import Vue from 'vue'
+
 /**
  * HITL 审批的纯函数（DA-02）：approval_required 载荷 → 工具卡片标记 / 独立审批面板 / 恢复决策。
  *
@@ -55,9 +57,9 @@ export function applyApprovalRequests (blocks, actionRequests) {
       continue
     }
     taken.add(idx)
-    const blk = blocks[idx]
-    blk.pending_approval = true
-    blk.approval_status = 'pending'
+    // 换成新对象再 Vue.set：已观察过的工具块上新增 pending_approval / approval_status
+    // 不会触发更新，卡片要等历史回填才展开。
+    const blk = { ...blocks[idx], pending_approval: true, approval_status: 'pending' }
     if (ar.tool_call_id) {
       blk.tool_call_id = ar.tool_call_id
       blk.id = ar.tool_call_id
@@ -66,6 +68,7 @@ export function applyApprovalRequests (blocks, actionRequests) {
     // 后端下发的可选项：删除类只有 approve/reject，卡片据此隐藏「编辑参数」
     if (Array.isArray(ar.allowed_decisions)) blk.allowed_decisions = ar.allowed_decisions
     if (ar.interrupt_id) blk.hitl_interrupt_id = ar.interrupt_id
+    Vue.set(blocks, idx, blk)
   }
   return unmatched
 }

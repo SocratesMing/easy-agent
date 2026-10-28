@@ -1,36 +1,14 @@
 import { setReactive } from '../../../utils/reactiveSet.js'
+import { parseMCPResult } from '../../../utils/mcpResult.js'
 import { createSession, listSessions, getChatHistory, deleteSession, sendMessage, resumeStream, renameSession, togglePinSession, attachStream } from '../../../api/chat.js'
 import { deleteFile, getSessionGeneratedFiles } from '../../../api/files.js'
 import { authFetch } from '../../../api/auth.js'
-import { chatBus, chatStore } from '../store/chatStore.js'
+import { chatBus, chatStore, syncPendingApprovalFlag as setPendingApprovalFlag } from '../store/chatStore.js'
 import { createStreamChunkHandler as createChunkHandler } from '../services/chunkHandler.js'
 import { applyApprovalRequests, buildResumeDecisions, markApprovalDecision, unmatchedApprovalRequests } from '../../../utils/hitlApproval.js'
 
-// MCP 工具结果解析：模块级函数，供正常流(handleSendMessage)与 HITL 恢复流(handleToolApproval)共用。
-// 注意：不要把它定义在某个函数内部，否则另一处引用会抛 ReferenceError，
-// 导致 tool_result 事件处理中断、工具一直显示"等待运行结果"。
-export function parseMCPResult(rawResult) {
-  // MCP results come as a string representation of a Python list: "[{'type': 'text', 'text': '...'}]"
-  // or JSON format: '[{"type": "text", "text": "..."}]'
-  // Extract just the text content.
-  if (!rawResult) return ''
-  if (typeof rawResult !== 'string') return String(rawResult)
-
-  // Try JSON format first (single quotes replaced with double)
-  try {
-    const jsonStr = rawResult.replace(/'/g, '"')
-    const parsed = JSON.parse(jsonStr)
-    if (Array.isArray(parsed)) {
-      return parsed
-        .filter(item => item.type === 'text')
-        .map(item => item.text)
-        .join('\n\n')
-    }
-  } catch (e) {
-    // Not valid JSON, return as-is
-  }
-  return rawResult
-}
+// MCP 工具结果解析：正常流与 HITL 恢复流共用（App.vue 经本模块引用）
+export { parseMCPResult }
 
 /**
  * Vue 2 无法检测「数组索引赋值」（arr[i] = x）与「对象属性新增」（obj.k = x），
@@ -207,11 +185,7 @@ export default {
     },
     // 待审批产生/消失时增删列表徽标标记（store 共享，主面板与侧边栏同时可见）
     syncPendingApprovalFlag(sessionId, hasPending) {
-      if (!sessionId) return
-      const list = this.pendingApprovalSessions
-      const has = list.includes(sessionId)
-      if (hasPending && !has) list.push(sessionId)
-      else if (!hasPending && has) list.splice(list.indexOf(sessionId), 1)
+      setPendingApprovalFlag(sessionId, hasPending)
     },
     // 以本地消息缓存（当前界面或会话级缓存）为准重算某会话的待审批状态。
     // 审批决策后、服务端历史回填后调用，保证徽标随状态流转及时消失。
@@ -1104,6 +1078,9 @@ export default {
         if (idx !== -1) {
           this.messages[idx].loading = false
           this.messages[idx].error = e.message || '恢复执行失败'
+          if (e.status === 409) {
+            this.messages[idx].pending_approval = null
+          }
           setReactive(this.messages, idx, { ...this.messages[idx] })
         }
       } finally {

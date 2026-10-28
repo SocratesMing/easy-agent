@@ -621,9 +621,12 @@
             log('onError: ' + (e && e.message), 'error')
             alert('AI 侧边栏初始化失败：' + (e && e.message))
           },
-          onOpen: function () {
+          onOpen: function (source) {
             setPill('stOpen', '侧边栏打开', 'ok')
-            log('onOpen')
+            log('onOpen source=' + source)
+          },
+          refreshContext: function () {
+            log('refreshContext')
           },
           onClose: function () {
             setPill('stOpen', '侧边栏关闭', 'idle')

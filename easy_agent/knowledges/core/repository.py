@@ -851,46 +851,6 @@ class KnowledgeRepository:
         )
         return self.get_original_object(document_id)
 
-    def create_original_access_audit(
-        self,
-        *,
-        user_id: str,
-        session_id: str,
-        agent_id: str,
-        document_id: str,
-        action: str,
-        result: str,
-        request_id: str = "",
-    ) -> dict[str, Any]:
-        audit_id = str(uuid.uuid4())
-        created_at = _now()
-        with self.db.get_connection() as conn:
-            cursor = conn.cursor()
-            self.db._execute(
-                cursor,
-                """
-                INSERT INTO knowledge_original_access_audit
-                    (id, user_id, session_id, agent_id, document_id,
-                     action, result, request_id, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    audit_id, user_id, session_id, agent_id, document_id,
-                    action, result, request_id, created_at,
-                ),
-            )
-        return {
-            "id": audit_id,
-            "user_id": user_id,
-            "session_id": session_id,
-            "agent_id": agent_id,
-            "document_id": document_id,
-            "action": action,
-            "result": result,
-            "request_id": request_id,
-            "created_at": created_at,
-        }
-
     # ---------------- 权限 ----------------
 
     def list_permissions(self, base_id: str) -> list[dict[str, Any]]:

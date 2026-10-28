@@ -71,7 +71,7 @@
           <span class="ais-rail-mark" :class="{ 'is-busy': isStreaming }" :title="isStreaming ? '正在生成…' : 'AI 助手'">
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9L12 3z"></path></svg>
           </span>
-          <button type="button" class="ais-icon-btn" title="新建会话" @click="expand(); startNewChat()">
+          <button type="button" class="ais-icon-btn" title="新建会话" @click="expand(); startNewChat(false)">
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
           </button>
           <button type="button" class="ais-icon-btn" title="历史会话" @click="expand(); showHistory = true">
@@ -101,7 +101,7 @@
               <svg class="ais-title-arrow" :class="{ open: showHistory }" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>
             </button>
             <div class="ais-header-actions">
-              <button type="button" class="ais-icon-btn" title="新建会话" @click="startNewChat">
+              <button type="button" class="ais-icon-btn" title="新建会话" @click="startNewChat()">
                 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
               </button>
               <button
@@ -216,6 +216,7 @@
               :models="models"
               :selectedModel="selectedModel"
               @update:selectedModel="selectedModel = $event"
+              :activeExpert="selectedExpert" @select-expert="handleUseExpert" @clear-expert="selectedExpert = null"
               @send-message="handleSendMessage"
               @create-session="ensureCurrentSession"
               @remove-file="handleRemoveFile"
@@ -261,22 +262,17 @@
                 <div class="ais-context-bar">
                   <span
                     v-if="pageContext && includeContext"
-                    class="ais-chip"
+                    class="ais-chip is-clickable"
                     :class="{ 'is-sent': contextAlreadySent }"
                     :title="contextPreview"
+                    @click="attachPageContext"
                   >
                     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"></path><circle cx="12" cy="10" r="3"></circle></svg>
                     <span class="ais-chip-text">{{ pageContext.title }}</span>
                     <span v-if="contextAlreadySent" class="ais-chip-note">已提供</span>
-                    <button type="button" class="ais-chip-x" title="不附带页面上下文" @click="includeContext = false">×</button>
+                    <button type="button" class="ais-chip-x" title="不附带页面上下文" @click.stop="includeContext = false">×</button>
                   </span>
-                  <button
-                    v-else-if="pageContext"
-                    type="button"
-                    class="ais-chip is-ghost"
-                    title="把当前页面信息提供给 AI"
-                    @click="includeContext = true"
-                  >
+                  <button v-else-if="pageContext" type="button" class="ais-chip is-ghost" title="把当前页面信息提供给 AI" @click="attachPageContext">
                     + 附带页面上下文
                   </button>
                   <span v-if="quote" class="ais-chip is-quote" :title="quote">
@@ -285,13 +281,7 @@
                     <button type="button" class="ais-chip-x" title="移除引用" @click="quote = ''">×</button>
                   </span>
                   <template v-if="quote && !isStreaming">
-                    <button
-                      v-for="a in quoteActions"
-                      :key="a"
-                      type="button"
-                      class="ais-chip is-action"
-                      @click="sendQuick(a)"
-                    >{{ a }}</button>
+                    <button v-for="a in quoteActions" :key="a" type="button" class="ais-chip is-action" @click="sendQuick(a)">{{ a }}</button>
                   </template>
                 </div>
               </template>
@@ -323,7 +313,7 @@ const RAIL_WIDTH = 52
 // 小于该宽度的视口强制悬浮全宽显示
 const NARROW_VIEWPORT = 768
 const MAX_PAGE_SESSIONS = 20
-const QUOTE_MAX = 2000
+const QUOTE_MAX = 32000
 const DEFAULT_FEATURES = {
   launcher: true,
   selectionAsk: true,
@@ -353,38 +343,17 @@ export default {
   mixins: [chatSessionMixin],
   props: {
     // 当前页面上下文（App 根据所在页面生成），见 utils/pageContext.js
-    pageContext: {
-      type: Object,
-      default: null,
-    },
+    pageContext: { type: Object, default: null },
     // 嵌入第三方页面（SDK）：根节点 fixed 定位，固定模式由宿主据 layout-change 让出空间
-    embedded: {
-      type: Boolean,
-      default: false,
-    },
+    embedded: { type: Boolean, default: false },
     // 功能开关，未传的项取 DEFAULT_FEATURES
-    features: {
-      type: Object,
-      default: () => ({}),
-    },
+    features: { type: Object, default: () => ({}) },
     // 是否挂载 window.EasyAgentAI（SDK 由实例方法代替，避免多实例互相覆盖）
-    exposeGlobal: {
-      type: Boolean,
-      default: true,
-    },
+    exposeGlobal: { type: Boolean, default: true },
     // 用户未切换过模式时的初始模式：float | dock
-    defaultMode: {
-      type: String,
-      default: 'float',
-    },
-    launcherLabel: {
-      type: String,
-      default: '问 AI',
-    },
-    welcomeTitle: {
-      type: String,
-      default: '有什么可以帮你？',
-    },
+    defaultMode: { type: String, default: 'float' },
+    launcherLabel: { type: String, default: '问 AI' },
+    welcomeTitle: { type: String, default: '有什么可以帮你？' },
   },
   data() {
     const prefs = readJson(localStorage, PREFS_KEY, {})
@@ -400,12 +369,14 @@ export default {
       launcherDragging: false,
       launcherMoved: false,
       selectedModel: chatStore.activeModel,
+      selectedExpert: null, // 「+」菜单召唤的专家：发送时据此改走专家执行接口
       showHistory: false,
       historyQuery: '',
       renamingId: null,
       renameText: '',
       confirmDeleteId: null,
       includeContext: true,
+      openSource: 'api',
       // 每个会话最近一次发送给模型的上下文：内容未变化时不重复附带
       sentContexts: {},
       quote: '',
@@ -535,7 +506,7 @@ export default {
       if (!prev || !next || next.key !== prev.key) this.includeContext = true
     },
     open(v) {
-      this.$emit('open-change', v)
+      this.$emit('open-change', v, v ? this.openSource : undefined)
     },
     dockWidth: {
       immediate: true,
@@ -594,8 +565,14 @@ export default {
   },
   methods: {
     // ── chatSessionMixin 钩子 ─────────────────────────────────────────
-    beforeSessionChange() {
+    beforeSessionChange(kind) {
       this.showHistory = false
+      if (kind === 'create') this.selectedExpert = null
+    },
+    handleUseExpert(expert) {
+      if (!expert || !expert.export_agent_id) return
+      const { export_agent_id, export_name_cn, export_version } = expert
+      this.selectedExpert = { export_agent_id, export_name_cn, export_version }
     },
     getPageContextForSend() {
       const quote = this.quote
@@ -618,17 +595,22 @@ export default {
     },
 
     // ── 打开 / 关闭 / 折叠 ────────────────────────────────────────────
+    /** opts.source：唤起来源 launcher / shortcut / selection / api，随 open-change 交给宿主 */
     openSidebar(opts = {}) {
       const wasOpen = this.open
+      this.openSource = opts.source || 'api'
+      // 宿主页面可能已变（SPA 的 pushState 不触发 popstate、同页数据也会更新）：每次唤起都请宿主重采
+      this.$emit('refresh-context')
       this.open = true
       this.collapsed = false
       this.unread = false
       this.hideSelectionAsk()
       if (opts.context) setExternalPageContext(opts.context)
       if (opts.newSession) {
-        this.startNewChat()
+        this.startNewChat(false)
       } else if (!wasOpen) {
-        this.preferPageSession()
+        // 等重采的 pageContext 经 props 下发后再按页面匹配会话
+        this.$nextTick(() => this.preferPageSession())
       }
       this.$nextTick(() => {
         // 面板隐藏期间（display: none）无法滚动，打开后补一次贴底
@@ -641,15 +623,16 @@ export default {
       this.open = false
       this.showHistory = false
     },
-    toggle() {
+    toggle(opts) {
       if (this.open) this.close()
-      else this.openSidebar()
+      else this.openSidebar(opts)
     },
     collapse() {
       this.collapsed = true
       this.showHistory = false
     },
     expand() {
+      this.$emit('refresh-context')
       this.collapsed = false
       this.unread = false
       this.$nextTick(() => {
@@ -661,7 +644,8 @@ export default {
       this.mode = this.mode === 'dock' ? 'float' : 'dock'
       this.savePrefs()
     },
-    startNewChat() {
+    startNewChat(refreshContext = true) {
+      if (refreshContext) this.$emit('refresh-context')
       if (!this.currentSessionId && this.messages.length === 0) {
         this.focusComposer()
         return
@@ -679,6 +663,8 @@ export default {
     async sendFromHost(text) {
       if (!text) return
       this.openSidebar()
+      // 等重采的 pageContext 经 props 下发，这条消息才带上最新页面内容
+      await this.$nextTick()
       if (this.isStreaming) {
         this.setComposer(text)
         return
@@ -702,6 +688,11 @@ export default {
     setComposer(text) {
       const chat = this.$refs.chatRef
       if (chat) chat.setComposerText(text)
+    },
+    // 点上下文标签：重新采集当前页面并附带（页面内容变了也能拿到最新的）
+    attachPageContext() {
+      this.includeContext = true
+      this.$emit('refresh-context')
     },
     sendQuick(text) {
       if (this.isStreaming) return
@@ -828,7 +819,7 @@ export default {
         this.launcherMoved = false
         return
       }
-      this.openSidebar()
+      this.openSidebar({ source: 'launcher' })
     },
     clampLauncher() {
       const max = window.innerHeight - 56
@@ -869,7 +860,7 @@ export default {
       const text = this.selectionAsk.text
       this.hideSelectionAsk()
       if (window.getSelection) window.getSelection().removeAllRanges()
-      this.openSidebar()
+      this.openSidebar({ source: 'selection' })
       this.quote = text
     },
 
@@ -879,7 +870,7 @@ export default {
       if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && (e.key === 'j' || e.key === 'J')) {
         e.preventDefault()
         if (this.open && this.collapsed) this.expand()
-        else this.toggle()
+        else this.toggle({ source: 'shortcut' })
       }
     },
     onWindowResize() {
@@ -1600,6 +1591,10 @@ export default {
 .ais-chip.is-sent {
   border-color: var(--border-color, #e2e8f0);
   background: transparent;
+}
+
+.ais-chip.is-clickable {
+  cursor: pointer;
 }
 
 .ais-chip.is-quote {

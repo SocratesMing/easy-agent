@@ -187,8 +187,7 @@ def list_sessions(db, limit: int = 50, offset: int = 0, username: str = None
                 cursor,
                 """
                 SELECT s.session_id, s.title, s.created_at, s.updated_at, s.username,
-                       s.workspace_name, s.pinned,
-                       (SELECT COUNT(*) FROM session_messages m WHERE m.session_id = s.session_id) AS message_count
+                       s.workspace_name, s.pinned, s.message_count
                 FROM sessions s WHERE s.username = ? AND s.title NOT LIKE ?
                 ORDER BY s.pinned DESC, s.updated_at DESC LIMIT ? OFFSET ?
                 """,
@@ -199,8 +198,7 @@ def list_sessions(db, limit: int = 50, offset: int = 0, username: str = None
                 cursor,
                 """
                 SELECT s.session_id, s.title, s.created_at, s.updated_at, s.username,
-                       s.workspace_name, s.pinned,
-                       (SELECT COUNT(*) FROM session_messages m WHERE m.session_id = s.session_id) AS message_count
+                       s.workspace_name, s.pinned, s.message_count
                 FROM sessions s WHERE s.title NOT LIKE ?
                 ORDER BY s.pinned DESC, s.updated_at DESC LIMIT ? OFFSET ?
                 """,
@@ -650,6 +648,11 @@ def update_last_assistant_message_row(db, session_id: str, message: dict):
                     """,
                     (session_id, role, content, extra_data, timestamp),
                 )
+                db._execute(
+                    cursor,
+                    "UPDATE sessions SET message_count=message_count+1 WHERE session_id=?",
+                    (session_id,),
+                )
         else:
             # 没有任何消息，新增一行
             db._execute(
@@ -659,6 +662,11 @@ def update_last_assistant_message_row(db, session_id: str, message: dict):
                 VALUES (?, ?, ?, ?, ?)
                 """,
                 (session_id, role, content, extra_data, timestamp),
+            )
+            db._execute(
+                cursor,
+                "UPDATE sessions SET message_count=message_count+1 WHERE session_id=?",
+                (session_id,),
             )
         db._execute(
             cursor,

@@ -49,16 +49,12 @@ async def test_sqlite_saver_uses_wal_with_normal_sync(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_shutdown_clears_legacy_session_cache(tmp_path):
-    from easy_agent.db.database import Database
-
-    db = Database({"type": "sqlite", "sqlite": {"path": str(tmp_path / "legacy.db")}})
-    db.init_tables()
-    first = ck.get_session_checkpointer("legacy-session", db=db)
+async def test_shutdown_clears_legacy_session_cache():
+    first = ck.get_session_checkpointer("legacy-session")
     assert isinstance(first, ck.PersistentMemorySaver)
     try:
         await ck.shutdown_checkpointers()
-        second = ck.get_session_checkpointer("legacy-session", db=db)
+        second = ck.get_session_checkpointer("legacy-session")
         assert second is not first
         assert isinstance(second, ck.PersistentMemorySaver)
     finally:

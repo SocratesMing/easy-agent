@@ -173,8 +173,12 @@ def test_upload_session_file(client):
     assert data["size"] == len(b"hello world")
 
 
-def test_compute_session_usage_sums_reasoning_tokens():
-    """会话级聚合需带上思考 token（output 的子集，不并入 total 重复计数）。"""
+def test_compute_session_usage_reports_the_latest_call_not_a_sum():
+    """token 字段与流式 token_usage 同口径：最近一次模型调用，不跨轮相加。
+
+    每轮的输入已包含之前各轮的历史，相加会重复计算（10 + 20 加成 30）；
+    耗时与步数可以相加，仍按会话累计。
+    """
     from easy_agent.api.sessions import compute_session_usage
 
     usage = compute_session_usage([
@@ -188,17 +192,71 @@ def test_compute_session_usage_sums_reasoning_tokens():
             "reasoning_tokens": 6, "context_tokens": 20,
             "elapsed_time": 2.0, "step_count": 2}},
     ])
-    assert usage["input_tokens"] == 30
-    assert usage["output_tokens"] == 13
-    assert usage["reasoning_tokens"] == 9
-    # 已不再统计会话累计总量（旧消息里残留的 total_tokens 不参与聚合）
-    assert "total_tokens" not in usage
-    # 旧消息无 reasoning_tokens 字段时按 0 处理，不报错
+    # 旧消息里残留的 total_tokens 不返回
+    assert usage == {
+        "input_tokens": 20,
+        "output_tokens": 8,
+        "reasoning_tokens": 6,
+        "context_tokens": 20,
+        "elapsed_time": 3.0,
+        "step_count": 3,
+    }
+    # 旧消息无 reasoning_tokens / context_tokens 字段：思考按 0，上下文回退 input_tokens
     legacy = compute_session_usage([
         {"role": "assistant", "usage": {
             "input_tokens": 1, "output_tokens": 1, "total_tokens": 2}},
     ])
     assert legacy["reasoning_tokens"] == 0
+    assert legacy["context_tokens"] == 1
+
+
+def test_compute_session_usage_skips_replies_without_a_model_call():
+    """专家拒答等没有调用模型的回复（用量全为 0）不覆盖上一轮的真实用量。"""
+    from easy_agent.api.sessions import compute_session_usage
+
+    usage = compute_session_usage([
+        {"role": "assistant", "usage": {
+            "input_tokens": 50, "output_tokens": 9, "context_tokens": 50,
+            "elapsed_time": 1.0, "step_count": 1}},
+        {"role": "user"},
+        {"role": "assistant", "usage": {
+            "input_tokens": 0, "output_tokens": 0, "context_tokens": 0,
+            "elapsed_time": 0.2, "step_count": 0}},
+    ])
+    assert usage["input_tokens"] == 50
+    assert usage["output_tokens"] == 9
+    assert usage["context_tokens"] == 50
+    assert usage["elapsed_time"] == 1.2
+
+
+def test_session_endpoints_report_the_window_of_the_latest_turn_model(client, db, monkeypatch):
+    """会话不记录所用模型：窗口取最近一轮落库的 context_length，不取当前默认模型。"""
+    from easy_agent.api import sessions as sessions_api
+
+    monkeypatch.setattr(sessions_api, "get_context_length", lambda: 1_000_000)
+    sid = _create_session(client)
+    db.add_message(sid, {"role": "assistant", "content": "a", "usage": {
+        "input_tokens": 900, "output_tokens": 10, "context_tokens": 900,
+        "context_length": 131072, "elapsed_time": 1.0, "step_count": 1}})
+
+    for path in (f"/agent/sessions/{sid}", f"/agent/sessions/{sid}/history"):
+        data = client.get(path).json()
+        assert data["context_length"] == 131072, path
+        assert data["usage"]["context_tokens"] == 900, path
+        assert data["usage"]["input_tokens"] == 900, path
+
+
+def test_session_endpoints_fall_back_to_the_default_window_for_old_messages(client, db, monkeypatch):
+    """改造前落库的消息没有 context_length：退回当前默认模型的窗口。"""
+    from easy_agent.api import sessions as sessions_api
+
+    monkeypatch.setattr(sessions_api, "get_context_length", lambda: 4242)
+    sid = _create_session(client)
+    db.add_message(sid, {"role": "assistant", "content": "a", "usage": {
+        "input_tokens": 5, "output_tokens": 1, "context_tokens": 5}})
+
+    assert client.get(f"/agent/sessions/{sid}").json()["context_length"] == 4242
+    assert client.get(f"/agent/sessions/{sid}/history").json()["context_length"] == 4242
 
 
 # --- C1：API 层依赖 SessionRepository，而不是 Database 门面 -----------------

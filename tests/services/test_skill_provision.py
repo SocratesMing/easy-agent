@@ -46,11 +46,14 @@ def env(tmp_path, monkeypatch):
     return {"skills": skills_root, "workspace": workspace, "username": "alice"}
 
 
-def _make_skill(root: Path, name: str) -> Path:
+def _make_skill(root: Path, name: str, display_name: str | None = None) -> Path:
+    """建技能目录。``display_name`` 用于模拟「目录英文 + SKILL.md name 中文」的存量包。"""
     skill_dir = root / name
     skill_dir.mkdir(parents=True, exist_ok=True)
+    frontmatter_name = display_name if display_name is not None else name
     (skill_dir / "SKILL.md").write_text(
-        f"---\nname: {name}\ndescription: 测试技能 {name}\n---\n\n正文\n", encoding="utf-8"
+        f"---\nname: {frontmatter_name}\ndescription: 测试技能 {frontmatter_name}\n---\n\n正文\n",
+        encoding="utf-8",
     )
     return skill_dir
 
@@ -118,6 +121,85 @@ def test_user_skill_fork_counts_as_available(env, monkeypatch):
     assert report["existing"] == ["dc-research"]
     assert report["installed"] == []
     assert "dc-research" not in _store(env)["skills"]
+
+
+# ── 别名：required_skills 写 SKILL.md 的 name（中文）──────────────────
+
+
+def test_declared_by_display_name_installs_canonical_dir(env, monkeypatch):
+    """存量包「目录英文 + name 中文」：声明写中文名也能装上，清单键是目录名。"""
+    _make_skill(env["skills"], "fpp-income-analysis", "金市营收情况")
+    _make_skill(env["skills"], "precious-metals-analysis", "贵金属投资交易分析")
+    _declare(monkeypatch, ["金市营收情况", "贵金属投资交易分析"])
+
+    report = S.provision_expert_skills(env["username"], "preset_business_analysis")
+
+    # 装的是 canonical 目录名，不是声明里的中文名
+    assert report["installed"] == ["fpp-income-analysis", "precious-metals-analysis"]
+    assert set(_store(env)["skills"]) == {"fpp-income-analysis", "precious-metals-analysis"}
+    # resolved 记录声明 → 目录的映射，供排查接口使用
+    assert report["resolved"] == [
+        {"declared": "金市营收情况", "resolved_dir": "fpp-income-analysis", "matched_by": "name"},
+        {
+            "declared": "贵金属投资交易分析",
+            "resolved_dir": "precious-metals-analysis",
+            "matched_by": "name",
+        },
+    ]
+    assert report["cache_invalidated"] == 1
+
+
+def test_display_name_and_dir_name_both_declared_installs_once(env, monkeypatch):
+    """同一技能用两种写法各声明一次：只装一次，第二次记 existing，不重复写清单。"""
+    _make_skill(env["skills"], "fpp-income-analysis", "金市营收情况")
+    _declare(monkeypatch, ["金市营收情况", "fpp-income-analysis"])
+
+    report = S.provision_expert_skills(env["username"], "preset_business_analysis")
+
+    assert report["installed"] == ["fpp-income-analysis"]
+    assert report["existing"] == ["fpp-income-analysis"]
+    assert list(_store(env)["skills"]) == ["fpp-income-analysis"]
+
+
+def test_normalized_dir_name_declaration_resolves(env, monkeypatch):
+    """归一化写法（大小写/下划线）也能命中：FPP_Income_Analysis → fpp-income-analysis。"""
+    _make_skill(env["skills"], "fpp-income-analysis", "金市营收情况")
+    _declare(monkeypatch, ["FPP_Income_Analysis"])
+
+    report = S.provision_expert_skills(env["username"], "preset_business_analysis")
+
+    assert report["installed"] == ["fpp-income-analysis"]
+    assert report["resolved"][0]["matched_by"] == "dir_normalized"
+
+
+def test_unresolvable_declaration_reports_candidates(env, monkeypatch):
+    """解析不到的声明：fail-soft，附近似候选（仅提示，不自动装）。"""
+    _make_skill(env["skills"], "fpp-income-analysis", "金市营收情况")
+    _declare(monkeypatch, ["fpp_income_analysi"])  # 少了结尾的 s
+
+    report = S.provision_expert_skills(env["username"], "preset_business_analysis")
+
+    assert report["missing"] == ["fpp_income_analysi"]
+    skipped = report["skipped"][0]
+    assert skipped["reason"] == "source_missing"
+    assert skipped["candidates"][0]["dir_name"] == "fpp-income-analysis"
+    # 候选只用于诊断，绝不据此安装
+    assert _store(env)["skills"] == {}
+
+
+def test_status_exposes_resolution_fields(env, monkeypatch):
+    """排查接口的只读状态：声明/目录/命中方式都能看到。"""
+    _make_skill(env["skills"], "fpp-income-analysis", "金市营收情况")
+    _declare(monkeypatch, ["金市营收情况"])
+
+    status = S.required_skills_status(env["username"], "preset_business_analysis")
+
+    item = status["items"][0]
+    assert item["declared"] == "金市营收情况"
+    assert item["resolved_dir"] == "fpp-income-analysis"
+    assert item["matched_by"] == "name"
+    assert item["state"] == "installed_ready"
+    assert _store(env)["skills"] == {}  # 只读，不写清单
 
 
 # ── fail-soft 路径 ────────────────────────────────────────────────────

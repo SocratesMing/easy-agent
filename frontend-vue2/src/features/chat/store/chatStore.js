@@ -27,3 +27,21 @@ export const chatStore = Vue.observable({
  * - session-removed { sessionId, origin }：会话被删除，展示该会话的其他实例需回退
  */
 export const chatBus = new Vue()
+
+/**
+ * 会话列表「待审批」徽标。换成新数组，并在会话行上打标，审批事件到达时列表立刻重绘，
+ * 不必等历史回填或下一次 loadSessions。
+ */
+export function syncPendingApprovalFlag(sessionId, hasPending) {
+  if (!sessionId) return
+  const list = chatStore.pendingApprovalSessions
+  const has = list.includes(sessionId)
+  if (hasPending && !has) chatStore.pendingApprovalSessions = list.concat(sessionId)
+  else if (!hasPending && has) chatStore.pendingApprovalSessions = list.filter(id => id !== sessionId)
+  const sessions = chatStore.sessions
+  const i = sessions.findIndex(s => s && s.session_id === sessionId)
+  if (i === -1) return
+  const marked = !!hasPending
+  if (!!sessions[i].pending_approval === marked) return
+  sessions.splice(i, 1, { ...sessions[i], pending_approval: marked })
+}

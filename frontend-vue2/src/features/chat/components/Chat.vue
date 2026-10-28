@@ -132,7 +132,7 @@
         :showFooter="composerMode === 'bottom' && !isSidebar"
         :activeExpert="activeExpert"
         :expertPrompt="expertPrompt"
-        :show-manage-entry="showManageEntry"
+        :compact="isSidebar" :show-manage-entry="showManageEntry"
         @update:selectedModel="$emit('update:selectedModel', $event)"
         @stop="handleStop"
         @create-session="handleCreateSession"

@@ -81,6 +81,7 @@
               <span v-if="streamingSessionIds.includes(session.session_id)" class="streaming-badge" title="进行中">
                 <span class="streaming-dot"></span>
               </span>
+              <span v-if="session.pending_approval || pendingApprovalSessionIds.includes(session.session_id)" class="approval-flag" title="该会话存在待审批操作，需处理后才能继续">待审批</span>
             </div>
           </div>
           <div class="session-actions">
@@ -231,6 +232,10 @@ const props = defineProps({
     default: null
   },
   streamingSessionIds: {
+    type: Array,
+    default: () => []
+  },
+  pendingApprovalSessionIds: {
     type: Array,
     default: () => []
   },
@@ -651,6 +656,24 @@ function handleLogout() {
   border-radius: 50%;
   background: #22c55e;
   animation: streaming-pulse 1.2s infinite ease-in-out;
+}
+
+.approval-flag {
+  flex-shrink: 0;
+  margin-left: 2px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(245, 158, 11, 0.14);
+  color: #b45309;
+  font-size: 10px;
+  line-height: 1.5;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+html[data-theme="dark"] .approval-flag {
+  background: rgba(251, 191, 36, 0.16);
+  color: #fbbf24 !important;
 }
 
 @keyframes streaming-pulse {

@@ -8,6 +8,8 @@
    标记为 ``interrupted``、append 一条 error 事件，并释放这条 run 留下的会话流锁；
 3. 正常完成/失败/取消：由 ``_detached_event_stream`` 落终态。
 
+周期恢复顺带清掉保留期之前的 ``stream_events``（:func:`purge_stale_stream_events`）。
+
 本模块所有方法都是**薄封装 + 异常只记日志**：run 登记是观测/恢复能力，
 绝不允许反过来打断聊天主链路。本增量**不做**自动重新执行 stale run（执行器
 属于 Phase 2C），恢复后只保证前端不再停在「执行中」。
@@ -22,7 +24,10 @@ from datetime import UTC, datetime, timedelta
 
 from easy_agent.db.repositories import agent_runs as agent_runs_repo
 from easy_agent.db.repositories import session_runtime as session_runtime_repo
-from easy_agent.db.repositories.stream_events import append_stream_event
+from easy_agent.db.repositories.stream_events import (
+    append_stream_event,
+    delete_stream_events_before,
+)
 from easy_agent.bootstrap.env import env_int
 from easy_agent.services.session_runtime import instance_owner, is_stream_active
 from easy_agent.services.sse_emitter import SSEEmitter
@@ -48,6 +53,14 @@ RECOVER_BATCH_LIMIT = 500
 # 启动时那一轮扫不到，之后靠它补上；不大于 0 时只在启动时扫一次。
 RUN_RECOVERY_INTERVAL_ENV = "EASY_RUN_RECOVERY_INTERVAL"
 DEFAULT_RUN_RECOVERY_INTERVAL = 60
+
+# stream_events 只用于断线重连回放和中断后补发收尾帧，一天前的事件不会再有人回放。新一轮
+# 对话开始时会清掉本会话的旧事件，但用户不再回来的会话会一直留着，由周期恢复顺带清理。
+STREAM_EVENTS_RETENTION = timedelta(hours=24)
+# 每条 DELETE 最多删这么多行：积压很多时分批删，避免长事务。
+STREAM_EVENTS_PURGE_BATCH = 5000
+# 单轮最多删这么多批（10 万行）：积压很多时分几轮删完，每轮之间隔一个恢复间隔，不连续占着库。
+STREAM_EVENTS_PURGE_MAX_BATCHES = 20
 
 _recovery_task: asyncio.Task | None = None
 
@@ -254,6 +267,28 @@ def _release_dead_stream_lock(db, session_id: str, owner: str, now_iso: str) -> 
         logger.warning(f"释放 stale run 留下的流锁失败（忽略） | session={session_id} | {exc}")
 
 
+def purge_stale_stream_events(
+    db,
+    now: datetime | None = None,
+    *,
+    batch: int = STREAM_EVENTS_PURGE_BATCH,
+    max_batches: int = STREAM_EVENTS_PURGE_MAX_BATCHES,
+) -> int:
+    """分批删除保留期之前的 stream_events，返回本轮删除条数。
+
+    一轮最多 ``max_batches`` 批，删不完的留给下一轮。时间口径与 ``append_stream_event``
+    一致（本地时间的 ISO 字符串），按字符串比较。
+    """
+    cutoff = ((now or datetime.now()) - STREAM_EVENTS_RETENTION).isoformat()
+    total = 0
+    for _ in range(max_batches):
+        deleted = delete_stream_events_before(db, cutoff, limit=batch)
+        total += deleted
+        if deleted < batch:
+            break
+    return total
+
+
 async def _run_recovery_loop(interval: float) -> None:
     # 延迟导入：run_registry 在 db 层之上，避免导入期循环
     from easy_agent.db import get_database
@@ -264,6 +299,10 @@ async def _run_recovery_loop(interval: float) -> None:
             await run_blocking(recover_stale_runs, get_database())
         except Exception as exc:  # noqa: BLE001 - 恢复失败不能拖垮应用，下一轮重试
             logger.warning(f"stale run 周期恢复失败（下一轮重试）: {exc}")
+        try:
+            await run_blocking(purge_stale_stream_events, get_database())
+        except Exception as exc:  # noqa: BLE001 - 清理失败不影响恢复，下一轮重试
+            logger.warning(f"stream_events 过期清理失败（下一轮重试）: {exc}")
 
 
 def start_run_recovery(*, interval: float | None = None) -> asyncio.Task | None:
@@ -303,8 +342,10 @@ __all__ = [
     "RECOVER_ERROR_MESSAGE",
     "RUN_LEASE_SECONDS",
     "RUN_RECOVERY_INTERVAL_ENV",
+    "STREAM_EVENTS_RETENTION",
     "finish_run",
     "new_run_id",
+    "purge_stale_stream_events",
     "recover_stale_runs",
     "renew_run",
     "start_run",

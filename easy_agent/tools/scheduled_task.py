@@ -63,13 +63,6 @@ class CreateScheduledTaskTool(BaseTool):
         except ValueError as e:
             return f"错误：无效的 cron 表达式 '{schedule_cron}'：{e}。请提供标准的5字段 cron 表达式（分 时 日 月 周）。"
 
-        # 注册到 scheduler
-        try:
-            from easy_agent.services.scheduler import get_scheduler, register_scheduled_task
-            get_scheduler()  # 确保已初始化
-        except RuntimeError as e:
-            return f"错误：调度器未初始化：{e}"
-
         task_id = str(uuid.uuid4())
         now = datetime.now().isoformat()
         task = ScheduledTaskModel(
@@ -98,9 +91,16 @@ class CreateScheduledTaskTool(BaseTool):
 
         db.create_scheduled_task(task)
 
-        next_run = register_scheduled_task(task)
+        # 只写库。本进程若已有调度器，立刻对账装上 job；其它副本靠周期对账在数秒内装上。
+        from easy_agent.services.scheduler import preview_next_run, reconcile_scheduled_tasks
+
+        next_run = preview_next_run(schedule_cron)
         if next_run:
             db.update_scheduled_task_run_times(task_id, "", next_run)
+        try:
+            reconcile_scheduled_tasks()
+        except Exception as exc:  # noqa: BLE001 - 库已写入，对账失败由周期任务补
+            logger.warning(f"定时任务已入库，本进程对账失败: {exc}")
 
         logger.info(f"定时任务已创建 | task_id={task_id} | name={name} | cron={schedule_cron} | user={self.username}")
         log_task_event(

@@ -17,8 +17,14 @@ def _versions(db):
 
 def test_baseline_recorded_on_first_init(tmp_path):
     db = _db(tmp_path / "m.db")
-    # 引入迁移框架时已有 schema 版本记为 baseline（5）
-    assert _versions(db) == [mig.BASELINE_VERSION]
+    # 引入迁移框架时已有 schema 版本记为 baseline（5）；之后的迁移在新库上也各执行一次
+    assert _versions(db) == [mig.BASELINE_VERSION, *sorted(m.version for m in mig.MIGRATIONS)]
+
+
+def test_migration_versions_follow_the_baseline():
+    versions = [m.version for m in mig.MIGRATIONS]
+    assert versions == sorted(set(versions))
+    assert all(v > mig.BASELINE_VERSION for v in versions)
 
 
 def test_pending_migration_applied_once(tmp_path, monkeypatch):

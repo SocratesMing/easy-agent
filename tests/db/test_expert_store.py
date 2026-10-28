@@ -85,7 +85,8 @@ def test_expert_agents_indexes(db):
         cur.execute("SELECT name FROM sqlite_master WHERE type='index'")
         names = {r[0] for r in cur.fetchall()}
     assert "idx_expert_agents_user" in names
-    assert "idx_expert_agents_status" in names
+    # 查询都带 user_id，agent_status 只有几种取值：单列索引用不上，已不再创建
+    assert "idx_expert_agents_status" not in names
 
 
 # ── 增删改查 ──────────────────────────────────────────────────────────

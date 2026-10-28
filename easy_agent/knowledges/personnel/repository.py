@@ -204,7 +204,6 @@ def delete_personnel(db: Database, user_id: str) -> dict:
             (user_id,),
         )
         db._execute(cursor, "DELETE FROM knowledge_team_space_managers WHERE user_id=?", (user_id,))
-        db._execute(cursor, "DELETE FROM knowledge_team_space_viewers WHERE user_id=?", (user_id,))
         db._execute(cursor, "DELETE FROM session_knowledge_scopes WHERE user_id=?", (user_id,))
         db._execute(cursor, "DELETE FROM users WHERE user_id=?", (user_id,))
     return record

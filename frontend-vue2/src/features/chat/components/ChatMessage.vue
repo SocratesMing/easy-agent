@@ -583,9 +583,20 @@ export default {
         }
       }
     },
-    // 出现待审批的工具调用（HITL）时自动展开，便于用户查看审批提示。
-    hasPendingApproval(pending) {
-      if (pending) this.processExpanded = true
+    // 出现待审批的工具调用（HITL）时自动展开，并滚到对应卡片。
+    // immediate：历史里已经是 pending 的消息挂载时也要展开，不能等下一次变化。
+    hasPendingApproval: {
+      immediate: true,
+      handler(pending) {
+        if (!pending) return
+        this.processExpanded = true
+        this.$nextTick(() => this.scrollPendingApprovalIntoView())
+      },
+    },
+    pendingPanelActions(actions, prev) {
+      if (actions && actions.length && !(prev && prev.length)) {
+        this.$nextTick(() => this.scrollPendingApprovalIntoView())
+      }
     },
     processExpanded(expanded) {
       this.isStuck = false
@@ -676,6 +687,12 @@ export default {
       // 默认展开：仅当用户显式折叠过（值为 false）才收起
       const key = this.getBlockKey(block, index)
       return this.expandedTool[key] !== false
+    },
+    scrollPendingApprovalIntoView() {
+      const root = this.$el
+      if (!root || !root.querySelector) return
+      const el = root.querySelector('.tcc-approval, .pending-approval-panel')
+      if (el && el.scrollIntoView) el.scrollIntoView({ block: 'nearest' })
     },
     toggleProcess() {
       this.processToggledByUser = true
@@ -1252,9 +1269,11 @@ html[data-theme="dark"] .process-body .process-inline-content {
 }
 
 .thinking-header {
-  display: inline-flex;
+  display: flex;
   align-items: center;
   gap: 8px;
+  width: 100%;
+  box-sizing: border-box;
   padding: 4px 10px;
   background: transparent;
   border-radius: 8px;
@@ -1264,7 +1283,6 @@ html[data-theme="dark"] .process-body .process-inline-content {
   color: #475569;
   user-select: none;
   transition: background 0.2s;
-  align-self: flex-start;
 }
 
 .thinking-header:hover {
@@ -1324,9 +1342,11 @@ html[data-theme="dark"] .process-body .process-inline-content {
 }
 
 .thinking-duration {
+  margin-left: auto;
   font-size: 11px;
   color: #94a3b8;
   font-weight: 400;
+  font-variant-numeric: tabular-nums;
 }
 
 .toggle-arrow {

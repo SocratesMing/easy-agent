@@ -1,6 +1,7 @@
 <template>
-  <div class="message" :class="[message.role]">
+  <div ref="messageEl" class="message" :class="[message.role]">
     <div class="message-content" @click="handleContentClick">
+      <PageContextChip v-if="message.role === 'user' && message.page_context" :text="message.page_context" />
       <!-- 文件卡片 -->
       <div v-if="message.files && message.files.length > 0" class="files-container">
         <div 
@@ -243,6 +244,7 @@ import SkillIcon from '../../../shared/components/SkillIcon.vue'
 import { iconCategoryFor } from '../../../utils/skillCategories.js'
 // 专家头像取字 / 配色：与技能中心、+ 号下拉、输入框胶囊共用同一套规则（按 ID 稳定取档）
 import { expertAvatarChar, expertAvatarClass } from '../../../utils/expertAvatar.js'
+import PageContextChip from './PageContextChip.vue'
 import { parseLeadingSkillTokens } from '../../../utils/skillTokens.js'
 import { ensureSkillDirectoryLoaded, skillDirectoryStore } from '../../skills/store/skillDirectoryStore.js'
 
@@ -552,14 +554,27 @@ watch(
 const hasPendingApproval = computed(() =>
   processBlocks.value.some(b => b.type === 'tool_call' && b.approval_status === 'pending')
 )
+const messageEl = ref(null)
+function scrollPendingApprovalIntoView() {
+  const scope = messageEl.value
+  if (!scope || !scope.querySelector) return
+  const el = scope.querySelector('.tcc-approval, .pending-approval-panel')
+  if (el && el.scrollIntoView) el.scrollIntoView({ block: 'nearest' })
+}
+
 watch(() => hasPendingApproval.value, (pending) => {
-  if (pending) processExpanded.value = true
-})
+  if (!pending) return
+  processExpanded.value = true
+  nextTick(scrollPendingApprovalIntoView)
+}, { immediate: true })
 
 // 没有对应工具卡片的待审批操作（子代理内部触发），在消息级面板里单独给出按钮（DA-02）。
 const pendingPanelActions = computed(() =>
   props.message.role === 'assistant' ? unmatchedApprovalRequests(props.message) : []
 )
+watch(() => pendingPanelActions.value.length, (len, prev) => {
+  if (len && !prev) nextTick(scrollPendingApprovalIntoView)
+})
 
 function toggleProcess() {
   processToggledByUser.value = true
@@ -634,8 +649,6 @@ function toggleThinking(index) {
   expandedThinking.value[key] = !expandedThinking.value[key]
 }
 
-
-
 function isToolRunning(block) {
   // Tool is still running if: no duration AND the message is still loading
   return block.duration == null && props.message.loading === true
@@ -663,7 +676,6 @@ function isExpandedToolCall(index) {
   const key = getBlockKey(block, index)
   return expandedTool.value[key] === true
 }
-
 
 function formatJson(obj) {
   try {
@@ -1214,20 +1226,6 @@ html[data-theme="dark"] .process-body .process-inline-content {
   background: #F1F5F9;
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 .thinking-block {
   display: flex;
   flex-direction: column;
@@ -1236,9 +1234,11 @@ html[data-theme="dark"] .process-body .process-inline-content {
 }
 
 .thinking-header {
-  display: inline-flex;
+  display: flex;
   align-items: center;
   gap: 8px;
+  width: 100%;
+  box-sizing: border-box;
   padding: 4px 10px;
   background: transparent;
   border-radius: 8px;
@@ -1248,7 +1248,6 @@ html[data-theme="dark"] .process-body .process-inline-content {
   color: #475569;
   user-select: none;
   transition: background 0.2s;
-  align-self: flex-start;
 }
 
 .thinking-header:hover {
@@ -1308,9 +1307,11 @@ html[data-theme="dark"] .process-body .process-inline-content {
 }
 
 .thinking-duration {
+  margin-left: auto;
   font-size: 11px;
   color: #94a3b8;
   font-weight: 400;
+  font-variant-numeric: tabular-nums;
 }
 
 .toggle-arrow {

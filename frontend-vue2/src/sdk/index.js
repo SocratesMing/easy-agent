@@ -134,6 +134,9 @@ export function init(options = {}) {
     baseURL: options.baseURL || '',
     tokenKey: shareLogin ? MAIN_TOKEN_KEY : SDK_TOKEN_KEY,
     usernameKey: shareLogin ? MAIN_USERNAME_KEY : SDK_USERNAME_KEY,
+    // 401：换新 token 后由请求层把失败的请求重发一次，用户无感
+    refreshAuth: () => relogin(),
+    // 无法重发的场景（如上传）：续期后刷新会话列表
     onAuthExpired: () => { handleAuthExpired() },
   })
 
@@ -191,10 +194,15 @@ export function init(options = {}) {
           welcomeTitle: options.welcomeTitle || '有什么可以帮你？',
         },
         on: {
-          'open-change': (open) => {
-            if (open) refreshPageContext()
+          // 唤起 / 展开 / 新建会话 / 点上下文标签时：重算函数形式的 pageContext，
+          // 再交给宿主 refreshContext（宿主可在其中调用 setPageContext 推送最新内容）
+          'refresh-context': () => {
+            refreshPageContext()
+            if (typeof options.refreshContext === 'function') options.refreshContext()
+          },
+          'open-change': (open, source) => {
             const cb = open ? options.onOpen : options.onClose
-            if (typeof cb === 'function') cb()
+            if (typeof cb === 'function') cb(source)
           },
           'layout-change': applyDock,
           'open-in-main': (sessionId) => {
@@ -249,8 +257,9 @@ export function init(options = {}) {
     chatStore.username = profile.username
   }
 
-  async function handleAuthExpired() {
-    if (bootstrapping || destroyed) return
+  /** 重新获取 token：并发调用合并为一次，成功 resolve true；失败通知宿主 onAuthExpired */
+  function relogin() {
+    if (bootstrapping || destroyed) return Promise.resolve(false)
     if (reauthing) return reauthing
     const canRelogin = typeof auth.getToken === 'function' || !!auth.username
     reauthing = (async () => {
@@ -258,15 +267,20 @@ export function init(options = {}) {
         if (!canRelogin) throw new Error('登录已过期')
         await acquireToken({ forceLogin: true })
         await loadProfile()
-        if (sidebar()) await sidebar().loadSessions()
+        return true
       } catch (e) {
         if (typeof options.onAuthExpired === 'function') options.onAuthExpired(e)
         else console.warn('[EasyAgentSidebar] 登录已过期：', e && e.message)
+        return false
       } finally {
         reauthing = null
       }
     })()
     return reauthing
+  }
+
+  async function handleAuthExpired() {
+    if (await relogin() && sidebar()) await sidebar().loadSessions()
   }
 
   async function bootstrap() {
@@ -331,21 +345,14 @@ export function init(options = {}) {
     version,
     ready,
     /** 打开侧边栏：{ prompt?: 预填输入框, context?: 补充上下文文本, newSession?: 新建会话 } */
-    open: (opts) => whenReady(s => {
-      refreshPageContext()
-      s.openSidebar(opts || {})
-    }),
+    open: (opts) => whenReady(s => s.openSidebar(opts || {})),
     close: () => whenReady(s => s.close()),
-    toggle: () => whenReady(s => {
-      if (!s.open) refreshPageContext()
-      s.toggle()
-    }),
+    toggle: () => whenReady(s => s.toggle()),
     isOpen: () => !!(sidebar() && sidebar().open),
     /** 打开侧边栏并直接发送一条消息 */
-    send: (text) => whenReady(s => {
-      refreshPageContext()
-      return s.sendFromHost(text)
-    }),
+    send: (text) => whenReady(s => s.sendFromHost(text)),
+    /** 预填输入框（不打开侧边栏、不发送） */
+    setComposer: (text) => whenReady(s => s.setComposer(text)),
     /** 更新页面上下文（SPA 路由切换后调用）：对象 / 字符串 / 返回二者的函数 */
     setPageContext: (ctx) => {
       if (typeof ctx === 'function') options.pageContext = ctx

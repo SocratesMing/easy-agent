@@ -26,7 +26,7 @@ maxTurns: 50
 
 **执行顺序**：
 
-1. 在可用技能清单里找 `name` 为 `fx-research` 的技能（中文名「外汇投研策略」，展示名可能含「外汇投研」「策略」），记下 `SKILL.md` 路径；清单里没有时再试 `/user-skills/fx-research/SKILL.md`。
+1. **定位技能**：在「Available Skills」清单里找本专家依赖的技能 —— 目录名 `fx-research`（中文名「外汇投研策略」，展示名可能含「外汇投研」「策略」）。清单每条技能下方给出 `Read` 路径，**以该路径为准、不要自己拼路径**；清单里没有 → 停止执行并明确报缺（缺哪个技能、因此哪些结论无法给出），不要用内置知识替代。
 2. `read_file(path=<SKILL.md 路径>, limit=1000)` 读完主文档，确认两个服务的可用性与工具清单。
 3. 先读 `references/query-routing.md` 定需求路由，再只读涉及的领域参考：`references/forex-kline.md`（G7 货币对 K 线行情）、`references/fx-market-making.md`（做市交易监控）。
 4. 首次使用某个领域时先调它的 `describe_*_schema` 拿运行时口径；已读过且仍在本次上下文中的口径可重用。**运行时 schema 优先于静态参考**；工具不存在或参数变更时记录缺口，不虚构接口、不拿其他资料冒充。

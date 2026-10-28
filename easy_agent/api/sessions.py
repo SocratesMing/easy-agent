@@ -52,52 +52,66 @@ def generate_workspace_name(session_id: str) -> str:
     return f"{now.strftime('%Y%m%d')}_{now.strftime('%H%M%S')}_{session_id[:5]}"
 
 
+def _latest_usage(messages: list[dict]) -> dict:
+    """最后一条带 token 用量的 assistant 消息的 ``usage``，没有则返回空 dict。
+
+    跳过没有调用模型的回复（如专家相关性预检的拒答，用量全为 0）。
+    """
+    for msg in reversed(messages):
+        if msg.get("role") != "assistant":
+            continue
+        usage = msg.get("usage") or {}
+        if any(usage.get(key) for key in ("input_tokens", "output_tokens", "context_tokens")):
+            return usage
+    return {}
+
+
 def compute_session_usage(messages: list[dict]) -> dict | None:
-    """从消息列表中计算会话级别的 token 用量。
+    """会话详情 / 历史接口的用量，与流式 ``token_usage`` 同一口径。
+
+    每条 assistant 消息落库的是该轮**最近一次模型调用**的用量，而每次调用的输入已包含
+    之前各轮的全部历史：跨轮相加会把历史重复计算（三轮 10k / 20k / 30k 加成 60k），
+    既不是上下文占用也不是计费量，还和对话进行中显示的值对不上。所以 token 字段取最后
+    一条有用量的 assistant 消息；``elapsed_time`` / ``step_count`` 可以相加，仍按会话累计。
 
     Returns:
         包含 input_tokens/output_tokens/reasoning_tokens/context_tokens/
         elapsed_time/step_count 的字典，如果没有任何用量数据则返回 None。
     """
-    total_input = 0
-    total_output = 0
-    total_reasoning = 0
-    context_tokens = 0
+    latest = _latest_usage(messages)
     total_elapsed = 0.0
     total_steps = 0
-
     for msg in messages:
         msg_usage = msg.get("usage") or {}
-        total_input += msg_usage.get("input_tokens", 0) or 0
-        total_output += msg_usage.get("output_tokens", 0) or 0
-        # 思考 token（output 的子集），仅用于拆分展示
-        total_reasoning += msg_usage.get("reasoning_tokens", 0) or 0
         total_elapsed += msg_usage.get("elapsed_time", 0) or 0
         total_steps += msg_usage.get("step_count", 0) or 0
 
-    # 从最后一条 assistant 消息获取上下文窗口占用
-    # 优先使用 context_tokens（最后一次 API 调用的 input_tokens），
-    # 旧消息无此字段时回退到 input_tokens
-    for msg in reversed(messages):
-        if msg.get("role") == "assistant":
-            last_usage = msg.get("usage") or {}
-            if last_usage.get("context_tokens"):
-                context_tokens = last_usage["context_tokens"]
-                break
-            if last_usage.get("input_tokens"):
-                context_tokens = last_usage["input_tokens"]
-                break
+    input_tokens = latest.get("input_tokens", 0) or 0
+    output_tokens = latest.get("output_tokens", 0) or 0
+    # 优先使用 context_tokens（最后一次 API 调用的 input_tokens），旧消息无此字段时回退到 input_tokens
+    context_tokens = latest.get("context_tokens") or input_tokens
 
-    if total_input > 0 or total_output > 0 or total_elapsed > 0 or total_steps > 0:
+    if input_tokens > 0 or output_tokens > 0 or total_elapsed > 0 or total_steps > 0:
         return {
-            "input_tokens": total_input,
-            "output_tokens": total_output,
-            "reasoning_tokens": total_reasoning,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            # 思考 token（output 的子集），仅用于拆分展示
+            "reasoning_tokens": latest.get("reasoning_tokens", 0) or 0,
             "context_tokens": context_tokens,
             "elapsed_time": round(total_elapsed, 2),
             "step_count": total_steps,
         }
     return None
+
+
+def session_context_length(messages: list[dict]) -> int | None:
+    """会话最近一次模型调用所用模型的上下文窗口（占用率的分母）。
+
+    会话不记录所用模型（输入框可以逐轮切换），窗口随 assistant 消息的 ``usage`` 落库；
+    旧消息没有这个字段时退回当前默认模型（:func:`get_context_length`）。
+    """
+    value = _latest_usage(messages).get("context_length")
+    return int(value) if value else get_context_length()
 
 
 def get_context_length() -> int | None:
@@ -236,7 +250,7 @@ async def get_session(
     session = repo.get_owned_session(session_id, username)
 
     usage = compute_session_usage(session.messages or [])
-    context_length = get_context_length()
+    context_length = session_context_length(session.messages or [])
 
     return SessionDetail(
         session_id=session.session_id,
@@ -394,7 +408,7 @@ async def get_chat_history(
     session = repo.get_owned_session(session_id, username)
 
     usage = compute_session_usage(session.messages or [])
-    context_length = get_context_length()
+    context_length = session_context_length(session.messages or [])
 
     return GetChatHistoryResponse(
         session_id=session.session_id,

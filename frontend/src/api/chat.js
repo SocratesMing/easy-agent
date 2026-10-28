@@ -117,6 +117,8 @@ export async function sendMessage(sessionId, message, onChunk, signal, enableDee
   if (model) {
     payload.model = model
   }
+  // AI 侧边栏附带的页面上下文（用户唤起侧边栏时所在页面），仅供模型参考
+  if (extra && extra.pageContext) payload.page_context = extra.pageContext
   // 已选技能以结构化字段提交（技能目录名），`/目录名` 由后端拼进模型输入（不进落库文本）。
   // 连接器不随消息提交：本会话启用哪些连接器由 /agent/connectors/session 单独设置。
   if (skills && skills.length) payload.skills = skills
