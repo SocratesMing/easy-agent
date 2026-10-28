@@ -35,6 +35,12 @@ export async function getModels() {
   return await response.json()
 }
 
+export async function getKnowledgeStatus() {
+  const response = await authFetch(`${API_BASE_URL}/agent/settings/knowledge`)
+  if (!response.ok) throw new Error('获取知识库状态失败')
+  return await response.json()
+}
+
 export async function getWebSearchStatus() {
   const response = await authFetch(`${API_BASE_URL}/agent/settings/web-search`)
   if (!response.ok) throw new Error('获取联网搜索状态失败')

@@ -21,14 +21,7 @@
         <span>新建会话</span>
       </button>
       
-      <button @click="$emit('showAssets')" class="action-btn assets">
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
-        </svg>
-        <span>资产</span>
-      </button>
-
-      <button @click="$emit('showKnowledge')" class="action-btn assets" :class="{ active: showKnowledge }">
+      <button v-if="knowledgeEnabled" @click="$emit('showKnowledge')" class="action-btn assets" :class="{ active: showKnowledge }">
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
         </svg>
@@ -67,7 +60,7 @@
           v-for="session in group.sessions"
           :key="session.session_id"
           class="session-item"
-          :class="{ active: !showAssets && session.session_id === currentSessionId, streaming: streamingSessionIds.includes(session.session_id) }"
+          :class="{ active: !showKnowledge && session.session_id === currentSessionId, streaming: streamingSessionIds.includes(session.session_id) }"
           @click="$emit('selectSession', session.session_id)"
         >
           <div class="session-info">
@@ -220,7 +213,7 @@ import { ref, nextTick, onMounted, computed } from 'vue'
 import { APP_TITLE } from '../../../config.js'
 import { ensureSkillDirectoryLoaded, skillFreeTitle } from '../../skills/store/skillDirectoryStore.js'
 
-const emit = defineEmits(['createSession', 'selectSession', 'deleteSession', 'renameSession', 'toggleSidebar', 'showAssets', 'showKnowledge', 'showSkillCenter', 'showScheduledTasks', 'showSettings', 'showUserManagement', 'logout', 'togglePin'])
+const emit = defineEmits(['createSession', 'selectSession', 'deleteSession', 'renameSession', 'toggleSidebar', 'showKnowledge', 'showSkillCenter', 'showScheduledTasks', 'showSettings', 'showUserManagement', 'logout', 'togglePin'])
 
 const props = defineProps({
   sessions: {
@@ -251,7 +244,7 @@ const props = defineProps({
     type: String,
     default: ''
   },
-  showAssets: {
+  knowledgeEnabled: {
     type: Boolean,
     default: false
   },

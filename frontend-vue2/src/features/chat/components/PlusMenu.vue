@@ -19,7 +19,7 @@
           <polyline points="9 18 15 12 9 6"></polyline>
         </svg>
       </button>
-      <button type="button" class="plus-menu-item plus-menu-item-knowledge" @mouseenter="$emit('hover', 'knowledge')" @click="$emit('knowledge')">
+      <button v-if="knowledgeEnabled" type="button" class="plus-menu-item plus-menu-item-knowledge" @mouseenter="$emit('hover', 'knowledge')" @click="$emit('knowledge')">
         <svg class="plus-menu-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path>
           <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path>
@@ -76,6 +76,7 @@ export default {
     disabled: { type: Boolean, default: false },
     isStreaming: { type: Boolean, default: false },
     open: { type: Boolean, default: false },
+    knowledgeEnabled: { type: Boolean, default: false },
     menuStyle: { type: Object, default: () => ({}) },
   },
   emits: [

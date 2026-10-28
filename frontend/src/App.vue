@@ -15,7 +15,7 @@
         :username="userProfile.username"
         :organizationId="userProfile.organization_id"
         :email="userProfile.email"
-        :showAssets="showAssets"
+        :knowledgeEnabled="knowledgeEnabled"
         :showKnowledge="showKnowledge"
         @createSession="handleCreateSession"
         @selectSession="handleSelectSession"
@@ -23,7 +23,6 @@
         @renameSession="handleRenameSession"
         @togglePin="handleTogglePin"
         @toggleSidebar="toggleSidebar"
-        @showAssets="handleShowAssets"
         @showKnowledge="handleShowKnowledge"
         @showSkillCenter="handleShowSkillCenter"
         @showScheduledTasks="handleShowScheduledTasks"
@@ -44,8 +43,6 @@
         </svg>
       </button>
       
-      <AssetsPanel v-if="showAssets" :visible="showAssets" @close="showAssets = false" />
-
       <SkillCenter
         v-if="showSkillCenter"
         :session-id="currentSessionId || ''"
@@ -77,7 +74,7 @@
       />
 
       <Chat
-        v-else-if="!showAssets && !showSkillCenter && !showScheduledTasks"
+        v-else-if="!showSkillCenter && !showScheduledTasks"
         :messages="messages"
         :sessionLoading="sessionLoading"
         :currentSessionId="currentSessionId"
@@ -113,7 +110,7 @@
         @openKnowledge="openKnowledgeWorkbench"
       />
 
-      <div v-if="currentSessionId && !showKnowledge && !showAssets && !showSkillCenter" class="workspace-area">
+      <div v-if="currentSessionId && !showKnowledge && !showSkillCenter" class="workspace-area">
         <WorkspacePanel
           :username="userProfile.username"
           :currentSessionId="currentSessionId"
@@ -138,7 +135,6 @@ import { API_BASE_URL, APP_WELCOME_TITLE, appRuntime } from './config.js'
 import { ref, computed, onMounted, watch, toRef, defineAsyncComponent } from 'vue'
 import SessionList from './features/chat/components/SessionList.vue'
 import Chat from './features/chat/components/Chat.vue'
-import AssetsPanel from './features/chat/components/AssetsPanel.vue'
 const SkillCenter = defineAsyncComponent(() => import('./features/skills/components/SkillCenter.vue'))
 const ScheduledTasksPanel = defineAsyncComponent(() => import('./features/tasks/components/ScheduledTasksPanel.vue'))
 const KnowledgeWorkbench = defineAsyncComponent(() => import('./features/knowledge/KnowledgeWorkbench.vue'))
@@ -154,7 +150,7 @@ import { applyApprovalRequests, buildResumeDecisions, markApprovalDecision, unma
 import { createStreamChunkHandler } from './features/chat/composables/useStreamChunks.js'
 import { uploadFile, deleteFile, getUserProfile, getSessionGeneratedFiles } from './api/files.js'
 import { logout as apiLogout, notifyLogout, getStoredToken, getStoredUsername, AUTH_EXPIRED_EVENT, authFetch, passwordlessLogin } from './api/auth.js'
-import { getModels as fetchModels } from './api/settings.js'
+import { getKnowledgeStatus, getModels as fetchModels } from './api/settings.js'
 
 // 会话列表与「进行中」集合放在 chatStore：AI 侧边栏与主页面共用同一份
 const sessions = toRef(chatStore, 'sessions')
@@ -184,6 +180,15 @@ function clearActiveSession() {
 const availableModels = ref([])
 const selectedModel = ref(null)
 const welcomeTitle = ref(APP_WELCOME_TITLE)
+
+async function loadKnowledgeStatus() {
+  try {
+    const data = await getKnowledgeStatus()
+    knowledgeEnabled.value = Boolean(data && data.enabled)
+  } catch (e) {
+    knowledgeEnabled.value = false
+  }
+}
 
 async function loadModels() {
   try {
@@ -809,7 +814,7 @@ function reconstructPendingApproval() {
 watch(() => loadedSessionId.value, reconstructPendingApproval)
 const isSidebarCollapsed = ref(false)
 const isWorkspaceCollapsed = ref(true)
-const showAssets = ref(false)
+const knowledgeEnabled = ref(false)
 const showKnowledge = ref(false)
 const showSkillCenter = ref(false)
 const skillCenterTab = ref('experts')
@@ -835,13 +840,6 @@ function toggleSidebar() {
   isSidebarCollapsed.value = !isSidebarCollapsed.value
 }
 
-function handleShowAssets() {
-  showKnowledge.value = false
-  showAssets.value = !showAssets.value
-  showSkillCenter.value = false
-  showScheduledTasks.value = false
-}
-
 function openSkillCenterPanel(tab) {
   if (tab === 'knowledge') return openKnowledgeWorkbench()
   showKnowledge.value = false
@@ -852,8 +850,8 @@ function openSkillCenterPanel(tab) {
 
 // 知识库工作台：与聊天区互斥，打开时收起其他管理面板
 function openKnowledgeWorkbench() {
+  if (!knowledgeEnabled.value) return
   showKnowledge.value = true
-  showAssets.value = false
   showSkillCenter.value = false
   showScheduledTasks.value = false
   showSettingsPanel.value = false
@@ -862,7 +860,6 @@ function openKnowledgeWorkbench() {
 
 function handleShowKnowledge() {
   showKnowledge.value = !showKnowledge.value
-  showAssets.value = false
   showSkillCenter.value = false
   showScheduledTasks.value = false
   showSettingsPanel.value = false
@@ -872,7 +869,6 @@ function handleShowKnowledge() {
 function handleShowSkillCenter() {
   showKnowledge.value = false
   showSkillCenter.value = !showSkillCenter.value
-  showAssets.value = false
   showScheduledTasks.value = false
 }
 
@@ -931,7 +927,6 @@ async function handleSummonExpertInPlace(expert) {
 function handleShowScheduledTasks() {
   showKnowledge.value = false
   showScheduledTasks.value = !showScheduledTasks.value
-  showAssets.value = false
   showSkillCenter.value = false
 }
 
@@ -1035,6 +1030,7 @@ async function handleWelcomeCompleted(profile) {
     console.warn('获取模型配置失败:', e)
   }
   loadModels()
+  loadKnowledgeStatus()
   await loadSessions()
   await restoreInitialSession()
 }
@@ -1065,7 +1061,6 @@ async function handleLogout() {
     email: ''
   }
   showKnowledge.value = false
-  showAssets.value = false
   showSkillCenter.value = false
   selectedExpert.value = null
   hasBootstrapped.value = false
@@ -1207,7 +1202,6 @@ async function handleExpertCreate() {
 async function handleExpertEdit() {
   const isEmptySession = !currentSessionId.value || messages.value.length === 0
   if (isEmptySession) {
-    showAssets.value = false
     showSkillCenter.value = false
     showScheduledTasks.value = false
     showSettingsPanel.value = false
@@ -1220,7 +1214,6 @@ async function handleCreateSession() {
   saveCurrentSessionState()
 
   showKnowledge.value = false
-  showAssets.value = false
   showSkillCenter.value = false
   selectedExpert.value = null
   showScheduledTasks.value = false
@@ -1242,7 +1235,6 @@ async function handleSelectSession(sessionId) {
   saveCurrentSessionState()
 
   showKnowledge.value = false
-  showAssets.value = false
   showSkillCenter.value = false
   // 切换会话时不沿用上一个会话的专家选择（选择是当前工作台的临时状态）
   selectedExpert.value = null
@@ -1340,7 +1332,7 @@ async function handleDeleteSession(sessionId) {
 }
 
 const { aiPageContext, handleOpenSessionInMain, fallbackAfterSessionRemoved } = useAiSidebarBridge({
-  panels: { showAssets, showSkillCenter, showScheduledTasks, showSettingsPanel, showUserManagementPanel },
+  panels: { showSkillCenter, showScheduledTasks, showSettingsPanel, showUserManagementPanel },
   userProfile, sessions, currentSessionId, loadedSessionId, messages, sessionUsage, availableModels, selectedModel,
   sessionStates, attachedStreamingSessions, attachToStreamingSession, handleSelectSession, handleCreateSession,
 })
@@ -1847,6 +1839,7 @@ onMounted(async () => {
     if (!showWelcome.value) {
       // 拉取可选模型列表（不阻塞会话加载）
       loadModels()
+      loadKnowledgeStatus()
       await loadSessions()
       await restoreInitialSession()
     }

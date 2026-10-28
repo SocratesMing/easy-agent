@@ -104,7 +104,7 @@
                     <polyline points="9 18 15 12 9 6"></polyline>
                   </svg>
                 </button>
-                <button type="button" class="plus-menu-item plus-menu-item-knowledge" @mouseenter="hoverPlusItem('knowledge', $event)" @click="openKnowledgeScope($event)">
+                <button v-if="knowledgeEnabled" type="button" class="plus-menu-item plus-menu-item-knowledge" @mouseenter="hoverPlusItem('knowledge', $event)" @click="openKnowledgeScope($event)">
                   <svg class="plus-menu-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                     <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path>
                     <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path>
@@ -647,7 +647,7 @@
 <script setup>
 import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
 import { uploadFile, deleteFile } from '../../../api/files.js'
-import { getWebSearchStatus, getUploadLimits } from '../../../api/settings.js'
+import { getKnowledgeStatus, getWebSearchStatus, getUploadLimits } from '../../../api/settings.js'
 import { getUserSkills, importSkill } from '../../../api/skills.js'
 import { iconCategoryFor } from '../../../utils/skillCategories.js'
 
@@ -1292,6 +1292,7 @@ function handleViewportChange() {
 // ========== 联网搜索 ==========
 // 开关状态仅本次页面会话有效（默认关闭）：开启后本轮消息携带 enable_web_search，
 // 后端注入 web_search 工具并追加联网搜索行为约束。
+const knowledgeEnabled = ref(false)
 const webSearchEnabled = ref(false)
 const webSearchStatus = ref({ enabled: false, configured: false })
 const webSearchUnavailable = computed(() => !webSearchStatus.value.configured)
@@ -1308,6 +1309,15 @@ function toggleWebSearch() {
   console.log(
     `[${new Date().toISOString()}] [联网搜索] ${webSearchEnabled.value ? '已开启' : '已关闭'}`
   )
+}
+
+async function loadKnowledgeStatus() {
+  try {
+    const data = await getKnowledgeStatus()
+    knowledgeEnabled.value = Boolean(data && data.enabled)
+  } catch (e) {
+    knowledgeEnabled.value = false
+  }
 }
 
 async function loadWebSearchStatus() {
@@ -2660,6 +2670,7 @@ onMounted(() => {
   window.addEventListener('resize', handleViewportChange)
   document.addEventListener('click', closePlusMenu)
   loadWebSearchStatus()
+  loadKnowledgeStatus()
   // 「专家·技能·连接器」面板里改了开关 → 本面板同步（两个面板不在同一组件树分支，走事件广播）
   offConnectorsChanged = onConnectorsChanged(onConnectorsChangedHandler)
   loadUploadLimits()

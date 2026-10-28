@@ -62,21 +62,6 @@ def test_upload_returns_store_uri_and_cleans_local_file(store_client):
     assert after == before
 
 
-def test_asset_list_reads_store_objects(store_client):
-    client, _ = store_client
-    up = _upload(client).json()
-
-    resp = client.get("/agent/files/list")
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["total"] >= 1
-    paths = {item["file_path"] for item in body["files"]}
-    assert up["file_path"] in paths
-    item = next(i for i in body["files"] if i["file_path"] == up["file_path"])
-    assert item["size"] == len(b"hello store")
-    assert item["filename"].endswith("data.txt")
-
-
 def test_download_streams_materialized_bytes(store_client):
     client, _ = store_client
     up = _upload(client).json()
@@ -161,7 +146,7 @@ def test_delete_removes_store_object(store_client):
     assert resp.status_code == 200
 
     # DB 行与 Store 对象都清掉（缓存也清）
-    assert client.get("/agent/files/list", params={"session_id": sid}).json()["total"] == 0
+    assert get_database().get_session_files(sid) == []
     assert _items(store) == []
     assert not [p for p in Path(us.BASE_CACHE_DIR).rglob("*") if p.is_file()]
 

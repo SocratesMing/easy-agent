@@ -21,7 +21,7 @@
         <span>新建会话</span>
       </button>
       
-      <button @click="$emit('show-knowledge')" class="action-btn assets" :class="{ active: showKnowledge }">
+      <button v-if="knowledgeEnabled" @click="$emit('show-knowledge')" class="action-btn assets" :class="{ active: showKnowledge }">
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
         </svg>
@@ -61,7 +61,7 @@
           :key="session.session_id"
           class="session-item"
           :class="{
-            active: !showKnowledge && !showAssets && session.session_id === currentSessionId,
+            active: !showKnowledge && session.session_id === currentSessionId,
             streaming: streamingSessionIds.includes(session.session_id),
             'menu-open': activeMenu === session.session_id
           }"
@@ -247,12 +247,12 @@ export default {
     type: String,
     default: ''
   },
-  showAssets: {
+  knowledgeEnabled: {
     type: Boolean,
     default: false
   }
 },
-  emits: ['create-session', 'select-session', 'delete-session', 'rename-session', 'toggle-sidebar', 'show-assets', 'show-skill-center', 'show-scheduled-tasks', 'show-settings', 'show-user-management', 'logout', 'toggle-pin'],
+  emits: ['create-session', 'select-session', 'delete-session', 'rename-session', 'toggle-sidebar', 'show-knowledge', 'show-skill-center', 'show-scheduled-tasks', 'show-settings', 'show-user-management', 'logout', 'toggle-pin'],
   data() {
     return {
       activeMenu: null,

@@ -35,6 +35,13 @@ export async function getModels() {
   )
 }
 
+export async function getKnowledgeStatus() {
+  return request(
+    { url: '/agent/settings/knowledge', method: 'get' },
+    '获取知识库状态失败'
+  )
+}
+
 export async function getWebSearchStatus() {
   return request(
     { url: '/agent/settings/web-search', method: 'get' },
