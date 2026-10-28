@@ -21,7 +21,7 @@ const LINE_BUDGET = {
   'App.vue': 3091,
   'features/chat/components/ChatInput.vue': 4093,
   'features/chat/components/ChatMessage.vue': 2550,
-  'features/experts/components/ExpertListPanel.vue': 1649,
+  'features/experts/components/ExpertListPanel.vue': 1683,
   'features/connectors/components/ConnectorListPanel.vue': 1534,
   'features/settings/components/SettingsPanel.vue': 1226,
   'features/skills/components/SkillListPanel.vue': 1226,

@@ -71,7 +71,7 @@
 `precious-metals-analysis`（贵金属投资交易分析）、`fpp-income-analysis`（金市营收情况）。
 服务端公共技能目录里必须存在同名目录且内含 `SKILL.md`，否则自动补装走 `source_missing`。
 
-补充：服务端也接受按 SKILL.md 的 `name`（中文）声明——补装会把声明解析成目录名后再登记
+补充：服务端也接受按 SKILL.md 的 `name`（中文）声明——补装会把声明解析成目录名后再复制
 （`matched_by=name`）。但**推荐仍写目录名**：目录名是运行时唯一键，改名时诊断接口
 （`GET /agent/expert/required-skills`）能立刻看到 `resolved_dir` 与 `candidates`。
 若服务端目录名带版本后缀（例如 `fpp-income-analysis-v0.2`），需同步改这里的名字。

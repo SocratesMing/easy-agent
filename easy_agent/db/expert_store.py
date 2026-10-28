@@ -28,7 +28,7 @@ STATUS_FAILED = "failed"       # 生成失败，前端可重试
 STATUS_DISABLED = "disabled"   # 软删除
 
 # 落库时以 JSON 字符串存储的列表型字段
-_JSON_FIELDS = ("export_skills_names", "export_features_prompt")
+_JSON_FIELDS = ("export_skills_names", "export_required_skills", "export_features_prompt")
 
 # 允许被 update_fields 更新的列（白名单，避免 SQL 注入与误更新主键）
 _UPDATABLE_COLUMNS = frozenset({
@@ -39,6 +39,7 @@ _UPDATABLE_COLUMNS = frozenset({
     "export_prompt",
     "export_description",
     "export_skills_names",
+    "export_required_skills",
     "export_features_prompt",
     "export_file_path",
     "agent_status",
@@ -57,6 +58,7 @@ COLUMNS = (
     "export_prompt",
     "export_description",
     "export_skills_names",
+    "export_required_skills",
     "export_features_prompt",
     "export_file_path",
     "agent_status",
@@ -170,6 +172,26 @@ class ExpertStore:
             self.db._execute(
                 conn.cursor(), sql, (*payload.values(), expert_agent_id)
             )
+
+    def list_by_session(self, user_id: str, session_id: str) -> list[dict]:
+        """列出某个会话里创建的专家（工作区「专家设定 MD」只读条目的数据源）。
+
+        专家记录在创建时就带 ``session_id``（溯源用），这里按它反查，用于在
+        创建该专家的会话工作区里展示其提示词 MD。已软删（disabled）的不返回。
+        """
+        if not session_id:
+            return []
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            self.db._execute(
+                cursor,
+                "SELECT * FROM expert_agents "
+                "WHERE user_id=? AND session_id=? AND agent_status<>? "
+                "ORDER BY create_timestamp ASC",
+                (user_id, session_id, STATUS_DISABLED),
+            )
+            rows = cursor.fetchall()
+        return [_row_to_dict(r) for r in rows]
 
     def delete(self, expert_agent_id: str, user_id: str, hard: bool = False) -> bool:
         """删除专家。``hard=False`` 为软删除（置 ``disabled``）。

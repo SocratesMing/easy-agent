@@ -154,6 +154,7 @@ expert:
   relevance_strict: false            # true = 部分相关也整条拒答；false = 放行只答相关部分
   relevance_disable_thinking: true   # 预检调用关闭思考模式
   auto_install_required_skills: true # 用预置专家时自动「添加」其 required_skills 声明的公共技能（不复制技能包）
+  tool_scope_enabled: true           # 专家选定技能包时做硬隔离：只挂这些技能 + 本轮另选的技能；未选=全量可见
 
 # ===== 专家分类标签（tag_id 落库，tag_name 展示）=====
 expert_tags:

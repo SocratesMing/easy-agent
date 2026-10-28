@@ -154,6 +154,10 @@ class ToolBuildContext:
     expert_session: bool = False
     web_search_tool: Any = None
     edit_targets: Mapping[str, str] | None = None
+    #: 会话 → 本轮输入框选中的技能目录名（``{session_id: [dir_name, ...]}``）。
+    #: ``save_expert`` 用它把技能包写进专家的 ``export_required_skills``——技能胶囊
+    #: 只在请求体的 ``skills`` 字段里，工具侧看不到，必须由装配根暂存一份。
+    turn_skills: Mapping[str, list[str]] | None = None
     # 工具工厂（按工具名索引），由装配根 ``agent_manager._tool_factories()`` 提供。
     # 注册表刻意不 import tools/knowledge 模块，保持包内无 import 边的叶子模块，
     # 避免把 tools.registry 并进既有 knowledge→scheduler→agent_manager SCC。
@@ -233,6 +237,7 @@ def _build_save_expert_tool(ctx: ToolBuildContext) -> Any:
         config_model=ctx.model_name or "",
         tag_options=getattr(ctx.config, "expert_tags", None),
         edit_targets=ctx.edit_targets or {},
+        turn_skills=ctx.turn_skills or {},
     )
     logger.info(f"[{ctx.sid}] 🧑‍🔬 已注入 save_expert 工具")
     return tool

@@ -1169,17 +1169,22 @@ function restorePendingSkill() {
   if (!raw) return
 
   try {
-    const skill = JSON.parse(raw)
-    if (!skill?.dir_name) return
-    rememberSkills([skill])
-    if (skill.insert_token === false) {
-      preselectedSkillDirs.value.add(skill.dir_name)
-      return
+    const parsed = JSON.parse(raw)
+    // 两种载荷：单个技能对象（技能中心）与 {skills: [...]}（专家面板：
+    // 新建带 expert-creator，编辑还会带上该专家已绑定的技能包）
+    const list = Array.isArray(parsed?.skills) ? parsed.skills : (parsed ? [parsed] : [])
+    for (const skill of list) {
+      if (!skill?.dir_name) continue
+      rememberSkills([skill])
+      if (skill.insert_token === false) {
+        preselectedSkillDirs.value.add(skill.dir_name)
+        continue
+      }
+      const ta = textareaRef.value
+      const base = ta?.value ?? message.value
+      if (skillSegments(base, tokenMap.value).some((seg) => seg.dirName === skill.dir_name)) continue
+      replaceTextWithCaret(insertSkillToken(base, base.length, tokenForSkill(skill)))
     }
-    const ta = textareaRef.value
-    const base = ta?.value ?? message.value
-    if (skillSegments(base, tokenMap.value).some((seg) => seg.dirName === skill.dir_name)) return
-    replaceTextWithCaret(insertSkillToken(base, base.length, tokenForSkill(skill)))
   } catch (e) {
     console.error('恢复待选技能失败:', e)
   }

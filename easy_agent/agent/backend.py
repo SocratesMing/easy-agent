@@ -16,6 +16,7 @@ from easy_agent.agent.builtin_skills import BUILTIN_VIRTUAL_ROOT
 from easy_agent.backends.artifacts import AGENT_ARTIFACTS_ROOT, AgentArtifactsBackend
 from easy_agent.backends.builtin_skills import BuiltinSkillsBackend
 from easy_agent.backends.langsmith_sandbox import create_langsmith_backend, sandbox_mode
+from easy_agent.backends.scoped_skills import ScopedSkillsBackend
 from easy_agent.backends.shell import _PathTranslatingShell
 from easy_agent.bootstrap.config import Config
 from easy_agent.sandboxing.fs_safety import _check_external_dir_safety
@@ -135,16 +136,37 @@ def _build_backend_for_context(
         user_skills_dir.mkdir(parents=True, exist_ok=True)
     except OSError as e:
         logger.warning(f"[{sid}] 创建用户技能目录失败: {e}")
+    # 技能作用域（专家技能硬隔离）：None = 全量；非 None 时只暴露白名单内的技能目录。
+    # 这一层同时管住「技能清单被谁发现」（SkillsMiddleware 走 backend.ls）与
+    # 「能不能直接读到未选中技能的 SKILL.md」（read / grep / glob / download）。
+    skill_whitelist = getattr(context, "skill_whitelist", None)
     if skills_paths or user_skills_dir.exists():
-        routes["/user-skills/"] = LocalShellBackend(
-            root_dir=str(user_skills_dir.absolute()),
-            virtual_mode=True,
+        routes["/user-skills/"] = ScopedSkillsBackend(
+            user_skills_dir,
+            skill_whitelist,
             env=shell_env,
+        )
+    if skill_whitelist is None:
+        logger.info(f"[{sid}] 🔓 用户技能库全量可见（无技能作用域）")
+    else:
+        logger.info(
+            f"[{sid}] 🔒 用户技能库已按作用域过滤 | 白名单 {len(skill_whitelist)} 个: "
+            f"{list(skill_whitelist) or '（空 → 一个技能都不可见）'} | "
+            f"其余目录不进技能清单、read_file 也读不到"
         )
 
     # 公共技能（DA-13 S2）：canonical 目录只读挂载，只看得到本会话用户已添加且启用的
     builtin_dir = str(getattr(context, "builtin_skills_dir", "") or "")
     builtin_enabled = tuple(getattr(context, "builtin_skills", ()) or ())
+    if skill_whitelist is not None:
+        # 公共技能同样受作用域约束：专家只绑定了某几个公共技能时，其余连清单都不出现
+        scoped_enabled = tuple(name for name in builtin_enabled if name in skill_whitelist)
+        if scoped_enabled != builtin_enabled:
+            logger.info(
+                f"[{sid}] 🔒 公共技能作用域收窄 | 启用 {len(builtin_enabled)} 个 -> "
+                f"白名单内 {len(scoped_enabled)} 个 | {list(scoped_enabled)}"
+            )
+        builtin_enabled = scoped_enabled
     if builtin_dir:
         routes[f"{BUILTIN_VIRTUAL_ROOT}/"] = BuiltinSkillsBackend(
             builtin_dir, builtin_enabled, virtual_root=BUILTIN_VIRTUAL_ROOT
