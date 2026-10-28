@@ -271,7 +271,7 @@
             <div class="detail-tags">
               <span v-for="name in requiredSkillsOf(detailItem)" :key="name" class="skill-tag">{{ name }}</span>
             </div>
-            <div class="more-row">该专家对话时只使用以上技能包（本轮另选的技能会一并加入）</div>
+            <div class="more-row">该专家对话时优先使用以上技能包</div>
           </div>
 
           <div v-if="featuresOf(detailItem).length" class="detail-section">

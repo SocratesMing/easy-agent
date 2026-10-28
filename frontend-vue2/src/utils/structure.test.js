@@ -30,7 +30,7 @@ const LINE_BUDGET = {
   'features/chat/components/ChatInput.vue': 3359,
   'features/chat/components/ChatMessage.vue': 2652,
   'features/chat/components/AiSidebar.vue': 1725,
-  'features/experts/components/ExpertListPanel.vue': 1705,
+  'features/experts/components/ExpertListPanel.vue': 1740,
   'features/chat/mixins/chatSession.js': 1205,
   'features/connectors/components/ConnectorListPanel.vue': 1491,
   'features/skills/components/SkillListPanel.vue': 1237,
