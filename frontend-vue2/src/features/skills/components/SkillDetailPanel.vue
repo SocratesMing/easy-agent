@@ -288,6 +288,10 @@ export default {
 .skill-detail {
   flex: 1;
   min-width: 0;
+  /* 详情面板是 flex 列的直接子项：不加 min-height: 0 时它的最小高度取内容高度，
+     长 SKILL.md 会撑破 .panel-slot / .skill-center 并溢出到 body，
+     结果是整页（含左侧栏、顶部 Tab）一起滚。加上之后滚动收进 .detail-scroll 内部。 */
+  min-height: 0;
   display: flex;
   flex-direction: column;
   position: relative;
@@ -364,6 +368,8 @@ export default {
   overflow-y: auto;
   overflow-x: hidden;
   padding: 20px 24px 32px;
+  /* 与技能列表的滚动区保持一致；旧浏览器没有这个属性会忽略，退回系统默认滚动条 */
+  scrollbar-width: thin;
 }
 
 .detail-hero {
