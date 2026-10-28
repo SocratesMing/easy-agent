@@ -84,6 +84,9 @@ class ExpertRepository:
             page_size=page_size,
         )
 
+    def list_by_session(self, user_id: str, session_id: str) -> list[dict]:
+        return self._store().list_by_session(user_id, session_id)
+
     def delete(self, expert_agent_id: str, user_id: str, hard: bool = False) -> bool:
         return self._store().delete(expert_agent_id, user_id, hard=hard)
 

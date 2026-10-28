@@ -21,6 +21,7 @@ re-export 继续可用。
 
 import logging
 import time
+from pathlib import Path
 from typing import Annotated, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -37,6 +38,7 @@ from easy_agent.services import (
 from easy_agent.services import public_expert_service
 from easy_agent.services.expert_service import (
     build_expert_ids,
+    load_active_prompt_file,
     remove_expert_dir,
     validate_create_params,
 )
@@ -388,6 +390,117 @@ def list_public_experts():
         "dir": str(root.absolute()),
         "items": items,
     }
+
+
+@router.get(
+    "/agent/expert-md",
+    summary="读取专家提示词 MD（只读预览）",
+)
+def get_expert_md(
+    db: Annotated[ExpertRepository, Depends(get_expert_repository)],
+    username: Annotated[str, Depends(get_current_username)],
+    expert_id: str = Query(..., description="专家 ID（我的专家或公共专家）"),
+):
+    """返回专家提示词 MD 的**文件名与正文**，供详情弹窗与工作区只读预览。
+
+    只读接口：专家提示词由 ``save_expert`` 工具在对话里生成落盘，前端不提供
+    编辑写入口。归属校验与 ``/agent/list`` 一致——本人记录或公共预置专家，
+    其余一律 404（不泄露存在性）。
+
+    ``my`` = 本人专家（``export_file_path`` 是版本目录，正文取 active 版本里的
+    提示词文件）；``public`` = 公共专家（``export_file_path`` 就是 MD 本身）。
+    """
+    repo = _as_expert_repository(db)
+    user_id = _current_user_id(repo, username)
+
+    record = repo.get_owned(expert_id, user_id)
+    if record is not None:
+        file_name, content, version = load_active_prompt_file(username, expert_id)
+        if not content:
+            raise HTTPException(status_code=404, detail="该专家暂无可读的提示词文件")
+        logger.info(
+            "读取专家提示词 MD | user=%s | expert=%s | 文件=%s | 版本=v%s",
+            username,
+            expert_id,
+            file_name,
+            version,
+        )
+        return {
+            "expert_agent_id": expert_id,
+            "scope": "mine",
+            "file_name": file_name,
+            "content": content,
+            "version": version,
+        }
+
+    public = public_expert_service.find_public_expert(expert_id)
+    if public is None:
+        raise HTTPException(status_code=404, detail="专家不存在")
+
+    prompt_path = Path(str(public.get("export_file_path") or ""))
+    try:
+        content = prompt_path.read_text(encoding="utf-8") if prompt_path.is_file() else ""
+    except OSError as exc:  # noqa: BLE001 - 读不到按 404 处理，不 500
+        logger.warning("读取公共专家提示词 MD 失败 | %s | %s", prompt_path, exc)
+        content = ""
+    if not content:
+        raise HTTPException(status_code=404, detail="该专家暂无可读的提示词文件")
+
+    logger.info(
+        "读取公共专家提示词 MD | user=%s | expert=%s | 文件=%s",
+        username,
+        expert_id,
+        prompt_path.name,
+    )
+    return {
+        "expert_agent_id": expert_id,
+        "scope": "public",
+        "file_name": prompt_path.name,
+        "content": content,
+        "version": int(public.get("export_version") or 1),
+    }
+
+
+@router.get(
+    "/agent/session-experts",
+    summary="列出某会话里创建的专家（工作区只读条目）",
+)
+def list_session_experts(
+    db: Annotated[ExpertRepository, Depends(get_expert_repository)],
+    username: Annotated[str, Depends(get_current_username)],
+    session_id: str = Query(..., description="会话 ID"),
+):
+    """在创建该专家的会话工作区里展示其提示词 MD（只读）。
+
+    专家记录创建时就带 ``session_id``，这里按会话反查本人创建的专家；前端把返回
+    条目作为**虚拟文件**并入工作区文件树，点击走 ``/agent/expert-md`` 取正文。
+    只读：不提供删除/编辑入口，专家本体仍由专家面板管理。
+    """
+    repo = _as_expert_repository(db)
+    user_id = _current_user_id(repo, username)
+    records = repo.list_by_session(user_id, session_id)
+    items = []
+    for r in records:
+        expert_id = r.get("export_agent_id", "")
+        # 真实文件名（active 版本里的提示词文件），取不到时前端按 name_en 兜底
+        file_name, _content, version = load_active_prompt_file(username, expert_id)
+        items.append(
+            {
+                "expert_agent_id": expert_id,
+                "name_cn": r.get("export_name_cn", ""),
+                "name_en": r.get("export_name_en", ""),
+                "file_name": file_name,
+                "version": version or int(r.get("export_version") or 1),
+                "update_timestamp": r.get("update_timestamp", ""),
+            }
+        )
+    logger.info(
+        "会话内专家列表 | user=%s | session=%s | 数量=%s",
+        username,
+        session_id[-6:] if session_id else "-",
+        len(items),
+    )
+    return {"items": items}
 
 
 @router.get(
