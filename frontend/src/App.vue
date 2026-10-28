@@ -97,7 +97,7 @@
         @approve="handleToolApproval('approve')"
         @reject="handleToolApproval('reject')"
         @clearExpert="selectedExpert = null"
-        @selectExpert="handleUseExpert"
+        @selectExpert="handleSummonExpertInPlace"
         @openPanel="openSkillCenterPanel"
       />
 
@@ -135,7 +135,7 @@ import { createSession, listSessions, getChatHistory, deleteSession, sendMessage
 import { uploadFile, deleteFile, getUserProfile, getSessionGeneratedFiles } from './api/files.js'
 import { logout as apiLogout, notifyLogout, getStoredToken, getStoredUsername, AUTH_EXPIRED_EVENT, authFetch, passwordlessLogin } from './api/auth.js'
 import { getModels as fetchModels } from './api/settings.js'
-import { getExpertLastSession, setExpertLastSession } from './utils/expertSession.js'
+import { setExpertLastSession } from './utils/expertSession.js'
 
 const sessions = ref([])
 const currentSessionId = ref(null)
@@ -809,18 +809,15 @@ function handleShowSkillCenter() {
 }
 
 /**
- * 「专家 Tab -> 使用」（及任何来源的专家选中）：把专家挂到当前会话。
+ * 「专家 Tab -> 召唤」（列表卡片 / 详情弹窗 / 示例问题）：**始终新开会话**。
  *
- * 专家之间**不共享同一个会话**：会话记忆（memory.md）、历史消息、摘要与工作区
- * 交付物都绑定在会话上，同一会话里换专家会让上一个专家留下的领域规则继续被注入
- * （实测：先问利率债专家，再切 Java 专家问汇率，模型照着利率债的记忆"汇率拒答"
- * 并照抄了历史里的专家名）。因此这里按「换专家 = 换会话」处理，但**不做成一味
- * 新建**——先看该专家有没有聊过的会话，有就回去，这样对话记录与会话记忆都不丢。
+ * 2026-10-28 口径调整：从专家面板发起的召唤不再跳回该专家的历史会话，
+ * 一律给一个干净的新窗口（会话记忆、历史消息、工作区交付物都绑定在会话上，
+ * 沿用旧会话会让上次对话的上下文渗进本轮）。
+ * 例外：当前已是空白会话（没有任何消息）则就地复用，避免连点召唤堆出空会话。
  *
- * 三种情况：
- * 1. 当前是空会话（用户刚手动新建）→ 尊重这个新窗口，就地使用，不合并到旧会话；
- * 2. 当前会话已有消息 → 若该专家有历史会话就跳过去，没有就新建一个干净会话；
- * 3. 该专家的「最近会话」正是当前会话 → 只切换专家，不做任何跳转。
+ * 「+」号面板的召唤走 handleSummonExpertInPlace，不再进入本函数。
+ * 与 frontend-vue2/src/App.vue 的同名函数同构，改动需同步两处。
  */
 async function handleUseExpert(expert, prompt) {
   if (!expert || !expert.export_agent_id) return
@@ -833,25 +830,33 @@ async function handleUseExpert(expert, prompt) {
   // 详情弹窗点了示例问题：召唤专家的同时把问题回填到输入框（用户确认后发送）
   expertPrompt.value = typeof prompt === 'string' ? prompt : ''
 
-  const expertId = picked.export_agent_id
-  const isBlankSession = messages.value.length === 0
-  const lastSessionId = getExpertLastSession(expertId)
-  // localStorage 里的会话可能已被删除：必须以会话列表为准，否则会跳到空会话
-  const lastSessionAlive =
-    !!lastSessionId && sessions.value.some(s => s.session_id === lastSessionId)
-
-  if (!isBlankSession && lastSessionId !== currentSessionId.value) {
-    if (lastSessionAlive) {
-      // 回到该专家上次的会话（函数内部会把 selectedExpert 置空，返回后统一恢复）
-      await handleSelectSession(lastSessionId)
-    } else if (!lastSessionAlive) {
-      // 该专家还没有（有效的）会话：开一个干净窗口，避免继承上一个专家的上下文
-      await handleCreateSession()
-    }
+  if (messages.value.length > 0) {
+    await handleCreateSession()
   }
 
-  // handleSelectSession / handleCreateSession 都会清空专家选择（那是「切会话不沿用
-  // 临时选择」的既有口径），这里显式恢复成本轮用户刚选中的专家。
+  // handleCreateSession 会清空专家选择（「切会话不沿用临时选择」的既有口径），
+  // 这里显式恢复成本轮用户刚选中的专家。
+  selectedExpert.value = picked
+}
+
+/**
+ * 「+」号面板 -> 专家行的召唤：**留在当前会话**，只挂专家胶囊。
+ *
+ * 2026-10-28 口径调整：+ 面板召唤不再跳转/新建会话；唯一例外是当前会话
+ * 已经召唤了**另一位**专家——换专家 = 换会话（避免两位专家共享同一份
+ * 会话记忆互相污染），此时新建一个干净窗口再挂载。
+ * 与 frontend-vue2/src/App.vue 的同名函数同构，改动需同步两处。
+ */
+async function handleSummonExpertInPlace(expert) {
+  if (!expert || !expert.export_agent_id) return
+  const picked = {
+    export_agent_id: expert.export_agent_id,
+    export_name_cn: expert.export_name_cn,
+    export_version: expert.export_version,
+  }
+  if (selectedExpert.value && selectedExpert.value.export_agent_id !== picked.export_agent_id) {
+    await handleCreateSession()
+  }
   selectedExpert.value = picked
 }
 

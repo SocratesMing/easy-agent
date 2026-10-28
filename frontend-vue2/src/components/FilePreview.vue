@@ -5,7 +5,7 @@
         <div class="preview-header">
           <h3 class="preview-title">{{ filename }}</h3>
           <div class="header-actions">
-            <button class="download-btn" @click="handleDownload" title="下载文件">
+            <button v-if="!expertId" class="download-btn" @click="handleDownload" title="下载文件">
               <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
                 <polyline points="7 10 12 15 17 10"></polyline>
@@ -110,6 +110,7 @@ import DocxPreview from './DocxPreview.vue'
 import ExcelPreview from './ExcelPreview.vue'
 import * as XLSX from 'xlsx'
 import { getStoredToken } from '../api/auth.js'
+import { getExpertMd } from '../api/expert.js'
 import { requestBlob, requestArrayBuffer, requestText } from '../utils/request.js'
 
 // 注册 KaTeX 数学公式 + emoji 短代码扩展（幂等，仅执行一次）
@@ -171,6 +172,12 @@ export default {
       default: ''
     },
     filePath: {
+      type: String,
+      default: ''
+    },
+    // 专家提示词 MD（只读虚拟文件）：非空时正文走 `/agent/expert-md` 现取，
+    // 不用 filePath；下载按钮同时隐藏（无磁盘文件可下）。
+    expertId: {
       type: String,
       default: ''
     },
@@ -250,7 +257,8 @@ export default {
     //   3) 多标签切换：visible 始终为 true，只有 filePath/filename 变化（工作区预览）。
     // 只监听 visible 会漏掉 2 和 3，表现为预览区一直空白。
     previewTarget() {
-      return `${this.visible}|${this.filePath}|${this.filename}`
+      // expertId 参与比对：同为虚拟 MD 的两个专家切换时也能重新取正文
+      return `${this.visible}|${this.filePath}|${this.expertId}|${this.filename}`
     },
     isCode() {
       const ext = getExt(this.filename)
@@ -392,8 +400,24 @@ export default {
       const ts = new Date().toISOString()
       // 统一打印预览请求日志：文件名、路径、会话ID
       console.log(
-        `[${ts}] [FilePreview] 预览请求 | 文件名: ${this.filename} | 路径: ${this.filePath} | 会话: ${this.sessionId || '无'}`
+        `[${ts}] [FilePreview] 预览请求 | 文件名: ${this.filename} | 路径: ${this.filePath} | 会话: ${this.sessionId || '无'}| 专家: ${this.expertId || '无'}`
       )
+
+      // 专家提示词 MD：只读虚拟文件，正文按 expertId 现取（无磁盘路径）
+      if (this.expertId) {
+        try {
+          const data = await getExpertMd(this.expertId)
+          if (seq !== this._loadSeq) return
+          this.textContent = (data && data.content) || ''
+          if (!this.textContent) this.error = '该专家暂无可读的提示词文件'
+        } catch (e) {
+          if (seq !== this._loadSeq) return
+          this.error = (e && e.message) || '加载专家提示词失败'
+        } finally {
+          if (seq === this._loadSeq) this.loading = false
+        }
+        return
+      }
 
       // 校验必要参数
       if (!this.filePath) {
