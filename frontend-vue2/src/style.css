@@ -93,6 +93,20 @@ button,
   background-image: none;
 }
 
+/* Win10 Chrome 在 -webkit-appearance:button 时忽略按钮内部的 flex 居中，
+   图标贴着继承来的 1.6 行高上沿，工具栏看起来上浮、互相不齐。
+   只改输入框底栏按钮，不波及加号菜单里的文字按钮。 */
+.input-actions .plus-btn,
+.input-actions .web-search-btn,
+.input-actions .model-btn,
+.input-actions .send-btn,
+.input-actions .stop-btn,
+.input-actions .expert-chip-clear {
+  -webkit-appearance: none;
+  appearance: none;
+  line-height: 1;
+}
+
 input::placeholder,
 textarea::placeholder {
   opacity: 1;
