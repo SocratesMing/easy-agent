@@ -30,9 +30,10 @@ logger = logging.getLogger("easy_agent.db.schema")
 # 否则已经升级过的库会一直命中「结构已是最新」的快速启动路径，变更不会生效。
 # 见 init_tables()：版本一致时跳过整轮建表 + 补列 + 建索引探测（MySQL 上这一步
 # 过去要 40+ 次网络往返，多副本部署时每个 pod 启动都要跑一遍，是启动慢的主因）。
-# 10：knowledge_source_sync_items（b65aff4）；11：表精简（b7bfe69）；12：再退役 3 张空表。
+# 10：knowledge_source_sync_items（b65aff4）；11：表精简（b7bfe69）；12：再退役 3 张空表；
+# 13：再退役 8 张代码不再读写的表（旧 market key、行情数据、旧版知识库模块）。
 # 撞号的库会走快速路径、跳过新的变更，改之前先看远端有没有用过这个号。
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 # utf8mb4 复合主键必须 ≤ 3072 字节：(512 + 191) * 4 = 2812。
 LANGGRAPH_STORE_NS_LEN = 512
 LANGGRAPH_STORE_KEY_LEN = 191
@@ -424,6 +425,9 @@ def _create_langgraph_store_table(db, cursor):
 # 曾经建过、当前路径不再读写的表。升级时删掉，避免继续占空间。
 # fmqt_bloom*：9091087c 删掉彭博业务后留在库里，代码早已不建不读。
 # uploaded_file / user_ip / tool_call_record：更早版本建的表，现在的代码里没有任何引用，现网是空表。
+# market_mcp_api_keys：旧的 market 业务 key 表，key 统一放在 mcp_api_keys 之后不再使用。
+# forex_rates / precious_metals：tests/helpers/download_market_data.py 灌的行情数据，后端不读不写。
+# session_llm 不在这里：本应用从没建过这张表，归属确认之前不删。
 _RETIRED_TABLES = (
     "fmqt_lock",
     "fmqt_bloom",
@@ -434,6 +438,9 @@ _RETIRED_TABLES = (
     "uploaded_file",
     "user_ip",
     "tool_call_record",
+    "market_mcp_api_keys",
+    "forex_rates",
+    "precious_metals",
 )
 
 # 不再创建的索引 (表, 索引)：都是别的索引的前缀，或者没有查询用到。升级时删掉，省掉写入开销。

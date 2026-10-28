@@ -4,7 +4,6 @@
 这几个脚本原来都没导入（pytest 进程里 conftest 早就导入过了，所以只能在子进程里测）：
 - migrate_db.py：新库只建核心表就写入最新版本号，老库的知识库部分不迁移，最后报
   「默认管理员策略未注册」退出；
-- migrate_market_mcp_keys.py：不读配置，总去初始化 ./data/easy_agent.db，同样报错退出；
 - migrate_sqlite_to_mysql.py：给空目标库建表时没有 knowledge_* 表，迁移中止。
 """
 
@@ -73,17 +72,6 @@ def test_migrate_db_also_migrates_the_knowledge_tables(tmp_path):
     finally:
         con.close()
     assert rows == [("knowledge.original.download",)]
-
-
-def test_migrate_market_keys_uses_the_configured_database(tmp_path):
-    db_path = tmp_path / "configured.db"
-
-    result = _run(tmp_path, str(SCRIPTS / "migrate_market_mcp_keys.py"), db_path=db_path)
-
-    assert result.returncode == 0, result.stderr[-2000:]
-    assert "不是 MySQL" in result.stdout
-    assert _names(db_path, "table") == FRESH_TABLES
-    assert not (tmp_path / "data").exists()
 
 
 def test_migrate_sqlite_to_mysql_creates_the_knowledge_tables(tmp_path):

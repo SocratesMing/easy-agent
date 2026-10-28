@@ -424,8 +424,7 @@ Agent 会自动解析调度意图并调用 `create_scheduled_task` 工具，参�
   - ⚠️ 该文件位于 config 目录，同时会被当作「全局 mcp.json」用于 Agent 加载。它没有 `servers` 字段，因此不会给任何用户自动加载 MCP；**不要往里面加 `servers`**（会让所有未自建 mcp.json 的用户自动加载这些服务）
   - 连接器页的「已安装」判断只读用户自己的 `workspace/{username}/mcp.json`，不受这份公共配置影响
 - 格式规范（顶层 `connectors` 数组，字段非法/重复/缺 name 或缺 config 的条目会被跳过并记 warning，页面始终可用）
-- API Key 已不在设置页签发（表 `mcp_api_keys` 仅由 mcp-server 只读校验），
-  历史 key 迁移见 `scripts/db/migrate_market_mcp_keys.py`
+- API Key 已不在设置页签发（表 `mcp_api_keys` 仅由 mcp-server 只读校验）
 
 ---
 
@@ -504,7 +503,7 @@ python scripts/docs/generate_api_docs.py           # 生成 docs/API接口文档
 | 目录 | 用途 |
 | --- | --- |
 | `scripts/quality/` | import SCC、双写冻结、配置 schema/裸 env、多副本门禁 |
-| `scripts/db/` | `migrate_db`、SQLite→MySQL、MCP key |
+| `scripts/db/` | `migrate_db`、SQLite→MySQL、checkpoint 清理 |
 | `scripts/deps/` | 离线依赖下载、wheel 落盘 |
 | `scripts/release/` | 发布预检、变更导出 |
 | `scripts/docs/` | API 文档生成 |

@@ -80,7 +80,7 @@
 | 目录 | 内容 |
 | --- | --- |
 | `scripts/quality/` | import SCC、双写冻结、配置 schema/裸 env、多副本门禁 |
-| `scripts/db/` | `migrate_db`、SQLite→MySQL、MCP key |
+| `scripts/db/` | `migrate_db`、SQLite→MySQL、checkpoint 清理 |
 | `scripts/deps/` | 离线后端/前端依赖下载、wheel 落盘 |
 | `scripts/release/` | 发布预检、变更导出 |
 | `scripts/docs/` | API 文档生成 |
