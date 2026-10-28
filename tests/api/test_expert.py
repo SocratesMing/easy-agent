@@ -421,9 +421,13 @@ def test_delete_expert_soft(client, fake_llm):
     created = _add(client).json()
     agent_id = created["export_agent_id"]
 
-    resp = client.post("/agent/del", json={"export_agent_id": agent_id})
+    # hard 默认已是 True，测软删除需显式传 False
+    resp = client.post(
+        "/agent/del", json={"export_agent_id": agent_id, "hard": False}
+    )
     assert resp.status_code == 200
     assert resp.json()["status"] == "deleted"
+    assert resp.json()["hard"] is False
 
     # 默认列表不再返回
     assert client.get("/agent/list").json()["total"] == 0
@@ -997,7 +1001,8 @@ def test_stream_run_unknown_expert_404(client, fake_llm, stub_stream):
 def test_stream_run_disabled_expert_400(client, fake_llm, stub_stream):
     created = _add(client).json()
     agent_id = created["export_agent_id"]
-    client.post("/agent/del", json={"export_agent_id": agent_id})
+    # 软删除保留 disabled 记录；hard 默认 True 会物理删除而返回 404
+    client.post("/agent/del", json={"export_agent_id": agent_id, "hard": False})
 
     resp = client.post(
         "/agent/chat/stream",
