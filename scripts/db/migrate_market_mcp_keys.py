@@ -14,7 +14,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from easy_agent.db import get_database  # noqa: E402
+from easy_agent.bootstrap.initialization import initialize_runtime  # noqa: E402
+from easy_agent.db import init_database  # noqa: E402
 
 
 def main() -> None:
@@ -26,7 +27,14 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    db = get_database()
+    config = initialize_runtime().config
+    if config is None:
+        sys.exit("ERROR: 配置未加载，无法迁移")
+    # 知识库建表函数和默认管理员策略在 import 时注册进 db（应用启动时由 app.py 导入），
+    # init_database 两个都要用
+    import easy_agent.knowledges.personnel  # noqa: F401
+
+    db = init_database(config.database.model_dump())
     if db.db_type != "mysql":
         print("旧 key 表只存在于 MySQL，当前数据库不是 MySQL，无需迁移")
         return
