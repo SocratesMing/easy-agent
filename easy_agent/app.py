@@ -443,6 +443,19 @@ async def lifespan(app: FastAPI):
         runtime_initialization.log_files,
     )
 
+    # 沙箱自检：bwrap / Landlock 的探测结论在启动期就落到日志里，而不是等第一次
+    # execute 才发现落进 fail-closed。探测结果有缓存，后续 shell 后端复用同一结论。
+    # EASY_SANDBOX_STRICT=1 时沙箱不可用直接拒绝启动（放在 DB 初始化之前，避免
+    # fail-fast 时留下未关闭的连接池）。
+    from easy_agent.sandboxing.sandbox import log_sandbox_startup_report
+
+    log_sandbox_startup_report(
+        sandbox_enabled=bool(
+            getattr(getattr(config, "agent", None), "sandbox_enabled", True)
+        ),
+        strict=env_bool("EASY_SANDBOX_STRICT"),
+    )
+
     # 知识库：配置里没有 knowledge 段时按默认配置（未启用）加载，不起 worker
     await startup_knowledge(app, config_path)
 
