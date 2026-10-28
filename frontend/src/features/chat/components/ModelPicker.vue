@@ -106,6 +106,10 @@ onBeforeUnmount(() => document.removeEventListener('click', closeModelDropdown))
   align-items: center;
 }
 
+.plus-menu-wrapper {
+  display: inline-flex;
+}
+
 .model-btn {
   display: inline-flex;
   flex-direction: row;

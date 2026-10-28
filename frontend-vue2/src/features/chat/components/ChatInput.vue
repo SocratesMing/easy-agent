@@ -486,9 +486,6 @@ export default {
       // 上传限额汇总提示条文案（空串=不显示，2.6s 自动消失）
       uploadNotice: '',
       // 联网搜索：available=false 时按钮置灰（后端未启用或未配置 api_key）
-      webSearchEnabled: false,
-      webSearchAvailable: false,
-      webSearchReason: '',
       // 光标所在行高亮（overlay 技术：textareal 本身无法按行上色）
       caretLineTop: null, // 高亮条 top，null 表示隐藏
       lineHeight: 24, // 行高（px）
@@ -574,9 +571,6 @@ export default {
       }
       return this.webSearchEnabled ? '联网搜索已开启，点击关闭' : '联网搜索（点击开启）'
     },
-    webSearchUnavailable() {
-      return !this.webSearchAvailable
-    },
     /** 计额口径：上传失败的文件不占额度（上传中/已上传都占） */
     chargedFiles() {
       return this.uploadedFiles.filter(f => f.uploadStatus !== 'error')
@@ -603,14 +597,6 @@ export default {
     limitsFull() {
       const L = this.uploadLimits
       return L.enabled && this.usedCount >= L.maxFiles
-    },
-    webSearchTitle() {
-      if (!this.webSearchAvailable) {
-        if (this.webSearchReason === 'disabled') return '联网搜索未启用（后端配置 web_search.enabled 为 false）'
-        if (this.webSearchReason === 'unreachable') return '联网搜索状态获取失败，点击重试'
-        return '联网搜索未配置（需配置 WEB_SEARCH_API_KEY 后重启后端）'
-      }
-      return this.webSearchEnabled ? '联网搜索已开启，点击关闭' : '联网搜索（点击开启）'
     },
     plusListTitle() {
       const meta = { experts: '专家', skills: '我的技能', connectors: '我的连接器' }
