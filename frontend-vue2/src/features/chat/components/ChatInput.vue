@@ -2909,6 +2909,10 @@ html[data-theme="dark"] .context-ring-wrapper {
   gap: 12px;
 }
 
+.plus-menu-wrapper {
+  display: inline-flex;
+}
+
 
 
 

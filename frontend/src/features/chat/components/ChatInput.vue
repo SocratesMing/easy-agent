@@ -3374,6 +3374,9 @@ html[data-theme="dark"] .context-ring-wrapper {
   gap: 10px;
 }
 
+.plus-menu-wrapper {
+  display: inline-flex;
+}
 
 
 /* 星形图标：给「模型选择」一个视觉锚点，避免三个按钮里只有它是纯文字 */
