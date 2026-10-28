@@ -166,6 +166,7 @@
       <FilePreview
         :filename="activeTab?.name || ''"
         :filePath="activeTab?.file_path || ''"
+        :expertId="activeTab?.expert_id || ''"
         :sessionId="currentSessionId"
         :taskId="taskId"
         :visible="showPreview"
@@ -189,6 +190,7 @@ import {
 import FileTreeNode from './FileTreeNode.vue'
 import FilePreview from './FilePreview.vue'
 import { getWorkspaceTree } from '../api/files'
+import { getSessionExperts } from '../api/expert.js'
 import { getScheduledTaskWorkspace } from '../api/scheduledTasks'
 import { getStoredToken } from '../api/auth.js'
 
@@ -358,6 +360,9 @@ const error = ref(null)
 // 文件树固定在第一个 tab（TREE_TAB），打开过的文件各占一个 tab，
 // 可切换、可单独关闭。参考编辑器的多标签交互。
 const TREE_TAB = '__tree__'
+// 专家提示词 MD 的虚拟文件 id 前缀：不出现在磁盘上，正文按 expert_id 现取
+// （见 FilePreview 的 expertId 分支），因此不参与下载/删除。
+const EXPERT_MD_PREFIX = 'expert-md:'
 const openTabs = ref([])
 const activeTabId = ref(TREE_TAB)
 const activeTab = computed(
@@ -381,25 +386,63 @@ async function buildWorkspaceTree() {
   isLoading.value = true
   error.value = null
   try {
-    const response = taskId
-      ? await getScheduledTaskWorkspace(taskId, '')
-      : await getWorkspaceTree('', sessionId)
+    const [response, expertEntries] = await Promise.all([
+      taskId
+        ? getScheduledTaskWorkspace(taskId, '')
+        : getWorkspaceTree('', sessionId),
+      // 专家提示词 MD 只挂在会话工作区（定时任务目录里没有专家概念）
+      taskId ? Promise.resolve([]) : buildExpertMdEntries(sessionId),
+    ])
     // 切换来源期间到达的旧响应丢弃，避免工作区内容串会话 / 串任务
     if (activeSourceKey.value !== sourceKey) return
-    workspaceTreeData.value = (response.items || []).map(item => ({
-      id: item.path,
-      name: item.name,
-      type: item.type,
-      size: item.size,
-      file_type: item.type === 'file' ? item.name.split('.').pop().toLowerCase() : '',
-      file_path: item.path,
-    }))
+    workspaceTreeData.value = [
+      // 本会话创建的专家：提示词 MD 置于文件树顶部（只读虚拟文件）
+      ...expertEntries,
+      ...(response.items || []).map(item => ({
+        id: item.path,
+        name: item.name,
+        type: item.type,
+        size: item.size,
+        file_type: item.type === 'file' ? item.name.split('.').pop().toLowerCase() : '',
+        file_path: item.path,
+      })),
+    ]
   } catch (e) {
     if (activeSourceKey.value !== sourceKey) return
     error.value = '加载工作区失败: ' + e.message
     workspaceTreeData.value = []
   } finally {
     if (activeSourceKey.value === sourceKey) isLoading.value = false
+  }
+}
+
+/**
+ * 本会话创建的专家的提示词 MD 条目（只读虚拟文件）。
+ *
+ * 专家 MD 落在 `{workspace}/{user}/experts/{id}/v{n}/`，不在会话目录里，
+ * 所以单独按 session_id 反查后并入文件树；正文由 FilePreview 按 expert_id
+ * 调 `/agent/expert-md` 现取。取不到时静默跳过，不影响真实文件列表。
+ */
+async function buildExpertMdEntries(sessionId) {
+  try {
+    const resp = await getSessionExperts(sessionId)
+    return (resp.items || []).map((e) => {
+      // 文件名优先用后端回的真实名（active 版本里的 MD），缺失时按 name_en 兜底
+      const baseName = e.file_name || e.name_en || e.name_cn || 'expert'
+      return {
+        id: EXPERT_MD_PREFIX + e.expert_agent_id,
+        name: baseName.endsWith('.md') ? baseName : `${baseName}.md`,
+        type: 'file',
+        size: 0,
+        file_type: 'md',
+        file_path: '',
+        virtual: true,
+        expert_id: e.expert_agent_id,
+      }
+    })
+  } catch (e) {
+    console.warn('[WorkspacePanel] 会话内专家 MD 获取失败', e)
+    return []
   }
 }
 
@@ -417,6 +460,9 @@ function handleSelectFile(file) {
       id,
       name: file.name || '',
       file_path: file.file_path || file.path || '',
+      // 专家提示词 MD：虚拟文件，正文由 FilePreview 按 expert_id 现取
+      expert_id: file.expert_id || '',
+      virtual: !!file.virtual,
     })
   }
   activeTabId.value = id
@@ -438,6 +484,8 @@ function closeTab(id) {
 }
 
 function handleDownloadFile(file) {
+  // 专家提示词 MD 是只读虚拟条目（无磁盘文件），不提供下载
+  if (file && file.virtual) return
   const filePath = file.file_path || file.path
   const token = getStoredToken()
   const params = new URLSearchParams()

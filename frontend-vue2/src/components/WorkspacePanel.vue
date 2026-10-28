@@ -165,6 +165,7 @@
       <FilePreview
         :filename="activeTab?.name || ''"
         :filePath="activeTab?.file_path || ''"
+        :expertId="activeTab?.expert_id || ''"
         :sessionId="currentSessionId"
         :visible="showPreview"
         inline
@@ -178,11 +179,15 @@
 import FileTreeNode from './FileTreeNode.vue'
 import FilePreview from './FilePreview.vue'
 import { getWorkspaceTree } from '../api/files'
+import { getSessionExperts } from '../api/expert.js'
 import { getStoredToken } from '../api/auth.js'
 import { setPageContextExtra } from '../utils/pageContext.js'
 
 // 文件树固定在第一个 tab；宽度/动画常量集中在此
 const TREE_TAB = '__tree__'
+// 专家提示词 MD 的虚拟文件 id 前缀：不出现在磁盘上，正文按 expert_id 现取
+// （见 FilePreview 的 expertId 分支），因此不参与下载/删除。
+const EXPERT_MD_PREFIX = 'expert-md:'
 const WIDTH_KEY = 'workspace_panel_width'
 const WIDTH_MIN = 220
 const WIDTH_MAX = 640
@@ -376,26 +381,62 @@ export default {
       this.isLoading = true
       this.error = null
       try {
-        const response = await getWorkspaceTree('', sessionId)
+        const [response, expertEntries] = await Promise.all([
+          getWorkspaceTree('', sessionId),
+          this.buildExpertMdEntries(sessionId),
+        ])
         // 切换会话期间到达的旧响应丢弃，避免工作区内容串会话
         if (this.currentSessionId !== sessionId) return
-        this.workspaceTreeData = (response.items || []).map((item) => ({
-          id: item.path,
-          name: item.name,
-          type: item.type,
-          size: item.size,
-          file_type:
-            item.type === 'file'
-              ? item.name.split('.').pop().toLowerCase()
-              : '',
-          file_path: item.path,
-        }))
+        this.workspaceTreeData = [
+          // 本会话创建的专家：提示词 MD 置于文件树顶部（只读虚拟文件）
+          ...expertEntries,
+          ...(response.items || []).map((item) => ({
+            id: item.path,
+            name: item.name,
+            type: item.type,
+            size: item.size,
+            file_type:
+              item.type === 'file'
+                ? item.name.split('.').pop().toLowerCase()
+                : '',
+            file_path: item.path,
+          })),
+        ]
       } catch (e) {
         if (this.currentSessionId !== sessionId) return
         this.error = '加载工作区失败: ' + e.message
         this.workspaceTreeData = []
       } finally {
         if (this.currentSessionId === sessionId) this.isLoading = false
+      }
+    },
+    /**
+     * 本会话创建的专家的提示词 MD 条目（只读虚拟文件）。
+     *
+     * 专家 MD 落在 `{workspace}/{user}/experts/{id}/v{n}/`，不在会话目录里，
+     * 所以单独按 session_id 反查后并入文件树；正文由 FilePreview 按 expert_id
+     * 调 `/agent/expert-md` 现取。取不到时静默跳过，不影响真实文件列表。
+     */
+    async buildExpertMdEntries(sessionId) {
+      try {
+        const resp = await getSessionExperts(sessionId)
+        return (resp.items || []).map((e) => {
+          // 文件名优先用后端回的真实名（active 版本里的 MD），缺失时按 name_en 兜底
+          const baseName = e.file_name || e.name_en || e.name_cn || 'expert'
+          return {
+            id: EXPERT_MD_PREFIX + e.expert_agent_id,
+            name: baseName.endsWith('.md') ? baseName : `${baseName}.md`,
+            type: 'file',
+            size: 0,
+            file_type: 'md',
+            file_path: '',
+            virtual: true,
+            expert_id: e.expert_agent_id,
+          }
+        })
+      } catch (e) {
+        console.warn('[WorkspacePanel] 会话内专家 MD 获取失败', e)
+        return []
       }
     },
     tabIdOf(file) {
@@ -411,6 +452,9 @@ export default {
           id,
           name: file.name || '',
           file_path: file.file_path || file.path || '',
+          // 专家提示词 MD：虚拟文件，正文由 FilePreview 按 expert_id 现取
+          expert_id: file.expert_id || '',
+          virtual: !!file.virtual,
         })
       }
       this.activeTabId = id
@@ -429,6 +473,8 @@ export default {
       }
     },
     handleDownloadFile(file) {
+      // 专家提示词 MD 是只读虚拟条目（无磁盘文件），不提供下载
+      if (file && file.virtual) return
       const filePath = file.file_path || file.path
       const token = getStoredToken()
       const params = new URLSearchParams()
