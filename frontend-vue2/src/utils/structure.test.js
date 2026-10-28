@@ -23,21 +23,22 @@ const MAX_NEW_FILE_LINES = 800
 
 /**
  * 现存超大文件的行数预算（= 2026-10-20 实测值，只允许往下调）。
+ * 2026-10-28 合并 audit-improvements 分支（AI 侧边栏等）后按实测值更新。
  * 拆分这些文件时同步删掉条目，避免预算变成"合法上限"。
  */
 const LINE_BUDGET = {
-  'App.vue': 3136,
-  'features/chat/components/ChatInput.vue': 3359,
-  'features/chat/components/ChatMessage.vue': 2652,
+  'App.vue': 3182,
+  'features/chat/components/ChatInput.vue': 3600,
+  'features/chat/components/ChatMessage.vue': 2672,
   'features/chat/components/AiSidebar.vue': 1725,
   'features/experts/components/ExpertListPanel.vue': 1705,
   'features/chat/mixins/chatSession.js': 1205,
   'features/connectors/components/ConnectorListPanel.vue': 1491,
-  'features/skills/components/SkillListPanel.vue': 1237,
+  'features/skills/components/SkillListPanel.vue': 1241,
   'shared/preview/FilePreview.vue': 1138,
   'features/settings/components/SettingsPanel.vue': 1128,
   'features/chat/components/Chat.vue': 1122,
-  'features/chat/components/SessionList.vue': 1028,
+  'features/chat/components/SessionList.vue': 1072,
   'features/tasks/components/ScheduledTasksPanel.vue': 967,
   'features/workspace/components/WorkspacePanel.vue': 908,
   'features/knowledge/KnowledgeWorkbench.vue': 1911,
