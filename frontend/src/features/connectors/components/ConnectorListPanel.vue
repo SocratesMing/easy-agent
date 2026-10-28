@@ -1530,4 +1530,17 @@ html[data-theme="dark"] .action-btn-outline {
   border-color: var(--border-color);
   color: var(--text-primary);
 }
+/* ── 旧浏览器兜底：color-mix() 需要 Chromium 111+ ─────────────────────
+   Edge 92 / Chrome ≤ 110 会把 `background: color-mix(...)` 整条丢弃，hover 时
+   底色退回透明、文字仍是 #fff，「自定义连接器」按钮看起来"变白消失"。
+   这里用「基色 + 叠一层黑」复现 color-mix(基色 84%~86%, #000)：sRGB 下叠 α 黑
+   与 color-mix(基色 (1-α), #000) 完全等价，所以浅色/暗色主题都不用分别写死颜色。
+   新浏览器 @supports 判定为真，整块跳过，视觉零变化。 */
+@supports not (background: color-mix(in srgb, #000 10%, #fff)) {
+  .custom-connector-btn:hover {
+    background-color: var(--accent-color, #0ea5e9);
+    background-image: linear-gradient(rgba(0, 0, 0, 0.14), rgba(0, 0, 0, 0.14));
+  }
+}
+
 </style>

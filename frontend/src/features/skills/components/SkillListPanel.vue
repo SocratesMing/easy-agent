@@ -1226,4 +1226,24 @@ onMounted(load)
     animation: none;
   }
 }
+/* ── 旧浏览器兜底：color-mix() 需要 Chromium 111+ ─────────────────────
+   Edge 92 / Chrome ≤ 110 会把 `background: color-mix(...)` 整条丢弃，hover 时
+   底色退回透明、文字仍是 #fff，「添加技能」按钮看起来"变白消失"。
+   这里用「基色 + 叠一层黑」复现 color-mix(基色 84%~86%, #000)：sRGB 下叠 α 黑
+   与 color-mix(基色 (1-α), #000) 完全等价，所以浅色/暗色主题都不用分别写死颜色。
+   新浏览器 @supports 判定为真，整块跳过，视觉零变化。 */
+@supports not (background: color-mix(in srgb, #000 10%, #fff)) {
+  /* 复现 color-mix(主色 84%, #000)：叠 16% 黑才与新版浏览器完全同色 */
+  .action-btn-primary:hover:not(:disabled) {
+    background-color: var(--accent-color);
+    background-image: linear-gradient(rgba(0, 0, 0, 0.16), rgba(0, 0, 0, 0.16));
+  }
+
+  /* 分类 chip 与「已安装」筛选的选中态：失效后底色全无，只剩主色文字 */
+  .chip.active,
+  .installed-filter.active {
+    background-color: var(--bg-tertiary);
+  }
+}
+
 </style>
