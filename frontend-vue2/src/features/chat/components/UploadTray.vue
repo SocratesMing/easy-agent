@@ -20,6 +20,7 @@
               <span class="progress-text">{{ file.uploadProgress }}%</span>
             </div>
             <span v-else-if="file.uploadStatus === 'completed'" class="upload-status completed">上传完成</span>
+            <span v-else-if="file.uploadStatus === 'pending'" class="upload-status pending">发送时上传</span>
             <template v-else-if="file.uploadStatus === 'error'">
               <span class="upload-status error" :title="file.errorMessage || '上传失败'">上传失败</span>
               <button
@@ -208,6 +209,11 @@ export default {
 .upload-status.completed {
   color: #15803d;
   background: #dcfce7;
+}
+
+.upload-status.pending {
+  color: #64748b;
+  background: #f1f5f9;
 }
 
 .upload-status.error {

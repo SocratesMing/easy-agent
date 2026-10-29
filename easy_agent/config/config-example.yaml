@@ -196,6 +196,9 @@ knowledge:
   api_key: "${RAGFLOW_API_KEY}"
   shared_dataset_id: "${RAGFLOW_SHARED_DATASET_ID:-}"    # 留空按 EA_SHARED 名称查找或创建
   embedding:
+    # 首次使用时会校验共享数据集：空库自动更新模型；有 chunk 且模型不一致时
+    # 自动切换到 EA_SHARED_<模型哈希> 新库（旧库文档需重新上传）。模型 ID 必须
+    # 是 RAGFlow 已注册的完整格式：模型名@实例名@provider名。
     model: "${RAGFLOW_EMBEDDING_MODEL:-}"
   # 审计事件记录开关与 details 截断上限
   audit:
@@ -223,20 +226,21 @@ knowledge:
   source_sync:
     enabled: ${KNOWLEDGE_SOURCE_SYNC_ENABLED:-false}
     owner_username: "admin"     # 入库归属用户（需已存在，以该用户身份上传并授权）
-    file_root: "${SOURCE_SYNC_FILE_ROOT:-}"  # 文件根目录（绝对路径）；留空则 attacUrl 必须是绝对路径
+    file_root: "${SOURCE_SYNC_FILE_ROOT:-}"  # 磁盘文件根目录（绝对路径，必填）：按文档 SQL 的 batchid 在此目录下匹配同名文件
     base_id: ""                # 精确指定入库的知识库 ID（同名库有多个时用它锁定）；留空则按 base_name 查找/新建
     base_name: "报告库"  # 按这个名字找知识库，找不到才新建（新建固定为团队公共库）；base_id 为空时生效
     lookback_days: 7           # 按 publishDate 取最近 N 天
     start_date: ""             # 首次回填起始日期 YYYY-MM-DD
-    interval_minutes: 60       # 0 = 仅启动执行一次
+    start_delay_minutes: 0     # 启动后延迟多少分钟执行第一次同步（0 = 启动即执行）
+    interval_minutes: 60       # 两次同步的间隔；0 = 只执行一次（在 start_delay_minutes 之后）
     max_inflight: 10           # 同时在途（排队/解析中）文档上限
     poll_interval_seconds: 15  # 轮询在途文档解析状态的间隔（秒）
     max_attempts: 3            # 单篇文档上传/解析失败后的最大重试次数
     mysql:
-      host: "${SOURCE_SYNC_MYSQL_HOST:-}"         # 研报 SQL 必填，不复用主库
-      port: ${SOURCE_SYNC_MYSQL_PORT:-3306}
-      user: "${SOURCE_SYNC_MYSQL_USER:-}"
-      password: "${SOURCE_SYNC_MYSQL_PASSWORD:-}"
-      database: "${SOURCE_SYNC_MYSQL_DATABASE:-}" # 研报 SQL 必填，不复用主库
-      charset: "${SOURCE_SYNC_MYSQL_CHARSET:-utf8mb4}"
-      table: "${SOURCE_SYNC_MYSQL_TABLE:-}"       # 留空用内置表 easy_agent_report 并自动建表
+      host: "${COL_SQL_HOST:-}"         # 研报 SQL 必填，不复用主库
+      port: ${COL_SQL_PORT:-3306}
+      user: "${COL_SQL_USER:-}"
+      password: "${COL_SQL_PASSWORD:-}"
+      database: "${COL_SQL_DB:-}" # 研报 SQL 必填，不复用主库
+      charset: "${COL_SQL_CHARSET:-utf8mb4}"
+      table: "${COL_SQL_TABLE:-}"       # 研报源表名（必填，源库已存在）

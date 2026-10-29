@@ -41,13 +41,23 @@ class KnowledgeOriginalArgs(BaseModel):
     action: Literal["list", "metadata", "materialize"] = Field(
         ...,
         description=(
-            "list 列出某知识库的原文；metadata 查看一份原文信息；"
+            "list 列出知识库的原文；metadata 查看一份原文信息；"
             "materialize 将完整原文安全复制到当前会话 /workspace/knowledge-originals 下"
         ),
     )
-    base_id: str = Field(default="", description="list 操作必填的知识库 ID")
+    base_id: str = Field(
+        default="",
+        description=(
+            "可选。list 操作推荐留空：默认列出当前会话已选择的知识库；"
+            "也可传真实知识库 ID 或名称，但不要猜测或臆造"
+        ),
+    )
     document_id: str = Field(
-        default="", description="metadata/materialize 操作必填的文档 ID"
+        default="",
+        description=(
+            "metadata/materialize 操作必填的文档 ID；"
+            "必须先调用 list 获取真实 document_id，不要猜测"
+        ),
     )
 
 
@@ -60,7 +70,9 @@ class KnowledgeOriginalTool(BaseTool):
     description: str = (
         "访问知识库中的完整原文档，而不是 RAG 切片。"
         "当用户要求逐页、全表、全文或原始文件分析时使用。"
-        "先用 list 找到文档 ID，再用 materialize 将文件放入当前会话工作区。"
+        "先用 list 找到文档 ID；list 的 base_id 可省略，省略时自动使用当前会话"
+        "已选择的知识库，不要用知识库名称冒充 base_id。"
+        "再用 materialize 将文件放入当前会话工作区；不要臆造 document_id。"
     )
     args_schema: type = KnowledgeOriginalArgs
 
@@ -105,6 +117,128 @@ class KnowledgeOriginalTool(BaseTool):
             # 刻意不区分「无权」与「不存在」，避免资源存在性泄露
             raise FileNotFoundError("知识资源不存在")
         return base
+
+    def _scoped_bases(
+        self,
+        repository: KnowledgeRepository,
+        principal: KnowledgePrincipal,
+    ) -> list[dict[str, Any]]:
+        """当前会话已绑定、且当前用户仍可下载的知识库。"""
+
+        if not self.session_id:
+            return []
+        base_ids = repository.get_session_scope(
+            session_id=self.session_id, user_id=principal.user_id
+        )
+        bases: list[dict[str, Any]] = []
+        for base_id in base_ids:
+            try:
+                bases.append(self._authorized_base(repository, base_id, principal))
+            except FileNotFoundError:
+                # 范围里已失效/被回收的知识库跳过，不能因此阻断其它库
+                continue
+        return bases
+
+    @staticmethod
+    def _base_options(bases: list[dict[str, Any]]) -> str:
+        """把可选知识库格式化成模型可复制的候选清单。"""
+
+        return "；".join(
+            f"{base.get('name') or '未命名知识库'} (base_id={base['id']})"
+            for base in bases
+        )
+
+    def _resolve_list_bases(
+        self,
+        repository: KnowledgeRepository,
+        principal: KnowledgePrincipal,
+        requested: str,
+    ) -> tuple[list[dict[str, Any]], str | None]:
+        """解析 list 的目标知识库。
+
+        优先精确 base_id；其次在当前会话范围内按名称精确匹配。两者都没有时，
+        返回可执行提示而不是笼统的「知识资源不存在」，避免模型反复臆造 ID。
+        """
+
+        scoped = self._scoped_bases(repository, principal)
+        selector = requested.strip()
+        if not selector:
+            if scoped:
+                return scoped, None
+            return [], (
+                "当前会话未绑定知识库。请先在聊天输入框的“知识库”选择器中选择"
+                "知识库，再调用 list；不要猜测 base_id。"
+            )
+        try:
+            return [self._authorized_base(repository, selector, principal)], None
+        except FileNotFoundError:
+            pass
+        matches = [
+            base
+            for base in scoped
+            if str(base.get("name") or "").strip() == selector
+        ]
+        if len(matches) == 1:
+            return matches, None
+        if len(matches) > 1:
+            return [], (
+                "当前会话有多个同名知识库，请改用真实 base_id："
+                f"{self._base_options(matches)}"
+            )
+        if scoped:
+            return [], (
+                f"未找到知识库 {selector!r}。当前会话可选："
+                f"{self._base_options(scoped)}。可省略 base_id 直接列出全部，"
+                "不要继续猜测。"
+            )
+        return [], (
+            f"未找到知识库 {selector!r}，且当前会话未绑定知识库。"
+            "请先在聊天输入框的“知识库”选择器中选择知识库，或提供真实 base_id。"
+        )
+
+    def _list_available_originals(
+        self,
+        repository: KnowledgeRepository,
+        bases: list[dict[str, Any]],
+    ) -> str:
+        """列出目标知识库中可用的完整原文，输出真实 base_id/document_id。"""
+
+        max_docs = max(
+            1, int(self.knowledge_config.limits.max_documents_per_query)
+        )
+        lines: list[str] = []
+        total = 0
+        for base in bases:
+            remaining = max_docs - total
+            if remaining <= 0:
+                break
+            documents = repository.list_documents(
+                str(base["id"]), limit=remaining, offset=0
+            )
+            available = [
+                row
+                for row in documents
+                if str(row.get("original_status")) == "available"
+            ]
+            if not available:
+                continue
+            lines.append(
+                f"知识库：{base.get('name') or '未命名知识库'} | "
+                f"base_id={base['id']}"
+            )
+            lines.extend(
+                f"- {row['name']} | document_id={row['id']} | "
+                f"size={int(row.get('size_bytes') or 0)} bytes"
+                for row in available
+            )
+            total += len(available)
+        if not total:
+            return "当前授权知识范围内暂无可用的完整原文。"
+        return "\n".join([
+            f"可用原文 {total} 份（list 可省略 base_id；"
+            "metadata/materialize 直接使用 document_id）：",
+            *lines,
+        ])
 
     def _audit(
         self,
@@ -152,30 +286,23 @@ class KnowledgeOriginalTool(BaseTool):
         try:
             principal = self._principal()
             if action == "list":
-                if not base_id:
-                    return "错误：list 操作需要 base_id。"
-                self._authorized_base(repository, base_id, principal)
-                documents = repository.list_documents(base_id, limit=1000, offset=0)
-                available = [
-                    row
-                    for row in documents
-                    if str(row.get("original_status")) == "available"
-                ]
-                if not available:
-                    return "该知识库暂无可用的完整原文。"
-                lines = [f"可用原文 {len(available)} 份："]
-                lines.extend(
-                    f"- {row['name']} | document_id={row['id']} | "
-                    f"size={int(row.get('size_bytes') or 0)} bytes"
-                    for row in available
+                bases, message = self._resolve_list_bases(
+                    repository, principal, base_id
                 )
-                return "\n".join(lines)
+                if message is not None:
+                    return message
+                return self._list_available_originals(repository, bases)
 
             if action not in {"metadata", "materialize"} or not document_id:
-                return "错误：metadata/materialize 操作需要 document_id。"
+                return (
+                    "错误：metadata/materialize 操作需要 document_id。"
+                    "请先调用 list 获取真实 document_id，不要猜测。"
+                )
             document = repository.get_document(document_id)
             if document is None:
-                raise FileNotFoundError("知识资源不存在")
+                raise FileNotFoundError(
+                    "文档不存在，请先调用 list 获取真实 document_id"
+                )
             self._authorized_base(repository, str(document["base_id"]), principal)
             original = repository.get_original_object(document_id)
             if original is None or str(original.get("status")) != "available":

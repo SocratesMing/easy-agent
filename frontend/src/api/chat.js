@@ -132,6 +132,11 @@ export async function sendMessage(sessionId, message, onChunk, signal, enableDee
   if (extra && extra.knowledgeMetadataFilter) {
     payload.knowledge_metadata_filter = extra.knowledgeMetadataFilter
   }
+  // 新对话首条消息携带的知识库范围：后端建会话后先落 scope 再检索，
+  // 避免“选知识库”阶段提前创建空会话（已有会话仍走 knowledge-scope 接口）
+  if (extra && Array.isArray(extra.knowledgeBaseIds) && extra.knowledgeBaseIds.length) {
+    payload.knowledge_base_ids = extra.knowledgeBaseIds
+  }
 
   const response = await authFetch(`${API_BASE_URL}/agent/chat/stream`, {
     method: 'POST',

@@ -30,10 +30,12 @@ logger = logging.getLogger("easy_agent.db.schema")
 # 否则已经升级过的库会一直命中「结构已是最新」的快速启动路径，变更不会生效。
 # 见 init_tables()：版本一致时跳过整轮建表 + 补列 + 建索引探测（MySQL 上这一步
 # 过去要 40+ 次网络往返，多副本部署时每个 pod 启动都要跑一遍，是启动慢的主因）。
-# 10：knowledge_source_sync_items（b65aff4）；11：表精简（b7bfe69）；12：再退役 3 张空表；
+# 10：knowledge_source_sync_items（b65aff4）；11：知识库 batch_id 列（0f79e70）
+# 与表精简（b7bfe69）撞号；12：再退役 3 张空表（edcc851）；
 # 13：再退役 8 张代码不再读写的表（旧 market key、行情数据、旧版知识库模块）。
-# 撞号的库会走快速路径、跳过新的变更，改之前先看远端有没有用过这个号。
-SCHEMA_VERSION = 13
+# 14：合并 rag-1018 与 audit-improvements：两侧都用过 13，统一再 +1，
+# 否则任一侧的旧库会命中快速路径、跳过另一侧的变更。
+SCHEMA_VERSION = 14
 # utf8mb4 复合主键必须 ≤ 3072 字节：(512 + 191) * 4 = 2812。
 LANGGRAPH_STORE_NS_LEN = 512
 LANGGRAPH_STORE_KEY_LEN = 191
@@ -647,9 +649,6 @@ def _create_expert_tables(db, cursor):
     # 查询都带 user_id；agent_status 只有几种取值且多用 <>，单建索引用不上。
     _create_index(db,
         cursor, "idx_expert_agents_user", "expert_agents", "user_id"
-    )
-    _create_index(db, 
-        cursor, "idx_expert_agents_status", "expert_agents", "agent_status"
     )
     # 存量库补列：专家绑定的技能包目录名（JSON 数组），SCHEMA_VERSION=11 起
     _ensure_column(db, cursor, "expert_agents", "export_required_skills", "TEXT")

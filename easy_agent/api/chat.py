@@ -731,6 +731,7 @@ async def chat_stream(
         session_id=session_id,
         question=request.message,
         metadata_filter=request.knowledge_metadata_filter,
+        knowledge_base_ids=request.knowledge_base_ids,
     )
     uploads = build_turn_uploads(repo, session_id, username, request.files, request.message)
     parsed_content = uploads.model_input

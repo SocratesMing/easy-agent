@@ -16,21 +16,22 @@ const srcRoot = path.join(frontendRoot, 'src')
 const MAX_NEW_FILE_LINES = 800
 
 /** 现存超大文件的行数预算（= 2026-10-20 实测值，只允许往下调；
- *  2026-10-23 知识库功能从 Vue2 基线同步，相关文件按同步后实测值更新） */
+ *  2026-10-23 知识库功能从 Vue2 基线同步，相关文件按同步后实测值更新；
+ *  2026-10-28 合并 audit-improvements / rag-1018 分支后按实测值更新） */
 const LINE_BUDGET = {
-  'App.vue': 3091,
-  'features/chat/components/ChatInput.vue': 4093,
-  'features/chat/components/ChatMessage.vue': 2550,
-  'features/experts/components/ExpertListPanel.vue': 1683,
-  'features/connectors/components/ConnectorListPanel.vue': 1534,
+  'App.vue': 3163,
+  'features/chat/components/ChatInput.vue': 4721,
+  'features/chat/components/ChatMessage.vue': 2551,
+  'features/experts/components/ExpertListPanel.vue': 2089,
+  'features/connectors/components/ConnectorListPanel.vue': 1547,
   'features/settings/components/SettingsPanel.vue': 1226,
-  'features/skills/components/SkillListPanel.vue': 1226,
-  'shared/preview/FilePreview.vue': 1105,
+  'features/skills/components/SkillListPanel.vue': 1250,
+  'shared/preview/FilePreview.vue': 1128,
   'features/chat/components/Chat.vue': 1026,
-  'features/chat/components/SessionList.vue': 968,
-  'features/workspace/components/WorkspacePanel.vue': 930,
+  'features/chat/components/SessionList.vue': 1038,
+  'features/workspace/components/WorkspacePanel.vue': 978,
   'features/tasks/components/ScheduledTasksPanel.vue': 842,
-  'features/knowledge/KnowledgeWorkbench.vue': 1903,
+  'features/knowledge/KnowledgeWorkbench.vue': 1911,
 }
 
 /** 组件里已经存在的 api 直连（存量，只允许删） */

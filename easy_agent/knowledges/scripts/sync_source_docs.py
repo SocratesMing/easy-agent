@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -22,12 +23,12 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from easy_agent.bootstrap.initialization import initialize_runtime  # noqa: E402
 from easy_agent.db.database import init_database  # noqa: E402
 from easy_agent.knowledges.core.config import KnowledgeConfig  # noqa: E402
 from easy_agent.knowledges.core.original_store import LocalOriginalStore  # noqa: E402
 from easy_agent.knowledges.ragflow import RagflowClient  # noqa: E402
 from easy_agent.knowledges.runtime.source_sync import run_source_sync  # noqa: E402
-from easy_agent.utils.env_loader import load_project_env  # noqa: E402
 
 
 def _parse_args() -> argparse.Namespace:
@@ -47,7 +48,10 @@ def _parse_args() -> argparse.Namespace:
 
 
 async def _run(args: argparse.Namespace) -> int:
-    load_project_env()
+    app_config = initialize_runtime().config
+    if app_config is None:
+        print("ERROR: 配置未加载，无法同步", file=sys.stderr)
+        return 2
     config = KnowledgeConfig.load()
     if not config.enabled:
         print("知识库模块未启用（knowledge.enabled=false），退出")
@@ -56,7 +60,12 @@ async def _run(args: argparse.Namespace) -> int:
         print("文档同步未启用（knowledge.source_sync.enabled=false），退出")
         return 2
 
-    db = init_database()
+    # 知识库建表函数和默认管理员策略在 import 时注册进 db（应用启动时由 app.py 导入）。
+    # 前者随上面的 easy_agent.knowledges 导入已注册，后者要导入 personnel，
+    # 否则 init_database 最后报「默认管理员策略未注册」。
+    import easy_agent.knowledges.personnel  # noqa: F401
+
+    db = init_database(app_config.database.model_dump())
     ragflow = RagflowClient(config.base_url, config.api_key.get_secret_value())
     store = LocalOriginalStore()
     app = SimpleNamespace(
@@ -78,6 +87,8 @@ async def _run(args: argparse.Namespace) -> int:
 
 
 def main() -> int:
+    os.chdir(PROJECT_ROOT)
+    initialize_runtime()
     return asyncio.run(_run(_parse_args()))
 
 

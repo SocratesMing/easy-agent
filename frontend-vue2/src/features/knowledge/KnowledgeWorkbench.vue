@@ -557,8 +557,9 @@ import {
   teamSpaceOptionSuffix,
 } from './utils/teamSpace.js'
 import {
-  createOptimisticUploadDocument,
-  mergeServerDocumentsWithOptimistic,
+  applyOptimisticUploadProgress, createOptimisticUploadDocument,
+  markOptimisticUploadStarted, mergeServerDocumentsWithOptimistic,
+  optimisticUploadStatusText,
 } from './utils/uploadPresentation.js'
 import {
   createFolder, createKnowledgeBase, createKnowledgeChatRound, deleteDocument, deleteFolder,
@@ -647,7 +648,7 @@ const search = ref('')
 const statusFilter = ref('')
 // 状态筛选下拉：仅显示当前范围内文档实际存在的状态（非筛选态时从全量文档收集）
 const STATUS_META = [
-  ['pending', '待处理'], ['processing', '解析中'], ['cancel_requested', '取消中'],
+  ['pending', '排队中'], ['processing', '解析中'], ['cancel_requested', '取消中'],
   ['cancelled', '已取消'], ['paused', '已暂停'], ['ready', '已就绪'],
   ['failed', '失败'], ['deleting', '删除中'], ['unknown', '未知'],
 ]
@@ -1136,7 +1137,13 @@ async function uploadFiles(items) {
   })
   const uploadOne = async ({ file, relativePath, optimisticId }) => {
     try {
-      const result = await uploadDocument(uploadBaseId, file, { folderId: uploadFolderId, relativePath })
+      // 传输进度只更新当前文档的乐观行：同批其它文件仍显示各自进度/阶段。
+      markOptimisticUploadStarted(documents.value, optimisticId)
+      const result = await uploadDocument(uploadBaseId, file, {
+        folderId: uploadFolderId,
+        relativePath,
+        onProgress: value => applyOptimisticUploadProgress(documents.value, optimisticId, value),
+      })
       const optimisticIndex = documents.value.findIndex(doc => doc.id === optimisticId)
       if (optimisticIndex >= 0 && (result.document.folder_id || '') === (uploadFolderId || '')) documents.value.splice(optimisticIndex, 1, { ...result.document, optimistic: false })
       else if (optimisticIndex >= 0) {
@@ -1703,6 +1710,7 @@ function folderPath(folder) {
   return parts.join(' / ')
 }
 function documentStatusText(doc) {
+  if (doc.optimistic) return optimisticUploadStatusText(doc)
   if (doc.status !== 'processing') return statusLabel(doc.status)
   const progress = Number(doc.progress || 0)
   if (progress < 0.02) return '正在读取原文'
@@ -1712,7 +1720,7 @@ function documentStatusText(doc) {
 function processingElapsed(doc) {
   return processingElapsedText(doc, operations.value)
 }
-function statusLabel(status) { return ({ pending: '待处理', processing: '解析中', cancel_requested: '取消中', ready: '已就绪', failed: '失败', cancelled: '已取消', paused: '已暂停', deleting: '删除中', unknown: '未知' })[status] || status }
+function statusLabel(status) { return ({ pending: '排队中', processing: '解析中', cancel_requested: '取消中', ready: '已就绪', failed: '失败', cancelled: '已取消', paused: '已暂停', deleting: '删除中', unknown: '未知' })[status] || status }
 function operationStatusLabel(status) { return ({ accepted: '已受理', running: '进行中', succeeded: '成功', failed: '失败', partial_failed: '部分失败' })[status] || status }
 function operationLabel(type) { return ({ dataset_create: '创建知识库', document_upload: '上传文档', document_parse: '解析文档' })[type] || type }
 
@@ -1877,8 +1885,8 @@ onUnmounted(() => { stopQuestion('unmount'); finishKnowledgeResize(); stopPollin
 .ke-status.paused i{background:#9aa19c}.ke-status.processing i,.ke-status.running i{animation:none}.ke-processing-age{margin-left:auto;color:#9aa19c;font-size:9px;white-space:nowrap}.ke-preview-modal>div:not(header){flex:1;min-height:0;overflow:auto}.ke-preview-modal ::v-deep .docx-wrapper{min-height:100%;background:#eef1ef}.ke-preview-modal ::v-deep .vue-office-excel{height:100%}.ke-preview-modal ::v-deep .pptx-preview-wrapper{height:100%;overflow:auto}
 @keyframes ke-pulse{50%{opacity:.35}}@keyframes ke-spin{to{transform:rotate(360deg)}}@keyframes ke-dot-pulse{0%,100%{opacity:.2}50%{opacity:1}}
 @container ke-shell (max-width:1100px){.ke-workspace,.ke-workspace.ask-closed{grid-template-columns:var(--ke-library-width,220px) 6px minmax(0,1fr) 6px 0}.ke-workspace:not(.ask-closed) .ke-content-panel{margin-right:min(var(--ke-ask-width,360px),max(0px,calc(100cqw - var(--ke-library-width,220px) - 12px - 320px)))}.ke-ask-panel{position:absolute;right:0;top:0;bottom:0;width:min(var(--ke-ask-width,360px),max(0px,calc(100cqw - var(--ke-library-width,220px) - 12px - 320px)));z-index:20;box-shadow:-14px 0 35px rgba(28,43,33,.13)}.ke-base-meta span:last-child{display:none}.ke-tool-row{flex-wrap:wrap}.ke-tool-row>.ke-search-box{max-width:none}.list .ke-document-card{grid-template-columns:minmax(0,1fr) 190px 130px}/* 浮层模式下文档列被问答面板压缩：文档名放开换行，保证完整可见不被截断 */.ke-document-copy strong{white-space:normal;word-break:break-word}}
-/* 内容面板被拖窄时：隐藏大小/日期等次要信息，为文档名让出空间；文档名放开换行防截断。 */
-@container ke-content (max-width:720px){.list .ke-doc-title small{display:none}.ke-document-copy strong{white-space:normal;word-break:break-word}.list .ke-doc-open{grid-column:1/-1}.list .ke-document-details{grid-column:1/-1;justify-content:flex-start;margin:0}.list .ke-row-actions{grid-column:1/-1;justify-content:flex-start;margin-top:2px}}
+/* 内容面板被拖窄时：隐藏大小/日期等次要信息，为文档名让出空间；文档名放开换行防截断；状态与操作按钮保持同一行。 */
+@container ke-content (max-width:720px){.list .ke-doc-title small{display:none}.ke-document-copy strong{white-space:normal;word-break:break-word}.list .ke-doc-open{grid-column:1/-1}.list .ke-document-details{grid-column:1/3;justify-content:flex-start;margin:0}.list .ke-row-actions{grid-column:3/-1;justify-content:flex-end;margin-top:0}}
 @container ke-shell (max-width:700px){.ke-topbar{padding:0 10px}.ke-topbar-title span,.ke-topbar-actions .quiet{display:none}.ke-workspace,.ke-workspace.ask-closed{display:block}.ke-library-panel,.ke-resizer.library{display:none}.ke-content-panel{height:100%}.ke-base-hero{padding:18px 15px}.ke-inline-actions{position:absolute;right:14px}.ke-base-identity{padding-right:80px}.ke-base-meta{flex-wrap:wrap}.ke-content-toolbar{padding:11px 12px}.ke-documents{padding:12px}.ke-documents.grid{grid-template-columns:1fr}.ke-view-switch{display:none}.list .ke-document-card{display:block}.list .ke-document-details{margin-top:12px;margin-right:0}.list .ke-row-actions{margin-top:8px;justify-content:flex-start}.ke-base-identity p{white-space:normal;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}/* 左侧导航隐藏后文档列占满容器：问答浮层拉宽上限收紧到给文档列保底 220px */.ke-ask-panel{width:min(var(--ke-ask-width,360px),calc(100cqw - 220px))}.ke-workspace:not(.ask-closed) .ke-content-panel{margin-right:min(var(--ke-ask-width,360px),calc(100cqw - 220px))}}
 
 /* EasyAgent surface and dark-mode alignment. */

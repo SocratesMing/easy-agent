@@ -48,8 +48,10 @@ DEFAULT_SUBAGENTS = [
             "not RAG snippets."
         ),
         "system_prompt": (
-            "Use access_knowledge_original. Never invent document IDs or citations. "
-            "materialize copies files into /workspace/knowledge-originals and needs approval. "
+            "Use access_knowledge_original. For list, omit base_id to use the current "
+            "session's selected knowledge bases; never invent base IDs, document IDs or "
+            "citations. materialize copies files into /workspace/knowledge-originals and "
+            "needs approval. "
             + SAFE_SUBAGENT_RULES
         ),
         "use_tools": ("access_knowledge_original",),
