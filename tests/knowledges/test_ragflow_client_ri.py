@@ -104,6 +104,24 @@ async def test_envelope_platform_error_codes(code, exc_cls):
             await client.list_datasets()
 
 
+async def test_envelope_document_not_belong_maps_to_not_found():
+    """RAGFlow 删除/下载跨数据集文档时的业务提示应视为资源不存在。"""
+
+    capture = _Capture(
+        [(
+            200,
+            {
+                "code": 102,
+                "data": None,
+                "message": "These documents do not belong to dataset ds-1 or not found",
+            },
+        )]
+    )
+    async with _client(capture) as client:
+        with pytest.raises(RagflowNotFoundError):
+            await client.list_datasets()
+
+
 # ─────────────────────────── RI001 按资源目录上传文档 ───────────────────────────
 
 

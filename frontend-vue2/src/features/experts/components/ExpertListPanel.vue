@@ -366,11 +366,11 @@
 </template>
 
 <script>
-import { marked } from 'marked'
 import { deleteExpert, getExpertMd, listExperts, listPublicExperts } from '../../../api/expert.js'
 import {
+  createMarkdownRenderer,
   escapeHtml,
-  normalizeMathDelimiters,
+  renderMarkdown,
   setupMarkedExtensions,
 } from '../../../markdownSetup.js'
 // 别名导入：模板方法同名（Vue2 模板只能访问实例成员）
@@ -419,7 +419,7 @@ setupMarkedExtensions()
  * 专家提示词 MD 的渲染器：代码块只保留 ``<pre class="hljs">``，不套「语言 + 复制」头
  * ——详情弹窗是只读速览，带上复制按钮反而像可编辑区域（与技能详情保持一致）。
  */
-const expertMdRenderer = new marked.Renderer()
+const expertMdRenderer = createMarkdownRenderer({ externalLinks: false })
 expertMdRenderer.code = function (token) {
   const code = typeof token === 'object' ? (token.text || token.raw || '') : String(token || '')
   return `<pre class="hljs"><code>${escapeHtml(code)}</code></pre>`
@@ -434,20 +434,11 @@ function stripFrontmatter(md) {
   return String(md || '').replace(/^---\r?\n[\s\S]*?\r?\n---[ \t]*\r?\n?/, '')
 }
 
-/** 渲染专家 MD（marked 直出：不走全局单点渲染器，避免带出代码块复制头） */
+/** 渲染专家 MD（复用共享单点渲染，自定义 code 渲染器不带复制头） */
 function renderExpertMd(content) {
   const body = stripFrontmatter(content)
   if (!body.trim()) return ''
-  try {
-    return marked.parse(normalizeMathDelimiters(body), {
-      renderer: expertMdRenderer,
-      breaks: true,
-      gfm: true,
-    })
-  } catch (e) {
-    console.error('专家 MD 渲染失败:', e)
-    return escapeHtml(content)
-  }
+  return renderMarkdown(body, expertMdRenderer)
 }
 
 export default {

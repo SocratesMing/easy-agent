@@ -367,11 +367,11 @@
 
 <script setup>
 import { computed, onMounted, ref } from 'vue'
-import { marked } from 'marked'
 import { deleteExpert, getExpertMd, listExperts, listPublicExperts } from '../../../api/expert.js'
 import {
+  createMarkdownRenderer,
   escapeHtml,
-  normalizeMathDelimiters,
+  renderMarkdown,
   setupMarkedExtensions,
 } from '../../../markdownSetup.js'
 import { expertAvatarChar, expertAvatarClass } from '../../../utils/expertAvatar.js'
@@ -573,7 +573,7 @@ setupMarkedExtensions()
  * 专家提示词 MD 的渲染器：代码块只保留 ``<pre class="hljs">``，不套「语言 + 复制」头
  * ——详情弹窗是只读速览，带上复制按钮反而像可编辑区域（与技能详情保持一致）。
  */
-const expertMdRenderer = new marked.Renderer()
+const expertMdRenderer = createMarkdownRenderer({ externalLinks: false })
 expertMdRenderer.code = function (token) {
   const code = typeof token === 'object' ? (token.text || token.raw || '') : String(token || '')
   return `<pre class="hljs"><code>${escapeHtml(code)}</code></pre>`
@@ -592,16 +592,7 @@ function stripFrontmatter(md) {
 const detailMdHtml = computed(() => {
   const content = stripFrontmatter(detailMd.value.content)
   if (!content.trim()) return ''
-  try {
-    return marked.parse(normalizeMathDelimiters(content), {
-      renderer: expertMdRenderer,
-      breaks: true,
-      gfm: true,
-    })
-  } catch (e) {
-    console.error('专家 MD 渲染失败:', e)
-    return escapeHtml(content)
-  }
+  return renderMarkdown(content, expertMdRenderer)
 })
 
 /** 「定义提示词」只对本人创建的专家有意义；公共预置专家由发行包提供，不展示该 tab */

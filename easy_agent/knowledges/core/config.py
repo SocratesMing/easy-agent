@@ -69,7 +69,8 @@ class LimitsConfig(BaseModel):
     )
     max_documents_per_query: int = Field(default=500, gt=0)
     # 解析绝对超时秒数；0 = 不限制（批量同步场景推荐）。
-    # 计时起点为 parse_started_at（首次进入 processing），不含排队时间。
+    # 计时起点为 parse_started_at（首次观察到上游 RUNNING），不含排队时间；
+    # 超时即失败终态，暂停/恢复/重试会清空旧计时重新开始。
     parse_timeout_seconds: float = Field(default=1800.0, ge=0)
 
 
@@ -90,9 +91,9 @@ class UploadSecurityConfig(BaseModel):
 
 
 class SourceSyncMySQLConfig(BaseModel):
-    """研报 SQL 所在 MySQL 连接（host / database 必填，不做主库兜底）。
+    """研报 SQL 所在 MySQL 连接（host / database / table 必填，不做主库兜底）。
 
-    ``table`` 留空时使用内置默认表名并自动建表；配置后按配置的表名查询。
+    ``table`` 必须是源库中已存在的表。
     """
 
     host: str = ""
@@ -114,8 +115,7 @@ class SourceSyncConfig(BaseModel):
 
     enabled: bool = False
     owner_username: str = "admin"
-    # 文件根目录（绝对路径）：配置后忽略 attacUrl 的目录部分，只取其文件名拼到该根目录；
-    # 留空则要求 attacUrl 本身是绝对路径。
+    # 磁盘文件根目录（绝对路径，必填）：按文档 SQL 的 batchid 在该目录下匹配同名文件
     file_root: str = ""
     # 指定既有知识库 ID（可选）：同名库有多个时用来锁定具体目标；留空则按 base_name 查找
     base_id: str = ""
@@ -123,6 +123,8 @@ class SourceSyncConfig(BaseModel):
     lookback_days: int = Field(default=7, ge=1, le=365)
     # 首次回填起始日期（YYYY-MM-DD）；为空时只处理 lookback 窗口
     start_date: str = ""
+    # 启动后延迟多少分钟执行第一次同步（0 = 启动即执行）
+    start_delay_minutes: int = Field(default=0, ge=0, le=1440)
     interval_minutes: int = Field(default=60, ge=0)
     max_inflight: int = Field(default=10, ge=1, le=100)
     poll_interval_seconds: float = Field(default=15.0, ge=1)

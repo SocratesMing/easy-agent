@@ -101,13 +101,18 @@ export function listDocuments(baseId, { page = 1, pageSize = 100, folderId = '',
   return request(`/bases/${encodeURIComponent(baseId)}/documents?${params}`)
 }
 
-export function uploadDocument(baseId, file, { folderId = '', relativePath = '' } = {}) {
+export function uploadDocument(baseId, file, { folderId = '', relativePath = '', onProgress } = {}) {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest()
     xhr.open('POST', `${root()}/bases/${encodeURIComponent(baseId)}/documents`)
     const token = getStoredToken()
     if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`)
     xhr.responseType = 'json'
+    xhr.upload.onprogress = (event) => {
+      if (event.lengthComputable && typeof onProgress === 'function') {
+        onProgress(Math.round((event.loaded / event.total) * 100))
+      }
+    }
     xhr.onload = () => {
       if (xhr.status === 401) {
         dispatchAuthExpired()

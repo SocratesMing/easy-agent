@@ -63,6 +63,9 @@ _NOT_FOUND_MARKERS = (
     "doesn't own",
     "doesn't have",
     "does not have",
+    "do not belong",
+    "does not belong",
+    "not belong",
 )
 # 知识库名称规则（文档 1.1）：字母/数字/下划线，以字母或下划线开头，最多 65535 字符。
 _DATASET_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,65534}")

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import codecs
 import logging
 import shutil
 import subprocess
@@ -110,6 +111,43 @@ def _verify_magic(source: BinaryIO, extension: str, reject_macros: bool) -> None
         raise UploadValidationError("KNOWLEDGE_TEXT_BINARY_REJECTED", "文本文件包含二进制内容")
 
 
+_TEXT_ENCODING_EXTENSIONS = {
+    "txt",
+    "md",
+    "markdown",
+    "csv",
+    "tsv",
+    "json",
+    "log",
+    "xml",
+    "yaml",
+    "yml",
+    "html",
+    "htm",
+}
+
+
+def _verify_utf8(source: BinaryIO, extension: str) -> None:
+    """文本类文件只接受 UTF-8；流式校验后恢复调用方的流位置。"""
+
+    if extension not in _TEXT_ENCODING_EXTENSIONS:
+        return
+    position = source.tell()
+    try:
+        source.seek(0)
+        decoder = codecs.getincrementaldecoder("utf-8")("strict")
+        while chunk := source.read(1024 * 1024):
+            decoder.decode(chunk)
+        decoder.decode(b"", final=True)
+    except UnicodeDecodeError as exc:
+        raise UploadValidationError(
+            "KNOWLEDGE_FILE_ENCODING_NOT_UTF8",
+            "只支持 UTF-8 编码的文本文件，请转换编码后重新上传",
+        ) from exc
+    finally:
+        source.seek(position)
+
+
 def _scan_for_virus(source: BinaryIO, config: UploadSecurityConfig) -> None:
     scanner = config.virus_scan
     if not scanner.enabled:
@@ -169,6 +207,7 @@ def validate_upload(
     _verify_declared_mime(extension, content_type)
     if config.verify_magic:
         _verify_magic(source, extension, config.reject_office_macros)
+    _verify_utf8(source, extension)
     _scan_for_virus(source, config)
 
 

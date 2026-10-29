@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -86,6 +87,8 @@ async def _run(args: argparse.Namespace) -> int:
 
 
 def main() -> int:
+    os.chdir(PROJECT_ROOT)
+    initialize_runtime()
     return asyncio.run(_run(_parse_args()))
 
 

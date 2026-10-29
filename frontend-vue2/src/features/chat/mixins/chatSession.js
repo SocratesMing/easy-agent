@@ -757,7 +757,7 @@ export default {
     createStreamChunkHandler(ctx) {
       return createChunkHandler(this, ctx)
     },
-    async handleSendMessage(message, files = [], signal, enableDeepThink = true, enableWebSearch = false, skills = []) {
+    async handleSendMessage(message, files = [], signal, enableDeepThink = true, enableWebSearch = false, skills = [], expertEditId = '', knowledgeBaseIds = []) {
       const userMsgId = `user-${Date.now()}`
       const preStreamUsage = { ...this.sessionUsage }
       // 记录本次请求开始前已累计的耗时和迭代次数，用于流式过程中实时累加
@@ -891,7 +891,9 @@ export default {
           '',
           this.selectedExpert && this.selectedExpert.export_agent_id
             ? this.selectedExpert.export_agent_id
-            : ''
+            : '',
+          // 新对话首条消息携带的知识库范围：后端建会话后先落 scope 再检索
+          knowledgeBaseIds && knowledgeBaseIds.length ? { knowledgeBaseIds } : null
         )
 
         await this.refreshSessionFiles(null, 500)

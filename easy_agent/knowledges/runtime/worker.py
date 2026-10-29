@@ -1,9 +1,9 @@
 """后台 worker：解析状态轮询 + 软删除远端副本兜底清理。
 
-上传与重试内联在 ``KnowledgeService.upload_document`` 中同步完成，
-解析轮询 worker 只负责把上游解析进度（pending/processing）拉回本地投影；
-清理 worker 兜底清理同步删除失败或历史遗留的远端（Ragflow）文档副本，
-避免共享数据集膨胀。
+上传与重试内联在 ``KnowledgeService.upload_document`` 中同步完成，只把文档
+推进到本地 ``pending``；解析轮询 worker 负责观察上游 RUNNING，把
+``processing``/``ready``/``failed`` 写回本地投影。清理 worker 兜底清理同步
+删除失败或历史遗留的远端（Ragflow）文档副本，避免共享数据集膨胀。
 """
 
 from __future__ import annotations
@@ -20,9 +20,6 @@ from easy_agent.knowledges.core.original_store import LocalOriginalStore
 from easy_agent.knowledges.service import KnowledgeService
 
 logger = logging.getLogger(__name__)
-
-# 处于这两个状态的文档意味着解析仍在进行，需要轮询上游进度
-_POLLING_STATUSES = ("pending", "processing")
 
 
 class KnowledgeParsePollWorker:
@@ -60,19 +57,10 @@ class KnowledgeParsePollWorker:
     def is_running(self) -> bool:
         return self._task is not None and not self._task.done()
 
-    def _pending_base_ids(self, db: Database) -> list[str]:
-        """找出仍有待解析/解析中文档的知识库（repository 未提供列表方法，走直查）。"""
+    def _refreshable_base_ids(self, db: Database) -> list[str]:
+        """找出仍有可轮询解析文档（已有远端副本的 pending/processing）的知识库。"""
 
-        placeholders = ", ".join("?" for _ in _POLLING_STATUSES)
-        with db.get_connection() as conn:
-            cursor = conn.cursor()
-            db._execute(
-                cursor,
-                "SELECT DISTINCT base_id FROM knowledge_documents "
-                f"WHERE status IN ({placeholders})",
-                _POLLING_STATUSES,
-            )
-            return [str(row["base_id"] if isinstance(row, dict) else row[0]) for row in cursor.fetchall()]
+        return KnowledgeRepository(db).list_refreshable_base_ids()
 
     async def poll_once(self) -> bool:
         """单轮轮询；返回是否处理了任何知识库。数据库未就绪时静默跳过。"""
@@ -95,7 +83,7 @@ class KnowledgeParsePollWorker:
 
     async def _poll_locked(self, db: Database) -> bool:
         try:
-            base_ids = await asyncio.to_thread(self._pending_base_ids, db)
+            base_ids = await asyncio.to_thread(self._refreshable_base_ids, db)
         except Exception as exc:
             logger.warning("知识库轮询查询待解析文档失败: %s", exc)
             return False

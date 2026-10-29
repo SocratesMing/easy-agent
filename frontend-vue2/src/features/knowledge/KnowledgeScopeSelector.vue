@@ -1,8 +1,8 @@
 <template>
   <div v-if="enabled" ref="rootRef" class="scope-selector" :class="{ 'trigger-hidden': hideTrigger }">
-    <button class="scope-trigger" :class="{ active: selected.length }" :aria-expanded="open" :disabled="disabled || creatingSession" @click.stop="togglePopover">
+    <button class="scope-trigger" :class="{ active: selected.length }" :aria-expanded="open" :disabled="disabled" @click.stop="togglePopover">
       <IconLibrary />
-      <span>{{ creatingSession ? '正在准备会话…' : triggerLabel }}</span>
+      <span>{{ triggerLabel }}</span>
       <IconChevronDown class="chevron" :class="{ rotated: open }" />
     </button>
 
@@ -61,8 +61,10 @@ export default {
     anchorSelector: { type: String, default: '' },
     // 底部「在管理面板中打开」入口（SDK 未配置主站地址时无处可跳，隐藏）
     showManage: { type: Boolean, default: true },
+    // 新对话尚未创建会话时，由宿主暂存并回传的勾选结果（发送时随消息提交）
+    pendingBaseIds: { type: Array, default: () => [] },
   },
-  emits: ['create-session', 'change', 'manage'],
+  emits: ['change', 'manage'],
   setup(props, { emit }) {
 const rootRef = ref(null)
 const enabled = ref(false)
@@ -72,9 +74,7 @@ const bases = ref([])
 const selected = ref([])
 const draft = ref([])
 const saving = ref(false)
-const creatingSession = ref(false)
 const error = ref('')
-const pendingOpen = ref(false)
 const panelStyle = ref({})
 const selectedBaseNames = computed(() => selected.value
   .map((id) => {
@@ -96,15 +96,23 @@ async function load() {
     const capability = await getKnowledgeCapabilities()
     enabled.value = Boolean(capability.enabled)
     if (!enabled.value) return
-    const [baseResponse, scope] = await Promise.all([
-      listKnowledgeBases({ pageSize: 100 }),
-      props.sessionId ? getSessionKnowledgeScope(props.sessionId) : Promise.resolve({ base_ids: [] })
-    ])
+    const baseResponse = await listKnowledgeBases({ pageSize: 100 })
     bases.value = baseResponse.items || []
-    // 面板打开期间用户已勾选（保存中）时，以保存结果为准，不用旧快照覆盖
-    if (!saving.value && !creatingSession.value) {
-      selected.value = scope.base_ids || []
-      draft.value = [...selected.value]
+    // 保存中时以保存结果为准，不用旧快照覆盖
+    if (!saving.value) {
+      // 新对话（或会话刚建、范围尚未落库）优先使用宿主暂存的勾选
+      const pending = Array.isArray(props.pendingBaseIds) ? props.pendingBaseIds : []
+      if (pending.length) {
+        selected.value = [...pending]
+        draft.value = [...pending]
+      } else if (props.sessionId) {
+        const scope = await getSessionKnowledgeScope(props.sessionId)
+        selected.value = scope.base_ids || []
+        draft.value = [...selected.value]
+      } else {
+        selected.value = []
+        draft.value = []
+      }
     }
   } catch (reason) { error.value = reason.message || '知识范围加载失败' }
   finally { loading.value = false }
@@ -112,26 +120,20 @@ async function load() {
 
 function togglePopover() {
   if (props.disabled) return
-  if (!props.sessionId) {
-    if (creatingSession.value) return
-    creatingSession.value = true
-    pendingOpen.value = true
-    emit('create-session')
-    return
-  }
   if (!open.value) {
     draft.value = [...selected.value]
     error.value = ''
     updatePanelPosition()
+    load()
   }
   open.value = !open.value
 }
 
-// 供加号菜单 hover/click 展开：幂等打开面板（不新建会话，勾选时才落库）。
+// 供加号菜单 hover/click 展开：幂等打开面板（不建会话，勾选先由宿主暂存，发送时落库）。
 // anchor 为触发的菜单项元素；每次展开都重新拉取列表，主页面新建的知识库无需刷新页面即可看到
 let anchorEl = null
 async function openPopover(anchor) {
-  if (props.disabled || open.value || creatingSession.value) return
+  if (props.disabled || open.value) return
   if (anchor) anchorEl = anchor
   draft.value = [...selected.value]
   error.value = ''
@@ -173,7 +175,6 @@ function handleViewportChange() {
   if (open.value) updatePanelPosition()
 }
 let saveSeq = 0
-let pendingSave = null  // 无会话时的勾选暂存：会话创建完成后恢复并保存
 function sameSet(a, b) {
   const ka = [...a].sort().join('|')
   const kb = [...b].sort().join('|')
@@ -200,11 +201,10 @@ watch(draft, () => {
   const snapshot = [...draft.value]
   if (sameSet(snapshot, selected.value)) return  // 打开面板时的同步赋值，无实际变化
   if (!props.sessionId) {
-    // 无会话时勾选（新对话 hover 展开场景）：暂存勾选并先创建会话，建好后再保存
-    if (creatingSession.value) { pendingSave = snapshot; return }
-    creatingSession.value = true
-    pendingSave = snapshot
-    emit('create-session')
+    // 新对话：只更新本地暂存，等首条消息发送时由宿主随请求提交；
+    // 不在这里创建会话，避免左侧栏出现没有对话的空记录。
+    selected.value = snapshot
+    emit('change', snapshot)
     return
   }
   persist(snapshot)
@@ -213,24 +213,21 @@ function handleOutside(event) { if (open.value && rootRef.value && !rootRef.valu
 function roleLabel(role) { return ({ viewer: '查看者', maintainer: '维护者', manager: '管理员' })[role] || role }
 function spaceLabel(space) { return ({ personal: '个人', team: '团队', shared: '共享' })[space] || space }
 
-watch(() => props.sessionId, async (sessionId) => {
+// 宿主暂存的勾选变化（切换会话/开始新对话/发送后清理）时同步面板
+watch(() => props.pendingBaseIds, (ids) => {
+  if (props.sessionId) return  // 已有会话以服务端范围为准
+  if (saving.value) return
+  const next = Array.isArray(ids) ? [...ids] : []
+  if (sameSet(next, selected.value)) return
+  selected.value = next
+  draft.value = [...next]
+}, { deep: true })
+
+watch(() => props.sessionId, async () => {
   await load()
-  if (sessionId && pendingSave) {
-    // 勾选触发的会话创建完成：恢复暂存勾选并保存
-    creatingSession.value = false
-    const snapshot = pendingSave
-    pendingSave = null
-    selected.value = snapshot
-    draft.value = [...snapshot]
-    persist(snapshot)
-    return
-  }
-  if (sessionId && pendingOpen.value) {
-    creatingSession.value = false
-    pendingOpen.value = false
+  if (open.value) {
     draft.value = [...selected.value]
     updatePanelPosition()
-    open.value = true
   }
 })
 onMounted(() => {
@@ -245,7 +242,6 @@ onUnmounted(() => {
 
     return {
       bases,
-      creatingSession,
       disabled: computed(() => props.disabled),
       draft,
       enabled,
