@@ -1,136 +1,120 @@
-# Easy Agent Configuration（唯一配置文件）
-#
-# 环境差异（路径 / 窗口 / 阈值 / 模型名等）不在本文件分环境拆分，
-# 统一用 ${VAR:-默认值} 占位符从环境变量注入，按 AGENT_ENV 加载对应 .env：
-#   AGENT_ENV=dev  → 项目根 .env.dev  （不存在则回退 .env）
-#   AGENT_ENV=test → 项目根 .env.test （不存在则回退 .env）
-#   AGENT_ENV=prod → 项目根 .env.prod （不存在则回退 .env）
-#
-# 占位符的默认值即「开发环境」取值，不提供任何 .env 时也能直接启动。
-# 敏感值（api_key / password）只写进 .env，不要写进本文件。
-# 应急指定其它配置文件：EASY_CONFIG=/path/to/xxx.yaml
-#
-# 可用变量清单见 .env.dev.example / .env.test.example / .env.prod.example。
+# Easy Agent 配置模板：复制为 config.yaml。
+# 环境差异用 ${VAR:-默认值} 占位符从 .env.{AGENT_ENV}（dev/test/prod，缺省回退 .env）注入，默认值即开发环境取值。
+# 敏感值（api_key / password）只写 .env。备用配置：EASY_CONFIG=/path/to/xxx.yaml。
+# 校验：python scripts/quality/check_config_schema.py --check
 
-# ===== LLM Configuration =====
-# Select which model to use: deepseek | ark
-model: "${ACTIVE_MODEL:-deepseek}"
+# ===== LLM =====
+model: "${ACTIVE_MODEL:-deepseek}"   # 当前模型：deepseek | qwen | ark
 
-# Provider-specific configurations
 models:
   deepseek:
     provider: "deepseek"
-    protocol: "openai"  # anthropic or openai
-    model: "${DEEPSEEK_MODEL:-deepseek-flash}"
+    protocol: "openai"                # openai | anthropic
+    model: "${DEEPSEEK_MODEL:-deepseek-v4-pro-0813}"
     api_key: "${DEEPSEEK_API_KEY}"
-    api_base: "https://api.deepseek.com"
-    context_length: ${DEEPSEEK_CONTEXT_LENGTH:-1000000}
-  
+    api_base: "${DEEPSEEK_API_BASE:-https://llm-tyyt06c5mq54ngq7.cn-beijing.maas.aliyuncs.com/compatible-mode/v1}"
+    context_length: ${DEEPSEEK_CONTEXT_LENGTH:-131072}
+    headers: {}                       # 可选透传请求头，值支持 {session_id} 占位符
+
+  qwen:
+    provider: "qwen"
+    protocol: "openai"                # openai | anthropic
+    model: "${QWEN_MODEL:-qwen-plus}"
+    api_key: "${QWEN_API_KEY}"
+    api_base: "${QWEN_API_BASE:-https://dashscope.aliyuncs.com/compatible-mode/v1}"
+    context_length: ${QWEN_CONTEXT_LENGTH:-131072}
+
   ark:
     provider: "ark"
-    protocol: "openai"  # anthropic or openai
+    protocol: "openai"                # openai | anthropic
     model: "${ARK_MODEL:-ark-code-latest}"
     api_key: "${ARK_API_KEY}"
     api_base: "https://ark.cn-beijing.volces.com/api/coding/v3"
     context_length: ${ARK_CONTEXT_LENGTH:-200000}
 
-# ===== Retry Configuration =====
+# ===== 重试 =====
 retry:
-  enabled: true           # Enable retry mechanism
-  max_retries: 3          # Maximum number of retries
+  enabled: true           # 是否启用重试
+  max_retries: 3          # 最大重试次数
 
-# ===== Agent Configuration =====
-max_steps: ${MAX_STEPS:-100}  # Maximum execution steps
-workspace_dir: "${WORKSPACE_DIR:-/qts/workspace}"  # Working directory (project-relative). 实际路径会按用户/会话隔离：{workspace_dir}/{username}/{session_dir}
-memories_dir: "${MEMORIES_DIR:-/qts/memories}"    # Long-term memory directory (project-relative). 实际路径：{memories_dir}/{username}/AGENTS.md
-sessions_dir: "${SESSIONS_DIR:-/qts/sessions}"     # 会话数据存储目录（项目相对路径）。实际路径：{sessions_dir}/{username}/{session_id}.json
-prompt_path: "prompts"  # 提示词目录（相对配置目录）：system.md + fragments/ + memory_*.md
-idle_logout_minutes: ${IDLE_LOGOUT_MINUTES:-0}   # 前端空闲自动登出（分钟）：用户超过该时长无界面操作或后端交互则退出到登录页；0 表示永不过期（默认，后台不启用登录超时机制）
-app_welcome_title: "Easy Agent，让工作更简单"  # 首页欢迎语
-sandbox_enabled: ${SANDBOX_ENABLED:-true}    # Linux 使用 bwrap/Landlock；Windows 无等效沙箱时拒绝 execute。仅在可信单用户环境设为 false
+# ===== Agent =====
+max_steps: ${MAX_STEPS:-100}                      # 单轮最大执行步数
+tool_progress_enabled: ${TOOL_PROGRESS_ENABLED:-true}  # 工具空结果终止提示 + 原地打转提醒（只改结果文本，不改工具行为）
+workspace_dir: "${WORKSPACE_DIR:-/qts/workspace}" # 工作区根目录，实际按用户/会话隔离
+memories_dir: "${MEMORIES_DIR:-/qts/memories}"    # 长期记忆根目录，实际 {memories_dir}/{username}/AGENTS.md
+sessions_dir: "${SESSIONS_DIR:-/qts/sessions}"    # 会话数据目录，实际 {sessions_dir}/{username}/{session_id}.json
+prompt_path: "prompts"                            # 提示词目录（相对配置目录）
+idle_logout_minutes: ${IDLE_LOGOUT_MINUTES:-0}    # 前端空闲登出分钟数，0 = 不登出
+app_welcome_title: "今天，你要研究什么"            # 首页欢迎语
+sandbox_enabled: ${SANDBOX_ENABLED:-true}         # 启用 bwrap/Landlock 沙箱；无沙箱平台拒绝 execute
+sandbox_network: ${SANDBOX_NETWORK:-host}         # 沙箱网络：host = 可联网 / none = 断网（Landlock 模式降级为告警）
+execute_max_timeout: ${EXECUTE_MAX_TIMEOUT:-600}  # execute 可指定的最长超时（秒）
+session_thread: ${SESSION_THREAD:-true}           # 一会话一 thread（需 checkpointer）；false = 每条消息重建历史（兼容模式）
 
-# 外部目录映射：虚拟路径前缀 → 宿主机实际路径
-# 将 skill 需要访问的宿主机目录挂载为虚拟路径路由，使文件工具能通过虚拟路径访问
+# 外部目录映射：虚拟路径 → 宿主机路径（供技能访问）
 external_dirs:
   "/strategy-workspace": "${STRATEGY_WORKSPACE:-/qts/workspace}"
 
-# ===== Summarization Configuration =====
-# Auto-compress conversation context when token usage exceeds threshold
+# ===== 上下文压缩 =====
 summarization:
-  enabled: true                    # Enable context compression
-  compression_threshold: 0.8       # Trigger compression at 80% of context window
-  compression_target: 0.1          # Keep 10% of context window after compression
+  enabled: true                    # false = 关闭压缩与参数截断（阈值抬到不可达）
+  compression_threshold: 0.8       # 上下文用量达到该比例时压缩
+  compression_target: 0.1          # 压缩后保留的上下文比例
 
-# ===== Tools Configuration =====
+# ===== 工具 =====
 tools:
-  result_log_truncate: 200  # 工具结果在日志中的截断字符数（默认 200）
-  skills_dir: "${SKILLS_DIR:-./skills}"   # Skills directory path
-  prompts_dir: "${PROMPTS_DIR:-/qts/prompts}" # Prompts directory path (for forex, etc.)
+  result_log_truncate: 200                        # 工具结果在日志中的截断字符数
+  skills_dir: "${SKILLS_DIR:-./skills}"           # 公共技能目录
+  prompts_dir: "${PROMPTS_DIR:-/qts/prompts}"     # 提示词目录（外汇等技能使用）
+  experts_dir: "${EXPERTS_DIR:-./experts}"        # 预置专家目录（只读扫描）
 
-# ===== Web Search Configuration =====
-# 联网搜索（输入框地球按钮）：api_url / api_key 与 models 段一样支持 ${VAR} 占位符，
-# 实际值由 .env.{AGENT_ENV} 提供。api_key 为空时前端按钮置灰、后端不注入搜索工具。
+# ===== 联网搜索 =====
 web_search:
-  enabled: ${WEB_SEARCH_ENABLED:-true}
-  provider: "${WEB_SEARCH_PROVIDER:-tavily}"  # tavily（默认）| internal（内网 WebSearch 接口）
-  # 留空 = 用 provider 默认地址：tavily → https://api.tavily.com/search
-  #                              internal → http://28.221.28.7:10089/api/v1/webSearch（测试环境）
-  api_url: "${WEB_SEARCH_API_URL:-}"
-  api_key: "${WEB_SEARCH_API_KEY}"  # tavily 在 https://app.tavily.com 申请（tvly- 开头）
-  search_depth: "${WEB_SEARCH_SEARCH_DEPTH:-basic}"  # 仅 tavily：basic | advanced | fast | ultra-fast
-  topic: "${WEB_SEARCH_TOPIC:-general}"  # 仅 tavily：general | news | finance；带时间范围时自动用 news
-  timeout_seconds: ${WEB_SEARCH_TIMEOUT:-30}
-  default_time_range: "${WEB_SEARCH_TIME_RANGE:-NoLimit}"  # NoLimit/OneDay/OneWeek/OneMonth/OneYear 或 YYYY-MM-DD..YYYY-MM-DD
-  max_results: ${WEB_SEARCH_MAX_RESULTS:-10}  # 每次搜索返回的最大结果条数（tavily 上限 20）
-  main_text_max_chars: ${WEB_SEARCH_MAIN_TEXT_CHARS:-500}  # 单条结果摘要展示上限（Tavily content 可能是整页正文）
+  enabled: ${WEB_SEARCH_ENABLED:-true}                        # 是否启用；api_key 为空时前端置灰
+  provider: "${WEB_SEARCH_PROVIDER:-tavily}"                  # tavily | internal
+  api_url: "${WEB_SEARCH_API_URL:-}"                          # 留空用 provider 默认地址
+  api_key: "${WEB_SEARCH_API_KEY}"                            # tavily 在 app.tavily.com 申请（tvly- 开头）
+  search_depth: "${WEB_SEARCH_SEARCH_DEPTH:-basic}"           # 仅 tavily：basic | advanced | fast | ultra-fast
+  topic: "${WEB_SEARCH_TOPIC:-general}"                       # 仅 tavily：general | news | finance
+  timeout_seconds: ${WEB_SEARCH_TIMEOUT:-30}                  # 请求超时（秒）
+  default_time_range: "${WEB_SEARCH_TIME_RANGE:-NoLimit}"     # NoLimit | OneDay | OneWeek | OneMonth | OneYear | YYYY-MM-DD..YYYY-MM-DD
+  max_results: ${WEB_SEARCH_MAX_RESULTS:-10}                  # 每次返回条数（tavily 上限 20）
+  main_text_max_chars: ${WEB_SEARCH_MAIN_TEXT_CHARS:-500}     # 单条结果摘要字符上限
 
-# ===== Web Search Configuration =====
-# 联网搜索（输入框地球按钮）：api_url / api_key 与 models 段一样支持 ${VAR} 占位符，
-# 实际值由 .env.{AGENT_ENV} 提供。api_key 为空时前端按钮置灰、后端不注入搜索工具。
-web_search:
-  enabled: ${WEB_SEARCH_ENABLED:-true}
-  provider: "${WEB_SEARCH_PROVIDER:-tavily}"  # tavily（默认）| internal（内网 WebSearch 接口）
-  # 留空 = 用 provider 默认地址：tavily → https://api.tavily.com/search
-  #                              internal → http://28.221.28.7:10089/api/v1/webSearch（测试环境）
-  api_url: "${WEB_SEARCH_API_URL:-}"
-  api_key: "${WEB_SEARCH_API_KEY}"  # tavily 在 https://app.tavily.com 申请（tvly- 开头）
-  search_depth: "${WEB_SEARCH_SEARCH_DEPTH:-basic}"  # 仅 tavily：basic | advanced | fast | ultra-fast
-  topic: "${WEB_SEARCH_TOPIC:-general}"  # 仅 tavily：general | news | finance；带时间范围时自动用 news
-  timeout_seconds: ${WEB_SEARCH_TIMEOUT:-30}
-  default_time_range: "${WEB_SEARCH_TIME_RANGE:-NoLimit}"  # NoLimit/OneDay/OneWeek/OneMonth/OneYear 或 YYYY-MM-DD..YYYY-MM-DD
-  max_results: ${WEB_SEARCH_MAX_RESULTS:-10}  # 每次搜索返回的最大结果条数（tavily 上限 20）
-  main_text_max_chars: ${WEB_SEARCH_MAIN_TEXT_CHARS:-500}  # 单条结果摘要展示上限（Tavily content 可能是整页正文）
-
-# ===== Preset Questions =====
-# Quick action questions shown on the welcome screen
+# ===== 首页预置问题（每条一张卡片，最多 6 张）=====
 preset_questions:
-  - category: "文档处理"
+  - category: "宏观与资产研判"
+    icon: "❄️"
+    questions:
+      - "结合国内外宏观指标判断增长与通胀方向，再落到 10 年期国债给出趋势研判与验证信号。"
+  - category: "大类配置"
+    icon: "📊"
+    questions:
+      - "基于最新 CMA 与当前持仓，在 PVBP、RWA 与分中心久期约束下测算目标持仓与约束。"
+  - category: "组合管理"
     icon: "📄"
     questions:
-      - "帮我创建一份智能体介绍的docx,ppt和pdf文件"
-      - "帮我生成一份金融量化的pptx"
-      - "总结这份PDF的核心要点"
-  - category: "量化策略"
+      - "按信评、行业、期限、流动性与地域穿透信用债投组，标出久期集中区间与低流动性资产占比。"
+  - category: "策略工坊"
+    icon: "💻"
+    questions:
+      - "参考 XBOND 最优报价与经纪商跟随策略，新建一个债券日内做市策略并给出回测与验证方案。"
+  - category: "因子工坊"
     icon: "📈"
     questions:
-      - "帮我生成一个策略如下： 1、交易货币：EUR/USD， 2、周期：采用1小时图作为主信号周期， 3、核心指标包括：集合EMA(20)、MACD指实现入开仓； 4、止盈止损：止盈采用固定40点，止损采用固定100点。 5、持仓时间：无限制 6、回测区间 2021-01-01 至 2021-03-31 不需要回测，生成策略即可"
-      - "解释一下什么是动量策略"
-      - "帮我写一个双均线交叉策略"
-  - category: "信息查询"
-    icon: "🔍"
+      - "围绕资金面、期限利差与机构行为挖掘利率债择时因子，并说明检验标准。"
+  - category: "数据底座"
+    icon: "🗄️"
     questions:
-      - "今天A股哪些板块比较强势？"
-      - "帮我查一下贵州茅台的最新财报"
-      - "解释一下MACD指标的原理"
+      - "调 USDCNH 近一周分钟 bar，算 5 分钟已实现波动率，并说明数据渠道与更新时点。"
 
-# ===== Database Configuration =====
-# Supports SQLite (local) or MySQL (remote)
+# ===== 数据库 =====
 database:
-  type: "${DB_TYPE:-mysql}"
-  
+  type: "${DB_TYPE:-mysql}"                         # sqlite | mysql
+
   sqlite:
-    path: "${SQLITE_PATH:-/qts/data/easy_agent.db}"
-  
+    path: "${SQLITE_PATH:-/qts/data/easy_agent.db}" # SQLite 文件路径
+
   mysql:
     host: "${MYSQL_HOST:-127.0.0.1}"
     port: ${MYSQL_PORT:-3306}
@@ -139,48 +123,41 @@ database:
     database: "${MYSQL_DATABASE:-easy_agent}"
     charset: "utf8mb4"
     pool:
-      pool_size: ${MYSQL_POOL_SIZE:-5}
-      max_overflow: 10
-      pool_timeout: 30
-      pool_recycle: 3600
-    connect_timeout: 10
-    read_timeout: 30
-    write_timeout: 30
+      pool_size: ${MYSQL_POOL_SIZE:-5}    # 常驻连接数
+      max_overflow: 10                    # 超出 pool_size 的临时连接数
+      pool_recycle: 3600                  # 连接复用次数上限（DBUtils maxusage，非秒）
+    connect_timeout: 10                   # 建立连接超时（秒）
+    read_timeout: 30                      # 读超时（秒）
+    write_timeout: 30                     # 写超时（秒）
 
-# ===== Distributed Lock Configuration =====
-# 多实例（多 pod / 多 worker）部署的分布式锁（锁表 distributed_locks，见
-# easy_agent/utils/distributed_lock.py）。定时任务在每个 pod 都会注册同一批 cron，
-# 开启后同一时刻只有一个实例真正执行，避免重复处理。
-# 单实例部署保持关闭即可（关闭时不产生任何额外数据库访问）。
+# ===== 人员账号 =====
+personnel:
+  self_registration_enabled: false   # 自助注册：true 时登录页显示注册入口
+  passwordless_login_enabled: false  # 门户免密登录：true 时支持 URL 直登与 /login-passwordless（admin 不支持）
+
+# ===== 分布式锁（多实例部署）=====
 distributed_lock:
-  enabled: ${DISTRIBUTED_LOCK_ENABLED:-false}
-  key_prefix: "${DISTRIBUTED_LOCK_KEY_PREFIX:-easy_agent}"  # 多套系统共用一个库时用于区分
-  ttl_seconds: ${DISTRIBUTED_LOCK_TTL:-300}  # 锁存活时间（秒）：持有者崩溃后其它实例最多等这么久即可接管
+  enabled: ${DISTRIBUTED_LOCK_ENABLED:-false}                  # 多 pod/多 worker 时开启，避免定时任务重复执行
+  key_prefix: "${DISTRIBUTED_LOCK_KEY_PREFIX:-easy_agent}"     # 多套系统共库时用于区分
+  ttl_seconds: ${DISTRIBUTED_LOCK_TTL:-300}                    # 锁存活时间（秒），持有者崩溃后最多等这么久
   renew_interval_seconds: ${DISTRIBUTED_LOCK_RENEW_INTERVAL:-100}  # 长任务续约间隔（秒），实际取 min(本值, ttl/3)
-  retry_interval_seconds: ${DISTRIBUTED_LOCK_RETRY_INTERVAL:-1}  # 等待抢锁（wait_seconds>0）时的轮询间隔（秒）
+  retry_interval_seconds: ${DISTRIBUTED_LOCK_RETRY_INTERVAL:-1}    # 抢锁轮询间隔（秒）
 
-# ===== Vector Store Configuration (Chroma + Sentence Transformers) =====
-# 技能库（虚拟路径 /user-skills）写权限：
-#   new-only（默认）= 允许在对话里新建技能，禁止改写/删除已有技能，隐藏路径一律禁写
-#   deny            = 整个技能库禁止写入
-#   allow           = 不做额外限制
-# new-only / allow 下会忽略 denied_dirs 里针对 /user-skills 的 write 禁令
-# （见 easy_agent/agent.py::_build_permissions）。
-skill_write: ${SKILL_WRITE:-new-only}
+# ===== 文件权限 =====
+skill_write: ${SKILL_WRITE:-new-only}  # 技能库写权限：new-only（只可新建）| deny（全禁写）| allow（不限制）
+interrupt_sensitive_writes: true       # /memories/**、/user-skills/** 的写入是否走人工审批（需 checkpointer）
+denied_dirs: []                        # 禁读写的虚拟路径；字符串 = 读+写，{path, operations} = 仅指定操作
 
-# 禁止智能体读写的虚拟路径目录列表（通过 permissions deny 规则限制）
-# 路径必须是虚拟路径（以 / 开头），且必须是 CompositeBackend 已挂载的 route 前缀。
-# 系统会自动为路径补充 /** glob 通配符递归匹配子目录。
-# 支持两种格式：
-#   - 字符串："/strategy-workspace"                        → 默认禁止 read+write
-#   - 字典：  {path: "/strategy-workspace", operations: ["write"]} → 只禁止指定操作
-# operations 可选值：read、write。技能库的写权限请改用上面的 skill_write。
-denied_dirs: []
+# ===== 专家 =====
+expert:
+  guardrail_enabled: true            # 在专家提示词末尾追加职责边界
+  relevance_check_enabled: true      # 每轮预检相关性，无关消息直接拒答
+  relevance_strict: false            # true = 部分相关也整条拒答；false = 放行只答相关部分
+  relevance_disable_thinking: true   # 预检调用关闭思考模式
+  auto_install_required_skills: true # 用预置专家时自动「添加」其 required_skills 声明的公共技能（不复制技能包）
+  tool_scope_enabled: true           # 专家选定技能包时做硬隔离：只挂这些技能 + 本轮另选的技能；未选=全量可见
 
-# ===== Expert Tags =====
-# 专家 Agent 的分类标签候选：创建专家时整份列表会交给大模型，
-# 由它按专家功能挑一个最匹配的 tag_id 落库（tag_id 用于数据筛选，tag_name 用于展示）。
-# 前端「专家 · 技能 · 连接器 -> 专家」Tab 的筛选 chips 即按此列表渲染。
+# ===== 专家分类标签（tag_id 落库，tag_name 展示）=====
 expert_tags:
   - { tag_id: macro_research, tag_name: 宏观投研 }
   - { tag_id: bond_research, tag_name: 债券投研 }
@@ -194,321 +171,39 @@ expert_tags:
   - { tag_id: credit_research, tag_name: 信用研究 }
   - { tag_id: asset_allocation, tag_name: 资产配置 }
   - { tag_id: risk_management, tag_name: 风险管理 }
+  - { tag_id: business_analysis, tag_name: 经营分析 }
   - { tag_id: other, tag_name: 其他 }
 
-# ===== Knowledge Configuration (RAGFlow) =====
-# 独立知识库模块。默认 enabled=false，缺省不启动；启用时需按 .env 提供
-# RAGFlow 端点与密钥。样例段自身可通过严格校验，不设置任何环境变量也能启动。
+# ===== 附件上传限额（单个会话单次对话）=====
+upload_limits:
+  enabled: ${UPLOAD_LIMITS_ENABLED:-true}            # false = 不限制
+  max_file_size_mb: ${UPLOAD_MAX_FILE_SIZE_MB:-10}   # 单文件上限
+  max_files_per_message: ${UPLOAD_MAX_FILES:-5}      # 单次数量上限
+  max_total_size_mb: ${UPLOAD_MAX_TOTAL_SIZE_MB:-20} # 单次总大小上限（>100 需同步 nginx client_max_body_size）
+
+# ===== 上传文件解析与记忆（file_context）=====
+file_context:
+  enabled: ${FILE_CONTEXT_ENABLED:-true}                     # false = 回退全量注入
+  parse_max_file_size_mb: ${FILE_PARSE_MAX_MB:-20}           # 超过该大小不解析，仍记清单
+  max_stored_chars: ${FILE_MAX_STORED_CHARS:-200000}         # 单文件落盘文本上限（字符）
+  manifest_max_chars: ${FILE_MANIFEST_MAX_CHARS:-2000}       # 上传清单上限，超出丢最旧条目
+  preview_max_chars: ${FILE_PREVIEW_MAX_CHARS:-2000}         # 本轮预览注入上限（0 = 不注入）
+
+# ===== 知识库 / RAGFlow =====
 knowledge:
-  schema_version: 1
-  enabled: "${KNOWLEDGE_ENABLED:-false}"
-
-  adapter:
-    profile: bank_custom_v1
-    expected_version: bank_custom_v1
-    contract_fixture_set: bank_custom_v1
-    capabilities:
-      declared:
-        - datasets
-        - documents
-        - document_download
-        - parsing
-        - retrieval
-      required:
-        - datasets
-        - documents
-        - document_download
-        - parsing
-        - retrieval
-      probe_on_startup: true
-    version_probe:
-      # none | response_header | endpoint. Official v0.17.2 has no API-token probe.
-      mode: none
-      require_match: false
-      header_name: ""
-      operation: ""
-    local_v017_bridge:
-      enabled: "${RAGFLOW_LOCAL_COMPAT_ENABLED:-false}"
-      base_url: "${RAGFLOW_LOCAL_BASE_URL:-https://ragflow.example.test}"
-      api_prefix: /api/v1
-      operation_paths:
-        retrieve: /retrieval
-      strip_headers:
-        - stdAuthToken
-        - stdRqtSyt
-        - stdRspSys
-        - stdTransId
-        - stdApplySystTmtp
-        - stdBankNum
-      omit_embedding_model_on_create: true
-      layout_recognize_value: "Plain Text"
-      strip_parser_config_fields: [method, paternity, parent_retrieval, stuctured]
-
-  endpoint:
-    base_url: "${RAGFLOW_BASE_URL:-https://ragflow.example.test}"
-    api_prefix: "${RAGFLOW_API_PREFIX:-/api/v1}"
-    # Every operation is configurable so a bank route/method difference does not
-    # require code changes. request_encoding: query | json | multipart | none.
-    operations:
-      create_dataset:
-        method: POST
-        path: "/datasets"
-        request_encoding: json
-        response_contract: dataset
-      list_datasets:
-        method: GET
-        path: "/datasets"
-        request_encoding: query
-        response_contract: dataset_list
-      update_dataset:
-        method: PUT
-        path: "/datasets/{dataset_id}"
-        request_encoding: json
-        response_contract: empty_or_boolean
-      delete_datasets:
-        method: DELETE
-        path: "/datasets"
-        request_encoding: json
-        response_contract: empty_or_boolean
-      upload_documents:
-        method: POST
-        path: "/datasets/{dataset_id}/documents"
-        request_encoding: multipart
-        response_contract: document_list
-      list_documents:
-        method: GET
-        path: "/datasets/{dataset_id}/documents"
-        request_encoding: query
-        response_contract: document_list
-      update_document:
-        method: PUT
-        path: "/datasets/{dataset_id}/documents/{document_id}"
-        request_encoding: json
-        response_contract: empty_or_boolean
-      download_document:
-        method: GET
-        path: "/datasets/{dataset_id}/documents/{document_id}"
-        request_encoding: none
-        response_contract: binary
-      delete_documents:
-        method: DELETE
-        path: "/datasets/{dataset_id}/documents"
-        request_encoding: json
-        response_contract: empty_or_boolean
-      start_parsing:
-        method: POST
-        path: "/datasets/{dataset_id}/chunks"
-        request_encoding: json
-        response_contract: empty_or_boolean
-      stop_parsing:
-        method: DELETE
-        path: "/datasets/{dataset_id}/chunks"
-        request_encoding: json
-        response_contract: empty_or_boolean
-      retrieve:
-        method: POST
-        base_url: "${RAGFLOW_BANK_RETRIEVAL_BASE_URL:-https://aaas.example.test}"
-        path: "/AIGCQA/api/rag_retrieval"
-        request_encoding: json
-        response_contract: retrieval_result
-
-  auth:
-    mode: "${RAGFLOW_AUTH_MODE:-bearer}"
-    header_name: "${RAGFLOW_AUTH_HEADER_NAME:-Authorization}"
-    scheme: "${RAGFLOW_AUTH_SCHEME:-Bearer}"
-    credential: "${RAGFLOW_API_KEY:-}"
-    fixed_headers:
-      X-Request-Source: "easy-agent"
-    # Values come from the server-side trusted Principal, never from frontend input.
-    principal_headers:
-      tenant_id: "${RAGFLOW_TENANT_HEADER_NAME:-}"
-      organization_id: "${RAGFLOW_ORG_HEADER_NAME:-}"
-      request_id: "${RAGFLOW_REQUEST_ID_HEADER_NAME:-X-Request-Id}"
-
-  bank_api:
-    system_code: "${RAGFLOW_SYS_CODE:-EASYAGENT}"
-    aaas_retrieval:
-      enabled: true
-      auth_token: "${RAGFLOW_AAAS_AUTH_TOKEN:-}"
-      request_system: EASYAGENT
-      response_system: AIGCQA
-      bank_number: "001"
-      transaction_id_prefix: EASYAGENT
-
-  tls:
-    verify: "${RAGFLOW_VERIFY_SSL:-true}"
-    ca_bundle: "${RAGFLOW_CA_BUNDLE:-}"
-    client_cert: "${RAGFLOW_CLIENT_CERT:-}"
-    client_key: "${RAGFLOW_CLIENT_KEY:-}"
-
-  transport:
-    trust_env: false
-    follow_redirects: false
-    proxy: "${RAGFLOW_PROXY:-}"
-    timeout_seconds:
-      connect: 5
-      read: 60
-      write: 60
-      pool: 5
-      upload_wall_clock: 300
-    pool:
-      max_connections: 50
-      max_keepalive_connections: 20
-      keepalive_expiry_seconds: 30
-    retry:
-      attempts: 3
-      base_backoff_seconds: 0.5
-      max_backoff_seconds: 8
-      jitter: true
-      respect_retry_after: true
-      retry_statuses: [429, 502, 503, 504]
-      # Mutating operations are excluded unless an idempotency protocol is agreed.
-      operations:
-        - list_datasets
-        - list_documents
-        - retrieve
-
-  response:
-    envelope:
-      code_field: "code"
-      data_field: "data"
-      message_field: "message"
-      success_codes: [0]
-      authentication_codes: [109]
-      # Some v0.17.2 auth failures are HTTP 200/code 0/data false.
-      data_false_with_message_is_error: true
-    accepted_json_content_types:
-      - "application/json"
-      - "application/*+json"
-    require_operation_contract_match: true
-    field_aliases: {}
-    error_code_map: {}
-
-  compatibility:
-    # Fixed, deployment-controlled additions only. Frontend passthrough is forbidden.
-    fixed_query_by_operation: {}
-    fixed_body_by_operation: {}
-    request_field_aliases:
-      parse_document_ids: "document_ids"
-      retrieval_document_ids: "document_ids"
-      retrieval_dataset_ids: "dataset_ids"
-    document_status_mapping:
-      "0": pending
-      "UNSTART": pending
-      "1": processing
-      "RUNNING": processing
-      "2": cancelled
-      "CANCEL": cancelled
-      "3": ready
-      "DONE": ready
-      "4": failed
-      "FAIL": failed
-    # Compatibility guard for RAGFlow v0.17.2/custom deployments where indexing
-    # tasks finish but the document row remains RUNNING. This never trusts chunk
-    # counters alone: retrieval must return non-empty text for the exact document.
-    completed_document_probe:
-      enabled: "${RAGFLOW_COMPLETED_DOCUMENT_PROBE_ENABLED:-true}"
-      grace_seconds: 10
-      min_chunk_count: 1
-      min_token_count: 1
-      probe_question: "${RAGFLOW_COMPLETED_DOCUMENT_PROBE_QUESTION:-文档主要内容}"
-
-  defaults:
-    dataset:
-      # Keep upstream private; EasyAgent remains the authorization authority.
-      permission: "${RAGFLOW_DATASET_PERMISSION:-me}"
-      embedding_model: "${RAGFLOW_EMBEDDING_MODEL:-}"
-    parsing:
-      default_profile: standard
-      profiles:
-        standard:
-          chunk_method: naive
-          parser_config:
-            chunk_token_num: 512
-            layout_recognize: true
-            html4excel: false
-            delimiter: "\n!?;。；！？"
-            task_page_size: 12
-            method: minerullm
-            parent_retrieval: false
-            raptor:
-              use_raptor: false
-        table:
-          chunk_method: naive
-          parser_config:
-            # Excel HTML can collapse a large sheet into an oversized embedding
-            # input. Plain-text rows keep chunks bounded for local bge-m3.
-            chunk_token_num: 256
-            layout_recognize: true
-            html4excel: false
-            delimiter: "\n!?;。；！？"
-            task_page_size: 12
-            method: minerullm
-            parent_retrieval: false
-            raptor:
-              use_raptor: false
-        presentation:
-          chunk_method: naive
-          parser_config:
-            chunk_token_num: 512
-            layout_recognize: true
-            method: minerullm
-            parent_retrieval: false
-            raptor:
-              use_raptor: false
-      routing_rules:
-        - extensions: [xls, xlsx, csv]
-          profile: table
-        - extensions: [ppt, pptx]
-          profile: presentation
-    retrieval:
-      page_size: 10
-      similarity_threshold: 0.2
-      vector_similarity_weight: 0.3
-      top_k: 1024
-      rerank_id: "${RAGFLOW_RERANK_MODEL:-}"
-      require_non_empty_document_filter: true
-      enforce_single_embedding_model: true
-      # Never truncate or fall back to a broader dataset-only query.
-      document_filter_overflow_strategy: reject
-
-  operations:
-    upload:
-      per_file: true
-      concurrency: 1
-    parsing_poll:
-      interval_seconds: 2
-      max_duration_seconds: 1800
-    deletion:
-      remote_strategy: delete
-      durable_outbox: false
-      forbid_empty_ids: true
-    worker:
-      # API flow tests intentionally execute the deterministic fake inline. Runtime
-      # dev/prod configuration uses the separate queue worker.
-      mode: inline
-      poll_interval_seconds: 1.0
-      heartbeat_interval_seconds: 10.0
-      stale_after_seconds: 90.0
-      task_timeout_seconds: 300.0
-      max_attempts: 3
-      retry_backoff_seconds: 5.0
-
-  upload_security:
-    reject_empty_files: true
-    verify_magic: false
-    reject_office_macros: true
-    virus_scan:
-      enabled: false
-      required: false
-      command: clamdscan
-      timeout_seconds: 60.0
-
+  enabled: ${KNOWLEDGE_ENABLED:-false}                   # 启用前需配置 RAGFLOW_BASE_URL / RAGFLOW_API_KEY
+  base_url: "${RAGFLOW_BASE_URL}"
+  api_key: "${RAGFLOW_API_KEY}"
+  shared_dataset_id: "${RAGFLOW_SHARED_DATASET_ID:-}"    # 留空按 EA_SHARED 名称查找或创建
+  embedding:
+    model: "${RAGFLOW_EMBEDDING_MODEL:-}"
+  # 审计事件记录开关与 details 截断上限
+  audit:
+    enabled: true                                        # 记录知识库审计事件
+    max_details_bytes: 4096                              # 事件 details 截断上限
   limits:
     max_file_size_mb: 100
     max_request_size_mb: 110
-    max_files_per_request: 1
-    max_dataset_name_utf8_bytes: 127
     max_filename_utf8_bytes: 127
     allowed_extensions:
       - pdf
@@ -521,74 +216,27 @@ knowledge:
       - csv
       - ppt
       - pptx
-    max_datasets_per_query: 20
     max_documents_per_query: 500
-
-  features:
-    # Enable only after the bank-specific contract has been verified.
-    reparse_completed_document: false
-    retry_failed_document: false
-    disable_document: false
-    ragflow_chat: false
-    ragflow_agent: false
-    expose_chunk_management_to_business_users: false
-
-  health:
-    upstream_required_for_easyagent_startup: false
-    upstream_required_for_readiness: false
-    upstream_probe_operation: list_datasets
-    upstream_probe_query:
-      page: 1
-      page_size: 1
-    mask_endpoint: true
-
-  # Original binaries are authoritative here; RAGFlow remains the derived index.
-  # In-bank deployments should mount NAS at the OS/container layer and only replace
-  # this root through deployment configuration. NAS credentials never belong here.
-  original_storage:
-    enabled: "${KNOWLEDGE_ORIGINAL_STORAGE_ENABLED:-false}"
-    required_for_upload: true
-    driver: "${KNOWLEDGE_ORIGINAL_STORAGE_DRIVER:-local_fs}"
-    filesystem:
-      root_path: "${KNOWLEDGE_ORIGINAL_STORAGE_ROOT:-./data/nas-sim}"
-      path_prefix: "${KNOWLEDGE_ORIGINAL_STORAGE_PREFIX:-easyagent-knowledge}"
-      chunk_size_mb: 8
-      fsync: true
-      directory_mode: "0750"
-      file_mode: "0640"
-    reads:
-      legacy_fallback_to_ragflow: true
-      max_agent_file_size_mb: 100
-      max_agent_total_size_mb: 200
-      materialized_file_ttl_seconds: 3600
-    deletion:
-      policy: quarantine
-      retention_days: 30
-    health:
-      required_for_readiness: true
-      probe_on_startup: true
-
-  security:
-    forbid_frontend_passthrough: true
-    fail_when_enabled_and_secret_missing: true
-    allowed_base_url_schemes:
-      - "${RAGFLOW_ALLOWED_SCHEME:-https}"
-    # HTTP is allowed only when the exact host is also listed here. Empty by default.
-    insecure_http_hosts:
-      - "${RAGFLOW_INSECURE_HTTP_HOST:-}"
-    forbid_base_url_userinfo_query_fragment: true
-    operation_paths_must_be_relative: true
-    reject_network_path_and_dot_segments: true
-    reject_header_newlines: true
-    reserved_headers:
-      - Authorization
-      - Host
-      - Content-Length
-      - Transfer-Encoding
-    redact_keys:
-      - authorization
-      - api_key
-      - credential
-      - client_key
-      - cookie
-      - document_content
+    # 解析绝对超时（秒）：0 = 不限制；计时从真正开始解析算起，不含上游排队
+    parse_timeout_seconds: ${KNOWLEDGE_PARSE_TIMEOUT_SECONDS:-0}
+  # 研报接入：文档 SQL 增量同步（enabled=true 即启用；mysql 连接/表名按需填写）
+  source_sync:
+    enabled: ${KNOWLEDGE_SOURCE_SYNC_ENABLED:-false}
+    owner_username: "admin"     # 入库归属用户（需已存在，以该用户身份上传并授权）
+    file_root: "${SOURCE_SYNC_FILE_ROOT:-}"  # 文件根目录（绝对路径）；留空则 attacUrl 必须是绝对路径
+    base_id: ""                # 精确指定入库的知识库 ID（同名库有多个时用它锁定）；留空则按 base_name 查找/新建
+    base_name: "报告库"  # 按这个名字找知识库，找不到才新建（新建固定为团队公共库）；base_id 为空时生效
+    lookback_days: 7           # 按 publishDate 取最近 N 天
+    start_date: ""             # 首次回填起始日期 YYYY-MM-DD
+    interval_minutes: 60       # 0 = 仅启动执行一次
+    max_inflight: 10           # 同时在途（排队/解析中）文档上限
+    poll_interval_seconds: 15  # 轮询在途文档解析状态的间隔（秒）
+    max_attempts: 3            # 单篇文档上传/解析失败后的最大重试次数
+    mysql:
+      host: "${SOURCE_SYNC_MYSQL_HOST:-}"         # 研报 SQL 必填，不复用主库
+      port: ${SOURCE_SYNC_MYSQL_PORT:-3306}
+      user: "${SOURCE_SYNC_MYSQL_USER:-}"
+      password: "${SOURCE_SYNC_MYSQL_PASSWORD:-}"
+      database: "${SOURCE_SYNC_MYSQL_DATABASE:-}" # 研报 SQL 必填，不复用主库
+      charset: "${SOURCE_SYNC_MYSQL_CHARSET:-utf8mb4}"
+      table: "${SOURCE_SYNC_MYSQL_TABLE:-}"       # 留空用内置表 easy_agent_report 并自动建表

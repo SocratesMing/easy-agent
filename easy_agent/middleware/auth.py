@@ -6,9 +6,14 @@ from typing import Annotated, Optional
 
 from fastapi import Depends, HTTPException, Request
 
-from ..db import Database, get_database
-from ..services import get_agent_config
-from ..utils.auth import decode_access_token
+from easy_agent.db import Database, get_database
+from easy_agent.db.repositories.user_repository import UserRepository
+from easy_agent.bootstrap.runtime_config import get_runtime_agent_config
+
+# 兼容旧调用/测试：它们会 monkeypatch `auth_middleware.get_agent_config`。
+# 实现仍是 runtime_config（不再反向依赖 services）。
+get_agent_config = get_runtime_agent_config
+from easy_agent.utils.auth import decode_access_token
 
 logger = logging.getLogger(__name__)
 
@@ -30,11 +35,21 @@ def _get_idle_logout_minutes() -> int:
     return 0
 
 
-def touch_user_activity(db: Database, username: str, now: Optional[float] = None) -> None:
+# 「用户存储端口」：活跃时间读写与单点登录校验只用下列同名方法，
+# ``Database`` 与 ``UserRepository`` 都提供且语义一致，因此 API 层可以把
+# repository 直接传进来，无需再向下取 ``repo.database``。
+UserActivityStore = Database | UserRepository
+
+
+def touch_user_activity(
+    db: UserActivityStore, username: str, now: Optional[float] = None
+) -> None:
     """更新用户最近活跃时间，写入共享数据库（节流）。
 
     多 worker 下登录请求可能落在 worker A，后续请求落在 worker B；活跃时间
     必须存进共享数据库，否则 worker B 会误判用户「空闲过期」而将其登出。
+
+    ``db`` 可为 ``Database`` 或 ``UserRepository``（同名方法、同一语义）。
     """
     if not username or db is None:
         return
@@ -49,7 +64,7 @@ def touch_user_activity(db: Database, username: str, now: Optional[float] = None
         logger.warning(f"写入用户活跃时间失败 | 用户: {username} | 错误: {exc}")
 
 
-def clear_user_activity(db: Database, username: str) -> None:
+def clear_user_activity(db: UserActivityStore, username: str) -> None:
     _activity_write_throttle.pop(username, None)
     if db is None:
         return
@@ -59,7 +74,9 @@ def clear_user_activity(db: Database, username: str) -> None:
         logger.warning(f"清空用户活跃时间失败 | 用户: {username} | 错误: {exc}")
 
 
-def get_user_activity_time(db: Database, username: str) -> Optional[float]:
+def get_user_activity_time(
+    db: UserActivityStore, username: str
+) -> Optional[float]:
     """从共享数据库读取用户最近活跃时间。"""
     if db is None:
         return None
@@ -71,7 +88,7 @@ def get_user_activity_time(db: Database, username: str) -> Optional[float]:
 
 
 def _user_session_is_active(
-    db: Database, username: str, now: Optional[float] = None
+    db: UserActivityStore, username: str, now: Optional[float] = None
 ) -> bool:
     idle_minutes = _get_idle_logout_minutes()
     if idle_minutes <= 0:
@@ -85,11 +102,13 @@ def _user_session_is_active(
     return current_time - last_activity < idle_minutes * 60
 
 
-def verify_token_sso(token: str, db: Database) -> Optional[str]:
+def verify_token_sso(token: str, db: UserActivityStore) -> Optional[str]:
     """校验 token（含单点登录 token_version 校验），成功返回 username，失败返回 None。
 
     供 files.py 等无法走 Depends(get_current_username) 的场景（如 iframe 预览的
     query token）复用，确保被踢下线的旧 token 同样无法访问文件预览。
+
+    ``db`` 可为 ``Database`` 或 ``UserRepository``（由 API 层注入 repository）。
     """
     payload = decode_access_token(token, verify_exp=False)
     if not payload:
@@ -101,6 +120,8 @@ def verify_token_sso(token: str, db: Database) -> Optional[str]:
     user = db.get_user_by_username(username)
     if not user:
         return None
+    if user.account_status == "disabled":
+        return None
     if token_v is None or user.token_version != token_v:
         return None
     if not _user_session_is_active(db, username):
@@ -109,10 +130,28 @@ def verify_token_sso(token: str, db: Database) -> Optional[str]:
     return username
 
 
-async def get_current_username(
+def get_user_repository(
+    db: Annotated[Database, Depends(get_database)],
+) -> UserRepository:
+    """FastAPI 依赖：把进程级 ``Database`` 包装成 users 域 repository。
+
+    ``get_database`` 只出现在本 provider 内；``api.auth`` / ``api.files`` /
+    ``api.scheduled_tasks`` 的路由函数只声明 ``Depends(get_user_repository)``，
+    因此活跃时间与 SSO token 校验无需在 API 层触碰 ``Database`` 门面。
+    """
+    return UserRepository(db)
+
+
+def get_current_username(
     http_request: Request,
     db: Annotated[Database, Depends(get_database)],
 ) -> str:
+    """校验 Bearer token 并返回用户名（每个需要登录的接口都经过这里）。
+
+    刻意写成同步函数：FastAPI 会把同步依赖放进线程池执行。这里每个请求都要查库（用户状态、
+    单点登录的 ``token_version``、空闲登出的最近活动时间），写成 ``async def`` 会在事件循环上
+    同步查库，业务库是 MySQL 时每次往返都会卡住所有并发的 SSE 流。
+    """
     auth_header = http_request.headers.get("Authorization")
 
     if auth_header and auth_header.startswith("Bearer "):
@@ -124,6 +163,8 @@ async def get_current_username(
             if username:
                 user = db.get_user_by_username(username)
                 if user:
+                    if user.account_status == "disabled":
+                        raise HTTPException(status_code=403, detail="账号已停用")
                     # 单点登录：token 中的 v 必须等于 DB 当前 token_version，
                     # 否则说明该账号已在其他设备/IP 登录，当前 token 立即失效。
                     if token_v is None or user.token_version != token_v:

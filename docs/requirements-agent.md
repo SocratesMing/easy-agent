@@ -6,7 +6,7 @@
 | 版本 | v1.0 |
 | 状态 | 草案（待评审） |
 | 适用对象 | 产品、后端、前端、测试 |
-| 需求来源 | 基于当前代码库现状整理（`easy_agent/` + `frontend/`） |
+| 需求来源 | 基于当前代码库现状整理（`easy_agent/` + `frontend-vue2/` + `frontend/`） |
 
 > 本文档采用「需求 + 验收标准」的组织方式，描述**智能体（Agent）本身**应
 > 提供的业务能力。实现细节（具体函数、类名）只在需要界定边界时引用，避免
@@ -96,8 +96,10 @@ Easy Agent 是一个面向企业与个人用户的 AI Agent Web 应用。传统 
 
 - 执行过程以流式事件实时推送，覆盖思考、工具调用、工具结果、正文、用量等。
 - 事件类型至少包含：`start`、`thinking_start`、`thinking`、`thinking_end`、
-  `tool_call`、`tool_result`、`content`、`content_end`、`todo_list`、
-  `token_usage`、`approval_required`、`done`、`error`。
+  `tool_call`、`tool_call_delta`、`tool_result`、`content`、`content_end`、
+  `todo_list`、`token_usage`、`knowledge_evidence`、`approval_required`、
+  `done`、`error`。完整字段契约见 `docs/sse-events.md` 与
+  `easy_agent/services/sse.py`（唯一注册表）。
 - **AC1**：首个可见内容在请求发出后数秒内到达（受模型首 token 时延约束）。
 - **AC2**：客户端断线重连后可回放已产生的事件，不丢帧（弱网/刷新场景）。
 
@@ -294,6 +296,7 @@ Agent 至少具备以下内置能力，并可自主决定调用时机：
 - 复用同样的路径翻译与危险命令拦截策略。
 - **AC1**：终端可执行基础命令并返回输出。
 - **AC2**：危险命令按 HITL/拒绝策略处理。
+- **现状（2026-10-19）**：实现是宿主机原生 shell（pty），未接入路径翻译与危险命令拦截，AC2 未满足；因此默认关闭（`EASY_WEB_TERMINAL_ENABLED=1` 开启），且仅 admin 可连接（SEC-01）。
 
 ### FR-11 可观测与审计（P1）
 
@@ -388,7 +391,7 @@ Agent 至少具备以下内置能力，并可自主决定调用时机：
 
 1. **知识库（RAG）** 是否为正式需求？当前实现缺失，是否本期纳入？
 2. **多副本无粘性** 是否为硬性要求？（会话流事件、HITL 中断态目前存于进程内存）
-3. **网页终端** 的开放范围：所有用户还是仅管理员？
+3. **网页终端** 的开放范围：所有用户还是仅管理员？——已确认（2026-10-19）：仅管理员，且默认关闭（SEC-01）。
 4. 是否需要 **企业权限体系**（组织/角色/RBAC、SSO）？当前仅有注册时绑定机构 ID。
 5. **数据合规**：是否需要会话/文件的数据保留期与删除策略（GDPR/等保）？
 6. **用量与计费**：是否需要按用户统计 token 用量与配额控制？

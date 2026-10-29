@@ -8,19 +8,51 @@ and records the result.
 
 import asyncio
 import logging
+from easy_agent.bootstrap.env import env_bool
 import uuid
 from datetime import datetime
+from typing import Any
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
-from ..db import get_database
-from ..models.db import ScheduledTaskModel, ScheduledTaskRunModel, SessionModel
-from ..utils.distributed_lock import get_distributed_lock
-from ..utils.task_logger import log_task_event
+from easy_agent.db import get_database
+from easy_agent.models.db import ScheduledTaskModel, ScheduledTaskRunModel, SessionModel
+from easy_agent.utils.deployment import detect_worker_count as _detect_worker_count
+from easy_agent.utils.distributed_lock import get_distributed_lock
+from easy_agent.utils.task_logger import log_task_event
 from langchain_core.callbacks import BaseCallbackHandler
 
 logger = logging.getLogger("easy_agent.scheduler")
+
+_agent_lifecycle_provider = None
+_reconcile_task: asyncio.Task | None = None
+RECONCILE_INTERVAL_SECONDS = 15.0
+
+
+def set_agent_lifecycle(provider) -> None:
+    """注册返回 (get_or_create_agent, remove_agent) 的 provider。
+
+    用 provider 而非直接函数对象，保证测试/运行时对 agent_manager 函数的替换生效；
+    scheduler 不在模块级 import agent_manager（断 SCC 环）。
+    """
+    global _agent_lifecycle_provider
+    _agent_lifecycle_provider = provider
+
+
+def _require_agent_lifecycle():
+    provider = _agent_lifecycle_provider
+    if provider is None:
+        # 兼容绕过 agent_manager 初始化的单测/独立调用：动态导入，不形成 AST 边。
+        import importlib
+
+        module = importlib.import_module("easy_agent.services.agent_manager")
+        provider = lambda: (  # noqa: E731
+            module.get_or_create_agent_for_session,
+            module.remove_session_agent,
+        )
+        set_agent_lifecycle(provider)
+    return provider()
 
 _scheduler_instance: AsyncIOScheduler | None = None
 
@@ -115,11 +147,79 @@ def get_scheduler() -> AsyncIOScheduler:
 
 
 def shutdown_scheduler():
-    global _scheduler_instance
+    global _scheduler_instance, _reconcile_task
+    if _reconcile_task is not None and not _reconcile_task.done():
+        _reconcile_task.cancel()
+    _reconcile_task = None
     if _scheduler_instance is not None:
         _scheduler_instance.shutdown(wait=False)
         _scheduler_instance = None
         logger.info("AsyncIOScheduler 已关闭")
+
+
+def preview_next_run(schedule_cron: str) -> str:
+    """根据 cron 计算下一次触发时间，不向本进程调度器注册 job。"""
+    trigger = CronTrigger.from_crontab(schedule_cron, timezone="Asia/Shanghai")
+    nxt = trigger.get_next_fire_time(None, datetime.now(trigger.timezone))
+    return nxt.strftime("%Y-%m-%d %H:%M:%S") if nxt else ""
+
+
+def reconcile_scheduled_tasks() -> int:
+    """把本进程调度器对齐到数据库里启用的任务。
+
+    每个运行中的调度器都执行：新建任务不必落在「当时处理对话的那台机器」上才会触发。
+    执行本身仍由每任务分布式锁保证只跑一次。``manual-`` 前缀的手动触发 job 不参与对账。
+    调度器未初始化或未启动时直接返回。
+    """
+    if _scheduler_instance is None or not _scheduler_instance.running:
+        return 0
+    db = get_database()
+    tasks = db.list_all_enabled_scheduled_tasks()
+    wanted = {task.task_id: task for task in tasks}
+    existing = {
+        job.id
+        for job in _scheduler_instance.get_jobs()
+        if not str(job.id).startswith("manual-")
+    }
+    added = 0
+    for task_id, task in wanted.items():
+        if task_id in existing:
+            continue
+        next_run = register_scheduled_task(task)
+        if next_run:
+            db.update_scheduled_task_run_times(task_id, task.last_run_at or "", next_run)
+            added += 1
+    for job_id in existing - set(wanted):
+        unregister_scheduled_task(job_id)
+    if added or existing - set(wanted):
+        logger.info(
+            "定时任务对账 | 新增 %s | 移除 %s | 启用 %s",
+            added,
+            len(existing - set(wanted)),
+            len(wanted),
+        )
+    return added
+
+
+async def _reconcile_loop() -> None:
+    while True:
+        try:
+            reconcile_scheduled_tasks()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - 对账失败不拖垮调度器
+            logger.warning(f"定时任务对账失败: {exc}")
+        await asyncio.sleep(RECONCILE_INTERVAL_SECONDS)
+
+
+def start_scheduled_task_reconcile() -> None:
+    """启动周期对账。调度器已 start 之后调用。"""
+    global _reconcile_task
+    if _reconcile_task is not None and not _reconcile_task.done():
+        return
+    _reconcile_task = asyncio.get_running_loop().create_task(
+        _reconcile_loop(), name="scheduled-task-reconcile"
+    )
 
 
 def register_scheduled_task(task: ScheduledTaskModel) -> str | None:
@@ -204,6 +304,18 @@ def reload_all_tasks():
             f"ttl={lock.config.ttl_seconds}s"
         )
     else:
+        workers = _detect_worker_count()
+        if workers > 1 and not env_bool("EASY_ALLOW_DUPLICATE_SCHEDULER"):
+            # 多 worker/多副本 + 未开分布式锁 = 同一 cron 被 N 个实例各执行一次：
+            # 重复扣费、重复写会话/消息。默认拒绝注册调度任务（fail-closed），
+            # 单实例仍可正常工作；确需关闭锁请显式设置 EASY_ALLOW_DUPLICATE_SCHEDULER=1。
+            logger.error(
+                "❌ 检测到多 worker/多副本（%s）但 distributed_lock.enabled=false："
+                "为避免定时任务重复执行，本次不注册任何定时任务。"
+                "请开启 distributed_lock，或显式设置 EASY_ALLOW_DUPLICATE_SCHEDULER=1。",
+                workers,
+            )
+            return
         logger.info(
             "🔒 分布式锁未启用（单实例部署无需开启；多 pod 部署请设置 distributed_lock.enabled）"
         )
@@ -226,10 +338,34 @@ def reload_all_tasks():
     logger.info(f"从 DB 重载 {count}/{len(tasks)} 个定时任务")
 
 
+#: LangGraph 在运行结果里放待处理中断的键（公开常量 ``langgraph.constants.INTERRUPT`` 已弃用）
+_INTERRUPT_KEY = "__interrupt__"
+
+
+def _raise_if_waiting_for_approval(result: Any) -> None:
+    """运行停在人工审批处就算失败：定时任务没人审批（``enable_hitl=False``）。
+
+    不能按成功记录：结束后 thread 会被删掉，等待审批的操作（例如写记忆）就此丢失，
+    却显示为执行成功。
+    """
+    interrupts = result.get(_INTERRUPT_KEY) if isinstance(result, dict) else None
+    if not interrupts:
+        return
+    names = []
+    for item in interrupts:
+        value = getattr(item, "value", None)
+        requests = value.get("action_requests") if isinstance(value, dict) else None
+        names.extend(str(action.get("name")) for action in requests or () if isinstance(action, dict))
+    raise RuntimeError(
+        f"运行停在了人工审批处（{', '.join(names) or '未知操作'}）：定时任务没有人工审批，本次未完成"
+    )
+
+
 async def _execute_task(task_id: str):
     """定时任务执行核心逻辑：创建新 session → 调用 agent → 记录结果。"""
-    from .agent_manager import get_or_create_agent_for_session, remove_session_agent
     from langchain_core.messages import HumanMessage
+
+    get_or_create_agent_for_session, remove_session_agent = _require_agent_lifecycle()
 
     db = get_database()
     task = db.get_scheduled_task(task_id)
@@ -258,6 +394,7 @@ async def _execute_task(task_id: str):
             f"[{task_id[-5:]}] 🔒 已获取分布式锁 | task={task.name} | key={lock_handle.key} | "
             f"owner={lock_handle.owner} | ttl={lock_handle.ttl_seconds}s"
         )
+
     # 登记在途运行，便于暂停/删除时中断
     running = asyncio.current_task()
     running_tasks[task_id] = running
@@ -310,7 +447,6 @@ async def _execute_task(task_id: str):
         "timestamp": started_at,
     }
     db.add_message(session_id, user_msg)
-    db.add_message_row(session_id, user_msg)
 
     logger.info(f"[{task_id[-5:]}] 定时任务开始执行 | run_id={run_id[-5:]} | session={session_id[-5:]} | prompt={task.task_prompt[:80]}")
     log_task_event(
@@ -324,6 +460,7 @@ async def _execute_task(task_id: str):
     )
 
     agent = None
+    thread_id = None
     try:
         agent = await get_or_create_agent_for_session(
             session_id, task.username, workspace_name, enable_hitl=False
@@ -334,10 +471,16 @@ async def _execute_task(task_id: str):
             raise _TaskAborted(f"任务已被暂停/删除: {task_id}")
         thread_id = f"sched-{task_id}-{run_id}"
         handler = _PauseAwareCallback(task_id)
+        from easy_agent.agent.run_config import build_run_config, run_context_kwargs
+
+        # 与聊天流同一套调用参数：共享编译图必须带 SessionContext，否则 backend 在
+        # before_agent 读记忆时就抛「缺少运行期 SessionContext」，任务直接失败。
         result = await agent.agent.ainvoke(
             {"messages": [HumanMessage(content=task.task_prompt)]},
-            config={"configurable": {"thread_id": thread_id}, "callbacks": [handler]},
+            config=build_run_config(agent, thread_id, callbacks=[handler]),
+            **run_context_kwargs(agent),
         )
+        _raise_if_waiting_for_approval(result)
         messages = result.get("messages", []) if isinstance(result, dict) else []
         final_content = ""
         for msg in reversed(messages):
@@ -367,7 +510,6 @@ async def _execute_task(task_id: str):
                 "timestamp": datetime.now().isoformat(),
             }
             db.add_message(session_id, assistant_msg)
-            db.add_message_row(session_id, assistant_msg)
 
             finished_at = datetime.now().isoformat()
             db.update_scheduled_task_run(
@@ -423,6 +565,12 @@ async def _execute_task(task_id: str):
         stopping_tasks.discard(task_id)
         if agent is not None:
             remove_session_agent(session_id)
+        # 每次运行一个独立 thread，且关闭了 HITL，运行结束后没有需要恢复的状态；
+        # checkpointer 不会自动清理，这里删掉（DA-03）
+        if agent is not None and thread_id:
+            from easy_agent.persistence.checkpoints import adelete_agent_thread
+
+            await adelete_agent_thread(agent, thread_id)
         # 更新 last_run_at 和 next_run_at
         scheduler = get_scheduler()
         job = scheduler.get_job(task_id)

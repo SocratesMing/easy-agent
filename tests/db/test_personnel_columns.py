@@ -1,3 +1,7 @@
+"""users 表人员扩展列测试：新用户默认值、迁移幂等、从 organization_id 回填 department_id、
+缺列时行映射的兜底值。
+"""
+
 from easy_agent.db.database import Database, init_database
 
 

@@ -13,19 +13,48 @@ from pathlib import Path
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import Field
 from pydantic import BaseModel
 
 from langchain_mcp_adapters.client import MultiServerMCPClient
 
-from ..config import Config
-from ..middleware import get_current_username
-from ..services import get_agent_config, invalidate_user_agents
-from ..services.connectors import catalog_connectors, find_catalog_entry
-from ..services.mcp import (
+from easy_agent.models.api import (
+    ConnectorConfigUpdateResponse,
+    ConnectorToolsResponse,
+    ConnectorToggleResponse,
+    McpAddResponse,
+    McpDeleteResponse,
+    McpRawResponse,
+    McpSaveResponse,
+    SessionConnectorSetResponse,
+    SessionConnectorSwitchesResponse,
+    ConnectorInstallResponse,
+    ConnectorStatusResponse,
+    ConnectorUninstallResponse,
+)
+
+from easy_agent.bootstrap.config import Config
+from easy_agent.middleware import get_current_username
+from easy_agent.services import (
+    get_agent_config,
+    get_session_connectors,
+    invalidate_user_agents,
+    resolve_connector_servers,
+)
+from easy_agent.services.agent_manager import aset_session_connectors
+from easy_agent.services.connectors import catalog_connectors, find_catalog_entry
+from easy_agent.services.mcp import (
+    _stdio_precheck,
     _unpack_error,
     invalidate_mcp_cache,
     load_mcp_config,
     normalize_servers_mapping,
+)
+from easy_agent.services.mcp_policy import (
+    McpPolicyError,
+    ensure_servers_allowed,
+    normalize_workspace_paths,
+    stdio_violation,
 )
 
 logger = logging.getLogger(__name__)
@@ -105,6 +134,20 @@ def _extract_servers(user_config: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return normalize_servers_mapping(user_config)
 
 
+def _prepare_servers(servers: dict[str, Any], username: str) -> dict[str, Any]:
+    """写入前的执行策略（SEC-04）：工作区路径字段换算成绝对路径，再校验。
+
+    普通用户的自定义 stdio 连接器、或文件路径不在个人工作区内时返回 403。
+    """
+    prepared = normalize_workspace_paths(servers, username)
+    try:
+        ensure_servers_allowed(prepared, username)
+    except McpPolicyError as exc:
+        logger.warning(f"拒绝 MCP 配置 | 用户: {username} | {exc}")
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    return prepared
+
+
 async def _validate_servers(
     names: list[str], username: str
 ) -> list[dict[str, Any]]:
@@ -116,16 +159,26 @@ async def _validate_servers(
         return []
 
     tasks = [
-        _validate_one(name, all_config[name])
+        _validate_one(name, all_config[name], username)
         for name in names
         if all_config.get(name)
     ]
     return list(await asyncio.gather(*tasks))
 
 
-async def _validate_one(name: str, cfg: dict[str, Any]) -> dict[str, Any]:
-    """连接单个 server 校验状态，异常不抛出。剥离 enabled 标记（非 MCP 配置字段）。"""
+async def _validate_one(name: str, cfg: dict[str, Any], username: str) -> dict[str, Any]:
+    """连接单个 server 校验状态，异常不抛出。剥离 enabled 标记（非 MCP 配置字段）。
+
+    不允许运行的 stdio 连接器（SEC-04）直接返回错误，不拉起进程。
+    """
+    violation = stdio_violation(cfg, username)
+    if violation:
+        return {"name": name, "status": "error", "tools_count": 0, "error": violation}
     server_cfg = {k: v for k, v in cfg.items() if k != "enabled"}
+    # stdio 启动前先查命令 / 工作目录是否存在，给出比进程报错更直白的提示
+    precheck = _stdio_precheck(server_cfg)
+    if precheck:
+        return {"name": name, "status": "error", "tools_count": 0, "error": precheck}
     try:
         client = MultiServerMCPClient({name: server_cfg})
         tools = await client.get_tools()
@@ -137,7 +190,7 @@ async def _validate_one(name: str, cfg: dict[str, Any]) -> dict[str, Any]:
         return {"name": name, "status": "error", "tools_count": 0, "error": err_text}
 
 
-@router.get("/status", summary="校验当前用户所有已安装 MCP 的连接状态")
+@router.get("/status", summary="校验当前用户所有已安装 MCP 的连接状态", response_model=ConnectorStatusResponse)
 async def get_connectors_status(
     username: Annotated[str, Depends(get_current_username)],
 ):
@@ -150,7 +203,7 @@ async def get_connectors_status(
     raw = _read_user_mcp_raw(username, config)
     servers = raw.get("servers") or {}
     tasks = [
-        _validate_one(name, cfg)
+        _validate_one(name, cfg, username)
         for name, cfg in servers.items()
         if isinstance(cfg, dict)
     ]
@@ -191,10 +244,12 @@ class ConnectorInstallRequest(ConnectorIdRequest):
     默认 true（「运行」按钮语义：保存并立即验证连接）。
     """
     values: dict[str, str] = {}
-    validate: bool = True
+    # 字段名不能叫 validate（遮蔽 BaseModel.validate 会产生 Pydantic 警告）；
+    # 对外仍接受 JSON 字段 "validate"，保持前端契约不变。
+    validate_after_install: bool = Field(default=True, alias="validate")
 
 
-@router.post("/install", summary="安装内置连接器到用户 mcp.json")
+@router.post("/install", summary="安装内置连接器到用户 mcp.json", response_model=ConnectorInstallResponse)
 async def install_connector(
     request: ConnectorInstallRequest,
     username: Annotated[str, Depends(get_current_username)],
@@ -217,10 +272,13 @@ async def install_connector(
         if f.get("required", True) and not str(request.values.get(f["key"], "")).strip()
     ]
     if missing:
+        # 响应头按 latin-1 编码传输：中文 label 必须转义为 \uXXXX，否则 Starlette
+        # 构造响应时抛 UnicodeEncodeError，最终变成全局 500（回归 D1）。detail 仍在
+        # JSON body 中保留可读中文，前端无需依赖该响应头。
         raise HTTPException(
             status_code=400,
             detail=f"请先填写以下必填信息: { '、'.join(missing) }",
-            headers={"X-Missing-Fields": json.dumps(missing, ensure_ascii=False)},
+            headers={"X-Missing-Fields": json.dumps(missing, ensure_ascii=True)},
         )
 
     # 深拷贝目录配置并填充用户填写的字段值，标记默认启用
@@ -229,6 +287,7 @@ async def install_connector(
         if str(request.values.get(f["key"], "")).strip():
             _set_config_field(server_cfg, f["key"], request.values[f["key"]].strip())
     server_cfg.setdefault("enabled", True)
+    server_cfg = _prepare_servers({request.id: server_cfg}, username)[request.id]
 
     raw = _read_user_mcp_raw(username, config)
     existing: dict[str, Any] = raw.get("servers", {})
@@ -253,13 +312,13 @@ async def install_connector(
         "agents_invalidated": evicted,
         "server_status": (
             await _validate_servers([request.id], username)
-            if request.validate
+            if request.validate_after_install
             else []
         ),
     }
 
 
-@router.post("/uninstall", summary="卸载用户 mcp.json 中的连接器")
+@router.post("/uninstall", summary="卸载用户 mcp.json 中的连接器", response_model=ConnectorUninstallResponse)
 async def uninstall_connector(
     request: ConnectorIdRequest,
     username: Annotated[str, Depends(get_current_username)],
@@ -295,21 +354,6 @@ async def uninstall_connector(
 # key 是 config 内的路径，支持两种段：
 #   字典段："headers.Authorization" / "env.TCA_TOKEN"
 #   数组段："args.1"（数字段索引进 list，用于 stdio 的位置参数）
-
-
-def _get_config_field(cfg: dict[str, Any], key_path: str) -> tuple[bool, Any]:
-    """读取 config 内字段路径的值，返回 (是否存在, 值)。"""
-    cur: Any = cfg
-    for seg in key_path.split("."):
-        if isinstance(cur, dict):
-            if seg not in cur:
-                return False, None
-            cur = cur[seg]
-        elif isinstance(cur, list) and seg.isdigit() and int(seg) < len(cur):
-            cur = cur[int(seg)]
-        else:
-            return False, None
-    return True, cur
 
 
 def _set_config_field(cfg: dict[str, Any], key_path: str, value: Any) -> None:
@@ -371,7 +415,7 @@ class ConnectorToggleRequest(BaseModel):
     enabled: bool
 
 
-@router.post("/toggle", summary="启用/停用已安装的连接器（开关）")
+@router.post("/toggle", summary="启用/停用已安装的连接器（开关）", response_model=ConnectorToggleResponse)
 async def toggle_connector(
     request: ConnectorToggleRequest,
     username: Annotated[str, Depends(get_current_username)],
@@ -390,7 +434,7 @@ async def toggle_connector(
 
     cfg["enabled"] = request.enabled
     raw["servers"] = existing
-    user_mcp_path = _write_user_mcp_raw(username, config, raw)
+    _write_user_mcp_raw(username, config, raw)
     invalidate_mcp_cache(username)
     evicted = invalidate_user_agents(username)
     logger.info(
@@ -405,7 +449,69 @@ async def toggle_connector(
     }
 
 
-@router.get("/tools", summary="查看已安装连接器的工具列表")
+# ── 会话级开关（输入框「+」→ 连接器面板，仅本次会话临时生效） ──────────────
+
+
+class SessionConnectorsRequest(BaseModel):
+    """会话级连接器开关：全量提交该会话当前**启用**的连接器。
+
+    元素为公共目录的 id 或自定义 server 名（与 mcp.json 的 server key 一致），
+    由 ``resolve_connector_servers`` 归一化。空列表表示该会话把所有连接器都关掉。
+    """
+
+    session_id: str
+    connectors: list[str] = []
+
+
+@router.get("/session", summary="查询会话级连接器开关（null = 尚未设置，等价于全部启用）", response_model=SessionConnectorSwitchesResponse)
+async def get_session_connector_switches(
+    session_id: str,
+    username: Annotated[str, Depends(get_current_username)],
+):
+    """返回该会话显式启用的连接器 server 名列表。
+
+    ``connectors: null`` 表示这个会话还没动过开关（默认全部启用），
+    与「空数组 = 用户把开关全部关闭」是两种不同状态。
+    """
+    servers = get_session_connectors(session_id)
+    return {
+        "session_id": session_id,
+        "connectors": None if servers is None else list(servers),
+    }
+
+
+@router.post("/session", summary="设置会话级连接器开关（仅本次会话，不写 mcp.json）", response_model=SessionConnectorSetResponse)
+async def set_session_connector_switches(
+    request: SessionConnectorsRequest,
+    username: Annotated[str, Depends(get_current_username)],
+):
+    """全量写入该会话的连接器启用集合，并驱逐其缓存 Agent 让新工具集立即生效。
+
+    与 ``/toggle``（持久开关，写用户 mcp.json 的 ``enabled``）区分：这里只影响
+    当前会话的 Agent 工具集，进程重启或换会话即回到默认的「全部启用」。
+    """
+    servers, unknown = resolve_connector_servers(
+        request.connectors, username, _runtime_config()
+    )
+    evicted = await aset_session_connectors(request.session_id, servers)
+    if unknown:
+        logger.warning(
+            f"会话连接器开关存在未识别项（未安装 / 已停用 / 名称不符），已忽略: {unknown}"
+        )
+    logger.info(
+        f"设置会话连接器开关 | 用户: {username} | 会话: {request.session_id} | "
+        f"启用: {servers or '(全部关闭)'} | 驱逐 Agent: {evicted} 个"
+    )
+    return {
+        "status": "ok",
+        "session_id": request.session_id,
+        "connectors": servers,
+        "unknown": unknown,
+        "agents_invalidated": evicted,
+    }
+
+
+@router.get("/tools", summary="查看已安装连接器的工具列表", response_model=ConnectorToolsResponse)
 async def list_connector_tools(
     name: str,
     username: Annotated[str, Depends(get_current_username)],
@@ -420,6 +526,10 @@ async def list_connector_tools(
     cfg = (raw.get("servers") or {}).get(name)
     if not isinstance(cfg, dict):
         raise HTTPException(status_code=404, detail=f"连接器不存在: {name}")
+
+    violation = stdio_violation(cfg, username)
+    if violation:
+        return {"name": name, "tools": [], "error": violation}
 
     server_cfg = {k: v for k, v in cfg.items() if k != "enabled"}
     try:
@@ -444,7 +554,7 @@ class ConnectorConfigUpdateRequest(BaseModel):
     values: dict[str, str]
 
 
-@router.put("/config", summary="修改已安装连接器的配置字段（url / key 等）")
+@router.put("/config", summary="修改已安装连接器的配置字段（url / key 等）", response_model=ConnectorConfigUpdateResponse)
 async def update_connector_config(
     request: ConnectorConfigUpdateRequest,
     username: Annotated[str, Depends(get_current_username)],
@@ -483,6 +593,7 @@ async def update_connector_config(
         _set_config_field(cfg, key_path, value)
         applied[key_path] = value
     if applied:
+        existing[request.id] = _prepare_servers({request.id: cfg}, username)[request.id]
         raw["servers"] = existing
         _write_user_mcp_raw(username, config, raw)
         invalidate_mcp_cache(username)
@@ -508,7 +619,7 @@ async def update_connector_config(
 # ── mcp.json 原文读写 ─────────────────────────────────────────────────
 
 
-@router.get("/mcp/raw", summary="读取用户 mcp.json 原文")
+@router.get("/mcp/raw", summary="读取用户 mcp.json 原文", response_model=McpRawResponse)
 async def get_mcp_raw(
     username: Annotated[str, Depends(get_current_username)],
 ):
@@ -528,7 +639,7 @@ class SaveMcpRawRequest(BaseModel):
     content: str
 
 
-@router.put("/mcp/raw", summary="保存用户 mcp.json 原文")
+@router.put("/mcp/raw", summary="保存用户 mcp.json 原文", response_model=McpSaveResponse)
 async def save_mcp_raw(
     request: SaveMcpRawRequest,
     username: Annotated[str, Depends(get_current_username)],
@@ -551,7 +662,7 @@ async def save_mcp_raw(
     if not isinstance(parsed, dict):
         raise HTTPException(status_code=400, detail="mcp.json 顶层必须是 JSON 对象")
 
-    servers = _extract_servers(parsed)
+    servers = _prepare_servers(_extract_servers(parsed), username)
     config = _runtime_config()
     user_mcp_path = _write_user_mcp_raw(username, config, {"servers": servers})
     invalidate_mcp_cache(username)
@@ -577,7 +688,7 @@ class AddMcpServerRequest(BaseModel):
     config: dict[str, Any]
 
 
-@router.post("/mcp", summary="粘贴 JSON 添加 MCP 服务")
+@router.post("/mcp", summary="粘贴 JSON 添加 MCP 服务", response_model=McpAddResponse)
 async def add_mcp_server(
     request: AddMcpServerRequest,
     username: Annotated[str, Depends(get_current_username)],
@@ -605,6 +716,7 @@ async def add_mcp_server(
             detail=f"MCP 服务已存在: {', '.join(duplicates)}（请先删除或改名）",
         )
 
+    new_servers = _prepare_servers(new_servers, username)
     existing.update(new_servers)
     raw["servers"] = existing
     user_mcp_path = _write_user_mcp_raw(username, config, raw)
@@ -626,7 +738,7 @@ async def add_mcp_server(
     }
 
 
-@router.delete("/mcp/{name}", summary="删除指定 MCP 服务")
+@router.delete("/mcp/{name}", summary="删除指定 MCP 服务", response_model=McpDeleteResponse)
 async def delete_mcp_server(
     name: str,
     username: Annotated[str, Depends(get_current_username)],

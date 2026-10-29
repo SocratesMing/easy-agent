@@ -1,0 +1,469 @@
+"""公共（预置）专家 Agent 的目录发现与读取。
+
+与「我的专家」的关系（见 ``docs/expert-agent-solution.md``）：
+
+- **我的专家**：用户在界面里创建，落库（``expert_agents`` 表）+ 版本目录
+  （``workspace/{username}/experts/{id}/v{n}/``），可改可删；
+- **公共专家**：随代码/发行包预置，**只落目录、不落库**，只读（不可改、不可删），
+  全部放在一个公共目录下（默认项目根的 ``experts/``）。
+
+目录约定（两种布局都支持，逐个专家目录自适应）：
+
+1. **版本目录（预置专家的标准布局，与「我的专家」完全一致）**：
+   ``experts/{expert_id}/active``（内容为版本号）+ ``experts/{expert_id}/v{n}/``
+   下放 ``config.yaml`` / ``manifest.json`` / 提示词 ``md`` / ``README.md``；
+2. **平铺（兼容旧目录）**：
+   ``experts/{expert_id}/config.yaml`` + ``experts/{expert_id}/{name_en}.md``。
+   缺 ``active`` 时取最大版本号。
+
+``config.yaml`` 里识别的键与 ``expert_service.write_expert_version`` 写出的完全一致
+（``name_cn`` / ``name_en`` / ``description`` / ``skills_names`` / ``tag_id`` /
+``features_prompt`` …），因此「用我的专家目录里的配置文件直接拷成公共专家」也能被识别。
+
+本模块只读文件系统，不碰数据库；返回的字段名与 ``api/expert.py`` 的 ``_to_public``
+保持一致，前端卡片/详情页/召唤链路可原样复用。
+
+**存在标志**：一个目录只有在能找到提示词 ``*.md`` 时才算「一个公共专家」。缺失提示词
+的目录会在列表里被跳过、召唤时返回 404 —— 这与「我的专家」在磁盘缺失时降级为通用
+Agent 的策略不同：公共专家的内容随发行包提供，缺文件属打包错误，需要显式暴露，
+而不是静默地用通用 Agent 回答。
+"""
+
+import logging
+from easy_agent.bootstrap.env import env_str
+from pathlib import Path
+from typing import Any, Optional
+
+import yaml
+
+from easy_agent.utils.paths import PROJECT_ROOT
+
+logger = logging.getLogger(__name__)
+
+#: 公共专家目录的环境变量覆盖项（优先级：配置 > 环境变量 > 默认 <项目根>/experts）
+ENV_EXPERTS_DIR = "EASY_EXPERTS_DIR"
+
+#: 默认目录的**名字**，锚定在项目根（``PROJECT_ROOT``）下解析：预置专家是随代码交付的
+#: 内容资产，默认位置必须跟着代码走，而不是进程工作目录（``uvicorn`` / ``systemd`` /
+#: IDE 启动时 CWD 各不相同，用 ``./experts`` 会导致「明明装了预置专家却扫不到」）。
+DEFAULT_EXPERTS_DIRNAME = "experts"
+#: 兼容旧口径的默认值（相对进程 CWD）；仅在项目根下同名目录不存在时兜底使用。
+DEFAULT_EXPERTS_DIR = "./experts"
+
+#: 需要跳过的目录名（隐藏目录、模板目录）
+_SKIP_PREFIXES = (".", "_")
+
+#: 公共专家对外统一状态：永远「可用」（预置内容随发行包一起验证过）
+STATUS_ACTIVE = "active"
+
+
+# ── 根目录解析 ────────────────────────────────────────────────────────
+
+
+def _ensure_experts_root_config() -> str:
+    """读取 ``config.yaml`` 的 ``tools.experts_dir``（读不到返回空串）。"""
+    try:
+        # 延迟导入：避免 services 包初始化期的循环依赖
+        from easy_agent.services.agent_manager import get_agent_config
+
+        cfg = get_agent_config()
+        if cfg and cfg.get("config"):
+            return (getattr(cfg["config"].tools, "experts_dir", "") or "").strip()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("读取 tools.experts_dir 失败，改用环境变量/默认值: %s", exc)
+    return ""
+
+
+def _resolve_relative(raw: str) -> Path:
+    """把（可能是相对路径的）目录值解析成绝对路径。
+
+    相对路径的解析顺序：**进程 CWD** → **项目根**。前者保持历史行为（本地
+    ``./experts`` 直接命中），后者保证「换启动目录也能找到」——这是本次改动的
+    核心诉求：用户改配置里的目录后，程序在任何启动方式下都能找到预置专家。
+    两处都不存在时返回 CWD 口径的路径，交由调用方记 warning（保持报错信息
+    指向用户真正写下的位置，而不是被静默改写成别处）。
+    """
+    path = Path(raw).expanduser()
+    if path.is_absolute():
+        return path
+
+    cwd_path = Path.cwd() / path
+    if cwd_path.is_dir():
+        return cwd_path
+
+    root_path = PROJECT_ROOT / path
+    if root_path.is_dir():
+        logger.info(
+            "📂 公共专家目录按项目根解析 | 配置值: %s | 实际: %s（进程 CWD 下不存在）",
+            raw,
+            root_path,
+        )
+        return root_path
+    return cwd_path
+
+
+def public_experts_root_info() -> tuple[Path, str]:
+    """公共专家根目录 + 来源标记，来源取值 ``config`` / ``env`` / ``default``。
+
+    解析优先级：``config.yaml`` 的 ``tools.experts_dir`` > 环境变量
+    ``EASY_EXPERTS_DIR`` > 默认 ``<项目根>/experts``（再退 ``./experts``）。
+
+    ``tools.experts_dir`` 采用 ``getattr`` 读取：老配置里没有该键时自动降级，
+    不需要改动 ``config.py`` 也不会报错。
+    """
+    configured = _ensure_experts_root_config()
+    if configured:
+        return _resolve_relative(configured), "config"
+
+    env_raw = env_str(ENV_EXPERTS_DIR)
+    if env_raw:
+        return _resolve_relative(env_raw), "env"
+
+    anchored = PROJECT_ROOT / DEFAULT_EXPERTS_DIRNAME
+    if anchored.is_dir():
+        return anchored, "default"
+    # 项目根下没有（非常规布局）：退回历史口径 ./experts（相对 CWD）
+    return Path(DEFAULT_EXPERTS_DIR), "default"
+
+
+def public_experts_root() -> Path:
+    """公共专家根目录。
+
+    **这是全模块唯一的目录解析入口**（``discover_public_experts`` /
+    ``find_public_expert`` 都经它取根目录），测试与部署侧替换目录时只需替换本函数。
+    """
+    return public_experts_root_info()[0]
+
+
+def public_experts_root_source() -> str:
+    """目录来源标记（``config`` / ``env`` / ``default``），仅用于日志。"""
+    return public_experts_root_info()[1]
+
+
+#: 来源标记 -> 用户可读的出处说明（写进日志，便于定位「扫不到」的原因）
+_SOURCE_LABELS = {
+    "config": "config.tools.experts_dir",
+    "env": f"环境变量 {ENV_EXPERTS_DIR}",
+    "default": f"默认值 <项目根>/{DEFAULT_EXPERTS_DIRNAME}",
+}
+
+
+def public_experts_root_hint() -> str:
+    """一行式说明：目录来自哪里、当前解析成什么（用于启动/告警日志）。"""
+    root, source = public_experts_root_info()
+    return f"{root.absolute()}（来源: {_SOURCE_LABELS.get(source, source)}）"
+
+
+# ── 单个专家目录的解析 ────────────────────────────────────────────────
+
+
+def _read_yaml(path: Path) -> dict:
+    """读 YAML；缺失/损坏时返回空 dict（公共专家不该因一个坏文件整列失败）。"""
+    if not path.is_file():
+        return {}
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("公共专家配置解析失败 | %s | %s", path, exc)
+        return {}
+
+
+def _read_json(path: Path) -> dict:
+    if not path.is_file():
+        return {}
+    try:
+        import json
+
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("公共专家 manifest 解析失败 | %s | %s", path, exc)
+        return {}
+
+
+def _find_prompt_file(folder: Path) -> Optional[Path]:
+    """定位目录里的专家提示词文件。
+
+    兼容旧版 ``EXPERT.md``；否则取除 ``README.md`` 外按名称排序的第一个 ``*.md``。
+    """
+    legacy = folder / "EXPERT.md"
+    if legacy.is_file():
+        return legacy
+    candidates = sorted(
+        p for p in folder.glob("*.md") if p.name.lower() != "readme.md"
+    )
+    return candidates[0] if candidates else None
+
+
+def _parse_version_dirs(expert_dir: Path) -> list[int]:
+    versions: list[int] = []
+    for child in expert_dir.iterdir():
+        if child.is_dir() and child.name.startswith("v") and child.name[1:].isdigit():
+            versions.append(int(child.name[1:]))
+    return sorted(versions)
+
+
+def _resolve_content_dir(expert_dir: Path) -> tuple[Path, int]:
+    """定位「专家内容目录」与其版本号。
+
+    Returns:
+        ``(内容目录, 版本号)``；无法识别返回 ``(expert_dir, 1)``（当作平铺处理）。
+    """
+    active_file = expert_dir / "active"
+    versions = _parse_version_dirs(expert_dir)
+
+    if active_file.is_file():
+        raw = ""
+        try:
+            raw = active_file.read_text(encoding="utf-8").strip()
+        except OSError as exc:  # noqa: BLE001
+            logger.warning("读取公共专家 active 指针失败 | %s | %s", active_file, exc)
+        if raw.isdigit() and (expert_dir / f"v{raw}").is_dir():
+            return expert_dir / f"v{raw}", int(raw)
+        if versions:
+            # active 非法：回退最大版本，与「我的专家」的容错口径一致
+            logger.warning(
+                "公共专家 %s 的 active 指针非法(%r)，回退 v%s",
+                expert_dir.name,
+                raw,
+                versions[-1],
+            )
+            return expert_dir / f"v{versions[-1]}", versions[-1]
+
+    if versions:
+        return expert_dir / f"v{versions[-1]}", versions[-1]
+    return expert_dir, 1
+
+
+def _as_str_list(value: Any) -> list[str]:
+    """规整字符串数组字段（兼容 JSON 字符串、英文逗号分隔的写法）。"""
+    if isinstance(value, list):
+        return [str(v).strip() for v in value if str(v).strip()]
+    if isinstance(value, str) and value.strip():
+        text = value.strip()
+        if text.startswith("["):
+            try:
+                import json
+
+                parsed = json.loads(text)
+                if isinstance(parsed, list):
+                    return [str(v).strip() for v in parsed if str(v).strip()]
+            except Exception:  # noqa: BLE001
+                pass
+        return [part.strip() for part in text.replace("，", ",").split(",") if part.strip()]
+    return []
+
+
+def _first_plain_line(md_text: str) -> str:
+    """取 md 正文里第一行非标题/非空内容，作为缺 description 时的兜底描述。"""
+    for raw in md_text.splitlines():
+        line = raw.strip().lstrip("#").strip()
+        if not line or line.startswith("---") or ":" in line[:20]:
+            continue
+        return line[:120]
+    return ""
+
+
+def read_public_expert(expert_dir: Path) -> Optional[dict]:
+    """把一个公共专家目录解析成卡片数据；无法识别时返回 ``None``。
+
+    返回字段与 ``api/expert.py`` 的 ``_to_public`` 对齐（前端可直接复用卡片
+    与召唤链路），额外带 ``scope="public"`` 供前端做只读渲染。
+    """
+    if not expert_dir.is_dir() or expert_dir.name.startswith(_SKIP_PREFIXES):
+        return None
+
+    content_dir, version = _resolve_content_dir(expert_dir)
+    prompt_path = _find_prompt_file(content_dir)
+    if prompt_path is None:
+        logger.warning(
+            "跳过公共专家目录（未找到提示词 md）| %s", expert_dir.absolute()
+        )
+        return None
+
+    cfg = _read_yaml(content_dir / "config.yaml") or _read_yaml(expert_dir / "config.yaml")
+    manifest = _read_json(content_dir / "manifest.json")
+
+    expert_id = str(cfg.get("expert_agent_id") or expert_dir.name).strip()
+    name_cn = str(cfg.get("name_cn") or "").strip()
+    name_en = str(cfg.get("name_en") or "").strip()
+
+    # 提示词正文（仅用于兜底 name / description，不放进列表响应体）
+    prompt_text = ""
+    try:
+        prompt_text = prompt_path.read_text(encoding="utf-8")
+    except OSError as exc:  # noqa: BLE001
+        logger.warning("读取公共专家提示词失败 | %s | %s", prompt_path, exc)
+
+    if not name_cn:
+        # 无 config.yaml 时的兜底：目录名 / 文件名
+        name_cn = expert_dir.name.replace("_", " ").replace("-", " ").strip() or name_en
+    if not name_en:
+        name_en = prompt_path.stem
+
+    description = str(cfg.get("description") or "").strip() or _first_plain_line(prompt_text)
+
+    updated = (
+        str(cfg.get("update_timestamp") or "").strip()
+        or str(manifest.get("generated_at") or "").strip()
+    )
+
+    return {
+        "export_agent_id": expert_id,
+        "session_id": "",
+        "tag_id": str(cfg.get("tag_id") or "").strip(),
+        "export_name_en": name_en,
+        "export_name_cn": name_cn,
+        # 公共专家列表不下发提示词全文（列表接口保持轻量），
+        # 召唤时由 load_public_prompt() 按需读取。
+        "export_prompt": "",
+        "export_description": description,
+        "export_skills_names": _as_str_list(cfg.get("skills_names")),
+        # 依赖技能（技能目录名，不是展示名）：召唤该专家时由
+        # services/skill_provision.py 自动「添加」到用户公共技能清单。
+        "export_required_skills": _as_str_list(cfg.get("required_skills")),
+        # 画像补充字段（相关性预检用）：公共专家的 config.yaml 里有场景与能力清单，
+        # 不下发到列表也不影响前端（未知字段被忽略），但能让预检看到"能产出报告"。
+        "export_scenario": str(cfg.get("scenario") or "").strip(),
+        "export_capabilities": _as_str_list(cfg.get("capabilities")),
+        "export_features_prompt": _as_str_list(cfg.get("features_prompt")),
+        "export_file_path": str(prompt_path),
+        "agent_status": STATUS_ACTIVE,
+        "export_version": int(cfg.get("version") or version or 1),
+        "create_timestamp": updated,
+        "update_timestamp": updated,
+        # 只读标记：前端据此隐藏「编辑 / 删除」，并展示「预置」标签
+        "scope": "public",
+    }
+
+
+# ── 列表 / 查找 / 读提示词 ────────────────────────────────────────────
+
+
+def discover_public_experts() -> list[dict]:
+    """扫描公共专家目录，返回全部可识别的公共专家（按中文名排序）。"""
+    # 取根目录走 public_experts_root()（唯一缝口，便于测试/部署替换）
+    root = public_experts_root()
+    source = public_experts_root_source()
+    if not root.is_dir():
+        logger.warning(
+            "⚠️ 公共（预置）专家目录不存在，列表将为空 | 解析目录: %s | 来源: %s | "
+            "检查 config.yaml 的 tools.experts_dir（或环境变量 %s），"
+            "或把预置专家目录放到 <项目根>/%s",
+            root.absolute(),
+            _SOURCE_LABELS.get(source, source),
+            ENV_EXPERTS_DIR,
+            DEFAULT_EXPERTS_DIRNAME,
+        )
+        return []
+
+    items: list[dict] = []
+    seen: set[str] = set()
+    for child in sorted(root.iterdir(), key=lambda p: p.name):
+        if not child.is_dir() or child.name.startswith(_SKIP_PREFIXES):
+            continue
+        item = read_public_expert(child)
+        if not item:
+            continue
+        # 极端情况（两个目录声明了同一个 expert_agent_id）：先到先得，避免前端 key 冲突
+        if item["export_agent_id"] in seen:
+            logger.warning(
+                "公共专家 ID 重复，已跳过 | id=%s | dir=%s",
+                item["export_agent_id"],
+                child.name,
+            )
+            continue
+        seen.add(item["export_agent_id"])
+        items.append(item)
+
+    items.sort(key=lambda row: (row.get("export_name_cn") or "", row["export_agent_id"]))
+    logger.info(
+        "📂 公共专家目录 | 目录: %s | 来源: %s | 数量: %s",
+        root.absolute(),
+        _SOURCE_LABELS.get(source, source),
+        len(items),
+    )
+    return items
+
+
+def find_public_expert(expert_id: str) -> Optional[dict]:
+    """按 ``export_agent_id`` 查找公共专家；不存在返回 ``None``。
+
+    直接按目录名命中（O(1)），不依赖遍历顺序；目录名与 ID 不一致时（config.yaml
+    里写了别的 ID）退化为一次全量扫描，保证「列表里能看到的，召唤时一定找得到」。
+    """
+    if not expert_id:
+        return None
+
+    root = public_experts_root()
+    direct = root / expert_id
+    if direct.is_dir():
+        item = read_public_expert(direct)
+        if item:
+            return item
+
+    for item in discover_public_experts():
+        if item["export_agent_id"] == expert_id:
+            return item
+    return None
+
+
+def required_skills_of_public_expert(expert_id: str) -> list[str]:
+    """只读 ``config.yaml`` 取公共专家的依赖技能（``required_skills``）。
+
+    与 ``find_public_expert`` 的区别：**不读提示词正文**。本函数在每轮对话创建
+    Agent 前都会跑，读几 KB 的 md 纯属浪费。
+
+    先按目录名直判（O(1)）；目录名与 config 里的 ``expert_agent_id`` 不一致时，
+    退化为扫描各目录的 ``config.yaml``（只读 yaml，仍不读提示词）。找不到返回空列表
+    ——「我的专家」的 ID 走的正是这条路径，必须足够便宜。
+    """
+    if not expert_id:
+        return []
+
+    root = public_experts_root()
+    direct = root / expert_id
+    if direct.is_dir():
+        content_dir, _ = _resolve_content_dir(direct)
+        cfg = _read_yaml(content_dir / "config.yaml") or _read_yaml(direct / "config.yaml")
+        return _as_str_list(cfg.get("required_skills"))
+
+    if not root.is_dir():
+        return []
+
+    for candidate in sorted(root.iterdir()):
+        if not candidate.is_dir() or candidate.name.startswith(_SKIP_PREFIXES):
+            continue
+        content_dir, _ = _resolve_content_dir(candidate)
+        cfg = _read_yaml(content_dir / "config.yaml") or _read_yaml(
+            candidate / "config.yaml"
+        )
+        declared = str(cfg.get("expert_agent_id") or candidate.name).strip()
+        if declared == expert_id:
+            return _as_str_list(cfg.get("required_skills"))
+    return []
+
+
+def load_public_prompt(expert_id: str) -> tuple[str, int, str]:
+    """读取公共专家的提示词。
+
+    Returns:
+        ``(prompt_text, version, prompt_file_path)``。专家不存在或提示词不可读时
+        返回 ``("", 0, "")``，由接口层降级为通用 Agent 并告警（与
+        ``expert_service.load_active_prompt`` 的口径一致）。
+    """
+    item = find_public_expert(expert_id)
+    if not item:
+        return "", 0, ""
+    prompt_path = Path(item.get("export_file_path") or "")
+    try:
+        if prompt_path.is_file():
+            return (
+                prompt_path.read_text(encoding="utf-8"),
+                int(item.get("export_version") or 1),
+                str(prompt_path),
+            )
+    except OSError as exc:  # noqa: BLE001
+        logger.warning("读取公共专家提示词失败 | %s | %s", prompt_path, exc)
+    return "", int(item.get("export_version") or 0), str(prompt_path)

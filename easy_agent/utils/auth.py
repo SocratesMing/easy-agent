@@ -19,6 +19,39 @@ ACCESS_TOKEN_EXPIRE_MINUTES = 30
 _DEFAULT_SECRET_FILE = Path("./data/.jwt_secret")
 
 
+def _current_agent_env() -> str:
+    """当前运行环境（AGENT_ENV，缺省 dev），与 initialization 语义一致。"""
+    return (os.environ.get("AGENT_ENV") or "dev").strip().lower()
+
+
+def validate_production_jwt_secret(
+    env: str | None = None, secret: str | None = None
+) -> None:
+    """校验生产环境 JWT 密钥契约（纯函数，无副作用）。
+
+    - ``env`` 缺省读取 ``AGENT_ENV``（缺省 dev）；
+    - ``secret`` 缺省读取 ``EASY_JWT_SECRET``；
+    - 仅 ``prod`` 强制要求显式密钥：未设置（或仅空白）时抛 ``RuntimeError``，
+      阻止启动。生产禁止回退 ``data/.jwt_secret``：多副本/多 worker 各自本地
+      文件会导致 JWT 无法互验，且密钥落盘不符合 Secret 管理要求；
+    - dev/test 不校验，保留密钥文件回退（单机多 worker 仍可共享同一文件）。
+
+    该函数必须在应用启动期（lifespan）调用，不能在模块 import 时调用，
+    否则 pytest / 工具脚本仅 import 就会失败。
+    """
+    current = (env if env is not None else _current_agent_env()).strip().lower()
+    if current != "prod":
+        return
+    value = secret if secret is not None else os.environ.get("EASY_JWT_SECRET")
+    if not (value or "").strip():
+        raise RuntimeError(
+            "生产环境 (AGENT_ENV=prod) 必须显式设置 EASY_JWT_SECRET；"
+            "禁止回退到 data/.jwt_secret：多副本/多 worker 各自本地文件会导致 "
+            "JWT 无法互验，且密钥落盘不符合生产密钥管理要求。"
+            "请通过部署 Secret 注入 EASY_JWT_SECRET（>=32 字节随机值）。"
+        )
+
+
 def _load_or_create_secret(secret_file: Path = _DEFAULT_SECRET_FILE) -> str:
     """返回稳定的 JWT 签名密钥，保证多 worker 进程共享同一密钥。
 
@@ -26,10 +59,20 @@ def _load_or_create_secret(secret_file: Path = _DEFAULT_SECRET_FILE) -> str:
     1. EASY_JWT_SECRET 环境变量（推荐，生产环境显式配置）；
     2. 密钥文件（首次生成后持久化），使未设置环境变量时所有 worker 也能
        读到同一密钥，避免 --workers > 1 下各进程随机密钥互相解不开 token。
+       **仅 dev/test**：prod 未设置环境变量时不会读写该文件（启动期 fail-fast）。
     """
     env_secret = os.environ.get("EASY_JWT_SECRET")
-    if env_secret:
+    if env_secret and env_secret.strip():
         return env_secret
+    if _current_agent_env() == "prod":
+        # 生产禁止把密钥落到本地 data/.jwt_secret：多副本各自本地文件无法互验，
+        # 且密钥落盘不符合 Secret 管理要求。这里返回进程内临时密钥且不写文件，
+        # 应用会在 lifespan 的 validate_production_jwt_secret 中拒绝启动。
+        logger.error(
+            "生产环境 (AGENT_ENV=prod) 未设置 EASY_JWT_SECRET："
+            "不会写入 data/.jwt_secret，应用启动将被拒绝。"
+        )
+        return secrets.token_urlsafe(32)
     try:
         if secret_file.exists():
             stored = secret_file.read_text(encoding="utf-8").strip()
@@ -100,10 +143,3 @@ def decode_access_token(token: str, verify_exp: bool = True) -> Optional[dict]:
         return payload
     except JWTError:
         return None
-
-
-def get_username_from_token(token: str) -> Optional[str]:
-    payload = decode_access_token(token)
-    if payload:
-        return payload.get("sub")
-    return None

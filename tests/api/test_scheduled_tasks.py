@@ -51,6 +51,39 @@ def test_run_task(client: TestClient):
     assert resp.status_code < 600
 
 
+def test_task_workspace_file_rejects_bad_token(client: TestClient):
+    tid = _seed_task(client, "unit-task-ws-bad")
+    resp = client.get(
+        f"/agent/scheduled-tasks/{tid}/workspace/file",
+        params={"file_path": "x.md", "token": "not-a-token"},
+    )
+    assert resp.status_code == 401
+    assert resp.json()["detail"] == "登录已过期或未登录，请重新登录"
+
+
+def test_task_workspace_file_accepts_valid_token(client: TestClient):
+    """token 查询参数认证通过后进入文件定位（文件不存在 -> 404，而非 401）。"""
+    registered = client.post(
+        "/api/auth/register",
+        json={
+            "username": "testuser",
+            "password": "secret123",
+            "organization_id": "test-org",
+            "employee_id": "E-scheduled-ws",
+        },
+    )
+    assert registered.status_code == 200
+    token = registered.json()["access_token"]
+    tid = _seed_task(client, "unit-task-ws-ok")
+
+    resp = client.get(
+        f"/agent/scheduled-tasks/{tid}/workspace/file",
+        params={"file_path": "missing.md", "token": token},
+    )
+    assert resp.status_code == 404
+    assert resp.json()["detail"] == "文件不存在"
+
+
 def test_delete_task(client: TestClient):
     tid = _seed_task(client)
     resp = client.delete(f"/agent/scheduled-tasks/{tid}")

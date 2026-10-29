@@ -15,10 +15,9 @@ import logging
 import os
 from pathlib import Path
 
-logger = logging.getLogger(__name__)
+from easy_agent.utils.paths import PROJECT_ROOT
 
-# easy_agent/utils/env_loader.py -> easy_agent -> 项目根
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+logger = logging.getLogger(__name__)
 
 _loaded = False
 _env_file: Path | None = None

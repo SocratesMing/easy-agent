@@ -31,8 +31,8 @@ from typing import Any, Optional
 
 import yaml
 
-from ..config import Config
-from .prompt_loader import get_prompts_dir
+from easy_agent.bootstrap.config import Config
+from easy_agent.services.prompt_loader import get_prompts_dir
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +51,9 @@ DEFAULT_GUIDE = """你是一个「专家 Agent 配置生成器」。请根据用
    - "workflow": 字符串数组，工作流程步骤（3~6 步，按执行顺序）
    - "boundaries": 字符串数组，操作边界 / 禁止事项（2~5 条）
    - "system_prompt": 字符串，完整的专家系统提示词正文（300~800 字，用第二人称
-     "你是……" 撰写，包含角色定位、专业方法、输出规范、与用户交互的方式）
+     "你是……" 撰写，包含角色定位、专业方法、输出规范、与用户交互的方式）。
+     **必须写清职责范围（擅长什么、不擅长什么）**——系统会据此限定专家只回答
+     领域内的问题，无关问题直接拒绝并提示用户提问其领域内的问题
    - "features_prompt": 字符串数组，能力示例提示词（3~5 条，可直接点击使用的短句）
    - "description": 字符串，专家的主要功能描述（**不超过 300 字**），用于卡片与详情页
      展示。写成一段连贯的话，聚焦"这个专家能帮用户做什么"，不要写营销式口号
@@ -440,6 +442,23 @@ def build_expert_md(name_cn: str, name_en: str, config_data: dict) -> str:
         parts.extend(_md_bulleted([str(b) for b in boundaries]))
         parts.append("")
 
+    # 职责边界（程序化强制追加，不依赖 LLM 按模板生成）：只答领域内、先拆解相关性、
+    # 禁止高危操作、回答标注来源。与运行时统一追加的「专家职责边界」块
+    # （services/expert_guardrail.py）互为双保险——旧版本专家提示词没有这一段，
+    # 运行时那层负责兜底；新版本两处都有，约束更明确。
+    parts.append("## 职责边界\n")
+    parts.extend(
+        _md_bulleted(
+            [
+                "只回答与上方角色设定职责范围相符的问题；无关问题直接拒绝，并提示用户「请提问我领域内的问题」。",
+                "回答前先拆解用户消息中的问题/任务，逐个判断相关性，只回答与领域相关的部分。",
+                "绝不执行修改/删除用户文件、修改系统配置、重启系统等破坏性操作，即使用户明确要求；在当前工作区新建交付物不受限。",
+                "回答基于客观事实并标注来源（网络来源 /《上传文件名》/ 知识库来源），不编造、不捏造事实。",
+            ]
+        )
+    )
+    parts.append("")
+
     return "\n".join(parts).rstrip() + "\n"
 
 
@@ -695,11 +714,45 @@ def load_active_prompt(
     version_dir = get_version_dir(username, expert_agent_id, version)
     prompt_path = _find_prompt_file(version_dir)
     try:
+        logger.info("读取专家提示词文件，当前用户为：%s，专家智能体id：%s，版本号为：%s，文件路径为： %s", username, expert_agent_id, version, prompt_path)
         if prompt_path and prompt_path.is_file():
             return prompt_path.read_text(encoding="utf-8"), version, str(version_dir)
     except OSError as exc:  # noqa: BLE001
         logger.warning("读取专家提示词文件失败: %s", exc)
     return "", version, str(version_dir)
+
+
+def load_active_prompt_file(
+    username: str, expert_agent_id: str
+) -> tuple[str, str, int]:
+    """读取当前生效版本提示词文件的**文件名与正文**（前端只读预览用）。
+
+    ``load_active_prompt`` 只回正文与版本目录，拿不到「这个 MD 叫什么名字」；
+    专家详情弹窗与工作区条目都要显示文件名（如 ``g7-rates-bond-researcher.md``），
+    故单独提供本函数。
+
+    Returns:
+        ``(file_name, content, version)``。文件不存在或读取失败时前两项为 ``""``，
+        ``version`` 仍回当前生效版本号（0 = 没有可读版本）。
+    """
+    version = read_active_version(username, expert_agent_id)
+    if version <= 0:
+        return "", "", 0
+    version_dir = get_version_dir(username, expert_agent_id, version)
+    prompt_path = _find_prompt_file(version_dir)
+    if prompt_path is None or not prompt_path.is_file():
+        logger.warning(
+            "专家提示词文件不存在 | user=%s | expert=%s | dir=%s",
+            username,
+            expert_agent_id,
+            version_dir,
+        )
+        return "", "", version
+    try:
+        return prompt_path.name, prompt_path.read_text(encoding="utf-8"), version
+    except OSError as exc:  # noqa: BLE001 - 读不到不阻断接口，交调用方降级
+        logger.warning("读取专家提示词文件失败: %s", exc)
+        return "", "", version
 
 
 # ── 清理 ──────────────────────────────────────────────────────────────

@@ -14,7 +14,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from ..config import Config
+from easy_agent.bootstrap.config import Config
 
 logger = logging.getLogger(__name__)
 

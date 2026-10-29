@@ -1,8 +1,8 @@
 """pytest 公共夹具。
 
 策略：
-- 通过 EASY_CONFIG 指向 tests/test_config.yaml，并用环境变量将数据库/工作区/记忆/技能等
-  路径重定向到临时目录，避免依赖宿主机真实配置与外部服务。
+- 根据 tests/test_config.yaml 生成一份路径已解析的临时配置，并通过 EASY_CONFIG
+  指向它；生产配置保持“YAML 值不做环境变量插值”的最新语义。
 - 每个测试使用独立的内存 SQLite 数据库（:memory:），保证隔离。
 - 固定当前用户名为 "testuser"，绕过 JWT 校验，方便接口测试；
   需要验证真实鉴权的用例可在测试内临时移除 get_current_username 的 override。
@@ -16,18 +16,18 @@ import uuid
 from pathlib import Path
 
 import pytest
+import yaml
 
-# 手动演示脚本 / 陈旧单测，不纳入接口与业务场景测试套件：
-# - test_v3_streaming.py：需真实 config.yaml + 联网调用 LLM，模块级 test_* 协程会被收集并执行 sys.exit(1)
-# - test_basic.py：引用了已移除的模块（easy_agent.web、Colors 等），在当前代码库下恒失败
-collect_ignore = ["test_v3_streaming.py", "test_basic.py"]
+# 说明：历史上用 collect_ignore 隐藏过 test_v3_streaming.py / test_basic.py。
+# 这两个文件已不存在；不要再用 collect_ignore 隐藏坏用例（审计 ARCH-11），
+# 需要暂时跳过的用例应使用 pytest.mark.skip(reason=...)，保持可见。
 
 TEST_ROOT = Path(__file__).parent
 _TMP = Path(tempfile.mkdtemp(prefix="easy_agent_test_"))
 
 # 在导入 app 之前设置环境变量，确保 lifespan 加载测试配置成功
 os.environ["EASY_JWT_SECRET"] = "test-secret-for-easy-agent-tests"
-os.environ["EASY_CONFIG"] = str(TEST_ROOT / "test_config.yaml")
+os.environ["EASYAGENT_BOOTSTRAP_ADMIN_PASSWORD"] = "Test-Admin-Bootstrap-2026!"
 os.environ["TEST_WORKSPACE_DIR"] = str(_TMP / "workspace")
 os.environ["TEST_MEMORIES_DIR"] = str(_TMP / "memories")
 os.environ["TEST_LOG_DIR"] = str(_TMP / "logs")
@@ -38,17 +38,41 @@ os.environ["TEST_UPLOADS_DIR"] = str(_TMP / "uploads")
 os.environ["TEST_DB_PATH"] = str(_TMP / "easy_agent.db")
 os.environ["TEST_SYSTEM_PROMPT"] = str(TEST_ROOT / "system_prompt.md")
 
+# FW-09：checkpointer 后端在 lifespan 内按业务库类型选择（默认官方 SQLite saver）。
+# 显式给一份临时路径，避免默认 data/checkpoints.db 写入仓库；每个 client fixture
+# 再覆盖成独立文件，保证测试之间不共享 HITL 中断态。
+os.environ["EASY_CHECKPOINT_BACKEND"] = "auto"
+os.environ["EASY_CHECKPOINT_SQLITE_PATH"] = str(_TMP / "checkpoints" / "shared.db")
+(_TMP / "checkpoints").mkdir(parents=True, exist_ok=True)
+
 for _d in ("workspace", "memories", "logs", "sessions", "skills", "prompts", "uploads"):
     (_TMP / _d).mkdir(parents=True, exist_ok=True)
+
+# 最新 EasyAgent 的主配置不再展开 ${ENV}。测试仍需为每次运行使用独立临时
+# 目录，因此在导入 app 前生成已解析的测试 YAML，而不改变生产配置语义。
+with (TEST_ROOT / "test_config.yaml").open(encoding="utf-8") as _f:
+    _test_config = yaml.safe_load(_f)
+_test_config["workspace_dir"] = os.environ["TEST_WORKSPACE_DIR"]
+_test_config["memories_dir"] = os.environ["TEST_MEMORIES_DIR"]
+_test_config["log_dir"] = os.environ["TEST_LOG_DIR"]
+_test_config["sessions_dir"] = os.environ["TEST_SESSIONS_DIR"]
+_test_config["system_prompt_path"] = os.environ["TEST_SYSTEM_PROMPT"]
+_test_config["tools"]["skills_dir"] = os.environ["TEST_SKILLS_DIR"]
+_test_config["tools"]["prompts_dir"] = os.environ["TEST_PROMPTS_DIR"]
+_test_config["database"]["sqlite"]["path"] = os.environ["TEST_DB_PATH"]
+_test_config["knowledge"] = {"schema_version": 1, "enabled": False}
+_resolved_test_config = _TMP / "test_config.resolved.yaml"
+with _resolved_test_config.open("w", encoding="utf-8") as _f:
+    yaml.safe_dump(_test_config, _f, allow_unicode=True, sort_keys=False)
+os.environ["EASY_CONFIG"] = str(_resolved_test_config)
 
 from fastapi.testclient import TestClient  # noqa: E402
 
 from easy_agent.app import app  # noqa: E402
 from easy_agent.db import get_database, init_database  # noqa: E402
 from easy_agent.middleware import get_current_username  # noqa: E402
-import easy_agent.db as _db_mod  # noqa: E402
 import easy_agent.db.database as _db_impl  # noqa: E402
-import easy_agent.config as _config_mod  # noqa: E402
+import easy_agent.bootstrap.config as _config_mod  # noqa: E402
 import easy_agent.api.files as _files_mod  # noqa: E402
 
 
@@ -61,12 +85,19 @@ def db():
 
 @pytest.fixture()
 def client(db, monkeypatch):
+    # 每个测试独立 checkpoint 文件：lifespan 打开/关闭官方 saver，
+    # 避免 HITL 中断态跨用例串状态，也不写默认 data/checkpoints.db。
+    monkeypatch.setenv(
+        "EASY_CHECKPOINT_SQLITE_PATH",
+        str(_TMP / "checkpoints" / f"test_{uuid.uuid4().hex}.db"),
+    )
+
     # 将工作区相关路径重定向到临时目录
     monkeypatch.setattr(
         _config_mod.Config,
         "get_user_workspace_dir",
         staticmethod(
-            lambda username: Path(os.environ["TEST_WORKSPACE_DIR"])
+            lambda username, config=None: Path(os.environ["TEST_WORKSPACE_DIR"])
             / "users"
             / username
         ),
@@ -119,15 +150,13 @@ def client(db, monkeypatch):
 
     import easy_agent.agent as _agent_mod
     import easy_agent.app as _app_mod
-    import easy_agent.model as _model_mod
+    import easy_agent.agent.model as _model_mod
     import easy_agent.services.agent_manager as _am_mod
-    import easy_agent.services.streaming as _stream_mod
 
     for _m in (
         _model_mod,
         _app_mod,
         _am_mod,
-        _stream_mod,
         _agent_mod,
     ):
         if hasattr(_m, "create_model"):

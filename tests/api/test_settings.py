@@ -1,23 +1,13 @@
-"""接口 /agent/settings 的测试：模型列表、MCP 服务器查询与增删。"""
+"""接口 /agent/settings 的测试：模型列表、系统提示词、联网搜索状态。
 
-import asyncio
+MCP（连接器）接口已迁到 ``/agent/connectors``，用例见 tests/api/test_connectors.py。
+"""
+
 import json
 from pathlib import Path
 
-import pytest
-from fastapi import HTTPException
-
-from easy_agent.api.settings import (
-    AddMarketMcpRequest,
-    add_mcp_from_market,
-    generate_mcp_api_key,
-    get_mcp_market,
-    get_mcp_servers,
-    router,
-)
 import easy_agent.api.settings as settings_api
 
-from easy_agent.config import Config
 from easy_agent.services import mcp as mcp_mod
 
 
@@ -309,7 +299,7 @@ def test_main_app_never_imports_mcp_server_subproject():
     assert offenders == [], f"主应用 import 了 MCP 子项目: {offenders}"
 
 
-def test_mcp_config_preserves_environment_placeholders(tmp_path, monkeypatch):
+def test_mcp_config_expands_environment_placeholders(tmp_path, monkeypatch):
     global_path = tmp_path / "mcp.json"
     global_path.write_text(
         json.dumps(
@@ -335,6 +325,31 @@ def test_mcp_config_preserves_environment_placeholders(tmp_path, monkeypatch):
     config = mcp_mod.load_mcp_config(None)
 
     assert config["env-server"]["env"] == {
-        "MCP_PASSWORD": "${MCP_TEST_PASSWORD}",
-        "MCP_HOST": "${MCP_TEST_HOST:-127.0.0.1}",
+        "MCP_PASSWORD": "test-password",
+        "MCP_HOST": "127.0.0.1",
     }
+
+
+def test_knowledge_status_reports_enabled_flag(client):
+    """侧边栏只看 enabled，不带 Ragflow 地址或密钥。"""
+    from easy_agent.app import app
+
+    from easy_agent.knowledges.core.config import KnowledgeConfig
+
+    previous = getattr(app.state, "knowledge_config", None)
+    try:
+        app.state.knowledge_config = KnowledgeConfig(
+            enabled=True, base_url="http://ragflow.local", api_key="test-key"
+        )
+        enabled = client.get("/agent/settings/knowledge")
+        assert enabled.status_code == 200
+        assert enabled.json() == {"enabled": True}
+
+        app.state.knowledge_config = KnowledgeConfig(enabled=False)
+        disabled = client.get("/agent/settings/knowledge")
+        assert disabled.json() == {"enabled": False}
+    finally:
+        if previous is None:
+            delattr(app.state, "knowledge_config")
+        else:
+            app.state.knowledge_config = previous

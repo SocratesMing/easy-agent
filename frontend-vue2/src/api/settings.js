@@ -28,63 +28,17 @@ export async function getSkills() {
   )
 }
 
-export async function getMcpServers() {
-  return request(
-    { url: '/agent/settings/mcp', method: 'get' },
-    '获取 MCP 配置失败'
-  )
-}
-
-export async function getMcpMarket() {
-  return request(
-    { url: '/agent/settings/mcp/market', method: 'get' },
-    '获取 MCP 市场失败'
-  )
-}
-
-export async function addMcpFromMarket(name) {
-  return request(
-    {
-      url: '/agent/settings/mcp/market/add',
-      method: 'post',
-      data: { name },
-    },
-    '添加 MCP 市场服务失败'
-  )
-}
-
-export async function updateMcpServers(servers) {
-  return request(
-    { url: '/agent/settings/mcp', method: 'put', data: { servers } },
-    '更新 MCP 配置失败'
-  )
-}
-
-export async function addMcpServer(config) {
-  return request(
-    {
-      url: '/agent/settings/mcp/server',
-      method: 'post',
-      data: { config },
-    },
-    '添加 MCP 服务失败'
-  )
-}
-
-export async function deleteMcpServer(name) {
-  return request(
-    {
-      url: `/agent/settings/mcp/server/${encodeURIComponent(name)}`,
-      method: 'delete',
-    },
-    '删除 MCP 服务失败'
-  )
-}
-
 export async function getModels() {
   return request(
     { url: '/agent/settings/models', method: 'get' },
     '获取模型列表失败'
+  )
+}
+
+export async function getKnowledgeStatus() {
+  return request(
+    { url: '/agent/settings/knowledge', method: 'get' },
+    '获取知识库状态失败'
   )
 }
 
@@ -95,20 +49,13 @@ export async function getWebSearchStatus() {
   )
 }
 
-export async function getMcpApiKeyStatuses() {
+/**
+ * 获取对话附件上传限额（后端 config.yaml 的 upload_limits 段）。
+ * 返回 { enabled, max_file_size_mb, max_files_per_message, max_total_size_mb }。
+ */
+export async function getUploadLimits() {
   return request(
-    { url: '/agent/settings/mcp/api-keys', method: 'get' },
-    '获取 MCP API Key 状态失败'
-  )
-}
-
-export async function generateMcpApiKey(business) {
-  return request(
-    {
-      url: '/agent/settings/mcp/api-key',
-      method: 'post',
-      data: { business },
-    },
-    '生成 MCP API Key 失败'
+    { url: '/agent/settings/upload-limits', method: 'get' },
+    '获取上传限额失败'
   )
 }

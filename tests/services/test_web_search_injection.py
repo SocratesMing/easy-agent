@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from easy_agent.agent import EasyAgent
-from easy_agent.config import Config
+from easy_agent.bootstrap.config import Config
 from easy_agent.services import agent_manager
 from easy_agent.tools.web_search import PROVIDER_TAVILY, WEB_SEARCH_SYSTEM_PROMPT
 
@@ -28,7 +28,7 @@ def _patch_manager(monkeypatch, config):
         {"config": config, "system_prompt": "SYS", "skills_root": "", "agent_env": "test", "win": False},
     )
 
-    async def _no_mcp(_username=None):
+    async def _no_mcp(_username=None, server_names=None):
         return []
 
     monkeypatch.setattr(agent_manager, "load_mcp_tools_for_user", _no_mcp)

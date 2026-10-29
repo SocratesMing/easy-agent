@@ -18,8 +18,22 @@ from typing import TYPE_CHECKING
 from fastapi import HTTPException
 
 if TYPE_CHECKING:
-    from ..db import Database
-    from ..models.db import SessionModel
+    from easy_agent.db import Database
+    from easy_agent.models.db import SessionModel
+
+
+def get_owned_session_meta(
+    db: "Database", session_id: str, username: str
+) -> dict:
+    """轻量版 get_owned_session：只返回归属/工作区所需字段（不加载消息）。
+
+    用于只校验归属或只要 workspace_name 的接口（文件预览/下载、chat 取消/
+    resume 等），避免对长会话做全量消息加载。
+    """
+    meta = db.get_session_owner(session_id)
+    if not meta or (meta.get("username") or "") != (username or ""):
+        raise HTTPException(status_code=404, detail="会话不存在")
+    return meta
 
 
 def get_owned_session(
@@ -34,20 +48,4 @@ def get_owned_session(
     session = db.get_session(session_id)
     if not session or (session.username or "") != (username or ""):
         raise HTTPException(status_code=404, detail="会话不存在")
-    return session
-
-
-def session_owned_by(
-    db: "Database", session_id: str, username: str
-) -> "SessionModel | None":
-    """Return the session if it exists **and** belongs to *username*.
-
-    Returns ``None`` when the session does not exist or is owned by another
-    user.  Use this when the caller needs to distinguish "not found / not mine"
-    from a genuine error (e.g. ``chat_stream`` creates a new session when the
-    ID is unknown but must reject an ID that belongs to someone else).
-    """
-    session = db.get_session(session_id)
-    if not session or (session.username or "") != (username or ""):
-        return None
     return session

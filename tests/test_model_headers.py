@@ -8,8 +8,8 @@
 这些用例不发起网络请求，只验证客户端构造后的请求头。
 """
 
-from easy_agent.config import Config, LLMConfig, ProviderConfig, RetryConfig
-from easy_agent.model import build_request_headers, create_model, resolve_llm_config
+from easy_agent.bootstrap.config import Config, LLMConfig, ProviderConfig, RetryConfig
+from easy_agent.agent.model import build_request_headers, create_model, resolve_llm_config
 
 API_BASE = "https://opencode.ai/zen/go/v1"
 

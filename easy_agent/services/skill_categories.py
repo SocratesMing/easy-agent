@@ -37,7 +37,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from ..config import Config
+from easy_agent.bootstrap.config import Config
 
 logger = logging.getLogger("easy-agent")
 
@@ -458,7 +458,7 @@ def auto_assign_skill(
 
 def auto_assign_skill_dir(username: str, dir_name: str, skill_dir: Path) -> str:
     """按技能目录自动归类（读元数据 + 正文），供创建技能后调用。"""
-    from . import skill_library
+    from easy_agent.services import skill_library
 
     metadata = skill_library.skill_metadata(skill_dir)
     _, content = skill_library.read_skill_document(skill_dir)

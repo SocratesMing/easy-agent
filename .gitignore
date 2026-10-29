@@ -29,6 +29,9 @@ env/
 venv/
 ENV/
 
+# 便携运行时（嵌入式 Python + 依赖，仅本地分发用，勿提交；仅限仓库根目录）
+/runtime/
+
 workspace/
 *.log
 
@@ -48,6 +51,8 @@ htmlcov/
 .qoder
 
 tests/chat_history/
+# Local QA evidence can contain request/response payloads and document metadata.
+test-results/
 
 data/
 logs/
@@ -87,5 +92,29 @@ _tmp_*.py
 
 # 来自 vue26-1013
 .workbuddy/
+
+# playwright-cli 本地运行产物（浏览器截图/快照/控制台日志）
+.playwright-cli/
+
+# 内部方案文档（本地参考，不入库）
 /docs/expert-agent-solution.md
 /docs/expert-skill-solution.md
+
+# 本地分析脚本目录（临时排查产物，勿提交）
+/_analysis/
+
+# 本地 e2e 排查产物（复现脚本、截图、临时数据，勿提交）
+/e2e/
+
+# macOS
+.DS_Store
+
+# Trae 本地会话文档
+.trae/
+
+# 部署打包产物（本地分发用）
+easy-agent-portable.zip
+
+# Claude Code 本地配置与 worktree（含完整工作区副本，体积大，勿提交）
+/.claude/worktrees/
+/.claude/settings.local.json

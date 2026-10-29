@@ -1,220 +1,313 @@
 <template>
-  <div v-if="enabled" ref="rootRef" class="scope-selector">
-    <button class="scope-trigger" :class="{ active: selected.length }" :aria-expanded="open" :disabled="disabled || saving || creatingSession" @click.stop="togglePopover">
+  <div v-if="enabled" ref="rootRef" class="scope-selector" :class="{ 'trigger-hidden': hideTrigger }">
+    <button class="scope-trigger" :class="{ active: selected.length }" :aria-expanded="open" :disabled="disabled || creatingSession" @click.stop="togglePopover">
       <IconLibrary />
       <span>{{ creatingSession ? '正在准备会话…' : triggerLabel }}</span>
       <IconChevronDown class="chevron" :class="{ rotated: open }" />
     </button>
 
-    <transition name="scope-popover">
+    <!-- 面板样式对齐「+」菜单技能子面板：标题+数量 / 条目列表（勾选即生效）/ 底部管理入口 -->
+    <Transition name="scope-popover">
       <div v-if="open" class="scope-panel" :style="panelStyle">
-        <header>
-          <div><strong>选择本次对话使用的知识库</strong><small>每次提问仅从所选知识库检索，并保留来源依据</small></div>
-          <button aria-label="关闭" @click="open = false"><IconX /></button>
-        </header>
-
-        <label class="scope-search"><IconSearch /><input v-model="query" placeholder="搜索知识库" /></label>
-
-        <div class="scope-list">
-          <label v-for="base in visibleBases" :key="base.id" class="scope-item" :class="{ checked: draft.includes(base.id) }">
-            <input v-model="draft" type="checkbox" :value="base.id" :disabled="saving" />
-            <span class="scope-book" :class="base.visibility"><IconBookOpen /></span>
-            <span class="scope-copy"><strong>{{ base.name }}</strong><small>{{ spaceLabel(base.visibility) }} · {{ roleLabel(base.role) }} · {{ base.document_count || 0 }} 篇资料</small></span>
-            <span class="scope-check"><IconCheck /></span>
-          </label>
-          <div v-if="!visibleBases.length" class="scope-empty"><IconBookDashed /><span>{{ query ? '没有匹配的知识库' : '暂无可用知识库' }}</span></div>
+        <div class="scope-head">
+          <span class="scope-title">我的知识库</span>
+          <span class="scope-count">{{ bases.length }}</span>
         </div>
 
-        <div v-if="error" class="scope-error"><IconCircleAlert />{{ error }}</div>
-        <footer>
-          <button class="clear" :disabled="saving || !draft.length" @click="draft = []">清空选择</button>
-          <button class="save" :disabled="saving" @click="save">{{ saving ? '保存中…' : '应用' }}</button>
-        </footer>
+        <div class="scope-list">
+          <div v-if="loading" class="scope-hint">加载中…</div>
+          <div v-else-if="!bases.length" class="scope-hint">{{ error || '暂无可用知识库' }}</div>
+          <label v-else v-for="base in bases" :key="base.id" class="scope-item" :class="{ checked: draft.includes(base.id) }">
+            <input v-model="draft" type="checkbox" :value="base.id" />
+            <span class="scope-item-icon"><IconBookOpen /></span>
+            <span class="scope-item-body">
+              <span class="scope-item-name-row">
+                <span class="scope-item-name">{{ base.name }}</span>
+                <span class="scope-item-tag" :class="draft.includes(base.id) ? 'on' : 'off'">{{ draft.includes(base.id) ? '已选' : '未选' }}</span>
+              </span>
+              <span class="scope-item-desc">{{ spaceLabel(base.visibility) }} · {{ roleLabel(base.role) }} · {{ base.document_count || 0 }} 篇资料</span>
+            </span>
+          </label>
+        </div>
+
+        <div v-if="error && bases.length" class="scope-error">{{ error }}</div>
+        <div v-if="showManage" class="scope-footer">
+          <button type="button" class="scope-manage" @click="openManage">在管理面板中打开 →</button>
+        </div>
       </div>
-    </transition>
+    </Transition>
   </div>
 </template>
 
 <script>
-import { IconBookDashed, IconBookOpen, IconCheck, IconChevronDown, IconCircleAlert, IconLibrary, IconSearch, IconX } from './icons.js'
-import { getKnowledgeStatus, getSessionKnowledgeScope, listKnowledgeBases, replaceSessionKnowledgeScope } from './api.js'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { IconBookOpen, IconChevronDown, IconLibrary } from './icons.js'
+import { getKnowledgeCapabilities, getSessionKnowledgeScope, listKnowledgeBases, replaceSessionKnowledgeScope } from './api.js'
+import { eventTarget } from '../../utils/domEvent.js'
 
 export default {
-  name: 'KnowledgeScopeSelector',
   components: {
-    IconBookDashed,
     IconBookOpen,
-    IconCheck,
     IconChevronDown,
-    IconCircleAlert,
     IconLibrary,
-    IconSearch,
-    IconX,
   },
   props: {
     sessionId: { type: String, default: '' },
     disabled: { type: Boolean, default: false },
+    // 隐藏常驻触发按钮（入口由宿主提供，如加号菜单）
+    hideTrigger: { type: Boolean, default: false },
+    // 面板定位锚点（CSS 选择器）：加号菜单场景传「知识库」菜单项，
+    // 面板贴着菜单项右侧弹出（与技能子面板同款定位）
+    anchorSelector: { type: String, default: '' },
+    // 底部「在管理面板中打开」入口（SDK 未配置主站地址时无处可跳，隐藏）
+    showManage: { type: Boolean, default: true },
   },
-  emits: ['create-session', 'change'],
-  data() {
-    return {
-      enabled: false,
-      open: false,
-      bases: [],
-      selected: [],
-      draft: [],
-      query: '',
-      saving: false,
-      creatingSession: false,
-      error: '',
-      pendingOpen: false,
-      panelStyle: {},
+  emits: ['create-session', 'change', 'manage'],
+  setup(props, { emit }) {
+const rootRef = ref(null)
+const enabled = ref(false)
+const open = ref(false)
+const loading = ref(false)
+const bases = ref([])
+const selected = ref([])
+const draft = ref([])
+const saving = ref(false)
+const creatingSession = ref(false)
+const error = ref('')
+const pendingOpen = ref(false)
+const panelStyle = ref({})
+const selectedBaseNames = computed(() => selected.value
+  .map((id) => {
+    const base = bases.value.find(item => item.id === id)
+    return base ? base.name : ''
+  })
+  .filter(Boolean))
+const triggerLabel = computed(() => {
+  if (!selectedBaseNames.value.length) return '选择知识库'
+  if (selectedBaseNames.value.length === 1) return selectedBaseNames.value[0]
+  return `${selectedBaseNames.value[0]} 等 ${selectedBaseNames.value.length} 个`
+})
+
+async function load() {
+  error.value = ''
+  // 已有数据时静默刷新，避免面板每次展开都闪「加载中」
+  loading.value = !bases.value.length
+  try {
+    const capability = await getKnowledgeCapabilities()
+    enabled.value = Boolean(capability.enabled)
+    if (!enabled.value) return
+    const [baseResponse, scope] = await Promise.all([
+      listKnowledgeBases({ pageSize: 100 }),
+      props.sessionId ? getSessionKnowledgeScope(props.sessionId) : Promise.resolve({ base_ids: [] })
+    ])
+    bases.value = baseResponse.items || []
+    // 面板打开期间用户已勾选（保存中）时，以保存结果为准，不用旧快照覆盖
+    if (!saving.value && !creatingSession.value) {
+      selected.value = scope.base_ids || []
+      draft.value = [...selected.value]
     }
-  },
-  computed: {
-    visibleBases() {
-      const keyword = this.query.trim().toLowerCase()
-      return this.bases.filter(base => !keyword || base.name.toLowerCase().includes(keyword) || (base.description || '').toLowerCase().includes(keyword))
-    },
-    selectedBaseNames() {
-      return this.selected
-        .map((id) => {
-          const base = this.bases.find(item => item.id === id)
-          return base ? base.name : ''
-        })
-        .filter(Boolean)
-    },
-    triggerLabel() {
-      if (!this.selectedBaseNames.length) return '选择知识库'
-      if (this.selectedBaseNames.length === 1) return this.selectedBaseNames[0]
-      return `${this.selectedBaseNames[0]} 等 ${this.selectedBaseNames.length} 个`
-    },
-  },
-  watch: {
-    async sessionId(sessionId) {
-      await this.load()
-      if (sessionId && this.pendingOpen) {
-        this.creatingSession = false
-        this.pendingOpen = false
-        this.draft = [...this.selected]
-        this.updatePanelPosition()
-        this.open = true
-      }
-    },
-  },
-  mounted() {
-    this.load()
-    document.addEventListener('pointerdown', this.handleOutside)
-    window.addEventListener('resize', this.handleViewportChange)
-  },
-  beforeDestroy() {
-    document.removeEventListener('pointerdown', this.handleOutside)
-    window.removeEventListener('resize', this.handleViewportChange)
-  },
-  methods: {
-    async load() {
-      this.error = ''
-      try {
-        const status = await getKnowledgeStatus()
-        this.enabled = Boolean(status && status.enabled)
-        if (!this.enabled) return
-        const [baseResponse, scope] = await Promise.all([
-          listKnowledgeBases({ pageSize: 100 }),
-          this.sessionId ? getSessionKnowledgeScope(this.sessionId) : Promise.resolve({ base_ids: [] }),
-        ])
-        this.bases = baseResponse.items || []
-        this.selected = scope.base_ids || []
-        this.draft = [...this.selected]
-      } catch (reason) { this.error = reason.message || '知识范围加载失败' }
-    },
-    togglePopover() {
-      if (this.disabled) return
-      if (!this.sessionId) {
-        if (this.creatingSession) return
-        this.creatingSession = true
-        this.pendingOpen = true
-        this.$emit('create-session')
-        return
-      }
-      if (!this.open) {
-        this.draft = [...this.selected]
-        this.query = ''
-        this.error = ''
-        this.updatePanelPosition()
-      }
-      this.open = !this.open
-    },
-    updatePanelPosition() {
-      const root = this.$refs.rootRef
-      if (!root) return
-      const rect = root.getBoundingClientRect()
-      const viewportPadding = 12
-      const panelWidth = Math.min(360, window.innerWidth - viewportPadding * 2)
-      const left = Math.min(
-        Math.max(rect.left, viewportPadding),
-        Math.max(viewportPadding, window.innerWidth - panelWidth - viewportPadding)
-      )
-      this.panelStyle = {
-        position: 'fixed',
-        left: `${left}px`,
-        right: 'auto',
-        top: 'auto',
-        bottom: `${Math.max(viewportPadding, window.innerHeight - rect.top + 8)}px`,
-        width: `${panelWidth}px`,
-      }
-    },
-    handleViewportChange() {
-      if (this.open) this.updatePanelPosition()
-    },
-    async save() {
-      this.saving = true
-      this.error = ''
-      try {
-        const response = await replaceSessionKnowledgeScope(this.sessionId, this.draft)
-        this.selected = response.base_ids || []
-        this.draft = [...this.selected]
-        this.open = false
-        this.$emit('change', [...this.selected])
-      } catch (reason) { this.error = reason.message || '知识范围保存失败' } finally { this.saving = false }
-    },
-    handleOutside(event) {
-      const root = this.$refs.rootRef
-      if (this.open && root && !root.contains(event.target)) this.open = false
-    },
-    roleLabel(role) {
-      return ({ viewer: '查看者', maintainer: '维护者', manager: '管理员' })[role] || role
-    },
-    spaceLabel(space) {
-      return ({ personal: '个人', team: '团队', shared: '共享' })[space] || space
-    },
+  } catch (reason) { error.value = reason.message || '知识范围加载失败' }
+  finally { loading.value = false }
+}
+
+function togglePopover() {
+  if (props.disabled) return
+  if (!props.sessionId) {
+    if (creatingSession.value) return
+    creatingSession.value = true
+    pendingOpen.value = true
+    emit('create-session')
+    return
+  }
+  if (!open.value) {
+    draft.value = [...selected.value]
+    error.value = ''
+    updatePanelPosition()
+  }
+  open.value = !open.value
+}
+
+// 供加号菜单 hover/click 展开：幂等打开面板（不新建会话，勾选时才落库）。
+// anchor 为触发的菜单项元素；每次展开都重新拉取列表，主页面新建的知识库无需刷新页面即可看到
+let anchorEl = null
+async function openPopover(anchor) {
+  if (props.disabled || open.value || creatingSession.value) return
+  if (anchor) anchorEl = anchor
+  draft.value = [...selected.value]
+  error.value = ''
+  updatePanelPosition()
+  open.value = true
+  await load()
+}
+function closePopover() { if (open.value) open.value = false }
+
+// 面板贴着锚点（如加号菜单「知识库」菜单项）右侧弹出，
+// 定位方式与 ChatInput 的技能/连接器子面板（openSubpanel）保持一致
+function updatePanelPosition() {
+  // 页面上可能同时存在多个输入框（主对话区 + AI 侧边栏），且 SDK 运行在 Shadow DOM 中，
+  // 不能用 document.querySelector 全局查找锚点
+  const anchor = (anchorEl && anchorEl.isConnected ? anchorEl : null)
+    || (props.anchorSelector && rootRef.value && rootRef.value.getRootNode().querySelector(props.anchorSelector))
+    || rootRef.value
+  if (!anchor) return
+  const rect = anchor.getBoundingClientRect()
+  const panelWidth = Math.min(380, window.innerWidth * 0.9)
+  const estimatedHeight = 420
+  const top = Math.max(8, Math.min(rect.top - 8, window.innerHeight - estimatedHeight - 8))
+  const left = rect.right + 10 + panelWidth > window.innerWidth
+    ? Math.max(8, rect.left - panelWidth - 10)
+    : rect.right + 10
+  panelStyle.value = {
+    position: 'fixed',
+    top: `${top}px`,
+    left: `${left}px`,
+    width: '380px',
+    maxWidth: '90vw',
+  }
+}
+
+// 面板底部入口：交由宿主打开知识库工作台
+function openManage() { emit('manage') }
+
+function handleViewportChange() {
+  if (open.value) updatePanelPosition()
+}
+let saveSeq = 0
+let pendingSave = null  // 无会话时的勾选暂存：会话创建完成后恢复并保存
+function sameSet(a, b) {
+  const ka = [...a].sort().join('|')
+  const kb = [...b].sort().join('|')
+  return ka === kb
+}
+async function persist(snapshot) {
+  const seq = ++saveSeq
+  saving.value = true; error.value = ''
+  try {
+    const response = await replaceSessionKnowledgeScope(props.sessionId, snapshot)
+    if (seq !== saveSeq) return  // 已有更新的勾选在保存，丢弃过期响应
+    selected.value = response.base_ids || []
+    emit('change', [...selected.value])
+  }
+  catch (reason) {
+    if (seq === saveSeq) error.value = reason.message || '知识范围保存失败'
+  }
+  finally {
+    if (seq === saveSeq) saving.value = false
+  }
+}
+watch(draft, () => {
+  if (!open.value) return
+  const snapshot = [...draft.value]
+  if (sameSet(snapshot, selected.value)) return  // 打开面板时的同步赋值，无实际变化
+  if (!props.sessionId) {
+    // 无会话时勾选（新对话 hover 展开场景）：暂存勾选并先创建会话，建好后再保存
+    if (creatingSession.value) { pendingSave = snapshot; return }
+    creatingSession.value = true
+    pendingSave = snapshot
+    emit('create-session')
+    return
+  }
+  persist(snapshot)
+}, { deep: true })
+function handleOutside(event) { if (open.value && rootRef.value && !rootRef.value.contains(eventTarget(event))) open.value = false }
+function roleLabel(role) { return ({ viewer: '查看者', maintainer: '维护者', manager: '管理员' })[role] || role }
+function spaceLabel(space) { return ({ personal: '个人', team: '团队', shared: '共享' })[space] || space }
+
+watch(() => props.sessionId, async (sessionId) => {
+  await load()
+  if (sessionId && pendingSave) {
+    // 勾选触发的会话创建完成：恢复暂存勾选并保存
+    creatingSession.value = false
+    const snapshot = pendingSave
+    pendingSave = null
+    selected.value = snapshot
+    draft.value = [...snapshot]
+    persist(snapshot)
+    return
+  }
+  if (sessionId && pendingOpen.value) {
+    creatingSession.value = false
+    pendingOpen.value = false
+    draft.value = [...selected.value]
+    updatePanelPosition()
+    open.value = true
+  }
+})
+onMounted(() => {
+  load()
+  document.addEventListener('pointerdown', handleOutside)
+  window.addEventListener('resize', handleViewportChange)
+})
+onUnmounted(() => {
+  document.removeEventListener('pointerdown', handleOutside)
+  window.removeEventListener('resize', handleViewportChange)
+})
+
+    return {
+      bases,
+      creatingSession,
+      disabled: computed(() => props.disabled),
+      draft,
+      enabled,
+      error,
+      load,
+      loading,
+      open,
+      openManage,
+      panelStyle,
+      roleLabel,
+      rootRef,
+      saving,
+      selected,
+      spaceLabel,
+      togglePopover,
+      openPopover,
+      closePopover,
+      triggerLabel,
+    }
   },
 }
 </script>
 
 <style scoped>
-.scope-selector{position:absolute;right:70px;top:14px;z-index:35;font-family:Inter,"PingFang SC","Microsoft YaHei",sans-serif}.scope-trigger{height:34px;border:1px solid #e1e5e2;background:rgba(255,255,255,.96);border-radius:17px;padding:0 11px;display:flex;align-items:center;gap:6px;color:#68716b;font-size:10px;cursor:pointer;box-shadow:0 3px 12px rgba(25,45,32,.05);transition:.18s}.scope-trigger:hover{border-color:#cbd4ce;background:#fff}.scope-trigger.active{border-color:#b7dccb;color:#188158;background:#f3faf7}.scope-trigger svg{width:13px;height:13px}.scope-trigger .chevron{width:11px;height:11px;transition:transform .18s}.scope-trigger .chevron.rotated{transform:rotate(180deg)}.scope-panel{position:absolute;right:0;top:42px;width:330px;background:#fff;border:1px solid #e3e7e4;border-radius:14px;box-shadow:0 18px 45px rgba(26,44,32,.16);padding:15px;box-sizing:border-box}.scope-panel header{display:flex;justify-content:space-between;align-items:flex-start}.scope-panel header>div{display:flex;flex-direction:column;gap:3px}.scope-panel header strong{font-size:12px;color:#2b322e}.scope-panel header small{font-size:9px;color:#969e98}.scope-panel header button{width:26px;height:26px;border:0;background:transparent;border-radius:7px;display:grid;place-items:center;color:#7e8781;cursor:pointer}.scope-panel header button:hover{background:#f3f5f3}.scope-panel svg{width:14px;height:14px}.scope-search{height:34px;margin-top:13px;border:1px solid #e1e5e2;background:#fafbfa;border-radius:9px;padding:0 9px;display:flex;align-items:center;gap:7px;color:#9ba29e}.scope-search:focus-within{border-color:#9fd8c0;background:#fff;box-shadow:0 0 0 3px rgba(37,161,111,.07)}.scope-search input{min-width:0;flex:1;border:0;outline:0;background:transparent;color:#303632;font-size:10px}.scope-list{max-height:270px;overflow:auto;margin:10px -3px 0}.scope-item{position:relative;display:grid;grid-template-columns:16px 34px 1fr 20px;gap:8px;align-items:center;padding:8px 7px;border-radius:10px;cursor:pointer;transition:.15s}.scope-item:hover{background:#f7f9f7}.scope-item.checked{background:#f1f8f4}.scope-item>input{position:absolute;opacity:0;pointer-events:none}.scope-book{width:31px;height:36px;border-radius:5px 8px 8px 5px;background:linear-gradient(145deg,#45bd8a,#229568);color:#fff;display:grid;place-items:center}.scope-book.team{background:linear-gradient(145deg,#5d9ee8,#557bc8)}.scope-book.shared{background:linear-gradient(145deg,#a788e7,#795fc4)}.scope-copy{min-width:0;display:flex;flex-direction:column;gap:3px}.scope-copy strong{font-size:10px;color:#343b37;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.scope-copy small{font-size:8px;color:#969e98;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.scope-check{width:17px;height:17px;border:1px solid #d6dcd8;border-radius:5px;color:transparent;display:grid;place-items:center}.scope-check svg{width:11px;height:11px}.scope-item.checked .scope-check{border-color:#25a16f;background:#25a16f;color:#fff}.scope-empty{height:110px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:7px;color:#9ca39e;font-size:9px}.scope-empty svg{width:23px;height:23px}.scope-error{margin-top:8px;padding:7px 9px;border-radius:8px;background:#fff3f2;color:#be4848;display:flex;gap:6px;align-items:center;font-size:9px}.scope-panel footer{display:flex;justify-content:space-between;align-items:center;margin-top:12px;padding-top:12px;border-top:1px solid #edf0ed}.scope-panel footer button{height:31px;border-radius:8px;padding:0 12px;font-size:10px;cursor:pointer}.scope-panel footer .clear{border:0;background:transparent;color:#7e8781}.scope-panel footer .save{border:1px solid #25a16f;background:#25a16f;color:#fff;min-width:64px}.scope-panel footer button:disabled{opacity:.45;cursor:not-allowed}.scope-popover-enter-active,.scope-popover-leave-active{transition:.18s}.scope-popover-enter-from,.scope-popover-leave-to{opacity:0;transform:translateY(-5px) scale(.98);transform-origin:top right}.scope-error{color:#b74348}@media(max-width:700px){.scope-selector{right:58px;top:10px}.scope-panel{width:min(330px,calc(100vw - 24px))}}
+/* 根节点：常驻触发按钮隐藏时仅承载弹层 */
+.scope-selector{position:relative;z-index:50;font-family:inherit;display:inline-flex;min-width:0}
+.scope-selector.trigger-hidden .scope-trigger{display:none}
 
-/* Match the native EasyAgent composer instead of using a standalone green theme. */
-.scope-selector{position:relative;right:auto;top:auto;z-index:50;font-family:inherit;display:inline-flex;min-width:0}
-.scope-trigger{height:36px;max-width:230px;border-color:var(--border-color);background:var(--bg-secondary);border-radius:10px;padding:0 10px;color:var(--text-secondary);font-size:12px;box-shadow:none}
+/* 常驻触发按钮（hide-trigger 场景不展示，保留独立使用时的样式） */
+.scope-trigger{height:36px;max-width:230px;display:flex;align-items:center;gap:6px;border:1px solid var(--border-color);background:var(--bg-secondary);border-radius:10px;padding:0 10px;color:var(--text-secondary);font-size:12px;cursor:pointer;box-shadow:none}
+.scope-trigger svg{width:13px;height:13px;flex-shrink:0}
+.scope-trigger .chevron{width:11px;height:11px;transition:transform .18s}
+.scope-trigger .chevron.rotated{transform:rotate(180deg)}
 .scope-trigger>span{max-width:165px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.scope-trigger:hover:not(:disabled){border-color:color-mix(in srgb,var(--accent-color) 40%,var(--border-color));background:color-mix(in srgb,var(--accent-color) 10%,transparent);transform:translateY(-1px)}
+.scope-trigger:hover:not(:disabled){border-color:color-mix(in srgb,var(--accent-color) 40%,var(--border-color));background:color-mix(in srgb,var(--accent-color) 10%,transparent)}
 .scope-trigger.active{border-color:color-mix(in srgb,var(--accent-color) 48%,var(--border-color));background:color-mix(in srgb,var(--accent-color) 12%,transparent);color:var(--accent-color)}
 .scope-trigger:disabled{opacity:.5;cursor:not-allowed}
-.scope-panel{right:auto;left:0;top:auto;bottom:44px;width:360px;max-height:calc(100vh - 24px);overflow-y:auto;background:var(--bg-secondary);border-color:var(--border-color);border-radius:12px;box-shadow:0 8px 24px rgba(0,0,0,.14);padding:16px;color:var(--text-primary);z-index:9999}
-.scope-panel header strong,.scope-copy strong{color:var(--text-primary)}
-.scope-panel header small,.scope-copy small,.scope-empty{color:var(--text-secondary)}
-.scope-panel header button:hover,.scope-item:hover{background:var(--bg-tertiary)}
-.scope-search{background:var(--bg-primary);border-color:var(--border-color);color:var(--text-secondary)}
-.scope-search:focus-within{background:var(--bg-primary);border-color:var(--accent-color);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent-color) 14%,transparent)}
-.scope-search input{color:var(--text-primary);font-size:12px}
-.scope-item{grid-template-columns:34px minmax(0,1fr) 20px;padding:9px 8px}
-.scope-item.checked{background:color-mix(in srgb,var(--accent-color) 10%,transparent)}
-.scope-book{grid-column:1;background:linear-gradient(145deg,#38bdf8,#0284c7)}
-.scope-copy{grid-column:2}.scope-check{grid-column:3;border-color:var(--border-color)}
-.scope-copy strong{font-size:12px}.scope-copy small{font-size:10px}.scope-item.checked .scope-check{border-color:var(--accent-color);background:var(--accent-color)}
-.scope-panel footer{border-top-color:var(--border-color)}
-.scope-panel footer .clear{color:var(--text-secondary);background:transparent}
-.scope-panel footer .save{border-color:var(--accent-color);background:var(--accent-color);font-size:12px}
-@media(max-width:700px){.scope-selector{right:auto;top:auto}.scope-panel{left:auto;right:-76px;width:min(360px,calc(100vw - 24px))}}
+
+/* ========== 面板：与「+」菜单技能子面板（.plus-subpanel）同款样式 ========== */
+.scope-panel{position:fixed;width:380px;max-width:90vw;display:flex;flex-direction:column;background:var(--bg-secondary,#fff);border:1px solid var(--border-color,#e2e8f0);border-radius:12px;box-shadow:0 12px 36px rgba(0,0,0,.14);padding:12px;box-sizing:border-box;color:var(--text-primary,#1e293b);z-index:9999}
+.scope-head{display:flex;align-items:center;gap:8px;padding:2px 4px 8px}
+.scope-title{flex:1;font-size:14px;font-weight:600;color:var(--text-primary,#1e293b)}
+.scope-count{font-size:12px;color:var(--text-secondary,#64748b);font-variant-numeric:tabular-nums}
+.scope-list{max-height:300px;overflow-y:auto;display:flex;flex-direction:column;gap:2px;scrollbar-width:thin}
+.scope-item{position:relative;display:flex;align-items:flex-start;gap:10px;padding:8px 10px;border-radius:8px;cursor:pointer;transition:background .15s ease}
+.scope-item:hover{background:var(--bg-tertiary,#f1f5f9)}
+.scope-item.checked{background:color-mix(in srgb,var(--accent-color,#16a34a) 10%,transparent)}
+.scope-item>input{position:absolute;opacity:0;pointer-events:none}
+.scope-item-icon{display:flex;align-items:center;justify-content:center;width:28px;height:28px;flex-shrink:0;border-radius:8px;background:color-mix(in srgb,var(--accent-color,#16a34a) 12%,var(--bg-tertiary,#f1f5f9));color:var(--accent-color,#16a34a)}
+.scope-item-icon svg{width:15px;height:15px}
+.scope-item-body{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
+.scope-item-name-row{display:flex;align-items:center;gap:6px;min-width:0}
+.scope-item-name{flex:1;min-width:0;font-size:13px;font-weight:600;color:var(--text-primary,#1e293b);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.scope-item-tag{flex-shrink:0;padding:1px 6px;border-radius:5px;font-size:11px}
+.scope-item-tag.on{background:#dcfce7;color:#16a34a}
+.scope-item-tag.off{background:var(--bg-tertiary,#f1f5f9);color:var(--text-secondary,#64748b)}
+.scope-item-desc{font-size:12px;line-height:1.5;color:var(--text-secondary,#64748b);display:-webkit-box;-webkit-line-clamp:1;line-clamp:1;-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:anywhere}
+.scope-hint{padding:16px 10px;font-size:13px;color:var(--text-secondary,#64748b);text-align:center}
+.scope-error{margin-top:4px;padding:8px 10px;border-radius:8px;font-size:12px;color:#dc2626;background:rgba(220,38,38,.06);text-align:center}
+.scope-footer{margin-top:8px;padding-top:6px;border-top:1px solid var(--border-color,#e2e8f0)}
+.scope-manage{width:100%;padding:8px 10px;border:none;border-radius:8px;background:transparent;font-size:13px;color:var(--text-secondary,#64748b);cursor:pointer;text-align:center}
+.scope-manage:hover{background:rgba(15,23,42,.05)}
+.scope-popover-enter-active,.scope-popover-leave-active{transition:.18s}
+.scope-popover-enter-from,.scope-popover-leave-to{opacity:0;transform:translateY(-5px) scale(.98);transform-origin:top left}
 </style>

@@ -29,7 +29,7 @@ if str(_REPO_ROOT) not in sys.path:
 _ENV_PLACEHOLDER_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
 
 try:  # 复用应用同款实现，避免语义漂移
-    from easy_agent.config import _expand_env_recursive as expand_env_recursive
+    from easy_agent.bootstrap.config import _expand_env_recursive as expand_env_recursive
 except ImportError:  # pragma: no cover - 依赖缺失时降级为本地实现
 
     def _expand_env(value: str) -> str:

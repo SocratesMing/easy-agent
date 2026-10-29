@@ -121,6 +121,17 @@ function hideTip(el) {
   }, 220)
 }
 
+function onMouseEnter(event) {
+  // 触摸设备没有悬停：忽略模拟 mouseenter，点击按钮后由 focus 触发
+  if (!finePointer) return
+  showTip(event.currentTarget)
+}
+
+function onFocusEnter(event) {
+  // 键盘 Tab / 触摸点击按钮都会产生 focus，不受 hover:none 限制
+  showTip(event.currentTarget)
+}
+
 function onLeave(event) {
   hideTip(event.currentTarget)
 }

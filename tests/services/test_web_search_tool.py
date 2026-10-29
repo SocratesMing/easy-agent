@@ -12,7 +12,6 @@ import json
 from types import SimpleNamespace
 
 import httpx
-import pytest
 
 from easy_agent.tools.web_search import (
     MAX_QUERY_CHARS,

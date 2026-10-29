@@ -6,31 +6,40 @@
     workspace/{username}/skills-disabled/   ← 停用技能存放处（Agent 不扫，不加载）
 
 「停用」= 把技能目录从 ``skills/`` 原子重命名到 ``skills-disabled/``，因此停用后
-deepagents 侧（``_resolve_skills_paths`` 只认 ``skills/``）自然不再加载它；重新启用
+deepagents 侧（技能源 ``/user-skills/`` 只挂 ``skills/``）自然不再加载它；重新启用
 即移回。这样不需要给 deepagents 传额外的过滤参数，也不改动技能内容本身。
 
-本模块只做文件系统层面的事，不依赖 Agent 运行期配置。
+公共技能（DA-13 S2）不在这两个目录里：「添加」只是在 ``builtin-skills.json`` 里记一条，
+agent 经只读路由 ``/skills/builtin/`` 读 canonical 目录（``agent/builtin_skills.py``）。
+本模块的列表 / 查找 / 启停 / 移除统一覆盖两种来源，条目带 ``source``（``user`` / ``builtin``）；
+用户技能与公共技能同名时以用户技能为准（相当于 fork）。
 """
 
 from __future__ import annotations
 
+import difflib
 import logging
 import os
 import re
 import shutil
+import time
+import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from ..config import Config
+from easy_agent.bootstrap.config import Config
+from easy_agent.agent import builtin_skills
+from easy_agent.agent.builtin_skills import USER_DISABLED_DIR_NAME, USER_SKILLS_DIR_NAME
+from easy_agent.agent.skills import parse_skill_frontmatter, skill_body
 
 logger = logging.getLogger("easy-agent")
 
 #: 技能定义文件（按优先级）
-SKILL_FILES = ("SKILL.md", "README.md")
+SKILL_FILES = ("SKILL.md",)
 
-#: 停用技能目录名（位于用户 workspace 下，与 skills/ 同级）
-DISABLED_DIR_NAME = "skills-disabled"
+#: 停用技能目录名（位于用户 workspace 下，与 skills/ 同级；唯一来源见 agent/builtin_skills.py）
+DISABLED_DIR_NAME = USER_DISABLED_DIR_NAME
 
 #: 统计时的文件数上限，防御性上限（技能目录正常只有几个文件）
 MAX_STAT_FILES = 5000
@@ -41,7 +50,7 @@ MAX_STAT_FILES = 5000
 
 def user_skills_dir(username: str) -> Path:
     """Agent 实际加载的用户技能目录。"""
-    return Config.get_user_workspace_dir(username) / "skills"
+    return Config.get_user_workspace_dir(username) / USER_SKILLS_DIR_NAME
 
 
 def user_disabled_dir(username: str) -> Path:
@@ -50,7 +59,7 @@ def user_disabled_dir(username: str) -> Path:
 
 
 def is_skill_dir(path: Path) -> bool:
-    """目录内存在 SKILL.md 或 README.md 才算技能目录。"""
+    """目录内存在 SKILL.md 才算技能目录。"""
     return path.is_dir() and any((path / name).exists() for name in SKILL_FILES)
 
 
@@ -69,23 +78,21 @@ def iter_skill_dirs(root: Path) -> list[Path]:
 
 
 def parse_frontmatter(text: str) -> dict[str, str]:
-    """解析 SKILL.md 顶部 YAML frontmatter 里的 name/description/icon/version。
+    """技能库展示用的 name / description / icon / version，取自 SKILL.md 的 frontmatter。
 
-    只认单行 `key: value`（现有技能文件都是这种极简形态），解析失败返回空字段。
+    与框架加载技能用同一套解析（``agent.skills.parse_skill_frontmatter``，YAML）：展示名
+    就是 pin 技能时框架按它匹配的名字。frontmatter 缺失或不是合法 YAML 时返回空字段，调用方
+    按目录名和正文降级展示（这种技能框架也不会加载）。
     """
-    meta: dict[str, str] = {}
-    match = re.match(r"^---\s*\n(.*?)\n---", text, re.DOTALL)
-    if not match:
-        return meta
-    for line in match.group(1).split("\n"):
-        if ":" not in line:
-            continue
-        key, _, value = line.partition(":")
-        key = key.strip()
-        value = value.strip().strip('"').strip("'")
-        if key in ("name", "description", "icon", "version") and value:
-            meta[key] = value
-    return meta
+    meta, _ = parse_skill_frontmatter(text)
+    fields: dict[str, str] = {}
+    for key in ("name", "description", "icon", "version"):
+        value = (meta or {}).get(key)
+        # 与框架一致按 str() 取值：YAML 会把 version: 1.10 读成数字 1.1
+        text_value = "" if value is None else str(value).strip()
+        if text_value:
+            fields[key] = text_value
+    return fields
 
 
 def read_skill_document(skill_dir: Path) -> tuple[str, str]:
@@ -108,9 +115,9 @@ def skill_metadata(skill_dir: Path) -> dict[str, Any]:
 
     description = front.get("description", "")
     if not description and content:
-        # 没有 frontmatter 描述时，取第一段有实际内容的正文：
+        # 没有 frontmatter 描述时，取 frontmatter 之后第一段有实际内容的正文：
         # 跳过标题/分隔线，并跳过纯符号行（如只有 ">" 的引用符号），避免卡片上出现 ">"
-        for line in content.split("\n"):
+        for line in skill_body(content).split("\n"):
             stripped = line.strip().lstrip(">").strip()
             if not stripped or stripped.startswith("#") or stripped.startswith("---"):
                 continue
@@ -176,8 +183,8 @@ def skill_stats(skill_dir: Path) -> dict[str, Any]:
 # ── 启用 / 停用 ───────────────────────────────────────────────────────
 
 
-def list_user_skill_dirs(username: str) -> list[dict[str, Any]]:
-    """列出用户技能（含停用），每项 {dir_name, path, enabled}。"""
+def _owned_skill_dirs(username: str) -> list[dict[str, Any]]:
+    """用户自己目录里的技能（含停用）。"""
     items: list[dict[str, Any]] = []
     for enabled, root in (
         (True, user_skills_dir(username)),
@@ -188,28 +195,276 @@ def list_user_skill_dirs(username: str) -> list[dict[str, Any]]:
                 "dir_name": skill_dir.name,
                 "path": skill_dir,
                 "enabled": enabled,
+                "source": "user",
             })
     return items
 
 
+def list_user_skill_dirs(username: str) -> list[dict[str, Any]]:
+    """列出用户技能库（含停用），每项 ``{dir_name, path, enabled, source}``。
+
+    包含用户自己的技能与已添加的公共技能；同名时只列用户技能（覆盖公共技能）。
+    """
+    # 先迁移 S2 之前复制出来的副本，再列目录：否则第一次列出的仍是刚被删掉的副本
+    builtin_skills.ensure_migrated(username)
+    owned = _owned_skill_dirs(username)
+    taken = {item["dir_name"] for item in owned}
+    added = [item for item in builtin_skills.list_added(username) if item["dir_name"] not in taken]
+    return owned + added
+
+
+# ── 技能身份解析：目录名 ⇄ SKILL.md 的 name ───────────────────────────
+#
+# 一个技能有两个标识：
+#   - **目录名** ``dir_name``：运行时唯一主键（技能清单 key、``/skills/builtin/{dir}``、
+#     斜杠指令、Agent 挂载路径），**不能改**；
+#   - **frontmatter ``name``**：展示名（技能中心卡片、模型看到的技能清单条目），
+#     存量包常见中文。
+#
+# 规范要求两者一致，但现实里有「目录英文 + name 中文」（如
+# ``fpp-income-analysis`` / 金市营收情况）与「目录中文 + name 中文」两种偏差。
+# 这里提供**只读的别名解析**：任一写法 → canonical 目录名。目录名仍是主键，
+# ``name`` 只作为别名兜底，绝不反向写入清单或路径。
+
+#: 身份索引缓存有效期（秒）。技能包增删会改目录 mtime 立即失效；改 SKILL.md 里的
+#: name 不改 mtime，用 TTL 兜底。补装每轮都会跑，不能每次都全量读 frontmatter。
+_REF_INDEX_TTL = 30.0
+
+_ref_index_cache: dict[str, tuple[float, float, list[dict[str, Any]]]] = {}
+_user_ref_index_cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}
+
+
+def normalize_skill_ref(text: str) -> str:
+    """归一化技能标识用于宽松比对：NFKC、小写、空白/下划线→连字符、折叠连字符。
+
+    ``FPP_Income_Analysis``、``fpp income analysis``、``fpp-income-analysis``
+    归一化后相同；中文保持原样（只做全角→半角）。
+    """
+    value = unicodedata.normalize("NFKC", str(text or "")).strip().lower()
+    value = re.sub(r"[\s_]+", "-", value)
+    value = re.sub(r"-{2,}", "-", value)
+    return value.strip("-")
+
+
+def _root_stamp(root: Path) -> float:
+    """技能根目录的 mtime（增删技能目录会变），用于缓存失效。"""
+    try:
+        return root.stat().st_mtime
+    except OSError:
+        return 0.0
+
+
+def skill_identity_index(
+    root: Path, *, use_cache: bool = True
+) -> list[dict[str, Any]]:
+    """扫描公共技能目录，返回身份索引（按目录名排序）。
+
+    每项 ``{dir_name, name, path, dir_key, name_key}``：``name`` 取 SKILL.md
+    frontmatter（缺失时回退目录名），``*_key`` 是归一化后的比对键。
+    """
+    key = str(root)
+    now = time.monotonic()
+    stamp = _root_stamp(root)
+    if use_cache:
+        cached = _ref_index_cache.get(key)
+        if cached and cached[1] == stamp and now - cached[0] < _REF_INDEX_TTL:
+            return cached[2]
+
+    items: list[dict[str, Any]] = []
+    for skill_dir in iter_skill_dirs(root):
+        meta = skill_metadata(skill_dir)
+        display_name = str(meta.get("name") or skill_dir.name).strip() or skill_dir.name
+        items.append({
+            "dir_name": skill_dir.name,
+            "name": display_name,
+            "path": skill_dir,
+            "dir_key": normalize_skill_ref(skill_dir.name),
+            "name_key": normalize_skill_ref(display_name),
+        })
+    if use_cache:
+        _ref_index_cache[key] = (now, stamp, items)
+    return items
+
+
+def resolve_skill_ref(ref: str, root: Path | None = None) -> dict[str, Any] | None:
+    """把「目录名 / frontmatter name / 归一化写法」解析为公共技能目录里的技能。
+
+    匹配顺序（**目录名优先**，name 只作别名——多技能 name 重名时目录名才是可靠键）：
+
+    1. 目录名精确；2. 目录名归一化；3. name 精确；4. name 归一化。
+
+    未命中返回 ``None``；同一级命中多个时取目录名排序的第一个（``iter_skill_dirs``
+    已排序），调用方可结合 ``suggest_skill_refs`` 给出候选。返回项在索引项基础上追加
+    ``matched_by``（``dir`` / ``dir_normalized`` / ``name`` / ``name_normalized``）
+    与 ``declared``（原始声明）。
+    """
+    raw = str(ref or "").strip()
+    if not raw or not builtin_skills.is_safe_dir_name(raw):
+        return None
+    if root is None:
+        root = builtin_skills.builtin_root()
+    if root is None:
+        return None
+
+    index = skill_identity_index(root)
+    if not index:
+        return None
+    ref_key = normalize_skill_ref(raw)
+    stages: tuple[tuple[str, Any], ...] = (
+        ("dir", lambda item: item["dir_name"] == raw),
+        ("dir_normalized", lambda item: bool(ref_key) and item["dir_key"] == ref_key),
+        ("name", lambda item: item["name"] == raw),
+        ("name_normalized", lambda item: bool(ref_key) and item["name_key"] == ref_key),
+    )
+    for matched_by, predicate in stages:
+        hits = [item for item in index if predicate(item)]
+        if not hits:
+            continue
+        if len(hits) > 1:
+            logger.warning(
+                f"⚠️ 技能别名歧义 | 声明: {raw} | 命中: {[h['dir_name'] for h in hits]} | "
+                f"按目录名取第一个: {hits[0]['dir_name']}"
+            )
+        return {**hits[0], "matched_by": matched_by, "declared": raw}
+    return None
+
+
+def suggest_skill_refs(
+    ref: str, root: Path | None = None, limit: int = 5
+) -> list[dict[str, Any]]:
+    """给解析失败的声明挑近似候选，**仅供诊断接口展示，绝不据此自动安装**。
+
+    评分：归一化后相似度（difflib）+ 包含关系加权；中文与英文之间相似度天然低，
+    因此主要覆盖拼写错误、连字符/下划线差异、名字片段。
+    """
+    raw = str(ref or "").strip()
+    if not raw:
+        return []
+    if root is None:
+        root = builtin_skills.builtin_root()
+    if root is None:
+        return []
+
+    ref_key = normalize_skill_ref(raw)
+    scored: list[tuple[float, dict[str, Any]]] = []
+    for item in skill_identity_index(root):
+        score = max(
+            difflib.SequenceMatcher(None, ref_key, item["dir_key"]).ratio(),
+            difflib.SequenceMatcher(None, ref_key, item["name_key"]).ratio(),
+        )
+        for candidate_key in (item["dir_key"], item["name_key"]):
+            if ref_key and candidate_key and (ref_key in candidate_key or candidate_key in ref_key):
+                score = max(score, 0.9)
+                break
+        if score >= 0.6:
+            scored.append((score, item))
+    scored.sort(key=lambda pair: (-pair[0], pair[1]["dir_name"]))
+    return [
+        {"dir_name": item["dir_name"], "name": item["name"], "score": round(score, 2)}
+        for score, item in scored[:limit]
+    ]
+
+
+def resolve_user_skill_ref(username: str, ref: str) -> dict[str, Any] | None:
+    """在**用户技能库**（用户技能 + 已添加的公共技能）里按目录名或 name 解析。
+
+    用于 ``find_user_skill`` 的别名兜底与对话内技能选择：用户可能手打
+    ``/中文名``，或旧数据里存的是展示名。命中后返回标准技能项
+    ``{dir_name, path, enabled, source}``。
+    """
+    raw = str(ref or "").strip()
+    if not raw or not builtin_skills.is_safe_dir_name(raw):
+        return None
+
+    now = time.monotonic()
+    cached = _user_ref_index_cache.get(username)
+    if cached and now - cached[0] < _REF_INDEX_TTL:
+        entries = cached[1]
+    else:
+        entries = []
+        for item in list_user_skill_dirs(username):
+            try:
+                meta = skill_metadata(Path(item["path"]))
+            except OSError:
+                continue
+            display_name = str(meta.get("name") or item["dir_name"]).strip() or item["dir_name"]
+            entries.append({
+                **item,
+                "name": display_name,
+                "dir_key": normalize_skill_ref(item["dir_name"]),
+                "name_key": normalize_skill_ref(display_name),
+            })
+        _user_ref_index_cache[username] = (now, entries)
+
+    ref_key = normalize_skill_ref(raw)
+    stages: tuple[tuple[str, Any], ...] = (
+        ("dir", lambda item: item["dir_name"] == raw),
+        ("dir_normalized", lambda item: bool(ref_key) and item["dir_key"] == ref_key),
+        ("name", lambda item: item["name"] == raw),
+        ("name_normalized", lambda item: bool(ref_key) and item["name_key"] == ref_key),
+    )
+    for matched_by, predicate in stages:
+        for item in entries:
+            if predicate(item):
+                return {
+                    "dir_name": item["dir_name"],
+                    "path": item["path"],
+                    "enabled": item.get("enabled", True),
+                    "source": item.get("source", "user"),
+                    "name": item["name"],
+                    "matched_by": matched_by,
+                    "declared": raw,
+                }
+    return None
+
+
 def find_user_skill(username: str, dir_name: str) -> dict[str, Any] | None:
-    """按目录名找用户技能（启用与停用都找），返回 None 表示不存在。"""
+    """按目录名找技能库里的技能（用户技能优先，其次已添加的公共技能），不存在返回 None。
+
+    找不到时再按 frontmatter ``name`` 做一次别名解析（见 ``resolve_skill_ref``）：
+    存量技能包常见「目录英文 + name 中文」，专家 ``required_skills`` 或旧前端手打的
+    ``/中文名`` 只有别名可用。解析结果仍以**目录名**返回，调用方无需感知别名。
+    """
+    if not builtin_skills.is_safe_dir_name(dir_name):
+        return None
+    builtin_skills.ensure_migrated(username)
     for root, enabled in (
         (user_skills_dir(username), True),
         (user_disabled_dir(username), False),
     ):
         candidate = root / dir_name
         if is_skill_dir(candidate):
-            return {"dir_name": dir_name, "path": candidate, "enabled": enabled}
-    return None
+            return {"dir_name": dir_name, "path": candidate, "enabled": enabled, "source": "user"}
+    found = next(
+        (item for item in builtin_skills.list_added(username) if item["dir_name"] == dir_name),
+        None,
+    )
+    if found:
+        return found
+    return resolve_user_skill_ref(username, dir_name)
 
 
 def set_skill_enabled(username: str, dir_name: str, enable: bool) -> dict[str, Any]:
-    """启用/停用用户技能（原子重命名），返回操作后的 {dir_name, enabled, path}。
+    """启用/停用技能，返回操作后的 {dir_name, enabled, path}。
 
-    已处于目标状态时直接返回成功（幂等），目录不存在抛 FileNotFoundError，
+    用户技能在 ``skills/`` 与 ``skills-disabled/`` 之间原子重命名；公共技能只改清单。
+    已处于目标状态时直接返回成功（幂等），不存在抛 FileNotFoundError，
     目标处已有同名技能抛 FileExistsError。
     """
+    if not builtin_skills.is_safe_dir_name(dir_name):
+        raise FileNotFoundError(dir_name)
+    found = find_user_skill(username, dir_name)
+    if found is not None and found["source"] == "builtin":
+        return builtin_skills.set_enabled(username, dir_name, enable)
+    result = _move_user_skill(username, dir_name, enable)
+    # 用户技能与已添加的同名公共技能（fork）在技能库里只显示一行：启停一起变，
+    # 否则停用 fork 后 agent 会读到同名的公共技能
+    if dir_name in builtin_skills.load_store(username)["skills"]:
+        builtin_skills.set_enabled(username, dir_name, enable)
+    return result
+
+
+def _move_user_skill(username: str, dir_name: str, enable: bool) -> dict[str, Any]:
     source_root = user_disabled_dir(username) if enable else user_skills_dir(username)
     target_root = user_skills_dir(username) if enable else user_disabled_dir(username)
     source = source_root / dir_name
@@ -233,10 +488,13 @@ def set_skill_enabled(username: str, dir_name: str, enable: bool) -> dict[str, A
 
 
 def remove_user_skill(username: str, dir_name: str) -> Path:
-    """彻底删除用户技能（启用或停用目录里的都删），返回被删路径。"""
+    """移除技能：用户技能彻底删除目录；公共技能只从清单移除（canonical 目录绝不删）。"""
     found = find_user_skill(username, dir_name)
     if not found:
         raise FileNotFoundError(dir_name)
+    if found["source"] == "builtin":
+        builtin_skills.remove(username, dir_name)
+        return found["path"]
     shutil.rmtree(str(found["path"]))
     logger.info(f"技能移除 | 用户: {username} | 技能: {dir_name}")
     return found["path"]
@@ -311,6 +569,10 @@ def register_skill_source(
     # 目标名与源目录名不同（规范化或重名加后缀）时算重命名
     renamed = final_name != source.name
     warnings: list[str] = []
+    # 写了 frontmatter 但解析不了时，先给出具体原因，否则下面「缺少 name」的提示会让人摸不着头脑
+    _, front_error = parse_skill_frontmatter(content)
+    if front_error:
+        warnings.append(f"SKILL.md {front_error}")
     front = parse_frontmatter(content)
     if not front.get("name"):
         warnings.append("SKILL.md frontmatter 缺少 name（将按目录名展示）")
@@ -330,3 +592,121 @@ def register_skill_source(
         "moved_from": source,
         "warnings": warnings,
     }
+
+
+# ── 「/技能目录名」指令解析与拼装 ──────────────────────────────────────────
+
+#: 技能指令形如 ``/技能目录名``：必须以消息开头（或紧跟在上一条令牌之后），
+#: 目录名限字母/数字/汉字开头，由字母数字汉字连字符下划线组成，且后面必须跟空白或
+#: 消息结束。这两个约束共同避免把 ``/usr/bin``、``/workspace/out`` 这类路径当成技能。
+#: 允许汉字是为了兼容「目录英文 + name 中文」的存量技能包：用户手打 ``/金市营收情况``
+#: 也能走到 ``resolve_skill_dirs`` 的别名解析（解析不到只记日志，不影响对话）。
+SKILL_DIRECTIVE_RE = re.compile(
+    r"^/([A-Za-z0-9\u4e00-\u9fff][A-Za-z0-9_\-\u4e00-\u9fff]*)(?=\s|$)"
+)
+
+#: 单轮最多解析的技能数：避免超长消息构造出大量目录查询
+MAX_SKILL_DIRECTIVES = 32
+
+
+def parse_skill_directives(message: str) -> list[str]:
+    """从消息文本里解析开头的 ``/技能目录名`` 指令。
+
+    旧前端（或用户手打）会把已选技能前置成指令，多条以空格分隔，例如::
+
+        /pptx-generator /docx 帮我排个版
+
+    只认「消息开头连续出现」的令牌，与前端 ``utils/skillTokens.js`` 的解析规则一致：
+    正文中间出现的 ``/技能名`` 是用户自己打的字，不当作发送时拼接的指令。
+
+    Returns:
+        按出现顺序去重后的目录名；无指令返回空列表。
+    """
+    text = (message or "").lstrip()
+    dirs: list[str] = []
+    seen: set[str] = set()
+    while text and len(dirs) < MAX_SKILL_DIRECTIVES:
+        matched = SKILL_DIRECTIVE_RE.match(text)
+        if not matched:
+            break
+        name = matched.group(1)
+        if name not in seen:
+            seen.add(name)
+            dirs.append(name)
+        text = text[matched.end():].lstrip()
+    return dirs
+
+
+def resolve_skill_dirs(
+    names: list[str],
+    username: str,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """把目录名映射为该用户实际拥有的技能（启用与停用都算）。
+
+    请求体的 ``skills`` 字段与消息文本里的 ``/目录名`` 指令都会经过这里校验：只有
+    真实存在于该用户技能库（``skills/`` 或 ``skills-disabled/``）的目录名才被放行，
+    其余归入未识别——调用方只记日志，既不阻断对话，也不给模型拼出无效指令。
+
+    Args:
+        names: ``parse_skill_directives`` 的结果，或请求体 ``skills`` 字段
+        username: 当前用户
+
+    Returns:
+        ``(命中的技能列表, 未识别的目录名列表)``，均保持输入顺序且去重。技能项形如
+        ``{"dir_name", "path", "enabled", "name"}``，其中 ``name`` 是 SKILL.md 的展示名。
+    """
+    if not names:
+        return [], []
+
+    by_dir_name = {item["dir_name"]: item for item in list_user_skill_dirs(username)}
+    resolved: list[dict[str, Any]] = []
+    unknown: list[str] = []
+    seen: set[str] = set()
+    for name in names:
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        item = by_dir_name.get(name)
+        if not item:
+            # 别名兜底：存量技能包「目录英文 + name 中文」，旧前端/手打会给出展示名
+            item = resolve_user_skill_ref(username, name)
+        if not item:
+            unknown.append(name)
+            continue
+        resolved.append({
+            "dir_name": item["dir_name"],
+            "path": item["path"],
+            "enabled": item["enabled"],
+            "name": skill_metadata(item["path"]).get("name") or item["dir_name"],
+        })
+    return resolved, unknown
+
+
+def resolve_turn_skills(
+    field_names: list[str] | None,
+    message: str,
+    username: str,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """本轮技能解析（chat 与专家链路共用）。
+
+    字段优先：请求体的 ``skills`` 字段是输入框的选中项（新前端），消息文本开头的
+    ``/目录名`` 是旧前端 / 用户手打的兼容写法，两者合并去重后交给
+    ``resolve_skill_dirs`` 校验归属。字段为空或缺省时行为与改造前逐字一致。
+    """
+    names = list(field_names or []) + parse_skill_directives(message)
+    return resolve_skill_dirs(names, username)
+
+
+def pinned_skill_names(turn_skills: list[dict[str, Any]]) -> list[str]:
+    """本轮要 pin 的技能名（DA-13）：只取已启用的，名字用 SKILL.md frontmatter 的 ``name``。
+
+    SkillsMiddleware 按 frontmatter ``name`` 精确匹配运行输入里的 ``pinned_skills``，在下一次
+    模型调用前把技能全文作为一条消息加进对话，模型不必再自己 ``read_file``。停用的技能不在
+    技能源里，pin 不到，调用方只记日志。
+    """
+    names: list[str] = []
+    for item in turn_skills:
+        name = item.get("name")
+        if item.get("enabled") and name and name not in names:
+            names.append(name)
+    return names

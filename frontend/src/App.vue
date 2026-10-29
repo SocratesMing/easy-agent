@@ -11,17 +11,19 @@
         :sessions="sessions"
         :currentSessionId="currentSessionId"
         :streamingSessionIds="streamingSessions"
+        :pendingApprovalSessionIds="pendingApprovalSessions"
         :username="userProfile.username"
         :organizationId="userProfile.organization_id"
         :email="userProfile.email"
-        :showAssets="showAssets"
+        :knowledgeEnabled="knowledgeEnabled"
+        :showKnowledge="showKnowledge"
         @createSession="handleCreateSession"
         @selectSession="handleSelectSession"
         @deleteSession="handleDeleteSession"
         @renameSession="handleRenameSession"
         @togglePin="handleTogglePin"
         @toggleSidebar="toggleSidebar"
-        @showAssets="handleShowAssets"
+        @showKnowledge="handleShowKnowledge"
         @showSkillCenter="handleShowSkillCenter"
         @showScheduledTasks="handleShowScheduledTasks"
         @showSettings="showSettingsPanel = true"
@@ -41,8 +43,6 @@
         </svg>
       </button>
       
-      <AssetsPanel v-if="showAssets" :visible="showAssets" @close="showAssets = false" />
-
       <SkillCenter
         v-if="showSkillCenter"
         :session-id="currentSessionId || ''"
@@ -50,6 +50,8 @@
         @close="showSkillCenter = false"
         @use="handleUseExpert"
         @create-skill="handleSkillCreate"
+        @create-expert="handleExpertCreate"
+        @edit-expert="handleExpertEdit"
       />
 
       <ScheduledTasksPanel v-if="showScheduledTasks" @close="showScheduledTasks = false" />
@@ -63,9 +65,16 @@
         v-if="showUserManagementPanel"
         @close="showUserManagementPanel = false"
       />
-      
+
+      <KnowledgeWorkbench
+        v-if="showKnowledge"
+        @close="showKnowledge = false"
+        @manage-personnel="showUserManagementPanel = true"
+        @chat-session-prepared="loadSessions"
+      />
+
       <Chat
-        v-else-if="!showAssets && !showSkillCenter && !showScheduledTasks"
+        v-else-if="!showSkillCenter && !showScheduledTasks"
         :messages="messages"
         :sessionLoading="sessionLoading"
         :currentSessionId="currentSessionId"
@@ -88,18 +97,20 @@
         @update:selectedModel="selectedModel = $event"
         @toggle-workspace="isWorkspaceCollapsed = false"
         @sendMessage="handleSendMessage"
-        @presetSend="handlePresetSend"
         @createSession="ensureCurrentSession"
         @removeFile="handleRemoveFile"
         @stop="handleStop"
         @retry="handleRetry"
-        @approve="handleToolApproval('approve')"
-        @reject="handleToolApproval('reject')"
+        @approve="handleToolApproval('approve', $event)"
+        @reject="handleToolApproval('reject', $event)"
+        @edit="handleToolApproval('edit', $event)"
         @clearExpert="selectedExpert = null"
+        @selectExpert="handleSummonExpertInPlace"
         @openPanel="openSkillCenterPanel"
+        @openKnowledge="openKnowledgeWorkbench"
       />
 
-      <div v-if="currentSessionId && !showAssets && !showSkillCenter" class="workspace-area">
+      <div v-if="currentSessionId && !showKnowledge && !showSkillCenter" class="workspace-area">
         <WorkspacePanel
           :username="userProfile.username"
           :currentSessionId="currentSessionId"
@@ -109,6 +120,8 @@
         />
       </div>
 
+      <!-- AI 侧边栏：任意页面可唤起，与主页面共用会话列表 -->
+      <AiSidebar v-if="userProfile.username" :pageContext="aiPageContext" @open-in-main="handleOpenSessionInMain" @open-panel="openSkillCenterPanel" />
       <div v-if="error" class="error-toast">
         {{ error }}
         <button @click="error = null">×</button>
@@ -119,23 +132,28 @@
 
 <script setup>
 import { API_BASE_URL, APP_WELCOME_TITLE, appRuntime } from './config.js'
-import { ref, computed, onMounted, watch } from 'vue'
-import SessionList from './components/SessionList.vue'
-import Chat from './components/Chat.vue'
-import AssetsPanel from './components/AssetsPanel.vue'
-import SkillCenter from './components/SkillCenter.vue'
-import ScheduledTasksPanel from './components/ScheduledTasksPanel.vue'
-import UserManagementPanel from './components/UserManagementPanel.vue'
-import Welcome from './components/Welcome.vue'
-import WorkspacePanel from './components/WorkspacePanel.vue'
-import SettingsPanel from './components/SettingsPanel.vue'
+import { ref, computed, onMounted, watch, toRef, defineAsyncComponent } from 'vue'
+import SessionList from './features/chat/components/SessionList.vue'
+import Chat from './features/chat/components/Chat.vue'
+const SkillCenter = defineAsyncComponent(() => import('./features/skills/components/SkillCenter.vue'))
+const ScheduledTasksPanel = defineAsyncComponent(() => import('./features/tasks/components/ScheduledTasksPanel.vue'))
+const KnowledgeWorkbench = defineAsyncComponent(() => import('./features/knowledge/KnowledgeWorkbench.vue'))
+const UserManagementPanel = defineAsyncComponent(() => import('./features/personnel/components/UserManagementPanel.vue'))
+import Welcome from './features/chat/components/Welcome.vue'
+import AiSidebar from './features/chat/components/AiSidebar.vue'
+import { chatBus, chatStore, syncPendingApprovalFlag } from './features/chat/store/chatStore.js'
+import { useAiSidebarBridge } from './features/chat/composables/useAiSidebarBridge.js'
+import WorkspacePanel from './features/workspace/components/WorkspacePanel.vue'
+const SettingsPanel = defineAsyncComponent(() => import('./features/settings/components/SettingsPanel.vue'))
 import { createSession, listSessions, getChatHistory, deleteSession, sendMessage, resumeStream, renameSession, togglePinSession, getStreamStatus, attachStream } from './api/chat.js'
+import { applyApprovalRequests, buildResumeDecisions, markApprovalDecision, unmatchedApprovalRequests } from './utils/hitlApproval.js'
+import { createStreamChunkHandler } from './features/chat/composables/useStreamChunks.js'
 import { uploadFile, deleteFile, getUserProfile, getSessionGeneratedFiles } from './api/files.js'
 import { logout as apiLogout, notifyLogout, getStoredToken, getStoredUsername, AUTH_EXPIRED_EVENT, authFetch, passwordlessLogin } from './api/auth.js'
-import { getModels as fetchModels } from './api/settings.js'
-import { streamExportRun } from './api/expert.js'
+import { getKnowledgeStatus, getModels as fetchModels } from './api/settings.js'
 
-const sessions = ref([])
+// 会话列表与「进行中」集合放在 chatStore：AI 侧边栏与主页面共用同一份
+const sessions = toRef(chatStore, 'sessions')
 const currentSessionId = ref(null)
 const currentSessionHasFiles = ref(false)
 
@@ -162,6 +180,15 @@ function clearActiveSession() {
 const availableModels = ref([])
 const selectedModel = ref(null)
 const welcomeTitle = ref(APP_WELCOME_TITLE)
+
+async function loadKnowledgeStatus() {
+  try {
+    const data = await getKnowledgeStatus()
+    knowledgeEnabled.value = Boolean(data && data.enabled)
+  } catch (e) {
+    knowledgeEnabled.value = false
+  }
+}
 
 async function loadModels() {
   try {
@@ -241,9 +268,10 @@ async function expandWorkspaceAfterSessionCompletion(sessionId, delayMs = 500) {
 }
 const messages = ref([])
 // 多个会话可同时流式：记录所有正在流式输出的会话 id（会话列表逐个显示"进行中"徽标）
-const streamingSessions = ref([])
+const streamingSessions = toRef(chatStore, 'streamingSessions')
+const pendingApprovalSessions = toRef(chatStore, 'pendingApprovalSessions')
 // 最近开始流式的会话（页面刷新后据此重新挂载）
-const lastStreamingSession = ref(null)
+const lastStreamingSession = toRef(chatStore, 'lastStreamingSession')
 // 输入框状态：当前展示的会话正在流式时才显示停止按钮与 token 用量
 const isStreaming = computed(() => isSessionStreaming(currentSessionId.value))
 // 当前正在流式输出的 assistant 消息 id（组件级，供 handleStop 等跨函数使用；
@@ -339,6 +367,7 @@ async function attachToStreamingSession(sessionId, opts = {}) {
       }
       messages.value = history.messages || []
       currentTodos.value = history.todos || []
+      syncExpertChipFromMessages()
       if (history.usage) {
         sessionUsage.value.input_tokens = history.usage.input_tokens || 0
         sessionUsage.value.output_tokens = history.usage.output_tokens || 0
@@ -385,17 +414,20 @@ async function attachToStreamingSession(sessionId, opts = {}) {
     streamingAssistantId.value = attachId
   }
 
-  const { onChunk } = createStreamChunkHandler({
+  const { onChunk } = createStreamChunkHandler(messages, {
     isResume: true,
     attachMode: true,
     get assistantMsgId() { return attachId },
     set assistantMsgId(v) {},
     streamSessionId: sessionId,
+    runInSession,
+    state: buildStreamState(),
     preStreamUsage: { ...sessionUsage.value },
     preStreamIterationCount: iterationCount.value,
     preStreamDuration: sessionDuration.value,
     initialBlockOrder: 0,
     onApprovalRequired: (data) => {
+      syncPendingApprovalFlag(sessionId, true)
       if (!displayed) return
       pendingApproval.value = {
         threadId: data.thread_id,
@@ -408,28 +440,8 @@ async function attachToStreamingSession(sessionId, opts = {}) {
           if (Array.isArray(data.blocks) && data.blocks.length > 0) {
             messages.value[idx].blocks = data.blocks.map(b => ({ ...b }))
           }
-          for (const ar of data.action_requests) {
-            let blk = messages.value[idx].blocks.find(
-              b => b.type === 'tool_call' && (b.tool_call_id === ar.tool_call_id || b.id === ar.tool_call_id)
-            )
-            if (!blk && ar.tool_name) {
-              for (let i = messages.value[idx].blocks.length - 1; i >= 0; i--) {
-                const b = messages.value[idx].blocks[i]
-                if (b.type === 'tool_call' && b.tool_name === ar.tool_name) { blk = b; break }
-              }
-            }
-            if (blk) {
-              blk.pending_approval = true
-              blk.approval_status = 'pending'
-              if (ar.tool_call_id) {
-                blk.tool_call_id = ar.tool_call_id
-                blk.id = ar.tool_call_id
-              }
-              if (ar.file_paths && ar.file_paths.length > 0) {
-                blk.file_paths = ar.file_paths
-              }
-            }
-          }
+          // 挂不上工具卡片的（子代理内部审批）由 ChatMessage 的独立审批面板展示
+          applyApprovalRequests(messages.value[idx].blocks, data.action_requests)
           messages.value[idx] = { ...messages.value[idx], blocks: [...messages.value[idx].blocks] }
         }
       }
@@ -566,9 +578,29 @@ function restoreSessionState(sessionId) {
     currentAbortController.value = state.abortController
     currentTodos.value = state.todos || []
     loadedSessionId.value = sessionId
+    syncExpertChipFromMessages()
     return true
   }
   return false
+}
+
+/** 按最后一轮对话恢复输入框右下角的专家芯片：
+    最后一条用户消息带 expert（{id,name}，随消息落库）则恢复召唤态，
+    没有则清空。messages 每次整体刷新（缓存恢复/历史加载/服务端回填）后调用，
+    保证芯片始终与「该会话最后一轮实际使用的专家」一致。 */
+function syncExpertChipFromMessages() {
+  const msgs = messages.value || []
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    const msg = msgs[i]
+    if (!msg || msg.role !== 'user') continue
+    const ex = msg.expert
+    selectedExpert.value = ex && ex.id
+      ? { export_agent_id: ex.id, export_name_cn: ex.name || '' }
+      : null
+    return
+  }
+  // 空会话（含「选了专家但没发消息就切走」的新窗口）：不恢复任何专家
+  selectedExpert.value = null
 }
 
 // ── 会话级流式隔离 ──────────────────────────────────────────────────────
@@ -598,8 +630,40 @@ function ensureSessionState(sid) {
       assistantMsgId: null,
     }
   }
+  // 历史缓存可能由部分更新（如只写 isStreaming/abortController）创建：缺字段时
+  // 后台流结束的 runInSession 会把全局 refs 置为 undefined（messages/sessionUsage），
+  // 收尾回调读 .length 或 token_usage 的 Object.assign 会抛 TypeError 并跳过清理
+  // （回归 UI-25 / applyUsage）。这里统一补齐默认值。
+  if (!Array.isArray(st.messages)) st.messages = []
+  if (!st.sessionUsage || typeof st.sessionUsage !== 'object') st.sessionUsage = { ...sessionUsage.value }
+  if (typeof st.sessionDuration !== 'number') st.sessionDuration = 0
+  if (typeof st.iterationCount !== 'number') st.iterationCount = 0
+  if (!Array.isArray(st.todos)) st.todos = []
+  if (st.streamingAssistantId === undefined) st.streamingAssistantId = null
+  if (st.assistantMsgId === undefined) st.assistantMsgId = null
   sessionStates.value = { ...sessionStates.value, [sid]: st }
   return st
+}
+
+// 流式处理器需要的页面级 refs：抽成模块后通过 ctx.state 注入
+function buildStreamState() {
+  return {
+    sessionUsage,
+    sessionDuration,
+    iterationCount,
+    sessionStates,
+    currentSessionId,
+    currentTodos,
+    loadedSessionId,
+    attachedStreamingSessions,
+    sessions,
+    pendingApproval,
+    error,
+    markStreaming,
+    loadSessions,
+    parseMCPResult,
+    onStreamStarted: (sid) => chatBus.emit('stream-started', { sessionId: sid, origin: 'main' }),
+  }
 }
 
 function runInSession(sid, ctx, fn) {
@@ -614,7 +678,7 @@ function runInSession(sid, ctx, fn) {
     streamingAssistantId: streamingAssistantId.value,
     assistantMsgId: ctx ? ctx.assistantMsgId : undefined,
   }
-  messages.value = st.messages
+  messages.value = st.messages || []
   sessionUsage.value = st.sessionUsage
   sessionDuration.value = st.sessionDuration
   iterationCount.value = st.iterationCount
@@ -673,6 +737,8 @@ async function syncSessionFromServer(sessionId) {
   if (currentSessionId.value === sessionId && loadedSessionId.value === sessionId) {
     messages.value = history.messages || []
     currentTodos.value = history.todos || []
+    // 按最后一轮对话恢复专家芯片（最后一轮用了专家则召唤态，否则清空）
+    syncExpertChipFromMessages()
     if (usage) {
       sessionUsage.value.input_tokens = usage.input_tokens || 0
       sessionUsage.value.output_tokens = usage.output_tokens || 0
@@ -711,12 +777,16 @@ function reconstructPendingApproval() {
   // 流式进行中由 onApprovalRequired 管理审批状态，不重建以免覆盖
   if (isStreaming.value) return
   pendingApproval.value = null
-  if (!messages.value || messages.value.length === 0) return
   const sid = currentSessionId.value || ''
+  let found = false
+  if (!messages.value || messages.value.length === 0) {
+    if (sid) syncPendingApprovalFlag(sid, false)
+    return
+  }
   for (let i = messages.value.length - 1; i >= 0; i--) {
     const msg = messages.value[i]
     // 末尾出现用户消息说明已发起新一轮对话，旧的待审批不再阻塞，不重建
-    if (msg.role === 'user') return
+    if (msg.role === 'user') break
     if (msg.role === 'assistant' && msg.pending_approval && msg.pending_approval.thread_id) {
       const threadId = msg.pending_approval.thread_id
       const backendMsgId = sid && threadId.startsWith(sid + '-')
@@ -728,19 +798,24 @@ function reconstructPendingApproval() {
         }
         return b
       })
-      const hasPending = blocks.some(b => b.type === 'tool_call' && b.approval_status === 'pending')
+      // 子代理内部的审批没有对应工具卡片，靠消息级独立面板展示，也算待审批
+      const hasPending = blocks.some(b => b.type === 'tool_call' && b.approval_status === 'pending') ||
+        unmatchedApprovalRequests({ ...msg, blocks }).length > 0
       messages.value[i] = { ...msg, id: backendMsgId, blocks }
       if (hasPending) {
         pendingApproval.value = { threadId, assistantMsgId: backendMsgId }
+        found = true
       }
       break
     }
   }
+  if (sid) syncPendingApprovalFlag(sid, found)
 }
 watch(() => loadedSessionId.value, reconstructPendingApproval)
 const isSidebarCollapsed = ref(false)
 const isWorkspaceCollapsed = ref(true)
-const showAssets = ref(false)
+const knowledgeEnabled = ref(false)
+const showKnowledge = ref(false)
 const showSkillCenter = ref(false)
 const skillCenterTab = ref('experts')
 const selectedExpert = ref(null)
@@ -765,34 +840,52 @@ function toggleSidebar() {
   isSidebarCollapsed.value = !isSidebarCollapsed.value
 }
 
-function handleShowAssets() {
-  showAssets.value = !showAssets.value
-  showSkillCenter.value = false
-  showScheduledTasks.value = false
-}
-
 function openSkillCenterPanel(tab) {
+  if (tab === 'knowledge') return openKnowledgeWorkbench()
+  showKnowledge.value = false
   // 「+」菜单入口：打开面板并直接定位到专家/技能/连接器
   skillCenterTab.value = tab
   showSkillCenter.value = true
 }
 
+// 知识库工作台：与聊天区互斥，打开时收起其他管理面板
+function openKnowledgeWorkbench() {
+  if (!knowledgeEnabled.value) return
+  showKnowledge.value = true
+  showSkillCenter.value = false
+  showScheduledTasks.value = false
+  showSettingsPanel.value = false
+  showUserManagementPanel.value = false
+}
+
+function handleShowKnowledge() {
+  showKnowledge.value = !showKnowledge.value
+  showSkillCenter.value = false
+  showScheduledTasks.value = false
+  showSettingsPanel.value = false
+  showUserManagementPanel.value = false
+}
+
 function handleShowSkillCenter() {
+  showKnowledge.value = false
   showSkillCenter.value = !showSkillCenter.value
-  showAssets.value = false
   showScheduledTasks.value = false
 }
 
 /**
- * 「专家 Tab -> 使用」（及任何来源的专家选中）：把专家挂到当前会话。
+ * 「专家 Tab -> 召唤」（列表卡片 / 详情弹窗 / 示例问题）：**始终新开会话**。
  *
- * 不强制新建会话：后端 thread_id = `{session_id}-{message_id}`，每条消息都是新线程，
- * 且 get_or_create_agent_for_session() 已按「专家是否变更」驱逐缓存，
- * 因此同一会话内切换专家能立即生效（详见 docs/expert-agent-solution.md）。
+ * 2026-10-28 口径调整：从专家面板发起的召唤不再跳回该专家的历史会话，
+ * 一律给一个干净的新窗口（会话记忆、历史消息、工作区交付物都绑定在会话上，
+ * 沿用旧会话会让上次对话的上下文渗进本轮）。
+ * 例外：当前已是空白会话（没有任何消息）则就地复用，避免连点召唤堆出空会话。
+ *
+ * 「+」号面板的召唤走 handleSummonExpertInPlace，不再进入本函数。
+ * 与 frontend-vue2/src/App.vue 的同名函数同构，改动需同步两处。
  */
-function handleUseExpert(expert, prompt) {
+async function handleUseExpert(expert, prompt) {
   if (!expert || !expert.export_agent_id) return
-  selectedExpert.value = {
+  const picked = {
     export_agent_id: expert.export_agent_id,
     export_name_cn: expert.export_name_cn,
     export_version: expert.export_version,
@@ -800,11 +893,40 @@ function handleUseExpert(expert, prompt) {
   showSkillCenter.value = false
   // 详情弹窗点了示例问题：召唤专家的同时把问题回填到输入框（用户确认后发送）
   expertPrompt.value = typeof prompt === 'string' ? prompt : ''
+
+  if (messages.value.length > 0) {
+    await handleCreateSession()
+  }
+
+  // handleCreateSession 会清空专家选择（「切会话不沿用临时选择」的既有口径），
+  // 这里显式恢复成本轮用户刚选中的专家。
+  selectedExpert.value = picked
+}
+
+/**
+ * 「+」号面板 -> 专家行的召唤：**留在当前会话**，只挂专家胶囊。
+ *
+ * 2026-10-28 口径调整：+ 面板召唤不再跳转/新建会话；唯一例外是当前会话
+ * 已经召唤了**另一位**专家——换专家 = 换会话（避免两位专家共享同一份
+ * 会话记忆互相污染），此时新建一个干净窗口再挂载。
+ * 与 frontend-vue2/src/App.vue 的同名函数同构，改动需同步两处。
+ */
+async function handleSummonExpertInPlace(expert) {
+  if (!expert || !expert.export_agent_id) return
+  const picked = {
+    export_agent_id: expert.export_agent_id,
+    export_name_cn: expert.export_name_cn,
+    export_version: expert.export_version,
+  }
+  if (selectedExpert.value && selectedExpert.value.export_agent_id !== picked.export_agent_id) {
+    await handleCreateSession()
+  }
+  selectedExpert.value = picked
 }
 
 function handleShowScheduledTasks() {
+  showKnowledge.value = false
   showScheduledTasks.value = !showScheduledTasks.value
-  showAssets.value = false
   showSkillCenter.value = false
 }
 
@@ -856,6 +978,7 @@ async function restoreInitialSession() {
         if (currentSessionId.value === initialSessionId) {
           messages.value = history.messages || []
           currentTodos.value = history.todos || []
+          syncExpertChipFromMessages()
           if (history.usage) {
             sessionUsage.value.input_tokens = history.usage.input_tokens || 0
             sessionUsage.value.output_tokens = history.usage.output_tokens || 0
@@ -907,6 +1030,7 @@ async function handleWelcomeCompleted(profile) {
     console.warn('获取模型配置失败:', e)
   }
   loadModels()
+  loadKnowledgeStatus()
   await loadSessions()
   await restoreInitialSession()
 }
@@ -936,7 +1060,7 @@ async function handleLogout() {
     organization_id: '',
     email: ''
   }
-  showAssets.value = false
+  showKnowledge.value = false
   showSkillCenter.value = false
   selectedExpert.value = null
   hasBootstrapped.value = false
@@ -950,6 +1074,7 @@ async function handleUnregister() {
   loadedSessionId.value = null
   sessionStates.value = {}
   messages.value = []
+  showKnowledge.value = false
   userProfile.value = {
     username: '',
     organization_id: '',
@@ -971,7 +1096,9 @@ async function loadUserProfile() {
 
   try {
     const profile = await getUserProfile()
-    if (!profile.username || profile.username === 'admin') {
+    // admin 同样要保留登录态：SessionList 的「用户管理」入口只对 admin 渲染，
+    // 若在这里把 admin 打回登录页，刷新/重开页面后用户管理将不可达（D4）。
+    if (!profile.username) {
       showWelcome.value = true
       return
     }
@@ -1054,10 +1181,39 @@ async function handleSkillCreate() {
   await handleCreateSession()
 }
 
+/**
+ * 专家面板「新建专家」：与「创建技能」完全一致 —— 预填草稿已由面板写入
+ * sessionStorage，这里新开一个对话窗口即可（ChatInput 挂载时自动恢复草稿 + 技能标签）。
+ */
+async function handleExpertCreate() {
+  await handleCreateSession()
+}
+
+/**
+ * 专家面板卡片「编辑」：预填草稿已由面板写入 sessionStorage。
+ *
+ * 窗口选择规则（按需求）：
+ * - 当前窗口就是**新会话**（无任何聊天记录）→ 直接把内容带入当前窗口，不新开；
+ * - 当前窗口**已有聊天记录** → 新开一个会话窗口，避免把修改指令混进既有上下文。
+ *
+ * 两种情况都只需「关闭面板」：Chat 因 v-else-if 会重新挂载，
+ * ChatInput 随之恢复草稿与技能标签。
+ */
+async function handleExpertEdit() {
+  const isEmptySession = !currentSessionId.value || messages.value.length === 0
+  if (isEmptySession) {
+    showSkillCenter.value = false
+    showScheduledTasks.value = false
+    showSettingsPanel.value = false
+    return
+  }
+  await handleCreateSession()
+}
+
 async function handleCreateSession() {
   saveCurrentSessionState()
 
-  showAssets.value = false
+  showKnowledge.value = false
   showSkillCenter.value = false
   selectedExpert.value = null
   showScheduledTasks.value = false
@@ -1074,19 +1230,11 @@ async function handleCreateSession() {
   refreshSessionFiles(null)
 }
 
-// 预置问题发送：点击首页预置问题卡片后，该问题作为「新对话的第一条消息」发出。
-// 无论当前是否已选中会话（如刷新后恢复的空会话），都先按「新建对话」把状态
-// 切回全新首页，再走正常发送；当前无会话时后端会在 start 事件里返回新会话 id。
-async function handlePresetSend(message, files, signal, enableDeepThink, enableWebSearch) {
-  await handleCreateSession()
-  handleSendMessage(message, files, signal, enableDeepThink, enableWebSearch)
-}
-
 async function handleSelectSession(sessionId) {
   // 保存当前会话状态
   saveCurrentSessionState()
 
-  showAssets.value = false
+  showKnowledge.value = false
   showSkillCenter.value = false
   // 切换会话时不沿用上一个会话的专家选择（选择是当前工作台的临时状态）
   selectedExpert.value = null
@@ -1128,6 +1276,8 @@ async function handleSelectSession(sessionId) {
     if (currentSessionId.value !== sessionId) return
     messages.value = history.messages || []
     currentTodos.value = history.todos || []
+    // 按最后一轮对话恢复专家芯片（最后一轮用了专家则召唤态，否则清空）
+    syncExpertChipFromMessages()
     // 从服务器返回的 usage 数据恢复 token 用量、会话耗时和迭代次数
     if (history.usage) {
       sessionUsage.value.input_tokens = history.usage.input_tokens || 0
@@ -1166,19 +1316,9 @@ async function handleDeleteSession(sessionId) {
     // 清除会话缓存
     delete sessionStates.value[sessionId]
 
+    chatBus.emit('session-removed', { sessionId, origin: 'main' })
     if (currentSessionId.value === sessionId) {
-      // 先清空归属（避免把已删除会话的界面数据再存回缓存），再决定回退到哪个会话
-      currentSessionId.value = null
-      loadedSessionId.value = null
-      messages.value = []
-      const nextId = sessions.value[0]?.session_id || null
-      if (nextId) {
-        // 复用切会话逻辑：加载其历史（含 sessionLoading 骨架屏），而不是留一个空欢迎页
-        await handleSelectSession(nextId)
-      } else {
-        // 没有剩余会话：回到新建会话首页
-        await handleCreateSession()
-      }
+      await fallbackAfterSessionRemoved()
     } else if (loadedSessionId.value === sessionId) {
       loadedSessionId.value = null
     }
@@ -1190,6 +1330,12 @@ async function handleDeleteSession(sessionId) {
     error.value = '删除会话失败'
   }
 }
+
+const { aiPageContext, handleOpenSessionInMain, fallbackAfterSessionRemoved } = useAiSidebarBridge({
+  panels: { showSkillCenter, showScheduledTasks, showSettingsPanel, showUserManagementPanel },
+  userProfile, sessions, currentSessionId, loadedSessionId, messages, sessionUsage, availableModels, selectedModel,
+  sessionStates, attachedStreamingSessions, attachToStreamingSession, handleSelectSession, handleCreateSession,
+})
 
 async function handleRenameSession(sessionId, newTitle) {
   try {
@@ -1245,449 +1391,7 @@ function parseMCPResult(rawResult) {
   return rawResult
 }
 
-function createStreamChunkHandler(ctx) {
-  let currentBlock = null
-  let currentThinking = ''
-  let currentContent = ''
-  let currentToolCalls = []
-  let blockOrderCounter = ctx.initialBlockOrder || 0
-  let totalThinkingDuration = 0
-
-  function findIdx() {
-    return messages.value.findIndex(m => m.id === ctx.assistantMsgId)
-  }
-  function touchBlocks() {
-    const idx = findIdx()
-    if (idx !== -1) messages.value[idx] = { ...messages.value[idx], blocks: [...messages.value[idx].blocks] }
-  }
-  function ensureMessage() {
-    if (ctx.ensureMessage) ctx.ensureMessage()
-  }
-  function addBlock(type, data, replace = false) {
-    ensureMessage()
-    const idx = findIdx()
-    if (idx === -1) return null
-    if (type === 'thinking' && data.step !== undefined) {
-      const existing = messages.value[idx].blocks.find(b => b.type === 'thinking' && b.step === data.step)
-      if (existing) { currentBlock = existing; return currentBlock }
-    }
-    blockOrderCounter++
-    // 严格按 order 展示时，reopen 场景（late reasoning 晚于同 step 工具块到达）会让
-    // 思考块的 order 大于工具块而排到工具之后。此时给思考块一个更小的 order
-    //（同 step 最小 order - 0.5），使其排在工具之前，符合「先思考后工具」。
-    let blkOrder = blockOrderCounter
-    if (type === 'thinking' && data.step !== undefined) {
-      const sameStep = messages.value[idx].blocks.filter(b => b.step === data.step && b.type !== 'thinking')
-      if (sameStep.length > 0) {
-        blkOrder = Math.min(...sameStep.map(b => b.order || 0)) - 0.5
-      }
-    }
-    const needNewBlock = !currentBlock || currentBlock.type !== type ||
-      (type === 'thinking' && data.step !== undefined && currentBlock.step !== data.step)
-    if (needNewBlock) {
-      currentBlock = { type, content: '', order: blkOrder, ...data }
-      messages.value[idx].blocks.push(currentBlock)
-      messages.value[idx] = { ...messages.value[idx], blocks: [...messages.value[idx].blocks] }
-    } else {
-      if (replace) {
-        currentBlock.content = data.content || ''
-      } else if (data.content !== undefined) {
-        currentBlock.content = (currentBlock.content || '') + (data.content || '')
-      }
-      if (data.tool_name) currentBlock.tool_name = data.tool_name
-      if (data.arguments !== undefined) currentBlock.arguments = data.arguments
-      if (data.result !== undefined) currentBlock.result = data.result
-      if (data.success !== undefined) currentBlock.success = data.success
-      if (data.duration !== undefined) currentBlock.duration = data.duration
-      if (data.step !== undefined) currentBlock.step = data.step
-      if (data.id !== undefined) currentBlock.id = data.id
-      messages.value[idx] = { ...messages.value[idx] }
-    }
-    return currentBlock
-  }
-  function updateThinkingDuration(duration, step) {
-    const idx = findIdx()
-    if (idx !== -1) {
-      const blockIdx = messages.value[idx].blocks.findIndex(b => b.type === 'thinking' && b.step === step)
-      if (blockIdx !== -1) {
-        messages.value[idx].blocks[blockIdx] = { ...messages.value[idx].blocks[blockIdx], duration }
-      }
-      messages.value[idx] = { ...messages.value[idx], thinking_duration: duration, blocks: [...messages.value[idx].blocks] }
-    }
-  }
-  function usagePatchFrom(data) {
-    const patch = {
-      input_tokens: data.input_tokens || 0,
-      output_tokens: data.output_tokens || 0,
-      reasoning_tokens: data.reasoning_tokens || 0,
-      context_tokens: data.context_tokens || sessionUsage.value.context_tokens || 0,
-    }
-    if (data.context_length) patch.context_length = data.context_length
-    if (data.auto_compress_tokens) patch.auto_compress_tokens = data.auto_compress_tokens
-    return patch
-  }
-  function applyUsage(data, sid) {
-    const patch = usagePatchFrom(data)
-    const match = !sid || currentSessionId.value === sid
-    if (ctx.attachMode) {
-      // 重挂载回放：token_usage/done 携带的 elapsed_time 是原始流从头开始的
-      // 累计值，应 SET 而非累加（isResume 分支的累加语义只适用于 HITL 续跑）
-      if (match) {
-        Object.assign(sessionUsage.value, patch)
-        if (typeof data.elapsed_time === 'number') sessionDuration.value = Math.round(data.elapsed_time * 10) / 10
-        if (typeof data.step_count === 'number') iterationCount.value = data.step_count
-      } else {
-        const cached = sessionStates.value[sid]
-        if (cached) {
-          cached.sessionUsage = { ...cached.sessionUsage, ...patch }
-          if (typeof data.elapsed_time === 'number') cached.sessionDuration = Math.round(data.elapsed_time * 10) / 10
-          if (typeof data.step_count === 'number') cached.iterationCount = data.step_count
-        }
-      }
-      return
-    }
-    if (ctx.isResume) {
-      if (match) {
-        Object.assign(sessionUsage.value, patch)
-        if (typeof data.elapsed_time === 'number') sessionDuration.value = Math.round((sessionDuration.value + data.elapsed_time) * 10) / 10
-        if (typeof data.step_count === 'number') iterationCount.value = data.step_count
-      } else {
-        const cached = sessionStates.value[sid]
-        if (cached) {
-          cached.sessionUsage = { ...cached.sessionUsage, ...patch }
-          if (typeof data.elapsed_time === 'number') cached.sessionDuration = Math.round(((cached.sessionDuration || 0) + data.elapsed_time) * 10) / 10
-          if (typeof data.step_count === 'number') cached.iterationCount = data.step_count
-        }
-      }
-    } else {
-      const newDuration = typeof data.elapsed_time === 'number' ? Math.round((ctx.preStreamDuration + data.elapsed_time) * 10) / 10 : null
-      const newIterations = typeof data.step_count === 'number' ? ctx.preStreamIterationCount + data.step_count : null
-      if (match) {
-        Object.assign(sessionUsage.value, patch)
-        if (newDuration !== null) sessionDuration.value = newDuration
-        if (newIterations !== null) iterationCount.value = newIterations
-      } else {
-        const cached = sessionStates.value[sid]
-        if (cached) {
-          cached.sessionUsage = { ...cached.sessionUsage, ...patch }
-          if (newDuration !== null) cached.sessionDuration = newDuration
-          if (newIterations !== null) cached.iterationCount = newIterations
-        }
-      }
-    }
-  }
-
-  function onChunk(data) {
-    const { type: eventType, content, duration, step, tool_name, tool_call_id: toolCallId, arguments: args, result, success, title } = data
-    const sid = ctx.streamSessionId
-
-    if (eventType === 'start') {
-      if (!ctx.isResume) {
-        currentTodos.value = []
-        // 仅「本次请求就是当前展示会话的新建」时才认领 session_id；
-        // 后台会话（ctx.streamSessionId 已确定）的 start 不得把界面抢过来。
-        if (data.session_id && !currentSessionId.value && !ctx.streamSessionId) {
-          currentSessionId.value = data.session_id
-          loadedSessionId.value = data.session_id
-          loadSessions()
-        }
-        if (data.session_id) ctx.streamSessionId = data.session_id
-        // 标记该会话已有本页流处理器：切回时直接按缓存显示，避免再起一个 attach
-        // 处理器（会重复渲染同一段流）——send 链路专有，attach 链路由自身管理。
-        if (data.session_id && !ctx.attachMode) {
-          attachedStreamingSessions.value[data.session_id] = 'displayed'
-        }
-        markStreaming(ctx.streamSessionId || currentSessionId.value)
-      }
-    } else if (eventType === 'token_usage') {
-      applyUsage(data, ctx.streamSessionId)
-    } else if (eventType === 'thinking_start') {
-      // 始终按 step 解析思考块，不再用「currentBlock 已是 thinking 则跳过」守卫：
-      // 该守卫会在上一 step 的 currentBlock 未被 thinking_end 及时置空时跳过新 step
-      // 的 thinking_start，导致后续 thinking 增量回退到上一步卡片，造成同一 step 的
-      // 思考内容被拆分/串步渲染。按 step 查找：存在则复用（同 turn 思考分段重开），
-      // 不存在则新建，保证每个 step 恰好一张思考卡片。
-      // 第一步思考事件可能早于 content/tool_call 到达（此时 assistant 消息尚未创建），
-      // 必须先 ensureMessage，否则 findIdx 返回 -1 导致首步思考被丢弃（历史能查到、实时不渲染）。
-      ensureMessage()
-      const idx = findIdx()
-      if (idx !== -1) {
-        const targetStep = step || 0
-        const existing = messages.value[idx].blocks.find(b => b.type === 'thinking' && b.step === targetStep)
-        if (existing) {
-          // 复用同 step 思考块：恢复已累积内容继续追加，不重置 duration 以避免卡片在
-          //「思考过程」与「正在思考」间闪烁、也避免同一步骤思考被视觉上分成两段。
-          currentThinking = existing.content || ''
-          currentBlock = existing
-          touchBlocks()
-        } else {
-          currentThinking = ''
-          currentBlock = null
-          addBlock('thinking', { content: '', step: targetStep })
-        }
-      }
-    } else if (eventType === 'thinking') {
-      const targetStep = step || 0
-      // 优先用后端 full_content（本 step 思考完整内容）采用 SET 语义覆盖——幂等，
-      // 重复/聚合增量也不会重复渲染；旧后端无 full_content 时回退到 append 增量。
-      if (data.full_content) {
-        currentThinking = data.full_content
-      } else {
-        currentThinking += content || ''
-      }
-      ensureMessage()
-      const idx = findIdx()
-      if (idx !== -1) {
-        // 按 step 定位思考块写入；若该 step 尚无思考块（thinking_start 被跳过或事件
-        // 乱序），按 step 新建一块，绝不回退到其他 step 的 currentBlock——否则会把
-        // 本步思考写入上一步卡片（覆盖其内容），造成一个 step 的思考被拆分/错位。
-        let blk = messages.value[idx].blocks.find(b => b.type === 'thinking' && b.step === targetStep)
-        if (!blk) {
-          blk = addBlock('thinking', { content: '', step: targetStep })
-          if (!data.full_content) currentThinking = content || ''
-        }
-        if (blk) {
-          blk.content = currentThinking
-          currentBlock = blk
-          messages.value[idx] = { ...messages.value[idx] }
-        }
-      }
-    } else if (eventType === 'thinking_end') {
-      touchBlocks()
-      totalThinkingDuration += duration || 0
-      if (ctx.isResume) {
-        // 健壮地为对应思考块设置 duration。HITL 恢复流中，思考之后往往紧跟
-        // tool_call/tool_result 事件，currentBlock 已被改写为工具块或 null，
-        // 仅依赖 currentBlock 会导致思考块 duration 一直为 null（前端误显示
-        // “正在思考…”）。因此优先按 step 匹配，再回退到 currentBlock 与最后
-        // 一个无 duration 的思考块。
-        const idx = findIdx()
-        if (idx !== -1) {
-          let blockIdx = messages.value[idx].blocks.findIndex(b => b.type === 'thinking' && b.step === (step || 0))
-          if (blockIdx === -1 && currentBlock && currentBlock.type === 'thinking') {
-            blockIdx = messages.value[idx].blocks.indexOf(currentBlock)
-          }
-          if (blockIdx === -1) {
-            for (let i = messages.value[idx].blocks.length - 1; i >= 0; i--) {
-              if (messages.value[idx].blocks[i].type === 'thinking') { blockIdx = i; break }
-            }
-          }
-          if (blockIdx !== -1) {
-            messages.value[idx].blocks[blockIdx] = { ...messages.value[idx].blocks[blockIdx], duration: duration || 0 }
-            messages.value[idx] = { ...messages.value[idx], blocks: [...messages.value[idx].blocks] }
-          }
-        }
-      } else {
-        updateThinkingDuration(duration || 0, step || 0)
-      }
-      currentThinking = ''
-      currentBlock = null
-    } else if (eventType === 'content_start') {
-      if (!currentBlock || currentBlock.type !== 'content') {
-        currentContent = ''
-        currentBlock = null
-        addBlock('content', { content: '', step: step || 0 })
-      }
-    } else if (eventType === 'content') {
-      const targetStep = step || 0
-      // 正文块必须带 step，否则按 step 排序时会落到顶部（step=0）。同一 step 的
-      // 正文分段到达（reopen）时复用已有正文块，避免同 step 产生多个正文块。
-      if (!currentBlock || currentBlock.type !== 'content' || currentBlock.step !== targetStep) {
-        const idx0 = findIdx()
-        let existing = null
-        if (idx0 !== -1) existing = messages.value[idx0].blocks.find(b => b.type === 'content' && b.step === targetStep)
-        if (existing) {
-          currentContent = (existing.content || '') + (content || '')
-          currentBlock = existing
-        } else {
-          currentContent = content || ''
-          currentBlock = null
-          addBlock('content', { content: currentContent, step: targetStep })
-        }
-      } else {
-        currentContent += content || ''
-      }
-      if (currentBlock && currentBlock.type === 'content') currentBlock.content = currentContent
-      const idx = findIdx()
-      if (idx !== -1) {
-        if (ctx.isResume) messages.value[idx].content = (messages.value[idx].content || '') + (content || '')
-        touchBlocks()
-      }
-    } else if (eventType === 'content_end') {
-      currentContent = ''
-      currentBlock = null
-    } else if (eventType === 'todo_list') {
-      if (data.todos && Array.isArray(data.todos)) currentTodos.value = data.todos
-    } else if (eventType === 'assistant_start') {
-      if (!ctx.isResume) {
-        ensureMessage()
-        currentContent = ''
-        currentThinking = ''
-        currentToolCalls = []
-        currentBlock = null
-      }
-    } else if (eventType === 'user_input_required') {
-      if (!ctx.isResume) {
-        const idx = findIdx()
-        if (idx !== -1) { messages.value[idx].loading = false; messages.value[idx] = { ...messages.value[idx] } }
-      }
-    } else if (eventType === 'tool_call_delta') {
-      // 大参数工具（write_file/edit_file）的 arguments 分片快照：模型还在生成
-      // 文件内容时就先把当前快照合入对应工具卡片，diff 实时增长；完整参数随后由
-      // tool_call 事件权威覆盖（同一 tool_call_id）。
-      if (!ctx.isResume) ensureMessage()
-      const idx = findIdx()
-      if (idx !== -1) {
-        const callId = toolCallId || `tool-${tool_name}`
-        const existingBlockIdx = messages.value[idx].blocks.findIndex(b => b.type === 'tool_call' && (b.id === callId || b.tool_call_id === callId))
-        if (existingBlockIdx !== -1) {
-          const prev = messages.value[idx].blocks[existingBlockIdx]
-          messages.value[idx].blocks[existingBlockIdx] = { ...prev, arguments: args || prev.arguments || {}, streaming: true }
-        } else {
-          addBlock('tool_call', { id: callId, tool_name: tool_name || '', arguments: args || {}, result: '', success: true, step: step || 0, streaming: true })
-          if (!ctx.isResume) currentToolCalls.push({ tool_call_id: callId, tool_name: tool_name || '', arguments: args || {}, result: '', success: true })
-        }
-        touchBlocks()
-      }
-    } else if (eventType === 'tool_call') {
-      if (!ctx.isResume) ensureMessage()
-      const idx = findIdx()
-      if (idx !== -1) {
-        const callId = toolCallId || `tool-${tool_name}`
-        let existingBlockIdx = messages.value[idx].blocks.findIndex(b => b.type === 'tool_call' && (b.id === callId || b.tool_call_id === callId))
-        if (existingBlockIdx === -1) {
-          // 参数分片阶段若无 id（部分 provider 首个分片才带 id），临时块的 key 是
-          // `tool-<name>`；此处按工具名回退匹配仍在 streaming 的占位块，避免重复卡片。
-          existingBlockIdx = messages.value[idx].blocks.findIndex(b => b.type === 'tool_call' && b.streaming && b.tool_name === tool_name)
-        }
-        if (existingBlockIdx !== -1) {
-          const prev = messages.value[idx].blocks[existingBlockIdx]
-          // 参数分片阶段的临时块：用权威参数覆盖，补齐 id/step，并清掉 streaming 标记。
-          messages.value[idx].blocks[existingBlockIdx] = { ...prev, id: toolCallId || prev.id, tool_call_id: toolCallId || prev.tool_call_id, arguments: args || prev.arguments || {}, step: step || prev.step || 0, streaming: false }
-          if (!ctx.isResume) {
-            const tracked = currentToolCalls.find(tc => tc.tool_call_id === callId)
-            if (tracked) {
-              tracked.arguments = args || tracked.arguments
-              tracked.tool_name = tool_name || tracked.tool_name
-            } else {
-              currentToolCalls.push({ tool_call_id: callId, tool_name: tool_name || '', arguments: args || {}, result: '', success: true })
-            }
-          }
-          currentBlock = messages.value[idx].blocks[existingBlockIdx]
-          touchBlocks()
-        } else {
-          currentBlock = null
-          if (!ctx.isResume) currentToolCalls.push({ tool_call_id: callId, tool_name: tool_name || '', arguments: args || {}, result: '', success: true })
-          addBlock('tool_call', { id: callId, tool_name: tool_name || '', arguments: args || {}, result: '', success: true, step: step || 0 })
-        }
-      }
-    } else if (eventType === 'tool_result') {
-      const callId = toolCallId || `tool-${tool_name}`
-      const toolDuration = duration != null ? duration : 0
-      if (!ctx.isResume && currentToolCalls.length > 0) {
-        const matchingCall = currentToolCalls.find(tc => tc.tool_call_id === callId)
-        if (matchingCall) {
-          matchingCall.result = result || ''
-          matchingCall.success = success !== false
-          matchingCall.duration = toolDuration
-          if (args) matchingCall.arguments = args
-        }
-      }
-      const idx = findIdx()
-      if (idx !== -1) {
-        let blockIdx = messages.value[idx].blocks.findIndex(b => b.type === 'tool_call' && (b.id === callId || b.tool_call_id === callId))
-        if (blockIdx === -1) {
-          blockIdx = messages.value[idx].blocks.findIndex(b => b.type === 'tool_call' && b.streaming && b.tool_name === tool_name)
-        }
-        if (blockIdx !== -1) {
-          const blk = { ...messages.value[idx].blocks[blockIdx], arguments: args || messages.value[idx].blocks[blockIdx].arguments, result: parseMCPResult(result || ''), success: success !== false, duration: toolDuration, streaming: false }
-          if (ctx.isResume) blk.loading = false
-          messages.value[idx].blocks[blockIdx] = blk
-          touchBlocks()
-        }
-      }
-      if (!currentBlock || currentBlock.type !== 'content') currentBlock = null
-    } else if (eventType === 'approval_required') {
-      if (ctx.onApprovalRequired) ctx.onApprovalRequired(data)
-    } else if (eventType === 'done') {
-      const idx = findIdx()
-      if (idx !== -1) {
-        messages.value[idx].loading = false
-        messages.value[idx].pending_approval = null
-        pendingApproval.value = null
-        messages.value[idx].created_at = new Date().toISOString()
-        // 兜底：任何未收到完整参数的 streaming 占位块在流结束时清掉标记，
-        // 避免工具卡片一直停留在「写入中…」。
-        for (const b of messages.value[idx].blocks || []) { if (b.streaming) b.streaming = false }
-        if (ctx.isResume) {
-          if (Array.isArray(data.blocks) && data.blocks.length > 0) messages.value[idx].blocks = data.blocks.map(b => ({ ...b }))
-          for (const b of messages.value[idx].blocks) { if (b.type === 'thinking' && b.duration == null) b.duration = 0 }
-          if (data.usage) applyUsage(data.usage, ctx.streamSessionId)
-        } else {
-          const finalContent = data.content || currentContent
-          messages.value[idx].content = finalContent
-          // SET 语义下 currentThinking 只剩最后一个 step 的内容；此处从所有思考块
-          // 拼接出完整 thinking，保证 message.thinking 字段（旧数据回退/兼容）正确。
-          messages.value[idx].thinking = (messages.value[idx].blocks || [])
-            .filter(b => b.type === 'thinking')
-            .map(b => b.content || '')
-            .join('')
-          messages.value[idx].tool_calls = currentToolCalls
-          if (data.usage) {
-            messages.value[idx].usage = { input_tokens: data.usage.input_tokens || 0, output_tokens: data.usage.output_tokens || 0, reasoning_tokens: data.usage.reasoning_tokens || 0 }
-          }
-          if (data.usage) {
-            const patch = usagePatchFrom(data.usage)
-            const match = !ctx.streamSessionId || currentSessionId.value === ctx.streamSessionId
-            const finalDuration = typeof data.elapsed_time === 'number' ? Math.round((ctx.preStreamDuration + data.elapsed_time) * 10) / 10 : null
-            const finalIterations = data.usage && typeof data.usage.step_count === 'number' ? ctx.preStreamIterationCount + data.usage.step_count : null
-            if (match) {
-              Object.assign(sessionUsage.value, patch)
-              if (finalDuration !== null) sessionDuration.value = finalDuration
-              if (finalIterations !== null) iterationCount.value = finalIterations
-            } else {
-              const cached = sessionStates.value[ctx.streamSessionId]
-              if (cached) {
-                cached.sessionUsage = { ...cached.sessionUsage, ...patch }
-                if (finalDuration !== null) cached.sessionDuration = finalDuration
-                if (finalIterations !== null) cached.iterationCount = finalIterations
-              }
-            }
-          }
-        }
-        messages.value[idx] = { ...messages.value[idx] }
-      }
-      if (!ctx.isResume && title) {
-        const existingIdx = sessions.value.findIndex(s => s.session_id === currentSessionId.value)
-        if (existingIdx === -1) {
-          sessions.value = [{ session_id: currentSessionId.value, title, created_at: new Date().toISOString(), message_count: messages.value.length }, ...sessions.value]
-        } else {
-          sessions.value[existingIdx] = { ...sessions.value[existingIdx], title }
-          sessions.value = [...sessions.value]
-        }
-      }
-    } else if (eventType === 'error') {
-      const idx = findIdx()
-      if (idx !== -1) {
-        messages.value[idx].loading = false
-        messages.value[idx].error = data.content || '处理失败'
-        if (!ctx.isResume) {
-          for (const blk of messages.value[idx].blocks) {
-            if (blk.type === 'thinking' && blk.duration == null) blk.duration = 0
-            if (blk.type === 'tool_call' && blk.duration == null) { blk.duration = 0; blk.success = false; if (!blk.result) blk.result = data.content || '执行中断' }
-          }
-        }
-        messages.value[idx] = { ...messages.value[idx], blocks: [...messages.value[idx].blocks] }
-      }
-      error.value = data.content || '处理失败'
-    }
-  }
-
-  // 事件按「所属会话」路由：后台会话写入其自身缓冲，不污染当前展示
-  return { onChunk: (data) => runInSession(ctx.streamSessionId, ctx, () => onChunk(data)) }
-}
-
-async function handleSendMessage(message, files = [], signal, enableDeepThink = true, enableWebSearch = false) {
+async function handleSendMessage(message, files = [], signal, enableDeepThink = true, enableWebSearch = false, skills = [], expertEditId = '') {
   const userMsgId = `user-${Date.now()}`
   const preStreamUsage = { ...sessionUsage.value }
   // 记录本次请求开始前已累计的耗时和迭代次数，用于流式过程中实时累加
@@ -1711,6 +1415,18 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
     })),
     created_at: new Date().toISOString()
   }
+  // 结构化技能目录名（与后端落库字段同形）：气泡按它渲染技能标签，不再依赖从消息
+  // 文本里反扒 `/技能名`。没有选中技能时不写该字段——手打 `/技能名` 的正文仍按老规则
+  // 从文本解析，行为和改造前一致。
+  if (skills.length > 0) userMessage.skills = [...skills]
+
+  // 专家模式：先在本轮消息上记下使用的专家（回答面板左上角「头像 + 名称」的数据来源）。
+  // 内存态必须显式写：后端落库的用户消息要等刷新/历史加载才回灌，只依赖后端会出现
+  // 「选中专家发送后左上角空白、刷新一下才出现」。（与 frontend-vue2 同构）
+  const usedExpert = (selectedExpert.value && selectedExpert.value.export_agent_id)
+    ? { id: selectedExpert.value.export_agent_id, name: selectedExpert.value.export_name_cn || '专家' }
+    : null
+  if (usedExpert) userMessage.expert = usedExpert
 
   messages.value.push(userMessage)
 
@@ -1724,7 +1440,8 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
     thinking: '',
     tool_calls: [],
     blocks: [],
-    loading: true
+    loading: true,
+    expert: usedExpert
   }
   messages.value.push(assistantPlaceholder)
   streamingAssistantId.value = assistantPlaceholderId
@@ -1734,6 +1451,8 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
 
   const streamCtx = {
     isResume: false,
+    // 本轮使用的专家 ID：start 事件里据此写「专家 -> 会话」映射（换专家 = 换会话）
+    expertId: (selectedExpert.value && selectedExpert.value.export_agent_id) || '',
     get assistantMsgId() { return assistantMsgId },
     set assistantMsgId(v) { assistantMsgId = v },
     get streamSessionId() { return streamSessionId },
@@ -1751,6 +1470,7 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
           messages.value.push({
             id: assistantMsgId, role: 'assistant', content: '',
             created_at: null, thinking: '', tool_calls: [], blocks: [], loading: true,
+            expert: usedExpert,
           })
         }
         streamingAssistantId.value = assistantMsgId
@@ -1758,40 +1478,22 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
       }
     },
     onApprovalRequired: (data) => {
+      syncPendingApprovalFlag(streamSessionId || currentSessionId.value, true)
       pendingApproval.value = { threadId: data.thread_id, assistantMsgId }
       if (assistantMsgId && data.action_requests) {
         const idx = messages.value.findIndex(m => m.id === assistantMsgId)
         if (idx !== -1) {
           messages.value[idx].pending_approval = { thread_id: data.thread_id, action_requests: data.action_requests }
-          for (const ar of data.action_requests) {
-            let blk = messages.value[idx].blocks.find(
-              b => b.type === 'tool_call' && (b.tool_call_id === ar.tool_call_id || b.id === ar.tool_call_id)
-            )
-            if (!blk && ar.tool_name) {
-              for (let i = messages.value[idx].blocks.length - 1; i >= 0; i--) {
-                const b = messages.value[idx].blocks[i]
-                if (b.type === 'tool_call' && b.tool_name === ar.tool_name) { blk = b; break }
-              }
-            }
-            if (!blk) {
-              for (let i = messages.value[idx].blocks.length - 1; i >= 0; i--) {
-                const b = messages.value[idx].blocks[i]
-                if (b.type === 'tool_call' && !b.result && b.duration == null) { blk = b; break }
-              }
-            }
-            if (blk) {
-              blk.pending_approval = true
-              blk.approval_status = 'pending'
-              if (ar.tool_call_id) { blk.tool_call_id = ar.tool_call_id; blk.id = ar.tool_call_id }
-              if (ar.file_paths && ar.file_paths.length > 0) blk.file_paths = ar.file_paths
-            }
-          }
+          // 挂不上工具卡片的（子代理内部审批）由 ChatMessage 的独立审批面板展示
+          applyApprovalRequests(messages.value[idx].blocks, data.action_requests)
           messages.value[idx] = { ...messages.value[idx], blocks: [...messages.value[idx].blocks] }
         }
       }
     },
   }
-  const { onChunk } = createStreamChunkHandler(streamCtx)
+  streamCtx.runInSession = runInSession
+  streamCtx.state = buildStreamState()
+  const { onChunk } = createStreamChunkHandler(messages, streamCtx)
 
   try {
     markStreaming(currentSessionId.value)
@@ -1808,36 +1510,26 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
       }
     }
 
-    // 专家模式：改走 /agent/stream_export_run，由后端按选中的专家动态构建 Agent
-    // （加载该专家当前生效版本的提示词，未选中的情况退化为通用 Agent）。
-    // SSE 事件格式与 /agent/chat/stream 完全一致，因此 onChunk 复用同一处理器。
-    // 未选专家时保持原有链路，行为不变。
-    if (selectedExpert.value && selectedExpert.value.export_agent_id) {
-      await streamExportRun(
-        {
-          message,
-          sessionId: currentSessionId.value,
-          expertAgentId: selectedExpert.value.export_agent_id,
-          model: selectedModel.value,
-          enableDeepThink,
-          enableWebSearch,
-          files,
-        },
-        onChunk,
-        abortSignal
-      )
-    } else {
-      await sendMessage(
-        currentSessionId.value,
-        message,
-        onChunk,
-        abortSignal,
-        enableDeepThink,
-        files,
-        selectedModel.value,
-        enableWebSearch
-      )
-    }
+    // 专家对话与通用对话只有一个入口 /agent/chat/stream：选中专家时把
+    // expert_agent_id 一并上行，由后端加载该专家提示词、补装依赖技能、
+    // 做职责范围预检（命中即短路拒答，Agent 不创建）。
+    await sendMessage(
+      currentSessionId.value,
+      message,
+      onChunk,
+      abortSignal,
+      enableDeepThink,
+      files,
+      selectedModel.value,
+      enableWebSearch,
+      skills,
+      // 待修改专家 ID（专家面板「编辑」带入，不进消息正文）：后端校验归属后
+      // 绑定为 save_expert 的修改目标
+      expertEditId,
+      selectedExpert.value && selectedExpert.value.export_agent_id
+        ? selectedExpert.value.export_agent_id
+        : ''
+    )
 
     await expandWorkspaceAfterSessionCompletion(streamSessionId)
   } catch (e) {
@@ -1872,7 +1564,8 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
             error: e.message || '发送消息失败，请检查网络连接',
             loading: false,
             created_at: new Date().toISOString(),
-            blocks: []
+            blocks: [],
+            expert: usedExpert
           })
         }
       }
@@ -1884,6 +1577,7 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
   } finally {
     // HITL: 若有审批待处理，保持 isStreaming=true（用户需先审批）
     if (!pendingApproval.value) {
+      syncPendingApprovalFlag(streamSessionId || currentSessionId.value, false)
       const sid = streamSessionId
       const isDisplayed = !sid || sid === loadedSessionId.value
       // 兜底：流已结束（列表"进行中"标记即将移除），若该会话的消息仍标记 loading
@@ -1920,43 +1614,54 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
   }
 }
 
-// HITL: 用户审批文件删除操作后恢复执行
-async function handleToolApproval(decision) {
+// HITL: 用户审批后恢复执行。target.interruptId = 用户点的那个中断（DA-02）：
+// 只回答它，其余中断保持挂起，恢复流结束时后端会再次下发 approval_required。
+async function handleToolApproval(decision, target) {
   if (!pendingApproval.value) return
 
   const currentApproval = pendingApproval.value
   const { threadId, assistantMsgId } = currentApproval
   const sessionId = currentSessionId.value
 
-  const decisions = decision === 'approve'
-    ? [{ type: 'approve' }]
-    : [{ type: 'reject', message: '用户拒绝了此操作，请勿重试此删除命令。' }]
+  const msgIdx = assistantMsgId ? messages.value.findIndex(m => m.id === assistantMsgId) : -1
+  const pending = msgIdx !== -1 ? messages.value[msgIdx].pending_approval : null
+  const actionRequests = (pending && pending.action_requests) || []
+  const { decisions, interruptId } = buildResumeDecisions(actionRequests, decision, {
+    interruptId: target && target.interruptId,
+    // 编辑参数：只改被点的那一条（action_index 由载荷带下来）
+    targetActionIndex: target && target.actionIndex,
+    editedAction: target && target.editedArgs
+      ? { name: target.actionName || '', args: target.editedArgs }
+      : null,
+  })
 
-  // 清除 tool_call block 的 pending_approval 状态
-  if (assistantMsgId) {
-    const idx = messages.value.findIndex(m => m.id === assistantMsgId)
-    if (idx !== -1) {
-      for (const blk of messages.value[idx].blocks) {
-        if (blk.pending_approval) {
-          blk.pending_approval = false
-          // 记录用户审批决策，供前端显示「已批准 / 已拒绝」持久标记
-          blk.approval_status = decision === 'approve' ? 'approved' : 'rejected'
-        }
-      }
-      messages.value[idx] = { ...messages.value[idx], blocks: [...messages.value[idx].blocks] }
+  // 清掉待审批按钮（恢复流期间不允许再点），只给本次作答的中断记上「已批准 / 已拒绝」
+  if (msgIdx !== -1) {
+    markApprovalDecision(messages.value[msgIdx].blocks, decision, actionRequests, interruptId)
+    messages.value[msgIdx] = {
+      ...messages.value[msgIdx],
+      pending_approval: null,
+      blocks: [...messages.value[msgIdx].blocks],
     }
+    const stillPending = messages.value[msgIdx].blocks.some(
+      b => b.type === 'tool_call' && b.approval_status === 'pending'
+    )
+    syncPendingApprovalFlag(sessionId, stillPending)
   }
 
-  const { onChunk } = createStreamChunkHandler({
+  const { onChunk } = createStreamChunkHandler(messages, {
     isResume: true,
     assistantMsgId,
     streamSessionId: sessionId,
+    runInSession,
+    state: buildStreamState(),
     initialBlockOrder: (() => {
       const i = messages.value.findIndex(m => m.id === assistantMsgId)
       return i !== -1 ? messages.value[i].blocks.length : 0
     })(),
     onApprovalRequired: (data) => {
       // 嵌套审批
+      syncPendingApprovalFlag(sessionId, true)
       pendingApproval.value = {
         threadId: data.thread_id,
         assistantMsgId,
@@ -1976,32 +1681,8 @@ async function handleToolApproval(decision) {
               b.duration = 0
             }
           }
-          for (const ar of data.action_requests) {
-            let blk = messages.value[idx].blocks.find(
-              b => b.type === 'tool_call' && (b.tool_call_id === ar.tool_call_id || b.id === ar.tool_call_id)
-            )
-            // 兜底：按 tool_name 匹配最后一个同名工具块
-            if (!blk && ar.tool_name) {
-              for (let i = messages.value[idx].blocks.length - 1; i >= 0; i--) {
-                const b = messages.value[idx].blocks[i]
-                if (b.type === 'tool_call' && b.tool_name === ar.tool_name) {
-                  blk = b
-                  break
-                }
-              }
-            }
-            if (blk) {
-              blk.pending_approval = true
-              blk.approval_status = 'pending'
-              if (ar.tool_call_id) {
-                blk.tool_call_id = ar.tool_call_id
-                blk.id = ar.tool_call_id
-              }
-              if (ar.file_paths && ar.file_paths.length > 0) {
-                blk.file_paths = ar.file_paths
-              }
-            }
-          }
+          // 挂不上工具卡片的（子代理内部审批）由 ChatMessage 的独立审批面板展示
+          applyApprovalRequests(messages.value[idx].blocks, data.action_requests)
           messages.value[idx] = { ...messages.value[idx], blocks: [...messages.value[idx].blocks] }
         }
       }
@@ -2032,6 +1713,9 @@ async function handleToolApproval(decision) {
     if (idx !== -1) {
       messages.value[idx].loading = false
       messages.value[idx].error = e.message || '恢复执行失败'
+      if (e.status === 409) {
+        messages.value[idx].pending_approval = null
+      }
       messages.value[idx] = { ...messages.value[idx] }
     }
   } finally {
@@ -2040,6 +1724,7 @@ async function handleToolApproval(decision) {
     const hasNewApproval = pendingApproval.value && pendingApproval.value !== currentApproval
     if (!hasNewApproval) {
       pendingApproval.value = null
+      syncPendingApprovalFlag(sessionId, false)
       currentAbortController.value = null
       streamingAssistantId.value = null
       const sid = sessionId
@@ -2154,6 +1839,7 @@ onMounted(async () => {
     if (!showWelcome.value) {
       // 拉取可选模型列表（不阻塞会话加载）
       loadModels()
+      loadKnowledgeStatus()
       await loadSessions()
       await restoreInitialSession()
     }
@@ -3150,8 +2836,6 @@ html[data-theme="dark"] .todo-item.in_progress {
 html[data-theme="dark"] .todo-content {
   color: var(--text-primary) !important;
 }
-
-
 
 html[data-theme="dark"] .todo-item.in_progress .todo-content {
   color: var(--text-primary) !important;
