@@ -86,11 +86,11 @@
         <li v-if="!card.paths.length" class="tcc-code-empty">无匹配</li>
       </ul>
 
-      <pre v-else-if="card.card === 'search'" class="tcc-code">{{ card.raw }}</pre>
-      <pre v-else-if="card.card === 'terminal' || card.card === 'read'" class="tcc-code">{{ card.body || '(无内容)' }}</pre>
+      <pre v-else-if="card.card === 'search'" class="tcc-code" v-html="linkifyText(card.raw)"></pre>
+      <pre v-else-if="card.card === 'terminal' || card.card === 'read'" class="tcc-code" v-html="linkifyText(card.body || '(无内容)')"></pre>
 
       <!-- 参数已在标题的 meta 里，展开只看结果 -->
-      <pre v-else class="tcc-code">{{ card.body || '(无内容)' }}</pre>
+      <pre v-else class="tcc-code" v-html="linkifyText(card.body || '(无内容)')"></pre>
     </div>
   </div>
 </template>
@@ -98,6 +98,7 @@
 <script setup>
 import { ref, computed, watch } from 'vue'
 import { toolCard } from '../../../utils/toolPresentation.js'
+import { linkifyText } from '../../../markdownSetup.js'
 import ChartArtifactView from './ChartArtifactView.vue'
 
 const props = defineProps({
@@ -263,6 +264,13 @@ const canEditDecision = computed(() => {
 .tcc-arrow.rotated { transform: rotate(180deg); }
 
 .tcc-body { border-top: 1px solid var(--border-color, #e2e8f0); padding: 8px 10px; }
+/* 工具结果里的 http(s) 链接（linkifyText 生成，新标签页打开） */
+.tcc-code :deep(a) {
+  color: var(--accent-color, #2563eb);
+  text-decoration: underline;
+  overflow-wrap: anywhere;
+}
+
 .tcc-code {
   margin: 0;
   padding: 8px 10px;
