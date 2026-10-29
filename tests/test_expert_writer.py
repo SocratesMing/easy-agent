@@ -447,6 +447,19 @@ def test_update_uses_bound_expert_id_without_args(env):
     assert record["export_version"] == 2
 
 
+def test_update_sees_a_target_bound_after_the_tool_was_built(env):
+    """用户点「编辑」时会话 Agent 可能早已建好：之后才绑定的待修改专家也要生效。"""
+    expert_id = _expert_id_from(_create(_make_tool(), name_cn="信用债投研专家"))
+    shared: dict = {}
+    tool = _make_tool(edit_targets=shared)
+    shared["s1"] = expert_id
+
+    out = _call(tool, action="update", name_cn="信用债投研专家V2", **FAKE_CONFIG)
+
+    assert "修改成功" in out
+    assert ExpertStore(env.db).get(expert_id)["export_name_cn"] == "信用债投研专家V2"
+
+
 def test_update_rejects_id_mismatch_with_bound_target(env):
     """模型传入的 ID 与系统绑定值不一致 → 拒绝（消息体里的 ID 不可信）。"""
     first = _expert_id_from(_create(_make_tool(), name_cn="专家甲"))
@@ -650,6 +663,40 @@ def test_update_replaces_skills_and_keeps_when_not_selected(env):
     tool_new = _make_tool(turn_skills={"s1": ["docx"]})
     _call(tool_new, action="update", expert_agent_id=expert_id, **FAKE_CONFIG)
     assert ExpertStore(env.db).get(expert_id)["export_required_skills"] == ["docx"]
+
+
+def test_tool_reads_and_clears_the_shared_turn_skills(env):
+    """会话 Agent 会复用：工具装配之后才选的技能也要看得到，保存后清掉的是共享暂存。"""
+    _user_skill(env, "docx")
+    shared: dict = {}
+    tool = _make_tool(turn_skills=shared)
+    shared["s1"] = ["docx"]  # chat.py 在后面的轮次写入
+
+    out = _create(tool)
+
+    assert ExpertStore(env.db).get(_expert_id_from(out))["export_required_skills"] == ["docx"]
+    assert "s1" not in shared  # 不会黏到下一次创建
+
+
+def test_registry_hands_the_tool_the_shared_tables_even_when_empty():
+    """装配根把同一张表交给工具：空表也不能换成新字典，否则之后的写入工具看不到。"""
+    from easy_agent.tools import registry
+
+    edit_targets: dict = {}
+    turn_skills: dict = {}
+    ctx = registry.ToolBuildContext(
+        config=None,
+        username="testuser",
+        session_id="s1",
+        edit_targets=edit_targets,
+        turn_skills=turn_skills,
+        factories={"save_expert": writer.create_save_expert_tool},
+    )
+
+    tool = registry._build_save_expert_tool(ctx)
+
+    assert tool.edit_targets is edit_targets
+    assert tool.turn_skills is turn_skills
 
 
 def test_create_drops_missing_skill(env):

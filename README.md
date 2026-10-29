@@ -570,7 +570,7 @@ A: 在 `easy_agent/agent/model.py` 中扩展 `create_model()`，并在 `config.y
 
 每个实例都会注册同一批 cron，必须开启数据库分布式锁：在 `.env.{AGENT_ENV}` 设置
 `DISTRIBUTED_LOCK_ENABLED=true`（或 `config.yaml` 的 `distributed_lock.enabled`）。
-锁实现/表见 `easy_agent/utils/distributed_lock.py`、`distributed_locks`；被跳过的触发记录
+锁实现/表见 `easy_agent/persistence/distributed_lock.py`、`distributed_locks`；被跳过的触发记录
 `operation=skip_locked` 审计日志。更多细节见 [docs/distributed-lock.md](docs/distributed-lock.md)。
 
 ---

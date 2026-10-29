@@ -12,7 +12,7 @@ import pytest
 from fastapi import HTTPException
 
 from easy_agent.models.db import SessionModel
-from easy_agent.utils.session import get_owned_session
+from easy_agent.db.session_ownership import get_owned_session
 
 
 def _make_session(session_id: str, username: str) -> SessionModel:

@@ -25,6 +25,7 @@ from collections.abc import Callable, Iterable, Mapping
 from deepagents.middleware.filesystem import EXECUTE_TOOL_DESCRIPTION
 from langchain.agents.middleware import InterruptOnConfig, ToolCallRequest
 
+from easy_agent.sandboxing.command_policy import is_deletion_command, is_directory_deletion
 from easy_agent.tools.registry import (
     ALLOWED_INTERRUPT_DECISIONS,
     DESTRUCTIVE_INTERRUPT_DECISIONS,
@@ -37,30 +38,6 @@ from easy_agent.tools.registry import (
 )
 
 logger = logging.getLogger("easy-agent.hitl")
-
-_DESTRUCTIVE_CMD_PATTERNS = [
-    r"\brm\b",
-    r"\brmdir\b",
-    r"\bunlink\b",
-    r"\bshred\b",
-    r"\bfind\s+.*\s-delete\b",
-    r"\bdel\b",
-    r"\berase\b",
-    r"\brd\b",
-    r"\bRemove-Item\b",
-    r"sudo\s+rm\b",
-    r"/\s*bin\s*/\s*rm\b",
-]
-
-_DIR_DELETION_PATTERNS = [
-    r"\brmdir\b",
-    r"\brm\b\s+(-\w*[rRd])",
-    r"\bfind\s+.*\s-delete\b",
-    r"\bshred\b\s+(-\w*[rR])",
-    r"\brd\b(?:\s+-\w*s)?",
-    r"\bdel\b(?:\s+[^&|;]*)\s/-s\b",
-    r"\bRemove-Item\b[^;|&]*-Recurse\b",
-]
 
 # 默认人工审批名单：由工具注册表派生（无条件 HITL 工具），
 # 内容与顺序保持改造前逐字一致（save_expert -> create_scheduled_task）。
@@ -130,13 +107,6 @@ _PROTOCOL_TO_LS_PROVIDER = {"openai": "openai", "anthropic": "anthropic"}
 _EXECUTE_DESC_PROFILE_KEYS: set[str] = set()
 
 _DEPRECATED_WARNED = False
-
-
-def _is_directory_deletion(command: str) -> bool:
-    """命令是否命中目录删除模式（策略层直接拒绝，见 ``_is_destructive_command``）。"""
-    if not command:
-        return False
-    return any(re.search(pat, command) for pat in _DIR_DELETION_PATTERNS)
 
 
 def _mcp_original_name(tool: object) -> str:
@@ -345,9 +315,9 @@ def _is_destructive_command(request: ToolCallRequest) -> bool:
     )
     if not command:
         return False
-    if not any(re.search(pat, command) for pat in _DESTRUCTIVE_CMD_PATTERNS):
+    if not is_deletion_command(command):
         return False
-    if _is_directory_deletion(command):
+    if is_directory_deletion(command):
         return False
     return True
 

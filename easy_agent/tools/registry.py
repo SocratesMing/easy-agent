@@ -86,6 +86,8 @@ class ToolSpec:
     #: 由技能带出（DA-13）：不进 agent 的工具列表，交给 SkillsMiddleware(tools=...)，模型读到或
     #: pin 了在 ``metadata.include_tools`` 里声明它的技能之后才出现
     skill_gated: bool = False
+    #: 工具开启时追加到系统提示词的行为约束（``agent/core.py`` 从这里读，不反向依赖工具实现）
+    prompt_note: str = ""
     builder: Callable[["ToolBuildContext"], Any] | None = field(
         default=None, repr=False, compare=False
     )
@@ -238,8 +240,9 @@ def _build_save_expert_tool(ctx: ToolBuildContext) -> Any:
         session_id=ctx.session_id or "",
         config_model=ctx.model_name or "",
         tag_options=getattr(ctx.config, "expert_tags", None),
-        edit_targets=ctx.edit_targets or {},
-        turn_skills=ctx.turn_skills or {},
+        # 传同一张表（不能 ``or {}``：空表会被换成新字典），之后写入的绑定和技能工具才看得到
+        edit_targets=ctx.edit_targets if ctx.edit_targets is not None else {},
+        turn_skills=ctx.turn_skills if ctx.turn_skills is not None else {},
     )
     logger.info(f"[{ctx.sid}] 🧑‍🔬 已注入 save_expert 工具")
     return tool
@@ -257,6 +260,17 @@ def _build_web_search_tool(ctx: ToolBuildContext) -> Any:
         return None
     logger.info(f"[{ctx.sid}] 🌐 联网搜索已开启（注入 web_search 工具）")
     return ctx.web_search_tool
+
+
+# 联网搜索开启时追加到系统提示词的行为约束（web_search 条目的 prompt_note）
+_WEB_SEARCH_PROMPT_NOTE = """## 联网搜索
+
+- 用户已开启「联网搜索」，你可以调用 `web_search` 工具检索公开网页信息。
+- 涉及实时/时效性内容（新闻、政策、行情、价格、版本号、人物动态、近期事件）或你不确定的事实时，先调用 `web_search` 核实再回答。
+- 检索结果来自公网，可能不完整或不准确；关键结论请交叉验证，并在回答中给出来源链接。
+- 单轮回答的检索次数尽量控制在 1~3 次：先想清楚检索词再调用，结果不足时更换关键词，不要机械重复相同查询。
+- 工具报错或结果为空时如实告知用户，不要编造结果。
+"""
 
 
 # ── 注册表本体 ───────────────────────────────────────────────────────────
@@ -395,6 +409,7 @@ TOOL_REGISTRY: tuple[ToolSpec, ...] = (
         description="联网搜索（需配置 api_url/api_key）",
         inject_order=50,
         condition_note="本轮开启且 create_web_search_tool 返回工具",
+        prompt_note=_WEB_SEARCH_PROMPT_NOTE,
         condition=_web_search_enabled,
         builder=_build_web_search_tool,
     ),

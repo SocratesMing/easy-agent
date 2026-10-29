@@ -657,6 +657,7 @@ async def chat_stream(
         turn_skills=turn.dirs,
         expert_id=expert_id,
         sid=sid,
+        enabled=tool_scope.tool_scope_enabled((_get_agent_config() or {}).get("config")),
     )
     logger.info(f"[{sid}] 🎛️ 本轮技能作用域 | {scope.describe()}")
     # 本轮技能暂存：save_expert 在创建 / 修改专家时据此落库 export_required_skills

@@ -14,6 +14,7 @@ from types import SimpleNamespace
 import easy_agent.agent.workspace as agent_workspace_mod
 import easy_agent.backends.shell as sandbox_shell_mod
 import easy_agent.agent.hitl as hitl_mod
+import easy_agent.sandboxing.command_policy as command_policy
 import easy_agent.sandboxing.landlock as landlock_mod
 from deepagents.backends import LocalShellBackend
 from easy_agent.agent import _PathTranslatingShell
@@ -145,8 +146,8 @@ def test_windows_deletion_commands_are_recognized():
     )
 
     assert hitl_mod._is_destructive_command(file_deletion) is True
-    assert hitl_mod._is_directory_deletion("rd /s /q C:\\dir") is True
-    assert hitl_mod._is_directory_deletion(
+    assert command_policy.is_directory_deletion("rd /s /q C:\\dir") is True
+    assert command_policy.is_directory_deletion(
         "powershell Remove-Item -Recurse -Force C:\\dir"
     ) is True
 

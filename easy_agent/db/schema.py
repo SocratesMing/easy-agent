@@ -491,7 +491,7 @@ def _backfill_message_counts(db, cursor) -> None:
 
 def _create_distributed_lock_table(db, cursor):
     # 分布式锁表：多实例（多 pod）部署下防止同一任务被重复处理，
-    # 见 easy_agent/utils/distributed_lock.py。lock_key 为主键，抢锁即
+    # 见 easy_agent/persistence/distributed_lock.py。lock_key 为主键，抢锁即
     # 「插入行 / 已过期则改写 owner」，插入失败即表示锁被其它实例占用。
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS distributed_locks (

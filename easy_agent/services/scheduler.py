@@ -19,7 +19,7 @@ from apscheduler.triggers.cron import CronTrigger
 from easy_agent.db import get_database
 from easy_agent.models.db import ScheduledTaskModel, ScheduledTaskRunModel, SessionModel
 from easy_agent.utils.deployment import detect_worker_count as _detect_worker_count
-from easy_agent.utils.distributed_lock import get_distributed_lock
+from easy_agent.persistence.distributed_lock import get_distributed_lock
 from easy_agent.utils.task_logger import log_task_event
 from langchain_core.callbacks import BaseCallbackHandler
 

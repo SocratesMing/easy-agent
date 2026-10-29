@@ -51,9 +51,10 @@ from easy_agent.agent.subagents import DEFAULT_SUBAGENTS, apply_skill_gated_tool
 from easy_agent.agent.summarization import build_summarization_middleware
 from easy_agent.agent.memory import SessionMemoryMiddleware
 from deepagents.middleware.skills import SkillsMiddleware
-from easy_agent.tools.registry import skill_gated_tool_names
+from easy_agent.tools.registry import require_tool_spec, skill_gated_tool_names
 from easy_agent.agent import builtin_skills
 from easy_agent.agent.skills import declared_include_tools, skill_tool_resolver
+from easy_agent.utils.mcp_content import parse_mcp_content
 from easy_agent.utils.mcp_tool_names import resolve_tool_names
 from easy_agent.agent.builtin_skills import BUILTIN_VIRTUAL_ROOT
 from easy_agent.bootstrap.logger import AgentLogger
@@ -63,11 +64,13 @@ from easy_agent.agent.model import (
     is_internal_model_call,
 )
 from easy_agent.security.prompt_guard import assemble_system_prompt
-from easy_agent.tools.web_search import WEB_SEARCH_SYSTEM_PROMPT
 from easy_agent.utils.prompt_probe import describe_prompt, prompt_fingerprint
 
 
 logger = logging.getLogger(__name__)
+
+# 联网搜索开启时追加到系统提示词的行为约束（登记在工具注册表的 web_search 条目上）
+WEB_SEARCH_SYSTEM_PROMPT = require_tool_spec("web_search").prompt_note
 
 
 def _deepagents_version() -> str:
@@ -873,10 +876,8 @@ class EasyAgent(AgentWorkspaceMixin):
                                     pass
 
                 elif isinstance(chunk, ToolMessage):
-                    from easy_agent.services.mcp import _parse_mcp_content
-
                     tool_name = getattr(chunk, "name", "") or ""
-                    result = _parse_mcp_content(chunk.content) if chunk.content else ""
+                    result = parse_mcp_content(chunk.content) if chunk.content else ""
                     truncate_len = getattr(
                         self.config.tools, "result_log_truncate", 200
                     )

@@ -26,6 +26,11 @@ logger = logging.getLogger("easy_agent.agent")
 # create_deep_agent(memory=[...]) 再经该虚拟路径加载（MemoryMiddleware 读 backend）。
 LONG_TERM_MEMORY_VIRTUAL_PATH = "/memories/AGENTS.md"
 
+# 会话工作区布局：上传文件解析后落盘的目录与清单文件名（清单作为记忆注入）。
+# services/session_uploads.py 从这里导入（上层依赖下层）。
+UPLOADS_DIR_NAME = "uploads"
+MANIFEST_FILENAME = "index.md"
+
 
 class AgentWorkspaceMixin:
     """workspace / skills / permissions 相关方法（``EasyAgent`` 的纯移动部分）。"""
@@ -104,8 +109,6 @@ class AgentWorkspaceMixin:
             LONG_TERM_MEMORY_VIRTUAL_PATH,
         ]
         if self._uploads_manifest_enabled():
-            from easy_agent.services.session_uploads import MANIFEST_FILENAME, UPLOADS_DIR_NAME
-
             sources.append(
                 f"{self.workspace_virtual_path}/{UPLOADS_DIR_NAME}/{MANIFEST_FILENAME}"
             )

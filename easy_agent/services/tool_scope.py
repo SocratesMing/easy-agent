@@ -66,22 +66,14 @@ class ToolScope:
         )
 
 
-def tool_scope_enabled() -> bool:
+def tool_scope_enabled(config) -> bool:
     """作用域总开关（``expert.tool_scope_enabled``，默认开）。
 
     关闭后一律返回"不限制"，等价于改造前的全量挂载，用于线上出问题时的快速回退
-    （不需要回滚代码）。
+    （不需要回滚代码）。``config`` 是调用方手里的应用配置，取不到时按开启处理；
+    本模块不反向 import ``agent_manager``（那样会和 save_expert 工具成环）。
     """
-    try:
-        from .agent_manager import get_agent_config
-
-        cfg = get_agent_config()
-        config = cfg.get("config") if isinstance(cfg, dict) else None
-        if config is not None:
-            return bool(getattr(config, "expert_tool_scope_enabled", True))
-    except Exception as exc:  # noqa: BLE001 - 配置异常按默认（开启）处理
-        logger.warning("读取技能作用域开关失败，按默认开启处理: %s", exc)
-    return True
+    return bool(getattr(config, "expert_tool_scope_enabled", True))
 
 
 def resolve_tool_scope(
@@ -91,6 +83,7 @@ def resolve_tool_scope(
     turn_skills: Iterable[str] | None = None,
     expert_id: str = "",
     sid: str = "",
+    enabled: bool = True,
 ) -> ToolScope:
     """把「专家绑定的技能包」与「本轮另选的技能」归一成 :class:`ToolScope`。
 
@@ -101,6 +94,7 @@ def resolve_tool_scope(
         turn_skills: 本轮输入框选中的技能目录名（``chat.py`` 的 ``turn.dirs``）。
         expert_id: 仅用于日志。
         sid: 会话日志前缀。
+        enabled: 作用域总开关，调用方用 :func:`tool_scope_enabled` 从应用配置取。
 
     Returns:
         :class:`ToolScope`；开关关闭或专家未绑定技能包时 ``skill_whitelist=None``。
@@ -108,7 +102,7 @@ def resolve_tool_scope(
     expert_list = _clean(expert_skills)
     turn_list = _clean(turn_skills)
 
-    if not tool_scope_enabled():
+    if not enabled:
         logger.info(
             f"[{sid}] 🔓 技能作用域已关闭（expert.tool_scope_enabled=false），全量挂载 | "
             f"expert={expert_id or '(无)'} | 专家技能={expert_list or '无'} | "

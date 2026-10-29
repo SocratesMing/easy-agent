@@ -4,17 +4,13 @@ from __future__ import annotations
 
 import json
 import logging
-import os
-import socket
 from datetime import UTC, datetime, timedelta
 
+from easy_agent.db.repositories import session_runtime as session_runtime_repo
+from easy_agent.db.repositories.session_runtime import STREAM_TTL_SECONDS
+from easy_agent.utils.deployment import instance_owner
+
 logger = logging.getLogger("easy_agent.session_runtime")
-
-STREAM_TTL_SECONDS = 30 * 60
-
-
-def instance_owner() -> str:
-    return f"{socket.gethostname()}:{os.getpid()}"
 
 
 def utc_now() -> datetime:
@@ -53,13 +49,8 @@ def renew_stream(
     db, session_id: str, *, ttl_seconds: int = STREAM_TTL_SECONDS
 ) -> bool:
     """为当前实例持有的流锁续约；owner 已变化时返回 False（锁被接管）。"""
-    owner = instance_owner()
-    now_dt = utc_now()
-    return db.renew_session_stream(
-        session_id,
-        owner,
-        _iso(now_dt + timedelta(seconds=ttl_seconds)),
-        _iso(now_dt),
+    return session_runtime_repo.renew_stream_lease(
+        db, session_id, instance_owner(), ttl_seconds=ttl_seconds
     )
 
 

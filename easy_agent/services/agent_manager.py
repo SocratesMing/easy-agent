@@ -538,11 +538,6 @@ def set_session_turn_skills(session_id: str, dirs: list[str] | None) -> list[str
     return list(_session_turn_skills.get(session_id) or [])
 
 
-def clear_session_turn_skills(session_id: str) -> None:
-    """清空本轮的技能暂存（``save_expert`` 落库后调用，避免黏到下一轮无关的创建）。"""
-    _session_turn_skills.pop(session_id, None)
-
-
 def set_session_edit_target(session_id: str, expert_agent_id: str) -> None:
     """绑定 / 覆盖会话级「待修改专家」（归属校验由接口层完成后再调用）。
 

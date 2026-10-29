@@ -31,7 +31,7 @@ import logging
 from typing import Any, Literal, Optional
 
 from langchain_core.tools import BaseTool
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, SkipValidation
 
 from easy_agent.db import Database, get_database
 from easy_agent.db.expert_store import (
@@ -272,10 +272,12 @@ class SaveExpertTool(BaseTool):
     #: ``agent_manager`` 持有并在聊天请求带 ``pending_expert_id`` 时写入。
     #: 修改专家时 ID 以这里为准（用户消息里不再携带专家 ID，防篡改）；
     #: 模型若显式传了 ``expert_agent_id``，必须与绑定值一致，否则拒绝。
-    edit_targets: Optional[dict] = None
+    #: 两张表都是 ``agent_manager`` 那一份（``SkipValidation`` 防止 pydantic 复制）：
+    #: 会话 Agent 会复用，绑定和本轮技能常常在工具装配之后才写入。
+    edit_targets: SkipValidation[Optional[dict]] = None
     #: 会话 → 本轮输入框选中的技能目录名（``agent_manager`` 持有，供本工具落库）。
     #: 技能胶囊只在请求体的 ``skills`` 字段里，工具侧看不到，所以由装配根暂存一份。
-    turn_skills: Optional[dict] = None
+    turn_skills: SkipValidation[Optional[dict]] = None
 
     def _run(self, **kwargs) -> str:
         raise NotImplementedError("此工具仅支持异步调用，请使用 _arun")
@@ -592,13 +594,9 @@ class SaveExpertTool(BaseTool):
         return self._success_text("修改", _to_public(updated), source)
 
     def _clear_turn_skills(self) -> None:
-        """清掉本会话的「本轮技能暂存」（保存完成后调用，失败只记日志）。"""
-        try:
-            from easy_agent.services.agent_manager import clear_session_turn_skills
-
-            clear_session_turn_skills(self.session_id or "")
-        except Exception as exc:  # noqa: BLE001 - 清缓存失败不影响保存结果
-            logger.debug("清除本轮技能暂存失败: %s", exc)
+        """清掉本会话的「本轮技能暂存」（保存完成后调用），避免黏到下一次无关的创建。"""
+        if self.turn_skills is not None:
+            self.turn_skills.pop(self.session_id or "", None)
 
     # ── 落盘（两条路径共用） ───────────────────────────────────────────
 

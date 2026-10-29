@@ -2,7 +2,7 @@
 
 服务部署在多个 pod（或 uvicorn `--workers > 1`）时，每个实例都有独立进程内存与
 独立的调度循环，实例之间**唯一共享的是数据库和共享存储**。本文梳理已知的「多实例
-会出问题」场景，并说明基于数据库的分布式锁（`easy_agent/utils/distributed_lock.py`）
+会出问题」场景，并说明基于数据库的分布式锁（`easy_agent/persistence/distributed_lock.py`）
 的开关与用法。
 
 ## 一、场景梳理
@@ -33,7 +33,7 @@
 
 ## 二、分布式锁
 
-实现：`easy_agent/utils/distributed_lock.py`，锁表 `distributed_locks`
+实现：`easy_agent/persistence/distributed_lock.py`，锁表 `distributed_locks`
 （`lock_key` 主键 + `owner` + `expires_at`，随 `Database.init_tables()` 自动创建）。
 
 抢锁 = 「插入锁行（已存在则忽略）」，失败再尝试「抢占过期锁」（`expires_at < now`
@@ -58,7 +58,7 @@ distributed_lock:
 ### 用法
 
 ```python
-from easy_agent.utils.distributed_lock import get_distributed_lock
+from easy_agent.persistence.distributed_lock import get_distributed_lock
 
 handle = get_distributed_lock().acquire("scheduled_task:t-1")   # 非阻塞，抢不到立即返回
 if not handle.acquired:

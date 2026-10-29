@@ -21,7 +21,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from easy_agent.services import agent_manager as am
 from easy_agent.services import tool_scope as ts
 from easy_agent.bootstrap.config import Config
 from easy_agent.services import skill_library
@@ -56,18 +55,10 @@ def env(monkeypatch, tmp_path):
     return SimpleNamespace(skills=skills_dir, disabled=disabled_dir, workspace=workspace)
 
 
-@pytest.fixture()
-def scope_enabled(monkeypatch):
-    """默认开启作用域开关（不依赖服务端配置初始化）。"""
-    monkeypatch.setattr(
-        am, "_agent_config", {"config": SimpleNamespace(expert_tool_scope_enabled=True)}
-    )
-
-
 # ── 1~3：来源与并集 ───────────────────────────────────────────────────
 
 
-def test_no_expert_skills_keeps_full_library(env, scope_enabled):
+def test_no_expert_skills_keeps_full_library(env):
     """专家没绑定技能包 → 全量可见（不选 = 默认都可以使用）。"""
     _skill(env.skills, "alpha")
     _skill(env.skills, "beta")
@@ -79,7 +70,7 @@ def test_no_expert_skills_keeps_full_library(env, scope_enabled):
     assert "全量可见" in scope.describe()
 
 
-def test_expert_skills_only(env, scope_enabled):
+def test_expert_skills_only(env):
     """专家绑定了技能包 → 白名单就是这些（目录名口径）。"""
     _skill(env.skills, "alpha")
     _skill(env.skills, "beta")
@@ -91,7 +82,7 @@ def test_expert_skills_only(env, scope_enabled):
     assert scope.signature() == (("alpha",),)
 
 
-def test_expert_plus_turn_is_union(env, scope_enabled):
+def test_expert_plus_turn_is_union(env):
     """公共专家（或自建专家）+ 本轮另选技能 = 并集（需求点 4）。"""
     _skill(env.skills, "alpha")
     _skill(env.skills, "beta")
@@ -105,7 +96,7 @@ def test_expert_plus_turn_is_union(env, scope_enabled):
     assert scope.source == "expert+turn"
 
 
-def test_turn_skill_alias_resolves_to_dir(env, scope_enabled):
+def test_turn_skill_alias_resolves_to_dir(env):
     """中文展示名会按别名解析成 canonical 目录名（存量技能包的常见形态）。"""
     _skill(env.skills, "gold-desk", description="金市营收情况")
     (env.skills / "gold-desk" / "SKILL.md").write_text(
@@ -120,7 +111,7 @@ def test_turn_skill_alias_resolves_to_dir(env, scope_enabled):
 # ── 4~5：失效技能 ─────────────────────────────────────────────────────
 
 
-def test_disabled_skill_is_dropped(env, scope_enabled):
+def test_disabled_skill_is_dropped(env):
     """停用的技能不在挂载源里，列进白名单只会让模型看到读不到的技能。"""
     _skill(env.skills, "alpha")
     _skill(env.disabled, "beta")
@@ -130,7 +121,7 @@ def test_disabled_skill_is_dropped(env, scope_enabled):
     assert scope.skill_whitelist == ("alpha",)
 
 
-def test_all_invalid_falls_back_to_full(env, scope_enabled):
+def test_all_invalid_falls_back_to_full(env):
     """绑定的技能全都不存在 → 回退全量（记 WARNING），不把专家变成"零技能"。"""
     _skill(env.skills, "alpha")
 
@@ -143,14 +134,13 @@ def test_all_invalid_falls_back_to_full(env, scope_enabled):
 # ── 6：总开关 ─────────────────────────────────────────────────────────
 
 
-def test_scope_switch_off_returns_full(env, monkeypatch):
+def test_scope_switch_off_returns_full(env):
     """``expert.tool_scope_enabled=false`` → 全量挂载（线上快速回退）。"""
     _skill(env.skills, "alpha")
-    monkeypatch.setattr(
-        am, "_agent_config", {"config": SimpleNamespace(expert_tool_scope_enabled=False)}
-    )
+    assert ts.tool_scope_enabled(SimpleNamespace(expert_tool_scope_enabled=False)) is False
+    assert ts.tool_scope_enabled(None) is True  # 取不到配置时按开启
 
-    scope = ts.resolve_tool_scope(USER, expert_skills=["alpha"], sid="t7")
+    scope = ts.resolve_tool_scope(USER, expert_skills=["alpha"], sid="t7", enabled=False)
 
     assert scope.skill_whitelist is None
     assert scope.source == "disabled"

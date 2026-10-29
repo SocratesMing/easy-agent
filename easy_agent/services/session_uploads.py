@@ -28,6 +28,7 @@ import re
 from datetime import datetime
 from pathlib import Path
 
+from easy_agent.agent.workspace import MANIFEST_FILENAME, UPLOADS_DIR_NAME
 from easy_agent.bootstrap.config import Config
 from easy_agent.utils.file_parser import parse_file_content
 from easy_agent.services.upload_storage import (
@@ -37,9 +38,6 @@ from easy_agent.services.upload_storage import (
 )
 
 logger = logging.getLogger("easy_agent.session_uploads")
-
-UPLOADS_DIR_NAME = "uploads"
-MANIFEST_FILENAME = "index.md"
 
 # 清单头部：既是给模型的检索说明，也是"来源标注"要求的落点。
 # 这段话每轮都在 system prompt 里（清单作为记忆注入），所以必须简短、无冗余。
