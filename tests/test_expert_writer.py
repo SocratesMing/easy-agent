@@ -503,8 +503,12 @@ def _tool_names(kwargs) -> set:
     return {getattr(t, "name", "") for t in (kwargs.get("tools") or [])}
 
 
-def test_agent_manager_save_expert_only_with_creator_skill(client, monkeypatch):
-    """save_expert 仅在 expert-creator 技能激活的会话注入，其他会话不带。"""
+def test_agent_manager_save_expert_always_on_in_general_sessions(client, monkeypatch):
+    """通用会话常驻 save_expert：不依赖本轮是否选中 expert-creator。
+
+    技能胶囊发送后前端即清空，按轮判断会让「创建专家」的第二轮工具消失，
+    模型接着上一轮的上下文去调就会失败（线上报「本轮未注入该工具」）。
+    """
     import easy_agent.services.agent_manager as am
 
     if not am._agent_config or not am._agent_config.get("config"):
@@ -527,11 +531,11 @@ def test_agent_manager_save_expert_only_with_creator_skill(client, monkeypatch):
     )
 
     assert "save_expert" in _tool_names(captured[0])
-    assert "save_expert" not in _tool_names(captured[1])
+    assert "save_expert" in _tool_names(captured[1])
 
 
-def test_agent_manager_evicts_when_creator_flag_changes(client, monkeypatch):
-    """save_expert 需求变化（带 -> 不带）必须驱逐重建，否则工具集黏住。"""
+def test_agent_manager_keeps_save_expert_after_skills_are_cleared(client, monkeypatch):
+    """回归：第一轮带 expert-creator、第二轮技能已清空，不重建 Agent，工具还在。"""
     import easy_agent.services.agent_manager as am
 
     if not am._agent_config or not am._agent_config.get("config"):
@@ -552,9 +556,30 @@ def test_agent_manager_evicts_when_creator_flag_changes(client, monkeypatch):
         )
     )
 
-    assert len(captured) == 2
+    assert len(captured) == 1  # 复用缓存，不再因技能清空而驱逐重建
     assert "save_expert" in _tool_names(captured[0])
-    assert "save_expert" not in _tool_names(captured[1])
+
+
+def test_agent_manager_save_expert_off_in_expert_session_without_the_skill(client, monkeypatch):
+    """专家会话维持原限制：本轮没显式激活 expert-creator 就不注入，防止领域专家越界。"""
+    import easy_agent.services.agent_manager as am
+
+    if not am._agent_config or not am._agent_config.get("config"):
+        pytest.skip("全局 Agent 配置未初始化")
+
+    captured: list = []
+    _stub_deep_agent(monkeypatch, captured)
+
+    asyncio.run(
+        am.get_or_create_agent_for_session(
+            "sess-expert-no-creator",
+            username="testuser",
+            enable_hitl=False,
+            expert_agent_id="expert_x_1",
+            skill_dirs=["docx"],
+        )
+    )
+    assert "save_expert" not in _tool_names(captured[-1])
 
 
 def test_session_edit_target_bind_override_and_clear(client):

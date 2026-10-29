@@ -39,9 +39,9 @@ _session_stream_tasks: dict[str, asyncio.Task[None]] = {}
 # 防止消息体被任意篡改。新绑定覆盖旧绑定，保留至会话结束（remove_session_agent 清除）。
 _session_edit_targets: dict[str, str] = {}
 
-# 会话创建 Agent 时是否注入了 save_expert（由本轮 skill_dirs 是否含 expert-creator
-# 决定）。与 _session_agents 同生共死：请求 wants 与缓存值不一致时驱逐重建，
-# 否则「点编辑后工具不在 / 不点了工具还在」。
+ # 会话创建 Agent 时是否注入了 save_expert。通用会话恒为 True（常驻），专家会话取决于
+# 本轮 skill_dirs 是否含 expert-creator。与 _session_agents 同生共死：需要的注入状态与
+# 缓存值不一致时驱逐重建，否则「点编辑后工具不在 / 不点了工具还在」。
 _session_creator: dict[str, bool] = {}
 _agent_config: dict = None
 _llm_instance = None
@@ -116,11 +116,12 @@ async def get_or_create_agent_for_session(
     启用集合（写入与「驱逐缓存 Agent」由 ``set_session_connectors`` 负责，见
     ``api/connectors.py`` 的 ``/agent/connectors/session``）。
 
-    ``skill_dirs`` 为本轮激活的技能目录名（chat / 专家流解析自请求的 skills 字段），
-    决定是否注入 ``save_expert``（仅 expert-creator 技能激活时注入——防止让某个领域
-    专家顺手创建/修改别的专家）。传 ``None``（HITL 恢复等不带本轮技能的场景）表示
-    「跟随缓存」：不因该项差异驱逐，复用已有 Agent。创建新 Agent 时按
-    ``expert-creator 是否在 skill_dirs 中`` 注入。
+    ``skill_dirs`` 为本轮激活的技能目录名（chat / 专家流解析自请求的 skills 字段）。
+    ``save_expert`` 在**通用会话常驻**——它是创建/修改专家的产品级入口，不能依赖本轮
+    是否选中 expert-creator：输入框的技能胶囊在发送后即清空，按轮判断会让下一轮
+    「工具突然消失」，模型接着上一轮的上下文去调就会失败。专家会话仍只在本轮显式激活
+    ``expert-creator`` 时注入，防止领域专家顺手创建/修改别的专家；此类会话传 ``None``
+    （HITL 恢复等不带本轮技能的场景）表示「跟随缓存」，不因该项差异驱逐。
     """
     global _session_agents, _session_expert, _session_connectors, _agent_config
 
@@ -177,10 +178,15 @@ async def get_or_create_agent_for_session(
     # 模型切换 / 联网搜索开关变化 / 专家变更 / save_expert 需求变化：
     # 缓存的 Agent 不匹配，驱逐后重建
     cached = _session_agents.get(session_id)
-    # save_expert 只在 expert-creator 技能激活的会话注入（skill_dirs=None = 跟随缓存）
-    creator_requested = (
-        "expert-creator" in (skill_dirs or []) if skill_dirs is not None else None
-    )
+    # save_expert 的注入需求：通用会话常驻（产品级入口，不依赖本轮是否选中技能——
+    # 输入框的技能胶囊发送后即清空，按轮判断会让下一轮工具突然消失）；专家会话维持
+    # 原限制，只在本轮显式激活 expert-creator 时注入；skill_dirs=None = 跟随缓存。
+    if not expert_key:
+        creator_requested = True
+    elif skill_dirs is None:
+        creator_requested = None
+    else:
+        creator_requested = "expert-creator" in skill_dirs
     if cached is not None:
         cached_web_search = bool(getattr(cached, "enable_web_search", False))
         # enable_web_search=None（如 HITL 恢复）：不比较开关，直接复用缓存 Agent
@@ -320,9 +326,9 @@ async def get_or_create_agent_for_session(
 
     # 专家写入工具（对话内「新建/修改专家」）：由 expert-creator 技能引导 Agent 产出
     # 结构化配置后落库 + 落版本目录，替代原先只能在弹窗里慢慢等的方式。
-    # 仅在该技能激活的会话注入（creator_requested 为 None 只可能出现在 skill_dirs
-    # 未传的旧调用路径，此时保持注入以免破坏既有行为）；edit_targets 绑定表由
-    # 本模块持有，修改专家时 ID 以绑定值为准（用户消息不再携带专家 ID）。
+    # 通用会话常驻（产品级入口，不赌本轮是否带技能）；专家会话只在本轮显式激活该技能时
+    # 注入，防止领域专家越界。creator_requested 为 None = 跟随缓存的旧调用路径，保持注入。
+    # edit_targets 绑定表由本模块持有，修改专家时 ID 以绑定值为准（用户消息不再携带专家 ID）。
     if creator_requested is None or creator_requested:
         try:
             from ..tools.expert_writer import create_save_expert_tool
@@ -382,7 +388,12 @@ async def get_or_create_agent_for_session(
 
     _session_agents[session_id] = agent
     _session_expert[session_id] = expert_key
-    _session_creator[session_id] = bool(creator_requested)
+    # 记录「这次实际注入了没有」：creator_requested=None（跟随缓存）走到这里必定是新建，
+    # 而注入条件对 None 放行，所以记为 True。原写法 bool(None)=False 会让记录与实际相反，
+    # 下一轮按「False -> True」再驱逐一次。
+    _session_creator[session_id] = (
+        True if creator_requested is None else creator_requested
+    )
     logger.info(
         f"[{session_id[-5:]}] Agent 实例创建成功 | workspace: {agent.workspace_dir} | "
         f"model: {agent.model_name} | mcp_tools: {len(tools)} | "
