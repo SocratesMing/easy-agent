@@ -58,7 +58,7 @@
 - 用户技能：`workspace/{username}/skills/` → 虚拟路径 `/user-skills/`。
 - 公共技能只读共享（DA-13 S2）：技能中心「添加」只在 `workspace/{username}/builtin-skills.json` 里记一条（`agent/builtin_skills.py`），不再复制；agent 经 `/skills/builtin/` 直接读 canonical 目录，只看得到该用户已添加且启用的（视图 backend `backends/builtin_skills.py`），写入一律拒绝（backend 与 deny write 规则两层）；execute 沙箱 bwrap 只读挂载已启用的那几个，Landlock 把整个 canonical 目录设为只读。
 - 技能源固定为 `["/skills/builtin/", "/user-skills/"]`，同名时用户技能覆盖公共技能（fork 即复制到用户技能后修改）。S2 之前复制进用户目录、与公共版本一致的副本在第一次访问时删除并记入清单，改过的保留为用户技能；`scripts/skills/migrate_builtin_skills.py` 可一次性预览 / 执行全部用户的迁移。
-- 输入框选中的技能经 `pinned_skills` 加载（DA-13 S1）。`save_expert` 由 expert-creator 的 `metadata.include_tools` 带出：建图时交给替换默认项的 `SkillsMiddleware(tools=...)`，模型读到或 pin 了该技能才绑定，专家会话不提供。
+- 输入框选中的技能经 `pinned_skills` 加载（DA-13 S1）。`save_expert` 是非专家会话常驻的产品级工具，**不参与技能门控**（`agent/core.py` 的 `_ALWAYS_AVAILABLE_TOOLS`）：S2 之前复制进用户目录、被改过而保留下来的旧 `expert-creator` 没有 `metadata.include_tools`，若交给门控会永不披露，创建专家直接失败。技能带出工具的能力（`metadata.include_tools` + `SkillsMiddleware(tools=...)`）对其他工具照常生效。
 
 ### 数据库
 - SQLite（单机开发，启用 WAL/busy_timeout/synchronous=NORMAL）或 MySQL（多副本生产，代码禁止静默降级）。

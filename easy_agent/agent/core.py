@@ -95,6 +95,18 @@ def framework_patch_status() -> dict[str, bool]:
 _HITL_WHEN_PREDICATES = HITL_WHEN_PREDICATES
 
 
+#: 不参与技能门控的工具（DA-13 的例外清单）：这些是产品级入口，可用性不能取决于
+#: 用户手里那份 SKILL.md 的 frontmatter 写成什么样。
+#:
+#: ``save_expert`` 曾经完全靠 expert-creator 的 ``metadata.include_tools`` 带出，
+#: 但 S2 之前「添加技能」是整份复制到用户目录的：这些副本的 frontmatter 没有该字段，
+#: ``_find_skill_reads`` 因此认不出「读过这个技能」，工具永远不披露，模型只能回答
+#: 「本轮未注入 save_expert」，创建专家直接失败。公共版本再正确也救不了旧副本
+#: （同名时用户副本覆盖公共版本），而且这里扫 canonical 目录还会把它重新算进
+#: ``declared_include_tools``，所以必须显式排除，不能只靠注册表去掉 ``skill_gated``。
+_ALWAYS_AVAILABLE_TOOLS = frozenset({"save_expert"})
+
+
 _patch_status_logged = False
 
 
@@ -595,13 +607,15 @@ class EasyAgent(AgentWorkspaceMixin):
                 )
 
             main_middleware = [*middleware, summarization(render_turn=True)]
-            # DA-13：由技能带出的工具（save_expert）不进 agent 工具列表，交给同名替换默认项的
+            # DA-13：由技能带出的工具不进 agent 工具列表，交给同名替换默认项的
             # SkillsMiddleware，模型读到 / pin 了在 include_tools 里声明它的技能后才出现
             # DA-13：注册表里标记为 skill_gated 的工具 + 任意 SKILL.md 通过
             # metadata.include_tools 声明的工具（官方约定为空格分隔字符串）
-            gated_names = set(skill_gated_tool_names()) | declared_include_tools(
-                [self.builtin_skills_dir, self.user_skills_dir]
-            )
+            # 例外：_ALWAYS_AVAILABLE_TOOLS 常驻，旧版技能副本的声明缺失不会把它们锁死
+            gated_names = (
+                set(skill_gated_tool_names())
+                | declared_include_tools([self.builtin_skills_dir, self.user_skills_dir])
+            ) - _ALWAYS_AVAILABLE_TOOLS
             # D4：开启 MCP 前缀后，技能里写的仍是原始工具名，这里按后缀唯一匹配解析
             gated_resolved, gated_unresolved = resolve_tool_names(
                 gated_names, [getattr(t, "name", "") for t in graph_tools]
