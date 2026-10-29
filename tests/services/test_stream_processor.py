@@ -1,3 +1,7 @@
+"""StreamProcessor 测试：把 DeepAgents astream 输出转成 SSE 事件，包括工具调用与结果配对、
+思考块按 step 切分与去重、正文块顺序、token 用量统计和流式工具参数。
+"""
+
 import sys
 import time
 from pathlib import Path
@@ -89,7 +93,6 @@ from langchain_core.messages import AIMessageChunk
 def test_messages_reasoning_emits_thinking_events():
     p = StreamProcessor(sid="s1")
     c1 = AIMessageChunk(content="", additional_kwargs={"reasoning_content": "hello "})
-    c2 = AIMessageChunk(content="", additional_kwargs={"reasoning_content": "world"})
     e1 = p.handle("messages", (c1, {}))
     assert any(e["type"] == "thinking_start" for e in e1)
     assert any(e["type"] == "thinking" and e["content"] == "hello " for e in e1)
@@ -398,20 +401,32 @@ def test_thinking_reopen_no_flicker_keeps_duration():
     assert blk["content"] == "ab"
 
 
-def test_thinking_event_carries_full_content_and_delta():
-    """The `thinking` SSE event carries both the delta (`content`) and the FULL
-    per-step content (`full_content`). The frontend SETs `full_content` (idempotent
-    against re-emitted/aggregate chunks) while an old frontend can still append the
-    `content` delta -- so neither cache state duplicates the thinking."""
+def test_thinking_event_carries_delta_and_throttled_snapshot():
+    """thinking 事件每包都发增量 delta；full_content 全量快照只在首包/周期/大增量
+    时发送（避免 O(n²) SSE）。前端在无 full_content 时 append delta。"""
     p = StreamProcessor(sid="s1")
+    first_events = p.handle("messages", (AIMessageChunk(content="", additional_kwargs={"reasoning_content": "hello "}), {}))
+    first_thinking = [e for e in first_events if e["type"] == "thinking"][-1]
+    # 首个 chunk 必须带全量快照，供前端 SET 语义初始化
+    assert first_thinking["full_content"] == "hello "
+
+    ev = p.handle("messages", (AIMessageChunk(content="", additional_kwargs={"reasoning_content": "world"}), {}))
+    last = [e for e in ev if e["type"] == "thinking"][-1]
+    # 同一 step、1.5s 内且增量 < 8192 字符：不再重复 full_content
+    assert last["content"] == "world"
+    assert "full_content" not in last
+    # blocks 内容仍然完整
+    block = next(b for b in p.blocks if b["type"] == "thinking")
+    assert block["content"] == "hello world"
+
+
+def test_thinking_snapshot_forced_by_interval():
+    """把快照间隔设为 0 时，每个增量包都应携带全量 full_content。"""
+    p = StreamProcessor(sid="s1")
+    p.THINKING_SNAPSHOT_INTERVAL = 0.0
     p.handle("messages", (AIMessageChunk(content="", additional_kwargs={"reasoning_content": "hello "}), {}))
     ev = p.handle("messages", (AIMessageChunk(content="", additional_kwargs={"reasoning_content": "world"}), {}))
-    thinking_events = [e for e in ev if e["type"] == "thinking"]
-    assert thinking_events, "should emit a thinking event"
-    last = thinking_events[-1]
-    # delta of the second chunk
-    assert last["content"] == "world"
-    # full per-step content after the second delta
+    last = [e for e in ev if e["type"] == "thinking"][-1]
     assert last["full_content"] == "hello world"
 
 
@@ -500,7 +515,7 @@ def test_usage_reasoning_defaults_to_zero_when_absent():
 
 def test_build_assistant_message_dict_carries_reasoning_tokens():
     """持久化的消息 usage 必须带上 reasoning_tokens，供历史会话回放展示。"""
-    from easy_agent.services.streaming import build_assistant_message_dict
+    from easy_agent.services.stream_messages import build_assistant_message_dict
 
     msg = build_assistant_message_dict(
         content="c", thinking="t", thinking_duration=1.0,

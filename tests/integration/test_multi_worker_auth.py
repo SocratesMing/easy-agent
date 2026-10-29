@@ -59,8 +59,7 @@ def _register_and_login(db, username="alice"):
     )
 
 
-@pytest.mark.asyncio
-async def test_login_activity_visible_to_other_worker(two_workers, monkeypatch):
+def test_login_activity_visible_to_other_worker(two_workers, monkeypatch):
     """worker A 登录并 touch 活跃时间后，worker B 应能读到活跃状态，不能立刻踢下线。"""
     db_a, db_b = two_workers
     monkeypatch.setattr(auth_middleware, "get_agent_config", lambda: _config(5))
@@ -69,13 +68,12 @@ async def test_login_activity_visible_to_other_worker(two_workers, monkeypatch):
     auth_middleware.touch_user_activity(db_a, "alice")
     auth_middleware._activity_write_throttle.clear()
 
-    username = await auth_middleware.get_current_username(_Request(token), db_b)
+    username = auth_middleware.get_current_username(_Request(token), db_b)
 
     assert username == "alice"
 
 
-@pytest.mark.asyncio
-async def test_idle_timeout_still_enforced_across_workers(two_workers, monkeypatch):
+def test_idle_timeout_still_enforced_across_workers(two_workers, monkeypatch):
     """空闲超时在跨 worker 后依然生效：共享 DB 里活跃时间超过阈值即返回 401。"""
     db_a, db_b = two_workers
     monkeypatch.setattr(auth_middleware, "get_agent_config", lambda: _config(1))
@@ -86,13 +84,12 @@ async def test_idle_timeout_still_enforced_across_workers(two_workers, monkeypat
     auth_middleware._activity_write_throttle.clear()
 
     with pytest.raises(HTTPException) as exc_info:
-        await auth_middleware.get_current_username(_Request(token), db_b)
+        auth_middleware.get_current_username(_Request(token), db_b)
 
     assert exc_info.value.status_code == 401
 
 
-@pytest.mark.asyncio
-async def test_active_user_on_other_worker_passes_idle_check(two_workers, monkeypatch):
+def test_active_user_on_other_worker_passes_idle_check(two_workers, monkeypatch):
     """worker A 刚 touch（60 秒内），worker B 校验同一用户应通过。"""
     db_a, db_b = two_workers
     monkeypatch.setattr(auth_middleware, "get_agent_config", lambda: _config(1))
@@ -101,7 +98,7 @@ async def test_active_user_on_other_worker_passes_idle_check(two_workers, monkey
     db_a.touch_user_activity("alice", auth_middleware.time.time())
     auth_middleware._activity_write_throttle.clear()
 
-    username = await auth_middleware.get_current_username(_Request(token), db_b)
+    username = auth_middleware.get_current_username(_Request(token), db_b)
 
     assert username == "alice"
 

@@ -1,0 +1,143 @@
+# Multi-replica Easy Agent. Requires MySQL (application database), RWX workspace
+# storage, and the sticky-session Ingress in agent-ingress.yaml.
+#
+# HITL checkpoints use the official SQLite saver with one file per pod:
+# data/checkpoints/{pod}.db on the pod's local `data` volume, where {pod} becomes
+# EASY_POD_NAME at startup. A pending approval can only be resumed on the pod that
+# recorded it, so the Ingress pins each browser to one pod with a cookie; requests that
+# land on another pod get a 409 asking the user to resend. Deleting a session removes
+# its checkpoints on the pod that handles the request; the other pods clean up their
+# leftovers in a background pass (EASY_CHECKPOINT_GC_INTERVAL). The LangGraph Store
+# lives in MySQL (SqlStore). Never put the SQLite files on the NAS: SQLite's WAL mode
+# does not work on network filesystems.
+# See docs/design/2026-10-21-per-pod-sqlite-checkpoints.md.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: easy-agent-config
+data:
+  AGENT_ENV: "prod"
+  # Must match spec.replicas below: the startup check reads this value to know the
+  # deployment runs several pods.
+  EASY_REPLICA_COUNT: "2"
+  EASY_TRUST_PROXY: "1"
+  EASY_SKIP_LLM_PROBE: "1"
+  EASY_CHECKPOINT_BACKEND: "auto"
+  # One file per pod, resolved against the repo root (/app), i.e. the local `data`
+  # volume below. {pod} is replaced with EASY_POD_NAME.
+  EASY_CHECKPOINT_SQLITE_PATH: "data/checkpoints/{pod}.db"
+  # Confirms the Ingress pins each browser to one pod (agent-ingress.yaml). Without it,
+  # prod refuses to start with more than one replica.
+  EASY_STICKY_SESSIONS: "1"
+  # Seconds between background passes that delete leftover checkpoints of deleted sessions.
+  EASY_CHECKPOINT_GC_INTERVAL: "600"
+  # Scheduled tasks run on one pod only (the scheduler refuses to register them otherwise).
+  DISTRIBUTED_LOCK_ENABLED: "true"
+  # Uploaded files go to MySQL instead of the pod-local data/uploads.
+  EASY_UPLOAD_BACKEND: "store"
+  # Explicitly off: the escape hatch that would accept inconsistent cross-pod approvals.
+  EASY_ALLOW_LEGACY_CHECKPOINTER: "0"
+  # Phase 0：SSE/run/file/sandbox 尚未外置，保持 0；Phase 2/3 完成后再改 1。
+  EASY_MULTI_REPLICA_STRICT: "0"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: easy-agent-workspace
+spec:
+  accessModes: ["ReadWriteMany"]
+  resources:
+    requests:
+      storage: 50Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: easy-agent
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: easy-agent
+  template:
+    metadata:
+      labels:
+        app: easy-agent
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+        - name: easy-agent
+          image: easy-agent:latest
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: easy-agent-config
+            - secretRef:
+                name: easy-agent-secrets
+          env:
+            # Instance name for {pod} in EASY_CHECKPOINT_SQLITE_PATH and for pending approvals.
+            - name: EASY_POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: EASY_JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: easy-agent-secrets
+                  key: jwt-secret
+            - name: EASY_CORS_ALLOW_ORIGINS
+              valueFrom:
+                secretKeyRef:
+                  name: easy-agent-secrets
+                  key: cors-origins
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              add: ["SYS_ADMIN"]
+              drop: ["ALL"]
+          volumeMounts:
+            - name: shared
+              mountPath: /app/workspace
+              subPath: workspace
+            - name: shared
+              mountPath: /app/memories
+              subPath: memories
+            - name: data
+              mountPath: /app/data
+          livenessProbe:
+            httpGet:
+              path: /api/live
+              port: 8000
+            initialDelaySeconds: 20
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /api/ready
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+      volumes:
+        - name: shared
+          persistentVolumeClaim:
+            claimName: easy-agent-workspace
+        # Pod-local, not the NAS: holds this pod's SQLite checkpoint file. emptyDir
+        # survives container restarts but is wiped when the pod is replaced; approvals
+        # still pending on that pod are then void and the user resends the message.
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: easy-agent
+spec:
+  selector:
+    app: easy-agent
+  ports:
+    - port: 80
+      targetPort: 8000

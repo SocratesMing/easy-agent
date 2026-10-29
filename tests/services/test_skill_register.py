@@ -6,7 +6,7 @@
 
 import pytest
 
-from easy_agent.config import Config
+from easy_agent.bootstrap.config import Config
 from easy_agent.services import skill_library
 
 USERNAME = "szm"
@@ -17,7 +17,7 @@ def users_root(monkeypatch, tmp_path):
     """把用户工作区重定向到临时目录，避免污染仓库。"""
     root = tmp_path / "workspace" / "users"
     monkeypatch.setattr(
-        Config, "get_user_workspace_dir", staticmethod(lambda username: root / username)
+        Config, "get_user_workspace_dir", staticmethod(lambda username, config=None: root / username)
     )
     return root
 
@@ -119,6 +119,20 @@ def test_register_warns_when_frontmatter_incomplete(users_root, tmp_path):
     assert result["dir_name"] == "bare-skill"
     assert any("name" in w for w in result["warnings"])
     assert any("description" in w for w in result["warnings"])
+
+
+
+def test_register_reports_why_the_frontmatter_failed(users_root, tmp_path):
+    """写了 frontmatter 但不是合法 YAML：提示里给出解析错误，而不是只说缺 name。"""
+    src = _make_skill_dir(
+        tmp_path / "ws",
+        "colon-skill",
+        content="---\nname: demo\ndescription: Use when: 写周报\n---\n# Demo\n",
+    )
+
+    result = skill_library.register_skill_source(USERNAME, src)
+
+    assert any("YAML 解析失败" in w for w in result["warnings"])
 
 
 def test_explicit_dir_name_wins(users_root, tmp_path):

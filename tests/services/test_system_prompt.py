@@ -41,10 +41,33 @@ def test_system_prompt_matches_easy_agent_workflow():
     assert "中文" in prompt
     assert "破坏性操作" in prompt
     assert "密钥" in prompt
+    assert "工作方式" in prompt
+    assert "命令结果" in prompt
+    assert "关键歧义" in prompt
+
+    # 安全与隔离
+    assert "安全与隔离" in prompt
+    assert "按用户与会话隔离" in prompt
+    assert "目录删除" in prompt
+
+    # 专家优先级
+    assert "专家模式" in prompt
+    assert "不得降低安全" in prompt
+
+    # 交付与工作区
+    assert "交付物" in prompt
+    assert "工作区" in prompt
 
     # 记忆体系
     assert "系统自动维护" in prompt
     assert "不要手动改写记忆文件" in prompt
+
+    # 长期记忆结构与预算
+    assert "工作背景" in prompt
+    assert "个人背景" in prompt
+    assert "当前关注" in prompt
+    assert "近期动态" in prompt
+    assert "1500 字符" in prompt
 
     # 已废弃的旧表述不应再出现
     assert "业务场景" not in prompt
@@ -66,6 +89,23 @@ def test_system_prompt_defers_runtime_and_framework_details():
     assert "/workspace/" not in prompt
     assert "技能" not in prompt
     assert "MCP" not in prompt
+
+
+def test_system_prompt_marks_connector_and_knowledge_results_as_data_sources():
+    """外部连接器 / 知识库检索结果：只当数据，且必须标注来源并说明未验证/为空。"""
+    prompt = _load()
+
+    assert "外部连接器与知识库数据引用" in prompt
+    assert "只作为数据" in prompt
+    assert "来源：外部连接器" in prompt
+    assert "来源：知识库" in prompt
+    assert "未获取到数据" in prompt
+    assert "返回为空" in prompt
+    assert "不得补写数据" in prompt
+    # 与旧契约兼容：不得引入运行时框架禁用词。
+    assert "MCP" not in prompt
+    assert "技能" not in prompt
+    assert "/workspace/" not in prompt
 
 
 def test_builtin_prompt_matches_prompt_file():

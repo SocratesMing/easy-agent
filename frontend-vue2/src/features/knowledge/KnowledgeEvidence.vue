@@ -6,7 +6,9 @@
       :aria-expanded="expanded ? 'true' : 'false'"
       @click="expanded = !expanded"
     >
-      <span>知识依据 {{ evidence.length }} 条</span>
+      <span>
+        知识依据 {{ displayCount }} 条
+      </span>
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" :class="{ rotated: expanded }">
         <polyline points="6 9 12 15 18 9"></polyline>
       </svg>
@@ -16,9 +18,11 @@
         {{ warnings.join('；') }}
       </div>
       <article
-        v-for="(item, index) in evidence"
+        v-for="(item, index) in displayEvidence"
         :key="`${item.document_id}-${index}`"
+        :data-cite="index + 1"
         class="knowledge-citation-card"
+        :class="{ cited: citedCount > 0 }"
       >
         <div class="knowledge-citation-title">
           <span>[知识依据{{ index + 1 }}]</span>
@@ -27,6 +31,7 @@
         <div v-if="item.metadata && item.metadata.base_name" class="knowledge-citation-base">
           {{ item.metadata.base_name }}
         </div>
+        <div v-if="metaLine(item)" class="knowledge-citation-meta">{{ metaLine(item) }}</div>
         <p>{{ item.snippet }}</p>
         <span class="knowledge-citation-score">相关度 {{ Number(item.score || 0).toFixed(3) }}</span>
       </article>
@@ -41,13 +46,69 @@ export default {
     evidence: { type: Array, default: () => [] },
     warnings: { type: Array, default: () => [] },
     messageId: { type: [String, Number], default: '' },
+    // 本条回答的完整正文，用于解析 [知识依据N] 标记统计实际引用数
+    content: { type: String, default: '' },
   },
   data() {
     return { expanded: false }
   },
+  computed: {
+    // 正文中出现过的有效依据编号（去重；忽略超出检索范围的编号）
+    citedNumbers() {
+      const numbers = []
+      const text = this.content || ''
+      const pattern = /\[知识(?:库)?依据\s*(\d+)\]/g
+      let match
+      while ((match = pattern.exec(text)) !== null) {
+        const value = Number(match[1])
+        if (value > 0 && value <= this.evidence.length && numbers.indexOf(value) === -1) {
+          numbers.push(value)
+        }
+      }
+      return numbers
+    },
+    citedCount() {
+      return this.citedNumbers.length
+    },
+    // 实际展示的依据：有明确引用时仅展示被引用的条目，按正文引用顺序重新编号；
+    // 无引用时回退为全部展示（保持原始编号）
+    displayEvidence() {
+      if (this.citedCount > 0) {
+        return this.citedNumbers.map((num) => this.evidence[num - 1]).filter(Boolean)
+      }
+      return this.evidence
+    },
+    // 头部展示条数：与实际展示的依据条数一致
+    displayCount() {
+      return this.displayEvidence.length
+    },
+  },
   watch: {
     messageId() {
       this.expanded = false
+    },
+  },
+  methods: {
+    // 证据的业务元数据（发布日期 / 标签 / 来源），有则展示，便于核对检索范围
+    metaLine(item) {
+      const meta = (item && item.metadata) || {}
+      const parts = []
+      if (meta.publish_date) parts.push(`发布日期 ${meta.publish_date}`)
+      if (meta.report_tag) parts.push(`标签 ${meta.report_tag}`)
+      if (meta.report_second_source) parts.push(`来源 ${meta.report_second_source}`)
+      return parts.join(' · ')
+    },
+    // 展开面板并滚动定位到第 number 条依据卡片（供正文锚点点击调用）
+    jumpTo(number) {
+      if (!number) return
+      this.expanded = true
+      this.$nextTick(() => {
+        const card = this.$el.querySelector(`[data-cite="${number}"]`)
+        if (!card) return
+        card.scrollIntoView({ behavior: 'smooth', block: 'center' })
+        card.classList.add('flash')
+        setTimeout(() => card.classList.remove('flash'), 1600)
+      })
     },
   },
 }
@@ -61,8 +122,16 @@ export default {
 .knowledge-citations-body { padding: 0 10px 10px; display: grid; gap: 8px; }
 .knowledge-warning { color: #92400e; background: #fffbeb; border-radius: 7px; padding: 7px 9px; font-size: 12px; }
 .knowledge-citation-card { background: #fff; border: 1px solid #e2e8f0; border-radius: 8px; padding: 9px 10px; }
+.knowledge-citation-card.cited { border-color: #2563eb; background: #f0f6ff; }
+.knowledge-citation-card.flash { animation: ke-cite-flash 1.6s ease; }
+@keyframes ke-cite-flash {
+  0%, 100% { box-shadow: none; }
+  20%, 60% { box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.25); }
+}
 .knowledge-citation-title { color: #0f172a; font-size: 13px; font-weight: 600; }
 .knowledge-citation-title span { color: #2563eb; margin-right: 5px; }
+.knowledge-citation-badge { display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 999px; background: #2563eb; color: #fff; font-size: 10px; font-weight: 600; font-style: normal; vertical-align: 1px; }
 .knowledge-citation-base, .knowledge-citation-score { color: #64748b; font-size: 11px; }
+.knowledge-citation-meta { color: #475569; font-size: 11px; margin-top: 2px; }
 .knowledge-citation-card p { color: #334155; font-size: 12px; line-height: 1.55; margin: 6px 0; white-space: pre-wrap; max-height: 120px; overflow: auto; }
 </style>

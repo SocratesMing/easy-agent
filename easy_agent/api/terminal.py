@@ -2,9 +2,15 @@
 
 通过 FastAPI 提供独立的终端 HTML 页面，使用 xterm.js (CDN) + WebSocket 实现交互式终端。
 访问地址: http://host:port/terminal
+
+这是宿主机上的真实 shell（不经沙箱、继承服务进程环境），因此（SEC-01）：
+- 默认关闭，``EASY_WEB_TERMINAL_ENABLED=1`` 才挂出页面与 WebSocket；
+- 连接后首帧必须是 ``{"type": "auth", "token": "<JWT>"}``，且只允许 admin；
+  鉴权通过前不创建 pty / 子进程。
 """
 
 import asyncio
+import json
 import logging
 import os
 import struct
@@ -12,14 +18,31 @@ import termios
 import pty
 import select
 import fcntl
+from typing import Annotated
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from fastapi.websockets import WebSocketState
+
+from easy_agent.bootstrap.env import env_bool
+from easy_agent.db.repositories.user_repository import UserRepository
+from easy_agent.middleware.auth import get_user_repository, verify_token_sso
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["Terminal"])
+
+_ENABLED_ENV = "EASY_WEB_TERMINAL_ENABLED"
+_ADMIN_USERNAME = "admin"
+_AUTH_TIMEOUT_SECONDS = 10
+# 应用自定义关闭码（4000-4999）：未登录 / 非管理员
+_CLOSE_UNAUTHENTICATED = 4401
+_CLOSE_FORBIDDEN = 4403
+
+
+def web_terminal_enabled() -> bool:
+    """Web 终端开关，默认关闭（SEC-01）。"""
+    return env_bool(_ENABLED_ENV, False)
 
 
 TERMINAL_HTML = """<!DOCTYPE html>
@@ -161,6 +184,18 @@ TERMINAL_HTML = """<!DOCTYPE html>
         let ws = null;
         const statusEl = document.getElementById('status');
 
+        // 鉴权 token：与主界面同源时复用其登录态；前后端不同源（开发环境）可用
+        // /terminal#token=<JWT>（fragment 不会发给服务器），读取后从地址栏移除。
+        function readToken() {
+            const m = location.hash.match(/token=([^&]+)/);
+            if (m) {
+                history.replaceState(null, '', location.pathname);
+                return decodeURIComponent(m[1]);
+            }
+            try { return localStorage.getItem('mini_agent_token') || ''; } catch (e) { return ''; }
+        }
+        const authToken = readToken();
+
         function getWsBase() {
             const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
             return proto + '//' + location.host;
@@ -172,6 +207,13 @@ TERMINAL_HTML = """<!DOCTYPE html>
             ws.binaryType = 'arraybuffer';
 
             ws.onopen = () => {
+                if (!authToken) {
+                    term.write('\\r\\n\\x1b[31m[未找到登录凭证：请先在主界面用 admin 账号登录]\\x1b[0m\\r\\n');
+                    ws.close();
+                    return;
+                }
+                // 首帧必须是鉴权消息，服务端校验通过（仅 admin）后才创建 shell
+                ws.send(JSON.stringify({ type: 'auth', token: authToken }));
                 statusEl.textContent = '已连接';
                 statusEl.className = 'terminal-status connected';
                 term.focus();
@@ -225,19 +267,63 @@ TERMINAL_HTML = """<!DOCTYPE html>
 @router.get("/terminal", response_class=HTMLResponse, summary="Web 终端页面")
 async def terminal_page():
     """独立的 Web 终端页面，使用 xterm.js + WebSocket 实现交互式终端。"""
+    if not web_terminal_enabled():
+        raise HTTPException(status_code=404, detail="Not Found")
     return HTMLResponse(content=TERMINAL_HTML)
 
 
 @router.websocket("/agent/terminal/ws")
-async def terminal_ws(websocket: WebSocket):
-    """WebSocket 终端接口。
+async def terminal_ws(
+    websocket: WebSocket,
+    users: Annotated[UserRepository, Depends(get_user_repository)],
+):
+    """WebSocket 终端接口：首帧 admin 鉴权通过后才创建 shell。
 
-    使用 pty 创建伪终端，支持交互式命令（ls, tail -f, top, vim 等）。
-    默认工作目录为用户 home 目录 (~)。
-    无需认证，直接连接即可使用。
+    浏览器的 WebSocket 不能带 Authorization 头，token 放 URL 又会进访问日志，
+    所以先 accept，再收一帧 ``{"type": "auth", "token": "<JWT>"}``。
     """
+    if not web_terminal_enabled():
+        await websocket.close(code=1008)  # accept 前关闭 = 拒绝握手
+        return
     await websocket.accept()
+    web_user = await _authenticate_admin(websocket, users)
+    if web_user is None:
+        return
+    await _run_shell_session(websocket, web_user)
 
+
+async def _authenticate_admin(websocket: WebSocket, users: UserRepository) -> str | None:
+    """校验首帧 token（含单点登录 / 停用 / 空闲过期），只放行 admin；失败时关闭连接。"""
+    try:
+        raw = await asyncio.wait_for(websocket.receive_text(), timeout=_AUTH_TIMEOUT_SECONDS)
+        message = json.loads(raw)
+    except (asyncio.TimeoutError, WebSocketDisconnect, KeyError, RuntimeError, ValueError):
+        message = None
+    token = message.get("token") if isinstance(message, dict) and message.get("type") == "auth" else None
+    username = verify_token_sso(token, users) if isinstance(token, str) and token else None
+    if username is None:
+        await _reject(websocket, _CLOSE_UNAUTHENTICATED, "未登录或登录已过期")
+        return None
+    if username != _ADMIN_USERNAME:
+        await _reject(websocket, _CLOSE_FORBIDDEN, "仅管理员可使用 Web 终端")
+        return None
+    return username
+
+
+async def _reject(websocket: WebSocket, code: int, reason: str) -> None:
+    logger.warning(f"拒绝 Web 终端连接 | {reason} | client={websocket.client}")
+    try:
+        await websocket.send_text(f"\r\n\x1b[31m[{reason}]\x1b[0m\r\n")
+        await websocket.close(code=code, reason=reason)
+    except Exception:  # noqa: BLE001 - 客户端可能已断开
+        pass
+
+
+async def _run_shell_session(websocket: WebSocket, web_user: str) -> None:
+    """使用 pty 创建伪终端，支持交互式命令（ls, tail -f, top, vim 等）。
+
+    默认工作目录为服务进程用户的 home 目录 (~)。
+    """
     # 默认使用用户 home 目录
     cwd = os.path.expanduser("~")
 
@@ -284,7 +370,7 @@ async def terminal_ws(websocket: WebSocket):
     # 父进程
     os.close(slave_fd)
 
-    logger.info(f"终端会话已创建 | user={username} | pid={pid} | cwd={cwd}")
+    logger.info(f"终端会话已创建 | web_user={web_user} | os_user={username} | pid={pid} | cwd={cwd}")
 
     async def read_from_pty():
         """从 pty 读取输出并发送到 WebSocket"""
@@ -361,4 +447,4 @@ async def terminal_ws(websocket: WebSocket):
             except Exception:
                 pass
 
-        logger.info(f"终端会话已关闭 | user={username} | pid={pid}")
+        logger.info(f"终端会话已关闭 | web_user={web_user} | pid={pid}")

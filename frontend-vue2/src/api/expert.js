@@ -3,19 +3,16 @@
  *
  * 对应后端 easy_agent/api/expert.py：
  *   POST /agent/add                创建专家
- *   POST /agent/update             修改专家（新版本目录）
  *   GET  /agent/list               我的专家列表
+ *   GET  /agent/public-list        公共（预置）专家列表
+ *   GET  /agent/expert-md          读取专家提示词 MD（只读预览）
+ *   GET  /agent/session-experts    某会话里创建的专家（工作区只读条目）
  *   POST /agent/del                删除专家（默认软删）
- *   POST /agent/stream_export_run  选中专家执行（SSE）
  *
- * 流式请求沿用 utils/request.js 的 streamUrl / streamHeaders /
- * handleStreamResponse，SSE 事件格式与 /agent/chat/stream 完全一致。
+ * 新建与修改专家都改在对话框里由 Agent（expert-creator 技能）完成，故这里只
+ * 保留浏览侧接口；后端的 POST /agent/update 仍存在，但当前无前端调用方。
  */
-import request, {
-  handleStreamResponse,
-  streamHeaders,
-  streamUrl,
-} from '../utils/request.js'
+import request from '../utils/request.js'
 
 /** 创建专家（分类标签 tag_id 由大模型自动生成，无需前端传入） */
 export async function addExpert({ nameCn, prompt, sessionId = null, model = null }) {
@@ -32,29 +29,6 @@ export async function addExpert({ nameCn, prompt, sessionId = null, model = null
       },
     },
     '创建专家失败'
-  )
-}
-
-/** 修改专家 */
-export async function updateExpert({
-  exportAgentId,
-  nameCn = null,
-  prompt = null,
-  model = null,
-}) {
-  return request(
-    {
-      url: '/agent/update',
-      method: 'post',
-      data: {
-        export_agent_id: exportAgentId,
-        name_cn: nameCn,
-        prompt,
-        modify_type: 'edit',
-        model,
-      },
-    },
-    '修改专家失败'
   )
 }
 
@@ -82,6 +56,51 @@ export async function listExperts({
   )
 }
 
+/**
+ * 公共（预置）专家列表：随项目内置的专家（`experts/` 目录），只读，
+ * 不区分用户。字段与 listExperts 的 items 一致（另带 `scope: 'public'`）。
+ */
+export async function listPublicExperts() {
+  return request(
+    {
+      url: '/agent/public-list',
+      method: 'get',
+    },
+    '获取公共专家列表失败'
+  )
+}
+
+/**
+ * 读取专家提示词 MD（只读）：详情弹窗与工作区预览共用。
+ * 返回 `{ expert_agent_id, scope, file_name, content, version }`。
+ */
+export async function getExpertMd(expertId) {
+  return request(
+    {
+      url: '/agent/expert-md',
+      method: 'get',
+      params: { expert_id: expertId },
+    },
+    '获取专家提示词失败'
+  )
+}
+
+/**
+ * 某会话里创建的专家（工作区只读条目的数据源）。
+ * 返回 `{ items: [{ expert_agent_id, name_cn, name_en, version }] }`。
+ */
+export async function getSessionExperts(sessionId) {
+  if (!sessionId) return { items: [] }
+  return request(
+    {
+      url: '/agent/session-experts',
+      method: 'get',
+      params: { session_id: sessionId },
+    },
+    '获取会话内专家失败'
+  )
+}
+
 /** 删除专家（hard=true 时物理删除） */
 export async function deleteExpert(exportAgentId, hard = false) {
   return request(
@@ -92,65 +111,4 @@ export async function deleteExpert(exportAgentId, hard = false) {
     },
     '删除专家失败'
   )
-}
-
-/**
- * 选中专家执行（SSE 流式）
- *
- * @param {Object} payload { message, sessionId, expertAgentId, model, enableDeepThink, enableWebSearch, files }
- * @param {Function} onChunk 每个 SSE 事件回调（与聊天完全相同的结构）
- * @param {AbortSignal} [signal] 用于取消
- */
-export async function streamExportRun(payload, onChunk, signal) {
-  const controller = new AbortController()
-  const abortSignal = signal || controller.signal
-
-  const response = await handleStreamResponse(
-    await fetch(streamUrl('/agent/stream_export_run'), {
-      method: 'POST',
-      headers: streamHeaders(),
-      body: JSON.stringify({
-        message: payload.message,
-        session_id: payload.sessionId || null,
-        message_id: payload.messageId || null,
-        expert_agent_id: payload.expertAgentId || null,
-        model: payload.model || null,
-        enable_deep_think: !!payload.enableDeepThink,
-        enable_web_search: !!payload.enableWebSearch,
-        files: payload.files || null,
-      }),
-      signal: abortSignal,
-    })
-  )
-
-  await readSseStream(response, onChunk, abortSignal)
-}
-
-/** 本地 SSE 解析（与 chat.js 的 readSseStream 行为一致，避免改动既有模块） */
-async function readSseStream(response, onChunk, abortSignal) {
-  const reader = response.body.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ''
-
-  try {
-    while (true) {
-      if (abortSignal && abortSignal.aborted) return
-      const { done, value } = await reader.read()
-      if (done) break
-      buffer += decoder.decode(value, { stream: true })
-      const lines = buffer.split('\n')
-      buffer = lines.pop() || ''
-      for (const line of lines) {
-        if (!line.startsWith('data: ')) continue
-        try {
-          onChunk(JSON.parse(line.slice(6)))
-        } catch (error) {
-          console.error('解析 SSE 数据失败:', error)
-        }
-      }
-    }
-  } catch (error) {
-    if (error.name === 'AbortError') return
-    throw error
-  }
 }

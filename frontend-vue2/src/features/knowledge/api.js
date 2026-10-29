@@ -1,102 +1,115 @@
-import request, {
-  dispatchAuthExpired,
-  getStoredToken,
-  handleStreamResponse,
-  requestRaw,
-  streamHeaders,
-  streamUrl,
-} from '../../utils/request.js'
+import { dispatchAuthExpired, getStoredToken } from '../../api/auth.js'
+import { fetchWithAuth, handleStreamResponse, streamHeaders, streamUrl } from '../../utils/request.js'
+import { readSSE } from '../../api/sse.js'
 
-const ROOT = '/agent/knowledge/v1'
-const ADMIN_ROOT = '/agent/knowledge/v1/admin'
+// Keep native Response semantics for binary previews, Range headers and error bodies.
+const authFetch = fetchWithAuth
 
-export const getKnowledgeCapabilities = () =>
-  request({ url: `${ROOT}/capabilities`, method: 'get' }, '获取知识服务能力失败')
+// SDK 的 baseURL 在 configureRequest() 后才确定，不能在模块加载时固化
+const root = () => streamUrl('/api/knowledge/v1')
 
-export const getKnowledgeStatus = () =>
-  request({ url: `${ROOT}/status`, method: 'get' }, '获取知识服务状态失败')
+export async function cancelMessage(sessionId) {
+  const response = await authFetch(streamUrl(`/agent/chat/cancel?session_id=${encodeURIComponent(sessionId)}`), { method: 'POST' })
+  if (!response.ok) return parseError(response)
+  return response.json()
+}
+
+async function parseError(response) {
+  let payload = null
+  try {
+    payload = await response.json()
+  } catch (_) {
+    // Keep the public message generic when an upstream proxy returns HTML.
+  }
+  const detail = payload?.detail
+  const message = typeof detail === 'string'
+    ? detail
+    : detail?.message || payload?.message || `请求失败 (${response.status})`
+  const error = new Error(message)
+  error.status = response.status
+  error.code = detail?.code || payload?.code || 'KNOWLEDGE_REQUEST_FAILED'
+  error.retryable = Boolean(detail?.retryable || payload?.retryable)
+  throw error
+}
+
+async function request(path, options = {}) {
+  const headers = { ...(options.headers || {}) }
+  const init = { ...options, headers }
+  if (options.json !== undefined) {
+    headers['Content-Type'] = 'application/json'
+    init.body = JSON.stringify(options.json)
+    delete init.json
+  }
+  const response = await authFetch(`${root()}${path}`, init)
+  if (!response.ok) return parseError(response)
+  if (response.status === 204) return null
+  return response.json()
+}
+
+export const getKnowledgeCapabilities = () => request('/capabilities')
+export const getKnowledgeStatus = () => request('/status')
 
 export function listKnowledgeBases({ page = 1, pageSize = 100 } = {}) {
-  return request(
-    { url: `${ROOT}/bases`, method: 'get', params: { page, page_size: pageSize } },
-    '加载知识库失败'
-  )
+  return request(`/bases?page=${page}&page_size=${pageSize}`)
 }
 
 export function createKnowledgeBase(payload) {
-  return request({ url: `${ROOT}/bases`, method: 'post', data: payload }, '创建知识库失败')
+  return request('/bases', { method: 'POST', json: payload })
 }
 
 export function updateKnowledgeBase(baseId, payload) {
-  return request(
-    { url: `${ROOT}/bases/${encodeURIComponent(baseId)}`, method: 'patch', data: payload },
-    '更新知识库失败'
-  )
+  return request(`/bases/${encodeURIComponent(baseId)}`, { method: 'PATCH', json: payload })
 }
 
 export function deleteKnowledgeBase(baseId) {
-  return request(
-    { url: `${ROOT}/bases/${encodeURIComponent(baseId)}`, method: 'delete' },
-    '删除知识库失败'
-  )
+  return request(`/bases/${encodeURIComponent(baseId)}`, { method: 'DELETE' })
 }
 
 export function listFolders(baseId) {
-  return request(
-    { url: `${ROOT}/bases/${encodeURIComponent(baseId)}/folders`, method: 'get' },
-    '加载目录失败'
-  )
+  return request(`/bases/${encodeURIComponent(baseId)}/folders`)
 }
 
 export function createFolder(baseId, name, parentId = '') {
-  return request(
-    {
-      url: `${ROOT}/bases/${encodeURIComponent(baseId)}/folders`,
-      method: 'post',
-      data: { name, parent_id: parentId || null },
-    },
-    '创建目录失败'
-  )
+  return request(`/bases/${encodeURIComponent(baseId)}/folders`, {
+    method: 'POST',
+    json: { name, parent_id: parentId || null },
+  })
+}
+
+export function ensureFolders(baseId, { folderId = '', paths = [] } = {}) {
+  return request(`/bases/${encodeURIComponent(baseId)}/folders/ensure`, {
+    method: 'POST',
+    json: { folder_id: folderId || null, paths },
+  })
 }
 
 export function updateFolder(folderId, name) {
-  return request(
-    { url: `${ROOT}/folders/${encodeURIComponent(folderId)}`, method: 'patch', data: { name } },
-    '重命名目录失败'
-  )
+  return request(`/folders/${encodeURIComponent(folderId)}`, {
+    method: 'PATCH',
+    json: { name },
+  })
 }
 
 export function deleteFolder(folderId) {
-  return request(
-    { url: `${ROOT}/folders/${encodeURIComponent(folderId)}`, method: 'delete' },
-    '删除目录失败'
-  )
+  return request(`/folders/${encodeURIComponent(folderId)}`, { method: 'DELETE' })
 }
 
 export function listDocuments(baseId, { page = 1, pageSize = 100, folderId = '', directOnly = false, status = '', q = '' } = {}) {
-  const params = { page, page_size: pageSize }
-  if (folderId) params.folder_id = folderId
-  if (directOnly) params.direct_only = 'true'
-  if (status) params.status = status
-  if (q) params.q = q
-  return request(
-    { url: `${ROOT}/bases/${encodeURIComponent(baseId)}/documents`, method: 'get', params },
-    '加载资料失败'
-  )
+  const params = new URLSearchParams({ page: String(page), page_size: String(pageSize) })
+  if (folderId) params.set('folder_id', folderId)
+  if (directOnly) params.set('direct_only', 'true')
+  if (status) params.set('status', status)
+  if (q) params.set('q', q)
+  return request(`/bases/${encodeURIComponent(baseId)}/documents?${params}`)
 }
 
-export function uploadDocument(baseId, file, { folderId = '', onProgress } = {}) {
+export function uploadDocument(baseId, file, { folderId = '', relativePath = '' } = {}) {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest()
-    xhr.open('POST', `${ROOT}/bases/${encodeURIComponent(baseId)}/documents`)
+    xhr.open('POST', `${root()}/bases/${encodeURIComponent(baseId)}/documents`)
     const token = getStoredToken()
     if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`)
     xhr.responseType = 'json'
-    xhr.upload.onprogress = (event) => {
-      if (event.lengthComputable && onProgress) {
-        onProgress(Math.round((event.loaded / event.total) * 100))
-      }
-    }
     xhr.onload = () => {
       if (xhr.status === 401) {
         dispatchAuthExpired()
@@ -112,163 +125,131 @@ export function uploadDocument(baseId, file, { folderId = '', onProgress } = {})
         typeof detail === 'string' ? detail : detail?.message || `上传失败 (${xhr.status})`
       )
       error.status = xhr.status
+      error.code = detail?.code || 'KNOWLEDGE_UPLOAD_FAILED'
       reject(error)
     }
     xhr.onerror = () => reject(new Error('上传网络错误'))
     const form = new FormData()
     form.append('file', file)
     if (folderId) form.append('folder_id', folderId)
+    // 文件夹上传时携带原始相对路径，后端据此逐级建目录保留层级
+    if (relativePath) form.append('relative_path', relativePath)
     xhr.send(form)
   })
 }
 
 export function moveDocument(documentId, folderId) {
-  return request(
-    {
-      url: `${ROOT}/documents/${encodeURIComponent(documentId)}`,
-      method: 'patch',
-      data: { folder_id: folderId || null },
-    },
-    '移动资料失败'
-  )
+  return request(`/documents/${encodeURIComponent(documentId)}`, {
+    method: 'PATCH',
+    json: { folder_id: folderId || null },
+  })
 }
 
 export function deleteDocument(documentId) {
-  return request(
-    { url: `${ROOT}/documents/${encodeURIComponent(documentId)}`, method: 'delete' },
-    '删除资料失败'
-  )
+  return request(`/documents/${encodeURIComponent(documentId)}`, { method: 'DELETE' })
 }
 
 export function retryDocument(documentId) {
-  return request(
-    { url: `${ROOT}/documents/${encodeURIComponent(documentId)}/retry`, method: 'post' },
-    '重试解析失败'
-  )
+  return request(`/documents/${encodeURIComponent(documentId)}/retry`, { method: 'POST' })
+}
+
+export function pauseDocument(documentId) {
+  return request(`/documents/${encodeURIComponent(documentId)}/pause`, { method: 'POST' })
+}
+
+export function resumeDocument(documentId) {
+  return request(`/documents/${encodeURIComponent(documentId)}/resume`, { method: 'POST' })
 }
 
 export async function getDocumentBlob(documentId, disposition = 'inline') {
-  const response = await requestRaw({
-    url: `${ROOT}/documents/${encodeURIComponent(documentId)}/content`,
-    method: 'get',
-    params: { disposition },
-    responseType: 'blob',
-  })
+  const response = await authFetch(
+    `${root()}/documents/${encodeURIComponent(documentId)}/content?disposition=${disposition}`,
+    { responseType: 'blob' }
+  )
+  if (!response.ok) return parseError(response)
   return {
-    blob: response.data,
-    contentDisposition: response.headers['content-disposition'] || '',
+    blob: await response.blob(),
+    contentDisposition: response.headers.get('content-disposition') || '',
   }
 }
 
 export function listPermissions(baseId) {
-  return request(
-    { url: `${ROOT}/bases/${encodeURIComponent(baseId)}/permissions`, method: 'get' },
-    '加载权限失败'
-  )
+  return request(`/bases/${encodeURIComponent(baseId)}/permissions`)
 }
 
-export function replacePermissions(baseId, items) {
-  return request(
-    {
-      url: `${ROOT}/bases/${encodeURIComponent(baseId)}/permissions`,
-      method: 'put',
-      data: { items },
+// 权限管理：userIds 为勾选的可见人员；勾选名单非空时该库仅勾选人员可见
+export function replacePermissions(baseId, userIds) {
+  return request(`/bases/${encodeURIComponent(baseId)}/permissions`, {
+    method: 'PUT',
+    json: {
+      items: userIds.map(id => ({ subject_type: 'user', subject_id: id, role: 'viewer' })),
+      restrict_access: userIds.length > 0,
     },
-    '保存权限失败'
-  )
+  })
 }
 
-export function searchPermissionSubjects(baseId, type, q = '') {
-  return request(
-    {
-      url: `${ROOT}/bases/${encodeURIComponent(baseId)}/permission-subjects`,
-      method: 'get',
-      params: { type, q },
-    },
-    '搜索授权对象失败'
-  )
+export function listPermissionDirectory(baseId) {
+  return request(`/bases/${encodeURIComponent(baseId)}/permission-directory`)
+}
+
+// 创建知识库时的可选人员目录（不依赖具体库，需公共空间管理白名单）
+export function listCreationPermissionDirectory() {
+  return request('/bases/permission-directory')
 }
 
 export function askKnowledgeBase(baseId, payload) {
-  return request(
-    { url: `${ROOT}/bases/${encodeURIComponent(baseId)}/ask`, method: 'post', data: payload },
-    '知识库问答失败'
-  )
+  return request(`/bases/${encodeURIComponent(baseId)}/ask`, { method: 'POST', json: payload })
 }
 
-export function prepareKnowledgeChatSession(baseId) {
+// peek=true 只读探测：会话不存在返回 404 且不创建会话记录，用于打开面板预取历史；
+// 实际提问时用默认调用，此时才生成「[知识库问答]」会话记录。
+export function prepareKnowledgeChatSession(baseId, { peek = false } = {}) {
+  const suffix = peek ? '?peek=true' : ''
+  return request(`/bases/${encodeURIComponent(baseId)}/chat-session${suffix}`, { method: 'POST' })
+}
+
+// 开启新一轮问答会话：旧会话保留为历史（主界面会话列表可回看），面板切换到全新会话
+export function createKnowledgeChatRound(baseId) {
   return request(
-    { url: `${ROOT}/bases/${encodeURIComponent(baseId)}/chat-session`, method: 'post' },
-    '创建知识会话失败'
+    `/bases/${encodeURIComponent(baseId)}/chat-session/new`,
+    { method: 'POST' }
   )
 }
 
 export async function askKnowledgeBaseStream(baseId, payload, onChunk, signal) {
   const response = await handleStreamResponse(
-    await fetch(streamUrl(`${ROOT}/bases/${encodeURIComponent(baseId)}/ask/stream`), {
+    await fetchWithAuth(streamUrl(`/api/knowledge/v1/bases/${encodeURIComponent(baseId)}/ask/stream`), {
       method: 'POST',
       headers: streamHeaders(),
       body: JSON.stringify(payload),
       signal,
     })
   )
-  const reader = response.body.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ''
-  try {
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-      buffer += decoder.decode(value, { stream: true })
-      const lines = buffer.split('\n')
-      buffer = lines.pop() || ''
-      for (const line of lines) {
-        if (!line.startsWith('data: ')) continue
-        let event
-        try { event = JSON.parse(line.slice(6)) } catch (_) { continue }
-        if (event.type === 'error') {
-          const error = new Error(event.content || '知识库问答失败')
-          error.code = event.code || 'KNOWLEDGE_AGENT_FAILED'
-          throw error
-        }
-        onChunk(event)
-      }
+  await readSSE(response, (event) => {
+    if (event.type === 'error') {
+      const error = new Error(event.content || '知识库问答失败')
+      error.code = event.code || 'KNOWLEDGE_AGENT_FAILED'
+      throw error
     }
-  } finally {
-    reader.releaseLock()
-  }
+    onChunk(event)
+  }, { signal })
 }
 
 export function cancelKnowledgeBaseAnswer(baseId) {
-  return request(
-    { url: `${ROOT}/bases/${encodeURIComponent(baseId)}/ask/cancel`, method: 'post' },
-    '停止回答失败'
-  )
+  return request(`/bases/${encodeURIComponent(baseId)}/ask/cancel`, { method: 'POST' })
 }
 
 export function listKnowledgeOperations({ page = 1, pageSize = 100 } = {}) {
-  return request(
-    { url: `${ROOT}/operations`, method: 'get', params: { page, page_size: pageSize } },
-    '加载任务失败'
-  )
+  return request(`/operations?page=${page}&page_size=${pageSize}`)
 }
 
 export function getSessionKnowledgeScope(sessionId) {
-  return request(
-    { url: `${ROOT}/sessions/${encodeURIComponent(sessionId)}/knowledge-scope`, method: 'get' },
-    '加载知识范围失败'
-  )
+  return request(`/sessions/${encodeURIComponent(sessionId)}/knowledge-scope`)
 }
 
 export function replaceSessionKnowledgeScope(sessionId, baseIds) {
-  return request(
-    {
-      url: `${ROOT}/sessions/${encodeURIComponent(sessionId)}/knowledge-scope`,
-      method: 'put',
-      data: { base_ids: baseIds },
-    },
-    '保存知识范围失败'
-  )
+  return request(`/sessions/${encodeURIComponent(sessionId)}/knowledge-scope`, {
+    method: 'PUT',
+    json: { base_ids: baseIds },
+  })
 }
-
-export { ROOT, ADMIN_ROOT }

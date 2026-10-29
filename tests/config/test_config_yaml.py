@@ -1,4 +1,11 @@
-from easy_agent.config import Config, get_missing_env_vars
+"""Config.from_yaml 测试：环境变量占位符展开与未解析提示、配置文件路径解析，以及
+web_search / distributed_lock / expert 标签 / 沙箱 / 工具结果日志截断等段落的解析与默认值，
+旧版 llm: 单模型写法的处理。
+"""
+
+import pytest
+
+from easy_agent.bootstrap.config import Config, get_missing_env_vars
 
 
 def test_config_from_yaml_expands_environment_placeholders(tmp_path, monkeypatch):
@@ -357,3 +364,46 @@ tools:
         encoding="utf-8",
     )
     assert Config.from_yaml(tmp_path / "empty.yaml").tools.result_log_truncate == 200
+
+
+# ── 旧版 llm: 单模型写法：从来没被当成模型配置读过，出现时只告警 ─────────
+
+
+def test_legacy_llm_section_alone_explains_how_to_migrate(tmp_path):
+    """只写 llm: 时直接说明怎么改，而不是报「当前模型没有 api_key」让人去查密钥。"""
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        "llm:\n  provider: deepseek\n  api_key: sk-test\n  model: deepseek-chat\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError) as exc:
+        Config.from_yaml(path)
+
+    message = str(exc.value)
+    assert "llm: 单模型写法已不再读取" in message
+    assert "models.<名字>" in message and "model: <名字>" in message
+
+
+def test_legacy_llm_section_next_to_models_is_ignored_with_a_warning(tmp_path, caplog):
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        "model: main\n"
+        "models:\n  main: {api_key: sk-main, model: from-models}\n"
+        "llm: {api_key: sk-llm, model: from-llm, max_input_tokens: 8000}\n",
+        encoding="utf-8",
+    )
+
+    config = Config.from_yaml(path)
+
+    assert (config.llm.model, config.llm.api_key) == ("from-models", "sk-main")
+    assert config.llm.context_length == 1_000_000
+    assert "llm 为旧版单模型写法，已不再读取" in caplog.text
+
+
+def test_missing_api_key_without_llm_section_keeps_the_original_error(tmp_path):
+    path = tmp_path / "config.yaml"
+    path.write_text("model: main\nmodels:\n  main: {model: m}\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="Active model 'main' has no api_key configured"):
+        Config.from_yaml(path)

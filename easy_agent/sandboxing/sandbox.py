@@ -1,0 +1,669 @@
+"""Shell-command sandboxing for agent ``execute`` calls.
+
+DeepAgents' :class:`~deepagents.backends.LocalShellBackend` runs shell commands
+directly on the host with **no isolation** (its docstring states this explicitly).
+This module wraps each command in a `bubblewrap <https://github.com/containers/bubblewrap>`_
+container so the agent can only access:
+
+* the workspace, user-skills and configured external directories (read-write),
+* the Python environment that runs the backend (read-only, so ``python`` and
+  its installed packages keep working),
+* standard system directories (read-only, for shell commands & shared libs).
+
+Everything else on the host (``/home``, ``/root``, ``/var``, the application
+source, ``config.yaml`` ...) is invisible and cannot be read or written.
+
+When ``bwrap`` is unavailable (e.g. a minimal Docker image lacking user
+namespace support) execution falls back to a best-effort **path allowlist**
+that rejects commands referencing host paths outside the allowed roots.
+"""
+
+from __future__ import annotations
+
+import logging
+import re
+import shlex
+import shutil
+import subprocess
+import sys
+import os
+import tempfile
+from pathlib import Path
+
+from deepagents.backends.protocol import ExecuteResponse
+
+logger = logging.getLogger(__name__)
+
+# Host directories mounted read-only inside the sandbox so that shell commands,
+# shared libraries (the dynamic linker!), SSL certificates and DNS resolution
+# keep working.  These contain no user secrets - ``config.yaml`` lives in the
+# project root, which is NOT mounted.
+_SANDBOX_RO_DIRS: tuple[str, ...] = (
+    "/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc", "/opt",
+)
+
+# Paths considered safe to reference by the best-effort fallback even when they
+# are not under an allowed root (commands, libraries, temp devices).
+_FALLBACK_SAFE_PREFIXES: tuple[str, ...] = (
+    "/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc", "/opt",
+    "/tmp", "/dev/null", "/dev/zero", "/dev/random", "/dev/urandom",
+    "/dev/stdin", "/dev/stdout", "/dev/stderr",
+)
+
+# Absolute path tokens in a command string.  The leading negative lookbehind
+# avoids matching separators inside words (``a/b``) and protocol slashes
+# (``http://``).  Path segments never contain ``/``.
+_ABS_PATH_RE = re.compile(
+    r"(?<![A-Za-z0-9._@/:-])/(?:[A-Za-z0-9._@+~-]+/)*[A-Za-z0-9._@+~-]*"
+)
+
+# Environment variables safe to forward into the sandbox. Everything else -
+# notably ``EASY_JWT_SECRET``, LLM API keys and DB credentials - is stripped so
+# the agent cannot exfiltrate server secrets via ``env``, ``printenv`` or
+# ``/proc/self/environ``.
+_SANITIZED_ENV_KEEP: frozenset[str] = frozenset({
+    "PATH", "HOME", "LANG", "LANGUAGE", "LC_ALL", "LC_CTYPE", "LC_COLLATE",
+    "LC_TIME", "LC_NUMERIC", "LC_MONETARY", "LC_MESSAGES", "LC_PAPER",
+    "LC_NAME", "LC_ADDRESS", "LC_TELEPHONE", "LC_MEASUREMENT",
+    "LC_IDENTIFICATION", "TZ", "TERM", "SHELL",
+})
+
+# Sensitive /etc files masked (overlaid with /dev/null) inside the bwrap
+# sandbox so the agent cannot read host credentials or the host username.
+_BWRAP_MASKED_ETC_FILES: tuple[str, ...] = (
+    "/etc/environment",
+    "/etc/shadow",
+    "/etc/gshadow",
+    "/etc/subuid",
+    "/etc/subgid",
+)
+
+# Neutral mount point for the Python venv. Binding it here (instead of its real
+# host path, which typically lives under ``/home/<user>/...``) keeps ``/home``
+# invisible inside the sandbox.
+_VENV_MOUNT = "/venv"
+
+
+# host_safe_env() 额外保留的临时目录变量（沙箱分支由 bwrap/Landlock 自行设置）。
+# 代理 / 镜像 / 证书类变量（HTTP(S)_PROXY、NO_PROXY、PIP_INDEX_URL、NPM_CONFIG_REGISTRY、
+# SSL_CERT_FILE 等）有意不放行，关闭沙箱时也一样（2026-10-19 决定）：代理 URL 可能带凭据；
+# 需要时由部署方显式配置，不从宿主环境继承。
+_HOST_SHELL_ENV_EXTRA: frozenset[str] = frozenset({"TMPDIR", "TMP", "TEMP"})
+
+# Windows 下 cmd.exe / Python 子进程正常运行所需的系统变量（均不含密钥）。
+# Windows 没有 bwrap/Landlock，只能以 sandbox_enabled=false 运行，必须保住这些。
+_WINDOWS_SHELL_ENV: frozenset[str] = frozenset({
+    "SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "COMSPEC", "PATHEXT",
+    "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "APPDATA", "LOCALAPPDATA",
+    "PROGRAMDATA", "PROGRAMFILES", "PROGRAMFILES(X86)", "PROGRAMW6432",
+    "COMMONPROGRAMFILES", "COMMONPROGRAMFILES(X86)", "ALLUSERSPROFILE",
+    "PUBLIC", "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE", "OS",
+})
+
+
+def host_safe_env(environ: dict[str, str] | None = None) -> dict[str, str]:
+    """宿主环境中可以交给 agent shell 的变量（白名单，保留宿主自己的 PATH/HOME）。
+
+    给 ``LocalShellBackend(inherit_env=False, env=host_safe_env())`` 用：未启用沙箱
+    （``agent.sandbox_enabled=false``）时命令直接以 ``self._env`` 运行，若继承整个
+    ``os.environ``，``.env`` 里的 LLM API Key、``EASY_JWT_SECRET``、数据库口令都会
+    对 agent 执行的命令可见（DA-16）。启用沙箱时 ``_sanitize_env`` 再按同一白名单
+    过滤，结果与改造前一致。
+    """
+    source = os.environ if environ is None else environ
+    keep = _SANITIZED_ENV_KEEP | _HOST_SHELL_ENV_EXTRA
+    if sys.platform == "win32":
+        keep = keep | _WINDOWS_SHELL_ENV
+        return {
+            key: value
+            for key, value in source.items()
+            if key.upper() in keep or key.upper().startswith("LC_")
+        }
+    return {
+        key: value
+        for key, value in source.items()
+        if key in keep or key.startswith("LC_")
+    }
+
+
+def _sanitize_env(
+    env: dict[str, str] | None, *, home: str, path: str
+) -> dict[str, str]:
+    """Return a copy of *env* containing only non-sensitive variables.
+
+    Only a locale/path/timezone whitelist is kept; HOME and PATH are overridden.
+    Server secrets are never forwarded to the sandboxed command.
+    """
+    safe: dict[str, str] = {}
+    for key, value in (env or {}).items():
+        if key in _SANITIZED_ENV_KEEP or key.startswith("LC_"):
+            safe[key] = value
+    safe["PATH"] = path
+    safe["HOME"] = home
+    return safe
+
+
+def _sandbox_path(venv: str | None) -> str:
+    """PATH for the sandboxed command: venv bin (neutral mount) + system dirs."""
+    prefix = f"{_VENV_MOUNT}/bin:" if venv else ""
+    return f"{prefix}/usr/local/bin:/usr/bin:/bin"
+
+
+_bwrap_usable: bool | None = None
+# 最近一次探测的细节（路径 / 失败原因），供启动期自检复用：探测本身仍然只做一次，
+# 之后 shell 后端直接命中 _bwrap_usable 缓存，与启动日志的结论必然一致。
+_bwrap_probe_path: str | None = None
+_bwrap_probe_reason: str = ""
+
+
+def _venv_prefix() -> str | None:
+    """Return the active virtual-env root (read-only mount target) or ``None``.
+
+    Only returns a path when a venv is actually active (``sys.prefix !=
+    sys.base_prefix``) and it is not already a system directory.  This prevents
+    accidentally bind-mounting the user's home directory when running with a
+    system interpreter.
+    """
+    if sys.prefix == sys.base_prefix:
+        return None
+    try:
+        prefix = str(Path(sys.prefix).resolve())
+    except Exception:  # noqa: BLE001
+        return None
+    if any(prefix == d or prefix.startswith(d + "/") for d in _SANDBOX_RO_DIRS):
+        return None
+    return prefix
+
+
+def bwrap_usable() -> bool:
+    """Return ``True`` if ``bwrap`` is installed and can create an isolated sandbox.
+
+    The result is cached after the first probe.
+    """
+    global _bwrap_usable, _bwrap_probe_path, _bwrap_probe_reason
+    if sys.platform != "linux" and not sys.platform.startswith("linux"):
+        _bwrap_probe_reason = f"非 Linux 平台（{sys.platform}）"
+        return False
+    if _bwrap_usable is not None:
+        return _bwrap_usable
+    bwrap = shutil.which("bwrap")
+    _bwrap_probe_path = bwrap
+    if not bwrap:
+        _bwrap_usable = False
+        _bwrap_probe_reason = "PATH 中找不到 bwrap（未安装）"
+        logger.info("[sandbox] bwrap 未安装，shell 命令降级为路径白名单检测")
+        return False
+    argv: list[str] = [
+        bwrap, "--unshare-all", "--share-net",
+        "--die-with-parent", "--new-session",
+    ]
+    for d in _SANDBOX_RO_DIRS:
+        argv += ["--ro-bind-try", d, d]
+    argv += ["--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp", "/usr/bin/true"]
+    reason = ""
+    try:
+        proc = subprocess.run(argv, capture_output=True, text=True, timeout=10)
+        _bwrap_usable = proc.returncode == 0
+        reason = (proc.stderr or "").strip()
+    except Exception as exc:  # noqa: BLE001
+        _bwrap_usable = False
+        reason = str(exc)
+    if not _bwrap_usable:
+        _bwrap_probe_reason = reason or "未知原因"
+        logger.warning(
+            "[sandbox] bwrap 不可用（%s），shell 命令降级为 Landlock 隔离。"
+            "容器内启用 bwrap 需 --security-opt seccomp=unconfined、"
+            "apparmor=unconfined、systempaths=unconfined",
+            reason or "未知原因",
+        )
+    return _bwrap_usable
+
+
+def _bwrap_version(path: str | None) -> str | None:
+    """Return the ``bwrap --version`` line for *path*, or ``None`` if unknown."""
+    if not path:
+        return None
+    try:
+        proc = subprocess.run(
+            [path, "--version"], capture_output=True, text=True, timeout=5
+        )
+    except Exception:  # noqa: BLE001
+        return None
+    text = (proc.stdout or proc.stderr or "").strip().splitlines()
+    return text[0] if text else None
+
+
+def _sandbox_hints(bwrap_path: str | None, reason: str) -> list[str]:
+    """Actionable hints for a failed/failing sandbox probe (for startup logs)."""
+    if not bwrap_path:
+        return [
+            "容器内没有 bwrap：确认运行的是新构建的镜像"
+            "（docker compose up -d --build，未带 --build 会复用旧镜像）",
+            "镜像已内置离线编译的 bwrap，位于 /usr/local/bin/bwrap；"
+            "若服务进程的 PATH 不含该目录，用它兜底或调整 PATH",
+        ]
+    hints: list[str] = []
+    low = reason.lower()
+    if "namespace" in low or "operation not permitted" in low or "permission denied" in low:
+        hints += [
+            "宿主启用了非特权 user namespace 限制："
+            "sysctl -w user.max_user_namespaces=15000（写入 /etc/sysctl.d 持久化）",
+            "容器启动参数需带 --security-opt seccomp=unconfined "
+            "apparmor=unconfined systempaths=unconfined；"
+            "改完 compose 需 docker compose up -d 重建容器（restart 不生效）",
+        ]
+    hints.append(
+        "若暂时无法开放 namespace，可在宿主编译并给 bwrap 加 setuid 位，"
+        "同时以 --cap-add SYS_ADMIN 运行容器"
+    )
+    hints.append(
+        "仅在可信单用户环境可设 agent.sandbox_enabled=false 直接执行（不隔离），"
+        "不要在生产开启"
+    )
+    return hints
+
+
+def sandbox_report(*, sandbox_enabled: bool = True) -> dict[str, object]:
+    """Summarise the sandbox decision: ``bwrap`` / ``landlock`` / ``fail-closed``.
+
+    Triggers the (cached) probes on first call, so calling it at startup makes the
+    later shell-backend construction reuse the very same verdict — the startup log
+    and the runtime behaviour can never disagree.
+    """
+    report: dict[str, object] = {
+        "platform": sys.platform,
+        "sandbox_enabled": sandbox_enabled,
+    }
+    try:
+        uname = os.uname()
+        report["kernel"] = uname.release
+        report["arch"] = uname.machine
+    except Exception:  # noqa: BLE001 - not available on non-POSIX platforms
+        report["kernel"] = None
+        report["arch"] = None
+
+    if not sandbox_enabled:
+        report.update(
+            mode="disabled",
+            bwrap_path=None,
+            bwrap_version=None,
+            bwrap_ok=False,
+            bwrap_reason="agent.sandbox_enabled=false",
+            landlock_ok=False,
+            hints=[],
+        )
+        return report
+
+    bwrap_ok = bwrap_usable()
+    from easy_agent.sandboxing.landlock import landlock_usable
+
+    landlock_ok = landlock_usable()
+    if bwrap_ok:
+        mode = "bwrap"
+    elif landlock_ok:
+        mode = "landlock"
+    else:
+        mode = "fail-closed"
+    report.update(
+        mode=mode,
+        bwrap_path=_bwrap_probe_path,
+        bwrap_version=_bwrap_version(_bwrap_probe_path),
+        bwrap_ok=bwrap_ok,
+        bwrap_reason=_bwrap_probe_reason,
+        landlock_ok=landlock_ok,
+        hints=(
+            []
+            if mode != "fail-closed"
+            else _sandbox_hints(_bwrap_probe_path, _bwrap_probe_reason)
+        ),
+    )
+    return report
+
+
+def log_sandbox_startup_report(
+    *, sandbox_enabled: bool = True, strict: bool = False
+) -> dict[str, object]:
+    """Log the sandbox verdict once at startup and return the report.
+
+    *strict* turns an unusable sandbox into a hard startup failure, so a host that
+    cannot isolate shell commands never starts serving (fail-closed at boot rather
+    than at the first ``execute`` call). Disabled sandboxes are always only warned
+    about — they are a deliberate configuration choice, not a probe failure.
+    """
+    report = sandbox_report(sandbox_enabled=sandbox_enabled)
+    mode = report["mode"]
+    kernel = report.get("kernel") or "?"
+    arch = report.get("arch") or "?"
+    logger.info(
+        "[沙箱自检] 平台: %s %s (%s)", report["platform"], kernel, arch
+    )
+    if mode == "bwrap":
+        logger.info(
+            "[沙箱自检] ✅ bwrap 沙箱隔离可用: %s (%s)",
+            report["bwrap_path"],
+            report["bwrap_version"] or "版本未知",
+        )
+    elif mode == "landlock":
+        logger.warning(
+            "[沙箱自检] ⚠️ bwrap 不可用（%s），已降级为 Landlock 隔离："
+            "文件系统受限但无法隔离进程/网络",
+            report["bwrap_reason"] or "未知原因",
+        )
+    elif mode == "fail-closed":
+        logger.error(
+            "[沙箱自检] ❌ bwrap 与 Landlock 均不可用（%s），"
+            "agent 的 shell 命令将被拒绝执行（fail-closed）",
+            report["bwrap_reason"] or "未知原因",
+        )
+        for hint in report["hints"] or []:  # type: ignore[union-attr]
+            logger.error("[沙箱自检] 修复建议: %s", hint)
+        if strict:
+            raise RuntimeError(
+                "沙箱自检失败：bwrap 与 Landlock 均不可用，且 EASY_SANDBOX_STRICT=1。"
+                f"原因：{report['bwrap_reason'] or '未知原因'}。"
+                "修复后重试，或设 agent.sandbox_enabled=false（不隔离，仅限可信环境）。"
+            )
+    else:
+        logger.warning(
+            "[沙箱自检] ⚠️ agent.sandbox_enabled=false，shell 命令将在宿主直接执行，"
+            "没有任何沙箱隔离"
+        )
+    return report
+
+
+def run_sandboxed(
+    command: str,
+    *,
+    binds: list[tuple[str, str]],
+    cwd: str,
+    env: dict[str, str] | None,
+    timeout: int,
+    max_output_bytes: int,
+    network: str = "host",
+    ro_binds: list[tuple[str, str]] | None = None,
+) -> ExecuteResponse:
+    """Run *command* inside a bwrap sandbox and return an :class:`ExecuteResponse`.
+
+    Each entry in *binds* is a ``(real_host_dir, sandbox_target)`` pair: the real
+    workspace/skills/external directory is mounted (read-write) at its *virtual*
+    path inside the sandbox. Binding at the virtual path - rather than the real
+    host path, which typically lives under ``/home/<user>/...`` - keeps ``/home``
+    and ``/root`` completely invisible. The model uses virtual paths directly,
+    so no path translation is needed.
+
+    *cwd* is the virtual working directory used inside the sandbox (via ``cd``).
+
+    *network* ``"none"`` keeps the network namespace unshared (loopback only);
+    ``"host"`` shares the host network. *ro_binds* are ``(real, target)`` pairs
+    mounted read-only **after** the read-write binds, so they override sub-paths
+    of a writable mount (e.g. existing skills inside the writable skills root).
+    """
+    argv: list[str] = ["bwrap", "--unshare-all"]
+    if network != "none":
+        argv.append("--share-net")
+    argv += ["--die-with-parent", "--new-session"]
+    # read-only system dirs (commands + shared libraries)
+    for d in _SANDBOX_RO_DIRS:
+        argv += ["--ro-bind-try", d, d]
+    # read-only python environment, bound at a neutral path so the real host
+    # venv path (usually under /home) is never exposed.
+    venv = _venv_prefix()
+    if venv:
+        argv += ["--ro-bind-try", venv, _VENV_MOUNT]
+    argv += ["--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp"]
+    # Mask sensitive /etc files (overlay /dev/null) so the agent cannot read
+    # host credentials or the host username via /etc/environment etc.
+    for f in _BWRAP_MASKED_ETC_FILES:
+        argv += ["--ro-bind-try", "/dev/null", f]
+    # Neutral /etc/passwd & /etc/group: overlay minimal files so getpwuid()
+    # resolves to a generic "agent" identity instead of leaking the real host
+    # username (via `whoami`, `id`, `ls -l` owner fields). The real uid is
+    # mapped to "agent" so user-aware commands keep working.
+    _uid = os.getuid()
+    _etc_overlays = {
+        "/etc/passwd": (
+            "root:x:0:0:root:/root:/bin/sh\n"
+            f"agent:x:{_uid}:{_uid}:agent:/tmp:/bin/sh\n"
+            "nobody:x:65534:65534:nobody:/:/usr/sbin/nologin\n"
+        ),
+        "/etc/group": (
+            "root:x:0:\n"
+            f"agent:x:{_uid}:\n"
+            "nogroup:x:65534:\n"
+        ),
+    }
+    _etc_tmp: list[str] = []
+    for _target, _content in _etc_overlays.items():
+        _fd, _path = tempfile.mkstemp(prefix="sandbox_etc_", suffix=".txt")
+        os.write(_fd, _content.encode())
+        os.close(_fd)
+        _etc_tmp.append(_path)
+        argv += ["--ro-bind", _path, _target]
+    # read-write: workspace, skills, external dirs bound at their VIRTUAL paths
+    for real, target in binds:
+        argv += ["--bind", real, target]
+    # read-only overlays on top of the writable mounts (protected skills, DA-07)
+    for real, target in ro_binds or []:
+        argv += ["--ro-bind-try", real, target]
+    # HOME/TMPDIR -> tmpfs; PATH -> venv bin + system dirs. The subprocess env
+    # is sanitized separately so no server secrets reach the sandboxed command.
+    sandbox_path = _sandbox_path(venv)
+    argv += ["--setenv", "HOME", "/tmp"]
+    argv += ["--setenv", "TMPDIR", "/tmp"]
+    argv += ["--setenv", "PATH", sandbox_path]
+    argv += ["sh", "-c", f"cd {shlex.quote(cwd)} && {command}"]
+
+    try:
+        result = subprocess.run(  # noqa: S603 - argv list, shell=False
+            argv,
+            check=False,
+            shell=False,
+            capture_output=True,
+            stdin=subprocess.DEVNULL,
+            text=True,
+            timeout=timeout,
+            env=_sanitize_env(env, home="/tmp", path=sandbox_path),
+            cwd=None,
+        )
+    except subprocess.TimeoutExpired:
+        return ExecuteResponse(
+            output=f"Error: Command timed out after {timeout} seconds.",
+            exit_code=124,
+            truncated=False,
+        )
+    except FileNotFoundError:
+        return ExecuteResponse(
+            output="Error: bwrap executable not found.",
+            exit_code=127,
+            truncated=False,
+        )
+    finally:
+        for _path in _etc_tmp:
+            try:
+                os.unlink(_path)
+            except OSError:
+                pass
+
+    parts: list[str] = []
+    if result.stdout:
+        parts.append(result.stdout)
+    if result.stderr:
+        parts.extend(
+            f"[stderr] {line}" for line in result.stderr.strip().split("\n")
+        )
+    output = "\n".join(parts) if parts else "<no output>"
+    truncated = False
+    if len(output) > max_output_bytes:
+        output = output[:max_output_bytes]
+        output += f"\n\n... Output truncated at {max_output_bytes} bytes."
+        truncated = True
+    if result.returncode != 0:
+        output = f"{output.rstrip()}\n\nExit code: {result.returncode}"
+    return ExecuteResponse(
+        output=output, exit_code=result.returncode, truncated=truncated
+    )
+
+
+def run_landlocked(
+    command: str,
+    *,
+    allowed_rw_dirs: list[str],
+    cwd: str,
+    env: dict[str, str] | None,
+    timeout: int,
+    max_output_bytes: int,
+    extra_ro_dirs: list[str] | None = None,
+) -> ExecuteResponse:
+    """Run *command* confined by Linux Landlock (unprivileged FS isolation).
+
+    Used when ``bwrap`` is unavailable. The command runs in a fresh helper
+    process that applies a Landlock ruleset restricting filesystem access to:
+
+    * the workspace / skills / external dirs (read-write),
+    * system dirs + venv + ``/dev`` (read-only),
+    * a handful of safe device files (``/dev/null`` ... read-write).
+
+    Everything else on the host - including other users' workspace dirs and the
+    application database - is invisible / denied. If Landlock cannot be applied
+    the helper exits 127 without running the command (fail-closed).
+    """
+    import sys as _sys
+    from pathlib import Path as _Path
+
+    try:
+        import easy_agent.sandboxing.landlock as _ll
+    except Exception as exc:  # noqa: BLE001
+        return ExecuteResponse(
+            output=f"Error: Landlock 模块不可用，已拒绝执行命令: {exc}",
+            exit_code=127,
+            truncated=False,
+        )
+    if not _ll.landlock_usable():
+        return ExecuteResponse(
+            output=(
+                "Error: 当前环境不支持 bwrap 与 Landlock，无法安全执行 shell 命令，已拒绝执行。"
+                "请在容器启动时添加 --security-opt seccomp=unconfined --security-opt apparmor=unconfined "
+                "--security-opt systempaths=unconfined 以启用 bwrap 沙箱。"
+            ),
+            exit_code=127,
+            truncated=False,
+        )
+
+    ro_dirs = list(_SANDBOX_RO_DIRS)
+    if "/dev" not in ro_dirs:
+        ro_dirs.append("/dev")
+    # Landlock 规则只能叠加授权：要只读的目录必须不在 allowed_rw_dirs 里（调用方负责剔除）
+    ro_dirs.extend(d for d in (extra_ro_dirs or []) if d and d not in ro_dirs)
+    # NOTE: the venv is intentionally NOT added to ro_dirs. Its real host path
+    # (typically /home/<user>/.../.venv) would expose /home; the confined
+    # command uses the system Python instead. Landlock cannot remap paths, so
+    # the workspace stays at its real path (confined to it).
+
+    # Sanitize the environment so server secrets (JWT key, API keys, DB creds)
+    # are never forwarded to the confined command, then add Landlock params.
+    full_env = _sanitize_env(env, home=cwd, path=_sandbox_path(None))
+    full_env["EASY_LANDLOCK_RW"] = os.pathsep.join(
+        d for d in allowed_rw_dirs if d
+    )
+    full_env["EASY_LANDLOCK_RO"] = os.pathsep.join(d for d in ro_dirs if d)
+    full_env["EASY_LANDLOCK_RW_FILES"] = os.pathsep.join(_ll._SAFE_DEV_FILES)
+    full_env["EASY_LANDLOCK_CWD"] = cwd
+    full_env["TMPDIR"] = cwd
+
+    script = _Path(_ll.__file__)
+    argv: list[str] = [
+        _sys.executable, str(script), "sh", "-c", command,
+    ]
+    try:
+        result = subprocess.run(  # noqa: S603 - argv list, shell=False
+            argv,
+            check=False,
+            shell=False,
+            capture_output=True,
+            stdin=subprocess.DEVNULL,
+            text=True,
+            timeout=timeout,
+            env=full_env,
+            cwd=cwd,
+        )
+    except subprocess.TimeoutExpired:
+        return ExecuteResponse(
+            output=f"Error: Command timed out after {timeout} seconds.",
+            exit_code=124,
+            truncated=False,
+        )
+    except FileNotFoundError:
+        return ExecuteResponse(
+            output="Error: Python interpreter not found for Landlock executor.",
+            exit_code=127,
+            truncated=False,
+        )
+
+    # The helper exits 127 (with a stderr message) when confinement setup fails.
+    if result.returncode == 127 and not result.stdout and result.stderr.strip():
+        return ExecuteResponse(
+            output=result.stderr.strip(),
+            exit_code=127,
+            truncated=False,
+        )
+
+    parts: list[str] = []
+    if result.stdout:
+        parts.append(result.stdout)
+    if result.stderr:
+        parts.extend(
+            f"[stderr] {line}" for line in result.stderr.strip().split("\n")
+        )
+    output = "\n".join(parts) if parts else "<no output>"
+    truncated = False
+    if len(output) > max_output_bytes:
+        output = output[:max_output_bytes]
+        output += f"\n\n... Output truncated at {max_output_bytes} bytes."
+        truncated = True
+    if result.returncode != 0:
+        output = f"{output.rstrip()}\n\nExit code: {result.returncode}"
+    return ExecuteResponse(
+        output=output, exit_code=result.returncode, truncated=truncated
+    )
+
+
+def check_command_paths(command: str, allowed_rw_dirs: list[str]) -> str | None:
+    """Best-effort path allowlist for the no-bwrap fallback.
+
+    Returns an error message if *command* references an absolute host path
+    outside the allowed roots / safe system prefixes, otherwise ``None``.
+    """
+    safe = {p.rstrip("/") for p in _FALLBACK_SAFE_PREFIXES}
+    venv = _venv_prefix()
+    if venv:
+        safe.add(venv.rstrip("/"))
+    for d in allowed_rw_dirs:
+        safe.add(d.rstrip("/"))
+    safe_sorted = sorted(safe, key=len, reverse=True)
+
+    for m in _ABS_PATH_RE.finditer(command):
+        path = m.group(0)
+        if _path_allowed(path, safe_sorted):
+            continue
+        return (
+            "Error: 命令引用了工作区之外的路径 "
+            f"{path}，已被沙箱拒绝。\n"
+            "智能体仅允许访问当前工作区及已授权目录，请使用工作区内路径或虚拟路径。"
+        )
+    # block home-directory shortcut expansions (~/...)
+    if re.search(r"(^|[\s;|&()=])~/", command):
+        return (
+            "Error: 命令使用了 ~ (用户主目录) 路径引用，已被沙箱拒绝。"
+            "请使用工作区内路径。"
+        )
+    return None
+
+
+def _path_allowed(path: str, safe_prefixes: list[str]) -> bool:
+    p = path.rstrip("/")
+    if not p:
+        return False  # bare "/" -> filesystem root, never allowed
+    for prefix in safe_prefixes:
+        if p == prefix or p.startswith(prefix + "/"):
+            return True
+    return False

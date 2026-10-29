@@ -6,8 +6,7 @@ import pytest
 from fastapi import HTTPException
 
 from easy_agent.api import auth as auth_mod
-from easy_agent.app import app
-from easy_agent.config import Config
+from easy_agent.bootstrap.config import Config
 from easy_agent.models.api import LoginRequest, ResetPasswordRequest
 
 
@@ -31,6 +30,19 @@ def test_register_success(client):
     assert data["access_token"]
     assert data["token_type"] == "bearer"
     assert data["username"] == "alice"
+
+
+def test_register_is_rejected_when_personnel_policy_disables_it(client, db, monkeypatch):
+    config = SimpleNamespace(
+        personnel=SimpleNamespace(self_registration_enabled=False)
+    )
+    monkeypatch.setattr(auth_mod, "get_agent_config", lambda: {"config": config})
+
+    response = _register(client, "blocked.user")
+
+    assert response.status_code == 403
+    assert "关闭自助注册" in response.json()["detail"]
+    assert db.get_user_by_username("blocked.user") is None
 
 
 def test_token_lifetime_zero_idle_logout(monkeypatch):
@@ -101,32 +113,43 @@ def test_update_profile(client):
     assert resp.json()["email"] == "new@x.com"
 
 
-async def test_admin_can_list_users(db):
+def test_admin_can_list_users(db):
     db.register_user("admin", "admin")
     db.register_user("alice", "secret123")
 
-    users = await auth_mod.list_users(db, "admin")
+    users = auth_mod.list_users(db, "admin")
 
     assert users.total == 2
     assert {user.username for user in users.users} == {"admin", "alice"}
 
 
-async def test_admin_can_reset_user_password_to_default(db):
+def test_admin_can_reset_user_password_to_default(db):
     db.register_user("admin", "admin")
     db.register_user("alice", "secret123")
 
-    result = await auth_mod.admin_reset_password("alice", "admin", db)
+    result = auth_mod.admin_reset_password("alice", "admin", db)
 
     assert result["status"] == "success"
     assert db.verify_user_password("alice", "123456") is not None
 
 
-async def test_admin_reset_password_allows_login_with_default(db, monkeypatch):
+def test_admin_default_password_reset_rejects_admin_target(db):
+    admin = db.get_user_by_username("admin")
+    original_hash = admin.password_hash
+
+    with pytest.raises(HTTPException) as error:
+        auth_mod.admin_reset_password("admin", "admin", db)
+
+    assert error.value.status_code == 400
+    assert db.get_user_by_username("admin").password_hash == original_hash
+
+
+def test_admin_reset_password_allows_login_with_default(db, monkeypatch):
     monkeypatch.setattr(auth_mod, "get_agent_config", lambda: {})
     db.register_user("alice", "secret123")
-    await auth_mod.admin_reset_password("alice", "admin", db)
+    auth_mod.admin_reset_password("alice", "admin", db)
 
-    response = await auth_mod.login(
+    response = auth_mod.login(
         LoginRequest(username="alice", password="123456"),
         SimpleNamespace(headers={}, client=None),
         db,
@@ -135,23 +158,46 @@ async def test_admin_reset_password_allows_login_with_default(db, monkeypatch):
     assert response.username == "alice"
 
 
-async def test_non_admin_cannot_list_users_or_reset_password(db):
+def test_non_admin_cannot_list_users_or_reset_password(db):
     db.register_user("alice", "secret123")
 
     with pytest.raises(HTTPException) as list_error:
-        await auth_mod.list_users(db, "alice")
+        auth_mod.list_users(db, "alice")
     with pytest.raises(HTTPException) as reset_error:
-        await auth_mod.admin_reset_password("alice", "alice", db)
+        auth_mod.admin_reset_password("alice", "alice", db)
 
     assert list_error.value.status_code == 403
     assert reset_error.value.status_code == 403
 
 
-async def test_legacy_reset_password_requires_admin(db):
+def test_team_space_manager_can_reset_user_password_to_default(db):
+    db.register_user("dept_mgr", "secret123")
+    db.register_user("alice", "secret123")
+    manager_id = db.get_user_by_username("dept_mgr").user_id
+    with db.get_connection() as connection:
+        cursor = connection.cursor()
+        db._execute(
+            cursor,
+            "UPDATE users SET department_id='dept-market', organization_id='dept-market' WHERE username='dept_mgr'",
+        )
+        db._execute(
+            cursor,
+            "INSERT INTO knowledge_team_space_managers (user_id, granted_by, granted_at, updated_at) "
+            "VALUES (?, 'admin', '2026-10-14T00:00:00', '2026-10-14T00:00:00')",
+            (manager_id,),
+        )
+
+    result = auth_mod.admin_reset_password("alice", "dept_mgr", db)
+
+    assert result["status"] == "success"
+    assert db.verify_user_password("alice", "123456") is not None
+
+
+def test_legacy_reset_password_requires_admin(db):
     request = ResetPasswordRequest(username="alice", new_password="new12345")
 
     with pytest.raises(HTTPException) as error:
-        await auth_mod.reset_password(request, "alice", db)
+        auth_mod.reset_password(request, "alice", db)
 
     assert error.value.status_code == 403
 
@@ -162,11 +208,11 @@ def test_login_request_allows_default_reset_password():
     assert request.password == "123456"
 
 
-async def test_reset_password_missing_user(db):
+def test_reset_password_missing_user(db):
     request = ResetPasswordRequest(username="nobody", new_password="new12345")
 
     with pytest.raises(HTTPException) as error:
-        await auth_mod.reset_password(request, "admin", db)
+        auth_mod.reset_password(request, "admin", db)
 
     assert error.value.status_code == 404
 
@@ -177,6 +223,27 @@ def test_auth_config(client):
     data = resp.json()
     assert "context_length" in data
     assert "preset_questions" in data
+    assert isinstance(data["preset_questions"], list)
+
+
+def test_auth_config_response_accepts_question_groups():
+    from easy_agent.models.api import AuthConfigResponse
+
+    model = AuthConfigResponse(
+        context_length=128000,
+        preset_questions=[
+            {
+                "category": "宏观与资产研判",
+                "icon": "❄️",
+                "questions": ["结合国内外宏观指标判断增长与通胀方向。"],
+            }
+        ],
+        win=False,
+        agent_env="dev",
+        idle_logout_minutes=0,
+        app_welcome_title="Easy Agent",
+    )
+    assert model.preset_questions[0].questions[0].startswith("结合")
 
 
 def test_register_requires_employee_id(client):

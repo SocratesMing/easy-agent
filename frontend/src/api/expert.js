@@ -3,13 +3,18 @@
  *
  * 对应后端 easy_agent/api/expert.py：
  *   POST /agent/add                创建专家
- *   POST /agent/update             修改专家（新版本目录）
  *   GET  /agent/list               我的专家列表
+ *   GET  /agent/public-list        公共（预置）专家列表（只读目录 experts/）
+ *   GET  /agent/expert-md          读取专家提示词 MD（只读预览）
+ *   GET  /agent/session-experts    某会话里创建的专家（工作区只读条目）
  *   POST /agent/del                删除专家（默认软删）
- *   POST /agent/stream_export_run  选中专家执行（SSE）
  *
- * 与 api/chat.js 保持同一套请求约定（API_BASE_URL + authFetch），
- * SSE 事件格式与 /agent/chat/stream 完全一致。
+ * 与 api/chat.js 保持同一套请求约定（API_BASE_URL + authFetch）。
+ *
+ * 说明：专家对话**没有**独立接口——选中的专家随 /agent/chat/stream 的
+ * `expert_agent_id` 字段上行（见 api/chat.js::sendMessage），因此本文件只有浏览侧接口。
+ * 新建与修改专家都改在对话框里由 Agent（expert-creator 技能）完成；后端的
+ * POST /agent/update 仍存在，但当前无前端调用方。
  */
 import { API_BASE_URL } from '../config.js'
 import { authFetch } from './auth.js'
@@ -40,28 +45,6 @@ export async function addExpert({ nameCn, prompt, sessionId = null, model = null
   return await response.json()
 }
 
-/** 修改专家 */
-export async function updateExpert({
-  exportAgentId,
-  nameCn = null,
-  prompt = null,
-  model = null,
-}) {
-  const response = await authFetch(`${API_BASE_URL}/agent/update`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      export_agent_id: exportAgentId,
-      name_cn: nameCn,
-      prompt,
-      modify_type: 'edit',
-      model,
-    }),
-  })
-  if (!response.ok) throw await _errorOf(response, '修改专家失败')
-  return await response.json()
-}
-
 /** 我的专家列表 */
 export async function listExperts({
   keyword = '',
@@ -82,6 +65,41 @@ export async function listExperts({
   return await response.json()
 }
 
+/**
+ * 公共（预置）专家列表：随项目内置的专家（`experts/` 目录），只读，
+ * 不区分用户。字段与 listExperts 的 items 一致（另带 `scope: 'public'`）。
+ */
+export async function listPublicExperts() {
+  const response = await authFetch(`${API_BASE_URL}/agent/public-list`)
+  if (!response.ok) throw await _errorOf(response, '获取公共专家列表失败')
+  return await response.json()
+}
+
+/**
+ * 读取专家提示词 MD（只读）：详情弹窗与工作区预览共用。
+ * 返回 `{ expert_agent_id, scope, file_name, content, version }`。
+ */
+export async function getExpertMd(expertId) {
+  const params = new URLSearchParams({ expert_id: expertId })
+  const response = await authFetch(`${API_BASE_URL}/agent/expert-md?${params.toString()}`)
+  if (!response.ok) throw await _errorOf(response, '获取专家提示词失败')
+  return await response.json()
+}
+
+/**
+ * 某会话里创建的专家（工作区只读条目的数据源）。
+ * 返回 `{ items: [{ expert_agent_id, name_cn, name_en, version }] }`。
+ */
+export async function getSessionExperts(sessionId) {
+  if (!sessionId) return { items: [] }
+  const params = new URLSearchParams({ session_id: sessionId })
+  const response = await authFetch(
+    `${API_BASE_URL}/agent/session-experts?${params.toString()}`
+  )
+  if (!response.ok) throw await _errorOf(response, '获取会话内专家失败')
+  return await response.json()
+}
+
 /** 删除专家（hard=true 时物理删除） */
 export async function deleteExpert(exportAgentId, hard = false) {
   const response = await authFetch(`${API_BASE_URL}/agent/del`, {
@@ -91,67 +109,4 @@ export async function deleteExpert(exportAgentId, hard = false) {
   })
   if (!response.ok) throw await _errorOf(response, '删除专家失败')
   return await response.json()
-}
-
-/**
- * 选中专家执行（SSE 流式）
- *
- * @param {Object} payload { message, sessionId, expertAgentId, model, enableDeepThink, enableWebSearch, files }
- * @param {Function} onChunk 每个 SSE 事件回调（与聊天完全相同的结构）
- * @param {AbortSignal} [signal] 用于取消
- */
-export async function streamExportRun(payload, onChunk, signal) {
-  const controller = new AbortController()
-  const abortSignal = signal || controller.signal
-
-  const body = {
-    message: payload.message,
-    session_id: payload.sessionId || null,
-    message_id: payload.messageId || generateMessageId(),
-    expert_agent_id: payload.expertAgentId || null,
-    enable_deep_think: !!payload.enableDeepThink,
-    enable_web_search: !!payload.enableWebSearch,
-    files: payload.files || null,
-  }
-  if (payload.model) body.model = payload.model
-
-  const response = await authFetch(`${API_BASE_URL}/agent/stream_export_run`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-    signal: abortSignal,
-  })
-  if (!response.ok) throw await _errorOf(response, '专家执行失败')
-
-  const reader = response.body.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ''
-
-  try {
-    while (true) {
-      if (abortSignal?.aborted) {
-        controller.abort()
-        return
-      }
-      const { done, value } = await reader.read()
-      if (done) break
-
-      buffer += decoder.decode(value, { stream: true })
-      const lines = buffer.split('\n')
-      buffer = lines.pop() || ''
-
-      for (const line of lines) {
-        if (line.startsWith('data: ')) {
-          try {
-            onChunk(JSON.parse(line.slice(6)))
-          } catch (e) {
-            console.error('解析 SSE 数据失败:', e)
-          }
-        }
-      }
-    }
-  } catch (e) {
-    if (e.name === 'AbortError') return
-    throw e
-  }
 }

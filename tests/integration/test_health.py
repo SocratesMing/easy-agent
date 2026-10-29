@@ -5,11 +5,18 @@ from fastapi.testclient import TestClient
 
 
 def test_health(client: TestClient):
-    resp = client.get("/agent/health")
+    resp = client.get("/agent/live")
     assert resp.status_code == 200
     data = resp.json()
-    assert data["status"] == "healthy"
-    assert "database_initialized" in data
+    assert data["status"] == "live"
+
+
+def test_ready(client: TestClient):
+    resp = client.get("/agent/ready")
+    assert resp.status_code in (200, 503)
+    data = resp.json()
+    assert "database_ready" in data
+    assert "workspace_ready" in data
 
 
 def test_config_endpoint(client: TestClient):
@@ -24,6 +31,10 @@ def test_config_endpoint(client: TestClient):
 def test_app_metadata(client: TestClient):
     routes = [getattr(r, "path", "") for r in app.routes]
     assert "/agent/health" in routes
+    assert "/agent/live" in routes
+    assert "/api/live" in routes
+    assert "/agent/ready" in routes
+    assert "/api/ready" in routes
     assert "/agent/auth/login" in routes
     assert "/agent/sessions" in routes
     assert "/agent/chat/stream" in routes

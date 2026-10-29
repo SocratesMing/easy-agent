@@ -1,4 +1,4 @@
-"""Characterization tests for easy_agent.model.
+"""Characterization tests for easy_agent.agent.model.
 
 Pin current behavior of model creation, reasoning extraction and image
 stripping so the Phase 1 structural refactor can be verified to preserve
@@ -16,7 +16,7 @@ from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import HumanMessage
 from langchain_openai import ChatOpenAI
 
-from easy_agent.config import (
+from easy_agent.bootstrap.config import (
     AgentConfig,
     Config,
     LLMConfig,
@@ -24,7 +24,7 @@ from easy_agent.config import (
     RetryConfig,
     ToolsConfig,
 )
-from easy_agent.model import (
+from easy_agent.agent.model import (
     ReasoningChatOpenAI,
     create_model,
     drop_incomplete_media_blocks,
@@ -189,7 +189,7 @@ class TestMediaBlockFiltering:
 
 class TestAnthropicConstants:
     def test_constants_exist_and_match_previous_values(self):
-        from easy_agent.model import (
+        from easy_agent.agent.model import (
             ANTHROPIC_MAX_TOKENS,
             ANTHROPIC_THINKING_BUDGET_TOKENS,
         )
@@ -199,7 +199,7 @@ class TestAnthropicConstants:
 
 class TestResolveLlmConfig:
     def test_resolves_named_model(self):
-        from easy_agent.model import resolve_llm_config
+        from easy_agent.agent.model import resolve_llm_config
         config = _make_config(protocol="anthropic")
         cfg = resolve_llm_config(config, "m")
         assert cfg.provider == "p"
@@ -208,11 +208,11 @@ class TestResolveLlmConfig:
         assert cfg.context_length == 128000
 
     def test_none_falls_back_to_active(self):
-        from easy_agent.model import resolve_llm_config
+        from easy_agent.agent.model import resolve_llm_config
         config = _make_config(protocol="openai")
         assert resolve_llm_config(config, None) is config.llm
 
     def test_unknown_model_falls_back_to_active(self):
-        from easy_agent.model import resolve_llm_config
+        from easy_agent.agent.model import resolve_llm_config
         config = _make_config(protocol="openai")
         assert resolve_llm_config(config, "nope") is config.llm

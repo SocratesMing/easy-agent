@@ -11,10 +11,13 @@
         </div>
       </div>
       <div class="ke-topbar-actions">
-        <!-- 人员与权限（sunya 的 manage-personnel）依赖 personnel 模块，尚未迁移；
-             该 emit 在 vue2 无监听者，故隐藏入口，避免点击无响应。 -->
+        <button
+          v-if="teamSpaceManagement.can_manage && selectedSpace === 'team'"
+          class="ke-button admin-access"
+          title="配置人员、部门及公共空间创建与管理权限"
+          @click="$emit('manage-personnel')"
+        ><IconUserRoundCog />人员管理</button>
         <span class="ke-health" :class="healthClass"><i></i>{{ healthLabel }}</span>
-        <button class="ke-button quiet" @click="showOperations = true"><IconActivity />任务</button>
         <button class="ke-button primary" @click="openCreateBase"><IconPlus />新建知识库</button>
       </div>
     </header>
@@ -24,8 +27,8 @@
     </div>
     <div v-else-if="!capabilities.enabled" class="ke-empty-page">
       <div class="ke-empty-illustration"><IconLibrary /></div>
-      <h2>知识库未启用</h2>
-      <p>{{ disabledMessage }}</p>
+      <h2>知识服务尚未启用</h2>
+      <p>主聊天仍可正常使用。请由管理员完成知识服务配置后再试。</p>
     </div>
 
     <div v-else class="ke-workspace" :class="{ 'ask-closed': !askOpen }" :style="knowledgeLayoutStyle">
@@ -117,7 +120,7 @@
               </div>
             </div>
             <div class="ke-inline-actions">
-              <button v-if="selectedBase.visibility !== 'personal' && can('manage_permissions')" class="ke-button quiet" @click="openPermissions"><IconUserRoundCog />成员</button>
+              <button v-if="selectedBase.visibility !== 'personal' && can('manage_permissions')" class="ke-button quiet" @click="openPermissions"><IconShieldCheck />权限管理</button>
               <button v-if="can('edit_base')" class="ke-button quiet icon-only" title="编辑知识库" @click="editBase"><IconSettings2 /></button>
               <button v-if="can('delete_base')" class="ke-button quiet icon-only danger-hover" title="删除知识库" @click="removeBase"><IconTrash2 /></button>
             </div>
@@ -148,29 +151,22 @@
                 <IconListFilter />
                 <select v-model="statusFilter" @change="loadDocuments">
                   <option value="">全部状态</option>
-                  <option value="pending">待处理</option>
-                  <option value="processing">解析中</option>
-                  <option value="ready">已就绪</option>
-                  <option value="failed">失败</option>
+                  <option v-for="opt in statusOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
                 </select>
               </label>
               <div class="ke-view-switch" aria-label="资料视图">
                 <button :class="{ active: viewMode === 'grid' }" title="卡片视图" @click="viewMode = 'grid'"><IconLayoutGrid /></button>
                 <button :class="{ active: viewMode === 'list' }" title="列表视图" @click="viewMode = 'list'"><IconList /></button>
               </div>
-              <label v-if="can('upload')" class="ke-button primary upload">
-                <IconUpload />导入资料
-                <input type="file" multiple hidden @change="handleFiles" />
-              </label>
-            </div>
-          </section>
-
-          <section v-if="visibleUploadQueue.length" class="ke-upload-queue">
-            <header><strong>导入进度</strong><span>{{ visibleUploadQueue.length }} 个文件</span></header>
-            <div v-for="item in visibleUploadQueue" :key="item.id" class="ke-upload-item">
-              <span class="ke-mini-file"><IconFileText /></span>
-              <div><strong>{{ item.name }}</strong><div class="ke-progress"><i :style="{ width: `${item.progress}%` }"></i></div></div>
-              <b :class="item.state">{{ uploadStateLabel(item) }}</b>
+              <div v-if="can('upload')" class="ke-import-wrap">
+                <button type="button" class="ke-button primary upload" title="选择文件或文件夹导入">
+                  <IconUpload />导入资料<IconChevronDown class="ke-import-caret" />
+                </button>
+                <div class="ke-import-menu">
+                  <label class="ke-import-option"><IconFileText />选择文件<input type="file" multiple hidden @change="handleFiles" /></label>
+                  <label class="ke-import-option"><IconFolder />选择文件夹（含子目录）<input type="file" webkitdirectory hidden @change="handleFolderFiles" /></label>
+                </div>
+              </div>
             </div>
           </section>
 
@@ -183,20 +179,22 @@
               </button>
             </div>
 
-            <div v-if="loadingDocuments && !documents.length" class="ke-document-skeletons">
-              <span v-for="index in 6" :key="index"></span>
+            <div v-if="loadingDocuments && !documents.length" class="ke-document-loading">
+              <p>文档加载中<span v-for="index in 3" :key="index" class="ke-dot"></span></p>
             </div>
 
             <template v-else-if="documents.length">
               <article v-for="doc in documents" :key="doc.id" class="ke-document-card">
                 <button class="ke-doc-open" :disabled="!previewable(doc)" title="双击预览" @dblclick="previewable(doc) && previewDocument(doc)">
-                  <span class="ke-file-icon"><FileIcon :filename="doc.name" :size="28" /></span>
+                  <span class="ke-file-icon"><FileIcon :filename="doc.name" :size="18" /></span>
                   <span class="ke-document-copy">
-                    <strong :title="doc.name">{{ doc.name }}</strong>
-                    <small>
-                      {{ formatSize(doc.size_bytes) }} · {{ formatDate(doc.updated_at) }}
-                      <template v-if="doc.original_available"> · 原文已存</template>
-                    </small>
+                    <span class="ke-doc-title">
+                      <strong :title="doc.name">{{ doc.name }}</strong>
+                      <small>
+                        {{ formatSize(doc.size_bytes) }} · {{ formatDate(doc.updated_at) }}
+                        <template v-if="doc.original_available"> · 原文已存</template>
+                      </small>
+                    </span>
                   </span>
                 </button>
                 <div class="ke-document-details">
@@ -209,16 +207,24 @@
                   <button v-if="!doc.optimistic" title="下载" @click="downloadDocument(doc)"><IconDownload /><span>下载</span></button>
                   <button v-if="doc.allowed_actions.includes('move_document')" title="移动" @click="openMoveDocument(doc)"><IconFolder /><span>移动</span></button>
                   <button v-if="['failed', 'cancelled', 'unknown'].includes(doc.status) && doc.allowed_actions.includes('retry_document')" title="重试解析" @click="retryDoc(doc)"><IconRefreshCw /><span>重试</span></button>
+                  <button v-if="['pending', 'processing'].includes(doc.status) && doc.allowed_actions.includes('retry_document')" title="暂停解析任务" @click="pauseDoc(doc)"><IconPause /><span>暂停</span></button>
+                  <button v-if="doc.status === 'paused' && doc.allowed_actions.includes('retry_document')" title="恢复解析任务" @click="resumeDoc(doc)"><IconPlay /><span>恢复</span></button>
                   <button v-if="doc.allowed_actions.includes('delete_document')" class="danger-text" title="删除" @click="removeDocument(doc)"><IconTrash2 /><span>删除</span></button>
                 </div>
               </article>
             </template>
 
             <div v-else-if="!currentFolders.length || search || statusFilter" class="ke-empty-documents">
-              <div><IconFiles /></div>
+              <div class="ke-empty-icon"><IconFiles /></div>
               <h3>{{ search || statusFilter ? '没有找到匹配资料' : '添加第一篇资料' }}</h3>
               <p>{{ search || statusFilter ? '换个关键词或筛选条件试试。' : '支持批量选择文件，也可以直接拖拽到这里。' }}</p>
-              <label v-if="can('upload') && !search && !statusFilter" class="ke-button primary upload"><IconUpload />导入资料<input type="file" multiple hidden @change="handleFiles" /></label>
+              <div v-if="can('upload') && !search && !statusFilter" class="ke-import-wrap">
+                <button type="button" class="ke-button primary upload" title="选择文件或文件夹导入"><IconUpload />导入资料<IconChevronDown class="ke-import-caret" /></button>
+                <div class="ke-import-menu">
+                  <label class="ke-import-option"><IconFileText />选择文件<input type="file" multiple hidden @change="handleFiles" /></label>
+                  <label class="ke-import-option"><IconFolder />选择文件夹（含子目录）<input type="file" webkitdirectory hidden @change="handleFolderFiles" /></label>
+                </div>
+              </div>
               <button v-else-if="search || statusFilter" class="ke-button quiet" @click="clearFilters">清除筛选</button>
             </div>
           </section>
@@ -241,18 +247,26 @@
         <header class="ke-ask-header">
           <div class="ke-ai-avatar"><IconSparkles /></div>
           <div><strong>问问知识库</strong><small>{{ selectedBase ? `基于「${selectedBase.name}」` : '选择知识库后开始提问' }}</small></div>
+          <button class="ke-icon-button subtle" :disabled="asking || !selectedBase" aria-label="新对话" title="开启新对话（删除当前问答记录）" @click="startNewChat"><IconMessageSquarePlus /></button>
           <button v-if="asking" class="ke-icon-button subtle ke-stop-button" aria-label="停止回答" title="停止回答" @click="stopQuestion('user')"><IconSquare /></button>
-          <button class="ke-icon-button subtle" aria-label="收起问答" title="收起问答" @click="askOpen = false"><IconPanelRightClose /></button>
+          <button class="ke-icon-button subtle" aria-label="收起问答" title="收起问答" @click="closeAskPanel"><IconPanelRightClose /></button>
         </header>
 
-        <div class="ke-answer">
-          <div v-if="!agentMessage && !asking" class="ke-answer-welcome">
+        <div class="ke-answer" ref="askBody">
+          <div v-if="!agentMessage && !asking && !askHistory.length" class="ke-answer-welcome">
             <div class="ke-answer-orb"><IconSparkles /></div>
             <h3>{{ selectedBase ? '从资料里找答案' : '先选择一个知识库' }}</h3>
             <p>{{ selectedBase ? '我会基于当前知识库回答，并标明引用来源。' : '选择后即可对资料进行提问、总结和对比。' }}</p>
             <div v-if="selectedBase" class="ke-question-suggestions">
               <button v-for="item in questionSuggestions" :key="item" @click="submitQuestion(item)">{{ item }}<IconArrowUpRight /></button>
             </div>
+          </div>
+          <div v-for="(entry, index) in askHistory" :key="'ke-history-' + index" class="ke-history-entry">
+            <div v-if="entry.question" class="ke-question-bubble">{{ entry.question }}</div>
+            <template v-if="entry.message">
+              <div class="ke-answer-label"><span class="ke-ai-avatar small"><IconSparkles /></span><strong>EasyAgent 知识库回答</strong></div>
+              <div class="ke-agent-message"><ChatMessage :message="entry.message" /></div>
+            </template>
           </div>
           <template v-if="agentMessage">
             <div class="ke-question-bubble">{{ lastQuestion }}</div>
@@ -263,6 +277,7 @@
         </div>
 
         <form class="ke-ask-form" @submit.prevent="submitQuestion()">
+          <KnowledgeAskFilter v-if="selectedBase" @change="askMetadataFilter = $event" />
           <div class="ke-composer" :class="{ disabled: !selectedBase }">
             <textarea v-model="question" :disabled="!selectedBase || asking" rows="3" placeholder="基于这个知识库提问…" @keydown.enter.exact.prevent="submitQuestion()"></textarea>
             <div><span><IconDatabase />仅检索当前知识库</span><button :disabled="!question.trim() || !selectedBase || asking" aria-label="发送问题"><IconArrowUp /></button></div>
@@ -271,7 +286,7 @@
         </form>
       </aside>
 
-      <button v-else class="ke-ask-fab" :disabled="!selectedBase" @click="askOpen = true"><IconSparkles /><span>问问知识库</span></button>
+      <button v-else class="ke-ask-fab" @click="openAskPanel"><IconSparkles /><span>问问知识库</span></button>
     </div>
 
     <div v-if="showBaseModal" class="ke-modal-mask" @click.self="showBaseModal = false">
@@ -280,10 +295,10 @@
         <label>名称<input v-model="baseForm.name" maxlength="127" placeholder="例如：宏观研究资料库" required /></label>
         <label>简介<textarea v-model="baseForm.description" maxlength="2000" placeholder="说明这个知识库包含什么内容，以及适合怎样使用。"></textarea></label>
         <label v-if="baseModalMode === 'create'">空间
-          <select v-model="baseForm.visibility"><option value="personal">个人空间</option><option value="team" :disabled="!teamSpaceManagement.can_create">团队空间{{ teamSpaceOptionSuffix(teamSpaceManagement) }}</option><option value="shared">共享空间</option></select>
-          <small v-if="baseForm.visibility === 'team' && teamSpaceManagement.is_admin">admin 无需授权；请选择团队空间所属部门。</small>
-          <small v-else-if="baseForm.visibility === 'team'">已授权管理员可创建和管理；本部门其他成员默认只读。</small>
-          <small v-else>空间决定知识库的默认可见范围，创建后可通过成员权限精细控制。</small>
+          <select v-model="baseForm.visibility"><option value="personal">个人空间</option><option value="team" :disabled="!teamSpaceManagement.can_create">公共空间{{ teamSpaceOptionSuffix(teamSpaceManagement) }}</option></select>
+          <small v-if="baseForm.visibility === 'team' && teamSpaceManagement.is_admin">admin 无需授权；请选择公共空间所属部门。</small>
+          <small v-else-if="baseForm.visibility === 'team'">已授权管理员可创建和管理；本部门其他成员默认只读，可在权限管理中勾选限定可见人员。</small>
+          <small v-else>空间决定知识库的默认可见范围，创建后可在权限管理中精细控制可见人员。</small>
         </label>
         <label v-if="baseModalMode === 'create' && baseForm.visibility === 'team' && teamSpaceManagement.is_admin">所属部门
           <select v-model="baseForm.department_id" required>
@@ -292,6 +307,73 @@
           </select>
           <small>所选部门的在职成员将默认获得查看权限。</small>
         </label>
+        <div v-if="baseModalMode === 'create' && baseForm.visibility === 'team'" class="ke-create-perm">
+          <label class="ke-create-perm-toggle">
+            <input type="checkbox" v-model="createPermRestricted" />
+            <span>限定可见人员</span>
+            <small>开启后仅勾选人员可查看；不开启则所选部门在职成员默认可见。创建后可随时在权限管理中调整。</small>
+          </label>
+          <template v-if="createPermRestricted">
+            <div v-if="createPermLoading" class="ke-perm-loading"><span class="ke-spinner"></span><p>正在加载人员目录…</p></div>
+            <template v-else>
+              <div class="ke-perm-toolbar">
+                <span>已选 <strong>{{ createPermSelectedTotal }}</strong> / {{ createPermDirectoryTotal }} 人</span>
+              </div>
+              <div class="ke-perm-tree ke-create-perm-tree">
+                <section v-for="dept in createPermTree" :key="dept.key" class="ke-perm-branch">
+                  <div class="ke-perm-row level-dept">
+                    <button type="button" class="ke-perm-caret" title="展开/收起" @click="toggleCreatePermExpand(dept.key)"><IconChevronDown :class="{ rotated: isCreatePermCollapsed(dept.key) }" /></button>
+                    <input type="checkbox" v-indeterminate="permNodeIndeterminate(dept)" :checked="permNodeChecked(dept)" @change="togglePermNode(dept, $event.target.checked)" />
+                    <span class="ke-perm-name">{{ dept.name }}</span>
+                    <small class="ke-perm-count">{{ permSelectedCount(dept) }}/{{ dept.allUsers.length }}</small>
+                  </div>
+                  <div v-show="!isCreatePermCollapsed(dept.key)" class="ke-perm-children">
+                    <label v-for="user in dept.users" :key="user.user_id" class="ke-perm-user">
+                      <input type="checkbox" :checked="user.checked" @change="user.checked = $event.target.checked" />
+                      <span>{{ user.display_name }}</span>
+                      <small>{{ user.username }}</small>
+                    </label>
+                    <section v-for="division in dept.divisions" :key="division.key" class="ke-perm-branch">
+                      <div class="ke-perm-row level-division">
+                        <button type="button" class="ke-perm-caret" title="展开/收起" @click="toggleCreatePermExpand(division.key)"><IconChevronDown :class="{ rotated: isCreatePermCollapsed(division.key) }" /></button>
+                        <input type="checkbox" v-indeterminate="permNodeIndeterminate(division)" :checked="permNodeChecked(division)" @change="togglePermNode(division, $event.target.checked)" />
+                        <span class="ke-perm-name">{{ division.name }}</span>
+                        <small class="ke-perm-count">{{ permSelectedCount(division) }}/{{ division.allUsers.length }}</small>
+                      </div>
+                      <div v-show="!isCreatePermCollapsed(division.key)" class="ke-perm-children">
+                        <label v-for="user in division.users" :key="user.user_id" class="ke-perm-user">
+                          <input type="checkbox" :checked="user.checked" @change="user.checked = $event.target.checked" />
+                          <span>{{ user.display_name }}</span>
+                          <small>{{ user.username }}</small>
+                        </label>
+                        <section v-for="team in division.teams" :key="team.key" class="ke-perm-branch">
+                          <div class="ke-perm-row level-team">
+                            <button type="button" class="ke-perm-caret" title="展开/收起" @click="toggleCreatePermExpand(team.key)"><IconChevronDown :class="{ rotated: isCreatePermCollapsed(team.key) }" /></button>
+                            <input type="checkbox" v-indeterminate="permNodeIndeterminate(team)" :checked="permNodeChecked(team)" @change="togglePermNode(team, $event.target.checked)" />
+                            <span class="ke-perm-name">{{ team.name }}</span>
+                            <small class="ke-perm-count">{{ permSelectedCount(team) }}/{{ team.allUsers.length }}</small>
+                          </div>
+                          <div v-show="!isCreatePermCollapsed(team.key)" class="ke-perm-children">
+                            <label v-for="user in team.users" :key="user.user_id" class="ke-perm-user">
+                              <input type="checkbox" :checked="user.checked" @change="user.checked = $event.target.checked" />
+                              <span>{{ user.display_name }}</span>
+                              <small>{{ user.username }}</small>
+                            </label>
+                          </div>
+                        </section>
+                      </div>
+                    </section>
+                  </div>
+                </section>
+                <p v-if="!createPermTree.length" class="ke-perm-empty">暂无可选人员，请先在人员与部门中导入账号。</p>
+              </div>
+              <p class="ke-permission-note">
+                <template v-if="createPermSelectedTotal > 0">创建后，该知识库仅勾选人员及所有者、空间管理员可见；未勾选人员（含本部门其他成员）不可见。</template>
+                <template v-else>未勾选任何人员，创建后仅所有者与空间管理员可见。</template>
+              </p>
+            </template>
+          </template>
+        </div>
         <footer><button type="button" class="ke-button quiet" @click="showBaseModal = false">取消</button><button class="ke-button primary" :disabled="saving">{{ saving ? '保存中…' : baseModalMode === 'create' ? '创建知识库' : '保存修改' }}</button></footer>
       </form>
     </div>
@@ -319,26 +401,74 @@
 
     <div v-if="showPermissionModal" class="ke-modal-mask" @click.self="showPermissionModal = false">
       <div class="ke-modal wide">
-        <header><div><h3>成员与权限</h3><p>邀请用户或部门，共同使用「{{ selectedBase ? selectedBase.name : '' }}」。</p></div><button aria-label="关闭" @click="showPermissionModal = false"><IconX /></button></header>
-        <div class="ke-subject-search">
-          <select v-model="subjectType" @change="searchSubjects"><option value="user">用户</option><option value="department">部门</option></select>
-          <label class="ke-search-box"><IconSearch /><input v-model="subjectQuery" placeholder="搜索用户名或部门" @input="scheduleSubjectSearch" /></label>
-        </div>
-        <div v-if="subjectResults.length" class="ke-subject-results">
-          <button v-for="subject in subjectResults" :key="`${subject.subject_type}-${subject.subject_id}`" @click="addPermission(subject)"><span class="ke-subject-avatar"><IconUserRound v-if="subject.subject_type === 'user'" /><IconBuilding2 v-else /></span><span><strong>{{ subject.label }}</strong><small>{{ subject.secondary || subject.subject_id }}</small></span><IconPlus /></button>
-        </div>
-        <div class="ke-permission-heading"><strong>已有成员</strong><span>{{ permissionItems.length }}</span></div>
-        <div class="ke-permission-list">
-          <div v-for="(item, index) in permissionItems" :key="`${item.subject_type}-${item.subject_id}`">
-            <span class="ke-subject-avatar"><IconUserRound v-if="item.subject_type === 'user'" /><IconBuilding2 v-else /></span>
-            <span class="ke-permission-copy"><strong>{{ item.label || item.subject_id }}</strong><small>{{ item.subject_type === 'user' ? '用户' : '部门' }}</small></span>
-            <select v-model="item.role" :disabled="!canEditPermissionRole(selectedBase, teamSpaceManagement)"><option value="viewer">查看者</option><option value="maintainer">维护者</option><option value="manager">管理员</option></select>
-            <button class="ke-icon-button danger-hover" title="移除" :disabled="!canRemovePermission(selectedBase, teamSpaceManagement, item)" @click="permissionItems.splice(index, 1)"><IconTrash2 /></button>
+        <header>
+          <div>
+            <h3>权限管理</h3>
+            <p>按部门 &gt; 处室 &gt; 团队勾选可见人员；勾选目录级即全选该级别下所有人员。保存后，仅勾选人员可查看「{{ selectedBase ? selectedBase.name : '' }}」。</p>
           </div>
-          <p v-if="!permissionItems.length">尚未添加授权成员</p>
-        </div>
-        <p v-if="selectedBase && selectedBase.visibility === 'team' && !teamSpaceManagement.is_admin" class="ke-permission-note">团队库的维护者和管理员角色由 admin 配置。</p>
-        <footer><button class="ke-button quiet" @click="showPermissionModal = false">取消</button><button class="ke-button primary" :disabled="saving" @click="savePermissions">{{ saving ? '保存中…' : '保存权限' }}</button></footer>
+          <button aria-label="关闭" @click="showPermissionModal = false"><IconX /></button>
+        </header>
+        <div v-if="permissionDirectoryLoading" class="ke-perm-loading"><span class="ke-spinner"></span><p>正在加载人员目录…</p></div>
+        <template v-else>
+          <div class="ke-perm-toolbar">
+            <span>已选 <strong>{{ permSelectedTotal }}</strong> / {{ permDirectoryTotal }} 人</span>
+            <span v-if="permissionRestricted">当前已限定：仅勾选人员可见</span>
+            <span v-else>当前：默认可见范围（公共空间对本部门成员可见）</span>
+          </div>
+          <div class="ke-perm-tree">
+            <section v-for="dept in permissionTree" :key="dept.key" class="ke-perm-branch">
+              <div class="ke-perm-row level-dept">
+                <button type="button" class="ke-perm-caret" title="展开/收起" @click="togglePermExpand(dept.key)"><IconChevronDown :class="{ rotated: isPermCollapsed(dept.key) }" /></button>
+                <input type="checkbox" v-indeterminate="permNodeIndeterminate(dept)" :checked="permNodeChecked(dept)" @change="togglePermNode(dept, $event.target.checked)" />
+                <span class="ke-perm-name">{{ dept.name }}</span>
+                <small class="ke-perm-count">{{ permSelectedCount(dept) }}/{{ dept.allUsers.length }}</small>
+              </div>
+              <div v-show="!isPermCollapsed(dept.key)" class="ke-perm-children">
+                <label v-for="user in dept.users" :key="user.user_id" class="ke-perm-user">
+                  <input type="checkbox" :checked="user.checked" @change="user.checked = $event.target.checked" />
+                  <span>{{ user.display_name }}</span>
+                  <small>{{ user.username }}</small>
+                </label>
+                <section v-for="division in dept.divisions" :key="division.key" class="ke-perm-branch">
+                  <div class="ke-perm-row level-division">
+                    <button type="button" class="ke-perm-caret" title="展开/收起" @click="togglePermExpand(division.key)"><IconChevronDown :class="{ rotated: isPermCollapsed(division.key) }" /></button>
+                    <input type="checkbox" v-indeterminate="permNodeIndeterminate(division)" :checked="permNodeChecked(division)" @change="togglePermNode(division, $event.target.checked)" />
+                    <span class="ke-perm-name">{{ division.name }}</span>
+                    <small class="ke-perm-count">{{ permSelectedCount(division) }}/{{ division.allUsers.length }}</small>
+                  </div>
+                  <div v-show="!isPermCollapsed(division.key)" class="ke-perm-children">
+                    <label v-for="user in division.users" :key="user.user_id" class="ke-perm-user">
+                      <input type="checkbox" :checked="user.checked" @change="user.checked = $event.target.checked" />
+                      <span>{{ user.display_name }}</span>
+                      <small>{{ user.username }}</small>
+                    </label>
+                    <section v-for="team in division.teams" :key="team.key" class="ke-perm-branch">
+                      <div class="ke-perm-row level-team">
+                        <button type="button" class="ke-perm-caret" title="展开/收起" @click="togglePermExpand(team.key)"><IconChevronDown :class="{ rotated: isPermCollapsed(team.key) }" /></button>
+                        <input type="checkbox" v-indeterminate="permNodeIndeterminate(team)" :checked="permNodeChecked(team)" @change="togglePermNode(team, $event.target.checked)" />
+                        <span class="ke-perm-name">{{ team.name }}</span>
+                        <small class="ke-perm-count">{{ permSelectedCount(team) }}/{{ team.allUsers.length }}</small>
+                      </div>
+                      <div v-show="!isPermCollapsed(team.key)" class="ke-perm-children">
+                        <label v-for="user in team.users" :key="user.user_id" class="ke-perm-user">
+                          <input type="checkbox" :checked="user.checked" @change="user.checked = $event.target.checked" />
+                          <span>{{ user.display_name }}</span>
+                          <small>{{ user.username }}</small>
+                        </label>
+                      </div>
+                    </section>
+                  </div>
+                </section>
+              </div>
+            </section>
+            <p v-if="!permissionTree.length" class="ke-perm-empty">暂无可选人员，请先在人员与部门中导入账号。</p>
+          </div>
+          <p class="ke-permission-note">
+            <template v-if="permSelectedTotal > 0">保存后，该知识库仅勾选人员及所有者、空间管理员可见；未勾选人员（含本部门其他成员）不可见。</template>
+            <template v-else>未勾选任何人员，保存后恢复默认可见范围（公共空间对本部门成员可见）。</template>
+          </p>
+        </template>
+        <footer><button class="ke-button quiet" @click="showPermissionModal = false">取消</button><button class="ke-button primary" :disabled="saving || permissionDirectoryLoading" @click="savePermissions">{{ saving ? '保存中…' : '保存权限' }}</button></footer>
       </div>
     </div>
 
@@ -363,89 +493,91 @@
       </div>
     </div>
 
-    <div v-if="showOperations" class="ke-drawer-mask" @click.self="showOperations = false">
-      <aside class="ke-drawer">
-        <header><div><h2>任务中心</h2><p>查看资料导入与解析进度</p></div><button aria-label="关闭" @click="showOperations = false"><IconX /></button></header>
-        <button class="ke-button quiet refresh" @click="loadOperations"><IconRefreshCw />刷新</button>
-        <div v-for="operation in operations" :key="operation.id" class="ke-operation">
-          <div><span class="ke-operation-icon"><IconFileClock /></span><div><strong>{{ operationLabel(operation.type) }}</strong><small>{{ formatDate(operation.updated_at) }}</small></div><span class="ke-status" :class="operation.status"><i></i>{{ operationStatusLabel(operation.status) }}</span></div>
-          <div class="ke-progress"><i :style="{ width: `${Math.round((operation.progress || 0) * 100)}%` }"></i></div>
-          <p v-if="operation.error">{{ operation.error.message }}</p>
-        </div>
-        <div v-if="!operations.length" class="ke-empty-small"><IconActivity /><span>暂无任务</span></div>
-      </aside>
-    </div>
-
-    <transition name="ke-toast"><div v-if="toast" class="ke-toast" :class="toast.type"><IconCircleCheck v-if="toast.type !== 'error'" /><IconCircleAlert v-else />{{ toast.message }}</div></transition>
+    <Transition name="ke-toast"><div v-if="toast" class="ke-toast" :class="toast.type"><IconCircleCheck v-if="toast.type !== 'error'" /><IconCircleAlert v-else />{{ toast.message }}</div></Transition>
   </section>
 </template>
 
 <script>
-import { IconActivity, IconArrowLeft, IconArrowUp, IconArrowUpRight, IconBookDashed, IconBookOpen, IconBuilding2, IconChevronDown, IconChevronRight, IconCircleAlert, IconCircleCheck, IconClock3, IconDatabase, IconDownload, IconEye, IconFileClock, IconFileText, IconFiles, IconFolder, IconFolderPlus, IconLayoutGrid, IconLibrary, IconList, IconListFilter, IconPanelRightClose, IconPencil, IconPlus, IconRefreshCw, IconSearch, IconSettings2, IconShieldCheck, IconSparkles, IconSquare, IconTrash2, IconTriangleAlert, IconUpload, IconUploadCloud, IconUserRound, IconUserRoundCog, IconUsers, IconX } from './icons.js'
-import DocxPreview from '../../components/DocxPreview.vue'
-import ExcelPreview from '../../components/ExcelPreview.vue'
-import FileIcon from '../../components/FileIcon.vue'
-import ChatMessage from '../../components/ChatMessage.vue'
-import { attachStream, cancelMessage, sendMessage } from '../../api/chat.js'
+import { computed, getCurrentInstance, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+// 图标统一走 ./icons.js（vue2 构建栈为 unplugin-icons raw 编译 + 函数式组件包装），
+// 组件用法 <IconX /> 与 frontend/ 直接导入 ~icons 的模板写法保持一致。
+import {
+  IconArrowLeft,
+  IconArrowUp,
+  IconArrowUpRight,
+  IconBookOpen,
+  IconChevronDown,
+  IconChevronRight,
+  IconCircleAlert,
+  IconCircleCheck,
+  IconClock3,
+  IconDatabase,
+  IconDownload,
+  IconEye,
+  IconFiles,
+  IconFileText,
+  IconFolder,
+  IconFolderPlus,
+  IconLayoutGrid,
+  IconLibrary,
+  IconList,
+  IconListFilter,
+  IconMessageSquarePlus,
+  IconPanelRightClose,
+  IconPause,
+  IconPencil,
+  IconPlay,
+  IconPlus,
+  IconRefreshCw,
+  IconSearch,
+  IconSettings2,
+  IconShieldCheck,
+  IconSparkles,
+  IconSquare,
+  IconTrash2,
+  IconTriangleAlert,
+  IconUpload,
+  IconUploadCloud,
+  IconUserRound,
+  IconUserRoundCog,
+  IconUsers,
+  IconX,
+} from './icons.js'
+import DocxPreview from '../../shared/preview/DocxPreview.vue'
+import ExcelPreview from '../../shared/preview/ExcelPreview.vue'
+import FileIcon from '../../shared/components/FileIcon.vue'
+import ChatMessage from '../chat/components/ChatMessage.vue'
+import KnowledgeAskFilter from './KnowledgeAskFilter.vue'
+import { attachStream, getChatHistory, sendMessage } from '../../api/chat.js'
+import { cancelMessage } from './api.js'
 import { processingElapsedText } from './utils/presentation.js'
 import {
-  canEditPermissionRole as canEditPermissionRoleUtil,
-  canRemovePermission as canRemovePermissionUtil,
   defaultTeamDepartmentId,
-  teamSpaceEmptyHint as teamSpaceEmptyHintUtil,
-  teamSpaceOptionSuffix as teamSpaceOptionSuffixUtil,
+  teamSpaceEmptyHint,
+  teamSpaceOptionSuffix,
 } from './utils/teamSpace.js'
 import {
   createOptimisticUploadDocument,
   mergeServerDocumentsWithOptimistic,
 } from './utils/uploadPresentation.js'
 import {
-  createFolder, createKnowledgeBase, deleteDocument, deleteFolder,
-  deleteKnowledgeBase, getDocumentBlob, getKnowledgeStatus,
-  listDocuments, listFolders, listKnowledgeBases, listKnowledgeOperations, listPermissions,
-  moveDocument, prepareKnowledgeChatSession, replacePermissions, retryDocument, searchPermissionSubjects, updateFolder,
+  createFolder, createKnowledgeBase, createKnowledgeChatRound, deleteDocument, deleteFolder,
+  deleteKnowledgeBase, ensureFolders, getDocumentBlob, getKnowledgeCapabilities, getKnowledgeStatus,
+  listCreationPermissionDirectory, listDocuments, listFolders, listKnowledgeBases, listKnowledgeOperations, listPermissionDirectory, listPermissions,
+  moveDocument, pauseDocument, prepareKnowledgeChatSession, replacePermissions, resumeDocument, retryDocument, updateFolder,
   updateKnowledgeBase, uploadDocument,
 } from './api.js'
 
-function clampLayout(value, min, max) {
-  return Math.min(max, Math.max(min, value))
-}
-
-// crypto.randomUUID() 仅在安全上下文（https / localhost）可用；明文 HTTP 局域网访问时缺失，
-// 会导致上传排队失败。这里补一个基于 getRandomValues / Math.random 的回退。
-function randomId() {
-  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-    return crypto.randomUUID()
-  }
-  if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') {
-    const bytes = crypto.getRandomValues(new Uint8Array(16))
-    bytes[6] = (bytes[6] & 0x0f) | 0x40
-    bytes[8] = (bytes[8] & 0x3f) | 0x80
-    const hex = Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('')
-    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
-  }
-  return `id-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
-}
-
-function storedLayoutNumber(key, fallback) {
-  const value = Number(localStorage.getItem(key))
-  return Number.isFinite(value) ? value : fallback
-}
-
 export default {
-  name: 'KnowledgeWorkbench',
   components: {
     ChatMessage,
     DocxPreview,
     ExcelPreview,
     FileIcon,
-    IconActivity,
     IconArrowLeft,
     IconArrowUp,
     IconArrowUpRight,
-    IconBookDashed,
     IconBookOpen,
-    IconBuilding2,
     IconChevronDown,
     IconChevronRight,
     IconCircleAlert,
@@ -454,7 +586,6 @@ export default {
     IconDatabase,
     IconDownload,
     IconEye,
-    IconFileClock,
     IconFiles,
     IconFileText,
     IconFolder,
@@ -463,8 +594,11 @@ export default {
     IconLibrary,
     IconList,
     IconListFilter,
+    IconMessageSquarePlus,
     IconPanelRightClose,
+    IconPause,
     IconPencil,
+    IconPlay,
     IconPlus,
     IconRefreshCw,
     IconSearch,
@@ -481,859 +615,1288 @@ export default {
     IconUsers,
     IconX,
   },
-  emits: ['close'],
-  data() {
-    return {
-      capabilities: { loaded: false, enabled: false },
-      teamSpaceManagement: { can_create: false, can_manage: false, department_id: null, is_admin: false, departments: [] },
-      health: null,
-      bases: [],
-      baseQuery: '',
-      selectedSpace: 'personal',
-      selectedBaseId: '',
-      folders: [],
-      selectedFolderId: '',
-      documents: [],
-      documentsPage: { total: 0 },
-      loadingDocuments: false,
-      search: '',
-      statusFilter: '',
-      viewMode: localStorage.getItem('ke-view-mode') || 'list',
-      dragging: false,
-      uploadQueue: [],
-      operations: [],
-      showOperations: false,
-      askOpen: true,
-      libraryWidth: clampLayout(storedLayoutNumber('easyagent.layout.knowledge.library', 252), 200, 420),
-      askWidth: clampLayout(storedLayoutNumber('easyagent.layout.knowledge.ask', 344), 280, 560),
-      question: '',
-      lastQuestion: '',
-      agentMessage: null,
-      asking: false,
-      askError: '',
-      showBaseModal: false,
-      baseModalMode: 'create',
-      showFolderModal: false,
-      showMoveModal: false,
-      movingDocument: null,
-      moveTargetFolderId: '',
-      showPermissionModal: false,
-      saving: false,
-      baseForm: { name: '', description: '', visibility: 'personal', department_id: '' },
-      folderForm: { id: '', name: '', parentId: '' },
-      confirmation: { open: false, title: '', description: '', confirmLabel: '确认删除', tone: 'danger' },
-      permissionItems: [],
-      subjectType: 'user',
-      subjectQuery: '',
-      subjectResults: [],
-      toast: null,
-      preview: { open: false, loading: false, name: '', kind: '', url: '', text: '', buffer: null },
-      statusUnauthorized: false,
-      activeKnowledgeResize: null,
-      askController: null,
-      askGeneration: 0,
-      activeChatSessionId: '',
-      streamDone: false,
-      blockOrder: 0,
-      pollTimer: null,
-      toastTimer: null,
-      searchTimer: null,
-      confirmResolver: null,
-      documentRequestSequence: 0,
+  emits: ['close', 'manage-personnel', 'chat-session-prepared'],
+  // Vue 2 模板无法直接绑定 checkbox 的 indeterminate 属性，用指令补齐
+  directives: {
+    indeterminate: {
+      bind(el, binding) { el.indeterminate = Boolean(binding.value) },
+      update(el, binding) { el.indeterminate = Boolean(binding.value) },
+    },
+  },
+  setup(_props, { emit }) {
+
+const spaces = [
+  { value: 'personal', label: '个人空间', description: '仅自己可见', icon: IconUserRound },
+  { value: 'team', label: '公共空间', description: '本部门成员可见', icon: IconUsers },
+]
+const questionSuggestions = ['概括这批资料的核心结论', '提取重要数据与时间点', '不同报告有哪些观点分歧？']
+// Vue 2.7 对 setup 返回的对象 ref 替换存在边界差异，固定对象身份更稳定。
+const capabilities = reactive({ loaded: false, enabled: false })
+const teamSpaceManagement = reactive({ can_create: false, can_manage: false, department_id: null, is_admin: false, departments: [] })
+const health = ref(null)
+const bases = ref([])
+const baseQuery = ref('')
+const selectedSpace = ref('personal')
+const selectedBaseId = ref('')
+const folders = ref([])
+const selectedFolderId = ref('')
+const documents = ref([])
+const documentsPage = ref({ total: 0 })
+const loadingDocuments = ref(false)
+const search = ref('')
+const statusFilter = ref('')
+// 状态筛选下拉：仅显示当前范围内文档实际存在的状态（非筛选态时从全量文档收集）
+const STATUS_META = [
+  ['pending', '待处理'], ['processing', '解析中'], ['cancel_requested', '取消中'],
+  ['cancelled', '已取消'], ['paused', '已暂停'], ['ready', '已就绪'],
+  ['failed', '失败'], ['deleting', '删除中'], ['unknown', '未知'],
+]
+const STATUS_LABELS = Object.fromEntries(STATUS_META)
+const availableStatuses = ref([])
+const statusOptions = computed(() => {
+  const current = statusFilter.value
+  const list = availableStatuses.value
+    .filter(s => STATUS_LABELS[s])
+    .sort((a, b) => STATUS_META.findIndex(m => m[0] === a) - STATUS_META.findIndex(m => m[0] === b))
+    .map(s => ({ value: s, label: STATUS_LABELS[s] }))
+  // 当前选中的状态即使已不在集合中（如最后一份失败文档状态流转）也保留，避免下拉显示空白
+  if (current && STATUS_LABELS[current] && !list.some(o => o.value === current)) {
+    list.push({ value: current, label: STATUS_LABELS[current] })
+  }
+  return list
+})
+const viewMode = ref(localStorage.getItem('ke-view-mode') || 'list')
+const dragging = ref(false)
+const operations = ref([])
+const askOpen = ref(true)
+// 窄容器（≤1100px）下问答面板是 absolute 浮层：拉宽时必须为文档列保留最小宽度，否则会盖住文档名。
+const ASK_FLOATING_BREAKPOINT = 1100, ASK_MIN_WIDTH = 280, ASK_MAX_WIDTH = 560, ASK_CONTENT_MIN_WIDE = 490, ASK_CONTENT_MIN_FLOATING = 320, LAYOUT_RESIZER_TOTAL = 12
+// 批量上传并发上限：每篇文档独立上传、独立返回，避免后一篇等前一篇传完
+const UPLOAD_CONCURRENCY = 3
+let askUserOpened = false, shellWidthObserver = null, shellElement = null
+function openAskPanel() { askUserOpened = true; askOpen.value = true }
+function closeAskPanel() { askUserOpened = false; askOpen.value = false }
+const maxAskWidth = () => { const w = shellElement?.clientWidth || 0, c = w <= ASK_FLOATING_BREAKPOINT ? ASK_CONTENT_MIN_FLOATING : ASK_CONTENT_MIN_WIDE; return !w ? ASK_MAX_WIDTH : Math.max(ASK_MIN_WIDTH, Math.min(ASK_MAX_WIDTH, w - libraryWidth.value - LAYOUT_RESIZER_TOTAL - c)) }
+const clampAskWidth = (value) => Math.min(maxAskWidth(), Math.max(ASK_MIN_WIDTH, value))
+function shrinkAskIntoShell() { const max = maxAskWidth(); if (askWidth.value > max) { askWidth.value = max; localStorage.setItem('easyagent.layout.knowledge.ask', String(max)) } }
+function watchShellWidth() {
+  const shell = getCurrentInstance()?.proxy?.$el
+  if (!shell || typeof ResizeObserver === 'undefined') return
+  shellElement = shell
+  if (shell.clientWidth <= ASK_FLOATING_BREAKPOINT) askOpen.value = false
+  shrinkAskIntoShell()
+  shellWidthObserver = new ResizeObserver(() => {
+    if (shell.clientWidth <= ASK_FLOATING_BREAKPOINT && askOpen.value && !askUserOpened) askOpen.value = false
+    shrinkAskIntoShell()
+  })
+  shellWidthObserver.observe(shell)
+}
+function stopShellWidthWatch() {
+  if (shellWidthObserver) { shellWidthObserver.disconnect(); shellWidthObserver = null }
+}
+const clampLayout = (value, min, max) => Math.min(max, Math.max(min, value))
+const storedLayoutNumber = (key, fallback) => { const value = Number(localStorage.getItem(key)); return Number.isFinite(value) ? value : fallback }
+const libraryWidth = ref(clampLayout(storedLayoutNumber('easyagent.layout.knowledge.library', 252), 200, 420))
+const askWidth = ref(clampLayout(storedLayoutNumber('easyagent.layout.knowledge.ask', 344), 280, 560))
+const knowledgeLayoutStyle = computed(() => ({
+  '--ke-library-width': `${libraryWidth.value}px`,
+  '--ke-ask-width': `${askWidth.value}px`,
+}))
+let activeKnowledgeResize = null
+
+function finishKnowledgeResize() {
+  if (!activeKnowledgeResize) return
+  localStorage.setItem('easyagent.layout.knowledge.library', String(libraryWidth.value))
+  localStorage.setItem('easyagent.layout.knowledge.ask', String(askWidth.value))
+  activeKnowledgeResize = null
+  document.body.classList.remove('ke-layout-resizing')
+  window.removeEventListener('pointermove', handleKnowledgeResize)
+  window.removeEventListener('pointerup', finishKnowledgeResize)
+  window.removeEventListener('pointercancel', finishKnowledgeResize)
+}
+
+function handleKnowledgeResize(event) {
+  if (!activeKnowledgeResize) return
+  const delta = event.clientX - activeKnowledgeResize.startX
+  if (activeKnowledgeResize.kind === 'library') {
+    libraryWidth.value = clampLayout(activeKnowledgeResize.startWidth + delta, 200, 420); shrinkAskIntoShell()
+  } else {
+    askWidth.value = clampAskWidth(activeKnowledgeResize.startWidth - delta)
+  }
+}
+
+function startKnowledgeResize(kind, event) {
+  if (event.pointerType === 'mouse' && event.button !== 0) return
+  activeKnowledgeResize = {
+    kind,
+    startX: event.clientX,
+    startWidth: kind === 'library' ? libraryWidth.value : askWidth.value,
+  }
+  document.body.classList.add('ke-layout-resizing')
+  window.addEventListener('pointermove', handleKnowledgeResize)
+  window.addEventListener('pointerup', finishKnowledgeResize)
+  window.addEventListener('pointercancel', finishKnowledgeResize)
+  event.preventDefault()
+}
+
+function resizeKnowledgeWithKeyboard(kind, event) {
+  if (!['ArrowLeft', 'ArrowRight'].includes(event.key)) return
+  const direction = event.key === 'ArrowRight' ? 1 : -1
+  if (kind === 'library') {
+    libraryWidth.value = clampLayout(libraryWidth.value + direction * 16, 200, 420); shrinkAskIntoShell()
+    localStorage.setItem('easyagent.layout.knowledge.library', String(libraryWidth.value))
+  } else {
+    askWidth.value = clampAskWidth(askWidth.value - direction * 16)
+    localStorage.setItem('easyagent.layout.knowledge.ask', String(askWidth.value))
+  }
+  event.preventDefault()
+}
+const question = ref('')
+const lastQuestion = ref('')
+const askMetadataFilter = ref(null) // 知识库问答元数据硬过滤（由 KnowledgeAskFilter 产出；null = 全范围）
+const agentMessage = ref(null)
+// 面板内已完成的历史问答：[{question, message}]，多轮问答均可回看（含各自的知识引用）
+const askHistory = ref([])
+// 已拉取过问答历史的知识库 ID（含历史为空的库），避免重复请求；切换知识库时重置
+const askHistoryBaseId = ref('')
+let askHistoryFetching = false
+// 「开启新对话」重置计数：作废在途的历史拉取，防止已删除的旧历史复活
+let askHistoryResetCount = 0
+const askBody = ref(null)
+const asking = ref(false)
+const askError = ref('')
+let askController = null
+let askGeneration = 0
+let activeChatSessionId = ''
+let streamDone = false
+let blockOrder = 0
+const showBaseModal = ref(false)
+const baseModalMode = ref('create')
+const showFolderModal = ref(false)
+const showMoveModal = ref(false)
+const movingDocument = ref(null)
+const moveTargetFolderId = ref('')
+const showPermissionModal = ref(false)
+const saving = ref(false)
+const baseForm = reactive({ name: '', description: '', visibility: 'personal', department_id: '' })
+const folderForm = reactive({ id: '', name: '', parentId: '' })
+const confirmation = reactive({ open: false, title: '', description: '', confirmLabel: '确认删除', tone: 'danger' })
+// 权限管理：人员目录（含 checked 勾选态）、三级树、展开态与受限标记
+const permissionDirectory = ref([])
+const permissionTree = ref([])
+const permissionDirectoryLoading = ref(false)
+const permissionRestricted = ref(false)
+const permissionCollapsed = ref({})
+let permissionLoadSeq = 0
+// 创建知识库时的可见人员配置（与权限管理同款三级树，独立状态避免串扰）
+const createPermDirectory = ref([])
+const createPermTree = ref([])
+const createPermLoading = ref(false)
+const createPermRestricted = ref(false)
+const createPermCollapsed = ref({})
+let createPermLoadSeq = 0
+const toast = ref(null)
+const preview = reactive({ open: false, loading: false, name: '', kind: '', url: '', text: '', buffer: null })
+let pollTimer = null
+let toastTimer = null
+let confirmResolver = null
+let documentRequestSequence = 0
+
+const selectedBase = computed(() => bases.value.find(item => item.id === selectedBaseId.value) || null)
+const currentFolders = computed(() => folders.value.filter(item => (item.parent_id || '') === selectedFolderId.value))
+const currentFolder = computed(() => folders.value.find(item => item.id === selectedFolderId.value) || null)
+const folderBreadcrumbs = computed(() => {
+  const chain = []
+  const visited = new Set()
+  let cursor = currentFolder.value
+  while (cursor && !visited.has(cursor.id)) {
+    visited.add(cursor.id)
+    chain.unshift(cursor)
+    cursor = folders.value.find(item => item.id === cursor.parent_id)
+  }
+  return chain
+})
+const folderOptions = computed(() => folders.value.map(folder => ({ ...folder, path: folderPath(folder) })).sort((a, b) => a.path.localeCompare(b.path, 'zh-CN')))
+const healthClass = computed(() => health.value?.ready ? 'ready' : 'degraded')
+const healthLabel = computed(() => health.value?.ready ? '知识服务正常' : '知识服务待就绪')
+const hasActiveWork = computed(() => documents.value.some(
+  item => !item.optimistic && ['pending', 'processing', 'cancel_requested', 'deleting'].includes(item.status),
+))
+const permSelectedTotal = computed(() => permissionDirectory.value.filter(user => user.checked).length)
+const permDirectoryTotal = computed(() => permissionDirectory.value.length)
+const createPermSelectedTotal = computed(() => createPermDirectory.value.filter(user => user.checked).length)
+const createPermDirectoryTotal = computed(() => createPermDirectory.value.length)
+
+watch(hasActiveWork, active => active ? startPolling() : stopPolling())
+watch(viewMode, value => localStorage.setItem('ke-view-mode', value))
+function can(action) { return Boolean(selectedBase.value?.allowed_actions?.includes(action)) }
+function canCreateInSpace(space) { return space !== 'team' || teamSpaceManagement.can_create }
+function baseCount(space) { return bases.value.filter(item => item.visibility === space).length }
+function basesForSpace(space) {
+  const keyword = baseQuery.value.trim().toLowerCase()
+  return bases.value.filter(item => item.visibility === space && (!keyword || item.name.toLowerCase().includes(keyword) || (item.description || '').toLowerCase().includes(keyword)))
+}
+function notify(message, type = 'success') { toast.value = { message, type }; clearTimeout(toastTimer); toastTimer = setTimeout(() => { toast.value = null }, 3000) }
+function handleError(error) { console.error(error); notify(error?.message || '操作失败', 'error') }
+
+async function initialize() {
+  try {
+    Object.assign(capabilities, await getKnowledgeCapabilities(), { loaded: true })
+    if (!capabilities.enabled) return
+    await Promise.all([loadBases(), loadHealth(), loadOperations()])
+  } catch (error) { capabilities.loaded = true; handleError(error) }
+}
+async function loadHealth() { try { health.value = await getKnowledgeStatus() } catch (_) { health.value = { ready: false } } }
+async function loadBases(preferredId = '') {
+  const response = await listKnowledgeBases({ pageSize: 100 })
+  bases.value = response.items || []
+  Object.assign(
+    teamSpaceManagement,
+    { can_create: false, can_manage: false, department_id: null, is_admin: false, departments: [] },
+    response.team_space_management || {}
+  )
+  const target = preferredId || selectedBaseId.value
+  if (target && bases.value.some(item => item.id === target)) await selectBase(target)
+  else if (basesForSpace(selectedSpace.value).length) await selectBase(basesForSpace(selectedSpace.value)[0].id)
+  else { selectedBaseId.value = ''; folders.value = []; documents.value = [] }
+}
+async function refreshBaseCounts() {
+  // 仅刷新左侧列表数据（document_count 等），不触发 selectBase 的选中/视图副作用
+  try {
+    const response = await listKnowledgeBases({ pageSize: 100 })
+    bases.value = response.items || []
+    Object.assign(
+      teamSpaceManagement,
+      { can_create: false, can_manage: false, department_id: null, is_admin: false, departments: [] },
+      response.team_space_management || {}
+    )
+  } catch (_) { /* 数量刷新失败不影响主流程 */ }
+}
+async function selectSpace(space) {
+  selectedSpace.value = space
+  if (selectedBase.value?.visibility === space) return
+  const first = basesForSpace(space)[0]
+  if (first) await selectBase(first.id)
+  else { selectedBaseId.value = ''; selectedFolderId.value = ''; folders.value = []; documents.value = [] }
+}
+async function selectBase(baseId) {
+  if (asking.value && selectedBaseId.value !== baseId) stopQuestion('switch')
+  if (selectedBaseId.value !== baseId) { documents.value = []; folders.value = [] }
+  selectedBaseId.value = baseId; selectedFolderId.value = ''; agentMessage.value = null; askError.value = ''; askHistory.value = []; askHistoryBaseId.value = ''; lastQuestion.value = ''
+  await Promise.all([loadFolders(), loadDocuments({ initial: true }), loadStatusOptions()])
+  await loadOperations()
+}
+// 状态筛选选项：整个知识库实际存在的文档状态（不随当前文件夹/搜索窄化）
+async function loadStatusOptions() {
+  const baseId = selectedBaseId.value
+  if (!baseId) { availableStatuses.value = []; return }
+  try {
+    const response = await listDocuments(baseId, { pageSize: 100 })
+    if (selectedBaseId.value === baseId) {
+      availableStatuses.value = [...new Set((response.items || []).map(d => d.status).filter(Boolean))]
     }
-  },
-  computed: {
-    spaces() {
-      return [
-        { value: 'personal', label: '个人空间', description: '仅自己可见', icon: IconUserRound },
-        { value: 'team', label: '团队空间', description: '本部门默认可见', icon: IconUsers },
-        { value: 'shared', label: '共享空间', description: '按成员或部门授权', icon: IconLibrary },
-      ]
-    },
-    questionSuggestions() {
-      return ['概括这批资料的核心结论', '提取重要数据与时间点', '不同报告有哪些观点分歧？']
-    },
-    knowledgeLayoutStyle() {
-      return {
-        '--ke-library-width': `${this.libraryWidth}px`,
-        '--ke-ask-width': `${this.askWidth}px`,
+  } catch { /* 静默失败：下拉保留现有选项 */ }
+}
+async function selectFolder(folderId) { selectedFolderId.value = folderId; await loadDocuments() }
+async function goParentFolder() { await selectFolder(currentFolder.value?.parent_id || '') }
+async function loadFolders() {
+  const baseId = selectedBaseId.value
+  if (!baseId) return
+  try {
+    const response = await listFolders(baseId)
+    if (selectedBaseId.value === baseId) folders.value = response.items || []
+  } catch (error) { handleError(error) }
+}
+async function loadDocuments({ initial = false } = {}) {
+  const baseId = selectedBaseId.value
+  const folderId = selectedFolderId.value
+  if (!baseId) return
+  const requestSequence = ++documentRequestSequence
+  loadingDocuments.value = initial || documents.value.length === 0
+  try {
+    const query = search.value.trim()
+    const response = await listDocuments(baseId, { pageSize: 100, folderId, directOnly: !query, status: statusFilter.value, q: query })
+    if (requestSequence !== documentRequestSequence || selectedBaseId.value !== baseId || selectedFolderId.value !== folderId) return
+    const serverDocuments = response.items || []
+    documents.value = mergeServerDocumentsWithOptimistic(
+      serverDocuments,
+      documents.value,
+      {
+        baseId,
+        folderId,
+        preserve: !query && !statusFilter.value,
       }
-    },
-    disabledMessage() {
-      if (this.statusUnauthorized) return '当前账号无权访问知识库，请联系管理员确认权限。'
-      return '知识服务尚未启用，主聊天仍可正常使用。请由管理员完成知识服务配置后再试。'
-    },
-    selectedBase() {
-      return this.bases.find(item => item.id === this.selectedBaseId) || null
-    },
-    currentFolders() {
-      return this.folders.filter(item => (item.parent_id || '') === this.selectedFolderId)
-    },
-    currentFolder() {
-      return this.folders.find(item => item.id === this.selectedFolderId) || null
-    },
-    visibleUploadQueue() {
-      return this.uploadQueue.filter(item => item.baseId === this.selectedBaseId && item.state !== 'ready')
-    },
-    folderBreadcrumbs() {
-      const chain = []
-      const visited = new Set()
-      let cursor = this.currentFolder
-      while (cursor && !visited.has(cursor.id)) {
-        visited.add(cursor.id)
-        chain.unshift(cursor)
-        cursor = this.folders.find(item => item.id === cursor.parent_id)
-      }
-      return chain
-    },
-    folderOptions() {
-      return this.folders
-        .map(folder => ({ ...folder, path: this.folderPath(folder) }))
-        .sort((a, b) => a.path.localeCompare(b.path, 'zh-CN'))
-    },
-    healthClass() {
-      return this.health && this.health.ready ? 'ready' : 'degraded'
-    },
-    healthLabel() {
-      return this.health && this.health.ready ? '知识服务正常' : '知识服务待就绪'
-    },
-    hasActiveWork() {
-      return this.documents.some(item => !item.optimistic && ['pending', 'processing', 'deleting'].includes(item.status))
-    },
-    hasCurrentUploadRequest() {
-      return this.uploadQueue.some(item => item.baseId === this.selectedBaseId && ['uploading', 'saving'].includes(item.state))
-    },
-  },
-  watch: {
-    hasActiveWork(active) {
-      active ? this.startPolling() : this.stopPolling()
-    },
-    viewMode(value) {
-      localStorage.setItem('ke-view-mode', value)
-    },
-  },
-  mounted() {
-    this.initialize()
-  },
-  beforeDestroy() {
-    this.stopQuestion('unmount')
-    this.finishKnowledgeResize()
-    this.stopPolling()
-    this.closePreview()
-    clearTimeout(this.toastTimer)
-    clearTimeout(this.searchTimer)
-    this.resolveConfirmation(false)
-  },
-  methods: {
-    // ── 布局拖拽 ────────────────────────────────────────────────────
-    finishKnowledgeResize() {
-      if (!this.activeKnowledgeResize) return
-      localStorage.setItem('easyagent.layout.knowledge.library', String(this.libraryWidth))
-      localStorage.setItem('easyagent.layout.knowledge.ask', String(this.askWidth))
-      this.activeKnowledgeResize = null
-      document.body.classList.remove('ke-layout-resizing')
-      window.removeEventListener('pointermove', this.handleKnowledgeResize)
-      window.removeEventListener('pointerup', this.finishKnowledgeResize)
-      window.removeEventListener('pointercancel', this.finishKnowledgeResize)
-    },
-    handleKnowledgeResize(event) {
-      if (!this.activeKnowledgeResize) return
-      const delta = event.clientX - this.activeKnowledgeResize.startX
-      if (this.activeKnowledgeResize.kind === 'library') {
-        this.libraryWidth = clampLayout(this.activeKnowledgeResize.startWidth + delta, 200, 420)
-      } else {
-        this.askWidth = clampLayout(this.activeKnowledgeResize.startWidth - delta, 280, 560)
-      }
-    },
-    startKnowledgeResize(kind, event) {
-      if (event.pointerType === 'mouse' && event.button !== 0) return
-      this.activeKnowledgeResize = {
-        kind,
-        startX: event.clientX,
-        startWidth: kind === 'library' ? this.libraryWidth : this.askWidth,
-      }
-      document.body.classList.add('ke-layout-resizing')
-      window.addEventListener('pointermove', this.handleKnowledgeResize)
-      window.addEventListener('pointerup', this.finishKnowledgeResize)
-      window.addEventListener('pointercancel', this.finishKnowledgeResize)
-      event.preventDefault()
-    },
-    resizeKnowledgeWithKeyboard(kind, event) {
-      if (!['ArrowLeft', 'ArrowRight'].includes(event.key)) return
-      const direction = event.key === 'ArrowRight' ? 1 : -1
-      if (kind === 'library') {
-        this.libraryWidth = clampLayout(this.libraryWidth + direction * 16, 200, 420)
-        localStorage.setItem('easyagent.layout.knowledge.library', String(this.libraryWidth))
-      } else {
-        this.askWidth = clampLayout(this.askWidth - direction * 16, 280, 560)
-        localStorage.setItem('easyagent.layout.knowledge.ask', String(this.askWidth))
-      }
-      event.preventDefault()
-    },
+    )
+    documentsPage.value = response.page || { total: serverDocuments.length }
+    await loadFolders()
+  } catch (error) { handleError(error) } finally {
+    if (requestSequence === documentRequestSequence) loadingDocuments.value = false
+  }
+}
+function clearFilters() { search.value = ''; statusFilter.value = ''; loadDocuments() }
 
-    // ── 展示辅助 ────────────────────────────────────────────────────
-    can(action) {
-      return Boolean(this.selectedBase && this.selectedBase.allowed_actions && this.selectedBase.allowed_actions.includes(action))
-    },
-    canCreateInSpace(space) {
-      return space !== 'team' || this.teamSpaceManagement.can_create
-    },
-    baseCount(space) {
-      return this.bases.filter(item => item.visibility === space).length
-    },
-    basesForSpace(space) {
-      const keyword = this.baseQuery.trim().toLowerCase()
-      return this.bases.filter(item => item.visibility === space && (!keyword || item.name.toLowerCase().includes(keyword) || (item.description || '').toLowerCase().includes(keyword)))
-    },
-    canEditPermissionRole(base, management) {
-      return canEditPermissionRoleUtil(base, management)
-    },
-    canRemovePermission(base, management, permission) {
-      return canRemovePermissionUtil(base, management, permission)
-    },
-    teamSpaceEmptyHint(management) {
-      return teamSpaceEmptyHintUtil(management)
-    },
-    teamSpaceOptionSuffix(management) {
-      return teamSpaceOptionSuffixUtil(management)
-    },
-    roleLabel(role) {
-      return ({ viewer: '查看者', maintainer: '维护者', manager: '管理员' })[role] || role
-    },
-    spaceLabel(space) {
-      return ({ personal: '个人空间', team: '团队空间', shared: '共享空间' })[space] || space
-    },
-    statusLabel(status) {
-      return ({ pending: '待处理', processing: '解析中', ready: '已就绪', failed: '失败', cancelled: '已取消', deleting: '删除中', unknown: '未知' })[status] || status
-    },
-    operationStatusLabel(status) {
-      return ({ accepted: '已受理', running: '进行中', succeeded: '成功', failed: '失败', partial_failed: '部分失败' })[status] || status
-    },
-    operationLabel(type) {
-      return ({ dataset_create: '创建知识库', dataset_delete: '删除知识库', document_upload: '上传文档', document_parse: '解析文档', document_delete: '删除文档' })[type] || type
-    },
-    uploadStateLabel(item) {
-      return item.state === 'failed' ? item.error || '失败' : item.state === 'ready' ? '解析完成' : item.state === 'processing' ? '等待解析' : item.state === 'saving' ? '正在保存原文' : `${item.progress}%`
-    },
-    formatSize(size = 0) {
-      if (size < 1024) return `${size} B`
-      if (size < 1048576) return `${(size / 1024).toFixed(1)} KB`
-      return `${(size / 1048576).toFixed(1)} MB`
-    },
-    formatDate(value) {
-      return value ? new Date(value).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '-'
-    },
-    folderPath(folder) {
-      const parts = [folder.name]
-      const visited = new Set([folder.id])
-      let parent = this.folders.find(item => item.id === folder.parent_id)
-      while (parent && !visited.has(parent.id)) {
-        visited.add(parent.id)
-        parts.unshift(parent.name)
-        parent = this.folders.find(item => item.id === parent.parent_id)
+function openCreateBase() {
+  const visibility = canCreateInSpace(selectedSpace.value) ? selectedSpace.value : 'personal'
+  Object.assign(baseForm, {
+    name: '',
+    description: '',
+    visibility,
+    department_id: defaultTeamDepartmentId(teamSpaceManagement),
+  })
+  resetCreatePermissions()
+  if (visibility === 'team') ensureCreatePermDirectory()
+  baseModalMode.value = 'create'
+  showBaseModal.value = true
+}
+function editBase() { Object.assign(baseForm, { name: selectedBase.value.name, description: selectedBase.value.description || '', visibility: selectedBase.value.visibility, department_id: '' }); baseModalMode.value = 'edit'; showBaseModal.value = true }
+async function saveBase() {
+  saving.value = true
+  try {
+    if (baseModalMode.value === 'create') {
+      const payload = {
+        name: baseForm.name.trim(),
+        description: baseForm.description || '',
+        visibility: baseForm.visibility,
       }
-      return parts.join(' / ')
-    },
-    documentStatusText(doc) {
-      if (doc.status !== 'processing') return this.statusLabel(doc.status)
-      const progress = Number(doc.progress || 0)
-      if (progress < 0.02) return '正在读取原文'
-      if (progress < 0.85) return `正在建立索引 ${Math.max(1, Math.round(progress * 100))}%`
-      return '正在完成索引'
-    },
-    processingElapsed(doc) {
-      return processingElapsedText(doc, this.operations)
-    },
-    notify(message, type = 'success') {
-      this.toast = { message, type }
-      clearTimeout(this.toastTimer)
-      this.toastTimer = setTimeout(() => { this.toast = null }, 3000)
-    },
-    handleError(error) {
-      console.error(error)
-      this.notify((error && error.message) || '操作失败', 'error')
-    },
-
-    // ── 初始化与加载 ────────────────────────────────────────────────
-    async initialize() {
-      try {
-        const status = await getKnowledgeStatus()
-        this.health = status || null
-        Object.assign(this.capabilities, { loaded: true, enabled: Boolean(status && status.enabled) })
-        if (!this.capabilities.enabled) return
-        await Promise.all([this.loadBases(), this.loadHealth(), this.loadOperations()])
-      } catch (error) {
-        this.capabilities.loaded = true
-        const httpStatus = error && error.response ? error.response.status : 0
-        if (httpStatus === 401 || httpStatus === 403) {
-          this.statusUnauthorized = true
-          return
+      if (baseForm.visibility === 'team') {
+        payload.department_id = baseForm.department_id || null
+        // 创建即配置可见性：开启名单或勾选了人员即进入受限模式（仅勾选人员可见）
+        if (createPermRestricted.value || createPermSelectedTotal.value > 0) {
+          payload.restrict_access = true
+          payload.permission_user_ids = createPermDirectory.value
+            .filter(user => user.checked)
+            .map(user => user.user_id)
         }
-        this.handleError(error)
       }
-    },
-    async loadHealth() {
-      try { this.health = await getKnowledgeStatus() } catch (_) { this.health = { ready: false } }
-    },
-    async loadBases(preferredId = '') {
-      const response = await listKnowledgeBases({ pageSize: 100 })
-      this.bases = response.items || []
-      Object.assign(
-        this.teamSpaceManagement,
-        { can_create: false, can_manage: false, department_id: null, is_admin: false, departments: [] },
-        response.team_space_management || {}
-      )
-      const target = preferredId || this.selectedBaseId
-      if (target && this.bases.some(item => item.id === target)) await this.selectBase(target)
-      else if (this.basesForSpace(this.selectedSpace).length) await this.selectBase(this.basesForSpace(this.selectedSpace)[0].id)
-      else { this.selectedBaseId = ''; this.folders = []; this.documents = [] }
-    },
-    async selectSpace(space) {
-      this.selectedSpace = space
-      if (this.selectedBase && this.selectedBase.visibility === space) return
-      const first = this.basesForSpace(space)[0]
-      if (first) await this.selectBase(first.id)
-      else { this.selectedBaseId = ''; this.selectedFolderId = ''; this.folders = []; this.documents = [] }
-    },
-    async selectBase(baseId) {
-      if (this.asking && this.selectedBaseId !== baseId) this.stopQuestion('switch')
-      if (this.selectedBaseId !== baseId) { this.documents = []; this.folders = [] }
-      this.selectedBaseId = baseId
-      this.selectedFolderId = ''
-      this.agentMessage = null
-      this.askError = ''
-      await Promise.all([this.loadFolders(), this.loadDocuments({ initial: true })])
-      await this.loadOperations()
-    },
-    async selectFolder(folderId) {
-      this.selectedFolderId = folderId
-      await this.loadDocuments()
-    },
-    async goParentFolder() {
-      await this.selectFolder(this.currentFolder ? (this.currentFolder.parent_id || '') : '')
-    },
-    async loadFolders() {
-      const baseId = this.selectedBaseId
-      if (!baseId) return
-      try {
-        const response = await listFolders(baseId)
-        if (this.selectedBaseId === baseId) this.folders = response.items || []
-      } catch (error) { this.handleError(error) }
-    },
-    async loadDocuments({ initial = false } = {}) {
-      const baseId = this.selectedBaseId
-      const folderId = this.selectedFolderId
-      if (!baseId) return
-      const requestSequence = ++this.documentRequestSequence
-      this.loadingDocuments = initial || this.documents.length === 0
-      try {
-        const query = this.search.trim()
-        const response = await listDocuments(baseId, { pageSize: 100, folderId, directOnly: !query, status: this.statusFilter, q: query })
-        if (requestSequence !== this.documentRequestSequence || this.selectedBaseId !== baseId || this.selectedFolderId !== folderId) return
-        const serverDocuments = response.items || []
-        this.documents = mergeServerDocumentsWithOptimistic(
-          serverDocuments,
-          this.documents,
-          { baseId, folderId, preserve: !query && !this.statusFilter }
-        )
-        this.documentsPage = response.page || { total: serverDocuments.length }
-        this.syncUploadQueue()
-        await this.loadFolders()
-      } catch (error) { this.handleError(error) } finally {
-        if (requestSequence === this.documentRequestSequence) this.loadingDocuments = false
-      }
-    },
-    clearFilters() {
-      this.search = ''
-      this.statusFilter = ''
-      this.loadDocuments()
-    },
-    async loadOperations() {
-      try { this.operations = (await listKnowledgeOperations({ pageSize: 100 })).items || [] } catch (error) { this.handleError(error) }
-    },
+      const created = await createKnowledgeBase(payload)
+      selectedSpace.value = created.visibility
+      await loadBases(created.id)
+      notify('知识库已创建')
+    } else {
+      await updateKnowledgeBase(selectedBaseId.value, { name: baseForm.name.trim(), description: baseForm.description || '' })
+      await loadBases(selectedBaseId.value)
+      notify('知识库已更新')
+    }
+    showBaseModal.value = false
+  } catch (error) { handleError(error) } finally { saving.value = false }
+}
+async function removeBase() {
+  const confirmed = await askConfirmation({ title: '删除这个知识库？', description: `「${selectedBase.value.name}」及其中全部资料将被删除，此操作无法撤销。`, confirmLabel: '删除知识库' })
+  if (!confirmed) return
+  try { await deleteKnowledgeBase(selectedBaseId.value); selectedBaseId.value = ''; await loadBases(); notify('知识库已删除') } catch (error) { handleError(error) }
+}
 
-    // ── 知识库 CRUD ─────────────────────────────────────────────────
-    openCreateBase() {
-      const visibility = this.canCreateInSpace(this.selectedSpace) ? this.selectedSpace : 'personal'
-      Object.assign(this.baseForm, {
-        name: '',
-        description: '',
-        visibility,
-        department_id: defaultTeamDepartmentId(this.teamSpaceManagement),
+function addFolder() { Object.assign(folderForm, { id: '', name: '', parentId: selectedFolderId.value }); showFolderModal.value = true }
+function renameCurrentFolder() { const folder = currentFolder.value; if (!folder) return; Object.assign(folderForm, { id: folder.id, name: folder.name, parentId: folder.parent_id || '' }); showFolderModal.value = true }
+async function saveFolder() {
+  if (!folderForm.name.trim()) return
+  saving.value = true
+  try {
+    if (folderForm.id) { await updateFolder(folderForm.id, folderForm.name.trim()); notify('文件夹已重命名') }
+    else { await createFolder(selectedBaseId.value, folderForm.name.trim(), folderForm.parentId); notify('文件夹已创建') }
+    showFolderModal.value = false
+    await loadFolders()
+  } catch (error) { handleError(error) } finally { saving.value = false }
+}
+async function removeFolder() {
+  const folder = folders.value.find(item => item.id === selectedFolderId.value)
+  if (!folder || !await askConfirmation({ title: '删除这个文件夹？', description: `仅空文件夹「${folder.name}」可以被删除。`, confirmLabel: '删除文件夹' })) return
+  try { const parentId = folder.parent_id || ''; await deleteFolder(folder.id); selectedFolderId.value = parentId; await Promise.all([loadFolders(), loadDocuments()]); notify('文件夹已删除') } catch (error) { handleError(error) }
+}
+
+async function handleFiles(event) { const files = Array.from(event.target.files || []); event.target.value = ''; await uploadFiles(files.map(file => ({ file, relativePath: '' }))) }
+async function handleFolderFiles(event) {
+  const files = Array.from(event.target.files || [])
+  event.target.value = ''
+  const picked = files.filter(isFolderImportableFile)
+  const skipped = files.length - picked.length
+  if (skipped > 0) notify(`已跳过 ${skipped} 个隐藏或临时文件`)
+  if (!picked.length) return
+  await uploadFiles(picked.map(file => ({ file, relativePath: file.webkitRelativePath || '' })))
+}
+function isFolderImportableFile(file) {
+  const relativePath = file.webkitRelativePath || ''
+  const segments = relativePath.split('/').filter(Boolean)
+  if (segments.some(part => part.startsWith('.') || part === '__MACOSX' || part === 'node_modules')) return false
+  if (file.name.startsWith('~$') || file.name === 'Thumbs.db' || file.name === 'desktop.ini') return false
+  return true
+}
+function isHiddenDirSegment(segment) { return segment.startsWith('.') || segment === '__MACOSX' || segment === 'node_modules' }
+function isJunkFileName(name) { return name.startsWith('.') || name.startsWith('~$') || name === 'Thumbs.db' || name === 'desktop.ini' }
+async function collectDroppedEntry(entry, parentPath, result) {
+  // 递归展开拖入的目录树：文件带完整相对路径，目录全量收集（含空目录）
+  if (entry.isFile) {
+    const dirSegments = parentPath ? parentPath.split('/').filter(Boolean) : []
+    if (dirSegments.some(isHiddenDirSegment) || isJunkFileName(entry.name)) { result.skipped += 1; return }
+    const file = await new Promise((resolve, reject) => entry.file(resolve, reject))
+    result.files.push({ file, relativePath: parentPath + entry.name })
+    let cursor = parentPath
+    while (cursor) {
+      result.nonEmpty.add(cursor.replace(/\/+$/, ''))
+      const slash = cursor.slice(0, -1).lastIndexOf('/')
+      cursor = slash >= 0 ? cursor.slice(0, slash + 1) : ''
+    }
+    return
+  }
+  if (isHiddenDirSegment(entry.name)) return
+  const dirPath = parentPath + entry.name
+  result.dirs.add(dirPath)
+  const reader = entry.createReader()
+  // readEntries 每批最多返回 100 条，循环读到空批为止
+  while (true) {
+    const batch = await new Promise((resolve, reject) => reader.readEntries(resolve, reject))
+    if (!batch.length) break
+    for (const child of batch) await collectDroppedEntry(child, `${dirPath}/`, result)
+  }
+}
+async function uploadDroppedEntries(entries) {
+  const result = { files: [], dirs: new Set(), nonEmpty: new Set(), skipped: 0 }
+  for (const entry of entries) await collectDroppedEntry(entry, '', result)
+  if (result.skipped > 0) notify(`已跳过 ${result.skipped} 个隐藏或临时文件`)
+  // 空目录先补齐（非空目录随文件上传自动创建），把整个文件夹结构搬进知识库
+  const emptyDirs = [...result.dirs].filter(dir => !result.nonEmpty.has(dir))
+  if (emptyDirs.length) {
+    try { await ensureFolders(selectedBaseId.value, { folderId: selectedFolderId.value, paths: emptyDirs }) }
+    catch (error) { handleError(error) }
+  }
+  if (result.files.length) await uploadFiles(result.files)
+  else if (emptyDirs.length) await loadFolders()
+}
+async function handleDrop(event) {
+  dragging.value = false
+  if (!selectedBase.value || !can('upload')) return
+  // entry 必须在事件同步阶段取出（DataTransfer 会在 await 后失效）
+  const entries = Array.from(event.dataTransfer?.items || [])
+    .map(item => (item.webkitGetAsEntry ? item.webkitGetAsEntry() : null))
+    .filter(Boolean)
+  if (entries.length) { await uploadDroppedEntries(entries); return }
+  await uploadFiles(Array.from(event.dataTransfer?.files || []).map(file => ({ file, relativePath: '' })))
+}
+// crypto.randomUUID 仅安全上下文（HTTPS/localhost）可用；
+// 局域网 HTTP 访问时回退 Math.random 生成（仅作前端队列 ID，无安全要求）
+function genQueueId() {
+  if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID()
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+    const r = (Math.random() * 16) | 0
+    return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16)
+  })
+}
+// 重复文档预检：直接上传（不带相对路径）的文件与目标目录已有文档按文件名比对，
+// 存在同名时弹确认框——确认则全部上传，取消则跳过重复文件仅传新文件。
+// 文件夹导入的内容落入子目录，不在此检测；预检接口失败不阻塞上传。
+async function confirmDuplicateUploads(items, baseId, folderId) {
+  const directFiles = items.filter(it => it.file && !it.relativePath)
+  if (!directFiles.length) return items
+  const existingNames = new Set()
+  try {
+    let page = 1
+    for (;;) {
+      const response = await listDocuments(baseId, { folderId, directOnly: true, page, pageSize: 100 })
+      const list = response.items || []
+      for (const doc of list) existingNames.add(doc.name)
+      const total = Number((response.page || {}).total || 0)
+      if (!list.length || list.length < 100 || existingNames.size >= total) break
+      page += 1
+    }
+  } catch (_) {
+    return items
+  }
+  const duplicates = directFiles.filter(it => existingNames.has(it.file.name))
+  if (!duplicates.length) return items
+  const shown = duplicates.slice(0, 5).map(it => `「${it.file.name}」`).join('、')
+  const suffix = duplicates.length > 5 ? ` 等 ${duplicates.length} 个文件` : ''
+  const confirmed = await askConfirmation({
+    title: '存在同名文档',
+    description: `当前目录已有 ${duplicates.length} 个同名文件：${shown}${suffix}。继续上传会生成重复文档。`,
+    confirmLabel: '仍然上传',
+  })
+  if (confirmed) return items
+  const remaining = items.filter(it => it.relativePath || !existingNames.has(it.file.name))
+  if (!remaining.length) {
+    notify('所选文件均已存在，已取消上传')
+    return []
+  }
+  notify(`已跳过 ${duplicates.length} 个重复文件，继续上传其余 ${remaining.length} 个`)
+  return remaining
+}
+async function uploadFiles(items) {
+  const uploadBaseId = selectedBaseId.value
+  const uploadFolderId = selectedFolderId.value
+  if (!uploadBaseId) return
+  const uploadItems = await confirmDuplicateUploads(items, uploadBaseId, uploadFolderId)
+  if (!uploadItems.length) return
+  // 每篇文档独立维护乐观行：上传完成即替换为服务端行，入库状态由轮询分别刷新
+  const pendingUploads = uploadItems.map(({ file, relativePath }) => {
+    const optimisticId = `upload-${genQueueId()}`
+    if (selectedBaseId.value === uploadBaseId && selectedFolderId.value === uploadFolderId && !search.value.trim() && !statusFilter.value) {
+      documents.value = [createOptimisticUploadDocument(file, { optimisticId, baseId: uploadBaseId, folderId: uploadFolderId }), ...documents.value]
+      documentsPage.value = { ...documentsPage.value, total: Number(documentsPage.value.total || 0) + 1 }
+    }
+    return { file, relativePath, optimisticId }
+  })
+  const uploadOne = async ({ file, relativePath, optimisticId }) => {
+    try {
+      const result = await uploadDocument(uploadBaseId, file, { folderId: uploadFolderId, relativePath })
+      const optimisticIndex = documents.value.findIndex(doc => doc.id === optimisticId)
+      if (optimisticIndex >= 0 && (result.document.folder_id || '') === (uploadFolderId || '')) documents.value.splice(optimisticIndex, 1, { ...result.document, optimistic: false })
+      else if (optimisticIndex >= 0) {
+        // 文档按相对路径落入了子文件夹，当前视图不再展示
+        documents.value.splice(optimisticIndex, 1)
+        documentsPage.value = { ...documentsPage.value, total: Math.max(0, Number(documentsPage.value.total || 1) - 1) }
+      }
+    } catch (error) {
+      const optimisticIndex = documents.value.findIndex(doc => doc.id === optimisticId)
+      if (optimisticIndex >= 0) {
+        documents.value.splice(optimisticIndex, 1)
+        documentsPage.value = { ...documentsPage.value, total: Math.max(0, Number(documentsPage.value.total || 1) - 1) }
+      }
+      handleError(error)
+    }
+  }
+  const queue = [...pendingUploads]
+  await Promise.all(
+    Array.from({ length: Math.min(UPLOAD_CONCURRENCY, queue.length) }, async () => {
+      while (queue.length) await uploadOne(queue.shift())
+    })
+  )
+  if (selectedBaseId.value === uploadBaseId) await Promise.all([loadDocuments(), loadFolders(), loadStatusOptions()])
+  await Promise.all([loadOperations(), refreshBaseCounts()])
+}
+async function moveDoc(doc, folderId) { try { await moveDocument(doc.id, folderId); await Promise.all([loadDocuments(), loadFolders()]); notify('文档已移动') } catch (error) { handleError(error) } }
+function openMoveDocument(doc) { movingDocument.value = doc; moveTargetFolderId.value = doc.folder_id || ''; showMoveModal.value = true }
+async function confirmMoveDocument() {
+  if (!movingDocument.value) return
+  saving.value = true
+  try { await moveDoc(movingDocument.value, moveTargetFolderId.value); showMoveModal.value = false }
+  finally { saving.value = false }
+}
+async function retryDoc(doc) { try { await retryDocument(doc.id); await Promise.all([loadDocuments(), loadOperations()]); notify('已重新提交解析') } catch (error) { handleError(error) } }
+async function pauseDoc(doc) { try { await pauseDocument(doc.id); await Promise.all([loadDocuments(), loadOperations()]); notify('已暂停解析任务，可随时恢复') } catch (error) { handleError(error) } }
+async function resumeDoc(doc) { try { await resumeDocument(doc.id); await Promise.all([loadDocuments(), loadOperations()]); notify('已恢复解析任务，重新排队中') } catch (error) { handleError(error) } }
+async function removeDocument(doc) {
+  if (!await askConfirmation({ title: '删除这篇资料？', description: `「${doc.name}」将从知识库中永久移除。`, confirmLabel: '删除资料' })) return
+  try { await deleteDocument(doc.id); await Promise.all([loadDocuments(), loadOperations(), refreshBaseCounts(), loadStatusOptions()]); notify('文档已删除') } catch (error) { handleError(error) } }
+
+function previewable(doc) { return !doc.optimistic && (/^(application\/pdf|text\/|image\/)/.test(doc.content_type || '') || /\.(md|txt|docx?|xlsx?|pptx)$/i.test(doc.name || '')) }
+async function previewDocument(doc) {
+  // .doc 旧版格式已下线在线预览（原 doc->docx 转换链路移除），点击提示不支持
+  if (/\.doc$/i.test(doc.name || '')) { notify('暂不支持 .doc 格式预览，请下载后查看', 'error'); return }
+  closePreview()
+  Object.assign(preview, { open: true, loading: true, name: doc.name, kind: '', url: '', text: '' })
+  try {
+    const result = await getDocumentBlob(doc.id, 'inline')
+    if (result instanceof Error) throw result
+    const { blob } = result
+    if ((doc.content_type || '').startsWith('text/') || /\.(md|txt)$/i.test(doc.name)) { preview.kind = 'text'; preview.text = await blob.text() }
+    else {
+      preview.url = URL.createObjectURL(blob)
+      if (/\.xlsx?$/i.test(doc.name)) preview.kind = 'excel'
+      else
+      preview.kind = /\.docx$/i.test(doc.name) ? 'docx' : /\.pptx$/i.test(doc.name) ? 'pptx' : (doc.content_type || '').startsWith('image/') ? 'image' : 'frame'
+    }
+  } catch (error) { closePreview(); handleError(error) }
+  finally { preview.loading = false }
+}
+function closePreview() { if (preview.url) URL.revokeObjectURL(preview.url); Object.assign(preview, { open: false, loading: false, name: '', kind: '', url: '', text: '', buffer: null }) }
+async function downloadDocument(doc) {
+  try {
+    notify('正在准备下载…')
+    const { blob } = await getDocumentBlob(doc.id, 'attachment')
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = doc.name
+    link.style.display = 'none'
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    setTimeout(() => URL.revokeObjectURL(url), 30000)
+    notify('已开始下载')
+  } catch (error) { handleError(error) }
+}
+
+// ---------------- 权限管理（部门 > 处室 > 团队 三级勾选树） ----------------
+
+// 将人员目录按 部门 > 处室 > 团队 组装为三级树；缺级人员挂在上一级直下。
+// 节点持有 allUsers（子树全部人员），勾选态存在人员对象上，保证响应式。
+function buildPermissionTree(users) {
+  const sortByName = (a, b) => a.name.localeCompare(b.name, 'zh-CN')
+  const deptMap = new Map()
+  for (const user of users) {
+    const deptId = String(user.department_id || '').trim()
+    const deptKey = `dept:${deptId || '__none__'}`
+    if (!deptMap.has(deptKey)) {
+      deptMap.set(deptKey, {
+        key: deptKey,
+        name: String(user.department_name || '').trim() || deptId || '未分配部门',
+        users: [],
+        divisions: [],
+        divisionMap: new Map(),
+        allUsers: [],
       })
-      this.baseModalMode = 'create'
-      this.showBaseModal = true
-    },
-    editBase() {
-      Object.assign(this.baseForm, {
-        name: this.selectedBase.name,
-        description: this.selectedBase.description || '',
-        visibility: this.selectedBase.visibility,
-        department_id: '',
+    }
+    const dept = deptMap.get(deptKey)
+    dept.allUsers.push(user)
+    const divisionName = String(user.division_name || '').trim()
+    if (!divisionName) {
+      dept.users.push(user)
+      continue
+    }
+    const divisionKey = `${deptKey}|division:${divisionName}`
+    if (!dept.divisionMap.has(divisionKey)) {
+      dept.divisionMap.set(divisionKey, { key: divisionKey, name: divisionName, users: [], teams: [], teamMap: new Map(), allUsers: [] })
+      dept.divisions.push(dept.divisionMap.get(divisionKey))
+    }
+    const division = dept.divisionMap.get(divisionKey)
+    division.allUsers.push(user)
+    const teamName = String(user.team_name || '').trim()
+    if (!teamName) {
+      division.users.push(user)
+      continue
+    }
+    const teamKey = `${divisionKey}|team:${teamName}`
+    if (!division.teamMap.has(teamKey)) {
+      division.teamMap.set(teamKey, { key: teamKey, name: teamName, users: [], allUsers: [] })
+      division.teams.push(division.teamMap.get(teamKey))
+    }
+    const team = division.teamMap.get(teamKey)
+    team.users.push(user)
+    team.allUsers.push(user)
+  }
+  const tree = [...deptMap.values()].sort(sortByName)
+  for (const dept of tree) {
+    dept.divisions.sort(sortByName)
+    for (const division of dept.divisions) {
+      division.teams.sort(sortByName)
+      delete division.teamMap
+    }
+    delete dept.divisionMap
+  }
+  return tree
+}
+
+function permSelectedCount(node) {
+  return node.allUsers.reduce((count, user) => count + (user.checked ? 1 : 0), 0)
+}
+function permNodeChecked(node) {
+  return node.allUsers.length > 0 && node.allUsers.every(user => user.checked)
+}
+function permNodeIndeterminate(node) {
+  const selected = permSelectedCount(node)
+  return selected > 0 && selected < node.allUsers.length
+}
+function togglePermNode(node, checked) {
+  node.allUsers.forEach(user => { user.checked = checked })
+}
+function isPermCollapsed(key) { return Boolean(permissionCollapsed.value[key]) }
+function togglePermExpand(key) {
+  const next = { ...permissionCollapsed.value }
+  if (next[key]) delete next[key]
+  else next[key] = true
+  permissionCollapsed.value = next
+}
+
+async function openPermissions() {
+  const seq = ++permissionLoadSeq
+  showPermissionModal.value = true
+  permissionDirectoryLoading.value = true
+  permissionCollapsed.value = {}
+  try {
+    const baseId = selectedBaseId.value
+    const [permissionResponse, directoryResponse] = await Promise.all([
+      listPermissions(baseId),
+      listPermissionDirectory(baseId),
+    ])
+    if (seq !== permissionLoadSeq) return
+    const checkedIds = new Set(
+      (permissionResponse.items || [])
+        .filter(item => item.subject_type === 'user')
+        .map(item => item.subject_id),
+    )
+    permissionRestricted.value = Boolean(permissionResponse.restrict_access)
+    const users = (directoryResponse.items || []).map(item => ({
+      ...item,
+      checked: checkedIds.has(item.user_id),
+    }))
+    permissionDirectory.value = users
+    permissionTree.value = buildPermissionTree(users)
+  } catch (error) {
+    if (seq !== permissionLoadSeq) return
+    handleError(error)
+    permissionDirectory.value = []
+    permissionTree.value = []
+  } finally {
+    if (seq === permissionLoadSeq) permissionDirectoryLoading.value = false
+  }
+}
+
+async function savePermissions() {
+  saving.value = true
+  try {
+    const userIds = permissionDirectory.value
+      .filter(user => user.checked)
+      .map(user => user.user_id)
+    await replacePermissions(selectedBaseId.value, userIds)
+    permissionRestricted.value = userIds.length > 0
+    showPermissionModal.value = false
+    notify('权限已保存')
+  } catch (error) { handleError(error) } finally { saving.value = false }
+}
+
+// ---------------- 创建知识库：可见人员配置（复用权限管理三级树） ----------------
+
+function isCreatePermCollapsed(key) { return Boolean(createPermCollapsed.value[key]) }
+function toggleCreatePermExpand(key) {
+  const next = { ...createPermCollapsed.value }
+  if (next[key]) delete next[key]
+  else next[key] = true
+  createPermCollapsed.value = next
+}
+
+function resetCreatePermissions() {
+  createPermLoadSeq += 1  // 在途请求作废
+  createPermDirectory.value = []
+  createPermTree.value = []
+  createPermRestricted.value = false
+  createPermCollapsed.value = {}
+  createPermLoading.value = false
+}
+
+async function ensureCreatePermDirectory() {
+  if (createPermDirectory.value.length || createPermLoading.value) return
+  const seq = ++createPermLoadSeq
+  createPermLoading.value = true
+  try {
+    const response = await listCreationPermissionDirectory()
+    if (seq !== createPermLoadSeq) return
+    const users = (response.items || []).map(item => ({ ...item, checked: false }))
+    createPermDirectory.value = users
+    createPermTree.value = buildPermissionTree(users)
+  } catch (error) {
+    if (seq !== createPermLoadSeq) return
+    handleError(error)
+    createPermDirectory.value = []
+    createPermTree.value = []
+  } finally {
+    if (seq === createPermLoadSeq) createPermLoading.value = false
+  }
+}
+
+// 创建弹窗切到公共空间时懒加载人员目录（个人空间无权限配置）
+watch(() => [baseModalMode.value, baseForm.visibility], ([mode, visibility]) => {
+  if (mode === 'create' && visibility === 'team') ensureCreatePermDirectory()
+})
+
+function touchAgentMessage() {
+  if (!agentMessage.value) return
+  agentMessage.value = {
+    ...agentMessage.value,
+    blocks: [...(agentMessage.value.blocks || [])],
+  }
+}
+
+function findAgentBlock(type, event) {
+  if (!agentMessage.value) return null
+  const step = event.step || 0
+  if (type === 'tool_call') {
+    const callId = event.tool_call_id || `tool-${event.tool_name || ''}`
+    return agentMessage.value.blocks.find(
+      block => block.type === type && (block.id === callId || block.tool_call_id === callId)
+    ) || null
+  }
+  return agentMessage.value.blocks.find(block => block.type === type && (block.step || 0) === step) || null
+}
+
+function ensureAgentBlock(type, event) {
+  let block = findAgentBlock(type, event)
+  if (block) return block
+  blockOrder += 1
+  block = { type, content: '', step: event.step || 0, order: blockOrder }
+  if (type === 'tool_call') {
+    const callId = event.tool_call_id || `tool-${event.tool_name || ''}`
+    Object.assign(block, {
+      id: callId,
+      tool_call_id: callId,
+      tool_name: event.tool_name || '',
+      arguments: event.arguments || {},
+      result: '',
+      success: true,
+    })
+  }
+  agentMessage.value.blocks.push(block)
+  return block
+}
+
+function applyAgentEvent(event, baseId, generation) {
+  if (
+    selectedBaseId.value !== baseId ||
+    generation !== askGeneration ||
+    !agentMessage.value
+  ) return
+
+  if (event.type === 'knowledge_evidence') {
+    agentMessage.value.knowledge_evidence = Array.isArray(event.evidence) ? event.evidence : []
+    agentMessage.value.knowledge_warnings = Array.isArray(event.warnings) ? event.warnings : []
+  } else if (event.type === 'thinking_start') {
+    ensureAgentBlock('thinking', event)
+  } else if (event.type === 'thinking') {
+    const block = ensureAgentBlock('thinking', event)
+    block.content = event.full_content || `${block.content || ''}${event.content || ''}`
+    agentMessage.value.thinking = agentMessage.value.blocks
+      .filter(item => item.type === 'thinking')
+      .map(item => item.content || '')
+      .join('')
+  } else if (event.type === 'thinking_end') {
+    const block = ensureAgentBlock('thinking', event)
+    block.duration = event.duration || 0
+  } else if (event.type === 'content_start') {
+    ensureAgentBlock('content', event)
+  } else if (event.type === 'content' && event.content) {
+    const block = ensureAgentBlock('content', event)
+    block.content = `${block.content || ''}${event.content}`
+    agentMessage.value.content = `${agentMessage.value.content || ''}${event.content}`
+  } else if (event.type === 'tool_call') {
+    const block = ensureAgentBlock('tool_call', event)
+    block.arguments = event.arguments || block.arguments || {}
+  } else if (event.type === 'tool_result') {
+    const block = ensureAgentBlock('tool_call', event)
+    block.result = typeof event.result === 'string' ? event.result : JSON.stringify(event.result || '')
+    block.success = event.success !== false
+    block.duration = event.duration || 0
+  } else if (event.type === 'done') {
+    streamDone = true
+    agentMessage.value.loading = false
+    if (event.content) agentMessage.value.content = event.content
+    for (const block of agentMessage.value.blocks) {
+      if (block.type === 'thinking' && block.duration == null) block.duration = 0
+    }
+  } else if (event.type === 'error') {
+    streamDone = true
+    agentMessage.value.loading = false
+    // 后端正常下发字符串；若拿到对象（如嵌套 error/message），提取可读文案，
+    // 避免模板渲染出 "[object Object]"
+    const content = event.content
+    agentMessage.value.error = typeof content === 'string'
+      ? (content || '处理失败')
+      : (content?.message || content?.error || '处理失败')
+    askError.value = agentMessage.value.error
+  }
+  touchAgentMessage()
+}
+
+async function stopQuestion(reason = 'user') {
+  const controller = askController
+  const sessionId = activeChatSessionId
+  if (!controller && !asking.value) return
+  askGeneration += 1
+  askController = null
+  activeChatSessionId = ''
+  asking.value = false
+  controller?.abort()
+  if (agentMessage.value) {
+    agentMessage.value = { ...agentMessage.value, loading: false }
+  }
+  if (sessionId) {
+    try { await cancelMessage(sessionId) } catch (_) { /* 中止以本地状态为准 */ }
+  }
+  if (reason === 'user') {
+    notify('已停止回答')
+  }
+}
+
+function retryQuestion() {
+  if (!lastQuestion.value || asking.value) return
+  question.value = lastQuestion.value
+  submitQuestion()
+}
+
+// 开启新对话：旧会话保留为历史（可在主界面会话列表回看），面板切换到全新会话
+async function startNewChat() {
+  const baseId = selectedBaseId.value
+  if (!baseId || asking.value) return
+  // 历史仍在拉取时界面暂时为空，但服务端可能已有记录——放行走 peek 判定；
+  // 若在此返回，拉取完成后旧历史"复活"，表现为"点了新对话却仍有历史记录"
+  if (!askHistory.value.length && !agentMessage.value && !askHistoryFetching) return
+  const confirmed = await askConfirmation({
+    title: '开启新对话？',
+    description: '当前问答将保留为历史会话（可在主界面会话列表回看），之后提问将从全新对话开始。',
+    confirmLabel: '开启新对话',
+  })
+  if (!confirmed) return
+  // 先 peek 只读探测：有记录才轮换新会话；404 说明本就没有记录
+  try {
+    await prepareKnowledgeChatSession(baseId, { peek: true })
+    try {
+      await createKnowledgeChatRound(baseId)
+      // 服务端已轮换出新会话，通知外层刷新会话列表（旧会话在列表中保留为历史）
+      emit('chat-session-prepared')
+    } catch (error) {
+      handleError(error)
+      return
+    }
+  } catch (error) {
+    // peek 404 = 本就没有问答记录，仅清空本地即可；其他错误必须提示并中止，
+    // 否则服务端仍是旧会话，下次提问会继续在旧会话里进行
+    if (error?.response?.status !== 404) { handleError(error); return }
+  }
+  // 作废在途的历史拉取：其响应可能在轮换之后到达，会把旧历史写回界面
+  askHistoryResetCount += 1
+  askHistory.value = []
+  askHistoryBaseId.value = ''
+  agentMessage.value = null
+  askError.value = ''
+  lastQuestion.value = ''
+  question.value = ''
+  notify('已开启新对话')
+}
+// 面板问答区滚动到底部（发送新问题/载入历史后定位到最新一轮）
+function scrollAskToBottom() {
+  const el = askBody.value
+  if (el && el.scrollHeight > el.clientHeight) el.scrollTop = el.scrollHeight
+}
+
+// 把服务端会话消息解析为面板问答条目（问题气泡 + 含知识引用的回答）
+function parseAskHistory(messages) {
+  const entries = []
+  let pendingQuestion = ''
+  for (const item of (messages || [])) {
+    const content = String(item?.content || '').trim()
+    if (!content) continue
+    if (item.role === 'user') { pendingQuestion = content; continue }
+    if (item.role === 'assistant') {
+      entries.push({
+        question: pendingQuestion,
+        message: {
+          ...item,
+          id: item.id || `ke-history-${entries.length}`,
+          role: 'assistant',
+          blocks: Array.isArray(item.blocks) ? item.blocks : [],
+          knowledge_evidence: Array.isArray(item.knowledge_evidence) ? item.knowledge_evidence : [],
+          knowledge_warnings: Array.isArray(item.knowledge_warnings) ? item.knowledge_warnings : [],
+          loading: false,
+        },
       })
-      this.baseModalMode = 'edit'
-      this.showBaseModal = true
-    },
-    async saveBase() {
-      this.saving = true
-      try {
-        if (this.baseModalMode === 'create') {
-          const payload = {
-            name: this.baseForm.name.trim(),
-            description: this.baseForm.description || '',
-            visibility: this.baseForm.visibility,
-          }
-          if (this.baseForm.visibility === 'team') payload.department_id = this.baseForm.department_id || null
-          const created = await createKnowledgeBase(payload)
-          this.selectedSpace = created.visibility
-          await this.loadBases(created.id)
-          this.notify('知识库已创建')
-        } else {
-          await updateKnowledgeBase(this.selectedBaseId, { name: this.baseForm.name.trim(), description: this.baseForm.description || '' })
-          await this.loadBases(this.selectedBaseId)
-          this.notify('知识库已更新')
-        }
-        this.showBaseModal = false
-      } catch (error) { this.handleError(error) } finally { this.saving = false }
-    },
-    async removeBase() {
-      const confirmed = await this.askConfirmation({ title: '删除这个知识库？', description: `「${this.selectedBase.name}」及其中全部资料将被删除，此操作无法撤销。`, confirmLabel: '删除知识库' })
-      if (!confirmed) return
-      try {
-        await deleteKnowledgeBase(this.selectedBaseId)
-        this.selectedBaseId = ''
-        await this.loadBases()
-        this.notify('知识库已删除')
-      } catch (error) { this.handleError(error) }
-    },
+      pendingQuestion = ''
+    }
+  }
+  return entries
+}
 
-    // ── 文件夹 ──────────────────────────────────────────────────────
-    addFolder() {
-      Object.assign(this.folderForm, { id: '', name: '', parentId: this.selectedFolderId })
-      this.showFolderModal = true
-    },
-    renameCurrentFolder() {
-      const folder = this.currentFolder
-      if (!folder) return
-      Object.assign(this.folderForm, { id: folder.id, name: folder.name, parentId: folder.parent_id || '' })
-      this.showFolderModal = true
-    },
-    async saveFolder() {
-      if (!this.folderForm.name.trim()) return
-      this.saving = true
-      try {
-        if (this.folderForm.id) { await updateFolder(this.folderForm.id, this.folderForm.name.trim()); this.notify('文件夹已重命名') }
-        else { await createFolder(this.selectedBaseId, this.folderForm.name.trim(), this.folderForm.parentId); this.notify('文件夹已创建') }
-        this.showFolderModal = false
-        await this.loadFolders()
-      } catch (error) { this.handleError(error) } finally { this.saving = false }
-    },
-    async removeFolder() {
-      const folder = this.folders.find(item => item.id === this.selectedFolderId)
-      if (!folder || !await this.askConfirmation({ title: '删除这个文件夹？', description: `仅空文件夹「${folder.name}」可以被删除。`, confirmLabel: '删除文件夹' })) return
-      try {
-        const parentId = folder.parent_id || ''
-        await deleteFolder(folder.id)
-        this.selectedFolderId = parentId
-        await Promise.all([this.loadFolders(), this.loadDocuments()])
-        this.notify('文件夹已删除')
-      } catch (error) { this.handleError(error) }
-    },
+// 拉取指定知识库的问答历史（打开面板/切换库时预取；首次提问时复用兜底）。
+// preparedSessionId 由调用方传入时可跳过会话准备。预取走 peek 只读探测：
+// 会话不存在返回 404 且不创建记录——点击知识库不应自动生成
+// 「[知识库问答]」会话，只有真正提问才落记录。滚动必须等历史渲染完成
+// （nextTick），否则 scrollTop 停留在赋值前的旧高度，表现为视口停在最早的对话。
+async function loadAskHistory(baseId, preparedSessionId = '') {
+  if (!baseId || askHistoryFetching || askHistoryBaseId.value === baseId) return
+  askHistoryFetching = true
+  const resetCount = askHistoryResetCount
+  try {
+    let sessionId = preparedSessionId
+    if (!sessionId) {
+      const prepared = await prepareKnowledgeChatSession(baseId, { peek: true })
+      if (selectedBaseId.value !== baseId) return
+      sessionId = prepared.session_id
+    }
+    activeChatSessionId = sessionId
+    const history = await getChatHistory(sessionId)
+    if (selectedBaseId.value !== baseId) return
+    // 期间用户已「开启新对话」：丢弃本次响应，防止已删除的旧历史复活
+    if (resetCount !== askHistoryResetCount) return
+    askHistory.value = parseAskHistory(history.messages)
+    // 仅会话确实存在时标记已拉取；peek 404 时不标记，下次打开重新探测
+    askHistoryBaseId.value = baseId
+    nextTick(() => scrollAskToBottom())
+  } catch { /* 历史拉取失败不阻塞提问，面板欢迎页兜底 */ }
+  finally { askHistoryFetching = false }
+}
 
-    // ── 上传 ────────────────────────────────────────────────────────
-    async handleFiles(event) {
-      const files = Array.from(event.target.files || [])
-      event.target.value = ''
-      await this.uploadFiles(files)
-    },
-    async handleDrop(event) {
-      this.dragging = false
-      if (!this.selectedBase || !this.can('upload')) return
-      await this.uploadFiles(Array.from((event.dataTransfer && event.dataTransfer.files) || []))
-    },
-    async uploadFiles(files) {
-      const uploadBaseId = this.selectedBaseId
-      const uploadFolderId = this.selectedFolderId
-      if (!uploadBaseId) return
-      const pendingUploads = files.map(file => {
-        const queueId = randomId()
-        const item = { id: queueId, optimisticId: `upload-${queueId}`, baseId: uploadBaseId, folderId: uploadFolderId, documentId: '', name: file.name, progress: 0, state: 'uploading', error: '' }
-        this.uploadQueue.push(item)
-        if (this.selectedBaseId === uploadBaseId && this.selectedFolderId === uploadFolderId && !this.search.trim() && !this.statusFilter) {
-          this.documents = [createOptimisticUploadDocument(file, item), ...this.documents]
-          this.documentsPage = { ...this.documentsPage, total: Number(this.documentsPage.total || 0) + 1 }
-        }
-        return { file, item }
-      })
-      for (const { file, item } of pendingUploads) {
-        try {
-          const result = await uploadDocument(uploadBaseId, file, {
-            folderId: uploadFolderId,
-            onProgress: value => {
-              if (value >= 100) { item.progress = 95; item.state = 'saving' }
-              else item.progress = Math.min(value, 95)
-            },
-          })
-          item.documentId = result.document.id
-          item.progress = 100
-          item.state = 'processing'
-          const optimisticIndex = this.documents.findIndex(doc => doc.id === item.optimisticId)
-          if (optimisticIndex >= 0) this.documents.splice(optimisticIndex, 1, { ...result.document, optimistic: false })
-        } catch (error) {
-          const optimisticIndex = this.documents.findIndex(doc => doc.id === item.optimisticId)
-          if (optimisticIndex >= 0) {
-            this.documents.splice(optimisticIndex, 1)
-            this.documentsPage = { ...this.documentsPage, total: Math.max(0, Number(this.documentsPage.total || 1) - 1) }
-          }
-          item.state = 'failed'
-          item.error = error.message
-          this.handleError(error)
-        }
-      }
-      if (this.selectedBaseId === uploadBaseId) await this.loadDocuments()
-      await this.loadOperations()
-    },
-    syncUploadQueue() {
-      for (const item of this.uploadQueue) {
-        if (item.baseId !== this.selectedBaseId) continue
-        const document = this.documents.find(doc => doc.id === item.documentId)
-        if (!document) continue
-        if (document.status === 'ready') { item.state = 'ready'; item.progress = 100 }
-        else if (document.status === 'failed') { item.state = 'failed'; item.error = (document.error && document.error.message) || '解析失败' }
-      }
-      this.uploadQueue = this.uploadQueue.filter(item => item.state !== 'ready')
-    },
+// 打开问答面板或切换知识库时预取历史，重新进入工作台也能直接回看此前的问答
+watch(() => [askOpen.value, selectedBaseId.value], () => {
+  if (askOpen.value && selectedBaseId.value) loadAskHistory(selectedBaseId.value)
+})
 
-    // ── 文档操作 ────────────────────────────────────────────────────
-    async moveDoc(doc, folderId) {
-      try {
-        await moveDocument(doc.id, folderId)
-        await Promise.all([this.loadDocuments(), this.loadFolders()])
-        this.notify('文档已移动')
-      } catch (error) { this.handleError(error) }
-    },
-    openMoveDocument(doc) {
-      this.movingDocument = doc
-      this.moveTargetFolderId = doc.folder_id || ''
-      this.showMoveModal = true
-    },
-    async confirmMoveDocument() {
-      if (!this.movingDocument) return
-      this.saving = true
-      try {
-        await this.moveDoc(this.movingDocument, this.moveTargetFolderId)
-        this.showMoveModal = false
-      } finally { this.saving = false }
-    },
-    async retryDoc(doc) {
-      try {
-        await retryDocument(doc.id)
-        await Promise.all([this.loadDocuments(), this.loadOperations()])
-        this.notify('已重新提交解析')
-      } catch (error) { this.handleError(error) }
-    },
-    async removeDocument(doc) {
-      if (!await this.askConfirmation({ title: '删除这篇资料？', description: `「${doc.name}」将从知识库中永久移除。`, confirmLabel: '删除资料' })) return
-      try {
-        await deleteDocument(doc.id)
-        await Promise.all([this.loadDocuments(), this.loadOperations()])
-        this.notify('文档已删除')
-      } catch (error) { this.handleError(error) }
-    },
-    previewable(doc) {
-      return !doc.optimistic && (/^(application\/pdf|text\/|image\/)/.test(doc.content_type || '') || /\.(md|txt|docx|xlsx?|pptx)$/i.test(doc.name || ''))
-    },
-    async previewDocument(doc) {
-      this.closePreview()
-      Object.assign(this.preview, { open: true, loading: true, name: doc.name, kind: '', url: '', text: '' })
-      try {
-        const { blob } = await getDocumentBlob(doc.id, 'inline')
-        if ((doc.content_type || '').startsWith('text/') || /\.(md|txt)$/i.test(doc.name)) {
-          this.preview.kind = 'text'
-          this.preview.text = await blob.text()
-        } else {
-          this.preview.url = URL.createObjectURL(blob)
-          if (/\.xlsx?$/i.test(doc.name)) this.preview.kind = 'excel'
-          else this.preview.kind = /\.docx$/i.test(doc.name) ? 'docx' : /\.pptx$/i.test(doc.name) ? 'pptx' : (doc.content_type || '').startsWith('image/') ? 'image' : 'frame'
-        }
-      } catch (error) { this.closePreview(); this.handleError(error) } finally { this.preview.loading = false }
-    },
-    closePreview() {
-      if (this.preview.url) URL.revokeObjectURL(this.preview.url)
-      Object.assign(this.preview, { open: false, loading: false, name: '', kind: '', url: '', text: '', buffer: null })
-    },
-    async downloadDocument(doc) {
-      try {
-        this.notify('正在准备下载…')
-        const { blob } = await getDocumentBlob(doc.id, 'attachment')
-        const url = URL.createObjectURL(blob)
-        const link = document.createElement('a')
-        link.href = url
-        link.download = doc.name
-        link.style.display = 'none'
-        document.body.appendChild(link)
-        link.click()
-        document.body.removeChild(link)
-        setTimeout(() => URL.revokeObjectURL(url), 30000)
-        this.notify('已开始下载')
-      } catch (error) { this.handleError(error) }
-    },
+async function submitQuestion(suggested = '') {
+  if (suggested) question.value = suggested
+  if (!question.value.trim() || !selectedBaseId.value || asking.value) return
+  const baseId = selectedBaseId.value
+  const generation = ++askGeneration
+  askController = new AbortController()
+  asking.value = true
+  askError.value = ''
+  streamDone = false
+  blockOrder = 0
+  // 上一轮已完成的问答归档到历史（失败的轮次不归档，随重试重新生成）
+  if (agentMessage.value && !agentMessage.value.error) {
+    askHistory.value.push({ question: lastQuestion.value, message: agentMessage.value })
+  }
+  agentMessage.value = {
+    id: `knowledge-assistant-${Date.now()}`,
+    role: 'assistant',
+    content: '',
+    thinking: '',
+    tool_calls: [],
+    blocks: [],
+    knowledge_evidence: [],
+    knowledge_warnings: [],
+    loading: true,
+    created_at: null,
+  }
+  lastQuestion.value = question.value.trim()
+  // 发送即清空输入框（发送内容已存入 lastQuestion，不等回答完成）
+  question.value = ''
+  nextTick(() => scrollAskToBottom())
+  try {
+    const prepared = await prepareKnowledgeChatSession(baseId)
+    if (generation !== askGeneration) return
+    activeChatSessionId = prepared.session_id
+    // 首次对该库提问时兜底拉取历史（面板打开/切换库时已预取过的不重复请求）
+    if (!askHistory.value.length) await loadAskHistory(baseId, prepared.session_id)
+    if (generation !== askGeneration) return
+    // 问答会话刚入库（或复用）：通知外层立即刷新会话列表，避免"新对话/刷新页面才出现"。
+    emit('chat-session-prepared')
+    const onChunk = event => applyAgentEvent(event, baseId, generation)
+    await sendMessage(prepared.session_id, lastQuestion.value, onChunk, askController.signal, true, [], null, false, null, [], '', '', { knowledgeMetadataFilter: askMetadataFilter.value })
+    // 与新对话一样，SSE 连接意外结束时挂载到后台流并回放已有事件。
+    if (!streamDone && generation === askGeneration && !askController.signal.aborted) {
+      await attachStream(prepared.session_id, onChunk, askController.signal)
+    }
+  } catch (error) {
+    if (error?.name !== 'AbortError' && generation === askGeneration) {
+      askError.value = error?.message || '知识库问答失败'
+      if (agentMessage.value) {
+        agentMessage.value = { ...agentMessage.value, loading: false, error: askError.value }
+      }
+      handleError(error)
+    }
+  } finally {
+    if (generation === askGeneration) {
+      askController = null
+      activeChatSessionId = ''
+      asking.value = false
+      if (agentMessage.value) agentMessage.value = { ...agentMessage.value, loading: false }
+      // 问答结束后消息与 updated_at 已落库，再刷新一次让列表排序/时间同步。
+      emit('chat-session-prepared')
+    }
+  }
+}
+async function loadOperations() { try { operations.value = (await listKnowledgeOperations({ pageSize: 100 })).items || [] } catch (error) { handleError(error) } }
+function askConfirmation(options) { Object.assign(confirmation, { open: true, tone: 'danger', ...options }); return new Promise(resolve => { confirmResolver = resolve }) }
+function resolveConfirmation(value) { confirmation.open = false; confirmResolver?.(value); confirmResolver = null }
+function startPolling() {
+  if (pollTimer) return
+  pollTimer = setInterval(async () => {
+    if (document.hidden || !selectedBaseId.value) return
+    // 上传期间也刷新：服务端行按文件去重后合并，保证每篇文档的入库状态独立更新
+    await loadDocuments()
+    await loadOperations()
+  }, 3000)
+}
+function stopPolling() { clearInterval(pollTimer); pollTimer = null }
+function roleLabel(role) { return ({ viewer: '查看者', maintainer: '维护者', manager: '管理员' })[role] || role }
+function spaceLabel(space) { return ({ personal: '个人空间', team: '公共空间' })[space] || space }
+function folderPath(folder) {
+  const parts = [folder.name]
+  const visited = new Set([folder.id])
+  let parent = folders.value.find(item => item.id === folder.parent_id)
+  while (parent && !visited.has(parent.id)) { visited.add(parent.id); parts.unshift(parent.name); parent = folders.value.find(item => item.id === parent.parent_id) }
+  return parts.join(' / ')
+}
+function documentStatusText(doc) {
+  if (doc.status !== 'processing') return statusLabel(doc.status)
+  const progress = Number(doc.progress || 0)
+  if (progress < 0.02) return '正在读取原文'
+  if (progress < 0.85) return `正在建立索引 ${Math.max(1, Math.round(progress * 100))}%`
+  return '正在完成索引'
+}
+function processingElapsed(doc) {
+  return processingElapsedText(doc, operations.value)
+}
+function statusLabel(status) { return ({ pending: '待处理', processing: '解析中', cancel_requested: '取消中', ready: '已就绪', failed: '失败', cancelled: '已取消', paused: '已暂停', deleting: '删除中', unknown: '未知' })[status] || status }
+function operationStatusLabel(status) { return ({ accepted: '已受理', running: '进行中', succeeded: '成功', failed: '失败', partial_failed: '部分失败' })[status] || status }
+function operationLabel(type) { return ({ dataset_create: '创建知识库', document_upload: '上传文档', document_parse: '解析文档' })[type] || type }
 
-    // ── 权限 ────────────────────────────────────────────────────────
-    async openPermissions() {
-      this.showPermissionModal = true
-      this.subjectResults = []
-      try {
-        const response = await listPermissions(this.selectedBaseId)
-        this.permissionItems = (response.items || []).map(item => ({ ...item, label: item.label || item.subject_id }))
-      } catch (error) { this.handleError(error) }
-    },
-    scheduleSubjectSearch() {
-      clearTimeout(this.searchTimer)
-      this.searchTimer = setTimeout(this.searchSubjects, 250)
-    },
-    async searchSubjects() {
-      if (!this.showPermissionModal) return
-      try {
-        const response = await searchPermissionSubjects(this.selectedBaseId, this.subjectType, this.subjectQuery.trim())
-        this.subjectResults = response.items || []
-      } catch (error) { this.handleError(error) }
-    },
-    addPermission(subject) {
-      if (!this.permissionItems.some(item => item.subject_type === subject.subject_type && item.subject_id === subject.subject_id)) {
-        this.permissionItems.push({ ...subject, role: 'viewer' })
-      }
-    },
-    async savePermissions() {
-      this.saving = true
-      try {
-        await replacePermissions(this.selectedBaseId, this.permissionItems.map(({ subject_type, subject_id, role }) => ({ subject_type, subject_id, role })))
-        this.showPermissionModal = false
-        this.notify('权限已保存')
-      } catch (error) { this.handleError(error) } finally { this.saving = false }
-    },
+function formatSize(size = 0) { if (size < 1024) return `${size} B`; if (size < 1048576) return `${(size / 1024).toFixed(1)} KB`; return `${(size / 1048576).toFixed(1)} MB` }
+function formatDate(value) { return value ? new Date(value).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '-' }
 
-    // ── 知识库问答 ──────────────────────────────────────────────────
-    touchAgentMessage() {
-      if (!this.agentMessage) return
-      this.agentMessage = {
-        ...this.agentMessage,
-        blocks: [...(this.agentMessage.blocks || [])],
-      }
-    },
-    findAgentBlock(type, event) {
-      if (!this.agentMessage) return null
-      const step = event.step || 0
-      if (type === 'tool_call') {
-        const callId = event.tool_call_id || `tool-${event.tool_name || ''}`
-        return this.agentMessage.blocks.find(
-          block => block.type === type && (block.id === callId || block.tool_call_id === callId)
-        ) || null
-      }
-      return this.agentMessage.blocks.find(block => block.type === type && (block.step || 0) === step) || null
-    },
-    ensureAgentBlock(type, event) {
-      let block = this.findAgentBlock(type, event)
-      if (block) return block
-      this.blockOrder += 1
-      block = { type, content: '', step: event.step || 0, order: this.blockOrder }
-      if (type === 'tool_call') {
-        const callId = event.tool_call_id || `tool-${event.tool_name || ''}`
-        Object.assign(block, {
-          id: callId,
-          tool_call_id: callId,
-          tool_name: event.tool_name || '',
-          arguments: event.arguments || {},
-          result: '',
-          success: true,
-        })
-      }
-      this.agentMessage.blocks.push(block)
-      return block
-    },
-    applyAgentEvent(event, baseId, generation) {
-      if (this.selectedBaseId !== baseId || generation !== this.askGeneration || !this.agentMessage) return
+// Vue 2.7 的生命周期适配对 async hook 返回值处理与 Vue 3 不同，用同步包装启动异步初始化。
+onMounted(() => { initialize(); watchShellWidth() })
+onUnmounted(() => { stopQuestion('unmount'); finishKnowledgeResize(); stopPolling(); closePreview(); clearTimeout(toastTimer); resolveConfirmation(false); stopShellWidthWatch() })
 
-      if (event.type === 'knowledge_evidence') {
-        this.agentMessage.knowledge_evidence = Array.isArray(event.evidence) ? event.evidence : []
-        this.agentMessage.knowledge_warnings = Array.isArray(event.warnings) ? event.warnings : []
-      } else if (event.type === 'thinking_start') {
-        this.ensureAgentBlock('thinking', event)
-      } else if (event.type === 'thinking') {
-        const block = this.ensureAgentBlock('thinking', event)
-        block.content = event.full_content || `${block.content || ''}${event.content || ''}`
-        this.agentMessage.thinking = this.agentMessage.blocks
-          .filter(item => item.type === 'thinking')
-          .map(item => item.content || '')
-          .join('')
-      } else if (event.type === 'thinking_end') {
-        const block = this.ensureAgentBlock('thinking', event)
-        this.$set(block, 'duration', event.duration || 0)
-      } else if (event.type === 'content_start') {
-        this.ensureAgentBlock('content', event)
-      } else if (event.type === 'content' && event.content) {
-        const block = this.ensureAgentBlock('content', event)
-        block.content = `${block.content || ''}${event.content}`
-        this.agentMessage.content = `${this.agentMessage.content || ''}${event.content}`
-      } else if (event.type === 'tool_call') {
-        const block = this.ensureAgentBlock('tool_call', event)
-        block.arguments = event.arguments || block.arguments || {}
-      } else if (event.type === 'tool_result') {
-        const block = this.ensureAgentBlock('tool_call', event)
-        block.result = typeof event.result === 'string' ? event.result : JSON.stringify(event.result || '')
-        block.success = event.success !== false
-        this.$set(block, 'duration', event.duration || 0)
-      } else if (event.type === 'done') {
-        this.streamDone = true
-        this.agentMessage.loading = false
-        if (event.content) this.agentMessage.content = event.content
-        for (const block of this.agentMessage.blocks) {
-          if (block.type === 'thinking' && block.duration == null) this.$set(block, 'duration', 0)
-        }
-      } else if (event.type === 'error') {
-        this.streamDone = true
-        this.agentMessage.loading = false
-        this.$set(this.agentMessage, 'error', event.content || '处理失败')
-        this.askError = this.agentMessage.error
-      }
-      this.touchAgentMessage()
-    },
-    async stopQuestion(reason = 'user') {
-      const controller = this.askController
-      const sessionId = this.activeChatSessionId
-      if (!controller && !this.asking) return
-      this.askGeneration += 1
-      this.askController = null
-      this.activeChatSessionId = ''
-      this.asking = false
-      if (controller) controller.abort()
-      if (this.agentMessage) this.agentMessage = { ...this.agentMessage, loading: false }
-      if (sessionId) {
-        try { await cancelMessage(sessionId) } catch (_) { /* 中止以本地状态为准 */ }
-      }
-      if (reason === 'user') this.notify('已停止回答')
-    },
-    retryQuestion() {
-      if (!this.lastQuestion || this.asking) return
-      this.question = this.lastQuestion
-      this.submitQuestion()
-    },
-    async submitQuestion(suggested = '') {
-      if (suggested) this.question = suggested
-      if (!this.question.trim() || !this.selectedBaseId || this.asking) return
-      const baseId = this.selectedBaseId
-      const generation = ++this.askGeneration
-      this.askController = new AbortController()
-      this.asking = true
-      this.askError = ''
-      this.streamDone = false
-      this.blockOrder = 0
-      this.agentMessage = {
-        id: `knowledge-assistant-${Date.now()}`,
-        role: 'assistant',
-        content: '',
-        thinking: '',
-        tool_calls: [],
-        blocks: [],
-        knowledge_evidence: [],
-        knowledge_warnings: [],
-        loading: true,
-        created_at: null,
-      }
-      this.lastQuestion = this.question.trim()
-      try {
-        const prepared = await prepareKnowledgeChatSession(baseId)
-        if (generation !== this.askGeneration) return
-        this.activeChatSessionId = prepared.session_id
-        const onChunk = event => this.applyAgentEvent(event, baseId, generation)
-        const signal = this.askController ? this.askController.signal : undefined
-        await sendMessage(prepared.session_id, this.lastQuestion, onChunk, signal, true)
-        // 与新对话一样，SSE 连接意外结束时挂载到后台流并回放已有事件。
-        if (!this.streamDone && generation === this.askGeneration && this.askController && !this.askController.signal.aborted) {
-          await attachStream(prepared.session_id, onChunk, this.askController.signal)
-        }
-        if (generation === this.askGeneration) this.question = ''
-      } catch (error) {
-        if (error && error.name !== 'AbortError' && generation === this.askGeneration) {
-          this.askError = (error && error.message) || '知识库问答失败'
-          if (this.agentMessage) this.agentMessage = { ...this.agentMessage, loading: false, error: this.askError }
-          this.handleError(error)
-        }
-      } finally {
-        if (generation === this.askGeneration) {
-          this.askController = null
-          this.activeChatSessionId = ''
-          this.asking = false
-          if (this.agentMessage) this.agentMessage = { ...this.agentMessage, loading: false }
-        }
-      }
-    },
-
-    // ── 确认框 / 轮询 ───────────────────────────────────────────────
-    askConfirmation(options) {
-      Object.assign(this.confirmation, { open: true, tone: 'danger', ...options })
-      return new Promise(resolve => { this.confirmResolver = resolve })
-    },
-    resolveConfirmation(value) {
-      this.confirmation.open = false
-      if (this.confirmResolver) this.confirmResolver(value)
-      this.confirmResolver = null
-    },
-    startPolling() {
-      if (this.pollTimer) return
-      this.pollTimer = setInterval(async () => {
-        if (document.hidden || !this.selectedBaseId) return
-        // The upload endpoint creates its database record before returning. Refreshing
-        // the list in that window can display both the server row and our optimistic row.
-        if (!this.hasCurrentUploadRequest) await this.loadDocuments()
-        await this.loadOperations()
-      }, 3000)
-    },
-    stopPolling() {
-      clearInterval(this.pollTimer)
-      this.pollTimer = null
-    },
+    return {
+      addFolder,
+      agentMessage,
+      askHistory,
+      askBody,
+      askOpen,
+      askError,
+      askWidth,
+      asking,
+      baseCount,
+      closeAskPanel,
+      openAskPanel,
+      baseForm,
+      baseModalMode,
+      baseQuery,
+      bases,
+      basesForSpace,
+      can,
+      canCreateInSpace,
+      capabilities,
+      clearFilters,
+      closePreview,
+      confirmation,
+      confirmMoveDocument,
+      createPermDirectoryTotal,
+      createPermLoading,
+      createPermRestricted,
+      createPermSelectedTotal,
+      createPermTree,
+      isCreatePermCollapsed,
+      toggleCreatePermExpand,
+      currentFolder,
+      currentFolders,
+      documents,
+      documentsPage,
+      documentStatusText,
+      downloadDocument,
+      dragging,
+      editBase,
+      folderBreadcrumbs,
+      folderForm,
+      folderOptions,
+      formatDate,
+      formatSize,
+      goParentFolder,
+      handleDrop,
+      handleFiles,
+      handleFolderFiles,
+      hasActiveWork,
+      health,
+      healthClass,
+      healthLabel,
+      isPermCollapsed,
+      knowledgeLayoutStyle,
+      lastQuestion,
+      askMetadataFilter, KnowledgeAskFilter,
+      libraryWidth,
+      loadDocuments,
+      loadingDocuments,
+      loadOperations,
+      moveTargetFolderId,
+      movingDocument,
+      openCreateBase,
+      openMoveDocument,
+      openPermissions,
+      operationLabel,
+      operations,
+      operationStatusLabel,
+      permissionDirectoryLoading,
+      permissionRestricted,
+      permissionTree,
+      permDirectoryTotal,
+      permNodeChecked,
+      permNodeIndeterminate,
+      permSelectedCount,
+      permSelectedTotal,
+      preview,
+      previewable,
+      previewDocument,
+      processingElapsed,
+      question,
+      questionSuggestions,
+      removeBase,
+      removeDocument,
+      removeFolder,
+      renameCurrentFolder,
+      resizeKnowledgeWithKeyboard,
+      resolveConfirmation,
+      retryDoc,
+      retryQuestion,
+      roleLabel,
+      saveBase,
+      saveFolder,
+      savePermissions,
+      saving,
+      search,
+      selectedBase,
+      selectedBaseId,
+      selectedFolderId,
+      selectedSpace,
+      selectBase,
+      selectFolder,
+      selectSpace,
+      showBaseModal,
+      showFolderModal,
+      showMoveModal,
+      showPermissionModal,
+      spaceLabel,
+      spaces,
+      startKnowledgeResize,
+      startNewChat,
+      statusFilter,
+      statusOptions,
+      pauseDoc,
+      resumeDoc,
+      statusLabel,
+      stopQuestion,
+      submitQuestion,
+      teamSpaceManagement,
+      teamSpaceEmptyHint,
+      teamSpaceOptionSuffix,
+      togglePermExpand,
+      togglePermNode,
+      toast,
+      viewMode,
+    }
   },
 }
 </script>
 
 <style scoped>
-.ke-shell{--ke-accent:var(--accent-color);--ke-accent-dark:var(--accent-color);--ke-accent-soft:color-mix(in srgb,var(--accent-color) 12%,transparent);--ke-ink:var(--text-primary);--ke-muted:var(--text-secondary);--ke-line:var(--border-color);--ke-bg:var(--bg-primary);position:fixed;inset:0;z-index:1000;container-type:inline-size;flex:1;min-width:0;height:100%;display:flex;flex-direction:column;background:var(--ke-bg);color:var(--ke-ink);font-family:inherit}.ke-shell button,.ke-shell input,.ke-shell select,.ke-shell textarea{font:inherit}.ke-shell svg{width:16px;height:16px;flex:none}.ke-topbar{height:64px;flex:none;background:var(--bg-secondary);border-bottom:1px solid var(--ke-line);display:flex;align-items:center;justify-content:space-between;padding:0 20px;z-index:5}.ke-topbar-title,.ke-topbar-actions,.ke-inline-actions,.ke-title-row,.ke-base-meta,.ke-tool-row{display:flex;align-items:center}.ke-topbar-title{gap:10px}.ke-topbar-title h1{font-size:17px;line-height:1.2;margin:0;font-weight:650}.ke-topbar-title span{display:block;margin-top:3px;color:var(--text-secondary);font-size:11px}.ke-topbar-actions{gap:8px}.ke-button{height:34px;border:1px solid var(--border-color);background:var(--bg-secondary);border-radius:9px;padding:0 12px;display:inline-flex;align-items:center;justify-content:center;gap:6px;color:var(--text-secondary);font-size:12px;cursor:pointer;transition:.18s ease;box-sizing:border-box}.ke-button:hover{background:var(--bg-tertiary);border-color:var(--border-color)}.ke-button.primary{background:var(--ke-accent);border-color:var(--ke-accent);color:#fff;box-shadow:0 3px 10px color-mix(in srgb,var(--ke-accent) 22%,transparent)}.ke-button.primary:hover{background:var(--ke-accent-dark);border-color:var(--ke-accent-dark);transform:translateY(-1px)}.ke-button.quiet{background:var(--bg-secondary)}.ke-button.danger{background:#d94b4b;border-color:#d94b4b;color:#fff}.ke-button.icon-only{width:34px;padding:0}.ke-button:disabled,.ke-icon-button:disabled{opacity:.45;cursor:not-allowed;transform:none}.ke-icon-button{width:32px;height:32px;border:1px solid var(--border-color);background:var(--bg-secondary);border-radius:9px;display:grid;place-items:center;color:var(--text-secondary);cursor:pointer;transition:.18s}.ke-icon-button:hover{background:var(--bg-tertiary);color:var(--text-primary)}.ke-icon-button.subtle{border-color:transparent;background:transparent}.danger-hover:hover,.danger-text{color:#cc4545!important;background:#fff3f2!important;border-color:#f3cdca!important}.ke-health{display:inline-flex;align-items:center;gap:6px;color:var(--text-secondary);font-size:11px;margin-right:4px}.ke-health i,.ke-status i{width:7px;height:7px;border-radius:50%;background:#e2a22e}.ke-health.ready i,.ke-status.ready i,.ke-status.succeeded i{background:var(--ke-accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--ke-accent) 12%,transparent)}
-.ke-workspace{position:relative;flex:1;min-height:0;display:grid;grid-template-columns:var(--ke-library-width,252px) 6px minmax(490px,1fr) 6px var(--ke-ask-width,344px);gap:0}.ke-workspace.ask-closed{grid-template-columns:var(--ke-library-width,252px) 6px minmax(540px,1fr)}.ke-library-panel,.ke-content-panel,.ke-ask-panel{min-height:0;background:#fff}.ke-library-panel{border-right:1px solid var(--ke-line);display:flex;flex-direction:column;padding:18px 12px 12px}.ke-resizer{position:relative;width:6px;min-width:6px;cursor:col-resize;touch-action:none;z-index:25;outline:none;background:var(--bg-secondary)}.ke-resizer:after{content:"";position:absolute;inset:0 2px;background:transparent;transition:.15s}.ke-resizer:hover:after,.ke-resizer:focus-visible:after{background:var(--accent-color);box-shadow:0 0 0 2px color-mix(in srgb,var(--accent-color) 14%,transparent)}.ke-library-heading{display:flex;align-items:center;justify-content:space-between;padding:0 4px 14px}.ke-library-heading>div{display:flex;flex-direction:column;gap:3px}.ke-library-heading strong{font-size:14px}.ke-library-heading small{font-size:10px;color:#9aa09c}.ke-search-box{height:34px;border:1px solid #e1e5e2;background:#fafbfa;border-radius:9px;display:flex;align-items:center;gap:7px;padding:0 9px;color:#9ba29e;transition:.18s}.ke-search-box:focus-within{border-color:#9fd8c0;background:#fff;box-shadow:0 0 0 3px rgba(37,161,111,.08)}.ke-search-box input{min-width:0;flex:1;border:0;outline:0;background:transparent;color:#303632;font-size:12px}.ke-search-box button{border:0;background:transparent;color:#9aa19c;display:grid;place-items:center;padding:0;cursor:pointer}.sidebar-search{margin-bottom:14px}.ke-space-tabs{display:flex;flex-direction:column;gap:3px}.ke-space-tabs button{height:36px;border:0;background:transparent;border-radius:9px;padding:0 10px;display:grid;grid-template-columns:18px 1fr auto;gap:8px;text-align:left;align-items:center;color:#68716b;font-size:12px;cursor:pointer}.ke-space-tabs button:hover{background:#f5f7f5}.ke-space-tabs button.active{background:var(--ke-accent-soft);color:var(--ke-accent-dark);font-weight:600}.ke-space-tabs b{font-weight:500;font-size:10px;color:#9aa19d}.ke-base-list{flex:1;min-height:0;overflow:auto;padding-top:14px;margin-top:12px;border-top:1px solid #f0f2f0}.ke-base-card{width:100%;border:1px solid transparent;background:transparent;border-radius:11px;padding:8px;display:flex;gap:9px;align-items:center;text-align:left;color:inherit;cursor:pointer;transition:.18s}.ke-base-card:hover{background:#f8faf8}.ke-base-card.active{background:#f2f8f5;border-color:#d9eee4}.ke-base-cover,.ke-hero-cover{display:grid;place-items:center;background:linear-gradient(145deg,#45bd8a,#229568);color:#fff;box-shadow:inset 0 0 0 1px rgba(255,255,255,.18)}.ke-base-cover{width:34px;height:40px;border-radius:5px 9px 9px 5px}.ke-base-cover.team,.ke-hero-cover.team{background:linear-gradient(145deg,#5d9ee8,#557bc8)}.ke-base-cover.shared,.ke-hero-cover.shared{background:linear-gradient(145deg,#a788e7,#795fc4)}.ke-base-copy{display:flex;flex:1;min-width:0;flex-direction:column;gap:4px}.ke-base-copy strong{font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ke-base-copy small{font-size:10px;color:#959c97}.ke-chevron{width:13px!important;color:#bec3bf;opacity:0}.ke-base-card:hover .ke-chevron,.ke-base-card.active .ke-chevron{opacity:1}.ke-empty-small{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;color:#a2a9a4;text-align:center;font-size:11px;padding:32px 12px}.ke-empty-small svg{width:25px;height:25px}.ke-empty-small button{border:0;background:transparent;color:var(--ke-accent-dark);font-size:11px;cursor:pointer}.ke-library-tip{display:flex;align-items:flex-start;gap:7px;background:#f8faf8;border-radius:9px;padding:10px;color:#929994;font-size:9px;line-height:1.45}.ke-library-tip svg{width:14px;height:14px;color:#72a78e}
-.ke-content-panel{position:relative;display:flex;flex-direction:column;overflow:hidden;background:#fff}.ke-base-hero{flex:none;padding:24px 26px 20px;display:flex;justify-content:space-between;gap:18px;border-bottom:1px solid var(--ke-line)}.ke-base-identity{display:flex;gap:15px;min-width:0}.ke-hero-cover{width:48px;height:58px;border-radius:7px 12px 12px 7px}.ke-hero-cover svg{width:22px;height:22px}.ke-title-row{gap:9px}.ke-title-row h2{margin:0;font-size:20px;line-height:1.3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ke-role{padding:3px 7px;background:#f1f4f2;border-radius:5px;color:#768078;font-size:9px}.ke-base-identity p{max-width:620px;margin:6px 0 10px;color:#868e89;font-size:11px;line-height:1.55;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ke-base-meta{gap:14px;color:#9aa09c;font-size:9px}.ke-base-meta span{display:flex;align-items:center;gap:4px}.ke-base-meta svg{width:12px;height:12px}.ke-inline-actions{gap:6px;align-self:flex-start}.ke-content-toolbar{flex:none;padding:13px 20px 12px;border-bottom:1px solid var(--ke-line)}.ke-folder-tabs{display:flex;align-items:center;gap:4px;overflow-x:auto;padding-bottom:11px}.ke-folder-tabs button{height:28px;border:0;background:transparent;border-radius:7px;padding:0 8px;display:flex;align-items:center;gap:5px;color:#777f7a;font-size:10px;white-space:nowrap;cursor:pointer}.ke-folder-tabs button:hover{background:#f5f7f5}.ke-folder-tabs button.active{background:#edf7f2;color:var(--ke-accent-dark);font-weight:600}.ke-folder-tabs button span{color:#9ca39e;font-size:9px}.ke-folder-tabs svg{width:12px;height:12px}.ke-folder-tabs .folder-add{color:var(--ke-accent-dark);margin-left:3px}.ke-folder-tabs .folder-manage{width:27px;padding:0;justify-content:center}.ke-tool-row{gap:7px}.ke-tool-row>.ke-search-box{flex:1;max-width:300px}.ke-select-wrap{height:34px;border:1px solid #e1e5e2;background:#fff;border-radius:9px;padding:0 8px;display:flex;align-items:center;color:#929a94}.ke-select-wrap select,.ke-folder-select select{border:0;outline:0;background:transparent;color:#636b66;font-size:10px}.ke-view-switch{height:34px;background:#f3f5f3;border-radius:9px;padding:3px;display:flex}.ke-view-switch button{width:28px;border:0;background:transparent;color:#9aa19c;border-radius:7px;display:grid;place-items:center;cursor:pointer}.ke-view-switch button.active{background:#fff;color:#3d4640;box-shadow:0 1px 4px rgba(30,45,35,.1)}.ke-upload-queue{flex:none;margin:12px 20px 0;border:1px solid #e3e8e4;border-radius:11px;background:#fbfcfb;padding:11px}.ke-upload-queue header{display:flex;align-items:center;gap:7px;margin-bottom:8px;font-size:10px}.ke-upload-queue header span{color:#9ba19d}.ke-upload-item{display:grid;grid-template-columns:28px 1fr 72px;gap:8px;align-items:center;padding:6px 0}.ke-mini-file{width:26px;height:28px;border-radius:6px;background:#edf7f2;color:var(--ke-accent);display:grid;place-items:center}.ke-upload-item>div{min-width:0}.ke-upload-item strong{display:block;font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:4px}.ke-progress{height:4px;background:#e8ece9;border-radius:8px;overflow:hidden}.ke-progress i{display:block;height:100%;background:var(--ke-accent);transition:width .3s}.ke-upload-item>b{font-size:9px;font-weight:500;color:#7f8782}.ke-upload-item>b.failed{color:#d54e4e}
-.ke-documents{flex:1;min-height:0;overflow:auto;padding:18px 20px 28px}.ke-documents.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));align-content:start;gap:12px}.ke-document-card{position:relative;border:1px solid #e6eae7;border-radius:12px;background:#fff;padding:14px;min-width:0;transition:.18s}.grid .ke-document-card{min-height:150px;display:flex;flex-direction:column}.ke-document-card:hover{border-color:#ccd8d1;box-shadow:0 8px 24px rgba(39,64,48,.07);transform:translateY(-1px)}.ke-doc-open{width:100%;border:0;background:transparent;padding:0;display:grid;grid-template-columns:39px minmax(0,1fr);align-items:start;column-gap:10px;text-align:left;min-width:0;color:inherit;cursor:pointer}.ke-doc-open:disabled{cursor:default}.ke-file-icon{width:39px;min-width:39px;height:43px;box-sizing:border-box;display:grid;place-items:center;border-radius:8px;background:#f7f9f7;overflow:hidden}.ke-document-copy{width:100%;min-width:0;overflow:hidden;display:flex;flex-direction:column;gap:5px;padding-top:2px}.ke-document-copy strong,.ke-document-copy small{display:block;max-width:100%;min-width:0;overflow:hidden;text-overflow:ellipsis}.ke-document-copy strong{font-size:11px;line-height:1.45;white-space:nowrap}.grid .ke-document-copy strong{white-space:normal;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}.ke-document-copy small{color:#9aa19c;font-size:9px;white-space:nowrap}.ke-document-details{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:15px}.grid .ke-document-details{margin-top:auto;padding-top:15px}.ke-status{display:inline-flex;align-items:center;gap:5px;color:#6e7771;font-size:9px;white-space:nowrap}.ke-status i{width:6px;height:6px}.ke-status em{font-style:normal;color:#9aa19c}.ke-status.processing i,.ke-status.running i{background:#4b91e4;animation:ke-pulse 1.2s infinite}.ke-status.failed i,.ke-status.partial_failed i{background:#e25555}.ke-folder-select{min-width:0;display:flex;align-items:center;gap:3px;color:#9aa19c}.ke-folder-select svg{width:11px;height:11px}.ke-folder-select select{max-width:80px;text-overflow:ellipsis}.ke-error-text{font-size:9px;color:#cc4b4b;line-height:1.4;margin:7px 0 0}.ke-row-actions{position:absolute;right:9px;top:9px;display:flex;align-items:center;gap:2px;background:rgba(255,255,255,.96);border-radius:8px;padding:2px;opacity:0;transform:translateY(-3px);transition:.16s;box-shadow:0 2px 10px rgba(30,45,35,.08)}.ke-document-card:hover .ke-row-actions,.ke-row-actions:focus-within{opacity:1;transform:none}.ke-row-actions button{height:26px;border:0;background:transparent;border-radius:6px;padding:0 6px;display:flex;align-items:center;gap:3px;color:#69726c;font-size:9px;cursor:pointer}.ke-row-actions button:hover{background:#f2f5f3;color:#26312a}.ke-row-actions svg{width:12px;height:12px}.list.ke-documents{padding-top:8px}.list .ke-document-card{border-width:0 0 1px;border-radius:0;padding:12px 8px;display:grid;grid-template-columns:minmax(220px,1fr) 240px 145px;align-items:center;gap:10px}.list .ke-document-card:hover{transform:none;box-shadow:none;background:#fafbfa}.list .ke-document-details{margin:0}.list .ke-row-actions{position:static;opacity:1;transform:none;box-shadow:none;justify-content:flex-end}.list .ke-row-actions button span{display:none}.list .ke-error-text{grid-column:1/-1}.ke-document-skeletons{grid-column:1/-1;display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:12px}.ke-document-skeletons span{height:150px;border-radius:12px;background:linear-gradient(90deg,#f4f6f4 25%,#fafbfa 37%,#f4f6f4 63%);background-size:400% 100%;animation:ke-shimmer 1.4s infinite}.ke-empty-documents{grid-column:1/-1;align-self:center;margin:auto;display:flex;flex-direction:column;align-items:center;text-align:center;padding:45px 20px}.ke-empty-documents>div,.ke-empty-illustration{width:60px;height:60px;border-radius:18px;background:var(--ke-accent-soft);color:var(--ke-accent);display:grid;place-items:center}.ke-empty-documents>div svg,.ke-empty-illustration svg{width:27px;height:27px}.ke-empty-documents h3{margin:14px 0 5px;font-size:14px}.ke-empty-documents p{margin:0 0 15px;color:#929994;font-size:11px}.ke-drop-mask{position:absolute;inset:10px;z-index:15;border:2px dashed #71c39f;border-radius:16px;background:rgba(237,250,244,.94);display:grid;place-items:center;pointer-events:none}.ke-drop-mask>div{display:flex;flex-direction:column;align-items:center;gap:7px;color:var(--ke-accent-dark)}.ke-drop-mask svg{width:36px;height:36px}.ke-drop-mask strong{font-size:15px}.ke-drop-mask span{color:#7b8c82;font-size:11px}
-.ke-ask-panel{border-left:1px solid var(--ke-line);display:flex;flex-direction:column;overflow:hidden;background:#fcfdfc}.ke-ask-header{height:67px;flex:none;padding:0 14px;display:flex;align-items:center;gap:9px;border-bottom:1px solid var(--ke-line);background:#fff}.ke-ai-avatar{width:31px;height:31px;border-radius:10px;background:linear-gradient(145deg,#32b981,#21865f);color:#fff;display:grid;place-items:center;box-shadow:0 4px 12px rgba(37,161,111,.2)}.ke-ai-avatar.small{width:23px;height:23px;border-radius:7px}.ke-ai-avatar.small svg{width:12px;height:12px}.ke-ask-header>div:nth-child(2){display:flex;flex:1;min-width:0;flex-direction:column;gap:3px}.ke-ask-header strong{font-size:12px}.ke-ask-header small{font-size:9px;color:#969d98;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ke-answer{flex:1;min-height:0;overflow:auto;padding:18px}.ke-answer-welcome{height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center}.ke-answer-orb{width:52px;height:52px;border-radius:18px;background:radial-gradient(circle at 30% 25%,#fff 0,#e4f7ee 35%,#cceede 100%);color:var(--ke-accent);display:grid;place-items:center;box-shadow:0 8px 25px rgba(38,126,88,.12)}.ke-answer-orb svg{width:24px;height:24px}.ke-answer-welcome h3{font-size:14px;margin:15px 0 6px}.ke-answer-welcome>p{max-width:235px;margin:0;color:#8d9690;font-size:10px;line-height:1.7}.ke-question-suggestions{width:100%;margin-top:19px;display:flex;flex-direction:column;gap:7px}.ke-question-suggestions button{border:1px solid #e3e8e4;background:#fff;border-radius:10px;padding:10px 11px;display:flex;justify-content:space-between;align-items:center;color:#626b65;text-align:left;font-size:10px;cursor:pointer;transition:.16s}.ke-question-suggestions button:hover{border-color:#b9ddcb;background:#f5fbf8;color:var(--ke-accent-dark)}.ke-question-suggestions svg{width:12px;height:12px}.ke-answer-loading{height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;color:#8b948e;font-size:10px}.ke-question-bubble{margin-left:28px;padding:9px 11px;border-radius:11px 3px 11px 11px;background:#eef7f3;color:#3f4d45;font-size:11px;line-height:1.55}.ke-answer-label{display:flex;align-items:center;gap:7px;margin:18px 0 10px;font-size:10px}.ke-answer-text{font-size:11px;line-height:1.85;color:#3e4741;white-space:pre-wrap}.ke-evidence-title{display:flex;align-items:center;gap:5px;margin:18px 0 7px;color:#737d76;font-size:10px;font-weight:600}.ke-evidence-title svg{width:13px;height:13px}.ke-evidence{width:100%;margin-top:7px;padding:10px;border:1px solid #e3e8e4;border-radius:10px;background:#fff;text-align:left;color:inherit;cursor:pointer}.ke-evidence:hover{border-color:#c6ddd1;background:#fbfdfc}.ke-evidence>div{display:flex;gap:7px;align-items:center;font-size:9px}.ke-evidence b{width:18px;height:18px;border-radius:5px;background:var(--ke-accent-soft);color:var(--ke-accent-dark);display:grid;place-items:center}.ke-evidence strong{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ke-evidence span{margin-left:auto;color:#9aa19c}.ke-evidence p{font-size:9px;line-height:1.55;color:#747d77;margin:7px 0 0;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}.ke-warning{display:flex;gap:6px;color:#a56a14;font-size:9px;line-height:1.5}.ke-warning svg{width:13px;height:13px}.ke-ask-form{flex:none;padding:12px 14px 13px}.ke-composer{border:1px solid #dce3de;background:#fff;border-radius:13px;padding:8px 9px;box-shadow:0 5px 18px rgba(42,62,49,.06);transition:.18s}.ke-composer:focus-within{border-color:#91ceb2;box-shadow:0 0 0 3px rgba(37,161,111,.08)}.ke-composer.disabled{background:#f7f8f7}.ke-composer textarea{width:100%;min-height:50px;box-sizing:border-box;border:0;outline:0;resize:none;background:transparent;color:#303733;font-size:11px;line-height:1.55}.ke-composer>div{display:flex;align-items:center;justify-content:space-between}.ke-composer>div span{display:flex;align-items:center;gap:4px;color:#9aa19c;font-size:8px}.ke-composer>div span svg{width:11px;height:11px}.ke-composer>div button{width:28px;height:28px;border:0;border-radius:9px;background:var(--ke-accent);color:#fff;display:grid;place-items:center;cursor:pointer}.ke-composer>div button:disabled{background:#d8ddda;cursor:not-allowed}.ke-ask-form>small{display:block;margin-top:6px;text-align:center;color:#a1a7a3;font-size:8px}.ke-ask-fab{position:absolute;right:20px;bottom:20px;height:40px;border:0;border-radius:20px;background:var(--ke-accent);color:#fff;padding:0 15px;display:flex;align-items:center;gap:7px;box-shadow:0 8px 24px rgba(37,161,111,.25);cursor:pointer;z-index:10}.ke-ask-fab:disabled{display:none}.ke-ask-fab span{font-size:11px}
+.ke-shell{--ke-accent:var(--accent-color);--ke-accent-dark:var(--accent-color);--ke-accent-soft:color-mix(in srgb,var(--accent-color) 12%,transparent);--ke-ink:var(--text-primary);--ke-muted:var(--text-secondary);--ke-line:var(--border-color);--ke-bg:var(--bg-primary);position:relative;container:ke-shell/inline-size;flex:1;min-width:0;height:100%;display:flex;flex-direction:column;background:var(--ke-bg);color:var(--ke-ink);font-family:inherit}.ke-shell button,.ke-shell input,.ke-shell select,.ke-shell textarea{font:inherit}.ke-shell svg{width:16px;height:16px;flex:none}.ke-topbar{height:64px;flex:none;background:var(--bg-secondary);border-bottom:1px solid var(--ke-line);display:flex;align-items:center;justify-content:space-between;padding:0 20px;z-index:5}.ke-topbar-title,.ke-topbar-actions,.ke-inline-actions,.ke-title-row,.ke-base-meta,.ke-tool-row{display:flex;align-items:center}.ke-topbar-title{gap:10px}.ke-topbar-title h1{font-size:17px;line-height:1.2;margin:0;font-weight:650}.ke-topbar-title span{display:block;margin-top:3px;color:var(--text-secondary);font-size:11px}.ke-topbar-actions{gap:8px}.ke-button{height:34px;border:1px solid var(--border-color);background:var(--bg-secondary);border-radius:9px;padding:0 12px;display:inline-flex;align-items:center;justify-content:center;gap:6px;color:var(--text-secondary);font-size:12px;cursor:pointer;transition:.18s ease;box-sizing:border-box}.ke-button:hover{background:var(--bg-tertiary);border-color:var(--border-color)}.ke-button.primary{background:var(--ke-accent);border-color:var(--ke-accent);color:#fff;box-shadow:0 3px 10px color-mix(in srgb,var(--ke-accent) 22%,transparent)}.ke-button.primary:hover{background:var(--ke-accent-dark);border-color:var(--ke-accent-dark);transform:translateY(-1px)}.ke-button.quiet{background:var(--bg-secondary)}.ke-button.danger{background:#d94b4b;border-color:#d94b4b;color:#fff}.ke-button.icon-only{width:34px;padding:0}.ke-button:disabled,.ke-icon-button:disabled{opacity:.45;cursor:not-allowed;transform:none}.ke-icon-button{width:32px;height:32px;border:1px solid var(--border-color);background:var(--bg-secondary);border-radius:9px;display:grid;place-items:center;color:var(--text-secondary);cursor:pointer;transition:.18s}.ke-icon-button:hover{background:var(--bg-tertiary);color:var(--text-primary)}.ke-icon-button.subtle{border-color:transparent;background:transparent}.danger-hover:hover,.danger-text{color:#cc4545!important;background:#fff3f2!important;border-color:#f3cdca!important}.ke-health{display:inline-flex;align-items:center;gap:6px;color:var(--text-secondary);font-size:11px;margin-right:4px}.ke-health i,.ke-status i{width:7px;height:7px;border-radius:50%;background:#e2a22e}.ke-health.ready i,.ke-status.ready i,.ke-status.succeeded i{background:var(--ke-accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--ke-accent) 12%,transparent)}
+.ke-workspace{position:relative;flex:1;min-height:0;display:grid;grid-template-columns:var(--ke-library-width,252px) 6px minmax(490px,1fr) 6px var(--ke-ask-width,344px);gap:0}.ke-workspace.ask-closed{grid-template-columns:var(--ke-library-width,252px) 6px minmax(540px,1fr)}.ke-library-panel,.ke-content-panel,.ke-ask-panel{min-height:0;background:#fff}.ke-library-panel{border-right:1px solid var(--ke-line);display:flex;flex-direction:column;padding:18px 12px 12px}.ke-resizer{position:relative;width:6px;min-width:6px;cursor:col-resize;touch-action:none;z-index:25;outline:none;background:var(--bg-secondary)}.ke-resizer:after{content:"";position:absolute;inset:0 2px;background:transparent;transition:.15s}.ke-resizer:hover:after,.ke-resizer:focus-visible:after,:global(body.ke-layout-resizing) .ke-resizer:after{background:var(--accent-color);box-shadow:0 0 0 2px color-mix(in srgb,var(--accent-color) 14%,transparent)}.ke-library-heading{display:flex;align-items:center;justify-content:space-between;padding:0 4px 14px}.ke-library-heading>div{display:flex;flex-direction:column;gap:3px}.ke-library-heading strong{font-size:14px}.ke-library-heading small{font-size:10px;color:#9aa09c}.ke-search-box{height:34px;border:1px solid #e1e5e2;background:#fafbfa;border-radius:9px;display:flex;align-items:center;gap:7px;padding:0 9px;color:#9ba29e;transition:.18s}.ke-search-box:focus-within{border-color:#9fd8c0;background:#fff;box-shadow:0 0 0 3px rgba(37,161,111,.08)}.ke-search-box input{min-width:0;flex:1;border:0;outline:0;background:transparent;color:#303632;font-size:12px}.ke-search-box button{border:0;background:transparent;color:#9aa19c;display:grid;place-items:center;padding:0;cursor:pointer}.sidebar-search{margin-bottom:14px}.ke-space-tabs{display:flex;flex-direction:column;gap:3px}.ke-space-tabs button{height:36px;border:0;background:transparent;border-radius:9px;padding:0 10px;display:grid;grid-template-columns:18px 1fr auto;gap:8px;text-align:left;align-items:center;color:#68716b;font-size:12px;cursor:pointer}.ke-space-tabs button:hover{background:#f5f7f5}.ke-space-tabs button.active{background:var(--ke-accent-soft);color:var(--ke-accent-dark);font-weight:600}.ke-space-tabs b{font-weight:500;font-size:10px;color:#9aa19d}.ke-base-list{flex:1;min-height:0;overflow:auto;padding-top:14px;margin-top:12px;border-top:1px solid #f0f2f0}.ke-base-card{width:100%;border:1px solid transparent;background:transparent;border-radius:11px;padding:8px;display:flex;gap:9px;align-items:center;text-align:left;color:inherit;cursor:pointer;transition:.18s}.ke-base-card:hover{background:#f8faf8}.ke-base-card.active{background:#f2f8f5;border-color:#d9eee4}.ke-base-cover,.ke-hero-cover{display:grid;place-items:center;background:linear-gradient(145deg,#45bd8a,#229568);color:#fff;box-shadow:inset 0 0 0 1px rgba(255,255,255,.18)}.ke-base-cover{width:34px;height:40px;border-radius:5px 9px 9px 5px}.ke-base-cover.team,.ke-hero-cover.team{background:linear-gradient(145deg,#5d9ee8,#557bc8)}.ke-base-cover.shared,.ke-hero-cover.shared{background:linear-gradient(145deg,#a788e7,#795fc4)}.ke-base-copy{display:flex;flex:1;min-width:0;flex-direction:column;gap:4px}.ke-base-copy strong{font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ke-base-copy small{font-size:10px;color:#959c97}.ke-chevron{width:13px!important;color:#bec3bf;opacity:0}.ke-base-card:hover .ke-chevron,.ke-base-card.active .ke-chevron{opacity:1}.ke-empty-small{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;color:#a2a9a4;text-align:center;font-size:11px;padding:32px 12px}.ke-empty-small svg{width:25px;height:25px}.ke-empty-small button{border:0;background:transparent;color:var(--ke-accent-dark);font-size:11px;cursor:pointer}.ke-library-tip{display:flex;align-items:flex-start;gap:7px;background:#f8faf8;border-radius:9px;padding:10px;color:#929994;font-size:9px;line-height:1.45}.ke-library-tip svg{width:14px;height:14px;color:#72a78e}
+.ke-content-panel{position:relative;display:flex;flex-direction:column;overflow:hidden;background:#fff;container:ke-content/inline-size}.ke-base-hero{flex:none;padding:24px 26px 20px;display:flex;justify-content:space-between;gap:18px;border-bottom:1px solid var(--ke-line)}.ke-base-identity{display:flex;gap:15px;min-width:0}.ke-hero-cover{width:48px;height:58px;border-radius:7px 12px 12px 7px}.ke-hero-cover svg{width:22px;height:22px}.ke-title-row{gap:9px}.ke-title-row h2{margin:0;font-size:20px;line-height:1.3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ke-role{padding:3px 7px;background:#f1f4f2;border-radius:5px;color:#768078;font-size:9px}.ke-base-identity p{max-width:620px;margin:6px 0 10px;color:#868e89;font-size:11px;line-height:1.55;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ke-base-meta{gap:14px;color:#9aa09c;font-size:9px}.ke-base-meta span{display:flex;align-items:center;gap:4px}.ke-base-meta svg{width:12px;height:12px}.ke-inline-actions{gap:6px;align-self:flex-start}.ke-content-toolbar{flex:none;padding:13px 20px 12px;border-bottom:1px solid var(--ke-line)}.ke-folder-tabs{display:flex;align-items:center;gap:4px;overflow-x:auto;padding-bottom:11px}.ke-folder-tabs button{height:28px;border:0;background:transparent;border-radius:7px;padding:0 8px;display:flex;align-items:center;gap:5px;color:#777f7a;font-size:10px;white-space:nowrap;cursor:pointer}.ke-folder-tabs button:hover{background:#f5f7f5}.ke-folder-tabs button.active{background:#edf7f2;color:var(--ke-accent-dark);font-weight:600}.ke-folder-tabs button span{color:#9ca39e;font-size:9px}.ke-folder-tabs svg{width:12px;height:12px}.ke-folder-tabs .folder-add{color:var(--ke-accent-dark);margin-left:3px}.ke-folder-tabs .folder-manage{width:27px;padding:0;justify-content:center}.ke-tool-row{gap:7px}.ke-tool-row>.ke-search-box{flex:1;max-width:300px}.ke-select-wrap{height:34px;border:1px solid #e1e5e2;background:#fff;border-radius:9px;padding:0 8px;display:flex;align-items:center;color:#929a94}.ke-select-wrap select,.ke-folder-select select{border:0;outline:0;background:transparent;color:#636b66;font-size:10px}.ke-view-switch{height:34px;background:#f3f5f3;border-radius:9px;padding:3px;display:flex}.ke-view-switch button{width:28px;border:0;background:transparent;color:#9aa19c;border-radius:7px;display:grid;place-items:center;cursor:pointer}.ke-view-switch button.active{background:#fff;color:#3d4640;box-shadow:0 1px 4px rgba(30,45,35,.1)}
+.ke-import-wrap{position:relative;display:inline-flex}
+.ke-import-caret{width:13px!important;height:13px;transition:transform .15s ease}
+.ke-import-wrap:hover .ke-import-caret,.ke-import-wrap:focus-within .ke-import-caret{transform:rotate(180deg)}
+.ke-import-menu{position:absolute;top:calc(100% + 6px);right:0;z-index:60;min-width:180px;display:none;flex-direction:column;padding:5px;background:#fff;border:1px solid #e3e8e4;border-radius:11px;box-shadow:0 14px 36px rgba(23,35,27,.16)}
+.ke-import-wrap:hover .ke-import-menu,.ke-import-wrap:focus-within .ke-import-menu{display:flex}
+.ke-import-option{display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:8px;color:#3d4640;font-size:11px;cursor:pointer;white-space:nowrap}
+.ke-import-option:hover{background:#f2f8f5;color:var(--ke-accent-dark)}
+.ke-import-option svg{width:14px;height:14px;color:#69726c}
+.ke-documents{flex:1;min-height:0;overflow:auto;padding:18px 20px 28px}.ke-documents.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));align-content:start;gap:10px}.ke-document-card{position:relative;border:1px solid #e6eae7;border-radius:12px;background:#fff;padding:10px 12px;min-width:0;transition:.18s}.grid .ke-document-card{display:flex;flex-direction:column}.ke-document-card:hover{border-color:#ccd8d1;box-shadow:0 8px 24px rgba(39,64,48,.07);transform:translateY(-1px)}.ke-doc-open{width:100%;border:0;background:transparent;padding:0;display:grid;grid-template-columns:30px minmax(0,1fr);align-items:start;column-gap:8px;text-align:left;min-width:0;color:inherit;cursor:pointer}.ke-doc-open:disabled{cursor:default}.ke-file-icon{width:30px;min-width:30px;height:34px;box-sizing:border-box;display:grid;place-items:center;border-radius:8px;background:#f7f9f7;overflow:hidden}.ke-document-copy{width:100%;min-width:0;overflow:hidden;display:flex;flex-direction:column;gap:3px}.ke-doc-title{display:flex;align-items:baseline;gap:6px;min-width:0;max-width:100%}.ke-document-copy strong{min-width:0;font-size:11px;line-height:1.45;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ke-document-copy small{color:#9aa19c;font-size:9px;white-space:nowrap;flex-shrink:0}.ke-document-details{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:8px}.grid .ke-document-details{margin-top:auto;padding-top:8px}.ke-status{display:inline-flex;align-items:center;gap:5px;color:#6e7771;font-size:9px;white-space:nowrap}.ke-status i{width:6px;height:6px}.ke-status em{font-style:normal;color:#9aa19c}.ke-status.processing i,.ke-status.running i{background:#4b91e4;animation:ke-pulse 1.2s infinite}.ke-status.failed i,.ke-status.partial_failed i{background:#e25555}.ke-folder-select{min-width:0;display:flex;align-items:center;gap:3px;color:#9aa19c}.ke-folder-select svg{width:11px;height:11px}.ke-folder-select select{max-width:80px;text-overflow:ellipsis}.ke-error-text{font-size:9px;color:#cc4b4b;line-height:1.4;margin:7px 0 0}.ke-row-actions{position:absolute;right:9px;top:9px;display:flex;align-items:center;gap:2px;background:rgba(255,255,255,.96);border-radius:8px;padding:2px;opacity:0;transform:translateY(-3px);transition:.16s;box-shadow:0 2px 10px rgba(30,45,35,.08)}.ke-document-card:hover .ke-row-actions,.ke-row-actions:focus-within{opacity:1;transform:none}.ke-row-actions button{height:22px;border:0;background:transparent;border-radius:6px;padding:0 5px;display:flex;align-items:center;gap:3px;color:#69726c;font-size:9px;cursor:pointer}.ke-row-actions button:hover{background:#f2f5f3;color:#26312a}.ke-row-actions svg{width:11px;height:11px}.list.ke-documents{padding-top:8px}.list .ke-document-card{border-width:0 0 1px;border-radius:0;padding:7px 8px;display:grid;grid-template-columns:minmax(0,1fr) 240px 145px;align-items:center;gap:10px}.list .ke-doc-open{align-items:center}
+.list .ke-document-card:hover{transform:none;box-shadow:none;background:#fafbfa}.list .ke-document-details{margin:0 -10px 0 0;align-self:center;justify-content:flex-end}.list .ke-row-actions{position:static;opacity:1;transform:none;box-shadow:none;justify-content:flex-end;align-self:center}.list .ke-row-actions button span{display:none}.list .ke-error-text{grid-column:1/-1}.ke-document-loading{grid-column:1/-1;min-height:220px;display:flex;align-items:center;justify-content:center;color:var(--text-secondary);font-size:12px}.ke-document-loading p{margin:0;display:inline-flex;align-items:center}.ke-dot{width:4px;height:4px;margin-left:4px;border-radius:50%;background:currentColor;animation:ke-dot-pulse 1.2s infinite}.ke-dot:nth-child(2){animation-delay:.2s}.ke-dot:nth-child(3){animation-delay:.4s}.ke-empty-documents{grid-column:1/-1;align-self:center;margin:auto;display:flex;flex-direction:column;align-items:center;text-align:center;padding:45px 20px}.ke-empty-icon,.ke-empty-illustration{width:60px;height:60px;border-radius:18px;background:var(--ke-accent-soft);color:var(--ke-accent);display:grid;place-items:center}.ke-empty-icon svg,.ke-empty-illustration svg{width:27px;height:27px}.ke-empty-documents .ke-import-wrap{width:auto;height:auto}.ke-empty-documents h3{margin:14px 0 5px;font-size:14px}.ke-empty-documents p{margin:0 0 15px;color:#929994;font-size:11px}.ke-drop-mask{position:absolute;inset:10px;z-index:15;border:2px dashed #71c39f;border-radius:16px;background:rgba(237,250,244,.94);display:grid;place-items:center;pointer-events:none}.ke-drop-mask>div{display:flex;flex-direction:column;align-items:center;gap:7px;color:var(--ke-accent-dark)}.ke-drop-mask svg{width:36px;height:36px}.ke-drop-mask strong{font-size:15px}.ke-drop-mask span{color:#7b8c82;font-size:11px}
+.ke-ask-panel{border-left:1px solid var(--ke-line);display:flex;flex-direction:column;overflow:hidden;background:#fcfdfc}.ke-ask-header{height:67px;flex:none;padding:0 14px;display:flex;align-items:center;gap:9px;border-bottom:1px solid var(--ke-line);background:#fff}.ke-ai-avatar{width:31px;height:31px;border-radius:10px;background:linear-gradient(145deg,#32b981,#21865f);color:#fff;display:grid;place-items:center;box-shadow:0 4px 12px rgba(37,161,111,.2)}.ke-ai-avatar.small{width:23px;height:23px;border-radius:7px}.ke-ai-avatar.small svg{width:12px;height:12px}.ke-ask-header>div:nth-child(2){display:flex;flex:1;min-width:0;flex-direction:column;gap:3px}.ke-ask-header strong{font-size:12px}.ke-ask-header small{font-size:9px;color:#969d98;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ke-answer{flex:1;min-height:0;overflow:auto;padding:18px}.ke-history-entry{display:flex;flex-direction:column;gap:8px;padding-bottom:12px;margin-bottom:12px;border-bottom:1px dashed #e8ece9}.ke-history-entry:last-of-type{border-bottom:0}.ke-answer-welcome{height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center}.ke-answer-orb{width:52px;height:52px;border-radius:18px;background:radial-gradient(circle at 30% 25%,#fff 0,#e4f7ee 35%,#cceede 100%);color:var(--ke-accent);display:grid;place-items:center;box-shadow:0 8px 25px rgba(38,126,88,.12)}.ke-answer-orb svg{width:24px;height:24px}.ke-answer-welcome h3{font-size:14px;margin:15px 0 6px}.ke-answer-welcome>p{max-width:235px;margin:0;color:#8d9690;font-size:10px;line-height:1.7}.ke-question-suggestions{width:100%;margin-top:19px;display:flex;flex-direction:column;gap:7px}.ke-question-suggestions button{border:1px solid #e3e8e4;background:#fff;border-radius:10px;padding:10px 11px;display:flex;justify-content:space-between;align-items:center;color:#626b65;text-align:left;font-size:10px;cursor:pointer;transition:.16s}.ke-question-suggestions button:hover{border-color:#b9ddcb;background:#f5fbf8;color:var(--ke-accent-dark)}.ke-question-suggestions svg{width:12px;height:12px}.ke-answer-loading{height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;color:#8b948e;font-size:10px}.ke-question-bubble{margin-left:auto;width:fit-content;max-width:100%;padding:9px 11px;border-radius:11px 3px 11px 11px;background:#eef7f3;color:#3f4d45;font-size:11px;line-height:1.55}.ke-answer-label{display:flex;align-items:center;gap:7px;margin:18px 0 10px;font-size:10px}.ke-answer-text{font-size:11px;line-height:1.85;color:#3e4741;white-space:pre-wrap}.ke-evidence-title{display:flex;align-items:center;gap:5px;margin:18px 0 7px;color:#737d76;font-size:10px;font-weight:600}.ke-evidence-title svg{width:13px;height:13px}.ke-evidence{width:100%;margin-top:7px;padding:10px;border:1px solid #e3e8e4;border-radius:10px;background:#fff;text-align:left;color:inherit;cursor:pointer}.ke-evidence:hover{border-color:#c6ddd1;background:#fbfdfc}.ke-evidence>div{display:flex;gap:7px;align-items:center;font-size:9px}.ke-evidence b{width:18px;height:18px;border-radius:5px;background:var(--ke-accent-soft);color:var(--ke-accent-dark);display:grid;place-items:center}.ke-evidence strong{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ke-evidence span{margin-left:auto;color:#9aa19c}.ke-evidence p{font-size:9px;line-height:1.55;color:#747d77;margin:7px 0 0;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}.ke-warning{display:flex;gap:6px;color:#a56a14;font-size:9px;line-height:1.5}.ke-warning svg{width:13px;height:13px}.ke-ask-form{flex:none;padding:12px 14px 13px}.ke-composer{border:1px solid #dce3de;background:#fff;border-radius:13px;padding:8px 9px;box-shadow:0 5px 18px rgba(42,62,49,.06);transition:.18s}.ke-composer:focus-within{border-color:#91ceb2;box-shadow:0 0 0 3px rgba(37,161,111,.08)}.ke-composer.disabled{background:#f7f8f7}.ke-composer textarea{width:100%;min-height:50px;box-sizing:border-box;border:0;outline:0;resize:none;background:transparent;color:#303733;font-size:11px;line-height:1.55}.ke-composer>div{display:flex;align-items:center;justify-content:space-between}.ke-composer>div span{display:flex;align-items:center;gap:4px;color:#9aa19c;font-size:8px}.ke-composer>div span svg{width:11px;height:11px}.ke-composer>div button{width:28px;height:28px;border:0;border-radius:9px;background:var(--ke-accent);color:#fff;display:grid;place-items:center;cursor:pointer}.ke-composer>div button:disabled{background:#d8ddda;cursor:not-allowed}.ke-ask-form>small{display:block;margin-top:6px;text-align:center;color:#a1a7a3;font-size:8px}.ke-ask-fab{position:absolute;right:20px;bottom:20px;height:40px;border:0;border-radius:20px;background:var(--ke-accent);color:#fff;padding:0 15px;display:flex;align-items:center;gap:7px;box-shadow:0 8px 24px rgba(37,161,111,.25);cursor:pointer;z-index:10}.ke-ask-fab span{font-size:11px}
 .ke-loading-page,.ke-empty-page{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;color:#858e88}.ke-loading-page p{font-size:11px}.ke-empty-page h2{font-size:17px;color:#303632;margin:15px 0 6px}.ke-empty-page p{font-size:11px;margin:0 0 16px}.ke-empty-page.compact{height:100%}.ke-spinner{width:22px;height:22px;border:2px solid #dce9e2;border-top-color:var(--ke-accent);border-radius:50%;animation:ke-spin .75s linear infinite}
-.ke-modal-mask,.ke-drawer-mask{position:fixed;inset:0;background:rgba(26,31,28,.38);z-index:1200;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(2px)}.ke-modal{width:min(430px,calc(100vw - 32px));max-height:90vh;overflow:auto;background:#fff;border-radius:16px;padding:21px;box-shadow:0 24px 65px rgba(23,35,27,.2)}.ke-modal.small{width:min(360px,calc(100vw - 32px))}.ke-modal.wide{width:min(600px,calc(100vw - 32px))}.ke-modal header,.ke-preview-modal header,.ke-drawer header{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}.ke-modal header h3,.ke-preview-modal h3,.ke-drawer h2{margin:0;font-size:16px}.ke-modal header p,.ke-drawer header p{margin:4px 0 0;color:#929a95;font-size:10px;line-height:1.5}.ke-modal header>button,.ke-preview-modal header>button,.ke-drawer header>button{width:30px;height:30px;border:0;background:transparent;border-radius:8px;display:grid;place-items:center;color:#7d8580;cursor:pointer}.ke-modal header>button:hover,.ke-preview-modal header>button:hover,.ke-drawer header>button:hover{background:#f3f5f3}.ke-modal>label{display:flex;flex-direction:column;gap:6px;margin-top:16px;color:#59615c;font-size:11px}.ke-modal input,.ke-modal select,.ke-modal textarea{width:100%;box-sizing:border-box;border:1px solid #dfe4e0;border-radius:9px;background:#fff;padding:9px 10px;color:#303632;outline:0;font-size:11px}.ke-modal input:focus,.ke-modal select:focus,.ke-modal textarea:focus{border-color:#91ceb2;box-shadow:0 0 0 3px rgba(37,161,111,.07)}.ke-modal textarea{min-height:82px;resize:vertical}.ke-modal label>small{color:#9ba19d;font-size:9px;line-height:1.5}.ke-modal footer{display:flex;justify-content:flex-end;gap:8px;margin-top:20px}.ke-subject-search{display:grid;grid-template-columns:90px 1fr;gap:8px;margin-top:17px}.ke-subject-search>select{border:1px solid #dfe4e0;border-radius:9px;background:#fff;padding:0 8px;font-size:11px}.ke-subject-results{border:1px solid #e3e7e4;border-radius:10px;margin-top:7px;max-height:150px;overflow:auto}.ke-subject-results button{width:100%;border:0;border-bottom:1px solid #eff1ef;background:#fff;padding:8px 10px;display:grid;grid-template-columns:30px 1fr auto;gap:8px;align-items:center;text-align:left;color:inherit;cursor:pointer}.ke-subject-results button:hover{background:#f6faf8}.ke-subject-results button>span:nth-child(2){display:flex;flex-direction:column;gap:2px}.ke-subject-results strong{font-size:10px}.ke-subject-results small{color:#969e98;font-size:9px}.ke-subject-avatar{width:28px;height:28px;border-radius:9px;background:#eef7f3;color:var(--ke-accent-dark);display:grid;place-items:center}.ke-subject-avatar svg{width:14px;height:14px}.ke-permission-heading{display:flex;gap:6px;align-items:center;margin-top:18px;padding-bottom:7px;border-bottom:1px solid #edf0ed;font-size:11px}.ke-permission-heading span{color:#9aa19c}.ke-permission-list{max-height:250px;overflow:auto}.ke-permission-list>div{display:grid;grid-template-columns:32px 1fr 105px 32px;gap:8px;align-items:center;padding:9px 0;border-bottom:1px solid #f0f2f0}.ke-permission-copy{display:flex;flex-direction:column;gap:2px}.ke-permission-copy strong{font-size:10px}.ke-permission-copy small{font-size:9px;color:#9aa19c}.ke-permission-list>div>select{padding:7px}.ke-permission-list>p{color:#9aa19c;text-align:center;font-size:10px;padding:20px}.ke-modal.confirm{text-align:center;width:min(360px,calc(100vw - 32px));overflow:visible}.ke-confirm-icon{width:45px;height:45px;margin:0 auto 12px;border-radius:14px;background:#fff1ef;color:#d34c4c;display:grid;place-items:center}.ke-confirm-icon svg{width:22px;height:22px}.ke-modal.confirm h3{font-size:16px;margin:0}.ke-modal.confirm>p{font-size:10px;color:#838b86;line-height:1.65;margin:8px 10px}.ke-modal.confirm footer{justify-content:center}.preview-mask{padding:24px}.ke-preview-modal{width:min(1080px,94vw);height:min(820px,90vh);background:#fff;border-radius:15px;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 24px 70px rgba(18,29,22,.24)}.ke-preview-modal header{height:55px;flex:none;align-items:center;padding:0 16px;border-bottom:1px solid var(--ke-line)}.ke-preview-modal header>div{display:flex;align-items:center;gap:8px;min-width:0}.ke-preview-modal h3{font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ke-preview-modal iframe,.ke-preview-modal img,.ke-preview-modal pre{flex:1;min-height:0;width:100%;border:0;object-fit:contain;background:#f5f7f5;overflow:auto;box-sizing:border-box;padding:16px}.ke-drawer-mask{justify-content:flex-end;align-items:stretch}.ke-drawer{width:min(400px,90vw);background:#fff;padding:20px;overflow:auto;box-shadow:-18px 0 50px rgba(28,38,31,.13)}.ke-drawer .refresh{margin:15px 0;width:100%}.ke-operation{padding:12px 0;border-top:1px solid #edf0ed}.ke-operation>div:first-child{display:grid;grid-template-columns:30px 1fr auto;gap:8px;align-items:center;margin-bottom:9px}.ke-operation-icon{width:28px;height:28px;background:#f2f6f3;color:#6f7c74;border-radius:8px;display:grid;place-items:center}.ke-operation>div:first-child>div{display:flex;flex-direction:column;gap:2px}.ke-operation strong{font-size:10px}.ke-operation small{color:#949c97;font-size:8px}.ke-operation p{color:#c94a4a;font-size:9px}.ke-toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%);background:#26342c;color:#fff;border-radius:10px;padding:10px 14px;z-index:1600;display:flex;align-items:center;gap:7px;font-size:11px;box-shadow:0 9px 28px rgba(22,36,27,.24)}.ke-toast.error{background:#b83f43}.ke-toast svg{width:14px;height:14px}.ke-toast-enter-active,.ke-toast-leave-active{transition:.2s}.ke-toast-enter-from,.ke-toast-leave-to{opacity:0;transform:translate(-50%,8px)}
+.ke-modal-mask,.ke-drawer-mask{position:fixed;inset:0;background:rgba(26,31,28,.38);z-index:1200;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(2px)}.ke-modal{width:min(430px,calc(100vw - 32px));max-height:90vh;overflow:auto;background:#fff;border-radius:16px;padding:21px;box-shadow:0 24px 65px rgba(23,35,27,.2)}.ke-modal.small{width:min(360px,calc(100vw - 32px))}.ke-modal.wide{width:min(600px,calc(100vw - 32px))}.ke-modal header,.ke-preview-modal header,.ke-drawer header{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}.ke-modal header h3,.ke-preview-modal h3,.ke-drawer h2{margin:0;font-size:16px}.ke-modal header p,.ke-drawer header p{margin:4px 0 0;color:#929a95;font-size:10px;line-height:1.5}.ke-modal header>button,.ke-preview-modal header>button,.ke-drawer header>button{width:30px;height:30px;border:0;background:transparent;border-radius:8px;display:grid;place-items:center;color:#7d8580;cursor:pointer}.ke-modal header>button:hover,.ke-preview-modal header>button:hover,.ke-drawer header>button:hover{background:#f3f5f3}.ke-modal>label{display:flex;flex-direction:column;gap:6px;margin-top:16px;color:#59615c;font-size:11px}.ke-modal input,.ke-modal select,.ke-modal textarea{width:100%;box-sizing:border-box;border:1px solid #dfe4e0;border-radius:9px;background:#fff;padding:9px 10px;color:#303632;outline:0;font-size:11px}.ke-modal input:focus,.ke-modal select:focus,.ke-modal textarea:focus{border-color:#91ceb2;box-shadow:0 0 0 3px rgba(37,161,111,.07)}.ke-modal textarea{min-height:82px;resize:vertical}.ke-modal label>small{color:#9ba19d;font-size:9px;line-height:1.5}.ke-modal footer{display:flex;justify-content:flex-end;gap:8px;margin-top:20px}.ke-perm-loading{margin-top:18px;padding:26px 0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;color:var(--text-secondary);font-size:11px}.ke-perm-loading p{margin:0}.ke-perm-loading .ke-spinner{flex:none}.ke-perm-toolbar{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:16px;padding:8px 12px;border:1px solid #e3e7e4;border-radius:10px;background:#f8faf8;color:#7d8580;font-size:10px}.ke-perm-toolbar strong{color:var(--ke-accent-dark);font-size:12px}.ke-perm-tree{margin-top:7px;border:1px solid #e3e7e4;border-radius:10px;max-height:340px;overflow:auto;padding:6px 10px;background:#fff}.ke-perm-branch+.ke-perm-branch{margin-top:4px}.ke-perm-row{display:grid;grid-template-columns:24px 18px 1fr auto;gap:7px;align-items:center;padding:7px 4px;border-radius:8px}.ke-perm-row:hover{background:#f7faf8}.ke-perm-row.level-dept>.ke-perm-name{font-weight:650;font-size:12px;color:#3d4640}.ke-perm-row.level-division>.ke-perm-name{font-weight:600;font-size:11px;color:#4a544d;padding-left:2px}.ke-perm-row.level-team>.ke-perm-name{font-weight:500;font-size:11px;color:#59615c;padding-left:2px}.ke-perm-name{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ke-perm-count{color:#9aa19c;font-size:9px}.ke-perm-caret{width:22px;height:22px;padding:0;border:0;background:transparent;border-radius:6px;display:grid;place-items:center;color:#9aa19c;cursor:pointer}.ke-perm-caret:hover{background:#eef3ef;color:#59615c}.ke-perm-caret svg{width:13px;height:13px;transition:transform .15s ease}.ke-perm-caret svg.rotated{transform:rotate(-90deg)}.ke-perm-children{margin-left:24px;border-left:1px dashed #dfe4e0;padding-left:8px}.ke-perm-user{display:grid;grid-template-columns:18px 1fr auto;gap:8px;align-items:center;padding:5px 4px;border-radius:8px;cursor:pointer;color:#3d4640;font-size:11px}.ke-perm-user:hover{background:#f7faf8}.ke-perm-user span{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ke-perm-user small{color:#9aa19c;font-size:9px}.ke-perm-empty{margin:0;padding:22px 10px;color:#9aa19c;text-align:center;font-size:10px}.ke-perm-tree input[type=checkbox]{width:15px;height:15px;flex:none;box-sizing:border-box;margin:0;padding:0;border:0;background:transparent;accent-color:var(--ke-accent);cursor:pointer}.ke-modal.confirm{text-align:center;width:min(360px,calc(100vw - 32px));overflow:visible}.ke-confirm-icon{width:45px;height:45px;margin:0 auto 12px;border-radius:14px;background:#fff1ef;color:#d34c4c;display:grid;place-items:center}.ke-confirm-icon svg{width:22px;height:22px}.ke-modal.confirm h3{font-size:16px;margin:0}.ke-modal.confirm>p{font-size:10px;color:#838b86;line-height:1.65;margin:8px 10px}.ke-modal.confirm footer{justify-content:center}.preview-mask{padding:24px}.ke-preview-modal{width:min(1080px,94vw);height:min(820px,90vh);background:#fff;border-radius:15px;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 24px 70px rgba(18,29,22,.24)}.ke-preview-modal header{height:55px;flex:none;align-items:center;padding:0 16px;border-bottom:1px solid var(--ke-line)}.ke-preview-modal header>div{display:flex;align-items:center;gap:8px;min-width:0}.ke-preview-modal h3{font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ke-preview-modal iframe,.ke-preview-modal img,.ke-preview-modal pre{flex:1;min-height:0;width:100%;border:0;object-fit:contain;background:#f5f7f5;overflow:auto;box-sizing:border-box;padding:16px}.ke-drawer-mask{justify-content:flex-end;align-items:stretch}.ke-drawer{width:min(400px,90vw);background:#fff;padding:20px;overflow:auto;box-shadow:-18px 0 50px rgba(28,38,31,.13)}.ke-drawer .refresh{margin:15px 0;width:100%}.ke-operation{padding:12px 0;border-top:1px solid #edf0ed}.ke-operation>div:first-child{display:grid;grid-template-columns:30px 1fr auto;gap:8px;align-items:center;margin-bottom:9px}.ke-operation-icon{width:28px;height:28px;background:#f2f6f3;color:#6f7c74;border-radius:8px;display:grid;place-items:center}.ke-operation>div:first-child>div{display:flex;flex-direction:column;gap:2px}.ke-operation strong{font-size:10px}.ke-operation small{color:#949c97;font-size:8px}.ke-operation p{color:#c94a4a;font-size:9px}.ke-toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%);background:#26342c;color:#fff;border-radius:10px;padding:10px 14px;z-index:1600;display:flex;align-items:center;gap:7px;font-size:11px;box-shadow:0 9px 28px rgba(22,36,27,.24)}.ke-toast.error{background:#b83f43}.ke-toast svg{width:14px;height:14px}.ke-toast-enter-active,.ke-toast-leave-active{transition:.2s}.ke-toast-enter-from,.ke-toast-leave-to{opacity:0;transform:translate(-50%,8px)}
 .ke-workspace{grid-template-columns:var(--ke-library-width,252px) 6px minmax(490px,1fr) 6px var(--ke-ask-width,344px)}.ke-workspace.ask-closed{grid-template-columns:var(--ke-library-width,252px) 6px minmax(540px,1fr)}
-.sidebar-search{margin-bottom:12px}.ke-space-list{flex:1;min-height:0;overflow:auto;display:flex;flex-direction:column;gap:4px}.ke-space-group{border-radius:11px;overflow:hidden}.ke-space-group.active{background:#f8faf8}.ke-space-trigger{width:100%;min-height:48px;border:0;background:transparent;border-radius:10px;padding:7px 8px;display:grid;grid-template-columns:19px minmax(0,1fr) auto 14px;gap:8px;align-items:center;text-align:left;color:#5f6862;cursor:pointer}.ke-space-trigger:hover{background:#f4f7f5}.ke-space-group.active>.ke-space-trigger{color:var(--ke-accent-dark);background:#eef7f3}.ke-space-trigger>span{display:flex;min-width:0;flex-direction:column;gap:2px}.ke-space-trigger strong{font-size:11px}.ke-space-trigger small{font-size:8px;color:#999f9b;font-weight:400}.ke-space-trigger b{font-size:9px;font-weight:500;color:#979f99}.ke-space-trigger>svg:last-child{width:12px;height:12px;transition:transform .18s}.ke-space-trigger>svg.rotated{transform:rotate(180deg)}.ke-space-bases{margin:5px 0 8px 17px;padding-left:9px;border-left:2px solid #d9e9e0;display:flex;flex-direction:column;gap:2px}.ke-space-bases .ke-base-card{border-radius:9px;padding:7px}.ke-space-bases .ke-base-card.active{background:#fff;box-shadow:0 2px 8px rgba(31,68,47,.05)}.ke-space-bases .ke-base-cover{width:30px;height:35px}.ke-space-empty{padding:10px 6px;color:#9ba29d;font-size:9px;display:flex;align-items:center;justify-content:space-between;gap:6px}.ke-space-empty>small{display:block;max-width:105px;text-align:right;color:#9ba29d;line-height:1.35}.ke-space-empty button{border:0;background:transparent;color:var(--ke-accent-dark);display:flex;align-items:center;gap:3px;cursor:pointer}
+.sidebar-search{margin-bottom:12px}.ke-space-list{flex:1;min-height:0;overflow:auto;display:flex;flex-direction:column;gap:4px}.ke-space-group{border-radius:11px;overflow:hidden}.ke-space-group.active{background:#f8faf8}.ke-space-trigger{width:100%;min-height:48px;border:0;background:transparent;border-radius:10px;padding:7px 8px;display:grid;grid-template-columns:19px minmax(0,1fr) auto 14px;gap:8px;align-items:center;text-align:left;color:#5f6862;cursor:pointer}.ke-space-trigger:hover{background:#f4f7f5}.ke-space-group.active>.ke-space-trigger{color:var(--ke-accent-dark);background:#eef7f3}.ke-space-trigger>span{display:flex;min-width:0;flex-direction:column;gap:2px}.ke-space-trigger strong{font-size:11px}.ke-space-trigger small{font-size:8px;color:#999f9b;font-weight:400}.ke-space-trigger b{font-size:9px;font-weight:500;color:#979f99}.ke-space-trigger>svg:last-child{width:12px;height:12px;transition:transform .18s}.ke-space-trigger>svg.rotated{transform:rotate(180deg)}.ke-space-bases{margin:5px 0 8px 17px;padding-left:9px;border-left:2px solid #d9e9e0;display:flex;flex-direction:column;gap:2px}.ke-space-bases .ke-base-card{border-radius:9px;padding:6px 7px;gap:8px}.ke-space-bases .ke-base-card.active{background:#fff;box-shadow:0 2px 8px rgba(31,68,47,.05)}.ke-space-bases .ke-base-cover{width:26px;height:30px;flex:none}.ke-space-bases .ke-base-copy{gap:1px}.ke-space-bases .ke-base-copy strong{font-size:11px;line-height:1.3}.ke-space-bases .ke-base-copy small{font-size:9px;line-height:1.3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ke-space-empty{padding:10px 6px;color:#9ba29d;font-size:9px;display:flex;align-items:center;justify-content:space-between;gap:6px}.ke-space-empty>small{display:block;max-width:105px;text-align:right;color:#9ba29d;line-height:1.35}.ke-space-empty button{border:0;background:transparent;color:var(--ke-accent-dark);display:flex;align-items:center;gap:3px;cursor:pointer}
 .ke-folder-breadcrumbs{min-height:30px;display:flex;align-items:center;gap:3px;padding-bottom:11px;overflow-x:auto}.ke-folder-breadcrumbs>svg,.ke-folder-crumb>svg{width:12px;height:12px;color:#b3b8b5}.ke-folder-breadcrumbs>button,.ke-folder-crumb>button{height:28px;border:0;background:transparent;border-radius:7px;padding:0 7px;color:#8b928e;font-size:10px;white-space:nowrap;cursor:pointer}.ke-folder-breadcrumbs>button:hover,.ke-folder-breadcrumbs>button.current,.ke-folder-crumb>button:hover,.ke-folder-crumb>button.current{background:#f1f6f3;color:#27312b;font-weight:600}.ke-folder-crumb{display:inline-flex;align-items:center;gap:3px}.ke-folder-breadcrumbs .ke-folder-back{width:28px;padding:0;display:grid;place-items:center}.ke-folder-actions{display:flex;align-items:center;gap:3px;margin-left:auto;padding-left:12px}.ke-folder-actions button{height:28px;border:0;background:#f5f7f5;border-radius:7px;padding:0 7px;display:flex;align-items:center;gap:4px;color:#6e7771;font-size:9px;white-space:nowrap;cursor:pointer}.ke-folder-actions button:first-child{color:var(--ke-accent-dark);background:#edf7f2}.ke-folder-actions svg{width:12px;height:12px}
 .ke-folder-grid{grid-column:1/-1;display:flex;flex-direction:column;gap:2px;margin-bottom:11px}.ke-folder-card{width:100%;height:62px;border:0;border-bottom:1px solid #f0f2f0;background:#fff;padding:5px 10px;display:grid;grid-template-columns:54px minmax(0,1fr) 18px;gap:10px;align-items:center;text-align:left;color:inherit;border-radius:8px;cursor:pointer}.ke-folder-card:hover{background:#f8faf8}.ke-folder-art{position:relative;width:49px;height:35px;border-radius:4px 5px 5px 5px;background:linear-gradient(180deg,#bce7d1,#a8dbc0);color:#fff;display:grid;place-items:center}.ke-folder-art:before{content:"";position:absolute;left:3px;top:-6px;width:22px;height:8px;border-radius:4px 5px 0 0;background:#9bd5b8}.ke-folder-art svg{position:relative;width:23px;height:23px}.ke-folder-card>span:nth-child(2){display:flex;min-width:0;flex-direction:column;gap:4px}.ke-folder-card strong{font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ke-folder-card small{font-size:9px;color:#acb1ae}.ke-folder-card>svg{color:#c1c6c2;width:14px;height:14px}
-.ke-status.processing i,.ke-status.running i{animation:none}.ke-processing-age{margin-left:auto;color:#9aa19c;font-size:9px;white-space:nowrap}.ke-preview-modal>div:not(header){flex:1;min-height:0;overflow:auto}.ke-preview-modal ::v-deep .docx-wrapper{min-height:100%;background:#eef1ef}.ke-preview-modal ::v-deep .vue-office-excel{height:100%}.ke-preview-modal ::v-deep .pptx-preview-wrapper{height:100%;overflow:auto}
-@keyframes ke-pulse{50%{opacity:.35}}@keyframes ke-spin{to{transform:rotate(360deg)}}@keyframes ke-shimmer{0%{background-position:100% 0}100%{background-position:0 0}}
-@container(max-width:1100px){.ke-workspace,.ke-workspace.ask-closed{grid-template-columns:var(--ke-library-width,220px) 6px minmax(0,1fr)}.ke-resizer.ask{display:none}.ke-workspace:not(.ask-closed) .ke-content-panel{margin-right:min(var(--ke-ask-width,360px),88cqw)}.ke-ask-panel{position:absolute;right:0;top:0;bottom:0;width:min(var(--ke-ask-width,360px),88cqw);z-index:20;box-shadow:-14px 0 35px rgba(28,43,33,.13)}.ke-base-meta span:last-child{display:none}.ke-tool-row{flex-wrap:wrap}.ke-tool-row>.ke-search-box{max-width:none}.list .ke-document-card{grid-template-columns:minmax(180px,1fr) 190px 130px}}
-@container(max-width:700px){.ke-topbar{padding:0 10px}.ke-topbar-title span,.ke-topbar-actions .quiet{display:none}.ke-workspace,.ke-workspace.ask-closed{display:block}.ke-library-panel,.ke-resizer{display:none}.ke-content-panel{height:100%}.ke-base-hero{padding:18px 15px}.ke-inline-actions{position:absolute;right:14px}.ke-base-identity{padding-right:80px}.ke-base-meta{flex-wrap:wrap}.ke-content-toolbar{padding:11px 12px}.ke-documents{padding:12px}.ke-documents.grid{grid-template-columns:1fr}.ke-view-switch{display:none}.list .ke-document-card{display:block}.list .ke-document-details{margin-top:12px}.list .ke-row-actions{margin-top:8px;justify-content:flex-start}.ke-base-identity p{white-space:normal;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}}
+.ke-status.paused i{background:#9aa19c}.ke-status.processing i,.ke-status.running i{animation:none}.ke-processing-age{margin-left:auto;color:#9aa19c;font-size:9px;white-space:nowrap}.ke-preview-modal>div:not(header){flex:1;min-height:0;overflow:auto}.ke-preview-modal ::v-deep .docx-wrapper{min-height:100%;background:#eef1ef}.ke-preview-modal ::v-deep .vue-office-excel{height:100%}.ke-preview-modal ::v-deep .pptx-preview-wrapper{height:100%;overflow:auto}
+@keyframes ke-pulse{50%{opacity:.35}}@keyframes ke-spin{to{transform:rotate(360deg)}}@keyframes ke-dot-pulse{0%,100%{opacity:.2}50%{opacity:1}}
+@container ke-shell (max-width:1100px){.ke-workspace,.ke-workspace.ask-closed{grid-template-columns:var(--ke-library-width,220px) 6px minmax(0,1fr) 6px 0}.ke-workspace:not(.ask-closed) .ke-content-panel{margin-right:min(var(--ke-ask-width,360px),max(0px,calc(100cqw - var(--ke-library-width,220px) - 12px - 320px)))}.ke-ask-panel{position:absolute;right:0;top:0;bottom:0;width:min(var(--ke-ask-width,360px),max(0px,calc(100cqw - var(--ke-library-width,220px) - 12px - 320px)));z-index:20;box-shadow:-14px 0 35px rgba(28,43,33,.13)}.ke-base-meta span:last-child{display:none}.ke-tool-row{flex-wrap:wrap}.ke-tool-row>.ke-search-box{max-width:none}.list .ke-document-card{grid-template-columns:minmax(0,1fr) 190px 130px}/* 浮层模式下文档列被问答面板压缩：文档名放开换行，保证完整可见不被截断 */.ke-document-copy strong{white-space:normal;word-break:break-word}}
+/* 内容面板被拖窄时：隐藏大小/日期等次要信息，为文档名让出空间；文档名放开换行防截断。 */
+@container ke-content (max-width:720px){.list .ke-doc-title small{display:none}.ke-document-copy strong{white-space:normal;word-break:break-word}.list .ke-doc-open{grid-column:1/-1}.list .ke-document-details{grid-column:1/-1;justify-content:flex-start;margin:0}.list .ke-row-actions{grid-column:1/-1;justify-content:flex-start;margin-top:2px}}
+@container ke-shell (max-width:700px){.ke-topbar{padding:0 10px}.ke-topbar-title span,.ke-topbar-actions .quiet{display:none}.ke-workspace,.ke-workspace.ask-closed{display:block}.ke-library-panel,.ke-resizer.library{display:none}.ke-content-panel{height:100%}.ke-base-hero{padding:18px 15px}.ke-inline-actions{position:absolute;right:14px}.ke-base-identity{padding-right:80px}.ke-base-meta{flex-wrap:wrap}.ke-content-toolbar{padding:11px 12px}.ke-documents{padding:12px}.ke-documents.grid{grid-template-columns:1fr}.ke-view-switch{display:none}.list .ke-document-card{display:block}.list .ke-document-details{margin-top:12px;margin-right:0}.list .ke-row-actions{margin-top:8px;justify-content:flex-start}.ke-base-identity p{white-space:normal;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}/* 左侧导航隐藏后文档列占满容器：问答浮层拉宽上限收紧到给文档列保底 220px */.ke-ask-panel{width:min(var(--ke-ask-width,360px),calc(100cqw - 220px))}.ke-workspace:not(.ask-closed) .ke-content-panel{margin-right:min(var(--ke-ask-width,360px),calc(100cqw - 220px))}}
 
 /* EasyAgent surface and dark-mode alignment. */
 .ke-library-panel,.ke-content-panel,.ke-ask-panel,.ke-ask-header,.ke-document-card,.ke-folder-card,.ke-modal,.ke-preview-modal,.ke-drawer,.ke-composer,.ke-evidence,.ke-question-suggestions button{background:var(--bg-secondary);color:var(--text-primary)}
-.ke-search-box,.ke-select-wrap,.ke-upload-queue,.ke-view-switch,.ke-role,.ke-operation-icon,.ke-file-icon{background:var(--bg-tertiary);border-color:var(--border-color);color:var(--text-secondary)}
+.ke-search-box,.ke-select-wrap,.ke-view-switch,.ke-role,.ke-operation-icon,.ke-file-icon{background:var(--bg-tertiary);border-color:var(--border-color);color:var(--text-secondary)}
 .ke-search-box input,.ke-select-wrap select,.ke-folder-select select,.ke-modal input,.ke-modal select,.ke-modal textarea,.ke-composer textarea{color:var(--text-primary);background:transparent}
 .ke-search-box:focus-within,.ke-modal input:focus,.ke-modal select:focus,.ke-modal textarea:focus,.ke-composer:focus-within{border-color:var(--accent-color);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent-color) 14%,transparent)}
 .ke-space-group.active,.ke-space-trigger:hover,.ke-base-card:hover,.ke-folder-card:hover,.list .ke-document-card:hover,.ke-row-actions button:hover{background:var(--bg-tertiary)}
 .ke-space-group.active>.ke-space-trigger,.ke-base-card.active,.ke-folder-actions button:first-child,.ke-question-bubble{background:color-mix(in srgb,var(--accent-color) 11%,transparent);color:var(--accent-color)}
 .ke-space-bases .ke-base-card.active,.ke-view-switch button.active,.ke-row-actions{background:var(--bg-secondary)}
 .ke-space-bases{border-left-color:color-mix(in srgb,var(--accent-color) 35%,var(--border-color))}
-.ke-modal input,.ke-modal select,.ke-modal textarea,.ke-subject-search>select,.ke-subject-results,.ke-permission-heading,.ke-permission-list>div,.ke-operation{border-color:var(--border-color)}
-.ke-subject-results button{background:var(--bg-secondary);color:var(--text-primary);border-color:var(--border-color)}
-.ke-subject-results button:hover{background:var(--bg-tertiary)}
+.ke-modal input,.ke-modal select,.ke-modal textarea,.ke-operation{border-color:var(--border-color)}
 .ke-preview-modal iframe,.ke-preview-modal img,.ke-preview-modal pre{background:var(--bg-primary)}
 .ke-ai-avatar{background:linear-gradient(145deg,#38bdf8,#0284c7);box-shadow:0 4px 12px color-mix(in srgb,var(--accent-color) 24%,transparent)}
 .ke-folder-art{background:linear-gradient(180deg,#7dd3fc,#38bdf8)}.ke-folder-art:before{background:#0ea5e9}
 .ke-preview-loading{flex:1;min-height:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;color:var(--text-secondary);font-size:11px}.ke-preview-loading p{margin:0}.ke-preview-loading .ke-spinner{flex:none}
 .ke-stop-button{color:#d14b4b!important}.ke-answer-text{min-height:18px}.ke-stream-cursor{display:inline-block;width:2px;height:1em;margin-left:3px;vertical-align:-2px;background:var(--accent-color);animation:ke-cursor-blink .8s steps(2,end) infinite}.ke-ask-error{margin-top:14px;padding:11px;border:1px solid color-mix(in srgb,#d14b4b 28%,var(--border-color));border-radius:10px;background:color-mix(in srgb,#d14b4b 7%,var(--bg-secondary));color:var(--text-secondary);font-size:10px;line-height:1.55;display:grid;grid-template-columns:16px minmax(0,1fr) auto;gap:7px;align-items:start}.ke-ask-error>svg{width:15px;height:15px;color:#d14b4b;margin-top:1px}.ke-ask-error p{margin:0}.ke-ask-error button{border:0;background:transparent;color:var(--accent-color);font-weight:600;display:flex;align-items:center;gap:4px;cursor:pointer}.ke-ask-error button svg{width:12px;height:12px}@keyframes ke-cursor-blink{50%{opacity:0}}
-.ke-agent-message{width:100%;min-width:0}.ke-agent-message ::v-deep .message.assistant{width:100%;max-width:none;margin:0;padding:0}.ke-agent-message ::v-deep .message-content{min-width:0}.ke-agent-message ::v-deep .process-wrapper,.ke-agent-message ::v-deep .knowledge-citations{box-sizing:border-box}.ke-permission-note{margin:10px 0 0;color:var(--text-secondary);font-size:9px;line-height:1.5}
-
-<style>
-/* 布局拖拽期间禁用文本选择（原本使用 Vue3 的 :global()，Vue2 放到非 scoped 块） */
-body.ke-layout-resizing .ke-resizer:after{background:var(--accent-color);box-shadow:0 0 0 2px color-mix(in srgb,var(--accent-color) 14%,transparent)}
+.ke-agent-message{width:100%;min-width:0}.ke-agent-message ::v-deep .message.assistant{width:100%;max-width:none;margin:0;padding:0}.ke-agent-message ::v-deep .message-content{min-width:0}.ke-agent-message ::v-deep .process-wrapper,.ke-agent-message ::v-deep .knowledge-citations{box-sizing:border-box}.ke-permission-note{margin:10px 0 0;color:var(--text-secondary);font-size:9px;line-height:1.5}.ke-create-perm{margin-top:16px;border:1px solid #e3e7e4;border-radius:10px;padding:12px;background:#fbfdfb}.ke-create-perm-toggle{display:grid;grid-template-columns:16px auto 1fr;gap:8px;align-items:start;cursor:pointer;color:#3d4640;font-size:12px}.ke-create-perm-toggle input{width:16px;height:16px;margin:1px 0 0;accent-color:var(--ke-accent);cursor:pointer}.ke-create-perm-toggle span{font-weight:600;white-space:nowrap}.ke-create-perm-toggle small{grid-column:2/4;color:#9ba19d;font-size:9px;line-height:1.5;white-space:normal}.ke-create-perm .ke-perm-toolbar{margin-top:12px}.ke-create-perm-tree{max-height:240px}
+/* 弹窗内的搜索框：.ke-modal input 会给嵌套 input 误加边框/内边距，形成框中框，这里显式还原 */
+.ke-modal .ke-search-box input{width:auto;min-width:0;flex:1;border:0;outline:0;background:transparent;padding:0;color:var(--text-primary);font-size:12px}
 </style>

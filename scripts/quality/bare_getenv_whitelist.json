@@ -1,0 +1,44 @@
+{
+  "_comment": "E2 裸 os.getenv 基线：每条记录文件 + 源码行 + 次数。新增条目必须写清原因；优先迁移到 easy_agent.bootstrap.env。",
+  "allowed": {
+    "easy_agent/api/auth.py": {
+      "DEFAULT_RESET_PASSWORD = os.environ.get(\"EASY_DEFAULT_RESET_PASSWORD\", \"123456\")": 1
+    },
+    "easy_agent/bootstrap/env.py": {
+      "raw = os.environ.get(name)": 1
+    },
+    "easy_agent/knowledges/core/config.py": {
+      "\"base_url\": section.get(\"base_url\") or os.environ.get(\"RAGFLOW_BASE_URL\") or \"\",": 1,
+      "\"api_key\": section.get(\"api_key\") or os.environ.get(\"RAGFLOW_API_KEY\") or \"\",": 1,
+      "or os.environ.get(\"RAGFLOW_SHARED_DATASET_ID\")": 1,
+      "or os.environ.get(\"RAGFLOW_EMBEDDING_MODEL\")": 1,
+      "raw = os.environ.get(name)": 1,
+      "env_value = os.environ.get(match.group(1))": 1
+    },
+    "easy_agent/knowledges/personnel/bootstrap.py": {
+      "password = os.environ.get(\"EASYAGENT_BOOTSTRAP_ADMIN_PASSWORD\", \"\")": 1
+    },
+    "easy_agent/sandboxing/landlock.py": {
+      "rw = [d for d in os.environ.get(\"EASY_LANDLOCK_RW\", \"\").split(sep) if d]": 1,
+      "ro = [d for d in os.environ.get(\"EASY_LANDLOCK_RO\", \"\").split(sep) if d]": 1,
+      "rf = [d for d in os.environ.get(\"EASY_LANDLOCK_RW_FILES\", \"\").split(sep) if d]": 1,
+      "cwd = os.environ.get(\"EASY_LANDLOCK_CWD\")": 1
+    },
+    "easy_agent/services/mcp_evidence.py": {
+      "raw = os.getenv(\"EASY_MCP_MAX_CONTENT_CHARS\", \"\").strip()": 1
+    },
+    "easy_agent/services/mcp_sessions.py": {
+      "raw = os.getenv(name, \"\").strip()": 1
+    },
+    "easy_agent/utils/auth.py": {
+      "return (os.environ.get(\"AGENT_ENV\") or \"dev\").strip().lower()": 1,
+      "value = secret if secret is not None else os.environ.get(\"EASY_JWT_SECRET\")": 1,
+      "env_secret = os.environ.get(\"EASY_JWT_SECRET\")": 1
+    },
+    "easy_agent/utils/env_loader.py": {
+      "override = os.environ.get(\"EASY_ENV_OVERRIDE\", \"\") == \"1\"": 1,
+      "env_file = os.environ.get(\"EASY_ENV_FILE\")": 1,
+      "agent_env = (os.environ.get(\"AGENT_ENV\") or \"dev\").strip().lower()": 1
+    }
+  }
+}

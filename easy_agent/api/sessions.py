@@ -1,5 +1,6 @@
 """Session management routes"""
 
+import asyncio
 import logging
 import os
 import shutil
@@ -10,10 +11,18 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 
-from ..agent import release_session_checkpointer
-from ..db import Database, get_database
-from ..models.db import SessionModel
-from ..models.api import (
+from easy_agent.agent.backend import agent_artifacts_dir
+from easy_agent.persistence.checkpoints import delete_session_threads
+from easy_agent.db.session_repository import SessionRepository
+from easy_agent.api.deps import (  # noqa: F401 - 旧模块级名字 re-export
+    as_session_repository as _as_session_repository,
+    get_session_repository,
+)
+from easy_agent.models.db import SessionModel
+from easy_agent.models.api import (
+    SessionPinUpdateResponse,
+    SessionTitleUpdateResponse,
+    SessionUploadResponse,
     AddMessageRequest,
     AddMessageResponse,
     CreateSessionRequest,
@@ -25,10 +34,15 @@ from ..models.api import (
     SessionInfo,
     UpdateTitleRequest,
 )
-from ..middleware import get_current_username
-from ..utils import get_owned_session
-from ..config import Config
-from ..services import get_agent_config, remove_session_agent
+from easy_agent.middleware import get_current_username
+from easy_agent.bootstrap.config import Config
+from easy_agent.services import clear_session_connectors, get_agent_config, remove_session_agent
+from easy_agent.services.session_uploads import (
+    UploadTooLargeError,
+    append_manifest,
+    save_upload_streaming,
+    store_parsed_content,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -38,52 +52,66 @@ def generate_workspace_name(session_id: str) -> str:
     return f"{now.strftime('%Y%m%d')}_{now.strftime('%H%M%S')}_{session_id[:5]}"
 
 
+def _latest_usage(messages: list[dict]) -> dict:
+    """最后一条带 token 用量的 assistant 消息的 ``usage``，没有则返回空 dict。
+
+    跳过没有调用模型的回复（如专家相关性预检的拒答，用量全为 0）。
+    """
+    for msg in reversed(messages):
+        if msg.get("role") != "assistant":
+            continue
+        usage = msg.get("usage") or {}
+        if any(usage.get(key) for key in ("input_tokens", "output_tokens", "context_tokens")):
+            return usage
+    return {}
+
+
 def compute_session_usage(messages: list[dict]) -> dict | None:
-    """从消息列表中计算会话级别的 token 用量。
+    """会话详情 / 历史接口的用量，与流式 ``token_usage`` 同一口径。
+
+    每条 assistant 消息落库的是该轮**最近一次模型调用**的用量，而每次调用的输入已包含
+    之前各轮的全部历史：跨轮相加会把历史重复计算（三轮 10k / 20k / 30k 加成 60k），
+    既不是上下文占用也不是计费量，还和对话进行中显示的值对不上。所以 token 字段取最后
+    一条有用量的 assistant 消息；``elapsed_time`` / ``step_count`` 可以相加，仍按会话累计。
 
     Returns:
         包含 input_tokens/output_tokens/reasoning_tokens/context_tokens/
         elapsed_time/step_count 的字典，如果没有任何用量数据则返回 None。
     """
-    total_input = 0
-    total_output = 0
-    total_reasoning = 0
-    context_tokens = 0
+    latest = _latest_usage(messages)
     total_elapsed = 0.0
     total_steps = 0
-
     for msg in messages:
         msg_usage = msg.get("usage") or {}
-        total_input += msg_usage.get("input_tokens", 0) or 0
-        total_output += msg_usage.get("output_tokens", 0) or 0
-        # 思考 token（output 的子集），仅用于拆分展示
-        total_reasoning += msg_usage.get("reasoning_tokens", 0) or 0
         total_elapsed += msg_usage.get("elapsed_time", 0) or 0
         total_steps += msg_usage.get("step_count", 0) or 0
 
-    # 从最后一条 assistant 消息获取上下文窗口占用
-    # 优先使用 context_tokens（最后一次 API 调用的 input_tokens），
-    # 旧消息无此字段时回退到 input_tokens
-    for msg in reversed(messages):
-        if msg.get("role") == "assistant":
-            last_usage = msg.get("usage") or {}
-            if last_usage.get("context_tokens"):
-                context_tokens = last_usage["context_tokens"]
-                break
-            if last_usage.get("input_tokens"):
-                context_tokens = last_usage["input_tokens"]
-                break
+    input_tokens = latest.get("input_tokens", 0) or 0
+    output_tokens = latest.get("output_tokens", 0) or 0
+    # 优先使用 context_tokens（最后一次 API 调用的 input_tokens），旧消息无此字段时回退到 input_tokens
+    context_tokens = latest.get("context_tokens") or input_tokens
 
-    if total_input > 0 or total_output > 0 or total_elapsed > 0 or total_steps > 0:
+    if input_tokens > 0 or output_tokens > 0 or total_elapsed > 0 or total_steps > 0:
         return {
-            "input_tokens": total_input,
-            "output_tokens": total_output,
-            "reasoning_tokens": total_reasoning,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            # 思考 token（output 的子集），仅用于拆分展示
+            "reasoning_tokens": latest.get("reasoning_tokens", 0) or 0,
             "context_tokens": context_tokens,
             "elapsed_time": round(total_elapsed, 2),
             "step_count": total_steps,
         }
     return None
+
+
+def session_context_length(messages: list[dict]) -> int | None:
+    """会话最近一次模型调用所用模型的上下文窗口（占用率的分母）。
+
+    会话不记录所用模型（输入框可以逐轮切换），窗口随 assistant 消息的 ``usage`` 落库；
+    旧消息没有这个字段时退回当前默认模型（:func:`get_context_length`）。
+    """
+    value = _latest_usage(messages).get("context_length")
+    return int(value) if value else get_context_length()
 
 
 def get_context_length() -> int | None:
@@ -107,18 +135,43 @@ def get_context_length() -> int | None:
         return None
 
 
+def _get_max_file_size_mb() -> int | None:
+    """读取配置中的单文件上传大小上限（MB）。
+
+    返回 None 表示不做限制（``upload_limits.enabled=false`` 或读取配置失败）；
+    读取失败按"不拦"处理，避免配置异常时把上传功能整体打死。
+    与 get_context_length 一致：优先复用启动时初始化的全局配置，兜底读盘。
+    """
+    try:
+        cfg = get_agent_config()
+        if cfg and cfg.get("config"):
+            limits = getattr(cfg["config"], "upload_limits", None)
+            if limits is None:
+                return None
+            return int(limits.max_file_size_mb) if limits.enabled else None
+    except Exception as e:
+        logger.warning(f"读取上传限额配置失败（本次不做单文件大小限制）: {e}")
+        return None
+    return None
+
+
 router = APIRouter(
     prefix="/agent/sessions",
     tags=["Sessions"],
 )
 
 
+# 批次 4：repository provider 统一在 ``api.deps``；旧名字在此 re-export。
+
+
 @router.post("", summary="创建新会话", response_model=CreateSessionResponse)
 async def create_session(
     request: CreateSessionRequest,
-    db: Annotated[Database, Depends(get_database)],
+    db: Annotated[SessionRepository, Depends(get_session_repository)],
     username: Annotated[str, Depends(get_current_username)],
 ):
+    repo = _as_session_repository(db)
+
     session_id = str(uuid.uuid4())
     now = datetime.now().isoformat()
     workspace_name = generate_workspace_name(session_id)
@@ -135,8 +188,8 @@ async def create_session(
         workspace_name=workspace_name,
     )
 
-    db.create_session(session_data)
-    db.update_session_workspace_name(session_id, workspace_name)
+    repo.create_session(session_data)
+    repo.update_session_workspace_name(session_id, workspace_name)
 
     logger.info(
         f"创建会话 | ID: {session_id} | 标题: {title} | 工作区: {workspace_name}"
@@ -153,12 +206,14 @@ async def create_session(
 
 @router.get("", summary="获取会话列表", response_model=list[SessionInfo])
 async def list_sessions(
-    db: Annotated[Database, Depends(get_database)],
+    db: Annotated[SessionRepository, Depends(get_session_repository)],
     username: Annotated[str, Depends(get_current_username)],
     limit: int = Query(default=50, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
 ):
-    sessions = db.list_sessions(limit=limit, offset=offset, username=username)
+    repo = _as_session_repository(db)
+
+    sessions = repo.list_sessions(limit=limit, offset=offset, username=username)
 
     return [
         SessionInfo(
@@ -175,23 +230,27 @@ async def list_sessions(
 
 @router.get("/count", summary="获取会话总数", response_model=SessionCountResponse)
 async def count_sessions(
-    db: Annotated[Database, Depends(get_database)],
+    db: Annotated[SessionRepository, Depends(get_session_repository)],
     username: Annotated[str, Depends(get_current_username)],
 ):
-    total = db.count_sessions(username=username)
+    repo = _as_session_repository(db)
+
+    total = repo.count_sessions(username=username)
     return SessionCountResponse(total_sessions=total)
 
 
 @router.get("/{session_id}", summary="获取会话详情", response_model=SessionDetail)
 async def get_session(
     session_id: str,
-    db: Annotated[Database, Depends(get_database)],
+    db: Annotated[SessionRepository, Depends(get_session_repository)],
     username: Annotated[str, Depends(get_current_username)],
 ):
-    session = get_owned_session(db, session_id, username)
+    repo = _as_session_repository(db)
+
+    session = repo.get_owned_session(session_id, username)
 
     usage = compute_session_usage(session.messages or [])
-    context_length = get_context_length()
+    context_length = session_context_length(session.messages or [])
 
     return SessionDetail(
         session_id=session.session_id,
@@ -205,32 +264,36 @@ async def get_session(
     )
 
 
-@router.put("/{session_id}/title", summary="更新会话标题")
+@router.put("/{session_id}/title", summary="更新会话标题", response_model=SessionTitleUpdateResponse)
 async def update_title(
     session_id: str,
     request: UpdateTitleRequest,
-    db: Annotated[Database, Depends(get_database)],
+    db: Annotated[SessionRepository, Depends(get_session_repository)],
     username: Annotated[str, Depends(get_current_username)],
 ):
-    session = get_owned_session(db, session_id, username)
+    repo = _as_session_repository(db)
+
+    repo.get_owned_session(session_id, username)
 
     title = request.title or "未命名会话"
-    db.update_session_title(session_id, title)
+    repo.update_session_title(session_id, title)
 
     logger.info(f"更新会话标题 | ID: {session_id} | 新标题: {title}")
 
     return {"status": "updated", "session_id": session_id, "title": title}
 
 
-@router.put("/{session_id}/pin", summary="切换会话置顶")
+@router.put("/{session_id}/pin", summary="切换会话置顶", response_model=SessionPinUpdateResponse)
 async def toggle_pin(
     session_id: str,
-    db: Annotated[Database, Depends(get_database)],
+    db: Annotated[SessionRepository, Depends(get_session_repository)],
     username: Annotated[str, Depends(get_current_username)],
 ):
-    session = get_owned_session(db, session_id, username)
+    repo = _as_session_repository(db)
 
-    new_val = db.toggle_session_pin(session_id)
+    repo.get_owned_session(session_id, username)
+
+    new_val = repo.toggle_session_pin(session_id)
     action = "置顶" if new_val else "取消置顶"
     logger.info(f"会话{action} | ID: {session_id}")
 
@@ -242,12 +305,14 @@ async def toggle_pin(
 )
 async def delete_session(
     session_id: str,
-    db: Annotated[Database, Depends(get_database)],
+    db: Annotated[SessionRepository, Depends(get_session_repository)],
     username: Annotated[str, Depends(get_current_username)],
 ):
-    session = get_owned_session(db, session_id, username)
+    repo = _as_session_repository(db)
 
-    session_files = db.get_session_files(session_id)
+    session = repo.get_owned_session(session_id, username)
+
+    session_files = repo.get_session_files(session_id)
     for f in session_files:
         file_path = Path(f["file_path"])
         if file_path.exists():
@@ -263,11 +328,23 @@ async def delete_session(
     except Exception as e:
         logger.warning(f"移除缓存 Agent 失败: {e}")
 
-    # 释放该会话的 HITL checkpointer（未调用时由 agent.py 的 FIFO 上限兜底）
+    # 会话级连接器开关记录随会话一起清掉（进程内缓存，不清理会残留到进程结束）
     try:
-        release_session_checkpointer(session_id)
+        clear_session_connectors(session_id)
     except Exception as e:
-        logger.warning(f"释放会话 checkpointer 失败: {e}")
+        logger.warning(f"清除会话连接器开关失败: {e}")
+
+    # 删除该会话的 checkpoint：官方 saver 里的会话 thread 与每条消息一个的旧 thread
+    # （message_id 取自 agent_runs），以及 legacy 快照（DA-03）
+    try:
+        message_ids = repo.list_run_message_ids(session_id)
+    except Exception as e:
+        logger.warning(f"读取会话 run 记录失败，只删除会话 thread: {e}")
+        message_ids = []
+    try:
+        await delete_session_threads(session_id, message_ids)
+    except Exception as e:
+        logger.warning(f"删除会话 checkpoint 失败: {e}")
 
     user_workspace_dir = Config.get_user_workspace_dir(username)
     # 候选工作区目录名：workspace_name（首轮/重命名后）与 session_id（旧会话回退）
@@ -300,7 +377,16 @@ async def delete_session(
             f"workspace_name={session.workspace_name} | user_dir={user_workspace_dir}"
         )
 
-    db.delete_session(session_id)
+    # 框架产物（大工具结果 / 对话历史）放在工作区之外的隐藏目录（DA-04），随会话一起删
+    artifacts_dir = agent_artifacts_dir(username, session_id)
+    if artifacts_dir.exists():
+        try:
+            shutil.rmtree(artifacts_dir)
+            logger.info(f"删除会话产物目录 | 路径: {artifacts_dir}")
+        except Exception as e:
+            logger.warning(f"删除会话产物目录失败: {artifacts_dir} | {e}")
+
+    repo.delete_session(session_id)
 
     logger.info(f"删除会话 | ID: {session_id}")
 
@@ -314,13 +400,15 @@ async def delete_session(
 )
 async def get_chat_history(
     session_id: str,
-    db: Annotated[Database, Depends(get_database)],
+    db: Annotated[SessionRepository, Depends(get_session_repository)],
     username: Annotated[str, Depends(get_current_username)],
 ):
-    session = get_owned_session(db, session_id, username)
+    repo = _as_session_repository(db)
+
+    session = repo.get_owned_session(session_id, username)
 
     usage = compute_session_usage(session.messages or [])
-    context_length = get_context_length()
+    context_length = session_context_length(session.messages or [])
 
     return GetChatHistoryResponse(
         session_id=session.session_id,
@@ -339,17 +427,19 @@ async def get_chat_history(
 async def add_message(
     session_id: str,
     request: AddMessageRequest,
-    db: Annotated[Database, Depends(get_database)],
+    db: Annotated[SessionRepository, Depends(get_session_repository)],
     username: Annotated[str, Depends(get_current_username)],
 ):
-    session = get_owned_session(db, session_id, username)
+    repo = _as_session_repository(db)
+
+    session = repo.get_owned_session(session_id, username)
 
     message = {
         "role": request.role,
         "content": request.content,
         "timestamp": datetime.now().isoformat(),
     }
-    db.add_message(session_id, message)
+    repo.add_message(session_id, message)
 
     return AddMessageResponse(
         session_id=session_id,
@@ -357,14 +447,16 @@ async def add_message(
     )
 
 
-@router.post("/{session_id}/upload", summary="上传文件到会话")
+@router.post("/{session_id}/upload", summary="上传文件到会话", response_model=SessionUploadResponse)
 async def upload_session_file(
     session_id: str,
-    db: Annotated[Database, Depends(get_database)],
+    db: Annotated[SessionRepository, Depends(get_session_repository)],
     username: Annotated[str, Depends(get_current_username)],
     file: UploadFile = File(...),
 ):
-    session = get_owned_session(db, session_id, username)
+    repo = _as_session_repository(db)
+
+    repo.get_owned_session(session_id, username)
 
     Config.sanitize_username(username)
     upload_dir = Config.get_user_workspace_dir(username) / "uploadfiles"
@@ -375,29 +467,87 @@ async def upload_session_file(
     saved_name = f"{file_id}_{safe_filename}"
     file_path = upload_dir / saved_name
 
-    content = await file.read()
-    file_path.write_bytes(content)
+    # 流式落盘 + 单文件上限（权威校验）：前端已按 upload_limits 拦截，这里防止
+    # 直接调接口绕过；分块读取避免把整个请求体读进内存。
+    max_file_size_mb = _get_max_file_size_mb()
+    max_bytes = (
+        max_file_size_mb * 1024 * 1024 if max_file_size_mb else None
+    )
+    try:
+        size = await save_upload_streaming(file, file_path, max_bytes=max_bytes)
+    except UploadTooLargeError as exc:
+        actual_mb = round(exc.size / 1024 / 1024, 2)
+        limit_mb = exc.limit // (1024 * 1024)
+        logger.warning(
+            f"文件上传被拒（超过单文件上限）| 文件名: {safe_filename} | "
+            f"大小: {actual_mb}MB | 上限: {limit_mb}MB | 用户: {username}"
+        )
+        raise HTTPException(
+            status_code=413,
+            detail={
+                "code": "UPLOAD_FILE_TOO_LARGE",
+                "message": f"单个文件不能超过 {limit_mb}MB，当前 {actual_mb}MB",
+                "limit_mb": limit_mb,
+                "actual_mb": actual_mb,
+            },
+        ) from exc
 
     ext = os.path.splitext(safe_filename)[1].lstrip(".") or "unknown"
 
-    db.add_session_file(
+    repo.add_session_file(
         session_id=session_id,
         filename=safe_filename,
         file_path=str(file_path),
         file_type=ext,
-        size=len(content),
+        size=size,
         username=username,
     )
 
     logger.info(
-        f"文件上传成功 | 会话: {session_id} | 文件名: {safe_filename} | 大小: {len(content)} bytes | 用户: {username}"
+        f"文件上传成功 | 会话: {session_id} | 文件名: {safe_filename} | 大小: {size} bytes | 用户: {username}"
     )
+
+    # 解析落盘 + 上传清单（记忆）：解析正文写入会话工作区 uploads/{文件名}.txt，
+    # 文件清单写入 uploads/index.md —— 后者由 agent.py 作为记忆文件注入 system
+    # prompt，因此后续每一轮（不必再上传）模型都知道本会话传过哪些文件、正文在哪，
+    # 并按需用 grep/read_file 检索。file_context.enabled=false 时整体跳过（回退旧行为）。
+    parsed_entry = None
+    try:
+        parsed_entry = await asyncio.to_thread(
+            store_parsed_content,
+            session_id=session_id,
+            username=username,
+            file_path=str(file_path),
+            filename=safe_filename,
+            size=size,
+            file_type=ext,
+            db=repo.database,
+            source_name=saved_name,
+        )
+        if parsed_entry:
+            await asyncio.to_thread(
+                append_manifest, session_id, username, [parsed_entry], repo.database
+            )
+    except Exception as e:
+        # 解析/清单失败不能影响上传本身：文件已落盘、记录已入库，用户仍可继续对话
+        logger.warning(f"上传文件解析落盘失败（不影响上传）| {safe_filename} | {e}")
+
+    # 上传后驱逐本会话缓存 Agent：记忆文件只在创建 Agent 时加载，不驱逐的话
+    # 本轮新上传的清单要等到 Agent 因其他原因重建时才生效（下一轮就看不到新文件）。
+    if parsed_entry:
+        try:
+            remove_session_agent(session_id)
+        except Exception as e:
+            logger.warning(f"上传后驱逐缓存 Agent 失败: {e}")
 
     return {
         "id": file_id,
         "filename": safe_filename,
         "file_path": str(file_path),
         "file_type": ext,
-        "size": len(content),
+        "size": size,
         "uploaded_at": datetime.now().isoformat(),
+        "parsed": bool(parsed_entry),
+        "parsed_path": parsed_entry.get("stored_path") if parsed_entry else None,
+        "parse_status": parsed_entry.get("status") if parsed_entry else None,
     }

@@ -20,9 +20,11 @@
 #   DIST_DIR      输出目录（默认 dist）
 #
 # 后端地址选择优先级（高 -> 低）：
-#   API_BASE_URL（显式，跨域部署用） > 构建期 VITE_API_BASE_URL（bundle 内）
-#   > "/"（默认：同源相对路径，后端不设置跨域时的正确选择）
-# 注：ENV_CONFIG 表仅作各环境地址参考/打印，默认不自动套用（避免产生跨域）。
+#   1) API_BASE_URL（显式传入，跨域部署 / 覆盖用）
+#   2) .env.<AGENT_ENV> 的 VITE_API_BASE_URL（仅当显式设置了 AGENT_ENV 时才套用，
+#      即“按 env 文件动态加载”）
+#   3) "/"（同源相对路径，后端自己托管 dist 时的正确选择）
+# 注：显式传 API_BASE_URL=/ 可强制走同源，忽略 env 文件中的地址。
 # ============================================================
 set -e
 
@@ -32,7 +34,10 @@ mkdir -p "$DIST_DIR"
 
 APP_TITLE="${APP_TITLE:-Easy Agent}"
 APP_WELCOME_TITLE="${APP_WELCOME_TITLE:-}"
-AGENT_ENV_VAL="${AGENT_ENV:-prod}"
+# 是否“显式”指定了 AGENT_ENV：只有显式指定时才按 .env.<AGENT_ENV> 自动套用后端地址，
+# 未指定时保持同源 "/" 默认值，避免误用可能过期的环境地址。
+AGENT_ENV_SET="${AGENT_ENV:-}"
+AGENT_ENV_VAL="${AGENT_ENV_SET:-prod}"
 
 # 读取各环境 .env.<mode> 中的 VITE_API_BASE_URL，作为该环境默认后端地址。
 # 这是“按 AGENT_ENV 加载不同环境配置”的唯一数据源（与构建期保持一致）。
@@ -51,13 +56,22 @@ DEV_API=$(read_env_api dev)
 TEST_API=$(read_env_api test)
 PROD_API=$(read_env_api prod)
 
+# 当前 AGENT_ENV 对应的 .env 文件地址（按 env 文件动态加载的唯一入口）
+ENV_API=""
+if [ -n "$AGENT_ENV_SET" ]; then
+  ENV_API=$(read_env_api "$AGENT_ENV_VAL")
+fi
+
 # 后端“不设置跨域(CORS)”时，前端必须与后端同源访问，否则浏览器会拦截请求。
-# 故默认（未显式给定 API_BASE_URL）使用相对路径 "/"，让前端跟随当前访问入口
-# （即由后端自身托管 dist/，访问 http://<host>:<port>/ 即可，无需跨域）。
-# 仅当确实是“前端独立托管 + 跨域部署”且后端已开启 CORS 时，才显式传 API_BASE_URL。
+# 优先级：显式 API_BASE_URL > .env.<AGENT_ENV> 的地址 > 相对路径 "/"。
+#   - 显式传 API_BASE_URL=/ 可强制同源，忽略 env 文件里的地址；
+#   - 未指定 AGENT_ENV 时保持 "/"，由后端自身托管 dist/ 跟随当前访问入口。
 if [ -n "$API_BASE_URL" ]; then
   RT_API="$API_BASE_URL"
   RT_API_SRC="显式 API_BASE_URL (跨域，需后端开启 CORS)"
+elif [ -n "$ENV_API" ]; then
+  RT_API="$ENV_API"
+  RT_API_SRC=".env.${AGENT_ENV_VAL} 的 VITE_API_BASE_URL (按 AGENT_ENV 动态加载)"
 else
   RT_API="/"
   RT_API_SRC="相对路径 / (同源访问，无需跨域)"

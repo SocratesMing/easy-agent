@@ -7,13 +7,29 @@
 
 记忆文件位置：workspace/{username}/{workspace_name}/memory.md
 生命周期：会话创建时预创建工作区目录 → 首轮响应后写入 memory.md → 后续输入时自动加载
+
+结构化 sidecar：Markdown 旁的 memory.jsonl / AGENTS.jsonl（条目 / 来源 / 版本），
+Markdown 仍是权威读取文件；默认开启，EASY_STRUCTURED_MEMORY=0 回退旧行为。
 """
 
 import logging
+import re
 import time
 from pathlib import Path
 
-from .prompt_loader import load_prompt, render
+from easy_agent.services.memory_store import (
+    SOURCE_DIRECT_WRITE,
+    SOURCE_IMPORT,
+    SOURCE_LLM_LONG_TERM,
+    SOURCE_LLM_SESSION,
+    atomic_write_text,
+    content_digest,
+    memory_lock,
+    structured_memory_enabled,
+    sync_from_markdown,
+    write_structured_memory,
+)
+from easy_agent.services.prompt_loader import load_prompt, render
 
 logger = logging.getLogger("easy_agent.memory")
 
@@ -22,8 +38,12 @@ MAX_MEMORY_CHARS = 600
 COMPRESS_THRESHOLD = 540
 
 # 用户级长期记忆（memories/{username}/AGENTS.md）上限，跨会话积累故比会话级更大
-MAX_LONG_TERM_MEMORY_CHARS = 800
-LONG_TERM_COMPRESS_THRESHOLD = 720
+MAX_LONG_TERM_MEMORY_CHARS = 1500
+LONG_TERM_COMPRESS_THRESHOLD = 1350
+
+# Markdown 一级标题（与提示词契约一致；结构化渲染复用同一标题）
+SESSION_MEMORY_TITLE = "会话记忆"
+LONG_TERM_MEMORY_TITLE = "用户长期记忆"
 
 # 提示词统一放在 easy_agent/config/prompts/ 下（文件为权威）；
 # 以下为文件缺失时的兜底文本，保证部署漏挂载仍能工作。
@@ -97,32 +117,85 @@ def build_memory_update_prompt(
 
 
 def read_memory(memory_file: Path) -> str:
-    """读取记忆文件内容。"""
+    """读取记忆文件内容（共享锁下读取，避免读到双写中间态）。"""
     try:
-        if not memory_file.exists():
-            return ""
-        return memory_file.read_text(encoding="utf-8")
+        with memory_lock(memory_file, exclusive=False):
+            if not memory_file.exists():
+                return ""
+            return memory_file.read_text(encoding="utf-8")
     except Exception as e:
         logger.error(f"读取记忆文件失败 {memory_file}: {e}")
         return ""
 
 
+def _write_markdown_file(memory_file: Path, content: str) -> None:
+    """只写 Markdown 记忆文件（权威读取文件），不触碰结构化 sidecar。
+
+    使用与 JSONL 相同的原子写实现：临时文件 + ``os.replace``，读方不会看到
+    半截 Markdown；非原子 ``write_text`` 在并发读/进程崩溃时会留下截断文件。
+    """
+    atomic_write_text(memory_file, content)
+
+
 def write_memory(memory_file: Path, content: str) -> None:
-    """写入记忆文件。"""
+    """写入记忆文件（Markdown 为权威），并尽力同步结构化 sidecar。
+
+    兼容旧调用方：签名与语义不变；日志只记录长度与内容 hash，不再打印全文。
+    """
     try:
-        memory_file.parent.mkdir(parents=True, exist_ok=True)
-        memory_file.write_text(content, encoding="utf-8")
+        # Markdown 与 sidecar 共用同一把跨进程锁：读方不会看到「Markdown 已更新、
+        # sidecar 仍是旧内容」的中间态。
+        with memory_lock(memory_file):
+            _write_markdown_file(memory_file, content)
+            _import_legacy_markdown(memory_file, content, source=SOURCE_DIRECT_WRITE)
         logger.info(
-            f"记忆文件已更新: {memory_file} | 长度: {len(content)} 字符\n"
-            f"--- 记忆内容 ---\n{content}\n--- 记忆内容结束 ---"
+            f"记忆文件已更新: {memory_file} | 长度: {len(content)} 字符 | "
+            f"sha256: {content_digest(content)}"
         )
     except Exception as e:
         logger.error(f"写入记忆文件失败 {memory_file}: {e}")
 
 
-def needs_compression(content: str) -> bool:
-    """判断记忆内容是否需要压缩。"""
-    return len(content) > COMPRESS_THRESHOLD
+def _import_legacy_markdown(
+    memory_file: Path, markdown: str, *, source: str = SOURCE_IMPORT
+) -> bool:
+    """把已有 / 刚写入的 Markdown 首次导入结构化 sidecar（best effort）。
+
+    失败只告警，不影响 Markdown 权威路径；Markdown 未变化时按内容 hash 幂等跳过。
+    """
+    if not structured_memory_enabled() or not (markdown or "").strip():
+        return False
+    try:
+        return sync_from_markdown(memory_file, markdown=markdown, source=source)
+    except Exception as e:
+        logger.warning(f"旧 Markdown 导入结构化记忆失败（忽略）: {e}")
+        return False
+
+
+def _persist_structured_memory(
+    memory_file: Path,
+    markdown: str,
+    *,
+    title: str,
+    source: str,
+    max_chars: int,
+    previous_markdown: str = "",
+):
+    """写结构化 sidecar 并返回渲染后的 Markdown；关闭/失败时返回 None 由调用方回退。"""
+    if not structured_memory_enabled():
+        return None
+    try:
+        return write_structured_memory(
+            memory_file,
+            markdown,
+            title=title,
+            source=source,
+            max_chars=max_chars,
+            previous_markdown=previous_markdown,
+        )
+    except Exception as e:
+        logger.warning(f"结构化记忆写入失败，回退旧 Markdown 路径: {e}")
+        return None
 
 
 def compress_memory(content: str, llm, max_chars: int = MAX_MEMORY_CHARS) -> str:
@@ -260,6 +333,8 @@ def update_memory_after_session(
     start = time.time()
     try:
         current_memory = read_memory(memory_file)
+        # 首次升级时把旧 Markdown 导入 sidecar；已同步时按内容 hash 幂等跳过
+        _import_legacy_markdown(memory_file, current_memory)
 
         # 截断过长的会话内容，避免 token 浪费
         user_msg_trunc = (user_message or "")[:800]
@@ -305,12 +380,31 @@ def update_memory_after_session(
         if len(updated) > target_chars:
             updated = _hard_truncate(updated, target_chars)
 
-        write_memory(memory_file, updated)
+        # sidecar 写入与 Markdown 覆盖必须在同一把锁内完成（可重入）：
+        # 否则并发写会看到 Markdown 与 sidecar 对应不同 revision / 内容的组合。
+        with memory_lock(memory_file):
+            result = _persist_structured_memory(
+                memory_file,
+                updated,
+                title=SESSION_MEMORY_TITLE,
+                source=SOURCE_LLM_SESSION,
+                max_chars=target_chars,
+                previous_markdown=current_memory,
+            )
+            if result is None:
+                # 解析失败 / 开关关闭：保持旧行为，Markdown 原文写入，不丢数据
+                write_memory(memory_file, updated)
+                final_content = updated
+                entry_count = 0
+            else:
+                _write_markdown_file(memory_file, result.markdown)
+                final_content = result.markdown
+                entry_count = result.entries
 
         elapsed = time.time() - start
         logger.info(
-            f"记忆更新完成 | 更新后长度: {len(updated)} 字符 | 耗时: {elapsed:.2f}s\n"
-            f"--- 记忆内容 ---\n{updated}\n--- 记忆内容结束 ---"
+            f"记忆更新完成 | 更新后长度: {len(final_content)} 字符 | 条目: {entry_count} | "
+            f"sha256: {content_digest(final_content)} | 耗时: {elapsed:.2f}s"
         )
         return True
     except Exception as e:
@@ -319,24 +413,128 @@ def update_memory_after_session(
         return enforce_memory_limit(memory_file, llm)
 
 
-FALLBACK_LONG_TERM_MEMORY_PROMPT = """你是一个用户长期记忆管理助手。根据本次对话更新用户长期记忆（AGENTS.md），只沉淀跨会话长期有效的信息。
+# --------------------------------------------------------------------------- #
+# 用户级长期记忆的领域边界剔除
+#
+# 用户级 memories/{user}/AGENTS.md 会注入**每一个**专家会话，因此不能承载
+# 「某个专家只答什么 / 不答什么」这类规则——写进去就会被所有专家当成自己的规矩。
+# 提示词（long_term_memory.md）负责让模型不要写，本函数负责落盘前兜底。
+#
+# 粒度是「子句」而非整行：一行里可能既有身份（「16 年利率债投研」）又有边界
+# （「不覆盖汇率」），整行丢掉会把用户背景一起删了。
+#
+# 注意**只用于用户级长期记忆**：会话级 memory.md 绑定单个专家（换专家 = 换会话），
+# 里面写领域规则是合理的，不做剔除。
+# --------------------------------------------------------------------------- #
 
-## 记入（满足其一）
+#: 命中即为「角色职责 / 领域边界 / 拒答规则」的特征词
+_ROLE_SCOPE_PATTERNS = (
+    re.compile(r"拒答|拒绝回答|不予回答"),
+    re.compile(r"越界"),
+    re.compile(r"只答|仅答|只接|仅接|只处理|仅处理|仅限"),
+    re.compile(r"不覆盖|不涉及|不接"),
+    re.compile(r"专业范围|职责范围|领域外|领域之外"),
+    re.compile(r"超出.{0,8}范围"),
+)
+#: 句末切分（保留标点，便于原样拼回）
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[。；;！!？?\n])")
+#: 子句切分（命中后再按逗号拆，尽量保住同一行里的身份信息）
+_CLAUSE_SPLIT_RE = re.compile(r"(?<=[，,])")
+#: Markdown 列表符号（`- ` / `* ` / `1. `），过滤后需要原样保留
+_BULLET_PREFIX_RE = re.compile(r"^\s*(?:[-*+]|\d+[.、)])\s*")
 
-1. 稳定偏好：用户明确表达的沟通风格、技术栈倾向、输出格式与交付习惯
-2. 长期背景：不会随本次会话结束而失效的项目目标、环境约束、角色与职责
-3. 可复用经验：跨项目通用的踩坑结论与解决方案
+
+def _has_role_scope(text: str) -> bool:
+    """文本里是否出现「角色职责 / 领域边界 / 拒答规则」的特征。"""
+    return any(p.search(text or "") for p in _ROLE_SCOPE_PATTERNS)
+
+
+def _has_meaningful_content(text: str) -> bool:
+    """记忆里是否还有「非标题」的实际条目（只剩小标题等同于空记忆）。"""
+    return any(
+        line.strip() and not line.strip().startswith("#")
+        for line in (text or "").splitlines()
+    )
+
+
+def strip_role_scope_clauses(text: str) -> tuple[str, list[str]]:
+    """剔除用户级长期记忆里「专家角色职责 / 领域边界 / 拒答规则」类内容。
+
+    与 ``long_term_memory.md`` 提示词里的「禁止记入」一节配套：提示词负责让模型
+    不要写，本函数负责在落盘前兜底——模型偶尔仍会把「只答某领域」当成用户偏好写进来，
+    而这份记忆会注入所有专家，一旦写进就会污染其它专家。
+
+    Args:
+        text: 待过滤的记忆全文（Markdown）。
+
+    Returns:
+        ``(cleaned_text, dropped)``。``dropped`` 是被删掉的原始子句列表，仅用于日志
+        （便于排查「某条记忆怎么没了」）；无命中时原样返回，不会改动排版。
+    """
+    dropped: list[str] = []
+    if not (text or "").strip():
+        return text or "", dropped
+
+    out_lines: list[str] = []
+    for line in text.splitlines():
+        if not _has_role_scope(line):
+            out_lines.append(line)
+            continue
+
+        prefix_match = _BULLET_PREFIX_RE.match(line)
+        prefix = prefix_match.group(0) if prefix_match else ""
+        body = line[len(prefix):]
+
+        kept_sentences: list[str] = []
+        for sentence in _SENTENCE_SPLIT_RE.split(body):
+            if not sentence.strip():
+                continue
+            if not _has_role_scope(sentence):
+                kept_sentences.append(sentence)
+                continue
+            # 整句命中 → 再按逗号拆，保住同一句里的身份/偏好信息
+            kept_parts: list[str] = []
+            for part in _CLAUSE_SPLIT_RE.split(sentence):
+                if not part.strip():
+                    continue
+                if _has_role_scope(part):
+                    dropped.append(part.strip())
+                else:
+                    kept_parts.append(part)
+            if kept_parts:
+                kept_sentences.append("".join(kept_parts))
+
+        kept_line = prefix + "".join(kept_sentences)
+        # 只剩列表符号说明整条都被删了，丢掉这一行；否则保留残句
+        if kept_line.strip() and kept_line.strip() not in ("-", "*", "+"):
+            out_lines.append(kept_line)
+
+    cleaned = re.sub(r"\n{3,}", "\n\n", "\n".join(out_lines)).strip()
+    # 结尾标点/分隔符可能残留（如「16 年利率债投研；」后整句被删），收一下尾
+    cleaned = re.sub(r"[；;、,，\s]+$", "", cleaned).strip()
+    return cleaned, dropped
+
+
+FALLBACK_LONG_TERM_MEMORY_PROMPT = """你是用户长期记忆管理助手。请根据本次对话更新用户长期记忆（AGENTS.md），只沉淀跨会话长期有效、能帮助下次会话快速理解用户的个人信息与背景。
+
+## 记入（满足其一方可记入）
+
+1. **工作背景**：当前职位与职责、所在组织或团队、主要项目与技术栈、专业领域和长期目标
+2. **个人背景**：稳定身份信息、经验资历、沟通与协作偏好、城市/时区等可控背景信息
+3. **当前关注**：当前重点方向、关键任务、学习目标或阶段性目标
+4. **近期动态**：近期重要变化、进行中的事项、下一步计划或待确认决策
 
 ## 排除
 
-一次性任务及其结果、临时状态、单会话内的中间结论、完整执行过程、密钥 / token / 隐私数据。
+一次性任务及其结果、临时状态、单会话内的中间结论、完整执行过程、寒暄内容、密钥 / token / 密码和其他隐私数据。
 判据：只在本次会话成立的信息一律不写。
 
-## 写法
+## 写法要求
 
-每条一句话，用「结论：值」形式；与已有条目重复就合并精炼，不堆叠。
-用二级标题分组：`## 用户偏好`、`## 项目背景`、`## 可复用经验`；无内容的小节省略。
-总长不超过 $target_chars 字符；接近上限时优先保留偏好与通用经验。
+- 用 Markdown 二级标题分组：`## 工作背景`、`## 个人背景`、`## 当前关注`、`## 近期动态`；无内容的小节省略。
+- 每个方面写一类而非逐条累加；与已有条目重复就合并精炼，删除过时、冲突或低价值内容，不堆叠近似内容。
+- 近期动态只保留仍有后续价值的事项；已完成事项转为可复用结论或删除。
+- 总长度不超过 $target_chars 字符；接近上限时优先保留工作背景、当前关注和近期动态，再压缩低频个人背景。
 
 ## 当前长期记忆
 
@@ -349,10 +547,9 @@ $current_memory
 **用户输入**：$user_message
 
 **助手回复（节选）**：$assistant_response
-
 ---
 
-直接输出更新后的完整长期记忆（Markdown，一级标题 `# 用户长期记忆`），不要任何解释说明："""
+请直接输出更新后的完整长期记忆文件内容（Markdown，一级标题 `# 用户长期记忆`），不要添加任何解释说明："""
 
 
 def build_long_term_memory_update_prompt(
@@ -392,7 +589,7 @@ def update_long_term_memory_after_session(
         user_message: 本次会话用户输入
         assistant_response: 本次会话助手回复
         llm: LLM 实例；为 None 时跳过上下文更新，仅做长度检查
-        max_chars: 长期记忆字符上限，默认 4000（比会话级更大）
+        max_chars: 长期记忆字符上限，默认 1500
 
     Returns:
         True 表示记忆已更新，False 表示未更新
@@ -404,6 +601,8 @@ def update_long_term_memory_after_session(
     start = time.time()
     try:
         current_memory = read_memory(memory_file)
+        # 首次升级时把旧 Markdown 导入 sidecar；已同步时按内容 hash 幂等跳过
+        _import_legacy_markdown(memory_file, current_memory)
 
         # 截断过长的会话内容，避免 token 浪费
         user_msg_trunc = (user_message or "")[:800]
@@ -434,6 +633,18 @@ def update_long_term_memory_after_session(
             logger.warning("LLM 返回空内容，长期记忆未更新")
             return enforce_memory_limit(memory_file, llm, max_chars=max_chars)
 
+        # 兜底剔除「角色职责 / 领域边界 / 拒答规则」：这份记忆会注入所有专家，
+        # 一旦写进就会被其它专家当成自己的规矩（详见 strip_role_scope_clauses）。
+        updated, dropped = strip_role_scope_clauses(updated)
+        if dropped:
+            logger.info(
+                f"🧹 用户长期记忆已剔除 {len(dropped)} 处「角色职责/拒答规则」"
+                f"（避免注入到其它专家）| 样例: {dropped[:3]}"
+            )
+        if not _has_meaningful_content(updated):
+            logger.warning("剔除角色职责后长期记忆已无实际条目，保留原文件不写入")
+            return False
+
         target_chars = max_chars
         compression_threshold = min(LONG_TERM_COMPRESS_THRESHOLD, target_chars)
 
@@ -443,17 +654,39 @@ def update_long_term_memory_after_session(
                 f"更新后长期记忆超过目标预算 ({len(updated)} > {target_chars} 字符)，触发压缩"
             )
             updated = compress_memory(updated, llm, max_chars=target_chars)
+            # 压缩是一次 LLM 改写，可能把刚剔掉的规则又写回来，再过滤一遍
+            updated, more_dropped = strip_role_scope_clauses(updated)
+            dropped.extend(more_dropped)
 
         # 最终硬保底
         if len(updated) > target_chars:
             updated = _hard_truncate(updated, target_chars)
 
-        write_memory(memory_file, updated)
+        # 同会话级记忆：sidecar 与 Markdown 在同一把跨进程锁内完成。
+        with memory_lock(memory_file):
+            result = _persist_structured_memory(
+                memory_file,
+                updated,
+                title=LONG_TERM_MEMORY_TITLE,
+                source=SOURCE_LLM_LONG_TERM,
+                max_chars=target_chars,
+                previous_markdown=current_memory,
+            )
+            if result is None:
+                # 解析失败 / 开关关闭：保持旧行为，Markdown 原文写入，不丢数据
+                write_memory(memory_file, updated)
+                final_content = updated
+                entry_count = 0
+            else:
+                _write_markdown_file(memory_file, result.markdown)
+                final_content = result.markdown
+                entry_count = result.entries
 
         elapsed = time.time() - start
         logger.info(
-            f"用户长期记忆更新完成 | 更新后长度: {len(updated)} 字符 | 耗时: {elapsed:.2f}s\n"
-            f"--- 记忆内容 ---\n{updated}\n--- 记忆内容结束 ---"
+            f"用户长期记忆更新完成 | 更新后长度: {len(final_content)} 字符 | "
+            f"条目: {entry_count} | sha256: {content_digest(final_content)} | "
+            f"耗时: {elapsed:.2f}s"
         )
         return True
     except Exception as e:

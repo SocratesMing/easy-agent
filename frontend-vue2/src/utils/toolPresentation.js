@@ -4,7 +4,10 @@
  * 纯函数，实时流与历史回放共用。前端派生 dsh 的 presentCall/presentResult：
  *   execute → terminal   read_file → read   write_file/edit_file → diff
  *   ls/glob → search(paths)   grep → search(matches)   其它 → generic
+ *   数据类 MCP 信封（带 chart）→ chart
  */
+import { extractChartArtifact, formatArtifactMeta } from '../shared/chart/artifact.js'
+
 function oneLine(s) {
   return String(s == null ? '' : s).split('\n')[0]
 }
@@ -58,8 +61,10 @@ export function toolCard(toolName, args, result, success = true) {
       }
     case 'write_file': {
       const path = a.file_path || a.path || ''
+      // 标题直接「动作 + 完整路径」，不再「动作 + 文件名」配一行路径 meta，
+      // 避免同一个文件名与路径在头部重复出现。
       return {
-        card: 'diff', kind: 'edit', title: `写入 ${baseName(path)}`, meta: short(path, 60),
+        card: 'diff', kind: 'edit', title: `写入 ${short(path, 64)}`, meta: '',
         error: success === false,
         diffs: [{ path, lines: String(a.content ?? '').split('\n').map(t => ({ type: 'add', text: t })) }],
       }
@@ -70,7 +75,7 @@ export function toolCard(toolName, args, result, success = true) {
       for (const t of String(a.old_string ?? '').split('\n')) lines.push({ type: 'del', text: t })
       for (const t of String(a.new_string ?? '').split('\n')) lines.push({ type: 'add', text: t })
       return {
-        card: 'diff', kind: 'edit', title: `编辑 ${baseName(path)}`, meta: short(path, 60),
+        card: 'diff', kind: 'edit', title: `编辑 ${short(path, 64)}`, meta: '',
         error: success === false,
         diffs: [{ path, lines }],
       }
@@ -100,11 +105,25 @@ export function toolCard(toolName, args, result, success = true) {
         error: success === false, raw: r,
       }
     }
-    default:
+    default: {
+      // 数据类 MCP 工具：结果信封自带 chart（ECharts option）时走图表卡片。
+      // 只放在 default：内建工具（execute/read_file 等）的语义不被图表产物覆盖。
+      const artifact = extractChartArtifact(r)
+      if (artifact) {
+        return {
+          card: 'chart',
+          kind: 'chart',
+          title: artifact.title || toolName || '图表',
+          meta: formatArtifactMeta(artifact),
+          error: success === false,
+          artifact,
+        }
+      }
       return {
         card: 'generic', kind: 'other', title: toolName || 'tool',
         meta: short(JSON.stringify(a || {}), 56),
         error: success === false, args: a, body: r,
       }
+    }
   }
 }

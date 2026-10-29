@@ -1,5 +1,6 @@
 import { API_BASE_URL } from '../config.js'
 import { getAuthHeaders, authFetch } from './auth.js'
+import { readSSE } from './sse.js'
 
 export async function createSession(title, username = null) {
   const body = { title }
@@ -98,44 +99,10 @@ export async function attachStream(sessionId, onChunk, signal) {
     throw new Error(error.detail || '挂载流式输出失败')
   }
 
-  const reader = response.body.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ''
-
-  try {
-    while (true) {
-      if (abortSignal?.aborted) {
-        controller.abort()
-        return
-      }
-
-      const { done, value } = await reader.read()
-      if (done) break
-
-      buffer += decoder.decode(value, { stream: true })
-      const lines = buffer.split('\n')
-      buffer = lines.pop() || ''
-
-      for (const line of lines) {
-        if (line.startsWith('data: ')) {
-          try {
-            const data = JSON.parse(line.slice(6))
-            onChunk(data)
-          } catch (e) {
-            console.error('解析 SSE 数据失败:', e)
-          }
-        }
-      }
-    }
-  } catch (e) {
-    if (e.name === 'AbortError') {
-      return
-    }
-    throw e
-  }
+  await readSSE(response, onChunk, { signal: abortSignal })
 }
 
-export async function sendMessage(sessionId, message, onChunk, signal, enableDeepThink = true, files = [], model = null, enableWebSearch = false) {
+export async function sendMessage(sessionId, message, onChunk, signal, enableDeepThink = true, files = [], model = null, enableWebSearch = false, skills = [], pendingExpertId = '', expertAgentId = '', extra = null) {
   const controller = new AbortController()
   const abortSignal = signal || controller.signal
 
@@ -149,6 +116,21 @@ export async function sendMessage(sessionId, message, onChunk, signal, enableDee
   }
   if (model) {
     payload.model = model
+  }
+  // AI 侧边栏附带的页面上下文（用户唤起侧边栏时所在页面），仅供模型参考
+  if (extra && extra.pageContext) payload.page_context = extra.pageContext
+  // 已选技能以结构化字段提交（技能目录名），`/目录名` 由后端拼进模型输入（不进落库文本）。
+  // 连接器不随消息提交：本会话启用哪些连接器由 /agent/connectors/session 单独设置。
+  if (skills && skills.length) payload.skills = skills
+  // 待修改专家 ID（专家面板「编辑」带入，不进消息正文）：后端校验归属（只接受
+  // 本人创建的专家）后绑定为 save_expert 的修改目标
+  if (pendingExpertId) payload.pending_expert_id = pendingExpertId
+  // 本轮使用的专家（我的专家 ID / 公共专家目录名）：专家对话只有一个入口，
+  // 后端据此加载提示词、补装依赖技能、做职责范围预检（命中即短路拒答）
+  if (expertAgentId) payload.expert_agent_id = expertAgentId
+  // 知识库问答的元数据硬过滤（日期区间 / 标签 / 来源），由知识库工作台传入
+  if (extra && extra.knowledgeMetadataFilter) {
+    payload.knowledge_metadata_filter = extra.knowledgeMetadataFilter
   }
 
   const response = await authFetch(`${API_BASE_URL}/agent/chat/stream`, {
@@ -165,44 +147,16 @@ export async function sendMessage(sessionId, message, onChunk, signal, enableDee
     throw new Error(error.detail || '发送消息失败')
   }
 
-  const reader = response.body.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ''
-
-  try {
-    while (true) {
-      if (abortSignal?.aborted) {
-        controller.abort()
-        return
+  await readSSE(
+    response,
+    (data) => {
+      if (data.type === 'done') {
+        console.log('[SSE] Received done event:', JSON.stringify(data).substring(0, 500))
       }
-
-      const { done, value } = await reader.read()
-      if (done) break
-
-      buffer += decoder.decode(value, { stream: true })
-      const lines = buffer.split('\n')
-      buffer = lines.pop() || ''
-
-      for (const line of lines) {
-        if (line.startsWith('data: ')) {
-          try {
-            const data = JSON.parse(line.slice(6))
-            if (data.type === 'done') {
-              console.log('[SSE] Received done event:', JSON.stringify(data).substring(0, 500))
-            }
-            onChunk(data)
-          } catch (e) {
-            console.error('解析 SSE 数据失败:', e)
-          }
-        }
-      }
-    }
-  } catch (e) {
-    if (e.name === 'AbortError') {
-      return
-    }
-    throw e
-  }
+      onChunk(data)
+    },
+    { signal: abortSignal }
+  )
 }
 
 export async function resumeStream(sessionId, threadId, decisions, onChunk, signal, messageId) {
@@ -228,41 +182,7 @@ export async function resumeStream(sessionId, threadId, decisions, onChunk, sign
     throw new Error(error.detail || '恢复执行失败')
   }
 
-  const reader = response.body.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ''
-
-  try {
-    while (true) {
-      if (abortSignal?.aborted) {
-        controller.abort()
-        return
-      }
-
-      const { done, value } = await reader.read()
-      if (done) break
-
-      buffer += decoder.decode(value, { stream: true })
-      const lines = buffer.split('\n')
-      buffer = lines.pop() || ''
-
-      for (const line of lines) {
-        if (line.startsWith('data: ')) {
-          try {
-            const data = JSON.parse(line.slice(6))
-            onChunk(data)
-          } catch (e) {
-            console.error('解析 SSE 数据失败:', e)
-          }
-        }
-      }
-    }
-  } catch (e) {
-    if (e.name === 'AbortError') {
-      return
-    }
-    throw e
-  }
+  await readSSE(response, onChunk, { signal: abortSignal })
 }
 
 function generateMessageId() {

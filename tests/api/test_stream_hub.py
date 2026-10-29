@@ -8,7 +8,7 @@
 import pytest
 
 from easy_agent.api.chat import _StreamHub, _detached_event_stream, _session_stream_hubs
-from easy_agent.services.streaming import format_sse
+from easy_agent.services.sse import format_sse
 
 
 def _sse(obj) -> str:
@@ -66,7 +66,7 @@ async def test_detached_event_stream_yields_and_publishes_to_hub():
     hub = _session_stream_hubs.get("sess1")
     assert hub is not None
     assert hub.done is True
-    assert hub.history == chunks
+    assert list(hub.history) == chunks  # history 已改为 deque（O(1) 淘汰）
 
 
 async def test_replay_is_complete_when_history_exceeds_queue_slack():

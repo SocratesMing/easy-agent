@@ -14,14 +14,10 @@ def _upload(client: TestClient, session_id=None):
     return resp.json()
 
 
-def test_upload_and_list(client):
+def test_upload(client):
     up = _upload(client)
     assert up["filename"] == "data.txt"
-
-    lst = client.get("/agent/files/list")
-    assert lst.status_code == 200
-    body = lst.json()
-    assert body["total"] >= 1
+    assert up["size"] == len(b"hello content")
 
 
 def test_parse_file(client):
@@ -39,6 +35,23 @@ def test_download_file(client):
     assert resp.content == b"hello content"
 
 
+def test_download_rejects_paths_outside_user_dirs(client, tmp_path):
+    """SEC-05：绝对路径或 ``..`` 不能逃出本用户的上传目录 / 工作区。"""
+    host_secret = tmp_path / "host-secret.txt"
+    host_secret.write_text("sec05-host-secret", encoding="utf-8")
+    other_user = Path(os.environ["TEST_UPLOADS_DIR"]) / "sec05_other" / "other-secret.txt"
+    other_user.parent.mkdir(parents=True, exist_ok=True)
+    other_user.write_text("sec05-other-user-secret", encoding="utf-8")
+    try:
+        for path in (str(host_secret), "%2e%2e/sec05_other/other-secret.txt"):
+            resp = client.get(f"/agent/files/download/{path}")
+            assert resp.status_code == 400, path
+            assert b"sec05" not in resp.content
+    finally:
+        other_user.unlink()
+        other_user.parent.rmdir()
+
+
 def test_delete_missing_file_404(client):
     resp = client.delete("/agent/files/999999")
     assert resp.status_code == 404
@@ -50,10 +63,34 @@ def test_workspace_tree(client):
     assert "items" in resp.json()
 
 
-def test_preview_workspace_file(client):
-    from easy_agent.utils.auth import create_access_token
+def test_workspace_tree_hides_internal_files(tmp_path):
+    """记忆锁 ``.memory.jsonl.lock`` 等框架产物不列给前端（文件树看不到）。"""
+    from easy_agent.api.files import build_workspace_tree
 
-    token = create_access_token(data={"sub": "testuser"})
+    ws = tmp_path / "alice"
+    ws.mkdir()
+    (ws / ".memory.jsonl.lock").write_text("", encoding="utf-8")
+    (ws / "AGENTS.jsonl.lock").write_text("", encoding="utf-8")
+    (ws / ".gitignore").write_text("x", encoding="utf-8")
+    (ws / "report.md").write_text("hi", encoding="utf-8")
+
+    assert [item["name"] for item in build_workspace_tree(ws)] == ["report.md"]
+
+
+def test_preview_workspace_file(client):
+    # 预览接口已接入单点登录 token_version 与活跃会话校验，必须使用真实注册流程
+    # 签发的 token；旧式仅含 sub 的手工 token 应当被拒绝。
+    registered = client.post(
+        "/api/auth/register",
+        json={
+            "username": "testuser",
+            "password": "secret123",
+            "organization_id": "test-org",
+            "employee_id": "E-preview-testuser",
+        },
+    )
+    assert registered.status_code == 200
+    token = registered.json()["access_token"]
     ws_file = (
         Path(os.environ["TEST_WORKSPACE_DIR"]) / "users" / "testuser" / "preview.md"
     )
@@ -73,10 +110,10 @@ def test_session_files_list(client):
     up = client.post(f"/agent/sessions/{sess}/upload", files=files)
     assert up.status_code == 200
 
-    # 上传的会话文件通过 /agent/files/list?session_id 查看（get_session_files）
-    resp = client.get("/agent/files/list", params={"session_id": sess})
-    assert resp.status_code == 200
-    assert resp.json()["total"] >= 1
+    from easy_agent.db import get_database
+
+    rows = get_database().get_session_files(sess)
+    assert rows and rows[0]["filename"] == "data.txt"
 
 
 def test_session_generated_files(client):
@@ -97,3 +134,26 @@ def test_session_generated_files(client):
     assert resp.status_code == 200
     assert isinstance(resp.json(), list)
     assert any(f["filename"] == "result.txt" for f in resp.json())
+
+
+def test_download_accepts_the_stored_upload_path(tmp_path, monkeypatch):
+    """上传接口返回的落库路径相对服务进程目录（生产配置下上传目录是相对路径），也要能下载。"""
+    from easy_agent.api.files import _resolve_download_file
+
+    monkeypatch.chdir(tmp_path)
+    upload_dir, workspace_dir = Path("data/uploads/alice"), Path("workspace/alice")
+    (tmp_path / upload_dir).mkdir(parents=True)
+    (tmp_path / workspace_dir).mkdir(parents=True)
+    (tmp_path / upload_dir / "abc_report.txt").write_text("mine", encoding="utf-8")
+    (tmp_path / "data/uploads/bob").mkdir(parents=True)
+    (tmp_path / "data/uploads/bob/secret.txt").write_text("bob", encoding="utf-8")
+
+    found = _resolve_download_file(upload_dir, workspace_dir, "data/uploads/alice/abc_report.txt")
+    assert found.read_text(encoding="utf-8") == "mine"
+
+    import pytest
+    from fastapi import HTTPException
+
+    with pytest.raises(HTTPException) as other_user:
+        _resolve_download_file(upload_dir, workspace_dir, "data/uploads/bob/secret.txt")
+    assert other_user.value.status_code == 404

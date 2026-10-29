@@ -12,7 +12,7 @@ import pytest
 from fastapi import HTTPException
 
 from easy_agent.models.db import SessionModel
-from easy_agent.utils.session import get_owned_session, session_owned_by
+from easy_agent.utils.session import get_owned_session
 
 
 def _make_session(session_id: str, username: str) -> SessionModel:
@@ -57,12 +57,6 @@ def test_get_owned_session_404_for_missing(two_user_sessions):
     with pytest.raises(HTTPException) as exc:
         get_owned_session(two_user_sessions, "nonexistent", "userA")
     assert exc.value.status_code == 404
-
-
-def test_session_owned_by_returns_none_cross_user(two_user_sessions):
-    assert session_owned_by(two_user_sessions, "sess-A", "userB") is None
-    assert session_owned_by(two_user_sessions, "sess-A", "userA") is not None
-    assert session_owned_by(two_user_sessions, "nope", "userA") is None
 
 
 # ---------------------------------------------------------------------------
@@ -157,13 +151,11 @@ async def test_list_files_denies_cross_user(two_user_sessions):
 
 
 async def test_get_workspace_tree_denies_cross_user(two_user_sessions, monkeypatch):
-    from easy_agent.api import files as files_mod
     from easy_agent.api.files import get_workspace_tree
-    from easy_agent.config import Config
+    from easy_agent.bootstrap.config import Config
 
-    tmp_base = two_user_sessions  # just for naming
     # 重定向工作区目录到临时目录，避免触碰真实文件系统
-    import tempfile, os
+    import tempfile
     from pathlib import Path
 
     tmp = Path(tempfile.mkdtemp())

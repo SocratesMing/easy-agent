@@ -1,4 +1,13 @@
-"""Per-session conversation logging - stores complete JSON logs"""
+"""Per-session conversation logging - append-only JSONL.
+
+历史实现每记录一条（每条工具调用都会记）都会「读入整个 JSON 文件 -> append ->
+全量 indent=2 重写」，长会话写盘 O(n²)（实测 120 条 -> 798KB、累计写盘约 48MB），
+且同步文件 IO 直接压在事件循环上。
+
+现在改为 append-only JSONL：每条 entry 只追加一行（O(1)），首次创建时写一行
+session_meta。旧格式 ``{session_id}.json``（若存在）会在首次初始化时迁移为
+JSONL，旧文件保留不动。读取方只需逐行 ``json.loads``。
+"""
 
 import json
 import logging
@@ -17,7 +26,7 @@ def _resolve_session_log_dir(username: str = "", log_date: Optional[str] = None)
     ``logs/sessions`` 保持兼容。
     """
     try:
-        from easy_agent.config import Config
+        from easy_agent.bootstrap.config import Config
 
         base = Config.get_user_sessions_dir(username)
         if log_date:
@@ -33,10 +42,10 @@ def _resolve_session_log_dir(username: str = "", log_date: Optional[str] = None)
 
 
 class SessionLogger:
-    """Logs full conversation as structured JSON per session.
+    """Logs full conversation as append-only JSONL per session.
 
-    文件位置：``{sessions_dir}/{username}/{YYYY-MM-DD}/{session_id}.json``，
-    按用户 + 日志日期（精确到天）分目录隔离。
+    文件位置：``{sessions_dir}/{username}/{YYYY-MM-DD}/{session_id}.jsonl``。
+    第一行为 ``session_meta``，其后每条日志一行；追加写，不重写历史。
     """
 
     def __init__(
@@ -49,48 +58,66 @@ class SessionLogger:
         self.session_id = session_id
         log_date = datetime.now().strftime("%Y-%m-%d")
         log_dir = _resolve_session_log_dir(username, log_date)
-        self.log_file = log_dir / f"{session_id}.json"
+        self.log_file = log_dir / f"{session_id}.jsonl"
 
-        # workspace / system_prompt 未显式传入时自动推导；并补充技能、记忆目录
         workspace = workspace or self._resolve_workspace(username)
         system_prompt = system_prompt or self._resolve_system_prompt()
         skills_dir = str(Path(workspace) / "skills") if workspace else ""
         memories_dir = self._resolve_memories_dir(username)
 
-        # 多轮对话中每轮都会 new SessionLogger 实例：若文件已存在则加载已有内容
-        # （保留历史 entries），仅用最新参数更新基础字段，避免覆盖只留下当前轮。
-        loaded = self._load_existing()
-        if loaded is not None:
-            self._data = loaded
-            if not isinstance(self._data.get("entries"), list):
-                self._data["entries"] = []
-            if workspace:
-                self._data["workspace"] = workspace
-            if system_prompt:
-                self._data["system_prompt"] = system_prompt
-            self._data["session_id"] = session_id
-            self._data["username"] = username
-            self._data["skills_dir"] = skills_dir
-            self._data["memories_dir"] = memories_dir
+        self._meta: dict[str, Any] = {
+            "type": "session_meta",
+            "session_id": session_id,
+            "username": username,
+            "workspace": workspace,
+            "skills_dir": skills_dir,
+            "memories_dir": memories_dir,
+            "system_prompt": system_prompt,
+            "updated_at": datetime.now().isoformat(),
+        }
+        self._migrate_legacy_json(log_dir)
+        if not self.log_file.exists() or self.log_file.stat().st_size == 0:
+            self._append(self._meta)
         else:
-            self._data: dict[str, Any] = {
-                "session_id": session_id,
-                "username": username,
-                "workspace": workspace,
-                "system_prompt": system_prompt,
-                "skills_dir": skills_dir,
-                "memories_dir": memories_dir,
-                "created_at": datetime.now().isoformat(),
-                "updated_at": datetime.now().isoformat(),
-                "entries": [],
-            }
-        self._flush()
+            # 元信息可能随工作区/提示词变化，追加一行最新 meta（读取方取最后一条）。
+            self._append(self._meta)
+
+    # -- 兼容旧 JSON 文件：一次性迁移为 JSONL（旧文件保留） -----------------
+    def _migrate_legacy_json(self, log_dir: Path) -> None:
+        if self.log_file.exists():
+            return
+        legacy = log_dir / f"{self.session_id}.json"
+        if not legacy.exists():
+            return
+        try:
+            with open(legacy, encoding="utf-8") as f:
+                data = json.load(f)
+            if not isinstance(data, dict):
+                return
+            with open(self.log_file, "a", encoding="utf-8") as out:
+                meta = {k: v for k, v in data.items() if k != "entries"}
+                meta["type"] = "session_meta"
+                out.write(json.dumps(meta, ensure_ascii=False) + "\n")
+                for entry in data.get("entries") or []:
+                    if isinstance(entry, dict):
+                        out.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            logger.info(f"会话日志已迁移为 JSONL: {legacy} -> {self.log_file}")
+        except (json.JSONDecodeError, OSError) as exc:
+            logger.warning(f"迁移旧会话日志失败（忽略，继续新建 JSONL）: {legacy} | {exc}")
+
+    def _append(self, entry: dict) -> None:
+        entry.setdefault("timestamp", datetime.now().isoformat())
+        try:
+            with open(self.log_file, "a", encoding="utf-8") as f:
+                f.write(json.dumps(entry, ensure_ascii=False, separators=(",", ":")) + "\n")
+        except OSError as exc:
+            logger.warning(f"写入会话日志失败（忽略，不影响对话）: {self.log_file} | {exc}")
 
     @staticmethod
     def _resolve_workspace(username: str) -> str:
         """推导用户工作目录：{workspace_dir}/{username}/"""
         try:
-            from easy_agent.config import Config
+            from easy_agent.bootstrap.config import Config
 
             return str(Config.get_user_workspace_dir(username))
         except Exception:
@@ -100,9 +127,9 @@ class SessionLogger:
     def _resolve_system_prompt() -> str:
         """从运行期 agent 配置中读取 system_prompt"""
         try:
-            from easy_agent.services.agent_manager import get_agent_config
+            from easy_agent.bootstrap.runtime_config import get_runtime_agent_config
 
-            _cfg = get_agent_config()
+            _cfg = get_runtime_agent_config()
             if _cfg:
                 return _cfg.get("system_prompt", "") or ""
         except Exception:
@@ -113,39 +140,17 @@ class SessionLogger:
     def _resolve_memories_dir(username: str) -> str:
         """推导用户长期记忆目录：{memories_dir}/{username}/"""
         try:
-            from easy_agent.config import Config
+            from easy_agent.bootstrap.config import Config
 
             return str(Config.get_user_memories_dir(username))
         except Exception:
             return ""
-
-    def _load_existing(self) -> Optional[dict]:
-        """加载已存在的会话日志文件；文件不存在或损坏返回 None。"""
-        if not self.log_file.exists():
-            return None
-        try:
-            with open(self.log_file, encoding="utf-8") as f:
-                data = json.load(f)
-            return data if isinstance(data, dict) else None
-        except (json.JSONDecodeError, OSError):
-            logger.warning(f"会话日志文件损坏，重新初始化: {self.log_file}")
-            return None
-
-    def _flush(self):
-        self._data["updated_at"] = datetime.now().isoformat()
-        with open(self.log_file, "w", encoding="utf-8") as f:
-            json.dump(self._data, f, ensure_ascii=False, indent=2)
-
-    def set_system_prompt(self, prompt: str):
-        self._data["system_prompt"] = prompt
-        self._flush()
 
     def log_user_message(
         self, message: str, files: Optional[list] = None, message_id: str = ""
     ):
         entry = {
             "type": "user_message",
-            "timestamp": datetime.now().isoformat(),
             "message_id": message_id,
             "content": message,
         }
@@ -159,8 +164,7 @@ class SessionLogger:
                 }
                 for f in files
             ]
-        self._data["entries"].append(entry)
-        self._flush()
+        self._append(entry)
 
     def log_assistant_response(
         self,
@@ -172,7 +176,6 @@ class SessionLogger:
     ):
         entry: dict[str, Any] = {
             "type": "assistant_response",
-            "timestamp": datetime.now().isoformat(),
             "message_id": message_id,
             "content": content,
         }
@@ -192,27 +195,7 @@ class SessionLogger:
                 }
                 for tc in tool_calls
             ]
-        self._data["entries"].append(entry)
-        self._flush()
-
-    def log_thinking(
-        self,
-        content: str,
-        step: int = 0,
-        duration: Optional[float] = None,
-        message_id: str = "",
-    ):
-        entry = {
-            "type": "thinking",
-            "timestamp": datetime.now().isoformat(),
-            "message_id": message_id,
-            "step": step,
-            "content": content,
-        }
-        if duration is not None:
-            entry["duration"] = duration
-        self._data["entries"].append(entry)
-        self._flush()
+        self._append(entry)
 
     def log_tool_call(
         self,
@@ -227,7 +210,6 @@ class SessionLogger:
     ):
         entry = {
             "type": "tool_call",
-            "timestamp": datetime.now().isoformat(),
             "message_id": message_id,
             "tool_name": tool_name,
             "tool_call_id": tool_call_id,
@@ -238,28 +220,4 @@ class SessionLogger:
         }
         if duration is not None:
             entry["duration"] = duration
-        self._data["entries"].append(entry)
-        self._flush()
-
-    def log_context_compression(
-        self, summary: str, original_count: int, compressed_count: int
-    ):
-        entry = {
-            "type": "context_compression",
-            "timestamp": datetime.now().isoformat(),
-            "summary": summary,
-            "original_message_count": original_count,
-            "compressed_message_count": compressed_count,
-        }
-        self._data["entries"].append(entry)
-        self._flush()
-
-    def log_error(self, error: str, context: str = ""):
-        entry = {
-            "type": "error",
-            "timestamp": datetime.now().isoformat(),
-            "error": error,
-            "context": context,
-        }
-        self._data["entries"].append(entry)
-        self._flush()
+        self._append(entry)

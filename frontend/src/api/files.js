@@ -1,18 +1,26 @@
 import { API_BASE_URL } from '../config.js'
 import { getAuthHeaders, authFetch, getStoredToken } from './auth.js'
 
-export async function uploadFile(sessionId, file, onProgress) {
+export async function uploadFile(sessionId, file, onProgress, xhrHolder) {
   return new Promise((resolve, reject) => {
     const formData = new FormData()
     formData.append('file', file)
 
     const xhr = new XMLHttpRequest()
 
+    // 把 xhr 交给调用方，用户点 × 删除"上传中"的文件时可在外部 abort()
+    if (xhrHolder) xhrHolder.xhr = xhr
+
     xhr.upload.addEventListener('progress', (progressEvent) => {
       if (onProgress && progressEvent.lengthComputable) {
         const percentCompleted = Math.round((progressEvent.loaded * 100) / progressEvent.total)
         onProgress(percentCompleted)
       }
+    })
+
+    // 用户主动取消：以"取消"结束 Promise，避免调用方永久挂起
+    xhr.addEventListener('abort', () => {
+      reject(new Error('上传已取消'))
     })
 
     xhr.addEventListener('load', () => {
@@ -25,8 +33,19 @@ export async function uploadFile(sessionId, file, onProgress) {
         }
       } else {
         try {
-          const error = JSON.parse(xhr.responseText)
-          reject(new Error(error.detail || '文件上传失败'))
+          const payload = JSON.parse(xhr.responseText)
+          const detail = payload.detail
+          // 限额类错误：后端 detail 是结构化对象（code/message/limit_mb/actual_mb），
+          // 归一成带 code 的 Error，便于卡片展示原因并决定是否给「重试」
+          if (detail && typeof detail === 'object' && detail.message) {
+            const err = new Error(detail.message)
+            err.code = detail.code || ''
+            err.limitMb = detail.limit_mb
+            err.actualMb = detail.actual_mb
+            reject(err)
+            return
+          }
+          reject(new Error(typeof detail === 'string' && detail ? detail : '文件上传失败'))
         } catch {
           reject(new Error('文件上传失败'))
         }
@@ -69,7 +88,15 @@ export async function getAllFiles() {
 }
 
 export async function deleteFile(sessionId, file) {
-  const response = await authFetch(`${API_BASE_URL}/agent/sessions/${sessionId}/files/${file.id}`, {
+  // 后端只提供按文件记录 id 删除的接口（DELETE /agent/files/{id}）；
+  // 没有 id 的历史消息/未落库文件只做本地移除，避免请求落到 SPA catch-all 得到 405。
+  // 只有后端 session_files 的数字主键才可删；历史消息可能携带前端生成的字符串 id，
+  // 直接拼进 /agent/files/{id} 会被 FastAPI int 校验拒绝（422），这里统一跳过远端删除。
+  const fileId = Number(file && file.id)
+  if (!Number.isInteger(fileId) || fileId <= 0) {
+    return { status: 'skipped' }
+  }
+  const response = await authFetch(`${API_BASE_URL}/agent/files/${fileId}`, {
     method: 'DELETE',
   })
 

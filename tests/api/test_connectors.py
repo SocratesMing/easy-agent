@@ -7,7 +7,7 @@ import pytest
 
 import easy_agent.api.connectors as connectors_api
 import easy_agent.services.connectors as connectors_service
-from easy_agent.config import Config
+from easy_agent.bootstrap.config import Config
 from easy_agent.api.connectors import router as connectors_router
 
 DEMO_CONNECTOR = {
@@ -21,6 +21,10 @@ DEMO_CONNECTOR = {
         "args": [],
     },
 }
+
+
+#: 自定义连接器用 HTTP 类：普通用户不能添加自定义 stdio（SEC-04，见 test_mcp_policy.py）
+HTTP_URL = "http://127.0.0.1:9/mcp"
 
 
 @pytest.fixture(autouse=True)
@@ -167,13 +171,13 @@ def test_connectors_list_marks_installed_and_collects_custom(client, demo_catalo
 
     add = client.post(
         "/agent/connectors/mcp",
-        json={"config": {"name": "custom-one", "transport": "stdio", "command": "echo"}},
+        json={"config": {"name": "custom-one", "transport": "streamable_http", "url": HTTP_URL}},
     )
     assert add.status_code == 200
 
     data = client.get("/agent/connectors").json()
     assert [c["name"] for c in data["custom"]] == ["custom-one"]
-    assert data["custom"][0]["config"]["transport"] == "stdio"
+    assert data["custom"][0]["config"]["transport"] == "streamable_http"
 
 
 # ── 安装 / 卸载 ───────────────────────────────────────────────────────
@@ -254,7 +258,7 @@ def test_mcp_raw_save_rejects_invalid_json(client):
 
 
 def test_add_mcp_config_rejects_duplicate_and_bad_format(client, demo_catalog):
-    body = {"config": {"name": "dup-server", "transport": "stdio", "command": "echo"}}
+    body = {"config": {"name": "dup-server", "transport": "streamable_http", "url": HTTP_URL}}
     assert client.post("/agent/connectors/mcp", json=body).status_code == 200
 
     resp = client.post("/agent/connectors/mcp", json=body)
@@ -268,7 +272,7 @@ def test_add_mcp_config_rejects_duplicate_and_bad_format(client, demo_catalog):
 def test_delete_mcp_server(client, demo_catalog):
     client.post(
         "/agent/connectors/mcp",
-        json={"config": {"name": "to-delete", "transport": "stdio", "command": "echo"}},
+        json={"config": {"name": "to-delete", "transport": "streamable_http", "url": HTTP_URL}},
     )
     assert client.delete("/agent/connectors/mcp/to-delete").status_code == 200
     assert client.delete("/agent/connectors/mcp/to-delete").status_code == 404
@@ -573,3 +577,224 @@ def test_connectors_status_endpoint(client, auth_catalog, monkeypatch):
     statuses = client.get("/agent/connectors/status").json()["statuses"]
     assert statuses[0]["status"] == "error"
     assert "403" in statuses[0]["error"]
+
+
+# ── 会话级连接器开关（输入框「+」→ 连接器面板的开关） ──────────────────
+
+
+def _install_auth_connector(client) -> None:
+    client.post(
+        "/agent/connectors/install",
+        json={
+            "id": "auth-connector",
+            "validate": False,
+            "values": {"headers.Authorization": "Bearer sk-123"},
+        },
+    )
+
+
+def test_session_switches_default_to_null(client):
+    """没动过开关的会话返回 null（= 全部启用），与「空数组 = 全部关闭」是两种状态。"""
+    from easy_agent.services import agent_manager as am
+
+    resp = client.get("/agent/connectors/session", params={"session_id": "sess-none"})
+    assert resp.status_code == 200
+    assert resp.json() == {"session_id": "sess-none", "connectors": None}
+    assert am.get_session_connectors("sess-none") is None
+
+
+def test_session_switches_write_and_read_back(client, auth_catalog):
+    """写入会话开关：映射成 server 名落到 agent_manager，查询接口原样返回。"""
+    from easy_agent.services import agent_manager as am
+
+    _install_auth_connector(client)
+    sid = "sess-switch"
+    try:
+        resp = client.post(
+            "/agent/connectors/session",
+            json={"session_id": sid, "connectors": ["auth-connector"]},
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["connectors"] == ["auth-connector"]
+        assert resp.json()["unknown"] == []
+        assert am.get_session_connectors(sid) == ("auth-connector",)
+
+        got = client.get("/agent/connectors/session", params={"session_id": sid})
+        assert got.status_code == 200
+        assert got.json()["connectors"] == ["auth-connector"]
+
+        # 全部关闭：提交空数组，查询仍是空数组（不能退化成 null/全部启用）
+        resp = client.post(
+            "/agent/connectors/session", json={"session_id": sid, "connectors": []}
+        )
+        assert resp.status_code == 200
+        assert resp.json()["connectors"] == []
+        assert am.get_session_connectors(sid) == ()
+        assert client.get(
+            "/agent/connectors/session", params={"session_id": sid}
+        ).json()["connectors"] == []
+    finally:
+        am.clear_session_connectors(sid)
+
+
+def test_session_switches_map_display_name_and_ignore_unknown(client, auth_catalog):
+    """展示名映射为目录 id（server 名）；未安装的名字进 unknown，不影响其余项。"""
+    from easy_agent.services import agent_manager as am
+
+    _install_auth_connector(client)
+    sid = "sess-unknown"
+    try:
+        resp = client.post(
+            "/agent/connectors/session",
+            json={"session_id": sid, "connectors": ["需要鉴权的连接器", "根本没装"]},
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["connectors"] == ["auth-connector"]
+        assert resp.json()["unknown"] == ["根本没装"]
+        assert am.get_session_connectors(sid) == ("auth-connector",)
+    finally:
+        am.clear_session_connectors(sid)
+
+
+# ── SEC-04：普通用户的自定义 stdio 连接器 ─────────────────────────────
+
+EVIL_STDIO = {"command": "bash", "args": ["-c", "id > /tmp/sec04-pwned"]}
+
+
+def test_regular_user_cannot_save_custom_stdio(client, demo_catalog):
+    raw = client.put(
+        "/agent/connectors/mcp/raw",
+        json={"content": json.dumps({"servers": {"evil": EVIL_STDIO}})},
+    )
+    assert raw.status_code == 403
+    assert "evil" in raw.json()["detail"]
+
+    add = client.post("/agent/connectors/mcp", json={"config": {"name": "evil", **EVIL_STDIO}})
+    assert add.status_code == 403
+    assert not _user_mcp_path().exists()
+
+
+def test_existing_custom_stdio_is_never_spawned(client, demo_catalog, monkeypatch):
+    """策略上线前写入的违规配置：状态校验 / 工具列表只报错，不拉起进程。"""
+    spawned = []
+    monkeypatch.setattr(
+        connectors_api, "MultiServerMCPClient", lambda servers: spawned.append(servers)
+    )
+    path = _user_mcp_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"servers": {"evil": EVIL_STDIO}}), encoding="utf-8")
+
+    statuses = client.get("/agent/connectors/status").json()["statuses"]
+    assert [(s["name"], s["status"]) for s in statuses] == [("evil", "error")]
+    assert "stdio" in statuses[0]["error"]
+
+    tools = client.get("/agent/connectors/tools", params={"name": "evil"}).json()
+    assert tools["tools"] == []
+    assert "stdio" in tools["error"]
+    assert spawned == []
+
+
+def test_admin_can_save_custom_stdio(client, demo_catalog):
+    from easy_agent.app import app
+    from easy_agent.middleware import get_current_username
+
+    app.dependency_overrides[get_current_username] = lambda: "admin"
+    admin_path = Config.get_user_mcp_path("admin")
+    try:
+        resp = client.put(
+            "/agent/connectors/mcp/raw",
+            json={"content": json.dumps({"servers": {"ops": EVIL_STDIO}})},
+        )
+        assert resp.status_code == 200
+        assert json.loads(admin_path.read_text(encoding="utf-8"))["servers"]["ops"]["command"] == "bash"
+    finally:
+        admin_path.unlink(missing_ok=True)
+
+
+
+# ── sqlite 连接器的 DB_PATH 只能指向个人工作区（随包目录 + 真实安装接口）────
+
+
+def _install_sqlite(client, db_path):
+    return client.post(
+        "/agent/connectors/install",
+        json={"id": "sqlite", "values": {"env.DB_PATH": db_path}, "validate": False},
+    )
+
+
+def test_sqlite_install_rejects_the_app_database(client):
+    resp = _install_sqlite(client, "/qts/data/easy_agent.db")
+    assert resp.status_code == 403
+    assert "工作区" in resp.json()["detail"]
+    assert not _user_mcp_path().exists()
+
+
+def test_sqlite_install_stores_relative_path_inside_workspace(client):
+    resp = _install_sqlite(client, "data/sales.db")
+    assert resp.status_code == 200
+
+    saved = json.loads(_user_mcp_path().read_text(encoding="utf-8"))["servers"]["sqlite"]
+    expected = Config.get_user_workspace_dir("testuser").resolve() / "data" / "sales.db"
+    assert saved["env"]["DB_PATH"] == str(expected)
+
+
+def test_shipped_sqlite_field_is_scoped_to_the_workspace():
+    entry = next(e for e in connectors_service.load_catalog() if e["id"] == "sqlite")
+    field = next(f for f in entry["fields"] if f["key"] == "env.DB_PATH")
+    assert field["path"] == "workspace"
+    assert "easy_agent.db" not in json.dumps(entry, ensure_ascii=False)
+
+
+async def test_validate_reports_a_missing_stdio_command_without_spawning(monkeypatch):
+    """stdio 启动前先查命令是否存在（原 validate_mcp_servers 的预检，迁到实际在用的校验路径）。"""
+    spawned = []
+    monkeypatch.setattr(connectors_api, "MultiServerMCPClient", lambda servers: spawned.append(servers))
+
+    status = await connectors_api._validate_one(
+        "tool", {"transport": "stdio", "command": "definitely-missing-cmd-xyz"}, "admin"
+    )
+    assert status["status"] == "error"
+    assert "definitely-missing-cmd-xyz" in status["error"]
+    assert spawned == []
+
+
+# ── D1 回归：中文 label 的必填字段，X-Missing-Fields 响应头必须 latin-1 安全 ──
+
+CN_FIELD_CONNECTOR = {
+    "id": "cn-field-connector",
+    "name": "中文字段连接器",
+    "description": "回归 D1：中文 label 写入响应头会触发 latin-1 编码错误",
+    "icon": "cn",
+    "fields": [
+        {"key": "env.DB_PATH", "label": "数据库文件路径", "required": True},
+    ],
+    "config": {"transport": "stdio", "command": "echo", "args": []},
+}
+
+
+@pytest.fixture()
+def cn_field_catalog(monkeypatch):
+    async def _no_validate(names, username):
+        return []
+
+    monkeypatch.setattr(
+        connectors_service, "load_catalog", lambda path=None: [dict(CN_FIELD_CONNECTOR)]
+    )
+    monkeypatch.setattr(connectors_api, "_validate_servers", _no_validate)
+    return CN_FIELD_CONNECTOR
+
+
+def test_install_missing_required_fields_header_is_latin1_safe(client, cn_field_catalog):
+    """D1 回归：中文 label 经 X-Missing-Fields 头返回时不能触发 UnicodeEncodeError（500）。"""
+    resp = client.post(
+        "/agent/connectors/install",
+        json={"id": "cn-field-connector", "values": {}, "validate": False},
+    )
+    assert resp.status_code == 400, resp.text
+    assert "数据库文件路径" in resp.json()["detail"]
+
+    header = resp.headers.get("X-Missing-Fields")
+    assert header is not None
+    # HTTP 头按 latin-1 编码传输：值必须可 latin-1 编码，且客户端仍能解析回中文
+    header.encode("latin-1")
+    assert json.loads(header) == ["数据库文件路径"]

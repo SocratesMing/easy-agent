@@ -19,11 +19,3 @@ export function defaultTeamDepartmentId(management = {}) {
   if (current && departments.some(item => String(item.id) === current)) return current
   return departments.length ? String(departments[0].id || '') : current
 }
-
-export function canEditPermissionRole(base = {}, management = {}) {
-  return base.visibility !== 'team' || Boolean(management.is_admin)
-}
-
-export function canRemovePermission(base = {}, management = {}, permission = {}) {
-  return canEditPermissionRole(base, management) || permission.role === 'viewer'
-}

@@ -1,5 +1,5 @@
 {
-  "_comment": "公共 MCP 连接器目录（连接器页「公共」卡片的数据源，由 services/connectors.py 读取）。每条 = 一份可直接写入用户 mcp.json 的 MCP 服务配置：{id, name, description, icon, fields, config}；id 同时作为写入用户 mcp.json 的 server 名，必须唯一且为安全标识符。fields 声明安装时需要用户填写的字段（key 为 config 内路径，支持 env.X / headers.X / args.N）。config 支持 transport=stdio（command/args/env）或 streamable_http/sse（url/headers）。改这里不需要重启后端（每次请求现读）。注意：本文件放在 config 目录，同时会被当作「全局 mcp.json」用于 Agent 加载；因为它没有 servers 字段，所以不会给任何用户自动加载 MCP —— 请勿在此文件里加 servers，那会让所有未自建 mcp.json 的用户自动加载这些服务。 自家投资研究业务（strategyqa / idata / …）也登记在这里：它们由 mcp-server 子项目提供，添加时由主应用自动签发并注入 API Key。",
+  "_comment": "公共 MCP 连接器目录（连接器页「公共」卡片的数据源，由 services/connectors.py 读取）。每条 = 一份可直接写入用户 mcp.json 的 MCP 服务配置：{id, name, description, icon, fields, config}；id 同时作为写入用户 mcp.json 的 server 名，必须唯一且为安全标识符。fields 声明安装时需要用户填写的字段（key 为 config 内路径，支持 env.X / headers.X / args.N）。config 支持 transport=stdio（command/args/env）或 streamable_http/sse（url/headers）。改这里不需要重启后端（每次请求现读）。注意：本文件放在 config 目录，同时会被当作「全局 mcp.json」用于 Agent 加载；因为它没有 servers 字段，所以不会给任何用户自动加载 MCP —— 请勿在此文件里加 servers，那会让所有未自建 mcp.json 的用户自动加载这些服务。",
   "connectors": [
     {
       "id": "mysql",
@@ -7,259 +7,41 @@
       "description": "官方 mysql-mcp-server（stdio，uvx 拉起，需本机已装 uv/uvx）：对 MySQL 数据库做查询与分析。添加时填写连接信息，安装后可在连接器详情中修改",
       "icon": "database-outline",
       "fields": [
-        {
-          "key": "env.MYSQL_HOST",
-          "label": "主机地址",
-          "placeholder": "127.0.0.1",
-          "required": true
-        },
-        {
-          "key": "env.MYSQL_PORT",
-          "label": "端口",
-          "placeholder": "3306",
-          "required": true
-        },
-        {
-          "key": "env.MYSQL_USER",
-          "label": "用户名",
-          "placeholder": "root",
-          "required": true
-        },
-        {
-          "key": "env.MYSQL_PASSWORD",
-          "label": "密码",
-          "placeholder": "数据库密码",
-          "required": true
-        },
-        {
-          "key": "env.MYSQL_DATABASE",
-          "label": "数据库名",
-          "placeholder": "agent",
-          "required": true
-        }
+        { "key": "env.MYSQL_HOST", "label": "主机地址", "placeholder": "127.0.0.1", "required": true },
+        { "key": "env.MYSQL_PORT", "label": "端口", "placeholder": "3306", "required": true },
+        { "key": "env.MYSQL_USER", "label": "用户名", "placeholder": "root", "required": true },
+        { "key": "env.MYSQL_PASSWORD", "label": "密码", "placeholder": "数据库密码", "required": true },
+        { "key": "env.MYSQL_DATABASE", "label": "数据库名", "placeholder": "agent", "required": true }
       ],
       "config": {
         "type": "stdio",
         "command": "uvx",
-        "args": [
-          "--from",
-          "mysql-mcp-server",
-          "mysql_mcp_server"
-        ],
+        "args": ["--from", "mysql-mcp-server", "mysql_mcp_server"],
         "env": {
           "MYSQL_HOST": "127.0.0.1",
           "MYSQL_PORT": "3306",
           "MYSQL_USER": "root",
-          "MYSQL_PASSWORD": "",
+          "MYSQL_PASSWORD": "Test1234",
           "MYSQL_DATABASE": "agent"
         }
       }
     },
     {
-      "id": "strategyqa",
-      "name": "StrategyQA 策略问数",
-      "description": "投资研究：用自然语言查询策略数据",
-      "icon": "analytics-outline",
+      "id": "sqlite",
+      "name": "SQLite 数据库",
+      "description": "db-mcp-server（stdio，uvx 拉起，需本机已装 uv/uvx）：对 SQLite 数据库做查询与分析（默认只读；env.DB_MODE=read-write 可写，仅管理员可改）。添加时填写数据库文件路径（须位于个人工作区内，可写相对路径），安装后可在连接器详情中修改",
+      "icon": "database-outline",
       "fields": [
-        {
-          "key": "headers.Authorization",
-          "label": "MCP API Key",
-          "placeholder": "自家业务可留空，添加时自动签发",
-          "required": false
-        }
+        { "key": "env.DB_PATH", "label": "数据库文件路径（个人工作区内）", "placeholder": "data/sales.db", "required": true, "path": "workspace" }
       ],
       "config": {
-        "type": "streamable_http",
-        "url": "http://127.0.0.1:8174/mcp/strategyqa/",
-        "headers": {
-          "Authorization": "Bearer "
+        "type": "stdio",
+        "command": "uvx",
+        "args": ["--with", "mcp<2", "db-mcp-server"],
+        "env": {
+          "DB_TYPE": "sqlite",
+          "DB_PATH": ""
         }
-      }
-    },
-    {
-      "id": "idata",
-      "name": "iData 数据分析看板",
-      "description": "投资研究：iData 债券分析看板数据",
-      "icon": "bar-chart-outline",
-      "fields": [
-        {
-          "key": "headers.Authorization",
-          "label": "MCP API Key",
-          "placeholder": "自家业务可留空，添加时自动签发",
-          "required": false
-        }
-      ],
-      "config": {
-        "type": "streamable_http",
-        "url": "http://127.0.0.1:8174/mcp/idata/",
-        "headers": {
-          "Authorization": "Bearer "
-        }
-      }
-    },
-    {
-      "id": "macro_forecast",
-      "name": "国内宏观指标预测",
-      "description": "投资研究：宏观指标预测与因子贡献",
-      "icon": "trending-up-outline",
-      "fields": [
-        {
-          "key": "headers.Authorization",
-          "label": "MCP API Key",
-          "placeholder": "自家业务可留空，添加时自动签发",
-          "required": false
-        }
-      ],
-      "config": {
-        "type": "streamable_http",
-        "url": "http://127.0.0.1:8174/mcp/macro_forecast/",
-        "headers": {
-          "Authorization": "Bearer "
-        }
-      }
-    },
-    {
-      "id": "rates_timing",
-      "name": "10 年期国债趋势判断",
-      "description": "投资研究：已落库的趋势判断与运行审计",
-      "icon": "pulse-outline",
-      "fields": [
-        {
-          "key": "headers.Authorization",
-          "label": "MCP API Key",
-          "placeholder": "自家业务可留空，添加时自动签发",
-          "required": false
-        }
-      ],
-      "config": {
-        "type": "streamable_http",
-        "url": "http://127.0.0.1:8174/mcp/rates_timing/",
-        "headers": {
-          "Authorization": "Bearer "
-        }
-      }
-    },
-    {
-      "id": "weekly_research",
-      "name": "研报观点矩阵",
-      "description": "投资研究：周度机构观点与宏观预测",
-      "icon": "newspaper-outline",
-      "fields": [
-        {
-          "key": "headers.Authorization",
-          "label": "MCP API Key",
-          "placeholder": "自家业务可留空，添加时自动签发",
-          "required": false
-        }
-      ],
-      "config": {
-        "type": "streamable_http",
-        "url": "http://127.0.0.1:8174/mcp/weekly_research/",
-        "headers": {
-          "Authorization": "Bearer "
-        }
-      }
-    },
-    {
-      "id": "gold_analysis",
-      "name": "黄金价格驱动因子",
-      "description": "投资研究：黄金价格驱动因子归因",
-      "icon": "diamond-outline",
-      "fields": [
-        {
-          "key": "headers.Authorization",
-          "label": "MCP API Key",
-          "placeholder": "自家业务可留空，添加时自动签发",
-          "required": false
-        }
-      ],
-      "config": {
-        "type": "streamable_http",
-        "url": "http://127.0.0.1:8174/mcp/gold_analysis/",
-        "headers": {
-          "Authorization": "Bearer "
-        }
-      }
-    },
-    {
-      "id": "treasury_1y",
-      "name": "1 年期国债模型",
-      "description": "投资研究：1 年期国债收益率信号与已存解释",
-      "icon": "stats-chart-outline",
-      "fields": [
-        {
-          "key": "headers.Authorization",
-          "label": "MCP API Key",
-          "placeholder": "自家业务可留空，添加时自动签发",
-          "required": false
-        }
-      ],
-      "config": {
-        "type": "streamable_http",
-        "url": "http://127.0.0.1:8174/mcp/treasury_1y/",
-        "headers": {
-          "Authorization": "Bearer "
-        }
-      }
-    },
-    {
-      "id": "gold_weekly",
-      "name": "黄金周频预测",
-      "description": "投资研究：黄金（XAUUSD）未来一周方向预测与已兑现的命中率统计",
-      "business": "gold_weekly",
-      "config": {
-        "transport": "streamable_http",
-        "url": "http://127.0.0.1:8174/mcp/gold_weekly/"
-      }
-    },
-    {
-      "id": "g7_fx",
-      "name": "G7外汇研判",
-      "description": "投资研究：G7 六个货币对的研判快照、回测指标与已存因子解释",
-      "business": "g7_fx",
-      "config": {
-        "transport": "streamable_http",
-        "url": "http://127.0.0.1:8174/mcp/g7_fx/"
-      }
-    },
-    {
-      "id": "fomc",
-      "name": "美联储议息会议",
-      "description": "投资研究：FOMC 声明对比、货币政策观点与市场反应",
-      "business": "fomc",
-      "config": {
-        "transport": "streamable_http",
-        "url": "http://127.0.0.1:8174/mcp/fomc/"
-      }
-    },
-    {
-      "id": "us_cpi",
-      "name": "美国CPI预测",
-      "description": "投资研究：美国 CPI 组级/分项/逐日预测、机构比较与官方历史",
-      "business": "us_cpi",
-      "config": {
-        "transport": "streamable_http",
-        "url": "http://127.0.0.1:8174/mcp/us_cpi/"
-      }
-    },
-    {
-      "id": "gold_monthly",
-      "name": "黄金月频预测",
-      "description": "投资研究：黄金（XAUUSD）未来一个月方向预测与已兑现的命中率统计",
-      "business": "gold_monthly",
-      "config": {
-        "transport": "streamable_http",
-        "url": "http://127.0.0.1:8174/mcp/gold_monthly/"
-      }
-    },
-    {
-      "id": "fx_barometer",
-      "name": "外汇晴雨指数",
-      "description": "投资研究：USDCNY 外汇晴雨指数，3M/6M 分位区间与模型参数（非实时行情）",
-      "business": "fx_barometer",
-      "config": {
-        "transport": "streamable_http",
-        "url": "http://127.0.0.1:8174/mcp/fx_barometer/"
       }
     }
   ]

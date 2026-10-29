@@ -1,0 +1,94 @@
+# Easy Agent 部署编排（与 RAGFlow 共用外部网络 easyagent-net）
+#
+# 前置：
+#   docker network create easyagent-net
+#   cd frontend-vue2 && npm ci && npm run build   # 前端镜像依赖 dist/
+#
+# 启动（项目根，即 /mnt/data/easyagent）：
+#   docker compose --env-file .env.dev up -d --build
+#
+# 对外端口（-p）：
+#   前端 22333 → nginx :80（静态 + 反代 /agent|/api）
+#   后端 22332 → uvicorn :8000
+#
+# .env.dev：
+#   1) env_file 注入容器环境变量
+#   2) 挂载到 /app/.env.dev（AGENT_ENV=dev 时由后端读取）
+
+name: easyagent
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        AGENT_ENV: dev
+    image: easy-agent:dev
+    container_name: easy-agent-backend
+    restart: unless-stopped
+    # bwrap 经非特权用户命名空间建隔离根目录，无需 SYS_ADMIN；Docker 默认的
+    # seccomp 拦截建命名空间、AppArmor 拦截 pivot_root、/proc 屏蔽路径拦截挂载新 procfs，
+    # 三者缺一 bwrap 都会降级为 Landlock
+    security_opt:
+      - seccomp=unconfined
+      - apparmor=unconfined
+      - systempaths=unconfined
+    ports:
+      - "22332:8000"
+    env_file:
+      - .env.dev
+    environment:
+      AGENT_ENV: dev
+      API_BASE_URL: "/"
+    volumes:
+      - ./.env.dev:/app/.env.dev:ro
+      # 宿主机改提示词后重启 backend 即生效
+      - ./easy_agent/config/prompts:/app/easy_agent/config/prompts
+      - easy_agent_data:/app/data
+      - easy_agent_workspace:/app/workspace
+      - easy_agent_memories:/app/memories
+      - easy_agent_sessions:/app/sessions
+      - easy_agent_logs:/app/logs
+    networks:
+      - easyagent-net
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/agent/health')",
+        ]
+      interval: 30s
+      timeout: 10s
+      start_period: 90s
+      retries: 5
+
+  frontend:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.frontend
+    image: easy-agent-frontend:dev
+    container_name: easy-agent-frontend
+    restart: unless-stopped
+    ports:
+      - "22333:80"
+    depends_on:
+      - backend
+    networks:
+      - easyagent-net
+
+volumes:
+  easy_agent_data:
+  easy_agent_workspace:
+  easy_agent_memories:
+  easy_agent_sessions:
+  easy_agent_logs:
+
+networks:
+  easyagent-net:
+    name: easyagent-net
+    external: true

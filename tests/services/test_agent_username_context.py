@@ -3,7 +3,7 @@
 import pytest
 
 from easy_agent.agent import EasyAgent
-from easy_agent.config import Config
+from easy_agent.bootstrap.config import Config
 
 
 @pytest.fixture
