@@ -530,18 +530,6 @@ app = FastAPI(
     redoc_url="/docs",
 )
 
-# 跨域访问（CORS）：
-#   - 默认放行所有来源（"*"），兼容开发期跨域直连与同 pod 部署；
-#   - 生产环境如需收紧，设置环境变量 EASY_CORS_ALLOW_ORIGINS 为逗号分隔的可信域名，
-#     例如 "https://app.example.com,https://admin.example.com"。
-_cors_origins = runtime_initialization.environment.cors_allow_origins
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=_cors_origins,
-    allow_credentials=_cors_origins != ["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 app.add_middleware(RateLimitMiddleware)
 app.add_middleware(MetricsMiddleware)
 
@@ -726,6 +714,21 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 app.include_router(chat_router)
 app.add_middleware(LegacyHostRoutes)
+
+# 跨域访问（CORS）：
+#   - 默认放行所有来源（"*"），兼容开发期跨域直连与同 pod 部署；
+#   - 生产环境如需收紧，设置环境变量 EASY_CORS_ALLOW_ORIGINS 为逗号分隔的可信域名，
+#     例如 "https://app.example.com,https://admin.example.com"。
+# 必须最后注册（最外层）：限流 429 等由内层中间件直接返回的响应也要带 CORS 头，
+# 否则跨域页面（AI 侧边栏 SDK）只看到 CORS 报错；预检请求也在这里应答，不计入限流。
+_cors_origins = runtime_initialization.environment.cors_allow_origins
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_origins,
+    allow_credentials=_cors_origins != ["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 app.include_router(sessions_router)
 app.include_router(files_router)
 app.include_router(auth_router)

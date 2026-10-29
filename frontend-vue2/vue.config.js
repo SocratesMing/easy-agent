@@ -97,6 +97,11 @@ module.exports = defineConfig({
   configureWebpack: {
     // SDK 体积：全量 highlight.js（190+ 语言）换成官方常用语言子集，压缩后少约 700 KB
     resolve: IS_SDK_BUILD ? { alias: { 'highlight.js$': 'highlight.js/lib/common' } } : {},
-    plugins: [iconsPlugin()],
+    plugins: [
+      iconsPlugin(),
+      // SDK 必须单文件交付（CSS 由 build-sdk.mjs 回填进 JS）：动态 import() 一律并回主文件，
+      // 否则会拆出 *.<id>.js 异步分包，宿主漏部署时运行期加载失败
+      ...(IS_SDK_BUILD ? [new (require('webpack').optimize.LimitChunkCountPlugin)({ maxChunks: 1 })] : []),
+    ],
   },
 })

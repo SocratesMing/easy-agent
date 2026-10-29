@@ -1968,14 +1968,14 @@ html[data-theme="dark"] .approval-badge.status-rejected {
 /* 知识依据锚点：[知识依据N] 渲染为可点击链接，点击跳转证据面板对应卡片 */
 /* 正文内超链接：全局 a 重置（style.css 里 color/text-decoration: inherit）
    会抹掉链接外观，这里恢复可辨识样式，保证 [标题](URL) 与裸 URL 一眼可点 */
-.message-text ::v-deep a {
+.message-text ::v-deep a, .thinking-text ::v-deep a {
   color: var(--accent-color, #2563eb);
   text-decoration: underline;
   cursor: pointer;
   overflow-wrap: anywhere;
 }
 
-.message-text ::v-deep a:hover {
+.message-text ::v-deep a:hover, .thinking-text ::v-deep a:hover {
   text-decoration: none;
   opacity: 0.8;
 }

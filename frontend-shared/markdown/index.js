@@ -164,6 +164,32 @@ function normalizeInlineUrls(line) {
   return converted.replace(/\u0000(\d+)\u0000/g, (_, i) => held[+i])
 }
 
+const EXTERNAL_LINK_ATTRS = ' target="_blank" rel="noopener noreferrer"'
+const URL_ONLY_TEXT_RE = new RegExp('^' + URL_BODY + '$')
+
+/**
+ * 纯文本里的 http(s) 链接转成新标签页打开的 <a>，其余内容转义（用于工具结果等非 markdown 文本）。
+ *
+ * @param {string} text 纯文本
+ * @returns {string} 可直接 v-html 的 HTML
+ * @example
+ * linkifyText('详见 https://example.com/a。') // 详见 <a href="https://example.com/a" ...>…</a>。
+ */
+export function linkifyText(text) {
+  const source = String(text == null ? '' : text)
+  let html = ''
+  let last = 0
+  for (const match of source.matchAll(URL_RE_G)) {
+    const { url, tail } = splitUrlTail(match[0])
+    html += escapeHtml(source.slice(last, match.index))
+    html += url
+      ? '<a href="' + escapeHtml(url) + '"' + EXTERNAL_LINK_ATTRS + '>' + escapeHtml(url) + '</a>' + escapeHtml(tail)
+      : escapeHtml(match[0])
+    last = match.index + match[0].length
+  }
+  return html + escapeHtml(source.slice(last))
+}
+
 // 单行改写：命中来源链接模式则生成卡片 HTML（保留列表/标题前缀），否则原样返回
 function beautifySourceLine(raw) {
   const lead = raw.match(/^(\s*(?:[-*+]|\d+[.)])?\s*#{0,6}\s*)/)
@@ -409,8 +435,16 @@ export function createMarkdownRenderer({ highlight, externalLinks = true }) {
       const text = this.parser.parseInline(tokens)
       const isExternal = /^https?:\/\//i.test(url)
       const titleAttr = title ? ` title="${escapeHtml(title)}"` : ''
-      const extra = isExternal ? ' target="_blank" rel="noopener noreferrer"' : ''
+      const extra = isExternal ? EXTERNAL_LINK_ATTRS : ''
       return `<a href="${escapeHtml(url)}"${titleAttr}${extra}>${text}</a>`
+    }
+
+    // 模型常把链接写成行内代码（`https://…`）：整段就是一个 URL 时也可点击，保留代码外观
+    renderer.codespan = function ({ text }) {
+      const code = `<code>${escapeHtml(text)}</code>`
+      const url = String(text || '').trim()
+      if (!URL_ONLY_TEXT_RE.test(url)) return code
+      return `<a href="${escapeHtml(url)}"${EXTERNAL_LINK_ATTRS}>${code}</a>`
     }
   }
 
