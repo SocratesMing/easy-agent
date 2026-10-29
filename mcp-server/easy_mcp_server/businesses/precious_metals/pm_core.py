@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+ # -*- coding: utf-8 -*-
 """
 pm_core —— precious_metals MCP 的公共核心层（零依赖，仅标准库）
 
