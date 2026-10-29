@@ -21,6 +21,8 @@ LOG_PROC_FILE = "proc-{version}-{service_name}.log"
 LOG_ERR_FILE = "err-{version}-{service_name}.log"
 LOG_COMM_FILE = "comm-{version}-{service_name}.log"
 LOG_COMMUNICATION_LOGGERS = ("uvicorn.access",)
+# 只写文件、不进控制台的 logger（大体量报文日志，避免控制台重复同步写入）
+LOG_CONSOLE_EXCLUDED_LOGGERS = ("easy_agent.llm_wire",)
 LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 LOG_LEVEL = "info"
 LOG_MAX_BYTES = 50 * 1024 * 1024
@@ -63,6 +65,11 @@ class _CommunicationFilter(logging.Filter):
             or record.name.startswith(f"{logger_name}.")
             for logger_name in self._logger_names
         )
+
+
+class _ExcludeLoggersFilter(_CommunicationFilter):
+    def filter(self, record):
+        return not super().filter(record)
 
 
 class _TimeSizeRotatingFileHandler(TimedRotatingFileHandler):
@@ -183,6 +190,7 @@ def setup_logging() -> dict[str, str]:
     console_handler.setLevel(level)
     console_handler.setFormatter(formatter)
     console_handler.addFilter(_RunidFilter())
+    console_handler.addFilter(_ExcludeLoggersFilter(LOG_CONSOLE_EXCLUDED_LOGGERS))
 
     log_files = {
         "proc": log_dir_path

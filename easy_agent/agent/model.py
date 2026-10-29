@@ -8,6 +8,7 @@ Use ``create_model(config, model_name)`` to build an instance; config resolution
 is handled by the public ``resolve_llm_config``.
 """
 
+import json
 import logging
 import os
 
@@ -18,6 +19,9 @@ from langchain_openai import ChatOpenAI
 from easy_agent.bootstrap.config import Config, LLMConfig, RetryConfig
 
 logger = logging.getLogger(__name__)
+#: 模型入口参数 / 请求 / 原始返回报文日志：只写 proc 文件，不进控制台
+#: （见 ``bootstrap/initialization/log.py`` 的 ``LOG_CONSOLE_EXCLUDED_LOGGERS``）。
+wire_logger = logging.getLogger("easy_agent.llm_wire")
 
 # Candidate field names used by various providers for model reasoning / thinking.
 # DeepSeek uses "reasoning_content"; some models use "reasoning"; others use
@@ -29,6 +33,143 @@ _REASONING_KEYS = ("reasoning_content", "reasoning", "reason_content")
 # Values identical to the previous hardcoded literals (Phase 1 behavior-preserving).
 ANTHROPIC_THINKING_BUDGET_TOKENS = 10000
 ANTHROPIC_MAX_TOKENS = 16000
+
+#: 开关：为 1/true/yes/on 时打印模型入口参数、每次发往 api_base 的完整请求与原始返回报文。
+#: 报文含完整对话内容，体量大且可能含敏感信息，仅排障时开启。
+LLM_REQUEST_LOG_ENV = "EASY_LLM_REQUEST_LOG"
+
+
+def llm_request_log_enabled() -> bool:
+    return os.environ.get(LLM_REQUEST_LOG_ENV, "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _mask_secret(value) -> str:
+    text = str(value or "")
+    if len(text) <= 8:
+        return "***" if text else ""
+    return f"{text[:4]}***{text[-4:]}"
+
+
+_SECRET_HEADERS = frozenset({"authorization", "x-api-key", "api-key", "proxy-authorization"})
+
+
+def _log_http_request(request) -> None:
+    """打印 SDK 最终发出的 HTTP 请求：方法、完整 URL、全部请求头与请求体。"""
+    try:
+        headers = {
+            key: _mask_secret(value) if key.lower() in _SECRET_HEADERS else value
+            for key, value in request.headers.items()
+        }
+        raw = request.content
+        try:
+            body = json.dumps(json.loads(raw), ensure_ascii=False)
+        except ValueError:
+            body = raw.decode("utf-8", errors="replace")
+        wire_logger.info(
+            f"[LLM_REQUEST] {request.method} {request.url} | "
+            f"headers={json.dumps(headers, ensure_ascii=False)} | body={body}"
+        )
+    except Exception as exc:  # noqa: BLE001 - 日志失败不影响请求
+        logger.warning(f"[LLM_REQUEST] 打印请求失败: {exc}")
+
+
+def _log_http_response(response, chunks: list[bytes]) -> None:
+    """打印模型 endpoint 的原始返回：状态码、全部响应头与（解压后的）原始报文。
+
+    流式响应即 SSE 原文（``data: {...}`` 逐行），非流式为 JSON 原文。
+    """
+    try:
+        body = b"".join(chunks).decode(response.encoding or "utf-8", errors="replace")
+        wire_logger.info(
+            f"[LLM_RESPONSE] {response.status_code} {response.request.method} {response.request.url} | "
+            f"headers={json.dumps(dict(response.headers.items()), ensure_ascii=False)} | "
+            f"body={body}"
+        )
+    except Exception as exc:  # noqa: BLE001 - 日志失败不影响响应
+        logger.warning(f"[LLM_RESPONSE] 打印响应失败: {exc}")
+
+
+def _tee_response_body(response) -> None:
+    # SDK 的流式解析和非流式 read() 都经 iter_bytes/aiter_bytes 读取解压后的报文；
+    # 边转发边累积，流结束（或被提前关闭）时整体打印一次，不缓冲、不影响逐字输出。
+    # SDK 读到 [DONE] 即停止迭代，因此不能用「迭代器是否耗尽」判断报文是否完整。
+    original_iter = response.iter_bytes
+    original_aiter = response.aiter_bytes
+
+    def iter_bytes(chunk_size=None):
+        chunks = []
+        try:
+            for chunk in original_iter(chunk_size):
+                chunks.append(chunk)
+                yield chunk
+        finally:
+            _log_http_response(response, chunks)
+
+    async def aiter_bytes(chunk_size=None):
+        chunks = []
+        try:
+            async for chunk in original_aiter(chunk_size):
+                chunks.append(chunk)
+                yield chunk
+        finally:
+            _log_http_response(response, chunks)
+
+    response.iter_bytes = iter_bytes
+    response.aiter_bytes = aiter_bytes
+
+
+def _sync_request_hook(request) -> None:
+    if llm_request_log_enabled():
+        _log_http_request(request)
+
+
+async def _async_request_hook(request) -> None:
+    if llm_request_log_enabled():
+        _log_http_request(request)
+
+
+def _sync_response_hook(response) -> None:
+    if llm_request_log_enabled():
+        _tee_response_body(response)
+
+
+async def _async_response_hook(response) -> None:
+    if llm_request_log_enabled():
+        _tee_response_body(response)
+
+
+def _attach_hooks(http_client, request_hook, response_hook) -> None:
+    # langchain 用 lru_cache 让同 base_url 的模型共享 httpx 客户端，重复挂会重复打印
+    if http_client is None or not hasattr(http_client, "event_hooks"):
+        return
+    hooks = http_client.event_hooks
+    if request_hook not in hooks["request"]:
+        hooks["request"].append(request_hook)
+    if response_hook not in hooks["response"]:
+        hooks["response"].append(response_hook)
+    http_client.event_hooks = hooks
+
+
+def install_request_logging(model) -> None:
+    """在模型底层 SDK 的 httpx 客户端上挂请求 / 响应钩子。
+
+    deepagents 中间件（system prompt / bind_tools / 摘要等）改写后的请求，最终都经
+    langchain → openai/anthropic SDK → httpx 发出；在 httpx 层拿到的才是真正发往
+    endpoint 的 URL、请求头和请求体（含 SDK 追加的 headers、extra_body 等），以及
+    endpoint 返回的原始报文。
+    """
+    if isinstance(model, ChatAnthropic):
+        sdk_clients = [
+            (model._client, _sync_request_hook, _sync_response_hook),
+            (model._async_client, _async_request_hook, _async_response_hook),
+        ]
+    else:
+        sdk_clients = [
+            (getattr(model, "root_client", None), _sync_request_hook, _sync_response_hook),
+            (getattr(model, "root_async_client", None), _async_request_hook, _async_response_hook),
+        ]
+    for sdk_client, request_hook, response_hook in sdk_clients:
+        _attach_hooks(getattr(sdk_client, "_client", None), request_hook, response_hook)
 
 
 def _extract_reasoning(source: dict):
@@ -344,6 +485,17 @@ def create_model(
         f"provider={llm_config.provider} | model={llm_config.model} | "
         f"protocol={protocol}"
     )
+    if llm_request_log_enabled():
+        wire_logger.info(
+            f"[LLM_INIT] model_name={model_name or config.active_model} | "
+            f"provider={llm_config.provider} | model={llm_config.model} | "
+            f"protocol={protocol} | api_base={llm_config.api_base} | "
+            f"api_key={_mask_secret(llm_config.api_key)} | "
+            f"context_length={llm_config.context_length} | "
+            f"retry={llm_config.retry.model_dump() if llm_config.retry else None} | "
+            f"headers={build_request_headers(llm_config, session_id)} | "
+            f"session_id={session_id}"
+        )
 
     if protocol == "openai":
         model = _create_openai_compatible(
@@ -357,6 +509,8 @@ def create_model(
         raise ValueError(
             f"Unsupported protocol: {protocol}. Use 'openai' or 'anthropic'."
         )
+    if llm_request_log_enabled():
+        install_request_logging(model)
     return apply_context_profile(model, llm_config.context_length)
 
 
