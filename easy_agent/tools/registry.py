@@ -177,8 +177,10 @@ def _scheduled_task_enabled(ctx: ToolBuildContext) -> bool:
 
 
 def _save_expert_enabled(ctx: ToolBuildContext) -> bool:
-    # DA-13：非专家会话都注入，但它是 skill_gated 工具，模型读到 / pin 了 expert-creator 才出现；
-    # 改造前按「本轮是否选中 expert-creator」决定注不注入，切换时要重建 Agent。
+    # 非专家会话都注入，且**不参与技能门控**：创建专家的入口是产品级的，不能依赖用户手里
+    # 那份 expert-creator 技能的 frontmatter 写成什么样。DA-13 曾把它交给技能带出，结果
+    # 升级前整份复制到用户目录的旧副本（frontmatter 没有 metadata.include_tools）永远
+    # 披露不出这个工具，「新建专家」直接不可用。见 agent/core.py 的 _ALWAYS_AVAILABLE_TOOLS。
     return not ctx.expert_session
 
 
@@ -370,10 +372,9 @@ TOOL_REGISTRY: tuple[ToolSpec, ...] = (
         interrupt_decisions=("approve", "edit", "reject"),
         hitl_order=10,
         inject_order=30,
-        condition_note="非专家会话；由 expert-creator 技能的 include_tools 带出（skill_gated）",
+        condition_note="非专家会话（产品级入口，不参与技能门控）",
         condition=_save_expert_enabled,
         builder=_build_save_expert_tool,
-        skill_gated=True,
     ),
     ToolSpec(
         name="read_uploaded_file",

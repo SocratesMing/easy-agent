@@ -2,8 +2,9 @@
 
 - 技能源固定为 ``/skills/builtin/``（只读、按启用集合过滤）+ ``/user-skills/``，同名时用户技能
   覆盖公共技能；停用 / 没添加的公共技能不出现在技能列表里；
-- ``save_expert`` 由 expert-creator 技能带出：不在 agent 工具列表里，模型读到（或 pin 了）
-  ``SKILL.md`` 之后的那次模型调用才绑定；没读就调用不会执行；开着审批时照常先审批。
+- ``save_expert`` 是产品级工具，非专家会话常驻，**不参与技能门控**：升级前整份复制到用户
+  目录的旧 expert-creator（frontmatter 没有 ``metadata.include_tools``）也能正常调用；
+  技能带出工具的能力由 ``fetcher`` 那条用例继续覆盖；开着审批时照常先审批。
 """
 
 from __future__ import annotations
@@ -177,32 +178,50 @@ async def test_reading_a_disabled_builtin_skill_fails(build):
     assert "body of xlsx" not in str(result.content)
 
 
-# ── save_expert 由 expert-creator 带出 ─────────────────────────────────
+# ── save_expert 常驻（不参与技能门控）──────────────────────────────────
 
 
-async def test_save_expert_is_bound_only_after_expert_creator_is_read(build):
+async def test_save_expert_is_available_from_the_first_model_call(build):
+    """非专家会话第一次模型调用就带着 save_expert，不再等技能披露。"""
+    agent, model = build([AIMessage(content="ok")])
+    await _run(agent, _turn())
+
+    assert "save_expert" in model.bound[0]
+
+
+async def test_save_expert_works_with_a_legacy_user_copy_of_expert_creator(setup, build):
+    """现场回归：S2 之前整份复制到用户目录的旧副本没有 metadata.include_tools。
+
+    公共版本的声明仍在（``declared_include_tools`` 会扫到），所以光把注册表的
+    ``skill_gated`` 去掉还不够，必须显式从门控名单里排除 save_expert。
+    """
+    legacy = Path(setup.agent.workspace_dir) / "u1" / "skills" / "expert-creator"
+    legacy.mkdir(parents=True)
+    (legacy / "SKILL.md").write_text(
+        "---\nname: expert-creator\ndescription: 老版本副本\n---\n4. 调用 `save_expert` 落库\n",
+        encoding="utf-8",
+    )
     agent, model = build(
         [
-            _call("read_file", {"file_path": EXPERT_CREATOR_PATH}, "r1"),
+            _call("read_file", {"file_path": "/user-skills/expert-creator/SKILL.md"}, "r1"),
             _call("save_expert", {"name": "macro"}, "c1"),
             AIMessage(content="done"),
         ]
     )
     await _run(agent, _turn())
 
-    assert "save_expert" not in model.bound[0]
-    assert "save_expert" in model.bound[1]
+    assert "save_expert" in model.bound[0]
     assert build.saved == ["macro"]
 
 
-async def test_save_expert_called_before_the_skill_is_read_does_not_run(build):
+async def test_save_expert_called_without_reading_the_skill_still_runs(build):
     agent, model = build([_call("save_expert", {"name": "macro"}, "c1"), AIMessage(content="done")])
     state = await _run(agent, _turn())
 
-    assert build.saved == []
-    assert all("save_expert" not in names for names in model.bound)
+    assert "save_expert" in model.bound[0]
+    assert build.saved == ["macro"]
     result = next(m for m in state.values["messages"] if isinstance(m, ToolMessage))
-    assert result.status == "error"  # 当作未知工具
+    assert result.status != "error"
 
 
 async def test_pinned_expert_creator_binds_save_expert_on_the_first_call(build):

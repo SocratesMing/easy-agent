@@ -365,8 +365,7 @@ def test_result_text_hides_server_paths(env):
 def test_agent_manager_injects_save_expert(client, monkeypatch):
     """会话 Agent 应注入 save_expert，且工具描述携带配置里的分类标签候选。
 
-    DA-13：save_expert 由 expert-creator 技能带出，交给 SkillsMiddleware(tools=...)，
-    不在 agent 的工具列表里。
+    save_expert 是产品级入口，非专家会话常驻，不交给 SkillsMiddleware 门控。
     """
     import easy_agent.agent.core as agent_mod
     import easy_agent.services.agent_manager as am
@@ -392,9 +391,7 @@ def test_agent_manager_injects_save_expert(client, monkeypatch):
         )
     )
 
-    assert "save_expert" not in {getattr(t, "name", "") for t in (captured.get("tools") or [])}
-    # tools 是 resolver（D4：兼容 MCP 前缀），按技能里写的名字取工具
-    tools = {t.name: t for t in recorded[-1]["tools"]("save_expert", None)}
+    tools = {getattr(t, "name", ""): t for t in (captured.get("tools") or [])}
     assert "save_expert" in tools
     assert "credit_research: 信用研究" in tools["save_expert"].description
     assert tools["save_expert"].tag_options == TAG_OPTIONS
@@ -524,9 +521,8 @@ def _stub_skills_middleware(monkeypatch, recorded: list):
     monkeypatch.setattr(agent_mod, "SkillsMiddleware", _record)
 
 
-def test_agent_manager_save_expert_is_carried_by_expert_creator_skill(client, monkeypatch):
-    """DA-13：save_expert 不进 agent 工具列表，交给 SkillsMiddleware（expert-creator 的
-    include_tools 带出）；专家会话不提供。"""
+def test_agent_manager_keeps_save_expert_out_of_skill_gating(client, monkeypatch):
+    """save_expert 是产品级入口：非专家会话常驻，不再交给 SkillsMiddleware 门控；专家会话不提供。"""
     import easy_agent.services.agent_manager as am
     from easy_agent.agent.graph_cache import clear_agent_graph_cache
 
@@ -544,11 +540,13 @@ def test_agent_manager_save_expert_is_carried_by_expert_creator_skill(client, mo
             "sess-gated-general", username="testuser", enable_hitl=False
         )
     )
-    assert "save_expert" not in _tool_names(captured[-1])
-    assert [t.name for t in recorded[-1]["tools"]("save_expert", None)] == ["save_expert"]
-    assert recorded[-1]["sources"][-1] == "/user-skills/"
+    assert "save_expert" in _tool_names(captured[-1])
+    # 公共 expert-creator 仍声明 include_tools: save_expert，但它是例外清单成员，
+    # 不会被交给任何 SkillsMiddleware（否则旧副本场景下又变成永不披露）
+    assert all(
+        [t.name for t in kw["tools"]("save_expert", None)] == [] for kw in recorded
+    )
 
-    built = len(recorded)
     asyncio.run(
         am.get_or_create_agent_for_session(
             "sess-gated-expert",
@@ -558,8 +556,6 @@ def test_agent_manager_save_expert_is_carried_by_expert_creator_skill(client, mo
         )
     )
     assert "save_expert" not in _tool_names(captured[-1])
-    # 专家会话没有可带出的工具：不替换框架默认的 SkillsMiddleware
-    assert len(recorded) == built
 
 
 def test_agent_manager_reuses_agent_across_turns(client, monkeypatch):

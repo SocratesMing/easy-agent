@@ -223,9 +223,9 @@ async def get_or_create_agent_for_session(
     启用集合（写入与「驱逐缓存 Agent」由 ``set_session_connectors`` 负责，见
     ``api/connectors.py`` 的 ``/agent/connectors/session``）。
 
-    ``save_expert``（DA-13）：非专家会话都注入，但它由 expert-creator 技能带出（模型读到或
-    pin 了该技能才出现，见 ``tools/registry.py`` 的 ``skill_gated``），不再随本轮选中的技能
-    驱逐重建 Agent；专家会话不提供，防止领域专家被借来创建 / 修改别的专家。
+    ``save_expert``（DA-13）：非专家会话都注入，且不参与技能门控——产品级入口不能依赖
+    技能 frontmatter 的写法（见 ``agent/core.py`` 的 ``_ALWAYS_AVAILABLE_TOOLS``）；也不再
+    随本轮选中的技能驱逐重建 Agent。专家会话不提供，防止领域专家被借来创建 / 修改别的专家。
     """
     async with _create_lock(session_id):
         return await _get_or_create_agent_unlocked(
