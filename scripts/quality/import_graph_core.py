@@ -47,6 +47,8 @@ class ImportGraph:
     modules: dict[str, Path] = field(default_factory=dict)
     init_modules: set[str] = field(default_factory=set)
     edges: list[Edge] = field(default_factory=list)
+    #: ``import_module(...)`` calls whose module name is not an absolute literal
+    warnings: list[str] = field(default_factory=list)
 
     def adjacency(self) -> dict[str, set[str]]:
         graph = {module: set() for module in self.modules}
@@ -141,6 +143,43 @@ def _import_edges(
     return edges
 
 
+def _is_import_module_call(node: ast.Call) -> bool:
+    """``importlib.import_module(...)`` or a bare ``import_module(...)``."""
+    func = node.func
+    if isinstance(func, ast.Attribute):
+        return func.attr == "import_module"
+    return isinstance(func, ast.Name) and func.id == "import_module"
+
+
+def _dynamic_import_edges(
+    tree: ast.AST, module: str, modules: dict[str, Path]
+) -> tuple[list[Edge], list[str]]:
+    """Treat ``import_module("pkg.x")`` with a literal name as an ordinary edge.
+
+    A name that is not an absolute string literal (an f-string, a variable, a
+    relative name) cannot be resolved; it is reported as a warning instead.
+    """
+    edges: list[Edge] = []
+    warnings: list[str] = []
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and _is_import_module_call(node)):
+            continue
+        arg = node.args[0] if node.args else None
+        if (
+            isinstance(arg, ast.Constant)
+            and isinstance(arg.value, str)
+            and not arg.value.startswith(".")
+        ):
+            target = _resolve_module(arg.value, modules)
+            if target and target != module:
+                edges.append(Edge(module, target, node.lineno, f'import_module("{arg.value}")'))
+        else:
+            warnings.append(
+                f"{module}:{node.lineno} 动态导入的模块名不是绝对字面量，门禁看不到这条边"
+            )
+    return edges, warnings
+
+
 def build_graph(root: str | Path, package: str = DEFAULT_PACKAGE) -> ImportGraph:
     """Parse every module of ``package`` under ``root`` and build the graph."""
     root = Path(root).resolve()
@@ -163,6 +202,9 @@ def build_graph(root: str | Path, package: str = DEFAULT_PACKAGE) -> ImportGraph
         graph.edges.extend(
             _import_edges(tree, module, module in graph.init_modules, graph.modules)
         )
+        dynamic_edges, warnings = _dynamic_import_edges(tree, module, graph.modules)
+        graph.edges.extend(dynamic_edges)
+        graph.warnings.extend(warnings)
     return graph
 
 
@@ -472,6 +514,7 @@ def graph_report(graph: ImportGraph) -> dict:
         "sccs": [
             {"size": len(cycle), "modules": cycle} for cycle in cycles
         ],
+        "warnings": list(graph.warnings),
     }
 
 

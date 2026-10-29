@@ -71,6 +71,31 @@ def test_import_graph_resolves_relative_and_absolute_imports(tmp_path):
     assert graph.cycles() == [["pkg.a", "pkg.b"]]
 
 
+def test_literal_import_module_calls_are_edges(tmp_path):
+    _write(tmp_path, "pkg/__init__.py", "")
+    _write(
+        tmp_path,
+        "pkg/a.py",
+        "import importlib\n\n\ndef load():\n    return importlib.import_module('pkg.b')\n",
+    )
+    _write(tmp_path, "pkg/b.py", "from pkg import a\n")
+    _write(
+        tmp_path,
+        "pkg/c.py",
+        "from importlib import import_module\n\n\ndef load(name):\n"
+        "    return import_module(f'pkg.{name}')\n",
+    )
+
+    graph = import_graph.build_graph(tmp_path, "pkg")
+
+    assert "pkg.b" in graph.adjacency()["pkg.a"]
+    # 动态导入藏住的环，门禁现在看得到
+    assert graph.cycles() == [["pkg.a", "pkg.b"]]
+    # 模块名不是字面量的只能告警
+    assert len(graph.warnings) == 1
+    assert graph.warnings[0].startswith("pkg.c:5 ")
+
+
 def test_import_graph_whitelist_comparison(tmp_path):
     _make_cycle_package(tmp_path)
     cycles = import_graph.build_graph(tmp_path, "pkg").cycles()

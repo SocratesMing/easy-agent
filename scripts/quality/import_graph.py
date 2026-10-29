@@ -64,6 +64,8 @@ def _print_human(report: dict, errors: list[str], check: bool) -> None:
     for position, scc in enumerate(report["sccs"], start=1):
         modules = ", ".join(module.replace(f"{report['package']}.", "") for module in scc["modules"])
         print(f"  SCC-{position} [{scc['size']}]: {modules}")
+    for warning in report["warnings"]:
+        print(f"  [warning] {warning}")
     if check:
         if errors:
             print("[check-scc] FAIL")

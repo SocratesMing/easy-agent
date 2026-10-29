@@ -58,3 +58,19 @@ def test_single_worker_does_not_block(fake_env, monkeypatch):
     monkeypatch.delenv("UVICORN_WORKERS", raising=False)
     assert sched._detect_worker_count() == 1
     sched.reload_all_tasks()
+
+
+def test_agent_manager_registers_the_agent_lifecycle_on_import():
+    """scheduler 不导入 agent_manager，由 agent_manager 导入时注册生命周期。"""
+    import easy_agent.services.agent_manager as agent_manager
+
+    get_agent, remove_agent = sched._require_agent_lifecycle()
+    assert get_agent is agent_manager.get_or_create_agent_for_session
+    assert remove_agent is agent_manager.remove_session_agent
+
+
+def test_unregistered_agent_lifecycle_fails_clearly(monkeypatch):
+    """没注册就跑任务要明确报错，不再悄悄动态导入 agent_manager（那样会藏住一个 import 环）。"""
+    monkeypatch.setattr(sched, "_agent_lifecycle_provider", None)
+    with pytest.raises(RuntimeError, match="agent_manager"):
+        sched._require_agent_lifecycle()
