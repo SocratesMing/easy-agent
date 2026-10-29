@@ -713,22 +713,22 @@
 
         <ul v-else class="skill-picker-list" role="listbox" aria-label="可用技能">
           <li
-            v-for="(skill, index) in filteredSkills"
-            :key="skill.dir_name"
+            v-for="(row, index) in skillRows"
+            :key="row.skill.dir_name"
             class="skill-picker-item"
             :class="{ active: index === skillPickerIndex }"
             role="option"
             :aria-selected="index === skillPickerIndex ? 'true' : 'false'"
             @mouseenter="skillPickerIndex = index"
-            @mousedown.prevent="selectSkill(skill)"
-            @click="selectSkill(skill)"
+            @mousedown.prevent="selectSkill(row.skill)"
+            @click="selectSkill(row.skill)"
           >
-            <SkillIcon :icon="skill.icon" :category="iconCategoryFor(skill.category_id)" size="xs" />
+            <SkillIcon :icon="row.skill.icon" :category="iconCategoryFor(row.skill.category_id)" size="xs" />
             <span class="skill-picker-body">
-              <span class="skill-picker-name">{{ skill.name || skill.dir_name }}</span>
-              <span class="skill-picker-desc">{{ skill.description || '暂无描述' }}</span>
+              <span class="skill-picker-name"><span v-for="(part, pi) in row.nameParts" :key="'n' + pi" :class="{ 'skill-picker-hit': part.hit }">{{ part.text }}</span></span>
+              <span class="skill-picker-desc"><span v-for="(part, pi) in row.descParts" :key="'d' + pi" :class="{ 'skill-picker-hit': part.hit }">{{ part.text }}</span></span>
             </span>
-            <span class="skill-picker-slash">/{{ skill.dir_name }}</span>
+            <span class="skill-picker-slash">/{{ row.skill.dir_name }}</span>
           </li>
         </ul>
       </div>
@@ -750,7 +750,7 @@ import { iconCategoryFor } from '../utils/skillCategories.js'
 // 镜像层为画出技能芯片的外扩留白，把裁剪盒向外扩了这么多 px（见 .input-mirror 的 padding/margin）：
 // 补滚动条占位时要一起加上，否则镜像内容比 textarea 窄、换行位置对不上。
 const MIRROR_BLEED = 6
-import { buildMessageText, parseSlashQuery } from '../utils/skillSlash.js'
+import { buildMessageText, parseSlashQuery, splitByQuery } from '../utils/skillSlash.js'
 // 内联技能标签：标签文字 = textarea 文本里的子串，选中/删除/发送前的剥离都走这套纯逻辑
 import {
   buildSegments,
@@ -1088,6 +1088,20 @@ const filteredSkills = computed(() => {
   if (byName.length > 0) return byName
   return skillOptions.value.filter(s => (s.description || '').toLowerCase().includes(q))
 })
+
+/**
+ * 技能面板的行数据：把名称 / 描述按查询词切成片段，命中片段由模板上色。
+ * 筛选结果与高亮同源（都吃 filteredSkills），两者不会出现「显示却不高亮」的错位；
+ * 名称命中时描述里的同词也一并上色，方便一眼看出为什么这条被选中。
+ * 右侧的 `/目录名` 与名称基本重复，不再单独上色，避免一行出现三处蓝。
+ */
+const skillRows = computed(() =>
+  filteredSkills.value.map(skill => ({
+    skill,
+    nameParts: splitByQuery(skill.name || skill.dir_name, skillQuery.value),
+    descParts: splitByQuery(skill.description || '暂无描述', skillQuery.value),
+  }))
+)
 
 async function loadSkillOptions() {
   const now = Date.now()
@@ -3148,6 +3162,16 @@ html[data-theme="dark"] .connector-switch.on {
   display: flex;
   flex-direction: column;
   gap: 2px;
+}
+
+/* 检索命中的片段：只染色不加底，选中行本身有淡色背景，叠加底色会糊成一片 */
+.skill-picker-hit {
+  color: var(--accent-color);
+}
+
+/* 名称是这一行的主标识，命中再加粗一档，扫视时比描述更先被看到 */
+.skill-picker-name .skill-picker-hit {
+  font-weight: 600;
 }
 
 .skill-picker-name {

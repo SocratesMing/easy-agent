@@ -60,3 +60,35 @@ export function parseSlashQuery(text, caret, tokenMap) {
 export function buildMessageText(text) {
   return (text || '').trim().replace(/\s+/g, ' ')
 }
+
+/**
+ * 把文本按查询词切成「命中 / 未命中」片段，供技能检索面板给关键字上色。
+ * 匹配口径与技能列表的筛选保持一致：忽略大小写、按子串、允许命中多处。
+ *
+ * 用原文切片而不是正则替换：技能名 / 描述里可能出现 `$`、`(` 之类的元字符，
+ * 走正则要先转义且容易漏；同时不产出 HTML，由模板逐段渲染，
+ * 避免技能描述里的标记被当成标签执行。
+ *
+ * @param {string} text 原文
+ * @param {string} query 查询词（首尾空白忽略）
+ * @returns {Array<{ text: string, hit: boolean }>} 未命中时返回单段，渲染路径恒定
+ */
+export function splitByQuery(text, query) {
+  const value = typeof text === 'string' ? text : ''
+  const keyword = (query || '').trim().toLowerCase()
+  if (!keyword) return [{ text: value, hit: false }]
+  // 小写副本只用于定位；技能名 / 描述是 ASCII 与中文，小写不会改变长度，下标可直接复用
+  const lower = value.toLowerCase()
+  const parts = []
+  let from = 0
+  let at = lower.indexOf(keyword)
+  while (at !== -1) {
+    if (at > from) parts.push({ text: value.slice(from, at), hit: false })
+    parts.push({ text: value.slice(at, at + keyword.length), hit: true })
+    from = at + keyword.length
+    at = lower.indexOf(keyword, from)
+  }
+  if (parts.length === 0) return [{ text: value, hit: false }]
+  if (from < value.length) parts.push({ text: value.slice(from), hit: false })
+  return parts
+}
