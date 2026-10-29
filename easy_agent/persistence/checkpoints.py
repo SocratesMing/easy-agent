@@ -1,13 +1,13 @@
 """Durable HITL checkpointer：官方 AsyncSqliteSaver 或自研业务库快照。
 
 FW-09：由 ``EASY_CHECKPOINT_BACKEND=auto|sqlite|legacy`` 控制，选择规则集中在
-``resolve_checkpoint_backend()``：配置了 ``EASY_CHECKPOINT_SQLITE_PATH`` 或业务库为
-SQLite 时用官方 SQLite saver（默认 ``data/checkpoints.db``）。业务库不再保存
-checkpoint。显式 ``legacy`` 或 MySQL 未配 SQLite 路径时，只用进程内
-``PersistentMemorySaver``，重启后审批状态不在。
+``resolve_checkpoint_backend()``：默认用官方 SQLite saver，文件路径取 config.yaml 的
+``checkpoint.sqlite_path``，没配时用旧环境变量 ``EASY_CHECKPOINT_SQLITE_PATH``，再没有就是
+``/qts/checkpoint/{pod}.db``。业务库不再保存 checkpoint。只有显式 ``legacy``，或单 pod 时
+SQLite 文件打不开，才用进程内 ``PersistentMemorySaver``，重启后审批状态不在。
 
 生产只有 MySQL，Postgres checkpointer 已移除。两种后端都不能在副本之间共享，多副本时每个 pod
-用自己的 SQLite 文件：路径里写 ``{pod}``（启动时替换成实例名），由 Ingress 粘性会话把同一用户的
+用自己的 SQLite 文件：路径里写 ``{pod}``（启动时替换成实例名，默认路径就是这样），由 Ingress 粘性会话把同一用户的
 请求固定到同一个 pod（``EASY_STICKY_SESSIONS=1`` 确认已配好），删除会话时别的 pod 里的残留由后台
 对账补删。其余多副本组合在启动期 fail-fast；显式设置 ``EASY_ALLOW_LEGACY_CHECKPOINTER=1``（默认
 关闭）才放行，此时 HITL 跨副本恢复不保证一致。见 ``docs/design/2026-10-21-per-pod-sqlite-checkpoints.md``。
@@ -70,8 +70,9 @@ _AGENT_ENV = "AGENT_ENV"
 POD_PLACEHOLDER = "{pod}"
 DEFAULT_GC_INTERVAL = 600
 
-# 相对路径按项目根解析，避免依赖进程 cwd（web_runner 会 chdir，测试注入绝对路径）
-DEFAULT_SQLITE_PATH = "data/checkpoints.db"
+#: config.yaml 和环境变量都没配时的路径：每个 pod 一个文件，放在部署目录 /qts 下。
+#: 配置里的相对路径按项目根解析，避免依赖进程 cwd（web_runner 会 chdir，测试注入绝对路径）
+DEFAULT_SQLITE_PATH = f"/qts/checkpoint/{POD_PLACEHOLDER}.db"
 _UNSET: Any = object()
 
 
@@ -118,7 +119,7 @@ def _pod_instance_name() -> str:
     name = instance_name()
     if not is_valid_instance_name(name):
         raise CheckpointDeploymentError(
-            f"实例名 {name!r} 不能用于 {_SQLITE_PATH_ENV} 里的 {POD_PLACEHOLDER}："
+            f"实例名 {name!r} 不能替换 checkpoint 路径里的 {POD_PLACEHOLDER}："
             "只允许字母、数字、. _ -，不能以 . 开头，最长 253 个字符；请设置 EASY_POD_NAME"
         )
     return name
@@ -135,6 +136,22 @@ def detect_business_db_type() -> str | None:
     return str(db_type).strip().lower() if db_type else None
 
 
+def _sqlite_path_template(configured: str | None, warnings: list[str]) -> tuple[str, str]:
+    """SQLite 路径模板和它的来源：config.yaml 的 checkpoint.sqlite_path > 旧环境变量 > 默认路径。"""
+    configured = (configured or "").strip()
+    legacy = env_str(_SQLITE_PATH_ENV).strip()
+    if configured:
+        if legacy and legacy != configured:
+            warnings.append(
+                f"环境变量 {_SQLITE_PATH_ENV}={legacy!r} 不再生效："
+                "config.yaml 的 checkpoint.sqlite_path 优先，可以删掉这个变量"
+            )
+        return configured, "config.yaml 的 checkpoint.sqlite_path"
+    if legacy:
+        return legacy, f"环境变量 {_SQLITE_PATH_ENV}"
+    return DEFAULT_SQLITE_PATH, "默认路径"
+
+
 def resolve_checkpoint_backend(
     *,
     backend: str | None = None,
@@ -143,8 +160,10 @@ def resolve_checkpoint_backend(
 ) -> CheckpointSelection:
     """解析 checkpointer 后端（不打开连接）。
 
-    所有入参都可显式注入：``None`` 表示读环境变量；``db_type`` 保持 ``_UNSET``
-    时读取已加载的业务库实例。单测依赖这一点，无需真实 MySQL。
+    ``sqlite_path`` 是 config.yaml 的 ``checkpoint.sqlite_path``：没配（``None`` / 空串）时用
+    旧环境变量 ``EASY_CHECKPOINT_SQLITE_PATH``，再没有就用 :data:`DEFAULT_SQLITE_PATH`。
+    ``backend`` 为 ``None`` 时读环境变量；``db_type`` 保持 ``_UNSET`` 时读取已加载的业务库
+    实例。单测依赖这些注入点，无需真实 MySQL。
     """
     raw_backend = (env_str(_BACKEND_ENV) if backend is None else str(backend)).strip().lower()
     warnings: list[str] = []
@@ -156,10 +175,11 @@ def resolve_checkpoint_backend(
             "（可选 auto/sqlite/legacy），按 auto 处理"
         )
         raw_backend = BACKEND_AUTO
+    if raw_backend == BACKEND_LEGACY:
+        # 用不到 SQLite 文件：不解析路径，也就不校验 {pod} 的实例名
+        return CheckpointSelection(BACKEND_LEGACY, "EASY_CHECKPOINT_BACKEND=legacy：显式使用自研业务库快照")
 
-    sqlite = (
-        env_str(_SQLITE_PATH_ENV) if sqlite_path is None else str(sqlite_path)
-    ).strip()
+    sqlite, source = _sqlite_path_template(sqlite_path, warnings)
     # 路径模板里的 {pod} 替换成本实例名：多副本时每个 pod 一个文件
     pod_fields: dict[str, Any] = {}
     if POD_PLACEHOLDER in sqlite:
@@ -170,73 +190,21 @@ def resolve_checkpoint_backend(
         business_db = detect_business_db_type()
     else:
         business_db = str(db_type).strip().lower() if db_type else None
-
-    def result(
-        kind: str,
-        reason: str,
-        *,
-        sqlite_value: str = "",
-        extra: str = "",
-    ) -> CheckpointSelection:
-        messages = [*warnings]
-        if extra:
-            messages.append(extra)
-        return CheckpointSelection(
-            kind=kind,
-            reason=reason,
-            sqlite_path=sqlite_value,
-            warning="；".join(messages),
-            **(pod_fields if sqlite_value and sqlite_value == sqlite else {}),
-        )
-
-    if raw_backend == BACKEND_LEGACY:
-        return result(BACKEND_LEGACY, "EASY_CHECKPOINT_BACKEND=legacy：显式使用自研业务库快照")
-
     # 按 pod 隔离时多副本由启动校验把关，这条单机提示就不必了
-    local_only_hint = "" if pod_fields else (
-        "业务库为 MySQL，checkpoint 将落在本地 SQLite 文件，"
-        "多副本会各写各的（仅适合单机）"
-    )
-
-    if raw_backend == BACKEND_SQLITE:
-        return result(
-            BACKEND_SQLITE,
-            "EASY_CHECKPOINT_BACKEND=sqlite：使用官方 AsyncSqliteSaver",
-            sqlite_value=sqlite or DEFAULT_SQLITE_PATH,
-            extra=local_only_hint if business_db == "mysql" else "",
+    if business_db == "mysql" and not pod_fields:
+        warnings.append(
+            "业务库为 MySQL，checkpoint 将落在本地 SQLite 文件，"
+            "多副本会各写各的（仅适合单机）"
         )
 
-    # auto
-    if sqlite:
-        return result(
-            BACKEND_SQLITE,
-            "已配置 EASY_CHECKPOINT_SQLITE_PATH：使用官方 AsyncSqliteSaver",
-            sqlite_value=sqlite,
-            extra=local_only_hint if business_db == "mysql" else "",
-        )
-    if business_db == "sqlite":
-        return result(
-            BACKEND_SQLITE,
-            "业务库为 SQLite：默认使用官方 AsyncSqliteSaver",
-            sqlite_value=DEFAULT_SQLITE_PATH,
-        )
-    if business_db == "mysql":
-        return result(
-            BACKEND_LEGACY,
-            "业务库为 MySQL 且未配置 SQLite 路径：回退自研业务库快照",
-            extra=(
-                "官方 LangGraph 没有 MySQL checkpointer，HITL 回退到自研 "
-                "PersistentMemorySaver 快照：功能可用，但每轮全量 pickle 写业务库、"
-                "非官方实现，高并发/长会话性能较差；建议配置 EASY_CHECKPOINT_SQLITE_PATH"
-            ),
-        )
-    return result(
-        BACKEND_LEGACY,
-        "未识别业务库类型且未配置 checkpoint 路径：回退自研业务库快照",
-        extra=(
-            "未能确定业务库类型（数据库可能尚未初始化），且未配置 "
-            "EASY_CHECKPOINT_SQLITE_PATH，HITL 使用自研 MemorySaver 业务库快照"
-        ),
+    # auto 和显式 sqlite 一样：路径总有（没配就是默认路径），都用官方 saver
+    mode = "EASY_CHECKPOINT_BACKEND=sqlite" if raw_backend == BACKEND_SQLITE else "auto"
+    return CheckpointSelection(
+        kind=BACKEND_SQLITE,
+        reason=f"{mode}：使用官方 AsyncSqliteSaver，路径来自{source}",
+        sqlite_path=sqlite,
+        warning="；".join(warnings),
+        **pod_fields,
     )
 
 
@@ -318,15 +286,16 @@ def validate_checkpoint_deployment(
     if selection.kind != BACKEND_SQLITE:
         raise CheckpointDeploymentError(
             f"生产环境检测到 {replicas} 个副本，但 HITL checkpointer 是 {selection.kind!r}（业务库快照），"
-            "不能跨副本共享。多副本请用每个 pod 独立的官方 SQLite 文件：设置 "
-            f"{_SQLITE_PATH_ENV}=data/checkpoints/{POD_PLACEHOLDER}.db，在 Ingress 配好粘性会话后再设置 "
-            f"{_STICKY_ENV}=1。若接受审批跨副本恢复不一致，可显式设置 {_ALLOW_LEGACY_ENV}=1（默认关闭）。"
+            f"不能跨副本共享。多副本请去掉 {_BACKEND_ENV}=legacy，用每个 pod 独立的官方 SQLite 文件"
+            f"（config.yaml 的 checkpoint.sqlite_path 带 {POD_PLACEHOLDER}，默认的 {DEFAULT_SQLITE_PATH} 就是），"
+            f"在 Ingress 配好粘性会话后再设置 {_STICKY_ENV}=1。"
+            f"若接受审批跨副本恢复不一致，可显式设置 {_ALLOW_LEGACY_ENV}=1（默认关闭）。"
         )
     if not selection.per_pod:
         raise CheckpointDeploymentError(
-            f"生产环境检测到 {replicas} 个副本，但 {_SQLITE_PATH_ENV} 里没有 {POD_PLACEHOLDER}："
+            f"生产环境检测到 {replicas} 个副本，但 checkpoint 路径 {selection.sqlite_path} 里没有 {POD_PLACEHOLDER}："
             "多个 pod 不能共用一个 SQLite 文件（WAL 不能跨主机，网络盘上的文件锁也不可靠）。"
-            f"请改成 data/checkpoints/{POD_PLACEHOLDER}.db 这类每个 pod 一个文件的路径。"
+            f"请把 config.yaml 的 checkpoint.sqlite_path 改成 {DEFAULT_SQLITE_PATH} 这类每个 pod 一个文件的路径。"
         )
     if not (env_bool(_STICKY_ENV, False) if sticky is None else bool(sticky)):
         raise CheckpointDeploymentError(
@@ -470,11 +439,11 @@ def sqlite_checkpointer_active() -> bool:
 
 
 async def open_sqlite_checkpointer(path: str):
-    """打开官方 AsyncSqliteSaver（FW-09 单机默认路径）。
+    """打开官方 AsyncSqliteSaver（FW-09 默认后端）。
 
-    业务库为 SQLite 时 ``auto`` 默认走这里（路径 ``data/checkpoints.db``，可用
-    ``EASY_CHECKPOINT_SQLITE_PATH`` 覆盖）；checkpoint 由 sqlite 自身持久化，
-    不再每轮 pickle 全量写业务库。
+    ``auto`` 默认走这里（路径见 :func:`resolve_checkpoint_backend`：config.yaml 的
+    ``checkpoint.sqlite_path``，默认 ``/qts/checkpoint/{pod}.db``）；checkpoint 由 sqlite
+    自身持久化，不再每轮 pickle 全量写业务库。
     """
     global _sqlite_cm, _sqlite_saver
     if _sqlite_saver is not None:
@@ -560,6 +529,7 @@ async def _open_with_fallback(selection: CheckpointSelection) -> str:
 async def start_checkpoint_backend(
     selection: CheckpointSelection | None = None,
     *,
+    sqlite_path: str | None = None,
     agent_env: str | None = None,
     replicas: int | None = None,
     workers_per_pod: int | None = None,
@@ -568,13 +538,14 @@ async def start_checkpoint_backend(
 ) -> str:
     """按解析结果打开 checkpointer，返回实际生效的后端名。
 
-    ``selection`` 为空时读取环境变量解析。部署形态在打开之前校验（见
+    ``selection`` 为空时按 ``sqlite_path``（config.yaml 的 ``checkpoint.sqlite_path``）和环境变量
+    解析。部署形态在打开之前校验（见
     :func:`validate_checkpoint_deployment`）。单 pod 时官方 saver 打不开会降级为自研快照；
     按 pod 隔离的多副本模式下打不开直接失败（``CheckpointDeploymentError``），不回退。
     """
     global _active_selection
     if selection is None:
-        selection = resolve_checkpoint_backend()
+        selection = resolve_checkpoint_backend(sqlite_path=sqlite_path)
     _clear_legacy_checkpointers()
     if selection.warning:
         logger.warning("HITL checkpointer 配置 | %s", selection.warning)

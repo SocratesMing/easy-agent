@@ -185,10 +185,10 @@ python scripts/db/migrate_db.py
 EASY_AUTO_MIGRATE=0
 EASY_MIGRATION_LOCK_TIMEOUT=120
 
-# HITL checkpointer：官方 SQLite saver，文件在仓库根 data/ 下（不能放 NAS）
-# 多副本时每个 pod 一个文件（{pod} 换成实例名），并在 Ingress 配好 cookie 粘性会话后打开 EASY_STICKY_SESSIONS
+# HITL checkpointer：官方 SQLite saver，路径是 config.yaml 的 checkpoint.sqlite_path，
+# 默认 /qts/checkpoint/{pod}.db（每个 pod 一个文件，{pod} 换成实例名；放 pod 本地盘，不能放 NAS）
+# 多副本时在 Ingress 配好 cookie 粘性会话后打开 EASY_STICKY_SESSIONS
 # LangGraph Store 固定用业务库 SqlStore，无需配置
-EASY_CHECKPOINT_SQLITE_PATH=data/checkpoints/{pod}.db
 EASY_STICKY_SESSIONS=1
 
 # 上传原始文件落数据库 LangGraph Store（local 默认，不改变现有行为）
@@ -554,7 +554,7 @@ A: 在 `easy_agent/agent/model.py` 中扩展 `create_model()`，并在 `config.y
 | run 租约/中断恢复 | `agent_runs` 表 + `run_registry` | 流锁心跳续租；Pod 崩溃后，启动时和之后每隔 `EASY_RUN_RECOVERY_INTERVAL` 秒（默认 60）把租约过期的 running 标记 `interrupted`、补 error 事件并释放它留下的会话流锁；**不自动重跑** |
 | 会话流互斥 | `session_runtime` DB 流锁 | 跨 Pod 原子抢占/续约/取消 |
 | 迁移串行化 | MySQL `GET_LOCK` / SQLite `flock` | `scripts/db/migrate_db.py`；`EASY_AUTO_MIGRATE=0` 时启动只校验 |
-| LangGraph checkpointer/store | 官方 SQLite saver / 业务库 SqlStore | `EASY_CHECKPOINT_SQLITE_PATH`；多副本时路径带 `{pod}`、`EASY_STICKY_SESSIONS=1`，审批落错 pod 返回 409，删除会话后各 pod 后台补删 |
+| LangGraph checkpointer/store | 官方 SQLite saver / 业务库 SqlStore | `checkpoint.sqlite_path`（默认 `/qts/checkpoint/{pod}.db`）；多副本时路径带 `{pod}`、`EASY_STICKY_SESSIONS=1`，审批落错 pod 返回 409，删除会话后各 pod 后台补删 |
 | 上传原始文件 | LangGraph StoreBackend（可选） | `EASY_UPLOAD_BACKEND=store`；只覆盖 `/agent/files/upload` |
 | 定时任务重复执行 | 数据库分布式锁 | `distributed_lock.enabled=true`；同 cron 单实例执行 |
 

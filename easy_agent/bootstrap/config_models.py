@@ -317,6 +317,16 @@ class DistributedLockConfig(BaseModel):
     """``acquire(wait_seconds>0)`` 等待抢锁时的轮询间隔（秒）。"""
 
 
+class CheckpointConfig(BaseModel):
+    """HITL 人工审批的 checkpoint（config.yaml 的 ``checkpoint`` 段，官方 AsyncSqliteSaver）。"""
+
+    sqlite_path: str = ""
+    """SQLite 文件路径，``{pod}`` 启动时换成实例名（``EASY_POD_NAME`` → ``POD_NAME`` →
+    ``HOSTNAME``），每个 pod 一个文件；相对路径按项目根解析。留空时用旧环境变量
+    ``EASY_CHECKPOINT_SQLITE_PATH``，也没有时默认 ``/qts/checkpoint/{pod}.db``
+    （见 ``persistence/checkpoints.py``）。"""
+
+
 class PersonnelConfig(BaseModel):
     """Personnel provisioning and account-source policy."""
 

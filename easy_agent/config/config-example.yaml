@@ -130,6 +130,14 @@ database:
     read_timeout: 30                      # 读超时（秒）
     write_timeout: 30                     # 写超时（秒）
 
+# ===== HITL 审批 checkpoint =====
+checkpoint:
+  # 人工审批断点的 SQLite 文件（官方 AsyncSqliteSaver）。{pod} 启动时换成 pod 名
+  # （EASY_POD_NAME → POD_NAME → HOSTNAME），每个 pod 一个文件；相对路径按项目根解析。
+  # 不配置时默认 /qts/checkpoint/{pod}.db。要放 pod 本地盘，不能放 NAS 等网络盘（SQLite WAL 不能跨主机）。
+  # 本机开发可在 .env.dev 里设 CHECKPOINT_DIR=data/checkpoints。
+  sqlite_path: "${CHECKPOINT_DIR:-/qts/checkpoint}/{pod}.db"
+
 # ===== 人员账号 =====
 personnel:
   self_registration_enabled: false   # 自助注册：true 时登录页显示注册入口

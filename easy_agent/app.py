@@ -349,8 +349,8 @@ def _log_public_experts() -> None:
         logger.warning(f"⚠️ 公共专家目录扫描失败: {type(exc).__name__}: {exc}")
 
 
-async def _start_checkpointing(agent_env: str) -> None:
-    """FW-09：默认官方 checkpointer（auto：sqlite → legacy）。
+async def _start_checkpointing(agent_env: str, config) -> None:
+    """FW-09：默认官方 SQLite checkpointer，文件路径取 config.yaml 的 checkpoint.sqlite_path。
 
     两种后端都不能跨副本共享，prod 多副本在启动期 fail-fast（可用
     EASY_ALLOW_LEGACY_CHECKPOINTER=1 显式豁免），配置错误不再被静默吞掉。
@@ -362,7 +362,9 @@ async def _start_checkpointing(agent_env: str) -> None:
     )
 
     try:
-        checkpoint_backend = await start_checkpoint_backend(agent_env=agent_env)
+        checkpoint_backend = await start_checkpoint_backend(
+            sqlite_path=config.checkpoint.sqlite_path, agent_env=agent_env
+        )
         logger.info(f"✅ HITL checkpointer 后端: {checkpoint_backend}")
     except CheckpointDeploymentError:
         raise
@@ -487,7 +489,7 @@ async def lifespan(app: FastAPI):
 
         _register_execute_profiles(config)
         _log_public_experts()
-        await _start_checkpointing(agent_env)
+        await _start_checkpointing(agent_env, config)
 
         # LangGraph Store 是业务库 SqlStore，首次使用时绑定业务库；先丢掉同一进程里
         # 之前缓存的实例（测试会在一个进程里换着业务库多次启动应用）

@@ -19,6 +19,7 @@ from easy_agent.bootstrap.config_models import (  # noqa: F401 - 兼容重导出
     DEFAULT_APP_WELCOME_TITLE,
     DEFAULT_WEB_SEARCH_API_URLS,
     AgentConfig,
+    CheckpointConfig,
     DatabaseConfig,
     DistributedLockConfig,
     ExpertTag,
@@ -85,6 +86,7 @@ class Config(BaseModel):
         default_factory=DistributedLockConfig
     )
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
+    checkpoint: CheckpointConfig = Field(default_factory=CheckpointConfig)
     personnel: PersonnelConfig = Field(default_factory=PersonnelConfig)
     upload_limits: UploadLimitsConfig = Field(default_factory=UploadLimitsConfig)
     file_context: FileContextConfig = Field(default_factory=FileContextConfig)
@@ -281,6 +283,7 @@ class Config(BaseModel):
                 # 这几段写成非键值映射时按默认值处理
                 "web_search": _get_section(data, "web_search") or {},
                 "distributed_lock": _get_section(data, "distributed_lock") or {},
+                "checkpoint": _get_section(data, "checkpoint") or {},
                 "file_context": _get_section(data, "file_context") or {},
                 "upload_limits": cls._parse_upload_limits(data),
                 "models": models,

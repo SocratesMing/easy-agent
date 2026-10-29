@@ -68,9 +68,9 @@ _legacy_warned = False
 def session_thread_active(agent) -> bool:
     """本轮是否走会话 thread：开关打开，且 checkpointer 不是 legacy 快照 saver。
 
-    legacy ``PersistentMemorySaver``（业务库为 MySQL 且没配 SQLite checkpoint 时的回退）
-    每次写入都把整个快照 pickle 进业务库，会话 thread 越长越慢，因此仍按每条消息一个 thread。
-    要用会话 thread，请配置 ``EASY_CHECKPOINT_SQLITE_PATH``。
+    legacy ``PersistentMemorySaver``（显式 ``EASY_CHECKPOINT_BACKEND=legacy``，或 SQLite checkpoint
+    文件打不开时的回退）是进程内快照，会话 thread 越长越慢，因此仍按每条消息一个 thread。
+    要用会话 thread，请确认 config.yaml 的 ``checkpoint.sqlite_path`` 可写。
     """
     global _legacy_warned
     if not session_thread_enabled(getattr(agent, "config", None)):
@@ -80,8 +80,8 @@ def session_thread_active(agent) -> bool:
         if not _legacy_warned:
             _legacy_warned = True
             logger.warning(
-                "agent.session_thread 已打开，但当前是 legacy checkpoint 快照（MySQL 回退），"
-                "仍按每条消息一个 thread；配置 EASY_CHECKPOINT_SQLITE_PATH 后生效"
+                "agent.session_thread 已打开，但当前是 legacy checkpoint 快照，仍按每条消息一个 thread；"
+                "去掉 EASY_CHECKPOINT_BACKEND=legacy、让 checkpoint.sqlite_path 可写后生效"
             )
         return False
     return True

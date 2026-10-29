@@ -13,6 +13,7 @@ from pydantic import BaseModel
 
 from easy_agent.bootstrap.config_models import (
     AgentConfig,
+    CheckpointConfig,
     DatabaseConfig,
     DistributedLockConfig,
     FileContextConfig,
@@ -56,6 +57,7 @@ KNOWN_TOP_LEVEL_KEYS = _fields(AgentConfig) | frozenset(
         "web_search",
         "preset_questions",
         "database",
+        "checkpoint",
         "personnel",
         "distributed_lock",
         "upload_limits",
@@ -87,6 +89,7 @@ KNOWN_SECTION_KEYS: dict[str, frozenset[str]] = {
     "database.sqlite": _fields(SQLiteConfig),
     "database.mysql": _fields(MySQLConfig),
     "database.mysql.pool": _fields(MySQLPoolConfig),
+    "checkpoint": _fields(CheckpointConfig),
     "summarization": _fields(SummarizationConfig),
     "web_search": _fields(WebSearchConfig),
     "distributed_lock": _fields(DistributedLockConfig),
