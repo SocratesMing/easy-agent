@@ -14,6 +14,7 @@ from easy_agent.knowledges.core.models import (
     OperationStatus,
 )
 from easy_agent.knowledges.core.repository import KnowledgeRepository
+from easy_agent.knowledges.ragflow import RagflowNotFoundError
 
 from .test_shared_dataset import (
     _FakeRagflow,
@@ -30,12 +31,15 @@ OLD_PARSE_STARTED_AT = "2020-01-01T00:00:00+00:00"
 class _StatusFakeRagflow(_FakeRagflow):
     """在共享库假客户端上补充暂停/删除接口。"""
 
-    def __init__(self):
+    def __init__(self, *, delete_error: Exception | None = None):
         super().__init__()
         self.deleted: list[str] = []
         self.stopped: list[str] = []
+        self.delete_error = delete_error
 
     async def delete_documents(self, dataset_id, document_ids):
+        if self.delete_error is not None:
+            raise self.delete_error
         self.deleted.extend(document_ids)
 
     async def stop_parsing(self, dataset_id, document_ids):
@@ -106,6 +110,31 @@ async def test_upload_pending_then_processing_then_ready(db, tmp_path):
     assert operation["phase"] == OperationPhase.COMPLETED.value
     assert operation["status"] == OperationStatus.SUCCEEDED.value
     assert operation["current_count"] == 1
+
+
+async def test_retry_orphaned_remote_document_uses_local_original(db, tmp_path):
+    """远端旧副本属于另一个数据集时，跳过删除并用本地原文重传。"""
+
+    ragflow = _StatusFakeRagflow(
+        delete_error=RagflowNotFoundError(
+            "These documents do not belong to dataset ds-other or not found"
+        )
+    )
+    service = _make_service(db, ragflow, tmp_path)
+    base = _create_base_row(db)
+    document_id, _operation_id = await _upload(service, base)
+    repository = KnowledgeRepository(db)
+    repository.update_document(document_id, status=DocumentStatus.FAILED.value)
+
+    accepted = await service.retry_document(
+        document_id=document_id,
+        principal=_principal(),
+        request_id="req-retry-orphan",
+    )
+
+    assert accepted.document.id == document_id
+    assert len(ragflow.uploaded) == 2
+    assert ragflow.uploaded[-1]["dataset_id"] == ragflow.uploaded[0]["dataset_id"]
 
 
 async def test_parse_timeout_is_terminal_and_stops_polling(db, tmp_path):

@@ -2458,10 +2458,20 @@ class KnowledgeService:
                 )
                 source = io.BytesIO(downloaded.content)
             if remote_id:
-                await self.ragflow.delete_documents(
-                    dataset_id=dataset_id,
-                    document_ids=[str(remote_id)],
-                )
+                try:
+                    await self.ragflow.delete_documents(
+                        dataset_id=dataset_id,
+                        document_ids=[str(remote_id)],
+                    )
+                except RagflowNotFoundError:
+                    # 旧副本属于另一个数据集/已被删除：不影响用本地原文重传
+                    logger.warning(
+                        "上游旧副本不属于当前数据集，跳过删除 | doc=%s "
+                        "dataset=%s remote=%s",
+                        document_id,
+                        dataset_id,
+                        remote_id,
+                    )
             await self._repo(
                 self.repository.update_document,
                 document_id,
