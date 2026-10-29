@@ -10,6 +10,10 @@ FW-12：``interrupt_on`` 不再静态预置全部 HITL 工具，而由
 :func:`build_interrupt_config` 按「本会话实际注入的工具」动态构造；
 未注入的注册表 HITL 工具只记 debug 日志，不进入配置（DeepAgents 对
 ``interrupt_on`` 里不存在的工具名静默无效，见 T1-14）。
+
+哪些工具要审批由 config.yaml 的 ``hitl`` 段决定：``enabled`` 总开关（:func:`hitl_enabled`），
+``tools`` 审批名单（不配时是 :data:`DEFAULT_APPROVAL_TOOLS`）；名单外的 MCP 工具按服务端
+标注 / 名字兜底。
 """
 
 from __future__ import annotations
@@ -27,6 +31,7 @@ from easy_agent.tools.registry import (
     ToolSpec,
     builtin_tool_names,
     default_interrupt_tool_names,
+    get_tool_spec,
     hitl_tool_specs,
     name_heuristic_exempt_tools,
 )
@@ -62,6 +67,10 @@ _DIR_DELETION_PATTERNS = [
 # FW-12 起 agent.py 不再直接消费本常量：它只作为注册表派生结果的兼容出口，
 # 实际 interrupt_on 由 build_interrupt_config() 按会话实际工具集过滤。
 DEFAULT_INTERRUPT_TOOLS = default_interrupt_tool_names()
+
+# config.yaml 的 hitl.tools 不配时的审批名单：注册表里的全部 HITL 工具（含按条件审批的
+# execute / access_knowledge_original），按 hitl_order 排序。
+DEFAULT_APPROVAL_TOOLS = tuple(spec.name for spec in hitl_tool_specs())
 
 # 名字启发式的豁免集合同样由注册表派生：已单独配置 HITL 的工具与只读内置工具
 # 不参与「名字含 write/delete/... 即视为写操作」的判定。
@@ -366,35 +375,69 @@ def _tool_name(tool: object) -> str:
     return str(getattr(tool, "name", "") or "")
 
 
+def hitl_enabled(config, requested: bool = True) -> bool:
+    """本次运行是否人工审批：调用方要（定时任务传 False），且 config.yaml 的 ``hitl.enabled`` 没关。"""
+    return bool(requested) and bool(getattr(getattr(config, "hitl", None), "enabled", True))
+
+
+def _interrupt_options(
+    name: str,
+    spec: ToolSpec | None,
+    tool: object | None,
+    predicate_map: Mapping[str, Callable[[ToolCallRequest], bool]],
+    sid: str,
+) -> InterruptOnConfig:
+    """名单里一个工具的审批选项：注册表 HITL 工具沿用它的决策和条件谓词，其余按名字决定能否改参数。"""
+    if spec is None:
+        return InterruptOnConfig(
+            allowed_decisions=mcp_interrupt_decisions(_mcp_original_name(tool) or name, tool)
+        )
+    options: dict[str, object] = {"allowed_decisions": list(spec.interrupt_decisions)}
+    if spec.hitl_predicate:
+        predicate = predicate_map.get(spec.hitl_predicate)
+        if predicate is None:
+            logger.error(
+                "[%s] 未知 HITL 条件谓词 %r（工具 %r），退化为无条件审批",
+                sid or "-",
+                spec.hitl_predicate,
+                spec.name,
+            )
+        else:
+            options["when"] = predicate
+    return InterruptOnConfig(**options)
+
+
 def build_interrupt_config(
     tool_names: Iterable[object],
     *,
     enable_hitl: bool = True,
+    approval_tools: Iterable[str] | None = None,
     specs: Iterable[ToolSpec] | None = None,
     predicates: Mapping[str, Callable[[ToolCallRequest], bool]] | None = None,
     sid: str = "",
 ) -> dict[str, bool | InterruptOnConfig] | None:
-    """按「实际注入到本会话的工具」构造 ``interrupt_on``。
+    """按「审批名单」和「实际注入到本会话的工具」构造 ``interrupt_on``。
 
-    规则（顺序与改造前一致）：
+    规则：
 
-    1. ``enable_hitl=False`` → ``None``（不启用 HITL，行为不变）；
-    2. 注册表声明的 HITL 工具按 ``hitl_order`` 排序，**只保留本会话实际
-       存在的工具**；未注入的条目记 debug 日志并跳过。``execute`` 由注册表的
-       builtin 集合视为始终可用，因此总在配置里；若未来框架移除/改名它，
-       需要同步注册表（否则仍会静默无效，见设计文档风险）；
-    3. 条件 HITL（``execute`` / ``access_knowledge_original``）沿用注册表的
-       ``hitl_predicate`` 绑定 ``when``；谓词缺失时退化为无条件审批
-       （宁可多问，不可漏问）；
-    4. 其余**实际注入**的非内置工具：先看 MCP annotations
-       （:func:`mcp_annotation_decision`），没有可用标注再按名字启发式判定，
-       未登记名字一律视为 MCP（与 ``resolve_tool_source`` 口径一致）；
-    5. 未知/未注入工具不进入配置。
+    1. ``enable_hitl=False`` → ``None``（不启用 HITL）；
+    2. ``approval_tools`` 是 config.yaml 的 ``hitl.tools``，不配时用注册表里的全部 HITL 工具
+       （:data:`DEFAULT_APPROVAL_TOOLS`）。名单里**本会话实际存在**的工具进审批，按名单顺序；
+       没注入的名字记 debug 日志并跳过（DeepAgents 对 ``interrupt_on`` 里不存在的工具名静默
+       无效，见 T1-14）。框架内置工具（``execute`` / ``delete`` 等）始终存在；MCP 工具按注入名
+       或去掉 server 前缀的原始名匹配；
+    3. 名单里的注册表 HITL 工具沿用注册表的决策和条件谓词（``execute`` 只拦删除类命令、
+       ``access_knowledge_original`` 只拦 materialize）；谓词缺失时退化为无条件审批（宁可
+       多问，不可漏问）。其余工具按名字给决策：删除类不给编辑参数；
+    4. 名单外的 MCP / 动态工具（注册表里没有的名字）兜底：先看 MCP annotations
+       （:func:`mcp_annotation_decision`），没有可用标注再按名字启发式判定。注册表里的
+       内置 / 应用工具只看名单。
 
     Args:
         tool_names: 本会话实际注入的非内置工具（工具对象或工具名）。
             ``EasyAgent.mcp_tools`` 实际承载的是「MCP + 应用注入工具」全集。
         enable_hitl: 是否启用人工审批（与 ``EasyAgent.enable_hitl`` 一致）。
+        approval_tools: 审批名单（config.yaml 的 ``hitl.tools``）；``None`` 用默认名单。
         specs: 仅测试用；默认使用注册表的 ``hitl_tool_specs()``。
         predicates: 仅测试/扩展用；默认使用本模块的
             :data:`HITL_WHEN_PREDICATES`。
@@ -410,51 +453,45 @@ def build_interrupt_config(
     ordered_names = [name for name in map(_tool_name, tools) if name]
     tool_objects = {_tool_name(tool): tool for tool in tools if not isinstance(tool, str)}
     builtin_names = set(builtin_tool_names())
-    available = set(ordered_names) | builtin_names
     predicate_map = HITL_WHEN_PREDICATES if predicates is None else predicates
-    resolved_specs = tuple(hitl_tool_specs() if specs is None else specs)
+    hitl_specs = {spec.name: spec for spec in (hitl_tool_specs() if specs is None else specs)}
+    wanted = (
+        list(hitl_specs)
+        if approval_tools is None
+        else [str(name).strip() for name in approval_tools if str(name).strip()]
+    )
+    # 名单按注入名匹配，MCP 工具也认去掉 server 前缀的原始名
+    injected: dict[str, list[str]] = {}
+    for name in ordered_names:
+        injected.setdefault(name, []).append(name)
+        original = _mcp_original_name(tool_objects.get(name))
+        if original and original != name:
+            injected.setdefault(original, []).append(name)
 
     config: dict[str, bool | InterruptOnConfig] = {}
-    for spec in resolved_specs:
-        if spec.name not in available:
+    for wanted_name in wanted:
+        matches = [wanted_name] if wanted_name in builtin_names else injected.get(wanted_name, [])
+        if not matches:
             logger.debug(
-                "[%s] HITL 工具 %s 未实际注入，跳过 interrupt_on",
+                "[%s] 审批名单里的工具 %s 未实际注入，跳过 interrupt_on",
                 sid or "-",
-                spec.name,
+                wanted_name,
             )
-            continue
-        options: dict[str, object] = {
-            "allowed_decisions": list(spec.interrupt_decisions)
-        }
-        if spec.hitl_predicate:
-            predicate = predicate_map.get(spec.hitl_predicate)
-            if predicate is None:
-                logger.error(
-                    "[%s] 未知 HITL 条件谓词 %r（工具 %r），退化为无条件审批",
-                    sid or "-",
-                    spec.hitl_predicate,
-                    spec.name,
+        for name in matches:
+            if name not in config:
+                config[name] = _interrupt_options(
+                    name, hitl_specs.get(wanted_name), tool_objects.get(name), predicate_map, sid
                 )
-            else:
-                options["when"] = predicate
-        config.setdefault(spec.name, InterruptOnConfig(**options))
 
-    # MCP / 动态工具：只对**实际注入**且未进声明名单的工具走名字启发式。
-    # 内置工具（write_file/edit_file 等）不参与：它们由框架提供，改造前也不在
-    # EasyAgent.mcp_tools 里。read_uploaded_file 名字含 upload，历史上会被该
-    # 启发式加入审批；FW-12 保持这一现状（行为等价），是否改为 is_hitl 由后续
-    # 产品决策处理（见设计文档「未覆盖工具」）。
-    # DA-09：MCP 工具优先看服务端声明的 annotations，没有可用标注才回退名字启发式。
+    # 名单外的 MCP / 动态工具兜底（DA-09）：服务端 annotations 优先，没有可用标注再看名字。
+    # D4：MCP 工具可能带 server 前缀，名字启发式按原始名判断，避免前缀干扰。
     for name in ordered_names:
-        if name in builtin_names or name in config:
+        if name in config or name in builtin_names or get_tool_spec(name) is not None:
             continue
-        # D4：MCP 工具可能带 server 前缀，启发式按原始名判断，避免前缀干扰
         tool_obj = tool_objects.get(name)
         heuristic_name = _mcp_original_name(tool_obj) or name
         by_name = looks_like_mutating_tool(heuristic_name)
-        decision = None
-        if name not in _NAME_HEURISTIC_EXEMPT:
-            decision = mcp_annotation_decision(tool_objects.get(name))
+        decision = mcp_annotation_decision(tool_obj)
         if decision is None:
             decision = by_name
         elif decision != by_name:
@@ -468,9 +505,7 @@ def build_interrupt_config(
             config.setdefault(
                 name,
                 InterruptOnConfig(
-                    allowed_decisions=mcp_interrupt_decisions(
-                        heuristic_name, tool_obj
-                    )
+                    allowed_decisions=mcp_interrupt_decisions(heuristic_name, tool_obj)
                 ),
             )
     return config

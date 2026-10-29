@@ -24,6 +24,7 @@ from easy_agent.bootstrap.config_models import (  # noqa: F401 - 兼容重导出
     DistributedLockConfig,
     ExpertTag,
     FileContextConfig,
+    HitlConfig,
     LLMConfig,
     MCPToolConfig,
     MySQLConfig,
@@ -87,6 +88,7 @@ class Config(BaseModel):
     )
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
     checkpoint: CheckpointConfig = Field(default_factory=CheckpointConfig)
+    hitl: HitlConfig = Field(default_factory=HitlConfig)
     personnel: PersonnelConfig = Field(default_factory=PersonnelConfig)
     upload_limits: UploadLimitsConfig = Field(default_factory=UploadLimitsConfig)
     file_context: FileContextConfig = Field(default_factory=FileContextConfig)
@@ -284,6 +286,7 @@ class Config(BaseModel):
                 "web_search": _get_section(data, "web_search") or {},
                 "distributed_lock": _get_section(data, "distributed_lock") or {},
                 "checkpoint": _get_section(data, "checkpoint") or {},
+                "hitl": _get_section(data, "hitl") or {},
                 "file_context": _get_section(data, "file_context") or {},
                 "upload_limits": cls._parse_upload_limits(data),
                 "models": models,

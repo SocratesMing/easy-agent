@@ -327,6 +327,18 @@ class CheckpointConfig(BaseModel):
     （见 ``persistence/checkpoints.py``）。"""
 
 
+class HitlConfig(BaseModel):
+    """人工审批（config.yaml 的 ``hitl`` 段）。"""
+
+    enabled: bool = True
+    """关闭后对话里也不审批，和定时任务一样：工具审批、``interrupt_sensitive_writes`` 的写入审批
+    都不生效，也不提供 ``create_scheduled_task``（建定时任务必须有人确认）。"""
+    tools: list[str] | None = None
+    """执行前要人工审批的工具名；不配时用内置名单 ``agent.hitl.DEFAULT_APPROVAL_TOOLS``。
+    ``execute`` 只拦删除类命令、``access_knowledge_original`` 只拦 materialize；MCP 工具写名字即可
+    （带不带服务前缀都行），没列出的 MCP 工具仍按服务端标注 / 名字自动判断（见 ``agent/hitl.py``）。"""
+
+
 class PersonnelConfig(BaseModel):
     """Personnel provisioning and account-source policy."""
 

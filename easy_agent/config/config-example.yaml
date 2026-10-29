@@ -156,6 +156,18 @@ skill_write: ${SKILL_WRITE:-new-only}  # 技能库写权限：new-only（只可�
 interrupt_sensitive_writes: true       # /memories/**、/user-skills/** 的写入是否走人工审批（需 checkpointer）
 denied_dirs: []                        # 禁读写的虚拟路径；字符串 = 读+写，{path, operations} = 仅指定操作
 
+# ===== 人工审批（HITL）=====
+hitl:
+  enabled: true                  # false：对话里也不审批（和定时任务一样），也不提供创建定时任务的工具
+  # 执行这些工具前要人工审批；不写 tools 时就是下面这份默认名单
+  tools:
+    - execute                    # 只拦删除类命令（rm / unlink / shred 等），删目录直接拒绝
+    - delete                     # 删除文件
+    - save_expert                # 新建 / 修改专家
+    - create_scheduled_task      # 创建定时任务
+    - access_knowledge_original  # 只拦 action=materialize（把知识库原文取到工作区）
+  # MCP 工具写工具名即可（带不带服务前缀都行）；没列出的 MCP 工具仍按服务端标注 / 名字自动判断
+
 # ===== 专家 =====
 expert:
   guardrail_enabled: true            # 在专家提示词末尾追加职责边界

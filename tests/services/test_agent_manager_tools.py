@@ -112,6 +112,23 @@ def _isolate(monkeypatch):
     ) = saved
 
 
+async def test_hitl_disabled_in_config_turns_approvals_off(monkeypatch, _isolate):
+    """config.yaml 的 hitl.enabled=false：对话和定时任务一样不审批，也不提供建定时任务的工具。"""
+    _isolate.hitl = SimpleNamespace(enabled=False, tools=None)
+    monkeypatch.setattr(am, "create_web_search_tool", lambda *a, **k: None)
+
+    await am._get_or_create_agent_unlocked(
+        "session-hitl0",
+        username="u",
+        workspace_name="ws",
+        enable_hitl=True,
+        enable_web_search=False,
+    )
+
+    assert _SpyAgent.last_kwargs["enable_hitl"] is False
+    assert "create_scheduled_task" not in _injected_names()
+
+
 async def test_tool_set_matches_legacy_when_hitl_and_file_context_on(monkeypatch):
     monkeypatch.setattr(am, "create_web_search_tool", lambda *a, **k: None)
 

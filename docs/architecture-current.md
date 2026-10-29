@@ -17,7 +17,7 @@
 | `agent/core.py` | `EasyAgent` 封装 `create_deep_agent`（skills/memory/permissions/interrupt_on/subagents/checkpointer/store）；backend 装配、HITL 中断配置、子代理 specs |
 | `backends/shell.py` | `LocalShellBackend` + 虚拟路径翻译 + bwrap/Landlock/fail-closed 策略 |
 | `sandboxing/sandbox.py` / `landlock.py` / `fs_safety.py` | 命令沙箱、Landlock 降级、外部目录挂载安全校验 |
-| `agent/hitl.py` | 破坏性命令识别、execute 工具描述、HITL 默认工具 |
+| `agent/hitl.py` | 破坏性命令识别、execute 工具描述、按 config.yaml 的 `hitl` 段构造 `interrupt_on` |
 | `persistence/checkpoints.py` | 官方 `AsyncSqliteSaver` 与自研 `PersistentMemorySaver`（裁剪后写业务库） |
 | `persistence/stores.py` | 自研 LangGraph `BaseStore`（SQLite/MySQL） |
 | `agent/summarization.py` | 建图期替换官方摘要工厂 + 缺失降级护栏 |
@@ -49,7 +49,7 @@
 ### Agent 工具与沙箱
 - 文件工具走 CompositeBackend 路由（`/workspace/`、`/user-skills/`、`/skills/builtin/`（只读）、`/memories/`、外部目录）；没命中路由的路径与框架产物（`/.agent/...`：大工具结果、对话历史）落在工作区之外的会话隐藏目录 `workspace/{user}/.agent/{session_id}/`，删除会话时一并删除（DA-04）。共享编译图用两层真实 `CompositeBackend`（`backends/context.py`）按运行期 `SessionContext` 路由（DA-05）。
 - `execute` 默认经 bwrap；不可用降级 Landlock；都不可用 fail-closed（127）。
-- HITL：删除类命令/专家保存/定时任务/知识原文 materialize 等触发审批。
+- HITL：config.yaml 的 `hitl` 段配置，`enabled` 总开关（关掉后对话和定时任务一样不审批），`tools` 审批名单（默认 execute 删除类命令 / delete / save_expert / create_scheduled_task / access_knowledge_original 的 materialize）；名单外的 MCP 工具按服务端标注 / 名字兜底。
 - 子代理（office-writer / knowledge-researcher）显式声明与主代理相同的技能源（`/skills/builtin/`、`/user-skills/`）+ 异常兜底 middleware。
 
 ### 技能

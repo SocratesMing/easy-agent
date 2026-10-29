@@ -449,16 +449,19 @@ class EasyAgent(AgentWorkspaceMixin):
         改造前无论工具是否注入，都会把 ``execute`` / ``save_expert`` /
         ``create_scheduled_task`` / ``access_knowledge_original`` 以及 MCP 写工具
         写进 ``interrupt_on``；未注入的名字会被 DeepAgents 静默忽略（T1-14）。
-        现在交给 :func:`easy_agent.agent.hitl.build_interrupt_config` 过滤：注册表只提供
-        声明（决策 / 条件谓词 / 顺序），是否进入配置取决于本会话实际工具集。
+        现在交给 :func:`easy_agent.agent.hitl.build_interrupt_config` 过滤：审批名单取
+        config.yaml 的 ``hitl.tools``（不配时是注册表的全部 HITL 工具），注册表提供决策和
+        条件谓词，是否进入配置取决于本会话实际工具集。
 
         ``self.mcp_tools`` 实际承载「MCP + 应用注入工具」全集（历史命名），
         因此这里直接把它作为实际工具来源；``execute`` 等框架内置工具由
         ``build_interrupt_config`` 内部补入。
         """
+        hitl = getattr(getattr(self, "config", None), "hitl", None)
         return build_interrupt_config(
             getattr(self, "mcp_tools", None) or [],
             enable_hitl=bool(getattr(self, "enable_hitl", True)),
+            approval_tools=getattr(hitl, "tools", None),
             sid=getattr(self, "sid", ""),
         )
 

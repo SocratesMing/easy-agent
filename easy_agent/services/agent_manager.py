@@ -9,6 +9,7 @@ from typing import Any, Callable
 
 from easy_agent.agent import EasyAgent
 from easy_agent.agent.graph_cache import clear_agent_graph_cache, get_agent_graph_cache
+from easy_agent.agent.hitl import hitl_enabled
 from easy_agent.bootstrap.config import Config
 from easy_agent.db import get_database
 from easy_agent.bootstrap.runtime_config import (
@@ -255,6 +256,8 @@ async def _get_or_create_agent_unlocked(
         raise RuntimeError("Agent 配置未初始化")
 
     config = _agent_config["config"]
+    # config.yaml 的 hitl.enabled=false 时对话也不审批（工具装配和 EasyAgent 都看这个值）
+    enable_hitl = hitl_enabled(config, enable_hitl)
     effective_model = model_name or config.active_model
     # None 与 "" 等价：都表示「本次请求不挂专家（通用 Agent）」
     expert_key = expert_agent_id or ""
