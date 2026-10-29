@@ -208,7 +208,6 @@ def test_add_expert_persists_selected_skills(client, fake_llm, fake_skills, db):
         },
     )
     assert resp.status_code == 200, resp.text
-    agent_id = resp.json()["export_agent_id"]
     assert resp.json()["export_required_skills"] == ["factor-creator", "docx"]
 
     detail = client.get("/agent/list").json()

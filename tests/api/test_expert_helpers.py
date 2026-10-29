@@ -53,6 +53,9 @@ EXPECTED_ROUTES = {
     ("GET", "/agent/public-list"),
     ("POST", "/agent/del"),
     ("GET", "/agent/expert/required-skills"),
+    # cc4b1e9d：新建专家后在工作区列出专家的 md 文档
+    ("GET", "/agent/expert-md"),
+    ("GET", "/agent/session-experts"),
 }
 
 

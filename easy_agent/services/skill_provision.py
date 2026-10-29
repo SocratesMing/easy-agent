@@ -73,7 +73,6 @@ def required_skills_of(expert_id: str | None, username: str = "") -> list[str]:
     if username:
         try:
             from easy_agent.db import get_database
-            from easy_agent.db.expert_store import ExpertStore
             from easy_agent.tools.expert_writer import resolve_owned_expert
 
             record = resolve_owned_expert(get_database(), username, expert_id)

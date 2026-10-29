@@ -38,10 +38,6 @@ def main() -> int:
         print("ERROR: 配置未加载，无法迁移数据库", file=sys.stderr)
         return 2
 
-    # 知识库建表函数和默认管理员策略在 import 时注册进 db（应用启动时由 app.py 导入）。
-    # 不导入的话只建核心表就写入最新版本号，最后报「默认管理员策略未注册」。
-    import easy_agent.knowledges.personnel  # noqa: F401
-
     db_config = config.database.model_dump()
     if args.check:
         os.environ["EASY_AUTO_MIGRATE"] = "0"

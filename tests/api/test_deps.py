@@ -107,13 +107,17 @@ EXPECTED_ROUTER_PATHS = {
         "/agent/public-list",
         "/agent/del",
         "/agent/expert/required-skills",
+        "/agent/expert-md",
+        "/agent/session-experts",
     },
 }
 
 # 批次 4 前后 app.openapi()["paths"] 的基线数量。
 # 2026-10-22：/agent/stream_export_run 删除（专家对话并入 /agent/chat/stream），
 # /agent/expert/required-skills 新增，一删一增，路径总数仍是 121。
-EXPECTED_OPENAPI_PATH_COUNT = 121
+# 2026-10-28：资产页下线删掉 /agent/files/list、新增 /agent/settings/knowledge（e59c5a6d），
+# 专家工作区新增 /agent/expert-md、/agent/session-experts（cc4b1e9d），121 - 1 + 3 = 123。
+EXPECTED_OPENAPI_PATH_COUNT = 123
 
 
 def _module(name: str):

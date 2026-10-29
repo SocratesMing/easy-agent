@@ -140,16 +140,6 @@ async def test_get_session_generated_files_denies_cross_user(two_user_sessions):
     assert exc.value.status_code == 404
 
 
-async def test_list_files_denies_cross_user(two_user_sessions):
-    from easy_agent.api.files import list_files
-
-    with pytest.raises(HTTPException) as exc:
-        await list_files(
-            db=two_user_sessions, username="userB", session_id="sess-A"
-        )
-    assert exc.value.status_code == 404
-
-
 async def test_get_workspace_tree_denies_cross_user(two_user_sessions, monkeypatch):
     from easy_agent.api.files import get_workspace_tree
     from easy_agent.bootstrap.config import Config
