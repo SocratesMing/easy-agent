@@ -39,6 +39,7 @@ retry:
 
 # ===== Agent =====
 max_steps: ${MAX_STEPS:-100}                      # 单轮最大执行步数
+tool_progress_enabled: ${TOOL_PROGRESS_ENABLED:-true}  # 工具空结果终止提示 + 原地打转提醒（只改结果文本，不改工具行为）
 workspace_dir: "${WORKSPACE_DIR:-/qts/workspace}" # 工作区根目录，实际按用户/会话隔离
 memories_dir: "${MEMORIES_DIR:-/qts/memories}"    # 长期记忆根目录，实际 {memories_dir}/{username}/AGENTS.md
 sessions_dir: "${SESSIONS_DIR:-/qts/sessions}"    # 会话数据目录，实际 {sessions_dir}/{username}/{session_id}.json

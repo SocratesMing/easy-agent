@@ -134,6 +134,13 @@ class AgentConfig(BaseModel):
     """Agent configuration"""
 
     max_steps: int = 50
+    tool_progress_enabled: bool = True
+    """工具进度提示（空结果终止信号 + 原地打转提醒）。
+
+    ``ls``/``glob``/``grep`` 查不到东西时框架返回的是正常结果，模型拿不到「该停」
+    的信号，容易在错误路径上反复重试直到把 ``max_steps`` 烧完。开启后给这类空结果
+    补一句终止提示，并对「同工具 + 同参数连续重复」点名次数。只改工具结果文本，
+    不改工具行为；出问题可置 false 一键回到旧行为。"""
     workspace_dir: str = "./workspace"
     memories_dir: str = "./memories"
     sessions_dir: str = "./sessions"

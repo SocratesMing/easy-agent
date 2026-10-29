@@ -84,6 +84,9 @@ from easy_agent.knowledges.chat.host_port import (
 from easy_agent.services.streaming.orchestrator import (
     chat_stream_generator as _host_chat_stream_generator,
 )
+from easy_agent.services.streaming.orchestrator import (
+    friendly_error_message as _friendly_error_message,
+)
 from easy_agent.services import get_agent_config as _get_agent_config
 from easy_agent.services.session_thread import (
     StaleApprovalError,
@@ -506,7 +509,7 @@ async def _drive_stream(
         logger.error(f"[{sid}] 后台流式任务异常: {type(e).__name__}: {e}")
         run_status = "failed"
         run_error = f"{type(e).__name__}: {e}"
-        hub.broadcast(emitter.error(f"处理失败: {e}"))
+        hub.broadcast(emitter.error(f"处理失败: {_friendly_error_message(e)}"))
     finally:
         await _stop_heartbeat(heartbeat)
         if run_id is not None and db is not None:

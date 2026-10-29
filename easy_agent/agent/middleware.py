@@ -1,7 +1,8 @@
 """Agent 自定义中间件装配。
 
 从 ``EasyAgent._build_middleware`` 抽出的纯函数：只依赖 ``config`` 与
-``max_steps``，不读 ``self``。顺序：TodoList → ToolError → ModelCallLimit → ToolCallLimit。
+``max_steps``，不读 ``self``。顺序：TodoList → ToolProgress → ToolError →
+ModelCallLimit → ToolCallLimit。
 摘要中间件不在这里：它要绑定建图时的 model / backend，由 ``EasyAgent._create_agent``
 按同名原位替换框架默认项（DA-06，见 ``agent/summarization.py``）。
 """
@@ -50,6 +51,18 @@ def build_agent_middleware(config, max_steps) -> list:
     # 官方默认栈若已提供则不再重复添加。
     if not framework_provides_todolist():
         middleware.append(TodoListMiddleware())
+    # 放在 ToolError **之前**：先定义的中间件在最外层，只有这样才能拿到
+    # ToolErrorMiddleware 转换后的 ToolMessage（异常已变成错误文本），
+    # 从而对「空结果」补终止信号。错误文本自带重试提示，这里会跳过不重复加。
+    from easy_agent.agent.tool_progress import ToolProgressMiddleware
+
+    middleware.append(
+        ToolProgressMiddleware(
+            enabled=bool(
+                getattr(getattr(config, "agent", None), "tool_progress_enabled", True)
+            )
+        )
+    )
     middleware.append(
         # DA-12：官方 ToolErrorMiddleware，只把可恢复的工具错误回灌模型。
         # D2：middleware 进共享编译图，不绑定 session_id。

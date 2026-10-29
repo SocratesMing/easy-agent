@@ -283,6 +283,10 @@ def config_fingerprint(config: Any) -> dict[str, Any]:
         "denied_dirs": list(getattr(agent_cfg, "denied_dirs", []) or []),
         "skill_write": str(getattr(agent_cfg, "skill_write", "") or ""),
         "max_steps": int(getattr(agent_cfg, "max_steps", 0) or 0),
+        # 开关变化要重建图：中间件实例按 enabled 构造，换值不重建会沿用旧行为。
+        "tool_progress_enabled": bool(
+            getattr(agent_cfg, "tool_progress_enabled", True)
+        ),
         "result_log_truncate": int(
             getattr(tools_cfg, "result_log_truncate", 0) or 0
         ),
