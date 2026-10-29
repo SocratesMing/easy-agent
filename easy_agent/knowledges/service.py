@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import io
 import logging
 import re
@@ -100,8 +101,11 @@ PARSER_CONFIG: dict[str, object] = {
 }
 # 检索固定参数
 # 阈值 0.5：召回阶段即过滤无关 chunk（无关问题的混合分多在 0.3~0.5），
-# 让与知识库无关的问题返回空证据，而不是凑满 top_n 条弱相关依据
+# 让与知识库无关的问题返回空证据，而不是凑满 top_n 条弱相关依据。
 RETRIEVAL_SIMILARITY_THRESHOLD = 0.5
+# 主阈值 0 命中时降级重试；与本地最低证据分保持一致，避免相关问题的
+# 最高分恰好落在 0.4~0.5 边界时被整体丢弃。
+RETRIEVAL_FALLBACK_SIMILARITY_THRESHOLD = MINIMUM_EVIDENCE_SCORE
 # 向量权重 0.5：向量/关键词各占一半，提升语义相关性、降低表面用词匹配的干扰
 RETRIEVAL_VECTOR_SIMILARITY_WEIGHT = 0.5
 RETRIEVAL_TOP_K = 1024
@@ -130,6 +134,9 @@ SHARED_DATASET_NAME = "EA_SHARED"
 # 进程级缓存（KnowledgeService 每请求实例化，共享数据集 ID 必须跨实例复用）
 _shared_dataset_id: str | None = None
 _shared_dataset_lock: asyncio.Lock | None = None
+# 共享数据集模型校验缓存：(dataset_id, configured_model)。配置只在进程启动时
+# 变化，同一进程内无需对每次上传/检索都重复查数据集详情。
+_validated_dataset_model: tuple[str, str] | None = None
 
 
 def _get_shared_dataset_lock() -> asyncio.Lock:
@@ -141,9 +148,10 @@ def _get_shared_dataset_lock() -> asyncio.Lock:
 
 
 def reset_shared_dataset_cache() -> None:
-    """清空共享数据集 ID 进程级缓存（测试用）。"""
-    global _shared_dataset_id
+    """清空共享数据集 ID/模型校验进程级缓存（测试用）。"""
+    global _shared_dataset_id, _validated_dataset_model
     _shared_dataset_id = None
+    _validated_dataset_model = None
 
 
 # ---------------------------------------------------------------------------
@@ -235,48 +243,283 @@ class KnowledgeService:
         )
 
     async def _ensure_shared_dataset(self) -> str:
-        """返回共享数据集 ID：配置指定库时直接透传，否则查找/创建（进程级缓存）。
+        """返回共享数据集 ID：配置指定库时按 ID 校验，否则查找/创建（进程级缓存）。
 
-        配置了 shared_dataset_id 时不查找、不创建——适合共享/托管 RAGFlow
-        环境（仅授权使用某个既有数据集，不允许随意建库）；ID 是否真实存在
-        由后续 Ragflow 调用自然校验。未配置时按名称查找共享数据集，没有则创建。
-        创建参数：embedding 模型取知识库配置，缺省用 Ragflow 租户默认模型。
+        配置了 shared_dataset_id 时不按名称查找、不创建——适合共享/托管
+        RAGFlow 环境（仅授权使用某个既有数据集，不允许随意建库），但会按 ID
+        做一次存在性与 embedding 模型校验。未配置时按名称查找共享数据集，
+        没有则创建。创建参数：embedding 模型取知识库配置，缺省用 Ragflow
+        租户默认模型。校验规则见 ``_validate_shared_dataset_model``。
+
+        模型变化时：
+        - 指定库为空：原地更新模型；
+        - 指定库已有 chunk：明确报错（显式指定 ID 时不擅自换库）；
+        - 未指定 ID、旧 ``EA_SHARED`` 已有 chunk 且模型不一致：自动创建
+          ``EA_SHARED_<模型哈希>`` 新库并使用，旧库文档保留但不再接收新上传。
+          这样只改 ``RAGFLOW_EMBEDDING_MODEL`` 就能让新文档用新模型解析。
+
         多进程并发创建的竞态由"失败后重查"兜底：Ragflow 数据集名称全局唯一，
         后创建方会收到错误，重查即可复用。
         """
         configured = self.config.shared_dataset_id.strip()
+        configured_model = self.config.embedding.model.strip()
         if configured:
-            return configured
+            return await self._ensure_configured_dataset(
+                configured, configured_model
+            )
         global _shared_dataset_id
         if _shared_dataset_id:
             return _shared_dataset_id
         async with _get_shared_dataset_lock():
             if _shared_dataset_id:
                 return _shared_dataset_id
+
+            preferred_name = self._shared_dataset_name_for_model(configured_model)
+            if preferred_name != SHARED_DATASET_NAME:
+                found_preferred = await self._find_shared_dataset(name=preferred_name)
+                if found_preferred is not None:
+                    await self._validate_shared_dataset_model(found_preferred)
+                    _shared_dataset_id = found_preferred
+                    logger.info(
+                        "共享数据集就绪（模型专用） | id=%s model=%s",
+                        _shared_dataset_id,
+                        configured_model,
+                    )
+                    return _shared_dataset_id
+
             found = await self._find_shared_dataset()
             if found is None:
-                try:
-                    remote = await self.ragflow.create_dataset(
-                        name=SHARED_DATASET_NAME,
-                        description="EasyAgent 共享知识库（个人/公共库共用）",
-                        embedding_model=self.config.embedding.model or None,
-                        permission=DATASET_PERMISSION,
-                        chunk_method=CHUNK_METHOD,
-                        parser_config=PARSER_CONFIG,
-                    )
-                    _shared_dataset_id = str(remote["id"])
-                except RagflowError:
-                    # 并发竞态：其他进程/实例刚创建了同名数据集 → 重查复用
-                    found = await self._find_shared_dataset()
-                    if found is None:
-                        raise
-                    _shared_dataset_id = found
+                _shared_dataset_id = await self._create_shared_dataset(
+                    SHARED_DATASET_NAME, configured_model
+                )
+            elif await self._dataset_needs_model_switch(found, configured_model):
+                # 旧共享库已有 chunk 且模型不一致：新建模型专用库，
+                # 避免 RAGFlow 继续用旧模型解析新文档。
+                old_model = await self._dataset_model(found)
+                _shared_dataset_id = await self._create_shared_dataset(
+                    preferred_name, configured_model
+                )
+                logger.warning(
+                    "检测到共享数据集模型变化，已切换到新数据集 | old_dataset=%s "
+                    "new_dataset=%s old_model=%s new_model=%s | 旧库文档不会自动"
+                    "迁移，需要重新上传才能用新模型解析",
+                    found,
+                    _shared_dataset_id,
+                    old_model,
+                    configured_model,
+                )
             else:
+                await self._validate_shared_dataset_model(found)
                 _shared_dataset_id = found
+
             logger.info("共享数据集就绪 | id=%s", _shared_dataset_id)
             return _shared_dataset_id
 
-    async def _find_shared_dataset(self) -> str | None:
+    async def _ensure_configured_dataset(
+        self, dataset_id: str, configured_model: str
+    ) -> str:
+        """处理显式 ``RAGFLOW_SHARED_DATASET_ID`` 的模型一致性。
+
+        - 数据集不存在：明确报错；
+        - 模型一致或未配置：直接使用；
+        - 空库且模型不一致：原地更新模型；
+        - 有 chunk 且模型不一致：尝试创建/复用模型专用数据集
+          ``EA_SHARED_<模型哈希>``；创建失败（如托管环境不允许建库）时
+          回退到原来的明确不一致错误。
+        """
+
+        global _validated_dataset_model
+        if configured_model and _validated_dataset_model == (
+            dataset_id,
+            configured_model,
+        ):
+            return dataset_id
+        dataset = await self._get_dataset(dataset_id)
+        if dataset is None:
+            raise KnowledgeServiceError(
+                "KNOWLEDGE_SHARED_DATASET_NOT_FOUND",
+                f"共享数据集 {dataset_id} 不存在或当前 API Key 无权访问；"
+                "请确认 RAGFLOW_BASE_URL / RAGFLOW_API_KEY / "
+                "RAGFLOW_SHARED_DATASET_ID 指向同一套 RAGFlow",
+                status_code=409,
+            )
+        actual = str(dataset.get("embedding_model") or "").strip()
+        if not configured_model:
+            return dataset_id
+        if not actual or actual == configured_model:
+            _validated_dataset_model = (dataset_id, configured_model)
+            return dataset_id
+        if self._dataset_chunk_count(dataset) == 0:
+            await self._update_dataset_model(dataset_id, configured_model)
+            return dataset_id
+
+        preferred_name = self._shared_dataset_name_for_model(configured_model)
+        found = await self._find_shared_dataset(name=preferred_name)
+        if found is not None:
+            await self._validate_shared_dataset_model(found)
+            logger.warning(
+                "指定共享数据集模型不一致，改用模型专用数据集 | configured=%s "
+                "actual_dataset=%s actual_model=%s new_dataset=%s new_model=%s",
+                dataset_id,
+                dataset_id,
+                actual,
+                found,
+                configured_model,
+            )
+            return found
+        try:
+            new_id = await self._create_shared_dataset(
+                preferred_name, configured_model
+            )
+        except RagflowError:
+            self._raise_model_mismatch(dataset_id, actual, configured_model)
+            raise  # pragma: no cover - _raise_model_mismatch 必定抛出
+        logger.warning(
+            "指定共享数据集模型不一致，已创建模型专用数据集 | configured=%s "
+            "actual_model=%s new_dataset=%s new_model=%s | 旧库文档不会自动迁移，"
+            "需要重新上传",
+            dataset_id,
+            actual,
+            new_id,
+            configured_model,
+        )
+        return new_id
+
+    async def _update_dataset_model(self, dataset_id: str, model: str) -> None:
+        try:
+            await self.ragflow.update_dataset(dataset_id, embedding_model=model)
+        except RagflowError as exc:
+            raise self._upstream_error(exc) from exc
+        global _validated_dataset_model
+        _validated_dataset_model = (dataset_id, model)
+        logger.info(
+            "共享数据集为空，已按配置切换 embedding 模型 | dataset=%s new=%s",
+            dataset_id,
+            model,
+        )
+
+    def _raise_model_mismatch(
+        self, dataset_id: str, actual: str, configured: str
+    ) -> None:
+        raise KnowledgeServiceError(
+            "KNOWLEDGE_EMBEDDING_MODEL_MISMATCH",
+            f"共享数据集 {dataset_id} 绑定模型 {actual}，与配置 "
+            f"RAGFLOW_EMBEDDING_MODEL={configured} 不一致；RAGFlow 不支持在有 "
+            "chunk 的数据集上原地换模型。请新建一个使用新模型的数据集，把 "
+            "RAGFLOW_SHARED_DATASET_ID 指向它后重新解析文档；或清空 "
+            "RAGFLOW_SHARED_DATASET_ID，让程序按新模型自动创建专用数据集；"
+            "或把 RAGFLOW_EMBEDDING_MODEL 改回该数据集实际模型",
+            status_code=409,
+        )
+
+    @staticmethod
+    def _shared_dataset_name_for_model(model: str) -> str:
+        """模型变化时使用的稳定数据集名；未配置模型时沿用 ``EA_SHARED``。"""
+
+        if not model:
+            return SHARED_DATASET_NAME
+        digest = hashlib.sha1(model.encode("utf-8")).hexdigest()[:8]
+        return f"{SHARED_DATASET_NAME}_{digest}"
+
+    async def _dataset_model(self, dataset_id: str) -> str:
+        dataset = await self._get_dataset(dataset_id)
+        return str(dataset.get("embedding_model") or "").strip() if dataset else ""
+
+    async def _dataset_needs_model_switch(
+        self, dataset_id: str, configured_model: str
+    ) -> bool:
+        """旧库是否因“有 chunk + 模型不一致”而需要切到模型专用新库。"""
+
+        if not configured_model:
+            return False
+        dataset = await self._get_dataset(dataset_id)
+        if dataset is None:
+            return False
+        actual = str(dataset.get("embedding_model") or "").strip()
+        return bool(
+            actual
+            and actual != configured_model
+            and self._dataset_chunk_count(dataset) > 0
+        )
+
+    async def _create_shared_dataset(self, name: str, model: str) -> str:
+        try:
+            remote = await self.ragflow.create_dataset(
+                name=name,
+                description="EasyAgent 共享知识库（个人/公共库共用）",
+                embedding_model=model or None,
+                permission=DATASET_PERMISSION,
+                chunk_method=CHUNK_METHOD,
+                parser_config=PARSER_CONFIG,
+            )
+            return str(remote["id"])
+        except RagflowError:
+            # 并发竞态：其他进程/实例刚创建了同名数据集 → 重查复用
+            found = await self._find_shared_dataset(name=name)
+            if found is None:
+                raise
+            await self._validate_shared_dataset_model(found)
+            return found
+
+    async def _get_dataset(self, dataset_id: str) -> dict[str, Any] | None:
+        """按 ID 查询上游数据集详情；不存在返回 None。"""
+
+        try:
+            result = await self.ragflow.list_datasets(
+                dataset_id=dataset_id, page=1, page_size=1
+            )
+        except RagflowError as exc:
+            raise self._upstream_error(exc) from exc
+        datasets = result.get("datasets") if isinstance(result, dict) else None
+        for item in datasets or []:
+            if isinstance(item, dict) and str(item.get("id")) == dataset_id:
+                return item
+        return None
+
+    @staticmethod
+    def _dataset_chunk_count(dataset: Mapping[str, Any]) -> int:
+        try:
+            return int(dataset.get("chunk_count") or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    async def _validate_shared_dataset_model(self, dataset_id: str) -> None:
+        """校验共享数据集与配置的 embedding 模型是否一致。
+
+        - 未配置 ``RAGFLOW_EMBEDDING_MODEL``：不校验，沿用数据集既有模型；
+        - 数据集为空：自动按配置更新模型（RAGFlow 允许空库改模型）；
+        - 数据集已有 chunk：明确报错，提示新建数据集并重新解析，避免
+          RAGFlow 在解析/检索时才抛"找不到模型"这类难以定位的上游错误。
+        """
+
+        configured = self.config.embedding.model.strip()
+        if not configured:
+            return
+        global _validated_dataset_model
+        cache_key = (dataset_id, configured)
+        if _validated_dataset_model == cache_key:
+            return
+        dataset = await self._get_dataset(dataset_id)
+        if dataset is None:
+            raise KnowledgeServiceError(
+                "KNOWLEDGE_SHARED_DATASET_NOT_FOUND",
+                f"共享数据集 {dataset_id} 不存在或当前 API Key 无权访问；"
+                "请确认 RAGFLOW_BASE_URL / RAGFLOW_API_KEY / "
+                "RAGFLOW_SHARED_DATASET_ID 指向同一套 RAGFlow",
+                status_code=409,
+            )
+        actual = str(dataset.get("embedding_model") or "").strip()
+        if not actual or actual == configured:
+            _validated_dataset_model = cache_key
+            return
+        if self._dataset_chunk_count(dataset) == 0:
+            await self._update_dataset_model(dataset_id, configured)
+            return
+        self._raise_model_mismatch(dataset_id, actual, configured)
+
+    async def _find_shared_dataset(
+        self, *, name: str = SHARED_DATASET_NAME
+    ) -> str | None:
         """分页拉取数据集列表，客户端按名称精确匹配查找共享数据集。
 
         注意：不能用 ``name`` 查询参数过滤——定制版 Ragflow 对不存在的
@@ -292,7 +535,7 @@ class KnowledgeService:
                 for item in items:
                     if (
                         isinstance(item, dict)
-                        and str(item.get("name")) == SHARED_DATASET_NAME
+                        and str(item.get("name")) == name
                     ):
                         return str(item["id"])
                 # 客户端列表分支返回的 total 为本页长度：不满一页即到末尾
@@ -2362,20 +2605,42 @@ class KnowledgeService:
             retrieval_meta: dict[str, Any] | None = None
             if not str(base.get("remote_dataset_id") or "").strip():
                 retrieval_meta = self._personal_meta_fields(base)
-            result = await self.ragflow.retrieve(
-                question=question,
-                dataset_ids=[dataset_id],
-                document_ids=[str(item["remote_document_id"]) for item in documents],
-                page_size=min(max(top_n * 2, 20), 50) if aggregation else top_n,
-                similarity_threshold=(
-                    RETRIEVAL_AGGREGATION_THRESHOLD
-                    if aggregation
-                    else RETRIEVAL_SIMILARITY_THRESHOLD
-                ),
-                vector_similarity_weight=RETRIEVAL_VECTOR_SIMILARITY_WEIGHT,
-                top_k=RETRIEVAL_TOP_K,
-                meta_fields=retrieval_meta,
+            retrieve_kwargs = {
+                "question": question,
+                "dataset_ids": [dataset_id],
+                "document_ids": [
+                    str(item["remote_document_id"]) for item in documents
+                ],
+                "page_size": min(max(top_n * 2, 20), 50) if aggregation else top_n,
+                "vector_similarity_weight": RETRIEVAL_VECTOR_SIMILARITY_WEIGHT,
+                "top_k": RETRIEVAL_TOP_K,
+                "meta_fields": retrieval_meta,
+            }
+            primary_threshold = (
+                RETRIEVAL_AGGREGATION_THRESHOLD
+                if aggregation
+                else RETRIEVAL_SIMILARITY_THRESHOLD
             )
+            result = await self.ragflow.retrieve(
+                **retrieve_kwargs,
+                similarity_threshold=primary_threshold,
+            )
+            if not result.get("chunks") and not aggregation:
+                # 相关问题最高分可能恰好卡在 0.5 以下；用本地最低证据分再召回一次
+                fallback = await self.ragflow.retrieve(
+                    **retrieve_kwargs,
+                    similarity_threshold=RETRIEVAL_FALLBACK_SIMILARITY_THRESHOLD,
+                )
+                if fallback.get("chunks"):
+                    logger.info(
+                        "检索主阈值无结果，降阈值重试命中 | base=%s primary=%.2f "
+                        "fallback=%.2f chunks=%s",
+                        base.get("id"),
+                        primary_threshold,
+                        RETRIEVAL_FALLBACK_SIMILARITY_THRESHOLD,
+                        len(fallback["chunks"]),
+                    )
+                    result = fallback
         except RagflowError as exc:
             raise self._upstream_error(exc) from exc
         by_remote = {str(item["remote_document_id"]): item for item in documents}
