@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import { buildTokenMap } from './skillPillTokens.js'
-import { buildMessageText, parseSlashQuery } from './skillSlash.js'
+import { buildMessageText, parseSlashQuery, splitByQuery } from './skillSlash.js'
 
 const SKILLS = [
   { dir_name: 'docx', name: 'Word 文档处理' },
@@ -61,4 +61,48 @@ test('selectSkill 场景：标签后 /查询词 的 start 不吃掉前面的标�
   const slash = parseSlashQuery(value, value.length, map())
   const cleared = value.slice(0, slash.start) + value.slice(value.length)
   assert.equal(cleared, '/Word 文档处理')
+})
+
+test('技能检索高亮：按查询词切段，命中片段带 hit 标记', () => {
+  assert.deepEqual(splitByQuery('expert-creator', 'ea'), [
+    { text: 'expert-cr', hit: false },
+    { text: 'ea', hit: true },
+    { text: 'tor', hit: false },
+  ])
+  // 忽略大小写：命中的片段保留原文大小写
+  assert.deepEqual(splitByQuery('buddy-image-processing', 'IMAGE'), [
+    { text: 'buddy-', hit: false },
+    { text: 'image', hit: true },
+    { text: '-processing', hit: false },
+  ])
+})
+
+test('技能检索高亮：多处命中，且正则元字符按普通文字处理', () => {
+  assert.deepEqual(splitByQuery('image-to-video ImageGen', 'image'), [
+    { text: 'image', hit: true },
+    { text: '-to-video ', hit: false },
+    { text: 'Image', hit: true },
+    { text: 'Gen', hit: false },
+  ])
+  assert.deepEqual(splitByQuery('a.b(c)$', '(c)'), [
+    { text: 'a.b', hit: false },
+    { text: '(c)', hit: true },
+    { text: '$', hit: false },
+  ])
+})
+
+test('技能检索高亮：空查询词 / 未命中都返回单段，模板渲染路径不变', () => {
+  assert.deepEqual(splitByQuery('docx', ''), [{ text: 'docx', hit: false }])
+  assert.deepEqual(splitByQuery('docx', '   '), [{ text: 'docx', hit: false }])
+  assert.deepEqual(splitByQuery('docx', 'zzz'), [{ text: 'docx', hit: false }])
+  assert.deepEqual(splitByQuery('', 'doc'), [{ text: '', hit: false }])
+  assert.deepEqual(splitByQuery(null, 'doc'), [{ text: '', hit: false }])
+})
+
+test('技能检索高亮：首尾命中不产生空片段', () => {
+  assert.deepEqual(splitByQuery('image', 'image'), [{ text: 'image', hit: true }])
+  assert.deepEqual(splitByQuery('imagedoc', 'image'), [
+    { text: 'image', hit: true },
+    { text: 'doc', hit: false },
+  ])
 })
