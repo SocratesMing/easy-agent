@@ -15,7 +15,7 @@ MAX_SKILL_MD_BYTES = 10 * 1024 * 1024
 MAX_DESCRIPTION_CHARS = 1024
 MAX_COMPATIBILITY_CHARS = 500
 MAX_SKILL_NAME_CHARS = 64
-_SKILL_NAME_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+SKILL_NAME_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 
 
 def find_skills_root(skills_dir: str | None = None) -> str | None:
@@ -229,7 +229,7 @@ def _validate_skill_meta(dir_name: str, meta: dict[str, Any]) -> list[str]:
             errors.append(f"frontmatter.name（{name}）必须与目录名（{dir_name}）一致")
         if len(name) > MAX_SKILL_NAME_CHARS:
             errors.append(f"frontmatter.name 超过 {MAX_SKILL_NAME_CHARS} 字符")
-        if not _SKILL_NAME_RE.match(name):
+        if not SKILL_NAME_RE.match(name):
             errors.append("frontmatter.name 只能包含小写字母、数字与单个连字符（不能有空格/下划线/大写）")
 
     description = str(meta.get("description") or "").strip()

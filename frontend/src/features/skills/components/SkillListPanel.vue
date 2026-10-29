@@ -231,6 +231,7 @@ import {
   getSkillCategories,
 } from '../../../api/skills.js'
 import { DEFAULT_CATEGORY, iconCategoryFor } from '../../../utils/skillCategories.js'
+import { validateSkillZip } from '../../../utils/skillZip.js'
 import SkillIcon from '../../../shared/components/SkillIcon.vue'
 import SkillDetailPanel from './SkillDetailPanel.vue'
 import ToggleSwitch from '../../../shared/components/ToggleSwitch.vue'
@@ -509,6 +510,14 @@ function triggerImport() {
 async function handleImportFile(event) {
   const file = event.target.files?.[0]
   if (!file) return
+  // 上传前置校验：非 zip、或名称不是「小写字母/数字/单个连字符」，当场拦下不发请求
+  const invalid = validateSkillZip(file)
+  if (invalid) {
+    showToast(invalid, 'error')
+    // 清空选择，否则同一个文件再次选中不会触发 change
+    if (fileInputRef.value) fileInputRef.value.value = ''
+    return
+  }
   importing.value = true
   try {
     const result = await importSkill(file)
