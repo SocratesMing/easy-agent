@@ -21,11 +21,16 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS = REPO_ROOT / "scripts" / "db"
 
 
-def _run(tmp_path, *argv, db_path):
-    """按生产用法在独立进程里跑：配置指向临时 SQLite 库，不读开发机的 .env。"""
+def _run(tmp_path, *argv, db_path, knowledge=None):
+    """按生产用法在独立进程里跑：配置指向临时 SQLite 库，不读开发机的 .env。
+
+    ``knowledge`` 给了就整段替换配置的 knowledge 段（知识库脚本要先打开模块）。
+    """
     with open(os.environ["EASY_CONFIG"], encoding="utf-8") as f:
         config = yaml.safe_load(f)
     config["database"]["sqlite"]["path"] = str(db_path)
+    if knowledge is not None:
+        config["knowledge"] = knowledge
     config_path = tmp_path / "config.yaml"
     config_path.write_text(yaml.safe_dump(config, allow_unicode=True), encoding="utf-8")
     env = {
