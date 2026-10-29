@@ -146,9 +146,9 @@ def _make_old_database(path, version=10):
     con.close()
 
 
-@pytest.mark.parametrize("old_version", [10, 12])
+@pytest.mark.parametrize("old_version", [10, 13])
 def test_upgrade_drops_retired_tables_and_indexes(tmp_path, old_version):
-    """10：表精简之前的库；12：上一版。两种都要走一次完整初始化，删掉退役的表和索引。"""
+    """10：表精简之前的库；13：上一版。两种都要走一次完整初始化，删掉退役的表和索引。"""
     path = tmp_path / "old.db"
     _make_old_database(path, old_version)
 
