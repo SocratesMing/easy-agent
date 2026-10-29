@@ -1,4 +1,4 @@
-"""阶段 0 架构门禁测试：import 图 SCC + 双写冻结 + 裸 os.getenv 基线。
+"""阶段 0 架构门禁测试：import 图 SCC + 分层方向 + 双写冻结 + 裸 os.getenv 基线。
 
 所有用例都用 ``tmp_path`` 注入坏/好样本，不依赖网络、真实数据库或
 ``tests/conftest.py`` 里的 app fixture。
@@ -183,6 +183,93 @@ def test_repository_import_graph_matches_whitelist():
     else:
         assert entries == [], "SCC=0 时白名单必须为空"
     assert import_graph.compare_sccs(graph.cycles(), entries, "easy_agent") == []
+
+
+# --- layer direction ---------------------------------------------------------
+
+
+def _make_layered_package(root: Path) -> None:
+    _write(root, "pkg/__init__.py", "")
+    # 函数内导入同样计入
+    _write(root, "pkg/low.py", "def helper():\n    from pkg import high\n")
+    _write(root, "pkg/high.py", "from pkg.low import helper\n")
+
+
+def _write_layers(path: Path, allow: list[dict]) -> Path:
+    path.write_text(
+        json.dumps(
+            {"schema_version": 1, "layers": {"pkg": 1, "pkg.low": 0}, "allow": allow},
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_layer_check_flags_a_lower_layer_importing_a_higher_one(tmp_path):
+    _make_layered_package(tmp_path)
+    graph = import_graph.build_graph(tmp_path, "pkg")
+    layers, allow = import_graph.load_layers(_write_layers(tmp_path / "layers.json", []), "pkg")
+
+    assert import_graph.layer_of("pkg.low", layers) == 0
+    # 没有单独配置的模块取最长匹配前缀（这里是包本身）的层号
+    assert import_graph.layer_of("pkg.high", layers) == 1
+    errors = import_graph.check_layers(graph, layers, allow)
+    assert len(errors) == 1
+    assert "pkg.low" in errors[0] and "pkg.high" in errors[0]
+
+
+def test_layer_allow_list_passes_and_goes_stale(tmp_path):
+    _make_layered_package(tmp_path)
+    allow = [{"from": "pkg.low", "to": "pkg.high", "reason": "fixture"}]
+    layers, entries = import_graph.load_layers(_write_layers(tmp_path / "layers.json", allow), "pkg")
+    assert import_graph.check_layers(import_graph.build_graph(tmp_path, "pkg"), layers, entries) == []
+
+    _write(tmp_path, "pkg/low.py", "")
+    stale = import_graph.check_layers(import_graph.build_graph(tmp_path, "pkg"), layers, entries)
+    assert any("白名单过期" in error for error in stale)
+
+
+def test_layer_config_requires_the_root_package_and_reasons(tmp_path):
+    path = tmp_path / "layers.json"
+    path.write_text(json.dumps({"layers": {"pkg.low": 0}}), encoding="utf-8")
+    with pytest.raises(ValueError, match="root package"):
+        import_graph.load_layers(path, "pkg")
+
+    _write_layers(path, [{"from": "pkg.low", "to": "pkg.high"}])
+    with pytest.raises(ValueError, match="reason"):
+        import_graph.load_layers(path, "pkg")
+
+
+def test_layer_check_cli_exit_codes(tmp_path):
+    _make_layered_package(tmp_path)
+    base = [
+        sys.executable,
+        str(SCRIPTS / "quality" / "import_graph.py"),
+        "--root",
+        str(tmp_path),
+        "--package",
+        "pkg",
+        "--check-layers",
+    ]
+
+    strict = _write_layers(tmp_path / "strict.json", [])
+    failed = subprocess.run(base + ["--layers", str(strict)], capture_output=True, text=True, check=False)
+    assert failed.returncode == 1
+    assert "[check-layers] FAIL" in failed.stdout
+
+    allowed = _write_layers(
+        tmp_path / "allowed.json", [{"from": "pkg.low", "to": "pkg.high", "reason": "fixture"}]
+    )
+    passed = subprocess.run(base + ["--layers", str(allowed)], capture_output=True, text=True, check=False)
+    assert passed.returncode == 0, passed.stderr
+    assert "[check-layers] OK" in passed.stdout
+
+
+def test_repository_imports_follow_the_layers():
+    graph = import_graph.build_graph(REPO_ROOT, "easy_agent")
+    layers, allow = import_graph.load_layers(SCRIPTS / "quality" / "import_layers.json", "easy_agent")
+    assert import_graph.check_layers(graph, layers, allow) == []
 
 
 # --- double-write freeze -----------------------------------------------------

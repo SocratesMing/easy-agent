@@ -2,7 +2,7 @@
 
 - 日期：2026-10-20
 - 状态：已评审（2026-10-20，§13 的 6 个问题均按推荐答案定案）；2026-10-21 完成 §7 中 `services.streaming` 的瘦身并删除 `services/streaming.py` 垫片，其余尚未实施
-- 更新（2026-10-29）：§9 违规修复清单除 #7（按 §13 留在白名单）外已全部按表中改法实施；`agent_manager` ↔ `tool_scope` ↔ `expert_writer` 的环也已拆掉（`resolve_tool_scope` 由调用方传入开关，`save_expert` 直接持有会话暂存表）。§6 的方向门禁、§7 其余瘦身、§8 子包划分仍未实施
+- 更新（2026-10-29）：§9 违规修复清单除 #7（按 §13 留在白名单）外已全部按表中改法实施；`agent_manager` ↔ `tool_scope` ↔ `expert_writer` 的环也已拆掉（`resolve_tool_scope` 由调用方传入开关，`save_expert` 直接持有会话暂存表）。§6.1 方向门禁已落地：`scripts/quality/import_layers.json` 只登记 #7 一条，CI 跑 `--check-scc --check-layers`。§6.3 动态导入未实施：把 `services/scheduler.py` 未注册时回退用的 `importlib.import_module("easy_agent.services.agent_manager")` 算成边，会出现 `agent_manager`、`scheduler`、`tools.scheduled_task` 一个环，要先决定去掉回退还是登记白名单。§6.2、§7 其余瘦身、§8 子包划分仍未实施
 - 范围：`easy_agent/services/` 的子包划分与迁移；根包、`services`、`services.streaming`、`utils` 四个 `__init__.py` 的瘦身；import 图门禁增加分层方向检查。前端与 `knowledges/` 的内部结构不在范围内
 - 相关：`docs/design/2026-10-18-architecture-improvement-plan.md`（阶段 0 的 SCC 门禁、阶段 C 的分层收口与 streaming 拆分）；审计路线图 D 项「`services/` 拆领域子包、清理兼容垫片」（`docs/audit/2026-10-19-deepagents-best-practices-audit.md` §7）
 - 数据：2026-10-20，HEAD `72014e0`；工作区里其他会话未提交的改动不计

@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "description": "分层方向门禁（docs/design/2026-10-20-services-subpackages-and-layering.md §5、§6.1）：层号按模块前缀指定，最长前缀优先；同层可以互相导入，下层不得导入上层，函数内导入和 TYPE_CHECKING 导入同样计入。allow 只减不增，每条写明原因。",
+  "layers": {
+    "easy_agent": 6,
+    "easy_agent.app": 6,
+    "easy_agent.api": 5,
+    "easy_agent.middleware": 5,
+    "easy_agent.services": 4,
+    "easy_agent.tools": 4,
+    "easy_agent.knowledges": 4,
+    "easy_agent.agent": 3,
+    "easy_agent.backends": 2,
+    "easy_agent.tools.registry": 2,
+    "easy_agent.db": 1,
+    "easy_agent.persistence": 1,
+    "easy_agent.sandboxing": 1,
+    "easy_agent.utils": 0,
+    "easy_agent.bootstrap": 0,
+    "easy_agent.security": 0,
+    "easy_agent.models": 0
+  },
+  "allow": [
+    {
+      "from": "easy_agent.knowledges.personnel.api",
+      "to": "easy_agent.middleware",
+      "reason": "知识库纵向切片自带路由，用 middleware 的鉴权依赖；知识库内部分层另行设计（设计文档 §9 #7、§13 决策 4）"
+    }
+  ]
+}

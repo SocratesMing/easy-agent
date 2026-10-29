@@ -1,4 +1,4 @@
-"""Import graph scanner core (AST, SCC, whitelist comparison).
+"""Import graph scanner core (AST, SCC, whitelist comparison, layer direction).
 
 CLI lives in :mod:`scripts.quality.import_graph`; this module is importable by
 tests and by the CLI, keeping the command-line surface small.
@@ -15,6 +15,7 @@ from pathlib import Path
 DEFAULT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_PACKAGE = "easy_agent"
 DEFAULT_WHITELIST = Path(__file__).with_name("import_graph_whitelist.json")
+DEFAULT_LAYERS = Path(__file__).with_name("import_layers.json")
 
 # Directories that never contain importable runtime modules.
 _SKIP_DIRS = {
@@ -336,6 +337,112 @@ def compare_sccs(
 
     if not entries and actual_cycles:
         errors.insert(0, "白名单为空，要求 SCC=0，实际发现 %d 个环" % len(actual_cycles))
+    return errors
+
+
+def load_layers(
+    path: str | Path, package: str = DEFAULT_PACKAGE
+) -> tuple[dict[str, int], list[dict]]:
+    """Load and validate the layer model and its allow list.
+
+    Canonical format::
+
+        {
+          "schema_version": 1,
+          "layers": {"pkg": 6, "pkg.db": 1},
+          "allow": [{"from": "pkg.a", "to": "pkg.b", "reason": "..."}]
+        }
+
+    The root package itself must have a layer so that every module gets one
+    (the longest matching prefix wins, see :func:`layer_of`).
+    """
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError("layer config root must be a JSON object")
+    raw_layers = data.get("layers")
+    if not isinstance(raw_layers, dict) or not raw_layers:
+        raise ValueError('layer config must map module prefixes to layers under "layers"')
+
+    layers: dict[str, int] = {}
+    for prefix, level in raw_layers.items():
+        if isinstance(level, bool) or not isinstance(level, int) or level < 0:
+            raise ValueError(f"layers[{prefix!r}] must be a non-negative integer")
+        layers[_normalize_module(str(prefix), package)] = level
+    if package not in layers:
+        raise ValueError(
+            f'layers must assign the root package "{package}" so every module has a layer'
+        )
+
+    raw_allow = data.get("allow", [])
+    if not isinstance(raw_allow, list):
+        raise ValueError('"allow" must be a list')
+    allow: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    for position, raw in enumerate(raw_allow):
+        if not isinstance(raw, dict):
+            raise ValueError(f"allow[{position}] must be an object")
+        source = _normalize_module(str(raw.get("from", "")), package)
+        target = _normalize_module(str(raw.get("to", "")), package)
+        if not source or not target:
+            raise ValueError(f'allow[{position}] must name both "from" and "to"')
+        reason = str(raw.get("reason", "")).strip()
+        if not reason:
+            raise ValueError(
+                f"allow[{position}] must document a non-empty reason "
+                "(allowed violations are frozen debt, not a mute button)"
+            )
+        if (source, target) in seen:
+            raise ValueError(f"allow[{position}] duplicates {source} -> {target}")
+        seen.add((source, target))
+        allow.append({"from": source, "to": target, "reason": reason})
+    return layers, allow
+
+
+def layer_of(module: str, layers: dict[str, int]) -> int | None:
+    """Layer of ``module``: the longest matching module prefix wins."""
+    best: str | None = None
+    for prefix in layers:
+        if module == prefix or module.startswith(f"{prefix}."):
+            if best is None or len(prefix) > len(best):
+                best = prefix
+    return layers[best] if best is not None else None
+
+
+def check_layers(
+    graph: ImportGraph, layers: dict[str, int], allow: list[dict]
+) -> list[str]:
+    """Return gate errors for imports from a lower layer into a higher one.
+
+    Imports within a layer are fine. Every violating module pair must be in
+    ``allow``; an allow entry that no longer matches a violation is stale and
+    fails too, so the list only shrinks.
+    """
+    violations: dict[tuple[str, str], set[int]] = {}
+    for edge in graph.edges:
+        source_layer = layer_of(edge.source, layers)
+        target_layer = layer_of(edge.target, layers)
+        if source_layer is None or target_layer is None:
+            continue
+        if source_layer < target_layer:
+            violations.setdefault((edge.source, edge.target), set()).add(edge.line)
+
+    allowed = {(entry["from"], entry["to"]) for entry in allow}
+    errors: list[str] = []
+    for (source, target), lines in sorted(violations.items()):
+        if (source, target) in allowed:
+            continue
+        errors.append(
+            f"下层依赖上层：{source}（L{layer_of(source, layers)}）导入 "
+            f"{target}（L{layer_of(target, layers)}），第 "
+            + ", ".join(str(line) for line in sorted(lines))
+            + " 行"
+        )
+    for entry in allow:
+        if (entry["from"], entry["to"]) not in violations:
+            errors.append(
+                f"白名单过期：{entry['from']} → {entry['to']} 已不再违规；"
+                "请删除该条目（白名单只减不增）"
+            )
     return errors
 
 

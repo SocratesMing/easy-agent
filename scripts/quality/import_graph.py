@@ -14,14 +14,21 @@ Gate semantics (``--check-scc``):
 * Whitelist entries must carry a human-readable ``reason``; the whitelist is
   expected to shrink only (fix the cycle, then delete the entry).
 
+Layer semantics (``--check-layers``, config ``scripts/quality/import_layers.json``):
+
+* Every module gets the layer of its longest matching prefix; a module may
+  import its own layer and the ones below it, never a higher one.
+* Each violating module pair must be listed under ``allow`` with a ``reason``;
+  a new violation or a stale ``allow`` entry fails the gate.
+
 Usage::
 
     python scripts/quality/import_graph.py                 # human readable report
     python scripts/quality/import_graph.py --json          # machine readable report
-    python scripts/quality/import_graph.py --check-scc     # CI gate (exit 1 on drift)
+    python scripts/quality/import_graph.py --check-scc --check-layers   # CI gate
 
-The ``--root`` / ``--package`` / ``--whitelist`` options make the scanner
-testable against temporary fixture packages.
+The ``--root`` / ``--package`` / ``--whitelist`` / ``--layers`` options make the
+scanner testable against temporary fixture packages.
 """
 
 from __future__ import annotations
@@ -36,12 +43,16 @@ if str(_ROOT_FOR_IMPORTS) not in sys.path:
     sys.path.insert(0, str(_ROOT_FOR_IMPORTS))
 
 from scripts.quality.import_graph_core import (  # noqa: E402
+    DEFAULT_LAYERS,
     DEFAULT_PACKAGE,
     DEFAULT_ROOT,
     DEFAULT_WHITELIST,
     build_graph,
+    check_layers,
     compare_sccs,
     graph_report,
+    layer_of,
+    load_layers,
     load_whitelist,
 )
 
@@ -60,6 +71,15 @@ def _print_human(report: dict, errors: list[str], check: bool) -> None:
                 print(f"  - {error}")
         else:
             print("[check-scc] OK — 实际 SCC 与白名单完全一致")
+
+
+def _print_layers(check: dict) -> None:
+    if check["errors"]:
+        print("[check-layers] FAIL")
+        for error in check["errors"]:
+            print(f"  - {error}")
+    else:
+        print(f"[check-layers] OK — 没有未登记的下层依赖上层（白名单 {check['allowed']} 条）")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -87,6 +107,17 @@ def main(argv: list[str] | None = None) -> int:
         "--check-scc",
         action="store_true",
         help="enforce the whitelist and exit 1 on any drift",
+    )
+    parser.add_argument(
+        "--layers",
+        type=Path,
+        default=DEFAULT_LAYERS,
+        help="layer model JSON (default: scripts/quality/import_layers.json)",
+    )
+    parser.add_argument(
+        "--check-layers",
+        action="store_true",
+        help="fail when a module imports a higher layer outside the allow list",
     )
     parser.add_argument(
         "--json",
@@ -119,6 +150,24 @@ def main(argv: list[str] | None = None) -> int:
 
     report["check"] = {"enabled": args.check_scc, "ok": not errors, "errors": errors}
 
+    layer_errors: list[str] = []
+    allowed = 0
+    if args.check_layers:
+        try:
+            layers, allow = load_layers(args.layers, args.package)
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            print(f"[check-layers] ERROR: invalid layer config: {exc}", file=sys.stderr)
+            return 2
+        layer_errors = check_layers(graph, layers, allow)
+        allowed = len(allow)
+        report["layers"] = {module: layer_of(module, layers) for module in sorted(graph.modules)}
+    report["layer_check"] = {
+        "enabled": args.check_layers,
+        "ok": not layer_errors,
+        "errors": layer_errors,
+        "allowed": allowed,
+    }
+
     if args.json_out is not None:
         args.json_out.parent.mkdir(parents=True, exist_ok=True)
         args.json_out.write_text(
@@ -133,8 +182,10 @@ def main(argv: list[str] | None = None) -> int:
             return 0
     else:
         _print_human(report, errors, args.check_scc)
+        if args.check_layers:
+            _print_layers(report["layer_check"])
 
-    return 0 if not errors else 1
+    return 0 if not (errors or layer_errors) else 1
 
 
 if __name__ == "__main__":
