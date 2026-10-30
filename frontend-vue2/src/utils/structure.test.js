@@ -1,11 +1,13 @@
 /**
- * 结构约束（防劣化闸门）：文件行数、层间依赖、markdown 渲染单点。
+ * 结构约束（防劣化闸门）：文件行数、层间依赖、markdown 渲染单点、锁文件的包源。
  *
  * 这些用例不是"风格检查"，而是给重构留的ratchet：
  * - 行数预算只减不增：拆分文件后请把 `LINE_BUDGET` 里的数值调小或删掉条目；
  * - 新增文件不得突破 `MAX_NEW_FILE_LINES`；
  * - 组件不得新增对 `api/` 的直接依赖（老账记在 allowlist 里，还一笔删一行）；
- * - 只有 `src/shared/markdown/` 可以直接 import `marked`。
+ * - 只有 `src/shared/markdown/` 可以直接 import `marked`；
+ * - `package-lock.json` 的包地址只认 registry.npmjs.org：想走镜像就在自己的 ~/.npmrc 里设 registry，
+ *   npm 安装时会把锁文件里的 npmjs 地址换成镜像。
  *
  * 运行：`npm run test:unit`（node --test，不依赖 eslint）。
  */
@@ -66,6 +68,9 @@ const API_IMPORT_ALLOWLIST = new Set([
 
 /** 允许 import marked 的位置（markdown 渲染单点） */
 const MARKDOWN_IMPORT_ALLOWLIST = new Set(['shared/markdown/index.js'])
+
+/** 锁文件里包地址唯一允许的源：npm 12 默认把其他地址当远程包拒装（EALLOWREMOTE） */
+const NPM_REGISTRY = 'https://registry.npmjs.org/'
 
 async function collectSourceFiles(directory, acc = []) {
   const entries = await readdir(directory, { withFileTypes: true })
@@ -149,5 +154,19 @@ test('共享 markdown 内核与 frontend-shared 保持一致', async () => {
   assert.ok(
     copy.endsWith(source),
     'shared/markdown/index.js 与 frontend-shared/markdown/index.js 不一致，请执行 npm run sync:shared'
+  )
+})
+
+test('package-lock.json 只用 npmjs 源', async () => {
+  const lock = JSON.parse(await readFile(path.join(frontendRoot, 'package-lock.json'), 'utf8'))
+  const offRegistry = Object.entries(lock.packages || {})
+    .filter(([, meta]) => meta.resolved && !meta.resolved.startsWith(NPM_REGISTRY))
+    .map(([name, meta]) => `${name} → ${meta.resolved}`)
+
+  assert.deepEqual(
+    offRegistry,
+    [],
+    `锁文件的包地址只能是 ${NPM_REGISTRY}。用镜像装包后把这些地址的域名换成 registry.npmjs.org，integrity 不变：\n` +
+      offRegistry.join('\n')
   )
 })
