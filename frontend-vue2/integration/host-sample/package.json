@@ -11,7 +11,6 @@
     "axios": "1.7.9",
     "core-js": "^3.8.3",
     "docx-preview": "0.3.7",
-    "echarts": "6.1.0",
     "element-ui": "2.15.13",
     "exceljs": "3.10.0",
     "gemoji": "8.1.0",

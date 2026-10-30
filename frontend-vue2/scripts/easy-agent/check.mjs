@@ -229,7 +229,15 @@ function checkSharedSources(allowMissing) {
     }
     return out
   }
-  for (const rel of walk(sourceRoot)) {
+  const sources = walk(sourceRoot)
+  // 源文件删掉后，模块里带生成头的副本不会自己消失：残留副本同样算不一致
+  const sharedRoot = join(MODULE_ROOT, 'shared')
+  for (const rel of existsSync(sharedRoot) ? walk(sharedRoot) : []) {
+    if (sources.includes(rel)) continue
+    const head = readFileSync(join(sharedRoot, rel), 'utf8').split('\n', 2).join('\n')
+    if (head === banner(rel).split('\n', 2).join('\n')) fail(`共享代码 shared/${rel} 的源文件 frontend-shared/${rel} 已删除，生成副本残留（npm run sync:shared 会清理）`)
+  }
+  for (const rel of sources) {
     const expected = banner(rel) + readFileSync(join(sourceRoot, rel), 'utf8')
     const copy = join(MODULE_ROOT, 'shared', rel)
     if (!existsSync(copy) || readFileSync(copy, 'utf8') !== expected) {

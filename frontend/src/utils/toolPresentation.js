@@ -3,10 +3,8 @@
  *
  * 纯函数，实时流与历史回放共用。前端派生 dsh 的 presentCall/presentResult：
  *   execute → terminal   read_file → read   write_file/edit_file → diff
- *   ls/glob → search(paths)   grep → search(matches)
- *   数据类 MCP 信封（带 chart）→ chart   其它 → generic
+ *   ls/glob → search(paths)   grep → search(matches)   其它 → generic
  */
-import { extractChartArtifact, formatArtifactMeta } from '../shared/chart/artifact.js'
 
 function oneLine(s) {
   return String(s == null ? '' : s).split('\n')[0]
@@ -106,19 +104,7 @@ export function toolCard(toolName, args, result, success = true) {
       }
     }
     default: {
-      // 数据类 MCP 工具：结果信封自带 chart（ECharts option）时走图表卡片。
-      // 只放在 default：内建工具（execute/read_file 等）的语义不被图表产物覆盖。
-      const artifact = extractChartArtifact(r)
-      if (artifact) {
-        return {
-          card: 'chart',
-          kind: 'chart',
-          title: artifact.title || toolName || '图表',
-          meta: formatArtifactMeta(artifact),
-          error: success === false,
-          artifact,
-        }
-      }
+      // 其它工具（含返回图表信封的数据类 MCP 工具）一律走通用卡片，结果按原文展示
       return {
         card: 'generic', kind: 'other', title: toolName || 'tool',
         meta: short(JSON.stringify(a || {}), 56),

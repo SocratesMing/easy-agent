@@ -28,28 +28,6 @@
         "shared/preview/DocxPreview.vue"
       ]
     },
-    "echarts": {
-      "range": "^6.1.0",
-      "locked": "6.1.0",
-      "license": "Apache-2.0",
-      "nodeEngines": null,
-      "declaredIn": "dependencies",
-      "specifiers": [
-        "echarts/core",
-        "echarts/lib/chart/bar.js",
-        "echarts/lib/chart/line.js",
-        "echarts/lib/chart/pie.js",
-        "echarts/lib/component/dataset.js",
-        "echarts/lib/component/grid.js",
-        "echarts/lib/component/legend.js",
-        "echarts/lib/component/title.js",
-        "echarts/lib/component/tooltip.js",
-        "echarts/lib/renderer/installCanvasRenderer.js"
-      ],
-      "usedBy": [
-        "shared/chart/echarts.js"
-      ]
-    },
     "element-ui": {
       "range": "^2.15.14",
       "locked": "2.15.14",

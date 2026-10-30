@@ -10,7 +10,8 @@
  *   POST /__mock/kick     之后所有已发 token 返回 401「其他设备登录」（验证不自动重登）
  *   GET  /__mock/log      请求日志（方法、路径、Authorization、是否带宿主 token / 宿主前缀）
  *   POST /__mock/reset    清空状态
- * 聊天消息里包含「慢」或 "slow" 时，流式回复持续约 8 秒（验证离开 / 返回页面时的重新挂载）。
+ * 聊天消息里包含「慢」或 "slow" 时，流式回复持续约 8 秒（验证离开 / 返回页面时的重新挂载）；
+ * 包含「图表」时先模拟一次数据类 MCP 工具调用，结果信封带 chart（验证前端按通用工具卡片原文展示）。
  */
 'use strict'
 
@@ -93,6 +94,15 @@ function startStream(sessionId, message) {
     ? ['这是一个', '较慢的', '流式回复，', '离开页面', '再回来', '应当能', '继续看到', '后续内容。', '**完成**']
     : ['你好，', '这是 mock 后端的', '**流式**回复。\n\n', '- 列表项\n', '\n```js\nconsole.log(1)\n```\n', '\n公式：\n\n$$E=mc^2$$\n']
   const plan = [{ type: 'start', session_id: sessionId }, { type: 'thinking_start', step: 1 }, { type: 'thinking', content: '思考中……', step: 1 }, { type: 'thinking_end', duration: 0.2, step: 1 }]
+  if (/图表/.test(message)) {
+    const envelope = JSON.stringify({
+      shape: 'table+chart', title: '各分行存款余额', summary: '共 2 家分行',
+      table: { columns: ['分行', '余额'], rows: [['A', '10'], ['B', '20']] },
+      chart: { xAxis: { type: 'category', data: ['A', 'B'] }, yAxis: { type: 'value' }, series: [{ type: 'bar', data: [10, 20] }] },
+    })
+    plan.push({ type: 'tool_call', tool_name: 'query_branch_deposit', tool_call_id: 'call-chart-1', arguments: { stat_date: '2026-10-30' }, step: 1 })
+    plan.push({ type: 'tool_result', tool_name: 'query_branch_deposit', tool_call_id: 'call-chart-1', result: envelope, success: true, duration: 0.3, step: 1 })
+  }
   for (const part of reply) plan.push({ type: 'content', content: part, step: 1 })
   plan.push({ type: 'token_usage', input_tokens: 12, output_tokens: 34, reasoning_tokens: 0, context_tokens: 46 })
   plan.push({ type: 'done', session_id: sessionId, message_id: `m-${Date.now()}`, finish_reason: 'stop' })

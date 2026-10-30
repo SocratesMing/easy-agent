@@ -186,9 +186,11 @@
 | marked-emoji / marked-katex-extension / gemoji | ^2.0.3 / ^5.1.10 / ^8.1.0 | 2.0.3 / 5.1.13 / 8.1.0 | 同左 | 待宿主确认 | Markdown 扩展 |
 | katex | ^0.16.47 | 0.16.47 | 0.16.47 | 待宿主确认 | 引入 `katex.min.css`（选择器均为 `.katex*`，另有一条 `body{counter-reset:katex…}`）；字体随宿主构建输出 |
 | highlight.js | ^11.11.1 | 11.12.0 | 11.12.0 | 待宿主确认 | 只注册常用语言；主题样式是模块内限域副本 |
-| echarts | ^6.1.0 | 6.1.0 | 6.1.0 | 待宿主确认 | 图表，按需引入、懒加载 |
 | monaco-editor | ^0.53.0 | 0.53.0 | 0.53.0 | 待宿主确认 | mcp.json 编辑器；worker 见第 7 节 |
 | docx-preview / exceljs / xlsx | ^0.3.7 / ^3.4.0 / ^0.18.5 | 0.3.7 / 3.10.0 / 0.18.5 | 同左 | 待宿主确认 | Office 预览（懒加载） |
+
+`echarts` 已于 2026-10-30 随图表渲染功能一起去掉：数据类 MCP 工具返回的 `chart` 信封不再画图，按通用工具卡片原文展示
+（外网 Vue 2 / Vue 3 与 AI 侧边栏 SDK 相同）。宿主若之前为它安装过 `echarts`，确认无其他用途后可卸载，不卸载也不影响构建。
 
 编译期要求见 `dependencies.json` 的 `build` 段。外网专用工具（`@iconify/json`、`unplugin-icons`、Vue CLI 插件等）宿主不需要安装。
 **不要**把外网 `package.json` 整份覆盖给宿主。
@@ -209,19 +211,19 @@
 - Monaco：`new Worker(new URL(..., import.meta.url))`，webpack 5 输出独立 worker chunk，地址跟随宿主 `publicPath`
   （已验证 `/portal/` 非根路径）；worker 必须与页面同源（`publicPath` 指向跨域 CDN 时浏览器拒绝）；宿主若已定义
   `self.MonacoEnvironment`，模块沿用宿主的，宿主工厂需能提供 `json` worker。
-- 懒加载：路由页面、各面板、图表、Office 预览、Monaco 均为动态 import，chunk 与字体随宿主构建输出到宿主 `publicPath` 下。
+- 懒加载：路由页面、各面板、Office 预览、Monaco 均为动态 import，chunk 与字体随宿主构建输出到宿主 `publicPath` 下。
 
 ## 8. 验证记录（2026-10-30）
 
 | 项 | 环境 / 命令 | 结果 |
 | --- | --- | --- |
-| 外网单元测试 | Node 24.18.0，`npm run test:unit` | 160 通过（含请求合同、宿主 axios 默认值、同步工具、边界检查、导出、导航、运行时配置；原有 122 个用例逐一保留） |
-| 模块检查 | `npm run check:easy-agent` | 通过：103 个受管文件，14 个运行期依赖 |
+| 外网单元测试 | Node 24.18.0，`npm run test:unit` | 150 通过（2026-10-30 去掉图表渲染后；含请求合同、宿主 axios 默认值、工具卡片呈现、同步工具、边界检查、导出、导航、运行时配置；原有 122 个用例逐一保留） |
+| 模块检查 | `npm run check:easy-agent` | 通过：受管文件 100 个，运行期依赖 13 个（2026-10-30 去掉 ECharts 图表渲染后） |
 | 外网构建 | Node 24.18.0 与 Node 14.20.0 下 `npm run build`、`npm run build:sdk` | 均通过 |
 | 独立应用视觉回归 | 改造前（HEAD 39d7eec）与改造后各截 6 屏（登录、首页、对话含代码 / 公式、加号菜单、设置、技能中心）逐像素比较 | 除时间显示的分钟数字外完全一致 |
 | 同步工具 | 测试以 Node 14.20.0 执行工具 | 新增 / 更新 / 删除 / 冲突 / --force+备份 / 失败自动恢复 / 回滚 / 越界与篡改拒绝 / 旧目录扫描 全部通过 |
 | 样例宿主安装与构建 | `integration/host-sample`：Node 14.20.0、npm 6.14.17、vue 2.7.14、vue-router 3.6.5、element-ui 2.15.13、webpack 5.96.1、@vue/cli-service 5.0.8、vue-loader 15.11.1、axios 1.7.9；`publicPath: /portal/`；用同步工具从迁移包导入 | 安装、同步、构建通过（仅体积提示） |
-| 浏览器冒烟 | Chromium 156 无头 + `host-sample/mock-backend.cjs`（合同级 mock），`node host-sample/smoke.mjs` | 44/44 通过：布局 / 标题 / URL 不被抢占，宿主样式前后不变，宿主 token 与前缀不泄漏，无宿主 window 事件，SSE 流式与 Markdown / 代码 / KaTeX，离开后后端继续、返回后重新挂载，keep-alive 卸下全局监听，401 续期，被顶下线不互踢，Monaco worker / 字体 / chunk 在 `/portal/` 下可加载，SDK 与页面同页共存（token 分开、destroy / 再初始化不影响页面） |
+| 浏览器冒烟 | Chromium 156 无头 + `host-sample/mock-backend.cjs`（合同级 mock），`node host-sample/smoke.mjs` | 47/47 通过：布局 / 标题 / URL 不被抢占，带图表信封的 MCP 工具结果在页面与 AI 侧边栏都按通用工具卡片原文展示（无图表、无 canvas），宿主样式前后不变，宿主 token 与前缀不泄漏，无宿主 window 事件，SSE 流式与 Markdown / 代码 / KaTeX，离开后后端继续、返回后重新挂载，keep-alive 卸下全局监听，401 续期，被顶下线不互踢，Monaco worker / 字体 / chunk 在 `/portal/` 下可加载，SDK 与页面同页共存（token 分开、destroy / 再初始化不影响页面） |
 
 未验证 / 缺口：真实后端联调（只用了合同级 mock）；知识库、人员管理、定时任务、文件预览等页面只验证了构建，
 没有在浏览器里逐个打开；内网真实宿主（axios 版本、ESLint、浏览器内核、全局样式、keep-alive 用法）未接触。

@@ -187,6 +187,32 @@ async function main() {
   const fontResponses = responses.filter((r) => /\/portal\/fonts\/KaTeX_/.test(r.url))
   check('KaTeX 字体从 /portal/fonts/ 加载', fontsOk && fontResponses.length > 0 && fontResponses.every((r) => r.status === 200), `${fontResponses.length} 个字体请求`)
 
+  // ── 数据类 MCP 工具结果（带 chart 信封）：前端不渲染 ECharts，按通用工具卡片原文展示 ──
+  const toolCardCheck = async (scope, label) => {
+    const ok = await waitFor(`!!document.querySelector('${scope} .tcc.generic')`, 10000)
+    await evaluate(`(() => { const head = [...document.querySelectorAll('${scope} .tcc.generic .tcc-head')].pop(); if (head && head.getAttribute('aria-expanded') !== 'true') head.click() })()`)
+    await sleep(300)
+    const state = await evaluate(`(() => { const card = [...document.querySelectorAll('${scope} .tcc.generic')].pop(); const pre = card && card.querySelector('.tcc-body pre.tcc-code'); return { body: pre ? pre.textContent : '', chartCards: document.querySelectorAll('${scope} .tcc.chart').length, canvases: document.querySelectorAll('${scope} canvas').length } })()`)
+    check(`${label}：带 chart 的工具结果显示为通用卡片（原文可展开查看），不渲染图表`, ok && state.body.includes('"chart"') && state.body.includes('各分行存款余额') && state.chartCards === 0 && state.canvases === 0, JSON.stringify({ chartCards: state.chartCards, canvases: state.canvases, bodyHead: state.body.slice(0, 40) }))
+  }
+  await evaluate(`document.querySelector('.easy-agent-root textarea').focus()`)
+  await cdp.send('Input.insertText', { text: '查询图表数据' })
+  await sleep(200)
+  await evaluate(`document.querySelector('.easy-agent-root .send-btn').click()`)
+  await toolCardCheck('.easy-agent-root .chat-container:not(.is-sidebar)', '页面')
+  // AI 侧边栏复用同一套消息组件：Ctrl+J 打开后在侧边栏里同样验证
+  await ctrlJ()
+  const sidebarInput = await waitFor(`!!document.querySelector('.easy-agent-root .ais-root textarea')`, 8000)
+  check('AI 侧边栏可打开', sidebarInput)
+  await evaluate(`document.querySelector('.easy-agent-root .ais-root textarea').focus()`)
+  await cdp.send('Input.insertText', { text: '侧边栏查询图表' })
+  await sleep(200)
+  await evaluate(`document.querySelector('.easy-agent-root .ais-root .send-btn').click()`)
+  await toolCardCheck('.easy-agent-root .ais-root', 'AI 侧边栏')
+  await shot('03b-tool-card-generic')
+  await ctrlJ()
+  await sleep(300)
+
   // ── 离开 / 返回：后端继续，前端重新挂载 ──
   await evaluate(`document.querySelector('.easy-agent-root textarea').focus()`)
   await cdp.send('Input.insertText', { text: '请慢一点回复' })

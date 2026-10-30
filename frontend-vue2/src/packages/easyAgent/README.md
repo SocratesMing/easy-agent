@@ -27,7 +27,7 @@ EasyAgentPage.vue       业务根组件（原 App.vue）
 runtime/                适配合同：config（配置）、events（模块内事件）、navigation（地址读写）、theme（主题）
 api/                    后端接口（/agent/...）；features/*/api.js 为 feature 内聚的接口
 features/               chat / knowledge / personnel / skills / experts / connectors / settings / tasks / workspace
-shared/                 共享组件、markdown、图表、预览；带「自动生成」头的文件来自仓库级 frontend-shared/
+shared/                 共享组件、markdown、预览；带「自动生成」头的文件来自仓库级 frontend-shared/
 utils/                  工具函数；utils/request.js 是唯一的传输实现
 directives/             v-tip（由使用的组件局部注册）
 styles/                 base.css（限域重置 + 主题变量）、theme-dark.css、highlight-github-dark.css（生成）
