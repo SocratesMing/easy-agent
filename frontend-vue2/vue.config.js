@@ -94,6 +94,14 @@ module.exports = defineConfig({
     },
   },
 
+  chainWebpack: (config) => {
+    // 字体一律输出成单独文件：默认 8 KB 以下会以 base64 内联进 CSS，KaTeX 数学字体的
+    // woff2 / woff / ttf 三种格式都被内联（约 103 KB），每次首屏都要下载。单独文件只在页面
+    // 真正用到该字体时才下载，而且浏览器只取 @font-face 里第一种支持的格式。
+    // SDK 构建不改：单文件交付，见下面的 LimitChunkCountPlugin
+    if (!IS_SDK_BUILD) config.module.rule('fonts').set('type', 'asset/resource')
+  },
+
   configureWebpack: {
     // SDK 体积：全量 highlight.js（190+ 语言）换成官方常用语言子集，压缩后少约 700 KB
     resolve: IS_SDK_BUILD ? { alias: { 'highlight.js$': 'highlight.js/lib/common' } } : {},
