@@ -1,5 +1,6 @@
 """应用级接口测试：健康检查与配置查询。"""
 
+import easy_agent.app as app_module
 from easy_agent.app import app
 from fastapi.testclient import TestClient
 
@@ -51,8 +52,13 @@ def test_unknown_agent_path_returns_json_404(client: TestClient):
     assert resp.json() == {"detail": "Not Found"}
 
 
-def test_frontend_fallback_still_serves_html(client: TestClient):
-    """非 /agent 路径仍走 SPA 兜底（保持前端路由/静态资源行为不变）。"""
+def test_frontend_fallback_still_serves_html(client: TestClient, tmp_path, monkeypatch):
+    """非 /agent 路径仍走 SPA 兜底（保持前端路由/静态资源行为不变）。
+
+    构建目录用临时目录：CI 的后端任务不构建前端，仓库里没有 frontend-vue2/dist。
+    """
+    (tmp_path / "index.html").write_text("<html>spa</html>", encoding="utf-8")
+    monkeypatch.setattr(app_module, "frontend_dist", str(tmp_path))
     resp = client.get("/some/spa/route")
     assert resp.status_code == 200
     assert resp.headers["content-type"].startswith("text/html")
