@@ -93,12 +93,14 @@ Environment variables:
 
 Two maintained baselines:
 
-- `frontend-vue2/` — Vue 2.7 (Options API; built-in Composition API functions allowed, `<script setup>` forbidden — guarded by `src/utils/vue2Compat.test.js`) + Element UI + Vue CLI (webpack). Currently served by the backend.
-- `frontend/` — Vue 3.5 + Vite. **No Vue Router** in the Vue2 baseline — routing is manual via boolean refs in `App.vue`; **no state management library** — state lives in `App.vue` and passes down as props. Both baselines share the same `src/api/sse.js` (`readSSE`) contract.
+- `frontend-vue2/` — Vue 2.7 (Options API; built-in Composition API functions allowed, `<script setup>` forbidden — guarded by `tests/vue2Compat.test.js`) + Element UI + Vue CLI (webpack). Currently served by the backend. **All business code lives in the managed module `src/packages/easyAgent/`** (entries `index.js` for routes, `sidebar.js` for the SDK; root component `EasyAgentPage.vue`), which is synced as one directory into the intranet Vue 2 host as a route page. `src/App.vue` + `src/main.js` + `src/standalone/` are only the standalone shell; `src/sdk/index.js` builds the AI-sidebar SDK from the same module. Host differences go through `configureEasyAgent()` (`runtime/config.js`, contract version in `EASY_AGENT_CONTRACT_VERSION`), never into module code. Rules (relative imports only, no global registration / `document.title` / `history` / `<html>` writes, styles scoped to `.easy-agent-root`, new deps → `npm run deps:easy-agent`) are enforced by `npm run check:easy-agent`; see `src/packages/easyAgent/README.md` and `integration/README.md` (export: `npm run export:easy-agent`; intranet sync: `integration/tools/sync-easy-agent.cjs`).
+- `frontend/` — Vue 3.5 + Vite. **No Vue Router** in either baseline — routing is manual via boolean refs in the root component (`EasyAgentPage.vue` in Vue 2, `App.vue` in Vue 3); **no state management library** — state lives in the root component and passes down as props. Both baselines share the same `api/sse.js` (`readSSE`) contract.
 
-- `api/auth.js` — `authFetch()` wrapper adds the JWT header, dispatches an `auth-expired` event on 401. Tokens in `localStorage` keys `mini_agent_token` / `mini_agent_username`.
-- `api/chat.js` — `sendMessage()` reads SSE via `src/api/sse.js` (`readSSE`), parses `data:` lines, and invokes the per-event callbacks
-- `App.vue` — Root orchestrator: loads profile, gates on auth, manages sessions/messages
+Vue 2 paths below are relative to `frontend-vue2/src/packages/easyAgent/`:
+
+- `utils/request.js` — the only transport (axios instance + `fetchWithAuth` for SSE); reads base URL / token keys / renew hooks from the runtime config at call time; 401 never dispatches `window` events (module-internal `runtime/events.js` + `auth.onExpired`). `api/auth.js` re-exports the auth helpers and `authFetch()`. Tokens in `localStorage` keys `mini_agent_token` / `mini_agent_username` by default.
+- `api/chat.js` — `sendMessage()` reads SSE via `api/sse.js` (`readSSE`), parses `data:` lines, and invokes the per-event callbacks
+- `EasyAgentPage.vue` (Vue 3: `App.vue`) — Root orchestrator: loads profile, gates on auth, manages sessions/messages
 - `Chat.vue` / `ChatMessage.vue` — Message rendering with block-level layout (collapsible thinking, markdown content, tool call/result cards)
 - `ChatInput.vue` — Input with file upload
 - `SessionList.vue` — Sidebar with session CRUD
@@ -130,5 +132,6 @@ Two maintained baselines:
 - **Per-turn context goes through `turn_context`** — the workspace prefix, knowledge/page context and upload preview are rendered into the model request only (skills selected in the input box are loaded via `pinned_skills`, not text directives); the turn's `HumanMessage` holds the raw user text (id = message_id, also stored as `turn_id` on the DB row). Don't concatenate per-turn context into message content (see `docs/archive/design/2026-10-19-da03-session-thread.md`)
 - **`web_runner.py` does `os.chdir(project_root)`** — important for relative path resolution
 - **`frontend-vue2/dist/` not committed** — must `npm run build` (in `frontend-vue2/`) before `easy-web` can serve the UI
+- **Vue 2 business code belongs in `frontend-vue2/src/packages/easyAgent/`** — it is exported and synced to the intranet host as one directory; don't add Easy Agent code to `src/App.vue`/`src/main.js`/`src/standalone/`, don't use `@/` aliases or global registration inside it, and run `npm run check:easy-agent` (frontend unit tests need Node ≥ 20.11; builds and the easy-agent tools still run on Node 14)
 - **CI/Docker exist** — `.github/workflows/ci.yml` runs ruff + pytest + both frontend builds; Dockerfile/docker-compose/k8s manifests are in the repo
 - **Per-user memory files** — stored at `memories/{username}/AGENTS.md`, read/written by the agent for long-term context

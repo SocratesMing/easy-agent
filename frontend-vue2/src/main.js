@@ -1,30 +1,21 @@
 import Vue from 'vue'
-// Element UI 按需引入：全仓只用到 el-button / el-dialog 与 MessageBox，
-// 全量 import 会把整套组件库（约 500KB+）打进 vendors。
-import Button from 'element-ui/lib/button'
-import Dialog from 'element-ui/lib/dialog'
-// 顺序很重要：全局重置（style.css）会把 button 背景重置为 transparent，
+// 顺序很重要：独立应用的全局重置（global.css）会把 button 背景重置为 transparent，
 // 必须先加载重置、再加载 element-ui 主题，否则 el-button 会失去底色。
-import './style.css'
+// Element UI 组件由用到的业务组件局部注册（全仓只用到 el-button / el-dialog 与 MessageBox），
+// 这里只引入对应主题样式；嵌入宿主时由宿主提供 Element 主题。
+import './standalone/global.css'
 import 'element-ui/lib/theme-chalk/base.css'
 import 'element-ui/lib/theme-chalk/icon.css'
 import 'element-ui/lib/theme-chalk/button.css'
 import 'element-ui/lib/theme-chalk/dialog.css'
 import 'element-ui/lib/theme-chalk/message-box.css'
-import 'highlight.js/styles/github-dark.css'
+import { configureStandalone } from './standalone/adapter.js'
 import App from './App.vue'
-import { loadStoredThemeColors } from './theme.js'
-import tipDirective from './directives/tip.js'
 
-Vue.use(Button)
-Vue.use(Dialog)
 Vue.config.productionTip = false
 
-// 悬浮提示指令（单例浮层，hover/focus 触发，触摸设备点击切换）
-Vue.directive('tip', tipDirective)
-
-// 挂载前应用持久化的颜色令牌（无自定义时即浅色默认值）
-loadStoredThemeColors()
+// 挂载前写入运行时配置（登录方式、标题、主题颜色等），见 standalone/adapter.js
+configureStandalone()
 
 new Vue({
   render: (h) => h(App),

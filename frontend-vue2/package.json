@@ -7,9 +7,14 @@
     "build": "node ../scripts/dev/sync-frontend-shared.mjs && node scripts/run-vite.mjs build",
     "sync:shared": "node ../scripts/dev/sync-frontend-shared.mjs",
     "preview": "vue-cli-service preview",
-    "test:unit": "node --test src/api/*.test.js src/utils/*.test.js src/directives/*.test.js src/features/knowledge/utils/*.test.js src/features/personnel/*.test.js src/shared/**/*.test.js",
+    "test:unit": "node scripts/run-unit-tests.mjs",
     "lint:vue2": "node scripts/check-vue2-syntax.mjs",
     "build:sdk": "node scripts/build-sdk.mjs",
+    "check:easy-agent": "node scripts/easy-agent/check.mjs",
+    "export:easy-agent": "node scripts/easy-agent/export.mjs",
+    "icons:easy-agent": "node scripts/easy-agent/generate-icons.mjs",
+    "styles:easy-agent": "node scripts/easy-agent/generate-styles.mjs",
+    "deps:easy-agent": "node scripts/easy-agent/deps.mjs",
     "serve": "node scripts/print-serve-env.mjs && npx --yes serve -s dist/"
   },
   "dependencies": {

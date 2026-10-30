@@ -23,3 +23,8 @@ dist-sdk
 *.njsproj
 *.sln
 *.sw?
+dist-easy-agent
+
+# 仓库根 .gitignore 的 workspace/（后端运行时工作区）会顺带忽略业务模块里的 features/workspace/；
+# 受管模块必须完整进版本库（内网按目录整体同步），这里重新纳入
+!src/packages/easyAgent/features/workspace/

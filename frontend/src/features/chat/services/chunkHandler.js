@@ -1,6 +1,6 @@
 /**
  * AI 侧边栏（chatSessionMixin）使用的流式事件状态机，移植自
- * frontend-vue2/src/features/chat/services/chunkHandler.js，两套基线逻辑保持一致。
+ * frontend-vue2/src/packages/easyAgent/features/chat/services/chunkHandler.js，两套基线逻辑保持一致。
  * 主页面（App.vue）走 composables/useStreamChunks.js，与本文件同源。
  *
  * @param {object} vm 宿主组件（mixin 所在实例），提供 messages/sessions/sessionUsage 等

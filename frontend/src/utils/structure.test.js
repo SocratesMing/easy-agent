@@ -1,7 +1,7 @@
 /**
  * 结构约束（防劣化闸门）：文件行数、层间依赖、markdown 渲染单点、锁文件的包源。
  *
- * 与 frontend-vue2/src/utils/structure.test.js 同一套规则，两侧独立统计。
+ * 与 frontend-vue2/tests/structure.test.js 同一套规则，两侧独立统计。
  * 运行：`npm run test:unit`（node --test，不依赖 eslint）。
  */
 

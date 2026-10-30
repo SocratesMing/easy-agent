@@ -68,7 +68,9 @@
 
 ## 4. 前端
 
-- `frontend-vue2/`：Vue 2.7 + Element UI（后端 `app.py` 与 Dockerfile 当前托管/构建的基线）。
+- `frontend-vue2/`：Vue 2.7 + Element UI（后端 `app.py` 与 Dockerfile 当前托管/构建的基线）。业务代码在受管模块
+  `frontend-vue2/src/packages/easyAgent/`：外网独立应用、内网 Vue 2 宿主的路由页面与 AI 侧边栏 SDK 共用，内网按迁移包整体
+  同步该目录（`npm run check:easy-agent` / `export:easy-agent`，见 `frontend-vue2/integration/README.md`）。
 - `frontend/`：Vue 3.5 + Vite（并行维护的第二基线）。
 - 两者都**不是** `npm run dev` 自动代理到 8080 的旧 CLI 结构（已改为 Vite 脚本）；构建命令见各自 `package.json`。
 - 无路由/状态库（Vue2 侧）：视图由 `App.vue` 布尔开关切换；**SSE 解析已统一**为各基线的 `src/api/sse.js`（唯一 `readSSE`），chat/expert/knowledge 只注册回调（审计项 ARCH-05 第一步完成）。
