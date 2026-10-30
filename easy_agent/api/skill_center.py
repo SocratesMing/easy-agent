@@ -19,12 +19,8 @@ from easy_agent.agent.skills import (
     discover_skills,
 )
 from easy_agent.agent import builtin_skills
-from easy_agent.services import (
-    get_agent_config,
-    invalidate_user_agents,
-    skill_categories,
-    skill_library,
-)
+from easy_agent.services import skill_categories, skill_library
+from easy_agent.services.agent_manager import get_agent_config, invalidate_user_agents
 
 logger = logging.getLogger(__name__)
 

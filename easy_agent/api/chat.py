@@ -24,8 +24,8 @@ from easy_agent.knowledges.facade import (
     is_knowledge_panel_title,
     prepare_knowledge_chat,
 )
-from easy_agent.services import (
-    resume_stream_generator,
+from easy_agent.services.streaming.orchestrator import resume_stream_generator
+from easy_agent.services.agent_manager import (
     get_or_create_agent_for_session,
     get_session_expert,
     remove_session_agent,
@@ -72,10 +72,8 @@ from easy_agent.api.chat_live import (  # noqa: F401 - 兼容旧导入路径
     chat_stream_status,
     router as chat_live_router,
 )
-from easy_agent.utils import (
-    parse_file_content,
-    SessionLogger,
-)
+from easy_agent.utils.file_parser import parse_file_content
+from easy_agent.utils.session_logger import SessionLogger
 from easy_agent.utils.prompt_probe import describe_prompt
 from easy_agent.api.sessions import generate_workspace_name
 from easy_agent.knowledges.chat.host_port import (
@@ -87,7 +85,7 @@ from easy_agent.services.streaming.orchestrator import (
 from easy_agent.services.streaming.orchestrator import (
     friendly_error_message as _friendly_error_message,
 )
-from easy_agent.services import get_agent_config as _get_agent_config
+from easy_agent.services.agent_manager import get_agent_config as _get_agent_config
 from easy_agent.services.session_thread import (
     StaleApprovalError,
     abandon_pending_approval,

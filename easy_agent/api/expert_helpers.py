@@ -24,9 +24,7 @@ from easy_agent.db.expert_store import (
 )
 from easy_agent.db.repositories.expert_repository import ExpertRepository
 from easy_agent.agent.model import create_model
-from easy_agent.services import (
-    get_agent_config,
-)
+from easy_agent.services.agent_manager import get_agent_config
 from easy_agent.services.expert_runtime import (  # noqa: F401 - re-export 历史名字
     _as_str_list,
     _current_user_id,

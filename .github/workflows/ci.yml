@@ -33,8 +33,9 @@ jobs:
           python-version: "3.12"
       # 阶段 0.1：import 图 SCC 白名单；新回边/环模块集合变化/白名单过期即失败。
       # 分层方向（services 分层设计 §6.1）：下层导入上层即失败，例外登记在 import_layers.json。
-      - name: Import graph SCC and layer direction
-        run: python scripts/quality/import_graph.py --check-scc --check-layers
+      # 包入口（§6.2）：__init__.py 导入项目内模块即失败，例外登记在 import_layers.json 的 init_allow。
+      - name: Import graph SCC, layer direction and package entries
+        run: python scripts/quality/import_graph.py --check-scc --check-layers --check-inits
       # A3 技能单一安装源：根 skills/ 为 canonical，包内副本必须逐字节一致。
       - name: Skills single source (canonical → packaged)
         run: python scripts/skills/sync_skills.py --check

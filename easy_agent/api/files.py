@@ -25,7 +25,7 @@ from easy_agent.api.deps import (  # noqa: F401 - 旧模块级名字 re-export
     as_file_repository as _as_file_repository,
     get_file_repository,
 )
-from easy_agent.utils import parse_file_content
+from easy_agent.utils.file_parser import parse_file_content
 from easy_agent.bootstrap.config import Config
 from easy_agent.services.session_uploads import (
     UploadTooLargeError,

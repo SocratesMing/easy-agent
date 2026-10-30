@@ -32,8 +32,8 @@ from easy_agent.models.api import (
     ResetPasswordRequest,
     AuthResponse,
 )
-from easy_agent.services import get_agent_config
-from easy_agent.utils import create_access_token, hash_password
+from easy_agent.services.agent_manager import get_agent_config
+from easy_agent.utils.auth import create_access_token, hash_password
 from easy_agent.utils.auth import decode_access_token
 
 logger = logging.getLogger(__name__)

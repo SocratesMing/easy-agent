@@ -488,6 +488,70 @@ def check_layers(
     return errors
 
 
+def load_init_allow(path: str | Path, package: str = DEFAULT_PACKAGE) -> list[dict]:
+    """Load the packages whose ``__init__.py`` may import project modules.
+
+    They live under ``init_allow`` in the layer config::
+
+        {"init_allow": [{"package": "pkg.api", "reason": "..."}]}
+    """
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError("layer config root must be a JSON object")
+    raw_entries = data.get("init_allow", [])
+    if not isinstance(raw_entries, list):
+        raise ValueError('"init_allow" must be a list')
+
+    entries: list[dict] = []
+    seen: set[str] = set()
+    for position, raw in enumerate(raw_entries):
+        if not isinstance(raw, dict):
+            raise ValueError(f"init_allow[{position}] must be an object")
+        name = _normalize_module(str(raw.get("package", "")), package)
+        if not name:
+            raise ValueError(f'init_allow[{position}] must name a "package"')
+        reason = str(raw.get("reason", "")).strip()
+        if not reason:
+            raise ValueError(
+                f"init_allow[{position}] must document a non-empty reason "
+                "(allowed imports are frozen debt, not a mute button)"
+            )
+        if name in seen:
+            raise ValueError(f"init_allow[{position}] duplicates {name}")
+        seen.add(name)
+        entries.append({"package": name, "reason": reason})
+    return entries
+
+
+def check_package_inits(graph: ImportGraph, init_allow: list[dict]) -> list[str]:
+    """Return gate errors for package ``__init__.py`` files that import project modules.
+
+    Importing any submodule runs every parent ``__init__.py`` first, so an import
+    there is loaded for every module below it. Packages in ``init_allow`` are exempt;
+    an entry whose ``__init__.py`` no longer imports a project module is stale and fails.
+    """
+    importing: dict[str, set[str]] = {}
+    for edge in graph.edges:
+        if edge.source in graph.init_modules:
+            importing.setdefault(edge.source, set()).add(edge.target)
+
+    allowed = {entry["package"] for entry in init_allow}
+    errors: list[str] = []
+    for package_name, targets in sorted(importing.items()):
+        if package_name not in allowed:
+            errors.append(
+                f"包入口 {package_name}（__init__.py）导入了 {', '.join(sorted(targets))}："
+                "包入口不导入项目内的模块，导入它下面的任何子模块都会先执行它"
+            )
+    for entry in init_allow:
+        if entry["package"] not in importing:
+            errors.append(
+                f"白名单过期：{entry['package']} 的 __init__.py 已不导入项目内的模块；"
+                "请删除该条目（白名单只减不增）"
+            )
+    return errors
+
+
 def graph_report(graph: ImportGraph) -> dict:
     adjacency = graph.adjacency()
     cycles = graph.cycles()

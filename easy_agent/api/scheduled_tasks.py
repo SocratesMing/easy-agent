@@ -19,7 +19,7 @@ from easy_agent.api.deps import (  # noqa: F401 - 旧模块级名字 re-export
 from easy_agent.models.api import (
     DeleteScheduledTaskResponse,
 )
-from easy_agent.services import (
+from easy_agent.services.scheduler import (
     get_scheduler,
     reconcile_scheduled_tasks,
     unregister_scheduled_task,

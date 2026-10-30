@@ -35,12 +35,12 @@ from easy_agent.models.api import (
 
 from easy_agent.bootstrap.config import Config
 from easy_agent.middleware import get_current_username
-from easy_agent.services import (
+from easy_agent.services.agent_manager import (
     get_agent_config,
     get_session_connectors,
     invalidate_user_agents,
-    resolve_connector_servers,
 )
+from easy_agent.services.connectors import resolve_connector_servers
 from easy_agent.services.agent_manager import aset_session_connectors
 from easy_agent.services.connectors import catalog_connectors, find_catalog_entry
 from easy_agent.services.mcp import (

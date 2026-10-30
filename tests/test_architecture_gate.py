@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -295,6 +296,112 @@ def test_repository_imports_follow_the_layers():
     graph = import_graph.build_graph(REPO_ROOT, "easy_agent")
     layers, allow = import_graph.load_layers(SCRIPTS / "quality" / "import_layers.json", "easy_agent")
     assert import_graph.check_layers(graph, layers, allow) == []
+
+
+# --- package entries ---------------------------------------------------------
+
+
+def _make_package_with_init_imports(root: Path) -> None:
+    _write(root, "pkg/__init__.py", "from pkg.a import thing\n")
+    _write(root, "pkg/a.py", "thing = 1\n")
+    _write(root, "pkg/sub/__init__.py", "")
+
+
+def _write_init_allow(path: Path, init_allow: list[dict]) -> Path:
+    path.write_text(
+        json.dumps(
+            {"schema_version": 1, "layers": {"pkg": 0}, "init_allow": init_allow},
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_package_init_importing_project_modules_fails(tmp_path):
+    _make_package_with_init_imports(tmp_path)
+    errors = import_graph.check_package_inits(import_graph.build_graph(tmp_path, "pkg"), [])
+    assert len(errors) == 1
+    assert "pkg（__init__.py）" in errors[0] and "pkg.a" in errors[0]
+
+
+def test_package_init_allow_list_passes_and_goes_stale(tmp_path):
+    _make_package_with_init_imports(tmp_path)
+    allow = import_graph.load_init_allow(
+        _write_init_allow(tmp_path / "layers.json", [{"package": "pkg", "reason": "fixture facade"}]),
+        "pkg",
+    )
+    assert import_graph.check_package_inits(import_graph.build_graph(tmp_path, "pkg"), allow) == []
+
+    _write(tmp_path, "pkg/__init__.py", "")
+    stale = import_graph.check_package_inits(import_graph.build_graph(tmp_path, "pkg"), allow)
+    assert any("白名单过期" in error for error in stale)
+
+
+def test_init_allow_requires_reasons(tmp_path):
+    path = _write_init_allow(tmp_path / "layers.json", [{"package": "pkg"}])
+    with pytest.raises(ValueError, match="reason"):
+        import_graph.load_init_allow(path, "pkg")
+
+
+def test_init_check_cli_exit_codes(tmp_path):
+    _make_package_with_init_imports(tmp_path)
+    base = [
+        sys.executable,
+        str(SCRIPTS / "quality" / "import_graph.py"),
+        "--root",
+        str(tmp_path),
+        "--package",
+        "pkg",
+        "--check-inits",
+    ]
+
+    strict = _write_init_allow(tmp_path / "strict.json", [])
+    failed = subprocess.run(base + ["--layers", str(strict)], capture_output=True, text=True, check=False)
+    assert failed.returncode == 1
+    assert "[check-inits] FAIL" in failed.stdout
+
+    allowed = _write_init_allow(tmp_path / "allowed.json", [{"package": "pkg", "reason": "fixture"}])
+    passed = subprocess.run(base + ["--layers", str(allowed)], capture_output=True, text=True, check=False)
+    assert passed.returncode == 0, passed.stderr
+    assert "[check-inits] OK" in passed.stdout
+
+
+def test_repository_package_inits_match_the_allow_list():
+    graph = import_graph.build_graph(REPO_ROOT, "easy_agent")
+    allow = import_graph.load_init_allow(SCRIPTS / "quality" / "import_layers.json", "easy_agent")
+    assert import_graph.check_package_inits(graph, allow) == []
+    # §7 瘦身过的包入口不能再回到白名单里
+    slimmed = {"easy_agent", "easy_agent.services", "easy_agent.services.streaming", "easy_agent.utils"}
+    assert not slimmed & {entry["package"] for entry in allow}
+
+
+def _modules_loaded_by(module: str) -> set[str]:
+    """在新进程里只导入 ``module``，返回之后已加载的模块名（pytest 进程早就导入过一切）。"""
+    result = subprocess.run(
+        [sys.executable, "-c", f"import sys, {module}; print('\\n'.join(sys.modules))"],
+        cwd=REPO_ROOT,
+        env={
+            **os.environ,
+            "PYTHONPATH": os.pathsep.join(filter(None, [str(REPO_ROOT), os.environ.get("PYTHONPATH")])),
+        },
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=True,
+    )
+    return set(result.stdout.split())
+
+
+def test_importing_bootstrap_env_does_not_load_the_agent():
+    loaded = _modules_loaded_by("easy_agent.bootstrap.env")
+    assert "easy_agent.agent" not in loaded
+    assert "deepagents" not in loaded
+
+
+def test_importing_services_health_does_not_load_agent_manager():
+    loaded = _modules_loaded_by("easy_agent.services.health")
+    assert "easy_agent.services.agent_manager" not in loaded
 
 
 # --- double-write freeze -----------------------------------------------------

@@ -49,13 +49,13 @@ from easy_agent.knowledges.personnel import router as personnel_router
 from easy_agent.agent.model import create_model
 from easy_agent.models.api import HealthResponse
 from easy_agent.utils.paths import PROJECT_ROOT
-from easy_agent.services import (
+from easy_agent.services.agent_manager import (
     drain_stream_tasks,
-    flush_all_stream_events,
     get_agent_config,
     init_agent_config,
 )
-from easy_agent.services import (
+from easy_agent.services.stream_events import flush_all_stream_events
+from easy_agent.services.scheduler import (
     init_scheduler,
     reload_all_tasks,
     shutdown_scheduler,

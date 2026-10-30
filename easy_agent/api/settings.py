@@ -23,7 +23,7 @@ from easy_agent.models.api import (
     WebSearchStatusResponse,
 )
 from easy_agent.agent.skills import discover_skills
-from easy_agent.services import get_agent_config
+from easy_agent.services.agent_manager import get_agent_config
 from easy_agent.services.prompt_loader import load_system_prompt
 from easy_agent.tools.web_search import TIME_RANGE_VALUES, is_web_search_available, resolve_provider
 

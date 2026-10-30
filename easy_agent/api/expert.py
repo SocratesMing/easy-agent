@@ -32,9 +32,7 @@ from easy_agent.db.expert_store import (
     STATUS_BUILDING,
 )
 from easy_agent.middleware import get_current_username
-from easy_agent.services import (
-    invalidate_user_agents,
-)
+from easy_agent.services.agent_manager import invalidate_user_agents
 from easy_agent.services import public_expert_service
 from easy_agent.services.expert_service import (
     build_expert_ids,

@@ -21,11 +21,17 @@ Layer semantics (``--check-layers``, config ``scripts/quality/import_layers.json
 * Each violating module pair must be listed under ``allow`` with a ``reason``;
   a new violation or a stale ``allow`` entry fails the gate.
 
+Package entry semantics (``--check-inits``, same config, key ``init_allow``):
+
+* A package ``__init__.py`` must not import project modules, because importing
+  any submodule runs it first. Listed packages are exempt; a listed package whose
+  ``__init__.py`` no longer imports anything is stale and fails the gate.
+
 Usage::
 
     python scripts/quality/import_graph.py                 # human readable report
     python scripts/quality/import_graph.py --json          # machine readable report
-    python scripts/quality/import_graph.py --check-scc --check-layers   # CI gate
+    python scripts/quality/import_graph.py --check-scc --check-layers --check-inits   # CI gate
 
 The ``--root`` / ``--package`` / ``--whitelist`` / ``--layers`` options make the
 scanner testable against temporary fixture packages.
@@ -49,9 +55,11 @@ from scripts.quality.import_graph_core import (  # noqa: E402
     DEFAULT_WHITELIST,
     build_graph,
     check_layers,
+    check_package_inits,
     compare_sccs,
     graph_report,
     layer_of,
+    load_init_allow,
     load_layers,
     load_whitelist,
 )
@@ -82,6 +90,15 @@ def _print_layers(check: dict) -> None:
             print(f"  - {error}")
     else:
         print(f"[check-layers] OK — 没有未登记的下层依赖上层（白名单 {check['allowed']} 条）")
+
+
+def _print_inits(check: dict) -> None:
+    if check["errors"]:
+        print("[check-inits] FAIL")
+        for error in check["errors"]:
+            print(f"  - {error}")
+    else:
+        print(f"[check-inits] OK — 带导入的包入口都在白名单里（{check['allowed']} 个）")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -120,6 +137,11 @@ def main(argv: list[str] | None = None) -> int:
         "--check-layers",
         action="store_true",
         help="fail when a module imports a higher layer outside the allow list",
+    )
+    parser.add_argument(
+        "--check-inits",
+        action="store_true",
+        help="fail when a package __init__.py outside init_allow imports project modules",
     )
     parser.add_argument(
         "--json",
@@ -170,6 +192,23 @@ def main(argv: list[str] | None = None) -> int:
         "allowed": allowed,
     }
 
+    init_errors: list[str] = []
+    init_allowed = 0
+    if args.check_inits:
+        try:
+            init_allow = load_init_allow(args.layers, args.package)
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            print(f"[check-inits] ERROR: invalid layer config: {exc}", file=sys.stderr)
+            return 2
+        init_errors = check_package_inits(graph, init_allow)
+        init_allowed = len(init_allow)
+    report["init_check"] = {
+        "enabled": args.check_inits,
+        "ok": not init_errors,
+        "errors": init_errors,
+        "allowed": init_allowed,
+    }
+
     if args.json_out is not None:
         args.json_out.parent.mkdir(parents=True, exist_ok=True)
         args.json_out.write_text(
@@ -186,8 +225,10 @@ def main(argv: list[str] | None = None) -> int:
         _print_human(report, errors, args.check_scc)
         if args.check_layers:
             _print_layers(report["layer_check"])
+        if args.check_inits:
+            _print_inits(report["init_check"])
 
-    return 0 if not (errors or layer_errors) else 1
+    return 0 if not (errors or layer_errors or init_errors) else 1
 
 
 if __name__ == "__main__":

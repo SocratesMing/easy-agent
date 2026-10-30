@@ -32,7 +32,7 @@ from easy_agent.services.session_thread import abandon_pending_approval, session
 from easy_agent.services.sse import SSEEvent
 from easy_agent.services.sse_emitter import SSEEmitter
 from easy_agent.services.stream_messages import build_assistant_message_dict
-from easy_agent.utils import SessionLogger
+from easy_agent.utils.session_logger import SessionLogger
 from easy_agent.utils.prompt_probe import describe_prompt
 
 from . import expert_guardrail, expert_relevance, public_expert_service
