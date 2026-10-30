@@ -230,6 +230,7 @@ import {
   importSkill,
   getSkillCategories,
 } from '../../../api/skills.js'
+import { formatRelativeDate as formatTime } from '../../../utils/format.js'
 import { DEFAULT_CATEGORY, iconCategoryFor } from '../../../utils/skillCategories.js'
 import { validateSkillZip } from '../../../utils/skillZip.js'
 import SkillIcon from '../../../shared/components/SkillIcon.vue'
@@ -268,21 +269,6 @@ function formatSize(bytes) {
   if (value < 1024) return `${value} B`
   if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`
   return `${(value / 1024 / 1024).toFixed(1)} MB`
-}
-
-function formatTime(iso) {
-  if (!iso) return '—'
-  const date = new Date(iso)
-  if (Number.isNaN(date.getTime())) return '—'
-  const diff = date.getTime() - Date.now()
-  const day = 86400000
-  const hour = 3600000
-  const minute = 60000
-  const rtf = new Intl.RelativeTimeFormat('zh-CN', { numeric: 'auto' })
-  if (Math.abs(diff) >= day && Math.abs(diff) <= 30 * day) return rtf.format(Math.round(diff / day), 'day')
-  if (Math.abs(diff) >= hour && Math.abs(diff) < day) return rtf.format(Math.round(diff / hour), 'hour')
-  if (Math.abs(diff) < hour) return rtf.format(Math.round(diff / minute), 'minute')
-  return new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium' }).format(date)
 }
 
 /**

@@ -25,7 +25,7 @@ const LINE_BUDGET = {
   'features/experts/components/ExpertListPanel.vue': 2089,
   'features/connectors/components/ConnectorListPanel.vue': 1547,
   'features/settings/components/SettingsPanel.vue': 1226,
-  'features/skills/components/SkillListPanel.vue': 1250,
+  'features/skills/components/SkillListPanel.vue': 1245,
   'shared/preview/FilePreview.vue': 1128,
   'features/chat/components/Chat.vue': 1026,
   'features/chat/components/SessionList.vue': 1038,

@@ -34,7 +34,7 @@ const LINE_BUDGET = {
   'features/experts/components/ExpertListPanel.vue': 2152,
   'features/chat/mixins/chatSession.js': 1205,
   'features/connectors/components/ConnectorListPanel.vue': 1504,
-  'features/skills/components/SkillListPanel.vue': 1261,
+  'features/skills/components/SkillListPanel.vue': 1260,
   'shared/preview/FilePreview.vue': 1162,
   'features/settings/components/SettingsPanel.vue': 1128,
   'features/chat/components/Chat.vue': 1122,
