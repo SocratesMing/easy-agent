@@ -64,7 +64,8 @@ def test_workspace_tree(client):
 
 
 def test_workspace_tree_hides_internal_files(tmp_path):
-    """记忆锁 ``.memory.jsonl.lock`` 等框架产物不列给前端（文件树看不到）。"""
+    """记忆锁 ``.memory.jsonl.lock``、记忆 sidecar ``memory.jsonl`` 等框架产物不列给前端
+    （文件树看不到）；``memory.md`` 本身照常列出。"""
     from easy_agent.api.files import build_workspace_tree
 
     ws = tmp_path / "alice"
@@ -72,9 +73,11 @@ def test_workspace_tree_hides_internal_files(tmp_path):
     (ws / ".memory.jsonl.lock").write_text("", encoding="utf-8")
     (ws / "AGENTS.jsonl.lock").write_text("", encoding="utf-8")
     (ws / ".gitignore").write_text("x", encoding="utf-8")
+    (ws / "memory.jsonl").write_text('{"type": "meta"}\n', encoding="utf-8")
+    (ws / "memory.md").write_text("# 会话记忆\n", encoding="utf-8")
     (ws / "report.md").write_text("hi", encoding="utf-8")
 
-    assert [item["name"] for item in build_workspace_tree(ws)] == ["report.md"]
+    assert [item["name"] for item in build_workspace_tree(ws)] == ["memory.md", "report.md"]
 
 
 def test_preview_workspace_file(client):

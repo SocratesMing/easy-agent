@@ -154,6 +154,9 @@ def build_workspace_tree(workspace_dir: Path, path: str = "") -> list:
     # 框架内部文件不列给用户：点开头（如记忆锁 ``.memory.jsonl.lock``）与锁文件。
     # 前者是运行时产物，后者是 ``memory_lock()`` 的跨进程锁，删不得也看不到才有意义。
     _HIDDEN_SUFFIXES = (".lock",)
+    # memory.md 的结构化 sidecar（``memory_locks.store_path_for``）：只在记忆写入时
+    # 用于去重 / 记版本，agent 读记忆不读它；用户看和改的仍是 memory.md。
+    _HIDDEN_FILES = {"memory.jsonl"}
     items = []
     try:
         for entry in sorted(
@@ -163,7 +166,9 @@ def build_workspace_tree(workspace_dir: Path, path: str = "") -> list:
                 continue
             if entry.is_dir() and entry.name in _HIDDEN_DIRS:
                 continue
-            if entry.is_file() and entry.name.endswith(_HIDDEN_SUFFIXES):
+            if entry.is_file() and (
+                entry.name in _HIDDEN_FILES or entry.name.endswith(_HIDDEN_SUFFIXES)
+            ):
                 continue
             items.append(
                 {
