@@ -198,10 +198,21 @@ test('登录类接口（含 /api/auth 旧前缀）401 不续期，避免续期�
 
 test('续期期间请求被取消：不会在新 token 下继续发出', async () => {
   let release
-  setup({ token: 'old', auth: { refresh: () => new Promise((r) => { release = () => { store.set('mini_agent_token', 'good'); r(true) } }) } })
+  let refreshStarted
+  // 等续期真正开始再取消（不用固定延时：401 何时返回取决于机器负载）
+  const started = new Promise((r) => { refreshStarted = r })
+  setup({
+    token: 'old',
+    auth: {
+      refresh: () => new Promise((r) => {
+        release = () => { store.set('mini_agent_token', 'good'); r(true) }
+        refreshStarted()
+      }),
+    },
+  })
   const controller = new AbortController()
   const pending = req.default({ url: '/agent/json', signal: controller.signal })
-  await new Promise((r) => setTimeout(r, 30))
+  await started
   controller.abort()
   release()
   await assert.rejects(pending, (e) => e.code === 'ERR_CANCELED' || e.name === 'CanceledError')
