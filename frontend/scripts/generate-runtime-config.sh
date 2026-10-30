@@ -41,13 +41,15 @@ AGENT_ENV_VAL="${AGENT_ENV_SET:-prod}"
 
 # 读取各环境 .env.<mode> 中的 VITE_API_BASE_URL，作为该环境默认后端地址。
 # 这是“按 AGENT_ENV 加载不同环境配置”的唯一数据源（与构建期保持一致）。
+# .env.* 是 CRLF 行尾：去引号前先删掉 \r，否则它会落进下面的 JS 字符串字面量，
+# 浏览器加载 runtime-config.js 即 SyntaxError（页面白屏）。
 read_env_api() {
   local env="$1"
   local env_file=".env.${env}"
   local url=""
   if [ -f "$env_file" ]; then
     url=$(grep -E "^VITE_API_BASE_URL=" "$env_file" 2>/dev/null | tail -1 | cut -d= -f2- \
-            | sed "s/^[\"']//;s/[\"']$//")
+            | tr -d '\r' | sed "s/^[\"']//;s/[\"']$//")
   fi
   echo "$url"
 }
@@ -92,6 +94,17 @@ window.__RUNTIME_CONFIG__ = {
   }
 };
 EOF
+
+# 生成结果必须是合法 JS：取值里混进 \r、换行或引号都会让页面加载即白屏，
+# 这里直接让 build / serve 失败，而不是静默产出坏文件。
+if command -v node >/dev/null 2>&1; then
+  if ! node --check "$OUT_FILE"; then
+    echo "$OUT_FILE 不是合法 JavaScript，请检查注入的环境变量 / .env.* 取值" >&2
+    exit 1
+  fi
+else
+  echo "未找到 node，跳过 $OUT_FILE 语法校验" >&2
+fi
 
 echo "==> 已生成运行期前端配置: $OUT_FILE"
 echo "    AGENT_ENV        : ${AGENT_ENV_VAL}"
